@@ -1,4 +1,4 @@
-//! Szene: Testkörper (Würfel 3 × 3 × 3 m) und gezeichnete Wände. Einheit: Millimeter.
+//! Szene: gezeichnete Wände mit Rückgängig-Verlauf. Einheit: Millimeter.
 
 use sk_math::{vec3, Vec3};
 use sk_model::{Solid, WallChain};
@@ -6,42 +6,62 @@ use sk_render::MeshData;
 
 pub struct Scene {
     pub walls: Vec<WallChain>,
-    /// Rückgängig gemachte Wände für „Wiederholen“.
-    redo: Vec<WallChain>,
-    cube: Solid,
+    /// Frühere Stände für „Rückgängig“.
+    undo: Vec<Vec<WallChain>>,
+    /// Rückgängig gemachte Stände für „Wiederholen“.
+    redo: Vec<Vec<WallChain>>,
     solid: Solid,
 }
 
 impl Scene {
     pub fn new() -> Scene {
-        let mut s = Scene {
+        Scene {
             walls: Vec::new(),
+            undo: Vec::new(),
             redo: Vec::new(),
-            cube: test_cube(),
             solid: Solid::default(),
-        };
-        s.rebuild();
-        s
+        }
     }
 
     fn rebuild(&mut self) {
-        let mut solid = self.cube.clone();
+        let mut solid = Solid::default();
         for w in &self.walls {
             solid.append(&w.solid());
         }
         self.solid = solid;
     }
 
+    /// Merkt den Stand `before` als Schritt für „Rückgängig“.
+    pub fn record(&mut self, before: Vec<WallChain>) {
+        if before != self.walls {
+            self.undo.push(before);
+            self.redo.clear();
+        }
+    }
+
     pub fn add_wall(&mut self, w: WallChain) {
+        let before = self.walls.clone();
         self.walls.push(w);
-        self.redo.clear();
+        self.record(before);
+        self.rebuild();
+    }
+
+    /// Ersetzt eine Wand ohne Verlaufseintrag (für Live-Änderungen beim Ziehen).
+    pub fn set_wall(&mut self, i: usize, w: WallChain) {
+        self.walls[i] = w;
+        self.rebuild();
+    }
+
+    /// Setzt alle Wände ohne Verlaufseintrag (Abbruch einer Live-Änderung).
+    pub fn set_walls(&mut self, walls: Vec<WallChain>) {
+        self.walls = walls;
         self.rebuild();
     }
 
     pub fn undo(&mut self) -> bool {
-        match self.walls.pop() {
-            Some(w) => {
-                self.redo.push(w);
+        match self.undo.pop() {
+            Some(prev) => {
+                self.redo.push(std::mem::replace(&mut self.walls, prev));
                 self.rebuild();
                 true
             }
@@ -51,8 +71,8 @@ impl Scene {
 
     pub fn redo(&mut self) -> bool {
         match self.redo.pop() {
-            Some(w) => {
-                self.walls.push(w);
+            Some(next) => {
+                self.undo.push(std::mem::replace(&mut self.walls, next));
                 self.rebuild();
                 true
             }
@@ -97,31 +117,4 @@ pub fn mesh_of(s: &Solid) -> MeshData {
         .map(|[a, b]| [a.to_f32(), b.to_f32()])
         .collect();
     m
-}
-
-fn test_cube() -> Solid {
-    let s = 3000.0;
-    let p = |x: f64, y: f64, z: f64| vec3(x * s, y * s, z * s);
-    // Eckpunkte gegen den Uhrzeigersinn von außen gesehen
-    let quads = [
-        [p(0., 0., 0.), p(0., 1., 0.), p(1., 1., 0.), p(1., 0., 0.)], // unten
-        [p(0., 0., 1.), p(1., 0., 1.), p(1., 1., 1.), p(0., 1., 1.)], // oben
-        [p(0., 0., 0.), p(1., 0., 0.), p(1., 0., 1.), p(0., 0., 1.)], // vorne (-Y)
-        [p(1., 1., 0.), p(0., 1., 0.), p(0., 1., 1.), p(1., 1., 1.)], // hinten (+Y)
-        [p(0., 1., 0.), p(0., 0., 0.), p(0., 0., 1.), p(0., 1., 1.)], // links (-X)
-        [p(1., 0., 0.), p(1., 1., 0.), p(1., 1., 1.), p(1., 0., 1.)], // rechts (+X)
-    ];
-    let mut solid = Solid::default();
-    for q in quads {
-        let n = (q[1] - q[0]).cross(q[2] - q[0]).normalized();
-        solid.quad(q[0], q[1], q[2], q[3], n);
-    }
-    for i in 0..4 {
-        let a = [(0., 0.), (1., 0.), (1., 1.), (0., 1.)][i];
-        let b = [(0., 0.), (1., 0.), (1., 1.), (0., 1.)][(i + 1) % 4];
-        solid.edge(p(a.0, a.1, 0.), p(b.0, b.1, 0.));
-        solid.edge(p(a.0, a.1, 1.), p(b.0, b.1, 1.));
-        solid.edge(p(a.0, a.1, 0.), p(a.0, a.1, 1.));
-    }
-    solid
 }

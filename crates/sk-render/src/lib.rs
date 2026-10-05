@@ -67,7 +67,7 @@ struct GpuMesh {
     edges: GpuBuffer,
 }
 
-/// Hilfslinie oder Markierung, immer sichtbar (ohne Tiefentest).
+/// Hilfslinie oder Markierung, immer sichtbar.
 /// Ein Punkt (`a == b`) wird als Quadrat mit Kantenlänge `width` gezeichnet.
 #[derive(Clone, Copy, Debug)]
 pub struct Helper {
@@ -79,6 +79,8 @@ pub struct Helper {
     pub width: f32,
     /// Gestrichelt (Strichlänge in Pixeln), 0 = durchgezogen.
     pub dash: f32,
+    /// Hinter Geometrie liegende Teile nur blass zeigen (sonst immer obenauf).
+    pub occlude: bool,
 }
 
 struct Target {
@@ -229,7 +231,7 @@ layout(location = 0) in vec3 a_a;
 layout(location = 1) in vec3 a_b;
 layout(location = 2) in vec2 a_corner;
 layout(location = 3) in vec4 a_color;
-layout(location = 4) in vec2 a_style;
+layout(location = 4) in vec3 a_style;
 uniform mat4 u_vp;
 uniform vec3 u_origin;
 uniform vec2 u_viewport;
@@ -238,8 +240,12 @@ out vec4 v_color;
 noperspective out float v_dist;
 flat out float v_dash;
 void main() {
-    vec4 ca = u_vp * vec4(a_a + u_origin, 1.0);
-    vec4 cb = u_vp * vec4(a_b + u_origin, 1.0);
+    // Verdeckbare Linien ein wenig zur Kamera ziehen, damit sie nicht mit
+    // der Fläche, auf der sie liegen, um die Tiefe kämpfen
+    bool occl = a_style.z > 0.5;
+    float pull = occl ? 0.997 : 1.0;
+    vec4 ca = u_vp * vec4((a_a + u_origin) * pull, 1.0);
+    vec4 cb = u_vp * vec4((a_b + u_origin) * pull, 1.0);
     v_color = a_color;
     v_dash = a_style.y;
     if (ca.w < u_near && cb.w < u_near) {
@@ -262,7 +268,8 @@ void main() {
     vec2 off = (n * a_corner.y + d * (at_b ? 1.0 : -1.0)) * (w * 0.5);
     v_dist = at_b ? len : 0.0;
     c.xy += off / half_vp * c.w;
-    c.z = 0.0;
+    // Nicht verdeckbar: ganz vorne (Tiefe 0)
+    if (!occl) c.z = -c.w;
     gl_Position = c;
 }
 "#;
@@ -271,10 +278,12 @@ const HELPER_FS: &str = r#"#version 330 core
 in vec4 v_color;
 noperspective in float v_dist;
 flat in float v_dash;
+uniform float u_hidden;
 out vec4 o_color;
 void main() {
     if (v_dash > 0.0 && mod(v_dist, 2.0 * v_dash) > v_dash) discard;
-    o_color = vec4(v_color.rgb * v_color.a, v_color.a);
+    float a = v_color.a * (u_hidden > 0.5 ? 0.3 : 1.0);
+    o_color = vec4(v_color.rgb * a, a);
 }
 "#;
 
@@ -361,12 +370,25 @@ impl Renderer {
 
     /// Hilfslinien und Markierungen für das nächste Bild.
     pub fn set_helpers(&mut self, helpers: &[Helper]) {
-        let mut v: Vec<[f32; 14]> = Vec::with_capacity(helpers.len() * 6);
+        let mut v: Vec<[f32; 15]> = Vec::with_capacity(helpers.len() * 6);
         for h in helpers {
             for c in CORNERS {
                 v.push([
-                    h.a[0], h.a[1], h.a[2], h.b[0], h.b[1], h.b[2], c[0], c[1], h.color[0],
-                    h.color[1], h.color[2], h.color[3], h.width, h.dash,
+                    h.a[0],
+                    h.a[1],
+                    h.a[2],
+                    h.b[0],
+                    h.b[1],
+                    h.b[2],
+                    c[0],
+                    c[1],
+                    h.color[0],
+                    h.color[1],
+                    h.color[2],
+                    h.color[3],
+                    h.width,
+                    h.dash,
+                    h.occlude as u8 as f32,
                 ]);
             }
         }
@@ -375,7 +397,7 @@ impl Renderer {
                 &self.gl,
                 &mut self.helper_mesh,
                 &v,
-                &[(3, 0), (3, 12), (2, 24), (4, 32), (2, 48)],
+                &[(3, 0), (3, 12), (2, 24), (4, 32), (3, 48)],
             );
         }
     }
@@ -524,9 +546,10 @@ impl Renderer {
                 gl.glDrawArrays(TRIANGLES, 0, m.edges.count);
             }
 
-            // Hilfslinien und Markierungen immer sichtbar obenauf
+            // Hilfslinien und Markierungen: erst die sichtbaren Teile, dann die
+            // verdeckten Teile verdeckbarer Linien blass
             if self.helper_mesh.count > 0 {
-                gl.glDisable(DEPTH_TEST);
+                gl.glDepthMask(FALSE);
                 gl.glEnable(BLEND);
                 gl.glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA);
                 let p = self.helpers.id;
@@ -536,9 +559,13 @@ impl Renderer {
                 gl.glUniform2f(loc(gl, p, c"u_viewport"), w as f32, h as f32);
                 gl.glUniform1f(loc(gl, p, c"u_near"), view.near);
                 gl.glBindVertexArray(self.helper_mesh.vao);
-                gl.glDrawArrays(TRIANGLES, 0, self.helper_mesh.count);
+                for (func, hidden) in [(LEQUAL, 0.0), (GREATER, 1.0)] {
+                    gl.glDepthFunc(func);
+                    gl.glUniform1f(loc(gl, p, c"u_hidden"), hidden);
+                    gl.glDrawArrays(TRIANGLES, 0, self.helper_mesh.count);
+                }
                 gl.glDisable(BLEND);
-                gl.glEnable(DEPTH_TEST);
+                gl.glDepthMask(TRUE);
             }
 
             // Mehrfachabtastung auflösen und ins Fenster kopieren

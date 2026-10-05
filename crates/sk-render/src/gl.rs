@@ -25,6 +25,7 @@ pub const MULTISAMPLE: GLenum = 0x809D;
 pub const FRAMEBUFFER_SRGB: GLenum = 0x8DB9;
 pub const LESS: GLenum = 0x0201;
 pub const LEQUAL: GLenum = 0x0203;
+pub const GREATER: GLenum = 0x0204;
 pub const ALWAYS: GLenum = 0x0207;
 pub const ONE: GLenum = 1;
 pub const ONE_MINUS_SRC_ALPHA: GLenum = 0x0303;

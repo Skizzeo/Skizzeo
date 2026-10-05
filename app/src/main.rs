@@ -6,6 +6,7 @@
 mod camera;
 mod nav;
 mod scene;
+mod wall_edit;
 mod wall_tool;
 
 use camera::Camera;
@@ -19,6 +20,7 @@ use sk_ui::{
     logo, theme,
     titlebar::{Button, TitleBar},
 };
+use wall_edit::WallEdit;
 use wall_tool::WallTool;
 
 fn main() {
@@ -64,6 +66,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     let mut cam = Camera::looking_at(vec3(-6200.0, -8600.0, 3700.0), target, 45.0);
     let mut nav = Navigation::default();
     let mut tool = WallTool::new();
+    let mut edit = WallEdit::default();
     let (mut w, mut h) = surface.size();
     let mut overlay_dirty = true;
     let mut redraw = true;
@@ -134,6 +137,10 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                     overlay_dirty |= title.hover.is_some();
                     title.hover = None;
                     redraw |= tool.handle(&Event::MouseLeave, &cam, vw, vh, sc).redraw;
+                    let en = !tool.is_active();
+                    redraw |= edit
+                        .handle(&Event::MouseLeave, &mut scene, &cam, vw, vh, sc, en)
+                        .redraw;
                 }
                 Event::MouseMove { y, .. } => {
                     let hover = if nav.is_dragging() {
@@ -147,7 +154,16 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                     title.hover = hover;
                     let ev = in_view(e);
                     camera_moved |= nav.handle(&ev, &mut cam, &scene, vw, vh, sc);
-                    let tool_ev = if y < th && !nav.is_dragging() {
+                    let in_title = y < th && !nav.is_dragging() && !edit.is_dragging();
+                    let edit_ev = if in_title { Event::MouseLeave } else { ev };
+                    let en = !tool.is_active();
+                    let out = edit.handle(&edit_ev, &mut scene, &cam, vw, vh, sc, en);
+                    redraw |= out.redraw;
+                    if out.changed {
+                        renderer.set_mesh(0, &scene.mesh());
+                    }
+                    // Über dem Band zeigt das Wandwerkzeug keinen Fangpunkt
+                    let tool_ev = if in_title || edit.is_busy() {
                         Event::MouseLeave
                     } else {
                         ev
@@ -163,12 +179,18 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                     } else {
                         let ev = in_view(e);
                         camera_moved |= nav.handle(&ev, &mut cam, &scene, vw, vh, sc);
-                        let out = tool.handle(&ev, &cam, vw, vh, sc);
-                        redraw |= out.redraw;
-                        if let Some(wall) = out.commit {
-                            scene.add_wall(wall);
-                            renderer.set_mesh(0, &scene.mesh());
-                            redraw = true;
+                        let en = !tool.is_active();
+                        let eo = edit.handle(&ev, &mut scene, &cam, vw, vh, sc, en);
+                        redraw |= eo.redraw;
+                        if !eo.consumed {
+                            let out = tool.handle(&ev, &cam, vw, vh, sc);
+                            redraw |= out.redraw;
+                            if let Some(wall) = out.commit {
+                                scene.add_wall(wall);
+                                renderer.set_mesh(0, &scene.mesh());
+                                redraw = true;
+                            }
+                            edit.refresh(&scene, &cam, vw, vh, sc, !tool.is_active());
                         }
                     }
                 }
@@ -185,7 +207,10 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                             }
                         }
                     }
-                    camera_moved |= nav.handle(&in_view(e), &mut cam, &scene, vw, vh, sc);
+                    let ev = in_view(e);
+                    camera_moved |= nav.handle(&ev, &mut cam, &scene, vw, vh, sc);
+                    let en = !tool.is_active();
+                    redraw |= edit.handle(&ev, &mut scene, &cam, vw, vh, sc, en).redraw;
                 }
                 Event::Wheel { y, .. } => {
                     if y >= th {
@@ -195,12 +220,22 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 Event::Key {
                     key, down, mods, ..
                 } => {
-                    let undo = down && mods.ctrl && key == Key::Char('Z') && !tool.is_active();
-                    let redo_key = down && mods.ctrl && key == Key::Char('Y');
-                    if undo || redo_key {
+                    let free = !tool.is_active() && !edit.is_dragging();
+                    let undo = down && mods.ctrl && key == Key::Char('Z') && free;
+                    let redo_key = down && mods.ctrl && key == Key::Char('Y') && free;
+                    let en = !tool.is_active();
+                    let eo = edit.handle(&e, &mut scene, &cam, vw, vh, sc, en);
+                    if eo.changed {
+                        renderer.set_mesh(0, &scene.mesh());
+                    }
+                    redraw |= eo.redraw;
+                    if eo.consumed {
+                        // Esc hat das Ziehen abgebrochen
+                    } else if undo || redo_key {
                         let changed = if undo { scene.undo() } else { scene.redo() };
                         if changed {
                             renderer.set_mesh(0, &scene.mesh());
+                            edit.refresh(&scene, &cam, vw, vh, sc, true);
                             redraw = true;
                         }
                     } else {
@@ -216,6 +251,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             }
             if camera_moved {
                 tool.refresh(&cam, vw, vh, sc);
+                edit.refresh(&scene, &cam, vw, vh, sc, !tool.is_active());
                 redraw = true;
             }
         }
@@ -237,7 +273,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             last_tick = Some(now);
             nav.tick(&mut cam, dt);
             let th = title.height() as f64;
-            tool.refresh(&cam, w as f64, h as f64 - th, title.scale as f64);
+            let (vw, vh, sc) = (w as f64, h as f64 - th, title.scale as f64);
+            tool.refresh(&cam, vw, vh, sc);
+            edit.refresh(&scene, &cam, vw, vh, sc, !tool.is_active());
             redraw = true;
         } else {
             last_tick = None;
@@ -247,7 +285,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             let th = title.height();
             let preview = tool.preview().map(|c| c.solid()).unwrap_or_default();
             renderer.set_mesh(1, &scene::mesh_of(&preview));
-            renderer.set_helpers(&tool.helpers(&cam, title.scale));
+            let mut helpers = edit.helpers(&scene, title.scale);
+            helpers.extend(tool.helpers(&cam, title.scale));
+            renderer.set_helpers(&helpers);
             renderer.draw(w, h, th, &cam.view(w, h - th))?;
             if let Some(path) = &screenshot {
                 let px = renderer.read_pixels(w, h);

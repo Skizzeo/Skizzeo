@@ -13,7 +13,7 @@ Eingabe, OpenGL-Anbindung, 2D-Grafik, Logo und Oberfläche sind selbst geschrieb
 | `sk-model` | Gebäudemodell: Wandzug mit Bezugsseite, Gehrungen, Dicke und Höhe |
 | `sk-platform` | Windows-Fenster ohne System-Titelleiste, Eingabe, OpenGL-Kontext (eigene Win32-FFI) |
 | `sk-render` | OpenGL-3.3-Darstellung: Himmel, Boden, Flächen, Kanten, Oberfläche |
-| `app` | Programm `skizzeo`: Kamera, Navigation, Testkörper |
+| `app` | Programm `skizzeo`: Kamera, Navigation, Wandzug, Gummiband |
 
 ## Bedienung
 
@@ -30,7 +30,13 @@ Wandzug (Wanddicke 40 cm, Höhe 3,50 m):
 - R: 90°-Sprung ein/aus, Umschalt halten kehrt ihn kurz um
 - Spurlinien durch den Startpunkt fangen den letzten Punkt rechtwinklig
 - Rücktaste: letzten Punkt zurücknehmen, Esc: abbrechen
-- Strg+Z / Strg+Y: Wand rückgängig / wiederholen
+- Strg+Z / Strg+Y: rückgängig / wiederholen
+
+Gummiband (violett am äußeren Wandfuß):
+
+- Segment mit der linken Maustaste greifen und quer ziehen (10-mm-Raster)
+- Die Wand geht live mit, die Nachbarwände behalten ihre Richtung
+- Esc während des Ziehens: abbrechen
 
 ## Bauen
 

@@ -80,33 +80,72 @@ impl WallChain {
         pts
     }
 
-    /// Wandkörper mit Gehrungen an den Ecken.
-    pub fn solid(&self) -> Solid {
-        let mut s = Solid::default();
+    /// Bereinigte Punkte, ob wirklich geschlossen, und Richtung jedes Segments.
+    fn layout(&self) -> Option<(Vec<Vec3>, bool, Vec<Vec3>)> {
         let pts = self.clean_points();
-        let closed = self.closed && pts.len() >= 3;
         if pts.len() < 2 {
-            return s;
+            return None;
         }
+        let closed = self.closed && pts.len() >= 3;
         let n = pts.len();
         let m = if closed { n } else { n - 1 };
-        let dirs: Vec<Vec3> = (0..m)
+        let dirs = (0..m)
             .map(|i| (pts[(i + 1) % n] - pts[i]).normalized())
             .collect();
-        let (oa, ob) = self.ref_side.span(self.thickness);
+        Some((pts, closed, dirs))
+    }
 
-        // Eckpunkt der versetzten Linie an Punkt j
-        let corner = |j: usize, off: f64| -> Vec3 {
+    /// Anzahl der Wandsegmente.
+    pub fn segment_count(&self) -> usize {
+        self.layout().map_or(0, |(_, _, dirs)| dirs.len())
+    }
+
+    /// Normale eines Segments in der Ebene (rechts der Zeichenrichtung).
+    pub fn segment_normal(&self, i: usize) -> Option<Vec3> {
+        let (_, _, dirs) = self.layout()?;
+        dirs.get(i).map(|d| right_of(*d))
+    }
+
+    /// Lage der Außenfläche quer zur Bezugslinie (positiv = rechts der Zeichenrichtung).
+    ///
+    /// Geschlossen: die Seite, die vom umschlossenen Bereich weg zeigt.
+    /// Offen: die Fläche auf der Bezugsseite (Mitte zählt als links).
+    pub fn outer_offset(&self) -> f64 {
+        let (lo, hi) = self.ref_side.span(self.thickness);
+        match self.layout() {
+            Some((pts, true, _)) => {
+                let n = pts.len();
+                let area: f64 = (0..n).map(|i| cross2(pts[i], pts[(i + 1) % n])).sum();
+                // Fläche > 0: gegen den Uhrzeigersinn, außen liegt rechts
+                if area > 0.0 {
+                    hi
+                } else {
+                    lo
+                }
+            }
+            _ => match self.ref_side {
+                RefSide::Right => hi,
+                RefSide::Left | RefSide::Center => lo,
+            },
+        }
+    }
+
+    /// Eckpunkte der zur Bezugslinie parallelen Wandfläche im Abstand `off`
+    /// (je Punkt der bereinigten Linie einer, mit Gehrung an den Ecken).
+    pub fn face_corners(&self, off: f64) -> Vec<Vec3> {
+        let Some((pts, closed, dirs)) = self.layout() else {
+            return Vec::new();
+        };
+        let (n, m) = (pts.len(), dirs.len());
+        let corner = |j: usize| -> Vec3 {
             let has_prev = closed || j > 0;
             let has_next = closed || j < n - 1;
-            let next = j % m.max(1);
-            let prev = (j + m - 1) % m;
             match (has_prev, has_next) {
                 (true, true) => {
-                    let (d0, d1) = (dirs[prev], dirs[next]);
+                    let (d0, d1) = (dirs[(j + m - 1) % m], dirs[j % m]);
                     let (n0, n1) = (right_of(d0), right_of(d1));
                     let c = cross2(d0, d1);
-                    let base = pts[j % n];
+                    let base = pts[j];
                     if c.abs() < 1e-9 {
                         return base + n1 * off;
                     }
@@ -125,11 +164,68 @@ impl WallChain {
                 (_, false) => pts[n - 1] + right_of(dirs[m - 1]) * off,
             }
         };
+        (0..n).map(corner).collect()
+    }
+
+    /// Verschiebt Segment `i` um `d` entlang seiner Normalen. Die Nachbarsegmente
+    /// behalten ihre Richtung: Die gemeinsamen Punkte gleiten auf deren Linien.
+    /// `None`, wenn dabei ein Segment verschwinden oder sich umkehren würde.
+    pub fn with_segment_moved(&self, i: usize, d: f64) -> Option<WallChain> {
+        let (pts, closed, dirs) = self.layout()?;
+        let (n, m) = (pts.len(), dirs.len());
+        if i >= m {
+            return None;
+        }
+        let shift = right_of(dirs[i]) * d;
+        let (a, b) = (i, (i + 1) % n);
+        // Schnitt der verschobenen Linie mit der Linie des Nachbarn durch `pts[k]`
+        let slide = |k: usize, nd: Vec3| -> Vec3 {
+            let c = cross2(nd, dirs[i]);
+            if c.abs() < 1e-9 {
+                return pts[k] + shift;
+            }
+            // pts[k] + nd*t liegt auf pts[k] + shift + dirs[i]*u
+            let t = cross2(shift, dirs[i]) / c;
+            pts[k] + nd * t
+        };
+        let mut out = pts.clone();
+        out[a] = if closed || a > 0 {
+            slide(a, dirs[(i + m - 1) % m])
+        } else {
+            pts[a] + shift
+        };
+        out[b] = if closed || b < n - 1 {
+            slide(b, dirs[(i + 1) % m])
+        } else {
+            pts[b] + shift
+        };
+        // Kein Segment darf verschwinden oder die Richtung wechseln
+        for k in 0..m {
+            let v = out[(k + 1) % n] - out[k];
+            if v.length() < 1.0 || v.dot(dirs[k]) <= 0.0 {
+                return None;
+            }
+        }
+        Some(WallChain {
+            points: out,
+            closed,
+            ..self.clone()
+        })
+    }
+
+    /// Wandkörper mit Gehrungen an den Ecken.
+    pub fn solid(&self) -> Solid {
+        let mut s = Solid::default();
+        let Some((pts, closed, dirs)) = self.layout() else {
+            return s;
+        };
+        let (n, m) = (pts.len(), dirs.len());
+        let (oa, ob) = self.ref_side.span(self.thickness);
+        let ca = self.face_corners(oa);
+        let cb = self.face_corners(ob);
 
         let h = self.height;
         let up = vec3(0.0, 0.0, h);
-        let ca: Vec<Vec3> = (0..n).map(|j| corner(j, oa)).collect();
-        let cb: Vec<Vec3> = (0..n).map(|j| corner(j, ob)).collect();
 
         for i in 0..m {
             let j = (i + 1) % n;
@@ -263,6 +359,99 @@ mod tests {
         assert_eq!(s.triangles.len(), 4 * 8);
         // je Seite 4 waagerechte, je Ecke 2 senkrechte Kanten
         assert_eq!(s.edges.len(), 4 * 4 + 4 * 2);
+    }
+}
+
+#[cfg(test)]
+mod verschieben {
+    use super::*;
+
+    fn rechteck() -> WallChain {
+        WallChain {
+            // im Uhrzeigersinn: links unten, links oben, rechts oben, rechts unten
+            points: vec![
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 4000.0, 0.0),
+                vec3(5000.0, 4000.0, 0.0),
+                vec3(5000.0, 0.0, 0.0),
+            ],
+            closed: true,
+            ref_side: RefSide::Left,
+            thickness: 400.0,
+            height: 3500.0,
+        }
+    }
+
+    fn near(a: Vec3, b: Vec3) -> bool {
+        (a - b).length() < 1e-6
+    }
+
+    #[test]
+    fn aussenseite_im_uhrzeigersinn_ist_links() {
+        let w = rechteck();
+        assert_eq!(w.outer_offset(), 0.0);
+        let mut ccw = w.clone();
+        ccw.points.reverse();
+        assert_eq!(ccw.outer_offset(), 400.0);
+        // Gegen den Uhrzeigersinn liegt die Bezugslinie innen, die Wand wächst nach außen
+        let c = ccw.face_corners(ccw.outer_offset());
+        assert!(
+            c.iter().any(|p| near(*p, vec3(5400.0, 4400.0, 0.0))),
+            "{c:?}"
+        );
+    }
+
+    #[test]
+    fn segment_wandert_nachbarn_bleiben_richtungstreu() {
+        let w = rechteck();
+        // Segment 1 (oben, von links nach rechts) nach außen (+y) schieben:
+        // Normale rechts der Zeichenrichtung zeigt nach -y, also d negativ
+        let n = w.segment_normal(1).unwrap();
+        assert!(near(n, vec3(0.0, -1.0, 0.0)));
+        let v = w.with_segment_moved(1, -1000.0).unwrap();
+        assert!(near(v.points[1], vec3(0.0, 5000.0, 0.0)));
+        assert!(near(v.points[2], vec3(5000.0, 5000.0, 0.0)));
+        assert!(near(v.points[0], w.points[0]) && near(v.points[3], w.points[3]));
+    }
+
+    #[test]
+    fn schraege_nachbarn_gleiten_auf_ihrer_linie() {
+        let w = WallChain {
+            points: vec![
+                vec3(0.0, 0.0, 0.0),
+                vec3(1000.0, 3000.0, 0.0),
+                vec3(4000.0, 3000.0, 0.0),
+                vec3(5000.0, 0.0, 0.0),
+            ],
+            ..rechteck()
+        };
+        let v = w.with_segment_moved(1, 300.0).unwrap();
+        // Oberes Segment liegt jetzt bei y = 2700, Nachbarn behalten ihre Richtung
+        for (k, prev) in [(1usize, 0usize), (2, 3)] {
+            assert!((v.points[k].y - 2700.0).abs() < 1e-6);
+            let a = (w.points[k] - w.points[prev]).normalized();
+            let b = (v.points[k] - v.points[prev]).normalized();
+            assert!(near(a, b), "{a:?} {b:?}");
+        }
+    }
+
+    #[test]
+    fn offenes_ende_wandert_parallel() {
+        let w = WallChain {
+            points: vec![vec3(0.0, 0.0, 0.0), vec3(3000.0, 0.0, 0.0)],
+            closed: false,
+            ..rechteck()
+        };
+        let v = w.with_segment_moved(0, 500.0).unwrap();
+        assert!(near(v.points[0], vec3(0.0, -500.0, 0.0)));
+        assert!(near(v.points[1], vec3(3000.0, -500.0, 0.0)));
+    }
+
+    #[test]
+    fn zu_weit_verschoben_wird_abgelehnt() {
+        let w = rechteck();
+        // Oberes Segment über das untere hinaus nach innen schieben
+        assert!(w.with_segment_moved(1, 4500.0).is_none());
     }
 }
 
