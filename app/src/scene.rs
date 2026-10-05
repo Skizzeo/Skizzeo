@@ -66,7 +66,15 @@ impl Scene {
             .min_by(f64::total_cmp)
     }
 
-    pub fn center(&self) -> Vec3 {
-        vec3(1500.0, 1500.0, 1500.0)
+    /// Mitte des umschließenden Quaders aller Flächen.
+    pub fn center(&self) -> Option<Vec3> {
+        let mut pts = self.triangles.iter().flatten();
+        let first = *pts.next()?;
+        let (mut lo, mut hi) = (first, first);
+        for p in pts {
+            lo = vec3(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+            hi = vec3(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+        }
+        Some((lo + hi) * 0.5)
     }
 }

@@ -57,15 +57,16 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     renderer.set_mesh(&scene.mesh());
 
     let mut title = TitleBar::new(surface.scale());
-    let mut cam = Camera::looking_at(vec3(-6200.0, -8600.0, 3700.0), scene.center(), 45.0);
+    let mut cam = Camera::looking_at(vec3(-6200.0, -8600.0, 3700.0), scene.center().unwrap_or(vec3(0.0, 0.0, 0.0)), 45.0);
     let mut nav = Navigation::default();
     let (mut w, mut h) = surface.size();
     let mut overlay_dirty = true;
     let mut redraw = true;
+    let mut last_tick: Option<std::time::Instant> = None;
 
     loop {
         let mut events = Vec::new();
-        if !redraw && !overlay_dirty {
+        if !redraw && !overlay_dirty && !nav.is_animating() {
             match surface.wait_event() {
                 Some(e) => events.push(e),
                 None => return Ok(()),
@@ -110,7 +111,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                     overlay_dirty |= hover != title.hover;
                     title.hover = hover;
                     let ev = Event::MouseMove { x, y: y - th, mods };
-                    redraw |= nav.handle(&ev, &mut cam, &scene, w as f64, h as f64 - th);
+                    redraw |= nav.handle(&ev, &mut cam, &scene, w as f64, h as f64 - th, title.scale as f64);
                 }
                 Event::MouseDown { button, x, y, mods } => {
                     if y < th {
@@ -120,7 +121,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                         }
                     } else {
                         let ev = Event::MouseDown { button, x, y: y - th, mods };
-                        redraw |= nav.handle(&ev, &mut cam, &scene, w as f64, h as f64 - th);
+                        redraw |= nav.handle(&ev, &mut cam, &scene, w as f64, h as f64 - th, title.scale as f64);
                     }
                 }
                 Event::MouseUp { button, x, y, mods } => {
@@ -137,12 +138,12 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                         }
                     }
                     let ev = Event::MouseUp { button, x, y: y - th, mods };
-                    redraw |= nav.handle(&ev, &mut cam, &scene, w as f64, h as f64 - th);
+                    redraw |= nav.handle(&ev, &mut cam, &scene, w as f64, h as f64 - th, title.scale as f64);
                 }
                 Event::Wheel { delta, x, y, mods } => {
                     if y >= th {
                         let ev = Event::Wheel { delta, x, y: y - th, mods };
-                        redraw |= nav.handle(&ev, &mut cam, &scene, w as f64, h as f64 - th);
+                        redraw |= nav.handle(&ev, &mut cam, &scene, w as f64, h as f64 - th, title.scale as f64);
                     }
                 }
             }
@@ -157,6 +158,16 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             });
             overlay_dirty = false;
             redraw = true;
+        }
+
+        if nav.is_animating() {
+            let now = std::time::Instant::now();
+            let dt = last_tick.map_or(1.0 / 60.0, |t| (now - t).as_secs_f64().min(0.1));
+            last_tick = Some(now);
+            nav.tick(&mut cam, dt);
+            redraw = true;
+        } else {
+            last_tick = None;
         }
 
         if redraw && w > 0 && h > title.height() {
