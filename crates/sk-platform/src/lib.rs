@@ -29,23 +29,68 @@ pub enum MouseButton {
     Right,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Key {
+    Tab,
+    Escape,
+    Enter,
+    Backspace,
+    Delete,
+    Shift,
+    Control,
+    Alt,
+    /// Buchstaben- und Zifferntasten als Großbuchstabe bzw. Ziffer.
+    Char(char),
+    /// Sonstige Taste mit dem Code des Betriebssystems.
+    Other(u32),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
     /// Schließen angefordert (Alt+F4, Taskleiste, eigener Schließen-Knopf).
     CloseRequested,
     /// Neue Größe der Zeichenfläche in Pixeln.
-    Resized { width: u32, height: u32 },
+    Resized {
+        width: u32,
+        height: u32,
+    },
     /// Bildschirmskalierung geändert (1,0 = 96 dpi).
     ScaleChanged(f32),
     Maximized(bool),
     Focus(bool),
     Redraw,
-    MouseMove { x: f64, y: f64, mods: Modifiers },
-    MouseDown { button: MouseButton, x: f64, y: f64, mods: Modifiers },
-    MouseUp { button: MouseButton, x: f64, y: f64, mods: Modifiers },
+    MouseMove {
+        x: f64,
+        y: f64,
+        mods: Modifiers,
+    },
+    MouseDown {
+        button: MouseButton,
+        x: f64,
+        y: f64,
+        mods: Modifiers,
+    },
+    MouseUp {
+        button: MouseButton,
+        x: f64,
+        y: f64,
+        mods: Modifiers,
+    },
     MouseLeave,
+    /// Taste gedrückt (`down`, auch bei automatischer Wiederholung) oder losgelassen.
+    Key {
+        key: Key,
+        down: bool,
+        repeat: bool,
+        mods: Modifiers,
+    },
     /// Mausrad in Rasten (positiv = vom Benutzer weg gedreht).
-    Wheel { delta: f64, x: f64, y: f64, mods: Modifiers },
+    Wheel {
+        delta: f64,
+        x: f64,
+        y: f64,
+        mods: Modifiers,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

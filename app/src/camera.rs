@@ -54,6 +54,32 @@ impl Camera {
         (self.forward() + self.right() * nx + self.up() * ny).normalized()
     }
 
+    /// Bildpunkt eines Weltpunkts (Pixel, Ursprung links oben); `None` hinter der Kamera.
+    pub fn project(&self, p: Vec3, w: f64, h: f64) -> Option<(f64, f64)> {
+        let r = p - self.eye;
+        let z = r.dot(self.forward());
+        if z <= self.near() {
+            return None;
+        }
+        let t = (self.fov_y * 0.5).tan();
+        let x = r.dot(self.right()) / (z * t * (w / h));
+        let y = r.dot(self.up()) / (z * t);
+        Some(((x * 0.5 + 0.5) * w, (0.5 - y * 0.5) * h))
+    }
+
+    /// Schnittpunkt des Blickstrahls durch einen Bildpunkt mit dem Boden (z = 0).
+    pub fn ground_point(&self, px: f64, py: f64, w: f64, h: f64) -> Option<Vec3> {
+        let d = self.ray(px, py, w, h);
+        if d.z.abs() < 1e-12 {
+            return None;
+        }
+        let t = -self.eye.z / d.z;
+        (t > 0.0 && t < self.far()).then(|| {
+            let p = self.eye + d * t;
+            vec3(p.x, p.y, 0.0)
+        })
+    }
+
     pub fn near(&self) -> f64 {
         (self.focus * 0.002).clamp(1.0, 500.0)
     }
@@ -122,7 +148,10 @@ mod tests {
         let m = v.view_proj;
         let r = p - c.eye;
         let clip = |row: usize| {
-            m[row] as f64 * r.x + m[4 + row] as f64 * r.y + m[8 + row] as f64 * r.z + m[12 + row] as f64
+            m[row] as f64 * r.x
+                + m[4 + row] as f64 * r.y
+                + m[8 + row] as f64 * r.z
+                + m[12 + row] as f64
         };
         let wc = clip(3);
         let (nx, ny) = (clip(0) / wc, clip(1) / wc);
@@ -136,7 +165,10 @@ mod tests {
         let before = project(&c, pivot, 1200, 800);
         c.orbit(pivot, 120.0, -40.0);
         let after = project(&c, pivot, 1200, 800);
-        assert!((before.0 - after.0).abs() < 1e-3 && (before.1 - after.1).abs() < 1e-3, "{before:?} {after:?}");
+        assert!(
+            (before.0 - after.0).abs() < 1e-3 && (before.1 - after.1).abs() < 1e-3,
+            "{before:?} {after:?}"
+        );
     }
 
     #[test]
@@ -147,8 +179,14 @@ mod tests {
         let before = project(&c, p, 1200, 800);
         c.pan(depth, 30.0, -12.0, 800.0);
         let after = project(&c, p, 1200, 800);
-        assert!((after.0 - before.0 - 30.0).abs() < 1e-3, "{before:?} {after:?}");
-        assert!((after.1 - before.1 + 12.0).abs() < 1e-3, "{before:?} {after:?}");
+        assert!(
+            (after.0 - before.0 - 30.0).abs() < 1e-3,
+            "{before:?} {after:?}"
+        );
+        assert!(
+            (after.1 - before.1 + 12.0).abs() < 1e-3,
+            "{before:?} {after:?}"
+        );
     }
 
     #[test]
@@ -158,7 +196,18 @@ mod tests {
         let p = c.eye + dir * 5000.0;
         c.zoom(p, 2.0);
         let s = project(&c, p, 1200, 800);
-        assert!((s.0 - 900.0).abs() < 1e-3 && (s.1 - 300.0).abs() < 1e-3, "{s:?}");
+        assert!(
+            (s.0 - 900.0).abs() < 1e-3 && (s.1 - 300.0).abs() < 1e-3,
+            "{s:?}"
+        );
+    }
+
+    #[test]
+    fn projektion_passt_zum_strahl() {
+        let c = Camera::looking_at(vec3(-6000.0, -8000.0, 3000.0), vec3(0.0, 0.0, 0.0), 45.0);
+        let p = c.ground_point(700.0, 500.0, 1200.0, 800.0).unwrap();
+        let (x, y) = c.project(p, 1200.0, 800.0).unwrap();
+        assert!((x - 700.0).abs() < 1e-6 && (y - 500.0).abs() < 1e-6);
     }
 
     #[test]

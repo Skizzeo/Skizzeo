@@ -31,6 +31,7 @@ pub const ONE_MINUS_SRC_ALPHA: GLenum = 0x0303;
 pub const TRIANGLES: GLenum = 0x0004;
 pub const ARRAY_BUFFER: GLenum = 0x8892;
 pub const STATIC_DRAW: GLenum = 0x88E4;
+pub const DYNAMIC_DRAW: GLenum = 0x88E8;
 pub const FLOAT: GLenum = 0x1406;
 pub const UNSIGNED_BYTE: GLenum = 0x1401;
 pub const FALSE: GLboolean = 0;

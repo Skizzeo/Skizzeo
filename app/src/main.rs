@@ -6,20 +6,23 @@
 mod camera;
 mod nav;
 mod scene;
+mod wall_tool;
 
 use camera::Camera;
 use nav::Navigation;
 use scene::Scene;
 use sk_math::vec3;
 use sk_paint::Rgba;
-use sk_platform::{CaptionArea, Config, Event, MouseButton, Surface, WindowCommand};
+use sk_platform::{CaptionArea, Config, Event, Key, MouseButton, Surface, WindowCommand};
 use sk_render::{gl::Gl, Renderer, Style};
-use sk_ui::{logo, theme, titlebar::{Button, TitleBar}};
+use sk_ui::{
+    logo, theme,
+    titlebar::{Button, TitleBar},
+};
+use wall_tool::WallTool;
 
 fn main() {
-    let screenshot = std::env::args()
-        .skip_while(|a| a != "--screenshot")
-        .nth(1);
+    let screenshot = std::env::args().skip_while(|a| a != "--screenshot").nth(1);
     let config = Config {
         title: "Skizzeo".into(),
         width: 1280,
@@ -53,12 +56,14 @@ fn style(scale: f32) -> Style {
 fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     let gl = Gl::load(|name| surface.gl_proc(name))?;
     let mut renderer = Renderer::new(gl, style(surface.scale()))?;
-    let scene = Scene::test_body();
-    renderer.set_mesh(&scene.mesh());
+    let mut scene = Scene::new();
+    renderer.set_mesh(0, &scene.mesh());
 
     let mut title = TitleBar::new(surface.scale());
-    let mut cam = Camera::looking_at(vec3(-6200.0, -8600.0, 3700.0), scene.center().unwrap_or(vec3(0.0, 0.0, 0.0)), 45.0);
+    let target = scene.center().unwrap_or(vec3(0.0, 0.0, 0.0));
+    let mut cam = Camera::looking_at(vec3(-6200.0, -8600.0, 3700.0), target, 45.0);
     let mut nav = Navigation::default();
+    let mut tool = WallTool::new();
     let (mut w, mut h) = surface.size();
     let mut overlay_dirty = true;
     let mut redraw = true;
@@ -78,6 +83,33 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
 
         for e in events {
             let th = title.height() as f64;
+            let (vw, vh, sc) = (w as f64, h as f64 - th, title.scale as f64);
+            // Ereignis in Koordinaten der 3D-Ansicht (unterhalb der Titelleiste)
+            let in_view = |e: Event| -> Event {
+                match e {
+                    Event::MouseMove { x, y, mods } => Event::MouseMove { x, y: y - th, mods },
+                    Event::MouseDown { button, x, y, mods } => Event::MouseDown {
+                        button,
+                        x,
+                        y: y - th,
+                        mods,
+                    },
+                    Event::MouseUp { button, x, y, mods } => Event::MouseUp {
+                        button,
+                        x,
+                        y: y - th,
+                        mods,
+                    },
+                    Event::Wheel { delta, x, y, mods } => Event::Wheel {
+                        delta,
+                        x,
+                        y: y - th,
+                        mods,
+                    },
+                    other => other,
+                }
+            };
+            let mut camera_moved = false;
             match e {
                 Event::CloseRequested => return Ok(()),
                 Event::Resized { width, height } => {
@@ -86,11 +118,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 }
                 Event::ScaleChanged(s) => {
                     title.scale = s;
-                    renderer = {
-                        let mut r = renderer;
-                        r.set_style(style(s));
-                        r
-                    };
+                    renderer.set_style(style(s));
                     overlay_dirty = true;
                 }
                 Event::Maximized(m) => {
@@ -105,26 +133,46 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 Event::MouseLeave => {
                     overlay_dirty |= title.hover.is_some();
                     title.hover = None;
+                    redraw |= tool.handle(&Event::MouseLeave, &cam, vw, vh, sc).redraw;
                 }
-                Event::MouseMove { x, y, mods } => {
-                    let hover = if nav.is_dragging() { None } else { title.button_at(x, y, w) };
+                Event::MouseMove { y, .. } => {
+                    let hover = if nav.is_dragging() {
+                        None
+                    } else if let Event::MouseMove { x, y, .. } = e {
+                        title.button_at(x, y, w)
+                    } else {
+                        None
+                    };
                     overlay_dirty |= hover != title.hover;
                     title.hover = hover;
-                    let ev = Event::MouseMove { x, y: y - th, mods };
-                    redraw |= nav.handle(&ev, &mut cam, &scene, w as f64, h as f64 - th, title.scale as f64);
+                    let ev = in_view(e);
+                    camera_moved |= nav.handle(&ev, &mut cam, &scene, vw, vh, sc);
+                    let tool_ev = if y < th && !nav.is_dragging() {
+                        Event::MouseLeave
+                    } else {
+                        ev
+                    };
+                    redraw |= tool.handle(&tool_ev, &cam, vw, vh, sc).redraw;
                 }
-                Event::MouseDown { button, x, y, mods } => {
+                Event::MouseDown { button, x, y, .. } => {
                     if y < th {
                         if button == MouseButton::Left {
                             title.pressed = title.button_at(x, y, w);
                             overlay_dirty = true;
                         }
                     } else {
-                        let ev = Event::MouseDown { button, x, y: y - th, mods };
-                        redraw |= nav.handle(&ev, &mut cam, &scene, w as f64, h as f64 - th, title.scale as f64);
+                        let ev = in_view(e);
+                        camera_moved |= nav.handle(&ev, &mut cam, &scene, vw, vh, sc);
+                        let out = tool.handle(&ev, &cam, vw, vh, sc);
+                        redraw |= out.redraw;
+                        if let Some(wall) = out.commit {
+                            scene.add_wall(wall);
+                            renderer.set_mesh(0, &scene.mesh());
+                            redraw = true;
+                        }
                     }
                 }
-                Event::MouseUp { button, x, y, mods } => {
+                Event::MouseUp { button, x, y, .. } => {
                     if button == MouseButton::Left {
                         if let Some(b) = title.pressed.take() {
                             overlay_dirty = true;
@@ -137,15 +185,38 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                             }
                         }
                     }
-                    let ev = Event::MouseUp { button, x, y: y - th, mods };
-                    redraw |= nav.handle(&ev, &mut cam, &scene, w as f64, h as f64 - th, title.scale as f64);
+                    camera_moved |= nav.handle(&in_view(e), &mut cam, &scene, vw, vh, sc);
                 }
-                Event::Wheel { delta, x, y, mods } => {
+                Event::Wheel { y, .. } => {
                     if y >= th {
-                        let ev = Event::Wheel { delta, x, y: y - th, mods };
-                        redraw |= nav.handle(&ev, &mut cam, &scene, w as f64, h as f64 - th, title.scale as f64);
+                        camera_moved |= nav.handle(&in_view(e), &mut cam, &scene, vw, vh, sc);
                     }
                 }
+                Event::Key {
+                    key, down, mods, ..
+                } => {
+                    let undo = down && mods.ctrl && key == Key::Char('Z') && !tool.is_active();
+                    let redo_key = down && mods.ctrl && key == Key::Char('Y');
+                    if undo || redo_key {
+                        let changed = if undo { scene.undo() } else { scene.redo() };
+                        if changed {
+                            renderer.set_mesh(0, &scene.mesh());
+                            redraw = true;
+                        }
+                    } else {
+                        let out = tool.handle(&e, &cam, vw, vh, sc);
+                        redraw |= out.redraw;
+                        if let Some(wall) = out.commit {
+                            scene.add_wall(wall);
+                            renderer.set_mesh(0, &scene.mesh());
+                            redraw = true;
+                        }
+                    }
+                }
+            }
+            if camera_moved {
+                tool.refresh(&cam, vw, vh, sc);
+                redraw = true;
             }
         }
 
@@ -165,6 +236,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             let dt = last_tick.map_or(1.0 / 60.0, |t| (now - t).as_secs_f64().min(0.1));
             last_tick = Some(now);
             nav.tick(&mut cam, dt);
+            let th = title.height() as f64;
+            tool.refresh(&cam, w as f64, h as f64 - th, title.scale as f64);
             redraw = true;
         } else {
             last_tick = None;
@@ -172,6 +245,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
 
         if redraw && w > 0 && h > title.height() {
             let th = title.height();
+            let preview = tool.preview().map(|c| c.solid()).unwrap_or_default();
+            renderer.set_mesh(1, &scene::mesh_of(&preview));
+            renderer.set_helpers(&tool.helpers(&cam, title.scale));
             renderer.draw(w, h, th, &cam.view(w, h - th))?;
             if let Some(path) = &screenshot {
                 let px = renderer.read_pixels(w, h);

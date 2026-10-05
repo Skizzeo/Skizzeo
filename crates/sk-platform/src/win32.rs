@@ -6,7 +6,7 @@
 
 #![allow(non_snake_case, non_camel_case_types, clippy::upper_case_acronyms)]
 
-use crate::{CaptionArea, Config, Event, Modifiers, MouseButton, WindowCommand};
+use crate::{CaptionArea, Config, Event, Key, Modifiers, MouseButton, WindowCommand};
 use std::cell::RefCell;
 use std::ffi::{c_char, c_void};
 use std::ptr::{null, null_mut};
@@ -217,6 +217,10 @@ const WM_NCCALCSIZE: u32 = 0x0083;
 const WM_NCHITTEST: u32 = 0x0084;
 const WM_NCACTIVATE: u32 = 0x0086;
 const WM_SYSCOMMAND: u32 = 0x0112;
+const WM_KEYDOWN: u32 = 0x0100;
+const WM_KEYUP: u32 = 0x0101;
+const WM_SYSKEYDOWN: u32 = 0x0104;
+const WM_SYSKEYUP: u32 = 0x0105;
 const WM_MOUSEMOVE: u32 = 0x0200;
 const WM_LBUTTONDOWN: u32 = 0x0201;
 const WM_LBUTTONUP: u32 = 0x0202;
@@ -334,7 +338,10 @@ fn mods() -> Modifiers {
 }
 
 fn lparam_xy(l: LPARAM) -> (i32, i32) {
-    ((l & 0xFFFF) as u16 as i16 as i32, ((l >> 16) & 0xFFFF) as u16 as i16 as i32)
+    (
+        (l & 0xFFFF) as u16 as i16 as i32,
+        ((l >> 16) & 0xFFFF) as u16 as i16 as i32,
+    )
 }
 
 fn dpi_of(hwnd: HWND) -> u32 {
@@ -453,7 +460,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     }
                 });
                 send(Event::Maximized(wp == SIZE_MAXIMIZED));
-                send(Event::Resized { width: w, height: h });
+                send(Event::Resized {
+                    width: w,
+                    height: h,
+                });
             }
             0
         }
@@ -505,7 +515,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 };
                 TrackMouseEvent(&mut t);
             }
-            send(Event::MouseMove { x: x as f64, y: y as f64, mods: mods() });
+            send(Event::MouseMove {
+                x: x as f64,
+                y: y as f64,
+                mods: mods(),
+            });
             0
         }
         WM_MOUSELEAVE => {
@@ -543,9 +557,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             let (x, y, m) = (x as f64, y as f64, mods());
             send(if down {
-                Event::MouseDown { button, x, y, mods: m }
+                Event::MouseDown {
+                    button,
+                    x,
+                    y,
+                    mods: m,
+                }
             } else {
-                Event::MouseUp { button, x, y, mods: m }
+                Event::MouseUp {
+                    button,
+                    x,
+                    y,
+                    mods: m,
+                }
             });
             0
         }
@@ -554,7 +578,39 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let (sx, sy) = lparam_xy(lp);
             let mut p = POINT { x: sx, y: sy };
             ScreenToClient(hwnd, &mut p);
-            send(Event::Wheel { delta, x: p.x as f64, y: p.y as f64, mods: mods() });
+            send(Event::Wheel {
+                delta,
+                x: p.x as f64,
+                y: p.y as f64,
+                mods: mods(),
+            });
+            0
+        }
+        WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP => {
+            let down = matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN);
+            let repeat = down && (lp >> 30) & 1 == 1;
+            let key = match wp as u32 {
+                0x09 => Key::Tab,
+                0x1B => Key::Escape,
+                0x0D => Key::Enter,
+                0x08 => Key::Backspace,
+                0x2E => Key::Delete,
+                0x10 => Key::Shift,
+                0x11 => Key::Control,
+                0x12 => Key::Alt,
+                c @ (0x30..=0x39 | 0x41..=0x5A) => Key::Char(c as u8 as char),
+                c => Key::Other(c),
+            };
+            send(Event::Key {
+                key,
+                down,
+                repeat,
+                mods: mods(),
+            });
+            // Alt+F4 und das Systemmenü weiter vom System behandeln lassen
+            if matches!(msg, WM_SYSKEYDOWN | WM_SYSKEYUP) {
+                return DefWindowProcW(hwnd, msg, wp, lp);
+            }
             0
         }
         WM_CLOSE => {
@@ -623,7 +679,11 @@ impl Surface {
                     PostMessageW(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
                 }
                 WindowCommand::ToggleMaximize => {
-                    let sc = if IsZoomed(hwnd) != 0 { SC_RESTORE } else { SC_MAXIMIZE };
+                    let sc = if IsZoomed(hwnd) != 0 {
+                        SC_RESTORE
+                    } else {
+                        SC_MAXIMIZE
+                    };
                     PostMessageW(hwnd, WM_SYSCOMMAND, sc, 0);
                 }
                 WindowCommand::Close => {
@@ -634,8 +694,12 @@ impl Surface {
     }
 
     pub fn set_caption_area(&self, a: CaptionArea) {
-        self.shared.caption_height.store(a.height, Ordering::Relaxed);
-        self.shared.buttons_width.store(a.buttons_width, Ordering::Relaxed);
+        self.shared
+            .caption_height
+            .store(a.height, Ordering::Relaxed);
+        self.shared
+            .buttons_width
+            .store(a.buttons_width, Ordering::Relaxed);
     }
 
     /// Legt im aufrufenden Thread einen OpenGL-3.3-Core-Kontext an.
@@ -779,7 +843,12 @@ where
         );
 
         // Schatten und (unter Windows 11) runde Ecken vom Fenstermanager behalten.
-        let m = MARGINS { left: 0, right: 0, top: 1, bottom: 0 };
+        let m = MARGINS {
+            left: 0,
+            right: 0,
+            top: 1,
+            bottom: 0,
+        };
         DwmExtendFrameIntoClientArea(hwnd, &m);
         let corner = DWMWCP_ROUND;
         DwmSetWindowAttribute(
@@ -881,4 +950,3 @@ where
         }
     }
 }
-

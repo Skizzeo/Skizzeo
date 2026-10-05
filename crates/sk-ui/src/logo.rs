@@ -48,7 +48,10 @@ pub fn app_icon(size: usize) -> Canvas {
     c.fill(&bg, Rgba::rgb(0, 0, 0));
     let w = s * 0.68;
     let h = w * HEIGHT / WIDTH;
-    c.fill(&path_at((s - w) * 0.5, (s - h) * 0.5, h), Rgba::rgb(255, 255, 255));
+    c.fill(
+        &path_at((s - w) * 0.5, (s - h) * 0.5, h),
+        Rgba::rgb(255, 255, 255),
+    );
     c
 }
 

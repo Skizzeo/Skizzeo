@@ -9,7 +9,6 @@ pub mod gl;
 
 use gl::*;
 use std::ffi::c_void;
-use std::ptr::null;
 
 /// Farben und Maße der 3D-Ansicht (Farbwerte 0..1, sRGB).
 #[derive(Clone, Debug)]
@@ -54,6 +53,34 @@ struct Program {
     id: GLuint,
 }
 
+/// Vertex-Array mit eigenem Puffer.
+#[derive(Default)]
+struct GpuBuffer {
+    vao: GLuint,
+    buf: GLuint,
+    count: i32,
+}
+
+#[derive(Default)]
+struct GpuMesh {
+    faces: GpuBuffer,
+    edges: GpuBuffer,
+}
+
+/// Hilfslinie oder Markierung, immer sichtbar (ohne Tiefentest).
+/// Ein Punkt (`a == b`) wird als Quadrat mit Kantenlänge `width` gezeichnet.
+#[derive(Clone, Copy, Debug)]
+pub struct Helper {
+    pub a: [f32; 3],
+    pub b: [f32; 3],
+    /// RGBA, 0..1, nicht vormultipliziert.
+    pub color: [f32; 4],
+    /// Breite in Pixeln.
+    pub width: f32,
+    /// Gestrichelt (Strichlänge in Pixeln), 0 = durchgezogen.
+    pub dash: f32,
+}
+
 struct Target {
     fbo: GLuint,
     color: GLuint,
@@ -68,11 +95,10 @@ pub struct Renderer {
     faces: Program,
     edges: Program,
     overlay: Program,
+    helpers: Program,
     empty_vao: GLuint,
-    face_vao: GLuint,
-    face_count: i32,
-    edge_vao: GLuint,
-    edge_count: i32,
+    meshes: Vec<GpuMesh>,
+    helper_mesh: GpuBuffer,
     overlay_tex: GLuint,
     overlay_size: (i32, i32),
     samples: i32,
@@ -198,6 +224,60 @@ void main() {
 }
 "#;
 
+const HELPER_VS: &str = r#"#version 330 core
+layout(location = 0) in vec3 a_a;
+layout(location = 1) in vec3 a_b;
+layout(location = 2) in vec2 a_corner;
+layout(location = 3) in vec4 a_color;
+layout(location = 4) in vec2 a_style;
+uniform mat4 u_vp;
+uniform vec3 u_origin;
+uniform vec2 u_viewport;
+uniform float u_near;
+out vec4 v_color;
+noperspective out float v_dist;
+flat out float v_dash;
+void main() {
+    vec4 ca = u_vp * vec4(a_a + u_origin, 1.0);
+    vec4 cb = u_vp * vec4(a_b + u_origin, 1.0);
+    v_color = a_color;
+    v_dash = a_style.y;
+    if (ca.w < u_near && cb.w < u_near) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        v_dist = 0.0;
+        return;
+    }
+    if (ca.w < u_near) ca = mix(ca, cb, (u_near - ca.w) / (cb.w - ca.w));
+    if (cb.w < u_near) cb = mix(cb, ca, (u_near - cb.w) / (ca.w - cb.w));
+    vec2 half_vp = u_viewport * 0.5;
+    vec2 sa = ca.xy / ca.w * half_vp;
+    vec2 sb = cb.xy / cb.w * half_vp;
+    vec2 d = sb - sa;
+    float len = length(d);
+    d = len > 1e-6 ? d / len : vec2(1.0, 0.0);
+    vec2 n = vec2(-d.y, d.x);
+    bool at_b = a_corner.x > 0.5;
+    vec4 c = at_b ? cb : ca;
+    float w = a_style.x;
+    vec2 off = (n * a_corner.y + d * (at_b ? 1.0 : -1.0)) * (w * 0.5);
+    v_dist = at_b ? len : 0.0;
+    c.xy += off / half_vp * c.w;
+    c.z = 0.0;
+    gl_Position = c;
+}
+"#;
+
+const HELPER_FS: &str = r#"#version 330 core
+in vec4 v_color;
+noperspective in float v_dist;
+flat in float v_dash;
+out vec4 o_color;
+void main() {
+    if (v_dash > 0.0 && mod(v_dist, 2.0 * v_dash) > v_dash) discard;
+    o_color = vec4(v_color.rgb * v_color.a, v_color.a);
+}
+"#;
+
 const OVERLAY_FS: &str = r#"#version 330 core
 in vec2 v_ndc;
 out vec4 o_color;
@@ -215,8 +295,9 @@ impl Renderer {
             let faces = program(&gl, FACE_VS, FACE_FS)?;
             let edges = program(&gl, EDGE_VS, EDGE_FS)?;
             let overlay = program(&gl, FULLSCREEN_VS, OVERLAY_FS)?;
-            let mut vaos = [0u32; 3];
-            gl.glGenVertexArrays(3, vaos.as_mut_ptr());
+            let helpers = program(&gl, HELPER_VS, HELPER_FS)?;
+            let mut vao = 0u32;
+            gl.glGenVertexArrays(1, &mut vao);
             let mut tex = 0;
             gl.glGenTextures(1, &mut tex);
             let mut max_samples = 0;
@@ -227,11 +308,10 @@ impl Renderer {
                 faces,
                 edges,
                 overlay,
-                empty_vao: vaos[0],
-                face_vao: vaos[1],
-                face_count: 0,
-                edge_vao: vaos[2],
-                edge_count: 0,
+                helpers,
+                empty_vao: vao,
+                meshes: Vec::new(),
+                helper_mesh: GpuBuffer::default(),
                 overlay_tex: tex,
                 overlay_size: (0, 0),
                 samples: max_samples.clamp(1, 8),
@@ -258,46 +338,45 @@ impl Renderer {
         }
     }
 
-    pub fn set_mesh(&mut self, mesh: &MeshData) {
+    /// Ersetzt das Netz in Platz `slot` (z. B. 0 = Modell, 1 = Vorschau).
+    pub fn set_mesh(&mut self, slot: usize, mesh: &MeshData) {
+        while self.meshes.len() <= slot {
+            self.meshes.push(GpuMesh::default());
+        }
         let gl = &self.gl;
+        let gm = &mut self.meshes[slot];
         unsafe {
-            gl.glBindVertexArray(self.face_vao);
-            let mut buf = [0u32; 2];
-            gl.glGenBuffers(2, buf.as_mut_ptr());
-            gl.glBindBuffer(ARRAY_BUFFER, buf[0]);
-            upload(gl, &mesh.faces);
-            gl.glVertexAttribPointer(0, 3, FLOAT, FALSE, 24, null());
-            gl.glEnableVertexAttribArray(0);
-            gl.glVertexAttribPointer(1, 3, FLOAT, FALSE, 24, 12 as *const c_void);
-            gl.glEnableVertexAttribArray(1);
-            self.face_count = mesh.faces.len() as i32;
+            fill(gl, &mut gm.faces, &mesh.faces, &[(3, 0), (3, 12)]);
 
             // Jede Kante wird zu zwei Dreiecken, die der Vertex-Shader auf Pixelbreite aufzieht.
-            const CORNERS: [[f32; 2]; 6] = [
-                [0.0, -1.0],
-                [1.0, -1.0],
-                [1.0, 1.0],
-                [0.0, -1.0],
-                [1.0, 1.0],
-                [0.0, 1.0],
-            ];
             let mut v: Vec<[f32; 8]> = Vec::with_capacity(mesh.edges.len() * 6);
             for [a, b] in &mesh.edges {
                 for c in CORNERS {
                     v.push([a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1]]);
                 }
             }
-            gl.glBindVertexArray(self.edge_vao);
-            gl.glBindBuffer(ARRAY_BUFFER, buf[1]);
-            upload(gl, &v);
-            gl.glVertexAttribPointer(0, 3, FLOAT, FALSE, 32, null());
-            gl.glEnableVertexAttribArray(0);
-            gl.glVertexAttribPointer(1, 3, FLOAT, FALSE, 32, 12 as *const c_void);
-            gl.glEnableVertexAttribArray(1);
-            gl.glVertexAttribPointer(2, 2, FLOAT, FALSE, 32, 24 as *const c_void);
-            gl.glEnableVertexAttribArray(2);
-            self.edge_count = v.len() as i32;
-            gl.glBindVertexArray(0);
+            fill(gl, &mut gm.edges, &v, &[(3, 0), (3, 12), (2, 24)]);
+        }
+    }
+
+    /// Hilfslinien und Markierungen für das nächste Bild.
+    pub fn set_helpers(&mut self, helpers: &[Helper]) {
+        let mut v: Vec<[f32; 14]> = Vec::with_capacity(helpers.len() * 6);
+        for h in helpers {
+            for c in CORNERS {
+                v.push([
+                    h.a[0], h.a[1], h.a[2], h.b[0], h.b[1], h.b[2], c[0], c[1], h.color[0],
+                    h.color[1], h.color[2], h.color[3], h.width, h.dash,
+                ]);
+            }
+        }
+        unsafe {
+            fill(
+                &self.gl,
+                &mut self.helper_mesh,
+                &v,
+                &[(3, 0), (3, 12), (2, 24), (4, 32), (2, 48)],
+            );
         }
     }
 
@@ -424,8 +503,10 @@ impl Renderer {
             vec3(gl, p, c"u_color", st.face);
             vec3(gl, p, c"u_light", st.light);
             gl.glUniform1f(loc(gl, p, c"u_ambient"), st.ambient);
-            gl.glBindVertexArray(self.face_vao);
-            gl.glDrawArrays(TRIANGLES, 0, self.face_count);
+            for m in &self.meshes {
+                gl.glBindVertexArray(m.faces.vao);
+                gl.glDrawArrays(TRIANGLES, 0, m.faces.count);
+            }
             gl.glDisable(POLYGON_OFFSET_FILL);
 
             // Kanten
@@ -438,8 +519,27 @@ impl Renderer {
             gl.glUniform2f(loc(gl, p, c"u_viewport"), w as f32, h as f32);
             gl.glUniform1f(loc(gl, p, c"u_width"), st.edge_width);
             gl.glUniform1f(loc(gl, p, c"u_near"), view.near);
-            gl.glBindVertexArray(self.edge_vao);
-            gl.glDrawArrays(TRIANGLES, 0, self.edge_count);
+            for m in &self.meshes {
+                gl.glBindVertexArray(m.edges.vao);
+                gl.glDrawArrays(TRIANGLES, 0, m.edges.count);
+            }
+
+            // Hilfslinien und Markierungen immer sichtbar obenauf
+            if self.helper_mesh.count > 0 {
+                gl.glDisable(DEPTH_TEST);
+                gl.glEnable(BLEND);
+                gl.glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA);
+                let p = self.helpers.id;
+                gl.glUseProgram(p);
+                mat(gl, p, c"u_vp", &view.view_proj);
+                vec3(gl, p, c"u_origin", view.origin_rel);
+                gl.glUniform2f(loc(gl, p, c"u_viewport"), w as f32, h as f32);
+                gl.glUniform1f(loc(gl, p, c"u_near"), view.near);
+                gl.glBindVertexArray(self.helper_mesh.vao);
+                gl.glDrawArrays(TRIANGLES, 0, self.helper_mesh.count);
+                gl.glDisable(BLEND);
+                gl.glEnable(DEPTH_TEST);
+            }
 
             // Mehrfachabtastung auflösen und ins Fenster kopieren
             gl.glBindFramebuffer(READ_FRAMEBUFFER, target_fbo);
@@ -493,12 +593,41 @@ impl Renderer {
     }
 }
 
+const CORNERS: [[f32; 2]; 6] = [
+    [0.0, -1.0],
+    [1.0, -1.0],
+    [1.0, 1.0],
+    [0.0, -1.0],
+    [1.0, 1.0],
+    [0.0, 1.0],
+];
+
+/// Lädt Vertexdaten in `b` und legt die Attribute (Anzahl, Byte-Versatz) fest.
+unsafe fn fill<T>(gl: &Gl, b: &mut GpuBuffer, data: &[T], attrs: &[(i32, usize)]) {
+    if b.vao == 0 {
+        gl.glGenVertexArrays(1, &mut b.vao);
+        gl.glGenBuffers(1, &mut b.buf);
+        gl.glBindVertexArray(b.vao);
+        gl.glBindBuffer(ARRAY_BUFFER, b.buf);
+        let stride = std::mem::size_of::<T>() as i32;
+        for (i, &(n, off)) in attrs.iter().enumerate() {
+            gl.glVertexAttribPointer(i as u32, n, FLOAT, FALSE, stride, off as *const c_void);
+            gl.glEnableVertexAttribArray(i as u32);
+        }
+    }
+    gl.glBindVertexArray(b.vao);
+    gl.glBindBuffer(ARRAY_BUFFER, b.buf);
+    upload(gl, data);
+    gl.glBindVertexArray(0);
+    b.count = data.len() as i32;
+}
+
 unsafe fn upload<T>(gl: &Gl, data: &[T]) {
     gl.glBufferData(
         ARRAY_BUFFER,
         std::mem::size_of_val(data) as isize,
         data.as_ptr() as *const c_void,
-        STATIC_DRAW,
+        DYNAMIC_DRAW,
     );
 }
 

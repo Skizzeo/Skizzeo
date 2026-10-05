@@ -161,6 +161,7 @@ impl Mat4 {
     }
 
     /// Allgemeine Inverse über Kofaktoren. `None`, wenn die Matrix singulär ist.
+    #[allow(clippy::needless_range_loop)]
     pub fn inverse(&self) -> Option<Mat4> {
         let m = |col: usize, row: usize| self.c[col][row];
         // Zeilenweise Sicht a[zeile][spalte]
@@ -214,7 +215,6 @@ impl Mat4 {
             ],
         ];
         // b ist zeilenweise; zurück in Spalten
-        #[allow(clippy::needless_range_loop)]
         let mut r = Mat4::IDENTITY;
         for row in 0..4 {
             for col in 0..4 {

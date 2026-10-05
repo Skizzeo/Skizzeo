@@ -64,18 +64,28 @@ impl Navigation {
         scale: f64,
     ) -> bool {
         match *e {
-            Event::MouseDown { button: MouseButton::Middle, x, y, mods } => {
+            Event::MouseDown {
+                button: MouseButton::Middle,
+                x,
+                y,
+                mods,
+            } => {
                 self.zoom_pending = 0.0;
                 let pivot = drag_point(cam, scene, x, y, w, h);
                 self.drag = Some(if mods.shift {
-                    Drag::Pan { depth: pan_depth(cam, pivot) }
+                    Drag::Pan {
+                        depth: pan_depth(cam, pivot),
+                    }
                 } else {
                     Drag::Orbit { pivot }
                 });
                 self.last = (x, y);
                 false
             }
-            Event::MouseUp { button: MouseButton::Middle, .. } => {
+            Event::MouseUp {
+                button: MouseButton::Middle,
+                ..
+            } => {
                 self.drag = None;
                 false
             }
@@ -85,7 +95,9 @@ impl Navigation {
                 // Umschalt während des Ziehens wechselt zwischen Drehen und Verschieben.
                 if let Some(Drag::Orbit { pivot }) = self.drag {
                     if mods.shift {
-                        self.drag = Some(Drag::Pan { depth: pan_depth(cam, pivot) });
+                        self.drag = Some(Drag::Pan {
+                            depth: pan_depth(cam, pivot),
+                        });
                     }
                 }
                 match self.drag {

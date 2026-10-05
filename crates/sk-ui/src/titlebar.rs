@@ -65,7 +65,10 @@ impl TitleBar {
         let s = self.scale;
         let logo_h = (14.0 * s).round();
         let logo_y = ((h as f32 - logo_h) * 0.5).round();
-        c.fill(&logo::path_at((12.0 * s).round(), logo_y, logo_h), col::LOGO);
+        c.fill(
+            &logo::path_at((12.0 * s).round(), logo_y, logo_h),
+            col::LOGO,
+        );
 
         let bw = self.button_width() as f32;
         for (i, b) in [Button::Minimize, Button::Maximize, Button::Close]
@@ -106,7 +109,7 @@ impl TitleBar {
         let s = self.scale;
         let sw = s.round().max(1.0); // Strichstärke 1 dip, pixelgenau
         let g = (10.0 * s).round(); // Glyphengröße 10 dip
-        // Auf das Pixelraster legen, damit waagerechte/senkrechte Striche scharf sind.
+                                    // Auf das Pixelraster legen, damit waagerechte/senkrechte Striche scharf sind.
         let x0 = (cx - g * 0.5).round();
         let y0 = (cy - g * 0.5).round();
         let r = 1.0 * s;
@@ -143,7 +146,13 @@ impl TitleBar {
 fn outline(c: &mut Canvas, x: f32, y: f32, w: f32, h: f32, r: f32, sw: f32, fg: Rgba) {
     let mut p = Path::new();
     p.rounded_rect(x, y, w, h, r);
-    p.rounded_rect_hole(x + sw, y + sw, w - 2.0 * sw, h - 2.0 * sw, (r - sw).max(0.0));
+    p.rounded_rect_hole(
+        x + sw,
+        y + sw,
+        w - 2.0 * sw,
+        h - 2.0 * sw,
+        (r - sw).max(0.0),
+    );
     c.fill(&p, fg);
 }
 
@@ -155,8 +164,14 @@ mod tests {
     fn knopf_trefferpruefung() {
         let t = TitleBar::new(1.0);
         assert_eq!(t.button_at(999.0, 5.0, 1000), Some(Button::Close));
-        assert_eq!(t.button_at(1000.0 - 47.0, 5.0, 1000), Some(Button::Maximize));
-        assert_eq!(t.button_at(1000.0 - 93.0, 5.0, 1000), Some(Button::Minimize));
+        assert_eq!(
+            t.button_at(1000.0 - 47.0, 5.0, 1000),
+            Some(Button::Maximize)
+        );
+        assert_eq!(
+            t.button_at(1000.0 - 93.0, 5.0, 1000),
+            Some(Button::Minimize)
+        );
         assert_eq!(t.button_at(500.0, 5.0, 1000), None);
         assert_eq!(t.button_at(999.0, 40.0, 1000), None);
     }

@@ -7,6 +7,13 @@ name = "sk-math"
 version = "0.1.0"
 
 [[package]]
+name = "sk-model"
+version = "0.1.0"
+dependencies = [
+ "sk-math",
+]
+
+[[package]]
 name = "sk-paint"
 version = "0.1.0"
 
@@ -33,6 +40,7 @@ name = "skizzeo"
 version = "0.1.0"
 dependencies = [
  "sk-math",
+ "sk-model",
  "sk-paint",
  "sk-platform",
  "sk-render",
