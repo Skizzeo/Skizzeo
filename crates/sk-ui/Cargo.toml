@@ -1,0 +1,8 @@
+[package]
+name = "sk-ui"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+sk-paint = { path = "../sk-paint" }

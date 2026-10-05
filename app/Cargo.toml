@@ -1,0 +1,12 @@
+[package]
+name = "skizzeo"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+sk-math = { path = "../crates/sk-math" }
+sk-platform = { path = "../crates/sk-platform" }
+sk-render = { path = "../crates/sk-render" }
+sk-paint = { path = "../crates/sk-paint" }
+sk-ui = { path = "../crates/sk-ui" }

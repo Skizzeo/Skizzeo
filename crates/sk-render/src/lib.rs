@@ -1,0 +1,566 @@
+//! GPU-Darstellung der 3D-Ansicht über OpenGL 3.3.
+//!
+//! Ablauf je Bild: Himmel und Boden als Vollbild-Pass (mit Tiefe der
+//! Bodenebene), dann Flächen, dann Kanten als bildschirmbreite Bänder. Alles in
+//! einen Mehrfachabtast-Puffer (MSAA), der anschließend ins Fenster kopiert wird.
+//! Darüber kommt die selbst gezeichnete Oberfläche (Titelleiste) als Textur.
+
+pub mod gl;
+
+use gl::*;
+use std::ffi::c_void;
+use std::ptr::null;
+
+/// Farben und Maße der 3D-Ansicht (Farbwerte 0..1, sRGB).
+#[derive(Clone, Debug)]
+pub struct Style {
+    pub sky: Vec<(f32, [f32; 3])>,
+    pub ground: [f32; 3],
+    pub horizon_softness: f32,
+    pub face: [f32; 3],
+    pub edge: [f32; 3],
+    /// Kantenbreite in Pixeln.
+    pub edge_width: f32,
+    /// Richtung zum Licht (Weltkoordinaten, normiert).
+    pub light: [f32; 3],
+    /// Helligkeit abgewandter Flächen (0..1); zugewandte Flächen erreichen 1.
+    pub ambient: f32,
+}
+
+/// Kameradaten für ein Bild. Alle Matrizen sind kamerarelativ (Auge im Ursprung),
+/// damit auch weit vom Nullpunkt entfernte Modelle in `f32` genau bleiben.
+#[derive(Clone, Copy, Debug)]
+pub struct View {
+    pub view_proj: [f32; 16],
+    pub inv_view_proj: [f32; 16],
+    /// Lage des Modellursprungs relativ zum Auge.
+    pub origin_rel: [f32; 3],
+    /// Höhe des Auges über dem Boden (z = 0).
+    pub eye_z: f32,
+    /// Horizontlinie in Pixeln, von unten gezählt.
+    pub horizon_px: f32,
+    /// Ebene, an der Kanten vor dem Auge abgeschnitten werden (Abstand).
+    pub near: f32,
+}
+
+/// Dreiecksnetz für die GPU: Flächen (Position, Normale) und Kanten (zwei Punkte).
+#[derive(Clone, Debug, Default)]
+pub struct MeshData {
+    pub faces: Vec<[f32; 6]>,
+    pub edges: Vec<[[f32; 3]; 2]>,
+}
+
+struct Program {
+    id: GLuint,
+}
+
+struct Target {
+    fbo: GLuint,
+    color: GLuint,
+    depth: GLuint,
+    width: i32,
+    height: i32,
+}
+
+pub struct Renderer {
+    gl: Gl,
+    sky: Program,
+    faces: Program,
+    edges: Program,
+    overlay: Program,
+    empty_vao: GLuint,
+    face_vao: GLuint,
+    face_count: i32,
+    edge_vao: GLuint,
+    edge_count: i32,
+    overlay_tex: GLuint,
+    overlay_size: (i32, i32),
+    samples: i32,
+    target: Option<Target>,
+    style: Style,
+}
+
+const SKY_MAX: usize = 16;
+
+const FULLSCREEN_VS: &str = r#"#version 330 core
+out vec2 v_ndc;
+void main() {
+    vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+    v_ndc = p * 2.0 - 1.0;
+    gl_Position = vec4(v_ndc, 0.0, 1.0);
+}
+"#;
+
+const SKY_FS: &str = r#"#version 330 core
+in vec2 v_ndc;
+out vec4 o_color;
+uniform mat4 u_inv_vp;
+uniform mat4 u_vp;
+uniform float u_eye_z;
+uniform float u_horizon_px;
+uniform float u_height;
+uniform float u_softness;
+uniform vec3 u_ground;
+uniform int u_sky_n;
+uniform float u_sky_pos[16];
+uniform vec3 u_sky_col[16];
+
+vec3 sky(float d) {
+    for (int i = 1; i < u_sky_n; i++) {
+        if (d <= u_sky_pos[i]) {
+            float t = (d - u_sky_pos[i - 1]) / (u_sky_pos[i] - u_sky_pos[i - 1]);
+            return mix(u_sky_col[i - 1], u_sky_col[i], clamp(t, 0.0, 1.0));
+        }
+    }
+    return u_sky_col[u_sky_n - 1];
+}
+
+void main() {
+    vec4 f = u_inv_vp * vec4(v_ndc, 1.0, 1.0);
+    vec3 dir = normalize(f.xyz / f.w);
+    float above = gl_FragCoord.y - u_horizon_px;
+    vec3 col = sky(abs(above) / u_height);
+    float depth = 1.0;
+    float t = dir.z != 0.0 ? -u_eye_z / dir.z : -1.0;
+    if (t > 0.0) {
+        vec4 c = u_vp * vec4(dir * t, 1.0);
+        depth = clamp(c.z / c.w * 0.5 + 0.5, 0.0, 1.0);
+        float g = 1.0 - exp(-u_softness * abs(above));
+        col = mix(col, u_ground, g);
+    }
+    o_color = vec4(col, 1.0);
+    gl_FragDepth = depth;
+}
+"#;
+
+const FACE_VS: &str = r#"#version 330 core
+layout(location = 0) in vec3 a_pos;
+layout(location = 1) in vec3 a_normal;
+uniform mat4 u_vp;
+uniform vec3 u_origin;
+out vec3 v_normal;
+void main() {
+    v_normal = a_normal;
+    gl_Position = u_vp * vec4(a_pos + u_origin, 1.0);
+}
+"#;
+
+const FACE_FS: &str = r#"#version 330 core
+in vec3 v_normal;
+out vec4 o_color;
+uniform vec3 u_color;
+uniform vec3 u_light;
+uniform float u_ambient;
+void main() {
+    float d = max(dot(normalize(v_normal), u_light), 0.0);
+    o_color = vec4(u_color * (u_ambient + (1.0 - u_ambient) * d), 1.0);
+}
+"#;
+
+const EDGE_VS: &str = r#"#version 330 core
+layout(location = 0) in vec3 a_a;
+layout(location = 1) in vec3 a_b;
+layout(location = 2) in vec2 a_corner;
+uniform mat4 u_vp;
+uniform vec3 u_origin;
+uniform vec2 u_viewport;
+uniform float u_width;
+uniform float u_near;
+void main() {
+    vec4 ca = u_vp * vec4(a_a + u_origin, 1.0);
+    vec4 cb = u_vp * vec4(a_b + u_origin, 1.0);
+    if (ca.w < u_near && cb.w < u_near) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        return;
+    }
+    if (ca.w < u_near) ca = mix(ca, cb, (u_near - ca.w) / (cb.w - ca.w));
+    if (cb.w < u_near) cb = mix(cb, ca, (u_near - cb.w) / (ca.w - cb.w));
+    vec2 half_vp = u_viewport * 0.5;
+    vec2 sa = ca.xy / ca.w * half_vp;
+    vec2 sb = cb.xy / cb.w * half_vp;
+    vec2 d = sb - sa;
+    float len = length(d);
+    d = len > 1e-6 ? d / len : vec2(1.0, 0.0);
+    vec2 n = vec2(-d.y, d.x);
+    bool at_b = a_corner.x > 0.5;
+    vec4 c = at_b ? cb : ca;
+    vec2 off = (n * a_corner.y + d * (at_b ? 1.0 : -1.0)) * (u_width * 0.5);
+    c.xy += off / half_vp * c.w;
+    gl_Position = c;
+}
+"#;
+
+const EDGE_FS: &str = r#"#version 330 core
+out vec4 o_color;
+uniform vec3 u_color;
+void main() {
+    o_color = vec4(u_color, 1.0);
+}
+"#;
+
+const OVERLAY_FS: &str = r#"#version 330 core
+in vec2 v_ndc;
+out vec4 o_color;
+uniform sampler2D u_tex;
+void main() {
+    vec2 uv = vec2(v_ndc.x * 0.5 + 0.5, 0.5 - v_ndc.y * 0.5);
+    o_color = texture(u_tex, uv);
+}
+"#;
+
+impl Renderer {
+    pub fn new(gl: Gl, style: Style) -> Result<Renderer, String> {
+        unsafe {
+            let sky = program(&gl, FULLSCREEN_VS, SKY_FS)?;
+            let faces = program(&gl, FACE_VS, FACE_FS)?;
+            let edges = program(&gl, EDGE_VS, EDGE_FS)?;
+            let overlay = program(&gl, FULLSCREEN_VS, OVERLAY_FS)?;
+            let mut vaos = [0u32; 3];
+            gl.glGenVertexArrays(3, vaos.as_mut_ptr());
+            let mut tex = 0;
+            gl.glGenTextures(1, &mut tex);
+            let mut max_samples = 0;
+            gl.glGetIntegerv(MAX_SAMPLES, &mut max_samples);
+            Ok(Renderer {
+                gl,
+                sky,
+                faces,
+                edges,
+                overlay,
+                empty_vao: vaos[0],
+                face_vao: vaos[1],
+                face_count: 0,
+                edge_vao: vaos[2],
+                edge_count: 0,
+                overlay_tex: tex,
+                overlay_size: (0, 0),
+                samples: max_samples.clamp(1, 8),
+                target: None,
+                style,
+            })
+        }
+    }
+
+    /// Treiberangaben für Fehlermeldungen und Protokoll.
+    pub fn driver_info(&self) -> String {
+        unsafe {
+            let s = |n| {
+                let p = self.gl.glGetString(n);
+                if p.is_null() {
+                    String::new()
+                } else {
+                    std::ffi::CStr::from_ptr(p as *const std::ffi::c_char)
+                        .to_string_lossy()
+                        .into_owned()
+                }
+            };
+            format!("{} / {}", s(RENDERER), s(VERSION))
+        }
+    }
+
+    pub fn set_mesh(&mut self, mesh: &MeshData) {
+        let gl = &self.gl;
+        unsafe {
+            gl.glBindVertexArray(self.face_vao);
+            let mut buf = [0u32; 2];
+            gl.glGenBuffers(2, buf.as_mut_ptr());
+            gl.glBindBuffer(ARRAY_BUFFER, buf[0]);
+            upload(gl, &mesh.faces);
+            gl.glVertexAttribPointer(0, 3, FLOAT, FALSE, 24, null());
+            gl.glEnableVertexAttribArray(0);
+            gl.glVertexAttribPointer(1, 3, FLOAT, FALSE, 24, 12 as *const c_void);
+            gl.glEnableVertexAttribArray(1);
+            self.face_count = mesh.faces.len() as i32;
+
+            // Jede Kante wird zu zwei Dreiecken, die der Vertex-Shader auf Pixelbreite aufzieht.
+            const CORNERS: [[f32; 2]; 6] = [
+                [0.0, -1.0],
+                [1.0, -1.0],
+                [1.0, 1.0],
+                [0.0, -1.0],
+                [1.0, 1.0],
+                [0.0, 1.0],
+            ];
+            let mut v: Vec<[f32; 8]> = Vec::with_capacity(mesh.edges.len() * 6);
+            for [a, b] in &mesh.edges {
+                for c in CORNERS {
+                    v.push([a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1]]);
+                }
+            }
+            gl.glBindVertexArray(self.edge_vao);
+            gl.glBindBuffer(ARRAY_BUFFER, buf[1]);
+            upload(gl, &v);
+            gl.glVertexAttribPointer(0, 3, FLOAT, FALSE, 32, null());
+            gl.glEnableVertexAttribArray(0);
+            gl.glVertexAttribPointer(1, 3, FLOAT, FALSE, 32, 12 as *const c_void);
+            gl.glEnableVertexAttribArray(1);
+            gl.glVertexAttribPointer(2, 2, FLOAT, FALSE, 32, 24 as *const c_void);
+            gl.glEnableVertexAttribArray(2);
+            self.edge_count = v.len() as i32;
+            gl.glBindVertexArray(0);
+        }
+    }
+
+    /// Oberfläche über der 3D-Ansicht (vormultipliziertes RGBA8, Zeilen von oben).
+    pub fn set_overlay(&mut self, width: u32, height: u32, rgba_premul: &[u8]) {
+        let gl = &self.gl;
+        unsafe {
+            gl.glBindTexture(TEXTURE_2D, self.overlay_tex);
+            gl.glPixelStorei(UNPACK_ALIGNMENT, 1);
+            gl.glTexImage2D(
+                TEXTURE_2D,
+                0,
+                RGBA8 as GLint,
+                width as i32,
+                height as i32,
+                0,
+                RGBA,
+                UNSIGNED_BYTE,
+                rgba_premul.as_ptr() as *const c_void,
+            );
+            gl.glTexParameteri(TEXTURE_2D, TEXTURE_MIN_FILTER, NEAREST);
+            gl.glTexParameteri(TEXTURE_2D, TEXTURE_MAG_FILTER, NEAREST);
+            gl.glTexParameteri(TEXTURE_2D, TEXTURE_WRAP_S, CLAMP_TO_EDGE);
+            gl.glTexParameteri(TEXTURE_2D, TEXTURE_WRAP_T, CLAMP_TO_EDGE);
+        }
+        self.overlay_size = (width as i32, height as i32);
+    }
+
+    fn ensure_target(&mut self, w: i32, h: i32) -> Result<(), String> {
+        if let Some(t) = &self.target {
+            if t.width == w && t.height == h {
+                return Ok(());
+            }
+        }
+        let gl = &self.gl;
+        unsafe {
+            if let Some(t) = self.target.take() {
+                gl.glDeleteFramebuffers(1, &t.fbo);
+                gl.glDeleteRenderbuffers(1, &t.color);
+                gl.glDeleteRenderbuffers(1, &t.depth);
+            }
+            let (mut fbo, mut rb) = (0, [0u32; 2]);
+            gl.glGenFramebuffers(1, &mut fbo);
+            gl.glGenRenderbuffers(2, rb.as_mut_ptr());
+            gl.glBindFramebuffer(FRAMEBUFFER, fbo);
+            gl.glBindRenderbuffer(RENDERBUFFER, rb[0]);
+            gl.glRenderbufferStorageMultisample(RENDERBUFFER, self.samples, RGBA8, w, h);
+            gl.glFramebufferRenderbuffer(FRAMEBUFFER, COLOR_ATTACHMENT0, RENDERBUFFER, rb[0]);
+            gl.glBindRenderbuffer(RENDERBUFFER, rb[1]);
+            gl.glRenderbufferStorageMultisample(
+                RENDERBUFFER,
+                self.samples,
+                DEPTH_COMPONENT24,
+                w,
+                h,
+            );
+            gl.glFramebufferRenderbuffer(FRAMEBUFFER, DEPTH_ATTACHMENT, RENDERBUFFER, rb[1]);
+            let status = gl.glCheckFramebufferStatus(FRAMEBUFFER);
+            if status != FRAMEBUFFER_COMPLETE {
+                return Err(format!("Zeichenpuffer unvollständig (Status {status:#x})."));
+            }
+            self.target = Some(Target {
+                fbo,
+                color: rb[0],
+                depth: rb[1],
+                width: w,
+                height: h,
+            });
+        }
+        Ok(())
+    }
+
+    /// Zeichnet ein Bild. Die 3D-Ansicht füllt das Fenster unterhalb von `top` Pixeln.
+    pub fn draw(&mut self, win_w: u32, win_h: u32, top: u32, view: &View) -> Result<(), String> {
+        let (w, h) = (win_w as i32, win_h as i32 - top as i32);
+        if w <= 0 || h <= 0 {
+            return Ok(());
+        }
+        self.ensure_target(w, h)?;
+        let target_fbo = self.target.as_ref().map_or(0, |t| t.fbo);
+        let gl = &self.gl;
+        let st = &self.style;
+        unsafe {
+            gl.glBindFramebuffer(FRAMEBUFFER, target_fbo);
+            gl.glViewport(0, 0, w, h);
+            gl.glDisable(SCISSOR_TEST);
+            gl.glDisable(BLEND);
+            gl.glDisable(CULL_FACE);
+            gl.glDisable(FRAMEBUFFER_SRGB);
+            gl.glEnable(MULTISAMPLE);
+            gl.glEnable(DEPTH_TEST);
+            gl.glDepthMask(TRUE);
+            gl.glClearDepth(1.0);
+            gl.glClear(DEPTH_BUFFER_BIT);
+
+            // Himmel und Boden
+            gl.glDepthFunc(ALWAYS);
+            let p = self.sky.id;
+            gl.glUseProgram(p);
+            mat(gl, p, c"u_inv_vp", &view.inv_view_proj);
+            mat(gl, p, c"u_vp", &view.view_proj);
+            gl.glUniform1f(loc(gl, p, c"u_eye_z"), view.eye_z);
+            gl.glUniform1f(loc(gl, p, c"u_horizon_px"), view.horizon_px);
+            gl.glUniform1f(loc(gl, p, c"u_height"), h as f32);
+            gl.glUniform1f(loc(gl, p, c"u_softness"), st.horizon_softness);
+            vec3(gl, p, c"u_ground", st.ground);
+            let n = st.sky.len().min(SKY_MAX);
+            let pos: Vec<f32> = st.sky[..n].iter().map(|s| s.0).collect();
+            let col: Vec<f32> = st.sky[..n].iter().flat_map(|s| s.1).collect();
+            gl.glUniform1i(loc(gl, p, c"u_sky_n"), n as i32);
+            gl.glUniform1fv(loc(gl, p, c"u_sky_pos"), n as i32, pos.as_ptr());
+            gl.glUniform3fv(loc(gl, p, c"u_sky_col"), n as i32, col.as_ptr());
+            gl.glBindVertexArray(self.empty_vao);
+            gl.glDrawArrays(TRIANGLES, 0, 3);
+
+            // Flächen, leicht nach hinten versetzt, damit die Kanten sauber obenauf liegen
+            gl.glDepthFunc(LESS);
+            gl.glEnable(POLYGON_OFFSET_FILL);
+            gl.glPolygonOffset(1.0, 1.0);
+            let p = self.faces.id;
+            gl.glUseProgram(p);
+            mat(gl, p, c"u_vp", &view.view_proj);
+            vec3(gl, p, c"u_origin", view.origin_rel);
+            vec3(gl, p, c"u_color", st.face);
+            vec3(gl, p, c"u_light", st.light);
+            gl.glUniform1f(loc(gl, p, c"u_ambient"), st.ambient);
+            gl.glBindVertexArray(self.face_vao);
+            gl.glDrawArrays(TRIANGLES, 0, self.face_count);
+            gl.glDisable(POLYGON_OFFSET_FILL);
+
+            // Kanten
+            gl.glDepthFunc(LEQUAL);
+            let p = self.edges.id;
+            gl.glUseProgram(p);
+            mat(gl, p, c"u_vp", &view.view_proj);
+            vec3(gl, p, c"u_origin", view.origin_rel);
+            vec3(gl, p, c"u_color", st.edge);
+            gl.glUniform2f(loc(gl, p, c"u_viewport"), w as f32, h as f32);
+            gl.glUniform1f(loc(gl, p, c"u_width"), st.edge_width);
+            gl.glUniform1f(loc(gl, p, c"u_near"), view.near);
+            gl.glBindVertexArray(self.edge_vao);
+            gl.glDrawArrays(TRIANGLES, 0, self.edge_count);
+
+            // Mehrfachabtastung auflösen und ins Fenster kopieren
+            gl.glBindFramebuffer(READ_FRAMEBUFFER, target_fbo);
+            gl.glBindFramebuffer(DRAW_FRAMEBUFFER, 0);
+            gl.glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, COLOR_BUFFER_BIT, NEAREST as GLenum);
+
+            // Oberfläche (Titelleiste) oben drüber
+            gl.glBindFramebuffer(FRAMEBUFFER, 0);
+            gl.glDisable(DEPTH_TEST);
+            if self.overlay_size.0 > 0 && top > 0 {
+                gl.glViewport(0, h, self.overlay_size.0, self.overlay_size.1);
+                gl.glEnable(BLEND);
+                gl.glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA);
+                let p = self.overlay.id;
+                gl.glUseProgram(p);
+                gl.glActiveTexture(TEXTURE0);
+                gl.glBindTexture(TEXTURE_2D, self.overlay_tex);
+                gl.glUniform1i(loc(gl, p, c"u_tex"), 0);
+                gl.glBindVertexArray(self.empty_vao);
+                gl.glDrawArrays(TRIANGLES, 0, 3);
+                gl.glDisable(BLEND);
+            }
+            gl.glBindVertexArray(0);
+        }
+        Ok(())
+    }
+
+    /// Liest das fertige Bild (vor dem Tauschen der Puffer) als RGBA8, Zeilen von oben.
+    pub fn read_pixels(&self, w: u32, h: u32) -> Vec<u8> {
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        unsafe {
+            self.gl.glBindFramebuffer(READ_FRAMEBUFFER, 0);
+            self.gl.glReadBuffer(BACK);
+            self.gl.glPixelStorei(PACK_ALIGNMENT, 1);
+            self.gl.glReadPixels(
+                0,
+                0,
+                w as i32,
+                h as i32,
+                RGBA,
+                UNSIGNED_BYTE,
+                px.as_mut_ptr() as *mut c_void,
+            );
+        }
+        let row = (w * 4) as usize;
+        let mut flipped = Vec::with_capacity(px.len());
+        for r in px.chunks(row).rev() {
+            flipped.extend_from_slice(r);
+        }
+        flipped
+    }
+}
+
+unsafe fn upload<T>(gl: &Gl, data: &[T]) {
+    gl.glBufferData(
+        ARRAY_BUFFER,
+        std::mem::size_of_val(data) as isize,
+        data.as_ptr() as *const c_void,
+        STATIC_DRAW,
+    );
+}
+
+unsafe fn loc(gl: &Gl, p: GLuint, name: &std::ffi::CStr) -> GLint {
+    gl.glGetUniformLocation(p, name.as_ptr() as *const GLchar)
+}
+
+unsafe fn mat(gl: &Gl, p: GLuint, name: &std::ffi::CStr, m: &[f32; 16]) {
+    gl.glUniformMatrix4fv(loc(gl, p, name), 1, FALSE, m.as_ptr());
+}
+
+unsafe fn vec3(gl: &Gl, p: GLuint, name: &std::ffi::CStr, v: [f32; 3]) {
+    gl.glUniform3f(loc(gl, p, name), v[0], v[1], v[2]);
+}
+
+unsafe fn shader(gl: &Gl, kind: GLenum, src: &str) -> Result<GLuint, String> {
+    let s = gl.glCreateShader(kind);
+    let ptr = src.as_ptr() as *const GLchar;
+    let len = src.len() as GLint;
+    gl.glShaderSource(s, 1, &ptr, &len);
+    gl.glCompileShader(s);
+    let mut ok = 0;
+    gl.glGetShaderiv(s, COMPILE_STATUS, &mut ok);
+    if ok == 0 {
+        let mut n = 0;
+        gl.glGetShaderiv(s, INFO_LOG_LENGTH, &mut n);
+        let mut log = vec![0u8; n.max(1) as usize];
+        gl.glGetShaderInfoLog(s, n, &mut n, log.as_mut_ptr() as *mut GLchar);
+        return Err(format!(
+            "Shader-Fehler: {}",
+            String::from_utf8_lossy(&log[..n.max(0) as usize])
+        ));
+    }
+    Ok(s)
+}
+
+unsafe fn program(gl: &Gl, vs: &str, fs: &str) -> Result<Program, String> {
+    let v = shader(gl, VERTEX_SHADER, vs)?;
+    let f = shader(gl, FRAGMENT_SHADER, fs)?;
+    let p = gl.glCreateProgram();
+    gl.glAttachShader(p, v);
+    gl.glAttachShader(p, f);
+    gl.glLinkProgram(p);
+    gl.glDeleteShader(v);
+    gl.glDeleteShader(f);
+    let mut ok = 0;
+    gl.glGetProgramiv(p, LINK_STATUS, &mut ok);
+    if ok == 0 {
+        let mut n = 0;
+        gl.glGetProgramiv(p, INFO_LOG_LENGTH, &mut n);
+        let mut log = vec![0u8; n.max(1) as usize];
+        gl.glGetProgramInfoLog(p, n, &mut n, log.as_mut_ptr() as *mut GLchar);
+        return Err(format!(
+            "Shader-Verknüpfung fehlgeschlagen: {}",
+            String::from_utf8_lossy(&log[..n.max(0) as usize])
+        ));
+    }
+    Ok(Program { id: p })
+}
+
+impl Renderer {
+    pub fn set_style(&mut self, style: Style) {
+        self.style = style;
+    }
+}

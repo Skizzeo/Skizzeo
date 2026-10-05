@@ -1,0 +1,480 @@
+//! Eigene 2D-Vektorgrafik: Pfade, kantengeglättete Füllung, PNG- und SVG-Ausgabe.
+//!
+//! Die Füllung arbeitet mit exakter Flächenabdeckung pro Pixel (vorzeichenbehaftete
+//! Flächenakkumulation). Gegenläufig orientierte Teilpfade stanzen Löcher aus.
+
+#![forbid(unsafe_code)]
+
+mod png;
+
+pub use png::encode_png;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pt {
+    pub x: f32,
+    pub y: f32,
+}
+
+pub const fn pt(x: f32, y: f32) -> Pt {
+    Pt { x, y }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Cmd {
+    Move(Pt),
+    Line(Pt),
+    Cubic(Pt, Pt, Pt),
+    Close,
+}
+
+/// Vektorpfad aus Teilpfaden. Jeder Teilpfad beginnt mit `Move`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Path {
+    pub cmds: Vec<Cmd>,
+}
+
+/// Kreisnäherung für Viertelbögen mit kubischen Bézierkurven.
+const KAPPA: f32 = 0.552_284_8;
+
+impl Path {
+    pub fn new() -> Path {
+        Path::default()
+    }
+
+    pub fn move_to(&mut self, x: f32, y: f32) -> &mut Path {
+        self.cmds.push(Cmd::Move(pt(x, y)));
+        self
+    }
+
+    pub fn line_to(&mut self, x: f32, y: f32) -> &mut Path {
+        self.cmds.push(Cmd::Line(pt(x, y)));
+        self
+    }
+
+    pub fn cubic_to(&mut self, c1: (f32, f32), c2: (f32, f32), p: (f32, f32)) -> &mut Path {
+        self.cmds
+            .push(Cmd::Cubic(pt(c1.0, c1.1), pt(c2.0, c2.1), pt(p.0, p.1)));
+        self
+    }
+
+    pub fn close(&mut self) -> &mut Path {
+        self.cmds.push(Cmd::Close);
+        self
+    }
+
+    /// Rechteck mit abgerundeten Ecken, im Uhrzeigersinn (Bildschirmkoordinaten).
+    pub fn rounded_rect(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32) -> &mut Path {
+        let r = r.min(w * 0.5).min(h * 0.5).max(0.0);
+        let k = r * KAPPA;
+        let (x1, y1) = (x + w, y + h);
+        self.move_to(x + r, y).line_to(x1 - r, y);
+        self.cubic_to((x1 - r + k, y), (x1, y + r - k), (x1, y + r));
+        self.line_to(x1, y1 - r);
+        self.cubic_to((x1, y1 - r + k), (x1 - r + k, y1), (x1 - r, y1));
+        self.line_to(x + r, y1);
+        self.cubic_to((x + r - k, y1), (x, y1 - r + k), (x, y1 - r));
+        self.line_to(x, y + r);
+        self.cubic_to((x, y + r - k), (x + r - k, y), (x + r, y));
+        self.close()
+    }
+
+    /// Gleiches Rechteck, aber gegen den Uhrzeigersinn: stanzt innerhalb eines
+    /// anderen Pfades ein Loch aus.
+    pub fn rounded_rect_hole(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32) -> &mut Path {
+        let mut p = Path::new();
+        p.rounded_rect(x, y, w, h, r);
+        self.cmds.extend(p.reversed().cmds);
+        self
+    }
+
+    /// Strich zwischen zwei Punkten als gefülltes Rechteck mit flachen Enden.
+    pub fn segment(&mut self, a: (f32, f32), b: (f32, f32), width: f32) -> &mut Path {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let len = (dx * dx + dy * dy).sqrt().max(1e-6);
+        let (nx, ny) = (-dy / len * width * 0.5, dx / len * width * 0.5);
+        self.move_to(a.0 + nx, a.1 + ny)
+            .line_to(b.0 + nx, b.1 + ny)
+            .line_to(b.0 - nx, b.1 - ny)
+            .line_to(a.0 - nx, a.1 - ny)
+            .close()
+    }
+
+    /// Kehrt die Laufrichtung aller Teilpfade um.
+    pub fn reversed(&self) -> Path {
+        let mut out = Path::new();
+        for sub in self.subpaths() {
+            // Segmente als (Start, Befehl) sammeln und rückwärts ablaufen
+            let mut segs: Vec<(Pt, Cmd)> = Vec::new();
+            let mut cur = pt(0.0, 0.0);
+            let mut start = cur;
+            for c in sub {
+                match *c {
+                    Cmd::Move(p) => {
+                        cur = p;
+                        start = p;
+                    }
+                    Cmd::Line(p) => {
+                        segs.push((cur, Cmd::Line(p)));
+                        cur = p;
+                    }
+                    Cmd::Cubic(a, b, p) => {
+                        segs.push((cur, Cmd::Cubic(a, b, p)));
+                        cur = p;
+                    }
+                    Cmd::Close => {}
+                }
+            }
+            if cur != start {
+                segs.push((cur, Cmd::Line(start)));
+            }
+            out.cmds.push(Cmd::Move(start));
+            for (from, c) in segs.iter().rev() {
+                match *c {
+                    Cmd::Line(_) => out.cmds.push(Cmd::Line(*from)),
+                    Cmd::Cubic(a, b, _) => out.cmds.push(Cmd::Cubic(b, a, *from)),
+                    _ => {}
+                }
+            }
+            out.cmds.push(Cmd::Close);
+        }
+        out
+    }
+
+    fn subpaths(&self) -> Vec<&[Cmd]> {
+        let mut out = Vec::new();
+        let mut begin = 0;
+        for (i, c) in self.cmds.iter().enumerate() {
+            if matches!(c, Cmd::Move(_)) && i > begin {
+                out.push(&self.cmds[begin..i]);
+                begin = i;
+            }
+        }
+        if begin < self.cmds.len() {
+            out.push(&self.cmds[begin..]);
+        }
+        out
+    }
+
+    /// Wendet `p * scale + offset` auf alle Punkte an.
+    pub fn transformed(&self, scale: f32, dx: f32, dy: f32) -> Path {
+        let t = |p: Pt| pt(p.x * scale + dx, p.y * scale + dy);
+        Path {
+            cmds: self
+                .cmds
+                .iter()
+                .map(|c| match *c {
+                    Cmd::Move(p) => Cmd::Move(t(p)),
+                    Cmd::Line(p) => Cmd::Line(t(p)),
+                    Cmd::Cubic(a, b, p) => Cmd::Cubic(t(a), t(b), t(p)),
+                    Cmd::Close => Cmd::Close,
+                })
+                .collect(),
+        }
+    }
+
+    /// Zerlegt den Pfad in geschlossene Polygone (Kurven mit Toleranz `tol` in Pixeln).
+    pub fn flatten(&self, tol: f32) -> Vec<Vec<Pt>> {
+        let mut polys: Vec<Vec<Pt>> = Vec::new();
+        let mut cur: Vec<Pt> = Vec::new();
+        let mut last = pt(0.0, 0.0);
+        for c in &self.cmds {
+            match *c {
+                Cmd::Move(p) => {
+                    if cur.len() > 2 {
+                        polys.push(std::mem::take(&mut cur));
+                    }
+                    cur.clear();
+                    cur.push(p);
+                    last = p;
+                }
+                Cmd::Line(p) => {
+                    cur.push(p);
+                    last = p;
+                }
+                Cmd::Cubic(a, b, p) => {
+                    // Kontrollpolygonlänge bestimmt die Unterteilung
+                    let l = dist(last, a) + dist(a, b) + dist(b, p);
+                    let n = ((l / tol.max(0.01)).sqrt().ceil() as usize).clamp(1, 256);
+                    for i in 1..=n {
+                        let t = i as f32 / n as f32;
+                        let u = 1.0 - t;
+                        let w0 = u * u * u;
+                        let w1 = 3.0 * u * u * t;
+                        let w2 = 3.0 * u * t * t;
+                        let w3 = t * t * t;
+                        cur.push(pt(
+                            w0 * last.x + w1 * a.x + w2 * b.x + w3 * p.x,
+                            w0 * last.y + w1 * a.y + w2 * b.y + w3 * p.y,
+                        ));
+                    }
+                    last = p;
+                }
+                Cmd::Close => {
+                    if cur.len() > 2 {
+                        polys.push(std::mem::take(&mut cur));
+                    }
+                    cur.clear();
+                }
+            }
+        }
+        if cur.len() > 2 {
+            polys.push(cur);
+        }
+        polys
+    }
+
+    /// SVG-Pfadbeschreibung (`d`-Attribut).
+    pub fn to_svg_d(&self) -> String {
+        let mut s = String::new();
+        for c in &self.cmds {
+            match *c {
+                Cmd::Move(p) => s += &format!("M{} {} ", n(p.x), n(p.y)),
+                Cmd::Line(p) => s += &format!("L{} {} ", n(p.x), n(p.y)),
+                Cmd::Cubic(a, b, p) => {
+                    s += &format!(
+                        "C{} {} {} {} {} {} ",
+                        n(a.x),
+                        n(a.y),
+                        n(b.x),
+                        n(b.y),
+                        n(p.x),
+                        n(p.y)
+                    )
+                }
+                Cmd::Close => s += "Z ",
+            }
+        }
+        s.trim_end().to_string()
+    }
+}
+
+fn n(v: f32) -> String {
+    let r = (v * 100.0).round() / 100.0;
+    format!("{}", r)
+}
+
+fn dist(a: Pt, b: Pt) -> f32 {
+    ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt()
+}
+
+/// Farbe in sRGB, 0..=255, nicht vormultipliziert.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rgba(pub u8, pub u8, pub u8, pub u8);
+
+impl Rgba {
+    pub const fn rgb(r: u8, g: u8, b: u8) -> Rgba {
+        Rgba(r, g, b, 255)
+    }
+}
+
+/// RGBA-Bild mit vormultiplizierten Farbwerten (0..1).
+#[derive(Clone, Debug)]
+pub struct Canvas {
+    pub width: usize,
+    pub height: usize,
+    px: Vec<[f32; 4]>,
+    acc: Vec<f32>,
+}
+
+impl Canvas {
+    pub fn new(width: usize, height: usize) -> Canvas {
+        Canvas {
+            width,
+            height,
+            px: vec![[0.0; 4]; width * height],
+            acc: Vec::new(),
+        }
+    }
+
+    pub fn clear(&mut self, c: Rgba) {
+        let v = premul(c, 1.0);
+        self.px.iter_mut().for_each(|p| *p = v);
+    }
+
+    pub fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, c: Rgba) {
+        let mut p = Path::new();
+        p.move_to(x, y)
+            .line_to(x + w, y)
+            .line_to(x + w, y + h)
+            .line_to(x, y + h)
+            .close();
+        self.fill(&p, c);
+    }
+
+    /// Füllt den Pfad kantengeglättet (Nonzero-Regel für nicht überlappende Teilpfade).
+    pub fn fill(&mut self, path: &Path, c: Rgba) {
+        let (w, h) = (self.width, self.height);
+        if w == 0 || h == 0 {
+            return;
+        }
+        let stride = w + 2;
+        self.acc.clear();
+        self.acc.resize(stride * h, 0.0);
+        for poly in path.flatten(0.2) {
+            for i in 0..poly.len() {
+                let a = poly[i];
+                let b = poly[(i + 1) % poly.len()];
+                accumulate_line(&mut self.acc, stride, w, h, a, b);
+            }
+        }
+        for y in 0..h {
+            let mut sum = 0.0f32;
+            for x in 0..w {
+                sum += self.acc[y * stride + x];
+                let cov = sum.abs().min(1.0);
+                if cov > 0.0 {
+                    let s = premul(c, cov);
+                    let d = &mut self.px[y * w + x];
+                    let ia = 1.0 - s[3];
+                    for k in 0..4 {
+                        d[k] = s[k] + d[k] * ia;
+                    }
+                }
+            }
+        }
+    }
+
+    /// RGBA8 in sRGB, nicht vormultipliziert, Zeilen von oben nach unten.
+    pub fn to_rgba8(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.px.len() * 4);
+        for p in &self.px {
+            let a = p[3];
+            let un = |v: f32| {
+                if a > 0.0 {
+                    (v / a * 255.0).round().clamp(0.0, 255.0) as u8
+                } else {
+                    0
+                }
+            };
+            out.extend_from_slice(&[un(p[0]), un(p[1]), un(p[2]), (a * 255.0).round() as u8]);
+        }
+        out
+    }
+
+    /// Vormultiplizierte RGBA8-Werte, wie sie zum Überblenden auf der GPU gebraucht werden.
+    pub fn to_premul_rgba8(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.px.len() * 4);
+        for p in &self.px {
+            for v in p {
+                out.push((v * 255.0).round().clamp(0.0, 255.0) as u8);
+            }
+        }
+        out
+    }
+
+    pub fn to_png(&self) -> Vec<u8> {
+        encode_png(self.width as u32, self.height as u32, &self.to_rgba8())
+    }
+}
+
+fn premul(c: Rgba, cov: f32) -> [f32; 4] {
+    let a = c.3 as f32 / 255.0 * cov;
+    [
+        c.0 as f32 / 255.0 * a,
+        c.1 as f32 / 255.0 * a,
+        c.2 as f32 / 255.0 * a,
+        a,
+    ]
+}
+
+/// Trägt die vorzeichenbehaftete Fläche einer Kante in den Akkumulator ein.
+/// Die laufende Summe je Zeile ergibt danach die Abdeckung jedes Pixels.
+fn accumulate_line(acc: &mut [f32], stride: usize, w: usize, h: usize, p0: Pt, p1: Pt) {
+    if p0.y == p1.y {
+        return;
+    }
+    let (dir, p0, p1) = if p0.y < p1.y {
+        (1.0f32, p0, p1)
+    } else {
+        (-1.0f32, p1, p0)
+    };
+    if p1.y <= 0.0 || p0.y >= h as f32 {
+        return;
+    }
+    let dxdy = (p1.x - p0.x) / (p1.y - p0.y);
+    let xmax = w as f32 - 0.0001;
+    let mut x = p0.x;
+    if p0.y < 0.0 {
+        x -= p0.y * dxdy;
+    }
+    let y_start = p0.y.max(0.0) as usize;
+    let y_end = (p1.y.ceil() as usize).min(h);
+    for y in y_start..y_end {
+        let row = y * stride;
+        let dy = ((y + 1) as f32).min(p1.y) - (y as f32).max(p0.y);
+        let xnext = x + dxdy * dy;
+        let d = dy * dir;
+        // Waagerecht auf die Bildfläche begrenzen; die Windungszahl bleibt erhalten.
+        let (xa, xb) = (x.clamp(0.0, xmax), xnext.clamp(0.0, xmax));
+        let (x0, x1) = if xa < xb { (xa, xb) } else { (xb, xa) };
+        let x0f = x0.floor();
+        let x0i = x0f as usize;
+        let x1c = x1.ceil();
+        let x1i = x1c as usize;
+        if x1i <= x0i + 1 {
+            let xmf = 0.5 * (xa + xb) - x0f;
+            acc[row + x0i] += d - d * xmf;
+            acc[row + x0i + 1] += d * xmf;
+        } else {
+            let s = 1.0 / (x1 - x0);
+            let x0r = x0 - x0f;
+            let a0 = 0.5 * s * (1.0 - x0r) * (1.0 - x0r);
+            let x1r = x1 - x1c + 1.0;
+            let am = 0.5 * s * x1r * x1r;
+            acc[row + x0i] += d * a0;
+            if x1i == x0i + 2 {
+                acc[row + x0i + 1] += d * (1.0 - a0 - am);
+            } else {
+                let a1 = s * (1.5 - x0r);
+                acc[row + x0i + 1] += d * (a1 - a0);
+                for xi in x0i + 2..x1i - 1 {
+                    acc[row + xi] += d * s;
+                }
+                let a2 = a1 + (x1i - x0i - 3) as f32 * s;
+                acc[row + x1i - 1] += d * (1.0 - a2 - am);
+            }
+            acc[row + x1i] += d * am;
+        }
+        x = xnext;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rechteck_deckt_genau_ab() {
+        let mut c = Canvas::new(10, 10);
+        c.fill_rect(2.0, 2.0, 4.5, 3.0, Rgba::rgb(255, 255, 255));
+        let px = c.to_rgba8();
+        let a = |x: usize, y: usize| px[(y * 10 + x) * 4 + 3];
+        assert_eq!(a(3, 3), 255);
+        assert_eq!(a(6, 3), 128); // halb abgedeckt
+        assert_eq!(a(7, 3), 0);
+        assert_eq!(a(1, 1), 0);
+    }
+
+    #[test]
+    fn loch_wird_ausgestanzt() {
+        let mut p = Path::new();
+        p.rounded_rect(0.0, 0.0, 20.0, 20.0, 0.0);
+        p.rounded_rect_hole(5.0, 5.0, 10.0, 10.0, 0.0);
+        let mut c = Canvas::new(20, 20);
+        c.fill(&p, Rgba::rgb(0, 0, 0));
+        let px = c.to_rgba8();
+        assert_eq!(px[(10 * 20 + 10) * 4 + 3], 0);
+        assert_eq!(px[(2 * 20 + 2) * 4 + 3], 255);
+    }
+
+    #[test]
+    fn flaeche_eines_kreises() {
+        let mut p = Path::new();
+        p.rounded_rect(10.0, 10.0, 80.0, 80.0, 40.0);
+        let mut c = Canvas::new(100, 100);
+        c.fill(&p, Rgba::rgb(0, 0, 0));
+        let sum: f32 = c.to_rgba8().chunks(4).map(|p| p[3] as f32 / 255.0).sum();
+        let soll = std::f32::consts::PI * 40.0 * 40.0;
+        assert!((sum - soll).abs() / soll < 0.002, "{sum} vs {soll}");
+    }
+}
