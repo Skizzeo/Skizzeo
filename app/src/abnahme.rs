@@ -696,7 +696,7 @@ fn a11_schnittlinie_a_a() {
     assert_eq!(sect.y, Some(4000.0));
     let c = cam_plan(&s);
     let lines = sect.helpers(&s, &c, H, 1.0, &Theme::dark());
-    assert!(lines.iter().any(|h| h.dash < 0.0), "Strichpunktlinie");
+    assert!(lines.iter().any(|h| h.pattern[0][2] > 0.0), "Strichpunktlinie");
     let marks = sect.marks(&s, &c, W, H);
     assert_eq!(marks.len(), 2, "zwei Endsymbole");
     assert!(marks.iter().any(|m| m.left) && marks.iter().any(|m| !m.left));
@@ -3985,7 +3985,11 @@ fn himmel_enden(th: &mut Theme, unten: sk_paint::Rgba, oben: sk_paint::Rgba) {
 }
 
 /// Neue Quelldateien des Fensters (für Prüfregel 1).
-const E5_DATEIEN: [&str; 2] = ["app/src/prefs.rs", "crates/sk-ui/src/widgets.rs"];
+const E5_DATEIEN: [&str; 3] = [
+    "app/src/prefs.rs",
+    "app/src/prefs_attr.rs",
+    "crates/sk-ui/src/widgets.rs",
+];
 
 // ===== Hilfen =====
 
@@ -4428,4 +4432,460 @@ fn a73_hilfen_und_pruefregel_1() {
             }
         }
     }
+}
+// Abnahmetests E4 + E6 „Linientypen im Kanten-Shader; Reiter Schraffuren,
+// Linientypen, Oberflächen, Baustoffe“ (einstellungen/paket-e4-e6-attribute.md)
+// mit den vier BIM-Bedingungen (Koordinator 11:41), vorbereitet gegen main
+// 650258e. Spezifikation: test/abnahme-einstellungen.md.
+//
+// Baut auf dem E5-Teil auf (a66-a73-einstellungsfenster.rs: `oeffnen`,
+// `eingabe`, `ok`, `abbrechen`, `zuruecksetzen`, `stift`, `szo`, `tabelle`,
+// `ohne_datei`, `haus_mit_wand`). Angenommene Namen nur in den Adaptern.
+// Pixelvergleiche (Strichmuster am Bildschirm, Vorschau gegen Shader) prüft
+// der Bauthread mit Bildvergleich bzw. Unit-Test; hier die Daten dahinter.
+
+// ===== Adapter E4 + E6 =====
+
+use sk_model::attr::{Dash, Fill, FillId, HatchLine, LineType, LineTypeId, SurfaceId};
+use sk_model::{MaterialDisplay, MaterialId};
+
+/// Strichmuster einer Kantenart, wie es an den Shader geht (zwei Einträge
+/// `[len_px, gap_px, dot, 0]`, alles 0 = Volllinie).
+fn strichmuster(s: &Scene, th: &Theme, drawing: bool, kind: u8) -> [[f32; 4]; 2] {
+    let d = DrawTable::resolve(s.model(), th)
+        .edge_looks(drawing, 1.0)
+        .dash;
+    [d[2 * kind as usize], d[2 * kind as usize + 1]]
+}
+
+/// Strichmuster der Schnittlinie A–A (Hilfslinien-Shader).
+fn schnittlinie_muster(s: &Scene, th: &Theme) -> [[f32; 4]; 2] {
+    crate::section::dash_pattern(s.model(), th)
+}
+
+fn linientyp_aendern(m: &mut Model, id: LineTypeId, l: LineType) -> bool {
+    m.set_line_type(id, l)
+}
+fn linientyp_loeschen(m: &mut Model, id: LineTypeId) -> bool {
+    m.remove_line_type(id)
+}
+fn schraffur_loeschen(m: &mut Model, id: FillId) -> bool {
+    m.remove_fill(id)
+}
+fn oberflaeche_loeschen(m: &mut Model, id: SurfaceId) -> bool {
+    m.remove_surface(id)
+}
+
+/// Baustoffverweise ändern (nur cut_fill, cut_fg, cut_bg, surface).
+fn baustoff_darstellung(
+    m: &mut Model,
+    id: MaterialId,
+    f: impl FnOnce(&mut MaterialDisplay),
+) -> bool {
+    let Some(mat) = m.material(id).cloned() else {
+        return false;
+    };
+    let mut d = MaterialDisplay {
+        cut_fill: mat.cut_fill,
+        cut_fg: mat.cut_fg,
+        cut_bg: mat.cut_bg,
+        surface: mat.surface,
+    };
+    f(&mut d);
+    m.set_material_display(id, d)
+}
+
+/// Neue Einträge über den Knopf „Neu“ im jeweiligen Reiter.
+fn linientyp_neu(p: &mut Prefs, s: &mut Scene) -> LineTypeId {
+    p.new_line_type(s)
+}
+fn schraffur_neu(p: &mut Prefs, s: &mut Scene) -> FillId {
+    p.new_fill(s)
+}
+
+/// Name im Reiter noch frei? (doppelter Name = ungültig)
+fn name_frei(s: &Scene, reiter: &str, name: &str) -> bool {
+    let tab = match reiter {
+        "Stifte" => Tab::Pens,
+        "Linientypen" => Tab::LineTypes,
+        "Schraffuren" => Tab::Fills,
+        "Oberflächen" => Tab::Surfaces,
+        _ => panic!("{reiter}"),
+    };
+    crate::prefs::name_free(s.model(), tab, name)
+}
+
+// ===== Hilfen =====
+
+fn linientyp(s: &Scene, name: &str) -> (LineTypeId, LineType) {
+    s.model()
+        .attr()
+        .line_types()
+        .iter()
+        .find(|(_, l)| l.name == name)
+        .map(|(id, l)| (id, l.clone()))
+        .unwrap_or_else(|| panic!("Linientyp {name}"))
+}
+
+fn schraffur(s: &Scene, name: &str) -> (FillId, Fill) {
+    s.model()
+        .attr()
+        .fills()
+        .iter()
+        .find(|(_, f)| f.name == name)
+        .map(|(id, f)| (id, f.clone()))
+        .unwrap_or_else(|| panic!("Schraffur {name}"))
+}
+
+fn baustoff(s: &Scene, name: &str) -> (MaterialId, sk_model::Material) {
+    s.model()
+        .materials()
+        .iter()
+        .find(|(_, m)| m.name == name)
+        .map(|(id, m)| (id, m.clone()))
+        .unwrap_or_else(|| panic!("Baustoff {name}"))
+}
+
+const NULL: [[f32; 4]; 2] = [[0.0; 4]; 2];
+
+// ===== Tests =====
+
+/// A74 (E4 A1–A3, Tests 1–3): Startsatz der Linientypen; alle Kanten bleiben
+/// Volllinie (Muster 0, damit bitgleich zu vorher); die Schnittlinie A–A kommt
+/// aus den Attributen (Strichpunkt); Strichlinie an den Ansichtskanten gibt
+/// 3,0/1,0 mm × px_per_mm.
+#[test]
+fn a74_linientypen_startsatz_und_shadermuster() {
+    let mut s = Scene::with_model(Model::with_seed(74));
+    let th = Theme::dark();
+    let namen: Vec<String> = s
+        .model()
+        .attr()
+        .line_types()
+        .iter()
+        .map(|(_, l)| l.name.clone())
+        .collect();
+    assert_eq!(
+        namen,
+        ["Volllinie", "Strichlinie", "Strichpunktlinie", "Punktlinie"]
+    );
+    let d = |len_mm, gap_mm, dot| Dash {
+        len_mm,
+        gap_mm,
+        dot,
+    };
+    assert!(linientyp(&s, "Volllinie").1.pattern.is_empty());
+    assert_eq!(linientyp(&s, "Strichlinie").1.pattern, [d(3.0, 1.0, false)]);
+    assert_eq!(
+        linientyp(&s, "Strichpunktlinie").1.pattern[0],
+        d(6.0, 1.0, true)
+    );
+    assert_eq!(linientyp(&s, "Punktlinie").1.pattern[0], d(0.0, 1.0, true));
+    for l in s.model().attr().line_types().iter().map(|(_, l)| l) {
+        assert!(l.pattern.len() <= 2, "{}: höchstens zwei Einträge", l.name);
+    }
+    for kind in 0..edge_kind::COUNT as u8 {
+        assert_eq!(strichmuster(&s, &th, true, kind), NULL, "Zeichnung {kind}");
+        assert_eq!(strichmuster(&s, &th, false, kind), NULL, "3D {kind}");
+    }
+    let (spl, _) = linientyp(&s, "Strichpunktlinie");
+    assert_eq!(s.model().attr().display().section_line.line_type, spl);
+    let px = th.px_per_mm;
+    let m = schnittlinie_muster(&s, &th);
+    assert_eq!((m[0][0], m[0][1], m[0][2]), (6.0 * px, 1.0 * px, 1.0));
+    // Ansichtskanten auf Strichlinie: nur VIEW gestrichelt
+    let (strich, _) = linientyp(&s, "Strichlinie");
+    let mut disp = s.model().attr().display().clone();
+    disp.drawing[edge_kind::VIEW as usize].line_type = strich;
+    assert!(s.edit_model("Linientyp", |m| {
+        m.set_display(disp);
+        true
+    }));
+    assert_eq!(
+        strichmuster(&s, &th, true, edge_kind::VIEW),
+        [[3.0 * px, 1.0 * px, 0.0, 0.0], [0.0; 4]]
+    );
+    assert_eq!(strichmuster(&s, &th, true, edge_kind::CUT), NULL);
+    assert_eq!(
+        strichmuster(&s, &th, false, edge_kind::VIEW),
+        NULL,
+        "3D unverändert"
+    );
+}
+
+/// A75 (E4 A4, Test 5): Alte Datei ohne die neuen Linientypen: sie werden
+/// ergänzt, die Schnittlinie zeigt auf Strichpunkt (sieht aus wie bisher),
+/// Hinweis „Linientypen ergänzt“; danach bytegleicher Rundlauf ohne Hinweis.
+#[test]
+fn a75_alte_datei_bekommt_linientypen() {
+    let d = test_dir("linientypen");
+    let alt = d.join("Alt.szo");
+    std::fs::write(&alt, HAUS_SZO1).unwrap();
+    let loaded = crate::document::load(&alt).unwrap();
+    assert!(
+        loaded
+            .hints
+            .iter()
+            .any(|h| h.contains("Linientypen ergänzt")),
+        "{:?}",
+        loaded.hints
+    );
+    let t = Scene::with_model(loaded.model);
+    assert_eq!(t.model().attr().line_types().len(), 4);
+    let (spl, _) = linientyp(&t, "Strichpunktlinie");
+    assert_eq!(t.model().attr().display().section_line.line_type, spl);
+    let th = Theme::dark();
+    for kind in 0..edge_kind::COUNT as u8 {
+        assert_eq!(strichmuster(&t, &th, true, kind), NULL);
+    }
+    let p2 = d.join("Neu.szo");
+    crate::document::save(t.model(), &p2).unwrap();
+    let text = std::fs::read_to_string(&p2).unwrap();
+    let again = crate::document::load(&p2).unwrap();
+    assert!(again.hints.is_empty(), "{:?}", again.hints);
+    let p3 = d.join("Neu2.szo");
+    crate::document::save(&again.model, &p3).unwrap();
+    assert_eq!(std::fs::read_to_string(&p3).unwrap(), text, "bytegleich");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A76 (E6 B1, Test 1; BIM 1, 2): Linientyp im Fenster ändern wirkt sofort
+/// auf die Kanten, Abbrechen bitgenau; Löschen nur ohne Verwender; tote
+/// Kennungen werden abgelehnt; jede Änderung ein Rückgängig-Schritt.
+#[test]
+fn a76_linientypen_bearbeiten() {
+    let mut s = haus_mit_wand();
+    let mut th = Theme::dark();
+    let px = th.px_per_mm;
+    let (strich, mut l) = linientyp(&s, "Strichlinie");
+    let mut disp = s.model().attr().display().clone();
+    disp.drawing[edge_kind::VIEW as usize].line_type = strich;
+    s.edit_model("Linientyp", |m| {
+        m.set_display(disp);
+        true
+    });
+    let vor = szo(&s);
+    let mut p = oeffnen(&mut s, &th);
+    l.pattern[0].len_mm = 5.0;
+    let l2 = l.clone();
+    assert!(eingabe(&mut p, &mut s, move |m| linientyp_aendern(
+        m, strich, l2
+    )));
+    assert_eq!(
+        strichmuster(&s, &th, true, edge_kind::VIEW)[0][0],
+        5.0 * px,
+        "sofort"
+    );
+    abbrechen(&mut p, &mut s, &mut th);
+    assert_eq!(szo(&s), vor, "bitgenau");
+    assert_eq!(strichmuster(&s, &th, true, edge_kind::VIEW)[0][0], 3.0 * px);
+    // Löschen: verwendet → nein; neu und unbenutzt → ja
+    let (spl, _) = linientyp(&s, "Strichpunktlinie");
+    assert!(
+        !s.edit_model("Löschen", |m| linientyp_loeschen(m, spl)),
+        "Schnittlinie"
+    );
+    assert!(
+        !s.edit_model("Löschen", |m| linientyp_loeschen(m, strich)),
+        "VIEW"
+    );
+    assert_eq!(szo(&s), vor, "abgelehnt ändert nichts");
+    let mut p = oeffnen(&mut s, &th);
+    let neu = linientyp_neu(&mut p, &mut s);
+    ok(&mut p, &mut s, &th, &mut ohne_datei());
+    let mit_neu = szo(&s);
+    assert!(s.edit_model("Löschen", |m| linientyp_loeschen(m, neu)));
+    assert_eq!(s.undo_label(), Some("Löschen"), "Löschen = ein Schritt");
+    let geloescht = szo(&s);
+    // Tote Kennung: abgelehnt, nichts ändert sich
+    let tot = l.clone();
+    assert!(!s.edit_model("Tot", |m| linientyp_aendern(m, neu, tot)));
+    assert_eq!(szo(&s), geloescht);
+    assert!(!s.edit_model("Tot", |m| linientyp_loeschen(m, neu)));
+    assert!(s.undo());
+    assert_eq!(szo(&s), mit_neu, "Löschen zurück");
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+}
+
+/// A77 (E6 B2, Tests 2, 4; BIM 1, 4): Schraffur Mauerwerk 135° → 45° wirkt
+/// sofort, Abbrechen → 135°. Neue Schraffur „Kies“, Putz verweist darauf:
+/// Löschen gesperrt, bis Putz wieder „Leer“ hat; danach .szo bytegleich.
+#[test]
+fn a77_schraffuren_bearbeiten() {
+    let mut s = haus_mit_wand();
+    let mut th = Theme::dark();
+    let vor = szo(&s);
+    let vor_tab = tabelle(&s, &th);
+    let (mw, mut f) = schraffur(&s, "Mauerwerk");
+    let mut p = oeffnen(&mut s, &th);
+    let FillKind::Lines(l) = &mut f.kind else {
+        panic!("Linien erwartet")
+    };
+    assert_eq!(l[0].angle_deg, 135.0);
+    l[0].angle_deg = 45.0;
+    assert!(eingabe(&mut p, &mut s, move |m| m.set_fill(mw, f)));
+    assert_ne!(tabelle(&s, &th), vor_tab, "Gasbeton sofort „/“");
+    abbrechen(&mut p, &mut s, &mut th);
+    assert_eq!(szo(&s), vor);
+    assert_eq!(tabelle(&s, &th), vor_tab);
+    // Kies anlegen und Putz darauf verweisen lassen
+    let mut p = oeffnen(&mut s, &th);
+    let kies = schraffur_neu(&mut p, &mut s);
+    let mut k = s.model().attr().fill(kies).unwrap().clone();
+    k.name = "Kies".into();
+    k.kind = FillKind::Lines(vec![
+        HatchLine::solid(0.0, 2.0, 0.0),
+        HatchLine::solid(90.0, 2.0, 0.0),
+    ]);
+    assert!(eingabe(&mut p, &mut s, move |m| m.set_fill(kies, k)));
+    let (putz, alt) = baustoff(&s, "Putz");
+    assert!(eingabe(&mut p, &mut s, move |m| baustoff_darstellung(
+        m,
+        putz,
+        |d| d.cut_fill = kies
+    )));
+    ok(&mut p, &mut s, &th, &mut ohne_datei());
+    assert_eq!(baustoff(&s, "Putz").1.cut_fill, kies);
+    assert!(
+        !s.edit_model("Löschen", |m| schraffur_loeschen(m, kies)),
+        "Putz nutzt Kies"
+    );
+    let leer = alt.cut_fill;
+    assert!(
+        s.edit_model("Putz", |m| baustoff_darstellung(m, putz, |d| d.cut_fill =
+            leer))
+    );
+    assert!(s.edit_model("Löschen", |m| schraffur_loeschen(m, kies)));
+    assert!(s.model().attr().fill(kies).is_none());
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+    // .szo nach dem Löschen bytegleich im Rundlauf
+    let d = test_dir("schraffuren");
+    let pfad = d.join("Haus.szo");
+    crate::document::save(s.model(), &pfad).unwrap();
+    let text = std::fs::read_to_string(&pfad).unwrap();
+    let t = crate::document::load(&pfad).unwrap();
+    assert!(t.hints.is_empty(), "{:?}", t.hints);
+    let pfad2 = d.join("Haus2.szo");
+    crate::document::save(&t.model, &pfad2).unwrap();
+    assert_eq!(std::fs::read_to_string(&pfad2).unwrap(), text);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A78 (E6 B3, B4, Teil C, Tests 5, 6; BIM 1, 2): Oberflächenfarbe wirkt
+/// sofort, Abbrechen bitgenau. Baustoffverweise änderbar (Stahlbeton Stift
+/// Schraffur 4 → 3), BIM-Daten bleiben unberührt; tote Kennungen und
+/// verwendete Oberflächen werden abgelehnt.
+#[test]
+fn a78_oberflaechen_und_baustoffverweise() {
+    let mut s = haus_mit_wand();
+    let mut th = Theme::dark();
+    let vor = szo(&s);
+    let vor_tab = tabelle(&s, &th);
+    let (gb, gasbeton) = baustoff(&s, "Gasbeton");
+    let mut o = s.model().attr().surface(gasbeton.surface).unwrap().clone();
+    let mut p = oeffnen(&mut s, &th);
+    o.color = [200, 120, 90];
+    let sid = gasbeton.surface;
+    assert!(eingabe(&mut p, &mut s, move |m| m.set_surface(sid, o)));
+    assert_ne!(tabelle(&s, &th), vor_tab, "3D sofort");
+    abbrechen(&mut p, &mut s, &mut th);
+    assert_eq!(szo(&s), vor);
+    assert!(
+        !s.edit_model("Löschen", |m| oberflaeche_loeschen(m, sid)),
+        "Gasbeton nutzt sie"
+    );
+    // Stahlbeton: Stift Schraffur 4 → 3, BIM-Daten bleiben
+    let (sb, alt) = baustoff(&s, "Stahlbeton");
+    let (p3, _) = stift(&s, 3);
+    assert_eq!(alt.cut_fg, stift(&s, 4).0);
+    assert!(
+        s.edit_model("Baustoff", |m| baustoff_darstellung(m, sb, |d| d.cut_fg =
+            p3))
+    );
+    assert_eq!(s.undo_label(), Some("Baustoff"), "ein Schritt");
+    let neu = baustoff(&s, "Stahlbeton").1;
+    assert_eq!(neu.cut_fg, p3);
+    assert_eq!(
+        (
+            &neu.name,
+            neu.category,
+            neu.priority,
+            neu.density,
+            neu.lambda
+        ),
+        (
+            &alt.name,
+            alt.category,
+            alt.priority,
+            alt.density,
+            alt.lambda
+        ),
+        "BIM-Daten unberührt"
+    );
+    assert_ne!(tabelle(&s, &th), vor_tab, "Decke und Platte mit Stift 3");
+    // Tote Kennung: neuen Stift anlegen und löschen, dann darauf verweisen
+    let mut q = oeffnen(&mut s, &th);
+    let frei = stift_neu(&mut q, &mut s);
+    ok(&mut q, &mut s, &th, &mut ohne_datei());
+    let mut q = oeffnen(&mut s, &th);
+    assert!(stift_loeschen(&mut q, &mut s, frei));
+    ok(&mut q, &mut s, &th, &mut ohne_datei());
+    let stand = szo(&s);
+    assert!(!s.edit_model("Tot", |m| baustoff_darstellung(m, gb, |d| d.cut_bg = frei)));
+    assert_eq!(szo(&s), stand, "nichts geändert");
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+}
+
+/// A79 (E6 B5, Test 7): Mehrere Änderungen in verschiedenen Reitern, OK →
+/// ein Rückgängig-Schritt; „Auf Standard zurücksetzen“ je Reiter; Namen je
+/// Tabelle eindeutig.
+#[test]
+fn a79_ok_zuruecksetzen_namen() {
+    let mut s = haus_mit_wand();
+    let mut th = Theme::dark();
+    let vor = szo(&s);
+    let mut p = oeffnen(&mut s, &th);
+    let (strich, mut l) = linientyp(&s, "Strichlinie");
+    l.pattern[0].len_mm = 5.0;
+    eingabe(&mut p, &mut s, move |m| linientyp_aendern(m, strich, l));
+    let (mw, mut f) = schraffur(&s, "Mauerwerk");
+    if let FillKind::Lines(l) = &mut f.kind {
+        l[0].angle_deg = 45.0;
+    }
+    eingabe(&mut p, &mut s, move |m| m.set_fill(mw, f));
+    let (_, gb) = baustoff(&s, "Gasbeton");
+    let sid = gb.surface;
+    let mut o = s.model().attr().surface(sid).unwrap().clone();
+    o.color = [200, 120, 90];
+    eingabe(&mut p, &mut s, move |m| m.set_surface(sid, o));
+    // Zurücksetzen nur im Reiter Schraffuren: Mauerwerk wieder 135°, Rest bleibt
+    zuruecksetzen(&mut p, &mut s, &mut th, "Schraffuren");
+    let FillKind::Lines(l) = schraffur(&s, "Mauerwerk").1.kind else {
+        panic!()
+    };
+    assert_eq!(l[0].angle_deg, 135.0);
+    assert_eq!(linientyp(&s, "Strichlinie").1.pattern[0].len_mm, 5.0);
+    assert_eq!(s.model().attr().surface(sid).unwrap().color, [200, 120, 90]);
+    zuruecksetzen(&mut p, &mut s, &mut th, "Linientypen");
+    assert_eq!(linientyp(&s, "Strichlinie").1.pattern[0].len_mm, 3.0);
+    zuruecksetzen(&mut p, &mut s, &mut th, "Oberflächen");
+    assert_eq!(szo(&s), vor, "alle drei Reiter zurück = Ausgangslage");
+    let (mw, mut f) = schraffur(&s, "Mauerwerk");
+    if let FillKind::Lines(l) = &mut f.kind {
+        l[0].spacing_mm = 2.0;
+    }
+    eingabe(&mut p, &mut s, move |m| m.set_fill(mw, f));
+    let (strich, mut l) = linientyp(&s, "Strichlinie");
+    l.pattern[0].gap_mm = 2.0;
+    eingabe(&mut p, &mut s, move |m| linientyp_aendern(m, strich, l));
+    ok(&mut p, &mut s, &th, &mut ohne_datei());
+    assert_eq!(s.undo_label(), Some("Einstellungen geändert"));
+    assert!(s.undo());
+    assert_eq!(szo(&s), vor, "ein Schritt für beide Reiter");
+    // Namen eindeutig je Tabelle
+    assert!(!name_frei(&s, "Schraffuren", "Mauerwerk"));
+    assert!(name_frei(&s, "Schraffuren", "Kies"));
+    assert!(!name_frei(&s, "Linientypen", "Strichlinie"));
+    assert!(name_frei(&s, "Linientypen", "Mauerwerk"), "andere Tabelle");
+    assert!(!name_frei(&s, "Stifte", "Kräftig"));
 }

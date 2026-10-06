@@ -13,13 +13,19 @@
 
 use crate::scene::Scene;
 use crate::settings::{Settings, F4_ROLES, RGBA_ROLES, SIZE_ROLES};
-use sk_model::{AttrRef, GuidGen, Model, Pen, PenId};
+use sk_model::{AttrRef, GuidGen, Model, Pen, PenId, SurfaceId};
 use sk_paint::{hsv_to_rgb, rgb_to_hsv, Canvas, Path, Rgba};
 use sk_platform::{Cursor, Event, Key, Modifiers, MouseButton};
 use sk_ui::text_edit::TextEdit;
 use sk_ui::theme::Theme;
 use sk_ui::widgets::{self, ButtonState, FieldState, Fonts, Rect};
 use std::time::{Duration, Instant};
+
+#[path = "prefs_attr.rs"]
+mod attr_tabs;
+#[cfg(test)]
+pub use attr_tabs::name_free;
+use attr_tabs::{attr_unit, reset_attr_tab};
 
 /// Reiter des Fensters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -55,9 +61,21 @@ impl Tab {
         }
     }
 
-    /// In E5 gibt es nur „Stifte“ und „Bedienoberfläche“.
+    /// Alle Reiter sind bedienbar (seit E6).
     fn enabled(self) -> bool {
-        matches!(self, Tab::Pens | Tab::Ui)
+        true
+    }
+
+    /// Platz der Attributreiter (Linientypen … Baustoffe) in den Feldern
+    /// `attr_sel` und `attr_scroll`.
+    fn attr_slot(self) -> Option<usize> {
+        match self {
+            Tab::LineTypes => Some(0),
+            Tab::Fills => Some(1),
+            Tab::Surfaces => Some(2),
+            Tab::Materials => Some(3),
+            _ => None,
+        }
     }
 }
 
@@ -128,6 +146,14 @@ enum FieldId {
     PickG,
     PickB,
     PickHex,
+    /// Name des gewählten Eintrags im Attributreiter.
+    Name,
+    /// Linientyp: Zeile, 0 = Strich, 1 = Lücke.
+    Dash(usize, usize),
+    /// Schraffur: Schar, 0 Winkel, 1 Abstand, 2 Versatz, 3 Strich, 4 Lücke.
+    Hatch(usize, usize),
+    /// Schraffur Zickzack: Periode in Schichtdicken.
+    Zigzag,
 }
 
 /// Auswahllisten.
@@ -135,6 +161,12 @@ enum FieldId {
 enum ComboId {
     PenWidth,
     Scheme,
+    FillKind,
+    FillSpace,
+    MatFill,
+    MatFg,
+    MatBg,
+    MatSurface,
 }
 
 /// Wessen Farbe ein Farbfeld zeigt.
@@ -147,6 +179,18 @@ enum ColorTarget {
     Accent,
     SkyTop,
     SkyHorizon,
+    /// Oberfläche: Ansichtsfläche bzw. Schnittfläche in 3D.
+    SurfFace(SurfaceId),
+    SurfCut(SurfaceId),
+}
+
+/// Bildlaufleisten.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BarId {
+    Pens,
+    Ui,
+    /// Liste im Attributreiter.
+    List,
 }
 
 /// Was unter der Maus liegt.
@@ -166,8 +210,17 @@ enum Target {
     Field(FieldId),
     Swatch(ColorTarget),
     Combo(ComboId),
-    /// Bildlaufleiste der Stifttabelle bzw. des Reiters „Bedienoberfläche“.
-    Bar(bool),
+    Bar(BarId),
+    /// Attributreiter: Zeile der Liste, Knöpfe darunter.
+    Row(usize),
+    AttrNew,
+    AttrDup,
+    AttrDel,
+    /// Kontrollkästchen „Punkt danach“ der Musterzeile.
+    Check(usize),
+    /// „Zeile/Schar hinzufügen“ bzw. „… entfernen“.
+    RowAdd,
+    RowDel,
     Group(usize),
     Dot(ColorTarget),
     Advanced,
@@ -186,8 +239,8 @@ enum Target {
 enum Drag {
     /// Fenster am Kopf: Abstand der Maus von der linken oberen Ecke.
     Window(f32, f32),
-    /// Schieber einer Bildlaufleiste (Tabelle?), Abstand im Schieber.
-    Bar(bool, f32),
+    /// Schieber einer Bildlaufleiste, Abstand im Schieber.
+    Bar(BarId, f32),
     Sv,
     Hue,
     /// Markieren im Textfeld.
@@ -225,6 +278,8 @@ struct Picker {
 struct Combo {
     id: ComboId,
     items: Vec<String>,
+    /// Bildchen vor dem Eintrag (Farbfeld, Kachel), soweit vorhanden.
+    icons: Vec<Option<Canvas>>,
     sel: Option<usize>,
     anchor: Rect,
 }
@@ -364,6 +419,8 @@ fn role_label(c: ColorTarget) -> &'static str {
         ColorTarget::SkyTop => "Himmel oben",
         ColorTarget::SkyHorizon => "Himmel Horizont",
         ColorTarget::Pen(_) => "Farbe",
+        ColorTarget::SurfFace(_) => "Farbe Ansichtsfläche",
+        ColorTarget::SurfCut(_) => "Farbe Schnittfläche 3D",
     }
 }
 
@@ -470,6 +527,7 @@ fn field_range(f: FieldId) -> Option<(f32, f32, usize, &'static str)> {
         }
         FieldId::PickR | FieldId::PickG | FieldId::PickB => Some((0.0, 255.0, 0, "")),
         FieldId::PenName | FieldId::PickHex => None,
+        FieldId::Name | FieldId::Dash(..) | FieldId::Hatch(..) | FieldId::Zigzag => None,
     }
 }
 
@@ -484,6 +542,8 @@ fn field_label(f: FieldId) -> &'static str {
         FieldId::PickG => "G",
         FieldId::PickB => "B",
         FieldId::PickHex => "Hex",
+        FieldId::Name => "Name",
+        FieldId::Dash(..) | FieldId::Hatch(..) | FieldId::Zigzag => "",
     }
 }
 
@@ -512,7 +572,7 @@ fn role_color(t: &Theme, c: ColorTarget) -> Rgba {
         ColorTarget::Accent => t.ui.accent,
         ColorTarget::SkyTop => t.env.sky.last().map_or(t.ui.bg, |s| s.1),
         ColorTarget::SkyHorizon => t.env.sky.first().map_or(t.ui.bg, |s| s.1),
-        ColorTarget::Pen(_) => t.ui.text,
+        ColorTarget::Pen(_) | ColorTarget::SurfFace(_) | ColorTarget::SurfCut(_) => t.ui.text,
     }
 }
 
@@ -534,6 +594,9 @@ pub struct Prefs {
     pending_scroll: Option<usize>,
     ui_scroll: f32,
     groups_open: [bool; GROUPS.len()],
+    /// Attributreiter: gewählte Zeile und Bildlauf je Reiter.
+    attr_sel: [usize; 4],
+    attr_scroll: [f32; 4],
     advanced: bool,
     /// „Eigene …“ gewählt: Feld für die Breite statt des Hinweises.
     custom_width: bool,
@@ -568,6 +631,8 @@ impl Prefs {
             pending_scroll: None,
             ui_scroll: 0.0,
             groups_open: [false; GROUPS.len()],
+            attr_sel: [0; 4],
+            attr_scroll: [0.0; 4],
             advanced: false,
             custom_width: false,
             hover: None,
@@ -658,7 +723,7 @@ impl Prefs {
                 *th = Theme::dark();
                 th.rev = rev + 1;
             }
-            _ => {}
+            tab => reset_attr_tab(s, tab),
         }
         self.edit = None;
     }
@@ -931,7 +996,7 @@ impl Prefs {
         y += 50.0 * s;
         for (g, (title, roles)) in GROUPS.iter().enumerate() {
             items.push((Rect::new(lx, y, lw, 28.0 * s), Target::Group(g)));
-            texts.push(UiText::group(lx, y + 19.0 * s, title, self.groups_open[g]));
+            texts.push(UiText::group(lx, y + 19.0 * s, *title, self.groups_open[g]));
             y += 30.0 * s;
             if self.groups_open[g] {
                 for key in roles.iter() {
@@ -1103,9 +1168,8 @@ impl Prefs {
         match self.tab {
             Tab::Pens => {
                 let l = self.pens_layout(t, w, s);
-                if let Some(b) = l.bar.filter(|b| b.contains(x, y)) {
-                    let _ = b;
-                    return Some(Target::Bar(true));
+                if l.bar.is_some_and(|b| b.contains(x, y)) {
+                    return Some(Target::Bar(BarId::Pens));
                 }
                 if l.body.contains(x, y) {
                     for (id, r) in &l.rows {
@@ -1149,7 +1213,7 @@ impl Prefs {
             Tab::Ui => {
                 let l = self.ui_layout(t, w);
                 if l.bar.is_some_and(|b| b.contains(x, y)) {
-                    return Some(Target::Bar(false));
+                    return Some(Target::Bar(BarId::Ui));
                 }
                 if !l.area.contains(x, y) {
                     return None;
@@ -1163,7 +1227,7 @@ impl Prefs {
                         _ => true,
                     })
             }
-            _ => None,
+            _ => self.attr_hit(t, w, s, x, y),
         }
     }
 
@@ -1353,7 +1417,7 @@ struct PensLayout {
 struct UiText {
     x: f32,
     y: f32,
-    text: &'static str,
+    text: String,
     kind: TextKind,
 }
 
@@ -1364,38 +1428,49 @@ enum TextKind {
     Dim,
     /// Aufklappbare Gruppe (offen?).
     Group(bool),
+    /// Fette Zwischenüberschrift.
+    Title,
 }
 
 impl UiText {
-    fn heading(x: f32, y: f32, text: &'static str) -> UiText {
+    fn heading(x: f32, y: f32, text: impl Into<String>) -> UiText {
         UiText {
             x,
             y,
-            text,
+            text: text.into(),
             kind: TextKind::Heading,
         }
     }
-    fn label(x: f32, y: f32, text: &'static str) -> UiText {
+    fn label(x: f32, y: f32, text: impl Into<String>) -> UiText {
         UiText {
             x,
             y,
-            text,
+            text: text.into(),
             kind: TextKind::Label,
         }
     }
-    fn dim(x: f32, y: f32, text: &'static str) -> UiText {
+    fn dim(x: f32, y: f32, text: impl Into<String>) -> UiText {
         UiText {
             x,
             y,
-            text,
+            text: text.into(),
             kind: TextKind::Dim,
         }
     }
-    fn group(x: f32, y: f32, text: &'static str, open: bool) -> UiText {
+    /// Fette Zwischenüberschrift (nicht aufklappbar).
+    fn group_title(x: f32, y: f32, text: impl Into<String>) -> UiText {
         UiText {
             x,
             y,
-            text,
+            text: text.into(),
+            kind: TextKind::Title,
+        }
+    }
+    fn group(x: f32, y: f32, text: impl Into<String>, open: bool) -> UiText {
+        UiText {
+            x,
+            y,
+            text: text.into(),
             kind: TextKind::Group(open),
         }
     }
@@ -1486,8 +1561,8 @@ impl Prefs {
                 out.moved = (before.x, before.y) != (after.x, after.y);
                 return;
             }
-            Some(Drag::Bar(table, grab)) => {
-                self.drag_bar(table, grab, y, cx);
+            Some(Drag::Bar(bar, grab)) => {
+                self.drag_bar(bar, grab, y, cx);
                 out.repaint = true;
                 return;
             }
@@ -1603,10 +1678,10 @@ impl Prefs {
                     self.open_combo(id, cx);
                 }
             }
-            Target::Bar(table) => {
-                let grab = self.bar_grab(table, y, cx);
-                self.drag = Some(Drag::Bar(table, grab));
-                self.drag_bar(table, grab, y, cx);
+            Target::Bar(bar) => {
+                let grab = self.bar_grab(bar, y, cx);
+                self.drag = Some(Drag::Bar(bar, grab));
+                self.drag_bar(bar, grab, y, cx);
             }
             Target::Group(g) => self.groups_open[g] = !self.groups_open[g],
             Target::Advanced => self.advanced = !self.advanced,
@@ -1614,6 +1689,13 @@ impl Prefs {
                 let c = role_color(&Theme::dark(), ct);
                 self.set_color(ct, c, cx, out);
             }
+            Target::Row(i) => {
+                if let Some(k) = self.tab.attr_slot() {
+                    self.attr_sel[k] = i;
+                }
+                self.table_focus = true;
+            }
+            Target::Check(i) => self.toggle_dot(i, cx, out),
             Target::PickSv => self.drag = Some(Drag::Sv),
             Target::PickHue => self.drag = Some(Drag::Hue),
             Target::Close
@@ -1621,6 +1703,11 @@ impl Prefs {
             | Target::PenNew
             | Target::PenDup
             | Target::PenDel
+            | Target::AttrNew
+            | Target::AttrDup
+            | Target::AttrDel
+            | Target::RowAdd
+            | Target::RowDel
             | Target::Item(_)
             | Target::PickRecent(_)
             | Target::PickOld
@@ -1672,7 +1759,14 @@ impl Prefs {
                     out.repaint = true;
                 }
             }
-            _ => {}
+            tab => {
+                let l = self.attr_layout(t, &w, cx.scene);
+                if let (true, Some(k)) = (l.body.contains(x, y), tab.attr_slot()) {
+                    let max = (l.content_h - l.body.h).max(0.0);
+                    self.attr_scroll[k] = (l.scroll + step).clamp(0.0, max);
+                    out.repaint = true;
+                }
+            }
         }
         if out.repaint {
             self.hover = self.hit(t, &w, cx.scene, x, y);
@@ -1724,6 +1818,11 @@ impl Prefs {
                     out.model |= self.remove_pen(cx.scene, id);
                 }
             }
+            Target::AttrNew
+            | Target::AttrDup
+            | Target::AttrDel
+            | Target::RowAdd
+            | Target::RowDel => self.attr_click(p, cx, out),
             Target::Item(i) => self.choose(i, cx, out),
             Target::PickOld => {
                 if let Some(Popup::Picker(p)) = &self.popup {
@@ -1804,6 +1903,9 @@ impl Prefs {
                 self.pen_sel = list.get(j).map(|p| p.0);
                 self.custom_width = false;
                 self.scroll_to_pen(cx.scene);
+            }
+            _ if (up || down) && self.table_focus && self.tab.attr_slot().is_some() => {
+                self.step_row(down, cx.scene);
             }
             _ if up || down => {
                 let tabs: Vec<Tab> = Tab::ALL.into_iter().filter(|t| t.enabled()).collect();
@@ -1888,7 +1990,7 @@ impl Prefs {
         };
         let f = e.field;
         let ok = match f {
-            FieldId::PenName => true,
+            FieldId::PenName | FieldId::Name => true,
             FieldId::PickHex => ch.is_ascii_hexdigit() || ch == '#',
             _ => ch.is_ascii_digit() || matches!(ch, ',' | '.' | '-'),
         };
@@ -1922,6 +2024,9 @@ impl Prefs {
             FieldId::PickG => pick.1.to_string(),
             FieldId::PickB => pick.2.to_string(),
             FieldId::PickHex => to_hex([pick.0, pick.1, pick.2]),
+            FieldId::Name | FieldId::Dash(..) | FieldId::Hatch(..) | FieldId::Zigzag => {
+                self.attr_field_value(f, s)
+            }
         }
     }
 
@@ -1974,6 +2079,9 @@ impl Prefs {
         cx: &mut Ctx,
         out: &mut Out,
     ) -> Result<(), String> {
+        if is_attr_field(f) {
+            return self.apply_attr_value(f, text, cx, out);
+        }
         if f == FieldId::PenName {
             let Some(id) = self.pen_sel else {
                 return Ok(());
@@ -2079,7 +2187,7 @@ impl Prefs {
                     self.pick_rgb(c, cx, out);
                 }
             }
-            FieldId::PenName | FieldId::PickHex => {}
+            _ => {}
         }
         Ok(())
     }
@@ -2091,10 +2199,10 @@ impl Prefs {
         let (t, s) = (&*cx.theme, cx.win.scale);
         let px = t.size.font_small * s;
         let text = &e.text.text;
-        let x0 = if f == FieldId::PenName || f == FieldId::PickHex {
+        let x0 = if matches!(f, FieldId::PenName | FieldId::PickHex | FieldId::Name) {
             widgets::text_field_x(r, s, t)
         } else {
-            let unit = field_range(f).map_or("", |r| r.3);
+            let unit = field_range(f).map_or_else(|| attr_unit(f), |r| r.3);
             widgets::field_x(cx.fonts, r, text, unit, s, t)
         };
         Some(widgets::caret_at(
@@ -2123,6 +2231,12 @@ impl Prefs {
                     _ => l.hex,
                 })
             }
+            _ if is_attr_field(f) => self
+                .attr_layout(t, &w, cx.scene)
+                .items
+                .iter()
+                .find(|(_, tg)| *tg == Target::Field(f))
+                .map(|(r, _)| *r),
             _ => self
                 .ui_layout(t, &w)
                 .items
@@ -2146,6 +2260,12 @@ impl Prefs {
                 .attr()
                 .pen(id)
                 .map_or(t.ui.text, |p| Rgba::from_rgb8(p.color)),
+            ColorTarget::SurfFace(id) | ColorTarget::SurfCut(id) => {
+                let face = matches!(ct, ColorTarget::SurfFace(_));
+                s.model().attr().surface(id).map_or(t.ui.text, |o| {
+                    Rgba::from_rgb8(if face { o.color } else { o.cut_color })
+                })
+            }
             _ => role_color(t, ct),
         }
     }
@@ -2164,6 +2284,20 @@ impl Prefs {
                     }
                     p.color = [c.0, c.1, c.2];
                     m.set_pen(id, p)
+                });
+            }
+            ColorTarget::SurfFace(id) | ColorTarget::SurfCut(id) => {
+                let face = matches!(ct, ColorTarget::SurfFace(_));
+                out.model |= cx.scene.edit_attr(|m| {
+                    let Some(mut o) = m.attr().surface(id).cloned() else {
+                        return false;
+                    };
+                    let slot = if face { &mut o.color } else { &mut o.cut_color };
+                    if *slot == [c.0, c.1, c.2] {
+                        return false;
+                    }
+                    *slot = [c.0, c.1, c.2];
+                    m.set_surface(id, o)
                 });
             }
             ColorTarget::Accent => {
@@ -2264,6 +2398,12 @@ impl Prefs {
         let (t, w) = (&*cx.theme, cx.win);
         match ct {
             ColorTarget::Pen(_) => self.pens_layout(t, &w, cx.scene).color,
+            ColorTarget::SurfFace(_) | ColorTarget::SurfCut(_) => self
+                .attr_layout(t, &w, cx.scene)
+                .items
+                .iter()
+                .find(|(_, tg)| *tg == Target::Swatch(ct))
+                .map_or(self.frame(t, &w), |(r, _)| *r),
             _ => self
                 .ui_layout(t, &w)
                 .items
@@ -2290,6 +2430,7 @@ impl Prefs {
 
     fn open_combo(&mut self, id: ComboId, cx: &mut Ctx) {
         let (t, w) = (&*cx.theme, cx.win);
+        let mut icons = Vec::new();
         let (items, sel, anchor) = match id {
             ComboId::PenWidth => {
                 let cur = self
@@ -2316,10 +2457,16 @@ impl Prefs {
                     .map_or(self.frame(t, &w), |(r, _)| *r);
                 (vec![Theme::dark().name], 0, r)
             }
+            _ => {
+                let (items, ic, sel, anchor) = self.attr_combo(id, cx);
+                icons = ic;
+                (items, sel, anchor)
+            }
         };
         self.popup = Some(Popup::Combo(Combo {
             id,
             items,
+            icons,
             sel: Some(sel),
             anchor,
         }));
@@ -2330,7 +2477,11 @@ impl Prefs {
         let Some(Popup::Combo(c)) = self.popup.take() else {
             return;
         };
+        if c.id == ComboId::Scheme {
+            return;
+        }
         if c.id != ComboId::PenWidth {
+            self.attr_choose(c.id, i, cx, out);
             return;
         }
         if let Some(&w) = ISO_WIDTHS.get(i) {
@@ -2369,21 +2520,28 @@ impl Prefs {
 
     // --- Bildlauf ---------------------------------------------------------------
 
-    fn bar_geometry(&self, table: bool, cx: &Ctx) -> Option<(Rect, f32, f32, f32)> {
+    fn bar_geometry(&self, bar: BarId, cx: &Ctx) -> Option<(Rect, f32, f32, f32)> {
         let (t, w) = (&*cx.theme, cx.win);
-        if table {
-            let l = self.pens_layout(t, &w, cx.scene);
-            l.bar.map(|b| (b, l.scroll, l.content_h, l.body.h))
-        } else {
-            let l = self.ui_layout(t, &w);
-            l.bar.map(|b| (b, l.scroll, l.content_h, l.area.h))
+        match bar {
+            BarId::Pens => {
+                let l = self.pens_layout(t, &w, cx.scene);
+                l.bar.map(|b| (b, l.scroll, l.content_h, l.body.h))
+            }
+            BarId::Ui => {
+                let l = self.ui_layout(t, &w);
+                l.bar.map(|b| (b, l.scroll, l.content_h, l.area.h))
+            }
+            BarId::List => {
+                let l = self.attr_layout(t, &w, cx.scene);
+                l.bar.map(|b| (b, l.scroll, l.content_h, l.body.h))
+            }
         }
     }
 
     /// Abstand der Maus vom Schieberanfang; neben dem Schieber springt er mit
     /// seiner Mitte zur Maus.
-    fn bar_grab(&self, table: bool, y: f64, cx: &Ctx) -> f32 {
-        let Some((b, scroll, total, view)) = self.bar_geometry(table, cx) else {
+    fn bar_grab(&self, bar: BarId, y: f64, cx: &Ctx) -> f32 {
+        let Some((b, scroll, total, view)) = self.bar_geometry(bar, cx) else {
             return 0.0;
         };
         let max = (total - view).max(1.0);
@@ -2397,18 +2555,22 @@ impl Prefs {
         }
     }
 
-    fn drag_bar(&mut self, table: bool, grab: f32, y: f64, cx: &Ctx) {
-        let Some((b, _, total, view)) = self.bar_geometry(table, cx) else {
+    fn drag_bar(&mut self, bar: BarId, grab: f32, y: f64, cx: &Ctx) {
+        let Some((b, _, total, view)) = self.bar_geometry(bar, cx) else {
             return;
         };
         let (_, th) = widgets::scroll_thumb(b, 0.0, view / total, cx.win.scale);
         let free = (b.h - th).max(1.0);
         let f = ((y as f32 - grab - b.y) / free).clamp(0.0, 1.0);
         let v = f * (total - view).max(0.0);
-        if table {
-            self.pen_scroll = v;
-        } else {
-            self.ui_scroll = v;
+        match bar {
+            BarId::Pens => self.pen_scroll = v,
+            BarId::Ui => self.ui_scroll = v,
+            BarId::List => {
+                if let Some(i) = self.tab.attr_slot() {
+                    self.attr_scroll[i] = v;
+                }
+            }
         }
     }
 
@@ -2483,9 +2645,20 @@ impl Prefs {
                 (!l.is_empty()).then(|| format!("Wird verwendet von {l}"))
             }
             Target::Dot(_) => Some("Geändert, Klick setzt zurück".into()),
+            Target::AttrDel => {
+                let l = self.attr_users_text(s);
+                (!l.is_empty()).then(|| format!("Wird verwendet von {l}"))
+            }
             _ => None,
         }
     }
+}
+
+fn is_attr_field(f: FieldId) -> bool {
+    matches!(
+        f,
+        FieldId::Name | FieldId::Dash(..) | FieldId::Hatch(..) | FieldId::Zigzag
+    )
 }
 
 fn is_picker_field(f: FieldId) -> bool {
@@ -2607,7 +2780,7 @@ impl Prefs {
         match self.tab {
             Tab::Pens => self.paint_pens(&mut c, t, fonts, w, sc, &at),
             Tab::Ui => self.paint_ui(&mut c, t, fonts, w, &at),
-            _ => {}
+            _ => self.paint_attr(&mut c, t, fonts, w, sc, &at),
         }
         // Fuß
         for (b, r, text) in self.button_rects(t, w) {
@@ -2763,8 +2936,8 @@ impl Prefs {
         c.blit(&bc, body.x as i32, body.y as i32);
         if let Some(b) = l.bar {
             let total = l.content_h.max(1.0);
-            let hover = self.hover == Some(Target::Bar(true))
-                || matches!(self.drag, Some(Drag::Bar(true, _)));
+            let hover = self.hover == Some(Target::Bar(BarId::Pens))
+                || matches!(self.drag, Some(Drag::Bar(BarId::Pens, _)));
             widgets::scrollbar(c, at(b), l.scroll / total, l.body.h / total, hover, s, t);
         }
         // Knöpfe und Hinweis
@@ -3056,13 +3229,14 @@ impl Prefs {
             }
             match tx.kind {
                 TextKind::Heading => {
-                    label(&mut cc, bold, tx.text, t.size.font_title * s, x, y, u.text)
+                    label(&mut cc, bold, &tx.text, t.size.font_title * s, x, y, u.text)
                 }
-                TextKind::Label => label(&mut cc, regular, tx.text, font, x, y, u.text_dim),
-                TextKind::Dim => label(&mut cc, regular, tx.text, small, x, y, u.field_unit),
+                TextKind::Label => label(&mut cc, regular, &tx.text, font, x, y, u.text_dim),
+                TextKind::Dim => label(&mut cc, regular, &tx.text, small, x, y, u.field_unit),
+                TextKind::Title => label(&mut cc, bold, &tx.text, font, x, y, u.text),
                 TextKind::Group(open) => {
                     widgets::disclosure(&mut cc, x + 4.0 * s, y - 5.0 * s, open, u.text, s);
-                    label(&mut cc, bold, tx.text, font, x + 16.0 * s, y, u.text);
+                    label(&mut cc, bold, &tx.text, font, x + 16.0 * s, y, u.text);
                 }
             }
         }
@@ -3150,8 +3324,8 @@ impl Prefs {
         c.blit(&cc, area.x as i32, area.y as i32);
         if let Some(b) = l.bar {
             let total = l.content_h.max(1.0);
-            let hover = self.hover == Some(Target::Bar(false))
-                || matches!(self.drag, Some(Drag::Bar(false, _)));
+            let hover = self.hover == Some(Target::Bar(BarId::Ui))
+                || matches!(self.drag, Some(Drag::Bar(BarId::Ui, _)));
             widgets::scrollbar(c, at(b), l.scroll / total, l.area.h / total, hover, s, t);
         }
     }
@@ -3208,12 +3382,18 @@ impl Prefs {
                         c.fill(&p, u.hover);
                     }
                     let cap = regular.map_or(small * 0.7, |f| f.cap_height(small));
+                    let mut x = rr.x + t.size.field_pad * s;
+                    if let Some(Some(icon)) = cb.icons.get(i) {
+                        let iy = rr.y + (rr.h - icon.height as f32) * 0.5;
+                        c.blit(icon, x as i32, iy as i32);
+                        x += icon.width as f32 + 8.0 * s;
+                    }
                     label(
                         &mut c,
                         regular,
                         text,
                         small,
-                        rr.x + t.size.field_pad * s,
+                        x,
                         rr.y + (rr.h + cap) * 0.5,
                         u.text,
                     );
@@ -3352,7 +3532,11 @@ impl Prefs {
                 widgets::panel(&mut c, Rect::new(m, m, r.w, r.h), s, t);
                 let q = match self.tab {
                     Tab::Pens => "Alle Stifte auf Standard zurücksetzen?",
-                    _ => "Bedienoberfläche auf Standard zurücksetzen?",
+                    Tab::LineTypes => "Alle Linientypen auf Standard zurücksetzen?",
+                    Tab::Fills => "Alle Schraffuren auf Standard zurücksetzen?",
+                    Tab::Surfaces => "Alle Oberflächen auf Standard zurücksetzen?",
+                    Tab::Materials => "Baustoffdarstellung auf Standard zurücksetzen?",
+                    Tab::Ui => "Bedienoberfläche auf Standard zurücksetzen?",
                 };
                 label(
                     &mut c,

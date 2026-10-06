@@ -133,7 +133,7 @@ pub const F4_ROLES: [F4Role; 10] = [
     }),
 ];
 
-pub const SIZE_ROLES: [SizeRole; 39] = [
+pub const SIZE_ROLES: [SizeRole; 43] = [
     ("corner_radius", "Eckenradius", |t| {
         &mut t.size.corner_radius
     }),
@@ -211,6 +211,14 @@ pub const SIZE_ROLES: [SizeRole; 39] = [
     ("swatch_w", "Farbfeld Breite", |t| &mut t.size.swatch_w),
     ("swatch_h", "Farbfeld Höhe", |t| &mut t.size.swatch_h),
     ("checkbox", "Kontrollkästchen", |t| &mut t.size.checkbox),
+    ("list_thumb_w", "Listenkachel Breite", |t| {
+        &mut t.size.list_thumb_w
+    }),
+    ("list_thumb_h", "Listenkachel Höhe", |t| {
+        &mut t.size.list_thumb_h
+    }),
+    ("preview_w", "Vorschau Breite", |t| &mut t.size.preview_w),
+    ("preview_h", "Vorschau Höhe", |t| &mut t.size.preview_h),
 ];
 
 /// Grundschema zu einem Namen.

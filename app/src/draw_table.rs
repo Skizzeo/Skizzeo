@@ -311,7 +311,8 @@ impl DrawTable {
         } else {
             (&self.model_edges, &self.model_dash)
         };
-        let scaled = |p: &DashPattern| p.map(|[l, g, dot, _]| [l * px_scale, g * px_scale, dot, 0.0]);
+        let scaled =
+            |p: &DashPattern| p.map(|[l, g, dot, _]| [l * px_scale, g * px_scale, dot, 0.0]);
         let mut e = EdgeLooks::default();
         for (i, ((w, c), p)) in t.iter().zip(dash).enumerate().take(EDGE_KINDS) {
             e.width[i] = w * px_scale;

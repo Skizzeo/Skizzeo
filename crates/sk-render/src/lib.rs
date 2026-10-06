@@ -121,7 +121,13 @@ pub struct Looks {
 /// `rows` sind die [`LOOK_ROWS`] Texel eines Schlüssels, `(x, y)` die Lage in
 /// Bildpunkten (y nach oben wie `gl_FragCoord`), `uv` die Schichtkoordinaten
 /// für das Zickzack (längs, quer 0..1) und `uv_px` ihre Änderung je Bildpunkt.
-pub fn fill_color(rows: &[[f32; 4]; LOOK_ROWS], x: f32, y: f32, uv: [f32; 2], uv_px: [f32; 2]) -> [f32; 3] {
+pub fn fill_color(
+    rows: &[[f32; 4]; LOOK_ROWS],
+    x: f32,
+    y: f32,
+    uv: [f32; 2],
+    uv_px: [f32; 2],
+) -> [f32; 3] {
     let bg = rows[2];
     let fg = rows[3];
     let mut c = [bg[0], bg[1], bg[2]];

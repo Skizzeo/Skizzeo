@@ -462,9 +462,7 @@ impl Model {
 
     /// Löscht einen unbenutzten Linientyp (wie [`Model::remove_pen`]).
     pub fn remove_line_type(&mut self, id: LineTypeId) -> bool {
-        if self.attr.line_type(id).is_none()
-            || !self.attr_users(AttrRef::LineType(id)).is_empty()
-        {
+        if self.attr.line_type(id).is_none() || !self.attr_users(AttrRef::LineType(id)).is_empty() {
             return false;
         }
         note!(self, LineType, self.attr.line_types(), id);
@@ -484,8 +482,7 @@ impl Model {
 
     /// Löscht eine Oberfläche, auf die kein Baustoff verweist.
     pub fn remove_surface(&mut self, id: SurfaceId) -> bool {
-        if self.attr.surface(id).is_none() || !self.attr_users(AttrRef::Surface(id)).is_empty()
-        {
+        if self.attr.surface(id).is_none() || !self.attr_users(AttrRef::Surface(id)).is_empty() {
             return false;
         }
         note!(self, Surface, self.attr.surfaces(), id);
@@ -508,7 +505,8 @@ impl Model {
         }
         note!(self, Material, self.materials, id);
         if let Some(m) = self.materials.get_mut(id) {
-            (m.cut_fill, m.cut_fg, m.cut_bg, m.surface) = (d.cut_fill, d.cut_fg, d.cut_bg, d.surface);
+            (m.cut_fill, m.cut_fg, m.cut_bg, m.surface) =
+                (d.cut_fill, d.cut_fg, d.cut_bg, d.surface);
         }
         self.touch();
         // Nur die Zeichentabelle ändert sich, keine Körper
@@ -533,7 +531,9 @@ impl Model {
                 pattern,
             });
             added = true;
-            let solid = self.attr.line_type(self.attr.display().section_line.line_type);
+            let solid = self
+                .attr
+                .line_type(self.attr.display().section_line.line_type);
             if name == attr::SECTION_LINE_TYPE && solid.is_some_and(|l| l.pattern.is_empty()) {
                 let mut d = self.attr.display().clone();
                 d.section_line.line_type = id;
