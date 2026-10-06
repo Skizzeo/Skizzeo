@@ -1,7 +1,7 @@
 # Skizzeo
 
 Version 0.2.0 (Meilenstein M1: Speichern und Öffnen als `.szo`), dazu
-Innenwände mit Wandanschlüssen (B5a) und Gründung (B9).
+Innenwände mit Wandanschlüssen (B5a), Gründung (B9) und Erdgeschossdecke (B10).
 
 3D-Gebäudemodellierer als native Rust-App. Keine externen Crates: Fenster,
 Eingabe, OpenGL-Anbindung, 2D-Grafik, Logo und Oberfläche sind selbst geschrieben.
@@ -90,9 +90,18 @@ bündig mit der Außenseite der Wand. Beide gehen fugenlos ineinander über und
 erscheinen im Schnitt kreuzschraffiert; in 3D liegen sie unter der
 Geländefläche. Wird der Zug geöffnet oder gelöscht, verschwinden sie.
 Platte oder Schürze anklicken: Das Paneel zeigt Fläche, Volumen und Umfang
-bzw. Länge auf der Achse, Volumen, Breite und Tiefe. Mit „− 1 cm“ / „+ 1 cm“
-springen Platte und Schürze gemeinsam zurück (bündig oder ab 2 cm).
+bzw. Länge auf der Achse, Volumen, Breite und Tiefe. Die Maße stehen in
+Zahlenfeldern (Zentimeter, Enter übernimmt, Esc bricht ab); der
+Sockelrücksprung lässt Platte und Schürze gemeinsam zurückspringen (bündig
+oder ab 2 cm).
 Ältere Dateien bekommen Gründung und Kreuzschraffur beim Öffnen.
+
+Erdgeschossdecke: Im selben Schritt entsteht über dem Zug eine
+Stahlbetondecke (DE-001 …, 22 cm, Oberkante bei ⅔ der Wandhöhe, danach fest).
+Sie reicht bis an die Dämmung und liegt in einer Auflagertasche über die
+ganze Gasbetondicke; Innenwände unter ihr werden unterbrochen und bleiben ein
+Bauteil. Wandmengen sind netto ohne Tasche bzw. Deckenstreifen. Die Dicke
+steht im Paneel als Zahlenfeld. Ältere Dateien bekommen die Decke beim Öffnen.
 
 ## Bauen
 

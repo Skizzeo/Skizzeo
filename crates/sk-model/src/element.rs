@@ -16,7 +16,8 @@ pub type StoreyId = Id<Storey>;
 pub enum Category {
     ExteriorWall,
     InteriorWall,
-    Slab,
+    /// Geschossdecke (heute nur die Erdgeschossdecke, B10).
+    Floor,
     GroundSlab,
     Roof,
     Window,
@@ -31,7 +32,7 @@ impl Category {
     pub const ALL: [Category; 10] = [
         Category::ExteriorWall,
         Category::InteriorWall,
-        Category::Slab,
+        Category::Floor,
         Category::GroundSlab,
         Category::Roof,
         Category::Window,
@@ -50,7 +51,7 @@ impl Category {
         match self {
             Category::ExteriorWall => "Außenwand",
             Category::InteriorWall => "Innenwand",
-            Category::Slab => "Decke",
+            Category::Floor => "Geschossdecke",
             Category::GroundSlab => "Sohlplatte",
             Category::Roof => "Dach",
             Category::Window => "Fenster",
@@ -66,7 +67,7 @@ impl Category {
         match self {
             Category::ExteriorWall => "AW",
             Category::InteriorWall => "IW",
-            Category::Slab => "DE",
+            Category::Floor => "DE",
             Category::GroundSlab => "SP",
             Category::Roof => "DA",
             Category::Window => "FE",
@@ -81,7 +82,7 @@ impl Category {
     pub fn ifc_class(self) -> &'static str {
         match self {
             Category::ExteriorWall | Category::InteriorWall => "IfcWall",
-            Category::Slab => "IfcSlab.FLOOR",
+            Category::Floor => "IfcSlab.FLOOR",
             Category::GroundSlab => "IfcSlab.BASESLAB",
             Category::Roof => "IfcRoof",
             Category::Window => "IfcWindow",
@@ -97,7 +98,7 @@ impl Category {
         match self {
             Category::ExteriorWall | Category::Window => Some(330),
             Category::InteriorWall | Category::Door => Some(340),
-            Category::Slab => Some(350),
+            Category::Floor => Some(350),
             Category::GroundSlab | Category::StripFooting => Some(322),
             Category::Roof => Some(360),
             Category::Opening | Category::Space => None,
@@ -145,6 +146,21 @@ pub enum ElementKind {
     Wall(Wall),
     GroundSlab(GroundSlab),
     StripFooting(StripFooting),
+    Floor(Floor),
+}
+
+/// Geschossdecke über einem geschlossenen Außenwandzug (IFC: IfcSlab FLOOR).
+/// Ihr Umriss ist abgeleitet: Außenseite der tragenden Schicht des Zuges; die
+/// Decke liegt in einer Auflagertasche über die ganze Kerndicke.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Floor {
+    pub run: RunId,
+    pub material: MaterialId,
+    /// Dicke in mm, von der Oberkante nach unten.
+    pub thickness: f64,
+    /// Oberkante in mm über dem Wandfuß. Beim Anlegen ⅔ der Wandhöhe, danach
+    /// fest (bis zur Ebenenverwaltung).
+    pub top: f64,
 }
 
 /// Sohlplatte unter einem geschlossenen Außenwandzug (IFC: IfcSlab BASESLAB).

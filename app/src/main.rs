@@ -484,7 +484,9 @@ impl App {
             Ok(loaded) => {
                 self.replace_scene(loaded.model);
                 self.doc = Document::opened(path, self.scene.model().revision());
-                if !loaded.hints.is_empty() {
+                // Im Bildschirmfoto-Modus hielte die Meldung das Bild auf
+                let shot = std::env::args().any(|a| a == "--screenshot");
+                if !loaded.hints.is_empty() && !shot {
                     surface.message(&document::hints_message(&loaded.hints), false);
                 }
             }

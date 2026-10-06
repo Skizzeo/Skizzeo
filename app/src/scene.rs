@@ -11,8 +11,9 @@ use crate::ui::Field;
 use crate::ui::ViewKind;
 use sk_math::{vec3, Vec3};
 use sk_model::{
-    foundation_qto_of, run_qto, Category, Direction, ElementId, FootingQto, Foundation, Model,
-    RunId, SlabQto, Solid, Touched, Txn, WallChain, WallQto, FOOTING_PART, SLAB_PART,
+    floor_qto_of, foundation_qto_of, run_qto, Category, Direction, ElementId, FloorQto, FloorSlab,
+    FootingQto, Foundation, Model, RunId, SlabQto, Solid, Touched, Txn, WallChain, WallQto,
+    FLOOR_PART, FOOTING_PART, SLAB_PART,
 };
 use sk_render::MeshData;
 use sk_ui::theme::Theme;
@@ -45,16 +46,28 @@ struct RunCache {
     found: Option<Foundation>,
     /// Mengen von Sohlplatte und Frostschürze (wie `qto` erst nach dem Ziehen).
     found_qto: Option<(SlabQto, FootingQto)>,
+    /// Erdgeschossdecke über einem geschlossenen Außenwandzug (B10).
+    floor: Option<FloorSlab>,
+    floor_qto: Option<FloorQto>,
     /// Wie oft dieser Zug berechnet wurde (für Tests und Messung).
     builds: u32,
 }
 
 impl RunCache {
-    fn new(id: RunId, chain: WallChain, found: Option<Foundation>, builds: u32) -> RunCache {
+    fn new(
+        id: RunId,
+        chain: WallChain,
+        found: Option<Foundation>,
+        floor: Option<FloorSlab>,
+        builds: u32,
+    ) -> RunCache {
         let mut solid = chain.solid();
         if let Some(f) = &found {
             solid.append(&part(f.slab_solid(), SLAB_PART));
             solid.append(&part(f.footing_solid(), FOOTING_PART));
+        }
+        if let Some(f) = &floor {
+            solid.append(&part(f.solid(), FLOOR_PART));
         }
         let foot = chain.outer_foot();
         let foot_bounds = foot
@@ -73,6 +86,8 @@ impl RunCache {
             qto: Vec::new(),
             found,
             found_qto: None,
+            floor,
+            floor_qto: None,
             builds,
         }
     }
@@ -80,13 +95,17 @@ impl RunCache {
     fn view_solid(&mut self, view: ViewKind, section: Option<Plane>) -> Option<&Solid> {
         match (view, section) {
             (ViewKind::Plan, _) => {
-                let (chain, found) = (&self.chain, &self.found);
-                // Die Gründung liegt unter der Schnitthöhe: Draufsicht
+                let (chain, found, floor) = (&self.chain, &self.found, &self.floor);
+                // Die Gründung liegt unter der Schnitthöhe: Draufsicht. Die
+                // Decke liegt darüber und bleibt leer.
                 Some(self.plan.get_or_insert_with(|| {
                     let mut s = chain.solid_cut_at(PLAN_CUT);
                     if let Some(f) = found {
                         s.append(&part(f.slab_solid(), SLAB_PART));
                         s.append(&part(f.footing_solid(), FOOTING_PART));
+                    }
+                    if let Some(f) = floor {
+                        s.append(&part(f.solid_cut_at(PLAN_CUT), FLOOR_PART));
                     }
                     s
                 }))
@@ -100,6 +119,9 @@ impl RunCache {
                         let (slab, foot) = f.section_caps(p0, n);
                         s.append(&part(slab, SLAB_PART));
                         s.append(&part(foot, FOOTING_PART));
+                    }
+                    if let Some(f) = &self.floor {
+                        s.append(&part(f.section_caps(p0, n), FLOOR_PART));
                     }
                     self.section = Some((pl, s));
                 }
@@ -272,10 +294,11 @@ impl Scene {
         if self.cache.len() <= slot {
             self.cache.resize_with(slot + 1, || None);
         }
-        match self.model.chain(id) {
-            Some(c) => {
+        match self.model.chain_and_floor(id) {
+            Some((c, floor)) => {
                 let found = self.model.foundation(id).and_then(Result::ok);
-                let mut rc = RunCache::new(id, c, found, builds + 1);
+                let floor = floor.and_then(Result::ok);
+                let mut rc = RunCache::new(id, c, found, floor, builds + 1);
                 if live {
                     if !self.unsettled.contains(&id) {
                         self.unsettled.push(id);
@@ -283,6 +306,7 @@ impl Scene {
                 } else {
                     rc.qto = run_qto(&self.model, id);
                     rc.found_qto = rc.found.as_ref().map(foundation_qto_of);
+                    rc.floor_qto = rc.floor.as_ref().map(floor_qto_of);
                     self.unsettled.retain(|&u| u != id);
                 }
                 self.cache[slot] = Some(rc);
@@ -316,6 +340,7 @@ impl Scene {
                     if c.id == id {
                         c.qto = q;
                         c.found_qto = c.found.as_ref().map(foundation_qto_of);
+                        c.floor_qto = c.floor.as_ref().map(floor_qto_of);
                     }
                 }
             }
@@ -336,6 +361,16 @@ impl Scene {
     /// Gründung unter einem Wandzug, wie sie gezeichnet wird.
     pub fn foundation(&self, run: RunId) -> Option<&Foundation> {
         self.cached(run)?.found.as_ref()
+    }
+
+    /// Mengen der Erdgeschossdecke über einem Wandzug.
+    pub fn floor_qto(&self, run: RunId) -> Option<&FloorQto> {
+        self.cached(run)?.floor_qto.as_ref()
+    }
+
+    /// Erdgeschossdecke über einem Wandzug, wie sie gezeichnet wird.
+    pub fn floor(&self, run: RunId) -> Option<&FloorSlab> {
+        self.cached(run)?.floor.as_ref()
     }
 
     fn cached(&self, id: RunId) -> Option<&RunCache> {
@@ -441,6 +476,9 @@ impl Scene {
             for p in self.model.joined_runs(id) {
                 self.mark(p);
             }
+            for p in self.model.runs_under_floor(id) {
+                self.mark(p);
+            }
         }
         self.commit();
         run
@@ -455,6 +493,9 @@ impl Scene {
         let Some(run) = m.run_of(id) else {
             return false;
         };
+        if field == Field::FloorThickness {
+            return self.set_floor_thickness(run, mm);
+        }
         let Some((slab, footing)) = m.foundation_of(run) else {
             return false;
         };
@@ -469,6 +510,7 @@ impl Scene {
             Field::Recess => ("Sockelrücksprung", s.recess),
             Field::FootingWidth => ("Schürzenbreite", f.width),
             Field::FootingDepth => ("Schürzentiefe", f.depth),
+            Field::FloorThickness => return false,
         };
         if old == mm {
             return false;
@@ -482,6 +524,29 @@ impl Scene {
             _ => false,
         };
         self.mark(run);
+        self.commit();
+        ok
+    }
+
+    /// Dicke der Erdgeschossdecke über dem Zug `run`. Neu gerechnet werden
+    /// der Zug (Tasche) und die Innenwände unter der Decke.
+    fn set_floor_thickness(&mut self, run: RunId, mm: f64) -> bool {
+        let Some(id) = self.model.floor_of(run) else {
+            return false;
+        };
+        let Some(sk_model::ElementKind::Floor(f)) = self.model.element(id).map(|e| e.kind.clone())
+        else {
+            return false;
+        };
+        if f.thickness == mm {
+            return false;
+        }
+        self.begin("Deckendicke");
+        let ok = self.model.set_floor_thickness(id, mm);
+        self.mark(run);
+        for r in self.model.runs_under_floor(run) {
+            self.mark(r);
+        }
         self.commit();
         ok
     }

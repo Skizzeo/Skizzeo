@@ -124,11 +124,17 @@ pub struct Joints {
     /// Anfang und Ende eines offenen Zuges.
     pub ends: [EndCut; 2],
     pub gaps: Vec<Gap>,
+    /// Höhenband einer Geschossdecke (Unterkante, Oberkante), in dem die
+    /// tragenden Schichten unterbrochen sind (Auflagertasche bzw. Innenwand
+    /// unter und über der Decke), siehe [`WallChain::band_layers`].
+    pub slab_band: Option<(f64, f64)>,
 }
 
 impl Joints {
     pub fn is_empty(&self) -> bool {
-        self.ends == [EndCut::Square, EndCut::Square] && self.gaps.is_empty()
+        self.ends == [EndCut::Square, EndCut::Square]
+            && self.gaps.is_empty()
+            && self.slab_band.is_none()
     }
 }
 
@@ -490,27 +496,47 @@ impl WallChain {
             .collect()
     }
 
+    /// Schichten, die eine Geschossdecke unterbricht: der tragende Kern und
+    /// alles innen davon (die Decke reicht bis an die Dämmung außen). Ohne
+    /// tragende Schicht alle.
+    pub fn band_layers(&self) -> std::ops::Range<usize> {
+        let first = self.layers.iter().position(|l| l.core).unwrap_or(0);
+        first..self.layers.len()
+    }
+
+    /// Höhenabschnitte (von, bis) der Schicht `layer`: ganze Höhe oder, wenn
+    /// eine Decke sie unterbricht, unter und über der Decke.
+    pub fn layer_spans(&self, layer: usize) -> Vec<(f64, f64)> {
+        let h = self.height;
+        match self.joints.slab_band {
+            Some((b, t)) if self.band_layers().contains(&layer) && b < h && t > 0.0 => {
+                let mut v = Vec::with_capacity(2);
+                if b > 1e-6 {
+                    v.push((0.0, b.min(h)));
+                }
+                if t < h - 1e-6 {
+                    v.push((t.max(0.0), h));
+                }
+                v
+            }
+            _ => vec![(0.0, h)],
+        }
+    }
+
     /// Wandkörper mit Gehrungen an den Ecken, eine Schale je Schicht.
     pub fn solid(&self) -> Solid {
-        let mut s = Solid::default();
-        for (i, ((lo, hi, mat), l)) in self
-            .layer_offsets()
-            .into_iter()
-            .zip(&self.layers)
-            .enumerate()
-        {
-            s.mat = mat;
-            self.prism(&mut s, i, lo, hi, self.height, mat, l.cut_kind());
-        }
-        s
+        self.solid_below(f64::INFINITY)
     }
 
     /// Wand waagerecht geschnitten in Höhe `cut` (für den Grundriss).
     /// Die Schnittfläche oben trägt den Baustoff mit [`material::CUT`].
     pub fn solid_cut_at(&self, cut: f64) -> Solid {
-        if cut >= self.height {
-            return self.solid();
-        }
+        self.solid_below(cut)
+    }
+
+    /// Alle Schichten bis Höhe `cut`; endet ein Abschnitt am Schnitt, ist seine
+    /// Deckfläche Schnittfläche.
+    fn solid_below(&self, cut: f64) -> Solid {
         let mut s = Solid::default();
         for (i, ((lo, hi, mat), l)) in self
             .layer_offsets()
@@ -518,8 +544,18 @@ impl WallChain {
             .zip(&self.layers)
             .enumerate()
         {
-            s.mat = mat;
-            self.prism(&mut s, i, lo, hi, cut, mat | material::CUT, l.cut_kind());
+            for (z0, z1) in self.layer_spans(i) {
+                if z0 >= cut {
+                    continue;
+                }
+                s.mat = mat;
+                let (top, top_mat) = if z1 > cut {
+                    (cut, mat | material::CUT)
+                } else {
+                    (z1, mat)
+                };
+                self.prism(&mut s, i, lo, hi, (z0, top), top_mat, l.cut_kind());
+            }
         }
         s
     }
@@ -534,8 +570,6 @@ impl WallChain {
         };
         let n = vec3(n.x, n.y, 0.0).normalized();
         let along = vec3(-n.y, n.x, 0.0);
-        let h = self.height;
-        let up = vec3(0.0, 0.0, h);
         let side = |p: Vec3| (p - p0).dot(n);
         for (li, ((lo, hi, mat), l)) in self
             .layer_offsets()
@@ -544,6 +578,7 @@ impl WallChain {
             .enumerate()
         {
             let kind = l.cut_kind();
+            let spans = self.layer_spans(li);
             let (cl, ch) = (
                 self.face_corners_in(lo, Some(li)),
                 self.face_corners_in(hi, Some(li)),
@@ -576,30 +611,35 @@ impl WallChain {
                 let v = |p: Vec3| (off(p) - lo) / t;
                 s.mat = mat | material::CUT;
                 s.elem = i as u32;
-                s.quad_uv(
-                    [a, b, b + up, a + up],
-                    n,
-                    [[0.0, v(a)], [0.0, v(b)], [h / t, v(b)], [h / t, v(a)]],
-                );
-                s.edge_kind = kind;
-                s.edge(a, b);
-                s.edge(a + up, b + up);
-                for p in [a, b] {
-                    let o = off(p);
-                    let face = if (o - lo).abs() < 1e-3 {
-                        Some(lo)
-                    } else if (o - hi).abs() < 1e-3 {
-                        Some(hi)
-                    } else {
-                        None
-                    };
-                    let t = (flat(p) - pts[i]).dot(dirs[i]);
-                    if let Some(f) = face {
-                        if !self
-                            .gaps_at(i, f)
-                            .any(|(g0, g1)| t > g0 + 1e-6 && t < g1 - 1e-6)
-                        {
-                            s.edge(p, p + up);
+                for &(z0, z1) in &spans {
+                    let (a, b) = (flat(a) + vec3(0.0, 0.0, z0), flat(b) + vec3(0.0, 0.0, z0));
+                    let up = vec3(0.0, 0.0, z1 - z0);
+                    let (v0, v1) = (z0 / t, z1 / t);
+                    s.quad_uv(
+                        [a, b, b + up, a + up],
+                        n,
+                        [[v0, v(a)], [v0, v(b)], [v1, v(b)], [v1, v(a)]],
+                    );
+                    s.edge_kind = kind;
+                    s.edge(a, b);
+                    s.edge(a + up, b + up);
+                    for p in [a, b] {
+                        let o = off(p);
+                        let face = if (o - lo).abs() < 1e-3 {
+                            Some(lo)
+                        } else if (o - hi).abs() < 1e-3 {
+                            Some(hi)
+                        } else {
+                            None
+                        };
+                        let t = (flat(p) - pts[i]).dot(dirs[i]);
+                        if let Some(f) = face {
+                            if !self
+                                .gaps_at(i, f)
+                                .any(|(g0, g1)| t > g0 + 1e-6 && t < g1 - 1e-6)
+                            {
+                                s.edge(p, p + up);
+                            }
                         }
                     }
                 }
@@ -627,7 +667,7 @@ impl WallChain {
         layer: usize,
         lo: f64,
         hi: f64,
-        h: f64,
+        (z0, z1): (f64, f64),
         top_mat: u16,
         cut_kind: u8,
     ) {
@@ -645,10 +685,19 @@ impl WallChain {
             }
         };
         let top_kind = if cut { cut_kind } else { edge_kind::VIEW };
-        let ca = self.face_corners_in(lo, Some(layer));
-        let cb = self.face_corners_in(hi, Some(layer));
+        let base = vec3(0.0, 0.0, z0);
+        let ca: Vec<Vec3> = self
+            .face_corners_in(lo, Some(layer))
+            .into_iter()
+            .map(|p| flat(p) + base)
+            .collect();
+        let cb: Vec<Vec3> = self
+            .face_corners_in(hi, Some(layer))
+            .into_iter()
+            .map(|p| flat(p) + base)
+            .collect();
         let side_mat = s.mat;
-        let up = vec3(0.0, 0.0, h);
+        let up = vec3(0.0, 0.0, z1 - z0);
         let t = (hi - lo).max(1.0);
 
         for i in 0..m {

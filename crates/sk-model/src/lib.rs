@@ -8,6 +8,7 @@
 
 pub mod attr;
 pub mod element;
+pub mod floor;
 pub mod foundation;
 pub mod guid;
 pub mod id;
@@ -28,6 +29,7 @@ pub use element::{
     Category, Element, ElementId, ElementKind, PropSet, PropValue, RunId, Storey, StoreyId, Wall,
     WallRun,
 };
+pub use floor::{FloorError, FloorParams, FloorSlab};
 pub use foundation::{FootingShape, Foundation, FoundationError, FoundationParams};
 pub use guid::{Guid, GuidGen};
 pub use id::{Arena, Id};
@@ -36,9 +38,12 @@ pub use library::{
     material_key, LayerFunction, LayerSet, LayerSetId, MatCategory, Material, MaterialId,
     MaterialLayer,
 };
-pub use model::{Defaults, Model, NumberError, Project, FOOTING_PART, MIN_RECESS, SLAB_PART};
+pub use model::{
+    Defaults, Model, NumberError, Project, FLOOR_PART, FOOTING_PART, MIN_RECESS, SLAB_PART,
+};
 pub use qto::{
-    foundation_qto, foundation_qto_of, run_qto, wall_qto, FootingQto, LayerQto, SlabQto, WallQto,
+    floor_qto, floor_qto_of, foundation_qto, foundation_qto_of, run_qto, wall_qto, FloorQto,
+    FootingQto, LayerQto, SlabQto, WallQto,
 };
 pub use solid::Solid;
 pub use solid::{edge_kind, material, Edge, Tri};

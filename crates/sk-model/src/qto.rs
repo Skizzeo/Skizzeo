@@ -6,6 +6,7 @@
 //! `volume_gross` bleiben brutto (ohne Verschnitt). Öffnungen gibt es noch nicht.
 
 use crate::element::{ElementId, RunId};
+use crate::floor::FloorSlab;
 use crate::foundation::Foundation;
 use crate::library::MaterialId;
 use crate::model::Model;
@@ -110,10 +111,13 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                 .layers
                 .iter()
                 .zip(&faces)
-                .map(|(l, (fa, fb))| {
+                .enumerate()
+                .map(|(li, (l, (fa, fb)))| {
                     let quad = [fa[k], fa[j], fb[j], fb[k]];
                     let area = area(&quad);
-                    let volume = area * h;
+                    // netto: ohne das Band einer Geschossdecke (Auflagertasche)
+                    let hn: f64 = chain.layer_spans(li).iter().map(|(a, b)| b - a).sum();
+                    let volume = area * hn;
                     let density = model.material(l.material).map_or(0.0, |m| m.density);
                     LayerQto {
                         material: l.material,
@@ -199,6 +203,36 @@ pub fn foundation_qto_of(f: &Foundation) -> (SlabQto, FootingQto) {
     )
 }
 
+/// Mengen einer Geschossdecke (IFC: Qto_SlabBaseQuantities), Hauptmenge Fläche.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FloorQto {
+    /// Fläche des Umrisses bis Außenseite Kern (mm²).
+    pub area: f64,
+    pub volume: f64,
+    /// Umfang (Randschalung), mm.
+    pub perimeter: f64,
+    pub thickness: f64,
+    /// Oberkante über Wandfuß (mm).
+    pub top: f64,
+}
+
+/// Mengen der Decke über einem Wandzug; `None` ohne Decke oder wenn kein
+/// Körper entstehen kann.
+pub fn floor_qto(model: &Model, run: RunId) -> Option<FloorQto> {
+    Some(floor_qto_of(&model.floor(run)?.ok()?))
+}
+
+/// Mengen aus einer schon berechneten Decke.
+pub fn floor_qto_of(f: &FloorSlab) -> FloorQto {
+    FloorQto {
+        area: f.area(),
+        volume: f.volume(),
+        perimeter: f.perimeter(),
+        thickness: f.params.thickness,
+        top: f.params.top,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,10 +266,11 @@ mod tests {
         let q = run_qto(&m, r);
         assert_eq!(q.len(), 4);
         let vol: f64 = q.iter().map(|w| w.volume).sum();
-        assert!((vol / M3 - 30.0935).abs() < 1e-4, "{}", vol / M3);
+        // netto ohne die Tasche der Erdgeschossdecke (B10): 30,0935 − 1,31593
+        assert!((vol / M3 - 28.7776).abs() < 1e-4, "{}", vol / M3);
         let layer = |i: usize| -> f64 { q.iter().map(|w| w.layers[i].volume).sum::<f64>() / M3 };
         assert!((layer(0) - 13.6444).abs() < 1e-4, "{}", layer(0));
-        assert!((layer(1) - 16.4491).abs() < 1e-4, "{}", layer(1));
+        assert!((layer(1) - 15.1332).abs() < 1e-4, "{}", layer(1));
         let len: f64 = q.iter().map(|w| w.length).sum();
         assert!((len - 36000.0).abs() < 1e-6);
         assert!(q.iter().all(|w| (w.width - 315.0).abs() < 1e-9));

@@ -268,9 +268,11 @@ mod tests {
 
     const H: f64 = 2750.0;
 
-    /// m³ auf vier Stellen. Das Paket nennt 3,5469 m³ für die Innenwand;
-    /// genau sind es 7,37 × 0,175 × 2,75 = 3,5468125 m³, also 3,5468. Ebenso
-    /// Gasbeton gesamt 16,449125 + 3,5468125 = 19,9959375 m³ (Paket: 19,9960).
+    /// m³ auf vier Stellen. Brutto wären es 7,37 × 0,175 × 2,75 = 3,5468 m³
+    /// für die Innenwand. Seit B10 liegt die Erdgeschossdecke (OK 1830, 22 cm)
+    /// über dem Haus: netto 7,37 × 0,175 × 2,53 = 3,26306 m³; die Außenwand
+    /// verliert die Tasche 5,9815 × 0,22 = 1,31593 m³ (30,0935 → 28,7776).
+    /// Gasbeton gesamt 16,449125 − 1,31593 + 3,26306 = 18,396255 m³.
     fn m3(v: f64) -> f64 {
         (v / 1e9 * 1e4).round() / 1e4
     }
@@ -293,6 +295,13 @@ mod tests {
         let pts = [vec3(5000.0, y0, 0.0), vec3(5000.0, y1, 0.0)];
         m.add_wall_run(&pts, false, RefSide::Center, H, set, Category::InteriorWall)
             .unwrap()
+    }
+
+    /// Keine Anschlüsse am Zug (das Deckenband der Tasche zählt nicht).
+    fn no_joints(m: &Model, r: RunId) -> bool {
+        let j = m.chain(r).unwrap().joints;
+        use crate::wall::EndCut::Square;
+        j.gaps.is_empty() && j.ends == [Square, Square]
     }
 
     fn volume(m: &Model, r: RunId) -> f64 {
@@ -331,9 +340,9 @@ mod tests {
             let iw = innenwand(&mut m, y0, y1);
             assert_eq!(t_joins(&m), 2, "{y0}..{y1}");
             assert_eq!(m.joins().len(), 2);
-            assert_eq!(volume(&m, iw), 3.5468, "{y0}..{y1}");
-            assert_eq!(volume(&m, aw), 30.0935);
-            assert_eq!(material_volume(&m, gasbeton(&m)), 19.9959);
+            assert_eq!(volume(&m, iw), 3.2631, "{y0}..{y1}");
+            assert_eq!(volume(&m, aw), 28.7776);
+            assert_eq!(material_volume(&m, gasbeton(&m)), 18.3963);
             // Brutto bleibt die gezeichnete Wand
             let gross: f64 = run_qto(&m, iw).iter().map(|q| q.volume_gross).sum();
             assert_eq!(m3(gross), m3((y1 - y0) * 175.0 * H));
@@ -351,7 +360,7 @@ mod tests {
         haus(&mut m);
         let iw = innenwand(&mut m, 1000.0, 7000.0);
         assert!(m.joins().is_empty());
-        assert_eq!(volume(&m, iw), 2.8875);
+        assert_eq!(volume(&m, iw), 2.6565);
         let t = szo::write(&m);
         let l = szo::read(&t, GuidGen::with_seed(5)).unwrap();
         assert!(l.hints.is_empty(), "{:?}", l.hints);
@@ -381,7 +390,7 @@ mod tests {
         assert_eq!(t.changes.len(), 2, "{:?}", t.changes);
         let p = &m.run(iw).unwrap().points;
         assert!((p[1].y - 8685.0).abs() < 1e-6, "{p:?}");
-        assert_eq!(volume(&m, iw), 4.0281);
+        assert_eq!(volume(&m, iw), 3.7058);
         assert_eq!(t_joins(&m), 2);
         assert!(m.check().is_empty(), "{:?}", m.check());
 
@@ -391,17 +400,17 @@ mod tests {
         assert!(l.hints.is_empty(), "{:?}", l.hints);
         assert_eq!(t_joins(&l.model), 2);
         let iw2 = l.model.runs().iter().find(|(_, r)| !r.closed).unwrap().0;
-        assert_eq!(volume(&l.model, iw2), 4.0281);
+        assert_eq!(volume(&l.model, iw2), 3.7058);
         assert_eq!(szo::write(&l.model), text);
 
         // Rückgängig stellt beide Züge zurück
         m.apply(&t, Direction::Undo);
         assert_eq!((m.run(aw).cloned(), m.run(iw).cloned()), before);
-        assert_eq!(volume(&m, iw), 3.5468);
+        assert_eq!(volume(&m, iw), 3.2631);
         assert_eq!(t_joins(&m), 2);
         assert!(m.check().is_empty(), "{:?}", m.check());
         m.apply(&t, Direction::Redo);
-        assert_eq!(volume(&m, iw), 4.0281);
+        assert_eq!(volume(&m, iw), 3.7058);
     }
 
     #[test]
@@ -415,7 +424,7 @@ mod tests {
         assert!((p[1].y - 8685.0).abs() < 1e-6, "{p:?}");
         // Das andere Ende hängt an einer unveränderten Wand und bleibt, wo es war
         assert!(p[0].y.abs() < 1e-6, "{p:?}");
-        assert_eq!(volume(&m, iw), 4.0281);
+        assert_eq!(volume(&m, iw), 3.7058);
         assert!(m.check().is_empty(), "{:?}", m.check());
     }
 
@@ -521,7 +530,7 @@ mod tests {
         let after = m.chain(aw).unwrap().solid();
         assert_eq!(before.edges.len(), after.edges.len());
         assert_eq!(before.triangles.len(), after.triangles.len());
-        assert!(m.chain(aw).unwrap().joints.is_empty());
+        assert!(no_joints(&m, aw));
     }
 
     #[test]
@@ -538,7 +547,7 @@ mod tests {
         let touched = m.apply(&t, Direction::Undo);
         assert!(touched.runs.contains(&aw), "{touched:?}");
         assert!(m.joins().is_empty());
-        assert!(m.chain(aw).unwrap().joints.is_empty());
+        assert!(no_joints(&m, aw));
         m.apply(&t, Direction::Redo);
         assert_eq!(t_joins(&m), 2);
         m.begin("Löschen");

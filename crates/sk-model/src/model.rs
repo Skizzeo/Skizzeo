@@ -8,9 +8,10 @@ use crate::attr::{
     self, Attributes, Display, Fill, FillId, LineType, LineTypeId, Pen, PenId, Surface, SurfaceId,
 };
 use crate::element::{
-    Category, Element, ElementId, ElementKind, GroundSlab, PropSet, PropValue, RunId, Storey,
-    StoreyId, StripFooting, Wall, WallRun,
+    Category, Element, ElementId, ElementKind, Floor, GroundSlab, PropSet, PropValue, RunId,
+    Storey, StoreyId, StripFooting, Wall, WallRun,
 };
+use crate::floor::{FloorError, FloorParams, FloorSlab};
 use crate::foundation::{FootingShape, Foundation, FoundationError, FoundationParams};
 use crate::guid::{Guid, GuidGen};
 use crate::id::Arena;
@@ -602,7 +603,7 @@ impl Model {
             .map(|k| self.new_wall(run, k, &template))
             .collect();
         self.runs.get_mut(run)?.segments = segments;
-        self.sync_foundation(run);
+        self.sync_parts(run);
         self.update_joins(&[run]);
         self.touch();
         Some(run)
@@ -622,7 +623,7 @@ impl Model {
         }
         let moved = self.follow(id);
         for r in &moved {
-            self.sync_foundation(*r);
+            self.sync_parts(*r);
         }
         let mut out = moved.clone();
         let partners = |m: &Model, out: &mut Vec<RunId>| {
@@ -637,6 +638,14 @@ impl Model {
         partners(self, &mut out);
         self.update_joins(&moved);
         partners(self, &mut out);
+        // Innenwände unter einer mitbewegten Decke (Deckenband)
+        for r in &moved {
+            for i in self.runs_under_floor(*r) {
+                if !out.contains(&i) {
+                    out.push(i);
+                }
+            }
+        }
         Some(out)
     }
 
@@ -712,7 +721,7 @@ impl Model {
             note!(self, Element, self.elements, e);
             self.elements.remove(e);
         }
-        self.sync_foundation(id);
+        self.sync_parts(id);
         self.update_joins(&[id]);
         self.touch();
         true
@@ -735,7 +744,18 @@ impl Model {
     /// Anschlüssen an andere Züge. Haben die Wände eines Zuges verschiedene
     /// Aufbauten, gilt der des ersten Segments.
     pub fn chain(&self, id: RunId) -> Option<WallChain> {
+        self.chain_and_floor(id).map(|(c, _)| c)
+    }
+
+    /// [`Model::chain`] und die Decke über dem Zug ([`Model::floor`]) in
+    /// einem Gang: der Deckenumriss entsteht nur einmal.
+    #[allow(clippy::type_complexity)]
+    pub fn chain_and_floor(
+        &self,
+        id: RunId,
+    ) -> Option<(WallChain, Option<Result<FloorSlab, FloorError>>)> {
         let mut c = self.base_chain(id)?;
+        let floor = self.floor_of_chain(id, &c);
         let prio = |k: u16| self.material_by_key(k).map_or(0, |m| m.priority);
         for j in &self.joins {
             if j.a_run == id {
@@ -764,7 +784,71 @@ impl Model {
                 }
             }
         }
-        Some(c)
+        c.joints.slab_band = match &floor {
+            Some(Ok(f)) => Some(f.band()),
+            _ if self.category_of(id) == Some(Category::InteriorWall) => {
+                self.floor_over(&c).map(|f| f.band())
+            }
+            _ => None,
+        };
+        Some((c, floor))
+    }
+
+    /// Kategorie der Wände eines Zuges (die des ersten Segments).
+    fn category_of(&self, run: RunId) -> Option<Category> {
+        let first = *self.run(run)?.segments.first()?;
+        Some(self.element(first)?.category)
+    }
+
+    /// Decke, unter der der Zug `c` steht: eine Segmentmitte liegt in ihrem
+    /// Umriss.
+    fn floor_over(&self, c: &WallChain) -> Option<FloorSlab> {
+        let mids = mids(&c.points, c.closed);
+        let (lo, hi) = bounds2(&mids);
+        for (id, r) in self.runs.iter() {
+            // Vortest: geschlossen und Rechteck der Zugpunkte überdeckt die
+            // Segmentmitten, bevor der Umriss entsteht
+            if !r.closed || !overlap(bounds2(&r.points), (lo, hi)) {
+                continue;
+            }
+            let (rlo, rhi) = bounds2(&r.points);
+            if !mids.iter().any(|m| inside(*m, rlo, rhi)) {
+                continue;
+            }
+            if let Some(Ok(slab)) = self.floor(id) {
+                if mids.iter().any(|m| contains(&slab.outline, *m)) {
+                    return Some(slab);
+                }
+            }
+        }
+        None
+    }
+
+    /// Innenwandzüge, die die Decke über dem Zug `run` unterbricht.
+    pub fn runs_under_floor(&self, run: RunId) -> Vec<RunId> {
+        let Some(r) = self.run(run).filter(|r| r.closed) else {
+            return Vec::new();
+        };
+        let (lo, hi) = bounds2(&r.points);
+        // Vortest am Rechteck, bevor der Umriss entsteht
+        let near: Vec<(RunId, Vec<Vec3>)> = self
+            .runs
+            .iter()
+            .filter(|(id, x)| *id != run && overlap(bounds2(&x.points), (lo, hi)))
+            .filter(|(id, _)| self.category_of(*id) == Some(Category::InteriorWall))
+            .map(|(id, x)| (id, mids(&x.points, x.closed)))
+            .filter(|(_, m)| m.iter().any(|p| inside(*p, lo, hi)))
+            .collect();
+        if near.is_empty() {
+            return Vec::new();
+        }
+        let Some(Ok(slab)) = self.floor(run) else {
+            return Vec::new();
+        };
+        near.into_iter()
+            .filter(|(_, m)| m.iter().any(|p| contains(&slab.outline, *p)))
+            .map(|(r, _)| r)
+            .collect()
     }
 
     /// Geometrie eines Wandzugs ohne Anschlüsse.
@@ -836,6 +920,7 @@ impl Model {
             ElementKind::Wall(w) => Some(w.run),
             ElementKind::GroundSlab(s) => Some(s.run),
             ElementKind::StripFooting(f) => self.run_of(f.slab),
+            ElementKind::Floor(f) => Some(f.run),
         }
     }
 
@@ -845,6 +930,7 @@ impl Model {
         match part {
             SLAB_PART => self.foundation_of(run).map(|f| f.0),
             FOOTING_PART => self.foundation_of(run).and_then(|f| f.1),
+            FLOOR_PART => self.floor_of(run),
             seg => self.wall_at(run, seg as usize),
         }
     }
@@ -928,6 +1014,12 @@ impl Model {
                 }),
             );
         }
+    }
+
+    /// Gründung und Erdgeschossdecke eines Zuges abgleichen.
+    fn sync_parts(&mut self, run: RunId) {
+        self.sync_foundation(run);
+        self.sync_floor(run);
     }
 
     /// Ergänzt in Dateien vor B9 die Stahlbeton-Kreuzschraffur (E10) und die
@@ -1060,6 +1152,114 @@ impl Model {
         true
     }
 
+    // --- Erdgeschossdecke (B10) -------------------------------------------
+
+    /// Decken über einem Wandzug (richtig: höchstens eine).
+    fn floors_of(&self, run: RunId) -> Vec<ElementId> {
+        self.elements
+            .iter()
+            .filter(|(_, e)| matches!(e.kind, ElementKind::Floor(f) if f.run == run))
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// Erdgeschossdecke über einem geschlossenen Außenwandzug.
+    pub fn floor_of(&self, run: RunId) -> Option<ElementId> {
+        self.floors_of(run).first().copied()
+    }
+
+    /// Jeder geschlossene Außenwandzug hat genau eine Erdgeschossdecke, ihre
+    /// Oberkante wird beim Anlegen aus der Wandhöhe vorbelegt und dann
+    /// gespeichert. Ist der Zug offen oder weg, verschwindet sie.
+    fn sync_floor(&mut self, run: RunId) {
+        let floors = self.floors_of(run);
+        if !self.needs_foundation(run) {
+            for f in floors {
+                note!(self, Element, self.elements, f);
+                self.elements.remove(f);
+            }
+            return;
+        }
+        if !floors.is_empty() {
+            return;
+        }
+        let (Some(r), Some(material)) = (self.run(run), self.concrete()) else {
+            return;
+        };
+        let (storey, top) = (r.storey, FloorParams::default_top(r.height));
+        self.new_element(
+            Category::Floor,
+            storey,
+            FLOOR_SEQ,
+            ElementKind::Floor(Floor {
+                run,
+                material,
+                thickness: 220.0,
+                top,
+            }),
+        );
+    }
+
+    /// Ergänzt in Dateien vor B10 die Erdgeschossdecke über jedem
+    /// geschlossenen Außenwandzug. Ohne Rückgängig-Schritt; liefert Hinweise.
+    pub(crate) fn complete_pre_b10(&mut self) -> Vec<String> {
+        let missing: Vec<RunId> = self
+            .runs
+            .ids()
+            .filter(|r| self.needs_foundation(*r) && self.floors_of(*r).is_empty())
+            .collect();
+        for r in &missing {
+            self.sync_floor(*r);
+        }
+        match missing.len() {
+            0 => Vec::new(),
+            1 => vec!["Erdgeschossdecke ergänzt".to_string()],
+            n => vec![format!("Erdgeschossdecke über {n} Außenwandzügen ergänzt")],
+        }
+    }
+
+    /// Geometrie der Decke über einem Wandzug; `None` ohne Decke, `Err` wenn
+    /// kein Körper entstehen kann.
+    pub fn floor(&self, run: RunId) -> Option<Result<FloorSlab, FloorError>> {
+        self.floor_of_chain(run, &self.base_chain(run)?)
+    }
+
+    /// [`Model::floor`] zum schon gebauten Zug `chain` (ohne Anschlüsse).
+    fn floor_of_chain(
+        &self,
+        run: RunId,
+        chain: &WallChain,
+    ) -> Option<Result<FloorSlab, FloorError>> {
+        let id = self.floor_of(run)?;
+        let ElementKind::Floor(f) = self.element(id)?.kind else {
+            return None;
+        };
+        let p = FloorParams {
+            top: f.top,
+            thickness: f.thickness,
+            mat: material_key(f.material),
+        };
+        Some(FloorSlab::from_chain(chain, &p))
+    }
+
+    /// Setzt die Dicke einer Decke (mm, von der Oberkante nach unten).
+    pub fn set_floor_thickness(&mut self, floor: ElementId, thickness: f64) -> bool {
+        if !(thickness > 0.0 && thickness.is_finite())
+            || !matches!(
+                self.element(floor).map(|e| &e.kind),
+                Some(ElementKind::Floor(_))
+            )
+        {
+            return false;
+        }
+        note!(self, Element, self.elements, floor);
+        if let Some(ElementKind::Floor(f)) = self.elements.get_mut(floor).map(|e| &mut e.kind) {
+            f.thickness = thickness;
+        }
+        self.touch();
+        true
+    }
+
     /// Hinweise, die keinen Fehler darstellen: Der Körper entsteht, aber etwas
     /// ist ungewöhnlich (Paneel „Eigenschaften“).
     pub fn warnings(&self, e: ElementId) -> Vec<String> {
@@ -1067,6 +1267,13 @@ impl Model {
         let Some(run) = self.run_of(e) else {
             return out;
         };
+        if let Some(ElementKind::Floor(f)) = self.element(e).map(|x| &x.kind) {
+            let h = self.run(run).map_or(0.0, |r| r.height);
+            if f.top != FloorParams::default_top(h) {
+                out.push("Oberkante nicht bei ⅔ der Wandhöhe".into());
+            }
+            return out;
+        }
         let Some((slab, _)) = self.foundation_of(run) else {
             return out;
         };
@@ -1453,6 +1660,7 @@ impl Model {
         debug_assert!(self.txn.is_none(), "Rückgängig in einem offenen Schritt");
         let mut touched = Touched::default();
         let mut footings = Vec::new();
+        let mut floors = Vec::new();
         let mut apply_one = |m: &mut Model, c: &Change| match c {
             Change::Run { id, old, new } => {
                 m.runs.set(*id, pick(dir, old, new));
@@ -1464,6 +1672,10 @@ impl Model {
                         ElementKind::Wall(w) => touched.run(w.run),
                         ElementKind::GroundSlab(s) => touched.run(s.run),
                         ElementKind::StripFooting(f) => footings.push(f.slab),
+                        ElementKind::Floor(f) => {
+                            touched.run(f.run);
+                            floors.push(f.run);
+                        }
                     }
                 }
                 m.elements.set(*id, pick(dir, old, new));
@@ -1512,6 +1724,12 @@ impl Model {
             if let Some(r) = self.run_of(slab) {
                 touched.run(r);
             }
+        }
+        // Decke geändert: auch die Innenwände darunter (Deckenband)
+        for r in floors {
+            self.runs_under_floor(r)
+                .into_iter()
+                .for_each(|i| touched.run(i));
         }
         if touched.attr {
             self.attr.bump();
@@ -1598,11 +1816,40 @@ impl Model {
                         out.push(format!("{}: Baustoff fehlt", e.number));
                     }
                 }
+                ElementKind::Floor(f) => {
+                    if !self.needs_foundation(f.run) {
+                        out.push(format!(
+                            "{}: kein geschlossener Außenwandzug darunter",
+                            e.number
+                        ));
+                    }
+                    if !(f.thickness > 0.0 && f.thickness.is_finite()) {
+                        out.push(format!("{}: Dicke {} ungültig", e.number, f.thickness));
+                    }
+                    let h = self.run(f.run).map_or(0.0, |r| r.height);
+                    if !(f.top - f.thickness > 0.0 && f.top <= h) {
+                        out.push(format!(
+                            "{}: Lage OK {} / UK {} außerhalb der Wand",
+                            e.number,
+                            f.top,
+                            f.top - f.thickness
+                        ));
+                    }
+                    if let Some(Err(err)) = self.floor(f.run) {
+                        out.push(format!("{}: keine Decke, {}", e.number, explain_floor(err)));
+                    }
+                    if !self.materials.contains(f.material) {
+                        out.push(format!("{}: Baustoff fehlt", e.number));
+                    }
+                }
             }
         }
         for (id, _) in self.runs.iter() {
             if self.needs_foundation(id) && self.slabs_of(id).len() != 1 {
                 out.push(format!("Wandzug {id:?}: nicht genau eine Sohlplatte"));
+            }
+            if self.needs_foundation(id) && self.floors_of(id).len() != 1 {
+                out.push(format!("Wandzug {id:?}: nicht genau eine Erdgeschossdecke"));
             }
         }
         for (id, r) in self.runs.iter() {
@@ -1704,11 +1951,64 @@ impl Model {
 pub const WALL_SEQ: u16 = 3;
 const SLAB_SEQ: u16 = 2;
 const FOOTING_SEQ: u16 = 1;
+/// Bauabschnitt der Erdgeschossdecke (nach den Wänden).
+const FLOOR_SEQ: u16 = 4;
 /// Kleinster Sockelrücksprung außer 0 (mm).
 pub const MIN_RECESS: f64 = 20.0;
 /// Teil des Körpers eines Wandzugs: Sohlplatte bzw. Frostschürze (statt Segment).
 pub const SLAB_PART: u32 = u32::MAX - 1;
 pub const FOOTING_PART: u32 = u32::MAX - 2;
+/// Teil des Körpers eines Wandzugs: Erdgeschossdecke darüber.
+pub const FLOOR_PART: u32 = u32::MAX - 3;
+
+/// Warum keine Decke entsteht, als Satz.
+fn explain_floor(e: FloorError) -> &'static str {
+    match e {
+        FloorError::NotClosed => "der Wandzug ist nicht geschlossen",
+        FloorError::NoCore => "der Wandaufbau hat keine tragende Schicht",
+        FloorError::NotSimple => "der Umriss überschneidet sich",
+        FloorError::BadLevel => "Dicke oder Höhenlage passt nicht in die Wand",
+    }
+}
+
+/// Umschließendes Rechteck von Punkten (Grundriss).
+fn bounds2(pts: &[Vec3]) -> (Vec3, Vec3) {
+    pts.iter().fold(
+        (vec3(f64::MAX, f64::MAX, 0.0), vec3(f64::MIN, f64::MIN, 0.0)),
+        |(lo, hi), p| {
+            (
+                vec3(lo.x.min(p.x), lo.y.min(p.y), 0.0),
+                vec3(hi.x.max(p.x), hi.y.max(p.y), 0.0),
+            )
+        },
+    )
+}
+
+/// Überschneiden sich zwei Rechtecke (Grundriss)?
+fn overlap((alo, ahi): (Vec3, Vec3), (blo, bhi): (Vec3, Vec3)) -> bool {
+    alo.x <= bhi.x && blo.x <= ahi.x && alo.y <= bhi.y && blo.y <= ahi.y
+}
+
+/// Segmentmitten eines Zuges.
+fn mids(pts: &[Vec3], closed: bool) -> Vec<Vec3> {
+    segment_lines(pts, closed)
+        .into_iter()
+        .map(|(a, b)| (a + b) * 0.5)
+        .collect()
+}
+
+/// Liegt `p` im Vieleck `poly` (Grundriss, Strahltest)?
+fn contains(poly: &[Vec3], p: Vec3) -> bool {
+    let n = poly.len();
+    let mut inside = false;
+    for i in 0..n {
+        let (a, b) = (poly[i], poly[(i + 1) % n]);
+        if (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x) {
+            inside = !inside;
+        }
+    }
+    inside
+}
 
 /// Warum keine Gründung entsteht, als Satz.
 fn explain(e: FoundationError) -> &'static str {
@@ -2038,8 +2338,8 @@ mod tests {
         m.begin("Löschen");
         assert!(m.remove_run(r));
         let t = m.commit().unwrap();
-        // Zug, Wände, Sohlplatte und Frostschürze
-        assert_eq!(t.changes.len(), 1 + walls.len() + 2);
+        // Zug, Wände, Sohlplatte, Frostschürze und Erdgeschossdecke
+        assert_eq!(t.changes.len(), 1 + walls.len() + 3);
         m.apply(&t, Direction::Undo);
         assert_eq!(state(&m), before);
         for (e, g) in walls.iter().zip(&guids) {

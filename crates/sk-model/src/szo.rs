@@ -15,7 +15,8 @@ use crate::attr::{
     Surface,
 };
 use crate::element::{
-    Category, Element, ElementKind, GroundSlab, PropValue, Storey, StripFooting, Wall, WallRun,
+    Category, Element, ElementKind, Floor, GroundSlab, PropValue, Storey, StripFooting, Wall,
+    WallRun,
 };
 use crate::guid::{Guid, GuidGen};
 use crate::id::{Arena, Id};
@@ -383,7 +384,7 @@ fn category(c: Category) -> &'static str {
     match c {
         Category::ExteriorWall => "exterior",
         Category::InteriorWall => "interior",
-        Category::Slab => "slab",
+        Category::Floor => "floor",
         Category::GroundSlab => "groundslab",
         Category::Roof => "roof",
         Category::Window => "window",
@@ -634,6 +635,22 @@ pub fn write(m: &Model) -> String {
             .finish(&mut out);
     }
     for e in &walls {
+        let ElementKind::Floor(f) = e.kind else {
+            continue;
+        };
+        Line::new("floor")
+            .guid("guid", Some(e.guid))
+            .guid("run", m.run(f.run).map(|r| r.guid))
+            .text("number", &e.number)
+            .word("cat", category(e.category))
+            .guid("mat", mat_guid(f.material))
+            .num("t", f.thickness)
+            .num("top", f.top)
+            .num("seq", e.seq)
+            .guid("storey", storey_guid(e.storey))
+            .finish(&mut out);
+    }
+    for e in &walls {
         for (k, v) in &e.props {
             let line = Line::new("prop").guid("elem", Some(e.guid)).text("key", k);
             match v {
@@ -674,9 +691,9 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     check_header(text.lines().next(), "SZO", VERSION)?;
     let mut hints = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 15] = [
+    const KNOWN: [&str; 16] = [
         "pen", "linetype", "fill", "surface", "display", "material", "layerset", "layer",
-        "project", "storey", "run", "wall", "slab", "footing", "prop",
+        "project", "storey", "run", "wall", "slab", "footing", "floor", "prop",
     ];
     for (i, l) in text.lines().enumerate().skip(1) {
         let Some(r) = Record::parse(i + 1, l)? else {
@@ -1002,7 +1019,8 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         register(&mut elem_ids, &mut seen, r, g, id)?;
         slots.entry(run).or_default().push((seg, id));
     }
-    // Gründung: erst die Platten, dann die Schürzen, die auf sie verweisen
+    // Gründung: erst die Platten, dann die Schürzen, die auf sie verweisen;
+    // dann die Decken über den Zügen
     let mut number = |r: &Record| -> Result<String, LoadError> {
         let n = r.get("number")?.to_string();
         if let Some(first) = taken_numbers.insert(n.clone(), r.line) {
@@ -1013,9 +1031,16 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         }
         Ok(n)
     };
-    for (section, ix) in [("slab", 0), ("footing", 1)] {
+    for (section, ix) in [("slab", 0), ("footing", 1), ("floor", 2)] {
         for r in recs(section) {
-            let kind = if ix == 0 {
+            let kind = if ix == 2 {
+                ElementKind::Floor(Floor {
+                    run: r.link("run", &run_ids)?,
+                    material: r.link("mat", &mat_ids)?,
+                    thickness: r.f64("t")?,
+                    top: r.f64("top")?,
+                })
+            } else if ix == 0 {
                 ElementKind::GroundSlab(GroundSlab {
                     run: r.link("run", &run_ids)?,
                     material: r.link("mat", &mat_ids)?,
@@ -1105,6 +1130,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         project, attr, materials, layer_sets, storeys, elements, runs, defaults, guids,
     );
     hints.extend(model.complete_pre_b9());
+    hints.extend(model.complete_pre_b10());
     hints.extend(model.check());
     Ok(Loaded { model, hints })
 }
@@ -1341,7 +1367,7 @@ mod tests {
             .map(|(id, _)| id)
             .unwrap();
         let vol: f64 = run_qto(&l, r).iter().map(|w| w.volume).sum();
-        assert!((vol / 1e9 - 30.0935).abs() < 1e-4, "{}", vol / 1e9);
+        assert!((vol / 1e9 - 28.7776).abs() < 1e-4, "{}", vol / 1e9);
         let open = l.runs().iter().find(|(_, r)| !r.closed).unwrap().1;
         assert_eq!(open.points[1].y, 4500.25);
     }
@@ -1511,7 +1537,9 @@ mod tests {
             .replacen(" t=140 ", " t=0 ", 1);
         assert_ne!(a, b);
         let l = load(&b).unwrap();
-        assert_eq!(l.hints.len(), 3, "{:?}", l.hints);
+        // dazu zwei zur Decke, die in einer Wand der Höhe 0 keinen Platz hat
+        assert_eq!(l.hints.len(), 5, "{:?}", l.hints);
+        assert!(l.hints.iter().any(|h| h.contains("DE-001: keine Decke")));
         assert!(l.hints.iter().any(|h| h.contains("ohne Länge")));
         assert!(l.hints.iter().any(|h| h.contains("Höhe")));
         assert!(l.hints.iter().any(|h| h.contains("Schichtdicke")));
