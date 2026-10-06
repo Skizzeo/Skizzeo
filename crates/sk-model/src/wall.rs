@@ -1461,3 +1461,158 @@ mod obergeschoss {
         assert!(per < 5.0);
     }
 }
+
+#[cfg(test)]
+mod pruefung_stapel {
+    //! Robustheit des Stapelns (G6) an schwierigen Umrissen: spitze Winkel,
+    //! winzige Vorsprünge, Zwischenpunkte auf geraden Kanten, beide Richtungen.
+    use super::*;
+    use crate::floor::{FloorParams, FloorSlab};
+    use crate::solid::merge_seam;
+
+    const OK_EG: f64 = 2855.0;
+    const OK_OG: f64 = 5835.0;
+
+    fn umrisse() -> Vec<(String, Vec<Vec3>)> {
+        let mut v = Vec::new();
+        for deg in [10.0f64, 20.0] {
+            let t = deg.to_radians();
+            v.push((
+                format!("spitz {deg}°"),
+                vec![
+                    vec3(0.0, 0.0, 0.0),
+                    vec3(12000.0 * t.cos(), 12000.0 * t.sin(), 0.0),
+                    vec3(12000.0, 0.0, 0.0),
+                ],
+            ));
+        }
+        for bump in [1.0, 50.0, 200.0] {
+            v.push((
+                format!("Vorsprung {bump} mm"),
+                vec![
+                    vec3(0.0, 0.0, 0.0),
+                    vec3(0.0, 8000.0, 0.0),
+                    vec3(4000.0, 8000.0, 0.0),
+                    vec3(4000.0, 8000.0 + bump, 0.0),
+                    vec3(6000.0, 8000.0 + bump, 0.0),
+                    vec3(6000.0, 8000.0, 0.0),
+                    vec3(10000.0, 8000.0, 0.0),
+                    vec3(10000.0, 0.0, 0.0),
+                ],
+            ));
+        }
+        v.push((
+            "Zwischenpunkt".into(),
+            vec![
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 4000.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ],
+        ));
+        let mut both = Vec::new();
+        for (name, p) in v {
+            let mut r = p.clone();
+            r.reverse();
+            both.push((format!("{name} rechts"), p));
+            both.push((format!("{name} links"), r));
+        }
+        both
+    }
+
+    fn mit_decke(mut w: WallChain) -> Option<(WallChain, FloorSlab)> {
+        let p = FloorParams {
+            top: w.top(),
+            thickness: 220.0,
+            mat: 7,
+        };
+        let f = FloorSlab::from_chain(&w, &p).ok()?;
+        w.joints.slab_band = Some(f.band());
+        Some((w, f))
+    }
+
+    fn finite(s: &Solid) -> bool {
+        s.triangles.iter().all(|t| {
+            t.p.iter()
+                .all(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
+        }) && s
+            .edges
+            .iter()
+            .all(|e| e.a.x.is_finite() && e.b.y.is_finite())
+    }
+
+    #[test]
+    fn stapel_ohne_naht_an_schwierigen_umrissen() {
+        let mut worst: f64 = 0.0;
+        for (name, pts) in umrisse() {
+            for ref_side in [RefSide::Left, RefSide::Right, RefSide::Center] {
+                let eg = WallChain {
+                    points: pts.clone(),
+                    closed: true,
+                    ref_side,
+                    layers: vec![Layer::new(140.0, 2), Layer::core(175.0, 1)],
+                    base: 0.0,
+                    height: OK_EG,
+                    joints: Default::default(),
+                };
+                let t = std::time::Instant::now();
+                let m = eg.segment_count();
+                let og = eg.stacked(&vec![0.0; m], OK_EG, OK_OG).unwrap();
+                assert_eq!(og.points.len(), eg.clean_points().len(), "{name}");
+                // Decke kann bei spitzen Winkeln fehlen (eigene Meldung), die
+                // Schale muss trotzdem ohne Naht bleiben
+                let (w0, w1) = match (mit_decke(eg.clone()), mit_decke(og.clone())) {
+                    (Some((a, _)), Some((b, _))) => (a, b),
+                    _ => (eg, og),
+                };
+                let (mut s0, mut s1) = (w0.solid(), w1.solid());
+                merge_seam(&mut s0, &mut s1, OK_EG);
+                let p0 = vec3(3000.0, 1.0, 0.0);
+                let (mut c0, mut c1) = (
+                    w0.section_caps(p0, vec3(1.0, 0.0, 0.0)),
+                    w1.section_caps(p0, vec3(1.0, 0.0, 0.0)),
+                );
+                merge_seam(&mut c0, &mut c1, OK_EG);
+                worst = worst.max(t.elapsed().as_secs_f64() * 1000.0);
+                for s in [&s0, &s1, &c0, &c1] {
+                    assert!(finite(s), "{name} {ref_side:?}");
+                }
+                // EG-Kopf in +2,855: nur Dämmung, die im OG weiterläuft
+                let rest: Vec<_> = s0
+                    .edges
+                    .iter()
+                    .filter(|e| (e.a.z - OK_EG).abs() < 1e-6 && (e.b.z - OK_EG).abs() < 1e-6)
+                    .collect();
+                assert!(rest.is_empty(), "{name} {ref_side:?}: {rest:?}");
+            }
+        }
+        eprintln!("Stapel je Umriss höchstens {worst:.3} ms (Debug)");
+    }
+
+    #[test]
+    fn versatz_an_zwischenpunkt() {
+        let pts = &umrisse()[10].1;
+        let eg = WallChain {
+            points: pts.clone(),
+            closed: true,
+            ref_side: RefSide::Left,
+            layers: vec![Layer::new(140.0, 2), Layer::core(175.0, 1)],
+            base: 0.0,
+            height: OK_EG,
+            joints: Default::default(),
+        };
+        assert_eq!(eg.segment_count(), 5);
+        // Fluchtende Nachbarn (Segment 0 und 1) nur gemeinsam
+        assert!(eg
+            .stacked(&[300.0, 0.0, 0.0, 0.0, 0.0], OK_EG, OK_OG)
+            .is_none());
+        let og = eg
+            .stacked(&[300.0, 300.0, 0.0, 0.0, 0.0], OK_EG, OK_OG)
+            .unwrap();
+        assert_eq!(
+            og.segment_offsets_from(&eg).unwrap(),
+            vec![300.0, 300.0, 0.0, 0.0, 0.0]
+        );
+    }
+}
