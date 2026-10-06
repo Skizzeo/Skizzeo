@@ -378,6 +378,7 @@ impl WallEdit {
             color,
             width: width * scale,
             dash: dash * scale,
+            pattern: sk_render::SOLID,
             occlude,
             round: false,
         };
@@ -387,6 +388,7 @@ impl WallEdit {
             color,
             width: d * scale,
             dash: 0.0,
+            pattern: sk_render::SOLID,
             occlude,
             round: true,
         };

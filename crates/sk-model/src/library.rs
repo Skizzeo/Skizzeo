@@ -54,6 +54,27 @@ pub struct Material {
     pub surface: SurfaceId,
 }
 
+/// Die Darstellungsverweise eines Baustoffs: Schnittstelle zwischen BIM und
+/// Darstellung (E6, Teil C). Nur sie ändert das Einstellungsfenster.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MaterialDisplay {
+    pub cut_fill: FillId,
+    pub cut_fg: PenId,
+    pub cut_bg: PenId,
+    pub surface: SurfaceId,
+}
+
+impl Material {
+    pub fn display(&self) -> MaterialDisplay {
+        MaterialDisplay {
+            cut_fill: self.cut_fill,
+            cut_fg: self.cut_fg,
+            cut_bg: self.cut_bg,
+            surface: self.surface,
+        }
+    }
+}
+
 /// Aufgabe einer Schicht im Aufbau.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayerFunction {

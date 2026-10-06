@@ -435,6 +435,7 @@ pub fn helpers(
             color,
             width: theme.size.outline * scale,
             dash: 0.0,
+            pattern: sk_render::SOLID,
             occlude: view == ViewKind::Persp,
             round: true,
         })
