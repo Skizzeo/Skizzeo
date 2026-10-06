@@ -1475,7 +1475,7 @@ impl Model {
                     run,
                     material,
                     top: LevelRef::bottom(storey),
-                    thickness: 200.0,
+                    thickness: SLAB_THICKNESS,
                     recess: 0.0,
                 }),
             ),
@@ -2066,6 +2066,17 @@ impl Model {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Geschosshöhe eines Geschosses ohne Grenzprüfung (Vorgaben des Dialogs
+    /// „Gebäude erstellen“, die der Aufrufer prüft); die Geschosse darüber
+    /// rücken mit.
+    pub fn plan_storey_height(&mut self, id: StoreyId, h: f64) {
+        if let Some(e) = self.storey(id).map(|s| s.elevation) {
+            if h.is_finite() && h > 0.0 {
+                self.move_storey_top(id, e + h);
+            }
         }
     }
 
@@ -2979,11 +2990,13 @@ const FLOOR_SEQ: u16 = 4;
 /// Standardwerte der Geschossbänder (B11, mm): Geschosshöhe EG und OG,
 /// Gründungstiefe, Deckendicke.
 pub(crate) const STOREY_HEIGHT: f64 = 2855.0;
-/// Geschosshöhe OG (B12): lichte Höhe 2,76 + Decke 0,22.
-pub(crate) const UPPER_HEIGHT: f64 = 2980.0;
+/// Geschosshöhe OG (Jörn 10:13): lichte Höhe 2,635 + Decke 0,22.
+pub(crate) const UPPER_HEIGHT: f64 = 2855.0;
 pub(crate) const FOUNDATION_DEPTH: f64 = 800.0;
-pub(crate) const FLOOR_THICKNESS: f64 = 220.0;
-const SLAB_THICKNESS: f64 = 200.0;
+pub const FLOOR_THICKNESS: f64 = 220.0;
+/// Sohlplatte neuer Gebäude (Jörn 10:13): 22 cm, die Frostschürze reicht
+/// darunter bis UK Gründung −0,80 (58 cm).
+pub const SLAB_THICKNESS: f64 = 220.0;
 /// Grenzen (G4): lichte Höhe jedes Geschosses, Schürzentiefe, größte
 /// Gründungstiefe.
 pub const MIN_CLEAR: f64 = 1000.0;
@@ -3228,8 +3241,8 @@ mod tests {
             [
                 ("GR".to_string(), -800.0, 0.0),
                 ("EG".to_string(), 0.0, 2855.0),
-                ("1. OG".to_string(), 2855.0, 5835.0),
-                ("2. OG".to_string(), 5835.0, 8815.0),
+                ("1. OG".to_string(), 2855.0, 5710.0),
+                ("2. OG".to_string(), 5710.0, 8565.0),
             ]
         );
         assert_eq!(nummern(&m, "AW-").len(), 12);

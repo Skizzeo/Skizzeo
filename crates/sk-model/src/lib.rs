@@ -39,8 +39,8 @@ pub use library::{
     MaterialLayer,
 };
 pub use model::{
-    Defaults, Model, NumberError, Project, FLOOR_PART, FOOTING_PART, MAX_FOUNDATION, MIN_CLEAR,
-    MIN_FOOTING, MIN_RECESS, SLAB_PART,
+    Defaults, Model, NumberError, Project, FLOOR_PART, FLOOR_THICKNESS, FOOTING_PART,
+    MAX_FOUNDATION, MIN_CLEAR, MIN_FOOTING, MIN_RECESS, SLAB_PART, SLAB_THICKNESS,
 };
 pub use qto::{
     floor_qto, floor_qto_of, foundation_qto, foundation_qto_of, run_qto, wall_qto, FloorQto,

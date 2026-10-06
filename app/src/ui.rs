@@ -2435,7 +2435,7 @@ mod levels_tests {
         assert_eq!(names, ["Gründung", "EG", "OG"]);
         let lines = level_lines(&ui.levels);
         let z: Vec<_> = lines.iter().map(|l| l.z).collect();
-        assert_eq!(z, [-800.0, 0.0, 2855.0, 5835.0]);
+        assert_eq!(z, [-800.0, 0.0, 2855.0, 5710.0]);
         assert_eq!(lines[3].name, "OK Decke OG");
         assert!(
             lines[1].grip.is_none() && lines[1].field.is_none(),
@@ -2447,11 +2447,11 @@ mod levels_tests {
         assert_eq!(kote_text(2855.0), "+2,855");
         assert_eq!(m_text(2635.0), "2,635");
         let l = ui.levels_layout();
-        assert!(!l.list && l.ppm == 32.0, "{l:?}");
-        // Linien von unten nach oben im Maßstab 32 px/m
+        assert!(!l.list && l.ppm == 40.0, "{l:?}");
+        // Linien von unten nach oben im Maßstab 40 px/m (Jörn 10:13: 25 % höher)
         let ys = ui.line_ys(&lines, &l);
-        assert!((ys[1] - ys[2] - 2.855 * 32.0).abs() < 1e-3);
-        assert!((ys[0] - ys[1] - 0.8 * 32.0).abs() < 1e-3);
+        assert!((ys[1] - ys[2] - 2.855 * 40.0).abs() < 1e-3);
+        assert!((ys[0] - ys[1] - 0.8 * 40.0).abs() < 1e-3);
     }
 
     /// Test 2 und 4 aus E14: OG-Griff 30 px hoch, auf 1 cm gefangen; Esc
@@ -2484,12 +2484,12 @@ mod levels_tests {
         );
         assert_eq!(
             out.level,
-            // 30 px bei 32 px/m = 937,5 mm, auf 1 cm gefangen
-            Some(LevelEvent::Move(Grip::Top(og.id), 6770.0))
+            // 30 px bei 40 px/m = 750 mm, auf 1 cm gefangen
+            Some(LevelEvent::Move(Grip::Top(og.id), 6460.0))
         );
         // Das Paneel bleibt beim Ziehen stehen, auch wenn die Werte wachsen
         let mut l = ui.levels.clone();
-        l.bands[2].top += 935.0;
+        l.bands[2].top += 750.0;
         ui.set_levels(l);
         assert_eq!(ui.rect(Panel::Levels, 1440, 32).h, h);
         let shift = Modifiers { shift: true, ..M };
@@ -2505,7 +2505,7 @@ mod levels_tests {
         assert_eq!(
             out.level,
             // mit Umschalt auf 5 cm
-            Some(LevelEvent::Move(Grip::Top(og.id), 6750.0))
+            Some(LevelEvent::Move(Grip::Top(og.id), 6450.0))
         );
         let up = Event::MouseUp {
             button: MouseButton::Left,
@@ -2587,7 +2587,7 @@ mod levels_tests {
     #[test]
     fn kleines_fenster_diagramm_oder_liste() {
         let (mut ui, _) = ui_mit_geschossen();
-        for (w, h, list) in [(900u32, 600u32, false), (900, 430, false), (900, 400, true)] {
+        for (w, h, list) in [(900u32, 600u32, false), (900, 440, false), (900, 400, true)] {
             ui.fit(1.0, w, h);
             let r = ui.rect(Panel::Levels, w, 32);
             let t = ui.rect(Panel::Tools, w, 32);

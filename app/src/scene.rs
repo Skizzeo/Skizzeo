@@ -228,7 +228,39 @@ pub struct Scene {
     /// wird (ein offener Schritt „Gebäude erstellt“), und das vorher aktive
     /// Geschoss.
     pending: Option<(BuildingId, Option<StoreyId>)>,
+    /// Vorgaben des Dialogs für dieses Gebäude.
+    draft: BuildingDraft,
 }
+
+/// Vorgaben im Dialog „Gebäude erstellen“ (Jörn 10:13, mm): lichte Höhen und
+/// Deckendicken gehen sofort in die Geschossbänder, die Plattendicke beim
+/// Schließen des Polygons in die Sohlplatte.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BuildingDraft {
+    pub clear_eg: f64,
+    pub clear_og: f64,
+    pub floor_eg: f64,
+    pub floor_og: f64,
+    pub slab: f64,
+}
+
+impl Default for BuildingDraft {
+    fn default() -> BuildingDraft {
+        BuildingDraft {
+            clear_eg: 2635.0,
+            clear_og: 2635.0,
+            floor_eg: sk_model::FLOOR_THICKNESS,
+            floor_og: sk_model::FLOOR_THICKNESS,
+            slab: sk_model::SLAB_THICKNESS,
+        }
+    }
+}
+
+/// Grenzen der Dialogfelder (mm): Decke 10–60 cm (B10), Sohlplatte 10–79 cm
+/// (die Frostschürze bleibt unter der Platte, UK −0,80).
+pub const DRAFT_FLOOR: (f64, f64) = (100.0, 600.0);
+pub const DRAFT_SLAB: (f64, f64) = (100.0, 790.0);
+pub const DRAFT_CLEAR: (f64, f64) = (sk_model::MIN_CLEAR, 10000.0);
 
 fn union(a: Option<Aabb>, b: Option<Aabb>) -> Option<Aabb> {
     match (a, b) {
@@ -288,6 +320,7 @@ impl Scene {
             theme,
             active: None,
             pending: None,
+            draft: BuildingDraft::default(),
         };
         s.rebuild_dirty(false);
         s
@@ -358,6 +391,88 @@ impl Scene {
         let b = self.model.add_building(2);
         self.pending = Some((b, self.active));
         self.active = self.model.ground_of(Some(b));
+        self.draft = BuildingDraft::default();
+        self.apply_draft();
+    }
+
+    /// Vorgaben des offenen Dialogs.
+    pub fn building_draft(&self) -> BuildingDraft {
+        self.draft
+    }
+
+    /// Ein Feld des Dialogs „Gebäude erstellen“ (mm): `lichte_eg`,
+    /// `lichte_og`, `decke_eg`, `decke_og`, `sohlplatte`. Gilt sofort im
+    /// Paneel „Geschosse“; `false` außerhalb der Grenzen oder ohne Dialog.
+    pub fn set_building_dialog_value(&mut self, field: &str, mm: f64) -> bool {
+        if self.pending.is_none() {
+            return false;
+        }
+        let ok = |(lo, hi): (f64, f64)| mm.is_finite() && mm >= lo - 1e-9 && mm <= hi + 1e-9;
+        let d = &mut self.draft;
+        let (slot, range) = match field {
+            "lichte_eg" => (&mut d.clear_eg, DRAFT_CLEAR),
+            "lichte_og" => (&mut d.clear_og, DRAFT_CLEAR),
+            "decke_eg" => (&mut d.floor_eg, DRAFT_FLOOR),
+            "decke_og" => (&mut d.floor_og, DRAFT_FLOOR),
+            "sohlplatte" => (&mut d.slab, DRAFT_SLAB),
+            _ => return false,
+        };
+        if !ok(range) {
+            return false;
+        }
+        *slot = mm;
+        self.apply_draft();
+        true
+    }
+
+    /// EG und OG des entstehenden Gebäudes: (EG, OG).
+    fn draft_storeys(&self) -> Option<(StoreyId, Option<StoreyId>)> {
+        let (b, _) = self.pending?;
+        let eg = self.model.ground_of(Some(b))?;
+        Some((eg, self.model.level_above(eg)))
+    }
+
+    /// Geschosshöhen aus den Vorgaben (lichte Höhe + Deckendicke).
+    fn apply_draft(&mut self) {
+        let d = self.draft;
+        if let Some((eg, og)) = self.draft_storeys() {
+            self.model.plan_storey_height(eg, d.clear_eg + d.floor_eg);
+            if let Some(og) = og {
+                self.model.plan_storey_height(og, d.clear_og + d.floor_og);
+            }
+        }
+    }
+
+    /// Das Polygon des entstehenden Gebäudes ist geschlossen: Deckendicken
+    /// und Plattendicke aus dem Dialog (die Geschosshöhen stehen schon).
+    fn apply_draft_parts(&mut self, eg_run: RunId) {
+        let d = self.draft;
+        let mut runs = vec![eg_run];
+        runs.extend(self.model.stack_above(eg_run));
+        for r in runs {
+            let Some(floor) = self.model.floor_of(r) else {
+                continue;
+            };
+            let st = self.model.run(r).map(|x| x.storey);
+            let ground = st.is_some_and(|s| self.model.ground_storey(s) == Some(s));
+            let t = if ground { d.floor_eg } else { d.floor_og };
+            self.model.set_floor_thickness(floor, t);
+        }
+        if let Some((slab, _)) = self.model.foundation_of(eg_run) {
+            self.model.set_slab_thickness(slab, d.slab);
+        }
+    }
+
+    /// Deckendicke aus den Vorgaben, solange das Gebäude entsteht.
+    fn draft_floor(&self, id: StoreyId) -> Option<f64> {
+        let (eg, og) = self.draft_storeys()?;
+        if id == eg {
+            Some(self.draft.floor_eg)
+        } else if Some(id) == og {
+            Some(self.draft.floor_og)
+        } else {
+            None
+        }
     }
 
     /// Bricht Dialog oder Polygon ab: nichts bleibt, kein Verlaufseintrag.
@@ -674,6 +789,9 @@ impl Scene {
             self.pending = pending;
             return None;
         }
+        if let (Some(id), Some(_)) = (run, pending) {
+            self.apply_draft_parts(id);
+        }
         if let Some(id) = run {
             for r in self.model.stack_above(id) {
                 self.mark(r);
@@ -803,7 +921,7 @@ impl Scene {
                 h,
                 (lo - e, hi - e),
             ));
-            let clear = m.clear_height(id);
+            let clear = self.draft_floor(id).map_or(m.clear_height(id), |t| h - t);
             let t = h - clear;
             l.clear.push((id, clear));
             let range = (lo - e - t, hi - e - t);

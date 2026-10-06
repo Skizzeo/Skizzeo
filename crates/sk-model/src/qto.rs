@@ -312,8 +312,8 @@ mod tests {
         (a - b).abs() < tol
     }
 
-    /// Sollwerte aus Paket B9 (Rechteck 10 × 8 m, AW 31,5, Platte 20 cm,
-    /// Schürze 35 × 60 cm).
+    /// Sollwerte aus Paket B9 (Rechteck 10 × 8 m, AW 31,5) mit Jörns
+    /// Standard 10:13: Platte 22 cm, Schürze 35 × 58 cm bis −0,80.
     #[test]
     fn gruendung_rechteck() {
         let mut m = Model::with_seed(3);
@@ -326,10 +326,10 @@ mod tests {
         assert_eq!(m.element(slab).unwrap().seq, 2);
         let (s, f) = foundation_qto(&m, r).unwrap();
         assert!(near(s.area / 1e6, 80.0, 1e-9), "{}", s.area);
-        assert!(near(s.volume / M3, 16.0, 1e-9));
+        assert!(near(s.volume / M3, 17.6, 1e-9));
         assert!(near(s.perimeter, 36000.0, 1e-6));
         assert!(near(f.length, 34600.0, 1e-6), "{}", f.length);
-        assert!(near(f.volume / M3, 7.266, 1e-9), "{}", f.volume / M3);
+        assert!(near(f.volume / M3, 7.0238, 1e-9), "{}", f.volume / M3);
         assert!(m.check().is_empty(), "{:?}", m.check());
         assert!(m.warnings(slab).is_empty());
 
@@ -338,9 +338,9 @@ mod tests {
         assert!(m.set_slab_recess(slab, 20.0));
         let (s, f) = foundation_qto(&m, r).unwrap();
         assert!(near(s.area / 1e6, 79.2816, 1e-9), "{}", s.area);
-        assert!(near(s.volume / M3, 15.85632, 1e-9));
+        assert!(near(s.volume / M3, 17.441952, 1e-9));
         assert!(near(f.length, 34440.0, 1e-6), "{}", f.length);
-        assert!(near(f.volume / M3, 7.2324, 1e-9), "{}", f.volume / M3);
+        assert!(near(f.volume / M3, 6.99132, 1e-9), "{}", f.volume / M3);
         assert!(m.set_slab_recess(slab, 0.0));
         assert!(near(
             foundation_qto(&m, r).unwrap().0.area / 1e6,

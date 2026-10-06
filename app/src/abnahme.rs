@@ -914,7 +914,7 @@ fn a15_auswahl_per_klick_in_jeder_ansicht() {
             ViewKind::Persp,
             cam3d(),
             None,
-            vec3(5000.0, 7930.0, 5835.0),
+            vec3(5000.0, 7930.0, 5710.0),
             top_og,
         ),
         (
@@ -1284,7 +1284,7 @@ fn a23_sockelruecksprung() {
     );
 }
 
-/// A24: Dicke parametrisch, von oben nach unten, Standard 20 cm.
+/// A24: Dicke parametrisch, von oben nach unten, Standard 22 cm (Jörn 10:13).
 #[test]
 fn a24_dicke_von_oben_nach_unten() {
     let mut s = Scene::with_model(Model::with_seed(24));
@@ -1292,11 +1292,11 @@ fn a24_dicke_von_oben_nach_unten() {
     let (slab, _) = sohlplatte(&s, run);
     assert_eq!(
         z_range(&s.foundation(run).unwrap().slab_solid()),
-        (-200.0, 0.0)
+        (-220.0, 0.0)
     );
-    assert_eq!(m3(s.foundation_qto(run).unwrap().0.volume), 16.0);
+    assert_eq!(m3(s.foundation_qto(run).unwrap().0.volume), 17.6);
     s.step_recess(slab, true);
-    assert_eq!(m3(s.foundation_qto(run).unwrap().0.volume), 15.8563);
+    assert_eq!(m3(s.foundation_qto(run).unwrap().0.volume), 17.442);
     s.step_recess(slab, false);
     assert!(s.edit_model("Dicke", |m| m.set_slab_thickness(slab, 250.0)));
     assert_eq!(
@@ -1305,22 +1305,23 @@ fn a24_dicke_von_oben_nach_unten() {
     );
 }
 
-/// A25: Frostschürze umlaufend unter der Platte, außen bündig, 35 × 60 cm.
+/// A25: Frostschürze umlaufend unter der Platte, außen bündig, 35 × 58 cm
+/// (−0,22 … −0,80, Jörn 10:13).
 #[test]
 fn a25_frostschuerze() {
     let mut s = Scene::with_model(Model::with_seed(25));
     let run = zeichne_rechteck(&mut s, &cam3d());
     let (slab, _) = sohlplatte(&s, run);
     let f = s.foundation(run).unwrap();
-    assert_eq!(z_range(&f.footing_solid()), (-800.0, -200.0));
+    assert_eq!(z_range(&f.footing_solid()), (-800.0, -220.0));
     let sk_model::FootingShape::Ring(inner) = &f.footing else {
         panic!("Ring erwartet");
     };
     // Innenkante 9,30 × 7,30 m
     assert_eq!(m2(sk_math::polygon::area(&inner.pts)), 67.89);
-    assert_eq!(m3(s.foundation_qto(run).unwrap().1.volume), 7.266);
+    assert_eq!(m3(s.foundation_qto(run).unwrap().1.volume), 7.0238);
     s.step_recess(slab, true);
-    assert_eq!(m3(s.foundation_qto(run).unwrap().1.volume), 7.2324);
+    assert_eq!(m3(s.foundation_qto(run).unwrap().1.volume), 6.9913);
 }
 
 /// A26: Zwei getrennte Bauteile mit eigener Kategorie, Nummer und Guid.
@@ -1385,18 +1386,18 @@ fn a27_mengen_flaeche_und_laenge() {
     let p = selection::props(&s, slab).unwrap();
     // nach Nummer, Kategorie, Geschoss, Gebäude
     assert_eq!(p.values[4], ("Fläche", "80,00 m²".to_string()));
-    assert_eq!(value(&p, "Volumen"), "16,000 m³");
+    assert_eq!(value(&p, "Volumen"), "17,600 m³");
     let cm = |p: &crate::ui::Props, f| field_cm(p, f).unwrap();
-    assert_eq!(cm(&p, crate::ui::Field::SlabThickness), "20");
+    assert_eq!(cm(&p, crate::ui::Field::SlabThickness), "22");
     let p = selection::props(&s, footing).unwrap();
     assert_eq!(p.values[4], ("Länge (Achse)", "34,60 m".to_string()));
-    assert_eq!(value(&p, "Volumen"), "7,266 m³");
+    assert_eq!(value(&p, "Volumen"), "7,024 m³");
     assert_eq!(
         (
             cm(&p, crate::ui::Field::FootingWidth),
             cm(&p, crate::ui::Field::FootingDepth)
         ),
-        ("35".into(), "60".into())
+        ("35".into(), "58".into())
     );
     assert_eq!(p.layer_set, "Stahlbeton");
     s.step_recess(slab, true);
@@ -1427,7 +1428,7 @@ fn a28_schnitt_stahlbeton_ohne_fuge() {
         .all(|v| {
             v[2] <= 1e-3
                 || (2635.0 - 1e-3..=2855.0 + 1e-3).contains(&v[2])
-                || (5615.0 - 1e-3..=5835.0 + 1e-3).contains(&v[2])
+                || (5490.0 - 1e-3..=5710.0 + 1e-3).contains(&v[2])
         });
     assert!(
         cross_below,
@@ -1446,13 +1447,13 @@ fn a28_schnitt_stahlbeton_ohne_fuge() {
             .collect::<Vec<f32>>()
     };
     assert!(
-        flat_at(-200.0, 0.0, 350.0).is_empty(),
+        flat_at(-220.0, 0.0, 350.0).is_empty(),
         "keine Fuge Platte/Schürze"
     );
     // Kontur außen kräftig: UK Schürze und UK Platte zwischen den Schürzen
     assert!(flat_at(-800.0, 0.0, 350.0).iter().all(|w| *w == cut_w));
     assert!(!flat_at(-800.0, 0.0, 350.0).is_empty());
-    assert!(flat_at(-200.0, 400.0, 9600.0).contains(&cut_w));
+    assert!(flat_at(-220.0, 400.0, 9600.0).contains(&cut_w));
     // Fuge zur Wand (OK Platte, unter dem Gasbeton) bleibt
     assert!(!flat_at(0.0, 140.0, 315.0).is_empty(), "Linie Wand/Platte");
 }
@@ -1717,7 +1718,7 @@ fn a30_gruendung_folgt_dem_haus() {
         .find(|r| t.model().foundation_of(*r).is_some());
     let tq = t.foundation_qto(trun.unwrap()).unwrap();
     assert_eq!(m2(tq.0.area), 79.2816);
-    assert_eq!(m3(tq.1.volume), 7.2324);
+    assert_eq!(m3(tq.1.volume), 6.9913);
     assert_eq!(n(&t), 2);
     assert!(t.model().check().is_empty(), "{:?}", t.model().check());
     let p2 = d.join("Haus2.szo");
@@ -1783,7 +1784,7 @@ fn a31_grosser_ruecksprung_an_kurzem_vorsprung() {
         }
         let (sp, fs) = s.foundation_qto(run).unwrap();
         assert_eq!(m2(sp.area), flaeche, "Platte, {b} × {v}");
-        assert_eq!(m3(sp.volume), m3(flaeche * 1e6 * 200.0), "Plattenvolumen");
+        assert_eq!(m3(sp.volume), m3(flaeche * 1e6 * 220.0), "Plattenvolumen");
         assert_eq!(
             (fs.length / 10.0).round() / 100.0,
             achse,
@@ -2202,15 +2203,16 @@ fn p1_zahlenfelder_der_gruendung() {
         assert!(s.undo());
     }
     let q = s.foundation_qto(run).unwrap();
-    assert_eq!((m2(q.0.area), m3(q.0.volume)), (80.0, 16.0));
-    assert_eq!((q.1.width, q.1.depth), (350.0, 600.0));
+    assert_eq!((m2(q.0.area), m3(q.0.volume)), (80.0, 17.6));
+    assert_eq!((q.1.width, q.1.depth), (350.0, 580.0));
 }
 // ---------------------------------------------------------------------------
 // A39–A47: Geschossbänder (Pakete B11, E14, G4; Lastenheft H-01–H-07, A-09)
 // Sollwerte: bim/paket-b11-ebenen.md „Fertig, wenn“ nach Jörns Festlegung
 // vom 06.10. 08:13 (von Hand nachgerechnet):
 //   Gründung −0,80 … ±0,00 · EG ±0,00 … +2,855 · OG +2,855 … +5,71
-//   lichte Höhe EG 2,635 · Decke UK +2,635 / OK +2,855 · Wände 3,50 ab EG.UK
+//   lichte Höhe EG 2,635 · Decke UK +2,635 / OK +2,855 · Wände je Geschoss
+//   (B12) · Platte 22, Schürze 58 cm (Jörn 10:13)
 //
 // Vorbereitet vor dem Einbau. Setzt die Decke (A32–A38, vorbereitet/a32-a38-decke.rs)
 // voraus und nutzt deren Hilfsfunktionen decke, decke_mengen, decke_hoehen,
@@ -2316,10 +2318,10 @@ fn innenzug(s: &Scene, aw: RunId) -> RunId {
         .expect("Innenwand")
 }
 
-const STANDARD: [f64; 6] = [14.1654, 15.7613, 3.3985, 16.5084, 16.0, 7.266];
+const STANDARD: [f64; 6] = [14.1654, 15.7613, 3.3985, 16.5084, 17.6, 7.0238];
 
 /// Mengen des Prüfhauses mit OK EG +3,00: die EG-Wände werden höher.
-const EG_300: [f64; 6] = [14.8848, 16.6286, 3.5855, 16.5084, 16.0, 7.266];
+const EG_300: [f64; 6] = [14.8848, 16.6286, 3.5855, 16.5084, 17.6, 7.0238];
 
 /// Höchster Punkt des Modells in 3D (OK OG-Decke = Krone der OG-Wände).
 fn wandkrone(s: &mut Scene) -> f64 {
@@ -2335,23 +2337,23 @@ fn a39_geschossbaender_und_bindung() {
     let (aw, iw) = haus_b11(&mut s);
     assert_eq!(band(&s, "GR"), (-800.0, 0.0));
     assert_eq!(band(&s, "EG"), (0.0, 2855.0));
-    assert_eq!(band(&s, "OG"), (2855.0, 5835.0));
+    assert_eq!(band(&s, "OG"), (2855.0, 5710.0));
     assert_eq!(lichte_hoehe(&s), 2635.0);
     assert!(s.model().check().is_empty(), "{:?}", s.model().check());
     assert_eq!(mengen_b11(&s, aw, iw), STANDARD);
     assert_eq!(decke_hoehen(&s, aw), (2635.0, 2855.0));
     let f = s.foundation(aw).unwrap();
-    assert_eq!(z_range(&f.slab_solid()), (-200.0, 0.0));
-    assert_eq!(z_range(&f.footing_solid()), (-800.0, -200.0));
+    assert_eq!(z_range(&f.slab_solid()), (-220.0, 0.0));
+    assert_eq!(z_range(&f.footing_solid()), (-800.0, -220.0));
     assert!(
-        (wandkrone(&mut s) - 5835.0).abs() < 1e-2,
+        (wandkrone(&mut s) - 5710.0).abs() < 1e-2,
         "Krone an OK OG-Decke"
     );
     // Bindung (A-09) am Verhalten: OK EG bewegt Decke, EG-Wände und das
     // OG-Band; UK Gründung bewegt nur die Frostschürze.
     kante_ziehen(&mut s, "EG.OK", &[3000.0], false);
     assert_eq!(decke_hoehen(&s, aw), (2780.0, 3000.0));
-    assert_eq!(band(&s, "OG"), (3000.0, 5980.0), "OG-Band wandert mit");
+    assert_eq!(band(&s, "OG"), (3000.0, 5855.0), "OG-Band wandert mit");
     assert_eq!(mengen_b11(&s, aw, iw), EG_300, "EG-Wände 3,00 hoch");
     assert!(s.undo());
     kante_ziehen(&mut s, "GR.UK", &[-900.0], false);
@@ -2421,7 +2423,7 @@ fn a41_masszahlen_eingeben() {
     assert_eq!(band(&s, "GR"), (-900.0, 0.0));
     assert_eq!(
         m3(s.foundation_qto(aw).unwrap().1.volume),
-        m3(12.11e6 * 700.0)
+        m3(12.11e6 * 680.0)
     );
     assert!(s.undo());
     // Deckendicke 25 cm: OK EG bleibt, lichte Höhe sinkt
@@ -2440,14 +2442,14 @@ fn a42_gruendung_und_plattendicke() {
     let (aw, iw) = haus_b11(&mut s);
     kante_ziehen(&mut s, "GR.UK", &[-820.0, -850.0], false);
     let m = mengen_b11(&s, aw, iw);
-    assert_eq!((m[4], m[5]), (16.0, 7.8715), "Schürze 0,65 tief");
+    assert_eq!((m[4], m[5]), (17.6, 7.6293), "Schürze 0,63 tief");
     assert_eq!(
         z_range(&s.foundation(aw).unwrap().footing_solid()),
-        (-850.0, -200.0)
+        (-850.0, -220.0)
     );
     assert!(s.undo());
     kante_ziehen(&mut s, "GR.UK", &[-500.0, -250.0], false);
-    assert_eq!(band(&s, "GR").0, -300.0, "klemmt bei Schürze 0,10");
+    assert_eq!(band(&s, "GR").0, -320.0, "klemmt bei Schürze 0,10");
     assert!(s.undo());
     // Plattendicke 25 cm: UK Gründung bleibt, Schürze wird kürzer
     let (slab, footing) = sohlplatte(&s, aw);
@@ -2458,7 +2460,7 @@ fn a42_gruendung_und_plattendicke() {
     assert!(s.undo());
     // Schürzentiefe als Zahl verschiebt UK Gründung (API-Annahme set_footing_depth)
     assert!(s.edit_model("Tiefe", |m| m.set_footing_depth(footing, 700.0)));
-    assert_eq!(band(&s, "GR").0, -900.0);
+    assert_eq!(band(&s, "GR").0, -920.0);
     assert!(s.model().check().is_empty(), "{:?}", s.model().check());
 }
 
@@ -2571,7 +2573,7 @@ fn a44_alte_datei_wird_umgestellt() {
         let s = Scene::with_model(loaded.model);
         assert_eq!(band(&s, "GR"), (-800.0, 0.0), "{name}");
         assert_eq!(band(&s, "EG"), (0.0, ok_eg), "{name}");
-        assert_eq!(band(&s, "OG"), (2855.0, 5835.0), "{name}");
+        assert_eq!(band(&s, "OG"), (2855.0, 5710.0), "{name}");
         assert_eq!((anzahl(&s, "AW-"), anzahl(&s, "DE-")), (8, 2), "{name}");
         let aw = s
             .model()
@@ -2581,7 +2583,10 @@ fn a44_alte_datei_wird_umgestellt() {
             .expect("EG-Zug");
         let iw = innenzug(&s, aw);
         assert_eq!(decke_hoehen(&s, aw), (ok_eg - 220.0, ok_eg), "{name}");
-        assert_eq!(mengen_b11(&s, aw, iw), STANDARD, "{name}");
+        // Alte Dateien behalten ihre Gründung: Platte 20, Schürze 60 cm
+        let mut alt = STANDARD;
+        (alt[4], alt[5]) = (16.0, 7.266);
+        assert_eq!(mengen_b11(&s, aw, iw), alt, "{name}");
         assert!(
             s.model().check().is_empty(),
             "{name}: {:?}",
@@ -2619,7 +2624,7 @@ fn a45_geschosse_speichern_und_oeffnen() {
     let t = Scene::with_model(loaded.model);
     assert_eq!(band(&t, "GR"), (-850.0, 0.0));
     assert_eq!(band(&t, "EG"), (0.0, 3000.0));
-    assert_eq!(band(&t, "OG"), (3000.0, 5980.0));
+    assert_eq!(band(&t, "OG"), (3000.0, 5855.0));
     for short in ["GR", "EG", "OG"] {
         let a = s.model().storey(geschoss(&s, short)).unwrap().guid;
         assert_eq!(
@@ -2665,20 +2670,20 @@ fn a46_ansichten_folgen() {
             .any(|v| v[9] == pattern::CONCRETE && v[2] > lo - 1e-2 && v[2] < hi + 1e-2)
     };
     let cut = view_mesh(&mut s, ViewKind::Section, sect.plane());
-    assert!((top(&cut) - 5835.0).abs() < 1e-2, "OK OG-Decke im Schnitt");
-    assert!((cross_top(&cut) - 5835.0).abs() < 1e-2, "DE-002 im Schnitt");
+    assert!((top(&cut) - 5710.0).abs() < 1e-2, "OK OG-Decke im Schnitt");
+    assert!((cross_top(&cut) - 5710.0).abs() < 1e-2, "DE-002 im Schnitt");
     assert!(concrete_in(&cut, 2635.0, 2855.0), "DE-001 im Schnitt");
     kante_ziehen(&mut s, "EG.OK", &[3200.0], false);
     let cut = view_mesh(&mut s, ViewKind::Section, sect.plane());
-    assert!((top(&cut) - 6180.0).abs() < 1e-2);
+    assert!((top(&cut) - 6055.0).abs() < 1e-2);
     assert!(
-        (cross_top(&cut) - 6180.0).abs() < 1e-2,
-        "DE-002 wandert mit auf +6,18"
+        (cross_top(&cut) - 6055.0).abs() < 1e-2,
+        "DE-002 wandert mit auf +6,055"
     );
     assert!(concrete_in(&cut, 2980.0, 3200.0), "DE-001 folgt auf +3,20");
     let front = view_mesh(&mut s, ViewKind::Front, None);
     assert!(
-        (top(&front) - 6180.0).abs() < 1e-2,
+        (top(&front) - 6055.0).abs() < 1e-2,
         "Ansicht bis OK OG-Decke"
     );
 }
@@ -2754,7 +2759,7 @@ fn a48_aktives_geschoss() {
     ui.upper_active = true;
     assert!(ui.rect(Panel::Tools, 1440, 32).h > h0, "Hinweiszeile");
     assert!(!s.ground_active());
-    assert_eq!(s.work_plane(), (3000.0, 2980.0), "UK OG und OG-Höhe");
+    assert_eq!(s.work_plane(), (3000.0, 2855.0), "UK OG und OG-Höhe");
     let c = cam3d();
     let mut t = tool(&s);
     click(&mut t, &c, vec3(20000.0, 0.0, 3000.0));
@@ -2817,6 +2822,13 @@ fn dialog_ok(s: &mut Scene) {
 
 fn dialog_abbrechen(s: &mut Scene) {
     s.cancel_building();
+}
+
+/// Ein Feld im Gebäudedialog setzen (Jörn 10:13: lichte Höhen, Deckendicken,
+/// Sohlplattendicke). Werte in mm; `false` = abgelehnt. Feldnamen:
+/// "lichte_eg", "lichte_og", "decke_eg", "decke_og", "sohlplatte".
+fn dialog_feld(s: &mut Scene, feld: &str, wert: f64) -> bool {
+    s.set_building_dialog_value(feld, wert)
 }
 
 /// Dialog mit OK, dann das Rechteck mit dem Werkzeug; das Schließen legt das
@@ -2886,7 +2898,8 @@ fn ziehen_am_fuss(s: &mut Scene, z: f64, dy: f64) {
 }
 
 const EG_SCHALE: (f64, f64) = (15.7613, 14.1654);
-const OG_SCHALE: (f64, f64) = (16.5089, 14.7856);
+// Jörn 10:13: lichte Höhe OG 2,635 wie EG, daher gleiche Schale (Wandhöhe 2,855)
+const OG_SCHALE: (f64, f64) = (15.7613, 14.1654);
 
 /// A50 (B12): Das erste Polygon erzeugt in einem Schritt das ganze Gebäude:
 /// GB-01, GR/EG/OG, FS-001, SP-001, AW-001…008, DE-001, DE-002.
@@ -2896,7 +2909,26 @@ fn a50_gebaeude_aus_einem_polygon() {
     // Dialog öffnen: Geschosse sofort da; Abbrechen lässt nichts zurück
     dialog_ok(&mut s);
     assert_eq!(gebaeude_nummern(&s), ["GB-01"]);
-    assert_eq!(band(&s, "OG"), (2855.0, 5835.0));
+    assert_eq!(band(&s, "OG"), (2855.0, 5710.0));
+    // Dialogfelder gehen live in den Geschossmanager (keine Kopie)
+    assert!(dialog_feld(&mut s, "lichte_eg", 2700.0));
+    assert_eq!(band(&s, "EG"), (0.0, 2920.0));
+    assert_eq!(band(&s, "OG"), (2920.0, 5775.0));
+    assert!(dialog_feld(&mut s, "decke_og", 250.0));
+    assert_eq!(band(&s, "OG"), (2920.0, 5805.0));
+    assert!(
+        !dialog_feld(&mut s, "lichte_og", 900.0),
+        "lichte Höhe ≥ 1,00"
+    );
+    assert!(
+        !dialog_feld(&mut s, "sohlplatte", 50.0),
+        "Plattendicke 10–100 cm"
+    );
+    assert_eq!(
+        band(&s, "GR"),
+        (-800.0, 0.0),
+        "UK Frostschürze bleibt −0,80"
+    );
     dialog_abbrechen(&mut s);
     assert!(gebaeude_nummern(&s).is_empty());
     assert!(!s.undo(), "Rückgängig-Liste unverändert leer");
@@ -2904,7 +2936,7 @@ fn a50_gebaeude_aus_einem_polygon() {
     assert_eq!(gebaeude_nummern(&s), ["GB-01"]);
     assert_eq!(band(&s, "GR"), (-800.0, 0.0));
     assert_eq!(band(&s, "EG"), (0.0, 2855.0));
-    assert_eq!(band(&s, "OG"), (2855.0, 5835.0));
+    assert_eq!(band(&s, "OG"), (2855.0, 5710.0));
     let n = |s: &Scene| ["FS-", "SP-", "AW-", "DE-", "IW-"].map(|p| anzahl(s, p));
     assert_eq!(n(&s), [1, 1, 8, 2, 0]);
     let nr = |run: RunId, i: usize| {
@@ -2952,12 +2984,12 @@ fn a51_mengen_je_geschoss() {
     assert_eq!(decke_mengen(&s, og).0, 75.0384);
     assert_eq!(decke_mengen(&s, og).1, 16.5084);
     assert_eq!(decke_hoehen(&s, eg), (2635.0, 2855.0));
-    assert_eq!(decke_hoehen(&s, og), (5615.0, 5835.0));
-    assert_eq!(lichte_og_hoehe(&s), 2760.0);
+    assert_eq!(decke_hoehen(&s, og), (5490.0, 5710.0));
+    assert_eq!(lichte_og_hoehe(&s), 2635.0);
     assert_eq!(schale(&s, eg), EG_SCHALE);
     assert_eq!(schale(&s, og), OG_SCHALE);
     let (sp, fs) = s.foundation_qto(eg).unwrap();
-    assert_eq!((m3(sp.volume), m3(fs.volume)), (16.0, 7.266));
+    assert_eq!((m3(sp.volume), m3(fs.volume)), (17.6, 7.0238));
     // EG-Innenwand netto, nicht gestapelt
     let c = cam3d();
     let set = s.model().defaults().interior_wall;
@@ -3010,13 +3042,13 @@ fn a53_hoehen_aendern() {
     assert_eq!(schale(&s, eg), EG_SCHALE, "EG unverändert");
     assert!(s.undo());
     assert!(!lichte_og(&mut s, 900.0), "lichte Höhe ≥ 1,00");
-    assert_eq!(band(&s, "OG"), (2855.0, 5835.0));
+    assert_eq!(band(&s, "OG"), (2855.0, 5710.0));
     // OK EG auf +3,00: EG-Wände 3,00, OG wandert mit, OG-Mengen gleich
     kante_ziehen(&mut s, "EG.OK", &[3000.0], false);
-    assert_eq!(band(&s, "OG"), (3000.0, 5980.0));
+    assert_eq!(band(&s, "OG"), (3000.0, 5855.0));
     assert_eq!(schale(&s, eg), (16.6286, 14.8848));
     assert_eq!(schale(&s, og), OG_SCHALE);
-    assert_eq!(decke_hoehen(&s, og), (5760.0, 5980.0));
+    assert_eq!(decke_hoehen(&s, og), (5635.0, 5855.0));
     assert!(s.model().check().is_empty(), "{:?}", s.model().check());
     assert!(s.undo());
     assert_eq!(schale(&s, eg), EG_SCHALE);
@@ -3042,7 +3074,7 @@ fn a54_schale_ohne_naht() {
     };
     assert_eq!(flach(&front, 2855.0, &quer), 0, "Naht in der Ansicht");
     assert!(
-        flach(&front, 5835.0, &quer) > 0,
+        flach(&front, 5710.0, &quer) > 0,
         "Gegenprobe: Oberkante gezeichnet"
     );
     // Schnitt A–A: in der Dämmung (x 0 … 140) keine Kante bei +2,855
@@ -3064,10 +3096,10 @@ fn a54_schale_ohne_naht() {
             v[9] == pattern::CONCRETE && v[2] > lo - 1e-2 && v[2] < hi + 1e-2 && v[2] > 0.0
         })
     };
-    assert!(in_band(2635.0, 2855.0) && in_band(5615.0, 5835.0));
+    assert!(in_band(2635.0, 2855.0) && in_band(5490.0, 5710.0));
     let top = cut.faces.iter().map(|v| v[2]).fold(f32::MIN, f32::max);
     assert!(
-        (top - 5835.0).abs() < 1e-2,
+        (top - 5710.0).abs() < 1e-2,
         "Baukörper endet an OK OG-Decke"
     );
 }
@@ -3090,9 +3122,9 @@ fn a55_innenwand_im_og() {
     let iw = s.add_wall_as(&w, sk_model::Category::InteriorWall).unwrap();
     let id = s.model().wall_at(iw, 0).unwrap();
     assert_eq!(s.model().element(id).unwrap().storey, og);
-    // 7,37 × 0,175 × 2,76
+    // 7,37 × 0,175 × 2,635
     assert!(
-        (wall_m3(&s, iw, 0) - 3.559755).abs() < 5e-5,
+        (wall_m3(&s, iw, 0) - 3.398491).abs() < 5e-5,
         "IW OG {}",
         wall_m3(&s, iw, 0)
     );
@@ -3135,7 +3167,7 @@ fn a56_datei_version_3_und_umstellung() {
     );
     let t = Scene::with_model(loaded.model);
     assert_eq!(gebaeude_nummern(&t), ["GB-01"]);
-    assert_eq!(band(&t, "OG"), (2855.0, 5835.0));
+    assert_eq!(band(&t, "OG"), (2855.0, 5710.0));
     assert_eq!(
         ["AW-", "DE-", "IW-", "SP-", "FS-"].map(|p| anzahl(&t, p)),
         [8, 2, 1, 1, 1]
@@ -3149,6 +3181,10 @@ fn a56_datei_version_3_und_umstellung() {
     let og = og_zug(&t, eg);
     assert_eq!(schale(&t, eg), EG_SCHALE);
     assert_eq!(schale(&t, og), OG_SCHALE);
+    // Alte Datei behält ihre Gründung (20 cm Platte, 60 cm Schürze), nur das
+    // fehlende OG kommt mit den neuen Standards (Koordinator 10:15)
+    let (sp, fs) = t.foundation_qto(eg).unwrap();
+    assert_eq!((m3(sp.volume), m3(fs.volume)), (16.0, 7.266));
     assert!(t.model().check().is_empty(), "{:?}", t.model().check());
     let p3 = d.join("Alt-3.szo");
     crate::document::save(t.model(), &p3).unwrap();

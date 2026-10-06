@@ -285,8 +285,8 @@ impl Theme {
                 panel_shadow: 10.0,
                 field_height: 26.0,
                 field_pad: 6.0,
-                level_px_per_m: 32.0,
-                level_px_per_m_min: 16.0,
+                level_px_per_m: 40.0,
+                level_px_per_m_min: 20.0,
                 level_handle: 10.0,
                 level_hit: 8.0,
                 level_row_min: 22.0,
@@ -383,7 +383,7 @@ mod tests {
         let z = &t.size;
         assert_eq!(
             (z.level_px_per_m, z.level_px_per_m_min, z.level_handle),
-            (32.0, 16.0, 10.0)
+            (40.0, 20.0, 10.0)
         );
         assert_eq!((z.level_hit, z.level_row_min), (8.0, 22.0));
         assert_eq!(
