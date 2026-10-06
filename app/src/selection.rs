@@ -3,7 +3,7 @@
 //! steht nicht im Rückgängig-Verlauf.
 
 use crate::camera::Camera;
-use crate::scene::{Scene, PLAN_CUT};
+use crate::scene::Scene;
 use crate::ui::{Field, FieldRow, Props, ViewKind};
 use sk_math::{vec3, Vec3};
 use sk_model::{ElementId, ElementKind, FootingShape, FoundationError, MaterialId, Model};
@@ -367,19 +367,22 @@ pub fn helpers(
             };
             let height = scene.chain(run).map_or(0.0, |c| c.height);
             let top = if view == ViewKind::Plan {
-                PLAN_CUT.min(height)
+                scene.plan_cut().min(height)
             } else {
                 height
             };
             prism(&f, 0.0, top);
         }
         (None, Some(ElementKind::Floor(f))) => {
-            // Über der Schnittebene des Grundrisses: dort nicht hervorgehoben
-            let Some(slab) = scene.floor(f.run).filter(|_| view != ViewKind::Plan) else {
+            // Über der Schnittebene des Grundrisses (EG): dort nicht hervorgehoben
+            let Some(slab) = scene.floor(f.run) else {
                 return Vec::new();
             };
             let (b, t) = slab.band();
-            prism(&slab.outline, b, t);
+            if view == ViewKind::Plan && b >= scene.plan_cut() {
+                return Vec::new();
+            }
+            prism(&slab.outline, b, t.min(scene.plan_cut()));
         }
         (None, Some(kind)) => {
             let Some(found) = m.run_of(id).and_then(|r| scene.foundation(r)) else {

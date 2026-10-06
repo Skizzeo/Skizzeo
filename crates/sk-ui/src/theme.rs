@@ -157,6 +157,15 @@ pub struct Sizes {
     pub level_handle: f32,
     pub level_hit: f32,
     pub level_row_min: f32,
+    /// Abstand des Geschossnamens vom Griff und Grundlinie der ersten
+    /// Listenzeile unter dem Titel.
+    pub level_label_gap: f32,
+    pub level_row_base: f32,
+    /// Hilfslinie der gezogenen Ebene in 3D, Schnitt und Ansichten (px).
+    pub level_guide: f32,
+    /// Maßketten: halbe Länge des Schrägstrichs und dessen Strichstärke.
+    pub dim_tick: f32,
+    pub dim_line: f32,
 }
 
 const fn rgb(r: u8, g: u8, b: u8) -> Rgba {
@@ -275,6 +284,11 @@ impl Theme {
                 level_handle: 10.0,
                 level_hit: 8.0,
                 level_row_min: 22.0,
+                level_label_gap: 6.0,
+                level_row_base: 15.0,
+                level_guide: 1.5,
+                dim_tick: 3.5,
+                dim_line: 1.2,
             },
             px_per_mm: 5.5,
         }
@@ -364,6 +378,11 @@ mod tests {
             (32.0, 16.0, 10.0)
         );
         assert_eq!((z.level_hit, z.level_row_min), (8.0, 22.0));
+        assert_eq!(
+            (z.level_label_gap, z.level_row_base, z.level_guide),
+            (6.0, 15.0, 1.5)
+        );
+        assert_eq!((z.dim_tick, z.dim_line), (3.5, 1.2));
         let blue = Rgba::rgb(40, 120, 220);
         t.set_accent(blue);
         assert_eq!((t.ui.level_line_active, t.ui.dim_text_hover), (blue, blue));

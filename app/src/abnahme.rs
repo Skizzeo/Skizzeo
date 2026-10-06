@@ -2654,3 +2654,89 @@ fn a47_paneel_geschosse_links() {
         );
     }
 }
+
+/// A48 (E14b Test 3): Klick auf „OG“ macht es aktiv. Der Grundriss schneidet
+/// dann 1 m über UK OG (+3,855) und zeigt nur noch Wände und Decke von oben;
+/// die Gründung ist nicht aktivierbar, gezeichnet wird weiter im EG.
+#[test]
+fn a48_aktives_geschoss() {
+    let mut s = Scene::with_model(Model::with_seed(48));
+    haus_b11(&mut s);
+    let (eg, og) = (geschoss(&s, "EG"), geschoss(&s, "OG"));
+    let top = |m: &Shown| m.faces.iter().map(|v| v[2]).fold(f32::MIN, f32::max);
+    assert_eq!(s.active_storey(), eg);
+    assert_eq!(s.plan_cut(), PLAN_CUT);
+    let plan = view_mesh(&mut s, ViewKind::Plan, None);
+    assert!(
+        (top(&plan) - 1000.0).abs() < 1e-2,
+        "EG: Wände bei +1,00 geschnitten"
+    );
+
+    let gr = s.levels().bands.iter().find(|b| b.foundation).unwrap().id;
+    assert!(!s.set_active_storey(gr), "Gründung nicht aktivierbar");
+    assert!(s.set_active_storey(og));
+    assert!(!s.set_active_storey(og), "schon aktiv");
+    assert_eq!(s.plan_cut(), 2855.0 + 1000.0);
+    let l = s.levels();
+    let active: Vec<_> = l
+        .bands
+        .iter()
+        .filter(|b| b.active)
+        .map(|b| b.name.as_str())
+        .collect();
+    assert_eq!(active, ["OG"]);
+    let plan = view_mesh(&mut s, ViewKind::Plan, None);
+    assert!(
+        (top(&plan) - 3500.0).abs() < 1e-2,
+        "OG: Wandkrone +3,50 unter der Schnitthöhe, nichts geschnitten"
+    );
+    assert!(
+        plan.faces.iter().any(|v| (v[2] - 2855.0).abs() < 1e-2),
+        "Decke von oben sichtbar"
+    );
+
+    // Ebene ziehen verschiebt die Schnitthöhe mit
+    kante_ziehen(&mut s, "EG.OK", &[3000.0], false);
+    assert_eq!(s.plan_cut(), 3000.0 + 1000.0);
+
+    // Oberfläche: Hinweis unter „Gebäude“, Zeichnen bleibt im EG
+    let mut ui = Ui::new(1.0, &Theme::dark());
+    ui.fit(1.0, 1440, 900);
+    let h0 = ui.rect(Panel::Tools, 1440, 32).h;
+    ui.eg_only = true;
+    assert!(ui.rect(Panel::Tools, 1440, 32).h > h0, "Hinweiszeile");
+    let c = cam3d();
+    let mut t = tool(&s);
+    click(&mut t, &c, vec3(20000.0, 0.0, 0.0));
+    click(&mut t, &c, vec3(24000.0, 0.0, 0.0));
+    let w = t.handle(&key(Key::Enter), &c, W, H, 1.0).commit.unwrap();
+    assert!(w.points.iter().all(|p| p.z == 0.0), "Wand im EG");
+}
+
+/// A49 (E14b Test 2): Beim Ziehen einer Ebene eine violette Hilfslinie in
+/// Ebenenhöhe: in 3D ein Rechteck 0,5 m um das Modell, in Schnitt und
+/// Ansichten eine waagerechte Linie, im Grundriss nichts.
+#[test]
+fn a49_hilfslinie_der_ebene() {
+    let th = Theme::dark();
+    let b = Some((vec3(0.0, 0.0, -800.0), vec3(10000.0, 8000.0, 3500.0)));
+    let z = 5710.0;
+    let r = crate::level_guide(ViewKind::Persp, b, z, 1.0, &th);
+    assert_eq!(r.len(), 4, "Rechteck");
+    for h in &r {
+        assert_eq!((h.a[2], h.b[2]), (z as f32, z as f32));
+        assert_eq!(h.color, th.interact.drag);
+        assert_eq!(h.width, th.size.level_guide);
+        assert!(!h.occlude, "auch hinter Wänden sichtbar");
+    }
+    let xs: Vec<f32> = r.iter().flat_map(|h| [h.a[0], h.b[0]]).collect();
+    assert_eq!(xs.iter().cloned().fold(f32::MAX, f32::min), -500.0);
+    assert_eq!(xs.iter().cloned().fold(f32::MIN, f32::max), 10500.0);
+    for v in [ViewKind::Section, ViewKind::Front, ViewKind::Left] {
+        let l = crate::level_guide(v, b, z, 2.0, &th);
+        assert_eq!(l.len(), 1, "{v:?}");
+        assert_eq!((l[0].a[2], l[0].b[2]), (z as f32, z as f32));
+        assert_eq!(l[0].width, 2.0 * th.size.level_guide);
+    }
+    assert!(crate::level_guide(ViewKind::Plan, b, z, 1.0, &th).is_empty());
+}

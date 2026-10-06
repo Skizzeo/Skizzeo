@@ -120,6 +120,13 @@ Maßketten:
 - Griff (Punkt links an der Linie) ziehen: die Ebene wandert mit, 3D,
   Schnitt und Ansichten folgen sofort; Fang 1 cm, mit Umschalt 5 cm; Esc
   bricht ab, ein Ziehen ist ein Rückgängig-Schritt. ±0,00 liegt fest.
+  Solange gezogen wird, zeigt eine violette Hilfslinie die Ebene im Modell
+  (in 3D ein Rechteck um das Gebäude, in Schnitt und Ansichten eine
+  waagerechte Linie). Über Griff und Linie zeigt der Mauszeiger ↕.
+- Klick auf einen Geschossnamen (EG, OG) macht das Geschoss aktiv. Der
+  Grundriss schneidet dann 1 m über dessen Unterkante; gezeichnet wird
+  weiterhin im EG („Zeichnen derzeit nur im EG“). Das aktive Geschoss ist
+  nicht in der Datei gespeichert.
 - Klick auf eine Kote oder Maßzahl öffnet ein Zahlenfeld in Metern
   (Geschosshöhe, lichte Höhe, Gründungstiefe, Koten). Ungültiges wird mit
   Grund abgelehnt: lichte Höhe mindestens 1,00 m, OK EG höchstens bis zur

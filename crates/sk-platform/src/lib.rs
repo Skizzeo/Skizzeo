@@ -110,6 +110,19 @@ pub enum WindowCommand {
     Close,
 }
 
+/// Mauszeiger über der Zeichenfläche.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Cursor {
+    #[default]
+    Arrow,
+    /// Senkrecht verschieben (Ebene ziehen).
+    SizeNS,
+    /// Klickbar (Maßzahl, Kote, Geschossname).
+    Hand,
+    /// Texteingabe.
+    IBeam,
+}
+
 /// Bereiche der eigenen Titelleiste in Pixeln, damit das System Ziehen,
 /// Doppelklick und Aero-Snap richtig behandelt.
 #[derive(Clone, Copy, Debug, Default)]
@@ -202,6 +215,12 @@ impl Surface {
         self.inner.set_caption_area(a)
     }
 
+    /// Mauszeiger über der Zeichenfläche; kostet nichts, wenn er schon gilt.
+    #[cfg(windows)]
+    pub fn set_cursor(&self, c: Cursor) {
+        self.inner.set_cursor(c)
+    }
+
     /// Fenstertitel für Taskleiste und Alt+Tab.
     #[cfg(windows)]
     pub fn set_title(&self, title: &str) {
@@ -240,6 +259,8 @@ impl Surface {
         self.inner.message(text, error)
     }
 
+    #[cfg(not(windows))]
+    pub fn set_cursor(&self, _c: Cursor) {}
     #[cfg(not(windows))]
     pub fn set_title(&self, _title: &str) {}
     #[cfg(not(windows))]

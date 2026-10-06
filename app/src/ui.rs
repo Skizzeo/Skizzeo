@@ -4,7 +4,7 @@
 
 use sk_model::{RefSide, StoreyId};
 use sk_paint::{Canvas, Path, Rgba};
-use sk_platform::{Event, Key, Modifiers, MouseButton};
+use sk_platform::{Cursor, Event, Key, Modifiers, MouseButton};
 use sk_ui::theme::{Sizes, Theme};
 use sk_ui::widgets::{self, ButtonState, FieldState, Fonts, Rect};
 
@@ -59,6 +59,8 @@ pub enum Id {
     Field(Field),
     /// Griff einer Ebene im Paneel „Geschosse“.
     Grip(Grip),
+    /// Name eines Geschosses im Paneel „Geschosse“: macht es aktiv.
+    Storey(StoreyId),
 }
 
 /// Ziehbare Ebene im Paneel „Geschosse“. ±0,00 liegt fest.
@@ -402,6 +404,8 @@ pub struct Ui {
     pub ortho: bool,
     /// Schichten der Wand, die das Werkzeug zeichnet: Farbfeld und Text (aus der Bibliothek).
     pub wall_layers: Vec<(Rgba, String)>,
+    /// Ein anderes Geschoss als das EG ist aktiv; gezeichnet wird trotzdem im EG.
+    pub eg_only: bool,
     /// Eigenschaften des gewählten Bauteils; ohne Auswahl kein Paneel.
     props: Option<Props>,
     /// Eingabe in einem Zahlenfeld.
@@ -488,13 +492,20 @@ enum Row {
     Hint(&'static str),
 }
 
-fn tool_rows(interior: bool, layers: &[(Rgba, String)]) -> Vec<Row> {
+fn tool_rows(interior: bool, layers: &[(Rgba, String)], eg_only: bool) -> Vec<Row> {
     let mut rows = vec![
         Row::Title("Werkzeuge"),
         Row::Button(Id::Building, "Gebäude"),
         Row::Button(Id::Interior, "Innenwand"),
-        Row::Label(if interior { "Innenwand" } else { "Außenwand" }),
     ];
+    if eg_only {
+        rows.push(Row::Text("Zeichnen derzeit nur im EG".into()));
+    }
+    rows.extend([Row::Label(if interior {
+        "Innenwand"
+    } else {
+        "Außenwand"
+    })]);
     rows.extend(layers.iter().map(|(c, t)| Row::Layer(*c, t.clone())));
     rows.extend([
         Row::Label("Bezugsseite"),
@@ -602,6 +613,7 @@ impl Ui {
             ref_side: RefSide::Left,
             ortho: true,
             wall_layers: Vec::new(),
+            eg_only: false,
             props: None,
             edit: None,
             images: [None, None, None, None],
@@ -628,7 +640,7 @@ impl Ui {
 
     fn rows(&self, p: Panel) -> Vec<Row> {
         match p {
-            Panel::Tools => tool_rows(self.interior, &self.wall_layers),
+            Panel::Tools => tool_rows(self.interior, &self.wall_layers, self.eg_only),
             Panel::Views => view_rows(),
             Panel::Props => self
                 .props
@@ -698,6 +710,11 @@ impl Ui {
     /// Eine Ebene wird gerade gezogen.
     pub fn level_dragging(&self) -> Option<Grip> {
         self.level_drag.map(|d| d.grip)
+    }
+
+    /// Höhe (mm) der gerade gezogenen Ebene.
+    pub fn level_drag_z(&self) -> Option<f64> {
+        self.grip_z(self.level_drag?.grip)
     }
 
     /// Bricht das Ziehen einer Ebene ab (Esc); `true`, wenn eines lief.
@@ -914,8 +931,7 @@ impl Ui {
             Id::Ref(r) => self.ref_side == r,
             Id::Ortho => self.ortho,
             Id::View(v) => self.view == v,
-            Id::Field(_) => false,
-            Id::Grip(_) => false,
+            Id::Field(_) | Id::Grip(_) | Id::Storey(_) => false,
         }
     }
 
@@ -1102,7 +1118,8 @@ impl Ui {
     fn paint_button(&self, t: &Theme, c: &mut Canvas, id: Id, b: Rect, label: &str) {
         let s = self.scale;
         let m = (self.size.panel_shadow * s).round();
-        if let Id::Grip(_) = id {
+        // Griffe und Namen stehen im Grundbild des Paneels „Geschosse“
+        if let Id::Grip(_) | Id::Storey(_) = id {
             return;
         }
         if let Id::Field(f) = id {
@@ -1386,24 +1403,29 @@ impl Ui {
         let (x0, xi, xo) = self.level_columns();
         let bands = &self.levels.bands;
         let mut out = Vec::new();
+        let mut names = Vec::new();
         let mut push = |f: Field, right: f32, base: f32| {
             out.push((Id::Field(f), self.level_text_rect(f, right, base), ""));
         };
         if l.list {
             let top = (self.size.panel_pad + LEVEL_HEAD) * s;
             let row = LEVEL_LIST_ROW * s;
+            let row_base = self.size.level_row_base * s;
             for (k, (i, b)) in bands.iter().enumerate().rev().enumerate() {
-                let base = top + k as f32 * row + 15.0 * s;
+                let base = top + k as f32 * row + row_base;
                 if let Some(f) = lines[i].field {
                     push(f, xi - 6.0 * s, base);
                 }
                 push(Field::StoreyHeight(b.id), xo, base);
+                if let Some(r) = self.storey_name_rect(b, x0, base) {
+                    names.push((Id::Storey(b.id), r, ""));
+                }
             }
             if let Some((id, _)) = self.levels.clear {
-                let base = top + bands.len() as f32 * row + 15.0 * s;
+                let base = top + bands.len() as f32 * row + row_base;
                 push(Field::ClearHeight(id), xo, base);
             }
-            let _ = x0;
+            out.extend(names);
             return out;
         }
         let ys = self.line_ys(&lines, &l);
@@ -1411,6 +1433,13 @@ impl Ui {
         for (line, &y) in lines.iter().zip(&ys) {
             if let Some(f) = line.field {
                 push(f, xi - 6.0 * s, clamp(y) - 4.0 * s);
+            }
+        }
+        // Namen der Geschosse an ihrer Unterkante (die Gründung ist keines)
+        let nx = x0 + (self.size.level_handle + self.size.level_label_gap) * s;
+        for (b, &y) in bands.iter().zip(&ys) {
+            if let Some(r) = self.storey_name_rect(b, nx, clamp(y) - 4.0 * s) {
+                names.push((Id::Storey(b.id), r, ""));
             }
         }
         for (i, b) in bands.iter().enumerate() {
@@ -1426,7 +1455,50 @@ impl Ui {
                 self.mid_base(clamp(y0), clamp(yc), self.level_px(f)),
             );
         }
+        out.extend(names);
         out
+    }
+
+    /// Klickfläche eines Geschossnamens (links `x`, Grundlinie `base`);
+    /// `None` für die Gründung.
+    fn storey_name_rect(&self, b: &Band, x: f32, base: f32) -> Option<Rect> {
+        if b.foundation {
+            return None;
+        }
+        let s = self.scale;
+        let px = self.size.font_small * s;
+        let font = if b.active {
+            self.fonts.bold.as_ref().or(self.fonts.regular.as_ref())
+        } else {
+            self.fonts.regular.as_ref()
+        };
+        let w = font.map_or(px * b.name.len() as f32 * 0.6, |f| f.width(&b.name, px));
+        let cap = font.map_or(px * 0.7, |f| f.cap_height(px));
+        Some(Rect::new(
+            x - 2.0 * s,
+            base - cap - 3.0 * s,
+            w + 4.0 * s,
+            cap + 6.0 * s,
+        ))
+    }
+
+    /// Mauszeiger für den Stand der Oberfläche: Ebene ziehen senkrecht,
+    /// Maßzahlen, Koten und Geschossnamen als klickbar, Felder als Eingabe.
+    pub fn cursor(&self) -> Cursor {
+        if self.level_drag.is_some() {
+            return Cursor::SizeNS;
+        }
+        match self.hover {
+            Some(Id::Grip(_)) => Cursor::SizeNS,
+            Some(Id::Field(f))
+                if f.is_level() && self.edit.as_ref().is_none_or(|e| e.field != f) =>
+            {
+                Cursor::Hand
+            }
+            Some(Id::Field(_)) => Cursor::IBeam,
+            Some(Id::Storey(_)) => Cursor::Hand,
+            _ => Cursor::Arrow,
+        }
     }
 
     /// Kette der lichten Höhe: Unterkante des Bandes, Unterkante der Decke.
@@ -1580,7 +1652,7 @@ impl Ui {
             let top = (z.panel_pad + LEVEL_HEAD) * s;
             let row = LEVEL_LIST_ROW * s;
             for (k, (i, b)) in self.levels.bands.iter().enumerate().rev().enumerate() {
-                let base = top + k as f32 * row + 15.0 * s;
+                let base = top + k as f32 * row + z.level_row_base * s;
                 let font = if b.active { bold.or(regular) } else { regular };
                 let col = if b.active {
                     u.level_line_active
@@ -1607,7 +1679,7 @@ impl Ui {
                     .iter()
                     .find(|b| b.id == id)
                     .map_or("", |b| b.name.as_str());
-                let base = top + self.levels.bands.len() as f32 * row + 15.0 * s;
+                let base = top + self.levels.bands.len() as f32 * row + z.level_row_base * s;
                 let txt = format!("lichte Höhe {name}");
                 widgets::text(c, regular, &txt, px_d, x0 + m, base + m, u.text_dim);
             }
@@ -1632,8 +1704,12 @@ impl Ui {
         }
         let tick = |c: &mut Canvas, x: f32, y: f32| {
             let mut p = Path::new();
-            let d = 3.5 * s;
-            p.segment((x - d + m, y + d + m), (x + d + m, y - d + m), 1.2 * s);
+            let d = z.dim_tick * s;
+            p.segment(
+                (x - d + m, y + d + m),
+                (x + d + m, y - d + m),
+                z.dim_line * s,
+            );
             c.fill(&p, u.dim_line);
         };
         let drag = self.level_drag.map(|d| d.grip);
@@ -1660,7 +1736,7 @@ impl Ui {
             } else {
                 u.text
             };
-            let nx = x0 + (z.level_handle + 6.0) * s;
+            let nx = x0 + (z.level_handle + z.level_label_gap) * s;
             widgets::text(c, font, &line.name, px, nx + m, y - 4.0 * s + m, name_col);
             if line.field.is_none() {
                 right_text(
@@ -2276,7 +2352,8 @@ mod levels_tests {
             assert!(r.y >= t.y + t.h && r.y + r.h <= h as f32, "{w}×{h}: {r:?}");
             assert_eq!(ui.levels_layout().list, list, "{w}×{h}");
             let n = ui.level_buttons().len();
-            assert_eq!(n, if list { 6 } else { 7 }, "{w}×{h}");
+            // Zahlen und die Namen von EG und OG
+            assert_eq!(n, if list { 8 } else { 9 }, "{w}×{h}");
             for (_, b, _) in ui.level_buttons() {
                 assert!(b.y >= 0.0 && b.y + b.h <= r.h, "{w}×{h}: {b:?}");
             }
@@ -2309,5 +2386,107 @@ mod levels_tests {
         let (x, y) = ((m + 120.0) as usize, (m + ys[1]).round() as usize);
         let i = (y * c.width + x) * 4;
         assert_eq!(Rgba(px[i], px[i + 1], px[i + 2], px[i + 3]), blue);
+    }
+
+    /// Mitte der Klickfläche eines Geschossnamens im Fenster.
+    fn name_at(ui: &Ui, id: StoreyId) -> Option<(f64, f64)> {
+        let r = ui.rect(Panel::Levels, 1440, 32);
+        ui.buttons(Panel::Levels)
+            .into_iter()
+            .find(|b| b.0 == Id::Storey(id))
+            .map(|(_, b, _)| {
+                (
+                    (r.x + b.x + b.w * 0.5) as f64,
+                    (r.y + b.y + b.h * 0.5) as f64,
+                )
+            })
+    }
+
+    /// E14b Test 1: Zeiger über Griff, Maßzahl, Feld in Eingabe, Name und daneben.
+    #[test]
+    fn zeiger_folgt_dem_hover() {
+        let (mut ui, _) = ui_mit_geschossen();
+        let og = band(&ui, "OG");
+        let mv = |ui: &mut Ui, (x, y): (f64, f64)| {
+            ui.handle(&Event::MouseMove { x, y, mods: M }, 1440, 32);
+            ui.cursor()
+        };
+        let g = griff(&ui, og.top);
+        assert_eq!(mv(&mut ui, g), Cursor::SizeNS);
+        assert_eq!(mv(&mut ui, (700.0, 400.0)), Cursor::Arrow, "über 3D");
+        let f = Field::StoreyHeight(og.id);
+        let r = ui.rect(Panel::Levels, 1440, 32);
+        let b = ui.field_rect(f).unwrap();
+        let at = (
+            (r.x + b.x + b.w * 0.5) as f64,
+            (r.y + b.y + b.h * 0.5) as f64,
+        );
+        assert_eq!(mv(&mut ui, at), Cursor::Hand, "Maßzahl");
+        let down = Event::MouseDown {
+            button: MouseButton::Left,
+            x: at.0,
+            y: at.1,
+            mods: M,
+        };
+        ui.handle(&down, 1440, 32);
+        assert!(ui.edit.is_some());
+        let b = ui.field_rect(f).unwrap();
+        let at = (
+            (r.x + b.x + b.w * 0.5) as f64,
+            (r.y + b.y + b.h * 0.5) as f64,
+        );
+        assert_eq!(mv(&mut ui, at), Cursor::IBeam, "Feld in Eingabe");
+        ui.key(Key::Escape, true, M);
+        let n = name_at(&ui, og.id).unwrap();
+        assert_eq!(mv(&mut ui, n), Cursor::Hand, "Name");
+        // Beim Ziehen gilt der Zeiger auch außerhalb des Paneels
+        let (x, y) = griff(&ui, og.top);
+        mv(&mut ui, (x, y));
+        let down = Event::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            mods: M,
+        };
+        ui.handle(&down, 1440, 32);
+        assert_eq!(mv(&mut ui, (700.0, 100.0)), Cursor::SizeNS);
+        assert!(ui.level_drag_z().is_some());
+    }
+
+    /// E14b Test 3 (Oberfläche): Klick auf „OG“ meldet das Geschoss, die
+    /// Gründung hat keinen klickbaren Namen.
+    #[test]
+    fn klick_auf_geschossnamen() {
+        let (mut ui, mut s) = ui_mit_geschossen();
+        let og = band(&ui, "OG");
+        assert!(name_at(&ui, band(&ui, "Gründung").id).is_none());
+        let (x, y) = name_at(&ui, og.id).unwrap();
+        let mut clicked = None;
+        for e in [
+            Event::MouseMove { x, y, mods: M },
+            Event::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                mods: M,
+            },
+            Event::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+                mods: M,
+            },
+        ] {
+            clicked = clicked.or(ui.handle(&e, 1440, 32).clicked);
+        }
+        assert_eq!(clicked, Some(Id::Storey(og.id)));
+        assert!(s.set_active_storey(og.id));
+        ui.set_levels(s.levels());
+        assert!(band(&ui, "OG").active && !band(&ui, "EG").active);
+        // Auch in der Liste (kleines Fenster)
+        ui.fit(1.0, 900, 400);
+        assert!(ui.levels_layout().list);
+        assert!(name_at(&ui, og.id).is_some());
+        assert!(name_at(&ui, band(&ui, "Gründung").id).is_none());
     }
 }

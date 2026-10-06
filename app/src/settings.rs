@@ -77,7 +77,7 @@ const F4_ROLES: [F4Role; 10] = [
     ("interact.shadow_band", |t| &mut t.interact.shadow_band),
 ];
 
-const SIZE_ROLES: [SizeRole; 18] = [
+const SIZE_ROLES: [SizeRole; 23] = [
     ("corner_radius", |t| &mut t.size.corner_radius),
     ("font", |t| &mut t.size.font),
     ("font_small", |t| &mut t.size.font_small),
@@ -96,6 +96,11 @@ const SIZE_ROLES: [SizeRole; 18] = [
     ("level_handle", |t| &mut t.size.level_handle),
     ("level_hit", |t| &mut t.size.level_hit),
     ("level_row_min", |t| &mut t.size.level_row_min),
+    ("level_label_gap", |t| &mut t.size.level_label_gap),
+    ("level_row_base", |t| &mut t.size.level_row_base),
+    ("level_guide", |t| &mut t.size.level_guide),
+    ("dim_tick", |t| &mut t.size.dim_tick),
+    ("dim_line", |t| &mut t.size.dim_line),
 ];
 
 /// Grundschema zu einem Namen.

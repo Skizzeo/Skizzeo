@@ -176,6 +176,50 @@ fn ground_line(
     }]
 }
 
+/// Hilfslinie der gezogenen Ebene in Höhe `z`: in 3D ein Rechteck um den
+/// Grundriss des Modells (0,5 m Überstand), in Schnitt und Ansichten eine
+/// waagerechte Linie wie die Geländelinie, im Grundriss nichts.
+fn level_guide(
+    v: ViewKind,
+    bounds: Option<(Vec3, Vec3)>,
+    z: f64,
+    scale: f32,
+    theme: &Theme,
+) -> Vec<sk_render::Helper> {
+    let (lo, hi) = bounds.unwrap_or((vec3(-2000.0, -2000.0, 0.0), vec3(12000.0, 10000.0, 0.0)));
+    let line = |a: Vec3, b: Vec3| sk_render::Helper {
+        a: a.to_f32(),
+        b: b.to_f32(),
+        color: theme.interact.drag,
+        width: theme.size.level_guide * scale,
+        dash: 0.0,
+        occlude: false,
+        round: true,
+    };
+    match v {
+        ViewKind::Plan => Vec::new(),
+        ViewKind::Persp => {
+            let m = 500.0;
+            let (x0, y0, x1, y1) = (lo.x - m, lo.y - m, hi.x + m, hi.y + m);
+            let c = [
+                vec3(x0, y0, z),
+                vec3(x1, y0, z),
+                vec3(x1, y1, z),
+                vec3(x0, y1, z),
+            ];
+            (0..4).map(|i| line(c[i], c[(i + 1) % 4])).collect()
+        }
+        ViewKind::Left | ViewKind::Right => {
+            let m = 3000.0;
+            vec![line(vec3(lo.x, lo.y - m, z), vec3(lo.x, hi.y + m, z))]
+        }
+        _ => {
+            let m = 3000.0;
+            vec![line(vec3(lo.x - m, lo.y, z), vec3(hi.x + m, lo.y, z))]
+        }
+    }
+}
+
 /// 3D-Kamera schräg von vorne links, die das ganze Modell zeigt.
 fn fit_perspective(lo: Vec3, hi: Vec3) -> Camera {
     let center = (lo + hi) * 0.5;
@@ -323,6 +367,11 @@ impl App {
     /// Paneel „Geschosse“ an das Modell angleichen. Beim Ziehen wird nur sein
     /// Bild erneuert, die Größe bleibt bis zum Loslassen.
     fn sync_levels(&mut self) {
+        let eg_only = self.scene.active_storey() != self.scene.model().defaults().storey;
+        if eg_only != self.ui.eg_only {
+            self.ui.eg_only = eg_only;
+            self.overlay_dirty = true;
+        }
         if self.ui.set_levels(self.scene.levels()) {
             match self.ui.level_dragging() {
                 Some(g) => self.dirty_buttons.push(Id::Grip(g)),
@@ -548,6 +597,15 @@ impl App {
             Id::Ref(r) => self.tool.ref_side = r,
             Id::Ortho => self.tool.ortho = !self.tool.ortho,
             Id::View(v) => self.set_view(v),
+            Id::Storey(st) => {
+                if self.scene.set_active_storey(st) {
+                    // Nur der Grundriss hängt vom aktiven Geschoss ab
+                    if self.ui.view == ViewKind::Plan {
+                        self.upload_model();
+                    }
+                    self.sync_levels();
+                }
+            }
             // Zahlenfelder melden sich über `UiOut::submit`, Griffe über `UiOut::level`
             Id::Field(_) | Id::Grip(_) => {}
         }
@@ -1245,6 +1303,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         if a.w > 0 {
             a.paint_buttons(&surface);
         }
+        surface.set_cursor(a.ui.cursor());
 
         if a.nav.is_animating() {
             let now = std::time::Instant::now();
@@ -1263,7 +1322,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             let t_mesh = Instant::now();
             let drawing = a.ui.view != ViewKind::Persp;
             let preview = match (a.tool.preview(), a.ui.view) {
-                (Some(c), ViewKind::Plan) => Some(scene::mesh_of(&c.solid_cut_at(scene::PLAN_CUT))),
+                (Some(c), ViewKind::Plan) => {
+                    Some(scene::mesh_of(&c.solid_cut_at(a.scene.plan_cut())))
+                }
                 (Some(c), _) => Some(scene::mesh_of(&c.solid())),
                 (None, _) => None,
             };
@@ -1288,6 +1349,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 helpers.extend(selection::helpers(
                     &a.scene, id, a.ui.view, plane, scale, &a.theme,
                 ));
+            }
+            if let Some(z) = a.ui.level_drag_z() {
+                helpers.extend(level_guide(a.ui.view, a.scene.bounds(), z, scale, &a.theme));
             }
             helpers.extend(a.edit.helpers(&a.scene, &a.cam, scale, !drawing, &a.theme));
             helpers.extend(a.tool.helpers(&a.cam, scale, &a.theme));

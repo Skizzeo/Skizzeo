@@ -7,7 +7,8 @@
 #![allow(non_snake_case, non_camel_case_types, clippy::upper_case_acronyms)]
 
 use crate::{
-    CaptionArea, Config, Event, FileFilter, Key, Modifiers, MouseButton, SaveAnswer, WindowCommand,
+    CaptionArea, Config, Cursor, Event, FileFilter, Key, Modifiers, MouseButton, SaveAnswer,
+    WindowCommand,
 };
 use std::cell::{Cell, RefCell};
 use std::ffi::{c_char, c_void};
@@ -192,6 +193,10 @@ extern "system" {
     fn ShowWindow(h: HWND, cmd: i32) -> BOOL;
     fn GetDC(h: HWND) -> HDC;
     fn LoadCursorW(inst: HINSTANCE, name: *const u16) -> HCURSOR;
+    fn SetCursor(c: HCURSOR) -> HCURSOR;
+    fn GetCursorPos(p: *mut POINT) -> BOOL;
+    fn WindowFromPoint(p: POINT) -> HWND;
+    fn GetCapture() -> HWND;
     fn GetClientRect(h: HWND, r: *mut RECT) -> BOOL;
     fn ScreenToClient(h: HWND, p: *mut POINT) -> BOOL;
     fn SetCapture(h: HWND) -> HWND;
@@ -255,6 +260,7 @@ const WM_ACTIVATE: u32 = 0x0006;
 const WM_PAINT: u32 = 0x000F;
 const WM_CLOSE: u32 = 0x0010;
 const WM_ERASEBKGND: u32 = 0x0014;
+const WM_SETCURSOR: u32 = 0x0020;
 const WM_GETMINMAXINFO: u32 = 0x0024;
 const WM_SETICON: u32 = 0x0080;
 const WM_NCCALCSIZE: u32 = 0x0083;
@@ -278,6 +284,8 @@ const WM_ENTERSIZEMOVE: u32 = 0x0231;
 const WM_EXITSIZEMOVE: u32 = 0x0232;
 const WM_DPICHANGED: u32 = 0x02E0;
 const WM_APP_QUIT: u32 = 0x8001;
+/// Der Zeichenthread hat einen anderen Mauszeiger gewählt.
+const WM_APP_CURSOR: u32 = 0x8002;
 
 const SC_MINIMIZE: usize = 0xF020;
 const SC_MAXIMIZE: usize = 0xF030;
@@ -334,6 +342,9 @@ const OFN_FILEMUSTEXIST: u32 = 0x0000_1000;
 const OFN_EXPLORER: u32 = 0x0008_0000;
 const COINIT_APARTMENTTHREADED: u32 = 0x2;
 const IDC_ARROW: usize = 32512;
+const IDC_IBEAM: usize = 32513;
+const IDC_SIZENS: usize = 32645;
+const IDC_HAND: usize = 32649;
 
 const PFD_DOUBLEBUFFER: u32 = 0x0001;
 const PFD_DRAW_TO_WINDOW: u32 = 0x0004;
@@ -367,6 +378,8 @@ struct Shared {
     buttons_width: AtomicU32,
     /// Der Nutzer zieht gerade an Rand oder Titelleiste (Windows-Größeziehschleife).
     sizing: AtomicBool,
+    /// Gewählter Mauszeiger (Index in [`WndState::cursors`]).
+    cursor: AtomicU32,
     /// Größe des zuletzt gezeigten Bildes (0, 0: noch keines).
     presented: Mutex<(u32, u32)>,
     presented_cv: Condvar,
@@ -407,6 +420,27 @@ struct WndState {
     shared: Arc<Shared>,
     tracking_leave: bool,
     buttons_down: u32,
+    /// Systemzeiger in der Reihenfolge von [`Cursor`], einmal geladen.
+    cursors: [HCURSOR; 4],
+}
+
+fn cursor_index(c: Cursor) -> u32 {
+    match c {
+        Cursor::Arrow => 0,
+        Cursor::SizeNS => 1,
+        Cursor::Hand => 2,
+        Cursor::IBeam => 3,
+    }
+}
+
+/// Setzt den gewählten Zeiger.
+unsafe fn apply_cursor() {
+    STATE.with(|s| {
+        if let Some(s) = s.borrow().as_ref() {
+            let i = s.shared.cursor.load(Ordering::Relaxed) as usize;
+            SetCursor(s.cursors[i.min(3)]);
+        }
+    });
 }
 
 thread_local! {
@@ -601,6 +635,26 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             });
             // Nach dem Ziehen einmal neu zeichnen, wieder mit Bildsynchronisation
             send(Event::Redraw);
+            0
+        }
+        // Nur über der Zeichenfläche; Rand und Titelleiste behandelt das System
+        WM_SETCURSOR if lp & 0xFFFF == HTCLIENT => {
+            apply_cursor();
+            1
+        }
+        WM_APP_CURSOR => {
+            // Sofort tauschen, wenn die Maus über der Zeichenfläche steht oder
+            // gefangen ist (beim Ziehen kommt kein WM_SETCURSOR)
+            let mut p = POINT::default();
+            GetCursorPos(&mut p);
+            let captured = GetCapture() == hwnd;
+            let over = WindowFromPoint(p) == hwnd && {
+                let l = ((p.x as u16 as u32) | ((p.y as u16 as u32) << 16)) as LPARAM;
+                SendMessageW(hwnd, WM_NCHITTEST, 0, l) == HTCLIENT
+            };
+            if captured || over {
+                apply_cursor();
+            }
             0
         }
         WM_ERASEBKGND => 1,
@@ -974,6 +1028,15 @@ impl Surface {
         }
     }
 
+    pub fn set_cursor(&self, c: Cursor) {
+        let i = cursor_index(c);
+        if self.shared.cursor.swap(i, Ordering::Relaxed) != i {
+            unsafe {
+                PostMessageW(self.hwnd as HWND, WM_APP_CURSOR, 0, 0);
+            }
+        }
+    }
+
     pub fn set_caption_area(&self, a: CaptionArea) {
         self.shared
             .caption_height
@@ -1080,6 +1143,7 @@ where
             caption_height: AtomicU32::new(0),
             buttons_width: AtomicU32::new(0),
             sizing: AtomicBool::new(false),
+            cursor: AtomicU32::new(0),
             presented: Mutex::new((0, 0)),
             presented_cv: Condvar::new(),
         });
@@ -1089,6 +1153,8 @@ where
                 shared: shared.clone(),
                 tracking_leave: false,
                 buttons_down: 0,
+                cursors: [IDC_ARROW, IDC_SIZENS, IDC_HAND, IDC_IBEAM]
+                    .map(|c| LoadCursorW(null_mut(), c as *const u16)),
             })
         });
 
