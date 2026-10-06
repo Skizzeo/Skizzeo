@@ -123,6 +123,7 @@ impl WallTool {
 
     fn chain(&self, points: Vec<Vec3>, closed: bool) -> WallChain {
         WallChain {
+            base: 0.0,
             points,
             closed,
             ref_side: self.ref_side,

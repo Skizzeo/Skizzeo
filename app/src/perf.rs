@@ -35,6 +35,7 @@ fn town(n: usize, segs: usize) -> Scene {
             })
             .collect();
         let w = WallChain {
+            base: 0.0,
             points: pts,
             closed: true,
             ref_side: RefSide::Left,
@@ -191,6 +192,7 @@ fn town_with_interior(n: usize) -> Scene {
         let (ox, oy) = ((i % side) as f64 * 15000.0, (i / side) as f64 * 15000.0);
         let p = |x: f64, y: f64| vec3(ox + x, oy + y, 0.0);
         let wall = |points, closed, ref_side| WallChain {
+            base: 0.0,
             points,
             closed,
             ref_side,
@@ -315,6 +317,7 @@ fn perf_attribut_aendern() {
 fn storey(s: &mut Scene, ox: f64, oy: f64, height: f64) {
     let p = |x: f64, y: f64| vec3(ox + x, oy + y, 0.0);
     let wall = |points, closed, ref_side| WallChain {
+        base: 0.0,
         points,
         closed,
         ref_side,
@@ -376,6 +379,7 @@ fn storey(s: &mut Scene, ox: f64, oy: f64, height: f64) {
 fn annex(s: &mut Scene, ox: f64, oy: f64) {
     let p = |x: f64, y: f64| vec3(ox + x, oy + y, 0.0);
     let wall = |points, closed, ref_side| WallChain {
+        base: 0.0,
         points,
         closed,
         ref_side,

@@ -507,7 +507,11 @@ impl WallChain {
             } else {
                 None
             };
-            let next = if closed || j < n - 1 { Some(j % m) } else { None };
+            let next = if closed || j < n - 1 {
+                Some(j % m)
+            } else {
+                None
+            };
             let p = match (prev, next) {
                 (Some(a), Some(b)) => {
                     let c = cross2(dirs[a], dirs[b]);
