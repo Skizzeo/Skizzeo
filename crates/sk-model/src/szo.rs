@@ -142,6 +142,8 @@ pub struct Record {
     pub line: usize,
     pub section: String,
     fields: Vec<(String, String, Cell<bool>)>,
+    /// Unbekannte Werte, für die ein Ersatz gilt (neuere Dateien).
+    replaced: Cell<usize>,
 }
 
 impl Record {
@@ -209,7 +211,14 @@ impl Record {
             line,
             section,
             fields,
+            replaced: Cell::new(0),
         }))
+    }
+
+    /// Unbekannte Angaben nach dem Lesen: Schlüssel, die kein Leser abgefragt
+    /// hat, und Werte, für die ein Ersatz gilt.
+    pub fn unknown(&self) -> usize {
+        self.fields.iter().filter(|f| !f.2.get()).count() + self.replaced.get()
     }
 
     /// Wert zu `key`, falls vorhanden.
@@ -407,6 +416,26 @@ fn ref_side(r: RefSide) -> &'static str {
         RefSide::Right => "right",
         RefSide::Center => "center",
     }
+}
+
+/// Wie [`keyword`], ein unbekanntes Wort (aus einer neueren Fassung) gilt
+/// aber als `fallback` und wird als unbekannte Angabe gezählt.
+pub(crate) fn keyword_or<T: Copy>(
+    r: &Record,
+    key: &str,
+    all: &[T],
+    name: impl Fn(T) -> &'static str,
+    fallback: T,
+) -> Result<T, LoadError> {
+    let v = r.get(key)?;
+    Ok(all
+        .iter()
+        .copied()
+        .find(|&x| name(x) == v)
+        .unwrap_or_else(|| {
+            r.replaced.set(r.replaced.get() + 1);
+            fallback
+        }))
 }
 
 pub(crate) fn keyword<T: Copy>(
@@ -1485,7 +1514,14 @@ pub(crate) fn read_material(
     Ok(Material {
         guid: r.guid("guid")?,
         name: r.get("name")?.to_string(),
-        category: keyword(r, "cat", &MAT_CATEGORIES, mat_category)?,
+        // Unbekannte Art (neuere Fassung): wie Mauerwerk, die Zeile bleibt
+        category: keyword_or(
+            r,
+            "cat",
+            &MAT_CATEGORIES,
+            mat_category,
+            MatCategory::Masonry,
+        )?,
         priority: r.int("prio")?,
         density: r.f64("rho")?,
         lambda,

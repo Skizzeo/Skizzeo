@@ -32,6 +32,58 @@ pub struct Company {
     broken: bool,
 }
 
+/// Schluss des Hinweises auf Fremdes aus einer neueren Fassung; er gehört
+/// in die Statuszeile, nicht in einen Dialog ([`quiet`]).
+const UNKNOWN_TAIL: &str = "unbekannte Angaben übersprungen, alles andere ist geladen.";
+
+/// Hinweis für die Statuszeile statt eines Dialogs?
+pub fn quiet(hint: &str) -> bool {
+    hint.ends_with(UNKNOWN_TAIL)
+}
+
+/// Wo sich Skizzeo merkt, welche Fassungen eines Firmenkatalogs schon einen
+/// Hinweis bekamen: beim Nutzer, sonst neben der Datei.
+fn seen_list(path: &Path) -> PathBuf {
+    #[cfg(not(test))]
+    if let Some(a) = std::env::var_os("APPDATA") {
+        return PathBuf::from(a)
+            .join("Skizzeo")
+            .join("firmenkatalog-hinweise.txt");
+    }
+    path.with_extension("szk-hinweise")
+}
+
+/// FNV-1a über den Inhalt: erkennt eine neue Fassung der Datei.
+fn fingerprint(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf29ce484222325, |h, b| {
+        (h ^ *b as u64).wrapping_mul(0x100000001b3)
+    })
+}
+
+/// Erster Blick auf diese Fassung der Datei (Pfad und Inhalt)? Dann wird
+/// sie gemerkt. Ohne lesbare Liste gilt: ja.
+fn first_time(path: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(path) else {
+        return true;
+    };
+    let key = format!("{:016x} {}", fingerprint(&bytes), path.display());
+    let list = seen_list(path);
+    let old = std::fs::read_to_string(&list).unwrap_or_default();
+    if old.lines().any(|l| l == key) {
+        return false;
+    }
+    // Die letzten Einträge genügen
+    let mut lines: Vec<&str> = old.lines().collect();
+    let skip = lines.len().saturating_sub(99);
+    lines.drain(..skip);
+    lines.push(&key);
+    if let Some(dir) = list.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&list, lines.join("\n") + "\n");
+    true
+}
+
 fn modified(p: &Path) -> Option<SystemTime> {
     std::fs::metadata(p).and_then(|m| m.modified()).ok()
 }
@@ -74,8 +126,14 @@ impl Company {
                 self.stamp = modified(&self.path);
                 match read_szk(&text) {
                     Ok(lib) => {
+                        let unknown = lib.foreign.unknown;
                         self.lib = lib;
-                        self.add_stock()
+                        let mut hints = self.add_stock();
+                        // Fremdes aus einer neueren Fassung: einmal je Fassung der Datei
+                        if unknown > 0 && first_time(&self.path) {
+                            hints.push(format!("Firmenkatalog: {unknown} {UNKNOWN_TAIL}"));
+                        }
+                        hints
                     }
                     Err(e) => {
                         self.lib = Library::standard();
@@ -111,6 +169,7 @@ impl Company {
     /// Ergänzt neue Werkstypen (K4) und schreibt den Katalog zurück, damit
     /// der Hinweis nur einmal kommt.
     fn add_stock(&mut self) -> Vec<String> {
+        let before = write_szk(&self.lib);
         let (added, switched) = self.lib.add_stock();
         if self.lib.stock.is_empty() {
             return Vec::new();
@@ -125,8 +184,10 @@ impl Company {
         if switched {
             hints.push("Firmenkatalog: Standard-Außenwand ist jetzt AW-36.".into());
         }
+        // Nur bei echter Ergänzung schreiben: die Datei einer anderen Fassung
+        // bleibt sonst bytegleich (Reihenfolge, fremde Zeilen)
         let text = write_szk(&self.lib);
-        if std::fs::read_to_string(&self.path).is_ok_and(|t| t != text) {
+        if text != before {
             match write_atomic(&self.path, &text) {
                 Ok(()) => self.stamp = modified(&self.path),
                 Err(e) => hints.push(format!(

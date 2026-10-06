@@ -8749,3 +8749,504 @@ mod uebergaenge {
         assert_eq!(netz(&mut s2), ohne);
     }
 }
+
+// Abnahmetests Firmenkatalog-Datei .szk: Rundlauf mit allen
+// Baustoffkategorien (A124) und alte .szk aus K2/K3 verlustfrei (A125).
+// Anlass: Jörn 19:20, „firmenkatalog.szk nicht lesbar (Zeile 13: [material]:
+// „cat“ ist kein gültiger Wert (Schlüsselwort))“.
+// Spezifikation: test/abnahme-wandtypen.md (A124, A125).
+//
+// Einbau: als `mod szk_rundlauf { use super::*; … }` ans Ende von
+// app/src/abnahme.rs. Die alte Datei `vorbereitet/a125-firmenkatalog-k2.szk`
+// als `app/src/abnahme_firmenkatalog_k2.szk` daneben legen. Sie ist mit
+// c23fb08 geschrieben (137fca7 schreibt bytegleich): Library::standard() des
+// alten Stands, AW-31,5 umbenannt in „AW 31,5 Büro“, λ von „Dämmung (WDVS)“
+// von Hand auf 0,12, Gasbeton ohne λ. Nutzt aus abnahme.rs: test_dir.
+// Keine angenommenen Namen.
+mod szk_rundlauf {
+    use super::*;
+
+    use sk_model::catalog::{read_szk, write_szk, Library};
+    use sk_model::{MatCategory, Model};
+
+    const SZK_K2: &str = include_str!("abnahme_firmenkatalog_k2.szk");
+
+    fn laden(p: &std::path::Path) -> (crate::catalog::Company, Vec<String>) {
+        crate::catalog::Company::load(p, true)
+    }
+
+    fn baustoff<'a>(lib: &'a Library, name: &str) -> &'a sk_model::Material {
+        lib.materials
+            .iter()
+            .find(|(_, x)| x.name == name)
+            .unwrap_or_else(|| panic!("Baustoff {name} fehlt"))
+            .1
+    }
+
+    fn typ_code<'a>(lib: &'a Library, code: &str) -> Option<&'a sk_model::LayerSet> {
+        lib.types
+            .iter()
+            .find(|(_, t)| t.code == code)
+            .map(|(_, t)| t)
+    }
+
+    /// A124: Der Startbestand (mit Luft) und je ein Baustoff jeder Kategorie aus
+    /// `MatCategory::ALL` (auch Holz und Luft) plus „Randdämmung“ (Dämmung,
+    /// λ 0,035): schreiben → lesen ergibt dieselbe Bibliothek, schreiben →
+    /// lesen → schreiben denselben Text. Über die Datei (Company::load): kein
+    /// Hinweis, nichts verloren, die Datei bleibt bytegleich.
+    #[test]
+    fn a124_szk_rundlauf_alle_baustoffkategorien() {
+        let mut m = Model::with_seed(124);
+        let mut lib = Library::standard();
+        assert!(
+            lib.materials
+                .iter()
+                .any(|(_, x)| x.category == MatCategory::Air),
+            "Startbestand mit Luft (AW-49)"
+        );
+        let vorlage = lib.materials.iter().next().unwrap().1.clone();
+        for (i, cat) in MatCategory::ALL.iter().enumerate() {
+            let mut x = vorlage.clone();
+            x.guid = m.new_guid();
+            x.name = format!("Prüfbaustoff {i}");
+            x.category = *cat;
+            x.lambda = Some(0.5 + i as f64 / 100.0);
+            lib.materials.insert(x);
+        }
+        let mut rd = vorlage.clone();
+        rd.guid = m.new_guid();
+        rd.name = "Randdämmung".into();
+        rd.category = MatCategory::Insulation;
+        rd.lambda = Some(0.035);
+        lib.materials.insert(rd);
+
+        let text = write_szk(&lib);
+        assert!(text.contains("cat=air"), "Luft steht in der Datei");
+        let zurueck = read_szk(&text).unwrap_or_else(|e| panic!("lesbar: {e}"));
+        assert_eq!(zurueck, lib, "schreiben → lesen");
+        assert_eq!(write_szk(&zurueck), text, "schreiben → lesen → schreiben");
+        for (i, cat) in MatCategory::ALL.iter().enumerate() {
+            let x = baustoff(&zurueck, &format!("Prüfbaustoff {i}"));
+            assert_eq!((x.category, x.lambda), (*cat, Some(0.5 + i as f64 / 100.0)));
+        }
+        let r = baustoff(&zurueck, "Randdämmung");
+        assert_eq!(
+            (r.category, r.lambda),
+            (MatCategory::Insulation, Some(0.035))
+        );
+
+        // Über die Datei wie beim Start
+        let d = test_dir("a124");
+        let p = d.join("firmenkatalog.szk");
+        std::fs::write(&p, &text).unwrap();
+        let (c, h) = laden(&p);
+        assert!(h.is_empty(), "kein Hinweis: {h:?}");
+        assert_eq!(c.library(), &lib, "nichts verloren");
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            text,
+            "Datei unberührt"
+        );
+        // Ein zweiter Start liest die Datei ebenso
+        let (c2, h2) = laden(&p);
+        assert!(h2.is_empty(), "{h2:?}");
+        assert_eq!(c2.library(), &lib);
+    }
+
+    /// A125: Eine .szk aus K2/K3 (137fca7/c23fb08, ohne [stock], ohne Luft) liest
+    /// der neue Stand verlustfrei: alle Guids da, Büroname, Schichten, Standards
+    /// und das von Hand gesetzte λ 0,12 bleiben; jede Zeile der alten Datei steht
+    /// unverändert im neu geschriebenen Text. Über die Datei: einmal der Hinweis
+    /// „Werkstypen ergänzt“, Büroname und λ 0,12 bleiben, fehlendes λ (Gasbeton)
+    /// wird 0,09, Standard AW-36 (K4). Danach ist die Datei für den neuen Stand
+    /// wieder lesbar, der zweite Start gibt keinen Hinweis.
+    #[test]
+    fn a125_alte_szk_verlustfrei() {
+        assert!(SZK_K2.starts_with("SZK 1\n") && !SZK_K2.contains("[stock]"));
+        let lib = read_szk(SZK_K2).unwrap_or_else(|e| panic!("alte .szk lesbar: {e}"));
+        // Jede Zeile der alten Datei bleibt beim Zurückschreiben erhalten
+        let neu = write_szk(&lib);
+        for l in SZK_K2.lines().filter(|l| l.starts_with('[')) {
+            assert!(neu.lines().any(|n| n == l), "verloren: {l}");
+        }
+        assert_eq!(read_szk(&neu).unwrap(), lib, "Rundlauf");
+        let aw = typ_code(&lib, "AW-31,5").expect("AW-31,5");
+        assert_eq!(aw.name, "AW 31,5 Büro");
+        assert_eq!(
+            aw.layers.iter().map(|l| l.thickness).collect::<Vec<_>>(),
+            [140.0, 175.0]
+        );
+        assert_eq!(baustoff(&lib, "Dämmung (WDVS)").lambda, Some(0.12));
+        assert_eq!(
+            lib.default_exterior
+                .and_then(|id| lib.types.get(id))
+                .map(|t| t.code.as_str()),
+            Some("AW-31,5")
+        );
+        assert_eq!(
+            lib.default_interior
+                .and_then(|id| lib.types.get(id))
+                .map(|t| t.code.as_str()),
+            Some("IW-17,5")
+        );
+
+        // Start mit der alten Datei
+        let d = test_dir("a125");
+        let p = d.join("firmenkatalog.szk");
+        std::fs::write(&p, SZK_K2).unwrap();
+        let (c, h) = laden(&p);
+        assert!(
+            h.iter().any(|x| x.contains("Werkstypen")),
+            "Hinweis Werkstypen ergänzt: {h:?}"
+        );
+        assert!(!h.iter().any(|x| x.contains("nicht lesbar")), "{h:?}");
+        let b = c.library();
+        assert_eq!(b.types.len(), 7, "sieben Werkstypen seit K5");
+        assert_eq!(typ_code(b, "AW-31,5").unwrap().name, "AW 31,5 Büro");
+        assert_eq!(
+            baustoff(b, "Dämmung (WDVS)").lambda,
+            Some(0.12),
+            "Hand-λ bleibt"
+        );
+        assert_eq!(
+            baustoff(b, "Gasbeton").lambda,
+            Some(0.09),
+            "fehlendes λ ergänzt"
+        );
+        assert_eq!(
+            b.default_exterior
+                .and_then(|id| b.types.get(id))
+                .map(|t| t.code.as_str()),
+            Some("AW-36")
+        );
+        let (c2, h2) = laden(&p);
+        assert!(h2.is_empty(), "zweiter Start ohne Hinweis: {h2:?}");
+        assert_eq!(c2.library(), c.library());
+    }
+}
+
+// Abnahmetest A126: Firmenkatalog .szk aus einer neueren Fassung mit
+// unbekannten Schlüsselwörtern (Festlegung Koordinator 19:24 nach Jörns
+// Meldung 19:20). Der Leser toleriert sie: Baustoff mit Ersatzkategorie,
+// ein Hinweis je Dateifassung (Statuszeile), unbekannte Zeilen und Schlüssel bleiben beim
+// Zurückschreiben bytegleich erhalten.
+// Spezifikation: test/abnahme-wandtypen.md (A126).
+//
+// Einbau: als `mod szk_unbekannt { use super::*; … }` ans Ende von
+// app/src/abnahme.rs. Nutzt aus abnahme.rs: test_dir. Keine angenommenen
+// Namen (read_szk, write_szk, Company::load).
+mod szk_unbekannt {
+    use super::*;
+
+    use sk_model::catalog::{read_szk, write_szk, Library};
+    use sk_model::{MatCategory, Model};
+
+    /// Startbestand mit drei Zukunftsstellen: ein Baustoff „Stampflehm“ mit der
+    /// erfundenen Kategorie `lehm`, ein unbekannter Schlüssel `sd=12` an der
+    /// Gasbeton-Zeile und ein unbekannter Satz `[zukunft]`.
+    fn zukunft() -> (String, [String; 3]) {
+        let text = write_szk(&Library::standard());
+        let gas = text
+            .lines()
+            .find(|l| l.starts_with("[material]") && l.contains("name=\"Gasbeton\""))
+            .unwrap()
+            .to_string();
+        let alt_guid = gas
+            .split(' ')
+            .find_map(|t| t.strip_prefix("guid="))
+            .unwrap()
+            .to_string();
+        let g = Model::with_seed(126).new_guid().to_string();
+        let lehm = gas
+            .replacen(&alt_guid, &g, 1)
+            .replacen("name=\"Gasbeton\"", "name=\"Stampflehm\"", 1)
+            .replacen("cat=masonry", "cat=lehm", 1);
+        assert!(lehm.contains("cat=lehm"));
+        let gas_sd = format!("{gas} sd=12");
+        let satz = "[zukunft] guid=0000000000000000000126 wert=\"bleibt\"".to_string();
+        let mut zeilen: Vec<String> = text
+            .lines()
+            .map(|l| {
+                if l == gas {
+                    gas_sd.clone()
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect();
+        let pos = zeilen.iter().position(|l| l == &gas_sd).unwrap() + 1;
+        zeilen.insert(pos, lehm.clone());
+        zeilen.push(satz.clone());
+        (zeilen.join("\n") + "\n", [lehm, gas_sd, satz])
+    }
+
+    /// Text des Hinweises in der Statuszeile (ohne Fachwörter). Gezählt wird
+    /// jede unbekannte Angabe einmal: ein unbekannter Wert (cat=lehm), ein
+    /// unbekannter Schlüssel (sd=12), ein unbekannter Satz ([zukunft]).
+    fn hinweis(n: usize) -> String {
+        format!("Firmenkatalog: {n} unbekannte Angaben übersprungen, alles andere ist geladen.")
+    }
+
+    fn alle_da(text: &str, zeilen: &[String; 3], wo: &str) {
+        for z in zeilen {
+            assert!(
+                text.lines().any(|l| l == z),
+                "{wo}: Zeile fehlt oder geändert: {z}"
+            );
+        }
+    }
+
+    /// A126: Die Zukunfts-.szk lädt (kein „nicht lesbar“, kein Rückfall auf den
+    /// Startbestand). „Stampflehm“ ist da, mit Ersatzkategorie, Rohdichte und λ
+    /// wie in der Datei. Ein Hinweis je Dateifassung: erster Start genau einer, zweiter Start mit unveränderter Datei keiner, nach einer Änderung der Datei wieder genau einer. Schreiben behält alle drei
+    /// Zukunftszeilen bytegleich, auch nach einer Änderung an der Bibliothek;
+    /// schreiben → lesen → schreiben ist stabil. Company::load lässt die Datei
+    /// bytegleich (Startbestand vollständig, nichts zu ergänzen).
+    #[test]
+    fn a126_szk_mit_unbekannten_schluesselwoertern() {
+        let (text, zeilen) = zukunft();
+        let lib = read_szk(&text).unwrap_or_else(|e| panic!("lesbar: {e}"));
+        assert_eq!(lib.types.len(), 7, "nichts verworfen");
+        let lehm = lib
+            .materials
+            .iter()
+            .find(|(_, x)| x.name == "Stampflehm")
+            .expect("Baustoff mit unbekannter Kategorie bleibt")
+            .1;
+        let gas = lib
+            .materials
+            .iter()
+            .find(|(_, x)| x.name == "Gasbeton")
+            .unwrap()
+            .1;
+        assert!(MatCategory::ALL.contains(&lehm.category), "Ersatzkategorie");
+        assert_eq!((lehm.density, lehm.lambda), (gas.density, gas.lambda));
+
+        // Zurückschreiben, unverändert und nach einer Änderung
+        let neu = write_szk(&lib);
+        alle_da(&neu, &zeilen, "schreiben");
+        assert_eq!(write_szk(&read_szk(&neu).unwrap()), neu, "stabil");
+        let mut geaendert = lib.clone();
+        let id = geaendert
+            .types
+            .iter()
+            .find(|(_, t)| t.code == "AW-36")
+            .map(|(id, _)| id)
+            .unwrap();
+        geaendert.types.get_mut(id).unwrap().name = "AW 36 Büro".into();
+        let neu2 = write_szk(&geaendert);
+        alle_da(&neu2, &zeilen, "nach Änderung");
+        assert!(neu2.contains("name=\"AW 36 Büro\""));
+
+        // Start mit der Datei: ein Hinweis je Dateifassung (Koordinator 19:44)
+        let d = test_dir("a126");
+        let p = d.join("firmenkatalog.szk");
+        std::fs::write(&p, &text).unwrap();
+        let start = |soll: Option<usize>, wo: &str, inhalt: &str| {
+            let (c, h) = crate::catalog::Company::load(&p, true);
+            match soll {
+                Some(n) => assert_eq!(h, [hinweis(n)], "{wo}"),
+                None => assert!(h.is_empty(), "{wo}: kein Hinweis {h:?}"),
+            }
+            assert_eq!(c.library().types.len(), 7, "{wo}");
+            assert!(
+                c.library()
+                    .materials
+                    .iter()
+                    .any(|(_, x)| x.name == "Stampflehm"),
+                "{wo}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&p).unwrap(),
+                inhalt,
+                "{wo}: Datei bytegleich"
+            );
+        };
+        start(Some(3), "erster Start", &text);
+        start(None, "zweiter Start, Datei unverändert", &text);
+        // Neue Fassung der Datei: eine weitere unbekannte Angabe
+        let text2 = format!("{text}[zukunft] guid=0000000000000000000127 wert=\"neu\"\n");
+        std::fs::write(&p, &text2).unwrap();
+        start(Some(4), "nach Änderung der Datei", &text2);
+        start(None, "danach wieder still", &text2);
+    }
+}
+
+// Abnahmetest A127: Randdämmstreifen fugenlos dargestellt (K5, Jörn 16:43
+// F4, BIM-Abnahme 6c8c188: „Ansicht vorne ohne Kante in Deckenhöhe, Schnitt
+// mit Dämmschraffur ohne Trennlinie oben/unten“).
+// Spezifikation: test/abnahme-wandtypen.md (A127), Handtest H110.
+//
+// Statt Bildpunkten prüft der Test das Netz, so wie es gezeichnet wird
+// (view_mesh: Flächen mit Muster, Kanten mit Strichbreite). In der Cloud
+// gibt es kein Windows-Bild; --screenshot zeichnet genau dieses Netz.
+//
+// Einbau: als `mod randstreifen_bild { use super::*; … }` ans Ende von
+// app/src/abnahme.rs. Nutzt aus abnahme.rs: haus_b11, view_mesh, Shown,
+// pattern, SectionLine, ViewKind. Keine angenommenen Namen.
+mod randstreifen_bild {
+    use super::*;
+
+    use sk_model::{LayerSetId, Model, RunId};
+
+    fn typ(m: &Model, code: &str) -> LayerSetId {
+        m.layer_sets()
+            .iter()
+            .find(|(_, t)| t.code == code)
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| panic!("Typ {code} fehlt"))
+    }
+
+    fn auf_typ(s: &mut Scene, run: RunId, code: &str) {
+        let id = typ(s.model(), code);
+        assert!(
+            s.edit_model("Wandtyp geändert", |m| m.set_run_type(run, id)),
+            "Wechsel auf {code}"
+        );
+    }
+
+    /// Haus B11 (10 × 8 m) mit AW-36,5 (Streifen 12,5 cm vor 24 cm Auflager).
+    fn haus() -> Scene {
+        let mut s = Scene::with_model(Model::with_seed(127));
+        let (aw, iw) = haus_b11(&mut s);
+        auf_typ(&mut s, iw, "IW-17,5");
+        auf_typ(&mut s, aw, "AW-36,5");
+        s
+    }
+
+    /// Deckenhöhen, an denen Streifen liegen: UK/OK EG-Decke, UK OG-Decke.
+    const DECKE: [f32; 3] = [2635.0, 2855.0, 5490.0];
+
+    fn bei(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1.0
+    }
+
+    /// Kanten, die ganz in einer Fassadenebene liegen und waagerecht auf einer
+    /// Deckenhöhe verlaufen.
+    fn fassadenkanten_in_deckenhoehe(m: &Shown) -> Vec<([[f32; 3]; 2], f32)> {
+        let ebene = |p: &[[f32; 3]; 2]| {
+            (bei(p[0][1], 0.0) && bei(p[1][1], 0.0))
+                || (bei(p[0][1], 8000.0) && bei(p[1][1], 8000.0))
+                || (bei(p[0][0], 0.0) && bei(p[1][0], 0.0))
+                || (bei(p[0][0], 10000.0) && bei(p[1][0], 10000.0))
+        };
+        m.edges
+            .iter()
+            .filter(|(p, _)| ebene(p) && DECKE.iter().any(|&z| bei(p[0][2], z) && bei(p[1][2], z)))
+            .cloned()
+            .collect()
+    }
+
+    /// Senkrechte Kanten im Schnitt bei (x, y) decken z0…z1 lückenlos ab, alle
+    /// mit derselben Strichbreite.
+    fn durchgehend(c: &Shown, y: f32, x: f32, z0: f32, z1: f32) -> bool {
+        let mut st: Vec<(f32, f32, f32)> = c
+            .edges
+            .iter()
+            .filter(|(p, _)| {
+                bei(p[0][1], y) && bei(p[1][1], y) && bei(p[0][0], x) && bei(p[1][0], x)
+            })
+            .map(|(p, w)| (p[0][2].min(p[1][2]), p[0][2].max(p[1][2]), *w))
+            .filter(|&(a, b, _)| b > z0 && a < z1)
+            .collect();
+        st.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let Some(&(a, _, w)) = st.first() else {
+            return false;
+        };
+        if a > z0 {
+            return false;
+        }
+        let mut bis = z0;
+        for &(a, b, v) in &st {
+            if a > bis + 1.0 || v != w {
+                return false;
+            }
+            bis = bis.max(b);
+        }
+        bis >= z1
+    }
+
+    /// A127: Bei AW-36,5 zeigt keine Ansicht (vorne, hinten, links, rechts, 3D)
+    /// eine Kante in Deckenhöhe auf der Fassade. Im Schnitt A–A liegen die
+    /// Streifen (x 0…125 und 9875…10 000, je EG- und OG-Decke) in Dämmschraffur
+    /// (Zickzack), ohne waagerechte Linie zur Wand darüber und darunter; die
+    /// Außenkontur der Wand läuft durch, die Kontur der Decke bleibt.
+    #[test]
+    fn a127_randstreifen_fugenlos() {
+        let mut s = haus();
+        assert_eq!(s.model().edge_strip_pairs().len(), 8, "8 Streifen");
+        for v in [
+            ViewKind::Front,
+            ViewKind::Back,
+            ViewKind::Left,
+            ViewKind::Right,
+            ViewKind::Persp,
+        ] {
+            let m = view_mesh(&mut s, v, None);
+            let k = fassadenkanten_in_deckenhoehe(&m);
+            assert!(k.is_empty(), "{v:?}: Kante in Deckenhöhe {k:?}");
+        }
+
+        let mut sect = SectionLine::default();
+        sect.ensure(&s);
+        let c = view_mesh(&mut s, ViewKind::Section, sect.plane());
+        let y = 4000.0;
+        let im_schnitt = |p: &[[f32; 3]; 2]| bei(p[0][1], y) && bei(p[1][1], y);
+        for (x0, x1) in [(0.0f32, 125.0f32), (9875.0, 10000.0)] {
+            // keine Trennlinie oben/unten im Streifenbereich
+            let trenn: Vec<_> = c
+                .edges
+                .iter()
+                .filter(|(p, _)| {
+                    im_schnitt(p)
+                        && DECKE.iter().any(|&z| bei(p[0][2], z) && bei(p[1][2], z))
+                        && p[0][0].min(p[1][0]) > x0 - 1.0
+                        && p[0][0].max(p[1][0]) < x1 + 1.0
+                })
+                .collect();
+            assert!(
+                trenn.is_empty(),
+                "Trennlinie am Streifen {x0}…{x1}: {trenn:?}"
+            );
+            // Streifenflächen in Dämmschraffur, EG und OG
+            for (z0, z1) in [(2635.0f32, 2855.0f32), (5490.0, 5710.0)] {
+                let tri: Vec<f32> = c
+                    .faces
+                    .chunks(3)
+                    .filter(|t| {
+                        let cx = (t[0][0] + t[1][0] + t[2][0]) / 3.0;
+                        let cy = (t[0][1] + t[1][1] + t[2][1]) / 3.0;
+                        let cz = (t[0][2] + t[1][2] + t[2][2]) / 3.0;
+                        bei(cy, y) && cx > x0 && cx < x1 && cz > z0 && cz < z1
+                    })
+                    .map(|t| t[0][9])
+                    .collect();
+                assert!(!tri.is_empty(), "Streifen {x0}…{x1}, {z0}…{z1} im Schnitt");
+                assert!(
+                    tri.iter().all(|&p| p == pattern::ZIGZAG),
+                    "Dämmschraffur: {tri:?}"
+                );
+            }
+            // Außenkontur läuft über die Deckenhöhe hinweg durch: Teilstücke
+            // stoßen lückenlos aneinander und haben dieselbe Strichbreite
+            let aussen = if x0 == 0.0 { 0.0 } else { 10000.0 };
+            assert!(
+                durchgehend(&c, y, aussen, 2400.0, 3100.0),
+                "Außenkontur bei x = {aussen} ohne Lücke und Breitenwechsel"
+            );
+            // Kontur der Decke an der Innenseite des Streifens bleibt
+            let innen = if x0 == 0.0 { 125.0 } else { 9875.0 };
+            assert!(
+                c.edges.iter().any(|(p, _)| {
+                    im_schnitt(p)
+                        && bei(p[0][0], innen)
+                        && bei(p[1][0], innen)
+                        && p[0][2].min(p[1][2]) < 2635.0 + 1.0
+                        && p[0][2].max(p[1][2]) > 2855.0 - 1.0
+                }),
+                "Deckenkontur bei x = {innen}"
+            );
+        }
+    }
+}

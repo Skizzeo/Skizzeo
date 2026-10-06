@@ -145,7 +145,8 @@ const OVERLAY_LEVELS: usize = 6;
 /// Dialog „Gebäude erstellen“.
 const OVERLAY_DIALOG: usize = 7;
 const OVERLAY_TITLE: usize = 8;
-/// Platz 9 ist frei (früher der Hinweis an der Maus).
+/// Hinweis in der Statuszeile (F-17), unten in der Mitte.
+const OVERLAY_NOTICE: usize = 9;
 /// Dateimenü (E17), darüber die Nachfrage „Änderungen speichern?“ mit
 /// Abdunkeln.
 const OVERLAY_MENU: usize = 10;
@@ -401,6 +402,7 @@ struct App {
     mouse_at: Option<(f64, f64)>,
     /// Hinweis an der Maus: erscheint nach [`TIP_DELAY`] Ruhe über derselben Stelle.
     tip: Option<Tip>,
+    notice: Option<Notice>,
     /// Dateimenü am Logo, Tastenkürzel, Nachfrage „Änderungen speichern?“
     /// und der Befehl, der nach der Antwort folgt (E17).
     menu: menu::FileMenu,
@@ -468,6 +470,16 @@ struct Tip {
     since: Instant,
     shown: bool,
 }
+
+/// Hinweis in der Statuszeile: Text, seit wann er steht, wo (Fenster).
+struct Notice {
+    text: String,
+    since: Option<Instant>,
+    rect: (f64, f64, f64, f64),
+}
+
+/// So lange steht ein Hinweis in der Statuszeile.
+const NOTICE_TIME: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// Verzögerung bis zum Hinweis an der Maus.
 const TIP_DELAY: std::time::Duration = std::time::Duration::from_millis(400);
@@ -945,9 +957,7 @@ impl App {
             return;
         };
         let (c, hints) = catalog::Company::load(&p, false);
-        if !hints.is_empty() {
-            surface.message(&hints.join("\n\n"), false);
-        }
+        self.show_hints(hints, surface);
         self.settings.set_company_path(p);
         save_settings(&mut self.settings, &self.theme, &self.recent, surface);
         self.company = Some(c);
@@ -1888,6 +1898,17 @@ impl App {
     /// Ein Ereignis; `false` beendet die Schleife. Die Nachfrage „Änderungen
     /// speichern?“ und das offene Dateimenü nehmen Maus und Tasten zuerst.
     fn handle(&mut self, e: Event, surface: &Surface) -> bool {
+        if let Event::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            ..
+        } = e
+        {
+            if self.catalog.is_none() && self.prefs.is_none() && self.click_notice(x, y) {
+                return true;
+            }
+        }
         // Ein Klick während der Wände wachsen: sofort Endstand (K3b)
         if matches!(e, Event::MouseDown { .. }) && self.scene.skip_animation() {
             self.upload_model();
@@ -2591,6 +2612,91 @@ impl App {
         self.edit.coupled_hint().map(String::from)
     }
 
+    /// Hinweise aus dem Laden: leise in die Statuszeile, der Rest als Meldung.
+    fn show_hints(&mut self, hints: Vec<String>, surface: &Surface) {
+        let (quiet, loud): (Vec<String>, Vec<String>) =
+            hints.into_iter().partition(|h| catalog::quiet(h));
+        if !loud.is_empty() {
+            surface.message(&loud.join("\n\n"), false);
+        }
+        if let Some(text) = quiet.into_iter().next() {
+            self.notice = Some(Notice {
+                text,
+                since: None,
+                rect: (0.0, 0.0, 0.0, 0.0),
+            });
+        }
+    }
+
+    /// Hinweis in der Statuszeile zeigen, nach [`NOTICE_TIME`] wieder weg.
+    fn sync_notice(&mut self) {
+        let Some(n) = self.notice.as_mut() else {
+            return;
+        };
+        match n.since {
+            Some(at) if at.elapsed() >= NOTICE_TIME => {
+                self.notice = None;
+                self.renderer.set_overlay(OVERLAY_NOTICE, 0, 0, 0, 0, &[]);
+                self.redraw = true;
+            }
+            Some(_) => {
+                // Mittig unten halten, auch wenn das Fenster seine Größe ändert
+                let x = ((self.w as f64 - n.rect.2) * 0.5).round();
+                let y = (self.h as f64 - n.rect.3 - 16.0 * self.ui.scale as f64).round();
+                if (x, y) != (n.rect.0, n.rect.1) {
+                    n.rect.0 = x;
+                    n.rect.1 = y;
+                    self.renderer
+                        .move_overlay(OVERLAY_NOTICE, x as i32, y as i32);
+                    self.redraw = true;
+                }
+            }
+            None if self.w > 0 => {
+                let s = self.ui.scale;
+                let c = sk_ui::widgets::notice(&self.ui.fonts, &n.text, s, &self.theme);
+                let (cw, ch) = (c.width as f64, c.height as f64);
+                let x = ((self.w as f64 - cw) * 0.5).round();
+                let y = (self.h as f64 - ch - 16.0 * s as f64).round();
+                n.rect = (x, y, cw, ch);
+                n.since = Some(Instant::now());
+                let px = c.to_premul_rgba8();
+                self.renderer.set_overlay(
+                    OVERLAY_NOTICE,
+                    x as i32,
+                    y as i32,
+                    c.width as u32,
+                    c.height as u32,
+                    &px,
+                );
+                self.redraw = true;
+            }
+            None => {}
+        }
+    }
+
+    /// Klick auf den Hinweis: Bauteilkatalog im Reiter Firma.
+    fn click_notice(&mut self, x: f64, y: f64) -> bool {
+        let Some((rx, ry, rw, rh)) = self
+            .notice
+            .as_ref()
+            .filter(|n| n.since.is_some())
+            .map(|n| n.rect)
+        else {
+            return false;
+        };
+        if x < rx || y < ry || x > rx + rw || y > ry + rh {
+            return false;
+        }
+        self.notice = None;
+        self.renderer.set_overlay(OVERLAY_NOTICE, 0, 0, 0, 0, &[]);
+        self.redraw = true;
+        self.open_catalog();
+        if let Some(c) = self.catalog.as_mut() {
+            c.tab = catalog_view::Tab::Company;
+        }
+        true
+    }
+
     /// Hinweis an der Maus nachführen: neuer Text beginnt die Wartezeit,
     /// danach erscheint er rechts unter der Maus; ohne Wunsch verschwindet er.
     fn sync_tip(&mut self) {
@@ -2647,10 +2753,12 @@ impl App {
             .wheel
             .hint_wait(self.now())
             .map(std::time::Duration::from_millis);
-        match (tip, hud) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        let notice = self
+            .notice
+            .as_ref()
+            .and_then(|n| n.since)
+            .map(|at| NOTICE_TIME.saturating_sub(at.elapsed()));
+        [tip, hud, notice].into_iter().flatten().min()
     }
 
     /// Uhr des Geschossbogens: Millisekunden seit dem Start.
@@ -2936,6 +3044,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         }
         None => (None, Vec::new()),
     };
+    let (quiet, hints): (Vec<String>, Vec<String>) =
+        hints.into_iter().partition(|h| catalog::quiet(h));
     if !hints.is_empty() && screenshot.is_none() {
         surface.message(&hints.join("\n\n"), false);
     }
@@ -2973,6 +3083,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         snaps_key: None,
         mouse_at: None,
         tip: None,
+        notice: None,
         menu: menu::FileMenu::default(),
         menu_dirty: false,
         shortcuts: menu::Shortcuts::default(),
@@ -3026,6 +3137,13 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             .and_then(|n| n.parse().ok())
             .map(|n| (n, true)),
     };
+    if screenshot.is_none() {
+        a.notice = quiet.into_iter().next().map(|text| Notice {
+            text,
+            since: None,
+            rect: (0.0, 0.0, 0.0, 0.0),
+        });
+    }
     a.upload_model();
     a.sync_levels();
     // `skizzeo.exe haus.szo`: Projekt gleich öffnen
@@ -3160,6 +3278,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         a.sync_quantity(&surface);
         a.sync_tool_chip();
         a.sync_tip();
+        a.sync_notice();
         a.sync_title_state();
         if a.menu_dirty && !a.overlay_dirty && a.w > 0 {
             a.paint_menu();

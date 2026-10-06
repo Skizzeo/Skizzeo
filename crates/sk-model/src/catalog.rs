@@ -38,6 +38,22 @@ pub struct Library {
     /// Werkstypen, die der Katalog schon angeboten bekam (K4): fehlt einer
     /// davon, hat das Büro ihn entfernt, und er kommt nicht wieder.
     pub stock: Vec<Guid>,
+    /// Was eine neuere Fassung geschrieben hat und dieser Leser nicht kennt.
+    pub foreign: Foreign,
+}
+
+/// Fremdes aus einer neueren Fassung (F-17): bleibt beim Zurückschreiben
+/// bytegleich erhalten.
+#[derive(Clone, Debug, Default)]
+pub struct Foreign {
+    /// Zeilen mit unbekannten Angaben: so, wie dieser Leser den Eintrag
+    /// schreibt, und wie er in der Datei stand. Solange der Eintrag
+    /// unverändert ist, wird die Zeile der Datei geschrieben.
+    pub lines: Vec<(String, String)>,
+    /// Sätze unbekannter Art, unverändert in Dateireihenfolge.
+    pub records: Vec<String>,
+    /// Zahl der unbekannten Angaben beim Lesen (Wert, Schlüssel, Satz).
+    pub unknown: usize,
 }
 
 impl PartialEq for Library {
@@ -163,6 +179,30 @@ impl Library {
 
 /// Der Katalog als `.szk`-Text.
 pub fn write_szk(lib: &Library) -> String {
+    let plain = write_known(lib);
+    let f = &lib.foreign;
+    if f.lines.is_empty() && f.records.is_empty() {
+        return plain;
+    }
+    let mut out = String::with_capacity(plain.len() + 256);
+    for l in plain.lines() {
+        let l = f
+            .lines
+            .iter()
+            .find(|(mine, _)| mine == l)
+            .map_or(l, |(_, theirs)| theirs.as_str());
+        out.push_str(l);
+        out.push('\n');
+    }
+    for r in &f.records {
+        out.push_str(r);
+        out.push('\n');
+    }
+    out
+}
+
+/// Was dieser Leser kennt, ohne Fremdes.
+fn write_known(lib: &Library) -> String {
     let mut out = format!("SZK {VERSION}\n# Skizzeo-Firmenkatalog\n");
     for p in sorted(lib.pens.iter(), |p| p.guid) {
         szo::write_pen(&mut out, p);
@@ -213,13 +253,19 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
         "pen", "linetype", "fill", "surface", "material", "layerset", "layer", "typeprop",
         "default", "stock",
     ];
-    for (i, l) in text.lines().enumerate().skip(1) {
+    let mut foreign = Foreign::default();
+    let lines: Vec<&str> = text.lines().collect();
+    for (i, l) in lines.iter().enumerate().skip(1) {
         let Some(r) = Record::parse(i + 1, l)? else {
             continue;
         };
-        // Unbekannte Abschnitte (neuere Kataloge) werden übersprungen
-        if let Some(k) = KNOWN.iter().find(|k| **k == r.section) {
-            by.entry(k).or_default().push(r);
+        // Unbekannte Abschnitte (neuere Kataloge) bleiben unverändert stehen
+        match KNOWN.iter().find(|k| **k == r.section) {
+            Some(k) => by.entry(k).or_default().push(r),
+            None => {
+                foreign.records.push(l.to_string());
+                foreign.unknown += 1;
+            }
         }
     }
     let empty = Vec::new();
@@ -304,6 +350,31 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
     }
     lib.stock.sort();
     lib.stock.dedup();
+    // Unbekannte Schlüssel und Werte: zählen, und die Zeile merken, damit
+    // sie unverändert zurückgeschrieben wird
+    let mut odd = Vec::new();
+    for r in by.values().flatten() {
+        let n = r.unknown();
+        if n > 0 {
+            foreign.unknown += n;
+            if let Some(g) = r.opt("guid") {
+                odd.push((r.section.clone(), g.to_string(), lines[r.line - 1]));
+            }
+        }
+    }
+    if !odd.is_empty() {
+        let mine = write_known(&lib);
+        for (section, g, theirs) in odd {
+            let head = format!("[{section}]");
+            let token = format!(" guid={g}");
+            if let Some(l) = mine.lines().find(|l| {
+                l.starts_with(&head) && (l.contains(&format!("{token} ")) || l.ends_with(&token))
+            }) {
+                foreign.lines.push((l.to_string(), theirs.to_string()));
+            }
+        }
+    }
+    lib.foreign = foreign;
     Ok(lib)
 }
 
@@ -656,8 +727,7 @@ mod tests {
 
     /// Jörns Firmenkatalog nach K4 (Startbestand aus K3, beim Start mit K4
     /// um die Werkstypen ergänzt; Zeile 13 ist „Luft“ mit cat=air) liest
-    /// sich vollständig. Ein Programm, das ein Wort nicht kennt, nennt Wert
-    /// und Grund.
+    /// sich vollständig. Ein Wort aus einer neueren Fassung wird übersprungen.
     #[test]
     fn katalog_aus_k4_mit_luft() {
         let text = include_str!("../../../app/src/firmenkatalog_k4.szk");
@@ -672,12 +742,14 @@ mod tests {
         assert_eq!(luft.category, MatCategory::Air);
         assert_eq!(lib.types.len(), 6);
         assert_eq!(lib.stock.len(), 6);
+        // Ein unbekanntes Wort aus einer neueren Fassung: Ersatzkategorie,
+        // gezählt, und die Zeile bleibt beim Zurückschreiben erhalten.
         let alt = text.replace("cat=air", "cat=gas");
-        let e = read_szk(&alt).unwrap_err().to_string();
-        assert!(
-            e.contains("Zeile 13") && e.contains("„cat=gas“ unbekannt") && e.contains("neueren"),
-            "{e}"
-        );
+        let lib = read_szk(&alt).unwrap();
+        assert_eq!(lib.foreign.unknown, 1);
+        assert_eq!(lib.types.len(), 6);
+        let gas = alt.lines().nth(12).unwrap();
+        assert!(write_szk(&lib).lines().any(|l| l == gas));
     }
 
     #[test]

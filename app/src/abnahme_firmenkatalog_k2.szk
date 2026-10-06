@@ -1,0 +1,17 @@
+SZK 1
+# Skizzeo-Firmenkatalog
+[pen] guid=2Q_AHjmO1DIQtdifdRpNy1 nr=2 name="Hintergrund weiß" color=ffffff w=0
+[pen] guid=3zCKLf$AXB08Vb_tPAhDKm nr=1 name="Schraffur" color=000000 w=0.18
+[fill] guid=3WZwJkh5z7r8u$EoLXpp5K name="Dämmung hart" space=paper kind=zigzag period=1
+[fill] guid=3rzDaPgYj7zhDembDO9g_d name="Mauerwerk" space=paper kind=lines lines=135:1.27:0:0:0 ccw=1
+[surface] guid=0bqfa7vhvAWwwAvb377hM4 name="Dämmung (WDVS)" color=f4efdc cut=e8c45c
+[surface] guid=1G87ywj6vEoh1uzpHeS9Ka name="Gasbeton" color=eeede8 cut=b0b1ae
+[material] guid=2wuC33GkTD9Qack6WJ4EsM name="Gasbeton" cat=masonry prio=800 rho=350 lambda=- fill=3rzDaPgYj7zhDembDO9g_d fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1G87ywj6vEoh1uzpHeS9Ka
+[material] guid=2zPDwmqLPDpAPPFFMa8UFs name="Dämmung (WDVS)" cat=insulation prio=300 rho=20 lambda=0.12 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0bqfa7vhvAWwwAvb377hM4
+[layerset] guid=2$6TN9pv91oRMXaTMzh9E2 name="AW 31,5 Büro" code="AW-31,5" cat=exterior changed=1 note=""
+[layer] set=2$6TN9pv91oRMXaTMzh9E2 mat=2zPDwmqLPDpAPPFFMa8UFs t=140 fn=insulation core=0
+[layer] set=2$6TN9pv91oRMXaTMzh9E2 mat=2wuC33GkTD9Qack6WJ4EsM t=175 fn=loadbearing core=1
+[layerset] guid=3ZTJrDtor3KfcH2vccNFkY name="IW 17,5 Gasbeton" code="IW-17,5" cat=interior changed=1 note=""
+[layer] set=3ZTJrDtor3KfcH2vccNFkY mat=2wuC33GkTD9Qack6WJ4EsM t=175 fn=loadbearing core=1
+[default] cat=exterior set=2$6TN9pv91oRMXaTMzh9E2
+[default] cat=interior set=3ZTJrDtor3KfcH2vccNFkY
