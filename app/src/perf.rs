@@ -240,7 +240,8 @@ fn perf_ziehen_mit_innenwaenden() {
             s.set_run_points(run, &moved.points);
         });
         let live_set = s.live_set(run);
-        assert_eq!(live_set.len(), 3);
+        // Zug, zwei Innenwände und der gekoppelte OG-Zug darüber (B12)
+        assert_eq!(live_set.len(), 4);
         let live = time(20, || {
             std::hint::black_box(s.mesh_runs(ViewKind::Persp, None, &live_set));
         });
