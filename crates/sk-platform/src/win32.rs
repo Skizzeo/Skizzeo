@@ -320,6 +320,10 @@ impl Shared {
     /// Sonst zeigt der Fenstermanager während des Größeziehens kurz ein altes,
     /// verzerrtes oder leeres Bild: Das Fenster flackert.
     fn wait_presented(&self, w: u32, h: u32) {
+        // Minimiert (0 × 0) wird nichts gezeichnet, also nicht warten
+        if w == 0 || h == 0 {
+            return;
+        }
         let deadline = Instant::now() + RESIZE_WAIT;
         let Ok(mut p) = self.presented.lock() else {
             return;
