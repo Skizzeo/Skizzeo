@@ -449,6 +449,7 @@ mod tests {
     /// Rechteck 10 × 8 m im Uhrzeigersinn, Außenkante auf der Bezugslinie.
     fn rechteck() -> WallChain {
         WallChain {
+            base: 0.0,
             points: vec![
                 vec3(0.0, 0.0, 0.0),
                 vec3(0.0, 8000.0, 0.0),

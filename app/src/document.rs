@@ -137,6 +137,7 @@ mod tests {
             vec3(10000.0, 8000.0, 0.0),
         ];
         s.add_wall(&sk_model::WallChain {
+            base: 0.0,
             points: pts.to_vec(),
             closed: true,
             ref_side: RefSide::Left,

@@ -140,12 +140,15 @@ impl Joints {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WallChain {
-    /// Eckpunkte der Bezugslinie (z wird ignoriert, Wände stehen auf z = 0).
+    /// Eckpunkte der Bezugslinie (z wird ignoriert, siehe [`WallChain::base`]).
     pub points: Vec<Vec3>,
     pub closed: bool,
     pub ref_side: RefSide,
     /// Schichten von außen nach innen.
     pub layers: Vec<Layer>,
+    /// Höhe des Wandfußes (z, absolut): EG ±0, OG auf OK EG-Decke.
+    pub base: f64,
+    /// Wandhöhe ab dem Fuß.
     pub height: f64,
     /// Anschlüsse an andere Wandzüge (Paket B5a).
     pub joints: Joints,
@@ -465,6 +468,120 @@ impl WallChain {
         })
     }
 
+    /// Richtung „nach außen“ je Segment: +1, wenn die Außenfläche rechts der
+    /// Zeichenrichtung liegt, sonst −1.
+    fn outward_sign(&self) -> f64 {
+        let (_, hi) = self.span();
+        if self.outer_offset() == hi {
+            1.0
+        } else {
+            -1.0
+        }
+    }
+
+    /// Zug mit jedem Segment `i` um `offsets[i]` nach außen verschoben
+    /// (negativ: nach innen), z. B. die OG-Wand über der EG-Wand mit ihrem
+    /// Versatz je Segment. Die Ecken sind die Schnittpunkte der verschobenen
+    /// Nachbarlinien, Richtungen bleiben erhalten. `None`, wenn die Anzahl
+    /// nicht passt, zwei fluchtende Nachbarn verschieden weit wandern sollen
+    /// oder ein Segment dabei verschwinden oder sich umkehren würde.
+    pub fn with_segment_offsets(&self, offsets: &[f64]) -> Option<WallChain> {
+        let (pts, closed, dirs) = self.layout()?;
+        let (n, m) = (pts.len(), dirs.len());
+        if offsets.len() != m || offsets.iter().any(|d| !d.is_finite()) {
+            return None;
+        }
+        if offsets.iter().all(|d| *d == 0.0) {
+            return Some(WallChain {
+                points: pts,
+                closed,
+                ..self.clone()
+            });
+        }
+        let sign = self.outward_sign();
+        let shift = |i: usize| right_of(dirs[i]) * (sign * offsets[i]);
+        let mut out = Vec::with_capacity(n);
+        for (j, &pj) in pts.iter().enumerate() {
+            let prev = if closed || j > 0 {
+                Some((j + m - 1) % m)
+            } else {
+                None
+            };
+            let next = if closed || j < n - 1 {
+                Some(j % m)
+            } else {
+                None
+            };
+            let p = match (prev, next) {
+                (Some(a), Some(b)) => {
+                    let c = cross2(dirs[a], dirs[b]);
+                    if c.abs() < 1e-9 {
+                        // Fluchtend: nur gemeinsam verschiebbar
+                        if (offsets[a] - offsets[b]).abs() > 1e-6 || dirs[a].dot(dirs[b]) < 0.0 {
+                            return None;
+                        }
+                        pj + shift(b)
+                    } else {
+                        // Schnitt von pj + shift(a) + dirs[a]·s mit pj + shift(b) + dirs[b]·u
+                        let (pa, pb) = (pj + shift(a), pj + shift(b));
+                        pa + dirs[a] * (cross2(pb - pa, dirs[b]) / c)
+                    }
+                }
+                (Some(a), None) => pj + shift(a),
+                (None, Some(b)) => pj + shift(b),
+                (None, None) => return None,
+            };
+            out.push(p);
+        }
+        for k in 0..m {
+            let v = out[(k + 1) % n] - out[k];
+            if v.length() < 1.0 || v.dot(dirs[k]) <= 0.0 {
+                return None;
+            }
+        }
+        Some(WallChain {
+            points: out,
+            closed,
+            ..self.clone()
+        })
+    }
+
+    /// Wandzug des Geschosses darüber (Gebäude aus einem Polygon, B12):
+    /// gleicher Aufbau und gleiche Bezugsseite, Segment `i` um `offsets[i]`
+    /// nach außen versetzt (Phase 1 überall 0), Fuß bei `base`, Krone bei
+    /// `top`. Ohne Anschlüsse; die Deckentasche setzt das Modell wie im EG.
+    pub fn stacked(&self, offsets: &[f64], base: f64, top: f64) -> Option<WallChain> {
+        if top.is_nan() || base.is_nan() || top <= base {
+            return None;
+        }
+        let mut c = self.with_segment_offsets(offsets)?;
+        c.base = base;
+        c.height = top - base;
+        c.joints = Joints::default();
+        Some(c)
+    }
+
+    /// Versatz nach außen je Segment von `self` gegenüber dem Zug `below`
+    /// (gleiche Segmentzahl und Richtungen), Gegenstück zu
+    /// [`WallChain::with_segment_offsets`]: Bezugslinie zu Bezugslinie.
+    /// `None`, wenn die Züge nicht zusammenpassen.
+    pub fn segment_offsets_from(&self, below: &WallChain) -> Option<Vec<f64>> {
+        let (pa, ca, da) = below.layout()?;
+        let (pb, cb, db) = self.layout()?;
+        if ca != cb || da.len() != db.len() {
+            return None;
+        }
+        let sign = below.outward_sign();
+        da.iter()
+            .zip(&db)
+            .enumerate()
+            .map(|(i, (a, b))| {
+                (cross2(*a, *b).abs() < 1e-9 && a.dot(*b) > 0.0)
+                    .then(|| (pb[i] - pa[i]).dot(right_of(*a)) * sign)
+            })
+            .collect()
+    }
+
     /// Gesamtdicke aller Schichten.
     pub fn thickness(&self) -> f64 {
         self.layers.iter().map(|l| l.thickness).sum()
@@ -504,22 +621,27 @@ impl WallChain {
         first..self.layers.len()
     }
 
-    /// Höhenabschnitte (von, bis) der Schicht `layer`: ganze Höhe oder, wenn
-    /// eine Decke sie unterbricht, unter und über der Decke.
+    /// Wandkrone (z, absolut).
+    pub fn top(&self) -> f64 {
+        self.base + self.height
+    }
+
+    /// Höhenabschnitte (von, bis; z absolut) der Schicht `layer`: ganze Höhe
+    /// oder, wenn eine Decke sie unterbricht, unter und über der Decke.
     pub fn layer_spans(&self, layer: usize) -> Vec<(f64, f64)> {
-        let h = self.height;
+        let (z0, h) = (self.base, self.top());
         match self.joints.slab_band {
-            Some((b, t)) if self.band_layers().contains(&layer) && b < h && t > 0.0 => {
+            Some((b, t)) if self.band_layers().contains(&layer) && b < h && t > z0 => {
                 let mut v = Vec::with_capacity(2);
-                if b > 1e-6 {
-                    v.push((0.0, b.min(h)));
+                if b > z0 + 1e-6 {
+                    v.push((z0, b.min(h)));
                 }
                 if t < h - 1e-6 {
-                    v.push((t.max(0.0), h));
+                    v.push((t.max(z0), h));
                 }
                 v
             }
-            _ => vec![(0.0, h)],
+            _ => vec![(z0, h)],
         }
     }
 
@@ -824,6 +946,7 @@ mod tests {
             closed,
             ref_side,
             layers: vec![Layer::new(400.0, material::PLAIN)],
+            base: 0.0,
             height: 3500.0,
             joints: Default::default(),
         }
@@ -904,6 +1027,7 @@ mod verschieben {
             closed: true,
             ref_side: RefSide::Left,
             layers: vec![Layer::new(400.0, material::PLAIN)],
+            base: 0.0,
             height: 3500.0,
             joints: Default::default(),
         }
@@ -1008,6 +1132,7 @@ mod schichten {
             closed: true,
             ref_side,
             layers: exterior_wall_layers(),
+            base: 0.0,
             height: 3500.0,
             joints: Default::default(),
         }
@@ -1068,6 +1193,7 @@ mod richtung {
             closed: false,
             ref_side: RefSide::Left,
             layers: vec![Layer::new(400.0, material::PLAIN)],
+            base: 0.0,
             height: 3500.0,
             joints: Default::default(),
         };
@@ -1082,5 +1208,248 @@ mod richtung {
             xs.iter().cloned().fold(f64::MIN, f64::max),
         );
         assert!(lo.abs() < 1e-9 && (hi - 400.0).abs() < 1e-9, "{lo} {hi}");
+    }
+}
+
+#[cfg(test)]
+mod obergeschoss {
+    use super::*;
+    use crate::floor::{FloorParams, FloorSlab};
+    use crate::solid::{merge_seam, Edge};
+
+    const AAC: u16 = 1;
+    const INSULATION: u16 = 2;
+    const CONCRETE: u16 = 7;
+    const OK_EG: f64 = 2855.0;
+    const OK_OG: f64 = 5835.0;
+
+    /// B12: Rechteck 10 × 8 m im Uhrzeigersinn, AW 31,5, EG ±0 … +2,855.
+    fn eg() -> WallChain {
+        WallChain {
+            points: vec![
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ],
+            closed: true,
+            ref_side: RefSide::Left,
+            layers: vec![Layer::new(140.0, INSULATION), Layer::core(175.0, AAC)],
+            base: 0.0,
+            height: OK_EG,
+            joints: Default::default(),
+        }
+    }
+
+    /// Wand und Decke eines Geschosses mit Tasche (Decke 22 cm an der Krone).
+    fn mit_decke(mut w: WallChain) -> (WallChain, FloorSlab) {
+        let p = FloorParams {
+            top: w.top(),
+            thickness: 220.0,
+            mat: CONCRETE,
+        };
+        let f = FloorSlab::from_chain(&w, &p).unwrap();
+        w.joints.slab_band = Some(f.band());
+        (w, f)
+    }
+
+    /// Volumen der Flächen mit Baustoff `mat` (Divergenzsatz), in m³.
+    fn volume(s: &Solid, mat: u16) -> f64 {
+        s.triangles
+            .iter()
+            .filter(|t| t.mat & !material::CUT == mat)
+            .map(|t| {
+                let [a, b, c] = t.p;
+                let cr = (b - a).cross(c - a);
+                let sign = if cr.dot(t.n) >= 0.0 { 1.0 } else { -1.0 };
+                sign * a.dot(b.cross(c)) / 6.0
+            })
+            .sum::<f64>()
+            * 1e-9
+    }
+
+    fn near(a: f64, b: f64, eps: f64) -> bool {
+        (a - b).abs() < eps
+    }
+
+    fn stapel(offsets: &[f64]) -> ((WallChain, FloorSlab), (WallChain, FloorSlab)) {
+        let (w0, f0) = mit_decke(eg());
+        let og = eg().stacked(offsets, OK_EG, OK_OG).unwrap();
+        ((w0, f0), mit_decke(og))
+    }
+
+    /// Waagerechte Kanten in Höhe `z`, die auf der Außenfläche liegen
+    /// (Abstand zur Außenkontur des EG < `tol`) bzw. alle in `z`.
+    fn edges_at(s: &Solid, z: f64) -> Vec<Edge> {
+        s.edges
+            .iter()
+            .filter(|e| near(e.a.z, z, 1e-6) && near(e.b.z, z, 1e-6))
+            .copied()
+            .collect()
+    }
+
+    #[test]
+    fn sollwerte_b12_eg_und_og() {
+        let ((w0, f0), (w1, f1)) = stapel(&[0.0; 4]);
+        assert_eq!((w1.base, w1.top()), (OK_EG, OK_OG));
+        assert_eq!(w1.points, w0.points);
+        // Decken DE-001 und DE-002 gleich
+        for f in [&f0, &f1] {
+            assert!(near(f.area() * 1e-6, 75.0384, 1e-6));
+            assert!(near(f.volume() * 1e-9, 16.508448, 1e-6));
+        }
+        assert_eq!(f1.band(), (5615.0, OK_OG));
+        let (s0, s1) = (w0.solid(), w1.solid());
+        // EG: Gasbeton netto 15,761252, Dämmung 14,1654
+        assert!(
+            near(volume(&s0, AAC), 15.761252, 1e-6),
+            "{}",
+            volume(&s0, AAC)
+        );
+        assert!(
+            near(volume(&s0, INSULATION), 14.1654, 1e-4),
+            "{}",
+            volume(&s0, INSULATION)
+        );
+        // OG: Gasbeton netto 16,50894, Dämmung 14,7856
+        assert!(
+            near(volume(&s1, AAC), 16.50894, 1e-5),
+            "{}",
+            volume(&s1, AAC)
+        );
+        assert!(
+            near(volume(&s1, INSULATION), 14.7856, 1e-4),
+            "{}",
+            volume(&s1, INSULATION)
+        );
+        // OG-Gasbeton steht auf OK EG-Decke und endet unter DE-002
+        assert_eq!(w1.layer_spans(1), vec![(OK_EG, 5615.0)]);
+        assert_eq!(w1.layer_spans(0), vec![(OK_EG, OK_OG)]);
+    }
+
+    #[test]
+    fn schale_ohne_naht() {
+        let ((w0, _), (w1, _)) = stapel(&[0.0; 4]);
+        let (mut s0, mut s1) = (w0.solid(), w1.solid());
+        let (n0, n1) = (s0.triangles.len(), s1.triangles.len());
+        assert!(!edges_at(&s0, OK_EG).is_empty() && !edges_at(&s1, OK_EG).is_empty());
+        merge_seam(&mut s0, &mut s1, OK_EG);
+        // Die Dämmung läuft ohne Kante durch: In +2,855 bleibt im EG nichts,
+        // im OG nur der Fuß des Gasbetons (auf der Decke, anderer Baustoff)
+        assert!(
+            edges_at(&s0, OK_EG).is_empty(),
+            "{:?}",
+            edges_at(&s0, OK_EG)
+        );
+        let rest = edges_at(&s1, OK_EG);
+        for e in &rest {
+            // nur Kanten an der Gasbeton-Innen- oder -Außenseite (≥ 140 mm innen)
+            let inside = |p: Vec3| p.x.min(p.y).min(10000.0 - p.x).min(8000.0 - p.y);
+            assert!(inside(e.a) > 139.0 && inside(e.b) > 139.0, "{e:?}");
+        }
+        // Deckfläche der EG-Dämmung und Bodenfläche der OG-Dämmung entfallen
+        assert_eq!(n0 - s0.triangles.len(), 8);
+        assert_eq!(n1 - s1.triangles.len(), 8);
+        // Keine Kante auf der Außenfläche in +2,855
+        let on_outer = |e: &Edge| e.a.x.abs() < 1e-6 && e.b.x.abs() < 1e-6;
+        assert!(!edges_at(&s1, OK_EG).iter().any(on_outer));
+    }
+
+    #[test]
+    fn schnitt_ohne_naht() {
+        let ((w0, _), (w1, _)) = stapel(&[0.0; 4]);
+        let (p0, n) = (vec3(5000.0, 4000.0, 0.0), vec3(1.0, 0.0, 0.0));
+        let (mut c0, mut c1) = (w0.section_caps(p0, n), w1.section_caps(p0, n));
+        merge_seam(&mut c0, &mut c1, OK_EG);
+        // Dämmung: keine Linie in +2,855 (y in 0..140 und 7860..8000)
+        let ins = |e: &Edge| {
+            let y = 0.5 * (e.a.y + e.b.y);
+            !(140.0..=7860.0).contains(&y)
+        };
+        assert!(!edges_at(&c0, OK_EG).iter().any(ins));
+        assert!(!edges_at(&c1, OK_EG).iter().any(ins));
+        // Gasbeton OG: Fuß auf der Decke bleibt als Kontur (beide Wände)
+        assert_eq!(edges_at(&c1, OK_EG).len(), 2);
+    }
+
+    #[test]
+    fn vorsprung_gibt_saubere_stufe() {
+        // Phase 2 (B12): OG-Wand y = 8 um 0,30 m nach außen
+        let ((w0, _), (w1, f1)) = stapel(&[0.0, 300.0, 0.0, 0.0]);
+        assert!(near(w1.points[1].y, 8300.0, 1e-9) && near(w1.points[2].y, 8300.0, 1e-9));
+        assert_eq!(
+            w1.segment_offsets_from(&w0).unwrap(),
+            vec![0.0, 300.0, 0.0, 0.0]
+        );
+        // Sollwerte B12 Phase 2
+        assert!(near(f1.area() * 1e-6, 77.9544, 1e-6), "{}", f1.area());
+        assert!(near(f1.volume() * 1e-9, 17.149968, 1e-5), "{}", f1.volume());
+        let (mut s0, mut s1) = (w0.solid(), w1.solid());
+        assert!(
+            near(volume(&s1, AAC), 16.7987, 1e-4),
+            "{}",
+            volume(&s1, AAC)
+        );
+        assert!(
+            near(volume(&s1, INSULATION), 15.0359, 1e-4),
+            "{}",
+            volume(&s1, INSULATION)
+        );
+        merge_seam(&mut s0, &mut s1, OK_EG);
+        // An der Stufe (Außenfläche EG bei y = 8000 und OG bei y = 8300)
+        // bleiben die Kanten, an den übrigen drei Seiten keine Naht außen
+        let at_y = |s: &Solid, y: f64| {
+            edges_at(s, OK_EG)
+                .iter()
+                .filter(|e| near(e.a.y, y, 1e-6) && near(e.b.y, y, 1e-6))
+                .count()
+        };
+        assert!(at_y(&s0, 8000.0) > 0 && at_y(&s1, 8300.0) > 0);
+        // Westseite nur, wo EG und OG decken (y < 8000); darüber kragt das OG aus
+        let west =
+            |e: &Edge| e.a.x.abs() < 1e-6 && e.b.x.abs() < 1e-6 && e.a.y.min(e.b.y) < 8000.0 - 1e-6;
+        let south = |e: &Edge| e.a.y.abs() < 1e-6 && e.b.y.abs() < 1e-6;
+        for s in [&s0, &s1] {
+            for e in edges_at(s, OK_EG) {
+                assert!(!west(&e) && !south(&e), "{e:?}");
+            }
+        }
+        // Ostseite: die Unterkante der Auskragung (y 8000 … 8300) bleibt
+        let ost: Vec<Edge> = edges_at(&s1, OK_EG)
+            .into_iter()
+            .filter(|e| near(e.a.x, 10000.0, 1e-6) && near(e.b.x, 10000.0, 1e-6))
+            .collect();
+        assert!(!ost.is_empty());
+        for e in &ost {
+            assert!(e.a.y.min(e.b.y) >= 8000.0 - 1e-6, "{e:?}");
+        }
+    }
+
+    #[test]
+    fn versatz_abgelehnt_wenn_segment_verschwindet() {
+        assert!(eg()
+            .stacked(&[0.0, -9000.0, 0.0, 0.0], OK_EG, OK_OG)
+            .is_none());
+        assert!(eg().stacked(&[0.0; 3], OK_EG, OK_OG).is_none());
+        assert!(eg().stacked(&[0.0; 4], OK_OG, OK_EG).is_none());
+    }
+
+    #[test]
+    fn schnell_genug_fuer_gummiband_zwei_geschosse() {
+        let t = std::time::Instant::now();
+        let runs = 100;
+        for k in 0..runs {
+            let mut g = eg();
+            g.points[1].y += k as f64;
+            g.points[2].y += k as f64;
+            let og = g.stacked(&[0.0; 4], OK_EG, OK_OG).unwrap();
+            let ((w0, f0), (w1, f1)) = (mit_decke(g), mit_decke(og));
+            let (mut s0, mut s1) = (w0.solid(), w1.solid());
+            merge_seam(&mut s0, &mut s1, OK_EG);
+            let _ = (f0.solid(), f1.solid());
+        }
+        let per = t.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+        eprintln!("EG und OG mit Decken und Naht: {per:.3} ms");
+        assert!(per < 5.0);
     }
 }

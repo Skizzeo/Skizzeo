@@ -888,6 +888,7 @@ impl Model {
             closed: run.closed,
             ref_side: run.ref_side,
             layers: self.wall_layers(set),
+            base: self.level_z(run.base).unwrap_or(0.0),
             height: run.height,
             joints: Default::default(),
         })

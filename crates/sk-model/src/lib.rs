@@ -47,6 +47,6 @@ pub use qto::{
     FootingQto, LayerQto, SlabQto, WallQto,
 };
 pub use solid::Solid;
-pub use solid::{edge_kind, material, Edge, Tri};
+pub use solid::{edge_kind, material, merge_seam, Edge, Tri};
 pub use txn::{Change, Direction, Touched, Txn};
 pub use wall::{EndCut, Gap, Joints, Layer, Line2, RefSide, WallChain};

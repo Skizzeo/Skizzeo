@@ -175,3 +175,182 @@ impl Solid {
         out
     }
 }
+
+/// Waagerechte Kante in Höhe `z` am Rand einer senkrechten Fläche: Kante,
+/// Normale und Baustoff der Fläche, und ob die Fläche unter der Kante liegt.
+struct SeamEdge {
+    edge: usize,
+    n: Vec3,
+    mat: u16,
+    below: bool,
+}
+
+fn seam_edges(s: &Solid, z: f64) -> Vec<SeamEdge> {
+    const EPS: f64 = 1e-6;
+    let at = |p: Vec3| (p.z - z).abs() < EPS;
+    // Senkrechte Dreiecke mit einer Seite in Höhe z
+    let walls: Vec<(Vec3, Vec3, &Tri)> = s
+        .triangles
+        .iter()
+        .filter(|t| t.n.z.abs() < EPS)
+        .filter_map(|t| {
+            (0..3).find_map(|k| {
+                let (a, b) = (t.p[k], t.p[(k + 1) % 3]);
+                (at(a) && at(b)).then_some((a, b, t))
+            })
+        })
+        .collect();
+    let mut out = Vec::new();
+    for (i, e) in s.edges.iter().enumerate() {
+        if !(at(e.a) && at(e.b)) {
+            continue;
+        }
+        let d = e.b - e.a;
+        let len = d.length();
+        if len < EPS {
+            continue;
+        }
+        let d = d * (1.0 / len);
+        // Fläche, auf deren Rand die Kante liegt
+        let face = walls.iter().find(|(a, b, _)| {
+            let off = |p: Vec3| {
+                let r = p - e.a;
+                (r - d * r.dot(d)).length()
+            };
+            if off(*a) > 1e-3 || off(*b) > 1e-3 {
+                return false;
+            }
+            let (ta, tb) = ((*a - e.a).dot(d), (*b - e.a).dot(d));
+            ta.max(tb) > 1e-3 && ta.min(tb) < len - 1e-3
+        });
+        if let Some((_, _, t)) = face {
+            let zc = (t.p[0].z + t.p[1].z + t.p[2].z) / 3.0;
+            out.push(SeamEdge {
+                edge: i,
+                n: t.n,
+                mat: t.mat,
+                below: zc < z,
+            });
+        }
+    }
+    out
+}
+
+/// Kante `e` ohne die Abschnitte `cut` (längs der Kante ab `e.a`).
+fn without(e: Edge, mut cut: Vec<(f64, f64)>, out: &mut Vec<Edge>) {
+    let d = e.b - e.a;
+    let len = d.length();
+    cut.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let at = |t: f64| e.a + d * (t / len);
+    let mut from = 0.0;
+    for (a, b) in cut {
+        if a - from > 1e-6 {
+            out.push(Edge {
+                a: at(from),
+                b: at(a),
+                kind: e.kind,
+            });
+        }
+        from = f64::max(from, b);
+    }
+    if len - from > 1e-6 {
+        out.push(Edge {
+            a: at(from),
+            b: e.b,
+            kind: e.kind,
+        });
+    }
+}
+
+/// Fügt zwei übereinanderstehende Körper in Höhe `z` ohne Naht zusammen
+/// (EG-Wand und OG-Wand, auch ihre Schnittflächen): Läuft eine senkrechte
+/// Fläche mit gleichem Baustoff in derselben Ebene über `z` weiter, fällt die
+/// waagerechte Kante dort weg, in beiden Körpern und genau so weit, wie sich
+/// die Flächen überdecken. Deckungsgleiche Deck- und Bodenflächen in `z`
+/// entfallen ebenfalls. Wo die Flächen springen (Vor- oder Rücksprung) oder
+/// der Baustoff wechselt, bleibt die Kante: eine saubere Stufe.
+///
+/// Die Körper bleiben getrennt (Auswahl und Mengen je Geschoss).
+pub fn merge_seam(lower: &mut Solid, upper: &mut Solid, z: f64) {
+    let (sa, sb) = (seam_edges(lower, z), seam_edges(upper, z));
+    let mut cut_a: Vec<Vec<(f64, f64)>> = vec![Vec::new(); lower.edges.len()];
+    let mut cut_b: Vec<Vec<(f64, f64)>> = vec![Vec::new(); upper.edges.len()];
+    for x in &sa {
+        let ea = lower.edges[x.edge];
+        let len = (ea.b - ea.a).length();
+        let d = (ea.b - ea.a) * (1.0 / len);
+        for y in &sb {
+            if x.mat != y.mat || x.below == y.below || x.n.dot(y.n) < 1.0 - 1e-9 {
+                continue;
+            }
+            let eb = upper.edges[y.edge];
+            // Gleiche Ebene: Abstand längs der Normale; gleiche Höhe ist gegeben
+            if (eb.a - ea.a).dot(x.n).abs() > 1e-3 || (eb.b - ea.a).dot(x.n).abs() > 1e-3 {
+                continue;
+            }
+            let (t0, t1) = ((eb.a - ea.a).dot(d), (eb.b - ea.a).dot(d));
+            let (lo, hi) = (t0.min(t1).max(0.0), t0.max(t1).min(len));
+            if hi - lo < 1e-6 {
+                continue;
+            }
+            cut_a[x.edge].push((lo, hi));
+            // Derselbe Abschnitt längs der oberen Kante
+            let lb = (eb.b - eb.a).length();
+            let db = (eb.b - eb.a) * (1.0 / lb);
+            let (u0, u1) = (
+                (ea.a + d * lo - eb.a).dot(db),
+                (ea.a + d * hi - eb.a).dot(db),
+            );
+            cut_b[y.edge].push((u0.min(u1), u0.max(u1)));
+        }
+    }
+    for (s, cuts) in [(&mut *lower, cut_a), (&mut *upper, cut_b)] {
+        if cuts.iter().all(|c| c.is_empty()) {
+            continue;
+        }
+        let mut edges = Vec::with_capacity(s.edges.len());
+        for (e, c) in s.edges.iter().zip(cuts) {
+            if c.is_empty() {
+                edges.push(*e);
+            } else {
+                without(*e, c, &mut edges);
+            }
+        }
+        s.edges = edges;
+    }
+    // Deckungsgleiche Flächen in z (Deckfläche unten, Bodenfläche oben)
+    let flat_at = |t: &Tri| t.n.z.abs() > 1.0 - 1e-9 && t.p.iter().all(|p| (p.z - z).abs() < 1e-6);
+    let same = |a: &Tri, b: &Tri| {
+        a.p.iter()
+            .all(|p| b.p.iter().any(|q| (*p - *q).length() < 1e-6))
+    };
+    let tops: Vec<usize> = (0..lower.triangles.len())
+        .filter(|&i| flat_at(&lower.triangles[i]) && lower.triangles[i].n.z > 0.0)
+        .collect();
+    let bottoms: Vec<usize> = (0..upper.triangles.len())
+        .filter(|&i| flat_at(&upper.triangles[i]) && upper.triangles[i].n.z < 0.0)
+        .collect();
+    let (mut drop_a, mut drop_b) = (
+        vec![false; lower.triangles.len()],
+        vec![false; upper.triangles.len()],
+    );
+    for &i in &tops {
+        let a = &lower.triangles[i];
+        if let Some(&j) = bottoms.iter().find(|&&j| {
+            !drop_b[j] && upper.triangles[j].mat == a.mat && same(a, &upper.triangles[j])
+        }) {
+            drop_a[i] = true;
+            drop_b[j] = true;
+        }
+    }
+    let mut k = 0;
+    lower.triangles.retain(|_| {
+        k += 1;
+        !drop_a[k - 1]
+    });
+    k = 0;
+    upper.triangles.retain(|_| {
+        k += 1;
+        !drop_b[k - 1]
+    });
+}

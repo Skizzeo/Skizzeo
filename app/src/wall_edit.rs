@@ -411,6 +411,7 @@ mod tests {
     fn setup() -> (Scene, Camera) {
         let mut s = Scene::new();
         s.add_wall(&WallChain {
+            base: 0.0,
             points: vec![
                 vec3(0.0, 0.0, 0.0),
                 vec3(0.0, 4000.0, 0.0),
@@ -589,6 +590,7 @@ mod tests {
         let mut s = Scene::new();
         let run = s
             .add_wall(&WallChain {
+                base: 0.0,
                 points: vec![
                     vec3(0.0, 0.0, 0.0),
                     vec3(0.0, 6000.0, 0.0),
@@ -626,6 +628,7 @@ mod tests {
         let mut s = Scene::new();
         let run = s
             .add_wall(&WallChain {
+                base: 0.0,
                 points: vec![vec3(0.0, -20000.0, 0.0), vec3(0.0, 20000.0, 0.0)],
                 closed: false,
                 ref_side: RefSide::Left,

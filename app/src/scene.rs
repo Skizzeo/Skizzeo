@@ -958,6 +958,7 @@ mod tests {
 
     fn rechteck(x: f64) -> WallChain {
         WallChain {
+            base: 0.0,
             points: vec![
                 vec3(x, 0.0, 0.0),
                 vec3(x, 4000.0, 0.0),
