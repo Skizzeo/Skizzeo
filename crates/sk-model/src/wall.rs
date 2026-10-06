@@ -75,6 +75,63 @@ impl Layer {
     }
 }
 
+/// Gerade in der Grundrissebene: Punkt und Richtung.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Line2 {
+    pub p: Vec3,
+    pub d: Vec3,
+}
+
+impl Line2 {
+    /// Schnittpunkt mit der Geraden `p + d·t`; `None`, wenn (fast) parallel.
+    pub(crate) fn meet(&self, p: Vec3, d: Vec3) -> Option<Vec3> {
+        let c = cross2(d, self.d);
+        if c.abs() < 1e-6 {
+            return None;
+        }
+        Some(p + d * (cross2(self.p - p, self.d) / c))
+    }
+}
+
+/// Abschluss eines freien Endes eines offenen Wandzugs.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum EndCut {
+    /// Rechtwinklig am gezeichneten Endpunkt.
+    #[default]
+    Square,
+    /// L-Anschluss an einen anderen Zug: alle Schichten enden an der
+    /// Gehrungslinie, ohne Stirnfläche und Stirnkanten (wie eine Ecke im Zug).
+    Miter(Line2),
+    /// T-Anschluss: je Schicht die Linie, an der sie endet, und ob sie dort
+    /// ohne Fuge in denselben Baustoff übergeht (dann ohne Stirnkanten).
+    Layers(Vec<(Line2, bool)>),
+}
+
+/// Unterbrochene Konturkante: Auf der Fläche im Versatz `off` von Segment
+/// `seg` fehlen die Kanten zwischen `from` und `to`, gemessen längs des
+/// Segments ab seinem Anfangspunkt (T-Anschluss ohne Fuge).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Gap {
+    pub seg: usize,
+    pub off: f64,
+    pub from: f64,
+    pub to: f64,
+}
+
+/// Anschlüsse an andere Wandzüge, aus dem Modell abgeleitet.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Joints {
+    /// Anfang und Ende eines offenen Zuges.
+    pub ends: [EndCut; 2],
+    pub gaps: Vec<Gap>,
+}
+
+impl Joints {
+    pub fn is_empty(&self) -> bool {
+        self.ends == [EndCut::Square, EndCut::Square] && self.gaps.is_empty()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct WallChain {
     /// Eckpunkte der Bezugslinie (z wird ignoriert, Wände stehen auf z = 0).
@@ -84,21 +141,23 @@ pub struct WallChain {
     /// Schichten von außen nach innen.
     pub layers: Vec<Layer>,
     pub height: f64,
+    /// Anschlüsse an andere Wandzüge (Paket B5a).
+    pub joints: Joints,
 }
 
 /// Größter Abstand einer Gehrungsecke vom Linienpunkt, in Wanddicken.
 const MITER_LIMIT: f64 = 8.0;
 
-fn flat(p: Vec3) -> Vec3 {
+pub(crate) fn flat(p: Vec3) -> Vec3 {
     vec3(p.x, p.y, 0.0)
 }
 
 /// Rechte Normale einer Richtung in der Ebene.
-fn right_of(d: Vec3) -> Vec3 {
+pub(crate) fn right_of(d: Vec3) -> Vec3 {
     vec3(d.y, -d.x, 0.0)
 }
 
-fn cross2(a: Vec3, b: Vec3) -> f64 {
+pub(crate) fn cross2(a: Vec3, b: Vec3) -> f64 {
     a.x * b.y - a.y * b.x
 }
 
@@ -147,6 +206,30 @@ impl WallChain {
             .map(|i| (pts[(i + 1) % n] - pts[i]).normalized())
             .collect();
         Some((pts, closed, dirs))
+    }
+
+    /// Freies Ende `e` (0 Anfang, 1 Ende) eines offenen Zuges: Punkt auf der
+    /// Bezugslinie und Zeichenrichtung des Endsegments.
+    pub(crate) fn end_frame(&self, e: usize) -> Option<(Vec3, Vec3)> {
+        let (pts, closed, dirs) = self.layout()?;
+        if closed {
+            return None;
+        }
+        Some(match e {
+            0 => (pts[0], dirs[0]),
+            _ => (pts[pts.len() - 1], dirs[dirs.len() - 1]),
+        })
+    }
+
+    /// Anfangspunkt und Richtung von Segment `seg` (bereinigte Punkte).
+    pub(crate) fn segment_frame(&self, seg: usize) -> Option<(Vec3, Vec3)> {
+        let (pts, _, dirs) = self.layout()?;
+        Some((pts[seg], *dirs.get(seg)?))
+    }
+
+    /// Bereich des Wandkörpers quer zur Bezugslinie (kleiner, größer).
+    pub(crate) fn span(&self) -> (f64, f64) {
+        self.ref_side.span(self.thickness())
     }
 
     /// Anzahl der Wandsegmente.
@@ -210,7 +293,33 @@ impl WallChain {
 
     /// Eckpunkte der zur Bezugslinie parallelen Wandfläche im Abstand `off`
     /// (je Punkt der bereinigten Linie einer, mit Gehrung an den Ecken).
+    /// An angeschlossenen Enden gilt der Abschluss der Schicht, zu der die
+    /// Fläche gehört (bei einer Schichtfuge die äußere der beiden).
     pub fn face_corners(&self, off: f64) -> Vec<Vec3> {
+        self.face_corners_in(off, self.layer_at(off))
+    }
+
+    /// Schicht, zu der die Fläche im Versatz `off` gehört.
+    fn layer_at(&self, off: f64) -> Option<usize> {
+        if self.joints.ends == [EndCut::Square, EndCut::Square] {
+            return None;
+        }
+        self.layer_offsets()
+            .iter()
+            .position(|&(lo, hi, _)| off >= lo - 1e-6 && off <= hi + 1e-6)
+    }
+
+    /// Abschlusslinie an Ende `e` (0 Anfang, 1 Ende) für Schicht `layer`.
+    fn end_line(&self, e: usize, layer: Option<usize>) -> Option<Line2> {
+        match &self.joints.ends[e] {
+            EndCut::Square => None,
+            EndCut::Miter(l) => Some(*l),
+            EndCut::Layers(v) => layer.and_then(|i| v.get(i)).map(|x| x.0),
+        }
+    }
+
+    /// Wie [`WallChain::face_corners`] für eine Fläche von Schicht `layer`.
+    pub fn face_corners_in(&self, off: f64, layer: Option<usize>) -> Vec<Vec3> {
         let Some((pts, closed, dirs)) = self.layout() else {
             return Vec::new();
         };
@@ -238,11 +347,70 @@ impl WallChain {
                         x
                     }
                 }
-                (false, _) => pts[0] + right_of(dirs[0]) * off,
-                (_, false) => pts[n - 1] + right_of(dirs[m - 1]) * off,
+                (false, _) => {
+                    let p = pts[0] + right_of(dirs[0]) * off;
+                    self.end_line(0, layer)
+                        .and_then(|l| l.meet(p, dirs[0]))
+                        .unwrap_or(p)
+                }
+                (_, false) => {
+                    let p = pts[n - 1] + right_of(dirs[m - 1]) * off;
+                    self.end_line(1, layer)
+                        .and_then(|l| l.meet(p, dirs[m - 1]))
+                        .unwrap_or(p)
+                }
             }
         };
         (0..n).map(corner).collect()
+    }
+
+    /// Kanten der Flächen im Versatz `off` von Segment `seg` ohne angeschlossene Stellen.
+    fn gaps_at(&self, seg: usize, off: f64) -> impl Iterator<Item = (f64, f64)> + '_ {
+        self.joints
+            .gaps
+            .iter()
+            .filter(move |g| g.seg == seg && (g.off - off).abs() < 1e-3)
+            .map(|g| (g.from, g.to))
+    }
+
+    /// Kante von `p` nach `q` auf der Fläche `off` von Segment `seg` (Anfangspunkt
+    /// und Richtung `frame`), ohne die Lücken.
+    fn gapped_edge(
+        &self,
+        s: &mut Solid,
+        seg: usize,
+        off: f64,
+        frame: (Vec3, Vec3),
+        p: Vec3,
+        q: Vec3,
+    ) {
+        let (base, dir) = frame;
+        let mut gaps: Vec<(f64, f64)> = self.gaps_at(seg, off).collect();
+        if gaps.is_empty() {
+            s.edge(p, q);
+            return;
+        }
+        gaps.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let (tp, tq) = ((flat(p) - base).dot(dir), (flat(q) - base).dot(dir));
+        if (tq - tp).abs() < 1e-9 {
+            return;
+        }
+        let at = |t: f64| p + (q - p) * ((t - tp) / (tq - tp));
+        let (lo, hi) = (tp.min(tq), tp.max(tq));
+        let mut from = lo;
+        for (a, b) in gaps {
+            let (a, b) = (a.max(lo), b.min(hi));
+            if b <= a {
+                continue;
+            }
+            if a - from > 1e-6 {
+                s.edge(at(from), at(a));
+            }
+            from = from.max(b);
+        }
+        if hi - from > 1e-6 {
+            s.edge(at(from), at(hi));
+        }
     }
 
     /// Verschiebt Segment `i` um `d` entlang seiner Normalen. Die Nachbarsegmente
@@ -325,9 +493,14 @@ impl WallChain {
     /// Wandkörper mit Gehrungen an den Ecken, eine Schale je Schicht.
     pub fn solid(&self) -> Solid {
         let mut s = Solid::default();
-        for ((lo, hi, mat), l) in self.layer_offsets().into_iter().zip(&self.layers) {
+        for (i, ((lo, hi, mat), l)) in self
+            .layer_offsets()
+            .into_iter()
+            .zip(&self.layers)
+            .enumerate()
+        {
             s.mat = mat;
-            self.prism(&mut s, lo, hi, self.height, mat, l.cut_kind());
+            self.prism(&mut s, i, lo, hi, self.height, mat, l.cut_kind());
         }
         s
     }
@@ -339,9 +512,14 @@ impl WallChain {
             return self.solid();
         }
         let mut s = Solid::default();
-        for ((lo, hi, mat), l) in self.layer_offsets().into_iter().zip(&self.layers) {
+        for (i, ((lo, hi, mat), l)) in self
+            .layer_offsets()
+            .into_iter()
+            .zip(&self.layers)
+            .enumerate()
+        {
             s.mat = mat;
-            self.prism(&mut s, lo, hi, cut, mat | material::CUT, l.cut_kind());
+            self.prism(&mut s, i, lo, hi, cut, mat | material::CUT, l.cut_kind());
         }
         s
     }
@@ -359,9 +537,17 @@ impl WallChain {
         let h = self.height;
         let up = vec3(0.0, 0.0, h);
         let side = |p: Vec3| (p - p0).dot(n);
-        for ((lo, hi, mat), l) in self.layer_offsets().into_iter().zip(&self.layers) {
+        for (li, ((lo, hi, mat), l)) in self
+            .layer_offsets()
+            .into_iter()
+            .zip(&self.layers)
+            .enumerate()
+        {
             let kind = l.cut_kind();
-            let (cl, ch) = (self.face_corners(lo), self.face_corners(hi));
+            let (cl, ch) = (
+                self.face_corners_in(lo, Some(li)),
+                self.face_corners_in(hi, Some(li)),
+            );
             let cnt = cl.len();
             let t = (hi - lo).max(1.0);
             for i in 0..self.segment_count() {
@@ -400,8 +586,21 @@ impl WallChain {
                 s.edge(a + up, b + up);
                 for p in [a, b] {
                     let o = off(p);
-                    if (o - lo).abs() < 1e-3 || (o - hi).abs() < 1e-3 {
-                        s.edge(p, p + up);
+                    let face = if (o - lo).abs() < 1e-3 {
+                        Some(lo)
+                    } else if (o - hi).abs() < 1e-3 {
+                        Some(hi)
+                    } else {
+                        None
+                    };
+                    let t = (flat(p) - pts[i]).dot(dirs[i]);
+                    if let Some(f) = face {
+                        if !self
+                            .gaps_at(i, f)
+                            .any(|(g0, g1)| t > g0 + 1e-6 && t < g1 - 1e-6)
+                        {
+                            s.edge(p, p + up);
+                        }
                     }
                 }
             }
@@ -421,7 +620,17 @@ impl WallChain {
     /// Prisma zwischen den Wandflächen `lo` und `hi` (lo < hi) bis Höhe `h`.
     /// Flächen, die nicht auf der Wandkontur liegen (Schichtfugen), bekommen feine Kanten.
     /// Ist die Deckfläche ein Schnitt, wird sie ringsum mit `cut_kind` umrandet.
-    fn prism(&self, s: &mut Solid, lo: f64, hi: f64, h: f64, top_mat: u16, cut_kind: u8) {
+    #[allow(clippy::too_many_arguments)]
+    fn prism(
+        &self,
+        s: &mut Solid,
+        layer: usize,
+        lo: f64,
+        hi: f64,
+        h: f64,
+        top_mat: u16,
+        cut_kind: u8,
+    ) {
         let Some((pts, closed, dirs)) = self.layout() else {
             return;
         };
@@ -436,8 +645,8 @@ impl WallChain {
             }
         };
         let top_kind = if cut { cut_kind } else { edge_kind::VIEW };
-        let ca = self.face_corners(lo);
-        let cb = self.face_corners(hi);
+        let ca = self.face_corners_in(lo, Some(layer));
+        let cb = self.face_corners_in(hi, Some(layer));
         let side_mat = s.mat;
         let up = vec3(0.0, 0.0, h);
         let t = (hi - lo).max(1.0);
@@ -461,27 +670,58 @@ impl WallChain {
             s.quad(b0, b1, b1 + up, b0 + up, nr);
             for (p, q, off) in [(a0, a1, lo), (b0, b1, hi)] {
                 s.edge_kind = kind_at(off, edge_kind::VIEW);
-                s.edge(p, q);
+                self.gapped_edge(s, i, off, (pts[i], dirs[i]), p, q);
                 s.edge_kind = if cut {
                     cut_kind
                 } else {
                     kind_at(off, top_kind)
                 };
-                s.edge(p + up, q + up);
+                self.gapped_edge(s, i, off, (pts[i], dirs[i]), p + up, q + up);
             }
         }
         if !closed {
             let (d0, d1) = (dirs[0], dirs[m - 1]);
             let (a0, b0, a1, b1) = (ca[0], cb[0], ca[n - 1], cb[n - 1]);
-            s.elem = 0;
-            s.quad(a0, b0, b0 + up, a0 + up, -d0);
-            s.elem = (m - 1) as u32;
-            s.quad(a1, a1 + up, b1 + up, b1, d1);
-            for (p, q) in [(a0, b0), (a1, b1)] {
-                s.edge_kind = edge_kind::VIEW;
-                s.edge(p, q);
-                s.edge_kind = top_kind;
-                s.edge(p + up, q + up);
+            // Stirnfläche und -kanten je Ende: bei L keine (Gehrung wie im Zug),
+            // bei T ohne Fuge keine Kanten
+            let face = |e: usize| -> (bool, bool) {
+                match &self.joints.ends[e] {
+                    EndCut::Square => (true, true),
+                    EndCut::Miter(_) => (false, false),
+                    EndCut::Layers(v) => (true, !v.get(layer).is_some_and(|x| x.1)),
+                }
+            };
+            // Normale der Stirnfläche aus ihrer Lage (rechtwinklig: genau die Zugrichtung)
+            let normal = |e: usize, p: Vec3, q: Vec3, out: Vec3| -> Vec3 {
+                if self.joints.ends[e] == EndCut::Square {
+                    return out;
+                }
+                let nn = right_of((q - p).normalized());
+                if nn.dot(out) < 0.0 {
+                    -nn
+                } else {
+                    nn
+                }
+            };
+            let ends = [(a0, b0, -d0, 0), (a1, b1, d1, m - 1)];
+            for (e, &(p, q, out, elem)) in ends.iter().enumerate() {
+                if face(e).0 {
+                    s.elem = elem as u32;
+                    let nn = normal(e, p, q, out);
+                    if e == 0 {
+                        s.quad(p, q, q + up, p + up, nn);
+                    } else {
+                        s.quad(p, p + up, q + up, q, nn);
+                    }
+                }
+            }
+            for (e, &(p, q, _, _)) in ends.iter().enumerate() {
+                if face(e).1 {
+                    s.edge_kind = edge_kind::VIEW;
+                    s.edge(p, q);
+                    s.edge_kind = top_kind;
+                    s.edge(p + up, q + up);
+                }
             }
         }
         // Senkrechte Kanten an Ecken (nicht dort, wo die Wand gerade weiterläuft)
@@ -536,6 +776,7 @@ mod tests {
             ref_side,
             layers: vec![Layer::new(400.0, material::PLAIN)],
             height: 3500.0,
+            joints: Default::default(),
         }
     }
 
@@ -615,6 +856,7 @@ mod verschieben {
             ref_side: RefSide::Left,
             layers: vec![Layer::new(400.0, material::PLAIN)],
             height: 3500.0,
+            joints: Default::default(),
         }
     }
 
@@ -718,6 +960,7 @@ mod schichten {
             ref_side,
             layers: exterior_wall_layers(),
             height: 3500.0,
+            joints: Default::default(),
         }
     }
 
@@ -777,6 +1020,7 @@ mod richtung {
             ref_side: RefSide::Left,
             layers: vec![Layer::new(400.0, material::PLAIN)],
             height: 3500.0,
+            joints: Default::default(),
         };
         let s = w.solid();
         let xs: Vec<f64> = s

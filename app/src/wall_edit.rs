@@ -421,6 +421,7 @@ mod tests {
             ref_side: RefSide::Left,
             layers: Vec::new(),
             height: 3500.0,
+            joints: Default::default(),
         })
         .unwrap();
         let c = Camera::looking_at(
@@ -600,6 +601,7 @@ mod tests {
                 ref_side: RefSide::Left,
                 layers: Vec::new(),
                 height: 3500.0,
+                joints: Default::default(),
             })
             .unwrap();
         let c = Camera::parallel(vec3(3000.0, 3000.0, 1750.0), FRAC_PI_2, 0.0, 6000.0);
@@ -629,6 +631,7 @@ mod tests {
                 ref_side: RefSide::Left,
                 layers: Vec::new(),
                 height: 3500.0,
+                joints: Default::default(),
             })
             .unwrap();
         // Kamera steht neben der Wand und blickt an ihr entlang: Der Anfang liegt hinter ihr

@@ -13,13 +13,14 @@ use crate::element::{
 };
 use crate::guid::{Guid, GuidGen};
 use crate::id::Arena;
+use crate::join::{self, Join, JoinEnd, JoinKind};
 use crate::library::{
     material_key, LayerFunction, LayerSet, LayerSetId, MatCategory, Material, MaterialId,
     MaterialLayer,
 };
 use crate::solid::material;
 use crate::txn::{Change, Direction, Key, Open, Touched, Txn};
-use crate::wall::{clean_points, segment_count, Layer, RefSide, WallChain};
+use crate::wall::{clean_points, cross2, segment_count, EndCut, Layer, RefSide, WallChain};
 use sk_math::{vec3, Vec3};
 
 /// Voreinstellungen für neue Bauteile.
@@ -27,6 +28,7 @@ use sk_math::{vec3, Vec3};
 pub struct Defaults {
     pub storey: StoreyId,
     pub exterior_wall: LayerSetId,
+    pub interior_wall: LayerSetId,
 }
 
 /// Das Projekt (IFC: IfcProject).
@@ -54,6 +56,8 @@ pub struct Model {
     storeys: Arena<Storey>,
     elements: Arena<Element>,
     runs: Arena<WallRun>,
+    /// Anschlüsse zwischen Wandzügen, aus den Punkten abgeleitet (B5a).
+    joins: Vec<Join>,
     defaults: Defaults,
     /// Zuletzt vergebene laufende Nummer je Kategorie (wird nie zurückgesetzt).
     numbers: [u32; Category::ALL.len()],
@@ -196,6 +200,8 @@ impl Model {
             guid: guids.next_guid(),
             name: "Projekt".into(),
         };
+        // Nach der Projekt-Guid angelegt, damit die älteren Guids gleich bleiben
+        let interior_wall = layer_sets.insert(interior_set(guids.next_guid(), aerated));
         Model {
             project,
             attr,
@@ -204,9 +210,11 @@ impl Model {
             storeys,
             elements: Arena::new(),
             runs: Arena::new(),
+            joins: Vec::new(),
             defaults: Defaults {
                 storey,
                 exterior_wall,
+                interior_wall,
             },
             numbers: [0; Category::ALL.len()],
             revision: 0,
@@ -242,7 +250,7 @@ impl Model {
                 *c = (*c).max(n);
             }
         }
-        Model {
+        let mut m = Model {
             project,
             attr,
             materials,
@@ -250,13 +258,16 @@ impl Model {
             storeys,
             elements,
             runs,
+            joins: Vec::new(),
             defaults,
             numbers,
             revision: 0,
             guids,
             txn: None,
             strict: false,
-        }
+        };
+        m.joins = m.detect_all();
+        m
     }
 
     pub fn project(&self) -> &Project {
@@ -401,6 +412,8 @@ impl Model {
         match self.layer_sets.get_mut(id) {
             Some(old) => {
                 *old = s;
+                // Andere Dicken: Anschlüsse neu erkennen
+                self.joins = self.detect_all();
                 self.touch();
                 true
             }
@@ -572,6 +585,7 @@ impl Model {
             .map(|k| self.new_wall(run, k, &template))
             .collect();
         self.runs.get_mut(run)?.segments = segments;
+        self.update_joins(&[run]);
         self.touch();
         Some(run)
     }
@@ -580,7 +594,33 @@ impl Model {
     /// jede Wand ihren Platz (Verschieben). Ändert sie sich, behalten die Wände
     /// ihre Kennung nach Lage (Regel 11): ein geteiltes Segment gibt sie an seinen
     /// längeren Teil weiter, ein weggefallenes Segment nimmt genau seine mit.
-    pub fn set_run_points(&mut self, id: RunId, points: &[Vec3]) -> bool {
+    ///
+    /// Angeschlossene Züge werden im selben Schritt mitgeführt (B5a). Liefert
+    /// alle Züge, deren Körper sich dadurch ändern kann, `None` bei ungültigen
+    /// Punkten.
+    pub fn set_run_points(&mut self, id: RunId, points: &[Vec3]) -> Option<Vec<RunId>> {
+        if !self.set_points(id, points) {
+            return None;
+        }
+        let moved = self.follow(id);
+        let mut out = moved.clone();
+        let partners = |m: &Model, out: &mut Vec<RunId>| {
+            for r in &moved {
+                for p in m.joined_runs(*r) {
+                    if !out.contains(&p) {
+                        out.push(p);
+                    }
+                }
+            }
+        };
+        partners(self, &mut out);
+        self.update_joins(&moved);
+        partners(self, &mut out);
+        Some(out)
+    }
+
+    /// [`Model::set_run_points`] ohne Mitführen und ohne Anschlüsse.
+    fn set_points(&mut self, id: RunId, points: &[Vec3]) -> bool {
         let Some(run) = self.runs.get(id) else {
             return false;
         };
@@ -651,6 +691,7 @@ impl Model {
             note!(self, Element, self.elements, e);
             self.elements.remove(e);
         }
+        self.update_joins(&[id]);
         self.touch();
         true
     }
@@ -667,10 +708,44 @@ impl Model {
         self.run(run)?.segments.get(seg).copied()
     }
 
-    /// Geometrie eines Wandzugs mit den Schichten seines Aufbaus.
-    /// Haben die Wände eines Zuges verschiedene Aufbauten, gilt bis zu den
-    /// Wandanschlüssen (Paket B5) der des ersten Segments.
+    /// Geometrie eines Wandzugs mit den Schichten seines Aufbaus und seinen
+    /// Anschlüssen an andere Züge. Haben die Wände eines Zuges verschiedene
+    /// Aufbauten, gilt der des ersten Segments.
     pub fn chain(&self, id: RunId) -> Option<WallChain> {
+        let mut c = self.base_chain(id)?;
+        let prio = |k: u16| self.material_by_key(k).map_or(0, |m| m.priority);
+        for j in &self.joins {
+            if j.a_run == id {
+                let cut = match (j.kind, j.b_end) {
+                    (JoinKind::L, Some(eb)) => self
+                        .base_chain(j.b_run)
+                        .and_then(|b| join::l_miter(&c, j.a_end, &b, eb))
+                        .map(EndCut::Miter),
+                    _ => self
+                        .segment_of(j.b)
+                        .zip(self.base_chain(j.b_run))
+                        .and_then(|((_, s), h)| join::t_cut(&c, j.a_end, &h, s, &prio))
+                        .map(|x| EndCut::Layers(x.0)),
+                };
+                if let Some(cut) = cut {
+                    c.joints.ends[j.a_end.index()] = cut;
+                }
+            }
+            if j.b_run == id && j.kind == JoinKind::T {
+                let gaps = self
+                    .segment_of(j.b)
+                    .zip(self.base_chain(j.a_run))
+                    .and_then(|((_, s), a)| join::t_cut(&a, j.a_end, &c, s, &prio));
+                if let Some((_, g)) = gaps {
+                    c.joints.gaps.extend(g);
+                }
+            }
+        }
+        Some(c)
+    }
+
+    /// Geometrie eines Wandzugs ohne Anschlüsse.
+    fn base_chain(&self, id: RunId) -> Option<WallChain> {
         let run = self.run(id)?;
         let set = run
             .segments
@@ -683,6 +758,7 @@ impl Model {
             ref_side: run.ref_side,
             layers: self.wall_layers(set),
             height: run.height,
+            joints: Default::default(),
         })
     }
 
@@ -691,6 +767,288 @@ impl Model {
         self.runs
             .ids()
             .filter_map(|id| self.chain(id).map(|c| (id, c)))
+    }
+
+    // --- Anschlüsse (B5a) -------------------------------------------------
+
+    /// Anschlüsse zwischen Wandzügen, aus den Punkten abgeleitet.
+    pub fn joins(&self) -> &[Join] {
+        &self.joins
+    }
+
+    /// Züge, die über einen Anschluss mit `id` verbunden sind.
+    pub fn joined_runs(&self, id: RunId) -> Vec<RunId> {
+        let mut out = Vec::new();
+        for j in &self.joins {
+            let other = match (j.a_run == id, j.b_run == id) {
+                (true, false) => j.b_run,
+                (false, true) => j.a_run,
+                _ => continue,
+            };
+            if !out.contains(&other) {
+                out.push(other);
+            }
+        }
+        out
+    }
+
+    /// Zug ohne Anschlüsse, mit Grundriss je Segment.
+    fn base(&self, run: RunId) -> Option<Base> {
+        let chain = self.base_chain(run)?;
+        let foot = join::footprints(&chain);
+        let mut lo = vec3(f64::INFINITY, f64::INFINITY, 0.0);
+        let mut hi = -lo;
+        for p in foot.iter().flatten() {
+            lo = vec3(lo.x.min(p.x), lo.y.min(p.y), 0.0);
+            hi = vec3(hi.x.max(p.x), hi.y.max(p.y), 0.0);
+        }
+        Some(Base {
+            run,
+            chain,
+            segments: self.run(run)?.segments.clone(),
+            foot,
+            lo,
+            hi,
+        })
+    }
+
+    /// Grober Rahmen je Zug, den sein Grundriss samt Fangabstand nicht
+    /// verlässt: Eckpunkte plus Reichweite der Gehrungen. Billiger Vortest.
+    fn rough_boxes(&self) -> Vec<(RunId, Vec3, Vec3)> {
+        self.runs
+            .iter()
+            .map(|(id, r)| {
+                let t: f64 = r
+                    .segments
+                    .first()
+                    .and_then(|e| self.element(*e))
+                    .and_then(|e| e.layer_set)
+                    .and_then(|s| self.layer_set(s))
+                    .map_or(0.0, |s| s.layers.iter().map(|l| l.thickness).sum());
+                let m = t * 9.0 + join::SNAP;
+                let mut lo = vec3(f64::INFINITY, f64::INFINITY, 0.0);
+                let mut hi = -lo;
+                for q in &r.points {
+                    lo = vec3(lo.x.min(q.x), lo.y.min(q.y), 0.0);
+                    hi = vec3(hi.x.max(q.x), hi.y.max(q.y), 0.0);
+                }
+                (id, lo - vec3(m, m, 0.0), hi + vec3(m, m, 0.0))
+            })
+            .collect()
+    }
+
+    /// Freies Ende eines offenen Zuges (gespeicherte Punkte sind bereinigt).
+    fn end_point(r: &WallRun, e: JoinEnd) -> Option<Vec3> {
+        if r.closed || r.points.len() < 2 {
+            return None;
+        }
+        match e {
+            JoinEnd::Start => r.points.first().copied(),
+            JoinEnd::End => r.points.last().copied(),
+        }
+    }
+
+    /// Anschluss des freien Endes `e` von Zug `run`, frisch aus den Punkten.
+    fn detect_end(&self, run: RunId, e: JoinEnd, boxes: &[(RunId, Vec3, Vec3)]) -> Option<Join> {
+        let p = Model::end_point(self.runs.get(run)?, e)?;
+        let a = self.base(run)?;
+        let cands: Vec<Base> = boxes
+            .iter()
+            .filter(|(id, lo, hi)| *id != run && inside(p, *lo, *hi))
+            .filter_map(|(id, _, _)| self.base(*id))
+            .collect();
+        Model::detect(&a, e, &cands)
+    }
+
+    /// Erkennt den Anschluss des freien Endes `e` von `a`: L, wenn ein freies
+    /// Ende eines anderen Zuges höchstens [`join::SNAP`] entfernt liegt, sonst
+    /// T an das nächste nicht parallele Segment, in dessen Grundriss oder
+    /// höchstens [`join::SNAP`] vor dessen Fläche das Ende liegt.
+    fn detect(a: &Base, e: JoinEnd, all: &[Base]) -> Option<Join> {
+        let (p, da) = a.chain.end_frame(e.index())?;
+        let elem = |b: &Base, e: JoinEnd| match e {
+            JoinEnd::Start => b.segments.first().copied(),
+            JoinEnd::End => b.segments.last().copied(),
+        };
+        let others = || all.iter().filter(|b| b.run != a.run);
+        let mut l: Option<(f64, &Base, JoinEnd, Vec3, Vec3)> = None;
+        for b in others() {
+            for eb in JoinEnd::BOTH {
+                let Some((q, db)) = b.chain.end_frame(eb.index()) else {
+                    continue;
+                };
+                let d = (q - p).length();
+                if d <= join::SNAP && l.as_ref().is_none_or(|x| d < x.0) {
+                    l = Some((d, b, eb, q, db));
+                }
+            }
+        }
+        if let Some((_, b, eb, q, db)) = l {
+            return Some(Join {
+                a: elem(a, e)?,
+                a_end: e,
+                b: elem(b, eb)?,
+                b_end: Some(eb),
+                kind: JoinKind::L,
+                a_run: a.run,
+                b_run: b.run,
+                anchor: crate::wall::Line2 { p: q, d: db },
+            });
+        }
+        let mut t: Option<(f64, f64, &Base, usize)> = None;
+        for b in others() {
+            if p.x < b.lo.x - join::SNAP
+                || p.y < b.lo.y - join::SNAP
+                || p.x > b.hi.x + join::SNAP
+                || p.y > b.hi.y + join::SNAP
+            {
+                continue;
+            }
+            for (k, f) in b.foot.iter().enumerate() {
+                let d = join::quad_distance(f, p);
+                let Some((_, db)) = b.chain.segment_frame(k) else {
+                    continue;
+                };
+                let sin = join::sin_between(da, db);
+                if d > join::SNAP || sin < join::MIN_SIN {
+                    continue;
+                }
+                let better = t
+                    .as_ref()
+                    .is_none_or(|x| d < x.0 - 1e-6 || (d <= x.0 + 1e-6 && sin > x.1));
+                if better {
+                    t = Some((d, sin, b, k));
+                }
+            }
+        }
+        let (_, _, b, k) = t?;
+        Some(Join {
+            a: elem(a, e)?,
+            a_end: e,
+            b: *b.segments.get(k)?,
+            b_end: None,
+            kind: JoinKind::T,
+            a_run: a.run,
+            b_run: b.run,
+            anchor: join::facing_face(&a.chain, e, &b.chain, k)?,
+        })
+    }
+
+    /// Alle Anschlüsse frisch aus den Punkten.
+    fn detect_all(&self) -> Vec<Join> {
+        let boxes = self.rough_boxes();
+        let mut out: Vec<Join> = self
+            .runs
+            .ids()
+            .flat_map(|r| JoinEnd::BOTH.map(|e| self.detect_end(r, e, &boxes)))
+            .flatten()
+            .collect();
+        sort_joins(&mut out);
+        out
+    }
+
+    /// Erkennt die Anschlüsse neu, die sich durch Änderungen an `runs` ändern
+    /// können: freie Enden dieser Züge, Enden, die an ihnen hängen, und freie
+    /// Enden anderer Züge in ihrer Nähe.
+    fn update_joins(&mut self, runs: &[RunId]) {
+        let boxes = self.rough_boxes();
+        let changed: Vec<&(RunId, Vec3, Vec3)> =
+            boxes.iter().filter(|b| runs.contains(&b.0)).collect();
+        let mut ends: Vec<(RunId, JoinEnd)> = Vec::new();
+        for (id, r) in self.runs.iter() {
+            for e in JoinEnd::BOTH {
+                let Some(p) = Model::end_point(r, e) else {
+                    continue;
+                };
+                if runs.contains(&id) || changed.iter().any(|c| inside(p, c.1, c.2)) {
+                    ends.push((id, e));
+                }
+            }
+        }
+        for j in &self.joins {
+            if runs.contains(&j.a_run) || runs.contains(&j.b_run) {
+                ends.push((j.a_run, j.a_end));
+            }
+        }
+        ends.sort_by_key(|(r, e)| (r.index(), *e));
+        ends.dedup();
+        let fresh: Vec<Join> = ends
+            .iter()
+            .filter_map(|&(r, e)| self.detect_end(r, e, &boxes))
+            .collect();
+        self.joins.retain(|j| !ends.contains(&(j.a_run, j.a_end)));
+        self.joins.extend(fresh);
+        sort_joins(&mut self.joins);
+    }
+
+    /// Führt die Züge mit, die an `root` hängen, und weiter die an diesen
+    /// (B5a, Abschnitt 3): ein T-Ende entlang seiner Richtung auf die neue
+    /// zugewandte Wirtsfläche, ein L-Ende auf den neuen Endpunkt des Partners.
+    /// Liefert `root` und alle bewegten Züge.
+    fn follow(&mut self, root: RunId) -> Vec<RunId> {
+        let mut moved = vec![root];
+        let mut k = 0;
+        while k < moved.len() {
+            let r = moved[k];
+            k += 1;
+            let deps: Vec<Join> = self
+                .joins
+                .iter()
+                .filter(|j| j.b_run == r && j.a_run != root)
+                .cloned()
+                .collect();
+            for j in deps {
+                let Some(p) = self.follow_target(&j) else {
+                    continue;
+                };
+                if self.set_end_point(j.a_run, j.a_end, p) && !moved.contains(&j.a_run) {
+                    moved.push(j.a_run);
+                }
+            }
+        }
+        moved
+    }
+
+    /// Neue Lage des Endes `j.a_end`, wenn sich der Partner seit dem Erkennen
+    /// bewegt hat.
+    fn follow_target(&self, j: &Join) -> Option<Vec3> {
+        let a = self.base_chain(j.a_run)?;
+        let (p, da) = a.end_frame(j.a_end.index())?;
+        match j.kind {
+            JoinKind::L => {
+                let (q, _) = self.base_chain(j.b_run)?.end_frame(j.b_end?.index())?;
+                ((q - j.anchor.p).length() > 1e-6).then_some(q)
+            }
+            JoinKind::T => {
+                let (run, seg) = self.segment_of(j.b)?;
+                let face = join::facing_face(&a, j.a_end, &self.base_chain(run)?, seg)?;
+                let (o, d) = (j.anchor, face.d);
+                let same = cross2(d, o.d).abs() < 1e-9
+                    && d.dot(o.d) > 0.0
+                    && cross2(o.p - face.p, d).abs() < 1e-6;
+                if same {
+                    return None;
+                }
+                face.meet(p, da)
+            }
+        }
+    }
+
+    /// Legt das freie Ende `e` eines offenen Zuges auf `p`.
+    fn set_end_point(&mut self, run: RunId, e: JoinEnd, p: Vec3) -> bool {
+        let Some(r) = self.runs.get(run).filter(|r| !r.closed) else {
+            return false;
+        };
+        let mut pts = r.points.clone();
+        let i = match e {
+            JoinEnd::Start => 0,
+            JoinEnd::End => pts.len() - 1,
+        };
+        if (pts[i] - vec3(p.x, p.y, pts[i].z)).length() < 1e-9 {
+            return false;
+        }
+        pts[i] = vec3(p.x, p.y, pts[i].z);
+        self.set_points(run, &pts)
     }
 
     // --- Rückgängig -------------------------------------------------------
@@ -812,6 +1170,22 @@ impl Model {
         if touched.attr {
             self.attr.bump();
         }
+        if touched.library {
+            self.joins = self.detect_all();
+        } else {
+            let runs = touched.runs.clone();
+            for r in &runs {
+                self.joined_runs(*r)
+                    .into_iter()
+                    .for_each(|p| touched.run(p));
+            }
+            self.update_joins(&runs);
+            for r in &runs {
+                self.joined_runs(*r)
+                    .into_iter()
+                    .for_each(|p| touched.run(p));
+            }
+        }
         self.touch();
         touched
     }
@@ -923,7 +1297,56 @@ impl Model {
                 }
             }
         }
+        for j in &self.joins {
+            if self.segment_of(j.a).map(|s| s.0) != Some(j.a_run)
+                || self.segment_of(j.b).map(|s| s.0) != Some(j.b_run)
+            {
+                out.push(format!("Anschluss {:?}: Wand fehlt", j.a));
+            }
+        }
+        // Regel 13: Sichtbares hängt nur an den Punkten, nicht am Verlauf
+        let fresh = self.detect_all();
+        if fresh.len() != self.joins.len()
+            || !fresh.iter().all(|f| self.joins.iter().any(|j| j.same(f)))
+        {
+            out.push("Anschlüsse passen nicht zu den Punkten".into());
+        }
         out
+    }
+}
+
+/// Zug ohne Anschlüsse, zum Erkennen der Anschlüsse.
+struct Base {
+    run: RunId,
+    chain: WallChain,
+    segments: Vec<ElementId>,
+    foot: Vec<[Vec3; 4]>,
+    /// Umschließendes Rechteck des Grundrisses.
+    lo: Vec3,
+    hi: Vec3,
+}
+
+/// Liegt `p` im Rechteck `lo`..`hi` (Grundriss)?
+fn inside(p: Vec3, lo: Vec3, hi: Vec3) -> bool {
+    p.x >= lo.x && p.y >= lo.y && p.x <= hi.x && p.y <= hi.y
+}
+
+/// Feste Reihenfolge: nach anschließendem Zug und Ende.
+fn sort_joins(j: &mut [Join]) {
+    j.sort_by_key(|j| (j.a_run.index(), j.a_end));
+}
+
+/// Aufbau „IW 17,5 Gasbeton“: eine tragende Schicht aus `material`.
+pub(crate) fn interior_set(guid: Guid, material: MaterialId) -> LayerSet {
+    LayerSet {
+        guid,
+        name: "IW 17,5 Gasbeton".into(),
+        layers: vec![MaterialLayer {
+            material,
+            thickness: 175.0,
+            function: LayerFunction::Structure,
+            core: true,
+        }],
     }
 }
 
@@ -1053,7 +1476,7 @@ mod tests {
         let before = m.run(r).unwrap().segments.clone();
         let rev = m.revision();
         let moved = m.chain(r).unwrap().with_segment_moved(1, 500.0).unwrap();
-        assert!(m.set_run_points(r, &moved.points));
+        assert!(m.set_run_points(r, &moved.points).is_some());
         assert_eq!(m.run(r).unwrap().segments, before);
         assert!(m.revision() > rev);
         // Offener Zug mit weniger Punkten: überzählige Wände verschwinden
@@ -1075,11 +1498,11 @@ mod tests {
             )
             .unwrap();
         let segs = m2.run(r2).unwrap().segments.clone();
-        assert!(m2.set_run_points(r2, &pts[..2]));
+        assert!(m2.set_run_points(r2, &pts[..2]).is_some());
         assert_eq!(m2.run(r2).unwrap().segments, segs[..1]);
         assert!(m2.element(segs[1]).is_none());
         // Und wieder mehr: neue Wand mit neuer Nummer
-        assert!(m2.set_run_points(r2, &pts));
+        assert!(m2.set_run_points(r2, &pts).is_some());
         let e = m2.run(r2).unwrap().segments[1];
         assert_ne!(e, segs[1]);
         assert_eq!(m2.element(e).unwrap().number, "AW-003");
@@ -1095,7 +1518,7 @@ mod tests {
         // Punkt in Segment 1 einfügen (oben, 0..8000 bei y = 6000), längerer Teil rechts
         let mut q = p.clone();
         q.insert(2, vec3(3000.0, 6000.0, 0.0));
-        assert!(m.set_run_points(r, &q));
+        assert!(m.set_run_points(r, &q).is_some());
         let t = m.run(r).unwrap().segments.clone();
         assert_eq!(t.len(), 5);
         assert_eq!((t[0], t[3], t[4]), (s[0], s[2], s[3]));
@@ -1103,7 +1526,7 @@ mod tests {
         assert_eq!(t[2], s[1], "der längere Teil behält die Kennung");
         assert_eq!(m.element(t[1]).unwrap().number, "AW-005");
         // Den Punkt wieder entfernen: das kurze Stück verschwindet mit seiner Kennung
-        assert!(m.set_run_points(r, &p));
+        assert!(m.set_run_points(r, &p).is_some());
         assert_eq!(m.run(r).unwrap().segments, s);
         assert!(m.element(t[1]).is_none());
         for (k, e) in s.iter().enumerate() {
@@ -1128,7 +1551,7 @@ mod tests {
             )
             .unwrap();
         let s2 = m.run(r2).unwrap().segments.clone();
-        assert!(m.set_run_points(r2, &o[1..]));
+        assert!(m.set_run_points(r2, &o[1..]).is_some());
         assert_eq!(m.run(r2).unwrap().segments, s2[1..]);
         assert!(m.element(s2[0]).is_none());
         assert!(m.check().is_empty(), "{:?}", m.check());
@@ -1241,7 +1664,7 @@ mod tests {
             let mut p = start.clone();
             p[2].x += i as f64 * 10.0;
             p[3].x += i as f64 * 10.0;
-            assert!(m.set_run_points(r, &p));
+            assert!(m.set_run_points(r, &p).is_some());
         }
         let t = m.commit().unwrap();
         assert_eq!(t.changes.len(), 1, "{:?}", t.changes);
@@ -1265,8 +1688,8 @@ mod tests {
         let mut p = start.clone();
         p.insert(1, vec3(0.0, 3000.0, 0.0));
         p[2].x += 500.0;
-        assert!(m.set_run_points(r, &p));
-        assert!(m.set_run_points(r, &start[..3]));
+        assert!(m.set_run_points(r, &p).is_some());
+        assert!(m.set_run_points(r, &start[..3]).is_some());
         let touched = m.rollback();
         assert_eq!(touched.runs, vec![r]);
         assert!(!m.in_step());

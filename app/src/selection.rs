@@ -249,6 +249,7 @@ mod tests {
             ref_side: RefSide::Left,
             layers: Vec::new(),
             height: 2750.0,
+            joints: Default::default(),
         }
     }
 

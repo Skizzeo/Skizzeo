@@ -548,7 +548,7 @@ fn a09_zweischalige_aussenwand() {
     assert_eq!(q.width, 315.0);
     // Die Wand liegt innen an der geklickten Linie (Bezugsseite außen):
     // Im Grundriss reicht der Körper von x = 0 bis x = 315 mm
-    let mesh = s.mesh(ViewKind::Plan, None, None);
+    let mesh = s.mesh(ViewKind::Plan, None, &[]);
     let xs = mesh.faces.iter().filter(|v| v[0] < 1000.0).map(|v| v[0]);
     let (lo, hi) = xs.fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)));
     assert!(lo.abs() < 1e-3 && (hi - 315.0).abs() < 1e-3, "{lo} … {hi}");
@@ -585,7 +585,7 @@ fn a10_bauzeichnung_linienstaerken_und_schraffuren() {
     );
     assert!(cut_w > layer_w && layer_w > fine_w);
 
-    let plan = s.mesh(ViewKind::Plan, None, None);
+    let plan = s.mesh(ViewKind::Plan, None, &[]);
     let white = [1.0f32, 1.0, 1.0];
     assert!(plan.faces.iter().all(|v| v[6..9] == white), "Flächen weiß");
     let has = |m: &MeshData, pat: f32| m.faces.iter().any(|v| v[9] == pat);
@@ -604,17 +604,17 @@ fn a10_bauzeichnung_linienstaerken_und_schraffuren() {
     // Schnitt A–A: ebenfalls Schraffuren und dicke Kontur
     let mut sect = SectionLine::default();
     sect.ensure(&s);
-    let cut = s.mesh(ViewKind::Section, sect.plane(), None);
+    let cut = s.mesh(ViewKind::Section, sect.plane(), &[]);
     assert!(has(&cut, pattern::DIAGONAL) && has(&cut, pattern::ZIGZAG));
     assert!(cut.edges.iter().any(|e| e.1 == cut_w));
     assert!(cut.edges.iter().any(|e| e.1 == layer_w));
 
     // Ansicht: keine Schraffur, Ansichtskanten mittel
-    let front = s.mesh(ViewKind::Front, None, None);
+    let front = s.mesh(ViewKind::Front, None, &[]);
     assert!(!has(&front, pattern::DIAGONAL) && !has(&front, pattern::ZIGZAG));
     assert!(front.edges.iter().any(|e| e.1 == view_w));
     // 3D: farbige Flächen, keine Schraffur
-    let p3 = s.mesh(ViewKind::Persp, None, None);
+    let p3 = s.mesh(ViewKind::Persp, None, &[]);
     assert!(p3.faces.iter().all(|v| v[9] == pattern::NONE));
     assert!(p3.faces.iter().any(|v| v[6..9] != white));
 }
@@ -654,7 +654,7 @@ fn a11_schnittlinie_a_a() {
     assert!(!other.handle(&down(x, y), &s, &c, W, H, 1.0, false).consumed);
 
     // Der Schnitt zeigt das Gebäude an der neuen Stelle: Schnittflächen bei y = ny
-    let cut = s.mesh(ViewKind::Section, sect.plane(), None);
+    let cut = s.mesh(ViewKind::Section, sect.plane(), &[]);
     let on_plane = cut
         .faces
         .iter()
@@ -1020,8 +1020,8 @@ fn a20_szo_speichern_und_oeffnen() {
         (f, m.edges.len())
     };
     assert_eq!(
-        sig(&t.mesh(ViewKind::Plan, None, None)),
-        sig(&s.mesh(ViewKind::Plan, None, None)),
+        sig(&t.mesh(ViewKind::Plan, None, &[])),
+        sig(&s.mesh(ViewKind::Plan, None, &[])),
         "Grundriss gleich"
     );
     assert!(t.model().check().is_empty(), "{:?}", t.model().check());

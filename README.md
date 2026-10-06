@@ -1,5 +1,8 @@
 # Skizzeo
 
+Version 0.2.0 (Meilenstein M1: Speichern und Öffnen als `.szo`), dazu
+Innenwände mit Wandanschlüssen (B5a).
+
 3D-Gebäudemodellierer als native Rust-App. Keine externen Crates: Fenster,
 Eingabe, OpenGL-Anbindung, 2D-Grafik, Logo und Oberfläche sind selbst geschrieben.
 
@@ -10,7 +13,7 @@ Eingabe, OpenGL-Anbindung, 2D-Grafik, Logo und Oberfläche sind selbst geschrieb
 | `sk-math` | Vektoren, Matrizen, Strahltests (f64, Millimeter) |
 | `sk-paint` | Eigene 2D-Vektorgrafik mit Kantenglättung, eigener TrueType-Leser, PNG- und SVG-Ausgabe |
 | `sk-ui` | SK-Logo als Vektor, Farbwerte, eigene Titelleiste, Paneele und Knöpfe |
-| `sk-model` | Gebäudemodell als Datenbank: Bauteile mit Guid (IFC-Kurzform) und Nummer (AW-001 …), Arena mit Generationszähler, Baustoff- und Aufbau-Bibliothek, Geschoss; Wandzug mit Schichten, Bezugsseite, Gehrungen, Grundriss- und Senkrechtschnitt |
+| `sk-model` | Gebäudemodell als Datenbank: Bauteile mit Guid (IFC-Kurzform) und Nummer (AW-001 …), Arena mit Generationszähler, Baustoff- und Aufbau-Bibliothek, Geschoss; Wandzug mit Schichten, Bezugsseite, Gehrungen, Grundriss- und Senkrechtschnitt; Anschlüsse zwischen Wandzügen (L, T) mit Verschnitt nach Baustoffpriorität |
 | `sk-platform` | Windows-Fenster ohne System-Titelleiste, Eingabe, OpenGL-Kontext (eigene Win32-FFI) |
 | `sk-render` | OpenGL-3.3-Darstellung: Himmel, Boden, Flächen, Schraffuren, Kanten, Oberfläche |
 | `app` | Programm `skizzeo`: Kamera, Navigation, Paneele, Gebäude-Eingabe, Gummiband, Schnittlinie |
@@ -51,6 +54,14 @@ innen, Höhe 3,50 m. Eingabe in 3D und im Grundriss:
 - Rücktaste: letzten Punkt zurücknehmen, Esc: Zug abbrechen, nochmals Esc: Eingabe beenden
 - Strg+Z / Strg+Y: rückgängig / wiederholen
 
+Knopf „Innenwand“ (darunter) zeichnet mit demselben Werkzeug Innenwände:
+17,5 cm Gasbeton, Bezugsseite standardmäßig Achse, Nummern IW-001 ….
+Endet eine Wand höchstens 5 cm vor oder in einer anderen Wand, schließt sie
+an (T); treffen sich zwei freie Wandenden, entsteht eine Ecke mit Gehrung (L).
+Beim T reicht jede Schicht bis zur ersten Schicht der anderen Wand mit
+gleicher oder höherer Priorität; gleiche Baustoffe gehen ohne Fuge
+ineinander über. Wird eine Wand verschoben, gehen die angeschlossenen mit.
+
 Gummiband (violett am äußeren Wandfuß, in 3D und im Grundriss; erscheint,
 sobald der Mauszeiger über einem Wandsegment steht):
 
@@ -67,7 +78,8 @@ Auswahl und Eigenschaften (ohne aktive Gebäude-Eingabe):
   ihr Umriss erscheint in Akzentfarbe
 - Rechts unter „Ansichten“ zeigt das Paneel „Eigenschaften“ Nummer, Kategorie,
   Geschoss, Länge, Dicke, Höhe, Flächen außen und innen, Volumen und je Schicht
-  Volumen und Masse (brutto, aus der Parametrik in `sk-model::qto`)
+  Volumen und Masse (netto, an Anschlüssen verschnitten, aus der Parametrik
+  in `sk-model::qto`)
 - Klick ins Leere oder Esc hebt die Auswahl auf; nach Rückgängig verschwindet
   sie, wenn es die Wand nicht mehr gibt
 

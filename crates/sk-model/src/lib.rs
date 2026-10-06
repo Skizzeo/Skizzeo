@@ -10,6 +10,7 @@ pub mod attr;
 pub mod element;
 pub mod guid;
 pub mod id;
+pub mod join;
 pub mod library;
 pub mod model;
 pub mod qto;
@@ -28,6 +29,7 @@ pub use element::{
 };
 pub use guid::{Guid, GuidGen};
 pub use id::{Arena, Id};
+pub use join::{Join, JoinEnd, JoinKind};
 pub use library::{
     material_key, LayerFunction, LayerSet, LayerSetId, MatCategory, Material, MaterialId,
     MaterialLayer,
@@ -37,4 +39,4 @@ pub use qto::{run_qto, wall_qto, LayerQto, WallQto};
 pub use solid::Solid;
 pub use solid::{edge_kind, material, Edge, Tri};
 pub use txn::{Change, Direction, Touched, Txn};
-pub use wall::{Layer, RefSide, WallChain};
+pub use wall::{EndCut, Gap, Joints, Layer, Line2, RefSide, WallChain};

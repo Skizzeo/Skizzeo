@@ -1,10 +1,14 @@
 //! Mengen je Bauteil (IFC: Qto_WallBaseQuantities), aus der Parametrik
-//! berechnet, nie aus dem Anzeigenetz. Alle Werte brutto (ohne Öffnungen und
-//! ohne Verschnitt zwischen Wandzügen), Einheit mm, mm², mm³ und kg.
+//! berechnet, nie aus dem Anzeigenetz. Einheit mm, mm², mm³ und kg.
+//!
+//! Schichtmengen und Volumen sind netto: verschnitten an den Anschlüssen
+//! zwischen Wandzügen (B5a). Grundfläche, Ansichtsflächen und
+//! `volume_gross` bleiben brutto (ohne Verschnitt). Öffnungen gibt es noch nicht.
 
 use crate::element::{ElementId, RunId};
 use crate::library::MaterialId;
 use crate::model::Model;
+use crate::wall::WallChain;
 use sk_math::Vec3;
 
 /// Mengen einer Schicht in einem Wandsegment.
@@ -15,7 +19,7 @@ pub struct LayerQto {
     pub thickness: f64,
     /// Länge der Schichtmittellinie im Segment (mm).
     pub length: f64,
-    /// Grundfläche der Schicht im Segment, Viereck mit Gehrungsschnitten (mm²).
+    /// Grundfläche der Schicht im Segment, verschnitten an Ecken und Anschlüssen (mm²).
     pub area: f64,
     /// Grundfläche × Höhe (mm³).
     pub volume: f64,
@@ -32,14 +36,16 @@ pub struct WallQto {
     pub width: f64,
     /// Höhe (IFC Height), mm.
     pub height: f64,
-    /// Summe der Schicht-Grundflächen (IFC GrossFootprintArea), mm².
+    /// Grundfläche ohne Verschnitt mit anderen Zügen (IFC GrossFootprintArea), mm².
     pub footprint: f64,
     /// Außenfläche: Länge der Außenkante × Höhe (IFC GrossSideArea), mm².
     pub side_outer: f64,
     /// Innenfläche: Länge der Innenkante × Höhe, mm².
     pub side_inner: f64,
-    /// Summe der Schichtvolumen (IFC GrossVolume), mm³.
+    /// Summe der Schichtvolumen, netto (IFC NetVolume), mm³.
     pub volume: f64,
+    /// Volumen ohne Verschnitt mit anderen Zügen (IFC GrossVolume), mm³.
+    pub volume_gross: f64,
     /// Schichten von außen nach innen.
     pub layers: Vec<LayerQto>,
 }
@@ -73,13 +79,27 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
     let pts = chain.clean_points();
     let offsets = chain.layer_offsets();
     let h = chain.height;
+    let gross = WallChain {
+        joints: Default::default(),
+        ..chain.clone()
+    };
     let (c_out, c_in) = (
-        chain.face_corners(chain.outer_offset()),
-        chain.face_corners(chain.inner_offset()),
+        gross.face_corners(gross.outer_offset()),
+        gross.face_corners(gross.inner_offset()),
     );
+    let gross_faces: Vec<(Vec<Vec3>, Vec<Vec3>)> = offsets
+        .iter()
+        .map(|&(a, b, _)| (gross.face_corners(a), gross.face_corners(b)))
+        .collect();
     let faces: Vec<(Vec<Vec3>, Vec<Vec3>)> = offsets
         .iter()
-        .map(|&(a, b, _)| (chain.face_corners(a), chain.face_corners(b)))
+        .enumerate()
+        .map(|(i, &(a, b, _))| {
+            (
+                chain.face_corners_in(a, Some(i)),
+                chain.face_corners_in(b, Some(i)),
+            )
+        })
         .collect();
     let n = pts.len();
     (0..chain.segment_count())
@@ -104,7 +124,10 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                     }
                 })
                 .collect();
-            let footprint: f64 = layers.iter().map(|l| l.area).sum();
+            let footprint: f64 = gross_faces
+                .iter()
+                .map(|(fa, fb)| area(&[fa[k], fa[j], fb[j], fb[k]]))
+                .sum();
             WallQto {
                 length: (pts[j] - pts[k]).length(),
                 width: chain.thickness(),
@@ -112,7 +135,8 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                 footprint,
                 side_outer: (c_out[j] - c_out[k]).length() * h,
                 side_inner: (c_in[j] - c_in[k]).length() * h,
-                volume: footprint * h,
+                volume: layers.iter().map(|l| l.volume).sum(),
+                volume_gross: footprint * h,
                 layers,
             }
         })

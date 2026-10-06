@@ -106,6 +106,9 @@ pub struct Scene {
     all_dirty: bool,
     /// Wandzüge, deren Mengen nach einer Live-Änderung noch fehlen.
     unsettled: Vec<RunId>,
+    /// Züge, die sich im offenen Schritt live geändert haben (der gezogene und
+    /// die mitgeführten oder angeschlossenen).
+    live: Vec<RunId>,
     bounds: Option<Aabb>,
     /// Aufgelöste Attributtabellen des Modells.
     table: DrawTable,
@@ -165,6 +168,7 @@ impl Scene {
             dirty: Vec::new(),
             all_dirty: true,
             unsettled: Vec::new(),
+            live: Vec::new(),
             bounds: None,
             table,
             theme,
@@ -338,6 +342,7 @@ impl Scene {
         if self.model.in_step() {
             self.commit();
         }
+        self.live.clear();
         self.model.begin(label);
     }
 
@@ -351,6 +356,7 @@ impl Scene {
             }
             self.redo.clear();
         }
+        self.live.clear();
         self.rebuild_dirty(false);
         self.settle();
     }
@@ -359,6 +365,7 @@ impl Scene {
     /// Wandzüge werden neu berechnet.
     pub fn rollback(&mut self) {
         let touched = self.model.rollback();
+        self.live.clear();
         self.mark_touched(&touched);
         self.rebuild_dirty(false);
     }
@@ -377,31 +384,57 @@ impl Scene {
 
     /// Legt die Außenwand an, die `w` beschreibt (Punkte, Bezugsseite, Höhe),
     /// mit dem voreingestellten Außenwand-Aufbau.
+    #[cfg(test)]
     pub fn add_wall(&mut self, w: &WallChain) -> Option<RunId> {
+        self.add_wall_as(w, Category::ExteriorWall)
+    }
+
+    /// Legt eine Wand der Kategorie `cat` an (Außen- oder Innenwand), mit dem
+    /// dafür voreingestellten Aufbau. Angeschlossene Züge werden neu berechnet.
+    pub fn add_wall_as(&mut self, w: &WallChain, cat: Category) -> Option<RunId> {
         self.begin("Wand zeichnen");
-        let set = self.model.defaults().exterior_wall;
-        let run = self.model.add_wall_run(
-            &w.points,
-            w.closed,
-            w.ref_side,
-            w.height,
-            set,
-            Category::ExteriorWall,
-        );
+        let d = self.model.defaults();
+        let set = match cat {
+            Category::InteriorWall => d.interior_wall,
+            _ => d.exterior_wall,
+        };
+        let run = self
+            .model
+            .add_wall_run(&w.points, w.closed, w.ref_side, w.height, set, cat);
         if let Some(id) = run {
             self.mark(id);
+            for p in self.model.joined_runs(id) {
+                self.mark(p);
+            }
         }
         self.commit();
         run
     }
 
     /// Neue Eckpunkte eines Wandzugs ohne Verlaufseintrag (Live-Änderung beim
-    /// Ziehen). Nur dieser Wandzug wird neu berechnet.
+    /// Ziehen). Neu berechnet werden dieser Wandzug und die, die an ihm hängen.
     pub fn set_run_points(&mut self, run: RunId, points: &[Vec3]) {
-        if self.model.set_run_points(run, points) {
-            self.mark(run);
+        if let Some(runs) = self.model.set_run_points(run, points) {
+            for r in runs {
+                self.mark(r);
+                if !self.live.contains(&r) {
+                    self.live.push(r);
+                }
+            }
             self.rebuild_dirty(true);
         }
+    }
+
+    /// Züge im Live-Netz, während `run` gezogen wird: er selbst und alle, die
+    /// sich dabei mitändern.
+    pub fn live_set(&self, run: RunId) -> Vec<RunId> {
+        let mut v = vec![run];
+        for &r in self.live.iter().chain(&self.model.joined_runs(run)) {
+            if !v.contains(&r) {
+                v.push(r);
+            }
+        }
+        v
     }
 
     pub fn undo(&mut self) -> bool {
@@ -427,20 +460,15 @@ impl Scene {
         true
     }
 
-    /// Netz einer Ansicht aus allen Wandzügen außer `except` (der gerade gezogene).
-    /// Beim Schnitt: Ebene `section` (Punkt, Normale zum Betrachter), alles davor
-    /// wird weggeschnitten.
-    pub fn mesh(
-        &mut self,
-        view: ViewKind,
-        section: Option<Plane>,
-        except: Option<RunId>,
-    ) -> MeshData {
+    /// Netz einer Ansicht aus allen Wandzügen außer `except` (die gerade
+    /// gezogenen). Beim Schnitt: Ebene `section` (Punkt, Normale zum Betrachter),
+    /// alles davor wird weggeschnitten.
+    pub fn mesh(&mut self, view: ViewKind, section: Option<Plane>, except: &[RunId]) -> MeshData {
         let drawing = view != ViewKind::Persp;
         let mut m = MeshData::default();
         let table = &self.table;
         for c in self.cache.iter_mut().flatten() {
-            if Some(c.id) == except {
+            if except.contains(&c.id) {
                 continue;
             }
             if let Some(s) = c.view_solid(view, section) {
@@ -450,15 +478,22 @@ impl Scene {
         m
     }
 
-    /// Netz eines einzelnen Wandzugs (Live-Netz beim Ziehen).
-    pub fn mesh_run(&mut self, view: ViewKind, section: Option<Plane>, run: RunId) -> MeshData {
+    /// Netz einzelner Wandzüge (Live-Netz beim Ziehen).
+    pub fn mesh_runs(
+        &mut self,
+        view: ViewKind,
+        section: Option<Plane>,
+        runs: &[RunId],
+    ) -> MeshData {
         let drawing = view != ViewKind::Persp;
         let mut m = MeshData::default();
         let table = &self.table;
-        if let Some(Some(c)) = self.cache.get_mut(run.index() as usize) {
-            if c.id == run {
-                if let Some(s) = c.view_solid(view, section) {
-                    mesh_into(&mut m, s, drawing, table);
+        for &run in runs {
+            if let Some(Some(c)) = self.cache.get_mut(run.index() as usize) {
+                if c.id == run {
+                    if let Some(s) = c.view_solid(view, section) {
+                        mesh_into(&mut m, s, drawing, table);
+                    }
                 }
             }
         }
@@ -589,6 +624,7 @@ mod tests {
             ref_side: RefSide::Left,
             layers: Vec::new(),
             height: 3500.0,
+            joints: Default::default(),
         }
     }
 
@@ -617,12 +653,12 @@ mod tests {
         assert!((s.bounds().unwrap().1.y - 4000.0).abs() < 1e-6);
         let mut full = Scene::with_model(s.model().clone());
         for v in [ViewKind::Persp, ViewKind::Plan] {
-            assert!(same(&s.mesh(v, None, None), &full.mesh(v, None, None)));
+            assert!(same(&s.mesh(v, None, &[]), &full.mesh(v, None, &[])));
         }
         let pl = Some((vec3(0.0, 2000.0, 0.0), vec3(0.0, -1.0, 0.0)));
         assert!(same(
-            &s.mesh(ViewKind::Section, pl, None),
-            &full.mesh(ViewKind::Section, pl, None)
+            &s.mesh(ViewKind::Section, pl, &[]),
+            &full.mesh(ViewKind::Section, pl, &[])
         ));
         assert!(s.model().check().is_empty());
     }
@@ -657,7 +693,7 @@ mod tests {
             .find(|(_, p)| p.number == 5)
             .map(|(id, p)| (id, p.clone()))
             .unwrap();
-        let before = s.mesh(ViewKind::Plan, None, None);
+        let before = s.mesh(ViewKind::Plan, None, &[]);
         let red = Pen {
             color: [255, 0, 0],
             ..pen
@@ -665,7 +701,7 @@ mod tests {
         assert!(s.set_pen(id, red));
         assert!(s.table().rev > rev);
         // Der Grund der Schnittflächen ist jetzt rot
-        let after = s.mesh(ViewKind::Plan, None, None);
+        let after = s.mesh(ViewKind::Plan, None, &[]);
         assert_ne!(before.faces, after.faces);
         assert!(after
             .faces
@@ -673,7 +709,7 @@ mod tests {
             .any(|f| f[6] == 1.0 && f[7] == 0.0 && f[8] == 0.0));
         // Rückgängig stellt die alte Farbe wieder her
         assert!(s.undo());
-        assert_eq!(s.mesh(ViewKind::Plan, None, None).faces, before.faces);
+        assert_eq!(s.mesh(ViewKind::Plan, None, &[]).faces, before.faces);
     }
 
     #[test]
@@ -681,9 +717,9 @@ mod tests {
         let mut s = Scene::with_model(Model::with_seed(2));
         let a = s.add_wall(&rechteck(0.0)).unwrap();
         s.add_wall(&rechteck(10000.0)).unwrap();
-        let whole = s.mesh(ViewKind::Persp, None, None);
-        let rest = s.mesh(ViewKind::Persp, None, Some(a));
-        let live = s.mesh_run(ViewKind::Persp, None, a);
+        let whole = s.mesh(ViewKind::Persp, None, &[]);
+        let rest = s.mesh(ViewKind::Persp, None, &[a]);
+        let live = s.mesh_runs(ViewKind::Persp, None, &[a]);
         assert_eq!(whole.faces.len(), rest.faces.len() + live.faces.len());
         assert_eq!(whole.edges.len(), rest.edges.len() + live.edges.len());
     }

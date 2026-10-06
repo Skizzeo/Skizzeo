@@ -22,6 +22,7 @@ pub enum ViewKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Id {
     Building,
+    Interior,
     Ref(RefSide),
     Ortho,
     View(ViewKind),
@@ -61,9 +62,11 @@ pub struct Ui {
     pressed: Option<Id>,
     pub view: ViewKind,
     pub building: bool,
+    /// Das Werkzeug zeichnet Innenwände (sonst Außenwände).
+    pub interior: bool,
     pub ref_side: RefSide,
     pub ortho: bool,
-    /// Schichten der Außenwand: Farbfeld und Text (aus der Bibliothek).
+    /// Schichten der Wand, die das Werkzeug zeichnet: Farbfeld und Text (aus der Bibliothek).
     pub wall_layers: Vec<(Rgba, String)>,
     /// Eigenschaften des gewählten Bauteils; ohne Auswahl kein Paneel.
     pub props: Option<Props>,
@@ -131,11 +134,12 @@ enum Row {
     Hint(&'static str),
 }
 
-fn tool_rows(layers: &[(Rgba, String)]) -> Vec<Row> {
+fn tool_rows(interior: bool, layers: &[(Rgba, String)]) -> Vec<Row> {
     let mut rows = vec![
         Row::Title("Werkzeuge"),
         Row::Button(Id::Building, "Gebäude"),
-        Row::Label("Außenwand"),
+        Row::Button(Id::Interior, "Innenwand"),
+        Row::Label(if interior { "Innenwand" } else { "Außenwand" }),
     ];
     rows.extend(layers.iter().map(|(c, t)| Row::Layer(*c, t.clone())));
     rows.extend([
@@ -220,6 +224,7 @@ impl Ui {
             pressed: None,
             view: ViewKind::Persp,
             building: false,
+            interior: false,
             ref_side: RefSide::Left,
             ortho: true,
             wall_layers: Vec::new(),
@@ -244,7 +249,7 @@ impl Ui {
 
     fn rows(&self, p: Panel) -> Vec<Row> {
         match p {
-            Panel::Tools => tool_rows(&self.wall_layers),
+            Panel::Tools => tool_rows(self.interior, &self.wall_layers),
             Panel::Views => view_rows(),
             Panel::Props => self.props.as_ref().map_or(Vec::new(), props_rows),
         }
@@ -324,7 +329,8 @@ impl Ui {
 
     fn is_on(&self, id: Id) -> bool {
         match id {
-            Id::Building => self.building,
+            Id::Building => self.building && !self.interior,
+            Id::Interior => self.building && self.interior,
             Id::Ref(r) => self.ref_side == r,
             Id::Ortho => self.ortho,
             Id::View(v) => self.view == v,

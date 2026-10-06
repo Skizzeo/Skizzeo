@@ -553,6 +553,7 @@ pub fn write(m: &Model) -> String {
             "wallset",
             m.layer_set(defaults.exterior_wall).map(|s| s.guid),
         )
+        .guid("iwset", m.layer_set(defaults.interior_wall).map(|s| s.guid))
         .finish(&mut out);
     for s in sorted(m.storeys().iter(), |s| s.guid) {
         Line::new("storey")
@@ -630,7 +631,7 @@ fn register<T>(
 
 /// Liest eine `.szo`-Datei. Neue Laufzeit-Kennungen, Guids aus der Datei; neue
 /// Guids kommen aus `guids`. Bei einem Fehler wird nichts übernommen.
-pub fn read(text: &str, guids: GuidGen) -> Result<Loaded, LoadError> {
+pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     check_header(text.lines().next(), "SZO", VERSION)?;
     let mut hints = Vec::new();
@@ -873,9 +874,28 @@ pub fn read(text: &str, guids: GuidGen) -> Result<Loaded, LoadError> {
             ),
         ));
     }
+    let exterior_wall = p.link("wallset", &set_ids)?;
+    // Dateien vor B5a kennen keinen Innenwand-Aufbau: aus dem Kern der Außenwand anlegen
+    let interior_wall = match p.opt("iwset") {
+        Some(_) => p.link("iwset", &set_ids)?,
+        None => {
+            let mat = layer_sets.get(exterior_wall).and_then(|s| {
+                s.layers
+                    .iter()
+                    .find(|l| l.core)
+                    .or(s.layers.first())
+                    .map(|l| l.material)
+            });
+            let mat = mat
+                .or_else(|| materials.ids().next())
+                .ok_or_else(|| err(p.line, "[project]: kein Baustoff für den Innenwand-Aufbau"))?;
+            layer_sets.insert(crate::model::interior_set(guids.next_guid(), mat))
+        }
+    };
     let defaults = Defaults {
         storey: p.link("storey", &storey_ids)?,
-        exterior_wall: p.link("wallset", &set_ids)?,
+        exterior_wall,
+        interior_wall,
     };
 
     // Wandzüge und Wände

@@ -27,6 +27,7 @@ use scene::Scene;
 use section::SectionLine;
 use selection::Selection;
 use sk_math::{vec3, Vec3};
+use sk_model::Category;
 use sk_paint::Rgba;
 use sk_platform::{
     CaptionArea, Config, Event, Key, MouseButton, SaveAnswer, Surface, WindowCommand,
@@ -221,8 +222,9 @@ struct App {
     mesh_dirty: bool,
     /// Live-Netz (gezogener Wandzug) muss neu erzeugt werden.
     live_dirty: bool,
-    /// Wandzug, der gerade im Live-Netz statt im ruhenden Netz liegt.
-    live_run: Option<sk_model::RunId>,
+    /// Wandzüge, die gerade im Live-Netz statt im ruhenden Netz liegen (der
+    /// gezogene und die, die an ihm hängen).
+    live_runs: Vec<sk_model::RunId>,
     /// Die Vorschau-Ablage enthält ein Netz.
     preview_shown: bool,
     /// Stand der Zeichentabelle, aus dem der Renderer-Stil stammt.
@@ -268,24 +270,24 @@ impl App {
             self.mesh_dirty = true;
             self.live_dirty = true;
         }
-        let live = self.edit.dragging_run();
-        if live != self.live_run {
-            self.live_run = live;
+        let live = self
+            .edit
+            .dragging_run()
+            .map_or_else(Vec::new, |r| self.scene.live_set(r));
+        if live != self.live_runs {
+            self.live_runs = live;
             self.mesh_dirty = true;
             self.live_dirty = true;
         }
         let plane = self.plane();
         if self.mesh_dirty {
             self.mesh_dirty = false;
-            let mesh = self.scene.mesh(self.ui.view, plane, self.live_run);
+            let mesh = self.scene.mesh(self.ui.view, plane, &self.live_runs);
             self.renderer.set_mesh(MESH_MODEL, &mesh);
         }
         if self.live_dirty {
             self.live_dirty = false;
-            let mesh = match self.live_run {
-                Some(r) => self.scene.mesh_run(self.ui.view, plane, r),
-                None => Default::default(),
-            };
+            let mesh = self.scene.mesh_runs(self.ui.view, plane, &self.live_runs);
             self.renderer.set_mesh(MESH_LIVE, &mesh);
         }
     }
@@ -390,10 +392,8 @@ impl App {
     fn replace_scene(&mut self, model: sk_model::Model) {
         self.scene = Scene::with_model(model);
         self.scene.set_theme(&self.theme);
-        let exterior = self.scene.model().defaults().exterior_wall;
         self.tool.set_enabled(self.tool.enabled);
-        self.tool.layers = self.scene.model().wall_layers(exterior);
-        self.ui.wall_layers = layer_rows(self.scene.model(), exterior);
+        self.set_wall_kind(self.tool.category);
         self.nav = Navigation::default();
         self.edit = WallEdit::default();
         self.sect = SectionLine::default();
@@ -401,7 +401,7 @@ impl App {
         self.props_key = None;
         self.ui.props = None;
         self.props_dirty = true;
-        self.live_run = None;
+        self.live_runs.clear();
         // Stil sicher neu setzen, auch wenn die neue Tabelle denselben Stand hat
         self.style_rev = u64::MAX;
         self.cam3d = start_camera();
@@ -502,10 +502,18 @@ impl App {
 
     fn click(&mut self, id: Id) {
         match id {
-            Id::Building => {
-                let on = !self.tool.enabled;
+            Id::Building | Id::Interior => {
+                let cat = match id {
+                    Id::Interior => Category::InteriorWall,
+                    _ => Category::ExteriorWall,
+                };
+                // Derselbe Knopf schaltet aus, der andere wechselt die Wandart
+                let on = !(self.tool.enabled && self.tool.category == cat);
                 if on && !self.tool_allowed() {
                     self.set_view(ViewKind::Persp);
+                }
+                if on {
+                    self.set_wall_kind(cat);
                 }
                 self.tool.set_enabled(on);
             }
@@ -517,9 +525,24 @@ impl App {
         self.refresh_cursor();
     }
 
+    /// Wandart des Werkzeugs mit dem voreingestellten Aufbau aus der Bibliothek
+    /// (Vorschau beim Zeichnen und Anzeige im Paneel).
+    fn set_wall_kind(&mut self, cat: Category) {
+        let d = self.scene.model().defaults();
+        let set = match cat {
+            Category::InteriorWall => d.interior_wall,
+            _ => d.exterior_wall,
+        };
+        self.tool
+            .set_category(cat, self.scene.model().wall_layers(set));
+        self.ui.wall_layers = layer_rows(self.scene.model(), set);
+        self.ui.interior = cat == Category::InteriorWall;
+        self.overlay_dirty = true;
+    }
+
     fn commit_wall(&mut self, wall: Option<sk_model::WallChain>) {
         if let Some(wall) = wall {
-            self.scene.add_wall(&wall);
+            self.scene.add_wall_as(&wall, self.tool.category);
             self.sect.ensure(&self.scene);
             self.upload_model();
             self.refresh_cursor();
@@ -1050,7 +1073,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         redraw: true,
         mesh_dirty: true,
         live_dirty: true,
-        live_run: None,
+        live_runs: Vec::new(),
         preview_shown: true,
         style_rev: 0,
         mark_keys: [None; 2],

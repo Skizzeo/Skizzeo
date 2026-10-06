@@ -142,6 +142,7 @@ mod tests {
             ref_side: RefSide::Left,
             height: 2750.0,
             layers: s.model().wall_layers(set),
+            joints: Default::default(),
         });
     }
 

@@ -41,6 +41,7 @@ fn town(n: usize, segs: usize) -> Scene {
             // Schichten kommen aus dem Aufbau der Bibliothek
             layers: Vec::new(),
             height: 3500.0,
+            joints: Default::default(),
         };
         s.add_wall(&w);
     }
@@ -87,7 +88,7 @@ fn perf_griff_ziehen() {
     );
     for &(n, segs) in &[(1, 4), (10, 4), (100, 4), (1000, 4), (1, 200), (100, 40)] {
         let mut s = town(n, segs);
-        let tris = s.mesh(ViewKind::Persp, None, None).faces.len() / 3;
+        let tris = s.mesh(ViewKind::Persp, None, &[]).faces.len() / 3;
         let cam = Camera::looking_at(
             vec3(-20000.0, -30000.0, 25000.0),
             vec3(5000.0, 5000.0, 0.0),
@@ -124,13 +125,13 @@ fn perf_griff_ziehen() {
         sect.ensure(&s);
         let plane = sect.plane();
         let m3 = time(10, || {
-            std::hint::black_box(s.mesh(ViewKind::Persp, None, None));
+            std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
         });
         let mgr = time(10, || {
-            std::hint::black_box(s.mesh(ViewKind::Plan, None, None));
+            std::hint::black_box(s.mesh(ViewKind::Plan, None, &[]));
         });
         let msc = time(10, || {
-            std::hint::black_box(s.mesh(ViewKind::Section, plane, None));
+            std::hint::black_box(s.mesh(ViewKind::Section, plane, &[]));
         });
         let mut e = WallEdit::default();
         let mv = Event::MouseMove {
@@ -148,10 +149,10 @@ fn perf_griff_ziehen() {
         });
         // Beim Ziehen: nur das Live-Netz des gezogenen Wandzugs
         let live = time(20, || {
-            std::hint::black_box(s.mesh_run(ViewKind::Persp, None, run));
+            std::hint::black_box(s.mesh_runs(ViewKind::Persp, None, &[run]));
         });
-        let up = bytes(&s.mesh(ViewKind::Persp, None, None)) as f64 / 1e6;
-        let up_live = bytes(&s.mesh_run(ViewKind::Persp, None, run)) as f64 / 1e6;
+        let up = bytes(&s.mesh(ViewKind::Persp, None, &[])) as f64 / 1e6;
+        let up_live = bytes(&s.mesh_runs(ViewKind::Persp, None, &[run])) as f64 / 1e6;
         println!(
             "{:>6} {:>5} {:>7} | {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} | {:>8.3} {:>8.3} {:>8.2} {:>8.3} | {:>8.4} {:>8.3} {:>8.3}",
             n,
@@ -180,4 +181,77 @@ fn perf_griff_ziehen() {
          Anfassen = Schritt öffnen beim Greifen am Gummiband, Kopie = Modellkopie, die \
          das Greifen vor B3 kostete, Rückg. = Ziehen rückgängig machen."
     );
+}
+
+/// `n` Häuser 10 × 8 m mit je zwei Innenwänden quer durch (T an beiden Enden).
+fn town_with_interior(n: usize) -> Scene {
+    let mut s = Scene::new();
+    let side = (n as f64).sqrt().ceil() as usize;
+    for i in 0..n {
+        let (ox, oy) = ((i % side) as f64 * 15000.0, (i / side) as f64 * 15000.0);
+        let p = |x: f64, y: f64| vec3(ox + x, oy + y, 0.0);
+        let wall = |points, closed, ref_side| WallChain {
+            points,
+            closed,
+            ref_side,
+            layers: Vec::new(),
+            height: 2750.0,
+            joints: Default::default(),
+        };
+        let pts = vec![
+            p(0.0, 0.0),
+            p(0.0, 8000.0),
+            p(10000.0, 8000.0),
+            p(10000.0, 0.0),
+        ];
+        s.add_wall(&wall(pts, true, RefSide::Left));
+        for x in [3500.0, 6500.0] {
+            let w = wall(vec![p(x, 315.0), p(x, 7685.0)], false, RefSide::Center);
+            s.add_wall_as(&w, sk_model::Category::InteriorWall);
+        }
+    }
+    s
+}
+
+#[test]
+#[ignore]
+fn perf_ziehen_mit_innenwaenden() {
+    println!();
+    println!(
+        "{:>6} {:>8} {:>8} {:>8} {:>8}",
+        "Häuser", "Anschl.", "Ziehen", "Live3D", "Neu"
+    );
+    for n in [1, 10, 100, 1000] {
+        let mut s = town_with_interior(n);
+        let joins = s.model().joins().len();
+        assert_eq!(joins, 4 * n);
+        let run = s.model().runs().ids().next().unwrap();
+        let orig = s.chain(run).unwrap().clone();
+        let mut flip = false;
+        s.begin("Wand verschieben");
+        // Oberes Segment ziehen: beide Innenwände werden mitgeführt
+        let drag = time(20, || {
+            flip = !flip;
+            let moved = orig
+                .with_segment_moved(1, if flip { -100.0 } else { -200.0 })
+                .unwrap();
+            s.set_run_points(run, &moved.points);
+        });
+        let live_set = s.live_set(run);
+        assert_eq!(live_set.len(), 3);
+        let live = time(20, || {
+            std::hint::black_box(s.mesh_runs(ViewKind::Persp, None, &live_set));
+        });
+        s.commit();
+        assert!(s.model().check().is_empty());
+        println!(
+            "{:>6} {:>8} {:>8.3} {:>8.3} {:>8.3}",
+            n,
+            joins,
+            drag,
+            live,
+            drag + live
+        );
+    }
+    println!("Zeiten in ms je Mausbewegung. Ziel B5a: Ziehen < 1 ms.");
 }

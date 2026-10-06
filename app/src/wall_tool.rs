@@ -11,7 +11,7 @@
 
 use crate::camera::Camera;
 use sk_math::{vec3, Vec3};
-use sk_model::{Layer, RefSide, WallChain};
+use sk_model::{Category, Layer, RefSide, WallChain};
 use sk_platform::{Event, Key, MouseButton};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
@@ -57,6 +57,8 @@ pub struct WallTool {
     mouse: Option<(f64, f64)>,
     /// Schichten des Aufbaus für die Vorschau (aus der Bibliothek des Modells).
     pub layers: Vec<Layer>,
+    /// Außenwand (Knopf „Gebäude“) oder Innenwand (Knopf „Innenwand“).
+    pub category: Category,
 }
 
 /// Ergebnis eines Ereignisses für die App.
@@ -96,7 +98,23 @@ impl WallTool {
             shift: false,
             mouse: None,
             layers: Vec::new(),
+            category: Category::ExteriorWall,
         }
+    }
+
+    /// Wechselt zwischen Außen- und Innenwand. Eine angefangene Eingabe geht weg;
+    /// die Bezugsseite springt auf den Standard der Art (Innenwand: Achse).
+    pub fn set_category(&mut self, category: Category, layers: Vec<Layer>) {
+        if category != self.category {
+            self.points.clear();
+            self.cursor = None;
+            self.category = category;
+            self.ref_side = match category {
+                Category::InteriorWall => RefSide::Center,
+                _ => RefSide::Left,
+            };
+        }
+        self.layers = layers;
     }
 
     pub fn is_active(&self) -> bool {
@@ -110,6 +128,7 @@ impl WallTool {
             ref_side: self.ref_side,
             layers: self.layers.clone(),
             height: WALL_HEIGHT,
+            joints: Default::default(),
         }
     }
 
