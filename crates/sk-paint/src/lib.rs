@@ -332,6 +332,12 @@ impl Canvas {
         self.origin = (x, y);
     }
 
+    /// Senkrechter Bereich des Gesamtbildes, den diese Leinwand zeigt (von,
+    /// bis). Was ganz außerhalb liegt, braucht nicht gezeichnet zu werden.
+    pub fn visible_y(&self) -> (f32, f32) {
+        (self.origin.1, self.origin.1 + self.height as f32)
+    }
+
     pub fn clear(&mut self, c: Rgba) {
         let v = premul(c, 1.0);
         self.px.iter_mut().for_each(|p| *p = v);

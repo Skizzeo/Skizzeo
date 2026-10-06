@@ -839,22 +839,27 @@ impl ListView {
         let top = self.top_dip() * s;
         let (x0, cw) = self.content_x(t);
         let u = &t.ui;
-        let regular = fonts.regular.as_ref();
-        let bold = fonts.bold.as_ref().or(regular);
-        let italic = fonts.italic.as_ref().or(regular);
         let anim = t.size.anim_ms > 0.0;
 
         // Liste (unter dem Kopf, gerollt)
         let list_top = top + HEAD * s;
         let rows = self.layout(Some(t));
         let pad_band = 10.0 * s;
+        // Zeichnet die Leinwand nur einen Streifen (Hover, Auswahl, Pille),
+        // bleiben Zeilen und Kopf außerhalb weg: Schrift kostet je Zeile
+        let (v0, v1) = c.visible_y();
+        let margin = 4.0 * s;
+        let outside = |a: f32, b: f32| b + margin < v0 || a - margin > v1;
         for &(i, y, h) in &rows {
             let ys = list_top + (y - self.scroll) * s;
             if ys + h * s < list_top - 40.0 * s {
                 continue;
             }
-            if ys > self.h as f32 {
+            if ys > self.h as f32 || ys - margin > v1 {
                 break;
+            }
+            if outside(ys, ys + h * s) {
+                continue;
             }
             let l = &self.lines[i];
             let (band_y, band_h) = match l.kind {
@@ -874,6 +879,32 @@ impl ListView {
             self.paint_line(c, t, l, (x0, cw), band_y, band_h, fonts, now, anim);
         }
         // Kopf deckt die weggerollten Zeilen ab
+        if !outside(top, top + HEAD * s) {
+            self.paint_head(c, t, fonts, now);
+        }
+        // Laufleiste
+        let content = self.content_h(Some(t));
+        let view = self.view_h();
+        if content > view + 1.0 {
+            let track = view * s;
+            let bar_h = (track * view / content).max(24.0 * s);
+            let max = (content - view + 24.0).max(1.0);
+            let by = list_top + (track - bar_h) * (self.scroll / max).clamp(0.0, 1.0);
+            let mut p = Path::new();
+            let bw = 4.0 * s;
+            p.rounded_rect(self.w as f32 - bw - 4.0 * s, by, bw, bar_h, bw * 0.5);
+            c.fill(&p, u.sheet_rule);
+        }
+    }
+
+    /// Kopf über der Liste: Titel, Unterzeile, Pille, Knopf, Spaltenköpfe.
+    fn paint_head(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts, now: Instant) {
+        let s = self.scale;
+        let top = self.top_dip() * s;
+        let (x0, cw) = self.content_x(t);
+        let u = &t.ui;
+        let regular = fonts.regular.as_ref();
+        let bold = fonts.bold.as_ref().or(regular);
         c.fill_rect(0.0, top, self.w as f32, HEAD * s, u.sheet_bg);
         if let Some(f) = bold {
             f.draw(
@@ -936,20 +967,6 @@ impl ListView {
             }
         }
         c.fill_rect(x0, top + 86.0 * s, cw, s.max(1.0), u.sheet_rule);
-        // Laufleiste
-        let content = self.content_h(Some(t));
-        let view = self.view_h();
-        if content > view + 1.0 {
-            let track = view * s;
-            let bar_h = (track * view / content).max(24.0 * s);
-            let max = (content - view + 24.0).max(1.0);
-            let by = list_top + (track - bar_h) * (self.scroll / max).clamp(0.0, 1.0);
-            let mut p = Path::new();
-            let bw = 4.0 * s;
-            p.rounded_rect(self.w as f32 - bw - 4.0 * s, by, bw, bar_h, bw * 0.5);
-            c.fill(&p, u.sheet_rule);
-        }
-        let _ = italic;
     }
 
     /// Band einer Zeile: Farbe und Leiste links (Auswahl).

@@ -342,10 +342,13 @@ impl QuantityWindow {
         if let Some(l) = &self.list {
             l.paint(&mut c, t, fonts, now);
         }
-        c.set_origin(0.0, 0.0);
-        let bar = self.title.paint(t, fonts.regular.as_ref(), self.w);
-        c.blit(&bar, 0, -(y0 as i32));
-        c.set_origin(0.0, y0 as f32);
+        // Titelleiste nur, wenn der Ausschnitt sie berührt
+        if y0 < self.title.height() {
+            c.set_origin(0.0, 0.0);
+            let bar = self.title.paint(t, fonts.regular.as_ref(), self.w);
+            c.blit(&bar, 0, -(y0 as i32));
+            c.set_origin(0.0, y0 as f32);
+        }
         if self.docked {
             let s = self.title.scale;
             let col = match self.seam_flash {
@@ -480,5 +483,60 @@ mod tests {
         assert!(f.is_some());
         let whole = q.paint(&t, &fonts, now).to_premul_rgba8();
         assert!(q.shown == whole, "Auswahl: gleich dem ganzen Bild");
+    }
+
+    /// Review 1i: Ein Streifen lässt Zeilen, Kopf und Titelleiste außerhalb
+    /// weg und gleicht trotzdem dem ganzen Bild, auch bei 150 % und mit
+    /// Hover und Auswahl (mit Schrift nur unter Windows).
+    #[test]
+    fn jeder_streifen_gleicht_dem_ganzen_bild() {
+        let (t, fonts) = (Theme::dark(), Fonts::system());
+        let mut s = Scene::with_model(Model::with_seed(1));
+        s.edit_model("Gebäude erstellt", |m| {
+            m.add_building(2);
+            true
+        });
+        let b = s.model().buildings().ids().last().unwrap();
+        let eg = s.model().ground_of(Some(b)).unwrap();
+        s.set_active_storey(eg);
+        let mut walls = Vec::new();
+        for y in [0.0, 3000.0, 6000.0] {
+            let run = s
+                .add_wall(&WallChain {
+                    base: 0.0,
+                    points: vec![vec3(0.0, y, 0.0), vec3(5000.0, y, 0.0)],
+                    closed: false,
+                    ref_side: RefSide::Left,
+                    layers: Vec::new(),
+                    height: 3500.0,
+                    joints: Default::default(),
+                })
+                .unwrap();
+            walls.push(s.model().wall_at(run, 0).unwrap());
+        }
+        let mut p = Picking {
+            selected: vec![walls[0]],
+            ..Default::default()
+        };
+        p.set_hover(Some(walls[2]), Vec::new());
+        let mut q = QuantityWindow::new();
+        q.title.scale = 1.5;
+        (q.w, q.h) = (780, 600);
+        let now = Instant::now();
+        q.sync(&mut s, &p, false);
+        let whole = q.paint(&t, &fonts, now).to_premul_rgba8();
+        let row = q.w as usize * 4;
+        for y0 in (0..q.h - 9).step_by(13) {
+            let y1 = (y0 + 9 + y0 % 31).min(q.h);
+            let part = q.paint_rows(&t, &fonts, now, y0, y1).to_premul_rgba8();
+            // Verschobene Pfade runden in Gleitkomma minimal anders: höchstens
+            // eine Stufe (von 255) Unterschied, unsichtbar
+            let w = &whole[y0 as usize * row..y1 as usize * row];
+            let worst = part.iter().zip(w).map(|(a, b)| a.abs_diff(*b)).max();
+            assert!(
+                part.len() == w.len() && worst <= Some(1),
+                "Streifen {y0}..{y1} weicht ab: {worst:?}"
+            );
+        }
     }
 }
