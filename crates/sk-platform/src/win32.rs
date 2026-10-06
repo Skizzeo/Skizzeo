@@ -6,9 +6,12 @@
 
 #![allow(non_snake_case, non_camel_case_types, clippy::upper_case_acronyms)]
 
-use crate::{CaptionArea, Config, Event, Key, Modifiers, MouseButton, WindowCommand};
+use crate::{
+    CaptionArea, Config, Event, FileFilter, Key, Modifiers, MouseButton, SaveAnswer, WindowCommand,
+};
 use std::cell::{Cell, RefCell};
 use std::ffi::{c_char, c_void};
+use std::path::PathBuf;
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -127,6 +130,33 @@ struct MINMAXINFO {
     ptMaxTrackSize: POINT,
 }
 
+#[repr(C)]
+struct OPENFILENAMEW {
+    lStructSize: u32,
+    hwndOwner: HWND,
+    hInstance: HINSTANCE,
+    lpstrFilter: *const u16,
+    lpstrCustomFilter: *mut u16,
+    nMaxCustFilter: u32,
+    nFilterIndex: u32,
+    lpstrFile: *mut u16,
+    nMaxFile: u32,
+    lpstrFileTitle: *mut u16,
+    nMaxFileTitle: u32,
+    lpstrInitialDir: *const u16,
+    lpstrTitle: *const u16,
+    Flags: u32,
+    nFileOffset: u16,
+    nFileExtension: u16,
+    lpstrDefExt: *const u16,
+    lCustData: LPARAM,
+    lpfnHook: *const c_void,
+    lpTemplateName: *const u16,
+    pvReserved: *mut c_void,
+    dwReserved: u32,
+    FlagsEx: u32,
+}
+
 #[link(name = "kernel32")]
 extern "system" {
     fn GetModuleHandleW(name: *const u16) -> HMODULE;
@@ -172,6 +202,7 @@ extern "system" {
     fn SetWindowPos(h: HWND, after: HWND, x: i32, y: i32, w: i32, hh: i32, flags: u32) -> BOOL;
     fn TrackMouseEvent(t: *mut TRACKMOUSEEVENT) -> BOOL;
     fn MessageBoxW(h: HWND, text: *const u16, caption: *const u16, kind: u32) -> i32;
+    fn SetWindowTextW(h: HWND, text: *const u16) -> BOOL;
     fn CreateIcon(
         inst: HINSTANCE,
         w: i32,
@@ -182,6 +213,17 @@ extern "system" {
         xor: *const u8,
     ) -> HICON;
     fn SetProcessDPIAware() -> BOOL;
+}
+
+#[link(name = "comdlg32")]
+extern "system" {
+    fn GetOpenFileNameW(o: *mut OPENFILENAMEW) -> BOOL;
+    fn GetSaveFileNameW(o: *mut OPENFILENAMEW) -> BOOL;
+}
+
+#[link(name = "ole32")]
+extern "system" {
+    fn CoInitializeEx(reserved: *mut c_void, coinit: u32) -> i32;
 }
 
 #[link(name = "gdi32")]
@@ -240,6 +282,7 @@ const WM_APP_QUIT: u32 = 0x8001;
 const SC_MINIMIZE: usize = 0xF020;
 const SC_MAXIMIZE: usize = 0xF030;
 const SC_RESTORE: usize = 0xF120;
+const SC_CLOSE: usize = 0xF060;
 
 const HTCLIENT: isize = 1;
 const HTCAPTION: isize = 2;
@@ -278,6 +321,18 @@ const VK_SHIFT: i32 = 0x10;
 const VK_CONTROL: i32 = 0x11;
 const VK_MENU: i32 = 0x12;
 const MB_ICONERROR: u32 = 0x10;
+const MB_ICONWARNING: u32 = 0x30;
+const MB_ICONINFORMATION: u32 = 0x40;
+const MB_YESNOCANCEL: u32 = 0x3;
+const IDYES: i32 = 6;
+const IDNO: i32 = 7;
+const OFN_OVERWRITEPROMPT: u32 = 0x0000_0002;
+const OFN_HIDEREADONLY: u32 = 0x0000_0004;
+const OFN_NOCHANGEDIR: u32 = 0x0000_0008;
+const OFN_PATHMUSTEXIST: u32 = 0x0000_0800;
+const OFN_FILEMUSTEXIST: u32 = 0x0000_1000;
+const OFN_EXPLORER: u32 = 0x0008_0000;
+const COINIT_APARTMENTTHREADED: u32 = 0x2;
 const IDC_ARROW: usize = 32512;
 
 const PFD_DOUBLEBUFFER: u32 = 0x0001;
@@ -669,8 +724,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             0
         }
+        // Vom Nutzer (Alt+F4, Taskleiste, eigener Knopf): die App darf nachfragen
+        WM_SYSCOMMAND if wp & 0xFFF0 == SC_CLOSE => {
+            send(Event::CloseRequested { ask: true });
+            0
+        }
         WM_CLOSE => {
-            send(Event::CloseRequested);
+            send(Event::CloseRequested { ask: false });
             0
         }
         WM_APP_QUIT => {
@@ -697,6 +757,8 @@ pub struct Surface {
     interval: Cell<i32>,
     /// Größe des vorigen Bildes.
     last_size: Cell<(u32, u32)>,
+    /// COM ist im Zeichenthread eingerichtet (für die Dateidialoge).
+    com: Cell<bool>,
 }
 
 // Fenster- und Gerätekontext-Handles dürfen zwischen Threads weitergereicht werden.
@@ -781,9 +843,125 @@ impl Surface {
                     PostMessageW(hwnd, WM_SYSCOMMAND, sc, 0);
                 }
                 WindowCommand::Close => {
-                    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                    PostMessageW(hwnd, WM_SYSCOMMAND, SC_CLOSE, 0);
                 }
             }
+        }
+    }
+
+    pub fn set_title(&self, title: &str) {
+        let t = wide(title);
+        unsafe {
+            SetWindowTextW(self.hwnd as HWND, t.as_ptr());
+        }
+    }
+
+    /// Dateidialog des Systems. Läuft im Zeichenthread; das Fenster ist so lange
+    /// gesperrt, der Hauptthread verarbeitet weiter seine Nachrichten.
+    pub fn file_dialog(
+        &self,
+        save: bool,
+        title: &str,
+        filters: &[FileFilter],
+        default_ext: &str,
+        suggested: &str,
+    ) -> Option<PathBuf> {
+        if !self.com.get() {
+            unsafe {
+                CoInitializeEx(null_mut(), COINIT_APARTMENTTHREADED);
+            }
+            self.com.set(true);
+        }
+        // Bezeichnung\0Muster\0…\0\0
+        let mut filter: Vec<u16> = Vec::new();
+        for (name, pattern) in filters {
+            filter.extend(name.encode_utf16().chain([0]));
+            filter.extend(pattern.encode_utf16().chain([0]));
+        }
+        filter.push(0);
+        let mut file = vec![0u16; 4096];
+        for (i, c) in suggested.encode_utf16().take(file.len() - 1).enumerate() {
+            file[i] = c;
+        }
+        let title = wide(title);
+        let ext = wide(default_ext);
+        let mut o = OPENFILENAMEW {
+            lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+            hwndOwner: self.hwnd as HWND,
+            hInstance: null_mut(),
+            lpstrFilter: filter.as_ptr(),
+            lpstrCustomFilter: null_mut(),
+            nMaxCustFilter: 0,
+            nFilterIndex: 1,
+            lpstrFile: file.as_mut_ptr(),
+            nMaxFile: file.len() as u32,
+            lpstrFileTitle: null_mut(),
+            nMaxFileTitle: 0,
+            lpstrInitialDir: null(),
+            lpstrTitle: title.as_ptr(),
+            Flags: OFN_EXPLORER
+                | OFN_HIDEREADONLY
+                | OFN_NOCHANGEDIR
+                | OFN_PATHMUSTEXIST
+                | if save {
+                    OFN_OVERWRITEPROMPT
+                } else {
+                    OFN_FILEMUSTEXIST
+                },
+            nFileOffset: 0,
+            nFileExtension: 0,
+            lpstrDefExt: if default_ext.is_empty() {
+                null()
+            } else {
+                ext.as_ptr()
+            },
+            lCustData: 0,
+            lpfnHook: null(),
+            lpTemplateName: null(),
+            pvReserved: null_mut(),
+            dwReserved: 0,
+            FlagsEx: 0,
+        };
+        let ok = unsafe {
+            if save {
+                GetSaveFileNameW(&mut o)
+            } else {
+                GetOpenFileNameW(&mut o)
+            }
+        };
+        if ok == 0 {
+            return None;
+        }
+        let len = file.iter().position(|&c| c == 0).unwrap_or(file.len());
+        Some(PathBuf::from(String::from_utf16_lossy(&file[..len])))
+    }
+
+    pub fn ask_save(&self, question: &str) -> SaveAnswer {
+        let (t, m) = (wide("Skizzeo"), wide(question));
+        let r = unsafe {
+            MessageBoxW(
+                self.hwnd as HWND,
+                m.as_ptr(),
+                t.as_ptr(),
+                MB_YESNOCANCEL | MB_ICONWARNING,
+            )
+        };
+        match r {
+            IDYES => SaveAnswer::Save,
+            IDNO => SaveAnswer::Discard,
+            _ => SaveAnswer::Cancel,
+        }
+    }
+
+    pub fn message(&self, text: &str, error: bool) {
+        let (t, m) = (wide("Skizzeo"), wide(text));
+        let icon = if error {
+            MB_ICONERROR
+        } else {
+            MB_ICONINFORMATION
+        };
+        unsafe {
+            MessageBoxW(self.hwnd as HWND, m.as_ptr(), t.as_ptr(), icon);
         }
     }
 
@@ -1022,6 +1200,7 @@ where
             swap_interval: Cell::new(0),
             interval: Cell::new(1),
             last_size: Cell::new((0, 0)),
+            com: Cell::new(false),
         };
         let hwnd_val = hwnd as usize;
         let (err_tx, err_rx) = channel::<String>();

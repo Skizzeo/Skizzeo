@@ -917,7 +917,7 @@ pub fn read(text: &str, guids: GuidGen) -> Result<Loaded, LoadError> {
     }
     let mut elements = Arena::new();
     let mut elem_ids = HashMap::new();
-    let mut slots: HashMap<Id<WallRun>, Vec<(u32, Id<Element>, usize)>> = HashMap::new();
+    let mut slots: HashMap<Id<WallRun>, Vec<(u32, Id<Element>)>> = HashMap::new();
     let mut taken_numbers: HashMap<String, usize> = HashMap::new();
     for r in recs("wall") {
         let run = r.link("run", &run_ids)?;
@@ -941,7 +941,7 @@ pub fn read(text: &str, guids: GuidGen) -> Result<Loaded, LoadError> {
         let g = e.guid;
         let id = elements.insert(e);
         register(&mut elem_ids, &mut seen, r, g, id)?;
-        slots.entry(run).or_default().push((seg, id, r.line));
+        slots.entry(run).or_default().push((seg, id));
     }
     for r in recs("run") {
         let id = run_ids[&r.guid("guid")?];
@@ -1241,13 +1241,14 @@ mod tests {
     fn baustoffe_behalten_ihr_aussehen() {
         let m = house();
         let l = load(&write(&m)).unwrap().model;
-        let look = |m: &Model| -> Vec<(
+        type Look = (
             Guid,
             Option<Fill>,
             Option<Pen>,
             Option<Pen>,
             Option<Surface>,
-        )> {
+        );
+        let look = |m: &Model| -> Vec<Look> {
             let a = m.attr();
             let mut v: Vec<_> = m
                 .materials()

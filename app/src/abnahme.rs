@@ -775,7 +775,7 @@ fn a14_dunkle_titelleiste_mit_weissem_logo() {
     let th = Theme::dark();
     assert_eq!(th.title.bg, th.ui.bg);
 
-    let c = t.paint(&th, w);
+    let c = t.paint(&th, None, w);
     let px = c.to_rgba8();
     let at = |x: usize, y: usize| {
         let i = (y * c.width + x) * 4;

@@ -26,13 +26,13 @@ fn main() -> std::io::Result<()> {
     let mut t = TitleBar::new(1.5);
     fs::write(
         dir.join("titelleiste-vorschau.png"),
-        t.paint(&sk_ui::theme::Theme::dark(), 900).to_png(),
+        t.paint(&sk_ui::theme::Theme::dark(), None, 900).to_png(),
     )?;
     t.maximized = true;
     t.hover = Some(sk_ui::titlebar::Button::Close);
     fs::write(
         dir.join("titelleiste-vorschau-max-hover.png"),
-        t.paint(&sk_ui::theme::Theme::dark(), 900).to_png(),
+        t.paint(&sk_ui::theme::Theme::dark(), None, 900).to_png(),
     )?;
     Ok(())
 }

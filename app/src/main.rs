@@ -6,6 +6,7 @@
 #[cfg(test)]
 mod abnahme;
 mod camera;
+mod document;
 mod draw_table;
 mod nav;
 #[cfg(test)]
@@ -18,6 +19,7 @@ mod wall_edit;
 mod wall_tool;
 
 use camera::Camera;
+use document::Document;
 use draw_table::DrawTable;
 use nav::Navigation;
 use scene::Scene;
@@ -25,7 +27,9 @@ use section::SectionLine;
 use selection::Selection;
 use sk_math::{vec3, Vec3};
 use sk_paint::Rgba;
-use sk_platform::{CaptionArea, Config, Event, Key, MouseButton, Surface, WindowCommand};
+use sk_platform::{
+    CaptionArea, Config, Event, Key, MouseButton, SaveAnswer, Surface, WindowCommand,
+};
 use sk_render::{gl::Gl, Renderer, Style};
 use sk_ui::{
     logo,
@@ -50,6 +54,11 @@ fn main() {
         sk_platform::show_error(&e);
         std::process::exit(1);
     }
+}
+
+/// Kamera beim Start und für ein neues Projekt.
+fn start_camera() -> Camera {
+    Camera::looking_at(vec3(-6200.0, -8600.0, 3700.0), Vec3::ZERO, 45.0)
 }
 
 fn rgb(c: Rgba) -> [f32; 3] {
@@ -166,6 +175,8 @@ type MarkKey = (bool, bool, u32, (u64, u64));
 struct App {
     renderer: Renderer,
     scene: Scene,
+    /// Datei des Projekts und gespeicherter Stand.
+    doc: Document,
     title: TitleBar,
     ui: Ui,
     cam: Camera,
@@ -338,17 +349,7 @@ impl App {
             self.cam3d_empty = self.scene.bounds().is_none();
         }
         self.ui.view = v;
-        let (vw, vh, _) = self.view_size();
-        let tools = self.ui.rect(Panel::Tools, self.w, self.top());
-        let free_w = (vw - 2.0 * (tools.x + tools.w) as f64).max(vw * 0.3);
-        self.cam = match v {
-            ViewKind::Persp => match self.scene.bounds() {
-                // In einer Parallelansicht gezeichnet: Modell ganz zeigen
-                Some((lo, hi)) if self.cam3d_empty => fit_perspective(lo, hi),
-                _ => self.cam3d.clone(),
-            },
-            _ => fit_parallel(v, self.scene.bounds(), free_w, vh),
-        };
+        self.cam = self.camera_for(v);
         if matches!(v, ViewKind::Plan | ViewKind::Section) {
             self.sect.ensure(&self.scene);
         }
@@ -359,6 +360,136 @@ impl App {
         self.upload_model();
         self.overlay_dirty = true;
         self.refresh_cursor();
+    }
+
+    /// Kamera beim Wechsel in die Ansicht `v`.
+    fn camera_for(&self, v: ViewKind) -> Camera {
+        let (vw, vh, _) = self.view_size();
+        let tools = self.ui.rect(Panel::Tools, self.w, self.top());
+        let free_w = (vw - 2.0 * (tools.x + tools.w) as f64).max(vw * 0.3);
+        match v {
+            ViewKind::Persp => match self.scene.bounds() {
+                // In einer Parallelansicht gezeichnet: Modell ganz zeigen
+                Some((lo, hi)) if self.cam3d_empty => fit_perspective(lo, hi),
+                _ => self.cam3d.clone(),
+            },
+            _ => fit_parallel(v, self.scene.bounds(), free_w, vh),
+        }
+    }
+
+    /// Ersetzt das Modell (Neu, Öffnen). Verlauf, Auswahl und angefangene
+    /// Eingaben gehen weg; die Kamera zeigt das ganze Modell.
+    fn replace_scene(&mut self, model: sk_model::Model) {
+        self.scene = Scene::with_model(model);
+        self.scene.set_theme(&self.theme);
+        let exterior = self.scene.model().defaults().exterior_wall;
+        self.tool.set_enabled(self.tool.enabled);
+        self.tool.layers = self.scene.model().wall_layers(exterior);
+        self.ui.wall_layers = layer_rows(self.scene.model(), exterior);
+        self.nav = Navigation::default();
+        self.edit = WallEdit::default();
+        self.sect = SectionLine::default();
+        self.sel = Selection::default();
+        self.props_key = None;
+        self.ui.props = None;
+        self.props_dirty = true;
+        self.live_run = None;
+        // Stil sicher neu setzen, auch wenn die neue Tabelle denselben Stand hat
+        self.style_rev = u64::MAX;
+        self.cam3d = start_camera();
+        self.cam3d_empty = true;
+        self.cam = self.camera_for(self.ui.view);
+        if matches!(self.ui.view, ViewKind::Plan | ViewKind::Section) {
+            self.sect.ensure(&self.scene);
+        }
+        self.upload_model();
+        self.overlay_dirty = true;
+        self.refresh_cursor();
+    }
+
+    /// Bei ungespeicherten Änderungen nachfragen. `true`: weitermachen.
+    fn confirm_discard(&mut self, surface: &Surface) -> bool {
+        if !self.doc.is_dirty(self.scene.model()) {
+            return true;
+        }
+        let q = format!("Änderungen an „{}“ speichern?", self.doc.name());
+        match surface.ask_save(&q) {
+            SaveAnswer::Save => self.save(surface, false),
+            SaveAnswer::Discard => true,
+            SaveAnswer::Cancel => false,
+        }
+    }
+
+    /// Speichern (bzw. „Speichern unter“, wenn `as_new` oder noch ohne Datei).
+    /// `true`, wenn gespeichert wurde.
+    fn save(&mut self, surface: &Surface, as_new: bool) -> bool {
+        let path = match (&self.doc.path, as_new) {
+            (Some(p), false) => p.clone(),
+            _ => {
+                let suggested = self
+                    .doc
+                    .path
+                    .as_ref()
+                    .map_or("Unbenannt".into(), |p| p.display().to_string());
+                match surface.save_dialog("Speichern unter", &document::FILTERS, "szo", &suggested)
+                {
+                    Some(p) => p,
+                    None => return false,
+                }
+            }
+        };
+        match document::save(self.scene.model(), &path) {
+            Ok(()) => {
+                self.doc.mark_saved(path, self.scene.model().revision());
+                true
+            }
+            Err(e) => {
+                surface.message(&e, true);
+                false
+            }
+        }
+    }
+
+    fn open(&mut self, surface: &Surface) {
+        if !self.confirm_discard(surface) {
+            return;
+        }
+        if let Some(path) = surface.open_dialog("Öffnen", &document::FILTERS) {
+            self.open_path(surface, path);
+        }
+    }
+
+    fn open_path(&mut self, surface: &Surface, path: std::path::PathBuf) {
+        match document::load(&path) {
+            Ok(loaded) => {
+                self.replace_scene(loaded.model);
+                self.doc = Document::opened(path, self.scene.model().revision());
+                if !loaded.hints.is_empty() {
+                    surface.message(&document::hints_message(&loaded.hints), false);
+                }
+            }
+            Err(e) => surface.message(&e, true),
+        }
+    }
+
+    fn new_project(&mut self, surface: &Surface) {
+        if self.confirm_discard(surface) {
+            self.replace_scene(sk_model::Model::new());
+            self.doc = Document::new(self.scene.model().revision());
+        }
+    }
+
+    /// Dateiname und `•` in Titelleiste und Taskleiste.
+    fn sync_caption(&mut self, surface: &Surface) {
+        let caption = self.doc.caption(self.scene.model());
+        if caption != self.title.caption {
+            surface.set_title(&format!("{caption} – Skizzeo"));
+            self.title.caption = caption;
+            if self.w > 0 {
+                self.paint_title(surface);
+                self.redraw = true;
+            }
+        }
     }
 
     fn click(&mut self, id: Id) {
@@ -429,7 +560,10 @@ impl App {
         let sen = self.sect_enabled();
         let mut camera_moved = false;
         match e {
-            Event::CloseRequested => return false,
+            Event::CloseRequested { ask } => {
+                // Von außen (etwa beim Neustart nach einem neuen Stand) sofort schließen
+                return ask && !self.confirm_discard(surface);
+            }
             Event::Resized { width, height } => {
                 (self.w, self.h) = (width, height);
                 // Paneele nur neu zeichnen, wenn sich ihre Größe ändert; beim
@@ -638,6 +772,10 @@ impl App {
                 let free = !self.tool.is_active() && !self.edit.is_dragging();
                 let undo = down && mods.ctrl && key == Key::Char('Z') && free;
                 let redo_key = down && mods.ctrl && key == Key::Char('Y') && free;
+                let file_key = match key {
+                    Key::Char(c @ ('S' | 'O' | 'N')) if down && mods.ctrl && free => Some(c),
+                    _ => None,
+                };
                 let en = self.edit_enabled();
                 let eo = self
                     .edit
@@ -648,6 +786,14 @@ impl App {
                 self.redraw |= eo.redraw;
                 if eo.consumed {
                     // Esc hat das Ziehen abgebrochen
+                } else if let Some(c) = file_key {
+                    match c {
+                        'S' => {
+                            self.save(surface, mods.shift);
+                        }
+                        'O' => self.open(surface),
+                        _ => self.new_project(surface),
+                    }
                 } else if undo || redo_key {
                     let changed = if undo {
                         self.scene.undo()
@@ -678,11 +824,14 @@ impl App {
         }
         self.sync_ui();
         self.sync_props();
+        self.sync_caption(surface);
         true
     }
 
     fn paint_title(&mut self, surface: &Surface) {
-        let c = self.title.paint(&self.theme, self.w);
+        let c = self
+            .title
+            .paint(&self.theme, self.ui.fonts.regular.as_ref(), self.w);
         let th = self.title.height();
         self.renderer
             .set_overlay(OVERLAY_TITLE, 0, 0, self.w, th, &c.to_premul_rgba8());
@@ -849,7 +998,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     let mut scene = Scene::new();
     scene.set_theme(&theme);
     let renderer = Renderer::new(gl, style(surface.scale(), scene.table(), &theme.env))?;
-    let cam = Camera::looking_at(vec3(-6200.0, -8600.0, 3700.0), Vec3::ZERO, 45.0);
+    let cam = start_camera();
     let (w, h) = surface.size();
     // Außenwand-Aufbau aus der Bibliothek: Vorschau beim Zeichnen und Anzeige im Paneel
     let exterior = scene.model().defaults().exterior_wall;
@@ -858,9 +1007,11 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     let mut ui = Ui::new(surface.scale(), &theme);
     ui.fit(surface.scale(), w, h);
     ui.wall_layers = layer_rows(scene.model(), exterior);
+    let doc = Document::new(scene.model().revision());
     let mut a = App {
         renderer,
         scene,
+        doc,
         title: TitleBar::new(surface.scale()),
         ui,
         cam3d: cam.clone(),
@@ -890,6 +1041,11 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         mark_keys: [None; 2],
     };
     a.upload_model();
+    // `skizzeo.exe haus.szo`: Projekt gleich öffnen
+    if let Some(path) = document::path_from_args(std::env::args()) {
+        a.open_path(&surface, path);
+    }
+    a.sync_caption(&surface);
     // `--zeiten datei.csv`: Dauer jedes Bildes in Millisekunden mitschreiben
     let timing_path = std::env::args().skip_while(|a| a != "--zeiten").nth(1);
     let mut timing = timing_path.as_ref().map(|p| {

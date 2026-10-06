@@ -1,7 +1,7 @@
 //! Eigene Titelleiste mit Logo und den drei Fensterknöpfen (Maße wie Windows 11).
 
 use crate::{logo, theme::Theme};
-use sk_paint::{Canvas, Path, Rgba};
+use sk_paint::{font::Font, Canvas, Path, Rgba};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Button {
@@ -18,6 +18,8 @@ pub struct TitleBar {
     pub active: bool,
     pub hover: Option<Button>,
     pub pressed: Option<Button>,
+    /// Mittig gezeigter Text, z. B. Dateiname.
+    pub caption: String,
 }
 
 impl TitleBar {
@@ -28,6 +30,7 @@ impl TitleBar {
             active: true,
             hover: None,
             pressed: None,
+            caption: String::new(),
         }
     }
 
@@ -57,7 +60,7 @@ impl TitleBar {
         }
     }
 
-    pub fn paint(&self, t: &Theme, width: u32) -> Canvas {
+    pub fn paint(&self, t: &Theme, font: Option<&Font>, width: u32) -> Canvas {
         let h = self.height();
         let mut c = Canvas::new(width as usize, h as usize);
         c.clear(t.title.bg);
@@ -69,6 +72,24 @@ impl TitleBar {
             &logo::path_at((12.0 * s).round(), logo_y, logo_h),
             t.title.logo,
         );
+
+        // Text mittig; nur wenn er zwischen Logo und Knöpfe passt
+        if let (Some(f), false) = (font, self.caption.is_empty()) {
+            let px = (12.0 * s).round();
+            let tw = f.width(&self.caption, px);
+            let x = ((width as f32 - tw) * 0.5).round();
+            let left = 64.0 * s;
+            let right = width as f32 - self.buttons_width() as f32 - 8.0 * s;
+            if x >= left && x + tw <= right {
+                let y = ((h as f32 + f.cap_height(px)) * 0.5).round();
+                let col = if self.active {
+                    t.title.glyph
+                } else {
+                    t.title.glyph_inactive
+                };
+                f.draw(&mut c, &self.caption, px, x, y, col);
+            }
+        }
 
         for b in [Button::Minimize, Button::Maximize, Button::Close] {
             self.paint_button_at(t, &mut c, b, self.button_x(b, width));
@@ -216,10 +237,10 @@ mod tests {
                         let width = 1003;
                         (t.hover, t.pressed) = from;
                         let th = Theme::dark();
-                        let mut c = t.paint(&th, width);
+                        let mut c = t.paint(&th, None, width);
                         (t.hover, t.pressed) = to;
                         t.repaint_button(&th, &mut c, b, width);
-                        let full = t.paint(&th, width).to_premul_rgba8();
+                        let full = t.paint(&th, None, width).to_premul_rgba8();
                         assert!(
                             c.to_premul_rgba8() == full,
                             "{scale} {b:?} {from:?} -> {to:?}"

@@ -9,6 +9,7 @@
 //! System das Fenster beim Ziehen oder Vergrößern festhält.
 
 use std::ffi::c_void;
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::time::Duration;
 
@@ -47,8 +48,12 @@ pub enum Key {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
-    /// Schließen angefordert (Alt+F4, Taskleiste, eigener Schließen-Knopf).
-    CloseRequested,
+    /// Schließen angefordert. `ask`: vom Nutzer (Alt+F4, Taskleiste, eigener
+    /// Schließen-Knopf), dann darf nach ungespeicherten Änderungen gefragt
+    /// werden. Sonst kam es von außen (z. B. `taskkill`) und schließt sofort.
+    CloseRequested {
+        ask: bool,
+    },
     /// Neue Größe der Zeichenfläche in Pixeln.
     Resized {
         width: u32,
@@ -108,6 +113,17 @@ pub struct CaptionArea {
     /// Breite der Knopfgruppe am rechten Rand (gehört der App, nicht dem Ziehen).
     pub buttons_width: u32,
 }
+
+/// Antwort auf die Frage nach ungespeicherten Änderungen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveAnswer {
+    Save,
+    Discard,
+    Cancel,
+}
+
+/// Dateityp im Dateidialog: Bezeichnung und Muster, z. B. `("Skizzeo-Projekt", "*.szo")`.
+pub type FileFilter<'a> = (&'a str, &'a str);
 
 pub struct Config {
     pub title: String,
@@ -178,6 +194,69 @@ impl Surface {
     #[cfg(windows)]
     pub fn set_caption_area(&self, a: CaptionArea) {
         self.inner.set_caption_area(a)
+    }
+
+    /// Fenstertitel für Taskleiste und Alt+Tab.
+    #[cfg(windows)]
+    pub fn set_title(&self, title: &str) {
+        self.inner.set_title(title)
+    }
+
+    /// Systemdialog „Öffnen“. `None`, wenn abgebrochen.
+    #[cfg(windows)]
+    pub fn open_dialog(&self, title: &str, filters: &[FileFilter]) -> Option<PathBuf> {
+        self.inner.file_dialog(false, title, filters, "", "")
+    }
+
+    /// Systemdialog „Speichern unter“ mit Vorschlag `suggested` und Endung
+    /// `default_ext` (ohne Punkt), fragt vor dem Überschreiben.
+    #[cfg(windows)]
+    pub fn save_dialog(
+        &self,
+        title: &str,
+        filters: &[FileFilter],
+        default_ext: &str,
+        suggested: &str,
+    ) -> Option<PathBuf> {
+        self.inner
+            .file_dialog(true, title, filters, default_ext, suggested)
+    }
+
+    /// Fragt „Speichern?“ mit Ja, Nein und Abbrechen.
+    #[cfg(windows)]
+    pub fn ask_save(&self, question: &str) -> SaveAnswer {
+        self.inner.ask_save(question)
+    }
+
+    /// Meldung mit OK-Knopf; `error` wählt das Fehlersymbol statt des Hinweises.
+    #[cfg(windows)]
+    pub fn message(&self, text: &str, error: bool) {
+        self.inner.message(text, error)
+    }
+
+    #[cfg(not(windows))]
+    pub fn set_title(&self, _title: &str) {}
+    #[cfg(not(windows))]
+    pub fn open_dialog(&self, _title: &str, _filters: &[FileFilter]) -> Option<PathBuf> {
+        None
+    }
+    #[cfg(not(windows))]
+    pub fn save_dialog(
+        &self,
+        _title: &str,
+        _filters: &[FileFilter],
+        _default_ext: &str,
+        _suggested: &str,
+    ) -> Option<PathBuf> {
+        None
+    }
+    #[cfg(not(windows))]
+    pub fn ask_save(&self, _question: &str) -> SaveAnswer {
+        SaveAnswer::Discard
+    }
+    #[cfg(not(windows))]
+    pub fn message(&self, text: &str, _error: bool) {
+        eprintln!("Skizzeo: {text}");
     }
 
     #[cfg(not(windows))]
