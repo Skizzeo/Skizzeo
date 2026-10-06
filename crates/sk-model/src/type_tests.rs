@@ -474,3 +474,33 @@ fn randdaemmstreifen_ohne_fuge_zur_og_wand() {
         .iter()
         .any(|e| (e.a.z - z_og).abs() < 1e-6 && e.a.x.abs() < 1e-6 && e.b.x.abs() < 1e-6));
 }
+
+/// Regel 21 aus einer Datei: Tiefe 40 an AW-36,5 bleibt im Typ stehen,
+/// `check()` meldet, die Wände nennen den Grund, Streifen gibt es keine.
+#[test]
+fn ungueltiges_auflager_aus_datei() {
+    let (mut m, aw, _) = haus();
+    let mono = m.type_by_guid(MONO_TYPE_GUID).unwrap();
+    m.begin("Typ");
+    assert!(m.set_run_type(aw, mono));
+    m.commit();
+    assert!(!m.edge_strip_pairs().is_empty());
+    let text = szo::write(&m).replacen("bearing=240", "bearing=400", 1);
+    let l = szo::read(&text, GuidGen::with_seed(1)).unwrap();
+    let m2 = l.model;
+    assert!(m2.check().iter().any(|p| p.contains("Auflagertiefe")));
+    assert!(m2.edge_strip_pairs().is_empty());
+    assert!(!m2
+        .elements()
+        .iter()
+        .any(|(_, e)| e.category == Category::EdgeInsulation));
+    // Zugkennungen sind nach dem Laden neu vergeben
+    let wall = m2
+        .elements()
+        .iter()
+        .find(|(_, e)| e.category == Category::ExteriorWall)
+        .map(|(id, _)| id)
+        .unwrap();
+    assert_eq!(m2.warnings(wall), ["Deckenauflager des Typs ungültig"]);
+    assert!(szo::write(&m2).contains("bearing=400"), "Wert bleibt");
+}

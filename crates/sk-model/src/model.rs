@@ -777,6 +777,32 @@ impl Model {
         id
     }
 
+    /// Wird der Baustoff benutzt: in einer Schicht, als Randdämmstreifen
+    /// eines Typs (Regel 15) oder von Sohlplatte, Schürze, Decke?
+    pub fn material_used(&self, id: MaterialId) -> bool {
+        let in_types = self.layer_sets.iter().any(|(_, t)| {
+            t.layers.iter().any(|l| l.material == id) || t.strip_material() == Some(id)
+        });
+        let in_elements = self.elements.iter().any(|(_, e)| match &e.kind {
+            ElementKind::Floor(f) => f.material == id,
+            ElementKind::GroundSlab(g) => g.material == id,
+            ElementKind::StripFooting(f) => f.material == id,
+            ElementKind::Wall(_) | ElementKind::EdgeStrip { .. } => false,
+        });
+        in_types || in_elements
+    }
+
+    /// Löscht einen unbenutzten Baustoff ([`Model::material_used`]). `false`,
+    /// wenn er benutzt wird oder fehlt; dann bleibt alles, wie es ist.
+    pub fn remove_material(&mut self, id: MaterialId) -> bool {
+        if !self.materials.contains(id) || self.material_used(id) {
+            return false;
+        }
+        note!(self, Material, self.materials, id);
+        self.touch();
+        self.materials.remove(id).is_some()
+    }
+
     pub fn layer_sets(&self) -> &Arena<LayerSet> {
         &self.layer_sets
     }
@@ -795,6 +821,7 @@ impl Model {
             .any(|(_, t)| t.guid == s.guid || t.code == s.code);
         if taken
             || !s.problems().is_empty()
+            || self.bearing_problem(&s).is_some()
             || s.layers
                 .iter()
                 .map(|l| l.material)
@@ -829,6 +856,7 @@ impl Model {
             || code_taken
             || category_locked
             || !s.problems().is_empty()
+            || self.bearing_problem(&s).is_some()
             || s.layers
                 .iter()
                 .map(|l| l.material)
@@ -893,6 +921,26 @@ impl Model {
             TypeCategory::ExteriorWall => self.defaults.exterior_wall,
             TypeCategory::InteriorWall => self.defaults.interior_wall,
         }
+    }
+
+    /// Regel 21: „fest, Rest Randstreifen“ nur an Außenwänden, deren erste
+    /// Schicht Kern ist, Tiefe im Bereich ([`LayerSet::bearing_range`]),
+    /// Streifen aus Dämmung. Ein ungültiges Auflager bleibt gespeichert und
+    /// wird wie „ganze tragende Schicht“ gebaut.
+    pub fn bearing_problem(&self, t: &LayerSet) -> Option<String> {
+        let Bearing::Depth { strip, .. } = t.bearing else {
+            return None;
+        };
+        if let Some(p) = t.bearing_problem() {
+            return Some(p);
+        }
+        let insulation = self
+            .material(strip)
+            .is_some_and(|m| m.category == MatCategory::Insulation);
+        (!insulation).then(|| {
+            let who = if t.code.is_empty() { &t.name } else { &t.code };
+            format!("Typ {who}: Randdämmstreifen nur aus Dämmung")
+        })
     }
 
     /// Kopie eines Typs: neue Guid, Name „… (Kopie)“, nächstes freies
@@ -2113,7 +2161,10 @@ impl Model {
                     .element(wall)
                     .and_then(|e| e.layer_set)
                     .and_then(|t| self.layer_set(t))
-                    .is_some_and(|t| matches!(t.bearing, Bearing::Depth { .. }));
+                    .is_some_and(|t| {
+                        matches!(t.bearing, Bearing::Depth { .. })
+                            && self.bearing_problem(t).is_none()
+                    });
                 if depth {
                     out.push((wall, floor));
                 }
@@ -2128,6 +2179,30 @@ impl Model {
             .iter()
             .find(|(_, e)| e.kind == ElementKind::EdgeStrip { wall, floor })
             .map(|(id, _)| id)
+    }
+
+    /// Nach dem Laden: Randdämmstreifen passend zu den Typen. Ein ungültiges
+    /// Auflager (Regel 21) bleibt im Typ stehen, seine Streifen fallen weg,
+    /// damit Decke und Streifen nicht doppelt zählen.
+    /// Andere Abweichungen (Regel 22) bleiben stehen und meldet `check()`.
+    pub(crate) fn complete_edge_strips(&mut self) {
+        let invalid: Vec<ElementId> = self
+            .elements
+            .iter()
+            .filter(|(_, e)| match e.kind {
+                ElementKind::EdgeStrip { wall, .. } => self
+                    .element(wall)
+                    .and_then(|w| w.layer_set)
+                    .and_then(|t| self.layer_set(t))
+                    .is_some_and(|t| self.bearing_problem(t).is_some()),
+                _ => false,
+            })
+            .map(|(id, _)| id)
+            .collect();
+        for id in invalid {
+            self.elements.remove(id);
+            self.touch();
+        }
     }
 
     /// Legt fehlende Randdämmstreifen an und entfernt überzählige, im offenen
@@ -2600,6 +2675,10 @@ impl Model {
             .and_then(|w| self.element(*w))
             .and_then(|e| e.layer_set)
             .and_then(|t| self.layer_set(t))?;
+        // Ungültiges Auflager (Regel 21): wie „ganze tragende Schicht“
+        if self.bearing_problem(t).is_some() {
+            return None;
+        }
         let core = t.layers.iter().find(|l| l.core).or(t.layers.first())?;
         Some(StripParams {
             width: t.strip_width()?,
@@ -2632,6 +2711,17 @@ impl Model {
     /// ist ungewöhnlich (Paneel „Eigenschaften“).
     pub fn warnings(&self, e: ElementId) -> Vec<String> {
         let mut out = Vec::new();
+        // Ungültiges Auflager aus einer Datei (Regel 21): gebaut wie „ganze
+        // tragende Schicht“
+        if self
+            .element(e)
+            .filter(|x| matches!(x.kind, ElementKind::Wall(_)))
+            .and_then(|x| x.layer_set)
+            .and_then(|t| self.layer_set(t))
+            .is_some_and(|t| self.bearing_problem(t).is_some())
+        {
+            out.push("Deckenauflager des Typs ungültig".into());
+        }
         let Some(run) = self.run_of(e) else {
             return out;
         };
@@ -3845,6 +3935,7 @@ impl Model {
         let mut codes: Vec<&str> = Vec::new();
         for (_, set) in self.layer_sets.iter() {
             out.extend(set.problems());
+            out.extend(self.bearing_problem(set));
             codes.push(&set.code);
         }
         // Regel 17: Kurzzeichen eindeutig

@@ -71,7 +71,9 @@ pub fn type_look(m: &Model, theme: &Theme, set: &LayerSet) -> TypeLook {
         .map_or(fallback, |(_, mat)| {
             mat_look(m, theme, &mat.display(), &mut notes)
         });
+    // Ungültiges Auflager (Regel 21) zeichnet wie „ganze tragende Schicht“
     let strip = match set.bearing {
+        Bearing::Depth { .. } if m.bearing_problem(set).is_some() => None,
         Bearing::Core => None,
         Bearing::Depth { depth, strip } => Some((
             depth,
@@ -271,7 +273,10 @@ fn geo(r: Rect, look: &TypeLook, t: &[f64]) -> Geo {
     let total = t.iter().sum::<f64>().max(MIN_TOTAL) as f32;
     let k = (r.h / 880.0).min(0.42 * r.w / total);
     let wall_w = t.iter().sum::<f64>() as f32 * k;
-    let x_out = if exterior {
+    // Mit Randdämmstreifen mehr Platz links für dessen Beschriftung
+    let x_out = if exterior && look.strip.is_some() {
+        r.x + 0.29 * r.w
+    } else if exterior {
         r.x + 0.195 * r.w
     } else {
         r.x + 0.5 * (r.w - wall_w)
@@ -540,11 +545,58 @@ pub fn paint_section(
     }
     let chain_y = (r.y + 0.835 * r.h).round();
     let total_y = (r.y + 0.925 * r.h).round();
-    if n > 1 {
-        dim_chain(c, &g.xs, chain_y, ink, s);
-        for (i, &ti) in t.iter().enumerate() {
-            let cx = 0.5 * (g.xs[i] + g.xs[i + 1]);
-            dim_label(c, f, ti, cx, chain_y - 4.0 * s, px, text);
+    // Randdämmstreifen: Pfeil mit Beschriftung von links, die Grenze zum
+    // Auflager steht mit in der Maßkette (Jörns Skizze 3b)
+    let mut cuts: Vec<f64> = Vec::new();
+    if let (true, Some((depth, _))) = (look.exterior, &look.strip) {
+        let total: f64 = t.iter().sum();
+        let edge = (total - depth).max(0.0);
+        cuts.push(edge);
+        let x_out = g.xs[0];
+        let tip = (x_out + 0.5 * (sx0 - x_out)).round();
+        let y = (0.5 * (sy0 + sy1)).round();
+        let label = "Randdämmstreifen";
+        let mut lpx = px;
+        let room = x_out - r.x - 18.0 * s;
+        while lpx > 0.7 * px && f.width(label, lpx) > room {
+            lpx -= 0.5 * s;
+        }
+        let tw = f.width(label, lpx);
+        let tx = (x_out - 14.0 * s - tw).round();
+        f.draw(
+            c,
+            label,
+            lpx,
+            tx,
+            y + (0.5 * f.cap_height(lpx)).round(),
+            text,
+        );
+        let lw2 = (0.8 * s).max(1.0);
+        line(c, (x_out - 10.0 * s, y), (tip, y), lw2, ink);
+        let a = 4.0 * s;
+        let mut p = Path::new();
+        p.move_to(tip, y);
+        p.line_to(tip - 2.0 * a, y - a);
+        p.line_to(tip - 2.0 * a, y + a);
+        p.close();
+        c.fill(&p, ink);
+    }
+    if n > 1 || !cuts.is_empty() {
+        // Grenzen der Schichten und des Streifens in einer Kette
+        let mut at: Vec<f64> = vec![0.0];
+        let mut acc = 0.0;
+        for &ti in t {
+            acc += ti;
+            at.push(acc);
+        }
+        at.extend(cuts);
+        at.sort_by(f64::total_cmp);
+        at.dedup_by(|a, b| (*a - *b).abs() < 1.0);
+        let xs: Vec<f32> = at.iter().map(|&m| g.xs[0] + m as f32 * k).collect();
+        dim_chain(c, &xs, chain_y, ink, s);
+        for i in 0..at.len() - 1 {
+            let cx = 0.5 * (xs[i] + xs[i + 1]);
+            dim_label(c, f, at[i + 1] - at[i], cx, chain_y - 4.0 * s, px, text);
         }
     }
     dim_chain(c, &[g.xs[0], g.xs[n]], total_y, ink, s);

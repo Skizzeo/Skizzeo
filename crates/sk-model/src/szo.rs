@@ -1381,6 +1381,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     if !v3 {
         hints.extend(model.complete_pre_b12());
     }
+    model.complete_edge_strips();
     hints.extend(model.check());
     Ok(Loaded { model, hints })
 }

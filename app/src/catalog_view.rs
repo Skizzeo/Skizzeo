@@ -80,6 +80,8 @@ enum FieldId {
     Code,
     Thick(usize),
     Prop(usize),
+    /// Auflagertiefe bei „fest, Rest Randstreifen“.
+    Depth,
     MatName,
     MatDensity,
     MatLambda,
@@ -89,13 +91,13 @@ impl FieldId {
     fn numeric(self) -> bool {
         matches!(
             self,
-            FieldId::Thick(_) | FieldId::MatDensity | FieldId::MatLambda
+            FieldId::Thick(_) | FieldId::Depth | FieldId::MatDensity | FieldId::MatLambda
         )
     }
 
     fn unit(self) -> &'static str {
         match self {
-            FieldId::Thick(_) => "cm",
+            FieldId::Thick(_) | FieldId::Depth => "cm",
             FieldId::MatDensity => "kg/m³",
             FieldId::MatLambda => "W/mK",
             _ => "",
@@ -108,6 +110,8 @@ enum ComboId {
     Category,
     Material(usize),
     Function(usize),
+    /// Baustoff des Randdämmstreifens.
+    Strip,
 }
 
 /// Knöpfe unter der Liste, unten und in den Karten.
@@ -150,6 +154,9 @@ enum Target {
     Remove(usize),
     AddLayer,
     Standard,
+    /// Deckenauflager: ganze tragende Schicht (`false`) oder fest, Rest
+    /// Randstreifen (`true`).
+    Bearing(bool),
     /// Schicht im Schnittbild.
     Section(usize),
     /// Eintrag einer Auswahlliste.
@@ -379,6 +386,24 @@ fn parse_thick(t: &str) -> Result<f64, String> {
         Some(cm) if (0.5..=100.0).contains(&cm) => Ok((cm * 2.0).round() * 5.0),
         _ => Err("Dicke 0,5 bis 100 cm".into()),
     }
+}
+
+/// Auflagertiefe in cm, Schritte 0,5 cm, im Bereich des Typs (Regel 21);
+/// rundet und klemmt nicht.
+fn parse_depth(t: &str, range: Option<(f64, f64)>) -> Result<f64, String> {
+    let Some((lo, hi)) = range else {
+        return Err("Hier kein festes Auflager möglich".into());
+    };
+    let msg = || format!("Auflagertiefe {} bis {} cm", cm_field(lo), cm_field(hi));
+    let cm = parse_num(t).ok_or_else(msg)?;
+    if ((cm * 2.0) - (cm * 2.0).round()).abs() > 1e-6 {
+        return Err("Auflagertiefe in Schritten von 0,5 cm".into());
+    }
+    let mm = (cm * 2.0).round() * 5.0;
+    if mm < lo - 1e-6 || mm > hi + 1e-6 {
+        return Err(msg());
+    }
+    Ok(mm)
 }
 
 /// Steht die alte Dicke als eigenes Wort im Namen, zieht sie mit
@@ -672,6 +697,8 @@ impl Catalog {
             FieldId::Prop(i) => {
                 Some(self.r(t, w, PROPS_X, ROWS_Y + 4.0 + i as f32 * 48.0, 172.0, 26.0))
             }
+            FieldId::Depth => (self.exterior() && self.fixed())
+                .then(|| self.r(t, w, RIGHT_X + 150.0, 308.0, 90.0, 26.0)),
             FieldId::MatName | FieldId::MatDensity | FieldId::MatLambda => {
                 let card = self.new_mat_card(t, w)?;
                 let s = w.scale;
@@ -695,14 +722,89 @@ impl Catalog {
             ComboId::Category => self.r(t, w, CONTENT_X + 430.0, 72.0, 130.0, 32.0),
             ComboId::Material(i) => self.r(t, w, 324.0, ROWS_Y + i as f32 * ROW_H, 250.0, 26.0),
             ComboId::Function(i) => self.r(t, w, 680.0, ROWS_Y + i as f32 * ROW_H, 150.0, 26.0),
+            ComboId::Strip => self.r(t, w, RIGHT_X + 150.0, 340.0, 150.0, 26.0),
         }
     }
 
     fn standard_rect(&self, t: &Theme, w: &Win) -> Rect {
-        // Unter den Kennwerten: fünf, mit Randdämmstreifen sechs (K5)
-        let strip = matches!(self.draft.bearing, sk_model::Bearing::Depth { .. });
-        let y = if strip { 312.0 } else { 282.0 };
+        // Unter den Kennwerten, bei Außenwänden unter dem Deckenauflager
+        let y = if !self.exterior() {
+            252.0
+        } else if self.fixed() {
+            372.0
+        } else {
+            310.0
+        };
         self.r(t, w, RIGHT_X, y, 16.0, 16.0)
+    }
+
+    fn exterior(&self) -> bool {
+        self.draft.category == TypeCategory::ExteriorWall
+    }
+
+    /// Deckenauflager „fest, Rest Randstreifen“.
+    fn fixed(&self) -> bool {
+        matches!(self.draft.bearing, sk_model::Bearing::Depth { .. })
+    }
+
+    /// Umschalter Deckenauflager und seine beiden Hälften.
+    fn bearing_box(&self, t: &Theme, w: &Win) -> Rect {
+        self.r(t, w, RIGHT_X, 272.0, 300.0, 30.0)
+    }
+
+    fn bearing_rect(&self, t: &Theme, w: &Win, fixed: bool) -> Rect {
+        let x = RIGHT_X + 2.0 + if fixed { 149.0 } else { 0.0 };
+        self.r(t, w, x, 274.0, 147.0, 26.0)
+    }
+
+    /// Warum „fest, Rest Randstreifen“ nicht geht.
+    fn fixed_blocked(&self) -> Option<&'static str> {
+        if self.fixed() || self.draft.bearing_range().is_some() {
+            return None;
+        }
+        Some(if self.draft.layers.first().is_some_and(|l| l.core) {
+            "Tragende Schicht zu dünn: Auflager mindestens 10 cm, Randstreifen mindestens 2 cm"
+        } else {
+            "Nur bei Wänden ohne Schichten vor der tragenden Schicht."
+        })
+    }
+
+    /// Dämmstoffe für den Randstreifen, der Werksbaustoff „Randdämmung“ zuerst.
+    fn strip_materials(&self) -> Vec<sk_model::MaterialId> {
+        let mut v: Vec<(bool, sk_model::MaterialId)> = self
+            .work
+            .materials()
+            .iter()
+            .filter(|(_, m)| m.category == MatCategory::Insulation)
+            .map(|(id, m)| (m.name != "Randdämmung", id))
+            .collect();
+        v.sort_by_key(|x| x.0);
+        v.into_iter().map(|x| x.1).collect()
+    }
+
+    fn set_bearing(&mut self, fixed: bool) {
+        if fixed == self.fixed() || (fixed && self.fixed_blocked().is_some()) {
+            return;
+        }
+        self.end_edit(true);
+        if fixed {
+            let Some((lo, hi)) = self.draft.bearing_range() else {
+                return;
+            };
+            let Some(&strip) = self.strip_materials().first() else {
+                self.message = Some("Kein Dämmstoff für den Randstreifen".into());
+                return;
+            };
+            let depth = if (lo - 1e-6..=hi + 1e-6).contains(&240.0) {
+                240.0
+            } else {
+                ((lo + hi) / 10.0).round() * 5.0
+            };
+            self.draft.bearing = sk_model::Bearing::Depth { depth, strip };
+        } else {
+            self.draft.bearing = sk_model::Bearing::Core;
+        }
+        self.commit_draft();
     }
 
     fn add_layer_rect(&self, t: &Theme, w: &Win) -> Rect {
@@ -936,6 +1038,24 @@ impl Catalog {
             let look = type_look(&self.work, t, &self.draft);
             let th = self.anim_thick(t);
             return section_layer_at(sec, &look, &th, x as f32, y as f32).map(Target::Section);
+        }
+        if self.exterior() {
+            for fixed in [false, true] {
+                if self.bearing_rect(t, w, fixed).contains(x, y) {
+                    return Some(Target::Bearing(fixed));
+                }
+            }
+            if self.fixed() {
+                if self
+                    .field_rect(t, w, FieldId::Depth)
+                    .is_some_and(|r| r.contains(x, y))
+                {
+                    return Some(Target::Field(FieldId::Depth));
+                }
+                if self.combo_rect(t, w, ComboId::Strip).contains(x, y) {
+                    return Some(Target::Combo(ComboId::Strip));
+                }
+            }
         }
         let st = self.standard_rect(t, w);
         let label = Rect::new(st.x, st.y, 260.0 * s, st.h);
@@ -1270,6 +1390,7 @@ impl Catalog {
                 }
             }
             Target::AddLayer => self.add_layer(),
+            Target::Bearing(fixed) => self.set_bearing(fixed),
             Target::Standard => {
                 if let Some(id) = self.sel {
                     self.work.set_default_type(self.draft.category, id);
@@ -1479,6 +1600,10 @@ impl Catalog {
                 .props
                 .get(TYPE_PROPS[i])
                 .map_or(String::new(), prop_text),
+            FieldId::Depth => match self.draft.bearing {
+                sk_model::Bearing::Depth { depth, .. } => cm_field(depth),
+                sk_model::Bearing::Core => String::new(),
+            },
             FieldId::MatName | FieldId::MatDensity | FieldId::MatLambda => match &self.popup {
                 Some(Popup::NewMat(nm)) => match f {
                     FieldId::MatName => nm.name.clone(),
@@ -1594,6 +1719,16 @@ impl Catalog {
                     self.draft.props.insert(key, PropValue::Text(text.into()));
                 }
                 self.commit_draft();
+            }
+            FieldId::Depth => {
+                let mm = parse_depth(text, self.draft.bearing_range())?;
+                if let sk_model::Bearing::Depth { depth, .. } = &mut self.draft.bearing {
+                    if (*depth - mm).abs() < 1e-9 {
+                        return Ok(());
+                    }
+                    *depth = mm;
+                    self.commit_draft();
+                }
             }
             FieldId::MatName => {
                 if let Some(Popup::NewMat(nm)) = &mut self.popup {
@@ -1743,6 +1878,7 @@ impl Catalog {
             v.push("Mindestens eine Schicht anlegen".into());
         }
         v.extend(self.draft.problems());
+        v.extend(self.work.bearing_problem(&self.draft));
         if self.code_taken(&self.draft.code) {
             v.push(format!(
                 "Kurzzeichen {} ist schon vergeben",
@@ -1946,6 +2082,22 @@ impl Catalog {
                 items.push(("Neuer Baustoff …".into(), None));
                 (items, sel)
             }
+            ComboId::Strip => {
+                let cur = self.draft.strip_material();
+                let mats = self.strip_materials();
+                let sel = mats.iter().position(|m| Some(*m) == cur);
+                let items = mats
+                    .into_iter()
+                    .map(|mid| {
+                        let name = self
+                            .work
+                            .material(mid)
+                            .map_or(String::new(), |m| m.name.clone());
+                        (name, Some(mat_look(&self.work, t, mid)))
+                    })
+                    .collect();
+                (items, sel)
+            }
             ComboId::Function(i) => {
                 let cur = self.draft.layers.get(i).map(|l| l.function);
                 let sel = FUNCTIONS.iter().position(|f| Some(f.0) == cur);
@@ -2047,6 +2199,17 @@ impl Catalog {
                         }));
                         self.begin_edit(FieldId::MatName);
                         let _ = cx;
+                    }
+                }
+            }
+            ComboId::Strip => {
+                let mats = self.strip_materials();
+                if let (Some(&mid), sk_model::Bearing::Depth { strip, .. }) =
+                    (mats.get(i), &mut self.draft.bearing)
+                {
+                    if *strip != mid {
+                        *strip = mid;
+                        self.commit_draft();
                     }
                 }
             }
@@ -2488,6 +2651,15 @@ impl Catalog {
                 Some("Ohne Einstellungen gibt es keinen Firmenkatalog".into())
             }
             Target::Grip(_) => Some("Ziehen sortiert um".into()),
+            Target::Bearing(true) => self.fixed_blocked().map(Into::into),
+            Target::Field(FieldId::Depth) => {
+                let (lo, hi) = self.draft.bearing_range()?;
+                Some(format!(
+                    "Ab Wandinnenseite, {} bis {} cm",
+                    cm_field(lo),
+                    cm_field(hi)
+                ))
+            }
             _ => None,
         }
     }
@@ -2950,6 +3122,7 @@ impl Catalog {
                         let st = self.standard_rect(t, w);
                         vec![Rect::new(st.x, st.y, 260.0 * s, st.h)]
                     }
+                    Target::Bearing(_) => vec![self.bearing_box(t, w)],
                     Target::Section(_) => vec![self.section_rect(t, w)],
                     // Auswahllisten und Karten liegen in eigenem Bild
                     Target::Choice(_)
@@ -3409,20 +3582,7 @@ impl Catalog {
                 format!("{name} {}", cm_field(l.thickness))
             })
             .collect();
-        // Deckenauflager (K5), nur Anzeige; die Zeile zum Bearbeiten
-        // gestaltet die Abteilung Einstellungen
-        let (bearing, strip) = match self.draft.bearing {
-            sk_model::Bearing::Core => ("ganzer Kern".to_string(), None),
-            sk_model::Bearing::Depth { depth, strip } => (
-                cm_text(depth),
-                Some(format!(
-                    "{} {}",
-                    cm_text(self.draft.thickness() - depth),
-                    self.work.material(strip).map_or("", |m| m.name.as_str())
-                )),
-            ),
-        };
-        let mut rows: Vec<(&str, String, Option<Flash>)> = vec![
+        let rows: Vec<(&str, String, Option<Flash>)> = vec![
             ("Dicke", cm_text(self.draft.thickness()), Some(Flash::Thick)),
             (
                 "U-Wert",
@@ -3450,11 +3610,7 @@ impl Catalog {
                 },
                 None,
             ),
-            ("Deckenauflager", bearing, None),
         ];
-        if let Some(v) = strip {
-            rows.push(("Randdämmstreifen", v, None));
-        }
         for (i, (k, v, fl)) in rows.iter().enumerate() {
             let r = self.r(t, w, RIGHT_X, 124.0 + i as f32 * 30.0, 300.0, 26.0);
             let kf = fl.map_or(0.0, |f| self.flash_k(f, t));
@@ -3473,6 +3629,9 @@ impl Catalog {
                 r.y + 18.0 * s,
                 u.text,
             );
+        }
+        if self.exterior() {
+            self.paint_bearing(c, t, fonts, w);
         }
         // Standard
         let sr = self.standard_rect(t, w);
@@ -3664,6 +3823,111 @@ impl Catalog {
             let st = self.field_state(FieldId::Prop(i), &v);
             widgets::text_field(c, fonts, r, &st, s, t);
         }
+    }
+
+    /// Deckenauflager (Skizze 3b): Umschalter, bei „fest“ Auflagertiefe und
+    /// Baustoff des Randstreifens.
+    fn paint_bearing(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts, w: &Win) {
+        let s = w.scale;
+        let u = &t.ui;
+        let regular = fonts.regular.as_ref();
+        let small = t.size.font_small * s;
+        let line = s.round().max(1.0);
+        let head = self.r(t, w, RIGHT_X, 244.0, 0.0, 0.0);
+        label(
+            c,
+            regular,
+            "Deckenauflager",
+            small,
+            head.x,
+            head.y + 18.0 * s,
+            u.text_dim,
+        );
+        rounded(c, self.bearing_box(t, w), 7.0 * s, u.field);
+        let blocked = self.fixed_blocked().is_some();
+        for fixed in [false, true] {
+            let r = self.bearing_rect(t, w, fixed);
+            let on = self.fixed() == fixed;
+            let off = fixed && blocked;
+            if on {
+                rounded(c, r, 6.0 * s, u.pressed);
+                outline(c, r, 6.0 * s, line, u.accent);
+            } else if !off && self.hover == Some(Target::Bearing(fixed)) {
+                rounded(c, r, 6.0 * s, u.hover);
+            }
+            let text = if fixed {
+                "fest, Rest Randstreifen"
+            } else {
+                "ganze tragende Schicht"
+            };
+            let tw = regular.map_or(0.0, |ft| ft.width(text, small));
+            let col = if off {
+                u.text_disabled
+            } else if on {
+                u.text
+            } else {
+                u.text_dim
+            };
+            label(
+                c,
+                regular,
+                text,
+                small,
+                r.x + (r.w - tw) * 0.5,
+                r.y + 17.5 * s,
+                col,
+            );
+        }
+        if !self.fixed() {
+            return;
+        }
+        if let Some(r) = self.field_rect(t, w, FieldId::Depth) {
+            label(
+                c,
+                regular,
+                "Auflagertiefe",
+                small,
+                head.x,
+                r.y + 18.0 * s,
+                u.text_dim,
+            );
+            let v = self.field_value(FieldId::Depth);
+            let mut st = self.field_state(FieldId::Depth, &v);
+            // Passt die Tiefe nicht mehr zu den Schichten: rot, OK gesperrt
+            st.invalid |= self.draft.bearing_problem().is_some();
+            widgets::field(c, fonts, r, &st, s, t);
+        }
+        let cr = self.combo_rect(t, w, ComboId::Strip);
+        label(
+            c,
+            regular,
+            "Randstreifen",
+            small,
+            head.x,
+            cr.y + 18.0 * s,
+            u.text_dim,
+        );
+        let mid = self.draft.strip_material();
+        let mat = mid.and_then(|m| self.work.material(m));
+        let icon = mid.filter(|_| mat.is_some()).map(|m| {
+            let look = mat_look(&self.work, t, m);
+            let (iw, ih) = ((22.0 * s).round(), (14.0 * s).round());
+            let mut ic = Canvas::new(iw as usize, ih as usize);
+            paint_thumb(&mut ic, Rect::new(0.0, 0.0, iw, ih), &look, s);
+            ic
+        });
+        let open = matches!(&self.popup, Some(Popup::Combo(cb)) if cb.id == ComboId::Strip);
+        widgets::combo_icon(
+            c,
+            fonts,
+            cr,
+            mat.map_or("–", |m| m.name.as_str()),
+            icon.as_ref(),
+            self.hover == Some(Target::Combo(ComboId::Strip)),
+            open,
+            s,
+            t,
+        );
     }
 
     fn field_state<'a>(&'a self, f: FieldId, value: &'a str) -> FieldState<'a> {
@@ -4523,25 +4787,71 @@ mod tests {
         assert!(parse_thick("101").is_err());
     }
 
-    /// „Standard für neue Gebäude“ sitzt direkt unter den Kennwerten:
-    /// ohne Randdämmstreifen keine leere Zeile (30-px-Lücke nach K5).
+    /// Deckenauflager bearbeiten (Skizze 3b, Regel 21): „fest“ nur ohne
+    /// Schicht vor dem Kern, Tiefe 10 cm ab Kern bis Dicke − 2 cm in
+    /// Schritten von 0,5 cm, Streifen nur aus Dämmung; „Standard“ rückt
+    /// unter die Felder.
     #[test]
-    fn standard_unter_den_kennwerten() {
+    fn deckenauflager_bearbeiten() {
         let mut c = Catalog::open(&szene(), None);
         let t = Theme::dark();
-        let five = c.standard_rect(&t, &WIN);
-        assert!(matches!(c.draft.bearing, sk_model::Bearing::Core));
-        let strip = c.draft.layers[0].material;
-        c.draft.bearing = sk_model::Bearing::Depth {
-            depth: 175.0,
-            strip,
-        };
-        let six = c.standard_rect(&t, &WIN);
-        assert_eq!(six.y - five.y, 30.0 * WIN.scale);
+        // AW-31,5 hat WDVS vor dem Kern
+        assert!(c.fixed_blocked().is_some());
+        c.set_bearing(true);
+        assert!(!c.fixed());
+        let core_y = c.standard_rect(&t, &WIN).y;
+        assert!(core_y > c.bearing_box(&t, &WIN).y);
+        // Kopie von AW-36,5 auf 42,5
+        let mono = c.work.type_by_guid(sk_model::MONO_TYPE_GUID).unwrap();
+        let id = c.work.duplicate_type(mono).unwrap();
+        c.show(id);
+        assert!(c.fixed());
+        c.apply_value(FieldId::Thick(0), "42,5").unwrap();
+        assert_eq!(c.draft.bearing_range(), Some((100.0, 405.0)));
+        for bad in ["9,5", "41", "24,25", "x"] {
+            assert!(c.apply_value(FieldId::Depth, bad).is_err(), "{bad}");
+        }
+        for ok in ["10", "40,5", "24"] {
+            assert_eq!(c.apply_value(FieldId::Depth, ok), Ok(()), "{ok}");
+        }
+        assert_eq!(c.draft.strip_width(), Some(185.0));
+        let saved = c.work.layer_set(id).unwrap();
+        assert_eq!(saved.strip_width(), Some(185.0));
+        // Nur Dämmstoffe als Streifen, „Randdämmung“ zuerst
+        let mats = c.strip_materials();
+        assert!(!mats.is_empty());
+        assert!(mats
+            .iter()
+            .all(|m| c.work.material(*m).unwrap().category == MatCategory::Insulation));
+        assert_eq!(c.work.material(mats[0]).unwrap().name, "Randdämmung");
+        // Felder und „Standard“ darunter
+        let depth = c.field_rect(&t, &WIN, FieldId::Depth).unwrap();
+        let strip = c.combo_rect(&t, &WIN, ComboId::Strip);
+        let st = c.standard_rect(&t, &WIN);
+        assert!(depth.y + depth.h <= strip.y && strip.y + strip.h <= st.y);
+        assert!(st.y > core_y);
+        // Kern dünner als die Tiefe: Skizzeo ändert die Tiefe nicht, der
+        // Typ bleibt ungültig und wird nicht übernommen
+        c.apply_value(FieldId::Depth, "40,5").unwrap();
+        c.apply_value(FieldId::Thick(0), "36,5").unwrap();
+        assert!(c.draft.bearing_problem().is_some());
+        assert!(!c.draft_problems().is_empty());
         assert_eq!(
-            five.y,
-            c.r(&t, &WIN, RIGHT_X, 124.0 + 5.0 * 30.0 + 8.0, 1.0, 1.0).y
+            c.work.layer_set(id).unwrap().thickness(),
+            425.0,
+            "ungültig nicht übernommen"
         );
+        // Zurück auf ganze tragende Schicht
+        c.set_bearing(false);
+        assert!(!c.fixed() && c.draft_problems().is_empty());
+        assert_eq!(c.standard_rect(&t, &WIN).y, core_y);
+        assert!(c.field_rect(&t, &WIN, FieldId::Depth).is_none());
+        // Wieder „fest“: Vorgabe 24 cm
+        c.set_bearing(true);
+        assert!(matches!(
+            c.draft.bearing,
+            sk_model::Bearing::Depth { depth, .. } if depth == 240.0
+        ));
     }
 
     use sk_math::vec3;

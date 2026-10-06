@@ -269,18 +269,45 @@ impl LayerSet {
         if self.layers.windows(2).any(|w| air(&w[0]) && air(&w[1])) {
             out.push(format!("Typ {who}: zwei Luftschichten hintereinander"));
         }
-        // Regel 21: das Auflager liegt im Kern und ist kürzer als die Wand
-        if let Bearing::Depth { depth, .. } = self.bearing {
-            let first = self.layers.iter().position(|l| l.core).unwrap_or(0);
-            let band: f64 = self.layers[first.min(n)..]
-                .iter()
-                .map(|l| l.thickness)
-                .sum();
-            if !(depth.is_finite() && depth > 0.0 && depth < band.min(self.thickness()) - 1e-9) {
-                out.push(format!("Typ {who}: Deckenauflager ungültig"));
-            }
-        }
         out
+    }
+
+    /// Bereich der Auflagertiefe für „fest, Rest Randstreifen“ (mm ab
+    /// Innenseite, Regel 21): mindestens die inneren Nicht-Kern-Schichten
+    /// plus 10 cm, höchstens Wanddicke minus 2 cm. `None`: nicht möglich
+    /// (keine Außenwand, Schicht vor dem Kern oder Bereich leer).
+    pub fn bearing_range(&self) -> Option<(f64, f64)> {
+        if self.category != TypeCategory::ExteriorWall || !self.layers.first()?.core {
+            return None;
+        }
+        let last = self.layers.iter().rposition(|l| l.core)?;
+        let inner: f64 = self.layers[last + 1..].iter().map(|l| l.thickness).sum();
+        let (lo, hi) = (inner + 100.0, self.thickness() - 20.0);
+        (lo <= hi + 1e-9).then_some((lo, hi))
+    }
+
+    /// Regel 21 ohne den Baustoff des Streifens ([`crate::Model::bearing_problem`]
+    /// prüft auch ihn): Auflagertiefe im Bereich [`LayerSet::bearing_range`].
+    pub fn bearing_problem(&self) -> Option<String> {
+        let Bearing::Depth { depth, .. } = self.bearing else {
+            return None;
+        };
+        let who = if self.code.is_empty() {
+            self.name.as_str()
+        } else {
+            self.code.as_str()
+        };
+        match self.bearing_range() {
+            None => Some(format!(
+                "Typ {who}: Deckenauflager nur bei Außenwänden ohne Schichten vor der tragenden Schicht"
+            )),
+            Some((lo, hi)) if !(depth >= lo - 1e-6 && depth <= hi + 1e-6) => Some(format!(
+                "Typ {who}: Auflagertiefe {} bis {} cm",
+                cm_de(lo),
+                cm_de(hi)
+            )),
+            _ => None,
+        }
     }
 }
 
@@ -289,4 +316,14 @@ impl LayerSet {
 pub fn material_key(id: MaterialId) -> u16 {
     debug_assert!(id.index() + 1 < material::CUT as u32);
     (id.index() + 1) as u16
+}
+
+/// Zentimeter mit Komma, ohne Einheit („24“, „40,5“).
+fn cm_de(mm: f64) -> String {
+    let cm = (mm / 5.0).round() * 0.5;
+    if cm.fract() == 0.0 {
+        format!("{cm:.0}")
+    } else {
+        format!("{cm:.1}").replace('.', ",")
+    }
 }

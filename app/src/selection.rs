@@ -405,6 +405,7 @@ pub fn props(scene: &Scene, id: ElementId) -> Option<Props> {
         layer_set: set.map_or(String::new(), |s| s.name.clone()),
         layers,
         fields: recess_field(m, id).into_iter().collect(),
+        notes: m.warnings(id),
         chip,
         ..Default::default()
     })
