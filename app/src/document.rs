@@ -209,7 +209,7 @@ mod tests {
         let d = dir("fehler");
         let e = load(&d.join("gibtsnicht.szo")).err().unwrap();
         assert!(e.contains("gibtsnicht.szo"), "{e}");
-        std::fs::write(d.join("alt.szo"), "SZO 2\n").unwrap();
+        std::fs::write(d.join("alt.szo"), "SZO 3\n").unwrap();
         let e = load(&d.join("alt.szo")).err().unwrap();
         assert!(e.contains("neuerer Skizzeo-Version"), "{e}");
         let _ = std::fs::remove_dir_all(&d);

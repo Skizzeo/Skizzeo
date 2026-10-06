@@ -509,8 +509,11 @@ impl Scene {
             Field::SlabThickness => ("Plattendicke", s.thickness),
             Field::Recess => ("Sockelrücksprung", s.recess),
             Field::FootingWidth => ("Schürzenbreite", f.width),
-            Field::FootingDepth => ("Schürzentiefe", f.depth),
-            Field::FloorThickness => return false,
+            Field::FootingDepth => match footing.and_then(|f| m.footing_depth(f)) {
+                Some(d) => ("Schürzentiefe", d),
+                None => return false,
+            },
+            _ => return false,
         };
         if old == mm {
             return false;
@@ -519,13 +522,109 @@ impl Scene {
         let ok = match (field, footing) {
             (Field::SlabThickness, _) => self.model.set_slab_thickness(slab, mm),
             (Field::Recess, _) => self.model.set_slab_recess(slab, mm),
-            (Field::FootingWidth, Some(fid)) => self.model.set_footing_size(fid, mm, f.depth),
-            (Field::FootingDepth, Some(fid)) => self.model.set_footing_size(fid, f.width, mm),
+            (Field::FootingWidth, Some(fid)) => self.model.set_footing_width(fid, mm),
+            // verschiebt UK Gründung: alle Gründungen ändern sich (B11)
+            (Field::FootingDepth, Some(fid)) => {
+                let ok = self.model.set_footing_depth(fid, mm);
+                self.mark_all();
+                ok
+            }
             _ => false,
         };
         self.mark(run);
         self.commit();
         ok
+    }
+
+    /// Inhalt des Paneels „Geschosse“: Bänder, lichte Höhe des EG und die
+    /// änderbaren Zahlen mit ihren Grenzen.
+    pub fn levels(&self) -> crate::ui::Levels {
+        use crate::ui::{Band, FieldRow, Levels};
+        let m = &self.model;
+        let eg = m.defaults().storey;
+        let mut l = Levels::default();
+        let row = |field, label, value, (min, max): (f64, f64)| FieldRow {
+            field,
+            label,
+            value,
+            min,
+            max,
+            zero: false,
+        };
+        for id in m.levels() {
+            let Some(st) = m.storey(id) else {
+                continue;
+            };
+            let foundation = st.kind == sk_model::LevelKind::Foundation;
+            l.bands.push(Band {
+                id,
+                name: if foundation {
+                    st.name.clone()
+                } else {
+                    st.short.clone()
+                },
+                bottom: st.elevation,
+                top: st.top(),
+                foundation,
+                active: id == eg,
+            });
+            if foundation {
+                let (lo, hi) = m.foundation_bottom_range();
+                l.fields.push(row(
+                    Field::LevelBottom,
+                    "UK Gründung",
+                    st.elevation,
+                    (lo, hi),
+                ));
+                let range = (st.top() - hi, st.top() - lo);
+                l.fields.push(row(
+                    Field::StoreyHeight(id),
+                    "Gründungstiefe",
+                    st.height,
+                    range,
+                ));
+                continue;
+            }
+            let Some((lo, hi)) = m.storey_top_range(id) else {
+                continue;
+            };
+            l.fields
+                .push(row(Field::LevelTop(id), "Oberkante", st.top(), (lo, hi)));
+            let (e, h) = (st.elevation, st.height);
+            l.fields.push(row(
+                Field::StoreyHeight(id),
+                "Geschosshöhe",
+                h,
+                (lo - e, hi - e),
+            ));
+            if id == eg {
+                let clear = m.clear_height(id);
+                let t = h - clear;
+                l.clear = Some((id, clear));
+                let range = (lo - e - t, hi - e - t);
+                l.fields
+                    .push(row(Field::ClearHeight(id), "lichte Höhe", clear, range));
+            }
+        }
+        l
+    }
+
+    /// Zahl aus dem Paneel „Geschosse“ als ein Schritt; `false`, wenn das
+    /// Modell sie ablehnt.
+    pub fn set_level(&mut self, field: Field, mm: f64) -> bool {
+        match field {
+            Field::LevelBottom => self.edit_model("UK Gründung", |m| m.set_foundation_bottom(mm)),
+            Field::LevelTop(id) => {
+                self.edit_model("Oberkante Geschoss", |m| m.set_storey_top(id, mm))
+            }
+            Field::StoreyHeight(id) => {
+                self.edit_model("Geschosshöhe", |m| m.set_storey_height(id, mm))
+            }
+            Field::ClearHeight(id) => {
+                self.edit_model("lichte Höhe", |m| m.set_clear_height(id, mm))
+            }
+            _ => false,
+        }
     }
 
     /// Dicke der Erdgeschossdecke über dem Zug `run`. Neu gerechnet werden
@@ -584,15 +683,39 @@ impl Scene {
         ok
     }
 
-    /// Ändert das Modell in einem Schritt (Tests für Parameter ohne eigenes
-    /// Bedienelement); alles wird neu berechnet.
-    #[cfg(test)]
+    /// Ändert das Modell in einem Schritt (Zahlen im Paneel „Geschosse“ und
+    /// Tests); alles wird neu berechnet.
     pub fn edit_model(&mut self, label: &'static str, f: impl FnOnce(&mut Model) -> bool) -> bool {
         self.begin(label);
         let ok = f(&mut self.model);
         self.mark_all();
         self.commit();
         ok
+    }
+
+    /// Oberkante eines Geschosses beim Ziehen im Paneel „Geschosse“: geklemmt,
+    /// ohne Verlaufseintrag (der Schritt ist offen, [`Scene::begin`]). Alle
+    /// Züge folgen im Live-Netz, die Mengen kommen beim Loslassen.
+    pub fn drag_storey_top(&mut self, id: sk_model::StoreyId, z: f64) {
+        if self.model.drag_storey_top(id, z) {
+            self.relevel();
+        }
+    }
+
+    /// Unterkante der Gründung beim Ziehen, wie [`Scene::drag_storey_top`].
+    pub fn drag_foundation_bottom(&mut self, z: f64) {
+        if self.model.drag_foundation_bottom(z) {
+            self.relevel();
+        }
+    }
+
+    /// Nach einer Änderung der Geschossbänder: alle Züge live neu.
+    fn relevel(&mut self) {
+        let ids: Vec<RunId> = self.model.runs().ids().collect();
+        for id in ids {
+            self.mark(id);
+        }
+        self.rebuild_dirty(true);
     }
 
     /// Neue Eckpunkte eines Wandzugs ohne Verlaufseintrag (Live-Änderung beim

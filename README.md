@@ -97,11 +97,30 @@ oder ab 2 cm).
 Ältere Dateien bekommen Gründung und Kreuzschraffur beim Öffnen.
 
 Erdgeschossdecke: Im selben Schritt entsteht über dem Zug eine
-Stahlbetondecke (DE-001 …, 22 cm, Oberkante bei ⅔ der Wandhöhe, danach fest).
-Sie reicht bis an die Dämmung und liegt in einer Auflagertasche über die
-ganze Gasbetondicke; Innenwände unter ihr werden unterbrochen und bleiben ein
-Bauteil. Wandmengen sind netto ohne Tasche bzw. Deckenstreifen. Die Dicke
-steht im Paneel als Zahlenfeld. Ältere Dateien bekommen die Decke beim Öffnen.
+Stahlbetondecke (DE-001 …, 22 cm, Oberkante = OK EG). Sie reicht bis an die
+Dämmung und liegt in einer Auflagertasche über die ganze Gasbetondicke;
+Innenwände unter ihr werden unterbrochen und bleiben ein Bauteil. Wandmengen
+sind netto ohne Tasche bzw. Deckenstreifen. Die Dicke steht im Paneel als
+Zahlenfeld (dicker heißt: Unterkante sinkt, lichte Höhe wird kleiner).
+
+Geschosse: Jedes Bauteil hängt an einer Ebene statt an einer festen Höhe.
+Drei Bänder liegen lückenlos übereinander: Gründung (UK Frostschürze −0,80
+bis ±0,00), EG (±0,00 bis OK EG-Decke +2,855, lichte Höhe 2,635) und OG
+(+2,855 bis +5,71). Die Wände stehen auf ±0,00 (3,50 m hoch), Sohlplatte
+an ±0,00, Frostschürze bis UK Gründung, Decke an OK EG. Das Paneel
+„Geschosse“ links unter „Werkzeuge“ zeigt die Ebenen mit Koten und
+Maßketten:
+- Griff (Punkt links an der Linie) ziehen: die Ebene wandert mit, 3D,
+  Schnitt und Ansichten folgen sofort; Fang 1 cm, mit Umschalt 5 cm; Esc
+  bricht ab, ein Ziehen ist ein Rückgängig-Schritt. ±0,00 liegt fest.
+- Klick auf eine Kote oder Maßzahl öffnet ein Zahlenfeld in Metern
+  (Geschosshöhe, lichte Höhe, Gründungstiefe, Koten). Ungültiges wird mit
+  Grund abgelehnt: lichte Höhe mindestens 1,00 m, OK EG höchstens bis zur
+  Wandkrone, Frostschürze mindestens 10 cm.
+- Im kleinen Fenster schrumpft das Diagramm, reicht es nicht, wird es eine
+  Liste mit denselben Zahlen.
+Ältere Dateien (SZO 1) werden beim Öffnen auf Geschosse umgestellt; sind die
+Wände niedriger als 2,855 m, liegt OK EG auf der Wandkrone.
 
 ## Bauen
 

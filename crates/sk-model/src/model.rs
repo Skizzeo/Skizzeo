@@ -8,8 +8,8 @@ use crate::attr::{
     self, Attributes, Display, Fill, FillId, LineType, LineTypeId, Pen, PenId, Surface, SurfaceId,
 };
 use crate::element::{
-    Category, Element, ElementId, ElementKind, Floor, GroundSlab, PropSet, PropValue, RunId,
-    Storey, StoreyId, StripFooting, Wall, WallRun,
+    Category, Element, ElementId, ElementKind, Floor, GroundSlab, LevelEdge, LevelKind, LevelRef,
+    PropSet, PropValue, RunId, Storey, StoreyId, StripFooting, Wall, WallRun,
 };
 use crate::floor::{FloorError, FloorParams, FloorSlab};
 use crate::foundation::{FootingShape, Foundation, FoundationError, FoundationParams};
@@ -194,9 +194,11 @@ impl Model {
         let mut storeys = Arena::new();
         let storey = storeys.insert(Storey {
             guid: guids.next_guid(),
-            name: "EG".into(),
+            name: "Erdgeschoss".into(),
+            short: "EG".into(),
+            kind: LevelKind::Storey,
             elevation: 0.0,
-            height: 3500.0,
+            height: STOREY_HEIGHT,
         });
         let project = Project {
             guid: guids.next_guid(),
@@ -219,6 +221,24 @@ impl Model {
         if let Some(m) = materials.get_mut(concrete) {
             m.cut_fill = cross;
         }
+        // Gründung und Obergeschoss (B11), zuletzt angelegt, damit die
+        // älteren Guids gleich bleiben
+        storeys.insert(Storey {
+            guid: guids.next_guid(),
+            name: "Gründung".into(),
+            short: "GR".into(),
+            kind: LevelKind::Foundation,
+            elevation: -FOUNDATION_DEPTH,
+            height: FOUNDATION_DEPTH,
+        });
+        storeys.insert(Storey {
+            guid: guids.next_guid(),
+            name: "Obergeschoss".into(),
+            short: "OG".into(),
+            kind: LevelKind::Storey,
+            elevation: STOREY_HEIGHT,
+            height: STOREY_HEIGHT,
+        });
         Model {
             project,
             attr,
@@ -584,10 +604,19 @@ impl Model {
             points: pts,
             closed,
             ref_side,
+            base: LevelRef::bottom(storey),
             height,
             storey,
             segments: Vec::new(),
         });
+        // Wandhöhe ≥ OK EG: eine niedrigere Wand zieht OK EG auf ihre Krone
+        // (die Decke muss in der Wand einbinden)
+        if let Some(eg) = self.storey(storey) {
+            let crown = eg.elevation + height;
+            if crown < eg.top() && crown >= eg.elevation + self.max_floor_thickness() + MIN_CLEAR {
+                self.move_storey_top(storey, crown);
+            }
+        }
         note!(self, Run, new run);
         let template = Element {
             guid: Guid(0),
@@ -996,12 +1025,16 @@ impl Model {
                 ElementKind::GroundSlab(GroundSlab {
                     run,
                     material,
+                    top: LevelRef::bottom(self.defaults.storey),
                     thickness: 200.0,
                     recess: 0.0,
                 }),
             ),
         };
         if self.footings_of(slab).is_empty() {
+            let Some(gr) = self.foundation_level() else {
+                return;
+            };
             self.new_element(
                 Category::StripFooting,
                 storey,
@@ -1010,7 +1043,7 @@ impl Model {
                     slab,
                     material,
                     width: 350.0,
-                    depth: 600.0,
+                    base: LevelRef::bottom(gr),
                 }),
             );
         }
@@ -1088,11 +1121,12 @@ impl Model {
             return Some(Err(FoundationError::RecessTooSmall));
         }
         let chain = self.base_chain(run)?;
+        let slab_bottom = self.level_z(s.top)? - s.thickness;
         let p = FoundationParams {
             recess: s.recess,
             slab_thickness: s.thickness,
             footing_width: f.width,
-            footing_depth: f.depth,
+            footing_depth: slab_bottom - self.level_z(f.base)?,
             slab_mat: material_key(s.material),
             footing_mat: material_key(f.material),
         };
@@ -1109,9 +1143,15 @@ impl Model {
     }
 
     /// Setzt die Dicke einer Sohlplatte (mm, von oben nach unten).
+    /// Grenze: Schürze bleibt mindestens 10 cm tief (UK Gründung steht).
     pub fn set_slab_thickness(&mut self, slab: ElementId, thickness: f64) -> bool {
+        let bottom = self
+            .foundation_level()
+            .and_then(|g| self.storey(g))
+            .map_or(f64::MIN, |g| g.elevation);
         thickness > 0.0
             && thickness.is_finite()
+            && thickness <= -bottom - MIN_FOOTING
             && self.edit_slab(slab, |s| s.thickness = thickness)
     }
 
@@ -1130,10 +1170,9 @@ impl Model {
         true
     }
 
-    /// Setzt Breite und Tiefe einer Frostschürze (mm).
-    pub fn set_footing_size(&mut self, footing: ElementId, width: f64, depth: f64) -> bool {
-        let ok = width > 0.0 && depth > 0.0 && width.is_finite() && depth.is_finite();
-        if !ok
+    /// Setzt die Breite einer Frostschürze (mm).
+    pub fn set_footing_width(&mut self, footing: ElementId, width: f64) -> bool {
+        if !(width > 0.0 && width.is_finite())
             || !matches!(
                 self.element(footing).map(|e| &e.kind),
                 Some(ElementKind::StripFooting(_))
@@ -1146,10 +1185,33 @@ impl Model {
             self.elements.get_mut(footing).map(|e| &mut e.kind)
         {
             f.width = width;
-            f.depth = depth;
         }
         self.touch();
         true
+    }
+
+    /// Tiefe einer Frostschürze ab UK Sohlplatte (mm), abgeleitet aus UK
+    /// Gründung.
+    pub fn footing_depth(&self, footing: ElementId) -> Option<f64> {
+        let ElementKind::StripFooting(f) = self.element(footing)?.kind else {
+            return None;
+        };
+        let ElementKind::GroundSlab(s) = self.element(f.slab)?.kind else {
+            return None;
+        };
+        Some(self.level_z(s.top)? - s.thickness - self.level_z(f.base)?)
+    }
+
+    /// Schürzentiefe als Zahl: verschiebt UK Gründung (B11), für alle
+    /// Schürzen. Ein Wert außerhalb der Grenzen wird abgelehnt.
+    pub fn set_footing_depth(&mut self, footing: ElementId, depth: f64) -> bool {
+        let (Some(d), true) = (self.footing_depth(footing), depth.is_finite()) else {
+            return false;
+        };
+        let Some(gr) = self.foundation_level().and_then(|g| self.storey(g)) else {
+            return false;
+        };
+        self.set_foundation_bottom(gr.elevation - (depth - d))
     }
 
     // --- Erdgeschossdecke (B10) -------------------------------------------
@@ -1186,7 +1248,7 @@ impl Model {
         let (Some(r), Some(material)) = (self.run(run), self.concrete()) else {
             return;
         };
-        let (storey, top) = (r.storey, FloorParams::default_top(r.height));
+        let storey = r.storey;
         self.new_element(
             Category::Floor,
             storey,
@@ -1194,8 +1256,8 @@ impl Model {
             ElementKind::Floor(Floor {
                 run,
                 material,
-                thickness: 220.0,
-                top,
+                thickness: FLOOR_THICKNESS,
+                top: LevelRef::top(storey),
             }),
         );
     }
@@ -1235,7 +1297,7 @@ impl Model {
             return None;
         };
         let p = FloorParams {
-            top: f.top,
+            top: self.level_z(f.top)?,
             thickness: f.thickness,
             mat: material_key(f.material),
         };
@@ -1243,13 +1305,14 @@ impl Model {
     }
 
     /// Setzt die Dicke einer Decke (mm, von der Oberkante nach unten).
+    /// Grenze: lichte Höhe darunter mindestens 1,00 m (OK bleibt stehen).
     pub fn set_floor_thickness(&mut self, floor: ElementId, thickness: f64) -> bool {
-        if !(thickness > 0.0 && thickness.is_finite())
-            || !matches!(
-                self.element(floor).map(|e| &e.kind),
-                Some(ElementKind::Floor(_))
-            )
-        {
+        let Some(ElementKind::Floor(f)) = self.element(floor).map(|e| &e.kind) else {
+            return false;
+        };
+        let room = self.level_z(f.top).unwrap_or(0.0)
+            - self.storey(f.top.storey).map_or(0.0, |s| s.elevation);
+        if !(thickness > 0.0 && thickness.is_finite() && thickness <= room - MIN_CLEAR) {
             return false;
         }
         note!(self, Element, self.elements, floor);
@@ -1267,11 +1330,10 @@ impl Model {
         let Some(run) = self.run_of(e) else {
             return out;
         };
-        if let Some(ElementKind::Floor(f)) = self.element(e).map(|x| &x.kind) {
-            let h = self.run(run).map_or(0.0, |r| r.height);
-            if f.top != FloorParams::default_top(h) {
-                out.push("Oberkante nicht bei ⅔ der Wandhöhe".into());
-            }
+        if matches!(
+            self.element(e).map(|x| &x.kind),
+            Some(ElementKind::Floor(_))
+        ) {
             return out;
         }
         let Some((slab, _)) = self.foundation_of(run) else {
@@ -1308,6 +1370,287 @@ impl Model {
             if matches!(f.footing, FootingShape::Full(_)) {
                 out.push("Schürze füllt die Platte ganz".into());
             }
+        }
+        out
+    }
+
+    // --- Geschossbänder (B11) ----------------------------------------------
+
+    /// Absolute Höhe eines Höhenbezugs (mm), `None` ohne das Geschoss.
+    pub fn level_z(&self, r: LevelRef) -> Option<f64> {
+        let s = self.storey(r.storey)?;
+        Some(
+            match r.edge {
+                LevelEdge::Bottom => s.elevation,
+                LevelEdge::Top => s.top(),
+            } + r.offset,
+        )
+    }
+
+    /// Geschosse von unten nach oben.
+    pub fn levels(&self) -> Vec<StoreyId> {
+        let mut v: Vec<(StoreyId, f64)> = self
+            .storeys
+            .iter()
+            .map(|(id, s)| (id, s.elevation))
+            .collect();
+        v.sort_by(|a, b| a.1.total_cmp(&b.1));
+        v.into_iter().map(|(id, _)| id).collect()
+    }
+
+    /// Das Gründungsband.
+    pub fn foundation_level(&self) -> Option<StoreyId> {
+        self.storeys
+            .iter()
+            .find(|(_, s)| s.kind == LevelKind::Foundation)
+            .map(|(id, _)| id)
+    }
+
+    /// Geschoss über `id`.
+    pub fn level_above(&self, id: StoreyId) -> Option<StoreyId> {
+        let l = self.levels();
+        let i = l.iter().position(|x| *x == id)?;
+        l.get(i + 1).copied()
+    }
+
+    /// Dickste Decke (bestimmt die kleinste lichte Höhe), ohne Decke der
+    /// Standardwert.
+    fn max_floor_thickness(&self) -> f64 {
+        self.elements
+            .iter()
+            .filter_map(|(_, e)| match e.kind {
+                ElementKind::Floor(f) => Some(f.thickness),
+                _ => None,
+            })
+            .reduce(f64::max)
+            .unwrap_or(FLOOR_THICKNESS)
+    }
+
+    /// Dickste Sohlplatte, ohne Platte der Standardwert.
+    fn max_slab_thickness(&self) -> f64 {
+        self.elements
+            .iter()
+            .filter_map(|(_, e)| match e.kind {
+                ElementKind::GroundSlab(s) => Some(s.thickness),
+                _ => None,
+            })
+            .reduce(f64::max)
+            .unwrap_or(SLAB_THICKNESS)
+    }
+
+    /// Niedrigste Wandkrone der Wände, die auf dem Geschoss `id` stehen.
+    fn min_crown(&self, id: StoreyId) -> f64 {
+        self.runs
+            .iter()
+            .filter(|(_, r)| r.base.storey == id)
+            .filter_map(|(_, r)| Some(self.level_z(r.base)? + r.height))
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    /// Lichte Höhe eines Geschosses: Geschosshöhe minus Deckendicke.
+    pub fn clear_height(&self, id: StoreyId) -> f64 {
+        self.storey(id)
+            .map_or(0.0, |s| s.height - self.max_floor_thickness())
+    }
+
+    /// Erlaubter Bereich der Oberkante eines Geschosses; `None`, wenn sie
+    /// fest liegt (Gründung: ±0,00).
+    pub fn storey_top_range(&self, id: StoreyId) -> Option<(f64, f64)> {
+        let s = self.storey(id)?;
+        match s.kind {
+            LevelKind::Foundation => None,
+            _ if id == self.defaults.storey => Some((
+                s.elevation + self.max_floor_thickness() + MIN_CLEAR,
+                self.min_crown(id),
+            )),
+            _ => Some((s.elevation + MIN_UPPER, f64::INFINITY)),
+        }
+    }
+
+    /// Erlaubter Bereich der Unterkante der Gründung.
+    pub fn foundation_bottom_range(&self) -> (f64, f64) {
+        let eg = self
+            .storey(self.defaults.storey)
+            .map_or(0.0, |s| s.elevation);
+        (
+            eg - MAX_FOUNDATION,
+            eg - self.max_slab_thickness() - MIN_FOOTING,
+        )
+    }
+
+    /// Oberkante auf `z` geklemmt (Ziehen).
+    pub fn clamp_storey_top(&self, id: StoreyId, z: f64) -> Option<f64> {
+        let (lo, hi) = self.storey_top_range(id)?;
+        Some(z.min(hi).max(lo))
+    }
+
+    /// Verschiebt die Oberkante ohne Prüfung; die Bänder darüber wandern mit.
+    fn move_storey_top(&mut self, id: StoreyId, z: f64) {
+        let Some(old) = self.storey(id).map(|s| s.top()) else {
+            return;
+        };
+        let delta = z - old;
+        if delta == 0.0 {
+            return;
+        }
+        let levels = self.levels();
+        let Some(i) = levels.iter().position(|x| *x == id) else {
+            return;
+        };
+        note!(self, Storey, self.storeys, id);
+        if let Some(s) = self.storeys.get_mut(id) {
+            s.height += delta;
+        }
+        for &above in &levels[i + 1..] {
+            note!(self, Storey, self.storeys, above);
+            if let Some(s) = self.storeys.get_mut(above) {
+                s.elevation += delta;
+            }
+        }
+        self.touch();
+    }
+
+    /// Oberkante eines Geschosses als Zahl (mm). Außerhalb der Grenzen
+    /// abgelehnt; ±0,00 liegt fest.
+    pub fn set_storey_top(&mut self, id: StoreyId, z: f64) -> bool {
+        match self.storey_top_range(id) {
+            Some((lo, hi)) if z.is_finite() && z >= lo - 1e-9 && z <= hi + 1e-9 => {
+                self.move_storey_top(id, z);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Oberkante beim Ziehen: an den Grenzen geklemmt.
+    pub fn drag_storey_top(&mut self, id: StoreyId, z: f64) -> bool {
+        match self.clamp_storey_top(id, z) {
+            Some(z) if z.is_finite() => {
+                self.move_storey_top(id, z);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Geschosshöhe als Zahl; bei der Gründung die Gründungstiefe.
+    pub fn set_storey_height(&mut self, id: StoreyId, h: f64) -> bool {
+        let Some(s) = self.storey(id) else {
+            return false;
+        };
+        match s.kind {
+            LevelKind::Foundation => self.set_foundation_depth(h),
+            _ => {
+                let z = s.elevation + h;
+                self.set_storey_top(id, z)
+            }
+        }
+    }
+
+    /// Lichte Höhe als Zahl: OK = UK + lichte Höhe + Deckendicke.
+    pub fn set_clear_height(&mut self, id: StoreyId, h: f64) -> bool {
+        let Some(e) = self.storey(id).map(|s| s.elevation) else {
+            return false;
+        };
+        let z = e + h + self.max_floor_thickness();
+        self.set_storey_top(id, z)
+    }
+
+    /// Unterkante der Gründung ohne Prüfung.
+    fn move_foundation_bottom(&mut self, z: f64) {
+        let Some(id) = self.foundation_level() else {
+            return;
+        };
+        let Some(top) = self.storey(id).map(|s| s.top()) else {
+            return;
+        };
+        if self.storey(id).is_some_and(|s| s.elevation == z) {
+            return;
+        }
+        note!(self, Storey, self.storeys, id);
+        if let Some(s) = self.storeys.get_mut(id) {
+            s.elevation = z;
+            s.height = top - z;
+        }
+        self.touch();
+    }
+
+    /// Unterkante der Gründung als Zahl (mm); außerhalb abgelehnt.
+    pub fn set_foundation_bottom(&mut self, z: f64) -> bool {
+        let (lo, hi) = self.foundation_bottom_range();
+        if !(z.is_finite() && z >= lo - 1e-9 && z <= hi + 1e-9) {
+            return false;
+        }
+        self.move_foundation_bottom(z);
+        true
+    }
+
+    /// Unterkante der Gründung beim Ziehen, geklemmt.
+    pub fn drag_foundation_bottom(&mut self, z: f64) -> bool {
+        if !z.is_finite() {
+            return false;
+        }
+        let (lo, hi) = self.foundation_bottom_range();
+        self.move_foundation_bottom(z.min(hi).max(lo));
+        true
+    }
+
+    /// Gründungstiefe als Zahl: UK Gründung = −Tiefe.
+    pub fn set_foundation_depth(&mut self, h: f64) -> bool {
+        let eg = self
+            .storey(self.defaults.storey)
+            .map_or(0.0, |s| s.elevation);
+        self.set_foundation_bottom(eg - h)
+    }
+
+    /// Prüfregeln der Geschossbänder (B11).
+    fn check_levels(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let levels = self.levels();
+        let found = self
+            .storeys
+            .iter()
+            .filter(|(_, s)| s.kind == LevelKind::Foundation)
+            .count();
+        if found != 1 || levels.len() < 3 {
+            out.push("Geschosse: nicht je eine Ebene Gründung, EG und OG".into());
+        }
+        if levels.first() != self.foundation_level().as_ref() {
+            out.push("Geschosse: Gründung ist nicht das unterste Band".into());
+        }
+        for w in levels.windows(2) {
+            let (a, b) = (self.storey(w[0]), self.storey(w[1]));
+            if let (Some(a), Some(b)) = (a, b) {
+                if (a.top() - b.elevation).abs() > 1e-6 {
+                    out.push(format!(
+                        "Geschosse {} und {} nicht lückenlos",
+                        a.short, b.short
+                    ));
+                }
+            }
+        }
+        for (_, s) in self.storeys.iter() {
+            if !(s.height > 0.0 && s.height.is_finite()) {
+                out.push(format!("Geschoss {}: Höhe {} ungültig", s.short, s.height));
+            }
+        }
+        if self
+            .storey(self.defaults.storey)
+            .is_none_or(|s| s.elevation != 0.0)
+        {
+            out.push("Geschosse: UK EG liegt nicht bei ±0,00".into());
+        }
+        let mut refs: Vec<LevelRef> = self.runs.iter().map(|(_, r)| r.base).collect();
+        for (_, e) in self.elements.iter() {
+            match e.kind {
+                ElementKind::GroundSlab(s) => refs.push(s.top),
+                ElementKind::StripFooting(f) => refs.push(f.base),
+                ElementKind::Floor(f) => refs.push(f.top),
+                ElementKind::Wall(_) => {}
+            }
+        }
+        if refs.iter().any(|r| !self.storeys.contains(r.storey)) {
+            out.push("Höhenbezug auf ein fehlendes Geschoss".into());
         }
         out
     }
@@ -1806,6 +2149,9 @@ impl Model {
                     }
                 }
                 ElementKind::StripFooting(f) => {
+                    if self.footing_depth(id).is_none_or(|d| d <= 0.0) {
+                        out.push(format!("{}: Tiefe nicht größer als 0", e.number));
+                    }
                     if !matches!(
                         self.element(f.slab).map(|x| &x.kind),
                         Some(ElementKind::GroundSlab(_))
@@ -1826,14 +2172,18 @@ impl Model {
                     if !(f.thickness > 0.0 && f.thickness.is_finite()) {
                         out.push(format!("{}: Dicke {} ungültig", e.number, f.thickness));
                     }
-                    let h = self.run(f.run).map_or(0.0, |r| r.height);
-                    if !(f.top - f.thickness > 0.0 && f.top <= h) {
-                        out.push(format!(
+                    let crown = self
+                        .run(f.run)
+                        .map_or(0.0, |r| self.level_z(r.base).unwrap_or(0.0) + r.height);
+                    match self.level_z(f.top) {
+                        Some(top) if top - f.thickness > 0.0 && top <= crown + 1e-6 => {}
+                        Some(top) => out.push(format!(
                             "{}: Lage OK {} / UK {} außerhalb der Wand",
                             e.number,
-                            f.top,
-                            f.top - f.thickness
-                        ));
+                            top,
+                            top - f.thickness
+                        )),
+                        None => out.push(format!("{}: Geschoss der Oberkante fehlt", e.number)),
                     }
                     if let Some(Err(err)) = self.floor(f.run) {
                         out.push(format!("{}: keine Decke, {}", e.number, explain_floor(err)));
@@ -1879,6 +2229,7 @@ impl Model {
                 }
             }
         }
+        out.extend(self.check_levels());
         for (_, set) in self.layer_sets.iter() {
             if set.layers.is_empty() {
                 out.push(format!("Aufbau {}: keine Schichten", set.name));
@@ -1953,6 +2304,18 @@ const SLAB_SEQ: u16 = 2;
 const FOOTING_SEQ: u16 = 1;
 /// Bauabschnitt der Erdgeschossdecke (nach den Wänden).
 const FLOOR_SEQ: u16 = 4;
+/// Standardwerte der Geschossbänder (B11, mm): Geschosshöhe EG und OG,
+/// Gründungstiefe, Deckendicke.
+pub(crate) const STOREY_HEIGHT: f64 = 2855.0;
+pub(crate) const FOUNDATION_DEPTH: f64 = 800.0;
+pub(crate) const FLOOR_THICKNESS: f64 = 220.0;
+const SLAB_THICKNESS: f64 = 200.0;
+/// Grenzen (G4): lichte Höhe, Schürzentiefe, OG-Höhe (Platzhalter bis zur
+/// OG-Decke), größte Gründungstiefe.
+pub const MIN_CLEAR: f64 = 1000.0;
+pub const MIN_FOOTING: f64 = 100.0;
+pub const MIN_UPPER: f64 = 1220.0;
+pub const MAX_FOUNDATION: f64 = 10000.0;
 /// Kleinster Sockelrücksprung außer 0 (mm).
 pub const MIN_RECESS: f64 = 20.0;
 /// Teil des Körpers eines Wandzugs: Sohlplatte bzw. Frostschürze (statt Segment).

@@ -167,7 +167,8 @@ fn floor_props(
             ("Umfang", format!("{} m", de(q.perimeter / 1e3, 2))),
         ]);
     }
-    values.push(("Oberkante", format!("+{} m", de(f.top / 1e3, 2))));
+    let top = m.level_z(f.top).unwrap_or(0.0);
+    values.push(("Oberkante", format!("+{} m", de(top / 1e3, 3))));
     values.push(("Bauabschnitt", e.seq.to_string()));
     let mut notes = m.warnings(id);
     if let Some(Err(_)) = m.floor(f.run) {
@@ -232,7 +233,13 @@ fn foundation_props(
             }
             fields.extend([
                 field(Field::FootingWidth, "Breite", f.width, 200.0, 1500.0),
-                field(Field::FootingDepth, "Tiefe", f.depth, 200.0, 3000.0),
+                field(
+                    Field::FootingDepth,
+                    "Tiefe",
+                    m.footing_depth(id).unwrap_or(0.0),
+                    sk_model::MIN_FOOTING,
+                    3000.0,
+                ),
             ]);
             (f.material, f.width, q.map(|q| q.1.volume))
         }
@@ -266,7 +273,7 @@ pub fn props(scene: &Scene, id: ElementId) -> Option<Props> {
         ("Kategorie", e.category.name().to_string()),
         (
             "Geschoss",
-            m.storey(e.storey).map_or("–".into(), |s| s.name.clone()),
+            m.storey(e.storey).map_or("–".into(), |s| s.short.clone()),
         ),
     ];
     match e.kind {

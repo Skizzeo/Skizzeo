@@ -15,8 +15,8 @@ use crate::attr::{
     Surface,
 };
 use crate::element::{
-    Category, Element, ElementKind, Floor, GroundSlab, PropValue, Storey, StripFooting, Wall,
-    WallRun,
+    Category, Element, ElementKind, Floor, GroundSlab, LevelEdge, LevelKind, LevelRef, PropValue,
+    Storey, StoreyId, StripFooting, Wall, WallRun,
 };
 use crate::guid::{Guid, GuidGen};
 use crate::id::{Arena, Id};
@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use std::fmt::{self, Write as _};
 
 /// Hauptversion des Formats. Eine Datei mit höherer Version wird nicht geöffnet.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// Fehler beim Laden; die Datei wird dann gar nicht übernommen.
 #[derive(Clone, Debug, PartialEq)]
@@ -563,10 +563,29 @@ pub fn write(m: &Model) -> String {
         Line::new("storey")
             .guid("guid", Some(s.guid))
             .text("name", &s.name)
+            .word("short", &s.short)
+            .word(
+                "kind",
+                match s.kind {
+                    LevelKind::Foundation => "foundation",
+                    LevelKind::Storey => "storey",
+                },
+            )
             .num("elev", s.elevation)
-            .num("height", s.height)
+            .num("h", s.height)
             .finish(&mut out);
     }
+    // Höhenbezug als `Guid:u|o:Versatz`
+    let level = |r: LevelRef| {
+        let g = m
+            .storey(r.storey)
+            .map_or("-".to_string(), |s| s.guid.to_ifc());
+        let e = match r.edge {
+            LevelEdge::Bottom => "u",
+            LevelEdge::Top => "o",
+        };
+        format!("{g}:{e}:{}", r.offset)
+    };
     for r in sorted(m.runs().iter(), |r| r.guid) {
         let pts = r
             .points
@@ -577,6 +596,7 @@ pub fn write(m: &Model) -> String {
         Line::new("run")
             .guid("guid", Some(r.guid))
             .guid("storey", storey_guid(r.storey))
+            .word("base", &level(r.base))
             .word("ref", ref_side(r.ref_side))
             .num("h", r.height)
             .flag("closed", r.closed)
@@ -612,6 +632,7 @@ pub fn write(m: &Model) -> String {
             .text("number", &e.number)
             .word("cat", category(e.category))
             .guid("mat", mat_guid(s.material))
+            .word("top", &level(s.top))
             .num("t", s.thickness)
             .num("recess", s.recess)
             .num("seq", e.seq)
@@ -629,7 +650,7 @@ pub fn write(m: &Model) -> String {
             .word("cat", category(e.category))
             .guid("mat", mat_guid(f.material))
             .num("w", f.width)
-            .num("d", f.depth)
+            .word("base", &level(f.base))
             .num("seq", e.seq)
             .guid("storey", storey_guid(e.storey))
             .finish(&mut out);
@@ -644,8 +665,8 @@ pub fn write(m: &Model) -> String {
             .text("number", &e.number)
             .word("cat", category(e.category))
             .guid("mat", mat_guid(f.material))
+            .word("top", &level(f.top))
             .num("t", f.thickness)
-            .num("top", f.top)
             .num("seq", e.seq)
             .guid("storey", storey_guid(e.storey))
             .finish(&mut out);
@@ -689,6 +710,12 @@ fn register<T>(
 pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     check_header(text.lines().next(), "SZO", VERSION)?;
+    // SZO 1: vor der Geschossverwaltung (B11), wird beim Lesen umgestellt
+    let v1 = text
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        == Some("1");
     let mut hints = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
     const KNOWN: [&str; 16] = [
@@ -901,11 +928,34 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     let mut storeys = Arena::new();
     let mut storey_ids = HashMap::new();
     for r in recs("storey") {
-        let s = Storey {
-            guid: r.guid("guid")?,
-            name: r.get("name")?.to_string(),
-            elevation: r.f64("elev")?,
-            height: r.f64("height")?,
+        let s = if v1 {
+            // Das eine Geschoss von SZO 1 wird das Erdgeschoss
+            let _ = (r.opt("name"), r.opt("elev"), r.opt("height"));
+            Storey {
+                guid: r.guid("guid")?,
+                name: "Erdgeschoss".into(),
+                short: "EG".into(),
+                kind: LevelKind::Storey,
+                elevation: 0.0,
+                height: crate::model::STOREY_HEIGHT,
+            }
+        } else {
+            Storey {
+                guid: r.guid("guid")?,
+                name: r.get("name")?.to_string(),
+                short: r.get("short")?.to_string(),
+                kind: keyword(
+                    r,
+                    "kind",
+                    &[LevelKind::Foundation, LevelKind::Storey],
+                    |k| match k {
+                        LevelKind::Foundation => "foundation",
+                        LevelKind::Storey => "storey",
+                    },
+                )?,
+                elevation: r.f64("elev")?,
+                height: r.f64("h")?,
+            }
         };
         let g = s.guid;
         let id = storeys.insert(s);
@@ -952,6 +1002,69 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         exterior_wall,
         interior_wall,
     };
+    // SZO 1: Gründung und Obergeschoss ergänzen (Maße folgen unten)
+    let (ground, found_level) = if v1 {
+        let eg = defaults.storey;
+        let gr = storeys.insert(Storey {
+            guid: guids.next_guid(),
+            name: "Gründung".into(),
+            short: "GR".into(),
+            kind: LevelKind::Foundation,
+            elevation: -crate::model::FOUNDATION_DEPTH,
+            height: crate::model::FOUNDATION_DEPTH,
+        });
+        storeys.insert(Storey {
+            guid: guids.next_guid(),
+            name: "Obergeschoss".into(),
+            short: "OG".into(),
+            kind: LevelKind::Storey,
+            elevation: crate::model::STOREY_HEIGHT,
+            height: crate::model::STOREY_HEIGHT,
+        });
+        hints.push("Datei auf Geschossverwaltung umgestellt".to_string());
+        (eg, gr)
+    } else {
+        let gr = storeys
+            .iter()
+            .find(|(_, s)| s.kind == LevelKind::Foundation)
+            .map(|(id, _)| id)
+            .ok_or_else(|| err(0, "[storey]: Gründung fehlt"))?;
+        (defaults.storey, gr)
+    };
+    let level = |r: &Record, key: &str, default: LevelRef| -> Result<LevelRef, LoadError> {
+        if v1 {
+            let _ = r.opt(key);
+            return Ok(default);
+        }
+        let v = r.get(key)?;
+        let mut it = v.split(':');
+        let (Some(g), Some(e), Some(o), None) = (it.next(), it.next(), it.next(), it.next()) else {
+            return Err(r.bad(key, "Guid:u|o:Versatz"));
+        };
+        let storey = Guid::from_ifc(g)
+            .and_then(|g| storey_ids.get(&g).copied())
+            .ok_or_else(|| {
+                err(
+                    r.line,
+                    format!("[{}]: „{key}“ verweist auf unbekanntes Geschoss", r.section),
+                )
+            })?;
+        let edge = match e {
+            "u" => LevelEdge::Bottom,
+            "o" => LevelEdge::Top,
+            _ => return Err(r.bad(key, "Guid:u|o:Versatz")),
+        };
+        let offset = o
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite())
+            .ok_or_else(|| r.bad(key, "Guid:u|o:Versatz"))?;
+        Ok(LevelRef {
+            storey,
+            edge,
+            offset,
+        })
+    };
 
     // Wandzüge und Wände
     let mut runs = Arena::new();
@@ -983,12 +1096,34 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
                 ref_side,
             )?,
             height: r.f64("h")?,
+            base: level(r, "base", LevelRef::bottom(ground))?,
             storey: r.link("storey", &storey_ids)?,
             segments: Vec::new(),
         };
         let g = run.guid;
         let id = runs.insert(run);
         register(&mut run_ids, &mut seen, r, g, id)?;
+    }
+    if v1 {
+        // OK EG höchstens auf der niedrigsten Wandkrone (die Decke bindet ein)
+        let crown = runs
+            .iter()
+            .map(|(_, r): (_, &WallRun)| r.height)
+            .fold(crate::model::STOREY_HEIGHT, f64::min);
+        let top = crown.max(crate::model::FLOOR_THICKNESS + crate::model::MIN_CLEAR);
+        if let Some(eg) = storeys.get_mut(ground) {
+            eg.height = top;
+        }
+        let og: Vec<StoreyId> = storeys
+            .iter()
+            .filter(|(id, s)| *id != ground && s.kind == LevelKind::Storey)
+            .map(|(id, _)| id)
+            .collect();
+        for id in og {
+            if let Some(s) = storeys.get_mut(id) {
+                s.elevation = top;
+            }
+        }
     }
     let mut elements = Arena::new();
     let mut elem_ids = HashMap::new();
@@ -1038,12 +1173,14 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
                     run: r.link("run", &run_ids)?,
                     material: r.link("mat", &mat_ids)?,
                     thickness: r.f64("t")?,
-                    top: r.f64("top")?,
+                    // SZO 1: die feste Zahl (⅔ der Wandhöhe) wird verworfen
+                    top: level(r, "top", LevelRef::top(ground))?,
                 })
             } else if ix == 0 {
                 ElementKind::GroundSlab(GroundSlab {
                     run: r.link("run", &run_ids)?,
                     material: r.link("mat", &mat_ids)?,
+                    top: level(r, "top", LevelRef::bottom(ground))?,
                     thickness: r.f64("t")?,
                     recess: r.f64("recess")?,
                 })
@@ -1055,11 +1192,23 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
                 ) {
                     return Err(err(r.line, "[footing]: „slab“ ist keine Sohlplatte"));
                 }
+                if v1 {
+                    // UK Gründung aus Plattendicke und Schürzentiefe
+                    let t = match elements.get(slab).map(|e: &Element| &e.kind) {
+                        Some(ElementKind::GroundSlab(s)) => s.thickness,
+                        _ => 0.0,
+                    };
+                    let bottom = -(t + r.f64("d")?);
+                    if let Some(gr) = storeys.get_mut(found_level) {
+                        gr.elevation = bottom;
+                        gr.height = -bottom;
+                    }
+                }
                 ElementKind::StripFooting(StripFooting {
                     slab,
                     material: r.link("mat", &mat_ids)?,
                     width: r.f64("w")?,
-                    depth: r.f64("d")?,
+                    base: level(r, "base", LevelRef::bottom(found_level))?,
                 })
             };
             let e = Element {
@@ -1326,7 +1475,7 @@ mod tests {
         let l = load(&a).unwrap();
         assert!(l.hints.is_empty(), "{:?}", l.hints);
         assert_eq!(write(&l.model), a);
-        assert!(a.starts_with("SZO 1\n"));
+        assert!(a.starts_with("SZO 2\n"));
         assert!(a.contains("number=\"AW-Nord \\\"alt\\\"\""), "{a}");
         assert!(l.model.check().is_empty());
         assert_eq!(l.model.project(), m.project());
@@ -1481,7 +1630,7 @@ mod tests {
 
     #[test]
     fn neuere_version_wird_nicht_geoeffnet() {
-        let a = write(&house()).replacen("SZO 1", "SZO 2", 1);
+        let a = write(&house()).replacen("SZO 2", "SZO 3", 1);
         let e = load(&a).err().unwrap();
         assert_eq!(e.line, 1);
         assert!(e.to_string().contains("neuerer Skizzeo-Version"), "{e}");

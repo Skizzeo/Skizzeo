@@ -17,7 +17,7 @@ type RgbaRole = (&'static str, fn(&mut Theme) -> &mut Rgba);
 type F4Role = (&'static str, fn(&mut Theme) -> &mut [f32; 4]);
 type SizeRole = (&'static str, fn(&mut Theme) -> &mut f32);
 
-const RGBA_ROLES: [RgbaRole; 34] = [
+const RGBA_ROLES: [RgbaRole; 42] = [
     ("ui.bg", |t| &mut t.ui.bg),
     ("ui.border", |t| &mut t.ui.border),
     ("ui.field", |t| &mut t.ui.field),
@@ -38,6 +38,14 @@ const RGBA_ROLES: [RgbaRole; 34] = [
     ("ui.caret", |t| &mut t.ui.caret),
     ("ui.text_select", |t| &mut t.ui.text_select),
     ("ui.field_readonly", |t| &mut t.ui.field_readonly),
+    ("ui.level_line", |t| &mut t.ui.level_line),
+    ("ui.level_line_active", |t| &mut t.ui.level_line_active),
+    ("ui.level_handle", |t| &mut t.ui.level_handle),
+    ("ui.level_handle_hover", |t| &mut t.ui.level_handle_hover),
+    ("ui.level_handle_drag", |t| &mut t.ui.level_handle_drag),
+    ("ui.dim_line", |t| &mut t.ui.dim_line),
+    ("ui.dim_text", |t| &mut t.ui.dim_text),
+    ("ui.dim_text_hover", |t| &mut t.ui.dim_text_hover),
     ("title.bg", |t| &mut t.title.bg),
     ("title.glyph", |t| &mut t.title.glyph),
     ("title.glyph_inactive", |t| &mut t.title.glyph_inactive),
@@ -69,7 +77,7 @@ const F4_ROLES: [F4Role; 10] = [
     ("interact.shadow_band", |t| &mut t.interact.shadow_band),
 ];
 
-const SIZE_ROLES: [SizeRole; 13] = [
+const SIZE_ROLES: [SizeRole; 18] = [
     ("corner_radius", |t| &mut t.size.corner_radius),
     ("font", |t| &mut t.size.font),
     ("font_small", |t| &mut t.size.font_small),
@@ -83,6 +91,11 @@ const SIZE_ROLES: [SizeRole; 13] = [
     ("panel_shadow", |t| &mut t.size.panel_shadow),
     ("field_height", |t| &mut t.size.field_height),
     ("field_pad", |t| &mut t.size.field_pad),
+    ("level_px_per_m", |t| &mut t.size.level_px_per_m),
+    ("level_px_per_m_min", |t| &mut t.size.level_px_per_m_min),
+    ("level_handle", |t| &mut t.size.level_handle),
+    ("level_hit", |t| &mut t.size.level_hit),
+    ("level_row_min", |t| &mut t.size.level_row_min),
 ];
 
 /// Grundschema zu einem Namen.

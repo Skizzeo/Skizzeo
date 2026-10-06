@@ -391,9 +391,10 @@ mod tests {
             .iter()
             .flat_map(|t| t.p.map(|p| p.z))
             .collect();
+        // UK Gründung bleibt (B11), die Schürze wird kürzer
         assert!(near(
             fz.iter().cloned().fold(f64::MAX, f64::min),
-            -850.0,
+            -800.0,
             1e-9
         ));
     }

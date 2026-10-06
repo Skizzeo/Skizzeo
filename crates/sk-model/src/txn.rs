@@ -121,6 +121,7 @@ pub(crate) enum Key {
     Element(ElementId),
     LayerSet(LayerSetId),
     Material(MaterialId),
+    Storey(StoreyId),
     Pen(PenId),
     LineType(LineTypeId),
     Fill(FillId),

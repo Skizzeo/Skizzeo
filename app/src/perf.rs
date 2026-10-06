@@ -496,3 +496,27 @@ fn perf_referenzgebaeude() {
          (Laden = Datei lesen + Szene + erstes Netz). MB = volles Netz zur Grafikkarte."
     );
 }
+
+/// Paneel „Geschosse“ (E14): OK EG ziehen. Je Bild ändern sich alle daran
+/// gebundenen Decken und Wände; gemessen wird Modell plus 3D-Netz.
+#[test]
+#[ignore]
+fn perf_ebene_ziehen() {
+    println!();
+    for (name, buildings, storeys, annexes) in [
+        ("Referenz: 4 Geschosse + 2 Nebengeb.", 1, 4, 2),
+        ("Groß: 2 Häuser à 4 G. + 2 Nebengeb.", 2, 4, 2),
+    ] {
+        let mut s = reference(buildings, storeys, annexes);
+        let eg = s.model().defaults().storey;
+        let mut flip = false;
+        s.begin("Geschoss ziehen");
+        let drag = time(20, || {
+            flip = !flip;
+            s.drag_storey_top(eg, if flip { 2500.0 } else { 2600.0 });
+            std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
+        });
+        let release = time(1, || s.commit());
+        println!("{name:<36} Ziehen {drag:7.2} ms je Bild, Loslassen {release:7.2} ms");
+    }
+}

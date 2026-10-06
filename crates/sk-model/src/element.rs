@@ -158,9 +158,8 @@ pub struct Floor {
     pub material: MaterialId,
     /// Dicke in mm, von der Oberkante nach unten.
     pub thickness: f64,
-    /// Oberkante in mm über dem Wandfuß. Beim Anlegen ⅔ der Wandhöhe, danach
-    /// fest (bis zur Ebenenverwaltung).
-    pub top: f64,
+    /// Oberkante: OK Erdgeschoss (B11).
+    pub top: LevelRef,
 }
 
 /// Sohlplatte unter einem geschlossenen Außenwandzug (IFC: IfcSlab BASESLAB).
@@ -169,6 +168,8 @@ pub struct Floor {
 pub struct GroundSlab {
     pub run: RunId,
     pub material: MaterialId,
+    /// Oberkante: UK Erdgeschoss (±0,00).
+    pub top: LevelRef,
     /// Dicke in mm, von der Oberkante (z = 0) nach unten.
     pub thickness: f64,
     /// Sockelrücksprung in mm: 0 (bündig) oder mindestens 20.
@@ -183,8 +184,8 @@ pub struct StripFooting {
     pub material: MaterialId,
     /// Breite in mm.
     pub width: f64,
-    /// Tiefe in mm ab Unterkante Sohlplatte.
-    pub depth: f64,
+    /// Unterkante: UK Gründung. Die Tiefe ab UK Sohlplatte ist abgeleitet.
+    pub base: LevelRef,
 }
 
 /// Wand = ein gerades Segment eines Wandzugs (IFC: IfcWall).
@@ -203,19 +204,75 @@ pub struct WallRun {
     pub points: Vec<Vec3>,
     pub closed: bool,
     pub ref_side: RefSide,
+    /// Wandfuß: UK des Geschosses (B11).
+    pub base: LevelRef,
+    /// Wandhöhe ab dem Fuß in mm.
     pub height: f64,
     pub storey: StoreyId,
     /// Je Segment ein Bauteil vom Typ Wand, in Segmentreihenfolge.
     pub segments: Vec<ElementId>,
 }
 
-/// Geschoss (IFC: IfcBuildingStorey).
+/// Art eines Geschossbands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LevelKind {
+    /// Gründung: UK Frostschürze bis OK Sohlplatte (±0,00).
+    Foundation,
+    Storey,
+}
+
+/// Geschoss als Band mit Unter- und Oberkante (IFC: IfcBuildingStorey,
+/// Elevation = UK). Die Bänder liegen lückenlos übereinander.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Storey {
     pub guid: Guid,
+    /// „Gründung“, „Erdgeschoss“, „Obergeschoss“.
     pub name: String,
-    /// Höhe der Geschossebene (OK Rohfußboden) in mm.
+    /// „GR“, „EG“, „OG“.
+    pub short: String,
+    pub kind: LevelKind,
+    /// Unterkante in mm, absolut zu ±0,00.
     pub elevation: f64,
-    /// Geschosshöhe in mm.
+    /// Geschosshöhe in mm; OK = `elevation + height`.
     pub height: f64,
+}
+
+impl Storey {
+    pub fn top(&self) -> f64 {
+        self.elevation + self.height
+    }
+}
+
+/// Kante eines Geschossbands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LevelEdge {
+    Bottom,
+    Top,
+}
+
+/// Höhenbezug eines Bauteils: Kante eines Geschosses plus Versatz (mm).
+/// Bauteile speichern keine absoluten Höhen (Prüfregel 14).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LevelRef {
+    pub storey: StoreyId,
+    pub edge: LevelEdge,
+    pub offset: f64,
+}
+
+impl LevelRef {
+    pub fn bottom(storey: StoreyId) -> LevelRef {
+        LevelRef {
+            storey,
+            edge: LevelEdge::Bottom,
+            offset: 0.0,
+        }
+    }
+
+    pub fn top(storey: StoreyId) -> LevelRef {
+        LevelRef {
+            storey,
+            edge: LevelEdge::Top,
+            offset: 0.0,
+        }
+    }
 }

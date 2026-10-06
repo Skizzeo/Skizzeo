@@ -40,7 +40,7 @@ use sk_ui::{
 };
 use std::f64::consts::{FRAC_PI_2, PI};
 use std::time::Instant;
-use ui::{Id, Panel, Ui, ViewKind};
+use ui::{Grip, Id, LevelEvent, Panel, Ui, ViewKind};
 use wall_edit::WallEdit;
 use wall_tool::WallTool;
 
@@ -113,7 +113,9 @@ const OVERLAY_TOOLS: usize = 2;
 const OVERLAY_VIEWS: usize = 3;
 /// Paneel „Eigenschaften“.
 const OVERLAY_PROPS: usize = 4;
-const OVERLAY_TITLE: usize = 5;
+/// Paneel „Geschosse“.
+const OVERLAY_LEVELS: usize = 5;
+const OVERLAY_TITLE: usize = 6;
 
 /// Blickrichtung (yaw, pitch) der Parallelansichten.
 fn view_direction(v: ViewKind) -> (f64, f64) {
@@ -301,7 +303,7 @@ impl App {
     /// Paneel „Eigenschaften“ an Auswahl und Modell angleichen. Beim Ziehen bleibt
     /// es stehen; die neuen Mengen kommen beim Loslassen.
     fn sync_props(&mut self) {
-        if self.edit.is_dragging() {
+        if self.edit.is_dragging() || self.ui.level_dragging().is_some() {
             return;
         }
         if self.sel.validate(&self.scene) {
@@ -315,6 +317,17 @@ impl App {
         self.ui
             .set_props(self.sel.id.and_then(|id| selection::props(&self.scene, id)));
         self.props_dirty = true;
+    }
+
+    /// Paneel „Geschosse“ an das Modell angleichen. Beim Ziehen wird nur sein
+    /// Bild erneuert, die Größe bleibt bis zum Loslassen.
+    fn sync_levels(&mut self) {
+        if self.ui.set_levels(self.scene.levels()) {
+            match self.ui.level_dragging() {
+                Some(g) => self.dirty_buttons.push(Id::Grip(g)),
+                None => self.overlay_dirty = true,
+            }
+        }
     }
 
     /// Wählt das Bauteil (oder nichts).
@@ -534,8 +547,8 @@ impl App {
             Id::Ref(r) => self.tool.ref_side = r,
             Id::Ortho => self.tool.ortho = !self.tool.ortho,
             Id::View(v) => self.set_view(v),
-            // Zahlenfelder melden sich über `UiOut::submit`
-            Id::Field(_) => {}
+            // Zahlenfelder melden sich über `UiOut::submit`, Griffe über `UiOut::level`
+            Id::Field(_) | Id::Grip(_) => {}
         }
         self.overlay_dirty = true;
         self.refresh_cursor();
@@ -548,10 +561,30 @@ impl App {
         if out.relayout {
             self.overlay_dirty = true;
         }
-        if let (Some((field, mm)), Some(id)) = (out.submit, self.sel.id) {
+        if let Some((field, mm)) = out.submit.filter(|s| s.0.is_level()) {
+            if self.scene.set_level(field, mm) {
+                self.upload_model();
+            }
+        } else if let (Some((field, mm)), Some(id)) = (out.submit, self.sel.id) {
             if self.scene.set_field(id, field, mm) {
                 self.upload_model();
             }
+        }
+        // Ebene ziehen: ein Schritt, das Modell folgt in jedem Bild
+        match out.level {
+            Some(LevelEvent::Begin(_)) => self.scene.begin("Geschoss ziehen"),
+            Some(LevelEvent::Move(g, z)) => {
+                match g {
+                    Grip::FoundationBottom => self.scene.drag_foundation_bottom(z),
+                    Grip::Top(id) => self.scene.drag_storey_top(id, z),
+                }
+                self.upload_model();
+            }
+            Some(LevelEvent::End) => {
+                self.scene.commit();
+                self.upload_model();
+            }
+            None => {}
         }
         self.redraw |= !out.changed.is_empty() || out.relayout;
     }
@@ -618,6 +651,29 @@ impl App {
                 other => other,
             }
         };
+        // Beim Ziehen einer Ebene gehören Maus und Tasten dem Paneel „Geschosse“
+        if self.ui.level_dragging().is_some() {
+            match e {
+                Event::MouseMove { .. } | Event::MouseDown { .. } | Event::MouseUp { .. } => {
+                    let out = self.ui.handle(&e, self.w, self.top());
+                    self.apply_ui(&out);
+                    self.sync_levels();
+                    self.sync_props();
+                    self.sync_caption(surface);
+                    return true;
+                }
+                Event::Key { key, down, .. } => {
+                    if down && key == Key::Escape && self.ui.cancel_level_drag() {
+                        self.scene.rollback();
+                        self.upload_model();
+                        self.overlay_dirty = true;
+                        self.sync_levels();
+                    }
+                    return true;
+                }
+                _ => {}
+            }
+        }
         let busy = self.nav.is_dragging() || self.edit.is_dragging() || self.sect.is_dragging();
         let sen = self.sect_enabled();
         let mut camera_moved = false;
@@ -639,6 +695,7 @@ impl App {
             }
             Event::ScaleChanged(s) => {
                 self.title.scale = s;
+                self.ui.top = self.title.height();
                 self.ui.fit(s, self.w, self.h);
                 self.overlay_dirty = true;
                 self.redraw = true;
@@ -892,6 +949,7 @@ impl App {
         }
         self.sync_ui();
         self.sync_props();
+        self.sync_levels();
         self.sync_caption(surface);
         true
     }
@@ -914,7 +972,11 @@ impl App {
     fn paint_overlays(&mut self, surface: &Surface) {
         self.paint_title(surface);
         let th = self.title.height();
-        for (slot, p) in [(OVERLAY_TOOLS, Panel::Tools), (OVERLAY_VIEWS, Panel::Views)] {
+        for (slot, p) in [
+            (OVERLAY_TOOLS, Panel::Tools),
+            (OVERLAY_LEVELS, Panel::Levels),
+            (OVERLAY_VIEWS, Panel::Views),
+        ] {
             let (c, x, y) = self.ui.paint(&self.theme, p, self.w, th);
             let px = c.to_premul_rgba8();
             self.renderer
@@ -985,6 +1047,7 @@ impl App {
                 Panel::Tools => OVERLAY_TOOLS,
                 Panel::Views => OVERLAY_VIEWS,
                 Panel::Props => OVERLAY_PROPS,
+                Panel::Levels => OVERLAY_LEVELS,
             };
             self.renderer
                 .update_overlay(slot, p.x as i32, p.y as i32, p.w as u32, p.h as u32, &p.px);
@@ -1001,6 +1064,7 @@ impl App {
             (OVERLAY_TOOLS, Panel::Tools),
             (OVERLAY_VIEWS, Panel::Views),
             (OVERLAY_PROPS, Panel::Props),
+            (OVERLAY_LEVELS, Panel::Levels),
         ] {
             let (x, y) = self.ui.origin(p, self.w, th);
             self.renderer.move_overlay(slot, x, y);
@@ -1080,6 +1144,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     let mut tool = WallTool::new();
     tool.layers = scene.model().wall_layers(exterior);
     let mut ui = Ui::new(surface.scale(), &theme);
+    let title = TitleBar::new(surface.scale());
+    ui.top = title.height();
     ui.fit(surface.scale(), w, h);
     ui.wall_layers = layer_rows(scene.model(), exterior);
     let doc = Document::new(scene.model().revision());
@@ -1087,7 +1153,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         renderer,
         scene,
         doc,
-        title: TitleBar::new(surface.scale()),
+        title,
         ui,
         cam3d: cam.clone(),
         cam3d_empty: true,
@@ -1116,6 +1182,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         mark_keys: [None; 2],
     };
     a.upload_model();
+    a.sync_levels();
     // `skizzeo.exe haus.szo`: Projekt gleich öffnen
     if let Some(path) = document::path_from_args(std::env::args()) {
         a.open_path(&surface, path);

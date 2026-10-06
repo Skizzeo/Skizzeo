@@ -52,6 +52,17 @@ pub struct Ui {
     pub text_select: Rgba,
     /// Berechnete Werte, nicht änderbar.
     pub field_readonly: Rgba,
+    /// Paneel „Geschosse“ (E14): Ebenenlinie, Linie des aktiven Geschosses,
+    /// Griff normal, unter der Maus und beim Ziehen.
+    pub level_line: Rgba,
+    pub level_line_active: Rgba,
+    pub level_handle: Rgba,
+    pub level_handle_hover: Rgba,
+    pub level_handle_drag: Rgba,
+    /// Maßkette, Maßzahl und Kote, Maßzahl unter der Maus (klickbar).
+    pub dim_line: Rgba,
+    pub dim_text: Rgba,
+    pub dim_text_hover: Rgba,
 }
 
 /// Eigene Titelleiste.
@@ -135,6 +146,14 @@ pub struct Sizes {
     /// Höhe und Innenabstand eines Zahlenfelds.
     pub field_height: f32,
     pub field_pad: f32,
+    /// Paneel „Geschosse“: Maßstab des Diagramms (px je m) und kleinster
+    /// Maßstab im kleinen Fenster, Griffdurchmesser, Fangabstand um Griff und
+    /// Linie, Mindestabstand zweier Linien.
+    pub level_px_per_m: f32,
+    pub level_px_per_m_min: f32,
+    pub level_handle: f32,
+    pub level_hit: f32,
+    pub level_row_min: f32,
 }
 
 const fn rgb(r: u8, g: u8, b: u8) -> Rgba {
@@ -173,6 +192,14 @@ impl Theme {
                 caret: text,
                 text_select: Rgba(accent.0, accent.1, accent.2, 90),
                 field_readonly: rgb(160, 165, 172),
+                level_line: rgb(160, 165, 172),
+                level_line_active: accent,
+                level_handle: text,
+                level_handle_hover: rgb(248, 196, 96),
+                level_handle_drag: rgb(143, 69, 219),
+                dim_line: rgb(160, 165, 172),
+                dim_text: text,
+                dim_text_hover: accent,
             },
             title: Title {
                 // Dunkel wie die Paneele, damit sie sich auch über dem Papier abhebt
@@ -239,6 +266,11 @@ impl Theme {
                 panel_shadow: 10.0,
                 field_height: 26.0,
                 field_pad: 6.0,
+                level_px_per_m: 32.0,
+                level_px_per_m_min: 16.0,
+                level_handle: 10.0,
+                level_hit: 8.0,
+                level_row_min: 22.0,
             },
             px_per_mm: 5.5,
         }
@@ -254,6 +286,11 @@ impl Theme {
         let sel = self.ui.text_select;
         if (sel.0, sel.1, sel.2) == (old.0, old.1, old.2) {
             self.ui.text_select = Rgba(c.0, c.1, c.2, sel.3);
+        }
+        for role in [&mut self.ui.level_line_active, &mut self.ui.dim_text_hover] {
+            if *role == old {
+                *role = c;
+            }
         }
         self.ui.accent = c;
         self.interact.select = c.to_f32();
@@ -301,6 +338,31 @@ mod tests {
         t.ui.field_focus = Rgba::rgb(1, 2, 3);
         t.set_accent(Rgba::rgb(9, 9, 9));
         assert_eq!(t.ui.field_focus, Rgba::rgb(1, 2, 3));
+    }
+
+    /// E14: Rollen und Maße des Paneels „Geschosse“; aktive Linie und
+    /// Maßzahl unter der Maus folgen dem Akzent.
+    #[test]
+    fn geschossrollen() {
+        let mut t = Theme::dark();
+        let u = &t.ui;
+        assert_eq!((u.level_line, u.dim_line), (u.text_dim, u.text_dim));
+        assert_eq!(
+            (u.level_line_active, u.dim_text_hover),
+            (u.accent, u.accent)
+        );
+        assert_eq!((u.level_handle, u.dim_text), (u.text, u.text));
+        assert_eq!(u.level_handle_hover, u.accent_hover);
+        assert_eq!(u.level_handle_drag, Rgba::from_f32(t.interact.drag));
+        let z = &t.size;
+        assert_eq!(
+            (z.level_px_per_m, z.level_px_per_m_min, z.level_handle),
+            (32.0, 16.0, 10.0)
+        );
+        assert_eq!((z.level_hit, z.level_row_min), (8.0, 22.0));
+        let blue = Rgba::rgb(40, 120, 220);
+        t.set_accent(blue);
+        assert_eq!((t.ui.level_line_active, t.ui.dim_text_hover), (blue, blue));
     }
 
     /// Die früheren Werte als 0..1 und ihre Rollen weichen höchstens 0,5/255 ab.

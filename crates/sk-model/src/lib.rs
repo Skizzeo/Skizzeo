@@ -26,8 +26,8 @@ pub use attr::{
     LineTypeId, Pen, PenId, Surface, SurfaceId,
 };
 pub use element::{
-    Category, Element, ElementId, ElementKind, PropSet, PropValue, RunId, Storey, StoreyId, Wall,
-    WallRun,
+    Category, Element, ElementId, ElementKind, LevelEdge, LevelKind, LevelRef, PropSet, PropValue,
+    RunId, Storey, StoreyId, Wall, WallRun,
 };
 pub use floor::{FloorError, FloorParams, FloorSlab};
 pub use foundation::{FootingShape, Foundation, FoundationError, FoundationParams};
@@ -39,7 +39,8 @@ pub use library::{
     MaterialLayer,
 };
 pub use model::{
-    Defaults, Model, NumberError, Project, FLOOR_PART, FOOTING_PART, MIN_RECESS, SLAB_PART,
+    Defaults, Model, NumberError, Project, FLOOR_PART, FOOTING_PART, MAX_FOUNDATION, MIN_CLEAR,
+    MIN_FOOTING, MIN_RECESS, MIN_UPPER, SLAB_PART,
 };
 pub use qto::{
     floor_qto, floor_qto_of, foundation_qto, foundation_qto_of, run_qto, wall_qto, FloorQto,
