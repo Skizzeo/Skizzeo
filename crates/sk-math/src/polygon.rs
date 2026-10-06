@@ -106,40 +106,67 @@ fn segments_cross(a: Vec3, b: Vec3, c: Vec3, d: Vec3) -> bool {
 }
 
 /// Ist das Polygon einfach (keine Selbstüberschneidung, mindestens drei
-/// Punkte, Fläche > 0)? Aufwand n², für Grundrisse unkritisch.
+/// Punkte, Fläche > 0)?
+///
+/// Geprüft werden nur Kantenpaare, deren x-Bereiche sich überlappen (Kanten
+/// nach linkem Ende sortiert, dann nach rechts abgesucht). Paare ohne
+/// Überlappung können sich weder schneiden noch berühren. Bei Grundrissen
+/// liegt der Aufwand so nahe n·log n statt n²; das Gründungsnetz wird bei jeder
+/// Mausbewegung neu berechnet und prüft dabei mehrfach.
 pub fn is_simple(pts: &[Vec3]) -> bool {
     let n = pts.len();
     if n < 3 || area(pts) < EPS {
         return false;
     }
-    for i in 0..n {
-        let (a, b) = (flat(pts[i]), flat(pts[(i + 1) % n]));
-        for j in i + 1..n {
-            let (c, d) = (flat(pts[j]), flat(pts[(j + 1) % n]));
-            let neighbours = j == i + 1 || (i == 0 && j == n - 1);
-            if neighbours {
-                // Nachbarkanten dürfen nicht auf sich zurücklaufen
-                let (u, w) = if j == i + 1 {
-                    (b - a, d - c)
-                } else {
-                    (d - c, b - a)
-                };
-                if cross2(u, w).abs() < 1e-9 * u.length() * w.length() && u.dot(w) < 0.0 {
-                    return false;
-                }
-                continue;
+    let edge = |i: usize| (flat(pts[i]), flat(pts[(i + 1) % n]));
+    // Toleranz der Berührungsprüfung unten: Abstand bis 1e-6 · Kantenlänge
+    let longest = (0..n)
+        .map(|i| (edge(i).1 - edge(i).0).length())
+        .fold(0.0, f64::max);
+    let margin = 1e-6 * longest + 1e-9;
+    let lo = |i: usize| edge(i).0.x.min(edge(i).1.x);
+    let hi = |i: usize| edge(i).0.x.max(edge(i).1.x);
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| lo(a).total_cmp(&lo(b)));
+    for (k, &first) in order.iter().enumerate() {
+        let end = hi(first) + margin;
+        for &second in &order[k + 1..] {
+            if lo(second) > end {
+                break;
             }
-            if segments_cross(a, b, c, d) {
+            if !edges_ok(pts, first.min(second), first.max(second)) {
                 return false;
             }
-            // Ein Punkt einer Kante liegt im Inneren der anderen
-            for (p, q0, q1) in [(c, a, b), (d, a, b), (a, c, d), (b, c, d)] {
-                let r = q1 - q0;
-                let t = (p - q0).dot(r) / r.dot(r).max(1e-12);
-                if t > 1e-9 && t < 1.0 - 1e-9 && cross2(p - q0, r).abs() < 1e-6 * r.length() {
-                    return false;
-                }
-            }
+        }
+    }
+    true
+}
+
+/// Kanten `i` und `j` (`i < j`) eines Polygons: keine Überschneidung, kein
+/// Endpunkt im Inneren der anderen Kante, Nachbarn laufen nicht zurück.
+fn edges_ok(pts: &[Vec3], i: usize, j: usize) -> bool {
+    let n = pts.len();
+    let (a, b) = (flat(pts[i]), flat(pts[(i + 1) % n]));
+    let (c, d) = (flat(pts[j]), flat(pts[(j + 1) % n]));
+    let neighbours = j == i + 1 || (i == 0 && j == n - 1);
+    if neighbours {
+        // Nachbarkanten dürfen nicht auf sich zurücklaufen
+        let (u, w) = if j == i + 1 {
+            (b - a, d - c)
+        } else {
+            (d - c, b - a)
+        };
+        return !(cross2(u, w).abs() < 1e-9 * u.length() * w.length() && u.dot(w) < 0.0);
+    }
+    if segments_cross(a, b, c, d) {
+        return false;
+    }
+    // Ein Punkt einer Kante liegt im Inneren der anderen
+    for (p, q0, q1) in [(c, a, b), (d, a, b), (a, c, d), (b, c, d)] {
+        let r = q1 - q0;
+        let t = (p - q0).dot(r) / r.dot(r).max(1e-12);
+        if t > 1e-9 && t < 1.0 - 1e-9 && cross2(p - q0, r).abs() < 1e-6 * r.length() {
+            return false;
         }
     }
     true
@@ -292,6 +319,12 @@ pub fn inset(pts: &[Vec3], d: f64) -> Result<Inset, InsetError> {
 
 /// Zerlegt ein einfaches Polygon in Dreiecke (Ohrenschneiden).
 /// Liefert Indizes gegen den Uhrzeigersinn, unabhängig von der Eingaberichtung.
+///
+/// Ob ein Punkt im Ohr liegt, wird nur für nach innen geknickte Ecken geprüft:
+/// Liegt irgendeine Ecke im Dreieck, dann auch eine geknickte. Ecken werden nur
+/// von geknickt zu gerade oder konvex, nie umgekehrt. Bei fast konvexen
+/// Grundrissen ist der Aufwand so nahezu linear statt quadratisch; die
+/// Gründung wird bei jeder Mausbewegung neu zerlegt.
 pub fn triangulate(pts: &[Vec3]) -> Vec<[usize; 3]> {
     let n = pts.len();
     let mut idx: Vec<usize> = (0..n).collect();
@@ -299,51 +332,85 @@ pub fn triangulate(pts: &[Vec3]) -> Vec<[usize; 3]> {
         idx.reverse();
     }
     let p = |i: usize| flat(pts[i]);
+    let turn = |idx: &[usize], k: usize| {
+        let m = idx.len();
+        let (a, b, c) = (p(idx[(k + m - 1) % m]), p(idx[k]), p(idx[(k + 1) % m]));
+        let t = cross2(b - a, c - b);
+        let straight = t.abs() <= 1e-9 * (b - a).length() * (c - b).length();
+        (t, straight)
+    };
+    // Gerade weiter laufende oder doppelte Punkte entfernen (ohne Dreieck)
+    let drop_straight = |idx: &mut Vec<usize>| {
+        let mut k = 0;
+        while idx.len() > 3 && k < idx.len() {
+            if turn(idx, k).1 {
+                idx.remove(k);
+                k = k.saturating_sub(1);
+            } else {
+                k += 1;
+            }
+        }
+    };
+    drop_straight(&mut idx);
+    let mut reflex = vec![false; n];
+    for k in 0..idx.len() {
+        reflex[idx[k]] = turn(&idx, k).0 <= 0.0;
+    }
+    let mut reflex_list: Vec<usize> = idx.iter().copied().filter(|&i| reflex[i]).collect();
     let mut tris = Vec::with_capacity(n.saturating_sub(2));
     let mut guard = 0;
     while idx.len() > 3 && guard < 4 * n * n + 16 {
         guard += 1;
         let m = idx.len();
+        reflex_list.retain(|&i| reflex[i]);
         let mut cut = None;
-        // Zuerst entartete Punkte (gerade weiter oder doppelt) entfernen
         for k in 0..m {
-            let (a, b, c) = (p(idx[(k + m - 1) % m]), p(idx[k]), p(idx[(k + 1) % m]));
-            if cross2(b - a, c - b).abs() <= 1e-9 * (b - a).length() * (c - b).length() {
-                cut = Some((k, false));
+            let (ia, ib, ic) = (idx[(k + m - 1) % m], idx[k], idx[(k + 1) % m]);
+            if reflex[ib] {
+                continue; // nach innen geknickt
+            }
+            let (a, b, c) = (p(ia), p(ib), p(ic));
+            let inside = reflex_list.iter().any(|&j| {
+                if j == ia || j == ib || j == ic {
+                    return false;
+                }
+                let q = p(j);
+                cross2(b - a, q - a) >= -1e-9
+                    && cross2(c - b, q - b) >= -1e-9
+                    && cross2(a - c, q - c) >= -1e-9
+            });
+            if !inside {
+                cut = Some(k);
                 break;
             }
         }
-        if cut.is_none() {
-            for k in 0..m {
-                let (ia, ib, ic) = (idx[(k + m - 1) % m], idx[k], idx[(k + 1) % m]);
-                let (a, b, c) = (p(ia), p(ib), p(ic));
-                if cross2(b - a, c - b) <= 0.0 {
-                    continue; // nach innen geknickt
-                }
-                let inside = idx.iter().any(|&j| {
-                    if j == ia || j == ib || j == ic {
-                        return false;
-                    }
-                    let q = p(j);
-                    cross2(b - a, q - a) >= -1e-9
-                        && cross2(c - b, q - b) >= -1e-9
-                        && cross2(a - c, q - c) >= -1e-9
-                });
-                if !inside {
-                    cut = Some((k, true));
-                    break;
-                }
+        let Some(k) = cut else {
+            break; // kein Ohr: Polygon nicht einfach
+        };
+        tris.push([idx[(k + m - 1) % m], idx[k], idx[(k + 1) % m]]);
+        reflex[idx[k]] = false;
+        idx.remove(k);
+        // Die beiden Nachbarn können gerade oder konvex geworden sein; fällt
+        // ein gerader weg, sind wiederum seine Nachbarn zu prüfen
+        let m = idx.len();
+        let mut check = vec![idx[(k + m - 1) % m], idx[k % m]];
+        while let Some(v) = check.pop() {
+            if idx.len() <= 3 {
+                break;
             }
-        }
-        match cut {
-            Some((k, emit)) => {
-                let m = idx.len();
-                if emit {
-                    tris.push([idx[(k + m - 1) % m], idx[k], idx[(k + 1) % m]]);
-                }
+            let Some(k) = idx.iter().position(|&i| i == v) else {
+                continue;
+            };
+            let (t, straight) = turn(&idx, k);
+            if straight {
+                reflex[v] = false;
                 idx.remove(k);
+                let m = idx.len();
+                check.push(idx[(k + m - 1) % m]);
+                check.push(idx[k % m]);
+            } else {
+                reflex[v] = t <= 0.0;
             }
-            None => break, // kein Ohr: Polygon nicht einfach
         }
     }
     if idx.len() == 3 {
@@ -379,6 +446,112 @@ pub fn plane_intervals(pts: &[Vec3], p0: Vec3, n: Vec3, along: Vec3) -> Vec<(f64
 
 #[cfg(test)]
 mod tests {
+    /// Alle Kantenpaare, wie vor der Sortierung: Vergleich für [`is_simple`].
+    fn is_simple_all_pairs(pts: &[Vec3]) -> bool {
+        let n = pts.len();
+        if n < 3 || area(pts) < EPS {
+            return false;
+        }
+        (0..n).all(|i| (i + 1..n).all(|j| edges_ok(pts, i, j)))
+    }
+
+    #[test]
+    fn zerlegung_deckt_zufaellige_vielecke() {
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % 10_000) as f64 / 10_000.0
+        };
+        let mut checked = 0;
+        for case in 0..4000 {
+            let n = 3 + case % 60;
+            let mut pts: Vec<Vec3> = (0..n)
+                .map(|k| {
+                    let a = k as f64 / n as f64 * std::f64::consts::TAU;
+                    let r = 1000.0 + 2500.0 * rnd() * (case % 4) as f64;
+                    vec3((r * a.cos()).round(), (r * a.sin()).round(), 0.0)
+                })
+                .collect();
+            if case % 5 == 0 {
+                // Zwischenpunkt auf einer Kante (gerade weiter)
+                let k = case % n;
+                let mid = (pts[k] + pts[(k + 1) % n]) * 0.5;
+                pts.insert(k + 1, mid);
+            }
+            if case % 2 == 1 {
+                pts.reverse();
+            }
+            if !is_simple(&pts) {
+                continue;
+            }
+            checked += 1;
+            let t = triangulate(&pts);
+            let sum: f64 = t
+                .iter()
+                .map(|t| area(&[pts[t[0]], pts[t[1]], pts[t[2]]]))
+                .sum();
+            assert!(
+                (sum - area(&pts)).abs() < 1e-6 * area(&pts).max(1.0),
+                "Fall {case}: {sum} statt {}",
+                area(&pts)
+            );
+            for t in &t {
+                let (a, b, c) = (pts[t[0]], pts[t[1]], pts[t[2]]);
+                assert!(
+                    cross2(b - a, c - b) > 0.0,
+                    "Fall {case}: Dreieck nicht gegen Uhrzeigersinn"
+                );
+            }
+        }
+        assert!(checked > 2000, "{checked}");
+    }
+
+    #[test]
+    fn einfach_gleich_wie_alle_paare() {
+        // Pseudozufällige Vielecke: Sterne, Zickzack, Kreise mit Störung,
+        // doppelte und zurücklaufende Punkte
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % 10_000) as f64 / 10_000.0
+        };
+        let mut simple = 0;
+        for case in 0..3000 {
+            let n = 3 + case % 40;
+            let mut pts: Vec<Vec3> = (0..n)
+                .map(|k| {
+                    let step = std::f64::consts::TAU / n as f64;
+                    // jeder vierte Fall mit Winkelrauschen: Kanten kreuzen sich
+                    let jitter = if case % 4 == 0 {
+                        (rnd() - 0.5) * 6.0
+                    } else {
+                        0.0
+                    };
+                    let a = (k as f64 + jitter) * step;
+                    let r = 1000.0 + 900.0 * rnd() * (case % 3) as f64;
+                    vec3((r * a.cos()).round(), (r * a.sin()).round(), 0.0)
+                })
+                .collect();
+            if case % 7 == 0 {
+                let k = (rnd() * n as f64) as usize % n;
+                pts[k] = pts[(k + 1) % n];
+            }
+            if case % 11 == 0 {
+                let k = (rnd() * n as f64) as usize % n;
+                pts[k] = vec3((rnd() * 4000.0 - 2000.0).round(), 0.0, 0.0);
+            }
+            let fast = is_simple(&pts);
+            assert_eq!(fast, is_simple_all_pairs(&pts), "Fall {case}: {pts:?}");
+            simple += fast as usize;
+        }
+        // beide Ausgänge kommen vor
+        assert!(simple > 300 && simple < 2700, "{simple}");
+    }
+
     use super::*;
 
     fn rect(w: f64, h: f64) -> Vec<Vec3> {
