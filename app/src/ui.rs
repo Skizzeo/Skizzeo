@@ -578,11 +578,13 @@ fn tool_rows(
         Row::Button(Id::Building, "Gebäude"),
         Row::Button(Id::Interior, "Innenwand"),
     ];
+    // Zweizeilig ohne Abstand dazwischen, damit nichts am Rand abbricht
     if foundation_active {
-        rows.push(Row::Text("Im Fundament gibt es noch".into()));
+        rows.push(Row::Hint("Im Fundament gibt es noch"));
         rows.push(Row::Text("nichts zu zeichnen".into()));
     } else if upper_active {
-        rows.push(Row::Text("Außenwände entstehen aus dem EG".into()));
+        rows.push(Row::Hint("Außenwände entstehen"));
+        rows.push(Row::Text("aus dem EG".into()));
     }
     rows.extend([Row::Label(if interior {
         "Innenwand"
