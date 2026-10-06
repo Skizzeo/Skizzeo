@@ -95,6 +95,9 @@ pub struct Title {
 pub struct Interact {
     /// Auswahlumriss.
     pub select: [f32; 4],
+    /// Bauteil unter der Maus, auch vom Mengenfenster aus (F2): zarter als
+    /// die Auswahl.
+    pub hover_element: [f32; 4],
     /// Live-Wand und freier Fangpunkt.
     pub draw: [f32; 4],
     /// Spurlinie vom Startpunkt, Fangpunkt auf Linie oder Kreuzung.
@@ -286,6 +289,7 @@ impl Theme {
             },
             interact: Interact {
                 select: accent.to_f32(),
+                hover_element: hover_of(accent),
                 draw: accent.to_f32(),
                 track: [0.85, 0.15, 0.85, 1.0],
                 guide: [0.9, 0.3, 0.2, 1.0],
@@ -417,10 +421,19 @@ impl Theme {
             }
         }
         self.ui.accent = c;
+        if self.interact.hover_element == hover_of(old) {
+            self.interact.hover_element = hover_of(c);
+        }
         self.interact.select = c.to_f32();
         self.interact.draw = c.to_f32();
         self.rev += 1;
     }
+}
+
+/// Hover-Farbe zum Akzent: gleiche Farbe, halb durchsichtig.
+fn hover_of(accent: Rgba) -> [f32; 4] {
+    let [r, g, b, _] = accent.to_f32();
+    [r, g, b, 0.55]
 }
 
 /// Akzent unter der Maus zu einem Akzent: 20 % in Richtung Weiß.

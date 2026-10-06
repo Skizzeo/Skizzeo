@@ -42,6 +42,7 @@ impl Selection {
 
     /// Hebt die Auswahl auf, wenn es das Bauteil nicht mehr gibt (etwa nach
     /// Rückgängig). `true`, wenn sie aufgehoben wurde.
+    #[cfg(test)]
     pub fn validate(&mut self, scene: &Scene) -> bool {
         match self.id {
             Some(id) if scene.model().element(id).is_none() => {
@@ -356,6 +357,49 @@ pub fn helpers(
     scale: f32,
     theme: &Theme,
 ) -> Vec<Helper> {
+    outline(
+        scene,
+        id,
+        view,
+        section,
+        scale,
+        theme,
+        theme.interact.select,
+    )
+}
+
+/// Umriss des Bauteils unter der Maus (auch vom Mengenfenster aus, F2) in
+/// der Rolle `interact.hover_element`, wie [`helpers`] gezeichnet.
+pub fn hover_helpers(
+    scene: &Scene,
+    hover: Option<ElementId>,
+    view: ViewKind,
+    section: Option<(Vec3, Vec3)>,
+    scale: f32,
+    theme: &Theme,
+) -> Vec<Helper> {
+    hover.map_or_else(Vec::new, |id| {
+        outline(
+            scene,
+            id,
+            view,
+            section,
+            scale,
+            theme,
+            theme.interact.hover_element,
+        )
+    })
+}
+
+fn outline(
+    scene: &Scene,
+    id: ElementId,
+    view: ViewKind,
+    section: Option<(Vec3, Vec3)>,
+    scale: f32,
+    theme: &Theme,
+    color: [f32; 4],
+) -> Vec<Helper> {
     let at = |p: Vec3, z: f64| vec3(p.x, p.y, z);
     let mut lines = Vec::new();
     // Umriss `f` von z0 bis z1 als Kanten (im Grundriss nur oben)
@@ -426,7 +470,6 @@ pub fn helpers(
             .filter_map(|(a, b)| behind(a, b, pl))
             .collect();
     }
-    let color = theme.interact.select;
     lines
         .into_iter()
         .map(|(a, b)| Helper {

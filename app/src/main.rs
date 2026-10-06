@@ -12,7 +12,9 @@ mod menu;
 mod nav;
 #[cfg(test)]
 mod perf;
+mod picking;
 mod prefs;
+mod quantity;
 mod scene;
 mod section;
 mod selection;
@@ -22,6 +24,7 @@ mod wall_edit;
 mod wall_tool;
 mod wheel;
 mod wheel_view;
+mod windows;
 
 use camera::Camera;
 use document::Document;
@@ -63,9 +66,16 @@ fn main() {
 
 /// Schreibt Farbschema und „Zuletzt geöffnet“ beim Beenden, falls sie sich
 /// geändert haben.
-fn save_settings(settings: &mut settings::Settings, theme: &Theme, recent: &menu::Recent) {
+fn save_settings(
+    settings: &mut settings::Settings,
+    theme: &Theme,
+    recent: &menu::Recent,
+    surface: &Surface,
+) {
     if settings.path.is_some() {
         settings.recent = recent.clone();
+        // Lage des Mengenfensters (F2)
+        settings.windows = windows::write_settings(&surface.layout());
     }
     if let Err(e) = settings.save_if_changed(theme) {
         eprintln!("{e}");
@@ -349,6 +359,13 @@ struct App {
     wheel_acc: f64,
     wheel_press: bool,
     view_shift: f32,
+    /// Gemeinsamer Hover- und Auswahlzustand beider Fenster (F2).
+    picking: picking::Picking,
+    /// Mengenfenster (F2; bis B7 nur mit `--mengenfenster`).
+    quantity: quantity::QuantityWindow,
+    /// `--geschosswechsel N`: noch so viele Wechsel am Geschossbogen, dann
+    /// beenden (Zeitmessung mit `--zeiten`); Richtung des nächsten.
+    auto_switch: Option<(u32, bool)>,
 }
 
 /// Hinweis an der Maus (Text, Lage, seit wann gewünscht, schon sichtbar).
@@ -426,7 +443,11 @@ impl App {
         if self.edit.is_dragging() || self.ui.level_dragging().is_some() {
             return;
         }
-        if self.sel.validate(&self.scene) {
+        if self.picking.validate(&self.scene) {
+            self.redraw = true;
+            self.quantity.dirty = true;
+        }
+        if self.sel.set(self.picking.primary()) {
             self.redraw = true;
         }
         let key = self.sel.id.map(|id| (id, self.scene.model().revision()));
@@ -479,6 +500,9 @@ impl App {
     /// Wählt das Bauteil (oder nichts). Ein Bauteil eines anderen Gebäudes
     /// macht dessen Geschoss aktiv (B12).
     fn select(&mut self, id: Option<sk_model::ElementId>) {
+        if self.picking.select_only(id) {
+            self.quantity.dirty = true;
+        }
         if self.sel.set(id) {
             self.redraw = true;
         }
@@ -1011,6 +1035,86 @@ impl App {
                 self.paint_title(surface);
                 self.redraw = true;
             }
+        }
+    }
+
+    /// Öffnet das Mengenfenster (F2) oder holt es nach vorn.
+    fn open_quantity(&mut self, surface: &Surface) {
+        self.quantity.open = true;
+        self.quantity.dirty = true;
+        let caption = windows::quantity_caption(&self.doc, self.scene.shown_revision());
+        self.quantity.title.caption = caption.clone();
+        surface.open_quantity(&caption);
+    }
+
+    /// Ereignis aus dem Mengenfenster; Hover und Auswahl wirken in beiden Fenstern.
+    fn handle_quantity(&mut self, e: Event, surface: &Surface) {
+        if !self.quantity.open {
+            return;
+        }
+        let Some(out) = self.quantity.handle(&e) else {
+            return;
+        };
+        match out {
+            quantity::Out::Hover(h) => {
+                if h != self.picking.hover {
+                    self.picking.hover = h;
+                    self.redraw = true;
+                    self.quantity.dirty = true;
+                }
+            }
+            quantity::Out::Click(id, ctrl) => {
+                self.picking.click(id, ctrl);
+                // Auf eine bekannte Lage: nicht wegrollen
+                self.quantity.reveal(&self.picking);
+                self.quantity.dirty = true;
+                self.redraw = true;
+                if self
+                    .picking
+                    .primary()
+                    .is_some_and(|e| self.scene.follow_selection(e))
+                {
+                    if self.ui.view == ViewKind::Plan {
+                        self.upload_model();
+                    }
+                    self.sync_levels();
+                }
+                self.sync_props();
+            }
+            quantity::Out::Clear => {
+                self.select(None);
+                self.sync_props();
+            }
+            quantity::Out::Command(c) => surface.quantity_command(c),
+            quantity::Out::Close => {
+                surface.close_quantity();
+                self.quantity.open = false;
+                if self.picking.hover.take().is_some() {
+                    self.redraw = true;
+                }
+            }
+        }
+    }
+
+    /// Mengenfenster an Modell, Auswahl und Datei angleichen und zeigen.
+    fn sync_quantity(&mut self, surface: &Surface) {
+        if !self.quantity.open {
+            return;
+        }
+        self.quantity.sync_rows(&self.scene);
+        self.quantity.reveal(&self.picking);
+        let caption = windows::quantity_caption(&self.doc, self.scene.shown_revision());
+        if caption != self.quantity.title.caption {
+            surface.set_quantity_title(&caption);
+            self.quantity.title.caption = caption;
+            self.quantity.dirty = true;
+        }
+        let q = &self.quantity;
+        if q.dirty && q.w > 0 && q.h > 0 {
+            surface.set_quantity_caption_area(q.caption_area());
+            let c = q.paint(&self.theme, &self.ui.fonts, &self.picking);
+            surface.present_quantity(q.w, q.h, &c.to_premul_rgba8(), None);
+            self.quantity.dirty = false;
         }
     }
 
@@ -2211,6 +2315,13 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         wheel_acc: 0.0,
         wheel_press: false,
         view_shift: 0.0,
+        picking: picking::Picking::default(),
+        quantity: quantity::QuantityWindow::new(),
+        auto_switch: std::env::args()
+            .skip_while(|a| a != "--geschosswechsel")
+            .nth(1)
+            .and_then(|n| n.parse().ok())
+            .map(|n| (n, true)),
     };
     a.upload_model();
     a.sync_levels();
@@ -2227,6 +2338,11 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         a.set_view(v);
     }
     a.sync_caption(&surface);
+    // Mengenfenster (F2): gemerkte Lage; bis B7 nur mit `--mengenfenster` zu öffnen
+    *surface.layout() = windows::read_settings(&a.settings.windows, &surface.monitors());
+    if surface.layout().quantity_open() || std::env::args().any(|x| x == "--mengenfenster") {
+        a.open_quantity(&surface);
+    }
     // `--zeiten datei.csv`: Dauer jedes Bildes in Millisekunden mitschreiben
     let timing_path = std::env::args().skip_while(|a| a != "--zeiten").nth(1);
     let mut timing = timing_path.as_ref().map(|p| {
@@ -2236,8 +2352,33 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     let mut last_tick: Option<std::time::Instant> = None;
 
     loop {
-        let mut events = Vec::new();
-        if !a.redraw && !a.overlay_dirty && !a.nav.is_animating() && !a.wheel.animating(a.now()) {
+        let mut tagged = Vec::new();
+        if let Some((left, up)) = a.auto_switch {
+            if !a.wheel.animating(a.now()) && a.ui.view == ViewKind::Plan {
+                if left == 0 {
+                    if let Some(log) = timing.as_mut() {
+                        write_timing(&timing_path, log);
+                    }
+                    return Ok(());
+                }
+                // Wie nach einer Pause: Nachbargrundrisse vorbereitet
+                a.scene.prepare_neighbor_plans();
+                let up = if a.wheel.arrow_enabled(&a.scene, up, false) {
+                    up
+                } else {
+                    !up
+                };
+                let t = a.now();
+                a.wheel.click_arrow(&mut a.scene, up, false, t);
+                a.auto_switch = Some((left - 1, up));
+            }
+        }
+        if !a.redraw
+            && !a.overlay_dirty
+            && !a.nav.is_animating()
+            && !a.wheel.animating(a.now())
+            && a.auto_switch.is_none()
+        {
             // Leerlauf: Grundrisse der Nachbargeschosse vorbereiten, damit ein
             // Wechsel am Geschossbogen nichts neu rechnet (E18)
             if a.ui.view == ViewKind::Plan && a.scene.plans_pending() {
@@ -2252,18 +2393,25 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 None => surface.wait_event().map(Some),
             };
             match next {
-                Some(e) => events.extend(e),
+                Some(e) => tagged.extend(e),
                 None => {
                     if let Some(log) = timing.as_mut() {
                         write_timing(&timing_path, log);
                     }
-                    save_settings(&mut a.settings, &a.theme, &a.recent);
+                    save_settings(&mut a.settings, &a.theme, &a.recent, &surface);
                     return Ok(());
                 }
             }
         }
         while let Some(e) = surface.poll_event() {
-            events.push(e);
+            tagged.push(e);
+        }
+        let mut events = Vec::new();
+        for (id, e) in tagged {
+            match id {
+                windows::WindowId::Main => events.push(e),
+                windows::WindowId::Quantity => a.handle_quantity(e, &surface),
+            }
         }
         coalesce_moves(&mut events);
         let t_events = Instant::now();
@@ -2272,7 +2420,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 if let Some(log) = timing.as_mut() {
                     write_timing(&timing_path, log);
                 }
-                save_settings(&mut a.settings, &a.theme, &a.recent);
+                save_settings(&mut a.settings, &a.theme, &a.recent, &surface);
                 return Ok(());
             }
         }
@@ -2281,6 +2429,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         if a.prefs.as_mut().is_some_and(|p| p.tick()) {
             a.prefs_dirty = true;
         }
+        a.sync_quantity(&surface);
         a.sync_tip();
         a.sync_title_state();
         if a.menu_dirty && !a.overlay_dirty && a.w > 0 {
@@ -2348,8 +2497,18 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 ViewKind::Persp => {}
                 v => helpers.extend(ground_line(v, a.scene.bounds(), scale, a.scene.table())),
             }
-            if let Some(id) = a.sel.id {
-                let plane = a.plane();
+            let plane = a.plane();
+            if !a.picking.hover.is_some_and(|h| a.picking.is_selected(h)) {
+                helpers.extend(selection::hover_helpers(
+                    &a.scene,
+                    a.picking.hover,
+                    a.ui.view,
+                    plane,
+                    scale,
+                    &a.theme,
+                ));
+            }
+            for &id in &a.picking.selected {
                 helpers.extend(selection::helpers(
                     &a.scene, id, a.ui.view, plane, scale, &a.theme,
                 ));

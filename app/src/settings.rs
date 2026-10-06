@@ -112,8 +112,11 @@ pub const RGBA_ROLES: [RgbaRole; 49] = [
     }),
 ];
 
-pub const F4_ROLES: [F4Role; 10] = [
+pub const F4_ROLES: [F4Role; 11] = [
     ("interact.select", "Auswahl", |t| &mut t.interact.select),
+    ("interact.hover_element", "Bauteil unter der Maus", |t| {
+        &mut t.interact.hover_element
+    }),
     ("interact.draw", "Wand zeichnen", |t| &mut t.interact.draw),
     ("interact.track", "Spurlinie vom Startpunkt", |t| {
         &mut t.interact.track
@@ -458,6 +461,8 @@ pub fn read_all(text: &str) -> (Theme, Recent, Vec<String>) {
                 r.unused(&mut hints);
                 continue;
             }
+            // Lage des Mengenfensters (F2): liest die App mit den Bildschirmen
+            "mengenfenster" => continue,
             s => {
                 skip(&mut hints, &format!("unbekannter Abschnitt [{s}]"));
                 continue;
@@ -491,6 +496,9 @@ pub struct Settings {
     /// Liste „Zuletzt geöffnet“ (E17) und ihr Stand beim Laden.
     pub recent: Recent,
     loaded_recent: Recent,
+    /// Abschnitt `[mengenfenster]` (F2, [`crate::windows`]) und sein Stand beim Laden.
+    pub windows: String,
+    loaded_windows: String,
 }
 
 impl Settings {
@@ -507,6 +515,8 @@ impl Settings {
             hints: Vec::new(),
             recent: Recent::default(),
             loaded_recent: Recent::default(),
+            windows: String::new(),
+            loaded_windows: String::new(),
         }
     }
 
@@ -521,12 +531,18 @@ impl Settings {
                 let (t, recent, hints) = read_all(&text);
                 self.hints = hints;
                 self.recent = recent;
+                self.windows = text
+                    .lines()
+                    .filter(|l| l.starts_with("[mengenfenster]"))
+                    .map(|l| format!("{l}\n"))
+                    .collect();
                 t
             }
             None => Theme::dark(),
         };
         self.loaded_rev = theme.rev;
         self.loaded_recent = self.recent.clone();
+        self.loaded_windows = self.windows.clone();
         theme
     }
 
@@ -536,7 +552,10 @@ impl Settings {
         let Some(path) = &self.path else {
             return Ok(());
         };
-        if theme.rev == self.loaded_rev && self.recent == self.loaded_recent {
+        if theme.rev == self.loaded_rev
+            && self.recent == self.loaded_recent
+            && self.windows == self.loaded_windows
+        {
             return Ok(());
         }
         let tmp = path.with_extension("txt.tmp");
@@ -544,13 +563,15 @@ impl Settings {
             .parent()
             .map_or(Ok(()), std::fs::create_dir_all)
             .and_then(|_| {
-                crate::document::write_synced(&tmp, write_all(theme, &self.recent).as_bytes())
+                let text = write_all(theme, &self.recent) + &self.windows;
+                crate::document::write_synced(&tmp, text.as_bytes())
             })
             .and_then(|_| std::fs::rename(&tmp, path));
         match res {
             Ok(()) => {
                 self.loaded_rev = theme.rev;
                 self.loaded_recent = self.recent.clone();
+                self.loaded_windows = self.windows.clone();
                 Ok(())
             }
             Err(e) => {

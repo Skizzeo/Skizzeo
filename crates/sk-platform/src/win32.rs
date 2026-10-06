@@ -6,14 +6,16 @@
 
 #![allow(non_snake_case, non_camel_case_types, clippy::upper_case_acronyms)]
 
+use crate::layout::{Action, Rect, Show, Windows as Layout};
 use crate::{
     CaptionArea, Config, Cursor, Event, FileFilter, Key, Modifiers, MouseButton, WindowCommand,
+    WindowId,
 };
 use std::cell::{Cell, RefCell};
 use std::ffi::{c_char, c_void};
 use std::path::PathBuf;
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -131,6 +133,50 @@ struct MINMAXINFO {
 }
 
 #[repr(C)]
+#[derive(Default)]
+struct MONITORINFO {
+    cbSize: u32,
+    rcMonitor: RECT,
+    rcWork: RECT,
+    dwFlags: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct WINDOWPLACEMENT {
+    length: u32,
+    flags: u32,
+    showCmd: u32,
+    ptMinPosition: POINT,
+    ptMaxPosition: POINT,
+    rcNormalPosition: RECT,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct BITMAPINFOHEADER {
+    biSize: u32,
+    biWidth: i32,
+    biHeight: i32,
+    biPlanes: u16,
+    biBitCount: u16,
+    biCompression: u32,
+    biSizeImage: u32,
+    biXPelsPerMeter: i32,
+    biYPelsPerMeter: i32,
+    biClrUsed: u32,
+    biClrImportant: u32,
+}
+
+#[repr(C)]
+struct BITMAPINFO {
+    bmiHeader: BITMAPINFOHEADER,
+    bmiColors: [u8; 4],
+}
+
+type MONITORENUMPROC = unsafe extern "system" fn(HANDLE, HDC, *mut RECT, LPARAM) -> BOOL;
+
+#[repr(C)]
 struct OPENFILENAMEW {
     lStructSize: u32,
     hwndOwner: HWND,
@@ -216,6 +262,15 @@ extern "system" {
     fn DestroyWindow(h: HWND) -> BOOL;
     fn ShowWindow(h: HWND, cmd: i32) -> BOOL;
     fn GetDC(h: HWND) -> HDC;
+    fn ReleaseDC(h: HWND, dc: HDC) -> i32;
+    fn GetWindowRect(h: HWND, r: *mut RECT) -> BOOL;
+    fn IsIconic(h: HWND) -> BOOL;
+    fn IsWindowVisible(h: HWND) -> BOOL;
+    fn SetForegroundWindow(h: HWND) -> BOOL;
+    fn GetWindowPlacement(h: HWND, p: *mut WINDOWPLACEMENT) -> BOOL;
+    fn MonitorFromWindow(h: HWND, flags: u32) -> HANDLE;
+    fn GetMonitorInfoW(m: HANDLE, mi: *mut MONITORINFO) -> BOOL;
+    fn EnumDisplayMonitors(dc: HDC, clip: *const RECT, f: MONITORENUMPROC, l: LPARAM) -> BOOL;
     fn LoadCursorW(inst: HINSTANCE, name: *const u16) -> HCURSOR;
     fn SetCursor(c: HCURSOR) -> HCURSOR;
     fn GetCursorPos(p: *mut POINT) -> BOOL;
@@ -319,6 +374,21 @@ extern "system" {
     fn SetPixelFormat(dc: HDC, f: i32, pfd: *const PIXELFORMATDESCRIPTOR) -> BOOL;
     fn SwapBuffers(dc: HDC) -> BOOL;
     fn GetDeviceCaps(dc: HDC, i: i32) -> i32;
+    fn SetDIBitsToDevice(
+        dc: HDC,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        sx: i32,
+        sy: i32,
+        start: u32,
+        lines: u32,
+        bits: *const c_void,
+        bmi: *const BITMAPINFO,
+        usage: u32,
+    ) -> i32;
+    fn GdiFlush() -> BOOL;
 }
 
 #[link(name = "opengl32")]
@@ -338,6 +408,8 @@ extern "system" {
 
 const WM_DESTROY: u32 = 0x0002;
 const WM_SIZE: u32 = 0x0005;
+const WM_WINDOWPOSCHANGED: u32 = 0x0047;
+const WM_MOVING: u32 = 0x0216;
 const WM_ACTIVATE: u32 = 0x0006;
 const WM_PAINT: u32 = 0x000F;
 const WM_CLOSE: u32 = 0x0010;
@@ -369,6 +441,11 @@ const WM_DPICHANGED: u32 = 0x02E0;
 const WM_APP_QUIT: u32 = 0x8001;
 /// Der Zeichenthread hat einen anderen Mauszeiger gewählt.
 const WM_APP_CURSOR: u32 = 0x8002;
+/// Mengenfenster öffnen bzw. schließen (an das Hauptfenster gesandt).
+const WM_APP_OPEN_QUANTITY: u32 = 0x8003;
+const WM_APP_CLOSE_QUANTITY: u32 = 0x8004;
+/// Fenster wieder nach vorn (nach dem Maximieren des anderen).
+const WM_APP_RAISE: u32 = 0x8005;
 
 const SC_MINIMIZE: usize = 0xF020;
 const SC_MAXIMIZE: usize = 0xF030;
@@ -392,6 +469,13 @@ const CS_OWNDC: u32 = 0x0020;
 const WS_OVERLAPPEDWINDOW: u32 = 0x00CF_0000;
 const CW_USEDEFAULT: i32 = 0x8000_0000_u32 as i32;
 const SW_SHOWNORMAL: i32 = 1;
+const SW_SHOWMAXIMIZED: i32 = 3;
+const SW_SHOWNOACTIVATE: i32 = 4;
+const SW_SHOWMINNOACTIVE: i32 = 7;
+const SW_RESTORE: i32 = 9;
+const WPF_RESTORETOMAXIMIZED: u32 = 0x0002;
+const MONITOR_DEFAULTTONEAREST: u32 = 2;
+const DIB_RGB_COLORS: u32 = 0;
 const SWP_NOSIZE: u32 = 0x0001;
 const SWP_NOMOVE: u32 = 0x0002;
 const SWP_NOZORDER: u32 = 0x0004;
@@ -448,8 +532,10 @@ pub fn message_box(title: &str, text: &str) {
     }
 }
 
-/// Zustand, den Fensterprozedur (Hauptthread) und Zeichenthread teilen.
+/// Zustand, den Fensterprozedur (Hauptthread) und Zeichenthread je Fenster teilen.
 struct Shared {
+    /// Fenstergriff (0: Fenster gibt es nicht).
+    hwnd: AtomicUsize,
     width: AtomicU32,
     height: AtomicU32,
     dpi: AtomicU32,
@@ -458,17 +544,40 @@ struct Shared {
     left_width: AtomicU32,
     /// Der Nutzer zieht gerade an Rand oder Titelleiste (Windows-Größeziehschleife).
     sizing: AtomicBool,
-    /// Gewählter Mauszeiger (Index in [`WndState::cursors`]).
+    /// Gewählter Mauszeiger (Index in [`Windows::cursors`]).
     cursor: AtomicU32,
     /// Größe des zuletzt gezeigten Bildes (0, 0: noch keines).
     presented: Mutex<(u32, u32)>,
     presented_cv: Condvar,
+    /// Titel für ein Fenster, das erst noch angelegt wird.
+    title: Mutex<String>,
 }
 
 /// Höchstens so lange wartet das Fenster beim Größeziehen auf ein passendes Bild.
 const RESIZE_WAIT: Duration = Duration::from_millis(50);
 
 impl Shared {
+    fn new() -> Arc<Shared> {
+        Arc::new(Shared {
+            hwnd: AtomicUsize::new(0),
+            width: AtomicU32::new(0),
+            height: AtomicU32::new(0),
+            dpi: AtomicU32::new(96),
+            caption_height: AtomicU32::new(0),
+            buttons_width: AtomicU32::new(0),
+            left_width: AtomicU32::new(0),
+            sizing: AtomicBool::new(false),
+            cursor: AtomicU32::new(0),
+            presented: Mutex::new((0, 0)),
+            presented_cv: Condvar::new(),
+            title: Mutex::new(String::new()),
+        })
+    }
+
+    fn hwnd(&self) -> HWND {
+        self.hwnd.load(Ordering::Relaxed) as HWND
+    }
+
     /// Wartet, bis der Zeichenthread ein Bild in der Größe `w` × `h` gezeigt hat.
     /// Sonst zeigt der Fenstermanager während des Größeziehens kurz ein altes,
     /// verzerrtes oder leeres Bild: Das Fenster flackert.
@@ -493,46 +602,106 @@ impl Shared {
             }
         }
     }
-}
 
-struct WndState {
-    tx: Sender<Event>,
-    shared: Arc<Shared>,
-    tracking_leave: bool,
-    buttons_down: u32,
-    /// Systemzeiger in der Reihenfolge von [`Cursor`], einmal geladen.
-    cursors: [HCURSOR; 4],
-}
-
-fn cursor_index(c: Cursor) -> u32 {
-    match c {
-        Cursor::Arrow => 0,
-        Cursor::SizeNS => 1,
-        Cursor::Hand => 2,
-        Cursor::IBeam => 3,
+    fn mark_presented(&self, w: u32, h: u32) {
+        if let Ok(mut p) = self.presented.lock() {
+            *p = (w, h);
+        }
+        self.presented_cv.notify_all();
     }
 }
 
-/// Setzt den gewählten Zeiger.
-unsafe fn apply_cursor() {
-    STATE.with(|s| {
-        if let Some(s) = s.borrow().as_ref() {
-            let i = s.shared.cursor.load(Ordering::Relaxed) as usize;
-            SetCursor(s.cursors[i.min(3)]);
-        }
-    });
+/// Ein Fenster aus Sicht des Hauptthreads.
+struct WndState {
+    id: WindowId,
+    shared: Arc<Shared>,
+    tracking_leave: bool,
+    buttons_down: u32,
+}
+
+/// Beide Fenster und was der Hauptthread zum Anlegen des Mengenfensters braucht.
+struct Windows {
+    tx: Sender<(WindowId, Event)>,
+    /// Hauptfenster, dann (falls offen) das Mengenfenster.
+    list: Vec<WndState>,
+    /// Geteilt mit dem Zeichenthread, auch solange das Fenster zu ist.
+    quantity: Arc<Shared>,
+    /// Regeln für das Zusammenspiel (auch der Zeichenthread liest sie).
+    layout: Arc<Mutex<Layout>>,
+    /// Systemzeiger in der Reihenfolge von [`Cursor`], einmal geladen.
+    cursors: [HCURSOR; 4],
+    inst: usize,
+    icon: Option<fn(u32) -> Vec<u8>>,
+    /// Das Hauptfenster wird zerstört: das Mengenfenster geht mit, ohne Regeln.
+    closing: bool,
 }
 
 thread_local! {
-    static STATE: RefCell<Option<WndState>> = const { RefCell::new(None) };
+    static WINDOWS: RefCell<Option<Windows>> = const { RefCell::new(None) };
 }
 
-fn send(e: Event) {
-    STATE.with(|s| {
-        if let Some(s) = s.borrow().as_ref() {
-            let _ = s.tx.send(e);
-        }
+/// Greift kurz auf die Fenster zu. Darin keine Systemaufrufe: Sie können
+/// Nachrichten verschachtelt zurück in die Fensterprozedur schicken.
+fn with<R>(f: impl FnOnce(&mut Windows) -> R) -> Option<R> {
+    WINDOWS.with(|w| w.borrow_mut().as_mut().map(f))
+}
+
+/// Kennung und geteilter Zustand von `hwnd`. Ein Fenster, das gerade angelegt
+/// wird, meldet sich mit seiner ersten Nachricht an.
+fn state(hwnd: HWND) -> Option<(WindowId, Arc<Shared>)> {
+    with(|w| {
+        let h = hwnd as usize;
+        let i = w
+            .list
+            .iter()
+            .position(|s| s.shared.hwnd.load(Ordering::Relaxed) == h)
+            .or_else(|| {
+                w.list
+                    .iter()
+                    .position(|s| s.shared.hwnd.load(Ordering::Relaxed) == 0)
+            })?;
+        let s = &w.list[i];
+        s.shared.hwnd.store(h, Ordering::Relaxed);
+        Some((s.id, s.shared.clone()))
+    })
+    .flatten()
+}
+
+fn id_of(hwnd: HWND) -> Option<WindowId> {
+    state(hwnd).map(|s| s.0)
+}
+
+/// Griff eines offenen Fensters.
+fn hwnd_of(id: WindowId) -> Option<HWND> {
+    with(|w| {
+        w.list
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.shared.hwnd())
+            .filter(|h| !h.is_null())
+    })
+    .flatten()
+}
+
+fn send(hwnd: HWND, e: Event) {
+    let Some(id) = id_of(hwnd) else {
+        return;
+    };
+    with(|w| {
+        let _ = w.tx.send((id, e));
     });
+}
+
+/// Regeln befragen: Sperre nur für die Rechnung, die Taten danach ausführen.
+fn ask(f: impl FnOnce(&mut Layout) -> Vec<Action>) -> Vec<Action> {
+    let Some(layout) = with(|w| w.layout.clone()) else {
+        return Vec::new();
+    };
+    let actions = match layout.lock() {
+        Ok(mut g) => f(&mut g),
+        Err(e) => f(&mut e.into_inner()),
+    };
+    actions
 }
 
 fn mods() -> Modifiers {
@@ -566,6 +735,7 @@ fn dpi_of(hwnd: HWND) -> u32 {
         }
         let dc = GetDC(hwnd);
         let d = GetDeviceCaps(dc, LOGPIXELSX);
+        ReleaseDC(hwnd, dc);
         if d > 0 {
             d as u32
         } else {
@@ -594,6 +764,268 @@ fn metric(i: i32, dpi: u32) -> i32 {
     }
 }
 
+fn to_rect(r: RECT) -> Rect {
+    (r.left, r.top, r.right - r.left, r.bottom - r.top)
+}
+
+/// Sichtbare Lage eines Fensters. Maximiert ragt es um die unsichtbare
+/// Rahmenbreite über den Bildschirm hinaus; die zählt nicht.
+unsafe fn window_rect(hwnd: HWND) -> Rect {
+    let mut r = RECT::default();
+    GetWindowRect(hwnd, &mut r);
+    if IsZoomed(hwnd) != 0 {
+        let (fx, fy) = frame_thickness(dpi_of(hwnd));
+        r.left += fx;
+        r.right -= fx;
+        r.top += fy;
+        r.bottom -= fy;
+    }
+    to_rect(r)
+}
+
+/// Arbeitsbereich (ohne Taskleiste) des Bildschirms, auf dem `hwnd` liegt.
+unsafe fn work_area(hwnd: HWND) -> Rect {
+    let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    let mut mi = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    GetMonitorInfoW(mon, &mut mi);
+    to_rect(mi.rcWork)
+}
+
+unsafe extern "system" fn collect_monitor(mon: HANDLE, _: HDC, _: *mut RECT, lp: LPARAM) -> BOOL {
+    let out = &mut *(lp as *mut Vec<Rect>);
+    let mut mi = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if GetMonitorInfoW(mon, &mut mi) != 0 {
+        out.push(to_rect(mi.rcWork));
+    }
+    1
+}
+
+/// Arbeitsbereiche aller Bildschirme.
+pub fn monitors() -> Vec<Rect> {
+    let mut out: Vec<Rect> = Vec::new();
+    unsafe {
+        EnumDisplayMonitors(
+            null_mut(),
+            null(),
+            collect_monitor,
+            &mut out as *mut Vec<Rect> as LPARAM,
+        );
+    }
+    out
+}
+
+unsafe fn set_rect(hwnd: HWND, r: Rect) {
+    SetWindowPos(
+        hwnd,
+        null_mut(),
+        r.0,
+        r.1,
+        r.2,
+        r.3,
+        SWP_NOZORDER | SWP_NOACTIVATE,
+    );
+}
+
+/// Führt die Taten der Regeln aus. `from`: das Fenster, dessen Meldung sie
+/// ausgelöst hat (wird nach einem Maximieren des anderen wieder vorn).
+unsafe fn run_actions(actions: Vec<Action>, from: Option<HWND>) {
+    for a in actions {
+        match a {
+            Action::Create(WindowId::Quantity, r) => create_quantity(r),
+            Action::Create(WindowId::Main, _) | Action::AskSave => {}
+            Action::Place(id, r) => {
+                if let Some(h) = hwnd_of(id) {
+                    if IsZoomed(h) != 0 || IsIconic(h) != 0 {
+                        ShowWindow(h, SW_RESTORE);
+                    }
+                    set_rect(h, r);
+                }
+            }
+            Action::Show(id, how) => {
+                let Some(h) = hwnd_of(id) else { continue };
+                match how {
+                    Show::Minimize => {
+                        ShowWindow(h, SW_SHOWMINNOACTIVE);
+                    }
+                    Show::RestoreNoActivate => {
+                        // Vor dem Minimieren maximiert: so zurück, dann den
+                        // Auslöser wieder nach vorn
+                        let mut wp = WINDOWPLACEMENT {
+                            length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+                            ..Default::default()
+                        };
+                        GetWindowPlacement(h, &mut wp);
+                        if wp.flags & WPF_RESTORETOMAXIMIZED != 0 {
+                            ShowWindow(h, SW_SHOWMAXIMIZED);
+                            if let Some(f) = from {
+                                PostMessageW(f, WM_APP_RAISE, 0, 0);
+                            }
+                        } else {
+                            ShowWindow(h, SW_SHOWNOACTIVATE);
+                        }
+                    }
+                    Show::Maximize => {
+                        ShowWindow(h, SW_SHOWMAXIMIZED);
+                    }
+                }
+            }
+            Action::Front(id) => {
+                if let Some(h) = hwnd_of(id) {
+                    if IsIconic(h) != 0 {
+                        ShowWindow(h, SW_RESTORE);
+                    }
+                    SetForegroundWindow(h);
+                }
+            }
+            Action::Close(WindowId::Quantity) => {
+                if let Some(h) = hwnd_of(WindowId::Quantity) {
+                    DestroyWindow(h);
+                }
+            }
+            // Das Hauptfenster schließt die App (Ende des Zeichenthreads)
+            Action::Close(WindowId::Main) => {}
+        }
+    }
+}
+
+/// Schatten, runde Ecken und Programmsymbol für ein eigenes Fenster.
+unsafe fn decorate(hwnd: HWND, inst: HINSTANCE, icon: Option<fn(u32) -> Vec<u8>>, dpi: u32) {
+    // Schatten und (unter Windows 11) runde Ecken vom Fenstermanager behalten.
+    let m = MARGINS {
+        left: 0,
+        right: 0,
+        top: 1,
+        bottom: 0,
+    };
+    DwmExtendFrameIntoClientArea(hwnd, &m);
+    let corner = DWMWCP_ROUND;
+    DwmSetWindowAttribute(
+        hwnd,
+        DWMWA_WINDOW_CORNER_PREFERENCE,
+        &corner as *const u32 as *const c_void,
+        4,
+    );
+    SetWindowPos(
+        hwnd,
+        null_mut(),
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+    );
+    if let Some(icon) = icon {
+        for (kind, metric_id) in [(1usize, SM_CXICON), (0usize, SM_CXSMICON)] {
+            let size = metric(metric_id, dpi).max(16);
+            let h = make_icon(inst, size, &icon(size as u32));
+            if !h.is_null() {
+                SendMessageW(hwnd, WM_SETICON, kind, h as isize);
+            }
+        }
+    }
+}
+
+/// Legt das Mengenfenster an `r` an und zeigt es, ohne es zu aktivieren.
+unsafe fn create_quantity(r: Rect) {
+    if hwnd_of(WindowId::Quantity).is_some() {
+        return;
+    }
+    let Some((shared, inst, icon)) = with(|w| {
+        w.quantity.hwnd.store(0, Ordering::Relaxed);
+        w.quantity.mark_presented(0, 0);
+        w.list.push(WndState {
+            id: WindowId::Quantity,
+            shared: w.quantity.clone(),
+            tracking_leave: false,
+            buttons_down: 0,
+        });
+        (w.quantity.clone(), w.inst, w.icon)
+    }) else {
+        return;
+    };
+    let title = wide(&shared.title.lock().map(|t| t.clone()).unwrap_or_default());
+    let class = wide(QUANTITY_CLASS);
+    let hwnd = CreateWindowExW(
+        0,
+        class.as_ptr(),
+        title.as_ptr(),
+        WS_OVERLAPPEDWINDOW,
+        r.0,
+        r.1,
+        r.2,
+        r.3,
+        null_mut(),
+        null_mut(),
+        inst as HINSTANCE,
+        null_mut(),
+    );
+    if hwnd.is_null() {
+        with(|w| w.list.retain(|s| s.id != WindowId::Quantity));
+        if let Some(l) = with(|w| w.layout.clone()) {
+            if let Ok(mut l) = l.lock() {
+                l.quantity_gone();
+            }
+        }
+        return;
+    }
+    shared.hwnd.store(hwnd as usize, Ordering::Relaxed);
+    let dpi = dpi_of(hwnd);
+    shared.dpi.store(dpi, Ordering::Relaxed);
+    decorate(hwnd, inst as HINSTANCE, icon, dpi);
+    let mut rc = RECT::default();
+    GetClientRect(hwnd, &mut rc);
+    shared.width.store(rc.right as u32, Ordering::Relaxed);
+    shared.height.store(rc.bottom as u32, Ordering::Relaxed);
+    send(hwnd, Event::ScaleChanged(dpi as f32 / 96.0));
+    send(
+        hwnd,
+        Event::Resized {
+            width: rc.right as u32,
+            height: rc.bottom as u32,
+        },
+    );
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    // Gleich hinter das Hauptfenster: beide zusammen vor anderen Programmen
+    if let Some(main) = hwnd_of(WindowId::Main) {
+        SetWindowPos(
+            hwnd,
+            main,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+}
+
+/// Knopf „Mengenermittlung“ (vom Zeichenthread über `WM_APP_OPEN_QUANTITY`).
+unsafe fn open_quantity(main: HWND) {
+    let r = window_rect(main);
+    let zoomed = IsZoomed(main) != 0;
+    let work = work_area(main);
+    let scale = dpi_of(main) as f32 / 96.0;
+    let actions = ask(|l| l.open_quantity(r, zoomed, work, scale));
+    run_actions(actions, Some(main));
+}
+
+/// Setzt den gewählten Zeiger des Fensters.
+unsafe fn apply_cursor(hwnd: HWND) {
+    let Some((_, shared)) = state(hwnd) else {
+        return;
+    };
+    let i = shared.cursor.load(Ordering::Relaxed) as usize;
+    if let Some(c) = with(|w| w.cursors[i.min(3)]) {
+        SetCursor(c);
+    }
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_NCCALCSIZE if wp == 1 => {
@@ -616,24 +1048,24 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let mut rc = RECT::default();
             GetClientRect(hwnd, &mut rc);
             let (w, h) = (rc.right, rc.bottom);
-            let (cap_h, btn_w, left_w, dpi) = STATE.with(|s| {
-                s.borrow().as_ref().map_or((0, 0, 0, 96), |s| {
-                    (
-                        s.shared.caption_height.load(Ordering::Relaxed) as i32,
-                        s.shared.buttons_width.load(Ordering::Relaxed) as i32,
-                        s.shared.left_width.load(Ordering::Relaxed) as i32,
-                        s.shared.dpi.load(Ordering::Relaxed),
-                    )
-                })
-            });
+            let Some((id, sh)) = state(hwnd) else {
+                return DefWindowProcW(hwnd, msg, wp, lp);
+            };
+            let cap_h = sh.caption_height.load(Ordering::Relaxed) as i32;
+            let btn_w = sh.buttons_width.load(Ordering::Relaxed) as i32;
+            let left_w = sh.left_width.load(Ordering::Relaxed) as i32;
+            let dpi = sh.dpi.load(Ordering::Relaxed);
+            // Angedockt ändert am Mengenfenster nur der rechte Rand die Breite
+            let docked = id == WindowId::Quantity
+                && with(|w| w.layout.lock().map(|l| l.docked()).unwrap_or(false)).unwrap_or(false);
             let b = (6 * dpi / 96) as i32;
             // Knopfgruppen rechts und links (Menü, Rückgängig, E17) gehören der App
             let over_buttons = (p.x >= w - btn_w || p.x < left_w) && p.y < cap_h;
             if IsZoomed(hwnd) == 0 {
-                let left = p.x < b;
+                let left = p.x < b && !docked;
                 let right = p.x >= w - b;
-                let top = p.y < b && !over_buttons;
-                let bottom = p.y >= h - b;
+                let top = p.y < b && !over_buttons && !docked;
+                let bottom = p.y >= h - b && !docked;
                 match (top, bottom, left, right) {
                     (true, _, true, _) => return HTTOPLEFT,
                     (true, _, _, true) => return HTTOPRIGHT,
@@ -657,38 +1089,113 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             DefWindowProcW(hwnd, msg, wp, -1)
         }
         WM_ACTIVATE => {
-            send(Event::Focus(wp & 0xFFFF != 0));
-            0
-        }
-        WM_SIZE => {
-            if wp != SIZE_MINIMIZED {
-                let (w, h) = ((lp & 0xFFFF) as u32, ((lp >> 16) & 0xFFFF) as u32);
-                STATE.with(|s| {
-                    if let Some(s) = s.borrow().as_ref() {
-                        s.shared.width.store(w, Ordering::Relaxed);
-                        s.shared.height.store(h, Ordering::Relaxed);
-                    }
-                });
-                send(Event::Maximized(wp == SIZE_MAXIMIZED));
-                send(Event::Resized {
-                    width: w,
-                    height: h,
-                });
-                // Erst weiter, wenn das Bild in neuer Größe da ist (gegen Flackern)
-                let shared = STATE.with(|s| s.borrow().as_ref().map(|s| s.shared.clone()));
-                if let Some(sh) = shared {
-                    sh.wait_presented(w, h);
+            let active = wp & 0xFFFF != 0;
+            send(hwnd, Event::Focus(active));
+            // Das andere Fenster gleich dahinter: beide zusammen vor anderen
+            // Programmen (Alt+Tab, Klick in die Taskleiste)
+            let minimized = (wp >> 16) & 0xFFFF != 0;
+            if active && !minimized {
+                let other = match id_of(hwnd) {
+                    Some(WindowId::Main) => hwnd_of(WindowId::Quantity),
+                    Some(WindowId::Quantity) => hwnd_of(WindowId::Main),
+                    None => None,
+                };
+                if let Some(o) = other.filter(|&o| IsIconic(o) == 0 && IsWindowVisible(o) != 0) {
+                    SetWindowPos(
+                        o,
+                        hwnd,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                    );
                 }
             }
             0
         }
+        WM_SIZE => {
+            let Some((id, sh)) = state(hwnd) else {
+                return 0;
+            };
+            if wp == SIZE_MINIMIZED {
+                let actions = ask(|l| l.minimized(id));
+                run_actions(actions, Some(hwnd));
+                return 0;
+            }
+            let (w, h) = ((lp & 0xFFFF) as u32, ((lp >> 16) & 0xFFFF) as u32);
+            sh.width.store(w, Ordering::Relaxed);
+            sh.height.store(h, Ordering::Relaxed);
+            send(hwnd, Event::Maximized(wp == SIZE_MAXIMIZED));
+            send(
+                hwnd,
+                Event::Resized {
+                    width: w,
+                    height: h,
+                },
+            );
+            // Erst weiter, wenn das Bild in neuer Größe da ist (gegen Flackern)
+            sh.wait_presented(w, h);
+            let mut actions = ask(|l| l.restored(id));
+            if wp == SIZE_MAXIMIZED {
+                actions.extend(ask(|l| l.maximized(id)));
+            }
+            run_actions(actions, Some(hwnd));
+            0
+        }
+        WM_WINDOWPOSCHANGED => {
+            // Erzeugt WM_SIZE und WM_MOVE
+            let r = DefWindowProcW(hwnd, msg, wp, lp);
+            if IsIconic(hwnd) != 0 {
+                return r;
+            }
+            let actions = match id_of(hwnd) {
+                // Maximiert wandert das Mengenfenster nicht mit
+                Some(WindowId::Main) if IsZoomed(hwnd) == 0 => {
+                    let m = window_rect(hwnd);
+                    ask(|l| l.main_moved(m))
+                }
+                Some(WindowId::Quantity) if IsZoomed(hwnd) == 0 => {
+                    let q = window_rect(hwnd);
+                    ask(|l| l.quantity_resized(q))
+                }
+                _ => Vec::new(),
+            };
+            run_actions(actions, Some(hwnd));
+            r
+        }
+        WM_MOVING => {
+            // Mengenfenster an der Titelleiste gezogen: Lösen und Einrasten
+            if id_of(hwnd) == Some(WindowId::Quantity) {
+                if let Some(main) = hwnd_of(WindowId::Main) {
+                    let m = (IsZoomed(main) == 0).then(|| window_rect(main));
+                    let rc = &mut *(lp as *mut RECT);
+                    let proposed = to_rect(*rc);
+                    let actions = ask(|l| {
+                        if let Some(m) = m {
+                            l.note_main(m);
+                        }
+                        l.quantity_moved(proposed)
+                    });
+                    for a in actions {
+                        if let Action::Place(WindowId::Quantity, r) = a {
+                            *rc = RECT {
+                                left: r.0,
+                                top: r.1,
+                                right: r.0 + r.2,
+                                bottom: r.1 + r.3,
+                            };
+                        }
+                    }
+                }
+            }
+            1
+        }
         WM_DPICHANGED => {
             let dpi = (wp & 0xFFFF) as u32;
-            STATE.with(|s| {
-                if let Some(s) = s.borrow().as_ref() {
-                    s.shared.dpi.store(dpi, Ordering::Relaxed);
-                }
-            });
+            if let Some((_, sh)) = state(hwnd) {
+                sh.dpi.store(dpi, Ordering::Relaxed);
+            }
             let r = &*(lp as *const RECT);
             SetWindowPos(
                 hwnd,
@@ -699,29 +1206,36 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 r.bottom - r.top,
                 SWP_NOZORDER | SWP_NOACTIVATE,
             );
-            send(Event::ScaleChanged(dpi as f32 / 96.0));
+            send(hwnd, Event::ScaleChanged(dpi as f32 / 96.0));
             0
         }
         WM_GETMINMAXINFO => {
             let mm = &mut *(lp as *mut MINMAXINFO);
-            mm.ptMinTrackSize = POINT { x: 640, y: 400 };
+            mm.ptMinTrackSize = match id_of(hwnd) {
+                Some(WindowId::Quantity) => POINT { x: 320, y: 240 },
+                _ => POINT { x: 640, y: 400 },
+            };
             0
         }
         WM_ENTERSIZEMOVE | WM_EXITSIZEMOVE => {
-            STATE.with(|s| {
-                if let Some(s) = s.borrow().as_ref() {
-                    s.shared
-                        .sizing
-                        .store(msg == WM_ENTERSIZEMOVE, Ordering::Relaxed);
-                }
-            });
+            if let Some((_, sh)) = state(hwnd) {
+                sh.sizing.store(msg == WM_ENTERSIZEMOVE, Ordering::Relaxed);
+            }
             // Nach dem Ziehen einmal neu zeichnen, wieder mit Bildsynchronisation
-            send(Event::Redraw);
+            send(hwnd, Event::Redraw);
+            // Eingerastet: Höhe und Oberkante vom Hauptfenster übernehmen
+            if msg == WM_EXITSIZEMOVE && id_of(hwnd) == Some(WindowId::Quantity) {
+                if let Some(main) = hwnd_of(WindowId::Main).filter(|&m| IsZoomed(m) == 0) {
+                    let m = window_rect(main);
+                    let actions = ask(|l| l.main_moved(m));
+                    run_actions(actions, Some(hwnd));
+                }
+            }
             0
         }
         // Nur über der Zeichenfläche; Rand und Titelleiste behandelt das System
         WM_SETCURSOR if lp & 0xFFFF == HTCLIENT => {
-            apply_cursor();
+            apply_cursor(hwnd);
             1
         }
         WM_APP_CURSOR => {
@@ -735,24 +1249,29 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 SendMessageW(hwnd, WM_NCHITTEST, 0, l) == HTCLIENT
             };
             if captured || over {
-                apply_cursor();
+                apply_cursor(hwnd);
             }
             0
         }
         WM_ERASEBKGND => 1,
         WM_PAINT => {
-            send(Event::Redraw);
+            send(hwnd, Event::Redraw);
             DefWindowProcW(hwnd, msg, wp, lp)
         }
         WM_MOUSEMOVE => {
             let (x, y) = lparam_xy(lp);
-            let start_tracking = STATE.with(|s| {
-                s.borrow_mut().as_mut().is_some_and(|s| {
-                    let start = !s.tracking_leave;
-                    s.tracking_leave = true;
-                    start
-                })
-            });
+            let id = id_of(hwnd);
+            let start_tracking = with(|w| {
+                w.list
+                    .iter_mut()
+                    .find(|s| Some(s.id) == id)
+                    .is_some_and(|s| {
+                        let start = !s.tracking_leave;
+                        s.tracking_leave = true;
+                        start
+                    })
+            })
+            .unwrap_or(false);
             if start_tracking {
                 let mut t = TRACKMOUSEEVENT {
                     cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
@@ -762,20 +1281,24 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 };
                 TrackMouseEvent(&mut t);
             }
-            send(Event::MouseMove {
-                x: x as f64,
-                y: y as f64,
-                mods: mods(),
-            });
+            send(
+                hwnd,
+                Event::MouseMove {
+                    x: x as f64,
+                    y: y as f64,
+                    mods: mods(),
+                },
+            );
             0
         }
         WM_MOUSELEAVE => {
-            STATE.with(|s| {
-                if let Some(s) = s.borrow_mut().as_mut() {
+            let id = id_of(hwnd);
+            with(|w| {
+                if let Some(s) = w.list.iter_mut().find(|s| Some(s.id) == id) {
                     s.tracking_leave = false;
                 }
             });
-            send(Event::MouseLeave);
+            send(hwnd, Event::MouseLeave);
             0
         }
         WM_LBUTTONDOWN | WM_MBUTTONDOWN | WM_RBUTTONDOWN | WM_LBUTTONUP | WM_MBUTTONUP
@@ -787,8 +1310,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 _ => MouseButton::Right,
             };
             let down = matches!(msg, WM_LBUTTONDOWN | WM_MBUTTONDOWN | WM_RBUTTONDOWN);
-            let still_down = STATE.with(|s| {
-                s.borrow_mut().as_mut().map_or(0, |s| {
+            let id = id_of(hwnd);
+            let still_down = with(|w| {
+                w.list.iter_mut().find(|s| Some(s.id) == id).map_or(0, |s| {
                     if down {
                         s.buttons_down += 1;
                     } else {
@@ -796,28 +1320,32 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     }
                     s.buttons_down
                 })
-            });
+            })
+            .unwrap_or(0);
             if down {
                 SetCapture(hwnd);
             } else if still_down == 0 {
                 ReleaseCapture();
             }
             let (x, y, m) = (x as f64, y as f64, mods());
-            send(if down {
-                Event::MouseDown {
-                    button,
-                    x,
-                    y,
-                    mods: m,
-                }
-            } else {
-                Event::MouseUp {
-                    button,
-                    x,
-                    y,
-                    mods: m,
-                }
-            });
+            send(
+                hwnd,
+                if down {
+                    Event::MouseDown {
+                        button,
+                        x,
+                        y,
+                        mods: m,
+                    }
+                } else {
+                    Event::MouseUp {
+                        button,
+                        x,
+                        y,
+                        mods: m,
+                    }
+                },
+            );
             0
         }
         WM_MOUSEWHEEL => {
@@ -825,12 +1353,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let (sx, sy) = lparam_xy(lp);
             let mut p = POINT { x: sx, y: sy };
             ScreenToClient(hwnd, &mut p);
-            send(Event::Wheel {
-                delta,
-                x: p.x as f64,
-                y: p.y as f64,
-                mods: mods(),
-            });
+            send(
+                hwnd,
+                Event::Wheel {
+                    delta,
+                    x: p.x as f64,
+                    y: p.y as f64,
+                    mods: mods(),
+                },
+            );
             0
         }
         WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP => {
@@ -857,12 +1388,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 0x6D | 0xBD => Key::Char('-'),
                 c => Key::Other(c),
             };
-            send(Event::Key {
-                key,
-                down,
-                repeat,
-                mods: mods(),
-            });
+            send(
+                hwnd,
+                Event::Key {
+                    key,
+                    down,
+                    repeat,
+                    mods: mods(),
+                },
+            );
             // Alt allein und F10 öffnen das Dateimenü der App (E17), nicht das
             // Systemmenü; Alt+F4 und Alt+Leertaste behandelt weiter das System
             if matches!(msg, WM_SYSKEYDOWN | WM_SYSKEYUP) && !matches!(wp as u32, 0x12 | 0x79) {
@@ -874,17 +1408,30 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         // Steuerzeichen (Strg+Buchstabe, Rücktaste, Enter) kommen als Taste
         WM_CHAR => {
             if let Some(c) = char::from_u32(wp as u32).filter(|c| !c.is_control()) {
-                send(Event::Text(c));
+                send(hwnd, Event::Text(c));
             }
             0
         }
         // Vom Nutzer (Alt+F4, Taskleiste, eigener Knopf): die App darf nachfragen
         WM_SYSCOMMAND if wp & 0xFFF0 == SC_CLOSE => {
-            send(Event::CloseRequested { ask: true });
+            send(hwnd, Event::CloseRequested { ask: true });
             0
         }
         WM_CLOSE => {
-            send(Event::CloseRequested { ask: false });
+            send(hwnd, Event::CloseRequested { ask: false });
+            0
+        }
+        WM_APP_OPEN_QUANTITY => {
+            open_quantity(hwnd);
+            0
+        }
+        WM_APP_CLOSE_QUANTITY => {
+            let actions = ask(|l| l.close_requested(WindowId::Quantity, false));
+            run_actions(actions, None);
+            0
+        }
+        WM_APP_RAISE => {
+            SetForegroundWindow(hwnd);
             0
         }
         WM_APP_QUIT => {
@@ -892,7 +1439,32 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             0
         }
         WM_DESTROY => {
-            PostQuitMessage(0);
+            match id_of(hwnd) {
+                Some(WindowId::Quantity) => {
+                    let closing = with(|w| {
+                        w.list.retain(|s| s.id != WindowId::Quantity);
+                        w.quantity.hwnd.store(0, Ordering::Relaxed);
+                        w.closing
+                    })
+                    .unwrap_or(true);
+                    // Nicht über die Regeln geschlossen (etwa vom System): vergessen
+                    if !closing {
+                        if let Some(l) = with(|w| w.layout.clone()) {
+                            if let Ok(mut l) = l.lock() {
+                                l.quantity_gone();
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // Das Hauptfenster nimmt das Mengenfenster mit; offen bleibt gemerkt
+                    with(|w| w.closing = true);
+                    if let Some(q) = hwnd_of(WindowId::Quantity) {
+                        DestroyWindow(q);
+                    }
+                    PostQuitMessage(0);
+                }
+            }
             0
         }
         _ => DefWindowProcW(hwnd, msg, wp, lp),
@@ -905,6 +1477,10 @@ pub struct Surface {
     hdc: usize,
     opengl32: usize,
     shared: Arc<Shared>,
+    /// Mengenfenster (Griff 0, solange es nicht offen ist).
+    quantity: Arc<Shared>,
+    /// Zeilen für die GDI-Kopie ins Mengenfenster (BGRA).
+    quantity_buf: RefCell<Vec<u8>>,
     /// `wglSwapIntervalEXT`, falls vorhanden.
     swap_interval: Cell<usize>,
     /// Zuletzt gesetztes Bildintervall (1 = auf den Bildwechsel warten).
@@ -917,6 +1493,65 @@ pub struct Surface {
 
 // Fenster- und Gerätekontext-Handles dürfen zwischen Threads weitergereicht werden.
 unsafe impl Send for Surface {}
+
+fn command_to(hwnd: HWND, c: WindowCommand) {
+    if hwnd.is_null() {
+        return;
+    }
+    unsafe {
+        match c {
+            WindowCommand::Minimize => {
+                PostMessageW(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+            }
+            WindowCommand::ToggleMaximize => {
+                let sc = if IsZoomed(hwnd) != 0 {
+                    SC_RESTORE
+                } else {
+                    SC_MAXIMIZE
+                };
+                PostMessageW(hwnd, WM_SYSCOMMAND, sc, 0);
+            }
+            WindowCommand::Close => {
+                PostMessageW(hwnd, WM_SYSCOMMAND, SC_CLOSE, 0);
+            }
+        }
+    }
+}
+
+fn set_caption_area_of(sh: &Shared, a: CaptionArea) {
+    sh.caption_height.store(a.height, Ordering::Relaxed);
+    sh.buttons_width.store(a.buttons_width, Ordering::Relaxed);
+    sh.left_width.store(a.left_width, Ordering::Relaxed);
+}
+
+fn set_cursor_of(sh: &Shared, c: Cursor) {
+    let i = cursor_index(c);
+    let hwnd = sh.hwnd();
+    if sh.cursor.swap(i, Ordering::Relaxed) != i && !hwnd.is_null() {
+        unsafe {
+            PostMessageW(hwnd, WM_APP_CURSOR, 0, 0);
+        }
+    }
+}
+
+fn set_title_of(hwnd: HWND, title: &str) {
+    if hwnd.is_null() {
+        return;
+    }
+    let t = wide(title);
+    unsafe {
+        SetWindowTextW(hwnd, t.as_ptr());
+    }
+}
+
+fn cursor_index(c: Cursor) -> u32 {
+    match c {
+        Cursor::Arrow => 0,
+        Cursor::SizeNS => 1,
+        Cursor::Hand => 2,
+        Cursor::IBeam => 3,
+    }
+}
 
 impl Surface {
     pub fn size(&self) -> (u32, u32) {
@@ -949,10 +1584,7 @@ impl Surface {
                 DwmFlush();
             }
         }
-        if let Ok(mut p) = self.shared.presented.lock() {
-            *p = (w, h);
-        }
-        self.shared.presented_cv.notify_all();
+        self.shared.mark_presented(w, h);
     }
 
     fn set_interval(&self, i: i32) {
@@ -982,34 +1614,123 @@ impl Surface {
     }
 
     pub fn command(&self, c: WindowCommand) {
-        let hwnd = self.hwnd as HWND;
-        unsafe {
-            match c {
-                WindowCommand::Minimize => {
-                    PostMessageW(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
-                }
-                WindowCommand::ToggleMaximize => {
-                    let sc = if IsZoomed(hwnd) != 0 {
-                        SC_RESTORE
-                    } else {
-                        SC_MAXIMIZE
-                    };
-                    PostMessageW(hwnd, WM_SYSCOMMAND, sc, 0);
-                }
-                WindowCommand::Close => {
-                    PostMessageW(hwnd, WM_SYSCOMMAND, SC_CLOSE, 0);
-                }
-            }
-        }
+        command_to(self.hwnd as HWND, c)
     }
 
     pub fn set_title(&self, title: &str) {
-        let t = wide(title);
+        set_title_of(self.hwnd as HWND, title)
+    }
+
+    pub fn set_cursor(&self, c: Cursor) {
+        set_cursor_of(&self.shared, c)
+    }
+
+    pub fn set_caption_area(&self, a: CaptionArea) {
+        set_caption_area_of(&self.shared, a)
+    }
+
+    pub fn open_quantity(&self, title: &str) {
+        if let Ok(mut t) = self.quantity.title.lock() {
+            *t = title.to_string();
+        }
         unsafe {
-            SetWindowTextW(self.hwnd as HWND, t.as_ptr());
+            PostMessageW(self.hwnd as HWND, WM_APP_OPEN_QUANTITY, 0, 0);
         }
     }
 
+    pub fn close_quantity(&self) {
+        unsafe {
+            PostMessageW(self.hwnd as HWND, WM_APP_CLOSE_QUANTITY, 0, 0);
+        }
+    }
+
+    /// Kopiert das Bild per GDI ins Mengenfenster (kein zweiter GL-Kontext:
+    /// zwei Fenster mit Bildsynchronisation würden die Bildrate halbieren).
+    pub fn present_quantity(&self, w: u32, h: u32, rgba: &[u8], rows: Option<(u32, u32)>) {
+        let hwnd = self.quantity.hwnd();
+        if hwnd.is_null() || w == 0 || h == 0 || rgba.len() < (w * h * 4) as usize {
+            return;
+        }
+        let (y0, y1) = rows.map_or((0, h), |(a, b)| (a.min(h), b.min(h)));
+        if y1 <= y0 {
+            return;
+        }
+        let mut buf = self.quantity_buf.borrow_mut();
+        let src = &rgba[(y0 * w * 4) as usize..(y1 * w * 4) as usize];
+        buf.clear();
+        buf.extend(src.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], 255]));
+        let bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w as i32,
+                // Negativ: Zeilen von oben nach unten
+                biHeight: -((y1 - y0) as i32),
+                biPlanes: 1,
+                biBitCount: 32,
+                ..Default::default()
+            },
+            bmiColors: [0; 4],
+        };
+        unsafe {
+            let dc = GetDC(hwnd);
+            if dc.is_null() {
+                return;
+            }
+            SetDIBitsToDevice(
+                dc,
+                0,
+                y0 as i32,
+                w,
+                y1 - y0,
+                0,
+                0,
+                0,
+                y1 - y0,
+                buf.as_ptr() as *const c_void,
+                &bmi,
+                DIB_RGB_COLORS,
+            );
+            GdiFlush();
+            ReleaseDC(hwnd, dc);
+        }
+        if rows.is_none() {
+            self.quantity.mark_presented(w, h);
+        }
+    }
+
+    pub fn quantity_size(&self) -> (u32, u32) {
+        (
+            self.quantity.width.load(Ordering::Relaxed),
+            self.quantity.height.load(Ordering::Relaxed),
+        )
+    }
+
+    pub fn quantity_scale(&self) -> f32 {
+        self.quantity.dpi.load(Ordering::Relaxed) as f32 / 96.0
+    }
+
+    pub fn quantity_command(&self, c: WindowCommand) {
+        command_to(self.quantity.hwnd(), c)
+    }
+
+    pub fn set_quantity_caption_area(&self, a: CaptionArea) {
+        set_caption_area_of(&self.quantity, a)
+    }
+
+    pub fn set_quantity_cursor(&self, c: Cursor) {
+        set_cursor_of(&self.quantity, c)
+    }
+
+    pub fn set_quantity_title(&self, title: &str) {
+        if let Ok(mut t) = self.quantity.title.lock() {
+            *t = title.to_string();
+        }
+        set_title_of(self.quantity.hwnd(), title)
+    }
+
+    pub fn monitors(&self) -> Vec<Rect> {
+        monitors()
+    }
     /// Dateidialog des Systems. Läuft im Zeichenthread; das Fenster ist so lange
     /// gesperrt, der Hauptthread verarbeitet weiter seine Nachrichten.
     pub fn file_dialog(
@@ -1102,27 +1823,6 @@ impl Surface {
         }
     }
 
-    pub fn set_cursor(&self, c: Cursor) {
-        let i = cursor_index(c);
-        if self.shared.cursor.swap(i, Ordering::Relaxed) != i {
-            unsafe {
-                PostMessageW(self.hwnd as HWND, WM_APP_CURSOR, 0, 0);
-            }
-        }
-    }
-
-    pub fn set_caption_area(&self, a: CaptionArea) {
-        self.shared
-            .caption_height
-            .store(a.height, Ordering::Relaxed);
-        self.shared
-            .buttons_width
-            .store(a.buttons_width, Ordering::Relaxed);
-        self.shared
-            .left_width
-            .store(a.left_width, Ordering::Relaxed);
-    }
-
     /// Legt im aufrufenden Thread einen OpenGL-3.3-Core-Kontext an.
     fn make_gl_context(&self) -> Result<(), String> {
         type CreateCtx = unsafe extern "system" fn(HDC, HGLRC, *const i32) -> HGLRC;
@@ -1186,56 +1886,66 @@ fn make_icon(inst: HINSTANCE, size: i32, rgba: &[u8]) -> HICON {
     unsafe { CreateIcon(inst, size, size, 1, 32, mask.as_ptr(), bgra.as_ptr()) }
 }
 
-pub fn run<F>(config: Config, app: F) -> Result<(), String>
+/// Fensterklassen: Hauptfenster mit eigenem Gerätekontext (OpenGL),
+/// Mengenfenster ohne (GDI-Kopie aus dem Zeichenthread).
+const MAIN_CLASS: &str = "SkizzeoFenster";
+const QUANTITY_CLASS: &str = "SkizzeoMengenfenster";
+
+unsafe fn register_class(inst: HINSTANCE, name: &str, style: u32) -> bool {
+    let class = wide(name);
+    let wc = WNDCLASSEXW {
+        cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+        style,
+        lpfnWndProc: wndproc,
+        cbClsExtra: 0,
+        cbWndExtra: 0,
+        hInstance: inst,
+        hIcon: null_mut(),
+        hCursor: LoadCursorW(null_mut(), IDC_ARROW as *const u16),
+        hbrBackground: null_mut(),
+        lpszMenuName: null(),
+        lpszClassName: class.as_ptr(),
+        hIconSm: null_mut(),
+    };
+    RegisterClassExW(&wc) != 0
+}
+
+pub fn run<F>(config: Config, layout: Arc<Mutex<Layout>>, app: F) -> Result<(), String>
 where
-    F: FnOnce(Receiver<Event>, Surface) -> Result<(), String> + Send + 'static,
+    F: FnOnce(Receiver<(WindowId, Event)>, Surface) -> Result<(), String> + Send + 'static,
 {
     set_dpi_awareness();
     unsafe {
         let inst = GetModuleHandleW(null());
-        let class = wide("SkizzeoFenster");
-        let wc = WNDCLASSEXW {
-            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-            style: CS_OWNDC | CS_HREDRAW | CS_VREDRAW,
-            lpfnWndProc: wndproc,
-            cbClsExtra: 0,
-            cbWndExtra: 0,
-            hInstance: inst,
-            hIcon: null_mut(),
-            hCursor: LoadCursorW(null_mut(), IDC_ARROW as *const u16),
-            hbrBackground: null_mut(),
-            lpszMenuName: null(),
-            lpszClassName: class.as_ptr(),
-            hIconSm: null_mut(),
-        };
-        if RegisterClassExW(&wc) == 0 {
+        if !register_class(inst, MAIN_CLASS, CS_OWNDC | CS_HREDRAW | CS_VREDRAW)
+            || !register_class(inst, QUANTITY_CLASS, CS_HREDRAW | CS_VREDRAW)
+        {
             return Err("Fensterklasse konnte nicht angelegt werden.".into());
         }
 
         let (tx, rx) = channel();
-        let shared = Arc::new(Shared {
-            width: AtomicU32::new(0),
-            height: AtomicU32::new(0),
-            dpi: AtomicU32::new(96),
-            caption_height: AtomicU32::new(0),
-            buttons_width: AtomicU32::new(0),
-            left_width: AtomicU32::new(0),
-            sizing: AtomicBool::new(false),
-            cursor: AtomicU32::new(0),
-            presented: Mutex::new((0, 0)),
-            presented_cv: Condvar::new(),
-        });
-        STATE.with(|s| {
-            *s.borrow_mut() = Some(WndState {
+        let shared = Shared::new();
+        let quantity = Shared::new();
+        WINDOWS.with(|s| {
+            *s.borrow_mut() = Some(Windows {
                 tx,
-                shared: shared.clone(),
-                tracking_leave: false,
-                buttons_down: 0,
+                list: vec![WndState {
+                    id: WindowId::Main,
+                    shared: shared.clone(),
+                    tracking_leave: false,
+                    buttons_down: 0,
+                }],
+                quantity: quantity.clone(),
+                layout,
                 cursors: [IDC_ARROW, IDC_SIZENS, IDC_HAND, IDC_IBEAM]
                     .map(|c| LoadCursorW(null_mut(), c as *const u16)),
+                inst: inst as usize,
+                icon: config.icon,
+                closing: false,
             })
         });
 
+        let class = wide(MAIN_CLASS);
         let title = wide(&config.title);
         let hwnd = CreateWindowExW(
             0,
@@ -1254,6 +1964,7 @@ where
         if hwnd.is_null() {
             return Err("Fenster konnte nicht geöffnet werden.".into());
         }
+        shared.hwnd.store(hwnd as usize, Ordering::Relaxed);
         let dpi = dpi_of(hwnd);
         shared.dpi.store(dpi, Ordering::Relaxed);
         let s = dpi as f32 / 96.0;
@@ -1270,41 +1981,7 @@ where
             h,
             SWP_NOZORDER | SWP_NOACTIVATE,
         );
-
-        // Schatten und (unter Windows 11) runde Ecken vom Fenstermanager behalten.
-        let m = MARGINS {
-            left: 0,
-            right: 0,
-            top: 1,
-            bottom: 0,
-        };
-        DwmExtendFrameIntoClientArea(hwnd, &m);
-        let corner = DWMWCP_ROUND;
-        DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_WINDOW_CORNER_PREFERENCE,
-            &corner as *const u32 as *const c_void,
-            4,
-        );
-        SetWindowPos(
-            hwnd,
-            null_mut(),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
-        );
-
-        if let Some(icon) = config.icon {
-            for (kind, metric_id) in [(1usize, SM_CXICON), (0usize, SM_CXSMICON)] {
-                let size = metric(metric_id, dpi).max(16);
-                let h = make_icon(inst, size, &icon(size as u32));
-                if !h.is_null() {
-                    SendMessageW(hwnd, WM_SETICON, kind, h as isize);
-                }
-            }
-        }
+        decorate(hwnd, inst, config.icon, dpi);
 
         let hdc = GetDC(hwnd);
         let pfd = PIXELFORMATDESCRIPTOR {
@@ -1350,6 +2027,8 @@ where
             hdc: hdc as usize,
             opengl32: LoadLibraryA(c"opengl32.dll".as_ptr()) as usize,
             shared,
+            quantity,
+            quantity_buf: RefCell::new(Vec::new()),
             swap_interval: Cell::new(0),
             interval: Cell::new(1),
             last_size: Cell::new((0, 0)),
@@ -1375,7 +2054,7 @@ where
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
-        STATE.with(|s| *s.borrow_mut() = None); // Kanal schließen
+        WINDOWS.with(|s| *s.borrow_mut() = None); // Kanal schließen
         let _ = render.join();
         match err_rx.try_recv() {
             Ok(e) => Err(e),

@@ -7,14 +7,23 @@
 //! schickt sie als [`Event`] über einen Kanal an den Zeichenthread. Dieser
 //! besitzt den OpenGL-Kontext. So zeichnet die App auch weiter, während das
 //! System das Fenster beim Ziehen oder Vergrößern festhält.
+//!
+//! Neben dem Hauptfenster kann es das Mengenfenster geben
+//! ([`WindowId::Quantity`], F2). Beide haben keinen Besitzer und je einen
+//! Taskleisteneintrag; die Schicht hält sie nach den Regeln in [`layout`]
+//! zusammen (Andocken, Teilen, gemeinsam minimieren).
 
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+pub mod layout;
 #[cfg(windows)]
 mod win32;
+
+pub use layout::{Rect, WindowId, Windows};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Modifiers {
@@ -149,7 +158,8 @@ pub struct Config {
 
 /// Zugriff des Zeichenthreads auf Fenster und GPU.
 pub struct Surface {
-    events: Receiver<Event>,
+    events: Receiver<(WindowId, Event)>,
+    layout: Arc<Mutex<Windows>>,
     #[cfg_attr(not(windows), allow(dead_code))]
     inner: SurfaceImpl,
 }
@@ -161,13 +171,13 @@ type SurfaceImpl = ();
 
 impl Surface {
     /// Wartet blockierend auf das nächste Ereignis. `None`, wenn das Fenster weg ist.
-    pub fn wait_event(&self) -> Option<Event> {
+    pub fn wait_event(&self) -> Option<(WindowId, Event)> {
         self.events.recv().ok()
     }
 
     /// Wartet höchstens `d` auf das nächste Ereignis: `Some(None)` nach Ablauf,
     /// `None`, wenn das Fenster weg ist.
-    pub fn wait_event_timeout(&self, d: Duration) -> Option<Option<Event>> {
+    pub fn wait_event_timeout(&self, d: Duration) -> Option<Option<(WindowId, Event)>> {
         match self.events.recv_timeout(d) {
             Ok(e) => Some(Some(e)),
             Err(RecvTimeoutError::Timeout) => Some(None),
@@ -175,7 +185,7 @@ impl Surface {
         }
     }
 
-    pub fn poll_event(&self) -> Option<Event> {
+    pub fn poll_event(&self) -> Option<(WindowId, Event)> {
         match self.events.try_recv() {
             Ok(e) => Some(e),
             Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => None,
@@ -252,6 +262,101 @@ impl Surface {
         self.inner.message(text, error)
     }
 
+    /// Öffnet das Mengenfenster nach den Regeln in [`layout`] (angedockt, an
+    /// seinem gemerkten Platz oder bei maximiertem Hauptfenster geteilt). Ist
+    /// es schon offen, kommt es nach vorn. Seine Ereignisse tragen
+    /// [`WindowId::Quantity`]; zuerst kommen `ScaleChanged` und `Resized`.
+    #[cfg(windows)]
+    pub fn open_quantity(&self, title: &str) {
+        self.inner.open_quantity(title)
+    }
+
+    /// Schließt das Mengenfenster; ein vorher maximiertes Hauptfenster wird
+    /// wieder maximiert.
+    #[cfg(windows)]
+    pub fn close_quantity(&self) {
+        self.inner.close_quantity()
+    }
+
+    /// Zeigt ein Bild im Mengenfenster: `rgba` vormultipliziert und deckend,
+    /// `w` × `h`. `rows`: nur diese Zeilen (von, bis) neu kopieren.
+    #[cfg(windows)]
+    pub fn present_quantity(&self, w: u32, h: u32, rgba: &[u8], rows: Option<(u32, u32)>) {
+        self.inner.present_quantity(w, h, rgba, rows)
+    }
+
+    #[cfg(windows)]
+    pub fn quantity_size(&self) -> (u32, u32) {
+        self.inner.quantity_size()
+    }
+
+    #[cfg(windows)]
+    pub fn quantity_scale(&self) -> f32 {
+        self.inner.quantity_scale()
+    }
+
+    #[cfg(windows)]
+    pub fn quantity_command(&self, c: WindowCommand) {
+        self.inner.quantity_command(c)
+    }
+
+    #[cfg(windows)]
+    pub fn set_quantity_caption_area(&self, a: CaptionArea) {
+        self.inner.set_quantity_caption_area(a)
+    }
+
+    #[cfg(windows)]
+    pub fn set_quantity_cursor(&self, c: Cursor) {
+        self.inner.set_quantity_cursor(c)
+    }
+
+    #[cfg(windows)]
+    pub fn set_quantity_title(&self, title: &str) {
+        self.inner.set_quantity_title(title)
+    }
+
+    /// Arbeitsbereiche aller Bildschirme (ohne Taskleiste).
+    #[cfg(windows)]
+    pub fn monitors(&self) -> Vec<Rect> {
+        self.inner.monitors()
+    }
+
+    /// Zustand der beiden Fenster zueinander (zum Merken in den Einstellungen
+    /// und zum Setzen beim Start).
+    pub fn layout(&self) -> std::sync::MutexGuard<'_, Windows> {
+        match self.layout.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn open_quantity(&self, _title: &str) {}
+    #[cfg(not(windows))]
+    pub fn close_quantity(&self) {}
+    #[cfg(not(windows))]
+    pub fn present_quantity(&self, _w: u32, _h: u32, _rgba: &[u8], _rows: Option<(u32, u32)>) {}
+    #[cfg(not(windows))]
+    pub fn quantity_size(&self) -> (u32, u32) {
+        (0, 0)
+    }
+    #[cfg(not(windows))]
+    pub fn quantity_scale(&self) -> f32 {
+        1.0
+    }
+    #[cfg(not(windows))]
+    pub fn quantity_command(&self, _c: WindowCommand) {}
+    #[cfg(not(windows))]
+    pub fn set_quantity_caption_area(&self, _a: CaptionArea) {}
+    #[cfg(not(windows))]
+    pub fn set_quantity_cursor(&self, _c: Cursor) {}
+    #[cfg(not(windows))]
+    pub fn set_quantity_title(&self, _title: &str) {}
+    #[cfg(not(windows))]
+    pub fn monitors(&self) -> Vec<Rect> {
+        Vec::new()
+    }
+
     #[cfg(not(windows))]
     pub fn set_cursor(&self, _c: Cursor) {}
     #[cfg(not(windows))]
@@ -302,7 +407,14 @@ where
 {
     #[cfg(windows)]
     {
-        win32::run(config, move |events, inner| app(Surface { events, inner }))
+        let layout = Arc::new(Mutex::new(Windows::new(layout::WIDTH_DIP)));
+        win32::run(config, layout.clone(), move |events, inner| {
+            app(Surface {
+                events,
+                layout,
+                inner,
+            })
+        })
     }
     #[cfg(not(windows))]
     {

@@ -37,6 +37,9 @@ pub struct TitleBar {
     pub redo_enabled: bool,
     /// Dateimenü offen: Menüknopf gedrückt.
     pub menu_open: bool,
+    /// Leiste des Mengenfensters (F2): links nur das Logo, ohne Menü und
+    /// ohne Rückgängig.
+    pub side: bool,
 }
 
 impl TitleBar {
@@ -51,11 +54,15 @@ impl TitleBar {
             undo_enabled: false,
             redo_enabled: false,
             menu_open: false,
+            side: false,
         }
     }
 
     /// Linke und rechte Kante eines Knopfes der linken Gruppe (ganze Pixel).
     fn left_span(&self, b: Button) -> Option<(f32, f32)> {
+        if self.side {
+            return None;
+        }
         let s = self.scale;
         let menu = (MENU_W * s).round();
         let undo = (menu + LEFT_GAP * s).round();
@@ -150,6 +157,9 @@ impl TitleBar {
             }
         }
 
+        if self.side {
+            self.paint_logo(t, &mut c);
+        }
         for b in [
             Button::Menu,
             Button::Undo,
@@ -158,6 +168,9 @@ impl TitleBar {
             Button::Maximize,
             Button::Close,
         ] {
+            if self.side && matches!(b, Button::Menu | Button::Undo | Button::Redo) {
+                continue;
+            }
             self.paint_button_at(t, &mut c, b, self.button_x(b, width));
         }
         c
@@ -240,6 +253,17 @@ impl TitleBar {
             }
             _ => self.paint_glyph(c, b, x + bw * 0.5, h as f32 * 0.5, glyph, bg),
         }
+    }
+
+    /// Nur das Logo, mittig in einem Feld so breit wie der Menüknopf.
+    fn paint_logo(&self, t: &Theme, c: &mut Canvas) {
+        let s = self.scale;
+        let h = self.height() as f32;
+        let logo_h = (14.0 * s).round();
+        let logo_w = logo_h * logo::WIDTH / logo::HEIGHT;
+        let lx = (((MENU_W * s).round() - logo_w) * 0.5).round();
+        let ly = ((h - logo_h) * 0.5).round();
+        c.fill(&logo::path_at(lx, ly, logo_h), t.title.logo);
     }
 
     /// Logo wie bisher, darunter ein kleiner Pfeil ▾ (5 dip, Strich 1 dip).
