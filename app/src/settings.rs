@@ -497,8 +497,9 @@ pub fn read_all(text: &str) -> (Theme, Recent, Vec<String>) {
                 r.unused(&mut hints);
                 continue;
             }
-            // Lage des Mengenfensters (F2): liest die App mit den Bildschirmen
-            "mengenfenster" => continue,
+            // Lage des Mengenfensters (F2): liest die App mit den Bildschirmen;
+            // Ort des Firmenkatalogs (K2): liest [`Settings::load`]
+            "mengenfenster" | "firmenkatalog" => continue,
             s => {
                 skip(&mut hints, &format!("unbekannter Abschnitt [{s}]"));
                 continue;
@@ -535,6 +536,10 @@ pub struct Settings {
     /// Abschnitt `[mengenfenster]` (F2, [`crate::windows`]) und sein Stand beim Laden.
     pub windows: String,
     loaded_windows: String,
+    /// Abschnitt `[firmenkatalog] datei=…` (K2), unverändert weitergeschrieben.
+    company_line: String,
+    /// Ort des Firmenkatalogs aus der Datei; ohne ihn gilt der Vorgabeort.
+    company: Option<PathBuf>,
 }
 
 impl Settings {
@@ -553,7 +558,21 @@ impl Settings {
             loaded_recent: Recent::default(),
             windows: String::new(),
             loaded_windows: String::new(),
+            company_line: String::new(),
+            company: None,
         }
+    }
+
+    /// Ort des Firmenkatalogs und ob es der Vorgabeort neben den
+    /// Einstellungen ist (`%APPDATA%\Skizzeo\firmenkatalog.szk`). `None`
+    /// ohne Einstellungen (Tests, Bildschirmfotos): dann gilt der eingebaute
+    /// Startbestand.
+    pub fn company_place(&self) -> Option<(PathBuf, bool)> {
+        let dir = self.path.as_ref()?.parent()?;
+        Some(match &self.company {
+            Some(p) => (p.clone(), false),
+            None => (dir.join(crate::catalog::FILE_NAME), true),
+        })
     }
 
     /// Liest das Schema; fehlt die Datei, gilt das dunkle Standardschema.
@@ -572,6 +591,17 @@ impl Settings {
                     .filter(|l| l.starts_with("[mengenfenster]"))
                     .map(|l| format!("{l}\n"))
                     .collect();
+                self.company_line = text
+                    .lines()
+                    .filter(|l| l.starts_with("[firmenkatalog]"))
+                    .map(|l| format!("{l}\n"))
+                    .collect();
+                self.company = text
+                    .lines()
+                    .enumerate()
+                    .filter_map(|(i, l)| Record::parse(i + 1, l).ok().flatten())
+                    .filter(|r| r.section == "firmenkatalog")
+                    .find_map(|r| r.opt("datei").filter(|d| !d.is_empty()).map(PathBuf::from));
                 t
             }
             None => Theme::dark(),
@@ -599,7 +629,7 @@ impl Settings {
             .parent()
             .map_or(Ok(()), std::fs::create_dir_all)
             .and_then(|_| {
-                let text = write_all(theme, &self.recent) + &self.windows;
+                let text = write_all(theme, &self.recent) + &self.windows + &self.company_line;
                 crate::document::write_synced(&tmp, text.as_bytes())
             })
             .and_then(|_| std::fs::rename(&tmp, path));
@@ -755,6 +785,40 @@ mod tests {
         // Ohne den Schalter wird die Datei gelesen
         let mut s = Settings::new(args(&["skizzeo.exe"]), Some(d.clone()));
         assert_eq!(s.load().size.font, 20.0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn firmenkatalog_ort_bleibt_erhalten() {
+        let d = dir("firma");
+        let path = d.join("Skizzeo").join("einstellungen.txt");
+        let mut s = Settings::new(args(&["skizzeo.exe"]), Some(d.clone()));
+        assert_eq!(
+            s.company_place(),
+            Some((d.join("Skizzeo").join("firmenkatalog.szk"), true))
+        );
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "SKIZZEO-EINSTELLUNGEN 1\n[firmenkatalog] datei=\"N:\\\\Buero\\\\firma.szk\"\n",
+        )
+        .unwrap();
+        let mut t = s.load();
+        assert!(s.hints.is_empty(), "{:?}", s.hints);
+        assert_eq!(
+            s.company_place(),
+            Some((PathBuf::from("N:\\Buero\\firma.szk"), false))
+        );
+        t.set_accent(Rgba::rgb(1, 2, 3));
+        s.save_if_changed(&t).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[firmenkatalog] datei=\"N:"), "{text}");
+        assert!(Settings::new(
+            args(&["skizzeo.exe", "--ohne-einstellungen"]),
+            Some(d.clone())
+        )
+        .company_place()
+        .is_none());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

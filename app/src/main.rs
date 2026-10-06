@@ -6,6 +6,7 @@
 #[cfg(test)]
 mod abnahme;
 mod camera;
+mod catalog;
 mod document;
 mod draw_table;
 mod menu;
@@ -415,6 +416,8 @@ struct App {
     prefs_popup_dirty: bool,
     /// Einstellungsdatei (Ort, Stand beim Laden).
     settings: settings::Settings,
+    /// Firmenkatalog (K2); `None` ohne Einstellungen: eingebauter Startbestand.
+    company: Option<catalog::Company>,
     /// Geschossbogen im Grundriss (E18), seine Bilder, die Uhr seiner
     /// Animation (ms seit dem Start), angefangene Mausradrasten, ein Druck
     /// auf den Bogen (das Loslassen gehört ihm) und der Höhenversatz des
@@ -1008,7 +1011,7 @@ impl App {
     fn perform(&mut self, c: Command, surface: &Surface) {
         match c {
             Command::New | Command::Close => {
-                self.replace_scene(sk_model::Model::new());
+                self.replace_scene(new_model(self.company.as_ref()));
                 self.doc = Document::new(self.scene.model().revision());
             }
             Command::Open => {
@@ -2433,6 +2436,14 @@ fn layer_rows(model: &sk_model::Model, set: sk_model::LayerSetId) -> Vec<(Rgba, 
         .collect()
 }
 
+/// Neues Projekt mit den Typen des Firmenkatalogs (ohne ihn: Startbestand).
+fn new_model(company: Option<&catalog::Company>) -> sk_model::Model {
+    match company {
+        Some(c) => sk_model::Model::from_library(c.library()),
+        None => sk_model::Model::new(),
+    }
+}
+
 fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     let gl = Gl::load(|name| surface.gl_proc(name))?;
     // Farbschema aus %APPDATA%\Skizzeo\einstellungen.txt (fehlt sie: dunkel)
@@ -2444,7 +2455,18 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     for h in &settings.hints {
         eprintln!("Einstellungen: {h}");
     }
-    let mut scene = Scene::new();
+    // Firmenkatalog (K2): neue Projekte bekommen seine Typen
+    let (company, hints) = match settings.company_place() {
+        Some((p, standard)) => {
+            let (c, h) = catalog::Company::load(&p, standard);
+            (Some(c), h)
+        }
+        None => (None, Vec::new()),
+    };
+    if !hints.is_empty() && screenshot.is_none() {
+        surface.message(&hints.join("\n\n"), false);
+    }
+    let mut scene = Scene::with_model(new_model(company.as_ref()));
     scene.set_theme(&theme);
     let renderer = Renderer::new(gl, style(&theme.env))?;
     let cam = start_camera();
@@ -2491,6 +2513,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         prefs_dirty: false,
         prefs_popup_dirty: false,
         settings,
+        company,
         w,
         h,
         overlay_dirty: true,

@@ -20,7 +20,7 @@ use crate::id::Arena;
 use crate::join::{self, Join, JoinEnd, JoinKind};
 use crate::library::{
     material_key, LayerFunction, LayerSet, LayerSetId, MatCategory, Material, MaterialDisplay,
-    MaterialId, MaterialLayer,
+    MaterialId, MaterialLayer, TypeCategory,
 };
 use crate::solid::material;
 use crate::txn::{Change, Direction, Key, Open, Touched, Txn};
@@ -105,9 +105,21 @@ impl Default for Model {
 }
 
 impl Model {
-    /// Leeres Modell mit Startbibliothek und Erdgeschoss.
+    /// Leeres Modell mit Startbibliothek und Erdgeschoss. Die Bibliothek
+    /// (Attribute, Baustoffe, Bauteiltypen) hat in jedem neuen Projekt
+    /// dieselben Guids, damit der Firmenkatalog sie wiedererkennt (K2);
+    /// Projekt und Geschosse bekommen neue.
     pub fn new() -> Model {
-        Model::standard(GuidGen::from_time())
+        let mut m = Model::standard(GuidGen::with_seed(LIBRARY_SEED));
+        let mut g = GuidGen::from_time();
+        m.project.guid = g.next_guid();
+        for id in m.storeys.ids().collect::<Vec<_>>() {
+            if let Some(s) = m.storeys.get_mut(id) {
+                s.guid = g.next_guid();
+            }
+        }
+        m.guids = g;
+        m
     }
 
     /// Wie [`Model::new`], aber mit festem Startwert für die Guids (Tests).
@@ -176,9 +188,17 @@ impl Model {
             [200, 198, 192],
         );
         let mut layer_sets = Arena::new();
+        // Werkstypen mit festen Guids (K1); der Erzeuger läuft weiter, damit
+        // die übrigen Guids gleich bleiben
+        let _ = guids.next_guid();
         let exterior_wall = layer_sets.insert(LayerSet {
-            guid: guids.next_guid(),
+            guid: EXTERIOR_TYPE_GUID,
             name: "AW 31,5 Gasbeton + WDVS".into(),
+            code: "AW-31,5".into(),
+            category: TypeCategory::ExteriorWall,
+            props: PropSet::new(),
+            note: String::new(),
+            changed: 1,
             layers: vec![
                 MaterialLayer {
                     material: insulation,
@@ -209,7 +229,8 @@ impl Model {
             name: "Projekt".into(),
         };
         // Nach der Projekt-Guid angelegt, damit die älteren Guids gleich bleiben
-        let interior_wall = layer_sets.insert(interior_set(guids.next_guid(), aerated));
+        let _ = guids.next_guid();
+        let interior_wall = layer_sets.insert(interior_set(INTERIOR_TYPE_GUID, aerated));
         // Stahlbeton: Diagonale, jede zweite Linie gestrichelt (E15)
         let cross = attr.add_fill(Fill {
             guid: guids.next_guid(),
@@ -611,28 +632,270 @@ impl Model {
         self.layer_sets.get(id)
     }
 
-    pub fn add_layer_set(&mut self, s: LayerSet) -> LayerSetId {
+    /// Legt einen Bauteiltyp an. `None`, wenn das Kurzzeichen leer oder
+    /// schon vergeben ist, die Guid schon existiert oder der Typ gegen die
+    /// Typregeln verstößt ([`LayerSet::problems`]).
+    pub fn add_layer_set(&mut self, s: LayerSet) -> Option<LayerSetId> {
+        let taken = self
+            .layer_sets
+            .iter()
+            .any(|(_, t)| t.guid == s.guid || t.code == s.code);
+        if taken
+            || !s.problems().is_empty()
+            || s.layers
+                .iter()
+                .any(|l| !self.materials.contains(l.material))
+        {
+            return None;
+        }
         self.touch();
         let id = self.layer_sets.insert(s);
         note!(self, LayerSet, new id);
-        id
+        Some(id)
     }
 
-    /// Ändert einen Aufbau; alle Bauteile dieses Typs folgen.
-    pub fn set_layer_set(&mut self, id: LayerSetId, s: LayerSet) -> bool {
-        if self.layer_sets.contains(id) {
-            note!(self, LayerSet, self.layer_sets, id);
+    /// Ändert einen Bauteiltyp; alle Bauteile dieses Typs folgen. Die Guid
+    /// bleibt (Regel 19), das Kurzzeichen bleibt eindeutig, die Typart
+    /// ändert sich nur bei unbenutzten Typen, die nicht Standard sind.
+    /// `changed` zählt eins hoch (auch beim Übernehmen aus dem
+    /// Firmenkatalog: es ist der Stand im Projekt). Gleicher Inhalt ändert
+    /// nichts und gilt als Erfolg; `false`: abgelehnt, nichts geändert.
+    pub fn set_layer_set(&mut self, id: LayerSetId, mut s: LayerSet) -> bool {
+        let Some(old) = self.layer_sets.get(id) else {
+            return false;
+        };
+        let code_taken = self
+            .layer_sets
+            .iter()
+            .any(|(other, t)| other != id && t.code == s.code);
+        let category_locked = s.category != old.category
+            && (self.is_default_type(id) || !self.type_users(id).is_empty());
+        if s.guid != old.guid
+            || code_taken
+            || category_locked
+            || !s.problems().is_empty()
+            || s.layers
+                .iter()
+                .any(|l| !self.materials.contains(l.material))
+        {
+            return false;
         }
-        match self.layer_sets.get_mut(id) {
-            Some(old) => {
-                *old = s;
-                // Andere Dicken: Anschlüsse neu erkennen
-                self.joins = self.detect_all();
-                self.touch();
-                true
+        if same_type(old, &s) {
+            return true;
+        }
+        s.changed = old.changed + 1;
+        note!(self, LayerSet, self.layer_sets, id);
+        if let Some(t) = self.layer_sets.get_mut(id) {
+            *t = s;
+        }
+        // Andere Dicken: Anschlüsse neu erkennen
+        self.joins = self.detect_all();
+        self.touch();
+        true
+    }
+
+    /// Bauteile, die den Typ benutzen (Wände).
+    pub fn type_users(&self, id: LayerSetId) -> Vec<ElementId> {
+        self.elements
+            .iter()
+            .filter(|(_, e)| e.layer_set == Some(id))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Typ zu einem Kurzzeichen.
+    pub fn type_by_code(&self, code: &str) -> Option<LayerSetId> {
+        self.layer_sets
+            .iter()
+            .find(|(_, t)| t.code == code)
+            .map(|(id, _)| id)
+    }
+
+    /// Typ zu einer Guid.
+    pub fn type_by_guid(&self, g: Guid) -> Option<LayerSetId> {
+        self.layer_sets
+            .iter()
+            .find(|(_, t)| t.guid == g)
+            .map(|(id, _)| id)
+    }
+
+    /// `code`, wenn frei, sonst das nächste freie „code-2“, „code-3“ …
+    pub fn free_code(&self, code: &str) -> String {
+        free_code(code, |c| self.type_by_code(c).is_some())
+    }
+
+    /// Ist der Typ Standard für neue Wände seiner Art? Standardtypen lassen
+    /// sich nicht löschen (Regel 18).
+    pub fn is_default_type(&self, id: LayerSetId) -> bool {
+        self.defaults.exterior_wall == id || self.defaults.interior_wall == id
+    }
+
+    /// Standardtyp für neue Wände der Art.
+    pub fn default_type(&self, cat: TypeCategory) -> LayerSetId {
+        match cat {
+            TypeCategory::ExteriorWall => self.defaults.exterior_wall,
+            TypeCategory::InteriorWall => self.defaults.interior_wall,
+        }
+    }
+
+    /// Kopie eines Typs: neue Guid, Name „… (Kopie)“, nächstes freies
+    /// Kurzzeichen „…-2“, Stand 1.
+    pub fn duplicate_type(&mut self, id: LayerSetId) -> Option<LayerSetId> {
+        let t = self.layer_set(id)?.clone();
+        let guid = self.new_guid();
+        // Das eigene Kurzzeichen ist belegt: „…-2“, „…-3“ …
+        let code = self.free_code(&t.code);
+        self.add_layer_set(LayerSet {
+            guid,
+            name: format!("{} (Kopie)", t.name),
+            code,
+            changed: 1,
+            ..t
+        })
+    }
+
+    /// Löscht einen Typ, den kein Bauteil benutzt und der nicht Standard ist
+    /// (Regel 18). `Err(n)`: n Bauteile benutzen ihn; `Err(0)`: Standardtyp
+    /// oder kein Typ.
+    pub fn remove_type(&mut self, id: LayerSetId) -> Result<(), usize> {
+        let users = self.type_users(id).len();
+        if users > 0 {
+            return Err(users);
+        }
+        if self.is_default_type(id) || !self.layer_sets.contains(id) {
+            return Err(0);
+        }
+        note!(self, LayerSet, self.layer_sets, id);
+        self.layer_sets.remove(id);
+        self.touch();
+        Ok(())
+    }
+
+    /// Setzt den Standardtyp für neue Wände der Art; `false`, wenn der Typ
+    /// fehlt oder eine andere Art hat.
+    pub fn set_default_type(&mut self, cat: TypeCategory, id: LayerSetId) -> bool {
+        if self.layer_set(id).is_none_or(|t| t.category != cat) {
+            return false;
+        }
+        let mut d = self.defaults;
+        match cat {
+            TypeCategory::ExteriorWall => d.exterior_wall = id,
+            TypeCategory::InteriorWall => d.interior_wall = id,
+        }
+        if d == self.defaults {
+            return true;
+        }
+        match self.txn.as_mut() {
+            Some(t) => {
+                if t.noted.insert(Key::Defaults) {
+                    t.changes.push(Change::Defaults {
+                        old: self.defaults,
+                        new: d,
+                    });
+                }
             }
-            None => false,
+            None => debug_assert!(!self.strict, "Änderung ohne Schritt"),
         }
+        self.defaults = d;
+        self.touch();
+        true
+    }
+
+    /// Wechselt den Typ eines Wandzugs. Alle Segmente bekommen ihn, dazu
+    /// die gekoppelten Züge darunter und darüber, damit die Schale fugenlos
+    /// bleibt. Bei Außenwänden bleibt die Außenseite stehen und die Wand
+    /// wächst nach innen: Liegt die Außenseite nicht auf der Bezugslinie,
+    /// wandert die Linie um die Dickenänderung. Decke, Gründung und
+    /// Anschlüsse ziehen nach. `false` (nichts geändert), wenn der Typ fehlt,
+    /// nicht zur Wand passt oder die Linie sich nicht verschieben lässt.
+    pub fn set_run_type(&mut self, run: RunId, id: LayerSetId) -> bool {
+        let Some(t) = self.layer_set(id) else {
+            return false;
+        };
+        let cat = t.category;
+        let mut root = run;
+        for _ in 0..64 {
+            match self.run_below(root) {
+                Some(b) if b != root => root = b,
+                _ => break,
+            }
+        }
+        let mut stack = vec![root];
+        stack.extend(self.stack_above(root));
+        let walls: Vec<ElementId> = stack
+            .iter()
+            .filter_map(|r| self.run(*r))
+            .flat_map(|r| r.segments.iter().copied())
+            .collect();
+        if !stack.contains(&run)
+            || walls.iter().any(|w| {
+                self.element(*w)
+                    .is_none_or(|e| TypeCategory::of(e.category) != Some(cat))
+            })
+        {
+            return false;
+        }
+        if walls
+            .iter()
+            .all(|w| self.element(*w).is_some_and(|e| e.layer_set == Some(id)))
+        {
+            return true;
+        }
+        // Neue Bezugslinie vorab, damit bei einem Fehler nichts geändert ist
+        let mut points = None;
+        if cat == TypeCategory::ExteriorWall {
+            let Some(old) = self.base_chain(root) else {
+                return false;
+            };
+            let new = WallChain {
+                layers: self.wall_layers(id),
+                ..old.clone()
+            };
+            let d = (old.outer_offset() - new.outer_offset()) * old.outward_sign();
+            if d.abs() > 1e-9 {
+                let offsets = vec![d; old.segment_count()];
+                match old.with_segment_offsets(&offsets) {
+                    Some(c) => points = Some(c.points),
+                    None => return false,
+                }
+            }
+        }
+        for w in walls {
+            note!(self, Element, self.elements, w);
+            if let Some(e) = self.elements.get_mut(w) {
+                e.layer_set = Some(id);
+            }
+        }
+        match points {
+            Some(p) => {
+                self.set_run_points(root, &p);
+            }
+            None => self.joins = self.detect_all(),
+        }
+        self.touch();
+        true
+    }
+
+    /// Entfernt einen Typ ohne Rückgängig und ohne Prüfung (nur beim
+    /// Anlegen eines Projekts aus dem Firmenkatalog, [`crate::catalog`]).
+    pub(crate) fn forget_type(&mut self, id: LayerSetId) {
+        debug_assert!(self.type_users(id).is_empty() && self.txn.is_none());
+        self.layer_sets.remove(id);
+    }
+
+    /// Merkmale eines Bauteils: die seines Typs, überlagert von den eigenen
+    /// mit gleichem Schlüssel (IFC-Regel). Schichten und Dicken lassen sich
+    /// am Bauteil nicht überschreiben.
+    pub fn props_of(&self, el: ElementId) -> PropSet {
+        let Some(e) = self.element(el) else {
+            return PropSet::new();
+        };
+        let mut p = e
+            .layer_set
+            .and_then(|s| self.layer_set(s))
+            .map_or_else(PropSet::new, |t| t.props.clone());
+        p.extend(e.props.iter().map(|(k, v)| (k.clone(), v.clone())));
+        p
     }
 
     /// Schichten eines Aufbaus für die Geometrie (Darstellungsschlüssel statt Kennung).
@@ -985,7 +1248,10 @@ impl Model {
         let pts = clean_points(&flat, closed);
         let closed = closed && pts.len() >= 3;
         let count = segment_count(pts.len(), closed);
-        if count == 0 || !self.layer_sets.contains(layer_set) || self.storey(storey).is_none() {
+        let fits = self
+            .layer_set(layer_set)
+            .is_some_and(|t| TypeCategory::of(category) == Some(t.category));
+        if count == 0 || !fits || self.storey(storey).is_none() {
             return None;
         }
         self.ensure_building(storey);
@@ -2786,6 +3052,12 @@ impl Model {
         self.strict = true;
     }
 
+    /// Gegenstück zu [`Model::require_steps`]: Änderungen auch ohne Schritt,
+    /// z. B. an einer Kopie des App-Modells zum Ausprobieren (Tests).
+    pub fn allow_unstepped(&mut self) {
+        self.strict = false;
+    }
+
     /// Öffnet einen Schritt. Es darf keiner offen sein ([`Model::commit`] vorher).
     pub fn begin(&mut self, label: &'static str) {
         debug_assert!(self.txn.is_none(), "Schritt schon offen");
@@ -2837,6 +3109,7 @@ impl Model {
             Change::Fill { id, new, .. } => *new = self.attr.fill(*id).cloned(),
             Change::Surface { id, new, .. } => *new = self.attr.surface(*id).cloned(),
             Change::Display { new, .. } => *new = self.attr.display().clone(),
+            Change::Defaults { new, .. } => *new = self.defaults,
         }
     }
 
@@ -2906,6 +3179,7 @@ impl Model {
                 m.attr.put_display(pick(dir, old, new));
                 touched.attr = true;
             }
+            Change::Defaults { old, new } => m.defaults = pick(dir, old, new),
         };
         // Rückwärts in umgekehrter Reihenfolge: ein Platz wird erst frei, dann neu belegt
         match dir {
@@ -3011,9 +3285,21 @@ impl Model {
                 out.push(format!("{}: Geschoss fehlt", e.number));
             }
             if let Some(s) = e.layer_set {
-                if !self.layer_sets.contains(s) {
-                    out.push(format!("{}: Aufbau fehlt", e.number));
+                match self.layer_set(s) {
+                    None => out.push(format!("{}: Aufbau fehlt", e.number)),
+                    // Regel 16: der Typ passt zur Wand
+                    Some(t) if TypeCategory::of(e.category) != Some(t.category) => {
+                        out.push(format!(
+                            "{}: Typ {} passt nicht zur {}",
+                            e.number,
+                            t.code,
+                            e.category.name()
+                        ))
+                    }
+                    Some(_) => {}
                 }
+            } else if TypeCategory::of(e.category).is_some() {
+                out.push(format!("{}: kein Bauteiltyp", e.number));
             }
             match e.kind {
                 ElementKind::Wall(w) => {
@@ -3142,18 +3428,43 @@ impl Model {
                     ));
                 }
             }
+            // Regel 16: ein Zug hat genau einen Typ
+            let mut sets = r
+                .segments
+                .iter()
+                .filter_map(|e| self.element(*e))
+                .map(|e| e.layer_set);
+            if let Some(first) = sets.next() {
+                if sets.any(|s| s != first) {
+                    out.push(format!("Wandzug {id:?}: Wände mit verschiedenen Typen"));
+                }
+            }
         }
         out.extend(self.check_levels());
+        let mut codes: Vec<&str> = Vec::new();
         for (_, set) in self.layer_sets.iter() {
-            if set.layers.is_empty() {
-                out.push(format!("Aufbau {}: keine Schichten", set.name));
-            }
-            if set
-                .layers
-                .iter()
-                .any(|l| l.thickness <= 0.0 || !l.thickness.is_finite())
-            {
-                out.push(format!("Aufbau {}: Schichtdicke ungültig", set.name));
+            out.extend(set.problems());
+            codes.push(&set.code);
+        }
+        // Regel 17: Kurzzeichen eindeutig
+        codes.sort_unstable();
+        for w in codes
+            .windows(2)
+            .filter(|w| w[0] == w[1] && !w[0].is_empty())
+        {
+            out.push(format!("Kurzzeichen {} doppelt vergeben", w[0]));
+        }
+        // Regel 18: die Standardtypen leben und haben ihre Art
+        for cat in TypeCategory::ALL {
+            match self.layer_set(self.default_type(cat)) {
+                Some(t) if t.category == cat => {}
+                Some(t) => out.push(format!(
+                    "Standardtyp {}: {} ist kein {}typ",
+                    cat.name(),
+                    t.code,
+                    cat.name()
+                )),
+                None => out.push(format!("Standardtyp {} fehlt", cat.name())),
             }
         }
         for (_, m) in self.materials.iter() {
@@ -3226,6 +3537,14 @@ impl Model {
         out
     }
 }
+
+/// Guids der Werkstypen „AW 31,5 Gasbeton + WDVS“ und „IW 17,5 Gasbeton“:
+/// in jedem Projekt und Firmenkatalog derselbe Typ (K1, Regel 19).
+pub const EXTERIOR_TYPE_GUID: Guid = Guid(0xbf19d5c9cf9241c9b5a191d5bdac9382);
+pub const INTERIOR_TYPE_GUID: Guid = Guid(0xe3753d4ddf2d435299910b99a65cfba2);
+/// Startwert der Guids der Startbibliothek in [`Model::new`]: Stifte,
+/// Schraffuren, Oberflächen und Baustoffe sind in jedem neuen Projekt gleich.
+const LIBRARY_SEED: u64 = 0x534b_4b41_5441_4c47;
 
 /// Bauabschnitt der Wände (nach Frostschürze 1 und Sohlplatte 2).
 pub const WALL_SEQ: u16 = 3;
@@ -3386,11 +3705,38 @@ fn sort_joins(j: &mut [Join]) {
     j.sort_by_key(|j| (j.a_run.index(), j.a_end));
 }
 
+/// Gleicher Inhalt zweier Typen; der Änderungsstand zählt nicht mit.
+pub(crate) fn same_type(a: &LayerSet, b: &LayerSet) -> bool {
+    a.guid == b.guid
+        && a.name == b.name
+        && a.code == b.code
+        && a.category == b.category
+        && a.layers == b.layers
+        && a.props == b.props
+        && a.note == b.note
+}
+
+/// `code`, wenn `taken` es nicht kennt, sonst „code-2“, „code-3“ …
+pub(crate) fn free_code(code: &str, taken: impl Fn(&str) -> bool) -> String {
+    if !taken(code) {
+        return code.to_string();
+    }
+    (2..)
+        .map(|n| format!("{code}-{n}"))
+        .find(|c| !taken(c))
+        .unwrap_or_default()
+}
+
 /// Aufbau „IW 17,5 Gasbeton“: eine tragende Schicht aus `material`.
 pub(crate) fn interior_set(guid: Guid, material: MaterialId) -> LayerSet {
     LayerSet {
         guid,
         name: "IW 17,5 Gasbeton".into(),
+        code: "IW-17,5".into(),
+        category: TypeCategory::InteriorWall,
+        props: PropSet::new(),
+        note: String::new(),
+        changed: 1,
         layers: vec![MaterialLayer {
             material,
             thickness: 175.0,

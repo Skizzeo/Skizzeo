@@ -6,7 +6,7 @@
 //! Attribute und Parametrik, nie Körper, Netze oder Mengen.
 //!
 //! Reihenfolge: Attribute (`pen`, `linetype`, `fill`, `surface`, `display`),
-//! `material`, `layerset` mit seinen `layer`, dann `project`, `building`,
+//! `material`, `layerset` (Bauteiltyp) mit seinen `layer` und `typeprop`, dann `project`, `building`,
 //! `storey`, `run`, `wall`, `slab`, `footing`, `floor`, `prop`. Innerhalb eines Abschnitts nach Guid sortiert, damit Diffs
 //! ruhig bleiben. Speichern, Öffnen und wieder Speichern ergibt dieselben Bytes.
 
@@ -16,11 +16,14 @@ use crate::attr::{
 };
 use crate::element::{
     Building, Category, Coupling, Element, ElementKind, Floor, GroundSlab, LevelEdge, LevelKind,
-    LevelRef, PropValue, Storey, StripFooting, Wall, WallRun,
+    LevelRef, PropSet, PropValue, Storey, StripFooting, Wall, WallRun,
 };
 use crate::guid::{Guid, GuidGen};
 use crate::id::{Arena, Id};
-use crate::library::{LayerFunction, LayerSet, MatCategory, Material, MaterialLayer};
+use crate::library::{
+    type_code, LayerFunction, LayerSet, LayerSetId, MatCategory, Material, MaterialLayer,
+    TypeCategory,
+};
 use crate::model::{Defaults, Model, Project};
 use crate::solid::edge_kind;
 use crate::wall::{segment_count, RefSide};
@@ -30,7 +33,7 @@ use std::collections::HashMap;
 use std::fmt::{self, Write as _};
 
 /// Hauptversion des Formats. Eine Datei mit höherer Version wird nicht geöffnet.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 /// Fehler beim Laden; die Datei wird dann gar nicht übernommen.
 #[derive(Clone, Debug, PartialEq)]
@@ -50,7 +53,7 @@ impl fmt::Display for LoadError {
     }
 }
 
-fn err(line: usize, message: impl Into<String>) -> LoadError {
+pub(crate) fn err(line: usize, message: impl Into<String>) -> LoadError {
     LoadError {
         line,
         message: message.into(),
@@ -395,6 +398,13 @@ fn category(c: Category) -> &'static str {
     }
 }
 
+pub(crate) fn type_category(c: TypeCategory) -> &'static str {
+    match c {
+        TypeCategory::ExteriorWall => "exterior",
+        TypeCategory::InteriorWall => "interior",
+    }
+}
+
 fn ref_side(r: RefSide) -> &'static str {
     match r {
         RefSide::Left => "left",
@@ -403,7 +413,7 @@ fn ref_side(r: RefSide) -> &'static str {
     }
 }
 
-fn keyword<T: Copy>(
+pub(crate) fn keyword<T: Copy>(
     r: &Record,
     key: &str,
     all: &[T],
@@ -418,13 +428,146 @@ fn keyword<T: Copy>(
 
 // --- Schreiben ------------------------------------------------------------
 
-fn sorted<'a, T: 'a>(
+pub(crate) fn sorted<'a, T: 'a>(
     it: impl Iterator<Item = (Id<T>, &'a T)>,
     guid: impl Fn(&T) -> Guid,
 ) -> Vec<&'a T> {
     let mut v: Vec<&T> = it.map(|(_, x)| x).collect();
     v.sort_by_key(|x| guid(x));
     v
+}
+
+/// Stift als Zeile.
+pub(crate) fn write_pen(out: &mut String, p: &Pen) {
+    Line::new("pen")
+        .guid("guid", Some(p.guid))
+        .num("nr", p.number)
+        .text("name", &p.name)
+        .color("color", p.color)
+        .num("w", p.width_mm)
+        .finish(out);
+}
+
+pub(crate) fn write_line_type(out: &mut String, l: &LineType) {
+    let pat = if l.pattern.is_empty() {
+        "-".to_string()
+    } else {
+        l.pattern
+            .iter()
+            .map(|d| format!("{}:{}:{}", d.len_mm, d.gap_mm, d.dot as u8))
+            .collect::<Vec<_>>()
+            .join(";")
+    };
+    Line::new("linetype")
+        .guid("guid", Some(l.guid))
+        .text("name", &l.name)
+        .word("pat", &pat)
+        .finish(out);
+}
+
+pub(crate) fn write_fill(out: &mut String, f: &Fill) {
+    let space = match f.space {
+        FillSpace::Paper => "paper",
+        FillSpace::Model => "model",
+    };
+    let line = Line::new("fill")
+        .guid("guid", Some(f.guid))
+        .text("name", &f.name)
+        .word("space", space);
+    let line = match &f.kind {
+        FillKind::Empty => line.word("kind", "empty"),
+        FillKind::Solid => line.word("kind", "solid"),
+        FillKind::Lines(ls) => {
+            let v = ls
+                .iter()
+                .map(|l| {
+                    format!(
+                        "{}:{}:{}:{}:{}",
+                        l.angle_deg, l.spacing_mm, l.offset_mm, l.dash_mm, l.gap_mm
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(";");
+            // Winkel gegen den Uhrzeigersinn (E3b)
+            line.word("kind", "lines")
+                .word("lines", &v)
+                .flag("ccw", true)
+        }
+        FillKind::Zigzag { period } => line.word("kind", "zigzag").num("period", period),
+    };
+    line.finish(out);
+}
+
+pub(crate) fn write_surface(out: &mut String, s: &Surface) {
+    Line::new("surface")
+        .guid("guid", Some(s.guid))
+        .text("name", &s.name)
+        .color("color", s.color)
+        .color("cut", s.cut_color)
+        .finish(out);
+}
+
+/// Baustoff als Zeile; `fill`, `fg`, `bg`, `surface` sind die Guids seiner
+/// Darstellung.
+pub(crate) fn write_material(
+    out: &mut String,
+    x: &Material,
+    [fill, fg, bg, surface]: [Option<Guid>; 4],
+) {
+    let line = Line::new("material")
+        .guid("guid", Some(x.guid))
+        .text("name", &x.name)
+        .word("cat", mat_category(x.category))
+        .num("prio", x.priority)
+        .num("rho", x.density);
+    let line = match x.lambda {
+        Some(l) => line.num("lambda", l),
+        None => line.word("lambda", "-"),
+    };
+    line.guid("fill", fill)
+        .guid("fg", fg)
+        .guid("bg", bg)
+        .guid("surface", surface)
+        .finish(out);
+}
+
+/// Bauteiltyp mit seinen Schichten und Merkmalen.
+pub(crate) fn write_type(
+    out: &mut String,
+    s: &LayerSet,
+    mat_guid: impl Fn(crate::library::MaterialId) -> Option<Guid>,
+) {
+    Line::new("layerset")
+        .guid("guid", Some(s.guid))
+        .text("name", &s.name)
+        .text("code", &s.code)
+        .word("cat", type_category(s.category))
+        .num("changed", s.changed)
+        .text("note", &s.note)
+        .finish(out);
+    for l in &s.layers {
+        Line::new("layer")
+            .guid("set", Some(s.guid))
+            .guid("mat", mat_guid(l.material))
+            .num("t", l.thickness)
+            .word("fn", layer_function(l.function))
+            .flag("core", l.core)
+            .finish(out);
+    }
+    write_props(out, "typeprop", "set", s.guid, &s.props);
+}
+
+/// Merkmale als `[section] key=… value|num|bool=…`.
+fn write_props(out: &mut String, section: &str, owner: &str, g: Guid, props: &PropSet) {
+    for (k, v) in props {
+        let line = Line::new(section).guid(owner, Some(g)).text("key", k);
+        match v {
+            PropValue::Text(t) => line.text("value", t),
+            PropValue::Number(n) => line.num("num", n),
+            PropValue::Bool(b) => line.flag("bool", *b),
+        }
+        .finish(out);
+    }
 }
 
 /// Das Modell als `.szo`-Text.
@@ -435,69 +578,16 @@ pub fn write(m: &Model) -> String {
     let lt_guid = |id| a.line_type(id).map(|l| l.guid);
 
     for p in sorted(a.pens().iter(), |p| p.guid) {
-        Line::new("pen")
-            .guid("guid", Some(p.guid))
-            .num("nr", p.number)
-            .text("name", &p.name)
-            .color("color", p.color)
-            .num("w", p.width_mm)
-            .finish(&mut out);
+        write_pen(&mut out, p);
     }
     for l in sorted(a.line_types().iter(), |l| l.guid) {
-        let pat = if l.pattern.is_empty() {
-            "-".to_string()
-        } else {
-            l.pattern
-                .iter()
-                .map(|d| format!("{}:{}:{}", d.len_mm, d.gap_mm, d.dot as u8))
-                .collect::<Vec<_>>()
-                .join(";")
-        };
-        Line::new("linetype")
-            .guid("guid", Some(l.guid))
-            .text("name", &l.name)
-            .word("pat", &pat)
-            .finish(&mut out);
+        write_line_type(&mut out, l);
     }
     for f in sorted(a.fills().iter(), |f| f.guid) {
-        let space = match f.space {
-            FillSpace::Paper => "paper",
-            FillSpace::Model => "model",
-        };
-        let line = Line::new("fill")
-            .guid("guid", Some(f.guid))
-            .text("name", &f.name)
-            .word("space", space);
-        let line = match &f.kind {
-            FillKind::Empty => line.word("kind", "empty"),
-            FillKind::Solid => line.word("kind", "solid"),
-            FillKind::Lines(ls) => {
-                let v = ls
-                    .iter()
-                    .map(|l| {
-                        format!(
-                            "{}:{}:{}:{}:{}",
-                            l.angle_deg, l.spacing_mm, l.offset_mm, l.dash_mm, l.gap_mm
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(";");
-                // Winkel gegen den Uhrzeigersinn (E3b)
-                line.word("kind", "lines")
-                    .word("lines", &v)
-                    .flag("ccw", true)
-            }
-            FillKind::Zigzag { period } => line.word("kind", "zigzag").num("period", period),
-        };
-        line.finish(&mut out);
+        write_fill(&mut out, f);
     }
     for s in sorted(a.surfaces().iter(), |s| s.guid) {
-        Line::new("surface")
-            .guid("guid", Some(s.guid))
-            .text("name", &s.name)
-            .color("color", s.color)
-            .color("cut", s.cut_color)
-            .finish(&mut out);
+        write_surface(&mut out, s);
     }
     let d = a.display();
     let slot = |out: &mut String, name: &str, s: &EdgeStyle| {
@@ -523,36 +613,16 @@ pub fn write(m: &Model) -> String {
 
     let mat_guid = |id| m.material(id).map(|x| x.guid);
     for x in sorted(m.materials().iter(), |x| x.guid) {
-        let line = Line::new("material")
-            .guid("guid", Some(x.guid))
-            .text("name", &x.name)
-            .word("cat", mat_category(x.category))
-            .num("prio", x.priority)
-            .num("rho", x.density);
-        let line = match x.lambda {
-            Some(l) => line.num("lambda", l),
-            None => line.word("lambda", "-"),
-        };
-        line.guid("fill", a.fill(x.cut_fill).map(|f| f.guid))
-            .guid("fg", pen_guid(x.cut_fg))
-            .guid("bg", pen_guid(x.cut_bg))
-            .guid("surface", a.surface(x.surface).map(|s| s.guid))
-            .finish(&mut out);
+        let refs = [
+            a.fill(x.cut_fill).map(|f| f.guid),
+            pen_guid(x.cut_fg),
+            pen_guid(x.cut_bg),
+            a.surface(x.surface).map(|s| s.guid),
+        ];
+        write_material(&mut out, x, refs);
     }
     for s in sorted(m.layer_sets().iter(), |s| s.guid) {
-        Line::new("layerset")
-            .guid("guid", Some(s.guid))
-            .text("name", &s.name)
-            .finish(&mut out);
-        for l in &s.layers {
-            Line::new("layer")
-                .guid("set", Some(s.guid))
-                .guid("mat", mat_guid(l.material))
-                .num("t", l.thickness)
-                .word("fn", layer_function(l.function))
-                .flag("core", l.core)
-                .finish(&mut out);
-        }
+        write_type(&mut out, s, mat_guid);
     }
 
     let storey_guid = |id| m.storey(id).map(|s| s.guid);
@@ -699,15 +769,7 @@ pub fn write(m: &Model) -> String {
             .finish(&mut out);
     }
     for e in &walls {
-        for (k, v) in &e.props {
-            let line = Line::new("prop").guid("elem", Some(e.guid)).text("key", k);
-            match v {
-                PropValue::Text(t) => line.text("value", t),
-                PropValue::Number(n) => line.num("num", n),
-                PropValue::Bool(b) => line.flag("bool", *b),
-            }
-            .finish(&mut out);
-        }
+        write_props(&mut out, "prop", "elem", e.guid, &e.props);
     }
     out
 }
@@ -715,7 +777,7 @@ pub fn write(m: &Model) -> String {
 // --- Lesen ----------------------------------------------------------------
 
 /// Guid → Kennung, mit Fehler bei doppelter Guid.
-fn register<T>(
+pub(crate) fn register<T>(
     table: &mut HashMap<Guid, Id<T>>,
     seen: &mut HashMap<Guid, usize>,
     r: &Record,
@@ -737,14 +799,6 @@ fn register<T>(
 pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     check_header(text.lines().next(), "SZO", VERSION)?;
-    // Start-Kreuzschraffur aus E10 (Winkel schon umgerechnet)
-    fn is_old_concrete_cross(l: &[HatchLine]) -> bool {
-        let mut a: Vec<f32> = l.iter().map(|h| h.angle_deg).collect();
-        a.sort_by(f32::total_cmp);
-        a == [45.0, 135.0]
-            && l.iter()
-                .all(|h| h.spacing_mm == 1.27 && h.offset_mm == 0.0 && h.dash_mm == 0.0)
-    }
     // SZO 1: vor der Geschossverwaltung (B11), SZO 2: vor den Gebäuden (B12);
     // beide werden beim Lesen umgestellt
     let version: u32 = text
@@ -757,9 +811,10 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     let v3 = version >= 3;
     let mut hints = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 17] = [
+    const KNOWN: [&str; 18] = [
         "pen", "linetype", "fill", "surface", "display", "material", "layerset", "layer",
-        "project", "building", "storey", "run", "wall", "slab", "footing", "floor", "prop",
+        "typeprop", "project", "building", "storey", "run", "wall", "slab", "footing", "floor",
+        "prop",
     ];
     for (i, l) in text.lines().enumerate().skip(1) {
         let Some(r) = Record::parse(i + 1, l)? else {
@@ -783,13 +838,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     let mut pen_ids = HashMap::new();
     let mut numbers = HashMap::new();
     for r in recs("pen") {
-        let p = Pen {
-            guid: r.guid("guid")?,
-            number: r.int("nr")?,
-            name: r.get("name")?.to_string(),
-            color: r.color("color")?,
-            width_mm: r.f32("w")?,
-        };
+        let p = read_pen(r)?;
         if let Some(first) = numbers.insert(p.number, r.line) {
             return Err(err(
                 r.line,
@@ -806,34 +855,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     let mut line_types = Arena::new();
     let mut lt_ids = HashMap::new();
     for r in recs("linetype") {
-        let pat = r.get("pat")?;
-        let pattern = if pat == "-" {
-            Vec::new()
-        } else {
-            pat.split(';')
-                .map(|d| {
-                    let v: Vec<&str> = d.split(':').collect();
-                    match v[..] {
-                        [len, gap, dot] => Some(Dash {
-                            len_mm: len.parse().ok()?,
-                            gap_mm: gap.parse().ok()?,
-                            dot: match dot {
-                                "0" => false,
-                                "1" => true,
-                                _ => return None,
-                            },
-                        }),
-                        _ => None,
-                    }
-                })
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| r.bad("pat", "länge:lücke:punkt;…"))?
-        };
-        let l = LineType {
-            guid: r.guid("guid")?,
-            name: r.get("name")?.to_string(),
-            pattern,
-        };
+        let l = read_line_type(r)?;
         let g = l.guid;
         let id = line_types.insert(l);
         register(&mut lt_ids, &mut seen, r, g, id)?;
@@ -841,60 +863,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     let mut fills = Arena::new();
     let mut fill_ids = HashMap::new();
     for r in recs("fill") {
-        let space = match r.get("space")? {
-            "paper" => FillSpace::Paper,
-            "model" => FillSpace::Model,
-            _ => return Err(r.bad("space", "paper oder model")),
-        };
-        let kind = match r.get("kind")? {
-            "empty" => FillKind::Empty,
-            "solid" => FillKind::Solid,
-            "zigzag" => FillKind::Zigzag {
-                period: r.f32("period")?,
-            },
-            "lines" => {
-                let mut lines = r
-                    .get("lines")?
-                    .split(';')
-                    .map(|l| {
-                        let v: Vec<f32> = l
-                            .split(':')
-                            .map(|x| x.parse().ok())
-                            .collect::<Option<_>>()?;
-                        match v[..] {
-                            [a, s, o] => Some(HatchLine::solid(a, s, o)),
-                            [a, s, o, dash_mm, gap_mm] => Some(HatchLine {
-                                dash_mm,
-                                gap_mm,
-                                ..HatchLine::solid(a, s, o)
-                            }),
-                            _ => None,
-                        }
-                    })
-                    .collect::<Option<Vec<_>>>()
-                    .ok_or_else(|| r.bad("lines", "winkel:abstand:versatz[:strich:lücke];…"))?;
-                // Vor E3b zählten Winkel im Uhrzeigersinn
-                if r.opt("ccw") != Some("1") {
-                    for l in &mut lines {
-                        l.angle_deg = (180.0 - l.angle_deg).rem_euclid(180.0);
-                    }
-                    if r.opt("name") == Some("Stahlbeton") && is_old_concrete_cross(&lines) {
-                        lines = crate::attr::concrete_lines();
-                        hints.push(
-                            "Stahlbeton-Schraffur auf gestrichelte Diagonale umgestellt".into(),
-                        );
-                    }
-                }
-                FillKind::Lines(lines)
-            }
-            _ => return Err(r.bad("kind", "empty, solid, lines oder zigzag")),
-        };
-        let f = Fill {
-            guid: r.guid("guid")?,
-            name: r.get("name")?.to_string(),
-            kind,
-            space,
-        };
+        let f = read_fill(r, &mut hints)?;
         let g = f.guid;
         let id = fills.insert(f);
         register(&mut fill_ids, &mut seen, r, g, id)?;
@@ -902,12 +871,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     let mut surfaces = Arena::new();
     let mut surface_ids = HashMap::new();
     for r in recs("surface") {
-        let s = Surface {
-            guid: r.guid("guid")?,
-            name: r.get("name")?.to_string(),
-            color: r.color("color")?,
-            cut_color: r.color("cut")?,
-        };
+        let s = read_surface(r)?;
         let g = s.guid;
         let id = surfaces.insert(s);
         register(&mut surface_ids, &mut seen, r, g, id)?;
@@ -938,58 +902,12 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     let mut materials = Arena::new();
     let mut mat_ids = HashMap::new();
     for r in recs("material") {
-        let lambda = match r.get("lambda")? {
-            "-" => None,
-            _ => Some(r.f64("lambda")?),
-        };
-        let x = Material {
-            guid: r.guid("guid")?,
-            name: r.get("name")?.to_string(),
-            category: keyword(r, "cat", &MAT_CATEGORIES, mat_category)?,
-            priority: r.int("prio")?,
-            density: r.f64("rho")?,
-            lambda,
-            cut_fill: r.link("fill", &fill_ids)?,
-            cut_fg: r.link("fg", &pen_ids)?,
-            cut_bg: r.link("bg", &pen_ids)?,
-            surface: r.link("surface", &surface_ids)?,
-        };
+        let x = read_material(r, &fill_ids, &pen_ids, &surface_ids)?;
         let g = x.guid;
         let id = materials.insert(x);
         register(&mut mat_ids, &mut seen, r, g, id)?;
     }
-    let mut set_layers: HashMap<Guid, Vec<MaterialLayer>> = HashMap::new();
-    for r in recs("layer") {
-        let set = r.guid("set")?;
-        let layer = MaterialLayer {
-            material: r.link("mat", &mat_ids)?,
-            thickness: r.f64("t")?,
-            function: keyword(r, "fn", &LAYER_FUNCTIONS, layer_function)?,
-            core: r.flag("core")?,
-        };
-        set_layers.entry(set).or_default().push(layer);
-    }
-    let mut layer_sets = Arena::new();
-    let mut set_ids = HashMap::new();
-    for r in recs("layerset") {
-        let guid = r.guid("guid")?;
-        let s = LayerSet {
-            guid,
-            name: r.get("name")?.to_string(),
-            layers: set_layers.remove(&guid).unwrap_or_default(),
-        };
-        let id = layer_sets.insert(s);
-        register(&mut set_ids, &mut seen, r, guid, id)?;
-    }
-    if let Some(r) = recs("layer")
-        .iter()
-        .find(|r| r.guid("set").is_ok_and(|g| set_layers.contains_key(&g)))
-    {
-        return Err(err(
-            r.line,
-            "[layer]: „set“ verweist auf unbekannten Aufbau",
-        ));
-    }
+    let (mut layer_sets, set_ids) = read_types(&by, &mat_ids, &mut seen, version >= 4)?;
 
     // Projekt, Gebäude und Geschosse
     let mut buildings = Arena::new();
@@ -1369,15 +1287,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     for r in recs("prop") {
         let id = r.link("elem", &elem_ids)?;
         let key = r.get("key")?.to_string();
-        let value = if let Some(v) = r.opt("value") {
-            PropValue::Text(v.to_string())
-        } else if r.opt("num").is_some() {
-            PropValue::Number(r.f64("num")?)
-        } else if r.opt("bool").is_some() {
-            PropValue::Bool(r.flag("bool")?)
-        } else {
-            return Err(err(r.line, "[prop]: Wert fehlt (value, num oder bool)"));
-        };
+        let value = read_prop_value(r)?;
         elements
             .get_mut(id)
             .expect("eben angelegt")
@@ -1396,6 +1306,9 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
             .unwrap_or(0)
     });
 
+    if version < 4 {
+        assign_codes(&mut layer_sets, &elements, &defaults);
+    }
     let attr = Attributes::from_parts(pens, line_types, fills, surfaces, display);
     let mut model = Model::from_parts(
         project, attr, materials, layer_sets, buildings, storeys, elements, runs, defaults, guids,
@@ -1408,6 +1321,274 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     }
     hints.extend(model.check());
     Ok(Loaded { model, hints })
+}
+
+// --- Datensätze lesen (auch für den Firmenkatalog, [`crate::catalog`]) ------
+
+/// Start-Kreuzschraffur aus E10 (Winkel schon umgerechnet).
+fn is_old_concrete_cross(l: &[HatchLine]) -> bool {
+    let mut a: Vec<f32> = l.iter().map(|h| h.angle_deg).collect();
+    a.sort_by(f32::total_cmp);
+    a == [45.0, 135.0]
+        && l.iter()
+            .all(|h| h.spacing_mm == 1.27 && h.offset_mm == 0.0 && h.dash_mm == 0.0)
+}
+
+pub(crate) fn read_pen(r: &Record) -> Result<Pen, LoadError> {
+    Ok(Pen {
+        guid: r.guid("guid")?,
+        number: r.int("nr")?,
+        name: r.get("name")?.to_string(),
+        color: r.color("color")?,
+        width_mm: r.f32("w")?,
+    })
+}
+
+pub(crate) fn read_line_type(r: &Record) -> Result<LineType, LoadError> {
+    let pat = r.get("pat")?;
+    let pattern = if pat == "-" {
+        Vec::new()
+    } else {
+        pat.split(';')
+            .map(|d| {
+                let v: Vec<&str> = d.split(':').collect();
+                match v[..] {
+                    [len, gap, dot] => Some(Dash {
+                        len_mm: len.parse().ok()?,
+                        gap_mm: gap.parse().ok()?,
+                        dot: match dot {
+                            "0" => false,
+                            "1" => true,
+                            _ => return None,
+                        },
+                    }),
+                    _ => None,
+                }
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| r.bad("pat", "länge:lücke:punkt;…"))?
+    };
+    Ok(LineType {
+        guid: r.guid("guid")?,
+        name: r.get("name")?.to_string(),
+        pattern,
+    })
+}
+
+pub(crate) fn read_fill(r: &Record, hints: &mut Vec<String>) -> Result<Fill, LoadError> {
+    let space = match r.get("space")? {
+        "paper" => FillSpace::Paper,
+        "model" => FillSpace::Model,
+        _ => return Err(r.bad("space", "paper oder model")),
+    };
+    let kind = match r.get("kind")? {
+        "empty" => FillKind::Empty,
+        "solid" => FillKind::Solid,
+        "zigzag" => FillKind::Zigzag {
+            period: r.f32("period")?,
+        },
+        "lines" => {
+            let mut lines = r
+                .get("lines")?
+                .split(';')
+                .map(|l| {
+                    let v: Vec<f32> = l
+                        .split(':')
+                        .map(|x| x.parse().ok())
+                        .collect::<Option<_>>()?;
+                    match v[..] {
+                        [a, s, o] => Some(HatchLine::solid(a, s, o)),
+                        [a, s, o, dash_mm, gap_mm] => Some(HatchLine {
+                            dash_mm,
+                            gap_mm,
+                            ..HatchLine::solid(a, s, o)
+                        }),
+                        _ => None,
+                    }
+                })
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| r.bad("lines", "winkel:abstand:versatz[:strich:lücke];…"))?;
+            // Vor E3b zählten Winkel im Uhrzeigersinn
+            if r.opt("ccw") != Some("1") {
+                for l in &mut lines {
+                    l.angle_deg = (180.0 - l.angle_deg).rem_euclid(180.0);
+                }
+                if r.opt("name") == Some("Stahlbeton") && is_old_concrete_cross(&lines) {
+                    lines = crate::attr::concrete_lines();
+                    hints.push("Stahlbeton-Schraffur auf gestrichelte Diagonale umgestellt".into());
+                }
+            }
+            FillKind::Lines(lines)
+        }
+        _ => return Err(r.bad("kind", "empty, solid, lines oder zigzag")),
+    };
+    Ok(Fill {
+        guid: r.guid("guid")?,
+        name: r.get("name")?.to_string(),
+        kind,
+        space,
+    })
+}
+
+pub(crate) fn read_surface(r: &Record) -> Result<Surface, LoadError> {
+    Ok(Surface {
+        guid: r.guid("guid")?,
+        name: r.get("name")?.to_string(),
+        color: r.color("color")?,
+        cut_color: r.color("cut")?,
+    })
+}
+
+pub(crate) fn read_material(
+    r: &Record,
+    fill_ids: &HashMap<Guid, Id<Fill>>,
+    pen_ids: &HashMap<Guid, Id<Pen>>,
+    surface_ids: &HashMap<Guid, Id<Surface>>,
+) -> Result<Material, LoadError> {
+    let lambda = match r.get("lambda")? {
+        "-" => None,
+        _ => Some(r.f64("lambda")?),
+    };
+    Ok(Material {
+        guid: r.guid("guid")?,
+        name: r.get("name")?.to_string(),
+        category: keyword(r, "cat", &MAT_CATEGORIES, mat_category)?,
+        priority: r.int("prio")?,
+        density: r.f64("rho")?,
+        lambda,
+        cut_fill: r.link("fill", fill_ids)?,
+        cut_fg: r.link("fg", pen_ids)?,
+        cut_bg: r.link("bg", pen_ids)?,
+        surface: r.link("surface", surface_ids)?,
+    })
+}
+
+/// Wert eines Merkmals: `value` (Text), `num` oder `bool`.
+fn read_prop_value(r: &Record) -> Result<PropValue, LoadError> {
+    if let Some(v) = r.opt("value") {
+        Ok(PropValue::Text(v.to_string()))
+    } else if r.opt("num").is_some() {
+        Ok(PropValue::Number(r.f64("num")?))
+    } else if r.opt("bool").is_some() {
+        Ok(PropValue::Bool(r.flag("bool")?))
+    } else {
+        Err(err(
+            r.line,
+            format!("[{}]: Wert fehlt (value, num oder bool)", r.section),
+        ))
+    }
+}
+
+/// Bauteiltypen aus `[layerset]`, `[layer]` und `[typeprop]`. Vor SZO 4
+/// (`typed` falsch) fehlen Kurzzeichen und Art; sie stellt der Aufrufer
+/// danach ein ([`assign_codes`]).
+#[allow(clippy::type_complexity)]
+pub(crate) fn read_types(
+    by: &HashMap<&str, Vec<Record>>,
+    mat_ids: &HashMap<Guid, Id<Material>>,
+    seen: &mut HashMap<Guid, usize>,
+    typed: bool,
+) -> Result<(Arena<LayerSet>, HashMap<Guid, LayerSetId>), LoadError> {
+    let empty = Vec::new();
+    let recs = |k: &str| by.get(k).unwrap_or(&empty);
+    let mut set_layers: HashMap<Guid, Vec<MaterialLayer>> = HashMap::new();
+    for r in recs("layer") {
+        let set = r.guid("set")?;
+        let layer = MaterialLayer {
+            material: r.link("mat", mat_ids)?,
+            thickness: r.f64("t")?,
+            function: keyword(r, "fn", &LAYER_FUNCTIONS, layer_function)?,
+            core: r.flag("core")?,
+        };
+        set_layers.entry(set).or_default().push(layer);
+    }
+    let mut set_props: HashMap<Guid, PropSet> = HashMap::new();
+    for r in recs("typeprop") {
+        let set = r.guid("set")?;
+        let key = r.get("key")?.to_string();
+        let value = read_prop_value(r)?;
+        set_props.entry(set).or_default().insert(key, value);
+    }
+    let mut layer_sets = Arena::new();
+    let mut set_ids = HashMap::new();
+    for r in recs("layerset") {
+        let guid = r.guid("guid")?;
+        let (code, category, changed, note) = if typed {
+            (
+                r.get("code")?.to_string(),
+                keyword(r, "cat", &TypeCategory::ALL, type_category)?,
+                match r.opt("changed") {
+                    Some(_) => r.int("changed")?,
+                    None => 1,
+                },
+                r.opt("note").unwrap_or("").to_string(),
+            )
+        } else {
+            (String::new(), TypeCategory::ExteriorWall, 1, String::new())
+        };
+        let s = LayerSet {
+            guid,
+            name: r.get("name")?.to_string(),
+            code,
+            category,
+            layers: set_layers.remove(&guid).unwrap_or_default(),
+            props: set_props.remove(&guid).unwrap_or_default(),
+            note,
+            changed,
+        };
+        let id = layer_sets.insert(s);
+        register(&mut set_ids, seen, r, guid, id)?;
+    }
+    let left: [Vec<Guid>; 2] = [
+        set_layers.keys().copied().collect(),
+        set_props.keys().copied().collect(),
+    ];
+    for (section, left) in ["layer", "typeprop"].into_iter().zip(left) {
+        if let Some(r) = recs(section)
+            .iter()
+            .find(|r| r.guid("set").is_ok_and(|g| left.contains(&g)))
+        {
+            return Err(err(
+                r.line,
+                format!("[{section}]: „set“ verweist auf unbekannten Typ"),
+            ));
+        }
+    }
+    Ok((layer_sets, set_ids))
+}
+
+/// Dateien vor SZO 4: Typart aus der Benutzung (Innenwände → Innenwandtyp;
+/// unbenutzt: der Platz in den Standardtypen, sonst Außenwand), Kurzzeichen
+/// aus Art und Dicke („AW-31,5“), bei Gleichstand mit „-2“ … in
+/// Guid-Reihenfolge.
+fn assign_codes(layer_sets: &mut Arena<LayerSet>, elements: &Arena<Element>, defaults: &Defaults) {
+    let mut users: HashMap<LayerSetId, (bool, bool)> = HashMap::new();
+    for (_, e) in elements.iter() {
+        if let Some(s) = e.layer_set {
+            let u = users.entry(s).or_default();
+            u.0 = true;
+            u.1 |= e.category == Category::InteriorWall;
+        }
+    }
+    let mut order: Vec<(Guid, LayerSetId)> =
+        layer_sets.iter().map(|(id, s)| (s.guid, id)).collect();
+    order.sort_by_key(|x| x.0);
+    let mut taken: Vec<String> = Vec::new();
+    for (_, id) in order {
+        let (used, interior) = users.get(&id).copied().unwrap_or_default();
+        let category = if interior || (!used && id == defaults.interior_wall) {
+            TypeCategory::InteriorWall
+        } else {
+            TypeCategory::ExteriorWall
+        };
+        if let Some(t) = layer_sets.get_mut(id) {
+            let code = crate::model::free_code(&type_code(category, t.thickness()), |c| {
+                taken.iter().any(|x| x == c)
+            });
+            taken.push(code.clone());
+            (t.category, t.code, t.changed) = (category, code, 1);
+        }
+    }
 }
 
 /// Liest die Darstellungs-Slots. Fehlt einer, gilt sein Startwert (gleiche
@@ -1662,7 +1843,7 @@ mod tests {
         let l = load(&a).unwrap();
         assert!(l.hints.is_empty(), "{:?}", l.hints);
         assert_eq!(write(&l.model), a);
-        assert!(a.starts_with("SZO 3\n"));
+        assert!(a.starts_with("SZO 4\n"));
         assert!(a.contains("number=\"AW-Nord \\\"alt\\\"\""), "{a}");
         assert!(l.model.check().is_empty());
         assert_eq!(l.model.project(), m.project());
@@ -1812,7 +1993,7 @@ mod tests {
 
     #[test]
     fn neuere_version_wird_nicht_geoeffnet() {
-        let a = write(&house()).replacen("SZO 3", "SZO 4", 1);
+        let a = write(&house()).replacen("SZO 4", "SZO 5", 1);
         let e = load(&a).err().unwrap();
         assert_eq!(e.line, 1);
         assert!(e.to_string().contains("neuerer Skizzeo-Version"), "{e}");

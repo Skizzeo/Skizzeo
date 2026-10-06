@@ -365,6 +365,7 @@ fn ray_hits_box(o: Vec3, d: Vec3, (lo, hi): Aabb) -> bool {
 pub const SETTINGS_STEP: &str = "Einstellungen geändert";
 
 impl Scene {
+    #[cfg(test)]
     pub fn new() -> Scene {
         Scene::with_model(Model::new())
     }

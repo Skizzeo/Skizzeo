@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod attr;
+pub mod catalog;
 pub mod element;
 pub mod floor;
 pub mod foundation;
@@ -19,12 +20,15 @@ pub mod qto;
 pub mod solid;
 pub mod szo;
 pub mod txn;
+#[cfg(test)]
+mod type_tests;
 pub mod wall;
 
 pub use attr::{
     display_slots, AttrRef, AttrUser, Attributes, Dash, Display, EdgeStyle, Fill, FillId, FillKind,
     FillSpace, HatchLine, LineType, LineTypeId, Pen, PenId, Surface, SurfaceId,
 };
+pub use catalog::{compare, export_type, import_type, read_szk, write_szk, Library, TypeState};
 pub use element::{
     Building, BuildingId, Category, Coupling, Element, ElementId, ElementKind, LevelEdge,
     LevelKind, LevelRef, PropSet, PropValue, RunId, Storey, StoreyId, Wall, WallRun,
@@ -35,12 +39,13 @@ pub use guid::{Guid, GuidGen};
 pub use id::{Arena, Id};
 pub use join::{Join, JoinEnd, JoinKind};
 pub use library::{
-    material_key, LayerFunction, LayerSet, LayerSetId, MatCategory, Material, MaterialDisplay,
-    MaterialId, MaterialLayer,
+    material_key, type_code, LayerFunction, LayerSet, LayerSetId, MatCategory, Material,
+    MaterialDisplay, MaterialId, MaterialLayer, TypeCategory, TYPE_PROPS,
 };
 pub use model::{
-    Defaults, Model, NumberError, Project, FLOOR_PART, FLOOR_THICKNESS, FOOTING_PART,
-    MAX_FOUNDATION, MIN_CLEAR, MIN_FOOTING, MIN_RECESS, SLAB_PART, SLAB_THICKNESS,
+    Defaults, Model, NumberError, Project, EXTERIOR_TYPE_GUID, FLOOR_PART, FLOOR_THICKNESS,
+    FOOTING_PART, INTERIOR_TYPE_GUID, MAX_FOUNDATION, MIN_CLEAR, MIN_FOOTING, MIN_RECESS,
+    SLAB_PART, SLAB_THICKNESS,
 };
 pub use qto::{
     floor_qto, floor_qto_of, foundation_qto, foundation_qto_of, run_qto, wall_qto, FloorQto,

@@ -1,0 +1,66 @@
+SZO 3
+# Skizzeo-Projekt
+[pen] guid=0HG2yaC2XFB9YRWGPPnQYy nr=1 name="Fein" color=000000 w=0.13
+[pen] guid=0a4p9U59PDq99oyTbUFMYF nr=5 name="Hintergrund weiß" color=ffffff w=0
+[pen] guid=106RTxVB11k85KYFhQkbpT nr=8 name="Schnittlinie Enden" color=000000 w=0.58
+[pen] guid=1VxIhEAevDJu1wHEUI2mB1 nr=3 name="Kräftig" color=000000 w=0.5
+[pen] guid=1q_L0xV3jF9QsQtcOMW_yJ nr=4 name="Schraffur" color=000000 w=0.18
+[pen] guid=1yF8yxZLjB0ud$pFBjpFNp nr=2 name="Mittel" color=000000 w=0.3
+[pen] guid=2Hpl3Tsmz2X8FPAVIKRw6a nr=6 name="3D-Kante" color=000000 w=0.23
+[pen] guid=3A$DqASL52ifvXSy02ReXC nr=9 name="Hintergrund" color=a0a0a0 w=0.13
+[pen] guid=3gDnBYqjbDbhvx_hs5h3RQ nr=7 name="Schnittlinie" color=000000 w=0.22
+[linetype] guid=3312pSH4L4av0YJq6PAzza name="Strichlinie" pat=3:1:0
+[linetype] guid=3KSu9RS9L9IwzbzbmlOSv9 name="Volllinie" pat=-
+[linetype] guid=3NdRWVqpnFgxDQ14B6RR3n name="Strichpunktlinie" pat=6:1:1
+[linetype] guid=3bb2EOvGb17BbABHBJVEER name="Punktlinie" pat=0:1:1
+[fill] guid=0TpcQSbCHEUO5390Pzop33 name="Leer" space=paper kind=empty
+[fill] guid=2lwAwhHS1EbOIiaI5QqSyN name="Dämmung hart" space=paper kind=zigzag period=1
+[fill] guid=2o5$5DUIv5gQTPlEStsQ3c name="Mauerwerk" space=paper kind=lines lines=135:1.27:0:0:0 ccw=1
+[fill] guid=3cNmAFoCf8QuUFgkr$RluX name="Stahlbeton" space=paper kind=lines lines=135:2.54:0:0:0;135:2.54:1.27:1.5:0.75 ccw=1
+[surface] guid=1lMzHF5712kQGHVxAW5qud name="Dämmung (WDVS)" color=f4efdc cut=e8c45c
+[surface] guid=3a_mW5Z$nBlfTv83Y3Xp9i name="Gasbeton" color=eeede8 cut=b0b1ae
+[surface] guid=3b5tt_WMj3owOYzNZmHRcf name="Stahlbeton" color=d6d6d2 cut=969694
+[surface] guid=3eJCCWRuH2_hb5UOTBoiUe name="Putz" color=f0eee8 cut=c8c6c0
+[display] slot=drawing.view pen=1yF8yxZLjB0ud$pFBjpFNp lt=3KSu9RS9L9IwzbzbmlOSv9
+[display] slot=drawing.cut pen=1VxIhEAevDJu1wHEUI2mB1 lt=3KSu9RS9L9IwzbzbmlOSv9
+[display] slot=drawing.fine pen=0HG2yaC2XFB9YRWGPPnQYy lt=3KSu9RS9L9IwzbzbmlOSv9
+[display] slot=drawing.cut_layer pen=1yF8yxZLjB0ud$pFBjpFNp lt=3KSu9RS9L9IwzbzbmlOSv9
+[display] slot=model3d.view pen=2Hpl3Tsmz2X8FPAVIKRw6a lt=3KSu9RS9L9IwzbzbmlOSv9
+[display] slot=model3d.cut pen=2Hpl3Tsmz2X8FPAVIKRw6a lt=3KSu9RS9L9IwzbzbmlOSv9
+[display] slot=model3d.fine pen=0HG2yaC2XFB9YRWGPPnQYy lt=3KSu9RS9L9IwzbzbmlOSv9
+[display] slot=model3d.cut_layer pen=2Hpl3Tsmz2X8FPAVIKRw6a lt=3KSu9RS9L9IwzbzbmlOSv9
+[display] slot=ground pen=1VxIhEAevDJu1wHEUI2mB1 lt=3KSu9RS9L9IwzbzbmlOSv9
+[display] slot=section_line pen=3gDnBYqjbDbhvx_hs5h3RQ lt=3NdRWVqpnFgxDQ14B6RR3n
+[display] slot=section_ends pen=106RTxVB11k85KYFhQkbpT lt=3KSu9RS9L9IwzbzbmlOSv9
+[display] slot=background pen=3A$DqASL52ifvXSy02ReXC lt=3KSu9RS9L9IwzbzbmlOSv9
+[display] slot=paper color=f5f4ef
+[material] guid=05wU89pRL2aOvrHnXeGz0n name="Stahlbeton" cat=concrete prio=900 rho=2500 lambda=- fill=3cNmAFoCf8QuUFgkr$RluX fg=1q_L0xV3jF9QsQtcOMW_yJ bg=0a4p9U59PDq99oyTbUFMYF surface=3b5tt_WMj3owOYzNZmHRcf
+[material] guid=12CxwGcUj3XhA5jt$AC$qq name="Dämmung (WDVS)" cat=insulation prio=300 rho=20 lambda=- fill=2lwAwhHS1EbOIiaI5QqSyN fg=1q_L0xV3jF9QsQtcOMW_yJ bg=0a4p9U59PDq99oyTbUFMYF surface=1lMzHF5712kQGHVxAW5qud
+[material] guid=2zxC9RDpf9rQz3f2Vk9Woq name="Gasbeton" cat=masonry prio=800 rho=350 lambda=- fill=2o5$5DUIv5gQTPlEStsQ3c fg=1q_L0xV3jF9QsQtcOMW_yJ bg=0a4p9U59PDq99oyTbUFMYF surface=3a_mW5Z$nBlfTv83Y3Xp9i
+[material] guid=3kPFq_vy1F$O75l8b$HO82 name="Putz" cat=plaster prio=100 rho=1400 lambda=- fill=0TpcQSbCHEUO5390Pzop33 fg=1q_L0xV3jF9QsQtcOMW_yJ bg=0a4p9U59PDq99oyTbUFMYF surface=3eJCCWRuH2_hb5UOTBoiUe
+[layerset] guid=2bI2Vt9ej8GAcbFzlgyhUb name="IW 17,5 Gasbeton"
+[layer] set=2bI2Vt9ej8GAcbFzlgyhUb mat=2zxC9RDpf9rQz3f2Vk9Woq t=175 fn=loadbearing core=1
+[layerset] guid=33i8p9bQ580uop$jCXCU6X name="AW 31,5 Gasbeton + WDVS"
+[layer] set=33i8p9bQ580uop$jCXCU6X mat=12CxwGcUj3XhA5jt$AC$qq t=140 fn=insulation core=0
+[layer] set=33i8p9bQ580uop$jCXCU6X mat=2zxC9RDpf9rQz3f2Vk9Woq t=175 fn=loadbearing core=1
+[project] guid=1IdSD4DhD7TwFpZMQHPcDY name="Projekt" storey=0HJgS9oH17bRaSiLiNLHP_ wallset=33i8p9bQ580uop$jCXCU6X iwset=2bI2Vt9ej8GAcbFzlgyhUb
+[building] guid=3L4B407Dv32AlA9zBuPijm name="Gebäude 1" number="GB-01"
+[storey] guid=0HJgS9oH17bRaSiLiNLHP_ building=3L4B407Dv32AlA9zBuPijm name="Erdgeschoss" short="EG" kind=storey elev=0 h=2855
+[storey] guid=2829jD9yr7LA51A3$iNcYj building=3L4B407Dv32AlA9zBuPijm name="Obergeschoss" short="OG" kind=storey elev=2855 h=2855
+[storey] guid=2LJ5BggrbF99PolREsseBR building=3L4B407Dv32AlA9zBuPijm name="Gründung" short="GR" kind=foundation elev=-800 h=800
+[run] guid=0sjX7DHY10uwJ9xzE_TiiJ storey=2829jD9yr7LA51A3$iNcYj base=2829jD9yr7LA51A3$iNcYj:u:0 top=2829jD9yr7LA51A3$iNcYj:o:0 ref=left closed=1 pts="0 0.0000000000018189894035458565;0 7999.999999999996;10000 7999.999999999996;10000 0.0000000000018189894035458565"
+[run] guid=1esIy4wsjDzfHRyDlS5VOj storey=0HJgS9oH17bRaSiLiNLHP_ base=0HJgS9oH17bRaSiLiNLHP_:u:0 top=0HJgS9oH17bRaSiLiNLHP_:o:0 ref=center closed=0 pts="5000.000000000001 0;5000.000000000001 7999.999999999996"
+[run] guid=3IZXdvaD55EQ2W$CO9unMj storey=0HJgS9oH17bRaSiLiNLHP_ base=0HJgS9oH17bRaSiLiNLHP_:u:0 top=0HJgS9oH17bRaSiLiNLHP_:o:0 ref=left closed=1 pts="0 0.0000000000018189894035458565;0 7999.999999999996;10000 7999.999999999996;10000 0.0000000000018189894035458565"
+[wall] guid=0Kaly1nm98X9tYoqlEk5VL run=3IZXdvaD55EQ2W$CO9unMj seg=3 number="AW-004" cat=exterior set=33i8p9bQ580uop$jCXCU6X seq=3 storey=0HJgS9oH17bRaSiLiNLHP_
+[wall] guid=0jW3Oykh90Cw_tKqSr$13K run=0sjX7DHY10uwJ9xzE_TiiJ seg=2 number="AW-007" cat=exterior set=33i8p9bQ580uop$jCXCU6X seq=5 storey=2829jD9yr7LA51A3$iNcYj below=3TDWtk2JD0LBSyHGxrZovQ off=0
+[wall] guid=1MxeSg23P6ohEA203xDjlM run=3IZXdvaD55EQ2W$CO9unMj seg=1 number="AW-002" cat=exterior set=33i8p9bQ580uop$jCXCU6X seq=3 storey=0HJgS9oH17bRaSiLiNLHP_
+[wall] guid=1pupkZfg53KxzyBaw9RKeS run=1esIy4wsjDzfHRyDlS5VOj seg=0 number="IW-001" cat=interior set=2bI2Vt9ej8GAcbFzlgyhUb seq=3 storey=0HJgS9oH17bRaSiLiNLHP_
+[wall] guid=26qb2hI5XFhxnXWHFFtQKq run=3IZXdvaD55EQ2W$CO9unMj seg=0 number="AW-001" cat=exterior set=33i8p9bQ580uop$jCXCU6X seq=3 storey=0HJgS9oH17bRaSiLiNLHP_
+[wall] guid=2E4$unk5DFGQtBCbhTO4R7 run=0sjX7DHY10uwJ9xzE_TiiJ seg=1 number="AW-006" cat=exterior set=33i8p9bQ580uop$jCXCU6X seq=5 storey=2829jD9yr7LA51A3$iNcYj below=1MxeSg23P6ohEA203xDjlM off=0
+[wall] guid=34y3p9lxv9UgSqoi1HjQZi run=0sjX7DHY10uwJ9xzE_TiiJ seg=3 number="AW-008" cat=exterior set=33i8p9bQ580uop$jCXCU6X seq=5 storey=2829jD9yr7LA51A3$iNcYj below=0Kaly1nm98X9tYoqlEk5VL off=0
+[wall] guid=3G89jTsYv0ggO5RR5ByUkU run=0sjX7DHY10uwJ9xzE_TiiJ seg=0 number="AW-005" cat=exterior set=33i8p9bQ580uop$jCXCU6X seq=5 storey=2829jD9yr7LA51A3$iNcYj below=26qb2hI5XFhxnXWHFFtQKq off=0
+[wall] guid=3TDWtk2JD0LBSyHGxrZovQ run=3IZXdvaD55EQ2W$CO9unMj seg=2 number="AW-003" cat=exterior set=33i8p9bQ580uop$jCXCU6X seq=3 storey=0HJgS9oH17bRaSiLiNLHP_
+[slab] guid=1zMM4ePLjCcvqY2RKsLwj4 run=3IZXdvaD55EQ2W$CO9unMj number="SP-001" cat=groundslab mat=05wU89pRL2aOvrHnXeGz0n top=0HJgS9oH17bRaSiLiNLHP_:u:0 t=220 recess=0 seq=2 storey=0HJgS9oH17bRaSiLiNLHP_
+[footing] guid=2MQ455TG5CWvJIBFXpGnae slab=1zMM4ePLjCcvqY2RKsLwj4 number="FS-001" cat=stripfooting mat=05wU89pRL2aOvrHnXeGz0n w=350 base=2LJ5BggrbF99PolREsseBR:u:0 seq=1 storey=0HJgS9oH17bRaSiLiNLHP_
+[floor] guid=27RsTVnO5678bc6icQYaLz run=3IZXdvaD55EQ2W$CO9unMj number="DE-001" cat=floor mat=05wU89pRL2aOvrHnXeGz0n top=0HJgS9oH17bRaSiLiNLHP_:o:0 t=220 seq=4 storey=0HJgS9oH17bRaSiLiNLHP_
+[floor] guid=3xAdbydYfCTQE5KPp3RYN4 run=0sjX7DHY10uwJ9xzE_TiiJ number="DE-002" cat=floor mat=05wU89pRL2aOvrHnXeGz0n top=2829jD9yr7LA51A3$iNcYj:o:0 t=220 seq=6 storey=2829jD9yr7LA51A3$iNcYj

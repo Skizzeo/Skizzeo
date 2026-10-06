@@ -9,6 +9,7 @@
 use crate::attr::{Display, Fill, FillId, LineType, LineTypeId, Pen, PenId, Surface, SurfaceId};
 use crate::element::{Building, BuildingId, Element, ElementId, RunId, Storey, StoreyId, WallRun};
 use crate::library::{LayerSet, LayerSetId, Material, MaterialId};
+use crate::model::Defaults;
 
 /// Ein geänderter Datensatz: `None` heißt „gab es nicht“ (angelegt bzw. gelöscht).
 #[derive(Clone, Debug, PartialEq)]
@@ -67,6 +68,11 @@ pub enum Change {
         old: Display,
         new: Display,
     },
+    /// Standardtypen und Standardgeschoss für neue Bauteile.
+    Defaults {
+        old: Defaults,
+        new: Defaults,
+    },
 }
 
 impl Change {
@@ -84,6 +90,7 @@ impl Change {
             Change::Fill { old, new, .. } => old == new,
             Change::Surface { old, new, .. } => old == new,
             Change::Display { old, new } => old == new,
+            Change::Defaults { old, new } => old == new,
         }
     }
 }
@@ -134,6 +141,7 @@ pub(crate) enum Key {
     Fill(FillId),
     Surface(SurfaceId),
     Display,
+    Defaults,
 }
 
 /// Offener Schritt.
