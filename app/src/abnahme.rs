@@ -13,7 +13,7 @@ use crate::section::SectionLine;
 use crate::selection::{self, Selection};
 use crate::ui::{Id, Panel, Ui, ViewKind};
 use crate::wall_edit::WallEdit;
-use crate::wall_tool::{WallTool, WALL_HEIGHT};
+use crate::wall_tool::WallTool;
 use crate::{fit_parallel, fit_perspective};
 use sk_math::{vec3, Vec3};
 use sk_model::{edge_kind, FillKind, Model, RefSide, RunId, WallChain};
@@ -204,8 +204,8 @@ fn a02_rechteck_in_3d_schliesst_am_startpunkt() {
         RefSide::Left,
         "Bezugsseite außen ist Standard"
     );
-    assert_eq!(chain.height, WALL_HEIGHT);
-    assert_eq!(WALL_HEIGHT, 3500.0);
+    // B12: die EG-Wand reicht von UK EG bis OK EG
+    assert_eq!((chain.base, chain.height), (0.0, 2855.0));
     // Vier Bauteile mit fortlaufender Nummer
     let numbers: Vec<_> = (0..4)
         .map(|i| {
@@ -893,44 +893,55 @@ fn a15_auswahl_per_klick_in_jeder_ansicht() {
     let mut s = Scene::with_model(Model::with_seed(10));
     let run = zeichne_rechteck(&mut s, &cam3d());
     let top = s.model().wall_at(run, 1).unwrap(); // y = 8 m, 10 m lang
+    // Darüber die gekoppelte OG-Wand (B12)
+    let og = s.model().runs_above(run)[0];
+    let top_og = s.model().wall_at(og, 1).unwrap();
     let mut sect = SectionLine::default();
     sect.ensure(&s);
     let bounds = s.bounds();
     // Je Ansicht: Kamera, Schnittebene, Punkt auf der oberen bzw. einer Wand
-    type Case = (ViewKind, Camera, Option<(Vec3, Vec3)>, Vec3);
+    type Case = (ViewKind, Camera, Option<(Vec3, Vec3)>, Vec3, sk_model::ElementId);
     let cases: [Case; 4] = [
-        // 3D: über der Erdgeschossdecke (OK +2,855), sonst trifft der Blick
-        // von oben ins Haus die Decke
-        (ViewKind::Persp, cam3d(), None, vec3(5000.0, 8000.0, 3000.0)),
+        // 3D von oben: die Krone der OG-Wand (Dämmung neben der OG-Decke)
+        (
+            ViewKind::Persp,
+            cam3d(),
+            None,
+            vec3(5000.0, 7930.0, 5835.0),
+            top_og,
+        ),
         (
             ViewKind::Plan,
             fit_parallel(ViewKind::Plan, bounds, W, H),
             None,
             vec3(5000.0, 7800.0, PLAN_CUT),
+            top,
         ),
         (
             ViewKind::Back,
             fit_parallel(ViewKind::Back, bounds, W, H),
             None,
             vec3(5000.0, 8000.0, 1500.0),
+            top,
         ),
         (
             ViewKind::Section,
             fit_parallel(ViewKind::Section, bounds, W, H),
             sect.plane(),
             vec3(5000.0, 8000.0, 1500.0),
+            top,
         ),
     ];
-    for (v, c, plane, p) in cases {
+    for (v, c, plane, p, want) in cases {
         let (x, y) = px(&c, p);
         let mut sel = Selection::default();
         sel.press(x, y);
         assert!(sel.release(x + 1.0, y, 1.0), "{v:?}: Klick");
         let hit = selection::pick_at(&mut s, &c, v, plane, x, y, W, H);
-        assert_eq!(hit, Some(top), "{v:?}: obere Wand gewählt");
+        assert_eq!(hit, Some(want), "{v:?}: obere Wand gewählt");
         sel.set(hit);
         assert!(
-            !selection::helpers(&s, top, v, plane, 1.0, &Theme::dark()).is_empty(),
+            !selection::helpers(&s, want, v, plane, 1.0, &Theme::dark()).is_empty(),
             "{v:?}: Umriss"
         );
         // Klick ins Leere
@@ -945,7 +956,8 @@ fn a15_auswahl_per_klick_in_jeder_ansicht() {
     assert_eq!(value(&p, "Geschoss"), "EG");
     assert_eq!(value(&p, "Länge"), "10,00 m");
     assert_eq!(value(&p, "Dicke"), "31,5 cm");
-    assert_eq!(value(&p, "Höhe"), "3,50 m");
+    assert_eq!(value(&p, "Höhe"), "2,855 m");
+    assert_eq!(value(&p, "Gebäude"), "GB-01");
     assert_eq!(p.layers.len(), 2);
     assert!(p
         .layers
@@ -969,9 +981,10 @@ fn a16_mengen_sollwerte_rechteck_und_gerade_wand() {
     for p in RECHTECK {
         click(&mut t, &c, p);
     }
-    let mut wall = click(&mut t, &c, RECHTECK[0]).unwrap();
-    wall.height = 2750.0;
+    let wall = click(&mut t, &c, RECHTECK[0]).unwrap();
     let run = s.add_wall(&wall).unwrap();
+    // Höhe 2,75 m: OK EG auf +2,75 (B12: Wände von UK bis OK EG)
+    kante_ziehen(&mut s, "EG.OK", &[2750.0], false);
     let q: Vec<_> = (0..4)
         .map(|i| {
             s.wall_qto(s.model().wall_at(run, i).unwrap())
@@ -1001,11 +1014,12 @@ fn a16_mengen_sollwerte_rechteck_und_gerade_wand() {
     let mut t = tool(&s);
     click(&mut t, &c, vec3(0.0, 0.0, 0.0));
     click(&mut t, &c, vec3(5000.0, 0.0, 0.0));
-    let mut wall = t.handle(&key(Key::Enter), &c, W, H, 1.0).commit.unwrap();
-    wall.height = 2750.0;
+    let wall = t.handle(&key(Key::Enter), &c, W, H, 1.0).commit.unwrap();
     let run = s.add_wall(&wall).unwrap();
     let q = s.wall_qto(s.model().wall_at(run, 0).unwrap()).unwrap();
-    let want = 5.0 * 0.315 * 2.75;
+    // Offener Zug: nur die EG-Wand von UK bis OK EG, ohne Stapel und Decke
+    assert_eq!(s.model().runs().len(), 1);
+    let want = 5.0 * 0.315 * 2.855;
     assert!(
         (m3(q.volume) - want).abs() < 1e-9,
         "{} ≠ {want}",
@@ -1078,7 +1092,8 @@ fn a20_szo_speichern_und_oeffnen() {
         v.sort_by(|a, b| a.1.cmp(&b.1));
         v
     };
-    assert_eq!(walls(&t).len(), 4);
+    // EG und gekoppeltes OG (B12)
+    assert_eq!(walls(&t).len(), 8);
     assert_eq!(
         walls(&t),
         walls(&s),
@@ -1121,7 +1136,7 @@ fn a20_szo_speichern_und_oeffnen() {
         .unwrap();
     let nr = t.add_wall(&w).unwrap();
     let el = t.model().wall_at(nr, 0).unwrap();
-    assert_eq!(t.model().element(el).unwrap().number, "AW-005");
+    assert_eq!(t.model().element(el).unwrap().number, "AW-009");
     assert_eq!(reopened.caption(t.model()), "Haus.szo •");
 
     // Scheitert das Speichern, bleibt die alte Datei heil, Meldung nennt die Datei
@@ -1310,8 +1325,8 @@ fn a26_zwei_getrennte_bauteile() {
     let m = s.model();
     assert_eq!(
         m.elements().len(),
-        7,
-        "4 Wände, Sohlplatte, Frostschürze, Erdgeschossdecke"
+        12,
+        "4 EG- und 4 OG-Wände, Sohlplatte, Frostschürze, DE-001, DE-002"
     );
     let (a, b) = (m.element(slab).unwrap(), m.element(footing).unwrap());
     assert_eq!(
@@ -1361,12 +1376,13 @@ fn a27_mengen_flaeche_und_laenge() {
     };
     let before = walls(&s);
     let p = selection::props(&s, slab).unwrap();
-    assert_eq!(p.values[3], ("Fläche", "80,00 m²".to_string()));
+    // nach Nummer, Kategorie, Geschoss, Gebäude
+    assert_eq!(p.values[4], ("Fläche", "80,00 m²".to_string()));
     assert_eq!(value(&p, "Volumen"), "16,000 m³");
     let cm = |p: &crate::ui::Props, f| field_cm(p, f).unwrap();
     assert_eq!(cm(&p, crate::ui::Field::SlabThickness), "20");
     let p = selection::props(&s, footing).unwrap();
-    assert_eq!(p.values[3], ("Länge (Achse)", "34,60 m".to_string()));
+    assert_eq!(p.values[4], ("Länge (Achse)", "34,60 m".to_string()));
     assert_eq!(value(&p, "Volumen"), "7,266 m³");
     assert_eq!(
         (
@@ -1401,10 +1417,14 @@ fn a28_schnitt_stahlbeton_ohne_fuge() {
         .faces
         .iter()
         .filter(|v| v[9] == pattern::CONCRETE)
-        .all(|v| v[2] <= 1e-3 || (2635.0 - 1e-3..=2855.0 + 1e-3).contains(&v[2]));
+        .all(|v| {
+            v[2] <= 1e-3
+                || (2635.0 - 1e-3..=2855.0 + 1e-3).contains(&v[2])
+                || (5615.0 - 1e-3..=5835.0 + 1e-3).contains(&v[2])
+        });
     assert!(
         cross_below,
-        "Stahlbeton-Schraffur nur in der Gründung und im Band der Erdgeschossdecke (B10)"
+        "Stahlbeton-Schraffur nur in der Gründung und in den Bändern der Decken (B10, B12)"
     );
     let cut_w = s.table().edge_width(true, edge_kind::CUT);
     // Waagerechte Kanten in der Schnittebene auf Höhe z zwischen x0 und x1
@@ -1440,9 +1460,11 @@ fn haus_275(s: &mut Scene, c: &Camera) -> RunId {
     for p in RECHTECK {
         click(&mut t, c, p);
     }
-    let mut w = click(&mut t, c, RECHTECK[0]).unwrap();
-    w.height = 2750.0;
-    s.add_wall(&w).unwrap()
+    let w = click(&mut t, c, RECHTECK[0]).unwrap();
+    let run = s.add_wall(&w).unwrap();
+    // B12: die Wände reichen bis OK EG
+    kante_ziehen(s, "EG.OK", &[2750.0], false);
+    run
 }
 
 /// Innenwand mit dem Werkzeug von `a` nach `b`, Enter beendet, Höhe 2,75 m.
@@ -1454,8 +1476,7 @@ fn innenwand(s: &mut Scene, c: &Camera, a: Vec3, b: Vec3) -> RunId {
     assert_eq!(t.ref_side, RefSide::Center, "Innenwand: Bezug Achse");
     click(&mut t, c, a);
     click(&mut t, c, b);
-    let mut w = t.handle(&key(Key::Enter), c, W, H, 1.0).commit.unwrap();
-    w.height = 2750.0;
+    let w = t.handle(&key(Key::Enter), c, W, H, 1.0).commit.unwrap();
     s.add_wall_as(&w, Category::InteriorWall).unwrap()
 }
 
@@ -1854,11 +1875,12 @@ fn a32_decke_entsteht_mit_dem_zug() {
     assert_eq!(s.model().element(id).unwrap().number, "DE-001");
     assert_eq!(
         (anzahl(&s, "SP-"), anzahl(&s, "FS-"), anzahl(&s, "DE-")),
-        (1, 1, 1)
+        (1, 1, 2),
+        "DE-001 im EG, DE-002 im OG"
     );
     assert!(s.model().check().is_empty(), "{:?}", s.model().check());
 
-    // Innenwand quer durch: keine zweite Decke
+    // Innenwand quer durch: keine weitere Decke
     let set = s.model().defaults().interior_wall;
     let mut t = tool(&s);
     t.set_category(sk_model::Category::InteriorWall, s.model().wall_layers(set));
@@ -1866,7 +1888,7 @@ fn a32_decke_entsteht_mit_dem_zug() {
     click(&mut t, &c, vec3(5000.0, 8000.0, 0.0));
     let w = t.handle(&key(Key::Enter), &c, W, H, 1.0).commit.unwrap();
     s.add_wall_as(&w, sk_model::Category::InteriorWall).unwrap();
-    assert_eq!(anzahl(&s, "DE-"), 1);
+    assert_eq!(anzahl(&s, "DE-"), 2);
 
     // Rückgängig bis vor das Schließen: Decke und Gründung weg
     assert!(s.undo() && s.undo());
@@ -1901,7 +1923,7 @@ fn a33_dicke_von_oben_nach_unten() {
     assert_eq!(decke_mengen(&s, run).1, 18.7596);
     let netto = aw_schicht(&s, run, 1);
     assert!(
-        (netto - (20.93525 - 1.495375)).abs() < 5e-5,
+        (netto - (17.0771825 - 1.495375)).abs() < 5e-5,
         "Gasbeton {netto}"
     );
     // Rückgängig: wieder 22 cm
@@ -1923,23 +1945,22 @@ fn a34_auflagertasche_bis_ans_wdvs() {
         assert!((ist - soll).abs() < 1e-6, "Umriss {ist} statt {soll}");
     }
     let gas = aw_schicht(&s, run, 1);
-    assert!((gas - 19.61932).abs() < 5e-5, "Gasbeton netto {gas}");
+    assert!((gas - 15.761252).abs() < 5e-5, "Gasbeton netto {gas}");
     let daemmung = aw_schicht(&s, run, 0);
-    assert!((daemmung - 17.3656).abs() < 5e-5, "Dämmung {daemmung}");
+    assert!((daemmung - 14.165368).abs() < 5e-5, "Dämmung {daemmung}");
     // Keine Doppelzählung: netto + Tasche = brutto
-    assert!((gas + 1.31593 - 20.93525).abs() < 5e-5);
+    assert!((gas + 1.31593 - 17.0771825).abs() < 5e-5);
 
-    // Innenwand IW 17,5 bei x = 5 m, Höhe 3,50: netto ohne Deckenstreifen
+    // Innenwand IW 17,5 bei x = 5 m, bis UK Decke: netto ohne Deckenstreifen
     let set = s.model().defaults().interior_wall;
     let mut t = tool(&s);
     t.set_category(sk_model::Category::InteriorWall, s.model().wall_layers(set));
     click(&mut t, &c, vec3(5000.0, 0.0, 0.0));
     click(&mut t, &c, vec3(5000.0, 8000.0, 0.0));
     let w = t.handle(&key(Key::Enter), &c, W, H, 1.0).commit.unwrap();
-    assert_eq!(w.height, 3500.0);
     let iw = s.add_wall_as(&w, sk_model::Category::InteriorWall).unwrap();
     assert!(
-        (wall_m3(&s, iw, 0) - 4.23038).abs() < 5e-5,
+        (wall_m3(&s, iw, 0) - 3.398491).abs() < 5e-5,
         "IW {}",
         wall_m3(&s, iw, 0)
     );
@@ -2020,7 +2041,7 @@ fn a37_decke_speichern_und_oeffnen() {
     let path = d.join("Haus.szo");
     crate::document::save(s.model(), &path).unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
-    assert_eq!(text.lines().filter(|l| l.starts_with("[floor]")).count(), 1);
+    assert_eq!(text.lines().filter(|l| l.starts_with("[floor]")).count(), 2);
     let loaded = crate::document::load(&path).unwrap();
     assert!(loaded.hints.is_empty(), "{:?}", loaded.hints);
     let t = Scene::with_model(loaded.model);
@@ -2028,7 +2049,7 @@ fn a37_decke_speichern_und_oeffnen() {
         .model()
         .runs()
         .ids()
-        .find(|r| decke(&t, *r).is_some())
+        .find(|r| t.foundation(*r).is_some())
         .unwrap();
     let tid = decke(&t, trun).unwrap();
     assert_eq!(t.model().element(tid).unwrap().number, "DE-001");
@@ -2066,7 +2087,7 @@ fn a38_alte_datei_bekommt_decke() {
         loaded
             .hints
             .iter()
-            .any(|h| h.contains("Erdgeschossdecke ergänzt")),
+            .any(|h| h.contains("Geschossdecken über 2 Außenwandzügen ergänzt")),
         "{:?}",
         loaded.hints
     );
@@ -2075,7 +2096,7 @@ fn a38_alte_datei_bekommt_decke() {
         .model()
         .runs()
         .ids()
-        .find(|r| decke(&t, *r).is_some())
+        .find(|r| t.foundation(*r).is_some())
         .expect("Decke ergänzt");
     assert_eq!(decke_hoehen(&t, trun), (2635.0, 2855.0));
     assert_eq!(decke_mengen(&t, trun).0, 75.0384);
@@ -2085,7 +2106,7 @@ fn a38_alte_datei_bekommt_decke() {
         (guid(&t, tslab), guid(&t, tfooting)),
         (guid(&s, slab), guid(&s, footing))
     );
-    assert!((aw_schicht(&t, trun, 1) - 19.61932).abs() < 5e-5);
+    assert!((aw_schicht(&t, trun, 1) - 15.761252).abs() < 5e-5);
     assert!(t.model().check().is_empty(), "{:?}", t.model().check());
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -2279,23 +2300,35 @@ fn mengen_b11(s: &Scene, aw: RunId, iw: RunId) -> [f64; 6] {
     ]
 }
 
-const STANDARD: [f64; 6] = [17.3656, 19.6193, 4.2304, 16.5084, 16.0, 7.266];
+/// Der Innenwandzug im EG neben dem Außenwandzug `aw` (nicht gestapelt).
+fn innenzug(s: &Scene, aw: RunId) -> RunId {
+    s.model()
+        .runs()
+        .ids()
+        .find(|r| *r != aw && s.model().run_below(*r).is_none())
+        .expect("Innenwand")
+}
 
-/// Höchster Punkt des Modells in 3D (Wandkrone, die Decke liegt darunter).
+const STANDARD: [f64; 6] = [14.1654, 15.7613, 3.3985, 16.5084, 16.0, 7.266];
+
+/// Mengen des Prüfhauses mit OK EG +3,00: die EG-Wände werden höher.
+const EG_300: [f64; 6] = [14.8848, 16.6286, 3.5855, 16.5084, 16.0, 7.266];
+
+/// Höchster Punkt des Modells in 3D (OK OG-Decke = Krone der OG-Wände).
 fn wandkrone(s: &mut Scene) -> f64 {
     let m = s.mesh(ViewKind::Persp, None, &[]);
     m.faces.iter().map(|v| v[2] as f64).fold(f64::MIN, f64::max)
 }
 
 /// A39 (H-02, H-07, A-09): Drei Geschossbänder lückenlos übereinander,
-/// Decke an OK EG, Gründung an UK Gründung, Wände 3,50 ab EG.UK.
+/// Decke an OK EG, Gründung an UK Gründung, Wände je Geschoss von UK bis OK.
 #[test]
 fn a39_geschossbaender_und_bindung() {
     let mut s = Scene::with_model(Model::with_seed(39));
     let (aw, iw) = haus_b11(&mut s);
     assert_eq!(band(&s, "GR"), (-800.0, 0.0));
     assert_eq!(band(&s, "EG"), (0.0, 2855.0));
-    assert_eq!(band(&s, "OG"), (2855.0, 5710.0));
+    assert_eq!(band(&s, "OG"), (2855.0, 5835.0));
     assert_eq!(lichte_hoehe(&s), 2635.0);
     assert!(s.model().check().is_empty(), "{:?}", s.model().check());
     assert_eq!(mengen_b11(&s, aw, iw), STANDARD);
@@ -2304,15 +2337,15 @@ fn a39_geschossbaender_und_bindung() {
     assert_eq!(z_range(&f.slab_solid()), (-200.0, 0.0));
     assert_eq!(z_range(&f.footing_solid()), (-800.0, -200.0));
     assert!(
-        (wandkrone(&mut s) - 3500.0).abs() < 1e-2,
-        "Wände bleiben 3,50"
+        (wandkrone(&mut s) - 5835.0).abs() < 1e-2,
+        "Krone an OK OG-Decke"
     );
-    // Bindung (A-09) am Verhalten: OK EG bewegt Decke und OG-Band, nicht die
-    // Wände; UK Gründung bewegt nur die Frostschürze.
+    // Bindung (A-09) am Verhalten: OK EG bewegt Decke, EG-Wände und das
+    // OG-Band; UK Gründung bewegt nur die Frostschürze.
     kante_ziehen(&mut s, "EG.OK", &[3000.0], false);
     assert_eq!(decke_hoehen(&s, aw), (2780.0, 3000.0));
-    assert_eq!(band(&s, "OG"), (3000.0, 5855.0), "OG-Band wandert mit");
-    assert_eq!(mengen_b11(&s, aw, iw), STANDARD, "Mengen gleich");
+    assert_eq!(band(&s, "OG"), (3000.0, 5980.0), "OG-Band wandert mit");
+    assert_eq!(mengen_b11(&s, aw, iw), EG_300, "EG-Wände 3,00 hoch");
     assert!(s.undo());
     kante_ziehen(&mut s, "GR.UK", &[-900.0], false);
     let m = mengen_b11(&s, aw, iw);
@@ -2324,8 +2357,8 @@ fn a39_geschossbaender_und_bindung() {
 }
 
 /// A40 (H-03, H-06, G4): OK EG ziehen, live ab dem ersten Bild, ein Schritt;
-/// Esc bricht ab; Klemmen an Wandkrone und lichter Höhe 1,00; OK OG ändert
-/// nur die OG-Höhe.
+/// Esc bricht ab; Klemmen an der lichten Höhe 1,00; OK OG ändert nur die
+/// OG-Höhe.
 #[test]
 fn a40_ok_eg_ziehen_live_klemmen_rueckgaengig() {
     let mut s = Scene::with_model(Model::with_seed(40));
@@ -2341,7 +2374,7 @@ fn a40_ok_eg_ziehen_live_klemmen_rueckgaengig() {
     s.drag_storey_top(eg, 3000.0);
     s.commit();
     assert_eq!((band(&s, "EG"), lichte_hoehe(&s)), ((0.0, 3000.0), 2780.0));
-    assert_eq!(mengen_b11(&s, aw, iw), STANDARD);
+    assert_eq!(mengen_b11(&s, aw, iw), EG_300);
     assert!(s.model().check().is_empty(), "{:?}", s.model().check());
     assert!(s.undo(), "ein Schritt für das ganze Ziehen");
     assert_eq!(band(&s, "EG"), (0.0, 2855.0));
@@ -2349,10 +2382,10 @@ fn a40_ok_eg_ziehen_live_klemmen_rueckgaengig() {
     // Esc: nichts geändert, nichts im Verlauf
     kante_ziehen(&mut s, "EG.OK", &[3100.0, 3200.0], true);
     assert_eq!(band(&s, "EG"), (0.0, 2855.0));
-    // Klemmen: Decke bündig mit der Wandkrone bzw. lichte Höhe 1,00
+    // Keine Wandkrone mehr: +3,60 wird angenommen; Klemmen nur an lichter Höhe 1,00
     kante_ziehen(&mut s, "EG.OK", &[3400.0, 3600.0], false);
-    assert_eq!(band(&s, "EG").1, 3500.0);
-    assert_eq!(decke_hoehen(&s, aw), (3280.0, 3500.0));
+    assert_eq!(band(&s, "EG").1, 3600.0);
+    assert_eq!(decke_hoehen(&s, aw), (3380.0, 3600.0));
     assert!(s.model().check().is_empty(), "{:?}", s.model().check());
     assert!(s.undo());
     kante_ziehen(&mut s, "EG.OK", &[2000.0, 1100.0], false);
@@ -2390,7 +2423,7 @@ fn a41_masszahlen_eingeben() {
     assert_eq!((band(&s, "EG").1, lichte_hoehe(&s)), (2855.0, 2605.0));
     assert_eq!(decke_hoehen(&s, aw), (2605.0, 2855.0));
     let m = mengen_b11(&s, aw, iw);
-    assert_eq!((m[1], m[2], m[3]), (19.4399, 4.1917, 18.7596));
+    assert_eq!((m[1], m[2], m[3]), (15.5818, 3.3598, 18.7596));
 }
 
 /// A42 (H-07): UK Gründung und Plattendicke steuern die Frostschürze.
@@ -2431,8 +2464,8 @@ fn a43_grenzen_ablehnen() {
     assert!(!mass_eingeben(&mut s, "OK Gründung", 100.0), "±0,00 fest");
     assert!(!mass_eingeben(&mut s, "lichte Höhe", 900.0));
     assert!(
-        !mass_eingeben(&mut s, "Geschosshöhe EG", 3600.0),
-        "über der Wandkrone"
+        !mass_eingeben(&mut s, "Geschosshöhe EG", 1100.0),
+        "lichte Höhe 0,88 < 1,00"
     );
     assert!(!mass_eingeben(&mut s, "Gründungstiefe", 250.0));
     let d = decke(&s, aw).unwrap();
@@ -2507,7 +2540,7 @@ const HAUS_SZO1: &str = r##"SZO 1
 fn a44_alte_datei_wird_umgestellt() {
     let d = test_dir("geschosse-alt");
     // Ohne Decke (vor B10), mit Decke bei der alten Vorbelegung +2,33, und mit
-    // Wänden 2,75 (OK EG klemmt auf die Wandkrone)
+    // Wänden 2,75 (die gespeicherte Wandhöhe wird seit B12 verworfen)
     let floor = "[floor] guid=3DeckeB10Pruefung00001 run=1DHdFlTxf5TA6lZFrCJBxb \
                  number=\"DE-001\" cat=floor mat=10re9EBlDC5uUUBY9M$lyC t=220 top=2330 \
                  seq=4 storey=0yWX_$MH11OwV$3JY6X$_o\n";
@@ -2515,7 +2548,7 @@ fn a44_alte_datei_wird_umgestellt() {
     for (name, text, ok_eg) in [
         ("ohne-decke", HAUS_SZO1.to_string(), 2855.0),
         ("mit-decke", format!("{HAUS_SZO1}{floor}"), 2855.0),
-        ("niedrig", niedrig, 2750.0),
+        ("niedrig", niedrig, 2855.0),
     ] {
         let path = d.join(format!("{name}.szo"));
         std::fs::write(&path, &text).unwrap();
@@ -2524,24 +2557,24 @@ fn a44_alte_datei_wird_umgestellt() {
             loaded
                 .hints
                 .iter()
-                .any(|h| h.contains("auf Geschossverwaltung umgestellt")),
+                .any(|h| h.contains("auf Gebäude umgestellt, Obergeschoss ergänzt")),
             "{name}: {:?}",
             loaded.hints
         );
         let s = Scene::with_model(loaded.model);
         assert_eq!(band(&s, "GR"), (-800.0, 0.0), "{name}");
         assert_eq!(band(&s, "EG"), (0.0, ok_eg), "{name}");
+        assert_eq!(band(&s, "OG"), (2855.0, 5835.0), "{name}");
+        assert_eq!((anzahl(&s, "AW-"), anzahl(&s, "DE-")), (8, 2), "{name}");
         let aw = s
             .model()
             .runs()
             .ids()
-            .find(|r| decke(&s, *r).is_some())
-            .expect("Decke");
-        let iw = s.model().runs().ids().find(|r| *r != aw).unwrap();
+            .find(|r| s.foundation(*r).is_some())
+            .expect("EG-Zug");
+        let iw = innenzug(&s, aw);
         assert_eq!(decke_hoehen(&s, aw), (ok_eg - 220.0, ok_eg), "{name}");
-        if ok_eg == 2855.0 {
-            assert_eq!(mengen_b11(&s, aw, iw), STANDARD, "{name}");
-        }
+        assert_eq!(mengen_b11(&s, aw, iw), STANDARD, "{name}");
         assert!(
             s.model().check().is_empty(),
             "{name}: {:?}",
@@ -2550,7 +2583,7 @@ fn a44_alte_datei_wird_umgestellt() {
         let p2 = d.join(format!("{name}-2.szo"));
         crate::document::save(s.model(), &p2).unwrap();
         let neu = std::fs::read_to_string(&p2).unwrap();
-        assert!(neu.starts_with("SZO 2"), "{name}");
+        assert!(neu.starts_with("SZO 3"), "{name}");
         let t = Scene::with_model(crate::document::load(&p2).unwrap().model);
         let p3 = d.join(format!("{name}-3.szo"));
         crate::document::save(t.model(), &p3).unwrap();
@@ -2579,7 +2612,7 @@ fn a45_geschosse_speichern_und_oeffnen() {
     let t = Scene::with_model(loaded.model);
     assert_eq!(band(&t, "GR"), (-850.0, 0.0));
     assert_eq!(band(&t, "EG"), (0.0, 3000.0));
-    assert_eq!(band(&t, "OG"), (3000.0, 5855.0));
+    assert_eq!(band(&t, "OG"), (3000.0, 5980.0));
     for short in ["GR", "EG", "OG"] {
         let a = s.model().storey(geschoss(&s, short)).unwrap().guid;
         assert_eq!(
@@ -2592,9 +2625,9 @@ fn a45_geschosse_speichern_und_oeffnen() {
         .model()
         .runs()
         .ids()
-        .find(|r| decke(&t, *r).is_some())
+        .find(|r| t.foundation(*r).is_some())
         .unwrap();
-    let tiw = t.model().runs().ids().find(|r| *r != taw).unwrap();
+    let tiw = innenzug(&t, taw);
     assert_eq!(mengen_b11(&t, taw, tiw), vorher);
     assert_eq!(decke_hoehen(&t, taw), (2780.0, 3000.0));
     let p2 = d.join("Haus2.szo");
@@ -2604,7 +2637,7 @@ fn a45_geschosse_speichern_und_oeffnen() {
 }
 
 /// A46 (H-06): Schnitt und Ansicht folgen: Decke im Schnitt bei OK EG,
-/// Wandkrone bleibt +3,50.
+/// oben endet das Haus an OK OG-Decke.
 #[test]
 fn a46_ansichten_folgen() {
     let mut s = Scene::with_model(Model::with_seed(46));
@@ -2620,19 +2653,27 @@ fn a46_ansichten_folgen() {
             .fold(f32::MIN, f32::max)
     };
     let cut = view_mesh(&mut s, ViewKind::Section, sect.plane());
-    assert!((top(&cut) - 3500.0).abs() < 1e-2, "Wandkrone im Schnitt");
-    assert!((cross_top(&cut) - 2855.0).abs() < 1e-2, "Decke im Schnitt");
+    let concrete_in = |m: &Shown, lo: f32, hi: f32| {
+        m.faces
+            .iter()
+            .any(|v| v[9] == pattern::CONCRETE && v[2] > lo - 1e-2 && v[2] < hi + 1e-2)
+    };
+    let cut = view_mesh(&mut s, ViewKind::Section, sect.plane());
+    assert!((top(&cut) - 5835.0).abs() < 1e-2, "OK OG-Decke im Schnitt");
+    assert!((cross_top(&cut) - 5835.0).abs() < 1e-2, "DE-002 im Schnitt");
+    assert!(concrete_in(&cut, 2635.0, 2855.0), "DE-001 im Schnitt");
     kante_ziehen(&mut s, "EG.OK", &[3200.0], false);
     let cut = view_mesh(&mut s, ViewKind::Section, sect.plane());
-    assert!((top(&cut) - 3500.0).abs() < 1e-2);
+    assert!((top(&cut) - 6180.0).abs() < 1e-2);
     assert!(
-        (cross_top(&cut) - 3200.0).abs() < 1e-2,
-        "Decke folgt auf +3,20"
+        (cross_top(&cut) - 6180.0).abs() < 1e-2,
+        "DE-002 wandert mit auf +6,18"
     );
+    assert!(concrete_in(&cut, 2980.0, 3200.0), "DE-001 folgt auf +3,20");
     let front = view_mesh(&mut s, ViewKind::Front, None);
     assert!(
-        (top(&front) - 3500.0).abs() < 1e-2,
-        "Ansicht bis zur Wandkrone"
+        (top(&front) - 6180.0).abs() < 1e-2,
+        "Ansicht bis OK OG-Decke"
     );
 }
 
@@ -2687,8 +2728,8 @@ fn a48_aktives_geschoss() {
     assert_eq!(active, ["OG"]);
     let plan = view_mesh(&mut s, ViewKind::Plan, None);
     assert!(
-        (top(&plan) - 3500.0).abs() < 1e-2,
-        "OG: Wandkrone +3,50 unter der Schnitthöhe, nichts geschnitten"
+        (top(&plan) - 3855.0).abs() < 1e-2,
+        "OG: Wände bei +3,855 geschnitten"
     );
     assert!(
         plan.faces.iter().any(|v| (v[2] - 2855.0).abs() < 1e-2),

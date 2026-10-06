@@ -10,6 +10,19 @@ use std::collections::BTreeMap;
 pub type ElementId = Id<Element>;
 pub type RunId = Id<WallRun>;
 pub type StoreyId = Id<Storey>;
+pub type BuildingId = Id<Building>;
+
+/// Gebäude (IFC: IfcBuilding): ein Wohnhaus oder Nebengebäude mit eigenen
+/// Geschossen (B12). Speichert keine Dialogwerte; die Bänder stehen in den
+/// Geschossen.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Building {
+    pub guid: Guid,
+    /// „Gebäude 1“.
+    pub name: String,
+    /// „GB-01“, im Modell eindeutig.
+    pub number: String,
+}
 
 /// Bauteilkategorie: bestimmt Nummernpräfix, IFC-Klasse und DIN-276-Kostengruppe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -189,11 +202,23 @@ pub struct StripFooting {
 }
 
 /// Wand = ein gerades Segment eines Wandzugs (IFC: IfcWall).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Wall {
     pub run: RunId,
     /// Segment im Wandzug: von Punkt `seg` zu Punkt `seg + 1`.
     pub seg: u32,
+    /// Kopplung an die Wand im Geschoss darunter (gestapelte Außenwand, B12).
+    pub coupling: Option<Coupling>,
+}
+
+/// Kopplung eines Wandsegments an das Segment im Geschoss direkt darunter:
+/// seine Bezugslinie ist die des Partners plus `offset` nach außen. Zieht
+/// man den Partner, geht das Segment im selben Schritt mit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Coupling {
+    pub below: ElementId,
+    /// mm quer zur Wand, + = nach außen; in Phase 1 immer 0.
+    pub offset: f64,
 }
 
 /// Wandzug: die Eingabe, aus der die Wand-Bauteile entstehen.
@@ -206,8 +231,8 @@ pub struct WallRun {
     pub ref_side: RefSide,
     /// Wandfuß: UK des Geschosses (B11).
     pub base: LevelRef,
-    /// Wandhöhe ab dem Fuß in mm.
-    pub height: f64,
+    /// Wandkrone: OK des Geschosses (B12); die Höhe ist abgeleitet.
+    pub top: LevelRef,
     pub storey: StoreyId,
     /// Je Segment ein Bauteil vom Typ Wand, in Segmentreihenfolge.
     pub segments: Vec<ElementId>,
@@ -226,6 +251,9 @@ pub enum LevelKind {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Storey {
     pub guid: Guid,
+    /// Gebäude, zu dem das Geschoss gehört; `None` nur für die Vorlage, solange
+    /// es noch kein Gebäude gibt (das erste Gebäude übernimmt sie).
+    pub building: Option<BuildingId>,
     /// „Gründung“, „Erdgeschoss“, „Obergeschoss“.
     pub name: String,
     /// „GR“, „EG“, „OG“.

@@ -253,12 +253,13 @@ mod tests {
             vec3(10000.0, 8000.0, 0.0),
             vec3(10000.0, 0.0, 0.0),
         ];
+        let eg = m.eg_at(2750.0);
         let r = m
             .add_wall_run(
                 &pts,
                 true,
                 RefSide::Left,
-                2750.0,
+                eg,
                 set,
                 Category::ExteriorWall,
             )
@@ -290,12 +291,13 @@ mod tests {
         let mut m = Model::with_seed(2);
         let set = m.defaults().exterior_wall;
         let pts = [vec3(0.0, 0.0, 0.0), vec3(5000.0, 0.0, 0.0)];
+        let eg = m.eg_at(2750.0);
         let r = m
             .add_wall_run(
                 &pts,
                 false,
                 RefSide::Left,
-                2750.0,
+                eg,
                 set,
                 Category::ExteriorWall,
             )
@@ -315,11 +317,12 @@ mod tests {
             vec3(10000.0, 8000.0, 0.0),
             vec3(10000.0, 0.0, 0.0),
         ];
+        let eg = m.eg_at(2750.0);
         m.add_wall_run(
             &pts,
             true,
             RefSide::Left,
-            2750.0,
+            eg,
             set,
             Category::ExteriorWall,
         )
@@ -426,12 +429,13 @@ mod tests {
         // Offener Zug: keine Gründung; Löschen nimmt sie mit
         let set = m.defaults().exterior_wall;
         m.begin("offen");
+        let eg = m.eg_at(2750.0);
         let o = m
             .add_wall_run(
                 &[vec3(20000.0, 0.0, 0.0), vec3(30000.0, 0.0, 0.0)],
                 false,
                 RefSide::Left,
-                2750.0,
+                eg,
                 set,
                 Category::ExteriorWall,
             )

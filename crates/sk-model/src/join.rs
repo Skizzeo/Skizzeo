@@ -286,14 +286,16 @@ mod tests {
             vec3(10000.0, 8000.0, 0.0),
             vec3(10000.0, 0.0, 0.0),
         ];
-        m.add_wall_run(&pts, true, RefSide::Left, H, set, Category::ExteriorWall)
+        let eg = m.eg_at(H);
+        m.add_wall_run(&pts, true, RefSide::Left, eg, set, Category::ExteriorWall)
             .unwrap()
     }
 
     fn innenwand(m: &mut Model, y0: f64, y1: f64) -> RunId {
         let set = m.defaults().interior_wall;
         let pts = [vec3(5000.0, y0, 0.0), vec3(5000.0, y1, 0.0)];
-        m.add_wall_run(&pts, false, RefSide::Center, H, set, Category::InteriorWall)
+        let eg = m.eg_at(H);
+        m.add_wall_run(&pts, false, RefSide::Center, eg, set, Category::InteriorWall)
             .unwrap()
     }
 
@@ -308,11 +310,14 @@ mod tests {
         m3(run_qto(m, r).iter().map(|q| q.volume).sum())
     }
 
+    /// Baustoffmenge im EG (das OG zählt eigene Mengen, B12).
     fn material_volume(m: &Model, mat: MaterialId) -> f64 {
+        let eg = m.defaults().storey;
         let v: f64 = m
             .runs()
-            .ids()
-            .flat_map(|r| run_qto(m, r))
+            .iter()
+            .filter(|(_, r)| r.storey == eg)
+            .flat_map(|(r, _)| run_qto(m, r))
             .flat_map(|q| q.layers)
             .filter(|l| l.material == mat)
             .map(|l| l.volume)
@@ -386,8 +391,8 @@ mod tests {
             assert!(runs.contains(&iw));
         }
         let t = m.commit().unwrap();
-        // Ein Eintrag je Zug
-        assert_eq!(t.changes.len(), 2, "{:?}", t.changes);
+        // Ein Eintrag je Zug: Außenwand, gekoppelter OG-Zug, Innenwand
+        assert_eq!(t.changes.len(), 3, "{:?}", t.changes);
         let p = &m.run(iw).unwrap().points;
         assert!((p[1].y - 8685.0).abs() < 1e-6, "{p:?}");
         assert_eq!(volume(&m, iw), 3.7058);
@@ -438,12 +443,13 @@ mod tests {
         );
         let mut one = Model::with_seed(5);
         let s = set(&one);
+        let eg = one.eg_at(H);
         let r = one
             .add_wall_run(
                 &[a, b, c],
                 false,
                 RefSide::Left,
-                H,
+                eg,
                 s,
                 Category::ExteriorWall,
             )
@@ -451,11 +457,13 @@ mod tests {
         let want = run_qto(&one, r);
         let mut two = Model::with_seed(5);
         let s = set(&two);
+        let eg = two.eg_at(H);
         let r1 = two
-            .add_wall_run(&[a, b], false, RefSide::Left, H, s, Category::ExteriorWall)
+            .add_wall_run(&[a, b], false, RefSide::Left, eg, s, Category::ExteriorWall)
             .unwrap();
+        let eg = two.eg_at(H);
         let r2 = two
-            .add_wall_run(&[b, c], false, RefSide::Left, H, s, Category::ExteriorWall)
+            .add_wall_run(&[b, c], false, RefSide::Left, eg, s, Category::ExteriorWall)
             .unwrap();
         assert_eq!(two.joins().len(), 2);
         assert!(two.joins().iter().all(|j| j.kind == JoinKind::L));

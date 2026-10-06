@@ -70,6 +70,14 @@ pub fn pick_at(
 }
 
 /// Zahl mit `dec` Nachkommastellen im deutschen Format, z. B. 1.608,25.
+/// Länge in m aus mm: zwei Nachkommastellen, eine dritte nur, wenn es
+/// Millimeter gibt (2,855 m, 2,98 m).
+pub fn de_m(mm: f64) -> String {
+    let cm = mm / 10.0;
+    let dec = if (cm - cm.round()).abs() < 1e-6 { 2 } else { 3 };
+    de(mm / 1e3, dec)
+}
+
 pub fn de(v: f64, dec: usize) -> String {
     let s = format!("{:.*}", dec, v.abs());
     let (int, frac) = s.split_once('.').unwrap_or((&s, ""));
@@ -275,6 +283,12 @@ pub fn props(scene: &Scene, id: ElementId) -> Option<Props> {
             "Geschoss",
             m.storey(e.storey).map_or("–".into(), |s| s.short.clone()),
         ),
+        (
+            "Gebäude",
+            m.building_of(e.storey)
+                .and_then(|b| m.building(b))
+                .map_or("–".into(), |b| b.number.clone()),
+        ),
     ];
     match e.kind {
         ElementKind::Wall(_) => {}
@@ -285,7 +299,7 @@ pub fn props(scene: &Scene, id: ElementId) -> Option<Props> {
         values.extend([
             ("Länge", format!("{} m", de(q.length / 1e3, 2))),
             ("Dicke", format!("{} cm", cm(q.width))),
-            ("Höhe", format!("{} m", de(q.height / 1e3, 2))),
+            ("Höhe", format!("{} m", de_m(q.height))),
             ("Fläche außen", format!("{} m²", de(q.side_outer / 1e6, 2))),
             ("Fläche innen", format!("{} m²", de(q.side_inner / 1e6, 2))),
             ("Volumen", format!("{} m³", de(q.volume / 1e9, 3))),
@@ -441,6 +455,10 @@ mod tests {
         assert_eq!(de(-0.0001, 2), "0,00");
         assert_eq!(de(-12.5, 1), "-12,5");
         assert_eq!(
+            (de_m(2855.0), de_m(2980.0), de_m(3500.0)),
+            ("2,855".into(), "2,98".into(), "3,50".into())
+        );
+        assert_eq!(
             (cm(140.0), cm(175.0), cm(315.0)),
             ("14".into(), "17,5".into(), "31,5".into())
         );
@@ -464,6 +482,17 @@ mod tests {
         }
     }
 
+    /// Das Rechteck mit OK EG +2,75: EG-Wände 2,75 hoch (B12: Wände reichen
+    /// von UK bis OK ihres Geschosses).
+    fn haus(s: &mut Scene) -> sk_model::RunId {
+        let run = s.add_wall(&rechteck()).unwrap();
+        assert!(s.edit_model("OK EG", |m| {
+            let eg = m.defaults().storey;
+            m.set_storey_top(eg, 2750.0)
+        }));
+        run
+    }
+
     fn value(p: &Props, k: &str) -> String {
         p.values.iter().find(|v| v.0 == k).unwrap().1.clone()
     }
@@ -471,7 +500,7 @@ mod tests {
     #[test]
     fn klick_waehlt_wand_und_rueckgaengig_hebt_auf() {
         let mut s = Scene::with_model(Model::with_seed(5));
-        let run = s.add_wall(&rechteck()).unwrap();
+        let run = haus(&mut s);
         let mut sel = Selection::default();
         // Segment 2 läuft bei x = 10 m von y = 8 m nach 0; Strahl von außen (+x)
         let o = vec3(20000.0, 4000.0, 1000.0);
@@ -485,6 +514,7 @@ mod tests {
         );
         assert_eq!(value(&p, "Kategorie"), "Außenwand");
         assert_eq!(value(&p, "Geschoss"), "EG");
+        assert_eq!(value(&p, "Gebäude"), "GB-01");
         assert_eq!(value(&p, "Länge"), "8,00 m");
         assert_eq!(value(&p, "Dicke"), "31,5 cm");
         assert_eq!(value(&p, "Höhe"), "2,75 m");
@@ -512,7 +542,8 @@ mod tests {
 
         // Rückgängig des Anlegens: Die Auswahl gilt nicht mehr
         assert!(!sel.validate(&s));
-        assert!(s.undo());
+        assert!(s.undo(), "OK EG");
+        assert!(s.undo(), "Anlegen");
         assert!(sel.validate(&s));
         assert_eq!(sel.id, None);
     }
@@ -520,7 +551,7 @@ mod tests {
     #[test]
     fn mengen_im_paneel() {
         let mut s = Scene::with_model(Model::with_seed(6));
-        let run = s.add_wall(&rechteck()).unwrap();
+        let run = haus(&mut s);
         // Obere Wand: 10 m außen, Gehrung an beiden Enden
         let p = props(&s, s.model().wall_at(run, 1).unwrap()).unwrap();
         assert_eq!(value(&p, "Länge"), "10,00 m");

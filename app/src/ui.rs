@@ -276,8 +276,8 @@ pub struct Band {
 pub struct Levels {
     /// Bänder von unten nach oben.
     pub bands: Vec<Band>,
-    /// Lichte Höhe (mm) eines Geschosses (heute des EG).
-    pub clear: Option<(StoreyId, f64)>,
+    /// Lichte Höhe (mm) je Geschoss (EG, OG, …), von unten nach oben.
+    pub clear: Vec<(StoreyId, f64)>,
     /// Zahlen, die sich eingeben lassen, mit erlaubtem Bereich.
     pub fields: Vec<FieldRow>,
 }
@@ -313,7 +313,7 @@ fn level_lines(l: &Levels) -> Vec<LevelLine> {
     if let Some(b) = l.bands.last() {
         out.push(LevelLine {
             z: b.top,
-            name: format!("OK {}", b.name),
+            name: format!("OK Decke {}", b.name),
             field: Some(Field::LevelTop(b.id)),
             grip: Some(Grip::Top(b.id)),
             active: false,
@@ -1288,7 +1288,7 @@ impl Ui {
             }
             ppm = (ppm - 1.0).max(z.level_px_per_m_min);
         }
-        let rows = self.levels.bands.len() + usize::from(self.levels.clear.is_some());
+        let rows = self.levels.bands.len() + self.levels.clear.len();
         let h = (2.0 * z.panel_pad + LEVEL_HEAD + rows as f32 * LEVEL_LIST_ROW) * s;
         let least = ((2.0 * z.panel_pad + LEVEL_HEAD) * s).round();
         LevelsLayout {
@@ -1347,7 +1347,12 @@ impl Ui {
                 .map_or(String::new(), |b| kote_text(b.bottom)),
             Field::LevelTop(id) => band(id).map_or(String::new(), |b| kote_text(b.top)),
             Field::StoreyHeight(id) => band(id).map_or(String::new(), |b| m_text(b.top - b.bottom)),
-            Field::ClearHeight(_) => self.levels.clear.map_or(String::new(), |c| m_text(c.1)),
+            Field::ClearHeight(id) => self
+                .levels
+                .clear
+                .iter()
+                .find(|c| c.0 == id)
+                .map_or(String::new(), |c| m_text(c.1)),
             _ => String::new(),
         }
     }
@@ -1421,8 +1426,8 @@ impl Ui {
                     names.push((Id::Storey(b.id), r, ""));
                 }
             }
-            if let Some((id, _)) = self.levels.clear {
-                let base = top + bands.len() as f32 * row + row_base;
+            for (k, &(id, _)) in self.levels.clear.iter().rev().enumerate() {
+                let base = top + (bands.len() + k) as f32 * row + row_base;
                 push(Field::ClearHeight(id), xo, base);
             }
             out.extend(names);
@@ -1447,7 +1452,7 @@ impl Ui {
             let base = self.mid_base(clamp(ys[i]), clamp(ys[i + 1]), self.level_px(f));
             push(f, xo - 5.0 * s, base);
         }
-        if let Some((y0, yc, id)) = self.clear_span(&lines, &ys, &l) {
+        for (y0, yc, id) in self.clear_spans(&lines, &ys) {
             let f = Field::ClearHeight(id);
             push(
                 f,
@@ -1501,25 +1506,25 @@ impl Ui {
         }
     }
 
-    /// Kette der lichten Höhe: Unterkante des Bandes, Unterkante der Decke.
-    fn clear_span(
-        &self,
-        lines: &[LevelLine],
-        ys: &[f32],
-        l: &LevelsLayout,
-    ) -> Option<(f32, f32, StoreyId)> {
-        let (id, clear) = self.levels.clear?;
-        let i = self.levels.bands.iter().position(|b| b.id == id)?;
-        let y0 = *ys.get(i)?;
-        // Decke unter der Oberkante: in der gespreizten Darstellung anteilig
-        let (z0, z1, y1) = (lines[i].z, lines.get(i + 1)?.z, *ys.get(i + 1)?);
-        let t = if z1 > z0 {
-            (clear / (z1 - z0)) as f32
-        } else {
-            1.0
-        };
-        let _ = l;
-        Some((y0, y0 + (y1 - y0) * t.clamp(0.0, 1.0), id))
+    /// Ketten der lichten Höhen: je Geschoss Unterkante des Bandes und
+    /// Unterkante der Decke.
+    fn clear_spans(&self, lines: &[LevelLine], ys: &[f32]) -> Vec<(f32, f32, StoreyId)> {
+        self.levels
+            .clear
+            .iter()
+            .filter_map(|&(id, clear)| {
+                let i = self.levels.bands.iter().position(|b| b.id == id)?;
+                let y0 = *ys.get(i)?;
+                // Decke unter der Oberkante: in der gespreizten Darstellung anteilig
+                let (z0, z1, y1) = (lines[i].z, lines.get(i + 1)?.z, *ys.get(i + 1)?);
+                let t = if z1 > z0 {
+                    (clear / (z1 - z0)) as f32
+                } else {
+                    1.0
+                };
+                Some((y0, y0 + (y1 - y0) * t.clamp(0.0, 1.0), id))
+            })
+            .collect()
     }
 
     /// Griff unter der Maus (Paneelkoordinaten), nur im Diagramm.
@@ -1672,14 +1677,15 @@ impl Ui {
                     );
                 }
             }
-            if let Some((id, _)) = self.levels.clear {
+            for (k, &(id, _)) in self.levels.clear.iter().rev().enumerate() {
                 let name = self
                     .levels
                     .bands
                     .iter()
                     .find(|b| b.id == id)
                     .map_or("", |b| b.name.as_str());
-                let base = top + self.levels.bands.len() as f32 * row + z.level_row_base * s;
+                let base =
+                    top + (self.levels.bands.len() + k) as f32 * row + z.level_row_base * s;
                 let txt = format!("lichte Höhe {name}");
                 widgets::text(c, regular, &txt, px_d, x0 + m, base + m, u.text_dim);
             }
@@ -1763,8 +1769,8 @@ impl Ui {
                 c.fill(&p, col);
             }
         }
-        // Kette der lichten Höhe mit Unterkante der Decke
-        if let Some((y0, yc, id)) = self.clear_span(&lines, &ys, &l) {
+        // Ketten der lichten Höhen mit Unterkante der Decke
+        for (y0, yc, id) in self.clear_spans(&lines, &ys) {
             let (y0, yc) = (clamp(y0), clamp(yc));
             c.fill_rect(xi + m - w1 * 0.5, yc + m, w1, y0 - yc, u.dim_line);
             c.fill_rect(
@@ -2196,7 +2202,8 @@ mod levels_tests {
         assert_eq!(names, ["Gründung", "EG", "OG"]);
         let lines = level_lines(&ui.levels);
         let z: Vec<_> = lines.iter().map(|l| l.z).collect();
-        assert_eq!(z, [-800.0, 0.0, 2855.0, 5710.0]);
+        assert_eq!(z, [-800.0, 0.0, 2855.0, 5835.0]);
+        assert_eq!(lines[3].name, "OK Decke OG");
         assert!(
             lines[1].grip.is_none() && lines[1].field.is_none(),
             "±0,00 fest"
@@ -2244,11 +2251,12 @@ mod levels_tests {
         );
         assert_eq!(
             out.level,
-            Some(LevelEvent::Move(Grip::Top(og.id), 5710.0 + 940.0))
+            // 30 px bei 32 px/m = 937,5 mm, auf 1 cm gefangen
+            Some(LevelEvent::Move(Grip::Top(og.id), 6770.0))
         );
         // Das Paneel bleibt beim Ziehen stehen, auch wenn die Werte wachsen
         let mut l = ui.levels.clone();
-        l.bands[2].top += 940.0;
+        l.bands[2].top += 935.0;
         ui.set_levels(l);
         assert_eq!(ui.rect(Panel::Levels, 1440, 32).h, h);
         let shift = Modifiers { shift: true, ..M };
@@ -2263,7 +2271,8 @@ mod levels_tests {
         );
         assert_eq!(
             out.level,
-            Some(LevelEvent::Move(Grip::Top(og.id), 5710.0 + 940.0))
+            // mit Umschalt auf 5 cm
+            Some(LevelEvent::Move(Grip::Top(og.id), 6750.0))
         );
         let up = Event::MouseUp {
             button: MouseButton::Left,
@@ -2345,15 +2354,15 @@ mod levels_tests {
     #[test]
     fn kleines_fenster_diagramm_oder_liste() {
         let (mut ui, _) = ui_mit_geschossen();
-        for (w, h, list) in [(900u32, 600u32, false), (900, 420, false), (900, 400, true)] {
+        for (w, h, list) in [(900u32, 600u32, false), (900, 430, false), (900, 400, true)] {
             ui.fit(1.0, w, h);
             let r = ui.rect(Panel::Levels, w, 32);
             let t = ui.rect(Panel::Tools, w, 32);
             assert!(r.y >= t.y + t.h && r.y + r.h <= h as f32, "{w}×{h}: {r:?}");
             assert_eq!(ui.levels_layout().list, list, "{w}×{h}");
             let n = ui.level_buttons().len();
-            // Zahlen und die Namen von EG und OG
-            assert_eq!(n, if list { 8 } else { 9 }, "{w}×{h}");
+            // Zahlen (mit lichter Höhe EG und OG) und die Namen von EG und OG
+            assert_eq!(n, if list { 9 } else { 10 }, "{w}×{h}");
             for (_, b, _) in ui.level_buttons() {
                 assert!(b.y >= 0.0 && b.y + b.h <= r.h, "{w}×{h}: {b:?}");
             }

@@ -11,9 +11,9 @@ use crate::ui::Field;
 use crate::ui::ViewKind;
 use sk_math::{vec3, Vec3};
 use sk_model::{
-    floor_qto_of, foundation_qto_of, run_qto, Category, Direction, ElementId, FloorQto, FloorSlab,
-    FootingQto, Foundation, Model, RunId, SlabQto, Solid, Touched, Txn, WallChain, WallQto,
-    FLOOR_PART, FOOTING_PART, SLAB_PART,
+    floor_qto_of, foundation_qto_of, merge_seam, run_qto, BuildingId, Category, Direction,
+    ElementId, FloorQto, FloorSlab, FootingQto, Foundation, Model, RunId, SlabQto, Solid,
+    StoreyId, Touched, Txn, WallChain, WallQto, FLOOR_PART, FOOTING_PART, SLAB_PART,
 };
 use sk_render::MeshData;
 use sk_ui::theme::Theme;
@@ -43,6 +43,9 @@ struct RunCache {
     foot_bounds: Option<Aabb>,
     /// Mengen je Segment; leer, solange der Zug gezogen wird.
     qto: Vec<WallQto>,
+    /// Gekoppelter Zug darunter (gestapelte Außenwand, B12): kein eigenes
+    /// Gummiband, die Schale läuft ohne Naht in ihn über.
+    below: Option<RunId>,
     /// Gründung unter einem geschlossenen Außenwandzug (B9).
     found: Option<Foundation>,
     /// Mengen von Sohlplatte und Frostschürze (wie `qto` erst nach dem Ziehen).
@@ -85,11 +88,26 @@ impl RunCache {
             chain,
             section: None,
             qto: Vec::new(),
+            below: None,
             found,
             found_qto: None,
             floor,
             floor_qto: None,
             builds,
+        }
+    }
+
+    /// Schon berechneter Körper einer Ansicht (nach [`RunCache::view_solid`]).
+    fn shown(&self, view: ViewKind, section: Option<Plane>) -> Option<&Solid> {
+        match (view, section) {
+            (ViewKind::Plan, _) => self.plan.as_ref().map(|(_, s)| s),
+            (ViewKind::Section, Some(pl)) => self
+                .section
+                .as_ref()
+                .filter(|(p, _)| *p == pl)
+                .map(|(_, s)| s),
+            (ViewKind::Section, None) => None,
+            _ => Some(&self.solid),
         }
     }
 
@@ -162,6 +180,10 @@ pub struct Scene {
     theme: Theme,
     /// Aktives Geschoss (Sitzungszustand, nicht in der Datei); `None` = EG.
     active: Option<sk_model::StoreyId>,
+    /// Gebäude, dessen Dialog offen ist oder dessen Polygon gerade gezeichnet
+    /// wird (ein offener Schritt „Gebäude erstellt“), und das vorher aktive
+    /// Geschoss.
+    pending: Option<(BuildingId, Option<StoreyId>)>,
 }
 
 fn union(a: Option<Aabb>, b: Option<Aabb>) -> Option<Aabb> {
@@ -221,6 +243,7 @@ impl Scene {
             table,
             theme,
             active: None,
+            pending: None,
         };
         s.rebuild_dirty(false);
         s
@@ -230,7 +253,8 @@ impl Scene {
         &self.model
     }
 
-    /// Aktives Geschoss; gibt es das gewählte nicht mehr, das EG.
+    /// Aktives Geschoss; gibt es das gewählte nicht mehr, das EG des ersten
+    /// Gebäudes.
     pub fn active_storey(&self) -> sk_model::StoreyId {
         let eg = self.model.defaults().storey;
         self.active
@@ -240,6 +264,69 @@ impl Scene {
                     .is_some_and(|st| st.kind != sk_model::LevelKind::Foundation)
             })
             .unwrap_or(eg)
+    }
+
+    /// Aktives Gebäude: das des aktiven Geschosses (`None`: noch keines).
+    pub fn active_building(&self) -> Option<BuildingId> {
+        self.model.building_of(self.active_storey())
+    }
+
+    /// Ist das aktive Geschoss das EG seines Gebäudes?
+    pub fn ground_active(&self) -> bool {
+        let a = self.active_storey();
+        self.model.ground_storey(a) == Some(a)
+    }
+
+    /// Wechselt in das Gebäude des Bauteils `e` (Auswahl, B12): aktiv wird
+    /// das Geschoss des Bauteils, bei der Gründung das EG. `true`, wenn sich
+    /// das Gebäude geändert hat.
+    pub fn follow_selection(&mut self, e: ElementId) -> bool {
+        let m = &self.model;
+        let Some(st) = m.element(e).map(|x| x.storey) else {
+            return false;
+        };
+        if m.building_of(st) == self.active_building() {
+            return false;
+        }
+        let st = match m.storey(st).map(|s| s.kind) {
+            Some(sk_model::LevelKind::Foundation) => m.ground_storey(st),
+            _ => Some(st),
+        };
+        match st {
+            Some(id) => {
+                self.active = Some(id);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Knopf „Gebäude“ → Dialog „Gebäude erstellen“ (B12, E16): öffnet den
+    /// Schritt „Gebäude erstellt“ und legt das Gebäude mit GR, EG und OG an;
+    /// das Paneel „Geschosse“ zeigt es sofort. Das Schließen des Polygons
+    /// ([`Scene::add_wall_as`]) schließt den Schritt, [`Scene::cancel_building`]
+    /// verwirft ihn.
+    pub fn open_building_dialog(&mut self) {
+        if self.pending.is_some() {
+            return;
+        }
+        self.begin("Gebäude erstellt");
+        let b = self.model.add_building(2);
+        self.pending = Some((b, self.active));
+        self.active = self.model.ground_of(Some(b));
+    }
+
+    /// Bricht Dialog oder Polygon ab: nichts bleibt, kein Verlaufseintrag.
+    pub fn cancel_building(&mut self) {
+        if let Some((_, prev)) = self.pending.take() {
+            self.rollback();
+            self.active = prev;
+        }
+    }
+
+    /// Ist ein Gebäude im Entstehen (Dialog offen oder Polygon begonnen)?
+    pub fn building_pending(&self) -> bool {
+        self.pending.is_some()
     }
 
     /// Macht ein Geschoss aktiv; `false`, wenn es schon aktiv ist oder keines
@@ -337,6 +424,7 @@ impl Scene {
                 let found = self.model.foundation(id).and_then(Result::ok);
                 let floor = floor.and_then(Result::ok);
                 let mut rc = RunCache::new(id, c, found, floor, builds + 1);
+                rc.below = self.model.run_below(id);
                 if live {
                     if !self.unsettled.contains(&id) {
                         self.unsettled.push(id);
@@ -436,9 +524,11 @@ impl Scene {
     /// Äußerer Wandfuß aller Wandzüge: umschließender Quader und je Segment
     /// (Anfang, Ende).
     pub fn feet(&self) -> impl Iterator<Item = (RunId, Option<Aabb>, &[(Vec3, Vec3)])> + '_ {
+        // Gestapelte Züge folgen dem EG: kein eigenes Gummiband (E16, A52)
         self.cache
             .iter()
             .flatten()
+            .filter(|c| c.below.is_none())
             .map(|c| (c.id, c.foot_bounds, c.foot.as_slice()))
     }
 
@@ -446,6 +536,8 @@ impl Scene {
     /// Ist noch einer offen (Loslassen ging verloren, weil das Fenster beim
     /// Ziehen die Maus verlor), wird er vorher abgeschlossen und bleibt im Verlauf.
     pub fn begin(&mut self, label: &'static str) {
+        // Eine andere Änderung, während das Gebäude entsteht, bricht es ab
+        self.cancel_building();
         if self.model.in_step() {
             self.commit();
         }
@@ -499,17 +591,38 @@ impl Scene {
 
     /// Legt eine Wand der Kategorie `cat` an (Außen- oder Innenwand), mit dem
     /// dafür voreingestellten Aufbau. Angeschlossene Züge werden neu berechnet.
+    ///
+    /// Außenwände entstehen im EG des aktiven Gebäudes (ein geschlossener Zug
+    /// mit allen Geschossen darüber, B12), Innenwände im aktiven Geschoss des
+    /// Gebäudes, in dessen Umriss ihr Anfang liegt. Ist ein Gebäude im
+    /// Entstehen, schließt die Wand dessen Schritt „Gebäude erstellt“.
     pub fn add_wall_as(&mut self, w: &WallChain, cat: Category) -> Option<RunId> {
-        self.begin("Wand zeichnen");
+        let pending = self.pending.take();
+        if pending.is_none() {
+            self.begin("Wand zeichnen");
+        }
         let d = self.model.defaults();
         let set = match cat {
             Category::InteriorWall => d.interior_wall,
             _ => d.exterior_wall,
         };
+        let active = self.active_storey();
+        let storey = match (cat, w.points.first()) {
+            (Category::InteriorWall, Some(p)) => self.model.storey_at(*p, active),
+            _ => self.model.ground_storey(active).unwrap_or(active),
+        };
         let run = self
             .model
-            .add_wall_run(&w.points, w.closed, w.ref_side, w.height, set, cat);
+            .add_wall_run(&w.points, w.closed, w.ref_side, storey, set, cat);
+        if run.is_none() && pending.is_some() {
+            // Nichts angelegt: das Gebäude entsteht weiter
+            self.pending = pending;
+            return None;
+        }
         if let Some(id) = run {
+            for r in self.model.stack_above(id) {
+                self.mark(r);
+            }
             self.mark(id);
             for p in self.model.joined_runs(id) {
                 self.mark(p);
@@ -579,7 +692,6 @@ impl Scene {
     pub fn levels(&self) -> crate::ui::Levels {
         use crate::ui::{Band, FieldRow, Levels};
         let m = &self.model;
-        let eg = m.defaults().storey;
         let active = self.active_storey();
         let mut l = Levels::default();
         let row = |field, label, value, (min, max): (f64, f64)| FieldRow {
@@ -590,7 +702,7 @@ impl Scene {
             max,
             zero: false,
         };
-        for id in m.levels() {
+        for id in m.group_levels(active) {
             let Some(st) = m.storey(id) else {
                 continue;
             };
@@ -608,7 +720,7 @@ impl Scene {
                 active: id == active,
             });
             if foundation {
-                let (lo, hi) = m.foundation_bottom_range();
+                let (lo, hi) = m.foundation_bottom_range_of(id);
                 l.fields.push(row(
                     Field::LevelBottom,
                     "UK Gründung",
@@ -636,14 +748,12 @@ impl Scene {
                 h,
                 (lo - e, hi - e),
             ));
-            if id == eg {
-                let clear = m.clear_height(id);
-                let t = h - clear;
-                l.clear = Some((id, clear));
-                let range = (lo - e - t, hi - e - t);
-                l.fields
-                    .push(row(Field::ClearHeight(id), "lichte Höhe", clear, range));
-            }
+            let clear = m.clear_height(id);
+            let t = h - clear;
+            l.clear.push((id, clear));
+            let range = (lo - e - t, hi - e - t);
+            l.fields
+                .push(row(Field::ClearHeight(id), "lichte Höhe", clear, range));
         }
         l
     }
@@ -652,7 +762,12 @@ impl Scene {
     /// Modell sie ablehnt.
     pub fn set_level(&mut self, field: Field, mm: f64) -> bool {
         match field {
-            Field::LevelBottom => self.edit_model("UK Gründung", |m| m.set_foundation_bottom(mm)),
+            Field::LevelBottom => match self.model.foundation_level_of(self.active_storey()) {
+                Some(gr) => {
+                    self.edit_model("UK Gründung", |m| m.set_foundation_bottom_of(gr, mm))
+                }
+                None => false,
+            },
             Field::LevelTop(id) => {
                 self.edit_model("Oberkante Geschoss", |m| m.set_storey_top(id, mm))
             }
@@ -743,7 +858,10 @@ impl Scene {
 
     /// Unterkante der Gründung beim Ziehen, wie [`Scene::drag_storey_top`].
     pub fn drag_foundation_bottom(&mut self, z: f64) {
-        if self.model.drag_foundation_bottom(z) {
+        let Some(gr) = self.model.foundation_level_of(self.active_storey()) else {
+            return;
+        };
+        if self.model.drag_foundation_bottom_of(gr, z) {
             self.relevel();
         }
     }
@@ -784,6 +902,10 @@ impl Scene {
     }
 
     pub fn undo(&mut self) -> bool {
+        if self.pending.is_some() {
+            self.cancel_building();
+            return true;
+        }
         self.step(Direction::Undo)
     }
 
@@ -794,6 +916,9 @@ impl Scene {
     }
 
     pub fn redo(&mut self) -> bool {
+        if self.pending.is_some() {
+            return false;
+        }
         self.step(Direction::Redo)
     }
 
@@ -816,17 +941,14 @@ impl Scene {
     /// gezogenen). Beim Schnitt: Ebene `section` (Punkt, Normale zum Betrachter),
     /// alles davor wird weggeschnitten.
     pub fn mesh(&mut self, view: ViewKind, section: Option<Plane>, except: &[RunId]) -> MeshData {
-        let cut = self.plan_cut();
-        let mut m = MeshData::default();
-        for c in self.cache.iter_mut().flatten() {
-            if except.contains(&c.id) {
-                continue;
-            }
-            if let Some(s) = c.view_solid(view, section, cut) {
-                mesh_into(&mut m, s);
-            }
-        }
-        m
+        let runs: Vec<RunId> = self
+            .cache
+            .iter()
+            .flatten()
+            .map(|c| c.id)
+            .filter(|id| !except.contains(id))
+            .collect();
+        self.mesh_runs(view, section, &runs)
     }
 
     /// Netz einzelner Wandzüge (Live-Netz beim Ziehen).
@@ -838,14 +960,74 @@ impl Scene {
     ) -> MeshData {
         let cut = self.plan_cut();
         let mut m = MeshData::default();
-        for &run in runs {
-            if let Some(Some(c)) = self.cache.get_mut(run.index() as usize) {
-                if c.id == run {
-                    if let Some(s) = c.view_solid(view, section, cut) {
-                        mesh_into(&mut m, s);
+        if view == ViewKind::Plan {
+            for &run in runs {
+                if let Some(Some(c)) = self.cache.get_mut(run.index() as usize) {
+                    if c.id == run {
+                        if let Some(s) = c.view_solid(view, section, cut) {
+                            mesh_into(&mut m, s);
+                        }
                     }
                 }
             }
+            return m;
+        }
+        // Gestapelte Züge: die Schale läuft ohne waagerechte Naht durch (G6,
+        // E16); die Partner stehen dafür auch berechnet bereit, gezeichnet
+        // wird nur `runs`
+        let mut above: Vec<(RunId, RunId)> = Vec::new();
+        for c in self.cache.iter().flatten() {
+            if let Some(b) = c.below {
+                above.push((b, c.id));
+            }
+        }
+        let partners: Vec<RunId> = runs
+            .iter()
+            .flat_map(|&r| {
+                let below = self.cached(r).and_then(|c| c.below);
+                above
+                    .iter()
+                    .filter(move |(b, _)| *b == r)
+                    .map(|(_, u)| *u)
+                    .chain(below)
+            })
+            .collect();
+        for &run in runs.iter().chain(&partners) {
+            if let Some(Some(c)) = self.cache.get_mut(run.index() as usize) {
+                if c.id == run {
+                    c.view_solid(view, section, cut);
+                }
+            }
+        }
+        for &run in runs {
+            let Some(c) = self.cached(run) else {
+                continue;
+            };
+            let Some(s) = c.shown(view, section) else {
+                continue;
+            };
+            let lower = c
+                .below
+                .and_then(|b| self.cached(b))
+                .and_then(|b| b.shown(view, section));
+            let uppers: Vec<(f64, &Solid)> = above
+                .iter()
+                .filter(|(b, _)| *b == run)
+                .filter_map(|(_, u)| self.cached(*u))
+                .filter_map(|u| Some((u.chain.base, u.shown(view, section)?)))
+                .collect();
+            if lower.is_none() && uppers.is_empty() {
+                mesh_into(&mut m, s);
+                continue;
+            }
+            let mut x = s.clone();
+            if let Some(l) = lower {
+                merge_seam(&mut l.clone(), &mut x, c.chain.base);
+            }
+            for (z, u) in uppers {
+                merge_seam(&mut x, &mut u.clone(), z);
+            }
+            mesh_into(&mut m, &x);
         }
         m
     }
@@ -1098,7 +1280,8 @@ mod tests {
         let (t, wall) = hit.unwrap();
         assert!((t - 4000.0).abs() < 1e-6, "{t}");
         assert_eq!(Some(wall), s.model().wall_at(a, 2));
-        assert_eq!(s.model().element(wall).unwrap().number, "AW-007");
+        // AW-001…008: erstes Haus mit OG, AW-009…012: EG des zweiten
+        assert_eq!(s.model().element(wall).unwrap().number, "AW-011");
         // Am Modell vorbei: kein Treffer
         assert!(s
             .raycast(vec3(0.0, -9000.0, 5000.0), vec3(0.0, 0.0, 1.0))

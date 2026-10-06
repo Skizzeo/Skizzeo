@@ -8,8 +8,9 @@ use crate::attr::{
     self, Attributes, Display, Fill, FillId, LineType, LineTypeId, Pen, PenId, Surface, SurfaceId,
 };
 use crate::element::{
-    Category, Element, ElementId, ElementKind, Floor, GroundSlab, LevelEdge, LevelKind, LevelRef,
-    PropSet, PropValue, RunId, Storey, StoreyId, StripFooting, Wall, WallRun,
+    Building, BuildingId, Category, Coupling, Element, ElementId, ElementKind, Floor, GroundSlab,
+    LevelEdge, LevelKind, LevelRef, PropSet, PropValue, RunId, Storey, StoreyId, StripFooting,
+    Wall, WallRun,
 };
 use crate::floor::{FloorError, FloorParams, FloorSlab};
 use crate::foundation::{FootingShape, Foundation, FoundationError, FoundationParams};
@@ -55,6 +56,7 @@ pub struct Model {
     attr: Attributes,
     materials: Arena<Material>,
     layer_sets: Arena<LayerSet>,
+    buildings: Arena<Building>,
     storeys: Arena<Storey>,
     elements: Arena<Element>,
     runs: Arena<WallRun>,
@@ -194,6 +196,7 @@ impl Model {
         let mut storeys = Arena::new();
         let storey = storeys.insert(Storey {
             guid: guids.next_guid(),
+            building: None,
             name: "Erdgeschoss".into(),
             short: "EG".into(),
             kind: LevelKind::Storey,
@@ -220,6 +223,7 @@ impl Model {
         // älteren Guids gleich bleiben
         storeys.insert(Storey {
             guid: guids.next_guid(),
+            building: None,
             name: "Gründung".into(),
             short: "GR".into(),
             kind: LevelKind::Foundation,
@@ -228,17 +232,19 @@ impl Model {
         });
         storeys.insert(Storey {
             guid: guids.next_guid(),
+            building: None,
             name: "Obergeschoss".into(),
             short: "OG".into(),
             kind: LevelKind::Storey,
             elevation: STOREY_HEIGHT,
-            height: STOREY_HEIGHT,
+            height: UPPER_HEIGHT,
         });
         Model {
             project,
             attr,
             materials,
             layer_sets,
+            buildings: Arena::new(),
             storeys,
             elements: Arena::new(),
             runs: Arena::new(),
@@ -264,6 +270,7 @@ impl Model {
         attr: Attributes,
         materials: Arena<Material>,
         layer_sets: Arena<LayerSet>,
+        buildings: Arena<Building>,
         storeys: Arena<Storey>,
         elements: Arena<Element>,
         runs: Arena<WallRun>,
@@ -287,6 +294,7 @@ impl Model {
             attr,
             materials,
             layer_sets,
+            buildings,
             storeys,
             elements,
             runs,
@@ -477,6 +485,208 @@ impl Model {
         self.storeys.get(id)
     }
 
+    // --- Gebäude (B12) ----------------------------------------------------
+
+    /// Tests: OK EG auf `h` (Wandhöhe im EG), liefert das EG.
+    #[cfg(test)]
+    pub(crate) fn eg_at(&mut self, h: f64) -> StoreyId {
+        let eg = self.defaults.storey;
+        if self.storey(eg).is_some_and(|s| s.top() != h) {
+            assert!(self.set_storey_top(eg, h), "OK EG {h}");
+        }
+        eg
+    }
+
+    pub fn buildings(&self) -> &Arena<Building> {
+        &self.buildings
+    }
+
+    pub fn building(&self, id: BuildingId) -> Option<&Building> {
+        self.buildings.get(id)
+    }
+
+    /// Gebäude eines Geschosses (`None`: Vorlage ohne Gebäude).
+    pub fn building_of(&self, storey: StoreyId) -> Option<BuildingId> {
+        self.storey(storey)?.building
+    }
+
+    /// Gebäude eines Bauteils (über sein Geschoss).
+    pub fn building_of_element(&self, e: ElementId) -> Option<BuildingId> {
+        self.building_of(self.element(e)?.storey)
+    }
+
+    /// Legt ein Gebäude mit Gründung, EG und `storeys − 1` Obergeschossen an
+    /// (Vorgaben: EG 2,855, OG 2,98 = lichte Höhe 2,76 + Decke 0,22). Das
+    /// erste Gebäude übernimmt die Vorlage (die Geschosse, die das Paneel
+    /// vorher zeigt), jedes weitere bekommt eigene Geschosse.
+    pub fn add_building(&mut self, storeys: u8) -> BuildingId {
+        let storeys = storeys.max(1) as usize;
+        let template = self.levels_in(None);
+        let n = self.buildings.len() + 1;
+        let mut k = n;
+        let number = loop {
+            let s = format!("GB-{k:02}");
+            if self.buildings.iter().all(|(_, b)| b.number != s) {
+                break s;
+            }
+            k += 1;
+        };
+        let guid = self.new_guid();
+        let b = self.buildings.insert(Building {
+            guid,
+            name: format!("Gebäude {n}"),
+            number,
+        });
+        note!(self, Building, new b);
+        let mut levels = if template.is_empty() {
+            let gr = self.insert_storey(Storey {
+                guid: Guid(0),
+                building: Some(b),
+                name: "Gründung".into(),
+                short: "GR".into(),
+                kind: LevelKind::Foundation,
+                elevation: -FOUNDATION_DEPTH,
+                height: FOUNDATION_DEPTH,
+            });
+            let eg = self.insert_storey(Storey {
+                guid: Guid(0),
+                building: Some(b),
+                name: "Erdgeschoss".into(),
+                short: "EG".into(),
+                kind: LevelKind::Storey,
+                elevation: 0.0,
+                height: STOREY_HEIGHT,
+            });
+            vec![gr, eg]
+        } else {
+            for &id in &template {
+                note!(self, Storey, self.storeys, id);
+                if let Some(st) = self.storeys.get_mut(id) {
+                    st.building = Some(b);
+                }
+            }
+            template
+        };
+        // Obergeschosse: überzählige der Vorlage weg, fehlende obendrauf
+        while levels.len() > storeys + 1 {
+            if let Some(top) = levels.pop() {
+                note!(self, Storey, self.storeys, top);
+                self.storeys.remove(top);
+            }
+        }
+        while levels.len() < storeys + 1 {
+            let z = levels
+                .last()
+                .and_then(|id| self.storey(*id))
+                .map_or(0.0, |s| s.top());
+            let id = self.insert_storey(Storey {
+                guid: Guid(0),
+                building: Some(b),
+                name: String::new(),
+                short: String::new(),
+                kind: LevelKind::Storey,
+                elevation: z,
+                height: UPPER_HEIGHT,
+            });
+            levels.push(id);
+        }
+        let uppers = levels.len().saturating_sub(2);
+        for (i, &id) in levels.iter().skip(2).enumerate() {
+            let (name, short) = match uppers {
+                1 => ("Obergeschoss".to_string(), "OG".to_string()),
+                _ => (format!("{}. Obergeschoss", i + 1), format!("{}. OG", i + 1)),
+            };
+            if self
+                .storey(id)
+                .is_some_and(|s| s.name != name || s.short != short)
+            {
+                note!(self, Storey, self.storeys, id);
+                if let Some(st) = self.storeys.get_mut(id) {
+                    st.name = name;
+                    st.short = short;
+                }
+            }
+        }
+        self.touch();
+        b
+    }
+
+    /// Legt ein Geschoss an (neue Guid).
+    fn insert_storey(&mut self, mut st: Storey) -> StoreyId {
+        st.guid = self.new_guid();
+        let id = self.storeys.insert(st);
+        note!(self, Storey, new id);
+        id
+    }
+
+    /// Ein Geschoss ohne Gebäude (Vorlage) wird mit seiner Vorlage zum ersten
+    /// Gebäude: Bauteile gehören immer zu einem Gebäude.
+    fn ensure_building(&mut self, storey: StoreyId) {
+        if self.storey(storey).is_some_and(|s| s.building.is_none()) {
+            let up = self
+                .levels_in(None)
+                .iter()
+                .filter(|id| self.storey(**id).is_some_and(|s| s.kind != LevelKind::Foundation))
+                .count();
+            self.add_building(up.max(1) as u8);
+        }
+    }
+
+    /// Erdgeschoss des Gebäudes `b` (unterstes Geschoss über der Gründung).
+    pub fn ground_of(&self, b: Option<BuildingId>) -> Option<StoreyId> {
+        self.levels_in(b)
+            .into_iter()
+            .find(|id| self.storey(*id).is_some_and(|s| s.kind != LevelKind::Foundation))
+    }
+
+    /// Erdgeschoss des Gebäudes, zu dem das Geschoss `id` gehört.
+    pub fn ground_storey(&self, id: StoreyId) -> Option<StoreyId> {
+        self.ground_of(self.storey(id)?.building)
+    }
+
+    /// Geschoss für das Wandsegment, das bei `p` beginnt, wenn im Geschoss
+    /// `level` gezeichnet wird: Liegt `p` im EG-Außenpolygon eines anderen
+    /// Gebäudes, das Geschoss auf gleicher Lage dort (B12).
+    pub fn storey_at(&self, p: Vec3, level: StoreyId) -> StoreyId {
+        let own = self.building_of(level);
+        let hit = self.runs.iter().find_map(|(id, r)| {
+            let b = self.building_of(r.storey);
+            (b != own
+                && r.closed
+                && self.ground_storey(r.storey) == Some(r.storey)
+                && self.category_of(id) == Some(Category::ExteriorWall)
+                && contains(&r.points, p))
+            .then_some(b)
+        });
+        let Some(b) = hit else {
+            return level;
+        };
+        let rank = |g: Option<BuildingId>| -> Vec<StoreyId> {
+            self.levels_in(g)
+                .into_iter()
+                .filter(|id| self.storey(*id).is_some_and(|s| s.kind != LevelKind::Foundation))
+                .collect()
+        };
+        let i = rank(own).iter().position(|x| *x == level).unwrap_or(0);
+        let there = rank(b);
+        there
+            .get(i)
+            .or(there.last())
+            .copied()
+            .unwrap_or(level)
+    }
+
+    /// Bauabschnitt (Wände, Decke) eines Geschosses: EG 3/4, OG 5/6, …
+    fn storey_seq(&self, storey: StoreyId) -> (u16, u16) {
+        let i = self
+            .group_levels(storey)
+            .into_iter()
+            .filter(|id| self.storey(*id).is_some_and(|s| s.kind != LevelKind::Foundation))
+            .position(|id| id == storey)
+            .unwrap_or(0) as u16;
+        (WALL_SEQ + 2 * i, FLOOR_SEQ + 2 * i)
+    }
+
     // --- Bauteile ---------------------------------------------------------
 
     pub fn elements(&self) -> &Arena<Element> {
@@ -558,6 +768,7 @@ impl Model {
             kind: ElementKind::Wall(Wall {
                 run,
                 seg: seg as u32,
+                coupling: None,
             }),
             ..template.clone()
         });
@@ -575,24 +786,29 @@ impl Model {
         self.runs.get(id)
     }
 
-    /// Legt einen Wandzug an, mit einem Wand-Bauteil je Segment. `None`, wenn
-    /// die Punkte kein Segment ergeben.
+    /// Legt einen Wandzug im Geschoss `storey` an, mit einem Wand-Bauteil je
+    /// Segment; die Wände reichen von UK bis OK des Geschosses. Ein
+    /// geschlossener Außenwandzug im EG erzeugt das ganze Gebäude (B12): in
+    /// jedem Geschoss darüber einen gekoppelten Zug mit Decke. Gehört das
+    /// Geschoss noch zu keinem Gebäude, entsteht das erste. `None`, wenn die
+    /// Punkte kein Segment ergeben.
     pub fn add_wall_run(
         &mut self,
         points: &[Vec3],
         closed: bool,
         ref_side: RefSide,
-        height: f64,
+        storey: StoreyId,
         layer_set: LayerSetId,
         category: Category,
     ) -> Option<RunId> {
-        let pts = clean_points(points, closed);
+        let flat: Vec<Vec3> = points.iter().map(|p| vec3(p.x, p.y, 0.0)).collect();
+        let pts = clean_points(&flat, closed);
         let closed = closed && pts.len() >= 3;
         let count = segment_count(pts.len(), closed);
-        if count == 0 || !self.layer_sets.contains(layer_set) {
+        if count == 0 || !self.layer_sets.contains(layer_set) || self.storey(storey).is_none() {
             return None;
         }
-        let storey = self.defaults.storey;
+        self.ensure_building(storey);
         let guid = self.new_guid();
         let run = self.runs.insert(WallRun {
             guid,
@@ -600,18 +816,10 @@ impl Model {
             closed,
             ref_side,
             base: LevelRef::bottom(storey),
-            height,
+            top: LevelRef::top(storey),
             storey,
             segments: Vec::new(),
         });
-        // Wandhöhe ≥ OK EG: eine niedrigere Wand zieht OK EG auf ihre Krone
-        // (die Decke muss in der Wand einbinden)
-        if let Some(eg) = self.storey(storey) {
-            let crown = eg.elevation + height;
-            if crown < eg.top() && crown >= eg.elevation + self.max_floor_thickness() + MIN_CLEAR {
-                self.move_storey_top(storey, crown);
-            }
-        }
         note!(self, Run, new run);
         let template = Element {
             guid: Guid(0),
@@ -619,8 +827,12 @@ impl Model {
             category,
             storey,
             layer_set: Some(layer_set),
-            seq: WALL_SEQ,
-            kind: ElementKind::Wall(Wall { run, seg: 0 }),
+            seq: self.storey_seq(storey).0,
+            kind: ElementKind::Wall(Wall {
+                run,
+                seg: 0,
+                coupling: None,
+            }),
             props: PropSet::new(),
         };
         let segments = (0..count)
@@ -629,8 +841,217 @@ impl Model {
         self.runs.get_mut(run)?.segments = segments;
         self.sync_parts(run);
         self.update_joins(&[run]);
+        if self.needs_foundation(run) {
+            let (mut below, mut at) = (run, storey);
+            while let Some(up) = self.level_above(at) {
+                let Some(r) = self.stack_run(below, up) else {
+                    break;
+                };
+                (below, at) = (r, up);
+            }
+        }
         self.touch();
         Some(run)
+    }
+
+    /// Gebäude aus einem Polygon (B12): geschlossener Außenwandzug im EG des
+    /// Gebäudes `b` mit dem voreingestellten Aufbau, darüber alle Geschosse.
+    pub fn build_from_polygon(&mut self, b: BuildingId, points: &[Vec3]) -> Option<RunId> {
+        let eg = self.ground_of(Some(b))?;
+        let set = self.defaults.exterior_wall;
+        self.add_wall_run(
+            points,
+            true,
+            RefSide::Left,
+            eg,
+            set,
+            Category::ExteriorWall,
+        )
+    }
+
+    /// Zug im Geschoss `storey` über dem Zug `below`: gleiche Punkte (Versatz
+    /// 0), gleiche Bezugsseite, je Segment eine Wand gleicher Art, an die
+    /// Wand darunter gekoppelt; mit Decke an OK des Geschosses.
+    fn stack_run(&mut self, below: RunId, storey: StoreyId) -> Option<RunId> {
+        let r = self.run(below)?.clone();
+        let guid = self.new_guid();
+        let run = self.runs.insert(WallRun {
+            guid,
+            points: r.points.clone(),
+            closed: r.closed,
+            ref_side: r.ref_side,
+            base: LevelRef::bottom(storey),
+            top: LevelRef::top(storey),
+            storey,
+            segments: Vec::new(),
+        });
+        note!(self, Run, new run);
+        let seq = self.storey_seq(storey).0;
+        let mut segments = Vec::with_capacity(r.segments.len());
+        for (k, &w) in r.segments.iter().enumerate() {
+            let Some(t) = self.element(w).cloned() else {
+                continue;
+            };
+            let id = self.new_wall(
+                run,
+                k,
+                &Element {
+                    storey,
+                    seq,
+                    props: PropSet::new(),
+                    ..t
+                },
+            );
+            if let Some(ElementKind::Wall(x)) = self.elements.get_mut(id).map(|e| &mut e.kind) {
+                x.coupling = Some(Coupling {
+                    below: w,
+                    offset: 0.0,
+                });
+            }
+            segments.push(id);
+        }
+        self.runs.get_mut(run)?.segments = segments;
+        self.sync_parts(run);
+        self.update_joins(&[run]);
+        Some(run)
+    }
+
+    /// Züge, deren Wände an Wände des Zuges `below` gekoppelt sind.
+    pub fn runs_above(&self, below: RunId) -> Vec<RunId> {
+        let Some(segs) = self.run(below).map(|r| &r.segments) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (_, e) in self.elements.iter() {
+            if let ElementKind::Wall(Wall {
+                run,
+                coupling: Some(c),
+                ..
+            }) = e.kind
+            {
+                if segs.contains(&c.below) && !out.contains(&run) {
+                    out.push(run);
+                }
+            }
+        }
+        out
+    }
+
+    /// Alle Züge, die über `run` gestapelt sind (Geschoss für Geschoss).
+    pub fn stack_above(&self, run: RunId) -> Vec<RunId> {
+        let mut out: Vec<RunId> = Vec::new();
+        let mut k = 0;
+        let mut at = vec![run];
+        while k < at.len() {
+            for up in self.runs_above(at[k]) {
+                if !at.contains(&up) {
+                    at.push(up);
+                    out.push(up);
+                }
+            }
+            k += 1;
+        }
+        out
+    }
+
+    /// Ist der Zug an einen Zug darunter gekoppelt (gestapelte Außenwand)?
+    pub fn is_coupled(&self, run: RunId) -> bool {
+        self.run(run).is_some_and(|r| {
+            r.segments.iter().any(|e| {
+                matches!(
+                    self.element(*e).map(|x| &x.kind),
+                    Some(ElementKind::Wall(Wall {
+                        coupling: Some(_),
+                        ..
+                    }))
+                )
+            })
+        })
+    }
+
+    /// Zug darunter, an den `run` gekoppelt ist.
+    pub fn run_below(&self, run: RunId) -> Option<RunId> {
+        self.run(run)?.segments.iter().find_map(|e| match self.element(*e)?.kind {
+            ElementKind::Wall(Wall {
+                coupling: Some(c), ..
+            }) => self.segment_of(c.below).map(|s| s.0),
+            _ => None,
+        })
+    }
+
+    /// Führt die gekoppelten Züge über `root` mit (Linie = Partnerlinie +
+    /// Versatz, Ecken neu geschnitten), Geschoss für Geschoss nach oben, und
+    /// ordnet die Kopplungen neu zu, wenn sich die Segmentzahl geändert hat.
+    /// Liefert die bewegten Züge.
+    fn carry_stack(&mut self, root: RunId) -> Vec<RunId> {
+        let mut out = Vec::new();
+        let mut queue = vec![root];
+        let mut k = 0;
+        while k < queue.len() {
+            let below = queue[k];
+            k += 1;
+            for up in self.runs_above(below) {
+                if queue.contains(&up) {
+                    continue;
+                }
+                self.follow_below(up, below);
+                queue.push(up);
+                out.push(up);
+            }
+        }
+        out
+    }
+
+    /// Legt den Zug `up` auf den Zug `below` (mit den Versätzen seiner Wände)
+    /// und koppelt Wand k an Wand k darunter.
+    fn follow_below(&mut self, up: RunId, below: RunId) {
+        let (Some(lower), Some(lsegs)) = (
+            self.base_chain(below),
+            self.run(below).map(|r| r.segments.clone()),
+        ) else {
+            return;
+        };
+        let offset_to = |m: &Model, e: ElementId| -> Option<f64> {
+            m.run(up)?.segments.iter().find_map(|w| match m.element(*w)?.kind {
+                ElementKind::Wall(Wall {
+                    coupling: Some(c), ..
+                }) if c.below == e => Some(c.offset),
+                _ => None,
+            })
+        };
+        let offsets: Vec<f64> = lsegs
+            .iter()
+            .map(|e| offset_to(self, *e).unwrap_or(0.0))
+            .collect();
+        let pts = lower
+            .with_segment_offsets(&offsets)
+            .map_or_else(|| lower.points.clone(), |c| c.points);
+        let same = self
+            .run(up)
+            .is_some_and(|r| r.points == pts && r.segments.len() == lsegs.len());
+        if !same && !self.set_points(up, &pts) {
+            return;
+        }
+        let segs = self.run(up).map(|r| r.segments.clone()).unwrap_or_default();
+        for (k, w) in segs.into_iter().enumerate() {
+            let Some(&b) = lsegs.get(k) else {
+                continue;
+            };
+            let want = Coupling {
+                below: b,
+                offset: offsets[k],
+            };
+            let now = match self.element(w).map(|e| &e.kind) {
+                Some(ElementKind::Wall(x)) => x.coupling,
+                _ => continue,
+            };
+            if now != Some(want) {
+                note!(self, Element, self.elements, w);
+                if let Some(ElementKind::Wall(x)) = self.elements.get_mut(w).map(|e| &mut e.kind) {
+                    x.coupling = Some(want);
+                }
+            }
+        }
     }
 
     /// Setzt neue Eckpunkte eines Wandzugs. Bleibt die Segmentzahl gleich, behält
@@ -642,10 +1063,20 @@ impl Model {
     /// alle Züge, deren Körper sich dadurch ändern kann, `None` bei ungültigen
     /// Punkten.
     pub fn set_run_points(&mut self, id: RunId, points: &[Vec3]) -> Option<Vec<RunId>> {
-        if !self.set_points(id, points) {
+        let flat: Vec<Vec3> = points.iter().map(|p| vec3(p.x, p.y, 0.0)).collect();
+        if !self.set_points(id, &flat) {
             return None;
         }
-        let moved = self.follow(id);
+        let mut moved = Vec::new();
+        let mut roots = vec![id];
+        roots.extend(self.carry_stack(id));
+        for r in roots {
+            for x in self.follow(r) {
+                if !moved.contains(&x) {
+                    moved.push(x);
+                }
+            }
+        }
         for r in &moved {
             self.sync_parts(*r);
         }
@@ -732,10 +1163,14 @@ impl Model {
         true
     }
 
-    /// Entfernt einen Wandzug mit allen seinen Wänden.
+    /// Entfernt einen Wandzug mit allen seinen Wänden und den Zügen, die
+    /// darüber an ihn gekoppelt sind.
     pub fn remove_run(&mut self, id: RunId) -> bool {
         if !self.runs.contains(id) {
             return false;
+        }
+        for up in self.runs_above(id) {
+            self.remove_run(up);
         }
         note!(self, Run, self.runs, id);
         let Some(run) = self.runs.remove(id) else {
@@ -810,9 +1245,10 @@ impl Model {
         }
         c.joints.slab_band = match &floor {
             Some(Ok(f)) => Some(f.band()),
-            _ if self.category_of(id) == Some(Category::InteriorWall) => {
-                self.floor_over(&c).map(|f| f.band())
-            }
+            _ if self.category_of(id) == Some(Category::InteriorWall) => self
+                .run(id)
+                .and_then(|r| self.floor_over(r.storey, &c))
+                .map(|f| f.band()),
             _ => None,
         };
         Some((c, floor))
@@ -824,15 +1260,15 @@ impl Model {
         Some(self.element(first)?.category)
     }
 
-    /// Decke, unter der der Zug `c` steht: eine Segmentmitte liegt in ihrem
-    /// Umriss.
-    fn floor_over(&self, c: &WallChain) -> Option<FloorSlab> {
+    /// Decke im Geschoss `storey`, unter der der Zug `c` steht: eine
+    /// Segmentmitte liegt in ihrem Umriss.
+    fn floor_over(&self, storey: StoreyId, c: &WallChain) -> Option<FloorSlab> {
         let mids = mids(&c.points, c.closed);
         let (lo, hi) = bounds2(&mids);
         for (id, r) in self.runs.iter() {
             // Vortest: geschlossen und Rechteck der Zugpunkte überdeckt die
             // Segmentmitten, bevor der Umriss entsteht
-            if !r.closed || !overlap(bounds2(&r.points), (lo, hi)) {
+            if !r.closed || r.storey != storey || !overlap(bounds2(&r.points), (lo, hi)) {
                 continue;
             }
             let (rlo, rhi) = bounds2(&r.points);
@@ -858,7 +1294,9 @@ impl Model {
         let near: Vec<(RunId, Vec<Vec3>)> = self
             .runs
             .iter()
-            .filter(|(id, x)| *id != run && overlap(bounds2(&x.points), (lo, hi)))
+            .filter(|(id, x)| {
+                *id != run && x.storey == r.storey && overlap(bounds2(&x.points), (lo, hi))
+            })
             .filter(|(id, _)| self.category_of(*id) == Some(Category::InteriorWall))
             .map(|(id, x)| (id, mids(&x.points, x.closed)))
             .filter(|(_, m)| m.iter().any(|p| inside(*p, lo, hi)))
@@ -883,13 +1321,14 @@ impl Model {
             .first()
             .and_then(|e| self.element(*e))
             .and_then(|e| e.layer_set)?;
+        let base = self.level_z(run.base).unwrap_or(0.0);
         Some(WallChain {
             points: run.points.clone(),
             closed: run.closed,
             ref_side: run.ref_side,
             layers: self.wall_layers(set),
-            base: self.level_z(run.base).unwrap_or(0.0),
-            height: run.height,
+            base,
+            height: self.level_z(run.top).unwrap_or(base) - base,
             joints: Default::default(),
         })
     }
@@ -903,8 +1342,8 @@ impl Model {
 
     // --- Gründung (B9) ----------------------------------------------------
 
-    /// Braucht der Zug eine Gründung? Ein lebender, geschlossener Außenwandzug.
-    fn needs_foundation(&self, run: RunId) -> bool {
+    /// Braucht der Zug eine Decke? Ein lebender, geschlossener Außenwandzug.
+    fn needs_floor(&self, run: RunId) -> bool {
         self.run(run).is_some_and(|r| {
             r.closed
                 && r.segments
@@ -912,6 +1351,15 @@ impl Model {
                     .and_then(|e| self.element(*e))
                     .is_some_and(|e| e.category == Category::ExteriorWall)
         })
+    }
+
+    /// Braucht der Zug eine Gründung? Ein geschlossener Außenwandzug im EG
+    /// seines Gebäudes (B12: Gründung nur unter dem EG).
+    fn needs_foundation(&self, run: RunId) -> bool {
+        self.needs_floor(run)
+            && self
+                .run(run)
+                .is_some_and(|r| self.ground_storey(r.storey) == Some(r.storey))
     }
 
     /// Sohlplatten unter einem Wandzug (richtig: höchstens eine).
@@ -1021,14 +1469,14 @@ impl Model {
                 ElementKind::GroundSlab(GroundSlab {
                     run,
                     material,
-                    top: LevelRef::bottom(self.defaults.storey),
+                    top: LevelRef::bottom(storey),
                     thickness: 200.0,
                     recess: 0.0,
                 }),
             ),
         };
         if self.footings_of(slab).is_empty() {
-            let Some(gr) = self.foundation_level() else {
+            let Some(gr) = self.foundation_level_of(storey) else {
                 return;
             };
             self.new_element(
@@ -1137,7 +1585,8 @@ impl Model {
     /// Grenze: Schürze bleibt mindestens 10 cm tief (UK Gründung steht).
     pub fn set_slab_thickness(&mut self, slab: ElementId, thickness: f64) -> bool {
         let bottom = self
-            .foundation_level()
+            .element(slab)
+            .and_then(|e| self.foundation_level_of(e.storey))
             .and_then(|g| self.storey(g))
             .map_or(f64::MIN, |g| g.elevation);
         thickness > 0.0
@@ -1199,10 +1648,15 @@ impl Model {
         let (Some(d), true) = (self.footing_depth(footing), depth.is_finite()) else {
             return false;
         };
-        let Some(gr) = self.foundation_level().and_then(|g| self.storey(g)) else {
+        let Some(ElementKind::StripFooting(f)) = self.element(footing).map(|e| e.kind.clone())
+        else {
             return false;
         };
-        self.set_foundation_bottom(gr.elevation - (depth - d))
+        let gr = f.base.storey;
+        let Some(z) = self.storey(gr).map(|g| g.elevation) else {
+            return false;
+        };
+        self.set_foundation_bottom_of(gr, z - (depth - d))
     }
 
     // --- Erdgeschossdecke (B10) -------------------------------------------
@@ -1226,7 +1680,7 @@ impl Model {
     /// gespeichert. Ist der Zug offen oder weg, verschwindet sie.
     fn sync_floor(&mut self, run: RunId) {
         let floors = self.floors_of(run);
-        if !self.needs_foundation(run) {
+        if !self.needs_floor(run) {
             for f in floors {
                 note!(self, Element, self.elements, f);
                 self.elements.remove(f);
@@ -1240,10 +1694,11 @@ impl Model {
             return;
         };
         let storey = r.storey;
+        let seq = self.storey_seq(storey).1;
         self.new_element(
             Category::Floor,
             storey,
-            FLOOR_SEQ,
+            seq,
             ElementKind::Floor(Floor {
                 run,
                 material,
@@ -1259,16 +1714,70 @@ impl Model {
         let missing: Vec<RunId> = self
             .runs
             .ids()
-            .filter(|r| self.needs_foundation(*r) && self.floors_of(*r).is_empty())
+            .filter(|r| self.needs_floor(*r) && self.floors_of(*r).is_empty())
             .collect();
         for r in &missing {
             self.sync_floor(*r);
         }
-        match missing.len() {
-            0 => Vec::new(),
-            1 => vec!["Erdgeschossdecke ergänzt".to_string()],
-            n => vec![format!("Erdgeschossdecke über {n} Außenwandzügen ergänzt")],
+        let eg = missing.iter().all(|r| self.needs_foundation(*r));
+        match (missing.len(), eg) {
+            (0, _) => Vec::new(),
+            (1, true) => vec!["Erdgeschossdecke ergänzt".to_string()],
+            (n, true) => vec![format!("Erdgeschossdecke über {n} Außenwandzügen ergänzt")],
+            (1, false) => vec!["Geschossdecke ergänzt".to_string()],
+            (n, false) => vec![format!("Geschossdecken über {n} Außenwandzügen ergänzt")],
         }
+    }
+
+    /// Stellt Dateien vor B12 auf Gebäude um: alle Geschosse gehören zu
+    /// „Gebäude 1“, das OG wird 2,98 hoch (lichte Höhe 2,76), und über jedem
+    /// geschlossenen EG-Außenwandzug entsteht der gekoppelte OG-Zug mit Decke.
+    /// Ohne Rückgängig-Schritt; liefert den Hinweis.
+    pub(crate) fn complete_pre_b12(&mut self) -> Vec<String> {
+        if !self.buildings.is_empty() || self.levels_in(None).is_empty() {
+            return Vec::new();
+        }
+        let guid = self.new_guid();
+        let b = self.buildings.insert(Building {
+            guid,
+            name: "Gebäude 1".into(),
+            number: "GB-01".into(),
+        });
+        let levels = self.levels_in(None);
+        let ground = self.ground_of(None);
+        let mut z = None;
+        for id in levels {
+            let Some(st) = self.storeys.get_mut(id) else {
+                continue;
+            };
+            st.building = Some(b);
+            if let Some(z) = z {
+                st.elevation = z;
+                st.height = UPPER_HEIGHT;
+            }
+            if Some(id) == ground || z.is_some() {
+                z = Some(st.top());
+            }
+        }
+        let roots: Vec<RunId> = self
+            .runs
+            .ids()
+            .filter(|r| self.needs_foundation(*r) && self.runs_above(*r).is_empty())
+            .collect();
+        for r in roots {
+            let (mut below, mut at) = match self.run(r) {
+                Some(x) => (r, x.storey),
+                None => continue,
+            };
+            while let Some(up) = self.level_above(at) {
+                let Some(n) = self.stack_run(below, up) else {
+                    break;
+                };
+                (below, at) = (n, up);
+            }
+        }
+        self.touch();
+        vec!["Datei auf Gebäude umgestellt, Obergeschoss ergänzt".to_string()]
     }
 
     /// Geometrie der Decke über einem Wandzug; `None` ohne Decke, `Err` wenn
@@ -1378,95 +1887,124 @@ impl Model {
         )
     }
 
-    /// Geschosse von unten nach oben.
-    pub fn levels(&self) -> Vec<StoreyId> {
+    /// Geschosse des Gebäudes `b` von unten nach oben (`None`: die Vorlage).
+    pub fn levels_in(&self, b: Option<BuildingId>) -> Vec<StoreyId> {
         let mut v: Vec<(StoreyId, f64)> = self
             .storeys
             .iter()
+            .filter(|(_, s)| s.building == b)
             .map(|(id, s)| (id, s.elevation))
             .collect();
         v.sort_by(|a, b| a.1.total_cmp(&b.1));
         v.into_iter().map(|(id, _)| id).collect()
     }
 
-    /// Das Gründungsband.
-    pub fn foundation_level(&self) -> Option<StoreyId> {
-        self.storeys
-            .iter()
-            .find(|(_, s)| s.kind == LevelKind::Foundation)
-            .map(|(id, _)| id)
+    /// Geschosse des Gebäudes, zu dem `id` gehört, von unten nach oben.
+    pub fn group_levels(&self, id: StoreyId) -> Vec<StoreyId> {
+        match self.storey(id) {
+            Some(s) => self.levels_in(s.building),
+            None => Vec::new(),
+        }
     }
 
-    /// Geschoss über `id`.
+    /// Geschosse des ersten Gebäudes (bzw. der Vorlage) von unten nach oben.
+    pub fn levels(&self) -> Vec<StoreyId> {
+        self.group_levels(self.defaults.storey)
+    }
+
+    /// Das Gründungsband des ersten Gebäudes (bzw. der Vorlage).
+    pub fn foundation_level(&self) -> Option<StoreyId> {
+        self.foundation_level_of(self.defaults.storey)
+    }
+
+    /// Das Gründungsband des Gebäudes, zu dem `id` gehört.
+    pub fn foundation_level_of(&self, id: StoreyId) -> Option<StoreyId> {
+        self.group_levels(id)
+            .into_iter()
+            .find(|g| self.storey(*g).is_some_and(|s| s.kind == LevelKind::Foundation))
+    }
+
+    /// Geschoss über `id` im selben Gebäude.
     pub fn level_above(&self, id: StoreyId) -> Option<StoreyId> {
-        let l = self.levels();
+        let l = self.group_levels(id);
         let i = l.iter().position(|x| *x == id)?;
         l.get(i + 1).copied()
     }
 
-    /// Dickste Decke (bestimmt die kleinste lichte Höhe), ohne Decke der
-    /// Standardwert.
-    fn max_floor_thickness(&self) -> f64 {
+    /// Geschoss unter `id` im selben Gebäude (beim EG die Gründung).
+    pub fn level_below(&self, id: StoreyId) -> Option<StoreyId> {
+        let l = self.group_levels(id);
+        let i = l.iter().position(|x| *x == id)?;
+        l.get(i.checked_sub(1)?).copied()
+    }
+
+    /// Dickste Decke an der OK des Geschosses `id` (bestimmt dessen lichte
+    /// Höhe), ohne Decke der Standardwert.
+    fn floor_thickness_of(&self, id: StoreyId) -> f64 {
         self.elements
             .iter()
             .filter_map(|(_, e)| match e.kind {
-                ElementKind::Floor(f) => Some(f.thickness),
+                ElementKind::Floor(f) if f.top.storey == id => Some(f.thickness),
                 _ => None,
             })
             .reduce(f64::max)
             .unwrap_or(FLOOR_THICKNESS)
     }
 
-    /// Dickste Sohlplatte, ohne Platte der Standardwert.
-    fn max_slab_thickness(&self) -> f64 {
+    /// Dickste Sohlplatte im Gebäude der Gründung `gr`, ohne Platte der
+    /// Standardwert.
+    fn max_slab_thickness(&self, gr: StoreyId) -> f64 {
+        let b = self.building_of(gr);
         self.elements
             .iter()
             .filter_map(|(_, e)| match e.kind {
-                ElementKind::GroundSlab(s) => Some(s.thickness),
+                ElementKind::GroundSlab(s) if self.building_of(s.top.storey) == b => {
+                    Some(s.thickness)
+                }
                 _ => None,
             })
             .reduce(f64::max)
             .unwrap_or(SLAB_THICKNESS)
     }
 
-    /// Niedrigste Wandkrone der Wände, die auf dem Geschoss `id` stehen.
-    fn min_crown(&self, id: StoreyId) -> f64 {
-        self.runs
-            .iter()
-            .filter(|(_, r)| r.base.storey == id)
-            .filter_map(|(_, r)| Some(self.level_z(r.base)? + r.height))
-            .fold(f64::INFINITY, f64::min)
-    }
-
     /// Lichte Höhe eines Geschosses: Geschosshöhe minus Deckendicke.
     pub fn clear_height(&self, id: StoreyId) -> f64 {
         self.storey(id)
-            .map_or(0.0, |s| s.height - self.max_floor_thickness())
+            .map_or(0.0, |s| s.height - self.floor_thickness_of(id))
     }
 
     /// Erlaubter Bereich der Oberkante eines Geschosses; `None`, wenn sie
-    /// fest liegt (Gründung: ±0,00).
+    /// fest liegt (Gründung: ±0,00). Die lichte Höhe bleibt mindestens
+    /// 1,00 m; nach oben frei, die Wände gehen mit (B12).
     pub fn storey_top_range(&self, id: StoreyId) -> Option<(f64, f64)> {
         let s = self.storey(id)?;
         match s.kind {
             LevelKind::Foundation => None,
-            _ if id == self.defaults.storey => Some((
-                s.elevation + self.max_floor_thickness() + MIN_CLEAR,
-                self.min_crown(id),
+            _ => Some((
+                s.elevation + self.floor_thickness_of(id) + MIN_CLEAR,
+                f64::INFINITY,
             )),
-            _ => Some((s.elevation + MIN_UPPER, f64::INFINITY)),
         }
     }
 
-    /// Erlaubter Bereich der Unterkante der Gründung.
-    pub fn foundation_bottom_range(&self) -> (f64, f64) {
+    /// Erlaubter Bereich der Unterkante der Gründung `gr`.
+    pub fn foundation_bottom_range_of(&self, gr: StoreyId) -> (f64, f64) {
         let eg = self
-            .storey(self.defaults.storey)
+            .ground_storey(gr)
+            .and_then(|e| self.storey(e))
             .map_or(0.0, |s| s.elevation);
         (
             eg - MAX_FOUNDATION,
-            eg - self.max_slab_thickness() - MIN_FOOTING,
+            eg - self.max_slab_thickness(gr) - MIN_FOOTING,
         )
+    }
+
+    /// Erlaubter Bereich der Unterkante der Gründung des ersten Gebäudes.
+    pub fn foundation_bottom_range(&self) -> (f64, f64) {
+        match self.foundation_level() {
+            Some(gr) => self.foundation_bottom_range_of(gr),
+            None => (-MAX_FOUNDATION, -SLAB_THICKNESS - MIN_FOOTING),
+        }
     }
 
     /// Oberkante auf `z` geklemmt (Ziehen).
@@ -1475,7 +2013,8 @@ impl Model {
         Some(z.min(hi).max(lo))
     }
 
-    /// Verschiebt die Oberkante ohne Prüfung; die Bänder darüber wandern mit.
+    /// Verschiebt die Oberkante ohne Prüfung; die Bänder darüber (im selben
+    /// Gebäude) wandern mit.
     fn move_storey_top(&mut self, id: StoreyId, z: f64) {
         let Some(old) = self.storey(id).map(|s| s.top()) else {
             return;
@@ -1484,7 +2023,7 @@ impl Model {
         if delta == 0.0 {
             return;
         }
-        let levels = self.levels();
+        let levels = self.group_levels(id);
         let Some(i) = levels.iter().position(|x| *x == id) else {
             return;
         };
@@ -1530,7 +2069,7 @@ impl Model {
             return false;
         };
         match s.kind {
-            LevelKind::Foundation => self.set_foundation_depth(h),
+            LevelKind::Foundation => self.set_foundation_depth_of(id, h),
             _ => {
                 let z = s.elevation + h;
                 self.set_storey_top(id, z)
@@ -1543,81 +2082,125 @@ impl Model {
         let Some(e) = self.storey(id).map(|s| s.elevation) else {
             return false;
         };
-        let z = e + h + self.max_floor_thickness();
+        let z = e + h + self.floor_thickness_of(id);
         self.set_storey_top(id, z)
     }
 
-    /// Unterkante der Gründung ohne Prüfung.
-    fn move_foundation_bottom(&mut self, z: f64) {
-        let Some(id) = self.foundation_level() else {
+    /// Unterkante der Gründung `gr` ohne Prüfung.
+    fn move_foundation_bottom(&mut self, gr: StoreyId, z: f64) {
+        let Some(top) = self.storey(gr).map(|s| s.top()) else {
             return;
         };
-        let Some(top) = self.storey(id).map(|s| s.top()) else {
-            return;
-        };
-        if self.storey(id).is_some_and(|s| s.elevation == z) {
+        if self.storey(gr).is_some_and(|s| s.elevation == z) {
             return;
         }
-        note!(self, Storey, self.storeys, id);
-        if let Some(s) = self.storeys.get_mut(id) {
+        note!(self, Storey, self.storeys, gr);
+        if let Some(s) = self.storeys.get_mut(gr) {
             s.elevation = z;
             s.height = top - z;
         }
         self.touch();
     }
 
-    /// Unterkante der Gründung als Zahl (mm); außerhalb abgelehnt.
-    pub fn set_foundation_bottom(&mut self, z: f64) -> bool {
-        let (lo, hi) = self.foundation_bottom_range();
+    /// Unterkante der Gründung `gr` als Zahl (mm); außerhalb abgelehnt.
+    pub fn set_foundation_bottom_of(&mut self, gr: StoreyId, z: f64) -> bool {
+        let (lo, hi) = self.foundation_bottom_range_of(gr);
         if !(z.is_finite() && z >= lo - 1e-9 && z <= hi + 1e-9) {
             return false;
         }
-        self.move_foundation_bottom(z);
+        self.move_foundation_bottom(gr, z);
         true
     }
 
-    /// Unterkante der Gründung beim Ziehen, geklemmt.
-    pub fn drag_foundation_bottom(&mut self, z: f64) -> bool {
-        if !z.is_finite() {
+    /// Unterkante der Gründung des ersten Gebäudes als Zahl (mm).
+    pub fn set_foundation_bottom(&mut self, z: f64) -> bool {
+        self.foundation_level()
+            .is_some_and(|gr| self.set_foundation_bottom_of(gr, z))
+    }
+
+    /// Unterkante der Gründung `gr` beim Ziehen, geklemmt.
+    pub fn drag_foundation_bottom_of(&mut self, gr: StoreyId, z: f64) -> bool {
+        if !z.is_finite() || self.storey(gr).is_none() {
             return false;
         }
-        let (lo, hi) = self.foundation_bottom_range();
-        self.move_foundation_bottom(z.min(hi).max(lo));
+        let (lo, hi) = self.foundation_bottom_range_of(gr);
+        self.move_foundation_bottom(gr, z.min(hi).max(lo));
         true
     }
 
-    /// Gründungstiefe als Zahl: UK Gründung = −Tiefe.
-    pub fn set_foundation_depth(&mut self, h: f64) -> bool {
-        let eg = self
-            .storey(self.defaults.storey)
-            .map_or(0.0, |s| s.elevation);
-        self.set_foundation_bottom(eg - h)
+    /// Unterkante der Gründung des ersten Gebäudes beim Ziehen, geklemmt.
+    pub fn drag_foundation_bottom(&mut self, z: f64) -> bool {
+        self.foundation_level()
+            .is_some_and(|gr| self.drag_foundation_bottom_of(gr, z))
     }
 
-    /// Prüfregeln der Geschossbänder (B11).
+    /// Gründungstiefe der Gründung `gr` als Zahl: UK Gründung = −Tiefe.
+    pub fn set_foundation_depth_of(&mut self, gr: StoreyId, h: f64) -> bool {
+        let eg = self
+            .ground_storey(gr)
+            .and_then(|e| self.storey(e))
+            .map_or(0.0, |s| s.elevation);
+        self.set_foundation_bottom_of(gr, eg - h)
+    }
+
+    /// Gründungstiefe des ersten Gebäudes als Zahl.
+    pub fn set_foundation_depth(&mut self, h: f64) -> bool {
+        self.foundation_level()
+            .is_some_and(|gr| self.set_foundation_depth_of(gr, h))
+    }
+
+    /// Prüfregeln der Geschossbänder (B11, B12): je Gebäude eine Gründung
+    /// zuunterst und ein EG bei ±0,00, lückenlos.
     fn check_levels(&self) -> Vec<String> {
         let mut out = Vec::new();
-        let levels = self.levels();
-        let found = self
-            .storeys
-            .iter()
-            .filter(|(_, s)| s.kind == LevelKind::Foundation)
-            .count();
-        if found != 1 || levels.len() < 3 {
-            out.push("Geschosse: nicht je eine Ebene Gründung, EG und OG".into());
+        let mut groups: Vec<Option<BuildingId>> =
+            self.buildings.ids().map(Some).collect::<Vec<_>>();
+        if self.storeys.iter().any(|(_, s)| s.building.is_none()) {
+            if !self.buildings.is_empty() {
+                out.push("Geschosse: Vorlage ohne Gebäude neben einem Gebäude".into());
+            }
+            groups.push(None);
         }
-        if levels.first() != self.foundation_level().as_ref() {
-            out.push("Geschosse: Gründung ist nicht das unterste Band".into());
+        for (_, s) in self.storeys.iter() {
+            if s.building.is_some_and(|b| !self.buildings.contains(b)) {
+                out.push(format!("Geschoss {}: Gebäude fehlt", s.short));
+            }
         }
-        for w in levels.windows(2) {
-            let (a, b) = (self.storey(w[0]), self.storey(w[1]));
-            if let (Some(a), Some(b)) = (a, b) {
-                if (a.top() - b.elevation).abs() > 1e-6 {
-                    out.push(format!(
-                        "Geschosse {} und {} nicht lückenlos",
-                        a.short, b.short
-                    ));
+        for g in groups {
+            let name = g
+                .and_then(|b| self.building(b))
+                .map_or("Vorlage".to_string(), |b| b.number.clone());
+            let levels = self.levels_in(g);
+            let found = levels
+                .iter()
+                .filter(|id| self.storey(**id).is_some_and(|s| s.kind == LevelKind::Foundation))
+                .count();
+            if found != 1 || levels.len() < 2 {
+                out.push(format!(
+                    "Geschosse {name}: nicht genau eine Gründung und mindestens ein EG"
+                ));
+            }
+            let first = levels.first().and_then(|id| self.storey(*id));
+            if first.is_some_and(|s| s.kind != LevelKind::Foundation) {
+                out.push(format!("Geschosse {name}: Gründung ist nicht das unterste Band"));
+            }
+            for w in levels.windows(2) {
+                let (a, b) = (self.storey(w[0]), self.storey(w[1]));
+                if let (Some(a), Some(b)) = (a, b) {
+                    if (a.top() - b.elevation).abs() > 1e-6 {
+                        out.push(format!(
+                            "Geschosse {} und {} nicht lückenlos",
+                            a.short, b.short
+                        ));
+                    }
                 }
+            }
+            if self
+                .ground_of(g)
+                .and_then(|e| self.storey(e))
+                .is_none_or(|s| s.elevation != 0.0)
+            {
+                out.push(format!("Geschosse {name}: UK EG liegt nicht bei ±0,00"));
             }
         }
         for (_, s) in self.storeys.iter() {
@@ -1625,13 +2208,11 @@ impl Model {
                 out.push(format!("Geschoss {}: Höhe {} ungültig", s.short, s.height));
             }
         }
-        if self
-            .storey(self.defaults.storey)
-            .is_none_or(|s| s.elevation != 0.0)
-        {
-            out.push("Geschosse: UK EG liegt nicht bei ±0,00".into());
-        }
-        let mut refs: Vec<LevelRef> = self.runs.iter().map(|(_, r)| r.base).collect();
+        let mut refs: Vec<LevelRef> = self
+            .runs
+            .iter()
+            .flat_map(|(_, r)| [r.base, r.top])
+            .collect();
         for (_, e) in self.elements.iter() {
             match e.kind {
                 ElementKind::GroundSlab(s) => refs.push(s.top),
@@ -1727,11 +2308,18 @@ impl Model {
 
     /// Anschluss des freien Endes `e` von Zug `run`, frisch aus den Punkten.
     fn detect_end(&self, run: RunId, e: JoinEnd, boxes: &[(RunId, Vec3, Vec3)]) -> Option<Join> {
-        let p = Model::end_point(self.runs.get(run)?, e)?;
+        let r = self.runs.get(run)?;
+        let p = Model::end_point(r, e)?;
+        let storey = r.storey;
         let a = self.base(run)?;
+        // Anschlüsse nur innerhalb eines Geschosses (B12)
         let cands: Vec<Base> = boxes
             .iter()
-            .filter(|(id, lo, hi)| *id != run && inside(p, *lo, *hi))
+            .filter(|(id, lo, hi)| {
+                *id != run
+                    && inside(p, *lo, *hi)
+                    && self.runs.get(*id).is_some_and(|x| x.storey == storey)
+            })
             .filter_map(|(id, _, _)| self.base(*id))
             .collect();
         Model::detect(&a, e, &cands)
@@ -1980,6 +2568,7 @@ impl Model {
             Change::LayerSet { id, new, .. } => *new = self.layer_sets.get(*id).cloned(),
             Change::Material { id, new, .. } => *new = self.materials.get(*id).cloned(),
             Change::Storey { id, new, .. } => *new = self.storeys.get(*id).cloned(),
+            Change::Building { id, new, .. } => *new = self.buildings.get(*id).cloned(),
             Change::Pen { id, new, .. } => *new = self.attr.pen(*id).cloned(),
             Change::LineType { id, new, .. } => *new = self.attr.line_type(*id).cloned(),
             Change::Fill { id, new, .. } => *new = self.attr.fill(*id).cloned(),
@@ -2025,6 +2614,9 @@ impl Model {
             Change::Storey { id, old, new } => {
                 m.storeys.set(*id, pick(dir, old, new));
                 touched.library = true;
+            }
+            Change::Building { id, old, new } => {
+                m.buildings.set(*id, pick(dir, old, new));
             }
             Change::Pen { id, old, new } => {
                 m.attr.put_pen(*id, pick(dir, old, new));
@@ -2090,6 +2682,49 @@ impl Model {
 
     // --- Prüfung ----------------------------------------------------------
 
+    /// Prüfregel Kopplung (B12): Partner lebt, steht im Geschoss direkt
+    /// darunter im selben Gebäude, und das Segment liegt parallel auf
+    /// Partnerlinie + Versatz (Toleranz 0,01 mm).
+    fn check_coupling(&self, id: ElementId, number: &str, w: Wall, c: Coupling) -> Vec<String> {
+        let mut out = Vec::new();
+        let (Some(me), Some(partner)) = (self.element(id), self.element(c.below)) else {
+            out.push(format!("{number}: gekoppelte Wand darunter fehlt"));
+            return out;
+        };
+        let ElementKind::Wall(pw) = partner.kind else {
+            out.push(format!("{number}: gekoppelt an ein Bauteil, das keine Wand ist"));
+            return out;
+        };
+        if self.level_below(me.storey) != Some(partner.storey) {
+            out.push(format!(
+                "{number}: gekoppelte Wand {} steht nicht im Geschoss darunter",
+                partner.number
+            ));
+            return out;
+        }
+        let offsets = self
+            .base_chain(w.run)
+            .zip(self.base_chain(pw.run))
+            .and_then(|(a, b)| {
+                let k = self.segment_of(c.below)?.1;
+                let la = a.segment_frame(w.seg as usize)?;
+                let lb = b.segment_frame(k)?;
+                // parallel, gleiche Richtung, Abstand quer zur Wand nach außen
+                let par = cross2(la.1, lb.1).abs() < 1e-9 && la.1.dot(lb.1) > 0.0;
+                let n = vec3(lb.1.y, -lb.1.x, 0.0);
+                par.then(|| (la.0 - lb.0).dot(n) * b.outward_sign())
+            });
+        match offsets {
+            Some(d) if (d - c.offset).abs() <= 0.01 => {}
+            Some(d) => out.push(format!(
+                "{number}: liegt {d:.2} mm statt {:.2} mm neben {}",
+                c.offset, partner.number
+            )),
+            None => out.push(format!("{number}: nicht parallel zu {}", partner.number)),
+        }
+        out
+    }
+
     /// Prüft die Strukturregeln des BIM-Konzepts (Abschnitt 8) und liefert
     /// die Verstöße als Text.
     pub fn check(&self) -> Vec<String> {
@@ -2115,11 +2750,14 @@ impl Model {
                     if self.wall_at(w.run, w.seg as usize) != Some(id) {
                         out.push(format!("{}: nicht im Wandzug eingetragen", e.number));
                     }
+                    if let Some(c) = w.coupling {
+                        out.extend(self.check_coupling(id, &e.number, w, c));
+                    }
                 }
                 ElementKind::GroundSlab(s) => {
                     if !self.needs_foundation(s.run) {
                         out.push(format!(
-                            "{}: kein geschlossener Außenwandzug darüber",
+                            "{}: kein geschlossener Außenwandzug im EG darüber",
                             e.number
                         ));
                     }
@@ -2154,7 +2792,7 @@ impl Model {
                     }
                 }
                 ElementKind::Floor(f) => {
-                    if !self.needs_foundation(f.run) {
+                    if !self.needs_floor(f.run) {
                         out.push(format!(
                             "{}: kein geschlossener Außenwandzug darunter",
                             e.number
@@ -2165,7 +2803,11 @@ impl Model {
                     }
                     let crown = self
                         .run(f.run)
-                        .map_or(0.0, |r| self.level_z(r.base).unwrap_or(0.0) + r.height);
+                        .and_then(|r| self.level_z(r.top))
+                        .unwrap_or(0.0);
+                    if self.run(f.run).is_some_and(|r| f.top != LevelRef::top(r.storey)) {
+                        out.push(format!("{}: nicht an der OK des Geschosses", e.number));
+                    }
                     match self.level_z(f.top) {
                         Some(top) if top - f.thickness > 0.0 && top <= crown + 1e-6 => {}
                         Some(top) => out.push(format!(
@@ -2189,8 +2831,8 @@ impl Model {
             if self.needs_foundation(id) && self.slabs_of(id).len() != 1 {
                 out.push(format!("Wandzug {id:?}: nicht genau eine Sohlplatte"));
             }
-            if self.needs_foundation(id) && self.floors_of(id).len() != 1 {
-                out.push(format!("Wandzug {id:?}: nicht genau eine Erdgeschossdecke"));
+            if self.needs_floor(id) && self.floors_of(id).len() != 1 {
+                out.push(format!("Wandzug {id:?}: nicht genau eine Decke"));
             }
         }
         for (id, r) in self.runs.iter() {
@@ -2202,8 +2844,16 @@ impl Model {
                     r.segments.len()
                 ));
             }
-            if r.height <= 0.0 || !r.height.is_finite() {
-                out.push(format!("Wandzug {id:?}: Höhe {} ungültig", r.height));
+            if r.base != LevelRef::bottom(r.storey) || r.top != LevelRef::top(r.storey) {
+                out.push(format!(
+                    "Wandzug {id:?}: Fuß/Krone nicht an UK/OK des eigenen Geschosses"
+                ));
+            }
+            if self
+                .storey(r.storey)
+                .is_some_and(|s| s.building.is_none_or(|b| !self.buildings.contains(b)))
+            {
+                out.push(format!("Wandzug {id:?}: Geschoss ohne Gebäude"));
             }
             let n = r.points.len();
             for k in 0..count {
@@ -2251,7 +2901,15 @@ impl Model {
         guids.extend(self.materials.iter().map(|(_, m)| m.guid));
         guids.extend(self.layer_sets.iter().map(|(_, s)| s.guid));
         guids.extend(self.storeys.iter().map(|(_, s)| s.guid));
+        guids.extend(self.buildings.iter().map(|(_, b)| b.guid));
         guids.push(self.project.guid);
+        let mut bn: Vec<&str> = self.buildings.iter().map(|(_, b)| b.number.as_str()).collect();
+        let n = bn.len();
+        bn.sort();
+        bn.dedup();
+        if bn.len() != n {
+            out.push("Gebäudenummer doppelt vergeben".into());
+        }
         let n = guids.len();
         guids.sort();
         guids.dedup();
@@ -2277,6 +2935,9 @@ impl Model {
             {
                 out.push(format!("Anschluss {:?}: Wand fehlt", j.a));
             }
+            if self.run(j.a_run).map(|r| r.storey) != self.run(j.b_run).map(|r| r.storey) {
+                out.push(format!("Anschluss {:?}: über zwei Geschosse", j.a));
+            }
         }
         // Regel 13: Sichtbares hängt nur an den Punkten, nicht am Verlauf
         let fresh = self.detect_all();
@@ -2298,14 +2959,15 @@ const FLOOR_SEQ: u16 = 4;
 /// Standardwerte der Geschossbänder (B11, mm): Geschosshöhe EG und OG,
 /// Gründungstiefe, Deckendicke.
 pub(crate) const STOREY_HEIGHT: f64 = 2855.0;
+/// Geschosshöhe OG (B12): lichte Höhe 2,76 + Decke 0,22.
+pub(crate) const UPPER_HEIGHT: f64 = 2980.0;
 pub(crate) const FOUNDATION_DEPTH: f64 = 800.0;
 pub(crate) const FLOOR_THICKNESS: f64 = 220.0;
 const SLAB_THICKNESS: f64 = 200.0;
-/// Grenzen (G4): lichte Höhe, Schürzentiefe, OG-Höhe (Platzhalter bis zur
-/// OG-Decke), größte Gründungstiefe.
+/// Grenzen (G4): lichte Höhe jedes Geschosses, Schürzentiefe, größte
+/// Gründungstiefe.
 pub const MIN_CLEAR: f64 = 1000.0;
 pub const MIN_FOOTING: f64 = 100.0;
-pub const MIN_UPPER: f64 = 1220.0;
 pub const MAX_FOUNDATION: f64 = 10000.0;
 /// Kleinster Sockelrücksprung außer 0 (mm).
 pub const MIN_RECESS: f64 = 20.0;
@@ -2478,11 +3140,12 @@ mod tests {
             vec3(8000.0, 0.0, 0.0),
         ];
         let set = m.defaults().exterior_wall;
+        let eg = m.eg_at(3500.0);
         m.add_wall_run(
             &pts,
             true,
             RefSide::Left,
-            3500.0,
+            eg,
             set,
             Category::ExteriorWall,
         )
@@ -2549,12 +3212,13 @@ mod tests {
             vec3(0.0, 5000.0, 0.0),
             vec3(5000.0, 5000.0, 0.0),
         ];
+        let eg = m2.eg_at(3000.0);
         let r2 = m2
             .add_wall_run(
                 &pts,
                 false,
                 RefSide::Left,
-                3000.0,
+                eg,
                 set,
                 Category::ExteriorWall,
             )
@@ -2586,7 +3250,8 @@ mod tests {
         assert_eq!((t[0], t[3], t[4]), (s[0], s[2], s[3]));
         assert_ne!(t[1], s[1]);
         assert_eq!(t[2], s[1], "der längere Teil behält die Kennung");
-        assert_eq!(m.element(t[1]).unwrap().number, "AW-005");
+        // AW-005…008 sind die gestapelten OG-Wände (B12)
+        assert_eq!(m.element(t[1]).unwrap().number, "AW-009");
         // Den Punkt wieder entfernen: das kurze Stück verschwindet mit seiner Kennung
         assert!(m.set_run_points(r, &p).is_some());
         assert_eq!(m.run(r).unwrap().segments, s);
@@ -2602,12 +3267,13 @@ mod tests {
             vec3(5000.0, 5000.0, 0.0),
             vec3(5000.0, 0.0, 0.0),
         ];
+        let eg = m.eg_at(3000.0);
         let r2 = m
             .add_wall_run(
                 &o,
                 false,
                 RefSide::Left,
-                3000.0,
+                eg,
                 set,
                 Category::ExteriorWall,
             )
@@ -2643,7 +3309,9 @@ mod tests {
         let guid = m.run(r).unwrap().guid;
         let rev = m.revision();
         let touched = m.apply(&t, Direction::Undo);
-        assert_eq!(touched.runs, vec![r]);
+        // EG-Zug und gekoppelter OG-Zug
+        assert_eq!(touched.runs.len(), 2);
+        assert!(touched.runs.contains(&r));
         assert!(m.runs().is_empty() && m.elements().is_empty());
         assert_eq!(state(&m), empty);
         assert!(m.revision() > rev);
@@ -2653,7 +3321,7 @@ mod tests {
         assert_ne!(r2, r);
         assert_ne!(m.run(r2).unwrap().guid, guid);
         let first = m.run(r2).unwrap().segments[0];
-        assert_eq!(m.element(first).unwrap().number, "AW-005");
+        assert_eq!(m.element(first).unwrap().number, "AW-009");
     }
 
     #[test]
@@ -2694,8 +3362,9 @@ mod tests {
         m.begin("Löschen");
         assert!(m.remove_run(r));
         let t = m.commit().unwrap();
-        // Zug, Wände, Sohlplatte, Frostschürze und Erdgeschossdecke
-        assert_eq!(t.changes.len(), 1 + walls.len() + 3);
+        // Zug, Wände, Sohlplatte, Frostschürze und Erdgeschossdecke, dazu
+        // der gekoppelte OG-Zug mit Wänden und OG-Decke
+        assert_eq!(t.changes.len(), 2 * (1 + walls.len()) + 4);
         m.apply(&t, Direction::Undo);
         assert_eq!(state(&m), before);
         for (e, g) in walls.iter().zip(&guids) {
@@ -2730,7 +3399,8 @@ mod tests {
             assert!(m.set_run_points(r, &p).is_some());
         }
         let t = m.commit().unwrap();
-        assert_eq!(t.changes.len(), 1, "{:?}", t.changes);
+        // EG-Zug und der mitgeführte OG-Zug
+        assert_eq!(t.changes.len(), 2, "{:?}", t.changes);
         assert!(matches!(t.changes[0], Change::Run { id, .. } if id == r));
         m.apply(&t, Direction::Undo);
         assert_eq!(m.run(r).unwrap().points, start);
@@ -2754,7 +3424,8 @@ mod tests {
         assert!(m.set_run_points(r, &p).is_some());
         assert!(m.set_run_points(r, &start[..3]).is_some());
         let touched = m.rollback();
-        assert_eq!(touched.runs, vec![r]);
+        assert_eq!(touched.runs.len(), 2, "EG- und OG-Zug");
+        assert!(touched.runs.contains(&r));
         assert!(!m.in_step());
         assert_eq!(state(&m), before);
         assert!(m.check().is_empty());

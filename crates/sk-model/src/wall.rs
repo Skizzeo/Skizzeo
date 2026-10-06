@@ -233,7 +233,7 @@ impl WallChain {
     /// Anfangspunkt und Richtung von Segment `seg` (bereinigte Punkte).
     pub(crate) fn segment_frame(&self, seg: usize) -> Option<(Vec3, Vec3)> {
         let (pts, _, dirs) = self.layout()?;
-        Some((pts[seg], *dirs.get(seg)?))
+        Some((*pts.get(seg)?, *dirs.get(seg)?))
     }
 
     /// Bereich des Wandkörpers quer zur Bezugslinie (kleiner, größer).
@@ -470,7 +470,7 @@ impl WallChain {
 
     /// Richtung „nach außen“ je Segment: +1, wenn die Außenfläche rechts der
     /// Zeichenrichtung liegt, sonst −1.
-    fn outward_sign(&self) -> f64 {
+    pub(crate) fn outward_sign(&self) -> f64 {
         let (_, hi) = self.span();
         if self.outer_offset() == hi {
             1.0

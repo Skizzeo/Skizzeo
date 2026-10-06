@@ -7,7 +7,7 @@
 //! Schritt mit [`crate::Model::begin`] und [`crate::Model::commit`].
 
 use crate::attr::{Display, Fill, FillId, LineType, LineTypeId, Pen, PenId, Surface, SurfaceId};
-use crate::element::{Element, ElementId, RunId, Storey, StoreyId, WallRun};
+use crate::element::{Building, BuildingId, Element, ElementId, RunId, Storey, StoreyId, WallRun};
 use crate::library::{LayerSet, LayerSetId, Material, MaterialId};
 
 /// Ein geänderter Datensatz: `None` heißt „gab es nicht“ (angelegt bzw. gelöscht).
@@ -37,6 +37,11 @@ pub enum Change {
         id: StoreyId,
         old: Option<Storey>,
         new: Option<Storey>,
+    },
+    Building {
+        id: BuildingId,
+        old: Option<Building>,
+        new: Option<Building>,
     },
     Pen {
         id: PenId,
@@ -73,6 +78,7 @@ impl Change {
             Change::LayerSet { old, new, .. } => old == new,
             Change::Material { old, new, .. } => old == new,
             Change::Storey { old, new, .. } => old == new,
+            Change::Building { old, new, .. } => old == new,
             Change::Pen { old, new, .. } => old == new,
             Change::LineType { old, new, .. } => old == new,
             Change::Fill { old, new, .. } => old == new,
@@ -122,6 +128,7 @@ pub(crate) enum Key {
     LayerSet(LayerSetId),
     Material(MaterialId),
     Storey(StoreyId),
+    Building(BuildingId),
     Pen(PenId),
     LineType(LineTypeId),
     Fill(FillId),
