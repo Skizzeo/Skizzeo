@@ -59,19 +59,30 @@ impl Document {
     }
 }
 
-/// Speichert atomar: erst `name.szo.tmp`, dann umbenennen. Eine alte Datei
-/// bleibt heil, wenn das Schreiben scheitert.
+/// Speichert atomar: erst `name.szo.tmp` schreiben und auf die Platte bringen,
+/// dann umbenennen. Eine alte Datei bleibt heil, wenn das Schreiben scheitert
+/// oder der Rechner dabei ausgeht.
 pub fn save(model: &Model, path: &Path) -> Result<(), String> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
     let text = szo::write(model);
-    std::fs::write(&tmp, text.as_bytes())
+    write_synced(&tmp, text.as_bytes())
         .and_then(|_| std::fs::rename(&tmp, path))
         .map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
             format!("„{}“ konnte nicht gespeichert werden: {e}", path.display())
         })
+}
+
+/// Schreibt und wartet, bis die Daten auf der Platte sind. Ohne das kann nach
+/// einem Absturz die umbenannte Datei leer sein, obwohl das Umbenennen schon
+/// gespeichert war.
+fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::File::create(path)?;
+    f.write_all(bytes)?;
+    f.sync_all()
 }
 
 /// Lädt eine Datei. Fehler als lesbarer Text; Hinweise gehen an den Aufrufer.
