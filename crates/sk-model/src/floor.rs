@@ -72,10 +72,10 @@ impl FloorSlab {
         if p.thickness.is_nan() || p.thickness <= 0.0 {
             return Err(FloorError::BadThickness);
         }
-        if p.top.is_nan() || p.top - p.thickness <= 0.0 {
+        if p.top.is_nan() || p.top - p.thickness <= chain.base {
             return Err(FloorError::BelowWallFoot);
         }
-        if p.top > chain.height + 1e-6 {
+        if p.top > chain.top() + 1e-6 {
             return Err(FloorError::AboveWallTop);
         }
         // Außenseite der tragenden Schicht: Außenfläche mit derselben
@@ -262,6 +262,7 @@ mod tests {
             closed: true,
             ref_side: RefSide::Left,
             layers: vec![Layer::new(140.0, INSULATION), Layer::core(175.0, AAC)],
+            base: 0.0,
             height: 3500.0,
             joints: Default::default(),
         }
@@ -394,6 +395,7 @@ mod tests {
             closed: false,
             ref_side: RefSide::Center,
             layers: vec![Layer::core(175.0, AAC)],
+            base: 0.0,
             height: 3500.0,
             joints: Default::default(),
         };

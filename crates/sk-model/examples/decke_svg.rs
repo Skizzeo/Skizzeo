@@ -23,6 +23,7 @@ fn main() {
         closed: true,
         ref_side: RefSide::Left,
         layers: vec![Layer::new(140.0, 2), Layer::core(175.0, 1)],
+        base: 0.0,
         height: 3500.0,
         joints: Default::default(),
     };

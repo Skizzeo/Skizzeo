@@ -140,12 +140,15 @@ impl Joints {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WallChain {
-    /// Eckpunkte der Bezugslinie (z wird ignoriert, Wände stehen auf z = 0).
+    /// Eckpunkte der Bezugslinie (z wird ignoriert, siehe [`WallChain::base`]).
     pub points: Vec<Vec3>,
     pub closed: bool,
     pub ref_side: RefSide,
     /// Schichten von außen nach innen.
     pub layers: Vec<Layer>,
+    /// Höhe des Wandfußes (z, absolut): EG ±0, OG auf OK EG-Decke.
+    pub base: f64,
+    /// Wandhöhe ab dem Fuß.
     pub height: f64,
     /// Anschlüsse an andere Wandzüge (Paket B5a).
     pub joints: Joints,
@@ -465,6 +468,101 @@ impl WallChain {
         })
     }
 
+    /// Richtung „nach außen“ je Segment: +1, wenn die Außenfläche rechts der
+    /// Zeichenrichtung liegt, sonst −1.
+    fn outward_sign(&self) -> f64 {
+        let (_, hi) = self.span();
+        if self.outer_offset() == hi {
+            1.0
+        } else {
+            -1.0
+        }
+    }
+
+    /// Zug mit jedem Segment `i` um `offsets[i]` nach außen verschoben
+    /// (negativ: nach innen), z. B. die OG-Wand über der EG-Wand mit ihrem
+    /// Versatz je Segment. Die Ecken sind die Schnittpunkte der verschobenen
+    /// Nachbarlinien, Richtungen bleiben erhalten. `None`, wenn die Anzahl
+    /// nicht passt, zwei fluchtende Nachbarn verschieden weit wandern sollen
+    /// oder ein Segment dabei verschwinden oder sich umkehren würde.
+    pub fn with_segment_offsets(&self, offsets: &[f64]) -> Option<WallChain> {
+        let (pts, closed, dirs) = self.layout()?;
+        let (n, m) = (pts.len(), dirs.len());
+        if offsets.len() != m || offsets.iter().any(|d| !d.is_finite()) {
+            return None;
+        }
+        if offsets.iter().all(|d| *d == 0.0) {
+            return Some(WallChain {
+                points: pts,
+                closed,
+                ..self.clone()
+            });
+        }
+        let sign = self.outward_sign();
+        let shift = |i: usize| right_of(dirs[i]) * (sign * offsets[i]);
+        let mut out = Vec::with_capacity(n);
+        for j in 0..n {
+            let prev = if closed || j > 0 {
+                Some((j + m - 1) % m)
+            } else {
+                None
+            };
+            let next = if closed || j < n - 1 { Some(j % m) } else { None };
+            let p = match (prev, next) {
+                (Some(a), Some(b)) => {
+                    let c = cross2(dirs[a], dirs[b]);
+                    if c.abs() < 1e-9 {
+                        // Fluchtend: nur gemeinsam verschiebbar
+                        if (offsets[a] - offsets[b]).abs() > 1e-6 || dirs[a].dot(dirs[b]) < 0.0 {
+                            return None;
+                        }
+                        pts[j] + shift(b)
+                    } else {
+                        // Schnitt von pts[j] + shift(a) + dirs[a]·s mit pts[j] + shift(b) + dirs[b]·u
+                        let (pa, pb) = (pts[j] + shift(a), pts[j] + shift(b));
+                        pa + dirs[a] * (cross2(pb - pa, dirs[b]) / c)
+                    }
+                }
+                (Some(a), None) => pts[j] + shift(a),
+                (None, Some(b)) => pts[j] + shift(b),
+                (None, None) => return None,
+            };
+            out.push(p);
+        }
+        for k in 0..m {
+            let v = out[(k + 1) % n] - out[k];
+            if v.length() < 1.0 || v.dot(dirs[k]) <= 0.0 {
+                return None;
+            }
+        }
+        Some(WallChain {
+            points: out,
+            closed,
+            ..self.clone()
+        })
+    }
+
+    /// Versatz nach außen je Segment von `self` gegenüber dem Zug `below`
+    /// (gleiche Segmentzahl und Richtungen), Gegenstück zu
+    /// [`WallChain::with_segment_offsets`]: Bezugslinie zu Bezugslinie.
+    /// `None`, wenn die Züge nicht zusammenpassen.
+    pub fn segment_offsets_from(&self, below: &WallChain) -> Option<Vec<f64>> {
+        let (pa, ca, da) = below.layout()?;
+        let (pb, cb, db) = self.layout()?;
+        if ca != cb || da.len() != db.len() {
+            return None;
+        }
+        let sign = below.outward_sign();
+        da.iter()
+            .zip(&db)
+            .enumerate()
+            .map(|(i, (a, b))| {
+                (cross2(*a, *b).abs() < 1e-9 && a.dot(*b) > 0.0)
+                    .then(|| (pb[i] - pa[i]).dot(right_of(*a)) * sign)
+            })
+            .collect()
+    }
+
     /// Gesamtdicke aller Schichten.
     pub fn thickness(&self) -> f64 {
         self.layers.iter().map(|l| l.thickness).sum()
@@ -504,22 +602,27 @@ impl WallChain {
         first..self.layers.len()
     }
 
-    /// Höhenabschnitte (von, bis) der Schicht `layer`: ganze Höhe oder, wenn
-    /// eine Decke sie unterbricht, unter und über der Decke.
+    /// Wandkrone (z, absolut).
+    pub fn top(&self) -> f64 {
+        self.base + self.height
+    }
+
+    /// Höhenabschnitte (von, bis; z absolut) der Schicht `layer`: ganze Höhe
+    /// oder, wenn eine Decke sie unterbricht, unter und über der Decke.
     pub fn layer_spans(&self, layer: usize) -> Vec<(f64, f64)> {
-        let h = self.height;
+        let (z0, h) = (self.base, self.top());
         match self.joints.slab_band {
-            Some((b, t)) if self.band_layers().contains(&layer) && b < h && t > 0.0 => {
+            Some((b, t)) if self.band_layers().contains(&layer) && b < h && t > z0 => {
                 let mut v = Vec::with_capacity(2);
-                if b > 1e-6 {
-                    v.push((0.0, b.min(h)));
+                if b > z0 + 1e-6 {
+                    v.push((z0, b.min(h)));
                 }
                 if t < h - 1e-6 {
-                    v.push((t.max(0.0), h));
+                    v.push((t.max(z0), h));
                 }
                 v
             }
-            _ => vec![(0.0, h)],
+            _ => vec![(z0, h)],
         }
     }
 
@@ -824,6 +927,7 @@ mod tests {
             closed,
             ref_side,
             layers: vec![Layer::new(400.0, material::PLAIN)],
+            base: 0.0,
             height: 3500.0,
             joints: Default::default(),
         }
@@ -904,6 +1008,7 @@ mod verschieben {
             closed: true,
             ref_side: RefSide::Left,
             layers: vec![Layer::new(400.0, material::PLAIN)],
+            base: 0.0,
             height: 3500.0,
             joints: Default::default(),
         }
@@ -1008,6 +1113,7 @@ mod schichten {
             closed: true,
             ref_side,
             layers: exterior_wall_layers(),
+            base: 0.0,
             height: 3500.0,
             joints: Default::default(),
         }
@@ -1068,6 +1174,7 @@ mod richtung {
             closed: false,
             ref_side: RefSide::Left,
             layers: vec![Layer::new(400.0, material::PLAIN)],
+            base: 0.0,
             height: 3500.0,
             joints: Default::default(),
         };
