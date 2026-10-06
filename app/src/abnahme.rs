@@ -1394,3 +1394,265 @@ fn a28_schnitt_stahlbeton_ohne_fuge() {
     // Fuge zur Wand (OK Platte, unter dem Gasbeton) bleibt
     assert!(!flat_at(0.0, 140.0, 315.0).is_empty(), "Linie Wand/Platte");
 }
+
+// ---------------------------------------------------------------------------
+// A29: Innenwände mit T-Anschluss (Paket B5a)
+// ---------------------------------------------------------------------------
+
+/// Haus 10 × 8 m mit der Maus, Höhe 2,75 m wie in Paket B5a.
+fn haus_275(s: &mut Scene, c: &Camera) -> RunId {
+    let mut t = tool(s);
+    for p in RECHTECK {
+        click(&mut t, c, p);
+    }
+    let mut w = click(&mut t, c, RECHTECK[0]).unwrap();
+    w.height = 2750.0;
+    s.add_wall(&w).unwrap()
+}
+
+/// Innenwand mit dem Werkzeug von `a` nach `b`, Enter beendet, Höhe 2,75 m.
+fn innenwand(s: &mut Scene, c: &Camera, a: Vec3, b: Vec3) -> RunId {
+    use sk_model::Category;
+    let mut t = tool(s);
+    let set = s.model().defaults().interior_wall;
+    t.set_category(Category::InteriorWall, s.model().wall_layers(set));
+    assert_eq!(t.ref_side, RefSide::Center, "Innenwand: Bezug Achse");
+    click(&mut t, c, a);
+    click(&mut t, c, b);
+    let mut w = t.handle(&key(Key::Enter), c, W, H, 1.0).commit.unwrap();
+    w.height = 2750.0;
+    s.add_wall_as(&w, Category::InteriorWall).unwrap()
+}
+
+fn wall_m3(s: &Scene, run: RunId, seg: usize) -> f64 {
+    s.wall_qto(s.model().wall_at(run, seg).unwrap())
+        .unwrap()
+        .volume
+        / 1e9
+}
+
+/// A29: Knopf „Innenwand“ zeichnet eine 17,5-cm-Gasbetonwand, die mit
+/// T-Anschluss an die Außenwand stößt: Volumen netto, Gasbeton ohne Fuge,
+/// die Innenwand geht beim Gummiband mit, Rückgängig und Speichern/Öffnen
+/// behalten alles.
+#[test]
+fn a29_innenwand_mit_t_anschluss() {
+    use sk_model::join::JoinKind;
+    // Knopf im Paneel
+    let mut ui = Ui::new(1.0, &Theme::dark());
+    ui.fit(1.0, 1440, 900);
+    let b = find_buttons(&mut ui, Panel::Tools, 1440, 32);
+    let &(_, x, y) = b
+        .iter()
+        .find(|b| b.0 == Id::Interior)
+        .expect("Knopf Innenwand");
+    assert_eq!(ui_click(&mut ui, x, y, 1440, 32), Some(Id::Interior));
+
+    let c = cam3d();
+    for (from, to) in [(315.0, 7685.0), (0.0, 8000.0)] {
+        let mut s = Scene::with_model(Model::with_seed(29));
+        let aw = haus_275(&mut s, &c);
+        let iw = innenwand(&mut s, &c, vec3(5000.0, from, 0.0), vec3(5000.0, to, 0.0));
+        let ctx = format!("Innenwand {from}…{to}");
+        let id = s.model().wall_at(iw, 0).unwrap();
+        assert_eq!(s.model().element(id).unwrap().number, "IW-001", "{ctx}");
+        let joins = s.model().joins();
+        assert_eq!(joins.len(), 2, "{ctx}: {joins:?}");
+        assert!(joins.iter().all(|j| j.kind == JoinKind::T), "{ctx}");
+        assert!(
+            (wall_m3(&s, iw, 0) - 3.5468125).abs() < 1e-6,
+            "{ctx}: {}",
+            wall_m3(&s, iw, 0)
+        );
+        let aw_sum: f64 = (0..4).map(|i| wall_m3(&s, aw, i)).sum();
+        assert!((aw_sum - 30.0935).abs() < 5e-5, "{ctx}: AW {aw_sum}");
+        let gas: f64 = (0..4)
+            .map(|i| {
+                let q = s.wall_qto(s.model().wall_at(aw, i).unwrap()).unwrap();
+                q.layers[1].volume / 1e9
+            })
+            .sum::<f64>()
+            + wall_m3(&s, iw, 0);
+        assert!((gas - 19.9959375).abs() < 5e-5, "{ctx}: Gasbeton {gas}");
+        assert!(
+            s.model().check().is_empty(),
+            "{ctx}: {:?}",
+            s.model().check()
+        );
+
+        // Grundriss: keine Kante quer über den Anschluss an der Innenfläche
+        let plan = s.mesh(ViewKind::Plan, None, &[]);
+        for yi in [315.0f32, 7685.0] {
+            let seam = plan.edges.iter().any(|(p, _)| {
+                (p[0][1] - yi).abs() < 0.5
+                    && (p[1][1] - yi).abs() < 0.5
+                    && p[0][0].min(p[1][0]) < 5000.0
+                    && p[0][0].max(p[1][0]) > 5000.0
+            });
+            assert!(!seam, "{ctx}: Fuge bei y = {yi}");
+            // Gegenprobe: Neben dem Anschluss ist die Innenkante durchgezogen
+            let wall_edge = plan.edges.iter().any(|(p, _)| {
+                (p[0][1] - yi).abs() < 0.5
+                    && (p[1][1] - yi).abs() < 0.5
+                    && p[0][0].min(p[1][0]) < 2500.0
+                    && p[0][0].max(p[1][0]) > 2500.0
+            });
+            assert!(wall_edge, "{ctx}: Innenkante bei y = {yi} fehlt");
+        }
+    }
+
+    // Lücke über 50 mm: kein Anschluss
+    let mut s = Scene::with_model(Model::with_seed(30));
+    haus_275(&mut s, &c);
+    let iw = innenwand(
+        &mut s,
+        &c,
+        vec3(5000.0, 1000.0, 0.0),
+        vec3(5000.0, 7000.0, 0.0),
+    );
+    assert!(s.model().joins().is_empty());
+    assert!((wall_m3(&s, iw, 0) - 2.8875).abs() < 1e-6);
+
+    // Gummiband: obere Außenwand 1 m nach außen, Innenwand geht mit
+    let mut s = Scene::with_model(Model::with_seed(31));
+    let aw = haus_275(&mut s, &c);
+    let iw = innenwand(
+        &mut s,
+        &c,
+        vec3(5000.0, 0.0, 0.0),
+        vec3(5000.0, 8000.0, 0.0),
+    );
+    let mut e = WallEdit::default();
+    let (x, y) = px(&c, vec3(2500.0, 8000.0, 0.0));
+    e.handle(&mv(x, y), &mut s, &c, W, H, 1.0, true);
+    e.handle(&down(x, y), &mut s, &c, W, H, 1.0, true);
+    let (x2, y2) = px(&c, vec3(2500.0, 9000.0, 0.0));
+    e.handle(&mv(x2, y2), &mut s, &c, W, H, 1.0, true);
+    e.handle(&up(x2, y2), &mut s, &c, W, H, 1.0, true);
+    assert!((s.chain(aw).unwrap().points[1].y - 9000.0).abs() < 1e-6);
+    assert!(
+        (wall_m3(&s, iw, 0) - 4.0280625).abs() < 1e-6,
+        "{}",
+        wall_m3(&s, iw, 0)
+    );
+    let ends = &s.chain(iw).unwrap().points;
+    assert!(ends.iter().any(|p| (p.y - 8685.0).abs() < 1e-6), "{ends:?}");
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+
+    // Speichern und Öffnen: dieselben Anschlüsse und Mengen, bytegleich
+    let d = test_dir("innenwand");
+    let path = d.join("Haus.szo");
+    crate::document::save(s.model(), &path).unwrap();
+    let t = Scene::with_model(crate::document::load(&path).unwrap().model);
+    assert_eq!(t.model().joins().len(), 2);
+    let tiw = t
+        .model()
+        .elements()
+        .iter()
+        .find(|(_, el)| el.number == "IW-001")
+        .map(|(id, _)| id)
+        .unwrap();
+    assert!((t.wall_qto(tiw).unwrap().volume / 1e9 - 4.0280625).abs() < 1e-6);
+    let p2 = d.join("Haus2.szo");
+    crate::document::save(t.model(), &p2).unwrap();
+    assert_eq!(std::fs::read(&p2).unwrap(), std::fs::read(&path).unwrap());
+    let _ = std::fs::remove_dir_all(&d);
+
+    // Rückgängig stellt beide Züge zurück
+    assert!(s.undo());
+    assert!((s.chain(aw).unwrap().points[1].y - 8000.0).abs() < 1e-6);
+    assert!(
+        (wall_m3(&s, iw, 0) - 3.5468125).abs() < 1e-6,
+        "{}",
+        wall_m3(&s, iw, 0)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A30: Gründung im Zusammenspiel (Gummiband, Innenwand, Speichern)
+// ---------------------------------------------------------------------------
+
+/// A30: Die Gründung folgt dem Haus. Gummiband → Platte und Schürze wachsen
+/// mit, Rückgängig stellt sie zurück; eine Innenwand erzeugt keine eigene
+/// Gründung; Rücksprung, Nummern und Guids überstehen Speichern/Öffnen.
+#[test]
+fn a30_gruendung_folgt_dem_haus() {
+    let mut s = Scene::with_model(Model::with_seed(30));
+    let c = cam3d();
+    let run = zeichne_rechteck(&mut s, &c);
+    let (slab, footing) = sohlplatte(&s, run);
+    let area = |s: &Scene| m2(s.foundation_qto(run).unwrap().0.area);
+    let axis = |s: &Scene| (s.foundation_qto(run).unwrap().1.length / 10.0).round() / 100.0;
+
+    // Gummiband: obere Wand 1 m nach außen → Platte 10 × 9 m, Schürze 36,60 m
+    let mut e = WallEdit::default();
+    let (x, y) = px(&c, vec3(2500.0, 8000.0, 0.0));
+    e.handle(&mv(x, y), &mut s, &c, W, H, 1.0, true);
+    e.handle(&down(x, y), &mut s, &c, W, H, 1.0, true);
+    let (x2, y2) = px(&c, vec3(2500.0, 9000.0, 0.0));
+    e.handle(&mv(x2, y2), &mut s, &c, W, H, 1.0, true);
+    e.handle(&up(x2, y2), &mut s, &c, W, H, 1.0, true);
+    assert_eq!(area(&s), 90.0);
+    assert_eq!(axis(&s), 36.6, "Achse 2 × (9,65 + 8,65)");
+    assert_eq!(sohlplatte(&s, run), (slab, footing), "dieselben Bauteile");
+    assert!(s.undo());
+    assert_eq!(area(&s), 80.0);
+    assert_eq!(axis(&s), 34.6);
+
+    // Innenwand quer durch: keine weitere Gründung
+    innenwand(
+        &mut s,
+        &c,
+        vec3(5000.0, 0.0, 0.0),
+        vec3(5000.0, 8000.0, 0.0),
+    );
+    let n = |s: &Scene| {
+        s.model()
+            .elements()
+            .iter()
+            .filter(|(_, el)| el.number.starts_with("SP-") || el.number.starts_with("FS-"))
+            .count()
+    };
+    assert_eq!(n(&s), 2, "nur Platte und Schürze des Hauses");
+
+    // Rücksprung 2 cm, speichern, öffnen
+    assert!(s.step_recess(slab, true));
+    let d = test_dir("gruendung");
+    let path = d.join("Haus.szo");
+    crate::document::save(s.model(), &path).unwrap();
+    let loaded = crate::document::load(&path).unwrap();
+    assert!(loaded.hints.is_empty(), "{:?}", loaded.hints);
+    let t = Scene::with_model(loaded.model);
+    let find = |s: &Scene, nr: &str| {
+        s.model()
+            .elements()
+            .iter()
+            .find(|(_, el)| el.number == nr)
+            .map(|(id, el)| (id, el.guid))
+            .unwrap_or_else(|| panic!("{nr} fehlt"))
+    };
+    let (tslab, g) = find(&t, "SP-001");
+    assert_eq!(g, s.model().element(slab).unwrap().guid);
+    assert_eq!(
+        find(&t, "FS-001").1,
+        s.model().element(footing).unwrap().guid
+    );
+    assert_eq!(
+        selection::props(&t, tslab).unwrap().recess.as_deref(),
+        Some("2 cm")
+    );
+    let trun = t
+        .model()
+        .runs()
+        .ids()
+        .find(|r| t.model().foundation_of(*r).is_some());
+    let tq = t.foundation_qto(trun.unwrap()).unwrap();
+    assert_eq!(m2(tq.0.area), 79.2816);
+    assert_eq!(m3(tq.1.volume), 7.2324);
+    assert_eq!(n(&t), 2);
+    assert!(t.model().check().is_empty(), "{:?}", t.model().check());
+    let p2 = d.join("Haus2.szo");
+    crate::document::save(t.model(), &p2).unwrap();
+    assert_eq!(std::fs::read(&p2).unwrap(), std::fs::read(&path).unwrap());
+    let _ = std::fs::remove_dir_all(&d);
+}
