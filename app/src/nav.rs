@@ -72,7 +72,8 @@ impl Navigation {
             } => {
                 self.zoom_pending = 0.0;
                 let pivot = drag_point(cam, scene, x, y, w, h);
-                self.drag = Some(if mods.shift {
+                // In Parallelansichten (Grundriss, Schnitt, Ansichten) nur verschieben
+                self.drag = Some(if mods.shift || cam.ortho.is_some() {
                     Drag::Pan {
                         depth: pan_depth(cam, pivot),
                     }
@@ -132,10 +133,12 @@ impl Navigation {
 
 /// Drehpunkt bzw. Griffpunkt: Geometrie unter der Maus, sonst Modellmitte.
 fn drag_point(cam: &mut Camera, scene: &Scene, x: f64, y: f64, w: f64, h: f64) -> Vec3 {
-    let dir = cam.ray(x, y, w, h);
-    if let Some(t) = scene.raycast(cam.eye, dir) {
-        cam.focus = t;
-        return cam.eye + dir * t;
+    let (o, dir) = cam.ray(x, y, w, h);
+    if let Some(t) = scene.raycast(o, dir) {
+        if cam.ortho.is_none() {
+            cam.focus = t;
+        }
+        return o + dir * t;
     }
     match scene.center() {
         Some(c) => c,
@@ -156,14 +159,18 @@ fn pan_depth(cam: &Camera, p: Vec3) -> f64 {
 /// Zielpunkt des Zoomens: Geometrie, sonst naher Boden, sonst im Fokusabstand
 /// auf dem Strahl unter der Maus.
 fn zoom_point(cam: &mut Camera, scene: &Scene, x: f64, y: f64, w: f64, h: f64) -> Vec3 {
-    let dir = cam.ray(x, y, w, h);
-    if let Some(t) = scene.raycast(cam.eye, dir) {
+    let (o, dir) = cam.ray(x, y, w, h);
+    if cam.ortho.is_some() {
+        // Parallelprojektion: Tiefe spielt keine Rolle
+        return o;
+    }
+    if let Some(t) = scene.raycast(o, dir) {
         cam.focus = t;
-        return cam.eye + dir * t;
+        return o + dir * t;
     }
     let mut t = cam.focus;
-    if cam.eye.z * dir.z < 0.0 {
-        t = t.min(-cam.eye.z / dir.z);
+    if o.z * dir.z < 0.0 {
+        t = t.min(-o.z / dir.z);
     }
-    cam.eye + dir * t
+    o + dir * t
 }

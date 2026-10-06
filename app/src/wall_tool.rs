@@ -1,4 +1,5 @@
-//! Werkzeug „Wandzug“: Polygonzug auf dem Boden zeichnen, die Wand wächst live mit.
+//! Werkzeug „Gebäude“: Außenwand als Polygonzug auf dem Boden zeichnen, die Wand
+//! wächst live mit. Eingeschaltet über den Knopf „Gebäude“.
 //!
 //! - Linksklick setzt Punkte. Klick auf den Startpunkt schließt den Zug.
 //! - Klick auf den letzten Punkt (Doppelklick) oder Enter beendet einen offenen Zug.
@@ -10,11 +11,10 @@
 
 use crate::camera::Camera;
 use sk_math::{vec3, Vec3};
-use sk_model::{RefSide, WallChain};
+use sk_model::{exterior_wall_layers, RefSide, WallChain};
 use sk_platform::{Event, Key, MouseButton};
 use sk_render::Helper;
 
-pub const WALL_THICKNESS: f64 = 400.0;
 pub const WALL_HEIGHT: f64 = 3500.0;
 
 /// Fangradius in Pixeln (bei 96 dpi).
@@ -46,6 +46,8 @@ struct Cursor {
 }
 
 pub struct WallTool {
+    /// Werkzeug eingeschaltet (Knopf „Gebäude“).
+    pub enabled: bool,
     points: Vec<Vec3>,
     cursor: Option<Cursor>,
     pub ref_side: RefSide,
@@ -88,6 +90,7 @@ fn push_dir(dirs: &mut Vec<Vec3>, d: Vec3) {
 impl WallTool {
     pub fn new() -> WallTool {
         WallTool {
+            enabled: false,
             points: Vec::new(),
             cursor: None,
             ref_side: RefSide::Left,
@@ -106,13 +109,16 @@ impl WallTool {
             points,
             closed,
             ref_side: self.ref_side,
-            thickness: WALL_THICKNESS,
+            layers: exterior_wall_layers(),
             height: WALL_HEIGHT,
         }
     }
 
     /// Wand, wie sie gerade am Cursor entsteht.
     pub fn preview(&self) -> Option<WallChain> {
+        if !self.enabled {
+            return None;
+        }
         let c = self.cursor.as_ref()?;
         if self.points.is_empty() {
             return None;
@@ -171,9 +177,19 @@ impl WallTool {
 
     /// Berechnet den gefangenen Cursorpunkt neu (nach Mausbewegung oder Kamerawechsel).
     pub fn refresh(&mut self, cam: &Camera, w: f64, h: f64, scale: f64) {
-        self.cursor = self
-            .mouse
-            .and_then(|(mx, my)| self.snap(cam, mx, my, w, h, scale));
+        self.cursor = if self.enabled {
+            self.mouse
+                .and_then(|(mx, my)| self.snap(cam, mx, my, w, h, scale))
+        } else {
+            None
+        };
+    }
+
+    /// Ein- oder ausschalten; ein halb gezeichneter Zug wird verworfen.
+    pub fn set_enabled(&mut self, on: bool) {
+        self.enabled = on;
+        self.points.clear();
+        self.cursor = None;
     }
 
     fn snap(&self, cam: &Camera, mx: f64, my: f64, w: f64, h: f64, scale: f64) -> Option<Cursor> {
@@ -273,6 +289,12 @@ impl WallTool {
     /// Verarbeitet ein Ereignis (Mauskoordinaten relativ zur 3D-Ansicht).
     pub fn handle(&mut self, e: &Event, cam: &Camera, w: f64, h: f64, scale: f64) -> Outcome {
         let mut out = Outcome::default();
+        if !self.enabled {
+            if let Event::MouseMove { x, y, .. } = *e {
+                self.mouse = Some((x, y));
+            }
+            return out;
+        }
         match *e {
             Event::MouseMove { x, y, mods } => {
                 self.mouse = Some((x, y));
@@ -369,6 +391,9 @@ impl WallTool {
     /// Bezugslinie, Spurlinien und Fangmarken.
     pub fn helpers(&self, cam: &Camera, scale: f32) -> Vec<Helper> {
         let mut out = Vec::new();
+        if !self.enabled {
+            return out;
+        }
         let lift = |p: Vec3| [p.x as f32, p.y as f32, p.z as f32 + 1.0];
         let line = |a: Vec3, b: Vec3, color, width: f32, dash: f32| Helper {
             a: lift(a),
@@ -481,6 +506,7 @@ mod tests {
     fn rechteck_schliesst_am_startpunkt() {
         let c = cam();
         let mut t = WallTool::new();
+        t.set_enabled(true);
         for p in [
             vec3(0.0, 0.0, 0.0),
             vec3(0.0, 4000.0, 0.0),
@@ -498,9 +524,19 @@ mod tests {
     }
 
     #[test]
+    fn ausgeschaltet_setzt_keine_punkte() {
+        let c = cam();
+        let mut t = WallTool::new();
+        assert!(click_at(&mut t, &c, vec3(0.0, 0.0, 0.0)).commit.is_none());
+        assert!(!t.is_active());
+        assert!(t.preview().is_none());
+    }
+
+    #[test]
     fn spurlinien_fangen_rechtwinklig_zum_start() {
         let c = cam();
         let mut t = WallTool::new();
+        t.set_enabled(true);
         click_at(&mut t, &c, vec3(0.0, 0.0, 0.0));
         click_at(&mut t, &c, vec3(0.0, 4000.0, 0.0));
         click_at(&mut t, &c, vec3(5000.0, 4000.0, 0.0));
@@ -515,6 +551,7 @@ mod tests {
     fn doppelklick_beendet_offenen_zug() {
         let c = cam();
         let mut t = WallTool::new();
+        t.set_enabled(true);
         click_at(&mut t, &c, vec3(0.0, 0.0, 0.0));
         click_at(&mut t, &c, vec3(3000.0, 1000.0, 0.0));
         let out = click_at(&mut t, &c, vec3(3000.0, 1000.0, 0.0));
@@ -527,6 +564,7 @@ mod tests {
     fn tab_wechselt_bezugsseite() {
         let c = cam();
         let mut t = WallTool::new();
+        t.set_enabled(true);
         let tab = Event::Key {
             key: Key::Tab,
             down: true,

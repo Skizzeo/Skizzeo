@@ -5,7 +5,7 @@
 //! Wird im Uhrzeigersinn gezeichnet, liegt links außen: Bezugsseite `Left`
 //! bedeutet dann „außen“, der Wandkörper wächst nach rechts ins Gebäude.
 
-use crate::Solid;
+use crate::solid::{material, Solid};
 use sk_math::{vec3, Vec3};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,13 +38,38 @@ impl RefSide {
     }
 }
 
+/// Eine Schicht des Wandaufbaus.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Layer {
+    pub thickness: f64,
+    pub material: u16,
+}
+
+impl Layer {
+    pub const fn new(thickness: f64, material: u16) -> Layer {
+        Layer {
+            thickness,
+            material,
+        }
+    }
+}
+
+/// Zweischalige Außenwand: 14 cm Dämmung (WDVS) außen, 17,5 cm Gasbeton innen.
+pub fn exterior_wall_layers() -> Vec<Layer> {
+    vec![
+        Layer::new(140.0, material::INSULATION),
+        Layer::new(175.0, material::AERATED_CONCRETE),
+    ]
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct WallChain {
     /// Eckpunkte der Bezugslinie (z wird ignoriert, Wände stehen auf z = 0).
     pub points: Vec<Vec3>,
     pub closed: bool,
     pub ref_side: RefSide,
-    pub thickness: f64,
+    /// Schichten von außen nach innen.
+    pub layers: Vec<Layer>,
     pub height: f64,
 }
 
@@ -111,7 +136,7 @@ impl WallChain {
     /// Geschlossen: die Seite, die vom umschlossenen Bereich weg zeigt.
     /// Offen: die Fläche auf der Bezugsseite (Mitte zählt als links).
     pub fn outer_offset(&self) -> f64 {
-        let (lo, hi) = self.ref_side.span(self.thickness);
+        let (lo, hi) = self.ref_side.span(self.thickness());
         match self.layout() {
             Some((pts, true, _)) => {
                 let n = pts.len();
@@ -154,7 +179,7 @@ impl WallChain {
                     let p1 = base + n1 * off;
                     let s_par = cross2(p1 - p0, d1) / c;
                     let x = p0 + d0 * s_par;
-                    if (x - base).length() > MITER_LIMIT * self.thickness.max(1.0) {
+                    if (x - base).length() > MITER_LIMIT * self.thickness().max(1.0) {
                         base + n1 * off
                     } else {
                         x
@@ -213,18 +238,103 @@ impl WallChain {
         })
     }
 
-    /// Wandkörper mit Gehrungen an den Ecken.
+    /// Gesamtdicke aller Schichten.
+    pub fn thickness(&self) -> f64 {
+        self.layers.iter().map(|l| l.thickness).sum()
+    }
+
+    /// Lage jeder Schicht quer zur Bezugslinie: (kleiner, größer, Baustoff).
+    pub fn layer_offsets(&self) -> Vec<(f64, f64, u16)> {
+        let (lo, _) = self.ref_side.span(self.thickness());
+        let outer = self.outer_offset();
+        let sign = if outer == lo { 1.0 } else { -1.0 };
+        let mut at = outer;
+        self.layers
+            .iter()
+            .map(|l| {
+                let next = at + sign * l.thickness;
+                let r = (at.min(next), at.max(next), l.material);
+                at = next;
+                r
+            })
+            .collect()
+    }
+
+    /// Wandkörper mit Gehrungen an den Ecken, eine Schale je Schicht.
     pub fn solid(&self) -> Solid {
         let mut s = Solid::default();
+        for (lo, hi, mat) in self.layer_offsets() {
+            s.mat = mat;
+            self.prism(&mut s, lo, hi, self.height, mat);
+        }
+        s
+    }
+
+    /// Wand waagerecht geschnitten in Höhe `cut` (für den Grundriss).
+    /// Die Schnittfläche oben trägt den Baustoff mit [`material::CUT`].
+    pub fn solid_cut_at(&self, cut: f64) -> Solid {
+        if cut >= self.height {
+            return self.solid();
+        }
+        let mut s = Solid::default();
+        for (lo, hi, mat) in self.layer_offsets() {
+            s.mat = mat;
+            self.prism(&mut s, lo, hi, cut, mat | material::CUT);
+        }
+        s
+    }
+
+    /// Schnittflächen der Wand mit der senkrechten Ebene durch `p0` mit Normale `n`
+    /// (Flächen zeigen in Richtung `n`).
+    pub fn section_caps(&self, p0: Vec3, n: Vec3) -> Solid {
+        let mut s = Solid::default();
+        let n = vec3(n.x, n.y, 0.0).normalized();
+        let along = vec3(-n.y, n.x, 0.0);
+        let up = vec3(0.0, 0.0, self.height);
+        let side = |p: Vec3| (p - p0).dot(n);
+        for (lo, hi, mat) in self.layer_offsets() {
+            let (cl, ch) = (self.face_corners(lo), self.face_corners(hi));
+            let cnt = cl.len();
+            for i in 0..self.segment_count() {
+                let j = (i + 1) % cnt;
+                let quad = [cl[i], cl[j], ch[j], ch[i]];
+                // Schnitt der Grundfläche (konvex) mit der Ebene: Strecke
+                let mut hits: Vec<Vec3> = Vec::new();
+                for k in 0..4 {
+                    let (a, b) = (quad[k], quad[(k + 1) % 4]);
+                    let (da, db) = (side(a), side(b));
+                    if (da < 0.0) != (db < 0.0) {
+                        hits.push(a + (b - a) * (da / (da - db)));
+                    }
+                }
+                if hits.len() < 2 {
+                    continue;
+                }
+                hits.sort_by(|a, b| a.dot(along).total_cmp(&b.dot(along)));
+                let (a, b) = (hits[0], hits[hits.len() - 1]);
+                if (b - a).length() < 1e-6 {
+                    continue;
+                }
+                s.mat = mat | material::CUT;
+                s.quad(a, b, b + up, a + up, n);
+                s.edge(a, b);
+                s.edge(a + up, b + up);
+                s.edge(a, a + up);
+                s.edge(b, b + up);
+            }
+        }
+        s
+    }
+
+    /// Prisma zwischen den Wandflächen `lo` und `hi` (lo < hi) bis Höhe `h`.
+    fn prism(&self, s: &mut Solid, lo: f64, hi: f64, h: f64, top_mat: u16) {
         let Some((pts, closed, dirs)) = self.layout() else {
-            return s;
+            return;
         };
         let (n, m) = (pts.len(), dirs.len());
-        let (oa, ob) = self.ref_side.span(self.thickness);
-        let ca = self.face_corners(oa);
-        let cb = self.face_corners(ob);
-
-        let h = self.height;
+        let ca = self.face_corners(lo);
+        let cb = self.face_corners(hi);
+        let side_mat = s.mat;
         let up = vec3(0.0, 0.0, h);
 
         for i in 0..m {
@@ -232,7 +342,9 @@ impl WallChain {
             let (a0, a1, b0, b1) = (ca[i], ca[j], cb[i], cb[j]);
             let nr = right_of(dirs[i]);
             s.quad(a0, a1, b1, b0, vec3(0.0, 0.0, -1.0));
+            s.mat = top_mat;
             s.quad(a0 + up, b0 + up, b1 + up, a1 + up, vec3(0.0, 0.0, 1.0));
+            s.mat = side_mat;
             s.quad(a0, a0 + up, a1 + up, a1, -nr);
             s.quad(b0, b1, b1 + up, b0 + up, nr);
             for (p, q) in [(a0, a1), (b0, b1)] {
@@ -263,7 +375,6 @@ impl WallChain {
                 s.edge(cb[j], cb[j] + up);
             }
         }
-        s
     }
 }
 
@@ -284,8 +395,8 @@ mod tests {
     fn bbox(s: &Solid) -> (Vec3, Vec3) {
         let mut lo = vec3(f64::MAX, f64::MAX, f64::MAX);
         let mut hi = -lo;
-        for (t, _) in &s.triangles {
-            for p in t {
+        for t in &s.triangles {
+            for p in &t.p {
                 lo = vec3(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
                 hi = vec3(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
             }
@@ -298,7 +409,7 @@ mod tests {
             points,
             closed,
             ref_side,
-            thickness: 400.0,
+            layers: vec![Layer::new(400.0, material::PLAIN)],
             height: 3500.0,
         }
     }
@@ -317,7 +428,7 @@ mod tests {
         assert!(s
             .triangles
             .iter()
-            .any(|(t, _)| t.iter().any(|p| (*p - inner).length() < 1e-6)));
+            .any(|t| t.p.iter().any(|p| (*p - inner).length() < 1e-6)));
     }
 
     #[test]
@@ -377,7 +488,7 @@ mod verschieben {
             ],
             closed: true,
             ref_side: RefSide::Left,
-            thickness: 400.0,
+            layers: vec![Layer::new(400.0, material::PLAIN)],
             height: 3500.0,
         }
     }
@@ -456,6 +567,69 @@ mod verschieben {
 }
 
 #[cfg(test)]
+mod schichten {
+    use super::*;
+
+    fn haus(ref_side: RefSide) -> WallChain {
+        WallChain {
+            points: vec![
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 4000.0, 0.0),
+                vec3(5000.0, 4000.0, 0.0),
+                vec3(5000.0, 0.0, 0.0),
+            ],
+            closed: true,
+            ref_side,
+            layers: exterior_wall_layers(),
+            height: 3500.0,
+        }
+    }
+
+    #[test]
+    fn daemmung_aussen_gasbeton_innen() {
+        let w = haus(RefSide::Left);
+        assert!((w.thickness() - 315.0).abs() < 1e-9);
+        let l = w.layer_offsets();
+        assert_eq!(l[0], (0.0, 140.0, material::INSULATION));
+        assert_eq!(l[1], (140.0, 315.0, material::AERATED_CONCRETE));
+        // Gegen den Uhrzeigersinn gezeichnet bleibt die Dämmung außen
+        let mut ccw = w.clone();
+        ccw.points.reverse();
+        let l = ccw.layer_offsets();
+        assert_eq!(l[0], (175.0, 315.0, material::INSULATION));
+        assert_eq!(l[1], (0.0, 175.0, material::AERATED_CONCRETE));
+    }
+
+    #[test]
+    fn grundriss_schnitt_hat_schnittflaechen_oben() {
+        let s = haus(RefSide::Left).solid_cut_at(1000.0);
+        let tops: Vec<_> = s
+            .triangles
+            .iter()
+            .filter(|t| t.p.iter().all(|p| (p.z - 1000.0).abs() < 1e-9))
+            .collect();
+        assert!(!tops.is_empty());
+        assert!(tops.iter().all(|t| t.mat & material::CUT != 0));
+    }
+
+    #[test]
+    fn senkrechter_schnitt_trifft_beide_waende_und_schichten() {
+        let w = haus(RefSide::Left);
+        let caps = w.section_caps(vec3(0.0, 2000.0, 0.0), vec3(0.0, -1.0, 0.0));
+        // linke und rechte Wand, je zwei Schichten, je ein Viereck
+        assert_eq!(caps.triangles.len(), 2 * 2 * 2);
+        let xs: Vec<f64> = caps
+            .triangles
+            .iter()
+            .flat_map(|t| t.p.map(|p| p.x))
+            .collect();
+        let lo = xs.iter().cloned().fold(f64::MAX, f64::min);
+        let hi = xs.iter().cloned().fold(f64::MIN, f64::max);
+        assert!(lo.abs() < 1e-9 && (hi - 5000.0).abs() < 1e-9, "{lo} {hi}");
+    }
+}
+
+#[cfg(test)]
 mod richtung {
     use super::*;
 
@@ -465,14 +639,14 @@ mod richtung {
             points: vec![vec3(0.0, 0.0, 0.0), vec3(0.0, 4000.0, 0.0)],
             closed: false,
             ref_side: RefSide::Left,
-            thickness: 400.0,
+            layers: vec![Layer::new(400.0, material::PLAIN)],
             height: 3500.0,
         };
         let s = w.solid();
         let xs: Vec<f64> = s
             .triangles
             .iter()
-            .flat_map(|(t, _)| t.iter().map(|p| p.x))
+            .flat_map(|t| t.p.iter().map(|p| p.x))
             .collect();
         let (lo, hi) = (
             xs.iter().cloned().fold(f64::MAX, f64::min),

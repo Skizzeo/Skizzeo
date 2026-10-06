@@ -6,13 +6,14 @@
 mod camera;
 mod nav;
 mod scene;
+mod ui;
 mod wall_edit;
 mod wall_tool;
 
 use camera::Camera;
 use nav::Navigation;
 use scene::Scene;
-use sk_math::vec3;
+use sk_math::{vec3, Vec3};
 use sk_paint::Rgba;
 use sk_platform::{CaptionArea, Config, Event, Key, MouseButton, Surface, WindowCommand};
 use sk_render::{gl::Gl, Renderer, Style};
@@ -20,6 +21,8 @@ use sk_ui::{
     logo, theme,
     titlebar::{Button, TitleBar},
 };
+use std::f64::consts::{FRAC_PI_2, PI};
+use ui::{Id, Panel, Ui, ViewKind};
 use wall_edit::WallEdit;
 use wall_tool::WallTool;
 
@@ -55,26 +58,428 @@ fn style(scale: f32) -> Style {
     }
 }
 
+/// Oberflächenbilder in der Zeichenreihenfolge.
+const OVERLAY_TITLE: usize = 0;
+const OVERLAY_TOOLS: usize = 1;
+const OVERLAY_VIEWS: usize = 2;
+
+/// Blickrichtung (yaw, pitch) der Parallelansichten.
+fn view_direction(v: ViewKind) -> (f64, f64) {
+    match v {
+        ViewKind::Plan => (FRAC_PI_2, -FRAC_PI_2),
+        ViewKind::Front | ViewKind::Section => (FRAC_PI_2, 0.0),
+        ViewKind::Back => (-FRAC_PI_2, 0.0),
+        ViewKind::Left => (0.0, 0.0),
+        ViewKind::Right | ViewKind::Persp => (PI, 0.0),
+    }
+}
+
+/// Parallelkamera, die das ganze Modell (oder ein leeres Baufeld) zeigt.
+fn fit_parallel(v: ViewKind, bounds: Option<(Vec3, Vec3)>, w: f64, h: f64) -> Camera {
+    let (lo, hi) = bounds.unwrap_or((vec3(-2000.0, -2000.0, 0.0), vec3(12000.0, 10000.0, 3500.0)));
+    let (yaw, pitch) = view_direction(v);
+    let center = (lo + hi) * 0.5;
+    let probe = Camera::parallel(center, yaw, pitch, 1.0);
+    let (r, u) = (probe.right(), probe.up());
+    let (mut wr, mut wu) = (0.0f64, 0.0f64);
+    for i in 0..8 {
+        let p = vec3(
+            if i & 1 == 0 { lo.x } else { hi.x },
+            if i & 2 == 0 { lo.y } else { hi.y },
+            if i & 4 == 0 { lo.z } else { hi.z },
+        ) - center;
+        wr = wr.max(p.dot(r).abs());
+        wu = wu.max(p.dot(u).abs());
+    }
+    // Nur die Breite zwischen den Paneelen nutzen
+    let aspect = (w / h.max(1.0)).max(0.1);
+    let half = (wu.max(wr / aspect) * 1.2).max(2000.0);
+    Camera::parallel(center, yaw, pitch, half)
+}
+
+/// 3D-Kamera schräg von vorne links, die das ganze Modell zeigt.
+fn fit_perspective(lo: Vec3, hi: Vec3) -> Camera {
+    let center = (lo + hi) * 0.5;
+    let radius = ((hi - lo).length() * 0.5).max(1000.0);
+    let fov = 45f64;
+    let dist = radius / (fov.to_radians() * 0.5).sin() * 1.15;
+    let dir = vec3(-0.55, -0.75, 0.42).normalized();
+    Camera::looking_at(center + dir * dist, center, fov)
+}
+
+struct App {
+    renderer: Renderer,
+    scene: Scene,
+    title: TitleBar,
+    ui: Ui,
+    cam: Camera,
+    /// Letzte 3D-Kamera, um aus den Parallelansichten zurückzukehren.
+    cam3d: Camera,
+    /// Die gemerkte 3D-Kamera stammt aus einer Zeit ohne Modell.
+    cam3d_empty: bool,
+    nav: Navigation,
+    tool: WallTool,
+    edit: WallEdit,
+    /// Schnittebene (Punkt, Normale zum Betrachter) der Ansicht „Schnitt“.
+    section: Option<(Vec3, Vec3)>,
+    w: u32,
+    h: u32,
+    overlay_dirty: bool,
+    redraw: bool,
+}
+
+impl App {
+    fn top(&self) -> u32 {
+        self.title.height()
+    }
+
+    /// Größe der 3D-Ansicht und Skalierung.
+    fn view_size(&self) -> (f64, f64, f64) {
+        let th = self.top() as f64;
+        (self.w as f64, self.h as f64 - th, self.title.scale as f64)
+    }
+
+    fn upload_model(&mut self) {
+        let mesh = self.scene.mesh(self.ui.view, self.section);
+        self.renderer.set_mesh(0, &mesh);
+        self.redraw = true;
+    }
+
+    /// Band nur dort, wo sich am Grundriss sinnvoll ziehen lässt.
+    fn band_allowed(&self) -> bool {
+        matches!(self.ui.view, ViewKind::Persp | ViewKind::Plan)
+    }
+
+    fn edit_enabled(&self) -> bool {
+        self.band_allowed() && !self.tool.is_active()
+    }
+
+    fn refresh_cursor(&mut self) {
+        let (vw, vh, sc) = self.view_size();
+        self.tool.refresh(&self.cam, vw, vh, sc);
+        let en = self.edit_enabled();
+        self.edit.refresh(&self.scene, &self.cam, vw, vh, sc, en);
+        self.redraw = true;
+    }
+
+    fn set_view(&mut self, v: ViewKind) {
+        if v == self.ui.view {
+            return;
+        }
+        if self.ui.view == ViewKind::Persp {
+            self.cam3d = self.cam.clone();
+            self.cam3d_empty = self.scene.bounds().is_none();
+        }
+        self.ui.view = v;
+        let (vw, vh, _) = self.view_size();
+        let tools = self.ui.rect(Panel::Tools, self.w, self.top());
+        let free_w = (vw - 2.0 * (tools.x + tools.w) as f64).max(vw * 0.3);
+        self.cam = match v {
+            ViewKind::Persp => match self.scene.bounds() {
+                // In einer Parallelansicht gezeichnet: Modell ganz zeigen
+                Some((lo, hi)) if self.cam3d_empty => fit_perspective(lo, hi),
+                _ => self.cam3d.clone(),
+            },
+            _ => fit_parallel(v, self.scene.bounds(), free_w, vh),
+        };
+        self.section = (v == ViewKind::Section).then(|| {
+            let c = self.scene.center().unwrap_or(Vec3::ZERO);
+            (vec3(c.x, c.y, 0.0), vec3(0.0, -1.0, 0.0))
+        });
+        // Wandeingabe nur auf dem Boden (3D und Grundriss)
+        if !self.band_allowed() && self.tool.enabled {
+            self.tool.set_enabled(false);
+            self.ui.building = false;
+        }
+        self.upload_model();
+        self.overlay_dirty = true;
+        self.refresh_cursor();
+    }
+
+    fn click(&mut self, id: Id) {
+        match id {
+            Id::Building => {
+                let on = !self.tool.enabled;
+                if on && !self.band_allowed() {
+                    self.set_view(ViewKind::Persp);
+                }
+                self.tool.set_enabled(on);
+            }
+            Id::Ref(r) => self.tool.ref_side = r,
+            Id::Ortho => self.tool.ortho = !self.tool.ortho,
+            Id::View(v) => self.set_view(v),
+        }
+        self.overlay_dirty = true;
+        self.refresh_cursor();
+    }
+
+    fn commit_wall(&mut self, wall: Option<sk_model::WallChain>) {
+        if let Some(wall) = wall {
+            self.scene.add_wall(wall);
+            self.upload_model();
+            self.refresh_cursor();
+        }
+    }
+
+    /// Zustand der Knöpfe an Werkzeug und Ansicht angleichen.
+    fn sync_ui(&mut self) {
+        let (b, r, o) = (self.tool.enabled, self.tool.ref_side, self.tool.ortho);
+        if (self.ui.building, self.ui.ref_side, self.ui.ortho) != (b, r, o) {
+            (self.ui.building, self.ui.ref_side, self.ui.ortho) = (b, r, o);
+            self.overlay_dirty = true;
+        }
+    }
+
+    fn handle(&mut self, e: Event, surface: &Surface) -> bool {
+        let th = self.top() as f64;
+        let (vw, vh, sc) = self.view_size();
+        // Ereignis in Koordinaten der 3D-Ansicht (unterhalb der Titelleiste)
+        let in_view = |e: Event| -> Event {
+            match e {
+                Event::MouseMove { x, y, mods } => Event::MouseMove { x, y: y - th, mods },
+                Event::MouseDown { button, x, y, mods } => Event::MouseDown {
+                    button,
+                    x,
+                    y: y - th,
+                    mods,
+                },
+                Event::MouseUp { button, x, y, mods } => Event::MouseUp {
+                    button,
+                    x,
+                    y: y - th,
+                    mods,
+                },
+                Event::Wheel { delta, x, y, mods } => Event::Wheel {
+                    delta,
+                    x,
+                    y: y - th,
+                    mods,
+                },
+                other => other,
+            }
+        };
+        let busy = self.nav.is_dragging() || self.edit.is_dragging();
+        let mut camera_moved = false;
+        match e {
+            Event::CloseRequested => return false,
+            Event::Resized { width, height } => {
+                (self.w, self.h) = (width, height);
+                self.overlay_dirty = true;
+            }
+            Event::ScaleChanged(s) => {
+                self.title.scale = s;
+                self.ui.scale = s;
+                self.renderer.set_style(style(s));
+                self.overlay_dirty = true;
+            }
+            Event::Maximized(m) => {
+                self.overlay_dirty |= self.title.maximized != m;
+                self.title.maximized = m;
+            }
+            Event::Focus(f) => {
+                self.overlay_dirty |= self.title.active != f;
+                self.title.active = f;
+            }
+            Event::Redraw => self.redraw = true,
+            Event::MouseLeave => {
+                self.overlay_dirty |= self.title.hover.take().is_some();
+                self.overlay_dirty |= self.ui.handle(&e, self.w, self.top()).repaint;
+                self.redraw |= self.tool.handle(&e, &self.cam, vw, vh, sc).redraw;
+                let en = self.edit_enabled();
+                let out = self
+                    .edit
+                    .handle(&e, &mut self.scene, &self.cam, vw, vh, sc, en);
+                self.redraw |= out.redraw;
+            }
+            Event::MouseMove { x, y, .. } => {
+                let hover = if busy {
+                    None
+                } else {
+                    self.title.button_at(x, y, self.w)
+                };
+                self.overlay_dirty |= hover != self.title.hover;
+                self.title.hover = hover;
+                let over_ui = if busy {
+                    false
+                } else {
+                    let out = self.ui.handle(&e, self.w, self.top());
+                    self.overlay_dirty |= out.repaint;
+                    out.consumed
+                };
+                let ev = in_view(e);
+                camera_moved |= self.nav.handle(&ev, &mut self.cam, &self.scene, vw, vh, sc);
+                let outside = (y < th || over_ui) && !busy;
+                let edit_ev = if outside { Event::MouseLeave } else { ev };
+                let en = self.edit_enabled();
+                let out = self
+                    .edit
+                    .handle(&edit_ev, &mut self.scene, &self.cam, vw, vh, sc, en);
+                self.redraw |= out.redraw;
+                if out.changed {
+                    self.upload_model();
+                }
+                // Über dem Band zeigt das Wandwerkzeug keinen Fangpunkt
+                let tool_ev = if outside || self.edit.is_busy() {
+                    Event::MouseLeave
+                } else {
+                    ev
+                };
+                self.redraw |= self.tool.handle(&tool_ev, &self.cam, vw, vh, sc).redraw;
+            }
+            Event::MouseDown { button, x, y, .. } => {
+                if y < th {
+                    if button == MouseButton::Left {
+                        self.title.pressed = self.title.button_at(x, y, self.w);
+                        self.overlay_dirty = true;
+                    }
+                } else {
+                    let out = self.ui.handle(&e, self.w, self.top());
+                    self.overlay_dirty |= out.repaint;
+                    if !out.consumed {
+                        let ev = in_view(e);
+                        camera_moved |=
+                            self.nav.handle(&ev, &mut self.cam, &self.scene, vw, vh, sc);
+                        let en = self.edit_enabled();
+                        let eo = self
+                            .edit
+                            .handle(&ev, &mut self.scene, &self.cam, vw, vh, sc, en);
+                        self.redraw |= eo.redraw;
+                        if !eo.consumed {
+                            let out = self.tool.handle(&ev, &self.cam, vw, vh, sc);
+                            self.redraw |= out.redraw;
+                            self.commit_wall(out.commit);
+                            let en = self.edit_enabled();
+                            self.edit.refresh(&self.scene, &self.cam, vw, vh, sc, en);
+                        }
+                    }
+                }
+            }
+            Event::MouseUp { button, x, y, .. } => {
+                if button == MouseButton::Left {
+                    if let Some(b) = self.title.pressed.take() {
+                        self.overlay_dirty = true;
+                        if self.title.button_at(x, y, self.w) == Some(b) {
+                            surface.command(match b {
+                                Button::Minimize => WindowCommand::Minimize,
+                                Button::Maximize => WindowCommand::ToggleMaximize,
+                                Button::Close => WindowCommand::Close,
+                            });
+                        }
+                    }
+                }
+                let out = self.ui.handle(&e, self.w, self.top());
+                self.overlay_dirty |= out.repaint;
+                if let Some(id) = out.clicked {
+                    self.click(id);
+                }
+                let ev = in_view(e);
+                camera_moved |= self.nav.handle(&ev, &mut self.cam, &self.scene, vw, vh, sc);
+                let en = self.edit_enabled();
+                self.redraw |= self
+                    .edit
+                    .handle(&ev, &mut self.scene, &self.cam, vw, vh, sc, en)
+                    .redraw;
+            }
+            Event::Wheel { y, .. } => {
+                if y >= th {
+                    camera_moved |=
+                        self.nav
+                            .handle(&in_view(e), &mut self.cam, &self.scene, vw, vh, sc);
+                }
+            }
+            Event::Key {
+                key, down, mods, ..
+            } => {
+                let free = !self.tool.is_active() && !self.edit.is_dragging();
+                let undo = down && mods.ctrl && key == Key::Char('Z') && free;
+                let redo_key = down && mods.ctrl && key == Key::Char('Y') && free;
+                let en = self.edit_enabled();
+                let eo = self
+                    .edit
+                    .handle(&e, &mut self.scene, &self.cam, vw, vh, sc, en);
+                if eo.changed {
+                    self.upload_model();
+                }
+                self.redraw |= eo.redraw;
+                if eo.consumed {
+                    // Esc hat das Ziehen abgebrochen
+                } else if undo || redo_key {
+                    let changed = if undo {
+                        self.scene.undo()
+                    } else {
+                        self.scene.redo()
+                    };
+                    if changed {
+                        self.upload_model();
+                        self.refresh_cursor();
+                    }
+                } else if down && key == Key::Escape && self.tool.enabled && !self.tool.is_active()
+                {
+                    // Esc ohne angefangenen Zug beendet die Gebäude-Eingabe
+                    self.tool.set_enabled(false);
+                    self.refresh_cursor();
+                } else {
+                    let out = self.tool.handle(&e, &self.cam, vw, vh, sc);
+                    self.redraw |= out.redraw;
+                    self.commit_wall(out.commit);
+                }
+            }
+        }
+        if camera_moved {
+            self.refresh_cursor();
+        }
+        self.sync_ui();
+        true
+    }
+
+    fn paint_overlays(&mut self, surface: &Surface) {
+        let c = self.title.paint(self.w);
+        let th = self.title.height();
+        self.renderer
+            .set_overlay(OVERLAY_TITLE, 0, 0, self.w, th, &c.to_premul_rgba8());
+        surface.set_caption_area(CaptionArea {
+            height: th,
+            buttons_width: self.title.buttons_width(),
+        });
+        for (slot, p) in [(OVERLAY_TOOLS, Panel::Tools), (OVERLAY_VIEWS, Panel::Views)] {
+            let (c, x, y) = self.ui.paint(p, self.w, th);
+            let px = c.to_premul_rgba8();
+            self.renderer
+                .set_overlay(slot, x, y, c.width as u32, c.height as u32, &px);
+        }
+        self.overlay_dirty = false;
+        self.redraw = true;
+    }
+}
+
 fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     let gl = Gl::load(|name| surface.gl_proc(name))?;
-    let mut renderer = Renderer::new(gl, style(surface.scale()))?;
-    let mut scene = Scene::new();
-    renderer.set_mesh(0, &scene.mesh());
-
-    let mut title = TitleBar::new(surface.scale());
-    let target = scene.center().unwrap_or(vec3(0.0, 0.0, 0.0));
-    let mut cam = Camera::looking_at(vec3(-6200.0, -8600.0, 3700.0), target, 45.0);
-    let mut nav = Navigation::default();
-    let mut tool = WallTool::new();
-    let mut edit = WallEdit::default();
-    let (mut w, mut h) = surface.size();
-    let mut overlay_dirty = true;
-    let mut redraw = true;
+    let renderer = Renderer::new(gl, style(surface.scale()))?;
+    let cam = Camera::looking_at(vec3(-6200.0, -8600.0, 3700.0), Vec3::ZERO, 45.0);
+    let (w, h) = surface.size();
+    let mut a = App {
+        renderer,
+        scene: Scene::new(),
+        title: TitleBar::new(surface.scale()),
+        ui: Ui::new(surface.scale()),
+        cam3d: cam.clone(),
+        cam3d_empty: true,
+        cam,
+        nav: Navigation::default(),
+        tool: WallTool::new(),
+        edit: WallEdit::default(),
+        section: None,
+        w,
+        h,
+        overlay_dirty: true,
+        redraw: true,
+    };
+    a.upload_model();
     let mut last_tick: Option<std::time::Instant> = None;
 
     loop {
         let mut events = Vec::new();
-        if !redraw && !overlay_dirty && !nav.is_animating() {
+        if !a.redraw && !a.overlay_dirty && !a.nav.is_animating() {
             match surface.wait_event() {
                 Some(e) => events.push(e),
                 None => return Ok(()),
@@ -83,220 +488,47 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         while let Some(e) = surface.poll_event() {
             events.push(e);
         }
-
         for e in events {
-            let th = title.height() as f64;
-            let (vw, vh, sc) = (w as f64, h as f64 - th, title.scale as f64);
-            // Ereignis in Koordinaten der 3D-Ansicht (unterhalb der Titelleiste)
-            let in_view = |e: Event| -> Event {
-                match e {
-                    Event::MouseMove { x, y, mods } => Event::MouseMove { x, y: y - th, mods },
-                    Event::MouseDown { button, x, y, mods } => Event::MouseDown {
-                        button,
-                        x,
-                        y: y - th,
-                        mods,
-                    },
-                    Event::MouseUp { button, x, y, mods } => Event::MouseUp {
-                        button,
-                        x,
-                        y: y - th,
-                        mods,
-                    },
-                    Event::Wheel { delta, x, y, mods } => Event::Wheel {
-                        delta,
-                        x,
-                        y: y - th,
-                        mods,
-                    },
-                    other => other,
-                }
-            };
-            let mut camera_moved = false;
-            match e {
-                Event::CloseRequested => return Ok(()),
-                Event::Resized { width, height } => {
-                    (w, h) = (width, height);
-                    overlay_dirty = true;
-                }
-                Event::ScaleChanged(s) => {
-                    title.scale = s;
-                    renderer.set_style(style(s));
-                    overlay_dirty = true;
-                }
-                Event::Maximized(m) => {
-                    overlay_dirty |= title.maximized != m;
-                    title.maximized = m;
-                }
-                Event::Focus(f) => {
-                    overlay_dirty |= title.active != f;
-                    title.active = f;
-                }
-                Event::Redraw => redraw = true,
-                Event::MouseLeave => {
-                    overlay_dirty |= title.hover.is_some();
-                    title.hover = None;
-                    redraw |= tool.handle(&Event::MouseLeave, &cam, vw, vh, sc).redraw;
-                    let en = !tool.is_active();
-                    redraw |= edit
-                        .handle(&Event::MouseLeave, &mut scene, &cam, vw, vh, sc, en)
-                        .redraw;
-                }
-                Event::MouseMove { y, .. } => {
-                    let hover = if nav.is_dragging() {
-                        None
-                    } else if let Event::MouseMove { x, y, .. } = e {
-                        title.button_at(x, y, w)
-                    } else {
-                        None
-                    };
-                    overlay_dirty |= hover != title.hover;
-                    title.hover = hover;
-                    let ev = in_view(e);
-                    camera_moved |= nav.handle(&ev, &mut cam, &scene, vw, vh, sc);
-                    let in_title = y < th && !nav.is_dragging() && !edit.is_dragging();
-                    let edit_ev = if in_title { Event::MouseLeave } else { ev };
-                    let en = !tool.is_active();
-                    let out = edit.handle(&edit_ev, &mut scene, &cam, vw, vh, sc, en);
-                    redraw |= out.redraw;
-                    if out.changed {
-                        renderer.set_mesh(0, &scene.mesh());
-                    }
-                    // Über dem Band zeigt das Wandwerkzeug keinen Fangpunkt
-                    let tool_ev = if in_title || edit.is_busy() {
-                        Event::MouseLeave
-                    } else {
-                        ev
-                    };
-                    redraw |= tool.handle(&tool_ev, &cam, vw, vh, sc).redraw;
-                }
-                Event::MouseDown { button, x, y, .. } => {
-                    if y < th {
-                        if button == MouseButton::Left {
-                            title.pressed = title.button_at(x, y, w);
-                            overlay_dirty = true;
-                        }
-                    } else {
-                        let ev = in_view(e);
-                        camera_moved |= nav.handle(&ev, &mut cam, &scene, vw, vh, sc);
-                        let en = !tool.is_active();
-                        let eo = edit.handle(&ev, &mut scene, &cam, vw, vh, sc, en);
-                        redraw |= eo.redraw;
-                        if !eo.consumed {
-                            let out = tool.handle(&ev, &cam, vw, vh, sc);
-                            redraw |= out.redraw;
-                            if let Some(wall) = out.commit {
-                                scene.add_wall(wall);
-                                renderer.set_mesh(0, &scene.mesh());
-                                redraw = true;
-                            }
-                            edit.refresh(&scene, &cam, vw, vh, sc, !tool.is_active());
-                        }
-                    }
-                }
-                Event::MouseUp { button, x, y, .. } => {
-                    if button == MouseButton::Left {
-                        if let Some(b) = title.pressed.take() {
-                            overlay_dirty = true;
-                            if title.button_at(x, y, w) == Some(b) {
-                                surface.command(match b {
-                                    Button::Minimize => WindowCommand::Minimize,
-                                    Button::Maximize => WindowCommand::ToggleMaximize,
-                                    Button::Close => WindowCommand::Close,
-                                });
-                            }
-                        }
-                    }
-                    let ev = in_view(e);
-                    camera_moved |= nav.handle(&ev, &mut cam, &scene, vw, vh, sc);
-                    let en = !tool.is_active();
-                    redraw |= edit.handle(&ev, &mut scene, &cam, vw, vh, sc, en).redraw;
-                }
-                Event::Wheel { y, .. } => {
-                    if y >= th {
-                        camera_moved |= nav.handle(&in_view(e), &mut cam, &scene, vw, vh, sc);
-                    }
-                }
-                Event::Key {
-                    key, down, mods, ..
-                } => {
-                    let free = !tool.is_active() && !edit.is_dragging();
-                    let undo = down && mods.ctrl && key == Key::Char('Z') && free;
-                    let redo_key = down && mods.ctrl && key == Key::Char('Y') && free;
-                    let en = !tool.is_active();
-                    let eo = edit.handle(&e, &mut scene, &cam, vw, vh, sc, en);
-                    if eo.changed {
-                        renderer.set_mesh(0, &scene.mesh());
-                    }
-                    redraw |= eo.redraw;
-                    if eo.consumed {
-                        // Esc hat das Ziehen abgebrochen
-                    } else if undo || redo_key {
-                        let changed = if undo { scene.undo() } else { scene.redo() };
-                        if changed {
-                            renderer.set_mesh(0, &scene.mesh());
-                            edit.refresh(&scene, &cam, vw, vh, sc, true);
-                            redraw = true;
-                        }
-                    } else {
-                        let out = tool.handle(&e, &cam, vw, vh, sc);
-                        redraw |= out.redraw;
-                        if let Some(wall) = out.commit {
-                            scene.add_wall(wall);
-                            renderer.set_mesh(0, &scene.mesh());
-                            redraw = true;
-                        }
-                    }
-                }
-            }
-            if camera_moved {
-                tool.refresh(&cam, vw, vh, sc);
-                edit.refresh(&scene, &cam, vw, vh, sc, !tool.is_active());
-                redraw = true;
+            if !a.handle(e, &surface) {
+                return Ok(());
             }
         }
 
-        if overlay_dirty && w > 0 {
-            let c = title.paint(w);
-            renderer.set_overlay(w, title.height(), &c.to_premul_rgba8());
-            surface.set_caption_area(CaptionArea {
-                height: title.height(),
-                buttons_width: title.buttons_width(),
-            });
-            overlay_dirty = false;
-            redraw = true;
+        if a.overlay_dirty && a.w > 0 {
+            a.paint_overlays(&surface);
         }
 
-        if nav.is_animating() {
+        if a.nav.is_animating() {
             let now = std::time::Instant::now();
             let dt = last_tick.map_or(1.0 / 60.0, |t| (now - t).as_secs_f64().min(0.1));
             last_tick = Some(now);
-            nav.tick(&mut cam, dt);
-            let th = title.height() as f64;
-            let (vw, vh, sc) = (w as f64, h as f64 - th, title.scale as f64);
-            tool.refresh(&cam, vw, vh, sc);
-            edit.refresh(&scene, &cam, vw, vh, sc, !tool.is_active());
-            redraw = true;
+            a.nav.tick(&mut a.cam, dt);
+            a.refresh_cursor();
         } else {
             last_tick = None;
         }
 
-        if redraw && w > 0 && h > title.height() {
-            let th = title.height();
-            let preview = tool.preview().map(|c| c.solid()).unwrap_or_default();
-            renderer.set_mesh(1, &scene::mesh_of(&preview));
-            let mut helpers = edit.helpers(&scene, title.scale);
-            helpers.extend(tool.helpers(&cam, title.scale));
-            renderer.set_helpers(&helpers);
-            renderer.draw(w, h, th, &cam.view(w, h - th))?;
+        let th = a.top();
+        if a.redraw && a.w > 0 && a.h > th {
+            let preview = a.tool.preview().map(|c| c.solid()).unwrap_or_default();
+            a.renderer.set_mesh(1, &scene::mesh_of(&preview));
+            let mut helpers = if a.band_allowed() {
+                let occlude = a.ui.view == ViewKind::Persp;
+                a.edit.helpers(&a.scene, a.title.scale, occlude)
+            } else {
+                Vec::new()
+            };
+            helpers.extend(a.tool.helpers(&a.cam, a.title.scale));
+            a.renderer.set_helpers(&helpers);
+            a.renderer.draw(a.w, a.h, th, &a.cam.view(a.w, a.h - th))?;
             if let Some(path) = &screenshot {
-                let px = renderer.read_pixels(w, h);
-                std::fs::write(path, sk_paint::encode_png(w, h, &px))
+                let px = a.renderer.read_pixels(a.w, a.h);
+                std::fs::write(path, sk_paint::encode_png(a.w, a.h, &px))
                     .map_err(|e| format!("Bildschirmfoto: {e}"))?;
                 return Ok(());
             }
             surface.swap_buffers();
-            redraw = false;
+            a.redraw = false;
         }
     }
 }

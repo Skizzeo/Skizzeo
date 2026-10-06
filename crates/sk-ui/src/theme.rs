@@ -41,7 +41,23 @@ pub mod panel {
     pub const FIELD: Rgba = Rgba::rgb(20, 25, 32);
     pub const ACCENT: Rgba = Rgba::rgb(242, 179, 61);
     pub const TEXT: Rgba = Rgba::rgb(231, 229, 222);
-    pub const CORNER_RADIUS: f32 = 8.0;
+    /// Gedämpfte Schrift für Hinweise.
+    pub const TEXT_DIM: Rgba = Rgba::rgb(160, 165, 172);
+    /// Schrift auf Akzentflächen.
+    pub const ON_ACCENT: Rgba = Rgba::rgb(31, 37, 45);
+    pub const ACCENT_HOVER: Rgba = Rgba::rgb(248, 196, 96);
+    pub const BUTTON_HOVER: Rgba = Rgba::rgb(42, 50, 61);
+    pub const BUTTON_PRESSED: Rgba = Rgba::rgb(50, 59, 71);
+    pub const CORNER_RADIUS: f32 = 10.0;
+}
+
+/// Baustofffarben in der 3D-Ansicht; Schnittflächen kräftiger.
+pub mod material {
+    use sk_paint::Rgba;
+    pub const AERATED_CONCRETE: Rgba = Rgba::rgb(238, 237, 232);
+    pub const INSULATION: Rgba = Rgba::rgb(244, 239, 220);
+    pub const AERATED_CONCRETE_CUT: Rgba = Rgba::rgb(176, 177, 174);
+    pub const INSULATION_CUT: Rgba = Rgba::rgb(232, 196, 92);
 }
 
 /// Eigene Titelleiste (hell, damit das schwarze Logo trägt).

@@ -6,3 +6,4 @@
 pub mod logo;
 pub mod theme;
 pub mod titlebar;
+pub mod widgets;

@@ -1,8 +1,14 @@
 //! Szene: gezeichnete Wände mit Rückgängig-Verlauf. Einheit: Millimeter.
 
-use sk_math::{vec3, Vec3};
-use sk_model::{Solid, WallChain};
+use crate::ui::ViewKind;
+use sk_math::Vec3;
+use sk_model::{material, Solid, WallChain};
+use sk_paint::Rgba;
 use sk_render::MeshData;
+use sk_ui::theme;
+
+/// Schnitthöhe des Grundrisses über dem Boden (mm).
+pub const PLAN_CUT: f64 = 1000.0;
 
 pub struct Scene {
     pub walls: Vec<WallChain>,
@@ -80,8 +86,31 @@ impl Scene {
         }
     }
 
-    pub fn mesh(&self) -> MeshData {
-        mesh_of(&self.solid)
+    /// Darstellung für eine Ansicht. Beim Schnitt: Ebene durch `section` (Punkt, Normale
+    /// zum Betrachter), alles davor wird weggeschnitten.
+    pub fn mesh(&self, view: ViewKind, section: Option<(Vec3, Vec3)>) -> MeshData {
+        match (view, section) {
+            (ViewKind::Plan, _) => {
+                let mut s = Solid::default();
+                for w in &self.walls {
+                    s.append(&w.solid_cut_at(PLAN_CUT));
+                }
+                mesh_of(&s)
+            }
+            (ViewKind::Section, Some((p0, n))) => {
+                let mut s = self.solid.clipped(p0, n);
+                for w in &self.walls {
+                    s.append(&w.section_caps(p0, n));
+                }
+                mesh_of(&s)
+            }
+            _ => mesh_of(&self.solid),
+        }
+    }
+
+    /// Umschließender Quader des Modells.
+    pub fn bounds(&self) -> Option<(Vec3, Vec3)> {
+        self.solid.bounds()
     }
 
     /// Nächster Treffer eines Strahls mit dem Modell.
@@ -91,24 +120,36 @@ impl Scene {
 
     /// Mitte des umschließenden Quaders aller Flächen.
     pub fn center(&self) -> Option<Vec3> {
-        let mut pts = self.solid.triangles.iter().flat_map(|(t, _)| t.iter());
-        let first = *pts.next()?;
-        let (mut lo, mut hi) = (first, first);
-        for p in pts {
-            lo = vec3(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
-            hi = vec3(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
-        }
-        Some((lo + hi) * 0.5)
+        self.bounds().map(|(lo, hi)| (lo + hi) * 0.5)
     }
+}
+
+fn rgb(c: Rgba) -> [f32; 3] {
+    [c.0 as f32 / 255.0, c.1 as f32 / 255.0, c.2 as f32 / 255.0]
+}
+
+/// Darstellungsfarbe eines Baustoffs.
+fn color_of(mat: u16) -> [f32; 3] {
+    use theme::material as m;
+    let cut = mat & material::CUT != 0;
+    rgb(match (mat & !material::CUT, cut) {
+        (material::AERATED_CONCRETE, false) => m::AERATED_CONCRETE,
+        (material::AERATED_CONCRETE, true) => m::AERATED_CONCRETE_CUT,
+        (material::INSULATION, false) => m::INSULATION,
+        (material::INSULATION, true) => m::INSULATION_CUT,
+        _ => theme::FACE,
+    })
 }
 
 pub fn mesh_of(s: &Solid) -> MeshData {
     let mut m = MeshData::default();
-    for (t, n) in &s.triangles {
-        let n = n.to_f32();
-        for v in t {
+    for t in &s.triangles {
+        let n = t.n.to_f32();
+        let c = color_of(t.mat);
+        for v in &t.p {
             let p = v.to_f32();
-            m.faces.push([p[0], p[1], p[2], n[0], n[1], n[2]]);
+            m.faces
+                .push([p[0], p[1], p[2], n[0], n[1], n[2], c[0], c[1], c[2]]);
         }
     }
     m.edges = s

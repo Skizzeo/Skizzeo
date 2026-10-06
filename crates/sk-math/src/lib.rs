@@ -150,6 +150,19 @@ impl Mat4 {
         }
     }
 
+    /// Parallelprojektion; `half_h` ist die halbe Bildhöhe in Welteinheiten.
+    pub fn orthographic(half_h: f64, aspect: f64, near: f64, far: f64) -> Mat4 {
+        let nf = 1.0 / (near - far);
+        Mat4 {
+            c: [
+                [1.0 / (half_h * aspect), 0.0, 0.0, 0.0],
+                [0.0, 1.0 / half_h, 0.0, 0.0],
+                [0.0, 0.0, 2.0 * nf, 0.0],
+                [0.0, 0.0, (far + near) * nf, 1.0],
+            ],
+        }
+    }
+
     pub fn mul_vec4(&self, v: [f64; 4]) -> [f64; 4] {
         let mut r = [0.0; 4];
         for (col, &s) in self.c.iter().zip(v.iter()) {

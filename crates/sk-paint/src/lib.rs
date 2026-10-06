@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod font;
 mod png;
 
 pub use png::encode_png;
@@ -49,6 +50,18 @@ impl Path {
     pub fn line_to(&mut self, x: f32, y: f32) -> &mut Path {
         self.cmds.push(Cmd::Line(pt(x, y)));
         self
+    }
+
+    /// Quadratische Bézierkurve (als kubische gespeichert).
+    pub fn quad_to(&mut self, c: (f32, f32), p: (f32, f32)) -> &mut Path {
+        let p0 = match self.cmds.last() {
+            Some(Cmd::Move(q)) | Some(Cmd::Line(q)) | Some(Cmd::Cubic(_, _, q)) => *q,
+            _ => pt(c.0, c.1),
+        };
+        let k = 2.0 / 3.0;
+        let c1 = (p0.x + k * (c.0 - p0.x), p0.y + k * (c.1 - p0.y));
+        let c2 = (p.0 + k * (c.0 - p.0), p.1 + k * (c.1 - p.1));
+        self.cubic_to(c1, c2, p)
     }
 
     pub fn cubic_to(&mut self, c1: (f32, f32), c2: (f32, f32), p: (f32, f32)) -> &mut Path {
@@ -308,19 +321,38 @@ impl Canvas {
             return;
         }
         let stride = w + 2;
-        self.acc.clear();
-        self.acc.resize(stride * h, 0.0);
-        for poly in path.flatten(0.2) {
+        // Akkumulator bleibt zwischen Aufrufen genullt; bearbeitet wird nur der
+        // umschließende Bereich des Pfads
+        if self.acc.len() != stride * h {
+            self.acc.clear();
+            self.acc.resize(stride * h, 0.0);
+        }
+        let polys = path.flatten(0.2);
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for p in polys.iter().flatten() {
+            (x0, y0, x1, y1) = (x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y));
+        }
+        if x0 > x1 || x1 < 0.0 || y1 < 0.0 || x0 >= w as f32 || y0 >= h as f32 {
+            return;
+        }
+        let (cx0, cy0) = (x0.max(0.0) as usize, y0.max(0.0) as usize);
+        let cx1 = ((x1.ceil().max(0.0) as usize) + 2).min(stride);
+        let cy1 = (y1.ceil().max(0.0) as usize).min(h);
+        for poly in &polys {
             for i in 0..poly.len() {
                 let a = poly[i];
                 let b = poly[(i + 1) % poly.len()];
                 accumulate_line(&mut self.acc, stride, w, h, a, b);
             }
         }
-        for y in 0..h {
+        for y in cy0..cy1 {
             let mut sum = 0.0f32;
-            for x in 0..w {
-                sum += self.acc[y * stride + x];
+            for x in cx0..cx1 {
+                let v = std::mem::take(&mut self.acc[y * stride + x]);
+                if x >= w {
+                    continue;
+                }
+                sum += v;
                 let cov = sum.abs().min(1.0);
                 if cov > 0.0 {
                     let s = premul(c, cov);

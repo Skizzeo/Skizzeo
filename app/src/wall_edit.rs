@@ -230,7 +230,8 @@ impl WallEdit {
     }
 
     /// Gummibänder aller Wände, das gegriffene Segment hervorgehoben.
-    pub fn helpers(&self, scene: &Scene, scale: f32) -> Vec<Helper> {
+    /// `occlude`: hinter Wänden liegende Teile blass (3D); sonst immer voll sichtbar.
+    pub fn helpers(&self, scene: &Scene, scale: f32, occlude: bool) -> Vec<Helper> {
         let mut out = Vec::new();
         let lift = |p: Vec3| [p.x as f32, p.y as f32, p.z as f32 + 2.0];
         let line = |a: Vec3, b: Vec3, color, width: f32, dash: f32| Helper {
@@ -239,7 +240,7 @@ impl WallEdit {
             color,
             width: width * scale,
             dash: dash * scale,
-            occlude: true,
+            occlude,
         };
         let active = self.drag.as_ref().map(|d| (d.wall, d.seg)).or(self.hover);
 
@@ -282,7 +283,7 @@ mod tests {
             ],
             closed: true,
             ref_side: RefSide::Left,
-            thickness: 400.0,
+            layers: vec![sk_model::Layer::new(400.0, 0)],
             height: 3500.0,
         });
         let c = Camera::looking_at(

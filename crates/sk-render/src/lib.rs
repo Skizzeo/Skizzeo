@@ -40,12 +40,14 @@ pub struct View {
     pub horizon_px: f32,
     /// Ebene, an der Kanten vor dem Auge abgeschnitten werden (Abstand).
     pub near: f32,
+    /// Verdeckbare Hilfslinien zur Kamera ziehen: Position * w + xyz (kamerarelativ).
+    pub pull: [f32; 4],
 }
 
-/// Dreiecksnetz für die GPU: Flächen (Position, Normale) und Kanten (zwei Punkte).
+/// Dreiecksnetz für die GPU: Flächen (Position, Normale, Farbe) und Kanten (zwei Punkte).
 #[derive(Clone, Debug, Default)]
 pub struct MeshData {
-    pub faces: Vec<[f32; 6]>,
+    pub faces: Vec<[f32; 9]>,
     pub edges: Vec<[[f32; 3]; 2]>,
 }
 
@@ -83,6 +85,15 @@ pub struct Helper {
     pub occlude: bool,
 }
 
+/// Bild der Oberfläche an einer Stelle im Fenster.
+struct Overlay {
+    tex: GLuint,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+}
+
 struct Target {
     fbo: GLuint,
     color: GLuint,
@@ -101,8 +112,7 @@ pub struct Renderer {
     empty_vao: GLuint,
     meshes: Vec<GpuMesh>,
     helper_mesh: GpuBuffer,
-    overlay_tex: GLuint,
-    overlay_size: (i32, i32),
+    overlays: Vec<Overlay>,
     samples: i32,
     target: Option<Target>,
     style: Style,
@@ -144,16 +154,23 @@ vec3 sky(float d) {
 }
 
 void main() {
-    vec4 f = u_inv_vp * vec4(v_ndc, 1.0, 1.0);
-    vec3 dir = normalize(f.xyz / f.w);
+    // Strahl vom Nah- zum Fernpunkt (gilt für Perspektive und Parallelprojektion)
+    vec4 n4 = u_inv_vp * vec4(v_ndc, -1.0, 1.0);
+    vec4 f4 = u_inv_vp * vec4(v_ndc, 1.0, 1.0);
+    vec3 o = n4.xyz / n4.w;
+    vec3 dir = normalize(f4.xyz / f4.w - o);
     float above = gl_FragCoord.y - u_horizon_px;
     vec3 col = sky(abs(above) / u_height);
     float depth = 1.0;
-    float t = dir.z != 0.0 ? -u_eye_z / dir.z : -1.0;
+    float z0 = u_eye_z + o.z;
+    float t = abs(dir.z) > 1e-6 ? -z0 / dir.z : -1.0;
+    float g = 1.0 - exp(-u_softness * abs(above));
     if (t > 0.0) {
-        vec4 c = u_vp * vec4(dir * t, 1.0);
+        vec4 c = u_vp * vec4(o + dir * t, 1.0);
         depth = clamp(c.z / c.w * 0.5 + 0.5, 0.0, 1.0);
-        float g = 1.0 - exp(-u_softness * abs(above));
+        col = mix(col, u_ground, g);
+    } else if (abs(dir.z) <= 1e-6 && z0 < 0.0) {
+        // Waagerechte Parallelansicht unterhalb des Bodens
         col = mix(col, u_ground, g);
     }
     o_color = vec4(col, 1.0);
@@ -164,24 +181,27 @@ void main() {
 const FACE_VS: &str = r#"#version 330 core
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in vec3 a_normal;
+layout(location = 2) in vec3 a_color;
 uniform mat4 u_vp;
 uniform vec3 u_origin;
 out vec3 v_normal;
+out vec3 v_color;
 void main() {
     v_normal = a_normal;
+    v_color = a_color;
     gl_Position = u_vp * vec4(a_pos + u_origin, 1.0);
 }
 "#;
 
 const FACE_FS: &str = r#"#version 330 core
 in vec3 v_normal;
+in vec3 v_color;
 out vec4 o_color;
-uniform vec3 u_color;
 uniform vec3 u_light;
 uniform float u_ambient;
 void main() {
     float d = max(dot(normalize(v_normal), u_light), 0.0);
-    o_color = vec4(u_color * (u_ambient + (1.0 - u_ambient) * d), 1.0);
+    o_color = vec4(v_color * (u_ambient + (1.0 - u_ambient) * d), 1.0);
 }
 "#;
 
@@ -236,6 +256,7 @@ uniform mat4 u_vp;
 uniform vec3 u_origin;
 uniform vec2 u_viewport;
 uniform float u_near;
+uniform vec4 u_pull;
 out vec4 v_color;
 noperspective out float v_dist;
 flat out float v_dash;
@@ -243,9 +264,9 @@ void main() {
     // Verdeckbare Linien ein wenig zur Kamera ziehen, damit sie nicht mit
     // der Fläche, auf der sie liegen, um die Tiefe kämpfen
     bool occl = a_style.z > 0.5;
-    float pull = occl ? 0.997 : 1.0;
-    vec4 ca = u_vp * vec4((a_a + u_origin) * pull, 1.0);
-    vec4 cb = u_vp * vec4((a_b + u_origin) * pull, 1.0);
+    vec4 pull = occl ? u_pull : vec4(0.0, 0.0, 0.0, 1.0);
+    vec4 ca = u_vp * vec4((a_a + u_origin) * pull.w + pull.xyz, 1.0);
+    vec4 cb = u_vp * vec4((a_b + u_origin) * pull.w + pull.xyz, 1.0);
     v_color = a_color;
     v_dash = a_style.y;
     if (ca.w < u_near && cb.w < u_near) {
@@ -307,8 +328,6 @@ impl Renderer {
             let helpers = program(&gl, HELPER_VS, HELPER_FS)?;
             let mut vao = 0u32;
             gl.glGenVertexArrays(1, &mut vao);
-            let mut tex = 0;
-            gl.glGenTextures(1, &mut tex);
             let mut max_samples = 0;
             gl.glGetIntegerv(MAX_SAMPLES, &mut max_samples);
             Ok(Renderer {
@@ -321,8 +340,7 @@ impl Renderer {
                 empty_vao: vao,
                 meshes: Vec::new(),
                 helper_mesh: GpuBuffer::default(),
-                overlay_tex: tex,
-                overlay_size: (0, 0),
+                overlays: Vec::new(),
                 samples: max_samples.clamp(1, 8),
                 target: None,
                 style,
@@ -355,7 +373,7 @@ impl Renderer {
         let gl = &self.gl;
         let gm = &mut self.meshes[slot];
         unsafe {
-            fill(gl, &mut gm.faces, &mesh.faces, &[(3, 0), (3, 12)]);
+            fill(gl, &mut gm.faces, &mesh.faces, &[(3, 0), (3, 12), (3, 24)]);
 
             // Jede Kante wird zu zwei Dreiecken, die der Vertex-Shader auf Pixelbreite aufzieht.
             let mut v: Vec<[f32; 8]> = Vec::with_capacity(mesh.edges.len() * 6);
@@ -402,11 +420,36 @@ impl Renderer {
         }
     }
 
-    /// Oberfläche über der 3D-Ansicht (vormultipliziertes RGBA8, Zeilen von oben).
-    pub fn set_overlay(&mut self, width: u32, height: u32, rgba_premul: &[u8]) {
+    /// Oberflächenbild Nummer `slot` an Fensterposition `(x, y)` (links oben, Pixel),
+    /// vormultipliziertes RGBA8, Zeilen von oben. Breite 0 blendet es aus.
+    pub fn set_overlay(
+        &mut self,
+        slot: usize,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        rgba_premul: &[u8],
+    ) {
         let gl = &self.gl;
+        while self.overlays.len() <= slot {
+            let mut tex = 0;
+            unsafe { gl.glGenTextures(1, &mut tex) };
+            self.overlays.push(Overlay {
+                tex,
+                x: 0,
+                y: 0,
+                w: 0,
+                h: 0,
+            });
+        }
+        let o = &mut self.overlays[slot];
+        (o.x, o.y, o.w, o.h) = (x, y, width as i32, height as i32);
+        if width == 0 || height == 0 {
+            return;
+        }
         unsafe {
-            gl.glBindTexture(TEXTURE_2D, self.overlay_tex);
+            gl.glBindTexture(TEXTURE_2D, o.tex);
             gl.glPixelStorei(UNPACK_ALIGNMENT, 1);
             gl.glTexImage2D(
                 TEXTURE_2D,
@@ -424,7 +467,6 @@ impl Renderer {
             gl.glTexParameteri(TEXTURE_2D, TEXTURE_WRAP_S, CLAMP_TO_EDGE);
             gl.glTexParameteri(TEXTURE_2D, TEXTURE_WRAP_T, CLAMP_TO_EDGE);
         }
-        self.overlay_size = (width as i32, height as i32);
     }
 
     fn ensure_target(&mut self, w: i32, h: i32) -> Result<(), String> {
@@ -522,7 +564,6 @@ impl Renderer {
             gl.glUseProgram(p);
             mat(gl, p, c"u_vp", &view.view_proj);
             vec3(gl, p, c"u_origin", view.origin_rel);
-            vec3(gl, p, c"u_color", st.face);
             vec3(gl, p, c"u_light", st.light);
             gl.glUniform1f(loc(gl, p, c"u_ambient"), st.ambient);
             for m in &self.meshes {
@@ -558,6 +599,8 @@ impl Renderer {
                 vec3(gl, p, c"u_origin", view.origin_rel);
                 gl.glUniform2f(loc(gl, p, c"u_viewport"), w as f32, h as f32);
                 gl.glUniform1f(loc(gl, p, c"u_near"), view.near);
+                let q = view.pull;
+                gl.glUniform4f(loc(gl, p, c"u_pull"), q[0], q[1], q[2], q[3]);
                 gl.glBindVertexArray(self.helper_mesh.vao);
                 for (func, hidden) in [(LEQUAL, 0.0), (GREATER, 1.0)] {
                     gl.glDepthFunc(func);
@@ -573,22 +616,22 @@ impl Renderer {
             gl.glBindFramebuffer(DRAW_FRAMEBUFFER, 0);
             gl.glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, COLOR_BUFFER_BIT, NEAREST as GLenum);
 
-            // Oberfläche (Titelleiste) oben drüber
             gl.glBindFramebuffer(FRAMEBUFFER, 0);
             gl.glDisable(DEPTH_TEST);
-            if self.overlay_size.0 > 0 && top > 0 {
-                gl.glViewport(0, h, self.overlay_size.0, self.overlay_size.1);
-                gl.glEnable(BLEND);
-                gl.glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA);
-                let p = self.overlay.id;
-                gl.glUseProgram(p);
-                gl.glActiveTexture(TEXTURE0);
-                gl.glBindTexture(TEXTURE_2D, self.overlay_tex);
-                gl.glUniform1i(loc(gl, p, c"u_tex"), 0);
-                gl.glBindVertexArray(self.empty_vao);
+            // Oberfläche (Titelleiste, Paneele) obenauf
+            gl.glEnable(BLEND);
+            gl.glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA);
+            let p = self.overlay.id;
+            gl.glUseProgram(p);
+            gl.glActiveTexture(TEXTURE0);
+            gl.glUniform1i(loc(gl, p, c"u_tex"), 0);
+            gl.glBindVertexArray(self.empty_vao);
+            for o in self.overlays.iter().filter(|o| o.w > 0 && o.h > 0) {
+                gl.glViewport(o.x, win_h as i32 - o.y - o.h, o.w, o.h);
+                gl.glBindTexture(TEXTURE_2D, o.tex);
                 gl.glDrawArrays(TRIANGLES, 0, 3);
-                gl.glDisable(BLEND);
             }
+            gl.glDisable(BLEND);
             gl.glBindVertexArray(0);
         }
         Ok(())

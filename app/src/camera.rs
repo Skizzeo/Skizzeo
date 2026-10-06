@@ -17,6 +17,8 @@ pub struct Camera {
     pub fov_y: f64,
     /// Typischer Abstand zum betrachteten Objekt; steuert Nahebene und Drehpunkt ins Leere.
     pub focus: f64,
+    /// Parallelprojektion mit dieser halben Bildhöhe (mm); `None` = perspektivisch.
+    pub ortho: Option<f64>,
 }
 
 impl Camera {
@@ -28,7 +30,24 @@ impl Camera {
             pitch: d.z.atan2((d.x * d.x + d.y * d.y).sqrt()),
             fov_y: fov_y_deg.to_radians(),
             focus: d.length(),
+            ortho: None,
         }
+    }
+
+    /// Parallelprojektion in Richtung `yaw`/`pitch` auf `target`, halbe Bildhöhe `half_h`.
+    pub fn parallel(target: Vec3, yaw: f64, pitch: f64, half_h: f64) -> Camera {
+        // Weit genug zurück, dass das ganze Modell vor der Kamera liegt
+        let dist = 200_000.0;
+        let mut c = Camera {
+            eye: target,
+            yaw,
+            pitch,
+            fov_y: 45f64.to_radians(),
+            focus: dist,
+            ortho: Some(half_h),
+        };
+        c.eye = target - c.forward() * dist;
+        c
     }
 
     pub fn forward(&self) -> Vec3 {
@@ -46,12 +65,21 @@ impl Camera {
         self.right().cross(self.forward())
     }
 
-    /// Blickstrahl durch einen Bildpunkt (Pixel, Ursprung links oben).
-    pub fn ray(&self, px: f64, py: f64, w: f64, h: f64) -> Vec3 {
-        let t = (self.fov_y * 0.5).tan();
-        let nx = (2.0 * px / w - 1.0) * t * (w / h);
-        let ny = (1.0 - 2.0 * py / h) * t;
-        (self.forward() + self.right() * nx + self.up() * ny).normalized()
+    /// Blickstrahl durch einen Bildpunkt (Pixel, Ursprung links oben): Ursprung und Richtung.
+    pub fn ray(&self, px: f64, py: f64, w: f64, h: f64) -> (Vec3, Vec3) {
+        let sx = (2.0 * px / w - 1.0) * (w / h);
+        let sy = 1.0 - 2.0 * py / h;
+        match self.ortho {
+            Some(half) => (
+                self.eye + self.right() * (sx * half) + self.up() * (sy * half),
+                self.forward(),
+            ),
+            None => {
+                let t = (self.fov_y * 0.5).tan();
+                let d = self.forward() + self.right() * (sx * t) + self.up() * (sy * t);
+                (self.eye, d.normalized())
+            }
+        }
     }
 
     /// Bildpunkt eines Weltpunkts (Pixel, Ursprung links oben); `None` hinter der Kamera.
@@ -61,47 +89,77 @@ impl Camera {
         if z <= self.near() {
             return None;
         }
-        let t = (self.fov_y * 0.5).tan();
-        let x = r.dot(self.right()) / (z * t * (w / h));
-        let y = r.dot(self.up()) / (z * t);
+        let s = match self.ortho {
+            Some(half) => half,
+            None => z * (self.fov_y * 0.5).tan(),
+        };
+        let x = r.dot(self.right()) / (s * (w / h));
+        let y = r.dot(self.up()) / s;
         Some(((x * 0.5 + 0.5) * w, (0.5 - y * 0.5) * h))
     }
 
     /// Schnittpunkt des Blickstrahls durch einen Bildpunkt mit dem Boden (z = 0).
     pub fn ground_point(&self, px: f64, py: f64, w: f64, h: f64) -> Option<Vec3> {
-        let d = self.ray(px, py, w, h);
+        let (o, d) = self.ray(px, py, w, h);
         if d.z.abs() < 1e-12 {
             return None;
         }
-        let t = -self.eye.z / d.z;
+        let t = -o.z / d.z;
         (t > 0.0 && t < self.far()).then(|| {
-            let p = self.eye + d * t;
+            let p = o + d * t;
             vec3(p.x, p.y, 0.0)
         })
     }
 
     pub fn near(&self) -> f64 {
-        (self.focus * 0.002).clamp(1.0, 500.0)
+        match self.ortho {
+            Some(_) => 10.0,
+            None => (self.focus * 0.002).clamp(1.0, 500.0),
+        }
     }
 
     pub fn far(&self) -> f64 {
-        self.near() * 2.0e6
+        match self.ortho {
+            // Tiefe ist linear: knapp halten, damit die Genauigkeit reicht
+            Some(_) => self.focus * 2.0,
+            None => self.near() * 2.0e6,
+        }
     }
 
     pub fn view(&self, w: u32, h: u32) -> View {
         let aspect = w.max(1) as f64 / h.max(1) as f64;
         let rot = Mat4::view_rotation(self.forward(), self.right(), self.up());
-        let proj = Mat4::perspective(self.fov_y, aspect, self.near(), self.far());
+        let proj = match self.ortho {
+            Some(half) => Mat4::orthographic(half, aspect, self.near(), self.far()),
+            None => Mat4::perspective(self.fov_y, aspect, self.near(), self.far()),
+        };
         let vp = proj * rot;
         let inv = vp.inverse().unwrap_or(Mat4::IDENTITY);
-        let ndc_h = (-self.pitch).tan() / (self.fov_y * 0.5).tan();
+        let ndc_h = match self.ortho {
+            // Waagerechter Blick: Horizont auf Höhe des Bodens; sonst weit oberhalb
+            Some(half) if self.pitch.abs() < 1e-6 => -self.eye.z / half,
+            Some(_) => 1000.0,
+            None => (-self.pitch).tan() / (self.fov_y * 0.5).tan(),
+        };
         View {
             view_proj: vp.to_f32(),
             inv_view_proj: inv.to_f32(),
             origin_rel: (Vec3::ZERO - self.eye).to_f32(),
             eye_z: self.eye.z as f32,
             horizon_px: ((ndc_h * 0.5 + 0.5) * h as f64) as f32,
-            near: self.near() as f32,
+            // Parallelprojektion hat w = 1: Kanten nie am Auge abschneiden
+            near: if self.ortho.is_some() {
+                0.0
+            } else {
+                self.near() as f32
+            },
+            pull: match self.ortho {
+                Some(_) => {
+                    let f = self.forward() * -50.0;
+                    [f.x as f32, f.y as f32, f.z as f32, 1.0]
+                }
+                None => [0.0, 0.0, 0.0, 0.997],
+            },
         }
     }
 
@@ -122,12 +180,26 @@ impl Camera {
 
     /// Verschieben, sodass der gegriffene Punkt in Tiefe `depth` unter der Maus bleibt.
     pub fn pan(&mut self, depth: f64, dx: f64, dy: f64, h: f64) {
-        let per_px = 2.0 * depth.max(self.near()) * (self.fov_y * 0.5).tan() / h;
+        let per_px = match self.ortho {
+            Some(half) => 2.0 * half / h,
+            None => 2.0 * depth.max(self.near()) * (self.fov_y * 0.5).tan() / h,
+        };
         self.eye = self.eye - self.right() * (dx * per_px) + self.up() * (dy * per_px);
     }
 
     /// Zoomen auf `point` zu (Rasten > 0) oder von ihm weg.
     pub fn zoom(&mut self, point: Vec3, steps: f64) {
+        if let Some(half) = self.ortho {
+            let s = 0.8f64.powf(steps);
+            let new_half = (half * s).clamp(100.0, 1.0e6);
+            let s = new_half / half;
+            let f = self.forward();
+            let rel = self.eye - point;
+            let depth = rel.dot(f);
+            self.eye = point + f * depth + (rel - f * depth) * s;
+            self.ortho = Some(new_half);
+            return;
+        }
         let rel = self.eye - point;
         let dist = rel.length();
         let mut s = 0.8f64.powf(steps);
@@ -192,8 +264,8 @@ mod tests {
     #[test]
     fn zoom_haelt_punkt_unter_der_maus() {
         let mut c = Camera::looking_at(vec3(-6000.0, -8000.0, 3000.0), vec3(0.0, 0.0, 0.0), 45.0);
-        let dir = c.ray(900.0, 300.0, 1200.0, 800.0);
-        let p = c.eye + dir * 5000.0;
+        let (o, dir) = c.ray(900.0, 300.0, 1200.0, 800.0);
+        let p = o + dir * 5000.0;
         c.zoom(p, 2.0);
         let s = project(&c, p, 1200, 800);
         assert!(
@@ -208,6 +280,38 @@ mod tests {
         let p = c.ground_point(700.0, 500.0, 1200.0, 800.0).unwrap();
         let (x, y) = c.project(p, 1200.0, 800.0).unwrap();
         assert!((x - 700.0).abs() < 1e-6 && (y - 500.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parallel_projektion_passt_zum_strahl() {
+        let c = Camera::parallel(
+            vec3(2000.0, 1000.0, 0.0),
+            0.3,
+            -std::f64::consts::FRAC_PI_2,
+            8000.0,
+        );
+        let p = c.ground_point(700.0, 500.0, 1200.0, 800.0).unwrap();
+        let (x, y) = c.project(p, 1200.0, 800.0).unwrap();
+        assert!((x - 700.0).abs() < 1e-6 && (y - 500.0).abs() < 1e-6);
+        let s = project(&c, p, 1200, 800);
+        assert!(
+            (s.0 - 700.0).abs() < 1e-2 && (s.1 - 500.0).abs() < 1e-2,
+            "{s:?}"
+        );
+    }
+
+    #[test]
+    fn parallel_zoom_haelt_punkt() {
+        let mut c = Camera::parallel(
+            vec3(0.0, 0.0, 0.0),
+            0.0,
+            -std::f64::consts::FRAC_PI_2,
+            8000.0,
+        );
+        let p = c.ground_point(900.0, 200.0, 1200.0, 800.0).unwrap();
+        c.zoom(p, 2.0);
+        let (x, y) = c.project(p, 1200.0, 800.0).unwrap();
+        assert!((x - 900.0).abs() < 1e-6 && (y - 200.0).abs() < 1e-6);
     }
 
     #[test]
