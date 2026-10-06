@@ -57,6 +57,8 @@ pub mod pattern {
     pub const DIAGONAL: f32 = 1.0;
     /// Zickzacklinie quer durch die Schicht (harte Dämmung), in Musterkoordinaten.
     pub const ZIGZAG: f32 = 2.0;
+    /// Kreuzschraffur unter 45° und 135° (Stahlbeton), in Bildschirmpixeln.
+    pub const CROSS: f32 = 3.0;
 }
 
 /// Dreiecksnetz für die GPU.
@@ -242,6 +244,14 @@ void main() {
         float m = mod(gl_FragCoord.x + gl_FragCoord.y, period);
         float dist = min(m, period - m) * 0.70710678;
         ink = clamp(u_hatch_width * 0.5 + 0.5 - dist, 0.0, 1.0);
+    } else if (v_pattern > 2.5) {
+        // Kreuzschraffur: dieselbe Schar unter 45° und 135°, Tinte = Maximum
+        float period = u_hatch_spacing * 1.41421356;
+        float m1 = mod(gl_FragCoord.x + gl_FragCoord.y, period);
+        float m2 = mod(gl_FragCoord.x - gl_FragCoord.y, period);
+        float d1 = min(m1, period - m1) * 0.70710678;
+        float d2 = min(m2, period - m2) * 0.70710678;
+        ink = clamp(u_hatch_width * 0.5 + 0.5 - min(d1, d2), 0.0, 1.0);
     } else if (v_pattern > 1.5) {
         // Zickzack zwischen den Schichtflächen (v = 0 und v = 1)
         float zig = abs(2.0 * fract(v_uv.x) - 1.0);

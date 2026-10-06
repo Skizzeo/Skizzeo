@@ -53,6 +53,9 @@ pub enum FoundationError {
     /// Rücksprung negativ oder nicht kleiner als die Wanddicke
     /// (die Wand stünde nicht mehr auf der Platte).
     RecessTooLarge,
+    /// Rücksprung zwischen 0 und dem kleinsten erlaubten Wert (B9: 20 mm);
+    /// prüft das Modell, nicht dieser Kern.
+    RecessTooSmall,
     /// Maße ≤ 0.
     BadSize,
 }

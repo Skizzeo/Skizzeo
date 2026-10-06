@@ -8,9 +8,10 @@ use crate::attr::{
     self, Attributes, Display, Fill, FillId, LineType, LineTypeId, Pen, PenId, Surface, SurfaceId,
 };
 use crate::element::{
-    Category, Element, ElementId, ElementKind, PropSet, PropValue, RunId, Storey, StoreyId, Wall,
-    WallRun,
+    Category, Element, ElementId, ElementKind, GroundSlab, PropSet, PropValue, RunId, Storey,
+    StoreyId, StripFooting, Wall, WallRun,
 };
+use crate::foundation::{FootingShape, Foundation, FoundationError, FoundationParams};
 use crate::guid::{Guid, GuidGen};
 use crate::id::Arena;
 use crate::join::{self, Join, JoinEnd, JoinKind};
@@ -152,7 +153,7 @@ impl Model {
             [244, 239, 220],
             [232, 196, 92],
         );
-        mat(
+        let concrete = mat(
             "Stahlbeton",
             C::Concrete,
             900,
@@ -202,6 +203,21 @@ impl Model {
         };
         // Nach der Projekt-Guid angelegt, damit die älteren Guids gleich bleiben
         let interior_wall = layer_sets.insert(interior_set(guids.next_guid(), aerated));
+        // Stahlbeton: Kreuzschraffur 45°/135° nach DIN 1356-1 (E10)
+        let line = |angle_deg| attr::HatchLine {
+            angle_deg,
+            spacing_mm: 1.27,
+            offset_mm: 0.0,
+        };
+        let cross = attr.add_fill(Fill {
+            guid: guids.next_guid(),
+            name: "Stahlbeton".into(),
+            kind: attr::FillKind::Lines(vec![line(45.0), line(135.0)]),
+            space: attr::FillSpace::Paper,
+        });
+        if let Some(m) = materials.get_mut(concrete) {
+            m.cut_fill = cross;
+        }
         Model {
             project,
             attr,
@@ -578,6 +594,7 @@ impl Model {
             category,
             storey,
             layer_set: Some(layer_set),
+            seq: WALL_SEQ,
             kind: ElementKind::Wall(Wall { run, seg: 0 }),
             props: PropSet::new(),
         };
@@ -585,6 +602,7 @@ impl Model {
             .map(|k| self.new_wall(run, k, &template))
             .collect();
         self.runs.get_mut(run)?.segments = segments;
+        self.sync_foundation(run);
         self.update_joins(&[run]);
         self.touch();
         Some(run)
@@ -603,6 +621,9 @@ impl Model {
             return None;
         }
         let moved = self.follow(id);
+        for r in &moved {
+            self.sync_foundation(*r);
+        }
         let mut out = moved.clone();
         let partners = |m: &Model, out: &mut Vec<RunId>| {
             for r in &moved {
@@ -691,6 +712,7 @@ impl Model {
             note!(self, Element, self.elements, e);
             self.elements.remove(e);
         }
+        self.sync_foundation(id);
         self.update_joins(&[id]);
         self.touch();
         true
@@ -700,6 +722,7 @@ impl Model {
     pub fn segment_of(&self, wall: ElementId) -> Option<(RunId, usize)> {
         match self.element(wall)?.kind {
             ElementKind::Wall(w) => Some((w.run, w.seg as usize)),
+            _ => None,
         }
     }
 
@@ -767,6 +790,319 @@ impl Model {
         self.runs
             .ids()
             .filter_map(|id| self.chain(id).map(|c| (id, c)))
+    }
+
+    // --- Gründung (B9) ----------------------------------------------------
+
+    /// Braucht der Zug eine Gründung? Ein lebender, geschlossener Außenwandzug.
+    fn needs_foundation(&self, run: RunId) -> bool {
+        self.run(run).is_some_and(|r| {
+            r.closed
+                && r.segments
+                    .first()
+                    .and_then(|e| self.element(*e))
+                    .is_some_and(|e| e.category == Category::ExteriorWall)
+        })
+    }
+
+    /// Sohlplatten unter einem Wandzug (richtig: höchstens eine).
+    fn slabs_of(&self, run: RunId) -> Vec<ElementId> {
+        self.elements
+            .iter()
+            .filter(|(_, e)| matches!(e.kind, ElementKind::GroundSlab(s) if s.run == run))
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// Frostschürzen unter einer Sohlplatte (richtig: genau eine).
+    fn footings_of(&self, slab: ElementId) -> Vec<ElementId> {
+        self.elements
+            .iter()
+            .filter(|(_, e)| matches!(e.kind, ElementKind::StripFooting(f) if f.slab == slab))
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// Sohlplatte und Frostschürze unter einem Wandzug.
+    pub fn foundation_of(&self, run: RunId) -> Option<(ElementId, Option<ElementId>)> {
+        let slab = *self.slabs_of(run).first()?;
+        Some((slab, self.footings_of(slab).first().copied()))
+    }
+
+    /// Wandzug, zu dem ein Bauteil gehört: Wand, Sohlplatte darunter oder
+    /// Frostschürze unter deren Platte.
+    pub fn run_of(&self, e: ElementId) -> Option<RunId> {
+        match self.element(e)?.kind {
+            ElementKind::Wall(w) => Some(w.run),
+            ElementKind::GroundSlab(s) => Some(s.run),
+            ElementKind::StripFooting(f) => self.run_of(f.slab),
+        }
+    }
+
+    /// Bauteil hinter einem Teil des Körpers eines Wandzugs (Treffer beim
+    /// Klicken): Segmentnummer, [`SLAB_PART`] oder [`FOOTING_PART`].
+    pub fn part_of(&self, run: RunId, part: u32) -> Option<ElementId> {
+        match part {
+            SLAB_PART => self.foundation_of(run).map(|f| f.0),
+            FOOTING_PART => self.foundation_of(run).and_then(|f| f.1),
+            seg => self.wall_at(run, seg as usize),
+        }
+    }
+
+    fn new_element(
+        &mut self,
+        category: Category,
+        storey: StoreyId,
+        seq: u16,
+        kind: ElementKind,
+    ) -> ElementId {
+        let guid = self.new_guid();
+        let number = self.next_number(category);
+        let id = self.elements.insert(Element {
+            guid,
+            number,
+            category,
+            storey,
+            layer_set: None,
+            seq,
+            kind,
+            props: PropSet::new(),
+        });
+        note!(self, Element, new id);
+        id
+    }
+
+    /// Baustoff neuer Gründungen: Stahlbeton (erster Beton der Bibliothek).
+    fn concrete(&self) -> Option<MaterialId> {
+        self.materials
+            .iter()
+            .find(|(_, m)| m.category == MatCategory::Concrete)
+            .or_else(|| self.materials.iter().next())
+            .map(|(id, _)| id)
+    }
+
+    /// Jeder geschlossene Außenwandzug hat genau eine Sohlplatte mit einer
+    /// Frostschürze; ist der Zug offen oder weg, verschwinden beide. Im selben
+    /// Schritt wie die Änderung am Zug.
+    fn sync_foundation(&mut self, run: RunId) {
+        let slabs = self.slabs_of(run);
+        if !self.needs_foundation(run) {
+            for slab in slabs {
+                for f in self.footings_of(slab) {
+                    note!(self, Element, self.elements, f);
+                    self.elements.remove(f);
+                }
+                note!(self, Element, self.elements, slab);
+                self.elements.remove(slab);
+            }
+            return;
+        }
+        let (Some(storey), Some(material)) = (self.run(run).map(|r| r.storey), self.concrete())
+        else {
+            return;
+        };
+        let slab = match slabs.first() {
+            Some(s) => *s,
+            None => self.new_element(
+                Category::GroundSlab,
+                storey,
+                SLAB_SEQ,
+                ElementKind::GroundSlab(GroundSlab {
+                    run,
+                    material,
+                    thickness: 200.0,
+                    recess: 0.0,
+                }),
+            ),
+        };
+        if self.footings_of(slab).is_empty() {
+            self.new_element(
+                Category::StripFooting,
+                storey,
+                FOOTING_SEQ,
+                ElementKind::StripFooting(StripFooting {
+                    slab,
+                    material,
+                    width: 350.0,
+                    depth: 600.0,
+                }),
+            );
+        }
+    }
+
+    /// Ergänzt in Dateien vor B9 die Stahlbeton-Kreuzschraffur (E10) und die
+    /// Gründung unter jedem geschlossenen Außenwandzug. Ohne Rückgängig-Schritt,
+    /// gleich nach dem Lesen; liefert Hinweise auf das Ergänzte.
+    pub(crate) fn complete_pre_b9(&mut self) -> Vec<String> {
+        let mut hints = Vec::new();
+        if !self
+            .attr
+            .fills()
+            .iter()
+            .any(|(_, f)| f.name == "Stahlbeton")
+        {
+            let line = |angle_deg| crate::attr::HatchLine {
+                angle_deg,
+                spacing_mm: 1.27,
+                offset_mm: 0.0,
+            };
+            let guid = self.new_guid();
+            let cross = self.attr.add_fill(crate::attr::Fill {
+                guid,
+                name: "Stahlbeton".into(),
+                kind: crate::attr::FillKind::Lines(vec![line(45.0), line(135.0)]),
+                space: crate::attr::FillSpace::Paper,
+            });
+            let ids: Vec<MaterialId> = self.materials.ids().collect();
+            for id in ids {
+                if let Some(m) = self
+                    .materials
+                    .get_mut(id)
+                    .filter(|m| m.name == "Stahlbeton")
+                {
+                    m.cut_fill = cross;
+                }
+            }
+            hints.push("Schraffur „Stahlbeton“ (Kreuzschraffur) ergänzt".to_string());
+        }
+        let missing: Vec<RunId> = self
+            .runs
+            .ids()
+            .filter(|r| self.needs_foundation(*r) && self.slabs_of(*r).is_empty())
+            .collect();
+        for r in &missing {
+            self.sync_foundation(*r);
+        }
+        if !missing.is_empty() {
+            hints.push(match missing.len() {
+                1 => "Gründung unter dem geschlossenen Außenwandzug ergänzt".to_string(),
+                n => format!("Gründung unter {n} geschlossenen Außenwandzügen ergänzt"),
+            });
+        }
+        hints
+    }
+
+    /// Geometrie der Gründung unter einem Wandzug; `None` ohne Sohlplatte,
+    /// `Err` wenn kein Körper entstehen kann.
+    pub fn foundation(&self, run: RunId) -> Option<Result<Foundation, FoundationError>> {
+        let (slab, footing) = self.foundation_of(run)?;
+        let ElementKind::GroundSlab(s) = self.element(slab)?.kind else {
+            return None;
+        };
+        let ElementKind::StripFooting(f) = self.element(footing?)?.kind else {
+            return None;
+        };
+        if s.recess > 0.0 && s.recess < MIN_RECESS {
+            return Some(Err(FoundationError::RecessTooSmall));
+        }
+        let chain = self.base_chain(run)?;
+        let p = FoundationParams {
+            recess: s.recess,
+            slab_thickness: s.thickness,
+            footing_width: f.width,
+            footing_depth: f.depth,
+            slab_mat: material_key(s.material),
+            footing_mat: material_key(f.material),
+        };
+        Some(Foundation::from_chain(&chain, &p))
+    }
+
+    /// Setzt den Sockelrücksprung einer Sohlplatte (mm). Erlaubt sind 0
+    /// (bündig) und Werte ab 20 mm; 1 bis 19 mm werden abgelehnt.
+    pub fn set_slab_recess(&mut self, slab: ElementId, recess: f64) -> bool {
+        if !(recess == 0.0 || recess >= MIN_RECESS) || !recess.is_finite() {
+            return false;
+        }
+        self.edit_slab(slab, |s| s.recess = recess)
+    }
+
+    /// Setzt die Dicke einer Sohlplatte (mm, von oben nach unten).
+    pub fn set_slab_thickness(&mut self, slab: ElementId, thickness: f64) -> bool {
+        thickness > 0.0
+            && thickness.is_finite()
+            && self.edit_slab(slab, |s| s.thickness = thickness)
+    }
+
+    fn edit_slab(&mut self, slab: ElementId, f: impl FnOnce(&mut GroundSlab)) -> bool {
+        if !matches!(
+            self.element(slab).map(|e| &e.kind),
+            Some(ElementKind::GroundSlab(_))
+        ) {
+            return false;
+        }
+        note!(self, Element, self.elements, slab);
+        if let Some(ElementKind::GroundSlab(s)) = self.elements.get_mut(slab).map(|e| &mut e.kind) {
+            f(s);
+        }
+        self.touch();
+        true
+    }
+
+    /// Setzt Breite und Tiefe einer Frostschürze (mm).
+    pub fn set_footing_size(&mut self, footing: ElementId, width: f64, depth: f64) -> bool {
+        let ok = width > 0.0 && depth > 0.0 && width.is_finite() && depth.is_finite();
+        if !ok
+            || !matches!(
+                self.element(footing).map(|e| &e.kind),
+                Some(ElementKind::StripFooting(_))
+            )
+        {
+            return false;
+        }
+        note!(self, Element, self.elements, footing);
+        if let Some(ElementKind::StripFooting(f)) =
+            self.elements.get_mut(footing).map(|e| &mut e.kind)
+        {
+            f.width = width;
+            f.depth = depth;
+        }
+        self.touch();
+        true
+    }
+
+    /// Hinweise, die keinen Fehler darstellen: Der Körper entsteht, aber etwas
+    /// ist ungewöhnlich (Paneel „Eigenschaften“).
+    pub fn warnings(&self, e: ElementId) -> Vec<String> {
+        let mut out = Vec::new();
+        let Some(run) = self.run_of(e) else {
+            return out;
+        };
+        let Some((slab, _)) = self.foundation_of(run) else {
+            return out;
+        };
+        if self
+            .element(e)
+            .is_some_and(|x| matches!(x.kind, ElementKind::Wall(_)))
+        {
+            return out;
+        }
+        let Some(&ElementKind::GroundSlab(s)) = self.element(slab).map(|x| &x.kind) else {
+            return out;
+        };
+        // Schichten außen vor dem tragenden Kern (bei AW 31,5 die Dämmung)
+        let outside: f64 = self
+            .run(run)
+            .and_then(|r| r.segments.first())
+            .and_then(|w| self.element(*w))
+            .and_then(|w| w.layer_set)
+            .and_then(|id| self.layer_set(id))
+            .map_or(0.0, |set| {
+                set.layers
+                    .iter()
+                    .take_while(|l| !l.core)
+                    .map(|l| l.thickness)
+                    .sum()
+            });
+        if s.recess > outside && outside > 0.0 {
+            // Rücksprung größer als die Schichten vor dem Kern
+            out.push("Kern steht teils neben Platte".into());
+        }
+        if let Some(Ok(f)) = self.foundation(run) {
+            if matches!(f.footing, FootingShape::Full(_)) {
+                out.push("Schürze füllt die Platte ganz".into());
+            }
+        }
+        out
     }
 
     // --- Anschlüsse (B5a) -------------------------------------------------
@@ -1116,6 +1452,7 @@ impl Model {
     pub fn apply(&mut self, t: &Txn, dir: Direction) -> Touched {
         debug_assert!(self.txn.is_none(), "Rückgängig in einem offenen Schritt");
         let mut touched = Touched::default();
+        let mut footings = Vec::new();
         let mut apply_one = |m: &mut Model, c: &Change| match c {
             Change::Run { id, old, new } => {
                 m.runs.set(*id, pick(dir, old, new));
@@ -1125,6 +1462,8 @@ impl Model {
                 for e in [old, new].into_iter().flatten() {
                     match e.kind {
                         ElementKind::Wall(w) => touched.run(w.run),
+                        ElementKind::GroundSlab(s) => touched.run(s.run),
+                        ElementKind::StripFooting(f) => footings.push(f.slab),
                     }
                 }
                 m.elements.set(*id, pick(dir, old, new));
@@ -1166,6 +1505,13 @@ impl Model {
         match dir {
             Direction::Undo => t.changes.iter().rev().for_each(|c| apply_one(self, c)),
             Direction::Redo => t.changes.iter().for_each(|c| apply_one(self, c)),
+        }
+        // Schürze geändert: ihr Zug ist der ihrer Platte (eine gelöschte Platte
+        // steht selbst im Schritt)
+        for slab in footings {
+            if let Some(r) = self.run_of(slab) {
+                touched.run(r);
+            }
         }
         if touched.attr {
             self.attr.bump();
@@ -1218,6 +1564,45 @@ impl Model {
                         out.push(format!("{}: nicht im Wandzug eingetragen", e.number));
                     }
                 }
+                ElementKind::GroundSlab(s) => {
+                    if !self.needs_foundation(s.run) {
+                        out.push(format!(
+                            "{}: kein geschlossener Außenwandzug darüber",
+                            e.number
+                        ));
+                    }
+                    if self.footings_of(id).len() != 1 {
+                        out.push(format!("{}: nicht genau eine Frostschürze", e.number));
+                    }
+                    if s.recess > 0.0 && s.recess < MIN_RECESS {
+                        out.push(format!(
+                            "{}: Sockelrücksprung {} mm (0 oder ab {MIN_RECESS} mm)",
+                            e.number, s.recess
+                        ));
+                    }
+                    if let Some(Err(err)) = self.foundation(s.run) {
+                        out.push(format!("{}: keine Gründung, {}", e.number, explain(err)));
+                    }
+                    if !self.materials.contains(s.material) {
+                        out.push(format!("{}: Baustoff fehlt", e.number));
+                    }
+                }
+                ElementKind::StripFooting(f) => {
+                    if !matches!(
+                        self.element(f.slab).map(|x| &x.kind),
+                        Some(ElementKind::GroundSlab(_))
+                    ) {
+                        out.push(format!("{}: Sohlplatte fehlt", e.number));
+                    }
+                    if !self.materials.contains(f.material) {
+                        out.push(format!("{}: Baustoff fehlt", e.number));
+                    }
+                }
+            }
+        }
+        for (id, _) in self.runs.iter() {
+            if self.needs_foundation(id) && self.slabs_of(id).len() != 1 {
+                out.push(format!("Wandzug {id:?}: nicht genau eine Sohlplatte"));
             }
         }
         for (id, r) in self.runs.iter() {
@@ -1312,6 +1697,27 @@ impl Model {
             out.push("Anschlüsse passen nicht zu den Punkten".into());
         }
         out
+    }
+}
+
+/// Bauabschnitt der Wände (nach Frostschürze 1 und Sohlplatte 2).
+pub const WALL_SEQ: u16 = 3;
+const SLAB_SEQ: u16 = 2;
+const FOOTING_SEQ: u16 = 1;
+/// Kleinster Sockelrücksprung außer 0 (mm).
+pub const MIN_RECESS: f64 = 20.0;
+/// Teil des Körpers eines Wandzugs: Sohlplatte bzw. Frostschürze (statt Segment).
+pub const SLAB_PART: u32 = u32::MAX - 1;
+pub const FOOTING_PART: u32 = u32::MAX - 2;
+
+/// Warum keine Gründung entsteht, als Satz.
+fn explain(e: FoundationError) -> &'static str {
+    match e {
+        FoundationError::NotClosed => "der Wandzug ist nicht geschlossen",
+        FoundationError::NotSimple => "der Umriss überschneidet sich",
+        FoundationError::RecessTooLarge => "der Rücksprung ist nicht kleiner als die Wanddicke",
+        FoundationError::RecessTooSmall => "der Rücksprung liegt zwischen 0 und 20 mm",
+        FoundationError::BadSize => "ein Maß ist nicht größer als 0",
     }
 }
 
@@ -1632,7 +2038,8 @@ mod tests {
         m.begin("Löschen");
         assert!(m.remove_run(r));
         let t = m.commit().unwrap();
-        assert_eq!(t.changes.len(), 1 + walls.len());
+        // Zug, Wände, Sohlplatte und Frostschürze
+        assert_eq!(t.changes.len(), 1 + walls.len() + 2);
         m.apply(&t, Direction::Undo);
         assert_eq!(state(&m), before);
         for (e, g) in walls.iter().zip(&guids) {

@@ -2,7 +2,7 @@
 
 use crate::guid::Guid;
 use crate::id::Id;
-use crate::library::LayerSetId;
+use crate::library::{LayerSetId, MaterialId};
 use crate::wall::RefSide;
 use sk_math::Vec3;
 use std::collections::BTreeMap;
@@ -17,25 +17,28 @@ pub enum Category {
     ExteriorWall,
     InteriorWall,
     Slab,
-    BaseSlab,
+    GroundSlab,
     Roof,
     Window,
     Door,
     Opening,
     Space,
+    /// Frostschürze: umlaufendes Streifenfundament unter der Sohlplatte.
+    StripFooting,
 }
 
 impl Category {
-    pub const ALL: [Category; 9] = [
+    pub const ALL: [Category; 10] = [
         Category::ExteriorWall,
         Category::InteriorWall,
         Category::Slab,
-        Category::BaseSlab,
+        Category::GroundSlab,
         Category::Roof,
         Category::Window,
         Category::Door,
         Category::Opening,
         Category::Space,
+        Category::StripFooting,
     ];
 
     /// Platz in [`Category::ALL`].
@@ -48,12 +51,13 @@ impl Category {
             Category::ExteriorWall => "Außenwand",
             Category::InteriorWall => "Innenwand",
             Category::Slab => "Decke",
-            Category::BaseSlab => "Bodenplatte",
+            Category::GroundSlab => "Sohlplatte",
             Category::Roof => "Dach",
             Category::Window => "Fenster",
             Category::Door => "Tür",
             Category::Opening => "Öffnung",
             Category::Space => "Raum",
+            Category::StripFooting => "Frostschürze",
         }
     }
 
@@ -63,12 +67,13 @@ impl Category {
             Category::ExteriorWall => "AW",
             Category::InteriorWall => "IW",
             Category::Slab => "DE",
-            Category::BaseSlab => "BP",
+            Category::GroundSlab => "SP",
             Category::Roof => "DA",
             Category::Window => "FE",
             Category::Door => "TU",
             Category::Opening => "OE",
             Category::Space => "R",
+            Category::StripFooting => "FS",
         }
     }
 
@@ -77,12 +82,13 @@ impl Category {
         match self {
             Category::ExteriorWall | Category::InteriorWall => "IfcWall",
             Category::Slab => "IfcSlab.FLOOR",
-            Category::BaseSlab => "IfcSlab.BASESLAB",
+            Category::GroundSlab => "IfcSlab.BASESLAB",
             Category::Roof => "IfcRoof",
             Category::Window => "IfcWindow",
             Category::Door => "IfcDoor",
             Category::Opening => "IfcOpeningElement",
             Category::Space => "IfcSpace",
+            Category::StripFooting => "IfcFooting.STRIP_FOOTING",
         }
     }
 
@@ -92,7 +98,7 @@ impl Category {
             Category::ExteriorWall | Category::Window => Some(330),
             Category::InteriorWall | Category::Door => Some(340),
             Category::Slab => Some(350),
-            Category::BaseSlab => Some(320),
+            Category::GroundSlab | Category::StripFooting => Some(322),
             Category::Roof => Some(360),
             Category::Opening | Category::Space => None,
         }
@@ -126,6 +132,9 @@ pub struct Element {
     pub storey: StoreyId,
     /// Aufbau, geteilt mit allen Bauteilen desselben Typs.
     pub layer_set: Option<LayerSetId>,
+    /// Bauabschnitt in der Reihenfolge der Ausführung (Frostschürze 1,
+    /// Sohlplatte 2, Wände 3). Heute nur gespeichert und angezeigt.
+    pub seq: u16,
     pub kind: ElementKind,
     pub props: PropSet,
 }
@@ -134,6 +143,32 @@ pub struct Element {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ElementKind {
     Wall(Wall),
+    GroundSlab(GroundSlab),
+    StripFooting(StripFooting),
+}
+
+/// Sohlplatte unter einem geschlossenen Außenwandzug (IFC: IfcSlab BASESLAB).
+/// Ihr Umriss ist abgeleitet: Außenfläche des Zuges, um `recess` nach innen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroundSlab {
+    pub run: RunId,
+    pub material: MaterialId,
+    /// Dicke in mm, von der Oberkante (z = 0) nach unten.
+    pub thickness: f64,
+    /// Sockelrücksprung in mm: 0 (bündig) oder mindestens 20.
+    pub recess: f64,
+}
+
+/// Frostschürze unter dem Rand einer Sohlplatte (IFC: IfcFooting STRIP_FOOTING),
+/// außen bündig mit der Platte.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StripFooting {
+    pub slab: ElementId,
+    pub material: MaterialId,
+    /// Breite in mm.
+    pub width: f64,
+    /// Tiefe in mm ab Unterkante Sohlplatte.
+    pub depth: f64,
 }
 
 /// Wand = ein gerades Segment eines Wandzugs (IFC: IfcWall).

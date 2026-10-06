@@ -1,7 +1,7 @@
 # Skizzeo
 
 Version 0.2.0 (Meilenstein M1: Speichern und Öffnen als `.szo`), dazu
-Innenwände mit Wandanschlüssen (B5a).
+Innenwände mit Wandanschlüssen (B5a) und Gründung (B9).
 
 3D-Gebäudemodellierer als native Rust-App. Keine externen Crates: Fenster,
 Eingabe, OpenGL-Anbindung, 2D-Grafik, Logo und Oberfläche sind selbst geschrieben.
@@ -82,6 +82,17 @@ Auswahl und Eigenschaften (ohne aktive Gebäude-Eingabe):
   in `sk-model::qto`)
 - Klick ins Leere oder Esc hebt die Auswahl auf; nach Rückgängig verschwindet
   sie, wenn es die Wand nicht mehr gibt
+
+Gründung: Jeder geschlossene Außenwandzug bekommt im selben Schritt eine
+Stahlbeton-Sohlplatte (SP-001 …, 20 cm, Oberkante = Wandfuß) und eine
+umlaufende Frostschürze (FS-001 …, 35 cm breit, bis 80 cm unter dem Wandfuß),
+bündig mit der Außenseite der Wand. Beide gehen fugenlos ineinander über und
+erscheinen im Schnitt kreuzschraffiert; in 3D liegen sie unter der
+Geländefläche. Wird der Zug geöffnet oder gelöscht, verschwinden sie.
+Platte oder Schürze anklicken: Das Paneel zeigt Fläche, Volumen und Umfang
+bzw. Länge auf der Achse, Volumen, Breite und Tiefe. Mit „− 1 cm“ / „+ 1 cm“
+springen Platte und Schürze gemeinsam zurück (bündig oder ab 2 cm).
+Ältere Dateien bekommen Gründung und Kreuzschraffur beim Öffnen.
 
 ## Bauen
 

@@ -1,8 +1,10 @@
 //! Zeichnet Schnitt A–A durch Wand, Sohlplatte und Frostschürze als SVG
 //! (Prüfbild für den Geometriekern): `cargo run -p sk-model --example gruendung_svg -- datei.svg [rücksprung]`
 
-use sk_model::{edge_kind, material, Foundation, FoundationParams, Layer, RefSide, Solid, WallChain};
 use sk_math::vec3;
+use sk_model::{
+    edge_kind, material, Foundation, FoundationParams, Layer, RefSide, Solid, WallChain,
+};
 use std::fmt::Write;
 
 fn main() {
@@ -52,8 +54,16 @@ fn main() {
                 1 => "url(#mw)",
                 _ => "#e8e8e8",
             };
-            let pts: Vec<String> = t.p.iter().map(|q| format!("{:.1},{:.1}", px(q.x), pz(q.z))).collect();
-            writeln!(svg, r#"<polygon points="{}" fill="{fill}" stroke="none"/>"#, pts.join(" ")).unwrap();
+            let pts: Vec<String> =
+                t.p.iter()
+                    .map(|q| format!("{:.1},{:.1}", px(q.x), pz(q.z)))
+                    .collect();
+            writeln!(
+                svg,
+                r#"<polygon points="{}" fill="{fill}" stroke="none"/>"#,
+                pts.join(" ")
+            )
+            .unwrap();
         }
         for e in &sol.edges {
             let sw = match e.kind {
@@ -70,5 +80,9 @@ fn main() {
     draw(&foot);
     writeln!(svg, r##"<text x="8" y="{}" font-family="sans-serif" font-size="13" fill="#555">Schnitt A–A, Sockelrücksprung {recess} mm</text></svg>"##, h - 10.0).unwrap();
     std::fs::write(&out, svg).unwrap();
-    println!("{out}: Platte {:.2} m², Schürze {:.2} m", f.slab_area() / 1e6, f.footing_axis_length() / 1e3);
+    println!(
+        "{out}: Platte {:.2} m², Schürze {:.2} m",
+        f.slab_area() / 1e6,
+        f.footing_axis_length() / 1e3
+    );
 }

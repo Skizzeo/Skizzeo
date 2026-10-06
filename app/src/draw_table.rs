@@ -96,7 +96,12 @@ impl DrawTable {
                         spacing = lines.first().map(|l| l.spacing_mm * px_per_mm);
                         hatch_width = a.pen(m.cut_fg).map(|p| p.width_mm * px_per_mm);
                     }
-                    pattern::DIAGONAL
+                    // Bis E3: zwei Scharen = Kreuzschraffur, sonst einfach 45°
+                    if lines.len() >= 2 {
+                        pattern::CROSS
+                    } else {
+                        pattern::DIAGONAL
+                    }
                 }
                 Some(FillKind::Zigzag { .. }) => pattern::ZIGZAG,
                 _ => pattern::NONE,
@@ -184,6 +189,10 @@ mod tests {
         assert_eq!(ins.pattern, pattern::ZIGZAG);
         assert_eq!(ins.cut, rgb([232, 196, 92]));
         assert_eq!(t.look(key("Putz")).pattern, pattern::NONE);
+        // E10: Stahlbeton mit Kreuzschraffur, gleicher Abstand und Strich
+        let rc = t.look(key("Stahlbeton") | material::CUT);
+        assert_eq!(rc.pattern, pattern::CROSS);
+        assert_eq!(rc.cut_bg, rgb([255, 255, 255]));
         assert_eq!(t.look(material::PLAIN).face, rgb_of(Theme::dark().env.face));
     }
 }

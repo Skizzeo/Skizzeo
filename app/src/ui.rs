@@ -23,6 +23,8 @@ pub enum ViewKind {
 pub enum Id {
     Building,
     Interior,
+    /// Sockelrücksprung der Sohlplatte größer (`true`) oder kleiner.
+    Recess(bool),
     Ref(RefSide),
     Ortho,
     View(ViewKind),
@@ -35,7 +37,7 @@ pub enum Panel {
     Props,
 }
 
-/// Inhalt des Paneels „Eigenschaften“ (nur lesend).
+/// Inhalt des Paneels „Eigenschaften“.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Props {
     /// Zeilen aus Bezeichnung und Wert, z. B. („Länge“, „10,00 m“).
@@ -44,6 +46,12 @@ pub struct Props {
     pub layer_set: String,
     /// Je Schicht: Farbfeld, „14 cm Dämmung (WDVS)“ und „3,796 m³ · 76 kg“.
     pub layers: Vec<(Rgba, String, String)>,
+    /// Überschrift über `layer_set`; leer heißt „Aufbau“.
+    pub set_label: &'static str,
+    /// Sockelrücksprung der Sohlplatte zum Verstellen (Wert als Text).
+    pub recess: Option<String>,
+    /// Hinweise (Warnungen der Prüfung).
+    pub notes: Vec<String>,
 }
 
 /// Fenstergröße (dip), ab der die Paneele in voller Größe erscheinen.
@@ -183,9 +191,21 @@ fn view_rows() -> Vec<Row> {
 fn props_rows(p: &Props) -> Vec<Row> {
     let mut rows = vec![Row::Title("Eigenschaften")];
     rows.extend(p.values.iter().map(|(k, v)| Row::Value(k, v.clone())));
+    if let Some(r) = &p.recess {
+        rows.extend([
+            Row::Separator,
+            Row::Value("Sockelrücksprung", r.clone()),
+            Row::Pair([(Id::Recess(false), "− 1 cm"), (Id::Recess(true), "+ 1 cm")]),
+        ]);
+    }
+    let label = if p.set_label.is_empty() {
+        "Aufbau"
+    } else {
+        p.set_label
+    };
     rows.extend([
         Row::Separator,
-        Row::Label("Aufbau"),
+        Row::Label(label),
         Row::Text(p.layer_set.clone()),
     ]);
     for (c, name, amount) in &p.layers {
@@ -193,6 +213,10 @@ fn props_rows(p: &Props) -> Vec<Row> {
         if !amount.is_empty() {
             rows.push(Row::Detail(amount.clone()));
         }
+    }
+    if !p.notes.is_empty() {
+        rows.push(Row::Separator);
+        rows.extend(p.notes.iter().map(|n| Row::Text(n.clone())));
     }
     rows
 }
@@ -333,6 +357,7 @@ impl Ui {
             Id::Interior => self.building && self.interior,
             Id::Ref(r) => self.ref_side == r,
             Id::Ortho => self.ortho,
+            Id::Recess(_) => false,
             Id::View(v) => self.view == v,
         }
     }

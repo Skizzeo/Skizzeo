@@ -390,7 +390,7 @@ mod tests {
         let l = szo::read(&text, GuidGen::with_seed(9)).unwrap();
         assert!(l.hints.is_empty(), "{:?}", l.hints);
         assert_eq!(t_joins(&l.model), 2);
-        let iw2 = l.model.runs().ids().nth(1).unwrap();
+        let iw2 = l.model.runs().iter().find(|(_, r)| !r.closed).unwrap().0;
         assert_eq!(volume(&l.model, iw2), 4.0281);
         assert_eq!(szo::write(&l.model), text);
 

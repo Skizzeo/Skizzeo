@@ -14,7 +14,9 @@ use crate::attr::{
     Attributes, Dash, Display, EdgeStyle, Fill, FillKind, FillSpace, HatchLine, LineType, Pen,
     Surface,
 };
-use crate::element::{Category, Element, ElementKind, PropValue, Storey, Wall, WallRun};
+use crate::element::{
+    Category, Element, ElementKind, GroundSlab, PropValue, Storey, StripFooting, Wall, WallRun,
+};
 use crate::guid::{Guid, GuidGen};
 use crate::id::{Arena, Id};
 use crate::library::{LayerFunction, LayerSet, MatCategory, Material, MaterialLayer};
@@ -382,12 +384,13 @@ fn category(c: Category) -> &'static str {
         Category::ExteriorWall => "exterior",
         Category::InteriorWall => "interior",
         Category::Slab => "slab",
-        Category::BaseSlab => "baseslab",
+        Category::GroundSlab => "groundslab",
         Category::Roof => "roof",
         Category::Window => "window",
         Category::Door => "door",
         Category::Opening => "opening",
         Category::Space => "space",
+        Category::StripFooting => "stripfooting",
     }
 }
 
@@ -580,8 +583,11 @@ pub fn write(m: &Model) -> String {
             .finish(&mut out);
     }
     let walls = sorted(m.elements().iter(), |e| e.guid);
+    let mat_guid = |id| m.material(id).map(|x| x.guid);
     for e in &walls {
-        let ElementKind::Wall(w) = e.kind;
+        let ElementKind::Wall(w) = e.kind else {
+            continue;
+        };
         Line::new("wall")
             .guid("guid", Some(e.guid))
             .guid("run", m.run(w.run).map(|r| r.guid))
@@ -592,6 +598,38 @@ pub fn write(m: &Model) -> String {
                 "set",
                 e.layer_set.and_then(|s| m.layer_set(s)).map(|s| s.guid),
             )
+            .guid("storey", storey_guid(e.storey))
+            .finish(&mut out);
+    }
+    for e in &walls {
+        let ElementKind::GroundSlab(s) = e.kind else {
+            continue;
+        };
+        Line::new("slab")
+            .guid("guid", Some(e.guid))
+            .guid("run", m.run(s.run).map(|r| r.guid))
+            .text("number", &e.number)
+            .word("cat", category(e.category))
+            .guid("mat", mat_guid(s.material))
+            .num("t", s.thickness)
+            .num("recess", s.recess)
+            .num("seq", e.seq)
+            .guid("storey", storey_guid(e.storey))
+            .finish(&mut out);
+    }
+    for e in &walls {
+        let ElementKind::StripFooting(f) = e.kind else {
+            continue;
+        };
+        Line::new("footing")
+            .guid("guid", Some(e.guid))
+            .guid("slab", m.element(f.slab).map(|x| x.guid))
+            .text("number", &e.number)
+            .word("cat", category(e.category))
+            .guid("mat", mat_guid(f.material))
+            .num("w", f.width)
+            .num("d", f.depth)
+            .num("seq", e.seq)
             .guid("storey", storey_guid(e.storey))
             .finish(&mut out);
     }
@@ -636,9 +674,9 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     check_header(text.lines().next(), "SZO", VERSION)?;
     let mut hints = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 13] = [
+    const KNOWN: [&str; 15] = [
         "pen", "linetype", "fill", "surface", "display", "material", "layerset", "layer",
-        "project", "storey", "run", "wall", "prop",
+        "project", "storey", "run", "wall", "slab", "footing", "prop",
     ];
     for (i, l) in text.lines().enumerate().skip(1) {
         let Some(r) = Record::parse(i + 1, l)? else {
@@ -955,6 +993,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
             category: keyword(r, "cat", &Category::ALL, category)?,
             storey: r.link("storey", &storey_ids)?,
             layer_set: r.link_opt("set", &set_ids)?,
+            seq: crate::model::WALL_SEQ,
             kind: ElementKind::Wall(Wall { run, seg }),
             props: Default::default(),
         };
@@ -962,6 +1001,56 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         let id = elements.insert(e);
         register(&mut elem_ids, &mut seen, r, g, id)?;
         slots.entry(run).or_default().push((seg, id));
+    }
+    // Gründung: erst die Platten, dann die Schürzen, die auf sie verweisen
+    let mut number = |r: &Record| -> Result<String, LoadError> {
+        let n = r.get("number")?.to_string();
+        if let Some(first) = taken_numbers.insert(n.clone(), r.line) {
+            return Err(err(
+                r.line,
+                format!("Bauteilnummer {n} doppelt (schon in Zeile {first})"),
+            ));
+        }
+        Ok(n)
+    };
+    for (section, ix) in [("slab", 0), ("footing", 1)] {
+        for r in recs(section) {
+            let kind = if ix == 0 {
+                ElementKind::GroundSlab(GroundSlab {
+                    run: r.link("run", &run_ids)?,
+                    material: r.link("mat", &mat_ids)?,
+                    thickness: r.f64("t")?,
+                    recess: r.f64("recess")?,
+                })
+            } else {
+                let slab = r.link("slab", &elem_ids)?;
+                if !matches!(
+                    elements.get(slab).map(|e: &Element| &e.kind),
+                    Some(ElementKind::GroundSlab(_))
+                ) {
+                    return Err(err(r.line, "[footing]: „slab“ ist keine Sohlplatte"));
+                }
+                ElementKind::StripFooting(StripFooting {
+                    slab,
+                    material: r.link("mat", &mat_ids)?,
+                    width: r.f64("w")?,
+                    depth: r.f64("d")?,
+                })
+            };
+            let e = Element {
+                guid: r.guid("guid")?,
+                number: number(r)?,
+                category: keyword(r, "cat", &Category::ALL, category)?,
+                storey: r.link("storey", &storey_ids)?,
+                layer_set: None,
+                seq: r.int("seq")?,
+                kind,
+                props: Default::default(),
+            };
+            let g = e.guid;
+            let id = elements.insert(e);
+            register(&mut elem_ids, &mut seen, r, g, id)?;
+        }
     }
     for r in recs("run") {
         let id = run_ids[&r.guid("guid")?];
@@ -1012,9 +1101,10 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     });
 
     let attr = Attributes::from_parts(pens, line_types, fills, surfaces, display);
-    let model = Model::from_parts(
+    let mut model = Model::from_parts(
         project, attr, materials, layer_sets, storeys, elements, runs, defaults, guids,
     );
+    hints.extend(model.complete_pre_b9());
     hints.extend(model.check());
     Ok(Loaded { model, hints })
 }
