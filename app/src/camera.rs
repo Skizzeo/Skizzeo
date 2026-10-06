@@ -160,6 +160,7 @@ impl Camera {
                 }
                 None => [0.0, 0.0, 0.0, 0.997],
             },
+            paper: None,
         }
     }
 

@@ -41,7 +41,7 @@ const SHADOW: f32 = 10.0;
 
 pub struct Ui {
     pub scale: f32,
-    fonts: Fonts,
+    pub fonts: Fonts,
     pub hover: Option<Id>,
     pressed: Option<Id>,
     pub view: ViewKind,
@@ -138,7 +138,7 @@ impl Ui {
             view: ViewKind::Persp,
             building: false,
             ref_side: RefSide::Left,
-            ortho: false,
+            ortho: true,
         }
     }
 

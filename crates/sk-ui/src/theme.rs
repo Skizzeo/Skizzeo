@@ -51,6 +51,20 @@ pub mod panel {
     pub const CORNER_RADIUS: f32 = 10.0;
 }
 
+/// Bauzeichnung (Grundriss, Schnitt, Ansichten).
+pub mod drawing {
+    use sk_paint::Rgba;
+    /// Papiergrund, altweiß neutral.
+    pub const PAPER: Rgba = Rgba::rgb(245, 244, 239);
+    /// Füllung aller Flächen und Schnittflächen.
+    pub const FILL: Rgba = Rgba::rgb(255, 255, 255);
+    pub const INK: Rgba = Rgba::rgb(0, 0, 0);
+    /// Strichbreiten als Vielfaches der Kantenbreite (1,25 px bei 96 dpi).
+    pub const CUT_WIDTH: f32 = 2.2;
+    pub const VIEW_WIDTH: f32 = 1.35;
+    pub const FINE_WIDTH: f32 = 0.55;
+}
+
 /// Baustofffarben in der 3D-Ansicht; Schnittflächen kräftiger.
 pub mod material {
     use sk_paint::Rgba;

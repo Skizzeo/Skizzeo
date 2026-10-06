@@ -6,6 +6,7 @@
 mod camera;
 mod nav;
 mod scene;
+mod section;
 mod ui;
 mod wall_edit;
 mod wall_tool;
@@ -13,6 +14,7 @@ mod wall_tool;
 use camera::Camera;
 use nav::Navigation;
 use scene::Scene;
+use section::SectionLine;
 use sk_math::{vec3, Vec3};
 use sk_paint::Rgba;
 use sk_platform::{CaptionArea, Config, Event, Key, MouseButton, Surface, WindowCommand};
@@ -55,6 +57,8 @@ fn style(scale: f32) -> Style {
         edge_width: 1.25 * scale,
         light: l,
         ambient: 0.84,
+        hatch_spacing: 7.0 * scale,
+        hatch_width: 1.0 * scale,
     }
 }
 
@@ -62,6 +66,8 @@ fn style(scale: f32) -> Style {
 const OVERLAY_TITLE: usize = 0;
 const OVERLAY_TOOLS: usize = 1;
 const OVERLAY_VIEWS: usize = 2;
+/// Endsymbole der Schnittlinie im Grundriss.
+const OVERLAY_MARKS: usize = 3;
 
 /// Blickrichtung (yaw, pitch) der Parallelansichten.
 fn view_direction(v: ViewKind) -> (f64, f64) {
@@ -97,6 +103,24 @@ fn fit_parallel(v: ViewKind, bounds: Option<(Vec3, Vec3)>, w: f64, h: f64) -> Ca
     Camera::parallel(center, yaw, pitch, half)
 }
 
+/// Geländelinie in Schnitt und Ansichten (kräftig, über das Gebäude hinaus).
+fn ground_line(v: ViewKind, bounds: Option<(Vec3, Vec3)>, scale: f32) -> Vec<sk_render::Helper> {
+    let (lo, hi) = bounds.unwrap_or((vec3(-2000.0, -2000.0, 0.0), vec3(12000.0, 10000.0, 0.0)));
+    let m = 3000.0;
+    let (a, b) = match v {
+        ViewKind::Left | ViewKind::Right => (vec3(lo.x, lo.y - m, 0.0), vec3(lo.x, hi.y + m, 0.0)),
+        _ => (vec3(lo.x - m, lo.y, 0.0), vec3(hi.x + m, lo.y, 0.0)),
+    };
+    vec![sk_render::Helper {
+        a: a.to_f32(),
+        b: b.to_f32(),
+        color: [0.0, 0.0, 0.0, 1.0],
+        width: 1.25 * theme::drawing::CUT_WIDTH * scale,
+        dash: 0.0,
+        occlude: false,
+    }]
+}
+
 /// 3D-Kamera schräg von vorne links, die das ganze Modell zeigt.
 fn fit_perspective(lo: Vec3, hi: Vec3) -> Camera {
     let center = (lo + hi) * 0.5;
@@ -120,8 +144,8 @@ struct App {
     nav: Navigation,
     tool: WallTool,
     edit: WallEdit,
-    /// Schnittebene (Punkt, Normale zum Betrachter) der Ansicht „Schnitt“.
-    section: Option<(Vec3, Vec3)>,
+    /// Schnittlinie (im Grundriss verschiebbar) für die Ansicht „Schnitt“.
+    sect: SectionLine,
     w: u32,
     h: u32,
     overlay_dirty: bool,
@@ -140,7 +164,11 @@ impl App {
     }
 
     fn upload_model(&mut self) {
-        let mesh = self.scene.mesh(self.ui.view, self.section);
+        let plane = match self.ui.view {
+            ViewKind::Section => self.sect.plane(),
+            _ => None,
+        };
+        let mesh = self.scene.mesh(self.ui.view, plane);
         self.renderer.set_mesh(0, &mesh);
         self.redraw = true;
     }
@@ -151,7 +179,12 @@ impl App {
     }
 
     fn edit_enabled(&self) -> bool {
-        self.band_allowed() && !self.tool.is_active()
+        self.band_allowed() && !self.tool.is_active() && !self.sect.is_busy()
+    }
+
+    /// Schnittlinie greifen nur im Grundriss und ohne angefangenen Wandzug.
+    fn sect_enabled(&self) -> bool {
+        self.ui.view == ViewKind::Plan && !self.tool.is_active()
     }
 
     fn refresh_cursor(&mut self) {
@@ -182,10 +215,9 @@ impl App {
             },
             _ => fit_parallel(v, self.scene.bounds(), free_w, vh),
         };
-        self.section = (v == ViewKind::Section).then(|| {
-            let c = self.scene.center().unwrap_or(Vec3::ZERO);
-            (vec3(c.x, c.y, 0.0), vec3(0.0, -1.0, 0.0))
-        });
+        if matches!(v, ViewKind::Plan | ViewKind::Section) {
+            self.sect.ensure(&self.scene);
+        }
         // Wandeingabe nur auf dem Boden (3D und Grundriss)
         if !self.band_allowed() && self.tool.enabled {
             self.tool.set_enabled(false);
@@ -216,6 +248,7 @@ impl App {
     fn commit_wall(&mut self, wall: Option<sk_model::WallChain>) {
         if let Some(wall) = wall {
             self.scene.add_wall(wall);
+            self.sect.ensure(&self.scene);
             self.upload_model();
             self.refresh_cursor();
         }
@@ -258,7 +291,8 @@ impl App {
                 other => other,
             }
         };
-        let busy = self.nav.is_dragging() || self.edit.is_dragging();
+        let busy = self.nav.is_dragging() || self.edit.is_dragging() || self.sect.is_dragging();
+        let sen = self.sect_enabled();
         let mut camera_moved = false;
         match e {
             Event::CloseRequested => return false,
@@ -290,6 +324,10 @@ impl App {
                     .edit
                     .handle(&e, &mut self.scene, &self.cam, vw, vh, sc, en);
                 self.redraw |= out.redraw;
+                let so = self
+                    .sect
+                    .handle(&e, &self.scene, &self.cam, vw, vh, sc, sen);
+                self.redraw |= so.redraw;
             }
             Event::MouseMove { x, y, .. } => {
                 let hover = if busy {
@@ -309,7 +347,19 @@ impl App {
                 let ev = in_view(e);
                 camera_moved |= self.nav.handle(&ev, &mut self.cam, &self.scene, vw, vh, sc);
                 let outside = (y < th || over_ui) && !busy;
-                let edit_ev = if outside { Event::MouseLeave } else { ev };
+                let sect_ev = if outside { Event::MouseLeave } else { ev };
+                let so = self
+                    .sect
+                    .handle(&sect_ev, &self.scene, &self.cam, vw, vh, sc, sen);
+                self.redraw |= so.redraw;
+                if so.changed {
+                    self.upload_model();
+                }
+                let edit_ev = if outside || self.sect.is_busy() {
+                    Event::MouseLeave
+                } else {
+                    ev
+                };
                 let en = self.edit_enabled();
                 let out = self
                     .edit
@@ -318,8 +368,8 @@ impl App {
                 if out.changed {
                     self.upload_model();
                 }
-                // Über dem Band zeigt das Wandwerkzeug keinen Fangpunkt
-                let tool_ev = if outside || self.edit.is_busy() {
+                // Über Band oder Schnittlinie zeigt das Wandwerkzeug keinen Fangpunkt
+                let tool_ev = if outside || self.edit.is_busy() || self.sect.is_busy() {
                     Event::MouseLeave
                 } else {
                     ev
@@ -339,10 +389,20 @@ impl App {
                         let ev = in_view(e);
                         camera_moved |=
                             self.nav.handle(&ev, &mut self.cam, &self.scene, vw, vh, sc);
+                        let so = self
+                            .sect
+                            .handle(&ev, &self.scene, &self.cam, vw, vh, sc, sen);
+                        self.redraw |= so.redraw;
                         let en = self.edit_enabled();
-                        let eo = self
-                            .edit
-                            .handle(&ev, &mut self.scene, &self.cam, vw, vh, sc, en);
+                        let eo = if so.consumed {
+                            wall_edit::EditOutcome {
+                                consumed: true,
+                                ..Default::default()
+                            }
+                        } else {
+                            self.edit
+                                .handle(&ev, &mut self.scene, &self.cam, vw, vh, sc, en)
+                        };
                         self.redraw |= eo.redraw;
                         if !eo.consumed {
                             let out = self.tool.handle(&ev, &self.cam, vw, vh, sc);
@@ -374,6 +434,10 @@ impl App {
                 }
                 let ev = in_view(e);
                 camera_moved |= self.nav.handle(&ev, &mut self.cam, &self.scene, vw, vh, sc);
+                let so = self
+                    .sect
+                    .handle(&ev, &self.scene, &self.cam, vw, vh, sc, sen);
+                self.redraw |= so.redraw;
                 let en = self.edit_enabled();
                 self.redraw |= self
                     .edit
@@ -468,7 +532,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         nav: Navigation::default(),
         tool: WallTool::new(),
         edit: WallEdit::default(),
-        section: None,
+        sect: SectionLine::default(),
         w,
         h,
         overlay_dirty: true,
@@ -510,17 +574,60 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
 
         let th = a.top();
         if a.redraw && a.w > 0 && a.h > th {
-            let preview = a.tool.preview().map(|c| c.solid()).unwrap_or_default();
-            a.renderer.set_mesh(1, &scene::mesh_of(&preview));
-            let mut helpers = if a.band_allowed() {
-                let occlude = a.ui.view == ViewKind::Persp;
-                a.edit.helpers(&a.scene, a.title.scale, occlude)
+            let drawing = a.ui.view != ViewKind::Persp;
+            let preview = match (a.tool.preview(), a.ui.view) {
+                (Some(c), ViewKind::Plan) => {
+                    scene::mesh_with(&c.solid_cut_at(scene::PLAN_CUT), true)
+                }
+                (Some(c), _) => scene::mesh_of(&c.solid()),
+                (None, _) => Default::default(),
+            };
+            a.renderer.set_mesh(1, &preview);
+            let (vw, vh) = (a.w as f64, (a.h - th) as f64);
+            let scale = a.title.scale;
+            let mut helpers = Vec::new();
+            match a.ui.view {
+                ViewKind::Plan => helpers.extend(a.sect.helpers(&a.scene, &a.cam, vh, scale)),
+                ViewKind::Persp => {}
+                v => helpers.extend(ground_line(v, a.scene.bounds(), scale)),
+            }
+            if a.band_allowed() {
+                helpers.extend(a.edit.helpers(&a.scene, scale, !drawing));
+            }
+            helpers.extend(a.tool.helpers(&a.cam, scale));
+            a.renderer.set_helpers(&helpers);
+
+            // Endsymbole der Schnittlinie als kleine Bilder an den Linienenden
+            let marks = if a.ui.view == ViewKind::Plan {
+                a.sect.marks(&a.scene, &a.cam, vw, vh)
             } else {
                 Vec::new()
             };
-            helpers.extend(a.tool.helpers(&a.cam, a.title.scale));
-            a.renderer.set_helpers(&helpers);
-            a.renderer.draw(a.w, a.h, th, &a.cam.view(a.w, a.h - th))?;
+            for i in 0..2 {
+                match marks.get(i) {
+                    Some(m) => {
+                        let (c, ax, ay) = a.sect.paint_mark(&a.ui.fonts, m.left, scale);
+                        let x = (m.x - ax as f64).round() as i32;
+                        let y = (m.y + th as f64 - ay as f64).round() as i32;
+                        let px = c.to_premul_rgba8();
+                        a.renderer.set_overlay(
+                            OVERLAY_MARKS + i,
+                            x,
+                            y,
+                            c.width as u32,
+                            c.height as u32,
+                            &px,
+                        );
+                    }
+                    None => a.renderer.set_overlay(OVERLAY_MARKS + i, 0, 0, 0, 0, &[]),
+                }
+            }
+
+            let mut view = a.cam.view(a.w, a.h - th);
+            if drawing {
+                view.paper = Some(rgb(theme::drawing::PAPER));
+            }
+            a.renderer.draw(a.w, a.h, th, &view)?;
             if let Some(path) = &screenshot {
                 let px = a.renderer.read_pixels(a.w, a.h);
                 std::fs::write(path, sk_paint::encode_png(a.w, a.h, &px))

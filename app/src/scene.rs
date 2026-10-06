@@ -2,9 +2,9 @@
 
 use crate::ui::ViewKind;
 use sk_math::Vec3;
-use sk_model::{material, Solid, WallChain};
+use sk_model::{edge_kind, material, Solid, WallChain};
 use sk_paint::Rgba;
-use sk_render::MeshData;
+use sk_render::{pattern, MeshData};
 use sk_ui::theme;
 
 /// Schnitthöhe des Grundrisses über dem Boden (mm).
@@ -89,6 +89,8 @@ impl Scene {
     /// Darstellung für eine Ansicht. Beim Schnitt: Ebene durch `section` (Punkt, Normale
     /// zum Betrachter), alles davor wird weggeschnitten.
     pub fn mesh(&self, view: ViewKind, section: Option<(Vec3, Vec3)>) -> MeshData {
+        let drawing = view != ViewKind::Persp;
+        let mesh_of = |s: &Solid| mesh_with(s, drawing);
         match (view, section) {
             (ViewKind::Plan, _) => {
                 let mut s = Solid::default();
@@ -141,21 +143,58 @@ fn color_of(mat: u16) -> [f32; 3] {
     })
 }
 
+/// Netz für die 3D-Ansicht.
 pub fn mesh_of(s: &Solid) -> MeshData {
+    mesh_with(s, false)
+}
+
+/// Netz für die 3D-Ansicht oder als Bauzeichnung (weiße Flächen, Schraffuren in
+/// Schnittflächen, Strichstärken nach Kantenart).
+pub fn mesh_with(s: &Solid, drawing: bool) -> MeshData {
+    use theme::drawing as d;
     let mut m = MeshData::default();
     for t in &s.triangles {
         let n = t.n.to_f32();
-        let c = color_of(t.mat);
-        for v in &t.p {
+        let (c, pat) = if drawing {
+            let pat = match (t.mat & material::CUT != 0, t.mat & !material::CUT) {
+                (true, material::AERATED_CONCRETE) => pattern::DIAGONAL,
+                (true, material::INSULATION) => pattern::ZIGZAG,
+                _ => pattern::NONE,
+            };
+            (rgb(d::FILL), pat)
+        } else {
+            (color_of(t.mat), pattern::NONE)
+        };
+        for (v, uv) in t.p.iter().zip(t.uv) {
             let p = v.to_f32();
-            m.faces
-                .push([p[0], p[1], p[2], n[0], n[1], n[2], c[0], c[1], c[2]]);
+            m.faces.push([
+                p[0],
+                p[1],
+                p[2],
+                n[0],
+                n[1],
+                n[2],
+                c[0],
+                c[1],
+                c[2],
+                pat,
+                uv[0] as f32,
+                uv[1] as f32,
+            ]);
         }
     }
     m.edges = s
         .edges
         .iter()
-        .map(|[a, b]| [a.to_f32(), b.to_f32()])
+        .map(|e| {
+            let w = match (drawing, e.kind) {
+                (_, edge_kind::FINE) => d::FINE_WIDTH,
+                (true, edge_kind::CUT) => d::CUT_WIDTH,
+                (true, _) => d::VIEW_WIDTH,
+                (false, _) => 1.0,
+            };
+            ([e.a.to_f32(), e.b.to_f32()], w)
+        })
         .collect();
     m
 }

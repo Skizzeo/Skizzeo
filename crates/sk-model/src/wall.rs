@@ -5,7 +5,7 @@
 //! Wird im Uhrzeigersinn gezeichnet, liegt links außen: Bezugsseite `Left`
 //! bedeutet dann „außen“, der Wandkörper wächst nach rechts ins Gebäude.
 
-use crate::solid::{material, Solid};
+use crate::solid::{edge_kind, material, Solid};
 use sk_math::{vec3, Vec3};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -285,16 +285,22 @@ impl WallChain {
     }
 
     /// Schnittflächen der Wand mit der senkrechten Ebene durch `p0` mit Normale `n`
-    /// (Flächen zeigen in Richtung `n`).
+    /// (Flächen zeigen in Richtung `n`). Konturen als Schnittkanten, Schichtfugen fein.
     pub fn section_caps(&self, p0: Vec3, n: Vec3) -> Solid {
         let mut s = Solid::default();
+        let Some((pts, _, dirs)) = self.layout() else {
+            return s;
+        };
         let n = vec3(n.x, n.y, 0.0).normalized();
         let along = vec3(-n.y, n.x, 0.0);
-        let up = vec3(0.0, 0.0, self.height);
+        let h = self.height;
+        let up = vec3(0.0, 0.0, h);
         let side = |p: Vec3| (p - p0).dot(n);
+        let (clo, chi) = self.contour();
         for (lo, hi, mat) in self.layer_offsets() {
             let (cl, ch) = (self.face_corners(lo), self.face_corners(hi));
             let cnt = cl.len();
+            let t = (hi - lo).max(1.0);
             for i in 0..self.segment_count() {
                 let j = (i + 1) % cnt;
                 let quad = [cl[i], cl[j], ch[j], ch[i]];
@@ -315,40 +321,90 @@ impl WallChain {
                 if (b - a).length() < 1e-6 {
                     continue;
                 }
+                // Lage quer zur Wand: auf welcher Wandfläche liegt ein Schnittpunkt?
+                let nr = right_of(dirs[i]);
+                let off = |p: Vec3| (flat(p) - pts[i]).dot(nr);
+                let v = |p: Vec3| (off(p) - lo) / t;
                 s.mat = mat | material::CUT;
-                s.quad(a, b, b + up, a + up, n);
+                s.quad_uv(
+                    [a, b, b + up, a + up],
+                    n,
+                    [[0.0, v(a)], [0.0, v(b)], [h / t, v(b)], [h / t, v(a)]],
+                );
+                s.edge_kind = edge_kind::CUT;
                 s.edge(a, b);
                 s.edge(a + up, b + up);
-                s.edge(a, a + up);
-                s.edge(b, b + up);
+                for p in [a, b] {
+                    let o = off(p);
+                    let on_lo = (o - lo).abs() < 1e-3;
+                    let on_hi = (o - hi).abs() < 1e-3;
+                    let outer =
+                        (on_lo && (lo - clo).abs() < 1e-6) || (on_hi && (hi - chi).abs() < 1e-6);
+                    if outer {
+                        s.edge_kind = edge_kind::CUT;
+                        s.edge(p, p + up);
+                    } else if on_lo || on_hi {
+                        s.edge_kind = edge_kind::FINE;
+                        s.edge(p, p + up);
+                    }
+                }
             }
         }
+        s.edge_kind = edge_kind::VIEW;
         s
     }
 
+    /// Äußerste Wandflächen (kleinster und größter Versatz aller Schichten).
+    fn contour(&self) -> (f64, f64) {
+        let l = self.layer_offsets();
+        let lo = l.iter().map(|x| x.0).fold(f64::MAX, f64::min);
+        let hi = l.iter().map(|x| x.1).fold(f64::MIN, f64::max);
+        (lo, hi)
+    }
+
     /// Prisma zwischen den Wandflächen `lo` und `hi` (lo < hi) bis Höhe `h`.
+    /// Flächen, die nicht auf der Wandkontur liegen (Schichtfugen), bekommen feine Kanten.
     fn prism(&self, s: &mut Solid, lo: f64, hi: f64, h: f64, top_mat: u16) {
         let Some((pts, closed, dirs)) = self.layout() else {
             return;
         };
         let (n, m) = (pts.len(), dirs.len());
+        let (clo, chi) = self.contour();
+        let cut = top_mat & material::CUT != 0;
+        let kind_at = |off: f64, outer: u8| {
+            if (off - clo).abs() < 1e-6 || (off - chi).abs() < 1e-6 {
+                outer
+            } else {
+                edge_kind::FINE
+            }
+        };
+        let top_kind = if cut { edge_kind::CUT } else { edge_kind::VIEW };
         let ca = self.face_corners(lo);
         let cb = self.face_corners(hi);
         let side_mat = s.mat;
         let up = vec3(0.0, 0.0, h);
+        let t = (hi - lo).max(1.0);
 
         for i in 0..m {
             let j = (i + 1) % n;
             let (a0, a1, b0, b1) = (ca[i], ca[j], cb[i], cb[j]);
             let nr = right_of(dirs[i]);
+            // Musterkoordinaten: u längs in Schichtdicken, v quer 0..1
+            let uv = |p: Vec3| -> [f64; 2] {
+                let r = flat(p) - pts[i];
+                [r.dot(dirs[i]) / t, (r.dot(nr) - lo) / t]
+            };
             s.quad(a0, a1, b1, b0, vec3(0.0, 0.0, -1.0));
             s.mat = top_mat;
-            s.quad(a0 + up, b0 + up, b1 + up, a1 + up, vec3(0.0, 0.0, 1.0));
+            let top = [a0 + up, b0 + up, b1 + up, a1 + up];
+            s.quad_uv(top, vec3(0.0, 0.0, 1.0), top.map(uv));
             s.mat = side_mat;
             s.quad(a0, a0 + up, a1 + up, a1, -nr);
             s.quad(b0, b1, b1 + up, b0 + up, nr);
-            for (p, q) in [(a0, a1), (b0, b1)] {
+            for (p, q, off) in [(a0, a1, lo), (b0, b1, hi)] {
+                s.edge_kind = kind_at(off, edge_kind::VIEW);
                 s.edge(p, q);
+                s.edge_kind = kind_at(off, top_kind);
                 s.edge(p + up, q + up);
             }
         }
@@ -358,7 +414,9 @@ impl WallChain {
             s.quad(a0, b0, b0 + up, a0 + up, -d0);
             s.quad(a1, a1 + up, b1 + up, b1, d1);
             for (p, q) in [(a0, b0), (a1, b1)] {
+                s.edge_kind = edge_kind::VIEW;
                 s.edge(p, q);
+                s.edge_kind = top_kind;
                 s.edge(p + up, q + up);
             }
         }
@@ -371,10 +429,13 @@ impl WallChain {
                 false
             };
             if !straight {
+                s.edge_kind = kind_at(lo, edge_kind::VIEW);
                 s.edge(ca[j], ca[j] + up);
+                s.edge_kind = kind_at(hi, edge_kind::VIEW);
                 s.edge(cb[j], cb[j] + up);
             }
         }
+        s.edge_kind = edge_kind::VIEW;
     }
 }
 

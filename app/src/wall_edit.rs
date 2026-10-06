@@ -1,4 +1,4 @@
-//! Gummiband: violette Linie am äußeren Wandfuß jeder Wand.
+//! Gummiband: violette Linie am äußeren Wandfuß, sichtbar beim Darüberfahren.
 //!
 //! Mit der linken Maustaste lässt sich ein Segment des Bandes quer zu seiner
 //! Richtung ziehen. Die Wand geht live mit, die Nachbarsegmente behalten ihre
@@ -16,7 +16,6 @@ const PICK_PX: f64 = 8.0;
 /// Raster beim Ziehen in Millimetern.
 const STEP: f64 = 10.0;
 
-const BAND: [f32; 4] = [0.56, 0.27, 0.86, 1.0];
 const BAND_HOT: [f32; 4] = [0.74, 0.50, 1.0, 1.0];
 const BAND_GHOST: [f32; 4] = [0.56, 0.27, 0.86, 0.7];
 const DARK: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
@@ -250,12 +249,11 @@ impl WallEdit {
                 out.push(line(a, b, BAND_GHOST, 1.5, 6.0));
             }
         }
-        for (i, wall) in scene.walls.iter().enumerate() {
-            for (k, (a, b)) in band(wall).into_iter().enumerate() {
-                let hot = active == Some((i, k));
-                let (color, width) = if hot { (BAND_HOT, 5.0) } else { (BAND, 3.0) };
-                out.push(line(a, b, DARK, width + 2.0, 0.0));
-                out.push(line(a, b, color, width, 0.0));
+        // Sichtbar nur das Segment unter der Maus bzw. das gezogene
+        if let Some((i, k)) = active {
+            if let Some((a, b)) = scene.walls.get(i).and_then(|w| band(w).get(k).copied()) {
+                out.push(line(a, b, DARK, 6.0, 0.0));
+                out.push(line(a, b, BAND_HOT, 4.0, 0.0));
             }
         }
         out

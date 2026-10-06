@@ -11,42 +11,74 @@ pub mod material {
     pub const CUT: u16 = 0x100;
 }
 
+/// Kantenarten für die Strichstärke in Zeichnungen.
+pub mod edge_kind {
+    /// Sichtkante (Ansicht).
+    pub const VIEW: u8 = 0;
+    /// Schnittkontur.
+    pub const CUT: u8 = 1;
+    /// Feine Linie, z. B. Fuge zwischen zwei Schichten.
+    pub const FINE: u8 = 2;
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Edge {
+    pub a: Vec3,
+    pub b: Vec3,
+    pub kind: u8,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Tri {
     pub p: [Vec3; 3],
     /// Flächennormale.
     pub n: Vec3,
     pub mat: u16,
+    /// Musterkoordinaten (für Schraffuren): u längs, v quer zur Schicht (0..1).
+    pub uv: [[f64; 2]; 3],
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Solid {
     pub triangles: Vec<Tri>,
     /// Sichtbare Kanten (Umrisse der Flächen, keine inneren Fugen).
-    pub edges: Vec<[Vec3; 2]>,
+    pub edges: Vec<Edge>,
     /// Baustoff für die nächsten Flächen.
     pub mat: u16,
+    /// Art der nächsten Kanten.
+    pub edge_kind: u8,
 }
 
 impl Solid {
     /// Viereck (eben, konvex) als zwei Dreiecke.
     pub fn quad(&mut self, a: Vec3, b: Vec3, c: Vec3, d: Vec3, normal: Vec3) {
+        self.quad_uv([a, b, c, d], normal, [[0.0; 2]; 4]);
+    }
+
+    /// Viereck mit Musterkoordinaten je Ecke.
+    pub fn quad_uv(&mut self, p: [Vec3; 4], normal: Vec3, uv: [[f64; 2]; 4]) {
         let mat = self.mat;
         self.triangles.push(Tri {
-            p: [a, b, c],
+            p: [p[0], p[1], p[2]],
             n: normal,
             mat,
+            uv: [uv[0], uv[1], uv[2]],
         });
         self.triangles.push(Tri {
-            p: [a, c, d],
+            p: [p[0], p[2], p[3]],
             n: normal,
             mat,
+            uv: [uv[0], uv[2], uv[3]],
         });
     }
 
     pub fn edge(&mut self, a: Vec3, b: Vec3) {
         if (a - b).length() > 1e-6 {
-            self.edges.push([a, b]);
+            self.edges.push(Edge {
+                a,
+                b,
+                kind: self.edge_kind,
+            });
         }
     }
 
@@ -87,29 +119,35 @@ impl Solid {
             ..Solid::default()
         };
         for t in &self.triangles {
-            let mut poly: Vec<Vec3> = Vec::with_capacity(4);
+            let mut poly: Vec<(Vec3, [f64; 2])> = Vec::with_capacity(4);
             for k in 0..3 {
                 let (a, b) = (t.p[k], t.p[(k + 1) % 3]);
+                let (ua, ub) = (t.uv[k], t.uv[(k + 1) % 3]);
                 let (da, db) = (side(a), side(b));
                 if da <= 0.0 {
-                    poly.push(a);
+                    poly.push((a, ua));
                 }
                 if (da < 0.0) != (db < 0.0) && (da - db).abs() > 1e-12 {
-                    poly.push(a + (b - a) * (da / (da - db)));
+                    let f = da / (da - db);
+                    let uv = [ua[0] + (ub[0] - ua[0]) * f, ua[1] + (ub[1] - ua[1]) * f];
+                    poly.push((a + (b - a) * f, uv));
                 }
             }
             for k in 1..poly.len().saturating_sub(1) {
                 out.triangles.push(Tri {
-                    p: [poly[0], poly[k], poly[k + 1]],
+                    p: [poly[0].0, poly[k].0, poly[k + 1].0],
                     n: t.n,
                     mat: t.mat,
+                    uv: [poly[0].1, poly[k].1, poly[k + 1].1],
                 });
             }
         }
-        for &[a, b] in &self.edges {
+        for e in &self.edges {
+            let (a, b) = (e.a, e.b);
             let (da, db) = (side(a), side(b));
+            out.edge_kind = e.kind;
             match (da <= 0.0, db <= 0.0) {
-                (true, true) => out.edges.push([a, b]),
+                (true, true) => out.edges.push(*e),
                 (false, false) => {}
                 _ => {
                     let x = a + (b - a) * (da / (da - db));
@@ -117,6 +155,7 @@ impl Solid {
                 }
             }
         }
+        out.edge_kind = edge_kind::VIEW;
         out
     }
 }

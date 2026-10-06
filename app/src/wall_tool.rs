@@ -4,7 +4,7 @@
 //! - Linksklick setzt Punkte. Klick auf den Startpunkt schließt den Zug.
 //! - Klick auf den letzten Punkt (Doppelklick) oder Enter beendet einen offenen Zug.
 //! - Tab wechselt die Bezugsseite: links (Standard, bei Uhrzeigersinn außen), rechts, Mitte.
-//! - R schaltet den 90°-Sprung ein/aus, Umschalt gedrückt halten kehrt ihn kurz um.
+//! - R schaltet den 90°-Sprung aus/ein (Standard: ein), Umschalt gedrückt halten kehrt ihn kurz um.
 //! - Spurlinien durch den Startpunkt (parallel und senkrecht zur ersten Wand sowie
 //!   entlang der Achsen) fangen den letzten Punkt rechtwinklig zum Anfang.
 //! - Rücktaste nimmt den letzten Punkt zurück, Esc bricht ab.
@@ -94,7 +94,7 @@ impl WallTool {
             points: Vec::new(),
             cursor: None,
             ref_side: RefSide::Left,
-            ortho: false,
+            ortho: true,
             shift: false,
             mouse: None,
         }
@@ -552,6 +552,7 @@ mod tests {
         let c = cam();
         let mut t = WallTool::new();
         t.set_enabled(true);
+        t.ortho = false;
         click_at(&mut t, &c, vec3(0.0, 0.0, 0.0));
         click_at(&mut t, &c, vec3(3000.0, 1000.0, 0.0));
         let out = click_at(&mut t, &c, vec3(3000.0, 1000.0, 0.0));
