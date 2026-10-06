@@ -26,13 +26,15 @@ struct RunCache {
     chain: WallChain,
     /// Körper für 3D und Ansichten.
     solid: Solid,
-    /// Körper waagerecht geschnitten (Grundriss).
-    plan: Solid,
+    /// Körper waagerecht geschnitten (Grundriss), erst bei Bedarf berechnet.
+    plan: Option<Solid>,
     /// Senkrechter Schnitt für die zuletzt gefragte Ebene.
     section: Option<(Plane, Solid)>,
     bounds: Option<Aabb>,
     /// Äußerer Wandfuß je Segment (Gummiband).
     foot: Vec<(Vec3, Vec3)>,
+    /// Umschließender Quader des Wandfußes (Vortest beim Greifen).
+    foot_bounds: Option<Aabb>,
     /// Wie oft dieser Zug berechnet wurde (für Tests und Messung).
     builds: u32,
 }
@@ -40,11 +42,17 @@ struct RunCache {
 impl RunCache {
     fn new(id: RunId, chain: WallChain, builds: u32) -> RunCache {
         let solid = chain.solid();
+        let foot = chain.outer_foot();
+        let foot_bounds = foot
+            .iter()
+            .flat_map(|&(a, b)| [a, b])
+            .fold(None, |acc, p| union(acc, Some((p, p))));
         RunCache {
             id,
-            plan: chain.solid_cut_at(PLAN_CUT),
+            plan: None,
             bounds: solid.bounds(),
-            foot: chain.outer_foot(),
+            foot,
+            foot_bounds,
             solid,
             chain,
             section: None,
@@ -54,7 +62,13 @@ impl RunCache {
 
     fn view_solid(&mut self, view: ViewKind, section: Option<Plane>) -> Option<&Solid> {
         match (view, section) {
-            (ViewKind::Plan, _) => Some(&self.plan),
+            (ViewKind::Plan, _) => {
+                let chain = &self.chain;
+                Some(
+                    self.plan
+                        .get_or_insert_with(|| chain.solid_cut_at(PLAN_CUT)),
+                )
+            }
             (ViewKind::Section, Some(pl)) => {
                 if self.section.as_ref().is_none_or(|(p, _)| *p != pl) {
                     let (p0, n) = pl;
@@ -220,12 +234,13 @@ impl Scene {
         self.cached(run).map(|c| c.foot.as_slice())
     }
 
-    /// Äußerer Wandfuß aller Wandzüge, je Segment (Anfang, Ende).
-    pub fn feet(&self) -> impl Iterator<Item = (RunId, &[(Vec3, Vec3)])> + '_ {
+    /// Äußerer Wandfuß aller Wandzüge: umschließender Quader und je Segment
+    /// (Anfang, Ende).
+    pub fn feet(&self) -> impl Iterator<Item = (RunId, Option<Aabb>, &[(Vec3, Vec3)])> + '_ {
         self.cache
             .iter()
             .flatten()
-            .map(|c| (c.id, c.foot.as_slice()))
+            .map(|c| (c.id, c.foot_bounds, c.foot.as_slice()))
     }
 
     /// Merkt den Stand `before` als Schritt für „Rückgängig“, falls sich seitdem
@@ -496,6 +511,23 @@ mod tests {
             &full.mesh(ViewKind::Section, pl, None)
         ));
         assert!(s.model().check().is_empty());
+    }
+
+    #[test]
+    fn nach_rueckgaengig_bekommt_eine_neue_wand_eine_neue_kennung() {
+        let mut s = Scene::with_model(Model::with_seed(4));
+        let a = s.add_wall(&rechteck(0.0)).unwrap();
+        let wa = s.model().wall_at(a, 0).unwrap();
+        assert!(s.undo());
+        let b = s.add_wall(&rechteck(0.0)).unwrap();
+        assert_ne!(a, b);
+        // Die alte Wandkennung zeigt nicht auf die neue Wand
+        assert!(s.model().element(wa).is_none());
+        assert!(s.model().check().is_empty());
+        // Wiederholen geht nach einer neuen Wand nicht mehr, Rückgängig schon
+        assert!(!s.redo());
+        assert!(s.undo());
+        assert!(s.model().run(b).is_none());
     }
 
     #[test]

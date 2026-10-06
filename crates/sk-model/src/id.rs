@@ -67,6 +67,9 @@ impl<T> fmt::Debug for Id<T> {
 struct Slot<T> {
     gen: u32,
     value: Option<T>,
+    /// Nächste nie vergebene Generation dieses Platzes (größer als jede bisher
+    /// ausgegebene). Bleibt auch über [`Arena::keep_generations`] erhalten.
+    fresh: u32,
 }
 
 /// Speicher mit stabilen Kennungen: Einfügen und Zugriff kosten einen Array-Index.
@@ -102,6 +105,7 @@ impl<T> Arena<T> {
         self.slots.push(Slot {
             gen: 0,
             value: Some(value),
+            fresh: 1,
         });
         Id::new(self.slots.len() as u32 - 1, 0)
     }
@@ -113,7 +117,9 @@ impl<T> Arena<T> {
             return None;
         }
         let value = slot.value.take()?;
-        slot.gen = slot.gen.wrapping_add(1);
+        // Freier Platz bekommt eine nie vergebene Generation
+        slot.gen = slot.fresh;
+        slot.fresh = slot.fresh.wrapping_add(1);
         self.free.push(id.index);
         self.len -= 1;
         Some(value)
@@ -166,6 +172,32 @@ impl<T> Arena<T> {
     pub fn ids(&self) -> impl Iterator<Item = Id<T>> + '_ {
         self.iter().map(|(id, _)| id)
     }
+
+    /// Bereitet diesen (früheren) Stand darauf vor, den späteren Stand `later` zu
+    /// ersetzen (Rückgängig/Wiederholen): Belegte Plätze behalten ihre Kennung,
+    /// freie Plätze bekommen eine Generation, die auch `later` nie vergeben hat.
+    /// So zeigt eine Kennung aus dem verworfenen Stand nie auf ein späteres
+    /// Bauteil am selben Platz.
+    pub fn keep_generations(&mut self, later: &Arena<T>) {
+        while self.slots.len() < later.slots.len() {
+            self.slots.push(Slot {
+                gen: 0,
+                value: None,
+                fresh: 0,
+            });
+        }
+        self.free.clear();
+        for (i, slot) in self.slots.iter_mut().enumerate().rev() {
+            let fresh = later.slots.get(i).map_or(0, |l| l.fresh).max(slot.fresh);
+            if slot.value.is_some() {
+                slot.fresh = fresh;
+            } else {
+                slot.gen = fresh;
+                slot.fresh = fresh.wrapping_add(1);
+                self.free.push(i as u32);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -189,5 +221,35 @@ mod tests {
         assert_eq!(a.get(z), Some(&"z"));
         assert_eq!(a.len(), 2);
         assert_eq!(a.ids().collect::<Vec<_>>(), vec![z, y]);
+    }
+
+    #[test]
+    fn rueckgaengig_vergibt_keine_alte_kennung() {
+        let mut a: Arena<&str> = Arena::new();
+        let x = a.insert("x");
+        let earlier = a.clone();
+        // Im späteren Stand: neuer Eintrag, x gelöscht, Platz neu belegt
+        let y = a.insert("y");
+        a.remove(x);
+        let z = a.insert("z");
+        // Zurück zum früheren Stand
+        let mut back = earlier;
+        back.keep_generations(&a);
+        assert_eq!(back.get(x), Some(&"x"));
+        assert_eq!(back.get(y), None);
+        assert_eq!(back.get(z), None);
+        // Neue Einträge bekommen keine der verworfenen Kennungen
+        let n1 = back.insert("n1");
+        let n2 = back.insert("n2");
+        for old in [y, z] {
+            assert_ne!(n1, old);
+            assert_ne!(n2, old);
+        }
+        back.remove(x);
+        let n3 = back.insert("n3");
+        for old in [x, y, z] {
+            assert_ne!(n3, old);
+        }
+        assert_eq!(back.len(), 3);
     }
 }

@@ -476,7 +476,13 @@ impl Model {
     /// Setzt das Modell auf einen früheren Stand zurück (Rückgängig, Abbruch).
     /// Guid-Erzeuger und Nummernzähler laufen weiter, damit nichts doppelt
     /// vergeben wird; die Revision steigt.
-    pub fn restore(&mut self, earlier: Model) {
+    pub fn restore(&mut self, mut earlier: Model) {
+        // Kennungen aus dem verworfenen Stand dürfen nicht wiederkehren
+        earlier.materials.keep_generations(&self.materials);
+        earlier.layer_sets.keep_generations(&self.layer_sets);
+        earlier.storeys.keep_generations(&self.storeys);
+        earlier.elements.keep_generations(&self.elements);
+        earlier.runs.keep_generations(&self.runs);
         let guids = self.guids.clone();
         let revision = self.revision + 1;
         let mut numbers = self.numbers;

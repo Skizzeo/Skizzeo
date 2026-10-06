@@ -6,7 +6,7 @@
 
 use crate::camera::Camera;
 use crate::scene::Scene;
-use sk_math::Vec3;
+use sk_math::{vec3, Vec3};
 use sk_model::{ElementId, Model, RunId, WallChain};
 use sk_platform::{Event, Key, MouseButton};
 use sk_render::Helper;
@@ -49,6 +49,43 @@ pub struct EditOutcome {
     pub consumed: bool,
 }
 
+/// Bildrechteck (x0, y0, x1, y1) eines Quaders auf dem Boden. `None`, wenn eine
+/// Ecke hinter der Kamera liegt (dann ist kein Vortest möglich).
+fn screen_rect(
+    cam: &Camera,
+    (lo, hi): (Vec3, Vec3),
+    w: f64,
+    h: f64,
+) -> Option<(f64, f64, f64, f64)> {
+    let mut r = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for (x, y) in [(lo.x, lo.y), (hi.x, lo.y), (lo.x, hi.y), (hi.x, hi.y)] {
+        let (px, py) = cam.project(vec3(x, y, lo.z), w, h)?;
+        r = (r.0.min(px), r.1.min(py), r.2.max(px), r.3.max(py));
+    }
+    Some(r)
+}
+
+/// Bild einer Strecke. Ragt sie hinter die Kamera, wird sie an der nahen
+/// Schnittebene gekürzt, damit lange Wände auch aus der Nähe greifbar bleiben.
+fn project_segment(
+    cam: &Camera,
+    a: Vec3,
+    b: Vec3,
+    w: f64,
+    h: f64,
+) -> Option<((f64, f64), (f64, f64))> {
+    let f = cam.forward();
+    let near = cam.near() * 1.01;
+    let (da, db) = ((a - cam.eye).dot(f) - near, (b - cam.eye).dot(f) - near);
+    if da < 0.0 && db < 0.0 {
+        return None;
+    }
+    let cut = |p: Vec3, q: Vec3, dp: f64, dq: f64| p + (q - p) * (dp / (dp - dq));
+    let a2 = if da < 0.0 { cut(a, b, da, db) } else { a };
+    let b2 = if db < 0.0 { cut(a, b, da, db) } else { b };
+    Some((cam.project(a2, w, h)?, cam.project(b2, w, h)?))
+}
+
 fn dist_to_segment(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
     let (vx, vy) = (b.0 - a.0, b.1 - a.1);
     let len2 = vx * vx + vy * vy;
@@ -77,14 +114,23 @@ impl WallEdit {
 
     fn pick(&self, scene: &Scene, cam: &Camera, w: f64, h: f64, scale: f64) -> Option<ElementId> {
         let m = self.mouse?;
+        let reach = PICK_PX * scale;
         let mut best: Option<(f64, (RunId, usize))> = None;
-        for (run, foot) in scene.feet() {
+        for (run, bounds, foot) in scene.feet() {
+            // Vortest: Liegt die Maus weit neben dem Bild des ganzen Wandfußes,
+            // kann kein Segment dieses Zuges getroffen sein
+            if let Some(r) = bounds.and_then(|b| screen_rect(cam, b, w, h)) {
+                if m.0 < r.0 - reach || m.0 > r.2 + reach || m.1 < r.1 - reach || m.1 > r.3 + reach
+                {
+                    continue;
+                }
+            }
             for (k, &(a, b)) in foot.iter().enumerate() {
-                let (Some(pa), Some(pb)) = (cam.project(a, w, h), cam.project(b, w, h)) else {
+                let Some((pa, pb)) = project_segment(cam, a, b, w, h) else {
                     continue;
                 };
                 let d = dist_to_segment(m, pa, pb);
-                if d < PICK_PX * scale && best.is_none_or(|b| d < b.0) {
+                if d < reach && best.is_none_or(|b| d < b.0) {
                     best = Some((d, (run, k)));
                 }
             }
@@ -355,6 +401,34 @@ mod tests {
         assert_eq!(s.model().wall_at(run, 1), Some(wall));
         assert!(s.undo());
         assert!((s.model().run(run).unwrap().points[1].y - 4000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn lange_wand_hinter_der_kamera_bleibt_greifbar() {
+        let mut s = Scene::new();
+        let run = s
+            .add_wall(&WallChain {
+                points: vec![vec3(0.0, -20000.0, 0.0), vec3(0.0, 20000.0, 0.0)],
+                closed: false,
+                ref_side: RefSide::Left,
+                layers: Vec::new(),
+                height: 3500.0,
+            })
+            .unwrap();
+        // Kamera steht neben der Wand und blickt an ihr entlang: Der Anfang liegt hinter ihr
+        let c = Camera::looking_at(vec3(2000.0, 0.0, 1600.0), vec3(0.0, 6000.0, 0.0), 45.0);
+        let (a, b) = s.foot(run).unwrap()[0];
+        let p = a + (b - a) * 0.6;
+        assert!(c.project(a, W, H).is_none());
+        let (x, y) = at(&c, p);
+        let mut e = WallEdit::default();
+        let mv = Event::MouseMove {
+            x,
+            y,
+            mods: Modifiers::default(),
+        };
+        e.handle(&mv, &mut s, &c, W, H, 1.0, true);
+        assert_eq!(e.hover, s.model().wall_at(run, 0));
     }
 
     #[test]
