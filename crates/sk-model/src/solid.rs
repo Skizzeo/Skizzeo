@@ -287,8 +287,14 @@ pub fn merge_seam(lower: &mut Solid, upper: &mut Solid, z: f64) {
                 continue;
             }
             let eb = upper.edges[y.edge];
-            // Gleiche Ebene: Abstand längs der Normale; gleiche Höhe ist gegeben
-            if (eb.a - ea.a).dot(x.n).abs() > 1e-3 || (eb.b - ea.a).dot(x.n).abs() > 1e-3 {
+            // Auf derselben Geraden (gleiche Höhe ist gegeben). Nicht über die
+            // Normale geprüft: an Gehrungen mit Ersatzecke steht die Fläche
+            // schräg zu ihrer angegebenen Normale.
+            let off = |p: Vec3| {
+                let r = p - ea.a;
+                (r - d * r.dot(d)).length()
+            };
+            if off(eb.a) > 1e-3 || off(eb.b) > 1e-3 {
                 continue;
             }
             let (t0, t1) = ((eb.a - ea.a).dot(d), (eb.b - ea.a).dot(d));
