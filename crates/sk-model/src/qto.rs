@@ -502,7 +502,10 @@ pub fn schedule(model: &Model) -> Schedule {
     };
 
     let mut sched = Schedule::default();
-    for (bid, _) in model.buildings().iter() {
+    // Gebäude nach Nummer (GB-01, GB-02 …), nicht nach Lage im Speicher
+    let mut buildings: Vec<_> = model.buildings().iter().collect();
+    buildings.sort_by(|a, b| a.1.number.cmp(&b.1.number));
+    for (bid, _) in buildings {
         let storeys: Vec<StoreyQto> = model
             .levels_in(Some(bid))
             .into_iter()

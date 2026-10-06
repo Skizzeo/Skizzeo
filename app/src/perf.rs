@@ -780,8 +780,8 @@ fn perf_mengenliste() {
     use sk_ui::widgets::Fonts;
     println!();
     println!(
-        "{:<34} {:>6} {:>9} {:>9} {:>9} {:>9} {:>9}",
-        "Modell (gestapelt)", "Zeilen", "Mengen", "Liste", "Bild", "Hover", "Pille"
+        "{:<34} {:>6} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9}",
+        "Modell (gestapelt)", "Zeilen", "Mengen", "Liste", "Bild", "Hover", "Rollen", "Pille"
     );
     let (t, fonts) = (Theme::dark(), Fonts::system());
     for (name, houses, storeys, annexes) in [
@@ -830,6 +830,35 @@ fn perf_mengenliste() {
             q.sync(&mut s, &p, false);
             std::hint::black_box(q.frame(&t, &fonts, now).is_some());
         });
+        // Rollen um etwa 8 px je Bild (wie beim weichen Rollen): Bild verschieben
+        let mut still = t.clone();
+        still.size.anim_ms = 0.0;
+        q.handle(
+            &Event::Wheel {
+                delta: -2.0,
+                x: 100.0,
+                y: 500.0,
+                mods: Modifiers::default(),
+            },
+            &still,
+            &fonts,
+            &mut p,
+        );
+        q.frame(&still, &fonts, now);
+        let mut k = 0;
+        let roll = time(20, || {
+            k += 1;
+            let delta = if k % 2 == 0 { 0.12 } else { -0.12 };
+            let e = Event::Wheel {
+                delta,
+                x: 100.0,
+                y: 500.0,
+                mods: Modifiers::default(),
+            };
+            q.handle(&e, &still, &fonts, &mut p);
+            q.tick(&still, now);
+            std::hint::black_box(q.frame(&still, &fonts, now).is_some());
+        });
         // Ziehen: die Pille erscheint einmal ganz, danach nur ihre Zeilen
         let eg = s.active_storey();
         s.begin("Geschoss ziehen");
@@ -845,14 +874,15 @@ fn perf_mengenliste() {
         });
         s.commit();
         println!(
-            "{:<34} {:>6} {:>9.3} {:>9.3} {:>9.3} {:>9.3} {:>9.3}",
-            name, rows, sched, list, frame, hover, pill
+            "{:<34} {:>6} {:>9.3} {:>9.3} {:>9.3} {:>9.3} {:>9.3} {:>9.3}",
+            name, rows, sched, list, frame, hover, roll, pill
         );
     }
     println!(
         "Zeiten in ms. Mengen = Mengenermittlung des ganzen Modells (beim Loslassen), Liste = \
          Zeilen aufbauen, Bild = ganzes Fensterbild 520 × 1000 inkl. Umwandlung, Hover = \
-         Hover-Wechsel aus dem Hauptfenster (nur Zeilen), Pille = ein Schritt der Punkte beim \
-         Ziehen."
+         Hover-Wechsel aus dem Hauptfenster (nur Zeilen), Rollen = ein Bild beim Rollen um \
+         8 px, Pille = ein Schritt der Punkte beim Ziehen. Mit Schrift: WINDIR auf einen \
+         Ordner, der w\\Fonts\\segoeui.ttf enthält."
     );
 }

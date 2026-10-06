@@ -48,7 +48,7 @@ pub struct QuantityWindow {
     /// Angedockt (für die Fuge) und seit wann die Fuge aufblinkt.
     pub docked: bool,
     seam_flash: Option<Instant>,
-    /// Im letzten Bild lief eine Animation (dann noch ein Schlussbild).
+    /// Im letzten Bild leuchtete etwas auf (dann noch ein Schlussbild).
     was_busy: bool,
     /// Zuletzt gezeigtes Fensterbild (vormultipliziert) und was die Pille
     /// „wird aktualisiert“ darin zeigt: Beim Ziehen im Modell wird nur die
@@ -61,6 +61,9 @@ pub struct QuantityWindow {
     bands_dirty: bool,
     bands_shown: Vec<RowBand>,
     button_shown: (bool, bool),
+    /// Rollstand des gezeigten Bildes (px): Rollen verschiebt das Bild und
+    /// zeichnet nur die frei werdenden Zeilen (U6b).
+    scroll_shown: i32,
 }
 
 impl QuantityWindow {
@@ -82,6 +85,7 @@ impl QuantityWindow {
             bands_dirty: false,
             bands_shown: Vec::new(),
             button_shown: (false, false),
+            scroll_shown: 0,
         }
     }
 
@@ -126,20 +130,22 @@ impl QuantityWindow {
                 .list
                 .as_ref()
                 .is_some_and(|l| l.pill_key(t, now).is_some());
-        let mut busy = self.list.as_mut().is_some_and(|l| l.tick(t, now));
+        // Rollen braucht weitere Bilder, aber kein ganzes: `frame` verschiebt
+        let scrolling = self.list.as_mut().is_some_and(|l| l.tick(t, now));
+        let mut flashing = self.list.as_ref().is_some_and(|l| l.flashing());
         if let Some(at) = self.seam_flash {
             if now.duration_since(at) < SEAM_FLASH && t.size.anim_ms > 0.0 {
-                busy = true;
+                flashing = true;
             } else {
                 self.seam_flash = None;
                 self.dirty = true;
             }
         }
-        if busy || self.was_busy {
+        if flashing || self.was_busy {
             self.dirty = true;
         }
-        self.was_busy = busy;
-        busy || pill
+        self.was_busy = flashing;
+        scrolling || flashing || pill
     }
 
     fn list_out(&mut self, o: Option<ListOut>) -> Option<Out> {
@@ -245,9 +251,10 @@ impl QuantityWindow {
                 self.list_out(o)
             }
             Event::Wheel { delta, .. } => {
+                // Kein ganzes Bild: `frame` verschiebt um den neuen Rollstand
                 let anim = t.size.anim_ms > 0.0;
-                let o = self.list.as_mut()?.wheel(delta, t, anim);
-                self.list_out(o)
+                self.list.as_mut()?.wheel(delta, t, anim);
+                None
             }
             Event::Key {
                 key: Key::Escape,
@@ -264,44 +271,91 @@ impl QuantityWindow {
         }
     }
 
-    /// Neues Fensterbild, falls nötig: das ganze Bild oder, wenn sich nur
-    /// Bänder (Hover, Auswahl) oder die Pille „wird aktualisiert“ geändert
-    /// haben, nur deren Zeilen (von, bis).
+    /// Neues Fensterbild, falls nötig: das ganze Bild oder nur die Zeilen
+    /// (von, bis), die sich geändert haben. Hover und Auswahl zeichnen die
+    /// Zeilen mit anderem Band, die Pille ihre Zeilen, Rollen verschiebt die
+    /// Liste und zeichnet die frei werdenden Zeilen und die Laufleiste.
     pub fn frame(&mut self, t: &Theme, fonts: &Fonts, now: Instant) -> Option<Frame<'_>> {
         if self.w == 0 || self.h == 0 {
             return None;
         }
+        let (w, h) = (self.w as i32, self.h as i32);
         let key = self.list.as_ref().and_then(|l| l.pill_key(t, now));
-        let mut rows: Option<(i32, i32)> = None;
-        let mut grow = |a: i32, b: i32| {
-            rows = Some(rows.map_or((a, b), |(x, y)| (x.min(a), y.max(b))));
+        // Neu zu zeichnende Zeilenbereiche und was davon gezeigt werden muss
+        let mut paint: Vec<(i32, i32)> = Vec::new();
+        let mut shown: Option<(i32, i32)> = None;
+        let mut show = |a: i32, b: i32| {
+            shown = Some(shown.map_or((a, b), |(x, y)| (x.min(a), y.max(b))));
         };
-        let mut full = self.dirty || self.shown.len() != self.w as usize * self.h as usize * 4;
-        if !full && std::mem::take(&mut self.bands_dirty) {
+        let mut full = self.dirty || self.shown.len() != (w * h * 4) as usize;
+        let scroll = self.list.as_ref().map_or(0, |l| l.scroll_px());
+        let scrolled = scroll != self.scroll_shown;
+        let bands_dirty = std::mem::take(&mut self.bands_dirty);
+        if !full {
             if let Some(l) = &self.list {
-                let bands = l.row_bands(t);
-                let same_rows = bands.len() == self.bands_shown.len()
-                    && bands
-                        .iter()
-                        .zip(&self.bands_shown)
-                        .all(|(a, b)| (a.0, a.1) == (b.0, b.1));
-                if !same_rows || l.button_look() != self.button_shown {
+                if scrolled && (bands_dirty || l.scrollbar_x(t).is_none()) {
                     full = true;
-                } else {
-                    for (a, b) in bands.iter().zip(&self.bands_shown) {
-                        if a.2 != b.2 {
-                            grow(a.0, a.1);
+                } else if bands_dirty {
+                    let bands = l.row_bands(t);
+                    let same_rows = bands.len() == self.bands_shown.len()
+                        && bands
+                            .iter()
+                            .zip(&self.bands_shown)
+                            .all(|(a, b)| (a.0, a.1) == (b.0, b.1));
+                    if !same_rows || l.button_look() != self.button_shown {
+                        full = true;
+                    } else {
+                        for (a, b) in bands.iter().zip(&self.bands_shown) {
+                            if a.2 != b.2 {
+                                paint.push((a.0, a.1));
+                                show(a.0, a.1);
+                            }
                         }
+                        self.bands_shown = bands;
                     }
-                    self.bands_shown = bands;
                 }
+            }
+        }
+        if !full && scrolled {
+            let l = self.list.as_ref()?;
+            let (top, d) = (l.list_y().clamp(0, h), scroll - self.scroll_shown);
+            if d.abs() >= h - top {
+                full = true;
+            } else {
+                // Liste verschieben, frei werdende Zeilen neu zeichnen
+                let row = (w * 4) as usize;
+                let (from, to, fresh) = if d > 0 {
+                    (top + d, top, (h - d, h))
+                } else {
+                    (top, top - d, (top, top - d))
+                };
+                let n = (h - top - d.abs()) as usize * row;
+                let src = from as usize * row;
+                self.shown.copy_within(src..src + n, to as usize * row);
+                paint.push(fresh);
+                show(top, h);
+                // Laufleiste: eigene Spalte rechts, über die ganze Liste
+                if let Some(x) = l.scrollbar_x(t) {
+                    let cw = (w - x).max(1) as usize;
+                    let mut c = Canvas::new(cw, (h - top) as usize);
+                    c.clear(t.ui.sheet_bg);
+                    c.set_origin(x as f32, top as f32);
+                    l.paint_scrollbar(&mut c, t);
+                    let px = c.to_premul_rgba8();
+                    for (k, line) in px.chunks_exact(cw * 4).enumerate() {
+                        let at = (top as usize + k) * row + x as usize * 4;
+                        self.shown[at..at + cw * 4].copy_from_slice(line);
+                    }
+                }
+                self.scroll_shown = scroll;
+                self.bands_shown = l.row_bands(t);
             }
         }
         if full {
             self.shown = self.paint(t, fonts, now).to_premul_rgba8();
             self.dirty = false;
-            self.bands_dirty = false;
             self.pill_shown = key;
+            self.scroll_shown = scroll;
             if let Some(l) = &self.list {
                 self.bands_shown = l.row_bands(t);
                 self.button_shown = l.button_look();
@@ -310,22 +364,27 @@ impl QuantityWindow {
         }
         if key != self.pill_shown {
             self.pill_shown = key;
-            if let Some((_, y, _, h)) = self.list.as_ref().and_then(|l| l.pill_rect(t, fonts)) {
-                grow(y, y + h);
+            if let Some((_, y, _, ph)) = self.list.as_ref().and_then(|l| l.pill_rect(t, fonts)) {
+                paint.push((y, y + ph));
+                show(y, y + ph);
             }
         }
-        let (y0, y1) = rows?;
-        let (y0, y1) = (y0.clamp(0, self.h as i32), y1.clamp(0, self.h as i32));
-        if y1 <= y0 {
-            return None;
+        // Nur diese Zeilen zeichnen: wie im ganzen Bild (Schrift höchstens
+        // eine Stufe anders gerundet)
+        for (y0, y1) in paint {
+            let (y0, y1) = (y0.clamp(0, h), y1.clamp(0, h));
+            if y1 <= y0 {
+                continue;
+            }
+            let band = self
+                .paint_rows(t, fonts, now, y0 as u32, y1 as u32)
+                .to_premul_rgba8();
+            let at = (y0 * w * 4) as usize;
+            self.shown[at..at + band.len()].copy_from_slice(&band);
         }
-        // Nur diese Zeilen zeichnen: Pixel für Pixel wie im ganzen Bild
-        let band = self
-            .paint_rows(t, fonts, now, y0 as u32, y1 as u32)
-            .to_premul_rgba8();
-        let at = y0 as usize * self.w as usize * 4;
-        self.shown[at..at + band.len()].copy_from_slice(&band);
-        Some((&self.shown, Some((y0 as u32, y1 as u32))))
+        let (y0, y1) = shown?;
+        let (y0, y1) = (y0.clamp(0, h), y1.clamp(0, h));
+        (y1 > y0).then_some((&self.shown[..], Some((y0 as u32, y1 as u32))))
     }
 
     /// Ganzes Fensterbild: Blatt, Fuge zum Hauptfenster, Titelleiste.
@@ -366,6 +425,12 @@ mod tests {
     use super::*;
     use sk_math::vec3;
     use sk_model::{Model, RefSide, WallChain};
+
+    /// Gleich bis auf eine Stufe (von 255): verschobene Schriftpfade runden
+    /// in Gleitkomma minimal anders, unsichtbar.
+    fn fast_gleich(a: &[u8], b: &[u8]) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.abs_diff(*y) <= 1)
+    }
 
     /// Review 1g (PR #18 auf B7 übertragen): Ziehen ändert die Revision je
     /// Bild, die Liste wartet aber auf das Loslassen. Nach dem ersten Bild
@@ -469,7 +534,10 @@ mod tests {
             let (y0, y1) = rows.expect("nur Zeilen, nicht das ganze Bild");
             assert!(y1 > y0 && y1 - y0 < 60, "{what}: eine Zeile, {y0}..{y1}");
             let whole = q.paint(&t, &fonts, now).to_premul_rgba8();
-            assert!(q.shown == whole, "{what}: gleich dem ganzen Bild");
+            assert!(
+                fast_gleich(&q.shown, &whole),
+                "{what}: gleich dem ganzen Bild"
+            );
             assert!(
                 q.frame(&t, &fonts, now).is_none(),
                 "{what}: danach nichts mehr"
@@ -482,7 +550,10 @@ mod tests {
         let f = q.frame(&t, &fonts, now).map(|(_, r)| r);
         assert!(f.is_some());
         let whole = q.paint(&t, &fonts, now).to_premul_rgba8();
-        assert!(q.shown == whole, "Auswahl: gleich dem ganzen Bild");
+        assert!(
+            fast_gleich(&q.shown, &whole),
+            "Auswahl: gleich dem ganzen Bild"
+        );
     }
 
     /// Review 1i: Ein Streifen lässt Zeilen, Kopf und Titelleiste außerhalb
@@ -537,6 +608,86 @@ mod tests {
                 part.len() == w.len() && worst <= Some(1),
                 "Streifen {y0}..{y1} weicht ab: {worst:?}"
             );
+        }
+    }
+
+    /// U6b: Rollen verschiebt das gezeigte Bild und zeichnet nur die frei
+    /// werdenden Zeilen und die Laufleiste; das Ergebnis gleicht dem ganzen
+    /// Bild, nach unten wie nach oben, auch bei 150 %.
+    #[test]
+    fn rollen_verschiebt_das_bild() {
+        let fonts = Fonts::system();
+        let mut t = Theme::dark();
+        t.size.anim_ms = 0.0;
+        let mut s = Scene::with_model(Model::with_seed(1));
+        s.edit_model("Gebäude erstellt", |m| {
+            m.add_building(2);
+            true
+        });
+        let b = s.model().buildings().ids().last().unwrap();
+        let eg = s.model().ground_of(Some(b)).unwrap();
+        s.set_active_storey(eg);
+        for (k, y) in [0.0, 3000.0, 6000.0, 9000.0].into_iter().enumerate() {
+            let cat = if k % 2 == 0 {
+                sk_model::Category::ExteriorWall
+            } else {
+                sk_model::Category::InteriorWall
+            };
+            s.add_wall_as(
+                &WallChain {
+                    base: 0.0,
+                    points: vec![vec3(0.0, y, 0.0), vec3(5000.0, y, 0.0)],
+                    closed: false,
+                    ref_side: RefSide::Left,
+                    layers: Vec::new(),
+                    height: 3500.0,
+                    joints: Default::default(),
+                },
+                cat,
+            )
+            .unwrap();
+        }
+        for scale in [1.0f32, 1.5] {
+            let p = Picking::default();
+            let mut q = QuantityWindow::new();
+            q.title.scale = scale;
+            (q.w, q.h) = ((520.0 * scale) as u32, (220.0 * scale) as u32);
+            let now = Instant::now();
+            q.sync(&mut s, &p, false);
+            assert!(matches!(q.frame(&t, &fonts, now), Some((_, None))));
+            let mut p = p;
+            let mut shifted = 0;
+            // Bruchteile einer Raste: der Rollstand liegt auch zwischen Pixeln
+            for delta in [-0.25, -0.13, 0.2, -0.4, 0.31, -0.07] {
+                let before = q.list.as_ref().unwrap().scroll_px();
+                q.handle(
+                    &Event::Wheel {
+                        delta,
+                        x: 100.0,
+                        y: 200.0,
+                        mods: Default::default(),
+                    },
+                    &t,
+                    &fonts,
+                    &mut p,
+                );
+                q.tick(&t, now);
+                let after = q.list.as_ref().unwrap().scroll_px();
+                let f = q.frame(&t, &fonts, now).map(|(_, r)| r);
+                if after == before {
+                    assert_eq!(f, None, "nichts gerollt");
+                    continue;
+                }
+                let list_y = q.list.as_ref().unwrap().list_y() as u32;
+                assert_eq!(f, Some(Some((list_y, q.h))), "{scale}: nur die Liste");
+                shifted += 1;
+                let whole = q.paint(&t, &fonts, now).to_premul_rgba8();
+                assert!(
+                    fast_gleich(&q.shown, &whole),
+                    "{scale}: Rollen {before} → {after} gleicht dem ganzen Bild"
+                );
+            }
+            assert!(shifted >= 4, "{scale}: {shifted} Mal verschoben");
         }
     }
 }

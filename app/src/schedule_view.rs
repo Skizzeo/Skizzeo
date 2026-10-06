@@ -679,8 +679,8 @@ impl ListView {
     }
 
     /// Rollen und Aufleuchten weiterführen. `true`, solange dafür weitere
-    /// ganze Bilder nötig sind (die Pille „wird aktualisiert“ zählt nicht,
-    /// siehe [`ListView::pill_key`]).
+    /// Bilder nötig sind (die Pille „wird aktualisiert“ zählt nicht, siehe
+    /// [`ListView::pill_key`]).
     pub fn tick(&mut self, t: &Theme, now: Instant) -> bool {
         let dt = self
             .last_tick
@@ -812,7 +812,7 @@ impl ListView {
         let list_top = self.top_dip() * s + HEAD * s;
         let mut out = Vec::new();
         for (i, y, h) in self.layout(Some(t)) {
-            let ys = list_top + (y - self.scroll) * s;
+            let ys = list_top + y * s - self.scroll_px() as f32;
             if ys + h * s < list_top - 40.0 * s {
                 continue;
             }
@@ -851,7 +851,7 @@ impl ListView {
         let margin = 4.0 * s;
         let outside = |a: f32, b: f32| b + margin < v0 || a - margin > v1;
         for &(i, y, h) in &rows {
-            let ys = list_top + (y - self.scroll) * s;
+            let ys = list_top + y * s - self.scroll_px() as f32;
             if ys + h * s < list_top - 40.0 * s {
                 continue;
             }
@@ -882,7 +882,13 @@ impl ListView {
         if !outside(top, top + HEAD * s) {
             self.paint_head(c, t, fonts, now);
         }
-        // Laufleiste
+        self.paint_scrollbar(c, t);
+    }
+
+    /// Laufleiste am rechten Rand der Liste.
+    pub fn paint_scrollbar(&self, c: &mut Canvas, t: &Theme) {
+        let s = self.scale;
+        let list_top = (self.top_dip() + HEAD) * s;
         let content = self.content_h(Some(t));
         let view = self.view_h();
         if content > view + 1.0 {
@@ -893,8 +899,37 @@ impl ListView {
             let mut p = Path::new();
             let bw = 4.0 * s;
             p.rounded_rect(self.w as f32 - bw - 4.0 * s, by, bw, bar_h, bw * 0.5);
-            c.fill(&p, u.sheet_rule);
+            c.fill(&p, t.ui.sheet_rule);
         }
+    }
+
+    /// Gerollt wird in ganzen Pixeln: So gleicht ein verschobenes Bild dem
+    /// neu gezeichneten, und beim Rollen müssen nur die frei werdenden
+    /// Zeilen neu gezeichnet werden (U6b).
+    pub fn scroll_px(&self) -> i32 {
+        (self.scroll * self.scale).round() as i32
+    }
+
+    /// Erste Fensterzeile der Liste unter dem Kopf; ab hier verschiebt das
+    /// Rollen das Bild.
+    pub fn list_y(&self) -> i32 {
+        ((self.top_dip() + HEAD) * self.scale).ceil() as i32
+    }
+
+    /// Linke Kante der Spalte, in der nur die Laufleiste liegt (beim Rollen
+    /// neu gezeichnet). `None`, wenn Zeilen bis dorthin reichen (sehr
+    /// kleiner Seitenrand): dann zeichnet Rollen das ganze Bild.
+    pub fn scrollbar_x(&self, t: &Theme) -> Option<i32> {
+        let s = self.scale;
+        let (x0, cw) = self.content_x(t);
+        let rows_right = x0 + cw + 10.0 * s + 1.0;
+        let x = (self.w as f32 - 9.0 * s).floor();
+        (rows_right <= x).then_some(x as i32)
+    }
+
+    /// Geänderte Werte leuchten noch auf (dann ganze Bilder).
+    pub fn flashing(&self) -> bool {
+        !self.flash.is_empty()
     }
 
     /// Kopf über der Liste: Titel, Unterzeile, Pille, Knopf, Spaltenköpfe.
@@ -1086,17 +1121,23 @@ impl ListView {
                 fi.draw(c, note, 10.5 * s, nx, base, u.sheet_hint);
             }
         }
-        // Nummer gedämpft
+        // Nummer gedämpft, endet vor der Länge (sonst „…“)
         if let Some(fr) = regular {
             if !l.cells[1].is_empty() {
-                fr.draw(
-                    c,
-                    &l.cells[1],
-                    10.5 * s,
-                    x0 + cw * COL_NR,
-                    base,
-                    u.sheet_text_dim,
-                );
+                let mut room = x0 + cw * COL_LEN - x0 - cw * COL_NR - 8.0 * s;
+                let len_font = if l.kind == Kind::Group { bold } else { regular };
+                if let (false, Some(lf)) = (l.cells[2].is_empty(), len_font) {
+                    room -= lf.width(&l.cells[2], 11.0 * s);
+                }
+                // Bereich „AW-001 … 020“ zur Not enger oder nur der Anfang
+                let full = &l.cells[1];
+                let first = full.split(" … ").next().unwrap_or(full);
+                let fits = |x: &str| fr.width(x, 10.5 * s) <= room;
+                let nr = [full.clone(), full.replace(" … ", "…"), format!("{first}…")]
+                    .into_iter()
+                    .find(|x| fits(x))
+                    .unwrap_or_else(|| sk_ui::widgets::ellipsize(Some(fr), first, 10.5 * s, room));
+                fr.draw(c, &nr, 10.5 * s, x0 + cw * COL_NR, base, u.sheet_text_dim);
             }
         }
         // Zahlen rechtsbündig; Zwischensummen fett, Kontrollzeilen kursiv

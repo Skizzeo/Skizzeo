@@ -326,8 +326,8 @@ impl Canvas {
 
     /// Die Leinwand zeigt ab jetzt den Ausschnitt ab `(x, y)` eines größeren
     /// Bildes: Pfade in dessen Koordinaten landen an der richtigen Stelle.
-    /// Ganzzahlig gewählt, gleicht der Ausschnitt Pixel für Pixel dem
-    /// ganzen Bild.
+    /// Ganzzahlig gewählt, gleicht der Ausschnitt dem ganzen Bild bis auf
+    /// Rundung (höchstens eine Stufe bei Kurven mit Bruchteilkoordinaten).
     pub fn set_origin(&mut self, x: f32, y: f32) {
         self.origin = (x, y);
     }
