@@ -937,3 +937,130 @@ fn a16_mengen_sollwerte_rechteck_und_gerade_wand() {
         m3(q.volume)
     );
 }
+
+// ---------------------------------------------------------------------------
+// A20: Projektdatei .szo (Meilenstein M1)
+// ---------------------------------------------------------------------------
+
+/// Eigener leerer Ordner für Dateitests.
+fn test_dir(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("skizzeo-abnahme-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+/// A20: Ein gezeichnetes und bearbeitetes Haus wird als `.szo` gespeichert und
+/// wieder geöffnet. Danach ist alles wie vorher: Wände, Nummern, Kennungen,
+/// Mengen und Zeichnung. Die Titelleiste zeigt den Dateinamen und `•` bei
+/// ungespeicherten Änderungen. Speichern ist atomar, Fehler sind lesbar.
+#[test]
+fn a20_szo_speichern_und_oeffnen() {
+    use crate::document::{self, Document, FILTERS};
+    let d = test_dir("szo");
+    let mut s = Scene::with_model(Model::with_seed(20));
+    let mut doc = Document::new(s.model().revision());
+    assert_eq!(doc.caption(s.model()), "Unbenannt");
+
+    // Zeichnen und eine Wand am Gummiband 1 m nach außen ziehen
+    let c = cam3d();
+    let run = zeichne_rechteck(&mut s, &c);
+    let mut e = WallEdit::default();
+    let (x, y) = px(&c, vec3(5000.0, 8000.0, 0.0));
+    e.handle(&mv(x, y), &mut s, &c, W, H, 1.0, true);
+    e.handle(&down(x, y), &mut s, &c, W, H, 1.0, true);
+    let (x2, y2) = px(&c, vec3(5000.0, 9000.0, 0.0));
+    e.handle(&mv(x2, y2), &mut s, &c, W, H, 1.0, true);
+    e.handle(&up(x2, y2), &mut s, &c, W, H, 1.0, true);
+    assert_eq!(doc.caption(s.model()), "Unbenannt •");
+
+    // Speichern unter „Haus.szo“: Dateiendung .szo, keine .tmp-Reste
+    assert!(FILTERS[0].1 == "*.szo", "Dialog filtert auf .szo");
+    let path = d.join("Haus.szo");
+    document::save(s.model(), &path).unwrap();
+    doc.mark_saved(path.clone(), s.model().revision());
+    assert_eq!(doc.caption(s.model()), "Haus.szo");
+    assert!(path.exists() && !d.join("Haus.szo.tmp").exists());
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(bytes.starts_with(b"SZO "), "Kopfzeile");
+
+    // Öffnen in eine neue Sitzung
+    let loaded = document::load(&path).unwrap();
+    assert!(loaded.hints.is_empty(), "{:?}", loaded.hints);
+    let mut t = Scene::with_model(loaded.model);
+    let walls = |s: &Scene| {
+        let mut v: Vec<_> = s
+            .model()
+            .elements()
+            .iter()
+            .map(|(id, el)| {
+                let q = s.wall_qto(id).unwrap();
+                let vol = (q.volume / 1e3).round();
+                (el.guid, el.number.clone(), (q.length * 10.0).round(), vol)
+            })
+            .collect();
+        v.sort_by(|a, b| a.1.cmp(&b.1));
+        v
+    };
+    assert_eq!(walls(&t).len(), 4);
+    assert_eq!(
+        walls(&t),
+        walls(&s),
+        "Nummern, Guids, Längen, Volumen gleich"
+    );
+    let tr = t.model().runs().ids().next().unwrap();
+    assert_eq!(
+        t.chain(tr).unwrap().points,
+        s.chain(run).unwrap().points,
+        "gezogene Wand steht an der neuen Stelle"
+    );
+    let sig = |m: &MeshData| {
+        let mut f: Vec<_> = m.faces.iter().map(|v| v.map(|x| x.to_bits())).collect();
+        f.sort();
+        (f, m.edges.len())
+    };
+    assert_eq!(
+        sig(&t.mesh(ViewKind::Plan, None, None)),
+        sig(&s.mesh(ViewKind::Plan, None, None)),
+        "Grundriss gleich"
+    );
+    assert!(t.model().check().is_empty(), "{:?}", t.model().check());
+    let reopened = Document::opened(path.clone(), t.model().revision());
+    assert_eq!(reopened.caption(t.model()), "Haus.szo");
+
+    // Speichern, öffnen, speichern ergibt dieselben Bytes
+    let path2 = d.join("Haus2.szo");
+    document::save(t.model(), &path2).unwrap();
+    assert_eq!(std::fs::read(&path2).unwrap(), bytes, "Rundlauf bytegleich");
+
+    // Weiterarbeiten nach dem Öffnen: neue Wand bekommt eine neue Nummer
+    let mut tool2 = tool(&t);
+    click(&mut tool2, &c, vec3(20000.0, 0.0, 0.0));
+    click(&mut tool2, &c, vec3(25000.0, 0.0, 0.0));
+    let w = tool2
+        .handle(&key(Key::Enter), &c, W, H, 1.0)
+        .commit
+        .unwrap();
+    let nr = t.add_wall(&w).unwrap();
+    let el = t.model().wall_at(nr, 0).unwrap();
+    assert_eq!(t.model().element(el).unwrap().number, "AW-005");
+    assert_eq!(reopened.caption(t.model()), "Haus.szo •");
+
+    // Scheitert das Speichern, bleibt die alte Datei heil, Meldung nennt die Datei
+    let bad = d.join("fehlt").join("Haus.szo");
+    let err = document::save(t.model(), &bad).unwrap_err();
+    assert!(err.contains("Haus.szo"), "{err}");
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    // Kaputte Datei: lesbare Meldung statt Absturz
+    std::fs::write(d.join("kaputt.szo"), b"Hallo").unwrap();
+    let err = document::load(&d.join("kaputt.szo")).err().unwrap();
+    assert!(err.contains("kaputt.szo"), "{err}");
+
+    // Start mit Datei: `skizzeo.exe Haus.szo`
+    let args = ["skizzeo.exe".to_string(), path.display().to_string()];
+    assert_eq!(
+        document::path_from_args(args.into_iter()),
+        Some(path.clone())
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
