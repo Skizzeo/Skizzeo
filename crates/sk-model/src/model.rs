@@ -618,7 +618,7 @@ impl Model {
         self.strict = true;
     }
 
-    /// Öffnet einen Schritt. Ein noch offener wird vorher geschlossen und verworfen.
+    /// Öffnet einen Schritt. Es darf keiner offen sein ([`Model::commit`] vorher).
     pub fn begin(&mut self, label: &'static str) {
         debug_assert!(self.txn.is_none(), "Schritt schon offen");
         self.txn = Some(Open {

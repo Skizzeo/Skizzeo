@@ -332,7 +332,12 @@ impl Scene {
     }
 
     /// Öffnet einen Schritt für „Rückgängig“ (z. B. beim Greifen am Gummiband).
+    /// Ist noch einer offen (Loslassen ging verloren, weil das Fenster beim
+    /// Ziehen die Maus verlor), wird er vorher abgeschlossen und bleibt im Verlauf.
     pub fn begin(&mut self, label: &'static str) {
+        if self.model.in_step() {
+            self.commit();
+        }
         self.model.begin(label);
     }
 
