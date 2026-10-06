@@ -158,9 +158,10 @@ impl Surface {
         self.inner.scale()
     }
 
+    /// Zeigt das gezeichnete Bild; `w` × `h` ist die Größe, für die es gezeichnet wurde.
     #[cfg(windows)]
-    pub fn swap_buffers(&self) {
-        self.inner.swap_buffers()
+    pub fn swap_buffers(&self, w: u32, h: u32) {
+        self.inner.swap_buffers(w, h)
     }
 
     /// Adresse einer OpenGL-Funktion; `name` muss mit `\0` enden.
@@ -188,7 +189,7 @@ impl Surface {
         1.0
     }
     #[cfg(not(windows))]
-    pub fn swap_buffers(&self) {}
+    pub fn swap_buffers(&self, _w: u32, _h: u32) {}
     #[cfg(not(windows))]
     pub fn gl_proc(&self, _name: &str) -> *const c_void {
         std::ptr::null()

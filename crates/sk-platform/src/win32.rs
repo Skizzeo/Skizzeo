@@ -12,7 +12,8 @@ use std::ffi::{c_char, c_void};
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 type HANDLE = *mut c_void;
 type HWND = HANDLE;
@@ -306,6 +307,35 @@ struct Shared {
     dpi: AtomicU32,
     caption_height: AtomicU32,
     buttons_width: AtomicU32,
+    /// Größe des zuletzt gezeigten Bildes (0, 0: noch keines).
+    presented: Mutex<(u32, u32)>,
+    presented_cv: Condvar,
+}
+
+/// Höchstens so lange wartet das Fenster beim Größeziehen auf ein passendes Bild.
+const RESIZE_WAIT: Duration = Duration::from_millis(50);
+
+impl Shared {
+    /// Wartet, bis der Zeichenthread ein Bild in der Größe `w` × `h` gezeigt hat.
+    /// Sonst zeigt der Fenstermanager während des Größeziehens kurz ein altes,
+    /// verzerrtes oder leeres Bild: Das Fenster flackert.
+    fn wait_presented(&self, w: u32, h: u32) {
+        let deadline = Instant::now() + RESIZE_WAIT;
+        let Ok(mut p) = self.presented.lock() else {
+            return;
+        };
+        // Vor dem ersten Bild gibt es nichts abzuwarten
+        while *p != (0, 0) && *p != (w, h) {
+            let now = Instant::now();
+            if now >= deadline {
+                return;
+            }
+            match self.presented_cv.wait_timeout(p, deadline - now) {
+                Ok((g, _)) => p = g,
+                Err(_) => return,
+            }
+        }
+    }
 }
 
 struct WndState {
@@ -464,6 +494,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     width: w,
                     height: h,
                 });
+                // Erst weiter, wenn das Bild in neuer Größe da ist (gegen Flackern)
+                let shared = STATE.with(|s| s.borrow().as_ref().map(|s| s.shared.clone()));
+                if let Some(sh) = shared {
+                    sh.wait_presented(w, h);
+                }
             }
             0
         }
@@ -652,10 +687,15 @@ impl Surface {
         self.shared.dpi.load(Ordering::Relaxed) as f32 / 96.0
     }
 
-    pub fn swap_buffers(&self) {
+    /// Zeigt das gezeichnete Bild; `w` × `h` ist die Größe, für die es gezeichnet wurde.
+    pub fn swap_buffers(&self, w: u32, h: u32) {
         unsafe {
             SwapBuffers(self.hdc as HDC);
         }
+        if let Ok(mut p) = self.shared.presented.lock() {
+            *p = (w, h);
+        }
+        self.shared.presented_cv.notify_all();
     }
 
     pub fn gl_proc(&self, name: &str) -> *const c_void {
@@ -797,6 +837,8 @@ where
             dpi: AtomicU32::new(96),
             caption_height: AtomicU32::new(0),
             buttons_width: AtomicU32::new(0),
+            presented: Mutex::new((0, 0)),
+            presented_cv: Condvar::new(),
         });
         STATE.with(|s| {
             *s.borrow_mut() = Some(WndState {

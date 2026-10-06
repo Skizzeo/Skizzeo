@@ -752,7 +752,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                     .map_err(|e| format!("Bildschirmfoto: {e}"))?;
                 return Ok(());
             }
-            surface.swap_buffers();
+            surface.swap_buffers(a.w, a.h);
             a.redraw = false;
             if let Some(log) = timing.as_mut() {
                 let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1000.0;
