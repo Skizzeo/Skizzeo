@@ -1743,7 +1743,7 @@ fn p1_zahlenfelder_der_gruendung() {
     let out = tippe(&mut ui, &mut s, slab, Field::Recess, "1");
     assert!(out.submit.is_none() && out.relayout);
     let e = ui.edit.as_ref().unwrap();
-    assert_eq!(e.error.as_deref(), Some("0 (bündig) oder mindestens 2 cm"));
+    assert_eq!(e.error.as_deref(), Some("0 oder mindestens 2 cm"));
     assert_eq!(m2(s.foundation_qto(run).unwrap().0.area), 80.0);
     // Esc bricht ab
     let out = ui.key(Key::Escape, true, M).unwrap();

@@ -97,7 +97,7 @@ impl FieldRow {
         }
         if mm < self.min {
             return Err(if self.zero {
-                format!("0 (bündig) oder mindestens {} cm", cm_text(self.min))
+                format!("0 oder mindestens {} cm", cm_text(self.min))
             } else {
                 format!("mindestens {} cm", cm_text(self.min))
             });
@@ -182,7 +182,7 @@ pub struct Props {
 }
 
 /// Breite eines Zahlenfelds (dip).
-const FIELD_W: f32 = 84.0;
+const FIELD_W: f32 = 60.0;
 
 /// Fenstergröße (dip), ab der die Paneele in voller Größe erscheinen.
 const FULL_W: f32 = 1440.0;
@@ -1192,7 +1192,7 @@ mod tests {
         taste(&mut ui, Key::Enter);
         assert_eq!(
             ui.edit.as_ref().unwrap().error.as_deref(),
-            Some("0 (bündig) oder mindestens 2 cm")
+            Some("0 oder mindestens 2 cm")
         );
         let out = taste(&mut ui, Key::Escape);
         assert!(ui.edit.is_none() && out.submit.is_none());
@@ -1225,10 +1225,7 @@ mod tests {
         assert_eq!(f.parse("2,5"), Ok(25.0));
         assert_eq!(f.parse(" 3.0 "), Ok(30.0));
         assert_eq!(f.parse("0"), Ok(0.0));
-        assert_eq!(
-            f.parse("-2").unwrap_err(),
-            "0 (bündig) oder mindestens 2 cm"
-        );
+        assert_eq!(f.parse("-2").unwrap_err(), "0 oder mindestens 2 cm");
         assert_eq!(f.parse("51").unwrap_err(), "höchstens 50 cm");
         assert_eq!(f.parse("").unwrap_err(), "Zahl fehlt");
         assert_eq!(f.parse("2,,5").unwrap_err(), "keine Zahl");
