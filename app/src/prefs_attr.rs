@@ -18,6 +18,8 @@ use sk_render::{DashPattern, SOLID};
 
 /// Breite der Liste links (dip).
 const LIST_W: f32 = 250.0;
+/// Zeilenabstand umbrochener Einträge (dip).
+const WRAP_LINE: f32 = 18.0;
 /// Breite der Spalte „Muster“ im Reiter „Linientypen“ (dip).
 const LT_THUMB_W: f32 = 80.0;
 /// Höchstzahl der Musterzeilen bzw. Linienscharen (Zeichentabelle).
@@ -547,13 +549,11 @@ impl Prefs {
         let users = self.sel_users(m);
         l.texts
             .push(UiText::dim(tx, y + 14.0 * s, "Verwendet von:"));
-        let mut ty = y + 32.0 * s;
+        let ty = y + 32.0 * s;
         if users.is_empty() {
             l.texts.push(UiText::dim(tx, ty, "nichts"));
-        }
-        for u in users.iter().take(6) {
-            l.texts.push(UiText::dim(tx, ty, u.clone()));
-            ty += 18.0 * s;
+        } else {
+            l.texts.push(UiText::wrapped(tx, ty, users.join("\n")));
         }
     }
 
@@ -608,10 +608,8 @@ impl Prefs {
         ty += 18.0 * s;
         if users.is_empty() {
             l.texts.push(UiText::dim(tx, ty, "nichts"));
-        }
-        for u in users.iter().take(4) {
-            l.texts.push(UiText::dim(tx, ty, u.clone()));
-            ty += 18.0 * s;
+        } else {
+            l.texts.push(UiText::wrapped(tx, ty, users.join("\n")));
         }
     }
 
@@ -1311,6 +1309,21 @@ impl Prefs {
                 ),
                 TextKind::Group(_) | TextKind::Title => {
                     label(c, bold, &fit(bold, font), font, r.x, r.y, u.text)
+                }
+                // je Eintrag eine oder mehrere Zeilen, bis zum unteren Rand
+                TextKind::Wrap => {
+                    let lines = tx
+                        .text
+                        .lines()
+                        .flat_map(|e| widgets::wrap(regular, e, small, max));
+                    let bottom = at(Rect::new(0.0, l.side.y + l.side.h, 0.0, 0.0)).y;
+                    for (k, line) in lines.enumerate() {
+                        let y = r.y + k as f32 * WRAP_LINE * s;
+                        if y > bottom {
+                            break;
+                        }
+                        label(c, regular, &line, small, r.x, y, u.field_unit);
+                    }
                 }
             }
         }

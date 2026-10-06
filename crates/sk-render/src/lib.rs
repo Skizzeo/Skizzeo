@@ -187,6 +187,18 @@ fn ink_of(f: [f32; 4], offset: f32, w: f32, dash: [f32; 2], x: f32, y: f32) -> f
     ink
 }
 
+impl View {
+    /// Dieselbe Ansicht um `dy` Pixel nach unten verschoben (Ansichtshöhe
+    /// `h`): eine Verschiebung in der Matrix, kein neues Netz.
+    pub fn shifted(mut self, dy: f32, h: f32) -> View {
+        let d = -2.0 * dy / h.max(1.0);
+        for c in 0..4 {
+            self.view_proj[c * 4 + 1] += d * self.view_proj[c * 4 + 3];
+        }
+        self
+    }
+}
+
 /// Kameradaten für ein Bild. Alle Matrizen sind kamerarelativ (Auge im Ursprung),
 /// damit auch weit vom Nullpunkt entfernte Modelle in `f32` genau bleiben.
 #[derive(Clone, Copy, Debug)]
@@ -264,6 +276,21 @@ struct Overlay {
     y: i32,
     w: i32,
     h: i32,
+    /// Größe des Bildes (gezeichnet wird es `w` × `h` groß) und Deckkraft.
+    tw: i32,
+    th: i32,
+    alpha: f32,
+}
+
+/// Festgehaltenes Bild der Modellansicht (Überblendung beim Geschosswechsel).
+struct Snapshot {
+    fbo: GLuint,
+    tex: GLuint,
+    w: i32,
+    h: i32,
+    /// Deckkraft und Versatz nach unten (Pixel) beim nächsten Bild.
+    alpha: f32,
+    offset: f32,
 }
 
 struct Target {
@@ -290,6 +317,8 @@ pub struct Renderer {
     style: Style,
     looks_tex: GLuint,
     looks: Looks,
+    snap_prog: Program,
+    snapshot: Option<Snapshot>,
 }
 
 const SKY_MAX: usize = 16;
@@ -628,9 +657,24 @@ const OVERLAY_FS: &str = r#"#version 330 core
 in vec2 v_ndc;
 out vec4 o_color;
 uniform sampler2D u_tex;
+uniform float u_alpha;
 void main() {
     vec2 uv = vec2(v_ndc.x * 0.5 + 0.5, 0.5 - v_ndc.y * 0.5);
-    o_color = texture(u_tex, uv);
+    o_color = texture(u_tex, uv) * u_alpha;
+}
+"#;
+
+/// Festgehaltenes Bild, um `u_offset` (Anteil der Höhe) nach unten versetzt.
+const SNAPSHOT_FS: &str = r#"#version 330 core
+in vec2 v_ndc;
+out vec4 o_color;
+uniform sampler2D u_tex;
+uniform float u_alpha;
+uniform float u_offset;
+void main() {
+    vec2 uv = vec2(v_ndc.x * 0.5 + 0.5, v_ndc.y * 0.5 + 0.5 + u_offset);
+    if (uv.y < 0.0 || uv.y > 1.0) discard;
+    o_color = vec4(texture(u_tex, uv).rgb * u_alpha, u_alpha);
 }
 "#;
 
@@ -642,6 +686,7 @@ impl Renderer {
             let edges = program(&gl, EDGE_VS, &with_dash(EDGE_FS))?;
             let overlay = program(&gl, FULLSCREEN_VS, OVERLAY_FS)?;
             let helpers = program(&gl, HELPER_VS, &with_dash(HELPER_FS))?;
+            let snap_prog = program(&gl, FULLSCREEN_VS, SNAPSHOT_FS)?;
             let mut vao = 0u32;
             gl.glGenVertexArrays(1, &mut vao);
             let mut max_samples = 0;
@@ -662,6 +707,8 @@ impl Renderer {
                 style,
                 looks_tex: 0,
                 looks: Looks::default(),
+                snap_prog,
+                snapshot: None,
             })
         }
     }
@@ -815,10 +862,14 @@ impl Renderer {
                 y: 0,
                 w: 0,
                 h: 0,
+                tw: 0,
+                th: 0,
+                alpha: 1.0,
             });
         }
         let o = &mut self.overlays[slot];
         (o.x, o.y, o.w, o.h) = (x, y, width as i32, height as i32);
+        (o.tw, o.th, o.alpha) = (width as i32, height as i32, 1.0);
         if width == 0 || height == 0 {
             return;
         }
@@ -857,6 +908,92 @@ impl Renderer {
         self.set_overlay(slot, x, y, 1, 1, &rgba_premul);
         let o = &mut self.overlays[slot];
         (o.w, o.h) = (width as i32, height as i32);
+    }
+
+    /// Lage, gezeichnete Größe und Deckkraft eines schon hochgeladenen
+    /// Bildes, ohne es neu zu übertragen (Animationen). Weicht die Größe vom
+    /// Bild ab, wird es geglättet gestreckt.
+    pub fn place_overlay(&mut self, slot: usize, x: i32, y: i32, w: i32, h: i32, alpha: f32) {
+        if let Some(o) = self.overlays.get_mut(slot) {
+            (o.x, o.y, o.w, o.h) = (x, y, w, h);
+            o.alpha = alpha.clamp(0.0, 1.0);
+        }
+    }
+
+    /// Größe des hochgeladenen Bildes (0, 0 ohne Bild).
+    pub fn overlay_size(&self, slot: usize) -> (i32, i32) {
+        self.overlays.get(slot).map_or((0, 0), |o| (o.tw, o.th))
+    }
+
+    /// Hält das zuletzt gezeichnete Bild der Modellansicht fest (ohne
+    /// Oberfläche), um es beim nächsten Bildern überzublenden.
+    pub fn capture_scene(&mut self) {
+        let Some(t) = &self.target else {
+            return;
+        };
+        let (w, h, src) = (t.width, t.height, t.fbo);
+        if self.snapshot.as_ref().is_some_and(|s| (s.w, s.h) != (w, h)) {
+            self.release_snapshot();
+        }
+        let gl = &self.gl;
+        unsafe {
+            if self.snapshot.is_none() {
+                let (mut fbo, mut tex) = (0, 0);
+                gl.glGenTextures(1, &mut tex);
+                gl.glBindTexture(TEXTURE_2D, tex);
+                gl.glTexImage2D(
+                    TEXTURE_2D,
+                    0,
+                    RGBA8 as GLint,
+                    w,
+                    h,
+                    0,
+                    RGBA,
+                    UNSIGNED_BYTE,
+                    std::ptr::null(),
+                );
+                gl.glTexParameteri(TEXTURE_2D, TEXTURE_MIN_FILTER, NEAREST);
+                gl.glTexParameteri(TEXTURE_2D, TEXTURE_MAG_FILTER, NEAREST);
+                gl.glTexParameteri(TEXTURE_2D, TEXTURE_WRAP_S, CLAMP_TO_EDGE);
+                gl.glTexParameteri(TEXTURE_2D, TEXTURE_WRAP_T, CLAMP_TO_EDGE);
+                gl.glGenFramebuffers(1, &mut fbo);
+                gl.glBindFramebuffer(FRAMEBUFFER, fbo);
+                gl.glFramebufferTexture2D(FRAMEBUFFER, COLOR_ATTACHMENT0, TEXTURE_2D, tex, 0);
+                self.snapshot = Some(Snapshot {
+                    fbo,
+                    tex,
+                    w,
+                    h,
+                    alpha: 0.0,
+                    offset: 0.0,
+                });
+            }
+            if let Some(s) = &mut self.snapshot {
+                // Mehrfachabtastung dabei auflösen
+                gl.glBindFramebuffer(READ_FRAMEBUFFER, src);
+                gl.glBindFramebuffer(DRAW_FRAMEBUFFER, s.fbo);
+                gl.glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, COLOR_BUFFER_BIT, NEAREST as GLenum);
+                gl.glBindFramebuffer(FRAMEBUFFER, 0);
+                (s.alpha, s.offset) = (1.0, 0.0);
+            }
+        }
+    }
+
+    /// Deckkraft und Versatz (Pixel nach unten) des festgehaltenen Bildes.
+    pub fn set_snapshot(&mut self, alpha: f32, offset_px: f32) {
+        if let Some(s) = &mut self.snapshot {
+            (s.alpha, s.offset) = (alpha.clamp(0.0, 1.0), offset_px);
+        }
+    }
+
+    /// Gibt das festgehaltene Bild frei.
+    pub fn release_snapshot(&mut self) {
+        if let Some(s) = self.snapshot.take() {
+            unsafe {
+                self.gl.glDeleteFramebuffers(1, &s.fbo);
+                self.gl.glDeleteTextures(1, &s.tex);
+            }
+        }
     }
 
     /// Ersetzt einen Ausschnitt eines schon hochgeladenen Oberflächenbildes:
@@ -1093,6 +1230,22 @@ impl Renderer {
 
             gl.glBindFramebuffer(FRAMEBUFFER, 0);
             gl.glDisable(DEPTH_TEST);
+            // Altes Bild beim Geschosswechsel: blendet aus und gleitet weg
+            if let Some(sn) = self.snapshot.as_ref().filter(|s| s.alpha > 0.0) {
+                gl.glViewport(0, 0, w, h);
+                gl.glEnable(BLEND);
+                gl.glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA);
+                let p = self.snap_prog.id;
+                gl.glUseProgram(p);
+                gl.glActiveTexture(TEXTURE0);
+                gl.glBindTexture(TEXTURE_2D, sn.tex);
+                gl.glUniform1i(loc(gl, p, c"u_tex"), 0);
+                gl.glUniform1f(loc(gl, p, c"u_alpha"), sn.alpha);
+                gl.glUniform1f(loc(gl, p, c"u_offset"), sn.offset / sn.h.max(1) as f32);
+                gl.glBindVertexArray(self.empty_vao);
+                gl.glDrawArrays(TRIANGLES, 0, 3);
+                gl.glDisable(BLEND);
+            }
             // Oberfläche (Titelleiste, Paneele) obenauf
             gl.glEnable(BLEND);
             gl.glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA);
@@ -1101,9 +1254,23 @@ impl Renderer {
             gl.glActiveTexture(TEXTURE0);
             gl.glUniform1i(loc(gl, p, c"u_tex"), 0);
             gl.glBindVertexArray(self.empty_vao);
-            for o in self.overlays.iter().filter(|o| o.w > 0 && o.h > 0) {
+            let u_alpha = loc(gl, p, c"u_alpha");
+            for o in self
+                .overlays
+                .iter()
+                .filter(|o| o.w > 0 && o.h > 0 && o.alpha > 0.0)
+            {
                 gl.glViewport(o.x, win_h as i32 - o.y - o.h, o.w, o.h);
                 gl.glBindTexture(TEXTURE_2D, o.tex);
+                // gestreckte Bilder (Animation) geglättet, sonst Pixel für Pixel
+                let f = if (o.w, o.h) == (o.tw, o.th) || (o.tw, o.th) == (1, 1) {
+                    NEAREST
+                } else {
+                    LINEAR
+                };
+                gl.glTexParameteri(TEXTURE_2D, TEXTURE_MIN_FILTER, f);
+                gl.glTexParameteri(TEXTURE_2D, TEXTURE_MAG_FILTER, f);
+                gl.glUniform1f(u_alpha, o.alpha);
                 gl.glDrawArrays(TRIANGLES, 0, 3);
             }
             gl.glDisable(BLEND);

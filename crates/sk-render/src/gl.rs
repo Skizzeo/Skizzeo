@@ -169,9 +169,11 @@ gl_api! {
     fn glDeleteRenderbuffers(n: GLsizei, r: *const GLuint);
     fn glBindRenderbuffer(t: GLenum, r: GLuint);
     fn glRenderbufferStorageMultisample(t: GLenum, samples: GLsizei, f: GLenum, w: GLsizei, h: GLsizei);
+    fn glFramebufferTexture2D(t: GLenum, a: GLenum, tt: GLenum, tex: GLuint, level: GLint);
     fn glBlitFramebuffer(sx0: GLint, sy0: GLint, sx1: GLint, sy1: GLint, dx0: GLint, dy0: GLint, dx1: GLint, dy1: GLint, mask: GLbitfield, filter: GLenum);
 
     fn glGenTextures(n: GLsizei, out: *mut GLuint);
+    fn glDeleteTextures(n: GLsizei, t: *const GLuint);
     fn glBindTexture(t: GLenum, tex: GLuint);
     fn glActiveTexture(t: GLenum);
     fn glTexParameteri(t: GLenum, p: GLenum, v: GLint);

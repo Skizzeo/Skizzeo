@@ -21,6 +21,7 @@ mod ui;
 mod wall_edit;
 mod wall_tool;
 mod wheel;
+mod wheel_view;
 
 use camera::Camera;
 use document::Document;
@@ -137,8 +138,11 @@ const OVERLAY_SAVE: usize = 12;
 /// Nachfrage).
 const OVERLAY_PREFS: usize = 13;
 const OVERLAY_PREFS_POPUP: usize = 14;
+/// Platz 15 ist frei. Geschossbogen im Grundriss (E18): Bogen, Aufleuchten,
+/// Schilder und Hinweis an der Spitze.
+const OVERLAY_WHEEL: usize = 16;
 /// Hinweis an der Maus, über allem.
-const OVERLAY_TIP: usize = 15;
+const OVERLAY_TIP: usize = OVERLAY_WHEEL + wheel_view::SLOTS;
 
 /// Blickrichtung (yaw, pitch) der Parallelansichten.
 fn view_direction(v: ViewKind) -> (f64, f64) {
@@ -335,6 +339,16 @@ struct App {
     prefs_popup_dirty: bool,
     /// Einstellungsdatei (Ort, Stand beim Laden).
     settings: settings::Settings,
+    /// Geschossbogen im Grundriss (E18), seine Bilder, die Uhr seiner
+    /// Animation (ms seit dem Start), angefangene Mausradrasten, ein Druck
+    /// auf den Bogen (das Loslassen gehört ihm) und der Höhenversatz des
+    /// Grundrisses beim Wechsel (Pixel nach unten).
+    wheel: wheel::Wheel,
+    wheel_view: wheel_view::WheelView,
+    clock: Instant,
+    wheel_acc: f64,
+    wheel_press: bool,
+    view_shift: f32,
 }
 
 /// Hinweis an der Maus (Text, Lage, seit wann gewünscht, schon sichtbar).
@@ -428,10 +442,16 @@ impl App {
     /// Paneel „Geschosse“ an das Modell angleichen. Beim Ziehen wird nur sein
     /// Bild erneuert, die Größe bleibt bis zum Loslassen.
     fn sync_levels(&mut self) {
-        let upper = !self.scene.ground_active();
-        if upper != self.ui.upper_active {
-            self.ui.upper_active = upper;
+        let found = self.scene.foundation_active();
+        let upper = !self.scene.ground_active() && !found;
+        if (upper, found) != (self.ui.upper_active, self.ui.foundation_active) {
+            (self.ui.upper_active, self.ui.foundation_active) = (upper, found);
             self.overlay_dirty = true;
+        }
+        // Im Fundament zeichnet das Wandwerkzeug nicht (E18)
+        if found && self.tool.enabled {
+            self.tool.set_enabled(false);
+            self.redraw = true;
         }
         // Außenwände entstehen aus dem EG (E16); Innenwände auch im OG
         if upper && self.tool.enabled && self.tool.category == Category::ExteriorWall {
@@ -707,6 +727,8 @@ impl App {
     /// Renderer-Stil, alle Paneele und Bilder neu.
     fn theme_changed(&mut self) {
         self.scene.set_theme(&self.theme);
+        self.wheel.set_theme(&self.theme);
+        self.wheel_view.forget();
         self.renderer.set_style(style(&self.theme.env));
         self.ui.forget_theme();
         self.ui.use_theme(&self.theme);
@@ -1004,6 +1026,10 @@ impl App {
                 if on && id == Id::Building && self.ui.upper_active {
                     return;
                 }
+                // Im Fundament gibt es noch nichts zu zeichnen (E18)
+                if on && self.ui.foundation_active {
+                    return;
+                }
                 if on && id == Id::Building && self.scene.model().buildings().is_empty() {
                     self.open_building_dialog();
                     return;
@@ -1019,6 +1045,11 @@ impl App {
             Id::Ref(r) => self.tool.ref_side = r,
             Id::Ortho => self.tool.ortho = !self.tool.ortho,
             Id::View(v) => self.set_view(v),
+            // Im Grundriss derselbe Wechsel wie am Geschossbogen (E18)
+            Id::Storey(st) if self.ui.view == ViewKind::Plan => {
+                let t = self.now();
+                self.wheel.select(&mut self.scene, st, t);
+            }
             Id::Storey(st) => {
                 if self.scene.set_active_storey(st) {
                     // Nur der Grundriss hängt vom aktiven Geschoss ab
@@ -1340,6 +1371,8 @@ impl App {
             Event::Redraw => self.redraw = true,
             Event::MouseLeave => {
                 self.mouse_at = None;
+                let t = self.now();
+                self.wheel.set_hover(None, t);
                 self.dirty_title.extend(self.title.hover.take());
                 let out = self.ui.handle(&e, self.w, self.top());
                 self.apply_ui(&out);
@@ -1366,8 +1399,20 @@ impl App {
                         .extend(self.title.hover.into_iter().chain(hover));
                 }
                 self.title.hover = hover;
+                // Geschossbogen (E18) liegt über dem Modell und den Paneelen
+                let part = if busy || y < th {
+                    None
+                } else {
+                    self.wheel_hit(x, y)
+                };
+                let t = self.now();
+                self.wheel.set_hover(part, t);
                 let over_ui = if busy {
                     false
+                } else if part.is_some() {
+                    let out = self.ui.handle(&Event::MouseLeave, self.w, self.top());
+                    self.apply_ui(&out);
+                    true
                 } else {
                     let out = self.ui.handle(&e, self.w, self.top());
                     self.apply_ui(&out);
@@ -1408,6 +1453,32 @@ impl App {
                 };
                 self.redraw |= self.tool.handle(&tool_ev, &self.cam, vw, vh, sc).redraw;
             }
+            // Klick auf den Geschossbogen: Spitze wechselt, Band und Schild
+            // nehmen den Klick ohne Wirkung
+            Event::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } if y >= th && self.wheel_hit(x, y).is_some() => {
+                self.shortcuts.cancel_alt();
+                self.wheel_press = true;
+                let t = self.now();
+                let input = self.tool.is_active();
+                match self.wheel_hit(x, y) {
+                    Some(wheel::Part::Up) => {
+                        self.wheel.click_arrow(&mut self.scene, true, input, t)
+                    }
+                    Some(wheel::Part::Down) => {
+                        self.wheel.click_arrow(&mut self.scene, false, input, t)
+                    }
+                    _ => self.wheel.click_band(&mut self.scene, t),
+                }
+            }
+            Event::MouseUp {
+                button: MouseButton::Left,
+                ..
+            } if self.wheel_press => self.wheel_press = false,
             Event::MouseDown { button, x, y, .. } => {
                 self.shortcuts.cancel_alt();
                 if y < th {
@@ -1517,6 +1588,19 @@ impl App {
             }
             // Getippte Zeichen braucht nur das Einstellungsfenster
             Event::Text(_) => {}
+            // Mausrad über dem Geschossbogen: eine Raste = ein Geschoss
+            Event::Wheel { delta, x, y, .. }
+                if y >= th && !self.ui.dialog && self.wheel_hit(x, y).is_some() =>
+            {
+                if self.wheel_acc * delta < 0.0 {
+                    self.wheel_acc = 0.0;
+                }
+                self.wheel_acc += delta;
+                let n = self.wheel_acc.trunc();
+                self.wheel_acc -= n;
+                let t = self.now();
+                self.wheel.scroll(&mut self.scene, n as i32, t);
+            }
             Event::Wheel { y, .. } => {
                 if y >= th && !self.ui.dialog {
                     camera_moved |=
@@ -1542,6 +1626,16 @@ impl App {
                 }
                 _ => {}
             },
+            // Bild↑/Bild↓ wechseln im Grundriss das Geschoss (E18)
+            Event::Key {
+                key: key @ (wheel::KEY_PAGE_UP | wheel::KEY_PAGE_DOWN),
+                down: true,
+                ..
+            } if self.ui.view == ViewKind::Plan => {
+                let t = self.now();
+                let (view, input) = (self.ui.view, self.tool.is_active());
+                self.wheel.key(&mut self.scene, view, key, input, t);
+            }
             Event::Key {
                 key, down, mods, ..
             } => {
@@ -1764,10 +1858,115 @@ impl App {
         self.redraw = true;
     }
 
-    /// Wartezeit bis zum nächsten Hinweis an der Maus.
+    /// Wartezeit bis zum nächsten Hinweis an der Maus (auch dem an einer
+    /// Spitze des Geschossbogens).
     fn tip_wait(&self) -> Option<std::time::Duration> {
-        let t = self.tip.as_ref().filter(|t| !t.shown)?;
-        Some(TIP_DELAY.saturating_sub(t.since.elapsed()))
+        let tip = self
+            .tip
+            .as_ref()
+            .filter(|t| !t.shown)
+            .map(|t| TIP_DELAY.saturating_sub(t.since.elapsed()));
+        let hud = self
+            .wheel
+            .hint_wait(self.now())
+            .map(std::time::Duration::from_millis);
+        match (tip, hud) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// Uhr des Geschossbogens: Millisekunden seit dem Start.
+    fn now(&self) -> u64 {
+        self.clock.elapsed().as_millis() as u64
+    }
+
+    /// Was der Geschossbogen zeigen soll: nur im Grundriss, sanft weg,
+    /// solange ein Dialog, das Dateimenü oder die Einstellungen offen sind.
+    fn wheel_show(&self) -> wheel_view::Show {
+        let blocked = self.ui.dialog
+            || self.menu.is_open()
+            || self.prefs.is_some()
+            || self.save_dlg.is_some();
+        if !self.wheel.visible(self.ui.view, false) {
+            wheel_view::Show::Off
+        } else if !self.wheel.visible(self.ui.view, blocked) {
+            wheel_view::Show::Blocked
+        } else {
+            wheel_view::Show::On
+        }
+    }
+
+    /// Teil des Geschossbogens an der Stelle (Fenster-Pixel).
+    fn wheel_hit(&self, x: f64, y: f64) -> Option<wheel::Part> {
+        if self.wheel_show() != wheel_view::Show::On {
+            return None;
+        }
+        self.wheel_view
+            .hit(&self.wheel, &self.ui, self.w, self.h, x, y)
+    }
+
+    /// Maus über einer Spitze, die wechseln kann: Zeiger „Hand“.
+    fn wheel_hand(&self) -> bool {
+        let input = self.tool.is_active();
+        match self.wheel.hover {
+            Some(wheel::Part::Up) => self.wheel.arrow_enabled(&self.scene, true, input),
+            Some(wheel::Part::Down) => self.wheel.arrow_enabled(&self.scene, false, input),
+            _ => false,
+        }
+    }
+
+    /// Geschossbogen (E18) je Durchlauf: einen begonnenen Wechsel übernehmen
+    /// (altes Bild festhalten, Grundriss des Ziels), Überblendung und Bilder
+    /// nachführen.
+    fn sync_wheel(&mut self) {
+        let t = self.now();
+        self.wheel.tick(&mut self.scene, t);
+        let plan = self.ui.view == ViewKind::Plan;
+        if self.wheel.take_started().is_some() {
+            if plan && self.wheel.animating(t) && self.w > 0 {
+                self.renderer.capture_scene();
+                // Die Zeit läuft ab dem ersten Bild mit dem neuen Grundriss
+                self.wheel.wait_for_first_frame();
+            }
+            if plan {
+                self.upload_model();
+            }
+            self.sync_levels();
+            self.overlay_dirty = true;
+            self.refresh_cursor();
+        }
+        self.view_shift = 0.0;
+        match self.wheel.progress(t).filter(|_| plan) {
+            Some((e, sw)) => {
+                // Nach oben: das alte Geschoss sinkt weg, das neue kommt von oben
+                let dir = sw.steps.signum() as f32;
+                let slide = wheel::SLIDE * self.ui.dpi();
+                self.renderer.set_snapshot(1.0 - e, dir * slide * e);
+                self.view_shift = -dir * slide * (1.0 - e);
+                self.redraw = true;
+            }
+            None => self.renderer.release_snapshot(),
+        }
+        let show = self.wheel_show();
+        if show != wheel_view::Show::On {
+            self.wheel.set_hover(None, t);
+        }
+        if self.w > 0 {
+            let input = self.tool.is_active();
+            let changed = self.wheel_view.sync(
+                &mut self.renderer,
+                &self.wheel,
+                &self.scene,
+                &self.ui,
+                &self.theme,
+                (self.w, self.h),
+                t,
+                show,
+                input,
+            );
+            self.redraw |= changed || self.wheel_view.fading(show);
+        }
     }
 
     /// Dialog „Gebäude erstellen“ samt Abdunkeln des Modellfensters
@@ -1958,6 +2157,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     ui.fit(surface.scale(), w, h);
     ui.wall_layers = layer_rows(scene.model(), exterior);
     let doc = Document::new(scene.model().revision());
+    let wheel = wheel::Wheel::new(&theme, screenshot.is_some());
     let mut a = App {
         renderer,
         scene,
@@ -2005,6 +2205,12 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         preview_shown: true,
         looks_key: None,
         mark_keys: [None; 2],
+        wheel,
+        wheel_view: wheel_view::WheelView::new(OVERLAY_WHEEL),
+        clock: Instant::now(),
+        wheel_acc: 0.0,
+        wheel_press: false,
+        view_shift: 0.0,
     };
     a.upload_model();
     a.sync_levels();
@@ -2031,7 +2237,12 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
 
     loop {
         let mut events = Vec::new();
-        if !a.redraw && !a.overlay_dirty && !a.nav.is_animating() {
+        if !a.redraw && !a.overlay_dirty && !a.nav.is_animating() && !a.wheel.animating(a.now()) {
+            // Leerlauf: Grundrisse der Nachbargeschosse vorbereiten, damit ein
+            // Wechsel am Geschossbogen nichts neu rechnet (E18)
+            if a.ui.view == ViewKind::Plan && a.scene.plans_pending() {
+                a.scene.prepare_neighbor_plans();
+            }
             let wait = match (a.tip_wait(), a.prefs.as_ref().and_then(|p| p.wait())) {
                 (Some(x), Some(y)) => Some(x.min(y)),
                 (x, y) => x.or(y),
@@ -2066,6 +2277,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             }
         }
 
+        a.sync_wheel();
         if a.prefs.as_mut().is_some_and(|p| p.tick()) {
             a.prefs_dirty = true;
         }
@@ -2090,7 +2302,12 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         if a.w > 0 {
             a.paint_buttons(&surface);
         }
-        surface.set_cursor(a.prefs.as_ref().map_or(a.ui.cursor(), |p| p.cursor()));
+        let cursor = match &a.prefs {
+            Some(p) => p.cursor(),
+            None if a.wheel_hand() => sk_platform::Cursor::Hand,
+            None => a.ui.cursor(),
+        };
+        surface.set_cursor(cursor);
 
         if a.nav.is_animating() {
             let now = std::time::Instant::now();
@@ -2189,7 +2406,13 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             if drawing {
                 view.paper = Some(a.scene.table().paper);
             }
+            // Geschosswechsel: der neue Grundriss gleitet an seinen Platz
+            if a.view_shift != 0.0 {
+                view = view.shifted(a.view_shift, (a.h - th) as f32);
+            }
             a.renderer.draw(a.w, a.h, th, &view)?;
+            let shown_at = a.now();
+            a.wheel.shown(shown_at);
             let t_draw = Instant::now();
             if let Some(path) = &screenshot {
                 let px = a.renderer.read_pixels(a.w, a.h);

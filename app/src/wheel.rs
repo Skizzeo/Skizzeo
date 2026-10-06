@@ -80,12 +80,18 @@ pub struct Wheel {
 }
 
 /// Dauer eines Wechsels: `anim_ms` aus dem Schema, beim Bildschirmfoto 0.
+#[cfg(test)]
 pub fn anim_duration(th: &Theme, screenshot: bool) -> u64 {
     if screenshot {
         0
     } else {
-        th.size.anim_ms.clamp(0.0, 600.0).round() as u64
+        ms(th.size.anim_ms)
     }
+}
+
+/// `anim_ms` im erlaubten Bereich 0–600.
+fn ms(anim_ms: f32) -> u64 {
+    anim_ms.clamp(0.0, 600.0).round() as u64
 }
 
 /// Weich ein, weich aus.
@@ -101,7 +107,7 @@ pub fn ease_in_out_cubic(t: f32) -> f32 {
 /// Ebenen, durch die der Bogen blättert, von unten nach oben: die des
 /// aktiven Gebäudes. Ohne Gebäude (nur EG gezeichnet) gibt es das
 /// Obergeschoss der Vorlage noch nicht, nur Fundament und EG.
-fn levels(s: &Scene) -> Vec<StoreyId> {
+pub fn levels(s: &Scene) -> Vec<StoreyId> {
     let m = s.model();
     let a = s.active_storey();
     let l = m.group_levels(a);
@@ -227,7 +233,12 @@ impl Geo {
         for p in pts {
             (x0, y0, x1, y1) = (x0.min(p.0), y0.min(p.1), x1.max(p.0), y1.max(p.1));
         }
-        Rect::new(x0.floor(), y0.floor(), (x1 - x0).ceil() + 1.0, (y1 - y0).ceil() + 1.0)
+        Rect::new(
+            x0.floor(),
+            y0.floor(),
+            (x1 - x0).ceil() + 1.0,
+            (y1 - y0).ceil() + 1.0,
+        )
     }
 
     /// Teil des Bogens an der Stelle (Pixel).
@@ -294,11 +305,16 @@ impl Wheel {
         self.size = th.size;
     }
 
+    /// Animationen aus (`anim_ms` = 0 oder Bildschirmfoto): alles sofort.
+    pub fn instant(&self) -> bool {
+        self.duration() == 0
+    }
+
     fn duration(&self) -> u64 {
         if self.screenshot {
             0
         } else {
-            self.size.anim_ms.clamp(0.0, 600.0).round() as u64
+            ms(self.size.anim_ms)
         }
     }
 
@@ -310,13 +326,19 @@ impl Wheel {
 
     /// Lage im Fenster `w` × `h` (Pixel, mit Titelleiste): rechts am Rand,
     /// senkrecht mittig unter „Ansichten“, nie höher als die Fenstermitte.
+    /// Ist ein Bauteil gewählt, rückt er links neben „Eigenschaften“, damit
+    /// das Paneel ihn nicht verdeckt.
     pub fn geo(&self, ui: &Ui, w: u32, h: u32) -> Geo {
         let z = &self.size;
         let s = ui.dpi();
         let views = ui.rect(Panel::Views, w, ui.top);
         let below = views.y + views.h;
         let cy = ((below + h as f32) / 2.0).max(h as f32 / 2.0);
-        let right = w as f32 - z.panel_margin * s;
+        let right = if ui.has_props() {
+            ui.rect(Panel::Props, w, ui.top).x - z.panel_margin * s
+        } else {
+            w as f32 - z.panel_margin * s
+        };
         let label_x = right - LABEL_COL * z.arc_label * s;
         let r = z.arc_r * s;
         let mid = label_x - LABEL_GAP * s - z.arc_band * 0.5 * s;
@@ -334,12 +356,14 @@ impl Wheel {
         }
     }
 
+    #[cfg(test)]
     /// Kreismittelpunkt und Radius (Pixel).
     pub fn placement(&self, ui: &Ui, w: u32, h: u32) -> (f32, f32, f32) {
         let g = self.geo(ui, w, h);
         (g.cx, g.cy, g.r)
     }
 
+    #[cfg(test)]
     /// Rechte Kante des Bogens samt Schild des aktiven Geschosses.
     pub fn right_edge(&self, _s: &Scene, ui: &Ui, w: u32, h: u32) -> f32 {
         self.geo(ui, w, h).right
@@ -360,12 +384,14 @@ impl Wheel {
         !input && self.neighbor_id(s, up).is_some()
     }
 
+    #[cfg(test)]
     /// Aktives Geschoss: Name und Kote.
     pub fn center(&self, s: &Scene) -> (String, String) {
         let a = s.active_storey();
         (short_name(s, a), kote(s, a))
     }
 
+    #[cfg(test)]
     /// Beschriftung an der Spitze (`None`: ausgegraut, ohne Beschriftung).
     pub fn neighbor(&self, s: &Scene, up: bool) -> Option<String> {
         self.neighbor_id(s, up).map(|id| short_name(s, id))
@@ -375,7 +401,10 @@ impl Wheel {
     /// Wandzug der Sperrhinweis.
     pub fn arrow_hint(&self, s: &Scene, up: bool, input: bool) -> Option<(String, String)> {
         if input {
-            return Some(("Erst die Wand fertig zeichnen oder Esc".into(), String::new()));
+            return Some((
+                "Erst die Wand fertig zeichnen oder Esc".into(),
+                String::new(),
+            ));
         }
         let id = self.neighbor_id(s, up)?;
         let arrow = if up { "↑" } else { "↓" };
@@ -384,10 +413,10 @@ impl Wheel {
 
     /// Läuft zur Zeit `t` ein Wechsel?
     pub fn animating(&self, t: u64) -> bool {
-        self.anim
-            .is_some_and(|a| a.fresh || t < a.start + a.dur)
+        self.anim.is_some_and(|a| a.fresh || t < a.start + a.dur)
     }
 
+    #[cfg(test)]
     /// Um wie viele Plätze die Beschriftungen gerade rollen (0 in Ruhe).
     pub fn anim_steps(&self, t: u64) -> i32 {
         match self.anim {
@@ -608,8 +637,7 @@ impl Wheel {
     }
 
     /// Bild des Bogens (Band, Spitzen, Leuchten) mit seiner Lage im Fenster.
-    /// `glow`: Stärke des Leuchtens (1 in Ruhe, 1,5 unter der Maus, 2 beim
-    /// Aufleuchten).
+    /// `glow`: Stärke des Leuchtens (1 in Ruhe, 1,5 unter der Maus).
     pub fn paint_arc(
         &self,
         g: &Geo,
@@ -617,45 +645,20 @@ impl Wheel {
         enabled: (bool, bool),
         glow: f32,
     ) -> (Canvas, i32, i32) {
+        let (mut c, local, x, y) = arc_canvas(g);
         let s = g.s;
-        let pad = 12.0 * s;
-        let b = g.bounds(pad);
-        let mut c = Canvas::new(b.w as usize, b.h as usize);
-        let local = Geo {
-            cx: g.cx - b.x,
-            cy: g.cy - b.y,
-            ..*g
-        };
-        // Ring zwischen zwei Vergrößerungen: außen herum, innen gegenläufig
-        let ring = |c: &mut Canvas, d0: f32, d1: f32, col: Rgba| {
-            let mut p = Path::new();
-            poly_path(&mut p, &local.outline(d1));
-            let mut inner = local.outline(d0);
-            inner.reverse();
-            poly_path(&mut p, &inner);
-            c.fill(&p, col);
-        };
         let border = 1.5 * s;
         // weicher Schatten wie die Paneele
         for i in 1..=3 {
             let d = border + i as f32 * 2.0 * s;
-            ring(&mut c, border, d, t.ui.shadow);
+            ring(&mut c, &local, border, d, t.ui.shadow);
         }
-        // Leuchten: drei Konturen in der Leuchtfarbe
-        let glow_col = |a: f32| {
-            let h = t.ui.hud_glow;
-            let alpha = (h.3 as f32 * (a * glow).min(1.0)).round() as u8;
-            Rgba(h.0, h.1, h.2, alpha)
-        };
-        for (k, a) in [0.06, 0.15, 0.30].iter().enumerate().rev() {
-            let d0 = border + k as f32 * 2.0 * s;
-            ring(&mut c, d0, d0 + 2.0 * s, glow_col(*a));
-        }
+        paint_glow(&mut c, &local, t, glow);
         // Fläche und Rand
         let mut body = Path::new();
         poly_path(&mut body, &local.outline(0.0));
         c.fill(&body, t.ui.hud_bg);
-        ring(&mut c, 0.0, border, t.ui.accent);
+        ring(&mut c, &local, 0.0, border, t.ui.accent);
         // Spitzen: unter der Maus gefüllt, gesperrt grau
         for (up, on) in [(true, enabled.0), (false, enabled.1)] {
             let part = if up { Part::Up } else { Part::Down };
@@ -669,7 +672,55 @@ impl Wheel {
                 c.fill(&p, Rgba(a.0, a.1, a.2, (a.3 as f32 * 0.9) as u8));
             }
         }
-        (c, b.x as i32, b.y as i32)
+        (c, x, y)
+    }
+
+    /// Nur das Leuchten (einfach), an derselben Stelle wie [`Wheel::paint_arc`]:
+    /// liegt beim Wechsel über dem Bogen und blendet aus (2-fach → 1-fach).
+    pub fn paint_flash(&self, g: &Geo, t: &Theme) -> (Canvas, i32, i32) {
+        let (mut c, local, x, y) = arc_canvas(g);
+        paint_glow(&mut c, &local, t, 1.0);
+        (c, x, y)
+    }
+}
+
+/// Leeres Bild um den Bogen (mit Rand für Schatten und Leuchten), der Bogen
+/// in seinen Koordinaten und die Lage im Fenster.
+fn arc_canvas(g: &Geo) -> (Canvas, Geo, i32, i32) {
+    let b = g.bounds(12.0 * g.s);
+    let local = Geo {
+        cx: g.cx - b.x,
+        cy: g.cy - b.y,
+        ..*g
+    };
+    (
+        Canvas::new(b.w as usize, b.h as usize),
+        local,
+        b.x as i32,
+        b.y as i32,
+    )
+}
+
+/// Ring zwischen zwei Vergrößerungen der Kontur: außen herum, innen
+/// gegenläufig.
+fn ring(c: &mut Canvas, g: &Geo, d0: f32, d1: f32, col: Rgba) {
+    let mut p = Path::new();
+    poly_path(&mut p, &g.outline(d1));
+    let mut inner = g.outline(d0);
+    inner.reverse();
+    poly_path(&mut p, &inner);
+    c.fill(&p, col);
+}
+
+/// Leuchten: drei Konturen in der Leuchtfarbe (30 %, 15 %, 6 % × `glow`).
+fn paint_glow(c: &mut Canvas, g: &Geo, t: &Theme, glow: f32) {
+    let s = g.s;
+    let border = 1.5 * s;
+    let h = t.ui.hud_glow;
+    for (k, a) in [0.30f32, 0.15, 0.06].iter().enumerate().rev() {
+        let alpha = (h.3 as f32 * (a * glow).min(1.0)).round() as u8;
+        let d0 = border + k as f32 * 2.0 * s;
+        ring(c, g, d0, d0 + 2.0 * s, Rgba(h.0, h.1, h.2, alpha));
     }
 }
 
@@ -682,7 +733,11 @@ pub fn paint_big(fonts: &Fonts, name: &str, kote: &str, g: &Geo, t: &Theme) -> C
     let (padx, pady) = (9.0 * s, 7.0 * s);
     let max_w = g.right - g.label_x - 2.0 * padx;
     let mut px = z.arc_label * s;
-    let width = |px: f32| bold.map_or(px * 0.6 * name.chars().count() as f32, |f| f.width(name, px));
+    let width = |px: f32| {
+        bold.map_or(px * 0.6 * name.chars().count() as f32, |f| {
+            f.width(name, px)
+        })
+    };
     if width(px) > max_w {
         px = (px * max_w / width(px)).max(LABEL_MIN * s);
     }
@@ -709,7 +764,9 @@ pub fn paint_small(fonts: &Fonts, name: &str, g: &Geo, t: &Theme, color: Rgba) -
     let px = z.arc_label_small * s;
     let (padx, pady) = (6.0 * s, 4.5 * s);
     let cap = f.map_or(px * 0.7, |f| f.cap_height(px));
-    let tw = f.map_or(px * 0.6 * name.chars().count() as f32, |f| f.width(name, px));
+    let tw = f.map_or(px * 0.6 * name.chars().count() as f32, |f| {
+        f.width(name, px)
+    });
     let (w, h) = ((tw + 2.0 * padx).ceil(), (cap + 2.0 * pady).ceil());
     let mut c = Canvas::new(w as usize, h as usize);
     let mut p = Path::new();

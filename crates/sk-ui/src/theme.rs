@@ -407,8 +407,8 @@ impl Theme {
         // Akzent ist (aufgehellt; beim dunklen Schema dessen eigener Wert)
         let dark = Theme::dark().ui;
         let old_hover = self.ui.accent_hover;
-        let derived = old_hover == lighten(old)
-            || (old == dark.accent && old_hover == dark.accent_hover);
+        let derived =
+            old_hover == lighten(old) || (old == dark.accent && old_hover == dark.accent_hover);
         if derived {
             let h = lighten(c);
             self.ui.accent_hover = h;

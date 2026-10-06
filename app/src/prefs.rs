@@ -516,7 +516,10 @@ pub fn set_sky_ends(th: &mut Theme, unten: Rgba, oben: Rgba) {
 
 /// Größe „anim_ms“ in [`SIZE_ROLES`].
 fn anim_role() -> usize {
-    SIZE_ROLES.iter().position(|r| r.0 == "anim_ms").unwrap_or(0)
+    SIZE_ROLES
+        .iter()
+        .position(|r| r.0 == "anim_ms")
+        .unwrap_or(0)
 }
 
 /// Bereich, Nachkommastellen und Einheit eines Zahlenfelds.
@@ -1286,11 +1289,25 @@ impl Prefs {
     fn picker_rect(&self, p: &Picker, t: &Theme, w: &Win) -> Rect {
         let s = w.scale;
         let (pw, ph) = (t.size.picker_w * s, t.size.picker_h * s);
-        let x = p.anchor.x.min(w.w as f32 - pw).max(0.0);
-        let mut y = p.anchor.y + p.anchor.h + 4.0 * s;
-        if y + ph > w.h as f32 {
-            y = (p.anchor.y - 4.0 * s - ph).max(w.top as f32);
-        }
+        // Im Einstellungsfenster bleiben: unter dem Farbfeld, sonst darüber,
+        // passt beides nicht, links daneben; nur ein zu kleines Fenster lässt
+        // ihn hinausragen
+        let f = self.frame(t, w);
+        let (left, top) = (f.x.max(0.0), f.y.max(w.top as f32));
+        let right = (f.x + f.w).min(w.w as f32);
+        let bottom = (f.y + f.h).min(w.h as f32);
+        let a = p.anchor;
+        let mut x = a.x.min(right - pw).max(left);
+        let below = a.y + a.h + 4.0 * s;
+        let above = a.y - 4.0 * s - ph;
+        let y = if below + ph <= bottom {
+            below
+        } else if above >= top {
+            above
+        } else {
+            x = (a.x - 8.0 * s - pw).max(left);
+            (a.y + a.h * 0.5 - ph * 0.5).min(bottom - ph).max(top)
+        };
         Rect::new(x.round(), y.round(), pw.round(), ph.round())
     }
 
@@ -1450,6 +1467,9 @@ enum TextKind {
     Group(bool),
     /// Fette Zwischenüberschrift.
     Title,
+    /// Leise, eine Zeile je Eintrag (`\n`), lange Einträge umbrochen statt
+    /// gekürzt (Spalte „Verwendet von“ neben der Vorschau).
+    Wrap,
 }
 
 impl UiText {
@@ -1484,6 +1504,14 @@ impl UiText {
             y,
             text: text.into(),
             kind: TextKind::Title,
+        }
+    }
+    fn wrapped(x: f32, y: f32, text: impl Into<String>) -> UiText {
+        UiText {
+            x,
+            y,
+            text: text.into(),
+            kind: TextKind::Wrap,
         }
     }
     fn group(x: f32, y: f32, text: impl Into<String>, open: bool) -> UiText {
@@ -3252,7 +3280,9 @@ impl Prefs {
                     label(&mut cc, bold, &tx.text, t.size.font_title * s, x, y, u.text)
                 }
                 TextKind::Label => label(&mut cc, regular, &tx.text, font, x, y, u.text_dim),
-                TextKind::Dim => label(&mut cc, regular, &tx.text, small, x, y, u.field_unit),
+                TextKind::Dim | TextKind::Wrap => {
+                    label(&mut cc, regular, &tx.text, small, x, y, u.field_unit)
+                }
                 TextKind::Title => label(&mut cc, bold, &tx.text, font, x, y, u.text),
                 TextKind::Group(open) => {
                     widgets::disclosure(&mut cc, x + 4.0 * s, y - 5.0 * s, open, u.text, s);
@@ -3601,5 +3631,47 @@ impl Prefs {
     /// Neuer Stift (Knopf „Neu“): höchste Nummer + 1, schwarz, 0,25 mm.
     pub fn new_pen(&mut self, s: &mut Scene) -> PenId {
         self.add_pen(s, None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Der Farbwähler bleibt im Einstellungsfenster, auch wenn sein Farbfeld
+    /// am rechten oder unteren Rand liegt (Abnahme E5).
+    #[test]
+    fn farbwaehler_bleibt_im_fenster() {
+        let mut s = Scene::new();
+        let th = Theme::dark();
+        let w = Win {
+            w: 1600,
+            h: 1000,
+            top: 32,
+            scale: 1.0,
+        };
+        let mut p = Prefs::open(&mut s, &th);
+        let f = p.frame(&th, &w);
+        for anchor in [
+            Rect::new(f.x + f.w - 30.0, f.y + 100.0, 24.0, 18.0),
+            Rect::new(f.x + f.w - 30.0, f.y + f.h - 24.0, 24.0, 18.0),
+        ] {
+            p.popup = Some(Popup::Picker(Box::new(Picker {
+                target: ColorTarget::Accent,
+                before: Rgba(0, 0, 0, 255),
+                hue: 0.0,
+                sat: 0.0,
+                val: 0.0,
+                anchor,
+                sv: None,
+                hue_img: None,
+            })));
+            let Some(Popup::Picker(pk)) = &p.popup else {
+                unreachable!()
+            };
+            let r = p.picker_rect(pk, &th, &w);
+            assert!(r.x >= f.x && r.x + r.w <= f.x + f.w + 0.5, "{r:?} in {f:?}");
+            assert!(r.y >= f.y && r.y + r.h <= f.y + f.h + 0.5, "{r:?} in {f:?}");
+        }
     }
 }

@@ -136,7 +136,11 @@ impl RunCache {
     ) -> Option<&Solid> {
         match (view, section) {
             (ViewKind::Plan, _) => {
-                let i = match self.plan.iter().position(|(c, m, _)| (*c, *m) == (cut, mode)) {
+                let i = match self
+                    .plan
+                    .iter()
+                    .position(|(c, m, _)| (*c, *m) == (cut, mode))
+                {
                     Some(i) => i,
                     None => {
                         let s = self.plan_solid(cut, mode);
@@ -410,7 +414,8 @@ impl Scene {
     }
 
     /// Warum das Wandwerkzeug im aktiven Geschoss nicht zeichnet (`None`:
-    /// es zeichnet).
+    /// es zeichnet). Das Paneel „Werkzeuge“ zeigt denselben Satz.
+    #[cfg(test)]
     pub fn wall_tool_block(&self) -> Option<String> {
         self.foundation_active()
             .then(|| "Im Fundament gibt es noch nichts zu zeichnen".to_string())
@@ -1327,10 +1332,14 @@ impl Scene {
     /// seine Nachbarn (E18).
     fn plan_candidates(&self) -> Vec<StoreyId> {
         let a = self.active_storey();
-        [Some(a), self.model.level_above(a), self.model.level_below(a)]
-            .into_iter()
-            .flatten()
-            .collect()
+        [
+            Some(a),
+            self.model.level_above(a),
+            self.model.level_below(a),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
     }
 
     /// Liegt der Grundriss des Geschosses `id` schon berechnet bereit (alle
@@ -1357,7 +1366,9 @@ impl Scene {
 
     /// Fehlt noch ein vorbereiteter Grundriss (Leerlauf hat zu tun)?
     pub fn plans_pending(&self) -> bool {
-        self.plan_candidates().into_iter().any(|id| !self.plan_ready(id))
+        self.plan_candidates()
+            .into_iter()
+            .any(|id| !self.plan_ready(id))
     }
 
     /// Grundriss des Geschosses `id` berechnen (vor einem Wechsel dorthin).
@@ -1397,15 +1408,6 @@ impl Scene {
             }
         }
         out
-    }
-
-    /// Liegt der Zug ganz unter dem aktiven Geschoss (B12, E16)?
-    fn is_lower(&self, run: RunId) -> bool {
-        let floor = self.work_plane().0;
-        self.model
-            .run(run)
-            .and_then(|r| self.model.storey(r.storey))
-            .is_some_and(|st| st.top() <= floor + 1e-6)
     }
 
     /// Netz einzelner Wandzüge (Live-Netz beim Ziehen).

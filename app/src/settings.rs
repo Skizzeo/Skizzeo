@@ -226,8 +226,12 @@ pub const SIZE_ROLES: [SizeRole; 52] = [
         &mut t.size.arc_span_deg
     }),
     ("arc_band", "Geschossbogen Band", |t| &mut t.size.arc_band),
-    ("arc_head_l", "Pfeilspitze Länge", |t| &mut t.size.arc_head_l),
-    ("arc_head_w", "Pfeilspitze Breite", |t| &mut t.size.arc_head_w),
+    ("arc_head_l", "Pfeilspitze Länge", |t| {
+        &mut t.size.arc_head_l
+    }),
+    ("arc_head_w", "Pfeilspitze Breite", |t| {
+        &mut t.size.arc_head_w
+    }),
     ("arc_label", "Geschossname groß", |t| &mut t.size.arc_label),
     ("arc_label_small", "Geschossname klein", |t| {
         &mut t.size.arc_label_small
