@@ -177,6 +177,26 @@ impl Library {
 
 // --- Datei ----------------------------------------------------------------
 
+/// Kennung eines Satzes zum Wiederfinden in der eigenen Ausgabe: Abschnitt
+/// und Guid, ohne Guid die Schlüsselfelder ([default]: Art, [typeprop]:
+/// Typ und Merkmal, [layer]: Typ). Mehrere Sätze mit derselben Kennung
+/// (Schichten eines Typs) zählen in Dateireihenfolge durch.
+fn record_key(r: &Record, count: &mut HashMap<String, usize>) -> String {
+    let base = match r.opt("guid") {
+        Some(g) => format!("{} guid={g}", r.section),
+        None => format!(
+            "{} set={} cat={} key={}",
+            r.section,
+            r.opt("set").unwrap_or(""),
+            r.opt("cat").unwrap_or(""),
+            r.opt("key").unwrap_or("")
+        ),
+    };
+    let n = count.entry(base.clone()).or_insert(0);
+    *n += 1;
+    format!("{base} #{n}")
+}
+
 /// Der Katalog als `.szk`-Text.
 pub fn write_szk(lib: &Library) -> String {
     let plain = write_known(lib);
@@ -185,12 +205,22 @@ pub fn write_szk(lib: &Library) -> String {
         return plain;
     }
     let mut out = String::with_capacity(plain.len() + 256);
+    // Jede gemerkte Zeile einmal: gleiche eigene Zeilen (zwei gleiche
+    // Schichten) bekommen ihre fremden Zeilen der Reihe nach
+    let mut used = vec![false; f.lines.len()];
     for l in plain.lines() {
-        let l = f
+        let hit = f
             .lines
             .iter()
-            .find(|(mine, _)| mine == l)
-            .map_or(l, |(_, theirs)| theirs.as_str());
+            .enumerate()
+            .find(|(i, (mine, _))| !used[*i] && mine == l);
+        let l = match hit {
+            Some((i, (_, theirs))) => {
+                used[i] = true;
+                theirs.as_str()
+            }
+            None => l,
+        };
         out.push_str(l);
         out.push('\n');
     }
@@ -351,25 +381,29 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
     lib.stock.sort();
     lib.stock.dedup();
     // Unbekannte Schlüssel und Werte: zählen, und die Zeile merken, damit
-    // sie unverändert zurückgeschrieben wird
+    // sie unverändert zurückgeschrieben wird. Zugeordnet wird über die
+    // Kennung des Satzes ([`record_key`]), auch bei Sätzen ohne Guid.
     let mut odd = Vec::new();
+    let mut count = HashMap::new();
     for r in by.values().flatten() {
         let n = r.unknown();
+        let key = record_key(r, &mut count);
         if n > 0 {
             foreign.unknown += n;
-            if let Some(g) = r.opt("guid") {
-                odd.push((r.section.clone(), g.to_string(), lines[r.line - 1]));
-            }
+            odd.push((key, lines[r.line - 1]));
         }
     }
     if !odd.is_empty() {
         let mine = write_known(&lib);
-        for (section, g, theirs) in odd {
-            let head = format!("[{section}]");
-            let token = format!(" guid={g}");
-            if let Some(l) = mine.lines().find(|l| {
-                l.starts_with(&head) && (l.contains(&format!("{token} ")) || l.ends_with(&token))
-            }) {
+        let mut count = HashMap::new();
+        let mut own = HashMap::new();
+        for (i, l) in mine.lines().enumerate() {
+            if let Ok(Some(r)) = Record::parse(i + 1, l) {
+                own.insert(record_key(&r, &mut count), l);
+            }
+        }
+        for (key, theirs) in odd {
+            if let Some(l) = own.get(&key) {
                 foreign.lines.push((l.to_string(), theirs.to_string()));
             }
         }
@@ -723,6 +757,28 @@ mod tests {
         let back = read_szk(&text).unwrap();
         assert_eq!(back, lib);
         assert_eq!(write_szk(&back), text);
+    }
+
+    /// Zwei gleiche Schichten eines Typs mit verschiedenen fremden Angaben:
+    /// jede kommt an ihrer Stelle zurück.
+    #[test]
+    fn gleiche_schichten_behalten_ihre_fremden_angaben() {
+        let text = include_str!("../../../app/src/firmenkatalog_k4.szk");
+        let i = text
+            .lines()
+            .position(|l| l.starts_with("[layer] "))
+            .unwrap();
+        let mut lines: Vec<String> = text.lines().map(String::from).collect();
+        let layer = lines[i].clone();
+        lines[i] = format!("{layer} neu=a");
+        lines.insert(i + 1, format!("{layer} neu=b"));
+        let alt = lines.join("\n") + "\n";
+        let lib = read_szk(&alt).unwrap();
+        assert_eq!(lib.foreign.unknown, 2);
+        let out = write_szk(&lib);
+        let a = out.lines().position(|l| l.ends_with(" neu=a"));
+        let b = out.lines().position(|l| l.ends_with(" neu=b"));
+        assert!(a.is_some() && b == a.map(|a| a + 1), "{out}");
     }
 
     /// Jörns Firmenkatalog nach K4 (Startbestand aus K3, beim Start mit K4
