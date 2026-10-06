@@ -9,12 +9,10 @@ use sk_math::{vec3, Vec3};
 use sk_model::ElementId;
 use sk_paint::Rgba;
 use sk_render::Helper;
-use sk_ui::theme;
+use sk_ui::theme::Theme;
 
 /// Bis zu so vielen Pixeln Bewegung zwischen Drücken und Loslassen gilt als Klick.
 const CLICK_PX: f64 = 4.0;
-/// Strichbreite des Umrisses (dip).
-const OUTLINE_WIDTH: f32 = 2.5;
 
 #[derive(Default)]
 pub struct Selection {
@@ -132,12 +130,12 @@ pub fn props(scene: &Scene, id: ElementId) -> Option<Props> {
             .enumerate()
             .filter_map(|(i, l)| {
                 let mat = m.material(l.material)?;
-                let [r, g, b] = m.attr().surface(mat.surface)?.cut_color;
+                let rgb = m.attr().surface(mat.surface)?.cut_color;
                 let amount = q.and_then(|q| q.layers.get(i)).map_or(String::new(), |lq| {
                     format!("{} m³ · {} kg", de(lq.volume / 1e9, 3), de(lq.mass, 0))
                 });
                 Some((
-                    Rgba::rgb(r, g, b),
+                    Rgba::from_rgb8(rgb),
                     format!("{} cm {}", cm(l.thickness), mat.name),
                     amount,
                 ))
@@ -172,6 +170,7 @@ pub fn helpers(
     view: ViewKind,
     section: Option<(Vec3, Vec3)>,
     scale: f32,
+    theme: &Theme,
 ) -> Vec<Helper> {
     let Some((run, seg)) = scene.model().segment_of(id) else {
         return Vec::new();
@@ -203,20 +202,14 @@ pub fn helpers(
             .filter_map(|(a, b)| behind(a, b, pl))
             .collect();
     }
-    let c = theme::panel::ACCENT;
-    let color = [
-        c.0 as f32 / 255.0,
-        c.1 as f32 / 255.0,
-        c.2 as f32 / 255.0,
-        1.0,
-    ];
+    let color = theme.interact.select;
     lines
         .into_iter()
         .map(|(a, b)| Helper {
             a: a.to_f32(),
             b: b.to_f32(),
             color,
-            width: OUTLINE_WIDTH * scale,
+            width: theme.size.outline * scale,
             dash: 0.0,
             occlude: view == ViewKind::Persp,
             round: true,
@@ -296,9 +289,9 @@ mod tests {
         let pl = Some((vec3(0.0, 4000.0, 0.0), vec3(0.0, -1.0, 0.0)));
         let o = vec3(9900.0, -5000.0, 1000.0);
         assert_eq!(s.pick(ViewKind::Section, pl, o, vec3(0.0, 1.0, 0.0)), hit);
-        assert!(!helpers(&s, hit.unwrap(), ViewKind::Section, pl, 1.0).is_empty());
+        assert!(!helpers(&s, hit.unwrap(), ViewKind::Section, pl, 1.0, &Theme::dark()).is_empty());
         assert_eq!(
-            helpers(&s, hit.unwrap(), ViewKind::Persp, None, 1.0).len(),
+            helpers(&s, hit.unwrap(), ViewKind::Persp, None, 1.0, &Theme::dark()).len(),
             12
         );
 
@@ -360,5 +353,24 @@ mod tests {
         sel.press(100.0, 100.0);
         assert!(!sel.release(120.0, 100.0, 1.0));
         assert!(!sel.release(100.0, 100.0, 1.0));
+    }
+
+    #[test]
+    fn umriss_in_der_auswahlfarbe_des_schemas() {
+        let mut s = Scene::with_model(Model::with_seed(5));
+        let run = s.add_wall(&rechteck()).unwrap();
+        let id = s.model().wall_at(run, 0).unwrap();
+        let mut th = Theme::dark();
+        let colors = |th: &Theme| -> Vec<[f32; 4]> {
+            helpers(&s, id, ViewKind::Persp, None, 1.0, th)
+                .iter()
+                .map(|h| h.color)
+                .collect()
+        };
+        assert!(colors(&th).iter().all(|&c| c == th.ui.accent.to_f32()));
+        th.set_accent(Rgba::rgb(40, 120, 220));
+        assert!(colors(&th)
+            .iter()
+            .all(|&c| c == [40.0 / 255.0, 120.0 / 255.0, 220.0 / 255.0, 1.0]));
     }
 }

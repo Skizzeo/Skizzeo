@@ -14,15 +14,12 @@ use sk_math::{vec3, Vec3};
 use sk_model::{ElementId, Model, RunId, WallChain};
 use sk_platform::{Event, Key, MouseButton};
 use sk_render::Helper;
+use sk_ui::theme::Theme;
 
 /// Greifabstand zum Band in Pixeln (bei 96 dpi).
 const PICK_PX: f64 = 8.0;
 /// Raster beim Ziehen in Millimetern.
 const STEP: f64 = 10.0;
-
-const BAND_HOT: [f32; 4] = [0.74, 0.50, 1.0, 1.0];
-const BAND_GHOST: [f32; 4] = [0.56, 0.27, 0.86, 0.7];
-const DARK: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
 
 struct Drag {
     /// Gezogene Wand und ihr Platz im Wandzug.
@@ -340,7 +337,15 @@ impl WallEdit {
     /// Gummiband des Segments unter der Maus bzw. des gezogenen, von der Seite als
     /// Kugel am Wandfuß. `occlude`: hinter Wänden liegende Teile blass (3D);
     /// sonst immer voll sichtbar.
-    pub fn helpers(&self, scene: &Scene, cam: &Camera, scale: f32, occlude: bool) -> Vec<Helper> {
+    pub fn helpers(
+        &self,
+        scene: &Scene,
+        cam: &Camera,
+        scale: f32,
+        occlude: bool,
+        theme: &Theme,
+    ) -> Vec<Helper> {
+        let col = &theme.interact;
         let mut out = Vec::new();
         let lift = |p: Vec3| [p.x as f32, p.y as f32, p.z as f32 + 2.0];
         let line = |a: Vec3, b: Vec3, color, width: f32, dash: f32| Helper {
@@ -366,14 +371,14 @@ impl WallEdit {
         if side_view(cam) {
             if let Some(d) = &self.drag {
                 if let Some(&(a, b)) = d.original.outer_foot().get(d.seg) {
-                    out.push(dot((a + b) * 0.5, BAND_GHOST, 8.0));
+                    out.push(dot((a + b) * 0.5, col.drag_ghost, 8.0));
                 }
             }
             let segment = active.and_then(|e| scene.model().segment_of(e));
             if let Some((run, k)) = segment {
                 if let Some((a, b)) = scene.foot(run).and_then(|f| f.get(k).copied()) {
-                    out.push(dot((a + b) * 0.5, DARK, 15.0));
-                    out.push(dot((a + b) * 0.5, BAND_HOT, 12.0));
+                    out.push(dot((a + b) * 0.5, col.shadow_band, 15.0));
+                    out.push(dot((a + b) * 0.5, col.drag_hot, 12.0));
                 }
             }
             return out;
@@ -382,15 +387,15 @@ impl WallEdit {
         // Beim Ziehen: ursprüngliche Lage gestrichelt
         if let Some(d) = &self.drag {
             if let Some(&(a, b)) = d.original.outer_foot().get(d.seg) {
-                out.push(line(a, b, BAND_GHOST, 1.5, 6.0));
+                out.push(line(a, b, col.drag_ghost, 1.5, 6.0));
             }
         }
         // Sichtbar nur das Segment unter der Maus bzw. das gezogene
         let segment = active.and_then(|e| scene.model().segment_of(e));
         if let Some((run, k)) = segment {
             if let Some((a, b)) = scene.foot(run).and_then(|f| f.get(k).copied()) {
-                out.push(line(a, b, DARK, 6.0, 0.0));
-                out.push(line(a, b, BAND_HOT, 4.0, 0.0));
+                out.push(line(a, b, col.shadow_band, 6.0, 0.0));
+                out.push(line(a, b, col.drag_hot, 4.0, 0.0));
             }
         }
         out
@@ -511,7 +516,7 @@ mod tests {
         assert!((xa - xb).abs() < 1e-6 && (ya - yb).abs() < 1e-6);
         e.handle(&mv(xa + 3.0, ya - 2.0), &mut s, &c, W, H, 1.0, true);
         assert_eq!(e.hover, s.model().wall_at(run, 0));
-        let h = e.helpers(&s, &c, 1.0, false);
+        let h = e.helpers(&s, &c, 1.0, false, &Theme::dark());
         assert!(h.iter().all(|h| h.round && h.a == h.b), "Kugel statt Linie");
         let down = Event::MouseDown {
             button: MouseButton::Left,

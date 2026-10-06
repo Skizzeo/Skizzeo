@@ -8,6 +8,7 @@ use sk_math::{vec3, Vec3};
 use sk_paint::{Canvas, Path, Rgba};
 use sk_platform::{Event, MouseButton};
 use sk_render::Helper;
+use sk_ui::theme::Theme;
 use sk_ui::widgets::Fonts;
 
 /// Greifabstand in Pixeln (bei 96 dpi).
@@ -16,8 +17,6 @@ const PICK_PX: f64 = 8.0;
 const OVERHANG: f64 = 1500.0;
 /// Raster beim Verschieben (mm).
 const STEP: f64 = 10.0;
-
-const HOT: [f32; 4] = [0.56, 0.27, 0.86, 1.0];
 
 #[derive(Default)]
 pub struct SectionLine {
@@ -166,12 +165,20 @@ impl SectionLine {
     }
 
     /// Linie als Hilfslinien: Strichpunkt in der Mitte, kräftige Enden.
-    pub fn helpers(&self, scene: &Scene, cam: &Camera, h: f64, scale: f32) -> Vec<Helper> {
+    pub fn helpers(
+        &self,
+        scene: &Scene,
+        cam: &Camera,
+        h: f64,
+        scale: f32,
+        theme: &Theme,
+    ) -> Vec<Helper> {
         let Some((a, b)) = self.ends(scene) else {
             return Vec::new();
         };
         let t = scene.table();
-        let color = |ink: [f32; 4]| if self.is_busy() { HOT } else { ink };
+        let hot = theme.interact.drag;
+        let color = |ink: [f32; 4]| if self.is_busy() { hot } else { ink };
         let mm_per_px = cam.ortho.map_or(10.0, |half| 2.0 * half / h.max(1.0));
         let end = 16.0 * mm_per_px * scale as f64;
         let lift = |p: Vec3| [p.x as f32, p.y as f32, p.z as f32 + 2.0];
@@ -218,15 +225,22 @@ impl SectionLine {
 
     /// Bild eines Endsymbols (Pfeil in Blickrichtung und Buchstabe) und sein
     /// Bezugspunkt (Ende der Linie) im Bild.
-    pub fn paint_mark(&self, fonts: &Fonts, left: bool, scale: f32) -> (Canvas, f32, f32) {
+    pub fn paint_mark(
+        &self,
+        scene: &Scene,
+        theme: &Theme,
+        fonts: &Fonts,
+        left: bool,
+        scale: f32,
+    ) -> (Canvas, f32, f32) {
         let s = scale;
         let (cw, ch) = mark_size(scale);
         let mut c = Canvas::new(cw as usize, ch as usize);
-        let color = if self.is_busy() {
-            Rgba::rgb(143, 69, 219)
+        let color = Rgba::from_f32(if self.is_busy() {
+            theme.interact.drag
         } else {
-            Rgba::rgb(0, 0, 0)
-        };
+            scene.table().section_ends.1
+        });
         // Bezugspunkt: am Linienende; der Pfeil steht senkrecht darauf (Blick nach oben = +y)
         let (ax, ay) = self.mark_anchor(left, scale);
         let shaft = 2.4 * s;
@@ -244,7 +258,7 @@ impl SectionLine {
             .close();
         c.fill(&p, color);
         if let Some(f) = fonts.bold.as_ref().or(fonts.regular.as_ref()) {
-            let px = 17.0 * s;
+            let px = theme.size.font_mark * s;
             let tw = f.width("A", px);
             let tx = if left {
                 ax + 7.0 * s

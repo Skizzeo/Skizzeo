@@ -28,7 +28,8 @@ use sk_paint::Rgba;
 use sk_platform::{CaptionArea, Config, Event, Key, MouseButton, Surface, WindowCommand};
 use sk_render::{gl::Gl, Renderer, Style};
 use sk_ui::{
-    logo, theme,
+    logo,
+    theme::{Environment, Theme},
     titlebar::{Button, TitleBar},
 };
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -52,18 +53,19 @@ fn main() {
 }
 
 fn rgb(c: Rgba) -> [f32; 3] {
-    [c.0 as f32 / 255.0, c.1 as f32 / 255.0, c.2 as f32 / 255.0]
+    let [r, g, b, _] = c.to_f32();
+    [r, g, b]
 }
 
 /// Renderer-Stil; Kantenbreiten im Netz sind Bildpunkte bei 96 dpi.
-fn style(scale: f32, table: &DrawTable) -> Style {
+fn style(scale: f32, table: &DrawTable, env: &Environment) -> Style {
     let l = vec3(0.32, -0.48, 0.82).normalized().to_f32();
     Style {
-        sky: theme::SKY.iter().map(|&(d, c)| (d, rgb(c))).collect(),
-        ground: rgb(theme::GROUND),
-        horizon_softness: theme::HORIZON_SOFTNESS,
-        face: rgb(theme::FACE),
-        edge: rgb(theme::EDGE),
+        sky: env.sky.iter().map(|&(d, c)| (d, rgb(c))).collect(),
+        ground: rgb(env.ground),
+        horizon_softness: env.horizon_softness,
+        face: rgb(env.face),
+        edge: rgb(env.edge),
         edge_width: scale,
         light: l,
         ambient: 0.84,
@@ -157,6 +159,10 @@ fn fit_perspective(lo: Vec3, hi: Vec3) -> Camera {
     Camera::looking_at(center + dir * dist, center, fov)
 }
 
+/// Stand eines Endsymbols: links, hervorgehoben, Skalierung, Stände von
+/// Farbschema und Zeichentabelle.
+type MarkKey = (bool, bool, u32, (u64, u64));
+
 struct App {
     renderer: Renderer,
     scene: Scene,
@@ -187,6 +193,8 @@ struct App {
     /// Nur diese Knöpfe der Paneele bzw. der Titelleiste neu zeichnen (Hover, Drücken).
     dirty_buttons: Vec<Id>,
     dirty_title: Vec<Button>,
+    /// Farbschema der Oberfläche.
+    theme: Theme,
     /// Zuletzt gezeichnete Titelleiste, für das Neuzeichnen einzelner Knöpfe.
     title_img: Option<sk_paint::Canvas>,
     redraw: bool,
@@ -201,7 +209,7 @@ struct App {
     /// Stand der Zeichentabelle, aus dem der Renderer-Stil stammt.
     style_rev: u64,
     /// Zuletzt hochgeladene Endsymbole der Schnittlinie (links, hervorgehoben, Skalierung).
-    mark_keys: [Option<(bool, bool, u32)>; 2],
+    mark_keys: [Option<MarkKey>; 2],
 }
 
 impl App {
@@ -237,7 +245,7 @@ impl App {
         if self.scene.table().rev != self.style_rev {
             self.style_rev = self.scene.table().rev;
             self.renderer
-                .set_style(style(self.title.scale, self.scene.table()));
+                .set_style(style(self.title.scale, self.scene.table(), &self.theme.env));
             self.mesh_dirty = true;
             self.live_dirty = true;
         }
@@ -436,7 +444,8 @@ impl App {
             Event::ScaleChanged(s) => {
                 self.title.scale = s;
                 self.ui.fit(s, self.w, self.h);
-                self.renderer.set_style(style(s, self.scene.table()));
+                self.renderer
+                    .set_style(style(s, self.scene.table(), &self.theme.env));
                 self.overlay_dirty = true;
             }
             Event::Maximized(m) => {
@@ -673,7 +682,7 @@ impl App {
     }
 
     fn paint_title(&mut self, surface: &Surface) {
-        let c = self.title.paint(self.w);
+        let c = self.title.paint(&self.theme, self.w);
         let th = self.title.height();
         self.renderer
             .set_overlay(OVERLAY_TITLE, 0, 0, self.w, th, &c.to_premul_rgba8());
@@ -689,7 +698,7 @@ impl App {
         self.paint_title(surface);
         let th = self.title.height();
         for (slot, p) in [(OVERLAY_TOOLS, Panel::Tools), (OVERLAY_VIEWS, Panel::Views)] {
-            let (c, x, y) = self.ui.paint(p, self.w, th);
+            let (c, x, y) = self.ui.paint(&self.theme, p, self.w, th);
             let px = c.to_premul_rgba8();
             self.renderer
                 .set_overlay(slot, x, y, c.width as u32, c.height as u32, &px);
@@ -704,7 +713,9 @@ impl App {
     /// Paneel „Eigenschaften“ zeichnen oder (ohne Auswahl) ausblenden.
     fn paint_props(&mut self) {
         if self.ui.props.is_some() {
-            let (c, x, y) = self.ui.paint(Panel::Props, self.w, self.title.height());
+            let (c, x, y) = self
+                .ui
+                .paint(&self.theme, Panel::Props, self.w, self.title.height());
             let px = c.to_premul_rgba8();
             self.renderer
                 .set_overlay(OVERLAY_PROPS, x, y, c.width as u32, c.height as u32, &px);
@@ -727,7 +738,7 @@ impl App {
                 self.paint_title(surface);
                 break;
             };
-            let (x, w) = self.title.repaint_button(c, b, self.w);
+            let (x, w) = self.title.repaint_button(&self.theme, c, b, self.w);
             let (x, y, w, h, px) = c.region_premul_rgba8(x, 0, w, c.height);
             self.renderer.update_overlay(
                 OVERLAY_TITLE,
@@ -740,9 +751,16 @@ impl App {
             self.redraw = true;
         }
         let mut ids = std::mem::take(&mut self.dirty_buttons);
-        ids.dedup();
+        let mut i = 0;
+        while i < ids.len() {
+            if ids[..i].contains(&ids[i]) {
+                ids.remove(i);
+            } else {
+                i += 1;
+            }
+        }
         for id in ids {
-            let Some(p) = self.ui.repaint_button(id) else {
+            let Some(p) = self.ui.repaint_button(&self.theme, id) else {
                 self.paint_overlays(surface);
                 return;
             };
@@ -812,29 +830,32 @@ fn layer_rows(model: &sk_model::Model, set: sk_model::LayerSetId) -> Vec<(Rgba, 
         .iter()
         .filter_map(|l| {
             let m = model.material(l.material)?;
-            let [r, g, b] = model.attr().surface(m.surface)?.cut_color;
+            let rgb = model.attr().surface(m.surface)?.cut_color;
             let cm = l.thickness / 10.0;
             let cm = if cm.fract().abs() < 1e-9 {
                 format!("{cm:.0}")
             } else {
                 format!("{cm:.1}").replace('.', ",")
             };
-            Some((Rgba::rgb(r, g, b), format!("{cm} cm {}", m.name)))
+            Some((Rgba::from_rgb8(rgb), format!("{cm} cm {}", m.name)))
         })
         .collect()
 }
 
 fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     let gl = Gl::load(|name| surface.gl_proc(name))?;
-    let scene = Scene::new();
-    let renderer = Renderer::new(gl, style(surface.scale(), scene.table()))?;
+    // Das Schema hält die App; E7 lädt es später aus den Einstellungen
+    let theme = Theme::dark();
+    let mut scene = Scene::new();
+    scene.set_theme(&theme);
+    let renderer = Renderer::new(gl, style(surface.scale(), scene.table(), &theme.env))?;
     let cam = Camera::looking_at(vec3(-6200.0, -8600.0, 3700.0), Vec3::ZERO, 45.0);
     let (w, h) = surface.size();
     // Außenwand-Aufbau aus der Bibliothek: Vorschau beim Zeichnen und Anzeige im Paneel
     let exterior = scene.model().defaults().exterior_wall;
     let mut tool = WallTool::new();
     tool.layers = scene.model().wall_layers(exterior);
-    let mut ui = Ui::new(surface.scale());
+    let mut ui = Ui::new(surface.scale(), &theme);
     ui.fit(surface.scale(), w, h);
     ui.wall_layers = layer_rows(scene.model(), exterior);
     let mut a = App {
@@ -859,6 +880,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         dirty_buttons: Vec::new(),
         dirty_title: Vec::new(),
         title_img: None,
+        theme,
         redraw: true,
         mesh_dirty: true,
         live_dirty: true,
@@ -950,16 +972,20 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             let scale = a.title.scale;
             let mut helpers = Vec::new();
             match a.ui.view {
-                ViewKind::Plan => helpers.extend(a.sect.helpers(&a.scene, &a.cam, vh, scale)),
+                ViewKind::Plan => {
+                    helpers.extend(a.sect.helpers(&a.scene, &a.cam, vh, scale, &a.theme))
+                }
                 ViewKind::Persp => {}
                 v => helpers.extend(ground_line(v, a.scene.bounds(), scale, a.scene.table())),
             }
             if let Some(id) = a.sel.id {
                 let plane = a.plane();
-                helpers.extend(selection::helpers(&a.scene, id, a.ui.view, plane, scale));
+                helpers.extend(selection::helpers(
+                    &a.scene, id, a.ui.view, plane, scale, &a.theme,
+                ));
             }
-            helpers.extend(a.edit.helpers(&a.scene, &a.cam, scale, !drawing));
-            helpers.extend(a.tool.helpers(&a.cam, scale));
+            helpers.extend(a.edit.helpers(&a.scene, &a.cam, scale, !drawing, &a.theme));
+            helpers.extend(a.tool.helpers(&a.cam, scale, &a.theme));
             a.renderer.set_helpers(&helpers);
 
             // Endsymbole der Schnittlinie als kleine Bilder an den Linienenden
@@ -972,14 +998,17 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 match marks.get(i) {
                     Some(m) => {
                         // Bild nur neu zeichnen, wenn es sich ändert; sonst nur verschieben
-                        let key = (m.left, a.sect.is_busy(), scale.to_bits());
+                        let revs = (a.theme.rev, a.scene.table().rev);
+                        let key = (m.left, a.sect.is_busy(), scale.to_bits(), revs);
                         let (ax, ay) = a.sect.mark_anchor(m.left, scale);
                         let x = (m.x - ax as f64).round() as i32;
                         let y = (m.y + th as f64 - ay as f64).round() as i32;
                         if a.mark_keys[i] == Some(key) {
                             a.renderer.move_overlay(OVERLAY_MARKS + i, x, y);
                         } else {
-                            let (c, _, _) = a.sect.paint_mark(&a.ui.fonts, m.left, scale);
+                            let (c, _, _) =
+                                a.sect
+                                    .paint_mark(&a.scene, &a.theme, &a.ui.fonts, m.left, scale);
                             let px = c.to_premul_rgba8();
                             a.renderer.set_overlay(
                                 OVERLAY_MARKS + i,

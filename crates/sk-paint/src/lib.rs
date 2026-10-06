@@ -278,6 +278,27 @@ impl Rgba {
     pub const fn rgb(r: u8, g: u8, b: u8) -> Rgba {
         Rgba(r, g, b, 255)
     }
+
+    /// Deckende Farbe aus Rot, Grün, Blau (z. B. aus den Attributtabellen).
+    pub const fn from_rgb8([r, g, b]: [u8; 3]) -> Rgba {
+        Rgba(r, g, b, 255)
+    }
+
+    /// Farbe als 0..1 (nicht vormultipliziert).
+    pub fn to_f32(self) -> [f32; 4] {
+        [
+            self.0 as f32 / 255.0,
+            self.1 as f32 / 255.0,
+            self.2 as f32 / 255.0,
+            self.3 as f32 / 255.0,
+        ]
+    }
+
+    /// Farbe aus 0..1, gerundet.
+    pub fn from_f32(c: [f32; 4]) -> Rgba {
+        let u = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+        Rgba(u(c[0]), u(c[1]), u(c[2]), u(c[3]))
+    }
 }
 
 /// RGBA-Bild mit vormultiplizierten Farbwerten (0..1).

@@ -18,7 +18,7 @@ use sk_math::{vec3, Vec3};
 use sk_model::{edge_kind, FillKind, Model, RefSide, RunId, WallChain};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_render::{pattern, MeshData};
-use sk_ui::theme;
+use sk_ui::theme::Theme;
 use sk_ui::titlebar::{Button, TitleBar};
 
 /// Größe der 3D-Ansicht in den Tests (Pixel, 96 dpi).
@@ -163,7 +163,7 @@ fn ui_click(ui: &mut Ui, x: f64, y: f64, win_w: u32, top: u32) -> Option<Id> {
 /// A01: Der Knopf „Gebäude“ im Paneel „Werkzeuge“ startet die Eingabe.
 #[test]
 fn a01_knopf_gebaeude_im_paneel_werkzeuge() {
-    let mut ui = Ui::new(1.0);
+    let mut ui = Ui::new(1.0, &Theme::dark());
     ui.fit(1.0, 1440, 900);
     let buttons = find_buttons(&mut ui, Panel::Tools, 1440, 32);
     let &(_, x, y) = buttons
@@ -403,21 +403,21 @@ fn a07_gummiband_nur_beim_hovern_in_3d_und_grundriss() {
         // Maus im Leeren: kein Band
         e.handle(&mv(5.0, 5.0), &mut s, &c, W, H, 1.0, true);
         assert!(
-            e.helpers(&s, &c, 1.0, !plan).is_empty(),
+            e.helpers(&s, &c, 1.0, !plan, &Theme::dark()).is_empty(),
             "{ctx}: Band ohne Hover"
         );
         // Über dem oberen Wandfuß (Segment 1, y = 8 m): Band erscheint
         let (x, y) = px(&c, vec3(5000.0, 8000.0, 0.0));
         e.handle(&mv(x, y), &mut s, &c, W, H, 1.0, true);
         assert!(
-            !e.helpers(&s, &c, 1.0, !plan).is_empty(),
+            !e.helpers(&s, &c, 1.0, !plan, &Theme::dark()).is_empty(),
             "{ctx}: Band beim Hover"
         );
         // Während der Wandeingabe gibt es kein Band
         let mut off = WallEdit::default();
         off.handle(&mv(x, y), &mut s, &c, W, H, 1.0, false);
         assert!(
-            off.helpers(&s, &c, 1.0, !plan).is_empty(),
+            off.helpers(&s, &c, 1.0, !plan, &Theme::dark()).is_empty(),
             "{ctx}: Band bei Eingabe"
         );
 
@@ -468,7 +468,7 @@ fn a08_ziehpunkte_am_wandfuss_in_schnitt_und_ansichten() {
     let out = e.handle(&mv(x, y), &mut s, &c, W, H, 1.0, true);
     assert!(out.redraw, "Kugel erscheint");
     assert!(e.is_busy());
-    let ball = e.helpers(&s, &c, 1.0, false);
+    let ball = e.helpers(&s, &c, 1.0, false, &Theme::dark());
     assert!(
         !ball.is_empty() && ball.iter().any(|h| h.a == h.b && h.round),
         "Kugel"
@@ -631,7 +631,7 @@ fn a11_schnittlinie_a_a() {
     // Mitte: Außenmaß 0 … 8 m
     assert_eq!(sect.y, Some(4000.0));
     let c = cam_plan(&s);
-    let lines = sect.helpers(&s, &c, H, 1.0);
+    let lines = sect.helpers(&s, &c, H, 1.0, &Theme::dark());
     assert!(lines.iter().any(|h| h.dash < 0.0), "Strichpunktlinie");
     let marks = sect.marks(&s, &c, W, H);
     assert_eq!(marks.len(), 2, "zwei Endsymbole");
@@ -674,7 +674,7 @@ fn a11_schnittlinie_a_a() {
 /// Blickrichtung.
 #[test]
 fn a12_ansichten_paneel() {
-    let mut ui = Ui::new(1.0);
+    let mut ui = Ui::new(1.0, &Theme::dark());
     ui.fit(1.0, 1440, 900);
     let r = ui.rect(Panel::Views, 1440, 32);
     assert!(r.x + r.w > 1300.0, "Ansichten rechts: {r:?}");
@@ -726,7 +726,7 @@ fn a12_ansichten_paneel() {
 /// kleiner darunter, höchstens auf 60 %. Die Bildschirmskalierung wirkt mit.
 #[test]
 fn a13_paneele_skalieren_mit_dem_fenster() {
-    let mut ui = Ui::new(1.0);
+    let mut ui = Ui::new(1.0, &Theme::dark());
     ui.fit(1.0, 1440, 810);
     assert_eq!(ui.scale, 1.0);
     ui.fit(1.0, 2560, 1440);
@@ -772,15 +772,16 @@ fn a14_dunkle_titelleiste_mit_weissem_logo() {
         Some(Button::Minimize)
     );
     assert_eq!(t.button_at(400.0, 10.0, w), None, "Rest zieht das Fenster");
-    assert_eq!(theme::titlebar::BACKGROUND, theme::panel::BACKGROUND);
+    let th = Theme::dark();
+    assert_eq!(th.title.bg, th.ui.bg);
 
-    let c = t.paint(w);
+    let c = t.paint(&th, w);
     let px = c.to_rgba8();
     let at = |x: usize, y: usize| {
         let i = (y * c.width + x) * 4;
         (px[i], px[i + 1], px[i + 2])
     };
-    let bg = theme::panel::BACKGROUND;
+    let bg = th.ui.bg;
     // Mitte der Leiste: Paneelfarbe
     assert_eq!(at(700, 16), (bg.0, bg.1, bg.2), "dunkel wie die Paneele");
     // Links: weiße Logopixel
@@ -856,7 +857,7 @@ fn a15_auswahl_per_klick_in_jeder_ansicht() {
         assert_eq!(hit, Some(top), "{v:?}: obere Wand gewählt");
         sel.set(hit);
         assert!(
-            !selection::helpers(&s, top, v, plane, 1.0).is_empty(),
+            !selection::helpers(&s, top, v, plane, 1.0, &Theme::dark()).is_empty(),
             "{v:?}: Umriss"
         );
         // Klick ins Leere

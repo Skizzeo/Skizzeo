@@ -11,6 +11,7 @@ use crate::ui::ViewKind;
 use sk_math::{vec3, Vec3};
 use sk_model::{material, run_qto, Category, ElementId, Model, RunId, Solid, WallChain, WallQto};
 use sk_render::{pattern, MeshData};
+use sk_ui::theme::Theme;
 
 /// Schnitthöhe des Grundrisses über dem Boden (mm).
 pub const PLAN_CUT: f64 = 1000.0;
@@ -102,6 +103,8 @@ pub struct Scene {
     bounds: Option<Aabb>,
     /// Aufgelöste Attributtabellen des Modells.
     table: DrawTable,
+    /// Farbschema der App (Rückfallfarben und Bildpunkte je mm der Tabelle).
+    theme: Theme,
 }
 
 fn union(a: Option<Aabb>, b: Option<Aabb>) -> Option<Aabb> {
@@ -145,7 +148,8 @@ impl Scene {
     }
 
     pub fn with_model(model: Model) -> Scene {
-        let table = DrawTable::resolve(&model);
+        let theme = Theme::dark();
+        let table = DrawTable::resolve(&model, &theme);
         let mut s = Scene {
             model,
             undo: Vec::new(),
@@ -156,6 +160,7 @@ impl Scene {
             unsettled: Vec::new(),
             bounds: None,
             table,
+            theme,
         };
         s.rebuild_dirty(false);
         s
@@ -168,6 +173,22 @@ impl Scene {
     /// Zeichentabelle zum aktuellen Stand der Attribute.
     pub fn table(&self) -> &DrawTable {
         &self.table
+    }
+
+    /// Übernimmt das Farbschema der App. `true`, wenn sich dadurch die
+    /// Zeichentabelle inhaltlich ändert und die Netze neu entstehen müssen.
+    pub fn set_theme(&mut self, theme: &Theme) -> bool {
+        if theme.rev == self.table.theme_rev && *theme == self.theme {
+            return false;
+        }
+        self.theme = theme.clone();
+        let table = DrawTable::resolve(&self.model, theme);
+        let changed = DrawTable {
+            theme_rev: self.table.theme_rev,
+            ..table.clone()
+        } != self.table;
+        self.table = table;
+        changed
     }
 
     /// Ändert einen Stift (mit Verlaufseintrag). Danach müssen die Netze neu
@@ -187,7 +208,7 @@ impl Scene {
     /// die Körper, die Mengen erst bei [`Scene::settle`].
     fn rebuild_dirty(&mut self, live: bool) {
         if self.table.rev != self.model.attr().rev() {
-            self.table = DrawTable::resolve(&self.model);
+            self.table = DrawTable::resolve(&self.model, &self.theme);
         }
         if self.all_dirty {
             self.all_dirty = false;
@@ -657,5 +678,24 @@ mod tests {
         assert!(s
             .raycast(vec3(0.0, -9000.0, 5000.0), vec3(0.0, 0.0, 1.0))
             .is_none());
+    }
+
+    /// Ein neuer Akzent ändert die Zeichnung nicht: Die Tabelle übernimmt den
+    /// Schema-Stand, Netze müssen nicht neu entstehen. Andere Bildpunkte je mm
+    /// ändern die Strichbreiten.
+    #[test]
+    fn farbschema_aendern() {
+        let mut s = Scene::with_model(Model::with_seed(8));
+        s.add_wall(&rechteck(0.0)).unwrap();
+        let mut theme = Theme::dark();
+        assert!(!s.set_theme(&theme), "gleiches Schema");
+        theme.set_accent(sk_paint::Rgba::rgb(40, 120, 220));
+        assert!(!s.set_theme(&theme), "Akzent ohne neue Netze");
+        assert_eq!(s.table().theme_rev, theme.rev);
+        let width = s.table().edge_width(true, sk_model::edge_kind::CUT);
+        theme.px_per_mm = 6.0;
+        theme.rev += 1;
+        assert!(s.set_theme(&theme), "Strichbreiten ändern sich");
+        assert!(s.table().edge_width(true, sk_model::edge_kind::CUT) > width);
     }
 }

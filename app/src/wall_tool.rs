@@ -14,6 +14,7 @@ use sk_math::{vec3, Vec3};
 use sk_model::{Layer, RefSide, WallChain};
 use sk_platform::{Event, Key, MouseButton};
 use sk_render::Helper;
+use sk_ui::theme::Theme;
 
 pub const WALL_HEIGHT: f64 = 3500.0;
 
@@ -64,11 +65,6 @@ pub struct Outcome {
     pub redraw: bool,
     pub commit: Option<WallChain>,
 }
-
-const ACCENT: [f32; 4] = [242.0 / 255.0, 179.0 / 255.0, 61.0 / 255.0, 1.0];
-const TRACK: [f32; 4] = [0.85, 0.15, 0.85, 1.0];
-const START: [f32; 4] = [0.15, 0.75, 0.25, 1.0];
-const DARK: [f32; 4] = [0.0, 0.0, 0.0, 0.85];
 
 fn perp(d: Vec3) -> Vec3 {
     vec3(-d.y, d.x, 0.0)
@@ -392,7 +388,8 @@ impl WallTool {
     }
 
     /// Bezugslinie, Spurlinien und Fangmarken.
-    pub fn helpers(&self, cam: &Camera, scale: f32) -> Vec<Helper> {
+    pub fn helpers(&self, cam: &Camera, scale: f32, theme: &Theme) -> Vec<Helper> {
+        let col = &theme.interact;
         let mut out = Vec::new();
         if !self.enabled {
             return out;
@@ -412,7 +409,7 @@ impl WallTool {
                 Helper {
                     a: lift(p),
                     b: lift(p),
-                    color: DARK,
+                    color: col.shadow_tool,
                     width: (size + 3.0) * scale,
                     dash: 0.0,
                     occlude: false,
@@ -438,7 +435,7 @@ impl WallTool {
             }
         }
         for s in pts.windows(2) {
-            out.push(line(s[0], s[1], ACCENT, 2.0, 0.0));
+            out.push(line(s[0], s[1], col.draw, 2.0, 0.0));
         }
 
         if let Some(c) = &self.cursor {
@@ -446,11 +443,7 @@ impl WallTool {
             for g in &c.guides {
                 let t = (c.pos - g.origin).dot(g.dir);
                 let reach = cam.focus.max(1000.0) * 0.15 * t.signum();
-                let color = if g.from_start {
-                    TRACK
-                } else {
-                    [0.9, 0.3, 0.2, 1.0]
-                };
+                let color = if g.from_start { col.track } else { col.guide };
                 out.push(line(
                     g.origin,
                     g.origin + g.dir * (t + reach),
@@ -462,14 +455,14 @@ impl WallTool {
         }
 
         if let Some(&s) = self.points.first() {
-            out.extend(mark(s, START, 8.0));
+            out.extend(mark(s, col.start, 8.0));
         }
         if let Some(c) = &self.cursor {
             let (color, size) = match c.kind {
-                SnapKind::Start => (START, 12.0),
-                SnapKind::Crossing => (TRACK, 10.0),
-                SnapKind::Line => (TRACK, 7.0),
-                SnapKind::Free => (ACCENT, 6.0),
+                SnapKind::Start => (col.start, 12.0),
+                SnapKind::Crossing => (col.track, 10.0),
+                SnapKind::Line => (col.track, 7.0),
+                SnapKind::Free => (col.draw, 6.0),
             };
             out.extend(mark(c.pos, color, size));
         }

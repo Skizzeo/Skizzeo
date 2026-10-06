@@ -1,6 +1,6 @@
 //! Eigene Titelleiste mit Logo und den drei Fensterknöpfen (Maße wie Windows 11).
 
-use crate::{logo, theme::titlebar as col};
+use crate::{logo, theme::Theme};
 use sk_paint::{Canvas, Path, Rgba};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,21 +57,21 @@ impl TitleBar {
         }
     }
 
-    pub fn paint(&self, width: u32) -> Canvas {
+    pub fn paint(&self, t: &Theme, width: u32) -> Canvas {
         let h = self.height();
         let mut c = Canvas::new(width as usize, h as usize);
-        c.clear(col::BACKGROUND);
+        c.clear(t.title.bg);
 
         let s = self.scale;
         let logo_h = (14.0 * s).round();
         let logo_y = ((h as f32 - logo_h) * 0.5).round();
         c.fill(
             &logo::path_at((12.0 * s).round(), logo_y, logo_h),
-            col::LOGO,
+            t.title.logo,
         );
 
         for b in [Button::Minimize, Button::Maximize, Button::Close] {
-            self.paint_button_at(&mut c, b, self.button_x(b, width));
+            self.paint_button_at(t, &mut c, b, self.button_x(b, width));
         }
         c
     }
@@ -88,15 +88,22 @@ impl TitleBar {
 
     /// Zeichnet einen Knopf auf dem Bild von [`TitleBar::paint`] neu (gleiche
     /// Breite), pixelgleich zum vollen Neuzeichnen. Liefert seine Spalten `(x, w)`.
-    pub fn repaint_button(&self, c: &mut Canvas, b: Button, width: u32) -> (usize, usize) {
+    pub fn repaint_button(
+        &self,
+        t: &Theme,
+        c: &mut Canvas,
+        b: Button,
+        width: u32,
+    ) -> (usize, usize) {
         let x = self.button_x(b, width);
         let bw = self.button_width() as f32;
-        c.fill_rect(x, 0.0, bw, self.height() as f32, col::BACKGROUND);
-        self.paint_button_at(c, b, x);
+        c.fill_rect(x, 0.0, bw, self.height() as f32, t.title.bg);
+        self.paint_button_at(t, c, b, x);
         (x.max(0.0) as usize, self.button_width() as usize)
     }
 
-    fn paint_button_at(&self, c: &mut Canvas, b: Button, x: f32) {
+    fn paint_button_at(&self, t: &Theme, c: &mut Canvas, b: Button, x: f32) {
+        let col = &t.title;
         let h = self.height();
         let bw = self.button_width() as f32;
         let state = if self.pressed == Some(b) && self.hover == Some(b) {
@@ -107,21 +114,21 @@ impl TitleBar {
             0
         };
         let bg = match (b, state) {
-            (_, 0) => col::BACKGROUND,
-            (Button::Close, 1) => col::CLOSE_HOVER,
-            (Button::Close, _) => col::CLOSE_PRESSED,
-            (_, 1) => col::HOVER,
-            _ => col::PRESSED,
+            (_, 0) => col.bg,
+            (Button::Close, 1) => col.close_hover,
+            (Button::Close, _) => col.close_pressed,
+            (_, 1) => col.hover,
+            _ => col.pressed,
         };
         if state > 0 {
             c.fill_rect(x, 0.0, bw, h as f32, bg);
         }
         let glyph = if b == Button::Close && state > 0 {
-            col::CLOSE_GLYPH_HOVER
+            col.close_glyph_hover
         } else if self.active {
-            col::GLYPH
+            col.glyph
         } else {
-            col::GLYPH_INACTIVE
+            col.glyph_inactive
         };
         self.paint_glyph(c, b, x + bw * 0.5, h as f32 * 0.5, glyph, bg);
     }
@@ -208,10 +215,11 @@ mod tests {
                         t.maximized = maximized;
                         let width = 1003;
                         (t.hover, t.pressed) = from;
-                        let mut c = t.paint(width);
+                        let th = Theme::dark();
+                        let mut c = t.paint(&th, width);
                         (t.hover, t.pressed) = to;
-                        t.repaint_button(&mut c, b, width);
-                        let full = t.paint(width).to_premul_rgba8();
+                        t.repaint_button(&th, &mut c, b, width);
+                        let full = t.paint(&th, width).to_premul_rgba8();
                         assert!(
                             c.to_premul_rgba8() == full,
                             "{scale} {b:?} {from:?} -> {to:?}"

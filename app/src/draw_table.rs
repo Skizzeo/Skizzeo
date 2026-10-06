@@ -6,7 +6,7 @@
 use sk_model::{edge_kind, EdgeStyle, FillKind, Model};
 use sk_paint::Rgba;
 use sk_render::pattern;
-use sk_ui::theme::{self, drawing::PX_PER_MM};
+use sk_ui::theme::Theme;
 
 /// Aussehen eines Baustoffs.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -28,6 +28,8 @@ pub type Stroke = (f32, [f32; 4]);
 pub struct DrawTable {
     /// Stand der Attribute, aus dem die Tabelle stammt.
     pub rev: u64,
+    /// Stand des Farbschemas (Rückfallfarben, Bildpunkte je mm).
+    pub theme_rev: u64,
     /// Index = Darstellungsschlüssel des Baustoffs ([`sk_model::material_key`]);
     /// 0 = ohne Baustoff.
     pub mats: Vec<MatLook>,
@@ -46,7 +48,8 @@ fn rgb([r, g, b]: [u8; 3]) -> [f32; 3] {
 }
 
 fn rgb_of(c: Rgba) -> [f32; 3] {
-    rgb([c.0, c.1, c.2])
+    let [r, g, b, _] = c.to_f32();
+    [r, g, b]
 }
 
 /// Aussehen von Flächen ohne Baustoff.
@@ -58,22 +61,24 @@ const NO_MATERIAL: MatLook = MatLook {
 };
 
 impl DrawTable {
-    pub fn resolve(model: &Model) -> DrawTable {
+    pub fn resolve(model: &Model, theme: &Theme) -> DrawTable {
         let a = model.attr();
+        let env = &theme.env;
+        let px_per_mm = theme.px_per_mm;
         let stroke = |s: &EdgeStyle| -> Stroke {
-            a.pen(s.pen).map_or((1.0, [0.0, 0.0, 0.0, 1.0]), |p| {
+            a.pen(s.pen).map_or((1.0, env.edge.to_f32()), |p| {
                 let [r, g, b] = rgb(p.color);
-                (p.width_mm * PX_PER_MM, [r, g, b, 1.0])
+                (p.width_mm * px_per_mm, [r, g, b, 1.0])
             })
         };
         let pen_rgb = |id| {
             a.pen(id)
-                .map_or(rgb_of(theme::drawing::FILL), |p| rgb(p.color))
+                .map_or(rgb_of(env.fill_fallback), |p| rgb(p.color))
         };
         let fallback = MatLook {
-            face: rgb_of(theme::FACE),
-            cut: rgb_of(theme::FACE),
-            cut_bg: rgb_of(theme::drawing::FILL),
+            face: rgb_of(env.face),
+            cut: rgb_of(env.face),
+            cut_bg: rgb_of(env.fill_fallback),
             ..NO_MATERIAL
         };
         let mut mats = vec![fallback];
@@ -88,8 +93,8 @@ impl DrawTable {
             let pat = match fill {
                 Some(FillKind::Lines(lines)) => {
                     if spacing.is_none() {
-                        spacing = lines.first().map(|l| l.spacing_mm * PX_PER_MM);
-                        hatch_width = a.pen(m.cut_fg).map(|p| p.width_mm * PX_PER_MM);
+                        spacing = lines.first().map(|l| l.spacing_mm * px_per_mm);
+                        hatch_width = a.pen(m.cut_fg).map(|p| p.width_mm * px_per_mm);
                     }
                     pattern::DIAGONAL
                 }
@@ -111,6 +116,7 @@ impl DrawTable {
         let d = a.display();
         DrawTable {
             rev: a.rev(),
+            theme_rev: theme.rev,
             mats,
             drawing_edges: d.drawing.map(|s| stroke(&s)),
             model_edges: d.model3d.map(|s| stroke(&s)),
@@ -153,7 +159,7 @@ mod tests {
     fn startwerte_wie_vorher() {
         let m = Model::with_seed(1);
         assert!(m.check().is_empty(), "{:?}", m.check());
-        let t = DrawTable::resolve(&m);
+        let t = DrawTable::resolve(&m, &Theme::dark());
         // Frühere Werte: Faktor × 1,25 px
         assert!(near(t.edge_width(true, edge_kind::CUT), 2.2 * 1.25));
         assert!(near(t.edge_width(true, edge_kind::VIEW), 1.35 * 1.25));
@@ -178,6 +184,6 @@ mod tests {
         assert_eq!(ins.pattern, pattern::ZIGZAG);
         assert_eq!(ins.cut, rgb([232, 196, 92]));
         assert_eq!(t.look(key("Putz")).pattern, pattern::NONE);
-        assert_eq!(t.look(material::PLAIN).face, rgb_of(theme::FACE));
+        assert_eq!(t.look(material::PLAIN).face, rgb_of(Theme::dark().env.face));
     }
 }
