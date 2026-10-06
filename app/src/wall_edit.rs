@@ -7,7 +7,7 @@
 use crate::camera::Camera;
 use crate::scene::Scene;
 use sk_math::Vec3;
-use sk_model::WallChain;
+use sk_model::{ElementId, Model, RunId, WallChain};
 use sk_platform::{Event, Key, MouseButton};
 use sk_render::Helper;
 
@@ -21,18 +21,20 @@ const BAND_GHOST: [f32; 4] = [0.56, 0.27, 0.86, 0.7];
 const DARK: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
 
 struct Drag {
-    wall: usize,
+    /// Gezogene Wand und ihr Platz im Wandzug.
+    wall: ElementId,
+    run: RunId,
     seg: usize,
     start: Vec3,
     normal: Vec3,
     original: WallChain,
-    before: Vec<WallChain>,
+    before: Model,
 }
 
 #[derive(Default)]
 pub struct WallEdit {
-    /// Segment unter der Maus: (Wand, Segment).
-    hover: Option<(usize, usize)>,
+    /// Wand unter der Maus.
+    hover: Option<ElementId>,
     drag: Option<Drag>,
     mouse: Option<(f64, f64)>,
 }
@@ -77,28 +79,21 @@ impl WallEdit {
         self.drag.is_some()
     }
 
-    fn pick(
-        &self,
-        scene: &Scene,
-        cam: &Camera,
-        w: f64,
-        h: f64,
-        scale: f64,
-    ) -> Option<(usize, usize)> {
+    fn pick(&self, scene: &Scene, cam: &Camera, w: f64, h: f64, scale: f64) -> Option<ElementId> {
         let m = self.mouse?;
-        let mut best: Option<(f64, (usize, usize))> = None;
-        for (i, wall) in scene.walls.iter().enumerate() {
-            for (k, (a, b)) in band(wall).into_iter().enumerate() {
+        let mut best: Option<(f64, (RunId, usize))> = None;
+        for (run, wall) in scene.chains() {
+            for (k, (a, b)) in band(&wall).into_iter().enumerate() {
                 let (Some(pa), Some(pb)) = (cam.project(a, w, h), cam.project(b, w, h)) else {
                     continue;
                 };
                 let d = dist_to_segment(m, pa, pb);
                 if d < PICK_PX * scale && best.is_none_or(|b| d < b.0) {
-                    best = Some((d, (i, k)));
+                    best = Some((d, (run, k)));
                 }
             }
         }
-        best.map(|b| b.1)
+        best.and_then(|(_, (run, k))| scene.model.wall_at(run, k))
     }
 
     /// Greifstelle neu bestimmen (nach Kamerawechsel oder Änderung der Wände).
@@ -133,8 +128,8 @@ impl WallEdit {
         };
         let off = ((g - d.start).dot(d.normal) / STEP).round() * STEP;
         match d.original.with_segment_moved(d.seg, off) {
-            Some(moved) if scene.walls[d.wall] != moved => {
-                scene.set_wall(d.wall, moved);
+            Some(moved) if scene.chain(d.run).is_some_and(|c| c.points != moved.points) => {
+                scene.set_run_points(d.run, &moved.points);
                 true
             }
             _ => false,
@@ -179,11 +174,16 @@ impl WallEdit {
             } => {
                 self.mouse = Some((x, y));
                 self.refresh(scene, cam, w, h, scale, enabled);
-                let Some((wall, seg)) = self.hover else {
+                let Some(wall) = self.hover else {
                     return out;
                 };
                 out.consumed = true;
-                let original = scene.walls[wall].clone();
+                let Some((run, seg)) = scene.model.segment_of(wall) else {
+                    return out;
+                };
+                let Some(original) = scene.chain(run) else {
+                    return out;
+                };
                 let (Some(start), Some(normal)) =
                     (cam.ground_point(x, y, w, h), original.segment_normal(seg))
                 else {
@@ -191,11 +191,12 @@ impl WallEdit {
                 };
                 self.drag = Some(Drag {
                     wall,
+                    run,
                     seg,
                     start,
                     normal,
                     original,
-                    before: scene.walls.clone(),
+                    before: scene.model.clone(),
                 });
                 out.redraw = true;
             }
@@ -204,7 +205,13 @@ impl WallEdit {
                 ..
             } => {
                 if let Some(d) = self.drag.take() {
-                    scene.record(d.before);
+                    // Nur ein Verlaufsschritt, wenn die Wand wirklich woanders steht
+                    if scene
+                        .chain(d.run)
+                        .is_some_and(|c| c.points != d.original.points)
+                    {
+                        scene.record(d.before);
+                    }
                     out.consumed = true;
                     out.redraw = true;
                     self.refresh(scene, cam, w, h, scale, enabled);
@@ -216,7 +223,7 @@ impl WallEdit {
                 ..
             } => {
                 if let Some(d) = self.drag.take() {
-                    scene.set_walls(d.before);
+                    scene.restore(d.before);
                     out.consumed = true;
                     out.changed = true;
                     out.redraw = true;
@@ -241,7 +248,7 @@ impl WallEdit {
             dash: dash * scale,
             occlude,
         };
-        let active = self.drag.as_ref().map(|d| (d.wall, d.seg)).or(self.hover);
+        let active = self.drag.as_ref().map(|d| d.wall).or(self.hover);
 
         // Beim Ziehen: ursprüngliche Lage gestrichelt
         if let Some(d) = &self.drag {
@@ -250,8 +257,9 @@ impl WallEdit {
             }
         }
         // Sichtbar nur das Segment unter der Maus bzw. das gezogene
-        if let Some((i, k)) = active {
-            if let Some((a, b)) = scene.walls.get(i).and_then(|w| band(w).get(k).copied()) {
+        let segment = active.and_then(|e| scene.model.segment_of(e));
+        if let Some((run, k)) = segment {
+            if let Some((a, b)) = scene.chain(run).and_then(|w| band(&w).get(k).copied()) {
                 out.push(line(a, b, DARK, 6.0, 0.0));
                 out.push(line(a, b, BAND_HOT, 4.0, 0.0));
             }
@@ -272,7 +280,7 @@ mod tests {
 
     fn setup() -> (Scene, Camera) {
         let mut s = Scene::new();
-        s.add_wall(WallChain {
+        s.add_wall(&WallChain {
             points: vec![
                 vec3(0.0, 0.0, 0.0),
                 vec3(0.0, 4000.0, 0.0),
@@ -281,9 +289,10 @@ mod tests {
             ],
             closed: true,
             ref_side: RefSide::Left,
-            layers: vec![sk_model::Layer::new(400.0, 0)],
+            layers: Vec::new(),
             height: 3500.0,
-        });
+        })
+        .unwrap();
         let c = Camera::looking_at(
             vec3(2500.0, -9000.0, 14000.0),
             vec3(2500.0, 2000.0, 0.0),
@@ -311,7 +320,10 @@ mod tests {
             1.0,
             true,
         );
-        assert_eq!(e.hover, Some((0, 1)));
+        let run = s.model.runs().ids().next().unwrap();
+        let wall = s.model.wall_at(run, 1).unwrap();
+        assert_eq!(e.hover, Some(wall));
+        assert_eq!(s.model.element(wall).unwrap().number, "AW-002");
         let down = Event::MouseDown {
             button: MouseButton::Left,
             x,
@@ -330,7 +342,7 @@ mod tests {
             true,
         );
         assert!(out.changed);
-        let p = &s.walls[0].points;
+        let p = &s.model.run(run).unwrap().points;
         assert!(
             (p[1].y - 5000.0).abs() < 1e-6 && (p[2].y - 5000.0).abs() < 1e-6,
             "{p:?}"
@@ -343,8 +355,10 @@ mod tests {
             mods: m,
         };
         e.handle(&up, &mut s, &c, W, H, 1.0, true);
+        // Die Wand behält beim Ziehen ihre Kennung
+        assert_eq!(s.model.wall_at(run, 1), Some(wall));
         assert!(s.undo());
-        assert!((s.walls[0].points[1].y - 4000.0).abs() < 1e-6);
+        assert!((s.model.run(run).unwrap().points[1].y - 4000.0).abs() < 1e-6);
     }
 
     #[test]

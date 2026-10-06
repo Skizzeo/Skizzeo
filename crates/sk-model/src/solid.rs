@@ -2,13 +2,13 @@
 
 use sk_math::{ray_triangle, vec3, Vec3};
 
-/// Baustoffe. Die App ordnet ihnen Farben zu.
+/// Baustoff einer Fläche als Darstellungsschlüssel (siehe [`crate::material_key`]).
+/// Farbe und Schraffur stehen in der Baustoffbibliothek des Modells.
 pub mod material {
+    /// Ohne Baustoff.
     pub const PLAIN: u16 = 0;
-    pub const AERATED_CONCRETE: u16 = 1;
-    pub const INSULATION: u16 = 2;
     /// Zusatzbit für Schnittflächen (Grundriss, Schnitt).
-    pub const CUT: u16 = 0x100;
+    pub const CUT: u16 = 0x8000;
 }
 
 /// Kantenarten für die Strichstärke in Zeichnungen.

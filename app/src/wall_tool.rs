@@ -11,7 +11,7 @@
 
 use crate::camera::Camera;
 use sk_math::{vec3, Vec3};
-use sk_model::{exterior_wall_layers, RefSide, WallChain};
+use sk_model::{Layer, RefSide, WallChain};
 use sk_platform::{Event, Key, MouseButton};
 use sk_render::Helper;
 
@@ -54,6 +54,8 @@ pub struct WallTool {
     pub ortho: bool,
     shift: bool,
     mouse: Option<(f64, f64)>,
+    /// Schichten des Aufbaus für die Vorschau (aus der Bibliothek des Modells).
+    pub layers: Vec<Layer>,
 }
 
 /// Ergebnis eines Ereignisses für die App.
@@ -97,6 +99,7 @@ impl WallTool {
             ortho: true,
             shift: false,
             mouse: None,
+            layers: Vec::new(),
         }
     }
 
@@ -109,7 +112,7 @@ impl WallTool {
             points,
             closed,
             ref_side: self.ref_side,
-            layers: exterior_wall_layers(),
+            layers: self.layers.clone(),
             height: WALL_HEIGHT,
         }
     }

@@ -14,7 +14,7 @@ use crate::section::SectionLine;
 use crate::ui::ViewKind;
 use crate::wall_edit::WallEdit;
 use sk_math::vec3;
-use sk_model::{exterior_wall_layers, RefSide, WallChain};
+use sk_model::{RefSide, WallChain};
 use sk_platform::{Event, Modifiers};
 use std::time::Instant;
 
@@ -41,10 +41,11 @@ fn town(n: usize, segs: usize) -> Scene {
             points: pts,
             closed: true,
             ref_side: RefSide::Left,
-            layers: exterior_wall_layers(),
+            // Schichten kommen aus dem Aufbau der Bibliothek
+            layers: Vec::new(),
             height: 3500.0,
         };
-        s.add_wall(w);
+        s.add_wall(&w);
     }
     s
 }
@@ -90,7 +91,8 @@ fn perf_griff_ziehen() {
             vec3(5000.0, 5000.0, 0.0),
             45.0,
         );
-        let orig = s.walls[0].clone();
+        let run = s.model.runs().ids().next().unwrap();
+        let orig = s.chain(run).unwrap();
         let mut flip = false;
         // Ein Ziehschritt: Segment verschieben und Szene neu aufbauen
         let drag = time(20, || {
@@ -98,7 +100,7 @@ fn perf_griff_ziehen() {
             let moved = orig
                 .with_segment_moved(0, if flip { 1.0 } else { 2.0 })
                 .unwrap_or_else(|| orig.clone());
-            s.set_wall(0, moved);
+            s.set_run_points(run, &moved.points);
         });
         let mut sect = SectionLine::default();
         sect.ensure(&s);

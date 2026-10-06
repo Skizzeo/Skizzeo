@@ -67,15 +67,6 @@ pub mod drawing {
     pub const FINE_WIDTH: f32 = 0.55;
 }
 
-/// Baustofffarben in der 3D-Ansicht; Schnittflächen kräftiger.
-pub mod material {
-    use sk_paint::Rgba;
-    pub const AERATED_CONCRETE: Rgba = Rgba::rgb(238, 237, 232);
-    pub const INSULATION: Rgba = Rgba::rgb(244, 239, 220);
-    pub const AERATED_CONCRETE_CUT: Rgba = Rgba::rgb(176, 177, 174);
-    pub const INSULATION_CUT: Rgba = Rgba::rgb(232, 196, 92);
-}
-
 /// Eigene Titelleiste (hell, damit das schwarze Logo trägt).
 pub mod titlebar {
     use sk_paint::Rgba;

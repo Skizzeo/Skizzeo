@@ -1,8 +1,9 @@
-//! Szene: gezeichnete Wände mit Rückgängig-Verlauf. Einheit: Millimeter.
+//! Szene: das Gebäudemodell mit Rückgängig-Verlauf und dem daraus abgeleiteten
+//! Körper für Darstellung und Treffertest. Einheit: Millimeter.
 
 use crate::ui::ViewKind;
 use sk_math::Vec3;
-use sk_model::{edge_kind, material, Solid, WallChain};
+use sk_model::{edge_kind, material, Category, Hatch, Model, RunId, Solid, WallChain};
 use sk_paint::Rgba;
 use sk_render::{pattern, MeshData};
 use sk_ui::theme;
@@ -11,63 +12,92 @@ use sk_ui::theme;
 pub const PLAN_CUT: f64 = 1000.0;
 
 pub struct Scene {
-    pub walls: Vec<WallChain>,
+    pub model: Model,
     /// Frühere Stände für „Rückgängig“.
-    undo: Vec<Vec<WallChain>>,
+    undo: Vec<Model>,
     /// Rückgängig gemachte Stände für „Wiederholen“.
-    redo: Vec<Vec<WallChain>>,
+    redo: Vec<Model>,
     solid: Solid,
 }
 
 impl Scene {
     pub fn new() -> Scene {
-        Scene {
-            walls: Vec::new(),
+        Scene::with_model(Model::new())
+    }
+
+    pub fn with_model(model: Model) -> Scene {
+        let mut s = Scene {
+            model,
             undo: Vec::new(),
             redo: Vec::new(),
             solid: Solid::default(),
-        }
+        };
+        s.rebuild();
+        s
     }
 
     fn rebuild(&mut self) {
         let mut solid = Solid::default();
-        for w in &self.walls {
-            solid.append(&w.solid());
+        for (_, c) in self.model.chains() {
+            solid.append(&c.solid());
         }
         self.solid = solid;
     }
 
-    /// Merkt den Stand `before` als Schritt für „Rückgängig“.
-    pub fn record(&mut self, before: Vec<WallChain>) {
-        if before != self.walls {
+    /// Geometrie aller Wandzüge.
+    pub fn chains(&self) -> impl Iterator<Item = (RunId, WallChain)> + '_ {
+        self.model.chains()
+    }
+
+    pub fn chain(&self, run: RunId) -> Option<WallChain> {
+        self.model.chain(run)
+    }
+
+    /// Merkt den Stand `before` als Schritt für „Rückgängig“, falls sich seitdem
+    /// etwas geändert hat.
+    pub fn record(&mut self, before: Model) {
+        if before.revision() != self.model.revision() {
             self.undo.push(before);
             self.redo.clear();
         }
     }
 
-    pub fn add_wall(&mut self, w: WallChain) {
-        let before = self.walls.clone();
-        self.walls.push(w);
+    /// Legt die Außenwand an, die `w` beschreibt (Punkte, Bezugsseite, Höhe),
+    /// mit dem voreingestellten Außenwand-Aufbau.
+    pub fn add_wall(&mut self, w: &WallChain) -> Option<RunId> {
+        let before = self.model.clone();
+        let set = self.model.defaults().exterior_wall;
+        let run = self.model.add_wall_run(
+            &w.points,
+            w.closed,
+            w.ref_side,
+            w.height,
+            set,
+            Category::ExteriorWall,
+        );
         self.record(before);
         self.rebuild();
+        run
     }
 
-    /// Ersetzt eine Wand ohne Verlaufseintrag (für Live-Änderungen beim Ziehen).
-    pub fn set_wall(&mut self, i: usize, w: WallChain) {
-        self.walls[i] = w;
-        self.rebuild();
+    /// Neue Eckpunkte eines Wandzugs ohne Verlaufseintrag (Live-Änderung beim Ziehen).
+    pub fn set_run_points(&mut self, run: RunId, points: &[Vec3]) {
+        if self.model.set_run_points(run, points) {
+            self.rebuild();
+        }
     }
 
-    /// Setzt alle Wände ohne Verlaufseintrag (Abbruch einer Live-Änderung).
-    pub fn set_walls(&mut self, walls: Vec<WallChain>) {
-        self.walls = walls;
+    /// Setzt das Modell ohne Verlaufseintrag zurück (Abbruch einer Live-Änderung).
+    pub fn restore(&mut self, before: Model) {
+        self.model.restore(before);
         self.rebuild();
     }
 
     pub fn undo(&mut self) -> bool {
         match self.undo.pop() {
             Some(prev) => {
-                self.redo.push(std::mem::replace(&mut self.walls, prev));
+                self.redo.push(self.model.clone());
+                self.model.restore(prev);
                 self.rebuild();
                 true
             }
@@ -78,7 +108,8 @@ impl Scene {
     pub fn redo(&mut self) -> bool {
         match self.redo.pop() {
             Some(next) => {
-                self.undo.push(std::mem::replace(&mut self.walls, next));
+                self.undo.push(self.model.clone());
+                self.model.restore(next);
                 self.rebuild();
                 true
             }
@@ -90,18 +121,18 @@ impl Scene {
     /// zum Betrachter), alles davor wird weggeschnitten.
     pub fn mesh(&self, view: ViewKind, section: Option<(Vec3, Vec3)>) -> MeshData {
         let drawing = view != ViewKind::Persp;
-        let mesh_of = |s: &Solid| mesh_with(s, drawing);
+        let mesh_of = |s: &Solid| mesh_with(s, drawing, &self.model);
         match (view, section) {
             (ViewKind::Plan, _) => {
                 let mut s = Solid::default();
-                for w in &self.walls {
+                for (_, w) in self.chains() {
                     s.append(&w.solid_cut_at(PLAN_CUT));
                 }
                 mesh_of(&s)
             }
             (ViewKind::Section, Some((p0, n))) => {
                 let mut s = self.solid.clipped(p0, n);
-                for w in &self.walls {
+                for (_, w) in self.chains() {
                     s.append(&w.section_caps(p0, n));
                 }
                 mesh_of(&s)
@@ -130,40 +161,40 @@ fn rgb(c: Rgba) -> [f32; 3] {
     [c.0 as f32 / 255.0, c.1 as f32 / 255.0, c.2 as f32 / 255.0]
 }
 
-/// Darstellungsfarbe eines Baustoffs.
-fn color_of(mat: u16) -> [f32; 3] {
-    use theme::material as m;
+/// Darstellungsfarbe eines Baustoffs aus der Bibliothek.
+fn color_of(model: &Model, mat: u16) -> [f32; 3] {
     let cut = mat & material::CUT != 0;
-    rgb(match (mat & !material::CUT, cut) {
-        (material::AERATED_CONCRETE, false) => m::AERATED_CONCRETE,
-        (material::AERATED_CONCRETE, true) => m::AERATED_CONCRETE_CUT,
-        (material::INSULATION, false) => m::INSULATION,
-        (material::INSULATION, true) => m::INSULATION_CUT,
-        _ => theme::FACE,
-    })
+    match model.material_by_key(mat) {
+        Some(m) => {
+            let [r, g, b] = if cut { m.cut_color } else { m.color };
+            rgb(Rgba::rgb(r, g, b))
+        }
+        None => rgb(theme::FACE),
+    }
 }
 
 /// Netz für die 3D-Ansicht.
-pub fn mesh_of(s: &Solid) -> MeshData {
-    mesh_with(s, false)
+pub fn mesh_of(s: &Solid, model: &Model) -> MeshData {
+    mesh_with(s, false, model)
 }
 
 /// Netz für die 3D-Ansicht oder als Bauzeichnung (weiße Flächen, Schraffuren in
 /// Schnittflächen, Strichstärken nach Kantenart).
-pub fn mesh_with(s: &Solid, drawing: bool) -> MeshData {
+pub fn mesh_with(s: &Solid, drawing: bool, model: &Model) -> MeshData {
     use theme::drawing as d;
     let mut m = MeshData::default();
     for t in &s.triangles {
         let n = t.n.to_f32();
         let (c, pat) = if drawing {
-            let pat = match (t.mat & material::CUT != 0, t.mat & !material::CUT) {
-                (true, material::AERATED_CONCRETE) => pattern::DIAGONAL,
-                (true, material::INSULATION) => pattern::ZIGZAG,
+            let hatch = model.material_by_key(t.mat).map(|m| m.hatch);
+            let pat = match (t.mat & material::CUT != 0, hatch) {
+                (true, Some(Hatch::Diagonal)) => pattern::DIAGONAL,
+                (true, Some(Hatch::Zigzag)) => pattern::ZIGZAG,
                 _ => pattern::NONE,
             };
             (rgb(d::FILL), pat)
         } else {
-            (color_of(t.mat), pattern::NONE)
+            (color_of(model, t.mat), pattern::NONE)
         };
         for (v, uv) in t.p.iter().zip(t.uv) {
             let p = v.to_f32();

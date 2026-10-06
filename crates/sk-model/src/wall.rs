@@ -75,14 +75,6 @@ impl Layer {
     }
 }
 
-/// Zweischalige Außenwand: 14 cm Dämmung (WDVS) außen, 17,5 cm Gasbeton innen.
-pub fn exterior_wall_layers() -> Vec<Layer> {
-    vec![
-        Layer::new(140.0, material::INSULATION),
-        Layer::core(175.0, material::AERATED_CONCRETE),
-    ]
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct WallChain {
     /// Eckpunkte der Bezugslinie (z wird ignoriert, Wände stehen auf z = 0).
@@ -110,20 +102,36 @@ fn cross2(a: Vec3, b: Vec3) -> f64 {
     a.x * b.y - a.y * b.x
 }
 
+/// Punkte auf dem Boden ohne doppelte Nachbarn (und bei geschlossenem Zug ohne
+/// Schlusspunkt gleich Startpunkt).
+pub fn clean_points(points: &[Vec3], closed: bool) -> Vec<Vec3> {
+    let mut pts: Vec<Vec3> = Vec::new();
+    for p in points {
+        let p = flat(*p);
+        if pts.last().is_none_or(|q| (p - *q).length() > 1.0) {
+            pts.push(p);
+        }
+    }
+    if closed && pts.len() > 2 && (pts[0] - pts[pts.len() - 1]).length() <= 1.0 {
+        pts.pop();
+    }
+    pts
+}
+
+/// Anzahl der Segmente eines Zuges aus `n` bereinigten Punkten.
+pub fn segment_count(n: usize, closed: bool) -> usize {
+    match n {
+        0 | 1 => 0,
+        2 => 1,
+        _ if closed => n,
+        _ => n - 1,
+    }
+}
+
 impl WallChain {
     /// Punkte ohne doppelte Nachbarn (und ohne Schlusspunkt gleich Startpunkt).
     pub fn clean_points(&self) -> Vec<Vec3> {
-        let mut pts: Vec<Vec3> = Vec::new();
-        for p in &self.points {
-            let p = flat(*p);
-            if pts.last().is_none_or(|q| (p - *q).length() > 1.0) {
-                pts.push(p);
-            }
-        }
-        if self.closed && pts.len() > 2 && (pts[0] - pts[pts.len() - 1]).length() <= 1.0 {
-            pts.pop();
-        }
-        pts
+        clean_points(&self.points, self.closed)
     }
 
     /// Bereinigte Punkte, ob wirklich geschlossen, und Richtung jedes Segments.
@@ -650,6 +658,17 @@ mod verschieben {
 mod schichten {
     use super::*;
 
+    const AERATED_CONCRETE: u16 = 1;
+    const INSULATION: u16 = 2;
+
+    /// Zweischalige Außenwand: 14 cm Dämmung außen, 17,5 cm Gasbeton innen.
+    fn exterior_wall_layers() -> Vec<Layer> {
+        vec![
+            Layer::new(140.0, INSULATION),
+            Layer::core(175.0, AERATED_CONCRETE),
+        ]
+    }
+
     fn haus(ref_side: RefSide) -> WallChain {
         WallChain {
             points: vec![
@@ -670,14 +689,14 @@ mod schichten {
         let w = haus(RefSide::Left);
         assert!((w.thickness() - 315.0).abs() < 1e-9);
         let l = w.layer_offsets();
-        assert_eq!(l[0], (0.0, 140.0, material::INSULATION));
-        assert_eq!(l[1], (140.0, 315.0, material::AERATED_CONCRETE));
+        assert_eq!(l[0], (0.0, 140.0, INSULATION));
+        assert_eq!(l[1], (140.0, 315.0, AERATED_CONCRETE));
         // Gegen den Uhrzeigersinn gezeichnet bleibt die Dämmung außen
         let mut ccw = w.clone();
         ccw.points.reverse();
         let l = ccw.layer_offsets();
-        assert_eq!(l[0], (175.0, 315.0, material::INSULATION));
-        assert_eq!(l[1], (0.0, 175.0, material::AERATED_CONCRETE));
+        assert_eq!(l[0], (175.0, 315.0, INSULATION));
+        assert_eq!(l[1], (0.0, 175.0, AERATED_CONCRETE));
     }
 
     #[test]

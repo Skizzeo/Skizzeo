@@ -4,7 +4,7 @@
 use sk_model::RefSide;
 use sk_paint::{Canvas, Rgba};
 use sk_platform::{Event, MouseButton};
-use sk_ui::theme::{material as mat_col, panel as col};
+use sk_ui::theme::panel as col;
 use sk_ui::widgets::{self, ButtonState, Fonts, Rect};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +48,8 @@ pub struct Ui {
     pub building: bool,
     pub ref_side: RefSide,
     pub ortho: bool,
+    /// Schichten der Außenwand: Farbfeld und Text (aus der Bibliothek).
+    pub wall_layers: Vec<(Rgba, String)>,
 }
 
 /// Ergebnis eines Ereignisses.
@@ -66,20 +68,21 @@ enum Row {
     Title(&'static str),
     Button(Id, &'static str),
     Label(&'static str),
-    Layer(Rgba, &'static str),
+    Layer(Rgba, String),
     Segments([(Id, &'static str); 3]),
     Pair([(Id, &'static str); 2]),
     Separator,
     Hint(&'static str),
 }
 
-fn tool_rows() -> Vec<Row> {
-    vec![
+fn tool_rows(layers: &[(Rgba, String)]) -> Vec<Row> {
+    let mut rows = vec![
         Row::Title("Werkzeuge"),
         Row::Button(Id::Building, "Gebäude"),
         Row::Label("Außenwand"),
-        Row::Layer(mat_col::INSULATION_CUT, "14 cm Dämmung (WDVS)"),
-        Row::Layer(mat_col::AERATED_CONCRETE_CUT, "17,5 cm Gasbeton"),
+    ];
+    rows.extend(layers.iter().map(|(c, t)| Row::Layer(*c, t.clone())));
+    rows.extend([
         Row::Label("Bezugsseite"),
         Row::Segments([
             (Id::Ref(RefSide::Left), "Außen"),
@@ -95,7 +98,8 @@ fn tool_rows() -> Vec<Row> {
         Row::Hint("Esc: Eingabe beenden"),
         Row::Hint("Violettes Band ziehen:"),
         Row::Hint("Wand verschieben"),
-    ]
+    ]);
+    rows
 }
 
 fn view_rows() -> Vec<Row> {
@@ -139,18 +143,20 @@ impl Ui {
             building: false,
             ref_side: RefSide::Left,
             ortho: true,
+            wall_layers: Vec::new(),
         }
     }
 
-    fn rows(p: Panel) -> Vec<Row> {
+    fn rows(&self, p: Panel) -> Vec<Row> {
         match p {
-            Panel::Tools => tool_rows(),
+            Panel::Tools => tool_rows(&self.wall_layers),
             Panel::Views => view_rows(),
         }
     }
 
     fn panel_height(&self, p: Panel) -> f32 {
-        let inner: f32 = Self::rows(p)
+        let inner: f32 = self
+            .rows(p)
             .iter()
             .map(|r| {
                 let (h, g) = row_height(r);
@@ -179,7 +185,7 @@ impl Ui {
         let mut y = PAD * s;
         let x = PAD * s;
         let mut out = Vec::new();
-        for r in Self::rows(p) {
+        for r in self.rows(p) {
             let (h, g) = row_height(&r);
             let (h, g) = (h * s, g * s);
             match r {
@@ -285,7 +291,7 @@ impl Ui {
         let x = m + PAD * s;
         let inner_w = (WIDTH - 2.0 * PAD) * s;
         let mut y = m + PAD * s;
-        for row in Self::rows(p) {
+        for row in self.rows(p) {
             let (h, g) = row_height(&row);
             let (h, g) = (h * s, g * s);
             match row {
@@ -308,7 +314,7 @@ impl Ui {
                     widgets::text(
                         &mut c,
                         regular,
-                        t,
+                        &t,
                         13.0 * s,
                         tx,
                         y + 13.5 * s,

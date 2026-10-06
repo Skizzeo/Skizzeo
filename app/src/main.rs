@@ -263,7 +263,7 @@ impl App {
 
     fn commit_wall(&mut self, wall: Option<sk_model::WallChain>) {
         if let Some(wall) = wall {
-            self.scene.add_wall(wall);
+            self.scene.add_wall(&wall);
             self.sect.ensure(&self.scene);
             self.upload_model();
             self.refresh_cursor();
@@ -561,21 +561,49 @@ fn write_timing(path: &Option<String>, log: &mut String) {
     log.clear();
 }
 
+/// Zeilen „14 cm Dämmung (WDVS)“ usw. mit der Schnittfarbe des Baustoffs.
+fn layer_rows(model: &sk_model::Model, set: sk_model::LayerSetId) -> Vec<(Rgba, String)> {
+    let Some(set) = model.layer_set(set) else {
+        return Vec::new();
+    };
+    set.layers
+        .iter()
+        .filter_map(|l| {
+            let m = model.material(l.material)?;
+            let [r, g, b] = m.cut_color;
+            let cm = l.thickness / 10.0;
+            let cm = if cm.fract().abs() < 1e-9 {
+                format!("{cm:.0}")
+            } else {
+                format!("{cm:.1}").replace('.', ",")
+            };
+            Some((Rgba::rgb(r, g, b), format!("{cm} cm {}", m.name)))
+        })
+        .collect()
+}
+
 fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     let gl = Gl::load(|name| surface.gl_proc(name))?;
     let renderer = Renderer::new(gl, style(surface.scale()))?;
     let cam = Camera::looking_at(vec3(-6200.0, -8600.0, 3700.0), Vec3::ZERO, 45.0);
     let (w, h) = surface.size();
+    let scene = Scene::new();
+    // Außenwand-Aufbau aus der Bibliothek: Vorschau beim Zeichnen und Anzeige im Paneel
+    let exterior = scene.model.defaults().exterior_wall;
+    let mut tool = WallTool::new();
+    tool.layers = scene.model.wall_layers(exterior);
+    let mut ui = Ui::new(surface.scale());
+    ui.wall_layers = layer_rows(&scene.model, exterior);
     let mut a = App {
         renderer,
-        scene: Scene::new(),
+        scene,
         title: TitleBar::new(surface.scale()),
-        ui: Ui::new(surface.scale()),
+        ui,
         cam3d: cam.clone(),
         cam3d_empty: true,
         cam,
         nav: Navigation::default(),
-        tool: WallTool::new(),
+        tool,
         edit: WallEdit::default(),
         sect: SectionLine::default(),
         w,
@@ -645,10 +673,12 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             let t_mesh = Instant::now();
             let drawing = a.ui.view != ViewKind::Persp;
             let preview = match (a.tool.preview(), a.ui.view) {
-                (Some(c), ViewKind::Plan) => {
-                    Some(scene::mesh_with(&c.solid_cut_at(scene::PLAN_CUT), true))
-                }
-                (Some(c), _) => Some(scene::mesh_of(&c.solid())),
+                (Some(c), ViewKind::Plan) => Some(scene::mesh_with(
+                    &c.solid_cut_at(scene::PLAN_CUT),
+                    true,
+                    &a.scene.model,
+                )),
+                (Some(c), _) => Some(scene::mesh_of(&c.solid(), &a.scene.model)),
                 (None, _) => None,
             };
             // Leere Vorschau nur einmal hochladen
