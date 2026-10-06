@@ -501,7 +501,7 @@ impl WallChain {
         let sign = self.outward_sign();
         let shift = |i: usize| right_of(dirs[i]) * (sign * offsets[i]);
         let mut out = Vec::with_capacity(n);
-        for j in 0..n {
+        for (j, &pj) in pts.iter().enumerate() {
             let prev = if closed || j > 0 {
                 Some((j + m - 1) % m)
             } else {
@@ -520,15 +520,15 @@ impl WallChain {
                         if (offsets[a] - offsets[b]).abs() > 1e-6 || dirs[a].dot(dirs[b]) < 0.0 {
                             return None;
                         }
-                        pts[j] + shift(b)
+                        pj + shift(b)
                     } else {
-                        // Schnitt von pts[j] + shift(a) + dirs[a]·s mit pts[j] + shift(b) + dirs[b]·u
-                        let (pa, pb) = (pts[j] + shift(a), pts[j] + shift(b));
+                        // Schnitt von pj + shift(a) + dirs[a]·s mit pj + shift(b) + dirs[b]·u
+                        let (pa, pb) = (pj + shift(a), pj + shift(b));
                         pa + dirs[a] * (cross2(pb - pa, dirs[b]) / c)
                     }
                 }
-                (Some(a), None) => pts[j] + shift(a),
-                (None, Some(b)) => pts[j] + shift(b),
+                (Some(a), None) => pj + shift(a),
+                (None, Some(b)) => pj + shift(b),
                 (None, None) => return None,
             };
             out.push(p);
