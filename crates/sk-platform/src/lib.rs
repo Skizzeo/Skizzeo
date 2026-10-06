@@ -136,6 +136,7 @@ pub struct Config {
 /// Zugriff des Zeichenthreads auf Fenster und GPU.
 pub struct Surface {
     events: Receiver<Event>,
+    #[cfg_attr(not(windows), allow(dead_code))]
     inner: SurfaceImpl,
 }
 

@@ -14,6 +14,7 @@ mod perf;
 mod scene;
 mod section;
 mod selection;
+mod settings;
 mod ui;
 mod wall_edit;
 mod wall_tool;
@@ -53,6 +54,13 @@ fn main() {
     if let Err(e) = sk_platform::run(config, move |s| app(s, screenshot)) {
         sk_platform::show_error(&e);
         std::process::exit(1);
+    }
+}
+
+/// Schreibt das Farbschema beim Beenden, falls es sich geändert hat.
+fn save_settings(settings: &mut settings::Settings, theme: &Theme) {
+    if let Err(e) = settings.save_if_changed(theme) {
+        eprintln!("{e}");
     }
 }
 
@@ -993,8 +1001,15 @@ fn layer_rows(model: &sk_model::Model, set: sk_model::LayerSetId) -> Vec<(Rgba, 
 
 fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     let gl = Gl::load(|name| surface.gl_proc(name))?;
-    // Das Schema hält die App; E7 lädt es später aus den Einstellungen
-    let theme = Theme::dark();
+    // Farbschema aus %APPDATA%\Skizzeo\einstellungen.txt (fehlt sie: dunkel)
+    let mut settings = settings::Settings::new(
+        std::env::args(),
+        std::env::var_os("APPDATA").map(std::path::PathBuf::from),
+    );
+    let theme = settings.load();
+    for h in &settings.hints {
+        eprintln!("Einstellungen: {h}");
+    }
     let mut scene = Scene::new();
     scene.set_theme(&theme);
     let renderer = Renderer::new(gl, style(surface.scale(), scene.table(), &theme.env))?;
@@ -1063,6 +1078,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                     if let Some(log) = timing.as_mut() {
                         write_timing(&timing_path, log);
                     }
+                    save_settings(&mut settings, &a.theme);
                     return Ok(());
                 }
             }
@@ -1077,6 +1093,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 if let Some(log) = timing.as_mut() {
                     write_timing(&timing_path, log);
                 }
+                save_settings(&mut settings, &a.theme);
                 return Ok(());
             }
         }
