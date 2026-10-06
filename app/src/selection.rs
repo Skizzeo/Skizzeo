@@ -6,7 +6,7 @@ use crate::camera::Camera;
 use crate::scene::{Scene, PLAN_CUT};
 use crate::ui::{Props, ViewKind};
 use sk_math::{vec3, Vec3};
-use sk_model::ElementId;
+use sk_model::{ElementId, ElementKind, FootingShape, FoundationError, MaterialId, Model};
 use sk_paint::Rgba;
 use sk_render::Helper;
 use sk_ui::theme::Theme;
@@ -100,6 +100,90 @@ pub fn cm(mm: f64) -> String {
     }
 }
 
+/// Farbfeld, Name und Menge einer massiven Schicht aus einem Baustoff.
+fn solid_layer(
+    m: &Model,
+    mat: MaterialId,
+    t: f64,
+    volume: Option<f64>,
+) -> Option<(Rgba, String, String)> {
+    let x = m.material(mat)?;
+    let rgb = m.attr().surface(x.surface)?.cut_color;
+    let amount = volume.map_or(String::new(), |v| {
+        format!("{} m³ · {} kg", de(v / 1e9, 3), de(v / 1e9 * x.density, 0))
+    });
+    Some((
+        Rgba::from_rgb8(rgb),
+        format!("{} cm {}", cm(t), x.name),
+        amount,
+    ))
+}
+
+/// Sockelrücksprung als Text, wenn das Bauteil zu einem Zug mit Sohlplatte gehört.
+fn recess_text(m: &Model, id: ElementId) -> Option<String> {
+    let (slab, _) = m.foundation_of(m.run_of(id)?)?;
+    match m.element(slab)?.kind {
+        ElementKind::GroundSlab(s) if s.recess == 0.0 => Some("bündig".into()),
+        ElementKind::GroundSlab(s) => Some(format!("{} cm", cm(s.recess))),
+        _ => None,
+    }
+}
+
+/// Paneel für Sohlplatte und Frostschürze: Hauptmenge zuerst.
+fn foundation_props(
+    scene: &Scene,
+    id: ElementId,
+    mut values: Vec<(&'static str, String)>,
+) -> Option<Props> {
+    let m = scene.model();
+    let e = m.element(id)?;
+    let run = m.run_of(id)?;
+    let q = scene.foundation_qto(run);
+    let (mat, t, volume) = match e.kind {
+        ElementKind::GroundSlab(s) => {
+            if let Some((sq, _)) = q {
+                values.extend([
+                    ("Fläche", format!("{} m²", de(sq.area / 1e6, 2))),
+                    ("Volumen", format!("{} m³", de(sq.volume / 1e9, 3))),
+                    ("Umfang", format!("{} m", de(sq.perimeter / 1e3, 2))),
+                ]);
+            }
+            values.push(("Dicke", format!("{} cm", cm(s.thickness))));
+            (s.material, s.thickness, q.map(|q| q.0.volume))
+        }
+        ElementKind::StripFooting(f) => {
+            if let Some((_, fq)) = q {
+                values.extend([
+                    ("Länge (Achse)", format!("{} m", de(fq.length / 1e3, 2))),
+                    ("Volumen", format!("{} m³", de(fq.volume / 1e9, 3))),
+                ]);
+            }
+            values.extend([
+                ("Breite", format!("{} cm", cm(f.width))),
+                ("Tiefe", format!("{} cm", cm(f.depth))),
+            ]);
+            (f.material, f.width, q.map(|q| q.1.volume))
+        }
+        ElementKind::Wall(_) => return None,
+    };
+    values.push(("Bauabschnitt", e.seq.to_string()));
+    let mut notes = m.warnings(id);
+    if let Some(Err(err)) = m.foundation(run) {
+        notes.push(match err {
+            FoundationError::RecessTooLarge => "Kein Körper: Rücksprung zu groß".into(),
+            _ => "Kein Körper: Umriss ungültig".into(),
+        });
+    }
+    Some(Props {
+        values,
+        layer_set: m.material(mat).map_or(String::new(), |x| x.name.clone()),
+        layers: solid_layer(m, mat, t, volume).into_iter().collect(),
+        set_label: "Baustoff",
+        recess: recess_text(m, id),
+        notes,
+    })
+}
+
 /// Inhalt des Paneels „Eigenschaften“ für ein Bauteil.
 pub fn props(scene: &Scene, id: ElementId) -> Option<Props> {
     let m = scene.model();
@@ -113,6 +197,9 @@ pub fn props(scene: &Scene, id: ElementId) -> Option<Props> {
             m.storey(e.storey).map_or("–".into(), |s| s.name.clone()),
         ),
     ];
+    if !matches!(e.kind, ElementKind::Wall(_)) {
+        return foundation_props(scene, id, values);
+    }
     if let Some(q) = q {
         values.extend([
             ("Länge", format!("{} m", de(q.length / 1e3, 2))),
@@ -146,6 +233,8 @@ pub fn props(scene: &Scene, id: ElementId) -> Option<Props> {
         values,
         layer_set: set.map_or(String::new(), |s| s.name.clone()),
         layers,
+        recess: recess_text(m, id),
+        ..Default::default()
     })
 }
 
@@ -172,26 +261,55 @@ pub fn helpers(
     scale: f32,
     theme: &Theme,
 ) -> Vec<Helper> {
-    let Some((run, seg)) = scene.model().segment_of(id) else {
-        return Vec::new();
-    };
-    let Some(f) = scene.chain(run).and_then(|c| c.segment_footprint(seg)) else {
-        return Vec::new();
-    };
-    let height = scene.chain(run).map_or(0.0, |c| c.height);
     let at = |p: Vec3, z: f64| vec3(p.x, p.y, z);
     let mut lines = Vec::new();
-    for i in 0..4 {
-        let (a, b) = (f[i], f[(i + 1) % 4]);
-        if view == ViewKind::Plan {
-            // Von oben fallen Fuß, Kopf und Kanten zusammen
-            let z = PLAN_CUT.min(height);
-            lines.push((at(a, z), at(b, z)));
-        } else {
-            lines.push((a, b));
-            lines.push((at(a, height), at(b, height)));
-            lines.push((a, at(a, height)));
+    // Umriss `f` von z0 bis z1 als Kanten (im Grundriss nur oben)
+    let mut prism = |f: &[Vec3], z0: f64, z1: f64| {
+        let n = f.len();
+        for i in 0..n {
+            let (a, b) = (f[i], f[(i + 1) % n]);
+            if view == ViewKind::Plan {
+                // Von oben fallen Fuß, Kopf und Kanten zusammen
+                lines.push((at(a, z1), at(b, z1)));
+            } else {
+                lines.push((at(a, z0), at(b, z0)));
+                lines.push((at(a, z1), at(b, z1)));
+                lines.push((at(a, z0), at(a, z1)));
+            }
         }
+    };
+    let m = scene.model();
+    match (m.segment_of(id), m.element(id).map(|e| &e.kind)) {
+        (Some((run, seg)), _) => {
+            let Some(f) = scene.chain(run).and_then(|c| c.segment_footprint(seg)) else {
+                return Vec::new();
+            };
+            let height = scene.chain(run).map_or(0.0, |c| c.height);
+            let top = if view == ViewKind::Plan {
+                PLAN_CUT.min(height)
+            } else {
+                height
+            };
+            prism(&f, 0.0, top);
+        }
+        (None, Some(kind)) => {
+            let Some(found) = m.run_of(id).and_then(|r| scene.foundation(r)) else {
+                return Vec::new();
+            };
+            let p = found.params;
+            let t = p.slab_thickness;
+            match kind {
+                ElementKind::GroundSlab(_) => prism(&found.outline, -t, 0.0),
+                _ => {
+                    let bottom = -t - p.footing_depth;
+                    prism(&found.outline, bottom, -t);
+                    if let FootingShape::Ring(inset) = &found.footing {
+                        prism(&inset.pts, bottom, -t);
+                    }
+                }
+            }
+        }
+        _ => return Vec::new(),
     }
     if view == ViewKind::Section {
         let Some(pl) = section else {

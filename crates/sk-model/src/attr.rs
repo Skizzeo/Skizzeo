@@ -395,6 +395,21 @@ mod tests {
             assert!(a.pen(mat.cut_fg).is_some() && a.pen(mat.cut_bg).is_some());
             assert!(a.surface(mat.surface).is_some());
         }
+        // E10: Stahlbeton kreuzschraffiert 45°/135°, 1,27 mm, Stift 4 auf Stift 5
+        let (_, rc) = m
+            .materials()
+            .iter()
+            .find(|(_, x)| x.name == "Stahlbeton")
+            .unwrap();
+        let f = a.fill(rc.cut_fill).unwrap();
+        assert_eq!(f.name, "Stahlbeton");
+        let super::FillKind::Lines(l) = &f.kind else {
+            panic!("Linienschraffur erwartet");
+        };
+        let v: Vec<(f32, f32)> = l.iter().map(|h| (h.angle_deg, h.spacing_mm)).collect();
+        assert_eq!(v, [(45.0, 1.27), (135.0, 1.27)]);
+        assert_eq!(a.pen(rc.cut_fg).unwrap().number, 4);
+        assert_eq!(a.pen(rc.cut_bg).unwrap().number, 5);
     }
 
     #[test]

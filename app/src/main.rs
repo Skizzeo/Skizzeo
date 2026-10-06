@@ -520,6 +520,13 @@ impl App {
             Id::Ref(r) => self.tool.ref_side = r,
             Id::Ortho => self.tool.ortho = !self.tool.ortho,
             Id::View(v) => self.set_view(v),
+            Id::Recess(up) => {
+                if let Some(id) = self.sel.id {
+                    if self.scene.step_recess(id, up) {
+                        self.upload_model();
+                    }
+                }
+            }
         }
         self.overlay_dirty = true;
         self.refresh_cursor();

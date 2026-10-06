@@ -549,7 +549,12 @@ fn a09_zweischalige_aussenwand() {
     // Die Wand liegt innen an der geklickten Linie (Bezugsseite außen):
     // Im Grundriss reicht der Körper von x = 0 bis x = 315 mm
     let mesh = s.mesh(ViewKind::Plan, None, &[]);
-    let xs = mesh.faces.iter().filter(|v| v[0] < 1000.0).map(|v| v[0]);
+    // (nur die Wand über der Sohlplatte)
+    let xs = mesh
+        .faces
+        .iter()
+        .filter(|v| v[0] < 1000.0 && v[2] > 1.0)
+        .map(|v| v[0]);
     let (lo, hi) = xs.fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)));
     assert!(lo.abs() < 1e-3 && (hi - 315.0).abs() < 1e-3, "{lo} … {hi}");
 }
@@ -993,6 +998,7 @@ fn a20_szo_speichern_und_oeffnen() {
             .model()
             .elements()
             .iter()
+            .filter(|(id, _)| s.model().segment_of(*id).is_some())
             .map(|(id, el)| {
                 let q = s.wall_qto(id).unwrap();
                 let vol = (q.volume / 1e3).round();
@@ -1066,6 +1072,268 @@ fn a20_szo_speichern_und_oeffnen() {
 }
 
 // ---------------------------------------------------------------------------
+// A21 – A28: Sohlplatte und Frostschürze (Paket B9, abnahme-sohlplatte.md)
+// ---------------------------------------------------------------------------
+
+fn sohlplatte(s: &Scene, run: RunId) -> (sk_model::ElementId, sk_model::ElementId) {
+    let (slab, footing) = s.model().foundation_of(run).expect("Sohlplatte");
+    (slab, footing.expect("Frostschürze"))
+}
+
+fn m2(v: f64) -> f64 {
+    (v / 1e6 * 1e4).round() / 1e4
+}
+
+fn m3(v: f64) -> f64 {
+    (v / 1e9 * 1e4).round() / 1e4
+}
+
+/// Kleinste und größte Höhe eines Körpers.
+fn z_range(s: &sk_model::Solid) -> (f64, f64) {
+    s.triangles
+        .iter()
+        .flat_map(|t| t.p.map(|p| p.z))
+        .fold((f64::MAX, f64::MIN), |a, z| (a.0.min(z), a.1.max(z)))
+}
+
+/// A21: Ein geschlossener Zug erzeugt automatisch eine Sohlplatte unter dem
+/// ganzen Polygon, ein offener keine.
+#[test]
+fn a21_geschlossener_zug_erzeugt_sohlplatte() {
+    let mut s = Scene::with_model(Model::with_seed(21));
+    let c = cam3d();
+    let run = zeichne_rechteck(&mut s, &c);
+    let (slab, _) = sohlplatte(&s, run);
+    assert_eq!(s.model().element(slab).unwrap().number, "SP-001");
+    assert_eq!(m2(s.foundation_qto(run).unwrap().0.area), 80.0);
+    // Offener Zug: keine Platte
+    let mut t = tool(&s);
+    click(&mut t, &c, vec3(20000.0, 0.0, 0.0));
+    click(&mut t, &c, vec3(25000.0, 0.0, 0.0));
+    let w = t.handle(&key(Key::Enter), &c, W, H, 1.0).commit.unwrap();
+    let open = s.add_wall(&w).unwrap();
+    assert!(s.model().foundation_of(open).is_none());
+    // Rückgängig des Rechtecks nimmt beide Bauteile mit, Wiederholen bringt dieselben
+    assert!(s.undo() && s.undo());
+    assert!(s.model().element(slab).is_none());
+    assert!(s.redo());
+    assert_eq!(sohlplatte(&s, run).0, slab);
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+}
+
+/// A22: Sockel bündig ist Standard: Plattenaußenkante = Wandaußenseite.
+#[test]
+fn a22_sockel_buendig() {
+    let mut s = Scene::with_model(Model::with_seed(22));
+    let run = zeichne_rechteck(&mut s, &cam3d());
+    let chain = s.chain(run).unwrap().clone();
+    let outer = chain.face_corners(chain.outer_offset());
+    let f = s.foundation(run).unwrap();
+    assert_eq!(f.outline.len(), 4);
+    for p in &f.outline {
+        let d = outer
+            .iter()
+            .map(|q| (*p - *q).length())
+            .fold(f64::MAX, f64::min);
+        assert!(d < 1e-9, "Abweichung {d} mm");
+    }
+}
+
+/// A23: Sockelrücksprung als Parameter im Paneel „Eigenschaften“.
+#[test]
+fn a23_sockelruecksprung() {
+    let mut s = Scene::with_model(Model::with_seed(23));
+    let run = zeichne_rechteck(&mut s, &cam3d());
+    let (slab, _) = sohlplatte(&s, run);
+    let wall = s.model().wall_at(run, 0).unwrap();
+    let points = s.chain(run).unwrap().points.clone();
+    // Auch bei gewählter Wand verstellbar
+    let p = selection::props(&s, wall).unwrap();
+    assert_eq!(p.recess.as_deref(), Some("bündig"));
+    assert!(s.step_recess(wall, true));
+    let p = selection::props(&s, slab).unwrap();
+    assert_eq!(p.recess.as_deref(), Some("2 cm"));
+    assert_eq!(m2(s.foundation_qto(run).unwrap().0.area), 79.2816);
+    // Die Wand bleibt an der Bezugslinie
+    assert_eq!(s.chain(run).unwrap().points, points);
+    assert!(s.step_recess(slab, true));
+    assert_eq!(
+        selection::props(&s, slab).unwrap().recess.as_deref(),
+        Some("3 cm")
+    );
+    assert!(s.step_recess(slab, false) && s.step_recess(slab, false));
+    assert_eq!(
+        selection::props(&s, slab).unwrap().recess.as_deref(),
+        Some("bündig")
+    );
+    assert!(!s.step_recess(slab, false), "unter 0 geht es nicht");
+    assert_eq!(m2(s.foundation_qto(run).unwrap().0.area), 80.0);
+    // 1 cm wird abgelehnt
+    assert!(!s.edit_model("Rücksprung", |m| m.set_slab_recess(slab, 10.0)));
+    // Rückgängig stellt den Rücksprung zurück
+    assert!(s.undo());
+    assert_eq!(
+        selection::props(&s, slab).unwrap().recess.as_deref(),
+        Some("2 cm")
+    );
+}
+
+/// A24: Dicke parametrisch, von oben nach unten, Standard 20 cm.
+#[test]
+fn a24_dicke_von_oben_nach_unten() {
+    let mut s = Scene::with_model(Model::with_seed(24));
+    let run = zeichne_rechteck(&mut s, &cam3d());
+    let (slab, _) = sohlplatte(&s, run);
+    assert_eq!(
+        z_range(&s.foundation(run).unwrap().slab_solid()),
+        (-200.0, 0.0)
+    );
+    assert_eq!(m3(s.foundation_qto(run).unwrap().0.volume), 16.0);
+    s.step_recess(slab, true);
+    assert_eq!(m3(s.foundation_qto(run).unwrap().0.volume), 15.8563);
+    s.step_recess(slab, false);
+    assert!(s.edit_model("Dicke", |m| m.set_slab_thickness(slab, 250.0)));
+    assert_eq!(
+        z_range(&s.foundation(run).unwrap().slab_solid()),
+        (-250.0, 0.0)
+    );
+}
+
+/// A25: Frostschürze umlaufend unter der Platte, außen bündig, 35 × 60 cm.
+#[test]
+fn a25_frostschuerze() {
+    let mut s = Scene::with_model(Model::with_seed(25));
+    let run = zeichne_rechteck(&mut s, &cam3d());
+    let (slab, _) = sohlplatte(&s, run);
+    let f = s.foundation(run).unwrap();
+    assert_eq!(z_range(&f.footing_solid()), (-800.0, -200.0));
+    let sk_model::FootingShape::Ring(inner) = &f.footing else {
+        panic!("Ring erwartet");
+    };
+    // Innenkante 9,30 × 7,30 m
+    assert_eq!(m2(sk_math::polygon::area(&inner.pts)), 67.89);
+    assert_eq!(m3(s.foundation_qto(run).unwrap().1.volume), 7.266);
+    s.step_recess(slab, true);
+    assert_eq!(m3(s.foundation_qto(run).unwrap().1.volume), 7.2324);
+}
+
+/// A26: Zwei getrennte Bauteile mit eigener Kategorie, Nummer und Guid.
+#[test]
+fn a26_zwei_getrennte_bauteile() {
+    let mut s = Scene::with_model(Model::with_seed(26));
+    let run = zeichne_rechteck(&mut s, &cam3d());
+    let (slab, footing) = sohlplatte(&s, run);
+    let m = s.model();
+    assert_eq!(m.elements().len(), 6, "4 Wände, Sohlplatte, Frostschürze");
+    let (a, b) = (m.element(slab).unwrap(), m.element(footing).unwrap());
+    assert_eq!(
+        (a.category.ifc_class(), b.category.ifc_class()),
+        ("IfcSlab.BASESLAB", "IfcFooting.STRIP_FOOTING")
+    );
+    assert_eq!((a.number.as_str(), b.number.as_str()), ("SP-001", "FS-001"));
+    assert_ne!(a.guid, b.guid);
+    assert_eq!((b.seq, a.seq), (1, 2), "Bauabfolge: Schürze vor Platte");
+    assert!(m.check().is_empty(), "{:?}", m.check());
+    // Klick trifft das jeweilige Bauteil, im Schnitt und in 3D von unten
+    let mut sect = SectionLine::default();
+    sect.ensure(&s);
+    let c = fit_parallel(ViewKind::Section, s.bounds(), W, H);
+    let pick = |s: &mut Scene, p: Vec3| {
+        let (x, y) = px(&c, p);
+        selection::pick_at(s, &c, ViewKind::Section, sect.plane(), x, y, W, H)
+    };
+    assert_eq!(pick(&mut s, vec3(5000.0, 4000.0, -100.0)), Some(slab));
+    assert_eq!(pick(&mut s, vec3(175.0, 4000.0, -500.0)), Some(footing));
+    assert!(!selection::helpers(
+        &s,
+        footing,
+        ViewKind::Section,
+        sect.plane(),
+        1.0,
+        &Theme::dark()
+    )
+    .is_empty());
+}
+
+/// A27: Sohlplatte flächenbezogen, Frostschürze längenbezogen; das Paneel
+/// zeigt die Hauptmenge zuerst.
+#[test]
+fn a27_mengen_flaeche_und_laenge() {
+    let mut s = Scene::with_model(Model::with_seed(27));
+    let run = zeichne_rechteck(&mut s, &cam3d());
+    let (slab, footing) = sohlplatte(&s, run);
+    let walls = |s: &Scene| -> f64 {
+        (0..4)
+            .map(|k| {
+                s.wall_qto(s.model().wall_at(run, k).unwrap())
+                    .unwrap()
+                    .volume
+            })
+            .sum()
+    };
+    let before = walls(&s);
+    let p = selection::props(&s, slab).unwrap();
+    assert_eq!(p.values[3], ("Fläche", "80,00 m²".to_string()));
+    assert_eq!(value(&p, "Volumen"), "16,000 m³");
+    assert_eq!(value(&p, "Dicke"), "20 cm");
+    let p = selection::props(&s, footing).unwrap();
+    assert_eq!(p.values[3], ("Länge (Achse)", "34,60 m".to_string()));
+    assert_eq!(value(&p, "Volumen"), "7,266 m³");
+    assert_eq!(
+        (value(&p, "Breite"), value(&p, "Tiefe")),
+        ("35 cm".into(), "60 cm".into())
+    );
+    assert_eq!(p.layer_set, "Stahlbeton");
+    s.step_recess(slab, true);
+    let p = selection::props(&s, footing).unwrap();
+    assert_eq!(value(&p, "Länge (Achse)"), "34,44 m");
+    let p = selection::props(&s, slab).unwrap();
+    assert_eq!(value(&p, "Fläche"), "79,28 m²");
+    // Wandmengen ändern sich durch Platte und Rücksprung nicht (A16)
+    assert_eq!(walls(&s), before);
+}
+
+/// A28: Im Schnitt Stahlbeton-Kreuzschraffur auf Platte und Schürze, kräftige
+/// Kontur wie tragendes Mauerwerk, keine Fuge zwischen Platte und Schürze;
+/// die Fuge zur Wand bleibt.
+#[test]
+fn a28_schnitt_stahlbeton_ohne_fuge() {
+    let mut s = Scene::with_model(Model::with_seed(28));
+    zeichne_rechteck(&mut s, &cam3d());
+    let mut sect = SectionLine::default();
+    sect.ensure(&s);
+    let cut = s.mesh(ViewKind::Section, sect.plane(), &[]);
+    let has = |pat: f32| cut.faces.iter().any(|v| v[9] == pat);
+    assert!(has(pattern::CROSS) && has(pattern::DIAGONAL) && has(pattern::ZIGZAG));
+    let cross_below = cut
+        .faces
+        .iter()
+        .filter(|v| v[9] == pattern::CROSS)
+        .all(|v| v[2] <= 1e-3);
+    assert!(cross_below, "Kreuzschraffur nur in der Gründung");
+    let cut_w = s.table().edge_width(true, edge_kind::CUT);
+    // Waagerechte Kanten in der Schnittebene auf Höhe z zwischen x0 und x1
+    let y = sect.y.unwrap() as f32;
+    let flat_at = |z: f32, x0: f32, x1: f32| {
+        cut.edges
+            .iter()
+            .filter(|e| (e.0[0][1] - y).abs() < 1e-2 && (e.0[1][1] - y).abs() < 1e-2)
+            .filter(|e| (e.0[0][2] - z).abs() < 1e-3 && (e.0[1][2] - z).abs() < 1e-3)
+            .filter(|e| e.0[0][0].min(e.0[1][0]) < x1 - 1.0 && e.0[0][0].max(e.0[1][0]) > x0 + 1.0)
+            .map(|e| e.1)
+            .collect::<Vec<f32>>()
+    };
+    assert!(
+        flat_at(-200.0, 0.0, 350.0).is_empty(),
+        "keine Fuge Platte/Schürze"
+    );
+    // Kontur außen kräftig: UK Schürze und UK Platte zwischen den Schürzen
+    assert!(flat_at(-800.0, 0.0, 350.0).iter().all(|w| *w == cut_w));
+    assert!(!flat_at(-800.0, 0.0, 350.0).is_empty());
+    assert!(flat_at(-200.0, 400.0, 9600.0).contains(&cut_w));
+    // Fuge zur Wand (OK Platte, unter dem Gasbeton) bleibt
+    assert!(!flat_at(0.0, 140.0, 315.0).is_empty(), "Linie Wand/Platte");
+}
 // A29: Innenwände mit T-Anschluss (Paket B5a)
 // ---------------------------------------------------------------------------
 
@@ -1094,7 +1362,7 @@ fn innenwand(s: &mut Scene, c: &Camera, a: Vec3, b: Vec3) -> RunId {
     s.add_wall_as(&w, Category::InteriorWall).unwrap()
 }
 
-fn m3(s: &Scene, run: RunId, seg: usize) -> f64 {
+fn wall_m3(s: &Scene, run: RunId, seg: usize) -> f64 {
     s.wall_qto(s.model().wall_at(run, seg).unwrap())
         .unwrap()
         .volume
@@ -1130,11 +1398,11 @@ fn a29_innenwand_mit_t_anschluss() {
         assert_eq!(joins.len(), 2, "{ctx}: {joins:?}");
         assert!(joins.iter().all(|j| j.kind == JoinKind::T), "{ctx}");
         assert!(
-            (m3(&s, iw, 0) - 3.5468125).abs() < 1e-6,
+            (wall_m3(&s, iw, 0) - 3.5468125).abs() < 1e-6,
             "{ctx}: {}",
-            m3(&s, iw, 0)
+            wall_m3(&s, iw, 0)
         );
-        let aw_sum: f64 = (0..4).map(|i| m3(&s, aw, i)).sum();
+        let aw_sum: f64 = (0..4).map(|i| wall_m3(&s, aw, i)).sum();
         assert!((aw_sum - 30.0935).abs() < 5e-5, "{ctx}: AW {aw_sum}");
         let gas: f64 = (0..4)
             .map(|i| {
@@ -1142,7 +1410,7 @@ fn a29_innenwand_mit_t_anschluss() {
                 q.layers[1].volume / 1e9
             })
             .sum::<f64>()
-            + m3(&s, iw, 0);
+            + wall_m3(&s, iw, 0);
         assert!((gas - 19.9959375).abs() < 5e-5, "{ctx}: Gasbeton {gas}");
         assert!(
             s.model().check().is_empty(),
@@ -1181,7 +1449,7 @@ fn a29_innenwand_mit_t_anschluss() {
         vec3(5000.0, 7000.0, 0.0),
     );
     assert!(s.model().joins().is_empty());
-    assert!((m3(&s, iw, 0) - 2.8875).abs() < 1e-6);
+    assert!((wall_m3(&s, iw, 0) - 2.8875).abs() < 1e-6);
 
     // Gummiband: obere Außenwand 1 m nach außen, Innenwand geht mit
     let mut s = Scene::with_model(Model::with_seed(31));
@@ -1201,9 +1469,9 @@ fn a29_innenwand_mit_t_anschluss() {
     e.handle(&up(x2, y2), &mut s, &c, W, H, 1.0, true);
     assert!((s.chain(aw).unwrap().points[1].y - 9000.0).abs() < 1e-6);
     assert!(
-        (m3(&s, iw, 0) - 4.0280625).abs() < 1e-6,
+        (wall_m3(&s, iw, 0) - 4.0280625).abs() < 1e-6,
         "{}",
-        m3(&s, iw, 0)
+        wall_m3(&s, iw, 0)
     );
     let ends = &s.chain(iw).unwrap().points;
     assert!(ends.iter().any(|p| (p.y - 8685.0).abs() < 1e-6), "{ends:?}");
@@ -1232,8 +1500,97 @@ fn a29_innenwand_mit_t_anschluss() {
     assert!(s.undo());
     assert!((s.chain(aw).unwrap().points[1].y - 8000.0).abs() < 1e-6);
     assert!(
-        (m3(&s, iw, 0) - 3.5468125).abs() < 1e-6,
+        (wall_m3(&s, iw, 0) - 3.5468125).abs() < 1e-6,
         "{}",
-        m3(&s, iw, 0)
+        wall_m3(&s, iw, 0)
     );
+}
+
+// ---------------------------------------------------------------------------
+// A30: Gründung im Zusammenspiel (Gummiband, Innenwand, Speichern)
+// ---------------------------------------------------------------------------
+
+/// A30: Die Gründung folgt dem Haus. Gummiband → Platte und Schürze wachsen
+/// mit, Rückgängig stellt sie zurück; eine Innenwand erzeugt keine eigene
+/// Gründung; Rücksprung, Nummern und Guids überstehen Speichern/Öffnen.
+#[test]
+fn a30_gruendung_folgt_dem_haus() {
+    let mut s = Scene::with_model(Model::with_seed(30));
+    let c = cam3d();
+    let run = zeichne_rechteck(&mut s, &c);
+    let (slab, footing) = sohlplatte(&s, run);
+    let area = |s: &Scene| m2(s.foundation_qto(run).unwrap().0.area);
+    let axis = |s: &Scene| (s.foundation_qto(run).unwrap().1.length / 10.0).round() / 100.0;
+
+    // Gummiband: obere Wand 1 m nach außen → Platte 10 × 9 m, Schürze 36,60 m
+    let mut e = WallEdit::default();
+    let (x, y) = px(&c, vec3(2500.0, 8000.0, 0.0));
+    e.handle(&mv(x, y), &mut s, &c, W, H, 1.0, true);
+    e.handle(&down(x, y), &mut s, &c, W, H, 1.0, true);
+    let (x2, y2) = px(&c, vec3(2500.0, 9000.0, 0.0));
+    e.handle(&mv(x2, y2), &mut s, &c, W, H, 1.0, true);
+    e.handle(&up(x2, y2), &mut s, &c, W, H, 1.0, true);
+    assert_eq!(area(&s), 90.0);
+    assert_eq!(axis(&s), 36.6, "Achse 2 × (9,65 + 8,65)");
+    assert_eq!(sohlplatte(&s, run), (slab, footing), "dieselben Bauteile");
+    assert!(s.undo());
+    assert_eq!(area(&s), 80.0);
+    assert_eq!(axis(&s), 34.6);
+
+    // Innenwand quer durch: keine weitere Gründung
+    innenwand(
+        &mut s,
+        &c,
+        vec3(5000.0, 0.0, 0.0),
+        vec3(5000.0, 8000.0, 0.0),
+    );
+    let n = |s: &Scene| {
+        s.model()
+            .elements()
+            .iter()
+            .filter(|(_, el)| el.number.starts_with("SP-") || el.number.starts_with("FS-"))
+            .count()
+    };
+    assert_eq!(n(&s), 2, "nur Platte und Schürze des Hauses");
+
+    // Rücksprung 2 cm, speichern, öffnen
+    assert!(s.step_recess(slab, true));
+    let d = test_dir("gruendung");
+    let path = d.join("Haus.szo");
+    crate::document::save(s.model(), &path).unwrap();
+    let loaded = crate::document::load(&path).unwrap();
+    assert!(loaded.hints.is_empty(), "{:?}", loaded.hints);
+    let t = Scene::with_model(loaded.model);
+    let find = |s: &Scene, nr: &str| {
+        s.model()
+            .elements()
+            .iter()
+            .find(|(_, el)| el.number == nr)
+            .map(|(id, el)| (id, el.guid))
+            .unwrap_or_else(|| panic!("{nr} fehlt"))
+    };
+    let (tslab, g) = find(&t, "SP-001");
+    assert_eq!(g, s.model().element(slab).unwrap().guid);
+    assert_eq!(
+        find(&t, "FS-001").1,
+        s.model().element(footing).unwrap().guid
+    );
+    assert_eq!(
+        selection::props(&t, tslab).unwrap().recess.as_deref(),
+        Some("2 cm")
+    );
+    let trun = t
+        .model()
+        .runs()
+        .ids()
+        .find(|r| t.model().foundation_of(*r).is_some());
+    let tq = t.foundation_qto(trun.unwrap()).unwrap();
+    assert_eq!(m2(tq.0.area), 79.2816);
+    assert_eq!(m3(tq.1.volume), 7.2324);
+    assert_eq!(n(&t), 2);
+    assert!(t.model().check().is_empty(), "{:?}", t.model().check());
+    let p2 = d.join("Haus2.szo");
+    crate::document::save(t.model(), &p2).unwrap();
+    assert_eq!(std::fs::read(&p2).unwrap(), std::fs::read(&path).unwrap());
+    let _ = std::fs::remove_dir_all(&d);
 }

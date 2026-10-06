@@ -10,8 +10,8 @@ use crate::draw_table::DrawTable;
 use crate::ui::ViewKind;
 use sk_math::{vec3, Vec3};
 use sk_model::{
-    material, run_qto, Category, Direction, ElementId, Model, RunId, Solid, Touched, Txn,
-    WallChain, WallQto,
+    foundation_qto_of, material, run_qto, Category, Direction, ElementId, FootingQto, Foundation,
+    Model, RunId, SlabQto, Solid, Touched, Txn, WallChain, WallQto, FOOTING_PART, SLAB_PART,
 };
 use sk_render::{pattern, MeshData};
 use sk_ui::theme::Theme;
@@ -40,13 +40,21 @@ struct RunCache {
     foot_bounds: Option<Aabb>,
     /// Mengen je Segment; leer, solange der Zug gezogen wird.
     qto: Vec<WallQto>,
+    /// Gründung unter einem geschlossenen Außenwandzug (B9).
+    found: Option<Foundation>,
+    /// Mengen von Sohlplatte und Frostschürze (wie `qto` erst nach dem Ziehen).
+    found_qto: Option<(SlabQto, FootingQto)>,
     /// Wie oft dieser Zug berechnet wurde (für Tests und Messung).
     builds: u32,
 }
 
 impl RunCache {
-    fn new(id: RunId, chain: WallChain, builds: u32) -> RunCache {
-        let solid = chain.solid();
+    fn new(id: RunId, chain: WallChain, found: Option<Foundation>, builds: u32) -> RunCache {
+        let mut solid = chain.solid();
+        if let Some(f) = &found {
+            solid.append(&part(f.slab_solid(), SLAB_PART));
+            solid.append(&part(f.footing_solid(), FOOTING_PART));
+        }
         let foot = chain.outer_foot();
         let foot_bounds = foot
             .iter()
@@ -62,6 +70,8 @@ impl RunCache {
             chain,
             section: None,
             qto: Vec::new(),
+            found,
+            found_qto: None,
             builds,
         }
     }
@@ -69,17 +79,27 @@ impl RunCache {
     fn view_solid(&mut self, view: ViewKind, section: Option<Plane>) -> Option<&Solid> {
         match (view, section) {
             (ViewKind::Plan, _) => {
-                let chain = &self.chain;
-                Some(
-                    self.plan
-                        .get_or_insert_with(|| chain.solid_cut_at(PLAN_CUT)),
-                )
+                let (chain, found) = (&self.chain, &self.found);
+                // Die Gründung liegt unter der Schnitthöhe: Draufsicht
+                Some(self.plan.get_or_insert_with(|| {
+                    let mut s = chain.solid_cut_at(PLAN_CUT);
+                    if let Some(f) = found {
+                        s.append(&part(f.slab_solid(), SLAB_PART));
+                        s.append(&part(f.footing_solid(), FOOTING_PART));
+                    }
+                    s
+                }))
             }
             (ViewKind::Section, Some(pl)) => {
                 if self.section.as_ref().is_none_or(|(p, _)| *p != pl) {
                     let (p0, n) = pl;
                     let mut s = self.solid.clipped(p0, n);
                     s.append(&self.chain.section_caps(p0, n));
+                    if let Some(f) = &self.found {
+                        let (slab, foot) = f.section_caps(p0, n);
+                        s.append(&part(slab, SLAB_PART));
+                        s.append(&part(foot, FOOTING_PART));
+                    }
                     self.section = Some((pl, s));
                 }
                 self.section.as_ref().map(|(_, s)| s)
@@ -253,13 +273,15 @@ impl Scene {
         }
         match self.model.chain(id) {
             Some(c) => {
-                let mut rc = RunCache::new(id, c, builds + 1);
+                let found = self.model.foundation(id).and_then(Result::ok);
+                let mut rc = RunCache::new(id, c, found, builds + 1);
                 if live {
                     if !self.unsettled.contains(&id) {
                         self.unsettled.push(id);
                     }
                 } else {
                     rc.qto = run_qto(&self.model, id);
+                    rc.found_qto = rc.found.as_ref().map(foundation_qto_of);
                     self.unsettled.retain(|&u| u != id);
                 }
                 self.cache[slot] = Some(rc);
@@ -292,6 +314,7 @@ impl Scene {
                 if let Some(Some(c)) = self.cache.get_mut(id.index() as usize) {
                     if c.id == id {
                         c.qto = q;
+                        c.found_qto = c.found.as_ref().map(foundation_qto_of);
                     }
                 }
             }
@@ -302,6 +325,16 @@ impl Scene {
     pub fn wall_qto(&self, wall: ElementId) -> Option<&WallQto> {
         let (run, seg) = self.model.segment_of(wall)?;
         self.cached(run)?.qto.get(seg)
+    }
+
+    /// Mengen von Sohlplatte und Frostschürze unter einem Wandzug.
+    pub fn foundation_qto(&self, run: RunId) -> Option<&(SlabQto, FootingQto)> {
+        self.cached(run)?.found_qto.as_ref()
+    }
+
+    /// Gründung unter einem Wandzug, wie sie gezeichnet wird.
+    pub fn foundation(&self, run: RunId) -> Option<&Foundation> {
+        self.cached(run)?.found.as_ref()
     }
 
     fn cached(&self, id: RunId) -> Option<&RunCache> {
@@ -409,6 +442,49 @@ impl Scene {
         }
         self.commit();
         run
+    }
+
+    /// Sockelrücksprung der Sohlplatte unter dem Zug von `id` um eine Stufe
+    /// größer oder kleiner: 0 ↔ 2 cm, darüber in 1-cm-Schritten. Ein Schritt
+    /// im Verlauf. `true`, wenn sich etwas geändert hat.
+    pub fn step_recess(&mut self, id: ElementId, up: bool) -> bool {
+        let m = &self.model;
+        let Some(run) = m.run_of(id) else {
+            return false;
+        };
+        let Some((slab, _)) = m.foundation_of(run) else {
+            return false;
+        };
+        let Some(sk_model::ElementKind::GroundSlab(s)) = m.element(slab).map(|e| e.kind.clone())
+        else {
+            return false;
+        };
+        let r = s.recess;
+        let next = match (up, r <= sk_model::MIN_RECESS) {
+            (true, _) if r < sk_model::MIN_RECESS => sk_model::MIN_RECESS,
+            (true, _) => r + 10.0,
+            (false, true) => 0.0,
+            (false, false) => (r - 10.0).max(sk_model::MIN_RECESS),
+        };
+        if next == r {
+            return false;
+        }
+        self.begin("Sockelrücksprung");
+        let ok = self.model.set_slab_recess(slab, next);
+        self.mark(run);
+        self.commit();
+        ok
+    }
+
+    /// Ändert das Modell in einem Schritt (Tests für Parameter ohne eigenes
+    /// Bedienelement); alles wird neu berechnet.
+    #[cfg(test)]
+    pub fn edit_model(&mut self, label: &'static str, f: impl FnOnce(&mut Model) -> bool) -> bool {
+        self.begin(label);
+        let ok = f(&mut self.model);
+        self.mark_all();
+        self.commit();
+        ok
     }
 
     /// Neue Eckpunkte eines Wandzugs ohne Verlaufseintrag (Live-Änderung beim
@@ -519,7 +595,7 @@ impl Scene {
             }
         }
         let (t, run, seg) = best?;
-        Some((t, self.model.wall_at(run, seg as usize)?))
+        Some((t, self.model.part_of(run, seg)?))
     }
 
     /// Bauteil unter einem Strahl, so wie die Ansicht es zeigt (Grundriss:
@@ -547,13 +623,21 @@ impl Scene {
             }
         }
         let (_, run, seg) = best?;
-        self.model.wall_at(run, seg as usize)
+        self.model.part_of(run, seg)
     }
 
     /// Mitte des umschließenden Quaders aller Flächen.
     pub fn center(&self) -> Option<Vec3> {
         self.bounds().map(|(lo, hi)| (lo + hi) * 0.5)
     }
+}
+
+/// Körper mit allen Dreiecken einem Teil zugeordnet (Treffer beim Klicken).
+fn part(mut s: Solid, part: u32) -> Solid {
+    for t in &mut s.triangles {
+        t.elem = part;
+    }
+    s
 }
 
 /// Netz für die 3D-Ansicht.
