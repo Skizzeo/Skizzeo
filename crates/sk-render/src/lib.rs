@@ -527,6 +527,13 @@ impl Renderer {
         }
     }
 
+    /// Verschiebt ein schon hochgeladenes Oberflächenbild, ohne es neu zu übertragen.
+    pub fn move_overlay(&mut self, slot: usize, x: i32, y: i32) {
+        if let Some(o) = self.overlays.get_mut(slot) {
+            (o.x, o.y) = (x, y);
+        }
+    }
+
     fn ensure_target(&mut self, w: i32, h: i32) -> Result<(), String> {
         if let Some(t) = &self.target {
             if t.width == w && t.height == h {

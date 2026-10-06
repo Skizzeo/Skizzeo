@@ -5,6 +5,8 @@
 
 mod camera;
 mod nav;
+#[cfg(test)]
+mod perf;
 mod scene;
 mod section;
 mod ui;
@@ -24,6 +26,7 @@ use sk_ui::{
     titlebar::{Button, TitleBar},
 };
 use std::f64::consts::{FRAC_PI_2, PI};
+use std::time::Instant;
 use ui::{Id, Panel, Ui, ViewKind};
 use wall_edit::WallEdit;
 use wall_tool::WallTool;
@@ -150,6 +153,12 @@ struct App {
     h: u32,
     overlay_dirty: bool,
     redraw: bool,
+    /// Modellnetz muss vor dem nächsten Bild neu erzeugt werden.
+    mesh_dirty: bool,
+    /// Die Vorschau-Ablage enthält ein Netz.
+    preview_shown: bool,
+    /// Zuletzt hochgeladene Endsymbole der Schnittlinie (links, hervorgehoben, Skalierung).
+    mark_keys: [Option<(bool, bool, u32)>; 2],
 }
 
 impl App {
@@ -163,14 +172,21 @@ impl App {
         (self.w as f64, self.h as f64 - th, self.title.scale as f64)
     }
 
+    /// Merkt das Modellnetz zum Neuaufbau vor. Erzeugt wird es höchstens einmal
+    /// je Bild in [`App::build_mesh`], egal wie viele Ereignisse es ändern.
     fn upload_model(&mut self) {
+        self.mesh_dirty = true;
+        self.redraw = true;
+    }
+
+    fn build_mesh(&mut self) {
+        self.mesh_dirty = false;
         let plane = match self.ui.view {
             ViewKind::Section => self.sect.plane(),
             _ => None,
         };
         let mesh = self.scene.mesh(self.ui.view, plane);
         self.renderer.set_mesh(0, &mesh);
-        self.redraw = true;
     }
 
     /// Band nur dort, wo sich am Grundriss sinnvoll ziehen lässt.
@@ -352,7 +368,8 @@ impl App {
                     .sect
                     .handle(&sect_ev, &self.scene, &self.cam, vw, vh, sc, sen);
                 self.redraw |= so.redraw;
-                if so.changed {
+                // Der Grundriss hängt nicht von der Schnittlinie ab, nur die Ansicht „Schnitt“
+                if so.changed && self.ui.view == ViewKind::Section {
                     self.upload_model();
                 }
                 let edit_ev = if outside || self.sect.is_busy() {
@@ -516,6 +533,34 @@ impl App {
     }
 }
 
+/// Fasst direkt aufeinanderfolgende Mausbewegungen zur letzten zusammen.
+///
+/// Eine Maus mit hoher Abtastrate liefert viele Bewegungen je Bild. Jede würde
+/// beim Ziehen das Modell neu berechnen, gezeigt wird aber nur der letzte Stand.
+/// Drücken, Loslassen und Tasten trennen die Folgen, damit keine Klickposition
+/// verloren geht. Die Navigation rechnet mit der Differenz zur letzten Position
+/// und bekommt so dieselbe Gesamtbewegung.
+fn coalesce_moves(events: &mut Vec<Event>) {
+    events.dedup_by(|next, prev| {
+        if let (Event::MouseMove { .. }, Event::MouseMove { .. }) = (&*prev, &*next) {
+            *prev = *next;
+            true
+        } else {
+            false
+        }
+    });
+}
+
+fn write_timing(path: &Option<String>, log: &mut String) {
+    use std::io::Write;
+    if let Some(p) = path {
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(p) {
+            let _ = f.write_all(log.as_bytes());
+        }
+    }
+    log.clear();
+}
+
 fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     let gl = Gl::load(|name| surface.gl_proc(name))?;
     let renderer = Renderer::new(gl, style(surface.scale()))?;
@@ -537,8 +582,17 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         h,
         overlay_dirty: true,
         redraw: true,
+        mesh_dirty: true,
+        preview_shown: true,
+        mark_keys: [None; 2],
     };
     a.upload_model();
+    // `--zeiten datei.csv`: Dauer jedes Bildes in Millisekunden mitschreiben
+    let timing_path = std::env::args().skip_while(|a| a != "--zeiten").nth(1);
+    let mut timing = timing_path.as_ref().map(|p| {
+        let _ = std::fs::write(p, "ereignisse;netz;zeichnen;tauschen;gesamt\n");
+        String::new()
+    });
     let mut last_tick: Option<std::time::Instant> = None;
 
     loop {
@@ -546,14 +600,24 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         if !a.redraw && !a.overlay_dirty && !a.nav.is_animating() {
             match surface.wait_event() {
                 Some(e) => events.push(e),
-                None => return Ok(()),
+                None => {
+                    if let Some(log) = timing.as_mut() {
+                        write_timing(&timing_path, log);
+                    }
+                    return Ok(());
+                }
             }
         }
         while let Some(e) = surface.poll_event() {
             events.push(e);
         }
+        coalesce_moves(&mut events);
+        let t_events = Instant::now();
         for e in events {
             if !a.handle(e, &surface) {
+                if let Some(log) = timing.as_mut() {
+                    write_timing(&timing_path, log);
+                }
                 return Ok(());
             }
         }
@@ -574,15 +638,24 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
 
         let th = a.top();
         if a.redraw && a.w > 0 && a.h > th {
+            let t_handled = Instant::now();
+            if a.mesh_dirty {
+                a.build_mesh();
+            }
+            let t_mesh = Instant::now();
             let drawing = a.ui.view != ViewKind::Persp;
             let preview = match (a.tool.preview(), a.ui.view) {
                 (Some(c), ViewKind::Plan) => {
-                    scene::mesh_with(&c.solid_cut_at(scene::PLAN_CUT), true)
+                    Some(scene::mesh_with(&c.solid_cut_at(scene::PLAN_CUT), true))
                 }
-                (Some(c), _) => scene::mesh_of(&c.solid()),
-                (None, _) => Default::default(),
+                (Some(c), _) => Some(scene::mesh_of(&c.solid())),
+                (None, _) => None,
             };
-            a.renderer.set_mesh(1, &preview);
+            // Leere Vorschau nur einmal hochladen
+            if preview.is_some() || a.preview_shown {
+                a.preview_shown = preview.is_some();
+                a.renderer.set_mesh(1, &preview.unwrap_or_default());
+            }
             let (vw, vh) = (a.w as f64, (a.h - th) as f64);
             let scale = a.title.scale;
             let mut helpers = Vec::new();
@@ -606,20 +679,32 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             for i in 0..2 {
                 match marks.get(i) {
                     Some(m) => {
-                        let (c, ax, ay) = a.sect.paint_mark(&a.ui.fonts, m.left, scale);
+                        // Bild nur neu zeichnen, wenn es sich ändert; sonst nur verschieben
+                        let key = (m.left, a.sect.is_busy(), scale.to_bits());
+                        let (ax, ay) = a.sect.mark_anchor(m.left, scale);
                         let x = (m.x - ax as f64).round() as i32;
                         let y = (m.y + th as f64 - ay as f64).round() as i32;
-                        let px = c.to_premul_rgba8();
-                        a.renderer.set_overlay(
-                            OVERLAY_MARKS + i,
-                            x,
-                            y,
-                            c.width as u32,
-                            c.height as u32,
-                            &px,
-                        );
+                        if a.mark_keys[i] == Some(key) {
+                            a.renderer.move_overlay(OVERLAY_MARKS + i, x, y);
+                        } else {
+                            let (c, _, _) = a.sect.paint_mark(&a.ui.fonts, m.left, scale);
+                            let px = c.to_premul_rgba8();
+                            a.renderer.set_overlay(
+                                OVERLAY_MARKS + i,
+                                x,
+                                y,
+                                c.width as u32,
+                                c.height as u32,
+                                &px,
+                            );
+                            a.mark_keys[i] = Some(key);
+                        }
                     }
-                    None => a.renderer.set_overlay(OVERLAY_MARKS + i, 0, 0, 0, 0, &[]),
+                    None => {
+                        if a.mark_keys[i].take().is_some() {
+                            a.renderer.set_overlay(OVERLAY_MARKS + i, 0, 0, 0, 0, &[]);
+                        }
+                    }
                 }
             }
 
@@ -628,6 +713,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 view.paper = Some(rgb(theme::drawing::PAPER));
             }
             a.renderer.draw(a.w, a.h, th, &view)?;
+            let t_draw = Instant::now();
             if let Some(path) = &screenshot {
                 let px = a.renderer.read_pixels(a.w, a.h);
                 std::fs::write(path, sk_paint::encode_png(a.w, a.h, &px))
@@ -636,6 +722,56 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             }
             surface.swap_buffers();
             a.redraw = false;
+            if let Some(log) = timing.as_mut() {
+                let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1000.0;
+                let now = Instant::now();
+                log.push_str(&format!(
+                    "{:.3};{:.3};{:.3};{:.3};{:.3}\n",
+                    ms(t_events, t_handled),
+                    ms(t_handled, t_mesh),
+                    ms(t_mesh, t_draw),
+                    ms(t_draw, now),
+                    ms(t_events, now),
+                ));
+                if log.len() > 4096 {
+                    write_timing(&timing_path, log);
+                }
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sk_platform::Modifiers;
+
+    fn mv(x: f64) -> Event {
+        Event::MouseMove {
+            x,
+            y: 0.0,
+            mods: Modifiers::default(),
+        }
+    }
+
+    #[test]
+    fn mausbewegungen_werden_gebuendelt() {
+        let down = Event::MouseDown {
+            button: MouseButton::Left,
+            x: 2.0,
+            y: 0.0,
+            mods: Modifiers::default(),
+        };
+        let mut ev = vec![
+            mv(1.0),
+            mv(2.0),
+            down,
+            mv(3.0),
+            mv(4.0),
+            mv(5.0),
+            Event::Redraw,
+        ];
+        coalesce_moves(&mut ev);
+        assert_eq!(ev, vec![mv(2.0), down, mv(5.0), Event::Redraw]);
     }
 }
