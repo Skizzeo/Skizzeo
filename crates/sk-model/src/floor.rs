@@ -26,13 +26,6 @@ pub struct FloorParams {
     pub mat: u16,
 }
 
-impl FloorParams {
-    /// Vorbelegung der Oberkante: zwei Drittel der Wandhöhe, auf volle cm gerundet.
-    pub fn default_top(wall_height: f64) -> f64 {
-        (wall_height * 2.0 / 3.0 / 10.0).round() * 10.0
-    }
-}
-
 /// Warum keine Decke entsteht.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FloorError {
@@ -42,8 +35,12 @@ pub enum FloorError {
     NoCore,
     /// Umriss überschneidet sich selbst.
     NotSimple,
-    /// Dicke ≤ 0, Unterkante ≤ Wandfuß oder Oberkante über der Wand.
-    BadLevel,
+    /// Dicke ≤ 0.
+    BadThickness,
+    /// Unterkante der Decke auf oder unter dem Wandfuß.
+    BelowWallFoot,
+    /// Oberkante der Decke über der Wandkrone.
+    AboveWallTop,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -72,8 +69,14 @@ impl FloorSlab {
             .iter()
             .position(|l| l.core)
             .ok_or(FloorError::NoCore)?;
-        if !(p.thickness > 0.0 && p.top - p.thickness > 0.0 && p.top <= chain.height) {
-            return Err(FloorError::BadLevel);
+        if p.thickness.is_nan() || p.thickness <= 0.0 {
+            return Err(FloorError::BadThickness);
+        }
+        if p.top.is_nan() || p.top - p.thickness <= 0.0 {
+            return Err(FloorError::BelowWallFoot);
+        }
+        if p.top > chain.height + 1e-6 {
+            return Err(FloorError::AboveWallTop);
         }
         // Außenseite der tragenden Schicht: Außenfläche mit derselben
         // Eckberechnung wie die Wand, dann um die Dämmdicke mit dem robusten
@@ -94,7 +97,7 @@ impl FloorSlab {
     /// Decke über einem beliebigen einfachen Umriss (Richtung egal).
     pub fn from_outline(outline: &[Vec3], p: &FloorParams) -> Result<FloorSlab, FloorError> {
         if p.thickness.is_nan() || p.thickness <= 0.0 {
-            return Err(FloorError::BadLevel);
+            return Err(FloorError::BadThickness);
         }
         let outline = polygon::simplified(&polygon::to_ccw(outline));
         if outline.len() < 3 {
@@ -266,7 +269,7 @@ mod tests {
 
     fn params(t: f64) -> FloorParams {
         FloorParams {
-            top: FloorParams::default_top(3500.0),
+            top: 2330.0,
             thickness: t,
             mat: CONCRETE,
         }
@@ -288,12 +291,6 @@ mod tests {
                 sign * a.dot(b.cross(c)) / 6.0
             })
             .sum()
-    }
-
-    #[test]
-    fn oberkante_zwei_drittel() {
-        assert_eq!(FloorParams::default_top(3500.0), 2330.0);
-        assert_eq!(FloorParams::default_top(2750.0), 1830.0);
     }
 
     #[test]
@@ -328,9 +325,17 @@ mod tests {
         let w = haus();
         let mut p = params(220.0);
         p.top = 3600.0;
-        assert_eq!(FloorSlab::from_chain(&w, &p), Err(FloorError::BadLevel));
+        assert_eq!(FloorSlab::from_chain(&w, &p), Err(FloorError::AboveWallTop));
+        p.top = 3500.0;
+        assert!(FloorSlab::from_chain(&w, &p).is_ok());
         p.top = 200.0;
-        assert_eq!(FloorSlab::from_chain(&w, &p), Err(FloorError::BadLevel));
+        assert_eq!(
+            FloorSlab::from_chain(&w, &p),
+            Err(FloorError::BelowWallFoot)
+        );
+        p.top = 2330.0;
+        p.thickness = 0.0;
+        assert_eq!(FloorSlab::from_chain(&w, &p), Err(FloorError::BadThickness));
         let mut w2 = haus();
         w2.layers = vec![Layer::new(300.0, AAC)];
         assert_eq!(
@@ -478,6 +483,27 @@ mod tests {
                 .sum();
             assert!(near(top, f.area(), 1.0), "{deg}°: {top} {}", f.area());
         }
+    }
+
+    #[test]
+    fn decke_oben_buendig_mit_wandkrone() {
+        // Geschossmanager: Wand reicht bis OK Rohdecke, die Tasche sitzt oben
+        let mut w = haus();
+        w.height = 2750.0;
+        let p = FloorParams {
+            top: 2750.0,
+            thickness: 220.0,
+            mat: CONCRETE,
+        };
+        let f = FloorSlab::from_chain(&w, &p).unwrap();
+        w.joints.slab_band = Some(f.band());
+        assert_eq!(w.layer_spans(1), vec![(0.0, 2530.0)]);
+        assert_eq!(w.layer_spans(0), vec![(0.0, 2750.0)]);
+        let (lo, hi) = w.solid().bounds().unwrap();
+        assert!(near(lo.z, 0.0, 1e-9) && near(hi.z, 2750.0, 1e-9));
+        // Band ganz über der Wand: Wand unverändert
+        w.joints.slab_band = Some((2800.0, 3000.0));
+        assert_eq!(w.layer_spans(1), vec![(0.0, 2750.0)]);
     }
 
     #[test]

@@ -38,7 +38,7 @@ fn main() {
     let floor = FloorSlab::from_chain(
         &wall,
         &FloorParams {
-            top: FloorParams::default_top(3500.0),
+            top: 2330.0,
             thickness: 220.0,
             mat: 7,
         },

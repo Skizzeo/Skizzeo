@@ -2330,7 +2330,9 @@ fn explain_floor(e: FloorError) -> &'static str {
         FloorError::NotClosed => "der Wandzug ist nicht geschlossen",
         FloorError::NoCore => "der Wandaufbau hat keine tragende Schicht",
         FloorError::NotSimple => "der Umriss überschneidet sich",
-        FloorError::BadLevel => "Dicke oder Höhenlage passt nicht in die Wand",
+        FloorError::BadThickness => "die Deckendicke muss größer als 0 sein",
+        FloorError::BelowWallFoot => "die Unterkante liegt auf oder unter dem Wandfuß",
+        FloorError::AboveWallTop => "die Oberkante liegt über der Wandkrone",
     }
 }
 
