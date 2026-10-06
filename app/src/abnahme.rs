@@ -328,7 +328,8 @@ fn a05_eingabe_im_grundriss() {
 }
 
 /// A06: Offener Zug: Enter oder Doppelklick beendet ihn, Rücktaste nimmt den
-/// letzten Punkt zurück, Esc bricht ab, Strg+Z/Strg+Y nehmen die Wand zurück.
+/// letzten Punkt zurück, Esc bricht ab, Tab wechselt die Bezugsseite,
+/// Strg+Z/Strg+Y nehmen die Wand zurück.
 #[test]
 fn a06_offener_zug_ruecktaste_esc_rueckgaengig() {
     let mut s = Scene::with_model(Model::with_seed(3));
@@ -357,6 +358,24 @@ fn a06_offener_zug_ruecktaste_esc_rueckgaengig() {
     assert!(t.is_active());
     t.handle(&key(Key::Escape), &c, W, H, 1.0);
     assert!(!t.is_active());
+    // Tab wechselt die Bezugsseite während der Eingabe: außen, innen, Achse
+    let mut t = tool(&s);
+    click(&mut t, &c, vec3(0.0, 0.0, 0.0));
+    let mut sides = vec![t.ref_side];
+    for _ in 0..3 {
+        t.handle(&key(Key::Tab), &c, W, H, 1.0);
+        sides.push(t.ref_side);
+    }
+    assert_eq!(
+        sides,
+        [
+            RefSide::Left,
+            RefSide::Right,
+            RefSide::Center,
+            RefSide::Left
+        ]
+    );
+    assert!(t.is_active(), "Tab bricht die Eingabe nicht ab");
     // Rückgängig und Wiederholen
     assert!(s.undo());
     assert!(s.model().run(run).is_none());
