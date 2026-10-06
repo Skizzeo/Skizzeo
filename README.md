@@ -61,6 +61,13 @@ sobald der Mauszeiger über einem Wandsegment steht):
 
 Das Programm liegt danach unter `target/release/skizzeo.exe`.
 `skizzeo.exe --screenshot bild.png` speichert das erste Bild und beendet sich.
+`skizzeo.exe --zeiten zeiten.csv` schreibt für jedes Bild die Dauer in
+Millisekunden mit (Ereignisse, Netz, Zeichnen, Tauschen, gesamt). Ziel bei
+Echtzeit-Interaktionen wie Griff-Ziehen: 5–15 ms je Bild.
+
+Leistungsmessung ohne Fenster (Ziehen, Netze, Greifen bei 1 bis 1000 Häusern):
+
+    cargo test --release -p skizzeo perf -- --ignored --nocapture
 
 Logos neu erzeugen: `cargo run -p sk-ui --example logos -- logos`
 

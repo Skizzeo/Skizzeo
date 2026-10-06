@@ -44,6 +44,11 @@ pub struct Mark {
     pub left: bool,
 }
 
+/// Bildgröße eines Endsymbols in Pixeln.
+fn mark_size(scale: f32) -> (f32, f32) {
+    ((44.0 * scale).round(), (52.0 * scale).round())
+}
+
 fn dist_to_segment(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
     let (vx, vy) = (b.0 - a.0, b.1 - a.1);
     let len2 = vx * vx + vy * vy;
@@ -197,11 +202,24 @@ impl SectionLine {
             .collect()
     }
 
+    /// Bezugspunkt (Linienende) im Bild eines Endsymbols.
+    pub fn mark_anchor(&self, left: bool, scale: f32) -> (f32, f32) {
+        let (cw, ch) = mark_size(scale);
+        (
+            if left {
+                10.0 * scale
+            } else {
+                cw - 10.0 * scale
+            },
+            ch - 6.0 * scale,
+        )
+    }
+
     /// Bild eines Endsymbols (Pfeil in Blickrichtung und Buchstabe) und sein
     /// Bezugspunkt (Ende der Linie) im Bild.
     pub fn paint_mark(&self, fonts: &Fonts, left: bool, scale: f32) -> (Canvas, f32, f32) {
         let s = scale;
-        let (cw, ch) = ((44.0 * s).round(), (52.0 * s).round());
+        let (cw, ch) = mark_size(scale);
         let mut c = Canvas::new(cw as usize, ch as usize);
         let color = if self.is_busy() {
             Rgba::rgb(143, 69, 219)
@@ -209,7 +227,7 @@ impl SectionLine {
             Rgba::rgb(0, 0, 0)
         };
         // Bezugspunkt: am Linienende; der Pfeil steht senkrecht darauf (Blick nach oben = +y)
-        let (ax, ay) = (if left { 10.0 * s } else { cw - 10.0 * s }, ch - 6.0 * s);
+        let (ax, ay) = self.mark_anchor(left, scale);
         let shaft = 2.4 * s;
         let mut p = Path::new();
         p.move_to(ax - shaft * 0.5, ay)
