@@ -516,7 +516,10 @@ fn perf_ebene_ziehen() {
             s.drag_storey_top(eg, if flip { 2500.0 } else { 2600.0 });
             std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
         });
-        let release = time(1, || s.commit());
+        // `time` ruft einmal vorab auf: Loslassen direkt messen
+        let t = Instant::now();
+        s.commit();
+        let release = t.elapsed().as_secs_f64() * 1000.0;
         println!("{name:<36} Ziehen {drag:7.2} ms je Bild, Loslassen {release:7.2} ms");
     }
 }
