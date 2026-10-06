@@ -94,6 +94,54 @@ pub enum Field {
     LevelTop(StoreyId),
     StoreyHeight(StoreyId),
     ClearHeight(StoreyId),
+    /// Dialog „Gebäude erstellen“ (E16, Jörn 10:13).
+    Draft(Draft),
+}
+
+/// Vorgaben im Dialog „Gebäude erstellen“, von oben nach unten.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Draft {
+    FloorOg,
+    ClearOg,
+    FloorEg,
+    ClearEg,
+    Slab,
+}
+
+impl Draft {
+    pub const ALL: [Draft; 5] = [
+        Draft::FloorOg,
+        Draft::ClearOg,
+        Draft::FloorEg,
+        Draft::ClearEg,
+        Draft::Slab,
+    ];
+
+    /// Name für `Scene::set_building_dialog_value`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Draft::FloorOg => "decke_og",
+            Draft::ClearOg => "lichte_og",
+            Draft::FloorEg => "decke_eg",
+            Draft::ClearEg => "lichte_eg",
+            Draft::Slab => "sohlplatte",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Draft::FloorOg => "Dicke OG-Decke",
+            Draft::ClearOg => "lichte Höhe OG",
+            Draft::FloorEg => "Dicke EG-Decke",
+            Draft::ClearEg => "lichte Höhe EG",
+            Draft::Slab => "Dicke Sohlplatte",
+        }
+    }
+
+    fn next(self) -> Option<Draft> {
+        let i = Draft::ALL.iter().position(|d| *d == self)?;
+        Draft::ALL.get(i + 1).copied()
+    }
 }
 
 impl Field {
@@ -108,8 +156,13 @@ impl Field {
         )
     }
 
+    /// Zahl in Metern (sonst in Zentimetern).
+    fn in_metres(self) -> bool {
+        self.is_level() || matches!(self, Field::Draft(Draft::ClearEg | Draft::ClearOg))
+    }
+
     fn unit(self) -> &'static str {
-        if self.is_level() {
+        if self.in_metres() {
             "m"
         } else {
             "cm"
@@ -123,7 +176,7 @@ impl Field {
 
     /// Wert, wie er im Feld steht (ohne Einheit).
     fn text(self, mm: f64) -> String {
-        if !self.is_level() {
+        if !self.in_metres() {
             cm_text(mm)
         } else if mm.round() < 0.0 {
             format!("-{}", m_text(mm))
@@ -134,7 +187,7 @@ impl Field {
 
     /// Wert mit Einheit für Hinweise.
     fn show(self, mm: f64) -> String {
-        if !self.is_level() {
+        if !self.in_metres() {
             format!("{} cm", cm_text(mm))
         } else if self.is_kote() {
             format!("{} m", kote_text(mm))
@@ -168,7 +221,7 @@ impl FieldRow {
         if !n.is_finite() {
             return Err("keine Zahl".into());
         }
-        let per = if self.field.is_level() { 1000.0 } else { 10.0 };
+        let per = if self.field.in_metres() { 1000.0 } else { 10.0 };
         let mm = (n * per).round() + 0.0;
         if self.zero && mm == 0.0 {
             return Ok(0.0);
@@ -223,6 +276,9 @@ pub struct Edit {
     anchor: usize,
     /// Grund, warum die Eingabe nicht gilt (unter dem Feld).
     pub error: Option<String>,
+    /// Wert beim Beginn; Esc stellt ihn im Dialog wieder her (dort gilt jede
+    /// gültige Taste sofort).
+    orig: f64,
 }
 
 impl Edit {
@@ -230,6 +286,7 @@ impl Edit {
         let text = row.field.text(row.value);
         Edit {
             field: row.field,
+            orig: row.value,
             caret: text.len(),
             anchor: 0,
             text,
@@ -418,6 +475,8 @@ pub struct Ui {
     pub upper_active: bool,
     /// Dialog „Gebäude erstellen“ offen (modal, E16).
     pub dialog: bool,
+    /// Zahlenfelder des Dialogs (Vorgaben des Gebäudes).
+    dialog_fields: Vec<FieldRow>,
     /// Eigenschaften des gewählten Bauteils; ohne Auswahl kein Paneel.
     props: Option<Props>,
     /// Eingabe in einem Zahlenfeld.
@@ -628,6 +687,7 @@ impl Ui {
             wall_layers: Vec::new(),
             upper_active: false,
             dialog: false,
+            dialog_fields: Vec::new(),
             props: None,
             edit: None,
             images: [None, None, None, None, None],
@@ -683,6 +743,9 @@ impl Ui {
     }
 
     fn field_row(&self, f: Field) -> Option<&FieldRow> {
+        if let Field::Draft(_) = f {
+            return self.dialog_fields.iter().find(|r| r.field == f);
+        }
         if f.is_level() {
             return self.levels.fields.iter().find(|r| r.field == f);
         }
@@ -690,7 +753,9 @@ impl Ui {
     }
 
     fn field_panel(f: Field) -> Panel {
-        if f.is_level() {
+        if let Field::Draft(_) = f {
+            Panel::Dialog
+        } else if f.is_level() {
             Panel::Levels
         } else {
             Panel::Props
@@ -703,6 +768,31 @@ impl Ui {
             .into_iter()
             .find(|b| b.0 == Id::Field(f))
             .map(|b| b.1)
+    }
+
+    /// Neue Werte der Dialogfelder; `true`, wenn sie sich geändert haben.
+    pub fn set_dialog_fields(&mut self, rows: Vec<FieldRow>) -> bool {
+        if rows == self.dialog_fields {
+            return false;
+        }
+        self.dialog_fields = rows;
+        true
+    }
+
+    /// Setzt die Eingabe in ein Feld (alles markiert), etwa beim Öffnen des
+    /// Dialogs; eine laufende Eingabe wird vorher beendet.
+    pub fn focus_field(&mut self, f: Field) -> UiOut {
+        let mut out = UiOut::default();
+        self.finish_edit(&mut out);
+        self.begin_edit(f, &mut out);
+        out
+    }
+
+    /// Eine Eingabe im Dialog ist ungültig: „Zeichnen beginnen“ gesperrt.
+    fn dialog_invalid(&self) -> bool {
+        self.edit
+            .as_ref()
+            .is_some_and(|e| matches!(e.field, Field::Draft(_)) && e.error.is_some())
     }
 
     /// Neuer Inhalt des Paneels „Geschosse“; `true`, wenn er sich geändert
@@ -781,6 +871,11 @@ impl Ui {
         let field = e.field;
         let had_error = e.error.is_some();
         let end = e.text.len();
+        let draft = match field {
+            Field::Draft(d) => Some(d),
+            _ => None,
+        };
+        let (before, orig) = (e.text.clone(), e.orig);
         match key {
             Key::Enter | Key::Tab => {
                 let row = self.field_row(field).cloned();
@@ -790,6 +885,15 @@ impl Ui {
                         self.edit = None;
                         out.submit = Some((field, mm));
                         out.relayout = had_error || field.is_level();
+                        // Im Dialog weiter ins nächste Feld, nach dem letzten
+                        // ohne Eingabe (Enter beginnt dann)
+                        if let Some(d) = draft {
+                            if let Some(n) = d.next() {
+                                self.begin_edit(Field::Draft(n), &mut out);
+                                out.changed.push(Id::Field(Field::Draft(n)));
+                            }
+                            out.relayout = true;
+                        }
                     }
                     Some(Err(why)) => {
                         out.relayout = e.error.as_ref() != Some(&why);
@@ -801,6 +905,11 @@ impl Ui {
             Key::Escape => {
                 self.edit = None;
                 out.relayout = had_error || field.is_level();
+                // Im Dialog galt schon jede gültige Taste: alten Wert zurück
+                if draft.is_some() {
+                    out.submit = Some((field, orig));
+                    out.relayout = true;
+                }
             }
             Key::Backspace | Key::Delete => {
                 let (a, z) = e.selection();
@@ -835,6 +944,24 @@ impl Ui {
                 e.replace_selection(&c.to_string());
             }
             _ => {}
+        }
+        // Im Dialog gilt jede gültige Eingabe sofort (Paneel „Geschosse“)
+        if let (Some(_), Some(row)) = (draft, self.field_row(field).cloned()) {
+            if let Some(e) = self
+                .edit
+                .as_mut()
+                .filter(|e| e.field == field && e.text != before)
+            {
+                let error = match row.parse(&e.text) {
+                    Ok(mm) => {
+                        out.submit = Some((field, mm));
+                        None
+                    }
+                    Err(why) => Some(why),
+                };
+                out.relayout |= error != e.error;
+                e.error = error;
+            }
         }
         out.changed.push(Id::Field(field));
         Some(out)
@@ -975,6 +1102,7 @@ impl Ui {
         match id {
             Id::Building => self.upper_active,
             Id::DialogMinus | Id::DialogPlus => true,
+            Id::DialogStart => self.dialog_invalid(),
             _ => false,
         }
     }
@@ -1032,6 +1160,9 @@ impl Ui {
             }
             Event::MouseDown { button, x, y, .. } => {
                 let hit = self.hit(x, y, win_w, top);
+                // Ungültige Eingabe sperrt „Zeichnen beginnen“ auch beim Klick,
+                // der die Eingabe beendet
+                let start_blocked = self.dialog_invalid();
                 let field = match hit {
                     Some((_, Some(Id::Field(f)))) if button == MouseButton::Left => Some(f),
                     _ => None,
@@ -1068,7 +1199,9 @@ impl Ui {
                     }
                 } else if let Some((_, id)) = hit {
                     out.consumed = true;
-                    let id = id.filter(|id| !self.is_disabled(*id));
+                    let id = id.filter(|id| {
+                        !self.is_disabled(*id) && !(start_blocked && *id == Id::DialogStart)
+                    });
                     if button == MouseButton::Left {
                         self.pressed = id;
                         out.changed.extend(id);
@@ -1325,9 +1458,15 @@ impl Ui {
     }
 }
 
-/// Dialog „Gebäude erstellen“ (E16): eine Zeile „Geschosse: 2 (EG + OG)“,
-/// derzeit fest; die Werte zeigt das Paneel „Geschosse“ sofort.
+/// Dialog „Gebäude erstellen“ (E16): „Geschosse: 2 (EG + OG)“, derzeit
+/// fest, darunter die Vorgaben von oben nach unten (Jörn 10:13); jede
+/// gültige Eingabe zeigt das Paneel „Geschosse“ sofort.
 impl Ui {
+    /// Obere Kante der Zeile `i` (0 = Geschosse, dann die Felder), dip.
+    fn dialog_row_y(&self, i: usize) -> f32 {
+        DIALOG_ROW_Y + i as f32 * self.size.dialog_row
+    }
+
     /// Knöpfe des Dialogs in Paneelkoordinaten.
     fn dialog_buttons(&self) -> Vec<(Id, Rect, &'static str)> {
         let (s, z) = (self.scale, &self.size);
@@ -1335,7 +1474,15 @@ impl Ui {
         let r = |x: f32, y: f32, bw: f32, bh: f32| Rect::new(x * s, y * s, bw * s, bh * s);
         let (start_w, cancel_w, bh) = (150.0, 96.0, 30.0);
         let by = h - 12.0 - bh;
-        vec![
+        let fields = self.dialog_fields.iter().enumerate().map(|(i, f)| {
+            let y = self.dialog_row_y(i + 1);
+            (
+                Id::Field(f.field),
+                r(w - pad - DIALOG_FIELD_W, y, DIALOG_FIELD_W, 26.0),
+                "",
+            )
+        });
+        let mut v = vec![
             (Id::DialogClose, r(w - 10.0 - 24.0, 10.0, 24.0, 24.0), ""),
             (
                 Id::DialogMinus,
@@ -1357,7 +1504,9 @@ impl Ui {
                 r(w - pad - start_w, by, start_w, bh),
                 "Zeichnen beginnen",
             ),
-        ]
+        ];
+        v.extend(fields);
+        v
     }
 
     /// Grundbild des Dialogs: Kopfzeile, Zähler und (beim Darüberfahren über
@@ -1392,10 +1541,27 @@ impl Ui {
         let n = "2 (EG + OG)";
         let nw = regular.map_or(0.0, |f| f.width(n, px));
         widgets::text(c, regular, n, px, (a + b - nw) * 0.5, base, col.text);
-        if matches!(self.hover, Some(Id::DialogMinus | Id::DialogPlus)) {
+        // Bezeichnungen der Felder
+        for (i, f) in self.dialog_fields.iter().enumerate() {
+            let mid = m + (self.dialog_row_y(i + 1) + 13.0) * s;
+            let base = (mid + cap(px) * 0.5).round();
+            widgets::text(c, regular, f.label, px, x, base, col.text);
+        }
+        // Eine Zeile unter den Feldern: Grund einer ungültigen Eingabe, sonst
+        // beim Darüberfahren über − oder +, warum der Zähler fest ist
+        let n = self.dialog_fields.len();
+        let hb = m + (self.dialog_row_y(n + 1) + 13.0) * s;
+        let error = self
+            .edit
+            .as_ref()
+            .filter(|e| matches!(e.field, Field::Draft(_)))
+            .and_then(|e| e.error.as_ref());
+        if let Some(why) = error {
+            let px = z.font_small * s;
+            widgets::text(c, regular, why, px, x, hb, col.field_invalid);
+        } else if matches!(self.hover, Some(Id::DialogMinus | Id::DialogPlus)) {
             let px = z.font_small * s;
             let hint = "Derzeit Erdgeschoss und Obergeschoss";
-            let hb = row + (26.0 + 15.0) * s;
             widgets::text(c, regular, hint, px, x, hb, col.text_dim);
         }
     }
@@ -1421,6 +1587,8 @@ impl Ui {
 /// Dialog: linke Kante des Zählers und obere Kante seiner Zeile (dip).
 const DIALOG_COUNTER_X: f32 = 104.0;
 const DIALOG_ROW_Y: f32 = 46.0;
+/// Breite der Zahlenfelder im Dialog (dip).
+const DIALOG_FIELD_W: f32 = 84.0;
 
 /// Paneel „Geschosse“ (E14): Diagramm der Ebenen mit Griffen, Koten und
 /// Maßketten, im kleinen Fenster eine Liste.
@@ -2039,7 +2207,7 @@ mod tests {
             ui.rect(Panel::Dialog, 1280, 32),
             ui.rect(Panel::Levels, 1280, 32),
         );
-        assert_eq!((d.w, d.h), (280.0, 130.0));
+        assert_eq!((d.w, d.h), (300.0, 290.0));
         assert!(d.x >= l.x + l.w, "rechts neben dem Paneel");
         assert_eq!(d.y, ui.rect(Panel::Tools, 1280, 32).y, "oben bündig");
         let at = |ui: &Ui, id: Id| {
@@ -2085,6 +2253,93 @@ mod tests {
             None,
             "Außenwände entstehen aus dem EG"
         );
+    }
+
+    /// Dialogfelder (Jörn 10:13): Reihenfolge von oben nach unten, jede
+    /// gültige Taste gilt sofort, Enter springt ins nächste Feld, ungültig
+    /// sperrt „Zeichnen beginnen“, Esc stellt den alten Wert her.
+    #[test]
+    fn dialog_felder() {
+        let mut ui = Ui::new(1.0, &Theme::dark());
+        ui.dialog = true;
+        let row = |d: Draft, value: f64, min: f64, max: f64| FieldRow {
+            field: Field::Draft(d),
+            label: d.label(),
+            value,
+            min,
+            max,
+            zero: false,
+        };
+        ui.set_dialog_fields(vec![
+            row(Draft::FloorOg, 220.0, 100.0, 600.0),
+            row(Draft::ClearOg, 2635.0, 1000.0, 10000.0),
+            row(Draft::FloorEg, 220.0, 100.0, 600.0),
+            row(Draft::ClearEg, 2635.0, 1000.0, 10000.0),
+            row(Draft::Slab, 220.0, 100.0, 790.0),
+        ]);
+        // Felder von oben nach unten, alle über den Knöpfen
+        let rects: Vec<Rect> = Draft::ALL
+            .iter()
+            .map(|d| ui.field_rect(Field::Draft(*d)).unwrap())
+            .collect();
+        let start = ui
+            .buttons(Panel::Dialog)
+            .into_iter()
+            .find(|b| b.0 == Id::DialogStart)
+            .unwrap()
+            .1;
+        assert!(rects.windows(2).all(|w| w[0].y + w[0].h < w[1].y));
+        assert!(
+            rects[4].y + rects[4].h + 15.0 < start.y,
+            "Platz für den Hinweis"
+        );
+        assert_eq!(rects[1].y - rects[0].y, 30.0, "dialog_row");
+        assert_eq!(
+            ui.field_row(Field::Draft(Draft::ClearOg))
+                .unwrap()
+                .field
+                .text(2635.0),
+            "2,635"
+        );
+
+        ui.focus_field(Field::Draft(Draft::FloorOg));
+        let m = Modifiers::default();
+        let key = |ui: &mut Ui, k: Key| ui.key(k, true, m).unwrap();
+        let out = key(&mut ui, Key::Char('2'));
+        assert_eq!(out.submit, None, "2 cm ist zu dünn");
+        assert!(ui.is_disabled(Id::DialogStart));
+        assert!(ui.edit.as_ref().unwrap().error.is_some());
+        let out = key(&mut ui, Key::Char('5'));
+        assert_eq!(
+            out.submit,
+            Some((Field::Draft(Draft::FloorOg), 250.0)),
+            "sofort"
+        );
+        assert!(!ui.is_disabled(Id::DialogStart));
+        let out = key(&mut ui, Key::Enter);
+        assert_eq!(out.submit, Some((Field::Draft(Draft::FloorOg), 250.0)));
+        assert_eq!(
+            ui.edit.as_ref().unwrap().field,
+            Field::Draft(Draft::ClearOg)
+        );
+        // lichte Höhe in m
+        key(&mut ui, Key::Char('2'));
+        key(&mut ui, Key::Char(','));
+        key(&mut ui, Key::Char('8'));
+        assert_eq!(
+            key(&mut ui, Key::Char('0')).submit,
+            Some((Field::Draft(Draft::ClearOg), 2800.0))
+        );
+        // Esc: alter Wert zurück
+        assert_eq!(
+            key(&mut ui, Key::Escape).submit,
+            Some((Field::Draft(Draft::ClearOg), 2635.0))
+        );
+        assert!(ui.edit.is_none());
+        // Nach dem letzten Feld keine Eingabe mehr: Enter beginnt (App)
+        ui.focus_field(Field::Draft(Draft::Slab));
+        key(&mut ui, Key::Enter);
+        assert!(ui.edit.is_none());
     }
 
     #[test]

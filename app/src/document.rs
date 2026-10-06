@@ -50,8 +50,14 @@ impl Document {
     }
 
     /// Text für die Titelleiste, mit `•` bei ungespeicherten Änderungen.
+    #[cfg(test)]
     pub fn caption(&self, model: &Model) -> String {
-        if self.is_dirty(model) {
+        self.caption_at(model.revision())
+    }
+
+    /// Wie [`Document::caption`] für einen Modellstand.
+    pub fn caption_at(&self, rev: u64) -> String {
+        if rev != self.saved_rev {
             format!("{} •", self.name())
         } else {
             self.name()

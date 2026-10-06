@@ -230,6 +230,8 @@ pub struct Scene {
     pending: Option<(BuildingId, Option<StoreyId>)>,
     /// Vorgaben des Dialogs für dieses Gebäude.
     draft: BuildingDraft,
+    /// Modellstand vor dem offenen Schritt „Gebäude erstellt“.
+    pending_rev: u64,
 }
 
 /// Vorgaben im Dialog „Gebäude erstellen“ (Jörn 10:13, mm): lichte Höhen und
@@ -321,6 +323,7 @@ impl Scene {
             active: None,
             pending: None,
             draft: BuildingDraft::default(),
+            pending_rev: 0,
         };
         s.rebuild_dirty(false);
         s
@@ -387,6 +390,7 @@ impl Scene {
         if self.pending.is_some() {
             return;
         }
+        self.pending_rev = self.model.revision();
         self.begin("Gebäude erstellt");
         let b = self.model.add_building(2);
         self.pending = Some((b, self.active));
@@ -486,6 +490,16 @@ impl Scene {
     /// Ist ein Gebäude im Entstehen (Dialog offen oder Polygon begonnen)?
     pub fn building_pending(&self) -> bool {
         self.pending.is_some()
+    }
+
+    /// Modellstand für die Titelleiste: ein Gebäude im Entstehen zählt erst
+    /// mit dem geschlossenen Polygon als Änderung.
+    pub fn shown_revision(&self) -> u64 {
+        if self.pending.is_some() {
+            self.pending_rev
+        } else {
+            self.model.revision()
+        }
     }
 
     /// Macht ein Geschoss aktiv; `false`, wenn es schon aktiv ist oder keines

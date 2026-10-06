@@ -40,7 +40,7 @@ use sk_ui::{
 };
 use std::f64::consts::{FRAC_PI_2, PI};
 use std::time::Instant;
-use ui::{Grip, Id, LevelEvent, Panel, Ui, ViewKind};
+use ui::{Draft, Field, FieldRow, Grip, Id, LevelEvent, Panel, Ui, ViewKind};
 use wall_edit::WallEdit;
 use wall_tool::WallTool;
 
@@ -427,12 +427,53 @@ impl App {
         self.ui.dialog = true;
         self.ui.hover = None;
         self.sync_levels();
+        self.sync_dialog_fields();
+        // Eingabe beginnt in „Dicke OG-Decke“ (oberste Zeile)
+        let out = self.ui.focus_field(Field::Draft(Draft::FloorOg));
+        self.apply_ui(&out);
         self.overlay_dirty = true;
+    }
+
+    /// Dialogfelder an die Vorgaben des entstehenden Gebäudes angleichen.
+    fn sync_dialog_fields(&mut self) {
+        let d = self.scene.building_draft();
+        let rows = Draft::ALL
+            .into_iter()
+            .map(|k| {
+                let (value, (min, max)) = match k {
+                    Draft::FloorOg => (d.floor_og, scene::DRAFT_FLOOR),
+                    Draft::ClearOg => (d.clear_og, scene::DRAFT_CLEAR),
+                    Draft::FloorEg => (d.floor_eg, scene::DRAFT_FLOOR),
+                    Draft::ClearEg => (d.clear_eg, scene::DRAFT_CLEAR),
+                    Draft::Slab => (d.slab, scene::DRAFT_SLAB),
+                };
+                FieldRow {
+                    field: Field::Draft(k),
+                    label: k.label(),
+                    value,
+                    min,
+                    max,
+                    zero: false,
+                }
+            })
+            .collect();
+        if self.ui.set_dialog_fields(rows) {
+            self.overlay_dirty = true;
+        }
     }
 
     /// Dialog schließen: mit „Zeichnen beginnen“ beginnt das Polygon im selben
     /// Schritt, sonst bleibt nichts zurück.
     fn close_building_dialog(&mut self, start: bool) {
+        // Jede gültige Eingabe galt schon; eine ungültige verfällt
+        if self
+            .ui
+            .edit
+            .as_ref()
+            .is_some_and(|e| matches!(e.field, Field::Draft(_)))
+        {
+            self.ui.edit = None;
+        }
         self.ui.dialog = false;
         self.ui.hover = None;
         if start {
@@ -627,7 +668,7 @@ impl App {
 
     /// Dateiname und `•` in Titelleiste und Taskleiste.
     fn sync_caption(&mut self, surface: &Surface) {
-        let caption = self.doc.caption(self.scene.model());
+        let caption = self.doc.caption_at(self.scene.shown_revision());
         if caption != self.title.caption {
             surface.set_title(&format!("{caption} – Skizzeo"));
             self.title.caption = caption;
@@ -691,7 +732,13 @@ impl App {
         if out.relayout {
             self.overlay_dirty = true;
         }
-        if let Some((field, mm)) = out.submit.filter(|s| s.0.is_level()) {
+        if let Some((Field::Draft(d), mm)) = out.submit {
+            if self.scene.set_building_dialog_value(d.key(), mm) {
+                self.sync_levels();
+                self.sync_dialog_fields();
+                self.upload_model();
+            }
+        } else if let Some((field, mm)) = out.submit.filter(|s| s.0.is_level()) {
             if self.scene.set_level(field, mm) {
                 self.upload_model();
             }
@@ -1022,12 +1069,6 @@ impl App {
                             .handle(&in_view(e), &mut self.cam, &self.scene, vw, vh, sc);
                 }
             }
-            // Der Dialog nimmt jede Taste: Enter beginnt, Esc bricht ab
-            Event::Key { key, down, .. } if self.ui.dialog => match key {
-                Key::Enter if down => self.close_building_dialog(true),
-                Key::Escape if down => self.close_building_dialog(false),
-                _ => {}
-            },
             // Ein Zahlenfeld in Eingabe nimmt jede Taste
             Event::Key {
                 key, down, mods, ..
@@ -1035,6 +1076,17 @@ impl App {
                 let out = self.ui.key(key, down, mods).unwrap_or_default();
                 self.apply_ui(&out);
             }
+            // Der Dialog nimmt jede übrige Taste: Enter beginnt, Esc bricht ab,
+            // Tab springt ins oberste Feld
+            Event::Key { key, down, .. } if self.ui.dialog => match key {
+                Key::Enter if down => self.close_building_dialog(true),
+                Key::Escape if down => self.close_building_dialog(false),
+                Key::Tab if down => {
+                    let out = self.ui.focus_field(Field::Draft(Draft::FloorOg));
+                    self.apply_ui(&out);
+                }
+                _ => {}
+            },
             Event::Key {
                 key, down, mods, ..
             } => {

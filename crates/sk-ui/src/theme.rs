@@ -171,6 +171,8 @@ pub struct Sizes {
     /// Dialog „Gebäude erstellen“ (E16): Breite und Höhe.
     pub dialog_w: f32,
     pub dialog_h: f32,
+    /// Zeilenabstand der Zeilen im Dialog „Gebäude erstellen“ (dip).
+    pub dialog_row: f32,
 }
 
 const fn rgb(r: u8, g: u8, b: u8) -> Rgba {
@@ -295,8 +297,9 @@ impl Theme {
                 level_guide: 1.5,
                 dim_tick: 3.5,
                 dim_line: 1.2,
-                dialog_w: 280.0,
-                dialog_h: 130.0,
+                dialog_w: 300.0,
+                dialog_h: 290.0,
+                dialog_row: 30.0,
             },
             px_per_mm: 5.5,
         }
