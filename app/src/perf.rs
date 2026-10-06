@@ -298,3 +298,201 @@ fn perf_attribut_aendern() {
         sk_render::LOOK_ROWS
     );
 }
+
+// --- Referenzgebäude (Maßstab nach Jörn, 2026-10-06) -------------------------
+//
+// Ziel des Programms ist ein Wohngebäude mit drei bis vier Geschossen, Vor- und
+// Rücksprüngen, dazu ein bis zwei Nebengebäude oder höchstens ein zweites
+// Gebäude. Gemessen wird an diesem Maßstab, nicht an Hunderten Häusern.
+//
+// Geschosse kennt das Modell noch nicht: Die Geschosse liegen deshalb im
+// Grundriss nebeneinander (30 m Abstand), damit sich ihre Wände nicht
+// gegenseitig anschließen. Jeder geschlossene Außenzug bekommt heute eine
+// Gründung; das sind mehr als später (eine je Gebäude) und misst also eher zu viel.
+
+/// Ein Geschoss des Hauptgebäudes ab `(ox, oy)`: Außenwand mit Vor- und
+/// Rücksprüngen (20 Ecken, etwa 18 × 14 m) und 14 Innenwände mit T-Anschlüssen.
+fn storey(s: &mut Scene, ox: f64, oy: f64, height: f64) {
+    let p = |x: f64, y: f64| vec3(ox + x, oy + y, 0.0);
+    let wall = |points, closed, ref_side| WallChain {
+        points,
+        closed,
+        ref_side,
+        layers: Vec::new(),
+        height,
+        joints: Default::default(),
+    };
+    // Im Uhrzeigersinn: eingezogene Ecken links und rechts, Risalit vorn und hinten
+    let outline = [
+        (0.0, 1500.0),
+        (0.0, 10500.0),
+        (1500.0, 10500.0),
+        (1500.0, 12000.0),
+        (7000.0, 12000.0),
+        (7000.0, 13000.0),
+        (11000.0, 13000.0),
+        (11000.0, 12000.0),
+        (16500.0, 12000.0),
+        (16500.0, 10500.0),
+        (18000.0, 10500.0),
+        (18000.0, 1500.0),
+        (16500.0, 1500.0),
+        (16500.0, 0.0),
+        (11000.0, 0.0),
+        (11000.0, -1000.0),
+        (7000.0, -1000.0),
+        (7000.0, 0.0),
+        (1500.0, 0.0),
+        (1500.0, 1500.0),
+    ];
+    s.add_wall(&wall(
+        outline.iter().map(|&(x, y)| p(x, y)).collect(),
+        true,
+        RefSide::Left,
+    ));
+    // Tragende Querwände von der vorderen zur hinteren Innenfläche
+    let xs = [3500.0, 6000.0, 12500.0, 15000.0];
+    for x in xs {
+        let w = wall(vec![p(x, 315.0), p(x, 11685.0)], false, RefSide::Center);
+        s.add_wall_as(&w, sk_model::Category::InteriorWall);
+    }
+    // Flurwände zwischen den Querwänden und zu den Giebeln
+    let bays = [
+        (1815.0, 3500.0),
+        (3500.0, 6000.0),
+        (6000.0, 12500.0),
+        (12500.0, 15000.0),
+        (15000.0, 16185.0),
+    ];
+    for (x0, x1) in bays {
+        for y in [4500.0, 7500.0] {
+            let w = wall(vec![p(x0, y), p(x1, y)], false, RefSide::Center);
+            s.add_wall_as(&w, sk_model::Category::InteriorWall);
+        }
+    }
+}
+
+/// Nebengebäude (Garage 6 × 9 m) mit einer Innenwand.
+fn annex(s: &mut Scene, ox: f64, oy: f64) {
+    let p = |x: f64, y: f64| vec3(ox + x, oy + y, 0.0);
+    let wall = |points, closed, ref_side| WallChain {
+        points,
+        closed,
+        ref_side,
+        layers: Vec::new(),
+        height: 2750.0,
+        joints: Default::default(),
+    };
+    let pts = vec![
+        p(0.0, 0.0),
+        p(0.0, 9000.0),
+        p(6000.0, 9000.0),
+        p(6000.0, 0.0),
+    ];
+    s.add_wall(&wall(pts, true, RefSide::Left));
+    let w = wall(
+        vec![p(315.0, 6000.0), p(5685.0, 6000.0)],
+        false,
+        RefSide::Center,
+    );
+    s.add_wall_as(&w, sk_model::Category::InteriorWall);
+}
+
+/// Referenz: `buildings` Hauptgebäude mit je `storeys` Geschossen und `annexes`
+/// Nebengebäude.
+fn reference(buildings: usize, storeys: usize, annexes: usize) -> Scene {
+    let mut s = Scene::new();
+    for b in 0..buildings {
+        for g in 0..storeys {
+            storey(&mut s, g as f64 * 30000.0, b as f64 * 30000.0, 2750.0);
+        }
+    }
+    for a in 0..annexes {
+        annex(&mut s, a as f64 * 10000.0, -15000.0);
+    }
+    s
+}
+
+#[test]
+#[ignore]
+fn perf_referenzgebaeude() {
+    println!();
+    println!(
+        "{:<34} {:>5} {:>6} {:>6} {:>7} | {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} | {:>6} {:>6} {:>6}",
+        "Modell", "Züge", "Wände", "Anschl", "Dreieck", "Ziehen", "Live3D", "Neu", "Greifen", "Rückg.",
+        "Netz3D", "NetzGR", "MB", "Speich", "Laden"
+    );
+    let cases: [(&str, usize, usize, usize); 4] = [
+        ("Haus 4 Geschosse", 1, 4, 0),
+        ("Referenz: 4 Geschosse + 2 Nebengeb.", 1, 4, 2),
+        ("Groß: 2 Häuser à 4 G. + 2 Nebengeb.", 2, 4, 2),
+        ("Reserve ×4 (8 Häuser à 4 G.)", 8, 4, 2),
+    ];
+    for (name, buildings, storeys, annexes) in cases {
+        let mut s = reference(buildings, storeys, annexes);
+        let runs = s.model().runs().iter().count();
+        let walls = s.model().elements().iter().count();
+        let joins = s.model().joins().len();
+        let tris = s.mesh(ViewKind::Persp, None, &[]).faces.len() / 3;
+        // Gezogen wird die Front des obersten Geschosses (Segment 1, linker Giebel
+        // mit zwei Anschlüssen an Flurwände)
+        let run = s.model().runs().ids().next().unwrap();
+        let orig = s.chain(run).unwrap().clone();
+        let mut flip = false;
+        s.begin("Wand verschieben");
+        let drag = time(20, || {
+            flip = !flip;
+            let moved = orig
+                .with_segment_moved(0, if flip { -100.0 } else { -200.0 })
+                .unwrap_or_else(|| orig.clone());
+            s.set_run_points(run, &moved.points);
+        });
+        let live_set = s.live_set(run);
+        let live = time(20, || {
+            std::hint::black_box(s.mesh_runs(ViewKind::Persp, None, &live_set));
+        });
+        s.commit();
+        let undo = time(10, || {
+            s.undo();
+            s.redo();
+        }) / 2.0;
+        let cam = Camera::looking_at(
+            vec3(-20000.0, -30000.0, 25000.0),
+            vec3(9000.0, 6000.0, 0.0),
+            45.0,
+        );
+        let mut e = WallEdit::default();
+        let mv = Event::MouseMove {
+            x: 800.0,
+            y: 450.0,
+            mods: Modifiers::default(),
+        };
+        let pick = time(20, || {
+            e.handle(&mv, &mut s, &cam, W, H, 1.0, true);
+            e.handle(&Event::MouseLeave, &mut s, &cam, W, H, 1.0, true);
+        });
+        let m3 = time(10, || {
+            std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
+        });
+        let mgr = time(10, || {
+            std::hint::black_box(s.mesh(ViewKind::Plan, None, &[]));
+        });
+        let mb = bytes(&s.mesh(ViewKind::Persp, None, &[])) as f64 / 1e6;
+        let mut text = String::new();
+        let save = time(5, || text = sk_model::szo::write(s.model()));
+        let load = time(5, || {
+            let l = sk_model::szo::read(&text, sk_model::GuidGen::with_seed(1)).unwrap();
+            let mut sc = Scene::with_model(l.model);
+            std::hint::black_box(sc.mesh(ViewKind::Persp, None, &[]));
+        });
+        println!(
+            "{:<34} {:>5} {:>6} {:>6} {:>7} | {:>7.3} {:>7.3} {:>7.3} {:>7.3} {:>7.3} {:>7.3} {:>7.3} | {:>6.2} {:>6.2} {:>6.2}",
+            name, runs, walls, joins, tris, drag, live, drag + live, pick, undo, m3, mgr, mb, save, load
+        );
+    }
+    println!(
+        "Zeiten in ms. Ziehen/Live3D/Neu/Greifen je Mausbewegung, Rückg. je Schritt, \
+         Netz3D/NetzGR beim Greifen, Loslassen oder Ansichtswechsel, Speich/Laden einmalig \
+         (Laden = Datei lesen + Szene + erstes Netz). MB = volles Netz zur Grafikkarte."
+    );
+}
