@@ -15,7 +15,7 @@ use crate::wall_edit::WallEdit;
 use crate::wall_tool::{WallTool, WALL_HEIGHT};
 use crate::{fit_parallel, fit_perspective};
 use sk_math::{vec3, Vec3};
-use sk_model::{Hatch, Model, RefSide, RunId, WallChain};
+use sk_model::{edge_kind, FillKind, Model, RefSide, RunId, WallChain};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_render::{pattern, MeshData};
 use sk_ui::theme;
@@ -512,14 +512,17 @@ fn a09_zweischalige_aussenwand() {
         .iter()
         .map(|l| {
             let mat = m.material(l.material).unwrap();
-            (mat.name.as_str(), l.thickness, mat.hatch)
+            let fill = &m.attr().fill(mat.cut_fill).unwrap().kind;
+            let zigzag = matches!(fill, FillKind::Zigzag { .. });
+            let lines = matches!(fill, FillKind::Lines(_));
+            (mat.name.as_str(), l.thickness, zigzag, lines)
         })
         .collect();
     assert_eq!(
         rows,
         [
-            ("Dämmung (WDVS)", 140.0, Hatch::Zigzag),
-            ("Gasbeton", 175.0, Hatch::Diagonal)
+            ("Dämmung (WDVS)", 140.0, true, false),
+            ("Gasbeton", 175.0, false, true)
         ]
     );
     let q = s.wall_qto(m.wall_at(run, 0).unwrap()).unwrap();
@@ -551,10 +554,17 @@ fn edges_at_x(m: &MeshData, x: f32) -> Vec<f32> {
 /// mitteldick umrandet. 3D bleibt farbig ohne Schraffur.
 #[test]
 fn a10_bauzeichnung_linienstaerken_und_schraffuren() {
-    use theme::drawing as d;
-    const { assert!(d::CUT_WIDTH > d::LAYER_CUT_WIDTH && d::LAYER_CUT_WIDTH > d::FINE_WIDTH) };
     let mut s = Scene::with_model(Model::with_seed(7));
     zeichne_rechteck(&mut s, &cam3d());
+    // Strichbreiten aus der Zeichentabelle (Stifte der Bauteildarstellung)
+    let w = |k| s.table().edge_width(true, k);
+    let (cut_w, layer_w, view_w, fine_w) = (
+        w(edge_kind::CUT),
+        w(edge_kind::CUT_LAYER),
+        w(edge_kind::VIEW),
+        w(edge_kind::FINE),
+    );
+    assert!(cut_w > layer_w && layer_w > fine_w);
 
     let plan = s.mesh(ViewKind::Plan, None, None);
     let white = [1.0f32, 1.0, 1.0];
@@ -567,17 +577,17 @@ fn a10_bauzeichnung_linienstaerken_und_schraffuren() {
     let max = |v: Vec<f32>| v.into_iter().fold(0.0f32, f32::max);
     assert_eq!(
         max(edges_at_x(&plan, 0.0)),
-        d::LAYER_CUT_WIDTH,
+        layer_w,
         "Dämmung außen"
     );
     assert_eq!(
         max(edges_at_x(&plan, 140.0)),
-        d::CUT_WIDTH,
+        cut_w,
         "Gasbeton außen"
     );
     assert_eq!(
         max(edges_at_x(&plan, 315.0)),
-        d::CUT_WIDTH,
+        cut_w,
         "Gasbeton innen"
     );
     // Geschnitten in 1,00 m Höhe
@@ -589,13 +599,13 @@ fn a10_bauzeichnung_linienstaerken_und_schraffuren() {
     sect.ensure(&s);
     let cut = s.mesh(ViewKind::Section, sect.plane(), None);
     assert!(has(&cut, pattern::DIAGONAL) && has(&cut, pattern::ZIGZAG));
-    assert!(cut.edges.iter().any(|e| e.1 == d::CUT_WIDTH));
-    assert!(cut.edges.iter().any(|e| e.1 == d::LAYER_CUT_WIDTH));
+    assert!(cut.edges.iter().any(|e| e.1 == cut_w));
+    assert!(cut.edges.iter().any(|e| e.1 == layer_w));
 
     // Ansicht: keine Schraffur, Ansichtskanten mittel
     let front = s.mesh(ViewKind::Front, None, None);
     assert!(!has(&front, pattern::DIAGONAL) && !has(&front, pattern::ZIGZAG));
-    assert!(front.edges.iter().any(|e| e.1 == d::VIEW_WIDTH));
+    assert!(front.edges.iter().any(|e| e.1 == view_w));
     // 3D: farbige Flächen, keine Schraffur
     let p3 = s.mesh(ViewKind::Persp, None, None);
     assert!(p3.faces.iter().all(|v| v[9] == pattern::NONE));

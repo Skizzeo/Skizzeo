@@ -7,10 +7,13 @@
 use crate::element::{
     Category, Element, ElementId, ElementKind, PropSet, RunId, Storey, StoreyId, Wall, WallRun,
 };
+use crate::attr::{
+    self, Attributes, Display, Fill, FillId, LineType, LineTypeId, Pen, PenId, Surface, SurfaceId,
+};
 use crate::guid::{Guid, GuidGen};
 use crate::id::Arena;
 use crate::library::{
-    material_key, Hatch, LayerFunction, LayerSet, LayerSetId, MatCategory, Material, MaterialId,
+    material_key, LayerFunction, LayerSet, LayerSetId, MatCategory, Material, MaterialId,
     MaterialLayer,
 };
 use crate::solid::material;
@@ -34,6 +37,8 @@ pub enum NumberError {
 
 #[derive(Clone, Debug)]
 pub struct Model {
+    /// Stifte, Schraffuren, Oberflächen und Bauteildarstellung.
+    attr: Attributes,
     materials: Arena<Material>,
     layer_sets: Arena<LayerSet>,
     storeys: Arena<Storey>,
@@ -64,8 +69,15 @@ impl Model {
     }
 
     fn standard(mut guids: GuidGen) -> Model {
+        let (mut attr, st) = attr::defaults(&mut guids);
         let mut materials = Arena::new();
-        let mut mat = |name: &str, category, priority, density, hatch, color, cut_color| {
+        let mut mat = |name: &str, category, priority, density, cut_fill, color, cut_color| {
+            let surface = attr.add_surface(Surface {
+                guid: guids.next_guid(),
+                name: name.into(),
+                color,
+                cut_color,
+            });
             materials.insert(Material {
                 guid: guids.next_guid(),
                 name: name.into(),
@@ -73,9 +85,10 @@ impl Model {
                 priority,
                 density,
                 lambda: None,
-                hatch,
-                color,
-                cut_color,
+                cut_fill,
+                cut_fg: st.hatch_pen,
+                cut_bg: st.background,
+                surface,
             })
         };
         use MatCategory as C;
@@ -84,7 +97,7 @@ impl Model {
             C::Masonry,
             800,
             350.0,
-            Hatch::Diagonal,
+            st.masonry,
             [238, 237, 232],
             [176, 177, 174],
         );
@@ -93,7 +106,7 @@ impl Model {
             C::Insulation,
             300,
             20.0,
-            Hatch::Zigzag,
+            st.insulation,
             [244, 239, 220],
             [232, 196, 92],
         );
@@ -102,7 +115,7 @@ impl Model {
             C::Concrete,
             900,
             2500.0,
-            Hatch::Diagonal,
+            st.masonry,
             [214, 214, 210],
             [150, 150, 148],
         );
@@ -111,7 +124,7 @@ impl Model {
             C::Plaster,
             100,
             1400.0,
-            Hatch::None,
+            st.empty,
             [240, 238, 232],
             [200, 198, 192],
         );
@@ -142,6 +155,7 @@ impl Model {
             height: 3500.0,
         });
         Model {
+            attr,
             materials,
             layer_sets,
             storeys,
@@ -173,6 +187,55 @@ impl Model {
 
     pub fn defaults(&self) -> &Defaults {
         &self.defaults
+    }
+
+    // --- Darstellung ------------------------------------------------------
+
+    pub fn attr(&self) -> &Attributes {
+        &self.attr
+    }
+
+    pub fn add_pen(&mut self, p: Pen) -> PenId {
+        self.touch();
+        self.attr.add_pen(p)
+    }
+
+    pub fn add_line_type(&mut self, l: LineType) -> LineTypeId {
+        self.touch();
+        self.attr.add_line_type(l)
+    }
+
+    pub fn add_fill(&mut self, f: Fill) -> FillId {
+        self.touch();
+        self.attr.add_fill(f)
+    }
+
+    pub fn add_surface(&mut self, s: Surface) -> SurfaceId {
+        self.touch();
+        self.attr.add_surface(s)
+    }
+
+    pub fn set_pen(&mut self, id: PenId, p: Pen) -> bool {
+        let ok = self.attr.set_pen(id, p);
+        self.revision += ok as u64;
+        ok
+    }
+
+    pub fn set_fill(&mut self, id: FillId, f: Fill) -> bool {
+        let ok = self.attr.set_fill(id, f);
+        self.revision += ok as u64;
+        ok
+    }
+
+    pub fn set_surface(&mut self, id: SurfaceId, s: Surface) -> bool {
+        let ok = self.attr.set_surface(id, s);
+        self.revision += ok as u64;
+        ok
+    }
+
+    pub fn set_display(&mut self, d: Display) {
+        self.touch();
+        self.attr.set_display(d);
     }
 
     // --- Bibliothek -------------------------------------------------------
@@ -483,6 +546,7 @@ impl Model {
         earlier.storeys.keep_generations(&self.storeys);
         earlier.elements.keep_generations(&self.elements);
         earlier.runs.keep_generations(&self.runs);
+        earlier.attr.replace(&self.attr);
         let guids = self.guids.clone();
         let revision = self.revision + 1;
         let mut numbers = self.numbers;
@@ -542,6 +606,18 @@ impl Model {
                 }
             }
         }
+        for (_, m) in self.materials.iter() {
+            let a = &self.attr;
+            if a.fill(m.cut_fill).is_none()
+                || a.pen(m.cut_fg).is_none()
+                || a.pen(m.cut_bg).is_none()
+                || a.surface(m.surface).is_none()
+            {
+                out.push(format!("Baustoff {}: Verweis auf fehlendes Attribut", m.name));
+            }
+        }
+        out.extend(self.attr.check());
+        guids.extend(self.attr.guids());
         guids.extend(self.materials.iter().map(|(_, m)| m.guid));
         guids.extend(self.layer_sets.iter().map(|(_, s)| s.guid));
         guids.extend(self.storeys.iter().map(|(_, s)| s.guid));
@@ -674,10 +750,8 @@ mod tests {
         // Darstellungsschlüssel führen zurück zum Baustoff
         let key = c.layers[1].material;
         assert_eq!(m.material_by_key(key).unwrap().name, "Gasbeton");
-        assert_eq!(
-            m.material_by_key(key | material::CUT).unwrap().hatch,
-            Hatch::Diagonal
-        );
+        let fill = m.material_by_key(key | material::CUT).unwrap().cut_fill;
+        assert_eq!(m.attr().fill(fill).unwrap().name, "Mauerwerk");
         assert!(m.material_by_key(material::PLAIN).is_none());
     }
 

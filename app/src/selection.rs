@@ -132,7 +132,7 @@ pub fn props(scene: &Scene, id: ElementId) -> Option<Props> {
             .enumerate()
             .filter_map(|(i, l)| {
                 let mat = m.material(l.material)?;
-                let [r, g, b] = mat.cut_color;
+                let [r, g, b] = m.attr().surface(mat.surface)?.cut_color;
                 let amount = q.and_then(|q| q.layers.get(i)).map_or(String::new(), |lq| {
                     format!("{} m³ · {} kg", de(lq.volume / 1e9, 3), de(lq.mass, 0))
                 });

@@ -3,6 +3,7 @@
 //! Bauteile verweisen auf einen Aufbau, statt ihre Schichten zu kopieren.
 //! Ändert sich der Aufbau, ändern sich alle Bauteile dieses Typs.
 
+use crate::attr::{FillId, PenId, SurfaceId};
 use crate::guid::Guid;
 use crate::id::Id;
 use crate::solid::material;
@@ -31,16 +32,6 @@ impl MatCategory {
     }
 }
 
-/// Schraffur einer geschnittenen Fläche in der Bauzeichnung.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Hatch {
-    None,
-    /// Schräge Linien (Mauerwerk).
-    Diagonal,
-    /// Zickzack (harte Dämmung).
-    Zigzag,
-}
-
 /// Baustoff (IFC: IfcMaterial).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Material {
@@ -53,11 +44,14 @@ pub struct Material {
     pub density: f64,
     /// Wärmeleitfähigkeit in W/(mK), später für den U-Wert.
     pub lambda: Option<f64>,
-    pub hatch: Hatch,
-    /// Farbe der Oberfläche in 3D.
-    pub color: [u8; 3],
-    /// Farbe einer Schnittfläche in 3D.
-    pub cut_color: [u8; 3],
+    /// Schraffur der Schnittfläche in der Bauzeichnung.
+    pub cut_fill: FillId,
+    /// Stift der Schraffurlinien.
+    pub cut_fg: PenId,
+    /// Stift des Grundes unter der Schraffur (Füllfarbe in der Zeichnung).
+    pub cut_bg: PenId,
+    /// Oberfläche in 3D.
+    pub surface: SurfaceId,
 }
 
 /// Aufgabe einer Schicht im Aufbau.

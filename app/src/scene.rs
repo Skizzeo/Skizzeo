@@ -8,13 +8,11 @@
 
 use crate::ui::ViewKind;
 use sk_math::{vec3, Vec3};
+use crate::draw_table::DrawTable;
 use sk_model::{
-    edge_kind, material, run_qto, Category, ElementId, Hatch, Model, RunId, Solid, WallChain,
-    WallQto,
+    material, run_qto, Category, ElementId, Model, RunId, Solid, WallChain, WallQto,
 };
-use sk_paint::Rgba;
 use sk_render::{pattern, MeshData};
-use sk_ui::theme;
 
 /// Schnitthöhe des Grundrisses über dem Boden (mm).
 pub const PLAN_CUT: f64 = 1000.0;
@@ -104,6 +102,8 @@ pub struct Scene {
     /// Wandzüge, deren Mengen nach einer Live-Änderung noch fehlen.
     unsettled: Vec<RunId>,
     bounds: Option<Aabb>,
+    /// Aufgelöste Attributtabellen des Modells.
+    table: DrawTable,
 }
 
 fn union(a: Option<Aabb>, b: Option<Aabb>) -> Option<Aabb> {
@@ -147,6 +147,7 @@ impl Scene {
     }
 
     pub fn with_model(model: Model) -> Scene {
+        let table = DrawTable::resolve(&model);
         let mut s = Scene {
             model,
             undo: Vec::new(),
@@ -156,6 +157,7 @@ impl Scene {
             all_dirty: true,
             unsettled: Vec::new(),
             bounds: None,
+            table,
         };
         s.rebuild_dirty(false);
         s
@@ -165,9 +167,30 @@ impl Scene {
         &self.model
     }
 
+    /// Zeichentabelle zum aktuellen Stand der Attribute.
+    pub fn table(&self) -> &DrawTable {
+        &self.table
+    }
+
+    /// Ändert einen Stift (mit Verlaufseintrag). Danach müssen die Netze neu
+    /// erzeugt werden. Bisher nur in Tests; das Einstellungsfenster folgt.
+    #[cfg(test)]
+    pub fn set_pen(&mut self, id: sk_model::PenId, pen: sk_model::Pen) -> bool {
+        let before = self.model.clone();
+        if !self.model.set_pen(id, pen) {
+            return false;
+        }
+        self.record(before);
+        self.rebuild_dirty(false);
+        true
+    }
+
     /// Rechnet die markierten Wandzüge neu und entfernt gelöschte. `live`: nur
     /// die Körper, die Mengen erst bei [`Scene::settle`].
     fn rebuild_dirty(&mut self, live: bool) {
+        if self.table.rev != self.model.attr().rev() {
+            self.table = DrawTable::resolve(&self.model);
+        }
         if self.all_dirty {
             self.all_dirty = false;
             self.dirty.clear();
@@ -374,13 +397,13 @@ impl Scene {
     ) -> MeshData {
         let drawing = view != ViewKind::Persp;
         let mut m = MeshData::default();
-        let model = &self.model;
+        let table = &self.table;
         for c in self.cache.iter_mut().flatten() {
             if Some(c.id) == except {
                 continue;
             }
             if let Some(s) = c.view_solid(view, section) {
-                mesh_into(&mut m, s, drawing, model);
+                mesh_into(&mut m, s, drawing, table);
             }
         }
         m
@@ -390,11 +413,11 @@ impl Scene {
     pub fn mesh_run(&mut self, view: ViewKind, section: Option<Plane>, run: RunId) -> MeshData {
         let drawing = view != ViewKind::Persp;
         let mut m = MeshData::default();
-        let model = &self.model;
+        let table = &self.table;
         if let Some(Some(c)) = self.cache.get_mut(run.index() as usize) {
             if c.id == run {
                 if let Some(s) = c.view_solid(view, section) {
-                    mesh_into(&mut m, s, drawing, model);
+                    mesh_into(&mut m, s, drawing, table);
                 }
             }
         }
@@ -457,50 +480,30 @@ impl Scene {
     }
 }
 
-fn rgb(c: Rgba) -> [f32; 3] {
-    [c.0 as f32 / 255.0, c.1 as f32 / 255.0, c.2 as f32 / 255.0]
-}
-
-/// Darstellungsfarbe eines Baustoffs aus der Bibliothek.
-fn color_of(model: &Model, mat: u16) -> [f32; 3] {
-    let cut = mat & material::CUT != 0;
-    match model.material_by_key(mat) {
-        Some(m) => {
-            let [r, g, b] = if cut { m.cut_color } else { m.color };
-            rgb(Rgba::rgb(r, g, b))
-        }
-        None => rgb(theme::FACE),
-    }
-}
-
 /// Netz für die 3D-Ansicht.
-pub fn mesh_of(s: &Solid, model: &Model) -> MeshData {
-    mesh_with(s, false, model)
+pub fn mesh_of(s: &Solid, table: &DrawTable) -> MeshData {
+    mesh_with(s, false, table)
 }
 
-/// Netz für die 3D-Ansicht oder als Bauzeichnung (weiße Flächen, Schraffuren in
+/// Netz für die 3D-Ansicht oder als Bauzeichnung (Grund und Schraffur der
 /// Schnittflächen, Strichstärken nach Kantenart).
-pub fn mesh_with(s: &Solid, drawing: bool, model: &Model) -> MeshData {
+pub fn mesh_with(s: &Solid, drawing: bool, table: &DrawTable) -> MeshData {
     let mut m = MeshData::default();
-    mesh_into(&mut m, s, drawing, model);
+    mesh_into(&mut m, s, drawing, table);
     m
 }
 
 /// Hängt das Netz eines Körpers an `m` an.
-fn mesh_into(m: &mut MeshData, s: &Solid, drawing: bool, model: &Model) {
-    use theme::drawing as d;
+fn mesh_into(m: &mut MeshData, s: &Solid, drawing: bool, table: &DrawTable) {
     for t in &s.triangles {
         let n = t.n.to_f32();
-        let (c, pat) = if drawing {
-            let hatch = model.material_by_key(t.mat).map(|m| m.hatch);
-            let pat = match (t.mat & material::CUT != 0, hatch) {
-                (true, Some(Hatch::Diagonal)) => pattern::DIAGONAL,
-                (true, Some(Hatch::Zigzag)) => pattern::ZIGZAG,
-                _ => pattern::NONE,
-            };
-            (rgb(d::FILL), pat)
-        } else {
-            (color_of(model, t.mat), pattern::NONE)
+        let look = table.look(t.mat);
+        let cut = t.mat & material::CUT != 0;
+        let (c, pat) = match (drawing, cut) {
+            (true, true) => (look.cut_bg, look.pattern),
+            (true, false) => (look.cut_bg, pattern::NONE),
+            (false, true) => (look.cut, pattern::NONE),
+            (false, false) => (look.face, pattern::NONE),
         };
         for (v, uv) in t.p.iter().zip(t.uv) {
             let p = v.to_f32();
@@ -520,22 +523,17 @@ fn mesh_into(m: &mut MeshData, s: &Solid, drawing: bool, model: &Model) {
             ]);
         }
     }
-    m.edges.extend(s.edges.iter().map(|e| {
-        let w = match (drawing, e.kind) {
-            (_, edge_kind::FINE) => d::FINE_WIDTH,
-            (true, edge_kind::CUT) => d::CUT_WIDTH,
-            (true, edge_kind::CUT_LAYER) => d::LAYER_CUT_WIDTH,
-            (true, _) => d::VIEW_WIDTH,
-            (false, _) => 1.0,
-        };
-        ([e.a.to_f32(), e.b.to_f32()], w)
-    }));
+    m.edges.extend(
+        s.edges
+            .iter()
+            .map(|e| ([e.a.to_f32(), e.b.to_f32()], table.edge_width(drawing, e.kind))),
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sk_model::RefSide;
+    use sk_model::{Pen, RefSide};
 
     fn rechteck(x: f64) -> WallChain {
         WallChain {
@@ -599,6 +597,35 @@ mod tests {
         assert!(!s.redo());
         assert!(s.undo());
         assert!(s.model().run(b).is_none());
+    }
+
+    #[test]
+    fn stiftfarbe_aendern_loest_die_tabelle_neu_auf() {
+        let mut s = Scene::with_model(Model::with_seed(8));
+        s.add_wall(&rechteck(0.0)).unwrap();
+        let rev = s.table().rev;
+        let (id, pen) = s
+            .model()
+            .attr()
+            .pens()
+            .iter()
+            .find(|(_, p)| p.number == 5)
+            .map(|(id, p)| (id, p.clone()))
+            .unwrap();
+        let before = s.mesh(ViewKind::Plan, None, None);
+        let red = Pen {
+            color: [255, 0, 0],
+            ..pen
+        };
+        assert!(s.set_pen(id, red));
+        assert!(s.table().rev > rev);
+        // Der Grund der Schnittflächen ist jetzt rot
+        let after = s.mesh(ViewKind::Plan, None, None);
+        assert_ne!(before.faces, after.faces);
+        assert!(after.faces.iter().any(|f| f[6] == 1.0 && f[7] == 0.0 && f[8] == 0.0));
+        // Rückgängig stellt die alte Farbe wieder her
+        assert!(s.undo());
+        assert_eq!(s.mesh(ViewKind::Plan, None, None).faces, before.faces);
     }
 
     #[test]

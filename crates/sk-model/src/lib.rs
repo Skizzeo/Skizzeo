@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod attr;
 pub mod element;
 pub mod guid;
 pub mod id;
@@ -19,10 +20,14 @@ pub use element::{
     Category, Element, ElementId, ElementKind, PropSet, PropValue, RunId, Storey, StoreyId, Wall,
     WallRun,
 };
+pub use attr::{
+    Attributes, Dash, Display, EdgeStyle, Fill, FillId, FillKind, FillSpace, HatchLine, LineType,
+    LineTypeId, Pen, PenId, Surface, SurfaceId,
+};
 pub use guid::{Guid, GuidGen};
 pub use id::{Arena, Id};
 pub use library::{
-    material_key, Hatch, LayerFunction, LayerSet, LayerSetId, MatCategory, Material, MaterialId,
+    material_key, LayerFunction, LayerSet, LayerSetId, MatCategory, Material, MaterialId,
     MaterialLayer,
 };
 pub use model::{Defaults, Model, NumberError};

@@ -6,6 +6,7 @@
 #[cfg(test)]
 mod abnahme;
 mod camera;
+mod draw_table;
 mod nav;
 #[cfg(test)]
 mod perf;
@@ -17,6 +18,7 @@ mod wall_edit;
 mod wall_tool;
 
 use camera::Camera;
+use draw_table::DrawTable;
 use nav::Navigation;
 use scene::Scene;
 use section::SectionLine;
@@ -53,7 +55,8 @@ fn rgb(c: Rgba) -> [f32; 3] {
     [c.0 as f32 / 255.0, c.1 as f32 / 255.0, c.2 as f32 / 255.0]
 }
 
-fn style(scale: f32) -> Style {
+/// Renderer-Stil; Kantenbreiten im Netz sind Bildpunkte bei 96 dpi.
+fn style(scale: f32, table: &DrawTable) -> Style {
     let l = vec3(0.32, -0.48, 0.82).normalized().to_f32();
     Style {
         sky: theme::SKY.iter().map(|&(d, c)| (d, rgb(c))).collect(),
@@ -61,11 +64,11 @@ fn style(scale: f32) -> Style {
         horizon_softness: theme::HORIZON_SOFTNESS,
         face: rgb(theme::FACE),
         edge: rgb(theme::EDGE),
-        edge_width: 1.25 * scale,
+        edge_width: scale,
         light: l,
         ambient: 0.84,
-        hatch_spacing: 7.0 * scale,
-        hatch_width: 1.0 * scale,
+        hatch_spacing: table.hatch_spacing_px * scale,
+        hatch_width: table.hatch_width_px * scale,
     }
 }
 
@@ -119,7 +122,12 @@ fn fit_parallel(v: ViewKind, bounds: Option<(Vec3, Vec3)>, w: f64, h: f64) -> Ca
 }
 
 /// Geländelinie in Schnitt und Ansichten (kräftig, über das Gebäude hinaus).
-fn ground_line(v: ViewKind, bounds: Option<(Vec3, Vec3)>, scale: f32) -> Vec<sk_render::Helper> {
+fn ground_line(
+    v: ViewKind,
+    bounds: Option<(Vec3, Vec3)>,
+    scale: f32,
+    table: &DrawTable,
+) -> Vec<sk_render::Helper> {
     let (lo, hi) = bounds.unwrap_or((vec3(-2000.0, -2000.0, 0.0), vec3(12000.0, 10000.0, 0.0)));
     let m = 3000.0;
     let (a, b) = match v {
@@ -129,8 +137,8 @@ fn ground_line(v: ViewKind, bounds: Option<(Vec3, Vec3)>, scale: f32) -> Vec<sk_
     vec![sk_render::Helper {
         a: a.to_f32(),
         b: b.to_f32(),
-        color: [0.0, 0.0, 0.0, 1.0],
-        width: 1.25 * theme::drawing::CUT_WIDTH * scale,
+        color: table.ground.1,
+        width: table.ground.0 * scale,
         dash: 0.0,
         occlude: false,
         round: false,
@@ -183,6 +191,8 @@ struct App {
     live_run: Option<sk_model::RunId>,
     /// Die Vorschau-Ablage enthält ein Netz.
     preview_shown: bool,
+    /// Stand der Zeichentabelle, aus dem der Renderer-Stil stammt.
+    style_rev: u64,
     /// Zuletzt hochgeladene Endsymbole der Schnittlinie (links, hervorgehoben, Skalierung).
     mark_keys: [Option<(bool, bool, u32)>; 2],
 }
@@ -216,6 +226,14 @@ impl App {
     /// einem eigenen Live-Netz; nur dieses wird dann je Bild neu erzeugt und
     /// hochgeladen, das ruhende Netz bleibt auf der Grafikkarte.
     fn build_mesh(&mut self) {
+        // Attribute geändert (etwa durch Rückgängig): Stil und Netze neu
+        if self.scene.table().rev != self.style_rev {
+            self.style_rev = self.scene.table().rev;
+            self.renderer
+                .set_style(style(self.title.scale, self.scene.table()));
+            self.mesh_dirty = true;
+            self.live_dirty = true;
+        }
         let live = self.edit.dragging_run();
         if live != self.live_run {
             self.live_run = live;
@@ -411,7 +429,7 @@ impl App {
             Event::ScaleChanged(s) => {
                 self.title.scale = s;
                 self.ui.fit(s, self.w, self.h);
-                self.renderer.set_style(style(s));
+                self.renderer.set_style(style(s, self.scene.table()));
                 self.overlay_dirty = true;
             }
             Event::Maximized(m) => {
@@ -737,7 +755,7 @@ fn layer_rows(model: &sk_model::Model, set: sk_model::LayerSetId) -> Vec<(Rgba, 
         .iter()
         .filter_map(|l| {
             let m = model.material(l.material)?;
-            let [r, g, b] = m.cut_color;
+            let [r, g, b] = model.attr().surface(m.surface)?.cut_color;
             let cm = l.thickness / 10.0;
             let cm = if cm.fract().abs() < 1e-9 {
                 format!("{cm:.0}")
@@ -751,10 +769,10 @@ fn layer_rows(model: &sk_model::Model, set: sk_model::LayerSetId) -> Vec<(Rgba, 
 
 fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     let gl = Gl::load(|name| surface.gl_proc(name))?;
-    let renderer = Renderer::new(gl, style(surface.scale()))?;
+    let scene = Scene::new();
+    let renderer = Renderer::new(gl, style(surface.scale(), scene.table()))?;
     let cam = Camera::looking_at(vec3(-6200.0, -8600.0, 3700.0), Vec3::ZERO, 45.0);
     let (w, h) = surface.size();
-    let scene = Scene::new();
     // Außenwand-Aufbau aus der Bibliothek: Vorschau beim Zeichnen und Anzeige im Paneel
     let exterior = scene.model().defaults().exterior_wall;
     let mut tool = WallTool::new();
@@ -786,6 +804,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         live_dirty: true,
         live_run: None,
         preview_shown: true,
+        style_rev: 0,
         mark_keys: [None; 2],
     };
     a.upload_model();
@@ -853,9 +872,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 (Some(c), ViewKind::Plan) => Some(scene::mesh_with(
                     &c.solid_cut_at(scene::PLAN_CUT),
                     true,
-                    a.scene.model(),
+                    a.scene.table(),
                 )),
-                (Some(c), _) => Some(scene::mesh_of(&c.solid(), a.scene.model())),
+                (Some(c), _) => Some(scene::mesh_of(&c.solid(), a.scene.table())),
                 (None, _) => None,
             };
             // Leere Vorschau nur einmal hochladen
@@ -870,7 +889,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             match a.ui.view {
                 ViewKind::Plan => helpers.extend(a.sect.helpers(&a.scene, &a.cam, vh, scale)),
                 ViewKind::Persp => {}
-                v => helpers.extend(ground_line(v, a.scene.bounds(), scale)),
+                v => helpers.extend(ground_line(v, a.scene.bounds(), scale, a.scene.table())),
             }
             if let Some(id) = a.sel.id {
                 let plane = a.plane();
@@ -920,7 +939,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
 
             let mut view = a.cam.view(a.w, a.h - th);
             if drawing {
-                view.paper = Some(rgb(theme::drawing::PAPER));
+                view.paper = Some(a.scene.table().paper);
             }
             a.renderer.draw(a.w, a.h, th, &view)?;
             let t_draw = Instant::now();

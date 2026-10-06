@@ -21,6 +21,8 @@ pub mod edge_kind {
     pub const FINE: u8 = 2;
     /// Schnittkontur einer nicht tragenden Schicht (z. B. Dämmung), mitteldick.
     pub const CUT_LAYER: u8 = 3;
+    /// Anzahl der Kantenarten (für Tabellen je Art).
+    pub const COUNT: usize = 4;
 }
 
 #[derive(Clone, Copy, Debug)]

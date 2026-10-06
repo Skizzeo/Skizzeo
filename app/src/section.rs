@@ -17,7 +17,6 @@ const OVERHANG: f64 = 1500.0;
 /// Raster beim Verschieben (mm).
 const STEP: f64 = 10.0;
 
-const INK: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const HOT: [f32; 4] = [0.56, 0.27, 0.86, 1.0];
 
 #[derive(Default)]
@@ -171,14 +170,15 @@ impl SectionLine {
         let Some((a, b)) = self.ends(scene) else {
             return Vec::new();
         };
-        let color = if self.is_busy() { HOT } else { INK };
+        let t = scene.table();
+        let color = |ink: [f32; 4]| if self.is_busy() { HOT } else { ink };
         let mm_per_px = cam.ortho.map_or(10.0, |half| 2.0 * half / h.max(1.0));
         let end = 16.0 * mm_per_px * scale as f64;
         let lift = |p: Vec3| [p.x as f32, p.y as f32, p.z as f32 + 2.0];
-        let line = |p: Vec3, q: Vec3, width: f32, dash: f32| Helper {
+        let line = |p: Vec3, q: Vec3, (width, ink): (f32, [f32; 4]), dash: f32| Helper {
             a: lift(p),
             b: lift(q),
-            color,
+            color: color(ink),
             width: width * scale,
             dash: dash * scale,
             occlude: false,
@@ -186,9 +186,9 @@ impl SectionLine {
         };
         let dx = vec3(end, 0.0, 0.0);
         vec![
-            line(a + dx, b - dx, 1.2, -6.0),
-            line(a, a + dx, 3.2, 0.0),
-            line(b - dx, b, 3.2, 0.0),
+            line(a + dx, b - dx, t.section_line, -6.0),
+            line(a, a + dx, t.section_ends, 0.0),
+            line(b - dx, b, t.section_ends, 0.0),
         ]
     }
 
