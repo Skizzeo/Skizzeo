@@ -345,6 +345,10 @@ impl Canvas {
                 accumulate_line(&mut self.acc, stride, w, h, a, b);
             }
         }
+        // Volle Abdeckung ist der häufigste Fall: Farbe einmal vorausrechnen,
+        // deckende Farbe einfach schreiben
+        let full = premul(c, 1.0);
+        let opaque = full[3] >= 1.0;
         for y in cy0..cy1 {
             let mut sum = 0.0f32;
             for x in cx0..cx1 {
@@ -354,13 +358,18 @@ impl Canvas {
                 }
                 sum += v;
                 let cov = sum.abs().min(1.0);
-                if cov > 0.0 {
-                    let s = premul(c, cov);
-                    let d = &mut self.px[y * w + x];
-                    let ia = 1.0 - s[3];
-                    for k in 0..4 {
-                        d[k] = s[k] + d[k] * ia;
-                    }
+                if cov <= 0.0 {
+                    continue;
+                }
+                let d = &mut self.px[y * w + x];
+                if cov >= 1.0 && opaque {
+                    *d = full;
+                    continue;
+                }
+                let s = if cov >= 1.0 { full } else { premul(c, cov) };
+                let ia = 1.0 - s[3];
+                for k in 0..4 {
+                    d[k] = s[k] + d[k] * ia;
                 }
             }
         }
@@ -385,10 +394,10 @@ impl Canvas {
 
     /// Vormultiplizierte RGBA8-Werte, wie sie zum Überblenden auf der GPU gebraucht werden.
     pub fn to_premul_rgba8(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.px.len() * 4);
-        for p in &self.px {
-            for v in p {
-                out.push((v * 255.0).round().clamp(0.0, 255.0) as u8);
+        let mut out = vec![0u8; self.px.len() * 4];
+        for (o, p) in out.chunks_exact_mut(4).zip(&self.px) {
+            for k in 0..4 {
+                o[k] = unit_to_u8(p[k]);
             }
         }
         out
@@ -397,6 +406,17 @@ impl Canvas {
     pub fn to_png(&self) -> Vec<u8> {
         encode_png(self.width as u32, self.height as u32, &self.to_rgba8())
     }
+}
+
+/// `(v * 255).round().clamp(0, 255)` ohne Bibliotheksaufruf für `round`
+/// (der Grundbefehlssatz von x86-64 kennt kein Runden; je Pixel vier Aufrufe
+/// kosteten bei großen Paneelen mehrere Millisekunden). Ergebnis identisch.
+#[inline]
+fn unit_to_u8(v: f32) -> u8 {
+    // NaN bleibt NaN und wird beim Umwandeln zu 0, wie beim Vorbild
+    let x = (v * 255.0).clamp(0.0, 255.0);
+    let i = x as i32;
+    (i + (x - i as f32 >= 0.5) as i32) as u8
 }
 
 fn premul(c: Rgba, cov: f32) -> [f32; 4] {
@@ -468,6 +488,46 @@ fn accumulate_line(acc: &mut [f32], stride: usize, w: usize, h: usize, p0: Pt, p
             acc[row + x1i] += d * am;
         }
         x = xnext;
+    }
+}
+
+#[cfg(test)]
+mod umrechnung {
+    use super::unit_to_u8;
+
+    #[test]
+    fn rundet_wie_round() {
+        let reference = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+        // Alle f32-Werte zwischen -0,1 und 1,1 in feinen Schritten, dazu Grenzfälle
+        let mut v = -0.1f32;
+        while v < 1.1 {
+            assert_eq!(unit_to_u8(v), reference(v), "{v}");
+            let b = v.to_bits();
+            v = f32::from_bits(if v < 0.0 { b.wrapping_sub(97) } else { b + 97 });
+            if v.is_nan() || (v < 0.0 && v > -1e-30) {
+                v = 0.0;
+            }
+        }
+        // Um jede Rundungsgrenze k + 0,5 herum
+        for k in 0..256 {
+            let t = (k as f32 + 0.5) / 255.0;
+            for d in -8i32..=8 {
+                let v = f32::from_bits((t.to_bits() as i32 + d) as u32);
+                assert_eq!(unit_to_u8(v), reference(v), "{v}");
+            }
+        }
+        for v in [
+            0.0,
+            -0.0,
+            1.0,
+            0.5 / 255.0,
+            1.5 / 255.0,
+            f32::NAN,
+            f32::INFINITY,
+            -1.0,
+        ] {
+            assert_eq!(unit_to_u8(v), reference(v), "{v}");
+        }
     }
 }
 
