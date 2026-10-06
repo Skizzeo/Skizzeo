@@ -89,7 +89,11 @@ umlaufende Frostschürze (FS-001 …, 35 cm breit, bis 80 cm unter dem Wandfuß)
 bündig mit der Außenseite der Wand. Beide gehen fugenlos ineinander über und
 erscheinen im Schnitt mit der Stahlbeton-Schraffur (Diagonale wie Mauerwerk,
 jede zweite Linie gestrichelt); in 3D liegen sie unter der
-Geländefläche. Wird der Zug geöffnet oder gelöscht, verschwinden sie.
+Geländefläche, die sie durchscheinen lässt (Deckkraft 0,6; einstellbar in
+`einstellungen.txt` mit `[env] ground_opacity=` von 0 bis 1, 1 = deckend).
+Über dem Boden ändert sich dadurch nichts; nur Linien genau auf ±0,00 zeigen
+ihre untere Hälfte jetzt abgeschwächt, statt vom Boden abgeschnitten zu
+werden. Wird der Zug geöffnet oder gelöscht, verschwinden sie.
 Platte oder Schürze anklicken: Das Paneel zeigt Fläche, Volumen und Umfang
 bzw. Länge auf der Achse, Volumen, Breite und Tiefe. Die Maße stehen in
 Zahlenfeldern (Zentimeter, Enter übernimmt, Esc bricht ab); der

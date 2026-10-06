@@ -1,7 +1,8 @@
 //! GPU-Darstellung der 3D-Ansicht über OpenGL 3.3.
 //!
-//! Ablauf je Bild: Himmel und Boden als Vollbild-Pass (mit Tiefe der
-//! Bodenebene), dann Flächen, dann Kanten als bildschirmbreite Bänder. Alles in
+//! Ablauf je Bild: Himmel und Boden als Vollbild-Pass (ohne Tiefe), dann
+//! Flächen, dann Kanten als bildschirmbreite Bänder, dann der Boden noch einmal
+//! durchscheinend über allem, was unter ihm liegt (E11). Alles in
 //! einen Mehrfachabtast-Puffer (MSAA), der anschließend ins Fenster kopiert wird.
 //! Darüber kommt die selbst gezeichnete Oberfläche (Titelleiste) als Textur.
 
@@ -16,6 +17,8 @@ pub struct Style {
     pub sky: Vec<(f32, [f32; 3])>,
     pub ground: [f32; 3],
     pub horizon_softness: f32,
+    /// Deckkraft des Bodens über Modellteilen unter z = 0 (1 = deckend).
+    pub ground_opacity: f32,
     /// Richtung zum Licht (Weltkoordinaten, normiert).
     pub light: [f32; 3],
     /// Helligkeit abgewandter Flächen (0..1); zugewandte Flächen erreichen 1.
@@ -189,6 +192,9 @@ uniform vec3 u_ground;
 uniform int u_sky_n;
 uniform float u_sky_pos[16];
 uniform vec3 u_sky_col[16];
+// 0: Hintergrund ohne Tiefe; 1: Bodenschicht über dem Modell (E11)
+uniform int u_overlay;
+uniform float u_opacity;
 
 vec3 sky(float d) {
     for (int i = 1; i < u_sky_n; i++) {
@@ -220,7 +226,17 @@ void main() {
         // Waagerechte Parallelansicht unterhalb des Bodens
         col = mix(col, u_ground, g);
     }
-    o_color = vec4(col, 1.0);
+    if (u_overlay == 0) {
+        o_color = vec4(col, 1.0);
+        gl_FragDepth = 1.0;
+        return;
+    }
+    if (t <= 0.0) {
+        discard;
+    }
+    // Genau der Wert, der im Hintergrund steht: über leerem Boden bleibt das
+    // Bild beim Mischen gleich
+    o_color = vec4(floor(col * 255.0 + 0.5) / 255.0, u_opacity);
     gl_FragDepth = depth;
 }
 "#;
@@ -785,6 +801,8 @@ impl Renderer {
             gl.glUniform1i(loc(gl, p, c"u_sky_n"), n as i32);
             gl.glUniform1fv(loc(gl, p, c"u_sky_pos"), n as i32, pos.as_ptr());
             gl.glUniform3fv(loc(gl, p, c"u_sky_col"), n as i32, col.as_ptr());
+            gl.glUniform1i(loc(gl, p, c"u_overlay"), 0);
+            gl.glUniform1f(loc(gl, p, c"u_opacity"), st.ground_opacity.clamp(0.0, 1.0));
             gl.glBindVertexArray(self.empty_vao);
             if view.paper.is_none() {
                 gl.glDrawArrays(TRIANGLES, 0, 3);
@@ -832,6 +850,21 @@ impl Renderer {
             for m in self.meshes.iter().filter(|m| m.edges.count > 0) {
                 gl.glBindVertexArray(m.edges.vao);
                 gl.glDrawArraysInstanced(TRIANGLES, 0, 6, m.edges.count);
+            }
+
+            // Boden durchscheinend über allem, was unter z = 0 liegt; über dem
+            // Boden scheitert der Tiefentest, über leerem Boden bleibt das Bild
+            if view.paper.is_none() && st.ground_opacity > 0.0 {
+                gl.glDepthFunc(LESS);
+                gl.glDepthMask(FALSE);
+                gl.glEnable(BLEND);
+                gl.glBlendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA);
+                gl.glUseProgram(self.sky.id);
+                gl.glUniform1i(loc(gl, self.sky.id, c"u_overlay"), 1);
+                gl.glBindVertexArray(self.empty_vao);
+                gl.glDrawArrays(TRIANGLES, 0, 3);
+                gl.glDisable(BLEND);
+                gl.glDepthMask(TRUE);
             }
 
             // Hilfslinien und Markierungen: erst die sichtbaren Teile, dann die
