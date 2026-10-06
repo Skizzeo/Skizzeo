@@ -897,6 +897,7 @@ mod tests {
             &Fonts {
                 regular: None,
                 bold: None,
+                italic: None,
             },
             1.0,
         );

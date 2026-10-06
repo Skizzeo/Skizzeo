@@ -74,6 +74,19 @@ pub struct Ui {
     /// und Leuchten (die Abstufungen rechnet der Code als Deckkraft).
     pub hud_bg: Rgba,
     pub hud_glow: Rgba,
+    /// Mengenfenster (B7): Blatt, Schrift, gedämpfte Schrift, Kontrollzeilen
+    /// (kursiv), Haarlinien, Kacheln; Bänder für Hover, Aufleuchten, Auswahl
+    /// und die Gruppe über der Auswahl (folgen dem Akzent).
+    pub sheet_bg: Rgba,
+    pub sheet_text: Rgba,
+    pub sheet_text_dim: Rgba,
+    pub sheet_hint: Rgba,
+    pub sheet_rule: Rgba,
+    pub sheet_tile: Rgba,
+    pub sheet_hover: Rgba,
+    pub sheet_flash: Rgba,
+    pub sheet_select: Rgba,
+    pub sheet_select_group: Rgba,
 }
 
 /// Eigene Titelleiste.
@@ -222,6 +235,15 @@ pub struct Sizes {
     /// Hinweises an schwebenden Bedienelementen in s.
     pub anim_ms: f32,
     pub hover_delay_hud: f32,
+    /// Mengenfenster (B7): Zeilenhöhe, Einzug je Stufe, Innenabstand des
+    /// Blatts, größte Inhaltsbreite, Breite beim Andocken (dip), Dauer des
+    /// Aufleuchtens geänderter Werte (ms).
+    pub qto_row: f32,
+    pub qto_indent: f32,
+    pub sheet_pad: f32,
+    pub qto_max_w: f32,
+    pub qto_window_w: f32,
+    pub flash_ms: f32,
 }
 
 const fn rgb(r: u8, g: u8, b: u8) -> Rgba {
@@ -274,6 +296,16 @@ impl Theme {
                 menu_bg: bg,
                 hud_bg: Rgba(bg.0, bg.1, bg.2, 199),
                 hud_glow: accent,
+                sheet_bg: rgb(245, 244, 239),
+                sheet_text: rgb(34, 36, 40),
+                sheet_text_dim: rgb(112, 116, 122),
+                sheet_hint: rgb(138, 142, 148),
+                sheet_rule: rgb(214, 212, 204),
+                sheet_tile: rgb(234, 232, 224),
+                sheet_hover: Rgba(accent.0, accent.1, accent.2, 36),
+                sheet_flash: Rgba(accent.0, accent.1, accent.2, 120),
+                sheet_select: Rgba(accent.0, accent.1, accent.2, 84),
+                sheet_select_group: Rgba(accent.0, accent.1, accent.2, 26),
             },
             title: Title {
                 // Dunkel wie die Paneele, damit sie sich auch über dem Papier abhebt
@@ -381,6 +413,12 @@ impl Theme {
                 arc_label: 26.0,
                 arc_label_small: 13.0,
                 anim_ms: 280.0,
+                qto_row: 22.0,
+                qto_indent: 18.0,
+                sheet_pad: 28.0,
+                qto_max_w: 900.0,
+                qto_window_w: 520.0,
+                flash_ms: 600.0,
                 hover_delay_hud: 0.25,
             },
             px_per_mm: 5.5,
@@ -407,6 +445,17 @@ impl Theme {
                 *role = c;
             }
         }
+        // Bänder im Mengenfenster: Akzent mit eigener Deckkraft
+        for role in [
+            &mut self.ui.sheet_hover,
+            &mut self.ui.sheet_flash,
+            &mut self.ui.sheet_select,
+            &mut self.ui.sheet_select_group,
+        ] {
+            if (role.0, role.1, role.2) == (old.0, old.1, old.2) {
+                *role = Rgba(c.0, c.1, c.2, role.3);
+            }
+        }
         // Akzent unter der Maus: folgt, solange er die Vorbelegung zum alten
         // Akzent ist (aufgehellt; beim dunklen Schema dessen eigener Wert)
         let dark = Theme::dark().ui;
@@ -430,10 +479,12 @@ impl Theme {
     }
 }
 
-/// Hover-Farbe zum Akzent: gleiche Farbe, halb durchsichtig.
+/// Umriss des Bauteils unter der Maus zum Akzent: fast deckend, damit er
+/// sich von der Auswahl unterscheidet (B7; der weiche Schein dahinter nimmt
+/// davon 43 %).
 fn hover_of(accent: Rgba) -> [f32; 4] {
     let [r, g, b, _] = accent.to_f32();
-    [r, g, b, 0.55]
+    [r, g, b, 0.9]
 }
 
 /// Akzent unter der Maus zu einem Akzent: 20 % in Richtung Weiß.

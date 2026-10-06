@@ -16,6 +16,7 @@ mod picking;
 mod prefs;
 mod quantity;
 mod scene;
+mod schedule_view;
 mod section;
 mod selection;
 mod settings;
@@ -122,6 +123,8 @@ fn geometry(v: ViewKind) -> u8 {
 const MESH_MODEL: usize = 0;
 const MESH_PREVIEW: usize = 1;
 const MESH_LIVE: usize = 2;
+/// Bildabstand für Animationen im Mengenfenster (das Hauptfenster läuft mit vsync).
+const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 
 // Oberflächenbilder in Zeichenreihenfolge: Endsymbole unter den Paneelen,
 // das Abdunkeln hinter dem Dialog über „Ansichten“, „Eigenschaften“ und
@@ -268,6 +271,69 @@ fn fit_perspective(lo: Vec3, hi: Vec3) -> Camera {
     Camera::looking_at(center + dir * dist, center, fov)
 }
 
+/// Weiche Kamerafahrt (Doppelklick in der Mengenliste).
+struct Fly {
+    from: Camera,
+    to: Camera,
+    start: Instant,
+    ms: f64,
+}
+
+impl Fly {
+    /// Kamera zum Zeitpunkt `now`; `None`, wenn die Fahrt vorbei ist.
+    fn at(&self, now: Instant) -> Option<Camera> {
+        let k = now.duration_since(self.start).as_secs_f64() * 1000.0 / self.ms.max(1.0);
+        if k >= 1.0 {
+            return None;
+        }
+        // Weich an- und auslaufen
+        let e = k * k * (3.0 - 2.0 * k);
+        let mut c = self.to.clone();
+        c.eye = self.from.eye + (self.to.eye - self.from.eye) * e;
+        c.focus = self.from.focus + (self.to.focus - self.from.focus) * e;
+        if let (Some(a), Some(b)) = (self.from.ortho, self.to.ortho) {
+            // Maßstab logarithmisch, damit das Heranholen gleichmäßig wirkt
+            c.ortho = Some((a.ln() + (b.ln() - a.ln()) * e).exp());
+        }
+        Some(c)
+    }
+}
+
+/// Kamera, die den Quader `lo`–`hi` aus der jetzigen Richtung zeigt.
+fn zoom_camera(cam: &Camera, lo: Vec3, hi: Vec3, w: f64, h: f64) -> Camera {
+    let center = (lo + hi) * 0.5;
+    let (r, u, f) = (cam.right(), cam.up(), cam.forward());
+    let (mut wr, mut wu, mut wf) = (0.0f64, 0.0f64, 0.0f64);
+    for i in 0..8 {
+        let p = vec3(
+            if i & 1 == 0 { lo.x } else { hi.x },
+            if i & 2 == 0 { lo.y } else { hi.y },
+            if i & 4 == 0 { lo.z } else { hi.z },
+        ) - center;
+        wr = wr.max(p.dot(r).abs());
+        wu = wu.max(p.dot(u).abs());
+        wf = wf.max(p.dot(f).abs());
+    }
+    let aspect = (w / h.max(1.0)).max(0.1);
+    // Halbe Bildhöhe, die das Bauteil mit Rand braucht (mindestens 0,8 m)
+    let half = (wu.max(wr / aspect) * 1.8).max(800.0);
+    match cam.ortho {
+        Some(_) => {
+            let mut c = Camera::parallel(center, cam.yaw, cam.pitch, half.max(1500.0));
+            c.fov_y = cam.fov_y;
+            c
+        }
+        None => {
+            // In 3D mehr Umgebung lassen, sonst verdecken nahe Wände das Bauteil
+            let dist = half * 1.4 / (cam.fov_y * 0.5).tan() + wf;
+            let mut c = cam.clone();
+            c.eye = center - f * dist;
+            c.focus = dist;
+            c
+        }
+    }
+}
+
 /// Stand eines Endsymbols: links, hervorgehoben, Skalierung, Stände von
 /// Farbschema und Zeichentabelle.
 type MarkKey = (bool, bool, u32, (u64, u64));
@@ -361,8 +427,17 @@ struct App {
     view_shift: f32,
     /// Gemeinsamer Hover- und Auswahlzustand beider Fenster (F2).
     picking: picking::Picking,
-    /// Mengenfenster (F2; bis B7 nur mit `--mengenfenster`).
+    /// Mengenfenster (F2, B7).
     quantity: quantity::QuantityWindow,
+    /// Der Hover kommt aus der Liste (dann zeigt das Modell den Umriss);
+    /// ein Hover im Modell selbst zeigt nur die Zeile in der Liste.
+    hover_from_list: bool,
+    /// Weiche Kamerafahrt zu Bauteilen (Doppelklick in der Liste).
+    fly: Option<Fly>,
+    /// Mengenfenster animiert (Rollen, Aufleuchten, Punkte): nächstes Bild bald.
+    quantity_busy: bool,
+    /// Knopf „Mengenermittlung“ geklickt (wird nach den Ereignissen geöffnet).
+    quantity_wanted: bool,
     /// `--geschosswechsel N`: noch so viele Wechsel am Geschossbogen, dann
     /// beenden (Zeitmessung mit `--zeiten`); Richtung des nächsten.
     auto_switch: Option<(u32, bool)>,
@@ -1045,6 +1120,24 @@ impl App {
         let caption = windows::quantity_caption(&self.doc, self.scene.shown_revision());
         self.quantity.title.caption = caption.clone();
         surface.open_quantity(&caption);
+        if !self.ui.quantity_open {
+            self.ui.quantity_open = true;
+            self.dirty_buttons.push(Id::Quantity);
+        }
+    }
+
+    /// Mengenfenster schließen (✕ oder Taskleiste).
+    fn close_quantity(&mut self, surface: &Surface) {
+        surface.close_quantity();
+        self.quantity.open = false;
+        if self.ui.quantity_open {
+            self.ui.quantity_open = false;
+            self.dirty_buttons.push(Id::Quantity);
+        }
+        if self.hover_from_list && self.picking.set_hover(None, Vec::new()) {
+            self.redraw = true;
+        }
+        self.hover_from_list = false;
     }
 
     /// Ereignis aus dem Mengenfenster; Hover und Auswahl wirken in beiden Fenstern.
@@ -1052,48 +1145,105 @@ impl App {
         if !self.quantity.open {
             return;
         }
-        let Some(out) = self.quantity.handle(&e) else {
+        let Some(out) = self
+            .quantity
+            .handle(&e, &self.theme, &self.ui.fonts, &mut self.picking)
+        else {
             return;
         };
         match out {
-            quantity::Out::Hover(h) => {
-                if h != self.picking.hover {
-                    self.picking.hover = h;
-                    self.redraw = true;
-                    self.quantity.dirty = true;
-                }
-            }
-            quantity::Out::Click(id, ctrl) => {
-                self.picking.click(id, ctrl);
-                // Auf eine bekannte Lage: nicht wegrollen
-                self.quantity.reveal(&self.picking);
-                self.quantity.dirty = true;
+            quantity::Out::Picking { selection } => {
+                self.hover_from_list = true;
                 self.redraw = true;
-                if self
-                    .picking
-                    .primary()
-                    .is_some_and(|e| self.scene.follow_selection(e))
-                {
-                    if self.ui.view == ViewKind::Plan {
-                        self.upload_model();
+                if selection {
+                    if self
+                        .picking
+                        .primary()
+                        .is_some_and(|e| self.scene.follow_selection(e))
+                    {
+                        if self.ui.view == ViewKind::Plan {
+                            self.upload_model();
+                        }
+                        self.sync_levels();
                     }
-                    self.sync_levels();
+                    self.sync_props();
                 }
-                self.sync_props();
             }
-            quantity::Out::Clear => {
-                self.select(None);
-                self.sync_props();
-            }
+            quantity::Out::Zoom(ids) => self.zoom_to(&ids),
+            quantity::Out::SaveCsv => self.save_csv(surface),
             quantity::Out::Command(c) => surface.quantity_command(c),
-            quantity::Out::Close => {
-                surface.close_quantity();
-                self.quantity.open = false;
-                if self.picking.hover.take().is_some() {
-                    self.redraw = true;
+            quantity::Out::Close => self.close_quantity(surface),
+        }
+    }
+
+    /// „Als Tabelle speichern“: Windows-Dialog, .csv für Excel.
+    fn save_csv(&mut self, surface: &Surface) {
+        let stem = self
+            .doc
+            .path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map_or("Unbenannt".to_string(), |s| {
+                s.to_string_lossy().into_owned()
+            });
+        let suggested = format!("{stem} Mengenermittlung.csv");
+        let filters = [
+            ("Tabelle für Excel (*.csv)", "*.csv"),
+            ("Alle Dateien (*.*)", "*.*"),
+        ];
+        let Some(path) = surface.save_dialog("Als Tabelle speichern", &filters, "csv", &suggested)
+        else {
+            return;
+        };
+        let sched = self.scene.schedule().clone();
+        let bytes = schedule_view::csv(self.scene.model(), &sched);
+        if let Err(e) = std::fs::write(&path, bytes) {
+            surface.message(
+                &format!("Die Tabelle konnte nicht gespeichert werden:\n{e}"),
+                true,
+            );
+        }
+    }
+
+    /// Doppelklick in der Liste: die aktive Ansicht holt die Bauteile weich
+    /// ins Bild; im Grundriss und Schnitt wechselt dabei das Geschoss.
+    fn zoom_to(&mut self, ids: &[sk_model::ElementId]) {
+        let Some(&first) = ids.first() else { return };
+        if self.scene.follow_selection(first) {
+            if self.ui.view == ViewKind::Plan {
+                self.upload_model();
+            }
+            self.sync_levels();
+        }
+        let plane = self.plane();
+        let mut lo = vec3(f64::MAX, f64::MAX, f64::MAX);
+        let mut hi = vec3(f64::MIN, f64::MIN, f64::MIN);
+        for &id in ids {
+            for h in selection::helpers(&self.scene, id, ViewKind::Persp, plane, 1.0, &self.theme) {
+                for p in [h.a, h.b] {
+                    let p = vec3(p[0] as f64, p[1] as f64, p[2] as f64);
+                    lo = vec3(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+                    hi = vec3(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
                 }
             }
         }
+        if lo.x > hi.x {
+            return;
+        }
+        let (vw, vh, _) = self.view_size();
+        let to = zoom_camera(&self.cam, lo, hi, vw, vh);
+        let ms = self.theme.size.anim_ms;
+        if ms <= 0.0 {
+            self.cam = to;
+        } else {
+            self.fly = Some(Fly {
+                from: self.cam.clone(),
+                to,
+                start: Instant::now(),
+                ms: ms as f64 * 1.5,
+            });
+        }
+        self.redraw = true;
     }
 
     /// Mengenfenster an Modell, Auswahl und Datei angleichen und zeigen.
@@ -1101,20 +1251,40 @@ impl App {
         if !self.quantity.open {
             return;
         }
-        self.quantity.sync_rows(&self.scene);
-        self.quantity.reveal(&self.picking);
+        let anim = self.theme.size.anim_ms > 0.0;
+        self.quantity.set_docked(surface.layout().docked(), anim);
+        self.quantity.sync(&mut self.scene, &self.picking, anim);
+        let now = Instant::now();
+        self.quantity_busy = self.quantity.tick(&self.theme, now);
         let caption = windows::quantity_caption(&self.doc, self.scene.shown_revision());
         if caption != self.quantity.title.caption {
             surface.set_quantity_title(&caption);
             self.quantity.title.caption = caption;
             self.quantity.dirty = true;
         }
-        let q = &self.quantity;
-        if q.dirty && q.w > 0 && q.h > 0 {
-            surface.set_quantity_caption_area(q.caption_area());
-            let c = q.paint(&self.theme, &self.ui.fonts, &self.picking);
-            surface.present_quantity(q.w, q.h, &c.to_premul_rgba8(), None);
-            self.quantity.dirty = false;
+        let (w, h, area) = (
+            self.quantity.w,
+            self.quantity.h,
+            self.quantity.caption_area(),
+        );
+        if let Some((px, rows)) = self.quantity.frame(&self.theme, &self.ui.fonts, now) {
+            if rows.is_none() {
+                surface.set_quantity_caption_area(area);
+            }
+            surface.present_quantity(w, h, px, rows);
+        }
+    }
+
+    /// Hover im Modell: die Liste zeigt die Zeile (nur bei offenem Mengenfenster).
+    fn model_hover(&mut self, hit: Option<sk_model::ElementId>) {
+        if !self.quantity.open {
+            return;
+        }
+        if std::mem::take(&mut self.hover_from_list) {
+            self.redraw = true;
+        }
+        if self.picking.set_hover(hit, Vec::new()) {
+            self.quantity.dirty = true;
         }
     }
 
@@ -1149,6 +1319,7 @@ impl App {
             Id::Ref(r) => self.tool.ref_side = r,
             Id::Ortho => self.tool.ortho = !self.tool.ortho,
             Id::View(v) => self.set_view(v),
+            Id::Quantity => self.quantity_wanted = true,
             // Im Grundriss derselbe Wechsel wie am Geschossbogen (E18)
             Id::Storey(st) if self.ui.view == ViewKind::Plan => {
                 let t = self.now();
@@ -1475,6 +1646,9 @@ impl App {
             Event::Redraw => self.redraw = true,
             Event::MouseLeave => {
                 self.mouse_at = None;
+                if !self.hover_from_list {
+                    self.model_hover(None);
+                }
                 let t = self.now();
                 self.wheel.set_hover(None, t);
                 self.dirty_title.extend(self.title.hover.take());
@@ -1556,6 +1730,32 @@ impl App {
                     ev
                 };
                 self.redraw |= self.tool.handle(&tool_ev, &self.cam, vw, vh, sc).redraw;
+                // Bauteil unter der Maus: die Mengenliste zeigt seine Zeile (B7)
+                if self.quantity.open {
+                    let free = !busy
+                        && !outside
+                        && !self.tool.enabled
+                        && !self.edit.is_dragging()
+                        && !self.sect.is_dragging()
+                        && !self.nav.is_dragging();
+                    let hit = match ev {
+                        Event::MouseMove { x, y, .. } if free => {
+                            let (view, plane) = (self.ui.view, self.plane());
+                            selection::pick_at(
+                                &mut self.scene,
+                                &self.cam,
+                                view,
+                                plane,
+                                x,
+                                y,
+                                vw,
+                                vh,
+                            )
+                        }
+                        _ => None,
+                    };
+                    self.model_hover(hit);
+                }
             }
             // Klick auf den Geschossbogen: Spitze wechselt, Band und Schild
             // nehmen den Klick ohne Wirkung
@@ -2317,6 +2517,10 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         view_shift: 0.0,
         picking: picking::Picking::default(),
         quantity: quantity::QuantityWindow::new(),
+        hover_from_list: false,
+        fly: None,
+        quantity_busy: false,
+        quantity_wanted: false,
         auto_switch: std::env::args()
             .skip_while(|a| a != "--geschosswechsel")
             .nth(1)
@@ -2338,8 +2542,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         a.set_view(v);
     }
     a.sync_caption(&surface);
-    // Mengenfenster (F2): gemerkte Lage; bis B7 nur mit `--mengenfenster` zu öffnen
+    // Mengenfenster (F2, B7): gemerkte Lage, Breite aus dem Schema
     *surface.layout() = windows::read_settings(&a.settings.windows, &surface.monitors());
+    surface.layout().set_width_dip(a.theme.size.qto_window_w);
     if surface.layout().quantity_open() || std::env::args().any(|x| x == "--mengenfenster") {
         a.open_quantity(&surface);
     }
@@ -2378,6 +2583,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             && !a.nav.is_animating()
             && !a.wheel.animating(a.now())
             && a.auto_switch.is_none()
+            && a.fly.is_none()
         {
             // Leerlauf: Grundrisse der Nachbargeschosse vorbereiten, damit ein
             // Wechsel am Geschossbogen nichts neu rechnet (E18)
@@ -2387,6 +2593,10 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             let wait = match (a.tip_wait(), a.prefs.as_ref().and_then(|p| p.wait())) {
                 (Some(x), Some(y)) => Some(x.min(y)),
                 (x, y) => x.or(y),
+            };
+            let wait = match (wait, a.quantity_busy) {
+                (w, true) => Some(w.map_or(FRAME, |w| w.min(FRAME))),
+                (w, false) => w,
             };
             let next = match wait {
                 Some(d) => surface.wait_event_timeout(d),
@@ -2425,6 +2635,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             }
         }
 
+        if std::mem::take(&mut a.quantity_wanted) {
+            a.open_quantity(&surface);
+        }
         a.sync_wheel();
         if a.prefs.as_mut().is_some_and(|p| p.tick()) {
             a.prefs_dirty = true;
@@ -2458,6 +2671,17 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         };
         surface.set_cursor(cursor);
 
+        if let Some(f) = &a.fly {
+            match f.at(Instant::now()) {
+                Some(c) => a.cam = c,
+                None => {
+                    a.cam = f.to.clone();
+                    a.fly = None;
+                }
+            }
+            a.redraw = true;
+            a.refresh_cursor();
+        }
         if a.nav.is_animating() {
             let now = std::time::Instant::now();
             let dt = last_tick.map_or(1.0 / 60.0, |t| (now - t).as_secs_f64().min(0.1));
@@ -2498,15 +2722,28 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 v => helpers.extend(ground_line(v, a.scene.bounds(), scale, a.scene.table())),
             }
             let plane = a.plane();
-            if !a.picking.hover.is_some_and(|h| a.picking.is_selected(h)) {
-                helpers.extend(selection::hover_helpers(
-                    &a.scene,
-                    a.picking.hover,
-                    a.ui.view,
-                    plane,
-                    scale,
-                    &a.theme,
-                ));
+            // Hover aus der Mengenliste: leuchtender Umriss mit weichem Schein
+            if a.hover_from_list {
+                let hovered: Vec<_> = a
+                    .picking
+                    .hovered()
+                    .filter(|h| !a.picking.is_selected(*h))
+                    .collect();
+                for &h in &hovered {
+                    helpers.extend(selection::hover_glow(
+                        &a.scene, h, a.ui.view, plane, scale, &a.theme,
+                    ));
+                }
+                for h in hovered {
+                    helpers.extend(selection::hover_helpers(
+                        &a.scene,
+                        Some(h),
+                        a.ui.view,
+                        plane,
+                        scale,
+                        &a.theme,
+                    ));
+                }
             }
             for &id in &a.picking.selected {
                 helpers.extend(selection::helpers(

@@ -391,6 +391,25 @@ pub fn hover_helpers(
     })
 }
 
+/// Weicher Schein hinter dem Umriss eines Bauteils unter der Maus (aus der
+/// Mengenliste, B7): 8 dip breit, 43 % der Hover-Farbe.
+pub fn hover_glow(
+    scene: &Scene,
+    id: ElementId,
+    view: ViewKind,
+    section: Option<(Vec3, Vec3)>,
+    scale: f32,
+    theme: &Theme,
+) -> Vec<Helper> {
+    let [r, g, b, a] = theme.interact.hover_element;
+    let mut v = outline(scene, id, view, section, scale, theme, [r, g, b, a * 0.43]);
+    for h in &mut v {
+        h.width = 8.0 * scale;
+        h.round = true;
+    }
+    v
+}
+
 fn outline(
     scene: &Scene,
     id: ElementId,

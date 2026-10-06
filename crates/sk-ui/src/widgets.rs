@@ -28,6 +28,8 @@ impl Rect {
 pub struct Fonts {
     pub regular: Option<Font>,
     pub bold: Option<Font>,
+    /// Kursiv (Kontrollzeilen der Mengenliste); fehlt die Datei, gilt `regular`.
+    pub italic: Option<Font>,
 }
 
 impl Fonts {
@@ -35,6 +37,7 @@ impl Fonts {
         Fonts {
             regular: Font::system(&["segoeui.ttf", "arial.ttf", "tahoma.ttf"]),
             bold: Font::system(&["seguisb.ttf", "segoeuib.ttf", "arialbd.ttf", "tahomabd.ttf"]),
+            italic: Font::system(&["segoeuii.ttf", "ariali.ttf"]),
         }
     }
 }

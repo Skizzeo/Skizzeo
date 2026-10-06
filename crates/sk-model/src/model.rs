@@ -3275,7 +3275,7 @@ fn bim_equal(a: Option<&Material>, b: Option<&Material>) -> bool {
     }
 }
 
-fn explain_floor(e: FloorError) -> &'static str {
+pub(crate) fn explain_floor(e: FloorError) -> &'static str {
     match e {
         FloorError::NotClosed => "der Wandzug ist nicht geschlossen",
         FloorError::NoCore => "der Wandaufbau hat keine tragende Schicht",
@@ -3326,7 +3326,7 @@ fn contains(poly: &[Vec3], p: Vec3) -> bool {
 }
 
 /// Warum keine Gründung entsteht, als Satz.
-fn explain(e: FoundationError) -> &'static str {
+pub(crate) fn explain(e: FoundationError) -> &'static str {
     match e {
         FoundationError::NotClosed => "der Wandzug ist nicht geschlossen",
         FoundationError::NotSimple => "der Umriss überschneidet sich",

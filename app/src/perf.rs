@@ -766,3 +766,68 @@ fn perf_geschosswechsel() {
          kalt = derselbe Wechsel ohne Leerlauf."
     );
 }
+
+/// B7: Mengenliste am Referenzgebäude. Loslassen rechnet die Mengen neu
+/// (nur bei offenem Mengenfenster), die Liste baut ihre Zeilen auf, ein
+/// ganzes Fensterbild (520 × 1000) und die Pille „wird aktualisiert“ beim
+/// Ziehen. Ohne Windows-Schriften fehlt hier die Schrift in den Bildern.
+#[test]
+#[ignore]
+fn perf_mengenliste() {
+    use crate::picking::Picking;
+    use crate::quantity::QuantityWindow;
+    use sk_ui::theme::Theme;
+    use sk_ui::widgets::Fonts;
+    println!();
+    println!(
+        "{:<34} {:>6} {:>9} {:>9} {:>9} {:>9}",
+        "Modell (gestapelt)", "Zeilen", "Mengen", "Liste", "Bild", "Pille"
+    );
+    let (t, fonts) = (Theme::dark(), Fonts::system());
+    for (name, houses, storeys, annexes) in [
+        ("Referenz: 4 Geschosse + 2 Nebengeb.", 1, 4u8, 2),
+        ("Groß: 2 Häuser à 4 G. + 2 Nebengeb.", 2, 4, 2),
+    ] {
+        let mut s = reference_stacked(houses, storeys, annexes);
+        let sched = time(10, || {
+            std::hint::black_box(sk_model::qto::schedule(s.model()));
+        });
+        let p = Picking::default();
+        let list = time(10, || {
+            let mut l = crate::schedule_view::ListView::new(&mut s);
+            std::hint::black_box(l.sync(&mut s, false));
+        });
+        let mut q = QuantityWindow::new();
+        (q.w, q.h) = (520, 1000);
+        q.sync(&mut s, &p, false);
+        let rows = q.list.as_ref().map_or(0, |l| l.line_count());
+        let now = Instant::now();
+        let frame = time(10, || {
+            q.dirty = true;
+            std::hint::black_box(q.frame(&t, &fonts, now).is_some());
+        });
+        // Ziehen: die Pille erscheint einmal ganz, danach nur ihre Zeilen
+        let eg = s.active_storey();
+        s.begin("Geschoss ziehen");
+        s.drag_storey_top(eg, 2800.0);
+        q.sync(&mut s, &p, true);
+        q.frame(&t, &fonts, now);
+        let mut k = 0u64;
+        let pill = time(10, || {
+            k += 1;
+            let at = now + std::time::Duration::from_millis(220 * k);
+            q.tick(&t, at);
+            std::hint::black_box(q.frame(&t, &fonts, at).is_some());
+        });
+        s.commit();
+        println!(
+            "{:<34} {:>6} {:>9.3} {:>9.3} {:>9.3} {:>9.3}",
+            name, rows, sched, list, frame, pill
+        );
+    }
+    println!(
+        "Zeiten in ms. Mengen = Mengenermittlung des ganzen Modells (beim Loslassen), Liste = \
+         Zeilen aufbauen, Bild = ganzes Fensterbild 520 × 1000 inkl. Umwandlung, Pille = \
+         ein Schritt der Punkte beim Ziehen."
+    );
+}

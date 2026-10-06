@@ -235,6 +235,18 @@ pub fn local_time() -> (u8, u8) {
     (t.hour as u8, t.minute as u8)
 }
 
+pub fn local_date_time() -> (u16, u8, u8, u8, u8) {
+    let mut t = SYSTEMTIME::default();
+    unsafe { GetLocalTime(&mut t) };
+    (
+        t.year,
+        t.month as u8,
+        t.day as u8,
+        t.hour as u8,
+        t.minute as u8,
+    )
+}
+
 #[link(name = "user32")]
 extern "system" {
     fn RegisterClassExW(c: *const WNDCLASSEXW) -> u16;

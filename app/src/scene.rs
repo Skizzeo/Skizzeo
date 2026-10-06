@@ -10,6 +10,7 @@ use crate::draw_table::DrawTable;
 use crate::ui::Field;
 use crate::ui::ViewKind;
 use sk_math::{vec3, Vec3};
+use sk_model::qto::Schedule;
 use sk_model::{
     edge_kind, floor_qto_of, foundation_qto_of, merge_seam, run_qto, BuildingId, Category,
     Direction, Edge, ElementId, FloorQto, FloorSlab, FootingQto, Foundation, Model, RunId, SlabQto,
@@ -289,6 +290,10 @@ pub struct Scene {
     draft: BuildingDraft,
     /// Modellstand vor dem offenen Schritt „Gebäude erstellt“.
     pending_rev: u64,
+    /// Mengenliste (B7) mit dem Modellstand, aus dem sie stammt.
+    schedule: Option<(u64, Schedule)>,
+    /// Wie oft die Liste berechnet wurde (Messung, Abnahme).
+    schedule_runs: u64,
 }
 
 /// Vorgaben im Dialog „Gebäude erstellen“ (Jörn 10:13, mm): lichte Höhen und
@@ -384,9 +389,35 @@ impl Scene {
             pending: None,
             draft: BuildingDraft::default(),
             pending_rev: 0,
+            schedule: None,
+            schedule_runs: 0,
         };
         s.rebuild_dirty(false);
         s
+    }
+
+    /// Mengenliste (B7): einmal je Modellstand berechnet und gemerkt, nie
+    /// während eines offenen Schritts (Ziehen); dann bleibt der alte Stand.
+    pub fn schedule(&mut self) -> &Schedule {
+        let rev = self.model.revision();
+        let fresh = matches!(&self.schedule, Some((r, _)) if *r == rev);
+        if !fresh && (self.schedule.is_none() || !self.model.in_step()) {
+            self.schedule = Some((rev, sk_model::qto::schedule(&self.model)));
+            self.schedule_runs += 1;
+        }
+        &self.schedule.as_ref().expect("gerade berechnet").1
+    }
+
+    /// Liegt die Liste hinter dem Modell („wird aktualisiert“)?
+    pub fn schedule_stale(&self) -> bool {
+        self.schedule
+            .as_ref()
+            .is_some_and(|(r, _)| *r != self.model.revision())
+    }
+
+    /// Anzahl der Berechnungen der Liste.
+    pub fn schedule_runs(&self) -> u64 {
+        self.schedule_runs
     }
 
     pub fn model(&self) -> &Model {

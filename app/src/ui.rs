@@ -56,6 +56,8 @@ pub enum Id {
     Ref(RefSide),
     Ortho,
     View(ViewKind),
+    /// „Mengenermittlung“ (B7): öffnet das Mengenfenster oder holt es nach vorn.
+    Quantity,
     Field(Field),
     /// Griff einer Ebene im Paneel „Geschosse“.
     Grip(Grip),
@@ -463,6 +465,8 @@ pub struct Ui {
     pub hover: Option<Id>,
     pressed: Option<Id>,
     pub view: ViewKind,
+    /// Mengenfenster offen: Knopf „Mengenermittlung“ in `accent`.
+    pub quantity_open: bool,
     pub building: bool,
     /// Das Werkzeug zeichnet Innenwände (sonst Außenwände).
     pub interior: bool,
@@ -627,6 +631,8 @@ fn view_rows() -> Vec<Row> {
             (Id::View(ViewKind::Left), "Links"),
             (Id::View(ViewKind::Right), "Rechts"),
         ]),
+        Row::Separator,
+        Row::Button(Id::Quantity, "Mengenermittlung"),
     ]
 }
 
@@ -693,6 +699,7 @@ impl Ui {
             hover: None,
             pressed: None,
             view: ViewKind::Persp,
+            quantity_open: false,
             building: false,
             interior: false,
             ref_side: RefSide::Left,
@@ -1114,6 +1121,7 @@ impl Ui {
             Id::Ref(r) => self.ref_side == r,
             Id::Ortho => self.ortho,
             Id::View(v) => self.view == v,
+            Id::Quantity => self.quantity_open,
             // Standardknopf des Dialogs
             Id::DialogStart => true,
             Id::Field(_)

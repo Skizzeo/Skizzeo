@@ -128,6 +128,13 @@ impl Windows {
         }
     }
 
+    /// Breite beim Andocken (dip), aus dem Schema.
+    pub fn set_width_dip(&mut self, w: f32) {
+        if w > 0.0 {
+            self.width_dip = w;
+        }
+    }
+
     pub fn quantity_open(&self) -> bool {
         self.open
     }

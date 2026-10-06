@@ -316,7 +316,7 @@ const RECENT_MAX: usize = 8;
 
 /// Farbgruppen im Reiter „Bedienoberfläche“: Überschrift und Schlüssel der
 /// Rollen ([`RGBA_ROLES`], [`F4_ROLES`]).
-const GROUPS: [(&str, &[&str]); 7] = [
+const GROUPS: [(&str, &[&str]); 8] = [
     (
         "Flächen",
         &[
@@ -396,6 +396,22 @@ const GROUPS: [(&str, &[&str]); 7] = [
             "interact.drag_ghost",
             "interact.shadow_tool",
             "interact.shadow_band",
+        ],
+    ),
+    (
+        "Blatt (Mengenliste)",
+        &[
+            "ui.sheet_bg",
+            "ui.sheet_text",
+            "ui.sheet_text_dim",
+            "ui.sheet_hint",
+            "ui.sheet_rule",
+            "ui.sheet_tile",
+            "ui.sheet_hover",
+            "interact.hover_element",
+            "ui.sheet_flash",
+            "ui.sheet_select",
+            "ui.sheet_select_group",
         ],
     ),
 ];

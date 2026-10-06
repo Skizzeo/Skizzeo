@@ -20,7 +20,7 @@ pub type RgbaRole = (&'static str, &'static str, fn(&mut Theme) -> &mut Rgba);
 pub type F4Role = (&'static str, &'static str, fn(&mut Theme) -> &mut [f32; 4]);
 pub type SizeRole = (&'static str, &'static str, fn(&mut Theme) -> &mut f32);
 
-pub const RGBA_ROLES: [RgbaRole; 49] = [
+pub const RGBA_ROLES: [RgbaRole; 59] = [
     ("ui.bg", "Fläche", |t| &mut t.ui.bg),
     ("ui.border", "Rahmen", |t| &mut t.ui.border),
     ("ui.field", "Feld", |t| &mut t.ui.field),
@@ -110,6 +110,30 @@ pub const RGBA_ROLES: [RgbaRole; 49] = [
     ("env.scrim", "Abdunkeln hinter Dialogen", |t| {
         &mut t.env.scrim
     }),
+    ("ui.sheet_bg", "Blatt", |t| &mut t.ui.sheet_bg),
+    ("ui.sheet_text", "Schrift auf dem Blatt", |t| {
+        &mut t.ui.sheet_text
+    }),
+    ("ui.sheet_text_dim", "Schrift gedämpft (Blatt)", |t| {
+        &mut t.ui.sheet_text_dim
+    }),
+    ("ui.sheet_hint", "Kontrollzeilen", |t| &mut t.ui.sheet_hint),
+    ("ui.sheet_rule", "Linien auf dem Blatt", |t| {
+        &mut t.ui.sheet_rule
+    }),
+    ("ui.sheet_tile", "Kacheln", |t| &mut t.ui.sheet_tile),
+    ("ui.sheet_hover", "Zeile unter der Maus", |t| {
+        &mut t.ui.sheet_hover
+    }),
+    ("ui.sheet_flash", "Aufleuchten geänderter Werte", |t| {
+        &mut t.ui.sheet_flash
+    }),
+    ("ui.sheet_select", "Gewählte Zeile", |t| {
+        &mut t.ui.sheet_select
+    }),
+    ("ui.sheet_select_group", "Gruppe der Auswahl", |t| {
+        &mut t.ui.sheet_select_group
+    }),
 ];
 
 pub const F4_ROLES: [F4Role; 11] = [
@@ -138,7 +162,7 @@ pub const F4_ROLES: [F4Role; 11] = [
     }),
 ];
 
-pub const SIZE_ROLES: [SizeRole; 52] = [
+pub const SIZE_ROLES: [SizeRole; 58] = [
     ("corner_radius", "Eckenradius", |t| {
         &mut t.size.corner_radius
     }),
@@ -243,6 +267,18 @@ pub const SIZE_ROLES: [SizeRole; 52] = [
     ("hover_delay_hud", "Hinweis am Bogen (s)", |t| {
         &mut t.size.hover_delay_hud
     }),
+    ("qto_row", "Mengenliste: Zeile", |t| &mut t.size.qto_row),
+    ("qto_indent", "Mengenliste: Einzug", |t| {
+        &mut t.size.qto_indent
+    }),
+    ("sheet_pad", "Mengenliste: Rand", |t| &mut t.size.sheet_pad),
+    ("qto_max_w", "Mengenliste: größte Breite", |t| {
+        &mut t.size.qto_max_w
+    }),
+    ("qto_window_w", "Mengenfenster: Breite", |t| {
+        &mut t.size.qto_window_w
+    }),
+    ("flash_ms", "Aufleuchten (ms)", |t| &mut t.size.flash_ms),
 ];
 
 /// Grundschema zu einem Namen.

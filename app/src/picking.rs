@@ -11,6 +11,9 @@ pub struct Picking {
     pub selected: Vec<ElementId>,
     /// Bauteil unter der Maus, egal in welchem Fenster.
     pub hover: Option<ElementId>,
+    /// Bauteile einer Gruppenzeile unter der Maus im Mengenfenster (B7),
+    /// etwa alle EG-Außenwände.
+    pub hover_group: Vec<ElementId>,
 }
 
 impl Picking {
@@ -43,6 +46,24 @@ impl Picking {
         self.selected.contains(&id)
     }
 
+    /// Bauteile unter der Maus: einzeln oder als Gruppe.
+    pub fn hovered(&self) -> impl Iterator<Item = ElementId> + '_ {
+        let group: &[ElementId] = if self.hover.is_some() {
+            &[]
+        } else {
+            &self.hover_group
+        };
+        self.hover.iter().chain(group.iter()).copied()
+    }
+
+    /// Hover setzen (einzeln oder Gruppe). `true`, wenn sich etwas ändert.
+    pub fn set_hover(&mut self, one: Option<ElementId>, group: Vec<ElementId>) -> bool {
+        let changed = self.hover != one || self.hover_group != group;
+        self.hover = one;
+        self.hover_group = group;
+        changed
+    }
+
     /// Esc: Auswahl aufheben.
     #[cfg(test)]
     pub fn clear(&mut self) {
@@ -60,6 +81,8 @@ impl Picking {
             self.hover = None;
             changed = true;
         }
-        changed
+        let n = self.hover_group.len();
+        self.hover_group.retain(|&e| m.element(e).is_some());
+        changed | (n != self.hover_group.len())
     }
 }

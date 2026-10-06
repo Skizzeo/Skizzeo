@@ -5,13 +5,14 @@
 //! zwischen Wandzügen (B5a). Grundfläche, Ansichtsflächen und
 //! `volume_gross` bleiben brutto (ohne Verschnitt). Öffnungen gibt es noch nicht.
 
-use crate::element::{ElementId, RunId};
-use crate::floor::FloorSlab;
-use crate::foundation::Foundation;
-use crate::library::MaterialId;
+use crate::element::{BuildingId, Category, ElementId, ElementKind, RunId, StoreyId};
+use crate::floor::{FloorError, FloorSlab};
+use crate::foundation::{Foundation, FoundationError};
+use crate::library::{LayerSetId, MatCategory, MaterialId};
 use crate::model::Model;
 use crate::wall::WallChain;
 use sk_math::Vec3;
+use std::collections::HashMap;
 
 /// Mengen einer Schicht in einem Wandsegment.
 #[derive(Clone, Debug, PartialEq)]
@@ -27,6 +28,12 @@ pub struct LayerQto {
     pub volume: f64,
     /// Volumen × Rohdichte (kg).
     pub mass: f64,
+    /// Volumen, das eine Geschossdecke aus der Schicht nimmt (Auflagertasche
+    /// bzw. Deckenstreifen), mm³: brutto minus netto.
+    pub pocket: f64,
+    /// Außenfläche der Schicht: Länge der äußeren Schichtkante × Höhe (mm²),
+    /// für die Abrechnung des WDVS nach Fläche.
+    pub side_area: f64,
 }
 
 /// Mengen eines Wandsegments.
@@ -50,6 +57,11 @@ pub struct WallQto {
     pub volume_gross: f64,
     /// Schichten von außen nach innen.
     pub layers: Vec<LayerQto>,
+    /// Volumen, das die Decke aus der Wand nimmt (Summe der Schichten), mm³.
+    pub pocket: f64,
+    /// Länge in der Mengenliste (mm): Außenwand Länge der Außenseite,
+    /// Innenwand lichte Länge der tragenden Schicht.
+    pub list_length: f64,
 }
 
 /// Fläche eines ebenen Vielecks in der Grundrissebene.
@@ -78,8 +90,11 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
     else {
         return Vec::new();
     };
+    let category = model.element(r.segments[0]).map(|e| e.category);
     let pts = chain.clean_points();
     let offsets = chain.layer_offsets();
+    // Außenkante einer Schicht: `a` (kleinerer Versatz), wenn außen links liegt
+    let outer_first = chain.outer_offset() <= chain.inner_offset();
     let h = chain.height;
     let gross = WallChain {
         joints: Default::default(),
@@ -119,13 +134,16 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                     let hn: f64 = chain.layer_spans(li).iter().map(|(a, b)| b - a).sum();
                     let volume = area * hn;
                     let density = model.material(l.material).map_or(0.0, |m| m.density);
+                    let (la, lb) = ((fa[j] - fa[k]).length(), (fb[j] - fb[k]).length());
                     LayerQto {
                         material: l.material,
                         thickness: l.thickness,
-                        length: ((fa[j] - fa[k]).length() + (fb[j] - fb[k]).length()) * 0.5,
+                        length: (la + lb) * 0.5,
                         area,
                         volume,
                         mass: volume * 1e-9 * density,
+                        pocket: (area * h - volume).max(0.0),
+                        side_area: if outer_first { la } else { lb } * h,
                     }
                 })
                 .collect();
@@ -133,15 +151,28 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                 .iter()
                 .map(|(fa, fb)| area(&[fa[k], fa[j], fb[j], fb[k]]))
                 .sum();
+            let side_outer = (c_out[j] - c_out[k]).length() * h;
+            let list_length = if category == Some(Category::ExteriorWall) && h > 0.0 {
+                side_outer / h
+            } else {
+                // lichte Länge: Mittellinie der (ersten) tragenden Schicht
+                set.layers
+                    .iter()
+                    .position(|l| l.core)
+                    .and_then(|i| layers.get(i))
+                    .map_or((pts[j] - pts[k]).length(), |l| l.length)
+            };
             WallQto {
                 length: (pts[j] - pts[k]).length(),
                 width: chain.thickness(),
                 height: h,
                 footprint,
-                side_outer: (c_out[j] - c_out[k]).length() * h,
+                side_outer,
                 side_inner: (c_in[j] - c_in[k]).length() * h,
                 volume: layers.iter().map(|l| l.volume).sum(),
                 volume_gross: footprint * h,
+                pocket: layers.iter().map(|l| l.pocket).sum(),
+                list_length,
                 layers,
             }
         })
@@ -214,12 +245,18 @@ pub struct FloorQto {
     pub thickness: f64,
     /// Oberkante über Wandfuß (mm).
     pub top: f64,
+    /// „davon Auflager in den Außenwänden“: Summe der Taschen in den Wänden
+    /// des Zugs (mm³), im Volumen enthalten. 0, solange nicht bekannt
+    /// ([`floor_qto_of`] kennt die Wände nicht).
+    pub bearing: f64,
 }
 
 /// Mengen der Decke über einem Wandzug; `None` ohne Decke oder wenn kein
 /// Körper entstehen kann.
 pub fn floor_qto(model: &Model, run: RunId) -> Option<FloorQto> {
-    Some(floor_qto_of(&model.floor(run)?.ok()?))
+    let mut q = floor_qto_of(&model.floor(run)?.ok()?);
+    q.bearing = run_qto(model, run).iter().map(|w| w.pocket).sum();
+    Some(q)
 }
 
 /// Mengen aus einer schon berechneten Decke.
@@ -230,13 +267,355 @@ pub fn floor_qto_of(f: &FloorSlab) -> FloorQto {
         perimeter: f.perimeter(),
         thickness: f.params.thickness,
         top: f.params.top,
+        bearing: 0.0,
     }
+}
+
+// --- Mengenliste (B7) ----------------------------------------------------
+
+/// Mengen eines Bauteils in der Liste.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ElementQto {
+    Wall(WallQto),
+    Slab(SlabQto),
+    Footing(FootingQto),
+    Floor(FloorQto),
+}
+
+impl ElementQto {
+    /// Volumen (mm³), bei Wänden netto.
+    pub fn volume(&self) -> f64 {
+        match self {
+            ElementQto::Wall(w) => w.volume,
+            ElementQto::Slab(s) => s.volume,
+            ElementQto::Footing(f) => f.volume,
+            ElementQto::Floor(f) => f.volume,
+        }
+    }
+}
+
+/// Eine Zeile der Liste: ein Bauteil. `q` ist `None`, wenn kein Körper
+/// entsteht; dann steht in `note` der Grund.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowQto {
+    pub element: ElementId,
+    pub number: String,
+    pub q: Option<ElementQto>,
+    pub note: Option<String>,
+}
+
+/// Summen einer Gruppe (mm, mm², mm³), aus ungerundeten Werten.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Totals {
+    /// Bauteile mit Körper.
+    pub count: usize,
+    /// Länge in der Liste (Wände, Frostschürze).
+    pub length: f64,
+    /// Fläche (Platten, Decken).
+    pub area: f64,
+    /// Volumen, bei Wänden netto.
+    pub volume: f64,
+    /// Wände: Abzug Deckenauflager bzw. Deckenstreifen; Decken: davon
+    /// Auflager in den Außenwänden.
+    pub pocket: f64,
+}
+
+/// Gruppe: eine Bauteilart (Wände zusätzlich je Aufbau) in einem Geschoss.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupQto {
+    pub category: Category,
+    pub layer_set: Option<LayerSetId>,
+    pub rows: Vec<RowQto>,
+    pub total: Totals,
+}
+
+/// Geschoss (bzw. Fundament) mit seinen Gruppen.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoreyQto {
+    pub id: StoreyId,
+    pub groups: Vec<GroupQto>,
+}
+
+/// Summe eines Baustoffs in einem Gebäude; `area` (mm²) nur für Dämmung.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MaterialSum {
+    pub material: MaterialId,
+    pub volume: f64,
+    pub area: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BuildingQto {
+    pub id: BuildingId,
+    pub storeys: Vec<StoreyQto>,
+    pub by_material: Vec<MaterialSum>,
+}
+
+/// Die Mengenliste: abgeleitet, nie gespeichert.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Schedule {
+    pub buildings: Vec<BuildingQto>,
+    /// Bauteile in Geschossen ohne Gebäude (Vorlage), damit keines fehlt.
+    pub loose: Vec<StoreyQto>,
+}
+
+/// Reihenfolge der Gruppen nach Bauablauf.
+fn group_rank(c: Category) -> u8 {
+    match c {
+        Category::StripFooting => 0,
+        Category::GroundSlab => 1,
+        Category::ExteriorWall => 2,
+        Category::InteriorWall => 3,
+        Category::Floor => 4,
+        _ => 5,
+    }
+}
+
+/// Reihenfolge der Baustoffsummen.
+fn material_rank(c: MatCategory) -> u8 {
+    match c {
+        MatCategory::Concrete => 0,
+        MatCategory::Masonry => 1,
+        MatCategory::Timber => 2,
+        MatCategory::Insulation => 3,
+        MatCategory::Plaster => 4,
+    }
+}
+
+/// Baut die Mengenliste: Gebäude → Fundament und Geschosse von unten →
+/// Bauteilart (Wände je Aufbau) → Bauteile nach Nummer. Nur Lesen.
+pub fn schedule(model: &Model) -> Schedule {
+    // Je Wandzug einmal rechnen
+    let mut walls: HashMap<RunId, Vec<WallQto>> = HashMap::new();
+    let mut found: HashMap<RunId, Result<Foundation, FoundationError>> = HashMap::new();
+    let mut floors: HashMap<RunId, Result<FloorSlab, FloorError>> = HashMap::new();
+    // (Geschoss der Gruppe, Rang, Aufbau) → Zeilen mit Baustoffanteilen
+    type Key = (StoreyId, u8, Option<LayerSetId>);
+    let mut groups: HashMap<Key, (Category, Vec<RowQto>)> = HashMap::new();
+    for (id, e) in model.elements().iter() {
+        let Some(run) = model.run_of(id) else {
+            continue;
+        };
+        let (q, note) = match e.kind {
+            ElementKind::Wall(w) => {
+                let qs = walls.entry(run).or_insert_with(|| run_qto(model, run));
+                match qs.get(w.seg as usize) {
+                    Some(q) => (Some(ElementQto::Wall(q.clone())), None),
+                    None => (None, Some("Kein Körper: Wandzug ungültig".to_string())),
+                }
+            }
+            ElementKind::GroundSlab(_) | ElementKind::StripFooting(_) => {
+                let f = found
+                    .entry(run)
+                    .or_insert_with(|| match model.foundation(run) {
+                        Some(r) => r,
+                        None => Err(FoundationError::NotClosed),
+                    });
+                match f {
+                    Ok(f) => {
+                        let (s, fs) = foundation_qto_of(f);
+                        let q = if matches!(e.kind, ElementKind::GroundSlab(_)) {
+                            ElementQto::Slab(s)
+                        } else {
+                            ElementQto::Footing(fs)
+                        };
+                        (Some(q), None)
+                    }
+                    Err(err) => (None, Some(foundation_note(*err))),
+                }
+            }
+            ElementKind::Floor(_) => {
+                let f = floors.entry(run).or_insert_with(|| match model.floor(run) {
+                    Some(r) => r,
+                    None => Err(FloorError::NotClosed),
+                });
+                match f {
+                    Ok(f) => {
+                        let mut q = floor_qto_of(f);
+                        let qs = walls.entry(run).or_insert_with(|| run_qto(model, run));
+                        q.bearing = qs.iter().map(|w| w.pocket).sum();
+                        (Some(ElementQto::Floor(q)), None)
+                    }
+                    Err(err) => (
+                        None,
+                        Some(format!(
+                            "Kein Körper: {}",
+                            crate::model::explain_floor(*err)
+                        )),
+                    ),
+                }
+            }
+        };
+        // Fundament: Kostengruppe 322 unter dem Gründungsband
+        let storey = match e.category {
+            Category::GroundSlab | Category::StripFooting => {
+                model.foundation_level_of(e.storey).unwrap_or(e.storey)
+            }
+            _ => e.storey,
+        };
+        let set = match e.kind {
+            ElementKind::Wall(_) => e.layer_set,
+            _ => None,
+        };
+        groups
+            .entry((storey, group_rank(e.category), set))
+            .or_insert_with(|| (e.category, Vec::new()))
+            .1
+            .push(RowQto {
+                element: id,
+                number: e.number.clone(),
+                q,
+                note,
+            });
+    }
+
+    let mut keys: Vec<Key> = groups.keys().copied().collect();
+    // Aufbauten in fester Reihenfolge (Name, dann Kennung)
+    let set_name = |s: Option<LayerSetId>| {
+        s.and_then(|s| model.layer_set(s))
+            .map_or(String::new(), |x| x.name.clone())
+    };
+    keys.sort_by(|a, b| {
+        (a.1, set_name(a.2), a.2.map(|s| s.index())).cmp(&(
+            b.1,
+            set_name(b.2),
+            b.2.map(|s| s.index()),
+        ))
+    });
+    let storey_qto = |sid: StoreyId, groups: &mut HashMap<Key, (Category, Vec<RowQto>)>| {
+        let mut out = Vec::new();
+        for k in keys.iter().filter(|k| k.0 == sid) {
+            let (category, mut rows) = groups.remove(k).unwrap_or((Category::Space, Vec::new()));
+            rows.sort_by(|a, b| a.number.cmp(&b.number));
+            let total = totals(&rows);
+            out.push(GroupQto {
+                category,
+                layer_set: k.2,
+                rows,
+                total,
+            });
+        }
+        StoreyQto {
+            id: sid,
+            groups: out,
+        }
+    };
+
+    let mut sched = Schedule::default();
+    for (bid, _) in model.buildings().iter() {
+        let storeys: Vec<StoreyQto> = model
+            .levels_in(Some(bid))
+            .into_iter()
+            .map(|sid| storey_qto(sid, &mut groups))
+            .filter(|s| !s.groups.is_empty())
+            .collect();
+        let by_material = material_sums(model, &storeys);
+        sched.buildings.push(BuildingQto {
+            id: bid,
+            storeys,
+            by_material,
+        });
+    }
+    // Was übrig ist, liegt in Geschossen ohne Gebäude
+    let mut rest: Vec<StoreyId> = groups.keys().map(|k| k.0).collect();
+    rest.sort_by(|a, b| {
+        let z = |s: &StoreyId| model.storey(*s).map_or(0.0, |x| x.elevation);
+        z(a).total_cmp(&z(b))
+    });
+    rest.dedup();
+    for sid in rest {
+        let s = storey_qto(sid, &mut groups);
+        if !s.groups.is_empty() {
+            sched.loose.push(s);
+        }
+    }
+    sched
+}
+
+/// Grund, warum Sohlplatte und Frostschürze keinen Körper haben.
+fn foundation_note(e: FoundationError) -> String {
+    match e {
+        FoundationError::RecessTooLarge => "Kein Körper: Rücksprung zu groß".to_string(),
+        e => format!("Kein Körper: {}", crate::model::explain(e)),
+    }
+}
+
+/// Summen einer Gruppe.
+fn totals(rows: &[RowQto]) -> Totals {
+    let mut t = Totals::default();
+    for q in rows.iter().filter_map(|r| r.q.as_ref()) {
+        t.count += 1;
+        t.volume += q.volume();
+        match q {
+            ElementQto::Wall(w) => {
+                t.length += w.list_length;
+                t.pocket += w.pocket;
+            }
+            ElementQto::Slab(s) => t.area += s.area,
+            ElementQto::Footing(f) => t.length += f.length,
+            ElementQto::Floor(f) => {
+                t.area += f.area;
+                t.pocket += f.bearing;
+            }
+        }
+    }
+    t
+}
+
+/// Summe nach Baustoff über alle Bauteile mit Körper; Dämmung auch als Fläche.
+fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
+    let mut sums: Vec<MaterialSum> = Vec::new();
+    let mut add = |m: MaterialId, v: f64, a: f64| {
+        let ins = model
+            .material(m)
+            .is_some_and(|x| x.category == MatCategory::Insulation);
+        let area = ins.then_some(a);
+        match sums.iter_mut().find(|s| s.material == m) {
+            Some(s) => {
+                s.volume += v;
+                if let (Some(x), Some(y)) = (s.area.as_mut(), area) {
+                    *x += y;
+                }
+            }
+            None => sums.push(MaterialSum {
+                material: m,
+                volume: v,
+                area,
+            }),
+        }
+    };
+    for row in storeys.iter().flat_map(|s| &s.groups).flat_map(|g| &g.rows) {
+        let Some(q) = &row.q else { continue };
+        let mat = model.element(row.element).and_then(|e| match e.kind {
+            ElementKind::GroundSlab(s) => Some(s.material),
+            ElementKind::StripFooting(f) => Some(f.material),
+            ElementKind::Floor(f) => Some(f.material),
+            ElementKind::Wall(_) => None,
+        });
+        match (q, mat) {
+            (ElementQto::Wall(w), _) => {
+                for l in &w.layers {
+                    add(l.material, l.volume, l.side_area);
+                }
+            }
+            (q, Some(m)) => add(m, q.volume(), 0.0),
+            _ => {}
+        }
+    }
+    sums.sort_by_key(|s| {
+        (
+            model
+                .material(s.material)
+                .map_or(9, |m| material_rank(m.category)),
+            s.material.index(),
+        )
+    });
+    sums
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::element::Category;
     use crate::wall::RefSide;
     use sk_math::vec3;
 
