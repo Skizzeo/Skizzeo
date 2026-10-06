@@ -780,8 +780,8 @@ fn perf_mengenliste() {
     use sk_ui::widgets::Fonts;
     println!();
     println!(
-        "{:<34} {:>6} {:>9} {:>9} {:>9} {:>9}",
-        "Modell (gestapelt)", "Zeilen", "Mengen", "Liste", "Bild", "Pille"
+        "{:<34} {:>6} {:>9} {:>9} {:>9} {:>9} {:>9}",
+        "Modell (gestapelt)", "Zeilen", "Mengen", "Liste", "Bild", "Hover", "Pille"
     );
     let (t, fonts) = (Theme::dark(), Fonts::system());
     for (name, houses, storeys, annexes) in [
@@ -806,6 +806,30 @@ fn perf_mengenliste() {
             q.dirty = true;
             std::hint::black_box(q.frame(&t, &fonts, now).is_some());
         });
+        // Hover im Hauptfenster wechselt zwischen zwei Bauteilen: nur Zeilen
+        // Sohlplatte und Frostschürze stehen oben in der Liste (sichtbar)
+        let ids: Vec<_> = s
+            .model()
+            .elements()
+            .iter()
+            .filter(|(_, e)| {
+                matches!(
+                    e.category,
+                    sk_model::Category::GroundSlab | sk_model::Category::StripFooting
+                )
+            })
+            .map(|(id, _)| id)
+            .take(2)
+            .collect();
+        assert_eq!(ids.len(), 2);
+        let mut p = p;
+        let mut k = 0usize;
+        let hover = time(20, || {
+            k += 1;
+            p.set_hover(Some(ids[k % 2]), Vec::new());
+            q.sync(&mut s, &p, false);
+            std::hint::black_box(q.frame(&t, &fonts, now).is_some());
+        });
         // Ziehen: die Pille erscheint einmal ganz, danach nur ihre Zeilen
         let eg = s.active_storey();
         s.begin("Geschoss ziehen");
@@ -821,13 +845,14 @@ fn perf_mengenliste() {
         });
         s.commit();
         println!(
-            "{:<34} {:>6} {:>9.3} {:>9.3} {:>9.3} {:>9.3}",
-            name, rows, sched, list, frame, pill
+            "{:<34} {:>6} {:>9.3} {:>9.3} {:>9.3} {:>9.3} {:>9.3}",
+            name, rows, sched, list, frame, hover, pill
         );
     }
     println!(
         "Zeiten in ms. Mengen = Mengenermittlung des ganzen Modells (beim Loslassen), Liste = \
-         Zeilen aufbauen, Bild = ganzes Fensterbild 520 × 1000 inkl. Umwandlung, Pille = \
-         ein Schritt der Punkte beim Ziehen."
+         Zeilen aufbauen, Bild = ganzes Fensterbild 520 × 1000 inkl. Umwandlung, Hover = \
+         Hover-Wechsel aus dem Hauptfenster (nur Zeilen), Pille = ein Schritt der Punkte beim \
+         Ziehen."
     );
 }

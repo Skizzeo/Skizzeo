@@ -17,6 +17,10 @@ use sk_ui::widgets::Fonts;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+/// Band einer sichtbaren Zeile: Fensterpixel (von, bis) und Farbe mit
+/// Akzentstrich, `None` ohne Band.
+pub type RowBand = (i32, i32, Option<(Rgba, bool)>);
+
 /// Kopf über der Liste (dip ab Unterkante der Titelleiste): Titelzeile,
 /// Unterzeile, Spaltenköpfe und Linie; bleibt beim Rollen stehen.
 const HEAD: f32 = 92.0;
@@ -575,7 +579,9 @@ impl ListView {
         y: f64,
     ) -> Option<ListOut> {
         let hot = self.hit(t, fonts, x, y);
-        let repaint = hot != self.hot;
+        // Nur der Knopf sieht anders aus, wenn die Maus darüber steht
+        let button = |h: Option<Hot>| h == Some(Hot::Button);
+        let repaint = button(hot) != button(self.hot);
         self.hot = hot;
         let (one, group) = self.hover_of(hot);
         if p.set_hover(one, group) {
@@ -586,13 +592,13 @@ impl ListView {
     }
 
     pub fn mouse_leave(&mut self, p: &mut Picking) -> Option<ListOut> {
-        self.hot = None;
+        let button = self.hot.take() == Some(Hot::Button) || self.button_down;
         self.button_down = false;
         if p.set_hover(None, Vec::new()) {
             self.hover.clear();
             return Some(ListOut::Picking { selection: false });
         }
-        Some(ListOut::Repaint)
+        button.then_some(ListOut::Repaint)
     }
 
     pub fn mouse_down(
@@ -791,6 +797,40 @@ impl ListView {
             py + (ph + f.cap_height(10.0 * s)) * 0.5,
             alpha(u.sheet_text_dim, fade),
         );
+    }
+
+    /// Wie der Knopf „Als Tabelle speichern“ aussieht (Maus darüber, gedrückt).
+    pub fn button_look(&self) -> (bool, bool) {
+        (self.hot == Some(Hot::Button), self.button_down)
+    }
+
+    /// Bänder der sichtbaren Zeilen in Fensterpixeln (von, bis, Band), in
+    /// derselben Auswahl wie beim Zeichnen. Ändert sich bei Hover oder
+    /// Auswahl nur ein Band, reicht es, dessen Zeilen neu zu zeichnen.
+    pub fn row_bands(&self, t: &Theme) -> Vec<RowBand> {
+        let s = self.scale;
+        let list_top = self.top_dip() * s + HEAD * s;
+        let mut out = Vec::new();
+        for (i, y, h) in self.layout(Some(t)) {
+            let ys = list_top + (y - self.scroll) * s;
+            if ys + h * s < list_top - 40.0 * s {
+                continue;
+            }
+            if ys > self.h as f32 {
+                break;
+            }
+            let l = &self.lines[i];
+            let (band_y, band_h) = match l.kind {
+                Kind::Storey => (ys + STOREY_GAP * s, STOREY_ROW * s),
+                _ => (ys, h * s),
+            };
+            let (y0, y1) = (
+                band_y.floor() as i32 - 1,
+                (band_y + band_h).ceil() as i32 + 1,
+            );
+            out.push((y0, y1, self.band(l, t)));
+        }
+        out
     }
 
     /// Blatt unter der Titelleiste; die Leinwand ist schon mit `sheet_bg` gefüllt.

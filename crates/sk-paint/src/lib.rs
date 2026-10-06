@@ -308,6 +308,9 @@ pub struct Canvas {
     pub height: usize,
     px: Vec<[f32; 4]>,
     acc: Vec<f32>,
+    /// Lage der Leinwand im Gesamtbild: gefüllte Pfade werden um diesen
+    /// Betrag verschoben (Ausschnitt eines größeren Bildes zeichnen).
+    origin: (f32, f32),
 }
 
 impl Canvas {
@@ -317,7 +320,16 @@ impl Canvas {
             height,
             px: vec![[0.0; 4]; width * height],
             acc: Vec::new(),
+            origin: (0.0, 0.0),
         }
+    }
+
+    /// Die Leinwand zeigt ab jetzt den Ausschnitt ab `(x, y)` eines größeren
+    /// Bildes: Pfade in dessen Koordinaten landen an der richtigen Stelle.
+    /// Ganzzahlig gewählt, gleicht der Ausschnitt Pixel für Pixel dem
+    /// ganzen Bild.
+    pub fn set_origin(&mut self, x: f32, y: f32) {
+        self.origin = (x, y);
     }
 
     pub fn clear(&mut self, c: Rgba) {
@@ -339,6 +351,14 @@ impl Canvas {
     pub fn fill(&mut self, path: &Path, c: Rgba) {
         let (w, h) = (self.width, self.height);
         if w == 0 || h == 0 {
+            return;
+        }
+        if self.origin != (0.0, 0.0) {
+            let (ox, oy) = self.origin;
+            let moved = path.transformed(1.0, -ox, -oy);
+            self.origin = (0.0, 0.0);
+            self.fill(&moved, c);
+            self.origin = (ox, oy);
             return;
         }
         let stride = w + 2;
@@ -663,6 +683,27 @@ mod umrechnung {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ein Ausschnitt mit verschobenem Ursprung gleicht Pixel für Pixel den
+    /// Zeilen des ganzen Bildes (Mengenfenster zeichnet nur geänderte Zeilen).
+    #[test]
+    fn ausschnitt_gleicht_dem_ganzen_bild() {
+        let draw = |c: &mut Canvas| {
+            let mut p = Path::new();
+            p.rounded_rect(3.5, 7.25, 40.0, 30.0, 6.0);
+            c.fill(&p, Rgba(200, 120, 30, 180));
+            c.fill_rect(0.0, 20.0, 50.0, 2.5, Rgba(10, 20, 30, 255));
+        };
+        let mut full = Canvas::new(50, 50);
+        full.clear(Rgba(240, 240, 240, 255));
+        draw(&mut full);
+        let mut part = Canvas::new(50, 12);
+        part.clear(Rgba(240, 240, 240, 255));
+        part.set_origin(0.0, 15.0);
+        draw(&mut part);
+        let (a, b) = (full.to_premul_rgba8(), part.to_premul_rgba8());
+        assert_eq!(&a[15 * 50 * 4..27 * 50 * 4], &b[..]);
+    }
 
     #[test]
     fn rechteck_deckt_genau_ab() {

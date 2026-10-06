@@ -575,9 +575,8 @@ impl App {
     /// Wählt das Bauteil (oder nichts). Ein Bauteil eines anderen Gebäudes
     /// macht dessen Geschoss aktiv (B12).
     fn select(&mut self, id: Option<sk_model::ElementId>) {
-        if self.picking.select_only(id) {
-            self.quantity.dirty = true;
-        }
+        // Die Mengenliste folgt beim nächsten Abgleich (nur geänderte Zeilen)
+        self.picking.select_only(id);
         if self.sel.set(id) {
             self.redraw = true;
         }
@@ -1283,9 +1282,8 @@ impl App {
         if std::mem::take(&mut self.hover_from_list) {
             self.redraw = true;
         }
-        if self.picking.set_hover(hit, Vec::new()) {
-            self.quantity.dirty = true;
-        }
+        // Die Liste zeichnet beim Abgleich nur die betroffenen Zeilen neu
+        self.picking.set_hover(hit, Vec::new());
     }
 
     fn click(&mut self, id: Id) {

@@ -4,7 +4,7 @@
 
 use crate::picking::Picking;
 use crate::scene::Scene;
-use crate::schedule_view::{ListOut, ListView};
+use crate::schedule_view::{ListOut, ListView, RowBand};
 use sk_model::ElementId;
 use sk_paint::Canvas;
 use sk_platform::{CaptionArea, Event, Key, MouseButton, WindowCommand};
@@ -55,6 +55,12 @@ pub struct QuantityWindow {
     /// Pille neu gezeichnet, nicht das ganze Fenster (Review 1g).
     shown: Vec<u8>,
     pill_shown: Option<(u8, u8)>,
+    /// Hover oder Auswahl haben sich geändert: nur die Zeilen neu zeichnen,
+    /// deren Band anders aussieht (Review 1h, U5). Dazu Bänder und Knopf,
+    /// wie sie im gezeigten Bild stehen.
+    bands_dirty: bool,
+    bands_shown: Vec<RowBand>,
+    button_shown: (bool, bool),
 }
 
 impl QuantityWindow {
@@ -73,6 +79,9 @@ impl QuantityWindow {
             was_busy: false,
             shown: Vec::new(),
             pill_shown: None,
+            bands_dirty: false,
+            bands_shown: Vec::new(),
+            button_shown: (false, false),
         }
     }
 
@@ -100,8 +109,13 @@ impl QuantityWindow {
         let list = self.list.get_or_insert_with(|| ListView::new(s));
         list.scale = self.title.scale;
         (list.w, list.h) = (self.w, self.h);
-        if list.sync(s, animate) | list.follow(s, p) {
+        if list.sync(s, animate) {
             self.dirty = true;
+        }
+        // Liegen die Zeilen danach anders (aufgeklappt, gerollt), zeichnet
+        // `frame` doch das ganze Bild
+        if list.follow(s, p) {
+            self.bands_dirty = true;
         }
     }
 
@@ -135,7 +149,7 @@ impl QuantityWindow {
                 None
             }
             ListOut::Picking { selection } => {
-                self.dirty = true;
+                self.bands_dirty = true;
                 Some(Out::Picking { selection })
             }
             ListOut::Zoom(v) => Some(Out::Zoom(v)),
@@ -243,69 +257,102 @@ impl QuantityWindow {
                 let l = self.list.as_mut()?;
                 let had = !p.selected.is_empty();
                 l.clear_selection(p);
-                self.dirty = true;
+                self.bands_dirty = true;
                 had.then_some(Out::Picking { selection: true })
             }
             _ => None,
         }
     }
 
-    /// Neues Fensterbild, falls nötig: das ganze Bild oder, wenn sich nur die
-    /// Pille „wird aktualisiert“ geändert hat, nur ihre Zeilen (von, bis).
+    /// Neues Fensterbild, falls nötig: das ganze Bild oder, wenn sich nur
+    /// Bänder (Hover, Auswahl) oder die Pille „wird aktualisiert“ geändert
+    /// haben, nur deren Zeilen (von, bis).
     pub fn frame(&mut self, t: &Theme, fonts: &Fonts, now: Instant) -> Option<Frame<'_>> {
         if self.w == 0 || self.h == 0 {
             return None;
         }
         let key = self.list.as_ref().and_then(|l| l.pill_key(t, now));
-        let full = self.dirty || self.shown.len() != self.w as usize * self.h as usize * 4;
+        let mut rows: Option<(i32, i32)> = None;
+        let mut grow = |a: i32, b: i32| {
+            rows = Some(rows.map_or((a, b), |(x, y)| (x.min(a), y.max(b))));
+        };
+        let mut full = self.dirty || self.shown.len() != self.w as usize * self.h as usize * 4;
+        if !full && std::mem::take(&mut self.bands_dirty) {
+            if let Some(l) = &self.list {
+                let bands = l.row_bands(t);
+                let same_rows = bands.len() == self.bands_shown.len()
+                    && bands
+                        .iter()
+                        .zip(&self.bands_shown)
+                        .all(|(a, b)| (a.0, a.1) == (b.0, b.1));
+                if !same_rows || l.button_look() != self.button_shown {
+                    full = true;
+                } else {
+                    for (a, b) in bands.iter().zip(&self.bands_shown) {
+                        if a.2 != b.2 {
+                            grow(a.0, a.1);
+                        }
+                    }
+                    self.bands_shown = bands;
+                }
+            }
+        }
         if full {
             self.shown = self.paint(t, fonts, now).to_premul_rgba8();
             self.dirty = false;
+            self.bands_dirty = false;
             self.pill_shown = key;
+            if let Some(l) = &self.list {
+                self.bands_shown = l.row_bands(t);
+                self.button_shown = l.button_look();
+            }
             return Some((&self.shown, None));
         }
-        if key == self.pill_shown {
+        if key != self.pill_shown {
+            self.pill_shown = key;
+            if let Some((_, y, _, h)) = self.list.as_ref().and_then(|l| l.pill_rect(t, fonts)) {
+                grow(y, y + h);
+            }
+        }
+        let (y0, y1) = rows?;
+        let (y0, y1) = (y0.clamp(0, self.h as i32), y1.clamp(0, self.h as i32));
+        if y1 <= y0 {
             return None;
         }
-        self.pill_shown = key;
-        let l = self.list.as_ref()?;
-        let (rx, ry, rw, rh) = l.pill_rect(t, fonts)?;
-        let mut c = Canvas::new(rw.max(1) as usize, rh.max(1) as usize);
-        c.clear(t.ui.sheet_bg);
-        l.paint_pill(&mut c, t, fonts, now, (rx as f32, ry as f32));
-        let px = c.to_premul_rgba8();
-        let (w, h) = (self.w as i32, self.h as i32);
-        for y in ry.max(0)..(ry + rh).min(h) {
-            let (x1, x2) = (rx.max(0), (rx + rw).min(w));
-            if x1 >= x2 {
-                continue;
-            }
-            let src = (((y - ry) * rw + (x1 - rx)) * 4) as usize;
-            let dst = ((y * w + x1) * 4) as usize;
-            let n = ((x2 - x1) * 4) as usize;
-            self.shown[dst..dst + n].copy_from_slice(&px[src..src + n]);
-        }
-        let rows = (ry.clamp(0, h) as u32, (ry + rh).clamp(0, h) as u32);
-        Some((&self.shown, Some(rows)))
+        // Nur diese Zeilen zeichnen: Pixel für Pixel wie im ganzen Bild
+        let band = self
+            .paint_rows(t, fonts, now, y0 as u32, y1 as u32)
+            .to_premul_rgba8();
+        let at = y0 as usize * self.w as usize * 4;
+        self.shown[at..at + band.len()].copy_from_slice(&band);
+        Some((&self.shown, Some((y0 as u32, y1 as u32))))
     }
 
     /// Ganzes Fensterbild: Blatt, Fuge zum Hauptfenster, Titelleiste.
     pub fn paint(&self, t: &Theme, fonts: &Fonts, now: Instant) -> Canvas {
-        let (w, h) = (self.w as usize, self.h as usize);
+        self.paint_rows(t, fonts, now, 0, self.h)
+    }
+
+    /// Ausschnitt des Fensterbilds, Zeilen `y0..y1`.
+    fn paint_rows(&self, t: &Theme, fonts: &Fonts, now: Instant, y0: u32, y1: u32) -> Canvas {
+        let (w, h) = (self.w as usize, y1.saturating_sub(y0) as usize);
         let mut c = Canvas::new(w, h);
         c.clear(t.ui.sheet_bg);
+        c.set_origin(0.0, y0 as f32);
         if let Some(l) = &self.list {
             l.paint(&mut c, t, fonts, now);
         }
+        c.set_origin(0.0, 0.0);
         let bar = self.title.paint(t, fonts.regular.as_ref(), self.w);
-        c.blit(&bar, 0, 0);
+        c.blit(&bar, 0, -(y0 as i32));
+        c.set_origin(0.0, y0 as f32);
         if self.docked {
             let s = self.title.scale;
             let col = match self.seam_flash {
                 Some(at) if now.duration_since(at) < SEAM_FLASH => t.ui.accent,
                 _ => t.title.bg,
             };
-            c.fill_rect(0.0, 0.0, (SEAM * s).max(1.0), h as f32, col);
+            c.fill_rect(0.0, 0.0, (SEAM * s).max(1.0), self.h as f32, col);
         }
         c
     }
@@ -378,5 +425,60 @@ mod tests {
             matches!(q.frame(&t, &fonts, now), Some((_, None))),
             "Loslassen: neue Mengen, ganzes Bild"
         );
+    }
+
+    /// Review 1h (U5): Hover aus dem Hauptfenster zeichnet nur die Zeilen,
+    /// deren Band sich ändert, und das Ergebnis gleicht dem ganzen Bild.
+    #[test]
+    fn hover_zeichnet_nur_die_betroffenen_zeilen() {
+        let (t, fonts) = (Theme::dark(), Fonts::system());
+        let mut s = Scene::with_model(Model::with_seed(1));
+        s.edit_model("Gebäude erstellt", |m| {
+            m.add_building(2);
+            true
+        });
+        let b = s.model().buildings().ids().last().unwrap();
+        let eg = s.model().ground_of(Some(b)).unwrap();
+        s.set_active_storey(eg);
+        let run = s
+            .add_wall(&WallChain {
+                base: 0.0,
+                points: vec![vec3(0.0, 0.0, 0.0), vec3(5000.0, 0.0, 0.0)],
+                closed: false,
+                ref_side: RefSide::Left,
+                layers: Vec::new(),
+                height: 3500.0,
+                joints: Default::default(),
+            })
+            .unwrap();
+        let wall = s.model().wall_at(run, 0).unwrap();
+        let mut p = Picking::default();
+        let mut q = QuantityWindow::new();
+        (q.w, q.h) = (520, 1000);
+        let now = Instant::now();
+        q.sync(&mut s, &p, false);
+        assert!(matches!(q.frame(&t, &fonts, now), Some((_, None))));
+
+        for (one, what) in [(Some(wall), "Hover an"), (None, "Hover aus")] {
+            assert!(p.set_hover(one, Vec::new()));
+            q.sync(&mut s, &p, false);
+            let (_, rows) = q.frame(&t, &fonts, now).expect(what);
+            let (y0, y1) = rows.expect("nur Zeilen, nicht das ganze Bild");
+            assert!(y1 > y0 && y1 - y0 < 60, "{what}: eine Zeile, {y0}..{y1}");
+            let whole = q.paint(&t, &fonts, now).to_premul_rgba8();
+            assert!(q.shown == whole, "{what}: gleich dem ganzen Bild");
+            assert!(
+                q.frame(&t, &fonts, now).is_none(),
+                "{what}: danach nichts mehr"
+            );
+        }
+
+        // Auswahl: ebenfalls nur Zeilen; auf- oder zugeklappt wird nichts
+        p.selected = vec![wall];
+        q.sync(&mut s, &p, false);
+        let f = q.frame(&t, &fonts, now).map(|(_, r)| r);
+        assert!(f.is_some());
+        let whole = q.paint(&t, &fonts, now).to_premul_rgba8();
+        assert!(q.shown == whole, "Auswahl: gleich dem ganzen Bild");
     }
 }
