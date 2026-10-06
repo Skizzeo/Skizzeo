@@ -78,7 +78,7 @@ pub fn save(model: &Model, path: &Path) -> Result<(), String> {
 /// Schreibt und wartet, bis die Daten auf der Platte sind. Ohne das kann nach
 /// einem Absturz die umbenannte Datei leer sein, obwohl das Umbenennen schon
 /// gespeichert war.
-fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let mut f = std::fs::File::create(path)?;
     f.write_all(bytes)?;

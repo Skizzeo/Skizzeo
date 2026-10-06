@@ -1391,6 +1391,22 @@ mod tests {
         assert!(e.message.contains("Segmente"), "{e}");
     }
 
+    /// Doppelte Punkte, Höhe 0 und Schichtdicke 0 laden, melden sich aber.
+    #[test]
+    fn unsinnige_masse_ergeben_hinweise() {
+        let a = write(&house());
+        let b = a
+            .replacen("pts=\"0 0;0 8000;", "pts=\"0 0;0 0;", 1)
+            .replacen(" h=2750 ", " h=0 ", 1)
+            .replacen(" t=140 ", " t=0 ", 1);
+        assert_ne!(a, b);
+        let l = load(&b).unwrap();
+        assert_eq!(l.hints.len(), 3, "{:?}", l.hints);
+        assert!(l.hints.iter().any(|h| h.contains("ohne Länge")));
+        assert!(l.hints.iter().any(|h| h.contains("Höhe")));
+        assert!(l.hints.iter().any(|h| h.contains("Schichtdicke")));
+    }
+
     #[test]
     fn texte_mit_sonderzeichen() {
         let mut out = String::new();

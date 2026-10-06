@@ -251,7 +251,7 @@ pub fn read(text: &str) -> (Theme, Vec<String>) {
 
 /// Ort der Einstellungsdatei und Stand beim Laden.
 pub struct Settings {
-    /// `None` mit `--ohne-einstellungen` oder ohne `APPDATA`.
+    /// `None` mit `--ohne-einstellungen` oder `--screenshot` oder ohne `APPDATA`.
     pub path: Option<PathBuf>,
     loaded_rev: u64,
     /// Übersprungenes beim Lesen (später im Einstellungsfenster).
@@ -260,7 +260,10 @@ pub struct Settings {
 
 impl Settings {
     pub fn new(args: impl Iterator<Item = String>, appdata: Option<PathBuf>) -> Settings {
-        let off = args.skip(1).any(|a| a == "--ohne-einstellungen");
+        // Bildschirmfotos (Abnahme) hängen nie von der Datei des Nutzers ab
+        let off = args
+            .skip(1)
+            .any(|a| a == "--ohne-einstellungen" || a == "--screenshot");
         Settings {
             path: appdata
                 .filter(|_| !off)
@@ -300,7 +303,7 @@ impl Settings {
         let res = path
             .parent()
             .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|_| std::fs::write(&tmp, write(theme)))
+            .and_then(|_| crate::document::write_synced(&tmp, write(theme).as_bytes()))
             .and_then(|_| std::fs::rename(&tmp, path));
         match res {
             Ok(()) => {
@@ -426,6 +429,11 @@ mod tests {
             Some(d.clone()),
         );
         assert!(s.path.is_none());
+        let shot = Settings::new(
+            args(&["skizzeo.exe", "--screenshot", "a.png"]),
+            Some(d.clone()),
+        );
+        assert!(shot.path.is_none());
         let mut t = s.load();
         assert_eq!(t, Theme::dark());
         t.set_accent(Rgba::rgb(1, 2, 3));

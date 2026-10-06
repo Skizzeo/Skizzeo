@@ -855,12 +855,34 @@ impl Model {
                     r.segments.len()
                 ));
             }
+            if r.height <= 0.0 || !r.height.is_finite() {
+                out.push(format!("Wandzug {id:?}: Höhe {} ungültig", r.height));
+            }
+            let n = r.points.len();
+            for k in 0..count {
+                let (p, q) = (r.points[k], r.points[(k + 1) % n]);
+                if (q - p).length() < 1.0 {
+                    out.push(format!("Wandzug {id:?}: Segment {} ohne Länge", k + 1));
+                }
+            }
             for e in &r.segments {
                 if self.segment_of(*e).map(|s| s.0) != Some(id) {
                     out.push(format!(
                         "Wandzug {id:?}: Wand {e:?} fehlt oder gehört woandershin"
                     ));
                 }
+            }
+        }
+        for (_, set) in self.layer_sets.iter() {
+            if set.layers.is_empty() {
+                out.push(format!("Aufbau {}: keine Schichten", set.name));
+            }
+            if set
+                .layers
+                .iter()
+                .any(|l| l.thickness <= 0.0 || !l.thickness.is_finite())
+            {
+                out.push(format!("Aufbau {}: Schichtdicke ungültig", set.name));
             }
         }
         for (_, m) in self.materials.iter() {
