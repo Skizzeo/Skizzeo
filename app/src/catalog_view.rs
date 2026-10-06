@@ -306,6 +306,9 @@ pub struct Catalog {
     /// Zeitpunkt des Bildes, das gerade entsteht: alle Teilbilder zeigen
     /// denselben Stand der Übergänge.
     paint_now: Option<Instant>,
+    /// Feste Uhr für Tests: alle Bilder zeigen denselben Stand.
+    #[cfg(test)]
+    test_clock: Option<Instant>,
 }
 
 /// Dauer der Überblendung einer Marke (ms).
@@ -432,6 +435,8 @@ impl Catalog {
             pulse: None,
             fade: None,
             paint_now: None,
+            #[cfg(test)]
+            test_clock: None,
         };
         c.set_company(company);
         c
@@ -1692,9 +1697,18 @@ impl Catalog {
     /// Fortschritt eines Übergangs der Dauer `ms` (0 … 1); `None` ohne
     /// Animationen oder danach.
     fn progress(&self, at: Instant, ms: f32, t: &Theme) -> Option<f32> {
-        let now = self.paint_now.unwrap_or_else(Instant::now);
+        let now = self.paint_now.unwrap_or_else(|| self.clock());
         let u = now.saturating_duration_since(at).as_secs_f32() * 1000.0 / ms.max(1.0);
         (t.size.anim_ms > 0.0 && u < 1.0).then_some(u)
+    }
+
+    /// Jetzt; in Tests die feste Uhr, falls gesetzt.
+    fn clock(&self) -> Instant {
+        #[cfg(test)]
+        if let Some(t) = self.test_clock {
+            return t;
+        }
+        Instant::now()
     }
 
     /// Lage der fliegenden Kopie: Rechteck und Deckkraft.
@@ -2754,7 +2768,7 @@ impl Catalog {
     pub fn paint(&mut self, t: &Theme, fonts: &Fonts, w: &Win) -> (Canvas, i32, i32) {
         let outer = self.paint_now.is_none();
         if outer {
-            self.paint_now = Some(Instant::now());
+            self.paint_now = Some(self.clock());
         }
         let f = self.frame(t, w);
         let m = (t.size.panel_shadow * w.scale).round();
@@ -2772,7 +2786,7 @@ impl Catalog {
     /// Nächstes Bild für die App (U7): Nach Hervorhebungen und Übergängen
     /// nur die betroffenen Bereiche, sonst das ganze Fenster.
     pub fn paint_frame(&mut self, t: &Theme, fonts: &Fonts, w: &Win) -> Frame {
-        self.paint_now = Some(Instant::now());
+        self.paint_now = Some(self.clock());
         let frame = self.paint_frame_now(t, fonts, w);
         self.paint_now = None;
         frame
@@ -4943,6 +4957,8 @@ mod tests {
             c.fly = Some((Item::Company(g), Tab::Project, at));
             // Die Marke blendet in festen 150 ms über: schon vorbei
             c.fade = c.fade.map(|(it, old, _)| (it, old, at));
+            // Feste Uhr: Teilbilder und ganzes Bild zeigen denselben Stand
+            c.test_clock = Some(at + Duration::from_secs_f32(slow.size.anim_ms / 2000.0));
             for _ in 0..2 {
                 assert!(c.tick(&slow));
                 let Frame::Parts(_) = c.paint_frame(&slow, &f, &win) else {
@@ -4953,23 +4969,15 @@ mod tests {
             let from = start.iter().find(|x| x.0 == Item::Company(g)).unwrap().1;
             let r = c.fly_drawn.expect("Kopie gezeichnet");
             assert!(r.w < from.w * 0.95 && r.y < from.y, "{r:?} von {from:?}");
-            // Die Kopie wandert zwischen beiden Bildern ein wenig weiter
+            // Teilbilder und ganzes Bild stimmen überein
             let a = c.img.as_ref().unwrap().to_premul_rgba8();
             let b = c.paint(&slow, &f, &win).0.to_premul_rgba8();
             let fr = c.frame(&slow, &win);
             let m = (slow.size.panel_shadow * win.scale).round();
             let iw = c.img.as_ref().unwrap().width;
-            let near = |i: usize| {
-                let (x, y) = (
-                    (i / 4 % iw) as f32 + fr.x - m,
-                    (i / 4 / iw) as f32 + fr.y - m,
-                );
-                x > r.x - 2.0 && x < r.x + r.w + 2.0 && y > r.y - 2.0 && y < r.y + r.h + 2.0
-            };
             for (i, (p, q)) in a.iter().zip(&b).enumerate() {
-                let tol = if near(i) { 8 } else { 1 };
                 assert!(
-                    p.abs_diff(*q) <= tol,
+                    p.abs_diff(*q) <= 1,
                     "Flug: Abweichung {} bei {}, {} (Kopie {r:?})",
                     p.abs_diff(*q),
                     (i / 4 % iw) as f32 + fr.x - m,
@@ -4977,6 +4985,7 @@ mod tests {
                 );
             }
             // Flug vorbei: das letzte Bild löscht die Kopie überall
+            c.test_clock = None;
             let past = Instant::now() - Duration::from_millis(700);
             c.fly = Some((Item::Company(g), Tab::Project, past));
             c.pulse = Some((Tab::Project, past));
