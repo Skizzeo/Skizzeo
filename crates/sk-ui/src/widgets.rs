@@ -80,6 +80,8 @@ pub struct ButtonState {
     pub pressed: bool,
     /// Eingeschaltet / ausgewählt: gelb gefüllt.
     pub active: bool,
+    /// Gesperrt: blasse Schrift, keine Reaktion auf die Maus.
+    pub disabled: bool,
 }
 
 /// Knopf mit zentrierter Beschriftung.
@@ -95,7 +97,9 @@ pub fn button(
     let u = &t.ui;
     let rad = 6.0 * s;
     let b = s.round().max(1.0);
-    let (fill, border, text) = if st.active {
+    let (fill, border, text) = if st.disabled {
+        (u.bg, u.border, u.text_dim)
+    } else if st.active {
         let f = if st.hover { u.accent_hover } else { u.accent };
         (f, f, u.on_accent)
     } else if st.pressed {

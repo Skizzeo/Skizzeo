@@ -199,6 +199,7 @@ mod tests {
                 d.ground,
                 d.section_line,
                 d.section_ends,
+                d.background,
             )
         };
         assert_eq!(rest(&t), rest(&s));

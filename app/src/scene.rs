@@ -11,9 +11,9 @@ use crate::ui::Field;
 use crate::ui::ViewKind;
 use sk_math::{vec3, Vec3};
 use sk_model::{
-    floor_qto_of, foundation_qto_of, merge_seam, run_qto, BuildingId, Category, Direction,
-    ElementId, FloorQto, FloorSlab, FootingQto, Foundation, Model, RunId, SlabQto, Solid,
-    StoreyId, Touched, Txn, WallChain, WallQto, FLOOR_PART, FOOTING_PART, SLAB_PART,
+    edge_kind, floor_qto_of, foundation_qto_of, merge_seam, run_qto, BuildingId, Category,
+    Direction, Edge, ElementId, FloorQto, FloorSlab, FootingQto, Foundation, Model, RunId, SlabQto,
+    Solid, StoreyId, Touched, Txn, WallChain, WallQto, FLOOR_PART, FOOTING_PART, SLAB_PART,
 };
 use sk_render::MeshData;
 use sk_ui::theme::Theme;
@@ -31,9 +31,13 @@ struct RunCache {
     chain: WallChain,
     /// Körper für 3D und Ansichten.
     solid: Solid,
-    /// Körper waagerecht geschnitten (Grundriss) und dessen Schnitthöhe,
-    /// erst bei Bedarf berechnet.
-    plan: Option<(f64, Solid)>,
+    /// Körper waagerecht geschnitten (Grundriss), dessen Schnitthöhe und ob
+    /// der Zug unter dem aktiven Geschoss liegt (dann nur seine Decke), erst
+    /// bei Bedarf berechnet.
+    plan: Option<(f64, bool, Solid)>,
+    /// Konturen des Wandschnitts im eigenen Geschoss (UK + 1 m), als
+    /// Hintergrund des Geschosses darüber (E16); mit der Schnitthöhe.
+    under: Option<(f64, Vec<Edge>)>,
     /// Senkrechter Schnitt für die zuletzt gefragte Ebene.
     section: Option<(Plane, Solid)>,
     bounds: Option<Aabb>,
@@ -81,6 +85,7 @@ impl RunCache {
         RunCache {
             id,
             plan: None,
+            under: None,
             bounds: solid.bounds(),
             foot,
             foot_bounds,
@@ -100,7 +105,7 @@ impl RunCache {
     /// Schon berechneter Körper einer Ansicht (nach [`RunCache::view_solid`]).
     fn shown(&self, view: ViewKind, section: Option<Plane>) -> Option<&Solid> {
         match (view, section) {
-            (ViewKind::Plan, _) => self.plan.as_ref().map(|(_, s)| s),
+            (ViewKind::Plan, _) => self.plan.as_ref().map(|(_, _, s)| s),
             (ViewKind::Section, Some(pl)) => self
                 .section
                 .as_ref()
@@ -111,25 +116,42 @@ impl RunCache {
         }
     }
 
-    /// Körper einer Ansicht; `cut` ist die Schnitthöhe des Grundrisses.
-    fn view_solid(&mut self, view: ViewKind, section: Option<Plane>, cut: f64) -> Option<&Solid> {
+    /// Körper einer Ansicht; `cut` ist die Schnitthöhe des Grundrisses,
+    /// `lower`: der Zug liegt unter dem aktiven Geschoss (Grundriss: nur
+    /// seine Decke, der Boden des aktiven Geschosses; die Wände zeigt der
+    /// Hintergrund).
+    fn view_solid(
+        &mut self,
+        view: ViewKind,
+        section: Option<Plane>,
+        cut: f64,
+        lower: bool,
+    ) -> Option<&Solid> {
         match (view, section) {
             (ViewKind::Plan, _) => {
                 let (chain, found, floor) = (&self.chain, &self.found, &self.floor);
                 // Die Gründung liegt unter der Schnitthöhe: Draufsicht. Die
                 // Decke liegt im EG darüber und bleibt leer, im OG darunter.
-                if self.plan.as_ref().is_none_or(|(c, _)| *c != cut) {
-                    let mut s = chain.solid_cut_at(cut);
-                    if let Some(f) = found {
+                if self
+                    .plan
+                    .as_ref()
+                    .is_none_or(|(c, l, _)| (*c, *l) != (cut, lower))
+                {
+                    let mut s = if lower {
+                        Solid::default()
+                    } else {
+                        chain.solid_cut_at(cut)
+                    };
+                    if let (Some(f), false) = (found, lower) {
                         s.append(&part(f.slab_solid(), SLAB_PART));
                         s.append(&part(f.footing_solid(), FOOTING_PART));
                     }
                     if let Some(f) = floor {
                         s.append(&part(f.solid_cut_at(cut), FLOOR_PART));
                     }
-                    self.plan = Some((cut, s));
+                    self.plan = Some((cut, lower, s));
                 }
-                self.plan.as_ref().map(|(_, s)| s)
+                self.plan.as_ref().map(|(_, _, s)| s)
             }
             (ViewKind::Section, Some(pl)) => {
                 if self.section.as_ref().is_none_or(|(p, _)| *p != pl) {
@@ -153,6 +175,28 @@ impl RunCache {
         }
     }
 }
+
+impl RunCache {
+    /// Konturen des Wandschnitts in Höhe `cut` (nur die Schnittkanten), für
+    /// den Hintergrund des Geschosses darüber; bei Bedarf berechnet.
+    fn under_edges(&mut self, cut: f64) -> &[Edge] {
+        if self.under.as_ref().is_none_or(|(c, _)| *c != cut) {
+            let s = self.chain.solid_cut_at(cut);
+            let at_cut = |p: Vec3| (p.z - cut).abs() < 1e-6;
+            let edges = s
+                .edges
+                .into_iter()
+                .filter(|e| at_cut(e.a) && at_cut(e.b))
+                .collect();
+            self.under = Some((cut, edges));
+        }
+        self.under.as_ref().map_or(&[], |(_, e)| e)
+    }
+}
+
+/// Hintergrund im Grundriss knapp über dem Boden des aktiven Geschosses (mm):
+/// über dessen Decke, unter den eigenen Wänden.
+const BACKGROUND_LIFT: f64 = 10.0;
 
 /// So viele Schritte lassen sich rückgängig machen.
 const HISTORY: usize = 200;
@@ -341,6 +385,17 @@ impl Scene {
         }
         self.active = Some(id);
         true
+    }
+
+    /// Arbeitsebene des Wandwerkzeugs: (UK, Geschosshöhe) des aktiven
+    /// Geschosses in mm.
+    pub fn work_plane(&self) -> (f64, f64) {
+        let id = self.active_storey();
+        self.model
+            .storey(id)
+            .map_or((0.0, crate::wall_tool::WALL_HEIGHT), |st| {
+                (st.elevation, st.height)
+            })
     }
 
     /// Schnitthöhe des Grundrisses: Unterkante des aktiven Geschosses + 1 m.
@@ -763,9 +818,7 @@ impl Scene {
     pub fn set_level(&mut self, field: Field, mm: f64) -> bool {
         match field {
             Field::LevelBottom => match self.model.foundation_level_of(self.active_storey()) {
-                Some(gr) => {
-                    self.edit_model("UK Gründung", |m| m.set_foundation_bottom_of(gr, mm))
-                }
+                Some(gr) => self.edit_model("UK Gründung", |m| m.set_foundation_bottom_of(gr, mm)),
                 None => false,
             },
             Field::LevelTop(id) => {
@@ -951,6 +1004,44 @@ impl Scene {
         self.mesh_runs(view, section, &runs)
     }
 
+    /// Schnitthöhe des Hintergrunds für den Zug `run`: sein Geschoss liegt
+    /// direkt unter dem aktiven (E16).
+    fn under_cut(&self, run: RunId) -> Option<f64> {
+        let floor = self.work_plane().0;
+        let st = self.model.storey(self.model.run(run)?.storey)?;
+        let below = st.kind != sk_model::LevelKind::Foundation && (st.top() - floor).abs() < 1e-6;
+        below.then_some(st.elevation + PLAN_CUT)
+    }
+
+    /// Kanten des Hintergrunds auf der Arbeitsebene: fangbar, nicht wählbar
+    /// (E16). Leer, solange das EG aktiv ist.
+    pub fn background_snaps(&mut self) -> Vec<(Vec3, Vec3)> {
+        let floor = self.work_plane().0;
+        let cuts: Vec<(RunId, f64)> = self
+            .cache
+            .iter()
+            .flatten()
+            .filter_map(|c| Some((c.id, self.under_cut(c.id)?)))
+            .collect();
+        let mut out = Vec::new();
+        for (run, cut) in cuts {
+            if let Some(Some(c)) = self.cache.get_mut(run.index() as usize) {
+                let at = |p: Vec3| vec3(p.x, p.y, floor);
+                out.extend(c.under_edges(cut).iter().map(|e| (at(e.a), at(e.b))));
+            }
+        }
+        out
+    }
+
+    /// Liegt der Zug ganz unter dem aktiven Geschoss (B12, E16)?
+    fn is_lower(&self, run: RunId) -> bool {
+        let floor = self.work_plane().0;
+        self.model
+            .run(run)
+            .and_then(|r| self.model.storey(r.storey))
+            .is_some_and(|st| st.top() <= floor + 1e-6)
+    }
+
     /// Netz einzelner Wandzüge (Live-Netz beim Ziehen).
     pub fn mesh_runs(
         &mut self,
@@ -961,11 +1052,25 @@ impl Scene {
         let cut = self.plan_cut();
         let mut m = MeshData::default();
         if view == ViewKind::Plan {
-            for &run in runs {
+            let lower: Vec<bool> = runs.iter().map(|r| self.is_lower(*r)).collect();
+            // Hintergrund: Wandschnitt des Geschosses direkt darunter in
+            // seiner eigenen Schnitthöhe, nur Konturen, knapp über dem Boden
+            // des aktiven Geschosses (unter dessen Wänden)
+            let floor = self.work_plane().0;
+            let under: Vec<Option<f64>> = runs.iter().map(|r| self.under_cut(*r)).collect();
+            for (i, &run) in runs.iter().enumerate() {
                 if let Some(Some(c)) = self.cache.get_mut(run.index() as usize) {
                     if c.id == run {
-                        if let Some(s) = c.view_solid(view, section, cut) {
+                        if let Some(s) = c.view_solid(view, section, cut, lower[i]) {
                             mesh_into(&mut m, s);
+                        }
+                        if let Some(bcut) = under[i] {
+                            let z = (floor + BACKGROUND_LIFT) as f32;
+                            for e in c.under_edges(bcut) {
+                                let (mut a, mut b) = (e.a.to_f32(), e.b.to_f32());
+                                (a[2], b[2]) = (z, z);
+                                m.edges.push(([a, b], edge_kind::BACKGROUND as f32));
+                            }
                         }
                     }
                 }
@@ -995,7 +1100,7 @@ impl Scene {
         for &run in runs.iter().chain(&partners) {
             if let Some(Some(c)) = self.cache.get_mut(run.index() as usize) {
                 if c.id == run {
-                    c.view_solid(view, section, cut);
+                    c.view_solid(view, section, cut, false);
                 }
             }
         }
@@ -1064,6 +1169,13 @@ impl Scene {
         dir: Vec3,
     ) -> Option<ElementId> {
         let cut = self.plan_cut();
+        let lower: Vec<RunId> = self
+            .cache
+            .iter()
+            .flatten()
+            .map(|c| c.id)
+            .filter(|r| self.is_lower(*r))
+            .collect();
         let mut best: Option<(f64, RunId, u32)> = None;
         for c in self.cache.iter_mut().flatten() {
             if !c.bounds.is_some_and(|b| ray_hits_box(origin, dir, b)) {
@@ -1071,7 +1183,7 @@ impl Scene {
             }
             let id = c.id;
             if let Some((t, seg)) = c
-                .view_solid(view, section, cut)
+                .view_solid(view, section, cut, lower.contains(&id))
                 .and_then(|s| s.raycast_elem(origin, dir))
             {
                 if best.is_none_or(|b| t < b.0) {

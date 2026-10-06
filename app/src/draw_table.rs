@@ -67,6 +67,8 @@ pub struct DrawTable {
     pub ground: Stroke,
     pub section_line: Stroke,
     pub section_ends: Stroke,
+    /// Grundriss des Geschosses darunter (E16, Kantenart `BACKGROUND`).
+    pub background: Stroke,
     /// Was die Darstellung noch nicht kann (modellbezogene Schraffuren, mehr
     /// als zwei Scharen); gezeichnet wird ersatzweise.
     pub notes: Vec<String>,
@@ -210,6 +212,7 @@ impl DrawTable {
             ground: stroke(&d.ground),
             section_line: stroke(&d.section_line),
             section_ends: stroke(&d.section_ends),
+            background: stroke(&d.background),
             notes,
         }
     }
@@ -274,6 +277,10 @@ impl DrawTable {
             e.width[i] = w * px_scale;
             e.color[i] = [c[0], c[1], c[2]];
         }
+        let (w, c) = self.background;
+        let k = edge_kind::BACKGROUND as usize;
+        e.width[k] = w * px_scale;
+        e.color[k] = [c[0], c[1], c[2]];
         e
     }
 

@@ -672,6 +672,22 @@ impl Renderer {
         }
     }
 
+    /// Einfarbige Fläche als Oberflächenbild (etwa das Abdunkeln hinter einem
+    /// Dialog): ein Bildpunkt, auf `width` × `height` gestreckt.
+    pub fn set_overlay_fill(
+        &mut self,
+        slot: usize,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        rgba_premul: [u8; 4],
+    ) {
+        self.set_overlay(slot, x, y, 1, 1, &rgba_premul);
+        let o = &mut self.overlays[slot];
+        (o.w, o.h) = (width as i32, height as i32);
+    }
+
     /// Ersetzt einen Ausschnitt eines schon hochgeladenen Oberflächenbildes:
     /// `(x, y)` links oben im Bild, vormultipliziertes RGBA8. Ein Ausschnitt,
     /// der nicht ganz im Bild liegt, wird verworfen.

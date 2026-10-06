@@ -17,7 +17,7 @@ type RgbaRole = (&'static str, fn(&mut Theme) -> &mut Rgba);
 type F4Role = (&'static str, fn(&mut Theme) -> &mut [f32; 4]);
 type SizeRole = (&'static str, fn(&mut Theme) -> &mut f32);
 
-const RGBA_ROLES: [RgbaRole; 42] = [
+const RGBA_ROLES: [RgbaRole; 43] = [
     ("ui.bg", |t| &mut t.ui.bg),
     ("ui.border", |t| &mut t.ui.border),
     ("ui.field", |t| &mut t.ui.field),
@@ -62,6 +62,7 @@ const RGBA_ROLES: [RgbaRole; 42] = [
     ("env.edge", |t| &mut t.env.edge),
     ("env.paper_fallback", |t| &mut t.env.paper_fallback),
     ("env.fill_fallback", |t| &mut t.env.fill_fallback),
+    ("env.scrim", |t| &mut t.env.scrim),
 ];
 
 const F4_ROLES: [F4Role; 10] = [
@@ -77,7 +78,7 @@ const F4_ROLES: [F4Role; 10] = [
     ("interact.shadow_band", |t| &mut t.interact.shadow_band),
 ];
 
-const SIZE_ROLES: [SizeRole; 23] = [
+const SIZE_ROLES: [SizeRole; 25] = [
     ("corner_radius", |t| &mut t.size.corner_radius),
     ("font", |t| &mut t.size.font),
     ("font_small", |t| &mut t.size.font_small),
@@ -101,6 +102,8 @@ const SIZE_ROLES: [SizeRole; 23] = [
     ("level_guide", |t| &mut t.size.level_guide),
     ("dim_tick", |t| &mut t.size.dim_tick),
     ("dim_line", |t| &mut t.size.dim_line),
+    ("dialog_w", |t| &mut t.size.dialog_w),
+    ("dialog_h", |t| &mut t.size.dialog_h),
 ];
 
 /// Grundschema zu einem Namen.

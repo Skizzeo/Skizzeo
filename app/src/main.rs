@@ -107,16 +107,20 @@ const MESH_PREVIEW: usize = 1;
 const MESH_LIVE: usize = 2;
 
 // Oberflächenbilder in Zeichenreihenfolge: Endsymbole unter den Paneelen,
-// die Titelleiste ganz oben.
+// das Abdunkeln hinter dem Dialog über den rechten, unter den linken
+// Paneelen (E16), die Titelleiste ganz oben.
 /// Endsymbole der Schnittlinie im Grundriss (zwei Plätze).
 const OVERLAY_MARKS: usize = 0;
-const OVERLAY_TOOLS: usize = 2;
-const OVERLAY_VIEWS: usize = 3;
+const OVERLAY_VIEWS: usize = 2;
 /// Paneel „Eigenschaften“.
-const OVERLAY_PROPS: usize = 4;
+const OVERLAY_PROPS: usize = 3;
+const OVERLAY_SCRIM: usize = 4;
+const OVERLAY_TOOLS: usize = 5;
 /// Paneel „Geschosse“.
-const OVERLAY_LEVELS: usize = 5;
-const OVERLAY_TITLE: usize = 6;
+const OVERLAY_LEVELS: usize = 6;
+/// Dialog „Gebäude erstellen“.
+const OVERLAY_DIALOG: usize = 7;
+const OVERLAY_TITLE: usize = 8;
 
 /// Blickrichtung (yaw, pitch) der Parallelansichten.
 fn view_direction(v: ViewKind) -> (f64, f64) {
@@ -256,6 +260,8 @@ struct App {
     /// Stand, für den das Paneel „Eigenschaften“ zuletzt gefüllt wurde
     /// (Bauteil, Modellrevision).
     props_key: Option<(sk_model::ElementId, u64)>,
+    /// Stand (Revision, aktives Geschoss) der Fangkanten des Hintergrunds.
+    snaps_key: Option<(u64, sk_model::StoreyId)>,
     w: u32,
     h: u32,
     overlay_dirty: bool,
@@ -367,10 +373,25 @@ impl App {
     /// Paneel „Geschosse“ an das Modell angleichen. Beim Ziehen wird nur sein
     /// Bild erneuert, die Größe bleibt bis zum Loslassen.
     fn sync_levels(&mut self) {
-        let eg_only = self.scene.active_storey() != self.scene.model().defaults().storey;
-        if eg_only != self.ui.eg_only {
-            self.ui.eg_only = eg_only;
+        let upper = !self.scene.ground_active();
+        if upper != self.ui.upper_active {
+            self.ui.upper_active = upper;
             self.overlay_dirty = true;
+        }
+        // Außenwände entstehen aus dem EG (E16); Innenwände auch im OG
+        if upper && self.tool.enabled && self.tool.category == Category::ExteriorWall {
+            self.tool.set_enabled(false);
+            self.redraw = true;
+        }
+        let (z, h) = self.scene.work_plane();
+        if self.tool.set_plane(z, h) {
+            self.redraw = true;
+        }
+        // Fangkanten des Hintergrunds (nur bei Modell- oder Geschosswechsel neu)
+        let key = (self.scene.model().revision(), self.scene.active_storey());
+        if self.snaps_key != Some(key) {
+            self.snaps_key = Some(key);
+            self.tool.snaps = self.scene.background_snaps();
         }
         if self.ui.set_levels(self.scene.levels()) {
             match self.ui.level_dragging() {
@@ -380,11 +401,49 @@ impl App {
         }
     }
 
-    /// Wählt das Bauteil (oder nichts).
+    /// Wählt das Bauteil (oder nichts). Ein Bauteil eines anderen Gebäudes
+    /// macht dessen Geschoss aktiv (B12).
     fn select(&mut self, id: Option<sk_model::ElementId>) {
         if self.sel.set(id) {
             self.redraw = true;
         }
+        if id.is_some_and(|e| self.scene.follow_selection(e)) {
+            if self.ui.view == ViewKind::Plan {
+                self.upload_model();
+            }
+            self.sync_levels();
+        }
+    }
+
+    /// Knopf „Gebäude“ ohne Gebäude im Modell: Dialog „Gebäude erstellen“
+    /// (E16). Das Gebäude steht sofort im Paneel „Geschosse“.
+    fn open_building_dialog(&mut self) {
+        if !self.tool_allowed() {
+            self.set_view(ViewKind::Persp);
+        }
+        self.tool.set_enabled(false);
+        self.set_wall_kind(Category::ExteriorWall);
+        self.scene.open_building_dialog();
+        self.ui.dialog = true;
+        self.ui.hover = None;
+        self.sync_levels();
+        self.overlay_dirty = true;
+    }
+
+    /// Dialog schließen: mit „Zeichnen beginnen“ beginnt das Polygon im selben
+    /// Schritt, sonst bleibt nichts zurück.
+    fn close_building_dialog(&mut self, start: bool) {
+        self.ui.dialog = false;
+        self.ui.hover = None;
+        if start {
+            self.tool.set_enabled(true);
+        } else {
+            self.scene.cancel_building();
+            self.tool.set_enabled(false);
+        }
+        self.sync_levels();
+        self.overlay_dirty = true;
+        self.refresh_cursor();
     }
 
     /// Wandeingabe nur auf dem Boden (3D und Grundriss).
@@ -466,6 +525,8 @@ impl App {
     /// Eingaben gehen weg; die Kamera zeigt das ganze Modell.
     fn replace_scene(&mut self, model: sk_model::Model) {
         self.scene = Scene::with_model(model);
+        self.ui.dialog = false;
+        self.snaps_key = None;
         self.scene.set_theme(&self.theme);
         self.tool.set_enabled(self.tool.enabled);
         self.set_wall_kind(self.tool.category);
@@ -586,6 +647,13 @@ impl App {
                 };
                 // Derselbe Knopf schaltet aus, der andere wechselt die Wandart
                 let on = !(self.tool.enabled && self.tool.category == cat);
+                if on && id == Id::Building && self.ui.upper_active {
+                    return;
+                }
+                if on && id == Id::Building && self.scene.model().buildings().is_empty() {
+                    self.open_building_dialog();
+                    return;
+                }
                 if on && !self.tool_allowed() {
                     self.set_view(ViewKind::Persp);
                 }
@@ -606,8 +674,11 @@ impl App {
                     self.sync_levels();
                 }
             }
-            // Zahlenfelder melden sich über `UiOut::submit`, Griffe über `UiOut::level`
-            Id::Field(_) | Id::Grip(_) => {}
+            Id::DialogStart => self.close_building_dialog(true),
+            Id::DialogCancel | Id::DialogClose => self.close_building_dialog(false),
+            // Zahlenfelder melden sich über `UiOut::submit`, Griffe über
+            // `UiOut::level`; der Zähler ist derzeit fest
+            Id::Field(_) | Id::Grip(_) | Id::DialogMinus | Id::DialogPlus => {}
         }
         self.overlay_dirty = true;
         self.refresh_cursor();
@@ -672,8 +743,16 @@ impl App {
         }
     }
 
-    /// Zustand der Knöpfe an Werkzeug und Ansicht angleichen.
+    /// Zustand der Knöpfe an Werkzeug und Ansicht angleichen. Ein Gebäude
+    /// im Entstehen ohne Außenwand-Werkzeug (anderes Werkzeug, andere
+    /// Ansicht) wird verworfen.
     fn sync_ui(&mut self) {
+        let drawing = self.tool.enabled && self.tool.category == Category::ExteriorWall;
+        if self.scene.building_pending() && !self.ui.dialog && !drawing {
+            self.scene.cancel_building();
+            self.sync_levels();
+            self.upload_model();
+        }
         let (b, r, o) = (self.tool.enabled, self.tool.ref_side, self.tool.ortho);
         if (self.ui.building, self.ui.ref_side, self.ui.ortho) != (b, r, o) {
             (self.ui.building, self.ui.ref_side, self.ui.ortho) = (b, r, o);
@@ -937,12 +1016,18 @@ impl App {
                 }
             }
             Event::Wheel { y, .. } => {
-                if y >= th {
+                if y >= th && !self.ui.dialog {
                     camera_moved |=
                         self.nav
                             .handle(&in_view(e), &mut self.cam, &self.scene, vw, vh, sc);
                 }
             }
+            // Der Dialog nimmt jede Taste: Enter beginnt, Esc bricht ab
+            Event::Key { key, down, .. } if self.ui.dialog => match key {
+                Key::Enter if down => self.close_building_dialog(true),
+                Key::Escape if down => self.close_building_dialog(false),
+                _ => {}
+            },
             // Ein Zahlenfeld in Eingabe nimmt jede Taste
             Event::Key {
                 key, down, mods, ..
@@ -988,6 +1073,12 @@ impl App {
                         self.upload_model();
                         self.refresh_cursor();
                     }
+                } else if down && key == Key::Escape && self.scene.building_pending() {
+                    // Esc vor dem Schließen des Polygons: das Gebäude entsteht nicht
+                    self.tool.set_enabled(false);
+                    self.scene.cancel_building();
+                    self.sync_levels();
+                    self.refresh_cursor();
                 } else if down && key == Key::Escape && self.tool.enabled && !self.tool.is_active()
                 {
                     // Esc ohne angefangenen Zug beendet die Gebäude-Eingabe
@@ -1043,9 +1134,32 @@ impl App {
         }
         self.dirty_buttons.clear();
         self.paint_props();
+        self.paint_dialog();
         self.overlay_dirty = false;
         self.layout_dirty = false;
         self.redraw = true;
+    }
+
+    /// Dialog „Gebäude erstellen“ samt Abdunkeln des Modellfensters
+    /// zeichnen oder ausblenden.
+    fn paint_dialog(&mut self) {
+        if self.ui.dialog {
+            let th = self.title.height();
+            let (c, x, y) = self.ui.paint(&self.theme, Panel::Dialog, self.w, th);
+            let px = c.to_premul_rgba8();
+            self.renderer
+                .set_overlay(OVERLAY_DIALOG, x, y, c.width as u32, c.height as u32, &px);
+            let k = self.theme.env.scrim;
+            let a = k.3 as u32;
+            let pm = |v: u8| ((v as u32 * a + 127) / 255) as u8;
+            let scrim = [pm(k.0), pm(k.1), pm(k.2), k.3];
+            let h = self.h.saturating_sub(th);
+            self.renderer
+                .set_overlay_fill(OVERLAY_SCRIM, 0, th as i32, self.w, h, scrim);
+        } else {
+            self.renderer.set_overlay(OVERLAY_DIALOG, 0, 0, 0, 0, &[]);
+            self.renderer.set_overlay(OVERLAY_SCRIM, 0, 0, 0, 0, &[]);
+        }
     }
 
     /// Paneel „Eigenschaften“ zeichnen oder (ohne Auswahl) ausblenden.
@@ -1107,6 +1221,7 @@ impl App {
                 Panel::Views => OVERLAY_VIEWS,
                 Panel::Props => OVERLAY_PROPS,
                 Panel::Levels => OVERLAY_LEVELS,
+                Panel::Dialog => OVERLAY_DIALOG,
             };
             self.renderer
                 .update_overlay(slot, p.x as i32, p.y as i32, p.w as u32, p.h as u32, &p.px);
@@ -1117,6 +1232,11 @@ impl App {
     /// Neue Fensterbreite bei gleicher Paneelgröße: nur die Titelleiste neu,
     /// die Paneele behalten ihr Bild und rücken an ihren Platz.
     fn relayout_overlays(&mut self, surface: &Surface) {
+        if self.ui.dialog {
+            // Das Abdunkeln folgt der Fenstergröße
+            self.paint_overlays(surface);
+            return;
+        }
         self.paint_title(surface);
         let th = self.title.height();
         for (slot, p) in [
@@ -1223,6 +1343,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         sect: SectionLine::default(),
         sel: Selection::default(),
         props_key: None,
+        snaps_key: None,
         w,
         h,
         overlay_dirty: true,

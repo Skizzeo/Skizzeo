@@ -255,14 +255,7 @@ mod tests {
         ];
         let eg = m.eg_at(2750.0);
         let r = m
-            .add_wall_run(
-                &pts,
-                true,
-                RefSide::Left,
-                eg,
-                set,
-                Category::ExteriorWall,
-            )
+            .add_wall_run(&pts, true, RefSide::Left, eg, set, Category::ExteriorWall)
             .unwrap();
         let q = run_qto(&m, r);
         assert_eq!(q.len(), 4);
@@ -293,14 +286,7 @@ mod tests {
         let pts = [vec3(0.0, 0.0, 0.0), vec3(5000.0, 0.0, 0.0)];
         let eg = m.eg_at(2750.0);
         let r = m
-            .add_wall_run(
-                &pts,
-                false,
-                RefSide::Left,
-                eg,
-                set,
-                Category::ExteriorWall,
-            )
+            .add_wall_run(&pts, false, RefSide::Left, eg, set, Category::ExteriorWall)
             .unwrap();
         let q = run_qto(&m, r);
         assert_eq!(q.len(), 1);
@@ -318,15 +304,8 @@ mod tests {
             vec3(10000.0, 0.0, 0.0),
         ];
         let eg = m.eg_at(2750.0);
-        m.add_wall_run(
-            &pts,
-            true,
-            RefSide::Left,
-            eg,
-            set,
-            Category::ExteriorWall,
-        )
-        .unwrap()
+        m.add_wall_run(&pts, true, RefSide::Left, eg, set, Category::ExteriorWall)
+            .unwrap()
     }
 
     fn near(a: f64, b: f64, tol: f64) -> bool {
@@ -458,7 +437,12 @@ mod tests {
         let l = crate::szo::read(&text, crate::GuidGen::with_seed(1)).unwrap();
         assert!(l.hints.is_empty(), "{:?}", l.hints);
         assert_eq!(crate::szo::write(&l.model), text);
-        let r2 = l.model.runs().ids().next().unwrap();
+        let r2 = l
+            .model
+            .runs()
+            .ids()
+            .find(|r| l.model.run_below(*r).is_none())
+            .unwrap();
         assert_eq!(foundation_qto(&l.model, r2), foundation_qto(&m, r));
         let (s2, f2) = l.model.foundation_of(r2).unwrap();
         assert_eq!(
@@ -490,7 +474,12 @@ mod tests {
         let l = crate::szo::read(&old, crate::GuidGen::with_seed(1)).unwrap();
         assert_eq!(l.hints.len(), 2, "{:?}", l.hints);
         assert!(l.model.check().is_empty(), "{:?}", l.model.check());
-        let r = l.model.runs().ids().next().unwrap();
+        let r = l
+            .model
+            .runs()
+            .ids()
+            .find(|r| l.model.run_below(*r).is_none())
+            .unwrap();
         assert!(l.model.foundation(r).unwrap().is_ok());
         let (_, rc) = l
             .model

@@ -23,6 +23,9 @@ pub mod edge_kind {
     pub const CUT_LAYER: u8 = 3;
     /// Anzahl der Kantenarten (für Tabellen je Art).
     pub const COUNT: usize = 4;
+    /// Hintergrund: Grundriss des Geschosses unter dem aktiven (E16); Stil aus
+    /// [`crate::Display::background`], nicht aus den Tabellen je Art.
+    pub const BACKGROUND: u8 = 4;
 }
 
 #[derive(Clone, Copy, Debug)]

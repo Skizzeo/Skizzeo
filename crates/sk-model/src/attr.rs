@@ -145,6 +145,8 @@ pub struct Display {
     pub section_line: EdgeStyle,
     /// Schnittlinie, kräftige Enden.
     pub section_ends: EdgeStyle,
+    /// Grundriss des Geschosses darunter, wenn ein Obergeschoss aktiv ist (E16).
+    pub background: EdgeStyle,
     /// Papiergrund der Zeichnungsansichten.
     pub paper: [u8; 3],
 }
@@ -293,11 +295,12 @@ impl Attributes {
     /// Verstöße gegen die Verweisregeln (jede Kantenart verweist auf Lebendes).
     pub fn check(&self) -> Vec<String> {
         let d = &self.display;
-        let styles =
-            d.drawing
-                .iter()
-                .chain(&d.model3d)
-                .chain([&d.ground, &d.section_line, &d.section_ends]);
+        let styles = d.drawing.iter().chain(&d.model3d).chain([
+            &d.ground,
+            &d.section_line,
+            &d.section_ends,
+            &d.background,
+        ]);
         let mut out = Vec::new();
         for s in styles {
             if !self.pens.contains(s.pen) {
@@ -330,6 +333,9 @@ pub struct Standard {
     pub insulation: FillId,
 }
 
+/// Nummer des Stifts „Hintergrund“ (E16), in älteren Dateien ergänzt.
+pub(crate) const BACKGROUND_PEN: u16 = 9;
+
 /// Starttabellen. Die Werte ergeben dieselbe Zeichnung wie vor den Tabellen
 /// (bei 5,5 px je mm).
 pub fn defaults(guids: &mut GuidGen) -> (Attributes, Standard) {
@@ -352,6 +358,7 @@ pub fn defaults(guids: &mut GuidGen) -> (Attributes, Standard) {
     let edge3d = pen(6, "3D-Kante", black, 0.23);
     let sect_thin = pen(7, "Schnittlinie", black, 0.22);
     let sect_strong = pen(8, "Schnittlinie Enden", black, 0.58);
+    let under = pen(BACKGROUND_PEN, "Hintergrund", [160, 160, 160], 0.13);
 
     let mut line_types = Arena::new();
     let solid = line_types.insert(LineType {
@@ -396,6 +403,7 @@ pub fn defaults(guids: &mut GuidGen) -> (Attributes, Standard) {
             ground: style(strong),
             section_line: style(sect_thin),
             section_ends: style(sect_strong),
+            background: style(under),
             paper: [245, 244, 239],
         },
         rev: 0,
@@ -419,7 +427,13 @@ mod tests {
         let m = Model::with_seed(1);
         assert!(m.check().is_empty(), "{:?}", m.check());
         let a = m.attr();
-        assert_eq!(a.pens().len(), 8);
+        assert_eq!(a.pens().len(), 9);
+        // E16: Stift 9 „Hintergrund“ für den Grundriss darunter
+        let bg = a.pen(a.display().background.pen).unwrap();
+        assert_eq!(
+            (bg.number, bg.name.as_str(), bg.color, bg.width_mm),
+            (9, "Hintergrund", [160, 160, 160], 0.13)
+        );
         for (_, mat) in m.materials().iter() {
             assert!(a.fill(mat.cut_fill).is_some());
             assert!(a.pen(mat.cut_fg).is_some() && a.pen(mat.cut_bg).is_some());

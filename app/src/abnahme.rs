@@ -88,6 +88,7 @@ fn tool(scene: &Scene) -> WallTool {
     let mut t = WallTool::new();
     let set = scene.model().defaults().exterior_wall;
     t.layers = scene.model().wall_layers(set);
+    (t.z, t.height) = scene.work_plane();
     t.set_enabled(true);
     t
 }
@@ -893,14 +894,20 @@ fn a15_auswahl_per_klick_in_jeder_ansicht() {
     let mut s = Scene::with_model(Model::with_seed(10));
     let run = zeichne_rechteck(&mut s, &cam3d());
     let top = s.model().wall_at(run, 1).unwrap(); // y = 8 m, 10 m lang
-    // Darüber die gekoppelte OG-Wand (B12)
+                                                  // Darüber die gekoppelte OG-Wand (B12)
     let og = s.model().runs_above(run)[0];
     let top_og = s.model().wall_at(og, 1).unwrap();
     let mut sect = SectionLine::default();
     sect.ensure(&s);
     let bounds = s.bounds();
     // Je Ansicht: Kamera, Schnittebene, Punkt auf der oberen bzw. einer Wand
-    type Case = (ViewKind, Camera, Option<(Vec3, Vec3)>, Vec3, sk_model::ElementId);
+    type Case = (
+        ViewKind,
+        Camera,
+        Option<(Vec3, Vec3)>,
+        Vec3,
+        sk_model::ElementId,
+    );
     let cases: [Case; 4] = [
         // 3D von oben: die Krone der OG-Wand (Dämmung neben der OG-Decke)
         (
@@ -2652,7 +2659,6 @@ fn a46_ansichten_folgen() {
             .map(|v| v[2])
             .fold(f32::MIN, f32::max)
     };
-    let cut = view_mesh(&mut s, ViewKind::Section, sect.plane());
     let concrete_in = |m: &Shown, lo: f32, hi: f32| {
         m.faces
             .iter()
@@ -2698,7 +2704,7 @@ fn a47_paneel_geschosse_links() {
 
 /// A48 (E14b Test 3): Klick auf „OG“ macht es aktiv. Der Grundriss schneidet
 /// dann 1 m über UK OG (+3,855) und zeigt nur noch Wände und Decke von oben;
-/// die Gründung ist nicht aktivierbar, gezeichnet wird weiter im EG.
+/// die Gründung ist nicht aktivierbar; das Werkzeug zeichnet auf UK OG.
 #[test]
 fn a48_aktives_geschoss() {
     let mut s = Scene::with_model(Model::with_seed(48));
@@ -2740,18 +2746,22 @@ fn a48_aktives_geschoss() {
     kante_ziehen(&mut s, "EG.OK", &[3000.0], false);
     assert_eq!(s.plan_cut(), 3000.0 + 1000.0);
 
-    // Oberfläche: Hinweis unter „Gebäude“, Zeichnen bleibt im EG
+    // Oberfläche: Hinweis unter „Gebäude“ (E16), das Werkzeug zeichnet auf
+    // der Ebene des aktiven Geschosses
     let mut ui = Ui::new(1.0, &Theme::dark());
     ui.fit(1.0, 1440, 900);
     let h0 = ui.rect(Panel::Tools, 1440, 32).h;
-    ui.eg_only = true;
+    ui.upper_active = true;
     assert!(ui.rect(Panel::Tools, 1440, 32).h > h0, "Hinweiszeile");
+    assert!(!s.ground_active());
+    assert_eq!(s.work_plane(), (3000.0, 2980.0), "UK OG und OG-Höhe");
     let c = cam3d();
     let mut t = tool(&s);
-    click(&mut t, &c, vec3(20000.0, 0.0, 0.0));
-    click(&mut t, &c, vec3(24000.0, 0.0, 0.0));
+    click(&mut t, &c, vec3(20000.0, 0.0, 3000.0));
+    click(&mut t, &c, vec3(24000.0, 0.0, 3000.0));
     let w = t.handle(&key(Key::Enter), &c, W, H, 1.0).commit.unwrap();
-    assert!(w.points.iter().all(|p| p.z == 0.0), "Wand im EG");
+    assert_eq!(w.base, 3000.0);
+    assert!((w.points[1] - vec3(24000.0, 0.0, 3000.0)).length() < 1e-6);
 }
 
 /// A49 (E14b Test 2): Beim Ziehen einer Ebene eine violette Hilfslinie in
@@ -2780,4 +2790,481 @@ fn a49_hilfslinie_der_ebene() {
         assert_eq!(l[0].width, 2.0 * th.size.level_guide);
     }
     assert!(crate::level_guide(ViewKind::Plan, b, z, 1.0, &th).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// A50–A57: Gebäude aus einem Polygon, Obergeschoss, OG-Decke (B12 Phase 1, G6, E16)
+// Sollwerte: bim/paket-b12-obergeschoss.md „Fertig, wenn“ (von Hand nachgerechnet),
+// eingeschränkt nach Jörn 06.10. 09:29: Der Dialog fragt nur die Anzahl der
+// Geschosse, derzeit fest 2 (EG + OG); der Baukörper endet an OK OG-Decke +5,835.
+// Fälle mit 0 oder 2 OG aus B12 sind deshalb nicht enthalten.
+//
+// Stand B12/E16 final (09:34). Vorbereitet vor dem Einbau, setzt A32–A47 voraus (decke, aw_schicht, anzahl,
+// geschoss, band, kante_ziehen, HAUS_SZO1). Zugriffe auf die neue API stehen
+// nur in den Hilfsfunktionen direkt hier unten.
+//
+// Beim Einbau ändern sich ältere Sollwerte, weil die EG-Wände dann an OK EG
+// (+2,855) enden statt 3,50 hoch zu sein: A16, A29, A30, A34, A39–A48.
+// ---------------------------------------------------------------------------
+
+/// Knopf „Gebäude“ → Dialog (2 Geschosse) → OK: Transaktion offen, Gebäude
+/// mit GR/EG/OG steht schon im Geschosspaneel. API-Annahme:
+/// `Scene::open_building_dialog()` (begin + add_building),
+/// `Scene::cancel_building()` (rollback).
+fn dialog_ok(s: &mut Scene) {
+    s.open_building_dialog();
+}
+
+fn dialog_abbrechen(s: &mut Scene) {
+    s.cancel_building();
+}
+
+/// Dialog mit OK, dann das Rechteck mit dem Werkzeug; das Schließen legt das
+/// ganze Gebäude an (ein Schritt „Gebäude erstellt“). Liefert (EG-Zug, OG-Zug).
+fn gebaeude(s: &mut Scene) -> (RunId, RunId) {
+    dialog_ok(s);
+    let eg = zeichne_rechteck(s, &cam3d());
+    (eg, og_zug(s, eg))
+}
+
+fn og_zug(s: &Scene, eg: RunId) -> RunId {
+    let og = geschoss(s, "OG");
+    s.model()
+        .runs()
+        .ids()
+        .find(|r| {
+            *r != eg
+                && s.model()
+                    .wall_at(*r, 0)
+                    .and_then(|w| s.model().element(w))
+                    .is_some_and(|el| el.storey == og)
+        })
+        .expect("OG-Zug angelegt")
+}
+
+/// Gebäude im Modell. API-Annahme: `Model::buildings()` mit `number`.
+fn gebaeude_nummern(s: &Scene) -> Vec<String> {
+    let mut v: Vec<String> = s
+        .model()
+        .buildings()
+        .iter()
+        .map(|(_, b)| b.number.clone())
+        .collect();
+    v.sort();
+    v
+}
+
+/// Lichte Höhe OG als Zahl. API-Annahme: `set_clear_height` gilt je Geschoss.
+fn lichte_og(s: &mut Scene, wert: f64) -> bool {
+    let og = geschoss(s, "OG");
+    s.edit_model("lichte Höhe OG", |m| m.set_clear_height(og, wert))
+}
+
+fn lichte_og_hoehe(s: &Scene) -> f64 {
+    s.model().clear_height(geschoss(s, "OG"))
+}
+
+fn r4(v: f64) -> f64 {
+    (v * 1e4).round() / 1e4
+}
+
+/// Gasbeton netto und Dämmung eines Zugs (m³, gerundet).
+fn schale(s: &Scene, run: RunId) -> (f64, f64) {
+    (r4(aw_schicht(s, run, 1)), r4(aw_schicht(s, run, 0)))
+}
+
+/// Gummiband am Wandfuß einer Wand (Fußhöhe z) um dy verschieben.
+fn ziehen_am_fuss(s: &mut Scene, z: f64, dy: f64) {
+    let c = cam3d();
+    let mut e = WallEdit::default();
+    let (x, y) = px(&c, vec3(2500.0, 8000.0, z));
+    e.handle(&mv(x, y), s, &c, W, H, 1.0, true);
+    e.handle(&down(x, y), s, &c, W, H, 1.0, true);
+    let (x2, y2) = px(&c, vec3(2500.0, 8000.0 + dy, z));
+    e.handle(&mv(x2, y2), s, &c, W, H, 1.0, true);
+    e.handle(&up(x2, y2), s, &c, W, H, 1.0, true);
+}
+
+const EG_SCHALE: (f64, f64) = (15.7613, 14.1654);
+const OG_SCHALE: (f64, f64) = (16.5089, 14.7856);
+
+/// A50 (B12): Das erste Polygon erzeugt in einem Schritt das ganze Gebäude:
+/// GB-01, GR/EG/OG, FS-001, SP-001, AW-001…008, DE-001, DE-002.
+#[test]
+fn a50_gebaeude_aus_einem_polygon() {
+    let mut s = Scene::with_model(Model::with_seed(50));
+    // Dialog öffnen: Geschosse sofort da; Abbrechen lässt nichts zurück
+    dialog_ok(&mut s);
+    assert_eq!(gebaeude_nummern(&s), ["GB-01"]);
+    assert_eq!(band(&s, "OG"), (2855.0, 5835.0));
+    dialog_abbrechen(&mut s);
+    assert!(gebaeude_nummern(&s).is_empty());
+    assert!(!s.undo(), "Rückgängig-Liste unverändert leer");
+    let (eg, og) = gebaeude(&mut s);
+    assert_eq!(gebaeude_nummern(&s), ["GB-01"]);
+    assert_eq!(band(&s, "GR"), (-800.0, 0.0));
+    assert_eq!(band(&s, "EG"), (0.0, 2855.0));
+    assert_eq!(band(&s, "OG"), (2855.0, 5835.0));
+    let n = |s: &Scene| ["FS-", "SP-", "AW-", "DE-", "IW-"].map(|p| anzahl(s, p));
+    assert_eq!(n(&s), [1, 1, 8, 2, 0]);
+    let nr = |run: RunId, i: usize| {
+        s.model()
+            .element(s.model().wall_at(run, i).unwrap())
+            .unwrap()
+            .number
+            .clone()
+    };
+    assert_eq!(nr(eg, 0), "AW-001");
+    assert_eq!(nr(og, 0), "AW-005");
+    let de = |run: RunId| {
+        s.model()
+            .element(decke(&s, run).unwrap())
+            .unwrap()
+            .number
+            .clone()
+    };
+    assert_eq!(
+        (de(eg), de(og)),
+        ("DE-001".to_string(), "DE-002".to_string())
+    );
+    assert!(s.foundation(og).is_none(), "Gründung nur unter dem EG");
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+    // Ein Schritt: Rückgängig entfernt alles, Wiederherstellen bringt dieselben Kennungen
+    let guids = |s: &Scene| {
+        let mut g: Vec<_> = s.model().elements().iter().map(|(_, e)| e.guid).collect();
+        g.sort();
+        g
+    };
+    let vorher = guids(&s);
+    assert!(s.undo());
+    assert_eq!(n(&s), [0, 0, 0, 0, 0]);
+    assert!(s.redo());
+    assert_eq!(guids(&s), vorher);
+}
+
+/// A51 (B12): Mengen je Geschoss getrennt, Gründung nur einmal.
+#[test]
+fn a51_mengen_je_geschoss() {
+    let mut s = Scene::with_model(Model::with_seed(51));
+    let (eg, og) = gebaeude(&mut s);
+    assert_eq!(decke_mengen(&s, eg).0, 75.0384);
+    assert_eq!(decke_mengen(&s, eg).1, 16.5084);
+    assert_eq!(decke_mengen(&s, og).0, 75.0384);
+    assert_eq!(decke_mengen(&s, og).1, 16.5084);
+    assert_eq!(decke_hoehen(&s, eg), (2635.0, 2855.0));
+    assert_eq!(decke_hoehen(&s, og), (5615.0, 5835.0));
+    assert_eq!(lichte_og_hoehe(&s), 2760.0);
+    assert_eq!(schale(&s, eg), EG_SCHALE);
+    assert_eq!(schale(&s, og), OG_SCHALE);
+    let (sp, fs) = s.foundation_qto(eg).unwrap();
+    assert_eq!((m3(sp.volume), m3(fs.volume)), (16.0, 7.266));
+    // EG-Innenwand netto, nicht gestapelt
+    let c = cam3d();
+    let set = s.model().defaults().interior_wall;
+    let mut t = tool(&s);
+    t.set_category(sk_model::Category::InteriorWall, s.model().wall_layers(set));
+    click(&mut t, &c, vec3(5000.0, 0.0, 0.0));
+    click(&mut t, &c, vec3(5000.0, 8000.0, 0.0));
+    let w = t.handle(&key(Key::Enter), &c, W, H, 1.0).commit.unwrap();
+    let iw = s.add_wall_as(&w, sk_model::Category::InteriorWall).unwrap();
+    assert!(
+        (wall_m3(&s, iw, 0) - 3.39846).abs() < 5e-5,
+        "IW {}",
+        wall_m3(&s, iw, 0)
+    );
+    assert_eq!(anzahl(&s, "IW-"), 1, "Innenwände werden nicht gestapelt");
+    assert_eq!(s.model().joins().len(), 2, "Anschlüsse nur im EG");
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+}
+
+/// A52 (B12, Jörn 09:26): Das Gummiband am EG-Wandfuß ändert die Außenkontur
+/// des ganzen Gebäudes in einem Schritt. Der OG-Zug hat in Phase 1 keine
+/// eigenen Fußgriffe (E16), er folgt dem EG.
+#[test]
+fn a52_gummiband_zieht_alle_geschosse() {
+    let mut s = Scene::with_model(Model::with_seed(52));
+    let (eg, og) = gebaeude(&mut s);
+    ziehen_am_fuss(&mut s, 0.0, 1000.0);
+    assert_eq!(decke_mengen(&s, eg).0, 84.7584, "DE-001");
+    assert_eq!(decke_mengen(&s, og).0, 84.7584, "DE-002");
+    assert_eq!(s.chain(eg).unwrap().points, s.chain(og).unwrap().points);
+    assert_eq!(m2(s.foundation_qto(eg).unwrap().0.area), 90.0);
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+    assert!(s.undo(), "ein Schritt");
+    assert_eq!(decke_mengen(&s, eg).0, 75.0384);
+    assert_eq!(decke_mengen(&s, og).0, 75.0384);
+    // Am OG-Wandfuß gibt es keinen Griff: nichts ändert sich
+    ziehen_am_fuss(&mut s, 2855.0, 1000.0);
+    assert_eq!(decke_mengen(&s, og).0, 75.0384);
+    assert_eq!(s.chain(eg).unwrap().points, s.chain(og).unwrap().points);
+}
+
+/// A53 (B11/B12): Höhen ändern: lichte Höhe OG und OK EG; Wände gehen mit.
+#[test]
+fn a53_hoehen_aendern() {
+    let mut s = Scene::with_model(Model::with_seed(53));
+    let (eg, og) = gebaeude(&mut s);
+    assert!(lichte_og(&mut s, 2900.0));
+    assert_eq!(band(&s, "OG"), (2855.0, 5975.0));
+    assert!((aw_schicht(&s, og, 1) - 17.34635).abs() < 5e-5);
+    assert_eq!(schale(&s, eg), EG_SCHALE, "EG unverändert");
+    assert!(s.undo());
+    assert!(!lichte_og(&mut s, 900.0), "lichte Höhe ≥ 1,00");
+    assert_eq!(band(&s, "OG"), (2855.0, 5835.0));
+    // OK EG auf +3,00: EG-Wände 3,00, OG wandert mit, OG-Mengen gleich
+    kante_ziehen(&mut s, "EG.OK", &[3000.0], false);
+    assert_eq!(band(&s, "OG"), (3000.0, 5980.0));
+    assert_eq!(schale(&s, eg), (16.6286, 14.8848));
+    assert_eq!(schale(&s, og), OG_SCHALE);
+    assert_eq!(decke_hoehen(&s, og), (5760.0, 5980.0));
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+    assert!(s.undo());
+    assert_eq!(schale(&s, eg), EG_SCHALE);
+}
+
+/// A54 (Jörn 09:24): EG- und OG-Schale ohne waagerechte Naht in Ansicht und
+/// Schnitt; Decken im Schnitt in der Tasche.
+#[test]
+fn a54_schale_ohne_naht() {
+    let mut s = Scene::with_model(Model::with_seed(54));
+    gebaeude(&mut s);
+    let flach = |m: &Shown, z: f32, sel: &dyn Fn(&[[f32; 3]; 2]) -> bool| {
+        m.edges
+            .iter()
+            .filter(|e| (e.0[0][2] - z).abs() < 1e-2 && (e.0[1][2] - z).abs() < 1e-2)
+            .filter(|e| sel(&e.0))
+            .count()
+    };
+    // Ansicht Vorne: Fassade y = 0, keine Kante bei +2,855 über die Breite
+    let front = view_mesh(&mut s, ViewKind::Front, None);
+    let quer = |p: &[[f32; 3]; 2]| {
+        p[0][1].abs() < 1.0 && p[0][0].min(p[1][0]) < 4000.0 && p[0][0].max(p[1][0]) > 6000.0
+    };
+    assert_eq!(flach(&front, 2855.0, &quer), 0, "Naht in der Ansicht");
+    assert!(
+        flach(&front, 5835.0, &quer) > 0,
+        "Gegenprobe: Oberkante gezeichnet"
+    );
+    // Schnitt A–A: in der Dämmung (x 0 … 140) keine Kante bei +2,855
+    let mut sect = SectionLine::default();
+    sect.ensure(&s);
+    let y = sect.y.unwrap() as f32;
+    let cut = view_mesh(&mut s, ViewKind::Section, sect.plane());
+    let daemmung = |p: &[[f32; 3]; 2]| {
+        (p[0][1] - y).abs() < 1e-2 && p[0][0].max(p[1][0]) < 139.0 && p[0][0].min(p[1][0]) > 1.0
+            || (p[0][1] - y).abs() < 1e-2
+                && p[0][0].min(p[1][0]) < 70.0
+                && p[0][0].max(p[1][0]) > 70.0
+                && p[0][0].max(p[1][0]) < 141.0
+    };
+    assert_eq!(flach(&cut, 2855.0, &daemmung), 0, "Naht in der Dämmung");
+    // Beide Decken im Schnitt mit Stahlbeton-Schraffur
+    let in_band = |lo: f32, hi: f32| {
+        cut.faces.iter().any(|v| {
+            v[9] == pattern::CONCRETE && v[2] > lo - 1e-2 && v[2] < hi + 1e-2 && v[2] > 0.0
+        })
+    };
+    assert!(in_band(2635.0, 2855.0) && in_band(5615.0, 5835.0));
+    let top = cut.faces.iter().map(|v| v[2]).fold(f32::MIN, f32::max);
+    assert!(
+        (top - 5835.0).abs() < 1e-2,
+        "Baukörper endet an OK OG-Decke"
+    );
+}
+
+/// A55 (B12, E14b): Innenwand im aktiven OG gehört zum OG und endet an der
+/// OG-Decke; Anschlüsse nur im eigenen Geschoss.
+#[test]
+fn a55_innenwand_im_og() {
+    let mut s = Scene::with_model(Model::with_seed(55));
+    gebaeude(&mut s);
+    let og = geschoss(&s, "OG");
+    assert!(s.set_active_storey(og));
+    let c = cam3d();
+    let set = s.model().defaults().interior_wall;
+    let mut t = tool(&s);
+    t.set_category(sk_model::Category::InteriorWall, s.model().wall_layers(set));
+    click(&mut t, &c, vec3(5000.0, 0.0, 2855.0));
+    click(&mut t, &c, vec3(5000.0, 8000.0, 2855.0));
+    let w = t.handle(&key(Key::Enter), &c, W, H, 1.0).commit.unwrap();
+    let iw = s.add_wall_as(&w, sk_model::Category::InteriorWall).unwrap();
+    let id = s.model().wall_at(iw, 0).unwrap();
+    assert_eq!(s.model().element(id).unwrap().storey, og);
+    // 7,37 × 0,175 × 2,76
+    assert!(
+        (wall_m3(&s, iw, 0) - 3.559755).abs() < 5e-5,
+        "IW OG {}",
+        wall_m3(&s, iw, 0)
+    );
+    assert_eq!(s.model().joins().len(), 2);
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+}
+
+/// A56 (F-03): .szo Version 3 bytegleich; alte Datei (SZO 1) wird zum
+/// Gebäude mit einem Obergeschoss umgestellt.
+#[test]
+fn a56_datei_version_3_und_umstellung() {
+    let d = test_dir("obergeschoss");
+    let mut s = Scene::with_model(Model::with_seed(56));
+    gebaeude(&mut s);
+    let path = d.join("Haus.szo");
+    crate::document::save(s.model(), &path).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.starts_with("SZO 3"));
+    assert_eq!(
+        text.lines().filter(|l| l.starts_with("[building]")).count(),
+        1
+    );
+    let loaded = crate::document::load(&path).unwrap();
+    assert!(loaded.hints.is_empty(), "{:?}", loaded.hints);
+    let p2 = d.join("Haus2.szo");
+    crate::document::save(&loaded.model, &p2).unwrap();
+    assert_eq!(std::fs::read(&p2).unwrap(), text.clone().into_bytes());
+
+    // Alte Datei: Rechteck mit Innenwand, Wände 3,50, ohne Decke
+    let alt = d.join("Alt.szo");
+    std::fs::write(&alt, HAUS_SZO1).unwrap();
+    let loaded = crate::document::load(&alt).unwrap();
+    assert!(
+        loaded
+            .hints
+            .iter()
+            .any(|h| h.contains("auf Gebäude umgestellt")),
+        "{:?}",
+        loaded.hints
+    );
+    let t = Scene::with_model(loaded.model);
+    assert_eq!(gebaeude_nummern(&t), ["GB-01"]);
+    assert_eq!(band(&t, "OG"), (2855.0, 5835.0));
+    assert_eq!(
+        ["AW-", "DE-", "IW-", "SP-", "FS-"].map(|p| anzahl(&t, p)),
+        [8, 2, 1, 1, 1]
+    );
+    let eg = t
+        .model()
+        .runs()
+        .ids()
+        .find(|r| t.foundation(*r).is_some())
+        .unwrap();
+    let og = og_zug(&t, eg);
+    assert_eq!(schale(&t, eg), EG_SCHALE);
+    assert_eq!(schale(&t, og), OG_SCHALE);
+    assert!(t.model().check().is_empty(), "{:?}", t.model().check());
+    let p3 = d.join("Alt-3.szo");
+    crate::document::save(t.model(), &p3).unwrap();
+    let neu = std::fs::read_to_string(&p3).unwrap();
+    assert!(neu.starts_with("SZO 3"));
+    let u = crate::document::load(&p3).unwrap().model;
+    let p4 = d.join("Alt-4.szo");
+    crate::document::save(&u, &p4).unwrap();
+    assert_eq!(std::fs::read(&p4).unwrap(), neu.into_bytes(), "bytegleich");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A57 (B12): Ein zweites Polygon daneben wird ein zweites Gebäude mit
+/// eigenen Geschossen; beide bleiben unabhängig.
+#[test]
+fn a57_zweites_gebaeude() {
+    let mut s = Scene::with_model(Model::with_seed(57));
+    let (eg1, _) = gebaeude(&mut s);
+    dialog_ok(&mut s);
+    let c = cam3d();
+    let mut t = tool(&s);
+    let off = vec3(20000.0, 0.0, 0.0);
+    for p in RECHTECK {
+        assert!(click(&mut t, &c, p + off).is_none());
+    }
+    let w = click(&mut t, &c, RECHTECK[0] + off).expect("schließt");
+    s.add_wall(&w).unwrap();
+    assert_eq!(gebaeude_nummern(&s), ["GB-01", "GB-02"]);
+    assert_eq!(s.model().storeys().len(), 6, "je Gebäude GR, EG, OG");
+    assert_eq!(
+        ["AW-", "DE-", "SP-", "FS-"].map(|p| anzahl(&s, p)),
+        [16, 4, 2, 2]
+    );
+    // Gummiband am ersten Haus ändert das zweite nicht
+    let haus2 = |s: &Scene| {
+        let mut v: Vec<_> = s
+            .model()
+            .runs()
+            .ids()
+            .filter_map(|r| s.chain(r))
+            .filter(|c| c.points[0].x >= 19999.0)
+            .map(|c| c.points.clone())
+            .collect();
+        v.sort_by(|a, b| a[0].z.total_cmp(&b[0].z));
+        v
+    };
+    let vorher = haus2(&s);
+    assert_eq!(vorher.len(), 2, "EG- und OG-Zug von Gebäude 2");
+    ziehen_am_fuss(&mut s, 0.0, 1000.0);
+    assert_eq!(decke_mengen(&s, eg1).0, 84.7584);
+    assert_eq!(haus2(&s), vorher, "Gebäude 2 unverändert");
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+}
+
+/// E16 Test 5: OG aktiv, Grundriss: EG-Wände als Hintergrund (Kantenart
+/// `BACKGROUND`, Stift 9 grau 0,13) ohne Schraffur, nicht wählbar, Endpunkt
+/// fangbar. EG aktiv: kein Hintergrund.
+#[test]
+fn e16_hintergrund_im_og_grundriss() {
+    let mut s = Scene::with_model(Model::with_seed(58));
+    gebaeude(&mut s);
+    let bg = edge_kind::BACKGROUND as f32;
+    let plan = view_mesh(&mut s, ViewKind::Plan, None);
+    assert!(
+        !plan.edges.iter().any(|e| e.1 == bg),
+        "EG aktiv: kein Hintergrund"
+    );
+    assert!(s.background_snaps().is_empty());
+    assert!(s.set_active_storey(geschoss(&s, "OG")));
+    let m = s.mesh(ViewKind::Plan, None, &[]);
+    let under: Vec<_> = m.edges.iter().filter(|e| e.1 == bg).collect();
+    assert!(!under.is_empty(), "Hintergrund gezeichnet");
+    assert!(
+        under
+            .iter()
+            .all(|e| e.0[0][2] == 2865.0 && e.0[1][2] == 2865.0),
+        "knapp über dem Boden des OG"
+    );
+    // Außenkante des WDVS (x = 0) ist eine Hintergrundkante
+    assert!(under.iter().any(|e| e.0[0][0] == 0.0 && e.0[1][0] == 0.0));
+    let t = s.table();
+    assert_eq!(
+        t.background.1,
+        [160.0 / 255.0, 160.0 / 255.0, 160.0 / 255.0, 1.0]
+    );
+    let looks = t.edge_looks(true, 1.0);
+    assert_eq!(looks.width[edge_kind::BACKGROUND as usize], t.background.0);
+    // Nicht wählbar: ein Klick auf die EG-Außenwand trifft die OG-Wand, ein
+    // Klick in den Raum den Boden (DE-001), nie eine EG-Wand
+    let pc = fit_parallel(ViewKind::Plan, s.bounds(), W, H);
+    let (x, y) = px(&pc, vec3(100.0, 4000.0, 3855.0));
+    let hit = selection::pick_at(&mut s, &pc, ViewKind::Plan, None, x, y, W, H).unwrap();
+    assert_eq!(s.model().element(hit).unwrap().storey, geschoss(&s, "OG"));
+    let (x, y) = px(&pc, vec3(5000.0, 4000.0, 2855.0));
+    let hit = selection::pick_at(&mut s, &pc, ViewKind::Plan, None, x, y, W, H).unwrap();
+    assert_eq!(s.model().element(hit).unwrap().number, "DE-001");
+    let snaps = s.background_snaps();
+    assert!(snaps
+        .iter()
+        .any(|(a, _)| (*a - vec3(0.0, 0.0, 2855.0)).length() < 1e-6));
+    // Fangbar: das Werkzeug im OG springt auf die Ecke des EG
+    let c = cam3d();
+    let mut t = tool(&s);
+    t.snaps = snaps;
+    t.set_category(
+        sk_model::Category::InteriorWall,
+        s.model().wall_layers(s.model().defaults().interior_wall),
+    );
+    let (x, y) = px(&c, vec3(30.0, 25.0, 2855.0));
+    t.handle(&mv(x, y), &c, W, H, 1.0);
+    t.handle(&down(x, y), &c, W, H, 1.0);
+    click(&mut t, &c, vec3(3000.0, 0.0, 2855.0));
+    let w = t.handle(&key(Key::Enter), &c, W, H, 1.0).commit.unwrap();
+    assert!(
+        (w.points[0] - vec3(0.0, 0.0, 2855.0)).length() < 1e-6,
+        "{:?}",
+        w.points
+    );
 }

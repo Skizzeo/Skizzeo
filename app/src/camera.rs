@@ -100,14 +100,20 @@ impl Camera {
 
     /// Schnittpunkt des Blickstrahls durch einen Bildpunkt mit dem Boden (z = 0).
     pub fn ground_point(&self, px: f64, py: f64, w: f64, h: f64) -> Option<Vec3> {
+        self.plane_point(px, py, w, h, 0.0)
+    }
+
+    /// Schnittpunkt des Sehstrahls mit der waagerechten Ebene in Höhe `z`
+    /// (Arbeitsebene des aktiven Geschosses).
+    pub fn plane_point(&self, px: f64, py: f64, w: f64, h: f64, z: f64) -> Option<Vec3> {
         let (o, d) = self.ray(px, py, w, h);
         if d.z.abs() < 1e-12 {
             return None;
         }
-        let t = -o.z / d.z;
+        let t = (z - o.z) / d.z;
         (t > 0.0 && t < self.far()).then(|| {
             let p = o + d * t;
-            vec3(p.x, p.y, 0.0)
+            vec3(p.x, p.y, z)
         })
     }
 

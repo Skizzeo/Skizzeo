@@ -626,7 +626,10 @@ impl Model {
             let up = self
                 .levels_in(None)
                 .iter()
-                .filter(|id| self.storey(**id).is_some_and(|s| s.kind != LevelKind::Foundation))
+                .filter(|id| {
+                    self.storey(**id)
+                        .is_some_and(|s| s.kind != LevelKind::Foundation)
+                })
                 .count();
             self.add_building(up.max(1) as u8);
         }
@@ -634,9 +637,10 @@ impl Model {
 
     /// Erdgeschoss des Gebäudes `b` (unterstes Geschoss über der Gründung).
     pub fn ground_of(&self, b: Option<BuildingId>) -> Option<StoreyId> {
-        self.levels_in(b)
-            .into_iter()
-            .find(|id| self.storey(*id).is_some_and(|s| s.kind != LevelKind::Foundation))
+        self.levels_in(b).into_iter().find(|id| {
+            self.storey(*id)
+                .is_some_and(|s| s.kind != LevelKind::Foundation)
+        })
     }
 
     /// Erdgeschoss des Gebäudes, zu dem das Geschoss `id` gehört.
@@ -664,16 +668,15 @@ impl Model {
         let rank = |g: Option<BuildingId>| -> Vec<StoreyId> {
             self.levels_in(g)
                 .into_iter()
-                .filter(|id| self.storey(*id).is_some_and(|s| s.kind != LevelKind::Foundation))
+                .filter(|id| {
+                    self.storey(*id)
+                        .is_some_and(|s| s.kind != LevelKind::Foundation)
+                })
                 .collect()
         };
         let i = rank(own).iter().position(|x| *x == level).unwrap_or(0);
         let there = rank(b);
-        there
-            .get(i)
-            .or(there.last())
-            .copied()
-            .unwrap_or(level)
+        there.get(i).or(there.last()).copied().unwrap_or(level)
     }
 
     /// Bauabschnitt (Wände, Decke) eines Geschosses: EG 3/4, OG 5/6, …
@@ -681,7 +684,10 @@ impl Model {
         let i = self
             .group_levels(storey)
             .into_iter()
-            .filter(|id| self.storey(*id).is_some_and(|s| s.kind != LevelKind::Foundation))
+            .filter(|id| {
+                self.storey(*id)
+                    .is_some_and(|s| s.kind != LevelKind::Foundation)
+            })
             .position(|id| id == storey)
             .unwrap_or(0) as u16;
         (WALL_SEQ + 2 * i, FLOOR_SEQ + 2 * i)
@@ -859,14 +865,7 @@ impl Model {
     pub fn build_from_polygon(&mut self, b: BuildingId, points: &[Vec3]) -> Option<RunId> {
         let eg = self.ground_of(Some(b))?;
         let set = self.defaults.exterior_wall;
-        self.add_wall_run(
-            points,
-            true,
-            RefSide::Left,
-            eg,
-            set,
-            Category::ExteriorWall,
-        )
+        self.add_wall_run(points, true, RefSide::Left, eg, set, Category::ExteriorWall)
     }
 
     /// Zug im Geschoss `storey` über dem Zug `below`: gleiche Punkte (Versatz
@@ -971,12 +970,15 @@ impl Model {
 
     /// Zug darunter, an den `run` gekoppelt ist.
     pub fn run_below(&self, run: RunId) -> Option<RunId> {
-        self.run(run)?.segments.iter().find_map(|e| match self.element(*e)?.kind {
-            ElementKind::Wall(Wall {
-                coupling: Some(c), ..
-            }) => self.segment_of(c.below).map(|s| s.0),
-            _ => None,
-        })
+        self.run(run)?
+            .segments
+            .iter()
+            .find_map(|e| match self.element(*e)?.kind {
+                ElementKind::Wall(Wall {
+                    coupling: Some(c), ..
+                }) => self.segment_of(c.below).map(|s| s.0),
+                _ => None,
+            })
     }
 
     /// Führt die gekoppelten Züge über `root` mit (Linie = Partnerlinie +
@@ -1012,12 +1014,15 @@ impl Model {
             return;
         };
         let offset_to = |m: &Model, e: ElementId| -> Option<f64> {
-            m.run(up)?.segments.iter().find_map(|w| match m.element(*w)?.kind {
-                ElementKind::Wall(Wall {
-                    coupling: Some(c), ..
-                }) if c.below == e => Some(c.offset),
-                _ => None,
-            })
+            m.run(up)?
+                .segments
+                .iter()
+                .find_map(|w| match m.element(*w)?.kind {
+                    ElementKind::Wall(Wall {
+                        coupling: Some(c), ..
+                    }) if c.below == e => Some(c.offset),
+                    _ => None,
+                })
         };
         let offsets: Vec<f64> = lsegs
             .iter()
@@ -1919,9 +1924,10 @@ impl Model {
 
     /// Das Gründungsband des Gebäudes, zu dem `id` gehört.
     pub fn foundation_level_of(&self, id: StoreyId) -> Option<StoreyId> {
-        self.group_levels(id)
-            .into_iter()
-            .find(|g| self.storey(*g).is_some_and(|s| s.kind == LevelKind::Foundation))
+        self.group_levels(id).into_iter().find(|g| {
+            self.storey(*g)
+                .is_some_and(|s| s.kind == LevelKind::Foundation)
+        })
     }
 
     /// Geschoss über `id` im selben Gebäude.
@@ -2173,7 +2179,10 @@ impl Model {
             let levels = self.levels_in(g);
             let found = levels
                 .iter()
-                .filter(|id| self.storey(**id).is_some_and(|s| s.kind == LevelKind::Foundation))
+                .filter(|id| {
+                    self.storey(**id)
+                        .is_some_and(|s| s.kind == LevelKind::Foundation)
+                })
                 .count();
             if found != 1 || levels.len() < 2 {
                 out.push(format!(
@@ -2182,7 +2191,9 @@ impl Model {
             }
             let first = levels.first().and_then(|id| self.storey(*id));
             if first.is_some_and(|s| s.kind != LevelKind::Foundation) {
-                out.push(format!("Geschosse {name}: Gründung ist nicht das unterste Band"));
+                out.push(format!(
+                    "Geschosse {name}: Gründung ist nicht das unterste Band"
+                ));
             }
             for w in levels.windows(2) {
                 let (a, b) = (self.storey(w[0]), self.storey(w[1]));
@@ -2692,7 +2703,9 @@ impl Model {
             return out;
         };
         let ElementKind::Wall(pw) = partner.kind else {
-            out.push(format!("{number}: gekoppelt an ein Bauteil, das keine Wand ist"));
+            out.push(format!(
+                "{number}: gekoppelt an ein Bauteil, das keine Wand ist"
+            ));
             return out;
         };
         if self.level_below(me.storey) != Some(partner.storey) {
@@ -2805,7 +2818,10 @@ impl Model {
                         .run(f.run)
                         .and_then(|r| self.level_z(r.top))
                         .unwrap_or(0.0);
-                    if self.run(f.run).is_some_and(|r| f.top != LevelRef::top(r.storey)) {
+                    if self
+                        .run(f.run)
+                        .is_some_and(|r| f.top != LevelRef::top(r.storey))
+                    {
                         out.push(format!("{}: nicht an der OK des Geschosses", e.number));
                     }
                     match self.level_z(f.top) {
@@ -2903,7 +2919,11 @@ impl Model {
         guids.extend(self.storeys.iter().map(|(_, s)| s.guid));
         guids.extend(self.buildings.iter().map(|(_, b)| b.guid));
         guids.push(self.project.guid);
-        let mut bn: Vec<&str> = self.buildings.iter().map(|(_, b)| b.number.as_str()).collect();
+        let mut bn: Vec<&str> = self
+            .buildings
+            .iter()
+            .map(|(_, b)| b.number.as_str())
+            .collect();
         let n = bn.len();
         bn.sort();
         bn.dedup();
@@ -3141,15 +3161,92 @@ mod tests {
         ];
         let set = m.defaults().exterior_wall;
         let eg = m.eg_at(3500.0);
-        m.add_wall_run(
-            &pts,
-            true,
-            RefSide::Left,
-            eg,
-            set,
-            Category::ExteriorWall,
-        )
-        .unwrap()
+        m.add_wall_run(&pts, true, RefSide::Left, eg, set, Category::ExteriorWall)
+            .unwrap()
+    }
+
+    /// Gebäude mit `n` Geschossen aus dem Rechteck 10 × 8 m (B12).
+    fn gebaeude(n: u8) -> (Model, Vec<RunId>) {
+        let mut m = Model::with_seed(12);
+        let b = m.add_building(n);
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        let eg = m.build_from_polygon(b, &pts).unwrap();
+        let mut runs = vec![eg];
+        while let Some(up) = runs.last().and_then(|r| m.runs_above(*r).first().copied()) {
+            runs.push(up);
+        }
+        (m, runs)
+    }
+
+    fn nummern(m: &Model, prefix: &str) -> Vec<String> {
+        let mut v: Vec<String> = m
+            .elements()
+            .iter()
+            .map(|(_, e)| e.number.clone())
+            .filter(|n| n.starts_with(prefix))
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn gebaeude_mit_einem_geschoss() {
+        let (m, runs) = gebaeude(1);
+        assert_eq!(runs.len(), 1);
+        let b = m.buildings().ids().next().unwrap();
+        let shorts: Vec<String> = m
+            .levels_in(Some(b))
+            .iter()
+            .map(|id| m.storey(*id).unwrap().short.clone())
+            .collect();
+        assert_eq!(shorts, ["GR", "EG"]);
+        assert_eq!(nummern(&m, "AW-").len(), 4);
+        assert_eq!(nummern(&m, "DE-"), ["DE-001"]);
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    #[test]
+    fn gebaeude_mit_drei_geschossen() {
+        let (m, runs) = gebaeude(3);
+        assert_eq!(runs.len(), 3);
+        let b = m.buildings().ids().next().unwrap();
+        let bands: Vec<(String, f64, f64)> = m
+            .levels_in(Some(b))
+            .iter()
+            .map(|id| {
+                let st = m.storey(*id).unwrap();
+                (st.short.clone(), st.elevation, st.top())
+            })
+            .collect();
+        assert_eq!(
+            bands,
+            [
+                ("GR".to_string(), -800.0, 0.0),
+                ("EG".to_string(), 0.0, 2855.0),
+                ("1. OG".to_string(), 2855.0, 5835.0),
+                ("2. OG".to_string(), 5835.0, 8815.0),
+            ]
+        );
+        assert_eq!(nummern(&m, "AW-").len(), 12);
+        assert_eq!(nummern(&m, "DE-"), ["DE-001", "DE-002", "DE-003"]);
+        let top = m.floor(runs[2]).unwrap().unwrap();
+        let q = crate::qto::floor_qto_of(&top);
+        assert!((q.volume / 1e9 - 16.508448).abs() < 1e-6, "{}", q.volume);
+        let de = m.floors_of(runs[2]);
+        assert_eq!(m.element(de[0]).unwrap().number, "DE-003");
+        // Wände der 2. OG an die des 1. OG gekoppelt
+        let w = m.wall_at(runs[2], 0).unwrap();
+        let below = match m.element(w).map(|e| &e.kind) {
+            Some(ElementKind::Wall(x)) => x.coupling.unwrap().below,
+            _ => unreachable!(),
+        };
+        assert_eq!(Some(below), m.wall_at(runs[1], 0));
+        assert!(m.check().is_empty(), "{:?}", m.check());
     }
 
     #[test]
@@ -3214,14 +3311,7 @@ mod tests {
         ];
         let eg = m2.eg_at(3000.0);
         let r2 = m2
-            .add_wall_run(
-                &pts,
-                false,
-                RefSide::Left,
-                eg,
-                set,
-                Category::ExteriorWall,
-            )
+            .add_wall_run(&pts, false, RefSide::Left, eg, set, Category::ExteriorWall)
             .unwrap();
         let segs = m2.run(r2).unwrap().segments.clone();
         assert!(m2.set_run_points(r2, &pts[..2]).is_some());
@@ -3269,14 +3359,7 @@ mod tests {
         ];
         let eg = m.eg_at(3000.0);
         let r2 = m
-            .add_wall_run(
-                &o,
-                false,
-                RefSide::Left,
-                eg,
-                set,
-                Category::ExteriorWall,
-            )
+            .add_wall_run(&o, false, RefSide::Left, eg, set, Category::ExteriorWall)
             .unwrap();
         let s2 = m.run(r2).unwrap().segments.clone();
         assert!(m.set_run_points(r2, &o[1..]).is_some());

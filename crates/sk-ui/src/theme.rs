@@ -121,6 +121,8 @@ pub struct Environment {
     /// Papier und Füllung, wenn eine Attributangabe fehlt.
     pub paper_fallback: Rgba,
     pub fill_fallback: Rgba,
+    /// Abdunkeln des Modellfensters hinter einem Dialog (E16).
+    pub scrim: Rgba,
 }
 
 /// Maße in Bildpunkten bei Skalierung 1.
@@ -166,6 +168,9 @@ pub struct Sizes {
     /// Maßketten: halbe Länge des Schrägstrichs und dessen Strichstärke.
     pub dim_tick: f32,
     pub dim_line: f32,
+    /// Dialog „Gebäude erstellen“ (E16): Breite und Höhe.
+    pub dialog_w: f32,
+    pub dialog_h: f32,
 }
 
 const fn rgb(r: u8, g: u8, b: u8) -> Rgba {
@@ -264,6 +269,7 @@ impl Theme {
                 edge: rgb(0, 0, 0),
                 paper_fallback: rgb(245, 244, 239),
                 fill_fallback: rgb(255, 255, 255),
+                scrim: Rgba(0, 0, 0, 89),
             },
             size: Sizes {
                 corner_radius: 10.0,
@@ -289,6 +295,8 @@ impl Theme {
                 level_guide: 1.5,
                 dim_tick: 3.5,
                 dim_line: 1.2,
+                dialog_w: 280.0,
+                dialog_h: 130.0,
             },
             px_per_mm: 5.5,
         }

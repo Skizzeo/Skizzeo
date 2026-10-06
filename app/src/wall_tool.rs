@@ -16,7 +16,8 @@ use sk_platform::{Event, Key, MouseButton};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
 
-pub const WALL_HEIGHT: f64 = 3500.0;
+/// Vorschauhöhe ohne Geschoss (EG mit OK +2,855).
+pub const WALL_HEIGHT: f64 = 2855.0;
 
 /// Fangradius in Pixeln (bei 96 dpi).
 const SNAP_PX: f64 = 12.0;
@@ -28,8 +29,12 @@ enum SnapKind {
     Start,
     /// Auf einer Spurlinie oder Richtung.
     Line,
-    /// Schnitt zweier Spurlinien.
+    /// Schnitt zweier Spurlinien (oder einer Richtung mit dem Hintergrund).
     Crossing,
+    /// Endpunkt einer Hintergrundkante (E16).
+    Point,
+    /// Auf einer Hintergrundkante.
+    Edge,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -59,6 +64,13 @@ pub struct WallTool {
     pub layers: Vec<Layer>,
     /// Außenwand (Knopf „Gebäude“) oder Innenwand (Knopf „Innenwand“).
     pub category: Category,
+    /// Arbeitsebene: UK des aktiven Geschosses (mm).
+    pub z: f64,
+    /// Wandhöhe der Vorschau: Geschosshöhe des aktiven Geschosses (mm).
+    pub height: f64,
+    /// Fangbare Kanten des Hintergrunds (Geschoss darunter, E16), auf der
+    /// Arbeitsebene.
+    pub snaps: Vec<(Vec3, Vec3)>,
 }
 
 /// Ergebnis eines Ereignisses für die App.
@@ -99,6 +111,9 @@ impl WallTool {
             mouse: None,
             layers: Vec::new(),
             category: Category::ExteriorWall,
+            z: 0.0,
+            height: WALL_HEIGHT,
+            snaps: Vec::new(),
         }
     }
 
@@ -123,12 +138,12 @@ impl WallTool {
 
     fn chain(&self, points: Vec<Vec3>, closed: bool) -> WallChain {
         WallChain {
-            base: 0.0,
+            base: self.z,
             points,
             closed,
             ref_side: self.ref_side,
             layers: self.layers.clone(),
-            height: WALL_HEIGHT,
+            height: self.height,
             joints: Default::default(),
         }
     }
@@ -204,6 +219,20 @@ impl WallTool {
         };
     }
 
+    /// Arbeitsebene und Vorschauhöhe aus dem aktiven Geschoss. Wechselt die
+    /// Ebene, geht ein angefangener Zug weg. `true`, wenn sich etwas ändert.
+    pub fn set_plane(&mut self, z: f64, height: f64) -> bool {
+        if (z, height) == (self.z, self.height) {
+            return false;
+        }
+        if z != self.z {
+            self.points.clear();
+            self.cursor = None;
+        }
+        (self.z, self.height) = (z, height);
+        true
+    }
+
     /// Ein- oder ausschalten; ein halb gezeichneter Zug wird verworfen.
     pub fn set_enabled(&mut self, on: bool) {
         self.enabled = on;
@@ -212,7 +241,7 @@ impl WallTool {
     }
 
     fn snap(&self, cam: &Camera, mx: f64, my: f64, w: f64, h: f64, scale: f64) -> Option<Cursor> {
-        let raw = cam.ground_point(mx, my, w, h)?;
+        let raw = cam.plane_point(mx, my, w, h, self.z)?;
         let thr = SNAP_PX * scale;
         let px = |p: Vec3| -> f64 {
             cam.project(p, w, h).map_or(f64::MAX, |(x, y)| {
@@ -230,6 +259,22 @@ impl WallTool {
             return Some(Cursor {
                 pos: self.points[0],
                 kind: SnapKind::Start,
+                guides: Vec::new(),
+            });
+        }
+
+        // 2. Endpunkt einer Hintergrundkante
+        let near = self
+            .snaps
+            .iter()
+            .flat_map(|&(a, b)| [a, b])
+            .map(|p| (px(p), p))
+            .filter(|(d, _)| *d < thr)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((_, p)) = near {
+            return Some(Cursor {
+                pos: p,
+                kind: SnapKind::Point,
                 guides: Vec::new(),
             });
         }
@@ -272,8 +317,56 @@ impl WallTool {
                 }
             }
         }
+        // Richtung am letzten Punkt trifft eine Hintergrundkante
+        for l in &lasts {
+            for &(a, b) in &self.snaps {
+                let e = b - a;
+                let c = cross2(l.dir, e);
+                if c.abs() < 1e-9 {
+                    continue;
+                }
+                let u = cross2(a - l.origin, l.dir) / c;
+                if !(0.0..=1.0).contains(&u) {
+                    continue;
+                }
+                let x = a + e * u;
+                let d = px(x);
+                if d < thr && best.as_ref().is_none_or(|b| d < b.0) {
+                    best = Some((
+                        d,
+                        Cursor {
+                            pos: x,
+                            kind: SnapKind::Crossing,
+                            guides: vec![*l],
+                        },
+                    ));
+                }
+            }
+        }
         if let Some((_, c)) = best {
             return Some(c);
+        }
+
+        // Frei (ohne erzwungene Richtung): auf eine Hintergrundkante
+        if !ortho || lasts.is_empty() {
+            let on_edge = self
+                .snaps
+                .iter()
+                .filter_map(|&(a, b)| {
+                    let e = b - a;
+                    let len2 = e.dot(e);
+                    (len2 > 1e-9).then(|| a + e * ((raw - a).dot(e) / len2).clamp(0.0, 1.0))
+                })
+                .map(|p| (px(p), p))
+                .filter(|(d, _)| *d < thr)
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            if let Some((_, p)) = on_edge {
+                return Some(Cursor {
+                    pos: p,
+                    kind: SnapKind::Edge,
+                    guides: Vec::new(),
+                });
+            }
         }
 
         if ortho && !lasts.is_empty() {
@@ -480,7 +573,8 @@ impl WallTool {
         if let Some(c) = &self.cursor {
             let (color, size) = match c.kind {
                 SnapKind::Start => (col.start, 12.0),
-                SnapKind::Crossing => (col.track, 10.0),
+                SnapKind::Crossing | SnapKind::Point => (col.track, 10.0),
+                SnapKind::Edge => (col.track, 7.0),
                 SnapKind::Line => (col.track, 7.0),
                 SnapKind::Free => (col.draw, 6.0),
             };

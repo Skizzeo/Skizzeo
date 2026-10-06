@@ -61,6 +61,13 @@ pub enum Id {
     Grip(Grip),
     /// Name eines Geschosses im Paneel „Geschosse“: macht es aktiv.
     Storey(StoreyId),
+    /// Dialog „Gebäude erstellen“ (E16): Schließkreuz, Zähler − und +
+    /// (derzeit gesperrt), „Abbrechen“ und „Zeichnen beginnen“.
+    DialogClose,
+    DialogMinus,
+    DialogPlus,
+    DialogCancel,
+    DialogStart,
 }
 
 /// Ziehbare Ebene im Paneel „Geschosse“. ±0,00 liegt fest.
@@ -255,6 +262,8 @@ pub enum Panel {
     Views,
     Props,
     Levels,
+    /// Dialog „Gebäude erstellen“ (E16), rechts neben dem Paneel „Geschosse“.
+    Dialog,
 }
 
 /// Ein Geschossband im Paneel „Geschosse“.
@@ -404,8 +413,11 @@ pub struct Ui {
     pub ortho: bool,
     /// Schichten der Wand, die das Werkzeug zeichnet: Farbfeld und Text (aus der Bibliothek).
     pub wall_layers: Vec<(Rgba, String)>,
-    /// Ein anderes Geschoss als das EG ist aktiv; gezeichnet wird trotzdem im EG.
-    pub eg_only: bool,
+    /// Ein Obergeschoss ist aktiv: Außenwände entstehen aus dem EG, der Knopf
+    /// „Gebäude“ ist gesperrt (E16).
+    pub upper_active: bool,
+    /// Dialog „Gebäude erstellen“ offen (modal, E16).
+    pub dialog: bool,
     /// Eigenschaften des gewählten Bauteils; ohne Auswahl kein Paneel.
     props: Option<Props>,
     /// Eingabe in einem Zahlenfeld.
@@ -413,9 +425,9 @@ pub struct Ui {
     /// Maße aus dem Farbschema (für Lage und Treffertest) und dessen Stand.
     size: Sizes,
     theme_rev: u64,
-    /// Zuletzt gezeichnete Paneelbilder (Tools, Views, Props, Levels) für das
-    /// Neuzeichnen einzelner Knöpfe.
-    images: [Option<PanelImage>; 4],
+    /// Zuletzt gezeichnete Paneelbilder (Tools, Views, Props, Levels, Dialog)
+    /// für das Neuzeichnen einzelner Knöpfe.
+    images: [Option<PanelImage>; 5],
     /// Paneel „Geschosse“: Inhalt und laufendes Ziehen.
     levels: Levels,
     level_drag: Option<LevelDrag>,
@@ -450,6 +462,7 @@ fn panel_index(p: Panel) -> usize {
         Panel::Views => 1,
         Panel::Props => 2,
         Panel::Levels => 3,
+        Panel::Dialog => 4,
     }
 }
 
@@ -492,14 +505,14 @@ enum Row {
     Hint(&'static str),
 }
 
-fn tool_rows(interior: bool, layers: &[(Rgba, String)], eg_only: bool) -> Vec<Row> {
+fn tool_rows(interior: bool, layers: &[(Rgba, String)], upper_active: bool) -> Vec<Row> {
     let mut rows = vec![
         Row::Title("Werkzeuge"),
         Row::Button(Id::Building, "Gebäude"),
         Row::Button(Id::Interior, "Innenwand"),
     ];
-    if eg_only {
-        rows.push(Row::Text("Zeichnen derzeit nur im EG".into()));
+    if upper_active {
+        rows.push(Row::Text("Außenwände entstehen aus dem EG".into()));
     }
     rows.extend([Row::Label(if interior {
         "Innenwand"
@@ -613,10 +626,11 @@ impl Ui {
             ref_side: RefSide::Left,
             ortho: true,
             wall_layers: Vec::new(),
-            eg_only: false,
+            upper_active: false,
+            dialog: false,
             props: None,
             edit: None,
-            images: [None, None, None, None],
+            images: [None, None, None, None, None],
             levels: Levels::default(),
             level_drag: None,
             win_h: 1e6,
@@ -640,13 +654,14 @@ impl Ui {
 
     fn rows(&self, p: Panel) -> Vec<Row> {
         match p {
-            Panel::Tools => tool_rows(self.interior, &self.wall_layers, self.eg_only),
+            Panel::Tools => tool_rows(self.interior, &self.wall_layers, self.upper_active),
             Panel::Views => view_rows(),
             Panel::Props => self
                 .props
                 .as_ref()
                 .map_or(Vec::new(), |p| props_rows(p, self.edit.as_ref())),
             Panel::Levels => vec![Row::Title("Geschosse")],
+            Panel::Dialog => Vec::new(),
         }
     }
 
@@ -842,8 +857,10 @@ impl Ui {
     }
 
     fn panel_height(&self, p: Panel) -> f32 {
-        if p == Panel::Levels {
-            return self.levels_layout().height;
+        match p {
+            Panel::Levels => return self.levels_layout().height,
+            Panel::Dialog => return (self.size.dialog_h * self.scale).round(),
+            _ => {}
         }
         let inner: f32 = self
             .rows(p)
@@ -861,8 +878,13 @@ impl Ui {
         let s = self.scale;
         let w = (self.size.panel_width * s).round();
         let m = (self.size.panel_margin * s).round();
+        if p == Panel::Dialog {
+            // Rechts neben dem Paneel „Geschosse“, oben bündig mit den Paneelen
+            let dw = (self.size.dialog_w * s).round();
+            return Rect::new(m + w + m, top as f32 + m, dw, self.panel_height(p));
+        }
         let x = match p {
-            Panel::Tools | Panel::Levels => m,
+            Panel::Tools | Panel::Levels | Panel::Dialog => m,
             Panel::Views | Panel::Props => win_w as f32 - m - w,
         };
         let y = match p {
@@ -874,8 +896,11 @@ impl Ui {
         Rect::new(x, y, w, self.panel_height(p))
     }
 
-    /// Sichtbare Paneele.
+    /// Sichtbare Paneele; bei offenem Dialog nimmt nur er die Maus.
     fn panels(&self) -> Vec<Panel> {
+        if self.dialog {
+            return vec![Panel::Dialog];
+        }
         let mut v = vec![Panel::Tools, Panel::Levels, Panel::Views];
         if self.props.is_some() {
             v.push(Panel::Props);
@@ -885,8 +910,10 @@ impl Ui {
 
     /// Knöpfe eines Paneels in Paneelkoordinaten.
     fn buttons(&self, p: Panel) -> Vec<(Id, Rect, &'static str)> {
-        if p == Panel::Levels {
-            return self.level_buttons();
+        match p {
+            Panel::Levels => return self.level_buttons(),
+            Panel::Dialog => return self.dialog_buttons(),
+            _ => {}
         }
         let s = self.scale;
         let pad = self.size.panel_pad;
@@ -931,12 +958,40 @@ impl Ui {
             Id::Ref(r) => self.ref_side == r,
             Id::Ortho => self.ortho,
             Id::View(v) => self.view == v,
-            Id::Field(_) | Id::Grip(_) | Id::Storey(_) => false,
+            // Standardknopf des Dialogs
+            Id::DialogStart => true,
+            Id::Field(_)
+            | Id::Grip(_)
+            | Id::Storey(_)
+            | Id::DialogClose
+            | Id::DialogMinus
+            | Id::DialogPlus
+            | Id::DialogCancel => false,
+        }
+    }
+
+    /// Gesperrte Knöpfe: „Gebäude“ im OG, der Zähler im Dialog (fest 2).
+    fn is_disabled(&self, id: Id) -> bool {
+        match id {
+            Id::Building => self.upper_active,
+            Id::DialogMinus | Id::DialogPlus => true,
+            _ => false,
         }
     }
 
     /// Paneel und Knopf unter der Maus (Fensterkoordinaten).
     fn hit(&self, x: f64, y: f64, win_w: u32, top: u32) -> Option<(Panel, Option<Id>)> {
+        if self.dialog {
+            // Modal: alles unterhalb der Titelleiste gehört dem Dialog
+            let r = self.rect(Panel::Dialog, win_w, top);
+            let (lx, ly) = (x - r.x as f64, y - r.y as f64);
+            let id = self
+                .buttons(Panel::Dialog)
+                .into_iter()
+                .find(|(_, b, _)| b.contains(lx, ly))
+                .map(|b| b.0);
+            return (y >= top as f64).then_some((Panel::Dialog, id));
+        }
         for p in self.panels() {
             let r = self.rect(p, win_w, top);
             if r.contains(x, y) {
@@ -1013,6 +1068,7 @@ impl Ui {
                     }
                 } else if let Some((_, id)) = hit {
                     out.consumed = true;
+                    let id = id.filter(|id| !self.is_disabled(*id));
                     if button == MouseButton::Left {
                         self.pressed = id;
                         out.changed.extend(id);
@@ -1073,6 +1129,10 @@ impl Ui {
         if matches!(id, Id::Grip(_)) || matches!(id, Id::Field(f) if f.is_level()) {
             return self.repaint_levels(t);
         }
+        // Der Hinweis zum Zähler steht im Grundbild des Dialogs
+        if matches!(id, Id::DialogMinus | Id::DialogPlus) {
+            return None;
+        }
         let (panel, b, label) = self.panels().into_iter().find_map(|p| {
             self.buttons(p)
                 .into_iter()
@@ -1111,7 +1171,7 @@ impl Ui {
         if t.rev != self.theme_rev {
             self.theme_rev = t.rev;
             self.size = t.size;
-            self.images = [None, None, None, None];
+            self.images = [None, None, None, None, None];
         }
     }
 
@@ -1142,12 +1202,18 @@ impl Ui {
             widgets::field(c, &self.fonts, b, &st, s, t);
             return;
         }
+        let disabled = self.is_disabled(id);
         let st = ButtonState {
-            hover: self.hover == Some(id),
+            hover: self.hover == Some(id) && !disabled,
             pressed: self.pressed == Some(id) && self.hover == Some(id),
             active: self.is_on(id),
+            disabled,
         };
         let b = Rect::new(b.x + m, b.y + m, b.w, b.h);
+        if id == Id::DialogClose {
+            self.paint_close(t, c, b, st.hover);
+            return;
+        }
         widgets::button(c, &self.fonts, b, label, st, s, t);
     }
 
@@ -1161,6 +1227,9 @@ impl Ui {
         widgets::panel(&mut c, Rect::new(m, m, r.w, r.h), s, t);
         if p == Panel::Levels {
             self.paint_levels(t, &mut c, r.h);
+        }
+        if p == Panel::Dialog {
+            self.paint_dialog(t, &mut c);
         }
 
         let (regular, bold) = (self.fonts.regular.as_ref(), self.fonts.bold.as_ref());
@@ -1255,6 +1324,103 @@ impl Ui {
         c
     }
 }
+
+/// Dialog „Gebäude erstellen“ (E16): eine Zeile „Geschosse: 2 (EG + OG)“,
+/// derzeit fest; die Werte zeigt das Paneel „Geschosse“ sofort.
+impl Ui {
+    /// Knöpfe des Dialogs in Paneelkoordinaten.
+    fn dialog_buttons(&self) -> Vec<(Id, Rect, &'static str)> {
+        let (s, z) = (self.scale, &self.size);
+        let (w, h, pad) = (z.dialog_w, z.dialog_h, z.panel_pad);
+        let r = |x: f32, y: f32, bw: f32, bh: f32| Rect::new(x * s, y * s, bw * s, bh * s);
+        let (start_w, cancel_w, bh) = (150.0, 96.0, 30.0);
+        let by = h - 12.0 - bh;
+        vec![
+            (Id::DialogClose, r(w - 10.0 - 24.0, 10.0, 24.0, 24.0), ""),
+            (
+                Id::DialogMinus,
+                r(DIALOG_COUNTER_X, DIALOG_ROW_Y, 26.0, 26.0),
+                "−",
+            ),
+            (
+                Id::DialogPlus,
+                r(w - pad - 26.0, DIALOG_ROW_Y, 26.0, 26.0),
+                "+",
+            ),
+            (
+                Id::DialogCancel,
+                r(w - pad - start_w - 8.0 - cancel_w, by, cancel_w, bh),
+                "Abbrechen",
+            ),
+            (
+                Id::DialogStart,
+                r(w - pad - start_w, by, start_w, bh),
+                "Zeichnen beginnen",
+            ),
+        ]
+    }
+
+    /// Grundbild des Dialogs: Kopfzeile, Zähler und (beim Darüberfahren über
+    /// − oder +) der Hinweis, warum er gesperrt ist.
+    fn paint_dialog(&self, t: &Theme, c: &mut Canvas) {
+        let (col, z, s) = (&t.ui, &t.size, self.scale);
+        let m = (z.panel_shadow * s).round();
+        let (regular, bold) = (self.fonts.regular.as_ref(), self.fonts.bold.as_ref());
+        let x = m + z.panel_pad * s;
+        let title = "Gebäude erstellen";
+        let base = m + (z.panel_pad + 16.0) * s;
+        widgets::text(
+            c,
+            bold.or(regular),
+            title,
+            z.font_title * s,
+            x,
+            base,
+            col.text,
+        );
+        let row = m + DIALOG_ROW_Y * s;
+        let mid = row + 13.0 * s;
+        let cap = |px: f32| regular.map_or(px * 0.7, |f| f.cap_height(px));
+        let px = z.font * s;
+        let base = (mid + cap(px) * 0.5).round();
+        widgets::text(c, regular, "Geschosse", px, x, base, col.text);
+        // Zahl mittig zwischen − und +
+        let (a, b) = (
+            m + (DIALOG_COUNTER_X + 26.0) * s,
+            m + (z.dialog_w - z.panel_pad - 26.0) * s,
+        );
+        let n = "2 (EG + OG)";
+        let nw = regular.map_or(0.0, |f| f.width(n, px));
+        widgets::text(c, regular, n, px, (a + b - nw) * 0.5, base, col.text);
+        if matches!(self.hover, Some(Id::DialogMinus | Id::DialogPlus)) {
+            let px = z.font_small * s;
+            let hint = "Derzeit Erdgeschoss und Obergeschoss";
+            let hb = row + (26.0 + 15.0) * s;
+            widgets::text(c, regular, hint, px, x, hb, col.text_dim);
+        }
+    }
+
+    /// Schließkreuz: zwei Striche, unter der Maus auf hellerem Grund.
+    fn paint_close(&self, t: &Theme, c: &mut Canvas, b: Rect, hover: bool) {
+        let s = self.scale;
+        if hover {
+            let mut p = Path::new();
+            p.rounded_rect(b.x, b.y, b.w, b.h, 6.0 * s);
+            c.fill(&p, t.ui.hover);
+        }
+        let (cx, cy, d) = (b.x + b.w * 0.5, b.y + b.h * 0.5, 4.5 * s);
+        let w = (1.5 * s).max(1.0);
+        for (dx, dy) in [(d, d), (d, -d)] {
+            let mut p = Path::new();
+            p.segment((cx - dx, cy - dy), (cx + dx, cy + dy), w);
+            c.fill(&p, t.ui.text);
+        }
+    }
+}
+
+/// Dialog: linke Kante des Zählers und obere Kante seiner Zeile (dip).
+const DIALOG_COUNTER_X: f32 = 104.0;
+const DIALOG_ROW_Y: f32 = 46.0;
 
 /// Paneel „Geschosse“ (E14): Diagramm der Ebenen mit Griffen, Koten und
 /// Maßketten, im kleinen Fenster eine Liste.
@@ -1684,8 +1850,7 @@ impl Ui {
                     .iter()
                     .find(|b| b.id == id)
                     .map_or("", |b| b.name.as_str());
-                let base =
-                    top + (self.levels.bands.len() + k) as f32 * row + z.level_row_base * s;
+                let base = top + (self.levels.bands.len() + k) as f32 * row + z.level_row_base * s;
                 let txt = format!("lichte Höhe {name}");
                 widgets::text(c, regular, &txt, px_d, x0 + m, base + m, u.text_dim);
             }
@@ -1743,7 +1908,17 @@ impl Ui {
                 u.text
             };
             let nx = x0 + (z.level_handle + z.level_label_gap) * s;
-            widgets::text(c, font, &line.name, px, nx + m, y - 4.0 * s + m, name_col);
+            // Ein langer Name („OK Decke OG“) weicht unter die Linie aus,
+            // wenn er die Kote berühren würde
+            let width =
+                |f: Option<&sk_paint::font::Font>, t: &str| f.map_or(0.0, |f| f.width(t, px));
+            let kote_x = xi - 4.0 * s - width(regular, &kote_text(line.z));
+            let base = if nx + width(font, &line.name) + 6.0 * s > kote_x {
+                y + regular.map_or(px * 0.7, |f| f.cap_height(px)) + 5.0 * s
+            } else {
+                y - 4.0 * s
+            };
+            widgets::text(c, font, &line.name, px, nx + m, base + m, name_col);
             if line.field.is_none() {
                 right_text(
                     c,
@@ -1852,6 +2027,64 @@ mod tests {
             mods: m,
         };
         ui.handle(&up, 1280, 32).clicked
+    }
+
+    /// E16: Dialog rechts neben „Geschosse“, oben bündig; modal; der Zähler
+    /// ist gesperrt, Gebäude im OG ebenso.
+    #[test]
+    fn dialog_gebaeude_erstellen() {
+        let mut ui = Ui::new(1.0, &Theme::dark());
+        ui.dialog = true;
+        let (d, l) = (
+            ui.rect(Panel::Dialog, 1280, 32),
+            ui.rect(Panel::Levels, 1280, 32),
+        );
+        assert_eq!((d.w, d.h), (280.0, 130.0));
+        assert!(d.x >= l.x + l.w, "rechts neben dem Paneel");
+        assert_eq!(d.y, ui.rect(Panel::Tools, 1280, 32).y, "oben bündig");
+        let at = |ui: &Ui, id: Id| {
+            let (_, b, _) = ui
+                .buttons(Panel::Dialog)
+                .into_iter()
+                .find(|b| b.0 == id)
+                .unwrap();
+            (
+                (d.x + b.x + b.w / 2.0) as f64,
+                (d.y + b.y + b.h / 2.0) as f64,
+            )
+        };
+        let (x, y) = at(&ui, Id::DialogStart);
+        assert_eq!(click(&mut ui, x, y), Some(Id::DialogStart));
+        let (x, y) = at(&ui, Id::DialogMinus);
+        assert_eq!(click(&mut ui, x, y), None, "Zähler fest auf 2");
+        let (x, y) = at(&ui, Id::DialogClose);
+        assert_eq!(click(&mut ui, x, y), Some(Id::DialogClose));
+        // Modal: der Knopf „Gebäude“ darunter ist nicht erreichbar
+        let r = ui.rect(Panel::Tools, 1280, 32);
+        let (_, b, _) = ui.buttons(Panel::Tools)[0];
+        let (x, y) = ((r.x + b.x + 5.0) as f64, (r.y + b.y + 5.0) as f64);
+        assert_eq!(click(&mut ui, x, y), None);
+        let m = Modifiers::default();
+        assert!(
+            ui.handle(
+                &Event::MouseMove {
+                    x: 900.0,
+                    y: 500.0,
+                    mods: m
+                },
+                1280,
+                32
+            )
+            .consumed
+        );
+        ui.dialog = false;
+        assert_eq!(click(&mut ui, x, y), Some(Id::Building));
+        ui.upper_active = true;
+        assert_eq!(
+            click(&mut ui, x, y),
+            None,
+            "Außenwände entstehen aus dem EG"
+        );
     }
 
     #[test]

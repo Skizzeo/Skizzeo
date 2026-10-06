@@ -515,6 +515,7 @@ pub fn write(m: &Model) -> String {
     slot(&mut out, "ground", &d.ground);
     slot(&mut out, "section_line", &d.section_line);
     slot(&mut out, "section_ends", &d.section_ends);
+    slot(&mut out, "background", &d.background);
     Line::new("display")
         .word("slot", "paper")
         .color("color", d.paper)
@@ -577,7 +578,10 @@ pub fn write(m: &Model) -> String {
     for s in sorted(m.storeys().iter(), |s| s.guid) {
         Line::new("storey")
             .guid("guid", Some(s.guid))
-            .guid("building", s.building.and_then(|b| m.building(b)).map(|b| b.guid))
+            .guid(
+                "building",
+                s.building.and_then(|b| m.building(b)).map(|b| b.guid),
+            )
             .text("name", &s.name)
             .word("short", &s.short)
             .word(
@@ -908,6 +912,19 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         let id = surfaces.insert(s);
         register(&mut surface_ids, &mut seen, r, g, id)?;
     }
+    // Vor E16: Stift 9 „Hintergrund“ ergänzen, wenn die Datei keinen hat
+    let has_background = recs("display")
+        .iter()
+        .any(|r| r.get("slot").is_ok_and(|s| s == "background"));
+    if !has_background && !numbers.contains_key(&crate::attr::BACKGROUND_PEN) {
+        let (std_attr, _) = crate::attr::defaults(&mut GuidGen::with_seed(0));
+        if let Some(p) = std_attr.pen(std_attr.display().background.pen) {
+            pens.insert(Pen {
+                guid: guids.next_guid(),
+                ..p.clone()
+            });
+        }
+    }
     let display = read_display(
         recs("display"),
         &pens,
@@ -987,7 +1004,10 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         if let Some(first) = building_numbers.insert(b.number.clone(), r.line) {
             return Err(err(
                 r.line,
-                format!("Gebäudenummer {} doppelt (schon in Zeile {first})", b.number),
+                format!(
+                    "Gebäudenummer {} doppelt (schon in Zeile {first})",
+                    b.number
+                ),
             ));
         }
         let g = b.guid;
@@ -1101,7 +1121,9 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         hints.push("Datei auf Geschossverwaltung umgestellt".to_string());
         (eg, gr)
     } else {
-        let b = storeys.get(defaults.storey).and_then(|s: &Storey| s.building);
+        let b = storeys
+            .get(defaults.storey)
+            .and_then(|s: &Storey| s.building);
         let gr = storeys
             .iter()
             .find(|(_, s)| s.kind == LevelKind::Foundation && s.building == b)
@@ -1424,6 +1446,7 @@ fn read_display(
     slots.push(("ground".into(), sd.ground));
     slots.push(("section_line".into(), sd.section_line));
     slots.push(("section_ends".into(), sd.section_ends));
+    slots.push(("background".into(), sd.background));
     let mut styles: Vec<Option<EdgeStyle>> = vec![None; slots.len()];
     let mut paper = None;
     for r in recs {
@@ -1450,7 +1473,10 @@ fn read_display(
         let s = match s {
             Some(s) => s,
             None => {
-                hints.push(format!("Darstellung „{name}“ fehlt, Startwert gesetzt"));
+                // Der Hintergrund (E16) fehlt in allen älteren Dateien: still ergänzen
+                if name != "background" {
+                    hints.push(format!("Darstellung „{name}“ fehlt, Startwert gesetzt"));
+                }
                 fallback(std).ok_or_else(|| {
                     err(
                         0,
@@ -1478,6 +1504,7 @@ fn read_display(
         ground: resolved[2 * n],
         section_line: resolved[2 * n + 1],
         section_ends: resolved[2 * n + 2],
+        background: resolved[2 * n + 3],
         paper,
     })
 }
@@ -1501,14 +1528,7 @@ mod tests {
         ];
         let eg = m.eg_at(2750.0);
         let r = m
-            .add_wall_run(
-                &rect,
-                true,
-                RefSide::Left,
-                eg,
-                set,
-                Category::ExteriorWall,
-            )
+            .add_wall_run(&rect, true, RefSide::Left, eg, set, Category::ExteriorWall)
             .unwrap();
         let line = [vec3(12000.0, 0.0, 0.0), vec3(12000.0, 4500.25, 0.0)];
         let eg = m.eg_at(2750.0);
@@ -1662,7 +1682,7 @@ mod tests {
         let r = l
             .runs()
             .iter()
-            .find(|(_, r)| r.closed)
+            .find(|(id, r)| r.closed && l.run_below(*id).is_none())
             .map(|(id, _)| id)
             .unwrap();
         let vol: f64 = run_qto(&l, r).iter().map(|w| w.volume).sum();
@@ -1708,7 +1728,7 @@ mod tests {
             d.drawing
                 .iter()
                 .chain(&d.model3d)
-                .chain([&d.ground, &d.section_line, &d.section_ends])
+                .chain([&d.ground, &d.section_line, &d.section_ends, &d.background])
                 .map(|s| {
                     (
                         a.pen(s.pen).unwrap().guid,
@@ -1729,14 +1749,7 @@ mod tests {
         let pts = [vec3(0.0, -5000.0, 0.0), vec3(3000.0, -5000.0, 0.0)];
         let eg = l.eg_at(2750.0);
         let r = l
-            .add_wall_run(
-                &pts,
-                false,
-                RefSide::Left,
-                eg,
-                set,
-                Category::ExteriorWall,
-            )
+            .add_wall_run(&pts, false, RefSide::Left, eg, set, Category::ExteriorWall)
             .unwrap();
         let w = l.run(r).unwrap().segments[0];
         // AW-001..AW-009 vergeben (EG, OG, gerade Wand; AW-002 umbenannt),
@@ -1843,7 +1856,10 @@ mod tests {
         assert!(l.hints.iter().any(|h| h.contains("ohne Länge")));
         assert!(l.hints.iter().any(|h| h.contains("Schichtdicke")));
         assert_eq!(
-            l.hints.iter().filter(|h| h.contains("nicht parallel")).count(),
+            l.hints
+                .iter()
+                .filter(|h| h.contains("nicht parallel"))
+                .count(),
             4
         );
     }

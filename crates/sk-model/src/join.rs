@@ -295,8 +295,15 @@ mod tests {
         let set = m.defaults().interior_wall;
         let pts = [vec3(5000.0, y0, 0.0), vec3(5000.0, y1, 0.0)];
         let eg = m.eg_at(H);
-        m.add_wall_run(&pts, false, RefSide::Center, eg, set, Category::InteriorWall)
-            .unwrap()
+        m.add_wall_run(
+            &pts,
+            false,
+            RefSide::Center,
+            eg,
+            set,
+            Category::InteriorWall,
+        )
+        .unwrap()
     }
 
     /// Keine Anschlüsse am Zug (das Deckenband der Tasche zählt nicht).
