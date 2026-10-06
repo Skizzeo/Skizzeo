@@ -73,6 +73,12 @@ pub struct Windows {
     /// Das Hauptfenster war maximiert und wurde zum Teilen verkleinert: beim
     /// Schließen wieder maximieren.
     restore_max: bool,
+    /// Breite des Hauptfensters, bevor es beim Öffnen rechts Platz gemacht
+    /// hat: beim Schließen bekommt es sie zurück.
+    give_back: Option<i32>,
+    /// Maximieren bei angedocktem Mengenfenster: Lage vorher und Lage, die
+    /// das Hauptfenster dafür bekommen hat (Rest des Arbeitsbereichs).
+    filled: Option<(Rect, Rect)>,
 }
 
 fn slot(id: WindowId) -> usize {
@@ -107,6 +113,8 @@ impl Windows {
             scale: 1.0,
             min: [false; 2],
             restore_max: false,
+            give_back: None,
+            filled: None,
         }
     }
 
@@ -184,10 +192,66 @@ impl Windows {
                 Action::Create(WindowId::Quantity, side),
             ];
         }
-        self.main = main;
-        let r = docked_at(main, self.width());
+        let width = self.width();
+        let mut out = Vec::new();
+        let mut m = main;
+        // Rechts zu wenig Platz: Hauptfenster gibt am rechten Rand Breite ab
+        let right = work.0 + work.2;
+        if m.0 + m.2 + width > right {
+            let w = (right - width - m.0).max(1);
+            self.give_back = Some(m.2);
+            m = (m.0, m.1, w, m.3);
+            out.push(Action::Place(WindowId::Main, m));
+        }
+        self.main = m;
+        let r = docked_at(m, width);
         self.rect = Some(r);
-        vec![Action::Create(WindowId::Quantity, r)]
+        out.push(Action::Create(WindowId::Quantity, r));
+        out
+    }
+
+    /// Hat das Hauptfenster für das angedockte Mengenfenster den Bildschirm
+    /// gefüllt (zeigt sich wie maximiert)?
+    pub fn main_filled(&self) -> bool {
+        self.filled.is_some()
+    }
+
+    /// Wird Maximieren des Hauptfensters (Bildschirm `work`) zum Füllen des
+    /// Rests neben dem Mengenfenster?
+    pub fn fills_on_maximize(&self, work: Rect) -> bool {
+        let Some(q) = self.rect else {
+            return false;
+        };
+        let (cx, cy) = (q.0 + q.2 / 2, q.1 + q.3 / 2);
+        let same = cx >= work.0 && cx < work.0 + work.2 && cy >= work.1 && cy < work.1 + work.3;
+        self.shown && self.docked && same
+    }
+
+    /// Maximieren des Hauptfensters (Lage `main`, Bildschirm `work`). Bei
+    /// angedocktem Mengenfenster auf demselben Bildschirm füllt es den Rest
+    /// des Arbeitsbereichs; das Mengenfenster behält seine Breite. Noch
+    /// einmal: zurück. Leer: ganz normal maximieren.
+    pub fn maximize_main(&mut self, main: Rect, work: Rect) -> Vec<Action> {
+        if let Some((before, _)) = self.filled.take() {
+            return self.set_main(before);
+        }
+        if !self.fills_on_maximize(work) {
+            return Vec::new();
+        }
+        let w = self.width();
+        let fill = (work.0, work.1, (work.2 - w).max(1), work.3);
+        self.filled = Some((main, fill));
+        self.set_main(fill)
+    }
+
+    /// Hauptfenster setzen, das angedockte Mengenfenster gleich mit.
+    fn set_main(&mut self, m: Rect) -> Vec<Action> {
+        self.main = m;
+        let mut out = vec![Action::Place(WindowId::Main, m)];
+        if self.shown && self.docked {
+            out.extend(self.place(docked_at(m, self.width())));
+        }
+        out
     }
 
     /// Lage des Hauptfensters merken, ohne etwas auszulösen (etwa vor dem
@@ -199,6 +263,10 @@ impl Windows {
     /// Das Hauptfenster wurde verschoben oder in der Größe geändert.
     pub fn main_moved(&mut self, r: Rect) -> Vec<Action> {
         self.main = r;
+        // Vom Nutzer verschoben oder anders groß: nicht mehr „maximiert“
+        if self.filled.is_some_and(|(_, f)| f != r) {
+            self.filled = None;
+        }
         if !self.shown || !self.docked || self.min.contains(&true) {
             return Vec::new();
         }
@@ -318,9 +386,23 @@ impl Windows {
                     return Vec::new();
                 }
                 let mut out = vec![Action::Close(WindowId::Quantity)];
-                if std::mem::take(&mut self.restore_max) {
+                let m = self.main;
+                if let Some((mut before, _)) = self.filled.take() {
+                    // Gefüllt: jetzt richtig maximieren, vorher die alte Lage
+                    // (mit der Breite von vor dem Öffnen, falls es abgab)
+                    if let Some(w) = self.give_back {
+                        before.2 = w;
+                    }
+                    out.push(Action::Place(WindowId::Main, before));
                     out.push(Action::Show(WindowId::Main, Show::Maximize));
+                    self.restore_max = false;
+                } else if std::mem::take(&mut self.restore_max) {
+                    out.push(Action::Show(WindowId::Main, Show::Maximize));
+                } else if let Some(w) = self.give_back.take() {
+                    self.main = (m.0, m.1, w, m.3);
+                    out.push(Action::Place(WindowId::Main, self.main));
                 }
+                self.give_back = None;
                 out
             }
             WindowId::Main if changed => vec![Action::AskSave],
@@ -342,6 +424,8 @@ impl Windows {
         self.shown = false;
         self.min = [false; 2];
         self.restore_max = false;
+        self.give_back = None;
+        self.filled = None;
     }
 }
 
@@ -379,6 +463,83 @@ mod tests {
             [Action::Create(WindowId::Quantity, (1300, 100, 610, 800))],
             "gemerkte Breite, Höhe und Lage vom Hauptfenster"
         );
+    }
+
+    #[test]
+    fn oeffnen_gibt_breite_ab_und_zurueck() {
+        let mut w = Windows::new(520.0);
+        let t = w.open_quantity(MAIN, false, WORK, 1.5);
+        assert_eq!(
+            t,
+            [
+                Action::Place(WindowId::Main, (100, 100, 1040, 800)),
+                Action::Create(WindowId::Quantity, (1140, 100, 780, 800)),
+            ]
+        );
+        assert_eq!(
+            w.close_requested(WindowId::Quantity, false),
+            [
+                Action::Close(WindowId::Quantity),
+                Action::Place(WindowId::Main, (100, 100, 1200, 800)),
+            ]
+        );
+        // Abgegeben, dann gefüllt und geschlossen: Wiederherstellen mit alter Breite
+        let mut w = Windows::new(520.0);
+        w.open_quantity(MAIN, false, WORK, 1.5);
+        w.maximize_main((100, 100, 1040, 800), WORK);
+        assert_eq!(
+            w.close_requested(WindowId::Quantity, false),
+            [
+                Action::Close(WindowId::Quantity),
+                Action::Place(WindowId::Main, (100, 100, 1200, 800)),
+                Action::Show(WindowId::Main, Show::Maximize),
+            ]
+        );
+    }
+
+    #[test]
+    fn maximieren_fuellt_den_rest() {
+        let mut w = Windows::new(520.0);
+        w.open_quantity(MAIN, false, WORK, 1.0);
+        assert!(w.fills_on_maximize(WORK));
+        assert_eq!(
+            w.maximize_main(MAIN, WORK),
+            [
+                Action::Place(WindowId::Main, (0, 0, 1400, 1040)),
+                Action::Place(WindowId::Quantity, (1400, 0, 520, 1040)),
+            ]
+        );
+        assert!(w.main_filled());
+        // Rückmeldung der eigenen Tat ändert nichts
+        assert_eq!(w.main_moved((0, 0, 1400, 1040)), []);
+        assert!(w.main_filled());
+        // Noch einmal: zurück
+        assert_eq!(
+            w.maximize_main((0, 0, 1400, 1040), WORK),
+            [
+                Action::Place(WindowId::Main, MAIN),
+                Action::Place(WindowId::Quantity, (1300, 100, 520, 800)),
+            ]
+        );
+        assert!(!w.main_filled());
+        // Gefüllt schließen: richtig maximiert
+        w.maximize_main(MAIN, WORK);
+        assert_eq!(
+            w.close_requested(WindowId::Quantity, false),
+            [
+                Action::Close(WindowId::Quantity),
+                Action::Place(WindowId::Main, MAIN),
+                Action::Show(WindowId::Main, Show::Maximize),
+            ]
+        );
+        // Gelöst oder auf einem anderen Bildschirm: ganz normal
+        let mut w = Windows::new(520.0);
+        w.open_quantity(MAIN, false, WORK, 1.0);
+        w.quantity_moved((2100, 80, 520, 800));
+        assert_eq!(w.maximize_main(MAIN, WORK), []);
+        let mut w = Windows::remembered(520.0, true, true, None);
+        w.open_quantity(MAIN, false, WORK, 1.0);
+        assert!(!w.fills_on_maximize((1920, 0, 1920, 1040)));
     }
 
     #[test]

@@ -5657,8 +5657,11 @@ mod f2 {
         let mut w15 = logik(520.0);
         assert_eq!(
             oeffne(&mut w15, HAUPT, false, ARBEIT, 1.5),
-            [Tat::Lege(Fenster::Mengen, (1300, 100, 780, 800))],
-            "520 dip bei 150 %"
+            [
+                Tat::Setze(Fenster::Haupt, (100, 100, 1040, 800)),
+                Tat::Lege(Fenster::Mengen, (1140, 100, 780, 800))
+            ],
+            "520 dip bei 150 %: Hauptfenster gibt rechts Breite ab"
         );
         // Titel
         let mut s = Scene::with_model(Model::with_seed(96));

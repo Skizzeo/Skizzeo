@@ -268,6 +268,7 @@ extern "system" {
     fn IsWindowVisible(h: HWND) -> BOOL;
     fn SetForegroundWindow(h: HWND) -> BOOL;
     fn GetWindowPlacement(h: HWND, p: *mut WINDOWPLACEMENT) -> BOOL;
+    fn SetWindowPlacement(h: HWND, p: *const WINDOWPLACEMENT) -> BOOL;
     fn MonitorFromWindow(h: HWND, flags: u32) -> HANDLE;
     fn GetMonitorInfoW(m: HANDLE, mi: *mut MONITORINFO) -> BOOL;
     fn EnumDisplayMonitors(dc: HDC, clip: *const RECT, f: MONITORENUMPROC, l: LPARAM) -> BOOL;
@@ -446,6 +447,9 @@ const WM_APP_OPEN_QUANTITY: u32 = 0x8003;
 const WM_APP_CLOSE_QUANTITY: u32 = 0x8004;
 /// Fenster wieder nach vorn (nach dem Maximieren des anderen).
 const WM_APP_RAISE: u32 = 0x8005;
+/// Vom System maximiert (Aero Snap, Win+↑) bei angedocktem Mengenfenster:
+/// stattdessen den Rest des Bildschirms füllen.
+const WM_APP_FILL: u32 = 0x8006;
 
 const SC_MINIMIZE: usize = 0xF020;
 const SC_MAXIMIZE: usize = 0xF030;
@@ -704,6 +708,26 @@ fn ask(f: impl FnOnce(&mut Layout) -> Vec<Action>) -> Vec<Action> {
     actions
 }
 
+/// Eine Frage an die Regeln, die nichts ändert.
+fn peek<R: Default>(f: impl FnOnce(&Layout) -> R) -> R {
+    let Some(layout) = with(|w| w.layout.clone()) else {
+        return R::default();
+    };
+    let r = match layout.lock() {
+        Ok(g) => f(&g),
+        Err(e) => f(&e.into_inner()),
+    };
+    r
+}
+
+fn main_filled() -> bool {
+    peek(|l| l.main_filled())
+}
+
+fn fills_on_maximize(work: Rect) -> bool {
+    peek(|l| l.fills_on_maximize(work))
+}
+
 fn mods() -> Modifiers {
     unsafe {
         Modifiers {
@@ -832,13 +856,50 @@ unsafe fn set_rect(hwnd: HWND, r: Rect) {
     );
 }
 
+/// Maximiert `hwnd`; Wiederherstellen bringt es nach `r` (Bildschirmpunkte).
+unsafe fn maximize_at(hwnd: HWND, r: Rect) {
+    let mut wp = WINDOWPLACEMENT {
+        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+        ..Default::default()
+    };
+    GetWindowPlacement(hwnd, &mut wp);
+    // rcNormalPosition zählt ab dem Arbeitsbereich, nicht ab dem Bildschirm
+    let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    let mut mi = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    GetMonitorInfoW(mon, &mut mi);
+    let (dx, dy) = (
+        mi.rcWork.left - mi.rcMonitor.left,
+        mi.rcWork.top - mi.rcMonitor.top,
+    );
+    wp.rcNormalPosition = RECT {
+        left: r.0 - dx,
+        top: r.1 - dy,
+        right: r.0 + r.2 - dx,
+        bottom: r.1 + r.3 - dy,
+    };
+    wp.showCmd = SW_SHOWMAXIMIZED as u32;
+    wp.flags = 0;
+    SetWindowPlacement(hwnd, &wp);
+}
+
 /// Führt die Taten der Regeln aus. `from`: das Fenster, dessen Meldung sie
 /// ausgelöst hat (wird nach einem Maximieren des anderen wieder vorn).
 unsafe fn run_actions(actions: Vec<Action>, from: Option<HWND>) {
-    for a in actions {
+    let mut actions = actions.into_iter().peekable();
+    while let Some(a) = actions.next() {
         match a {
             Action::Create(WindowId::Quantity, r) => create_quantity(r),
             Action::Create(WindowId::Main, _) | Action::AskSave => {}
+            // Alte Lage und Maximieren in einem Schritt (sonst kurz sichtbar)
+            Action::Place(id, r) if actions.peek() == Some(&Action::Show(id, Show::Maximize)) => {
+                actions.next();
+                if let Some(h) = hwnd_of(id) {
+                    maximize_at(h, r);
+                }
+            }
             Action::Place(id, r) => {
                 if let Some(h) = hwnd_of(id) {
                     if IsZoomed(h) != 0 || IsIconic(h) != 0 {
@@ -1126,7 +1187,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let (w, h) = ((lp & 0xFFFF) as u32, ((lp >> 16) & 0xFFFF) as u32);
             sh.width.store(w, Ordering::Relaxed);
             sh.height.store(h, Ordering::Relaxed);
-            send(hwnd, Event::Maximized(wp == SIZE_MAXIMIZED));
+            // Neben dem angedockten Mengenfenster gefüllt: zeigt sich wie maximiert
+            let filled = id == WindowId::Main && main_filled();
+            send(hwnd, Event::Maximized(wp == SIZE_MAXIMIZED || filled));
             send(
                 hwnd,
                 Event::Resized {
@@ -1139,6 +1202,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let mut actions = ask(|l| l.restored(id));
             if wp == SIZE_MAXIMIZED {
                 actions.extend(ask(|l| l.maximized(id)));
+                let work = work_area(hwnd);
+                if id == WindowId::Main && fills_on_maximize(work) {
+                    PostMessageW(hwnd, WM_APP_FILL, 0, 0);
+                }
             }
             run_actions(actions, Some(hwnd));
             0
@@ -1153,7 +1220,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 // Maximiert wandert das Mengenfenster nicht mit
                 Some(WindowId::Main) if IsZoomed(hwnd) == 0 => {
                     let m = window_rect(hwnd);
-                    ask(|l| l.main_moved(m))
+                    let filled = main_filled();
+                    let a = ask(|l| l.main_moved(m));
+                    // Weggezogen: nicht mehr „maximiert“
+                    if filled && !main_filled() {
+                        send(hwnd, Event::Maximized(false));
+                    }
+                    a
                 }
                 Some(WindowId::Quantity) if IsZoomed(hwnd) == 0 => {
                     let q = window_rect(hwnd);
@@ -1409,6 +1482,27 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_CHAR => {
             if let Some(c) = char::from_u32(wp as u32).filter(|c| !c.is_control()) {
                 send(hwnd, Event::Text(c));
+            }
+            0
+        }
+        // Maximieren neben dem angedockten Mengenfenster: Rest des Bildschirms
+        WM_SYSCOMMAND if wp & 0xFFF0 == SC_MAXIMIZE && id_of(hwnd) == Some(WindowId::Main) => {
+            let (m, work) = (window_rect(hwnd), work_area(hwnd));
+            let actions = ask(|l| l.maximize_main(m, work));
+            if actions.is_empty() {
+                return DefWindowProcW(hwnd, msg, wp, lp);
+            }
+            run_actions(actions, Some(hwnd));
+            0
+        }
+        WM_APP_FILL => {
+            if IsZoomed(hwnd) != 0 {
+                ShowWindow(hwnd, SW_RESTORE);
+            }
+            if !main_filled() {
+                let (m, work) = (window_rect(hwnd), work_area(hwnd));
+                let actions = ask(|l| l.maximize_main(m, work));
+                run_actions(actions, Some(hwnd));
             }
             0
         }
