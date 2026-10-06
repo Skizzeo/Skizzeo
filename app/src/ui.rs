@@ -66,6 +66,7 @@ pub enum Field {
     Recess,
     FootingWidth,
     FootingDepth,
+    FloorThickness,
 }
 
 /// Ein Zahlenfeld: Wert und erlaubter Bereich in mm, angezeigt in cm.

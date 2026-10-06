@@ -899,7 +899,9 @@ fn a15_auswahl_per_klick_in_jeder_ansicht() {
     // Je Ansicht: Kamera, Schnittebene, Punkt auf der oberen bzw. einer Wand
     type Case = (ViewKind, Camera, Option<(Vec3, Vec3)>, Vec3);
     let cases: [Case; 4] = [
-        (ViewKind::Persp, cam3d(), None, vec3(5000.0, 8000.0, 2000.0)),
+        // 3D: über der Erdgeschossdecke (OK 2,33), sonst trifft der Blick
+        // von oben ins Haus die Decke
+        (ViewKind::Persp, cam3d(), None, vec3(5000.0, 8000.0, 3000.0)),
         (
             ViewKind::Plan,
             fit_parallel(ViewKind::Plan, bounds, W, H),
@@ -981,9 +983,11 @@ fn a16_mengen_sollwerte_rechteck_und_gerade_wand() {
     let vol: f64 = q.iter().map(|q| m3(q.volume)).sum();
     let ins: f64 = q.iter().map(|q| m3(q.layers[0].volume)).sum();
     let gas: f64 = q.iter().map(|q| m3(q.layers[1].volume)).sum();
-    assert!((vol - 30.0935).abs() < 5e-5, "Volumen {vol}");
+    // Seit B10 netto ohne die Auflagertasche der Erdgeschossdecke:
+    // 5,9815 m² × 0,22 m = 1,31593 m³ weniger Gasbeton
+    assert!((vol - 28.7776).abs() < 5e-5, "Volumen {vol}");
     assert!((ins - 13.6444).abs() < 5e-5, "Dämmung {ins}");
-    assert!((gas - 16.4491).abs() < 5e-5, "Gasbeton {gas}");
+    assert!((gas - 15.1332).abs() < 5e-5, "Gasbeton {gas}");
     let len: f64 = q.iter().map(|q| q.length).sum();
     assert!((len - 36000.0).abs() < 1e-6, "Länge {len}");
     assert!(q.iter().all(|q| q.width == 315.0 && q.height == 2750.0));
@@ -1304,7 +1308,11 @@ fn a26_zwei_getrennte_bauteile() {
     let run = zeichne_rechteck(&mut s, &cam3d());
     let (slab, footing) = sohlplatte(&s, run);
     let m = s.model();
-    assert_eq!(m.elements().len(), 6, "4 Wände, Sohlplatte, Frostschürze");
+    assert_eq!(
+        m.elements().len(),
+        7,
+        "4 Wände, Sohlplatte, Frostschürze, Erdgeschossdecke"
+    );
     let (a, b) = (m.element(slab).unwrap(), m.element(footing).unwrap());
     assert_eq!(
         (a.category.ifc_class(), b.category.ifc_class()),
@@ -1393,8 +1401,11 @@ fn a28_schnitt_stahlbeton_ohne_fuge() {
         .faces
         .iter()
         .filter(|v| v[9] == pattern::CROSS)
-        .all(|v| v[2] <= 1e-3);
-    assert!(cross_below, "Kreuzschraffur nur in der Gründung");
+        .all(|v| v[2] <= 1e-3 || (2110.0 - 1e-3..=2330.0 + 1e-3).contains(&v[2]));
+    assert!(
+        cross_below,
+        "Kreuzschraffur nur in der Gründung und im Band der Erdgeschossdecke (B10)"
+    );
     let cut_w = s.table().edge_width(true, edge_kind::CUT);
     // Waagerechte Kanten in der Schnittebene auf Höhe z zwischen x0 und x1
     let y = sect.y.unwrap() as f32;
@@ -1458,7 +1469,9 @@ fn wall_m3(s: &Scene, run: RunId, seg: usize) -> f64 {
 /// A29: Knopf „Innenwand“ zeichnet eine 17,5-cm-Gasbetonwand, die mit
 /// T-Anschluss an die Außenwand stößt: Volumen netto, Gasbeton ohne Fuge,
 /// die Innenwand geht beim Gummiband mit, Rückgängig und Speichern/Öffnen
-/// behalten alles.
+/// behalten alles. Seit B10 steht die Innenwand unter der Erdgeschossdecke
+/// (OK 1,83 bei 2,75 m Wandhöhe, 22 cm): netto Höhe 2,53 m, die Außenwand
+/// ohne Tasche (−1,31593 m³).
 #[test]
 fn a29_innenwand_mit_t_anschluss() {
     use sk_model::join::JoinKind;
@@ -1484,12 +1497,12 @@ fn a29_innenwand_mit_t_anschluss() {
         assert_eq!(joins.len(), 2, "{ctx}: {joins:?}");
         assert!(joins.iter().all(|j| j.kind == JoinKind::T), "{ctx}");
         assert!(
-            (wall_m3(&s, iw, 0) - 3.5468125).abs() < 1e-6,
+            (wall_m3(&s, iw, 0) - 3.2630675).abs() < 1e-6,
             "{ctx}: {}",
             wall_m3(&s, iw, 0)
         );
         let aw_sum: f64 = (0..4).map(|i| wall_m3(&s, aw, i)).sum();
-        assert!((aw_sum - 30.0935).abs() < 5e-5, "{ctx}: AW {aw_sum}");
+        assert!((aw_sum - 28.7776).abs() < 5e-5, "{ctx}: AW {aw_sum}");
         let gas: f64 = (0..4)
             .map(|i| {
                 let q = s.wall_qto(s.model().wall_at(aw, i).unwrap()).unwrap();
@@ -1497,7 +1510,7 @@ fn a29_innenwand_mit_t_anschluss() {
             })
             .sum::<f64>()
             + wall_m3(&s, iw, 0);
-        assert!((gas - 19.9959375).abs() < 5e-5, "{ctx}: Gasbeton {gas}");
+        assert!((gas - 18.3962625).abs() < 5e-5, "{ctx}: Gasbeton {gas}");
         assert!(
             s.model().check().is_empty(),
             "{ctx}: {:?}",
@@ -1535,7 +1548,7 @@ fn a29_innenwand_mit_t_anschluss() {
         vec3(5000.0, 7000.0, 0.0),
     );
     assert!(s.model().joins().is_empty());
-    assert!((wall_m3(&s, iw, 0) - 2.8875).abs() < 1e-6);
+    assert!((wall_m3(&s, iw, 0) - 2.6565).abs() < 1e-6);
 
     // Gummiband: obere Außenwand 1 m nach außen, Innenwand geht mit
     let mut s = Scene::with_model(Model::with_seed(31));
@@ -1555,7 +1568,7 @@ fn a29_innenwand_mit_t_anschluss() {
     e.handle(&up(x2, y2), &mut s, &c, W, H, 1.0, true);
     assert!((s.chain(aw).unwrap().points[1].y - 9000.0).abs() < 1e-6);
     assert!(
-        (wall_m3(&s, iw, 0) - 4.0280625).abs() < 1e-6,
+        (wall_m3(&s, iw, 0) - 3.7058175).abs() < 1e-6,
         "{}",
         wall_m3(&s, iw, 0)
     );
@@ -1576,7 +1589,7 @@ fn a29_innenwand_mit_t_anschluss() {
         .find(|(_, el)| el.number == "IW-001")
         .map(|(id, _)| id)
         .unwrap();
-    assert!((t.wall_qto(tiw).unwrap().volume / 1e9 - 4.0280625).abs() < 1e-6);
+    assert!((t.wall_qto(tiw).unwrap().volume / 1e9 - 3.7058175).abs() < 1e-6);
     let p2 = d.join("Haus2.szo");
     crate::document::save(t.model(), &p2).unwrap();
     assert_eq!(std::fs::read(&p2).unwrap(), std::fs::read(&path).unwrap());
@@ -1586,7 +1599,7 @@ fn a29_innenwand_mit_t_anschluss() {
     assert!(s.undo());
     assert!((s.chain(aw).unwrap().points[1].y - 8000.0).abs() < 1e-6);
     assert!(
-        (wall_m3(&s, iw, 0) - 3.5468125).abs() < 1e-6,
+        (wall_m3(&s, iw, 0) - 3.2630675).abs() < 1e-6,
         "{}",
         wall_m3(&s, iw, 0)
     );
@@ -1756,6 +1769,325 @@ fn a31_grosser_ruecksprung_an_kurzem_vorsprung() {
         assert!(s.undo());
         assert_eq!(m2(s.foundation_qto(run).unwrap().0.area), buendig);
     }
+}
+
+// ---------------------------------------------------------------------------
+// A32–A38: Erdgeschossdecke (Paket B10, Geometrie G3)
+// Sollwerte: bim/paket-b10-decke.md „Fertig, wenn“ und
+// test/abnahme-erdgeschossdecke.md.
+//
+// Vorbereitet vor dem Einbau. Die Zugriffe auf die neue API stehen nur in den
+// fünf Hilfsfunktionen direkt hier unten; Namen bitte beim Einbau an die
+// tatsächliche B10/G3-API anpassen, die Tests selbst nicht.
+//
+// Achtung beim Einbau: A28 prüft „Kreuzschraffur nur in der Gründung“
+// (z ≤ 0). Mit der Decke gibt es Kreuzschraffur auch bei +2,11 … +2,33;
+// die Bedingung in A28 dann auf `v[2] <= 1e-3 || (2110..=2330).contains(z)`
+// erweitern.
+// ---------------------------------------------------------------------------
+
+/// Erdgeschossdecke des Zuges. API-Annahme: `Model::floor_of(run)`.
+fn decke(s: &Scene, run: RunId) -> Option<sk_model::ElementId> {
+    s.model().floor_of(run)
+}
+
+/// Fläche m², Volumen m³, Umfang m. API-Annahme: `Scene::floor_qto(run)`.
+fn decke_mengen(s: &Scene, run: RunId) -> (f64, f64, f64) {
+    let q = s.floor_qto(run).expect("Deckenmengen");
+    (
+        m2(q.area),
+        m3(q.volume),
+        (q.perimeter / 10.0).round() / 100.0,
+    )
+}
+
+/// Unterkante und Oberkante des Deckenkörpers. API-Annahme: `Scene::floor(run).solid()`.
+fn decke_hoehen(s: &Scene, run: RunId) -> (f64, f64) {
+    z_range(&s.floor(run).expect("Deckenkörper").solid())
+}
+
+/// Grundriss des Deckenkörpers (x min, x max, y min, y max).
+fn decke_umriss(s: &Scene, run: RunId) -> (f64, f64, f64, f64) {
+    let solid = s.floor(run).expect("Deckenkörper").solid();
+    let mut r = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    for p in solid.triangles.iter().flat_map(|t| t.p) {
+        r = (r.0.min(p.x), r.1.max(p.x), r.2.min(p.y), r.3.max(p.y));
+    }
+    r
+}
+
+/// Dicke ändern, ein Rückgängig-Schritt. API-Annahme: `Model::set_floor_thickness`.
+fn decke_dicke(s: &mut Scene, id: sk_model::ElementId, t: f64) -> bool {
+    s.edit_model("Deckendicke", |m| m.set_floor_thickness(id, t))
+}
+
+/// Summe einer Schicht (0 = Dämmung, 1 = Gasbeton) über die vier Außenwände, m³.
+fn aw_schicht(s: &Scene, run: RunId, layer: usize) -> f64 {
+    (0..4)
+        .map(|i| {
+            s.wall_qto(s.model().wall_at(run, i).unwrap())
+                .unwrap()
+                .layers[layer]
+                .volume
+                / 1e9
+        })
+        .sum()
+}
+
+fn anzahl(s: &Scene, prefix: &str) -> usize {
+    s.model()
+        .elements()
+        .iter()
+        .filter(|(_, el)| el.number.starts_with(prefix))
+        .count()
+}
+
+/// A32: Ein geschlossener Außenwandzug bekommt genau eine Erdgeschossdecke
+/// (DE-001) im selben Schritt wie die Gründung; offener Zug und Innenwand
+/// erzeugen keine.
+#[test]
+fn a32_decke_entsteht_mit_dem_zug() {
+    let c = cam3d();
+    let mut s = Scene::with_model(Model::with_seed(32));
+    let run = zeichne_rechteck(&mut s, &c);
+    let id = decke(&s, run).expect("Decke angelegt");
+    assert_eq!(s.model().element(id).unwrap().number, "DE-001");
+    assert_eq!(
+        (anzahl(&s, "SP-"), anzahl(&s, "FS-"), anzahl(&s, "DE-")),
+        (1, 1, 1)
+    );
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+
+    // Innenwand quer durch: keine zweite Decke
+    let set = s.model().defaults().interior_wall;
+    let mut t = tool(&s);
+    t.set_category(sk_model::Category::InteriorWall, s.model().wall_layers(set));
+    click(&mut t, &c, vec3(5000.0, 0.0, 0.0));
+    click(&mut t, &c, vec3(5000.0, 8000.0, 0.0));
+    let w = t.handle(&key(Key::Enter), &c, W, H, 1.0).commit.unwrap();
+    s.add_wall_as(&w, sk_model::Category::InteriorWall).unwrap();
+    assert_eq!(anzahl(&s, "DE-"), 1);
+
+    // Rückgängig bis vor das Schließen: Decke und Gründung weg
+    assert!(s.undo() && s.undo());
+    assert_eq!(
+        (anzahl(&s, "SP-"), anzahl(&s, "FS-"), anzahl(&s, "DE-")),
+        (0, 0, 0)
+    );
+
+    // Offener Zug: keine Decke
+    let mut s = Scene::with_model(Model::with_seed(33));
+    let mut t = tool(&s);
+    for p in &RECHTECK[..3] {
+        click(&mut t, &c, *p);
+    }
+    let w = t.handle(&key(Key::Enter), &c, W, H, 1.0).commit.unwrap();
+    let run = s.add_wall(&w).unwrap();
+    assert!(decke(&s, run).is_none());
+    assert_eq!(anzahl(&s, "DE-"), 0);
+}
+
+/// A33: Dicke 22 cm von der Oberkante +2,33 nach unten, veränderbar.
+#[test]
+fn a33_dicke_von_oben_nach_unten() {
+    let mut s = Scene::with_model(Model::with_seed(34));
+    let run = zeichne_rechteck(&mut s, &cam3d());
+    let id = decke(&s, run).unwrap();
+    assert_eq!(decke_mengen(&s, run), (75.0384, 16.5084, 34.88));
+    assert_eq!(decke_hoehen(&s, run), (2110.0, 2330.0));
+    // 25 cm: Oberkante bleibt, Decke und Tasche wachsen nach unten
+    assert!(decke_dicke(&mut s, id, 250.0));
+    assert_eq!(decke_hoehen(&s, run), (2080.0, 2330.0));
+    assert_eq!(decke_mengen(&s, run).1, 18.7596);
+    let netto = aw_schicht(&s, run, 1);
+    assert!(
+        (netto - (20.93525 - 1.495375)).abs() < 5e-5,
+        "Gasbeton {netto}"
+    );
+    // Rückgängig: wieder 22 cm
+    assert!(s.undo());
+    assert_eq!(decke_hoehen(&s, run), (2110.0, 2330.0));
+    assert_eq!(decke_mengen(&s, run).1, 16.5084);
+}
+
+/// A34: Auflagertasche über die ganze tragende Schicht bis an das WDVS;
+/// die Dämmung läuft durch, die Innenwand wird unterbrochen.
+#[test]
+fn a34_auflagertasche_bis_ans_wdvs() {
+    let c = cam3d();
+    let mut s = Scene::with_model(Model::with_seed(35));
+    let run = zeichne_rechteck(&mut s, &c);
+    // Umriss = Außenseite Gasbeton = WDVS-Innenseite, 140 mm innen
+    let (x0, x1, y0, y1) = decke_umriss(&s, run);
+    for (ist, soll) in [(x0, 140.0), (x1, 9860.0), (y0, 140.0), (y1, 7860.0)] {
+        assert!((ist - soll).abs() < 1e-6, "Umriss {ist} statt {soll}");
+    }
+    let gas = aw_schicht(&s, run, 1);
+    assert!((gas - 19.61932).abs() < 5e-5, "Gasbeton netto {gas}");
+    let daemmung = aw_schicht(&s, run, 0);
+    assert!((daemmung - 17.3656).abs() < 5e-5, "Dämmung {daemmung}");
+    // Keine Doppelzählung: netto + Tasche = brutto
+    assert!((gas + 1.31593 - 20.93525).abs() < 5e-5);
+
+    // Innenwand IW 17,5 bei x = 5 m, Höhe 3,50: netto ohne Deckenstreifen
+    let set = s.model().defaults().interior_wall;
+    let mut t = tool(&s);
+    t.set_category(sk_model::Category::InteriorWall, s.model().wall_layers(set));
+    click(&mut t, &c, vec3(5000.0, 0.0, 0.0));
+    click(&mut t, &c, vec3(5000.0, 8000.0, 0.0));
+    let w = t.handle(&key(Key::Enter), &c, W, H, 1.0).commit.unwrap();
+    assert_eq!(w.height, 3500.0);
+    let iw = s.add_wall_as(&w, sk_model::Category::InteriorWall).unwrap();
+    assert!(
+        (wall_m3(&s, iw, 0) - 4.23038).abs() < 5e-5,
+        "IW {}",
+        wall_m3(&s, iw, 0)
+    );
+    assert_eq!(anzahl(&s, "IW-"), 1, "ein Bauteil, zwei Körperteile");
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+}
+
+/// A35: Schnitt mit Stahlbeton-Kreuzschraffur in der Tasche und kräftiger
+/// Kontur; im Grundriss (+1,00) wird die Decke nicht gezeichnet.
+#[test]
+fn a35_darstellung_schnitt_und_grundriss() {
+    let mut s = Scene::with_model(Model::with_seed(36));
+    zeichne_rechteck(&mut s, &cam3d());
+    let mut sect = SectionLine::default();
+    sect.ensure(&s);
+    let cut = view_mesh(&mut s, ViewKind::Section, sect.plane());
+    let in_band = |z: f32| (2110.0 - 1e-3..=2330.0 + 1e-3).contains(&z);
+    // Kreuzschraffur im Deckenband, auch in der Tasche (x 140 … 315)
+    let cross: Vec<_> = cut
+        .faces
+        .iter()
+        .filter(|v| v[9] == pattern::CROSS && in_band(v[2]))
+        .collect();
+    assert!(!cross.is_empty(), "Decke im Schnitt");
+    assert!(
+        cross.iter().any(|v| v[0] > 139.0 && v[0] < 316.0),
+        "Kreuzschraffur in der Tasche"
+    );
+    // Kontur kräftig an OK und UK Decke
+    let cut_w = s.table().edge_width(true, edge_kind::CUT);
+    let y = sect.y.unwrap() as f32;
+    for z in [2110.0f32, 2330.0] {
+        let w: Vec<f32> = cut
+            .edges
+            .iter()
+            .filter(|e| (e.0[0][1] - y).abs() < 1e-2 && (e.0[1][1] - y).abs() < 1e-2)
+            .filter(|e| (e.0[0][2] - z).abs() < 1e-3 && (e.0[1][2] - z).abs() < 1e-3)
+            .map(|e| e.1)
+            .collect();
+        assert!(w.contains(&cut_w), "Kontur bei z = {z}: {w:?}");
+    }
+    // Grundriss bei +1,00: keine Kreuzschraffur
+    let plan = view_mesh(&mut s, ViewKind::Plan, None);
+    assert!(
+        !plan.faces.iter().any(|v| v[9] == pattern::CROSS),
+        "Decke liegt über der Schnittebene"
+    );
+}
+
+/// A36: Gummiband zieht die Decke mit, Rückgängig stellt beide zurück.
+#[test]
+fn a36_decke_folgt_dem_gummiband() {
+    let c = cam3d();
+    let mut s = Scene::with_model(Model::with_seed(37));
+    let run = zeichne_rechteck(&mut s, &c);
+    let id = decke(&s, run).unwrap();
+    let mut e = WallEdit::default();
+    let (x, y) = px(&c, vec3(2500.0, 8000.0, 0.0));
+    e.handle(&mv(x, y), &mut s, &c, W, H, 1.0, true);
+    e.handle(&down(x, y), &mut s, &c, W, H, 1.0, true);
+    let (x2, y2) = px(&c, vec3(2500.0, 9000.0, 0.0));
+    e.handle(&mv(x2, y2), &mut s, &c, W, H, 1.0, true);
+    e.handle(&up(x2, y2), &mut s, &c, W, H, 1.0, true);
+    assert_eq!(decke_mengen(&s, run).0, 84.7584);
+    assert_eq!(decke(&s, run), Some(id), "dieselbe Decke");
+    assert!(s.undo());
+    assert_eq!(decke_mengen(&s, run).0, 75.0384);
+}
+
+/// A37: Speichern und Öffnen: Decke mit Dicke, Nummer und Guid, bytegleich.
+#[test]
+fn a37_decke_speichern_und_oeffnen() {
+    let mut s = Scene::with_model(Model::with_seed(38));
+    let run = zeichne_rechteck(&mut s, &cam3d());
+    let id = decke(&s, run).unwrap();
+    assert!(decke_dicke(&mut s, id, 250.0));
+    let d = test_dir("decke");
+    let path = d.join("Haus.szo");
+    crate::document::save(s.model(), &path).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(text.lines().filter(|l| l.starts_with("[floor]")).count(), 1);
+    let loaded = crate::document::load(&path).unwrap();
+    assert!(loaded.hints.is_empty(), "{:?}", loaded.hints);
+    let t = Scene::with_model(loaded.model);
+    let trun = t
+        .model()
+        .runs()
+        .ids()
+        .find(|r| decke(&t, *r).is_some())
+        .unwrap();
+    let tid = decke(&t, trun).unwrap();
+    assert_eq!(t.model().element(tid).unwrap().number, "DE-001");
+    assert_eq!(
+        t.model().element(tid).unwrap().guid,
+        s.model().element(id).unwrap().guid
+    );
+    assert_eq!(decke_hoehen(&t, trun), (2080.0, 2330.0));
+    assert_eq!(decke_mengen(&t, trun).1, 18.7596);
+    let p2 = d.join("Haus2.szo");
+    crate::document::save(t.model(), &p2).unwrap();
+    assert_eq!(std::fs::read(&p2).unwrap(), std::fs::read(&path).unwrap());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A38: Eine Datei ohne Decke (Stand vor B10) bekommt beim Öffnen DE-001
+/// mit OK +2,33 und einen Hinweis; Wände und Gründung bleiben unverändert.
+#[test]
+fn a38_alte_datei_bekommt_decke() {
+    let mut s = Scene::with_model(Model::with_seed(39));
+    let run = zeichne_rechteck(&mut s, &cam3d());
+    let (slab, footing) = sohlplatte(&s, run);
+    let d = test_dir("decke-alt");
+    let path = d.join("Alt.szo");
+    crate::document::save(s.model(), &path).unwrap();
+    let alt: String = std::fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.starts_with("[floor]"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    std::fs::write(&path, alt).unwrap();
+    let loaded = crate::document::load(&path).unwrap();
+    assert!(
+        loaded
+            .hints
+            .iter()
+            .any(|h| h.contains("Erdgeschossdecke ergänzt")),
+        "{:?}",
+        loaded.hints
+    );
+    let t = Scene::with_model(loaded.model);
+    let trun = t
+        .model()
+        .runs()
+        .ids()
+        .find(|r| decke(&t, *r).is_some())
+        .expect("Decke ergänzt");
+    assert_eq!(decke_hoehen(&t, trun), (2110.0, 2330.0));
+    assert_eq!(decke_mengen(&t, trun).0, 75.0384);
+    let guid = |s: &Scene, id| s.model().element(id).unwrap().guid;
+    let (tslab, tfooting) = sohlplatte(&t, trun);
+    assert_eq!(
+        (guid(&t, tslab), guid(&t, tfooting)),
+        (guid(&s, slab), guid(&s, footing))
+    );
+    assert!((aw_schicht(&t, trun, 1) - 19.61932).abs() < 5e-5);
+    assert!(t.model().check().is_empty(), "{:?}", t.model().check());
+    let _ = std::fs::remove_dir_all(&d);
 }
 
 // ---------------------------------------------------------------------------

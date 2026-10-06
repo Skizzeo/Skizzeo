@@ -148,6 +148,51 @@ fn field(field: Field, label: &'static str, value: f64, min: f64, max: f64) -> F
     }
 }
 
+/// Paneel für die Erdgeschossdecke: Hauptmenge Fläche zuerst.
+fn floor_props(
+    scene: &Scene,
+    id: ElementId,
+    mut values: Vec<(&'static str, String)>,
+) -> Option<Props> {
+    let m = scene.model();
+    let e = m.element(id)?;
+    let ElementKind::Floor(f) = e.kind else {
+        return None;
+    };
+    let q = scene.floor_qto(f.run);
+    if let Some(q) = q {
+        values.extend([
+            ("Fläche", format!("{} m²", de(q.area / 1e6, 2))),
+            ("Volumen", format!("{} m³", de(q.volume / 1e9, 3))),
+            ("Umfang", format!("{} m", de(q.perimeter / 1e3, 2))),
+        ]);
+    }
+    values.push(("Oberkante", format!("+{} m", de(f.top / 1e3, 2))));
+    values.push(("Bauabschnitt", e.seq.to_string()));
+    let mut notes = m.warnings(id);
+    if let Some(Err(_)) = m.floor(f.run) {
+        notes.push("Kein Körper: Lage oder Umriss ungültig".into());
+    }
+    Some(Props {
+        values,
+        layer_set: m
+            .material(f.material)
+            .map_or(String::new(), |x| x.name.clone()),
+        layers: solid_layer(m, f.material, f.thickness, q.map(|q| q.volume))
+            .into_iter()
+            .collect(),
+        set_label: "Baustoff",
+        fields: vec![field(
+            Field::FloorThickness,
+            "Dicke",
+            f.thickness,
+            100.0,
+            600.0,
+        )],
+        notes,
+    })
+}
+
 /// Paneel für Sohlplatte und Frostschürze: Hauptmenge zuerst.
 fn foundation_props(
     scene: &Scene,
@@ -191,7 +236,7 @@ fn foundation_props(
             ]);
             (f.material, f.width, q.map(|q| q.1.volume))
         }
-        ElementKind::Wall(_) => return None,
+        ElementKind::Wall(_) | ElementKind::Floor(_) => return None,
     };
     values.push(("Bauabschnitt", e.seq.to_string()));
     let mut notes = m.warnings(id);
@@ -224,8 +269,10 @@ pub fn props(scene: &Scene, id: ElementId) -> Option<Props> {
             m.storey(e.storey).map_or("–".into(), |s| s.name.clone()),
         ),
     ];
-    if !matches!(e.kind, ElementKind::Wall(_)) {
-        return foundation_props(scene, id, values);
+    match e.kind {
+        ElementKind::Wall(_) => {}
+        ElementKind::Floor(_) => return floor_props(scene, id, values),
+        _ => return foundation_props(scene, id, values),
     }
     if let Some(q) = q {
         values.extend([
@@ -318,6 +365,14 @@ pub fn helpers(
                 height
             };
             prism(&f, 0.0, top);
+        }
+        (None, Some(ElementKind::Floor(f))) => {
+            // Über der Schnittebene des Grundrisses: dort nicht hervorgehoben
+            let Some(slab) = scene.floor(f.run).filter(|_| view != ViewKind::Plan) else {
+                return Vec::new();
+            };
+            let (b, t) = slab.band();
+            prism(&slab.outline, b, t);
         }
         (None, Some(kind)) => {
             let Some(found) = m.run_of(id).and_then(|r| scene.foundation(r)) else {

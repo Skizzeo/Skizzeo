@@ -38,9 +38,12 @@ pub use library::{
     material_key, LayerFunction, LayerSet, LayerSetId, MatCategory, Material, MaterialId,
     MaterialLayer,
 };
-pub use model::{Defaults, Model, NumberError, Project, FOOTING_PART, MIN_RECESS, SLAB_PART};
+pub use model::{
+    Defaults, Model, NumberError, Project, FLOOR_PART, FOOTING_PART, MIN_RECESS, SLAB_PART,
+};
 pub use qto::{
-    foundation_qto, foundation_qto_of, run_qto, wall_qto, FootingQto, LayerQto, SlabQto, WallQto,
+    floor_qto, floor_qto_of, foundation_qto, foundation_qto_of, run_qto, wall_qto, FloorQto,
+    FootingQto, LayerQto, SlabQto, WallQto,
 };
 pub use solid::Solid;
 pub use solid::{edge_kind, material, Edge, Tri};
