@@ -8,6 +8,7 @@
 
 pub mod attr;
 pub mod element;
+pub mod floor;
 pub mod foundation;
 pub mod guid;
 pub mod id;
@@ -28,6 +29,7 @@ pub use element::{
     Category, Element, ElementId, ElementKind, PropSet, PropValue, RunId, Storey, StoreyId, Wall,
     WallRun,
 };
+pub use floor::{FloorError, FloorParams, FloorSlab};
 pub use foundation::{FootingShape, Foundation, FoundationError, FoundationParams};
 pub use guid::{Guid, GuidGen};
 pub use id::{Arena, Id};
