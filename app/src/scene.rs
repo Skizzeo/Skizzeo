@@ -1055,7 +1055,7 @@ impl Scene {
     /// Züge folgen im Live-Netz, die Mengen kommen beim Loslassen.
     pub fn drag_storey_top(&mut self, id: sk_model::StoreyId, z: f64) {
         if self.model.drag_storey_top(id, z) {
-            self.relevel();
+            self.relevel(id);
         }
     }
 
@@ -1065,13 +1065,22 @@ impl Scene {
             return;
         };
         if self.model.drag_foundation_bottom_of(gr, z) {
-            self.relevel();
+            self.relevel(gr);
         }
     }
 
-    /// Nach einer Änderung der Geschossbänder: alle Züge live neu.
-    fn relevel(&mut self) {
-        let ids: Vec<RunId> = self.model.runs().ids().collect();
+    /// Nach einer Änderung der Geschossbänder des Gebäudes, zu dem `level`
+    /// gehört: dessen Züge live neu. Jedes Gebäude hat eigene Geschosse, die
+    /// Züge anderer Gebäude bleiben (U4); ohne Gebäude alle.
+    fn relevel(&mut self, level: sk_model::StoreyId) {
+        let m = &self.model;
+        let b = m.storey(level).and_then(|s| s.building);
+        let ids: Vec<RunId> = m
+            .runs()
+            .iter()
+            .filter(|(_, r)| b.is_none() || m.building_of(r.storey) == b)
+            .map(|(id, _)| id)
+            .collect();
         for id in ids {
             self.mark(id);
         }
@@ -1419,6 +1428,52 @@ mod tests {
 
     fn same(a: &MeshData, b: &MeshData) -> bool {
         a.faces == b.faces && a.edges == b.edges
+    }
+
+    /// U4: OK EG eines Gebäudes ziehen rechnet nur dessen Züge neu; das
+    /// andere Gebäude (eigene Geschosse) bleibt, wie es ist.
+    #[test]
+    fn ebene_ziehen_rechnet_nur_das_eigene_gebaeude() {
+        let mut s = Scene::with_model(Model::with_seed(1));
+        let mut eg = Vec::new();
+        for x in [0.0, 20000.0] {
+            s.edit_model("Gebäude erstellt", |m| {
+                m.add_building(2);
+                true
+            });
+            let b = s.model().buildings().ids().last().unwrap();
+            let g = s.model().ground_of(Some(b)).unwrap();
+            s.set_active_storey(g);
+            s.add_wall(&rechteck(x)).unwrap();
+            eg.push(g);
+        }
+        let of = |s: &Scene, g| -> Vec<RunId> {
+            let b = s.model().building_of(g);
+            s.model()
+                .runs()
+                .iter()
+                .filter(|(_, r)| s.model().building_of(r.storey) == b)
+                .map(|(id, _)| id)
+                .collect()
+        };
+        let (eigen, fremd) = (of(&s, eg[0]), of(&s, eg[1]));
+        assert_eq!((eigen.len(), fremd.len()), (2, 2), "EG und OG je Gebäude");
+        let count =
+            |s: &Scene, v: &[RunId]| v.iter().map(|r| s.build_count(*r)).collect::<Vec<_>>();
+        let (vorher_e, vorher_f) = (count(&s, &eigen), count(&s, &fremd));
+        s.begin("Geschoss ziehen");
+        s.drag_storey_top(eg[0], 2900.0);
+        s.commit();
+        let nachher_e = count(&s, &eigen);
+        assert!(
+            vorher_e.iter().zip(&nachher_e).all(|(a, b)| b > a),
+            "{vorher_e:?} → {nachher_e:?}"
+        );
+        assert_eq!(count(&s, &fremd), vorher_f, "anderes Gebäude unberührt");
+        // Ergebnis gleich einer vollen Neuberechnung
+        let live = s.mesh(ViewKind::Persp, None, &[]);
+        let mut frisch = Scene::with_model(s.model().clone());
+        assert!(same(&live, &frisch.mesh(ViewKind::Persp, None, &[])));
     }
 
     #[test]
