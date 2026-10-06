@@ -476,7 +476,7 @@ impl Font {
                     let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
                     let a = crate::pt(a.x - mx, a.y - my);
                     let b = crate::pt(b.x - mx, b.y - my);
-                    accumulate_line(&mut acc, stride, w, h, a, b);
+                    accumulate_line(&mut acc, stride, w, h, a, b, None);
                 }
             }
             let mut area = vec![0.0f32; w * h];

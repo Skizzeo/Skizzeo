@@ -308,6 +308,9 @@ pub struct Canvas {
     pub height: usize,
     px: Vec<[f32; 4]>,
     acc: Vec<f32>,
+    /// Je Zeile und Block von [`BLOCK`] Pixeln: hat eine Kante dort in den
+    /// Akkumulator geschrieben? Unberührte Blöcke haben eine feste Abdeckung.
+    marks: Vec<u8>,
     /// Lage der Leinwand im Gesamtbild: gefüllte Pfade werden um diesen
     /// Betrag verschoben (Ausschnitt eines größeren Bildes zeichnen).
     pub(crate) origin: (f32, f32),
@@ -320,6 +323,7 @@ impl Canvas {
             height,
             px: vec![[0.0; 4]; width * height],
             acc: Vec::new(),
+            marks: Vec::new(),
             origin: (0.0, 0.0),
         }
     }
@@ -368,11 +372,14 @@ impl Canvas {
             return;
         }
         let stride = w + 2;
-        // Akkumulator bleibt zwischen Aufrufen genullt; bearbeitet wird nur der
-        // umschließende Bereich des Pfads
+        let nb = stride.div_ceil(BLOCK);
+        // Akkumulator und Blockmarken bleiben zwischen Aufrufen genullt;
+        // bearbeitet wird nur der umschließende Bereich des Pfads
         if self.acc.len() != stride * h {
             self.acc.clear();
             self.acc.resize(stride * h, 0.0);
+            self.marks.clear();
+            self.marks.resize(nb * h, 0);
         }
         let polys = path.flatten(0.2);
         let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
@@ -389,7 +396,15 @@ impl Canvas {
             for i in 0..poly.len() {
                 let a = poly[i];
                 let b = poly[(i + 1) % poly.len()];
-                accumulate_line(&mut self.acc, stride, w, h, a, b);
+                accumulate_line(
+                    &mut self.acc,
+                    stride,
+                    w,
+                    h,
+                    a,
+                    b,
+                    Some((&mut self.marks, nb)),
+                );
             }
         }
         // Volle Abdeckung ist der häufigste Fall: Farbe einmal vorausrechnen,
@@ -398,26 +413,61 @@ impl Canvas {
         let opaque = full[3] >= 1.0;
         for y in cy0..cy1 {
             let mut sum = 0.0f32;
-            for x in cx0..cx1 {
-                let v = std::mem::take(&mut self.acc[y * stride + x]);
-                if x >= w {
+            let mut x = cx0;
+            while x < cx1 {
+                let bi = x / BLOCK;
+                let end = ((bi + 1) * BLOCK).min(cx1);
+                if std::mem::take(&mut self.marks[y * nb + bi]) == 0 {
+                    // Keine Kante im Block: Akkumulator ist null, die Abdeckung
+                    // fest (Rundungsreste der Laufsumme zählen nicht). Innen in
+                    // Rahmen und großen Flächen spart das die Schleife je Pixel.
+                    let cov = sum.abs().min(1.0);
+                    let row = &mut self.px[y * w + x.min(w)..y * w + end.min(w)];
+                    if cov >= 1.0 - FLAT {
+                        if opaque {
+                            row.fill(full);
+                        } else {
+                            let ia = 1.0 - full[3];
+                            for d in row {
+                                for k in 0..4 {
+                                    d[k] = full[k] + d[k] * ia;
+                                }
+                            }
+                        }
+                    } else if cov > FLAT {
+                        let s = premul(c, cov);
+                        let ia = 1.0 - s[3];
+                        for d in row {
+                            for k in 0..4 {
+                                d[k] = s[k] + d[k] * ia;
+                            }
+                        }
+                    }
+                    x = end;
                     continue;
                 }
-                sum += v;
-                let cov = sum.abs().min(1.0);
-                if cov <= 0.0 {
-                    continue;
+                for x in x..end {
+                    let v = std::mem::take(&mut self.acc[y * stride + x]);
+                    if x >= w {
+                        continue;
+                    }
+                    sum += v;
+                    let cov = sum.abs().min(1.0);
+                    if cov <= 0.0 {
+                        continue;
+                    }
+                    let d = &mut self.px[y * w + x];
+                    if cov >= 1.0 && opaque {
+                        *d = full;
+                        continue;
+                    }
+                    let s = if cov >= 1.0 { full } else { premul(c, cov) };
+                    let ia = 1.0 - s[3];
+                    for k in 0..4 {
+                        d[k] = s[k] + d[k] * ia;
+                    }
                 }
-                let d = &mut self.px[y * w + x];
-                if cov >= 1.0 && opaque {
-                    *d = full;
-                    continue;
-                }
-                let s = if cov >= 1.0 { full } else { premul(c, cov) };
-                let ia = 1.0 - s[3];
-                for k in 0..4 {
-                    d[k] = s[k] + d[k] * ia;
-                }
+                x = end;
             }
         }
     }
@@ -475,13 +525,11 @@ impl Canvas {
 
     /// Vormultiplizierte RGBA8-Werte, wie sie zum Überblenden auf der GPU gebraucht werden.
     pub fn to_premul_rgba8(&self) -> Vec<u8> {
-        let mut out = vec![0u8; self.px.len() * 4];
-        for (o, p) in out.chunks_exact_mut(4).zip(&self.px) {
-            for k in 0..4 {
-                o[k] = unit_to_u8(p[k]);
-            }
-        }
-        out
+        self.px
+            .as_flattened()
+            .iter()
+            .map(|&v| unit_to_u8(v))
+            .collect()
     }
 
     /// Ausschnitt als vormultipliziertes RGBA8 (Zeilen von oben), auf die
@@ -497,11 +545,9 @@ impl Canvas {
         let (w, h) = (w.min(self.width - x), h.min(self.height - y));
         let mut out = vec![0u8; w * h * 4];
         for (row, o) in out.chunks_exact_mut((w * 4).max(1)).enumerate().take(h) {
-            let src = &self.px[(y + row) * self.width + x..][..w];
-            for (o, p) in o.chunks_exact_mut(4).zip(src) {
-                for k in 0..4 {
-                    o[k] = unit_to_u8(p[k]);
-                }
+            let src = self.px[(y + row) * self.width + x..][..w].as_flattened();
+            for (o, &v) in o.iter_mut().zip(src) {
+                *o = unit_to_u8(v);
             }
         }
         (x, y, w, h, out)
@@ -579,14 +625,20 @@ impl Canvas {
 }
 
 /// `(v * 255).round().clamp(0, 255)` ohne Bibliotheksaufruf für `round`
-/// (der Grundbefehlssatz von x86-64 kennt kein Runden; je Pixel vier Aufrufe
-/// kosteten bei großen Paneelen mehrere Millisekunden). Ergebnis identisch.
+/// und ohne die sättigende Umwandlung `as i32`: Beides verhindert, dass der
+/// Übersetzer die Schleife über ein Bild bündelt (SIMD). Ergebnis identisch.
 #[inline]
 fn unit_to_u8(v: f32) -> u8 {
-    // NaN bleibt NaN und wird beim Umwandeln zu 0, wie beim Vorbild
-    let x = (v * 255.0).clamp(0.0, 255.0);
-    let i = x as i32;
-    (i + (x - i as f32 >= 0.5) as i32) as u8
+    let x = v * 255.0;
+    // Begrenzen; NaN wird zu 0 wie beim Vorbild
+    let x = if x > 0.0 { x } else { 0.0 };
+    let x = if x < 255.0 { x } else { 255.0 };
+    // + 2^23 rundet auf die nächste ganze Zahl n (bei ,5 auf die gerade), die
+    // dann in den unteren Bits steht; ,5 wird wie bei `round` aufgerundet
+    const SHIFT: f32 = 8_388_608.0;
+    let t = x + SHIFT;
+    let n = t - SHIFT;
+    (t.to_bits() as u8).wrapping_add((x - n >= 0.5) as u8)
 }
 
 /// Farbe aus Farbton (Grad), Sättigung und Helligkeit (0..1).
@@ -636,9 +688,23 @@ fn premul(c: Rgba, cov: f32) -> [f32; 4] {
     ]
 }
 
+/// Breite der Blöcke, deren Abdeckung [`Canvas::fill`] am Stück setzt.
+const BLOCK: usize = 16;
+/// Abweichung der Laufsumme von 0 bzw. 1, die als Rundungsrest gilt.
+const FLAT: f32 = 1e-3;
+
 /// Trägt die vorzeichenbehaftete Fläche einer Kante in den Akkumulator ein.
 /// Die laufende Summe je Zeile ergibt danach die Abdeckung jedes Pixels.
-fn accumulate_line(acc: &mut [f32], stride: usize, w: usize, h: usize, p0: Pt, p1: Pt) {
+/// `marks` (Blockmarken, Blöcke je Zeile): jeder beschriebene Block wird markiert.
+pub(crate) fn accumulate_line(
+    acc: &mut [f32],
+    stride: usize,
+    w: usize,
+    h: usize,
+    p0: Pt,
+    p1: Pt,
+    mut marks: Option<(&mut [u8], usize)>,
+) {
     if p0.y == p1.y {
         return;
     }
@@ -670,6 +736,9 @@ fn accumulate_line(acc: &mut [f32], stride: usize, w: usize, h: usize, p0: Pt, p
         let x0i = x0f as usize;
         let x1c = x1.ceil();
         let x1i = x1c as usize;
+        if let Some((m, nb)) = marks.as_mut() {
+            m[y * *nb + x0i / BLOCK..=y * *nb + (x1i.max(x0i + 1)) / BLOCK].fill(1);
+        }
         if x1i <= x0i + 1 {
             let xmf = 0.5 * (xa + xb) - x0f;
             acc[row + x0i] += d - d * xmf;
@@ -741,6 +810,74 @@ mod umrechnung {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Füllen wie vor den Blockmarken: jede Zeile Pixel für Pixel.
+    fn fill_per_pixel(c: &mut Canvas, path: &Path, col: Rgba) {
+        let (w, h) = (c.width, c.height);
+        let stride = w + 2;
+        let mut acc = vec![0.0f32; stride * h];
+        for poly in &path.flatten(0.2) {
+            for i in 0..poly.len() {
+                let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+                accumulate_line(&mut acc, stride, w, h, a, b, None);
+            }
+        }
+        for y in 0..h {
+            let mut sum = 0.0f32;
+            for x in 0..w {
+                sum += acc[y * stride + x];
+                let cov = sum.abs().min(1.0);
+                if cov <= 0.0 {
+                    continue;
+                }
+                let s = premul(col, cov);
+                let d = &mut c.px[y * w + x];
+                let ia = 1.0 - s[3];
+                for k in 0..4 {
+                    d[k] = s[k] + d[k] * ia;
+                }
+            }
+        }
+    }
+
+    /// Ganze Blöcke ohne Kante (innen in Rahmen und Flächen) ergeben dasselbe
+    /// Bild wie die Schleife je Pixel: Fensterrahmen mit Schatten, Kreis,
+    /// halbdurchsichtige Fläche, teils außerhalb der Leinwand.
+    #[test]
+    fn bloecke_gleichen_der_pixelschleife() {
+        let shadow = Rgba(0, 0, 0, 20);
+        let mut paths = Vec::new();
+        for i in 1..=4 {
+            let d = i as f32 * 3.0;
+            let mut p = Path::new();
+            p.rounded_rect(
+                20.3 - d * 0.5,
+                15.7 - d * 0.25,
+                300.0 + d,
+                200.0 + d,
+                9.0 + d,
+            );
+            p.rounded_rect_hole(22.3, 17.7, 296.0, 196.0, 7.0);
+            paths.push((p, shadow));
+        }
+        let mut p = Path::new();
+        p.rounded_rect(20.3, 15.7, 300.0, 200.0, 9.0);
+        paths.push((p, Rgba(230, 230, 235, 255)));
+        let mut p = Path::new();
+        p.rounded_rect(88.6, 58.6, 122.8, 122.8, 61.4);
+        paths.push((p, Rgba(50, 100, 200, 153)));
+        let mut p = Path::new();
+        p.rounded_rect(-40.0, 180.0, 500.0, 90.0, 12.0);
+        paths.push((p, Rgba(200, 80, 25, 255)));
+        let (mut a, mut b) = (Canvas::new(347, 251), Canvas::new(347, 251));
+        for (p, col) in &paths {
+            a.fill(p, *col);
+            fill_per_pixel(&mut b, p, *col);
+        }
+        let (a, b) = (a.to_premul_rgba8(), b.to_premul_rgba8());
+        let diff = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
+        assert!(diff <= 1, "größte Abweichung {diff}");
+    }
 
     /// Ein Ausschnitt mit verschobenem Ursprung gleicht Pixel für Pixel den
     /// Zeilen des ganzen Bildes (Mengenfenster zeichnet nur geänderte Zeilen).
