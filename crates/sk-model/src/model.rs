@@ -15,7 +15,7 @@ use crate::library::{
 };
 use crate::solid::material;
 use crate::wall::{clean_points, segment_count, Layer, RefSide, WallChain};
-use sk_math::Vec3;
+use sk_math::{vec3, Vec3};
 
 /// Voreinstellungen für neue Bauteile.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -364,9 +364,10 @@ impl Model {
         Some(run)
     }
 
-    /// Setzt neue Eckpunkte eines Wandzugs. Bleibt die Segmentzahl gleich, behalten
-    /// alle Wände ihre Kennung; kommen Segmente hinzu, entstehen neue Wände am
-    /// Ende, fallen welche weg, werden die letzten entfernt.
+    /// Setzt neue Eckpunkte eines Wandzugs. Bleibt die Segmentzahl gleich, behält
+    /// jede Wand ihren Platz (Verschieben). Ändert sie sich, behalten die Wände
+    /// ihre Kennung nach Lage (Regel 11): ein geteiltes Segment gibt sie an seinen
+    /// längeren Teil weiter, ein weggefallenes Segment nimmt genau seine mit.
     pub fn set_run_points(&mut self, id: RunId, points: &[Vec3]) -> bool {
         let Some(run) = self.runs.get(id) else {
             return false;
@@ -377,20 +378,37 @@ impl Model {
         if count == 0 {
             return false;
         }
-        let mut segments = run.segments.clone();
-        let template = segments
-            .first()
-            .and_then(|e| self.elements.get(*e))
-            .cloned();
-        while segments.len() > count {
-            if let Some(e) = segments.pop() {
-                self.elements.remove(e);
+        let old = run.segments.clone();
+        let matched = if old.len() == count {
+            (0..count).map(Some).collect()
+        } else {
+            match_segments(
+                &segment_lines(&run.points, run.closed),
+                &segment_lines(&pts, closed),
+            )
+        };
+        let template = old.first().and_then(|e| self.elements.get(*e)).cloned();
+        let mut kept = vec![false; old.len()];
+        let mut segments = Vec::with_capacity(count);
+        for (k, m) in matched.into_iter().enumerate() {
+            match (m, &template) {
+                (Some(o), _) => {
+                    kept[o] = true;
+                    let e = old[o];
+                    if let Some(ElementKind::Wall(w)) =
+                        self.elements.get_mut(e).map(|el| &mut el.kind)
+                    {
+                        w.seg = k as u32;
+                    }
+                    segments.push(e);
+                }
+                (None, Some(t)) => segments.push(self.new_wall(id, k, t)),
+                (None, None) => return false,
             }
         }
-        if let Some(t) = template {
-            while segments.len() < count {
-                let k = segments.len();
-                segments.push(self.new_wall(id, k, &t));
+        for (e, keep) in old.into_iter().zip(kept) {
+            if !keep {
+                self.elements.remove(e);
             }
         }
         let Some(run) = self.runs.get_mut(id) else {
@@ -544,6 +562,51 @@ impl Model {
     }
 }
 
+/// Segmente eines Zuges als (Anfang, Ende).
+fn segment_lines(pts: &[Vec3], closed: bool) -> Vec<(Vec3, Vec3)> {
+    let n = pts.len();
+    (0..segment_count(n, closed))
+        .map(|k| (pts[k], pts[(k + 1) % n]))
+        .collect()
+}
+
+/// Ordnet jedem neuen Segment höchstens ein altes zu, mit dem es auf derselben
+/// Linie in gleicher Richtung liegt; bei mehreren Kandidaten bekommt die
+/// längste Überdeckung den Vorrang.
+fn match_segments(old: &[(Vec3, Vec3)], new: &[(Vec3, Vec3)]) -> Vec<Option<usize>> {
+    let mut pairs: Vec<(f64, usize, usize)> = Vec::new();
+    for (i, &(a, b)) in new.iter().enumerate() {
+        for (k, &(c, d)) in old.iter().enumerate() {
+            let len = (d - c).length();
+            if len < 1e-9 || (b - a).length() < 1e-9 {
+                continue;
+            }
+            let dir = (d - c) * (1.0 / len);
+            let dn = (b - a).normalized();
+            let side = vec3(-dir.y, dir.x, 0.0);
+            let parallel = (dn.x * dir.y - dn.y * dir.x).abs() < 1e-6 && dn.dot(dir) > 0.0;
+            if !parallel || (a - c).dot(side).abs() > 1.0 {
+                continue;
+            }
+            let (s0, s1) = ((a - c).dot(dir), (b - c).dot(dir));
+            let overlap = s1.min(len) - s0.max(0.0);
+            if overlap > 1.0 {
+                pairs.push((overlap, i, k));
+            }
+        }
+    }
+    pairs.sort_by(|x, y| y.0.total_cmp(&x.0));
+    let mut out = vec![None; new.len()];
+    let mut used = vec![false; old.len()];
+    for (_, i, k) in pairs {
+        if out[i].is_none() && !used[k] {
+            out[i] = Some(k);
+            used[k] = true;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -650,6 +713,54 @@ mod tests {
         assert_ne!(e, segs[1]);
         assert_eq!(m2.element(e).unwrap().number, "AW-003");
         assert!(m2.check().is_empty(), "{:?}", m2.check());
+    }
+
+    #[test]
+    fn kennung_nach_lage() {
+        let mut m = Model::with_seed(7);
+        let r = rechteck(&mut m);
+        let s = m.run(r).unwrap().segments.clone();
+        let p = m.run(r).unwrap().points.clone();
+        // Punkt in Segment 1 einfügen (oben, 0..8000 bei y = 6000), längerer Teil rechts
+        let mut q = p.clone();
+        q.insert(2, vec3(3000.0, 6000.0, 0.0));
+        assert!(m.set_run_points(r, &q));
+        let t = m.run(r).unwrap().segments.clone();
+        assert_eq!(t.len(), 5);
+        assert_eq!((t[0], t[3], t[4]), (s[0], s[2], s[3]));
+        assert_ne!(t[1], s[1]);
+        assert_eq!(t[2], s[1], "der längere Teil behält die Kennung");
+        assert_eq!(m.element(t[1]).unwrap().number, "AW-005");
+        // Den Punkt wieder entfernen: das kurze Stück verschwindet mit seiner Kennung
+        assert!(m.set_run_points(r, &p));
+        assert_eq!(m.run(r).unwrap().segments, s);
+        assert!(m.element(t[1]).is_none());
+        for (k, e) in s.iter().enumerate() {
+            assert_eq!(m.segment_of(*e), Some((r, k)));
+        }
+        // Erstes Segment eines offenen Zuges entfernen: genau seine Kennung geht
+        let set = m.defaults().exterior_wall;
+        let o = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 5000.0, 0.0),
+            vec3(5000.0, 5000.0, 0.0),
+            vec3(5000.0, 0.0, 0.0),
+        ];
+        let r2 = m
+            .add_wall_run(
+                &o,
+                false,
+                RefSide::Left,
+                3000.0,
+                set,
+                Category::ExteriorWall,
+            )
+            .unwrap();
+        let s2 = m.run(r2).unwrap().segments.clone();
+        assert!(m.set_run_points(r2, &o[1..]));
+        assert_eq!(m.run(r2).unwrap().segments, s2[1..]);
+        assert!(m.element(s2[0]).is_none());
+        assert!(m.check().is_empty(), "{:?}", m.check());
     }
 
     #[test]

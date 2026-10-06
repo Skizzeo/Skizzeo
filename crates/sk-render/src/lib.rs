@@ -252,10 +252,13 @@ void main() {
 "#;
 
 const EDGE_VS: &str = r#"#version 330 core
+// Eine Instanz je Kante; die sechs Ecken der beiden Dreiecke kommen aus gl_VertexID.
 layout(location = 0) in vec3 a_a;
 layout(location = 1) in vec3 a_b;
-layout(location = 2) in vec2 a_corner;
-layout(location = 3) in float a_width;
+layout(location = 2) in float a_width;
+const vec2 CORNERS[6] = vec2[6](
+    vec2(0.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0),
+    vec2(0.0, -1.0), vec2(1.0, 1.0), vec2(0.0, 1.0));
 uniform mat4 u_vp;
 uniform vec3 u_origin;
 uniform vec2 u_viewport;
@@ -277,6 +280,7 @@ void main() {
     float len = length(d);
     d = len > 1e-6 ? d / len : vec2(1.0, 0.0);
     vec2 n = vec2(-d.y, d.x);
+    vec2 a_corner = CORNERS[gl_VertexID];
     bool at_b = a_corner.x > 0.5;
     vec4 c = at_b ? cb : ca;
     vec2 off = (n * a_corner.y + d * (at_b ? 1.0 : -1.0)) * (u_width * a_width * 0.5);
@@ -433,14 +437,14 @@ impl Renderer {
                 &[(3, 0), (3, 12), (3, 24), (1, 36), (2, 40)],
             );
 
-            // Jede Kante wird zu zwei Dreiecken, die der Vertex-Shader auf Pixelbreite aufzieht.
-            let mut v: Vec<[f32; 9]> = Vec::with_capacity(mesh.edges.len() * 6);
-            for ([a, b], wf) in &mesh.edges {
-                for c in CORNERS {
-                    v.push([a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], *wf]);
-                }
-            }
-            fill(gl, &mut gm.edges, &v, &[(3, 0), (3, 12), (2, 24), (1, 32)]);
+            // Eine Instanz je Kante (28 Byte); der Vertex-Shader zieht sie zu zwei
+            // Dreiecken auf Pixelbreite auf.
+            let v: Vec<[f32; 7]> = mesh
+                .edges
+                .iter()
+                .map(|([a, b], wf)| [a[0], a[1], a[2], b[0], b[1], b[2], *wf])
+                .collect();
+            fill_with(gl, &mut gm.edges, &v, &[(3, 0), (3, 12), (1, 24)], 1);
         }
     }
 
@@ -657,9 +661,9 @@ impl Renderer {
             gl.glUniform2f(loc(gl, p, c"u_viewport"), w as f32, h as f32);
             gl.glUniform1f(loc(gl, p, c"u_width"), st.edge_width);
             gl.glUniform1f(loc(gl, p, c"u_near"), view.near);
-            for m in &self.meshes {
+            for m in self.meshes.iter().filter(|m| m.edges.count > 0) {
                 gl.glBindVertexArray(m.edges.vao);
-                gl.glDrawArrays(TRIANGLES, 0, m.edges.count);
+                gl.glDrawArraysInstanced(TRIANGLES, 0, 6, m.edges.count);
             }
 
             // Hilfslinien und Markierungen: erst die sichtbaren Teile, dann die
@@ -749,6 +753,17 @@ const CORNERS: [[f32; 2]; 6] = [
 
 /// Lädt Vertexdaten in `b` und legt die Attribute (Anzahl, Byte-Versatz) fest.
 unsafe fn fill<T>(gl: &Gl, b: &mut GpuBuffer, data: &[T], attrs: &[(i32, usize)]) {
+    fill_with(gl, b, data, attrs, 0);
+}
+
+/// Wie [`fill`]; `divisor` 1 macht jeden Eintrag zu einer Instanz.
+unsafe fn fill_with<T>(
+    gl: &Gl,
+    b: &mut GpuBuffer,
+    data: &[T],
+    attrs: &[(i32, usize)],
+    divisor: u32,
+) {
     if b.vao == 0 {
         gl.glGenVertexArrays(1, &mut b.vao);
         gl.glGenBuffers(1, &mut b.buf);
@@ -758,6 +773,9 @@ unsafe fn fill<T>(gl: &Gl, b: &mut GpuBuffer, data: &[T], attrs: &[(i32, usize)]
         for (i, &(n, off)) in attrs.iter().enumerate() {
             gl.glVertexAttribPointer(i as u32, n, FLOAT, FALSE, stride, off as *const c_void);
             gl.glEnableVertexAttribArray(i as u32);
+            if divisor != 0 {
+                gl.glVertexAttribDivisor(i as u32, divisor);
+            }
         }
     }
     gl.glBindVertexArray(b.vao);

@@ -134,7 +134,7 @@ impl Navigation {
 /// Drehpunkt bzw. Griffpunkt: Geometrie unter der Maus, sonst Modellmitte.
 fn drag_point(cam: &mut Camera, scene: &Scene, x: f64, y: f64, w: f64, h: f64) -> Vec3 {
     let (o, dir) = cam.ray(x, y, w, h);
-    if let Some(t) = scene.raycast(o, dir) {
+    if let Some((t, _)) = scene.raycast(o, dir) {
         if cam.ortho.is_none() {
             cam.focus = t;
         }
@@ -164,7 +164,7 @@ fn zoom_point(cam: &mut Camera, scene: &Scene, x: f64, y: f64, w: f64, h: f64) -
         // Parallelprojektion: Tiefe spielt keine Rolle
         return o;
     }
-    if let Some(t) = scene.raycast(o, dir) {
+    if let Some((t, _)) = scene.raycast(o, dir) {
         cam.focus = t;
         return o + dir * t;
     }

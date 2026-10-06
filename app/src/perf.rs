@@ -20,9 +20,6 @@ use std::time::Instant;
 
 const W: f64 = 1600.0;
 const H: f64 = 900.0;
-/// Mausbewegungen je Bild bei einer Maus mit 1000 Hz und 120 Hz Bildwiederholung.
-/// Vor dem Bündeln wurde für jede davon das Modell neu berechnet.
-const MOVES_PER_FRAME: usize = 8;
 
 /// `n` Häuser (je ein geschlossener Wandzug mit `segs` Segmenten) im Raster.
 fn town(n: usize, segs: usize) -> Scene {
@@ -60,8 +57,8 @@ fn time<F: FnMut()>(reps: usize, mut f: F) -> f64 {
 }
 
 fn bytes(m: &sk_render::MeshData) -> usize {
-    // Flächen 48 B je Ecke; Kanten werden zu 6 Ecken à 36 B aufgeblasen
-    m.faces.len() * 48 + m.edges.len() * 6 * 36
+    // Flächen 48 B je Ecke; Kanten als Instanz mit 28 B
+    m.faces.len() * 48 + m.edges.len() * 28
 }
 
 #[test]
@@ -69,7 +66,7 @@ fn bytes(m: &sk_render::MeshData) -> usize {
 fn perf_griff_ziehen() {
     println!();
     println!(
-        "{:>6} {:>5} {:>7} | {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} | {:>8} {:>9} {:>8}",
+        "{:>6} {:>5} {:>7} | {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} | {:>8} {:>8} {:>8} {:>8}",
         "Häuser",
         "Segm",
         "Dreieck",
@@ -79,20 +76,22 @@ fn perf_griff_ziehen() {
         "NetzSch",
         "Greifen",
         "Strahl",
-        "Schritt",
-        "Bild alt",
-        "MB/Upl"
+        "Live3D",
+        "Voll",
+        "Neu",
+        "MB/Voll",
+        "MB/Live"
     );
     for &(n, segs) in &[(1, 4), (10, 4), (100, 4), (1000, 4), (1, 200), (100, 40)] {
         let mut s = town(n, segs);
-        let tris = s.mesh(ViewKind::Persp, None).faces.len() / 3;
+        let tris = s.mesh(ViewKind::Persp, None, None).faces.len() / 3;
         let cam = Camera::looking_at(
             vec3(-20000.0, -30000.0, 25000.0),
             vec3(5000.0, 5000.0, 0.0),
             45.0,
         );
-        let run = s.model.runs().ids().next().unwrap();
-        let orig = s.chain(run).unwrap();
+        let run = s.model().runs().ids().next().unwrap();
+        let orig = s.chain(run).unwrap().clone();
         let mut flip = false;
         // Ein Ziehschritt: Segment verschieben und Szene neu aufbauen
         let drag = time(20, || {
@@ -106,13 +105,13 @@ fn perf_griff_ziehen() {
         sect.ensure(&s);
         let plane = sect.plane();
         let m3 = time(10, || {
-            std::hint::black_box(s.mesh(ViewKind::Persp, None));
+            std::hint::black_box(s.mesh(ViewKind::Persp, None, None));
         });
         let mgr = time(10, || {
-            std::hint::black_box(s.mesh(ViewKind::Plan, None));
+            std::hint::black_box(s.mesh(ViewKind::Plan, None, None));
         });
         let msc = time(10, || {
-            std::hint::black_box(s.mesh(ViewKind::Section, plane));
+            std::hint::black_box(s.mesh(ViewKind::Section, plane, None));
         });
         let mut e = WallEdit::default();
         let mv = Event::MouseMove {
@@ -128,9 +127,14 @@ fn perf_griff_ziehen() {
         let ray = time(20, || {
             std::hint::black_box(s.raycast(o, d));
         });
-        let up = bytes(&s.mesh(ViewKind::Persp, None)) as f64 / 1e6;
+        // Beim Ziehen: nur das Live-Netz des gezogenen Wandzugs
+        let live = time(20, || {
+            std::hint::black_box(s.mesh_run(ViewKind::Persp, None, run));
+        });
+        let up = bytes(&s.mesh(ViewKind::Persp, None, None)) as f64 / 1e6;
+        let up_live = bytes(&s.mesh_run(ViewKind::Persp, None, run)) as f64 / 1e6;
         println!(
-            "{:>6} {:>5} {:>7} | {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} | {:>8.3} {:>9.3} {:>8.2}",
+            "{:>6} {:>5} {:>7} | {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} | {:>8.3} {:>8.3} {:>8.2} {:>8.3}",
             n,
             segs,
             tris,
@@ -140,14 +144,16 @@ fn perf_griff_ziehen() {
             msc,
             pick,
             ray,
+            live,
             drag + m3,
-            MOVES_PER_FRAME as f64 * (drag + m3),
-            up
+            drag + live,
+            up,
+            up_live
         );
     }
-    println!("Zeiten in ms je Aufruf. Schritt = Ziehen + Netz3D (ein Bild beim Ziehen in 3D).");
     println!(
-        "Bild alt = Schritt x {MOVES_PER_FRAME} (vor dem Bündeln der Mausbewegungen). \
-         MB/Upl = Daten, die je Bild zur Grafikkarte gehen."
+        "Zeiten in ms je Aufruf. Ziehen = Wandzug verschieben und neu berechnen. \
+         Voll = Ziehen + ganzes Netz3D (ein Bild ohne Live-Netz), Neu = Ziehen + Live3D \
+         (ein Bild beim Ziehen in 3D). MB/Voll bzw. MB/Live = Daten zur Grafikkarte."
     );
 }

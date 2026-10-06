@@ -38,6 +38,8 @@ pub struct Tri {
     pub mat: u16,
     /// Musterkoordinaten (für Schraffuren): u längs, v quer zur Schicht (0..1).
     pub uv: [[f64; 2]; 3],
+    /// Teil des Körpers, zu dem das Dreieck gehört (bei Wänden: Segment im Zug).
+    pub elem: u32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -49,6 +51,8 @@ pub struct Solid {
     pub mat: u16,
     /// Art der nächsten Kanten.
     pub edge_kind: u8,
+    /// Teil (Segment) für die nächsten Flächen.
+    pub elem: u32,
 }
 
 impl Solid {
@@ -59,18 +63,20 @@ impl Solid {
 
     /// Viereck mit Musterkoordinaten je Ecke.
     pub fn quad_uv(&mut self, p: [Vec3; 4], normal: Vec3, uv: [[f64; 2]; 4]) {
-        let mat = self.mat;
+        let (mat, elem) = (self.mat, self.elem);
         self.triangles.push(Tri {
             p: [p[0], p[1], p[2]],
             n: normal,
             mat,
             uv: [uv[0], uv[1], uv[2]],
+            elem,
         });
         self.triangles.push(Tri {
             p: [p[0], p[2], p[3]],
             n: normal,
             mat,
             uv: [uv[0], uv[2], uv[3]],
+            elem,
         });
     }
 
@@ -90,10 +96,15 @@ impl Solid {
     }
 
     pub fn raycast(&self, origin: Vec3, dir: Vec3) -> Option<f64> {
+        self.raycast_elem(origin, dir).map(|h| h.0)
+    }
+
+    /// Nächster Treffer: Abstand und Teil ([`Tri::elem`]) des getroffenen Dreiecks.
+    pub fn raycast_elem(&self, origin: Vec3, dir: Vec3) -> Option<(f64, u32)> {
         self.triangles
             .iter()
-            .filter_map(|t| ray_triangle(origin, dir, t.p[0], t.p[1], t.p[2]))
-            .min_by(f64::total_cmp)
+            .filter_map(|t| ray_triangle(origin, dir, t.p[0], t.p[1], t.p[2]).map(|d| (d, t.elem)))
+            .min_by(|a, b| a.0.total_cmp(&b.0))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -141,6 +152,7 @@ impl Solid {
                     n: t.n,
                     mat: t.mat,
                     uv: [poly[0].1, poly[k].1, poly[k + 1].1],
+                    elem: t.elem,
                 });
             }
         }

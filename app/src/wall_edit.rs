@@ -49,15 +49,6 @@ pub struct EditOutcome {
     pub consumed: bool,
 }
 
-/// Bandsegmente einer Wand: (Anfang, Ende) am äußeren Wandfuß.
-fn band(w: &WallChain) -> Vec<(Vec3, Vec3)> {
-    let c = w.face_corners(w.outer_offset());
-    let n = c.len();
-    (0..w.segment_count())
-        .map(|k| (c[k], c[(k + 1) % n]))
-        .collect()
-}
-
 fn dist_to_segment(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
     let (vx, vy) = (b.0 - a.0, b.1 - a.1);
     let len2 = vx * vx + vy * vy;
@@ -79,11 +70,16 @@ impl WallEdit {
         self.drag.is_some()
     }
 
+    /// Wandzug, der gerade gezogen wird.
+    pub fn dragging_run(&self) -> Option<RunId> {
+        self.drag.as_ref().map(|d| d.run)
+    }
+
     fn pick(&self, scene: &Scene, cam: &Camera, w: f64, h: f64, scale: f64) -> Option<ElementId> {
         let m = self.mouse?;
         let mut best: Option<(f64, (RunId, usize))> = None;
-        for (run, wall) in scene.chains() {
-            for (k, (a, b)) in band(&wall).into_iter().enumerate() {
+        for (run, foot) in scene.feet() {
+            for (k, &(a, b)) in foot.iter().enumerate() {
                 let (Some(pa), Some(pb)) = (cam.project(a, w, h), cam.project(b, w, h)) else {
                     continue;
                 };
@@ -93,7 +89,7 @@ impl WallEdit {
                 }
             }
         }
-        best.and_then(|(_, (run, k))| scene.model.wall_at(run, k))
+        best.and_then(|(_, (run, k))| scene.model().wall_at(run, k))
     }
 
     /// Greifstelle neu bestimmen (nach Kamerawechsel oder Änderung der Wände).
@@ -178,7 +174,7 @@ impl WallEdit {
                     return out;
                 };
                 out.consumed = true;
-                let Some((run, seg)) = scene.model.segment_of(wall) else {
+                let Some((run, seg)) = scene.model().segment_of(wall) else {
                     return out;
                 };
                 let Some(original) = scene.chain(run) else {
@@ -195,8 +191,8 @@ impl WallEdit {
                     seg,
                     start,
                     normal,
-                    original,
-                    before: scene.model.clone(),
+                    original: original.clone(),
+                    before: scene.snapshot(),
                 });
                 out.redraw = true;
             }
@@ -252,14 +248,14 @@ impl WallEdit {
 
         // Beim Ziehen: ursprüngliche Lage gestrichelt
         if let Some(d) = &self.drag {
-            if let Some(&(a, b)) = band(&d.original).get(d.seg) {
+            if let Some(&(a, b)) = d.original.outer_foot().get(d.seg) {
                 out.push(line(a, b, BAND_GHOST, 1.5, 6.0));
             }
         }
         // Sichtbar nur das Segment unter der Maus bzw. das gezogene
-        let segment = active.and_then(|e| scene.model.segment_of(e));
+        let segment = active.and_then(|e| scene.model().segment_of(e));
         if let Some((run, k)) = segment {
-            if let Some((a, b)) = scene.chain(run).and_then(|w| band(&w).get(k).copied()) {
+            if let Some((a, b)) = scene.foot(run).and_then(|f| f.get(k).copied()) {
                 out.push(line(a, b, DARK, 6.0, 0.0));
                 out.push(line(a, b, BAND_HOT, 4.0, 0.0));
             }
@@ -320,10 +316,10 @@ mod tests {
             1.0,
             true,
         );
-        let run = s.model.runs().ids().next().unwrap();
-        let wall = s.model.wall_at(run, 1).unwrap();
+        let run = s.model().runs().ids().next().unwrap();
+        let wall = s.model().wall_at(run, 1).unwrap();
         assert_eq!(e.hover, Some(wall));
-        assert_eq!(s.model.element(wall).unwrap().number, "AW-002");
+        assert_eq!(s.model().element(wall).unwrap().number, "AW-002");
         let down = Event::MouseDown {
             button: MouseButton::Left,
             x,
@@ -342,7 +338,7 @@ mod tests {
             true,
         );
         assert!(out.changed);
-        let p = &s.model.run(run).unwrap().points;
+        let p = &s.model().run(run).unwrap().points;
         assert!(
             (p[1].y - 5000.0).abs() < 1e-6 && (p[2].y - 5000.0).abs() < 1e-6,
             "{p:?}"
@@ -356,9 +352,9 @@ mod tests {
         };
         e.handle(&up, &mut s, &c, W, H, 1.0, true);
         // Die Wand behält beim Ziehen ihre Kennung
-        assert_eq!(s.model.wall_at(run, 1), Some(wall));
+        assert_eq!(s.model().wall_at(run, 1), Some(wall));
         assert!(s.undo());
-        assert!((s.model.run(run).unwrap().points[1].y - 4000.0).abs() < 1e-6);
+        assert!((s.model().run(run).unwrap().points[1].y - 4000.0).abs() < 1e-6);
     }
 
     #[test]

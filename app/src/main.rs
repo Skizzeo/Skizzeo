@@ -66,6 +66,12 @@ fn style(scale: f32) -> Style {
 }
 
 /// Oberflächenbilder in der Zeichenreihenfolge.
+/// Renderer-Ablagen für Netze: ruhendes Modell, Vorschau des Wandwerkzeugs,
+/// gezogener Wandzug.
+const MESH_MODEL: usize = 0;
+const MESH_PREVIEW: usize = 1;
+const MESH_LIVE: usize = 2;
+
 const OVERLAY_TITLE: usize = 0;
 const OVERLAY_TOOLS: usize = 1;
 const OVERLAY_VIEWS: usize = 2;
@@ -155,6 +161,10 @@ struct App {
     redraw: bool,
     /// Modellnetz muss vor dem nächsten Bild neu erzeugt werden.
     mesh_dirty: bool,
+    /// Live-Netz (gezogener Wandzug) muss neu erzeugt werden.
+    live_dirty: bool,
+    /// Wandzug, der gerade im Live-Netz statt im ruhenden Netz liegt.
+    live_run: Option<sk_model::RunId>,
     /// Die Vorschau-Ablage enthält ein Netz.
     preview_shown: bool,
     /// Zuletzt hochgeladene Endsymbole der Schnittlinie (links, hervorgehoben, Skalierung).
@@ -176,17 +186,43 @@ impl App {
     /// je Bild in [`App::build_mesh`], egal wie viele Ereignisse es ändern.
     fn upload_model(&mut self) {
         self.mesh_dirty = true;
+        self.live_dirty = true;
         self.redraw = true;
     }
 
+    /// Nur der gezogene Wandzug hat sich geändert.
+    fn upload_live(&mut self) {
+        self.live_dirty = true;
+        self.redraw = true;
+    }
+
+    /// Erzeugt die vorgemerkten Netze. Beim Ziehen liegt der gezogene Wandzug in
+    /// einem eigenen Live-Netz; nur dieses wird dann je Bild neu erzeugt und
+    /// hochgeladen, das ruhende Netz bleibt auf der Grafikkarte.
     fn build_mesh(&mut self) {
-        self.mesh_dirty = false;
+        let live = self.edit.dragging_run();
+        if live != self.live_run {
+            self.live_run = live;
+            self.mesh_dirty = true;
+            self.live_dirty = true;
+        }
         let plane = match self.ui.view {
             ViewKind::Section => self.sect.plane(),
             _ => None,
         };
-        let mesh = self.scene.mesh(self.ui.view, plane);
-        self.renderer.set_mesh(0, &mesh);
+        if self.mesh_dirty {
+            self.mesh_dirty = false;
+            let mesh = self.scene.mesh(self.ui.view, plane, self.live_run);
+            self.renderer.set_mesh(MESH_MODEL, &mesh);
+        }
+        if self.live_dirty {
+            self.live_dirty = false;
+            let mesh = match self.live_run {
+                Some(r) => self.scene.mesh_run(self.ui.view, plane, r),
+                None => Default::default(),
+            };
+            self.renderer.set_mesh(MESH_LIVE, &mesh);
+        }
     }
 
     /// Band nur dort, wo sich am Grundriss sinnvoll ziehen lässt.
@@ -383,7 +419,9 @@ impl App {
                     .edit
                     .handle(&edit_ev, &mut self.scene, &self.cam, vw, vh, sc, en);
                 self.redraw |= out.redraw;
-                if out.changed {
+                if out.changed && self.edit.is_dragging() {
+                    self.upload_live();
+                } else if out.changed {
                     self.upload_model();
                 }
                 // Über Band oder Schnittlinie zeigt das Wandwerkzeug keinen Fangpunkt
@@ -590,12 +628,12 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     let (w, h) = surface.size();
     let scene = Scene::new();
     // Außenwand-Aufbau aus der Bibliothek: Vorschau beim Zeichnen und Anzeige im Paneel
-    let exterior = scene.model.defaults().exterior_wall;
+    let exterior = scene.model().defaults().exterior_wall;
     let mut tool = WallTool::new();
-    tool.layers = scene.model.wall_layers(exterior);
+    tool.layers = scene.model().wall_layers(exterior);
     let mut ui = Ui::new(surface.scale());
     ui.fit(surface.scale(), w, h);
-    ui.wall_layers = layer_rows(&scene.model, exterior);
+    ui.wall_layers = layer_rows(scene.model(), exterior);
     let mut a = App {
         renderer,
         scene,
@@ -613,6 +651,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         overlay_dirty: true,
         redraw: true,
         mesh_dirty: true,
+        live_dirty: true,
+        live_run: None,
         preview_shown: true,
         mark_keys: [None; 2],
     };
@@ -669,24 +709,23 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         let th = a.top();
         if a.redraw && a.w > 0 && a.h > th {
             let t_handled = Instant::now();
-            if a.mesh_dirty {
-                a.build_mesh();
-            }
+            a.build_mesh();
             let t_mesh = Instant::now();
             let drawing = a.ui.view != ViewKind::Persp;
             let preview = match (a.tool.preview(), a.ui.view) {
                 (Some(c), ViewKind::Plan) => Some(scene::mesh_with(
                     &c.solid_cut_at(scene::PLAN_CUT),
                     true,
-                    &a.scene.model,
+                    a.scene.model(),
                 )),
-                (Some(c), _) => Some(scene::mesh_of(&c.solid(), &a.scene.model)),
+                (Some(c), _) => Some(scene::mesh_of(&c.solid(), a.scene.model())),
                 (None, _) => None,
             };
             // Leere Vorschau nur einmal hochladen
             if preview.is_some() || a.preview_shown {
                 a.preview_shown = preview.is_some();
-                a.renderer.set_mesh(1, &preview.unwrap_or_default());
+                a.renderer
+                    .set_mesh(MESH_PREVIEW, &preview.unwrap_or_default());
             }
             let (vw, vh) = (a.w as f64, (a.h - th) as f64);
             let scale = a.title.scale;

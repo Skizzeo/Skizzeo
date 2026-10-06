@@ -289,6 +289,15 @@ impl WallChain {
             .collect()
     }
 
+    /// Äußerer Wandfuß je Segment als (Anfang, Ende), auf z = 0.
+    pub fn outer_foot(&self) -> Vec<(Vec3, Vec3)> {
+        let c = self.face_corners(self.outer_offset());
+        let n = c.len();
+        (0..self.segment_count())
+            .map(|k| (c[k], c[(k + 1) % n]))
+            .collect()
+    }
+
     /// Wandkörper mit Gehrungen an den Ecken, eine Schale je Schicht.
     pub fn solid(&self) -> Solid {
         let mut s = Solid::default();
@@ -356,6 +365,7 @@ impl WallChain {
                 let off = |p: Vec3| (flat(p) - pts[i]).dot(nr);
                 let v = |p: Vec3| (off(p) - lo) / t;
                 s.mat = mat | material::CUT;
+                s.elem = i as u32;
                 s.quad_uv(
                     [a, b, b + up, a + up],
                     n,
@@ -412,6 +422,7 @@ impl WallChain {
             let j = (i + 1) % n;
             let (a0, a1, b0, b1) = (ca[i], ca[j], cb[i], cb[j]);
             let nr = right_of(dirs[i]);
+            s.elem = i as u32;
             // Musterkoordinaten: u längs in Schichtdicken, v quer 0..1
             let uv = |p: Vec3| -> [f64; 2] {
                 let r = flat(p) - pts[i];
@@ -438,7 +449,9 @@ impl WallChain {
         if !closed {
             let (d0, d1) = (dirs[0], dirs[m - 1]);
             let (a0, b0, a1, b1) = (ca[0], cb[0], ca[n - 1], cb[n - 1]);
+            s.elem = 0;
             s.quad(a0, b0, b0 + up, a0 + up, -d0);
+            s.elem = (m - 1) as u32;
             s.quad(a1, a1 + up, b1 + up, b1, d1);
             for (p, q) in [(a0, b0), (a1, b1)] {
                 s.edge_kind = edge_kind::VIEW;

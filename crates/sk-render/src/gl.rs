@@ -124,6 +124,7 @@ gl_api! {
     fn glReadBuffer(m: GLenum);
     fn glReadPixels(x: GLint, y: GLint, w: GLsizei, h: GLsizei, f: GLenum, t: GLenum, d: *mut c_void);
     fn glDrawArrays(mode: GLenum, first: GLint, count: GLsizei);
+    fn glDrawArraysInstanced(mode: GLenum, first: GLint, count: GLsizei, instances: GLsizei);
 
     fn glCreateShader(kind: GLenum) -> GLuint;
     fn glShaderSource(s: GLuint, n: GLsizei, src: *const *const GLchar, len: *const GLint);
@@ -154,6 +155,7 @@ gl_api! {
     fn glBufferData(t: GLenum, size: GLsizeiptr, data: *const c_void, usage: GLenum);
     fn glVertexAttribPointer(i: GLuint, n: GLint, t: GLenum, norm: GLboolean, stride: GLsizei, off: *const c_void);
     fn glEnableVertexAttribArray(i: GLuint);
+    fn glVertexAttribDivisor(i: GLuint, divisor: GLuint);
 
     fn glGenFramebuffers(n: GLsizei, out: *mut GLuint);
     fn glDeleteFramebuffers(n: GLsizei, f: *const GLuint);
