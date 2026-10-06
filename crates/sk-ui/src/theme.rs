@@ -70,6 +70,10 @@ pub struct Ui {
     pub tooltip_text: Rgba,
     /// Dateimenü (E17): Fläche.
     pub menu_bg: Rgba,
+    /// Schwebende Bedienelemente über dem Modell (Geschossbogen, E18): Fläche
+    /// und Leuchten (die Abstufungen rechnet der Code als Deckkraft).
+    pub hud_bg: Rgba,
+    pub hud_glow: Rgba,
 }
 
 /// Eigene Titelleiste.
@@ -201,6 +205,20 @@ pub struct Sizes {
     pub list_thumb_h: f32,
     pub preview_w: f32,
     pub preview_h: f32,
+    /// Geschossbogen (E18): Radius bis zur Bandmitte, halber Öffnungswinkel
+    /// (Grad), Bandbreite, Länge und Breite der Pfeilspitzen, Schriftgröße
+    /// des aktiven Geschosses und der Nachbarn.
+    pub arc_r: f32,
+    pub arc_span_deg: f32,
+    pub arc_band: f32,
+    pub arc_head_l: f32,
+    pub arc_head_w: f32,
+    pub arc_label: f32,
+    pub arc_label_small: f32,
+    /// Dauer der Übergänge in ms (0 = keine Animation) und Verzögerung des
+    /// Hinweises an schwebenden Bedienelementen in s.
+    pub anim_ms: f32,
+    pub hover_delay_hud: f32,
 }
 
 const fn rgb(r: u8, g: u8, b: u8) -> Rgba {
@@ -251,6 +269,8 @@ impl Theme {
                 tooltip_bg: rgb(20, 25, 32),
                 tooltip_text: text,
                 menu_bg: bg,
+                hud_bg: Rgba(bg.0, bg.1, bg.2, 199),
+                hud_glow: accent,
             },
             title: Title {
                 // Dunkel wie die Paneele, damit sie sich auch über dem Papier abhebt
@@ -349,6 +369,15 @@ impl Theme {
                 list_thumb_h: 24.0,
                 preview_w: 240.0,
                 preview_h: 160.0,
+                arc_r: 80.0,
+                arc_span_deg: 58.0,
+                arc_band: 14.0,
+                arc_head_l: 24.0,
+                arc_head_w: 34.0,
+                arc_label: 26.0,
+                arc_label_small: 13.0,
+                anim_ms: 280.0,
+                hover_delay_hud: 0.25,
             },
             px_per_mm: 5.5,
         }
@@ -365,9 +394,26 @@ impl Theme {
         if (sel.0, sel.1, sel.2) == (old.0, old.1, old.2) {
             self.ui.text_select = Rgba(c.0, c.1, c.2, sel.3);
         }
-        for role in [&mut self.ui.level_line_active, &mut self.ui.dim_text_hover] {
+        for role in [
+            &mut self.ui.level_line_active,
+            &mut self.ui.dim_text_hover,
+            &mut self.ui.hud_glow,
+        ] {
             if *role == old {
                 *role = c;
+            }
+        }
+        // Akzent unter der Maus: folgt, solange er die Vorbelegung zum alten
+        // Akzent ist (aufgehellt; beim dunklen Schema dessen eigener Wert)
+        let dark = Theme::dark().ui;
+        let old_hover = self.ui.accent_hover;
+        let derived =
+            old_hover == lighten(old) || (old == dark.accent && old_hover == dark.accent_hover);
+        if derived {
+            let h = lighten(c);
+            self.ui.accent_hover = h;
+            if self.ui.level_handle_hover == old_hover {
+                self.ui.level_handle_hover = h;
             }
         }
         self.ui.accent = c;
@@ -375,6 +421,12 @@ impl Theme {
         self.interact.draw = c.to_f32();
         self.rev += 1;
     }
+}
+
+/// Akzent unter der Maus zu einem Akzent: 20 % in Richtung Weiß.
+pub fn lighten(c: Rgba) -> Rgba {
+    let up = |v: u8| (v as f32 + (255.0 - v as f32) * 0.2).round() as u8;
+    Rgba(up(c.0), up(c.1), up(c.2), c.3)
 }
 
 #[cfg(test)]
@@ -446,6 +498,25 @@ mod tests {
         let blue = Rgba::rgb(40, 120, 220);
         t.set_accent(blue);
         assert_eq!((t.ui.level_line_active, t.ui.dim_text_hover), (blue, blue));
+    }
+
+    /// Akzent unter der Maus folgt dem Akzent (aufgehellt), solange er nicht
+    /// eigens gewählt ist.
+    #[test]
+    fn akzent_unter_der_maus_folgt() {
+        let mut t = Theme::dark();
+        let blue = Rgba::rgb(40, 120, 220);
+        t.set_accent(blue);
+        assert_eq!(t.ui.accent_hover, Rgba::rgb(83, 147, 227));
+        assert_eq!(t.ui.level_handle_hover, t.ui.accent_hover);
+        assert_eq!(t.ui.hud_glow, blue);
+        let green = Rgba::rgb(20, 160, 60);
+        t.set_accent(green);
+        assert_eq!(t.ui.accent_hover, lighten(green));
+        // eigens gewählt: bleibt
+        t.ui.accent_hover = Rgba::rgb(1, 2, 3);
+        t.set_accent(blue);
+        assert_eq!(t.ui.accent_hover, Rgba::rgb(1, 2, 3));
     }
 
     /// Die früheren Werte als 0..1 und ihre Rollen weichen höchstens 0,5/255 ab.

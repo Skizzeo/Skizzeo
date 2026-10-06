@@ -327,7 +327,7 @@ pub enum Panel {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Band {
     pub id: StoreyId,
-    /// Anzeigename: „Gründung“, „EG“, „OG“.
+    /// Anzeigename: „Fundament“, „EG“, „OG“.
     pub name: String,
     /// Unter- und Oberkante (mm).
     pub bottom: f64,
@@ -473,6 +473,9 @@ pub struct Ui {
     /// Ein Obergeschoss ist aktiv: Außenwände entstehen aus dem EG, der Knopf
     /// „Gebäude“ ist gesperrt (E16).
     pub upper_active: bool,
+    /// Das Fundament ist aktiv: dort gibt es noch nichts zu zeichnen, beide
+    /// Wandknöpfe sind gesperrt (E18).
+    pub foundation_active: bool,
     /// Dialog „Gebäude erstellen“ offen (modal, E16).
     pub dialog: bool,
     /// Zahlenfelder des Dialogs (Vorgaben des Gebäudes).
@@ -564,13 +567,21 @@ enum Row {
     Hint(&'static str),
 }
 
-fn tool_rows(interior: bool, layers: &[(Rgba, String)], upper_active: bool) -> Vec<Row> {
+fn tool_rows(
+    interior: bool,
+    layers: &[(Rgba, String)],
+    upper_active: bool,
+    foundation_active: bool,
+) -> Vec<Row> {
     let mut rows = vec![
         Row::Title("Werkzeuge"),
         Row::Button(Id::Building, "Gebäude"),
         Row::Button(Id::Interior, "Innenwand"),
     ];
-    if upper_active {
+    if foundation_active {
+        rows.push(Row::Text("Im Fundament gibt es noch".into()));
+        rows.push(Row::Text("nichts zu zeichnen".into()));
+    } else if upper_active {
         rows.push(Row::Text("Außenwände entstehen aus dem EG".into()));
     }
     rows.extend([Row::Label(if interior {
@@ -686,6 +697,7 @@ impl Ui {
             ortho: true,
             wall_layers: Vec::new(),
             upper_active: false,
+            foundation_active: false,
             dialog: false,
             dialog_fields: Vec::new(),
             props: None,
@@ -696,6 +708,11 @@ impl Ui {
             win_h: 1e6,
             top: 32,
         }
+    }
+
+    /// Bildschirmskalierung (dpi / 96), ohne den Fensterfaktor der Paneele.
+    pub fn dpi(&self) -> f32 {
+        self.dpi
     }
 
     /// Passt die Paneelgröße an Fenster (Pixel) und Bildschirmskalierung an: in
@@ -714,7 +731,12 @@ impl Ui {
 
     fn rows(&self, p: Panel) -> Vec<Row> {
         match p {
-            Panel::Tools => tool_rows(self.interior, &self.wall_layers, self.upper_active),
+            Panel::Tools => tool_rows(
+                self.interior,
+                &self.wall_layers,
+                self.upper_active,
+                self.foundation_active,
+            ),
             Panel::Views => view_rows(),
             Panel::Props => self
                 .props
@@ -1023,6 +1045,11 @@ impl Ui {
         Rect::new(x, y, w, self.panel_height(p))
     }
 
+    /// Ist das Paneel „Eigenschaften“ da (ein Bauteil gewählt)?
+    pub fn has_props(&self) -> bool {
+        self.props.is_some()
+    }
+
     /// Sichtbare Paneele; bei offenem Dialog nimmt nur er die Maus.
     fn panels(&self) -> Vec<Panel> {
         if self.dialog {
@@ -1097,10 +1124,12 @@ impl Ui {
         }
     }
 
-    /// Gesperrte Knöpfe: „Gebäude“ im OG, der Zähler im Dialog (fest 2).
+    /// Gesperrte Knöpfe: „Gebäude“ im OG, beide Wandknöpfe im Fundament,
+    /// der Zähler im Dialog (fest 2).
     fn is_disabled(&self, id: Id) -> bool {
         match id {
-            Id::Building => self.upper_active,
+            Id::Building => self.upper_active || self.foundation_active,
+            Id::Interior => self.foundation_active,
             Id::DialogMinus | Id::DialogPlus => true,
             Id::DialogStart => self.dialog_invalid(),
             _ => false,
@@ -1780,7 +1809,7 @@ impl Ui {
                 push(f, xi - 6.0 * s, clamp(y) - 4.0 * s);
             }
         }
-        // Namen der Geschosse an ihrer Unterkante (die Gründung ist keines)
+        // Namen der Geschosse an ihrer Unterkante (auch das Fundament, E18)
         let nx = x0 + (self.size.level_handle + self.size.level_label_gap) * s;
         for (b, &y) in bands.iter().zip(&ys) {
             if let Some(r) = self.storey_name_rect(b, nx, clamp(y) - 4.0 * s) {
@@ -1804,12 +1833,9 @@ impl Ui {
         out
     }
 
-    /// Klickfläche eines Geschossnamens (links `x`, Grundlinie `base`);
-    /// `None` für die Gründung.
+    /// Klickfläche eines Geschossnamens (links `x`, Grundlinie `base`); auch
+    /// das Fundament ist anklickbar (E18).
     fn storey_name_rect(&self, b: &Band, x: f32, base: f32) -> Option<Rect> {
-        if b.foundation {
-            return None;
-        }
         let s = self.scale;
         let px = self.size.font_small * s;
         let font = if b.active {
@@ -2071,11 +2097,6 @@ impl Ui {
             let yl = (y + m - th * 0.5).round();
             c.fill_rect(x0 + m, yl, xo + 4.0 * s - x0, th, col);
             tick(c, xo, y);
-            let font = if line.active {
-                bold.or(regular)
-            } else {
-                regular
-            };
             let name_col = if line.active {
                 u.level_line_active
             } else {
@@ -2087,6 +2108,15 @@ impl Ui {
             let width =
                 |f: Option<&sk_paint::font::Font>, t: &str| f.map_or(0.0, |f| f.width(t, px));
             let kote_x = xi - 4.0 * s - width(regular, &kote_text(line.z));
+            // Aktiv fett, außer der fette Name stieße an die Kote und der
+            // normale nicht („Fundament −0,80“, E18): dann bleibt er auf
+            // seiner Zeile und ist nur an der Farbe zu erkennen
+            let fits = |f| nx + width(f, &line.name) + 6.0 * s <= kote_x;
+            let font = if line.active && (fits(bold.or(regular)) || !fits(regular)) {
+                bold.or(regular)
+            } else {
+                regular
+            };
             let base = if nx + width(font, &line.name) + 6.0 * s > kote_x {
                 y - 4.0 * s - regular.map_or(px * 0.7, |f| f.cap_height(px)) - 5.0 * s
             } else {
@@ -2259,6 +2289,10 @@ mod tests {
             None,
             "Außenwände entstehen aus dem EG"
         );
+        // Im Fundament sind beide Wandknöpfe gesperrt (E18)
+        ui.upper_active = false;
+        ui.foundation_active = true;
+        assert_eq!(click(&mut ui, x, y), None, "Fundament: Gebäude gesperrt");
     }
 
     /// Dialogfelder (Jörn 10:13): Reihenfolge von oben nach unten, jede
@@ -2693,7 +2727,7 @@ mod levels_tests {
     fn drei_baender_und_vier_linien() {
         let (ui, _) = ui_mit_geschossen();
         let names: Vec<_> = ui.levels.bands.iter().map(|b| b.name.as_str()).collect();
-        assert_eq!(names, ["Gründung", "EG", "OG"]);
+        assert_eq!(names, ["Fundament", "EG", "OG"]);
         let lines = level_lines(&ui.levels);
         let z: Vec<_> = lines.iter().map(|l| l.z).collect();
         assert_eq!(z, [-800.0, 0.0, 2855.0, 5710.0]);
@@ -2855,8 +2889,9 @@ mod levels_tests {
             assert!(r.y >= t.y + t.h && r.y + r.h <= h as f32, "{w}×{h}: {r:?}");
             assert_eq!(ui.levels_layout().list, list, "{w}×{h}");
             let n = ui.level_buttons().len();
-            // Zahlen (mit lichter Höhe EG und OG) und die Namen von EG und OG
-            assert_eq!(n, if list { 9 } else { 10 }, "{w}×{h}");
+            // Zahlen (mit lichter Höhe EG und OG) und die Namen von
+            // Fundament, EG und OG (E18: das Fundament ist anklickbar)
+            assert_eq!(n, if list { 10 } else { 11 }, "{w}×{h}");
             for (_, b, _) in ui.level_buttons() {
                 assert!(b.y >= 0.0 && b.y + b.h <= r.h, "{w}×{h}: {b:?}");
             }
@@ -2956,13 +2991,13 @@ mod levels_tests {
         assert!(ui.level_drag_z().is_some());
     }
 
-    /// E14b Test 3 (Oberfläche): Klick auf „OG“ meldet das Geschoss, die
-    /// Gründung hat keinen klickbaren Namen.
+    /// E14b Test 3 (Oberfläche): Klick auf „OG“ meldet das Geschoss; auch das
+    /// Fundament hat einen klickbaren Namen (E18).
     #[test]
     fn klick_auf_geschossnamen() {
         let (mut ui, mut s) = ui_mit_geschossen();
         let og = band(&ui, "OG");
-        assert!(name_at(&ui, band(&ui, "Gründung").id).is_none());
+        assert!(name_at(&ui, band(&ui, "Fundament").id).is_some());
         let (x, y) = name_at(&ui, og.id).unwrap();
         let mut clicked = None;
         for e in [
@@ -2990,6 +3025,6 @@ mod levels_tests {
         ui.fit(1.0, 900, 400);
         assert!(ui.levels_layout().list);
         assert!(name_at(&ui, og.id).is_some());
-        assert!(name_at(&ui, band(&ui, "Gründung").id).is_none());
+        assert!(name_at(&ui, band(&ui, "Fundament").id).is_some());
     }
 }

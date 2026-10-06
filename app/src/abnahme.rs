@@ -2712,7 +2712,8 @@ fn a47_paneel_geschosse_links() {
 
 /// A48 (E14b Test 3): Klick auf „OG“ macht es aktiv. Der Grundriss schneidet
 /// dann 1 m über UK OG (+3,855) und zeigt nur noch Wände und Decke von oben;
-/// die Gründung ist nicht aktivierbar; das Werkzeug zeichnet auf UK OG.
+/// das Fundament ist aktivierbar (Schnitt −0,51, siehe A87); das Werkzeug
+/// zeichnet auf UK OG.
 #[test]
 fn a48_aktives_geschoss() {
     let mut s = Scene::with_model(Model::with_seed(48));
@@ -2728,7 +2729,8 @@ fn a48_aktives_geschoss() {
     );
 
     let gr = s.levels().bands.iter().find(|b| b.foundation).unwrap().id;
-    assert!(!s.set_active_storey(gr), "Gründung nicht aktivierbar");
+    assert!(s.set_active_storey(gr), "Fundament aktivierbar");
+    assert_eq!(s.plan_cut(), -510.0, "Mitte Frostschürze");
     assert!(s.set_active_storey(og));
     assert!(!s.set_active_storey(og), "schon aktiv");
     assert_eq!(s.plan_cut(), 2855.0 + 1000.0);
@@ -4891,4 +4893,561 @@ fn a79_ok_zuruecksetzen_namen() {
     assert!(!name_frei(&s, "Linientypen", "Strichlinie"));
     assert!(name_frei(&s, "Linientypen", "Mauerwerk"), "andere Tabelle");
     assert!(!name_frei(&s, "Stifte", "Kräftig"));
+}
+// Abnahmetests E18 „Geschossbogen im Grundriss“, Fassung 3 (einstellungen/paket-e18-geschossrad.md,
+// Jörns Handskizze 12:05), vorbereitet gegen main c86de72. Spezifikation: test/abnahme-geschossrad.md.
+// Ersetzt a80-a86-geschossrad.rs (Fassung 1, Halbkreisrad).
+//
+// Angenommene Namen stehen nur in den Adaptern. Die Zeit wird als Millisekunden
+// hineingereicht, damit die Animation ohne Warten prüfbar ist. Aussehen
+// (Leuchten, Überblendung, Höhenversatz) und echte Bildzeiten (--zeiten)
+// prüfen Handtest H55–H61 und Review.
+//
+// Das Fundament als Ebene (A87, Teile von A80–A82) hat Jörn noch nicht
+// bestätigt. Lehnt er ab, entfallen A87 und die Fundament-Zeilen in A80–A82
+// (dort mit „Fundament:“ markiert); die Spitze unten im EG ist dann gesperrt.
+
+// ===== Adapter E18 =====
+
+use crate::wheel::Wheel;
+
+/// Ist der Bogen in dieser Ansicht zu sehen? `gesperrt`: Dialog, Dateimenü
+/// oder Einstellungsfenster offen.
+fn bogen_sichtbar(w: &Wheel, view: ViewKind, gesperrt: bool) -> bool {
+    w.visible(view, gesperrt)
+}
+
+/// Kreismittelpunkt des Bogens (x, y) in Bildpunkten und Radius bis zur
+/// Bandmitte.
+fn bogen_lage(w: &Wheel, ui: &Ui, breite: u32, hoehe: u32) -> (f32, f32, f32) {
+    w.placement(ui, breite, hoehe)
+}
+
+/// Rechte Kante des ganzen Bogens samt Schild des aktiven Geschosses (px).
+fn bogen_rechts(w: &Wheel, s: &Scene, ui: &Ui, breite: u32, hoehe: u32) -> f32 {
+    w.right_edge(s, ui, breite, hoehe)
+}
+
+/// Spitze frei? `hoch` = Spitze oben. `eingabe`: Wandzug angefangen.
+fn spitze_frei(w: &Wheel, s: &Scene, hoch: bool, eingabe: bool) -> bool {
+    w.arrow_enabled(s, hoch, eingabe)
+}
+
+/// Klick auf eine Spitze (oder ihre Beschriftung) zur Zeit `t` (ms).
+fn spitze_klick(w: &mut Wheel, s: &mut Scene, hoch: bool, eingabe: bool, t: u64) {
+    w.click_arrow(s, hoch, eingabe, t)
+}
+
+/// Klick auf Band oder Schild des aktiven Geschosses.
+fn band_klick(w: &mut Wheel, s: &mut Scene, t: u64) {
+    w.click_band(s, t)
+}
+
+/// Mausrad über dem Bogen: `rasten` > 0 = hoch.
+fn mausrad(w: &mut Wheel, s: &mut Scene, rasten: i32, t: u64) {
+    w.scroll(s, rasten, t)
+}
+
+/// Taste in der Ansicht `view` (Bild↑/Bild↓); `true` = vom Bogen verbraucht.
+fn taste(w: &mut Wheel, s: &mut Scene, view: ViewKind, key: Key, eingabe: bool, t: u64) -> bool {
+    w.key(s, view, key, eingabe, t)
+}
+
+/// Klick auf einen Geschossnamen im Paneel „Geschosse“: derselbe Wechsel mit
+/// Animation wie über den Bogen.
+fn paneel_klick(w: &mut Wheel, s: &mut Scene, st: sk_model::StoreyId, t: u64) {
+    w.select(s, st, t)
+}
+
+/// Um wie viele Plätze die Beschriftungen in der laufenden Animation rollen
+/// (+ = nach oben); 0 ohne Animation.
+fn rollt(w: &Wheel, t: u64) -> i32 {
+    w.anim_steps(t)
+}
+
+/// Fortschritt der Zeit: führt vorgemerkte Eingaben nach dem Ende aus.
+fn tick(w: &mut Wheel, s: &mut Scene, t: u64) {
+    w.tick(s, t)
+}
+
+fn laeuft(w: &Wheel, t: u64) -> bool {
+    w.animating(t)
+}
+
+/// Beschriftung: aktives Geschoss (Name, Kote), Nachbar an der oberen und an
+/// der unteren Spitze (Name; `None` = Spitze ausgegraut ohne Beschriftung).
+type Text = ((String, String), Option<String>, Option<String>);
+fn bogen_text(w: &Wheel, s: &Scene) -> Text {
+    (w.center(s), w.neighbor(s, true), w.neighbor(s, false))
+}
+
+/// Hinweis an der Spitze nach der Hover-Verzögerung: (Zeile, Kote) bzw. der
+/// Sperrhinweis; `None` über einer ausgegrauten Spitze.
+fn spitze_hinweis(w: &Wheel, s: &Scene, hoch: bool, eingabe: bool) -> Option<(String, String)> {
+    w.arrow_hint(s, hoch, eingabe)
+}
+
+/// Dauer der Animation in ms aus Schema und Startart.
+fn anim_dauer(th: &Theme, screenshot: bool) -> u64 {
+    crate::wheel::anim_duration(th, screenshot)
+}
+
+/// Grundrissnetz eines Geschosses liegt schon bereit (vorbereitet im Leerlauf).
+fn grundriss_bereit(s: &Scene, st: sk_model::StoreyId) -> bool {
+    s.plan_ready(st)
+}
+
+/// Leerlauf: Nachbargeschosse vorbereiten.
+fn leerlauf(s: &mut Scene) {
+    s.prepare_neighbor_plans()
+}
+
+/// Sperrhinweis des Wandwerkzeugs im aktiven Geschoss (`None` = frei).
+fn wand_sperre(s: &Scene) -> Option<String> {
+    s.wall_tool_block()
+}
+
+/// Das Fundament (Gründungsband des Geschossmanagers).
+fn fundament(s: &Scene) -> sk_model::StoreyId {
+    s.levels().bands.iter().find(|b| b.foundation).unwrap().id
+}
+
+fn bogen(th: &Theme) -> Wheel {
+    Wheel::new(th, false)
+}
+
+const BILD_HOCH: Key = Key::Other(0x21);
+const BILD_RUNTER: Key = Key::Other(0x22);
+
+fn t(a: &str, b: &str, oben: Option<&str>, unten: Option<&str>) -> Text {
+    (
+        (a.into(), b.into()),
+        oben.map(Into::into),
+        unten.map(Into::into),
+    )
+}
+
+// ===== Tests =====
+
+/// A80 (E18 §1, §2, Test 1): Bogen nur im Grundriss, ausgeblendet bei Dialog,
+/// Menü oder Einstellungsfenster; rechts am Rand mit Abstand `panel_margin`,
+/// senkrecht mittig im freien Bereich unter „Ansichten“, nie höher als die
+/// Fenstermitte. Rechts groß „EG ±0,00“, oben klein „OG“, unten „Fundament“.
+#[test]
+fn a80_bogen_nur_im_grundriss() {
+    let th = Theme::dark();
+    let w = bogen(&th);
+    for v in [
+        ViewKind::Persp,
+        ViewKind::Section,
+        ViewKind::Front,
+        ViewKind::Back,
+        ViewKind::Left,
+        ViewKind::Right,
+    ] {
+        assert!(!bogen_sichtbar(&w, v, false), "{v:?}");
+    }
+    assert!(bogen_sichtbar(&w, ViewKind::Plan, false));
+    assert!(!bogen_sichtbar(&w, ViewKind::Plan, true), "Dialog offen");
+    // Gebäude mit Fundament, EG und OG
+    let mut s = Scene::with_model(Model::with_seed(81));
+    gebaeude(&mut s);
+    assert_eq!(
+        bogen_text(&w, &s),
+        t("EG", "±0,00", Some("OG"), Some("Fundament"))
+    );
+    assert!(spitze_frei(&w, &s, true, false));
+    assert!(spitze_frei(&w, &s, false, false), "Fundament: unten frei");
+    // Lage
+    let mut ui = Ui::new(1.0, &th);
+    for (bw, bh) in [(1440u32, 900u32), (1920, 1080), (1000, 640)] {
+        ui.fit(1.0, bw, bh);
+        let (cx, cy, r) = bogen_lage(&w, &ui, bw, bh);
+        let views = ui.rect(Panel::Views, bw, 32);
+        let unten = views.y + views.h;
+        let soll = ((unten + bh as f32) / 2.0).max(bh as f32 / 2.0);
+        assert_eq!(r, th.size.arc_r);
+        assert!(
+            (cy - soll).abs() < 1.0,
+            "senkrecht {bw}×{bh}: {cy} ≠ {soll}"
+        );
+        let rechts = bogen_rechts(&w, &s, &ui, bw, bh);
+        assert!(
+            (rechts - (bw as f32 - th.size.panel_margin)).abs() < 1.0,
+            "rechter Rand {bw}: {rechts}"
+        );
+        assert!(cx + r < rechts, "Schild rechts vom Bogen");
+    }
+    // Noch kein Gebäude (nur die Vorlage): oben ausgegraut ohne Beschriftung.
+    // Bauthread: Ein geschlossenes Rechteck legt schon das ganze Gebäude mit
+    // OG an (Modellierungsansatz), daher hier ohne Zeichnen.
+    let s = Scene::with_model(Model::with_seed(80));
+    assert_eq!(
+        bogen_text(&w, &s),
+        t("EG", "±0,00", None, Some("Fundament"))
+    );
+    assert!(!spitze_frei(&w, &s, true, false));
+    assert_eq!(spitze_hinweis(&w, &s, true, false), None, "ausgegraut");
+}
+
+/// A81 (E18 §3, §5, Tests 2, 3, 5): Spitzen wechseln, an den Enden gesperrt;
+/// Hinweise; Bogen und Paneel zeigen dasselbe Geschoss; Band und Schild
+/// reagieren nicht.
+#[test]
+fn a81_spitzen_und_kopplung_mit_paneel() {
+    let th = Theme::dark();
+    let mut w = bogen(&th);
+    let mut s = Scene::with_model(Model::with_seed(82));
+    gebaeude(&mut s);
+    let (fu, eg, og) = (fundament(&s), geschoss(&s, "EG"), geschoss(&s, "OG"));
+    assert_eq!(
+        spitze_hinweis(&w, &s, true, false),
+        Some(("Obergeschoss ↑".into(), "+2,855".into()))
+    );
+    assert_eq!(
+        spitze_hinweis(&w, &s, false, false),
+        Some(("Fundament ↓".into(), "−0,80".into())),
+        "Fundament"
+    );
+    band_klick(&mut w, &mut s, 0);
+    assert_eq!(s.active_storey(), eg, "Band: nichts");
+    assert!(!laeuft(&w, 0));
+    spitze_klick(&mut w, &mut s, true, false, 0);
+    assert_eq!(s.active_storey(), og, "Paneel und Grundriss sofort auf OG");
+    assert_eq!(s.plan_cut(), 2855.0 + 1000.0);
+    tick(&mut w, &mut s, 1000);
+    assert_eq!(bogen_text(&w, &s), t("OG", "+2,855", None, Some("EG")));
+    assert!(!spitze_frei(&w, &s, true, false), "oben zu");
+    assert_eq!(spitze_hinweis(&w, &s, true, false), None);
+    assert_eq!(
+        spitze_hinweis(&w, &s, false, false),
+        Some(("Erdgeschoss ↓".into(), "±0,00".into()))
+    );
+    spitze_klick(&mut w, &mut s, true, false, 1000);
+    tick(&mut w, &mut s, 2000);
+    assert_eq!(s.active_storey(), og, "Spitze oben gesperrt: nichts");
+    // Paneel → Bogen: set_active_storey (Klick im Paneel) zeigt der Bogen mit
+    assert!(s.set_active_storey(eg));
+    assert_eq!(bogen_text(&w, &s).0 .0, "EG");
+    // Fundament: Spitze unten, dann unten ausgegraut
+    spitze_klick(&mut w, &mut s, false, false, 3000);
+    tick(&mut w, &mut s, 4000);
+    assert_eq!(s.active_storey(), fu);
+    assert_eq!(
+        bogen_text(&w, &s),
+        t("Fundament", "−0,80", Some("EG"), None)
+    );
+    assert!(!spitze_frei(&w, &s, false, false), "unten zu");
+    let l = s.levels();
+    let aktiv: Vec<_> = l
+        .bands
+        .iter()
+        .filter(|b| b.active)
+        .map(|b| b.name.as_str())
+        .collect();
+    assert_eq!(
+        aktiv,
+        ["Fundament"],
+        "Paneel heißt „Fundament“ und zeigt es aktiv"
+    );
+}
+
+/// A82 (E18 §3, Tests 2, 4): Bild↑/Bild↓ nur im Grundriss und nicht während
+/// einer Eingabe; Mausrad über dem Bogen: eine Raste = ein Geschoss.
+#[test]
+fn a82_bildtasten_und_mausrad() {
+    let th = Theme::dark();
+    let mut w = bogen(&th);
+    let mut s = Scene::with_model(Model::with_seed(83));
+    gebaeude(&mut s);
+    let (fu, eg, og) = (fundament(&s), geschoss(&s, "EG"), geschoss(&s, "OG"));
+    assert!(
+        !taste(&mut w, &mut s, ViewKind::Persp, BILD_HOCH, false, 0),
+        "nicht in 3D"
+    );
+    assert_eq!(s.active_storey(), eg);
+    assert!(
+        !taste(&mut w, &mut s, ViewKind::Plan, BILD_HOCH, true, 0),
+        "nicht während der Eingabe"
+    );
+    assert_eq!(s.active_storey(), eg);
+    assert!(taste(&mut w, &mut s, ViewKind::Plan, BILD_HOCH, false, 0));
+    assert_eq!(s.active_storey(), og);
+    tick(&mut w, &mut s, 1000);
+    assert!(taste(
+        &mut w,
+        &mut s,
+        ViewKind::Plan,
+        BILD_RUNTER,
+        false,
+        1000
+    ));
+    assert_eq!(s.active_storey(), eg);
+    tick(&mut w, &mut s, 2000);
+    mausrad(&mut w, &mut s, 1, 2000);
+    assert_eq!(s.active_storey(), og, "Rad hoch = Geschoss hoch");
+    tick(&mut w, &mut s, 3000);
+    mausrad(&mut w, &mut s, 1, 3000);
+    tick(&mut w, &mut s, 4000);
+    assert_eq!(s.active_storey(), og, "oben bleibt oben");
+    mausrad(&mut w, &mut s, -1, 4000);
+    assert_eq!(s.active_storey(), eg);
+    tick(&mut w, &mut s, 5000);
+    assert!(taste(
+        &mut w,
+        &mut s,
+        ViewKind::Plan,
+        BILD_RUNTER,
+        false,
+        5000
+    ));
+    assert_eq!(s.active_storey(), fu, "Fundament: Bild↓ im EG");
+    tick(&mut w, &mut s, 6000);
+    mausrad(&mut w, &mut s, -1, 6000);
+    tick(&mut w, &mut s, 7000);
+    assert_eq!(s.active_storey(), fu, "unten bleibt unten");
+}
+
+/// A83 (E18 §5, Test 9): Während eines angefangenen Wandzugs ist der Wechsel
+/// gesperrt: Spitzen zu mit Hinweis, Klick, Mausrad und Bildtasten wirkungslos.
+#[test]
+fn a83_gesperrt_beim_wand_zeichnen() {
+    let th = Theme::dark();
+    let mut w = bogen(&th);
+    let mut s = Scene::with_model(Model::with_seed(84));
+    gebaeude(&mut s);
+    let eg = geschoss(&s, "EG");
+    for hoch in [true, false] {
+        assert!(!spitze_frei(&w, &s, hoch, true));
+        assert_eq!(
+            spitze_hinweis(&w, &s, hoch, true).map(|h| h.0),
+            Some("Erst die Wand fertig zeichnen oder Esc".into())
+        );
+    }
+    spitze_klick(&mut w, &mut s, true, true, 0);
+    spitze_klick(&mut w, &mut s, false, true, 0);
+    assert!(!taste(&mut w, &mut s, ViewKind::Plan, BILD_HOCH, true, 0));
+    tick(&mut w, &mut s, 1000);
+    assert_eq!(s.active_storey(), eg);
+    assert!(!laeuft(&w, 1000));
+}
+
+/// A84 (E18 §4, §5, Tests 6, 7, 8): Animation 280 ms (17 ± 2 Bilder bei
+/// 60 Hz); eine Eingabe während der Animation wird vorgemerkt (höchstens
+/// eine) und danach ausgeführt; Paneelklick über zwei Stufen ist eine
+/// Animation; anim_ms = 0 und --screenshot ohne Animation.
+#[test]
+fn a84_animation_und_vormerken() {
+    let th = Theme::dark();
+    assert_eq!(th.size.anim_ms, 280.0);
+    assert_eq!(anim_dauer(&th, false), 280);
+    assert_eq!(anim_dauer(&th, true), 0, "--screenshot");
+    let mut aus = Theme::dark();
+    aus.size.anim_ms = 0.0;
+    assert_eq!(anim_dauer(&aus, false), 0);
+    // Bilder zählen
+    let mut w = bogen(&th);
+    let mut s = Scene::with_model(Model::with_seed(85));
+    gebaeude(&mut s);
+    let (fu, eg, og) = (fundament(&s), geschoss(&s, "EG"), geschoss(&s, "OG"));
+    spitze_klick(&mut w, &mut s, true, false, 0);
+    assert_eq!(rollt(&w, 0), 1);
+    let mut bilder = 0;
+    let mut t = 0.0f64;
+    while laeuft(&w, t as u64) {
+        bilder += 1;
+        t += 1000.0 / 60.0;
+        assert!(bilder < 100);
+    }
+    assert!((15..=19).contains(&bilder), "{bilder} Bilder");
+    // Vormerken: im OG nach unten anstoßen, dann zwei schnelle Rasten nach
+    // oben während der Animation → genau ein weiterer Wechsel
+    tick(&mut w, &mut s, 1000);
+    mausrad(&mut w, &mut s, -1, 1000);
+    assert_eq!(s.active_storey(), eg);
+    mausrad(&mut w, &mut s, 1, 1050);
+    mausrad(&mut w, &mut s, 1, 1100);
+    assert_eq!(s.active_storey(), eg, "noch in der Animation");
+    tick(&mut w, &mut s, 1300);
+    assert_eq!(s.active_storey(), og, "vorgemerkter Wechsel ausgeführt");
+    assert!(laeuft(&w, 1400), "Animation des vorgemerkten Wechsels");
+    tick(&mut w, &mut s, 1700);
+    assert!(
+        !laeuft(&w, 1700),
+        "keine zweite vorgemerkte Eingabe gestaut"
+    );
+    assert_eq!(s.active_storey(), og);
+    // Fundament: Paneelklick Fundament → OG rollt in einem Zug zwei Plätze
+    paneel_klick(&mut w, &mut s, fu, 2000);
+    tick(&mut w, &mut s, 3000);
+    assert_eq!(s.active_storey(), fu);
+    paneel_klick(&mut w, &mut s, og, 3000);
+    assert_eq!(s.active_storey(), og);
+    assert_eq!(rollt(&w, 3000), 2, "zwei Plätze");
+    assert!(laeuft(&w, 3200));
+    assert!(!laeuft(&w, 3300), "eine Animation von 280 ms, nicht zwei");
+    // anim_ms = 0: sofort, ohne Animation
+    tick(&mut w, &mut s, 4000);
+    let mut w0 = bogen(&aus);
+    spitze_klick(&mut w0, &mut s, false, false, 5000);
+    assert_eq!(s.active_storey(), eg);
+    assert!(!laeuft(&w0, 5000));
+    let mut ws = Wheel::new(&th, true);
+    spitze_klick(&mut ws, &mut s, true, false, 6000);
+    assert_eq!(s.active_storey(), og);
+    assert!(!laeuft(&ws, 6000), "--screenshot");
+}
+
+/// A85 (E18 §5, Test 10): Kein Rückgängig-Eintrag, keine Modell- oder
+/// Attributänderung, Titel ohne „•“, auch über das Fundament.
+#[test]
+fn a85_kein_rueckgaengig() {
+    let th = Theme::dark();
+    let mut w = bogen(&th);
+    let mut s = Scene::with_model(Model::with_seed(86));
+    gebaeude(&mut s);
+    let doc = crate::document::Document::new(s.model().revision());
+    let (label, rev, attr_rev) = (s.undo_label(), s.model().revision(), s.model().attr().rev());
+    let text = sk_model::szo::write(s.model());
+    spitze_klick(&mut w, &mut s, true, false, 0);
+    tick(&mut w, &mut s, 1000);
+    mausrad(&mut w, &mut s, -1, 1000);
+    tick(&mut w, &mut s, 2000);
+    mausrad(&mut w, &mut s, -1, 2000);
+    tick(&mut w, &mut s, 3000);
+    assert_eq!(s.undo_label(), label);
+    assert_eq!(s.model().revision(), rev);
+    assert_eq!(s.model().attr().rev(), attr_rev);
+    assert_eq!(sk_model::szo::write(s.model()), text);
+    assert!(!doc.is_dirty(s.model()));
+}
+
+/// A86 (E18 §4 Leistung, §6, Test 11): Der Grundriss der Nachbargeschosse
+/// liegt nach dem Leerlauf bereit, damit die Animation nichts neu aufbaut;
+/// nach einer Modelländerung wird neu vorbereitet. Neue Größen im Schema,
+/// `anim_ms` in einstellungen.txt, Prüfregel 1.
+#[test]
+fn a86_vorbereitung_und_schema() {
+    let th = Theme::dark();
+    let mut s = Scene::with_model(Model::with_seed(87));
+    gebaeude(&mut s);
+    let (fu, eg, og) = (fundament(&s), geschoss(&s, "EG"), geschoss(&s, "OG"));
+    leerlauf(&mut s);
+    assert!(grundriss_bereit(&s, og), "Nachbar OG vorbereitet");
+    assert!(grundriss_bereit(&s, fu), "Fundament: Nachbar vorbereitet");
+    assert!(grundriss_bereit(&s, eg));
+    ziehen_am_fuss(&mut s, 0.0, 500.0);
+    assert!(!grundriss_bereit(&s, og), "nach der Änderung veraltet");
+    leerlauf(&mut s);
+    assert!(grundriss_bereit(&s, og));
+    let mut w = bogen(&th);
+    spitze_klick(&mut w, &mut s, true, false, 0);
+    assert!(
+        grundriss_bereit(&s, og),
+        "die Animation baut nichts neu auf"
+    );
+    // Schema
+    let z = &th.size;
+    assert_eq!(
+        (
+            z.arc_r,
+            z.arc_span_deg,
+            z.arc_band,
+            z.arc_head_l,
+            z.arc_head_w
+        ),
+        (80.0, 58.0, 14.0, 24.0, 34.0)
+    );
+    assert_eq!((z.arc_label, z.arc_label_small), (26.0, 13.0));
+    assert_eq!(z.hover_delay_hud, 0.25);
+    assert_eq!(th.ui.hud_bg.3, 199);
+    assert_eq!(
+        (th.ui.hud_bg.0, th.ui.hud_bg.1, th.ui.hud_bg.2),
+        (th.ui.bg.0, th.ui.bg.1, th.ui.bg.2)
+    );
+    assert_eq!(th.ui.hud_glow, th.ui.accent);
+    let geaendert = {
+        let mut t = Theme::dark();
+        t.size.anim_ms = 0.0;
+        crate::settings::write(&t)
+    };
+    let (gelesen, hints) = crate::settings::read(&geaendert);
+    assert!(hints.is_empty(), "{hints:?}");
+    assert_eq!(gelesen.size.anim_ms, 0.0, "anim_ms in einstellungen.txt");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let text = std::fs::read_to_string(root.join("app/src/wheel.rs")).unwrap();
+    let code = text.split("#[cfg(test)]").next().unwrap();
+    for (n, z) in code.lines().enumerate() {
+        let z = z.split("//").next().unwrap();
+        for muster in ["Rgba::rgb(", "from_rgb8([", "Rgba::from_f32(["] {
+            if let Some(i) = z.find(muster) {
+                let rest = z[i + muster.len()..].trim_start();
+                assert!(
+                    !rest.starts_with(|c: char| c.is_ascii_digit()),
+                    "wheel.rs:{}: {z}",
+                    n + 1
+                );
+            }
+        }
+    }
+}
+
+/// A87 (E18 §3 „Fundament als Ebene“, Test 3; Lastenheft A-09, Prüfregel 14):
+/// Im Fundament schneidet der Grundriss in der Mitte der Frostschürze
+/// (Standard −0,51) über den Höhenbezug: Plattendicke 30 cm → −0,55, UK
+/// Fundament −0,85 → −0,535. Zu sehen: Frostschürze mit Stahlbeton-Schraffur,
+/// Plattenrand als Hintergrundlinie (Stift 9), keine Wände, kein
+/// EG-Hintergrund. Das Wandwerkzeug ist gesperrt.
+#[test]
+fn a87_fundament_als_ebene() {
+    let mut s = Scene::with_model(Model::with_seed(88));
+    let (eg_zug, _) = gebaeude(&mut s);
+    let fu = fundament(&s);
+    assert_eq!(wand_sperre(&s), None, "EG: frei");
+    assert!(s.set_active_storey(fu), "Fundament aktivierbar");
+    assert_eq!(s.plan_cut(), -510.0, "Mitte Frostschürze −0,80 … −0,22");
+    assert_eq!(
+        wand_sperre(&s).as_deref(),
+        Some("Im Fundament gibt es noch nichts zu zeichnen")
+    );
+    let plan = view_mesh(&mut s, ViewKind::Plan, None);
+    let has = |pat: f32| plan.faces.iter().any(|v| v[9] == pat);
+    assert!(
+        has(pattern::CONCRETE),
+        "Frostschürze geschnitten, Stahlbeton"
+    );
+    assert!(
+        !has(pattern::DIAGONAL) && !has(pattern::ZIGZAG),
+        "keine Wände (Gasbeton, Dämmung)"
+    );
+    assert!(
+        plan.faces.iter().all(|v| v[2] <= -510.0 + 1e-2),
+        "nichts über dem Schnitt geschnitten"
+    );
+    let m = s.mesh(ViewKind::Plan, None, &[]);
+    let bg = edge_kind::BACKGROUND as f32;
+    let auf_x = |x: f32| {
+        m.edges.iter().any(|e| {
+            e.1 == bg
+                && (e.0[0][0] - x).abs() < 0.5
+                && (e.0[1][0] - x).abs() < 0.5
+                && (e.0[0][1] - e.0[1][1]).abs() > 1000.0
+        })
+    };
+    assert!(auf_x(0.0), "Plattenrand als Hintergrundlinie");
+    assert!(
+        !auf_x(140.0) && !auf_x(315.0),
+        "kein EG-Hintergrund (Fuge, Innenkante Gasbeton)"
+    );
+    // Höhenbezug: Plattendicke 30 cm, UK Schürze bleibt −0,80
+    let (slab, _) = sohlplatte(&s, eg_zug);
+    assert!(s.edit_model("Dicke", |m| m.set_slab_thickness(slab, 300.0)));
+    assert_eq!(s.plan_cut(), -550.0, "Plattendicke 30 cm");
+    s.undo();
+    assert_eq!(s.plan_cut(), -510.0);
+    kante_ziehen(&mut s, "GR.UK", &[-850.0], false);
+    assert_eq!(s.plan_cut(), -535.0, "UK Fundament −0,85");
+    // Zurück ins EG und wieder ins Fundament (Paneel)
+    assert!(s.set_active_storey(geschoss(&s, "EG")));
+    assert!(s.set_active_storey(fu));
 }
