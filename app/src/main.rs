@@ -79,13 +79,15 @@ const MESH_MODEL: usize = 0;
 const MESH_PREVIEW: usize = 1;
 const MESH_LIVE: usize = 2;
 
-const OVERLAY_TITLE: usize = 0;
-const OVERLAY_TOOLS: usize = 1;
-const OVERLAY_VIEWS: usize = 2;
-/// Endsymbole der Schnittlinie im Grundriss.
-const OVERLAY_MARKS: usize = 3;
-/// Paneel „Eigenschaften“ (nach den zwei Endsymbolen).
-const OVERLAY_PROPS: usize = 5;
+// Oberflächenbilder in Zeichenreihenfolge: Endsymbole unter den Paneelen,
+// die Titelleiste ganz oben.
+/// Endsymbole der Schnittlinie im Grundriss (zwei Plätze).
+const OVERLAY_MARKS: usize = 0;
+const OVERLAY_TOOLS: usize = 2;
+const OVERLAY_VIEWS: usize = 3;
+/// Paneel „Eigenschaften“.
+const OVERLAY_PROPS: usize = 4;
+const OVERLAY_TITLE: usize = 5;
 
 /// Blickrichtung (yaw, pitch) der Parallelansichten.
 fn view_direction(v: ViewKind) -> (f64, f64) {
