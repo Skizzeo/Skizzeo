@@ -17,7 +17,7 @@ type RgbaRole = (&'static str, fn(&mut Theme) -> &mut Rgba);
 type F4Role = (&'static str, fn(&mut Theme) -> &mut [f32; 4]);
 type SizeRole = (&'static str, fn(&mut Theme) -> &mut f32);
 
-const RGBA_ROLES: [RgbaRole; 25] = [
+const RGBA_ROLES: [RgbaRole; 34] = [
     ("ui.bg", |t| &mut t.ui.bg),
     ("ui.border", |t| &mut t.ui.border),
     ("ui.field", |t| &mut t.ui.field),
@@ -29,6 +29,15 @@ const RGBA_ROLES: [RgbaRole; 25] = [
     ("ui.hover", |t| &mut t.ui.hover),
     ("ui.pressed", |t| &mut t.ui.pressed),
     ("ui.shadow", |t| &mut t.ui.shadow),
+    ("ui.field_border", |t| &mut t.ui.field_border),
+    ("ui.field_hover", |t| &mut t.ui.field_hover),
+    ("ui.field_focus", |t| &mut t.ui.field_focus),
+    ("ui.field_invalid", |t| &mut t.ui.field_invalid),
+    ("ui.field_text", |t| &mut t.ui.field_text),
+    ("ui.field_unit", |t| &mut t.ui.field_unit),
+    ("ui.caret", |t| &mut t.ui.caret),
+    ("ui.text_select", |t| &mut t.ui.text_select),
+    ("ui.field_readonly", |t| &mut t.ui.field_readonly),
     ("title.bg", |t| &mut t.title.bg),
     ("title.glyph", |t| &mut t.title.glyph),
     ("title.glyph_inactive", |t| &mut t.title.glyph_inactive),
@@ -60,7 +69,7 @@ const F4_ROLES: [F4Role; 10] = [
     ("interact.shadow_band", |t| &mut t.interact.shadow_band),
 ];
 
-const SIZE_ROLES: [SizeRole; 11] = [
+const SIZE_ROLES: [SizeRole; 13] = [
     ("corner_radius", |t| &mut t.size.corner_radius),
     ("font", |t| &mut t.size.font),
     ("font_small", |t| &mut t.size.font_small),
@@ -72,6 +81,8 @@ const SIZE_ROLES: [SizeRole; 11] = [
     ("panel_pad", |t| &mut t.size.panel_pad),
     ("panel_width", |t| &mut t.size.panel_width),
     ("panel_shadow", |t| &mut t.size.panel_shadow),
+    ("field_height", |t| &mut t.size.field_height),
+    ("field_pad", |t| &mut t.size.field_pad),
 ];
 
 /// Grundschema zu einem Namen.
@@ -379,6 +390,8 @@ mod tests {
         t.ui.shadow = Rgba(0, 0, 0, 30);
         t.interact.track = [0.1, 0.2, 0.3, 0.75];
         t.size.font = 15.5;
+        t.size.field_height = 28.0;
+        t.ui.field_invalid = Rgba::rgb(200, 10, 10);
         t.px_per_mm = 6.0;
         t.env.horizon_softness = 2.0;
         t.env.sky = vec![(0.0, Rgba::rgb(1, 2, 3)), (1.0, Rgba(4, 5, 6, 7))];
@@ -389,6 +402,10 @@ mod tests {
         );
         assert!(
             text.contains("[color] role=interact.track value=0.1,0.2,0.3,0.75\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("[color] role=ui.field_invalid value=c80a0a\n"),
             "{text}"
         );
         let (back, hints) = read(&text);

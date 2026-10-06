@@ -119,6 +119,67 @@ pub fn button(
     }
 }
 
+/// Zustand eines Zahlenfelds beim Zeichnen.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FieldState<'a> {
+    /// Zahl, wie sie im Feld steht (beim Eingeben der getippte Text).
+    pub text: &'a str,
+    /// Einheit rechtsbündig hinter der Zahl, z. B. „cm“.
+    pub unit: &'a str,
+    pub hover: bool,
+    /// Eingabemodus: Rahmen in `field_focus`, Schreibmarke und Markierung.
+    pub focus: bool,
+    pub invalid: bool,
+    /// Schreibmarke als Byte-Stelle in `text`.
+    pub caret: Option<usize>,
+    /// Markierter Bereich (Byte-Stellen, von < bis).
+    pub select: Option<(usize, usize)>,
+}
+
+/// Zahlenfeld: Grund, Rahmen, Zahl rechtsbündig vor der Einheit.
+pub fn field(c: &mut Canvas, fonts: &Fonts, r: Rect, st: &FieldState, s: f32, t: &Theme) {
+    let u = &t.ui;
+    let rad = 4.0 * s;
+    let b = s.round().max(1.0);
+    let border = if st.invalid {
+        u.field_invalid
+    } else if st.focus {
+        u.field_focus
+    } else {
+        u.field_border
+    };
+    let fill = if st.hover && !st.focus {
+        u.field_hover
+    } else {
+        u.field
+    };
+    let mut p = Path::new();
+    p.rounded_rect(r.x, r.y, r.w, r.h, rad);
+    c.fill(&p, border);
+    let mut p = Path::new();
+    p.rounded_rect(r.x + b, r.y + b, r.w - 2.0 * b, r.h - 2.0 * b, rad - b);
+    c.fill(&p, fill);
+    let Some(f) = fonts.regular.as_ref() else {
+        return;
+    };
+    let px = t.size.font_small * s;
+    let pad = t.size.field_pad * s;
+    let unit_w = f.width(st.unit, px);
+    let unit_x = r.x + r.w - pad - unit_w;
+    let num_x = unit_x - 4.0 * s - f.width(st.text, px);
+    let base = (r.y + (r.h + f.cap_height(px)) * 0.5).round();
+    let at = |i: usize| num_x + f.width(&st.text[..i.min(st.text.len())], px);
+    if let Some((a, z)) = st.select.filter(|(a, z)| a < z) {
+        let (x0, x1) = (at(a), at(z));
+        c.fill_rect(x0, r.y + 4.0 * s, x1 - x0, r.h - 8.0 * s, u.text_select);
+    }
+    f.draw(c, st.text, px, num_x.round(), base, u.field_text);
+    f.draw(c, st.unit, px, unit_x.round(), base, u.field_unit);
+    if let Some(i) = st.caret.filter(|_| st.focus) {
+        c.fill_rect(at(i).round(), r.y + 5.0 * s, b, r.h - 10.0 * s, u.caret);
+    }
+}
+
 /// Text mit Grundlinie bei `y`.
 pub fn text(c: &mut Canvas, font: Option<&Font>, t: &str, px: f32, x: f32, y: f32, color: Rgba) {
     if let Some(f) = font {

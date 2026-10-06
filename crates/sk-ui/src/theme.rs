@@ -39,6 +39,19 @@ pub struct Ui {
     pub pressed: Rgba,
     /// Je Ring des weichen Paneelschattens.
     pub shadow: Rgba,
+    /// Zahlenfeld: Rahmen, Grund unter der Maus, Rahmen beim Eingeben und bei
+    /// ungültiger Eingabe (auch der Hinweistext darunter).
+    pub field_border: Rgba,
+    pub field_hover: Rgba,
+    pub field_focus: Rgba,
+    pub field_invalid: Rgba,
+    /// Zahl, Einheit dahinter, Schreibmarke, markierter Text.
+    pub field_text: Rgba,
+    pub field_unit: Rgba,
+    pub caret: Rgba,
+    pub text_select: Rgba,
+    /// Berechnete Werte, nicht änderbar.
+    pub field_readonly: Rgba,
 }
 
 /// Eigene Titelleiste.
@@ -119,6 +132,9 @@ pub struct Sizes {
     pub panel_width: f32,
     /// Platz für den Schatten rund um ein Paneel.
     pub panel_shadow: f32,
+    /// Höhe und Innenabstand eines Zahlenfelds.
+    pub field_height: f32,
+    pub field_pad: f32,
 }
 
 const fn rgb(r: u8, g: u8, b: u8) -> Rgba {
@@ -148,6 +164,15 @@ impl Theme {
                 hover,
                 pressed,
                 shadow: Rgba(0, 0, 0, 14),
+                field_border: rgb(56, 65, 76),
+                field_hover: rgb(26, 32, 40),
+                field_focus: accent,
+                field_invalid: rgb(214, 84, 64),
+                field_text: text,
+                field_unit: rgb(160, 165, 172),
+                caret: text,
+                text_select: Rgba(accent.0, accent.1, accent.2, 90),
+                field_readonly: rgb(160, 165, 172),
             },
             title: Title {
                 // Dunkel wie die Paneele, damit sie sich auch über dem Papier abhebt
@@ -212,6 +237,8 @@ impl Theme {
                 panel_pad: 14.0,
                 panel_width: 196.0,
                 panel_shadow: 10.0,
+                field_height: 26.0,
+                field_pad: 6.0,
             },
             px_per_mm: 5.5,
         }
@@ -219,6 +246,15 @@ impl Theme {
 
     /// Setzt den Akzent für Paneele, Auswahl und Wandeingabe.
     pub fn set_accent(&mut self, c: Rgba) {
+        // Feldrollen, die dem Akzent folgen, gehen mit
+        let old = self.ui.accent;
+        if self.ui.field_focus == old {
+            self.ui.field_focus = c;
+        }
+        let sel = self.ui.text_select;
+        if (sel.0, sel.1, sel.2) == (old.0, old.1, old.2) {
+            self.ui.text_select = Rgba(c.0, c.1, c.2, sel.3);
+        }
         self.ui.accent = c;
         self.interact.select = c.to_f32();
         self.interact.draw = c.to_f32();
@@ -241,6 +277,30 @@ mod tests {
         assert_eq!(t.title.hover, t.ui.hover);
         assert_eq!(t.env.sky.len(), 16);
         assert_eq!(t.px_per_mm, 5.5);
+    }
+
+    /// E12: Rollen der Zahlenfelder.
+    #[test]
+    fn feldrollen() {
+        let mut t = Theme::dark();
+        let u = &t.ui;
+        assert_eq!(u.field, Rgba::rgb(20, 25, 32));
+        assert_eq!(u.field_border, u.border);
+        assert_eq!(u.field_hover, Rgba::rgb(26, 32, 40));
+        assert_eq!(u.field_focus, u.accent);
+        assert_eq!(u.field_invalid, Rgba::rgb(214, 84, 64));
+        assert_eq!((u.field_text, u.caret), (u.text, u.text));
+        assert_eq!((u.field_unit, u.field_readonly), (u.text_dim, u.text_dim));
+        assert_eq!(u.text_select, Rgba(242, 179, 61, 90));
+        assert_eq!((t.size.field_height, t.size.field_pad), (26.0, 6.0));
+        let blue = Rgba::rgb(40, 120, 220);
+        t.set_accent(blue);
+        assert_eq!(t.ui.field_focus, blue);
+        assert_eq!(t.ui.text_select, Rgba(40, 120, 220, 90));
+        // Eigene Feldfarbe folgt dem Akzent nicht mehr
+        t.ui.field_focus = Rgba::rgb(1, 2, 3);
+        t.set_accent(Rgba::rgb(9, 9, 9));
+        assert_eq!(t.ui.field_focus, Rgba::rgb(1, 2, 3));
     }
 
     /// Die früheren Werte als 0..1 und ihre Rollen weichen höchstens 0,5/255 ab.

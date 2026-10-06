@@ -868,6 +868,14 @@ fn a14_dunkle_titelleiste_mit_weissem_logo() {
 // A15 – A16: Auswahl und Mengen (Paket B4)
 // ---------------------------------------------------------------------------
 
+/// Wert eines Zahlenfelds in cm, wie er im Feld steht („0“, „2“, „2,5“).
+fn field_cm(p: &crate::ui::Props, f: crate::ui::Field) -> Option<String> {
+    p.fields
+        .iter()
+        .find(|r| r.field == f)
+        .map(|r| crate::ui::cm_text(r.value))
+}
+
 fn value(p: &crate::ui::Props, k: &str) -> String {
     p.values
         .iter()
@@ -1209,22 +1217,30 @@ fn a23_sockelruecksprung() {
     let points = s.chain(run).unwrap().points.clone();
     // Auch bei gewählter Wand verstellbar
     let p = selection::props(&s, wall).unwrap();
-    assert_eq!(p.recess.as_deref(), Some("bündig"));
+    assert_eq!(field_cm(&p, crate::ui::Field::Recess).as_deref(), Some("0"));
     assert!(s.step_recess(wall, true));
     let p = selection::props(&s, slab).unwrap();
-    assert_eq!(p.recess.as_deref(), Some("2 cm"));
+    assert_eq!(field_cm(&p, crate::ui::Field::Recess).as_deref(), Some("2"));
     assert_eq!(m2(s.foundation_qto(run).unwrap().0.area), 79.2816);
     // Die Wand bleibt an der Bezugslinie
     assert_eq!(s.chain(run).unwrap().points, points);
     assert!(s.step_recess(slab, true));
     assert_eq!(
-        selection::props(&s, slab).unwrap().recess.as_deref(),
-        Some("3 cm")
+        field_cm(
+            &selection::props(&s, slab).unwrap(),
+            crate::ui::Field::Recess
+        )
+        .as_deref(),
+        Some("3")
     );
     assert!(s.step_recess(slab, false) && s.step_recess(slab, false));
     assert_eq!(
-        selection::props(&s, slab).unwrap().recess.as_deref(),
-        Some("bündig")
+        field_cm(
+            &selection::props(&s, slab).unwrap(),
+            crate::ui::Field::Recess
+        )
+        .as_deref(),
+        Some("0")
     );
     assert!(!s.step_recess(slab, false), "unter 0 geht es nicht");
     assert_eq!(m2(s.foundation_qto(run).unwrap().0.area), 80.0);
@@ -1233,8 +1249,12 @@ fn a23_sockelruecksprung() {
     // Rückgängig stellt den Rücksprung zurück
     assert!(s.undo());
     assert_eq!(
-        selection::props(&s, slab).unwrap().recess.as_deref(),
-        Some("2 cm")
+        field_cm(
+            &selection::props(&s, slab).unwrap(),
+            crate::ui::Field::Recess
+        )
+        .as_deref(),
+        Some("2")
     );
 }
 
@@ -1335,13 +1355,17 @@ fn a27_mengen_flaeche_und_laenge() {
     let p = selection::props(&s, slab).unwrap();
     assert_eq!(p.values[3], ("Fläche", "80,00 m²".to_string()));
     assert_eq!(value(&p, "Volumen"), "16,000 m³");
-    assert_eq!(value(&p, "Dicke"), "20 cm");
+    let cm = |p: &crate::ui::Props, f| field_cm(p, f).unwrap();
+    assert_eq!(cm(&p, crate::ui::Field::SlabThickness), "20");
     let p = selection::props(&s, footing).unwrap();
     assert_eq!(p.values[3], ("Länge (Achse)", "34,60 m".to_string()));
     assert_eq!(value(&p, "Volumen"), "7,266 m³");
     assert_eq!(
-        (value(&p, "Breite"), value(&p, "Tiefe")),
-        ("35 cm".into(), "60 cm".into())
+        (
+            cm(&p, crate::ui::Field::FootingWidth),
+            cm(&p, crate::ui::Field::FootingDepth)
+        ),
+        ("35".into(), "60".into())
     );
     assert_eq!(p.layer_set, "Stahlbeton");
     s.step_recess(slab, true);
@@ -1638,8 +1662,12 @@ fn a30_gruendung_folgt_dem_haus() {
         s.model().element(footing).unwrap().guid
     );
     assert_eq!(
-        selection::props(&t, tslab).unwrap().recess.as_deref(),
-        Some("2 cm")
+        field_cm(
+            &selection::props(&t, tslab).unwrap(),
+            crate::ui::Field::Recess
+        )
+        .as_deref(),
+        Some("2")
     );
     let trun = t
         .model()
@@ -1655,4 +1683,92 @@ fn a30_gruendung_folgt_dem_haus() {
     crate::document::save(t.model(), &p2).unwrap();
     assert_eq!(std::fs::read(&p2).unwrap(), std::fs::read(&path).unwrap());
     let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// P1: Zahlenfelder im Paneel „Eigenschaften“
+// ---------------------------------------------------------------------------
+
+/// Tippt `text` in das Feld `f` des Paneels „Eigenschaften“ und drückt Enter;
+/// eine gültige Eingabe geht wie in der App als ein Schritt ins Modell.
+fn tippe(
+    ui: &mut Ui,
+    s: &mut Scene,
+    sel: sk_model::ElementId,
+    f: crate::ui::Field,
+    text: &str,
+) -> crate::ui::UiOut {
+    ui.set_props(selection::props(s, sel));
+    let b = find_buttons(ui, Panel::Props, 1440, 32);
+    let &(_, x, y) = b
+        .iter()
+        .find(|b| b.0 == Id::Field(f))
+        .unwrap_or_else(|| panic!("Feld {f:?}"));
+    ui.handle(&down(x, y), 1440, 32);
+    ui.handle(&up(x, y), 1440, 32);
+    assert!(ui.edit.is_some(), "Eingabe beginnt mit dem Klick");
+    for c in text.chars() {
+        ui.key(Key::Char(c), true, M).unwrap();
+    }
+    let out = ui.key(Key::Enter, true, M).unwrap();
+    if let Some((field, mm)) = out.submit {
+        assert!(s.set_field(sel, field, mm));
+        ui.set_props(selection::props(s, sel));
+    }
+    out
+}
+
+/// P1: Dicke der Sohlplatte, Sockelrücksprung, Breite und Tiefe der
+/// Frostschürze als Zahlenfelder: Tippen und Enter ändern das Modell in
+/// einem Schritt, Ungültiges bleibt mit Hinweis stehen, Esc bricht ab.
+#[test]
+fn p1_zahlenfelder_der_gruendung() {
+    use crate::ui::Field;
+    let mut s = Scene::with_model(Model::with_seed(41));
+    let run = zeichne_rechteck(&mut s, &cam3d());
+    let (slab, footing) = sohlplatte(&s, run);
+    let mut ui = Ui::new(1.0, &Theme::dark());
+    ui.fit(1.0, 1440, 900);
+
+    // Dicke 25 cm: wächst nach unten, 20 m³
+    tippe(&mut ui, &mut s, slab, Field::SlabThickness, "25");
+    assert_eq!(m3(s.foundation_qto(run).unwrap().0.volume), 20.0);
+    assert_eq!(
+        z_range(&s.foundation(run).unwrap().slab_solid()),
+        (-250.0, 0.0)
+    );
+    assert_eq!(s.undo_label(), Some("Plattendicke"));
+
+    // Rücksprung 1 cm: abgelehnt mit Hinweis, das Modell bleibt
+    let out = tippe(&mut ui, &mut s, slab, Field::Recess, "1");
+    assert!(out.submit.is_none() && out.relayout);
+    let e = ui.edit.as_ref().unwrap();
+    assert_eq!(e.error.as_deref(), Some("0 (bündig) oder mindestens 2 cm"));
+    assert_eq!(m2(s.foundation_qto(run).unwrap().0.area), 80.0);
+    // Esc bricht ab
+    let out = ui.key(Key::Escape, true, M).unwrap();
+    assert!(ui.edit.is_none() && out.relayout && out.submit.is_none());
+    // 2,5 cm mit Komma
+    tippe(&mut ui, &mut s, slab, Field::Recess, "2,5");
+    assert_eq!(m2(s.foundation_qto(run).unwrap().0.area), 79.1025);
+
+    // Schürze 40 cm breit und 80 cm tief: Achse 2 × (9,55 + 7,55), UK −1,05 m
+    tippe(&mut ui, &mut s, footing, Field::FootingWidth, "40");
+    tippe(&mut ui, &mut s, footing, Field::FootingDepth, "80");
+    let fq = &s.foundation_qto(run).unwrap().1;
+    assert_eq!((fq.width, fq.depth), (400.0, 800.0));
+    assert_eq!((fq.length / 10.0).round() / 100.0, 34.2);
+    assert_eq!(
+        z_range(&s.foundation(run).unwrap().footing_solid()).0,
+        -1050.0
+    );
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+
+    // Jede Eingabe ist ein Schritt: viermal Rückgängig = Ausgangslage
+    for _ in 0..4 {
+        assert!(s.undo());
+    }
+    let q = s.foundation_qto(run).unwrap();
+    assert_eq!((m2(q.0.area), m3(q.0.volume)), (80.0, 16.0));
+    assert_eq!((q.1.width, q.1.depth), (350.0, 600.0));
 }

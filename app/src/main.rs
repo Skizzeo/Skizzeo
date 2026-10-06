@@ -312,7 +312,8 @@ impl App {
             return;
         }
         self.props_key = key;
-        self.ui.props = self.sel.id.and_then(|id| selection::props(&self.scene, id));
+        self.ui
+            .set_props(self.sel.id.and_then(|id| selection::props(&self.scene, id)));
         self.props_dirty = true;
     }
 
@@ -410,7 +411,7 @@ impl App {
         self.sect = SectionLine::default();
         self.sel = Selection::default();
         self.props_key = None;
-        self.ui.props = None;
+        self.ui.set_props(None);
         self.props_dirty = true;
         self.live_runs.clear();
         // Tabelle sicher neu setzen, auch wenn die neue denselben Stand hat
@@ -531,16 +532,26 @@ impl App {
             Id::Ref(r) => self.tool.ref_side = r,
             Id::Ortho => self.tool.ortho = !self.tool.ortho,
             Id::View(v) => self.set_view(v),
-            Id::Recess(up) => {
-                if let Some(id) = self.sel.id {
-                    if self.scene.step_recess(id, up) {
-                        self.upload_model();
-                    }
-                }
-            }
+            // Zahlenfelder melden sich über `UiOut::submit`
+            Id::Field(_) => {}
         }
         self.overlay_dirty = true;
         self.refresh_cursor();
+    }
+
+    /// Ergebnis der Oberfläche übernehmen: geänderte Knöpfe und Felder neu
+    /// zeichnen, eine gültige Feldeingabe als Schritt ins Modell.
+    fn apply_ui(&mut self, out: &ui::UiOut) {
+        self.dirty_buttons.extend(out.changed.iter().copied());
+        if out.relayout {
+            self.overlay_dirty = true;
+        }
+        if let (Some((field, mm)), Some(id)) = (out.submit, self.sel.id) {
+            if self.scene.set_field(id, field, mm) {
+                self.upload_model();
+            }
+        }
+        self.redraw |= !out.changed.is_empty() || out.relayout;
     }
 
     /// Wandart des Werkzeugs mit dem voreingestellten Aufbau aus der Bibliothek
@@ -642,7 +653,7 @@ impl App {
             Event::MouseLeave => {
                 self.dirty_title.extend(self.title.hover.take());
                 let out = self.ui.handle(&e, self.w, self.top());
-                self.dirty_buttons.extend(out.changed);
+                self.apply_ui(&out);
                 self.redraw |= self.tool.handle(&e, &self.cam, vw, vh, sc).redraw;
                 let en = self.edit_enabled();
                 let out = self
@@ -669,7 +680,7 @@ impl App {
                     false
                 } else {
                     let out = self.ui.handle(&e, self.w, self.top());
-                    self.dirty_buttons.extend(out.changed);
+                    self.apply_ui(&out);
                     out.consumed
                 };
                 let ev = in_view(e);
@@ -715,7 +726,7 @@ impl App {
                     }
                 } else {
                     let out = self.ui.handle(&e, self.w, self.top());
-                    self.dirty_buttons.extend(out.changed);
+                    self.apply_ui(&out);
                     if !out.consumed {
                         let ev = in_view(e);
                         camera_moved |=
@@ -765,7 +776,7 @@ impl App {
                     }
                 }
                 let out = self.ui.handle(&e, self.w, self.top());
-                self.dirty_buttons.extend(out.changed);
+                self.apply_ui(&out);
                 if let Some(id) = out.clicked {
                     self.click(id);
                 }
@@ -813,6 +824,13 @@ impl App {
                         self.nav
                             .handle(&in_view(e), &mut self.cam, &self.scene, vw, vh, sc);
                 }
+            }
+            // Ein Zahlenfeld in Eingabe nimmt jede Taste
+            Event::Key {
+                key, down, mods, ..
+            } if self.ui.edit.is_some() => {
+                let out = self.ui.key(key, down, mods).unwrap_or_default();
+                self.apply_ui(&out);
             }
             Event::Key {
                 key, down, mods, ..
@@ -909,7 +927,7 @@ impl App {
 
     /// Paneel „Eigenschaften“ zeichnen oder (ohne Auswahl) ausblenden.
     fn paint_props(&mut self) {
-        if self.ui.props.is_some() {
+        if self.ui.props().is_some() {
             let (c, x, y) = self
                 .ui
                 .paint(&self.theme, Panel::Props, self.w, self.title.height());

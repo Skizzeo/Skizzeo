@@ -7,6 +7,7 @@
 //! ein ruhendes Netz ohne den gezogenen Zug und ein Live-Netz nur für ihn.
 
 use crate::draw_table::DrawTable;
+use crate::ui::Field;
 use crate::ui::ViewKind;
 use sk_math::{vec3, Vec3};
 use sk_model::{
@@ -445,9 +446,50 @@ impl Scene {
         run
     }
 
+    /// Setzt einen Parameter der Gründung unter dem Zug des Bauteils `id`
+    /// (Wert in mm, aus einem Zahlenfeld). Ein Schritt im Verlauf; `true`,
+    /// wenn sich etwas geändert hat.
+    pub fn set_field(&mut self, id: ElementId, field: Field, mm: f64) -> bool {
+        use sk_model::ElementKind::{GroundSlab, StripFooting};
+        let m = &self.model;
+        let Some(run) = m.run_of(id) else {
+            return false;
+        };
+        let Some((slab, footing)) = m.foundation_of(run) else {
+            return false;
+        };
+        let (Some(GroundSlab(s)), Some(StripFooting(f))) = (
+            m.element(slab).map(|e| e.kind.clone()),
+            footing.and_then(|f| m.element(f)).map(|e| e.kind.clone()),
+        ) else {
+            return false;
+        };
+        let (label, old) = match field {
+            Field::SlabThickness => ("Plattendicke", s.thickness),
+            Field::Recess => ("Sockelrücksprung", s.recess),
+            Field::FootingWidth => ("Schürzenbreite", f.width),
+            Field::FootingDepth => ("Schürzentiefe", f.depth),
+        };
+        if old == mm {
+            return false;
+        }
+        self.begin(label);
+        let ok = match (field, footing) {
+            (Field::SlabThickness, _) => self.model.set_slab_thickness(slab, mm),
+            (Field::Recess, _) => self.model.set_slab_recess(slab, mm),
+            (Field::FootingWidth, Some(fid)) => self.model.set_footing_size(fid, mm, f.depth),
+            (Field::FootingDepth, Some(fid)) => self.model.set_footing_size(fid, f.width, mm),
+            _ => false,
+        };
+        self.mark(run);
+        self.commit();
+        ok
+    }
+
     /// Sockelrücksprung der Sohlplatte unter dem Zug von `id` um eine Stufe
     /// größer oder kleiner: 0 ↔ 2 cm, darüber in 1-cm-Schritten. Ein Schritt
     /// im Verlauf. `true`, wenn sich etwas geändert hat.
+    #[cfg(test)]
     pub fn step_recess(&mut self, id: ElementId, up: bool) -> bool {
         let m = &self.model;
         let Some(run) = m.run_of(id) else {
@@ -516,6 +558,12 @@ impl Scene {
 
     pub fn undo(&mut self) -> bool {
         self.step(Direction::Undo)
+    }
+
+    /// Bezeichnung des Schritts, den „Rückgängig“ als Nächstes zurücknimmt.
+    #[cfg(test)]
+    pub fn undo_label(&self) -> Option<&'static str> {
+        self.undo.last().map(|t| t.label)
     }
 
     pub fn redo(&mut self) -> bool {

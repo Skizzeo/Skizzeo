@@ -4,9 +4,9 @@
 
 use sk_model::RefSide;
 use sk_paint::{Canvas, Rgba};
-use sk_platform::{Event, MouseButton};
+use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_ui::theme::{Sizes, Theme};
-use sk_ui::widgets::{self, ButtonState, Fonts, Rect};
+use sk_ui::widgets::{self, ButtonState, FieldState, Fonts, Rect};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewKind {
@@ -53,11 +53,108 @@ impl ViewKind {
 pub enum Id {
     Building,
     Interior,
-    /// Sockelrücksprung der Sohlplatte größer (`true`) oder kleiner.
-    Recess(bool),
     Ref(RefSide),
     Ortho,
     View(ViewKind),
+    Field(Field),
+}
+
+/// Zahlenfelder im Paneel „Eigenschaften“.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Field {
+    SlabThickness,
+    Recess,
+    FootingWidth,
+    FootingDepth,
+}
+
+/// Ein Zahlenfeld: Wert und erlaubter Bereich in mm, angezeigt in cm.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FieldRow {
+    pub field: Field,
+    pub label: &'static str,
+    pub value: f64,
+    pub min: f64,
+    pub max: f64,
+    /// 0 ist zusätzlich erlaubt (Sockelrücksprung: bündig).
+    pub zero: bool,
+}
+
+impl FieldRow {
+    /// Prüft eine Eingabe; `Ok` mit dem Wert in mm (auf 1 mm gerundet).
+    pub fn parse(&self, text: &str) -> Result<f64, String> {
+        let t = text.trim().replace(',', ".");
+        if t.is_empty() {
+            return Err("Zahl fehlt".into());
+        }
+        let cm: f64 = t.parse().map_err(|_| "keine Zahl".to_string())?;
+        if !cm.is_finite() {
+            return Err("keine Zahl".into());
+        }
+        let mm = (cm * 10.0).round();
+        if self.zero && mm == 0.0 {
+            return Ok(0.0);
+        }
+        if mm < self.min {
+            return Err(if self.zero {
+                format!("0 (bündig) oder mindestens {} cm", cm_text(self.min))
+            } else {
+                format!("mindestens {} cm", cm_text(self.min))
+            });
+        }
+        if mm > self.max {
+            return Err(format!("höchstens {} cm", cm_text(self.max)));
+        }
+        Ok(mm)
+    }
+}
+
+/// mm als Zentimeter mit höchstens einer Nachkommastelle, Dezimalkomma.
+pub fn cm_text(mm: f64) -> String {
+    let t = (mm.round() / 10.0).to_string();
+    t.replace('.', ",")
+}
+
+/// Laufende Eingabe in einem Zahlenfeld. Text nur aus ASCII-Zeichen.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Edit {
+    pub field: Field,
+    pub text: String,
+    caret: usize,
+    anchor: usize,
+    /// Grund, warum die Eingabe nicht gilt (unter dem Feld).
+    pub error: Option<String>,
+}
+
+impl Edit {
+    fn new(row: &FieldRow) -> Edit {
+        let text = cm_text(row.value);
+        Edit {
+            field: row.field,
+            caret: text.len(),
+            anchor: 0,
+            text,
+            error: None,
+        }
+    }
+
+    fn selection(&self) -> (usize, usize) {
+        (self.caret.min(self.anchor), self.caret.max(self.anchor))
+    }
+
+    fn replace_selection(&mut self, with: &str) {
+        let (a, z) = self.selection();
+        self.text.replace_range(a..z, with);
+        self.caret = a + with.len();
+        self.anchor = self.caret;
+    }
+
+    fn move_to(&mut self, i: usize, extend: bool) {
+        self.caret = i.min(self.text.len());
+        if !extend {
+            self.anchor = self.caret;
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,11 +175,14 @@ pub struct Props {
     pub layers: Vec<(Rgba, String, String)>,
     /// Überschrift über `layer_set`; leer heißt „Aufbau“.
     pub set_label: &'static str,
-    /// Sockelrücksprung der Sohlplatte zum Verstellen (Wert als Text).
-    pub recess: Option<String>,
+    /// Zahlenfelder (Parameter des Bauteils), zwischen Werten und Aufbau.
+    pub fields: Vec<FieldRow>,
     /// Hinweise (Warnungen der Prüfung).
     pub notes: Vec<String>,
 }
+
+/// Breite eines Zahlenfelds (dip).
+const FIELD_W: f32 = 84.0;
 
 /// Fenstergröße (dip), ab der die Paneele in voller Größe erscheinen.
 const FULL_W: f32 = 1440.0;
@@ -107,7 +207,9 @@ pub struct Ui {
     /// Schichten der Wand, die das Werkzeug zeichnet: Farbfeld und Text (aus der Bibliothek).
     pub wall_layers: Vec<(Rgba, String)>,
     /// Eigenschaften des gewählten Bauteils; ohne Auswahl kein Paneel.
-    pub props: Option<Props>,
+    props: Option<Props>,
+    /// Eingabe in einem Zahlenfeld.
+    pub edit: Option<Edit>,
     /// Maße aus dem Farbschema (für Lage und Treffertest) und dessen Stand.
     size: Sizes,
     theme_rev: u64,
@@ -152,6 +254,10 @@ pub struct UiOut {
     pub clicked: Option<Id>,
     /// Die Maus steht über einem Paneel: das Ereignis gehört der Oberfläche.
     pub consumed: bool,
+    /// Gültige Eingabe in einem Zahlenfeld (Wert in mm).
+    pub submit: Option<(Field, f64)>,
+    /// Die Höhe eines Paneels hat sich geändert (Hinweis unter einem Feld).
+    pub relayout: bool,
 }
 
 /// Zeilen des Werkzeug-Paneels (für Zeichnen und Treffertest gleich).
@@ -168,6 +274,10 @@ enum Row {
     Text(String),
     Segments([(Id, &'static str); 3]),
     Pair([(Id, &'static str); 2]),
+    /// Bezeichnung links, Zahlenfeld rechts.
+    Field(Field, &'static str),
+    /// Grund einer ungültigen Eingabe, in `field_invalid`.
+    Error(String),
     Separator,
     Hint(&'static str),
 }
@@ -218,15 +328,17 @@ fn view_rows() -> Vec<Row> {
     ]
 }
 
-fn props_rows(p: &Props) -> Vec<Row> {
+fn props_rows(p: &Props, edit: Option<&Edit>) -> Vec<Row> {
     let mut rows = vec![Row::Title("Eigenschaften")];
     rows.extend(p.values.iter().map(|(k, v)| Row::Value(k, v.clone())));
-    if let Some(r) = &p.recess {
-        rows.extend([
-            Row::Separator,
-            Row::Value("Sockelrücksprung", r.clone()),
-            Row::Pair([(Id::Recess(false), "− 1 cm"), (Id::Recess(true), "+ 1 cm")]),
-        ]);
+    if !p.fields.is_empty() {
+        rows.push(Row::Separator);
+    }
+    for f in &p.fields {
+        rows.push(Row::Field(f.field, f.label));
+        if let Some(e) = edit.filter(|e| e.field == f.field) {
+            rows.extend(e.error.clone().map(Row::Error));
+        }
     }
     let label = if p.set_label.is_empty() {
         "Aufbau"
@@ -259,6 +371,8 @@ fn row_height(r: &Row) -> (f32, f32) {
         Row::Label(_) => (18.0, 6.0),
         Row::Layer(..) => (18.0, 4.0),
         Row::Value(..) => (18.0, 4.0),
+        Row::Field(..) => (26.0, 6.0),
+        Row::Error(_) => (15.0, 6.0),
         Row::Detail(_) => (17.0, 6.0),
         Row::Text(_) => (17.0, 6.0),
         Row::Separator => (1.0, 10.0),
@@ -283,6 +397,7 @@ impl Ui {
             ortho: true,
             wall_layers: Vec::new(),
             props: None,
+            edit: None,
             images: [None, None, None],
         }
     }
@@ -305,8 +420,148 @@ impl Ui {
         match p {
             Panel::Tools => tool_rows(self.interior, &self.wall_layers),
             Panel::Views => view_rows(),
-            Panel::Props => self.props.as_ref().map_or(Vec::new(), props_rows),
+            Panel::Props => self
+                .props
+                .as_ref()
+                .map_or(Vec::new(), |p| props_rows(p, self.edit.as_ref())),
         }
+    }
+
+    pub fn props(&self) -> Option<&Props> {
+        self.props.as_ref()
+    }
+
+    /// Neuer Inhalt des Paneels „Eigenschaften“. Eine Eingabe in einem Feld,
+    /// das es nicht mehr gibt, verfällt.
+    pub fn set_props(&mut self, p: Option<Props>) {
+        let keep = self.edit.as_ref().is_some_and(|e| {
+            p.as_ref()
+                .is_some_and(|p| p.fields.iter().any(|f| f.field == e.field))
+        });
+        if !keep {
+            self.edit = None;
+        }
+        self.props = p;
+    }
+
+    fn field_row(&self, f: Field) -> Option<&FieldRow> {
+        self.props.as_ref()?.fields.iter().find(|r| r.field == f)
+    }
+
+    /// Feld des Paneels „Eigenschaften“ in Paneelkoordinaten.
+    fn field_rect(&self, f: Field) -> Option<Rect> {
+        self.buttons(Panel::Props)
+            .into_iter()
+            .find(|b| b.0 == Id::Field(f))
+            .map(|b| b.1)
+    }
+
+    /// Beginnt die Eingabe in einem Feld (alles markiert).
+    fn begin_edit(&mut self, f: Field, out: &mut UiOut) {
+        if let Some(row) = self.field_row(f) {
+            self.edit = Some(Edit::new(row));
+            out.changed.push(Id::Field(f));
+        }
+    }
+
+    /// Beendet die Eingabe: gültig wird übernommen, sonst bleibt der alte Wert.
+    fn finish_edit(&mut self, out: &mut UiOut) {
+        if let Some(e) = self.edit.take() {
+            if let Some(Ok(mm)) = self.field_row(e.field).map(|r| r.parse(&e.text)) {
+                out.submit = Some((e.field, mm));
+            }
+            out.changed.push(Id::Field(e.field));
+            out.relayout |= e.error.is_some();
+        }
+    }
+
+    /// Tastendruck. `None`, wenn kein Feld in Eingabe ist; dann gehört die
+    /// Taste der übrigen App. Sonst nimmt das Feld jede Taste.
+    pub fn key(&mut self, key: Key, down: bool, mods: Modifiers) -> Option<UiOut> {
+        let mut out = UiOut {
+            consumed: true,
+            ..UiOut::default()
+        };
+        let e = self.edit.as_mut()?;
+        if !down {
+            return Some(out);
+        }
+        let field = e.field;
+        let had_error = e.error.is_some();
+        let end = e.text.len();
+        match key {
+            Key::Enter | Key::Tab => {
+                let row = self.field_row(field).cloned();
+                let e = self.edit.as_mut()?;
+                match row.map(|r| r.parse(&e.text)) {
+                    Some(Ok(mm)) => {
+                        self.edit = None;
+                        out.submit = Some((field, mm));
+                        out.relayout = had_error;
+                    }
+                    Some(Err(why)) => {
+                        out.relayout = e.error.as_ref() != Some(&why);
+                        e.error = Some(why);
+                    }
+                    None => self.edit = None,
+                }
+            }
+            Key::Escape => {
+                self.edit = None;
+                out.relayout = had_error;
+            }
+            Key::Backspace | Key::Delete => {
+                let (a, z) = e.selection();
+                if a == z {
+                    let r = if key == Key::Backspace {
+                        a.saturating_sub(1)..a
+                    } else {
+                        a..(a + 1).min(end)
+                    };
+                    e.anchor = r.start;
+                    e.caret = r.end;
+                }
+                e.replace_selection("");
+            }
+            Key::Left | Key::Right if !mods.shift && e.caret != e.anchor => {
+                let (a, z) = e.selection();
+                e.move_to(if key == Key::Left { a } else { z }, false);
+            }
+            Key::Left => e.move_to(e.caret.saturating_sub(1), mods.shift),
+            Key::Right => e.move_to(e.caret + 1, mods.shift),
+            Key::Home => e.move_to(0, mods.shift),
+            Key::End => e.move_to(end, mods.shift),
+            Key::Char('A') if mods.ctrl => {
+                e.anchor = 0;
+                e.caret = end;
+            }
+            Key::Char(c @ ('0'..='9' | ',' | '.' | '-'))
+                if !mods.ctrl
+                    && !mods.alt
+                    && e.text.len() - (e.selection().1 - e.selection().0) < 12 =>
+            {
+                e.replace_selection(&c.to_string());
+            }
+            _ => {}
+        }
+        out.changed.push(Id::Field(field));
+        Some(out)
+    }
+
+    /// Schreibmarke an der Stelle `x` (Paneelkoordinaten) im Feld.
+    fn caret_at(&self, f: Field, x: f64) -> Option<usize> {
+        let (e, r) = (self.edit.as_ref()?, self.field_rect(f)?);
+        let font = self.fonts.regular.as_ref()?;
+        let s = self.scale;
+        let px = self.size.font_small * s;
+        let unit_x = r.x + r.w - self.size.field_pad * s - font.width("cm", px);
+        let num_x = unit_x - 4.0 * s - font.width(&e.text, px);
+        let x = x as f32 - num_x;
+        (0..=e.text.len()).min_by(|&a, &b| {
+            let da = (font.width(&e.text[..a], px) - x).abs();
+            let db = (font.width(&e.text[..b], px) - x).abs();
+            da.total_cmp(&db)
+        })
     }
 
     fn panel_height(&self, p: Panel) -> f32 {
@@ -374,6 +629,10 @@ impl Ui {
                         out.push((id, Rect::new(x + i as f32 * (bw + gap), y, bw, h), label));
                     }
                 }
+                Row::Field(f, _) => {
+                    let fw = FIELD_W * s;
+                    out.push((Id::Field(f), Rect::new(x + inner_w - fw, y, fw, h), ""));
+                }
                 _ => {}
             }
             y += h + g;
@@ -387,8 +646,8 @@ impl Ui {
             Id::Interior => self.building && self.interior,
             Id::Ref(r) => self.ref_side == r,
             Id::Ortho => self.ortho,
-            Id::Recess(_) => false,
             Id::View(v) => self.view == v,
+            Id::Field(_) => false,
         }
     }
 
@@ -426,7 +685,30 @@ impl Ui {
                 out.changed.extend(self.hover.take());
             }
             Event::MouseDown { button, x, y, .. } => {
-                if let Some((_, id)) = self.hit(x, y, win_w, top) {
+                let hit = self.hit(x, y, win_w, top);
+                let field = match hit {
+                    Some((_, Some(Id::Field(f)))) if button == MouseButton::Left => Some(f),
+                    _ => None,
+                };
+                // Klick neben das Feld in Eingabe beendet sie
+                if self.edit.as_ref().is_some_and(|e| Some(e.field) != field) {
+                    self.finish_edit(&mut out);
+                }
+                if let Some(f) = field {
+                    out.consumed = true;
+                    if self.edit.is_none() {
+                        self.begin_edit(f, &mut out);
+                    } else {
+                        let r = self.rect(Panel::Props, win_w, top);
+                        let lx = x - r.x as f64;
+                        if let Some(i) = self.caret_at(f, lx) {
+                            if let Some(e) = self.edit.as_mut() {
+                                e.move_to(i, false);
+                            }
+                        }
+                        out.changed.push(Id::Field(f));
+                    }
+                } else if let Some((_, id)) = hit {
                     out.consumed = true;
                     if button == MouseButton::Left {
                         self.pressed = id;
@@ -530,6 +812,24 @@ impl Ui {
     fn paint_button(&self, t: &Theme, c: &mut Canvas, id: Id, b: Rect, label: &str) {
         let s = self.scale;
         let m = (self.size.panel_shadow * s).round();
+        if let Id::Field(f) = id {
+            let b = Rect::new(b.x + m, b.y + m, b.w, b.h);
+            let edit = self.edit.as_ref().filter(|e| e.field == f);
+            let value = self
+                .field_row(f)
+                .map_or(String::new(), |r| cm_text(r.value));
+            let st = FieldState {
+                text: edit.map_or(&value, |e| &e.text),
+                unit: "cm",
+                hover: self.hover == Some(id),
+                focus: edit.is_some(),
+                invalid: edit.is_some_and(|e| e.error.is_some()),
+                caret: edit.map(|e| e.caret),
+                select: edit.map(|e| e.selection()),
+            };
+            widgets::field(c, &self.fonts, b, &st, s, t);
+            return;
+        }
         let st = ButtonState {
             hover: self.hover == Some(id),
             pressed: self.pressed == Some(id) && self.hover == Some(id),
@@ -582,6 +882,19 @@ impl Ui {
                         col.text_dim,
                     );
                 }
+                Row::Field(_, k) => {
+                    let px = size.font_small * s;
+                    widgets::text(&mut c, regular, k, px, x, y + 17.5 * s, col.text_dim);
+                }
+                Row::Error(t) => widgets::text(
+                    &mut c,
+                    regular,
+                    &t,
+                    size.font_detail * s,
+                    x,
+                    y + 12.0 * s,
+                    col.field_invalid,
+                ),
                 Row::Value(k, v) => {
                     let px = size.font_small * s;
                     let base = y + 13.5 * s;
@@ -788,5 +1101,171 @@ mod tests {
         assert!(ui.repaint_button(&th, id).is_none(), "altes Bild verworfen");
         assert_eq!(at(ui.paint(&th, p, 1280, 32).0), blue);
         assert!(ui.repaint_button(&th, id).is_some());
+    }
+
+    fn props_mit_feldern() -> Props {
+        Props {
+            values: vec![("Nummer", "SP-001".into())],
+            fields: vec![
+                FieldRow {
+                    field: Field::SlabThickness,
+                    label: "Dicke",
+                    value: 200.0,
+                    min: 100.0,
+                    max: 1000.0,
+                    zero: false,
+                },
+                FieldRow {
+                    field: Field::Recess,
+                    label: "Sockelrücksprung",
+                    value: 0.0,
+                    min: 20.0,
+                    max: 500.0,
+                    zero: true,
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    fn feld_mitte(ui: &Ui, f: Field) -> (f64, f64) {
+        let r = ui.rect(Panel::Props, 1280, 32);
+        let b = ui.field_rect(f).unwrap();
+        (
+            (r.x + b.x + b.w * 0.5) as f64,
+            (r.y + b.y + b.h * 0.5) as f64,
+        )
+    }
+
+    fn taste(ui: &mut Ui, k: Key) -> UiOut {
+        ui.key(k, true, Modifiers::default())
+            .expect("Feld in Eingabe")
+    }
+
+    #[test]
+    fn zahlenfeld_tippen_pruefen_abbrechen() {
+        let mut ui = Ui::new(1.0, &Theme::dark());
+        ui.set_props(Some(props_mit_feldern()));
+        assert!(ui.key(Key::Char('1'), true, Modifiers::default()).is_none());
+        let (x, y) = feld_mitte(&ui, Field::SlabThickness);
+        click(&mut ui, x, y);
+        // Alles markiert: Tippen ersetzt den Wert
+        assert_eq!(ui.edit.as_ref().unwrap().text, "20");
+        taste(&mut ui, Key::Char('3'));
+        taste(&mut ui, Key::Char('5'));
+        assert_eq!(ui.edit.as_ref().unwrap().text, "35");
+        taste(&mut ui, Key::Char('A'));
+        assert_eq!(
+            ui.edit.as_ref().unwrap().text,
+            "35",
+            "Buchstaben zählen nicht"
+        );
+        // Schreibmarke: Pos1, Entf, Ende, Rücktaste
+        taste(&mut ui, Key::Home);
+        taste(&mut ui, Key::Delete);
+        taste(&mut ui, Key::End);
+        taste(&mut ui, Key::Char(','));
+        taste(&mut ui, Key::Char('5'));
+        assert_eq!(ui.edit.as_ref().unwrap().text, "5,5");
+        let out = taste(&mut ui, Key::Enter);
+        assert_eq!(out.submit, None, "unter 10 cm");
+        assert!(out.relayout);
+        assert_eq!(
+            ui.edit.as_ref().unwrap().error.as_deref(),
+            Some("mindestens 10 cm")
+        );
+        let h = ui.panel_height(Panel::Props);
+        taste(&mut ui, Key::Backspace);
+        taste(&mut ui, Key::Backspace);
+        taste(&mut ui, Key::Backspace);
+        taste(&mut ui, Key::Char('2'));
+        taste(&mut ui, Key::Char('2'));
+        let out = taste(&mut ui, Key::Enter);
+        assert_eq!(out.submit, Some((Field::SlabThickness, 220.0)));
+        assert!(out.relayout && ui.edit.is_none());
+        assert!(ui.panel_height(Panel::Props) < h, "Hinweis weg");
+        // Rücksprung: 0 erlaubt, 1 cm nicht, Esc verwirft
+        let (x, y) = feld_mitte(&ui, Field::Recess);
+        click(&mut ui, x, y);
+        assert_eq!(ui.edit.as_ref().unwrap().text, "0");
+        taste(&mut ui, Key::Char('1'));
+        taste(&mut ui, Key::Enter);
+        assert_eq!(
+            ui.edit.as_ref().unwrap().error.as_deref(),
+            Some("0 (bündig) oder mindestens 2 cm")
+        );
+        let out = taste(&mut ui, Key::Escape);
+        assert!(ui.edit.is_none() && out.submit.is_none());
+        // Klick neben das Feld übernimmt eine gültige Eingabe
+        click(&mut ui, x, y);
+        taste(&mut ui, Key::Char('4'));
+        let out = ui.handle(
+            &Event::MouseDown {
+                button: MouseButton::Left,
+                x: 600.0,
+                y: 400.0,
+                mods: Modifiers::default(),
+            },
+            1280,
+            32,
+        );
+        assert_eq!(out.submit, Some((Field::Recess, 40.0)));
+        assert!(!out.consumed, "der Klick gehört weiter der 3D-Ansicht");
+        // Felder, die es nicht mehr gibt, beenden die Eingabe
+        click(&mut ui, x, y);
+        ui.set_props(Some(Props::default()));
+        assert!(ui.edit.is_none());
+    }
+
+    #[test]
+    fn zahl_in_zentimetern() {
+        let f = &props_mit_feldern().fields[1];
+        assert_eq!(cm_text(200.0), "20");
+        assert_eq!(cm_text(25.0), "2,5");
+        assert_eq!(f.parse("2,5"), Ok(25.0));
+        assert_eq!(f.parse(" 3.0 "), Ok(30.0));
+        assert_eq!(f.parse("0"), Ok(0.0));
+        assert_eq!(
+            f.parse("-2").unwrap_err(),
+            "0 (bündig) oder mindestens 2 cm"
+        );
+        assert_eq!(f.parse("51").unwrap_err(), "höchstens 50 cm");
+        assert_eq!(f.parse("").unwrap_err(), "Zahl fehlt");
+        assert_eq!(f.parse("2,,5").unwrap_err(), "keine Zahl");
+    }
+
+    /// Ein Feld unter der Maus oder in Eingabe zeichnet nur sich neu, gleich
+    /// dem vollen Paneel.
+    #[test]
+    fn feld_einzeln_neu_gleicht_dem_ganzen_paneel() {
+        let th = Theme::dark();
+        for scale in [1.0f32, 1.5] {
+            let mut ui = Ui::new(scale, &th);
+            ui.set_props(Some(props_mit_feldern()));
+            let id = Id::Field(Field::SlabThickness);
+            for step in 0..3 {
+                let mut img = ui.paint(&th, Panel::Props, 1280, 32).0.to_premul_rgba8();
+                let w = ui.images[panel_index(Panel::Props)]
+                    .as_ref()
+                    .unwrap()
+                    .cur
+                    .width;
+                match step {
+                    0 => ui.hover = Some(id),
+                    1 => ui.edit = Some(Edit::new(&props_mit_feldern().fields[0])),
+                    _ => {
+                        ui.key(Key::Left, true, Modifiers::default());
+                    }
+                }
+                let patch = ui.repaint_button(&th, id).expect("Paneelbild vorhanden");
+                for row in 0..patch.h {
+                    let dst = ((patch.y + row) * w + patch.x) * 4;
+                    img[dst..dst + patch.w * 4]
+                        .copy_from_slice(&patch.px[row * patch.w * 4..][..patch.w * 4]);
+                }
+                let full = ui.paint(&th, Panel::Props, 1280, 32).0.to_premul_rgba8();
+                assert!(img == full, "{scale} Schritt {step}");
+            }
+        }
     }
 }
