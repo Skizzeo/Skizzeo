@@ -4,40 +4,40 @@ version = 4
 
 [[package]]
 name = "sk-math"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "sk-model"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "sk-math",
 ]
 
 [[package]]
 name = "sk-paint"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "sk-platform"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "sk-render"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "sk-math",
 ]
 
 [[package]]
 name = "sk-ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "sk-paint",
 ]
 
 [[package]]
 name = "skizzeo"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "sk-math",
  "sk-model",
