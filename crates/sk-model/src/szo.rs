@@ -583,7 +583,7 @@ pub fn write(m: &Model) -> String {
                 s.building.and_then(|b| m.building(b)).map(|b| b.guid),
             )
             .text("name", &s.name)
-            .word("short", &s.short)
+            .text("short", &s.short)
             .word(
                 "kind",
                 match s.kind {
@@ -1636,6 +1636,18 @@ mod tests {
                 HatchLine::solid(60.0, 2.0, 0.5)
             ])
         );
+    }
+
+    /// Ab zwei Obergeschossen heißen sie „1. OG“, „2. OG“: das Kürzel hat ein
+    /// Leerzeichen und muss in Anführungszeichen stehen.
+    #[test]
+    fn gebaeude_mit_drei_obergeschossen_laedt_wieder() {
+        let mut m = Model::with_seed(12);
+        m.add_building(4);
+        let a = write(&m);
+        assert!(a.contains("short=\"2. OG\""), "{a}");
+        let l = load(&a).unwrap();
+        assert_eq!(write(&l.model), a);
     }
 
     #[test]
