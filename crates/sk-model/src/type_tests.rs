@@ -193,6 +193,17 @@ fn loeschen_kopieren_standard() {
     assert_ne!(k.guid, EXTERIOR_TYPE_GUID);
     let k2 = m.duplicate_type(aw).unwrap();
     assert_eq!(m.layer_set(k2).unwrap().code, "AW-31,5-3");
+    // Die Kopie von AW-36,5 behält ihr Deckenauflager mit Randdämmstreifen
+    let mono = m.type_by_guid(MONO_TYPE_GUID).unwrap();
+    let mk = m.duplicate_type(mono).unwrap();
+    assert_eq!(
+        m.layer_set(mk).unwrap().bearing,
+        m.layer_set(mono).unwrap().bearing
+    );
+    assert!(matches!(
+        m.layer_set(mk).unwrap().bearing,
+        crate::Bearing::Depth { .. }
+    ));
     // Standardtyp nicht löschbar, auch ohne Benutzer
     m.begin("Standard");
     assert!(m.set_default_type(TypeCategory::ExteriorWall, kopie));

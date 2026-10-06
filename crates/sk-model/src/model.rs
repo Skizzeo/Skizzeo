@@ -907,7 +907,6 @@ impl Model {
             name: format!("{} (Kopie)", t.name),
             code,
             changed: 1,
-            bearing: Bearing::Core,
             ..t
         })
     }

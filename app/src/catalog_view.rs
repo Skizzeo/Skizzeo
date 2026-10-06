@@ -699,8 +699,10 @@ impl Catalog {
     }
 
     fn standard_rect(&self, t: &Theme, w: &Win) -> Rect {
-        // Unter bis zu sechs Kennwerten (mit Randdämmstreifen, K5)
-        self.r(t, w, RIGHT_X, 312.0, 16.0, 16.0)
+        // Unter den Kennwerten: fünf, mit Randdämmstreifen sechs (K5)
+        let strip = matches!(self.draft.bearing, sk_model::Bearing::Depth { .. });
+        let y = if strip { 312.0 } else { 282.0 };
+        self.r(t, w, RIGHT_X, y, 16.0, 16.0)
     }
 
     fn add_layer_rect(&self, t: &Theme, w: &Win) -> Rect {
@@ -4519,6 +4521,27 @@ mod tests {
         assert_eq!(parse_thick("12,3"), Ok(125.0));
         assert!(parse_thick("0").is_err());
         assert!(parse_thick("101").is_err());
+    }
+
+    /// „Standard für neue Gebäude“ sitzt direkt unter den Kennwerten:
+    /// ohne Randdämmstreifen keine leere Zeile (30-px-Lücke nach K5).
+    #[test]
+    fn standard_unter_den_kennwerten() {
+        let mut c = Catalog::open(&szene(), None);
+        let t = Theme::dark();
+        let five = c.standard_rect(&t, &WIN);
+        assert!(matches!(c.draft.bearing, sk_model::Bearing::Core));
+        let strip = c.draft.layers[0].material;
+        c.draft.bearing = sk_model::Bearing::Depth {
+            depth: 175.0,
+            strip,
+        };
+        let six = c.standard_rect(&t, &WIN);
+        assert_eq!(six.y - five.y, 30.0 * WIN.scale);
+        assert_eq!(
+            five.y,
+            c.r(&t, &WIN, RIGHT_X, 124.0 + 5.0 * 30.0 + 8.0, 1.0, 1.0).y
+        );
     }
 
     use sk_math::vec3;
