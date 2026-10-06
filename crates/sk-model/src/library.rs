@@ -108,6 +108,17 @@ pub struct MaterialLayer {
     pub core: bool,
 }
 
+/// Wie eine Geschossdecke auf dem Typ aufliegt (K5).
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum Bearing {
+    /// Tasche über den ganzen Kern (Vorgabe).
+    #[default]
+    Core,
+    /// Die Decke liegt `depth` (mm, ab Innenseite) auf; außen davor ein
+    /// Randdämmstreifen aus `strip`. Die Tasche bleibt über die ganze Wand.
+    Depth { depth: f64, strip: MaterialId },
+}
+
 /// Art eines Bauteiltyps: für welche Bauteile er taugt (K1). Weitere Arten
 /// (Decke, Dach …) nur auf Jörns Vorgabe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -179,11 +190,30 @@ pub struct LayerSet {
     pub note: String,
     /// Änderungsstand, +1 bei jeder Änderung; nur zur Anzeige im Abgleich.
     pub changed: u32,
+    /// Deckenauflager (K5).
+    pub bearing: Bearing,
 }
 
 impl LayerSet {
     pub fn thickness(&self) -> f64 {
         self.layers.iter().map(|l| l.thickness).sum()
+    }
+
+    /// Dicke des Randdämmstreifens vor dem Deckenauflager (Wanddicke minus
+    /// Auflagertiefe); `None` bei Tasche über den ganzen Kern.
+    pub fn strip_width(&self) -> Option<f64> {
+        match self.bearing {
+            Bearing::Core => None,
+            Bearing::Depth { depth, .. } => Some(self.thickness() - depth),
+        }
+    }
+
+    /// Baustoff des Randdämmstreifens.
+    pub fn strip_material(&self) -> Option<MaterialId> {
+        match self.bearing {
+            Bearing::Core => None,
+            Bearing::Depth { strip, .. } => Some(strip),
+        }
     }
 
     /// Tragend (IFC LoadBearing): es gibt eine tragende Kernschicht.
@@ -238,6 +268,17 @@ impl LayerSet {
         }
         if self.layers.windows(2).any(|w| air(&w[0]) && air(&w[1])) {
             out.push(format!("Typ {who}: zwei Luftschichten hintereinander"));
+        }
+        // Regel 21: das Auflager liegt im Kern und ist kürzer als die Wand
+        if let Bearing::Depth { depth, .. } = self.bearing {
+            let first = self.layers.iter().position(|l| l.core).unwrap_or(0);
+            let band: f64 = self.layers[first.min(n)..]
+                .iter()
+                .map(|l| l.thickness)
+                .sum();
+            if !(depth.is_finite() && depth > 0.0 && depth < band.min(self.thickness()) - 1e-9) {
+                out.push(format!("Typ {who}: Deckenauflager ungültig"));
+            }
         }
         out
     }

@@ -43,11 +43,32 @@ pub enum FloorError {
     AboveWallTop,
 }
 
+/// Randdämmstreifen vor dem Deckenauflager (K5).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StripParams {
+    /// Breite ab Wandaußenseite (Wanddicke minus Auflagertiefe), mm.
+    pub width: f64,
+    /// Baustoff des Streifens (Schnittschraffur).
+    pub mat: u16,
+    /// Baustoff der Wand: in 3D trägt der Streifen ihre Oberfläche, damit
+    /// die Wand außen fugenlos aussieht.
+    pub face: u16,
+    /// Darüber steht eine Wand (OG): die Oberkante des Streifens ist keine
+    /// Gebäudekante. In 3D verschmilzt sie mit dem Fuß der Wand, im Schnitt
+    /// zeichnet er dort keine Linie.
+    pub covered: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FloorSlab {
     /// Umriss gegen den Uhrzeigersinn, auf z = 0.
     pub outline: Vec<Vec3>,
     pub params: FloorParams,
+    /// Randdämmstreifen, falls die Decke nur teilweise aufliegt.
+    pub strip: Option<StripParams>,
+    /// Grundriss der Streifen je Wandsegment (auf z = 0): außen Anfang,
+    /// außen Ende, innen Ende, innen Anfang, mit Gehrung wie die Wand.
+    pub strips: Vec<[Vec3; 4]>,
 }
 
 fn at_z(p: Vec3, z: f64) -> Vec3 {
@@ -61,6 +82,17 @@ fn right_of(d: Vec3) -> Vec3 {
 impl FloorSlab {
     /// Decke über dem geschlossenen Außenwandzug `chain`.
     pub fn from_chain(chain: &WallChain, p: &FloorParams) -> Result<FloorSlab, FloorError> {
+        FloorSlab::from_chain_with(chain, p, None)
+    }
+
+    /// Wie [`FloorSlab::from_chain`]; mit `strip` liegt die Decke nur
+    /// teilweise auf: Umriss = Wandaußenseite um die Streifenbreite nach
+    /// innen, davor je Wandsegment ein Randdämmstreifen (K5).
+    pub fn from_chain_with(
+        chain: &WallChain,
+        p: &FloorParams,
+        strip: Option<StripParams>,
+    ) -> Result<FloorSlab, FloorError> {
         if !chain.closed || chain.clean_points().len() < 3 {
             return Err(FloorError::NotClosed);
         }
@@ -82,16 +114,38 @@ impl FloorSlab {
         // Eckberechnung wie die Wand, dann um die Dämmdicke mit dem robusten
         // Versatz (sonst verknoten kurze Vorsprünge den Umriss). Ohne
         // Sonderfälle deckungsgleich mit der Schichtgrenze der Wand.
-        let depth: f64 = chain.layers[..core].iter().map(|l| l.thickness).sum();
+        let depth: f64 = match strip {
+            Some(sp) => sp.width,
+            None => chain.layers[..core].iter().map(|l| l.thickness).sum(),
+        };
         let face = chain.face_corners(chain.outer_offset());
         let outline = if depth > 0.0 {
             polygon::inset(&face, depth)
                 .map_err(|_| FloorError::NotSimple)?
                 .pts
         } else {
-            face
+            face.clone()
         };
-        FloorSlab::from_outline(&outline, p)
+        let mut slab = FloorSlab::from_outline(&outline, p)?;
+        if let Some(sp) = strip.filter(|sp| sp.width > 0.0) {
+            // Gleiche Eckberechnung wie die Schichtgrenzen der Wand
+            let (lo, _) = chain.ref_side.span(chain.thickness());
+            let sign = if chain.outer_offset() == lo {
+                1.0
+            } else {
+                -1.0
+            };
+            let inner = chain.face_corners(chain.outer_offset() + sign * sp.width);
+            let n = face.len().min(inner.len());
+            slab.strips = (0..chain.segment_count().min(n))
+                .map(|k| {
+                    let j = (k + 1) % n;
+                    [face[k], face[j], inner[j], inner[k]]
+                })
+                .collect();
+            slab.strip = Some(sp);
+        }
+        Ok(slab)
     }
 
     /// Decke über einem beliebigen einfachen Umriss (Richtung egal).
@@ -109,6 +163,8 @@ impl FloorSlab {
         Ok(FloorSlab {
             outline,
             params: *p,
+            strip: None,
+            strips: Vec::new(),
         })
     }
 
@@ -221,6 +277,151 @@ impl FloorSlab {
         }
         s.edge_kind = edge_kind::VIEW;
         s
+    }
+
+    // ---- Randdämmstreifen (K5) ----
+
+    /// Streifen `k` zwischen `z0` und `z1`. In 3D trägt er die Oberfläche der
+    /// Wand und hat keine Kanten außer den Gebäudeecken außen (die Wand
+    /// läuft fugenlos durch); als Schnitt oben trägt er seine Schraffur.
+    fn strip_prism(&self, k: usize, z0: f64, z1: f64, cut_top: bool) -> Solid {
+        let (Some(sp), Some(q)) = (self.strip, self.strips.get(k)) else {
+            return Solid::default();
+        };
+        let mut s = Solid {
+            mat: sp.face,
+            ..Solid::default()
+        };
+        let [o0, o1, i1, i0] = *q;
+        let up = vec3(0.0, 0.0, z1 - z0);
+        let z = |p: Vec3| at_z(p, z0);
+        let d = (o1 - o0).normalized();
+        let mut out = right_of(d);
+        if out.dot(o0 - i0) < 0.0 {
+            out = -out;
+        }
+        // Umlauf außen → innen so, dass die Flächen nach außen zeigen
+        let ring = if right_of(d).dot(out) > 0.0 {
+            [o0, o1, i1, i0]
+        } else {
+            [o1, o0, i0, i1]
+        };
+        let [a, b, c, e] = ring.map(z);
+        s.quad(a, e, c, b, vec3(0.0, 0.0, -1.0));
+        s.mat = if cut_top {
+            sp.mat | material::CUT
+        } else {
+            sp.face
+        };
+        s.quad(a + up, b + up, c + up, e + up, vec3(0.0, 0.0, 1.0));
+        s.mat = sp.face;
+        s.quad(z(o0), z(o1), z(o1) + up, z(o0) + up, out);
+        s.quad(z(i1), z(i0), z(i0) + up, z(i1) + up, -out);
+        s.edge_kind = edge_kind::VIEW;
+        let n = self.strips.len();
+        let prev = self.strips[(k + n - 1) % n];
+        let pd = (prev[1] - prev[0]).normalized();
+        let straight = (pd.x * d.y - pd.y * d.x).abs() < 1e-9 && pd.dot(d) > 0.0;
+        if !straight {
+            s.edge(z(o0), z(o0) + up);
+        }
+        if cut_top {
+            s.edge_kind = edge_kind::CUT;
+        }
+        // Oben außen: Gebäudekante; steht die OG-Wand darauf, nimmt
+        // merge_seam sie mit deren Fußkante weg (gleiche Oberfläche)
+        s.edge(z(o0) + up, z(o1) + up);
+        s.edge_kind = edge_kind::VIEW;
+        s
+    }
+
+    /// Körper des Streifens `k` für 3D und Ansichten.
+    pub fn strip_solid(&self, k: usize) -> Solid {
+        let (b, t) = self.band();
+        self.strip_prism(k, b, t, false)
+    }
+
+    /// Streifen `k` waagerecht geschnitten in Höhe `cut` (Grundriss), wie
+    /// [`FloorSlab::solid_cut_at`].
+    pub fn strip_cut_at(&self, k: usize, cut: f64) -> Solid {
+        let (b, t) = self.band();
+        if cut <= b {
+            Solid::default()
+        } else if cut >= t {
+            self.strip_solid(k)
+        } else {
+            self.strip_prism(k, b, cut, true)
+        }
+    }
+
+    /// Schnittfläche des Streifens `k` mit der senkrechten Ebene durch `p0`
+    /// (F4): Dämmschraffur, ohne Linie zur Wand darüber und darunter; nur
+    /// die Außenkontur der Wand läuft durch.
+    pub fn strip_section_caps(&self, k: usize, p0: Vec3, n: Vec3) -> Solid {
+        let (Some(sp), Some(q)) = (self.strip, self.strips.get(k)) else {
+            return Solid::default();
+        };
+        let n = vec3(n.x, n.y, 0.0).normalized();
+        let along = vec3(-n.y, n.x, 0.0);
+        let base = vec3(p0.x, p0.y, 0.0) - along * vec3(p0.x, p0.y, 0.0).dot(along);
+        let pt = |u: f64, z: f64| base + along * u + vec3(0.0, 0.0, z);
+        let (zb, zt) = self.band();
+        let mut s = Solid {
+            mat: sp.mat | material::CUT,
+            edge_kind: edge_kind::CUT,
+            ..Solid::default()
+        };
+        let (o0, o1) = (q[0], q[1]);
+        let on_outer = |p: Vec3| {
+            let d = o1 - o0;
+            let len = d.length();
+            if len < 1e-9 {
+                return false;
+            }
+            let r = vec3(p.x, p.y, 0.0) - vec3(o0.x, o0.y, 0.0);
+            (r.x * d.y - r.y * d.x).abs() / len < 1e-3
+        };
+        // Musterkoordinaten wie in der Wand: u in Streifenbreiten nach oben,
+        // v quer von außen (0) nach innen (1)
+        let w = sp.width.max(1e-9);
+        let v = |u: f64| {
+            let d = o1 - o0;
+            let r = pt(u, 0.0) - vec3(o0.x, o0.y, 0.0);
+            ((r.x * d.y - r.y * d.x).abs() / d.length().max(1e-9) / w).min(1.0)
+        };
+        for (a, b) in polygon::plane_intervals(q, p0, n, along) {
+            let (ub, ut) = (zb / w, zt / w);
+            s.quad_uv(
+                [pt(a, zb), pt(b, zb), pt(b, zt), pt(a, zt)],
+                n,
+                [[ub, v(a)], [ub, v(b)], [ut, v(b)], [ut, v(a)]],
+            );
+            for u in [a, b] {
+                if on_outer(pt(u, 0.0)) {
+                    s.edge(pt(u, zb), pt(u, zt));
+                }
+            }
+            // Oberste Decke: der Streifen schließt die Kontur oben
+            if !sp.covered {
+                s.edge(pt(a, zt), pt(b, zt));
+            }
+        }
+        s.edge_kind = edge_kind::VIEW;
+        s
+    }
+
+    /// Länge des Streifens `k` auf seiner Achse (Mittel aus außen und innen), mm.
+    pub fn strip_length(&self, k: usize) -> f64 {
+        self.strips.get(k).map_or(0.0, |q| {
+            ((q[1] - q[0]).length() + (q[2] - q[3]).length()) * 0.5
+        })
+    }
+
+    /// Volumen des Streifens `k` (Grundfläche × Deckendicke), mm³.
+    pub fn strip_volume(&self, k: usize) -> f64 {
+        self.strips
+            .get(k)
+            .map_or(0.0, |q| polygon::area(q) * self.params.thickness)
     }
 
     // ---- Mengen (Grundlage für qto, Einheiten mm, mm², mm³) ----

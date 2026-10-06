@@ -3,7 +3,9 @@
 
 use crate::element::{Category, PropValue, RunId};
 use crate::library::{LayerSet, LayerSetId, TypeCategory};
-use crate::model::{Model, ETICS_TYPE_GUID, EXTERIOR_TYPE_GUID, INTERIOR_TYPE_GUID};
+use crate::model::{
+    Model, ETICS_TYPE_GUID, EXTERIOR_TYPE_GUID, INTERIOR_TYPE_GUID, MONO_TYPE_GUID,
+};
 use crate::txn::Direction;
 use crate::wall::RefSide;
 use crate::{floor_qto, foundation_qto, run_qto, szo, GuidGen};
@@ -271,7 +273,11 @@ fn alte_datei_bekommt_kurzzeichen() {
                 "SZO 3".to_string()
             } else if l.starts_with("[layerset]") {
                 let cut = l.find(" code=").unwrap();
-                l[..cut].to_string()
+                // Das Auflager (K5) steht hinten und bleibt
+                let keep = l
+                    .find(" bearing=")
+                    .map_or("", |b| &l[b..l.find(" note=").unwrap()]);
+                format!("{}{keep}", &l[..cut])
             } else {
                 l.to_string()
             }
@@ -314,7 +320,12 @@ fn alte_datei_gleiche_dicke() {
         .replacen("SZO 4", "SZO 3", 1)
         .lines()
         .map(|l| match l.find(" code=") {
-            Some(c) if l.starts_with("[layerset]") => l[..c].to_string(),
+            Some(c) if l.starts_with("[layerset]") => {
+                let keep = l
+                    .find(" bearing=")
+                    .map_or("", |b| &l[b..l.find(" note=").unwrap()]);
+                format!("{}{keep}", &l[..c])
+            }
             _ => l.to_string(),
         })
         .collect::<Vec<_>>()
@@ -382,4 +393,73 @@ fn pruefregeln_bei_kaputten_dateien() {
         h.iter().any(|x| x.contains("passt nicht zur Außenwand")),
         "{h:?}"
     );
+}
+
+/// AW-36,5 (K5): Der Streifen unter der OG-Wand ist „bedeckt“ und zeichnet
+/// im Schnitt oben keine Linie, die OG-Wand keine am Fuß; die Decke behält
+/// ihre Kontur. Der oberste Streifen schließt die Kontur. In der Ansicht hat
+/// der Streifen oben außen eine Kante (die OG-Wand nimmt sie beim Zeichnen
+/// mit ihrer Fußkante weg).
+#[test]
+fn randdaemmstreifen_ohne_fuge_zur_og_wand() {
+    use crate::solid::edge_kind;
+    let (mut m, aw, _) = haus();
+    let mono = m
+        .layer_sets()
+        .iter()
+        .find(|(_, t)| t.guid == MONO_TYPE_GUID)
+        .map(|(id, _)| id)
+        .unwrap();
+    m.begin("Wandtyp geändert");
+    assert!(m.set_run_type(aw, mono));
+    m.commit().unwrap();
+    let og = og(&m, aw);
+    let (eg_c, eg_f) = m.chain_and_floor(aw).unwrap();
+    let (og_c, og_f) = m.chain_and_floor(og).unwrap();
+    let (eg_f, og_f) = (eg_f.unwrap().unwrap(), og_f.unwrap().unwrap());
+    assert!(eg_f.strip.unwrap().covered && !og_f.strip.unwrap().covered);
+    assert!(og_c.joints.strip_below && !eg_c.joints.strip_below);
+    // Schnitt quer durch die linke Wand (x = 0 … 365) bei y = 4 m
+    let (p0, n) = (vec3(0.0, 4000.0, 0.0), vec3(0.0, -1.0, 0.0));
+    let z_og = og_c.base;
+    let horizontal_at = |s: &crate::Solid, z: f64, x1: f64| {
+        s.edges.iter().any(|e| {
+            (e.a.z - z).abs() < 1e-6
+                && (e.b.z - z).abs() < 1e-6
+                && e.a.x.min(e.b.x) < x1 - 1e-3
+                && e.a.x.max(e.b.x) > 1e-3
+                && e.kind != edge_kind::VIEW
+        })
+    };
+    let k = (0..eg_f.strips.len())
+        .find(|&k| {
+            eg_f.strip_section_caps(k, p0, n).triangles.len() == 2
+                && eg_f.strips[k][0].x < 1.0
+                && eg_f.strips[k][1].x < 1.0
+        })
+        .unwrap();
+    assert!(!horizontal_at(
+        &eg_f.strip_section_caps(k, p0, n),
+        z_og,
+        125.0
+    ));
+    assert!(
+        !horizontal_at(&og_c.section_caps(p0, n), z_og, 125.0),
+        "OG-Wand ohne Fußlinie"
+    );
+    assert!(
+        horizontal_at(&eg_f.section_caps(p0, n), z_og, 400.0),
+        "Decke behält ihre Kontur"
+    );
+    let top = og_f.band().1;
+    assert!(
+        horizontal_at(&og_f.strip_section_caps(k, p0, n), top, 125.0),
+        "oben geschlossen"
+    );
+    // Ansicht: Kante oben außen am Streifen
+    let s = eg_f.strip_solid(k);
+    assert!(s
+        .edges
+        .iter()
+        .any(|e| (e.a.z - z_og).abs() < 1e-6 && e.a.x.abs() < 1e-6 && e.b.x.abs() < 1e-6));
 }

@@ -204,6 +204,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// Jörns Firmenkatalog aus K4 (mit „Luft“, cat=air) wird ohne Verlust
+    /// gelesen: alle Typen und Baustoffe bleiben, nur AW-36,5 kommt dazu.
+    #[test]
+    fn katalog_aus_k4_ohne_verlust() {
+        let d = dir("k4");
+        let p = d.join(FILE_NAME);
+        let alt = include_str!("firmenkatalog_k4.szk");
+        std::fs::write(&p, alt).unwrap();
+        let (c, h) = Company::load(&p, true);
+        assert_eq!(
+            h,
+            ["Firmenkatalog: neue Werkstypen ergänzt (AW-36,5).".to_string()]
+        );
+        let vorher = read_szk(alt).unwrap();
+        let lib = c.library();
+        for (_, t) in vorher.types.iter() {
+            let n = lib.types.iter().find(|(_, x)| x.guid == t.guid).unwrap().1;
+            assert_eq!((&n.code, &n.layers.len()), (&t.code, &t.layers.len()));
+        }
+        for (_, m) in vorher.materials.iter() {
+            assert!(lib.materials.iter().any(|(_, x)| x == m), "{}", m.name);
+        }
+        assert_eq!(lib.types.len(), vorher.types.len() + 1);
+        // Die Datei ist ergänzt, das zweite Laden gibt keinen Hinweis
+        let (c2, h) = Company::load(&p, true);
+        assert!(h.is_empty(), "{h:?}");
+        assert_eq!(c2.library(), lib);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn kaputt_gibt_hinweis_und_bleibt_unberuehrt() {
         let d = dir("kaputt");

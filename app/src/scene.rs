@@ -15,7 +15,7 @@ use sk_model::{
     edge_kind, floor_qto_of, foundation_qto_of, merge_seam, run_qto, BuildingId, Category,
     Direction, Edge, ElementId, FloorQto, FloorSlab, FootingQto, Foundation, LayerSetId, Model,
     RunId, SlabQto, Solid, StoreyId, Touched, Txn, TypeCategory, WallChain, WallQto, FLOOR_PART,
-    FOOTING_PART, SLAB_PART,
+    FOOTING_PART, SLAB_PART, STRIP_PART,
 };
 use sk_render::MeshData;
 use sk_ui::theme::Theme;
@@ -81,6 +81,9 @@ impl RunCache {
         }
         if let Some(f) = &floor {
             solid.append(&part(f.solid(), FLOOR_PART));
+            for k in 0..f.strips.len() {
+                solid.append(&part(f.strip_solid(k), STRIP_PART + k as u32));
+            }
         }
         // Auf Höhe des Wandfußes (Wände im OG stehen auf ihrem Geschoss)
         let lift = vec3(0.0, 0.0, chain.base);
@@ -165,6 +168,10 @@ impl RunCache {
                     }
                     if let Some(f) = &self.floor {
                         s.append(&part(f.section_caps(p0, n), FLOOR_PART));
+                        for k in 0..f.strips.len() {
+                            let caps = f.strip_section_caps(k, p0, n);
+                            s.append(&part(caps, STRIP_PART + k as u32));
+                        }
                     }
                     self.section = Some((pl, s));
                 }
@@ -206,6 +213,9 @@ impl RunCache {
                 }
                 if let Some(f) = floor {
                     s.append(&part(f.solid_cut_at(cut), FLOOR_PART));
+                    for k in 0..f.strips.len() {
+                        s.append(&part(f.strip_cut_at(k, cut), STRIP_PART + k as u32));
+                    }
                 }
                 s
             }
@@ -836,6 +846,17 @@ impl Scene {
     /// Mengen der Erdgeschossdecke über einem Wandzug.
     pub fn floor_qto(&self, run: RunId) -> Option<&FloorQto> {
         self.cached(run)?.floor_qto.as_ref()
+    }
+
+    /// Mengen eines Randdämmstreifens (K5), aus der gezeichneten Decke.
+    pub fn edge_strip_qto(&self, strip: ElementId) -> Option<sk_model::EdgeStripQto> {
+        let m = &self.model;
+        let sk_model::ElementKind::EdgeStrip { wall, floor } = m.element(strip)?.kind else {
+            return None;
+        };
+        let (run, seg) = m.segment_of(wall)?;
+        (m.floor_of(run) == Some(floor)).then_some(())?;
+        sk_model::edge_strip_qto_of(self.floor(run)?, seg)
     }
 
     /// Erdgeschossdecke über einem Wandzug, wie sie gezeichnet wird.

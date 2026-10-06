@@ -21,7 +21,7 @@ use crate::element::{
 use crate::guid::{Guid, GuidGen};
 use crate::id::{Arena, Id};
 use crate::library::{
-    type_code, LayerFunction, LayerSet, LayerSetId, MatCategory, Material, MaterialLayer,
+    type_code, Bearing, LayerFunction, LayerSet, LayerSetId, MatCategory, Material, MaterialLayer,
     TypeCategory,
 };
 use crate::model::{Defaults, Model, Project};
@@ -390,6 +390,7 @@ fn category(c: Category) -> &'static str {
         Category::Opening => "opening",
         Category::Space => "space",
         Category::StripFooting => "stripfooting",
+        Category::EdgeInsulation => "edgeinsulation",
     }
 }
 
@@ -415,10 +416,17 @@ pub(crate) fn keyword<T: Copy>(
     name: impl Fn(T) -> &'static str,
 ) -> Result<T, LoadError> {
     let v = r.get(key)?;
-    all.iter()
-        .copied()
-        .find(|&x| name(x) == v)
-        .ok_or_else(|| r.bad(key, "Schlüsselwort"))
+    all.iter().copied().find(|&x| name(x) == v).ok_or_else(|| {
+        // Unbekanntes Wort: meist aus einer neueren Version (z. B. „air“
+        // seit K4), deshalb Wert und Grund nennen
+        err(
+            r.line,
+            format!(
+                "[{}]: „{key}={v}“ unbekannt, Datei vermutlich aus einer neueren Skizzeo-Version",
+                r.section
+            ),
+        )
+    })
 }
 
 // --- Schreiben ------------------------------------------------------------
@@ -532,14 +540,17 @@ pub(crate) fn write_type(
     s: &LayerSet,
     mat_guid: impl Fn(crate::library::MaterialId) -> Option<Guid>,
 ) {
-    Line::new("layerset")
+    let mut line = Line::new("layerset")
         .guid("guid", Some(s.guid))
         .text("name", &s.name)
         .text("code", &s.code)
         .word("cat", type_category(s.category))
-        .num("changed", s.changed)
-        .text("note", &s.note)
-        .finish(out);
+        .num("changed", s.changed);
+    // Deckenauflager nur, wenn es nicht der ganze Kern ist (K5)
+    if let Bearing::Depth { depth, strip } = s.bearing {
+        line = line.num("bearing", depth).guid("strip", mat_guid(strip));
+    }
+    line.text("note", &s.note).finish(out);
     for l in &s.layers {
         Line::new("layer")
             .guid("set", Some(s.guid))
@@ -764,6 +775,20 @@ pub fn write(m: &Model) -> String {
             .finish(&mut out);
     }
     for e in &walls {
+        let ElementKind::EdgeStrip { wall, floor } = e.kind else {
+            continue;
+        };
+        Line::new("strip")
+            .guid("guid", Some(e.guid))
+            .guid("wall", m.element(wall).map(|x| x.guid))
+            .guid("floor", m.element(floor).map(|x| x.guid))
+            .text("number", &e.number)
+            .word("cat", category(e.category))
+            .num("seq", e.seq)
+            .guid("storey", storey_guid(e.storey))
+            .finish(&mut out);
+    }
+    for e in &walls {
         write_props(&mut out, "prop", "elem", e.guid, &e.props);
     }
     out
@@ -806,10 +831,10 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     let v3 = version >= 3;
     let mut hints = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 18] = [
+    const KNOWN: [&str; 19] = [
         "pen", "linetype", "fill", "surface", "display", "material", "layerset", "layer",
         "typeprop", "project", "building", "storey", "run", "wall", "slab", "footing", "floor",
-        "prop",
+        "strip", "prop",
     ];
     for (i, l) in text.lines().enumerate().skip(1) {
         let Some(r) = Record::parse(i + 1, l)? else {
@@ -1201,9 +1226,21 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         }
         Ok(n)
     };
-    for (section, ix) in [("slab", 0), ("footing", 1), ("floor", 2)] {
+    for (section, ix) in [("slab", 0), ("footing", 1), ("floor", 2), ("strip", 3)] {
         for r in recs(section) {
-            let kind = if ix == 2 {
+            let kind = if ix == 3 {
+                // Randdämmstreifen (K5): nur Verweise auf Wand und Decke
+                let wall = r.link("wall", &elem_ids)?;
+                let floor = r.link("floor", &elem_ids)?;
+                let kind_of = |id| elements.get(id).map(|e: &Element| &e.kind);
+                if !matches!(kind_of(wall), Some(ElementKind::Wall(_))) {
+                    return Err(err(r.line, "[strip]: „wall“ ist keine Wand"));
+                }
+                if !matches!(kind_of(floor), Some(ElementKind::Floor(_))) {
+                    return Err(err(r.line, "[strip]: „floor“ ist keine Decke"));
+                }
+                ElementKind::EdgeStrip { wall, floor }
+            } else if ix == 2 {
                 ElementKind::Floor(Floor {
                     run: r.link("run", &run_ids)?,
                     material: r.link("mat", &mat_ids)?,
@@ -1304,6 +1341,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     if version < 4 {
         assign_codes(&mut layer_sets, &elements, &defaults);
     }
+    add_lambda(&mut materials);
     let attr = Attributes::from_parts(pens, line_types, fills, surfaces, display);
     let mut model = Model::from_parts(
         project, attr, materials, layer_sets, buildings, storeys, elements, runs, defaults, guids,
@@ -1521,6 +1559,13 @@ pub(crate) fn read_types(
         } else {
             (String::new(), TypeCategory::ExteriorWall, 1, String::new())
         };
+        let bearing = match r.opt("bearing") {
+            None | Some("core") => Bearing::Core,
+            Some(_) => Bearing::Depth {
+                depth: r.f64("bearing")?,
+                strip: r.link("strip", mat_ids)?,
+            },
+        };
         let s = LayerSet {
             guid,
             name: r.get("name")?.to_string(),
@@ -1530,6 +1575,7 @@ pub(crate) fn read_types(
             props: set_props.remove(&guid).unwrap_or_default(),
             note,
             changed,
+            bearing,
         };
         let id = layer_sets.insert(s);
         register(&mut set_ids, seen, r, guid, id)?;
@@ -1550,6 +1596,31 @@ pub(crate) fn read_types(
         }
     }
     Ok((layer_sets, set_ids))
+}
+
+/// Ergänzt fehlendes λ an Werksbaustoffen (Nachtrag K5): Treffer über die
+/// Guid, sonst über Name und Kategorie der vier alten Startbaustoffe (Dateien
+/// vor 137fca7 haben zeitbasierte Guids). Vorhandenes λ bleibt; das Modell
+/// gilt danach als unverändert.
+fn add_lambda(materials: &mut Arena<Material>) {
+    const OLD: [&str; 4] = ["Gasbeton", "Dämmung (WDVS)", "Stahlbeton", "Putz"];
+    let werk = Model::new();
+    let ids: Vec<_> = materials.ids().collect();
+    for id in ids {
+        let Some(x) = materials.get(id).filter(|x| x.lambda.is_none()) else {
+            continue;
+        };
+        let by_guid = werk.materials().iter().find(|(_, w)| w.guid == x.guid);
+        let by_name = || {
+            werk.materials().iter().find(|(_, w)| {
+                OLD.contains(&w.name.as_str()) && w.name == x.name && w.category == x.category
+            })
+        };
+        let lambda = by_guid.or_else(by_name).and_then(|(_, w)| w.lambda);
+        if let Some(x) = materials.get_mut(id) {
+            x.lambda = lambda;
+        }
+    }
 }
 
 /// Dateien vor SZO 4: Typart aus der Benutzung (Innenwände → Innenwandtyp;

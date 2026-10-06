@@ -13,14 +13,14 @@ use crate::element::{
     LevelEdge, LevelKind, LevelRef, PropSet, PropValue, RunId, Storey, StoreyId, StripFooting,
     Wall, WallRun,
 };
-use crate::floor::{FloorError, FloorParams, FloorSlab};
+use crate::floor::{FloorError, FloorParams, FloorSlab, StripParams};
 use crate::foundation::{FootingShape, Foundation, FoundationError, FoundationParams};
 use crate::guid::{Guid, GuidGen};
 use crate::id::Arena;
 use crate::join::{self, Join, JoinEnd, JoinKind};
 use crate::library::{
-    material_key, LayerFunction, LayerSet, LayerSetId, MatCategory, Material, MaterialDisplay,
-    MaterialId, MaterialLayer, TypeCategory,
+    material_key, Bearing, LayerFunction, LayerSet, LayerSetId, MatCategory, Material,
+    MaterialDisplay, MaterialId, MaterialLayer, TypeCategory,
 };
 use crate::solid::material;
 use crate::txn::{Change, Direction, Key, Open, Touched, Txn};
@@ -204,6 +204,7 @@ impl Model {
             props: PropSet::new(),
             note: String::new(),
             changed: 1,
+            bearing: Bearing::Core,
             layers: vec![
                 MaterialLayer {
                     material: insulation,
@@ -360,6 +361,7 @@ impl Model {
             props: PropSet::new(),
             note: String::new(),
             changed: 1,
+            bearing: Bearing::Core,
             layers,
         };
         layer_sets.insert(wall_type(
@@ -396,6 +398,29 @@ impl Model {
                 vec![layer(aerated, d, F::Structure, true)],
             ));
         }
+        // K5: monolithische Wand, Decke 24 cm aufgelegt, davor Randdämmstreifen
+        let edge = mat(
+            "Randdämmung",
+            C::Insulation,
+            300,
+            30.0,
+            Some(0.035),
+            st.insulation,
+            [236, 230, 196],
+            [226, 204, 120],
+        );
+        let mut mono = wall_type(
+            MONO_TYPE_GUID,
+            "AW monolithisch 36,5",
+            "AW-36,5",
+            TypeCategory::ExteriorWall,
+            vec![layer(aerated, 365.0, F::Structure, true)],
+        );
+        mono.bearing = Bearing::Depth {
+            depth: 240.0,
+            strip: edge,
+        };
+        layer_sets.insert(mono);
         Model {
             project,
             attr,
@@ -772,7 +797,9 @@ impl Model {
             || !s.problems().is_empty()
             || s.layers
                 .iter()
-                .any(|l| !self.materials.contains(l.material))
+                .map(|l| l.material)
+                .chain(s.strip_material())
+                .any(|m| !self.materials.contains(m))
         {
             return None;
         }
@@ -804,7 +831,9 @@ impl Model {
             || !s.problems().is_empty()
             || s.layers
                 .iter()
-                .any(|l| !self.materials.contains(l.material))
+                .map(|l| l.material)
+                .chain(s.strip_material())
+                .any(|m| !self.materials.contains(m))
         {
             return false;
         }
@@ -878,6 +907,7 @@ impl Model {
             name: format!("{} (Kopie)", t.name),
             code,
             changed: 1,
+            bearing: Bearing::Core,
             ..t
         })
     }
@@ -1852,6 +1882,10 @@ impl Model {
                 }
             }
         }
+        c.joints.seamless = matches!(&floor, Some(Ok(f)) if f.strip.is_some());
+        c.joints.strip_below = self
+            .run_below(id)
+            .is_some_and(|b| self.strip_params(b).is_some());
         c.joints.slab_band = match &floor {
             Some(Ok(f)) => Some(f.band()),
             _ if self.category_of(id) == Some(Category::InteriorWall) => self
@@ -2047,6 +2081,96 @@ impl Model {
             ElementKind::GroundSlab(s) => Some(s.run),
             ElementKind::StripFooting(f) => self.run_of(f.slab),
             ElementKind::Floor(f) => Some(f.run),
+            ElementKind::EdgeStrip { wall, .. } => self.run_of(wall),
+        }
+    }
+
+    /// Paare (Wand, Decke), auf denen ein Randdämmstreifen liegen muss (K5):
+    /// jede Wand eines Zuges unter seiner Decke, deren Typ das Auflager
+    /// `Depth` hat. In Nummernreihenfolge: Gebäude, Geschoss, Segment.
+    pub fn edge_strip_pairs(&self) -> Vec<(ElementId, ElementId)> {
+        let mut floors: Vec<(String, f64, ElementId, RunId)> = self
+            .elements
+            .iter()
+            .filter_map(|(id, e)| match e.kind {
+                ElementKind::Floor(f) => {
+                    let r = self.run(f.run)?;
+                    let st = self.storey(r.storey)?;
+                    let b = st
+                        .building
+                        .and_then(|b| self.building(b))
+                        .map_or(String::new(), |b| b.number.clone());
+                    Some((b, st.elevation, id, f.run))
+                }
+                _ => None,
+            })
+            .collect();
+        floors.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        let mut out = Vec::new();
+        for (_, _, floor, run) in floors {
+            let Some(r) = self.run(run) else { continue };
+            for &wall in &r.segments {
+                let depth = self
+                    .element(wall)
+                    .and_then(|e| e.layer_set)
+                    .and_then(|t| self.layer_set(t))
+                    .is_some_and(|t| matches!(t.bearing, Bearing::Depth { .. }));
+                if depth {
+                    out.push((wall, floor));
+                }
+            }
+        }
+        out
+    }
+
+    /// Randdämmstreifen eines Paares (Wand, Decke).
+    pub fn edge_strip_of(&self, wall: ElementId, floor: ElementId) -> Option<ElementId> {
+        self.elements
+            .iter()
+            .find(|(_, e)| e.kind == ElementKind::EdgeStrip { wall, floor })
+            .map(|(id, _)| id)
+    }
+
+    /// Legt fehlende Randdämmstreifen an und entfernt überzählige, im offenen
+    /// Schritt. Bleibt das Paar (Wand, Decke), bleibt der Streifen mit Guid
+    /// und Nummer.
+    fn sync_edge_strips(&mut self) {
+        let want = self.edge_strip_pairs();
+        let have: Vec<(ElementId, (ElementId, ElementId))> = self
+            .elements
+            .iter()
+            .filter_map(|(id, e)| match e.kind {
+                ElementKind::EdgeStrip { wall, floor } => Some((id, (wall, floor))),
+                _ => None,
+            })
+            .collect();
+        let mut kept = Vec::with_capacity(have.len());
+        for (id, pair) in have {
+            if want.contains(&pair) && !kept.contains(&pair) {
+                kept.push(pair);
+            } else {
+                note!(self, Element, self.elements, id);
+                self.elements.remove(id);
+                self.touch();
+            }
+        }
+        for (wall, floor) in want {
+            if kept.contains(&(wall, floor)) {
+                continue;
+            }
+            let (Some(storey), Some(seq)) = (
+                self.element(wall).map(|e| e.storey),
+                self.element(floor).map(|e| e.seq),
+            ) else {
+                continue;
+            };
+            self.new_element(
+                Category::EdgeInsulation,
+                storey,
+                seq,
+                ElementKind::EdgeStrip { wall, floor },
+            );
+            self.touch();
         }
     }
 
@@ -2057,6 +2181,10 @@ impl Model {
             SLAB_PART => self.foundation_of(run).map(|f| f.0),
             FOOTING_PART => self.foundation_of(run).and_then(|f| f.1),
             FLOOR_PART => self.floor_of(run),
+            p if (STRIP_PART..STRIP_PART + MAX_STRIPS).contains(&p) => {
+                let wall = self.wall_at(run, (p - STRIP_PART) as usize)?;
+                self.edge_strip_of(wall, self.floor_of(run)?)
+            }
             seg => self.wall_at(run, seg as usize),
         }
     }
@@ -2457,7 +2585,29 @@ impl Model {
             thickness: f.thickness,
             mat: material_key(f.material),
         };
-        Some(FloorSlab::from_chain(chain, &p))
+        Some(FloorSlab::from_chain_with(
+            chain,
+            &p,
+            self.strip_params(run),
+        ))
+    }
+
+    /// Randdämmstreifen der Decke über dem Zug: aus dem Typ seiner Wände (K5).
+    fn strip_params(&self, run: RunId) -> Option<StripParams> {
+        let t = self
+            .run(run)?
+            .segments
+            .first()
+            .and_then(|w| self.element(*w))
+            .and_then(|e| e.layer_set)
+            .and_then(|t| self.layer_set(t))?;
+        let core = t.layers.iter().find(|l| l.core).or(t.layers.first())?;
+        Some(StripParams {
+            width: t.strip_width()?,
+            mat: material_key(t.strip_material()?),
+            face: material_key(core.material),
+            covered: !self.runs_above(run).is_empty(),
+        })
     }
 
     /// Setzt die Dicke einer Decke (mm, von der Oberkante nach unten).
@@ -2891,7 +3041,7 @@ impl Model {
                 ElementKind::GroundSlab(s) => refs.push(s.top),
                 ElementKind::StripFooting(f) => refs.push(f.base),
                 ElementKind::Floor(f) => refs.push(f.top),
-                ElementKind::Wall(_) => {}
+                ElementKind::Wall(_) | ElementKind::EdgeStrip { .. } => {}
             }
         }
         if refs.iter().any(|r| !self.storeys.contains(r.storey)) {
@@ -3231,7 +3381,15 @@ impl Model {
     }
 
     /// Schließt den offenen Schritt. `None`, wenn er nichts geändert hat.
+    /// Randdämmstreifen folgen Wänden, Decken und Typen im selben Schritt.
     pub fn commit(&mut self) -> Option<Txn> {
+        if self.txn.is_some() {
+            self.sync_edge_strips();
+        }
+        self.close()
+    }
+
+    fn close(&mut self) -> Option<Txn> {
         let open = self.txn.take()?;
         let mut changes = open.changes;
         for c in &mut changes {
@@ -3247,7 +3405,7 @@ impl Model {
     /// Verwirft den offenen Schritt und stellt den Stand bei [`Model::begin`]
     /// wieder her (Esc beim Ziehen).
     pub fn rollback(&mut self) -> Touched {
-        match self.commit() {
+        match self.close() {
             Some(t) => self.apply(&t, Direction::Undo),
             None => Touched::default(),
         }
@@ -3261,7 +3419,7 @@ impl Model {
         let Some(open) = &self.txn else {
             return Vec::new();
         };
-        let (mut footings, mut floors) = (Vec::new(), Vec::new());
+        let (mut footings, mut floors, mut strips) = (Vec::new(), Vec::new(), Vec::new());
         for c in &open.changes {
             match c {
                 Change::Run { id, .. } => t.run(*id),
@@ -3275,13 +3433,14 @@ impl Model {
                                 t.run(f.run);
                                 floors.push(f.run);
                             }
+                            ElementKind::EdgeStrip { wall, .. } => strips.push(wall),
                         }
                     }
                 }
                 _ => {}
             }
         }
-        for slab in footings {
+        for slab in footings.into_iter().chain(strips) {
             if let Some(r) = self.run_of(slab) {
                 t.run(r);
             }
@@ -3331,7 +3490,9 @@ impl Model {
                     match e.kind {
                         ElementKind::Wall(w) => touched.run(w.run),
                         ElementKind::GroundSlab(s) => touched.run(s.run),
+                        // Wand oder Platte stehen ggf. selbst im Schritt
                         ElementKind::StripFooting(f) => footings.push(f.slab),
+                        ElementKind::EdgeStrip { wall, .. } => footings.push(wall),
                         ElementKind::Floor(f) => {
                             touched.run(f.run);
                             floors.push(f.run);
@@ -3474,6 +3635,7 @@ impl Model {
     /// die Verstöße als Text.
     pub fn check(&self) -> Vec<String> {
         let mut out = Vec::new();
+        let strips_wanted = self.edge_strip_pairs();
         let mut guids = Vec::new();
         let mut numbers: Vec<&str> = Vec::new();
         for (id, e) in self.elements.iter() {
@@ -3585,6 +3747,45 @@ impl Model {
                         out.push(format!("{}: Baustoff fehlt", e.number));
                     }
                 }
+                ElementKind::EdgeStrip { wall, floor } => {
+                    // Regel 22: Wand und Decke gibt es, das Paar braucht ihn
+                    let wall_e = self.element(wall);
+                    if !matches!(wall_e.map(|w| &w.kind), Some(ElementKind::Wall(_))) {
+                        out.push(format!("{}: Wand fehlt", e.number));
+                    } else if wall_e.is_some_and(|w| w.storey != e.storey) {
+                        out.push(format!("{}: nicht im Geschoss seiner Wand", e.number));
+                    }
+                    if !matches!(
+                        self.element(floor).map(|f| &f.kind),
+                        Some(ElementKind::Floor(_))
+                    ) {
+                        out.push(format!("{}: Decke fehlt", e.number));
+                    }
+                    if !strips_wanted.contains(&(wall, floor)) {
+                        out.push(format!(
+                            "{}: Wand und Decke brauchen keinen Randdämmstreifen",
+                            e.number
+                        ));
+                    }
+                }
+            }
+        }
+        // Regel 22: zu jedem Paar genau ein Streifen
+        for (wall, floor) in &strips_wanted {
+            let n = self
+                .elements
+                .iter()
+                .filter(|(_, e)| {
+                    e.kind
+                        == ElementKind::EdgeStrip {
+                            wall: *wall,
+                            floor: *floor,
+                        }
+                })
+                .count();
+            if n != 1 {
+                let w = self.element(*wall).map_or("?", |w| w.number.as_str());
+                out.push(format!("{w}: {n} Randdämmstreifen statt einem"));
             }
         }
         for (id, _) in self.runs.iter() {
@@ -3748,10 +3949,14 @@ pub const ETICS_TYPE_GUID: Guid = Guid(0x72147f93f58782c40c7064abc28678f7);
 pub const CAVITY_TYPE_GUID: Guid = Guid(0xab62c0bdc94bb6740b98633edb84415c);
 pub const INTERIOR_115_TYPE_GUID: Guid = Guid(0x2f8dff421c184680660acedac925c20e);
 pub const INTERIOR_240_TYPE_GUID: Guid = Guid(0x399dbdcd165ab68f996acfde24d981df);
+/// Werkstyp aus K5: AW monolithisch 36,5 mit Randdämmstreifen.
+pub const MONO_TYPE_GUID: Guid = Guid(0x9c03de8332f6e5a1d90474f347dbbf7e);
 /// Art eines Werkstyps nach seiner festen Guid.
 pub(crate) fn werk_category(g: Guid) -> Option<TypeCategory> {
     match g {
-        EXTERIOR_TYPE_GUID | ETICS_TYPE_GUID | CAVITY_TYPE_GUID => Some(TypeCategory::ExteriorWall),
+        EXTERIOR_TYPE_GUID | ETICS_TYPE_GUID | CAVITY_TYPE_GUID | MONO_TYPE_GUID => {
+            Some(TypeCategory::ExteriorWall)
+        }
         INTERIOR_TYPE_GUID | INTERIOR_115_TYPE_GUID | INTERIOR_240_TYPE_GUID => {
             Some(TypeCategory::InteriorWall)
         }
@@ -3795,6 +4000,10 @@ pub const SLAB_PART: u32 = u32::MAX - 1;
 pub const FOOTING_PART: u32 = u32::MAX - 2;
 /// Teil des Körpers eines Wandzugs: Erdgeschossdecke darüber.
 pub const FLOOR_PART: u32 = u32::MAX - 3;
+/// Teil des Körpers eines Wandzugs: Randdämmstreifen auf Segment `k` ist
+/// `STRIP_PART + k` (K5).
+pub const STRIP_PART: u32 = u32::MAX - 3 - MAX_STRIPS;
+const MAX_STRIPS: u32 = 1 << 16;
 
 /// Warum keine Decke entsteht, als Satz.
 /// Zwei Stände eines Baustoffs unterscheiden sich höchstens in den
@@ -3935,6 +4144,7 @@ pub(crate) fn same_type(a: &LayerSet, b: &LayerSet) -> bool {
         && a.layers == b.layers
         && a.props == b.props
         && a.note == b.note
+        && a.bearing == b.bearing
 }
 
 /// `code`, wenn `taken` es nicht kennt, sonst „code-2“, „code-3“ …
@@ -3958,6 +4168,7 @@ pub(crate) fn interior_set(guid: Guid, material: MaterialId) -> LayerSet {
         props: PropSet::new(),
         note: String::new(),
         changed: 1,
+        bearing: Bearing::Core,
         layers: vec![MaterialLayer {
             material,
             thickness: 175.0,

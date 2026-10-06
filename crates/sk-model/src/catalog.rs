@@ -10,7 +10,9 @@
 use crate::attr::{Fill, Pen, Surface};
 use crate::guid::Guid;
 use crate::id::{Arena, Id};
-use crate::library::{LayerSet, LayerSetId, Material, MaterialDisplay, MaterialId, TypeCategory};
+use crate::library::{
+    Bearing, LayerSet, LayerSetId, Material, MaterialDisplay, MaterialId, TypeCategory,
+};
 use crate::model::{free_code, same_type, Model, ETICS_TYPE_GUID, EXTERIOR_TYPE_GUID};
 use crate::szo::{
     self, check_header, err, keyword, register, sorted, type_category, Line, LoadError, Record,
@@ -332,7 +334,16 @@ fn same_across(
     let shape = |l: &crate::library::MaterialLayer| (l.thickness, l.function, l.core);
     let mut x = a.clone();
     x.layers.clone_from(&b.layers);
-    same_type(&x, b)
+    x.bearing = b.bearing;
+    let bearing = match (a.bearing, b.bearing) {
+        (Bearing::Core, Bearing::Core) => true,
+        (Bearing::Depth { depth: d, strip: s }, Bearing::Depth { depth: e, strip: t }) => {
+            d == e && a_mat(s).is_some() && a_mat(s) == b_mat(t)
+        }
+        _ => false,
+    };
+    bearing
+        && same_type(&x, b)
         && a.layers.len() == b.layers.len()
         && a.layers.iter().zip(&b.layers).all(|(p, q)| {
             shape(p) == shape(q)
@@ -369,11 +380,10 @@ pub fn compare(m: &Model, lib: &Library) -> Vec<(Guid, TypeState)> {
 /// Kurzzeichen, gilt das nächste freie. `None`: nichts geändert.
 pub fn import_type(m: &mut Model, lib: &Library, g: Guid) -> Option<LayerSetId> {
     let t = lib.types.get(lib.type_by_guid(g)?)?.clone();
-    let mut layers = Vec::with_capacity(t.layers.len());
-    for l in &t.layers {
-        let x = lib.materials.get(l.material)?;
+    let material = |m: &mut Model, id: MaterialId| -> Option<MaterialId> {
+        let x = lib.materials.get(id)?;
         let found = m.materials().iter().find(|(_, y)| y.guid == x.guid);
-        let id = match found.map(|(id, _)| id) {
+        Some(match found.map(|(id, _)| id) {
             Some(id) => id,
             None => {
                 let d = import_display(m, lib, x)?;
@@ -385,15 +395,31 @@ pub fn import_type(m: &mut Model, lib: &Library, g: Guid) -> Option<LayerSetId> 
                     ..x.clone()
                 })
             }
-        };
+        })
+    };
+    let mut layers = Vec::with_capacity(t.layers.len());
+    for l in &t.layers {
+        let id = material(m, l.material)?;
         layers.push(crate::library::MaterialLayer { material: id, ..*l });
     }
+    let bearing = match t.bearing {
+        Bearing::Core => Bearing::Core,
+        Bearing::Depth { depth, strip } => Bearing::Depth {
+            depth,
+            strip: material(m, strip)?,
+        },
+    };
     let existing = m.type_by_guid(g);
     let code = free_code(&t.code, |c| {
         m.type_by_code(c)
             .is_some_and(|other| Some(other) != existing)
     });
-    let new = LayerSet { layers, code, ..t };
+    let new = LayerSet {
+        layers,
+        code,
+        bearing,
+        ..t
+    };
     match existing {
         Some(id) => m.set_layer_set(id, new).then_some(id),
         None => m.add_layer_set(new),
@@ -447,12 +473,9 @@ pub fn export_type(m: &Model, lib: &mut Library, g: Guid) -> bool {
     let Some(t) = m.type_by_guid(g).and_then(|id| m.layer_set(id)).cloned() else {
         return false;
     };
-    let mut layers = Vec::with_capacity(t.layers.len());
-    for l in &t.layers {
-        let Some(x) = m.material(l.material) else {
-            return false;
-        };
-        let id = match find(&lib.materials, x.guid, |y| y.guid) {
+    let material = |lib: &mut Library, id: MaterialId| -> Option<MaterialId> {
+        let x = m.material(id)?;
+        Some(match find(&lib.materials, x.guid, |y| y.guid) {
             Some(id) => id,
             None => {
                 let a = m.attr();
@@ -469,12 +492,8 @@ pub fn export_type(m: &Model, lib: &mut Library, g: Guid) -> bool {
                         }
                     }
                 };
-                let (Some(cut_fg), Some(cut_bg)) = (pen(lib, x.cut_fg), pen(lib, x.cut_bg)) else {
-                    return false;
-                };
-                let (Some(f), Some(s)) = (a.fill(x.cut_fill), a.surface(x.surface)) else {
-                    return false;
-                };
+                let (cut_fg, cut_bg) = (pen(lib, x.cut_fg)?, pen(lib, x.cut_bg)?);
+                let (f, s) = (a.fill(x.cut_fill)?, a.surface(x.surface)?);
                 let cut_fill = find(&lib.fills, f.guid, |q| q.guid)
                     .unwrap_or_else(|| lib.fills.insert(f.clone()));
                 let surface = find(&lib.surfaces, s.guid, |q| q.guid)
@@ -487,16 +506,34 @@ pub fn export_type(m: &Model, lib: &mut Library, g: Guid) -> bool {
                     ..x.clone()
                 })
             }
+        })
+    };
+    let mut layers = Vec::with_capacity(t.layers.len());
+    for l in &t.layers {
+        let Some(id) = material(lib, l.material) else {
+            return false;
         };
         layers.push(crate::library::MaterialLayer { material: id, ..*l });
     }
+    let bearing = match t.bearing {
+        Bearing::Core => Bearing::Core,
+        Bearing::Depth { depth, strip } => match material(lib, strip) {
+            Some(strip) => Bearing::Depth { depth, strip },
+            None => return false,
+        },
+    };
     let existing = lib.type_by_guid(g);
     let code = free_code(&t.code, |c| {
         lib.types
             .iter()
             .any(|(id, o)| o.code == c && Some(id) != existing)
     });
-    let new = LayerSet { layers, code, ..t };
+    let new = LayerSet {
+        layers,
+        code,
+        bearing,
+        ..t
+    };
     let cat = new.category;
     let id = match existing.and_then(|id| lib.types.get_mut(id).map(|o| (id, o))) {
         Some((id, old)) => {
@@ -557,7 +594,91 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::library::{LayerFunction, MatCategory, MaterialLayer};
     use crate::txn::Direction;
+
+    /// Jede Baustoffkategorie, Typart und Schichtaufgabe übersteht Schreiben
+    /// und Lesen (ein K3-Programm las „cat=air“ aus K4 nicht).
+    #[test]
+    fn alle_kategorien_im_rundlauf() {
+        let mut lib = Library::standard();
+        let vorlage = lib.materials.iter().next().unwrap().1.clone();
+        let mut mats = Vec::new();
+        for (i, c) in MatCategory::ALL.into_iter().enumerate() {
+            mats.push(lib.materials.insert(Material {
+                guid: Guid(0x5a00 + i as u128),
+                name: format!("Probe {}", c.name()),
+                category: c,
+                lambda: Some(0.5),
+                ..vorlage.clone()
+            }));
+        }
+        let [mw, sb, dae, putz, holz, luft] = mats[..] else {
+            unreachable!()
+        };
+        let lage = |material, thickness, function, core| MaterialLayer {
+            material,
+            thickness,
+            function,
+            core,
+        };
+        let vorlage = lib.types.iter().next().unwrap().1.clone();
+        for (i, cat) in TypeCategory::ALL.into_iter().enumerate() {
+            lib.types.insert(LayerSet {
+                guid: Guid(0x5b00 + i as u128),
+                name: format!("Probe {}", cat.name()),
+                code: format!("{}-P", cat.prefix()),
+                category: cat,
+                layers: vec![
+                    lage(putz, 15.0, LayerFunction::Finish, false),
+                    lage(luft, 40.0, LayerFunction::AirGap, false),
+                    lage(dae, 2.0, LayerFunction::Membrane, false),
+                    lage(dae, 100.0, LayerFunction::Insulation, false),
+                    lage(mw, 175.0, LayerFunction::Structure, true),
+                    lage(sb, 200.0, LayerFunction::Structure, true),
+                    lage(holz, 20.0, LayerFunction::Finish, false),
+                ],
+                bearing: Bearing::Depth {
+                    depth: 300.0,
+                    strip: dae,
+                },
+                ..vorlage.clone()
+            });
+        }
+        let text = write_szk(&lib);
+        for w in ["air", "concrete", "plaster", "timber", "membrane", "airgap"] {
+            assert!(text.contains(&format!("={w} ")), "{w}");
+        }
+        let back = read_szk(&text).unwrap();
+        assert_eq!(back, lib);
+        assert_eq!(write_szk(&back), text);
+    }
+
+    /// Jörns Firmenkatalog nach K4 (Startbestand aus K3, beim Start mit K4
+    /// um die Werkstypen ergänzt; Zeile 13 ist „Luft“ mit cat=air) liest
+    /// sich vollständig. Ein Programm, das ein Wort nicht kennt, nennt Wert
+    /// und Grund.
+    #[test]
+    fn katalog_aus_k4_mit_luft() {
+        let text = include_str!("../../../app/src/firmenkatalog_k4.szk");
+        assert!(text.lines().nth(12).unwrap().contains("cat=air"));
+        let lib = read_szk(text).unwrap();
+        let luft = lib
+            .materials
+            .iter()
+            .find(|(_, m)| m.name == "Luft")
+            .unwrap()
+            .1;
+        assert_eq!(luft.category, MatCategory::Air);
+        assert_eq!(lib.types.len(), 6);
+        assert_eq!(lib.stock.len(), 6);
+        let alt = text.replace("cat=air", "cat=gas");
+        let e = read_szk(&alt).unwrap_err().to_string();
+        assert!(
+            e.contains("Zeile 13") && e.contains("„cat=gas“ unbekannt") && e.contains("neueren"),
+            "{e}"
+        );
+    }
 
     #[test]
     fn startbestand_im_rundlauf() {
@@ -568,11 +689,11 @@ mod tests {
         assert!(text.contains("[default] cat=exterior"));
         assert!(!text.contains("[storey]") && !text.contains("[project]"));
         assert_eq!(read_szk(&text).unwrap(), lib);
-        assert_eq!(lib.types.len(), 6);
-        assert_eq!(lib.stock.len(), 6, "alle Werkstypen angeboten");
+        assert_eq!(lib.types.len(), 7);
+        assert_eq!(lib.stock.len(), 7, "alle Werkstypen angeboten");
         // Nur die Baustoffe der Typen und deren Darstellung (ohne Putz und
         // Stahlbeton)
-        assert_eq!(lib.materials.len(), 5);
+        assert_eq!(lib.materials.len(), 6);
         assert!(!text.contains("name=\"Putz\""));
     }
 

@@ -29,7 +29,7 @@ impl RefSide {
     }
 
     /// Bereich des Wandkörpers quer zur Linie (positiv = rechts der Zeichenrichtung).
-    fn span(self, t: f64) -> (f64, f64) {
+    pub fn span(self, t: f64) -> (f64, f64) {
         match self {
             RefSide::Left => (0.0, t),
             RefSide::Right => (-t, 0.0),
@@ -142,6 +142,14 @@ pub struct Joints {
     /// tragenden Schichten unterbrochen sind (Auflagertasche bzw. Innenwand
     /// unter und über der Decke), siehe [`WallChain::band_layers`].
     pub slab_band: Option<(f64, f64)>,
+    /// Vor der Decke liegt ein Randdämmstreifen (K5): Außenfläche und
+    /// Schnittkontur laufen über das Deckenband ohne Kante durch; die
+    /// Kanten dort zeichnet der Streifen.
+    pub seamless: bool,
+    /// Der Zug steht auf einem mit Randdämmstreifen (K5): im Schnitt keine
+    /// Linie am Fuß; über dem Streifen läuft die Wand ohne Fuge weiter, über
+    /// der Decke zeichnet die Decke ihre Kontur.
+    pub strip_below: bool,
 }
 
 impl Joints {
@@ -771,8 +779,21 @@ impl WallChain {
                         [[v0, v(a)], [v0, v(b)], [v1, v(b)], [v1, v(a)]],
                     );
                     s.edge_kind = kind;
-                    s.edge(a, b);
-                    s.edge(a + up, b + up);
+                    // Am Deckenband mit Randdämmstreifen keine Querlinie:
+                    // die Decke zeichnet ihre eigene, der Streifen keine
+                    let (mut bottom, top) = match self.joints.slab_band {
+                        Some((zb, zt)) if self.joints.seamless => {
+                            ((z0 - zt).abs() < 1e-6, (z1 - zb).abs() < 1e-6)
+                        }
+                        _ => (false, false),
+                    };
+                    bottom |= self.joints.strip_below && (z0 - self.base).abs() < 1e-6;
+                    if !bottom {
+                        s.edge(a, b);
+                    }
+                    if !top {
+                        s.edge(a + up, b + up);
+                    }
                     for p in [a, b] {
                         let o = off(p);
                         let face = if (o - lo).abs() < 1e-3 {
@@ -797,6 +818,18 @@ impl WallChain {
         }
         s.edge_kind = edge_kind::VIEW;
         s
+    }
+
+    /// Fällt die Unter- bzw. Oberkante eines Abschnitts `z` auf der Fläche
+    /// `off` weg, weil dort ein Randdämmstreifen fugenlos anschließt?
+    /// Gilt für die Außenfläche am Deckenband ([`Joints::seamless`]).
+    fn seam_at(&self, off: f64, (z0, z1): (f64, f64)) -> (bool, bool) {
+        match self.joints.slab_band {
+            Some((b, t)) if self.joints.seamless && (off - self.outer_offset()).abs() < 1e-6 => {
+                ((z0 - t).abs() < 1e-6, (z1 - b).abs() < 1e-6)
+            }
+            _ => (false, false),
+        }
     }
 
     /// Äußerste Wandflächen (kleinster und größter Versatz aller Schichten).
@@ -868,14 +901,19 @@ impl WallChain {
             s.quad(a0, a0 + up, a1 + up, a1, -nr);
             s.quad(b0, b1, b1 + up, b0 + up, nr);
             for (p, q, off) in [(a0, a1, lo), (b0, b1, hi)] {
+                let (bottom, top) = self.seam_at(off, (z0, z1));
                 s.edge_kind = kind_at(off, edge_kind::VIEW);
-                self.gapped_edge(s, i, off, (pts[i], dirs[i]), p, q);
+                if !bottom {
+                    self.gapped_edge(s, i, off, (pts[i], dirs[i]), p, q);
+                }
                 s.edge_kind = if cut {
                     cut_kind
                 } else {
                     kind_at(off, top_kind)
                 };
-                self.gapped_edge(s, i, off, (pts[i], dirs[i]), p + up, q + up);
+                if !top || cut {
+                    self.gapped_edge(s, i, off, (pts[i], dirs[i]), p + up, q + up);
+                }
             }
         }
         if !closed {

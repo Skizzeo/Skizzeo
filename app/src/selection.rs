@@ -204,6 +204,59 @@ fn floor_props(
     })
 }
 
+/// Paneel für einen Randdämmstreifen (K5): Hauptmenge Länge, keine Felder
+/// und keine Griffe, denn er folgt Wand und Decke.
+fn strip_props(
+    scene: &Scene,
+    id: ElementId,
+    mut values: Vec<(&'static str, String)>,
+) -> Option<Props> {
+    let m = scene.model();
+    let e = m.element(id)?;
+    let ElementKind::EdgeStrip { wall, .. } = e.kind else {
+        return None;
+    };
+    let q = scene.edge_strip_qto(id);
+    if let Some(q) = &q {
+        values.extend([
+            ("Länge (Achse)", format!("{} m", de(q.length / 1e3, 3))),
+            (
+                "Querschnitt",
+                format!("{} × {} cm", cm(q.width), cm(q.height)),
+            ),
+            ("Volumen", format!("{} m³", de(q.volume / 1e9, 3))),
+        ]);
+    }
+    let w = m.element(wall);
+    values.push(("Gehört zu", w.map_or("–".into(), |w| w.number.clone())));
+    values.push(("Bauabschnitt", e.seq.to_string()));
+    let mat = w
+        .and_then(|w| w.layer_set)
+        .and_then(|t| m.layer_set(t))
+        .and_then(|t| t.strip_material());
+    let mut notes = Vec::new();
+    if q.is_none() {
+        notes.push("Kein Körper: Decke oder Wand ungültig".into());
+    }
+    Some(Props {
+        values,
+        layer_set: mat
+            .and_then(|x| m.material(x))
+            .map_or(String::new(), |x| x.name.clone()),
+        layers: mat
+            .and_then(|x| {
+                let width = q.as_ref().map_or(0.0, |q| q.width);
+                solid_layer(m, x, width, q.as_ref().map(|q| q.volume))
+            })
+            .into_iter()
+            .collect(),
+        set_label: "Baustoff",
+        fields: Vec::new(),
+        notes,
+        chip: None,
+    })
+}
+
 /// Paneel für Sohlplatte und Frostschürze: Hauptmenge zuerst.
 fn foundation_props(
     scene: &Scene,
@@ -259,7 +312,9 @@ fn foundation_props(
             ]);
             (f.material, f.width, q.map(|q| q.1.volume))
         }
-        ElementKind::Wall(_) | ElementKind::Floor(_) => return None,
+        ElementKind::Wall(_) | ElementKind::Floor(_) | ElementKind::EdgeStrip { .. } => {
+            return None
+        }
     };
     values.push(("Bauabschnitt", e.seq.to_string()));
     let mut notes = m.warnings(id);
@@ -302,6 +357,7 @@ pub fn props(scene: &Scene, id: ElementId) -> Option<Props> {
     match e.kind {
         ElementKind::Wall(_) => {}
         ElementKind::Floor(_) => return floor_props(scene, id, values),
+        ElementKind::EdgeStrip { .. } => return strip_props(scene, id, values),
         _ => return foundation_props(scene, id, values),
     }
     if let Some(q) = q {
@@ -491,6 +547,23 @@ fn outline(
                 return Vec::new();
             }
             prism(&slab.outline, b, t.min(scene.plan_cut()));
+        }
+        (None, Some(ElementKind::EdgeStrip { wall, .. })) => {
+            // Umriss des Streifens, obwohl seine Kanten sonst fehlen (K5)
+            let Some((run, seg)) = m.segment_of(*wall) else {
+                return Vec::new();
+            };
+            let Some((slab, q)) = scene
+                .floor(run)
+                .and_then(|f| f.strips.get(seg).map(|q| (f, *q)))
+            else {
+                return Vec::new();
+            };
+            let (b, t) = slab.band();
+            if view == ViewKind::Plan && b >= scene.plan_cut() {
+                return Vec::new();
+            }
+            prism(&q, b, t.min(scene.plan_cut()));
         }
         (None, Some(kind)) => {
             let Some(found) = m.run_of(id).and_then(|r| scene.foundation(r)) else {

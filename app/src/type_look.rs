@@ -7,7 +7,7 @@
 //! ([`sk_render::fill_color`]).
 
 use crate::draw_table::{fallback_look, look_rows, mat_look, MatLook};
-use sk_model::{edge_kind, LayerFunction, LayerSet, MatCategory, Model, TypeCategory};
+use sk_model::{edge_kind, Bearing, LayerFunction, LayerSet, MatCategory, Model, TypeCategory};
 use sk_paint::{font::Font, Canvas, Path, Rgba};
 use sk_ui::theme::Theme;
 use sk_ui::widgets::Rect;
@@ -33,6 +33,9 @@ pub struct TypeLook {
     pub paper: Rgba,
     /// Decke im Schnittbild: erster Baustoff der Kategorie Beton.
     pub slab: MatLook,
+    /// Deckenauflager mit Randdämmstreifen (K5): Tiefe ab Innenseite (mm)
+    /// und Schraffur des Streifens.
+    pub strip: Option<(f64, MatLook)>,
 }
 
 impl TypeLook {
@@ -67,12 +70,22 @@ pub fn type_look(m: &Model, theme: &Theme, set: &LayerSet) -> TypeLook {
         .map_or(fallback, |(_, mat)| {
             mat_look(m, theme, &mat.display(), &mut notes)
         });
+    let strip = match set.bearing {
+        Bearing::Core => None,
+        Bearing::Depth { depth, strip } => Some((
+            depth,
+            m.material(strip).map_or(fallback, |mat| {
+                mat_look(m, theme, &mat.display(), &mut notes)
+            }),
+        )),
+    };
     TypeLook {
         layers,
         exterior: set.category == TypeCategory::ExteriorWall,
         ink,
         paper: theme.ui.sheet_bg,
         slab,
+        strip,
     }
 }
 
@@ -168,7 +181,8 @@ struct Geo {
 /// Sehr dünne Typen bleiben sichtbar.
 const MIN_TOTAL: f64 = 50.0;
 
-fn geo(r: Rect, exterior: bool, t: &[f64], core_from: Option<usize>) -> Geo {
+fn geo(r: Rect, look: &TypeLook, t: &[f64]) -> Geo {
+    let exterior = look.exterior;
     let total = t.iter().sum::<f64>().max(MIN_TOTAL) as f32;
     let k = (r.h / 880.0).min(0.42 * r.w / total);
     let wall_w = t.iter().sum::<f64>() as f32 * k;
@@ -185,8 +199,13 @@ fn geo(r: Rect, exterior: bool, t: &[f64], core_from: Option<usize>) -> Geo {
     }
     let slab_h = 220.0 * k;
     if exterior {
-        // Decke von der Außenseite des Kerns nach innen
-        let x0 = core_from.map_or(*xs.last().unwrap_or(&x_out), |i| xs[i]);
+        // Decke von der Außenseite des Kerns nach innen, mit Randdämmstreifen
+        // nur über die Auflagertiefe
+        let inner = *xs.last().unwrap_or(&x_out);
+        let x0 = match &look.strip {
+            Some((depth, _)) => (inner - *depth as f32 * k).max(x_out),
+            None => core_from(look).map_or(inner, |i| xs[i]),
+        };
         let y0 = r.y + 0.29 * r.h;
         Geo {
             xs,
@@ -214,7 +233,7 @@ fn core_from(look: &TypeLook) -> Option<usize> {
 
 /// Schicht unter dem Punkt im Schnittbild (Hover-Kopplung mit den Zeilen).
 pub fn section_layer_at(r: Rect, look: &TypeLook, t: &[f64], x: f32, y: f32) -> Option<usize> {
-    let g = geo(r, look.exterior, t, core_from(look));
+    let g = geo(r, look, t);
     if y < g.top || y > g.bottom {
         return None;
     }
@@ -298,7 +317,7 @@ pub fn paint_section(
     c.fill(&p, look.paper);
     let n = t.len().min(look.layers.len());
     let t = &t[..n];
-    let g = geo(r, look.exterior, t, core_from(look));
+    let g = geo(r, look, t);
     let ink = look.ink;
     let paper = look.paper;
     let lw = s.round().max(1.0);
@@ -329,6 +348,18 @@ pub fn paint_section(
     // Decke
     let (sx0, sy0, sx1, sy1) = g.slab;
     let (sx0, sy0, sx1, sy1) = (sx0.round(), sy0.round(), sx1.round(), sy1.round());
+    // Randdämmstreifen vor der Decke: Dämmschraffur ohne Linie zur Wand
+    // darüber und darunter, die Außenkontur läuft durch (F4)
+    if let Some((_, sl)) = &look.strip {
+        let x_out = g.xs[0].round();
+        shade(c, (x_out, sy0, sx0, sy1), sl, false, paper, s);
+        let w = if n > 0 && look.layers[0].core {
+            core_w
+        } else {
+            lw
+        };
+        c.fill_rect(x_out - (w * 0.5).floor(), sy0, w, sy1 - sy0, ink);
+    }
     shade_slab(c, sx0, sy0, sx1, sy1, &look.slab, s);
     c.fill_rect(sx0, sy0 - (core_w * 0.5).floor(), sx1 - sx0, core_w, ink);
     c.fill_rect(sx0, sy1 - (core_w * 0.5).floor(), sx1 - sx0, core_w, ink);
@@ -454,6 +485,44 @@ mod tests {
         assert_eq!(cm_text(360.0), "36 cm");
     }
 
+    /// AW-36,5 (K5): die Decke liegt 24 cm auf, davor der Streifen; ohne
+    /// Auflager beginnt sie an der Kernaußenseite.
+    #[test]
+    fn schnittbild_mit_randdaemmstreifen() {
+        let m = Model::new();
+        let theme = Theme::dark();
+        let r = Rect::new(0.0, 0.0, 430.0, 262.0);
+        let (_, set) = m
+            .layer_sets()
+            .iter()
+            .find(|(_, t)| t.guid == sk_model::MONO_TYPE_GUID)
+            .unwrap();
+        let look = type_look(&m, &theme, set);
+        assert_eq!(look.strip.as_ref().map(|s| s.0), Some(240.0));
+        let t = look.thicknesses();
+        let g = geo(r, &look, &t);
+        let k = (g.xs[1] - g.xs[0]) / 365.0;
+        assert!((g.slab.0 - (g.xs[1] - 240.0 * k)).abs() < 1e-3);
+        let mut c = Canvas::new(430, 262);
+        paint_section(
+            &mut c,
+            None,
+            r,
+            &look,
+            &t,
+            &SectionMarks::default(),
+            1.0,
+            &theme,
+        );
+        let set = m
+            .layer_set(m.default_type(TypeCategory::ExteriorWall))
+            .unwrap();
+        let look = type_look(&m, &theme, set);
+        assert!(look.strip.is_none());
+        let g = geo(r, &look, &look.thicknesses());
+        assert_eq!(g.slab.0, g.xs[1], "Decke ab Kern (nach 12 cm WDVS)");
+    }
+
     #[test]
     fn schnittbild_trifft_schichten() {
         let m = Model::new();
@@ -463,7 +532,7 @@ mod tests {
         let look = type_look(&m, &theme, set);
         let r = Rect::new(0.0, 0.0, 430.0, 262.0);
         let t = look.thicknesses();
-        let g = geo(r, true, &t, core_from(&look));
+        let g = geo(r, &look, &t);
         // außen links bei 0,195 der Breite
         assert!((g.xs[0] - 83.85).abs() < 0.01);
         let mid = 0.5 * (g.xs[0] + g.xs[1]);

@@ -33,24 +33,24 @@ pub use element::{
     Building, BuildingId, Category, Coupling, Element, ElementId, ElementKind, LevelEdge,
     LevelKind, LevelRef, PropSet, PropValue, RunId, Storey, StoreyId, Wall, WallRun,
 };
-pub use floor::{FloorError, FloorParams, FloorSlab};
+pub use floor::{FloorError, FloorParams, FloorSlab, StripParams};
 pub use foundation::{FootingShape, Foundation, FoundationError, FoundationParams};
 pub use guid::{Guid, GuidGen};
 pub use id::{Arena, Id};
 pub use join::{Join, JoinEnd, JoinKind};
 pub use library::{
-    material_key, type_code, LayerFunction, LayerSet, LayerSetId, MatCategory, Material,
+    material_key, type_code, Bearing, LayerFunction, LayerSet, LayerSetId, MatCategory, Material,
     MaterialDisplay, MaterialId, MaterialLayer, TypeCategory, TYPE_PROPS,
 };
 pub use model::{
     Defaults, Model, NumberError, Project, CAVITY_TYPE_GUID, ETICS_TYPE_GUID, EXTERIOR_TYPE_GUID,
     FLOOR_PART, FLOOR_THICKNESS, FOOTING_PART, FOOTING_WIDTH, INTERIOR_115_TYPE_GUID,
     INTERIOR_240_TYPE_GUID, INTERIOR_TYPE_GUID, MAX_FOUNDATION, MIN_CLEAR, MIN_FOOTING, MIN_RECESS,
-    SLAB_PART, SLAB_THICKNESS,
+    MONO_TYPE_GUID, SLAB_PART, SLAB_THICKNESS, STRIP_PART,
 };
 pub use qto::{
-    floor_qto, floor_qto_of, foundation_qto, foundation_qto_of, run_qto, wall_qto, FloorQto,
-    FootingQto, LayerQto, SlabQto, WallQto,
+    edge_strip_qto, edge_strip_qto_of, floor_qto, floor_qto_of, foundation_qto, foundation_qto_of,
+    run_qto, wall_qto, EdgeStripQto, FloorQto, FootingQto, LayerQto, SlabQto, WallQto,
 };
 pub use solid::Solid;
 pub use solid::{edge_kind, material, merge_seam, Edge, Tri};

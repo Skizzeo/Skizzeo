@@ -278,6 +278,44 @@ pub fn floor_qto_of(f: &FloorSlab) -> FloorQto {
     }
 }
 
+/// Mengen eines Randdämmstreifens (K5), Hauptmenge Länge.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgeStripQto {
+    /// Länge auf der Streifenachse (mm).
+    pub length: f64,
+    /// Grundfläche × Deckendicke (mm³).
+    pub volume: f64,
+    /// Breite ab Wandaußenseite (mm).
+    pub width: f64,
+    /// Höhe = Deckendicke (mm).
+    pub height: f64,
+}
+
+/// Mengen des Streifens auf Segment `seg` einer schon berechneten Decke.
+pub fn edge_strip_qto_of(f: &FloorSlab, seg: usize) -> Option<EdgeStripQto> {
+    let sp = f.strip?;
+    f.strips.get(seg)?;
+    Some(EdgeStripQto {
+        length: f.strip_length(seg),
+        volume: f.strip_volume(seg),
+        width: sp.width,
+        height: f.params.thickness,
+    })
+}
+
+/// Mengen eines Randdämmstreifens; `None`, wenn kein Körper entsteht.
+pub fn edge_strip_qto(model: &Model, strip: ElementId) -> Option<EdgeStripQto> {
+    let ElementKind::EdgeStrip { wall, floor } = model.element(strip)?.kind else {
+        return None;
+    };
+    let (run, seg) = model.segment_of(wall)?;
+    match model.element(floor)?.kind {
+        ElementKind::Floor(f) if f.run == run => {}
+        _ => return None,
+    }
+    edge_strip_qto_of(&model.floor(run)?.ok()?, seg)
+}
+
 // --- Mengenliste (B7) ----------------------------------------------------
 
 /// Mengen eines Bauteils in der Liste.
@@ -287,6 +325,7 @@ pub enum ElementQto {
     Slab(SlabQto),
     Footing(FootingQto),
     Floor(FloorQto),
+    Strip(EdgeStripQto),
 }
 
 impl ElementQto {
@@ -297,6 +336,7 @@ impl ElementQto {
             ElementQto::Slab(s) => s.volume,
             ElementQto::Footing(f) => f.volume,
             ElementQto::Floor(f) => f.volume,
+            ElementQto::Strip(f) => f.volume,
         }
     }
 }
@@ -372,9 +412,11 @@ fn group_rank(c: Category) -> u8 {
         Category::StripFooting => 0,
         Category::GroundSlab => 1,
         Category::ExteriorWall => 2,
-        Category::InteriorWall => 3,
-        Category::Floor => 4,
-        _ => 5,
+        // neben den Außenwänden (K5)
+        Category::EdgeInsulation => 3,
+        Category::InteriorWall => 4,
+        Category::Floor => 5,
+        _ => 6,
     }
 }
 
@@ -430,6 +472,30 @@ pub fn schedule(model: &Model) -> Schedule {
                         (Some(q), None)
                     }
                     Err(err) => (None, Some(foundation_note(*err))),
+                }
+            }
+            ElementKind::EdgeStrip { wall, .. } => {
+                let f = floors.entry(run).or_insert_with(|| match model.floor(run) {
+                    Some(r) => r,
+                    None => Err(FloorError::NotClosed),
+                });
+                let seg = model.segment_of(wall).map(|x| x.1);
+                match (f, seg) {
+                    (Ok(f), Some(seg)) => match edge_strip_qto_of(f, seg) {
+                        Some(q) => (Some(ElementQto::Strip(q)), None),
+                        None => (
+                            None,
+                            Some("Kein Körper: Decke ohne Randdämmstreifen".into()),
+                        ),
+                    },
+                    (Err(err), _) => (
+                        None,
+                        Some(format!(
+                            "Kein Körper: {}",
+                            crate::model::explain_floor(*err)
+                        )),
+                    ),
+                    _ => (None, Some("Kein Körper: Wand fehlt".into())),
                 }
             }
             ElementKind::Floor(_) => {
@@ -564,6 +630,7 @@ fn totals(rows: &[RowQto]) -> Totals {
             }
             ElementQto::Slab(s) => t.area += s.area,
             ElementQto::Footing(f) => t.length += f.length,
+            ElementQto::Strip(f) => t.length += f.length,
             ElementQto::Floor(f) => {
                 t.area += f.area;
                 t.pocket += f.bearing;
@@ -601,6 +668,11 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
             ElementKind::GroundSlab(s) => Some(s.material),
             ElementKind::StripFooting(f) => Some(f.material),
             ElementKind::Floor(f) => Some(f.material),
+            ElementKind::EdgeStrip { wall, .. } => model
+                .element(wall)
+                .and_then(|w| w.layer_set)
+                .and_then(|t| model.layer_set(t))
+                .and_then(|t| t.strip_material()),
             ElementKind::Wall(_) => None,
         });
         match (q, mat) {

@@ -1491,6 +1491,11 @@ fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut V
                     rl.cells[0] = g.category.name().into();
                     rl.cells[4] = m_vol(w.volume);
                 }
+                Some(ElementQto::Strip(f)) => {
+                    rl.cells[0] = format!("Randdämmstreifen {} × {}", cm(f.width), cm(f.height));
+                    rl.cells[2] = m_len(f.length);
+                    rl.cells[4] = m_vol(f.volume);
+                }
                 None => {
                     rl.cells[0] = g.category.name().into();
                     rl.cells[4] = "–".into();
@@ -1625,6 +1630,13 @@ pub fn csv(m: &Model, sched: &Schedule) -> Vec<u8> {
                         format!("Decke über {short} {}", cm(f.thickness)),
                         String::new(),
                         area(f.area),
+                        vol(f.volume),
+                        String::new(),
+                    ),
+                    Some(ElementQto::Strip(f)) => (
+                        format!("Randdämmstreifen {} × {}", cm(f.width), cm(f.height)),
+                        len(f.length),
+                        String::new(),
                         vol(f.volume),
                         String::new(),
                     ),

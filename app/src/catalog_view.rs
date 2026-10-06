@@ -630,7 +630,8 @@ impl Catalog {
     }
 
     fn standard_rect(&self, t: &Theme, w: &Win) -> Rect {
-        self.r(t, w, RIGHT_X, 282.0, 16.0, 16.0)
+        // Unter bis zu sechs Kennwerten (mit Randdämmstreifen, K5)
+        self.r(t, w, RIGHT_X, 312.0, 16.0, 16.0)
     }
 
     fn add_layer_rect(&self, t: &Theme, w: &Win) -> Rect {
@@ -2331,6 +2332,7 @@ fn empty_type(m: &mut Model, cat: TypeCategory) -> LayerSet {
         props: Default::default(),
         note: String::new(),
         changed: 1,
+        bearing: sk_model::Bearing::Core,
     }
 }
 
@@ -2361,6 +2363,7 @@ fn mat_look(m: &Model, t: &Theme, id: sk_model::MaterialId) -> TypeLook {
         props: Default::default(),
         note: String::new(),
         changed: 0,
+        bearing: sk_model::Bearing::Core,
     };
     type_look(m, t, &set)
 }
@@ -2953,7 +2956,20 @@ impl Catalog {
                 format!("{name} {}", cm_field(l.thickness))
             })
             .collect();
-        let rows: [(&str, String, Option<Flash>); 4] = [
+        // Deckenauflager (K5), nur Anzeige; die Zeile zum Bearbeiten
+        // gestaltet die Abteilung Einstellungen
+        let (bearing, strip) = match self.draft.bearing {
+            sk_model::Bearing::Core => ("ganzer Kern".to_string(), None),
+            sk_model::Bearing::Depth { depth, strip } => (
+                cm_text(depth),
+                Some(format!(
+                    "{} {}",
+                    cm_text(self.draft.thickness() - depth),
+                    self.work.material(strip).map_or("", |m| m.name.as_str())
+                )),
+            ),
+        };
+        let mut rows: Vec<(&str, String, Option<Flash>)> = vec![
             ("Dicke", cm_text(self.draft.thickness()), Some(Flash::Thick)),
             (
                 "U-Wert",
@@ -2981,7 +2997,11 @@ impl Catalog {
                 },
                 None,
             ),
+            ("Deckenauflager", bearing, None),
         ];
+        if let Some(v) = strip {
+            rows.push(("Randdämmstreifen", v, None));
+        }
         for (i, (k, v, fl)) in rows.iter().enumerate() {
             let r = self.r(t, w, RIGHT_X, 124.0 + i as f32 * 30.0, 300.0, 26.0);
             let kf = fl.map_or(0.0, |f| self.flash_k(f, t));
@@ -4067,7 +4087,11 @@ mod tests {
 
     /// Außenwandtypen ohne die Werkstypen aus K4.
     fn aussen(m: &Model) -> Vec<&LayerSet> {
-        let k4 = [sk_model::ETICS_TYPE_GUID, sk_model::CAVITY_TYPE_GUID];
+        let k4 = [
+            sk_model::ETICS_TYPE_GUID,
+            sk_model::CAVITY_TYPE_GUID,
+            sk_model::MONO_TYPE_GUID,
+        ];
         m.layer_sets()
             .iter()
             .filter(|(_, t)| t.category == TypeCategory::ExteriorWall && !k4.contains(&t.guid))

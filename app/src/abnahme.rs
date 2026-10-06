@@ -6764,6 +6764,7 @@ mod katalog {
             props: PropSet::new(),
             note: String::new(),
             changed: 1,
+            bearing: sk_model::Bearing::Core,
         }
     }
 
@@ -7475,8 +7476,11 @@ mod katalog {
     /// Firmenkatalogs; Model::with_seed bleibt beim Startbestand.
     #[test]
     fn a109_firmenkatalog_datei_und_neues_projekt() {
-        // Startbestand seit K4: sechs Werkstypen
-        let start = ["AW-31,5", "AW-36", "AW-49", "IW-11,5", "IW-17,5", "IW-24"].map(String::from);
+        // Startbestand seit K4: sieben Werkstypen (K5)
+        let start = [
+            "AW-31,5", "AW-36", "AW-36,5", "AW-49", "IW-11,5", "IW-17,5", "IW-24",
+        ]
+        .map(String::from);
         let d = test_dir("a109");
         // Erster Start am Vorgabeort
         let vorgabe = d.join("firmenkatalog.szk");
@@ -7590,7 +7594,7 @@ mod katalog {
     }
 }
 
-/// Abnahme K4 (Jörns Wandtypen); K5 folgt mit dem Randdämmstreifen.
+/// Abnahme K4 und K5 (Jörns Wandtypen, Randdämmstreifen).
 mod wandtypen {
     use super::*;
     // Abnahmetests K4 (Jörns Wandtypen, Luftschicht, Schürzenbreite 30–45 cm)
@@ -7610,7 +7614,10 @@ mod wandtypen {
     // Angenommene Namen stehen NUR in den Adaptern. Weicht der Bau ab, bitte
     // nur die Adapter anpassen.
 
-    use sk_model::{GuidGen, LayerFunction, LayerSet, LayerSetId, MatCategory, Model};
+    use sk_model::{
+        Bearing, Category, Element, ElementId, ElementKind, GuidGen, LayerFunction, LayerSet,
+        LayerSetId, MatCategory, Model,
+    };
 
     // ===== Adapter =====
 
@@ -7629,6 +7636,35 @@ mod wandtypen {
     /// U-Wert eines Typs (nur Anzeige); `None` bei Innenwand oder fehlendem λ.
     fn u_wert(m: &Model, id: LayerSetId) -> Option<f64> {
         m.u_value(id)
+    }
+    /// Deckenauflager des Typs: `None` = ganzer Kern, sonst (Tiefe mm, Baustoff).
+    fn auflager(t: &LayerSet) -> Option<(f64, sk_model::MaterialId)> {
+        match t.bearing {
+            Bearing::Core => None,
+            Bearing::Depth { depth, strip } => Some((depth, strip)),
+        }
+    }
+    fn setze_auflager(t: &mut LayerSet, tiefe: Option<(f64, sk_model::MaterialId)>) {
+        t.bearing = match tiefe {
+            None => Bearing::Core,
+            Some((depth, strip)) => Bearing::Depth { depth, strip },
+        };
+    }
+    /// Länge auf der Streifenachse (mm) und Volumen (mm³) eines Randdämmstreifens.
+    fn streifen_qto(s: &Scene, el: ElementId) -> (f64, f64) {
+        let q = s.edge_strip_qto(el).expect("Streifenmengen");
+        (q.length, q.volume)
+    }
+    /// (Wand, Decke) eines Randdämmstreifens.
+    fn streifen_von(m: &Model, el: ElementId) -> Option<(ElementId, ElementId)> {
+        match m.element(el)?.kind {
+            ElementKind::EdgeStrip { wall, floor } => Some((wall, floor)),
+            _ => None,
+        }
+    }
+    /// Bauteil ist ein Randdämmstreifen.
+    fn ist_streifen(e: &Element) -> bool {
+        e.category == Category::EdgeInsulation
     }
     /// Baustoffkategorie Luft.
     fn ist_luft(c: MatCategory) -> bool {
@@ -7687,6 +7723,30 @@ mod wandtypen {
     }
     fn sp_m3(s: &Scene, aw: RunId) -> f64 {
         m3(s.foundation_qto(aw).unwrap().0.volume)
+    }
+
+    /// Randdämmstreifen im Modell: (Nummer, Element), nach Nummer.
+    fn streifen(s: &Scene) -> Vec<(String, ElementId)> {
+        let mut v: Vec<_> = s
+            .model()
+            .elements()
+            .iter()
+            .filter(|(_, e)| ist_streifen(e))
+            .map(|(id, e)| (e.number.clone(), id))
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    }
+
+    fn pruefung(text: &str) -> Vec<String> {
+        match sk_model::szo::read(text, GuidGen::with_seed(1)) {
+            Err(e) => vec![e.to_string()],
+            Ok(l) => {
+                let mut v = l.model.check();
+                v.extend(l.hints);
+                v
+            }
+        }
     }
 
     // ===== Tests K4 =====
@@ -8027,5 +8087,450 @@ mod wandtypen {
         // Zweites Laden: nichts mehr zu ergänzen
         let (_, h2) = firma_laden(&p, true);
         assert!(h2.is_empty(), "{h2:?}");
+    }
+
+    // ===== Tests K5 =====
+
+    /// Prüfhaus mit AW-36,5 (monolithisch, Auflager 24 cm, Randdämmstreifen).
+    fn haus_k5(seed: u64) -> (Scene, RunId, RunId) {
+        let mut s = Scene::with_model(Model::with_seed(seed));
+        let (aw, iw) = haus_b11(&mut s);
+        auf_typ(&mut s, iw, "IW-17,5");
+        auf_typ(&mut s, aw, "AW-36,5");
+        (s, aw, iw)
+    }
+
+    /// A116 (K5, Mengen): AW-36,5 = Gasbeton 36,5, Auflager 24 cm mit Streifen
+    /// aus „Randdämmung“, U 0,24. Je Geschoss: Gasbeton netto 33,2197 m³ (wie
+    /// bei voller Tasche, kein doppelter Abzug); Decke 9,75 × 7,75 = 75,5625 m²,
+    /// 16,62375 m³; 4 Streifen (EG RD-001…004, OG RD-005…008), Achsen 9,875 /
+    /// 7,875 m (zusammen 35,50), Volumen 0,27156 / 0,21656 (zusammen 0,97625);
+    /// Decke + Streifen = 17,600 m³. SP 17,600, FS 7,0238, IW-17,5 3,3524 m³.
+    /// Streifen gehören zum Geschoss ihrer Wand (A-09), Kostengruppe 330.
+    #[test]
+    fn a116_monolithisch_mit_randdaemmstreifen() {
+        let (mut s, aw, iw) = haus_k5(116);
+        let m = s.model();
+        let t = m.layer_set(typ(m, "AW-36,5")).unwrap();
+        assert_eq!(t.thickness(), 365.0);
+        let (tiefe, mat) = auflager(t).expect("Auflager mit Streifen");
+        assert_eq!(tiefe, 240.0);
+        let rd = m.material(mat).unwrap();
+        assert_eq!(
+            (rd.name.as_str(), rd.category, rd.lambda),
+            ("Randdämmung", MatCategory::Insulation, Some(0.035))
+        );
+        assert_eq!(
+            u_wert(m, typ(m, "AW-36,5")).map(|u| (u * 100.0).round() / 100.0),
+            Some(0.24)
+        );
+        let og = og_zug(&s, aw);
+        let st = streifen(&s);
+        assert_eq!(
+            st.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(),
+            ["RD-001", "RD-002", "RD-003", "RD-004", "RD-005", "RD-006", "RD-007", "RD-008"]
+        );
+        for run in [aw, og] {
+            assert_eq!(baustoff_m3(&s, run, "Gasbeton"), 33.2197);
+            let (f, v, _) = decke_mengen(&s, run);
+            assert_eq!(f, 75.5625);
+            assert!((v - 16.62375).abs() < 1e-3, "Decke {v}");
+            // Streifen dieses Zugs
+            let walls: Vec<ElementId> = (0..4).map(|i| m.wall_at(run, i).unwrap()).collect();
+            let mut laengen = Vec::new();
+            let mut vol = 0.0;
+            for (_, el) in &st {
+                let (w, fl) = streifen_von(m, *el).expect("Verweise");
+                if !walls.contains(&w) {
+                    continue;
+                }
+                assert_eq!(Some(fl), decke(&s, run), "Decke des Zugs");
+                assert_eq!(
+                    m.element(*el).unwrap().storey,
+                    m.element(w).unwrap().storey,
+                    "A-09"
+                );
+                let (l, v) = streifen_qto(&s, *el);
+                laengen.push((l / 1e3 * 1e3).round() / 1e3);
+                vol += v / 1e9;
+            }
+            laengen.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            assert_eq!(laengen, [7.875, 7.875, 9.875, 9.875]);
+            assert!((vol - 0.97625).abs() < 1e-4, "Streifen {vol}");
+            assert!(
+                (v + vol - 17.6).abs() < 1e-3,
+                "Decke + Streifen = volle Tasche"
+            );
+        }
+        assert_eq!((sp_m3(&s, aw), fs_m3(&s, aw)), (17.6, 7.0238));
+        assert_eq!(r4(wall_m3(&s, iw, 0)), 3.3524);
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        // Mengenliste: Gruppe Randdämmstreifen, ohne zusätzlichen Gasbeton-Abzug
+        let liste = s.schedule().clone();
+        let csv = crate::schedule_view::csv(s.model(), &liste);
+        let text = String::from_utf8_lossy(&csv);
+        assert!(text.contains("Randdämmstreifen"), "Gruppe in der Liste");
+        assert!(text.contains("RD-001") && text.contains("RD-008"));
+    }
+
+    /// A117 (K5, Typwechsel und Gummiband): AW-36 → AW-36,5 legt die 8 Streifen
+    /// in einem Rückgängig-Schritt an, zurück auf AW-36 entfernt sie;
+    /// Rückgängig bringt sie mit denselben Guids und Nummern. Gummiband an einer
+    /// Wand: dieselben Streifen (Guid), nur Länge und Volumen ändern sich.
+    #[test]
+    fn a117_streifen_folgen_typ_und_gummiband() {
+        let mut s = Scene::with_model(Model::with_seed(117));
+        let (aw, _iw) = haus_b11(&mut s);
+        auf_typ(&mut s, aw, "AW-36");
+        assert!(streifen(&s).is_empty());
+        let k5 = typ(s.model(), "AW-36,5");
+        assert!(zugtyp(&mut s, aw, k5));
+        assert_eq!(s.undo_label(), Some("Wandtyp geändert"));
+        let guids = |s: &Scene| -> Vec<(String, sk_model::Guid)> {
+            streifen(s)
+                .into_iter()
+                .map(|(n, id)| (n, s.model().element(id).unwrap().guid))
+                .collect()
+        };
+        let mit = guids(&s);
+        assert_eq!(mit.len(), 8);
+        assert!(s.undo());
+        assert!(streifen(&s).is_empty(), "ein Schritt");
+        assert!(s.redo());
+        assert_eq!(guids(&s), mit, "gleiche Guids und Nummern");
+        let k4 = typ(s.model(), "AW-36");
+        assert!(zugtyp(&mut s, aw, k4));
+        assert!(streifen(&s).is_empty(), "zurück auf AW-36");
+        assert!(s.undo());
+        assert_eq!(guids(&s), mit);
+        // Gummiband an der Wand y = 8 m: +1 m
+        let laenge = |s: &Scene| -> f64 {
+            streifen(s)
+                .iter()
+                .map(|(_, el)| streifen_qto(s, *el).0)
+                .sum::<f64>()
+        };
+        let vorher = laenge(&s);
+        ziehen_am_fuss(&mut s, 0.0, 1000.0);
+        assert_eq!(guids(&s), mit, "dieselben Bauteile");
+        assert!(laenge(&s) > vorher, "länger");
+        assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+    }
+
+    /// A118 (K5, Datei und Prüfregeln 21–22): Rundlauf stabil; Auflager tiefer
+    /// als die Wand oder 0 wird abgelehnt oder gemeldet (21); ein Streifen, der
+    /// auf eine fremde Decke zeigt, oder ein doppelter Streifen schlägt an (22).
+    #[test]
+    fn a118_datei_und_pruefregeln_21_22() {
+        let (s, aw, _) = haus_k5(118);
+        let text = sk_model::szo::write(s.model());
+        let m2 = sk_model::szo::read(&text, GuidGen::with_seed(1))
+            .unwrap()
+            .model;
+        assert_eq!(sk_model::szo::write(&m2), text, "Rundlauf");
+        assert!(pruefung(&text).is_empty(), "{:?}", pruefung(&text));
+        // Regel 21
+        let id = typ(s.model(), "AW-36,5");
+        let t = s.model().layer_set(id).unwrap().clone();
+        let (_, mat) = auflager(&t).unwrap();
+        for tiefe in [365.0, 400.0, 0.0] {
+            let mut m = s.model().clone();
+            m.allow_unstepped();
+            let mut t2 = t.clone();
+            setze_auflager(&mut t2, Some((tiefe, mat)));
+            let abgelehnt = !m.set_layer_set(id, t2);
+            assert!(abgelehnt || !m.check().is_empty(), "Auflager {tiefe}");
+        }
+        // Regel 22: Streifen zeigt auf die OG-Decke statt auf die EG-Decke
+        let og = og_zug(&s, aw);
+        let g = |el: ElementId| s.model().element(el).unwrap().guid.to_string();
+        let (de_eg, de_og) = (g(decke(&s, aw).unwrap()), g(decke(&s, og).unwrap()));
+        let erster = streifen(&s)[0].1;
+        let sg = g(erster);
+        let mut falsch = Vec::new();
+        let mut doppelt = Vec::new();
+        for l in text.lines() {
+            if l.contains(&format!("guid={sg}")) {
+                assert!(
+                    l.contains(&de_eg),
+                    "Streifen verweist auf die EG-Decke: {l}"
+                );
+                falsch.push(l.replacen(&de_eg, &de_og, 1));
+                doppelt.push(l.to_string());
+                doppelt.push(l.replacen(&sg, "0000000000000000000001", 1));
+            } else {
+                falsch.push(l.to_string());
+                doppelt.push(l.to_string());
+            }
+        }
+        for (name, t) in [("fremde Decke", falsch), ("doppelter Streifen", doppelt)] {
+            let t = t.join("\n") + "\n";
+            assert_ne!(t, text);
+            assert!(!pruefung(&t).is_empty(), "{name} schlägt nicht an");
+        }
+    }
+}
+
+/// Abnahme K5-Nachtrag: λ in alten Dateien; gelöschte Werkstypen.
+mod lambda_alt {
+    use super::*;
+    // Abnahmetests K5-Nachtrag „λ in alten Dateien ergänzen“ (BIM, Koordinator
+    // 19:06) und K4 „gelöschte Werkstypen kommen nicht wieder“ ([stock] set=…).
+    // Paket: bim/paket-k4-k5-wandtypen.md, Nachtrag zu K5 („Fertig, wenn“).
+    // Spezifikation: test/abnahme-wandtypen.md (A122, A123).
+    //
+    // Einbau: als `mod lambda_alt { use super::*; … }` ans Ende von
+    // app/src/abnahme.rs. Nutzt aus abnahme.rs: test_dir und die Prüfhaus-Datei
+    // abnahme_haus_v3.szo (gespeichert mit 1f0763e, Version 3, alle λ = „-“).
+    // Keine angenommenen Namen: alles läuft über document::load, Document,
+    // Model::u_value, catalog::{read_szk, write_szk} und Company::load.
+
+    use sk_model::catalog::{read_szk, write_szk};
+    use sk_model::{LayerSetId, Model};
+
+    const HAUS_V3: &str = include_str!("abnahme_haus_v3.szo");
+
+    // ===== Hilfen =====
+
+    /// Öffnet `text` als Datei wie „Datei → Öffnen“ (main.rs open_path):
+    /// laden, Szene, Dokument mit dem Stand nach dem Laden.
+    fn oeffnen(name: &str, text: &str) -> (Scene, crate::document::Document, Vec<String>) {
+        let d = test_dir(name);
+        let p = d.join("haus.szo");
+        std::fs::write(&p, text).unwrap();
+        let l = crate::document::load(&p).expect("öffnet");
+        let s = Scene::with_model(l.model);
+        let doc = crate::document::Document::opened(p, s.model().revision());
+        (s, doc, l.hints)
+    }
+
+    fn lambda(m: &Model, name: &str) -> Option<f64> {
+        m.materials()
+            .iter()
+            .find(|(_, x)| x.name == name)
+            .unwrap_or_else(|| panic!("Baustoff {name} fehlt"))
+            .1
+            .lambda
+    }
+
+    fn typ(m: &Model, code: &str) -> LayerSetId {
+        m.layer_sets()
+            .iter()
+            .find(|(_, t)| t.code == code)
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| panic!("Typ {code} fehlt"))
+    }
+
+    /// U-Wert auf zwei Stellen, wie im Katalog angezeigt.
+    fn u2(m: &Model, code: &str) -> Option<f64> {
+        m.u_value(typ(m, code)).map(|u| (u * 100.0).round() / 100.0)
+    }
+
+    /// Ersetzt in der Baustoffzeile `name="…"` das λ-Feld durch `neu`
+    /// (bzw. benennt um, wenn `neuer_name` gesetzt ist).
+    fn baustoff_zeile(
+        text: &str,
+        name: &str,
+        lambda: Option<&str>,
+        neuer_name: Option<&str>,
+    ) -> String {
+        let key = format!("name=\"{name}\"");
+        let mut n = 0;
+        let out: Vec<String> = text
+            .lines()
+            .map(|l| {
+                if !(l.starts_with("[material]") && l.contains(&key)) {
+                    return l.to_string();
+                }
+                n += 1;
+                let mut l = l.to_string();
+                if let Some(v) = lambda {
+                    l = l
+                        .split(' ')
+                        .map(|t| {
+                            if t.starts_with("lambda=") {
+                                format!("lambda={v}")
+                            } else {
+                                t.to_string()
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                }
+                if let Some(nn) = neuer_name {
+                    l = l.replacen(&key, &format!("name=\"{nn}\""), 1);
+                }
+                l
+            })
+            .collect();
+        assert_eq!(n, 1, "Baustoff {name} genau einmal in der Datei");
+        out.join("\n") + "\n"
+    }
+
+    /// Alle λ-Felder der Baustoffzeilen auf „-“.
+    fn ohne_lambda(text: &str) -> String {
+        text.lines()
+            .map(|l| {
+                if !l.starts_with("[material]") {
+                    return l.to_string();
+                }
+                l.split(' ')
+                    .map(|t| {
+                        if t.starts_with("lambda=") {
+                            "lambda=-".to_string()
+                        } else {
+                            t.to_string()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    }
+
+    // ===== Tests =====
+
+    /// A122 (K5-Nachtrag „λ in alten Dateien“): Das Prüfhaus v3 (alle λ = „-“,
+    /// zeitbasierte Baustoff-Guids) öffnet mit Gasbeton 0,09, Dämmung (WDVS)
+    /// 0,035, Stahlbeton 2,3, Putz 0,87 (Treffer über Name und Kategorie). U von
+    /// AW-31,5 = 0,16. Die Datei gilt als unverändert: kein •, kein
+    /// Rückgängig-Schritt, kein Hinweis. Guids bleiben. Zweimal öffnen ergibt
+    /// dasselbe Modell (Regel 13), beim Speichern steht λ in der Datei.
+    /// Ein vorhandenes λ 0,12 bleibt 0,12; ein umbenannter „Gasbeton (alt)“
+    /// bleibt ohne λ. Treffer über die Guid: ein Werksbaustoff mit fremdem Namen
+    /// bekommt sein λ trotzdem.
+    #[test]
+    fn a122_lambda_in_alten_dateien() {
+        assert_eq!(HAUS_V3.matches("lambda=-").count(), 4, "Prüfhaus ohne λ");
+        let (s, doc, hints) = oeffnen("a122", HAUS_V3);
+        let m = s.model();
+        for (n, l) in [
+            ("Gasbeton", 0.09),
+            ("Dämmung (WDVS)", 0.035),
+            ("Stahlbeton", 2.3),
+            ("Putz", 0.87),
+        ] {
+            assert_eq!(lambda(m, n), Some(l), "λ {n}");
+        }
+        assert_eq!(
+            u2(m, "AW-31,5"),
+            Some(0.16),
+            "0,13 + 0,14/0,035 + 0,175/0,09 + 0,04"
+        );
+        assert!(!doc.is_dirty(m), "Titel ohne •");
+        assert_eq!(s.undo_label(), None, "kein Rückgängig-Schritt");
+        assert!(hints.is_empty(), "kein Hinweis: {hints:?}");
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        // Guids der Baustoffe wie in der Datei (Regel 19)
+        for l in HAUS_V3.lines().filter(|l| l.starts_with("[material]")) {
+            let g = l.split(' ').find_map(|t| t.strip_prefix("guid=")).unwrap();
+            assert!(
+                m.materials().iter().any(|(_, x)| x.guid.to_string() == g),
+                "Guid {g} unverändert"
+            );
+        }
+        // Immer gleich ergänzt, beim Speichern steht λ in der Datei
+        let text = sk_model::szo::write(m);
+        let (s2, _, _) = oeffnen("a122b", HAUS_V3);
+        assert_eq!(
+            sk_model::szo::write(s2.model()),
+            text,
+            "zweimal öffnen = dasselbe"
+        );
+        assert!(!text.contains("lambda=-"), "λ gespeichert");
+        let (s3, doc3, _) = oeffnen("a122c", &text);
+        assert_eq!(sk_model::szo::write(s3.model()), text, "Rundlauf");
+        assert!(!doc3.is_dirty(s3.model()));
+
+        // Vorhandenes λ wird nie überschrieben
+        let eigen = baustoff_zeile(HAUS_V3, "Gasbeton", Some("0.12"), None);
+        let (s, doc, _) = oeffnen("a122d", &eigen);
+        assert_eq!(lambda(s.model(), "Gasbeton"), Some(0.12));
+        assert_eq!(lambda(s.model(), "Dämmung (WDVS)"), Some(0.035));
+        assert_eq!(u2(s.model(), "AW-31,5"), Some(0.18), "mit λ 0,12");
+        assert!(!doc.is_dirty(s.model()));
+
+        // Umbenannt: kein Treffer, λ bleibt leer, U zeigt „–“
+        let alt = baustoff_zeile(HAUS_V3, "Gasbeton", None, Some("Gasbeton (alt)"));
+        let (s, _, _) = oeffnen("a122e", &alt);
+        assert_eq!(lambda(s.model(), "Gasbeton (alt)"), None);
+        assert_eq!(lambda(s.model(), "Dämmung (WDVS)"), Some(0.035));
+        assert_eq!(u2(s.model(), "AW-31,5"), None);
+
+        // Treffer über die Guid: aktuelles Projekt ohne λ, Gasbeton umbenannt
+        let werk = Model::new();
+        let neu = baustoff_zeile(
+            &ohne_lambda(&sk_model::szo::write(&werk)),
+            "Gasbeton",
+            None,
+            Some("Porenbeton Büro"),
+        );
+        let (s, doc, _) = oeffnen("a122f", &neu);
+        for (_, w) in werk.materials().iter() {
+            let x = s
+                .model()
+                .materials()
+                .iter()
+                .find(|(_, x)| x.guid == w.guid)
+                .unwrap()
+                .1;
+            assert_eq!(x.lambda, w.lambda, "λ über die Guid: {}", w.name);
+        }
+        assert_eq!(lambda(s.model(), "Porenbeton Büro"), Some(0.09));
+        assert!(!doc.is_dirty(s.model()));
+    }
+
+    /// A123 (K4, Firmenkatalog): Ein Werkstyp, den das Büro aus dem Firmenkatalog
+    /// gelöscht hat, kommt beim nächsten Laden nicht wieder (Vermerk
+    /// [stock] set=…). Ein vom Büro gewählter Standard (AW-31,5) bleibt. Kein
+    /// Hinweis.
+    #[test]
+    fn a123_geloeschter_werkstyp_kommt_nicht_wieder() {
+        let d = test_dir("a123");
+        let p = d.join("firmenkatalog.szk");
+        let (_, h) = crate::catalog::Company::load(&p, true);
+        assert!(h.is_empty(), "{h:?}");
+        let text = std::fs::read_to_string(&p).expect("am Vorgabeort angelegt");
+        assert_eq!(
+            text.matches("[stock]").count(),
+            7,
+            "alle Werkstypen vermerkt (seit K5 mit AW-36,5)"
+        );
+        let mut lib = read_szk(&text).unwrap();
+        let aw49 = lib
+            .types
+            .iter()
+            .find(|(_, t)| t.code == "AW-49")
+            .map(|(id, _)| id)
+            .unwrap();
+        lib.types.remove(aw49);
+        lib.default_exterior = lib
+            .types
+            .iter()
+            .find(|(_, t)| t.code == "AW-31,5")
+            .map(|(id, _)| id);
+        std::fs::write(&p, write_szk(&lib)).unwrap();
+        for runde in 0..2 {
+            let (c, h) = crate::catalog::Company::load(&p, true);
+            assert!(h.is_empty(), "Runde {runde}: kein Hinweis {h:?}");
+            let neu = Model::from_library(c.library());
+            let codes: Vec<String> = neu
+                .layer_sets()
+                .iter()
+                .map(|(_, t)| t.code.clone())
+                .collect();
+            assert!(
+                !codes.iter().any(|c| c == "AW-49"),
+                "bleibt gelöscht: {codes:?}"
+            );
+            assert_eq!(codes.len(), 6);
+            assert_eq!(
+                neu.layer_set(neu.defaults().exterior_wall).unwrap().code,
+                "AW-31,5",
+                "Standard des Büros bleibt"
+            );
+        }
     }
 }

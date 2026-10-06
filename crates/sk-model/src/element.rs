@@ -39,10 +39,12 @@ pub enum Category {
     Space,
     /// Frostschürze: umlaufendes Streifenfundament unter der Sohlplatte.
     StripFooting,
+    /// Randdämmstreifen vor dem Deckenauflager einer Außenwand (K5).
+    EdgeInsulation,
 }
 
 impl Category {
-    pub const ALL: [Category; 10] = [
+    pub const ALL: [Category; 11] = [
         Category::ExteriorWall,
         Category::InteriorWall,
         Category::Floor,
@@ -53,6 +55,7 @@ impl Category {
         Category::Opening,
         Category::Space,
         Category::StripFooting,
+        Category::EdgeInsulation,
     ];
 
     /// Platz in [`Category::ALL`].
@@ -72,6 +75,7 @@ impl Category {
             Category::Opening => "Öffnung",
             Category::Space => "Raum",
             Category::StripFooting => "Frostschürze",
+            Category::EdgeInsulation => "Randdämmstreifen",
         }
     }
 
@@ -88,6 +92,7 @@ impl Category {
             Category::Opening => "OE",
             Category::Space => "R",
             Category::StripFooting => "FS",
+            Category::EdgeInsulation => "RD",
         }
     }
 
@@ -103,13 +108,15 @@ impl Category {
             Category::Opening => "IfcOpeningElement",
             Category::Space => "IfcSpace",
             Category::StripFooting => "IfcFooting.STRIP_FOOTING",
+            // über IfcRelAggregates Teil der Wand
+            Category::EdgeInsulation => "IfcBuildingElementPart.INSULATION",
         }
     }
 
     /// Kostengruppe nach DIN 276 (Räume und Öffnungen haben keine).
     pub fn din276(self) -> Option<u16> {
         match self {
-            Category::ExteriorWall | Category::Window => Some(330),
+            Category::ExteriorWall | Category::Window | Category::EdgeInsulation => Some(330),
             Category::InteriorWall | Category::Door => Some(340),
             Category::Floor => Some(350),
             Category::GroundSlab | Category::StripFooting => Some(322),
@@ -160,6 +167,12 @@ pub enum ElementKind {
     GroundSlab(GroundSlab),
     StripFooting(StripFooting),
     Floor(Floor),
+    /// Randdämmstreifen: nur Verweise auf Wand und Decke; Maße, Baustoff
+    /// und Lage folgen aus Wandtyp und Decke (Regel 4).
+    EdgeStrip {
+        wall: ElementId,
+        floor: ElementId,
+    },
 }
 
 /// Geschossdecke über einem geschlossenen Außenwandzug (IFC: IfcSlab FLOOR).
