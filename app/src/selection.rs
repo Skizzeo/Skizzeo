@@ -644,6 +644,41 @@ mod tests {
     use super::*;
     use sk_model::{Model, RefSide, WallChain};
 
+    /// Ungültiges Deckenauflager aus einer Datei (Regel 21): Die Wand nennt
+    /// in den Eigenschaften den Grund, warum die Randdämmstreifen fehlen.
+    #[test]
+    fn eigenschaften_nennen_ungueltiges_auflager() {
+        let mut m = Model::with_seed(21);
+        m.allow_unstepped();
+        let b = m.add_building(2);
+        let pts = [
+            sk_math::vec3(0.0, 0.0, 0.0),
+            sk_math::vec3(0.0, 8000.0, 0.0),
+            sk_math::vec3(10000.0, 8000.0, 0.0),
+            sk_math::vec3(10000.0, 0.0, 0.0),
+        ];
+        let aw = m.build_from_polygon(b, &pts).unwrap();
+        let mono = m.type_by_guid(sk_model::MONO_TYPE_GUID).unwrap();
+        assert!(m.set_run_type(aw, mono));
+        let wand = |m: &Model| {
+            m.elements()
+                .iter()
+                .find(|(_, e)| e.category == sk_model::Category::ExteriorWall)
+                .map(|(id, _)| id)
+                .unwrap()
+        };
+        let ok = Scene::with_model(m.clone());
+        assert!(props(&ok, wand(&m)).unwrap().notes.is_empty());
+        let text = sk_model::szo::write(&m).replacen("bearing=240", "bearing=400", 1);
+        let l = sk_model::szo::read(&text, sk_model::GuidGen::with_seed(1)).unwrap();
+        let w = wand(&l.model);
+        let s = Scene::with_model(l.model);
+        assert_eq!(
+            props(&s, w).unwrap().notes,
+            ["Deckenauflager des Typs ungültig"]
+        );
+    }
+
     #[test]
     fn deutsches_zahlenformat() {
         assert_eq!(de(1608.4, 0), "1.608");
