@@ -8,7 +8,10 @@
 
 use crate::ui::ViewKind;
 use sk_math::{vec3, Vec3};
-use sk_model::{edge_kind, material, Category, ElementId, Hatch, Model, RunId, Solid, WallChain};
+use sk_model::{
+    edge_kind, material, run_qto, Category, ElementId, Hatch, Model, RunId, Solid, WallChain,
+    WallQto,
+};
 use sk_paint::Rgba;
 use sk_render::{pattern, MeshData};
 use sk_ui::theme;
@@ -35,6 +38,8 @@ struct RunCache {
     foot: Vec<(Vec3, Vec3)>,
     /// Umschließender Quader des Wandfußes (Vortest beim Greifen).
     foot_bounds: Option<Aabb>,
+    /// Mengen je Segment; leer, solange der Zug gezogen wird.
+    qto: Vec<WallQto>,
     /// Wie oft dieser Zug berechnet wurde (für Tests und Messung).
     builds: u32,
 }
@@ -56,6 +61,7 @@ impl RunCache {
             solid,
             chain,
             section: None,
+            qto: Vec::new(),
             builds,
         }
     }
@@ -95,6 +101,8 @@ pub struct Scene {
     /// Wandzüge, die neu berechnet werden müssen.
     dirty: Vec<RunId>,
     all_dirty: bool,
+    /// Wandzüge, deren Mengen nach einer Live-Änderung noch fehlen.
+    unsettled: Vec<RunId>,
     bounds: Option<Aabb>,
 }
 
@@ -146,9 +154,10 @@ impl Scene {
             cache: Vec::new(),
             dirty: Vec::new(),
             all_dirty: true,
+            unsettled: Vec::new(),
             bounds: None,
         };
-        s.rebuild_dirty();
+        s.rebuild_dirty(false);
         s
     }
 
@@ -156,8 +165,9 @@ impl Scene {
         &self.model
     }
 
-    /// Rechnet die markierten Wandzüge neu und entfernt gelöschte.
-    fn rebuild_dirty(&mut self) {
+    /// Rechnet die markierten Wandzüge neu und entfernt gelöschte. `live`: nur
+    /// die Körper, die Mengen erst bei [`Scene::settle`].
+    fn rebuild_dirty(&mut self, live: bool) {
         if self.all_dirty {
             self.all_dirty = false;
             self.dirty.clear();
@@ -170,12 +180,12 @@ impl Scene {
             let ids: Vec<RunId> = self.model.runs().ids().collect();
             for id in ids {
                 let b = builds.get(id.index() as usize).copied().unwrap_or(0);
-                self.store(id, b);
+                self.store(id, b, false);
             }
         } else {
             for id in std::mem::take(&mut self.dirty) {
                 let b = self.cached(id).map_or(0, |c| c.builds);
-                self.store(id, b);
+                self.store(id, b, live);
             }
         }
         self.bounds = self
@@ -186,13 +196,24 @@ impl Scene {
     }
 
     /// Berechnet einen Wandzug neu (oder entfernt ihn, wenn es ihn nicht mehr gibt).
-    fn store(&mut self, id: RunId, builds: u32) {
+    fn store(&mut self, id: RunId, builds: u32, live: bool) {
         let slot = id.index() as usize;
         if self.cache.len() <= slot {
             self.cache.resize_with(slot + 1, || None);
         }
         match self.model.chain(id) {
-            Some(c) => self.cache[slot] = Some(RunCache::new(id, c, builds + 1)),
+            Some(c) => {
+                let mut rc = RunCache::new(id, c, builds + 1);
+                if live {
+                    if !self.unsettled.contains(&id) {
+                        self.unsettled.push(id);
+                    }
+                } else {
+                    rc.qto = run_qto(&self.model, id);
+                    self.unsettled.retain(|&u| u != id);
+                }
+                self.cache[slot] = Some(rc);
+            }
             // Gelöscht: Platz nur räumen, wenn kein neuerer Zug darin steht
             None => {
                 if self.cache[slot].as_ref().is_some_and(|c| c.id == id) {
@@ -210,6 +231,27 @@ impl Scene {
 
     fn mark_all(&mut self) {
         self.all_dirty = true;
+        self.unsettled.clear();
+    }
+
+    /// Rechnet die Mengen nach, die beim Live-Ziehen ausgelassen wurden.
+    pub fn settle(&mut self) {
+        for id in std::mem::take(&mut self.unsettled) {
+            if self.model.run(id).is_some() {
+                let q = run_qto(&self.model, id);
+                if let Some(Some(c)) = self.cache.get_mut(id.index() as usize) {
+                    if c.id == id {
+                        c.qto = q;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Mengen einer Wand (fehlen, solange ihr Wandzug gezogen wird).
+    pub fn wall_qto(&self, wall: ElementId) -> Option<&WallQto> {
+        let (run, seg) = self.model.segment_of(wall)?;
+        self.cached(run)?.qto.get(seg)
     }
 
     fn cached(&self, id: RunId) -> Option<&RunCache> {
@@ -246,6 +288,7 @@ impl Scene {
     /// Merkt den Stand `before` als Schritt für „Rückgängig“, falls sich seitdem
     /// etwas geändert hat.
     pub fn record(&mut self, before: Model) {
+        self.settle();
         if before.revision() != self.model.revision() {
             self.undo.push(before);
             self.redo.clear();
@@ -274,7 +317,7 @@ impl Scene {
         if let Some(id) = run {
             self.mark(id);
         }
-        self.rebuild_dirty();
+        self.rebuild_dirty(false);
         run
     }
 
@@ -283,7 +326,7 @@ impl Scene {
     pub fn set_run_points(&mut self, run: RunId, points: &[Vec3]) {
         if self.model.set_run_points(run, points) {
             self.mark(run);
-            self.rebuild_dirty();
+            self.rebuild_dirty(true);
         }
     }
 
@@ -291,7 +334,7 @@ impl Scene {
     pub fn restore(&mut self, before: Model) {
         self.model.restore(before);
         self.mark_all();
-        self.rebuild_dirty();
+        self.rebuild_dirty(false);
     }
 
     pub fn undo(&mut self) -> bool {
@@ -300,7 +343,7 @@ impl Scene {
                 self.redo.push(self.model.clone());
                 self.model.restore(prev);
                 self.mark_all();
-                self.rebuild_dirty();
+                self.rebuild_dirty(false);
                 true
             }
             None => false,
@@ -313,7 +356,7 @@ impl Scene {
                 self.undo.push(self.model.clone());
                 self.model.restore(next);
                 self.mark_all();
-                self.rebuild_dirty();
+                self.rebuild_dirty(false);
                 true
             }
             None => false,
@@ -378,6 +421,34 @@ impl Scene {
         }
         let (t, run, seg) = best?;
         Some((t, self.model.wall_at(run, seg as usize)?))
+    }
+
+    /// Bauteil unter einem Strahl, so wie die Ansicht es zeigt (Grundriss:
+    /// waagerecht geschnitten, Schnitt: nur hinter der Ebene).
+    pub fn pick(
+        &mut self,
+        view: ViewKind,
+        section: Option<Plane>,
+        origin: Vec3,
+        dir: Vec3,
+    ) -> Option<ElementId> {
+        let mut best: Option<(f64, RunId, u32)> = None;
+        for c in self.cache.iter_mut().flatten() {
+            if !c.bounds.is_some_and(|b| ray_hits_box(origin, dir, b)) {
+                continue;
+            }
+            let id = c.id;
+            if let Some((t, seg)) = c
+                .view_solid(view, section)
+                .and_then(|s| s.raycast_elem(origin, dir))
+            {
+                if best.is_none_or(|b| t < b.0) {
+                    best = Some((t, id, seg));
+                }
+            }
+        }
+        let (_, run, seg) = best?;
+        self.model.wall_at(run, seg as usize)
     }
 
     /// Mitte des umschließenden Quaders aller Flächen.

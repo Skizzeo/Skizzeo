@@ -1,5 +1,6 @@
 //! Paneele über der 3D-Ansicht: links „Werkzeuge“ mit dem Knopf „Gebäude“,
-//! rechts „Ansichten“ (3D, Grundriss, Schnitt und vier Ansichten).
+//! rechts „Ansichten“ (3D, Grundriss, Schnitt und vier Ansichten) und darunter,
+//! solange ein Bauteil gewählt ist, „Eigenschaften“.
 
 use sk_model::RefSide;
 use sk_paint::{Canvas, Rgba};
@@ -30,6 +31,18 @@ pub enum Id {
 pub enum Panel {
     Tools,
     Views,
+    Props,
+}
+
+/// Inhalt des Paneels „Eigenschaften“ (nur lesend).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Props {
+    /// Zeilen aus Bezeichnung und Wert, z. B. („Länge“, „10,00 m“).
+    pub values: Vec<(&'static str, String)>,
+    /// Name des Aufbaus.
+    pub layer_set: String,
+    /// Je Schicht: Farbfeld, „14 cm Dämmung (WDVS)“ und „3,796 m³ · 76 kg“.
+    pub layers: Vec<(Rgba, String, String)>,
 }
 
 /// Abstand der Paneele vom Rand und Innenabstand (dip).
@@ -59,6 +72,8 @@ pub struct Ui {
     pub ortho: bool,
     /// Schichten der Außenwand: Farbfeld und Text (aus der Bibliothek).
     pub wall_layers: Vec<(Rgba, String)>,
+    /// Eigenschaften des gewählten Bauteils; ohne Auswahl kein Paneel.
+    pub props: Option<Props>,
 }
 
 /// Ergebnis eines Ereignisses.
@@ -78,6 +93,12 @@ enum Row {
     Button(Id, &'static str),
     Label(&'static str),
     Layer(Rgba, String),
+    /// Bezeichnung links, Wert rechtsbündig.
+    Value(&'static str, String),
+    /// Blasser Text, eingerückt wie der Text einer Schichtzeile.
+    Detail(String),
+    /// Blasser Text über die ganze Breite.
+    Text(String),
     Segments([(Id, &'static str); 3]),
     Pair([(Id, &'static str); 2]),
     Separator,
@@ -129,6 +150,23 @@ fn view_rows() -> Vec<Row> {
     ]
 }
 
+fn props_rows(p: &Props) -> Vec<Row> {
+    let mut rows = vec![Row::Title("Eigenschaften")];
+    rows.extend(p.values.iter().map(|(k, v)| Row::Value(k, v.clone())));
+    rows.extend([
+        Row::Separator,
+        Row::Label("Aufbau"),
+        Row::Text(p.layer_set.clone()),
+    ]);
+    for (c, name, amount) in &p.layers {
+        rows.push(Row::Layer(*c, name.clone()));
+        if !amount.is_empty() {
+            rows.push(Row::Detail(amount.clone()));
+        }
+    }
+    rows
+}
+
 /// Höhe einer Zeile in dip und Abstand danach.
 fn row_height(r: &Row) -> (f32, f32) {
     match r {
@@ -136,6 +174,9 @@ fn row_height(r: &Row) -> (f32, f32) {
         Row::Button(..) | Row::Segments(_) | Row::Pair(_) => (34.0, 8.0),
         Row::Label(_) => (18.0, 6.0),
         Row::Layer(..) => (18.0, 4.0),
+        Row::Value(..) => (18.0, 4.0),
+        Row::Detail(_) => (17.0, 6.0),
+        Row::Text(_) => (17.0, 6.0),
         Row::Separator => (1.0, 10.0),
         Row::Hint(_) => (17.0, 0.0),
     }
@@ -154,6 +195,7 @@ impl Ui {
             ref_side: RefSide::Left,
             ortho: true,
             wall_layers: Vec::new(),
+            props: None,
         }
     }
 
@@ -175,6 +217,7 @@ impl Ui {
         match p {
             Panel::Tools => tool_rows(&self.wall_layers),
             Panel::Views => view_rows(),
+            Panel::Props => self.props.as_ref().map_or(Vec::new(), props_rows),
         }
     }
 
@@ -197,9 +240,23 @@ impl Ui {
         let m = (MARGIN * s).round();
         let x = match p {
             Panel::Tools => m,
-            Panel::Views => win_w as f32 - m - w,
+            Panel::Views | Panel::Props => win_w as f32 - m - w,
         };
-        Rect::new(x, top as f32 + m, w, self.panel_height(p))
+        let y = match p {
+            // Unter „Ansichten“
+            Panel::Props => top as f32 + 2.0 * m + self.panel_height(Panel::Views),
+            _ => top as f32 + m,
+        };
+        Rect::new(x, y, w, self.panel_height(p))
+    }
+
+    /// Sichtbare Paneele.
+    fn panels(&self) -> Vec<Panel> {
+        let mut v = vec![Panel::Tools, Panel::Views];
+        if self.props.is_some() {
+            v.push(Panel::Props);
+        }
+        v
     }
 
     /// Knöpfe eines Paneels in Paneelkoordinaten.
@@ -246,7 +303,7 @@ impl Ui {
 
     /// Paneel und Knopf unter der Maus (Fensterkoordinaten).
     fn hit(&self, x: f64, y: f64, win_w: u32, top: u32) -> Option<(Panel, Option<Id>)> {
-        for p in [Panel::Tools, Panel::Views] {
+        for p in self.panels() {
             let r = self.rect(p, win_w, top);
             if r.contains(x, y) {
                 let (lx, ly) = (x - r.x as f64, y - r.y as f64);
@@ -352,6 +409,20 @@ impl Ui {
                         y + 13.5 * s,
                         col::TEXT_DIM,
                     );
+                }
+                Row::Value(k, v) => {
+                    let px = 13.0 * s;
+                    let base = y + 13.5 * s;
+                    widgets::text(&mut c, regular, k, px, x, base, col::TEXT_DIM);
+                    let vw = regular.map_or(0.0, |f| f.width(&v, px));
+                    widgets::text(&mut c, regular, &v, px, x + inner_w - vw, base, col::TEXT);
+                }
+                Row::Detail(t) => {
+                    let tx = x + 20.0 * s;
+                    widgets::text(&mut c, regular, &t, 12.5 * s, tx, y + 13.0 * s, col::TEXT_DIM)
+                }
+                Row::Text(t) => {
+                    widgets::text(&mut c, regular, &t, 13.0 * s, x, y + 13.0 * s, col::TEXT_DIM)
                 }
                 Row::Separator => widgets::separator(&mut c, x, y, inner_w, s),
                 Row::Hint(t) => {

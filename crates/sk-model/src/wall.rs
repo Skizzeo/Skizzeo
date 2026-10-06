@@ -184,6 +184,30 @@ impl WallChain {
         }
     }
 
+    /// Lage der Innenfläche quer zur Bezugslinie (gegenüber der Außenfläche).
+    pub fn inner_offset(&self) -> f64 {
+        let (lo, hi) = self.ref_side.span(self.thickness());
+        if self.outer_offset() == lo {
+            hi
+        } else {
+            lo
+        }
+    }
+
+    /// Grundriss eines Segments über die ganze Dicke, mit Gehrung: außen Anfang,
+    /// außen Ende, innen Ende, innen Anfang (auf z = 0).
+    pub fn segment_footprint(&self, seg: usize) -> Option<[Vec3; 4]> {
+        if seg >= self.segment_count() {
+            return None;
+        }
+        let (o, i) = (
+            self.face_corners(self.outer_offset()),
+            self.face_corners(self.inner_offset()),
+        );
+        let j = (seg + 1) % o.len();
+        Some([o[seg], o[j], i[j], i[seg]])
+    }
+
     /// Eckpunkte der zur Bezugslinie parallelen Wandfläche im Abstand `off`
     /// (je Punkt der bereinigten Linie einer, mit Gehrung an den Ecken).
     pub fn face_corners(&self, off: f64) -> Vec<Vec3> {

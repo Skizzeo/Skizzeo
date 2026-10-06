@@ -9,6 +9,7 @@ mod nav;
 mod perf;
 mod scene;
 mod section;
+mod selection;
 mod ui;
 mod wall_edit;
 mod wall_tool;
@@ -17,6 +18,7 @@ use camera::Camera;
 use nav::Navigation;
 use scene::Scene;
 use section::SectionLine;
+use selection::Selection;
 use sk_math::{vec3, Vec3};
 use sk_paint::Rgba;
 use sk_platform::{CaptionArea, Config, Event, Key, MouseButton, Surface, WindowCommand};
@@ -77,6 +79,8 @@ const OVERLAY_TOOLS: usize = 1;
 const OVERLAY_VIEWS: usize = 2;
 /// Endsymbole der Schnittlinie im Grundriss.
 const OVERLAY_MARKS: usize = 3;
+/// Paneel „Eigenschaften“ (nach den zwei Endsymbolen).
+const OVERLAY_PROPS: usize = 5;
 
 /// Blickrichtung (yaw, pitch) der Parallelansichten.
 fn view_direction(v: ViewKind) -> (f64, f64) {
@@ -156,11 +160,18 @@ struct App {
     edit: WallEdit,
     /// Schnittlinie (im Grundriss verschiebbar) für die Ansicht „Schnitt“.
     sect: SectionLine,
+    /// Gewähltes Bauteil.
+    sel: Selection,
+    /// Stand, für den das Paneel „Eigenschaften“ zuletzt gefüllt wurde
+    /// (Bauteil, Modellrevision).
+    props_key: Option<(sk_model::ElementId, u64)>,
     w: u32,
     h: u32,
     overlay_dirty: bool,
     /// Nur Fensterbreite geändert: Titelleiste neu zeichnen, Paneele nur verschieben.
     layout_dirty: bool,
+    /// Inhalt des Paneels „Eigenschaften“ hat sich geändert.
+    props_dirty: bool,
     redraw: bool,
     /// Modellnetz muss vor dem nächsten Bild neu erzeugt werden.
     mesh_dirty: bool,
@@ -222,6 +233,31 @@ impl App {
                 None => Default::default(),
             };
             self.renderer.set_mesh(MESH_LIVE, &mesh);
+        }
+    }
+
+    /// Paneel „Eigenschaften“ an Auswahl und Modell angleichen. Beim Ziehen bleibt
+    /// es stehen; die neuen Mengen kommen beim Loslassen.
+    fn sync_props(&mut self) {
+        if self.edit.is_dragging() {
+            return;
+        }
+        if self.sel.validate(&self.scene) {
+            self.redraw = true;
+        }
+        let key = self.sel.id.map(|id| (id, self.scene.model().revision()));
+        if key == self.props_key {
+            return;
+        }
+        self.props_key = key;
+        self.ui.props = self.sel.id.and_then(|id| selection::props(&self.scene, id));
+        self.props_dirty = true;
+    }
+
+    /// Wählt das Bauteil (oder nichts).
+    fn select(&mut self, id: Option<sk_model::ElementId>) {
+        if self.sel.set(id) {
+            self.redraw = true;
         }
     }
 
@@ -478,6 +514,12 @@ impl App {
                         };
                         self.redraw |= eo.redraw;
                         if !eo.consumed {
+                            // Ohne Wandeingabe wählt ein Klick ein Bauteil (beim Loslassen)
+                            if let (Event::MouseDown { x, y, .. }, MouseButton::Left, false) =
+                                (ev, button, self.tool.enabled)
+                            {
+                                self.sel.press(x, y);
+                            }
                             let out = self.tool.handle(&ev, &self.cam, vw, vh, sc);
                             self.redraw |= out.redraw;
                             self.commit_wall(out.commit);
@@ -512,10 +554,36 @@ impl App {
                     .handle(&ev, &self.scene, &self.cam, vw, vh, sc, sen);
                 self.redraw |= so.redraw;
                 let en = self.edit_enabled();
-                self.redraw |= self
+                let eo = self
                     .edit
-                    .handle(&ev, &mut self.scene, &self.cam, vw, vh, sc, en)
-                    .redraw;
+                    .handle(&ev, &mut self.scene, &self.cam, vw, vh, sc, en);
+                self.redraw |= eo.redraw;
+                if let Event::MouseUp {
+                    button: MouseButton::Left,
+                    x,
+                    y,
+                    ..
+                } = ev
+                {
+                    if eo.clicked.is_some() {
+                        // Band angeklickt, aber nicht verschoben
+                        self.sel.release(x, y, sc);
+                        self.select(eo.clicked);
+                    } else if self.sel.release(x, y, sc) {
+                        let (view, plane) = (self.ui.view, self.plane());
+                        let hit = selection::pick_at(
+                            &mut self.scene,
+                            &self.cam,
+                            view,
+                            plane,
+                            x,
+                            y,
+                            vw,
+                            vh,
+                        );
+                        self.select(hit);
+                    }
+                }
             }
             Event::Wheel { y, .. } => {
                 if y >= th {
@@ -555,6 +623,8 @@ impl App {
                     // Esc ohne angefangenen Zug beendet die Gebäude-Eingabe
                     self.tool.set_enabled(false);
                     self.refresh_cursor();
+                } else if down && key == Key::Escape && !self.tool.enabled && self.sel.id.is_some() {
+                    self.select(None);
                 } else {
                     let out = self.tool.handle(&e, &self.cam, vw, vh, sc);
                     self.redraw |= out.redraw;
@@ -566,6 +636,7 @@ impl App {
             self.refresh_cursor();
         }
         self.sync_ui();
+        self.sync_props();
         true
     }
 
@@ -589,8 +660,23 @@ impl App {
             self.renderer
                 .set_overlay(slot, x, y, c.width as u32, c.height as u32, &px);
         }
+        self.paint_props();
         self.overlay_dirty = false;
         self.layout_dirty = false;
+        self.redraw = true;
+    }
+
+    /// Paneel „Eigenschaften“ zeichnen oder (ohne Auswahl) ausblenden.
+    fn paint_props(&mut self) {
+        if self.ui.props.is_some() {
+            let (c, x, y) = self.ui.paint(Panel::Props, self.w, self.title.height());
+            let px = c.to_premul_rgba8();
+            self.renderer
+                .set_overlay(OVERLAY_PROPS, x, y, c.width as u32, c.height as u32, &px);
+        } else {
+            self.renderer.set_overlay(OVERLAY_PROPS, 0, 0, 0, 0, &[]);
+        }
+        self.props_dirty = false;
         self.redraw = true;
     }
 
@@ -599,7 +685,11 @@ impl App {
     fn relayout_overlays(&mut self, surface: &Surface) {
         self.paint_title(surface);
         let th = self.title.height();
-        for (slot, p) in [(OVERLAY_TOOLS, Panel::Tools), (OVERLAY_VIEWS, Panel::Views)] {
+        for (slot, p) in [
+            (OVERLAY_TOOLS, Panel::Tools),
+            (OVERLAY_VIEWS, Panel::Views),
+            (OVERLAY_PROPS, Panel::Props),
+        ] {
             let (x, y) = self.ui.origin(p, self.w, th);
             self.renderer.move_overlay(slot, x, y);
         }
@@ -682,10 +772,13 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         tool,
         edit: WallEdit::default(),
         sect: SectionLine::default(),
+        sel: Selection::default(),
+        props_key: None,
         w,
         h,
         overlay_dirty: true,
         layout_dirty: false,
+        props_dirty: false,
         redraw: true,
         mesh_dirty: true,
         live_dirty: true,
@@ -734,6 +827,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         } else if a.layout_dirty && a.w > 0 {
             a.relayout_overlays(&surface);
         }
+        if a.props_dirty && a.w > 0 {
+            a.paint_props();
+        }
 
         if a.nav.is_animating() {
             let now = std::time::Instant::now();
@@ -773,6 +869,10 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 ViewKind::Plan => helpers.extend(a.sect.helpers(&a.scene, &a.cam, vh, scale)),
                 ViewKind::Persp => {}
                 v => helpers.extend(ground_line(v, a.scene.bounds(), scale)),
+            }
+            if let Some(id) = a.sel.id {
+                let plane = a.plane();
+                helpers.extend(selection::helpers(&a.scene, id, a.ui.view, plane, scale));
             }
             helpers.extend(a.edit.helpers(&a.scene, &a.cam, scale, !drawing));
             helpers.extend(a.tool.helpers(&a.cam, scale));

@@ -54,6 +54,8 @@ pub struct EditOutcome {
     pub changed: bool,
     /// Ereignis gehört dem Band, das Wandwerkzeug bekommt es nicht.
     pub consumed: bool,
+    /// Band nur angeklickt, nicht verschoben: diese Wand auswählen.
+    pub clicked: Option<ElementId>,
 }
 
 /// Bildrechteck (x0, y0, x1, y1) eines Quaders auf dem Boden. `None`, wenn eine
@@ -302,12 +304,15 @@ impl WallEdit {
                 ..
             } => {
                 if let Some(d) = self.drag.take() {
+                    scene.settle();
                     // Nur ein Verlaufsschritt, wenn die Wand wirklich woanders steht
                     if scene
                         .chain(d.run)
                         .is_some_and(|c| c.points != d.original.points)
                     {
                         scene.record(d.before);
+                    } else {
+                        out.clicked = Some(d.wall);
                     }
                     out.consumed = true;
                     out.redraw = true;

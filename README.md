@@ -61,6 +61,16 @@ sobald der Mauszeiger über einem Wandsegment steht):
   Betrachter weg laufen: Ihr Fuß erscheint beim Darüberfahren als violette
   Kugel. Verdeckte Wände hinter der Fassade sind nicht greifbar.
 
+Auswahl und Eigenschaften (ohne aktive Gebäude-Eingabe):
+
+- Klick auf eine Wand wählt sie, in 3D, Grundriss, Schnitt und Ansichten;
+  ihr Umriss erscheint in Akzentfarbe
+- Rechts unter „Ansichten“ zeigt das Paneel „Eigenschaften“ Nummer, Kategorie,
+  Geschoss, Länge, Dicke, Höhe, Flächen außen und innen, Volumen und je Schicht
+  Volumen und Masse (brutto, aus der Parametrik in `sk-model::qto`)
+- Klick ins Leere oder Esc hebt die Auswahl auf; nach Rückgängig verschwindet
+  sie, wenn es die Wand nicht mehr gibt
+
 ## Bauen
 
     cargo build --release
