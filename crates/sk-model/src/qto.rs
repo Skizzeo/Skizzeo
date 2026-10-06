@@ -110,10 +110,13 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                 .layers
                 .iter()
                 .zip(&faces)
-                .map(|(l, (fa, fb))| {
+                .enumerate()
+                .map(|(li, (l, (fa, fb)))| {
                     let quad = [fa[k], fa[j], fb[j], fb[k]];
                     let area = area(&quad);
-                    let volume = area * h;
+                    // netto: ohne das Band einer Geschossdecke (Auflagertasche)
+                    let hn: f64 = chain.layer_spans(li).iter().map(|(a, b)| b - a).sum();
+                    let volume = area * hn;
                     let density = model.material(l.material).map_or(0.0, |m| m.density);
                     LayerQto {
                         material: l.material,
