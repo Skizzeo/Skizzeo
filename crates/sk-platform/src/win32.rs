@@ -7,10 +7,10 @@
 #![allow(non_snake_case, non_camel_case_types, clippy::upper_case_acronyms)]
 
 use crate::{CaptionArea, Config, Event, Key, Modifiers, MouseButton, WindowCommand};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::{c_char, c_void};
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -204,6 +204,7 @@ extern "system" {
 extern "system" {
     fn DwmExtendFrameIntoClientArea(h: HWND, m: *const MARGINS) -> i32;
     fn DwmSetWindowAttribute(h: HWND, attr: u32, v: *const c_void, size: u32) -> i32;
+    fn DwmFlush() -> i32;
 }
 
 const WM_DESTROY: u32 = 0x0002;
@@ -231,6 +232,8 @@ const WM_MBUTTONDOWN: u32 = 0x0207;
 const WM_MBUTTONUP: u32 = 0x0208;
 const WM_MOUSEWHEEL: u32 = 0x020A;
 const WM_MOUSELEAVE: u32 = 0x02A3;
+const WM_ENTERSIZEMOVE: u32 = 0x0231;
+const WM_EXITSIZEMOVE: u32 = 0x0232;
 const WM_DPICHANGED: u32 = 0x02E0;
 const WM_APP_QUIT: u32 = 0x8001;
 
@@ -307,6 +310,8 @@ struct Shared {
     dpi: AtomicU32,
     caption_height: AtomicU32,
     buttons_width: AtomicU32,
+    /// Der Nutzer zieht gerade an Rand oder Titelleiste (Windows-Größeziehschleife).
+    sizing: AtomicBool,
     /// Größe des zuletzt gezeigten Bildes (0, 0: noch keines).
     presented: Mutex<(u32, u32)>,
     presented_cv: Condvar,
@@ -531,6 +536,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             mm.ptMinTrackSize = POINT { x: 640, y: 400 };
             0
         }
+        WM_ENTERSIZEMOVE | WM_EXITSIZEMOVE => {
+            STATE.with(|s| {
+                if let Some(s) = s.borrow().as_ref() {
+                    s.shared
+                        .sizing
+                        .store(msg == WM_ENTERSIZEMOVE, Ordering::Relaxed);
+                }
+            });
+            // Nach dem Ziehen einmal neu zeichnen, wieder mit Bildsynchronisation
+            send(Event::Redraw);
+            0
+        }
         WM_ERASEBKGND => 1,
         WM_PAINT => {
             send(Event::Redraw);
@@ -674,6 +691,12 @@ pub struct Surface {
     hdc: usize,
     opengl32: usize,
     shared: Arc<Shared>,
+    /// `wglSwapIntervalEXT`, falls vorhanden.
+    swap_interval: Cell<usize>,
+    /// Zuletzt gesetztes Bildintervall (1 = auf den Bildwechsel warten).
+    interval: Cell<i32>,
+    /// Größe des vorigen Bildes.
+    last_size: Cell<(u32, u32)>,
 }
 
 // Fenster- und Gerätekontext-Handles dürfen zwischen Threads weitergereicht werden.
@@ -692,14 +715,41 @@ impl Surface {
     }
 
     /// Zeigt das gezeichnete Bild; `w` × `h` ist die Größe, für die es gezeichnet wurde.
+    ///
+    /// Beim Größeziehen muss jedes Bild in genau dem Bildwechsel erscheinen, in
+    /// dem der Fenstermanager auch den neuen Rahmen zeigt; sonst sieht man für
+    /// einen Wechsel den alten Inhalt im neuen Rahmen, und alles, was am rechten
+    /// Rand oder in der Mitte hängt, zittert hin und her. Deshalb dann: nicht auf
+    /// den Bildwechsel warten (das schiebt das Bild um einen Wechsel nach hinten),
+    /// sondern sofort abgeben und bis zum Zusammensetzen durch den
+    /// Fenstermanager warten. Erst danach darf die Größeziehschleife weiter.
     pub fn swap_buffers(&self, w: u32, h: u32) {
+        let resized = self.shared.sizing.load(Ordering::Relaxed) && self.last_size.get() != (w, h);
+        self.last_size.set((w, h));
+        self.set_interval(if resized { 0 } else { 1 });
         unsafe {
             SwapBuffers(self.hdc as HDC);
+            if resized {
+                DwmFlush();
+            }
         }
         if let Ok(mut p) = self.shared.presented.lock() {
             *p = (w, h);
         }
         self.shared.presented_cv.notify_all();
+    }
+
+    fn set_interval(&self, i: i32) {
+        type SwapInterval = unsafe extern "system" fn(i32) -> BOOL;
+        let f = self.swap_interval.get();
+        if f == 0 || self.interval.get() == i {
+            return;
+        }
+        unsafe {
+            let si: SwapInterval = std::mem::transmute(f as *const c_void);
+            si(i);
+        }
+        self.interval.set(i);
     }
 
     pub fn gl_proc(&self, name: &str) -> *const c_void {
@@ -778,6 +828,7 @@ impl Surface {
             wglDeleteContext(tmp);
             let si = wglGetProcAddress(c"wglSwapIntervalEXT".as_ptr());
             if !si.is_null() {
+                self.swap_interval.set(si as usize);
                 let si: SwapInterval = std::mem::transmute(si);
                 si(1);
             }
@@ -841,6 +892,7 @@ where
             dpi: AtomicU32::new(96),
             caption_height: AtomicU32::new(0),
             buttons_width: AtomicU32::new(0),
+            sizing: AtomicBool::new(false),
             presented: Mutex::new((0, 0)),
             presented_cv: Condvar::new(),
         });
@@ -967,6 +1019,9 @@ where
             hdc: hdc as usize,
             opengl32: LoadLibraryA(c"opengl32.dll".as_ptr()) as usize,
             shared,
+            swap_interval: Cell::new(0),
+            interval: Cell::new(1),
+            last_size: Cell::new((0, 0)),
         };
         let hwnd_val = hwnd as usize;
         let (err_tx, err_rx) = channel::<String>();

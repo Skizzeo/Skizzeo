@@ -303,6 +303,14 @@ impl Ui {
         out
     }
 
+    /// Lage (links oben) des Paneelbildes samt Schatten im Fenster, wie bei
+    /// [`Ui::paint`].
+    pub fn origin(&self, p: Panel, win_w: u32, top: u32) -> (i32, i32) {
+        let r = self.rect(p, win_w, top);
+        let m = (SHADOW * self.scale).round();
+        ((r.x - m) as i32, (r.y - m) as i32)
+    }
+
     /// Zeichnet ein Paneel. Liefert das Bild und seine Lage (links oben) im Fenster.
     pub fn paint(&self, p: Panel, win_w: u32, top: u32) -> (Canvas, i32, i32) {
         let s = self.scale;
@@ -362,7 +370,8 @@ impl Ui {
             let b = Rect::new(b.x + m, b.y + m, b.w, b.h);
             widgets::button(&mut c, &self.fonts, b, label, st, s);
         }
-        (c, (r.x - m) as i32, (r.y - m) as i32)
+        let (x, y) = self.origin(p, win_w, top);
+        (c, x, y)
     }
 }
 

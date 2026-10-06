@@ -158,6 +158,8 @@ struct App {
     w: u32,
     h: u32,
     overlay_dirty: bool,
+    /// Nur Fensterbreite geändert: Titelleiste neu zeichnen, Paneele nur verschieben.
+    layout_dirty: bool,
     redraw: bool,
     /// Modellnetz muss vor dem nächsten Bild neu erzeugt werden.
     mesh_dirty: bool,
@@ -350,8 +352,14 @@ impl App {
             Event::CloseRequested => return false,
             Event::Resized { width, height } => {
                 (self.w, self.h) = (width, height);
-                self.ui.fit(self.title.scale, width, height);
-                self.overlay_dirty = true;
+                // Paneele nur neu zeichnen, wenn sich ihre Größe ändert; beim
+                // Größeziehen zählt jede Millisekunde
+                if self.ui.fit(self.title.scale, width, height) {
+                    self.overlay_dirty = true;
+                } else {
+                    self.layout_dirty = true;
+                }
+                self.redraw = true;
             }
             Event::ScaleChanged(s) => {
                 self.title.scale = s;
@@ -552,7 +560,7 @@ impl App {
         true
     }
 
-    fn paint_overlays(&mut self, surface: &Surface) {
+    fn paint_title(&mut self, surface: &Surface) {
         let c = self.title.paint(self.w);
         let th = self.title.height();
         self.renderer
@@ -561,6 +569,11 @@ impl App {
             height: th,
             buttons_width: self.title.buttons_width(),
         });
+    }
+
+    fn paint_overlays(&mut self, surface: &Surface) {
+        self.paint_title(surface);
+        let th = self.title.height();
         for (slot, p) in [(OVERLAY_TOOLS, Panel::Tools), (OVERLAY_VIEWS, Panel::Views)] {
             let (c, x, y) = self.ui.paint(p, self.w, th);
             let px = c.to_premul_rgba8();
@@ -568,6 +581,20 @@ impl App {
                 .set_overlay(slot, x, y, c.width as u32, c.height as u32, &px);
         }
         self.overlay_dirty = false;
+        self.layout_dirty = false;
+        self.redraw = true;
+    }
+
+    /// Neue Fensterbreite bei gleicher Paneelgröße: nur die Titelleiste neu,
+    /// die Paneele behalten ihr Bild und rücken an ihren Platz.
+    fn relayout_overlays(&mut self, surface: &Surface) {
+        self.paint_title(surface);
+        let th = self.title.height();
+        for (slot, p) in [(OVERLAY_TOOLS, Panel::Tools), (OVERLAY_VIEWS, Panel::Views)] {
+            let (x, y) = self.ui.origin(p, self.w, th);
+            self.renderer.move_overlay(slot, x, y);
+        }
+        self.layout_dirty = false;
         self.redraw = true;
     }
 }
@@ -649,6 +676,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         w,
         h,
         overlay_dirty: true,
+        layout_dirty: false,
         redraw: true,
         mesh_dirty: true,
         live_dirty: true,
@@ -694,6 +722,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
 
         if a.overlay_dirty && a.w > 0 {
             a.paint_overlays(&surface);
+        } else if a.layout_dirty && a.w > 0 {
+            a.relayout_overlays(&surface);
         }
 
         if a.nav.is_animating() {
