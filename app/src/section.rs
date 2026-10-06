@@ -182,6 +182,7 @@ impl SectionLine {
             width: width * scale,
             dash: dash * scale,
             occlude: false,
+            round: false,
         };
         let dx = vec3(end, 0.0, 0.0);
         vec![

@@ -405,6 +405,7 @@ impl WallTool {
             width: width * scale,
             dash: dash * scale,
             occlude: false,
+            round: false,
         };
         let mark = |p: Vec3, color, size: f32| {
             [
@@ -415,6 +416,7 @@ impl WallTool {
                     width: (size + 3.0) * scale,
                     dash: 0.0,
                     occlude: false,
+                    round: false,
                 },
                 Helper {
                     a: lift(p),
@@ -423,6 +425,7 @@ impl WallTool {
                     width: size * scale,
                     dash: 0.0,
                     occlude: false,
+                    round: false,
                 },
             ]
         };

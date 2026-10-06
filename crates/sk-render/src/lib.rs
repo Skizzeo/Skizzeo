@@ -100,6 +100,8 @@ pub struct Helper {
     pub dash: f32,
     /// Hinter Geometrie liegende Teile nur blass zeigen (sonst immer obenauf).
     pub occlude: bool,
+    /// Runde Enden; mit `a == b` ein runder Punkt vom Durchmesser `width`.
+    pub round: bool,
 }
 
 /// Bild der Oberfläche an einer Stelle im Fenster.
@@ -311,10 +313,13 @@ uniform vec4 u_pull;
 out vec4 v_color;
 noperspective out float v_dist;
 flat out float v_dash;
+// Lage im Strich in Pixeln (längs ab Anfang, quer ab Mitte), für runde Enden
+noperspective out vec2 v_cap;
+flat out vec3 v_round;
 void main() {
     // Verdeckbare Linien ein wenig zur Kamera ziehen, damit sie nicht mit
     // der Fläche, auf der sie liegen, um die Tiefe kämpfen
-    bool occl = a_style.z > 0.5;
+    bool occl = mod(a_style.z, 2.0) > 0.5;
     vec4 pull = occl ? u_pull : vec4(0.0, 0.0, 0.0, 1.0);
     vec4 ca = u_vp * vec4((a_a + u_origin) * pull.w + pull.xyz, 1.0);
     vec4 cb = u_vp * vec4((a_b + u_origin) * pull.w + pull.xyz, 1.0);
@@ -339,6 +344,8 @@ void main() {
     float w = a_style.x;
     vec2 off = (n * a_corner.y + d * (at_b ? 1.0 : -1.0)) * (w * 0.5);
     v_dist = at_b ? len : 0.0;
+    v_cap = vec2(at_b ? len + w * 0.5 : -w * 0.5, a_corner.y * w * 0.5);
+    v_round = vec3(a_style.z > 1.5 ? 1.0 : 0.0, len, w * 0.5);
     c.xy += off / half_vp * c.w;
     // Nicht verdeckbar: ganz vorne (Tiefe 0)
     if (!occl) c.z = -c.w;
@@ -350,6 +357,8 @@ const HELPER_FS: &str = r#"#version 330 core
 in vec4 v_color;
 noperspective in float v_dist;
 flat in float v_dash;
+noperspective in vec2 v_cap;
+flat in vec3 v_round;
 uniform float u_hidden;
 out vec4 o_color;
 void main() {
@@ -361,6 +370,13 @@ void main() {
         if ((m > 3.0 * d && m < 3.75 * d) || m > 4.25 * d) discard;
     }
     float a = v_color.a * (u_hidden > 0.5 ? 0.3 : 1.0);
+    if (v_round.x > 0.5) {
+        // Runde Enden: Abstand zur Mittelstrecke, weicher Rand
+        float x = v_cap.x < 0.0 ? v_cap.x : max(v_cap.x - v_round.y, 0.0);
+        float cov = clamp(v_round.z - length(vec2(x, v_cap.y)) + 0.5, 0.0, 1.0);
+        if (cov <= 0.0) discard;
+        a *= cov;
+    }
     o_color = vec4(v_color.rgb * a, a);
 }
 "#;
@@ -468,7 +484,7 @@ impl Renderer {
                     h.color[3],
                     h.width,
                     h.dash,
-                    h.occlude as u8 as f32,
+                    h.occlude as u8 as f32 + 2.0 * h.round as u8 as f32,
                 ]);
             }
         }

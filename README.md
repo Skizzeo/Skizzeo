@@ -57,6 +57,9 @@ sobald der Mauszeiger über einem Wandsegment steht):
 - Segment mit der linken Maustaste greifen und quer ziehen (10-mm-Raster)
 - Die Wand geht live mit, die Nachbarwände behalten ihre Richtung
 - Esc während des Ziehens: abbrechen
+- Im Schnitt und in den Ansichten lassen sich die Wände ziehen, die vom
+  Betrachter weg laufen: Ihr Fuß erscheint beim Darüberfahren als violette
+  Kugel. Verdeckte Wände hinter der Fassade sind nicht greifbar.
 
 ## Bauen
 

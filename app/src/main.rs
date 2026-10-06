@@ -127,6 +127,7 @@ fn ground_line(v: ViewKind, bounds: Option<(Vec3, Vec3)>, scale: f32) -> Vec<sk_
         width: 1.25 * theme::drawing::CUT_WIDTH * scale,
         dash: 0.0,
         occlude: false,
+        round: false,
     }]
 }
 
@@ -208,10 +209,7 @@ impl App {
             self.mesh_dirty = true;
             self.live_dirty = true;
         }
-        let plane = match self.ui.view {
-            ViewKind::Section => self.sect.plane(),
-            _ => None,
-        };
+        let plane = self.plane();
         if self.mesh_dirty {
             self.mesh_dirty = false;
             let mesh = self.scene.mesh(self.ui.view, plane, self.live_run);
@@ -227,13 +225,15 @@ impl App {
         }
     }
 
-    /// Band nur dort, wo sich am Grundriss sinnvoll ziehen lässt.
-    fn band_allowed(&self) -> bool {
+    /// Wandeingabe nur auf dem Boden (3D und Grundriss).
+    fn tool_allowed(&self) -> bool {
         matches!(self.ui.view, ViewKind::Persp | ViewKind::Plan)
     }
 
+    /// Das Band lässt sich in allen Ansichten ziehen, nur nicht während einer
+    /// Wandeingabe oder an der Schnittlinie.
     fn edit_enabled(&self) -> bool {
-        self.band_allowed() && !self.tool.is_active() && !self.sect.is_busy()
+        !self.tool.is_active() && !self.sect.is_busy()
     }
 
     /// Schnittlinie greifen nur im Grundriss und ohne angefangenen Wandzug.
@@ -241,7 +241,16 @@ impl App {
         self.ui.view == ViewKind::Plan && !self.tool.is_active()
     }
 
+    /// Schnittebene der aktuellen Ansicht (nur im Schnitt).
+    fn plane(&self) -> Option<(Vec3, Vec3)> {
+        match self.ui.view {
+            ViewKind::Section => self.sect.plane(),
+            _ => None,
+        }
+    }
+
     fn refresh_cursor(&mut self) {
+        self.edit.section = self.plane();
         let (vw, vh, sc) = self.view_size();
         self.tool.refresh(&self.cam, vw, vh, sc);
         let en = self.edit_enabled();
@@ -272,8 +281,7 @@ impl App {
         if matches!(v, ViewKind::Plan | ViewKind::Section) {
             self.sect.ensure(&self.scene);
         }
-        // Wandeingabe nur auf dem Boden (3D und Grundriss)
-        if !self.band_allowed() && self.tool.enabled {
+        if !self.tool_allowed() && self.tool.enabled {
             self.tool.set_enabled(false);
             self.ui.building = false;
         }
@@ -286,7 +294,7 @@ impl App {
         match id {
             Id::Building => {
                 let on = !self.tool.enabled;
-                if on && !self.band_allowed() {
+                if on && !self.tool_allowed() {
                     self.set_view(ViewKind::Persp);
                 }
                 self.tool.set_enabled(on);
@@ -318,6 +326,7 @@ impl App {
     }
 
     fn handle(&mut self, e: Event, surface: &Surface) -> bool {
+        self.edit.section = self.plane();
         let th = self.top() as f64;
         let (vw, vh, sc) = self.view_size();
         // Ereignis in Koordinaten der 3D-Ansicht (unterhalb der Titelleiste)
@@ -765,9 +774,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 ViewKind::Persp => {}
                 v => helpers.extend(ground_line(v, a.scene.bounds(), scale)),
             }
-            if a.band_allowed() {
-                helpers.extend(a.edit.helpers(&a.scene, scale, !drawing));
-            }
+            helpers.extend(a.edit.helpers(&a.scene, &a.cam, scale, !drawing));
             helpers.extend(a.tool.helpers(&a.cam, scale));
             a.renderer.set_helpers(&helpers);
 
