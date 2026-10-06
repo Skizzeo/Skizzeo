@@ -130,14 +130,8 @@ pub struct CaptionArea {
     pub height: u32,
     /// Breite der Knopfgruppe am rechten Rand (gehört der App, nicht dem Ziehen).
     pub buttons_width: u32,
-}
-
-/// Antwort auf die Frage nach ungespeicherten Änderungen.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SaveAnswer {
-    Save,
-    Discard,
-    Cancel,
+    /// Breite der Knopfgruppe am linken Rand (Menü, Rückgängig, E17).
+    pub left_width: u32,
 }
 
 /// Dateityp im Dateidialog: Bezeichnung und Muster, z. B. `("Skizzeo-Projekt", "*.szo")`.
@@ -250,12 +244,6 @@ impl Surface {
             .file_dialog(true, title, filters, default_ext, suggested)
     }
 
-    /// Fragt „Speichern?“ mit Ja, Nein und Abbrechen.
-    #[cfg(windows)]
-    pub fn ask_save(&self, question: &str) -> SaveAnswer {
-        self.inner.ask_save(question)
-    }
-
     /// Meldung mit OK-Knopf; `error` wählt das Fehlersymbol statt des Hinweises.
     #[cfg(windows)]
     pub fn message(&self, text: &str, error: bool) {
@@ -279,10 +267,6 @@ impl Surface {
         _suggested: &str,
     ) -> Option<PathBuf> {
         None
-    }
-    #[cfg(not(windows))]
-    pub fn ask_save(&self, _question: &str) -> SaveAnswer {
-        SaveAnswer::Discard
     }
     #[cfg(not(windows))]
     pub fn message(&self, text: &str, _error: bool) {
@@ -322,6 +306,21 @@ where
     {
         let _ = (config, app);
         Err("Skizzeo läuft derzeit nur unter Windows.".into())
+    }
+}
+
+/// Ortszeit (Stunde, Minute); außerhalb von Windows UTC.
+pub fn local_time() -> (u8, u8) {
+    #[cfg(windows)]
+    {
+        win32::local_time()
+    }
+    #[cfg(not(windows))]
+    {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        (((secs / 3600) % 24) as u8, ((secs / 60) % 60) as u8)
     }
 }
 

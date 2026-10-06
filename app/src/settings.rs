@@ -5,6 +5,7 @@
 //! am Standardschema auch bei bestehenden Nutzern ankommen. Lesen bricht nie
 //! ab: Unbekanntes und Kaputtes wird übersprungen und als Hinweis gesammelt.
 
+use crate::menu::Recent;
 use sk_model::szo::{check_header, hex, parse_hex, Line, Record};
 use sk_paint::Rgba;
 use sk_ui::theme::Theme;
@@ -17,7 +18,7 @@ type RgbaRole = (&'static str, fn(&mut Theme) -> &mut Rgba);
 type F4Role = (&'static str, fn(&mut Theme) -> &mut [f32; 4]);
 type SizeRole = (&'static str, fn(&mut Theme) -> &mut f32);
 
-const RGBA_ROLES: [RgbaRole; 46] = [
+const RGBA_ROLES: [RgbaRole; 47] = [
     ("ui.bg", |t| &mut t.ui.bg),
     ("ui.border", |t| &mut t.ui.border),
     ("ui.field", |t| &mut t.ui.field),
@@ -49,6 +50,7 @@ const RGBA_ROLES: [RgbaRole; 46] = [
     ("ui.text_disabled", |t| &mut t.ui.text_disabled),
     ("ui.tooltip_bg", |t| &mut t.ui.tooltip_bg),
     ("ui.tooltip_text", |t| &mut t.ui.tooltip_text),
+    ("ui.menu_bg", |t| &mut t.ui.menu_bg),
     ("title.bg", |t| &mut t.title.bg),
     ("title.glyph", |t| &mut t.title.glyph),
     ("title.glyph_inactive", |t| &mut t.title.glyph_inactive),
@@ -81,7 +83,7 @@ const F4_ROLES: [F4Role; 10] = [
     ("interact.shadow_band", |t| &mut t.interact.shadow_band),
 ];
 
-const SIZE_ROLES: [SizeRole; 26] = [
+const SIZE_ROLES: [SizeRole; 29] = [
     ("corner_radius", |t| &mut t.size.corner_radius),
     ("font", |t| &mut t.size.font),
     ("font_small", |t| &mut t.size.font_small),
@@ -108,6 +110,9 @@ const SIZE_ROLES: [SizeRole; 26] = [
     ("dialog_w", |t| &mut t.size.dialog_w),
     ("dialog_h", |t| &mut t.size.dialog_h),
     ("dialog_row", |t| &mut t.size.dialog_row),
+    ("menu_row", |t| &mut t.size.menu_row),
+    ("menu_w", |t| &mut t.size.menu_w),
+    ("menu_sub_w", |t| &mut t.size.menu_sub_w),
 ];
 
 /// Grundschema zu einem Namen.
@@ -205,15 +210,36 @@ pub fn write(theme: &Theme) -> String {
     out
 }
 
+/// Schema und Liste „Zuletzt geöffnet“ (E17, Abschnitt `[zuletzt]`, neueste
+/// oben) als Einstellungsdatei.
+pub fn write_all(theme: &Theme, recent: &Recent) -> String {
+    let mut out = write(theme);
+    for p in recent.paths() {
+        Line::new("zuletzt")
+            .text("datei", &p.to_string_lossy())
+            .finish(&mut out);
+    }
+    out
+}
+
 /// Liest die Einstellungen. Nie ein Abbruch: was nicht passt, wird übersprungen
 /// und als Hinweis gemeldet.
+#[cfg(test)]
 pub fn read(text: &str) -> (Theme, Vec<String>) {
+    let (t, _, hints) = read_all(text);
+    (t, hints)
+}
+
+/// Wie [`read`], dazu die Liste „Zuletzt geöffnet“.
+pub fn read_all(text: &str) -> (Theme, Recent, Vec<String>) {
     let mut hints = Vec::new();
+    let mut recent = Recent::default();
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     if let Err(e) = check_header(text.lines().next(), HEAD, VERSION) {
         hints.push(format!("Einstellungen nicht gelesen: {e}"));
-        return (Theme::dark(), hints);
+        return (Theme::dark(), recent, hints);
     }
+    let mut files = Vec::new();
     let mut t = Theme::dark();
     let mut sky = Vec::new();
     let mut changed = false;
@@ -287,6 +313,14 @@ pub fn read(text: &str) -> (Theme, Vec<String>) {
                 (Ok(k), Some(c)) => sky.push((k, c)),
                 _ => skip(&mut hints, "Stützstelle des Himmels"),
             },
+            "zuletzt" => {
+                match r.opt("datei").filter(|d| !d.is_empty()) {
+                    Some(d) => files.push(PathBuf::from(d)),
+                    None => skip(&mut hints, "[zuletzt] ohne Datei"),
+                }
+                r.unused(&mut hints);
+                continue;
+            }
             s => {
                 skip(&mut hints, &format!("unbekannter Abschnitt [{s}]"));
                 continue;
@@ -303,7 +337,11 @@ pub fn read(text: &str) -> (Theme, Vec<String>) {
     if changed && t != Theme::dark() {
         t.rev = 1;
     }
-    (t, hints)
+    // Neueste oben: von unten her eintragen
+    for f in files.into_iter().rev() {
+        recent.push(f);
+    }
+    (t, recent, hints)
 }
 
 /// Ort der Einstellungsdatei und Stand beim Laden.
@@ -313,6 +351,9 @@ pub struct Settings {
     loaded_rev: u64,
     /// Übersprungenes beim Lesen (später im Einstellungsfenster).
     pub hints: Vec<String>,
+    /// Liste „Zuletzt geöffnet“ (E17) und ihr Stand beim Laden.
+    pub recent: Recent,
+    loaded_recent: Recent,
 }
 
 impl Settings {
@@ -327,6 +368,8 @@ impl Settings {
                 .map(|d| d.join("Skizzeo").join("einstellungen.txt")),
             loaded_rev: 0,
             hints: Vec::new(),
+            recent: Recent::default(),
+            loaded_recent: Recent::default(),
         }
     }
 
@@ -338,33 +381,39 @@ impl Settings {
             .and_then(|p| std::fs::read_to_string(p).ok());
         let theme = match text {
             Some(text) => {
-                let (t, hints) = read(&text);
+                let (t, recent, hints) = read_all(&text);
                 self.hints = hints;
+                self.recent = recent;
                 t
             }
             None => Theme::dark(),
         };
         self.loaded_rev = theme.rev;
+        self.loaded_recent = self.recent.clone();
         theme
     }
 
-    /// Schreibt atomar, wenn sich das Schema seit dem Laden geändert hat.
+    /// Schreibt atomar, wenn sich Schema oder Liste „Zuletzt geöffnet“ seit
+    /// dem Laden geändert haben.
     pub fn save_if_changed(&mut self, theme: &Theme) -> Result<(), String> {
         let Some(path) = &self.path else {
             return Ok(());
         };
-        if theme.rev == self.loaded_rev {
+        if theme.rev == self.loaded_rev && self.recent == self.loaded_recent {
             return Ok(());
         }
         let tmp = path.with_extension("txt.tmp");
         let res = path
             .parent()
             .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|_| crate::document::write_synced(&tmp, write(theme).as_bytes()))
+            .and_then(|_| {
+                crate::document::write_synced(&tmp, write_all(theme, &self.recent).as_bytes())
+            })
             .and_then(|_| std::fs::rename(&tmp, path));
         match res {
             Ok(()) => {
                 self.loaded_rev = theme.rev;
+                self.loaded_recent = self.recent.clone();
                 Ok(())
             }
             Err(e) => {

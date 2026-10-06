@@ -14,6 +14,9 @@ pub struct Document {
     pub path: Option<PathBuf>,
     /// Modellrevision beim letzten Speichern oder Öffnen.
     saved_rev: u64,
+    /// Ortszeit (Stunde, Minute) des letzten Speicherns oder Öffnens, für
+    /// die Nachfrage „Änderungen speichern?“ (E17).
+    pub saved_at: Option<(u8, u8)>,
 }
 
 impl Document {
@@ -22,6 +25,7 @@ impl Document {
         Document {
             path: None,
             saved_rev: rev,
+            saved_at: None,
         }
     }
 
@@ -29,6 +33,7 @@ impl Document {
         Document {
             path: Some(path),
             saved_rev: rev,
+            saved_at: None,
         }
     }
 

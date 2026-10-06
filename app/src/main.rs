@@ -8,6 +8,7 @@ mod abnahme;
 mod camera;
 mod document;
 mod draw_table;
+mod menu;
 mod nav;
 #[cfg(test)]
 mod perf;
@@ -22,6 +23,7 @@ mod wall_tool;
 use camera::Camera;
 use document::Document;
 use draw_table::DrawTable;
+use menu::Command;
 use nav::Navigation;
 use scene::Scene;
 use section::SectionLine;
@@ -29,9 +31,7 @@ use selection::Selection;
 use sk_math::{vec3, Vec3};
 use sk_model::Category;
 use sk_paint::Rgba;
-use sk_platform::{
-    CaptionArea, Config, Event, Key, MouseButton, SaveAnswer, Surface, WindowCommand,
-};
+use sk_platform::{CaptionArea, Config, Event, Key, MouseButton, Surface, WindowCommand};
 use sk_render::{gl::Gl, Renderer, Style};
 use sk_ui::{
     logo,
@@ -58,8 +58,12 @@ fn main() {
     }
 }
 
-/// Schreibt das Farbschema beim Beenden, falls es sich geändert hat.
-fn save_settings(settings: &mut settings::Settings, theme: &Theme) {
+/// Schreibt Farbschema und „Zuletzt geöffnet“ beim Beenden, falls sie sich
+/// geändert haben.
+fn save_settings(settings: &mut settings::Settings, theme: &Theme, recent: &menu::Recent) {
+    if settings.path.is_some() {
+        settings.recent = recent.clone();
+    }
     if let Err(e) = settings.save_if_changed(theme) {
         eprintln!("{e}");
     }
@@ -121,8 +125,13 @@ const OVERLAY_LEVELS: usize = 6;
 /// Dialog „Gebäude erstellen“.
 const OVERLAY_DIALOG: usize = 7;
 const OVERLAY_TITLE: usize = 8;
-/// Hinweis an der Maus, über allem.
+/// Hinweis an der Maus.
 const OVERLAY_TIP: usize = 9;
+/// Dateimenü (E17), darüber die Nachfrage „Änderungen speichern?“ mit
+/// Abdunkeln.
+const OVERLAY_MENU: usize = 10;
+const OVERLAY_SAVE_SCRIM: usize = 11;
+const OVERLAY_SAVE: usize = 12;
 
 /// Blickrichtung (yaw, pitch) der Parallelansichten.
 fn view_direction(v: ViewKind) -> (f64, f64) {
@@ -297,11 +306,23 @@ struct App {
     mouse_at: Option<(f64, f64)>,
     /// Hinweis an der Maus: erscheint nach [`TIP_DELAY`] Ruhe über derselben Stelle.
     tip: Option<Tip>,
+    /// Dateimenü am Logo, Tastenkürzel, Nachfrage „Änderungen speichern?“
+    /// und der Befehl, der nach der Antwort folgt (E17).
+    menu: menu::FileMenu,
+    menu_dirty: bool,
+    shortcuts: menu::Shortcuts,
+    save_dlg: Option<menu::SaveDialog>,
+    after_save: Option<Command>,
+    /// Liste „Zuletzt geöffnet“; ohne Einstellungsdatei bleibt sie leer.
+    recent: menu::Recent,
+    recent_on: bool,
+    /// Beenden bestätigt: die Schleife endet.
+    quit: bool,
 }
 
 /// Hinweis an der Maus (Text, Lage, seit wann gewünscht, schon sichtbar).
 struct Tip {
-    text: &'static str,
+    text: String,
     at: (f64, f64),
     since: Instant,
     shown: bool,
@@ -609,16 +630,108 @@ impl App {
         self.refresh_cursor();
     }
 
-    /// Bei ungespeicherten Änderungen nachfragen. `true`: weitermachen.
-    fn confirm_discard(&mut self, surface: &Surface) -> bool {
-        if !self.doc.is_dirty(self.scene.model()) {
-            return true;
+    /// Befehl aus Menü, Titelleiste oder Kürzel ausführen. Neu, Öffnen,
+    /// Schließen und Beenden fragen bei ungespeicherten Änderungen nach.
+    fn run_command(&mut self, c: Command, surface: &Surface) {
+        self.menu.close();
+        self.menu_dirty = true;
+        match c {
+            Command::New | Command::Close | Command::Open | Command::Quit => {
+                self.confirm_then(c, surface)
+            }
+            Command::OpenRecent(i) => match self.recent.get(i) {
+                // Fehlt die Datei, fällt sie aus der Liste
+                Some(p) if !p.is_file() => self.recent.remove(i),
+                Some(_) => self.confirm_then(c, surface),
+                None => {}
+            },
+            Command::Save | Command::SaveAs => {
+                self.save(surface, c == Command::SaveAs);
+            }
+            Command::Undo | Command::Redo => self.history(c == Command::Redo),
+            Command::OpenMenu => {
+                self.menu.open();
+                self.tip = None;
+                self.renderer.set_overlay(OVERLAY_TIP, 0, 0, 0, 0, &[]);
+            }
+            Command::ClearRecent => self.recent.clear(),
         }
-        let q = format!("Änderungen an „{}“ speichern?", self.doc.name());
-        match surface.ask_save(&q) {
-            SaveAnswer::Save => self.save(surface, false),
-            SaveAnswer::Discard => true,
-            SaveAnswer::Cancel => false,
+    }
+
+    /// Ohne ungespeicherte Änderungen sofort ausführen, sonst nachfragen.
+    fn confirm_then(&mut self, c: Command, surface: &Surface) {
+        if !self.doc.is_dirty(self.scene.model()) && !self.scene.building_pending() {
+            self.perform(c, surface);
+            return;
+        }
+        let (q, detail) = menu::save_question(&self.doc, self.doc.saved_at);
+        self.save_dlg = Some(menu::SaveDialog::new(q, detail));
+        self.after_save = Some(c);
+        self.overlay_dirty = true;
+    }
+
+    /// Antwort auf die Nachfrage: speichern (bei „Unbenannt“ mit „Speichern
+    /// unter“; dort abgebrochen, bricht auch der Befehl ab), verwerfen oder
+    /// nichts tun.
+    fn answer_save(&mut self, a: menu::SaveAnswer, surface: &Surface) {
+        self.save_dlg = None;
+        self.overlay_dirty = true;
+        let Some(c) = self.after_save.take() else {
+            return;
+        };
+        let go = match a {
+            menu::SaveAnswer::Save => self.save(surface, false),
+            menu::SaveAnswer::Discard => true,
+            menu::SaveAnswer::Cancel => false,
+        };
+        if go {
+            self.perform(c, surface);
+        }
+    }
+
+    /// Befehl nach der Nachfrage ausführen.
+    fn perform(&mut self, c: Command, surface: &Surface) {
+        match c {
+            Command::New | Command::Close => {
+                self.replace_scene(sk_model::Model::new());
+                self.doc = Document::new(self.scene.model().revision());
+            }
+            Command::Open => {
+                if let Some(path) = surface.open_dialog("Öffnen", &document::FILTERS) {
+                    self.open_path(surface, path);
+                }
+            }
+            Command::OpenRecent(i) => {
+                if let Some(p) = self.recent.get(i).cloned() {
+                    self.open_path(surface, p);
+                }
+            }
+            Command::Quit => self.quit = true,
+            _ => {}
+        }
+    }
+
+    /// Rückgängig bzw. Wiederherstellen (Knopf und Kürzel).
+    fn history(&mut self, redo: bool) {
+        if self.tool.is_active() || self.edit.is_dragging() {
+            return;
+        }
+        let changed = if redo {
+            self.scene.redo()
+        } else {
+            self.scene.undo()
+        };
+        if changed {
+            self.upload_model();
+            self.sync_levels();
+            self.refresh_cursor();
+        }
+    }
+
+    /// Eine Datei kommt in „Zuletzt geöffnet“ (nur mit Einstellungsdatei).
+    fn remember(&mut self, path: &std::path::Path) {
+        if self.recent_on {
+            self.recent.push(path.to_path_buf());
         }
     }
 
@@ -642,7 +755,9 @@ impl App {
         };
         match document::save(self.scene.model(), &path) {
             Ok(()) => {
+                self.remember(&path);
                 self.doc.mark_saved(path, self.scene.model().revision());
+                self.doc.saved_at = Some(sk_platform::local_time());
                 true
             }
             Err(e) => {
@@ -652,20 +767,13 @@ impl App {
         }
     }
 
-    fn open(&mut self, surface: &Surface) {
-        if !self.confirm_discard(surface) {
-            return;
-        }
-        if let Some(path) = surface.open_dialog("Öffnen", &document::FILTERS) {
-            self.open_path(surface, path);
-        }
-    }
-
     fn open_path(&mut self, surface: &Surface, path: std::path::PathBuf) {
         match document::load(&path) {
             Ok(loaded) => {
                 self.replace_scene(loaded.model);
+                self.remember(&path);
                 self.doc = Document::opened(path, self.scene.model().revision());
+                self.doc.saved_at = Some(sk_platform::local_time());
                 // Im Bildschirmfoto-Modus hielte die Meldung das Bild auf
                 let shot = std::env::args().any(|a| a == "--screenshot");
                 if !loaded.hints.is_empty() && !shot {
@@ -673,13 +781,6 @@ impl App {
                 }
             }
             Err(e) => surface.message(&e, true),
-        }
-    }
-
-    fn new_project(&mut self, surface: &Surface) {
-        if self.confirm_discard(surface) {
-            self.replace_scene(sk_model::Model::new());
-            self.doc = Document::new(self.scene.model().revision());
         }
     }
 
@@ -824,7 +925,132 @@ impl App {
         }
     }
 
+    /// Ein Ereignis; `false` beendet die Schleife. Die Nachfrage „Änderungen
+    /// speichern?“ und das offene Dateimenü nehmen Maus und Tasten zuerst.
     fn handle(&mut self, e: Event, surface: &Surface) -> bool {
+        if self.save_dlg.is_some() && self.handle_save_dialog(e, surface) {
+            return !self.quit;
+        }
+        if self.menu.is_open() && self.handle_menu(e, surface) {
+            return !self.quit;
+        }
+        self.handle_inner(e, surface) && !self.quit
+    }
+
+    /// Modale Nachfrage: `true`, wenn sie das Ereignis genommen hat.
+    fn handle_save_dialog(&mut self, e: Event, surface: &Surface) -> bool {
+        let (s, th) = (self.title.scale, self.title.height());
+        let Some(d) = self.save_dlg.as_mut() else {
+            return false;
+        };
+        let r = d.rect(s, self.w, self.h, th);
+        let answer = match e {
+            Event::MouseMove { x, y, .. } => {
+                self.mouse_at = Some((x, y));
+                self.overlay_dirty |= d.mouse_move(r, s, x, y);
+                None
+            }
+            Event::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
+                d.press(r, s, x, y);
+                self.overlay_dirty = true;
+                None
+            }
+            Event::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
+                self.overlay_dirty = true;
+                d.release(r, s, x, y)
+            }
+            Event::Key { key, down, .. } => {
+                if !down {
+                    return true;
+                }
+                self.overlay_dirty = true;
+                d.key(key)
+            }
+            Event::MouseDown { .. } | Event::MouseUp { .. } | Event::Wheel { .. } => None,
+            // Schließen von außen beendet sofort, vom Nutzer wird schon gefragt
+            Event::CloseRequested { ask } => {
+                self.quit |= !ask;
+                None
+            }
+            _ => return false,
+        };
+        if let Some(a) = answer {
+            self.answer_save(a, surface);
+        }
+        true
+    }
+
+    /// Offenes Dateimenü: `true`, wenn es das Ereignis genommen hat. Ein Klick
+    /// daneben schließt es und bewirkt sonst nichts.
+    fn handle_menu(&mut self, e: Event, surface: &Surface) -> bool {
+        let g = menu::Geo::new(&self.theme, self.title.scale, self.title.height() as f32);
+        let save = menu::save_enabled(&self.doc, self.scene.model());
+        match e {
+            Event::MouseMove { x, y, .. } => {
+                self.mouse_at = Some((x, y));
+                self.menu_dirty |= self.menu.mouse_move(&g, save, &self.recent, x, y);
+                let hover = self.title.button_at(x, y, self.w);
+                if hover != self.title.hover {
+                    self.dirty_title
+                        .extend(self.title.hover.into_iter().chain(hover));
+                    self.title.hover = hover;
+                }
+                true
+            }
+            Event::MouseDown { x, y, .. } => {
+                // Der Menüknopf schaltet das Menü wieder zu
+                if self.title.button_at(x, y, self.w) == Some(Button::Menu) {
+                    self.menu.close();
+                } else {
+                    self.menu.press(&g, save, &self.recent, x, y);
+                }
+                self.menu_dirty = true;
+                true
+            }
+            Event::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
+                if let Some(c) = self.menu.release(&g, save, &self.recent, x, y) {
+                    self.run_command(c, surface);
+                }
+                self.menu_dirty = true;
+                true
+            }
+            Event::MouseUp { .. } | Event::Wheel { .. } => true,
+            Event::Key { key, down, .. } => {
+                if down {
+                    if matches!(key, Key::Alt | Key::Other(0x79)) {
+                        self.menu.close();
+                    } else if let Some(c) = self.menu.key(key, save, &self.recent) {
+                        self.run_command(c, surface);
+                    }
+                    self.menu_dirty = true;
+                }
+                true
+            }
+            Event::Focus(false) => {
+                self.menu.close();
+                self.menu_dirty = true;
+                false
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_inner(&mut self, e: Event, surface: &Surface) -> bool {
         self.edit.section = self.plane();
         let th = self.top() as f64;
         let (vw, vh, sc) = self.view_size();
@@ -882,7 +1108,10 @@ impl App {
         match e {
             Event::CloseRequested { ask } => {
                 // Von außen (etwa beim Neustart nach einem neuen Stand) sofort schließen
-                return ask && !self.confirm_discard(surface);
+                if !ask {
+                    return false;
+                }
+                self.run_command(Command::Quit, surface);
             }
             Event::Resized { width, height } => {
                 (self.w, self.h) = (width, height);
@@ -982,9 +1211,13 @@ impl App {
                 self.redraw |= self.tool.handle(&tool_ev, &self.cam, vw, vh, sc).redraw;
             }
             Event::MouseDown { button, x, y, .. } => {
+                self.shortcuts.cancel_alt();
                 if y < th {
                     if button == MouseButton::Left {
-                        self.title.pressed = self.title.button_at(x, y, self.w);
+                        self.title.pressed = self
+                            .title
+                            .button_at(x, y, self.w)
+                            .filter(|b| !self.title.is_disabled(*b));
                         self.dirty_title.extend(self.title.pressed);
                     }
                 } else {
@@ -1030,11 +1263,14 @@ impl App {
                     if let Some(b) = self.title.pressed.take() {
                         self.dirty_title.push(b);
                         if self.title.button_at(x, y, self.w) == Some(b) {
-                            surface.command(match b {
-                                Button::Minimize => WindowCommand::Minimize,
-                                Button::Maximize => WindowCommand::ToggleMaximize,
-                                Button::Close => WindowCommand::Close,
-                            });
+                            match b {
+                                Button::Minimize => surface.command(WindowCommand::Minimize),
+                                Button::Maximize => surface.command(WindowCommand::ToggleMaximize),
+                                Button::Close => surface.command(WindowCommand::Close),
+                                Button::Menu => self.run_command(Command::OpenMenu, surface),
+                                Button::Undo => self.run_command(Command::Undo, surface),
+                                Button::Redo => self.run_command(Command::Redo, surface),
+                            }
                         }
                     }
                 }
@@ -1110,12 +1346,7 @@ impl App {
                 key, down, mods, ..
             } => {
                 let free = !self.tool.is_active() && !self.edit.is_dragging();
-                let undo = down && mods.ctrl && key == Key::Char('Z') && free;
-                let redo_key = down && mods.ctrl && key == Key::Char('Y') && free;
-                let file_key = match key {
-                    Key::Char(c @ ('S' | 'O' | 'N')) if down && mods.ctrl && free => Some(c),
-                    _ => None,
-                };
+                let command = self.shortcuts.key(key, down, mods, free);
                 let en = self.edit_enabled();
                 let eo = self
                     .edit
@@ -1126,24 +1357,8 @@ impl App {
                 self.redraw |= eo.redraw;
                 if eo.consumed {
                     // Esc hat das Ziehen abgebrochen
-                } else if let Some(c) = file_key {
-                    match c {
-                        'S' => {
-                            self.save(surface, mods.shift);
-                        }
-                        'O' => self.open(surface),
-                        _ => self.new_project(surface),
-                    }
-                } else if undo || redo_key {
-                    let changed = if undo {
-                        self.scene.undo()
-                    } else {
-                        self.scene.redo()
-                    };
-                    if changed {
-                        self.upload_model();
-                        self.refresh_cursor();
-                    }
+                } else if let Some(c) = command {
+                    self.run_command(c, surface);
                 } else if down && key == Key::Escape && self.scene.building_pending() {
                     // Esc vor dem Schließen des Polygons: das Gebäude entsteht nicht
                     self.tool.set_enabled(false);
@@ -1187,6 +1402,7 @@ impl App {
         surface.set_caption_area(CaptionArea {
             height: th,
             buttons_width: self.title.buttons_width(),
+            left_width: self.title.left_width(),
         });
     }
 
@@ -1206,25 +1422,103 @@ impl App {
         self.dirty_buttons.clear();
         self.paint_props();
         self.paint_dialog();
+        self.paint_menu();
+        self.paint_save_dialog();
         self.overlay_dirty = false;
         self.layout_dirty = false;
         self.redraw = true;
     }
 
+    /// Dateimenü zeichnen oder ausblenden.
+    fn paint_menu(&mut self) {
+        self.menu_dirty = false;
+        self.redraw = true;
+        if !self.menu.is_open() {
+            self.renderer.set_overlay(OVERLAY_MENU, 0, 0, 0, 0, &[]);
+            return;
+        }
+        let g = menu::Geo::new(&self.theme, self.title.scale, self.title.height() as f32);
+        let save = menu::save_enabled(&self.doc, self.scene.model());
+        let (c, x, y) = self
+            .menu
+            .paint(&self.theme, &self.ui.fonts, &g, save, &self.recent);
+        let px = c.to_premul_rgba8();
+        self.renderer
+            .set_overlay(OVERLAY_MENU, x, y, c.width as u32, c.height as u32, &px);
+    }
+
+    /// Nachfrage „Änderungen speichern?“ samt Abdunkeln zeichnen oder ausblenden.
+    fn paint_save_dialog(&mut self) {
+        let Some(d) = &self.save_dlg else {
+            self.renderer.set_overlay(OVERLAY_SAVE, 0, 0, 0, 0, &[]);
+            self.renderer
+                .set_overlay(OVERLAY_SAVE_SCRIM, 0, 0, 0, 0, &[]);
+            return;
+        };
+        let (s, th) = (self.title.scale, self.title.height());
+        let r = d.rect(s, self.w, self.h, th);
+        let c = d.paint(&self.theme, &self.ui.fonts, s);
+        let m = (self.theme.size.panel_shadow * s).round();
+        let px = c.to_premul_rgba8();
+        self.renderer.set_overlay(
+            OVERLAY_SAVE,
+            (r.x - m) as i32,
+            (r.y - m) as i32,
+            c.width as u32,
+            c.height as u32,
+            &px,
+        );
+        let scrim = menu::scrim_premul(self.theme.env.scrim);
+        let h = self.h.saturating_sub(th);
+        self.renderer
+            .set_overlay_fill(OVERLAY_SAVE_SCRIM, 0, th as i32, self.w, h, scrim);
+    }
+
+    /// Knöpfe der Titelleiste an Verlauf und Menü angleichen.
+    fn sync_title_state(&mut self) {
+        let undo = self.scene.undo_label().is_some();
+        let redo = self.scene.redo_label().is_some();
+        let open = self.menu.is_open();
+        let t = &mut self.title;
+        if t.undo_enabled != undo {
+            t.undo_enabled = undo;
+            self.dirty_title.push(Button::Undo);
+        }
+        if t.redo_enabled != redo {
+            t.redo_enabled = redo;
+            self.dirty_title.push(Button::Redo);
+        }
+        if t.menu_open != open {
+            t.menu_open = open;
+            self.dirty_title.push(Button::Menu);
+        }
+    }
+
     /// Gewünschter Hinweis an der Maus: über dem Fuß einer gekoppelten
     /// OG-Wand (A52).
-    fn tip_wanted(&self) -> Option<&'static str> {
-        if self.ui.dialog || self.ui.level_dragging().is_some() {
+    fn tip_wanted(&self) -> Option<String> {
+        if self.ui.dialog
+            || self.ui.level_dragging().is_some()
+            || self.menu.is_open()
+            || self.save_dlg.is_some()
+        {
             return None;
         }
-        self.edit.coupled_hint()
+        // Rückgängig und Wiederherstellen mit dem Namen des Schritts (E17)
+        match self.title.hover {
+            Some(Button::Undo) => return menu::history_hint(&self.scene, false),
+            Some(Button::Redo) => return menu::history_hint(&self.scene, true),
+            Some(_) => return None,
+            None => {}
+        }
+        self.edit.coupled_hint().map(String::from)
     }
 
     /// Hinweis an der Maus nachführen: neuer Text beginnt die Wartezeit,
     /// danach erscheint er rechts unter der Maus; ohne Wunsch verschwindet er.
     fn sync_tip(&mut self) {
         let want = self.tip_wanted().zip(self.mouse_at);
-        let same = matches!((&self.tip, want), (Some(t), Some((w, _))) if t.text == w);
+        let same = matches!((&self.tip, &want), (Some(t), Some((w, _))) if t.text == *w);
         if !same {
             if self.tip.take().is_some_and(|t| t.shown) {
                 self.renderer.set_overlay(OVERLAY_TIP, 0, 0, 0, 0, &[]);
@@ -1245,7 +1539,7 @@ impl App {
         }
         t.shown = true;
         let s = self.ui.scale;
-        let c = sk_ui::widgets::tooltip(&self.ui.fonts, t.text, s, &self.theme);
+        let c = sk_ui::widgets::tooltip(&self.ui.fonts, &t.text, s, &self.theme);
         let (cw, ch) = (c.width as f64, c.height as f64);
         let x = (t.at.0 + 12.0 * s as f64).min(self.w as f64 - cw).max(0.0);
         let mut y = t.at.1 + 20.0 * s as f64;
@@ -1476,6 +1770,14 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         snaps_key: None,
         mouse_at: None,
         tip: None,
+        menu: menu::FileMenu::default(),
+        menu_dirty: false,
+        shortcuts: menu::Shortcuts::default(),
+        save_dlg: None,
+        after_save: None,
+        recent: settings.recent.clone(),
+        recent_on: settings.path.is_some(),
+        quit: false,
         w,
         h,
         overlay_dirty: true,
@@ -1529,7 +1831,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                     if let Some(log) = timing.as_mut() {
                         write_timing(&timing_path, log);
                     }
-                    save_settings(&mut settings, &a.theme);
+                    save_settings(&mut settings, &a.theme, &a.recent);
                     return Ok(());
                 }
             }
@@ -1544,12 +1846,16 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 if let Some(log) = timing.as_mut() {
                     write_timing(&timing_path, log);
                 }
-                save_settings(&mut settings, &a.theme);
+                save_settings(&mut settings, &a.theme, &a.recent);
                 return Ok(());
             }
         }
 
         a.sync_tip();
+        a.sync_title_state();
+        if a.menu_dirty && !a.overlay_dirty && a.w > 0 {
+            a.paint_menu();
+        }
         if a.overlay_dirty && a.w > 0 {
             a.paint_overlays(&surface);
         } else if a.layout_dirty && a.w > 0 {

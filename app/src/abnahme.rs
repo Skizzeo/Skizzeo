@@ -3304,3 +3304,575 @@ fn e16_hintergrund_im_og_grundriss() {
         w.points
     );
 }
+
+// Abnahmetests E17 „Dateimenü am Logo, Rückgängig/Wiederherstellen in der
+// Titelleiste“ (einstellungen/paket-e17-dateimenue.md), vorbereitet gegen main
+// b1c8f37. Spezifikation: test/abnahme-dateimenue.md.
+//
+// Alle angenommenen Namen der neuen Schnittstellen stehen NUR in den Adaptern
+// unten. Der Bauthread passt die Adapter an seine Namen an; die Tests selbst
+// bleiben unverändert. Die Ablaufsteuerung in main.rs (Fenster, Windows-
+// Dialoge) ist in der Cloud nicht prüfbar und steht im Handtest H37–H41.
+
+// ===== Adapter E17 =====
+
+use crate::document::Document;
+use crate::menu::{Command, FileMenu, Recent, SaveAnswer as SaveAnswer2, SaveDialog, Shortcuts};
+
+/// Befehle als Text, damit die Tests nicht vom Enum abhängen.
+fn befehl(c: Option<Command>) -> Option<String> {
+    c.map(|c| match c {
+        Command::New => "Neu".into(),
+        Command::Open => "Öffnen".into(),
+        Command::OpenRecent(i) => format!("Zuletzt {i}"),
+        Command::Save => "Speichern".into(),
+        Command::SaveAs => "Speichern unter".into(),
+        Command::Close => "Schließen".into(),
+        Command::Quit => "Beenden".into(),
+        Command::Undo => "Rückgängig".into(),
+        Command::Redo => "Wiederherstellen".into(),
+        Command::OpenMenu => "Menü".into(),
+        Command::ClearRecent => "Liste leeren".into(),
+    })
+}
+
+/// Linke Knopfgruppe der Titelleiste: "menu", "undo", "redo" oder `None`
+/// (Ziehfläche bzw. rechte Fensterknöpfe).
+fn linker_knopf(t: &TitleBar, x: f64, y: f64) -> Option<&'static str> {
+    t.left_button_at(x, y).map(|b| match b {
+        Button::Menu => "menu",
+        Button::Undo => "undo",
+        Button::Redo => "redo",
+        _ => "rechts",
+    })
+}
+
+/// Breite der linken Gruppe in Pixeln (geht als `left_width` an die Plattform).
+fn linke_breite(t: &TitleBar) -> u32 {
+    t.left_width()
+}
+
+/// Hinweis beim Darüberfahren über Rückgängig (`redo = false`) bzw.
+/// Wiederherstellen; `None`, wenn der Knopf ausgegraut ist.
+fn verlauf_hinweis(s: &Scene, redo: bool) -> Option<String> {
+    crate::menu::history_hint(s, redo)
+}
+
+/// Kontext des Menüs: Speichern aktiv? und die Liste „Zuletzt geöffnet“.
+fn speichern_aktiv(doc: &Document, s: &Scene) -> bool {
+    crate::menu::save_enabled(doc, s.model())
+}
+
+/// Sichtbare Zeilen des geöffneten Menüs (ohne Untermenü):
+/// (Text, Kürzel, aktiv); Trennlinien als ("—", "", false).
+fn zeilen(m: &FileMenu, save: bool, r: &Recent) -> Vec<(String, String, bool)> {
+    m.items(save, r)
+        .into_iter()
+        .map(|i| {
+            if i.separator {
+                ("—".into(), String::new(), false)
+            } else {
+                (i.label, i.shortcut, i.enabled)
+            }
+        })
+        .collect()
+}
+
+/// Zeilen des Untermenüs „Zuletzt geöffnet“: (Dateiname, Ordner, aktiv).
+fn unterzeilen(m: &FileMenu, r: &Recent) -> Vec<(String, String, bool)> {
+    m.sub_items(r)
+        .into_iter()
+        .map(|i| (i.label, i.detail, i.enabled))
+        .collect()
+}
+
+/// Taste im offenen Menü; liefert den ausgelösten Befehl.
+fn menue_taste(m: &mut FileMenu, k: Key, save: bool, r: &Recent) -> Option<String> {
+    befehl(m.key(k, save, r))
+}
+
+/// Tastendruck im Hauptfenster (`free`: kein Werkzeug in Eingabe, nichts
+/// gezogen). `down = false` ist das Loslassen.
+fn kuerzel(k: &mut Shortcuts, key: Key, down: bool, mods: Modifiers, free: bool) -> Option<String> {
+    befehl(k.key(key, down, mods, free))
+}
+
+// Tasten, die `Key` heute nur als `Other(vk)` kennt (Windows-Tastencodes)
+fn taste_hoch() -> Key {
+    Key::Other(0x26)
+}
+fn taste_runter() -> Key {
+    Key::Other(0x28)
+}
+fn taste_f4() -> Key {
+    Key::Other(0x73)
+}
+fn taste_f10() -> Key {
+    Key::Other(0x79)
+}
+
+/// Einstellungsdatei mit Schema und Liste schreiben bzw. lesen.
+fn einstellungen_schreiben(t: &Theme, r: &Recent) -> String {
+    crate::settings::write_all(t, r)
+}
+fn einstellungen_lesen(text: &str) -> (Theme, Recent) {
+    let (t, r, _hints) = crate::settings::read_all(text);
+    (t, r)
+}
+
+/// Ordner in der Mitte gekürzt auf höchstens `max` Zeichen.
+fn ordner_kurz(p: &std::path::Path, max: usize) -> String {
+    crate::menu::short_folder(p, max)
+}
+
+/// Text der Nachfrage: (Frage, zweiter Satz). `gespeichert` = Uhrzeit (h, min)
+/// des letzten Speicherns.
+fn nachfrage(doc: &Document, gespeichert: Option<(u8, u8)>) -> (String, Option<String>) {
+    crate::menu::save_question(doc, gespeichert)
+}
+
+fn antwort(a: Option<SaveAnswer2>) -> Option<&'static str> {
+    a.map(|a| match a {
+        SaveAnswer2::Save => "Speichern",
+        SaveAnswer2::Discard => "Nicht speichern",
+        SaveAnswer2::Cancel => "Abbrechen",
+    })
+}
+
+const MODS_STRG: Modifiers = Modifiers {
+    shift: false,
+    ctrl: true,
+    alt: false,
+};
+const MODS_STRG_UMSCHALT: Modifiers = Modifiers {
+    shift: true,
+    ctrl: true,
+    alt: false,
+};
+const MODS_ALT: Modifiers = Modifiers {
+    shift: false,
+    ctrl: false,
+    alt: true,
+};
+
+// ===== Tests =====
+
+/// A58 (E17 §1, Test 1): Linke Knopfgruppe der Titelleiste. Von links Menü
+/// 46 px, 8 px Abstand, Rückgängig 40 px, Wiederherstellen 40 px; der Rest
+/// bleibt Ziehfläche, die drei Fensterknöpfe rechts unverändert; skaliert mit.
+#[test]
+fn a58_titelleiste_linke_knopfgruppe() {
+    let w = 1440;
+    for scale in [1.0f32, 1.5] {
+        let t = TitleBar::new(scale);
+        let p = |v: f64| v * scale as f64;
+        assert_eq!(linker_knopf(&t, p(1.0), p(10.0)), Some("menu"), "{scale}");
+        assert_eq!(linker_knopf(&t, p(45.0), p(31.0)), Some("menu"));
+        assert_eq!(linker_knopf(&t, p(50.0), p(10.0)), None, "Abstand 8 px");
+        assert_eq!(linker_knopf(&t, p(55.0), p(10.0)), Some("undo"));
+        assert_eq!(linker_knopf(&t, p(93.0), p(10.0)), Some("undo"));
+        assert_eq!(linker_knopf(&t, p(95.0), p(10.0)), Some("redo"));
+        assert_eq!(linker_knopf(&t, p(133.0), p(10.0)), Some("redo"));
+        assert_eq!(linker_knopf(&t, p(140.0), p(10.0)), None, "Ziehfläche");
+        assert_eq!(linker_knopf(&t, p(10.0), p(40.0)), None, "unter der Leiste");
+        assert_eq!(linke_breite(&t), (134.0 * scale).round() as u32);
+        // Rechts wie bisher (A-Titelleiste)
+        assert_eq!(
+            t.button_at(w as f64 - p(10.0), p(10.0), w),
+            Some(Button::Close)
+        );
+        assert_eq!(t.button_at(p(400.0), p(10.0), w), None, "Rest zieht");
+    }
+}
+
+/// A59 (E17 §1, Test 2): Rückgängig und Wiederherstellen als Knöpfe. Leeres
+/// Modell: beide ausgegraut. Nach „Wand zeichnen“ ist Rückgängig aktiv mit
+/// dem Namen des Schritts; zurückgenommen wird Wiederherstellen aktiv.
+#[test]
+fn a59_rueckgaengig_knoepfe() {
+    let mut s = Scene::with_model(Model::with_seed(59));
+    assert_eq!(verlauf_hinweis(&s, false), None, "leer: ausgegraut");
+    assert_eq!(verlauf_hinweis(&s, true), None);
+    let c = cam3d();
+    let mut t = tool(&s);
+    click(&mut t, &c, vec3(0.0, 0.0, 0.0));
+    click(&mut t, &c, vec3(5000.0, 0.0, 0.0));
+    let w = t.handle(&key(Key::Enter), &c, W, H, 1.0).commit.unwrap();
+    s.add_wall(&w).unwrap();
+    assert_eq!(
+        verlauf_hinweis(&s, false).as_deref(),
+        Some("Rückgängig: Wand zeichnen (Strg+Z)")
+    );
+    assert_eq!(verlauf_hinweis(&s, true), None);
+    assert!(s.undo(), "Klick auf den Knopf = ein Schritt zurück");
+    assert_eq!(verlauf_hinweis(&s, false), None);
+    assert_eq!(
+        verlauf_hinweis(&s, true).as_deref(),
+        Some("Wiederherstellen: Wand zeichnen (Strg+Y)")
+    );
+    assert!(s.redo());
+    assert_eq!(s.model().runs().len(), 1);
+    assert_eq!(verlauf_hinweis(&s, true), None);
+}
+
+/// A60 (E17 §2, Test 4): Einträge, Kürzel, Reihenfolge, Trennlinien;
+/// Speichern ausgegraut bei gespeicherter, unveränderter Datei.
+#[test]
+fn a60_dateimenue_eintraege_und_ausgrauen() {
+    let mut s = Scene::with_model(Model::with_seed(60));
+    let r = Recent::default();
+    let mut m = FileMenu::default();
+    assert!(!m.is_open());
+    m.open();
+    assert!(m.is_open());
+    let soll: Vec<(String, String, bool)> = [
+        ("Neu", "Strg+N", true),
+        ("Öffnen …", "Strg+O", true),
+        ("Zuletzt geöffnet", "▸", true),
+        ("—", "", false),
+        ("Speichern", "Strg+S", true),
+        ("Speichern unter …", "Strg+Umschalt+S", true),
+        ("—", "", false),
+        ("Schließen", "Strg+W", true),
+        ("Beenden", "Alt+F4", true),
+    ]
+    .iter()
+    .map(|(a, b, c)| (a.to_string(), b.to_string(), *c))
+    .collect();
+    // Unbenannt, unverändert: Speichern aktiv (es gibt noch keine Datei)
+    let neu = Document::new(s.model().revision());
+    assert!(speichern_aktiv(&neu, &s));
+    assert_eq!(zeilen(&m, speichern_aktiv(&neu, &s), &r), soll);
+    // Gespeicherte Datei, unverändert: Speichern ausgegraut, sonst alles gleich
+    let d = test_dir("menue");
+    let mut doc = Document::new(s.model().revision());
+    doc.mark_saved(d.join("Haus.szo"), s.model().revision());
+    assert!(!speichern_aktiv(&doc, &s));
+    let z = zeilen(&m, false, &r);
+    assert_eq!(z[4], ("Speichern".into(), "Strg+S".into(), false));
+    assert!(z.iter().enumerate().all(|(i, l)| i == 4 || *l == soll[i]));
+    // Nach einer Änderung wieder aktiv
+    assert!(s.edit_model("Test", |m| {
+        m.add_building(2);
+        true
+    }));
+    assert!(speichern_aktiv(&doc, &s));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A61 (E17 §2, Test 3): Bedienung mit Tasten. Pfeile wandern über die
+/// Einträge (Trennlinien übersprungen), rechts öffnet „Zuletzt geöffnet“,
+/// links schließt es, Enter führt aus und schließt, Esc und Klick daneben
+/// schließen ohne Wirkung.
+#[test]
+fn a61_menue_bedienung() {
+    let r = Recent::default();
+    let mut m = FileMenu::default();
+    m.open();
+    // Erster Eintrag ist markiert; Enter = Neu
+    assert_eq!(
+        menue_taste(&mut m, Key::Enter, true, &r).as_deref(),
+        Some("Neu")
+    );
+    assert!(!m.is_open(), "Enter schließt das Menü");
+    // Runter: Öffnen, Zuletzt, (Trennlinie) Speichern
+    m.open();
+    for _ in 0..3 {
+        assert_eq!(menue_taste(&mut m, taste_runter(), true, &r), None);
+    }
+    assert_eq!(
+        menue_taste(&mut m, Key::Enter, true, &r).as_deref(),
+        Some("Speichern")
+    );
+    // Hoch vom Speichern über die Trennlinie zurück auf „Zuletzt geöffnet“,
+    // rechts öffnet das Untermenü, links schließt es wieder
+    m.open();
+    for _ in 0..3 {
+        menue_taste(&mut m, taste_runter(), true, &r);
+    }
+    menue_taste(&mut m, taste_hoch(), true, &r);
+    assert!(!m.sub_open());
+    menue_taste(&mut m, Key::Right, true, &r);
+    assert!(m.sub_open(), "rechts öffnet „Zuletzt geöffnet“");
+    menue_taste(&mut m, Key::Left, true, &r);
+    assert!(
+        !m.sub_open() && m.is_open(),
+        "links schließt nur das Untermenü"
+    );
+    // Neu geöffnet steht die Markierung wieder oben. Ausgegrautes Speichern
+    // wird übersprungen: runter ×3 landet auf „Speichern unter …“
+    m.click_outside();
+    m.open();
+    for _ in 0..3 {
+        menue_taste(&mut m, taste_runter(), false, &r);
+    }
+    assert_eq!(
+        menue_taste(&mut m, Key::Enter, false, &r).as_deref(),
+        Some("Speichern unter")
+    );
+    // Esc und Klick daneben: zu, kein Befehl
+    m.open();
+    assert_eq!(menue_taste(&mut m, Key::Escape, true, &r), None);
+    assert!(!m.is_open());
+    m.open();
+    m.click_outside();
+    assert!(!m.is_open());
+}
+
+/// A62 (E17 §4, Tests 2, 3, 7): Tastenkürzel. Strg+W schließt, Strg+Umschalt+Z
+/// stellt wieder her, F10 und das Loslassen von Alt öffnen das Menü, Alt+F4
+/// und Alt+Tab öffnen es nicht. Während einer Eingabe gelten keine Kürzel.
+#[test]
+fn a62_tastenkuerzel() {
+    let mut k = Shortcuts::default();
+    let mut drueck = |key, mods| kuerzel(&mut k, key, true, mods, true);
+    assert_eq!(drueck(Key::Char('N'), MODS_STRG).as_deref(), Some("Neu"));
+    assert_eq!(drueck(Key::Char('O'), MODS_STRG).as_deref(), Some("Öffnen"));
+    assert_eq!(
+        drueck(Key::Char('S'), MODS_STRG).as_deref(),
+        Some("Speichern")
+    );
+    assert_eq!(
+        drueck(Key::Char('S'), MODS_STRG_UMSCHALT).as_deref(),
+        Some("Speichern unter")
+    );
+    assert_eq!(
+        drueck(Key::Char('W'), MODS_STRG).as_deref(),
+        Some("Schließen")
+    );
+    assert_eq!(
+        drueck(Key::Char('Z'), MODS_STRG).as_deref(),
+        Some("Rückgängig")
+    );
+    assert_eq!(
+        drueck(Key::Char('Y'), MODS_STRG).as_deref(),
+        Some("Wiederherstellen")
+    );
+    assert_eq!(
+        drueck(Key::Char('Z'), MODS_STRG_UMSCHALT).as_deref(),
+        Some("Wiederherstellen")
+    );
+    assert_eq!(drueck(taste_f10(), M).as_deref(), Some("Menü"));
+    assert_eq!(drueck(Key::Char('W'), M), None, "W allein ist nichts");
+
+    // Alt allein: Menü erst beim Loslassen
+    let mut k = Shortcuts::default();
+    assert_eq!(kuerzel(&mut k, Key::Alt, true, MODS_ALT, true), None);
+    assert_eq!(
+        kuerzel(&mut k, Key::Alt, false, M, true).as_deref(),
+        Some("Menü")
+    );
+    // Alt+F4 und Alt+Tab: kein Menü
+    for zweite in [taste_f4(), Key::Tab] {
+        let mut k = Shortcuts::default();
+        kuerzel(&mut k, Key::Alt, true, MODS_ALT, true);
+        kuerzel(&mut k, zweite, true, MODS_ALT, true);
+        kuerzel(&mut k, zweite, false, MODS_ALT, true);
+        assert_eq!(
+            kuerzel(&mut k, Key::Alt, false, M, true),
+            None,
+            "{zweite:?}"
+        );
+    }
+    // Werkzeug in Eingabe oder Ziehen: keine Kürzel
+    let mut k = Shortcuts::default();
+    for (key, mods) in [
+        (Key::Char('W'), MODS_STRG),
+        (Key::Char('Z'), MODS_STRG_UMSCHALT),
+        (Key::Char('N'), MODS_STRG),
+    ] {
+        assert_eq!(kuerzel(&mut k, key, true, mods, false), None);
+    }
+}
+
+/// A63 (E17 §2, §5, Test 5): Liste „Zuletzt geöffnet“. Neueste oben, ohne
+/// Doppel, höchstens 8; fehlende Datei ausgegraut mit „nicht gefunden“, Klick
+/// entfernt sie; „Liste leeren“; Rundlauf über einstellungen.txt.
+#[test]
+fn a63_zuletzt_geoeffnet() {
+    let d = test_dir("zuletzt");
+    let datei = |n: &str| {
+        let p = d.join(format!("{n}.szo"));
+        std::fs::write(&p, "SZO 3\n").unwrap();
+        p
+    };
+    let (a, b, c) = (datei("A"), datei("B"), datei("C"));
+    let mut r = Recent::default();
+    let mut m = FileMenu::default();
+    m.open();
+    assert_eq!(
+        unterzeilen(&m, &r),
+        [("Keine Dateien".to_string(), String::new(), false)]
+    );
+    for p in [&a, &b, &c] {
+        r.push(p.clone());
+    }
+    let namen = |m: &FileMenu, r: &Recent| {
+        unterzeilen(m, r)
+            .into_iter()
+            .map(|z| z.0)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(namen(&m, &r), ["C.szo", "B.szo", "A.szo", "Liste leeren"]);
+    // Erneut geöffnet: nach oben, kein Doppel
+    r.push(a.clone());
+    assert_eq!(namen(&m, &r), ["A.szo", "C.szo", "B.szo", "Liste leeren"]);
+    // Höchstens 8
+    for i in 0..10 {
+        r.push(datei(&format!("N{i}")));
+    }
+    let z = namen(&m, &r);
+    assert_eq!(z.len(), 9, "8 Dateien + Liste leeren");
+    assert_eq!(z[0], "N9.szo");
+    // Eintrag wählen liefert seinen Platz
+    let mut r = Recent::default();
+    for p in [&a, &b, &c] {
+        r.push(p.clone());
+    }
+    menue_taste(&mut m, taste_runter(), true, &r);
+    menue_taste(&mut m, taste_runter(), true, &r);
+    menue_taste(&mut m, Key::Right, true, &r);
+    menue_taste(&mut m, taste_runter(), true, &r);
+    assert_eq!(
+        menue_taste(&mut m, Key::Enter, true, &r).as_deref(),
+        Some("Zuletzt 1"),
+        "zweiter Eintrag (B)"
+    );
+    // Umbenannt: ausgegraut, „nicht gefunden“
+    std::fs::rename(&b, d.join("B2.szo")).unwrap();
+    let z = unterzeilen(&m, &r);
+    assert_eq!(z[1].0, "B.szo");
+    assert!(!z[1].2 && z[1].1.contains("nicht gefunden"), "{:?}", z[1]);
+    assert!(z[0].2 && z[2].2);
+    r.remove(1);
+    assert_eq!(namen(&m, &r), ["C.szo", "A.szo", "Liste leeren"]);
+    // Rundlauf über die Einstellungsdatei, Schema bleibt erhalten
+    let mut th = Theme::dark();
+    th.rev = 7;
+    let text = einstellungen_schreiben(&th, &r);
+    assert!(text.contains("[zuletzt]"), "{text}");
+    let i_c = text.find("C.szo").unwrap();
+    let i_a = text.find("A.szo").unwrap();
+    assert!(i_c < i_a, "neueste oben");
+    let (th2, r2) = einstellungen_lesen(&text);
+    assert_eq!(namen(&m, &r2), ["C.szo", "A.szo", "Liste leeren"]);
+    assert_eq!(
+        crate::settings::write(&th2),
+        crate::settings::write(&th),
+        "Schema unverändert"
+    );
+    assert_eq!(einstellungen_schreiben(&th2, &r2), text, "bytegleich");
+    // Ohne [zuletzt] (alte Datei): leere Liste, kein Fehler
+    let (_, r3) = einstellungen_lesen(&crate::settings::write(&th));
+    assert_eq!(namen(&m, &r3), ["Keine Dateien"]);
+    // Liste leeren
+    r.clear();
+    assert_eq!(namen(&m, &r), ["Keine Dateien"]);
+    // Mit --ohne-einstellungen gibt es keine Datei, also auch keine Liste
+    let st = crate::settings::Settings::new(
+        ["skizzeo", "--ohne-einstellungen"]
+            .map(String::from)
+            .into_iter(),
+        Some(d.clone()),
+    );
+    assert!(st.path.is_none());
+    // Ordner in der Mitte gekürzt
+    let lang = std::path::Path::new(r"C:\Projekte\2026\Wohnhaus Müller\Entwurf\Haus");
+    let k = ordner_kurz(lang, 24);
+    assert!(k.chars().count() <= 24, "{k}");
+    assert!(
+        k.starts_with(r"C:\Projekte\") && k.ends_with(r"\Haus") && k.contains('…'),
+        "{k}"
+    );
+    assert_eq!(
+        ordner_kurz(std::path::Path::new(r"C:\Haus"), 24),
+        r"C:\Haus"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A64 (E17 §3, Test 6): Nachfrage „Änderungen speichern?“ im eigenen
+/// Fenster. Frage mit Dateiname, zweiter Satz mit der Uhrzeit des letzten
+/// Speicherns (bei „Unbenannt“ ohne), drei Knöpfe, Enter = Speichern,
+/// Esc = Abbrechen.
+#[test]
+fn a64_nachfrage_aenderungen_speichern() {
+    let s = Scene::with_model(Model::with_seed(64));
+    let mut doc = Document::new(s.model().revision());
+    doc.mark_saved(std::path::PathBuf::from("Haus.szo"), s.model().revision());
+    let (frage, satz) = nachfrage(&doc, Some((10, 42)));
+    assert_eq!(frage, "Änderungen an „Haus“ speichern?");
+    assert_eq!(
+        satz.as_deref(),
+        Some("Ohne Speichern gehen die Änderungen seit 10:42 verloren.")
+    );
+    let (_, satz) = nachfrage(&doc, Some((9, 5)));
+    assert_eq!(
+        satz.as_deref(),
+        Some("Ohne Speichern gehen die Änderungen seit 09:05 verloren.")
+    );
+    let neu = Document::new(s.model().revision());
+    let (frage, satz) = nachfrage(&neu, None);
+    assert_eq!(frage, "Änderungen an „Unbenannt“ speichern?");
+    assert_eq!(satz, None);
+    let mut dlg = SaveDialog::default();
+    assert_eq!(dlg.buttons(), ["Speichern", "Nicht speichern", "Abbrechen"]);
+    assert_eq!(dlg.default_button(), 0, "Speichern ist Standard");
+    assert_eq!(antwort(dlg.key(Key::Enter)), Some("Speichern"));
+    assert_eq!(antwort(dlg.key(Key::Escape)), Some("Abbrechen"));
+    assert_eq!(antwort(dlg.key(Key::Char('X'))), None);
+    // Tab wandert zum nächsten Knopf, Enter löst ihn aus
+    dlg.key(Key::Tab);
+    assert_eq!(antwort(dlg.key(Key::Enter)), Some("Nicht speichern"));
+}
+
+/// A65 (ba88dc1, B12): Der Fuß einer OG-Innenwand liegt auf der Höhe des OG
+/// (+2,855): dort greift das violette Band und verschiebt die Wand um genau
+/// das gezogene Maß (vorher lag das Band auf dem Boden).
+#[test]
+fn a65_og_innenwand_fuss_auf_geschosshoehe() {
+    let mut s = Scene::with_model(Model::with_seed(65));
+    gebaeude(&mut s);
+    let og = geschoss(&s, "OG");
+    assert!(s.set_active_storey(og));
+    let c = cam3d();
+    let set = s.model().defaults().interior_wall;
+    let mut t = tool(&s);
+    t.set_category(sk_model::Category::InteriorWall, s.model().wall_layers(set));
+    click(&mut t, &c, vec3(5000.0, 0.0, 2855.0));
+    click(&mut t, &c, vec3(5000.0, 8000.0, 2855.0));
+    let w = t.handle(&key(Key::Enter), &c, W, H, 1.0).commit.unwrap();
+    let iw = s.add_wall_as(&w, sk_model::Category::InteriorWall).unwrap();
+    let x_iw = |s: &Scene| s.chain(iw).unwrap().points[0].x;
+    let ziehen = |s: &mut Scene, z: f64, dx: f64| {
+        // Fuß in der Mitte der 17,5-cm-Wand (x 4825 … 5000)
+        let mut e = WallEdit::default();
+        let (x, y) = px(&c, vec3(4912.5, 4000.0, z));
+        e.handle(&mv(x, y), s, &c, W, H, 1.0, true);
+        e.handle(&down(x, y), s, &c, W, H, 1.0, true);
+        let (x2, y2) = px(&c, vec3(4912.5 + dx, 4000.0, z));
+        e.handle(&mv(x2, y2), s, &c, W, H, 1.0, true);
+        e.handle(&up(x2, y2), s, &c, W, H, 1.0, true);
+    };
+    let x0 = x_iw(&s);
+    assert_eq!(s.chain(iw).unwrap().base, 2855.0, "Fuß auf UK OG");
+    // Auf +2,855: die Wand geht 1 m mit, Länge und Menge bleiben
+    ziehen(&mut s, 2855.0, 1000.0);
+    assert!(
+        (x_iw(&s) - x0 - 1000.0).abs() < 1.0,
+        "{} → {}",
+        x0,
+        x_iw(&s)
+    );
+    assert!((wall_m3(&s, iw, 0) - 3.398491).abs() < 5e-5);
+    assert_eq!(
+        s.model()
+            .element(s.model().wall_at(iw, 0).unwrap())
+            .unwrap()
+            .storey,
+        og
+    );
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+    assert!(s.undo());
+    assert_eq!(x_iw(&s), x0);
+}

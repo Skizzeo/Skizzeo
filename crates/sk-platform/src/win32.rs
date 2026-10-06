@@ -7,8 +7,7 @@
 #![allow(non_snake_case, non_camel_case_types, clippy::upper_case_acronyms)]
 
 use crate::{
-    CaptionArea, Config, Cursor, Event, FileFilter, Key, Modifiers, MouseButton, SaveAnswer,
-    WindowCommand,
+    CaptionArea, Config, Cursor, Event, FileFilter, Key, Modifiers, MouseButton, WindowCommand,
 };
 use std::cell::{Cell, RefCell};
 use std::ffi::{c_char, c_void};
@@ -163,6 +162,27 @@ extern "system" {
     fn GetModuleHandleW(name: *const u16) -> HMODULE;
     fn LoadLibraryA(name: *const c_char) -> HMODULE;
     fn GetProcAddress(m: HMODULE, name: *const c_char) -> *const c_void;
+    fn GetLocalTime(t: *mut SYSTEMTIME);
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct SYSTEMTIME {
+    year: u16,
+    month: u16,
+    day_of_week: u16,
+    day: u16,
+    hour: u16,
+    minute: u16,
+    second: u16,
+    milliseconds: u16,
+}
+
+/// Ortszeit (Stunde, Minute).
+pub fn local_time() -> (u8, u8) {
+    let mut t = SYSTEMTIME::default();
+    unsafe { GetLocalTime(&mut t) };
+    (t.hour as u8, t.minute as u8)
 }
 
 #[link(name = "user32")]
@@ -329,11 +349,7 @@ const VK_SHIFT: i32 = 0x10;
 const VK_CONTROL: i32 = 0x11;
 const VK_MENU: i32 = 0x12;
 const MB_ICONERROR: u32 = 0x10;
-const MB_ICONWARNING: u32 = 0x30;
 const MB_ICONINFORMATION: u32 = 0x40;
-const MB_YESNOCANCEL: u32 = 0x3;
-const IDYES: i32 = 6;
-const IDNO: i32 = 7;
 const OFN_OVERWRITEPROMPT: u32 = 0x0000_0002;
 const OFN_HIDEREADONLY: u32 = 0x0000_0004;
 const OFN_NOCHANGEDIR: u32 = 0x0000_0008;
@@ -376,6 +392,7 @@ struct Shared {
     dpi: AtomicU32,
     caption_height: AtomicU32,
     buttons_width: AtomicU32,
+    left_width: AtomicU32,
     /// Der Nutzer zieht gerade an Rand oder Titelleiste (Windows-Größeziehschleife).
     sizing: AtomicBool,
     /// Gewählter Mauszeiger (Index in [`WndState::cursors`]).
@@ -536,17 +553,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let mut rc = RECT::default();
             GetClientRect(hwnd, &mut rc);
             let (w, h) = (rc.right, rc.bottom);
-            let (cap_h, btn_w, dpi) = STATE.with(|s| {
-                s.borrow().as_ref().map_or((0, 0, 96), |s| {
+            let (cap_h, btn_w, left_w, dpi) = STATE.with(|s| {
+                s.borrow().as_ref().map_or((0, 0, 0, 96), |s| {
                     (
                         s.shared.caption_height.load(Ordering::Relaxed) as i32,
                         s.shared.buttons_width.load(Ordering::Relaxed) as i32,
+                        s.shared.left_width.load(Ordering::Relaxed) as i32,
                         s.shared.dpi.load(Ordering::Relaxed),
                     )
                 })
             });
             let b = (6 * dpi / 96) as i32;
-            let over_buttons = p.x >= w - btn_w && p.y < cap_h;
+            // Knopfgruppen rechts und links (Menü, Rückgängig, E17) gehören der App
+            let over_buttons = (p.x >= w - btn_w || p.x < left_w) && p.y < cap_h;
             if IsZoomed(hwnd) == 0 {
                 let left = p.x < b;
                 let right = p.x >= w - b;
@@ -781,8 +800,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 repeat,
                 mods: mods(),
             });
-            // Alt+F4 und das Systemmenü weiter vom System behandeln lassen
-            if matches!(msg, WM_SYSKEYDOWN | WM_SYSKEYUP) {
+            // Alt allein und F10 öffnen das Dateimenü der App (E17), nicht das
+            // Systemmenü; Alt+F4 und Alt+Leertaste behandelt weiter das System
+            if matches!(msg, WM_SYSKEYDOWN | WM_SYSKEYUP) && !matches!(wp as u32, 0x12 | 0x79) {
                 return DefWindowProcW(hwnd, msg, wp, lp);
             }
             0
@@ -999,23 +1019,6 @@ impl Surface {
         Some(PathBuf::from(String::from_utf16_lossy(&file[..len])))
     }
 
-    pub fn ask_save(&self, question: &str) -> SaveAnswer {
-        let (t, m) = (wide("Skizzeo"), wide(question));
-        let r = unsafe {
-            MessageBoxW(
-                self.hwnd as HWND,
-                m.as_ptr(),
-                t.as_ptr(),
-                MB_YESNOCANCEL | MB_ICONWARNING,
-            )
-        };
-        match r {
-            IDYES => SaveAnswer::Save,
-            IDNO => SaveAnswer::Discard,
-            _ => SaveAnswer::Cancel,
-        }
-    }
-
     pub fn message(&self, text: &str, error: bool) {
         let (t, m) = (wide("Skizzeo"), wide(text));
         let icon = if error {
@@ -1044,6 +1047,9 @@ impl Surface {
         self.shared
             .buttons_width
             .store(a.buttons_width, Ordering::Relaxed);
+        self.shared
+            .left_width
+            .store(a.left_width, Ordering::Relaxed);
     }
 
     /// Legt im aufrufenden Thread einen OpenGL-3.3-Core-Kontext an.
@@ -1142,6 +1148,7 @@ where
             dpi: AtomicU32::new(96),
             caption_height: AtomicU32::new(0),
             buttons_width: AtomicU32::new(0),
+            left_width: AtomicU32::new(0),
             sizing: AtomicBool::new(false),
             cursor: AtomicU32::new(0),
             presented: Mutex::new((0, 0)),

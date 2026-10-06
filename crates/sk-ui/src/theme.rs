@@ -68,6 +68,8 @@ pub struct Ui {
     /// Hinweis an der Maus: Grund und Schrift.
     pub tooltip_bg: Rgba,
     pub tooltip_text: Rgba,
+    /// Dateimenü (E17): Fläche.
+    pub menu_bg: Rgba,
 }
 
 /// Eigene Titelleiste.
@@ -178,6 +180,10 @@ pub struct Sizes {
     pub dialog_h: f32,
     /// Zeilenabstand der Zeilen im Dialog „Gebäude erstellen“ (dip).
     pub dialog_row: f32,
+    /// Dateimenü (E17): Zeilenhöhe, Breite des Menüs und des Untermenüs.
+    pub menu_row: f32,
+    pub menu_w: f32,
+    pub menu_sub_w: f32,
 }
 
 const fn rgb(r: u8, g: u8, b: u8) -> Rgba {
@@ -227,6 +233,7 @@ impl Theme {
                 text_disabled: Rgba(160, 165, 172, 128),
                 tooltip_bg: rgb(20, 25, 32),
                 tooltip_text: text,
+                menu_bg: bg,
             },
             title: Title {
                 // Dunkel wie die Paneele, damit sie sich auch über dem Papier abhebt
@@ -308,6 +315,9 @@ impl Theme {
                 dialog_w: 300.0,
                 dialog_h: 290.0,
                 dialog_row: 30.0,
+                menu_row: 30.0,
+                menu_w: 260.0,
+                menu_sub_w: 320.0,
             },
             px_per_mm: 5.5,
         }

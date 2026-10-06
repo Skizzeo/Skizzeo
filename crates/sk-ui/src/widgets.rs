@@ -45,6 +45,11 @@ impl Fonts {
 /// der deckenden Fläche darüber verdeckt. Das Loch liegt [`HIDDEN_INSET`] Pixel
 /// innerhalb dieser Fläche, damit die geglätteten Kanten genau gleich aussehen.
 pub fn panel(c: &mut Canvas, r: Rect, s: f32, t: &Theme) {
+    panel_filled(c, r, s, t, t.ui.bg);
+}
+
+/// Wie [`panel`] mit eigener Fläche (etwa `menu_bg`).
+pub fn panel_filled(c: &mut Canvas, r: Rect, s: f32, t: &Theme, fill: Rgba) {
     let rad = t.size.corner_radius * s;
     let b = s.round().max(1.0);
     // Deckend überdeckte Bereiche: unter dem Rand bzw. unter der Füllung
@@ -68,7 +73,7 @@ pub fn panel(c: &mut Canvas, r: Rect, s: f32, t: &Theme) {
     c.fill(&p, t.ui.border);
     let mut p = Path::new();
     p.rounded_rect(ix, iy, iw, ih, ir);
-    c.fill(&p, t.ui.bg);
+    c.fill(&p, fill);
 }
 
 /// Hinweis an der Maus: Text auf dunklem Grund mit Rand. Liefert das Bild

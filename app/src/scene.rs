@@ -1112,10 +1112,21 @@ impl Scene {
         self.step(Direction::Undo)
     }
 
-    /// Bezeichnung des Schritts, den „Rückgängig“ als Nächstes zurücknimmt.
-    #[cfg(test)]
+    /// Bezeichnung des Schritts, den „Rückgängig“ als Nächstes zurücknimmt
+    /// (ein Gebäude im Entstehen: „Gebäude erstellt“).
     pub fn undo_label(&self) -> Option<&'static str> {
+        if self.pending.is_some() {
+            return Some("Gebäude erstellt");
+        }
         self.undo.last().map(|t| t.label)
+    }
+
+    /// Bezeichnung des Schritts, den „Wiederherstellen“ als Nächstes ausführt.
+    pub fn redo_label(&self) -> Option<&'static str> {
+        if self.pending.is_some() {
+            return None;
+        }
+        self.redo.last().map(|t| t.label)
     }
 
     pub fn redo(&mut self) -> bool {
