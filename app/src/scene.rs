@@ -9,7 +9,10 @@
 use crate::draw_table::DrawTable;
 use crate::ui::ViewKind;
 use sk_math::{vec3, Vec3};
-use sk_model::{material, run_qto, Category, ElementId, Model, RunId, Solid, WallChain, WallQto};
+use sk_model::{
+    material, run_qto, Category, Direction, ElementId, Model, RunId, Solid, Touched, Txn,
+    WallChain, WallQto,
+};
 use sk_render::{pattern, MeshData};
 use sk_ui::theme::Theme;
 
@@ -87,12 +90,15 @@ impl RunCache {
     }
 }
 
+/// So viele Schritte lassen sich rückgängig machen.
+const HISTORY: usize = 200;
+
 pub struct Scene {
     model: Model,
-    /// Frühere Stände für „Rückgängig“.
-    undo: Vec<Model>,
-    /// Rückgängig gemachte Stände für „Wiederholen“.
-    redo: Vec<Model>,
+    /// Schritte für „Rückgängig“ (die ältesten fallen nach [`HISTORY`] weg).
+    undo: Vec<Txn>,
+    /// Rückgängig gemachte Schritte für „Wiederholen“.
+    redo: Vec<Txn>,
     /// Zwischenspeicher je Wandzug, über den Arena-Platz der [`RunId`].
     cache: Vec<Option<RunCache>>,
     /// Wandzüge, die neu berechnet werden müssen.
@@ -147,7 +153,8 @@ impl Scene {
         Scene::with_model(Model::new())
     }
 
-    pub fn with_model(model: Model) -> Scene {
+    pub fn with_model(mut model: Model) -> Scene {
+        model.require_steps();
         let theme = Theme::dark();
         let table = DrawTable::resolve(&model, &theme);
         let mut s = Scene {
@@ -195,13 +202,10 @@ impl Scene {
     /// erzeugt werden. Bisher nur in Tests; das Einstellungsfenster folgt.
     #[cfg(test)]
     pub fn set_pen(&mut self, id: sk_model::PenId, pen: sk_model::Pen) -> bool {
-        let before = self.model.clone();
-        if !self.model.set_pen(id, pen) {
-            return false;
-        }
-        self.record(before);
-        self.rebuild_dirty(false);
-        true
+        self.begin("Stift ändern");
+        let ok = self.model.set_pen(id, pen);
+        self.commit();
+        ok
     }
 
     /// Rechnet die markierten Wandzüge neu und entfernt gelöschte. `live`: nur
@@ -327,25 +331,49 @@ impl Scene {
             .map(|c| (c.id, c.foot_bounds, c.foot.as_slice()))
     }
 
-    /// Merkt den Stand `before` als Schritt für „Rückgängig“, falls sich seitdem
-    /// etwas geändert hat.
-    pub fn record(&mut self, before: Model) {
-        self.settle();
-        if before.revision() != self.model.revision() {
-            self.undo.push(before);
-            self.redo.clear();
-        }
+    /// Öffnet einen Schritt für „Rückgängig“ (z. B. beim Greifen am Gummiband).
+    pub fn begin(&mut self, label: &'static str) {
+        self.model.begin(label);
     }
 
-    /// Stand für einen späteren [`Scene::record`] oder [`Scene::restore`].
-    pub fn snapshot(&self) -> Model {
-        self.model.clone()
+    /// Schließt den offenen Schritt und legt ihn in den Verlauf, falls er etwas
+    /// geändert hat. Berechnet ausstehende Mengen und Wandzüge.
+    pub fn commit(&mut self) {
+        if let Some(t) = self.model.commit() {
+            self.undo.push(t);
+            if self.undo.len() > HISTORY {
+                self.undo.remove(0);
+            }
+            self.redo.clear();
+        }
+        self.rebuild_dirty(false);
+        self.settle();
+    }
+
+    /// Verwirft den offenen Schritt (Esc beim Ziehen); nur die betroffenen
+    /// Wandzüge werden neu berechnet.
+    pub fn rollback(&mut self) {
+        let touched = self.model.rollback();
+        self.mark_touched(&touched);
+        self.rebuild_dirty(false);
+    }
+
+    fn mark_touched(&mut self, t: &Touched) {
+        if t.library || t.attr {
+            // Bis die Farben auf der Grafikkarte nachgeschlagen werden (E3), sind
+            // sie in die Netze eingebrannt
+            self.mark_all();
+        } else {
+            for &id in &t.runs {
+                self.mark(id);
+            }
+        }
     }
 
     /// Legt die Außenwand an, die `w` beschreibt (Punkte, Bezugsseite, Höhe),
     /// mit dem voreingestellten Außenwand-Aufbau.
     pub fn add_wall(&mut self, w: &WallChain) -> Option<RunId> {
-        let before = self.model.clone();
+        self.begin("Wand zeichnen");
         let set = self.model.defaults().exterior_wall;
         let run = self.model.add_wall_run(
             &w.points,
@@ -355,11 +383,10 @@ impl Scene {
             set,
             Category::ExteriorWall,
         );
-        self.record(before);
         if let Some(id) = run {
             self.mark(id);
         }
-        self.rebuild_dirty(false);
+        self.commit();
         run
     }
 
@@ -372,37 +399,27 @@ impl Scene {
         }
     }
 
-    /// Setzt das Modell ohne Verlaufseintrag zurück (Abbruch einer Live-Änderung).
-    pub fn restore(&mut self, before: Model) {
-        self.model.restore(before);
-        self.mark_all();
-        self.rebuild_dirty(false);
-    }
-
     pub fn undo(&mut self) -> bool {
-        match self.undo.pop() {
-            Some(prev) => {
-                self.redo.push(self.model.clone());
-                self.model.restore(prev);
-                self.mark_all();
-                self.rebuild_dirty(false);
-                true
-            }
-            None => false,
-        }
+        self.step(Direction::Undo)
     }
 
     pub fn redo(&mut self) -> bool {
-        match self.redo.pop() {
-            Some(next) => {
-                self.undo.push(self.model.clone());
-                self.model.restore(next);
-                self.mark_all();
-                self.rebuild_dirty(false);
-                true
-            }
-            None => false,
-        }
+        self.step(Direction::Redo)
+    }
+
+    fn step(&mut self, dir: Direction) -> bool {
+        let (from, to) = match dir {
+            Direction::Undo => (&mut self.undo, &mut self.redo),
+            Direction::Redo => (&mut self.redo, &mut self.undo),
+        };
+        let Some(t) = from.pop() else {
+            return false;
+        };
+        let touched = self.model.apply(&t, dir);
+        to.push(t);
+        self.mark_touched(&touched);
+        self.rebuild_dirty(false);
+        true
     }
 
     /// Netz einer Ansicht aus allen Wandzügen außer `except` (der gerade gezogene).
@@ -580,16 +597,19 @@ mod tests {
         let a = s.add_wall(&rechteck(0.0)).unwrap();
         let b = s.add_wall(&rechteck(10000.0)).unwrap();
         assert_eq!((s.build_count(a), s.build_count(b)), (1, 1));
-        let before = s.snapshot();
+        s.begin("Wand verschieben");
         // Oberes Segment 50 cm nach außen
         let moved = s.chain(a).unwrap().with_segment_moved(1, -500.0).unwrap();
         s.set_run_points(a, &moved.points);
-        s.record(before);
+        s.commit();
         assert_eq!((s.build_count(a), s.build_count(b)), (2, 1));
         // Gesamtquader folgt der Änderung
         assert!((s.bounds().unwrap().1.y - 4500.0).abs() < 1e-6);
-        // Nach Rückgängig stimmt alles mit einem vollständigen Neuaufbau überein
+        // Rückgängig rechnet nur den betroffenen Zug neu, und alles stimmt mit
+        // einem vollständigen Neuaufbau überein
         assert!(s.undo());
+        assert_eq!((s.build_count(a), s.build_count(b)), (3, 1));
+        assert!((s.bounds().unwrap().1.y - 4000.0).abs() < 1e-6);
         let mut full = Scene::with_model(s.model().clone());
         for v in [ViewKind::Persp, ViewKind::Plan] {
             assert!(same(&s.mesh(v, None, None), &full.mesh(v, None, None)));

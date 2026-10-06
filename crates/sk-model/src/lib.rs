@@ -14,6 +14,7 @@ pub mod library;
 pub mod model;
 pub mod qto;
 pub mod solid;
+pub mod txn;
 pub mod wall;
 
 pub use attr::{
@@ -34,4 +35,5 @@ pub use model::{Defaults, Model, NumberError};
 pub use qto::{run_qto, wall_qto, LayerQto, WallQto};
 pub use solid::Solid;
 pub use solid::{edge_kind, material, Edge, Tri};
+pub use txn::{Change, Direction, Touched, Txn};
 pub use wall::{Layer, RefSide, WallChain};

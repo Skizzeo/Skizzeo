@@ -328,8 +328,8 @@ mod tests {
         let run = s.add_wall(&rechteck()).unwrap();
         // Linke Wand: wird länger, wenn die obere nach außen rückt
         let wall = s.model().wall_at(run, 0).unwrap();
-        let before = s.snapshot();
         let vol = s.wall_qto(wall).unwrap().volume;
+        s.begin("Wand verschieben");
         // Live-Ziehen der oberen Wand: keine Mengen
         let moved = s
             .chain(run)
@@ -339,7 +339,7 @@ mod tests {
         s.set_run_points(run, &moved.points);
         assert!(s.wall_qto(wall).is_none());
         // Loslassen: Mengen für den neuen Stand
-        s.record(before);
+        s.commit();
         let q = s.wall_qto(wall).unwrap();
         assert!(q.volume > vol);
         assert_eq!(Some(q), sk_model::wall_qto(s.model(), wall).as_ref());

@@ -208,14 +208,31 @@ impl Attributes {
         self.rev += 1;
     }
 
-    /// Bereitet diesen (früheren) Stand darauf vor, `later` zu ersetzen
-    /// (Rückgängig): Kennungen kehren nicht wieder, die Revision steigt weiter.
-    pub(crate) fn replace(&mut self, later: &Attributes) {
-        self.pens.keep_generations(&later.pens);
-        self.line_types.keep_generations(&later.line_types);
-        self.fills.keep_generations(&later.fills);
-        self.surfaces.keep_generations(&later.surfaces);
-        self.rev = later.rev + 1;
+    // Rückgängig/Wiederholen ([`crate::Model::apply`]): Einträge mit ihrer
+    // alten Kennung setzen; die Revision steigt danach einmal über `bump`.
+
+    pub(crate) fn put_pen(&mut self, id: PenId, v: Option<Pen>) {
+        self.pens.set(id, v);
+    }
+
+    pub(crate) fn put_line_type(&mut self, id: LineTypeId, v: Option<LineType>) {
+        self.line_types.set(id, v);
+    }
+
+    pub(crate) fn put_fill(&mut self, id: FillId, v: Option<Fill>) {
+        self.fills.set(id, v);
+    }
+
+    pub(crate) fn put_surface(&mut self, id: SurfaceId, v: Option<Surface>) {
+        self.surfaces.set(id, v);
+    }
+
+    pub(crate) fn put_display(&mut self, d: Display) {
+        self.display = d;
+    }
+
+    pub(crate) fn bump(&mut self) {
+        self.rev += 1;
     }
 
     /// Verstöße gegen die Verweisregeln (jede Kantenart verweist auf Lebendes).
@@ -365,7 +382,6 @@ mod tests {
     #[test]
     fn aenderung_erhoeht_revision_auch_nach_rueckgaengig() {
         let mut m = Model::with_seed(2);
-        let before = m.clone();
         let (id, pen) = m
             .attr()
             .pens()
@@ -374,6 +390,7 @@ mod tests {
             .map(|(i, p)| (i, p.clone()))
             .unwrap();
         let (rev, model_rev) = (m.attr().rev(), m.revision());
+        m.begin("Stift");
         assert!(m.set_pen(
             id,
             super::Pen {
@@ -381,10 +398,12 @@ mod tests {
                 ..pen.clone()
             }
         ));
+        let t = m.commit().unwrap();
         assert!(m.attr().rev() > rev && m.revision() > model_rev);
         // Zurück zum alten Stand: Werte wie vorher, Revision aber neu
         let changed = m.attr().rev();
-        m.restore(before);
+        let touched = m.apply(&t, crate::Direction::Undo);
+        assert!(touched.attr);
         assert!(m.attr().rev() > changed);
         assert!((m.attr().pen(id).unwrap().width_mm - 0.13).abs() < 1e-6);
         // Ein Verweis ins Leere fällt auf: Stift aus einem anderen Modell

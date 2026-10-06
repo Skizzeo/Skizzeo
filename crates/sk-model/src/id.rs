@@ -173,28 +173,45 @@ impl<T> Arena<T> {
         self.iter().map(|(id, _)| id)
     }
 
-    /// Bereitet diesen (früheren) Stand darauf vor, den späteren Stand `later` zu
-    /// ersetzen (Rückgängig/Wiederholen): Belegte Plätze behalten ihre Kennung,
-    /// freie Plätze bekommen eine Generation, die auch `later` nie vergeben hat.
-    /// So zeigt eine Kennung aus dem verworfenen Stand nie auf ein späteres
-    /// Bauteil am selben Platz.
-    pub fn keep_generations(&mut self, later: &Arena<T>) {
-        while self.slots.len() < later.slots.len() {
+    /// Belegt den Platz von `id` wieder mit genau dieser Kennung (Rückgängig
+    /// eines Löschens, Wiederholen eines Einfügens). `false`, wenn der Platz
+    /// belegt ist. Neue Einträge bekommen weiterhin nur nie vergebene
+    /// Generationen.
+    pub fn restore(&mut self, id: Id<T>, value: T) -> bool {
+        let i = id.index as usize;
+        while self.slots.len() <= i {
+            // Plätze dahinter gab es nie: keine ihrer Kennungen wurde vergeben
+            self.free.push(self.slots.len() as u32);
             self.slots.push(Slot {
                 gen: 0,
                 value: None,
-                fresh: 0,
+                fresh: 1,
             });
         }
-        self.free.clear();
-        for (i, slot) in self.slots.iter_mut().enumerate().rev() {
-            let fresh = later.slots.get(i).map_or(0, |l| l.fresh).max(slot.fresh);
-            if slot.value.is_some() {
-                slot.fresh = fresh;
-            } else {
-                slot.gen = fresh;
-                slot.fresh = fresh.wrapping_add(1);
-                self.free.push(i as u32);
+        let slot = &mut self.slots[i];
+        if slot.value.is_some() {
+            return false;
+        }
+        slot.gen = id.gen;
+        slot.value = Some(value);
+        slot.fresh = slot.fresh.max(id.gen.wrapping_add(1));
+        self.free.retain(|&f| f != id.index);
+        self.len += 1;
+        true
+    }
+
+    /// Setzt den Eintrag `id` auf `value`: ersetzt, stellt wieder her oder
+    /// entfernt ihn.
+    pub fn set(&mut self, id: Id<T>, value: Option<T>) {
+        match value {
+            Some(v) => match self.get_mut(id) {
+                Some(x) => *x = v,
+                None => {
+                    self.restore(id, v);
+                }
+            },
+            None => {
+                self.remove(id);
             }
         }
     }
@@ -224,32 +241,37 @@ mod tests {
     }
 
     #[test]
-    fn rueckgaengig_vergibt_keine_alte_kennung() {
+    fn wiederherstellen_mit_alter_kennung() {
         let mut a: Arena<&str> = Arena::new();
         let x = a.insert("x");
-        let earlier = a.clone();
-        // Im späteren Stand: neuer Eintrag, x gelöscht, Platz neu belegt
         let y = a.insert("y");
+        // Löschen und Rückgängig: dieselbe Kennung
         a.remove(x);
+        assert!(a.restore(x, "x"));
+        assert_eq!(a.get(x), Some(&"x"));
+        assert!(!a.restore(x, "x2"), "Platz belegt");
+        assert_eq!(a.len(), 2);
+        // Einfügen, Rückgängig (Entfernen), Wiederholen
         let z = a.insert("z");
-        // Zurück zum früheren Stand
-        let mut back = earlier;
-        back.keep_generations(&a);
-        assert_eq!(back.get(x), Some(&"x"));
-        assert_eq!(back.get(y), None);
-        assert_eq!(back.get(z), None);
-        // Neue Einträge bekommen keine der verworfenen Kennungen
-        let n1 = back.insert("n1");
-        let n2 = back.insert("n2");
-        for old in [y, z] {
+        a.remove(z);
+        a.set(z, Some("z"));
+        assert_eq!(a.get(z), Some(&"z"));
+        // Neue Einträge bekommen nie eine früher vergebene Kennung
+        a.remove(x);
+        a.remove(z);
+        let n1 = a.insert("n1");
+        let n2 = a.insert("n2");
+        for old in [x, y, z] {
             assert_ne!(n1, old);
             assert_ne!(n2, old);
         }
-        back.remove(x);
-        let n3 = back.insert("n3");
-        for old in [x, y, z] {
-            assert_ne!(n3, old);
-        }
-        assert_eq!(back.len(), 3);
+        assert_eq!(a.len(), 3);
+        // Ein Platz hinter dem Ende
+        let mut b: Arena<&str> = Arena::new();
+        assert!(b.restore(x, "x"));
+        assert!(b.restore(y, "y"));
+        let n = b.insert("n");
+        assert!(n != x && n != y);
+        assert_eq!(b.len(), 3);
     }
 }

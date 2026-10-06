@@ -17,6 +17,7 @@ use crate::library::{
     MaterialLayer,
 };
 use crate::solid::material;
+use crate::txn::{Change, Direction, Key, Open, Touched, Txn};
 use crate::wall::{clean_points, segment_count, Layer, RefSide, WallChain};
 use sk_math::{vec3, Vec3};
 
@@ -49,6 +50,34 @@ pub struct Model {
     numbers: [u32; Category::ALL.len()],
     revision: u64,
     guids: GuidGen,
+    /// Offener Schritt für Rückgängig ([`Model::begin`]).
+    txn: Option<Open>,
+    /// Jede Änderung muss in einem Schritt liegen (in der App; in Tests nicht).
+    strict: bool,
+}
+
+/// Merkt den Stand eines Datensatzes vor seiner ersten Änderung im offenen
+/// Schritt; `new`: eben angelegt, vorher gab es ihn nicht.
+macro_rules! note {
+    ($self:ident, $variant:ident, new $id:expr) => {
+        note!(@push $self, $variant, $id, |_| None)
+    };
+    ($self:ident, $variant:ident, $arena:expr, $id:expr) => {
+        note!(@push $self, $variant, $id, |id| $arena.get(id).cloned())
+    };
+    (@push $self:ident, $variant:ident, $id:expr, $old:expr) => {{
+        let id = $id;
+        match $self.txn.as_mut() {
+            Some(t) => {
+                if t.noted.insert(Key::$variant(id)) {
+                    #[allow(clippy::redundant_closure_call)]
+                    let old = ($old)(id);
+                    t.changes.push(Change::$variant { id, old, new: None });
+                }
+            }
+            None => debug_assert!(!$self.strict, "Änderung ohne Schritt"),
+        }
+    }};
 }
 
 impl Default for Model {
@@ -168,6 +197,8 @@ impl Model {
             numbers: [0; Category::ALL.len()],
             revision: 0,
             guids,
+            txn: None,
+            strict: false,
         }
     }
 
@@ -197,43 +228,65 @@ impl Model {
 
     pub fn add_pen(&mut self, p: Pen) -> PenId {
         self.touch();
-        self.attr.add_pen(p)
+        let id = self.attr.add_pen(p);
+        note!(self, Pen, new id);
+        id
     }
 
     pub fn add_line_type(&mut self, l: LineType) -> LineTypeId {
         self.touch();
-        self.attr.add_line_type(l)
+        let id = self.attr.add_line_type(l);
+        note!(self, LineType, new id);
+        id
     }
 
     pub fn add_fill(&mut self, f: Fill) -> FillId {
         self.touch();
-        self.attr.add_fill(f)
+        let id = self.attr.add_fill(f);
+        note!(self, Fill, new id);
+        id
     }
 
     pub fn add_surface(&mut self, s: Surface) -> SurfaceId {
         self.touch();
-        self.attr.add_surface(s)
+        let id = self.attr.add_surface(s);
+        note!(self, Surface, new id);
+        id
     }
 
     pub fn set_pen(&mut self, id: PenId, p: Pen) -> bool {
+        note!(self, Pen, self.attr.pens(), id);
         let ok = self.attr.set_pen(id, p);
         self.revision += ok as u64;
         ok
     }
 
     pub fn set_fill(&mut self, id: FillId, f: Fill) -> bool {
+        note!(self, Fill, self.attr.fills(), id);
         let ok = self.attr.set_fill(id, f);
         self.revision += ok as u64;
         ok
     }
 
     pub fn set_surface(&mut self, id: SurfaceId, s: Surface) -> bool {
+        note!(self, Surface, self.attr.surfaces(), id);
         let ok = self.attr.set_surface(id, s);
         self.revision += ok as u64;
         ok
     }
 
     pub fn set_display(&mut self, d: Display) {
+        match self.txn.as_mut() {
+            Some(t) => {
+                if t.noted.insert(Key::Display) {
+                    t.changes.push(Change::Display {
+                        old: self.attr.display().clone(),
+                        new: d.clone(),
+                    });
+                }
+            }
+            None => debug_assert!(!self.strict, "Änderung ohne Schritt"),
+        }
         self.touch();
         self.attr.set_display(d);
     }
@@ -259,7 +312,9 @@ impl Model {
 
     pub fn add_material(&mut self, m: Material) -> MaterialId {
         self.touch();
-        self.materials.insert(m)
+        let id = self.materials.insert(m);
+        note!(self, Material, new id);
+        id
     }
 
     pub fn layer_sets(&self) -> &Arena<LayerSet> {
@@ -272,11 +327,16 @@ impl Model {
 
     pub fn add_layer_set(&mut self, s: LayerSet) -> LayerSetId {
         self.touch();
-        self.layer_sets.insert(s)
+        let id = self.layer_sets.insert(s);
+        note!(self, LayerSet, new id);
+        id
     }
 
     /// Ändert einen Aufbau; alle Bauteile dieses Typs folgen.
     pub fn set_layer_set(&mut self, id: LayerSetId, s: LayerSet) -> bool {
+        if self.layer_sets.contains(id) {
+            note!(self, LayerSet, self.layer_sets, id);
+        }
         match self.layer_sets.get_mut(id) {
             Some(old) => {
                 *old = s;
@@ -352,6 +412,10 @@ impl Model {
             Some(other) => return Err(NumberError::Taken(other)),
             None => {}
         }
+        if !self.elements.contains(id) {
+            return Err(NumberError::NoElement);
+        }
+        note!(self, Element, self.elements, id);
         let e = self.elements.get_mut(id).ok_or(NumberError::NoElement)?;
         e.number = number.to_string();
         self.touch();
@@ -361,7 +425,7 @@ impl Model {
     fn new_wall(&mut self, run: RunId, seg: usize, template: &Element) -> ElementId {
         let guid = self.new_guid();
         let number = self.next_number(template.category);
-        self.elements.insert(Element {
+        let id = self.elements.insert(Element {
             guid,
             number,
             kind: ElementKind::Wall(Wall {
@@ -369,7 +433,9 @@ impl Model {
                 seg: seg as u32,
             }),
             ..template.clone()
-        })
+        });
+        note!(self, Element, new id);
+        id
     }
 
     // --- Wandzüge ---------------------------------------------------------
@@ -410,6 +476,7 @@ impl Model {
             storey,
             segments: Vec::new(),
         });
+        note!(self, Run, new run);
         let template = Element {
             guid: Guid(0),
             number: String::new(),
@@ -442,6 +509,7 @@ impl Model {
             return false;
         }
         let old = run.segments.clone();
+        note!(self, Run, self.runs, id);
         let matched = if old.len() == count {
             (0..count).map(Some).collect()
         } else {
@@ -458,6 +526,9 @@ impl Model {
                 (Some(o), _) => {
                     kept[o] = true;
                     let e = old[o];
+                    if self.segment_of(e).map(|s| s.1) != Some(k) {
+                        note!(self, Element, self.elements, e);
+                    }
                     if let Some(ElementKind::Wall(w)) =
                         self.elements.get_mut(e).map(|el| &mut el.kind)
                     {
@@ -471,6 +542,7 @@ impl Model {
         }
         for (e, keep) in old.into_iter().zip(kept) {
             if !keep {
+                note!(self, Element, self.elements, e);
                 self.elements.remove(e);
             }
         }
@@ -486,10 +558,15 @@ impl Model {
 
     /// Entfernt einen Wandzug mit allen seinen Wänden.
     pub fn remove_run(&mut self, id: RunId) -> bool {
+        if !self.runs.contains(id) {
+            return false;
+        }
+        note!(self, Run, self.runs, id);
         let Some(run) = self.runs.remove(id) else {
             return false;
         };
         for e in run.segments {
+            note!(self, Element, self.elements, e);
             self.elements.remove(e);
         }
         self.touch();
@@ -536,27 +613,125 @@ impl Model {
 
     // --- Rückgängig -------------------------------------------------------
 
-    /// Setzt das Modell auf einen früheren Stand zurück (Rückgängig, Abbruch).
-    /// Guid-Erzeuger und Nummernzähler laufen weiter, damit nichts doppelt
-    /// vergeben wird; die Revision steigt.
-    pub fn restore(&mut self, mut earlier: Model) {
-        // Kennungen aus dem verworfenen Stand dürfen nicht wiederkehren
-        earlier.materials.keep_generations(&self.materials);
-        earlier.layer_sets.keep_generations(&self.layer_sets);
-        earlier.storeys.keep_generations(&self.storeys);
-        earlier.elements.keep_generations(&self.elements);
-        earlier.runs.keep_generations(&self.runs);
-        earlier.attr.replace(&self.attr);
-        let guids = self.guids.clone();
-        let revision = self.revision + 1;
-        let mut numbers = self.numbers;
-        for (n, e) in numbers.iter_mut().zip(earlier.numbers) {
-            *n = (*n).max(e);
+    /// Verlangt ab jetzt für jede Änderung einen offenen Schritt (App).
+    pub fn require_steps(&mut self) {
+        self.strict = true;
+    }
+
+    /// Öffnet einen Schritt. Ein noch offener wird vorher geschlossen und verworfen.
+    pub fn begin(&mut self, label: &'static str) {
+        debug_assert!(self.txn.is_none(), "Schritt schon offen");
+        self.txn = Some(Open {
+            label,
+            changes: Vec::new(),
+            noted: Default::default(),
+        });
+    }
+
+    pub fn in_step(&self) -> bool {
+        self.txn.is_some()
+    }
+
+    /// Schließt den offenen Schritt. `None`, wenn er nichts geändert hat.
+    pub fn commit(&mut self) -> Option<Txn> {
+        let open = self.txn.take()?;
+        let mut changes = open.changes;
+        for c in &mut changes {
+            self.fill_new(c);
         }
-        *self = earlier;
-        self.guids = guids;
-        self.numbers = numbers;
-        self.revision = revision;
+        changes.retain(|c| !c.is_noop());
+        (!changes.is_empty()).then_some(Txn {
+            label: open.label,
+            changes,
+        })
+    }
+
+    /// Verwirft den offenen Schritt und stellt den Stand bei [`Model::begin`]
+    /// wieder her (Esc beim Ziehen).
+    pub fn rollback(&mut self) -> Touched {
+        match self.commit() {
+            Some(t) => self.apply(&t, Direction::Undo),
+            None => Touched::default(),
+        }
+    }
+
+    /// Trägt den heutigen Stand als „nachher“ ein.
+    fn fill_new(&self, c: &mut Change) {
+        match c {
+            Change::Run { id, new, .. } => *new = self.runs.get(*id).cloned(),
+            Change::Element { id, new, .. } => *new = self.elements.get(*id).cloned(),
+            Change::LayerSet { id, new, .. } => *new = self.layer_sets.get(*id).cloned(),
+            Change::Material { id, new, .. } => *new = self.materials.get(*id).cloned(),
+            Change::Storey { id, new, .. } => *new = self.storeys.get(*id).cloned(),
+            Change::Pen { id, new, .. } => *new = self.attr.pen(*id).cloned(),
+            Change::LineType { id, new, .. } => *new = self.attr.line_type(*id).cloned(),
+            Change::Fill { id, new, .. } => *new = self.attr.fill(*id).cloned(),
+            Change::Surface { id, new, .. } => *new = self.attr.surface(*id).cloned(),
+            Change::Display { new, .. } => *new = self.attr.display().clone(),
+        }
+    }
+
+    /// Macht einen Schritt rückgängig oder wiederholt ihn. Kennungen bleiben
+    /// erhalten; Guid-Erzeuger und Nummernzähler laufen weiter, die Revision steigt.
+    pub fn apply(&mut self, t: &Txn, dir: Direction) -> Touched {
+        debug_assert!(self.txn.is_none(), "Rückgängig in einem offenen Schritt");
+        let mut touched = Touched::default();
+        let mut apply_one = |m: &mut Model, c: &Change| match c {
+            Change::Run { id, old, new } => {
+                m.runs.set(*id, pick(dir, old, new));
+                touched.run(*id);
+            }
+            Change::Element { id, old, new } => {
+                for e in [old, new].into_iter().flatten() {
+                    match e.kind {
+                        ElementKind::Wall(w) => touched.run(w.run),
+                    }
+                }
+                m.elements.set(*id, pick(dir, old, new));
+            }
+            Change::LayerSet { id, old, new } => {
+                m.layer_sets.set(*id, pick(dir, old, new));
+                touched.library = true;
+            }
+            Change::Material { id, old, new } => {
+                m.materials.set(*id, pick(dir, old, new));
+                touched.library = true;
+            }
+            Change::Storey { id, old, new } => {
+                m.storeys.set(*id, pick(dir, old, new));
+                touched.library = true;
+            }
+            Change::Pen { id, old, new } => {
+                m.attr.put_pen(*id, pick(dir, old, new));
+                touched.attr = true;
+            }
+            Change::LineType { id, old, new } => {
+                m.attr.put_line_type(*id, pick(dir, old, new));
+                touched.attr = true;
+            }
+            Change::Fill { id, old, new } => {
+                m.attr.put_fill(*id, pick(dir, old, new));
+                touched.attr = true;
+            }
+            Change::Surface { id, old, new } => {
+                m.attr.put_surface(*id, pick(dir, old, new));
+                touched.attr = true;
+            }
+            Change::Display { old, new } => {
+                m.attr.put_display(pick(dir, old, new));
+                touched.attr = true;
+            }
+        };
+        // Rückwärts in umgekehrter Reihenfolge: ein Platz wird erst frei, dann neu belegt
+        match dir {
+            Direction::Undo => t.changes.iter().rev().for_each(|c| apply_one(self, c)),
+            Direction::Redo => t.changes.iter().for_each(|c| apply_one(self, c)),
+        }
+        if touched.attr {
+            self.attr.bump();
+        }
+        self.touch();
+        touched
     }
 
     // --- Prüfung ----------------------------------------------------------
@@ -648,6 +823,14 @@ impl Model {
 }
 
 /// Segmente eines Zuges als (Anfang, Ende).
+/// Stand vorher (Rückgängig) bzw. nachher (Wiederholen).
+fn pick<T: Clone>(dir: Direction, old: &T, new: &T) -> T {
+    match dir {
+        Direction::Undo => old.clone(),
+        Direction::Redo => new.clone(),
+    }
+}
+
 fn segment_lines(pts: &[Vec3], closed: bool) -> Vec<(Vec3, Vec3)> {
     let n = pts.len();
     (0..segment_count(n, closed))
@@ -846,20 +1029,144 @@ mod tests {
         assert!(m.check().is_empty(), "{:?}", m.check());
     }
 
+    /// Parametrik ohne Revision und Zähler, zum Vergleichen zweier Stände.
+    fn state(m: &Model) -> String {
+        format!(
+            "{:?}{:?}{:?}{:?}{:?}{:?}",
+            m.runs.iter().collect::<Vec<_>>(),
+            m.elements.iter().collect::<Vec<_>>(),
+            m.layer_sets.iter().collect::<Vec<_>>(),
+            m.materials.iter().collect::<Vec<_>>(),
+            m.attr.pens().iter().collect::<Vec<_>>(),
+            m.attr.display(),
+        )
+    }
+
     #[test]
     fn rueckgaengig_vergibt_nichts_doppelt() {
         let mut m = Model::with_seed(5);
-        let empty = m.clone();
+        m.require_steps();
+        let empty = state(&m);
+        m.begin("Wand");
         let r = rechteck(&mut m);
+        let t = m.commit().unwrap();
         let guid = m.run(r).unwrap().guid;
         let rev = m.revision();
-        m.restore(empty);
+        let touched = m.apply(&t, Direction::Undo);
+        assert_eq!(touched.runs, vec![r]);
         assert!(m.runs().is_empty() && m.elements().is_empty());
+        assert_eq!(state(&m), empty);
         assert!(m.revision() > rev);
-        let r = rechteck(&mut m);
-        assert_ne!(m.run(r).unwrap().guid, guid);
-        let first = m.run(r).unwrap().segments[0];
+        m.begin("Wand");
+        let r2 = rechteck(&mut m);
+        m.commit();
+        assert_ne!(r2, r);
+        assert_ne!(m.run(r2).unwrap().guid, guid);
+        let first = m.run(r2).unwrap().segments[0];
         assert_eq!(m.element(first).unwrap().number, "AW-005");
+    }
+
+    #[test]
+    fn anlegen_rueckgaengig_wiederholen_behaelt_kennungen() {
+        let mut m = Model::with_seed(7);
+        m.require_steps();
+        m.begin("Wand");
+        let r = rechteck(&mut m);
+        let t = m.commit().unwrap();
+        let walls = m.run(r).unwrap().segments.clone();
+        let numbers: Vec<String> = walls
+            .iter()
+            .map(|e| m.element(*e).unwrap().number.clone())
+            .collect();
+        let after = state(&m);
+        m.apply(&t, Direction::Undo);
+        assert!(m.run(r).is_none());
+        m.apply(&t, Direction::Redo);
+        assert_eq!(state(&m), after);
+        assert_eq!(m.run(r).unwrap().segments, walls);
+        for (e, n) in walls.iter().zip(&numbers) {
+            assert_eq!(&m.element(*e).unwrap().number, n);
+        }
+        assert_eq!(numbers[0], "AW-001");
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    #[test]
+    fn loeschen_rueckgaengig_bringt_alte_kennungen() {
+        let mut m = Model::with_seed(8);
+        m.require_steps();
+        m.begin("Wand");
+        let r = rechteck(&mut m);
+        m.commit();
+        let walls = m.run(r).unwrap().segments.clone();
+        let guids: Vec<Guid> = walls.iter().map(|e| m.element(*e).unwrap().guid).collect();
+        let before = state(&m);
+        m.begin("Löschen");
+        assert!(m.remove_run(r));
+        let t = m.commit().unwrap();
+        assert_eq!(t.changes.len(), 1 + walls.len());
+        m.apply(&t, Direction::Undo);
+        assert_eq!(state(&m), before);
+        for (e, g) in walls.iter().zip(&guids) {
+            assert_eq!(m.element(*e).unwrap().guid, *g);
+        }
+        assert!(m.check().is_empty());
+        // Wiederholen löscht, ein neuer Zug bekommt keine früher vergebene Kennung
+        m.apply(&t, Direction::Redo);
+        m.begin("Wand");
+        let r2 = rechteck(&mut m);
+        m.commit();
+        assert_ne!(r2, r);
+        for e in &m.run(r2).unwrap().segments {
+            assert!(!walls.contains(e));
+        }
+    }
+
+    #[test]
+    fn ziehen_ergibt_einen_eintrag() {
+        let mut m = Model::with_seed(9);
+        m.require_steps();
+        m.begin("Wand");
+        let r = rechteck(&mut m);
+        m.commit();
+        let start = m.run(r).unwrap().points.clone();
+        let before = state(&m);
+        m.begin("Verschieben");
+        for i in 1..=100 {
+            let mut p = start.clone();
+            p[2].x += i as f64 * 10.0;
+            p[3].x += i as f64 * 10.0;
+            assert!(m.set_run_points(r, &p));
+        }
+        let t = m.commit().unwrap();
+        assert_eq!(t.changes.len(), 1, "{:?}", t.changes);
+        assert!(matches!(t.changes[0], Change::Run { id, .. } if id == r));
+        m.apply(&t, Direction::Undo);
+        assert_eq!(m.run(r).unwrap().points, start);
+        assert_eq!(state(&m), before);
+    }
+
+    #[test]
+    fn abbrechen_stellt_den_stand_beim_greifen_her() {
+        let mut m = Model::with_seed(10);
+        m.require_steps();
+        m.begin("Wand");
+        let r = rechteck(&mut m);
+        m.commit();
+        let before = state(&m);
+        let start = m.run(r).unwrap().points.clone();
+        m.begin("Verschieben");
+        // Auch ein Teilen und Zusammenführen von Segmenten
+        let mut p = start.clone();
+        p.insert(1, vec3(0.0, 3000.0, 0.0));
+        p[2].x += 500.0;
+        assert!(m.set_run_points(r, &p));
+        assert!(m.set_run_points(r, &start[..3]));
+        let touched = m.rollback();
+        assert_eq!(touched.runs, vec![r]);
+        assert!(!m.in_step());
+        assert_eq!(state(&m), before);
+        assert!(m.check().is_empty());
     }
 
     #[test]

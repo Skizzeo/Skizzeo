@@ -11,7 +11,7 @@
 use crate::camera::Camera;
 use crate::scene::Scene;
 use sk_math::{vec3, Vec3};
-use sk_model::{ElementId, Model, RunId, WallChain};
+use sk_model::{ElementId, RunId, WallChain};
 use sk_platform::{Event, Key, MouseButton};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
@@ -29,7 +29,6 @@ struct Drag {
     start: Vec3,
     normal: Vec3,
     original: WallChain,
-    before: Model,
 }
 
 #[derive(Default)]
@@ -292,8 +291,8 @@ impl WallEdit {
                     start,
                     normal,
                     original: original.clone(),
-                    before: scene.snapshot(),
                 });
+                scene.begin("Wand verschieben");
                 out.redraw = true;
             }
             Event::MouseUp {
@@ -301,16 +300,14 @@ impl WallEdit {
                 ..
             } => {
                 if let Some(d) = self.drag.take() {
-                    scene.settle();
-                    // Nur ein Verlaufsschritt, wenn die Wand wirklich woanders steht
+                    // Ein Verlaufsschritt nur, wenn die Wand wirklich woanders steht
                     if scene
                         .chain(d.run)
-                        .is_some_and(|c| c.points != d.original.points)
+                        .is_none_or(|c| c.points == d.original.points)
                     {
-                        scene.record(d.before);
-                    } else {
                         out.clicked = Some(d.wall);
                     }
+                    scene.commit();
                     out.consumed = true;
                     out.redraw = true;
                     self.refresh(scene, cam, w, h, scale, enabled);
@@ -320,14 +317,12 @@ impl WallEdit {
                 key: Key::Escape,
                 down: true,
                 ..
-            } => {
-                if let Some(d) = self.drag.take() {
-                    scene.restore(d.before);
-                    out.consumed = true;
-                    out.changed = true;
-                    out.redraw = true;
-                    self.refresh(scene, cam, w, h, scale, enabled);
-                }
+            } if self.drag.take().is_some() => {
+                scene.rollback();
+                out.consumed = true;
+                out.changed = true;
+                out.redraw = true;
+                self.refresh(scene, cam, w, h, scale, enabled);
             }
             _ => {}
         }

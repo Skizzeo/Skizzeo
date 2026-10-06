@@ -66,7 +66,7 @@ fn bytes(m: &sk_render::MeshData) -> usize {
 fn perf_griff_ziehen() {
     println!();
     println!(
-        "{:>6} {:>5} {:>7} | {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} | {:>8} {:>8} {:>8} {:>8}",
+        "{:>6} {:>5} {:>7} | {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} | {:>8} {:>8} {:>8} {:>8} | {:>8} {:>8} {:>8}",
         "Häuser",
         "Segm",
         "Dreieck",
@@ -80,7 +80,10 @@ fn perf_griff_ziehen() {
         "Voll",
         "Neu",
         "MB/Voll",
-        "MB/Live"
+        "MB/Live",
+        "Anfassen",
+        "Kopie",
+        "Rückg."
     );
     for &(n, segs) in &[(1, 4), (10, 4), (100, 4), (1000, 4), (1, 200), (100, 40)] {
         let mut s = town(n, segs);
@@ -94,6 +97,8 @@ fn perf_griff_ziehen() {
         let orig = s.chain(run).unwrap().clone();
         let mut flip = false;
         // Ein Ziehschritt: Segment verschieben und Szene neu aufbauen
+        // Ein Verlaufsschritt; alle Mausbewegungen bleiben ein Eintrag
+        s.begin("Wand verschieben");
         let drag = time(20, || {
             flip = !flip;
             let moved = orig
@@ -101,6 +106,20 @@ fn perf_griff_ziehen() {
                 .unwrap_or_else(|| orig.clone());
             s.set_run_points(run, &moved.points);
         });
+        s.commit();
+        // Anfassen öffnet nur einen Schritt; früher kopierte es das ganze Modell
+        let grab = time(20, || {
+            s.begin("Wand verschieben");
+            s.rollback();
+        });
+        let copy = time(5, || {
+            std::hint::black_box(s.model().clone());
+        });
+        // Rückgängig und Wiederholen des Ziehens (je ein Zug neu berechnet)
+        let undo = time(10, || {
+            assert!(s.undo());
+            assert!(s.redo());
+        }) / 2.0;
         let mut sect = SectionLine::default();
         sect.ensure(&s);
         let plane = sect.plane();
@@ -134,7 +153,7 @@ fn perf_griff_ziehen() {
         let up = bytes(&s.mesh(ViewKind::Persp, None, None)) as f64 / 1e6;
         let up_live = bytes(&s.mesh_run(ViewKind::Persp, None, run)) as f64 / 1e6;
         println!(
-            "{:>6} {:>5} {:>7} | {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} | {:>8.3} {:>8.3} {:>8.2} {:>8.3}",
+            "{:>6} {:>5} {:>7} | {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} | {:>8.3} {:>8.3} {:>8.2} {:>8.3} | {:>8.4} {:>8.3} {:>8.3}",
             n,
             segs,
             tris,
@@ -148,12 +167,17 @@ fn perf_griff_ziehen() {
             drag + m3,
             drag + live,
             up,
-            up_live
+            up_live,
+            grab,
+            copy,
+            undo
         );
     }
     println!(
         "Zeiten in ms je Aufruf. Ziehen = Wandzug verschieben und neu berechnen. \
          Voll = Ziehen + ganzes Netz3D (ein Bild ohne Live-Netz), Neu = Ziehen + Live3D \
-         (ein Bild beim Ziehen in 3D). MB/Voll bzw. MB/Live = Daten zur Grafikkarte."
+         (ein Bild beim Ziehen in 3D). MB/Voll bzw. MB/Live = Daten zur Grafikkarte. \
+         Anfassen = Schritt öffnen beim Greifen am Gummiband, Kopie = Modellkopie, die \
+         das Greifen vor B3 kostete, Rückg. = Ziehen rückgängig machen."
     );
 }
