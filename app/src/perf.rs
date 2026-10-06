@@ -527,3 +527,221 @@ fn perf_ebene_ziehen() {
         println!("{name:<36} Ziehen {drag:7.2} ms je Bild, Loslassen {release:7.2} ms");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Ab B12 (Obergeschoss): Geschosse liegen wirklich übereinander. Der
+// geschlossene Außenzug im EG erzeugt die gekoppelten Züge darüber; die
+// Innenwände liegen je Geschoss.
+// ---------------------------------------------------------------------------
+
+/// Legt ein Gebäude mit `storeys` Geschossen an und macht sein EG aktiv.
+fn new_building(s: &mut Scene, storeys: u8) {
+    s.edit_model("Gebäude erstellt", |m| {
+        m.add_building(storeys);
+        true
+    });
+    let b = s.model().buildings().ids().last().unwrap();
+    let eg = s.model().ground_of(Some(b)).unwrap();
+    s.set_active_storey(eg);
+}
+
+/// Hauptgebäude mit `storeys` Geschossen ab `(ox, oy)`: Außenwand wie
+/// [`storey`] einmal im EG (gestapelt bis oben), Innenwände in jedem Geschoss.
+fn stacked_house(s: &mut Scene, ox: f64, oy: f64, storeys: u8) {
+    new_building(s, storeys);
+    let b = s.active_building();
+    let levels: Vec<_> = s
+        .model()
+        .levels_in(b)
+        .into_iter()
+        .filter(|id| {
+            s.model()
+                .storey(*id)
+                .is_some_and(|st| st.kind != sk_model::LevelKind::Foundation)
+        })
+        .collect();
+    let eg = levels[0];
+    for (i, id) in levels.into_iter().enumerate() {
+        if i > 0 {
+            s.set_active_storey(id);
+        }
+        // `storey` legt die Außenwand im EG des aktiven Gebäudes an; über dem
+        // EG nur die Innenwände (die Außenwand steht dort schon gekoppelt)
+        let before = s.model().runs().len();
+        storey_walls(s, ox, oy, i == 0);
+        assert!(s.model().runs().len() > before);
+    }
+    s.set_active_storey(eg);
+}
+
+/// Wände eines Geschosses wie in [`storey`]; die Außenwand nur mit `outer`.
+fn storey_walls(s: &mut Scene, ox: f64, oy: f64, outer: bool) {
+    let p = |x: f64, y: f64| vec3(ox + x, oy + y, 0.0);
+    let wall = |points, closed, ref_side| WallChain {
+        base: 0.0,
+        points,
+        closed,
+        ref_side,
+        layers: Vec::new(),
+        height: 2750.0,
+        joints: Default::default(),
+    };
+    if outer {
+        let outline = [
+            (0.0, 1500.0),
+            (0.0, 10500.0),
+            (1500.0, 10500.0),
+            (1500.0, 12000.0),
+            (7000.0, 12000.0),
+            (7000.0, 13000.0),
+            (11000.0, 13000.0),
+            (11000.0, 12000.0),
+            (16500.0, 12000.0),
+            (16500.0, 10500.0),
+            (18000.0, 10500.0),
+            (18000.0, 1500.0),
+            (16500.0, 1500.0),
+            (16500.0, 0.0),
+            (11000.0, 0.0),
+            (11000.0, -1000.0),
+            (7000.0, -1000.0),
+            (7000.0, 0.0),
+            (1500.0, 0.0),
+            (1500.0, 1500.0),
+        ];
+        s.add_wall(&wall(
+            outline.iter().map(|&(x, y)| p(x, y)).collect(),
+            true,
+            RefSide::Left,
+        ));
+    }
+    for x in [3500.0, 6000.0, 12500.0, 15000.0] {
+        let w = wall(vec![p(x, 315.0), p(x, 11685.0)], false, RefSide::Center);
+        s.add_wall_as(&w, sk_model::Category::InteriorWall);
+    }
+    let bays = [
+        (1815.0, 3500.0),
+        (3500.0, 6000.0),
+        (6000.0, 12500.0),
+        (12500.0, 15000.0),
+        (15000.0, 16185.0),
+    ];
+    for (x0, x1) in bays {
+        for y in [4500.0, 7500.0] {
+            let w = wall(vec![p(x0, y), p(x1, y)], false, RefSide::Center);
+            s.add_wall_as(&w, sk_model::Category::InteriorWall);
+        }
+    }
+}
+
+/// Referenz ab B12: `houses` Häuser mit `storeys` Geschossen übereinander
+/// und `annexes` eingeschossige Nebengebäude.
+fn reference_stacked(houses: usize, storeys: u8, annexes: usize) -> Scene {
+    let mut s = Scene::new();
+    for h in 0..houses {
+        stacked_house(&mut s, 0.0, h as f64 * 30000.0, storeys);
+    }
+    for a in 0..annexes {
+        new_building(&mut s, 1);
+        annex(&mut s, a as f64 * 10000.0, -15000.0);
+    }
+    s
+}
+
+/// B12: Wand ziehen am EG-Fuß (alle Geschosse darüber folgen), OK EG ziehen
+/// und Loslassen am Referenzgebäude mit echten Obergeschossen.
+#[test]
+#[ignore]
+fn perf_obergeschoss() {
+    println!();
+    println!(
+        "{:<34} {:>5} {:>6} {:>7} | {:>7} {:>7} {:>7} {:>7} {:>7} | {:>7} {:>7} {:>7} | {:>6}",
+        "Modell (gestapelt)",
+        "Züge",
+        "Teile",
+        "Dreieck",
+        "Ziehen",
+        "Live3D",
+        "Neu",
+        "Loslas",
+        "Rückg.",
+        "Ebene",
+        "Loslas",
+        "Netz3D",
+        "Laden"
+    );
+    for (name, houses, storeys, annexes) in [
+        ("Haus 4 Geschosse", 1, 4u8, 0),
+        ("Referenz: 4 Geschosse + 2 Nebengeb.", 1, 4, 2),
+        ("Groß: 2 Häuser à 4 G. + 2 Nebengeb.", 2, 4, 2),
+        ("Reserve ×4 (8 Häuser à 4 G.)", 8, 4, 2),
+    ] {
+        let mut s = reference_stacked(houses, storeys, annexes);
+        assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+        let runs = s.model().runs().len();
+        let parts = s.model().elements().len();
+        let tris = s.mesh(ViewKind::Persp, None, &[]).faces.len() / 3;
+        // EG-Außenwand des ersten Hauses: Segment 0 nach außen schieben
+        let run = s
+            .model()
+            .runs()
+            .ids()
+            .find(|r| !s.model().stack_above(*r).is_empty())
+            .unwrap();
+        let above = s.model().stack_above(run).len();
+        assert_eq!(above, storeys as usize - 1, "Züge darüber");
+        let orig = s.chain(run).unwrap().clone();
+        let mut flip = false;
+        s.begin("Wand verschieben");
+        let drag = time(20, || {
+            flip = !flip;
+            let moved = orig
+                .with_segment_moved(0, if flip { -100.0 } else { -200.0 })
+                .unwrap_or_else(|| orig.clone());
+            s.set_run_points(run, &moved.points);
+        });
+        let live_set = s.live_set(run);
+        let live = time(20, || {
+            std::hint::black_box(s.mesh_runs(ViewKind::Persp, None, &live_set));
+        });
+        let t = Instant::now();
+        s.commit();
+        let release = t.elapsed().as_secs_f64() * 1000.0;
+        let undo = time(10, || {
+            s.undo();
+            s.redo();
+        }) / 2.0;
+        let eg = s.active_storey();
+        let mut flip = false;
+        s.begin("Geschoss ziehen");
+        let level = time(20, || {
+            flip = !flip;
+            s.drag_storey_top(eg, if flip { 2800.0 } else { 2900.0 });
+            std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
+        });
+        let t = Instant::now();
+        s.commit();
+        let level_release = t.elapsed().as_secs_f64() * 1000.0;
+        let m3 = time(10, || {
+            std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
+        });
+        let text = sk_model::szo::write(s.model());
+        if let Err(e) = sk_model::szo::read(&text, sk_model::GuidGen::with_seed(1)) {
+            let l = text.lines().nth(e.line.saturating_sub(1)).unwrap_or("");
+            panic!("{e:?}: {l}");
+        }
+        let load = time(5, || {
+            let l = sk_model::szo::read(&text, sk_model::GuidGen::with_seed(1)).unwrap();
+            let mut sc = Scene::with_model(l.model);
+            std::hint::black_box(sc.mesh(ViewKind::Persp, None, &[]));
+        });
+        println!(
+            "{:<34} {:>5} {:>6} {:>7} | {:>7.3} {:>7.3} {:>7.3} {:>7.3} {:>7.3} | {:>7.3} {:>7.3} {:>7.3} | {:>6.2}",
+            name, runs, parts, tris, drag, live, drag + live, release, undo, level, level_release, m3, load
+        );
+    }
+    println!(
+        "Zeiten in ms. Ziehen/Live3D/Neu je Mausbewegung (EG-Fuß, alle Geschosse darüber \
+         folgen), Ebene = OK EG ziehen inkl. 3D-Netz je Bild, Loslas = Loslassen einmalig."
+    );
+}
