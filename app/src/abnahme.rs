@@ -1686,6 +1686,79 @@ fn a30_gruendung_folgt_dem_haus() {
 }
 
 // ---------------------------------------------------------------------------
+// A31 (G2): großer Sockelrücksprung an kurzem Vorsprung
+// ---------------------------------------------------------------------------
+
+/// Rechteck 10 × 8 m mit einem Vorsprung `b` × `v` mm an der Unterseite
+/// (ab x = 4000). Gezeichnet wird das Rechteck mit der Maus; die Ecken des
+/// Vorsprungs liegen nur wenige Bildpunkte auseinander und werden direkt
+/// in den Zug eingesetzt.
+fn haus_mit_vorsprung(s: &mut Scene, b: f64, v: f64) -> RunId {
+    let c = cam3d();
+    let mut t = tool(s);
+    for p in RECHTECK {
+        assert!(click(&mut t, &c, p).is_none());
+    }
+    let mut w = click(&mut t, &c, RECHTECK[0]).expect("Klick auf den Startpunkt schließt");
+    w.points.extend([
+        vec3(4000.0 + b, 0.0, 0.0),
+        vec3(4000.0 + b, -v, 0.0),
+        vec3(4000.0, -v, 0.0),
+        vec3(4000.0, 0.0, 0.0),
+    ]);
+    s.add_wall(&w).expect("Wandzug angelegt")
+}
+
+/// A31 (G2): Großer, erlaubter Sockelrücksprung (30 cm bei AW 31,5) an einem
+/// kurzen Vorsprung. Platte und Schürze bleiben vorhanden, die Mengen stimmen.
+#[test]
+fn a31_grosser_ruecksprung_an_kurzem_vorsprung() {
+    // (Breite, Tiefe, Platte m², Schürzenachse m) bei 30 cm Rücksprung.
+    // Schmale Vorsprünge (≤ 60 cm) verschwinden in der Platte: 9,40 × 7,40.
+    // Der breite behält einen eingerückten Rest von 1,40 × 0,20 m.
+    for (b, v, flaeche, achse) in [
+        (50.0, 50.0, 69.56, 32.2),
+        (200.0, 200.0, 69.56, 32.2),
+        (2000.0, 200.0, 69.84, 32.6),
+    ] {
+        let mut s = Scene::with_model(Model::with_seed(31));
+        let run = haus_mit_vorsprung(&mut s, b, v);
+        let (slab, footing) = sohlplatte(&s, run);
+        let buendig = m2(80e6 + b * v);
+        let (sp, fs) = s.foundation_qto(run).unwrap();
+        let fs_vol = fs.volume;
+        assert_eq!(m2(sp.area), buendig, "bündig, {b} × {v}");
+        assert!(s.edit_model("Rücksprung", |m| m.set_slab_recess(slab, 300.0)));
+        let fehler = s.model().check();
+        assert!(fehler.is_empty(), "{b} × {v}: {fehler:?}");
+        // Gleiche Bauteile, beide mit Körper
+        assert_eq!(s.model().foundation_of(run), Some((slab, Some(footing))));
+        for id in [slab, footing] {
+            let p = selection::props(&s, id).unwrap();
+            assert!(
+                !format!("{p:?}").contains("Kein Körper"),
+                "{b} × {v}: {p:?}"
+            );
+        }
+        let (sp, fs) = s.foundation_qto(run).unwrap();
+        assert_eq!(m2(sp.area), flaeche, "Platte, {b} × {v}");
+        assert_eq!(m3(sp.volume), m3(flaeche * 1e6 * 200.0), "Plattenvolumen");
+        assert_eq!(
+            (fs.length / 10.0).round() / 100.0,
+            achse,
+            "Schürzenachse, {b} × {v}"
+        );
+        assert!(
+            fs.volume > 0.0 && fs.volume < fs_vol,
+            "Schürzenvolumen, {b} × {v}"
+        );
+        // Rückgängig: wieder bündig
+        assert!(s.undo());
+        assert_eq!(m2(s.foundation_qto(run).unwrap().0.area), buendig);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // P1: Zahlenfelder im Paneel „Eigenschaften“
 // ---------------------------------------------------------------------------
 
