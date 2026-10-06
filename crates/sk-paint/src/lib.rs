@@ -310,7 +310,7 @@ pub struct Canvas {
     acc: Vec<f32>,
     /// Lage der Leinwand im Gesamtbild: gefüllte Pfade werden um diesen
     /// Betrag verschoben (Ausschnitt eines größeren Bildes zeichnen).
-    origin: (f32, f32),
+    pub(crate) origin: (f32, f32),
 }
 
 impl Canvas {
@@ -409,6 +409,40 @@ impl Canvas {
                     continue;
                 }
                 let d = &mut self.px[y * w + x];
+                if cov >= 1.0 && opaque {
+                    *d = full;
+                    continue;
+                }
+                let s = if cov >= 1.0 { full } else { premul(c, cov) };
+                let ia = 1.0 - s[3];
+                for k in 0..4 {
+                    d[k] = s[k] + d[k] * ia;
+                }
+            }
+        }
+    }
+
+    /// Mischt eine Fläche je Pixel (vorzeichenbehaftet, wie die Laufsumme in
+    /// [`Canvas::fill`]) ab `(x0, y0)` in Farbe `c` ein; dieselbe Rechnung
+    /// wie dort. Der Bereich liegt ganz in der Leinwand.
+    pub(crate) fn blend_area(
+        &mut self,
+        x0: usize,
+        y0: usize,
+        w: usize,
+        h: usize,
+        area: &[f32],
+        c: Rgba,
+    ) {
+        let full = premul(c, 1.0);
+        let opaque = full[3] >= 1.0;
+        for r in 0..h {
+            let row = &mut self.px[(y0 + r) * self.width + x0..][..w];
+            for (d, &v) in row.iter_mut().zip(&area[r * w..(r + 1) * w]) {
+                let cov = v.abs().min(1.0);
+                if cov <= 0.0 {
+                    continue;
+                }
                 if cov >= 1.0 && opaque {
                     *d = full;
                     continue;

@@ -4,8 +4,35 @@
 //! (`head`, `maxp`, `hhea`, `hmtx`, `cmap`, `loca`, `glyf`). Keine Hinting-
 //! Anweisungen, keine Unterschneidung. Zusammengesetzte Glyphen (z. B. Umlaute)
 //! werden aufgelöst.
+//!
+//! Gezeichnete Glyphen merkt sich die Schrift als Flächenmaske (Glyphen-Cache,
+//! Review U6a): Dieselbe Glyphe in derselben Größe und an derselben
+//! Bruchteil-Lage wird nicht neu gerastert.
 
-use crate::{Canvas, Path, Rgba};
+use crate::{accumulate_line, Canvas, Path, Rgba};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+/// Glyphe, Schriftgröße und Bruchteil der Lage (x, y), je als Bitmuster:
+/// nur genau gleiche Eingaben teilen sich eine Maske.
+type GlyphKey = (u16, u32, u32, u32);
+
+/// Vorzeichenbehaftete Fläche je Pixel einer Glyphe (Laufsumme des
+/// Akkumulators, noch ohne Betrag und Begrenzung auf 1). Weil diese Fläche
+/// linear ist, ergibt die Summe der Masken eines Textes dieselbe Abdeckung
+/// wie das Füllen des ganzen Textumrisses.
+struct Mask {
+    /// Lage der linken oberen Ecke zum ganzzahligen Anteil der Stiftlage.
+    x: i32,
+    y: i32,
+    w: usize,
+    h: usize,
+    area: Vec<f32>,
+}
+
+/// Höchstens so viele Masken; danach beginnt der Cache von vorn.
+const CACHE_MAX: usize = 4096;
 
 pub struct Font {
     data: Vec<u8>,
@@ -19,6 +46,7 @@ pub struct Font {
     glyf: usize,
     hmtx: usize,
     cmap: Cmap,
+    cache: RefCell<HashMap<GlyphKey, Rc<Mask>>>,
 }
 
 enum Cmap {
@@ -91,6 +119,7 @@ impl Font {
             hmtx,
             cmap: cmap?,
             data,
+            cache: RefCell::default(),
         })
     }
 
@@ -358,8 +387,203 @@ impl Font {
         out
     }
 
-    /// Zeichnet Text mit Grundlinie bei `(x, y)`.
+    /// Zeichnet Text mit Grundlinie bei `(x, y)`. Die Glyphen kommen aus dem
+    /// Cache; das Bild gleicht dem Füllen von [`Font::text_path`] bis auf
+    /// Gleitkomma-Rundung (höchstens eine Stufe von 255).
     pub fn draw(&self, c: &mut Canvas, text: &str, px: f32, x: f32, y: f32, color: Rgba) {
-        c.fill(&self.text_path(text, px, x, y), color);
+        let (ox, oy) = c.origin;
+        // Nur ganz innerhalb der Leinwand und bei ganzzahligem Ursprung; sonst
+        // wie bisher über den Umriss (Begrenzung am Rand, seltene Fälle)
+        if ox.fract() != 0.0 || oy.fract() != 0.0 || !px.is_finite() {
+            c.fill(&self.text_path(text, px, x, y), color);
+            return;
+        }
+        let s = px / self.units_per_em;
+        let yl = y - oy;
+        let (yi, fy) = (yl.floor(), yl - yl.floor());
+        let mut glyphs = Vec::with_capacity(text.len());
+        let (mut x0, mut y0, mut x1, mut y1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+        let mut pen = x - ox;
+        for ch in text.chars() {
+            let g = self.glyph_index(ch);
+            let (xi, fx) = (pen.floor(), pen - pen.floor());
+            let m = self.mask(g, px, fx, fy, s);
+            if m.w > 0 {
+                let (gx, gy) = (xi as i32 + m.x, yi as i32 + m.y);
+                (x0, y0) = (x0.min(gx), y0.min(gy));
+                (x1, y1) = (x1.max(gx + m.w as i32), y1.max(gy + m.h as i32));
+                glyphs.push((gx, gy, m));
+            }
+            pen += self.advance(g) * s;
+        }
+        if glyphs.is_empty() {
+            return;
+        }
+        // Ganz außerhalb (etwa beim Zeichnen eines Streifens): nichts zu tun
+        if x1 <= 0 || y1 <= 0 || x0 >= c.width as i32 || y0 >= c.height as i32 {
+            return;
+        }
+        if x0 < 0 || y0 < 0 || x1 > c.width as i32 || y1 > c.height as i32 {
+            c.fill(&self.text_path(text, px, x, y), color);
+            return;
+        }
+        let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
+        let mut area = vec![0.0f32; w * h];
+        for (gx, gy, m) in &glyphs {
+            let (dx, dy) = ((gx - x0) as usize, (gy - y0) as usize);
+            for r in 0..m.h {
+                let src = &m.area[r * m.w..(r + 1) * m.w];
+                let dst = &mut area[(dy + r) * w + dx..(dy + r) * w + dx + m.w];
+                for (d, a) in dst.iter_mut().zip(src) {
+                    *d += a;
+                }
+            }
+        }
+        c.blend_area(x0 as usize, y0 as usize, w, h, &area, color);
+    }
+
+    /// Maske der Glyphe `g` an der Bruchteil-Lage `(fx, fy)`, aus dem Cache
+    /// oder neu gerastert wie in [`Canvas::fill`].
+    fn mask(&self, g: u16, px: f32, fx: f32, fy: f32, s: f32) -> Rc<Mask> {
+        let key = (g, px.to_bits(), fx.to_bits(), fy.to_bits());
+        if let Some(m) = self.cache.borrow().get(&key) {
+            return m.clone();
+        }
+        let mut path = Path::new();
+        self.outline(g, [s, 0.0, 0.0, -s, fx, fy], &mut path, 0);
+        let polys = path.flatten(0.2);
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for p in polys.iter().flatten() {
+            (x0, y0, x1, y1) = (x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y));
+        }
+        let m = if x0 > x1 || y0 > y1 {
+            Mask {
+                x: 0,
+                y: 0,
+                w: 0,
+                h: 0,
+                area: Vec::new(),
+            }
+        } else {
+            // Ganzzahlig verschoben: Bruchteile und damit die Flächen bleiben
+            let (mx, my) = (x0.floor() - 1.0, y0.floor() - 1.0);
+            let w = (x1 - mx).ceil() as usize + 2;
+            let h = (y1 - my).ceil() as usize + 1;
+            let stride = w + 2;
+            let mut acc = vec![0.0f32; stride * h];
+            for poly in &polys {
+                for i in 0..poly.len() {
+                    let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+                    let a = crate::pt(a.x - mx, a.y - my);
+                    let b = crate::pt(b.x - mx, b.y - my);
+                    accumulate_line(&mut acc, stride, w, h, a, b);
+                }
+            }
+            let mut area = vec![0.0f32; w * h];
+            for r in 0..h {
+                let mut sum = 0.0f32;
+                for x in 0..w {
+                    sum += acc[r * stride + x];
+                    area[r * w + x] = sum;
+                }
+            }
+            Mask {
+                x: mx as i32,
+                y: my as i32,
+                w,
+                h,
+                area,
+            }
+        };
+        let m = Rc::new(m);
+        let mut cache = self.cache.borrow_mut();
+        if cache.len() >= CACHE_MAX {
+            cache.clear();
+        }
+        cache.insert(key, m.clone());
+        m
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Eine Schrift für die Tests: unter Windows aus dem System, sonst eine
+    /// verbreitete freie Schrift. Ohne Schrift prüfen die Tests nichts.
+    fn some_font() -> Option<Font> {
+        Font::system(&["segoeui.ttf", "arial.ttf"]).or_else(|| {
+            [
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            ]
+            .iter()
+            .find_map(|p| std::fs::read(p).ok().and_then(Font::parse))
+        })
+    }
+
+    fn worst(a: &Canvas, b: &Canvas) -> u8 {
+        let (a, b) = (a.to_premul_rgba8(), b.to_premul_rgba8());
+        a.iter()
+            .zip(&b)
+            .map(|(x, y)| x.abs_diff(*y))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// U6a: Text aus dem Glyphen-Cache gleicht dem gefüllten Textumriss bis
+    /// auf eine Rundungsstufe, auch beim zweiten Mal (aus dem Cache), an
+    /// Bruchteil-Lagen, halb außerhalb, mit verschobenem Ursprung und mit
+    /// halbdurchsichtiger Farbe.
+    #[test]
+    fn cache_gleicht_dem_umriss() {
+        let Some(f) = some_font() else {
+            eprintln!("keine Schrift gefunden, Test übersprungen");
+            return;
+        };
+        let cases: [(&str, f32, f32, f32, Rgba); 7] = [
+            (
+                "Außenwand AW-003 · 12,45 m²",
+                13.0,
+                10.0,
+                20.0,
+                Rgba(20, 20, 20, 255),
+            ),
+            ("Länge · Stück", 19.5, 3.37, 41.6, Rgba(200, 40, 40, 255)),
+            (
+                "Mengenermittlung",
+                28.5,
+                100.25,
+                70.5,
+                Rgba(10, 10, 200, 140),
+            ),
+            ("Wird gekürzt…", 15.0, -6.5, 90.0, Rgba(0, 0, 0, 255)),
+            ("unten raus", 16.0, 30.0, 118.0, Rgba(0, 0, 0, 255)),
+            ("ganz draußen", 16.0, 30.0, 160.0, Rgba(0, 0, 0, 255)),
+            (
+                "ÄÖÜ äöü ß 0123456789",
+                11.0,
+                160.7,
+                33.3,
+                Rgba(60, 60, 60, 255),
+            ),
+        ];
+        for origin in [(0.0, 0.0), (0.0, 17.0)] {
+            for round in 0..2 {
+                let (mut a, mut b) = (Canvas::new(260, 120), Canvas::new(260, 120));
+                for c in [&mut a, &mut b] {
+                    c.clear(Rgba(240, 238, 230, 255));
+                    c.set_origin(origin.0, origin.1);
+                }
+                for (text, px, x, y, col) in cases {
+                    let y = y + origin.1;
+                    f.draw(&mut a, text, px, x, y, col);
+                    b.fill(&f.text_path(text, px, x, y), col);
+                }
+                let d = worst(&a, &b);
+                assert!(d <= 1, "Ursprung {origin:?}, Durchgang {round}: {d} Stufen");
+            }
+        }
+        assert!(!f.cache.borrow().is_empty(), "Masken gemerkt");
     }
 }
