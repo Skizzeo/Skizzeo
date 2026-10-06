@@ -22,6 +22,14 @@ pub enum MatCategory {
 }
 
 impl MatCategory {
+    pub const ALL: [MatCategory; 5] = [
+        MatCategory::Masonry,
+        MatCategory::Concrete,
+        MatCategory::Insulation,
+        MatCategory::Plaster,
+        MatCategory::Timber,
+    ];
+
     pub fn name(self) -> &'static str {
         match self {
             MatCategory::Masonry => "Mauerwerk",

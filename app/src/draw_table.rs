@@ -133,7 +133,7 @@ const NO_MATERIAL: MatLook = MatLook {
 };
 
 /// Aussehen von Flächen ohne Baustoff (und Rückfall bei fehlenden Verweisen).
-fn fallback_look(theme: &Theme) -> MatLook {
+pub fn fallback_look(theme: &Theme) -> MatLook {
     let env = &theme.env;
     MatLook {
         face: rgb_of(env.face),

@@ -162,7 +162,7 @@ pub const F4_ROLES: [F4Role; 11] = [
     }),
 ];
 
-pub const SIZE_ROLES: [SizeRole; 58] = [
+pub const SIZE_ROLES: [SizeRole; 64] = [
     ("corner_radius", "Eckenradius", |t| {
         &mut t.size.corner_radius
     }),
@@ -279,6 +279,24 @@ pub const SIZE_ROLES: [SizeRole; 58] = [
         &mut t.size.qto_window_w
     }),
     ("flash_ms", "Aufleuchten (ms)", |t| &mut t.size.flash_ms),
+    ("catalog_w", "Bauteilkatalog: Breite", |t| {
+        &mut t.size.catalog_w
+    }),
+    ("catalog_h", "Bauteilkatalog: Höhe", |t| {
+        &mut t.size.catalog_h
+    }),
+    ("catalog_list_w", "Bauteilkatalog: Liste", |t| {
+        &mut t.size.catalog_list_w
+    }),
+    ("catalog_tile_h", "Bauteilkatalog: Zeile", |t| {
+        &mut t.size.catalog_tile_h
+    }),
+    ("catalog_thumb_w", "Schnittbild-Kachel: Breite", |t| {
+        &mut t.size.catalog_thumb_w
+    }),
+    ("catalog_thumb_h", "Schnittbild-Kachel: Höhe", |t| {
+        &mut t.size.catalog_thumb_h
+    }),
 ];
 
 /// Grundschema zu einem Namen.
@@ -575,6 +593,20 @@ impl Settings {
         })
     }
 
+    /// Neuer Ort des Firmenkatalogs (K3, „ändern …“ im Bauteilkatalog, F1:
+    /// frei wählbar, auch ein Netzlaufwerk). Steht ab dem nächsten
+    /// Speichern der Einstellungen in der Datei.
+    pub fn set_company_path(&mut self, p: PathBuf) {
+        let mut line = String::new();
+        Line::new("firmenkatalog")
+            .text("datei", &p.to_string_lossy())
+            .finish(&mut line);
+        self.company_line = line;
+        self.company = Some(p);
+        // Erzwingt das Schreiben, auch wenn Schema und Liste gleich sind
+        self.loaded_rev = u64::MAX;
+    }
+
     /// Liest das Schema; fehlt die Datei, gilt das dunkle Standardschema.
     pub fn load(&mut self) -> Theme {
         let text = self
@@ -813,6 +845,16 @@ mod tests {
         s.save_if_changed(&t).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("[firmenkatalog] datei=\"N:"), "{text}");
+        // K3: „ändern …“ im Bauteilkatalog; geschrieben wird auch ohne
+        // geändertes Schema, gelesen kommt der neue Ort zurück
+        s.set_company_path(PathBuf::from("M:\\Vorlagen\\büro.szk"));
+        s.save_if_changed(&t).unwrap();
+        let mut s = Settings::new(args(&["skizzeo.exe"]), Some(d.clone()));
+        s.load();
+        assert_eq!(
+            s.company_place(),
+            Some((PathBuf::from("M:\\Vorlagen\\büro.szk"), false))
+        );
         assert!(Settings::new(
             args(&["skizzeo.exe", "--ohne-einstellungen"]),
             Some(d.clone())

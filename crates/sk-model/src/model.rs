@@ -372,6 +372,13 @@ impl Model {
         self.guids.next_guid()
     }
 
+    /// Eigene Guid-Folge für eine Arbeitskopie (K3: Bauteilkatalog): was
+    /// sie vergibt und ins Modell zurückkommt, vergibt das Modell nie
+    /// noch einmal.
+    pub fn fork_guids(&mut self) {
+        self.guids = GuidGen::from_time();
+    }
+
     pub fn defaults(&self) -> &Defaults {
         &self.defaults
     }
@@ -896,6 +903,32 @@ impl Model {
             .map_or_else(PropSet::new, |t| t.props.clone());
         p.extend(e.props.iter().map(|(k, v)| (k.clone(), v.clone())));
         p
+    }
+
+    /// U-Wert eines Typs in W/(m²K), nur zur Anzeige ([`Model::u_value_of`]).
+    pub fn u_value(&self, id: LayerSetId) -> Option<f64> {
+        self.u_value_of(self.layer_set(id)?)
+    }
+
+    /// U = 1 / (0,13 + Σ d/λ + 0,18 je Luftschicht + 0,04), nur bei
+    /// Außenwänden; `None`, wenn einer Schicht λ fehlt.
+    pub fn u_value_of(&self, s: &LayerSet) -> Option<f64> {
+        if !s.is_external() || s.layers.is_empty() {
+            return None;
+        }
+        let mut r = 0.13 + 0.04;
+        for l in &s.layers {
+            if l.function == LayerFunction::AirGap {
+                r += 0.18;
+                continue;
+            }
+            let lambda = self.material(l.material)?.lambda?;
+            if lambda <= 0.0 {
+                return None;
+            }
+            r += l.thickness / 1000.0 / lambda;
+        }
+        Some(1.0 / r)
     }
 
     /// Schichten eines Aufbaus für die Geometrie (Darstellungsschlüssel statt Kennung).
@@ -2108,9 +2141,12 @@ impl Model {
         true
     }
 
-    /// Setzt die Breite einer Frostschürze (mm).
+    /// Setzt die Breite einer Frostschürze (mm), 30 bis 45 cm (Jörn 17:34:
+    /// die Schürze schützt vor Frost, tragend ist die Platte). Alte Dateien
+    /// behalten einen Wert außerhalb, bis er geändert wird.
     pub fn set_footing_width(&mut self, footing: ElementId, width: f64) -> bool {
-        if !(width > 0.0 && width.is_finite())
+        let (lo, hi) = FOOTING_WIDTH;
+        if !(width >= lo - 1e-9 && width <= hi + 1e-9)
             || !matches!(
                 self.element(footing).map(|e| &e.kind),
                 Some(ElementKind::StripFooting(_))
@@ -3095,6 +3131,49 @@ impl Model {
         }
     }
 
+    /// Wandzüge, die der offene Schritt bisher berührt, samt Schürzen-,
+    /// Decken- und Anschlusspartnern wie bei [`Model::apply`]: für eine
+    /// Live-Vorschau, die nur diese Züge neu rechnet.
+    pub fn step_touched(&self) -> Vec<RunId> {
+        let mut t = Touched::default();
+        let Some(open) = &self.txn else {
+            return Vec::new();
+        };
+        let (mut footings, mut floors) = (Vec::new(), Vec::new());
+        for c in &open.changes {
+            match c {
+                Change::Run { id, .. } => t.run(*id),
+                Change::Element { id, old, .. } => {
+                    for e in [old.as_ref(), self.elements.get(*id)].into_iter().flatten() {
+                        match e.kind {
+                            ElementKind::Wall(w) => t.run(w.run),
+                            ElementKind::GroundSlab(s) => t.run(s.run),
+                            ElementKind::StripFooting(f) => footings.push(f.slab),
+                            ElementKind::Floor(f) => {
+                                t.run(f.run);
+                                floors.push(f.run);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        for slab in footings {
+            if let Some(r) = self.run_of(slab) {
+                t.run(r);
+            }
+        }
+        for r in floors {
+            self.runs_under_floor(r).into_iter().for_each(|i| t.run(i));
+        }
+        let runs = t.runs.clone();
+        for r in runs {
+            self.joined_runs(r).into_iter().for_each(|p| t.run(p));
+        }
+        t.runs
+    }
+
     /// Trägt den heutigen Stand als „nachher“ ein.
     fn fill_new(&self, c: &mut Change) {
         match c {
@@ -3569,6 +3648,10 @@ pub const MIN_FOOTING: f64 = 100.0;
 pub const MAX_FOUNDATION: f64 = 10000.0;
 /// Kleinster Sockelrücksprung außer 0 (mm).
 pub const MIN_RECESS: f64 = 20.0;
+
+/// Breite der Frostschürze (mm): 30 bis 45 cm, unabhängig von der Wand
+/// (Jörn 06.10. 17:34).
+pub const FOOTING_WIDTH: (f64, f64) = (300.0, 450.0);
 /// Teil des Körpers eines Wandzugs: Sohlplatte bzw. Frostschürze (statt Segment).
 pub const SLAB_PART: u32 = u32::MAX - 1;
 pub const FOOTING_PART: u32 = u32::MAX - 2;

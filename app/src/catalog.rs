@@ -4,7 +4,6 @@
 //! Startbestand. Was nicht lesbar ist, wird zum Hinweis; Skizzeo arbeitet
 //! dann mit dem eingebauten Startbestand weiter und blockiert nie.
 
-#[cfg(test)]
 use sk_model::{export_type, Guid, Model};
 use sk_model::{read_szk, write_szk, Library};
 use std::path::{Path, PathBuf};
@@ -13,8 +12,7 @@ use std::time::SystemTime;
 /// Name der Datei am Vorgabeort.
 pub const FILE_NAME: &str = "firmenkatalog.szk";
 
-/// Ergebnis von [`Company::save_type`]. (Die Knöpfe dazu kommen mit K3.)
-#[cfg(test)]
+/// Ergebnis von [`Company::save_type`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum SaveResult {
     Saved,
@@ -110,6 +108,10 @@ impl Company {
         }
     }
 
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub fn library(&self) -> &Library {
         &self.lib
     }
@@ -117,7 +119,6 @@ impl Company {
     /// Speichert einen Projekttyp in den Katalog zurück. Hat sich die Datei
     /// seit dem Laden geändert, wird nichts geschrieben ([`SaveResult::Changed`]);
     /// es gibt keine Sperren.
-    #[cfg(test)]
     pub fn save_type(&mut self, m: &Model, g: Guid) -> SaveResult {
         if self.broken {
             return SaveResult::Failed(format!(

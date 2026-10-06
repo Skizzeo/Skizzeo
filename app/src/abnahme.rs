@@ -3339,6 +3339,7 @@ fn befehl(c: Option<Command>) -> Option<String> {
         Command::OpenMenu => "Menü".into(),
         Command::ClearRecent => "Liste leeren".into(),
         Command::Settings => "Einstellungen".into(),
+        Command::Catalog => "Bauteilkatalog".into(),
     })
 }
 
@@ -3540,6 +3541,7 @@ fn a60_dateimenue_eintraege_und_ausgrauen() {
         ("Speichern unter …", "Strg+Umschalt+S", true),
         ("—", "", false),
         ("Einstellungen …", "Strg+Komma", true),
+        ("Bauteilkatalog …", "", true),
         ("—", "", false),
         ("Schließen", "Strg+W", true),
         ("Beenden", "Alt+F4", true),
@@ -4064,8 +4066,10 @@ fn a66_einstellungen_aufrufen() {
     assert!(z[i].2, "aktiv");
     assert_eq!(z[i - 2].0, "Speichern unter …");
     assert_eq!(z[i - 1].0, "—", "eigene Gruppe");
-    assert_eq!(z[i + 1].0, "—");
-    assert_eq!(z[i + 2].0, "Schließen");
+    // K3: „Bauteilkatalog …“ in derselben Gruppe
+    assert_eq!(z[i + 1].0, "Bauteilkatalog …");
+    assert_eq!(z[i + 2].0, "—");
+    assert_eq!(z[i + 3].0, "Schließen");
     let komma = Key::Other(0xBC);
     let mut k = Shortcuts::default();
     assert_eq!(

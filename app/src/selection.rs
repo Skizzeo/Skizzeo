@@ -4,7 +4,7 @@
 
 use crate::camera::Camera;
 use crate::scene::Scene;
-use crate::ui::{Field, FieldRow, Props, ViewKind};
+use crate::ui::{Chip, Field, FieldRow, Props, ViewKind};
 use sk_math::{vec3, Vec3};
 use sk_model::{ElementId, ElementKind, FootingShape, FoundationError, MaterialId, Model};
 use sk_paint::Rgba;
@@ -200,6 +200,7 @@ fn floor_props(
             600.0,
         )],
         notes,
+        chip: None,
     })
 }
 
@@ -241,7 +242,13 @@ fn foundation_props(
                 ]);
             }
             fields.extend([
-                field(Field::FootingWidth, "Breite", f.width, 200.0, 1500.0),
+                field(
+                    Field::FootingWidth,
+                    "Breite",
+                    f.width,
+                    sk_model::FOOTING_WIDTH.0,
+                    sk_model::FOOTING_WIDTH.1,
+                ),
                 field(
                     Field::FootingDepth,
                     "Tiefe",
@@ -269,6 +276,7 @@ fn foundation_props(
         set_label: "Baustoff",
         fields,
         notes,
+        chip: None,
     })
 }
 
@@ -325,13 +333,31 @@ pub fn props(scene: &Scene, id: ElementId) -> Option<Props> {
             })
             .collect()
     });
+    let chip = set.map(|s| {
+        let mut c = type_chip(m, scene.theme(), s);
+        // Eigene Merkmale überschreiben die des Typs
+        c.marked = e.props.keys().any(|k| s.props.contains_key(k));
+        c
+    });
     Some(Props {
         values,
         layer_set: set.map_or(String::new(), |s| s.name.clone()),
         layers,
         fields: recess_field(m, id).into_iter().collect(),
+        chip,
         ..Default::default()
     })
+}
+
+/// Chip eines Typs (K3): Name, „Kürzel · Dicke“, Schnittbild.
+pub fn type_chip(m: &Model, theme: &Theme, s: &sk_model::LayerSet) -> Chip {
+    Chip {
+        name: s.name.clone(),
+        detail: format!("{} · {}", s.code, crate::type_look::cm_text(s.thickness())),
+        look: crate::type_look::type_look(m, theme, s),
+        open: false,
+        marked: false,
+    }
 }
 
 /// Teil der Strecke hinter der Ebene `(p0, n)` (Seite gegen `n`).

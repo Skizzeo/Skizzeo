@@ -521,8 +521,10 @@ impl Canvas {
     }
 
     /// Zeichnet `src` mit der linken oberen Ecke bei `(x, y)` darüber
-    /// (Quelle über Ziel); was außerhalb liegt, fällt weg.
+    /// (Quelle über Ziel); was außerhalb liegt, fällt weg. Mit Ursprung
+    /// ([`Canvas::set_origin`]) in dessen Koordinaten.
     pub fn blit(&mut self, src: &Canvas, x: i32, y: i32) {
+        let (x, y) = (x - self.origin.0 as i32, y - self.origin.1 as i32);
         for sy in 0..src.height {
             let dy = y + sy as i32;
             if dy < 0 || dy >= self.height as i32 {
@@ -539,6 +541,22 @@ impl Canvas {
                 for k in 0..4 {
                     d[k] = s[k] + d[k] * ia;
                 }
+            }
+        }
+    }
+
+    /// Füllt die ganzen Bildpunkte im Bereich `x0..x1`, `y0..y1` (Koordinaten
+    /// des Gesamtbildes wie bei Pfaden) deckend mit `f(x, y)`; `f` bekommt die
+    /// Mitte des Bildpunkts. Für Schraffuren in Vorschaubildern.
+    pub fn shade_rect(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, f: impl Fn(f32, f32) -> Rgba) {
+        let (ox, oy) = self.origin;
+        let col = |v: f32, o: f32, n: usize| ((v - o).round().max(0.0) as usize).min(n);
+        let (cx0, cx1) = (col(x0, ox, self.width), col(x1, ox, self.width));
+        let (cy0, cy1) = (col(y0, oy, self.height), col(y1, oy, self.height));
+        for y in cy0..cy1 {
+            for x in cx0..cx1 {
+                let c = f(x as f32 + ox + 0.5, y as f32 + oy + 0.5);
+                self.px[y * self.width + x] = premul(c, 1.0);
             }
         }
     }

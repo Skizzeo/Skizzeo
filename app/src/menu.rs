@@ -30,6 +30,8 @@ pub enum Command {
     ClearRecent,
     /// Einstellungsfenster (E5).
     Settings,
+    /// Bauteilkatalog (K3).
+    Catalog,
 }
 
 /// Antwort der Nachfrage „Änderungen speichern?“.
@@ -192,6 +194,7 @@ impl FileMenu {
             ),
             separator(),
             item("Einstellungen …", "Strg+Komma", Command::Settings, true),
+            item("Bauteilkatalog …", "", Command::Catalog, true),
             separator(),
             item("Schließen", "Strg+W", Command::Close, true),
             item("Beenden", "Alt+F4", Command::Quit, true),

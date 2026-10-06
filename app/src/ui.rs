@@ -2,6 +2,7 @@
 //! darunter „Geschosse“ (E14), rechts „Ansichten“ (3D, Grundriss, Schnitt und vier Ansichten) und darunter,
 //! solange ein Bauteil gewählt ist, „Eigenschaften“.
 
+use crate::type_look::TypeLook;
 use sk_model::{RefSide, StoreyId};
 use sk_paint::{Canvas, Path, Rgba};
 use sk_platform::{Cursor, Event, Key, Modifiers, MouseButton};
@@ -70,6 +71,10 @@ pub enum Id {
     DialogPlus,
     DialogCancel,
     DialogStart,
+    /// Typ-Chip (K3) unter dem Werkzeug bzw. im Paneel „Eigenschaften“:
+    /// öffnet die Typ-Liste.
+    ToolType,
+    PropsType,
 }
 
 /// Ziehbare Ebene im Paneel „Geschosse“. ±0,00 liegt fest.
@@ -445,6 +450,20 @@ pub struct Props {
     pub fields: Vec<FieldRow>,
     /// Hinweise (Warnungen der Prüfung).
     pub notes: Vec<String>,
+    /// Typ der Wand (K3): Chip statt der Zeile mit dem Namen des Aufbaus.
+    pub chip: Option<Chip>,
+}
+
+/// Typ-Chip (K3): Kachel mit Schnittbild, Name, „Kürzel · Dicke“, Pfeil.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Chip {
+    pub name: String,
+    pub detail: String,
+    pub look: TypeLook,
+    /// Die Typ-Liste dazu ist offen: Rand in Akzent, Pfeil nach oben.
+    pub open: bool,
+    /// Das Bauteil überschreibt Merkmale des Typs: Punkt in Akzent.
+    pub marked: bool,
 }
 
 /// Breite eines Zahlenfelds (dip).
@@ -474,6 +493,8 @@ pub struct Ui {
     pub ortho: bool,
     /// Schichten der Wand, die das Werkzeug zeichnet: Farbfeld und Text (aus der Bibliothek).
     pub wall_layers: Vec<(Rgba, String)>,
+    /// Typ, den das Werkzeug zeichnet (K3); ersetzt die Schichtzeilen.
+    pub tool_chip: Option<Chip>,
     /// Ein Obergeschoss ist aktiv: Außenwände entstehen aus dem EG, der Knopf
     /// „Gebäude“ ist gesperrt (E16).
     pub upper_active: bool,
@@ -555,6 +576,8 @@ enum Row {
     Button(Id, &'static str),
     Label(&'static str),
     Layer(Rgba, String),
+    /// Typ-Chip (K3).
+    TypeChip(Id),
     /// Bezeichnung links, Wert rechtsbündig.
     Value(&'static str, String),
     /// Blasser Text, eingerückt wie der Text einer Schichtzeile.
@@ -573,6 +596,7 @@ enum Row {
 
 fn tool_rows(
     interior: bool,
+    chip: bool,
     layers: &[(Rgba, String)],
     upper_active: bool,
     foundation_active: bool,
@@ -595,7 +619,11 @@ fn tool_rows(
     } else {
         "Außenwand"
     })]);
-    rows.extend(layers.iter().map(|(c, t)| Row::Layer(*c, t.clone())));
+    if chip {
+        rows.push(Row::TypeChip(Id::ToolType));
+    } else {
+        rows.extend(layers.iter().map(|(c, t)| Row::Layer(*c, t.clone())));
+    }
     rows.extend([
         Row::Label("Bezugsseite"),
         Row::Segments([
@@ -648,16 +676,19 @@ fn props_rows(p: &Props, edit: Option<&Edit>) -> Vec<Row> {
             rows.extend(e.error.clone().map(Row::Error));
         }
     }
-    let label = if p.set_label.is_empty() {
+    let label = if p.chip.is_some() {
+        "Typ"
+    } else if p.set_label.is_empty() {
         "Aufbau"
     } else {
         p.set_label
     };
-    rows.extend([
-        Row::Separator,
-        Row::Label(label),
-        Row::Text(p.layer_set.clone()),
-    ]);
+    rows.extend([Row::Separator, Row::Label(label)]);
+    if p.chip.is_some() {
+        rows.push(Row::TypeChip(Id::PropsType));
+    } else {
+        rows.push(Row::Text(p.layer_set.clone()));
+    }
     for (c, name, amount) in &p.layers {
         rows.push(Row::Layer(*c, name.clone()));
         if !amount.is_empty() {
@@ -678,6 +709,7 @@ fn row_height(r: &Row) -> (f32, f32) {
         Row::Button(..) | Row::Segments(_) | Row::Pair(_) => (34.0, 8.0),
         Row::Label(_) => (18.0, 6.0),
         Row::Layer(..) => (18.0, 4.0),
+        Row::TypeChip(_) => (46.0, 8.0),
         Row::Value(..) => (18.0, 4.0),
         Row::Field(..) => (26.0, 6.0),
         Row::Error(_) => (15.0, 6.0),
@@ -705,6 +737,7 @@ impl Ui {
             ref_side: RefSide::Left,
             ortho: true,
             wall_layers: Vec::new(),
+            tool_chip: None,
             upper_active: false,
             foundation_active: false,
             dialog: false,
@@ -742,6 +775,7 @@ impl Ui {
         match p {
             Panel::Tools => tool_rows(
                 self.interior,
+                self.tool_chip.is_some(),
                 &self.wall_layers,
                 self.upper_active,
                 self.foundation_active,
@@ -1054,6 +1088,43 @@ impl Ui {
         Rect::new(x, y, w, self.panel_height(p))
     }
 
+    fn chip(&self, id: Id) -> Option<&Chip> {
+        match id {
+            Id::ToolType => self.tool_chip.as_ref(),
+            Id::PropsType => self.props.as_ref()?.chip.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Lage eines Knopfs im Fenster (Pixel), etwa um die Typ-Liste unter
+    /// dem Chip zu öffnen.
+    pub fn button_rect(&self, id: Id, win_w: u32, top: u32) -> Option<Rect> {
+        self.panels().into_iter().find_map(|p| {
+            let r = self.rect(p, win_w, top);
+            self.buttons(p)
+                .into_iter()
+                .find(|b| b.0 == id)
+                .map(|(_, b, _)| Rect::new(r.x + b.x, r.y + b.y, b.w, b.h))
+        })
+    }
+
+    /// Öffnet bzw. schließt die Typ-Liste am Chip; `true`, wenn sich das
+    /// Aussehen ändert.
+    pub fn set_chip_open(&mut self, id: Id, open: bool) -> bool {
+        let chip = match id {
+            Id::ToolType => self.tool_chip.as_mut(),
+            Id::PropsType => self.props.as_mut().and_then(|p| p.chip.as_mut()),
+            _ => None,
+        };
+        match chip {
+            Some(c) if c.open != open => {
+                c.open = open;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Ist das Paneel „Eigenschaften“ da (ein Bauteil gewählt)?
     pub fn has_props(&self) -> bool {
         self.props.is_some()
@@ -1107,6 +1178,7 @@ impl Ui {
                     let fw = FIELD_W * s;
                     out.push((Id::Field(f), Rect::new(x + inner_w - fw, y, fw, h), ""));
                 }
+                Row::TypeChip(id) => out.push((id, Rect::new(x, y, inner_w, h), "")),
                 _ => {}
             }
             y += h + g;
@@ -1130,7 +1202,9 @@ impl Ui {
             | Id::DialogClose
             | Id::DialogMinus
             | Id::DialogPlus
-            | Id::DialogCancel => false,
+            | Id::DialogCancel
+            | Id::ToolType
+            | Id::PropsType => false,
         }
     }
 
@@ -1390,6 +1464,10 @@ impl Ui {
         let b = Rect::new(b.x + m, b.y + m, b.w, b.h);
         if id == Id::DialogClose {
             self.paint_close(t, c, b, st.hover);
+            return;
+        }
+        if let Some(chip) = self.chip(id) {
+            paint_chip(c, &self.fonts, b, chip, st, s, t);
             return;
         }
         widgets::button(c, &self.fonts, b, label, st, s, t);
@@ -2217,6 +2295,83 @@ impl Ui {
 /// Linie bei ±0,00 (fest): an ihr hängt das Diagramm.
 fn anchor_index(lines: &[LevelLine]) -> usize {
     lines.iter().position(|l| l.field.is_none()).unwrap_or(0)
+}
+
+/// Typ-Chip: Feld mit Kachel, fettem Namen, blassem „Kürzel · Dicke“ und
+/// Pfeil; offen mit Rand in Akzent.
+fn paint_chip(
+    c: &mut Canvas,
+    fonts: &Fonts,
+    r: Rect,
+    chip: &Chip,
+    st: ButtonState,
+    s: f32,
+    t: &Theme,
+) {
+    let u = &t.ui;
+    let rad = 6.0 * s;
+    let b = s.round().max(1.0);
+    let border = if chip.open {
+        u.accent
+    } else if st.hover {
+        u.field_hover
+    } else {
+        u.field_border
+    };
+    let fill = if st.pressed { u.pressed } else { u.field };
+    let mut p = Path::new();
+    p.rounded_rect(r.x, r.y, r.w, r.h, rad);
+    c.fill(&p, border);
+    let mut p = Path::new();
+    p.rounded_rect(r.x + b, r.y + b, r.w - 2.0 * b, r.h - 2.0 * b, rad - b);
+    c.fill(&p, fill);
+    let (tw, th) = (
+        (t.size.catalog_thumb_w * 0.8 * s).round(),
+        (t.size.catalog_thumb_h * s).round(),
+    );
+    let tx = (r.x + 6.0 * s).round();
+    let ty = (r.y + (r.h - th) * 0.5).round();
+    crate::type_look::paint_thumb(c, Rect::new(tx, ty, tw, th), &chip.look, s);
+    let x = tx + tw + 8.0 * s;
+    let caret_w = 14.0 * s;
+    let max_w = r.x + r.w - caret_w - 4.0 * s - x;
+    let bold = fonts.bold.as_ref().or(fonts.regular.as_ref());
+    let px = t.size.font * s;
+    let name = widgets::ellipsize(bold, &chip.name, px, max_w);
+    widgets::text(c, bold, &name, px, x, (r.y + 20.0 * s).round(), u.text);
+    let pd = t.size.font_detail * s;
+    let detail = widgets::ellipsize(fonts.regular.as_ref(), &chip.detail, pd, max_w);
+    widgets::text(
+        c,
+        fonts.regular.as_ref(),
+        &detail,
+        pd,
+        x,
+        (r.y + 36.0 * s).round(),
+        u.text_dim,
+    );
+    // Pfeil: offen nach oben
+    let (cx, cy) = (r.x + r.w - 12.0 * s, r.y + r.h * 0.5);
+    let a = 3.5 * s;
+    let mut p = Path::new();
+    if chip.open {
+        p.move_to(cx - a, cy + a * 0.5)
+            .line_to(cx + a, cy + a * 0.5)
+            .line_to(cx, cy - a * 0.6)
+            .close();
+    } else {
+        p.move_to(cx - a, cy - a * 0.5)
+            .line_to(cx + a, cy - a * 0.5)
+            .line_to(cx, cy + a * 0.6)
+            .close();
+    }
+    c.fill(&p, u.text_dim);
+    if chip.marked {
+        let d = 3.0 * s;
+        let mut p = Path::new();
+        p.rounded_rect(r.x + r.w - 7.0 * s - d, r.y + 5.0 * s, 2.0 * d, 2.0 * d, d);
+        c.fill(&p, u.accent);
+    }
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@
 mod abnahme;
 mod camera;
 mod catalog;
+mod catalog_view;
 mod document;
 mod draw_table;
 mod menu;
@@ -21,6 +22,8 @@ mod schedule_view;
 mod section;
 mod selection;
 mod settings;
+mod type_look;
+mod type_menu;
 mod ui;
 mod wall_edit;
 mod wall_tool;
@@ -152,8 +155,10 @@ const OVERLAY_SAVE: usize = 12;
 /// Nachfrage).
 const OVERLAY_PREFS: usize = 13;
 const OVERLAY_PREFS_POPUP: usize = 14;
-/// Platz 15 ist frei. Geschossbogen im Grundriss (E18): Bogen, Aufleuchten,
-/// Schilder und Hinweis an der Spitze.
+/// Typ-Liste am Chip (K3).
+const OVERLAY_TYPE_MENU: usize = 15;
+/// Geschossbogen im Grundriss (E18): Bogen, Aufleuchten, Schilder und
+/// Hinweis an der Spitze.
 const OVERLAY_WHEEL: usize = 16;
 /// Hinweis an der Maus, über allem.
 const OVERLAY_TIP: usize = OVERLAY_WHEEL + wheel_view::SLOTS;
@@ -418,6 +423,16 @@ struct App {
     settings: settings::Settings,
     /// Firmenkatalog (K2); `None` ohne Einstellungen: eingebauter Startbestand.
     company: Option<catalog::Company>,
+    /// Bauteilkatalog (K3), wie das Einstellungsfenster in dessen Ebenen.
+    catalog: Option<catalog_view::Catalog>,
+    /// Typ, den das Werkzeug zeichnet, je Typart (K3: Außen-, Innenwand);
+    /// `None`: der Standardtyp.
+    tool_type: [Option<sk_model::LayerSetId>; 2],
+    /// Typ-Liste am Chip (K3) und ob ihr Bild neu zu zeichnen ist.
+    type_menu: Option<type_menu::TypeMenu>,
+    type_menu_dirty: bool,
+    /// Stand (Revision, Farbschema), für den der Chip im Werkzeug gilt.
+    tool_chip_key: Option<(u64, u64)>,
     /// Geschossbogen im Grundriss (E18), seine Bilder, die Uhr seiner
     /// Animation (ms seit dem Start), angefangene Mausradrasten, ein Druck
     /// auf den Bogen (das Loslassen gehört ihm) und der Höhenversatz des
@@ -794,13 +809,159 @@ impl App {
             }
             Command::ClearRecent => self.recent.clear(),
             Command::Settings => self.open_prefs(),
+            Command::Catalog => self.open_catalog(),
         }
+    }
+
+    /// Bauteilkatalog öffnen (K3); er liegt vorn wie das Einstellungsfenster.
+    fn open_catalog(&mut self) {
+        if self.catalog.is_some() || self.prefs.is_some() {
+            return;
+        }
+        self.close_type_menu(false);
+        if self.ui.dialog {
+            self.close_building_dialog(false);
+        }
+        self.ui.hover = None;
+        self.title.hover = None;
+        self.catalog = Some(catalog_view::Catalog::open(
+            &self.scene,
+            self.company.as_ref(),
+        ));
+        self.prefs_dirty = true;
+        self.overlay_dirty = true;
+    }
+
+    /// Offener Bauteilkatalog: nimmt Maus und Tasten wie das
+    /// Einstellungsfenster ([`App::handle_prefs`]).
+    fn handle_catalog(&mut self, e: Event, surface: &Surface) -> bool {
+        let th = self.top() as f64;
+        let window_button = |a: &App, x: f64, y: f64| {
+            y < th
+                && matches!(
+                    a.title.button_at(x, y, a.w),
+                    Some(Button::Minimize | Button::Maximize | Button::Close)
+                )
+        };
+        match e {
+            Event::CloseRequested { .. } => {
+                // Wie „Abbrechen“: nichts übernommen
+                self.catalog = None;
+                self.highlight(Vec::new());
+                self.paint_prefs();
+                return false;
+            }
+            Event::Resized { .. }
+            | Event::ScaleChanged(_)
+            | Event::Maximized(_)
+            | Event::Focus(_)
+            | Event::Redraw => {
+                self.prefs_dirty = true;
+                self.prefs_popup_dirty = true;
+                return false;
+            }
+            Event::MouseMove { x, y, .. } => {
+                self.mouse_at = Some((x, y));
+                let over = if window_button(self, x, y) {
+                    self.title.button_at(x, y, self.w)
+                } else {
+                    None
+                };
+                if over != self.title.hover {
+                    self.dirty_title
+                        .extend(self.title.hover.into_iter().chain(over));
+                    self.title.hover = over;
+                }
+            }
+            Event::MouseDown { x, y, .. } | Event::MouseUp { x, y, .. }
+                if window_button(self, x, y) || self.title.pressed.is_some() =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+        let win = self.prefs_win();
+        let standard = self.settings.company_place().is_some_and(|(_, s)| s);
+        let Some(c) = self.catalog.as_mut() else {
+            return false;
+        };
+        let mut cx = catalog_view::Ctx {
+            scene: &mut self.scene,
+            theme: &self.theme,
+            fonts: &self.ui.fonts,
+            win,
+            company: self.company.as_mut(),
+            company_standard: standard,
+        };
+        let out = c.handle(&e, &mut cx);
+        if out.closed {
+            self.catalog = None;
+            self.overlay_dirty = true;
+        }
+        if out.moved {
+            if let Some(c) = &self.catalog {
+                let (x, y) = c.origin(&self.theme, &win);
+                self.renderer.move_overlay(OVERLAY_PREFS, x, y);
+                self.redraw = true;
+            }
+        }
+        self.prefs_dirty |= out.repaint || out.closed;
+        self.prefs_popup_dirty |= out.popup || out.closed;
+        if let Some(h) = out.highlight {
+            self.highlight(h);
+        } else if out.closed {
+            self.highlight(Vec::new());
+        }
+        if out.pick_company {
+            self.pick_company(surface);
+        }
+        if out.applied {
+            self.upload_model();
+            self.props_key = None;
+            self.tool_chip_key = None;
+            self.sync_levels();
+            self.refresh_cursor();
+        }
+        self.sync_caption(surface);
+        true
+    }
+
+    /// Wände im Modell hervorheben (Rückfrage im Bauteilkatalog); leer: aus.
+    fn highlight(&mut self, ids: Vec<sk_model::ElementId>) {
+        let on = !ids.is_empty();
+        if (on || self.hover_from_list) && self.picking.set_hover(None, ids) {
+            self.redraw = true;
+        }
+        self.hover_from_list = on;
+    }
+
+    /// „ändern …“ im Bauteilkatalog: anderer Ort des Firmenkatalogs (F1).
+    fn pick_company(&mut self, surface: &Surface) {
+        let filters = [
+            ("Firmenkatalog (*.szk)", "*.szk"),
+            ("Alle Dateien (*.*)", "*.*"),
+        ];
+        let Some(p) = surface.open_dialog("Firmenkatalog", &filters) else {
+            return;
+        };
+        let (c, hints) = catalog::Company::load(&p, false);
+        if !hints.is_empty() {
+            surface.message(&hints.join("\n\n"), false);
+        }
+        self.settings.set_company_path(p);
+        save_settings(&mut self.settings, &self.theme, &self.recent, surface);
+        self.company = Some(c);
+        if let Some(cat) = self.catalog.as_mut() {
+            cat.set_company(self.company.as_ref());
+        }
+        self.prefs_dirty = true;
+        self.prefs_popup_dirty = true;
     }
 
     /// Einstellungsfenster öffnen; ist es offen, bleibt es (es liegt ohnehin
     /// vorn).
     fn open_prefs(&mut self) {
-        if self.prefs.is_some() {
+        if self.prefs.is_some() || self.catalog.is_some() {
             return;
         }
         if self.ui.dialog {
@@ -939,6 +1100,20 @@ impl App {
         self.prefs_dirty = false;
         self.paint_prefs_popup();
         let win = self.prefs_win();
+        if let Some(cat) = self.catalog.as_mut() {
+            if cat.asking() {
+                // Die Rückfrage zeigt die Wände: das Fenster tritt zurück
+                self.renderer.set_overlay(OVERLAY_PREFS, 0, 0, 0, 0, &[]);
+                self.redraw = true;
+                return;
+            }
+            let (c, x, y) = cat.paint(&self.theme, &self.ui.fonts, &win);
+            let px = c.to_premul_rgba8();
+            self.renderer
+                .set_overlay(OVERLAY_PREFS, x, y, c.width as u32, c.height as u32, &px);
+            self.redraw = true;
+            return;
+        }
         let Some(p) = self.prefs.as_mut() else {
             self.renderer.set_overlay(OVERLAY_PREFS, 0, 0, 0, 0, &[]);
             return;
@@ -954,10 +1129,13 @@ impl App {
         self.prefs_popup_dirty = false;
         self.redraw = true;
         let win = self.prefs_win();
-        let img = self
-            .prefs
-            .as_mut()
-            .and_then(|p| p.paint_popup(&self.theme, &self.ui.fonts, &win, &self.scene));
+        let img = match self.catalog.as_mut() {
+            Some(cat) => cat.paint_popup(&self.theme, &self.ui.fonts, &win, self.scene.model()),
+            None => self
+                .prefs
+                .as_mut()
+                .and_then(|p| p.paint_popup(&self.theme, &self.ui.fonts, &win, &self.scene)),
+        };
         match img {
             Some((c, x, y)) => {
                 let px = c.to_premul_rgba8();
@@ -1335,6 +1513,7 @@ impl App {
                     self.sync_levels();
                 }
             }
+            Id::ToolType | Id::PropsType => self.open_type_menu(id),
             Id::DialogStart => self.close_building_dialog(true),
             Id::DialogCancel | Id::DialogClose => self.close_building_dialog(false),
             // Zahlenfelder melden sich über `UiOut::submit`, Griffe über
@@ -1389,21 +1568,299 @@ impl App {
     /// Wandart des Werkzeugs mit dem voreingestellten Aufbau aus der Bibliothek
     /// (Vorschau beim Zeichnen und Anzeige im Paneel).
     fn set_wall_kind(&mut self, cat: Category) {
-        let d = self.scene.model().defaults();
-        let set = match cat {
-            Category::InteriorWall => d.interior_wall,
-            _ => d.exterior_wall,
-        };
+        let set = self.tool_type_of(cat);
         self.tool
             .set_category(cat, self.scene.model().wall_layers(set));
         self.ui.wall_layers = layer_rows(self.scene.model(), set);
         self.ui.interior = cat == Category::InteriorWall;
+        self.tool_chip_key = None;
+        self.sync_tool_chip();
         self.overlay_dirty = true;
+    }
+
+    /// Typ, den das Werkzeug für die Wandart zeichnet (K3): der gewählte,
+    /// solange es ihn gibt, sonst der Standardtyp.
+    fn tool_type_of(&self, cat: Category) -> sk_model::LayerSetId {
+        let tc = sk_model::TypeCategory::of(cat).unwrap_or(sk_model::TypeCategory::ExteriorWall);
+        let m = self.scene.model();
+        self.tool_type[tc as usize]
+            .filter(|id| m.layer_set(*id).is_some_and(|t| t.category == tc))
+            .unwrap_or_else(|| m.default_type(tc))
+    }
+
+    /// Chip im Werkzeug an Modell und Farbschema angleichen; ein Typ, der
+    /// sich ändert (Katalog, Rückgängig), ändert auch die Vorschau beim
+    /// Zeichnen.
+    fn sync_tool_chip(&mut self) {
+        let key = (self.scene.model().revision(), self.theme.rev);
+        if self.tool_chip_key == Some(key) {
+            return;
+        }
+        self.tool_chip_key = Some(key);
+        let cat = self.tool.category;
+        let set = self.tool_type_of(cat);
+        let m = self.scene.model();
+        let open = self.ui.tool_chip.as_ref().is_some_and(|c| c.open);
+        let chip = m.layer_set(set).map(|t| {
+            let mut c = selection::type_chip(m, &self.theme, t);
+            c.open = open;
+            c
+        });
+        let layers = m.wall_layers(set);
+        if self.tool.layers != layers {
+            self.tool.set_category(cat, layers);
+            self.redraw = true;
+        }
+        if chip != self.ui.tool_chip {
+            self.ui.tool_chip = chip;
+            self.ui.wall_layers = layer_rows(m, set);
+            self.overlay_dirty = true;
+        }
+    }
+
+    /// Öffnet die Typ-Liste am Chip (K3); ein zweiter Klick schließt sie.
+    fn open_type_menu(&mut self, chip: Id) {
+        let again = self.type_menu.as_ref().is_some_and(|m| m.chip == chip);
+        self.close_type_menu(false);
+        if again {
+            return;
+        }
+        let top = self.top();
+        let Some(anchor) = self.ui.button_rect(chip, self.w, top) else {
+            return;
+        };
+        let m = self.scene.model();
+        let (panel, cat, current, runs) = match chip {
+            Id::ToolType => {
+                let cat = self.tool.category;
+                let tc =
+                    sk_model::TypeCategory::of(cat).unwrap_or(sk_model::TypeCategory::ExteriorWall);
+                (Panel::Tools, tc, Some(self.tool_type_of(cat)), Vec::new())
+            }
+            _ => {
+                // Alle gewählten Wände derselben Art wechseln mit
+                let Some(e) = self.sel.id.and_then(|id| m.element(id)) else {
+                    return;
+                };
+                let Some(tc) = sk_model::TypeCategory::of(e.category) else {
+                    return;
+                };
+                let mut runs = Vec::new();
+                for id in &self.picking.selected {
+                    let Some(el) = m.element(*id) else { continue };
+                    if sk_model::TypeCategory::of(el.category) != Some(tc) {
+                        continue;
+                    }
+                    if let sk_model::ElementKind::Wall(w) = el.kind {
+                        if !runs.contains(&w.run) {
+                            runs.push(w.run);
+                        }
+                    }
+                }
+                (Panel::Props, tc, e.layer_set, runs)
+            }
+        };
+        let panel = self.ui.rect(panel, self.w, top);
+        let menu = type_menu::TypeMenu::new(
+            chip,
+            m,
+            &self.theme,
+            cat,
+            current,
+            runs,
+            anchor,
+            panel,
+            self.ui.scale,
+            (self.w as f32, self.h as f32),
+        );
+        self.type_menu = Some(menu);
+        if self.ui.set_chip_open(chip, true) {
+            self.dirty_buttons.push(chip);
+        }
+        self.type_menu_dirty = true;
+        self.tip = None;
+    }
+
+    /// Schließt die Typ-Liste: `keep` übernimmt die Vorschau, sonst ist
+    /// alles wie vorher.
+    fn close_type_menu(&mut self, keep: bool) {
+        let Some(menu) = self.type_menu.take() else {
+            return;
+        };
+        if self.scene.previewing_type() {
+            self.scene.end_run_type(keep);
+            self.upload_model();
+            self.props_key = None;
+        }
+        if self.ui.set_chip_open(menu.chip, false) {
+            self.dirty_buttons.push(menu.chip);
+        }
+        self.type_menu_dirty = true;
+    }
+
+    /// Wählt den Eintrag `i` der Typ-Liste: im Werkzeug der Typ für die
+    /// nächsten Wände, in den Eigenschaften ein Rückgängig-Schritt.
+    fn choose_type(&mut self, i: usize) {
+        let Some(menu) = self.type_menu.as_ref() else {
+            return;
+        };
+        let Some(id) = menu.items.get(i).map(|it| it.id) else {
+            return;
+        };
+        if menu.chip == Id::ToolType {
+            let tc = menu.category;
+            self.tool_type[tc as usize] = Some(id);
+            self.close_type_menu(false);
+            self.tool_chip_key = None;
+            self.sync_tool_chip();
+            return;
+        }
+        if menu.current != Some(id) {
+            let runs = menu.runs.clone();
+            self.scene.preview_run_type(&runs, id);
+            self.close_type_menu(true);
+        } else {
+            self.close_type_menu(false);
+        }
+        self.sect.ensure(&self.scene);
+    }
+
+    /// Vorschau des überfahrenen Typs in den Eigenschaften (wächst nach
+    /// innen); ohne Eintrag unter der Maus wieder der alte Stand.
+    fn preview_type(&mut self, hover: Option<usize>) {
+        let Some(menu) = self.type_menu.as_ref() else {
+            return;
+        };
+        if menu.chip != Id::PropsType {
+            return;
+        }
+        let id = hover.and_then(|i| menu.items.get(i)).map(|it| it.id);
+        match id {
+            Some(id) if Some(id) != menu.current => {
+                let runs = menu.runs.clone();
+                self.scene.preview_run_type(&runs, id);
+            }
+            _ => self.scene.end_run_type(false),
+        }
+        self.upload_model();
+    }
+
+    /// Offene Typ-Liste: nimmt Maus und Tasten. Ein Klick daneben schließt
+    /// sie und bewirkt sonst nichts (wie das Dateimenü).
+    fn handle_type_menu(&mut self, e: Event, surface: &Surface) -> bool {
+        let Some(menu) = self.type_menu.as_mut() else {
+            return false;
+        };
+        match e {
+            Event::MouseMove { x, y, .. } => {
+                self.mouse_at = Some((x, y));
+                let hit = menu.hit(x, y);
+                let hover = match hit {
+                    type_menu::Hit::Item(i) => Some(i),
+                    _ => None,
+                };
+                let link = hit == type_menu::Hit::Catalog;
+                if (hover, link) != (menu.hover, menu.link_hover) {
+                    let changed_item = hover != menu.hover;
+                    (menu.hover, menu.link_hover) = (hover, link);
+                    self.type_menu_dirty = true;
+                    if changed_item {
+                        self.preview_type(hover);
+                    }
+                }
+                true
+            }
+            Event::MouseDown { x, y, .. } => {
+                if menu.hit(x, y) == type_menu::Hit::Outside {
+                    // Der eigene Chip schließt nur
+                    let chip = menu.chip;
+                    let on_chip = self
+                        .ui
+                        .button_rect(chip, self.w, self.top())
+                        .is_some_and(|r| r.contains(x, y));
+                    self.close_type_menu(false);
+                    return on_chip || true;
+                }
+                true
+            }
+            Event::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
+                match menu.hit(x, y) {
+                    type_menu::Hit::Item(i) => self.choose_type(i),
+                    type_menu::Hit::Catalog => {
+                        self.close_type_menu(false);
+                        self.run_command(Command::Catalog, surface);
+                    }
+                    _ => {}
+                }
+                true
+            }
+            Event::MouseUp { .. } | Event::Wheel { .. } => true,
+            Event::Key { key, down, .. } => {
+                if down {
+                    match key {
+                        Key::Escape => self.close_type_menu(false),
+                        Key::Other(0x26 | 0x28) => {
+                            let i = menu.step(key == Key::Other(0x28));
+                            self.type_menu_dirty = true;
+                            self.preview_type(i);
+                        }
+                        Key::Enter => match menu.hover {
+                            Some(i) => self.choose_type(i),
+                            None => self.close_type_menu(false),
+                        },
+                        _ => {}
+                    }
+                }
+                true
+            }
+            Event::MouseLeave => {
+                if menu.hover.take().is_some() || std::mem::take(&mut menu.link_hover) {
+                    self.type_menu_dirty = true;
+                    self.preview_type(None);
+                }
+                false
+            }
+            Event::Focus(false) => {
+                self.close_type_menu(false);
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// Typ-Liste zeichnen oder ausblenden.
+    fn paint_type_menu(&mut self) {
+        self.type_menu_dirty = false;
+        self.redraw = true;
+        match &self.type_menu {
+            Some(m) => {
+                let (c, x, y) = m.paint(&self.theme, &self.ui.fonts);
+                let px = c.to_premul_rgba8();
+                self.renderer.set_overlay(
+                    OVERLAY_TYPE_MENU,
+                    x,
+                    y,
+                    c.width as u32,
+                    c.height as u32,
+                    &px,
+                );
+            }
+            None => self
+                .renderer
+                .set_overlay(OVERLAY_TYPE_MENU, 0, 0, 0, 0, &[]),
+        }
     }
 
     fn commit_wall(&mut self, wall: Option<sk_model::WallChain>) {
         if let Some(wall) = wall {
-            self.scene.add_wall_as(&wall, self.tool.category);
+            let set = self.tool_type_of(self.tool.category);
+            self.scene
+                .add_wall_typed(&wall, self.tool.category, Some(set));
             self.sect.ensure(&self.scene);
             self.upload_model();
             self.refresh_cursor();
@@ -1436,7 +1893,13 @@ impl App {
         if self.prefs.is_some() && self.handle_prefs(e, surface) {
             return !self.quit;
         }
+        if self.catalog.is_some() && self.handle_catalog(e, surface) {
+            return !self.quit;
+        }
         if self.menu.is_open() && self.handle_menu(e, surface) {
+            return !self.quit;
+        }
+        if self.type_menu.is_some() && self.handle_type_menu(e, surface) {
             return !self.quit;
         }
         self.handle_inner(e, surface) && !self.quit
@@ -2024,6 +2487,7 @@ impl App {
         self.paint_menu();
         self.paint_save_dialog();
         self.paint_prefs();
+        self.paint_type_menu();
         self.overlay_dirty = false;
         self.layout_dirty = false;
         self.redraw = true;
@@ -2077,7 +2541,7 @@ impl App {
     /// Knöpfe der Titelleiste an Verlauf und Menü angleichen.
     fn sync_title_state(&mut self) {
         // Bei offenem Einstellungsfenster gesperrt (E5)
-        let free = self.prefs.is_none();
+        let free = self.prefs.is_none() && self.catalog.is_none();
         let undo = free && self.scene.undo_label().is_some();
         let redo = free && self.scene.redo_label().is_some();
         let open = self.menu.is_open();
@@ -2101,6 +2565,9 @@ impl App {
     fn tip_wanted(&self) -> Option<String> {
         if let Some(p) = &self.prefs {
             return p.tip(&self.scene);
+        }
+        if let Some(c) = &self.catalog {
+            return c.tip();
         }
         if self.ui.dialog
             || self.ui.level_dragging().is_some()
@@ -2192,6 +2659,7 @@ impl App {
         let blocked = self.ui.dialog
             || self.menu.is_open()
             || self.prefs.is_some()
+            || self.catalog.is_some()
             || self.save_dlg.is_some();
         if !self.wheel.visible(self.ui.view, false) {
             wheel_view::Show::Off
@@ -2514,6 +2982,11 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         prefs_popup_dirty: false,
         settings,
         company,
+        catalog: None,
+        tool_type: [None, None],
+        type_menu: None,
+        type_menu_dirty: false,
+        tool_chip_key: None,
         w,
         h,
         overlay_dirty: true,
@@ -2611,7 +3084,11 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             if a.ui.view == ViewKind::Plan && a.scene.plans_pending() {
                 a.scene.prepare_neighbor_plans();
             }
-            let wait = match (a.tip_wait(), a.prefs.as_ref().and_then(|p| p.wait())) {
+            let dlg_wait = match &a.catalog {
+                Some(c) => c.wait(&a.theme),
+                None => a.prefs.as_ref().and_then(|p| p.wait()),
+            };
+            let wait = match (a.tip_wait(), dlg_wait) {
                 (Some(x), Some(y)) => Some(x.min(y)),
                 (x, y) => x.or(y),
             };
@@ -2663,7 +3140,12 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         if a.prefs.as_mut().is_some_and(|p| p.tick()) {
             a.prefs_dirty = true;
         }
+        let theme = &a.theme;
+        if a.catalog.as_mut().is_some_and(|c| c.tick(theme)) {
+            a.prefs_dirty = true;
+        }
         a.sync_quantity(&surface);
+        a.sync_tool_chip();
         a.sync_tip();
         a.sync_title_state();
         if a.menu_dirty && !a.overlay_dirty && a.w > 0 {
@@ -2682,13 +3164,17 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         } else if a.prefs_popup_dirty && a.w > 0 {
             a.paint_prefs_popup();
         }
+        if a.type_menu_dirty && a.w > 0 {
+            a.paint_type_menu();
+        }
         if a.w > 0 {
             a.paint_buttons(&surface);
         }
-        let cursor = match &a.prefs {
-            Some(p) => p.cursor(),
-            None if a.wheel_hand() => sk_platform::Cursor::Hand,
-            None => a.ui.cursor(),
+        let cursor = match (&a.prefs, &a.catalog) {
+            (Some(p), _) => p.cursor(),
+            (None, Some(c)) => c.cursor(),
+            (None, None) if a.wheel_hand() => sk_platform::Cursor::Hand,
+            (None, None) => a.ui.cursor(),
         };
         surface.set_cursor(cursor);
 

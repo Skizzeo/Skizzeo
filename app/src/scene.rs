@@ -13,8 +13,9 @@ use sk_math::{vec3, Vec3};
 use sk_model::qto::Schedule;
 use sk_model::{
     edge_kind, floor_qto_of, foundation_qto_of, merge_seam, run_qto, BuildingId, Category,
-    Direction, Edge, ElementId, FloorQto, FloorSlab, FootingQto, Foundation, Model, RunId, SlabQto,
-    Solid, StoreyId, Touched, Txn, WallChain, WallQto, FLOOR_PART, FOOTING_PART, SLAB_PART,
+    Direction, Edge, ElementId, FloorQto, FloorSlab, FootingQto, Foundation, LayerSetId, Model,
+    RunId, SlabQto, Solid, StoreyId, Touched, Txn, TypeCategory, WallChain, WallQto, FLOOR_PART,
+    FOOTING_PART, SLAB_PART,
 };
 use sk_render::MeshData;
 use sk_ui::theme::Theme;
@@ -294,6 +295,8 @@ pub struct Scene {
     schedule: Option<(u64, Schedule)>,
     /// Wie oft die Liste berechnet wurde (Messung, Abnahme).
     schedule_runs: u64,
+    /// Offener Schritt „Typ gewechselt“ als Vorschau (K3).
+    type_preview: bool,
 }
 
 /// Vorgaben im Dialog „Gebäude erstellen“ (Jörn 10:13, mm): lichte Höhen und
@@ -392,6 +395,7 @@ impl Scene {
             pending_rev: 0,
             schedule: None,
             schedule_runs: 0,
+            type_preview: false,
         };
         s.rebuild_dirty(false);
         s
@@ -948,16 +952,27 @@ impl Scene {
     /// mit allen Geschossen darüber, B12), Innenwände im aktiven Geschoss des
     /// Gebäudes, in dessen Umriss ihr Anfang liegt. Ist ein Gebäude im
     /// Entstehen, schließt die Wand dessen Schritt „Gebäude erstellt“.
+    #[cfg(test)]
     pub fn add_wall_as(&mut self, w: &WallChain, cat: Category) -> Option<RunId> {
+        self.add_wall_typed(w, cat, None)
+    }
+
+    /// Wie [`Scene::add_wall_as`] mit dem Typ `set` (K3: im Werkzeug
+    /// gewählt); `None` oder ein unpassender Typ: der Standardtyp.
+    pub fn add_wall_typed(
+        &mut self,
+        w: &WallChain,
+        cat: Category,
+        set: Option<LayerSetId>,
+    ) -> Option<RunId> {
         let pending = self.pending.take();
         if pending.is_none() {
             self.begin("Wand zeichnen");
         }
-        let d = self.model.defaults();
-        let set = match cat {
-            Category::InteriorWall => d.interior_wall,
-            _ => d.exterior_wall,
-        };
+        let tc = TypeCategory::of(cat).unwrap_or(TypeCategory::ExteriorWall);
+        let set = set
+            .filter(|s| self.model.layer_set(*s).is_some_and(|t| t.category == tc))
+            .unwrap_or_else(|| self.model.default_type(tc));
         let active = self.active_storey();
         let storey = match (cat, w.points.first()) {
             (Category::InteriorWall, Some(p)) => self.model.storey_at(*p, active),
@@ -988,6 +1003,57 @@ impl Scene {
         }
         self.commit();
         run
+    }
+
+    /// Typwechsel als Vorschau (K3: Typ in den Eigenschaften überfahren):
+    /// ein offener Schritt „Typ gewechselt“, neu gerechnet werden nur die
+    /// Züge, die er berührt, ohne Mengen. Eine vorige Vorschau wird vorher
+    /// verworfen. `false`, wenn ein Zug den Typ nicht annimmt.
+    pub fn preview_run_type(&mut self, runs: &[RunId], id: LayerSetId) -> bool {
+        if std::mem::take(&mut self.type_preview) {
+            self.rollback();
+        }
+        self.begin("Typ gewechselt");
+        self.type_preview = true;
+        // Auch Anschlüsse, die der Wechsel löst
+        let mut marks: Vec<RunId> = runs
+            .iter()
+            .flat_map(|r| self.model.joined_runs(*r))
+            .collect();
+        let mut ok = true;
+        for &r in runs {
+            ok &= self.model.set_run_type(r, id);
+        }
+        marks.extend(self.model.step_touched());
+        for r in marks {
+            self.mark(r);
+        }
+        self.rebuild_dirty(true);
+        ok
+    }
+
+    /// Beendet die Vorschau: `keep` übernimmt sie als einen Schritt, sonst
+    /// ist alles wie vorher.
+    pub fn end_run_type(&mut self, keep: bool) {
+        if !std::mem::take(&mut self.type_preview) {
+            return;
+        }
+        if keep {
+            // Körper stehen schon, es fehlen nur die Mengen
+            self.commit();
+        } else {
+            self.rollback();
+        }
+    }
+
+    /// Läuft eine Typ-Vorschau?
+    pub fn previewing_type(&self) -> bool {
+        self.type_preview
+    }
+
+    /// Farbschema, mit dem die Zeichentabelle aufgelöst ist.
+    pub fn theme(&self) -> &Theme {
+        &self.theme
     }
 
     /// Setzt einen Parameter der Gründung unter dem Zug des Bauteils `id`
@@ -1199,6 +1265,63 @@ impl Scene {
         self.mark_all();
         self.commit();
         ok
+    }
+
+    /// Ändert Bauteiltypen in einem Schritt (K3: „OK“ im Bauteilkatalog).
+    /// Neu berechnet werden nur die Züge, deren Typ sich geändert hat, und die,
+    /// die an ihnen hängen; ändern sich Baustoffe, alles. `true`, wenn sich
+    /// etwas geändert hat.
+    pub fn edit_types(&mut self, label: &'static str, f: impl FnOnce(&mut Model) -> bool) -> bool {
+        let rev = self.model.revision();
+        let mats: Vec<_> = self
+            .model
+            .materials()
+            .iter()
+            .map(|(_, x)| x.clone())
+            .collect();
+        let sets: Vec<_> = self
+            .model
+            .layer_sets()
+            .iter()
+            .map(|(_, t)| t.clone())
+            .collect();
+        self.begin(label);
+        f(&mut self.model);
+        let mats_now: Vec<_> = self
+            .model
+            .materials()
+            .iter()
+            .map(|(_, x)| x.clone())
+            .collect();
+        if mats_now != mats {
+            self.table = DrawTable::resolve(&self.model, &self.theme);
+            self.mark_all();
+        } else {
+            let m = &self.model;
+            let mut runs: Vec<RunId> = Vec::new();
+            for (id, t) in m.layer_sets().iter() {
+                if sets.iter().any(|s| s == t) {
+                    continue;
+                }
+                for e in m.type_users(id) {
+                    runs.extend(m.run_of(e));
+                }
+            }
+            runs.sort_by_key(|r| r.index());
+            runs.dedup();
+            let mut marks = runs.clone();
+            for &r in &runs {
+                marks.extend(m.joined_runs(r));
+                marks.extend(m.runs_under_floor(r));
+                marks.extend(m.run_below(r));
+                marks.extend(m.stack_above(r));
+            }
+            for r in marks {
+                self.mark(r);
+            }
+        }
+        self.commit();
+        self.model.revision() != rev
     }
 
     /// Oberkante eines Geschosses beim Ziehen im Paneel „Geschosse“: geklemmt,

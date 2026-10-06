@@ -244,6 +244,13 @@ pub struct Sizes {
     pub qto_max_w: f32,
     pub qto_window_w: f32,
     pub flash_ms: f32,
+    /// Bauteilkatalog (K3): Dialog, Liste links, Kachelzeile, Schnittbild-Kachel.
+    pub catalog_w: f32,
+    pub catalog_h: f32,
+    pub catalog_list_w: f32,
+    pub catalog_tile_h: f32,
+    pub catalog_thumb_w: f32,
+    pub catalog_thumb_h: f32,
 }
 
 const fn rgb(r: u8, g: u8, b: u8) -> Rgba {
@@ -419,6 +426,12 @@ impl Theme {
                 qto_max_w: 900.0,
                 qto_window_w: 520.0,
                 flash_ms: 600.0,
+                catalog_w: 1080.0,
+                catalog_h: 720.0,
+                catalog_list_w: 270.0,
+                catalog_tile_h: 48.0,
+                catalog_thumb_w: 30.0,
+                catalog_thumb_h: 34.0,
                 hover_delay_hud: 0.25,
             },
             px_per_mm: 5.5,
