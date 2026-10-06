@@ -19,6 +19,8 @@ pub mod edge_kind {
     pub const CUT: u8 = 1;
     /// Feine Linie, z. B. Fuge zwischen zwei Schichten.
     pub const FINE: u8 = 2;
+    /// Schnittkontur einer nicht tragenden Schicht (z. B. Dämmung), mitteldick.
+    pub const CUT_LAYER: u8 = 3;
 }
 
 #[derive(Clone, Copy, Debug)]

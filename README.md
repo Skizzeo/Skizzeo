@@ -25,7 +25,8 @@ Eingabe, OpenGL-Anbindung, 2D-Grafik, Logo und Oberfläche sind selbst geschrieb
 Paneel „Ansichten“ (rechts): 3D, Grundriss (geschnitten in 1,00 m Höhe),
 Schnitt A–A, Vorne, Hinten, Links, Rechts. Alle außer 3D sind
 Parallelprojektionen im Bauzeichnungs-Look: altweißes Papier, schwarze
-Linien, Schnittkonturen breit, Ansichtskanten mittel, Schichtfugen fein.
+Linien. Im Schnitt ist der tragende Kern (Gasbeton) breit umrandet, die
+Dämmung mitteldick; Ansichtskanten mittel, Schichtfugen in Ansichten fein.
 Geschnittenes Mauerwerk (Gasbeton) ist auf weißer Fläche schräg schraffiert,
 harte Dämmung mit Zickzack.
 

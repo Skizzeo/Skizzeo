@@ -43,6 +43,8 @@ impl RefSide {
 pub struct Layer {
     pub thickness: f64,
     pub material: u16,
+    /// Tragender Kern: im Schnitt dick umrandet, übrige Schichten mitteldick.
+    pub core: bool,
 }
 
 impl Layer {
@@ -50,6 +52,25 @@ impl Layer {
         Layer {
             thickness,
             material,
+            core: false,
+        }
+    }
+
+    /// Schicht des tragenden Kerns.
+    pub const fn core(thickness: f64, material: u16) -> Layer {
+        Layer {
+            thickness,
+            material,
+            core: true,
+        }
+    }
+
+    /// Kantenart der Schnittkontur dieser Schicht.
+    fn cut_kind(&self) -> u8 {
+        if self.core {
+            edge_kind::CUT
+        } else {
+            edge_kind::CUT_LAYER
         }
     }
 }
@@ -58,7 +79,7 @@ impl Layer {
 pub fn exterior_wall_layers() -> Vec<Layer> {
     vec![
         Layer::new(140.0, material::INSULATION),
-        Layer::new(175.0, material::AERATED_CONCRETE),
+        Layer::core(175.0, material::AERATED_CONCRETE),
     ]
 }
 
@@ -263,9 +284,9 @@ impl WallChain {
     /// Wandkörper mit Gehrungen an den Ecken, eine Schale je Schicht.
     pub fn solid(&self) -> Solid {
         let mut s = Solid::default();
-        for (lo, hi, mat) in self.layer_offsets() {
+        for ((lo, hi, mat), l) in self.layer_offsets().into_iter().zip(&self.layers) {
             s.mat = mat;
-            self.prism(&mut s, lo, hi, self.height, mat);
+            self.prism(&mut s, lo, hi, self.height, mat, l.cut_kind());
         }
         s
     }
@@ -277,15 +298,16 @@ impl WallChain {
             return self.solid();
         }
         let mut s = Solid::default();
-        for (lo, hi, mat) in self.layer_offsets() {
+        for ((lo, hi, mat), l) in self.layer_offsets().into_iter().zip(&self.layers) {
             s.mat = mat;
-            self.prism(&mut s, lo, hi, cut, mat | material::CUT);
+            self.prism(&mut s, lo, hi, cut, mat | material::CUT, l.cut_kind());
         }
         s
     }
 
     /// Schnittflächen der Wand mit der senkrechten Ebene durch `p0` mit Normale `n`
-    /// (Flächen zeigen in Richtung `n`). Konturen als Schnittkanten, Schichtfugen fein.
+    /// (Flächen zeigen in Richtung `n`). Jede Schicht ist umrandet: der tragende Kern
+    /// dick, die übrigen Schichten mitteldick.
     pub fn section_caps(&self, p0: Vec3, n: Vec3) -> Solid {
         let mut s = Solid::default();
         let Some((pts, _, dirs)) = self.layout() else {
@@ -296,8 +318,8 @@ impl WallChain {
         let h = self.height;
         let up = vec3(0.0, 0.0, h);
         let side = |p: Vec3| (p - p0).dot(n);
-        let (clo, chi) = self.contour();
-        for (lo, hi, mat) in self.layer_offsets() {
+        for ((lo, hi, mat), l) in self.layer_offsets().into_iter().zip(&self.layers) {
+            let kind = l.cut_kind();
             let (cl, ch) = (self.face_corners(lo), self.face_corners(hi));
             let cnt = cl.len();
             let t = (hi - lo).max(1.0);
@@ -331,20 +353,12 @@ impl WallChain {
                     n,
                     [[0.0, v(a)], [0.0, v(b)], [h / t, v(b)], [h / t, v(a)]],
                 );
-                s.edge_kind = edge_kind::CUT;
+                s.edge_kind = kind;
                 s.edge(a, b);
                 s.edge(a + up, b + up);
                 for p in [a, b] {
                     let o = off(p);
-                    let on_lo = (o - lo).abs() < 1e-3;
-                    let on_hi = (o - hi).abs() < 1e-3;
-                    let outer =
-                        (on_lo && (lo - clo).abs() < 1e-6) || (on_hi && (hi - chi).abs() < 1e-6);
-                    if outer {
-                        s.edge_kind = edge_kind::CUT;
-                        s.edge(p, p + up);
-                    } else if on_lo || on_hi {
-                        s.edge_kind = edge_kind::FINE;
+                    if (o - lo).abs() < 1e-3 || (o - hi).abs() < 1e-3 {
                         s.edge(p, p + up);
                     }
                 }
@@ -364,7 +378,8 @@ impl WallChain {
 
     /// Prisma zwischen den Wandflächen `lo` und `hi` (lo < hi) bis Höhe `h`.
     /// Flächen, die nicht auf der Wandkontur liegen (Schichtfugen), bekommen feine Kanten.
-    fn prism(&self, s: &mut Solid, lo: f64, hi: f64, h: f64, top_mat: u16) {
+    /// Ist die Deckfläche ein Schnitt, wird sie ringsum mit `cut_kind` umrandet.
+    fn prism(&self, s: &mut Solid, lo: f64, hi: f64, h: f64, top_mat: u16, cut_kind: u8) {
         let Some((pts, closed, dirs)) = self.layout() else {
             return;
         };
@@ -378,7 +393,7 @@ impl WallChain {
                 edge_kind::FINE
             }
         };
-        let top_kind = if cut { edge_kind::CUT } else { edge_kind::VIEW };
+        let top_kind = if cut { cut_kind } else { edge_kind::VIEW };
         let ca = self.face_corners(lo);
         let cb = self.face_corners(hi);
         let side_mat = s.mat;
@@ -404,7 +419,11 @@ impl WallChain {
             for (p, q, off) in [(a0, a1, lo), (b0, b1, hi)] {
                 s.edge_kind = kind_at(off, edge_kind::VIEW);
                 s.edge(p, q);
-                s.edge_kind = kind_at(off, top_kind);
+                s.edge_kind = if cut {
+                    cut_kind
+                } else {
+                    kind_at(off, top_kind)
+                };
                 s.edge(p + up, q + up);
             }
         }

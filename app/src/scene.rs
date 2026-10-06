@@ -190,6 +190,7 @@ pub fn mesh_with(s: &Solid, drawing: bool) -> MeshData {
             let w = match (drawing, e.kind) {
                 (_, edge_kind::FINE) => d::FINE_WIDTH,
                 (true, edge_kind::CUT) => d::CUT_WIDTH,
+                (true, edge_kind::CUT_LAYER) => d::LAYER_CUT_WIDTH,
                 (true, _) => d::VIEW_WIDTH,
                 (false, _) => 1.0,
             };

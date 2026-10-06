@@ -62,6 +62,8 @@ pub mod drawing {
     /// Strichbreiten als Vielfaches der Kantenbreite (1,25 px bei 96 dpi).
     pub const CUT_WIDTH: f32 = 2.2;
     pub const VIEW_WIDTH: f32 = 1.35;
+    /// Schnittkontur nicht tragender Schichten (Dämmung), mitteldick.
+    pub const LAYER_CUT_WIDTH: f32 = 1.35;
     pub const FINE_WIDTH: f32 = 0.55;
 }
 
