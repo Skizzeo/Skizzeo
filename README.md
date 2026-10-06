@@ -91,9 +91,9 @@ erscheinen im Schnitt mit der Stahlbeton-Schraffur (Diagonale wie Mauerwerk,
 jede zweite Linie gestrichelt); in 3D liegen sie unter der
 Geländefläche, die sie durchscheinen lässt (Deckkraft 0,6; einstellbar in
 `einstellungen.txt` mit `[env] ground_opacity=` von 0 bis 1, 1 = deckend).
-Über dem Boden ändert sich dadurch nichts; nur Linien genau auf ±0,00 zeigen
-ihre untere Hälfte jetzt abgeschwächt, statt vom Boden abgeschnitten zu
-werden. Wird der Zug geöffnet oder gelöscht, verschwinden sie.
+Über dem Boden ändert sich dadurch nichts; die Bodenschicht liegt 1 mm
+unter ±0,00, damit Wandfußlinien in voller Breite schwarz bleiben (früher
+schnitt der Boden ihre untere Hälfte ab). Wird der Zug geöffnet oder gelöscht, verschwinden sie.
 Platte oder Schürze anklicken: Das Paneel zeigt Fläche, Volumen und Umfang
 bzw. Länge auf der Achse, Volumen, Breite und Tiefe. Die Maße stehen in
 Zahlenfeldern (Zentimeter, Enter übernimmt, Esc bricht ab); der

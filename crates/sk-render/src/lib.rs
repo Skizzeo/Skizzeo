@@ -195,6 +195,8 @@ uniform vec3 u_sky_col[16];
 // 0: Hintergrund ohne Tiefe; 1: Bodenschicht über dem Modell (E11)
 uniform int u_overlay;
 uniform float u_opacity;
+// Absenkung der Bodenschicht (mm)
+const float GROUND_SINK = 1.0;
 
 vec3 sky(float d) {
     for (int i = 1; i < u_sky_n; i++) {
@@ -237,7 +239,11 @@ void main() {
     // Genau der Wert, der im Hintergrund steht: über leerem Boden bleibt das
     // Bild beim Mischen gleich
     o_color = vec4(floor(col * 255.0 + 0.5) / 255.0, u_opacity);
-    gl_FragDepth = depth;
+    // Tiefe der um GROUND_SINK abgesenkten Ebene: Linien und Flächen genau
+    // auf ±0,00 (Wandfuß) bleiben ungetönt
+    float ts = -(z0 + GROUND_SINK) / dir.z;
+    vec4 cs = u_vp * vec4(o + dir * ts, 1.0);
+    gl_FragDepth = ts > 0.0 ? clamp(cs.z / cs.w * 0.5 + 0.5, 0.0, 1.0) : depth;
 }
 "#;
 
