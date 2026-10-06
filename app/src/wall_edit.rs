@@ -491,6 +491,48 @@ mod tests {
         assert!((s.model().run(run).unwrap().points[1].y - 4000.0).abs() < 1e-6);
     }
 
+    /// Geht das Loslassen verloren (Fenster verliert die Maus beim Ziehen, z. B.
+    /// Alt+Tab), beginnt das nächste Drücken einen neuen Schritt. Der erste Zug
+    /// bleibt rückgängig zu machen und nichts bricht ab.
+    #[test]
+    fn drücken_ohne_loslassen_behält_den_ersten_schritt() {
+        let (mut s, c) = setup();
+        let mut e = WallEdit::default();
+        let m = Modifiers::default();
+        let run = s.model().runs().ids().next().unwrap();
+        let drag = |s: &mut Scene, e: &mut WallEdit, from: f64, to: f64| {
+            let (x, y) = at(&c, vec3(2500.0, from, 0.0));
+            e.handle(&Event::MouseMove { x, y, mods: m }, s, &c, W, H, 1.0, true);
+            let down = Event::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                mods: m,
+            };
+            assert!(e.handle(&down, s, &c, W, H, 1.0, true).consumed);
+            let (x, y) = at(&c, vec3(2500.0, to, 0.0));
+            e.handle(&Event::MouseMove { x, y, mods: m }, s, &c, W, H, 1.0, true);
+            (x, y)
+        };
+        let y1 = |s: &Scene| s.model().run(run).unwrap().points[1].y;
+        drag(&mut s, &mut e, 4000.0, 5000.0);
+        assert!((y1(&s) - 5000.0).abs() < 1e-6);
+        // kein MouseUp; zweiter Zug
+        let (x, y) = drag(&mut s, &mut e, 5000.0, 6000.0);
+        let up = Event::MouseUp {
+            button: MouseButton::Left,
+            x,
+            y,
+            mods: m,
+        };
+        e.handle(&up, &mut s, &c, W, H, 1.0, true);
+        assert!((y1(&s) - 6000.0).abs() < 1e-6);
+        assert!(s.undo());
+        assert!((y1(&s) - 5000.0).abs() < 1e-6, "{}", y1(&s));
+        assert!(s.undo());
+        assert!((y1(&s) - 4000.0).abs() < 1e-6, "{}", y1(&s));
+    }
+
     #[test]
     fn von_vorne_seitenwand_als_punkt_ziehen() {
         let (mut s, _) = setup();
