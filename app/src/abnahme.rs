@@ -565,7 +565,7 @@ mod pattern {
     pub const NONE: f32 = 0.0;
     pub const DIAGONAL: f32 = 1.0;
     pub const ZIGZAG: f32 = 2.0;
-    pub const CROSS: f32 = 3.0;
+    pub const CONCRETE: f32 = 3.0;
     pub const SOLID: f32 = 4.0;
 }
 
@@ -589,7 +589,7 @@ fn shown(t: &DrawTable, m: &MeshData, drawing: bool) -> Shown {
                 (true, true) => (
                     look.cut_bg,
                     match (look.kind, look.line_count) {
-                        (fill_kind::LINES, 2) => pattern::CROSS,
+                        (fill_kind::LINES, 2) => pattern::CONCRETE,
                         (fill_kind::LINES, _) => pattern::DIAGONAL,
                         (fill_kind::ZIGZAG, _) => pattern::ZIGZAG,
                         (fill_kind::SOLID, _) => pattern::SOLID,
@@ -1385,7 +1385,7 @@ fn a27_mengen_flaeche_und_laenge() {
     assert_eq!(walls(&s), before);
 }
 
-/// A28: Im Schnitt Stahlbeton-Kreuzschraffur auf Platte und Schürze, kräftige
+/// A28: Im Schnitt Stahlbeton-Schraffur auf Platte und Schürze, kräftige
 /// Kontur wie tragendes Mauerwerk, keine Fuge zwischen Platte und Schürze;
 /// die Fuge zur Wand bleibt.
 #[test]
@@ -1396,15 +1396,15 @@ fn a28_schnitt_stahlbeton_ohne_fuge() {
     sect.ensure(&s);
     let cut = view_mesh(&mut s, ViewKind::Section, sect.plane());
     let has = |pat: f32| cut.faces.iter().any(|v| v[9] == pat);
-    assert!(has(pattern::CROSS) && has(pattern::DIAGONAL) && has(pattern::ZIGZAG));
+    assert!(has(pattern::CONCRETE) && has(pattern::DIAGONAL) && has(pattern::ZIGZAG));
     let cross_below = cut
         .faces
         .iter()
-        .filter(|v| v[9] == pattern::CROSS)
+        .filter(|v| v[9] == pattern::CONCRETE)
         .all(|v| v[2] <= 1e-3 || (2635.0 - 1e-3..=2855.0 + 1e-3).contains(&v[2]));
     assert!(
         cross_below,
-        "Kreuzschraffur nur in der Gründung und im Band der Erdgeschossdecke (B10)"
+        "Stahlbeton-Schraffur nur in der Gründung und im Band der Erdgeschossdecke (B10)"
     );
     let cut_w = s.table().edge_width(true, edge_kind::CUT);
     // Waagerechte Kanten in der Schnittebene auf Höhe z zwischen x0 und x1
@@ -1780,8 +1780,8 @@ fn a31_grosser_ruecksprung_an_kurzem_vorsprung() {
 // fünf Hilfsfunktionen direkt hier unten; Namen bitte beim Einbau an die
 // tatsächliche B10/G3-API anpassen, die Tests selbst nicht.
 //
-// Achtung beim Einbau: A28 prüft „Kreuzschraffur nur in der Gründung“
-// (z ≤ 0). Mit der Decke gibt es Kreuzschraffur auch bei +2,635 … +2,855;
+// Achtung beim Einbau: A28 prüft „Stahlbeton-Schraffur nur in der Gründung“
+// (z ≤ 0). Mit der Decke gibt es Stahlbeton-Schraffur auch bei +2,635 … +2,855;
 // die Bedingung in A28 dann auf `v[2] <= 1e-3 || (2635..=2855).contains(z)`
 // erweitern.
 // ---------------------------------------------------------------------------
@@ -1947,7 +1947,7 @@ fn a34_auflagertasche_bis_ans_wdvs() {
     assert!(s.model().check().is_empty(), "{:?}", s.model().check());
 }
 
-/// A35: Schnitt mit Stahlbeton-Kreuzschraffur in der Tasche und kräftiger
+/// A35: Schnitt mit Stahlbeton-Schraffur in der Tasche und kräftiger
 /// Kontur; im Grundriss (+1,00) wird die Decke nicht gezeichnet.
 #[test]
 fn a35_darstellung_schnitt_und_grundriss() {
@@ -1957,16 +1957,16 @@ fn a35_darstellung_schnitt_und_grundriss() {
     sect.ensure(&s);
     let cut = view_mesh(&mut s, ViewKind::Section, sect.plane());
     let in_band = |z: f32| (2635.0 - 1e-3..=2855.0 + 1e-3).contains(&z);
-    // Kreuzschraffur im Deckenband, auch in der Tasche (x 140 … 315)
+    // Stahlbeton-Schraffur im Deckenband, auch in der Tasche (x 140 … 315)
     let cross: Vec<_> = cut
         .faces
         .iter()
-        .filter(|v| v[9] == pattern::CROSS && in_band(v[2]))
+        .filter(|v| v[9] == pattern::CONCRETE && in_band(v[2]))
         .collect();
     assert!(!cross.is_empty(), "Decke im Schnitt");
     assert!(
         cross.iter().any(|v| v[0] > 139.0 && v[0] < 316.0),
-        "Kreuzschraffur in der Tasche"
+        "Stahlbeton-Schraffur in der Tasche"
     );
     // Kontur kräftig an OK und UK Decke
     let cut_w = s.table().edge_width(true, edge_kind::CUT);
@@ -1981,10 +1981,10 @@ fn a35_darstellung_schnitt_und_grundriss() {
             .collect();
         assert!(w.contains(&cut_w), "Kontur bei z = {z}: {w:?}");
     }
-    // Grundriss bei +1,00: keine Kreuzschraffur
+    // Grundriss bei +1,00: keine Stahlbeton-Schraffur
     let plan = view_mesh(&mut s, ViewKind::Plan, None);
     assert!(
-        !plan.faces.iter().any(|v| v[9] == pattern::CROSS),
+        !plan.faces.iter().any(|v| v[9] == pattern::CONCRETE),
         "Decke liegt über der Schnittebene"
     );
 }
@@ -2615,7 +2615,7 @@ fn a46_ansichten_folgen() {
     let cross_top = |m: &Shown| {
         m.faces
             .iter()
-            .filter(|v| v[9] == pattern::CROSS)
+            .filter(|v| v[9] == pattern::CONCRETE)
             .map(|v| v[2])
             .fold(f32::MIN, f32::max)
     };

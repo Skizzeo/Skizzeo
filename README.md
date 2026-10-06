@@ -87,14 +87,17 @@ Gründung: Jeder geschlossene Außenwandzug bekommt im selben Schritt eine
 Stahlbeton-Sohlplatte (SP-001 …, 20 cm, Oberkante = Wandfuß) und eine
 umlaufende Frostschürze (FS-001 …, 35 cm breit, bis 80 cm unter dem Wandfuß),
 bündig mit der Außenseite der Wand. Beide gehen fugenlos ineinander über und
-erscheinen im Schnitt kreuzschraffiert; in 3D liegen sie unter der
+erscheinen im Schnitt mit der Stahlbeton-Schraffur (Diagonale wie Mauerwerk,
+jede zweite Linie gestrichelt); in 3D liegen sie unter der
 Geländefläche. Wird der Zug geöffnet oder gelöscht, verschwinden sie.
 Platte oder Schürze anklicken: Das Paneel zeigt Fläche, Volumen und Umfang
 bzw. Länge auf der Achse, Volumen, Breite und Tiefe. Die Maße stehen in
 Zahlenfeldern (Zentimeter, Enter übernimmt, Esc bricht ab); der
 Sockelrücksprung lässt Platte und Schürze gemeinsam zurückspringen (bündig
 oder ab 2 cm).
-Ältere Dateien bekommen Gründung und Kreuzschraffur beim Öffnen.
+Ältere Dateien bekommen Gründung und Stahlbeton-Schraffur beim Öffnen; eine
+alte Kreuzschraffur wird ersetzt, Schraffurwinkel zählen jetzt gegen den
+Uhrzeigersinn (45° = „/“) und werden beim Öffnen umgerechnet.
 
 Erdgeschossdecke: Im selben Schritt entsteht über dem Zug eine
 Stahlbetondecke (DE-001 …, 22 cm, Oberkante = OK EG). Sie reicht bis an die

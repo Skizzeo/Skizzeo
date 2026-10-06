@@ -54,9 +54,46 @@ pub enum FillSpace {
 /// Eine Schar paralleler Schraffurlinien.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HatchLine {
+    /// Richtung der Linien, gegen den Uhrzeigersinn ab der Waagerechten
+    /// (mathematisch, E3b): 45° steigt nach rechts („/“), 135° fällt („\“).
     pub angle_deg: f32,
     pub spacing_mm: f32,
     pub offset_mm: f32,
+    /// Strich und Lücke (mm); beide 0 = durchgezogen (E15).
+    pub dash_mm: f32,
+    pub gap_mm: f32,
+}
+
+impl HatchLine {
+    /// Durchgezogene Schar.
+    pub const fn solid(angle_deg: f32, spacing_mm: f32, offset_mm: f32) -> HatchLine {
+        HatchLine {
+            angle_deg,
+            spacing_mm,
+            offset_mm,
+            dash_mm: 0.0,
+            gap_mm: 0.0,
+        }
+    }
+}
+
+/// Stahlbeton (E15, Jörn 06.10.): Diagonale wie Mauerwerk (135°, Linien alle
+/// 1,27 mm), jede zweite gestrichelt 1,5/0,75 mm. Zwei Scharen mit doppeltem
+/// Abstand, die zweite um einen Abstand versetzt.
+pub fn concrete_lines() -> Vec<HatchLine> {
+    vec![
+        HatchLine::solid(135.0, 2.54, 0.0),
+        HatchLine {
+            dash_mm: 1.5,
+            gap_mm: 0.75,
+            ..HatchLine::solid(135.0, 2.54, 1.27)
+        },
+    ]
+}
+
+/// Mauerwerk: Diagonale 135° alle 1,27 mm.
+pub fn masonry_lines() -> Vec<HatchLine> {
+    vec![HatchLine::solid(135.0, 1.27, 0.0)]
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -333,14 +370,7 @@ pub fn defaults(guids: &mut GuidGen) -> (Attributes, Standard) {
         })
     };
     let empty = fill("Leer", FillKind::Empty);
-    let masonry = fill(
-        "Mauerwerk",
-        FillKind::Lines(vec![HatchLine {
-            angle_deg: 45.0,
-            spacing_mm: 1.27,
-            offset_mm: 0.0,
-        }]),
-    );
+    let masonry = fill("Mauerwerk", FillKind::Lines(masonry_lines()));
     let insulation = fill("Dämmung hart", FillKind::Zigzag { period: 1.0 });
 
     let style = |pen| EdgeStyle {
@@ -395,7 +425,7 @@ mod tests {
             assert!(a.pen(mat.cut_fg).is_some() && a.pen(mat.cut_bg).is_some());
             assert!(a.surface(mat.surface).is_some());
         }
-        // E10: Stahlbeton kreuzschraffiert 45°/135°, 1,27 mm, Stift 4 auf Stift 5
+        // E15: Stahlbeton als Diagonale 135°, jede zweite gestrichelt, Stift 4 auf Stift 5
         let (_, rc) = m
             .materials()
             .iter()
@@ -406,8 +436,22 @@ mod tests {
         let super::FillKind::Lines(l) = &f.kind else {
             panic!("Linienschraffur erwartet");
         };
-        let v: Vec<(f32, f32)> = l.iter().map(|h| (h.angle_deg, h.spacing_mm)).collect();
-        assert_eq!(v, [(45.0, 1.27), (135.0, 1.27)]);
+        let v: Vec<_> = l
+            .iter()
+            .map(|h| (h.angle_deg, h.spacing_mm, h.offset_mm, h.dash_mm, h.gap_mm))
+            .collect();
+        assert_eq!(
+            v,
+            [(135.0, 2.54, 0.0, 0.0, 0.0), (135.0, 2.54, 1.27, 1.5, 0.75)]
+        );
+        let masonry = a
+            .fills()
+            .iter()
+            .find(|(_, f)| f.name == "Mauerwerk")
+            .unwrap()
+            .1;
+        assert_eq!(masonry.kind, super::FillKind::Lines(super::masonry_lines()));
+        assert_eq!(super::masonry_lines()[0].angle_deg, 135.0);
         assert_eq!(a.pen(rc.cut_fg).unwrap().number, 4);
         assert_eq!(a.pen(rc.cut_bg).unwrap().number, 5);
     }

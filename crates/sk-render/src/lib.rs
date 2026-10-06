@@ -26,7 +26,7 @@ pub struct Style {
 pub const EDGE_KINDS: usize = 8;
 
 /// Zeilen der Aussehens-Tabelle je Darstellungsschlüssel.
-pub const LOOK_ROWS: usize = 7;
+pub const LOOK_ROWS: usize = 8;
 
 /// Breite (Bildpunkte) und Farbe je Kantenart, für Zeichnung oder 3D.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -49,10 +49,12 @@ pub struct EdgeLooks {
 /// | 4 | Schar 1: cx, cy, Periode px | Abstandsfaktor k |
 /// | 5 | Schar 2: cx, cy, Periode px | Abstandsfaktor k |
 /// | 6 | Versatz Schar 1, Versatz Schar 2, Anzahl Scharen | Zickzack-Periode |
+/// | 7 | Strich und Lücke Schar 1, Strich und Lücke Schar 2 (px, 0 = durchgezogen) | |
 ///
 /// Eine Schar sind die Linien `cx·x + cy·y − Versatz = n·Periode` in
 /// Bildpunkten; der Abstand eines Pixels zur nächsten Linie ist
-/// `min(m, Periode − m)·k`.
+/// `min(m, Periode − m)·k`. Gestrichelt wird längs der Linie
+/// (`(−x·cy + y·cx)·k`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Looks {
     pub keys: usize,
@@ -258,6 +260,18 @@ float family(vec4 f, float offset) {
     float m = mod(gl_FragCoord.x * f.x + gl_FragCoord.y * f.y - offset, f.z);
     return min(m, f.z - m) * f.w;
 }
+// Tinte einer Schar, gestrichelt mit Strich und Lücke (px, 0 = durchgezogen)
+float ink_of(vec4 f, float offset, float w, vec2 dash) {
+    float ink = clamp(w * 0.5 + 0.5 - family(f, offset), 0.0, 1.0);
+    if (dash.x > 0.0) {
+        float along = (-gl_FragCoord.x * f.y + gl_FragCoord.y * f.x) * f.w;
+        float p = dash.x + dash.y;
+        float a = mod(along, p);
+        float s = a <= dash.x ? min(a, dash.x - a) : -min(a - dash.x, p - a);
+        ink *= clamp(0.5 + s, 0.0, 1.0);
+    }
+    return ink;
+}
 void main() {
     bool cut = (v_key & 0x8000) != 0;
     if (u_drawing == 0) {
@@ -276,11 +290,11 @@ void main() {
             c = fg.rgb;
         } else if (kind == 2) {
             vec4 o = look(6);
-            float dist = family(look(4), o.x);
+            vec4 d = look(7);
+            ink = ink_of(look(4), o.x, fg.a, d.xy);
             if (o.z > 1.5) {
-                dist = min(dist, family(look(5), o.y));
+                ink = max(ink, ink_of(look(5), o.y, fg.a, d.zw));
             }
-            ink = clamp(fg.a * 0.5 + 0.5 - dist, 0.0, 1.0);
         } else if (kind == 3) {
             // Zickzack zwischen den Schichtflächen (v = 0 und v = 1)
             float zig = abs(2.0 * fract(v_uv.x / look(6).a) - 1.0);

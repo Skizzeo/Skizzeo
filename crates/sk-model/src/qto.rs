@@ -469,7 +469,7 @@ mod tests {
         let mut m = Model::with_seed(5);
         haus(&mut m);
         let text = crate::szo::write(&m);
-        // Datei vor B9: ohne Gründung und ohne Kreuzschraffur
+        // Datei vor B9: ohne Gründung und ohne Stahlbeton-Schraffur
         let old: String = text
             .lines()
             .filter(|l| {
