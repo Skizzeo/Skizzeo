@@ -18,6 +18,9 @@ use sk_model::{
 use sk_render::MeshData;
 use sk_ui::theme::Theme;
 
+/// Anzeigename der Gründung als Ebene (Paneel „Geschosse“, Geschossbogen).
+pub const FOUNDATION_NAME: &str = "Fundament";
+
 /// Schnitthöhe des Grundrisses über der Unterkante des aktiven Geschosses (mm).
 pub const PLAN_CUT: f64 = 1000.0;
 
@@ -31,13 +34,13 @@ struct RunCache {
     chain: WallChain,
     /// Körper für 3D und Ansichten.
     solid: Solid,
-    /// Körper waagerecht geschnitten (Grundriss), dessen Schnitthöhe und ob
-    /// der Zug unter dem aktiven Geschoss liegt (dann nur seine Decke), erst
-    /// bei Bedarf berechnet.
-    plan: Option<(f64, bool, Solid)>,
+    /// Körper waagerecht geschnitten (Grundriss) je Schnitthöhe und Art,
+    /// erst bei Bedarf berechnet; die zuletzt gefragten zuerst, damit der
+    /// Wechsel in ein Nachbargeschoss nichts neu rechnet (E18).
+    plan: Vec<(f64, PlanMode, Solid)>,
     /// Konturen des Wandschnitts im eigenen Geschoss (UK + 1 m), als
-    /// Hintergrund des Geschosses darüber (E16); mit der Schnitthöhe.
-    under: Option<(f64, Vec<Edge>)>,
+    /// Hintergrund des Geschosses darüber (E16); je Schnitthöhe.
+    under: Vec<(f64, Vec<Edge>)>,
     /// Senkrechter Schnitt für die zuletzt gefragte Ebene.
     section: Option<(Plane, Solid)>,
     bounds: Option<Aabb>,
@@ -90,8 +93,8 @@ impl RunCache {
             .fold(None, |acc, p| union(acc, Some((p, p))));
         RunCache {
             id,
-            plan: None,
-            under: None,
+            plan: Vec::new(),
+            under: Vec::new(),
             bounds: solid.bounds(),
             foot,
             foot_bounds,
@@ -111,7 +114,7 @@ impl RunCache {
     /// Schon berechneter Körper einer Ansicht (nach [`RunCache::view_solid`]).
     fn shown(&self, view: ViewKind, section: Option<Plane>) -> Option<&Solid> {
         match (view, section) {
-            (ViewKind::Plan, _) => self.plan.as_ref().map(|(_, _, s)| s),
+            (ViewKind::Plan, _) => self.plan.first().map(|(_, _, s)| s),
             (ViewKind::Section, Some(pl)) => self
                 .section
                 .as_ref()
@@ -123,41 +126,26 @@ impl RunCache {
     }
 
     /// Körper einer Ansicht; `cut` ist die Schnitthöhe des Grundrisses,
-    /// `lower`: der Zug liegt unter dem aktiven Geschoss (Grundriss: nur
-    /// seine Decke, der Boden des aktiven Geschosses; die Wände zeigt der
-    /// Hintergrund).
+    /// `mode` sagt, wie der Zug zum aktiven Geschoss liegt.
     fn view_solid(
         &mut self,
         view: ViewKind,
         section: Option<Plane>,
         cut: f64,
-        lower: bool,
+        mode: PlanMode,
     ) -> Option<&Solid> {
         match (view, section) {
             (ViewKind::Plan, _) => {
-                let (chain, found, floor) = (&self.chain, &self.found, &self.floor);
-                // Die Gründung liegt unter der Schnitthöhe: Draufsicht. Die
-                // Decke liegt im EG darüber und bleibt leer, im OG darunter.
-                if self
-                    .plan
-                    .as_ref()
-                    .is_none_or(|(c, l, _)| (*c, *l) != (cut, lower))
-                {
-                    let mut s = if lower {
-                        Solid::default()
-                    } else {
-                        chain.solid_cut_at(cut)
-                    };
-                    if let (Some(f), false) = (found, lower) {
-                        s.append(&part(f.slab_solid(), SLAB_PART));
-                        s.append(&part(f.footing_solid(), FOOTING_PART));
+                let i = match self.plan.iter().position(|(c, m, _)| (*c, *m) == (cut, mode)) {
+                    Some(i) => i,
+                    None => {
+                        let s = self.plan_solid(cut, mode);
+                        self.plan.truncate(PLAN_KEEP - 1);
+                        self.plan.insert(0, (cut, mode, s));
+                        0
                     }
-                    if let Some(f) = floor {
-                        s.append(&part(f.solid_cut_at(cut), FLOOR_PART));
-                    }
-                    self.plan = Some((cut, lower, s));
-                }
-                self.plan.as_ref().map(|(_, _, s)| s)
+                };
+                self.plan.get(i).map(|(_, _, s)| s)
             }
             (ViewKind::Section, Some(pl)) => {
                 if self.section.as_ref().is_none_or(|(p, _)| *p != pl) {
@@ -183,22 +171,81 @@ impl RunCache {
 }
 
 impl RunCache {
+    /// Grundrisskörper in Höhe `cut`.
+    fn plan_solid(&self, cut: f64, mode: PlanMode) -> Solid {
+        let (chain, found, floor) = (&self.chain, &self.found, &self.floor);
+        match mode {
+            // Fundament (E18): die Schürze geschnitten, der Plattenrand
+            // darüber als Hintergrundlinie, keine Wände
+            PlanMode::Foundation => {
+                let mut s = Solid::default();
+                if let Some(f) = found {
+                    s.append(&part(f.footing_cut_at(cut), FOOTING_PART));
+                    s.edges.extend(f.slab_rim(cut + BACKGROUND_LIFT));
+                }
+                s
+            }
+            // Die Gründung liegt unter der Schnitthöhe: Draufsicht. Die
+            // Decke liegt im EG darüber und bleibt leer, im OG darunter.
+            PlanMode::Cut | PlanMode::Lower => {
+                let lower = mode == PlanMode::Lower;
+                let mut s = if lower {
+                    Solid::default()
+                } else {
+                    chain.solid_cut_at(cut)
+                };
+                if let (Some(f), false) = (found, lower) {
+                    s.append(&part(f.slab_solid(), SLAB_PART));
+                    s.append(&part(f.footing_solid(), FOOTING_PART));
+                }
+                if let Some(f) = floor {
+                    s.append(&part(f.solid_cut_at(cut), FLOOR_PART));
+                }
+                s
+            }
+        }
+    }
+
+    fn has_plan(&self, cut: f64, mode: PlanMode) -> bool {
+        self.plan.iter().any(|(c, m, _)| (*c, *m) == (cut, mode))
+    }
+
     /// Konturen des Wandschnitts in Höhe `cut` (nur die Schnittkanten), für
     /// den Hintergrund des Geschosses darüber; bei Bedarf berechnet.
     fn under_edges(&mut self, cut: f64) -> &[Edge] {
-        if self.under.as_ref().is_none_or(|(c, _)| *c != cut) {
-            let s = self.chain.solid_cut_at(cut);
-            let at_cut = |p: Vec3| (p.z - cut).abs() < 1e-6;
-            let edges = s
-                .edges
-                .into_iter()
-                .filter(|e| at_cut(e.a) && at_cut(e.b))
-                .collect();
-            self.under = Some((cut, edges));
-        }
-        self.under.as_ref().map_or(&[], |(_, e)| e)
+        let i = match self.under.iter().position(|(c, _)| *c == cut) {
+            Some(i) => i,
+            None => {
+                let s = self.chain.solid_cut_at(cut);
+                let at_cut = |p: Vec3| (p.z - cut).abs() < 1e-6;
+                let edges = s
+                    .edges
+                    .into_iter()
+                    .filter(|e| at_cut(e.a) && at_cut(e.b))
+                    .collect();
+                self.under.truncate(PLAN_KEEP - 1);
+                self.under.insert(0, (cut, edges));
+                0
+            }
+        };
+        self.under.get(i).map_or(&[], |(_, e)| e)
     }
 }
+
+/// Wie ein Wandzug zum aktiven Geschoss liegt (Grundriss).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PlanMode {
+    /// Im Geschoss oder darüber: waagerecht geschnitten.
+    Cut,
+    /// Ganz darunter: nur seine Decke (der Boden des aktiven Geschosses).
+    Lower,
+    /// Das Fundament ist aktiv: nur die Gründung geschnitten.
+    Foundation,
+}
+
+/// So viele Grundrisse merkt sich ein Wandzug (aktives Geschoss, die beiden
+/// Nachbarn und einen Rest).
+const PLAN_KEEP: usize = 4;
 
 /// Hintergrund im Grundriss knapp über dem Boden des aktiven Geschosses (mm):
 /// über dessen Decke, unter den eigenen Wänden.
@@ -347,12 +394,26 @@ impl Scene {
     pub fn active_storey(&self) -> sk_model::StoreyId {
         let eg = self.model.defaults().storey;
         self.active
-            .filter(|&id| {
-                self.model
-                    .storey(id)
-                    .is_some_and(|st| st.kind != sk_model::LevelKind::Foundation)
-            })
+            .filter(|&id| self.model.storey(id).is_some())
             .unwrap_or(eg)
+    }
+
+    /// Ist das Fundament (die Gründung) das aktive Geschoss (E18)?
+    pub fn foundation_active(&self) -> bool {
+        self.is_foundation(self.active_storey())
+    }
+
+    fn is_foundation(&self, id: StoreyId) -> bool {
+        self.model
+            .storey(id)
+            .is_some_and(|st| st.kind == sk_model::LevelKind::Foundation)
+    }
+
+    /// Warum das Wandwerkzeug im aktiven Geschoss nicht zeichnet (`None`:
+    /// es zeichnet).
+    pub fn wall_tool_block(&self) -> Option<String> {
+        self.foundation_active()
+            .then(|| "Im Fundament gibt es noch nichts zu zeichnen".to_string())
     }
 
     /// Aktives Gebäude: das des aktiven Geschosses (`None`: noch keines).
@@ -511,13 +572,10 @@ impl Scene {
         }
     }
 
-    /// Macht ein Geschoss aktiv; `false`, wenn es schon aktiv ist oder keines
-    /// ist (die Gründung).
+    /// Macht ein Geschoss aktiv (auch das Fundament, E18); `false`, wenn es
+    /// schon aktiv ist oder es nicht gibt.
     pub fn set_active_storey(&mut self, id: sk_model::StoreyId) -> bool {
-        let ok = self
-            .model
-            .storey(id)
-            .is_some_and(|st| st.kind != sk_model::LevelKind::Foundation);
+        let ok = self.model.storey(id).is_some();
         if !ok || id == self.active_storey() {
             return false;
         }
@@ -536,10 +594,35 @@ impl Scene {
             })
     }
 
-    /// Schnitthöhe des Grundrisses: Unterkante des aktiven Geschosses + 1 m.
+    /// Schnitthöhe des Grundrisses: Unterkante des aktiven Geschosses + 1 m,
+    /// im Fundament die Mitte der Frostschürze (E18).
     pub fn plan_cut(&self) -> f64 {
-        let id = self.active_storey();
-        self.model.storey(id).map_or(0.0, |st| st.elevation) + PLAN_CUT
+        self.plan_cut_of(self.active_storey())
+    }
+
+    /// Schnitthöhe des Grundrisses, wenn `id` aktiv ist. Im Fundament über
+    /// den Höhenbezug (Prüfregel 14): UK Fundament + halbe Tiefe bis UK
+    /// Sohlplatte (die Mitte der Frostschürze), so folgt der Schnitt
+    /// Plattendicke und Gründungstiefe.
+    fn plan_cut_of(&self, id: StoreyId) -> f64 {
+        let Some(st) = self.model.storey(id) else {
+            return PLAN_CUT;
+        };
+        let at = if st.kind == sk_model::LevelKind::Foundation {
+            let slab = self.model.max_slab_thickness(id);
+            sk_model::LevelRef {
+                storey: id,
+                edge: sk_model::LevelEdge::Bottom,
+                offset: (st.height - slab) / 2.0,
+            }
+        } else {
+            sk_model::LevelRef {
+                storey: id,
+                edge: sk_model::LevelEdge::Bottom,
+                offset: PLAN_CUT,
+            }
+        };
+        self.model.level_z(at).unwrap_or(PLAN_CUT)
     }
 
     /// Zeichentabelle zum aktuellen Stand der Attribute.
@@ -944,8 +1027,9 @@ impl Scene {
             let foundation = st.kind == sk_model::LevelKind::Foundation;
             l.bands.push(Band {
                 id,
+                // Jörns Wort (E18); im Modell bleibt es die Gründung
                 name: if foundation {
-                    st.name.clone()
+                    FOUNDATION_NAME.to_string()
                 } else {
                     st.short.clone()
                 },
@@ -958,7 +1042,7 @@ impl Scene {
                 let (lo, hi) = m.foundation_bottom_range_of(id);
                 l.fields.push(row(
                     Field::LevelBottom,
-                    "UK Gründung",
+                    "UK Fundament",
                     st.elevation,
                     (lo, hi),
                 ));
@@ -998,7 +1082,7 @@ impl Scene {
     pub fn set_level(&mut self, field: Field, mm: f64) -> bool {
         match field {
             Field::LevelBottom => match self.model.foundation_level_of(self.active_storey()) {
-                Some(gr) => self.edit_model("UK Gründung", |m| m.set_foundation_bottom_of(gr, mm)),
+                Some(gr) => self.edit_model("UK Fundament", |m| m.set_foundation_bottom_of(gr, mm)),
                 None => false,
             },
             Field::LevelTop(id) => {
@@ -1207,10 +1291,92 @@ impl Scene {
     /// Schnitthöhe des Hintergrunds für den Zug `run`: sein Geschoss liegt
     /// direkt unter dem aktiven (E16).
     fn under_cut(&self, run: RunId) -> Option<f64> {
-        let floor = self.work_plane().0;
+        self.under_cut_for(run, self.active_storey())
+    }
+
+    /// Wie [`Scene::under_cut`], wenn `active` aktiv ist.
+    fn under_cut_for(&self, run: RunId, active: StoreyId) -> Option<f64> {
+        if self.is_foundation(active) {
+            return None;
+        }
+        let floor = self.model.storey(active).map_or(0.0, |st| st.elevation);
         let st = self.model.storey(self.model.run(run)?.storey)?;
         let below = st.kind != sk_model::LevelKind::Foundation && (st.top() - floor).abs() < 1e-6;
         below.then_some(st.elevation + PLAN_CUT)
+    }
+
+    /// Wie der Zug zum Geschoss `active` liegt (Grundriss).
+    fn plan_mode(&self, run: RunId, active: StoreyId) -> PlanMode {
+        if self.is_foundation(active) {
+            return PlanMode::Foundation;
+        }
+        let floor = self.model.storey(active).map_or(0.0, |st| st.elevation);
+        let lower = self
+            .model
+            .run(run)
+            .and_then(|r| self.model.storey(r.storey))
+            .is_some_and(|st| st.top() <= floor + 1e-6);
+        if lower {
+            PlanMode::Lower
+        } else {
+            PlanMode::Cut
+        }
+    }
+
+    /// Geschosse, die der Bogen als Nächstes zeigen kann: das aktive und
+    /// seine Nachbarn (E18).
+    fn plan_candidates(&self) -> Vec<StoreyId> {
+        let a = self.active_storey();
+        [Some(a), self.model.level_above(a), self.model.level_below(a)]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    /// Liegt der Grundriss des Geschosses `id` schon berechnet bereit (alle
+    /// Wandzüge samt Hintergrund)?
+    pub fn plan_ready(&self, id: StoreyId) -> bool {
+        let cut = self.plan_cut_of(id);
+        self.cache.iter().flatten().all(|c| {
+            c.has_plan(cut, self.plan_mode(c.id, id))
+                && self
+                    .under_cut_for(c.id, id)
+                    .is_none_or(|u| c.under.iter().any(|(x, _)| *x == u))
+        })
+    }
+
+    /// Leerlauf (E18): Grundrisse des aktiven Geschosses und seiner
+    /// Nachbarn vorbereiten, damit ein Wechsel nichts neu rechnet.
+    pub fn prepare_neighbor_plans(&mut self) {
+        for id in self.plan_candidates() {
+            if !self.plan_ready(id) {
+                self.prepare_plan(id);
+            }
+        }
+    }
+
+    /// Fehlt noch ein vorbereiteter Grundriss (Leerlauf hat zu tun)?
+    pub fn plans_pending(&self) -> bool {
+        self.plan_candidates().into_iter().any(|id| !self.plan_ready(id))
+    }
+
+    /// Grundriss des Geschosses `id` berechnen (vor einem Wechsel dorthin).
+    pub fn prepare_plan(&mut self, id: StoreyId) {
+        let cut = self.plan_cut_of(id);
+        let jobs: Vec<(RunId, PlanMode, Option<f64>)> = self
+            .cache
+            .iter()
+            .flatten()
+            .map(|c| (c.id, self.plan_mode(c.id, id), self.under_cut_for(c.id, id)))
+            .collect();
+        for (run, mode, under) in jobs {
+            if let Some(Some(c)) = self.cache.get_mut(run.index() as usize) {
+                c.view_solid(ViewKind::Plan, None, cut, mode);
+                if let Some(u) = under {
+                    c.under_edges(u);
+                }
+            }
+        }
     }
 
     /// Kanten des Hintergrunds auf der Arbeitsebene: fangbar, nicht wählbar
@@ -1252,7 +1418,8 @@ impl Scene {
         let cut = self.plan_cut();
         let mut m = MeshData::default();
         if view == ViewKind::Plan {
-            let lower: Vec<bool> = runs.iter().map(|r| self.is_lower(*r)).collect();
+            let active = self.active_storey();
+            let modes: Vec<PlanMode> = runs.iter().map(|r| self.plan_mode(*r, active)).collect();
             // Hintergrund: Wandschnitt des Geschosses direkt darunter in
             // seiner eigenen Schnitthöhe, nur Konturen, knapp über dem Boden
             // des aktiven Geschosses (unter dessen Wänden)
@@ -1261,7 +1428,7 @@ impl Scene {
             for (i, &run) in runs.iter().enumerate() {
                 if let Some(Some(c)) = self.cache.get_mut(run.index() as usize) {
                     if c.id == run {
-                        if let Some(s) = c.view_solid(view, section, cut, lower[i]) {
+                        if let Some(s) = c.view_solid(view, section, cut, modes[i]) {
                             mesh_into(&mut m, s);
                         }
                         if let Some(bcut) = under[i] {
@@ -1300,7 +1467,7 @@ impl Scene {
         for &run in runs.iter().chain(&partners) {
             if let Some(Some(c)) = self.cache.get_mut(run.index() as usize) {
                 if c.id == run {
-                    c.view_solid(view, section, cut, false);
+                    c.view_solid(view, section, cut, PlanMode::Cut);
                 }
             }
         }
@@ -1369,12 +1536,12 @@ impl Scene {
         dir: Vec3,
     ) -> Option<ElementId> {
         let cut = self.plan_cut();
-        let lower: Vec<RunId> = self
+        let active = self.active_storey();
+        let modes: Vec<(RunId, PlanMode)> = self
             .cache
             .iter()
             .flatten()
-            .map(|c| c.id)
-            .filter(|r| self.is_lower(*r))
+            .map(|c| (c.id, self.plan_mode(c.id, active)))
             .collect();
         let mut best: Option<(f64, RunId, u32)> = None;
         for c in self.cache.iter_mut().flatten() {
@@ -1383,7 +1550,15 @@ impl Scene {
             }
             let id = c.id;
             if let Some((t, seg)) = c
-                .view_solid(view, section, cut, lower.contains(&id))
+                .view_solid(
+                    view,
+                    section,
+                    cut,
+                    modes
+                        .iter()
+                        .find(|m| m.0 == id)
+                        .map_or(PlanMode::Cut, |m| m.1),
+                )
                 .and_then(|s| s.raycast_elem(origin, dir))
             {
                 if best.is_none_or(|b| t < b.0) {

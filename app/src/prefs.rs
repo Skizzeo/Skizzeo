@@ -326,6 +326,7 @@ const GROUPS: [(&str, &[&str]); 7] = [
             "ui.pressed",
             "ui.shadow",
             "ui.menu_bg",
+            "ui.hud_bg",
             "env.scrim",
         ],
     ),
@@ -340,7 +341,7 @@ const GROUPS: [(&str, &[&str]); 7] = [
             "ui.tooltip_text",
         ],
     ),
-    ("Akzent", &["ui.accent", "ui.accent_hover"]),
+    ("Akzent", &["ui.accent", "ui.accent_hover", "ui.hud_glow"]),
     (
         "Eingabefelder",
         &[
@@ -513,6 +514,11 @@ pub fn set_sky_ends(th: &mut Theme, unten: Rgba, oben: Rgba) {
     th.rev += 1;
 }
 
+/// Größe „anim_ms“ in [`SIZE_ROLES`].
+fn anim_role() -> usize {
+    SIZE_ROLES.iter().position(|r| r.0 == "anim_ms").unwrap_or(0)
+}
+
 /// Bereich, Nachkommastellen und Einheit eines Zahlenfelds.
 fn field_range(f: FieldId) -> Option<(f32, f32, usize, &'static str)> {
     let dark = Theme::dark();
@@ -520,11 +526,16 @@ fn field_range(f: FieldId) -> Option<(f32, f32, usize, &'static str)> {
         FieldId::PenWidth => Some((0.0, 2.0, 2, "mm")),
         FieldId::Softness => Some((0.0, 5.0, 2, "")),
         FieldId::PxPerMm => Some((2.0, 12.0, 1, "px/mm")),
-        FieldId::Size(i) => {
-            let mut d = dark;
-            let v = *(SIZE_ROLES[i].2)(&mut d);
-            Some((0.5 * v, 3.0 * v, 1, "dip"))
-        }
+        FieldId::Size(i) => match SIZE_ROLES[i].0 {
+            "anim_ms" => Some((0.0, 600.0, 0, "ms")),
+            "hover_delay_hud" => Some((0.0, 2.0, 2, "s")),
+            "arc_span_deg" => Some((20.0, 80.0, 0, "°")),
+            _ => {
+                let mut d = dark;
+                let v = *(SIZE_ROLES[i].2)(&mut d);
+                Some((0.5 * v, 3.0 * v, 1, "dip"))
+            }
+        },
         FieldId::PickR | FieldId::PickG | FieldId::PickB => Some((0.0, 255.0, 0, "")),
         FieldId::PenName | FieldId::PickHex => None,
         FieldId::Name | FieldId::Dash(..) | FieldId::Hatch(..) | FieldId::Zigzag => None,
@@ -1082,6 +1093,15 @@ impl Prefs {
         ));
         y += 32.0 * s;
         let hint_y = y + 14.0 * s;
+        y += 26.0 * s;
+        // Übergänge (E18): 0 schaltet alle Animationen aus
+        texts.push(UiText::label(rx, y + 18.0 * s, "Animationen"));
+        items.push((
+            Rect::new(vx, y, (90.0 * s).min(rw - (vx - rx)), field_h),
+            Target::Field(FieldId::Size(anim_role())),
+        ));
+        y += 30.0 * s;
+        texts.push(UiText::dim(rx, y + 14.0 * s, "0 ms schaltet sie aus."));
         y += 26.0 * s;
         items.push((Rect::new(rx, y, rw, 28.0 * s), Target::Advanced));
         texts.push(UiText::group(

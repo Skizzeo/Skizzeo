@@ -20,7 +20,7 @@ pub type RgbaRole = (&'static str, &'static str, fn(&mut Theme) -> &mut Rgba);
 pub type F4Role = (&'static str, &'static str, fn(&mut Theme) -> &mut [f32; 4]);
 pub type SizeRole = (&'static str, &'static str, fn(&mut Theme) -> &mut f32);
 
-pub const RGBA_ROLES: [RgbaRole; 47] = [
+pub const RGBA_ROLES: [RgbaRole; 49] = [
     ("ui.bg", "Fläche", |t| &mut t.ui.bg),
     ("ui.border", "Rahmen", |t| &mut t.ui.border),
     ("ui.field", "Feld", |t| &mut t.ui.field),
@@ -75,6 +75,8 @@ pub const RGBA_ROLES: [RgbaRole; 47] = [
         &mut t.ui.tooltip_text
     }),
     ("ui.menu_bg", "Menü Fläche", |t| &mut t.ui.menu_bg),
+    ("ui.hud_bg", "Schwebende Elemente", |t| &mut t.ui.hud_bg),
+    ("ui.hud_glow", "Leuchten", |t| &mut t.ui.hud_glow),
     ("title.bg", "Titelleiste", |t| &mut t.title.bg),
     ("title.glyph", "Symbole", |t| &mut t.title.glyph),
     ("title.glyph_inactive", "Symbole inaktiv", |t| {
@@ -133,7 +135,7 @@ pub const F4_ROLES: [F4Role; 10] = [
     }),
 ];
 
-pub const SIZE_ROLES: [SizeRole; 43] = [
+pub const SIZE_ROLES: [SizeRole; 52] = [
     ("corner_radius", "Eckenradius", |t| {
         &mut t.size.corner_radius
     }),
@@ -219,6 +221,21 @@ pub const SIZE_ROLES: [SizeRole; 43] = [
     }),
     ("preview_w", "Vorschau Breite", |t| &mut t.size.preview_w),
     ("preview_h", "Vorschau Höhe", |t| &mut t.size.preview_h),
+    ("arc_r", "Geschossbogen Radius", |t| &mut t.size.arc_r),
+    ("arc_span_deg", "Geschossbogen Öffnung (°)", |t| {
+        &mut t.size.arc_span_deg
+    }),
+    ("arc_band", "Geschossbogen Band", |t| &mut t.size.arc_band),
+    ("arc_head_l", "Pfeilspitze Länge", |t| &mut t.size.arc_head_l),
+    ("arc_head_w", "Pfeilspitze Breite", |t| &mut t.size.arc_head_w),
+    ("arc_label", "Geschossname groß", |t| &mut t.size.arc_label),
+    ("arc_label_small", "Geschossname klein", |t| {
+        &mut t.size.arc_label_small
+    }),
+    ("anim_ms", "Animationen (ms)", |t| &mut t.size.anim_ms),
+    ("hover_delay_hud", "Hinweis am Bogen (s)", |t| {
+        &mut t.size.hover_delay_hud
+    }),
 ];
 
 /// Grundschema zu einem Namen.

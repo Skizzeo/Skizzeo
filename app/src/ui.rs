@@ -327,7 +327,7 @@ pub enum Panel {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Band {
     pub id: StoreyId,
-    /// Anzeigename: „Gründung“, „EG“, „OG“.
+    /// Anzeigename: „Fundament“, „EG“, „OG“.
     pub name: String,
     /// Unter- und Oberkante (mm).
     pub bottom: f64,
@@ -696,6 +696,11 @@ impl Ui {
             win_h: 1e6,
             top: 32,
         }
+    }
+
+    /// Bildschirmskalierung (dpi / 96), ohne den Fensterfaktor der Paneele.
+    pub fn dpi(&self) -> f32 {
+        self.dpi
     }
 
     /// Passt die Paneelgröße an Fenster (Pixel) und Bildschirmskalierung an: in
@@ -1780,7 +1785,7 @@ impl Ui {
                 push(f, xi - 6.0 * s, clamp(y) - 4.0 * s);
             }
         }
-        // Namen der Geschosse an ihrer Unterkante (die Gründung ist keines)
+        // Namen der Geschosse an ihrer Unterkante (auch das Fundament, E18)
         let nx = x0 + (self.size.level_handle + self.size.level_label_gap) * s;
         for (b, &y) in bands.iter().zip(&ys) {
             if let Some(r) = self.storey_name_rect(b, nx, clamp(y) - 4.0 * s) {
@@ -1804,12 +1809,9 @@ impl Ui {
         out
     }
 
-    /// Klickfläche eines Geschossnamens (links `x`, Grundlinie `base`);
-    /// `None` für die Gründung.
+    /// Klickfläche eines Geschossnamens (links `x`, Grundlinie `base`); auch
+    /// das Fundament ist anklickbar (E18).
     fn storey_name_rect(&self, b: &Band, x: f32, base: f32) -> Option<Rect> {
-        if b.foundation {
-            return None;
-        }
         let s = self.scale;
         let px = self.size.font_small * s;
         let font = if b.active {
@@ -2693,7 +2695,7 @@ mod levels_tests {
     fn drei_baender_und_vier_linien() {
         let (ui, _) = ui_mit_geschossen();
         let names: Vec<_> = ui.levels.bands.iter().map(|b| b.name.as_str()).collect();
-        assert_eq!(names, ["Gründung", "EG", "OG"]);
+        assert_eq!(names, ["Fundament", "EG", "OG"]);
         let lines = level_lines(&ui.levels);
         let z: Vec<_> = lines.iter().map(|l| l.z).collect();
         assert_eq!(z, [-800.0, 0.0, 2855.0, 5710.0]);
@@ -2956,13 +2958,13 @@ mod levels_tests {
         assert!(ui.level_drag_z().is_some());
     }
 
-    /// E14b Test 3 (Oberfläche): Klick auf „OG“ meldet das Geschoss, die
-    /// Gründung hat keinen klickbaren Namen.
+    /// E14b Test 3 (Oberfläche): Klick auf „OG“ meldet das Geschoss; auch das
+    /// Fundament hat einen klickbaren Namen (E18).
     #[test]
     fn klick_auf_geschossnamen() {
         let (mut ui, mut s) = ui_mit_geschossen();
         let og = band(&ui, "OG");
-        assert!(name_at(&ui, band(&ui, "Gründung").id).is_none());
+        assert!(name_at(&ui, band(&ui, "Fundament").id).is_some());
         let (x, y) = name_at(&ui, og.id).unwrap();
         let mut clicked = None;
         for e in [
@@ -2990,6 +2992,6 @@ mod levels_tests {
         ui.fit(1.0, 900, 400);
         assert!(ui.levels_layout().list);
         assert!(name_at(&ui, og.id).is_some());
-        assert!(name_at(&ui, band(&ui, "Gründung").id).is_none());
+        assert!(name_at(&ui, band(&ui, "Fundament").id).is_some());
     }
 }

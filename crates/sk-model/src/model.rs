@@ -2186,7 +2186,7 @@ impl Model {
 
     /// Dickste Sohlplatte im Gebäude der Gründung `gr`, ohne Platte der
     /// Standardwert.
-    fn max_slab_thickness(&self, gr: StoreyId) -> f64 {
+    pub fn max_slab_thickness(&self, gr: StoreyId) -> f64 {
         let b = self.building_of(gr);
         self.elements
             .iter()

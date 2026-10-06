@@ -20,6 +20,7 @@ mod settings;
 mod ui;
 mod wall_edit;
 mod wall_tool;
+mod wheel;
 
 use camera::Camera;
 use document::Document;
