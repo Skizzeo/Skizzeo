@@ -1898,17 +1898,6 @@ impl App {
     /// Ein Ereignis; `false` beendet die Schleife. Die Nachfrage „Änderungen
     /// speichern?“ und das offene Dateimenü nehmen Maus und Tasten zuerst.
     fn handle(&mut self, e: Event, surface: &Surface) -> bool {
-        if let Event::MouseDown {
-            button: MouseButton::Left,
-            x,
-            y,
-            ..
-        } = e
-        {
-            if self.catalog.is_none() && self.prefs.is_none() && self.click_notice(x, y) {
-                return true;
-            }
-        }
         // Ein Klick während der Wände wachsen: sofort Endstand (K3b)
         if matches!(e, Event::MouseDown { .. }) && self.scene.skip_animation() {
             self.upload_model();
@@ -1924,6 +1913,24 @@ impl App {
         }
         if self.menu.is_open() && self.handle_menu(e, surface) {
             return !self.quit;
+        }
+        // Hinweis in der Statuszeile: erst nach Nachfrage, Fenstern und
+        // Dateimenü, die den Klick zuerst bekommen
+        if let Event::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            ..
+        } = e
+        {
+            if self.save_dlg.is_none()
+                && !self.menu.is_open()
+                && self.catalog.is_none()
+                && self.prefs.is_none()
+                && self.click_notice(x, y)
+            {
+                return true;
+            }
         }
         if self.type_menu.is_some() && self.handle_type_menu(e, surface) {
             return !self.quit;
@@ -3036,7 +3043,11 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     for h in &settings.hints {
         eprintln!("Einstellungen: {h}");
     }
-    // Firmenkatalog (K2): neue Projekte bekommen seine Typen
+    // Firmenkatalog (K2): neue Projekte bekommen seine Typen. Der
+    // Bildvergleich merkt sich keine gesehene Fassung.
+    if screenshot.is_some() {
+        catalog::remember_hints(false);
+    }
     let (company, hints) = match settings.company_place() {
         Some((p, standard)) => {
             let (c, h) = catalog::Company::load(&p, standard);

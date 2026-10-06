@@ -7,6 +7,7 @@
 use sk_model::{export_type, Guid, Model};
 use sk_model::{read_szk, write_szk, Library};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 /// Name der Datei am Vorgabeort.
@@ -60,9 +61,22 @@ fn fingerprint(bytes: &[u8]) -> u64 {
     })
 }
 
+/// Ob gesehene Fassungen gemerkt werden. Der Bildvergleich (--screenshot)
+/// schaltet es ab, damit er Jörns Hinweis nicht vorwegnimmt.
+static REMEMBER: AtomicBool = AtomicBool::new(true);
+
+/// Fassungen des Firmenkatalogs merken (Normalfall) oder nur prüfen.
+pub fn remember_hints(on: bool) {
+    REMEMBER.store(on, Ordering::Relaxed);
+}
+
 /// Erster Blick auf diese Fassung der Datei (Pfad und Inhalt)? Dann wird
 /// sie gemerkt. Ohne lesbare Liste gilt: ja.
 fn first_time(path: &Path) -> bool {
+    first_seen(path, REMEMBER.load(Ordering::Relaxed))
+}
+
+fn first_seen(path: &Path, remember: bool) -> bool {
     let Ok(bytes) = std::fs::read(path) else {
         return true;
     };
@@ -71,6 +85,9 @@ fn first_time(path: &Path) -> bool {
     let old = std::fs::read_to_string(&list).unwrap_or_default();
     if old.lines().any(|l| l == key) {
         return false;
+    }
+    if !remember {
+        return true;
     }
     // Die letzten Einträge genügen
     let mut lines: Vec<&str> = old.lines().collect();
@@ -251,6 +268,21 @@ mod tests {
     }
 
     #[test]
+    fn bildvergleich_merkt_keine_fassung() {
+        let d = dir("bildvergleich");
+        let p = d.join(FILE_NAME);
+        std::fs::write(&p, "[skizzeo-katalog 1]\n").unwrap();
+        // Ohne Merken bleibt jede Fassung neu, die Liste entsteht nicht
+        assert!(first_seen(&p, false));
+        assert!(first_seen(&p, false));
+        assert!(!seen_list(&p).exists());
+        // Mit Merken nur beim ersten Blick
+        assert!(first_seen(&p, true));
+        assert!(!first_seen(&p, true));
+        assert!(!first_seen(&p, false));
+    }
+
+    #[test]
     fn vorgabeort_wird_angelegt_fremder_nicht() {
         let d = dir("ort");
         let p = d.join(FILE_NAME);
@@ -292,6 +324,83 @@ mod tests {
         let (c2, h) = Company::load(&p, true);
         assert!(h.is_empty(), "{h:?}");
         assert_eq!(c2.library(), lib);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Angaben einer neueren Fassung bleiben bytegleich stehen, auch in
+    /// Sätzen ohne Guid ([layer], [default], [typeprop]): beim Ergänzen der
+    /// Werkstypen und beim Zurückspeichern eines anderen Typs.
+    #[test]
+    fn fremde_angaben_ueberleben_das_zurueckschreiben() {
+        let d = dir("fremd");
+        let p = d.join(FILE_NAME);
+        let mut lines: Vec<String> = include_str!("firmenkatalog_k4.szk")
+            .lines()
+            .map(String::from)
+            .collect();
+        let at = |lines: &[String], head: &str, n: usize| {
+            lines
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| l.starts_with(head))
+                .nth(n)
+                .unwrap()
+                .0
+        };
+        // Zweite Schicht des ersten Typs, eine Standardangabe, ein Baustoff
+        for (head, n, extra) in [
+            ("[layer] ", 1, " neu=1"),
+            ("[default] ", 1, " neu=2"),
+            ("[material] ", 0, " neu=3"),
+        ] {
+            let i = at(&lines, head, n);
+            lines[i] += extra;
+        }
+        // Ein Merkmal mit fremder Angabe hinter den Schichten des ersten Typs
+        let set = lines[at(&lines, "[layerset] ", 0)]
+            .split(' ')
+            .find_map(|w| w.strip_prefix("guid="))
+            .unwrap()
+            .to_string();
+        let last = lines
+            .iter()
+            .rposition(|l| l.starts_with("[layer] ") && l.contains(&set))
+            .unwrap();
+        lines.insert(
+            last + 1,
+            format!("[typeprop] set={set} key=\"Brandschutz\" value=\"F90\" neu=4"),
+        );
+        let fremd: Vec<String> = lines
+            .iter()
+            .filter(|l| l.contains(" neu="))
+            .cloned()
+            .collect();
+        assert_eq!(fremd.len(), 4);
+        std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+        let steht = |what: &str| {
+            let text = std::fs::read_to_string(&p).unwrap();
+            for l in &fremd {
+                assert!(text.lines().any(|x| x == l), "{what}: fehlt {l}");
+            }
+        };
+        // Laden ergänzt AW-36,5 und schreibt zurück
+        let (mut c, h) = Company::load(&p, true);
+        assert!(h.iter().any(|h| h.contains("4 unbekannte")), "{h:?}");
+        assert!(h.iter().any(|h| h.contains("Werkstypen ergänzt")), "{h:?}");
+        steht("nach dem Ergänzen");
+        // Einen anderen Typ ändern und zurückspeichern
+        let mut m = Model::from_library(c.library());
+        let (id, g) = m
+            .layer_sets()
+            .iter()
+            .find(|(_, t)| t.guid.to_string() != set)
+            .map(|(id, t)| (id, t.guid))
+            .unwrap();
+        let mut t = m.layer_set(id).unwrap().clone();
+        t.layers[0].thickness += 10.0;
+        assert!(m.set_layer_set(id, t));
+        assert_eq!(c.save_type(&m, g), SaveResult::Saved);
+        steht("nach dem Zurückspeichern");
         let _ = std::fs::remove_dir_all(&d);
     }
 
