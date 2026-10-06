@@ -497,6 +497,36 @@ pub fn hover_glow(
     v
 }
 
+/// Nachleuchten nach einem Typwechsel (K3b): Schein und Umriss wie in der
+/// Rückfrage des Bauteilkatalogs, beide mit Stärke `k` (Schein: 0,43 = voll).
+pub fn fading_glow(
+    scene: &Scene,
+    id: ElementId,
+    view: ViewKind,
+    section: Option<(Vec3, Vec3)>,
+    scale: f32,
+    theme: &Theme,
+    k: f32,
+) -> Vec<Helper> {
+    let [r, g, b, a] = theme.interact.hover_element;
+    let mut v = outline(scene, id, view, section, scale, theme, [r, g, b, a * k]);
+    for h in &mut v {
+        h.width = 8.0 * scale;
+        h.round = true;
+    }
+    let full = k / crate::scene::GROW_GLOW;
+    v.extend(outline(
+        scene,
+        id,
+        view,
+        section,
+        scale,
+        theme,
+        [r, g, b, a * full],
+    ));
+    v
+}
+
 fn outline(
     scene: &Scene,
     id: ElementId,

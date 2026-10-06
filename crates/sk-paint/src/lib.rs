@@ -610,6 +610,49 @@ impl Canvas {
         }
     }
 
+    /// Zeichnet `src` um `scale` vergrößert (bilinear) und mit Deckkraft
+    /// `alpha` darüber, linke obere Ecke bei `(x, y)` (Koordinaten mit
+    /// Ursprung wie bei Pfaden). Für fliegende Kopien und Überblendungen.
+    pub fn blit_scaled(&mut self, src: &Canvas, x: f32, y: f32, scale: f32, alpha: f32) {
+        if scale <= 0.0 || alpha <= 0.0 || src.width == 0 || src.height == 0 {
+            return;
+        }
+        let (x, y) = (x - self.origin.0, y - self.origin.1);
+        let (w, h) = (src.width as f32 * scale, src.height as f32 * scale);
+        let x0 = x.floor().max(0.0) as usize;
+        let y0 = y.floor().max(0.0) as usize;
+        let x1 = ((x + w).ceil().max(0.0) as usize).min(self.width);
+        let y1 = ((y + h).ceil().max(0.0) as usize).min(self.height);
+        let at = |sx: isize, sy: isize| -> [f32; 4] {
+            if sx < 0 || sy < 0 || sx >= src.width as isize || sy >= src.height as isize {
+                [0.0; 4]
+            } else {
+                src.px[sy as usize * src.width + sx as usize]
+            }
+        };
+        for dy in y0..y1 {
+            let fy = (dy as f32 + 0.5 - y) / scale - 0.5;
+            let (iy, ty) = (fy.floor() as isize, fy - fy.floor());
+            for dx in x0..x1 {
+                let fx = (dx as f32 + 0.5 - x) / scale - 0.5;
+                let (ix, tx) = (fx.floor() as isize, fx - fx.floor());
+                let (a, b) = (at(ix, iy), at(ix + 1, iy));
+                let (c, d) = (at(ix, iy + 1), at(ix + 1, iy + 1));
+                let mut p = [0.0f32; 4];
+                for k in 0..4 {
+                    let top = a[k] + (b[k] - a[k]) * tx;
+                    let bot = c[k] + (d[k] - c[k]) * tx;
+                    p[k] = (top + (bot - top) * ty) * alpha;
+                }
+                let q = &mut self.px[dy * self.width + dx];
+                let ia = 1.0 - p[3];
+                for k in 0..4 {
+                    q[k] = p[k] + q[k] * ia;
+                }
+            }
+        }
+    }
+
     /// Füllt die ganzen Bildpunkte im Bereich `x0..x1`, `y0..y1` (Koordinaten
     /// des Gesamtbildes wie bei Pfaden) deckend mit `f(x, y)`; `f` bekommt die
     /// Mitte des Bildpunkts. Für Schraffuren in Vorschaubildern.
@@ -756,6 +799,28 @@ pub(crate) fn accumulate_line(
     if p0.y == p1.y {
         return;
     }
+    // An den Seitenrändern teilen: links davon zählt das Stück als senkrecht
+    // am Rand (volle Windung), rechts davon ist es unsichtbar. Ein Stück, das
+    // nur gestaucht würde, gäbe am Rand eine falsche Abdeckung (Teilbilder).
+    for edge in [0.0, w as f32] {
+        if (p0.x - edge) * (p1.x - edge) < 0.0 {
+            let t = (edge - p0.x) / (p1.x - p0.x);
+            let m = Pt {
+                x: edge,
+                y: p0.y + (p1.y - p0.y) * t,
+            };
+            let mut again = |a: Pt, b: Pt, marks: &mut Option<(&mut [u8], usize)>| {
+                let mk = marks.as_mut().map(|(m, nb)| (&mut **m, *nb));
+                accumulate_line(acc, stride, w, h, a, b, mk);
+            };
+            again(p0, m, &mut marks);
+            again(m, p1, &mut marks);
+            return;
+        }
+    }
+    if p0.x.min(p1.x) >= w as f32 {
+        return;
+    }
     let (dir, p0, p1) = if p0.y < p1.y {
         (1.0f32, p0, p1)
     } else {
@@ -858,6 +923,66 @@ mod umrechnung {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ein Ausschnitt (Teilbild) zeigt einen Pfad wie das ganze Bild, auch
+    /// wo der Pfad über den linken oder rechten Rand des Ausschnitts läuft.
+    #[test]
+    fn pfad_am_rand_des_ausschnitts() {
+        let col = Rgba::from_f32([0.2, 0.8, 0.4, 1.0]);
+        let mut p = Path::new();
+        p.rounded_rect(40.3, 10.2, 40.0, 30.0, 6.0);
+        p.rounded_rect_hole(42.3, 12.2, 36.0, 26.0, 4.0);
+        let mut big = Canvas::new(100, 60);
+        big.fill(&p, col);
+        for (ox, w) in [(0usize, 44usize), (20, 24), (20, 22), (30, 13), (41, 10)] {
+            let mut sub = Canvas::new(w, 50);
+            sub.set_origin(ox as f32, 5.0);
+            sub.fill(&p, col);
+            for y in 0..50 {
+                for x in 0..w {
+                    let a = big.px[(y + 5) * 100 + x + ox];
+                    let b = sub.px[y * w + x];
+                    assert!(
+                        (0..4).all(|k| (a[k] - b[k]).abs() < 1e-4),
+                        "ox {ox} w {w}: {x},{y}: {a:?} {b:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Unverkleinert und deckend wie `blit`; halb so groß bleibt eine
+    /// einfarbige Fläche einfarbig; halbe Deckkraft halbiert.
+    #[test]
+    fn verkleinert_mit_deckkraft() {
+        let red = Rgba::from_f32([1.0, 0.0, 0.0, 1.0]);
+        let mut src = Canvas::new(20, 10);
+        src.fill_rect(0.0, 0.0, 20.0, 10.0, red);
+        src.fill_rect(5.0, 2.0, 4.0, 4.0, Rgba::from_f32([0.0, 0.0, 1.0, 1.0]));
+        let (mut a, mut b) = (Canvas::new(40, 30), Canvas::new(40, 30));
+        a.blit(&src, 7, 5);
+        b.blit_scaled(&src, 7.0, 5.0, 1.0, 1.0);
+        assert!(a
+            .px
+            .iter()
+            .zip(&b.px)
+            .all(|(p, q)| (0..4).all(|k| (p[k] - q[k]).abs() < 1e-5)));
+        let mut uni = Canvas::new(20, 10);
+        uni.fill_rect(0.0, 0.0, 20.0, 10.0, red);
+        let mut c = Canvas::new(40, 30);
+        c.blit_scaled(&uni, 4.0, 4.0, 0.5, 0.5);
+        let p = c.px[6 * 40 + 8];
+        assert!(
+            (p[0] - 0.5).abs() < 1e-5 && (p[3] - 0.5).abs() < 1e-5,
+            "{p:?}"
+        );
+        assert_eq!(c.px[2 * 40 + 2], [0.0; 4]);
+        assert_eq!(
+            c.px[6 * 40 + 20],
+            [0.0; 4],
+            "rechts der 10 px breiten Kopie leer"
+        );
+    }
 
     /// Füllen wie vor den Blockmarken: jede Zeile Pixel für Pixel.
     fn fill_per_pixel(c: &mut Canvas, path: &Path, col: Rgba) {

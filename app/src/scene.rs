@@ -307,6 +307,92 @@ pub struct Scene {
     schedule_runs: u64,
     /// Offener Schritt „Typ gewechselt“ als Vorschau (K3).
     type_preview: bool,
+    /// Uhr der Übergänge (ms seit Start), von der App vor jedem Ereignis gestellt.
+    now: u64,
+    /// Ansicht des zuletzt gezeichneten Netzes; für sie entsteht ein Übergang.
+    shown_key: Option<MeshKey>,
+    /// Laufender Übergang „Wände wachsen“ (K3b).
+    grow: Option<Grow>,
+    /// Hat [`Scene::mesh`] zuletzt ein gemischtes Netz geliefert?
+    blend_shown: bool,
+}
+
+/// Ansicht, Schnittebene und ausgelassene Züge eines Netzes.
+type MeshKey = (ViewKind, Option<Plane>, Vec<RunId>);
+
+/// Übergang „Wände wachsen“ (K3b): Modell und Mengen sind sofort neu, nur das
+/// gezeichnete Netz mischt sich in `anim_ms` vom alten zum neuen Stand; die
+/// geänderten Wände leuchten in `flash_ms` aus.
+struct Grow {
+    key: MeshKey,
+    from: MeshData,
+    to: MeshData,
+    /// Modellstand, zu dem `to` gehört; ändert sich das Modell, gilt `to` nicht mehr.
+    rev: u64,
+    start: u64,
+    /// Passen beide Netze Punkt für Punkt zusammen? Sonst springt die Form
+    /// sofort, und nur das Leuchten läuft.
+    morph: bool,
+    glow: Vec<ElementId>,
+}
+
+/// Schritte, die beim Rückgängigmachen denselben Übergang rückwärts zeigen.
+const GROW_STEPS: [&str; 2] = [CATALOG_STEP, TYPE_STEP];
+
+/// Verlaufseintrag „OK“ im Bauteilkatalog (K3).
+pub const CATALOG_STEP: &str = "Bauteilkatalog geändert";
+/// Verlaufseintrag Typwechsel in den Eigenschaften (K3).
+pub const TYPE_STEP: &str = "Typ gewechselt";
+
+/// Stärke des Nachleuchtens zu Beginn (wie der Schein der Rückfrage).
+pub const GROW_GLOW: f32 = 0.43;
+
+/// Netz zwischen `a` (k = 0) und `b` (k = 1): Lage und Texturkoordinaten
+/// gemischt, Normale und Schlüssel von `b`.
+fn blend(a: &MeshData, b: &MeshData, k: f32) -> MeshData {
+    let mix = |x: f32, y: f32| x + (y - x) * k;
+    MeshData {
+        faces: a
+            .faces
+            .iter()
+            .zip(&b.faces)
+            .map(|(p, q)| {
+                let mut v = *q;
+                for i in [0, 1, 2, 7, 8] {
+                    v[i] = mix(p[i], q[i]);
+                }
+                v
+            })
+            .collect(),
+        edges: a
+            .edges
+            .iter()
+            .zip(&b.edges)
+            .map(|((p, _), (q, kind))| {
+                let m =
+                    |u: [f32; 3], w: [f32; 3]| [mix(u[0], w[0]), mix(u[1], w[1]), mix(u[2], w[2])];
+                ([m(p[0], q[0]), m(p[1], q[1])], *kind)
+            })
+            .collect(),
+    }
+}
+
+/// Lassen sich die Netze mischen? Gleich viele Punkte und Kanten, je Punkt
+/// derselbe Baustoff und dieselbe Flächenrichtung, je Kante dieselbe Art.
+/// Sonst hat sich die Gestalt geändert (andere Schichtzahl, Taschen, …).
+fn morphable(a: &MeshData, b: &MeshData) -> bool {
+    a.faces.len() == b.faces.len()
+        && a.edges.len() == b.edges.len()
+        && a.faces
+            .iter()
+            .zip(&b.faces)
+            .all(|(p, q)| p[6] == q[6] && p[3] * q[3] + p[4] * q[4] + p[5] * q[5] > 0.999)
+        && a.edges.iter().zip(&b.edges).all(|(p, q)| p.1 == q.1)
+}
+
+/// ease-out 1 − (1 − u)³
+fn ease_out(u: f32) -> f32 {
+    1.0 - (1.0 - u.clamp(0.0, 1.0)).powi(3)
 }
 
 /// Vorgaben im Dialog „Gebäude erstellen“ (Jörn 10:13, mm): lichte Höhen und
@@ -406,6 +492,10 @@ impl Scene {
             schedule: None,
             schedule_runs: 0,
             type_preview: false,
+            now: 0,
+            shown_key: None,
+            grow: None,
+            blend_shown: false,
         };
         s.rebuild_dirty(false);
         s
@@ -1031,10 +1121,14 @@ impl Scene {
     /// Züge, die er berührt, ohne Mengen. Eine vorige Vorschau wird vorher
     /// verworfen. `false`, wenn ein Zug den Typ nicht annimmt.
     pub fn preview_run_type(&mut self, runs: &[RunId], id: LayerSetId) -> bool {
+        self.grown(true, |s| s.preview_run_type_now(runs, id))
+    }
+
+    fn preview_run_type_now(&mut self, runs: &[RunId], id: LayerSetId) -> bool {
         if std::mem::take(&mut self.type_preview) {
             self.rollback();
         }
-        self.begin("Typ gewechselt");
+        self.begin(TYPE_STEP);
         self.type_preview = true;
         // Auch Anschlüsse, die der Wechsel löst
         let mut marks: Vec<RunId> = runs
@@ -1063,7 +1157,7 @@ impl Scene {
             // Körper stehen schon, es fehlen nur die Mengen
             self.commit();
         } else {
-            self.rollback();
+            self.grown(true, |s| s.rollback());
         }
     }
 
@@ -1293,6 +1387,10 @@ impl Scene {
     /// die an ihnen hängen; ändern sich Baustoffe, alles. `true`, wenn sich
     /// etwas geändert hat.
     pub fn edit_types(&mut self, label: &'static str, f: impl FnOnce(&mut Model) -> bool) -> bool {
+        self.grown(true, |s| s.edit_types_now(label, f))
+    }
+
+    fn edit_types_now(&mut self, label: &'static str, f: impl FnOnce(&mut Model) -> bool) -> bool {
         let rev = self.model.revision();
         let mats: Vec<_> = self
             .model
@@ -1413,7 +1511,11 @@ impl Scene {
             self.cancel_building();
             return true;
         }
-        self.step(Direction::Undo)
+        let grow = self
+            .undo
+            .last()
+            .is_some_and(|t| GROW_STEPS.contains(&t.label));
+        self.grown(grow, |s| s.step(Direction::Undo))
     }
 
     /// Bezeichnung des Schritts, den „Rückgängig“ als Nächstes zurücknimmt
@@ -1437,7 +1539,112 @@ impl Scene {
         if self.pending.is_some() {
             return false;
         }
-        self.step(Direction::Redo)
+        let grow = self
+            .redo
+            .last()
+            .is_some_and(|t| GROW_STEPS.contains(&t.label));
+        self.grown(grow, |s| s.step(Direction::Redo))
+    }
+
+    /// Uhr der Übergänge stellen (ms seit Start der App).
+    pub fn set_now(&mut self, ms: u64) {
+        self.now = ms;
+    }
+
+    /// Führt `f` aus; ändert es das Modell (und mit `grow`), zeigt das
+    /// gezeichnete Netz den Übergang vom bisherigen zum neuen Stand (K3b).
+    /// Wände, deren Typ sich geändert hat, leuchten nach.
+    fn grown<R>(&mut self, grow: bool, f: impl FnOnce(&mut Scene) -> R) -> R {
+        let rev = self.model.revision();
+        let key = self
+            .shown_key
+            .clone()
+            .filter(|_| grow && self.theme.size.anim_ms > 0.0);
+        let from = key
+            .as_ref()
+            .map(|k| self.grow_mesh(k).unwrap_or_else(|| self.plain_mesh(k)));
+        let sets: Vec<(sk_model::LayerSetId, sk_model::LayerSet)> = match key {
+            Some(_) => self
+                .model
+                .layer_sets()
+                .iter()
+                .map(|(id, t)| (id, t.clone()))
+                .collect(),
+            None => Vec::new(),
+        };
+        let r = f(self);
+        if self.model.revision() == rev {
+            return r;
+        }
+        self.grow = None;
+        let (Some(key), Some(from)) = (key, from) else {
+            return r;
+        };
+        let to = self.plain_mesh(&key);
+        let m = &self.model;
+        let mut glow = Vec::new();
+        for (id, t) in m.layer_sets().iter() {
+            if !sets.iter().any(|(i, s)| *i == id && s == t) {
+                glow.extend(m.type_users(id));
+            }
+        }
+        let morph = morphable(&from, &to) && (from.faces != to.faces || from.edges != to.edges);
+        if morph || !glow.is_empty() {
+            self.grow = Some(Grow {
+                key,
+                morph,
+                from,
+                to,
+                rev: self.model.revision(),
+                start: self.now,
+                glow,
+            });
+        }
+        r
+    }
+
+    /// Mischt sich das Netz gerade (Form, nicht nur Leuchten)?
+    #[cfg(test)]
+    pub fn morphing(&self) -> bool {
+        self.grow_k().is_some()
+    }
+
+    /// Läuft ein Übergang (Form oder Leuchten)? Dann braucht es Bilder.
+    pub fn growing(&self) -> bool {
+        self.grow.is_some()
+    }
+
+    /// Uhr weiterstellen; `true`, solange sich das Netz noch mischt oder
+    /// zuletzt gemischt gezeigt wurde (dann einmal neu hochladen).
+    pub fn grow_tick(&mut self, now: u64) -> bool {
+        self.now = now;
+        if let Some(g) = &self.grow {
+            let t = now.saturating_sub(g.start) as f32;
+            let size = &self.theme.size;
+            if t >= size.anim_ms.max(size.flash_ms) || size.anim_ms <= 0.0 {
+                self.grow = None;
+            }
+        }
+        self.grow_k().is_some() || self.blend_shown
+    }
+
+    /// Nachleuchten der geänderten Wände: Stärke (linear von [`GROW_GLOW`]
+    /// auf 0 in `flash_ms`) und Wände.
+    pub fn grow_glow(&self) -> (f32, &[ElementId]) {
+        let Some(g) = &self.grow else {
+            return (0.0, &[]);
+        };
+        let ms = self.theme.size.flash_ms;
+        let t = self.now.saturating_sub(g.start) as f32;
+        if g.glow.is_empty() || ms <= 0.0 || self.theme.size.anim_ms <= 0.0 || t >= ms {
+            return (0.0, &[]);
+        }
+        (GROW_GLOW * (1.0 - t / ms), &g.glow)
+    }
+
+    /// Klick während des Übergangs: sofort Endstand, Leuchten aus.
+    pub fn skip_animation(&mut self) -> bool {
+        self.grow.take().is_some()
     }
 
     fn step(&mut self, dir: Direction) -> bool {
@@ -1459,6 +1666,31 @@ impl Scene {
     /// gezogenen). Beim Schnitt: Ebene `section` (Punkt, Normale zum Betrachter),
     /// alles davor wird weggeschnitten.
     pub fn mesh(&mut self, view: ViewKind, section: Option<Plane>, except: &[RunId]) -> MeshData {
+        let key = (view, section, except.to_vec());
+        self.shown_key = Some(key.clone());
+        let m = self.grow_mesh(&key);
+        self.blend_shown = m.is_some();
+        m.unwrap_or_else(|| self.plain_mesh(&key))
+    }
+
+    /// Netz im laufenden Übergang, falls er für diese Ansicht gerade mischt.
+    fn grow_mesh(&self, key: &MeshKey) -> Option<MeshData> {
+        let g = self.grow.as_ref()?;
+        let k = self.grow_k()?;
+        (g.morph && g.key == *key && g.rev == self.model.revision())
+            .then(|| blend(&g.from, &g.to, k))
+    }
+
+    /// Fortschritt der Form im Übergang (0 … 1, ease-out); `None` am Ende.
+    fn grow_k(&self) -> Option<f32> {
+        let g = self.grow.as_ref()?;
+        let ms = self.theme.size.anim_ms;
+        let t = self.now.saturating_sub(g.start) as f32;
+        (g.morph && ms > 0.0 && t < ms).then(|| ease_out(t / ms))
+    }
+
+    fn plain_mesh(&mut self, key: &MeshKey) -> MeshData {
+        let (view, section, except) = (key.0, key.1, &key.2);
         let runs: Vec<RunId> = self
             .cache
             .iter()

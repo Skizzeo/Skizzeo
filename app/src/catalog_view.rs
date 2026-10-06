@@ -294,7 +294,22 @@ pub struct Catalog {
     img: Option<Canvas>,
     /// Schraffuren des Schnittbilds (Übergang ohne Rechnen je Bildpunkt).
     patterns: RefCell<Patterns>,
+    /// Kachelflug (K3b): Kopie der Kachel fliegt zum Reiter; Beginn.
+    fly: Option<(Item, Tab, Instant)>,
+    /// Bild der fliegenden Kopie und wo sie zuletzt gezeichnet wurde.
+    fly_img: Option<Canvas>,
+    fly_drawn: Option<Rect>,
+    /// Reiter, der nach Übernehmen oder Speichern einmal pulst.
+    pulse: Option<(Tab, Instant)>,
+    /// Marke einer Kachel, die überblendet: vorige Marke und Beginn.
+    fade: Option<(Item, Option<Mark>, Instant)>,
+    /// Zeitpunkt des Bildes, das gerade entsteht: alle Teilbilder zeigen
+    /// denselben Stand der Übergänge.
+    paint_now: Option<Instant>,
 }
+
+/// Dauer der Überblendung einer Marke (ms).
+const FADE_MS: f32 = 150.0;
 
 /// Bereich des Fensters, der neu gemalt werden muss.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -307,6 +322,11 @@ enum Area {
     Flash(Flash),
     /// Meldung im Fuß (Aufleuchten).
     Foot,
+    /// Fliegende Kachel (vorige und jetzige Lage).
+    Fly,
+    Pulse(Tab),
+    /// Kachel, deren Marke überblendet.
+    Tile(Item),
 }
 
 /// Was die App hochladen muss: das ganze Bild oder Ausschnitte daraus
@@ -406,6 +426,12 @@ impl Catalog {
             damage: Vec::new(),
             img: None,
             patterns: RefCell::default(),
+            fly: None,
+            fly_img: None,
+            fly_drawn: None,
+            pulse: None,
+            fade: None,
+            paint_now: None,
         };
         c.set_company(company);
         c
@@ -1653,6 +1679,42 @@ impl Catalog {
         })
     }
 
+    /// Kachelflug zum Reiter `to`, der danach pulst; die Marke der Kachel
+    /// (vorher `old`) blendet über (K3b §2).
+    fn transfer(&mut self, it: Item, to: Tab, old: Option<Mark>) {
+        let now = Instant::now();
+        self.fly = Some((it, to, now));
+        self.fly_img = None;
+        self.pulse = Some((to, now));
+        self.fade = Some((it, old, now));
+    }
+
+    /// Fortschritt eines Übergangs der Dauer `ms` (0 … 1); `None` ohne
+    /// Animationen oder danach.
+    fn progress(&self, at: Instant, ms: f32, t: &Theme) -> Option<f32> {
+        let now = self.paint_now.unwrap_or_else(Instant::now);
+        let u = now.saturating_duration_since(at).as_secs_f32() * 1000.0 / ms.max(1.0);
+        (t.size.anim_ms > 0.0 && u < 1.0).then_some(u)
+    }
+
+    /// Lage der fliegenden Kopie: Rechteck und Deckkraft.
+    fn fly_rect(&self, t: &Theme, w: &Win) -> Option<(Item, Rect, f32)> {
+        let (it, to, at) = self.fly?;
+        let u = self.progress(at, t.size.anim_ms, t)?;
+        let (tiles, ..) = self.list_layout(t, w);
+        let from = tiles.into_iter().find(|(x, _)| *x == it)?.1;
+        let dest = self.tab_rect(t, w, to);
+        let e = 1.0 - (1.0 - u).powi(3);
+        let k = 1.0 - 0.4 * e;
+        let (fx, fy) = (from.x + from.w * 0.5, from.y + from.h * 0.5);
+        let (tx, ty) = (dest.x + dest.w * 0.5, dest.y + dest.h * 0.5);
+        // Flacher Bogen nach oben
+        let lift = 28.0 * w.scale * (std::f32::consts::PI * e).sin();
+        let (cx, cy) = (fx + (tx - fx) * e, fy + (ty - fy) * e - lift);
+        let (ww, hh) = (from.w * k, from.h * k);
+        Some((it, Rect::new(cx - ww * 0.5, cy - hh * 0.5, ww, hh), 1.0 - u))
+    }
+
     fn draft_problems(&self) -> Vec<String> {
         let mut v = Vec::new();
         if self.draft.name.trim().is_empty() {
@@ -2054,10 +2116,15 @@ impl Catalog {
                 if changed {
                     company.reload(cx.company_standard);
                 }
+                let it = self.work.type_by_guid(g).map(Item::Type);
+                let old = it.and_then(|it| self.mark_of(it));
                 match company.save_type(&self.work, g) {
                     SaveResult::Saved => {
                         self.popup = None;
                         self.message = Some("In den Firmenkatalog gespeichert".into());
+                        if let Some(it) = it {
+                            self.transfer(it, Tab::Company, old);
+                        }
                     }
                     SaveResult::Changed => self.popup = Some(Popup::Export(g, true)),
                     SaveResult::Failed(e) => {
@@ -2113,11 +2180,12 @@ impl Catalog {
         let (Some(g), Some(lib)) = (self.csel, self.company_lib().cloned()) else {
             return;
         };
+        let old = self.mark_of(Item::Company(g));
         match import_type(&mut self.work, &lib, g) {
             Some(id) => {
-                self.tab = Tab::Project;
+                // Die Kachel fliegt zum Reiter „Projekt“, der Firmenreiter bleibt
                 self.show(id);
-                self.flash(Flash::Name);
+                self.transfer(Item::Company(g), Tab::Project, old);
             }
             None => {
                 self.message = Some("Übernehmen nicht möglich (Art eines verbauten Typs)".into());
@@ -2282,7 +2350,7 @@ impl Catalog {
             })
             .collect();
         let real_guids: Vec<Guid> = real.layer_sets().iter().map(|(_, t)| t.guid).collect();
-        let changed = cx.scene.edit_types("Bauteilkatalog geändert", |m| {
+        let changed = cx.scene.edit_types(crate::scene::CATALOG_STEP, |m| {
             for g in &work_guids {
                 import_type(m, &lib, *g);
             }
@@ -2315,7 +2383,19 @@ impl Catalog {
         let blink = self
             .blink
             .is_some_and(|at| at.elapsed().as_secs_f32() * 1000.0 < t.size.flash_ms);
+        let fly = self
+            .fly
+            .is_some_and(|(_, _, at)| self.progress(at, t.size.anim_ms, t).is_some());
+        let pulse = self
+            .pulse
+            .is_some_and(|(_, at)| self.progress(at, t.size.flash_ms, t).is_some());
+        let fade = self
+            .fade
+            .is_some_and(|(_, _, at)| self.progress(at, FADE_MS, t).is_some());
         anim || blink
+            || fly
+            || pulse
+            || fade
             || (0..3).any(|i| {
                 self.flashes[i]
                     .is_some_and(|at| at.elapsed().as_secs_f32() * 1000.0 < t.size.flash_ms)
@@ -2340,11 +2420,22 @@ impl Catalog {
                 self.damage.push(Area::Flash(f));
             }
         }
+        if self.fly.is_some() || self.fly_drawn.is_some() {
+            self.damage.push(Area::Fly);
+        }
+        if let Some((tab, _)) = self.pulse {
+            self.damage.push(Area::Pulse(tab));
+        }
+        if let Some((it, ..)) = self.fade {
+            self.damage.push(Area::Tile(it));
+        }
         if self.animating(t) {
             return true;
         }
         // Ein letztes Bild ohne Übergang
         let mut done = self.anim.take().is_some() | self.blink.take().is_some();
+        done |= self.fly.take().is_some() | self.fly_drawn.is_some();
+        done |= self.pulse.take().is_some() | self.fade.take().is_some();
         for f in &mut self.flashes {
             done |= f.take().is_some();
         }
@@ -2552,6 +2643,26 @@ fn paint_pill(c: &mut Canvas, fonts: &Fonts, right: f32, y: f32, mark: Mark, s: 
     );
 }
 
+/// Marke mit Deckkraft `alpha` (Überblendung, K3b).
+#[allow(clippy::too_many_arguments)]
+fn faded_pill(
+    c: &mut Canvas,
+    fonts: &Fonts,
+    right: f32,
+    y: f32,
+    mark: Mark,
+    s: f32,
+    t: &Theme,
+    alpha: f32,
+) {
+    let (w, h) = (pill_w(fonts, mark, s, t), (16.0 * s).round());
+    let (x0, y0) = ((right - w).round() - 2.0, y.round() - 2.0);
+    let mut img = Canvas::new(w as usize + 5, h as usize + 5);
+    img.set_origin(x0, y0);
+    paint_pill(&mut img, fonts, right, y, mark, s, t);
+    c.blit_scaled(&img, x0, y0, 1.0, alpha);
+}
+
 impl Catalog {
     fn mark_of(&self, it: Item) -> Option<Mark> {
         let lib = self.company_lib();
@@ -2641,6 +2752,10 @@ impl Catalog {
     }
 
     pub fn paint(&mut self, t: &Theme, fonts: &Fonts, w: &Win) -> (Canvas, i32, i32) {
+        let outer = self.paint_now.is_none();
+        if outer {
+            self.paint_now = Some(Instant::now());
+        }
         let f = self.frame(t, w);
         let m = (t.size.panel_shadow * w.scale).round();
         let mut c = Canvas::new((f.w + 2.0 * m) as usize, (f.h + 2.0 * m) as usize);
@@ -2648,12 +2763,22 @@ impl Catalog {
         c.set_origin(f.x - m, f.y - m);
         self.paint_into(&mut c, t, fonts, w);
         let (x, y) = self.origin(t, w);
+        if outer {
+            self.paint_now = None;
+        }
         (c, x, y)
     }
 
     /// Nächstes Bild für die App (U7): Nach Hervorhebungen und Übergängen
     /// nur die betroffenen Bereiche, sonst das ganze Fenster.
     pub fn paint_frame(&mut self, t: &Theme, fonts: &Fonts, w: &Win) -> Frame {
+        self.paint_now = Some(Instant::now());
+        let frame = self.paint_frame_now(t, fonts, w);
+        self.paint_now = None;
+        frame
+    }
+
+    fn paint_frame_now(&mut self, t: &Theme, fonts: &Fonts, w: &Win) -> Frame {
         let f = self.frame(t, w);
         let s = w.scale;
         let m = (t.size.panel_shadow * s).round();
@@ -2760,6 +2885,17 @@ impl Catalog {
                 let fr = self.frame(t, w);
                 vec![Rect::new(fr.x, fr.y + fr.h - FOOT * s, fr.w, FOOT * s)]
             }
+            Area::Fly => {
+                let now = self.fly_rect(t, w).map(|f| f.1);
+                self.fly_drawn.into_iter().chain(now).collect()
+            }
+            Area::Pulse(tab) => vec![self.tab_rect(t, w, tab)],
+            Area::Tile(it) => {
+                let body = self.list_body(t, w);
+                let (tiles, ..) = self.list_layout(t, w);
+                let r = tiles.into_iter().find(|(x, _)| *x == it)?.1;
+                vec![intersect(r, body)?]
+            }
             Area::Hover(None) => Vec::new(),
             Area::Hover(Some(h)) => {
                 // Schichten heben ihre Lage im Schnittbild mit hervor
@@ -2845,6 +2981,14 @@ impl Catalog {
                 outline(c, r, 6.0 * s, line, u.accent);
             } else if hov {
                 rounded(c, r, 6.0 * s, u.hover);
+            }
+            // Nach Übernehmen oder Speichern pulst der Zielreiter einmal
+            let pulse = self
+                .pulse
+                .filter(|p| p.0 == tab)
+                .and_then(|(_, at)| self.progress(at, t.size.flash_ms, t));
+            if let Some(p) = pulse {
+                outline(c, r, 6.0 * s, 2.0 * line, with_alpha(u.accent, 1.0 - p));
             }
             let text = if tab == Tab::Project {
                 "Projekt"
@@ -2963,6 +3107,38 @@ impl Catalog {
             };
             label(c, regular, &text, px, x0, action.1.y + 20.0 * s, col);
         }
+        self.paint_fly(c, t, fonts, w);
+    }
+
+    /// Fliegende Kopie der Kachel (Schnittbild und Name) über allem.
+    fn paint_fly(&mut self, c: &mut Canvas, t: &Theme, fonts: &Fonts, w: &Win) {
+        let Some((it, r, alpha)) = self.fly_rect(t, w) else {
+            self.fly_drawn = None;
+            return;
+        };
+        let s = w.scale;
+        if self.fly_img.is_none() {
+            let (tiles, ..) = self.list_layout(t, w);
+            let Some(from) = tiles.into_iter().find(|(x, _)| *x == it).map(|x| x.1) else {
+                return;
+            };
+            let from = Rect::new(
+                from.x.round(),
+                from.y.round(),
+                from.w.round(),
+                from.h.round(),
+            );
+            let mut img = Canvas::new(from.w as usize, from.h as usize);
+            img.set_origin(from.x, from.y);
+            rounded(&mut img, from, 6.0 * s, t.ui.hover);
+            self.paint_tile(&mut img, it, from, t, fonts, w, false, false);
+            self.fly_img = Some(img);
+        }
+        if let Some(img) = &self.fly_img {
+            let k = r.w / img.width as f32;
+            c.blit_scaled(img, r.x, r.y, k, alpha);
+        }
+        self.fly_drawn = Some(r);
     }
 
     fn btn_state(&self, b: Btn, active: bool, disabled: bool) -> ButtonState {
@@ -2987,6 +3163,7 @@ impl Catalog {
             body.w.round(),
             body.h.round(),
         );
+        let left = body.x;
         let (ox, oy) = c.origin();
         let shown = Rect::new(ox, oy, c.width as f32, c.height as f32);
         let Some(body) = intersect(body, shown) else {
@@ -2994,17 +3171,14 @@ impl Catalog {
         };
         let mut sub = Canvas::new(body.w as usize, body.h as usize);
         sub.set_origin(body.x, body.y);
-        let (regular, bold) = (
-            fonts.regular.as_ref(),
-            fonts.bold.as_ref().or(fonts.regular.as_ref()),
-        );
+        let bold = fonts.bold.as_ref().or(fonts.regular.as_ref());
         for (h, y) in heads {
             label(
                 &mut sub,
                 bold,
                 h,
                 t.size.font_detail * s,
-                body.x + 18.0 * s,
+                left + 18.0 * s,
                 y + 16.0 * s,
                 u.text_dim,
             );
@@ -3013,71 +3187,98 @@ impl Catalog {
             if r.y + r.h < body.y || r.y > body.y + body.h {
                 continue;
             }
-            let Some((name, detail, uses, look)) = self.tile_info(it, t) else {
-                continue;
-            };
             let sel = self.is_selected(it);
-            if sel {
-                rounded(&mut sub, r, 6.0 * s, u.pressed);
-                sub.fill_rect(
-                    r.x,
-                    r.y + 4.0 * s,
-                    (3.0 * s).round(),
-                    r.h - 8.0 * s,
-                    u.accent,
-                );
-            } else if self.hover == Some(Target::Tile(it)) {
-                rounded(&mut sub, r, 6.0 * s, u.hover);
-            }
-            let (tw, th) = (
-                (t.size.catalog_thumb_w * s).round(),
-                (t.size.catalog_thumb_h * s).round(),
-            );
-            let ty = (r.y + (r.h - th) * 0.5).round();
-            paint_thumb(
-                &mut sub,
-                Rect::new((r.x + 10.0 * s).round(), ty, tw, th),
-                &look,
-                s,
-            );
-            let tx = r.x + 10.0 * s + tw + 10.0 * s;
-            let mark = self.mark_of(it);
-            let right = r.x + r.w - 10.0 * s;
-            let px = t.size.font * s;
-            let font = if sel { bold } else { regular };
-            let max = right - tx - if uses > 0 { 30.0 * s } else { 0.0 };
-            let name = widgets::ellipsize(font, &name, px, max);
-            label(&mut sub, font, &name, px, tx, r.y + 20.0 * s, u.text);
-            let pd = t.size.font_detail * s;
-            let room = right - tx - mark.map_or(0.0, |mk| pill_w(fonts, mk, s, t) + 6.0 * s);
-            let detail = widgets::ellipsize(regular, &detail, pd, room);
-            label(
-                &mut sub,
-                regular,
-                &detail,
-                pd,
-                tx,
-                r.y + 38.0 * s,
-                u.text_dim,
-            );
-            if uses > 0 {
-                let text = format!("{uses}×");
-                let uw = regular.map_or(0.0, |ft| ft.width(&text, pd));
-                label(
-                    &mut sub,
-                    regular,
-                    &text,
-                    pd,
-                    right - uw,
-                    r.y + 18.0 * s,
-                    u.text_dim,
-                );
-            }
-            if let Some(mk) = mark {
-                paint_pill(&mut sub, fonts, right, r.y + 25.0 * s, mk, s, t);
-            }
+            let hover = self.hover == Some(Target::Tile(it));
+            self.paint_tile(&mut sub, it, r, t, fonts, w, sel, hover);
         }
         c.blit(&sub, body.x as i32, body.y as i32);
+    }
+
+    /// Eine Kachel der Liste in `r`: Schnittbild, Name, Angabe, Zahl der
+    /// Verwendungen, Marke.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_tile(
+        &self,
+        c: &mut Canvas,
+        it: Item,
+        r: Rect,
+        t: &Theme,
+        fonts: &Fonts,
+        w: &Win,
+        sel: bool,
+        hover: bool,
+    ) {
+        let s = w.scale;
+        let u = &t.ui;
+        let (regular, bold) = (
+            fonts.regular.as_ref(),
+            fonts.bold.as_ref().or(fonts.regular.as_ref()),
+        );
+        let Some((name, detail, uses, look)) = self.tile_info(it, t) else {
+            return;
+        };
+        if sel {
+            rounded(c, r, 6.0 * s, u.pressed);
+            c.fill_rect(
+                r.x,
+                r.y + 4.0 * s,
+                (3.0 * s).round(),
+                r.h - 8.0 * s,
+                u.accent,
+            );
+        } else if hover {
+            rounded(c, r, 6.0 * s, u.hover);
+        }
+        let (tw, th) = (
+            (t.size.catalog_thumb_w * s).round(),
+            (t.size.catalog_thumb_h * s).round(),
+        );
+        let ty = (r.y + (r.h - th) * 0.5).round();
+        paint_thumb(c, Rect::new((r.x + 10.0 * s).round(), ty, tw, th), &look, s);
+        let tx = r.x + 10.0 * s + tw + 10.0 * s;
+        let mark = self.mark_of(it);
+        let right = r.x + r.w - 10.0 * s;
+        let px = t.size.font * s;
+        let font = if sel { bold } else { regular };
+        let max = right - tx - if uses > 0 { 30.0 * s } else { 0.0 };
+        let name = widgets::ellipsize(font, &name, px, max);
+        label(c, font, &name, px, tx, r.y + 20.0 * s, u.text);
+        let pd = t.size.font_detail * s;
+        let room = right - tx - mark.map_or(0.0, |mk| pill_w(fonts, mk, s, t) + 6.0 * s);
+        let detail = widgets::ellipsize(regular, &detail, pd, room);
+        label(c, regular, &detail, pd, tx, r.y + 38.0 * s, u.text_dim);
+        if uses > 0 {
+            let text = format!("{uses}×");
+            let uw = regular.map_or(0.0, |ft| ft.width(&text, pd));
+            label(
+                c,
+                regular,
+                &text,
+                pd,
+                right - uw,
+                r.y + 18.0 * s,
+                u.text_dim,
+            );
+        }
+        // Nach Übernehmen oder Speichern blendet die Marke über
+        let fade = self
+            .fade
+            .filter(|f| f.0 == it)
+            .and_then(|(_, old, at)| Some((old, self.progress(at, FADE_MS, t)?)));
+        match fade {
+            Some((old, k)) => {
+                for (m, a) in [(old, 1.0 - k), (mark, k)] {
+                    if let Some(m) = m {
+                        faded_pill(c, fonts, right, r.y + 25.0 * s, m, s, t, a);
+                    }
+                }
+            }
+            None => {
+                if let Some(mk) = mark {
+                    paint_pill(c, fonts, right, r.y + 25.0 * s, mk, s, t);
+                }
+            }
+        }
     }
 
     /// Hervorgehobene Schicht (Zeile, Feld, Schnittbild, Ziehen).
@@ -4529,6 +4730,40 @@ mod tests {
                 scale, full, tile, row, anim
             );
         }
+        // Kachelflug (K3b): Bilder im Flug nach „Ins Projekt übernehmen“
+        let d = std::env::temp_dir().join("skizzeo-perf-kachelflug");
+        let _ = std::fs::remove_dir_all(&d);
+        let (company, _) = Company::load(&d.join("firmenkatalog.szk"), true);
+        for scale in [1.0, 1.5] {
+            let win = Win {
+                w: (1280.0 * scale) as u32,
+                h: (800.0 * scale) as u32,
+                top: (32.0 * scale) as u32,
+                scale,
+            };
+            let mut c = Catalog::open(&s, Some(&company));
+            c.tab = Tab::Company;
+            let g = c.company_lib().unwrap().types.iter().last().unwrap().1.guid;
+            c.csel = Some(g);
+            let mut v = Vec::new();
+            for _ in 0..5 {
+                c.paint_frame(&theme, &f, &win);
+                c.transfer(Item::Company(g), Tab::Project, Some(Mark::CompanyNewer));
+                while c.tick(&theme) {
+                    let t = Instant::now();
+                    std::hint::black_box(c.paint_frame(&theme, &f, &win));
+                    v.push(t.elapsed().as_secs_f64() * 1000.0);
+                }
+            }
+            v.sort_by(f64::total_cmp);
+            println!(
+                "Katalog: Kachelflug bei {scale}: je Bild {:.2} ms ({} Bilder, höchstens {:.2} ms)",
+                v[v.len() / 2],
+                v.len(),
+                v[v.len() - 1]
+            );
+        }
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Dicke eines verbauten Typs ändern: Rückfrage mit den Wänden, „Ändern“
@@ -4666,6 +4901,102 @@ mod tests {
         c.answer(false, &mut cx, &mut out);
         assert!(out.applied);
         assert_eq!(aussen(s.model()).len(), 2);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Kachelflug (K3b §2): „Ins Projekt übernehmen“ bleibt im Firmenreiter,
+    /// die Marke heißt danach „wie im Projekt“, eine Kopie der Kachel fliegt
+    /// zum Reiter „Projekt“ (Teilbilder gleich dem ganzen Bild). Ohne
+    /// Animationen wird keine Kopie gezeichnet.
+    #[test]
+    fn kachelflug_zum_reiter() {
+        let d = std::env::temp_dir().join("skizzeo-kachelflug");
+        let _ = std::fs::remove_dir_all(&d);
+        let (company, _) = Company::load(&d.join("firmenkatalog.szk"), true);
+        let s = szene();
+        let f = Fonts::system();
+        let mut slow = Theme::dark();
+        slow.size.anim_ms = 1e6;
+        slow.size.flash_ms = 1e6;
+        for win in [WIN, Win { scale: 1.5, ..WIN }] {
+            let mut c = Catalog::open(&s, Some(&company));
+            c.tab = Tab::Company;
+            let lib = c.company_lib().unwrap().clone();
+            let g = lib
+                .types
+                .iter()
+                .map(|(_, t)| t.guid)
+                .find(|g| c.mark_of(Item::Company(*g)) != Some(Mark::Same))
+                .unwrap_or(lib.types.iter().next().unwrap().1.guid);
+            c.csel = Some(g);
+            c.paint_frame(&slow, &f, &win);
+            c.import_selected();
+            // Der Klick malt das ganze Bild (Marke, Vergleich)
+            c.paint_frame(&slow, &f, &win);
+            assert_eq!(c.tab, Tab::Company);
+            assert_eq!(c.mark_of(Item::Company(g)), Some(Mark::Same));
+            assert!(c.fly.is_some() && c.pulse.is_some() && c.fade.is_some());
+            // Mitten im Flug (Uhr zurückgestellt), dann in Teilbildern weiter
+            let Some(at) = Instant::now().checked_sub(Duration::from_secs(400)) else {
+                return;
+            };
+            c.fly = Some((Item::Company(g), Tab::Project, at));
+            // Die Marke blendet in festen 150 ms über: schon vorbei
+            c.fade = c.fade.map(|(it, old, _)| (it, old, at));
+            for _ in 0..2 {
+                assert!(c.tick(&slow));
+                let Frame::Parts(_) = c.paint_frame(&slow, &f, &win) else {
+                    panic!("Teilbild erwartet im Flug");
+                };
+            }
+            let start = c.list_layout(&slow, &win).0;
+            let from = start.iter().find(|x| x.0 == Item::Company(g)).unwrap().1;
+            let r = c.fly_drawn.expect("Kopie gezeichnet");
+            assert!(r.w < from.w * 0.95 && r.y < from.y, "{r:?} von {from:?}");
+            // Die Kopie wandert zwischen beiden Bildern ein wenig weiter
+            let a = c.img.as_ref().unwrap().to_premul_rgba8();
+            let b = c.paint(&slow, &f, &win).0.to_premul_rgba8();
+            let fr = c.frame(&slow, &win);
+            let m = (slow.size.panel_shadow * win.scale).round();
+            let iw = c.img.as_ref().unwrap().width;
+            let near = |i: usize| {
+                let (x, y) = (
+                    (i / 4 % iw) as f32 + fr.x - m,
+                    (i / 4 / iw) as f32 + fr.y - m,
+                );
+                x > r.x - 2.0 && x < r.x + r.w + 2.0 && y > r.y - 2.0 && y < r.y + r.h + 2.0
+            };
+            for (i, (p, q)) in a.iter().zip(&b).enumerate() {
+                let tol = if near(i) { 8 } else { 1 };
+                assert!(
+                    p.abs_diff(*q) <= tol,
+                    "Flug: Abweichung {} bei {}, {} (Kopie {r:?})",
+                    p.abs_diff(*q),
+                    (i / 4 % iw) as f32 + fr.x - m,
+                    (i / 4 / iw) as f32 + fr.y - m
+                );
+            }
+            // Flug vorbei: das letzte Bild löscht die Kopie überall
+            let past = Instant::now() - Duration::from_millis(700);
+            c.fly = Some((Item::Company(g), Tab::Project, past));
+            c.pulse = Some((Tab::Project, past));
+            let normal = Theme::dark();
+            assert!(c.tick(&normal), "ein letztes Bild");
+            c.paint_frame(&normal, &f, &win);
+            assert!(c.fly_drawn.is_none());
+            let a = c.img.as_ref().unwrap().to_premul_rgba8();
+            let b = c.paint(&normal, &f, &win).0.to_premul_rgba8();
+            let diff = a.iter().zip(&b).map(|(p, q)| p.abs_diff(*q)).max();
+            assert!(diff <= Some(1), "Rest der Kopie: {diff:?}");
+            // Ohne Animationen: keine Kopie, der Übergang ist sofort vorbei
+            let mut off = Theme::dark();
+            off.size.anim_ms = 0.0;
+            c.transfer(Item::Company(g), Tab::Project, None);
+            assert!(c.tick(&off), "ein letztes Bild");
+            c.paint_frame(&off, &f, &win);
+            assert!(c.fly.is_none() && c.fly_drawn.is_none());
+            assert!(!c.tick(&off));
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 }

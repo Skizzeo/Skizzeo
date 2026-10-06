@@ -1888,6 +1888,10 @@ impl App {
     /// Ein Ereignis; `false` beendet die Schleife. Die Nachfrage „Änderungen
     /// speichern?“ und das offene Dateimenü nehmen Maus und Tasten zuerst.
     fn handle(&mut self, e: Event, surface: &Surface) -> bool {
+        // Ein Klick während der Wände wachsen: sofort Endstand (K3b)
+        if matches!(e, Event::MouseDown { .. }) && self.scene.skip_animation() {
+            self.upload_model();
+        }
         if self.save_dlg.is_some() && self.handle_save_dialog(e, surface) {
             return !self.quit;
         }
@@ -3079,6 +3083,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             && !a.wheel.animating(a.now())
             && a.auto_switch.is_none()
             && a.fly.is_none()
+            && !a.scene.growing()
         {
             // Leerlauf: Grundrisse der Nachbargeschosse vorbereiten, damit ein
             // Wechsel am Geschossbogen nichts neu rechnet (E18)
@@ -3124,6 +3129,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         }
         coalesce_moves(&mut events);
         let t_events = Instant::now();
+        a.scene.set_now(a.now());
         for e in events {
             if !a.handle(e, &surface) {
                 if let Some(log) = timing.as_mut() {
@@ -3144,6 +3150,12 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         let theme = &a.theme;
         if a.catalog.as_mut().is_some_and(|c| c.tick(theme)) {
             a.prefs_dirty = true;
+        }
+        // Wände wachsen nach einem Typwechsel (K3b)
+        if a.scene.growing() {
+            let t = a.now();
+            a.mesh_dirty |= a.scene.grow_tick(t);
+            a.redraw = true;
         }
         a.sync_quantity(&surface);
         a.sync_tool_chip();
@@ -3252,6 +3264,12 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                         &a.theme,
                     ));
                 }
+            }
+            let (k, glowing) = a.scene.grow_glow();
+            for &h in glowing {
+                helpers.extend(selection::fading_glow(
+                    &a.scene, h, a.ui.view, plane, scale, &a.theme, k,
+                ));
             }
             for &id in &a.picking.selected {
                 helpers.extend(selection::helpers(

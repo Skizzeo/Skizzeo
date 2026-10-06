@@ -886,3 +886,44 @@ fn perf_mengenliste() {
          Ordner, der w\\Fonts\\segoeui.ttf enthält."
     );
 }
+
+/// K3b: Übergänge nach „Ändern“ im Bauteilkatalog am Referenzgebäude. Die
+/// Außenwand wird 4,5 cm dicker; je Bild mischt die Szene das Netz (und es
+/// wird ganz hochgeladen). Auslöser = einmal beim Klick (Modell, zwei Netze).
+#[test]
+#[ignore]
+fn perf_uebergaenge() {
+    println!();
+    let mut s = reference_stacked(1, 4, 2);
+    let id = s.model().defaults().exterior_wall;
+    let walls = s.model().type_users(id).len();
+    let mut thick = s.model().layer_set(id).unwrap().clone();
+    let mut t = 0u64;
+    let mut v = Vec::new();
+    let mut frames = Vec::new();
+    let mut mb = 0.0;
+    for round in 0..9 {
+        s.mesh(ViewKind::Persp, None, &[]);
+        t += 10_000;
+        s.set_now(t);
+        thick.layers[0].thickness += if round % 2 == 0 { 45.0 } else { -45.0 };
+        let next = thick.clone();
+        let t0 = Instant::now();
+        s.edit_types(crate::scene::CATALOG_STEP, |m| m.set_layer_set(id, next));
+        v.push(t0.elapsed().as_secs_f64() * 1000.0);
+        assert!(s.morphing(), "Form mischt sich");
+        for k in 1..14 {
+            let t1 = Instant::now();
+            s.grow_tick(t + k * 20);
+            let m = s.mesh(ViewKind::Persp, None, &[]);
+            frames.push(t1.elapsed().as_secs_f64() * 1000.0);
+            mb = bytes(&m) as f64 / 1e6;
+        }
+    }
+    let (a, _, _) = median(&mut v);
+    let (f, lo, hi) = median(&mut frames);
+    println!(
+        "Katalog: Wand wächst ({walls} Wände): Auslöser {a:.2} ms, je Bild {f:.2} ms \
+         ({lo:.2}–{hi:.2}), hochgeladen {mb:.2} MB je Bild"
+    );
+}
