@@ -12,7 +12,7 @@
 //! fehlt in beiden Körpern, und keine Kante zeichnet die Trennung, weder in 3D
 //! noch im Schnitt.
 
-use crate::solid::{edge_kind, material, Solid};
+use crate::solid::{edge_kind, material, Edge, Solid};
 use crate::wall::WallChain;
 use sk_math::polygon::{self, Inset, InsetError};
 use sk_math::{vec3, Vec3};
@@ -279,6 +279,59 @@ impl Foundation {
             }
         }
         s
+    }
+
+    /// Frostschürze waagerecht geschnitten in Höhe `cut` (Grundriss des
+    /// Fundaments, E18): über dem Schnitt nichts, darunter bis zum Schnitt mit
+    /// Schnittfläche oben ([`material::CUT`], Kontur [`edge_kind::CUT`]).
+    pub fn footing_cut_at(&self, cut: f64) -> Solid {
+        let (zt, zb) = self.levels();
+        if cut <= zb {
+            return Solid::default();
+        }
+        if cut >= zt {
+            return self.footing_solid();
+        }
+        let mat = self.params.footing_mat;
+        let mut s = Solid {
+            mat,
+            ..Solid::default()
+        };
+        let c0 = &self.outline;
+        Foundation::walls(&mut s, c0, zb, cut, true);
+        s.mat = mat | material::CUT;
+        match &self.footing {
+            FootingShape::Ring(inset) => {
+                s.mat = mat;
+                Foundation::walls(&mut s, &inset.pts, zb, cut, false);
+                s.mat = mat | material::CUT;
+                for cell in self.ring_cells(inset) {
+                    Foundation::cap(&mut s, &cell, cut, true);
+                }
+                s.edge_kind = edge_kind::CUT;
+                Foundation::ring(&mut s, &inset.pts, cut);
+            }
+            FootingShape::Full(_) => Foundation::cap(&mut s, c0, cut, true),
+        }
+        s.edge_kind = edge_kind::CUT;
+        Foundation::ring(&mut s, c0, cut);
+        s.mat = mat;
+        s.edge_kind = edge_kind::VIEW;
+        s
+    }
+
+    /// Plattenrand als Linien in Höhe `z` (Grundriss des Fundaments: die
+    /// Platte liegt über dem Schnitt).
+    pub fn slab_rim(&self, z: f64) -> Vec<Edge> {
+        let c = &self.outline;
+        let n = c.len();
+        (0..n)
+            .map(|i| Edge {
+                a: at_z(c[i], z),
+                b: at_z(c[(i + 1) % n], z),
+                kind: edge_kind::BACKGROUND,
+            })
+            .collect()
     }
 
     /// Schnittflächen mit der senkrechten Ebene durch `p0` mit Normale `n`

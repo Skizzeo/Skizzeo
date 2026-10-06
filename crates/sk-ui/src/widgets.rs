@@ -290,6 +290,36 @@ pub fn ellipsize(font: Option<&Font>, text: &str, px: f32, max_w: f32) -> String
     out
 }
 
+/// Text in Zeilen von höchstens `max_w` Pixeln, umbrochen an Leerzeichen;
+/// ein einzelnes zu langes Wort wird gekürzt.
+pub fn wrap(font: Option<&Font>, text: &str, px: f32, max_w: f32) -> Vec<String> {
+    let Some(f) = font else {
+        return vec![text.into()];
+    };
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let probe = if line.is_empty() {
+            word.to_string()
+        } else {
+            format!("{line} {word}")
+        };
+        if f.width(&probe, px) <= max_w || line.is_empty() {
+            line = probe;
+        } else {
+            lines.push(std::mem::take(&mut line));
+            line = word.to_string();
+        }
+    }
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
+        .into_iter()
+        .map(|l| ellipsize(Some(f), &l, px, max_w))
+        .collect()
+}
+
 /// Farbfeld: Rechteck in der Farbe mit feinem Rand.
 pub fn swatch(c: &mut Canvas, r: Rect, color: Rgba, hover: bool, s: f32, t: &Theme) {
     let b = s.round().max(1.0);

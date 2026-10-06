@@ -679,3 +679,74 @@ fn perf_obergeschoss() {
          folgen), Ebene = OK EG ziehen inkl. 3D-Netz je Bild, Loslas = Loslassen einmalig."
     );
 }
+
+/// Geschossbogen (E18): Leerlauf nach einer Änderung (Grundrisse der
+/// Nachbargeschosse vorbereiten) und der Wechsel selbst (aktives Geschoss
+/// setzen und Grundrissnetz bauen), der danach nichts mehr schneiden soll.
+#[test]
+#[ignore]
+fn perf_geschosswechsel() {
+    println!();
+    println!(
+        "{:<34} {:>9} {:>9} {:>9} {:>9}",
+        "Modell (gestapelt)", "Grundriss", "Leerlauf", "Wechsel", "kalt"
+    );
+    for (name, houses, storeys, annexes) in [
+        ("Referenz: 4 Geschosse + 2 Nebengeb.", 1, 4u8, 2),
+        ("Groß: 2 Häuser à 4 G. + 2 Nebengeb.", 2, 4, 2),
+    ] {
+        let mut s = reference_stacked(houses, storeys, annexes);
+        let eg = s.active_storey();
+        let og = s.model().group_levels(eg)[2];
+        let run = s.model().runs().ids().next().unwrap();
+        let orig = s.chain(run).unwrap().clone();
+        let mut flip = false;
+        let mut change = |s: &mut Scene| {
+            flip = !flip;
+            let moved = orig
+                .with_segment_moved(0, if flip { -100.0 } else { -200.0 })
+                .unwrap_or_else(|| orig.clone());
+            s.begin("Wand verschieben");
+            s.set_run_points(run, &moved.points);
+            s.commit();
+        };
+        let (mut plan, mut idle, mut switch, mut cold) = (0.0, 0.0, 0.0, 0.0);
+        let reps = 10;
+        for _ in 0..reps {
+            change(&mut s);
+            s.set_active_storey(eg);
+            let t = Instant::now();
+            std::hint::black_box(s.mesh(ViewKind::Plan, None, &[]));
+            plan += t.elapsed().as_secs_f64();
+            let t = Instant::now();
+            s.prepare_neighbor_plans();
+            idle += t.elapsed().as_secs_f64();
+            let t = Instant::now();
+            s.set_active_storey(og);
+            std::hint::black_box(s.mesh(ViewKind::Plan, None, &[]));
+            switch += t.elapsed().as_secs_f64();
+            // ohne Leerlauf: der Wechsel schneidet selbst
+            change(&mut s);
+            s.set_active_storey(eg);
+            std::hint::black_box(s.mesh(ViewKind::Plan, None, &[]));
+            let t = Instant::now();
+            s.set_active_storey(og);
+            std::hint::black_box(s.mesh(ViewKind::Plan, None, &[]));
+            cold += t.elapsed().as_secs_f64();
+        }
+        let ms = |x: f64| x * 1000.0 / reps as f64;
+        println!(
+            "{:<34} {:>9.3} {:>9.3} {:>9.3} {:>9.3}",
+            name,
+            ms(plan),
+            ms(idle),
+            ms(switch),
+            ms(cold)
+        );
+    }
+    println!(
+        "Zeiten in ms. Grundriss = Netz des aktiven Geschosses nach einer Änderung, Leerlauf = \
+         Nachbargeschosse vorbereiten, Wechsel = Geschoss setzen + Grundrissnetz (vorbereitet), \
+         kalt = derselbe Wechsel ohne Leerlauf."
+    );
+}
