@@ -5,6 +5,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod polygon;
+
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
