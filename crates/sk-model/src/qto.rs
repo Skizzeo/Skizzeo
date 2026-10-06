@@ -146,7 +146,14 @@ mod tests {
             vec3(10000.0, 0.0, 0.0),
         ];
         let r = m
-            .add_wall_run(&pts, true, RefSide::Left, 2750.0, set, Category::ExteriorWall)
+            .add_wall_run(
+                &pts,
+                true,
+                RefSide::Left,
+                2750.0,
+                set,
+                Category::ExteriorWall,
+            )
             .unwrap();
         let q = run_qto(&m, r);
         assert_eq!(q.len(), 4);
@@ -175,7 +182,14 @@ mod tests {
         let set = m.defaults().exterior_wall;
         let pts = [vec3(0.0, 0.0, 0.0), vec3(5000.0, 0.0, 0.0)];
         let r = m
-            .add_wall_run(&pts, false, RefSide::Left, 2750.0, set, Category::ExteriorWall)
+            .add_wall_run(
+                &pts,
+                false,
+                RefSide::Left,
+                2750.0,
+                set,
+                Category::ExteriorWall,
+            )
             .unwrap();
         let q = run_qto(&m, r);
         assert_eq!(q.len(), 1);

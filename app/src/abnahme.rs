@@ -594,21 +594,9 @@ fn a10_bauzeichnung_linienstaerken_und_schraffuren() {
     // Linke Wand im Grundriss: Außenkante Dämmung (x = 0) mitteldick,
     // Fuge (x = 140) und Innenkante Gasbeton (x = 315) dick
     let max = |v: Vec<f32>| v.into_iter().fold(0.0f32, f32::max);
-    assert_eq!(
-        max(edges_at_x(&plan, 0.0)),
-        layer_w,
-        "Dämmung außen"
-    );
-    assert_eq!(
-        max(edges_at_x(&plan, 140.0)),
-        cut_w,
-        "Gasbeton außen"
-    );
-    assert_eq!(
-        max(edges_at_x(&plan, 315.0)),
-        cut_w,
-        "Gasbeton innen"
-    );
+    assert_eq!(max(edges_at_x(&plan, 0.0)), layer_w, "Dämmung außen");
+    assert_eq!(max(edges_at_x(&plan, 140.0)), cut_w, "Gasbeton außen");
+    assert_eq!(max(edges_at_x(&plan, 315.0)), cut_w, "Gasbeton innen");
     // Geschnitten in 1,00 m Höhe
     assert_eq!(PLAN_CUT, 1000.0);
     assert!(plan.faces.iter().all(|v| v[2] <= PLAN_CUT as f32 + 1e-3));

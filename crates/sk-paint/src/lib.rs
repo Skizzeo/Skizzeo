@@ -403,6 +403,42 @@ impl Canvas {
         out
     }
 
+    /// Ausschnitt als vormultipliziertes RGBA8 (Zeilen von oben), auf die
+    /// Bildfläche begrenzt. Liefert `(x, y, w, h, Bytes)` des wirklichen Ausschnitts.
+    pub fn region_premul_rgba8(
+        &self,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+    ) -> (usize, usize, usize, usize, Vec<u8>) {
+        let (x, y) = (x.min(self.width), y.min(self.height));
+        let (w, h) = (w.min(self.width - x), h.min(self.height - y));
+        let mut out = vec![0u8; w * h * 4];
+        for (row, o) in out.chunks_exact_mut((w * 4).max(1)).enumerate().take(h) {
+            let src = &self.px[(y + row) * self.width + x..][..w];
+            for (o, p) in o.chunks_exact_mut(4).zip(src) {
+                for k in 0..4 {
+                    o[k] = unit_to_u8(p[k]);
+                }
+            }
+        }
+        (x, y, w, h, out)
+    }
+
+    /// Übernimmt einen Ausschnitt aus einem gleich großen Bild.
+    pub fn copy_region(&mut self, from: &Canvas, x: usize, y: usize, w: usize, h: usize) {
+        if (from.width, from.height) != (self.width, self.height) {
+            return;
+        }
+        let (x, y) = (x.min(self.width), y.min(self.height));
+        let (w, h) = (w.min(self.width - x), h.min(self.height - y));
+        for row in y..y + h {
+            let i = row * self.width + x;
+            self.px[i..i + w].copy_from_slice(&from.px[i..i + w]);
+        }
+    }
+
     pub fn to_png(&self) -> Vec<u8> {
         encode_png(self.width as u32, self.height as u32, &self.to_rgba8())
     }

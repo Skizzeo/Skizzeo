@@ -173,4 +173,5 @@ gl_api! {
     fn glActiveTexture(t: GLenum);
     fn glTexParameteri(t: GLenum, p: GLenum, v: GLint);
     fn glTexImage2D(t: GLenum, level: GLint, ifmt: GLint, w: GLsizei, h: GLsizei, border: GLint, f: GLenum, ty: GLenum, d: *const c_void);
+    fn glTexSubImage2D(t: GLenum, level: GLint, x: GLint, y: GLint, w: GLsizei, h: GLsizei, f: GLenum, ty: GLenum, d: *const c_void);
 }

@@ -6,12 +6,10 @@
 //! einer Ansicht entsteht aus den gespeicherten Körpern, beim Ziehen getrennt in
 //! ein ruhendes Netz ohne den gezogenen Zug und ein Live-Netz nur für ihn.
 
+use crate::draw_table::DrawTable;
 use crate::ui::ViewKind;
 use sk_math::{vec3, Vec3};
-use crate::draw_table::DrawTable;
-use sk_model::{
-    material, run_qto, Category, ElementId, Model, RunId, Solid, WallChain, WallQto,
-};
+use sk_model::{material, run_qto, Category, ElementId, Model, RunId, Solid, WallChain, WallQto};
 use sk_render::{pattern, MeshData};
 
 /// Schnitthöhe des Grundrisses über dem Boden (mm).
@@ -523,11 +521,12 @@ fn mesh_into(m: &mut MeshData, s: &Solid, drawing: bool, table: &DrawTable) {
             ]);
         }
     }
-    m.edges.extend(
-        s.edges
-            .iter()
-            .map(|e| ([e.a.to_f32(), e.b.to_f32()], table.edge_width(drawing, e.kind))),
-    );
+    m.edges.extend(s.edges.iter().map(|e| {
+        (
+            [e.a.to_f32(), e.b.to_f32()],
+            table.edge_width(drawing, e.kind),
+        )
+    }));
 }
 
 #[cfg(test)]
@@ -622,7 +621,10 @@ mod tests {
         // Der Grund der Schnittflächen ist jetzt rot
         let after = s.mesh(ViewKind::Plan, None, None);
         assert_ne!(before.faces, after.faces);
-        assert!(after.faces.iter().any(|f| f[6] == 1.0 && f[7] == 0.0 && f[8] == 0.0));
+        assert!(after
+            .faces
+            .iter()
+            .any(|f| f[6] == 1.0 && f[7] == 0.0 && f[8] == 0.0));
         // Rückgängig stellt die alte Farbe wieder her
         assert!(s.undo());
         assert_eq!(s.mesh(ViewKind::Plan, None, None).faces, before.faces);

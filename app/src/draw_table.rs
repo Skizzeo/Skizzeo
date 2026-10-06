@@ -66,7 +66,10 @@ impl DrawTable {
                 (p.width_mm * PX_PER_MM, [r, g, b, 1.0])
             })
         };
-        let pen_rgb = |id| a.pen(id).map_or(rgb_of(theme::drawing::FILL), |p| rgb(p.color));
+        let pen_rgb = |id| {
+            a.pen(id)
+                .map_or(rgb_of(theme::drawing::FILL), |p| rgb(p.color))
+        };
         let fallback = MatLook {
             face: rgb_of(theme::FACE),
             cut: rgb_of(theme::FACE),

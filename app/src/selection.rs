@@ -204,7 +204,12 @@ pub fn helpers(
             .collect();
     }
     let c = theme::panel::ACCENT;
-    let color = [c.0 as f32 / 255.0, c.1 as f32 / 255.0, c.2 as f32 / 255.0, 1.0];
+    let color = [
+        c.0 as f32 / 255.0,
+        c.1 as f32 / 255.0,
+        c.2 as f32 / 255.0,
+        1.0,
+    ];
     lines
         .into_iter()
         .map(|(a, b)| Helper {
@@ -232,7 +237,10 @@ mod tests {
         assert_eq!(de(1234567.891, 2), "1.234.567,89");
         assert_eq!(de(-0.0001, 2), "0,00");
         assert_eq!(de(-12.5, 1), "-12,5");
-        assert_eq!((cm(140.0), cm(175.0), cm(315.0)), ("14".into(), "17,5".into(), "31,5".into()));
+        assert_eq!(
+            (cm(140.0), cm(175.0), cm(315.0)),
+            ("14".into(), "17,5".into(), "31,5".into())
+        );
     }
 
     /// Rechteck 10 × 8 m im Uhrzeigersinn, Außenkante auf der Bezugslinie.
@@ -266,7 +274,10 @@ mod tests {
         assert_eq!(hit, s.model().wall_at(run, 2));
         assert!(sel.set(hit));
         let p = props(&s, sel.id.unwrap()).unwrap();
-        assert_eq!(value(&p, "Nummer"), s.model().element(hit.unwrap()).unwrap().number);
+        assert_eq!(
+            value(&p, "Nummer"),
+            s.model().element(hit.unwrap()).unwrap().number
+        );
         assert_eq!(value(&p, "Kategorie"), "Außenwand");
         assert_eq!(value(&p, "Geschoss"), "EG");
         assert_eq!(value(&p, "Länge"), "8,00 m");
@@ -286,7 +297,10 @@ mod tests {
         let o = vec3(9900.0, -5000.0, 1000.0);
         assert_eq!(s.pick(ViewKind::Section, pl, o, vec3(0.0, 1.0, 0.0)), hit);
         assert!(!helpers(&s, hit.unwrap(), ViewKind::Section, pl, 1.0).is_empty());
-        assert_eq!(helpers(&s, hit.unwrap(), ViewKind::Persp, None, 1.0).len(), 12);
+        assert_eq!(
+            helpers(&s, hit.unwrap(), ViewKind::Persp, None, 1.0).len(),
+            12
+        );
 
         // Daneben: nichts
         assert_eq!(s.pick(ViewKind::Persp, None, o, vec3(0.0, 0.0, 1.0)), None);
@@ -308,7 +322,10 @@ mod tests {
         assert_eq!(value(&p, "Fläche außen"), "27,50 m²");
         assert_eq!(value(&p, "Fläche innen"), "25,77 m²");
         let q = s.wall_qto(s.model().wall_at(run, 1).unwrap()).unwrap();
-        assert_eq!(value(&p, "Volumen"), format!("{} m³", de(q.volume / 1e9, 3)));
+        assert_eq!(
+            value(&p, "Volumen"),
+            format!("{} m³", de(q.volume / 1e9, 3))
+        );
         assert!(p.layers[1].2.ends_with(" kg"), "{}", p.layers[1].2);
     }
 
@@ -321,7 +338,11 @@ mod tests {
         let before = s.snapshot();
         let vol = s.wall_qto(wall).unwrap().volume;
         // Live-Ziehen der oberen Wand: keine Mengen
-        let moved = s.chain(run).unwrap().with_segment_moved(1, -1000.0).unwrap();
+        let moved = s
+            .chain(run)
+            .unwrap()
+            .with_segment_moved(1, -1000.0)
+            .unwrap();
         s.set_run_points(run, &moved.points);
         assert!(s.wall_qto(wall).is_none());
         // Loslassen: Mengen für den neuen Stand

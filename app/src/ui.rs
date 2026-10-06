@@ -74,13 +74,43 @@ pub struct Ui {
     pub wall_layers: Vec<(Rgba, String)>,
     /// Eigenschaften des gewählten Bauteils; ohne Auswahl kein Paneel.
     pub props: Option<Props>,
+    /// Zuletzt gezeichnete Paneelbilder (Tools, Views, Props) für das
+    /// Neuzeichnen einzelner Knöpfe.
+    images: [Option<PanelImage>; 3],
+}
+
+/// Paneelbild ohne Knöpfe und mit Knöpfen, in Paneelkoordinaten.
+struct PanelImage {
+    scale: f32,
+    base: Canvas,
+    cur: Canvas,
+}
+
+/// Neu gezeichneter Ausschnitt eines Paneelbildes.
+pub struct Patch {
+    pub panel: Panel,
+    /// Links oben im Paneelbild.
+    pub x: usize,
+    pub y: usize,
+    pub w: usize,
+    pub h: usize,
+    /// Vormultipliziertes RGBA8.
+    pub px: Vec<u8>,
+}
+
+fn panel_index(p: Panel) -> usize {
+    match p {
+        Panel::Tools => 0,
+        Panel::Views => 1,
+        Panel::Props => 2,
+    }
 }
 
 /// Ergebnis eines Ereignisses.
 #[derive(Default)]
 pub struct UiOut {
-    /// Diese Paneele neu zeichnen.
-    pub repaint: bool,
+    /// Knöpfe, deren Aussehen sich geändert hat (Hover, Drücken).
+    pub changed: Vec<Id>,
     /// Angeklickter Knopf.
     pub clicked: Option<Id>,
     /// Die Maus steht über einem Paneel: das Ereignis gehört der Oberfläche.
@@ -196,6 +226,7 @@ impl Ui {
             ortho: true,
             wall_layers: Vec::new(),
             props: None,
+            images: [None, None, None],
         }
     }
 
@@ -325,19 +356,21 @@ impl Ui {
             Event::MouseMove { x, y, .. } => {
                 let hit = self.hit(x, y, win_w, top);
                 let hover = hit.and_then(|h| h.1);
-                out.repaint = hover != self.hover;
+                if hover != self.hover {
+                    out.changed.extend(self.hover.into_iter().chain(hover));
+                }
                 self.hover = hover;
                 out.consumed = hit.is_some();
             }
             Event::MouseLeave => {
-                out.repaint = self.hover.take().is_some();
+                out.changed.extend(self.hover.take());
             }
             Event::MouseDown { button, x, y, .. } => {
                 if let Some((_, id)) = self.hit(x, y, win_w, top) {
                     out.consumed = true;
                     if button == MouseButton::Left {
                         self.pressed = id;
-                        out.repaint = id.is_some();
+                        out.changed.extend(id);
                     }
                 }
             }
@@ -348,7 +381,7 @@ impl Ui {
                 ..
             } => {
                 if let Some(p) = self.pressed.take() {
-                    out.repaint = true;
+                    out.changed.push(p);
                     out.consumed = true;
                     if self.hit(x, y, win_w, top).and_then(|h| h.1) == Some(p) {
                         out.clicked = Some(p);
@@ -369,7 +402,70 @@ impl Ui {
     }
 
     /// Zeichnet ein Paneel. Liefert das Bild und seine Lage (links oben) im Fenster.
-    pub fn paint(&self, p: Panel, win_w: u32, top: u32) -> (Canvas, i32, i32) {
+    pub fn paint(&mut self, p: Panel, win_w: u32, top: u32) -> (&Canvas, i32, i32) {
+        let base = self.paint_base(p, win_w, top);
+        let mut cur = base.clone();
+        for (id, b, label) in self.buttons(p) {
+            self.paint_button(&mut cur, id, b, label);
+        }
+        let (x, y) = self.origin(p, win_w, top);
+        let img = self.images[panel_index(p)].insert(PanelImage {
+            scale: self.scale,
+            base,
+            cur,
+        });
+        (&img.cur, x, y)
+    }
+
+    /// Zeichnet einen Knopf auf dem zuletzt gezeichneten Paneelbild neu,
+    /// pixelgleich zum vollen Neuzeichnen. `None`, wenn es kein passendes Bild
+    /// gibt; dann muss das ganze Paneel neu gezeichnet werden.
+    pub fn repaint_button(&mut self, id: Id) -> Option<Patch> {
+        let (panel, b, label) = self.panels().into_iter().find_map(|p| {
+            self.buttons(p)
+                .into_iter()
+                .find(|b| b.0 == id)
+                .map(|(_, b, label)| (p, b, label))
+        })?;
+        let mut img = self.images[panel_index(panel)].take()?;
+        if img.scale != self.scale {
+            return None;
+        }
+        // Ausschnitt samt geglätteter Kanten; Knöpfe liegen mindestens
+        // 2,4 Pixel auseinander, der Rand von 1 Pixel trifft keinen Nachbarn.
+        let m = (SHADOW * self.scale).round();
+        let x0 = ((b.x + m).floor() as usize).saturating_sub(1);
+        let y0 = ((b.y + m).floor() as usize).saturating_sub(1);
+        let x1 = (b.x + m + b.w).ceil() as usize + 1;
+        let y1 = (b.y + m + b.h).ceil() as usize + 1;
+        img.cur.copy_region(&img.base, x0, y0, x1 - x0, y1 - y0);
+        self.paint_button(&mut img.cur, id, b, label);
+        let (x, y, w, h, px) = img.cur.region_premul_rgba8(x0, y0, x1 - x0, y1 - y0);
+        self.images[panel_index(panel)] = Some(img);
+        Some(Patch {
+            panel,
+            x,
+            y,
+            w,
+            h,
+            px,
+        })
+    }
+
+    fn paint_button(&self, c: &mut Canvas, id: Id, b: Rect, label: &str) {
+        let s = self.scale;
+        let m = (SHADOW * s).round();
+        let st = ButtonState {
+            hover: self.hover == Some(id),
+            pressed: self.pressed == Some(id) && self.hover == Some(id),
+            active: self.is_on(id),
+        };
+        let b = Rect::new(b.x + m, b.y + m, b.w, b.h);
+        widgets::button(c, &self.fonts, b, label, st, s);
+    }
+
+    /// Paneel ohne Knöpfe.
+    fn paint_base(&self, p: Panel, win_w: u32, top: u32) -> Canvas {
         let s = self.scale;
         let r = self.rect(p, win_w, top);
         let m = (SHADOW * s).round();
@@ -419,11 +515,25 @@ impl Ui {
                 }
                 Row::Detail(t) => {
                     let tx = x + 20.0 * s;
-                    widgets::text(&mut c, regular, &t, 12.5 * s, tx, y + 13.0 * s, col::TEXT_DIM)
+                    widgets::text(
+                        &mut c,
+                        regular,
+                        &t,
+                        12.5 * s,
+                        tx,
+                        y + 13.0 * s,
+                        col::TEXT_DIM,
+                    )
                 }
-                Row::Text(t) => {
-                    widgets::text(&mut c, regular, &t, 13.0 * s, x, y + 13.0 * s, col::TEXT_DIM)
-                }
+                Row::Text(t) => widgets::text(
+                    &mut c,
+                    regular,
+                    &t,
+                    13.0 * s,
+                    x,
+                    y + 13.0 * s,
+                    col::TEXT_DIM,
+                ),
                 Row::Separator => widgets::separator(&mut c, x, y, inner_w, s),
                 Row::Hint(t) => {
                     widgets::text(&mut c, regular, t, 13.0 * s, x, y + 13.0 * s, col::TEXT_DIM)
@@ -432,17 +542,7 @@ impl Ui {
             }
             y += h + g;
         }
-        for (id, b, label) in self.buttons(p) {
-            let st = ButtonState {
-                hover: self.hover == Some(id),
-                pressed: self.pressed == Some(id) && self.hover == Some(id),
-                active: self.is_on(id),
-            };
-            let b = Rect::new(b.x + m, b.y + m, b.w, b.h);
-            widgets::button(&mut c, &self.fonts, b, label, st, s);
-        }
-        let (x, y) = self.origin(p, win_w, top);
-        (c, x, y)
+        c
     }
 }
 
@@ -507,5 +607,78 @@ mod tests {
             32,
         );
         assert!(!out.consumed);
+    }
+
+    /// Hover und Drücken zeichnen nur den Knopf neu; das Ergebnis gleicht dem
+    /// vollen Neuzeichnen aufs Pixel.
+    #[test]
+    fn knopf_einzeln_neu_gleicht_dem_ganzen_paneel() {
+        for scale in [0.6f32, 0.875, 1.25, 2.0] {
+            let mut ui = Ui::new(scale);
+            ui.wall_layers = vec![(Rgba::rgb(240, 190, 60), "14 cm Dämmung".into())];
+            ui.building = true;
+            for p in [Panel::Tools, Panel::Views] {
+                let ids: Vec<Id> = ui.buttons(p).into_iter().map(|b| b.0).collect();
+                for id in ids {
+                    for (hover, pressed) in [(Some(id), None), (Some(id), Some(id)), (None, None)] {
+                        let mut img = ui.paint(p, 1280, 32).0.to_premul_rgba8();
+                        let w = ui.images[panel_index(p)].as_ref().unwrap().cur.width;
+                        (ui.hover, ui.pressed) = (hover, pressed);
+                        let patch = ui.repaint_button(id).expect("Paneelbild vorhanden");
+                        assert_eq!(patch.panel, p);
+                        for row in 0..patch.h {
+                            let dst = ((patch.y + row) * w + patch.x) * 4;
+                            img[dst..dst + patch.w * 4]
+                                .copy_from_slice(&patch.px[row * patch.w * 4..][..patch.w * 4]);
+                        }
+                        let full = ui.paint(p, 1280, 32).0.to_premul_rgba8();
+                        assert!(img == full, "{scale} {id:?} {hover:?} {pressed:?}");
+                        (ui.hover, ui.pressed) = (None, None);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hover_meldet_alten_und_neuen_knopf() {
+        let mut ui = Ui::new(1.0);
+        let m = Modifiers::default();
+        let r = ui.rect(Panel::Views, 1280, 32);
+        let bs = ui.buttons(Panel::Views);
+        let at = |b: &(Id, Rect, &str)| ((r.x + b.1.x + 5.0) as f64, (r.y + b.1.y + 5.0) as f64);
+        let (x, y) = at(&bs[0]);
+        let out = ui.handle(&Event::MouseMove { x, y, mods: m }, 1280, 32);
+        assert_eq!(out.changed, vec![bs[0].0]);
+        let (x, y) = at(&bs[1]);
+        let out = ui.handle(&Event::MouseMove { x, y, mods: m }, 1280, 32);
+        assert_eq!(out.changed, vec![bs[0].0, bs[1].0]);
+        let out = ui.handle(&Event::MouseMove { x, y, mods: m }, 1280, 32);
+        assert!(out.changed.is_empty());
+        let out = ui.handle(&Event::MouseLeave, 1280, 32);
+        assert_eq!(out.changed, vec![bs[1].0]);
+    }
+
+    /// `cargo test --release -p skizzeo knopf_zeit -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn knopf_zeit() {
+        for scale in [1.0f32, 1.5, 2.0] {
+            let mut ui = Ui::new(scale);
+            let n = 50;
+            let t = std::time::Instant::now();
+            for _ in 0..n {
+                std::hint::black_box(ui.paint(Panel::Views, 1920, 32).0.to_premul_rgba8());
+            }
+            let full = t.elapsed().as_secs_f64() * 1000.0 / n as f64;
+            let id = Id::View(ViewKind::Front);
+            let t = std::time::Instant::now();
+            for i in 0..n {
+                ui.hover = (i % 2 == 0).then_some(id);
+                std::hint::black_box(ui.repaint_button(id).unwrap());
+            }
+            let part = t.elapsed().as_secs_f64() * 1000.0 / n as f64;
+            println!("Skalierung {scale}: Paneel {full:.3} ms, ein Knopf {part:.3} ms");
+        }
     }
 }

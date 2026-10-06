@@ -184,6 +184,11 @@ struct App {
     layout_dirty: bool,
     /// Inhalt des Paneels „Eigenschaften“ hat sich geändert.
     props_dirty: bool,
+    /// Nur diese Knöpfe der Paneele bzw. der Titelleiste neu zeichnen (Hover, Drücken).
+    dirty_buttons: Vec<Id>,
+    dirty_title: Vec<Button>,
+    /// Zuletzt gezeichnete Titelleiste, für das Neuzeichnen einzelner Knöpfe.
+    title_img: Option<sk_paint::Canvas>,
     redraw: bool,
     /// Modellnetz muss vor dem nächsten Bild neu erzeugt werden.
     mesh_dirty: bool,
@@ -444,8 +449,9 @@ impl App {
             }
             Event::Redraw => self.redraw = true,
             Event::MouseLeave => {
-                self.overlay_dirty |= self.title.hover.take().is_some();
-                self.overlay_dirty |= self.ui.handle(&e, self.w, self.top()).repaint;
+                self.dirty_title.extend(self.title.hover.take());
+                let out = self.ui.handle(&e, self.w, self.top());
+                self.dirty_buttons.extend(out.changed);
                 self.redraw |= self.tool.handle(&e, &self.cam, vw, vh, sc).redraw;
                 let en = self.edit_enabled();
                 let out = self
@@ -463,13 +469,16 @@ impl App {
                 } else {
                     self.title.button_at(x, y, self.w)
                 };
-                self.overlay_dirty |= hover != self.title.hover;
+                if hover != self.title.hover {
+                    self.dirty_title
+                        .extend(self.title.hover.into_iter().chain(hover));
+                }
                 self.title.hover = hover;
                 let over_ui = if busy {
                     false
                 } else {
                     let out = self.ui.handle(&e, self.w, self.top());
-                    self.overlay_dirty |= out.repaint;
+                    self.dirty_buttons.extend(out.changed);
                     out.consumed
                 };
                 let ev = in_view(e);
@@ -511,11 +520,11 @@ impl App {
                 if y < th {
                     if button == MouseButton::Left {
                         self.title.pressed = self.title.button_at(x, y, self.w);
-                        self.overlay_dirty = true;
+                        self.dirty_title.extend(self.title.pressed);
                     }
                 } else {
                     let out = self.ui.handle(&e, self.w, self.top());
-                    self.overlay_dirty |= out.repaint;
+                    self.dirty_buttons.extend(out.changed);
                     if !out.consumed {
                         let ev = in_view(e);
                         camera_moved |=
@@ -554,7 +563,7 @@ impl App {
             Event::MouseUp { button, x, y, .. } => {
                 if button == MouseButton::Left {
                     if let Some(b) = self.title.pressed.take() {
-                        self.overlay_dirty = true;
+                        self.dirty_title.push(b);
                         if self.title.button_at(x, y, self.w) == Some(b) {
                             surface.command(match b {
                                 Button::Minimize => WindowCommand::Minimize,
@@ -565,7 +574,7 @@ impl App {
                     }
                 }
                 let out = self.ui.handle(&e, self.w, self.top());
-                self.overlay_dirty |= out.repaint;
+                self.dirty_buttons.extend(out.changed);
                 if let Some(id) = out.clicked {
                     self.click(id);
                 }
@@ -645,7 +654,8 @@ impl App {
                     // Esc ohne angefangenen Zug beendet die Gebäude-Eingabe
                     self.tool.set_enabled(false);
                     self.refresh_cursor();
-                } else if down && key == Key::Escape && !self.tool.enabled && self.sel.id.is_some() {
+                } else if down && key == Key::Escape && !self.tool.enabled && self.sel.id.is_some()
+                {
                     self.select(None);
                 } else {
                     let out = self.tool.handle(&e, &self.cam, vw, vh, sc);
@@ -667,6 +677,8 @@ impl App {
         let th = self.title.height();
         self.renderer
             .set_overlay(OVERLAY_TITLE, 0, 0, self.w, th, &c.to_premul_rgba8());
+        self.title_img = Some(c);
+        self.dirty_title.clear();
         surface.set_caption_area(CaptionArea {
             height: th,
             buttons_width: self.title.buttons_width(),
@@ -682,6 +694,7 @@ impl App {
             self.renderer
                 .set_overlay(slot, x, y, c.width as u32, c.height as u32, &px);
         }
+        self.dirty_buttons.clear();
         self.paint_props();
         self.overlay_dirty = false;
         self.layout_dirty = false;
@@ -700,6 +713,48 @@ impl App {
         }
         self.props_dirty = false;
         self.redraw = true;
+    }
+
+    /// Zeichnet nur die Knöpfe neu, die sich geändert haben (Hover, Drücken),
+    /// und überträgt nur ihren Ausschnitt.
+    fn paint_buttons(&mut self, surface: &Surface) {
+        for b in std::mem::take(&mut self.dirty_title) {
+            let Some(c) = self
+                .title_img
+                .as_mut()
+                .filter(|c| c.width == self.w as usize)
+            else {
+                self.paint_title(surface);
+                break;
+            };
+            let (x, w) = self.title.repaint_button(c, b, self.w);
+            let (x, y, w, h, px) = c.region_premul_rgba8(x, 0, w, c.height);
+            self.renderer.update_overlay(
+                OVERLAY_TITLE,
+                x as i32,
+                y as i32,
+                w as u32,
+                h as u32,
+                &px,
+            );
+            self.redraw = true;
+        }
+        let mut ids = std::mem::take(&mut self.dirty_buttons);
+        ids.dedup();
+        for id in ids {
+            let Some(p) = self.ui.repaint_button(id) else {
+                self.paint_overlays(surface);
+                return;
+            };
+            let slot = match p.panel {
+                Panel::Tools => OVERLAY_TOOLS,
+                Panel::Views => OVERLAY_VIEWS,
+                Panel::Props => OVERLAY_PROPS,
+            };
+            self.renderer
+                .update_overlay(slot, p.x as i32, p.y as i32, p.w as u32, p.h as u32, &p.px);
+            self.redraw = true;
+        }
     }
 
     /// Neue Fensterbreite bei gleicher Paneelgröße: nur die Titelleiste neu,
@@ -801,6 +856,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         overlay_dirty: true,
         layout_dirty: false,
         props_dirty: false,
+        dirty_buttons: Vec::new(),
+        dirty_title: Vec::new(),
+        title_img: None,
         redraw: true,
         mesh_dirty: true,
         live_dirty: true,
@@ -852,6 +910,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         }
         if a.props_dirty && a.w > 0 {
             a.paint_props();
+        }
+        if a.w > 0 {
+            a.paint_buttons(&surface);
         }
 
         if a.nav.is_animating() {

@@ -4,11 +4,11 @@
 //! Geometrie wird aus der Parametrik abgeleitet ([`Model::chain`]) und nie
 //! gespeichert. Jede Änderung erhöht die Revision.
 
-use crate::element::{
-    Category, Element, ElementId, ElementKind, PropSet, RunId, Storey, StoreyId, Wall, WallRun,
-};
 use crate::attr::{
     self, Attributes, Display, Fill, FillId, LineType, LineTypeId, Pen, PenId, Surface, SurfaceId,
+};
+use crate::element::{
+    Category, Element, ElementId, ElementKind, PropSet, RunId, Storey, StoreyId, Wall, WallRun,
 };
 use crate::guid::{Guid, GuidGen};
 use crate::id::Arena;
@@ -613,7 +613,10 @@ impl Model {
                 || a.pen(m.cut_bg).is_none()
                 || a.surface(m.surface).is_none()
             {
-                out.push(format!("Baustoff {}: Verweis auf fehlendes Attribut", m.name));
+                out.push(format!(
+                    "Baustoff {}: Verweis auf fehlendes Attribut",
+                    m.name
+                ));
             }
         }
         out.extend(self.attr.check());

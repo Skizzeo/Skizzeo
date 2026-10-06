@@ -70,39 +70,60 @@ impl TitleBar {
             col::LOGO,
         );
 
-        let bw = self.button_width() as f32;
-        for (i, b) in [Button::Minimize, Button::Maximize, Button::Close]
-            .into_iter()
-            .enumerate()
-        {
-            let x = width as f32 - bw * (3 - i) as f32;
-            let state = if self.pressed == Some(b) && self.hover == Some(b) {
-                2
-            } else if self.hover == Some(b) {
-                1
-            } else {
-                0
-            };
-            let bg = match (b, state) {
-                (_, 0) => col::BACKGROUND,
-                (Button::Close, 1) => col::CLOSE_HOVER,
-                (Button::Close, _) => col::CLOSE_PRESSED,
-                (_, 1) => col::HOVER,
-                _ => col::PRESSED,
-            };
-            if state > 0 {
-                c.fill_rect(x, 0.0, bw, h as f32, bg);
-            }
-            let glyph = if b == Button::Close && state > 0 {
-                col::CLOSE_GLYPH_HOVER
-            } else if self.active {
-                col::GLYPH
-            } else {
-                col::GLYPH_INACTIVE
-            };
-            self.paint_glyph(&mut c, b, x + bw * 0.5, h as f32 * 0.5, glyph, bg);
+        for b in [Button::Minimize, Button::Maximize, Button::Close] {
+            self.paint_button_at(&mut c, b, self.button_x(b, width));
         }
         c
+    }
+
+    /// Linke Kante eines Knopfes (ganze Pixel).
+    fn button_x(&self, b: Button, width: u32) -> f32 {
+        let i = match b {
+            Button::Minimize => 3,
+            Button::Maximize => 2,
+            Button::Close => 1,
+        };
+        width as f32 - (self.button_width() * i) as f32
+    }
+
+    /// Zeichnet einen Knopf auf dem Bild von [`TitleBar::paint`] neu (gleiche
+    /// Breite), pixelgleich zum vollen Neuzeichnen. Liefert seine Spalten `(x, w)`.
+    pub fn repaint_button(&self, c: &mut Canvas, b: Button, width: u32) -> (usize, usize) {
+        let x = self.button_x(b, width);
+        let bw = self.button_width() as f32;
+        c.fill_rect(x, 0.0, bw, self.height() as f32, col::BACKGROUND);
+        self.paint_button_at(c, b, x);
+        (x.max(0.0) as usize, self.button_width() as usize)
+    }
+
+    fn paint_button_at(&self, c: &mut Canvas, b: Button, x: f32) {
+        let h = self.height();
+        let bw = self.button_width() as f32;
+        let state = if self.pressed == Some(b) && self.hover == Some(b) {
+            2
+        } else if self.hover == Some(b) {
+            1
+        } else {
+            0
+        };
+        let bg = match (b, state) {
+            (_, 0) => col::BACKGROUND,
+            (Button::Close, 1) => col::CLOSE_HOVER,
+            (Button::Close, _) => col::CLOSE_PRESSED,
+            (_, 1) => col::HOVER,
+            _ => col::PRESSED,
+        };
+        if state > 0 {
+            c.fill_rect(x, 0.0, bw, h as f32, bg);
+        }
+        let glyph = if b == Button::Close && state > 0 {
+            col::CLOSE_GLYPH_HOVER
+        } else if self.active {
+            col::GLYPH
+        } else {
+            col::GLYPH_INACTIVE
+        };
+        self.paint_glyph(c, b, x + bw * 0.5, h as f32 * 0.5, glyph, bg);
     }
 
     fn paint_glyph(&self, c: &mut Canvas, b: Button, cx: f32, cy: f32, fg: Rgba, bg: Rgba) {
@@ -174,5 +195,30 @@ mod tests {
         );
         assert_eq!(t.button_at(500.0, 5.0, 1000), None);
         assert_eq!(t.button_at(999.0, 40.0, 1000), None);
+    }
+
+    #[test]
+    fn einzelner_knopf_gleicht_der_ganzen_leiste() {
+        let states = |b| [(None, None), (Some(b), None), (Some(b), Some(b))];
+        for scale in [1.0f32, 1.25, 1.5, 1.75, 2.0] {
+            for maximized in [false, true] {
+                for b in [Button::Minimize, Button::Maximize, Button::Close] {
+                    for (from, to) in states(b).into_iter().zip(states(b).into_iter().rev()) {
+                        let mut t = TitleBar::new(scale);
+                        t.maximized = maximized;
+                        let width = 1003;
+                        (t.hover, t.pressed) = from;
+                        let mut c = t.paint(width);
+                        (t.hover, t.pressed) = to;
+                        t.repaint_button(&mut c, b, width);
+                        let full = t.paint(width).to_premul_rgba8();
+                        assert!(
+                            c.to_premul_rgba8() == full,
+                            "{scale} {b:?} {from:?} -> {to:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

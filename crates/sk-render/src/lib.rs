@@ -547,6 +547,46 @@ impl Renderer {
         }
     }
 
+    /// Ersetzt einen Ausschnitt eines schon hochgeladenen Oberflächenbildes:
+    /// `(x, y)` links oben im Bild, vormultipliziertes RGBA8. Ein Ausschnitt,
+    /// der nicht ganz im Bild liegt, wird verworfen.
+    pub fn update_overlay(
+        &mut self,
+        slot: usize,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        rgba_premul: &[u8],
+    ) {
+        let Some(o) = self.overlays.get(slot) else {
+            return;
+        };
+        let (w, h) = (width as i32, height as i32);
+        if w <= 0 || h <= 0 || x < 0 || y < 0 || x + w > o.w || y + h > o.h {
+            return;
+        }
+        if rgba_premul.len() < (w * h * 4) as usize {
+            return;
+        }
+        let gl = &self.gl;
+        unsafe {
+            gl.glBindTexture(TEXTURE_2D, o.tex);
+            gl.glPixelStorei(UNPACK_ALIGNMENT, 1);
+            gl.glTexSubImage2D(
+                TEXTURE_2D,
+                0,
+                x,
+                y,
+                w,
+                h,
+                RGBA,
+                UNSIGNED_BYTE,
+                rgba_premul.as_ptr() as *const c_void,
+            );
+        }
+    }
+
     /// Verschiebt ein schon hochgeladenes Oberflächenbild, ohne es neu zu übertragen.
     pub fn move_overlay(&mut self, slot: usize, x: i32, y: i32) {
         if let Some(o) = self.overlays.get_mut(slot) {

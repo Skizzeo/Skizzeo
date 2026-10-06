@@ -221,11 +221,11 @@ impl Attributes {
     /// Verstöße gegen die Verweisregeln (jede Kantenart verweist auf Lebendes).
     pub fn check(&self) -> Vec<String> {
         let d = &self.display;
-        let styles = d
-            .drawing
-            .iter()
-            .chain(&d.model3d)
-            .chain([&d.ground, &d.section_line, &d.section_ends]);
+        let styles =
+            d.drawing
+                .iter()
+                .chain(&d.model3d)
+                .chain([&d.ground, &d.section_line, &d.section_ends]);
         let mut out = Vec::new();
         for s in styles {
             if !self.pens.contains(s.pen) {
@@ -366,9 +366,21 @@ mod tests {
     fn aenderung_erhoeht_revision_auch_nach_rueckgaengig() {
         let mut m = Model::with_seed(2);
         let before = m.clone();
-        let (id, pen) = m.attr().pens().iter().next().map(|(i, p)| (i, p.clone())).unwrap();
+        let (id, pen) = m
+            .attr()
+            .pens()
+            .iter()
+            .next()
+            .map(|(i, p)| (i, p.clone()))
+            .unwrap();
         let (rev, model_rev) = (m.attr().rev(), m.revision());
-        assert!(m.set_pen(id, super::Pen { width_mm: 1.0, ..pen.clone() }));
+        assert!(m.set_pen(
+            id,
+            super::Pen {
+                width_mm: 1.0,
+                ..pen.clone()
+            }
+        ));
         assert!(m.attr().rev() > rev && m.revision() > model_rev);
         // Zurück zum alten Stand: Werte wie vorher, Revision aber neu
         let changed = m.attr().rev();

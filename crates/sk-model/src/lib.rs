@@ -16,13 +16,13 @@ pub mod qto;
 pub mod solid;
 pub mod wall;
 
-pub use element::{
-    Category, Element, ElementId, ElementKind, PropSet, PropValue, RunId, Storey, StoreyId, Wall,
-    WallRun,
-};
 pub use attr::{
     Attributes, Dash, Display, EdgeStyle, Fill, FillId, FillKind, FillSpace, HatchLine, LineType,
     LineTypeId, Pen, PenId, Surface, SurfaceId,
+};
+pub use element::{
+    Category, Element, ElementId, ElementKind, PropSet, PropValue, RunId, Storey, StoreyId, Wall,
+    WallRun,
 };
 pub use guid::{Guid, GuidGen};
 pub use id::{Arena, Id};

@@ -531,7 +531,10 @@ mod tests {
         };
         e.handle(&up, &mut s, &c, W, H, 1.0, true);
         let p = &s.model().run(run).unwrap().points;
-        assert!((p[0].x + 1000.0).abs() < 1e-6 && (p[1].x + 1000.0).abs() < 1e-6, "{p:?}");
+        assert!(
+            (p[0].x + 1000.0).abs() < 1e-6 && (p[1].x + 1000.0).abs() < 1e-6,
+            "{p:?}"
+        );
         assert!((p[2].x - 5000.0).abs() < 1e-6);
         assert!(s.model().check().is_empty());
     }
