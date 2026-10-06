@@ -3,9 +3,9 @@
 //! Bildpunkten bei 96 dpi). Aufgelöst wird nur, wenn sich die Attribute ändern,
 //! nicht je Bild.
 
-use sk_model::{edge_kind, EdgeStyle, FillKind, FillSpace, Model};
+use sk_model::{edge_kind, EdgeStyle, FillKind, FillSpace, LineTypeId, Model};
 use sk_paint::Rgba;
-use sk_render::{EdgeLooks, Looks, EDGE_KINDS, LOOK_ROWS};
+use sk_render::{DashPattern, EdgeLooks, Looks, EDGE_KINDS, LOOK_ROWS, SOLID};
 use sk_ui::theme::Theme;
 
 /// Art der Schnittflächen-Füllung (Zeile 2, Alpha der Tabelle).
@@ -69,9 +69,39 @@ pub struct DrawTable {
     pub section_ends: Stroke,
     /// Grundriss des Geschosses darunter (E16, Kantenart `BACKGROUND`).
     pub background: Stroke,
+    /// Strichmuster (E4) in Bildpunkten bei 96 dpi, je Kantenart bzw. Linie.
+    pub drawing_dash: [DashPattern; edge_kind::COUNT],
+    pub model_dash: [DashPattern; edge_kind::COUNT],
+    pub background_dash: DashPattern,
+    pub section_dash: DashPattern,
     /// Was die Darstellung noch nicht kann (modellbezogene Schraffuren, mehr
     /// als zwei Scharen); gezeichnet wird ersatzweise.
     pub notes: Vec<String>,
+}
+
+/// Strichmuster eines Linientyps in Bildpunkten bei 96 dpi (höchstens zwei
+/// Einträge). Fehlt der Linientyp oder ist ein Wert unbrauchbar, Volllinie.
+pub fn dash_px(m: &Model, id: LineTypeId, px_per_mm: f32) -> DashPattern {
+    let Some(l) = m.attr().line_type(id) else {
+        return SOLID;
+    };
+    let mut p = SOLID;
+    for (slot, d) in p.iter_mut().zip(&l.pattern) {
+        *slot = [
+            d.len_mm * px_per_mm,
+            d.gap_mm * px_per_mm,
+            d.dot as u8 as f32,
+            0.0,
+        ];
+    }
+    let ok = p.iter().flatten().all(|v| v.is_finite() && *v >= 0.0)
+        && p.iter().any(|e| e[1] > 0.0)
+        && p.iter().all(|e| e[0] + e[1] > 0.0 || *e == [0.0; 4]);
+    if ok {
+        p
+    } else {
+        SOLID
+    }
 }
 
 fn rgb([r, g, b]: [u8; 3]) -> [f32; 3] {
@@ -102,6 +132,106 @@ const NO_MATERIAL: MatLook = MatLook {
     zigzag_period: 1.0,
 };
 
+/// Aussehen von Flächen ohne Baustoff (und Rückfall bei fehlenden Verweisen).
+fn fallback_look(theme: &Theme) -> MatLook {
+    let env = &theme.env;
+    MatLook {
+        face: rgb_of(env.face),
+        cut: rgb_of(env.face),
+        cut_bg: rgb_of(env.fill_fallback),
+        cut_fg: rgb_of(env.edge),
+        ..NO_MATERIAL
+    }
+}
+
+/// Aussehen zu den Darstellungsverweisen eines Baustoffs (auch für die
+/// Vorschau im Einstellungsfenster). Was die Darstellung nicht kann, landet
+/// mit Hinweis in `notes`.
+pub fn mat_look(
+    model: &Model,
+    theme: &Theme,
+    d: &sk_model::MaterialDisplay,
+    notes: &mut Vec<String>,
+) -> MatLook {
+    let a = model.attr();
+    let env = &theme.env;
+    let px_per_mm = theme.px_per_mm;
+    let pen_rgb = |id, fallback| a.pen(id).map_or(fallback, |p| rgb(p.color));
+    let fallback = fallback_look(theme);
+    let mut look = MatLook {
+        cut_bg: pen_rgb(d.cut_bg, rgb_of(env.fill_fallback)),
+        cut_fg: pen_rgb(d.cut_fg, rgb_of(env.edge)),
+        width_px: a.pen(d.cut_fg).map_or(1.0, |p| p.width_mm * px_per_mm),
+        ..fallback
+    };
+    (look.face, look.cut) = a
+        .surface(d.surface)
+        .map_or((fallback.face, fallback.cut), |s| {
+            (rgb(s.color), rgb(s.cut_color))
+        });
+    if let Some(f) = a.fill(d.cut_fill) {
+        if f.space == FillSpace::Model {
+            // Bis E3b wie papierbezogen
+            notes.push(format!(
+                "Schraffur „{}“ (modellbezogen) wird papierbezogen gezeichnet",
+                f.name
+            ));
+        }
+        match &f.kind {
+            FillKind::Empty => {}
+            FillKind::Solid => look.kind = fill_kind::SOLID,
+            FillKind::Lines(all) => {
+                look.kind = fill_kind::LINES;
+                // Abstand ≤ 0 oder nicht endlich ergäbe im Shader mod(x, 0)
+                // (Review H11): solche Scharen fallen mit Hinweis weg
+                let ok = |l: &&sk_model::HatchLine| {
+                    l.spacing_mm > 0.0
+                        && [l.angle_deg, l.spacing_mm, l.offset_mm]
+                            .iter()
+                            .all(|v| v.is_finite())
+                };
+                let lines: Vec<_> = all.iter().filter(ok).copied().collect();
+                if lines.len() < all.len() {
+                    notes.push(format!(
+                        "Schraffur „{}“: Schar ohne gültigen Abstand übersprungen",
+                        f.name
+                    ));
+                }
+                if lines.len() > 2 {
+                    notes.push(format!(
+                        "Schraffur „{}“: nur die ersten zwei von {} Scharen",
+                        f.name,
+                        lines.len()
+                    ));
+                }
+                for (slot, l) in look.lines.iter_mut().zip(&lines) {
+                    *slot = LineLook {
+                        angle_deg: l.angle_deg,
+                        spacing_px: l.spacing_mm * px_per_mm,
+                        offset_px: l.offset_mm * px_per_mm,
+                        dash_px: l.dash_mm * px_per_mm,
+                        gap_px: l.gap_mm * px_per_mm,
+                    };
+                    // Strich nur mit endlichem, positivem Paar
+                    let (d, g) = (slot.dash_px, slot.gap_px);
+                    if !(d.is_finite() && g.is_finite() && d > 0.0 && g > 0.0) {
+                        (slot.dash_px, slot.gap_px) = (0.0, 0.0);
+                    }
+                }
+                look.line_count = lines.len().min(2) as u8;
+                if look.line_count == 0 {
+                    look.kind = fill_kind::EMPTY;
+                }
+            }
+            FillKind::Zigzag { period } => {
+                look.kind = fill_kind::ZIGZAG;
+                look.zigzag_period = if *period > 0.0 { *period } else { 1.0 };
+            }
+        }
+    }
+    look
+}
+
 impl DrawTable {
     pub fn resolve(model: &Model, theme: &Theme) -> DrawTable {
         let a = model.attr();
@@ -113,14 +243,7 @@ impl DrawTable {
                 (p.width_mm * px_per_mm, [r, g, b, 1.0])
             })
         };
-        let pen_rgb = |id, fallback| a.pen(id).map_or(fallback, |p| rgb(p.color));
-        let fallback = MatLook {
-            face: rgb_of(env.face),
-            cut: rgb_of(env.face),
-            cut_bg: rgb_of(env.fill_fallback),
-            cut_fg: rgb_of(env.edge),
-            ..NO_MATERIAL
-        };
+        let fallback = fallback_look(theme);
         let mut mats = vec![fallback];
         let mut notes = Vec::new();
         for (id, m) in model.materials().iter() {
@@ -128,78 +251,7 @@ impl DrawTable {
             if mats.len() <= key {
                 mats.resize(key + 1, fallback);
             }
-            let mut look = MatLook {
-                cut_bg: pen_rgb(m.cut_bg, rgb_of(env.fill_fallback)),
-                cut_fg: pen_rgb(m.cut_fg, rgb_of(env.edge)),
-                width_px: a.pen(m.cut_fg).map_or(1.0, |p| p.width_mm * px_per_mm),
-                ..fallback
-            };
-            (look.face, look.cut) = a
-                .surface(m.surface)
-                .map_or((fallback.face, fallback.cut), |s| {
-                    (rgb(s.color), rgb(s.cut_color))
-                });
-            if let Some(f) = a.fill(m.cut_fill) {
-                if f.space == FillSpace::Model {
-                    // Bis E3b wie papierbezogen
-                    notes.push(format!(
-                        "Schraffur „{}“ (modellbezogen) wird papierbezogen gezeichnet",
-                        f.name
-                    ));
-                }
-                match &f.kind {
-                    FillKind::Empty => {}
-                    FillKind::Solid => look.kind = fill_kind::SOLID,
-                    FillKind::Lines(all) => {
-                        look.kind = fill_kind::LINES;
-                        // Abstand ≤ 0 oder nicht endlich ergäbe im Shader mod(x, 0)
-                        // (Review H11): solche Scharen fallen mit Hinweis weg
-                        let ok = |l: &&sk_model::HatchLine| {
-                            l.spacing_mm > 0.0
-                                && [l.angle_deg, l.spacing_mm, l.offset_mm]
-                                    .iter()
-                                    .all(|v| v.is_finite())
-                        };
-                        let lines: Vec<_> = all.iter().filter(ok).copied().collect();
-                        if lines.len() < all.len() {
-                            notes.push(format!(
-                                "Schraffur „{}“: Schar ohne gültigen Abstand übersprungen",
-                                f.name
-                            ));
-                        }
-                        if lines.len() > 2 {
-                            notes.push(format!(
-                                "Schraffur „{}“: nur die ersten zwei von {} Scharen",
-                                f.name,
-                                lines.len()
-                            ));
-                        }
-                        for (slot, l) in look.lines.iter_mut().zip(&lines) {
-                            *slot = LineLook {
-                                angle_deg: l.angle_deg,
-                                spacing_px: l.spacing_mm * px_per_mm,
-                                offset_px: l.offset_mm * px_per_mm,
-                                dash_px: l.dash_mm * px_per_mm,
-                                gap_px: l.gap_mm * px_per_mm,
-                            };
-                            // Strich nur mit endlichem, positivem Paar
-                            let (d, g) = (slot.dash_px, slot.gap_px);
-                            if !(d.is_finite() && g.is_finite() && d > 0.0 && g > 0.0) {
-                                (slot.dash_px, slot.gap_px) = (0.0, 0.0);
-                            }
-                        }
-                        look.line_count = lines.len().min(2) as u8;
-                        if look.line_count == 0 {
-                            look.kind = fill_kind::EMPTY;
-                        }
-                    }
-                    FillKind::Zigzag { period } => {
-                        look.kind = fill_kind::ZIGZAG;
-                        look.zigzag_period = if *period > 0.0 { *period } else { 1.0 };
-                    }
-                }
-            }
-            mats[key] = look;
+            mats[key] = mat_look(model, theme, &m.display(), &mut notes);
         }
         let d = a.display();
         DrawTable {
@@ -213,6 +265,10 @@ impl DrawTable {
             section_line: stroke(&d.section_line),
             section_ends: stroke(&d.section_ends),
             background: stroke(&d.background),
+            drawing_dash: d.drawing.map(|s| dash_px(model, s.line_type, px_per_mm)),
+            model_dash: d.model3d.map(|s| dash_px(model, s.line_type, px_per_mm)),
+            background_dash: dash_px(model, d.background.line_type, px_per_mm),
+            section_dash: dash_px(model, d.section_line.line_type, px_per_mm),
             notes,
         }
     }
@@ -241,46 +297,33 @@ impl DrawTable {
         let keys = self.mats.len();
         let mut t = vec![[0.0; 4]; keys * LOOK_ROWS];
         for (k, m) in self.mats.iter().enumerate() {
-            let mut put = |row: usize, v: [f32; 4]| t[row * keys + k] = v;
-            put(0, [m.face[0], m.face[1], m.face[2], 0.0]);
-            put(1, [m.cut[0], m.cut[1], m.cut[2], 0.0]);
-            put(2, [m.cut_bg[0], m.cut_bg[1], m.cut_bg[2], m.kind]);
-            let w = m.width_px * px_scale;
-            put(3, [m.cut_fg[0], m.cut_fg[1], m.cut_fg[2], w]);
-            let mut offsets = [0.0; 2];
-            let mut dashes = [0.0; 4];
-            for (i, l) in m.lines.iter().enumerate().take(m.line_count as usize) {
-                let (f, offset) = family(l, px_scale);
-                put(4 + i, f);
-                offsets[i] = offset;
-                if l.dash_px > 0.0 && l.gap_px > 0.0 {
-                    dashes[2 * i] = l.dash_px * px_scale;
-                    dashes[2 * i + 1] = l.gap_px * px_scale;
-                }
+            for (row, v) in look_rows(m, px_scale).into_iter().enumerate() {
+                t[row * keys + k] = v;
             }
-            let count = m.line_count as f32;
-            put(6, [offsets[0], offsets[1], count, m.zigzag_period]);
-            put(7, dashes);
         }
         t
     }
 
     /// Breite und Farbe je Kantenart, für Zeichnung oder 3D.
     pub fn edge_looks(&self, drawing: bool, px_scale: f32) -> EdgeLooks {
-        let t = if drawing {
-            &self.drawing_edges
+        let (t, dash) = if drawing {
+            (&self.drawing_edges, &self.drawing_dash)
         } else {
-            &self.model_edges
+            (&self.model_edges, &self.model_dash)
         };
+        let scaled =
+            |p: &DashPattern| p.map(|[l, g, dot, _]| [l * px_scale, g * px_scale, dot, 0.0]);
         let mut e = EdgeLooks::default();
-        for (i, (w, c)) in t.iter().enumerate().take(EDGE_KINDS) {
+        for (i, ((w, c), p)) in t.iter().zip(dash).enumerate().take(EDGE_KINDS) {
             e.width[i] = w * px_scale;
             e.color[i] = [c[0], c[1], c[2]];
+            [e.dash[2 * i], e.dash[2 * i + 1]] = scaled(p);
         }
         let (w, c) = self.background;
         let k = edge_kind::BACKGROUND as usize;
         e.width[k] = w * px_scale;
         e.color[k] = [c[0], c[1], c[2]];
+        [e.dash[2 * k], e.dash[2 * k + 1]] = scaled(&self.background_dash);
         e
     }
 
@@ -293,6 +336,30 @@ impl DrawTable {
             model: self.edge_looks(false, px_scale),
         }
     }
+}
+
+/// Die [`LOOK_ROWS`] Texel eines Aussehens (Aufbau: [`sk_render::Looks`]).
+pub fn look_rows(m: &MatLook, px_scale: f32) -> [[f32; 4]; LOOK_ROWS] {
+    let mut t = [[0.0; 4]; LOOK_ROWS];
+    t[0] = [m.face[0], m.face[1], m.face[2], 0.0];
+    t[1] = [m.cut[0], m.cut[1], m.cut[2], 0.0];
+    t[2] = [m.cut_bg[0], m.cut_bg[1], m.cut_bg[2], m.kind];
+    let w = m.width_px * px_scale;
+    t[3] = [m.cut_fg[0], m.cut_fg[1], m.cut_fg[2], w];
+    let mut offsets = [0.0; 2];
+    let mut dashes = [0.0; 4];
+    for (i, l) in m.lines.iter().enumerate().take(m.line_count as usize) {
+        let (f, offset) = family(l, px_scale);
+        t[4 + i] = f;
+        offsets[i] = offset;
+        if l.dash_px > 0.0 && l.gap_px > 0.0 {
+            dashes[2 * i] = l.dash_px * px_scale;
+            dashes[2 * i + 1] = l.gap_px * px_scale;
+        }
+    }
+    t[6] = [offsets[0], offsets[1], m.line_count as f32, m.zigzag_period];
+    t[7] = dashes;
+    t
 }
 
 /// Texel einer Linienschar und ihr Versatz.

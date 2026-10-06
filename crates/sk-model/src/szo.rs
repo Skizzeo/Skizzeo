@@ -1401,6 +1401,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         project, attr, materials, layer_sets, buildings, storeys, elements, runs, defaults, guids,
     );
     hints.extend(model.complete_pre_b9());
+    hints.extend(model.complete_line_types());
     hints.extend(model.complete_pre_b10());
     if !v3 {
         hints.extend(model.complete_pre_b12());
@@ -1423,16 +1424,20 @@ fn read_display(
     let sd = std_attr.display();
     let first_lt = line_types.ids().next();
     // Startwert in den geladenen Tabellen: Stift mit derselben Nummer
-    let fallback = |s: &EdgeStyle| -> Option<EdgeStyle> {
+    let fallback = |slot: &str, s: &EdgeStyle| -> Option<EdgeStyle> {
         let nr = std_attr.pen(s.pen)?.number;
-        let lt_name = &std_attr.line_type(s.line_type)?.name;
+        // Die Schnittlinie A–A ist im Startsatz Strichpunkt (E4)
+        let lt_name = match slot {
+            "section_line" => crate::attr::SECTION_LINE_TYPE,
+            _ => &std_attr.line_type(s.line_type)?.name,
+        };
         let pen = pens
             .iter()
             .find(|(_, p)| p.number == nr)
             .map(|(id, _)| id)?;
         let line_type = line_types
             .iter()
-            .find(|(_, l)| &l.name == lt_name)
+            .find(|(_, l)| l.name == lt_name)
             .map(|(id, _)| id)
             .or(first_lt)?;
         Some(EdgeStyle { pen, line_type })
@@ -1477,7 +1482,7 @@ fn read_display(
                 if name != "background" {
                     hints.push(format!("Darstellung „{name}“ fehlt, Startwert gesetzt"));
                 }
-                fallback(std).ok_or_else(|| {
+                fallback(name, std).ok_or_else(|| {
                     err(
                         0,
                         format!("Darstellung „{name}“ fehlt, kein passender Stift"),

@@ -338,6 +338,22 @@ pub fn combo(
     s: f32,
     t: &Theme,
 ) {
+    combo_icon(c, fonts, r, text, None, hover, open, s, t);
+}
+
+/// Auswahlliste mit Bildchen (Farbfeld, Kachel) vor dem Text.
+#[allow(clippy::too_many_arguments)]
+pub fn combo_icon(
+    c: &mut Canvas,
+    fonts: &Fonts,
+    r: Rect,
+    text: &str,
+    icon: Option<&Canvas>,
+    hover: bool,
+    open: bool,
+    s: f32,
+    t: &Theme,
+) {
     let st = FieldState {
         hover,
         focus: open,
@@ -348,15 +364,15 @@ pub fn combo(
     let px = t.size.font_small * s;
     let cap = f.map_or(px * 0.7, |f| f.cap_height(px));
     let base = r.y + (r.h + cap) * 0.5;
-    text_at(
-        c,
-        f,
-        text,
-        px,
-        r.x + t.size.field_pad * s,
-        base,
-        t.ui.field_text,
-    );
+    let mut x = r.x + t.size.field_pad * s;
+    if let Some(icon) = icon {
+        let y = r.y + (r.h - icon.height as f32) * 0.5;
+        c.blit(icon, x as i32, y as i32);
+        x += icon.width as f32 + 8.0 * s;
+    }
+    let max = r.x + r.w - 24.0 * s - x;
+    let text = ellipsize(f, text, px, max);
+    text_at(c, f, &text, px, x, base, t.ui.field_text);
     let (cx, cy, d) = (r.x + r.w - 12.0 * s, r.y + r.h * 0.5, 3.5 * s);
     let mut p = Path::new();
     p.move_to(cx - d, cy - d * 0.5)
@@ -370,6 +386,27 @@ fn text_at(c: &mut Canvas, f: Option<&Font>, s: &str, px: f32, x: f32, y: f32, c
     if let Some(f) = f {
         f.draw(c, s, px, x.round(), y.round(), col);
     }
+}
+
+/// Feld nur zum Ablesen (berechnet oder anderswo gepflegt): ohne Rahmen in
+/// Feldfarbe, Text rechtsbündig in `field_readonly`.
+pub fn field_readonly(c: &mut Canvas, fonts: &Fonts, r: Rect, text: &str, s: f32, t: &Theme) {
+    let u = &t.ui;
+    let mut p = Path::new();
+    p.rounded_rect(r.x, r.y, r.w, r.h, 4.0 * s);
+    c.fill(&p, u.border);
+    let b = s.round().max(1.0);
+    let mut p = Path::new();
+    p.rounded_rect(r.x + b, r.y + b, r.w - 2.0 * b, r.h - 2.0 * b, 4.0 * s - b);
+    c.fill(&p, u.bg);
+    let Some(f) = fonts.regular.as_ref() else {
+        return;
+    };
+    let px = t.size.font_small * s;
+    let pad = t.size.field_pad * s;
+    let base = (r.y + (r.h + f.cap_height(px)) * 0.5).round();
+    let x = r.x + r.w - pad - f.width(text, px);
+    f.draw(c, text, px, x.round(), base, u.field_readonly);
 }
 
 /// Dreieck zum Auf- und Zuklappen (▸ zu, ▾ offen), Mitte bei `(x, y)`.

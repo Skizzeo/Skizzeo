@@ -148,6 +148,7 @@ gl_api! {
     fn glUniform4f(l: GLint, a: GLfloat, b: GLfloat, c: GLfloat, d: GLfloat);
     fn glUniform1fv(l: GLint, n: GLsizei, v: *const GLfloat);
     fn glUniform3fv(l: GLint, n: GLsizei, v: *const GLfloat);
+    fn glUniform4fv(l: GLint, n: GLsizei, v: *const GLfloat);
     fn glUniformMatrix4fv(l: GLint, n: GLsizei, transpose: GLboolean, v: *const GLfloat);
 
     fn glGenVertexArrays(n: GLsizei, out: *mut GLuint);

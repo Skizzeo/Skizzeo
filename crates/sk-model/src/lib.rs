@@ -35,8 +35,8 @@ pub use guid::{Guid, GuidGen};
 pub use id::{Arena, Id};
 pub use join::{Join, JoinEnd, JoinKind};
 pub use library::{
-    material_key, LayerFunction, LayerSet, LayerSetId, MatCategory, Material, MaterialId,
-    MaterialLayer,
+    material_key, LayerFunction, LayerSet, LayerSetId, MatCategory, Material, MaterialDisplay,
+    MaterialId, MaterialLayer,
 };
 pub use model::{
     Defaults, Model, NumberError, Project, FLOOR_PART, FLOOR_THICKNESS, FOOTING_PART,

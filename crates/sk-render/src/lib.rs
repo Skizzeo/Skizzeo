@@ -32,10 +32,60 @@ pub const EDGE_KINDS: usize = 8;
 pub const LOOK_ROWS: usize = 8;
 
 /// Breite (Bildpunkte) und Farbe je Kantenart, für Zeichnung oder 3D.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EdgeLooks {
     pub width: [f32; EDGE_KINDS],
     pub color: [[f32; 3]; EDGE_KINDS],
+    /// Strichmuster je Kantenart, zwei Einträge `[Strich px, Lücke px,
+    /// Punkt 0/1, 0]` (Index `2·Art` und `2·Art + 1`); alles 0 = Volllinie.
+    pub dash: [[f32; 4]; 2 * EDGE_KINDS],
+}
+
+impl Default for EdgeLooks {
+    fn default() -> EdgeLooks {
+        EdgeLooks {
+            width: [0.0; EDGE_KINDS],
+            color: [[0.0; 3]; EDGE_KINDS],
+            dash: [[0.0; 4]; 2 * EDGE_KINDS],
+        }
+    }
+}
+
+/// Strichmuster einer Linie (siehe [`EdgeLooks::dash`]); alles 0 = Volllinie.
+pub type DashPattern = [[f32; 4]; 2];
+
+/// Volllinie.
+pub const SOLID: DashPattern = [[0.0; 4]; 2];
+
+/// Länge einer Periode des Musters in Bildpunkten bei Strichbreite `w` (ein
+/// Punkt ist so lang wie die Linie breit).
+pub fn dash_period(p: &DashPattern, w: f32) -> f32 {
+    p.iter()
+        .map(|e| e[0] + e[1] + if e[2] > 0.5 { w + e[1] } else { 0.0 })
+        .sum()
+}
+
+/// Farbe an der Stelle `dist` (Bildpunkte ab Linienanfang) einer Linie der
+/// Länge `len`? Dieselbe Regel wie `dash_ink` in den Shadern: kurze Linien
+/// (kürzer als eine Periode) bleiben voll.
+pub fn dash_ink(dist: f32, len: f32, p: &DashPattern, w: f32) -> bool {
+    let period = dash_period(p, w);
+    if period <= 0.0 || len < period {
+        return true;
+    }
+    let mut m = dist.max(0.0).rem_euclid(period);
+    let l0 = dash_period(&[p[0], [0.0; 4]], w);
+    let e = if m >= l0 {
+        m -= l0;
+        p[1]
+    } else {
+        p[0]
+    };
+    if m < e[0] {
+        return true;
+    }
+    m -= e[0] + e[1];
+    e[2] > 0.5 && (0.0..w).contains(&m)
 }
 
 /// Aussehen aller Darstellungsschlüssel als Tabelle für die Grafikkarte.
@@ -64,6 +114,77 @@ pub struct Looks {
     pub texels: Vec<[f32; 4]>,
     pub drawing: EdgeLooks,
     pub model: EdgeLooks,
+}
+
+/// Schraffur einer Schnittfläche in der Zeichnung an einem Bildpunkt, mit
+/// derselben Formel wie `FACE_FS` (für Vorschaubilder ohne Grafikkarte).
+/// `rows` sind die [`LOOK_ROWS`] Texel eines Schlüssels, `(x, y)` die Lage in
+/// Bildpunkten (y nach oben wie `gl_FragCoord`), `uv` die Schichtkoordinaten
+/// für das Zickzack (längs, quer 0..1) und `uv_px` ihre Änderung je Bildpunkt.
+pub fn fill_color(
+    rows: &[[f32; 4]; LOOK_ROWS],
+    x: f32,
+    y: f32,
+    uv: [f32; 2],
+    uv_px: [f32; 2],
+) -> [f32; 3] {
+    let bg = rows[2];
+    let fg = rows[3];
+    let mut c = [bg[0], bg[1], bg[2]];
+    let kind = (bg[3] + 0.5) as i32;
+    let ink = match kind {
+        1 => 1.0,
+        2 => {
+            let (o, d) = (rows[6], rows[7]);
+            let mut ink = ink_of(rows[4], o[0], fg[3], [d[0], d[1]], x, y);
+            if o[2] > 1.5 {
+                ink = ink.max(ink_of(rows[5], o[1], fg[3], [d[2], d[3]], x, y));
+            }
+            ink
+        }
+        3 => {
+            let zig = (2.0 * fract(uv[0] / rows[6][3]) - 1.0).abs();
+            let f = uv[1] - zig;
+            // |∇f| wie dFdx/dFdy: längs ändert sich zig mit 2/Periode
+            let g = (uv_px[1].powi(2) + (2.0 * uv_px[0] / rows[6][3]).powi(2))
+                .sqrt()
+                .max(1e-6);
+            (fg[3] * 0.5 + 0.5 - f.abs() / g).clamp(0.0, 1.0)
+        }
+        _ => 0.0,
+    };
+    for k in 0..3 {
+        c[k] += (fg[k] - c[k]) * ink;
+    }
+    c
+}
+
+fn fract(v: f32) -> f32 {
+    v - v.floor()
+}
+
+/// GLSL `mod`: Rest mit dem Vorzeichen des Teilers.
+fn modulo(a: f32, b: f32) -> f32 {
+    a - b * (a / b).floor()
+}
+
+/// `family` und `ink_of` aus `FACE_FS`.
+fn ink_of(f: [f32; 4], offset: f32, w: f32, dash: [f32; 2], x: f32, y: f32) -> f32 {
+    let m = modulo(x * f[0] + y * f[1] - offset, f[2]);
+    let dist = m.min(f[2] - m) * f[3];
+    let mut ink = (w * 0.5 + 0.5 - dist).clamp(0.0, 1.0);
+    if dash[0] > 0.0 {
+        let along = (-x * f[1] + y * f[0]) * f[3];
+        let p = dash[0] + dash[1];
+        let a = modulo(along, p);
+        let s = if a <= dash[0] {
+            a.min(dash[0] - a)
+        } else {
+            -(a - dash[0]).min(p - a)
+        };
+        ink *= (0.5 + s).clamp(0.0, 1.0);
+    }
+    ink
 }
 
 /// Kameradaten für ein Bild. Alle Matrizen sind kamerarelativ (Auge im Ursprung),
@@ -125,8 +246,11 @@ pub struct Helper {
     pub color: [f32; 4],
     /// Breite in Pixeln.
     pub width: f32,
-    /// Gestrichelt (Strichlänge in Pixeln), 0 = durchgezogen, negativ = Strichpunktlinie.
+    /// Gestrichelt (Strichlänge gleich Lücke, in Pixeln), 0 = durchgezogen.
     pub dash: f32,
+    /// Strichmuster aus den Attributen ([`SOLID`] = keins), z. B. die
+    /// Schnittlinie A–A.
+    pub pattern: DashPattern,
     /// Hinter Geometrie liegende Teile nur blass zeigen (sonst immer obenauf).
     pub occlude: bool,
     /// Runde Enden; mit `a == b` ein runder Punkt vom Durchmesser `width`.
@@ -330,6 +454,24 @@ void main() {
 }
 "#;
 
+const DASH_GLSL: &str = r#"
+// Strichmuster (E4): zwei Einträge (Strich, Lücke, Punkt 0/1) in Bildpunkten;
+// ein Punkt ist so lang wie die Linie breit. Linien kürzer als eine Periode
+// bleiben voll. Gleiche Regel wie `dash_ink` in Rust.
+bool dash_ink(float dist, float len, vec4 p0, vec4 p1, float w) {
+    float l0 = p0.x + p0.y + (p0.z > 0.5 ? w + p0.y : 0.0);
+    float l1 = p1.x + p1.y + (p1.z > 0.5 ? w + p1.y : 0.0);
+    float period = l0 + l1;
+    if (period <= 0.0 || len < period) return true;
+    float m = mod(max(dist, 0.0), period);
+    vec4 e = p0;
+    if (m >= l0) { m -= l0; e = p1; }
+    if (m < e.x) return true;
+    m -= e.x + e.y;
+    return e.z > 0.5 && m >= 0.0 && m < w;
+}
+"#;
+
 const EDGE_VS: &str = r#"#version 330 core
 // Eine Instanz je Kante; die sechs Ecken der beiden Dreiecke kommen aus gl_VertexID.
 layout(location = 0) in vec3 a_a;
@@ -343,11 +485,19 @@ uniform vec3 u_origin;
 uniform vec2 u_viewport;
 uniform float u_edge_width[8];
 uniform vec3 u_edge_color[8];
+uniform vec4 u_edge_dash[16];
 uniform float u_near;
 flat out vec3 v_color;
+// Strichmuster: Lage längs der Kante (px ab Anfang), Länge, Breite
+noperspective out float v_dist;
+flat out vec4 v_p0;
+flat out vec4 v_p1;
+flat out vec2 v_len_w;
 void main() {
     int k = clamp(int(a_kind + 0.5), 0, 7);
     v_color = u_edge_color[k];
+    v_p0 = u_edge_dash[2 * k];
+    v_p1 = u_edge_dash[2 * k + 1];
     vec4 ca = u_vp * vec4(a_a + u_origin, 1.0);
     vec4 cb = u_vp * vec4(a_b + u_origin, 1.0);
     if (ca.w < u_near && cb.w < u_near) {
@@ -366,16 +516,24 @@ void main() {
     vec2 a_corner = CORNERS[gl_VertexID];
     bool at_b = a_corner.x > 0.5;
     vec4 c = at_b ? cb : ca;
-    vec2 off = (n * a_corner.y + d * (at_b ? 1.0 : -1.0)) * (u_edge_width[k] * 0.5);
+    float w = u_edge_width[k];
+    vec2 off = (n * a_corner.y + d * (at_b ? 1.0 : -1.0)) * (w * 0.5);
+    v_dist = at_b ? len + w * 0.5 : -w * 0.5;
+    v_len_w = vec2(len, w);
     c.xy += off / half_vp * c.w;
     gl_Position = c;
 }
 "#;
 
-const EDGE_FS: &str = r#"#version 330 core
+const EDGE_FS: &str = r#"
 flat in vec3 v_color;
+noperspective in float v_dist;
+flat in vec4 v_p0;
+flat in vec4 v_p1;
+flat in vec2 v_len_w;
 out vec4 o_color;
 void main() {
+    if (v_p0.x + v_p0.y > 0.0 && !dash_ink(v_dist, v_len_w.x, v_p0, v_p1, v_len_w.y)) discard;
     o_color = vec4(v_color, 1.0);
 }
 "#;
@@ -386,6 +544,8 @@ layout(location = 1) in vec3 a_b;
 layout(location = 2) in vec2 a_corner;
 layout(location = 3) in vec4 a_color;
 layout(location = 4) in vec3 a_style;
+layout(location = 5) in vec4 a_pat0;
+layout(location = 6) in vec4 a_pat1;
 uniform mat4 u_vp;
 uniform vec3 u_origin;
 uniform vec2 u_viewport;
@@ -394,6 +554,8 @@ uniform vec4 u_pull;
 out vec4 v_color;
 noperspective out float v_dist;
 flat out float v_dash;
+flat out vec4 v_p0;
+flat out vec4 v_p1;
 // Lage im Strich in Pixeln (längs ab Anfang, quer ab Mitte), für runde Enden
 noperspective out vec2 v_cap;
 flat out vec3 v_round;
@@ -406,6 +568,8 @@ void main() {
     vec4 cb = u_vp * vec4((a_b + u_origin) * pull.w + pull.xyz, 1.0);
     v_color = a_color;
     v_dash = a_style.y;
+    v_p0 = a_pat0;
+    v_p1 = a_pat1;
     if (ca.w < u_near && cb.w < u_near) {
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
         v_dist = 0.0;
@@ -434,22 +598,20 @@ void main() {
 }
 "#;
 
-const HELPER_FS: &str = r#"#version 330 core
+const HELPER_FS: &str = r#"
 in vec4 v_color;
 noperspective in float v_dist;
 flat in float v_dash;
+flat in vec4 v_p0;
+flat in vec4 v_p1;
 noperspective in vec2 v_cap;
 flat in vec3 v_round;
 uniform float u_hidden;
 out vec4 o_color;
 void main() {
     if (v_dash > 0.0 && mod(v_dist, 2.0 * v_dash) > v_dash) discard;
-    if (v_dash < 0.0) {
-        // Strichpunktlinie: langer Strich, Lücke, Punkt, Lücke
-        float d = -v_dash;
-        float m = mod(v_dist, 5.0 * d);
-        if ((m > 3.0 * d && m < 3.75 * d) || m > 4.25 * d) discard;
-    }
+    // Strichmuster aus den Attributen (Schnittlinie A–A)
+    if (v_p0.x + v_p0.y > 0.0 && !dash_ink(v_dist, v_round.y, v_p0, v_p1, 2.0 * v_round.z)) discard;
     float a = v_color.a * (u_hidden > 0.5 ? 0.3 : 1.0);
     if (v_round.x > 0.5) {
         // Runde Enden: Abstand zur Mittelstrecke, weicher Rand
@@ -477,9 +639,9 @@ impl Renderer {
         unsafe {
             let sky = program(&gl, FULLSCREEN_VS, SKY_FS)?;
             let faces = program(&gl, FACE_VS, FACE_FS)?;
-            let edges = program(&gl, EDGE_VS, EDGE_FS)?;
+            let edges = program(&gl, EDGE_VS, &with_dash(EDGE_FS))?;
             let overlay = program(&gl, FULLSCREEN_VS, OVERLAY_FS)?;
-            let helpers = program(&gl, HELPER_VS, HELPER_FS)?;
+            let helpers = program(&gl, HELPER_VS, &with_dash(HELPER_FS))?;
             let mut vao = 0u32;
             gl.glGenVertexArrays(1, &mut vao);
             let mut max_samples = 0;
@@ -591,8 +753,9 @@ impl Renderer {
 
     /// Hilfslinien und Markierungen für das nächste Bild.
     pub fn set_helpers(&mut self, helpers: &[Helper]) {
-        let mut v: Vec<[f32; 15]> = Vec::with_capacity(helpers.len() * 6);
+        let mut v: Vec<[f32; 23]> = Vec::with_capacity(helpers.len() * 6);
         for h in helpers {
+            let [p0, p1] = h.pattern;
             for c in CORNERS {
                 v.push([
                     h.a[0],
@@ -610,6 +773,14 @@ impl Renderer {
                     h.width,
                     h.dash,
                     h.occlude as u8 as f32 + 2.0 * h.round as u8 as f32,
+                    p0[0],
+                    p0[1],
+                    p0[2],
+                    p0[3],
+                    p1[0],
+                    p1[1],
+                    p1[2],
+                    p1[3],
                 ]);
             }
         }
@@ -618,7 +789,7 @@ impl Renderer {
                 &self.gl,
                 &mut self.helper_mesh,
                 &v,
-                &[(3, 0), (3, 12), (2, 24), (4, 32), (3, 48)],
+                &[(3, 0), (3, 12), (2, 24), (4, 32), (3, 48), (4, 60), (4, 76)],
             );
         }
     }
@@ -868,6 +1039,8 @@ impl Renderer {
             gl.glUniform1fv(loc(gl, p, c"u_edge_width"), n, edges.width.as_ptr());
             let colors = edges.color.as_flattened();
             gl.glUniform3fv(loc(gl, p, c"u_edge_color"), n, colors.as_ptr());
+            let dash = edges.dash.as_flattened();
+            gl.glUniform4fv(loc(gl, p, c"u_edge_dash"), 2 * n, dash.as_ptr());
             gl.glUniform1f(loc(gl, p, c"u_near"), view.near);
             for m in self.meshes.iter().filter(|m| m.edges.count > 0) {
                 gl.glBindVertexArray(m.edges.vao);
@@ -1048,6 +1221,11 @@ unsafe fn shader(gl: &Gl, kind: GLenum, src: &str) -> Result<GLuint, String> {
         ));
     }
     Ok(s)
+}
+
+/// Fragment-Shader mit der gemeinsamen Strichmuster-Funktion davor.
+fn with_dash(fs: &str) -> String {
+    format!("#version 330 core\n{DASH_GLSL}{fs}")
 }
 
 unsafe fn program(gl: &Gl, vs: &str, fs: &str) -> Result<Program, String> {

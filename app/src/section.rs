@@ -7,9 +7,20 @@ use crate::scene::Scene;
 use sk_math::{vec3, Vec3};
 use sk_paint::{Canvas, Path, Rgba};
 use sk_platform::{Event, MouseButton};
-use sk_render::Helper;
+use sk_render::{DashPattern, Helper, SOLID};
 use sk_ui::theme::Theme;
 use sk_ui::widgets::Fonts;
+
+/// Strichmuster der Schnittlinie A–A in Bildpunkten bei 96 dpi, aus dem
+/// Linientyp der Darstellung (E4).
+#[cfg(test)]
+pub fn dash_pattern(model: &sk_model::Model, theme: &Theme) -> DashPattern {
+    crate::draw_table::dash_px(
+        model,
+        model.attr().display().section_line.line_type,
+        theme.px_per_mm,
+    )
+}
 
 /// Greifabstand in Pixeln (bei 96 dpi).
 const PICK_PX: f64 = 8.0;
@@ -164,7 +175,8 @@ impl SectionLine {
         out
     }
 
-    /// Linie als Hilfslinien: Strichpunkt in der Mitte, kräftige Enden.
+    /// Linie als Hilfslinien: Mitte im Linientyp der Schnittlinie (im
+    /// Startsatz Strichpunkt), kräftige Enden.
     pub fn helpers(
         &self,
         scene: &Scene,
@@ -182,20 +194,21 @@ impl SectionLine {
         let mm_per_px = cam.ortho.map_or(10.0, |half| 2.0 * half / h.max(1.0));
         let end = 16.0 * mm_per_px * scale as f64;
         let lift = |p: Vec3| [p.x as f32, p.y as f32, p.z as f32 + 2.0];
-        let line = |p: Vec3, q: Vec3, (width, ink): (f32, [f32; 4]), dash: f32| Helper {
+        let line = |p: Vec3, q: Vec3, (width, ink): (f32, [f32; 4]), pattern: DashPattern| Helper {
             a: lift(p),
             b: lift(q),
             color: color(ink),
             width: width * scale,
-            dash: dash * scale,
+            dash: 0.0,
+            pattern: pattern.map(|[l, g, dot, _]| [l * scale, g * scale, dot, 0.0]),
             occlude: false,
             round: false,
         };
         let dx = vec3(end, 0.0, 0.0);
         vec![
-            line(a + dx, b - dx, t.section_line, -6.0),
-            line(a, a + dx, t.section_ends, 0.0),
-            line(b - dx, b, t.section_ends, 0.0),
+            line(a + dx, b - dx, t.section_line, t.section_dash),
+            line(a, a + dx, t.section_ends, SOLID),
+            line(b - dx, b, t.section_ends, SOLID),
         ]
     }
 

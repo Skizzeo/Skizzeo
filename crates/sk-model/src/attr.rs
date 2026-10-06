@@ -312,6 +312,30 @@ impl Attributes {
         Some(p)
     }
 
+    pub(crate) fn set_line_type(&mut self, id: LineTypeId, l: LineType) -> bool {
+        let ok = self.line_types.get_mut(id).map(|old| *old = l).is_some();
+        self.rev += ok as u64;
+        ok
+    }
+
+    pub(crate) fn remove_line_type(&mut self, id: LineTypeId) -> Option<LineType> {
+        let l = self.line_types.remove(id)?;
+        self.rev += 1;
+        Some(l)
+    }
+
+    pub(crate) fn remove_fill(&mut self, id: FillId) -> Option<Fill> {
+        let f = self.fills.remove(id)?;
+        self.rev += 1;
+        Some(f)
+    }
+
+    pub(crate) fn remove_surface(&mut self, id: SurfaceId) -> Option<Surface> {
+        let s = self.surfaces.remove(id)?;
+        self.rev += 1;
+        Some(s)
+    }
+
     pub(crate) fn set_fill(&mut self, id: FillId, f: Fill) -> bool {
         let ok = self.fills.get_mut(id).map(|old| *old = f).is_some();
         self.rev += ok as u64;
@@ -391,6 +415,26 @@ impl Attributes {
         p.chain(l).chain(f).chain(s)
     }
 }
+
+/// Startsatz der Linientypen nach DIN ISO 128-20 / DIN 1356-1 (E4), Längen
+/// in mm auf dem Papier. Die Volllinie steht in [`defaults`], die übrigen
+/// legt das Modell danach an (und ergänzt sie in älteren Dateien).
+pub fn standard_line_types() -> [(&'static str, Vec<Dash>); 4] {
+    let d = |len_mm, gap_mm, dot| Dash {
+        len_mm,
+        gap_mm,
+        dot,
+    };
+    [
+        ("Volllinie", Vec::new()),
+        ("Strichlinie", vec![d(3.0, 1.0, false)]),
+        ("Strichpunktlinie", vec![d(6.0, 1.0, true)]),
+        ("Punktlinie", vec![d(0.0, 1.0, true)]),
+    ]
+}
+
+/// Name der Linientyps der Schnittlinie A–A im Startsatz.
+pub const SECTION_LINE_TYPE: &str = "Strichpunktlinie";
 
 /// Startverweise der Standardbaustoffe auf die Tabellen.
 #[derive(Clone, Copy, Debug)]
