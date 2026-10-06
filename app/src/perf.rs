@@ -308,73 +308,9 @@ fn perf_attribut_aendern() {
 // Rücksprüngen, dazu ein bis zwei Nebengebäude oder höchstens ein zweites
 // Gebäude. Gemessen wird an diesem Maßstab, nicht an Hunderten Häusern.
 //
-// Geschosse kennt das Modell noch nicht: Die Geschosse liegen deshalb im
-// Grundriss nebeneinander (30 m Abstand), damit sich ihre Wände nicht
-// gegenseitig anschließen. Jeder geschlossene Außenzug bekommt heute eine
-// Gründung; das sind mehr als später (eine je Gebäude) und misst also eher zu viel.
-
-/// Ein Geschoss des Hauptgebäudes ab `(ox, oy)`: Außenwand mit Vor- und
-/// Rücksprüngen (20 Ecken, etwa 18 × 14 m) und 14 Innenwände mit T-Anschlüssen.
-fn storey(s: &mut Scene, ox: f64, oy: f64, height: f64) {
-    let p = |x: f64, y: f64| vec3(ox + x, oy + y, 0.0);
-    let wall = |points, closed, ref_side| WallChain {
-        base: 0.0,
-        points,
-        closed,
-        ref_side,
-        layers: Vec::new(),
-        height,
-        joints: Default::default(),
-    };
-    // Im Uhrzeigersinn: eingezogene Ecken links und rechts, Risalit vorn und hinten
-    let outline = [
-        (0.0, 1500.0),
-        (0.0, 10500.0),
-        (1500.0, 10500.0),
-        (1500.0, 12000.0),
-        (7000.0, 12000.0),
-        (7000.0, 13000.0),
-        (11000.0, 13000.0),
-        (11000.0, 12000.0),
-        (16500.0, 12000.0),
-        (16500.0, 10500.0),
-        (18000.0, 10500.0),
-        (18000.0, 1500.0),
-        (16500.0, 1500.0),
-        (16500.0, 0.0),
-        (11000.0, 0.0),
-        (11000.0, -1000.0),
-        (7000.0, -1000.0),
-        (7000.0, 0.0),
-        (1500.0, 0.0),
-        (1500.0, 1500.0),
-    ];
-    s.add_wall(&wall(
-        outline.iter().map(|&(x, y)| p(x, y)).collect(),
-        true,
-        RefSide::Left,
-    ));
-    // Tragende Querwände von der vorderen zur hinteren Innenfläche
-    let xs = [3500.0, 6000.0, 12500.0, 15000.0];
-    for x in xs {
-        let w = wall(vec![p(x, 315.0), p(x, 11685.0)], false, RefSide::Center);
-        s.add_wall_as(&w, sk_model::Category::InteriorWall);
-    }
-    // Flurwände zwischen den Querwänden und zu den Giebeln
-    let bays = [
-        (1815.0, 3500.0),
-        (3500.0, 6000.0),
-        (6000.0, 12500.0),
-        (12500.0, 15000.0),
-        (15000.0, 16185.0),
-    ];
-    for (x0, x1) in bays {
-        for y in [4500.0, 7500.0] {
-            let w = wall(vec![p(x0, y), p(x1, y)], false, RefSide::Center);
-            s.add_wall_as(&w, sk_model::Category::InteriorWall);
-        }
-    }
-}
+// Seit B12 liegen die Geschosse übereinander ([`reference_stacked`]): Der
+// geschlossene Außenzug im EG trägt die gekoppelten Züge bis oben, Innenwände
+// liegen je Geschoss, jedes Gebäude hat eine Gründung.
 
 /// Nebengebäude (Garage 6 × 9 m) mit einer Innenwand.
 fn annex(s: &mut Scene, ox: f64, oy: f64) {
@@ -404,18 +340,9 @@ fn annex(s: &mut Scene, ox: f64, oy: f64) {
 }
 
 /// Referenz: `buildings` Hauptgebäude mit je `storeys` Geschossen und `annexes`
-/// Nebengebäude.
+/// Nebengebäude, Geschosse übereinander.
 fn reference(buildings: usize, storeys: usize, annexes: usize) -> Scene {
-    let mut s = Scene::new();
-    for b in 0..buildings {
-        for g in 0..storeys {
-            storey(&mut s, g as f64 * 30000.0, b as f64 * 30000.0, 2750.0);
-        }
-    }
-    for a in 0..annexes {
-        annex(&mut s, a as f64 * 10000.0, -15000.0);
-    }
-    s
+    reference_stacked(buildings, storeys as u8, annexes)
 }
 
 #[test]
@@ -513,12 +440,12 @@ fn perf_ebene_ziehen() {
         ("Groß: 2 Häuser à 4 G. + 2 Nebengeb.", 2, 4, 2),
     ] {
         let mut s = reference(buildings, storeys, annexes);
-        let eg = s.model().defaults().storey;
+        let eg = s.active_storey();
         let mut flip = false;
         s.begin("Geschoss ziehen");
         let drag = time(20, || {
             flip = !flip;
-            s.drag_storey_top(eg, if flip { 2500.0 } else { 2600.0 });
+            s.drag_storey_top(eg, if flip { 2800.0 } else { 2900.0 });
             std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
         });
         // `time` ruft einmal vorab auf: Loslassen direkt messen
@@ -639,12 +566,18 @@ fn storey_walls(s: &mut Scene, ox: f64, oy: f64, outer: bool) {
 /// und `annexes` eingeschossige Nebengebäude.
 fn reference_stacked(houses: usize, storeys: u8, annexes: usize) -> Scene {
     let mut s = Scene::new();
+    let mut first = None;
     for h in 0..houses {
         stacked_house(&mut s, 0.0, h as f64 * 30000.0, storeys);
+        first = first.or(Some(s.active_storey()));
     }
     for a in 0..annexes {
         new_building(&mut s, 1);
         annex(&mut s, a as f64 * 10000.0, -15000.0);
+    }
+    // Aktiv bleibt das EG des ersten Hauses (Ebene ziehen, Zeichnen)
+    if let Some(eg) = first {
+        s.set_active_storey(eg);
     }
     s
 }
