@@ -441,19 +441,35 @@ fn perf_ebene_ziehen() {
     ] {
         let mut s = reference(buildings, storeys, annexes);
         let eg = s.active_storey();
-        let mut flip = false;
-        s.begin("Geschoss ziehen");
-        let drag = time(20, || {
-            flip = !flip;
-            s.drag_storey_top(eg, if flip { 2800.0 } else { 2900.0 });
-            std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
-        });
-        // `time` ruft einmal vorab auf: Loslassen direkt messen
-        let t = Instant::now();
-        s.commit();
-        let release = t.elapsed().as_secs_f64() * 1000.0;
-        println!("{name:<36} Ziehen {drag:7.2} ms je Bild, Loslassen {release:7.2} ms");
+        // Sieben Runden à 20 Bilder: Einzelne Läufe streuen auf dem Messrechner
+        // um bis zu ±40 % (andere Last); der Median ist der Wert für den Bericht
+        let (mut drags, mut releases) = (Vec::new(), Vec::new());
+        for _ in 0..7 {
+            let mut flip = false;
+            s.begin("Geschoss ziehen");
+            drags.push(time(20, || {
+                flip = !flip;
+                s.drag_storey_top(eg, if flip { 2800.0 } else { 2900.0 });
+                std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
+            }));
+            // `time` ruft einmal vorab auf: Loslassen direkt messen
+            let t = Instant::now();
+            s.commit();
+            releases.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        let (drag, dlo, dhi) = median(&mut drags);
+        let (release, _, rhi) = median(&mut releases);
+        println!(
+            "{name:<36} Ziehen {drag:5.2} ms je Bild ({dlo:.2}–{dhi:.2}), \
+             Loslassen {release:5.2} ms (max {rhi:.2})"
+        );
     }
+}
+
+/// Median, Minimum und Maximum.
+fn median(v: &mut [f64]) -> (f64, f64, f64) {
+    v.sort_by(f64::total_cmp);
+    (v[v.len() / 2], v[0], v[v.len() - 1])
 }
 
 // ---------------------------------------------------------------------------
