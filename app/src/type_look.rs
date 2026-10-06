@@ -9,6 +9,7 @@
 use crate::draw_table::{fallback_look, look_rows, mat_look, MatLook};
 use sk_model::{edge_kind, Bearing, LayerFunction, LayerSet, MatCategory, Model, TypeCategory};
 use sk_paint::{font::Font, Canvas, Path, Rgba};
+use sk_render::LOOK_ROWS;
 use sk_ui::theme::Theme;
 use sk_ui::widgets::Rect;
 
@@ -89,8 +90,57 @@ pub fn type_look(m: &Model, theme: &Theme, set: &LayerSet) -> TypeLook {
     }
 }
 
+/// Schraffuren über die ganze Fläche des Schnittbilds, je Aussehen einmal
+/// gerechnet (U7): Beim Übergang der Schichtgrenzen verschieben sich nur die
+/// Grenzen, die Linien liegen fest im Bild. Das Zickzack hängt an der
+/// Schicht und wird weiter je Bildpunkt gerechnet.
+#[derive(Default)]
+pub struct Patterns {
+    area: (f32, f32, f32, f32),
+    pats: Vec<([[f32; 4]; LOOK_ROWS], Canvas)>,
+}
+
+impl Patterns {
+    /// Muster für `rows` über `area`; `None`, wenn es von der Schicht abhängt.
+    fn get(&mut self, rows: &[[f32; 4]; LOOK_ROWS], area: Rect) -> Option<&Canvas> {
+        if (rows[2][3] + 0.5) as i32 == 3 {
+            return None;
+        }
+        let key = (area.x, area.y, area.w, area.h);
+        if self.area != key {
+            self.area = key;
+            self.pats.clear();
+        }
+        let i = match self.pats.iter().position(|(r, _)| r == rows) {
+            Some(i) => i,
+            None => {
+                // Höchstens eine Handvoll Baustoffe je Typ
+                if self.pats.len() >= 8 {
+                    self.pats.remove(0);
+                }
+                let mut c = Canvas::new(area.w.max(0.0) as usize, area.h.max(0.0) as usize);
+                c.set_origin(area.x, area.y);
+                let rows = *rows;
+                c.shade_rect(area.x, area.y, area.x + area.w, area.y + area.h, |x, y| {
+                    let k = sk_render::fill_color(&rows, x, -y, [0.0; 2], [1.0; 2]);
+                    Rgba::from_f32([k[0], k[1], k[2], 1.0])
+                });
+                self.pats.push((rows, c));
+                self.pats.len() - 1
+            }
+        };
+        Some(&self.pats[i].1)
+    }
+}
+
+/// Liegt das Band ganz im Musterbereich?
+fn inside(area: Rect, (x0, y0, x1, y1): (f32, f32, f32, f32)) -> bool {
+    x0 >= area.x && y0 >= area.y && x1 <= area.x + area.w && y1 <= area.y + area.h
+}
+
 /// Füllt ein senkrechtes Band `x0..x1` × `y0..y1` mit der Schraffur;
 /// Luftschichten bleiben Papier.
+#[allow(clippy::too_many_arguments)]
 fn shade(
     c: &mut Canvas,
     (x0, y0, x1, y1): (f32, f32, f32, f32),
@@ -98,12 +148,20 @@ fn shade(
     air: bool,
     paper: Rgba,
     s: f32,
+    pats: Option<&mut Patterns>,
+    area: Rect,
 ) {
     if air {
         c.fill_rect(x0, y0, x1 - x0, y1 - y0, paper);
         return;
     }
     let rows = look_rows(look, s);
+    if inside(area, (x0, y0, x1, y1)) {
+        if let Some(p) = pats.and_then(|p| p.get(&rows, area)) {
+            c.copy_rect_from(p, x0, y0, x1, y1);
+            return;
+        }
+    }
     let w = (x1 - x0).max(1.0);
     c.shade_rect(x0, y0, x1, y1, |x, y| {
         // Längs = senkrecht (Zickzack), quer 0..1 über die Schicht
@@ -113,8 +171,25 @@ fn shade(
 }
 
 /// Waagrechtes Band (Decke): längs = waagrecht.
-fn shade_slab(c: &mut Canvas, x0: f32, y0: f32, x1: f32, y1: f32, look: &MatLook, s: f32) {
+#[allow(clippy::too_many_arguments)]
+fn shade_slab(
+    c: &mut Canvas,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    look: &MatLook,
+    s: f32,
+    pats: Option<&mut Patterns>,
+    area: Rect,
+) {
     let rows = look_rows(look, s);
+    if inside(area, (x0, y0, x1, y1)) {
+        if let Some(p) = pats.and_then(|p| p.get(&rows, area)) {
+            c.copy_rect_from(p, x0, y0, x1, y1);
+            return;
+        }
+    }
     let h = (y1 - y0).max(1.0);
     c.shade_rect(x0, y0, x1, y1, |x, y| {
         let k = sk_render::fill_color(&rows, x, -y, [x / h, (y1 - y) / h], [1.0 / h, 1.0 / h]);
@@ -160,7 +235,17 @@ pub fn paint_thumb(c: &mut Canvas, r: Rect, look: &TypeLook, s: f32) {
         } else {
             (ix + iw * (acc / total) as f32).round()
         };
-        shade(c, (x0, iy, x1, iy + ih), &l.look, l.air, look.paper, s);
+        let none = Rect::new(0.0, 0.0, 0.0, 0.0);
+        shade(
+            c,
+            (x0, iy, x1, iy + ih),
+            &l.look,
+            l.air,
+            look.paper,
+            s,
+            None,
+            none,
+        );
         if i > 0 {
             c.fill_rect(x0, iy, b, ih, look.ink);
         }
@@ -310,6 +395,7 @@ pub fn paint_section(
     marks: &SectionMarks,
     s: f32,
     theme: &Theme,
+    mut pats: Option<&mut Patterns>,
 ) {
     let rad = 4.0 * s;
     let mut p = Path::new();
@@ -332,6 +418,8 @@ pub fn paint_section(
             l.air,
             paper,
             s,
+            pats.as_deref_mut(),
+            r,
         );
     }
     for (i, &x) in g.xs.iter().enumerate() {
@@ -352,7 +440,8 @@ pub fn paint_section(
     // darüber und darunter, die Außenkontur läuft durch (F4)
     if let Some((_, sl)) = &look.strip {
         let x_out = g.xs[0].round();
-        shade(c, (x_out, sy0, sx0, sy1), sl, false, paper, s);
+        let band = (x_out, sy0, sx0, sy1);
+        shade(c, band, sl, false, paper, s, pats.as_deref_mut(), r);
         let w = if n > 0 && look.layers[0].core {
             core_w
         } else {
@@ -360,7 +449,7 @@ pub fn paint_section(
         };
         c.fill_rect(x_out - (w * 0.5).floor(), sy0, w, sy1 - sy0, ink);
     }
-    shade_slab(c, sx0, sy0, sx1, sy1, &look.slab, s);
+    shade_slab(c, sx0, sy0, sx1, sy1, &look.slab, s, pats, r);
     c.fill_rect(sx0, sy0 - (core_w * 0.5).floor(), sx1 - sx0, core_w, ink);
     c.fill_rect(sx0, sy1 - (core_w * 0.5).floor(), sx1 - sx0, core_w, ink);
     if look.exterior {
@@ -513,6 +602,7 @@ mod tests {
             &SectionMarks::default(),
             1.0,
             &theme,
+            None,
         );
         let set = m
             .layer_set(m.default_type(TypeCategory::ExteriorWall))
@@ -546,7 +636,7 @@ mod tests {
             hover: Some(0),
             ghost: Some((120.0, "+4".into())),
         };
-        paint_section(&mut c, None, r, &look, &t, &marks, 1.0, &theme);
+        paint_section(&mut c, None, r, &look, &t, &marks, 1.0, &theme, None);
         let mut c = Canvas::new(30, 34);
         paint_thumb(&mut c, Rect::new(0.0, 0.0, 30.0, 34.0), &look, 1.0);
     }

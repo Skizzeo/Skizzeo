@@ -14,17 +14,19 @@ use crate::catalog::{Company, SaveResult};
 use crate::prefs::Win;
 use crate::scene::Scene;
 use crate::type_look::{
-    cm_text, paint_section, paint_thumb, section_layer_at, type_look, SectionMarks, TypeLook,
+    cm_text, paint_section, paint_thumb, section_layer_at, type_look, Patterns, SectionMarks,
+    TypeLook,
 };
 use sk_model::{
     compare, import_type, type_code, ElementId, Guid, LayerFunction, LayerSet, LayerSetId, Library,
     MatCategory, Material, MaterialLayer, Model, PropValue, TypeCategory, TypeState, TYPE_PROPS,
 };
-use sk_paint::{Canvas, Path, Rgba};
+use sk_paint::{font::Font, Canvas, Path, Rgba};
 use sk_platform::{Cursor, Event, Key, Modifiers, MouseButton};
 use sk_ui::text_edit::TextEdit;
 use sk_ui::theme::Theme;
 use sk_ui::widgets::{self, ButtonState, FieldState, Fonts, Rect};
+use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
 /// Kopf, Fuß, Rand (dip).
@@ -252,7 +254,7 @@ pub struct Ctx<'a> {
 }
 
 /// Aufleuchten nach einer Änderung: Name, Dicke, U-Wert.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Flash {
     Name = 0,
     Thick = 1,
@@ -285,6 +287,39 @@ pub struct Catalog {
     ghost: Option<(f64, String)>,
     /// Ein Fehlversuch (ungültiger Typ): Meldung leuchtet.
     blink: Option<Instant>,
+    /// Was sich seit dem letzten Bild geändert hat (U7); leer heißt: alles
+    /// neu, wenn die App ein Bild verlangt.
+    damage: Vec<Area>,
+    /// Letztes ganzes Bild; Teilbilder erneuern es stellenweise.
+    img: Option<Canvas>,
+    /// Schraffuren des Schnittbilds (Übergang ohne Rechnen je Bildpunkt).
+    patterns: RefCell<Patterns>,
+}
+
+/// Bereich des Fensters, der neu gemalt werden muss.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Area {
+    Full,
+    /// Was ein Ziel unter der Maus hervorhebt (vorher und nachher).
+    Hover(Option<Target>),
+    /// Schnittbild (Übergang der Schichtgrenzen).
+    Section,
+    Flash(Flash),
+    /// Meldung im Fuß (Aufleuchten).
+    Foot,
+}
+
+/// Was die App hochladen muss: das ganze Bild oder Ausschnitte daraus
+/// (vormultipliziertes RGBA8, Lage im Bild).
+pub enum Frame {
+    Full {
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        px: Vec<u8>,
+    },
+    Parts(Vec<(i32, i32, u32, u32, Vec<u8>)>),
 }
 
 fn prop_text(v: &PropValue) -> String {
@@ -368,6 +403,9 @@ impl Catalog {
             anim: None,
             ghost: None,
             blink: None,
+            damage: Vec::new(),
+            img: None,
+            patterns: RefCell::default(),
         };
         c.set_company(company);
         c
@@ -982,6 +1020,18 @@ impl Catalog {
     // --- Ereignisse -----------------------------------------------------------
 
     pub fn handle(&mut self, e: &Event, cx: &mut Ctx) -> Out {
+        let mut out = self.dispatch(e, cx);
+        // Nur Hervorhebungen kennen ihren Bereich; alles andere malt ganz
+        if out.repaint && self.damage.is_empty() {
+            self.damage.push(Area::Full);
+        }
+        if out.closed {
+            out.repaint = true;
+        }
+        out
+    }
+
+    fn dispatch(&mut self, e: &Event, cx: &mut Ctx) -> Out {
         let mut out = Out::default();
         match *e {
             Event::MouseMove { x, y, .. } => self.mouse_move(x, y, cx, &mut out),
@@ -1015,7 +1065,7 @@ impl Catalog {
             } => self.key(key, mods, cx, &mut out),
             Event::Text(ch) => self.text(ch, &mut out),
             Event::MouseLeave if self.hover.is_some() => {
-                self.hover = None;
+                self.damage.push(Area::Hover(self.hover.take()));
                 out = Out::all();
             }
             _ => {}
@@ -1063,6 +1113,8 @@ impl Catalog {
         }
         let h = self.hit(t, &w, cx.fonts, x, y);
         if h != self.hover {
+            self.damage.push(Area::Hover(self.hover));
+            self.damage.push(Area::Hover(h));
             self.hover = h;
             out.repaint = true;
             out.popup = self.popup.is_some();
@@ -2276,6 +2328,18 @@ impl Catalog {
 
     /// Ein Bild weiter: `true`, wenn neu zu zeichnen ist.
     pub fn tick(&mut self, t: &Theme) -> bool {
+        // Was sich bewegt, malt nur seinen Bereich
+        if self.anim.is_some() {
+            self.damage.push(Area::Section);
+        }
+        if self.blink.is_some() {
+            self.damage.push(Area::Foot);
+        }
+        for f in [Flash::Name, Flash::Thick, Flash::U] {
+            if self.flashes[f as usize].is_some() {
+                self.damage.push(Area::Flash(f));
+            }
+        }
         if self.animating(t) {
             return true;
         }
@@ -2578,13 +2642,178 @@ impl Catalog {
 
     pub fn paint(&mut self, t: &Theme, fonts: &Fonts, w: &Win) -> (Canvas, i32, i32) {
         let f = self.frame(t, w);
-        let s = w.scale;
-        let m = (t.size.panel_shadow * s).round();
+        let m = (t.size.panel_shadow * w.scale).round();
         let mut c = Canvas::new((f.w + 2.0 * m) as usize, (f.h + 2.0 * m) as usize);
         // Zeichnen in Fensterkoordinaten
         c.set_origin(f.x - m, f.y - m);
+        self.paint_into(&mut c, t, fonts, w);
+        let (x, y) = self.origin(t, w);
+        (c, x, y)
+    }
+
+    /// Nächstes Bild für die App (U7): Nach Hervorhebungen und Übergängen
+    /// nur die betroffenen Bereiche, sonst das ganze Fenster.
+    pub fn paint_frame(&mut self, t: &Theme, fonts: &Fonts, w: &Win) -> Frame {
+        let f = self.frame(t, w);
+        let s = w.scale;
+        let m = (t.size.panel_shadow * s).round();
+        let (cw, ch) = ((f.w + 2.0 * m) as usize, (f.h + 2.0 * m) as usize);
+        let (ox, oy) = (f.x - m, f.y - m);
+        let areas = std::mem::take(&mut self.damage);
+        let mut rects = Vec::new();
+        let mut full = areas.is_empty()
+            || self
+                .img
+                .as_ref()
+                .is_none_or(|c| (c.width, c.height) != (cw, ch));
+        for a in &areas {
+            match self.area_rects(*a, t, w, fonts) {
+                Some(v) => rects.extend(v),
+                None => full = true,
+            }
+        }
+        // In Bildpunkte des Fensters, mit Rand für Umrisse und Glättung
+        let pad = (4.0 * s).ceil();
+        let mut parts: Vec<(usize, usize, usize, usize)> = Vec::new();
+        for r in rects {
+            let x0 = ((r.x - pad - ox).floor().max(0.0) as usize).min(cw);
+            let y0 = ((r.y - pad - oy).floor().max(0.0) as usize).min(ch);
+            let x1 = ((r.x + r.w + pad - ox).ceil().max(0.0) as usize).min(cw);
+            let y1 = ((r.y + r.h + pad - oy).ceil().max(0.0) as usize).min(ch);
+            if x1 > x0 && y1 > y0 {
+                merge_rect(&mut parts, (x0, y0, x1, y1));
+            }
+        }
+        let area: usize = parts.iter().map(|p| (p.2 - p.0) * (p.3 - p.1)).sum();
+        if full || area * 2 > cw * ch {
+            let (c, x, y) = self.paint(t, fonts, w);
+            let px = c.to_premul_rgba8();
+            let (cw, ch) = (c.width as u32, c.height as u32);
+            self.img = Some(c);
+            return Frame::Full {
+                x,
+                y,
+                w: cw,
+                h: ch,
+                px,
+            };
+        }
+        // Das Schnittbild allein (Übergang, Hervorhebung einer Schicht): es
+        // liegt mit Abstand auf der Paneelfläche, darunter ist nur deren Farbe
+        let sec = self.section_rect(t, w);
+        let sec_px = (
+            ((sec.x - pad - ox).floor().max(0.0) as usize).min(cw),
+            ((sec.y - pad - oy).floor().max(0.0) as usize).min(ch),
+            ((sec.x + sec.w + pad - ox).ceil().max(0.0) as usize).min(cw),
+            ((sec.y + sec.h + pad - oy).ceil().max(0.0) as usize).min(ch),
+        );
+        let mut out = Vec::with_capacity(parts.len());
+        for (x0, y0, x1, y1) in parts {
+            let mut sub = Canvas::new(x1 - x0, y1 - y0);
+            sub.set_origin(ox + x0 as f32, oy + y0 as f32);
+            if self.tab == Tab::Project && (x0, y0, x1, y1) == sec_px {
+                // Fläche nur am Rand und in den runden Ecken; innen deckt das
+                // Papier des Schnittbilds
+                let (sx, sy) = sub.origin();
+                let (w_, h_) = (sub.width as f32, sub.height as f32);
+                let e = pad + 6.0 * s;
+                for (x, y, ww, hh) in [
+                    (sx, sy, w_, e),
+                    (sx, sy + h_ - e, w_, e),
+                    (sx, sy, e, h_),
+                    (sx + w_ - e, sy, e, h_),
+                ] {
+                    sub.fill_rect(x, y, ww, hh, t.ui.bg);
+                }
+                let font = fonts.regular.as_ref();
+                self.paint_section_view(&mut sub, t, font, w);
+            } else {
+                self.paint_into(&mut sub, t, fonts, w);
+            }
+            if let Some(img) = self.img.as_mut() {
+                img.put(&sub, x0, y0);
+            }
+            let px = sub.to_premul_rgba8();
+            out.push((
+                x0 as i32,
+                y0 as i32,
+                sub.width as u32,
+                sub.height as u32,
+                px,
+            ));
+        }
+        Frame::Parts(out)
+    }
+
+    /// Fensterbereiche einer Änderung; `None`: unbekannt, ganz malen.
+    fn area_rects(&self, a: Area, t: &Theme, w: &Win, fonts: &Fonts) -> Option<Vec<Rect>> {
+        let s = w.scale;
+        Some(match a {
+            Area::Full => return None,
+            Area::Section => vec![self.section_rect(t, w)],
+            Area::Flash(Flash::Name) => vec![self.field_rect(t, w, FieldId::Name)?],
+            Area::Flash(f) => {
+                let i = if f == Flash::Thick { 0.0 } else { 1.0 };
+                vec![self.r(t, w, RIGHT_X, 124.0 + i * 30.0, 300.0, 26.0)]
+            }
+            Area::Foot => {
+                let fr = self.frame(t, w);
+                vec![Rect::new(fr.x, fr.y + fr.h - FOOT * s, fr.w, FOOT * s)]
+            }
+            Area::Hover(None) => Vec::new(),
+            Area::Hover(Some(h)) => {
+                // Schichten heben ihre Lage im Schnittbild mit hervor
+                let layer = |i: usize| {
+                    let y = ROWS_Y + i as f32 * ROW_H - 4.0;
+                    let row = self.r(t, w, CONTENT_X - 4.0, y, 562.0, ROW_H);
+                    vec![row, self.section_rect(t, w)]
+                };
+                match h {
+                    Target::Close => vec![self.close_rect(t, w)],
+                    Target::Tab(tab) => vec![self.tab_rect(t, w, tab)],
+                    Target::PathLink => vec![self.path_link(t, w, fonts)?],
+                    Target::Tile(it) => {
+                        let body = self.list_body(t, w);
+                        let (tiles, ..) = self.list_layout(t, w);
+                        let r = tiles.into_iter().find(|(x, _)| *x == it)?.1;
+                        vec![intersect(r, body)?]
+                    }
+                    Target::Btn(b) => {
+                        let mut all = self.foot_buttons(t, w).to_vec();
+                        all.extend(self.list_buttons(t, w));
+                        vec![all.into_iter().find(|(x, ..)| *x == b)?.1]
+                    }
+                    // Eine Schichtzeile hebt die ganze Zeile hervor
+                    Target::Field(FieldId::Thick(i))
+                    | Target::Combo(ComboId::Material(i) | ComboId::Function(i))
+                    | Target::Grip(i)
+                    | Target::Remove(i) => layer(i),
+                    Target::Field(fi) => vec![self.field_rect(t, w, fi)?],
+                    Target::Combo(id) => vec![self.combo_rect(t, w, id)],
+                    Target::AddLayer => vec![self.add_layer_rect(t, w)],
+                    Target::Standard => {
+                        let st = self.standard_rect(t, w);
+                        vec![Rect::new(st.x, st.y, 260.0 * s, st.h)]
+                    }
+                    Target::Section(_) => vec![self.section_rect(t, w)],
+                    // Auswahllisten und Karten liegen in eigenem Bild
+                    Target::Choice(_)
+                    | Target::NewCat(_)
+                    | Target::NewFrom(_)
+                    | Target::MatCat(_)
+                    | Target::Card => Vec::new(),
+                }
+            }
+        })
+    }
+
+    /// Malt das Fenster in `c` (Fensterkoordinaten über den Ursprung von
+    /// `c`); was außerhalb von `c` liegt, fällt weg.
+    fn paint_into(&mut self, c: &mut Canvas, t: &Theme, fonts: &Fonts, w: &Win) {
+        let f = self.frame(t, w);
+        let s = w.scale;
         let u = &t.ui;
-        widgets::panel(&mut c, f, s, t);
+        widgets::panel(c, f, s, t);
         let (regular, bold) = (
             fonts.regular.as_ref(),
             fonts.bold.as_ref().or(fonts.regular.as_ref()),
@@ -2592,7 +2821,7 @@ impl Catalog {
         let line = s.round().max(1.0);
         // Kopf
         label(
-            &mut c,
+            c,
             bold,
             "Bauteilkatalog",
             t.size.font_title * s,
@@ -2606,16 +2835,16 @@ impl Catalog {
             218.0 * s,
             32.0 * s,
         );
-        rounded(&mut c, seg, 7.0 * s, u.field);
+        rounded(c, seg, 7.0 * s, u.field);
         for tab in [Tab::Project, Tab::Company] {
             let r = self.tab_rect(t, w, tab);
             let on = self.tab == tab;
             let hov = self.hover == Some(Target::Tab(tab));
             if on {
-                rounded(&mut c, r, 6.0 * s, u.pressed);
-                outline(&mut c, r, 6.0 * s, line, u.accent);
+                rounded(c, r, 6.0 * s, u.pressed);
+                outline(c, r, 6.0 * s, line, u.accent);
             } else if hov {
-                rounded(&mut c, r, 6.0 * s, u.hover);
+                rounded(c, r, 6.0 * s, u.hover);
             }
             let text = if tab == Tab::Project {
                 "Projekt"
@@ -2626,7 +2855,7 @@ impl Catalog {
             let px = t.size.font * s;
             let tw = font.map_or(0.0, |ft| ft.width(text, px));
             label(
-                &mut c,
+                c,
                 font,
                 text,
                 px,
@@ -2639,15 +2868,7 @@ impl Catalog {
             let base = self.r(t, w, 436.0, 18.0, 0.0, 28.0);
             let px = t.size.font_small * s;
             let p = widgets::ellipsize(regular, path, px, 360.0 * s);
-            label(
-                &mut c,
-                regular,
-                &p,
-                px,
-                base.x,
-                base.y + 19.0 * s,
-                u.text_dim,
-            );
+            label(c, regular, &p, px, base.x, base.y + 19.0 * s, u.text_dim);
             if let Some(l) = self.path_link(t, w, fonts) {
                 let col = if self.hover == Some(Target::PathLink) {
                     u.accent_hover
@@ -2655,7 +2876,7 @@ impl Catalog {
                     u.accent
                 };
                 label(
-                    &mut c,
+                    c,
                     regular,
                     "ändern …",
                     px,
@@ -2667,7 +2888,7 @@ impl Catalog {
         }
         let cr = self.close_rect(t, w);
         if self.hover == Some(Target::Close) {
-            rounded(&mut c, cr, 6.0 * s, u.hover);
+            rounded(c, cr, 6.0 * s, u.hover);
         }
         let (cx0, cy0, d) = (cr.x + cr.w * 0.5, cr.y + cr.h * 0.5, 5.5 * s);
         let mut p = Path::new();
@@ -2684,23 +2905,15 @@ impl Catalog {
             f.h - (HEAD + FOOT) * s,
             u.border,
         );
-        self.paint_list(&mut c, t, fonts, w);
+        self.paint_list(c, t, fonts, w);
         if self.tab == Tab::Project {
             for (b, r, text) in self.list_buttons(t, w) {
                 let disabled = b == Btn::Delete && !self.can_delete();
-                widgets::button(
-                    &mut c,
-                    fonts,
-                    r,
-                    text,
-                    self.btn_state(b, false, disabled),
-                    s,
-                    t,
-                );
+                widgets::button(c, fonts, r, text, self.btn_state(b, false, disabled), s, t);
             }
-            self.paint_project(&mut c, t, fonts, w);
+            self.paint_project(c, t, fonts, w);
         } else {
-            self.paint_company(&mut c, t, fonts, w);
+            self.paint_company(c, t, fonts, w);
         }
         // Fuß
         let no_company = self.company.is_none();
@@ -2710,7 +2923,7 @@ impl Catalog {
                     || (self.tab == Tab::Project && self.draft_new)
                     || (self.tab == Tab::Company && self.csel.is_none()));
             widgets::button(
-                &mut c,
+                c,
                 fonts,
                 r,
                 text,
@@ -2739,12 +2952,7 @@ impl Catalog {
             if blink > 0.0 {
                 let tw = regular.map_or(0.0, |ft| ft.width(&text, px));
                 let r = Rect::new(x0 - 6.0 * s, action.1.y + 3.0 * s, tw + 12.0 * s, 24.0 * s);
-                rounded(
-                    &mut c,
-                    r,
-                    4.0 * s,
-                    with_alpha(u.field_invalid, 0.35 * blink),
-                );
+                rounded(c, r, 4.0 * s, with_alpha(u.field_invalid, 0.35 * blink));
             }
             let col = if self.edit.as_ref().is_some_and(|e| e.invalid.is_some())
                 || self.draft_problems().first() == Some(&msg)
@@ -2753,10 +2961,8 @@ impl Catalog {
             } else {
                 u.text_dim
             };
-            label(&mut c, regular, &text, px, x0, action.1.y + 20.0 * s, col);
+            label(c, regular, &text, px, x0, action.1.y + 20.0 * s, col);
         }
-        let (x, y) = self.origin(t, w);
-        (c, x, y)
     }
 
     fn btn_state(&self, b: Btn, active: bool, disabled: bool) -> ButtonState {
@@ -2773,13 +2979,19 @@ impl Catalog {
         let u = &t.ui;
         let body = self.list_body(t, w);
         let (tiles, heads, _) = self.list_layout(t, w);
-        // Eigene Leinwand: was über den Rand ragt, fällt weg
+        // Eigene Leinwand: was über den Rand ragt, fällt weg; nur der Teil,
+        // den `c` zeigt (Teilbild)
         let body = Rect::new(
             body.x.round(),
             body.y.round(),
             body.w.round(),
             body.h.round(),
         );
+        let (ox, oy) = c.origin();
+        let shown = Rect::new(ox, oy, c.width as f32, c.height as f32);
+        let Some(body) = intersect(body, shown) else {
+            return;
+        };
         let mut sub = Canvas::new(body.w as usize, body.h as usize);
         sub.set_origin(body.x, body.y);
         let (regular, bold) = (
@@ -2868,6 +3080,44 @@ impl Catalog {
         c.blit(&sub, body.x as i32, body.y as i32);
     }
 
+    /// Hervorgehobene Schicht (Zeile, Feld, Schnittbild, Ziehen).
+    fn hover_layer(&self) -> Option<usize> {
+        match (self.hover, &self.edit, self.drag) {
+            (_, _, Some(Drag::Row(i))) => Some(i),
+            (Some(Target::Section(i) | Target::Grip(i) | Target::Remove(i)), ..) => Some(i),
+            (Some(Target::Field(FieldId::Thick(i))), ..) => Some(i),
+            (Some(Target::Combo(ComboId::Material(i) | ComboId::Function(i))), ..) => Some(i),
+            (_, Some(e), _) => match e.field {
+                FieldId::Thick(i) => Some(i),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Schnittbild des Entwurfs mit Übergang und Hervorhebung.
+    fn paint_section_view(&self, c: &mut Canvas, t: &Theme, font: Option<&Font>, w: &Win) {
+        let sec = self.section_rect(t, w);
+        let look = type_look(&self.work, t, &self.draft);
+        let th = self.anim_thick(t);
+        let marks = SectionMarks {
+            hover: self.hover_layer(),
+            ghost: self.ghost.clone(),
+        };
+        let mut pats = self.patterns.borrow_mut();
+        paint_section(
+            c,
+            font,
+            sec,
+            &look,
+            &th,
+            &marks,
+            w.scale,
+            t,
+            Some(&mut pats),
+        );
+    }
+
     fn paint_project(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts, w: &Win) {
         let s = w.scale;
         let u = &t.ui;
@@ -2918,25 +3168,8 @@ impl Catalog {
             );
         }
         // Schnittbild
-        let sec = self.section_rect(t, w);
-        let look = type_look(&self.work, t, &self.draft);
-        let th = self.anim_thick(t);
-        let hover_layer = match (self.hover, &self.edit, self.drag) {
-            (_, _, Some(Drag::Row(i))) => Some(i),
-            (Some(Target::Section(i) | Target::Grip(i) | Target::Remove(i)), ..) => Some(i),
-            (Some(Target::Field(FieldId::Thick(i))), ..) => Some(i),
-            (Some(Target::Combo(ComboId::Material(i) | ComboId::Function(i))), ..) => Some(i),
-            (_, Some(e), _) => match e.field {
-                FieldId::Thick(i) => Some(i),
-                _ => None,
-            },
-            _ => None,
-        };
-        let marks = SectionMarks {
-            hover: hover_layer,
-            ghost: self.ghost.clone(),
-        };
-        paint_section(c, regular, sec, &look, &th, &marks, s, t);
+        let hover_layer = self.hover_layer();
+        self.paint_section_view(c, t, regular, w);
         // Kennwerte
         let users = self
             .sel
@@ -3332,6 +3565,7 @@ impl Catalog {
                     &SectionMarks::default(),
                     s,
                     t,
+                    None,
                 ),
                 None => {
                     let text = "nicht im Projekt";
@@ -4014,6 +4248,28 @@ fn differences(
     v
 }
 
+/// Schnitt zweier Rechtecke auf ganze Bildpunkte; `None`, wenn leer.
+fn intersect(a: Rect, b: Rect) -> Option<Rect> {
+    let x0 = a.x.max(b.x).round();
+    let y0 = a.y.max(b.y).round();
+    let x1 = (a.x + a.w).min(b.x + b.w).round();
+    let y1 = (a.y + a.h).min(b.y + b.h).round();
+    (x1 > x0 && y1 > y0).then(|| Rect::new(x0, y0, x1 - x0, y1 - y0))
+}
+
+/// Fügt ein Teilbild (x0, y0, x1, y1) hinzu; überlappende werden zum
+/// umschließenden Rechteck vereinigt.
+fn merge_rect(parts: &mut Vec<(usize, usize, usize, usize)>, mut r: (usize, usize, usize, usize)) {
+    while let Some(i) = parts
+        .iter()
+        .position(|p| p.0 < r.2 && r.0 < p.2 && p.1 < r.3 && r.1 < p.3)
+    {
+        let p = parts.swap_remove(i);
+        r = (r.0.min(p.0), r.1.min(p.1), r.2.max(p.2), r.3.max(p.3));
+    }
+    parts.push(r);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4097,6 +4353,182 @@ mod tests {
             .filter(|(_, t)| t.category == TypeCategory::ExteriorWall && !k4.contains(&t.guid))
             .map(|(_, t)| t)
             .collect()
+    }
+
+    /// U7: Nach einer Hervorhebung kommen nur Ausschnitte; zusammen mit dem
+    /// letzten ganzen Bild gleichen sie dem neu gemalten ganzen Bild. Ohne
+    /// bekannten Bereich (Klick, Größe) kommt das ganze Bild.
+    #[test]
+    fn teilbilder_gleichen_dem_ganzen_bild() {
+        let mut s = szene();
+        let theme = Theme::dark();
+        let f = Fonts::system();
+        for win in [WIN, Win { scale: 1.5, ..WIN }] {
+            let mut c = Catalog::open(&s, None);
+            assert!(matches!(
+                c.paint_frame(&theme, &f, &win),
+                Frame::Full { .. }
+            ));
+            let (tiles, ..) = c.list_layout(&theme, &win);
+            let thick = c.field_rect(&theme, &win, FieldId::Thick(1)).unwrap();
+            let ok = c.foot_buttons(&theme, &win)[2].1;
+            let mid = |r: Rect| ((r.x + r.w * 0.5) as f64, (r.y + r.h * 0.5) as f64);
+            let total = {
+                let img = c.img.as_ref().unwrap();
+                img.width * img.height
+            };
+            for (x, y) in [
+                mid(tiles[1].1),
+                mid(tiles[2].1),
+                mid(thick),
+                mid(ok),
+                (1.0, 1.0),
+            ] {
+                let mut cx = Ctx {
+                    scene: &mut s,
+                    theme: &theme,
+                    fonts: &f,
+                    win,
+                    company: None,
+                    company_standard: false,
+                };
+                let e = Event::MouseMove {
+                    x,
+                    y,
+                    mods: Modifiers::default(),
+                };
+                assert!(c.handle(&e, &mut cx).repaint);
+                let Frame::Parts(parts) = c.paint_frame(&theme, &f, &win) else {
+                    panic!("Teilbild erwartet bei {x}, {y}");
+                };
+                let area: usize = parts.iter().map(|p| (p.2 * p.3) as usize).sum();
+                assert!(!parts.is_empty() && area * 2 < total, "{area} von {total}");
+                let a = c.img.as_ref().unwrap().to_premul_rgba8();
+                let b = c.paint(&theme, &f, &win).0.to_premul_rgba8();
+                let diff = a.iter().zip(&b).map(|(p, q)| p.abs_diff(*q)).max();
+                assert!(diff <= Some(1), "Abweichung {diff:?} bei {x}, {y}");
+            }
+            // Übergang der Schichtgrenzen: nur das Schnittbild (sehr langsam,
+            // damit Teil- und Vergleichsbild denselben Stand zeigen)
+            let mut slow = theme.clone();
+            slow.size.anim_ms = 1e9;
+            c.anim = Some((vec![60.0, 300.0], Instant::now()));
+            assert!(c.tick(&slow));
+            let Frame::Parts(parts) = c.paint_frame(&slow, &f, &win) else {
+                panic!("Teilbild erwartet beim Übergang");
+            };
+            assert_eq!(parts.len(), 1);
+            let a = c.img.as_ref().unwrap().to_premul_rgba8();
+            let b = c.paint(&slow, &f, &win).0.to_premul_rgba8();
+            let diff = a.iter().zip(&b).map(|(p, q)| p.abs_diff(*q)).max();
+            assert!(diff <= Some(1), "Übergang: Abweichung {diff:?}");
+            c.anim = None;
+            // Klick: ganzes Bild
+            let mut cx = Ctx {
+                scene: &mut s,
+                theme: &theme,
+                fonts: &f,
+                win,
+                company: None,
+                company_standard: false,
+            };
+            let (x, y) = mid(tiles[2].1);
+            let e = Event::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                mods: Modifiers::default(),
+            };
+            c.handle(&e, &mut cx);
+            assert!(matches!(
+                c.paint_frame(&theme, &f, &win),
+                Frame::Full { .. }
+            ));
+            // Die App verlangt ein Bild ohne Änderung im Fenster: ganz
+            assert!(matches!(
+                c.paint_frame(&theme, &f, &win),
+                Frame::Full { .. }
+            ));
+        }
+    }
+
+    /// Zeitmessung Katalogfenster (U7), Median aus 7 Runden; mit Schrift
+    /// über WINDIR wie in perf.rs. `cargo test --release perf_katalog --
+    /// --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn perf_katalogfenster() {
+        let median = |f: &mut dyn FnMut()| {
+            let mut v: Vec<f64> = (0..7)
+                .map(|_| {
+                    let t = Instant::now();
+                    for _ in 0..10 {
+                        f();
+                    }
+                    t.elapsed().as_secs_f64() * 100.0
+                })
+                .collect();
+            v.sort_by(f64::total_cmp);
+            v[3]
+        };
+        let mut s = szene();
+        let theme = Theme::dark();
+        let f = Fonts::system();
+        println!();
+        println!(
+            "{:<6} {:>10} {:>12} {:>12} {:>12}",
+            "Skala", "ganz", "Hover Kachel", "Hover Zeile", "Übergang"
+        );
+        for scale in [1.0, 1.5] {
+            let win = Win {
+                w: (1280.0 * scale) as u32,
+                h: (800.0 * scale) as u32,
+                top: (32.0 * scale) as u32,
+                scale,
+            };
+            let mut c = Catalog::open(&s, None);
+            let full = median(&mut || {
+                c.damage.clear();
+                std::hint::black_box(c.paint_frame(&theme, &f, &win));
+            });
+            let (tiles, ..) = c.list_layout(&theme, &win);
+            let thick = c.field_rect(&theme, &win, FieldId::Thick(1)).unwrap();
+            let mid = |r: Rect| ((r.x + r.w * 0.5) as f64, (r.y + r.h * 0.5) as f64);
+            let mut hover = |pts: [(f64, f64); 2], c: &mut Catalog| {
+                let mut k = 0;
+                median(&mut || {
+                    k += 1;
+                    let (x, y) = pts[k % 2];
+                    let mut cx = Ctx {
+                        scene: &mut s,
+                        theme: &theme,
+                        fonts: &f,
+                        win,
+                        company: None,
+                        company_standard: false,
+                    };
+                    let e = Event::MouseMove {
+                        x,
+                        y,
+                        mods: Modifiers::default(),
+                    };
+                    c.handle(&e, &mut cx);
+                    std::hint::black_box(c.paint_frame(&theme, &f, &win));
+                })
+            };
+            let tile = hover([mid(tiles[1].1), mid(tiles[2].1)], &mut c);
+            let row = hover([mid(thick), mid(tiles[2].1)], &mut c);
+            c.anim = Some((vec![120.0, 195.0], Instant::now()));
+            let anim = median(&mut || {
+                c.anim = Some((vec![120.0, 195.0], Instant::now()));
+                c.tick(&theme);
+                std::hint::black_box(c.paint_frame(&theme, &f, &win));
+            });
+            println!(
+                "{:<6} {:>8.2}ms {:>10.2}ms {:>10.2}ms {:>10.2}ms",
+                scale, full, tile, row, anim
+            );
+        }
     }
 
     /// Dicke eines verbauten Typs ändern: Rückfrage mit den Wänden, „Ändern“

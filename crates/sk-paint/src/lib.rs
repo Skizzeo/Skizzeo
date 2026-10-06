@@ -336,6 +336,11 @@ impl Canvas {
         self.origin = (x, y);
     }
 
+    /// Lage der Leinwand im Gesamtbild ([`Canvas::set_origin`]).
+    pub fn origin(&self) -> (f32, f32) {
+        self.origin
+    }
+
     /// Senkrechter Bereich des Gesamtbildes, den diese Leinwand zeigt (von,
     /// bis). Was ganz außerhalb liegt, braucht nicht gezeichnet zu werden.
     pub fn visible_y(&self) -> (f32, f32) {
@@ -566,6 +571,20 @@ impl Canvas {
         }
     }
 
+    /// Ersetzt die Bildpunkte ab `(x, y)` (Bildpunkte dieser Leinwand) durch
+    /// `src`, ohne Überblenden; was übersteht, fällt weg. Für Teilbilder, die
+    /// ein ganzes Bild an einer Stelle erneuern.
+    pub fn put(&mut self, src: &Canvas, x: usize, y: usize) {
+        if x >= self.width || y >= self.height {
+            return;
+        }
+        let w = src.width.min(self.width - x);
+        for row in 0..src.height.min(self.height - y) {
+            let d = (y + row) * self.width + x;
+            self.px[d..d + w].copy_from_slice(&src.px[row * src.width..][..w]);
+        }
+    }
+
     /// Zeichnet `src` mit der linken oberen Ecke bei `(x, y)` darüber
     /// (Quelle über Ziel); was außerhalb liegt, fällt weg. Mit Ursprung
     /// ([`Canvas::set_origin`]) in dessen Koordinaten.
@@ -604,6 +623,35 @@ impl Canvas {
                 let c = f(x as f32 + ox + 0.5, y as f32 + oy + 0.5);
                 self.px[y * self.width + x] = premul(c, 1.0);
             }
+        }
+    }
+
+    /// Übernimmt die ganzen Bildpunkte im Bereich `x0..x1`, `y0..y1`
+    /// (Koordinaten des Gesamtbildes, gerundet wie [`Canvas::shade_rect`])
+    /// deckend aus `src`, das mit eigenem Ursprung im selben Gesamtbild liegt.
+    /// Was `src` nicht zeigt, bleibt unverändert.
+    pub fn copy_rect_from(&mut self, src: &Canvas, x0: f32, y0: f32, x1: f32, y1: f32) {
+        let (ox, oy) = self.origin;
+        let col = |v: f32, o: f32, n: usize| ((v - o).round().max(0.0) as usize).min(n);
+        let (cx0, cx1) = (col(x0, ox, self.width), col(x1, ox, self.width));
+        let (cy0, cy1) = (col(y0, oy, self.height), col(y1, oy, self.height));
+        let dx = (ox - src.origin.0).round() as isize;
+        let dy = (oy - src.origin.1).round() as isize;
+        let sx0 = (cx0 as isize + dx).max(0);
+        let sx1 = (cx1 as isize + dx).min(src.width as isize);
+        if sx1 <= sx0 {
+            return;
+        }
+        let (sx0, sx1) = (sx0 as usize, sx1 as usize);
+        let d0 = (sx0 as isize - dx) as usize;
+        for y in cy0..cy1 {
+            let sy = y as isize + dy;
+            if sy < 0 || sy >= src.height as isize {
+                continue;
+            }
+            let from = &src.px[sy as usize * src.width + sx0..sy as usize * src.width + sx1];
+            let at = y * self.width + d0;
+            self.px[at..at + from.len()].copy_from_slice(from);
         }
     }
 

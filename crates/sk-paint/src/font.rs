@@ -423,10 +423,6 @@ impl Font {
         if x1 <= 0 || y1 <= 0 || x0 >= c.width as i32 || y0 >= c.height as i32 {
             return;
         }
-        if x0 < 0 || y0 < 0 || x1 > c.width as i32 || y1 > c.height as i32 {
-            c.fill(&self.text_path(text, px, x, y), color);
-            return;
-        }
         let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
         let mut area = vec![0.0f32; w * h];
         for (gx, gy, m) in &glyphs {
@@ -439,7 +435,21 @@ impl Font {
                 }
             }
         }
-        c.blend_area(x0 as usize, y0 as usize, w, h, &area, color);
+        // Am Rand der Leinwand (Teilbild): nur der sichtbare Teil, mit
+        // denselben Masken wie im ganzen Bild
+        let (cx0, cy0) = (x0.max(0), y0.max(0));
+        let (cx1, cy1) = (x1.min(c.width as i32), y1.min(c.height as i32));
+        if (cx0, cy0, cx1, cy1) == (x0, y0, x1, y1) {
+            c.blend_area(x0 as usize, y0 as usize, w, h, &area, color);
+            return;
+        }
+        let (vw, vh) = ((cx1 - cx0) as usize, (cy1 - cy0) as usize);
+        let (sx, sy) = ((cx0 - x0) as usize, (cy0 - y0) as usize);
+        let mut part = Vec::with_capacity(vw * vh);
+        for r in 0..vh {
+            part.extend_from_slice(&area[(sy + r) * w + sx..][..vw]);
+        }
+        c.blend_area(cx0 as usize, cy0 as usize, vw, vh, &part, color);
     }
 
     /// Maske der Glyphe `g` an der Bruchteil-Lage `(fx, fy)`, aus dem Cache
@@ -570,15 +580,26 @@ mod tests {
         ];
         for origin in [(0.0, 0.0), (0.0, 17.0)] {
             for round in 0..2 {
-                let (mut a, mut b) = (Canvas::new(260, 120), Canvas::new(260, 120));
-                for c in [&mut a, &mut b] {
+                // Vorbild: Umriss auf einer größeren Leinwand, dann der
+                // Ausschnitt (am Rand ist das genauer als die Begrenzung beim
+                // Füllen)
+                const M: usize = 40;
+                let (mut a, mut big) =
+                    (Canvas::new(260, 120), Canvas::new(260 + 2 * M, 120 + 2 * M));
+                a.set_origin(origin.0, origin.1);
+                big.set_origin(origin.0 - M as f32, origin.1 - M as f32);
+                for c in [&mut a, &mut big] {
                     c.clear(Rgba(240, 238, 230, 255));
-                    c.set_origin(origin.0, origin.1);
                 }
                 for (text, px, x, y, col) in cases {
                     let y = y + origin.1;
                     f.draw(&mut a, text, px, x, y, col);
-                    b.fill(&f.text_path(text, px, x, y), col);
+                    big.fill(&f.text_path(text, px, x, y), col);
+                }
+                let mut b = Canvas::new(260, 120);
+                for r in 0..120 {
+                    let src = &big.px[(r + M) * big.width + M..][..260];
+                    b.px[r * 260..(r + 1) * 260].copy_from_slice(src);
                 }
                 let d = worst(&a, &b);
                 assert!(d <= 1, "Ursprung {origin:?}, Durchgang {round}: {d} Stufen");

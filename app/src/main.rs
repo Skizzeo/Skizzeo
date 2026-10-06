@@ -1107,10 +1107,17 @@ impl App {
                 self.redraw = true;
                 return;
             }
-            let (c, x, y) = cat.paint(&self.theme, &self.ui.fonts, &win);
-            let px = c.to_premul_rgba8();
-            self.renderer
-                .set_overlay(OVERLAY_PREFS, x, y, c.width as u32, c.height as u32, &px);
+            // Nach Hervorhebungen und Übergängen nur die Ausschnitte (U7)
+            match cat.paint_frame(&self.theme, &self.ui.fonts, &win) {
+                catalog_view::Frame::Full { x, y, w, h, px } => {
+                    self.renderer.set_overlay(OVERLAY_PREFS, x, y, w, h, &px);
+                }
+                catalog_view::Frame::Parts(parts) => {
+                    for (x, y, w, h, px) in parts {
+                        self.renderer.update_overlay(OVERLAY_PREFS, x, y, w, h, &px);
+                    }
+                }
+            }
             self.redraw = true;
             return;
         }
@@ -1772,14 +1779,8 @@ impl App {
             }
             Event::MouseDown { x, y, .. } => {
                 if menu.hit(x, y) == type_menu::Hit::Outside {
-                    // Der eigene Chip schließt nur
-                    let chip = menu.chip;
-                    let on_chip = self
-                        .ui
-                        .button_rect(chip, self.w, self.top())
-                        .is_some_and(|r| r.contains(x, y));
+                    // Ein Klick daneben schließt nur, auch auf dem eigenen Chip
                     self.close_type_menu(false);
-                    return on_chip || true;
                 }
                 true
             }
