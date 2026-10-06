@@ -474,10 +474,18 @@ pub fn write(m: &Model) -> String {
             FillKind::Lines(ls) => {
                 let v = ls
                     .iter()
-                    .map(|l| format!("{}:{}:{}", l.angle_deg, l.spacing_mm, l.offset_mm))
+                    .map(|l| {
+                        format!(
+                            "{}:{}:{}:{}:{}",
+                            l.angle_deg, l.spacing_mm, l.offset_mm, l.dash_mm, l.gap_mm
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join(";");
-                line.word("kind", "lines").word("lines", &v)
+                // Winkel gegen den Uhrzeigersinn (E3b)
+                line.word("kind", "lines")
+                    .word("lines", &v)
+                    .flag("ccw", true)
             }
             FillKind::Zigzag { period } => line.word("kind", "zigzag").num("period", period),
         };
@@ -710,6 +718,14 @@ fn register<T>(
 pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     check_header(text.lines().next(), "SZO", VERSION)?;
+    // Start-Kreuzschraffur aus E10 (Winkel schon umgerechnet)
+    fn is_old_concrete_cross(l: &[HatchLine]) -> bool {
+        let mut a: Vec<f32> = l.iter().map(|h| h.angle_deg).collect();
+        a.sort_by(f32::total_cmp);
+        a == [45.0, 135.0]
+            && l.iter()
+                .all(|h| h.spacing_mm == 1.27 && h.offset_mm == 0.0 && h.dash_mm == 0.0)
+    }
     // SZO 1: vor der Geschossverwaltung (B11), wird beim Lesen umgestellt
     let v1 = text
         .lines()
@@ -813,8 +829,9 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
             "zigzag" => FillKind::Zigzag {
                 period: r.f32("period")?,
             },
-            "lines" => FillKind::Lines(
-                r.get("lines")?
+            "lines" => {
+                let mut lines = r
+                    .get("lines")?
                     .split(';')
                     .map(|l| {
                         let v: Vec<f32> = l
@@ -822,17 +839,31 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
                             .map(|x| x.parse().ok())
                             .collect::<Option<_>>()?;
                         match v[..] {
-                            [angle_deg, spacing_mm, offset_mm] => Some(HatchLine {
-                                angle_deg,
-                                spacing_mm,
-                                offset_mm,
+                            [a, s, o] => Some(HatchLine::solid(a, s, o)),
+                            [a, s, o, dash_mm, gap_mm] => Some(HatchLine {
+                                dash_mm,
+                                gap_mm,
+                                ..HatchLine::solid(a, s, o)
                             }),
                             _ => None,
                         }
                     })
                     .collect::<Option<Vec<_>>>()
-                    .ok_or_else(|| r.bad("lines", "winkel:abstand:versatz;…"))?,
-            ),
+                    .ok_or_else(|| r.bad("lines", "winkel:abstand:versatz[:strich:lücke];…"))?;
+                // Vor E3b zählten Winkel im Uhrzeigersinn
+                if r.opt("ccw") != Some("1") {
+                    for l in &mut lines {
+                        l.angle_deg = (180.0 - l.angle_deg).rem_euclid(180.0);
+                    }
+                    if r.opt("name") == Some("Stahlbeton") && is_old_concrete_cross(&lines) {
+                        lines = crate::attr::concrete_lines();
+                        hints.push(
+                            "Stahlbeton-Schraffur auf gestrichelte Diagonale umgestellt".into(),
+                        );
+                    }
+                }
+                FillKind::Lines(lines)
+            }
             _ => return Err(r.bad("kind", "empty, solid, lines oder zigzag")),
         };
         let f = Fill {
@@ -1441,15 +1472,11 @@ mod tests {
             guid,
             name: "Kreuz".into(),
             kind: FillKind::Lines(vec![
+                HatchLine::solid(45.0, 2.5, 0.0),
                 HatchLine {
-                    angle_deg: 45.0,
-                    spacing_mm: 2.5,
-                    offset_mm: 0.0,
-                },
-                HatchLine {
-                    angle_deg: -45.0,
-                    spacing_mm: 2.5,
-                    offset_mm: 1.25,
+                    dash_mm: 1.0,
+                    gap_mm: 0.5,
+                    ..HatchLine::solid(-45.0, 2.5, 1.25)
                 },
             ]),
             space: FillSpace::Paper,
@@ -1466,6 +1493,55 @@ mod tests {
 
     fn load(text: &str) -> Result<Loaded, LoadError> {
         read(text, GuidGen::with_seed(99))
+    }
+
+    /// E15/E3b: Schraffuren vor E15 (Winkel im Uhrzeigersinn, Stahlbeton
+    /// gekreuzt) werden umgerechnet bzw. ersetzt; Guid und Verweise bleiben.
+    #[test]
+    fn alte_schraffuren_werden_umgestellt() {
+        let m = Model::with_seed(15);
+        let neu = write(&m);
+        assert!(
+            neu.contains("lines=135:2.54:0:0:0;135:2.54:1.27:1.5:0.75 ccw=1"),
+            "{neu}"
+        );
+        let alt: String = neu
+            .lines()
+            .map(|l| {
+                let l = l.replace(" ccw=1", "");
+                let l = l.replace("lines=135:1.27:0:0:0", "lines=45:1.27:0");
+                let l = l.replace(
+                    "lines=135:2.54:0:0:0;135:2.54:1.27:1.5:0.75",
+                    "lines=45:1.27:0;135:1.27:0",
+                );
+                format!("{l}\n")
+            })
+            .collect();
+        assert!(!alt.contains("ccw") && alt.contains("lines=45:1.27:0;135:1.27:0"));
+        let l = load(&alt).unwrap();
+        assert_eq!(
+            l.hints,
+            ["Stahlbeton-Schraffur auf gestrichelte Diagonale umgestellt"]
+        );
+        assert_eq!(write(&l.model), neu, "gleich einer neuen Datei");
+        // Eine selbst geänderte Kreuzschraffur wird nur umgerechnet
+        let eigen = alt.replace("lines=45:1.27:0;135:1.27:0", "lines=30:2:0;120:2:0.5");
+        let l = load(&eigen).unwrap();
+        assert!(l.hints.is_empty(), "{:?}", l.hints);
+        let (_, f) = l
+            .model
+            .attr()
+            .fills()
+            .iter()
+            .find(|(_, f)| f.name == "Stahlbeton")
+            .unwrap();
+        assert_eq!(
+            f.kind,
+            FillKind::Lines(vec![
+                HatchLine::solid(150.0, 2.0, 0.0),
+                HatchLine::solid(60.0, 2.0, 0.5)
+            ])
+        );
     }
 
     #[test]

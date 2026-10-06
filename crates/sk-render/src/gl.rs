@@ -28,6 +28,7 @@ pub const LEQUAL: GLenum = 0x0203;
 pub const GREATER: GLenum = 0x0204;
 pub const ALWAYS: GLenum = 0x0207;
 pub const ONE: GLenum = 1;
+pub const SRC_ALPHA: GLenum = 0x0302;
 pub const ONE_MINUS_SRC_ALPHA: GLenum = 0x0303;
 pub const TRIANGLES: GLenum = 0x0004;
 pub const ARRAY_BUFFER: GLenum = 0x8892;

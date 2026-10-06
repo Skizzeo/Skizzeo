@@ -83,6 +83,7 @@ fn style(env: &Environment) -> Style {
         sky: env.sky.iter().map(|&(d, c)| (d, rgb(c))).collect(),
         ground: rgb(env.ground),
         horizon_softness: env.horizon_softness,
+        ground_opacity: env.ground_opacity,
         light: l,
         ambient: 0.84,
     }

@@ -22,6 +22,9 @@ pub struct LineLook {
     pub angle_deg: f32,
     pub spacing_px: f32,
     pub offset_px: f32,
+    /// Strich und Lücke; beide 0 = durchgezogen.
+    pub dash_px: f32,
+    pub gap_px: f32,
 }
 
 /// Aussehen eines Baustoffs.
@@ -39,7 +42,7 @@ pub struct MatLook {
     pub kind: f32,
     /// Strichbreite der Schraffur in Bildpunkten bei 96 dpi.
     pub width_px: f32,
-    /// Bis zu zwei Linienscharen; zwei = Kreuzschraffur.
+    /// Bis zu zwei Linienscharen (Stahlbeton: zweite gestrichelt).
     pub lines: [LineLook; 2],
     pub line_count: u8,
     /// Zickzack: Periode längs in Schichtdicken.
@@ -90,6 +93,8 @@ const NO_MATERIAL: MatLook = MatLook {
         angle_deg: 0.0,
         spacing_px: 0.0,
         offset_px: 0.0,
+        dash_px: 0.0,
+        gap_px: 0.0,
     }; 2],
     line_count: 0,
     zigzag_period: 1.0,
@@ -143,8 +148,23 @@ impl DrawTable {
                 match &f.kind {
                     FillKind::Empty => {}
                     FillKind::Solid => look.kind = fill_kind::SOLID,
-                    FillKind::Lines(lines) => {
+                    FillKind::Lines(all) => {
                         look.kind = fill_kind::LINES;
+                        // Abstand ≤ 0 oder nicht endlich ergäbe im Shader mod(x, 0)
+                        // (Review H11): solche Scharen fallen mit Hinweis weg
+                        let ok = |l: &&sk_model::HatchLine| {
+                            l.spacing_mm > 0.0
+                                && [l.angle_deg, l.spacing_mm, l.offset_mm]
+                                    .iter()
+                                    .all(|v| v.is_finite())
+                        };
+                        let lines: Vec<_> = all.iter().filter(ok).copied().collect();
+                        if lines.len() < all.len() {
+                            notes.push(format!(
+                                "Schraffur „{}“: Schar ohne gültigen Abstand übersprungen",
+                                f.name
+                            ));
+                        }
                         if lines.len() > 2 {
                             notes.push(format!(
                                 "Schraffur „{}“: nur die ersten zwei von {} Scharen",
@@ -152,12 +172,19 @@ impl DrawTable {
                                 lines.len()
                             ));
                         }
-                        for (slot, l) in look.lines.iter_mut().zip(lines) {
+                        for (slot, l) in look.lines.iter_mut().zip(&lines) {
                             *slot = LineLook {
                                 angle_deg: l.angle_deg,
                                 spacing_px: l.spacing_mm * px_per_mm,
                                 offset_px: l.offset_mm * px_per_mm,
+                                dash_px: l.dash_mm * px_per_mm,
+                                gap_px: l.gap_mm * px_per_mm,
                             };
+                            // Strich nur mit endlichem, positivem Paar
+                            let (d, g) = (slot.dash_px, slot.gap_px);
+                            if !(d.is_finite() && g.is_finite() && d > 0.0 && g > 0.0) {
+                                (slot.dash_px, slot.gap_px) = (0.0, 0.0);
+                            }
                         }
                         look.line_count = lines.len().min(2) as u8;
                         if look.line_count == 0 {
@@ -218,13 +245,19 @@ impl DrawTable {
             let w = m.width_px * px_scale;
             put(3, [m.cut_fg[0], m.cut_fg[1], m.cut_fg[2], w]);
             let mut offsets = [0.0; 2];
+            let mut dashes = [0.0; 4];
             for (i, l) in m.lines.iter().enumerate().take(m.line_count as usize) {
                 let (f, offset) = family(l, px_scale);
                 put(4 + i, f);
                 offsets[i] = offset;
+                if l.dash_px > 0.0 && l.gap_px > 0.0 {
+                    dashes[2 * i] = l.dash_px * px_scale;
+                    dashes[2 * i + 1] = l.gap_px * px_scale;
+                }
             }
             let count = m.line_count as f32;
             put(6, [offsets[0], offsets[1], count, m.zigzag_period]);
+            put(7, dashes);
         }
         t
     }
@@ -257,11 +290,11 @@ impl DrawTable {
 
 /// Texel einer Linienschar und ihr Versatz.
 ///
-/// Die Linien sind `cx·x + cy·y = Versatz + n·Periode` mit `(cx, cy) =
-/// (sin w, cos w) / k`, `k = max(|sin w|, |cos w|)`: so hat eine der beiden
-/// Zahlen genau den Betrag 1, und 45° rechnet im Shader bitgleich wie die
-/// frühere feste Schraffur (`mod(x + y, Abstand·√2)·√½`). Der Winkel zählt
-/// wie bisher im Uhrzeigersinn ab der Waagerechten (45° fällt nach rechts).
+/// Die Linien sind `cx·x + cy·y = Versatz + n·Periode` (Bildpunkte, y nach
+/// oben) mit der Normalen `(cx, cy) = (sin w, −cos w) / k`, `k = max(|sin w|,
+/// |cos w|)`: so hat eine der beiden Zahlen genau den Betrag 1. Der Winkel
+/// zählt gegen den Uhrzeigersinn (E3b, 45° = „/“); 135° rechnet im Shader
+/// bitgleich wie die frühere feste Schraffur (`mod(x + y, Abstand·√2)·√½`).
 fn family(l: &LineLook, px_scale: f32) -> ([f32; 4], f32) {
     let w = (l.angle_deg as f64).to_radians();
     let (sin, cos) = (w.sin(), w.cos());
@@ -270,7 +303,7 @@ fn family(l: &LineLook, px_scale: f32) -> ([f32; 4], f32) {
     let spacing = l.spacing_px * px_scale;
     let period = spacing * inv_k;
     let offset = l.offset_px * px_scale * inv_k;
-    let f = [(sin / k) as f32, (cos / k) as f32, period, k as f32];
+    let f = [(sin / k) as f32, (-cos / k) as f32 + 0.0, period, k as f32];
     (f, offset)
 }
 
@@ -321,10 +354,11 @@ mod tests {
         assert_eq!(ins.kind, fill_kind::ZIGZAG);
         assert_eq!(ins.cut, rgb([232, 196, 92]));
         assert_eq!(t.look(key(&m, "Putz")).kind, fill_kind::EMPTY);
-        // E10: Stahlbeton mit Kreuzschraffur, gleicher Abstand und Strich
+        // E15: Stahlbeton zwei Scharen mit doppeltem Abstand, gleicher Strich
         let rc = t.look(key(&m, "Stahlbeton") | material::CUT);
         assert_eq!((rc.kind, rc.line_count), (fill_kind::LINES, 2));
-        assert_eq!(rc.lines[0].spacing_px, gas.lines[0].spacing_px);
+        assert!(near(rc.lines[0].spacing_px, 2.0 * gas.lines[0].spacing_px));
+        assert_eq!(rc.width_px, gas.width_px);
         assert_eq!(rc.cut_bg, rgb([255, 255, 255]));
         assert_eq!(t.look(material::PLAIN).face, rgb_of(Theme::dark().env.face));
     }
@@ -338,12 +372,12 @@ mod tests {
         assert_eq!(p.len(), t.mats.len() * LOOK_ROWS);
         let gas = key(&m, "Gasbeton");
         let surf = |k| t.look(k);
-        // Farben gleich den Oberflächen, Art 2 mit einer Schar unter 45°
+        // Farben gleich den Oberflächen, Art 2 mit einer Schar unter 135°
         assert_eq!(texel(&t, &p, gas, 0)[..3], surf(gas).face);
         assert_eq!(texel(&t, &p, gas, 1)[..3], surf(gas).cut);
         assert_eq!(texel(&t, &p, gas, 2)[3], 2.0);
         let f = texel(&t, &p, gas, 4);
-        // 45°: cx = cy = 1, Periode = Abstand·√2, k = √½ wie im früheren Shader
+        // 135° („\\“): cx = cy = 1, Periode = Abstand·√2, k = √½ wie im früheren Shader
         assert_eq!((f[0], f[1]), (1.0, 1.0));
         assert_eq!(
             f[2],
@@ -354,11 +388,26 @@ mod tests {
         assert_eq!(texel(&t, &p, gas, 6), [0.0, 0.0, 1.0, 1.0]);
         assert_eq!(texel(&t, &p, key(&m, "Dämmung (WDVS)"), 2)[3], 3.0);
         assert_eq!(texel(&t, &p, key(&m, "Putz"), 2)[3], 0.0);
-        // Stahlbeton: zweite Schar unter 135° = x − y
+        // E15, Test 5: Stahlbeton zwei Scharen wie Mauerwerk mit doppeltem
+        // Abstand, die zweite um einen Abstand versetzt und gestrichelt
         let rc = key(&m, "Stahlbeton");
-        assert_eq!(texel(&t, &p, rc, 6)[2], 2.0);
-        let g = texel(&t, &p, rc, 5);
-        assert_eq!((g[0], g[1]), (1.0, -1.0));
+        let (r4, r5, r6) = (
+            texel(&t, &p, rc, 4),
+            texel(&t, &p, rc, 5),
+            texel(&t, &p, rc, 6),
+        );
+        assert_eq!((r4[0], r4[1], r5[0], r5[1]), (1.0, 1.0, 1.0, 1.0));
+        assert!((r4[2] - 2.0 * f[2]).abs() < 1e-4 && r5[2] == r4[2]);
+        assert_eq!((r6[0], r6[2]), (0.0, 2.0));
+        assert!(
+            (r6[1] - f[2]).abs() < 1e-4,
+            "Versatz = ein Mauerwerksabstand"
+        );
+        let px = Theme::dark().px_per_mm;
+        assert_eq!(texel(&t, &p, rc, 7), [0.0, 0.0, 1.5 * px, 0.75 * px]);
+        assert_eq!(texel(&t, &p, gas, 7), [0.0; 4]);
+        assert_eq!(texel(&t, &p.clone(), rc, 7)[2], 8.25);
+        assert_eq!(t.pack(2.0)[7 * t.mats.len() + rc as usize][2], 16.5);
         // Skalierung der Oberfläche geht in Abstand und Strichbreite ein
         let p2 = t.pack(2.0);
         assert_eq!(texel(&t, &p2, gas, 4)[2], f[2] * 2.0);
@@ -370,6 +419,47 @@ mod tests {
             t.edge_width(true, edge_kind::CUT)
         );
         assert_eq!(e.color[edge_kind::CUT as usize], [0.0; 3]);
+    }
+
+    /// Review H11: Scharen ohne gültigen Abstand fallen mit Hinweis weg,
+    /// ungültige Striche zeichnen durchgezogen.
+    #[test]
+    fn ungueltige_schar_wird_uebersprungen() {
+        let mut m = Model::with_seed(1);
+        let guid = m.new_guid();
+        let bad = m.add_fill(Fill {
+            guid,
+            name: "Kaputt".into(),
+            kind: FillKind::Lines(vec![
+                HatchLine::solid(45.0, 0.0, 0.0),
+                HatchLine::solid(45.0, f32::NAN, 0.0),
+                HatchLine {
+                    dash_mm: f32::INFINITY,
+                    gap_mm: 1.0,
+                    ..HatchLine::solid(45.0, 2.0, 0.0)
+                },
+            ]),
+            space: FillSpace::Paper,
+        });
+        let base = m.materials().iter().next().unwrap().1.clone();
+        let guid = m.new_guid();
+        let id = m.add_material(sk_model::Material {
+            guid,
+            name: "X".into(),
+            cut_fill: bad,
+            ..base
+        });
+        let t = DrawTable::resolve(&m, &Theme::dark());
+        let k = sk_model::material_key(id);
+        let look = t.look(k);
+        assert_eq!((look.kind, look.line_count), (fill_kind::LINES, 1));
+        assert_eq!((look.lines[0].dash_px, look.lines[0].gap_px), (0.0, 0.0));
+        assert!(
+            t.notes.iter().any(|n| n.contains("Kaputt")),
+            "{:?}",
+            t.notes
+        );
+        assert!(t.pack(1.0).iter().flatten().all(|v| v.is_finite()));
     }
 
     /// E3, Test 3: zwei Baustoffe mit verschiedenen Linienschraffuren.
@@ -385,11 +475,7 @@ mod tests {
                 space: FillSpace::Paper,
             })
         };
-        let line = |angle_deg, spacing_mm| HatchLine {
-            angle_deg,
-            spacing_mm,
-            offset_mm: 0.0,
-        };
+        let line = |angle_deg, spacing_mm| HatchLine::solid(angle_deg, spacing_mm, 0.0);
         let a = lines("30°", vec![line(30.0, 2.0)]);
         let b = lines("Kreuz", vec![line(0.0, 1.0), line(90.0, 1.0)]);
         let base = m.materials().iter().next().unwrap().1.clone();
@@ -408,13 +494,13 @@ mod tests {
         let p = t.pack(1.0);
         let fa = texel(&t, &p, gas, 4);
         let px = Theme::dark().px_per_mm;
-        // 30°: k = cos 30°, cx = tan 30°, cy = 1
-        assert!((fa[0] - 0.57735).abs() < 1e-5 && fa[1] == 1.0);
+        // 30° (gegen den Uhrzeigersinn): k = cos 30°, cx = tan 30°, cy = −1
+        assert!((fa[0] - 0.57735).abs() < 1e-5 && fa[1] == -1.0);
         assert!((fa[2] - 2.0 * px / 0.866_025_4).abs() < 1e-3);
         assert_eq!(texel(&t, &p, gas, 6)[2], 1.0);
         // Kreuz 0° + 90°: waagerechte und senkrechte Linien, Periode = Abstand
         let (f0, f1) = (texel(&t, &p, putz, 4), texel(&t, &p, putz, 5));
-        assert_eq!((f0[0], f0[1], f0[3]), (0.0, 1.0, 1.0));
+        assert_eq!((f0[0], f0[1], f0[3]), (0.0, -1.0, 1.0));
         assert!(f1[0] == 1.0 && f1[1].abs() < 1e-7);
         assert!((f0[2] - px).abs() < 1e-5 && f1[2] == f0[2]);
         assert_eq!(texel(&t, &p, putz, 6)[2], 2.0);

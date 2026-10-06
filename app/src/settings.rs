@@ -177,6 +177,11 @@ pub fn write(theme: &Theme) -> String {
             .num("horizon_softness", t.env.horizon_softness)
             .finish(&mut out);
     }
+    if t.env.ground_opacity != b.env.ground_opacity {
+        Line::new("env")
+            .num("ground_opacity", t.env.ground_opacity)
+            .finish(&mut out);
+    }
     if t.env.sky != b.env.sky {
         for (k, c) in &t.env.sky {
             Line::new("sky")
@@ -246,10 +251,26 @@ pub fn read(text: &str) -> (Theme, Vec<String>) {
                 Ok(v) if v > 0.0 => t.px_per_mm = v,
                 _ => skip(&mut hints, "px_per_mm"),
             },
-            "env" => match r.f32("horizon_softness") {
-                Ok(v) => t.env.horizon_softness = v,
-                Err(_) => skip(&mut hints, "horizon_softness"),
-            },
+            "env" => {
+                let mut any = false;
+                if r.opt("horizon_softness").is_some() {
+                    any = true;
+                    match r.f32("horizon_softness") {
+                        Ok(v) => t.env.horizon_softness = v,
+                        Err(_) => skip(&mut hints, "horizon_softness"),
+                    }
+                }
+                if r.opt("ground_opacity").is_some() {
+                    any = true;
+                    match r.f32("ground_opacity") {
+                        Ok(v) if (0.0..=1.0).contains(&v) => t.env.ground_opacity = v,
+                        _ => skip(&mut hints, "ground_opacity (0 bis 1)"),
+                    }
+                }
+                if !any {
+                    skip(&mut hints, "[env] ohne Schlüssel");
+                }
+            }
             "sky" => match (r.f32("t"), r.opt("value").and_then(parse_rgba)) {
                 (Ok(k), Some(c)) => sky.push((k, c)),
                 _ => skip(&mut hints, "Stützstelle des Himmels"),
@@ -407,6 +428,7 @@ mod tests {
         t.ui.field_invalid = Rgba::rgb(200, 10, 10);
         t.px_per_mm = 6.0;
         t.env.horizon_softness = 2.0;
+        t.env.ground_opacity = 0.3;
         t.env.sky = vec![(0.0, Rgba::rgb(1, 2, 3)), (1.0, Rgba(4, 5, 6, 7))];
         let text = write(&t);
         assert!(
@@ -421,10 +443,15 @@ mod tests {
             text.contains("[color] role=ui.field_invalid value=c80a0a\n"),
             "{text}"
         );
+        // E11: Deckkraft des Bodens; außerhalb 0 … 1 übersprungen
+        assert!(text.contains("[env] ground_opacity=0.3\n"), "{text}");
         let (back, hints) = read(&text);
         assert!(hints.is_empty(), "{hints:?}");
         assert_eq!(write(&back), text);
         assert_eq!(Theme { rev: t.rev, ..back }, t);
+        let (bad, hints) = read(&format!("{HEAD} {VERSION}\n[env] ground_opacity=2\n"));
+        assert_eq!(bad.env.ground_opacity, 0.6);
+        assert_eq!(hints.len(), 1, "{hints:?}");
     }
 
     #[test]

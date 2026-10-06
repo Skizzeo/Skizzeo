@@ -112,6 +112,9 @@ pub struct Environment {
     pub ground: Rgba,
     /// Weicher Übergang Himmel→Boden: Anteil Boden = 1 - exp(-k · Pixel unter dem Horizont).
     pub horizon_softness: f32,
+    /// Deckkraft des Bodens über Modellteilen unter z = 0 in 3D (E11):
+    /// 1 = deckend, 0 = Boden nur als Hintergrund.
+    pub ground_opacity: f32,
     /// Flächen ohne Baustoff und Kanten.
     pub face: Rgba,
     pub edge: Rgba,
@@ -247,6 +250,7 @@ impl Theme {
                 ],
                 ground: rgb(59, 66, 54),
                 horizon_softness: 1.03,
+                ground_opacity: 0.6,
                 face: rgb(242, 240, 234),
                 edge: rgb(0, 0, 0),
                 paper_fallback: rgb(245, 244, 239),

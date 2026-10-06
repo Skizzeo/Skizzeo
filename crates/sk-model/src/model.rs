@@ -206,16 +206,11 @@ impl Model {
         };
         // Nach der Projekt-Guid angelegt, damit die älteren Guids gleich bleiben
         let interior_wall = layer_sets.insert(interior_set(guids.next_guid(), aerated));
-        // Stahlbeton: Kreuzschraffur 45°/135° nach DIN 1356-1 (E10)
-        let line = |angle_deg| attr::HatchLine {
-            angle_deg,
-            spacing_mm: 1.27,
-            offset_mm: 0.0,
-        };
+        // Stahlbeton: Diagonale, jede zweite Linie gestrichelt (E15)
         let cross = attr.add_fill(Fill {
             guid: guids.next_guid(),
             name: "Stahlbeton".into(),
-            kind: attr::FillKind::Lines(vec![line(45.0), line(135.0)]),
+            kind: attr::FillKind::Lines(attr::concrete_lines()),
             space: attr::FillSpace::Paper,
         });
         if let Some(m) = materials.get_mut(concrete) {
@@ -1055,7 +1050,7 @@ impl Model {
         self.sync_floor(run);
     }
 
-    /// Ergänzt in Dateien vor B9 die Stahlbeton-Kreuzschraffur (E10) und die
+    /// Ergänzt in Dateien vor B9 die Stahlbeton-Schraffur (E15) und die
     /// Gründung unter jedem geschlossenen Außenwandzug. Ohne Rückgängig-Schritt,
     /// gleich nach dem Lesen; liefert Hinweise auf das Ergänzte.
     pub(crate) fn complete_pre_b9(&mut self) -> Vec<String> {
@@ -1066,16 +1061,11 @@ impl Model {
             .iter()
             .any(|(_, f)| f.name == "Stahlbeton")
         {
-            let line = |angle_deg| crate::attr::HatchLine {
-                angle_deg,
-                spacing_mm: 1.27,
-                offset_mm: 0.0,
-            };
             let guid = self.new_guid();
             let cross = self.attr.add_fill(crate::attr::Fill {
                 guid,
                 name: "Stahlbeton".into(),
-                kind: crate::attr::FillKind::Lines(vec![line(45.0), line(135.0)]),
+                kind: crate::attr::FillKind::Lines(crate::attr::concrete_lines()),
                 space: crate::attr::FillSpace::Paper,
             });
             let ids: Vec<MaterialId> = self.materials.ids().collect();
@@ -1088,7 +1078,7 @@ impl Model {
                     m.cut_fill = cross;
                 }
             }
-            hints.push("Schraffur „Stahlbeton“ (Kreuzschraffur) ergänzt".to_string());
+            hints.push("Schraffur „Stahlbeton“ ergänzt".to_string());
         }
         let missing: Vec<RunId> = self
             .runs
