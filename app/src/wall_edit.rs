@@ -37,6 +37,8 @@ pub struct WallEdit {
     hover: Option<ElementId>,
     drag: Option<Drag>,
     mouse: Option<(f64, f64)>,
+    /// Die Maus steht über dem Fuß einer gekoppelten OG-Wand (kein Band).
+    coupled: bool,
     /// Schnittebene der Ansicht „Schnitt“ (Punkt, Normale zum Betrachter):
     /// Was davor liegt, ist weggeschnitten und verdeckt nichts.
     pub section: Option<(Vec3, Vec3)>,
@@ -98,11 +100,11 @@ fn side_view(cam: &Camera) -> bool {
 
 /// Punkt unter der Maus, an dem das Ziehen gemessen wird: in Parallelansichten
 /// auf der Bildebene, perspektivisch auf dem Boden.
-fn drag_point(cam: &Camera, x: f64, y: f64, w: f64, h: f64) -> Option<Vec3> {
+fn drag_point(cam: &Camera, x: f64, y: f64, w: f64, h: f64, z: f64) -> Option<Vec3> {
     if cam.ortho.is_some() {
         Some(cam.ray(x, y, w, h).0)
     } else {
-        cam.ground_point(x, y, w, h)
+        cam.plane_point(x, y, w, h, z)
     }
 }
 
@@ -153,12 +155,26 @@ impl WallEdit {
     }
 
     fn pick(&self, scene: &Scene, cam: &Camera, w: f64, h: f64, scale: f64) -> Option<ElementId> {
+        self.pick_in(scene.feet(), scene, cam, w, h, scale)
+    }
+
+    /// Nächster Wandfuß unter der Maus unter den gegebenen Zügen.
+    #[allow(clippy::too_many_arguments)]
+    fn pick_in<'a>(
+        &self,
+        feet: impl Iterator<Item = (RunId, Option<(Vec3, Vec3)>, &'a [(Vec3, Vec3)])>,
+        scene: &Scene,
+        cam: &Camera,
+        w: f64,
+        h: f64,
+        scale: f64,
+    ) -> Option<ElementId> {
         let m = self.mouse?;
         let reach = PICK_PX * scale;
         let (side, f) = (side_view(cam), cam.forward());
         // Abstand im Bild, Tiefe, Segment
         let mut best: Option<(f64, f64, (RunId, usize))> = None;
-        for (run, bounds, foot) in scene.feet() {
+        for (run, bounds, foot) in feet {
             // Vortest: Liegt die Maus weit neben dem Bild des ganzen Wandfußes,
             // kann kein Segment dieses Zuges getroffen sein
             if let Some(r) = bounds.and_then(|b| screen_rect(cam, b, w, h)) {
@@ -211,14 +227,25 @@ impl WallEdit {
         };
         let changed = hover != self.hover;
         self.hover = hover;
+        self.coupled = enabled
+            && hover.is_none()
+            && self
+                .pick_in(scene.stacked_feet(), scene, cam, w, h, scale)
+                .is_some();
         changed
+    }
+
+    /// Hinweis an der Maus: Fuß einer gekoppelten OG-Wand (A52).
+    pub fn coupled_hint(&self) -> Option<&'static str> {
+        (self.coupled && self.drag.is_none() && self.mouse.is_some())
+            .then_some("gekoppelt: am EG-Wandfuß ziehen")
     }
 
     fn update_drag(&mut self, scene: &mut Scene, cam: &Camera, w: f64, h: f64) -> bool {
         let (Some(d), Some((mx, my))) = (&self.drag, self.mouse) else {
             return false;
         };
-        let Some(g) = drag_point(cam, mx, my, w, h) else {
+        let Some(g) = drag_point(cam, mx, my, w, h, d.original.base) else {
             return false;
         };
         let off = ((g - d.start).dot(d.normal) / STEP).round() * STEP;
@@ -257,6 +284,7 @@ impl WallEdit {
             }
             Event::MouseLeave => {
                 self.mouse = None;
+                self.coupled = false;
                 if self.drag.is_none() {
                     out.redraw = self.hover.take().is_some();
                 }
@@ -279,9 +307,10 @@ impl WallEdit {
                 let Some(original) = scene.chain(run) else {
                     return out;
                 };
-                let (Some(start), Some(normal)) =
-                    (drag_point(cam, x, y, w, h), original.segment_normal(seg))
-                else {
+                let (Some(start), Some(normal)) = (
+                    drag_point(cam, x, y, w, h, original.base),
+                    original.segment_normal(seg),
+                ) else {
                     return out;
                 };
                 self.drag = Some(Drag {
@@ -621,6 +650,52 @@ mod tests {
         // Im Schnitt hinter dem Knick (y = 4000) liegt die Wand frei
         e.section = Some((vec3(0.0, 4000.0, 0.0), vec3(0.0, -1.0, 0.0)));
         assert_eq!(hover_at(&mut e, &mut s, 2), s.model().wall_at(run, 2));
+    }
+
+    /// A52: Der Fuß einer gekoppelten OG-Wand hat kein Band, nur den Hinweis
+    /// „gekoppelt: am EG-Wandfuß ziehen“; am EG-Fuß greift das Band.
+    #[test]
+    fn og_wandfuss_zeigt_nur_den_hinweis() {
+        let mut s = Scene::new();
+        s.open_building_dialog();
+        let eg = s
+            .add_wall_as(
+                &WallChain {
+                    base: 0.0,
+                    points: vec![
+                        vec3(0.0, 0.0, 0.0),
+                        vec3(10000.0, 0.0, 0.0),
+                        vec3(10000.0, 8000.0, 0.0),
+                        vec3(0.0, 8000.0, 0.0),
+                    ],
+                    closed: true,
+                    ref_side: RefSide::Left,
+                    layers: Vec::new(),
+                    height: 2855.0,
+                    joints: Default::default(),
+                },
+                sk_model::Category::ExteriorWall,
+            )
+            .unwrap();
+        let og = s.model().runs_above(eg)[0];
+        let c = Camera::looking_at(
+            vec3(5000.0, -20000.0, 4000.0),
+            vec3(5000.0, 4000.0, 2500.0),
+            45.0,
+        );
+        let m = Modifiers::default();
+        let mut e = WallEdit::default();
+        let hover_at = |e: &mut WallEdit, s: &mut Scene, run| {
+            let (a, b) = s.foot(run).unwrap()[0];
+            let (x, y) = at(&c, (a + b) * 0.5);
+            e.handle(&Event::MouseMove { x, y, mods: m }, s, &c, W, H, 1.0, true);
+            (e.hover, e.coupled_hint())
+        };
+        let (hover, hint) = hover_at(&mut e, &mut s, og);
+        assert_eq!(hover, None, "kein Band am OG-Fuß");
+        assert_eq!(hint, Some("gekoppelt: am EG-Wandfuß ziehen"));
+        let (hover, hint) = hover_at(&mut e, &mut s, eg);
+        assert!(hover.is_some() && hint.is_none());
     }
 
     #[test]

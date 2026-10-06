@@ -421,7 +421,7 @@ pub enum LevelEvent {
 /// Abstände im Diagramm (dip): Titel, Luft über der obersten und unter der
 /// untersten Linie, Zeilenhöhe der Liste.
 const LEVEL_HEAD: f32 = 34.0;
-const LEVEL_TOP: f32 = 20.0;
+const LEVEL_TOP: f32 = 30.0;
 const LEVEL_BOTTOM: f32 = 8.0;
 const LEVEL_LIST_ROW: f32 = 22.0;
 /// Rechter Rand: Kette der Geschosshöhen und davor die der lichten Höhe.
@@ -2076,13 +2076,13 @@ impl Ui {
                 u.text
             };
             let nx = x0 + (z.level_handle + z.level_label_gap) * s;
-            // Ein langer Name („OK Decke OG“) weicht unter die Linie aus,
-            // wenn er die Kote berühren würde
+            // Ein langer Name („OK Decke OG“) rückt eine Zeile über die Kote,
+            // wenn er sie berühren würde; beide bleiben über der Linie
             let width =
                 |f: Option<&sk_paint::font::Font>, t: &str| f.map_or(0.0, |f| f.width(t, px));
             let kote_x = xi - 4.0 * s - width(regular, &kote_text(line.z));
             let base = if nx + width(font, &line.name) + 6.0 * s > kote_x {
-                y + regular.map_or(px * 0.7, |f| f.cap_height(px)) + 5.0 * s
+                y - 4.0 * s - regular.map_or(px * 0.7, |f| f.cap_height(px)) - 5.0 * s
             } else {
                 y - 4.0 * s
             };

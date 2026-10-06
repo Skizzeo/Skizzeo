@@ -107,20 +107,22 @@ const MESH_PREVIEW: usize = 1;
 const MESH_LIVE: usize = 2;
 
 // Oberflächenbilder in Zeichenreihenfolge: Endsymbole unter den Paneelen,
-// das Abdunkeln hinter dem Dialog über den rechten, unter den linken
-// Paneelen (E16), die Titelleiste ganz oben.
+// das Abdunkeln hinter dem Dialog über „Ansichten“, „Eigenschaften“ und
+// „Werkzeuge“, unter „Geschosse“ (E16), die Titelleiste ganz oben.
 /// Endsymbole der Schnittlinie im Grundriss (zwei Plätze).
 const OVERLAY_MARKS: usize = 0;
 const OVERLAY_VIEWS: usize = 2;
 /// Paneel „Eigenschaften“.
 const OVERLAY_PROPS: usize = 3;
-const OVERLAY_SCRIM: usize = 4;
-const OVERLAY_TOOLS: usize = 5;
+const OVERLAY_TOOLS: usize = 4;
+const OVERLAY_SCRIM: usize = 5;
 /// Paneel „Geschosse“.
 const OVERLAY_LEVELS: usize = 6;
 /// Dialog „Gebäude erstellen“.
 const OVERLAY_DIALOG: usize = 7;
 const OVERLAY_TITLE: usize = 8;
+/// Hinweis an der Maus, über allem.
+const OVERLAY_TIP: usize = 9;
 
 /// Blickrichtung (yaw, pitch) der Parallelansichten.
 fn view_direction(v: ViewKind) -> (f64, f64) {
@@ -291,7 +293,22 @@ struct App {
     looks_key: Option<(u64, u64, u32)>,
     /// Zuletzt hochgeladene Endsymbole der Schnittlinie (links, hervorgehoben, Skalierung).
     mark_keys: [Option<MarkKey>; 2],
+    /// Letzte Mausposition im Fenster (Pixel).
+    mouse_at: Option<(f64, f64)>,
+    /// Hinweis an der Maus: erscheint nach [`TIP_DELAY`] Ruhe über derselben Stelle.
+    tip: Option<Tip>,
 }
+
+/// Hinweis an der Maus (Text, Lage, seit wann gewünscht, schon sichtbar).
+struct Tip {
+    text: &'static str,
+    at: (f64, f64),
+    since: Instant,
+    shown: bool,
+}
+
+/// Verzögerung bis zum Hinweis an der Maus.
+const TIP_DELAY: std::time::Duration = std::time::Duration::from_millis(400);
 
 impl App {
     fn top(&self) -> u32 {
@@ -895,6 +912,7 @@ impl App {
             }
             Event::Redraw => self.redraw = true,
             Event::MouseLeave => {
+                self.mouse_at = None;
                 self.dirty_title.extend(self.title.hover.take());
                 let out = self.ui.handle(&e, self.w, self.top());
                 self.apply_ui(&out);
@@ -910,6 +928,7 @@ impl App {
                 self.redraw |= so.redraw;
             }
             Event::MouseMove { x, y, .. } => {
+                self.mouse_at = Some((x, y));
                 let hover = if busy {
                     None
                 } else {
@@ -1192,6 +1211,65 @@ impl App {
         self.redraw = true;
     }
 
+    /// Gewünschter Hinweis an der Maus: über dem Fuß einer gekoppelten
+    /// OG-Wand (A52).
+    fn tip_wanted(&self) -> Option<&'static str> {
+        if self.ui.dialog || self.ui.level_dragging().is_some() {
+            return None;
+        }
+        self.edit.coupled_hint()
+    }
+
+    /// Hinweis an der Maus nachführen: neuer Text beginnt die Wartezeit,
+    /// danach erscheint er rechts unter der Maus; ohne Wunsch verschwindet er.
+    fn sync_tip(&mut self) {
+        let want = self.tip_wanted().zip(self.mouse_at);
+        let same = matches!((&self.tip, want), (Some(t), Some((w, _))) if t.text == w);
+        if !same {
+            if self.tip.take().is_some_and(|t| t.shown) {
+                self.renderer.set_overlay(OVERLAY_TIP, 0, 0, 0, 0, &[]);
+                self.redraw = true;
+            }
+            self.tip = want.map(|(text, at)| Tip {
+                text,
+                at,
+                since: Instant::now(),
+                shown: false,
+            });
+        }
+        let Some(t) = self.tip.as_mut().filter(|t| !t.shown) else {
+            return;
+        };
+        if t.since.elapsed() < TIP_DELAY {
+            return;
+        }
+        t.shown = true;
+        let s = self.ui.scale;
+        let c = sk_ui::widgets::tooltip(&self.ui.fonts, t.text, s, &self.theme);
+        let (cw, ch) = (c.width as f64, c.height as f64);
+        let x = (t.at.0 + 12.0 * s as f64).min(self.w as f64 - cw).max(0.0);
+        let mut y = t.at.1 + 20.0 * s as f64;
+        if y + ch > self.h as f64 {
+            y = t.at.1 - 8.0 * s as f64 - ch;
+        }
+        let px = c.to_premul_rgba8();
+        self.renderer.set_overlay(
+            OVERLAY_TIP,
+            x.round() as i32,
+            y.round() as i32,
+            c.width as u32,
+            c.height as u32,
+            &px,
+        );
+        self.redraw = true;
+    }
+
+    /// Wartezeit bis zum nächsten Hinweis an der Maus.
+    fn tip_wait(&self) -> Option<std::time::Duration> {
+        let t = self.tip.as_ref().filter(|t| !t.shown)?;
+        Some(TIP_DELAY.saturating_sub(t.since.elapsed()))
+    }
+
     /// Dialog „Gebäude erstellen“ samt Abdunkeln des Modellfensters
     /// zeichnen oder ausblenden.
     fn paint_dialog(&mut self) {
@@ -1396,6 +1474,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         sel: Selection::default(),
         props_key: None,
         snaps_key: None,
+        mouse_at: None,
+        tip: None,
         w,
         h,
         overlay_dirty: true,
@@ -1439,8 +1519,12 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     loop {
         let mut events = Vec::new();
         if !a.redraw && !a.overlay_dirty && !a.nav.is_animating() {
-            match surface.wait_event() {
-                Some(e) => events.push(e),
+            let next = match a.tip_wait() {
+                Some(d) => surface.wait_event_timeout(d),
+                None => surface.wait_event().map(Some),
+            };
+            match next {
+                Some(e) => events.extend(e),
                 None => {
                     if let Some(log) = timing.as_mut() {
                         write_timing(&timing_path, log);
@@ -1465,6 +1549,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             }
         }
 
+        a.sync_tip();
         if a.overlay_dirty && a.w > 0 {
             a.paint_overlays(&surface);
         } else if a.layout_dirty && a.w > 0 {

@@ -71,6 +71,29 @@ pub fn panel(c: &mut Canvas, r: Rect, s: f32, t: &Theme) {
     c.fill(&p, t.ui.bg);
 }
 
+/// Hinweis an der Maus: Text auf dunklem Grund mit Rand. Liefert das Bild
+/// (Pixel).
+pub fn tooltip(fonts: &Fonts, text: &str, s: f32, t: &Theme) -> Canvas {
+    let px = t.size.font_small * s;
+    let f = fonts.regular.as_ref();
+    let tw = f.map_or(0.0, |f| f.width(text, px));
+    let (pad, h) = ((8.0 * s).round(), (24.0 * s).round());
+    let (w, b) = ((tw + 2.0 * pad).ceil(), s.round().max(1.0));
+    let mut c = Canvas::new(w as usize, h as usize);
+    let rad = 4.0 * s;
+    let mut p = Path::new();
+    p.rounded_rect(0.0, 0.0, w, h, rad);
+    c.fill(&p, t.ui.border);
+    let mut p = Path::new();
+    p.rounded_rect(b, b, w - 2.0 * b, h - 2.0 * b, rad - b);
+    c.fill(&p, t.ui.tooltip_bg);
+    if let Some(f) = f {
+        let y = ((h + f.cap_height(px)) * 0.5).round();
+        f.draw(&mut c, text, px, pad, y, t.ui.tooltip_text);
+    }
+    c
+}
+
 /// Abstand des ausgesparten Lochs vom Rand der deckenden Fläche darüber (Pixel).
 const HIDDEN_INSET: f32 = 2.0;
 
@@ -98,7 +121,8 @@ pub fn button(
     let rad = 6.0 * s;
     let b = s.round().max(1.0);
     let (fill, border, text) = if st.disabled {
-        (u.bg, u.border, u.text_dim)
+        let b = u.border;
+        (u.bg, Rgba(b.0, b.1, b.2, b.3 / 2), u.text_disabled)
     } else if st.active {
         let f = if st.hover { u.accent_hover } else { u.accent };
         (f, f, u.on_accent)

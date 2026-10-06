@@ -17,7 +17,7 @@ type RgbaRole = (&'static str, fn(&mut Theme) -> &mut Rgba);
 type F4Role = (&'static str, fn(&mut Theme) -> &mut [f32; 4]);
 type SizeRole = (&'static str, fn(&mut Theme) -> &mut f32);
 
-const RGBA_ROLES: [RgbaRole; 43] = [
+const RGBA_ROLES: [RgbaRole; 46] = [
     ("ui.bg", |t| &mut t.ui.bg),
     ("ui.border", |t| &mut t.ui.border),
     ("ui.field", |t| &mut t.ui.field),
@@ -46,6 +46,9 @@ const RGBA_ROLES: [RgbaRole; 43] = [
     ("ui.dim_line", |t| &mut t.ui.dim_line),
     ("ui.dim_text", |t| &mut t.ui.dim_text),
     ("ui.dim_text_hover", |t| &mut t.ui.dim_text_hover),
+    ("ui.text_disabled", |t| &mut t.ui.text_disabled),
+    ("ui.tooltip_bg", |t| &mut t.ui.tooltip_bg),
+    ("ui.tooltip_text", |t| &mut t.ui.tooltip_text),
     ("title.bg", |t| &mut t.title.bg),
     ("title.glyph", |t| &mut t.title.glyph),
     ("title.glyph_inactive", |t| &mut t.title.glyph_inactive),

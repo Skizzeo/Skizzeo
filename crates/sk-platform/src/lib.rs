@@ -169,10 +169,13 @@ impl Surface {
         self.events.recv().ok()
     }
 
-    pub fn wait_event_timeout(&self, d: Duration) -> Option<Event> {
+    /// Wartet höchstens `d` auf das nächste Ereignis: `Some(None)` nach Ablauf,
+    /// `None`, wenn das Fenster weg ist.
+    pub fn wait_event_timeout(&self, d: Duration) -> Option<Option<Event>> {
         match self.events.recv_timeout(d) {
-            Ok(e) => Some(e),
-            Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => None,
+            Ok(e) => Some(Some(e)),
+            Err(RecvTimeoutError::Timeout) => Some(None),
+            Err(RecvTimeoutError::Disconnected) => None,
         }
     }
 

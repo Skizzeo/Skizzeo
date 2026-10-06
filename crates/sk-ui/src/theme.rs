@@ -63,6 +63,11 @@ pub struct Ui {
     pub dim_line: Rgba,
     pub dim_text: Rgba,
     pub dim_text_hover: Rgba,
+    /// Gesperrte Knöpfe und Menüzeilen: Schrift (`text_dim` halb deckend).
+    pub text_disabled: Rgba,
+    /// Hinweis an der Maus: Grund und Schrift.
+    pub tooltip_bg: Rgba,
+    pub tooltip_text: Rgba,
 }
 
 /// Eigene Titelleiste.
@@ -219,6 +224,9 @@ impl Theme {
                 dim_line: rgb(160, 165, 172),
                 dim_text: text,
                 dim_text_hover: accent,
+                text_disabled: Rgba(160, 165, 172, 128),
+                tooltip_bg: rgb(20, 25, 32),
+                tooltip_text: text,
             },
             title: Title {
                 // Dunkel wie die Paneele, damit sie sich auch über dem Papier abhebt

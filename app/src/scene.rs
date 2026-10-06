@@ -77,7 +77,13 @@ impl RunCache {
         if let Some(f) = &floor {
             solid.append(&part(f.solid(), FLOOR_PART));
         }
-        let foot = chain.outer_foot();
+        // Auf Höhe des Wandfußes (Wände im OG stehen auf ihrem Geschoss)
+        let lift = vec3(0.0, 0.0, chain.base);
+        let foot: Vec<(Vec3, Vec3)> = chain
+            .outer_foot()
+            .into_iter()
+            .map(|(a, b)| (a + lift, b + lift))
+            .collect();
         let foot_bounds = foot
             .iter()
             .flat_map(|&(a, b)| [a, b])
@@ -713,6 +719,18 @@ impl Scene {
             .iter()
             .flatten()
             .filter(|c| c.below.is_none())
+            .map(|c| (c.id, c.foot_bounds, c.foot.as_slice()))
+    }
+
+    /// Wandfüße der gestapelten Züge (OG): ohne Band, nur der Hinweis
+    /// „gekoppelt: am EG-Wandfuß ziehen“ (A52).
+    pub fn stacked_feet(
+        &self,
+    ) -> impl Iterator<Item = (RunId, Option<Aabb>, &[(Vec3, Vec3)])> + '_ {
+        self.cache
+            .iter()
+            .flatten()
+            .filter(|c| c.below.is_some())
             .map(|c| (c.id, c.foot_bounds, c.foot.as_slice()))
     }
 
