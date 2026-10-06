@@ -1132,11 +1132,14 @@ impl Catalog {
                 return;
             }
             Some(Drag::Select(f)) => {
-                if let Some(i) = self.caret_from_mouse(f, x, cx) {
-                    if let Some(e) = self.edit.as_mut() {
-                        e.text.place(i, true);
+                // Nur wenn sich die Markierung ändert, und nur das Feld
+                if let (Some(i), Some(e)) = (self.caret_from_mouse(f, x, cx), self.edit.as_mut()) {
+                    let before = e.text.caret;
+                    e.text.place(i, true);
+                    if e.text.caret != before {
+                        self.damage.push(Area::Hover(Some(Target::Field(f))));
+                        *out = Out::all();
                     }
-                    *out = Out::all();
                 }
                 return;
             }
@@ -4664,6 +4667,83 @@ mod tests {
                 c.paint_frame(&theme, &f, &win),
                 Frame::Full { .. }
             ));
+        }
+    }
+
+    /// Markieren mit der Maus im Namensfeld: je Bewegung nur das Feld, und
+    /// nur wenn sich die Markierung ändert.
+    #[test]
+    fn markieren_malt_nur_das_feld() {
+        let mut s = szene();
+        let theme = Theme::dark();
+        let f = Fonts::system();
+        // Ohne Schrift hat der Text keine Breite, die Maus keine Wirkung
+        if f.regular.is_none() {
+            return;
+        }
+        for win in [WIN, Win { scale: 1.5, ..WIN }] {
+            let mut c = Catalog::open(&s, None);
+            c.paint_frame(&theme, &f, &win);
+            let r = c.field_rect(&theme, &win, FieldId::Name).unwrap();
+            let y = (r.y + r.h * 0.5) as f64;
+            let at = |k: f32| (r.x + r.w * k) as f64;
+            let mut cx = Ctx {
+                scene: &mut s,
+                theme: &theme,
+                fonts: &f,
+                win,
+                company: None,
+                company_standard: false,
+            };
+            let mods = Modifiers::default();
+            let left = MouseButton::Left;
+            for _ in 0..2 {
+                c.handle(
+                    &Event::MouseDown {
+                        button: left,
+                        x: at(0.3),
+                        y,
+                        mods,
+                    },
+                    &mut cx,
+                );
+                c.handle(
+                    &Event::MouseUp {
+                        button: left,
+                        x: at(0.3),
+                        y,
+                        mods,
+                    },
+                    &mut cx,
+                );
+            }
+            c.handle(
+                &Event::MouseDown {
+                    button: left,
+                    x: at(0.3),
+                    y,
+                    mods,
+                },
+                &mut cx,
+            );
+            assert!(matches!(c.drag, Some(Drag::Select(FieldId::Name))));
+            c.paint_frame(&theme, &f, &win);
+            let e = Event::MouseMove {
+                x: r.x as f64 + 2.0,
+                y,
+                mods,
+            };
+            assert!(c.handle(&e, &mut cx).repaint, "Markierung geändert");
+            let Frame::Parts(parts) = c.paint_frame(&theme, &f, &win) else {
+                panic!("Teilbild erwartet");
+            };
+            assert_eq!(parts.len(), 1);
+            let a = c.img.as_ref().unwrap().to_premul_rgba8();
+            let b = c.paint(&theme, &f, &win).0.to_premul_rgba8();
+            let diff = a.iter().zip(&b).map(|(p, q)| p.abs_diff(*q)).max();
+            assert!(diff <= Some(1), "Abweichung {diff:?}");
+            // Dieselbe Stelle noch einmal: nichts zu malen
+            assert!(!c.handle(&e, &mut cx).repaint);
         }
     }
 
