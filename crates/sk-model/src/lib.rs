@@ -14,6 +14,7 @@ pub mod library;
 pub mod model;
 pub mod qto;
 pub mod solid;
+pub mod szo;
 pub mod txn;
 pub mod wall;
 
@@ -31,7 +32,7 @@ pub use library::{
     material_key, LayerFunction, LayerSet, LayerSetId, MatCategory, Material, MaterialId,
     MaterialLayer,
 };
-pub use model::{Defaults, Model, NumberError};
+pub use model::{Defaults, Model, NumberError, Project};
 pub use qto::{run_qto, wall_qto, LayerQto, WallQto};
 pub use solid::Solid;
 pub use solid::{edge_kind, material, Edge, Tri};

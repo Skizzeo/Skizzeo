@@ -124,6 +124,24 @@ pub struct Attributes {
 }
 
 impl Attributes {
+    /// Tabellen aus einer Datei ([`crate::szo`]); die Revision ist neu (1).
+    pub(crate) fn from_parts(
+        pens: Arena<Pen>,
+        line_types: Arena<LineType>,
+        fills: Arena<Fill>,
+        surfaces: Arena<Surface>,
+        display: Display,
+    ) -> Attributes {
+        Attributes {
+            pens,
+            line_types,
+            fills,
+            surfaces,
+            display,
+            rev: 1,
+        }
+    }
+
     /// Steigt bei jeder Änderung.
     pub fn rev(&self) -> u64 {
         self.rev

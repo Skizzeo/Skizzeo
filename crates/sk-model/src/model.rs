@@ -8,7 +8,8 @@ use crate::attr::{
     self, Attributes, Display, Fill, FillId, LineType, LineTypeId, Pen, PenId, Surface, SurfaceId,
 };
 use crate::element::{
-    Category, Element, ElementId, ElementKind, PropSet, RunId, Storey, StoreyId, Wall, WallRun,
+    Category, Element, ElementId, ElementKind, PropSet, PropValue, RunId, Storey, StoreyId, Wall,
+    WallRun,
 };
 use crate::guid::{Guid, GuidGen};
 use crate::id::Arena;
@@ -28,6 +29,13 @@ pub struct Defaults {
     pub exterior_wall: LayerSetId,
 }
 
+/// Das Projekt (IFC: IfcProject).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Project {
+    pub guid: Guid,
+    pub name: String,
+}
+
 /// Fehler beim Umbenennen eines Bauteils.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NumberError {
@@ -38,6 +46,7 @@ pub enum NumberError {
 
 #[derive(Clone, Debug)]
 pub struct Model {
+    project: Project,
     /// Stifte, Schraffuren, Oberflächen und Bauteildarstellung.
     attr: Attributes,
     materials: Arena<Material>,
@@ -183,7 +192,12 @@ impl Model {
             elevation: 0.0,
             height: 3500.0,
         });
+        let project = Project {
+            guid: guids.next_guid(),
+            name: "Projekt".into(),
+        };
         Model {
+            project,
             attr,
             materials,
             layer_sets,
@@ -200,6 +214,53 @@ impl Model {
             txn: None,
             strict: false,
         }
+    }
+
+    /// Setzt ein Modell aus geladenen Tabellen zusammen ([`crate::szo`]).
+    /// Nummernzähler je Kategorie stehen auf der höchsten vorhandenen Nummer.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_parts(
+        project: Project,
+        attr: Attributes,
+        materials: Arena<Material>,
+        layer_sets: Arena<LayerSet>,
+        storeys: Arena<Storey>,
+        elements: Arena<Element>,
+        runs: Arena<WallRun>,
+        defaults: Defaults,
+        guids: GuidGen,
+    ) -> Model {
+        let mut numbers = [0; Category::ALL.len()];
+        for (_, e) in elements.iter() {
+            let n = e
+                .number
+                .strip_prefix(e.category.prefix())
+                .and_then(|r| r.strip_prefix('-'))
+                .and_then(|r| r.parse::<u32>().ok());
+            if let Some(n) = n {
+                let c = &mut numbers[e.category.index()];
+                *c = (*c).max(n);
+            }
+        }
+        Model {
+            project,
+            attr,
+            materials,
+            layer_sets,
+            storeys,
+            elements,
+            runs,
+            defaults,
+            numbers,
+            revision: 0,
+            guids,
+            txn: None,
+            strict: false,
+        }
+    }
+
+    pub fn project(&self) -> &Project {
+        &self.project
     }
 
     /// Steigt bei jeder Änderung.
@@ -420,6 +481,27 @@ impl Model {
         e.number = number.to_string();
         self.touch();
         Ok(())
+    }
+
+    /// Setzt eine freie Eigenschaft; `None` entfernt sie.
+    pub fn set_prop(&mut self, id: ElementId, key: &str, value: Option<PropValue>) -> bool {
+        if !self.elements.contains(id) {
+            return false;
+        }
+        note!(self, Element, self.elements, id);
+        let Some(e) = self.elements.get_mut(id) else {
+            return false;
+        };
+        match value {
+            Some(v) => {
+                e.props.insert(key.to_string(), v);
+            }
+            None => {
+                e.props.remove(key);
+            }
+        }
+        self.touch();
+        true
     }
 
     fn new_wall(&mut self, run: RunId, seg: usize, template: &Element) -> ElementId {
@@ -799,6 +881,7 @@ impl Model {
         guids.extend(self.materials.iter().map(|(_, m)| m.guid));
         guids.extend(self.layer_sets.iter().map(|(_, s)| s.guid));
         guids.extend(self.storeys.iter().map(|(_, s)| s.guid));
+        guids.push(self.project.guid);
         let n = guids.len();
         guids.sort();
         guids.dedup();
