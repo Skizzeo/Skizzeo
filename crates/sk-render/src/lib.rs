@@ -16,17 +16,49 @@ pub struct Style {
     pub sky: Vec<(f32, [f32; 3])>,
     pub ground: [f32; 3],
     pub horizon_softness: f32,
-    pub face: [f32; 3],
-    pub edge: [f32; 3],
-    /// Kantenbreite in Pixeln.
-    pub edge_width: f32,
     /// Richtung zum Licht (Weltkoordinaten, normiert).
     pub light: [f32; 3],
     /// Helligkeit abgewandter Flächen (0..1); zugewandte Flächen erreichen 1.
     pub ambient: f32,
-    /// Schraffurabstand und Strichbreite in Pixeln (Zeichnungsansichten).
-    pub hatch_spacing: f32,
-    pub hatch_width: f32,
+}
+
+/// Höchstzahl der Kantenarten (Größe der Uniform-Felder).
+pub const EDGE_KINDS: usize = 8;
+
+/// Zeilen der Aussehens-Tabelle je Darstellungsschlüssel.
+pub const LOOK_ROWS: usize = 7;
+
+/// Breite (Bildpunkte) und Farbe je Kantenart, für Zeichnung oder 3D.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EdgeLooks {
+    pub width: [f32; EDGE_KINDS],
+    pub color: [[f32; 3]; EDGE_KINDS],
+}
+
+/// Aussehen aller Darstellungsschlüssel als Tabelle für die Grafikkarte.
+///
+/// `texels` hat [`LOOK_ROWS`] Zeilen zu je `keys` Texeln (Zeile für Zeile);
+/// Spalte = Schlüssel ohne Schnittbit. Die Zeilen:
+///
+/// | Zeile | r g b | a |
+/// |---|---|---|
+/// | 0 | Ansichtsfläche 3D | – |
+/// | 1 | Schnittfläche 3D | – |
+/// | 2 | Grund in der Zeichnung | Art: 0 leer, 1 Vollfläche, 2 Linien, 3 Zickzack |
+/// | 3 | Schraffurfarbe | Strichbreite px |
+/// | 4 | Schar 1: cx, cy, Periode px | Abstandsfaktor k |
+/// | 5 | Schar 2: cx, cy, Periode px | Abstandsfaktor k |
+/// | 6 | Versatz Schar 1, Versatz Schar 2, Anzahl Scharen | Zickzack-Periode |
+///
+/// Eine Schar sind die Linien `cx·x + cy·y − Versatz = n·Periode` in
+/// Bildpunkten; der Abstand eines Pixels zur nächsten Linie ist
+/// `min(m, Periode − m)·k`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Looks {
+    pub keys: usize,
+    pub texels: Vec<[f32; 4]>,
+    pub drawing: EdgeLooks,
+    pub model: EdgeLooks,
 }
 
 /// Kameradaten für ein Bild. Alle Matrizen sind kamerarelativ (Auge im Ursprung),
@@ -50,23 +82,13 @@ pub struct View {
     pub paper: Option<[f32; 3]>,
 }
 
-/// Muster einer Fläche.
-pub mod pattern {
-    pub const NONE: f32 = 0.0;
-    /// Schraffur unter 45° (Mauerwerk), in Bildschirmpixeln.
-    pub const DIAGONAL: f32 = 1.0;
-    /// Zickzacklinie quer durch die Schicht (harte Dämmung), in Musterkoordinaten.
-    pub const ZIGZAG: f32 = 2.0;
-    /// Kreuzschraffur unter 45° und 135° (Stahlbeton), in Bildschirmpixeln.
-    pub const CROSS: f32 = 3.0;
-}
-
 /// Dreiecksnetz für die GPU.
-/// Flächen: Position, Normale, Farbe, Muster, Musterkoordinaten (u, v).
-/// Kanten: zwei Punkte und Breitenfaktor (× Kantenbreite des Stils).
+/// Flächen: Position, Normale, Darstellungsschlüssel, Musterkoordinaten (u, v).
+/// Kanten: zwei Punkte und Kantenart. Farben, Schraffuren und Strichbreiten
+/// kommen aus der Tabelle [`Looks`], nicht aus dem Netz.
 #[derive(Clone, Debug, Default)]
 pub struct MeshData {
-    pub faces: Vec<[f32; 12]>,
+    pub faces: Vec<[f32; 9]>,
     pub edges: Vec<([[f32; 3]; 2], f32)>,
 }
 
@@ -137,6 +159,8 @@ pub struct Renderer {
     samples: i32,
     target: Option<Target>,
     style: Style,
+    looks_tex: GLuint,
+    looks: Looks,
 }
 
 const SKY_MAX: usize = 16;
@@ -202,19 +226,16 @@ void main() {
 const FACE_VS: &str = r#"#version 330 core
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in vec3 a_normal;
-layout(location = 2) in vec3 a_color;
-layout(location = 3) in float a_pattern;
-layout(location = 4) in vec2 a_uv;
+layout(location = 2) in float a_key;
+layout(location = 3) in vec2 a_uv;
 uniform mat4 u_vp;
 uniform vec3 u_origin;
 out vec3 v_normal;
-out vec3 v_color;
-flat out float v_pattern;
+flat out int v_key;
 out vec2 v_uv;
 void main() {
     v_normal = a_normal;
-    v_color = a_color;
-    v_pattern = a_pattern;
+    v_key = int(a_key + 0.5);
     v_uv = a_uv;
     gl_Position = u_vp * vec4(a_pos + u_origin, 1.0);
 }
@@ -222,44 +243,54 @@ void main() {
 
 const FACE_FS: &str = r#"#version 330 core
 in vec3 v_normal;
-in vec3 v_color;
-flat in float v_pattern;
+flat in int v_key;
 in vec2 v_uv;
 out vec4 o_color;
+uniform sampler2D u_looks;
+uniform int u_drawing;
 uniform vec3 u_light;
 uniform float u_ambient;
-uniform float u_flat;
-uniform float u_hatch_spacing;
-uniform float u_hatch_width;
+vec4 look(int row) {
+    return texelFetch(u_looks, ivec2(v_key & 0x7FFF, row), 0);
+}
+// Abstand des Pixels zur nächsten Linie einer Schar (Zeile 4 oder 5)
+float family(vec4 f, float offset) {
+    float m = mod(gl_FragCoord.x * f.x + gl_FragCoord.y * f.y - offset, f.z);
+    return min(m, f.z - m) * f.w;
+}
 void main() {
-    vec3 c = v_color;
-    if (u_flat < 0.5) {
+    bool cut = (v_key & 0x8000) != 0;
+    if (u_drawing == 0) {
+        vec3 c = look(cut ? 1 : 0).rgb;
         float d = max(dot(normalize(v_normal), u_light), 0.0);
-        c *= u_ambient + (1.0 - u_ambient) * d;
+        o_color = vec4(c * (u_ambient + (1.0 - u_ambient) * d), 1.0);
+        return;
     }
-    float ink = 0.0;
-    if (v_pattern > 0.5 && v_pattern < 1.5) {
-        // 45°-Schraffur mit festem Abstand in Pixeln
-        float period = u_hatch_spacing * 1.41421356;
-        float m = mod(gl_FragCoord.x + gl_FragCoord.y, period);
-        float dist = min(m, period - m) * 0.70710678;
-        ink = clamp(u_hatch_width * 0.5 + 0.5 - dist, 0.0, 1.0);
-    } else if (v_pattern > 2.5) {
-        // Kreuzschraffur: dieselbe Schar unter 45° und 135°, Tinte = Maximum
-        float period = u_hatch_spacing * 1.41421356;
-        float m1 = mod(gl_FragCoord.x + gl_FragCoord.y, period);
-        float m2 = mod(gl_FragCoord.x - gl_FragCoord.y, period);
-        float d1 = min(m1, period - m1) * 0.70710678;
-        float d2 = min(m2, period - m2) * 0.70710678;
-        ink = clamp(u_hatch_width * 0.5 + 0.5 - min(d1, d2), 0.0, 1.0);
-    } else if (v_pattern > 1.5) {
-        // Zickzack zwischen den Schichtflächen (v = 0 und v = 1)
-        float zig = abs(2.0 * fract(v_uv.x) - 1.0);
-        float f = v_uv.y - zig;
-        float g = max(length(vec2(dFdx(f), dFdy(f))), 1e-6);
-        ink = clamp(u_hatch_width * 0.5 + 0.5 - abs(f) / g, 0.0, 1.0);
+    vec4 bg = look(2);
+    vec3 c = bg.rgb;
+    if (cut) {
+        int kind = int(bg.a + 0.5);
+        vec4 fg = look(3);
+        float ink = 0.0;
+        if (kind == 1) {
+            c = fg.rgb;
+        } else if (kind == 2) {
+            vec4 o = look(6);
+            float dist = family(look(4), o.x);
+            if (o.z > 1.5) {
+                dist = min(dist, family(look(5), o.y));
+            }
+            ink = clamp(fg.a * 0.5 + 0.5 - dist, 0.0, 1.0);
+        } else if (kind == 3) {
+            // Zickzack zwischen den Schichtflächen (v = 0 und v = 1)
+            float zig = abs(2.0 * fract(v_uv.x / look(6).a) - 1.0);
+            float f = v_uv.y - zig;
+            float g = max(length(vec2(dFdx(f), dFdy(f))), 1e-6);
+            ink = clamp(fg.a * 0.5 + 0.5 - abs(f) / g, 0.0, 1.0);
+        }
+        c = mix(c, fg.rgb, ink);
     }
-    o_color = vec4(mix(c, vec3(0.0), ink), 1.0);
+    o_color = vec4(c, 1.0);
 }
 "#;
 
@@ -267,16 +298,20 @@ const EDGE_VS: &str = r#"#version 330 core
 // Eine Instanz je Kante; die sechs Ecken der beiden Dreiecke kommen aus gl_VertexID.
 layout(location = 0) in vec3 a_a;
 layout(location = 1) in vec3 a_b;
-layout(location = 2) in float a_width;
+layout(location = 2) in float a_kind;
 const vec2 CORNERS[6] = vec2[6](
     vec2(0.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0),
     vec2(0.0, -1.0), vec2(1.0, 1.0), vec2(0.0, 1.0));
 uniform mat4 u_vp;
 uniform vec3 u_origin;
 uniform vec2 u_viewport;
-uniform float u_width;
+uniform float u_edge_width[8];
+uniform vec3 u_edge_color[8];
 uniform float u_near;
+flat out vec3 v_color;
 void main() {
+    int k = clamp(int(a_kind + 0.5), 0, 7);
+    v_color = u_edge_color[k];
     vec4 ca = u_vp * vec4(a_a + u_origin, 1.0);
     vec4 cb = u_vp * vec4(a_b + u_origin, 1.0);
     if (ca.w < u_near && cb.w < u_near) {
@@ -295,17 +330,17 @@ void main() {
     vec2 a_corner = CORNERS[gl_VertexID];
     bool at_b = a_corner.x > 0.5;
     vec4 c = at_b ? cb : ca;
-    vec2 off = (n * a_corner.y + d * (at_b ? 1.0 : -1.0)) * (u_width * a_width * 0.5);
+    vec2 off = (n * a_corner.y + d * (at_b ? 1.0 : -1.0)) * (u_edge_width[k] * 0.5);
     c.xy += off / half_vp * c.w;
     gl_Position = c;
 }
 "#;
 
 const EDGE_FS: &str = r#"#version 330 core
+flat in vec3 v_color;
 out vec4 o_color;
-uniform vec3 u_color;
 void main() {
-    o_color = vec4(u_color, 1.0);
+    o_color = vec4(v_color, 1.0);
 }
 "#;
 
@@ -427,6 +462,8 @@ impl Renderer {
                 samples: max_samples.clamp(1, 8),
                 target: None,
                 style,
+                looks_tex: 0,
+                looks: Looks::default(),
             })
         }
     }
@@ -448,6 +485,48 @@ impl Renderer {
         }
     }
 
+    /// Lädt die Aussehens-Tabelle (Texel und Kantenstile) hoch. Netze bleiben
+    /// unberührt: eine Änderung an Stift, Schraffur oder Oberfläche kostet nur
+    /// diese wenigen Kilobyte.
+    pub fn set_looks(&mut self, looks: &Looks) {
+        if *looks == self.looks {
+            return;
+        }
+        let gl = &self.gl;
+        let keys = looks.keys.max(1);
+        let mut texels = looks.texels.clone();
+        texels.resize(keys * LOOK_ROWS, [0.0; 4]);
+        unsafe {
+            if self.looks_tex == 0 {
+                gl.glGenTextures(1, &mut self.looks_tex);
+                gl.glBindTexture(TEXTURE_2D, self.looks_tex);
+                for (p, v) in [
+                    (TEXTURE_MIN_FILTER, NEAREST),
+                    (TEXTURE_MAG_FILTER, NEAREST),
+                    (TEXTURE_WRAP_S, CLAMP_TO_EDGE),
+                    (TEXTURE_WRAP_T, CLAMP_TO_EDGE),
+                ] {
+                    gl.glTexParameteri(TEXTURE_2D, p, v);
+                }
+            }
+            gl.glBindTexture(TEXTURE_2D, self.looks_tex);
+            gl.glPixelStorei(UNPACK_ALIGNMENT, 4);
+            gl.glTexImage2D(
+                TEXTURE_2D,
+                0,
+                RGBA32F as GLint,
+                keys as i32,
+                LOOK_ROWS as i32,
+                0,
+                RGBA,
+                FLOAT,
+                texels.as_ptr() as *const c_void,
+            );
+            gl.glBindTexture(TEXTURE_2D, 0);
+        }
+        self.looks = looks.clone();
+    }
+
     /// Ersetzt das Netz in Platz `slot` (z. B. 0 = Modell, 1 = Vorschau).
     pub fn set_mesh(&mut self, slot: usize, mesh: &MeshData) {
         while self.meshes.len() <= slot {
@@ -460,11 +539,11 @@ impl Renderer {
                 gl,
                 &mut gm.faces,
                 &mesh.faces,
-                &[(3, 0), (3, 12), (3, 24), (1, 36), (2, 40)],
+                &[(3, 0), (3, 12), (1, 24), (2, 28)],
             );
 
             // Eine Instanz je Kante (28 Byte); der Vertex-Shader zieht sie zu zwei
-            // Dreiecken auf Pixelbreite auf.
+            // Dreiecken auf die Breite ihrer Kantenart auf.
             let v: Vec<[f32; 7]> = mesh
                 .edges
                 .iter()
@@ -707,10 +786,12 @@ impl Renderer {
             vec3(gl, p, c"u_origin", view.origin_rel);
             vec3(gl, p, c"u_light", st.light);
             gl.glUniform1f(loc(gl, p, c"u_ambient"), st.ambient);
-            let flat = if view.paper.is_some() { 1.0 } else { 0.0 };
-            gl.glUniform1f(loc(gl, p, c"u_flat"), flat);
-            gl.glUniform1f(loc(gl, p, c"u_hatch_spacing"), st.hatch_spacing);
-            gl.glUniform1f(loc(gl, p, c"u_hatch_width"), st.hatch_width);
+            let drawing = view.paper.is_some();
+            gl.glUniform1i(loc(gl, p, c"u_drawing"), drawing as GLint);
+            gl.glActiveTexture(TEXTURE0 + 1);
+            gl.glBindTexture(TEXTURE_2D, self.looks_tex);
+            gl.glUniform1i(loc(gl, p, c"u_looks"), 1);
+            gl.glActiveTexture(TEXTURE0);
             for m in &self.meshes {
                 gl.glBindVertexArray(m.faces.vao);
                 gl.glDrawArrays(TRIANGLES, 0, m.faces.count);
@@ -723,9 +804,16 @@ impl Renderer {
             gl.glUseProgram(p);
             mat(gl, p, c"u_vp", &view.view_proj);
             vec3(gl, p, c"u_origin", view.origin_rel);
-            vec3(gl, p, c"u_color", st.edge);
+            let edges = if drawing {
+                &self.looks.drawing
+            } else {
+                &self.looks.model
+            };
             gl.glUniform2f(loc(gl, p, c"u_viewport"), w as f32, h as f32);
-            gl.glUniform1f(loc(gl, p, c"u_width"), st.edge_width);
+            let n = EDGE_KINDS as i32;
+            gl.glUniform1fv(loc(gl, p, c"u_edge_width"), n, edges.width.as_ptr());
+            let colors = edges.color.as_flattened();
+            gl.glUniform3fv(loc(gl, p, c"u_edge_color"), n, colors.as_ptr());
             gl.glUniform1f(loc(gl, p, c"u_near"), view.near);
             for m in self.meshes.iter().filter(|m| m.edges.count > 0) {
                 gl.glBindVertexArray(m.edges.vao);

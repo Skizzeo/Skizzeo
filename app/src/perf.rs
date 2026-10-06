@@ -58,8 +58,8 @@ fn time<F: FnMut()>(reps: usize, mut f: F) -> f64 {
 }
 
 fn bytes(m: &sk_render::MeshData) -> usize {
-    // Flächen 48 B je Ecke; Kanten als Instanz mit 28 B
-    m.faces.len() * 48 + m.edges.len() * 28
+    // Flächen 36 B je Ecke (vor E3: 48 B); Kanten als Instanz mit 28 B
+    std::mem::size_of_val(m.faces.as_slice()) + m.edges.len() * 28
 }
 
 #[test]
@@ -254,4 +254,47 @@ fn perf_ziehen_mit_innenwaenden() {
         );
     }
     println!("Zeiten in ms je Mausbewegung. Ziel B5a: Ziehen < 1 ms.");
+}
+
+/// E3: Eine Attributänderung (Stiftfarbe) bei 1000 Häusern kostet nur die
+/// Tabelle, kein Netz.
+#[test]
+#[ignore]
+fn perf_attribut_aendern() {
+    let mut s = town(1000, 4);
+    let run = s.model().runs().ids().next().unwrap();
+    let builds = s.build_count(run);
+    let (id, pen) = s
+        .model()
+        .attr()
+        .pens()
+        .iter()
+        .find(|(_, p)| p.number == 3)
+        .map(|(id, p)| (id, p.clone()))
+        .unwrap();
+    let mut flip = false;
+    let change = time(20, || {
+        flip = !flip;
+        let color = if flip { [255, 0, 0] } else { [0, 0, 0] };
+        s.set_pen(
+            id,
+            sk_model::Pen {
+                color,
+                ..pen.clone()
+            },
+        );
+    });
+    assert_eq!(s.build_count(run), builds, "kein Netz neu");
+    let pack = time(100, || {
+        std::hint::black_box(s.table().looks(1.0));
+    });
+    let looks = s.table().looks(1.0);
+    let kb = std::mem::size_of_val(looks.texels.as_slice()) as f64 / 1e3;
+    println!();
+    println!("Stift ändern (Schritt + Tabelle): {change:.3} ms, Tabelle packen: {pack:.4} ms");
+    println!(
+        "Tabelle: {} Schlüssel × {} Zeilen = {kb:.2} KB",
+        looks.keys,
+        sk_render::LOOK_ROWS
+    );
 }

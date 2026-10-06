@@ -19,6 +19,36 @@ pub enum ViewKind {
     Right,
 }
 
+impl ViewKind {
+    pub const ALL: [ViewKind; 7] = [
+        ViewKind::Persp,
+        ViewKind::Plan,
+        ViewKind::Section,
+        ViewKind::Front,
+        ViewKind::Back,
+        ViewKind::Left,
+        ViewKind::Right,
+    ];
+
+    /// Name für die Befehlszeile (`--ansicht grundriss`).
+    pub fn arg(self) -> &'static str {
+        match self {
+            ViewKind::Persp => "3d",
+            ViewKind::Plan => "grundriss",
+            ViewKind::Section => "schnitt",
+            ViewKind::Front => "vorne",
+            ViewKind::Back => "hinten",
+            ViewKind::Left => "links",
+            ViewKind::Right => "rechts",
+        }
+    }
+
+    pub fn from_arg(s: &str) -> Option<ViewKind> {
+        let s = s.to_lowercase();
+        ViewKind::ALL.into_iter().find(|v| v.arg() == s)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Id {
     Building,

@@ -47,6 +47,7 @@ pub const READ_FRAMEBUFFER: GLenum = 0x8CA8;
 pub const DRAW_FRAMEBUFFER: GLenum = 0x8CA9;
 pub const RENDERBUFFER: GLenum = 0x8D41;
 pub const RGBA8: GLenum = 0x8058;
+pub const RGBA32F: GLenum = 0x8814;
 pub const RGBA: GLenum = 0x1908;
 pub const DEPTH_COMPONENT24: GLenum = 0x81A6;
 pub const COLOR_ATTACHMENT0: GLenum = 0x8CE0;

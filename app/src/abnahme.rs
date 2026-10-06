@@ -7,7 +7,8 @@
 //! echtem Windows prüfbar ist, steht in `skizzeo/test/handtest.md`.
 
 use crate::camera::Camera;
-use crate::scene::{Scene, PLAN_CUT};
+use crate::draw_table::{fill_kind, DrawTable};
+use crate::scene::{Plane, Scene, PLAN_CUT};
 use crate::section::SectionLine;
 use crate::selection::{self, Selection};
 use crate::ui::{Id, Panel, Ui, ViewKind};
@@ -17,7 +18,7 @@ use crate::{fit_parallel, fit_perspective};
 use sk_math::{vec3, Vec3};
 use sk_model::{edge_kind, FillKind, Model, RefSide, RunId, WallChain};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
-use sk_render::{pattern, MeshData};
+use sk_render::MeshData;
 use sk_ui::theme::Theme;
 use sk_ui::titlebar::{Button, TitleBar};
 
@@ -559,9 +560,66 @@ fn a09_zweischalige_aussenwand() {
     assert!(lo.abs() < 1e-3 && (hi - 315.0).abs() < 1e-3, "{lo} … {hi}");
 }
 
+/// Muster einer Fläche, wie der Shader sie zeigt.
+mod pattern {
+    pub const NONE: f32 = 0.0;
+    pub const DIAGONAL: f32 = 1.0;
+    pub const ZIGZAG: f32 = 2.0;
+    pub const CROSS: f32 = 3.0;
+    pub const SOLID: f32 = 4.0;
+}
+
+/// Ein Netz so, wie Netz und Zeichentabelle es auf den Bildschirm bringen:
+/// je Ecke Lage (0..3), Normale (3..6), Farbe (6..9) und Muster (9), je
+/// Kante die Strichbreite in Bildpunkten bei 96 dpi.
+struct Shown {
+    faces: Vec<[f32; 10]>,
+    edges: Vec<([[f32; 3]; 2], f32)>,
+}
+
+fn shown(t: &DrawTable, m: &MeshData, drawing: bool) -> Shown {
+    let faces = m
+        .faces
+        .iter()
+        .map(|v| {
+            let key = v[6] as u16;
+            let look = t.look(key);
+            let cut = key & sk_model::material::CUT != 0;
+            let (c, pat) = match (drawing, cut) {
+                (true, true) => (
+                    look.cut_bg,
+                    match (look.kind, look.line_count) {
+                        (fill_kind::LINES, 2) => pattern::CROSS,
+                        (fill_kind::LINES, _) => pattern::DIAGONAL,
+                        (fill_kind::ZIGZAG, _) => pattern::ZIGZAG,
+                        (fill_kind::SOLID, _) => pattern::SOLID,
+                        _ => pattern::NONE,
+                    },
+                ),
+                (true, false) => (look.cut_bg, pattern::NONE),
+                (false, true) => (look.cut, pattern::NONE),
+                (false, false) => (look.face, pattern::NONE),
+            };
+            [v[0], v[1], v[2], v[3], v[4], v[5], c[0], c[1], c[2], pat]
+        })
+        .collect();
+    let edges = m
+        .edges
+        .iter()
+        .map(|(p, k)| (*p, t.edge_width(drawing, *k as u8)))
+        .collect();
+    Shown { faces, edges }
+}
+
+/// Netz einer Ansicht so, wie es auf dem Bildschirm erscheint.
+fn view_mesh(s: &mut Scene, v: ViewKind, section: Option<Plane>) -> Shown {
+    let m = s.mesh(v, section, &[]);
+    shown(s.table(), &m, v != ViewKind::Persp)
+}
+
 /// Kanten (a, b, Breite) einer Bauzeichnung, die ganz auf der Geraden x = `x`
 /// liegen (zwischen y = 1 m und 7 m).
-fn edges_at_x(m: &MeshData, x: f32) -> Vec<f32> {
+fn edges_at_x(m: &Shown, x: f32) -> Vec<f32> {
     m.edges
         .iter()
         .filter(|(p, _)| {
@@ -590,10 +648,10 @@ fn a10_bauzeichnung_linienstaerken_und_schraffuren() {
     );
     assert!(cut_w > layer_w && layer_w > fine_w);
 
-    let plan = s.mesh(ViewKind::Plan, None, &[]);
+    let plan = view_mesh(&mut s, ViewKind::Plan, None);
     let white = [1.0f32, 1.0, 1.0];
     assert!(plan.faces.iter().all(|v| v[6..9] == white), "Flächen weiß");
-    let has = |m: &MeshData, pat: f32| m.faces.iter().any(|v| v[9] == pat);
+    let has = |m: &Shown, pat: f32| m.faces.iter().any(|v| v[9] == pat);
     assert!(has(&plan, pattern::DIAGONAL), "Gasbeton schräg schraffiert");
     assert!(has(&plan, pattern::ZIGZAG), "Dämmung Zickzack");
     // Linke Wand im Grundriss: Außenkante Dämmung (x = 0) mitteldick,
@@ -609,17 +667,17 @@ fn a10_bauzeichnung_linienstaerken_und_schraffuren() {
     // Schnitt A–A: ebenfalls Schraffuren und dicke Kontur
     let mut sect = SectionLine::default();
     sect.ensure(&s);
-    let cut = s.mesh(ViewKind::Section, sect.plane(), &[]);
+    let cut = view_mesh(&mut s, ViewKind::Section, sect.plane());
     assert!(has(&cut, pattern::DIAGONAL) && has(&cut, pattern::ZIGZAG));
     assert!(cut.edges.iter().any(|e| e.1 == cut_w));
     assert!(cut.edges.iter().any(|e| e.1 == layer_w));
 
     // Ansicht: keine Schraffur, Ansichtskanten mittel
-    let front = s.mesh(ViewKind::Front, None, &[]);
+    let front = view_mesh(&mut s, ViewKind::Front, None);
     assert!(!has(&front, pattern::DIAGONAL) && !has(&front, pattern::ZIGZAG));
     assert!(front.edges.iter().any(|e| e.1 == view_w));
     // 3D: farbige Flächen, keine Schraffur
-    let p3 = s.mesh(ViewKind::Persp, None, &[]);
+    let p3 = view_mesh(&mut s, ViewKind::Persp, None);
     assert!(p3.faces.iter().all(|v| v[9] == pattern::NONE));
     assert!(p3.faces.iter().any(|v| v[6..9] != white));
 }
@@ -659,7 +717,7 @@ fn a11_schnittlinie_a_a() {
     assert!(!other.handle(&down(x, y), &s, &c, W, H, 1.0, false).consumed);
 
     // Der Schnitt zeigt das Gebäude an der neuen Stelle: Schnittflächen bei y = ny
-    let cut = s.mesh(ViewKind::Section, sect.plane(), &[]);
+    let cut = view_mesh(&mut s, ViewKind::Section, sect.plane());
     let on_plane = cut
         .faces
         .iter()
@@ -1020,14 +1078,16 @@ fn a20_szo_speichern_und_oeffnen() {
         s.chain(run).unwrap().points,
         "gezogene Wand steht an der neuen Stelle"
     );
-    let sig = |m: &MeshData| {
+    // Gleich, wie es aussieht (die Darstellungsschlüssel hängen an den Plätzen
+    // der Baustoffe und dürfen sich nach dem Öffnen unterscheiden)
+    let sig = |m: Shown| {
         let mut f: Vec<_> = m.faces.iter().map(|v| v.map(|x| x.to_bits())).collect();
         f.sort();
         (f, m.edges.len())
     };
     assert_eq!(
-        sig(&t.mesh(ViewKind::Plan, None, &[])),
-        sig(&s.mesh(ViewKind::Plan, None, &[])),
+        sig(view_mesh(&mut t, ViewKind::Plan, None)),
+        sig(view_mesh(&mut s, ViewKind::Plan, None)),
         "Grundriss gleich"
     );
     assert!(t.model().check().is_empty(), "{:?}", t.model().check());
@@ -1302,7 +1362,7 @@ fn a28_schnitt_stahlbeton_ohne_fuge() {
     zeichne_rechteck(&mut s, &cam3d());
     let mut sect = SectionLine::default();
     sect.ensure(&s);
-    let cut = s.mesh(ViewKind::Section, sect.plane(), &[]);
+    let cut = view_mesh(&mut s, ViewKind::Section, sect.plane());
     let has = |pat: f32| cut.faces.iter().any(|v| v[9] == pat);
     assert!(has(pattern::CROSS) && has(pattern::DIAGONAL) && has(pattern::ZIGZAG));
     let cross_below = cut

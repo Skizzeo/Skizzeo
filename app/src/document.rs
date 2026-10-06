@@ -224,5 +224,17 @@ mod tests {
             Some(PathBuf::from("C:\\Haus.SZO"))
         );
         assert_eq!(a(&["skizzeo.exe", "--screenshot", "a.png"]), None);
+        assert_eq!(
+            a(&["skizzeo.exe", "--ansicht", "schnitt", "C:\\b.szo"]),
+            Some(PathBuf::from("C:\\b.szo"))
+        );
+        for v in crate::ui::ViewKind::ALL {
+            assert_eq!(crate::ui::ViewKind::from_arg(v.arg()), Some(v));
+        }
+        assert_eq!(
+            crate::ui::ViewKind::from_arg("Grundriss"),
+            Some(crate::ui::ViewKind::Plan)
+        );
+        assert_eq!(crate::ui::ViewKind::from_arg("oben"), None);
     }
 }
