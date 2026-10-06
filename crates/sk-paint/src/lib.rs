@@ -460,6 +460,41 @@ impl Canvas {
         }
     }
 
+    /// Zeichnet `src` mit der linken oberen Ecke bei `(x, y)` darüber
+    /// (Quelle über Ziel); was außerhalb liegt, fällt weg.
+    pub fn blit(&mut self, src: &Canvas, x: i32, y: i32) {
+        for sy in 0..src.height {
+            let dy = y + sy as i32;
+            if dy < 0 || dy >= self.height as i32 {
+                continue;
+            }
+            for sx in 0..src.width {
+                let dx = x + sx as i32;
+                if dx < 0 || dx >= self.width as i32 {
+                    continue;
+                }
+                let s = src.px[sy * src.width + sx];
+                let d = &mut self.px[dy as usize * self.width + dx as usize];
+                let ia = 1.0 - s[3];
+                for k in 0..4 {
+                    d[k] = s[k] + d[k] * ia;
+                }
+            }
+        }
+    }
+
+    /// Deckendes Bild, dessen Bildpunkte `f(x, y)` liefert (Farbverläufe,
+    /// Farbwähler).
+    pub fn from_fn(width: usize, height: usize, f: impl Fn(usize, usize) -> Rgba) -> Canvas {
+        let mut c = Canvas::new(width, height);
+        for y in 0..height {
+            for x in 0..width {
+                c.px[y * width + x] = premul(f(x, y), 1.0);
+            }
+        }
+        c
+    }
+
     pub fn to_png(&self) -> Vec<u8> {
         encode_png(self.width as u32, self.height as u32, &self.to_rgba8())
     }
@@ -474,6 +509,43 @@ fn unit_to_u8(v: f32) -> u8 {
     let x = (v * 255.0).clamp(0.0, 255.0);
     let i = x as i32;
     (i + (x - i as f32 >= 0.5) as i32) as u8
+}
+
+/// Farbe aus Farbton (Grad), Sättigung und Helligkeit (0..1).
+pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> Rgba {
+    let h = h.rem_euclid(360.0) / 60.0;
+    let c = v * s;
+    let x = c * (1.0 - (h % 2.0 - 1.0).abs());
+    let (r, g, b) = match h as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = v - c;
+    Rgba::from_f32([r + m, g + m, b + m, 1.0])
+}
+
+/// Farbton (Grad), Sättigung und Helligkeit (0..1) einer Farbe. Grau hat
+/// den Farbton 0.
+pub fn rgb_to_hsv(c: Rgba) -> (f32, f32, f32) {
+    let [r, g, b, _] = c.to_f32();
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let d = max - min;
+    let h = if d <= 0.0 {
+        0.0
+    } else if max == r {
+        60.0 * ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        60.0 * ((b - r) / d + 2.0)
+    } else {
+        60.0 * ((r - g) / d + 4.0)
+    };
+    let s = if max <= 0.0 { 0.0 } else { d / max };
+    (h, s, max)
 }
 
 fn premul(c: Rgba, cov: f32) -> [f32; 4] {
@@ -625,5 +697,32 @@ mod tests {
         let sum: f32 = c.to_rgba8().chunks(4).map(|p| p[3] as f32 / 255.0).sum();
         let soll = std::f32::consts::PI * 40.0 * 40.0;
         assert!((sum - soll).abs() / soll < 0.002, "{sum} vs {soll}");
+    }
+
+    #[test]
+    fn hsv_hin_und_zurueck() {
+        for c in [
+            Rgba::rgb(192, 57, 43),
+            Rgba::rgb(0, 0, 0),
+            Rgba::rgb(255, 255, 255),
+            Rgba::rgb(40, 120, 220),
+            Rgba::rgb(242, 179, 61),
+            Rgba::rgb(10, 200, 30),
+        ] {
+            let (h, s, v) = rgb_to_hsv(c);
+            assert_eq!(hsv_to_rgb(h, s, v), c);
+        }
+        assert_eq!(hsv_to_rgb(0.0, 1.0, 1.0), Rgba::rgb(255, 0, 0));
+        assert_eq!(hsv_to_rgb(240.0, 1.0, 1.0), Rgba::rgb(0, 0, 255));
+    }
+
+    #[test]
+    fn bild_ueber_bild() {
+        let mut a = Canvas::new(4, 4);
+        let b = Canvas::from_fn(2, 2, |_, _| Rgba::rgb(255, 0, 0));
+        a.blit(&b, 3, -1);
+        let px = a.to_rgba8();
+        assert_eq!(&px[3 * 4..4 * 4], &[255, 0, 0, 255]);
+        assert_eq!(&px[(4 + 3) * 4..(4 + 4) * 4], &[0, 0, 0, 0]);
     }
 }

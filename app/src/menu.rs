@@ -28,6 +28,8 @@ pub enum Command {
     Redo,
     OpenMenu,
     ClearRecent,
+    /// Einstellungsfenster (E5).
+    Settings,
 }
 
 /// Antwort der Nachfrage „Änderungen speichern?“.
@@ -188,6 +190,8 @@ impl FileMenu {
                 Command::SaveAs,
                 true,
             ),
+            separator(),
+            item("Einstellungen …", "Strg+Komma", Command::Settings, true),
             separator(),
             item("Schließen", "Strg+W", Command::Close, true),
             item("Beenden", "Alt+F4", Command::Quit, true),
@@ -687,6 +691,8 @@ impl Shortcuts {
                 Some(Command::Redo)
             }
             (Key::Other(0x79), false, false, _) => Some(Command::OpenMenu),
+            // Komma-Taste (VK_OEM_COMMA, als Zeichen oder als Code)
+            (Key::Char(',') | Key::Other(0xBC), true, false, false) => Some(Command::Settings),
             _ => None,
         }
     }

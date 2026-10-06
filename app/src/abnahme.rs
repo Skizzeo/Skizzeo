@@ -3333,6 +3333,7 @@ fn befehl(c: Option<Command>) -> Option<String> {
         Command::Redo => "Wiederherstellen".into(),
         Command::OpenMenu => "Menü".into(),
         Command::ClearRecent => "Liste leeren".into(),
+        Command::Settings => "Einstellungen".into(),
     })
 }
 
@@ -3532,6 +3533,8 @@ fn a60_dateimenue_eintraege_und_ausgrauen() {
         ("—", "", false),
         ("Speichern", "Strg+S", true),
         ("Speichern unter …", "Strg+Umschalt+S", true),
+        ("—", "", false),
+        ("Einstellungen …", "Strg+Komma", true),
         ("—", "", false),
         ("Schließen", "Strg+W", true),
         ("Beenden", "Alt+F4", true),
@@ -3875,4 +3878,554 @@ fn a65_og_innenwand_fuss_auf_geschosshoehe() {
     assert!(s.model().check().is_empty(), "{:?}", s.model().check());
     assert!(s.undo());
     assert_eq!(x_iw(&s), x0);
+}
+
+// Abnahmetests E5 „Einstellungsfenster: Gerüst, Reiter Stifte und
+// Bedienoberfläche“ (einstellungen/paket-e5-einstellungsfenster.md),
+// vorbereitet gegen main 650258e. Spezifikation: test/abnahme-einstellungen.md.
+//
+// Alle angenommenen Namen der neuen Schnittstellen stehen NUR in den Adaptern
+// unten. Der Bauthread passt die Adapter an; die Tests bleiben unverändert.
+// Fensterlage, Ziehen am Kopf, Farbwähler mit der Maus und das Sperren der
+// Ansichten prüft der Handtest H43–H50.
+//
+// Braucht aus dem E17-Teil von abnahme.rs: `befehl`, `kuerzel`, `zeilen`,
+// `MODS_STRG`, `test_dir`; `befehl` bekommt den Fall `Command::Settings` →
+// "Einstellungen".
+
+// ===== Adapter E5 =====
+
+use crate::prefs::{Prefs, Tab};
+use sk_model::attr::{Pen, PenId};
+
+/// Fenster öffnen: beginnt den Schritt „Einstellungen geändert“ und merkt sich
+/// das Schema.
+fn oeffnen(s: &mut Scene, th: &Theme) -> Prefs {
+    Prefs::open(s, th)
+}
+
+/// Eine Eingabe im Fenster (Projektseite), wirkt sofort.
+fn eingabe(p: &mut Prefs, s: &mut Scene, f: impl FnOnce(&mut Model) -> bool) -> bool {
+    p.edit(s, f)
+}
+
+/// Übernehmen: Projekt = ein Schritt (wenn geändert), Programm = Datei
+/// schreiben; Fenster bleibt offen.
+fn uebernehmen(p: &mut Prefs, s: &mut Scene, th: &Theme, st: &mut crate::settings::Settings) {
+    p.apply(s, th, st)
+}
+
+/// OK: wie Übernehmen, dann schließen.
+fn ok(p: &mut Prefs, s: &mut Scene, th: &Theme, st: &mut crate::settings::Settings) {
+    p.ok(s, th, st)
+}
+
+/// Abbrechen: alles seit Öffnen bzw. letztem Übernehmen zurück.
+fn abbrechen(p: &mut Prefs, s: &mut Scene, th: &mut Theme) {
+    p.cancel(s, th)
+}
+
+/// „Auf Standard zurücksetzen“ im genannten Reiter (nach der Nachfrage).
+fn zuruecksetzen(p: &mut Prefs, s: &mut Scene, th: &mut Theme, reiter: &str) {
+    let tab = match reiter {
+        "Stifte" => Tab::Pens,
+        "Bedienoberfläche" => Tab::Ui,
+        "Linientypen" => Tab::LineTypes,
+        "Schraffuren" => Tab::Fills,
+        "Oberflächen" => Tab::Surfaces,
+        "Baustoffe" => Tab::Materials,
+        _ => panic!("Reiter {reiter}"),
+    };
+    p.reset_tab(s, th, tab)
+}
+
+fn offen(p: &Prefs) -> bool {
+    p.is_open()
+}
+
+/// Neuer Stift über den Knopf „Neu“.
+fn stift_neu(p: &mut Prefs, s: &mut Scene) -> PenId {
+    p.new_pen(s)
+}
+
+/// Stift löschen über den Knopf; `false` = gesperrt (wird verwendet).
+fn stift_loeschen(p: &mut Prefs, s: &mut Scene, id: PenId) -> bool {
+    p.remove_pen(s, id)
+}
+
+/// Verwender eines Stifts (Spalte „Verwendet“, Hinweis beim Darüberfahren).
+fn stift_verwender(s: &Scene, id: PenId) -> Vec<String> {
+    crate::prefs::pen_users(s.model(), id)
+}
+
+/// Satz unter „Strichstärke am Bildschirm“.
+fn px_satz(px_per_mm: f32) -> String {
+    crate::prefs::px_hint(px_per_mm)
+}
+
+/// Farbwähler: Hex-Text und zurück, HSV.
+fn hex(c: [u8; 3]) -> String {
+    crate::prefs::to_hex(c)
+}
+fn hex_lesen(t: &str) -> Option<[u8; 3]> {
+    crate::prefs::parse_hex(t)
+}
+fn hsv(c: [u8; 3]) -> [f32; 3] {
+    let (h, s, v) = sk_paint::rgb_to_hsv(sk_paint::Rgba::rgb(c[0], c[1], c[2]));
+    [h, s, v]
+}
+fn rgb(h: [f32; 3]) -> [u8; 3] {
+    let c = sk_paint::hsv_to_rgb(h[0], h[1], h[2]);
+    [c.0, c.1, c.2]
+}
+
+/// Himmel: neue Enden setzen, Zwischenstufen im selben Verhältnis.
+fn himmel_enden(th: &mut Theme, unten: sk_paint::Rgba, oben: sk_paint::Rgba) {
+    crate::prefs::set_sky_ends(th, unten, oben)
+}
+
+/// Neue Quelldateien des Fensters (für Prüfregel 1).
+const E5_DATEIEN: [&str; 2] = ["app/src/prefs.rs", "crates/sk-ui/src/widgets.rs"];
+
+// ===== Hilfen =====
+
+fn stift(s: &Scene, nr: u16) -> (PenId, Pen) {
+    s.model()
+        .attr()
+        .pens()
+        .iter()
+        .find(|(_, p)| p.number == nr)
+        .map(|(id, p)| (id, p.clone()))
+        .unwrap_or_else(|| panic!("Stift {nr}"))
+}
+
+fn breite(s: &mut Scene, nr: u16, mm: f32) -> impl FnOnce(&mut Model) -> bool {
+    let (id, mut pen) = stift(s, nr);
+    pen.width_mm = mm;
+    move |m: &mut Model| m.set_pen(id, pen)
+}
+
+fn szo(s: &Scene) -> String {
+    sk_model::szo::write(s.model())
+}
+
+/// Zeichentabelle wie die Grafikkarte sie bekommt.
+fn tabelle(s: &Scene, th: &Theme) -> Vec<[f32; 4]> {
+    // Baustofftexel und dazu Breite und Farbe je Kantenart (Zeichnung, 3D)
+    let l = DrawTable::resolve(s.model(), th).looks(1.0);
+    let mut t = l.texels;
+    for e in [l.drawing, l.model] {
+        t.extend(
+            (0..e.width.len()).map(|i| [e.width[i], e.color[i][0], e.color[i][1], e.color[i][2]]),
+        );
+    }
+    t
+}
+
+fn ohne_datei() -> crate::settings::Settings {
+    crate::settings::Settings::new(
+        ["skizzeo", "--ohne-einstellungen"]
+            .map(String::from)
+            .into_iter(),
+        None,
+    )
+}
+
+fn haus_mit_wand() -> Scene {
+    let mut s = Scene::with_model(Model::with_seed(66));
+    zeichne_rechteck(&mut s, &cam3d());
+    s
+}
+
+// ===== Tests =====
+
+/// A66 (E5 §1): Aufruf über das Dateimenü („Einstellungen …“, eigene Gruppe
+/// zwischen „Speichern unter …“ und „Schließen“) und Strg+Komma; das Kürzel
+/// gilt nicht während einer Eingabe.
+#[test]
+fn a66_einstellungen_aufrufen() {
+    let mut m = FileMenu::default();
+    m.open();
+    let z = zeilen(&m, true, &Recent::default());
+    let i = z
+        .iter()
+        .position(|l| l.0 == "Einstellungen …")
+        .expect("Eintrag");
+    assert_eq!(z[i].1, "Strg+Komma");
+    assert!(z[i].2, "aktiv");
+    assert_eq!(z[i - 2].0, "Speichern unter …");
+    assert_eq!(z[i - 1].0, "—", "eigene Gruppe");
+    assert_eq!(z[i + 1].0, "—");
+    assert_eq!(z[i + 2].0, "Schließen");
+    let komma = Key::Other(0xBC);
+    let mut k = Shortcuts::default();
+    assert_eq!(
+        kuerzel(&mut k, komma, true, MODS_STRG, true).as_deref(),
+        Some("Einstellungen")
+    );
+    assert_eq!(kuerzel(&mut k, komma, true, MODS_STRG, false), None);
+    assert_eq!(kuerzel(&mut k, komma, true, M, true), None, "Komma allein");
+}
+
+/// A67 (E5 §2, Test 2): Abbrechen stellt das Projekt bitgenau her: gleiche
+/// .szo, gleiche Zeichentabelle, kein Rückgängig-Eintrag, Titel ohne „•“.
+#[test]
+fn a67_abbrechen_bitgenau() {
+    let mut s = haus_mit_wand();
+    let mut th = Theme::dark();
+    let doc = crate::document::Document::new(s.model().revision());
+    let (vor_szo, vor_tab, vor_undo) = (szo(&s), tabelle(&s, &th), s.undo_label());
+    let mut p = oeffnen(&mut s, &th);
+    assert!(offen(&p));
+    // Breite, Farbe, Name ändern, neuen Stift anlegen
+    let f = breite(&mut s, 3, 0.70);
+    assert!(eingabe(&mut p, &mut s, f));
+    let (id3, mut p3) = stift(&s, 3);
+    p3.color = [192, 57, 43];
+    p3.name = "Kräftig rot".into();
+    assert!(eingabe(&mut p, &mut s, move |m| m.set_pen(id3, p3)));
+    stift_neu(&mut p, &mut s);
+    // Live: die Tabelle ist schon anders, CUT-Kanten 1,4-mal so breit
+    assert_ne!(tabelle(&s, &th), vor_tab, "wirkt sofort");
+    let cut =
+        |s: &Scene, th: &Theme| DrawTable::resolve(s.model(), th).edge_width(true, edge_kind::CUT);
+    let jetzt = cut(&s, &th);
+    abbrechen(&mut p, &mut s, &mut th);
+    assert!(!offen(&p));
+    assert!((jetzt / cut(&s, &th) - 1.4).abs() < 1e-4, "0,70 / 0,50");
+    assert_eq!(szo(&s), vor_szo, ".szo bitgenau");
+    assert_eq!(tabelle(&s, &th), vor_tab, "Zeichentabelle bitgenau");
+    assert_eq!(s.undo_label(), vor_undo, "kein Rückgängig-Eintrag");
+    assert!(!doc.is_dirty(s.model()), "Titel ohne •");
+    assert_eq!(stift(&s, 3).1.width_mm, 0.50);
+}
+
+/// A68 (E5 §2, Test 2): OK erzeugt genau einen Rückgängig-Schritt
+/// „Einstellungen geändert“; Strg+Z stellt alles in einem Schritt her.
+/// OK ohne Änderung erzeugt keinen.
+#[test]
+fn a68_ok_ein_rueckgaengig_schritt() {
+    let mut s = haus_mit_wand();
+    let th = Theme::dark();
+    let mut st = ohne_datei();
+    let vor = szo(&s);
+    let vor_label = s.undo_label();
+    let mut p = oeffnen(&mut s, &th);
+    let f = breite(&mut s, 3, 0.70);
+    assert!(eingabe(&mut p, &mut s, f));
+    let f = breite(&mut s, 1, 0.18);
+    assert!(eingabe(&mut p, &mut s, f));
+    let neu = stift_neu(&mut p, &mut s);
+    ok(&mut p, &mut s, &th, &mut st);
+    assert!(!offen(&p));
+    assert_eq!(s.undo_label(), Some("Einstellungen geändert"));
+    let nach = szo(&s);
+    assert!(s.undo(), "ein Schritt");
+    assert_eq!(szo(&s), vor, "alles in einem Schritt zurück");
+    assert_eq!(s.undo_label(), vor_label);
+    assert!(s.model().attr().pen(neu).is_none());
+    assert!(s.redo());
+    assert_eq!(szo(&s), nach);
+    assert_eq!(stift(&s, 3).1.width_mm, 0.70);
+    // OK ohne Änderung: kein Eintrag
+    let mut p = oeffnen(&mut s, &th);
+    ok(&mut p, &mut s, &th, &mut st);
+    assert_eq!(s.undo_label(), Some("Einstellungen geändert"));
+    assert!(s.undo());
+    assert_eq!(szo(&s), vor, "nur der eine Schritt von oben lag darauf");
+}
+
+/// A69 (E5 §2, Test 3): Übernehmen mit Änderungen dazwischen → zwei Schritte;
+/// Übernehmen ohne Änderung → keiner; Abbrechen danach nimmt nur zurück, was
+/// seit dem letzten Übernehmen kam.
+#[test]
+fn a69_uebernehmen() {
+    let mut s = haus_mit_wand();
+    let mut th = Theme::dark();
+    let mut st = ohne_datei();
+    let vor = szo(&s);
+    let mut p = oeffnen(&mut s, &th);
+    let f = breite(&mut s, 3, 0.70);
+    eingabe(&mut p, &mut s, f);
+    uebernehmen(&mut p, &mut s, &th, &mut st);
+    assert!(offen(&p), "Fenster bleibt offen");
+    let nach1 = szo(&s);
+    let f = breite(&mut s, 2, 0.35);
+    eingabe(&mut p, &mut s, f);
+    uebernehmen(&mut p, &mut s, &th, &mut st);
+    let nach2 = szo(&s);
+    uebernehmen(&mut p, &mut s, &th, &mut st);
+    let f = breite(&mut s, 1, 0.25);
+    eingabe(&mut p, &mut s, f);
+    abbrechen(&mut p, &mut s, &mut th);
+    assert_eq!(szo(&s), nach2, "Abbrechen nur bis zum letzten Übernehmen");
+    assert!(s.undo());
+    assert_eq!(szo(&s), nach1);
+    assert!(s.undo());
+    assert_eq!(szo(&s), vor, "genau zwei Schritte");
+}
+
+/// A70 (E5 §4, Tests 5, 6; BIM-Bedingungen 1, 3, 4): Stift neu/löschen,
+/// Löschen gesperrt bei verwendeten Stiften (Baustoffe, Display-Slots),
+/// Nummern nie neu vergeben, check() meldet doppelte Nummern; .szo nach dem
+/// Löschen verlustfrei und bytegleich.
+#[test]
+fn a70_stifte_neu_loeschen_speichern() {
+    let mut s = haus_mit_wand();
+    let th = Theme::dark();
+    let mut st = ohne_datei();
+    let mut p = oeffnen(&mut s, &th);
+    let neu = stift_neu(&mut p, &mut s);
+    let pen = s.model().attr().pen(neu).unwrap().clone();
+    assert_eq!(
+        (pen.number, pen.name.as_str(), pen.color, pen.width_mm),
+        (10, "Stift 10", [0, 0, 0], 0.25)
+    );
+    assert!(stift_verwender(&s, neu).is_empty());
+    let (id3, _) = stift(&s, 3);
+    assert!(
+        !stift_verwender(&s, id3).is_empty(),
+        "Stift 3 zeichnet Schnittkanten"
+    );
+    assert!(!stift_loeschen(&mut p, &mut s, id3), "gesperrt");
+    assert!(s.model().attr().pen(id3).is_some());
+    // BIM 1: Verweise aus Display-Slots (und Baustoffen) sperren das Löschen
+    let zweiter = stift_neu(&mut p, &mut s);
+    assert_eq!(s.model().attr().pen(zweiter).unwrap().number, 11);
+    let mut disp = s.model().attr().display().clone();
+    let alt_bg = disp.background;
+    disp.background.pen = zweiter;
+    eingabe(&mut p, &mut s, move |m| {
+        m.set_display(disp);
+        true
+    });
+    assert!(!stift_verwender(&s, zweiter).is_empty());
+    assert!(
+        !stift_loeschen(&mut p, &mut s, zweiter),
+        "Hintergrund nutzt ihn"
+    );
+    let mut disp = s.model().attr().display().clone();
+    disp.background = alt_bg;
+    eingabe(&mut p, &mut s, move |m| {
+        m.set_display(disp);
+        true
+    });
+    // BIM 3: Nummern werden nicht neu vergeben (höchste + 1)
+    let dritter = stift_neu(&mut p, &mut s);
+    assert_eq!(s.model().attr().pen(dritter).unwrap().number, 12);
+    assert!(stift_loeschen(&mut p, &mut s, zweiter));
+    assert!(s.model().attr().pen(zweiter).is_none());
+    let vierter = stift_neu(&mut p, &mut s);
+    assert_eq!(
+        s.model().attr().pen(vierter).unwrap().number,
+        13,
+        "die 11 kommt nicht wieder"
+    );
+    assert!(stift_loeschen(&mut p, &mut s, vierter));
+    assert!(stift_loeschen(&mut p, &mut s, dritter));
+    // check() meldet doppelte Nummern
+    let (id1, mut doppelt) = stift(&s, 1);
+    doppelt.number = 3;
+    eingabe(&mut p, &mut s, move |m| m.set_pen(id1, doppelt));
+    assert!(!s.model().check().is_empty(), "Nummer 3 doppelt");
+    // Nach der Doppelung gibt es keine Nummer 1 mehr: Stift über die Kennung
+    let mut eins = s.model().attr().pen(id1).unwrap().clone();
+    eins.number = 1;
+    eingabe(&mut p, &mut s, move |m| m.set_pen(id1, eins));
+    let f = breite(&mut s, 3, 0.70);
+    eingabe(&mut p, &mut s, f);
+    let (id10, mut p10) = (neu, pen);
+    p10.name = "Achse".into();
+    p10.color = [192, 57, 43];
+    p10.width_mm = 0.35;
+    eingabe(&mut p, &mut s, move |m| m.set_pen(id10, p10));
+    ok(&mut p, &mut s, &th, &mut st);
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+    // Speichern und Öffnen: alles da, zweimal speichern bytegleich
+    let d = test_dir("stifte");
+    let pfad = d.join("Haus.szo");
+    crate::document::save(s.model(), &pfad).unwrap();
+    let text = std::fs::read_to_string(&pfad).unwrap();
+    let loaded = crate::document::load(&pfad).unwrap();
+    assert!(loaded.hints.is_empty(), "{:?}", loaded.hints);
+    let t = Scene::with_model(loaded.model);
+    assert_eq!(stift(&t, 3).1.width_mm, 0.70);
+    let p10 = stift(&t, 10).1;
+    assert_eq!(
+        (p10.name.as_str(), p10.color, p10.width_mm),
+        ("Achse", [192, 57, 43], 0.35)
+    );
+    assert_eq!(
+        p10.guid,
+        s.model().attr().pen(neu).unwrap().guid,
+        "Guid bleibt"
+    );
+    let pfad2 = d.join("Haus2.szo");
+    crate::document::save(t.model(), &pfad2).unwrap();
+    assert_eq!(std::fs::read_to_string(&pfad2).unwrap(), text, "bytegleich");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A71 (E5 §5, Test 7): Programmeinstellungen. Akzent wirkt sofort;
+/// Abbrechen stellt das Schema her und schreibt nichts; Übernehmen schreibt
+/// nur die Abweichungen, die beim Lesen genau dieses Schema ergeben.
+#[test]
+fn a71_bedienoberflaeche_speichern() {
+    let d = test_dir("bedien");
+    let mut st =
+        crate::settings::Settings::new(["skizzeo"].map(String::from).into_iter(), Some(d.clone()));
+    let datei = st.path.clone().unwrap();
+    let mut s = Scene::with_model(Model::with_seed(71));
+    let mut th = st.load();
+    let vor = th.clone();
+    let blau = sk_paint::Rgba::rgb(47, 111, 208);
+    let mut p = oeffnen(&mut s, &th);
+    th.set_accent(blau);
+    assert_eq!(th.ui.accent, blau, "wirkt sofort");
+    abbrechen(&mut p, &mut s, &mut th);
+    assert_eq!(th, vor, "Schema wie vorher");
+    assert!(!datei.exists(), "keine Datei geschrieben");
+    let mut p = oeffnen(&mut s, &th);
+    th.set_accent(blau);
+    uebernehmen(&mut p, &mut s, &th, &mut st);
+    assert!(datei.exists());
+    let text = std::fs::read_to_string(&datei).unwrap();
+    let (gelesen, hints) = crate::settings::read(&text);
+    assert!(hints.is_empty(), "{hints:?}");
+    assert_eq!(gelesen.ui.accent, blau);
+    assert_eq!(
+        crate::settings::write(&gelesen),
+        crate::settings::write(&th),
+        "verlustfrei"
+    );
+    let dunkel = crate::settings::write(&Theme::dark());
+    let abw = text.lines().filter(|l| !dunkel.contains(*l)).count();
+    assert!((1..=3).contains(&abw), "nur Abweichungen ({abw}):\n{text}");
+    // Abbrechen nach Übernehmen: bleibt blau, Datei unverändert
+    th.set_accent(sk_paint::Rgba::rgb(200, 30, 30));
+    abbrechen(&mut p, &mut s, &mut th);
+    assert_eq!(th.ui.accent, blau);
+    assert_eq!(std::fs::read_to_string(&datei).unwrap(), text);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A72 (E5 §2, Test 8): „Auf Standard zurücksetzen“ wirkt nur im aktiven
+/// Reiter: Stifte → Startsatz (eigene neue Stifte bleiben), Bedienoberfläche
+/// → `Theme::dark()`; bis OK noch abbrechbar.
+#[test]
+fn a72_auf_standard_zuruecksetzen() {
+    let mut s = haus_mit_wand();
+    let mut th = Theme::dark();
+    let mut st = ohne_datei();
+    let start = szo(&s);
+    let start_stifte: Vec<Pen> = s
+        .model()
+        .attr()
+        .pens()
+        .iter()
+        .map(|(_, p)| p.clone())
+        .collect();
+    let mut p = oeffnen(&mut s, &th);
+    let f = breite(&mut s, 3, 0.70);
+    eingabe(&mut p, &mut s, f);
+    let neu = stift_neu(&mut p, &mut s);
+    th.set_accent(sk_paint::Rgba::rgb(47, 111, 208));
+    th.size.font *= 1.5;
+    let th_geaendert = th.clone();
+    // Stifte zurück: Startsatz wieder da, Stift 10 bleibt, Schema unberührt
+    zuruecksetzen(&mut p, &mut s, &mut th, "Stifte");
+    for alt in &start_stifte {
+        assert_eq!(&stift(&s, alt.number).1, alt, "Stift {}", alt.number);
+    }
+    assert!(s.model().attr().pen(neu).is_some(), "eigener Stift bleibt");
+    assert_eq!(th, th_geaendert, "Bedienoberfläche unberührt");
+    // Bedienoberfläche zurück: Theme::dark(), Stifte unberührt
+    let f = breite(&mut s, 3, 0.70);
+    eingabe(&mut p, &mut s, f);
+    zuruecksetzen(&mut p, &mut s, &mut th, "Bedienoberfläche");
+    assert_eq!(
+        crate::settings::write(&th),
+        crate::settings::write(&Theme::dark())
+    );
+    assert_eq!(stift(&s, 3).1.width_mm, 0.70, "Stifte unberührt");
+    // Noch umkehrbar
+    abbrechen(&mut p, &mut s, &mut th);
+    assert_eq!(szo(&s), start);
+    // Zurücksetzen + OK: ein Schritt
+    let mut p = oeffnen(&mut s, &th);
+    let f = breite(&mut s, 3, 0.70);
+    eingabe(&mut p, &mut s, f);
+    ok(&mut p, &mut s, &th, &mut st);
+    let mut p = oeffnen(&mut s, &th);
+    zuruecksetzen(&mut p, &mut s, &mut th, "Stifte");
+    ok(&mut p, &mut s, &th, &mut st);
+    assert_eq!(szo(&s), start);
+    assert!(s.undo());
+    assert_eq!(stift(&s, 3).1.width_mm, 0.70);
+}
+
+/// A73 (E5 §3, §5, Prüfregel 1): Hilfen des Fensters. Satz zur Strichstärke,
+/// Hex und HSV im Farbwähler, Himmelsenden mit Zwischenstufen im selben
+/// Verhältnis; kein Farbliteral im neuen Code.
+#[test]
+fn a73_hilfen_und_pruefregel_1() {
+    assert_eq!(px_satz(5.5), "Eine 0,50-mm-Linie ist 2,8 px breit");
+    assert_eq!(px_satz(8.0), "Eine 0,50-mm-Linie ist 4,0 px breit");
+    assert_eq!(hex([192, 57, 43]), "#C0392B");
+    assert_eq!(hex_lesen("#c0392b"), Some([192, 57, 43]));
+    assert_eq!(hex_lesen("C0392B"), Some([192, 57, 43]), "ohne # geht auch");
+    assert_eq!(hex_lesen("#C0392"), None);
+    assert_eq!(hex_lesen("#GG0000"), None);
+    for c in [
+        [192, 57, 43],
+        [0, 0, 0],
+        [255, 255, 255],
+        [47, 111, 208],
+        [160, 160, 160],
+    ] {
+        assert_eq!(rgb(hsv(c)), c, "HSV-Rundlauf {c:?}");
+    }
+    // Himmel: Verhältnis je Kanal bleibt
+    let mut th = Theme::dark();
+    let alt = th.env.sky.clone();
+    let (u, o) = (
+        sk_paint::Rgba::rgb(200, 220, 240),
+        sk_paint::Rgba::rgb(20, 60, 120),
+    );
+    himmel_enden(&mut th, u, o);
+    let neu = &th.env.sky;
+    assert_eq!(neu.len(), alt.len());
+    assert_eq!((neu[0].1, neu[neu.len() - 1].1), (u, o));
+    let ch = |c: sk_paint::Rgba| [c.0 as f32, c.1 as f32, c.2 as f32];
+    let (a0, a1) = (ch(alt[0].1), ch(alt[alt.len() - 1].1));
+    let (n0, n1) = (ch(u), ch(o));
+    for (i, ((ta, ca), (tn, cn))) in alt.iter().zip(neu.iter()).enumerate() {
+        assert_eq!(ta, tn, "Lage der Stufe {i} bleibt");
+        for k in 0..3 {
+            if (a1[k] - a0[k]).abs() > 2.0 {
+                let r = (ch(*ca)[k] - a0[k]) / (a1[k] - a0[k]);
+                let soll = n0[k] + r * (n1[k] - n0[k]);
+                assert!((ch(*cn)[k] - soll).abs() <= 1.0, "Stufe {i} Kanal {k}");
+            }
+        }
+    }
+    // Prüfregel 1: kein Farbliteral außerhalb von Theme::dark() und Tests
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    for f in E5_DATEIEN {
+        let text = std::fs::read_to_string(root.join(f)).unwrap();
+        let code = text.split("#[cfg(test)]").next().unwrap();
+        for (n, z) in code.lines().enumerate() {
+            let z = z.split("//").next().unwrap();
+            for muster in ["Rgba::rgb(", "from_rgb8([", "Rgba::from_f32(["] {
+                if let Some(i) = z.find(muster) {
+                    let rest = z[i + muster.len()..].trim_start();
+                    assert!(
+                        !rest.starts_with(|c: char| c.is_ascii_digit()),
+                        "Farbliteral in {f}:{}: {z}",
+                        n + 1
+                    );
+                }
+            }
+        }
+    }
 }

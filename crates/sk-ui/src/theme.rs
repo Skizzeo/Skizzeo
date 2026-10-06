@@ -184,6 +184,18 @@ pub struct Sizes {
     pub menu_row: f32,
     pub menu_w: f32,
     pub menu_sub_w: f32,
+    /// Einstellungsfenster (E5): Breite, Höhe, Reiterleiste links; Zeile der
+    /// Tabellen, Bildlaufleiste, Farbwähler, Farbfeld, Kontrollkästchen.
+    pub settings_w: f32,
+    pub settings_h: f32,
+    pub settings_tabs_w: f32,
+    pub table_row: f32,
+    pub scrollbar: f32,
+    pub picker_w: f32,
+    pub picker_h: f32,
+    pub swatch_w: f32,
+    pub swatch_h: f32,
+    pub checkbox: f32,
 }
 
 const fn rgb(r: u8, g: u8, b: u8) -> Rgba {
@@ -318,6 +330,16 @@ impl Theme {
                 menu_row: 30.0,
                 menu_w: 260.0,
                 menu_sub_w: 320.0,
+                settings_w: 860.0,
+                settings_h: 580.0,
+                settings_tabs_w: 170.0,
+                table_row: 28.0,
+                scrollbar: 8.0,
+                picker_w: 300.0,
+                picker_h: 320.0,
+                swatch_w: 36.0,
+                swatch_h: 20.0,
+                checkbox: 16.0,
             },
             px_per_mm: 5.5,
         }

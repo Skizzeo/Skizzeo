@@ -1300,6 +1300,12 @@ impl Ui {
 
     /// Übernimmt Maße und Stand des Farbschemas; ein neuer Stand verwirft die
     /// Paneelbilder.
+    /// Vergisst den Stand des Farbschemas: das nächste Zeichnen baut alle
+    /// Paneelbilder neu (auch wenn ein Abbrechen den alten Stand herstellt).
+    pub fn forget_theme(&mut self) {
+        self.theme_rev = u64::MAX;
+    }
+
     pub fn use_theme(&mut self, t: &Theme) {
         if t.rev != self.theme_rev {
             self.theme_rev = t.rev;

@@ -22,8 +22,8 @@ pub mod txn;
 pub mod wall;
 
 pub use attr::{
-    Attributes, Dash, Display, EdgeStyle, Fill, FillId, FillKind, FillSpace, HatchLine, LineType,
-    LineTypeId, Pen, PenId, Surface, SurfaceId,
+    display_slots, AttrRef, AttrUser, Attributes, Dash, Display, EdgeStyle, Fill, FillId, FillKind,
+    FillSpace, HatchLine, LineType, LineTypeId, Pen, PenId, Surface, SurfaceId,
 };
 pub use element::{
     Building, BuildingId, Category, Coupling, Element, ElementId, ElementKind, LevelEdge,

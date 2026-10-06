@@ -163,6 +163,10 @@ extern "system" {
     fn LoadLibraryA(name: *const c_char) -> HMODULE;
     fn GetProcAddress(m: HMODULE, name: *const c_char) -> *const c_void;
     fn GetLocalTime(t: *mut SYSTEMTIME);
+    fn GlobalAlloc(flags: u32, bytes: usize) -> HANDLE;
+    fn GlobalLock(h: HANDLE) -> *mut c_void;
+    fn GlobalUnlock(h: HANDLE) -> BOOL;
+    fn GlobalFree(h: HANDLE) -> HANDLE;
 }
 
 #[repr(C)]
@@ -238,6 +242,64 @@ extern "system" {
         xor: *const u8,
     ) -> HICON;
     fn SetProcessDPIAware() -> BOOL;
+    fn OpenClipboard(h: HWND) -> BOOL;
+    fn CloseClipboard() -> BOOL;
+    fn EmptyClipboard() -> BOOL;
+    fn GetClipboardData(format: u32) -> HANDLE;
+    fn SetClipboardData(format: u32, h: HANDLE) -> HANDLE;
+}
+
+/// Unicode-Text in der Zwischenablage.
+const CF_UNICODETEXT: u32 = 13;
+const GMEM_MOVEABLE: u32 = 0x0002;
+
+/// Text aus der Zwischenablage (`None`, wenn keiner da ist).
+pub fn clipboard_text() -> Option<String> {
+    unsafe {
+        if OpenClipboard(null_mut()) == 0 {
+            return None;
+        }
+        let h = GetClipboardData(CF_UNICODETEXT);
+        let mut out = None;
+        if !h.is_null() {
+            let p = GlobalLock(h) as *const u16;
+            if !p.is_null() {
+                let mut n = 0;
+                while *p.add(n) != 0 {
+                    n += 1;
+                }
+                out = Some(String::from_utf16_lossy(std::slice::from_raw_parts(p, n)));
+                GlobalUnlock(h);
+            }
+        }
+        CloseClipboard();
+        out
+    }
+}
+
+/// Legt Text in die Zwischenablage.
+pub fn set_clipboard_text(text: &str) {
+    let w = wide(text);
+    unsafe {
+        if OpenClipboard(null_mut()) == 0 {
+            return;
+        }
+        EmptyClipboard();
+        let h = GlobalAlloc(GMEM_MOVEABLE, w.len() * 2);
+        if !h.is_null() {
+            let p = GlobalLock(h) as *mut u16;
+            if p.is_null() {
+                GlobalFree(h);
+            } else {
+                std::ptr::copy_nonoverlapping(w.as_ptr(), p, w.len());
+                GlobalUnlock(h);
+                if SetClipboardData(CF_UNICODETEXT, h).is_null() {
+                    GlobalFree(h);
+                }
+            }
+        }
+        CloseClipboard();
+    }
 }
 
 #[link(name = "comdlg32")]
@@ -289,6 +351,7 @@ const WM_NCACTIVATE: u32 = 0x0086;
 const WM_SYSCOMMAND: u32 = 0x0112;
 const WM_KEYDOWN: u32 = 0x0100;
 const WM_KEYUP: u32 = 0x0101;
+const WM_CHAR: u32 = 0x0102;
 const WM_SYSKEYDOWN: u32 = 0x0104;
 const WM_SYSKEYUP: u32 = 0x0105;
 const WM_MOUSEMOVE: u32 = 0x0200;
@@ -804,6 +867,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             // Systemmenü; Alt+F4 und Alt+Leertaste behandelt weiter das System
             if matches!(msg, WM_SYSKEYDOWN | WM_SYSKEYUP) && !matches!(wp as u32, 0x12 | 0x79) {
                 return DefWindowProcW(hwnd, msg, wp, lp);
+            }
+            0
+        }
+        // Getippte Zeichen (mit Umlauten und Großschreibung) für Textfelder;
+        // Steuerzeichen (Strg+Buchstabe, Rücktaste, Enter) kommen als Taste
+        WM_CHAR => {
+            if let Some(c) = char::from_u32(wp as u32).filter(|c| !c.is_control()) {
+                send(Event::Text(c));
             }
             0
         }

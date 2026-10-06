@@ -152,6 +152,64 @@ pub struct Display {
 }
 
 /// Alle Attributtabellen eines Modells.
+/// Verweis auf ein Attribut (für „verwendet von …“).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttrRef {
+    Pen(PenId),
+    LineType(LineTypeId),
+    Fill(FillId),
+    Surface(SurfaceId),
+}
+
+/// Wer ein Attribut verwendet: eine Stelle der Darstellung oder ein Baustoff.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AttrUser {
+    /// Bezeichnung der Stelle, z. B. „Schnittkante im Grundriss“.
+    Display(&'static str),
+    /// Baustoff und Rolle („Schraffur“, „Grund“, „Schnittmuster“, „Oberfläche“).
+    Material {
+        id: crate::library::MaterialId,
+        name: String,
+        role: &'static str,
+    },
+}
+
+impl AttrUser {
+    /// Deutsche Bezeichnung für Hinweise.
+    pub fn label(&self) -> String {
+        match self {
+            AttrUser::Display(s) => (*s).into(),
+            AttrUser::Material { name, role, .. } => format!("{name} ({role})"),
+        }
+    }
+}
+
+/// Stellen der Darstellung mit ihrer Bezeichnung: Kantenarten in Zeichnungen
+/// und in 3D, Gelände, Schnittlinie, Hintergrund.
+pub fn display_slots(d: &Display) -> Vec<(&'static str, EdgeStyle)> {
+    let kind = |k: u8| match k {
+        edge_kind::VIEW => ("Sichtkante in Zeichnungen", "Sichtkante in 3D"),
+        edge_kind::CUT => ("Schnittkante in Zeichnungen", "Schnittkante in 3D"),
+        edge_kind::FINE => ("Fuge in Zeichnungen", "Fuge in 3D"),
+        _ => (
+            "Schnittkante Schicht in Zeichnungen",
+            "Schnittkante Schicht in 3D",
+        ),
+    };
+    let mut v = Vec::new();
+    for (k, s) in d.drawing.iter().enumerate() {
+        v.push((kind(k as u8).0, *s));
+    }
+    for (k, s) in d.model3d.iter().enumerate() {
+        v.push((kind(k as u8).1, *s));
+    }
+    v.push(("Gelände", d.ground));
+    v.push(("Schnittlinie", d.section_line));
+    v.push(("Schnittlinie Enden", d.section_ends));
+    v.push(("Hintergrund", d.background));
+    v
+}
+
 #[derive(Clone, Debug)]
 pub struct Attributes {
     pens: Arena<Pen>,
@@ -248,6 +306,12 @@ impl Attributes {
         ok
     }
 
+    pub(crate) fn remove_pen(&mut self, id: PenId) -> Option<Pen> {
+        let p = self.pens.remove(id)?;
+        self.rev += 1;
+        Some(p)
+    }
+
     pub(crate) fn set_fill(&mut self, id: FillId, f: Fill) -> bool {
         let ok = self.fills.get_mut(id).map(|old| *old = f).is_some();
         self.rev += ok as u64;
@@ -302,6 +366,11 @@ impl Attributes {
             &d.background,
         ]);
         let mut out = Vec::new();
+        let mut numbers: Vec<u16> = self.pens.iter().map(|(_, p)| p.number).collect();
+        numbers.sort_unstable();
+        if numbers.windows(2).any(|w| w[0] == w[1]) {
+            out.push("Stiftnummer doppelt vergeben".into());
+        }
         for s in styles {
             if !self.pens.contains(s.pen) {
                 out.push(format!("Darstellung: Stift {:?} fehlt", s.pen));

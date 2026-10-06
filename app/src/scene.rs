@@ -305,6 +305,9 @@ fn ray_hits_box(o: Vec3, d: Vec3, (lo, hi): Aabb) -> bool {
     true
 }
 
+/// Verlaufseintrag des Einstellungsfensters (E5).
+pub const SETTINGS_STEP: &str = "Einstellungen geändert";
+
 impl Scene {
     pub fn new() -> Scene {
         Scene::with_model(Model::new())
@@ -568,6 +571,33 @@ impl Scene {
         let ok = self.model.set_pen(id, pen);
         self.commit();
         ok
+    }
+
+    /// Öffnet den Schritt des Einstellungsfensters (E5, auch nach
+    /// „Übernehmen“). Liefert die Revision zu Beginn für [`Scene::cancel_settings`].
+    pub fn begin_settings(&mut self) -> u64 {
+        self.begin(SETTINGS_STEP);
+        self.model.revision()
+    }
+
+    /// Eine Eingabe im Einstellungsfenster: ändert das Modell im offenen
+    /// Schritt; die Zeichentabelle folgt sofort (ohne Netzneubau).
+    pub fn edit_attr(&mut self, f: impl FnOnce(&mut Model) -> bool) -> bool {
+        debug_assert!(self.model.in_step(), "Eingabe ohne Schritt");
+        let ok = f(&mut self.model);
+        if self.table.rev != self.model.attr().rev() {
+            self.table = DrawTable::resolve(&self.model, &self.theme);
+        }
+        ok
+    }
+
+    /// „Abbrechen“ im Einstellungsfenster: alles seit [`Scene::begin_settings`]
+    /// zurück, ohne Verlaufseintrag, und die Revision wie vorher (Titel ohne
+    /// „•“). Im Schritt ändern sich nur Attribute; Zwischenstände der Revision
+    /// hat nichts behalten, was von Wänden oder Mengen abhängt.
+    pub fn cancel_settings(&mut self, rev: u64) {
+        self.rollback();
+        self.model.restore_revision(rev);
     }
 
     /// Rechnet die markierten Wandzüge neu und entfernt gelöschte. `live`: nur

@@ -12,6 +12,7 @@ mod menu;
 mod nav;
 #[cfg(test)]
 mod perf;
+mod prefs;
 mod scene;
 mod section;
 mod selection;
@@ -125,13 +126,18 @@ const OVERLAY_LEVELS: usize = 6;
 /// Dialog „Gebäude erstellen“.
 const OVERLAY_DIALOG: usize = 7;
 const OVERLAY_TITLE: usize = 8;
-/// Hinweis an der Maus.
-const OVERLAY_TIP: usize = 9;
+/// Platz 9 ist frei (früher der Hinweis an der Maus).
 /// Dateimenü (E17), darüber die Nachfrage „Änderungen speichern?“ mit
 /// Abdunkeln.
 const OVERLAY_MENU: usize = 10;
 const OVERLAY_SAVE_SCRIM: usize = 11;
 const OVERLAY_SAVE: usize = 12;
+/// Einstellungsfenster (E5) und sein Aufklapper (Auswahlliste, Farbwähler,
+/// Nachfrage).
+const OVERLAY_PREFS: usize = 13;
+const OVERLAY_PREFS_POPUP: usize = 14;
+/// Hinweis an der Maus, über allem.
+const OVERLAY_TIP: usize = 15;
 
 /// Blickrichtung (yaw, pitch) der Parallelansichten.
 fn view_direction(v: ViewKind) -> (f64, f64) {
@@ -318,6 +324,14 @@ struct App {
     recent_on: bool,
     /// Beenden bestätigt: die Schleife endet.
     quit: bool,
+    /// Einstellungsfenster (E5), was es sich für die Sitzung merkt, und ob
+    /// sein Bild bzw. sein Aufklapper neu zu zeichnen ist.
+    prefs: Option<prefs::Prefs>,
+    prefs_mem: prefs::Memory,
+    prefs_dirty: bool,
+    prefs_popup_dirty: bool,
+    /// Einstellungsdatei (Ort, Stand beim Laden).
+    settings: settings::Settings,
 }
 
 /// Hinweis an der Maus (Text, Lage, seit wann gewünscht, schon sichtbar).
@@ -655,6 +669,184 @@ impl App {
                 self.renderer.set_overlay(OVERLAY_TIP, 0, 0, 0, 0, &[]);
             }
             Command::ClearRecent => self.recent.clear(),
+            Command::Settings => self.open_prefs(),
+        }
+    }
+
+    /// Einstellungsfenster öffnen; ist es offen, bleibt es (es liegt ohnehin
+    /// vorn).
+    fn open_prefs(&mut self) {
+        if self.prefs.is_some() {
+            return;
+        }
+        if self.ui.dialog {
+            self.close_building_dialog(false);
+        }
+        self.ui.hover = None;
+        self.title.hover = None;
+        let p = prefs::Prefs::open(&mut self.scene, &self.theme).with_memory(&self.prefs_mem);
+        self.prefs = Some(p);
+        self.prefs_dirty = true;
+        self.overlay_dirty = true;
+    }
+
+    /// Lage und Skalierung für das Einstellungsfenster.
+    fn prefs_win(&self) -> prefs::Win {
+        prefs::Win {
+            w: self.w,
+            h: self.h,
+            top: self.title.height(),
+            scale: self.title.scale,
+        }
+    }
+
+    /// Farbschema hat sich geändert (Einstellungsfenster): Zeichentabelle,
+    /// Renderer-Stil, alle Paneele und Bilder neu.
+    fn theme_changed(&mut self) {
+        self.scene.set_theme(&self.theme);
+        self.renderer.set_style(style(&self.theme.env));
+        self.ui.forget_theme();
+        self.ui.use_theme(&self.theme);
+        self.ui.fit(self.title.scale, self.w, self.h);
+        self.looks_key = None;
+        self.mark_keys = [None; 2];
+        self.overlay_dirty = true;
+        self.prefs_dirty = true;
+        self.prefs_popup_dirty = true;
+        self.redraw = true;
+        self.refresh_cursor();
+    }
+
+    /// Offenes Einstellungsfenster: nimmt Maus und Tasten. Die Fensterknöpfe
+    /// der Titelleiste, Größe, Fokus und Schließen gehen weiter an
+    /// [`App::handle_inner`] (`false`).
+    fn handle_prefs(&mut self, e: Event, surface: &Surface) -> bool {
+        let th = self.top() as f64;
+        let window_button = |a: &App, x: f64, y: f64| {
+            y < th
+                && matches!(
+                    a.title.button_at(x, y, a.w),
+                    Some(Button::Minimize | Button::Maximize | Button::Close)
+                )
+        };
+        match e {
+            Event::CloseRequested { ask } => {
+                // Wie OK, danach fragt „Beenden“ nach dem Projekt
+                if ask {
+                    if let Some(mut p) = self.prefs.take() {
+                        p.ok(&mut self.scene, &self.theme, &mut self.settings);
+                        self.prefs_mem = p.memory();
+                    }
+                    self.paint_prefs();
+                }
+                return false;
+            }
+            Event::Resized { .. }
+            | Event::ScaleChanged(_)
+            | Event::Maximized(_)
+            | Event::Focus(_)
+            | Event::Redraw => {
+                self.prefs_dirty = true;
+                self.prefs_popup_dirty = true;
+                return false;
+            }
+            Event::MouseMove { x, y, .. } => {
+                self.mouse_at = Some((x, y));
+                let over = if window_button(self, x, y) {
+                    self.title.button_at(x, y, self.w)
+                } else {
+                    None
+                };
+                if over != self.title.hover {
+                    self.dirty_title
+                        .extend(self.title.hover.into_iter().chain(over));
+                    self.title.hover = over;
+                }
+            }
+            Event::MouseDown { x, y, .. } | Event::MouseUp { x, y, .. }
+                if window_button(self, x, y) || self.title.pressed.is_some() =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+        let win = self.prefs_win();
+        let Some(p) = self.prefs.as_mut() else {
+            return false;
+        };
+        let mut cx = prefs::Ctx {
+            scene: &mut self.scene,
+            theme: &mut self.theme,
+            settings: &mut self.settings,
+            fonts: &self.ui.fonts,
+            win,
+        };
+        let out = p.handle(&e, &mut cx);
+        if out.closed {
+            self.prefs_mem = p.memory();
+            self.prefs = None;
+            self.overlay_dirty = true;
+        }
+        if out.moved {
+            if let Some(p) = &self.prefs {
+                let (x, y) = p.origin(&self.theme, &win);
+                self.renderer.move_overlay(OVERLAY_PREFS, x, y);
+                self.redraw = true;
+            }
+        }
+        self.prefs_dirty |= out.repaint || out.closed;
+        self.prefs_popup_dirty |= out.popup || out.closed;
+        if out.theme {
+            self.theme_changed();
+        }
+        if out.model {
+            // Stifte wirken über die Zeichentabelle, ohne Netzneubau
+            self.redraw = true;
+            self.props_key = None;
+        }
+        self.sync_caption(surface);
+        true
+    }
+
+    /// Einstellungsfenster und Aufklapper zeichnen oder ausblenden.
+    fn paint_prefs(&mut self) {
+        self.prefs_dirty = false;
+        self.paint_prefs_popup();
+        let win = self.prefs_win();
+        let Some(p) = self.prefs.as_mut() else {
+            self.renderer.set_overlay(OVERLAY_PREFS, 0, 0, 0, 0, &[]);
+            return;
+        };
+        let (c, x, y) = p.paint(&self.theme, &self.ui.fonts, &win, &self.scene);
+        let px = c.to_premul_rgba8();
+        self.renderer
+            .set_overlay(OVERLAY_PREFS, x, y, c.width as u32, c.height as u32, &px);
+        self.redraw = true;
+    }
+
+    fn paint_prefs_popup(&mut self) {
+        self.prefs_popup_dirty = false;
+        self.redraw = true;
+        let win = self.prefs_win();
+        let img = self
+            .prefs
+            .as_mut()
+            .and_then(|p| p.paint_popup(&self.theme, &self.ui.fonts, &win, &self.scene));
+        match img {
+            Some((c, x, y)) => {
+                let px = c.to_premul_rgba8();
+                self.renderer.set_overlay(
+                    OVERLAY_PREFS_POPUP,
+                    x,
+                    y,
+                    c.width as u32,
+                    c.height as u32,
+                    &px,
+                );
+            }
+            None => self
+                .renderer
+                .set_overlay(OVERLAY_PREFS_POPUP, 0, 0, 0, 0, &[]),
         }
     }
 
@@ -929,6 +1121,9 @@ impl App {
     /// speichern?“ und das offene Dateimenü nehmen Maus und Tasten zuerst.
     fn handle(&mut self, e: Event, surface: &Surface) -> bool {
         if self.save_dlg.is_some() && self.handle_save_dialog(e, surface) {
+            return !self.quit;
+        }
+        if self.prefs.is_some() && self.handle_prefs(e, surface) {
             return !self.quit;
         }
         if self.menu.is_open() && self.handle_menu(e, surface) {
@@ -1317,6 +1512,8 @@ impl App {
                     }
                 }
             }
+            // Getippte Zeichen braucht nur das Einstellungsfenster
+            Event::Text(_) => {}
             Event::Wheel { y, .. } => {
                 if y >= th && !self.ui.dialog {
                     camera_moved |=
@@ -1424,6 +1621,7 @@ impl App {
         self.paint_dialog();
         self.paint_menu();
         self.paint_save_dialog();
+        self.paint_prefs();
         self.overlay_dirty = false;
         self.layout_dirty = false;
         self.redraw = true;
@@ -1476,8 +1674,10 @@ impl App {
 
     /// Knöpfe der Titelleiste an Verlauf und Menü angleichen.
     fn sync_title_state(&mut self) {
-        let undo = self.scene.undo_label().is_some();
-        let redo = self.scene.redo_label().is_some();
+        // Bei offenem Einstellungsfenster gesperrt (E5)
+        let free = self.prefs.is_none();
+        let undo = free && self.scene.undo_label().is_some();
+        let redo = free && self.scene.redo_label().is_some();
         let open = self.menu.is_open();
         let t = &mut self.title;
         if t.undo_enabled != undo {
@@ -1497,6 +1697,9 @@ impl App {
     /// Gewünschter Hinweis an der Maus: über dem Fuß einer gekoppelten
     /// OG-Wand (A52).
     fn tip_wanted(&self) -> Option<String> {
+        if let Some(p) = &self.prefs {
+            return p.tip(&self.scene);
+        }
         if self.ui.dialog
             || self.ui.level_dragging().is_some()
             || self.menu.is_open()
@@ -1778,6 +1981,11 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         recent: settings.recent.clone(),
         recent_on: settings.path.is_some(),
         quit: false,
+        prefs: None,
+        prefs_mem: prefs::Memory::default(),
+        prefs_dirty: false,
+        prefs_popup_dirty: false,
+        settings,
         w,
         h,
         overlay_dirty: true,
@@ -1821,7 +2029,11 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     loop {
         let mut events = Vec::new();
         if !a.redraw && !a.overlay_dirty && !a.nav.is_animating() {
-            let next = match a.tip_wait() {
+            let wait = match (a.tip_wait(), a.prefs.as_ref().and_then(|p| p.wait())) {
+                (Some(x), Some(y)) => Some(x.min(y)),
+                (x, y) => x.or(y),
+            };
+            let next = match wait {
                 Some(d) => surface.wait_event_timeout(d),
                 None => surface.wait_event().map(Some),
             };
@@ -1831,7 +2043,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                     if let Some(log) = timing.as_mut() {
                         write_timing(&timing_path, log);
                     }
-                    save_settings(&mut settings, &a.theme, &a.recent);
+                    save_settings(&mut a.settings, &a.theme, &a.recent);
                     return Ok(());
                 }
             }
@@ -1846,11 +2058,14 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 if let Some(log) = timing.as_mut() {
                     write_timing(&timing_path, log);
                 }
-                save_settings(&mut settings, &a.theme, &a.recent);
+                save_settings(&mut a.settings, &a.theme, &a.recent);
                 return Ok(());
             }
         }
 
+        if a.prefs.as_mut().is_some_and(|p| p.tick()) {
+            a.prefs_dirty = true;
+        }
         a.sync_tip();
         a.sync_title_state();
         if a.menu_dirty && !a.overlay_dirty && a.w > 0 {
@@ -1864,10 +2079,15 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         if a.props_dirty && a.w > 0 {
             a.paint_props();
         }
+        if a.prefs_dirty && a.w > 0 {
+            a.paint_prefs();
+        } else if a.prefs_popup_dirty && a.w > 0 {
+            a.paint_prefs_popup();
+        }
         if a.w > 0 {
             a.paint_buttons(&surface);
         }
-        surface.set_cursor(a.ui.cursor());
+        surface.set_cursor(a.prefs.as_ref().map_or(a.ui.cursor(), |p| p.cursor()));
 
         if a.nav.is_animating() {
             let now = std::time::Instant::now();

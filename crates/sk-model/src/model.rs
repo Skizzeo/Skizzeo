@@ -5,7 +5,8 @@
 //! gespeichert. Jede Änderung erhöht die Revision.
 
 use crate::attr::{
-    self, Attributes, Display, Fill, FillId, LineType, LineTypeId, Pen, PenId, Surface, SurfaceId,
+    self, AttrRef, AttrUser, Attributes, Display, Fill, FillId, LineType, LineTypeId, Pen, PenId,
+    Surface, SurfaceId,
 };
 use crate::element::{
     Building, BuildingId, Category, Coupling, Element, ElementId, ElementKind, Floor, GroundSlab,
@@ -323,6 +324,14 @@ impl Model {
         self.revision += 1;
     }
 
+    /// Setzt die Revision nach einem verworfenen Schritt auf den Stand davor
+    /// zurück (Einstellungsfenster: „Abbrechen“ lässt das Projekt
+    /// ungeändert). Nur für Schritte, die allein Attribute ändern.
+    pub fn restore_revision(&mut self, rev: u64) {
+        debug_assert!(self.txn.is_none());
+        self.revision = rev;
+    }
+
     /// Neue, noch nie vergebene Guid.
     pub fn new_guid(&mut self) -> Guid {
         self.guids.next_guid()
@@ -371,6 +380,59 @@ impl Model {
         let ok = self.attr.set_pen(id, p);
         self.revision += ok as u64;
         ok
+    }
+
+    /// Löscht einen unbenutzten Stift ([`Model::attr_users`] leer). `false`,
+    /// wenn er verwendet wird oder fehlt; dann bleibt alles, wie es ist.
+    pub fn remove_pen(&mut self, id: PenId) -> bool {
+        if self.attr.pen(id).is_none() || !self.attr_users(AttrRef::Pen(id)).is_empty() {
+            return false;
+        }
+        note!(self, Pen, self.attr.pens(), id);
+        self.touch();
+        self.attr.remove_pen(id).is_some()
+    }
+
+    /// Nummer für einen neuen Stift: die höchste vergebene + 1. Nummern
+    /// rücken nie nach und werden nicht wieder vergeben (solange der Stift mit
+    /// der höchsten Nummer lebt).
+    pub fn next_pen_number(&self) -> u16 {
+        let max = self.attr.pens().iter().map(|(_, p)| p.number).max();
+        max.map_or(1, |n| n.saturating_add(1))
+    }
+
+    /// Wer das Attribut verwendet: Stellen der Darstellung (Stift und
+    /// Linientyp) und Baustoffe (Schnittmuster, Schraffur, Grund, Oberfläche).
+    pub fn attr_users(&self, r: AttrRef) -> Vec<AttrUser> {
+        let mut out = Vec::new();
+        for (label, st) in attr::display_slots(self.attr.display()) {
+            let hit = match r {
+                AttrRef::Pen(p) => st.pen == p,
+                AttrRef::LineType(l) => st.line_type == l,
+                _ => false,
+            };
+            if hit {
+                out.push(AttrUser::Display(label));
+            }
+        }
+        for (id, m) in self.materials.iter() {
+            let roles: [(&'static str, bool); 4] = [
+                ("Schnittmuster", r == AttrRef::Fill(m.cut_fill)),
+                ("Schraffur", r == AttrRef::Pen(m.cut_fg)),
+                ("Grund", r == AttrRef::Pen(m.cut_bg)),
+                ("Oberfläche", r == AttrRef::Surface(m.surface)),
+            ];
+            for (role, hit) in roles {
+                if hit {
+                    out.push(AttrUser::Material {
+                        id,
+                        name: m.name.clone(),
+                        role,
+                    });
+                }
+            }
+        }
+        out
     }
 
     pub fn set_fill(&mut self, id: FillId, f: Fill) -> bool {
@@ -3682,5 +3744,56 @@ mod tests {
         assert!(m.remove_run(r));
         assert!(m.elements().is_empty());
         assert!(m.check().is_empty());
+    }
+
+    /// E5/BIM: Stift löschen nur unbenutzt, als Schritt mit Rückgängig;
+    /// neue Nummer = höchste + 1; Verwender aus Darstellung und Baustoffen.
+    #[test]
+    fn stift_loeschen_nur_unbenutzt() {
+        let mut m = Model::with_seed(7);
+        let pen = |m: &Model, n: u16| m.attr().pens().iter().find(|p| p.1.number == n).unwrap().0;
+        let strong = pen(&m, 3);
+        let users = m.attr_users(AttrRef::Pen(strong));
+        let labels: Vec<String> = users.iter().map(|u| u.label()).collect();
+        assert_eq!(labels, ["Schnittkante in Zeichnungen", "Gelände"]);
+        let hatch = pen(&m, 4);
+        assert!(m.attr_users(AttrRef::Pen(hatch)).iter().all(|u| matches!(
+            u,
+            AttrUser::Material {
+                role: "Schraffur",
+                ..
+            }
+        )));
+        assert_eq!(m.next_pen_number(), 10);
+        m.begin("Stift");
+        assert!(!m.remove_pen(strong), "verwendet");
+        let p = Pen {
+            guid: m.new_guid(),
+            number: m.next_pen_number(),
+            name: "Stift 10".into(),
+            color: [0, 0, 0],
+            width_mm: 0.25,
+        };
+        let id = m.add_pen(p);
+        let t = m.commit().unwrap();
+        assert_eq!(m.attr().pens().len(), 10);
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        m.begin("Löschen");
+        assert!(m.remove_pen(id));
+        let del = m.commit().unwrap();
+        assert!(m.attr().pen(id).is_none());
+        assert_eq!(m.next_pen_number(), 10);
+        m.apply(&del, Direction::Undo);
+        assert_eq!(m.attr().pen(id).unwrap().number, 10);
+        m.apply(&t, Direction::Undo);
+        assert!(m.attr().pen(id).is_none());
+        assert!(m.check().is_empty());
+        // Doppelte Nummer verletzt die Prüfregel
+        m.begin("Doppelt");
+        let mut dup = m.attr().pen(strong).unwrap().clone();
+        dup.guid = m.new_guid();
+        m.add_pen(dup);
+        m.commit();
+        assert!(m.check().iter().any(|e| e.contains("Stiftnummer")));
     }
 }

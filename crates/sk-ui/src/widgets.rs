@@ -171,6 +171,63 @@ pub struct FieldState<'a> {
 
 /// Zahlenfeld: Grund, Rahmen, Zahl rechtsbündig vor der Einheit.
 pub fn field(c: &mut Canvas, fonts: &Fonts, r: Rect, st: &FieldState, s: f32, t: &Theme) {
+    field_frame(c, r, st, s, t);
+    let Some(f) = fonts.regular.as_ref() else {
+        return;
+    };
+    let px = t.size.font_small * s;
+    let pad = t.size.field_pad * s;
+    let unit_w = f.width(st.unit, px);
+    let unit_x = r.x + r.w - pad - unit_w;
+    let base = (r.y + (r.h + f.cap_height(px)) * 0.5).round();
+    f.draw(c, st.unit, px, unit_x.round(), base, t.ui.field_unit);
+    let gap = if st.unit.is_empty() { 0.0 } else { 4.0 * s };
+    let num_x = unit_x - gap - f.width(st.text, px);
+    field_text(c, f, r, st, num_x, s, t);
+}
+
+/// Textfeld (E5): wie das Zahlenfeld, Text linksbündig, ohne Einheit.
+pub fn text_field(c: &mut Canvas, fonts: &Fonts, r: Rect, st: &FieldState, s: f32, t: &Theme) {
+    field_frame(c, r, st, s, t);
+    if let Some(f) = fonts.regular.as_ref() {
+        let x = r.x + t.size.field_pad * s;
+        field_text(c, f, r, st, x, s, t);
+    }
+}
+
+/// Stelle im Text (Byte) unter `x` für ein Feld, dessen Text bei `text_x`
+/// beginnt (Klick setzt die Schreibmarke).
+pub fn caret_at(font: Option<&Font>, text: &str, px: f32, text_x: f32, x: f32) -> usize {
+    let Some(f) = font else {
+        return text.len();
+    };
+    let mut best = (0, f32::MAX);
+    for (i, _) in text.char_indices().chain([(text.len(), ' ')]) {
+        let d = (text_x + f.width(&text[..i], px) - x).abs();
+        if d < best.1 {
+            best = (i, d);
+        }
+    }
+    best.0
+}
+
+/// Anfang des Texts in einem linksbündigen Textfeld (für [`caret_at`]).
+pub fn text_field_x(r: Rect, s: f32, t: &Theme) -> f32 {
+    r.x + t.size.field_pad * s
+}
+
+/// Anfang der Zahl in einem Zahlenfeld (für [`caret_at`]).
+pub fn field_x(fonts: &Fonts, r: Rect, text: &str, unit: &str, s: f32, t: &Theme) -> f32 {
+    let Some(f) = fonts.regular.as_ref() else {
+        return r.x;
+    };
+    let px = t.size.font_small * s;
+    let unit_x = r.x + r.w - t.size.field_pad * s - f.width(unit, px);
+    let gap = if unit.is_empty() { 0.0 } else { 4.0 * s };
+    unit_x - gap - f.width(text, px)
+}
+
+fn field_frame(c: &mut Canvas, r: Rect, st: &FieldState, s: f32, t: &Theme) {
     let u = &t.ui;
     let rad = 4.0 * s;
     let b = s.round().max(1.0);
@@ -192,25 +249,235 @@ pub fn field(c: &mut Canvas, fonts: &Fonts, r: Rect, st: &FieldState, s: f32, t:
     let mut p = Path::new();
     p.rounded_rect(r.x + b, r.y + b, r.w - 2.0 * b, r.h - 2.0 * b, rad - b);
     c.fill(&p, fill);
-    let Some(f) = fonts.regular.as_ref() else {
-        return;
-    };
+}
+
+/// Text, Markierung und Schreibmarke eines Felds ab `x`.
+fn field_text(c: &mut Canvas, f: &Font, r: Rect, st: &FieldState, x: f32, s: f32, t: &Theme) {
+    let u = &t.ui;
     let px = t.size.font_small * s;
-    let pad = t.size.field_pad * s;
-    let unit_w = f.width(st.unit, px);
-    let unit_x = r.x + r.w - pad - unit_w;
-    let num_x = unit_x - 4.0 * s - f.width(st.text, px);
+    let b = s.round().max(1.0);
     let base = (r.y + (r.h + f.cap_height(px)) * 0.5).round();
-    let at = |i: usize| num_x + f.width(&st.text[..i.min(st.text.len())], px);
+    let at = |i: usize| x + f.width(&st.text[..i.min(st.text.len())], px);
     if let Some((a, z)) = st.select.filter(|(a, z)| a < z) {
         let (x0, x1) = (at(a), at(z));
         c.fill_rect(x0, r.y + 4.0 * s, x1 - x0, r.h - 8.0 * s, u.text_select);
     }
-    f.draw(c, st.text, px, num_x.round(), base, u.field_text);
-    f.draw(c, st.unit, px, unit_x.round(), base, u.field_unit);
+    f.draw(c, st.text, px, x.round(), base, u.field_text);
     if let Some(i) = st.caret.filter(|_| st.focus) {
         c.fill_rect(at(i).round(), r.y + 5.0 * s, b, r.h - 10.0 * s, u.caret);
     }
+}
+
+/// Text auf `max_w` Pixel gekürzt, mit „…“ am Ende.
+pub fn ellipsize(font: Option<&Font>, text: &str, px: f32, max_w: f32) -> String {
+    let Some(f) = font else {
+        return text.into();
+    };
+    if f.width(text, px) <= max_w {
+        return text.into();
+    }
+    let mut out = String::new();
+    for ch in text.chars() {
+        let mut probe = out.clone();
+        probe.push(ch);
+        probe.push('…');
+        if f.width(&probe, px) > max_w {
+            break;
+        }
+        out.push(ch);
+    }
+    out.push('…');
+    out
+}
+
+/// Farbfeld: Rechteck in der Farbe mit feinem Rand.
+pub fn swatch(c: &mut Canvas, r: Rect, color: Rgba, hover: bool, s: f32, t: &Theme) {
+    let b = s.round().max(1.0);
+    let edge = if hover { t.ui.text_dim } else { t.ui.border };
+    c.fill_rect(r.x, r.y, r.w, r.h, edge);
+    c.fill_rect(r.x + b, r.y + b, r.w - 2.0 * b, r.h - 2.0 * b, color);
+}
+
+/// Kontrollkästchen: Rahmen, eingeschaltet Akzentfläche mit Haken.
+pub fn checkbox(c: &mut Canvas, r: Rect, on: bool, hover: bool, s: f32, t: &Theme) {
+    let u = &t.ui;
+    let b = s.round().max(1.0);
+    let rad = 3.0 * s;
+    let mut p = Path::new();
+    p.rounded_rect(r.x, r.y, r.w, r.h, rad);
+    let edge = if on {
+        u.accent
+    } else if hover {
+        u.field_focus
+    } else {
+        u.field_border
+    };
+    c.fill(&p, edge);
+    let mut p = Path::new();
+    p.rounded_rect(r.x + b, r.y + b, r.w - 2.0 * b, r.h - 2.0 * b, rad - b);
+    c.fill(&p, if on { u.accent } else { u.field });
+    if on {
+        let w = 2.0 * s;
+        let (x, y, k) = (r.x, r.y, r.w / 16.0);
+        let mut p = Path::new();
+        p.segment((x + 3.5 * k, y + 8.5 * k), (x + 6.5 * k, y + 11.5 * k), w);
+        p.segment((x + 6.5 * k, y + 11.5 * k), (x + 12.5 * k, y + 4.5 * k), w);
+        c.fill(&p, u.on_accent);
+    }
+}
+
+/// Auswahlliste (zu): Feld mit Text links und ▾ rechts.
+#[allow(clippy::too_many_arguments)]
+pub fn combo(
+    c: &mut Canvas,
+    fonts: &Fonts,
+    r: Rect,
+    text: &str,
+    hover: bool,
+    open: bool,
+    s: f32,
+    t: &Theme,
+) {
+    let st = FieldState {
+        hover,
+        focus: open,
+        ..FieldState::default()
+    };
+    field_frame(c, r, &st, s, t);
+    let f = fonts.regular.as_ref();
+    let px = t.size.font_small * s;
+    let cap = f.map_or(px * 0.7, |f| f.cap_height(px));
+    let base = r.y + (r.h + cap) * 0.5;
+    text_at(
+        c,
+        f,
+        text,
+        px,
+        r.x + t.size.field_pad * s,
+        base,
+        t.ui.field_text,
+    );
+    let (cx, cy, d) = (r.x + r.w - 12.0 * s, r.y + r.h * 0.5, 3.5 * s);
+    let mut p = Path::new();
+    p.move_to(cx - d, cy - d * 0.5)
+        .line_to(cx + d, cy - d * 0.5)
+        .line_to(cx, cy + d * 0.6)
+        .close();
+    c.fill(&p, t.ui.text_dim);
+}
+
+fn text_at(c: &mut Canvas, f: Option<&Font>, s: &str, px: f32, x: f32, y: f32, col: Rgba) {
+    if let Some(f) = f {
+        f.draw(c, s, px, x.round(), y.round(), col);
+    }
+}
+
+/// Dreieck zum Auf- und Zuklappen (▸ zu, ▾ offen), Mitte bei `(x, y)`.
+pub fn disclosure(c: &mut Canvas, x: f32, y: f32, open: bool, color: Rgba, s: f32) {
+    let d = 3.5 * s;
+    let mut p = Path::new();
+    if open {
+        p.move_to(x - d, y - d * 0.55)
+            .line_to(x + d, y - d * 0.55)
+            .line_to(x, y + d * 0.65);
+    } else {
+        p.move_to(x - d * 0.55, y - d)
+            .line_to(x + d * 0.65, y)
+            .line_to(x - d * 0.55, y + d);
+    }
+    p.close();
+    c.fill(&p, color);
+}
+
+/// Eintrag einer senkrechten Reiterliste: aktiv mit Fläche `pressed` und
+/// Strich links im Akzent, unter der Maus `hover`, gesperrt blass.
+#[allow(clippy::too_many_arguments)]
+pub fn tab_item(
+    c: &mut Canvas,
+    fonts: &Fonts,
+    r: Rect,
+    label: &str,
+    active: bool,
+    hover: bool,
+    disabled: bool,
+    s: f32,
+    t: &Theme,
+) {
+    let u = &t.ui;
+    if active || (hover && !disabled) {
+        let mut p = Path::new();
+        p.rounded_rect(r.x, r.y, r.w, r.h, 4.0 * s);
+        c.fill(&p, if active { u.pressed } else { u.hover });
+    }
+    if active {
+        c.fill_rect(r.x, r.y, (3.0 * s).round(), r.h, u.accent);
+    }
+    let (font, col) = if disabled {
+        (fonts.regular.as_ref(), u.text_disabled)
+    } else if active {
+        (fonts.bold.as_ref().or(fonts.regular.as_ref()), u.text)
+    } else {
+        (fonts.regular.as_ref(), u.text)
+    };
+    let px = t.size.font * s;
+    let cap = font.map_or(px * 0.7, |f| f.cap_height(px));
+    text_at(
+        c,
+        font,
+        label,
+        px,
+        r.x + 14.0 * s,
+        r.y + (r.h + cap) * 0.5,
+        col,
+    );
+}
+
+/// Senkrechte Bildlaufleiste in `r`: Schieber von `start` bis `start + len`
+/// (Anteile 0..1 des Inhalts).
+pub fn scrollbar(c: &mut Canvas, r: Rect, start: f32, len: f32, hover: bool, s: f32, t: &Theme) {
+    let rad = r.w * 0.5;
+    let mut p = Path::new();
+    p.rounded_rect(r.x, r.y, r.w, r.h, rad);
+    c.fill(&p, t.ui.field);
+    let (y0, h) = scroll_thumb(r, start, len, s);
+    let mut p = Path::new();
+    p.rounded_rect(r.x, y0, r.w, h, rad);
+    c.fill(&p, if hover { t.ui.text_dim } else { t.ui.border });
+}
+
+/// Lage und Höhe des Schiebers einer Bildlaufleiste (Pixel).
+pub fn scroll_thumb(r: Rect, start: f32, len: f32, s: f32) -> (f32, f32) {
+    let h = (r.h * len.clamp(0.0, 1.0)).max(20.0 * s).min(r.h);
+    let y = r.y + (r.h - h) * (start / (1.0 - len).max(1e-6)).clamp(0.0, 1.0);
+    (y, h)
+}
+
+/// Sättigung/Helligkeit-Feld des Farbwählers zum Farbton `hue` (Grad):
+/// x = Sättigung, y = Helligkeit (oben hell).
+pub fn sv_field(w: usize, h: usize, hue: f32) -> Canvas {
+    let (fw, fh) = ((w.max(2) - 1) as f32, (h.max(2) - 1) as f32);
+    Canvas::from_fn(w, h, |x, y| {
+        sk_paint::hsv_to_rgb(hue, x as f32 / fw, 1.0 - y as f32 / fh)
+    })
+}
+
+/// Farbtonleiste des Farbwählers: oben 360°, unten 0° (beides Rot).
+pub fn hue_bar(w: usize, h: usize) -> Canvas {
+    let fh = (h.max(2) - 1) as f32;
+    Canvas::from_fn(w, h, |_, y| {
+        sk_paint::hsv_to_rgb(360.0 * (1.0 - y as f32 / fh), 1.0, 1.0)
+    })
+}
+
+/// Kreisring (Marke im Farbwähler), Mitte `(x, y)`.
+pub fn ring(c: &mut Canvas, x: f32, y: f32, r: f32, w: f32, color: Rgba) {
+    let mut p = Path::new();
+    p.rounded_rect(x - r, y - r, 2.0 * r, 2.0 * r, r);
+    let ri = r - w;
+    if ri > 0.0 {
+        p.rounded_rect_hole(x - ri, y - ri, 2.0 * ri, 2.0 * ri, ri);
+    }
+    c.fill(&p, color);
 }
 
 /// Text mit Grundlinie bei `y`.

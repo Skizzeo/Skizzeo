@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod logo;
+pub mod text_edit;
 pub mod theme;
 pub mod titlebar;
 pub mod widgets;

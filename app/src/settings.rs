@@ -14,105 +14,203 @@ use std::path::PathBuf;
 const HEAD: &str = "SKIZZEO-EINSTELLUNGEN";
 const VERSION: u32 = 1;
 
-type RgbaRole = (&'static str, fn(&mut Theme) -> &mut Rgba);
-type F4Role = (&'static str, fn(&mut Theme) -> &mut [f32; 4]);
-type SizeRole = (&'static str, fn(&mut Theme) -> &mut f32);
+/// Rolle: Schlüssel in der Datei, deutsche Bezeichnung (Einstellungsfenster),
+/// Zugriff.
+pub type RgbaRole = (&'static str, &'static str, fn(&mut Theme) -> &mut Rgba);
+pub type F4Role = (&'static str, &'static str, fn(&mut Theme) -> &mut [f32; 4]);
+pub type SizeRole = (&'static str, &'static str, fn(&mut Theme) -> &mut f32);
 
-const RGBA_ROLES: [RgbaRole; 47] = [
-    ("ui.bg", |t| &mut t.ui.bg),
-    ("ui.border", |t| &mut t.ui.border),
-    ("ui.field", |t| &mut t.ui.field),
-    ("ui.text", |t| &mut t.ui.text),
-    ("ui.text_dim", |t| &mut t.ui.text_dim),
-    ("ui.on_accent", |t| &mut t.ui.on_accent),
-    ("ui.accent", |t| &mut t.ui.accent),
-    ("ui.accent_hover", |t| &mut t.ui.accent_hover),
-    ("ui.hover", |t| &mut t.ui.hover),
-    ("ui.pressed", |t| &mut t.ui.pressed),
-    ("ui.shadow", |t| &mut t.ui.shadow),
-    ("ui.field_border", |t| &mut t.ui.field_border),
-    ("ui.field_hover", |t| &mut t.ui.field_hover),
-    ("ui.field_focus", |t| &mut t.ui.field_focus),
-    ("ui.field_invalid", |t| &mut t.ui.field_invalid),
-    ("ui.field_text", |t| &mut t.ui.field_text),
-    ("ui.field_unit", |t| &mut t.ui.field_unit),
-    ("ui.caret", |t| &mut t.ui.caret),
-    ("ui.text_select", |t| &mut t.ui.text_select),
-    ("ui.field_readonly", |t| &mut t.ui.field_readonly),
-    ("ui.level_line", |t| &mut t.ui.level_line),
-    ("ui.level_line_active", |t| &mut t.ui.level_line_active),
-    ("ui.level_handle", |t| &mut t.ui.level_handle),
-    ("ui.level_handle_hover", |t| &mut t.ui.level_handle_hover),
-    ("ui.level_handle_drag", |t| &mut t.ui.level_handle_drag),
-    ("ui.dim_line", |t| &mut t.ui.dim_line),
-    ("ui.dim_text", |t| &mut t.ui.dim_text),
-    ("ui.dim_text_hover", |t| &mut t.ui.dim_text_hover),
-    ("ui.text_disabled", |t| &mut t.ui.text_disabled),
-    ("ui.tooltip_bg", |t| &mut t.ui.tooltip_bg),
-    ("ui.tooltip_text", |t| &mut t.ui.tooltip_text),
-    ("ui.menu_bg", |t| &mut t.ui.menu_bg),
-    ("title.bg", |t| &mut t.title.bg),
-    ("title.glyph", |t| &mut t.title.glyph),
-    ("title.glyph_inactive", |t| &mut t.title.glyph_inactive),
-    ("title.hover", |t| &mut t.title.hover),
-    ("title.pressed", |t| &mut t.title.pressed),
-    ("title.close_hover", |t| &mut t.title.close_hover),
-    ("title.close_pressed", |t| &mut t.title.close_pressed),
-    ("title.close_glyph_hover", |t| {
-        &mut t.title.close_glyph_hover
+pub const RGBA_ROLES: [RgbaRole; 47] = [
+    ("ui.bg", "Fläche", |t| &mut t.ui.bg),
+    ("ui.border", "Rahmen", |t| &mut t.ui.border),
+    ("ui.field", "Feld", |t| &mut t.ui.field),
+    ("ui.text", "Schrift", |t| &mut t.ui.text),
+    ("ui.text_dim", "Schrift gedämpft", |t| &mut t.ui.text_dim),
+    ("ui.on_accent", "Schrift auf Akzent", |t| {
+        &mut t.ui.on_accent
     }),
-    ("title.logo", |t| &mut t.title.logo),
-    ("env.ground", |t| &mut t.env.ground),
-    ("env.face", |t| &mut t.env.face),
-    ("env.edge", |t| &mut t.env.edge),
-    ("env.paper_fallback", |t| &mut t.env.paper_fallback),
-    ("env.fill_fallback", |t| &mut t.env.fill_fallback),
-    ("env.scrim", |t| &mut t.env.scrim),
+    ("ui.accent", "Akzent", |t| &mut t.ui.accent),
+    ("ui.accent_hover", "Akzent unter der Maus", |t| {
+        &mut t.ui.accent_hover
+    }),
+    ("ui.hover", "Unter der Maus", |t| &mut t.ui.hover),
+    ("ui.pressed", "Gedrückt", |t| &mut t.ui.pressed),
+    ("ui.shadow", "Schatten", |t| &mut t.ui.shadow),
+    ("ui.field_border", "Feld Rahmen", |t| &mut t.ui.field_border),
+    ("ui.field_hover", "Feld unter der Maus", |t| {
+        &mut t.ui.field_hover
+    }),
+    ("ui.field_focus", "Feld Fokus", |t| &mut t.ui.field_focus),
+    ("ui.field_invalid", "Feld ungültig", |t| {
+        &mut t.ui.field_invalid
+    }),
+    ("ui.field_text", "Feld Text", |t| &mut t.ui.field_text),
+    ("ui.field_unit", "Einheit", |t| &mut t.ui.field_unit),
+    ("ui.caret", "Schreibmarke", |t| &mut t.ui.caret),
+    ("ui.text_select", "Markierung", |t| &mut t.ui.text_select),
+    ("ui.field_readonly", "Feld berechnet", |t| {
+        &mut t.ui.field_readonly
+    }),
+    ("ui.level_line", "Ebenenlinie", |t| &mut t.ui.level_line),
+    ("ui.level_line_active", "Ebenenlinie aktiv", |t| {
+        &mut t.ui.level_line_active
+    }),
+    ("ui.level_handle", "Griff", |t| &mut t.ui.level_handle),
+    ("ui.level_handle_hover", "Griff unter der Maus", |t| {
+        &mut t.ui.level_handle_hover
+    }),
+    ("ui.level_handle_drag", "Griff beim Ziehen", |t| {
+        &mut t.ui.level_handle_drag
+    }),
+    ("ui.dim_line", "Maßkette", |t| &mut t.ui.dim_line),
+    ("ui.dim_text", "Maßzahl", |t| &mut t.ui.dim_text),
+    ("ui.dim_text_hover", "Maßzahl unter der Maus", |t| {
+        &mut t.ui.dim_text_hover
+    }),
+    ("ui.text_disabled", "Schrift gesperrt", |t| {
+        &mut t.ui.text_disabled
+    }),
+    ("ui.tooltip_bg", "Hinweis Grund", |t| &mut t.ui.tooltip_bg),
+    ("ui.tooltip_text", "Hinweis Schrift", |t| {
+        &mut t.ui.tooltip_text
+    }),
+    ("ui.menu_bg", "Menü Fläche", |t| &mut t.ui.menu_bg),
+    ("title.bg", "Titelleiste", |t| &mut t.title.bg),
+    ("title.glyph", "Symbole", |t| &mut t.title.glyph),
+    ("title.glyph_inactive", "Symbole inaktiv", |t| {
+        &mut t.title.glyph_inactive
+    }),
+    ("title.hover", "Knopf unter der Maus", |t| {
+        &mut t.title.hover
+    }),
+    ("title.pressed", "Knopf gedrückt", |t| &mut t.title.pressed),
+    ("title.close_hover", "Schließen unter der Maus", |t| {
+        &mut t.title.close_hover
+    }),
+    ("title.close_pressed", "Schließen gedrückt", |t| {
+        &mut t.title.close_pressed
+    }),
+    (
+        "title.close_glyph_hover",
+        "Schließen-Symbol unter der Maus",
+        |t| &mut t.title.close_glyph_hover,
+    ),
+    ("title.logo", "Logo", |t| &mut t.title.logo),
+    ("env.ground", "Boden", |t| &mut t.env.ground),
+    ("env.face", "Flächen ohne Baustoff", |t| &mut t.env.face),
+    ("env.edge", "Kanten ohne Stift", |t| &mut t.env.edge),
+    ("env.paper_fallback", "Papier (Ersatz)", |t| {
+        &mut t.env.paper_fallback
+    }),
+    ("env.fill_fallback", "Füllung (Ersatz)", |t| {
+        &mut t.env.fill_fallback
+    }),
+    ("env.scrim", "Abdunkeln hinter Dialogen", |t| {
+        &mut t.env.scrim
+    }),
 ];
 
-const F4_ROLES: [F4Role; 10] = [
-    ("interact.select", |t| &mut t.interact.select),
-    ("interact.draw", |t| &mut t.interact.draw),
-    ("interact.track", |t| &mut t.interact.track),
-    ("interact.guide", |t| &mut t.interact.guide),
-    ("interact.start", |t| &mut t.interact.start),
-    ("interact.drag", |t| &mut t.interact.drag),
-    ("interact.drag_hot", |t| &mut t.interact.drag_hot),
-    ("interact.drag_ghost", |t| &mut t.interact.drag_ghost),
-    ("interact.shadow_tool", |t| &mut t.interact.shadow_tool),
-    ("interact.shadow_band", |t| &mut t.interact.shadow_band),
+pub const F4_ROLES: [F4Role; 10] = [
+    ("interact.select", "Auswahl", |t| &mut t.interact.select),
+    ("interact.draw", "Wand zeichnen", |t| &mut t.interact.draw),
+    ("interact.track", "Spurlinie vom Startpunkt", |t| {
+        &mut t.interact.track
+    }),
+    ("interact.guide", "Spurlinien", |t| &mut t.interact.guide),
+    ("interact.start", "Startpunkt", |t| &mut t.interact.start),
+    ("interact.drag", "Ziehen", |t| &mut t.interact.drag),
+    ("interact.drag_hot", "Gummiband unter der Maus", |t| {
+        &mut t.interact.drag_hot
+    }),
+    ("interact.drag_ghost", "Gummiband ruhend", |t| {
+        &mut t.interact.drag_ghost
+    }),
+    ("interact.shadow_tool", "Grund unter Fangpunkten", |t| {
+        &mut t.interact.shadow_tool
+    }),
+    ("interact.shadow_band", "Grund unter dem Gummiband", |t| {
+        &mut t.interact.shadow_band
+    }),
 ];
 
-const SIZE_ROLES: [SizeRole; 29] = [
-    ("corner_radius", |t| &mut t.size.corner_radius),
-    ("font", |t| &mut t.size.font),
-    ("font_small", |t| &mut t.size.font_small),
-    ("font_detail", |t| &mut t.size.font_detail),
-    ("font_title", |t| &mut t.size.font_title),
-    ("font_mark", |t| &mut t.size.font_mark),
-    ("outline", |t| &mut t.size.outline),
-    ("panel_margin", |t| &mut t.size.panel_margin),
-    ("panel_pad", |t| &mut t.size.panel_pad),
-    ("panel_width", |t| &mut t.size.panel_width),
-    ("panel_shadow", |t| &mut t.size.panel_shadow),
-    ("field_height", |t| &mut t.size.field_height),
-    ("field_pad", |t| &mut t.size.field_pad),
-    ("level_px_per_m", |t| &mut t.size.level_px_per_m),
-    ("level_px_per_m_min", |t| &mut t.size.level_px_per_m_min),
-    ("level_handle", |t| &mut t.size.level_handle),
-    ("level_hit", |t| &mut t.size.level_hit),
-    ("level_row_min", |t| &mut t.size.level_row_min),
-    ("level_label_gap", |t| &mut t.size.level_label_gap),
-    ("level_row_base", |t| &mut t.size.level_row_base),
-    ("level_guide", |t| &mut t.size.level_guide),
-    ("dim_tick", |t| &mut t.size.dim_tick),
-    ("dim_line", |t| &mut t.size.dim_line),
-    ("dialog_w", |t| &mut t.size.dialog_w),
-    ("dialog_h", |t| &mut t.size.dialog_h),
-    ("dialog_row", |t| &mut t.size.dialog_row),
-    ("menu_row", |t| &mut t.size.menu_row),
-    ("menu_w", |t| &mut t.size.menu_w),
-    ("menu_sub_w", |t| &mut t.size.menu_sub_w),
+pub const SIZE_ROLES: [SizeRole; 39] = [
+    ("corner_radius", "Eckenradius", |t| {
+        &mut t.size.corner_radius
+    }),
+    ("font", "Schrift", |t| &mut t.size.font),
+    ("font_small", "Schrift klein", |t| &mut t.size.font_small),
+    ("font_detail", "Schrift Details", |t| {
+        &mut t.size.font_detail
+    }),
+    ("font_title", "Schrift Titel", |t| &mut t.size.font_title),
+    ("font_mark", "Kennbuchstabe Schnitt", |t| {
+        &mut t.size.font_mark
+    }),
+    ("outline", "Auswahlumriss", |t| &mut t.size.outline),
+    ("panel_margin", "Paneel Randabstand", |t| {
+        &mut t.size.panel_margin
+    }),
+    ("panel_pad", "Paneel Innenabstand", |t| {
+        &mut t.size.panel_pad
+    }),
+    ("panel_width", "Paneel Breite", |t| &mut t.size.panel_width),
+    ("panel_shadow", "Paneel Schatten", |t| {
+        &mut t.size.panel_shadow
+    }),
+    ("field_height", "Feld Höhe", |t| &mut t.size.field_height),
+    ("field_pad", "Feld Innenabstand", |t| &mut t.size.field_pad),
+    ("level_px_per_m", "Geschosse Maßstab", |t| {
+        &mut t.size.level_px_per_m
+    }),
+    ("level_px_per_m_min", "Geschosse kleinster Maßstab", |t| {
+        &mut t.size.level_px_per_m_min
+    }),
+    ("level_handle", "Geschosse Griff", |t| {
+        &mut t.size.level_handle
+    }),
+    ("level_hit", "Geschosse Fangabstand", |t| {
+        &mut t.size.level_hit
+    }),
+    ("level_row_min", "Geschosse Zeilenabstand", |t| {
+        &mut t.size.level_row_min
+    }),
+    ("level_label_gap", "Geschosse Abstand Name", |t| {
+        &mut t.size.level_label_gap
+    }),
+    ("level_row_base", "Geschosse erste Zeile", |t| {
+        &mut t.size.level_row_base
+    }),
+    ("level_guide", "Hilfslinie Ebene", |t| {
+        &mut t.size.level_guide
+    }),
+    ("dim_tick", "Maßkette Schrägstrich", |t| {
+        &mut t.size.dim_tick
+    }),
+    ("dim_line", "Maßkette Strich", |t| &mut t.size.dim_line),
+    ("dialog_w", "Dialog Breite", |t| &mut t.size.dialog_w),
+    ("dialog_h", "Dialog Höhe", |t| &mut t.size.dialog_h),
+    ("dialog_row", "Dialog Zeile", |t| &mut t.size.dialog_row),
+    ("menu_row", "Menü Zeile", |t| &mut t.size.menu_row),
+    ("menu_w", "Menü Breite", |t| &mut t.size.menu_w),
+    ("menu_sub_w", "Untermenü Breite", |t| {
+        &mut t.size.menu_sub_w
+    }),
+    ("settings_w", "Einstellungen Breite", |t| {
+        &mut t.size.settings_w
+    }),
+    ("settings_h", "Einstellungen Höhe", |t| {
+        &mut t.size.settings_h
+    }),
+    ("settings_tabs_w", "Einstellungen Reiter", |t| {
+        &mut t.size.settings_tabs_w
+    }),
+    ("table_row", "Tabellenzeile", |t| &mut t.size.table_row),
+    ("scrollbar", "Bildlaufleiste", |t| &mut t.size.scrollbar),
+    ("picker_w", "Farbwähler Breite", |t| &mut t.size.picker_w),
+    ("picker_h", "Farbwähler Höhe", |t| &mut t.size.picker_h),
+    ("swatch_w", "Farbfeld Breite", |t| &mut t.size.swatch_w),
+    ("swatch_h", "Farbfeld Höhe", |t| &mut t.size.swatch_h),
+    ("checkbox", "Kontrollkästchen", |t| &mut t.size.checkbox),
 ];
 
 /// Grundschema zu einem Namen.
@@ -156,7 +254,16 @@ pub fn write(theme: &Theme) -> String {
     let mut b = base(&theme.name).unwrap_or_else(Theme::dark);
     let mut t = theme.clone();
     Line::new("theme").text("base", &b.name).finish(&mut out);
-    for (name, f) in RGBA_ROLES {
+    // Der Akzent zuerst: beim Lesen ziehen die Rollen, die ihm folgen, mit
+    // (`Theme::set_accent`); geschrieben wird nur, was davon noch abweicht.
+    if t.ui.accent != b.ui.accent {
+        Line::new("color")
+            .word("role", "ui.accent")
+            .word("value", &rgba_hex(t.ui.accent))
+            .finish(&mut out);
+        b.set_accent(t.ui.accent);
+    }
+    for (name, _, f) in RGBA_ROLES {
         let v = *f(&mut t);
         if v != *f(&mut b) {
             Line::new("color")
@@ -165,7 +272,7 @@ pub fn write(theme: &Theme) -> String {
                 .finish(&mut out);
         }
     }
-    for (name, f) in F4_ROLES {
+    for (name, _, f) in F4_ROLES {
         let v = *f(&mut t);
         if v != *f(&mut b) {
             let s = v.map(|x| x.to_string()).join(",");
@@ -175,7 +282,7 @@ pub fn write(theme: &Theme) -> String {
                 .finish(&mut out);
         }
     }
-    for (name, f) in SIZE_ROLES {
+    for (name, _, f) in SIZE_ROLES {
         let v = *f(&mut t);
         if v != *f(&mut b) {
             Line::new("size")
@@ -263,12 +370,13 @@ pub fn read_all(text: &str) -> (Theme, Recent, Vec<String>) {
             },
             "color" => {
                 let (role, value) = (r.opt("role").unwrap_or(""), r.opt("value").unwrap_or(""));
-                if let Some((_, f)) = RGBA_ROLES.iter().find(|x| x.0 == role) {
+                if let Some((_, _, f)) = RGBA_ROLES.iter().find(|x| x.0 == role) {
                     match parse_rgba(value) {
+                        Some(c) if role == "ui.accent" => t.set_accent(c),
                         Some(c) => *f(&mut t) = c,
                         None => skip(&mut hints, &format!("Farbe „{value}“ für {role}")),
                     }
-                } else if let Some((_, f)) = F4_ROLES.iter().find(|x| x.0 == role) {
+                } else if let Some((_, _, f)) = F4_ROLES.iter().find(|x| x.0 == role) {
                     match parse_f4(value) {
                         Some(c) => *f(&mut t) = c,
                         None => skip(&mut hints, &format!("Farbe „{value}“ für {role}")),
@@ -280,7 +388,7 @@ pub fn read_all(text: &str) -> (Theme, Recent, Vec<String>) {
             "size" => {
                 let key = r.opt("key").unwrap_or("");
                 match (SIZE_ROLES.iter().find(|x| x.0 == key), r.f32("value")) {
-                    (Some((_, f)), Ok(v)) => *f(&mut t) = v,
+                    (Some((_, _, f)), Ok(v)) => *f(&mut t) = v,
                     (None, _) => skip(&mut hints, &format!("unbekannte Größe „{key}“")),
                     (_, Err(_)) => skip(&mut hints, &format!("Wert für Größe „{key}“")),
                 }

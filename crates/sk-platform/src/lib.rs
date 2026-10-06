@@ -94,6 +94,8 @@ pub enum Event {
         repeat: bool,
         mods: Modifiers,
     },
+    /// Getipptes Zeichen (nach Tastaturbelegung, mit Umschalt), für Textfelder.
+    Text(char),
     /// Mausrad in Rasten (positiv = vom Benutzer weg gedreht).
     Wheel {
         delta: f64,
@@ -323,6 +325,32 @@ pub fn local_time() -> (u8, u8) {
         (((secs / 3600) % 24) as u8, ((secs / 60) % 60) as u8)
     }
 }
+
+/// Text aus der Zwischenablage. Außerhalb von Windows eine Ablage nur für
+/// diesen Prozess (Tests).
+pub fn clipboard_text() -> Option<String> {
+    #[cfg(windows)]
+    {
+        win32::clipboard_text()
+    }
+    #[cfg(not(windows))]
+    {
+        CLIPBOARD.lock().ok().and_then(|c| c.clone())
+    }
+}
+
+/// Legt Text in die Zwischenablage.
+pub fn set_clipboard_text(text: &str) {
+    #[cfg(windows)]
+    win32::set_clipboard_text(text);
+    #[cfg(not(windows))]
+    if let Ok(mut c) = CLIPBOARD.lock() {
+        *c = Some(text.to_string());
+    }
+}
+
+#[cfg(not(windows))]
+static CLIPBOARD: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 /// Zeigt eine Fehlermeldung an (unter Windows als Meldungsfenster).
 pub fn show_error(msg: &str) {
