@@ -39,8 +39,17 @@ const WIDTH: f32 = 196.0;
 /// Platz für den Schatten rund um ein Paneel (dip).
 const SHADOW: f32 = 10.0;
 
+/// Fenstergröße (dip), ab der die Paneele in voller Größe erscheinen.
+const FULL_W: f32 = 1440.0;
+const FULL_H: f32 = 810.0;
+/// Kleinster Verkleinerungsfaktor, damit die Schrift lesbar bleibt.
+const MIN_FIT: f32 = 0.6;
+
 pub struct Ui {
+    /// Wirksame Skalierung der Paneele: Bildschirmskalierung × Fensterfaktor.
     pub scale: f32,
+    /// Bildschirmskalierung (dpi / 96).
+    dpi: f32,
     pub fonts: Fonts,
     pub hover: Option<Id>,
     pressed: Option<Id>,
@@ -136,6 +145,7 @@ impl Ui {
     pub fn new(scale: f32) -> Ui {
         Ui {
             scale,
+            dpi: scale,
             fonts: Fonts::system(),
             hover: None,
             pressed: None,
@@ -145,6 +155,20 @@ impl Ui {
             ortho: true,
             wall_layers: Vec::new(),
         }
+    }
+
+    /// Passt die Paneelgröße an Fenster (Pixel) und Bildschirmskalierung an: in
+    /// kleineren Fenstern schrumpfen Paneele und Knöpfe mit. `true`, wenn sich die
+    /// Größe geändert hat.
+    pub fn fit(&mut self, dpi: f32, win_w: u32, win_h: u32) -> bool {
+        let (w, h) = (win_w as f32 / dpi, win_h as f32 / dpi);
+        let f = (w / FULL_W).min(h / FULL_H).clamp(MIN_FIT, 1.0);
+        // In Schritten von 1/40, damit nicht jedes Pixel beim Ziehen neu zeichnet
+        let f = (f * 40.0).round() / 40.0;
+        let scale = dpi * f;
+        let changed = scale != self.scale;
+        (self.dpi, self.scale) = (dpi, scale);
+        changed
     }
 
     fn rows(&self, p: Panel) -> Vec<Row> {

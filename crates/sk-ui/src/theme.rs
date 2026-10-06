@@ -70,13 +70,14 @@ pub mod drawing {
 /// Eigene Titelleiste (hell, damit das schwarze Logo trägt).
 pub mod titlebar {
     use sk_paint::Rgba;
-    pub const BACKGROUND: Rgba = Rgba::rgb(243, 243, 243);
-    pub const GLYPH: Rgba = Rgba::rgb(0, 0, 0);
-    pub const GLYPH_INACTIVE: Rgba = Rgba::rgb(150, 150, 150);
-    pub const HOVER: Rgba = Rgba::rgb(229, 229, 229);
-    pub const PRESSED: Rgba = Rgba::rgb(204, 204, 204);
+    /// Dunkel wie Paneele und Knöpfe, damit sie sich auch über dem Papier abhebt.
+    pub const BACKGROUND: Rgba = super::panel::BACKGROUND;
+    pub const GLYPH: Rgba = Rgba::rgb(231, 229, 222);
+    pub const GLYPH_INACTIVE: Rgba = Rgba::rgb(120, 127, 136);
+    pub const HOVER: Rgba = super::panel::BUTTON_HOVER;
+    pub const PRESSED: Rgba = super::panel::BUTTON_PRESSED;
     pub const CLOSE_HOVER: Rgba = Rgba::rgb(196, 43, 28);
     pub const CLOSE_PRESSED: Rgba = Rgba::rgb(200, 64, 49);
     pub const CLOSE_GLYPH_HOVER: Rgba = Rgba::rgb(255, 255, 255);
-    pub const LOGO: Rgba = Rgba::rgb(0, 0, 0);
+    pub const LOGO: Rgba = Rgba::rgb(255, 255, 255);
 }

@@ -314,11 +314,12 @@ impl App {
             Event::CloseRequested => return false,
             Event::Resized { width, height } => {
                 (self.w, self.h) = (width, height);
+                self.ui.fit(self.title.scale, width, height);
                 self.overlay_dirty = true;
             }
             Event::ScaleChanged(s) => {
                 self.title.scale = s;
-                self.ui.scale = s;
+                self.ui.fit(s, self.w, self.h);
                 self.renderer.set_style(style(s));
                 self.overlay_dirty = true;
             }
@@ -593,6 +594,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     let mut tool = WallTool::new();
     tool.layers = scene.model.wall_layers(exterior);
     let mut ui = Ui::new(surface.scale());
+    ui.fit(surface.scale(), w, h);
     ui.wall_layers = layer_rows(&scene.model, exterior);
     let mut a = App {
         renderer,

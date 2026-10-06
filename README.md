@@ -22,6 +22,9 @@ Eingabe, OpenGL-Anbindung, 2D-Grafik, Logo und Oberfläche sind selbst geschrieb
 - Zoomen: Mausrad, zum Mauszeiger hin
 - In Grundriss, Schnitt und Ansichten verschiebt die mittlere Maustaste
 
+Titelleiste und Paneele sind dunkel. In kleineren Fenstern schrumpfen Paneele
+und Knöpfe mit (voll ab 1440 × 810 dip, höchstens auf 60 %).
+
 Paneel „Ansichten“ (rechts): 3D, Grundriss (geschnitten in 1,00 m Höhe),
 Schnitt A–A, Vorne, Hinten, Links, Rechts. Alle außer 3D sind
 Parallelprojektionen im Bauzeichnungs-Look: altweißes Papier, schwarze
