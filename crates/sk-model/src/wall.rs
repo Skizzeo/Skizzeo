@@ -45,6 +45,8 @@ pub struct Layer {
     pub material: u16,
     /// Tragender Kern: im Schnitt dick umrandet, übrige Schichten mitteldick.
     pub core: bool,
+    /// Luftschicht (K4): zählt zur Dicke, hat aber keinen Körper.
+    pub air: bool,
 }
 
 impl Layer {
@@ -53,6 +55,7 @@ impl Layer {
             thickness,
             material,
             core: false,
+            air: false,
         }
     }
 
@@ -62,6 +65,17 @@ impl Layer {
             thickness,
             material,
             core: true,
+            air: false,
+        }
+    }
+
+    /// Luftschicht: verschiebt die Schichten dahinter, ohne Körper.
+    pub const fn air(thickness: f64, material: u16) -> Layer {
+        Layer {
+            thickness,
+            material,
+            core: false,
+            air: true,
         }
     }
 
@@ -674,6 +688,9 @@ impl WallChain {
             .zip(&self.layers)
             .enumerate()
         {
+            if l.air {
+                continue;
+            }
             for (z0, z1) in self.layer_spans(i) {
                 if z0 >= cut {
                     continue;
@@ -707,6 +724,9 @@ impl WallChain {
             .zip(&self.layers)
             .enumerate()
         {
+            if l.air {
+                continue;
+            }
             let kind = l.cut_kind();
             let spans = self.layer_spans(li);
             let (cl, ch) = (

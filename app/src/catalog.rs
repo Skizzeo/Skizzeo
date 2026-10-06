@@ -75,7 +75,7 @@ impl Company {
                 match read_szk(&text) {
                     Ok(lib) => {
                         self.lib = lib;
-                        Vec::new()
+                        self.add_stock()
                     }
                     Err(e) => {
                         self.lib = Library::standard();
@@ -106,6 +106,36 @@ impl Company {
                 )]
             }
         }
+    }
+
+    /// Ergänzt neue Werkstypen (K4) und schreibt den Katalog zurück, damit
+    /// der Hinweis nur einmal kommt.
+    fn add_stock(&mut self) -> Vec<String> {
+        let (added, switched) = self.lib.add_stock();
+        if self.lib.stock.is_empty() {
+            return Vec::new();
+        }
+        let mut hints = Vec::new();
+        if !added.is_empty() {
+            hints.push(format!(
+                "Firmenkatalog: neue Werkstypen ergänzt ({}).",
+                added.join(", ")
+            ));
+        }
+        if switched {
+            hints.push("Firmenkatalog: Standard-Außenwand ist jetzt AW-36.".into());
+        }
+        let text = write_szk(&self.lib);
+        if std::fs::read_to_string(&self.path).is_ok_and(|t| t != text) {
+            match write_atomic(&self.path, &text) {
+                Ok(()) => self.stamp = modified(&self.path),
+                Err(e) => hints.push(format!(
+                    "Firmenkatalog {} nicht ergänzt: {e}",
+                    self.path.display()
+                )),
+            }
+        }
+        hints
     }
 
     pub fn path(&self) -> &Path {

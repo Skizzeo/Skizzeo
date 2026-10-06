@@ -8,7 +8,7 @@
 use crate::element::{BuildingId, Category, ElementId, ElementKind, RunId, StoreyId};
 use crate::floor::{FloorError, FloorSlab};
 use crate::foundation::{Foundation, FoundationError};
-use crate::library::{LayerSetId, MatCategory, MaterialId};
+use crate::library::{LayerFunction, LayerSetId, MatCategory, MaterialId};
 use crate::model::Model;
 use crate::wall::WallChain;
 use sk_math::Vec3;
@@ -129,7 +129,12 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                 .enumerate()
                 .map(|(li, (l, (fa, fb)))| {
                     let quad = [fa[k], fa[j], fb[j], fb[k]];
-                    let area = area(&quad);
+                    // Luftschicht: ohne Körper, darum ohne Fläche und Volumen (K4)
+                    let area = if l.function == LayerFunction::AirGap {
+                        0.0
+                    } else {
+                        area(&quad)
+                    };
                     // netto: ohne das Band einer Geschossdecke (Auflagertasche)
                     let hn: f64 = chain.layer_spans(li).iter().map(|(a, b)| b - a).sum();
                     let volume = area * hn;
@@ -149,7 +154,9 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                 .collect();
             let footprint: f64 = gross_faces
                 .iter()
-                .map(|(fa, fb)| area(&[fa[k], fa[j], fb[j], fb[k]]))
+                .zip(&set.layers)
+                .filter(|(_, l)| l.function != LayerFunction::AirGap)
+                .map(|((fa, fb), _)| area(&[fa[k], fa[j], fb[j], fb[k]]))
                 .sum();
             let side_outer = (c_out[j] - c_out[k]).length() * h;
             let list_length = if category == Some(Category::ExteriorWall) && h > 0.0 {
@@ -379,6 +386,7 @@ fn material_rank(c: MatCategory) -> u8 {
         MatCategory::Timber => 2,
         MatCategory::Insulation => 3,
         MatCategory::Plaster => 4,
+        MatCategory::Air => 5,
     }
 }
 
@@ -598,7 +606,13 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
         match (q, mat) {
             (ElementQto::Wall(w), _) => {
                 for l in &w.layers {
-                    add(l.material, l.volume, l.side_area);
+                    // Luftschicht ohne Körper: keine Summe „Luft“ (K4)
+                    let air = model
+                        .material(l.material)
+                        .is_some_and(|x| x.category == MatCategory::Air);
+                    if !air {
+                        add(l.material, l.volume, l.side_area);
+                    }
                 }
             }
             (q, Some(m)) => add(m, q.volume(), 0.0),

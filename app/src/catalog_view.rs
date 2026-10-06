@@ -43,19 +43,27 @@ const ROW_H: f32 = 34.0;
 const ROWS_Y: f32 = 442.0;
 /// Grün für „wie im Projekt“ (Marke im Firmenreiter).
 const SAME: Rgba = Rgba::rgb(126, 196, 140);
-/// Funktionen in der Auswahl (Luftschicht kommt mit K4).
-const FUNCTIONS: [(LayerFunction, &str); 4] = [
+/// Funktionen in der Auswahl.
+const FUNCTIONS: [(LayerFunction, &str); 5] = [
     (LayerFunction::Structure, "tragend"),
     (LayerFunction::Insulation, "Dämmung"),
     (LayerFunction::Finish, "Bekleidung"),
     (LayerFunction::Membrane, "Abdichtung"),
+    (LayerFunction::AirGap, "Luftschicht"),
+];
+
+/// Kategorien für einen neuen Baustoff; Luft gibt es nur einmal, fest an
+/// der Luftschicht (K4).
+const NEW_MAT_CATS: [MatCategory; 5] = [
+    MatCategory::Masonry,
+    MatCategory::Concrete,
+    MatCategory::Insulation,
+    MatCategory::Plaster,
+    MatCategory::Timber,
 ];
 
 fn function_name(f: LayerFunction) -> &'static str {
-    match f {
-        LayerFunction::AirGap => "Luftschicht",
-        f => FUNCTIONS.iter().find(|x| x.0 == f).map_or("", |x| x.1),
-    }
+    FUNCTIONS.iter().find(|x| x.0 == f).map_or("", |x| x.1)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -680,7 +688,7 @@ impl Catalog {
     /// Rückfrage unten mittig im Programmfenster.
     fn ask_card(&self, w: &Win) -> Rect {
         let s = w.scale;
-        let (cw, ch) = (580.0 * s, 236.0 * s);
+        let (cw, ch) = (640.0 * s, 252.0 * s);
         let x = (w.w as f32 - cw) * 0.5;
         let y = w.h as f32 - ch - 64.0 * s;
         Rect::new(x.round(), y.round(), cw.round(), ch.round())
@@ -753,12 +761,12 @@ impl Catalog {
                 vec![
                     (
                         Btn::AskNew,
-                        Rect::new(c.x + 22.0 * s, y, bw, 70.0 * s),
+                        Rect::new(c.x + 22.0 * s, y, bw, 86.0 * s),
                         "Als neuen Typ speichern",
                     ),
                     (
                         Btn::AskChange,
-                        Rect::new(c.x + 38.0 * s + bw, y, bw, 70.0 * s),
+                        Rect::new(c.x + 38.0 * s + bw, y, bw, 86.0 * s),
                         "Ändern",
                     ),
                     (
@@ -955,7 +963,7 @@ impl Catalog {
                         return Some(Target::Field(f));
                     }
                 }
-                for (i, cat) in MatCategory::ALL.into_iter().enumerate() {
+                for (i, cat) in NEW_MAT_CATS.into_iter().enumerate() {
                     if mat_cat_rect(c, i, s).contains(x, y) {
                         return Some(Target::MatCat(cat));
                     }
@@ -1784,14 +1792,22 @@ impl Catalog {
                 )
             }
             ComboId::Material(i) => {
+                // Die Luftschicht hat fest den Baustoff Luft
+                if self.is_air(i) {
+                    return;
+                }
                 let cur = self.draft.layers.get(i).map(|l| l.material);
                 let mut items: Vec<(String, Option<TypeLook>)> = Vec::new();
                 let mut sel = None;
-                for (k, (mid, m)) in self.work.materials().iter().enumerate() {
+                for (k, mid) in self.solid_materials().into_iter().enumerate() {
                     if Some(mid) == cur {
                         sel = Some(k);
                     }
-                    items.push((m.name.clone(), Some(mat_look(&self.work, t, mid))));
+                    let name = self
+                        .work
+                        .material(mid)
+                        .map_or(String::new(), |m| m.name.clone());
+                    items.push((name, Some(mat_look(&self.work, t, mid))));
                 }
                 items.push(("Neuer Baustoff …".into(), None));
                 (items, sel)
@@ -1812,6 +1828,31 @@ impl Catalog {
             sel,
             anchor,
         }));
+    }
+
+    fn is_air(&self, row: usize) -> bool {
+        self.draft
+            .layers
+            .get(row)
+            .is_some_and(|l| l.function == LayerFunction::AirGap)
+    }
+
+    /// Baustoffe mit Körper, in der Reihenfolge der Bibliothek (Auswahl).
+    fn solid_materials(&self) -> Vec<sk_model::MaterialId> {
+        self.work
+            .materials()
+            .iter()
+            .filter(|(_, m)| m.category != MatCategory::Air)
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    fn first_material(&self, cat: MatCategory) -> Option<sk_model::MaterialId> {
+        self.work
+            .materials()
+            .iter()
+            .find(|(_, m)| m.category == cat)
+            .map(|(id, _)| id)
     }
 
     fn category_locked(&self) -> bool {
@@ -1842,7 +1883,7 @@ impl Catalog {
                 }
             }
             ComboId::Material(row) => {
-                let mats: Vec<_> = self.work.materials().iter().map(|(id, _)| id).collect();
+                let mats = self.solid_materials();
                 match mats.get(i) {
                     Some(mid) => {
                         if let Some(l) = self.draft.layers.get_mut(row) {
@@ -1858,6 +1899,11 @@ impl Catalog {
                             .get(row)
                             .and_then(|l| self.work.material(l.material))
                             .map_or(MatCategory::Masonry, |m| m.category);
+                        let cat = if cat == MatCategory::Air {
+                            MatCategory::Masonry
+                        } else {
+                            cat
+                        };
                         self.popup = Some(Popup::NewMat(NewMat {
                             row,
                             name: String::new(),
@@ -1871,10 +1917,33 @@ impl Catalog {
                 }
             }
             ComboId::Function(row) => {
-                if let (Some(f), Some(l)) = (FUNCTIONS.get(i), self.draft.layers.get_mut(row)) {
-                    l.function = f.0;
+                let Some(&(f, _)) = FUNCTIONS.get(i) else {
+                    return;
+                };
+                // Luftschicht: Baustoff fest Luft; zurück: erster passender Baustoff
+                let was_air = self.is_air(row);
+                let material = if f == LayerFunction::AirGap {
+                    self.first_material(MatCategory::Air)
+                } else if was_air {
+                    let cat = if f == LayerFunction::Insulation {
+                        MatCategory::Insulation
+                    } else {
+                        MatCategory::Masonry
+                    };
+                    self.first_material(cat)
+                } else {
+                    None
+                };
+                if f == LayerFunction::AirGap && material.is_none() {
+                    return;
+                }
+                if let Some(l) = self.draft.layers.get_mut(row) {
+                    l.function = f;
                     // Tragend heißt Kern (IFC LoadBearing)
-                    l.core = f.0 == LayerFunction::Structure;
+                    l.core = f == LayerFunction::Structure;
+                    if let Some(m) = material {
+                        l.material = m;
+                    }
                     self.commit_draft();
                 }
             }
@@ -2298,7 +2367,7 @@ fn mat_look(m: &Model, t: &Theme, id: sk_model::MaterialId) -> TypeLook {
 
 /// Kategorie-Knopf in der Karte „Neuer Baustoff“.
 fn mat_cat_rect(card: Rect, i: usize, s: f32) -> Rect {
-    let w = (card.w - 36.0 * s) / MatCategory::ALL.len() as f32;
+    let w = (card.w - 36.0 * s) / NEW_MAT_CATS.len() as f32;
     Rect::new(
         card.x + 18.0 * s + i as f32 * w,
         card.y + 160.0 * s,
@@ -3053,7 +3122,8 @@ impl Catalog {
                 mr,
                 mat.map_or("–", |m| m.name.as_str()),
                 icon.as_ref(),
-                self.hover == Some(Target::Combo(ComboId::Material(i))),
+                self.hover == Some(Target::Combo(ComboId::Material(i)))
+                    && l.function != LayerFunction::AirGap,
                 open(ComboId::Material(i)),
                 s,
                 t,
@@ -3549,7 +3619,7 @@ impl Catalog {
                         }
                     }
                 }
-                for (i, cat) in MatCategory::ALL.into_iter().enumerate() {
+                for (i, cat) in NEW_MAT_CATS.into_iter().enumerate() {
                     let b = mat_cat_rect(r, i, s);
                     let st = ButtonState {
                         hover: self.hover == Some(Target::MatCat(cat)),
@@ -3772,26 +3842,35 @@ impl Catalog {
                         br.y + 28.0 * s,
                         fg,
                     );
-                    let detail = if accent {
-                        format!("alle {n} Wände bekommen {}", cm_text(new.thickness()))
+                    // Zwei Zeilen, damit der neue Name nicht abgeschnitten wird
+                    let lines = if accent {
+                        [
+                            format!("alle {n} Wände bekommen"),
+                            cm_text(new.thickness()).to_string(),
+                        ]
                     } else {
-                        format!("„{new_name}“, Wände bleiben")
+                        [
+                            format!("„{new_name}“"),
+                            "Wände bleiben, wie sie sind".into(),
+                        ]
                     };
-                    let detail = widgets::ellipsize(
-                        regular,
-                        &detail,
-                        t.size.font_detail * s,
-                        br.w - 32.0 * s,
-                    );
-                    label(
-                        c,
-                        regular,
-                        &detail,
-                        t.size.font_detail * s,
-                        br.x + 16.0 * s,
-                        br.y + 50.0 * s,
-                        sub,
-                    );
+                    for (k, line) in lines.iter().enumerate() {
+                        let line = widgets::ellipsize(
+                            regular,
+                            line,
+                            t.size.font_detail * s,
+                            br.w - 32.0 * s,
+                        );
+                        label(
+                            c,
+                            regular,
+                            &line,
+                            t.size.font_detail * s,
+                            br.x + 16.0 * s,
+                            br.y + (50.0 + k as f32 * 18.0) * s,
+                            sub,
+                        );
+                    }
                 }
                 Btn::AskClose => {
                     if self.hover == Some(Target::Btn(b)) {
@@ -3986,10 +4065,12 @@ mod tests {
         scale: 1.0,
     };
 
+    /// Außenwandtypen ohne die Werkstypen aus K4.
     fn aussen(m: &Model) -> Vec<&LayerSet> {
+        let k4 = [sk_model::ETICS_TYPE_GUID, sk_model::CAVITY_TYPE_GUID];
         m.layer_sets()
             .iter()
-            .filter(|(_, t)| t.category == TypeCategory::ExteriorWall)
+            .filter(|(_, t)| t.category == TypeCategory::ExteriorWall && !k4.contains(&t.guid))
             .map(|(_, t)| t)
             .collect()
     }
@@ -4105,12 +4186,7 @@ mod tests {
         let theme = Theme::dark();
         let f = fonts();
         let mut c = Catalog::open(&s, Some(&company));
-        let lib = company.library();
-        let g = lib
-            .types
-            .get(lib.default_type(TypeCategory::ExteriorWall).unwrap())
-            .unwrap()
-            .guid;
+        let g = sk_model::EXTERIOR_TYPE_GUID;
         // Der Projekttyp mit derselben Guid weicht ab: es gilt der Stand der Firma
         c.apply_value(FieldId::Thick(0), "16").unwrap();
         c.create_type(TypeCategory::ExteriorWall, Some(g));

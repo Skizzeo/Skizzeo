@@ -11,7 +11,7 @@ use crate::attr::{Fill, Pen, Surface};
 use crate::guid::Guid;
 use crate::id::{Arena, Id};
 use crate::library::{LayerSet, LayerSetId, Material, MaterialDisplay, MaterialId, TypeCategory};
-use crate::model::{free_code, same_type, Model};
+use crate::model::{free_code, same_type, Model, ETICS_TYPE_GUID, EXTERIOR_TYPE_GUID};
 use crate::szo::{
     self, check_header, err, keyword, register, sorted, type_category, Line, LoadError, Record,
 };
@@ -33,6 +33,9 @@ pub struct Library {
     /// Standardtypen für neue Projekte.
     pub default_exterior: Option<LayerSetId>,
     pub default_interior: Option<LayerSetId>,
+    /// Werkstypen, die der Katalog schon angeboten bekam (K4): fehlt einer
+    /// davon, hat das Büro ihn entfernt, und er kommt nicht wieder.
+    pub stock: Vec<Guid>,
 }
 
 impl PartialEq for Library {
@@ -63,7 +66,58 @@ impl Library {
 
     /// Eingebauter Startbestand: die Werkstypen eines neuen Projekts.
     pub fn standard() -> Library {
-        Library::from_model(&Model::new())
+        let mut lib = Library::from_model(&Model::new());
+        lib.stock = lib.types.iter().map(|(_, t)| t.guid).collect();
+        lib.stock.sort();
+        lib
+    }
+
+    /// Ergänzt die Werkstypen, die der Katalog noch nicht angeboten bekam
+    /// (nach Guid; vorhandene bleiben, wie sie sind). Steht der Standard
+    /// noch auf dem alten Werkstyp AW-31,5, wechselt er einmalig auf AW-36.
+    /// Fehlendes λ an Werksbaustoffen kommt dazu. Ergebnis: Kurzzeichen der
+    /// ergänzten Typen und ob der Standard gewechselt hat; beides leer bzw.
+    /// `false` heißt: nichts geändert.
+    pub fn add_stock(&mut self) -> (Vec<String>, bool) {
+        let werk = Model::new();
+        let mut order: Vec<Guid> = werk.layer_sets().iter().map(|(_, t)| t.guid).collect();
+        order.sort();
+        let fresh: Vec<Guid> = order
+            .into_iter()
+            .filter(|g| !self.stock.contains(g))
+            .collect();
+        if fresh.is_empty() {
+            return (Vec::new(), false);
+        }
+        let mut added = Vec::new();
+        for g in &fresh {
+            if self.type_by_guid(*g).is_none() && export_type(&werk, self, *g) {
+                if let Some(t) = self.type_by_guid(*g).and_then(|id| self.types.get(id)) {
+                    added.push(t.code.clone());
+                }
+            }
+            self.stock.push(*g);
+        }
+        self.stock.sort();
+        for id in self.materials.ids().collect::<Vec<_>>() {
+            if let Some(x) = self.materials.get_mut(id).filter(|x| x.lambda.is_none()) {
+                x.lambda = werk
+                    .materials()
+                    .iter()
+                    .find(|(_, w)| w.guid == x.guid)
+                    .and_then(|(_, w)| w.lambda);
+            }
+        }
+        let old_default = self
+            .default_exterior
+            .and_then(|id| self.types.get(id))
+            .is_some_and(|t| t.guid == EXTERIOR_TYPE_GUID);
+        let etics = self.type_by_guid(ETICS_TYPE_GUID);
+        let switched = fresh.contains(&ETICS_TYPE_GUID) && old_default && etics.is_some();
+        if switched {
+            self.default_exterior = etics;
+        }
+        (added, switched)
     }
 
     pub fn type_by_guid(&self, g: Guid) -> Option<LayerSetId> {
@@ -141,6 +195,9 @@ pub fn write_szk(lib: &Library) -> String {
                 .finish(&mut out);
         }
     }
+    for g in &lib.stock {
+        Line::new("stock").guid("set", Some(*g)).finish(&mut out);
+    }
     out
 }
 
@@ -150,9 +207,9 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     check_header(text.lines().next(), "SZK", VERSION)?;
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 9] = [
+    const KNOWN: [&str; 10] = [
         "pen", "linetype", "fill", "surface", "material", "layerset", "layer", "typeprop",
-        "default",
+        "default", "stock",
     ];
     for (i, l) in text.lines().enumerate().skip(1) {
         let Some(r) = Record::parse(i + 1, l)? else {
@@ -240,6 +297,11 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
             TypeCategory::InteriorWall => lib.default_interior = Some(id),
         }
     }
+    for r in recs("stock") {
+        lib.stock.push(r.guid("set")?);
+    }
+    lib.stock.sort();
+    lib.stock.dedup();
     Ok(lib)
 }
 
@@ -506,9 +568,12 @@ mod tests {
         assert!(text.contains("[default] cat=exterior"));
         assert!(!text.contains("[storey]") && !text.contains("[project]"));
         assert_eq!(read_szk(&text).unwrap(), lib);
-        assert_eq!(lib.types.len(), 2);
-        // Nur die Baustoffe der Typen und deren Darstellung
-        assert_eq!(lib.materials.len(), 2);
+        assert_eq!(lib.types.len(), 6);
+        assert_eq!(lib.stock.len(), 6, "alle Werkstypen angeboten");
+        // Nur die Baustoffe der Typen und deren Darstellung (ohne Putz und
+        // Stahlbeton)
+        assert_eq!(lib.materials.len(), 5);
+        assert!(!text.contains("name=\"Putz\""));
     }
 
     #[test]
@@ -548,7 +613,7 @@ mod tests {
         (ks.guid, ks.name, ks.cut_fg) = (f.new_guid(), "Kalksandstein".into(), pen);
         let ks = f.add_material(ks);
         let mut t = f.layer_set(f.defaults().interior_wall).unwrap().clone();
-        (t.guid, t.code, t.name) = (f.new_guid(), "IW-24".into(), "IW 24 KS".into());
+        (t.guid, t.code, t.name) = (f.new_guid(), "IW-24-KS".into(), "IW 24 KS".into());
         t.layers[0].material = ks;
         t.layers[0].thickness = 240.0;
         let g = t.guid;

@@ -3,7 +3,7 @@
 
 use crate::element::{Category, PropValue, RunId};
 use crate::library::{LayerSet, LayerSetId, TypeCategory};
-use crate::model::{Model, EXTERIOR_TYPE_GUID, INTERIOR_TYPE_GUID};
+use crate::model::{Model, ETICS_TYPE_GUID, EXTERIOR_TYPE_GUID, INTERIOR_TYPE_GUID};
 use crate::txn::Direction;
 use crate::wall::RefSide;
 use crate::{floor_qto, foundation_qto, run_qto, szo, GuidGen};
@@ -74,10 +74,15 @@ fn outer_x(m: &Model, run: RunId) -> f64 {
 
 #[test]
 fn werkstypen_mit_festen_guids_und_kurzzeichen() {
-    for m in [Model::new(), Model::with_seed(3)] {
+    // Neue Projekte haben AW-36 als Standard (K4), Tests mit festem
+    // Startwert weiter AW-31,5
+    for (m, std) in [
+        (Model::new(), (ETICS_TYPE_GUID, "AW-36")),
+        (Model::with_seed(3), (EXTERIOR_TYPE_GUID, "AW-31,5")),
+    ] {
         let aw = m.layer_set(m.defaults().exterior_wall).unwrap();
         let iw = m.layer_set(m.defaults().interior_wall).unwrap();
-        assert_eq!((aw.guid, aw.code.as_str()), (EXTERIOR_TYPE_GUID, "AW-31,5"));
+        assert_eq!((aw.guid, aw.code.as_str()), std);
         assert_eq!((iw.guid, iw.code.as_str()), (INTERIOR_TYPE_GUID, "IW-17,5"));
         assert_eq!(aw.category, TypeCategory::ExteriorWall);
         assert!(aw.load_bearing() && aw.is_external() && !iw.is_external());
@@ -123,7 +128,7 @@ fn zugtyp_wechseln_nimmt_das_obergeschoss_mit() {
     let (mut m, aw, iw) = haus();
     let mut t = aw_36(&m);
     t.guid = m.new_guid();
-    (t.code, t.name) = ("AW-36".into(), "AW 36".into());
+    (t.code, t.name) = ("AW-36-2".into(), "AW 36".into());
     let neu = m.add_layer_set(t).unwrap();
     let alt = m.defaults().exterior_wall;
     let x0 = outer_x(&m, aw);
@@ -167,7 +172,7 @@ fn aussenseite_bleibt_auch_bei_achse_als_bezug() {
     let y0 = x(&m);
     let mut t = aw_36(&m);
     t.guid = m.new_guid();
-    t.code = "AW-36".into();
+    t.code = "AW-36-2".into();
     let neu = m.add_layer_set(t).unwrap();
     assert!(m.set_run_type(run, neu));
     assert!((x(&m) - y0).abs() < 1e-9, "{} statt {y0}", x(&m));
@@ -318,7 +323,7 @@ fn alte_datei_gleiche_dicke() {
     let mut codes: Vec<(u128, String)> = n
         .layer_sets()
         .iter()
-        .filter(|(_, t)| t.category == TypeCategory::ExteriorWall)
+        .filter(|(_, t)| t.category == TypeCategory::ExteriorWall && t.thickness() == 315.0)
         .map(|(_, t)| (t.guid.0, t.code.clone()))
         .collect();
     codes.sort();

@@ -119,6 +119,11 @@ impl Model {
             }
         }
         m.guids = g;
+        // Standard-Außenwand neuer Projekte: AW-36 (F5); Tests mit festem
+        // Startwert behalten AW-31,5
+        if let Some(id) = m.type_by_guid(ETICS_TYPE_GUID) {
+            m.defaults.exterior_wall = id;
+        }
         m
     }
 
@@ -178,7 +183,7 @@ impl Model {
             [214, 214, 210],
             [150, 150, 148],
         );
-        mat(
+        let plaster = mat(
             "Putz",
             C::Plaster,
             100,
@@ -274,6 +279,122 @@ impl Model {
                 d.section_line.line_type = id;
                 attr.set_display(d);
             }
+        }
+        // K4: λ-Vorbelegungen (BIM) an den älteren Baustoffen
+        for (id, lambda) in [
+            (aerated, 0.09),
+            (insulation, 0.035),
+            (concrete, 2.3),
+            (plaster, 0.87),
+        ] {
+            if let Some(m) = materials.get_mut(id) {
+                m.lambda = Some(lambda);
+            }
+        }
+        // K4: Jörns Wandtypen mit ihren Baustoffen, zuletzt angelegt, damit
+        // die älteren Guids gleich bleiben
+        let mut mat =
+            |name: &str, category, priority, density, lambda, cut_fill, color, cut_color| {
+                let surface = attr.add_surface(Surface {
+                    guid: guids.next_guid(),
+                    name: name.into(),
+                    color,
+                    cut_color,
+                });
+                materials.insert(Material {
+                    guid: guids.next_guid(),
+                    name: name.into(),
+                    category,
+                    priority,
+                    density,
+                    lambda,
+                    cut_fill,
+                    cut_fg: st.hatch_pen,
+                    cut_bg: st.background,
+                    surface,
+                })
+            };
+        let facing = mat(
+            "Verblender (Vormauerziegel)",
+            C::Masonry,
+            700,
+            1800.0,
+            Some(0.68),
+            st.masonry,
+            [168, 74, 52],
+            [140, 62, 46],
+        );
+        let cavity = mat(
+            "Kerndämmung (Mineralwolle)",
+            C::Insulation,
+            300,
+            30.0,
+            Some(0.035),
+            st.insulation,
+            [236, 226, 170],
+            [222, 200, 110],
+        );
+        // Luft hat keinen Körper; Schraffur leer, die Oberfläche wird nie gezeigt
+        let air = mat(
+            "Luft",
+            C::Air,
+            0,
+            1.2,
+            None,
+            st.empty,
+            [255, 255, 255],
+            [255, 255, 255],
+        );
+        let layer = |material, thickness, function, core| MaterialLayer {
+            material,
+            thickness,
+            function,
+            core,
+        };
+        use LayerFunction as F;
+        let wall_type = |guid, name: &str, code: &str, category, layers| LayerSet {
+            guid,
+            name: name.into(),
+            code: code.into(),
+            category,
+            props: PropSet::new(),
+            note: String::new(),
+            changed: 1,
+            layers,
+        };
+        layer_sets.insert(wall_type(
+            ETICS_TYPE_GUID,
+            "AW mit WDVS 36",
+            "AW-36",
+            TypeCategory::ExteriorWall,
+            vec![
+                layer(insulation, 120.0, F::Insulation, false),
+                layer(aerated, 240.0, F::Structure, true),
+            ],
+        ));
+        layer_sets.insert(wall_type(
+            CAVITY_TYPE_GUID,
+            "AW mehrschalig 49",
+            "AW-49",
+            TypeCategory::ExteriorWall,
+            vec![
+                layer(facing, 115.0, F::Finish, false),
+                layer(air, 60.0, F::AirGap, false),
+                layer(cavity, 140.0, F::Insulation, false),
+                layer(aerated, 175.0, F::Structure, true),
+            ],
+        ));
+        for (guid, name, code, d) in [
+            (INTERIOR_115_TYPE_GUID, "IW 11,5 Gasbeton", "IW-11,5", 115.0),
+            (INTERIOR_240_TYPE_GUID, "IW 24 Gasbeton", "IW-24", 240.0),
+        ] {
+            layer_sets.insert(wall_type(
+                guid,
+                name,
+                code,
+                TypeCategory::InteriorWall,
+                vec![layer(aerated, d, F::Structure, true)],
+            ));
         }
         Model {
             project,
@@ -940,6 +1061,7 @@ impl Model {
                     thickness: l.thickness,
                     material: material_key(l.material),
                     core: l.core,
+                    air: l.function == LayerFunction::AirGap,
                 })
                 .collect()
         })
@@ -3621,6 +3743,22 @@ impl Model {
 /// in jedem Projekt und Firmenkatalog derselbe Typ (K1, Regel 19).
 pub const EXTERIOR_TYPE_GUID: Guid = Guid(0xbf19d5c9cf9241c9b5a191d5bdac9382);
 pub const INTERIOR_TYPE_GUID: Guid = Guid(0xe3753d4ddf2d435299910b99a65cfba2);
+/// Werkstypen aus K4 (Jörn 06.10. 16:38), in jedem Projekt gleich.
+pub const ETICS_TYPE_GUID: Guid = Guid(0x72147f93f58782c40c7064abc28678f7);
+pub const CAVITY_TYPE_GUID: Guid = Guid(0xab62c0bdc94bb6740b98633edb84415c);
+pub const INTERIOR_115_TYPE_GUID: Guid = Guid(0x2f8dff421c184680660acedac925c20e);
+pub const INTERIOR_240_TYPE_GUID: Guid = Guid(0x399dbdcd165ab68f996acfde24d981df);
+/// Art eines Werkstyps nach seiner festen Guid.
+pub(crate) fn werk_category(g: Guid) -> Option<TypeCategory> {
+    match g {
+        EXTERIOR_TYPE_GUID | ETICS_TYPE_GUID | CAVITY_TYPE_GUID => Some(TypeCategory::ExteriorWall),
+        INTERIOR_TYPE_GUID | INTERIOR_115_TYPE_GUID | INTERIOR_240_TYPE_GUID => {
+            Some(TypeCategory::InteriorWall)
+        }
+        _ => None,
+    }
+}
+
 /// Startwert der Guids der Startbibliothek in [`Model::new`]: Stifte,
 /// Schraffuren, Oberflächen und Baustoffe sind in jedem neuen Projekt gleich.
 const LIBRARY_SEED: u64 = 0x534b_4b41_5441_4c47;

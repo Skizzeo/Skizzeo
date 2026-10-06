@@ -322,9 +322,14 @@ pub fn props(scene: &Scene, id: ElementId) -> Option<Props> {
             .filter_map(|(i, l)| {
                 let mat = m.material(l.material)?;
                 let rgb = m.attr().surface(mat.surface)?.cut_color;
-                let amount = q.and_then(|q| q.layers.get(i)).map_or(String::new(), |lq| {
-                    format!("{} m³ · {} kg", de(lq.volume / 1e9, 3), de(lq.mass, 0))
-                });
+                // Luftschicht ohne Körper: keine Menge (K4)
+                let body = l.function != sk_model::LayerFunction::AirGap;
+                let amount = q
+                    .filter(|_| body)
+                    .and_then(|q| q.layers.get(i))
+                    .map_or(String::new(), |lq| {
+                        format!("{} m³ · {} kg", de(lq.volume / 1e9, 3), de(lq.mass, 0))
+                    });
                 Some((
                     Rgba::from_rgb8(rgb),
                     format!("{} cm {}", cm(l.thickness), mat.name),

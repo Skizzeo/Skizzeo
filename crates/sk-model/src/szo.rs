@@ -354,16 +354,11 @@ fn mat_category(c: MatCategory) -> &'static str {
         MatCategory::Insulation => "insulation",
         MatCategory::Plaster => "plaster",
         MatCategory::Timber => "timber",
+        MatCategory::Air => "air",
     }
 }
 
-const MAT_CATEGORIES: [MatCategory; 5] = [
-    MatCategory::Masonry,
-    MatCategory::Concrete,
-    MatCategory::Insulation,
-    MatCategory::Plaster,
-    MatCategory::Timber,
-];
+const MAT_CATEGORIES: [MatCategory; 6] = MatCategory::ALL;
 
 fn layer_function(f: LayerFunction) -> &'static str {
     match f {
@@ -1558,7 +1553,8 @@ pub(crate) fn read_types(
 }
 
 /// Dateien vor SZO 4: Typart aus der Benutzung (Innenwände → Innenwandtyp;
-/// unbenutzt: der Platz in den Standardtypen, sonst Außenwand), Kurzzeichen
+/// unbenutzt: die Art des Werkstyps, der Platz in den Standardtypen, sonst
+/// Außenwand), Kurzzeichen
 /// aus Art und Dicke („AW-31,5“), bei Gleichstand mit „-2“ … in
 /// Guid-Reihenfolge.
 fn assign_codes(layer_sets: &mut Arena<LayerSet>, elements: &Arena<Element>, defaults: &Defaults) {
@@ -1576,10 +1572,13 @@ fn assign_codes(layer_sets: &mut Arena<LayerSet>, elements: &Arena<Element>, def
     let mut taken: Vec<String> = Vec::new();
     for (_, id) in order {
         let (used, interior) = users.get(&id).copied().unwrap_or_default();
-        let category = if interior || (!used && id == defaults.interior_wall) {
-            TypeCategory::InteriorWall
-        } else {
-            TypeCategory::ExteriorWall
+        let werk = layer_sets
+            .get(id)
+            .and_then(|t| crate::model::werk_category(t.guid));
+        let category = match werk {
+            Some(c) if !used => c,
+            _ if interior || (!used && id == defaults.interior_wall) => TypeCategory::InteriorWall,
+            _ => TypeCategory::ExteriorWall,
         };
         if let Some(t) = layer_sets.get_mut(id) {
             let code = crate::model::free_code(&type_code(category, t.thickness()), |c| {

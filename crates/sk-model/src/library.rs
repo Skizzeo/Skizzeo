@@ -19,15 +19,18 @@ pub enum MatCategory {
     Insulation,
     Plaster,
     Timber,
+    /// Ruhende Luftschicht: zählt zur Dicke, hat aber keinen Körper (K4).
+    Air,
 }
 
 impl MatCategory {
-    pub const ALL: [MatCategory; 5] = [
+    pub const ALL: [MatCategory; 6] = [
         MatCategory::Masonry,
         MatCategory::Concrete,
         MatCategory::Insulation,
         MatCategory::Plaster,
         MatCategory::Timber,
+        MatCategory::Air,
     ];
 
     pub fn name(self) -> &'static str {
@@ -37,6 +40,7 @@ impl MatCategory {
             MatCategory::Insulation => "Dämmung",
             MatCategory::Plaster => "Putz",
             MatCategory::Timber => "Holz",
+            MatCategory::Air => "Luft",
         }
     }
 }
@@ -195,7 +199,8 @@ impl LayerSet {
     }
 
     /// Verstöße gegen die Regeln eines Typs: mindestens eine Schicht, jede
-    /// dicker als 0, Kernschichten zusammenhängend, Kurzzeichen nicht leer.
+    /// dicker als 0, Kernschichten zusammenhängend, Kurzzeichen nicht leer;
+    /// Luftschichten nach Regel 20.
     pub fn problems(&self) -> Vec<String> {
         let mut out = Vec::new();
         let who = if self.code.is_empty() {
@@ -221,6 +226,18 @@ impl LayerSet {
             .collect();
         if core.windows(2).any(|w| w[1] != w[0] + 1) {
             out.push(format!("Typ {who}: Kernschichten nicht zusammenhängend"));
+        }
+        // Regel 20: Luftschicht nie Kern, nie am Rand, nie zweimal nacheinander
+        let air = |l: &MaterialLayer| l.function == LayerFunction::AirGap;
+        let n = self.layers.len();
+        if self.layers.iter().any(|l| air(l) && l.core) {
+            out.push(format!("Typ {who}: Luftschicht als Kern"));
+        }
+        if n > 0 && (air(&self.layers[0]) || air(&self.layers[n - 1])) {
+            out.push(format!("Typ {who}: Luftschicht am Rand des Aufbaus"));
+        }
+        if self.layers.windows(2).any(|w| air(&w[0]) && air(&w[1])) {
+            out.push(format!("Typ {who}: zwei Luftschichten hintereinander"));
         }
         out
     }

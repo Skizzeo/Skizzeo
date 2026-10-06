@@ -7326,14 +7326,14 @@ mod katalog {
     /// weil das Projekt schon einen eigenen Stift 10 hat); keine Nummer doppelt,
     /// alte Nummern unverändert. Vorhandene Baustoffe bleiben die des Projekts.
     /// Belegt ein anderer Projekttyp das Kurzzeichen, bekommt der übernommene
-    /// „AW-36-2“. Ein Rückgängig entfernt Typ, Baustoff und Stift.
+    /// „AW-37-2“ (seit K4 gibt es den Werkstyp AW-36). Ein Rückgängig entfernt Typ, Baustoff und Stift.
     #[test]
     fn a108_neuen_typ_mit_baustoff_und_stift_uebernehmen() {
         let mut s = Scene::with_model(Model::with_seed(108));
         haus_b11(&mut s);
         let aw1 = s.model().defaults().exterior_wall;
         let aw1_layers = s.model().layer_set(aw1).unwrap().layers.clone();
-        // Firma: neuer Stift, neuer Baustoff, neuer Typ AW-36
+        // Firma: neuer Stift, neuer Baustoff, neuer Typ AW-37
         let mut b = lesen(&sk_model::szo::write(s.model())).unwrap();
         let pen_g = b.new_guid();
         let pen = b.add_pen(Pen {
@@ -7367,7 +7367,7 @@ mod katalog {
         let t = neuer_typ(
             &mut b,
             "AW 36 KS + WDVS",
-            "AW-36",
+            "AW-37",
             true,
             vec![
                 schicht(daemm, 160.0, LayerFunction::Insulation, false),
@@ -7382,7 +7382,7 @@ mod katalog {
             abgleich(s.model(), &lib).get(&tg),
             Some(&TypeState::OnlyCompany)
         );
-        // Projekt: eigener Stift 10, eigener Typ mit Kurzzeichen AW-36
+        // Projekt: eigener Stift 10, eigener Typ mit Kurzzeichen AW-37
         s.edit_model("Stift", |m| {
             let guid = m.new_guid();
             m.add_pen(Pen {
@@ -7395,7 +7395,7 @@ mod katalog {
             true
         });
         s.edit_model("Typ", |m| {
-            let t = neuer_typ(m, "AW Test", "AW-36", true, aw1_layers.clone());
+            let t = neuer_typ(m, "AW Test", "AW-37", true, aw1_layers.clone());
             typ_anlegen(m, t).is_some()
         });
         let stifte = |s: &Scene| -> BTreeMap<Guid, u16> {
@@ -7417,7 +7417,7 @@ mod katalog {
         let id = uebernehmen(&mut s, &lib, tg).expect("übernommen");
         let t = s.model().layer_set(id).unwrap().clone();
         assert_eq!(t.guid, tg, "gleiche Guid");
-        assert_eq!(kurz(&t), "AW-36-2", "Kurzzeichen belegt");
+        assert_eq!(kurz(&t), "AW-37-2", "Kurzzeichen belegt");
         assert_eq!(t.name, "AW 36 KS + WDVS");
         assert_eq!(
             t.layers.iter().map(|l| l.thickness).collect::<Vec<_>>(),
@@ -7475,7 +7475,8 @@ mod katalog {
     /// Firmenkatalogs; Model::with_seed bleibt beim Startbestand.
     #[test]
     fn a109_firmenkatalog_datei_und_neues_projekt() {
-        let start = ["AW-31,5".to_string(), "IW-17,5".to_string()];
+        // Startbestand seit K4: sechs Werkstypen
+        let start = ["AW-31,5", "AW-36", "AW-49", "IW-11,5", "IW-17,5", "IW-24"].map(String::from);
         let d = test_dir("a109");
         // Erster Start am Vorgabeort
         let vorgabe = d.join("firmenkatalog.szk");
@@ -7580,10 +7581,451 @@ mod katalog {
         let neu = d.join("neu");
         std::fs::create_dir_all(&neu).unwrap();
         let c = firma_laden(&neu.join("firmenkatalog.szk"), true).0;
+        // Seit K4 hat ein neues Projekt (Model::new) den Standard AW-36
         assert_eq!(
-            werk(&Model::with_seed(1)),
+            werk(&Model::new()),
             werk(&neues_projekt(firma_bibliothek(&c))),
             "Startbestand des Firmenkatalogs = Werkstypen"
         );
+    }
+}
+
+/// Abnahme K4 (Jörns Wandtypen); K5 folgt mit dem Randdämmstreifen.
+mod wandtypen {
+    use super::*;
+    // Abnahmetests K4 (Jörns Wandtypen, Luftschicht, Schürzenbreite 30–45 cm)
+    // und K5 (monolithische Wand mit Randdämmstreifen), vorbereitet gegen main
+    // 137fca7. Paket: bim/paket-k4-k5-wandtypen.md („Fertig, wenn“),
+    // Spezifikation test/abnahme-wandtypen.md.
+    //
+    // Einbau: als `mod wandtypen { use super::*; … }` ans Ende von
+    // app/src/abnahme.rs. Nutzt aus abnahme.rs: haus_b11, og_zug, wall_m3,
+    // decke_mengen, sohlplatte, tippe, m2, m3, cam3d; aus mod katalog nichts.
+    //
+    // Wichtig: Die Tests wechseln die Außenwand ausdrücklich auf den Werkstyp
+    // (set_run_type) und hängen nicht davon ab, welcher Typ in
+    // Model::with_seed Standard ist. Den neuen Standard AW-36 prüft A110 an
+    // Model::new().
+    //
+    // Angenommene Namen stehen NUR in den Adaptern. Weicht der Bau ab, bitte
+    // nur die Adapter anpassen.
+
+    use sk_model::{GuidGen, LayerFunction, LayerSet, LayerSetId, MatCategory, Model};
+
+    // ===== Adapter =====
+
+    /// Werkstyp nach Kurzzeichen.
+    fn typ(m: &Model, code: &str) -> LayerSetId {
+        m.layer_sets()
+            .iter()
+            .find(|(_, t)| t.code == code)
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| panic!("Typ {code} fehlt"))
+    }
+    /// Typ eines Wandzugs wechseln (K1), ein Rückgängig-Schritt.
+    fn zugtyp(s: &mut Scene, run: RunId, id: LayerSetId) -> bool {
+        s.edit_model("Wandtyp geändert", |m| m.set_run_type(run, id))
+    }
+    /// U-Wert eines Typs (nur Anzeige); `None` bei Innenwand oder fehlendem λ.
+    fn u_wert(m: &Model, id: LayerSetId) -> Option<f64> {
+        m.u_value(id)
+    }
+    /// Baustoffkategorie Luft.
+    fn ist_luft(c: MatCategory) -> bool {
+        c == MatCategory::Air
+    }
+    /// Firmenkatalog laden (App, K2): Hinweise statt Fehler.
+    fn firma_laden(p: &std::path::Path, vorgabe: bool) -> (crate::catalog::Company, Vec<String>) {
+        crate::catalog::Company::load(p, vorgabe)
+    }
+
+    // ===== Hilfen (keine Annahmen über K4/K5 hinaus) =====
+
+    fn r4(v: f64) -> f64 {
+        (v * 1e4).round() / 1e4
+    }
+
+    /// Wechselt den Zug auf den Werkstyp, falls er ihn noch nicht hat.
+    fn auf_typ(s: &mut Scene, run: RunId, code: &str) {
+        let id = typ(s.model(), code);
+        let hat = s
+            .model()
+            .element(s.model().wall_at(run, 0).unwrap())
+            .unwrap()
+            .layer_set;
+        if hat != Some(id) {
+            assert!(zugtyp(s, run, id), "Wechsel auf {code}");
+        }
+    }
+
+    /// Volumen (m³) aller Schichten eines Baustoffs in den 4 Segmenten des Zugs.
+    fn baustoff_m3(s: &Scene, run: RunId, name: &str) -> f64 {
+        let m = s.model();
+        let mut v = 0.0;
+        for i in 0..4 {
+            let q = s.wall_qto(m.wall_at(run, i).unwrap()).unwrap();
+            for l in &q.layers {
+                if m.material(l.material).unwrap().name == name {
+                    v += l.volume;
+                }
+            }
+        }
+        r4(v / 1e9)
+    }
+
+    /// Summe der Wandvolumen (m³) der 4 Segmente.
+    fn wand_m3(s: &Scene, run: RunId) -> f64 {
+        let m = s.model();
+        r4((0..4)
+            .map(|i| s.wall_qto(m.wall_at(run, i).unwrap()).unwrap().volume)
+            .sum::<f64>()
+            / 1e9)
+    }
+
+    fn fs_m3(s: &Scene, aw: RunId) -> f64 {
+        m3(s.foundation_qto(aw).unwrap().1.volume)
+    }
+    fn sp_m3(s: &Scene, aw: RunId) -> f64 {
+        m3(s.foundation_qto(aw).unwrap().0.volume)
+    }
+
+    // ===== Tests K4 =====
+
+    /// A110 (K4, Startbestand): Werkstypen AW-36, AW-49, IW-11,5, IW-17,5,
+    /// IW-24 mit Schichten außen → innen, AW-31,5 bleibt. Ein neues Projekt hat
+    /// den Standard AW-36 / IW-17,5. Feste Guids (gleich in jedem Projekt), die
+    /// Guids aus 137fca7 bleiben. Neue Baustoffe mit λ, Luft in eigener
+    /// Kategorie. U-Wert nur für Außenwände: AW-36 0,16, AW-49 0,15.
+    #[test]
+    fn a110_werkstypen_und_standard() {
+        let m = Model::with_seed(110);
+        let aufbau = |code: &str| -> (String, bool, Vec<(String, f64, bool)>, f64) {
+            let t = m.layer_set(typ(&m, code)).unwrap();
+            (
+                t.name.clone(),
+                t.category == sk_model::TypeCategory::ExteriorWall,
+                t.layers
+                    .iter()
+                    .map(|l| {
+                        (
+                            m.material(l.material).unwrap().name.clone(),
+                            l.thickness,
+                            l.core,
+                        )
+                    })
+                    .collect(),
+                t.thickness(),
+            )
+        };
+        let s = |x: &str| x.to_string();
+        assert_eq!(
+            aufbau("AW-36"),
+            (
+                s("AW mit WDVS 36"),
+                true,
+                vec![
+                    (s("Dämmung (WDVS)"), 120.0, false),
+                    (s("Gasbeton"), 240.0, true)
+                ],
+                360.0
+            )
+        );
+        let aw49 = aufbau("AW-49");
+        assert_eq!(
+            (aw49.0.as_str(), aw49.1, aw49.3),
+            ("AW mehrschalig 49", true, 490.0)
+        );
+        assert_eq!(
+            aw49.2.iter().map(|l| (l.1, l.2)).collect::<Vec<_>>(),
+            [(115.0, false), (60.0, false), (140.0, false), (175.0, true)]
+        );
+        assert_eq!(aw49.2[1].0, "Luft");
+        for (code, d) in [("IW-11,5", 115.0), ("IW-17,5", 175.0), ("IW-24", 240.0)] {
+            let a = aufbau(code);
+            assert!(!a.1, "{code} Innenwand");
+            assert_eq!(a.2, [(s("Gasbeton"), d, true)], "{code}");
+        }
+        assert_eq!(aufbau("AW-31,5").3, 315.0, "AW-31,5 bleibt");
+        let luft = m.layer_set(typ(&m, "AW-49")).unwrap().layers[1];
+        assert_eq!(luft.function, LayerFunction::AirGap);
+        let mat = |name: &str| {
+            m.materials()
+                .iter()
+                .find(|(_, x)| x.name.starts_with(name))
+                .map(|(_, x)| x.clone())
+                .unwrap_or_else(|| panic!("Baustoff {name}"))
+        };
+        assert!(ist_luft(mat("Luft").category));
+        for (name, lambda) in [
+            ("Verblender", 0.68),
+            ("Kerndämmung", 0.035),
+            ("Gasbeton", 0.09),
+            ("Dämmung (WDVS)", 0.035),
+            ("Stahlbeton", 2.3),
+            ("Putz", 0.87),
+        ] {
+            assert_eq!(mat(name).lambda, Some(lambda), "λ {name}");
+        }
+        // U-Wert
+        let u = |code: &str| u_wert(&m, typ(&m, code)).map(|u| (u * 100.0).round() / 100.0);
+        assert_eq!(u("AW-36"), Some(0.16));
+        assert_eq!(u("AW-49"), Some(0.15));
+        assert_eq!(u("IW-17,5"), None, "Innenwand ohne U-Wert");
+        // Standard und feste Guids
+        let neu = Model::new();
+        let d = neu.defaults();
+        assert_eq!(neu.layer_set(d.exterior_wall).unwrap().code, "AW-36");
+        assert_eq!(neu.layer_set(d.interior_wall).unwrap().code, "IW-17,5");
+        for code in ["AW-31,5", "AW-36", "AW-49", "IW-11,5", "IW-17,5", "IW-24"] {
+            assert_eq!(
+                neu.layer_set(typ(&neu, code)).unwrap().guid,
+                m.layer_set(typ(&m, code)).unwrap().guid,
+                "{code}: feste Guid"
+            );
+        }
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    /// A111 (K4, AW-36): Prüfhaus mit AW-36 je Geschoss: WDVS 12,1692, Gasbeton
+    /// netto 21,5522 m³, Decke 75,7376 m² / 16,6623 m³, SP 17,600, FS 7,0238 m³;
+    /// Innenwand IW-11,5 2,2060, IW-17,5 3,3570, IW-24 4,6039 m³. EG und OG
+    /// gleich, alle gebunden (A-09).
+    #[test]
+    fn a111_mengen_aw36_und_innenwaende() {
+        let mut s = Scene::with_model(Model::with_seed(111));
+        let (aw, iw) = haus_b11(&mut s);
+        auf_typ(&mut s, aw, "AW-36");
+        let og = og_zug(&s, aw);
+        for run in [aw, og] {
+            assert_eq!(baustoff_m3(&s, run, "Dämmung (WDVS)"), 12.1692);
+            assert_eq!(baustoff_m3(&s, run, "Gasbeton"), 21.5522);
+            let d = decke_mengen(&s, run);
+            assert_eq!((d.0, d.1), (75.7376, 16.6623));
+        }
+        assert_eq!((sp_m3(&s, aw), fs_m3(&s, aw)), (17.6, 7.0238));
+        for (code, soll) in [("IW-11,5", 2.2060), ("IW-17,5", 3.3570), ("IW-24", 4.6039)] {
+            auf_typ(&mut s, iw, code);
+            assert_eq!(r4(wall_m3(&s, iw, 0)), soll, "{code}");
+        }
+        let m = s.model();
+        assert!(m
+            .elements()
+            .iter()
+            .all(|(_, e)| m.storey(e.storey).is_some()));
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    /// A112 (K4, AW-49 mit Luftschicht): Verblender 11,6687, Kerndämmung
+    /// 13,6058, Gasbeton netto 15,1157 m³ je Geschoss. Die Luftschicht zählt zur
+    /// Dicke, hat aber kein Volumen und keine Zeile; 5,9681 m³ (Luft als
+    /// Körper) taucht nirgends auf, auch nicht in der CSV. Decke an der
+    /// Kernaußenseite 69,0569 m² / 15,1925 m³; IW-17,5 3,2371 m³; SP und FS
+    /// unverändert.
+    #[test]
+    fn a112_mehrschalig_mit_luftschicht() {
+        let mut s = Scene::with_model(Model::with_seed(112));
+        let (aw, iw) = haus_b11(&mut s);
+        auf_typ(&mut s, iw, "IW-17,5");
+        auf_typ(&mut s, aw, "AW-49");
+        let og = og_zug(&s, aw);
+        for run in [aw, og] {
+            assert_eq!(baustoff_m3(&s, run, "Verblender (Vormauerziegel)"), 11.6687);
+            assert_eq!(baustoff_m3(&s, run, "Kerndämmung (Mineralwolle)"), 13.6058);
+            assert_eq!(baustoff_m3(&s, run, "Gasbeton"), 15.1157);
+            assert_eq!(baustoff_m3(&s, run, "Luft"), 0.0, "Luft ohne Volumen");
+            // Summe der gerundeten Einzelwerte: ±1 in der vierten Stelle
+            assert!(
+                (wand_m3(&s, run) - (11.6687 + 13.6058 + 15.1157)).abs() < 2e-4,
+                "Summe ohne Luft: {}",
+                wand_m3(&s, run)
+            );
+            let d = decke_mengen(&s, run);
+            assert_eq!((d.0, d.1), (69.0569, 15.1925));
+        }
+        assert_eq!(
+            s.wall_qto(s.model().wall_at(aw, 0).unwrap()).unwrap().width,
+            490.0
+        );
+        assert_eq!(r4(wall_m3(&s, iw, 0)), 3.2371);
+        assert_eq!((sp_m3(&s, aw), fs_m3(&s, aw)), (17.6, 7.0238));
+        let liste = s.schedule().clone();
+        let csv = crate::schedule_view::csv(s.model(), &liste);
+        let text = String::from_utf8_lossy(&csv);
+        assert!(!text.contains("5,968"), "Luft als Körper in der CSV");
+        assert!(
+            !text
+                .lines()
+                .any(|z| z.starts_with("Luft") || z.contains(";Luft;")),
+            "keine Zeile Luft"
+        );
+        assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+    }
+
+    /// A113 (K4, Frostschürze unabhängig vom Wandtyp, Jörn 17:34): Typwechsel
+    /// AW-36 ↔ AW-49 lässt Breite 35 cm und FS 7,0238 m³. Das Feld „Breite“
+    /// nimmt 30 und 45 cm, lehnt 29,5 und 45,5 ab; set_footing_width ebenso.
+    /// Neue Schürzen 350 mm. Eine alte Datei mit 60 cm lädt mit 60 cm ohne
+    /// Befund in check().
+    #[test]
+    fn a113_schuerze_30_bis_45_unabhaengig_vom_typ() {
+        use crate::ui::Field;
+        let mut s = Scene::with_model(Model::with_seed(113));
+        let (aw, _iw) = haus_b11(&mut s);
+        let breite = |s: &Scene| s.foundation_qto(aw).unwrap().1.width;
+        assert_eq!(breite(&s), 350.0, "neue Schürze 35 cm");
+        for code in ["AW-36", "AW-49", "AW-36", "AW-31,5"] {
+            auf_typ(&mut s, aw, code);
+            assert_eq!((breite(&s), fs_m3(&s, aw)), (350.0, 7.0238), "{code}");
+        }
+        let (_, footing) = sohlplatte(&s, aw);
+        let mut ui = Ui::new(1.0, &Theme::dark());
+        ui.fit(1.0, 1440, 900);
+        for (eingabe, soll) in [
+            ("29,5", 350.0),
+            ("45,5", 350.0),
+            ("30", 300.0),
+            ("45", 450.0),
+        ] {
+            let out = tippe(&mut ui, &mut s, footing, Field::FootingWidth, eingabe);
+            if out.submit.is_none() {
+                assert!(
+                    ui.edit.as_ref().is_some_and(|e| e.error.is_some()),
+                    "Hinweis bei {eingabe}"
+                );
+                ui.key(Key::Escape, true, M).unwrap();
+            }
+            assert_eq!(breite(&s), soll, "Eingabe {eingabe}");
+        }
+        let mut m = s.model().clone();
+        m.allow_unstepped();
+        assert!(!m.set_footing_width(footing, 299.0));
+        assert!(!m.set_footing_width(footing, 451.0));
+        assert!(m.set_footing_width(footing, 350.0));
+        // Alte Datei mit 60 cm
+        s.edit_model("Breite", |m| m.set_footing_width(footing, 350.0));
+        let text = sk_model::szo::write(s.model());
+        let zeilen: Vec<String> = text
+            .lines()
+            .map(|l| {
+                if l.starts_with("[footing]") {
+                    assert!(l.contains("w=350"), "{l}");
+                    l.replacen("w=350", "w=600", 1)
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect();
+        let alt = zeilen.join("\n") + "\n";
+        let geladen = sk_model::szo::read(&alt, GuidGen::with_seed(1)).expect("lädt");
+        assert!(
+            geladen.model.check().is_empty(),
+            "{:?}",
+            geladen.model.check()
+        );
+        let s2 = Scene::with_model(geladen.model);
+        let aw2 = s2
+            .model()
+            .runs()
+            .ids()
+            .find(|r| s2.foundation_qto(*r).is_some())
+            .unwrap();
+        assert_eq!(
+            s2.foundation_qto(aw2).unwrap().1.width,
+            600.0,
+            "Wert bleibt"
+        );
+    }
+
+    /// A114 (K4, Prüfregel 20): Luftschicht außen oder innen am Rand, als Kern
+    /// oder zweimal hintereinander wird abgelehnt oder von check() gemeldet.
+    #[test]
+    fn a114_pruefregel_20_luftschicht() {
+        let mut s = Scene::with_model(Model::with_seed(114));
+        haus_b11(&mut s);
+        let m0 = s.model().clone();
+        let aw49 = typ(&m0, "AW-49");
+        let gut = m0.layer_set(aw49).unwrap().clone();
+        let luft = gut.layers[1];
+        let mut faelle: Vec<(&str, LayerSet)> = Vec::new();
+        let mut t = gut.clone();
+        t.layers.swap(0, 1);
+        faelle.push(("Luft außen", t));
+        let mut t = gut.clone();
+        t.layers.push(luft);
+        faelle.push(("Luft innen", t));
+        let mut t = gut.clone();
+        t.layers[1].core = true;
+        faelle.push(("Luft als Kern", t));
+        let mut t = gut.clone();
+        t.layers.insert(1, luft);
+        faelle.push(("zwei Luftschichten", t));
+        for (name, t) in faelle {
+            let mut m = m0.clone();
+            m.allow_unstepped();
+            let abgelehnt = !m.set_layer_set(aw49, t);
+            assert!(
+                abgelehnt || !m.check().is_empty(),
+                "{name} schlägt nicht an"
+            );
+        }
+        let mut m = m0.clone();
+        m.allow_unstepped();
+        assert!(m.set_layer_set(aw49, gut));
+        assert!(m.check().is_empty());
+    }
+
+    /// A115 (K4, Firmenkatalog): Ein Firmenkatalog aus K1/K2 (nur AW-31,5,
+    /// IW-17,5, Standard AW-31,5) bekommt beim Laden die fehlenden Werkstypen
+    /// (nach Guid), mit Hinweis; vorhandene Typen werden nicht überschrieben;
+    /// der Standard wechselt einmalig auf AW-36. Beim zweiten Laden kein Hinweis
+    /// mehr, ein neues Projekt hat AW-36 / IW-17,5.
+    #[test]
+    fn a115_firmenkatalog_bekommt_werkstypen() {
+        use sk_model::catalog::{export_type, write_szk, Library};
+        let d = test_dir("a115");
+        let p = d.join("firmenkatalog.szk");
+        // Alter Katalog: AW-31,5 (mit geändertem Namen) und IW-17,5
+        let mut alt = Model::with_seed(115);
+        alt.allow_unstepped();
+        let (a, i) = (typ(&alt, "AW-31,5"), typ(&alt, "IW-17,5"));
+        let mut t = alt.layer_set(a).unwrap().clone();
+        t.name = "AW 31,5 Büro".into();
+        assert!(alt.set_layer_set(a, t));
+        let mut lib = Library::default();
+        for id in [a, i] {
+            assert!(export_type(&alt, &mut lib, alt.layer_set(id).unwrap().guid));
+        }
+        lib.default_exterior = lib.type_by_guid(alt.layer_set(a).unwrap().guid);
+        lib.default_interior = lib.type_by_guid(alt.layer_set(i).unwrap().guid);
+        let vorher = write_szk(&lib);
+        assert!(!vorher.contains("AW-36"));
+        std::fs::write(&p, &vorher).unwrap();
+        let (c, h) = firma_laden(&p, true);
+        assert!(!h.is_empty(), "Hinweis: Werkstypen ergänzt");
+        let neu = Model::from_library(c.library());
+        let codes: Vec<String> = neu
+            .layer_sets()
+            .iter()
+            .map(|(_, t)| t.code.clone())
+            .collect();
+        for code in ["AW-31,5", "AW-36", "AW-49", "IW-11,5", "IW-17,5", "IW-24"] {
+            assert!(codes.iter().any(|c| c == code), "{code} fehlt: {codes:?}");
+        }
+        assert_eq!(
+            neu.layer_set(typ(&neu, "AW-31,5")).unwrap().name,
+            "AW 31,5 Büro",
+            "nicht überschrieben"
+        );
+        assert_eq!(
+            neu.layer_set(neu.defaults().exterior_wall).unwrap().code,
+            "AW-36"
+        );
+        assert_eq!(
+            neu.layer_set(neu.defaults().interior_wall).unwrap().code,
+            "IW-17,5"
+        );
+        // Zweites Laden: nichts mehr zu ergänzen
+        let (_, h2) = firma_laden(&p, true);
+        assert!(h2.is_empty(), "{h2:?}");
     }
 }

@@ -1674,6 +1674,9 @@ pub fn csv(m: &Model, sched: &Schedule) -> Vec<u8> {
                 }
                 for (mat, v, a) in mats {
                     let Some(x) = m.material(mat) else { continue };
+                    if x.category == sk_model::MatCategory::Air {
+                        continue;
+                    }
                     let ins = x.category == sk_model::MatCategory::Insulation;
                     row([
                         &gb,
