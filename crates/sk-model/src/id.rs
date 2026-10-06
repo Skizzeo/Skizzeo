@@ -68,7 +68,7 @@ struct Slot<T> {
     gen: u32,
     value: Option<T>,
     /// Nächste nie vergebene Generation dieses Platzes (größer als jede bisher
-    /// ausgegebene). Bleibt auch über [`Arena::keep_generations`] erhalten.
+    /// ausgegebene). Bleibt auch über [`Arena::restore`] erhalten.
     fresh: u32,
 }
 
