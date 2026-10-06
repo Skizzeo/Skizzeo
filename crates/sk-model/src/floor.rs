@@ -481,6 +481,27 @@ mod tests {
     }
 
     #[test]
+    fn decke_oben_buendig_mit_wandkrone() {
+        // Geschossmanager: Wand reicht bis OK Rohdecke, die Tasche sitzt oben
+        let mut w = haus();
+        w.height = 2750.0;
+        let p = FloorParams {
+            top: 2750.0,
+            thickness: 220.0,
+            mat: CONCRETE,
+        };
+        let f = FloorSlab::from_chain(&w, &p).unwrap();
+        w.joints.slab_band = Some(f.band());
+        assert_eq!(w.layer_spans(1), vec![(0.0, 2530.0)]);
+        assert_eq!(w.layer_spans(0), vec![(0.0, 2750.0)]);
+        let (lo, hi) = w.solid().bounds().unwrap();
+        assert!(near(lo.z, 0.0, 1e-9) && near(hi.z, 2750.0, 1e-9));
+        // Band ganz über der Wand: Wand unverändert
+        w.joints.slab_band = Some((2800.0, 3000.0));
+        assert_eq!(w.layer_spans(1), vec![(0.0, 2750.0)]);
+    }
+
+    #[test]
     fn schnell_genug_fuer_gummiband() {
         let mut w = haus();
         let t = std::time::Instant::now();
