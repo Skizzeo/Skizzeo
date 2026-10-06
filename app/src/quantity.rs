@@ -80,14 +80,16 @@ impl QuantityWindow {
         self.title.height() as f32 + (PAD * self.title.scale).round()
     }
 
-    /// Zeilen an den Modellstand angleichen.
+    /// Zeilen an den Modellstand angleichen. Neu gezeichnet wird nur, wenn sich
+    /// eine Zeile ändert: Beim Ziehen steigt die Revision je Bild, die Liste
+    /// bleibt gleich, und ein ganzes Fensterbild kostet mehrere Millisekunden.
     pub fn sync_rows(&mut self, scene: &Scene) {
         let m = scene.model();
         if self.rows_rev == Some(m.revision()) {
             return;
         }
         self.rows_rev = Some(m.revision());
-        self.rows = m
+        let rows: Vec<(ElementId, String)> = m
             .elements()
             .iter()
             .map(|(id, e)| {
@@ -98,6 +100,10 @@ impl QuantityWindow {
                 )
             })
             .collect();
+        if rows == self.rows {
+            return;
+        }
+        self.rows = rows;
         self.clamp_scroll();
         self.dirty = true;
     }
@@ -270,5 +276,55 @@ impl QuantityWindow {
         let bar = self.title.paint(t, font, self.w);
         c.blit(&bar, 0, 0);
         c
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sk_math::vec3;
+    use sk_model::{Model, RefSide, WallChain};
+
+    /// Ziehen ändert die Revision je Bild, aber keine Zeile: kein neues
+    /// Fensterbild. Ein neues Bauteil zeichnet neu.
+    #[test]
+    fn ziehen_zeichnet_die_liste_nicht_neu() {
+        let mut s = Scene::with_model(Model::with_seed(1));
+        s.edit_model("Gebäude erstellt", |m| {
+            m.add_building(2);
+            true
+        });
+        let b = s.model().buildings().ids().last().unwrap();
+        let eg = s.model().ground_of(Some(b)).unwrap();
+        s.set_active_storey(eg);
+        let wand = |x: f64| WallChain {
+            base: 0.0,
+            points: vec![vec3(x, 0.0, 0.0), vec3(x + 5000.0, 0.0, 0.0)],
+            closed: false,
+            ref_side: RefSide::Left,
+            layers: Vec::new(),
+            height: 3500.0,
+            joints: Default::default(),
+        };
+        s.add_wall(&wand(0.0)).unwrap();
+        let mut q = QuantityWindow::new();
+        q.sync_rows(&s);
+        assert!(q.dirty && !q.rows.is_empty());
+        q.dirty = false;
+
+        s.begin("Geschoss ziehen");
+        for top in [2800.0, 2900.0] {
+            let rev = s.model().revision();
+            s.drag_storey_top(eg, top);
+            assert_ne!(s.model().revision(), rev, "Ziehen ändert die Revision");
+            q.sync_rows(&s);
+            assert!(!q.dirty, "gleiche Zeilen: kein neues Fensterbild");
+        }
+        s.commit();
+
+        let n = q.rows.len();
+        s.add_wall(&wand(10000.0)).unwrap();
+        q.sync_rows(&s);
+        assert!(q.dirty && q.rows.len() > n, "neues Bauteil: neue Zeile");
     }
 }
