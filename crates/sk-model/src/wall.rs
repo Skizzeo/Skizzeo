@@ -236,6 +236,14 @@ impl WallChain {
         Some((*pts.get(seg)?, *dirs.get(seg)?))
     }
 
+    /// Anfangspunkt und Richtung aller Segmente, wie [`WallChain::segment_frame`]
+    /// mit nur einer Bereinigung der Punkte.
+    pub(crate) fn segment_frames(&self) -> Vec<(Vec3, Vec3)> {
+        self.layout().map_or_else(Vec::new, |(pts, _, dirs)| {
+            pts.into_iter().zip(dirs).collect()
+        })
+    }
+
     /// Bereich des Wandkörpers quer zur Bezugslinie (kleiner, größer).
     pub(crate) fn span(&self) -> (f64, f64) {
         self.ref_side.span(self.thickness())

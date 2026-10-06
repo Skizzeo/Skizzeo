@@ -1069,6 +1069,13 @@ impl Model {
     /// Punkten.
     pub fn set_run_points(&mut self, id: RunId, points: &[Vec3]) -> Option<Vec<RunId>> {
         let flat: Vec<Vec3> = points.iter().map(|p| vec3(p.x, p.y, 0.0)).collect();
+        // Punkte der geschlossenen Züge vorher: Deckenumriss alt gegen neu (U3)
+        let before: Vec<(RunId, Vec<Vec3>)> = self
+            .runs
+            .iter()
+            .filter(|(_, r)| r.closed)
+            .map(|(id, r)| (id, r.points.clone()))
+            .collect();
         if !self.set_points(id, &flat) {
             return None;
         }
@@ -1098,9 +1105,11 @@ impl Model {
         partners(self, &mut out);
         self.update_joins(&moved);
         partners(self, &mut out);
-        // Innenwände unter einer mitbewegten Decke (Deckenband)
+        // Innenwände, die unter eine mitbewegte Decke kommen oder sie verlassen
+        // (Deckenband)
         for r in &moved {
-            for i in self.runs_under_floor(*r) {
+            let old = before.iter().find(|(id, _)| id == r).map(|(_, p)| &p[..]);
+            for i in self.runs_under_moved_floor(*r, old) {
                 if !out.contains(&i) {
                     out.push(i);
                 }
@@ -1315,6 +1324,50 @@ impl Model {
         near.into_iter()
             .filter(|(_, m)| m.iter().any(|p| contains(&slab.outline, *p)))
             .map(|(r, _)| r)
+            .collect()
+    }
+
+    /// Innenwandzüge, deren Deckenband sich ändert, weil die Decke über `run`
+    /// von den Punkten `old` auf die jetzigen gewandert ist: Eine Segmentmitte
+    /// liegt jetzt im Umriss und vorher in keinem oder umgekehrt. Das Band
+    /// selbst (UK, OK) hängt nicht vom Grundriss ab; Innenwände, die drunter
+    /// bleiben, ändern sich nicht (U3). Ohne alten Stand oder ohne gültige
+    /// Decke vorher und nachher wie [`Model::runs_under_floor`].
+    fn runs_under_moved_floor(&self, run: RunId, old: Option<&[Vec3]>) -> Vec<RunId> {
+        let Some(r) = self.run(run).filter(|r| r.closed) else {
+            return Vec::new();
+        };
+        let Some(old) = old else {
+            return self.runs_under_floor(run);
+        };
+        if old == &r.points[..] {
+            return Vec::new();
+        }
+        let before = self.base_chain(run).and_then(|mut c| {
+            c.points = old.to_vec();
+            self.floor_of_chain(run, &c)
+        });
+        let (Some(Ok(before)), Some(Ok(after))) = (before, self.floor(run)) else {
+            return self.runs_under_floor(run);
+        };
+        let (alo, ahi) = bounds2(&before.outline);
+        let (blo, bhi) = bounds2(&after.outline);
+        let (lo, hi) = (
+            vec3(alo.x.min(blo.x), alo.y.min(blo.y), 0.0),
+            vec3(ahi.x.max(bhi.x), ahi.y.max(bhi.y), 0.0),
+        );
+        self.runs
+            .iter()
+            .filter(|(id, x)| {
+                *id != run && x.storey == r.storey && overlap(bounds2(&x.points), (lo, hi))
+            })
+            .filter(|(id, _)| self.category_of(*id) == Some(Category::InteriorWall))
+            .filter(|(_, x)| {
+                let m = mids(&x.points, x.closed);
+                let under = |o: &[Vec3]| m.iter().any(|p| contains(o, *p));
+                under(&before.outline) != under(&after.outline)
+            })
+            .map(|(id, _)| id)
             .collect()
     }
 
@@ -2273,6 +2326,8 @@ impl Model {
         }
         Some(Base {
             run,
+            ends: JoinEnd::BOTH.map(|e| chain.end_frame(e.index())),
+            frames: chain.segment_frames(),
             chain,
             segments: self.run(run)?.segments.clone(),
             foot,
@@ -2318,30 +2373,40 @@ impl Model {
     }
 
     /// Anschluss des freien Endes `e` von Zug `run`, frisch aus den Punkten.
-    fn detect_end(&self, run: RunId, e: JoinEnd, boxes: &[(RunId, Vec3, Vec3)]) -> Option<Join> {
+    fn detect_end(
+        &self,
+        run: RunId,
+        e: JoinEnd,
+        boxes: &[(RunId, Vec3, Vec3)],
+        bases: &mut Bases,
+    ) -> Option<Join> {
         let r = self.runs.get(run)?;
         let p = Model::end_point(r, e)?;
         let storey = r.storey;
-        let a = self.base(run)?;
         // Anschlüsse nur innerhalb eines Geschosses (B12)
-        let cands: Vec<Base> = boxes
+        let ids: Vec<RunId> = boxes
             .iter()
             .filter(|(id, lo, hi)| {
                 *id != run
                     && inside(p, *lo, *hi)
                     && self.runs.get(*id).is_some_and(|x| x.storey == storey)
             })
-            .filter_map(|(id, _, _)| self.base(*id))
+            .map(|(id, _, _)| *id)
             .collect();
-        Model::detect(&a, e, &cands)
+        for &id in ids.iter().chain([&run]) {
+            bases.fill(self, id);
+        }
+        let a = bases.get(run)?;
+        let cands: Vec<&Base> = ids.iter().filter_map(|id| bases.get(*id)).collect();
+        Model::detect(a, e, &cands)
     }
 
     /// Erkennt den Anschluss des freien Endes `e` von `a`: L, wenn ein freies
     /// Ende eines anderen Zuges höchstens [`join::SNAP`] entfernt liegt, sonst
     /// T an das nächste nicht parallele Segment, in dessen Grundriss oder
     /// höchstens [`join::SNAP`] vor dessen Fläche das Ende liegt.
-    fn detect(a: &Base, e: JoinEnd, all: &[Base]) -> Option<Join> {
-        let (p, da) = a.chain.end_frame(e.index())?;
+    fn detect(a: &Base, e: JoinEnd, all: &[&Base]) -> Option<Join> {
+        let (p, da) = a.ends[e.index()]?;
         let elem = |b: &Base, e: JoinEnd| match e {
             JoinEnd::Start => b.segments.first().copied(),
             JoinEnd::End => b.segments.last().copied(),
@@ -2350,7 +2415,7 @@ impl Model {
         let mut l: Option<(f64, &Base, JoinEnd, Vec3, Vec3)> = None;
         for b in others() {
             for eb in JoinEnd::BOTH {
-                let Some((q, db)) = b.chain.end_frame(eb.index()) else {
+                let Some((q, db)) = b.ends[eb.index()] else {
                     continue;
                 };
                 let d = (q - p).length();
@@ -2382,7 +2447,7 @@ impl Model {
             }
             for (k, f) in b.foot.iter().enumerate() {
                 let d = join::quad_distance(f, p);
-                let Some((_, db)) = b.chain.segment_frame(k) else {
+                let Some(&(_, db)) = b.frames.get(k) else {
                     continue;
                 };
                 let sin = join::sin_between(da, db);
@@ -2413,11 +2478,12 @@ impl Model {
     /// Alle Anschlüsse frisch aus den Punkten.
     fn detect_all(&self) -> Vec<Join> {
         let boxes = self.rough_boxes();
+        let mut bases = Bases::default();
         let mut out: Vec<Join> = self
             .runs
             .ids()
-            .flat_map(|r| JoinEnd::BOTH.map(|e| self.detect_end(r, e, &boxes)))
-            .flatten()
+            .flat_map(|r| JoinEnd::BOTH.map(|e| (r, e)))
+            .filter_map(|(r, e)| self.detect_end(r, e, &boxes, &mut bases))
             .collect();
         sort_joins(&mut out);
         out
@@ -2448,9 +2514,10 @@ impl Model {
         }
         ends.sort_by_key(|(r, e)| (r.index(), *e));
         ends.dedup();
+        let mut bases = Bases::default();
         let fresh: Vec<Join> = ends
             .iter()
-            .filter_map(|&(r, e)| self.detect_end(r, e, &boxes))
+            .filter_map(|&(r, e)| self.detect_end(r, e, &boxes, &mut bases))
             .collect();
         self.joins.retain(|j| !ends.contains(&(j.a_run, j.a_end)));
         self.joins.extend(fresh);
@@ -3062,12 +3129,41 @@ fn explain(e: FoundationError) -> &'static str {
 /// Zug ohne Anschlüsse, zum Erkennen der Anschlüsse.
 struct Base {
     run: RunId,
+    /// Freie Enden und Segmente: Punkt und Richtung, einmal berechnet (U3).
+    ends: [Option<(Vec3, Vec3)>; 2],
+    frames: Vec<(Vec3, Vec3)>,
     chain: WallChain,
     segments: Vec<ElementId>,
     foot: Vec<[Vec3; 4]>,
     /// Umschließendes Rechteck des Grundrisses.
     lo: Vec3,
     hi: Vec3,
+}
+
+/// Grundrisse der Züge, je Zug einmal je Erkennungslauf berechnet (U3): Ein
+/// großer Außenzug ist Kandidat für fast jedes Innenwandende und kostete sonst
+/// je Ende einen ganzen Grundriss. Die Züge ändern sich während eines Laufs
+/// nicht.
+#[derive(Default)]
+struct Bases(Vec<Option<Base>>);
+
+impl Bases {
+    fn fill(&mut self, m: &Model, id: RunId) {
+        let slot = id.index() as usize;
+        if self.0.len() <= slot {
+            self.0.resize_with(slot + 1, || None);
+        }
+        if self.0[slot].as_ref().is_none_or(|b| b.run != id) {
+            self.0[slot] = m.base(id);
+        }
+    }
+
+    fn get(&self, id: RunId) -> Option<&Base> {
+        self.0
+            .get(id.index() as usize)?
+            .as_ref()
+            .filter(|b| b.run == id)
+    }
 }
 
 /// Liegt `p` im Rechteck `lo`..`hi` (Grundriss)?
@@ -3192,6 +3288,53 @@ mod tests {
             .collect();
         v.sort();
         v
+    }
+
+    /// U3: Beim Verschieben der Außenwand kommen nur die Innenwände mit, die
+    /// unter die Decke kommen oder sie verlassen; die anderen behalten ihr
+    /// Deckenband.
+    #[test]
+    fn verschieben_nimmt_nur_innenwaende_mit_neuem_deckenband() {
+        let (mut m, runs) = gebaeude(2);
+        let eg = runs[0];
+        let storey = m.run(eg).unwrap().storey;
+        let set = m.defaults().interior_wall;
+        let innen = |m: &mut Model, x: f64| {
+            let pts = [vec3(x, 3000.0, 0.0), vec3(x, 5000.0, 0.0)];
+            m.add_wall_run(
+                &pts,
+                false,
+                RefSide::Center,
+                storey,
+                set,
+                Category::InteriorWall,
+            )
+            .unwrap()
+        };
+        let nah = innen(&mut m, 1000.0);
+        let fern = innen(&mut m, 6000.0);
+        assert_eq!(m.runs_under_floor(eg), [nah, fern]);
+        m.begin("Wand verschieben");
+        let pts = [
+            vec3(2000.0, 0.0, 0.0),
+            vec3(2000.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        let out = m.set_run_points(eg, &pts).unwrap();
+        assert!(out.contains(&nah), "verlässt die Decke: {out:?}");
+        assert!(!out.contains(&fern), "bleibt drunter: {out:?}");
+        assert_eq!(m.runs_under_floor(eg), [fern]);
+        // Zurück: die nahe kommt wieder unter die Decke
+        let back = m.chain(eg).unwrap().points;
+        let mut alt = back.clone();
+        for p in alt.iter_mut().take(2) {
+            p.x = 0.0;
+        }
+        let out = m.set_run_points(eg, &alt).unwrap();
+        assert!(out.contains(&nah) && !out.contains(&fern), "{out:?}");
+        m.commit();
+        assert!(m.check().is_empty(), "{:?}", m.check());
     }
 
     #[test]
