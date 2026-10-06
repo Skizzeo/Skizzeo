@@ -40,7 +40,12 @@ pub enum Key {
     Shift,
     Control,
     Alt,
-    /// Buchstaben- und Zifferntasten als Großbuchstabe bzw. Ziffer.
+    Left,
+    Right,
+    Home,
+    End,
+    /// Buchstaben- und Zifferntasten als Großbuchstabe bzw. Ziffer (auch vom
+    /// Ziffernblock), dazu `,` `.` `-` für Zahleneingaben.
     Char(char),
     /// Sonstige Taste mit dem Code des Betriebssystems.
     Other(u32),

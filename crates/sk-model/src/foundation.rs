@@ -107,11 +107,18 @@ impl Foundation {
         if !(p.recess >= 0.0 && p.recess < chain.thickness()) {
             return Err(FoundationError::RecessTooLarge);
         }
-        let (outer, inner) = (chain.outer_offset(), chain.inner_offset());
-        let inward = (inner - outer).signum();
-        // Dieselbe Eckberechnung wie die Wand: bei Rücksprung 0 deckungsgleich
-        let outline = chain.face_corners(outer + inward * p.recess);
-        Foundation::from_outline(&outline, p)
+        // Außenfläche mit derselben Eckberechnung wie die Wand (deckungsgleich),
+        // den Rücksprung mit dem robusten Versatz: Kurze Vorsprünge, die dabei
+        // verschwinden, fallen weg, statt den Umriss zu verknoten
+        let face = chain.face_corners(chain.outer_offset());
+        if p.recess <= 0.0 {
+            return Foundation::from_outline(&face, p);
+        }
+        match polygon::inset(&face, p.recess) {
+            Ok(i) => Foundation::from_outline(&i.pts, p),
+            Err(InsetError::Invalid) => Err(FoundationError::NotSimple),
+            Err(_) => Err(FoundationError::RecessTooLarge),
+        }
     }
 
     /// Gründung unter einem beliebigen einfachen Umriss (Richtung egal).
@@ -628,6 +635,34 @@ mod tests {
             "{bottom} {}",
             f.footing_area()
         );
+    }
+
+    #[test]
+    fn grosser_ruecksprung_an_kurzem_vorsprung() {
+        // 5-cm-Vorsprung, Rücksprung 30 cm: Der Vorsprung verschwindet in der
+        // Platte, statt den Umriss zu verknoten (Befund Prüfung 2026-10-06)
+        let w = WallChain {
+            points: vec![
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(5000.0, 8000.0, 0.0),
+                vec3(5000.0, 8050.0, 0.0),
+                vec3(5050.0, 8050.0, 0.0),
+                vec3(5050.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ],
+            ..haus()
+        };
+        let f = Foundation::from_chain(&w, &params(300.0)).unwrap();
+        assert!(
+            near(f.slab_area(), 9400.0 * 7400.0, 1.0),
+            "{}",
+            f.slab_area()
+        );
+        // Bei Rücksprung 0 bleibt der Umriss deckungsgleich mit der Wand
+        let f = Foundation::from_chain(&w, &params(0.0)).unwrap();
+        assert!(near(f.slab_area(), 80e6 + 50.0 * 50.0, 1e-3));
     }
 
     #[test]

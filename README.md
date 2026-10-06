@@ -15,7 +15,7 @@ Eingabe, OpenGL-Anbindung, 2D-Grafik, Logo und Oberfläche sind selbst geschrieb
 | `sk-ui` | SK-Logo als Vektor, Farbwerte, eigene Titelleiste, Paneele und Knöpfe |
 | `sk-model` | Gebäudemodell als Datenbank: Bauteile mit Guid (IFC-Kurzform) und Nummer (AW-001 …), Arena mit Generationszähler, Baustoff- und Aufbau-Bibliothek, Geschoss; Wandzug mit Schichten, Bezugsseite, Gehrungen, Grundriss- und Senkrechtschnitt; Anschlüsse zwischen Wandzügen (L, T) mit Verschnitt nach Baustoffpriorität |
 | `sk-platform` | Windows-Fenster ohne System-Titelleiste, Eingabe, OpenGL-Kontext (eigene Win32-FFI) |
-| `sk-render` | OpenGL-3.3-Darstellung: Himmel, Boden, Flächen, Schraffuren, Kanten, Oberfläche |
+| `sk-render` | OpenGL-3.3-Darstellung: Himmel, Boden, Flächen, Schraffuren, Kanten, Oberfläche. Netze tragen nur Baustoffschlüssel und Kantenart; Farben, Schraffuren und Strichbreiten liest der Shader aus einer Tabelle (Textur), die bei Änderungen an Stiften oder Schraffuren allein neu hochgeladen wird |
 | `app` | Programm `skizzeo`: Kamera, Navigation, Paneele, Gebäude-Eingabe, Gummiband, Schnittlinie |
 
 ## Bedienung

@@ -709,7 +709,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 0x10 => Key::Shift,
                 0x11 => Key::Control,
                 0x12 => Key::Alt,
+                0x25 => Key::Left,
+                0x27 => Key::Right,
+                0x24 => Key::Home,
+                0x23 => Key::End,
                 c @ (0x30..=0x39 | 0x41..=0x5A) => Key::Char(c as u8 as char),
+                // Ziffernblock
+                c @ 0x60..=0x69 => Key::Char((b'0' + (c - 0x60) as u8) as char),
+                0x6E | 0xBC => Key::Char(','),
+                0xBE => Key::Char('.'),
+                0x6D | 0xBD => Key::Char('-'),
                 c => Key::Other(c),
             };
             send(Event::Key {

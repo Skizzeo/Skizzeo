@@ -4,7 +4,7 @@
 
 use crate::camera::Camera;
 use crate::scene::{Scene, PLAN_CUT};
-use crate::ui::{Props, ViewKind};
+use crate::ui::{Field, FieldRow, Props, ViewKind};
 use sk_math::{vec3, Vec3};
 use sk_model::{ElementId, ElementKind, FootingShape, FoundationError, MaterialId, Model};
 use sk_paint::Rgba;
@@ -119,13 +119,32 @@ fn solid_layer(
     ))
 }
 
-/// Sockelrücksprung als Text, wenn das Bauteil zu einem Zug mit Sohlplatte gehört.
-fn recess_text(m: &Model, id: ElementId) -> Option<String> {
+/// Feld „Sockelrücksprung“, wenn das Bauteil zu einem Zug mit Sohlplatte
+/// gehört: 0 (bündig) oder 2 bis 50 cm.
+fn recess_field(m: &Model, id: ElementId) -> Option<FieldRow> {
     let (slab, _) = m.foundation_of(m.run_of(id)?)?;
-    match m.element(slab)?.kind {
-        ElementKind::GroundSlab(s) if s.recess == 0.0 => Some("bündig".into()),
-        ElementKind::GroundSlab(s) => Some(format!("{} cm", cm(s.recess))),
-        _ => None,
+    let ElementKind::GroundSlab(s) = m.element(slab)?.kind else {
+        return None;
+    };
+    Some(FieldRow {
+        field: Field::Recess,
+        label: "Sockelrücksprung",
+        value: s.recess,
+        min: sk_model::MIN_RECESS,
+        max: 500.0,
+        zero: true,
+    })
+}
+
+/// Zahlenfeld ohne Sonderwert 0; Bereich in mm.
+fn field(field: Field, label: &'static str, value: f64, min: f64, max: f64) -> FieldRow {
+    FieldRow {
+        field,
+        label,
+        value,
+        min,
+        max,
+        zero: false,
     }
 }
 
@@ -139,6 +158,7 @@ fn foundation_props(
     let e = m.element(id)?;
     let run = m.run_of(id)?;
     let q = scene.foundation_qto(run);
+    let mut fields = Vec::new();
     let (mat, t, volume) = match e.kind {
         ElementKind::GroundSlab(s) => {
             if let Some((sq, _)) = q {
@@ -148,7 +168,14 @@ fn foundation_props(
                     ("Umfang", format!("{} m", de(sq.perimeter / 1e3, 2))),
                 ]);
             }
-            values.push(("Dicke", format!("{} cm", cm(s.thickness))));
+            fields.push(field(
+                Field::SlabThickness,
+                "Dicke",
+                s.thickness,
+                100.0,
+                1000.0,
+            ));
+            fields.extend(recess_field(m, id));
             (s.material, s.thickness, q.map(|q| q.0.volume))
         }
         ElementKind::StripFooting(f) => {
@@ -158,9 +185,9 @@ fn foundation_props(
                     ("Volumen", format!("{} m³", de(fq.volume / 1e9, 3))),
                 ]);
             }
-            values.extend([
-                ("Breite", format!("{} cm", cm(f.width))),
-                ("Tiefe", format!("{} cm", cm(f.depth))),
+            fields.extend([
+                field(Field::FootingWidth, "Breite", f.width, 200.0, 1500.0),
+                field(Field::FootingDepth, "Tiefe", f.depth, 200.0, 3000.0),
             ]);
             (f.material, f.width, q.map(|q| q.1.volume))
         }
@@ -179,7 +206,7 @@ fn foundation_props(
         layer_set: m.material(mat).map_or(String::new(), |x| x.name.clone()),
         layers: solid_layer(m, mat, t, volume).into_iter().collect(),
         set_label: "Baustoff",
-        recess: recess_text(m, id),
+        fields,
         notes,
     })
 }
@@ -233,7 +260,7 @@ pub fn props(scene: &Scene, id: ElementId) -> Option<Props> {
         values,
         layer_set: set.map_or(String::new(), |s| s.name.clone()),
         layers,
-        recess: recess_text(m, id),
+        fields: recess_field(m, id).into_iter().collect(),
         ..Default::default()
     })
 }

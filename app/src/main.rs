@@ -75,20 +75,26 @@ fn rgb(c: Rgba) -> [f32; 3] {
     [r, g, b]
 }
 
-/// Renderer-Stil; Kantenbreiten im Netz sind Bildpunkte bei 96 dpi.
-fn style(scale: f32, table: &DrawTable, env: &Environment) -> Style {
+/// Renderer-Stil (Himmel, Boden, Licht). Baustoffe und Kanten kommen aus der
+/// Zeichentabelle ([`DrawTable::looks`]).
+fn style(env: &Environment) -> Style {
     let l = vec3(0.32, -0.48, 0.82).normalized().to_f32();
     Style {
         sky: env.sky.iter().map(|&(d, c)| (d, rgb(c))).collect(),
         ground: rgb(env.ground),
         horizon_softness: env.horizon_softness,
-        face: rgb(env.face),
-        edge: rgb(env.edge),
-        edge_width: scale,
         light: l,
         ambient: 0.84,
-        hatch_spacing: table.hatch_spacing_px * scale,
-        hatch_width: table.hatch_width_px * scale,
+    }
+}
+
+/// Welche Geometrie eine Ansicht zeigt: Grundriss und Schnitt schneiden,
+/// 3D und die vier Ansichten teilen sich dasselbe Netz.
+fn geometry(v: ViewKind) -> u8 {
+    match v {
+        ViewKind::Plan => 1,
+        ViewKind::Section => 2,
+        _ => 0,
     }
 }
 
@@ -228,7 +234,8 @@ struct App {
     /// Die Vorschau-Ablage enthält ein Netz.
     preview_shown: bool,
     /// Stand der Zeichentabelle, aus dem der Renderer-Stil stammt.
-    style_rev: u64,
+    /// Stand der hochgeladenen Aussehens-Tabelle: Attribute, Farbschema, Skalierung.
+    looks_key: Option<(u64, u64, u32)>,
     /// Zuletzt hochgeladene Endsymbole der Schnittlinie (links, hervorgehoben, Skalierung).
     mark_keys: [Option<MarkKey>; 2],
 }
@@ -262,13 +269,12 @@ impl App {
     /// einem eigenen Live-Netz; nur dieses wird dann je Bild neu erzeugt und
     /// hochgeladen, das ruhende Netz bleibt auf der Grafikkarte.
     fn build_mesh(&mut self) {
-        // Attribute geändert (etwa durch Rückgängig): Stil und Netze neu
-        if self.scene.table().rev != self.style_rev {
-            self.style_rev = self.scene.table().rev;
-            self.renderer
-                .set_style(style(self.title.scale, self.scene.table(), &self.theme.env));
-            self.mesh_dirty = true;
-            self.live_dirty = true;
+        // Attribute oder Skalierung geändert: nur die Tabelle neu, die Netze bleiben
+        let t = self.scene.table();
+        let key = (t.rev, t.theme_rev, self.title.scale.to_bits());
+        if self.looks_key != Some(key) {
+            self.looks_key = Some(key);
+            self.renderer.set_looks(&t.looks(self.title.scale));
         }
         let live = self
             .edit
@@ -306,7 +312,8 @@ impl App {
             return;
         }
         self.props_key = key;
-        self.ui.props = self.sel.id.and_then(|id| selection::props(&self.scene, id));
+        self.ui
+            .set_props(self.sel.id.and_then(|id| selection::props(&self.scene, id)));
         self.props_dirty = true;
     }
 
@@ -358,6 +365,7 @@ impl App {
             self.cam3d = self.cam.clone();
             self.cam3d_empty = self.scene.bounds().is_none();
         }
+        let same_mesh = geometry(v) == geometry(self.ui.view);
         self.ui.view = v;
         self.cam = self.camera_for(v);
         if matches!(v, ViewKind::Plan | ViewKind::Section) {
@@ -367,7 +375,11 @@ impl App {
             self.tool.set_enabled(false);
             self.ui.building = false;
         }
-        self.upload_model();
+        if same_mesh {
+            self.redraw = true;
+        } else {
+            self.upload_model();
+        }
         self.overlay_dirty = true;
         self.refresh_cursor();
     }
@@ -399,11 +411,11 @@ impl App {
         self.sect = SectionLine::default();
         self.sel = Selection::default();
         self.props_key = None;
-        self.ui.props = None;
+        self.ui.set_props(None);
         self.props_dirty = true;
         self.live_runs.clear();
-        // Stil sicher neu setzen, auch wenn die neue Tabelle denselben Stand hat
-        self.style_rev = u64::MAX;
+        // Tabelle sicher neu setzen, auch wenn die neue denselben Stand hat
+        self.looks_key = None;
         self.cam3d = start_camera();
         self.cam3d_empty = true;
         self.cam = self.camera_for(self.ui.view);
@@ -520,16 +532,26 @@ impl App {
             Id::Ref(r) => self.tool.ref_side = r,
             Id::Ortho => self.tool.ortho = !self.tool.ortho,
             Id::View(v) => self.set_view(v),
-            Id::Recess(up) => {
-                if let Some(id) = self.sel.id {
-                    if self.scene.step_recess(id, up) {
-                        self.upload_model();
-                    }
-                }
-            }
+            // Zahlenfelder melden sich über `UiOut::submit`
+            Id::Field(_) => {}
         }
         self.overlay_dirty = true;
         self.refresh_cursor();
+    }
+
+    /// Ergebnis der Oberfläche übernehmen: geänderte Knöpfe und Felder neu
+    /// zeichnen, eine gültige Feldeingabe als Schritt ins Modell.
+    fn apply_ui(&mut self, out: &ui::UiOut) {
+        self.dirty_buttons.extend(out.changed.iter().copied());
+        if out.relayout {
+            self.overlay_dirty = true;
+        }
+        if let (Some((field, mm)), Some(id)) = (out.submit, self.sel.id) {
+            if self.scene.set_field(id, field, mm) {
+                self.upload_model();
+            }
+        }
+        self.redraw |= !out.changed.is_empty() || out.relayout;
     }
 
     /// Wandart des Werkzeugs mit dem voreingestellten Aufbau aus der Bibliothek
@@ -616,9 +638,8 @@ impl App {
             Event::ScaleChanged(s) => {
                 self.title.scale = s;
                 self.ui.fit(s, self.w, self.h);
-                self.renderer
-                    .set_style(style(s, self.scene.table(), &self.theme.env));
                 self.overlay_dirty = true;
+                self.redraw = true;
             }
             Event::Maximized(m) => {
                 self.overlay_dirty |= self.title.maximized != m;
@@ -632,7 +653,7 @@ impl App {
             Event::MouseLeave => {
                 self.dirty_title.extend(self.title.hover.take());
                 let out = self.ui.handle(&e, self.w, self.top());
-                self.dirty_buttons.extend(out.changed);
+                self.apply_ui(&out);
                 self.redraw |= self.tool.handle(&e, &self.cam, vw, vh, sc).redraw;
                 let en = self.edit_enabled();
                 let out = self
@@ -659,7 +680,7 @@ impl App {
                     false
                 } else {
                     let out = self.ui.handle(&e, self.w, self.top());
-                    self.dirty_buttons.extend(out.changed);
+                    self.apply_ui(&out);
                     out.consumed
                 };
                 let ev = in_view(e);
@@ -705,7 +726,7 @@ impl App {
                     }
                 } else {
                     let out = self.ui.handle(&e, self.w, self.top());
-                    self.dirty_buttons.extend(out.changed);
+                    self.apply_ui(&out);
                     if !out.consumed {
                         let ev = in_view(e);
                         camera_moved |=
@@ -755,7 +776,7 @@ impl App {
                     }
                 }
                 let out = self.ui.handle(&e, self.w, self.top());
-                self.dirty_buttons.extend(out.changed);
+                self.apply_ui(&out);
                 if let Some(id) = out.clicked {
                     self.click(id);
                 }
@@ -803,6 +824,13 @@ impl App {
                         self.nav
                             .handle(&in_view(e), &mut self.cam, &self.scene, vw, vh, sc);
                 }
+            }
+            // Ein Zahlenfeld in Eingabe nimmt jede Taste
+            Event::Key {
+                key, down, mods, ..
+            } if self.ui.edit.is_some() => {
+                let out = self.ui.key(key, down, mods).unwrap_or_default();
+                self.apply_ui(&out);
             }
             Event::Key {
                 key, down, mods, ..
@@ -899,7 +927,7 @@ impl App {
 
     /// Paneel „Eigenschaften“ zeichnen oder (ohne Auswahl) ausblenden.
     fn paint_props(&mut self) {
-        if self.ui.props.is_some() {
+        if self.ui.props().is_some() {
             let (c, x, y) = self
                 .ui
                 .paint(&self.theme, Panel::Props, self.w, self.title.height());
@@ -1042,7 +1070,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     }
     let mut scene = Scene::new();
     scene.set_theme(&theme);
-    let renderer = Renderer::new(gl, style(surface.scale(), scene.table(), &theme.env))?;
+    let renderer = Renderer::new(gl, style(&theme.env))?;
     let cam = start_camera();
     let (w, h) = surface.size();
     // Außenwand-Aufbau aus der Bibliothek: Vorschau beim Zeichnen und Anzeige im Paneel
@@ -1082,13 +1110,21 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         live_dirty: true,
         live_runs: Vec::new(),
         preview_shown: true,
-        style_rev: 0,
+        looks_key: None,
         mark_keys: [None; 2],
     };
     a.upload_model();
     // `skizzeo.exe haus.szo`: Projekt gleich öffnen
     if let Some(path) = document::path_from_args(std::env::args()) {
         a.open_path(&surface, path);
+    }
+    // `--ansicht schnitt`: mit dieser Ansicht beginnen (Bildvergleiche)
+    if let Some(v) = std::env::args()
+        .skip_while(|a| a != "--ansicht")
+        .nth(1)
+        .and_then(|n| ViewKind::from_arg(&n))
+    {
+        a.set_view(v);
     }
     a.sync_caption(&surface);
     // `--zeiten datei.csv`: Dauer jedes Bildes in Millisekunden mitschreiben
@@ -1157,12 +1193,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             let t_mesh = Instant::now();
             let drawing = a.ui.view != ViewKind::Persp;
             let preview = match (a.tool.preview(), a.ui.view) {
-                (Some(c), ViewKind::Plan) => Some(scene::mesh_with(
-                    &c.solid_cut_at(scene::PLAN_CUT),
-                    true,
-                    a.scene.table(),
-                )),
-                (Some(c), _) => Some(scene::mesh_of(&c.solid(), a.scene.table())),
+                (Some(c), ViewKind::Plan) => Some(scene::mesh_of(&c.solid_cut_at(scene::PLAN_CUT))),
+                (Some(c), _) => Some(scene::mesh_of(&c.solid())),
                 (None, _) => None,
             };
             // Leere Vorschau nur einmal hochladen

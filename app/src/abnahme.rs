@@ -7,7 +7,8 @@
 //! echtem Windows prüfbar ist, steht in `skizzeo/test/handtest.md`.
 
 use crate::camera::Camera;
-use crate::scene::{Scene, PLAN_CUT};
+use crate::draw_table::{fill_kind, DrawTable};
+use crate::scene::{Plane, Scene, PLAN_CUT};
 use crate::section::SectionLine;
 use crate::selection::{self, Selection};
 use crate::ui::{Id, Panel, Ui, ViewKind};
@@ -17,7 +18,7 @@ use crate::{fit_parallel, fit_perspective};
 use sk_math::{vec3, Vec3};
 use sk_model::{edge_kind, FillKind, Model, RefSide, RunId, WallChain};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
-use sk_render::{pattern, MeshData};
+use sk_render::MeshData;
 use sk_ui::theme::Theme;
 use sk_ui::titlebar::{Button, TitleBar};
 
@@ -559,9 +560,66 @@ fn a09_zweischalige_aussenwand() {
     assert!(lo.abs() < 1e-3 && (hi - 315.0).abs() < 1e-3, "{lo} … {hi}");
 }
 
+/// Muster einer Fläche, wie der Shader sie zeigt.
+mod pattern {
+    pub const NONE: f32 = 0.0;
+    pub const DIAGONAL: f32 = 1.0;
+    pub const ZIGZAG: f32 = 2.0;
+    pub const CROSS: f32 = 3.0;
+    pub const SOLID: f32 = 4.0;
+}
+
+/// Ein Netz so, wie Netz und Zeichentabelle es auf den Bildschirm bringen:
+/// je Ecke Lage (0..3), Normale (3..6), Farbe (6..9) und Muster (9), je
+/// Kante die Strichbreite in Bildpunkten bei 96 dpi.
+struct Shown {
+    faces: Vec<[f32; 10]>,
+    edges: Vec<([[f32; 3]; 2], f32)>,
+}
+
+fn shown(t: &DrawTable, m: &MeshData, drawing: bool) -> Shown {
+    let faces = m
+        .faces
+        .iter()
+        .map(|v| {
+            let key = v[6] as u16;
+            let look = t.look(key);
+            let cut = key & sk_model::material::CUT != 0;
+            let (c, pat) = match (drawing, cut) {
+                (true, true) => (
+                    look.cut_bg,
+                    match (look.kind, look.line_count) {
+                        (fill_kind::LINES, 2) => pattern::CROSS,
+                        (fill_kind::LINES, _) => pattern::DIAGONAL,
+                        (fill_kind::ZIGZAG, _) => pattern::ZIGZAG,
+                        (fill_kind::SOLID, _) => pattern::SOLID,
+                        _ => pattern::NONE,
+                    },
+                ),
+                (true, false) => (look.cut_bg, pattern::NONE),
+                (false, true) => (look.cut, pattern::NONE),
+                (false, false) => (look.face, pattern::NONE),
+            };
+            [v[0], v[1], v[2], v[3], v[4], v[5], c[0], c[1], c[2], pat]
+        })
+        .collect();
+    let edges = m
+        .edges
+        .iter()
+        .map(|(p, k)| (*p, t.edge_width(drawing, *k as u8)))
+        .collect();
+    Shown { faces, edges }
+}
+
+/// Netz einer Ansicht so, wie es auf dem Bildschirm erscheint.
+fn view_mesh(s: &mut Scene, v: ViewKind, section: Option<Plane>) -> Shown {
+    let m = s.mesh(v, section, &[]);
+    shown(s.table(), &m, v != ViewKind::Persp)
+}
+
 /// Kanten (a, b, Breite) einer Bauzeichnung, die ganz auf der Geraden x = `x`
 /// liegen (zwischen y = 1 m und 7 m).
-fn edges_at_x(m: &MeshData, x: f32) -> Vec<f32> {
+fn edges_at_x(m: &Shown, x: f32) -> Vec<f32> {
     m.edges
         .iter()
         .filter(|(p, _)| {
@@ -590,10 +648,10 @@ fn a10_bauzeichnung_linienstaerken_und_schraffuren() {
     );
     assert!(cut_w > layer_w && layer_w > fine_w);
 
-    let plan = s.mesh(ViewKind::Plan, None, &[]);
+    let plan = view_mesh(&mut s, ViewKind::Plan, None);
     let white = [1.0f32, 1.0, 1.0];
     assert!(plan.faces.iter().all(|v| v[6..9] == white), "Flächen weiß");
-    let has = |m: &MeshData, pat: f32| m.faces.iter().any(|v| v[9] == pat);
+    let has = |m: &Shown, pat: f32| m.faces.iter().any(|v| v[9] == pat);
     assert!(has(&plan, pattern::DIAGONAL), "Gasbeton schräg schraffiert");
     assert!(has(&plan, pattern::ZIGZAG), "Dämmung Zickzack");
     // Linke Wand im Grundriss: Außenkante Dämmung (x = 0) mitteldick,
@@ -609,17 +667,17 @@ fn a10_bauzeichnung_linienstaerken_und_schraffuren() {
     // Schnitt A–A: ebenfalls Schraffuren und dicke Kontur
     let mut sect = SectionLine::default();
     sect.ensure(&s);
-    let cut = s.mesh(ViewKind::Section, sect.plane(), &[]);
+    let cut = view_mesh(&mut s, ViewKind::Section, sect.plane());
     assert!(has(&cut, pattern::DIAGONAL) && has(&cut, pattern::ZIGZAG));
     assert!(cut.edges.iter().any(|e| e.1 == cut_w));
     assert!(cut.edges.iter().any(|e| e.1 == layer_w));
 
     // Ansicht: keine Schraffur, Ansichtskanten mittel
-    let front = s.mesh(ViewKind::Front, None, &[]);
+    let front = view_mesh(&mut s, ViewKind::Front, None);
     assert!(!has(&front, pattern::DIAGONAL) && !has(&front, pattern::ZIGZAG));
     assert!(front.edges.iter().any(|e| e.1 == view_w));
     // 3D: farbige Flächen, keine Schraffur
-    let p3 = s.mesh(ViewKind::Persp, None, &[]);
+    let p3 = view_mesh(&mut s, ViewKind::Persp, None);
     assert!(p3.faces.iter().all(|v| v[9] == pattern::NONE));
     assert!(p3.faces.iter().any(|v| v[6..9] != white));
 }
@@ -659,7 +717,7 @@ fn a11_schnittlinie_a_a() {
     assert!(!other.handle(&down(x, y), &s, &c, W, H, 1.0, false).consumed);
 
     // Der Schnitt zeigt das Gebäude an der neuen Stelle: Schnittflächen bei y = ny
-    let cut = s.mesh(ViewKind::Section, sect.plane(), &[]);
+    let cut = view_mesh(&mut s, ViewKind::Section, sect.plane());
     let on_plane = cut
         .faces
         .iter()
@@ -809,6 +867,14 @@ fn a14_dunkle_titelleiste_mit_weissem_logo() {
 // ---------------------------------------------------------------------------
 // A15 – A16: Auswahl und Mengen (Paket B4)
 // ---------------------------------------------------------------------------
+
+/// Wert eines Zahlenfelds in cm, wie er im Feld steht („0“, „2“, „2,5“).
+fn field_cm(p: &crate::ui::Props, f: crate::ui::Field) -> Option<String> {
+    p.fields
+        .iter()
+        .find(|r| r.field == f)
+        .map(|r| crate::ui::cm_text(r.value))
+}
 
 fn value(p: &crate::ui::Props, k: &str) -> String {
     p.values
@@ -1020,14 +1086,16 @@ fn a20_szo_speichern_und_oeffnen() {
         s.chain(run).unwrap().points,
         "gezogene Wand steht an der neuen Stelle"
     );
-    let sig = |m: &MeshData| {
+    // Gleich, wie es aussieht (die Darstellungsschlüssel hängen an den Plätzen
+    // der Baustoffe und dürfen sich nach dem Öffnen unterscheiden)
+    let sig = |m: Shown| {
         let mut f: Vec<_> = m.faces.iter().map(|v| v.map(|x| x.to_bits())).collect();
         f.sort();
         (f, m.edges.len())
     };
     assert_eq!(
-        sig(&t.mesh(ViewKind::Plan, None, &[])),
-        sig(&s.mesh(ViewKind::Plan, None, &[])),
+        sig(view_mesh(&mut t, ViewKind::Plan, None)),
+        sig(view_mesh(&mut s, ViewKind::Plan, None)),
         "Grundriss gleich"
     );
     assert!(t.model().check().is_empty(), "{:?}", t.model().check());
@@ -1149,22 +1217,30 @@ fn a23_sockelruecksprung() {
     let points = s.chain(run).unwrap().points.clone();
     // Auch bei gewählter Wand verstellbar
     let p = selection::props(&s, wall).unwrap();
-    assert_eq!(p.recess.as_deref(), Some("bündig"));
+    assert_eq!(field_cm(&p, crate::ui::Field::Recess).as_deref(), Some("0"));
     assert!(s.step_recess(wall, true));
     let p = selection::props(&s, slab).unwrap();
-    assert_eq!(p.recess.as_deref(), Some("2 cm"));
+    assert_eq!(field_cm(&p, crate::ui::Field::Recess).as_deref(), Some("2"));
     assert_eq!(m2(s.foundation_qto(run).unwrap().0.area), 79.2816);
     // Die Wand bleibt an der Bezugslinie
     assert_eq!(s.chain(run).unwrap().points, points);
     assert!(s.step_recess(slab, true));
     assert_eq!(
-        selection::props(&s, slab).unwrap().recess.as_deref(),
-        Some("3 cm")
+        field_cm(
+            &selection::props(&s, slab).unwrap(),
+            crate::ui::Field::Recess
+        )
+        .as_deref(),
+        Some("3")
     );
     assert!(s.step_recess(slab, false) && s.step_recess(slab, false));
     assert_eq!(
-        selection::props(&s, slab).unwrap().recess.as_deref(),
-        Some("bündig")
+        field_cm(
+            &selection::props(&s, slab).unwrap(),
+            crate::ui::Field::Recess
+        )
+        .as_deref(),
+        Some("0")
     );
     assert!(!s.step_recess(slab, false), "unter 0 geht es nicht");
     assert_eq!(m2(s.foundation_qto(run).unwrap().0.area), 80.0);
@@ -1173,8 +1249,12 @@ fn a23_sockelruecksprung() {
     // Rückgängig stellt den Rücksprung zurück
     assert!(s.undo());
     assert_eq!(
-        selection::props(&s, slab).unwrap().recess.as_deref(),
-        Some("2 cm")
+        field_cm(
+            &selection::props(&s, slab).unwrap(),
+            crate::ui::Field::Recess
+        )
+        .as_deref(),
+        Some("2")
     );
 }
 
@@ -1275,13 +1355,17 @@ fn a27_mengen_flaeche_und_laenge() {
     let p = selection::props(&s, slab).unwrap();
     assert_eq!(p.values[3], ("Fläche", "80,00 m²".to_string()));
     assert_eq!(value(&p, "Volumen"), "16,000 m³");
-    assert_eq!(value(&p, "Dicke"), "20 cm");
+    let cm = |p: &crate::ui::Props, f| field_cm(p, f).unwrap();
+    assert_eq!(cm(&p, crate::ui::Field::SlabThickness), "20");
     let p = selection::props(&s, footing).unwrap();
     assert_eq!(p.values[3], ("Länge (Achse)", "34,60 m".to_string()));
     assert_eq!(value(&p, "Volumen"), "7,266 m³");
     assert_eq!(
-        (value(&p, "Breite"), value(&p, "Tiefe")),
-        ("35 cm".into(), "60 cm".into())
+        (
+            cm(&p, crate::ui::Field::FootingWidth),
+            cm(&p, crate::ui::Field::FootingDepth)
+        ),
+        ("35".into(), "60".into())
     );
     assert_eq!(p.layer_set, "Stahlbeton");
     s.step_recess(slab, true);
@@ -1302,7 +1386,7 @@ fn a28_schnitt_stahlbeton_ohne_fuge() {
     zeichne_rechteck(&mut s, &cam3d());
     let mut sect = SectionLine::default();
     sect.ensure(&s);
-    let cut = s.mesh(ViewKind::Section, sect.plane(), &[]);
+    let cut = view_mesh(&mut s, ViewKind::Section, sect.plane());
     let has = |pat: f32| cut.faces.iter().any(|v| v[9] == pat);
     assert!(has(pattern::CROSS) && has(pattern::DIAGONAL) && has(pattern::ZIGZAG));
     let cross_below = cut
@@ -1333,4 +1417,431 @@ fn a28_schnitt_stahlbeton_ohne_fuge() {
     assert!(flat_at(-200.0, 400.0, 9600.0).contains(&cut_w));
     // Fuge zur Wand (OK Platte, unter dem Gasbeton) bleibt
     assert!(!flat_at(0.0, 140.0, 315.0).is_empty(), "Linie Wand/Platte");
+}
+
+// ---------------------------------------------------------------------------
+// A29: Innenwände mit T-Anschluss (Paket B5a)
+// ---------------------------------------------------------------------------
+
+/// Haus 10 × 8 m mit der Maus, Höhe 2,75 m wie in Paket B5a.
+fn haus_275(s: &mut Scene, c: &Camera) -> RunId {
+    let mut t = tool(s);
+    for p in RECHTECK {
+        click(&mut t, c, p);
+    }
+    let mut w = click(&mut t, c, RECHTECK[0]).unwrap();
+    w.height = 2750.0;
+    s.add_wall(&w).unwrap()
+}
+
+/// Innenwand mit dem Werkzeug von `a` nach `b`, Enter beendet, Höhe 2,75 m.
+fn innenwand(s: &mut Scene, c: &Camera, a: Vec3, b: Vec3) -> RunId {
+    use sk_model::Category;
+    let mut t = tool(s);
+    let set = s.model().defaults().interior_wall;
+    t.set_category(Category::InteriorWall, s.model().wall_layers(set));
+    assert_eq!(t.ref_side, RefSide::Center, "Innenwand: Bezug Achse");
+    click(&mut t, c, a);
+    click(&mut t, c, b);
+    let mut w = t.handle(&key(Key::Enter), c, W, H, 1.0).commit.unwrap();
+    w.height = 2750.0;
+    s.add_wall_as(&w, Category::InteriorWall).unwrap()
+}
+
+fn wall_m3(s: &Scene, run: RunId, seg: usize) -> f64 {
+    s.wall_qto(s.model().wall_at(run, seg).unwrap())
+        .unwrap()
+        .volume
+        / 1e9
+}
+
+/// A29: Knopf „Innenwand“ zeichnet eine 17,5-cm-Gasbetonwand, die mit
+/// T-Anschluss an die Außenwand stößt: Volumen netto, Gasbeton ohne Fuge,
+/// die Innenwand geht beim Gummiband mit, Rückgängig und Speichern/Öffnen
+/// behalten alles.
+#[test]
+fn a29_innenwand_mit_t_anschluss() {
+    use sk_model::join::JoinKind;
+    // Knopf im Paneel
+    let mut ui = Ui::new(1.0, &Theme::dark());
+    ui.fit(1.0, 1440, 900);
+    let b = find_buttons(&mut ui, Panel::Tools, 1440, 32);
+    let &(_, x, y) = b
+        .iter()
+        .find(|b| b.0 == Id::Interior)
+        .expect("Knopf Innenwand");
+    assert_eq!(ui_click(&mut ui, x, y, 1440, 32), Some(Id::Interior));
+
+    let c = cam3d();
+    for (from, to) in [(315.0, 7685.0), (0.0, 8000.0)] {
+        let mut s = Scene::with_model(Model::with_seed(29));
+        let aw = haus_275(&mut s, &c);
+        let iw = innenwand(&mut s, &c, vec3(5000.0, from, 0.0), vec3(5000.0, to, 0.0));
+        let ctx = format!("Innenwand {from}…{to}");
+        let id = s.model().wall_at(iw, 0).unwrap();
+        assert_eq!(s.model().element(id).unwrap().number, "IW-001", "{ctx}");
+        let joins = s.model().joins();
+        assert_eq!(joins.len(), 2, "{ctx}: {joins:?}");
+        assert!(joins.iter().all(|j| j.kind == JoinKind::T), "{ctx}");
+        assert!(
+            (wall_m3(&s, iw, 0) - 3.5468125).abs() < 1e-6,
+            "{ctx}: {}",
+            wall_m3(&s, iw, 0)
+        );
+        let aw_sum: f64 = (0..4).map(|i| wall_m3(&s, aw, i)).sum();
+        assert!((aw_sum - 30.0935).abs() < 5e-5, "{ctx}: AW {aw_sum}");
+        let gas: f64 = (0..4)
+            .map(|i| {
+                let q = s.wall_qto(s.model().wall_at(aw, i).unwrap()).unwrap();
+                q.layers[1].volume / 1e9
+            })
+            .sum::<f64>()
+            + wall_m3(&s, iw, 0);
+        assert!((gas - 19.9959375).abs() < 5e-5, "{ctx}: Gasbeton {gas}");
+        assert!(
+            s.model().check().is_empty(),
+            "{ctx}: {:?}",
+            s.model().check()
+        );
+
+        // Grundriss: keine Kante quer über den Anschluss an der Innenfläche
+        let plan = s.mesh(ViewKind::Plan, None, &[]);
+        for yi in [315.0f32, 7685.0] {
+            let seam = plan.edges.iter().any(|(p, _)| {
+                (p[0][1] - yi).abs() < 0.5
+                    && (p[1][1] - yi).abs() < 0.5
+                    && p[0][0].min(p[1][0]) < 5000.0
+                    && p[0][0].max(p[1][0]) > 5000.0
+            });
+            assert!(!seam, "{ctx}: Fuge bei y = {yi}");
+            // Gegenprobe: Neben dem Anschluss ist die Innenkante durchgezogen
+            let wall_edge = plan.edges.iter().any(|(p, _)| {
+                (p[0][1] - yi).abs() < 0.5
+                    && (p[1][1] - yi).abs() < 0.5
+                    && p[0][0].min(p[1][0]) < 2500.0
+                    && p[0][0].max(p[1][0]) > 2500.0
+            });
+            assert!(wall_edge, "{ctx}: Innenkante bei y = {yi} fehlt");
+        }
+    }
+
+    // Lücke über 50 mm: kein Anschluss
+    let mut s = Scene::with_model(Model::with_seed(30));
+    haus_275(&mut s, &c);
+    let iw = innenwand(
+        &mut s,
+        &c,
+        vec3(5000.0, 1000.0, 0.0),
+        vec3(5000.0, 7000.0, 0.0),
+    );
+    assert!(s.model().joins().is_empty());
+    assert!((wall_m3(&s, iw, 0) - 2.8875).abs() < 1e-6);
+
+    // Gummiband: obere Außenwand 1 m nach außen, Innenwand geht mit
+    let mut s = Scene::with_model(Model::with_seed(31));
+    let aw = haus_275(&mut s, &c);
+    let iw = innenwand(
+        &mut s,
+        &c,
+        vec3(5000.0, 0.0, 0.0),
+        vec3(5000.0, 8000.0, 0.0),
+    );
+    let mut e = WallEdit::default();
+    let (x, y) = px(&c, vec3(2500.0, 8000.0, 0.0));
+    e.handle(&mv(x, y), &mut s, &c, W, H, 1.0, true);
+    e.handle(&down(x, y), &mut s, &c, W, H, 1.0, true);
+    let (x2, y2) = px(&c, vec3(2500.0, 9000.0, 0.0));
+    e.handle(&mv(x2, y2), &mut s, &c, W, H, 1.0, true);
+    e.handle(&up(x2, y2), &mut s, &c, W, H, 1.0, true);
+    assert!((s.chain(aw).unwrap().points[1].y - 9000.0).abs() < 1e-6);
+    assert!(
+        (wall_m3(&s, iw, 0) - 4.0280625).abs() < 1e-6,
+        "{}",
+        wall_m3(&s, iw, 0)
+    );
+    let ends = &s.chain(iw).unwrap().points;
+    assert!(ends.iter().any(|p| (p.y - 8685.0).abs() < 1e-6), "{ends:?}");
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+
+    // Speichern und Öffnen: dieselben Anschlüsse und Mengen, bytegleich
+    let d = test_dir("innenwand");
+    let path = d.join("Haus.szo");
+    crate::document::save(s.model(), &path).unwrap();
+    let t = Scene::with_model(crate::document::load(&path).unwrap().model);
+    assert_eq!(t.model().joins().len(), 2);
+    let tiw = t
+        .model()
+        .elements()
+        .iter()
+        .find(|(_, el)| el.number == "IW-001")
+        .map(|(id, _)| id)
+        .unwrap();
+    assert!((t.wall_qto(tiw).unwrap().volume / 1e9 - 4.0280625).abs() < 1e-6);
+    let p2 = d.join("Haus2.szo");
+    crate::document::save(t.model(), &p2).unwrap();
+    assert_eq!(std::fs::read(&p2).unwrap(), std::fs::read(&path).unwrap());
+    let _ = std::fs::remove_dir_all(&d);
+
+    // Rückgängig stellt beide Züge zurück
+    assert!(s.undo());
+    assert!((s.chain(aw).unwrap().points[1].y - 8000.0).abs() < 1e-6);
+    assert!(
+        (wall_m3(&s, iw, 0) - 3.5468125).abs() < 1e-6,
+        "{}",
+        wall_m3(&s, iw, 0)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A30: Gründung im Zusammenspiel (Gummiband, Innenwand, Speichern)
+// ---------------------------------------------------------------------------
+
+/// A30: Die Gründung folgt dem Haus. Gummiband → Platte und Schürze wachsen
+/// mit, Rückgängig stellt sie zurück; eine Innenwand erzeugt keine eigene
+/// Gründung; Rücksprung, Nummern und Guids überstehen Speichern/Öffnen.
+#[test]
+fn a30_gruendung_folgt_dem_haus() {
+    let mut s = Scene::with_model(Model::with_seed(30));
+    let c = cam3d();
+    let run = zeichne_rechteck(&mut s, &c);
+    let (slab, footing) = sohlplatte(&s, run);
+    let area = |s: &Scene| m2(s.foundation_qto(run).unwrap().0.area);
+    let axis = |s: &Scene| (s.foundation_qto(run).unwrap().1.length / 10.0).round() / 100.0;
+
+    // Gummiband: obere Wand 1 m nach außen → Platte 10 × 9 m, Schürze 36,60 m
+    let mut e = WallEdit::default();
+    let (x, y) = px(&c, vec3(2500.0, 8000.0, 0.0));
+    e.handle(&mv(x, y), &mut s, &c, W, H, 1.0, true);
+    e.handle(&down(x, y), &mut s, &c, W, H, 1.0, true);
+    let (x2, y2) = px(&c, vec3(2500.0, 9000.0, 0.0));
+    e.handle(&mv(x2, y2), &mut s, &c, W, H, 1.0, true);
+    e.handle(&up(x2, y2), &mut s, &c, W, H, 1.0, true);
+    assert_eq!(area(&s), 90.0);
+    assert_eq!(axis(&s), 36.6, "Achse 2 × (9,65 + 8,65)");
+    assert_eq!(sohlplatte(&s, run), (slab, footing), "dieselben Bauteile");
+    assert!(s.undo());
+    assert_eq!(area(&s), 80.0);
+    assert_eq!(axis(&s), 34.6);
+
+    // Innenwand quer durch: keine weitere Gründung
+    innenwand(
+        &mut s,
+        &c,
+        vec3(5000.0, 0.0, 0.0),
+        vec3(5000.0, 8000.0, 0.0),
+    );
+    let n = |s: &Scene| {
+        s.model()
+            .elements()
+            .iter()
+            .filter(|(_, el)| el.number.starts_with("SP-") || el.number.starts_with("FS-"))
+            .count()
+    };
+    assert_eq!(n(&s), 2, "nur Platte und Schürze des Hauses");
+
+    // Rücksprung 2 cm, speichern, öffnen
+    assert!(s.step_recess(slab, true));
+    let d = test_dir("gruendung");
+    let path = d.join("Haus.szo");
+    crate::document::save(s.model(), &path).unwrap();
+    let loaded = crate::document::load(&path).unwrap();
+    assert!(loaded.hints.is_empty(), "{:?}", loaded.hints);
+    let t = Scene::with_model(loaded.model);
+    let find = |s: &Scene, nr: &str| {
+        s.model()
+            .elements()
+            .iter()
+            .find(|(_, el)| el.number == nr)
+            .map(|(id, el)| (id, el.guid))
+            .unwrap_or_else(|| panic!("{nr} fehlt"))
+    };
+    let (tslab, g) = find(&t, "SP-001");
+    assert_eq!(g, s.model().element(slab).unwrap().guid);
+    assert_eq!(
+        find(&t, "FS-001").1,
+        s.model().element(footing).unwrap().guid
+    );
+    assert_eq!(
+        field_cm(
+            &selection::props(&t, tslab).unwrap(),
+            crate::ui::Field::Recess
+        )
+        .as_deref(),
+        Some("2")
+    );
+    let trun = t
+        .model()
+        .runs()
+        .ids()
+        .find(|r| t.model().foundation_of(*r).is_some());
+    let tq = t.foundation_qto(trun.unwrap()).unwrap();
+    assert_eq!(m2(tq.0.area), 79.2816);
+    assert_eq!(m3(tq.1.volume), 7.2324);
+    assert_eq!(n(&t), 2);
+    assert!(t.model().check().is_empty(), "{:?}", t.model().check());
+    let p2 = d.join("Haus2.szo");
+    crate::document::save(t.model(), &p2).unwrap();
+    assert_eq!(std::fs::read(&p2).unwrap(), std::fs::read(&path).unwrap());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// A31 (G2): großer Sockelrücksprung an kurzem Vorsprung
+// ---------------------------------------------------------------------------
+
+/// Rechteck 10 × 8 m mit einem Vorsprung `b` × `v` mm an der Unterseite
+/// (ab x = 4000). Gezeichnet wird das Rechteck mit der Maus; die Ecken des
+/// Vorsprungs liegen nur wenige Bildpunkte auseinander und werden direkt
+/// in den Zug eingesetzt.
+fn haus_mit_vorsprung(s: &mut Scene, b: f64, v: f64) -> RunId {
+    let c = cam3d();
+    let mut t = tool(s);
+    for p in RECHTECK {
+        assert!(click(&mut t, &c, p).is_none());
+    }
+    let mut w = click(&mut t, &c, RECHTECK[0]).expect("Klick auf den Startpunkt schließt");
+    w.points.extend([
+        vec3(4000.0 + b, 0.0, 0.0),
+        vec3(4000.0 + b, -v, 0.0),
+        vec3(4000.0, -v, 0.0),
+        vec3(4000.0, 0.0, 0.0),
+    ]);
+    s.add_wall(&w).expect("Wandzug angelegt")
+}
+
+/// A31 (G2): Großer, erlaubter Sockelrücksprung (30 cm bei AW 31,5) an einem
+/// kurzen Vorsprung. Platte und Schürze bleiben vorhanden, die Mengen stimmen.
+#[test]
+fn a31_grosser_ruecksprung_an_kurzem_vorsprung() {
+    // (Breite, Tiefe, Platte m², Schürzenachse m) bei 30 cm Rücksprung.
+    // Schmale Vorsprünge (≤ 60 cm) verschwinden in der Platte: 9,40 × 7,40.
+    // Der breite behält einen eingerückten Rest von 1,40 × 0,20 m.
+    for (b, v, flaeche, achse) in [
+        (50.0, 50.0, 69.56, 32.2),
+        (200.0, 200.0, 69.56, 32.2),
+        (2000.0, 200.0, 69.84, 32.6),
+    ] {
+        let mut s = Scene::with_model(Model::with_seed(31));
+        let run = haus_mit_vorsprung(&mut s, b, v);
+        let (slab, footing) = sohlplatte(&s, run);
+        let buendig = m2(80e6 + b * v);
+        let (sp, fs) = s.foundation_qto(run).unwrap();
+        let fs_vol = fs.volume;
+        assert_eq!(m2(sp.area), buendig, "bündig, {b} × {v}");
+        assert!(s.edit_model("Rücksprung", |m| m.set_slab_recess(slab, 300.0)));
+        let fehler = s.model().check();
+        assert!(fehler.is_empty(), "{b} × {v}: {fehler:?}");
+        // Gleiche Bauteile, beide mit Körper
+        assert_eq!(s.model().foundation_of(run), Some((slab, Some(footing))));
+        for id in [slab, footing] {
+            let p = selection::props(&s, id).unwrap();
+            assert!(
+                !format!("{p:?}").contains("Kein Körper"),
+                "{b} × {v}: {p:?}"
+            );
+        }
+        let (sp, fs) = s.foundation_qto(run).unwrap();
+        assert_eq!(m2(sp.area), flaeche, "Platte, {b} × {v}");
+        assert_eq!(m3(sp.volume), m3(flaeche * 1e6 * 200.0), "Plattenvolumen");
+        assert_eq!(
+            (fs.length / 10.0).round() / 100.0,
+            achse,
+            "Schürzenachse, {b} × {v}"
+        );
+        assert!(
+            fs.volume > 0.0 && fs.volume < fs_vol,
+            "Schürzenvolumen, {b} × {v}"
+        );
+        // Rückgängig: wieder bündig
+        assert!(s.undo());
+        assert_eq!(m2(s.foundation_qto(run).unwrap().0.area), buendig);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// P1: Zahlenfelder im Paneel „Eigenschaften“
+// ---------------------------------------------------------------------------
+
+/// Tippt `text` in das Feld `f` des Paneels „Eigenschaften“ und drückt Enter;
+/// eine gültige Eingabe geht wie in der App als ein Schritt ins Modell.
+fn tippe(
+    ui: &mut Ui,
+    s: &mut Scene,
+    sel: sk_model::ElementId,
+    f: crate::ui::Field,
+    text: &str,
+) -> crate::ui::UiOut {
+    ui.set_props(selection::props(s, sel));
+    let b = find_buttons(ui, Panel::Props, 1440, 32);
+    let &(_, x, y) = b
+        .iter()
+        .find(|b| b.0 == Id::Field(f))
+        .unwrap_or_else(|| panic!("Feld {f:?}"));
+    ui.handle(&down(x, y), 1440, 32);
+    ui.handle(&up(x, y), 1440, 32);
+    assert!(ui.edit.is_some(), "Eingabe beginnt mit dem Klick");
+    for c in text.chars() {
+        ui.key(Key::Char(c), true, M).unwrap();
+    }
+    let out = ui.key(Key::Enter, true, M).unwrap();
+    if let Some((field, mm)) = out.submit {
+        assert!(s.set_field(sel, field, mm));
+        ui.set_props(selection::props(s, sel));
+    }
+    out
+}
+
+/// P1: Dicke der Sohlplatte, Sockelrücksprung, Breite und Tiefe der
+/// Frostschürze als Zahlenfelder: Tippen und Enter ändern das Modell in
+/// einem Schritt, Ungültiges bleibt mit Hinweis stehen, Esc bricht ab.
+#[test]
+fn p1_zahlenfelder_der_gruendung() {
+    use crate::ui::Field;
+    let mut s = Scene::with_model(Model::with_seed(41));
+    let run = zeichne_rechteck(&mut s, &cam3d());
+    let (slab, footing) = sohlplatte(&s, run);
+    let mut ui = Ui::new(1.0, &Theme::dark());
+    ui.fit(1.0, 1440, 900);
+
+    // Dicke 25 cm: wächst nach unten, 20 m³
+    tippe(&mut ui, &mut s, slab, Field::SlabThickness, "25");
+    assert_eq!(m3(s.foundation_qto(run).unwrap().0.volume), 20.0);
+    assert_eq!(
+        z_range(&s.foundation(run).unwrap().slab_solid()),
+        (-250.0, 0.0)
+    );
+    assert_eq!(s.undo_label(), Some("Plattendicke"));
+
+    // Rücksprung 1 cm: abgelehnt mit Hinweis, das Modell bleibt
+    let out = tippe(&mut ui, &mut s, slab, Field::Recess, "1");
+    assert!(out.submit.is_none() && out.relayout);
+    let e = ui.edit.as_ref().unwrap();
+    assert_eq!(e.error.as_deref(), Some("0 oder mindestens 2 cm"));
+    assert_eq!(m2(s.foundation_qto(run).unwrap().0.area), 80.0);
+    // Esc bricht ab
+    let out = ui.key(Key::Escape, true, M).unwrap();
+    assert!(ui.edit.is_none() && out.relayout && out.submit.is_none());
+    // 2,5 cm mit Komma
+    tippe(&mut ui, &mut s, slab, Field::Recess, "2,5");
+    assert_eq!(m2(s.foundation_qto(run).unwrap().0.area), 79.1025);
+
+    // Schürze 40 cm breit und 80 cm tief: Achse 2 × (9,55 + 7,55), UK −1,05 m
+    tippe(&mut ui, &mut s, footing, Field::FootingWidth, "40");
+    tippe(&mut ui, &mut s, footing, Field::FootingDepth, "80");
+    let fq = &s.foundation_qto(run).unwrap().1;
+    assert_eq!((fq.width, fq.depth), (400.0, 800.0));
+    assert_eq!((fq.length / 10.0).round() / 100.0, 34.2);
+    assert_eq!(
+        z_range(&s.foundation(run).unwrap().footing_solid()).0,
+        -1050.0
+    );
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+
+    // Jede Eingabe ist ein Schritt: viermal Rückgängig = Ausgangslage
+    for _ in 0..4 {
+        assert!(s.undo());
+    }
+    let q = s.foundation_qto(run).unwrap();
+    assert_eq!((m2(q.0.area), m3(q.0.volume)), (80.0, 16.0));
+    assert_eq!((q.1.width, q.1.depth), (350.0, 600.0));
 }
