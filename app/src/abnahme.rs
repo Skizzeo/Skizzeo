@@ -696,7 +696,10 @@ fn a11_schnittlinie_a_a() {
     assert_eq!(sect.y, Some(4000.0));
     let c = cam_plan(&s);
     let lines = sect.helpers(&s, &c, H, 1.0, &Theme::dark());
-    assert!(lines.iter().any(|h| h.pattern[0][2] > 0.0), "Strichpunktlinie");
+    assert!(
+        lines.iter().any(|h| h.pattern[0][2] > 0.0),
+        "Strichpunktlinie"
+    );
     let marks = sect.marks(&s, &c, W, H);
     assert_eq!(marks.len(), 2, "zwei Endsymbole");
     assert!(marks.iter().any(|m| m.left) && marks.iter().any(|m| !m.left));
