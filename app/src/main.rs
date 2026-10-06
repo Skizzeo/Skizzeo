@@ -192,6 +192,7 @@ fn ground_line(
         color: table.ground.1,
         width: table.ground.0 * scale,
         dash: 0.0,
+        pattern: sk_render::SOLID,
         occlude: false,
         round: false,
     }]
@@ -214,6 +215,7 @@ fn level_guide(
         color: theme.interact.drag,
         width: theme.size.level_guide * scale,
         dash: 0.0,
+        pattern: sk_render::SOLID,
         occlude: false,
         round: true,
     };

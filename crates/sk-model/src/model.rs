@@ -19,8 +19,8 @@ use crate::guid::{Guid, GuidGen};
 use crate::id::Arena;
 use crate::join::{self, Join, JoinEnd, JoinKind};
 use crate::library::{
-    material_key, LayerFunction, LayerSet, LayerSetId, MatCategory, Material, MaterialId,
-    MaterialLayer,
+    material_key, LayerFunction, LayerSet, LayerSetId, MatCategory, Material, MaterialDisplay,
+    MaterialId, MaterialLayer,
 };
 use crate::solid::material;
 use crate::txn::{Change, Direction, Key, Open, Touched, Txn};
@@ -240,6 +240,20 @@ impl Model {
             elevation: STOREY_HEIGHT,
             height: UPPER_HEIGHT,
         });
+        // Linientypen des Startsatzes (E4), zuletzt angelegt, damit die
+        // älteren Guids gleich bleiben; die Schnittlinie A–A wird Strichpunkt
+        for (name, pattern) in attr::standard_line_types().into_iter().skip(1) {
+            let id = attr.add_line_type(LineType {
+                guid: guids.next_guid(),
+                name: name.into(),
+                pattern,
+            });
+            if name == attr::SECTION_LINE_TYPE {
+                let mut d = attr.display().clone();
+                d.section_line.line_type = id;
+                attr.set_display(d);
+            }
+        }
         Model {
             project,
             attr,
@@ -433,6 +447,104 @@ impl Model {
             }
         }
         out
+    }
+
+    /// Ändert einen Linientyp; `false` (und nichts geändert) bei toter Kennung.
+    pub fn set_line_type(&mut self, id: LineTypeId, l: LineType) -> bool {
+        if self.attr.line_type(id).is_none() {
+            return false;
+        }
+        note!(self, LineType, self.attr.line_types(), id);
+        let ok = self.attr.set_line_type(id, l);
+        self.revision += ok as u64;
+        ok
+    }
+
+    /// Löscht einen unbenutzten Linientyp (wie [`Model::remove_pen`]).
+    pub fn remove_line_type(&mut self, id: LineTypeId) -> bool {
+        if self.attr.line_type(id).is_none() || !self.attr_users(AttrRef::LineType(id)).is_empty() {
+            return false;
+        }
+        note!(self, LineType, self.attr.line_types(), id);
+        self.touch();
+        self.attr.remove_line_type(id).is_some()
+    }
+
+    /// Löscht eine Schraffur, auf die kein Baustoff verweist.
+    pub fn remove_fill(&mut self, id: FillId) -> bool {
+        if self.attr.fill(id).is_none() || !self.attr_users(AttrRef::Fill(id)).is_empty() {
+            return false;
+        }
+        note!(self, Fill, self.attr.fills(), id);
+        self.touch();
+        self.attr.remove_fill(id).is_some()
+    }
+
+    /// Löscht eine Oberfläche, auf die kein Baustoff verweist.
+    pub fn remove_surface(&mut self, id: SurfaceId) -> bool {
+        if self.attr.surface(id).is_none() || !self.attr_users(AttrRef::Surface(id)).is_empty() {
+            return false;
+        }
+        note!(self, Surface, self.attr.surfaces(), id);
+        self.touch();
+        self.attr.remove_surface(id).is_some()
+    }
+
+    /// Ändert die Darstellungsverweise eines Baustoffs (Schraffur, Stift
+    /// Schraffur, Stift Grund, Oberfläche). Die übrigen Felder gehören BIM und
+    /// bleiben unerreichbar. `false` (nichts geändert), wenn der Baustoff oder
+    /// eines der Ziele fehlt.
+    pub fn set_material_display(&mut self, id: MaterialId, d: MaterialDisplay) -> bool {
+        let a = &self.attr;
+        let alive = a.fill(d.cut_fill).is_some()
+            && a.pen(d.cut_fg).is_some()
+            && a.pen(d.cut_bg).is_some()
+            && a.surface(d.surface).is_some();
+        if !alive || self.materials.get(id).is_none() {
+            return false;
+        }
+        note!(self, Material, self.materials, id);
+        if let Some(m) = self.materials.get_mut(id) {
+            (m.cut_fill, m.cut_fg, m.cut_bg, m.surface) =
+                (d.cut_fill, d.cut_fg, d.cut_bg, d.surface);
+        }
+        self.touch();
+        // Nur die Zeichentabelle ändert sich, keine Körper
+        self.attr.bump();
+        true
+    }
+
+    /// Ergänzt in Dateien vor E4 die Linientypen des Startsatzes und setzt die
+    /// Schnittlinie A–A auf Strichpunkt, wenn sie auf die Volllinie zeigt (so
+    /// sieht sie aus wie bisher). Ohne Rückgängig-Schritt, gleich nach dem
+    /// Lesen; liefert einen Hinweis, wenn etwas ergänzt wurde.
+    pub(crate) fn complete_line_types(&mut self) -> Vec<String> {
+        let mut added = false;
+        for (name, pattern) in attr::standard_line_types() {
+            if self.attr.line_types().iter().any(|(_, l)| l.name == name) {
+                continue;
+            }
+            let guid = self.new_guid();
+            let id = self.attr.add_line_type(LineType {
+                guid,
+                name: name.into(),
+                pattern,
+            });
+            added = true;
+            let solid = self
+                .attr
+                .line_type(self.attr.display().section_line.line_type);
+            if name == attr::SECTION_LINE_TYPE && solid.is_some_and(|l| l.pattern.is_empty()) {
+                let mut d = self.attr.display().clone();
+                d.section_line.line_type = id;
+                self.attr.set_display(d);
+            }
+        }
+        if added {
+            vec!["Linientypen ergänzt".to_string()]
+        } else {
+            Vec::new()
+        }
     }
 
     pub fn set_fill(&mut self, id: FillId, f: Fill) -> bool {
@@ -2759,8 +2871,13 @@ impl Model {
                 touched.library = true;
             }
             Change::Material { id, old, new } => {
+                // Nur Darstellungsverweise geändert: allein die Zeichentabelle
+                if bim_equal(old.as_ref(), new.as_ref()) {
+                    touched.attr = true;
+                } else {
+                    touched.library = true;
+                }
                 m.materials.set(*id, pick(dir, old, new));
-                touched.library = true;
             }
             Change::Storey { id, old, new } => {
                 m.storeys.set(*id, pick(dir, old, new));
@@ -3140,6 +3257,24 @@ pub const FOOTING_PART: u32 = u32::MAX - 2;
 pub const FLOOR_PART: u32 = u32::MAX - 3;
 
 /// Warum keine Decke entsteht, als Satz.
+/// Zwei Stände eines Baustoffs unterscheiden sich höchstens in den
+/// Darstellungsverweisen (beide vorhanden).
+fn bim_equal(a: Option<&Material>, b: Option<&Material>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            let same = Material {
+                cut_fill: a.cut_fill,
+                cut_fg: a.cut_fg,
+                cut_bg: a.cut_bg,
+                surface: a.surface,
+                ..b.clone()
+            };
+            same == *a
+        }
+        _ => false,
+    }
+}
+
 fn explain_floor(e: FloorError) -> &'static str {
     match e {
         FloorError::NotClosed => "der Wandzug ist nicht geschlossen",

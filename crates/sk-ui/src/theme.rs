@@ -196,6 +196,11 @@ pub struct Sizes {
     pub swatch_w: f32,
     pub swatch_h: f32,
     pub checkbox: f32,
+    /// Reiter Schraffuren usw. (E6): Kachel in der Liste, Vorschaubild.
+    pub list_thumb_w: f32,
+    pub list_thumb_h: f32,
+    pub preview_w: f32,
+    pub preview_h: f32,
 }
 
 const fn rgb(r: u8, g: u8, b: u8) -> Rgba {
@@ -331,7 +336,7 @@ impl Theme {
                 menu_w: 260.0,
                 menu_sub_w: 320.0,
                 settings_w: 860.0,
-                settings_h: 580.0,
+                settings_h: 620.0,
                 settings_tabs_w: 170.0,
                 table_row: 28.0,
                 scrollbar: 8.0,
@@ -340,6 +345,10 @@ impl Theme {
                 swatch_w: 36.0,
                 swatch_h: 20.0,
                 checkbox: 16.0,
+                list_thumb_w: 40.0,
+                list_thumb_h: 24.0,
+                preview_w: 240.0,
+                preview_h: 160.0,
             },
             px_per_mm: 5.5,
         }

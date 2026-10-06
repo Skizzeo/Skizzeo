@@ -514,6 +514,7 @@ impl WallTool {
             color,
             width: width * scale,
             dash: dash * scale,
+            pattern: sk_render::SOLID,
             occlude: false,
             round: false,
         };
@@ -525,6 +526,7 @@ impl WallTool {
                     color: col.shadow_tool,
                     width: (size + 3.0) * scale,
                     dash: 0.0,
+                    pattern: sk_render::SOLID,
                     occlude: false,
                     round: false,
                 },
@@ -534,6 +536,7 @@ impl WallTool {
                     color,
                     width: size * scale,
                     dash: 0.0,
+                    pattern: sk_render::SOLID,
                     occlude: false,
                     round: false,
                 },
