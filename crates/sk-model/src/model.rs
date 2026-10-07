@@ -815,13 +815,24 @@ impl Model {
     /// schon vergeben ist, die Guid schon existiert oder der Typ gegen die
     /// Typregeln verstößt ([`LayerSet::problems`]).
     pub fn add_layer_set(&mut self, s: LayerSet) -> Option<LayerSetId> {
+        self.insert_layer_set(s, true)
+    }
+
+    /// Wie [`Model::add_layer_set`], ein ungültiges Deckenauflager (Regel 21)
+    /// bleibt aber stehen und wird wie „ganze tragende Schicht“ gebaut, wie
+    /// beim Laden einer `.szo` (Übernahme aus dem Firmenkatalog).
+    pub(crate) fn adopt_layer_set(&mut self, s: LayerSet) -> Option<LayerSetId> {
+        self.insert_layer_set(s, false)
+    }
+
+    fn insert_layer_set(&mut self, s: LayerSet, strict: bool) -> Option<LayerSetId> {
         let taken = self
             .layer_sets
             .iter()
             .any(|(_, t)| t.guid == s.guid || t.code == s.code);
         if taken
             || !s.problems().is_empty()
-            || self.bearing_problem(&s).is_some()
+            || (strict && self.bearing_problem(&s).is_some())
             || s.layers
                 .iter()
                 .map(|l| l.material)
@@ -842,7 +853,17 @@ impl Model {
     /// `changed` zählt eins hoch (auch beim Übernehmen aus dem
     /// Firmenkatalog: es ist der Stand im Projekt). Gleicher Inhalt ändert
     /// nichts und gilt als Erfolg; `false`: abgelehnt, nichts geändert.
-    pub fn set_layer_set(&mut self, id: LayerSetId, mut s: LayerSet) -> bool {
+    pub fn set_layer_set(&mut self, id: LayerSetId, s: LayerSet) -> bool {
+        self.replace_layer_set(id, s, true)
+    }
+
+    /// Wie [`Model::set_layer_set`] mit ungültigem Deckenauflager wie
+    /// [`Model::adopt_layer_set`].
+    pub(crate) fn adopt_set_layer_set(&mut self, id: LayerSetId, s: LayerSet) -> bool {
+        self.replace_layer_set(id, s, false)
+    }
+
+    fn replace_layer_set(&mut self, id: LayerSetId, mut s: LayerSet, strict: bool) -> bool {
         let Some(old) = self.layer_sets.get(id) else {
             return false;
         };
@@ -856,7 +877,7 @@ impl Model {
             || code_taken
             || category_locked
             || !s.problems().is_empty()
-            || self.bearing_problem(&s).is_some()
+            || (strict && self.bearing_problem(&s).is_some())
             || s.layers
                 .iter()
                 .map(|l| l.material)

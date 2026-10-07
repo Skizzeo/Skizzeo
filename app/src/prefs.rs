@@ -642,6 +642,10 @@ pub struct Prefs {
     /// Fehler beim Schreiben der Einstellungsdatei.
     error: Option<String>,
     mouse: (f64, f64),
+    /// Leinwand und Bytes des letzten Bildes ([`Prefs::give_back`]): ihr
+    /// Speicher dient dem nächsten.
+    spare: Option<Canvas>,
+    spare_px: Vec<u8>,
 }
 
 impl Prefs {
@@ -675,6 +679,8 @@ impl Prefs {
             recent: Vec::new(),
             error: None,
             mouse: (-1.0, -1.0),
+            spare: None,
+            spare_px: Vec::new(),
         }
     }
 
@@ -2763,13 +2769,28 @@ impl Prefs {
         }
     }
 
+    /// Fensterbild als vormultiplizierte Bytes in den Puffer des letzten
+    /// Bildes; danach beides mit [`Prefs::give_back`] zurück.
+    pub fn bytes(&mut self, c: &Canvas) -> Vec<u8> {
+        let mut px = std::mem::take(&mut self.spare_px);
+        c.premul_rgba8_into(&mut px);
+        px
+    }
+
+    /// Leinwand und Bytes nach dem Hochladen zum Wiederverwenden.
+    pub fn give_back(&mut self, c: Canvas, px: Vec<u8>) {
+        self.spare = Some(c);
+        self.spare_px = px;
+    }
+
     /// Fensterbild samt Schatten und seine Lage im Programmfenster.
     pub fn paint(&mut self, t: &Theme, fonts: &Fonts, w: &Win, sc: &Scene) -> (Canvas, i32, i32) {
         self.settle_scroll(t, w, sc);
         let f = self.frame(t, w);
         let s = w.scale;
         let m = (t.size.panel_shadow * s).round();
-        let mut c = Canvas::new((f.w + 2.0 * m) as usize, (f.h + 2.0 * m) as usize);
+        let mut c = self.spare.take().unwrap_or_else(|| Canvas::new(0, 0));
+        c.reuse((f.w + 2.0 * m) as usize, (f.h + 2.0 * m) as usize);
         let at = |r: Rect| Rect::new(r.x - f.x + m, r.y - f.y + m, r.w, r.h);
         let u = &t.ui;
         widgets::panel(&mut c, Rect::new(m, m, f.w, f.h), s, t);

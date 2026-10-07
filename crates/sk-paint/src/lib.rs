@@ -328,6 +328,23 @@ impl Canvas {
         }
     }
 
+    /// Dieselbe Leinwand für ein neues Bild der Größe `width` × `height`,
+    /// durchsichtig wie [`Canvas::new`]. Behält den Speicher: ein ganzes
+    /// Fensterbild braucht dann keine frischen Seiten vom System (unter
+    /// Windows kommt jeder große Block neu von VirtualAlloc).
+    pub fn reuse(&mut self, width: usize, height: usize) {
+        if (width, height) != (self.width, self.height) {
+            // Akkumulator und Marken passen nur zur alten Größe ([`Canvas::fill`])
+            self.acc.clear();
+            self.marks.clear();
+        }
+        self.width = width;
+        self.height = height;
+        self.px.clear();
+        self.px.resize(width * height, [0.0; 4]);
+        self.origin = (0.0, 0.0);
+    }
+
     /// Die Leinwand zeigt ab jetzt den Ausschnitt ab `(x, y)` eines größeren
     /// Bildes: Pfade in dessen Koordinaten landen an der richtigen Stelle.
     /// Ganzzahlig gewählt, gleicht der Ausschnitt dem ganzen Bild bis auf
@@ -530,11 +547,16 @@ impl Canvas {
 
     /// Vormultiplizierte RGBA8-Werte, wie sie zum Überblenden auf der GPU gebraucht werden.
     pub fn to_premul_rgba8(&self) -> Vec<u8> {
-        self.px
-            .as_flattened()
-            .iter()
-            .map(|&v| unit_to_u8(v))
-            .collect()
+        let mut out = Vec::new();
+        self.premul_rgba8_into(&mut out);
+        out
+    }
+
+    /// Wie [`Canvas::to_premul_rgba8`] in einen vorhandenen Puffer, der seinen
+    /// Speicher behält.
+    pub fn premul_rgba8_into(&self, out: &mut Vec<u8>) {
+        out.clear();
+        out.extend(self.px.as_flattened().iter().map(|&v| unit_to_u8(v)));
     }
 
     /// Ausschnitt als vormultipliziertes RGBA8 (Zeilen von oben), auf die
@@ -923,6 +945,30 @@ mod umrechnung {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Eine wiederverwendete Leinwand malt bytegleich wie eine neue, auch
+    /// nach anderer Größe und mit Ursprung (Akkumulator und Marken).
+    #[test]
+    fn wiederverwendet_wie_neu() {
+        let draw = |c: &mut Canvas, o: f32| {
+            c.set_origin(o, o);
+            let mut p = Path::new();
+            p.rounded_rect(o + 3.3, o + 2.7, 41.5, 23.2, 6.0);
+            c.fill(&p, Rgba(200, 40, 90, 255));
+            c.fill_rect(o + 10.5, o + 5.25, 20.0, 9.0, Rgba(20, 140, 190, 128));
+        };
+        let mut c = Canvas::new(0, 0);
+        for (w, h, o) in [(64, 40, 0.0), (33, 70, 5.0), (64, 40, 1.5), (64, 40, 0.0)] {
+            let mut fresh = Canvas::new(w, h);
+            draw(&mut fresh, o);
+            c.reuse(w, h);
+            draw(&mut c, o);
+            assert_eq!(c.to_premul_rgba8(), fresh.to_premul_rgba8(), "{w}x{h}");
+            let mut buf = vec![7u8; 3];
+            c.premul_rgba8_into(&mut buf);
+            assert_eq!(buf, fresh.to_premul_rgba8());
+        }
+    }
 
     /// Ein Ausschnitt (Teilbild) zeigt einen Pfad wie das ganze Bild, auch
     /// wo der Pfad über den linken oder rechten Rand des Ausschnitts läuft.

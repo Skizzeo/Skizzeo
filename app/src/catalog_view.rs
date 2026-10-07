@@ -299,6 +299,13 @@ pub struct Catalog {
     damage: Vec<Area>,
     /// Letztes ganzes Bild; Teilbilder erneuern es stellenweise.
     img: Option<Canvas>,
+    /// Bytes des letzten ganzen Bildes nach dem Hochladen zurück
+    /// ([`Catalog::give_back`]): ihr Speicher dient dem nächsten.
+    bytes: Vec<u8>,
+    /// Leinwand für Teilbilder, behält ihren Speicher.
+    scratch: Canvas,
+    /// Leinwand der Liste (Kacheln mit Bildlauf), behält ihren Speicher.
+    list_sub: std::cell::RefCell<Canvas>,
     /// Schraffuren des Schnittbilds (Übergang ohne Rechnen je Bildpunkt).
     patterns: RefCell<Patterns>,
     /// Kachelflug (K3b): Kopie der Kachel fliegt zum Reiter; Beginn.
@@ -453,6 +460,9 @@ impl Catalog {
             blink: None,
             damage: Vec::new(),
             img: None,
+            bytes: Vec::new(),
+            scratch: Canvas::new(0, 0),
+            list_sub: std::cell::RefCell::new(Canvas::new(0, 0)),
             patterns: RefCell::default(),
             fly: None,
             fly_img: None,
@@ -2942,22 +2952,36 @@ impl Catalog {
         }
     }
 
+    #[cfg(test)]
     pub fn paint(&mut self, t: &Theme, fonts: &Fonts, w: &Win) -> (Canvas, i32, i32) {
+        let mut c = Canvas::new(0, 0);
+        let (x, y) = self.paint_onto(&mut c, t, fonts, w);
+        (c, x, y)
+    }
+
+    /// Wie [`Catalog::paint`] auf eine vorhandene Leinwand, die ihren
+    /// Speicher behält ([`Canvas::reuse`]).
+    fn paint_onto(&mut self, c: &mut Canvas, t: &Theme, fonts: &Fonts, w: &Win) -> (i32, i32) {
         let outer = self.paint_now.is_none();
         if outer {
             self.paint_now = Some(self.clock());
         }
         let f = self.frame(t, w);
         let m = (t.size.panel_shadow * w.scale).round();
-        let mut c = Canvas::new((f.w + 2.0 * m) as usize, (f.h + 2.0 * m) as usize);
+        c.reuse((f.w + 2.0 * m) as usize, (f.h + 2.0 * m) as usize);
         // Zeichnen in Fensterkoordinaten
         c.set_origin(f.x - m, f.y - m);
-        self.paint_into(&mut c, t, fonts, w);
+        self.paint_into(c, t, fonts, w);
         let (x, y) = self.origin(t, w);
         if outer {
             self.paint_now = None;
         }
-        (c, x, y)
+        (x, y)
+    }
+
+    /// Die Bytes eines hochgeladenen [`Frame::Full`] zum Wiederverwenden.
+    pub fn give_back(&mut self, px: Vec<u8>) {
+        self.bytes = px;
     }
 
     /// Nächstes Bild für die App (U7): Nach Hervorhebungen und Übergängen
@@ -3002,8 +3026,11 @@ impl Catalog {
         }
         let area: usize = parts.iter().map(|p| (p.2 - p.0) * (p.3 - p.1)).sum();
         if full || area * 2 > cw * ch {
-            let (c, x, y) = self.paint(t, fonts, w);
-            let px = c.to_premul_rgba8();
+            // Bild und Bytes des letzten ganzen Bildes weiterverwenden
+            let mut c = self.img.take().unwrap_or_else(|| Canvas::new(0, 0));
+            let (x, y) = self.paint_onto(&mut c, t, fonts, w);
+            let mut px = std::mem::take(&mut self.bytes);
+            c.premul_rgba8_into(&mut px);
             let (cw, ch) = (c.width as u32, c.height as u32);
             self.img = Some(c);
             return Frame::Full {
@@ -3025,7 +3052,8 @@ impl Catalog {
         );
         let mut out = Vec::with_capacity(parts.len());
         for (x0, y0, x1, y1) in parts {
-            let mut sub = Canvas::new(x1 - x0, y1 - y0);
+            let mut sub = std::mem::replace(&mut self.scratch, Canvas::new(0, 0));
+            sub.reuse(x1 - x0, y1 - y0);
             sub.set_origin(ox + x0 as f32, oy + y0 as f32);
             if self.tab == Tab::Project && (x0, y0, x1, y1) == sec_px {
                 // Fläche nur am Rand und in den runden Ecken; innen deckt das
@@ -3057,6 +3085,7 @@ impl Catalog {
                 sub.height as u32,
                 px,
             ));
+            self.scratch = sub;
         }
         Frame::Parts(out)
     }
@@ -3361,7 +3390,8 @@ impl Catalog {
         let Some(body) = intersect(body, shown) else {
             return;
         };
-        let mut sub = Canvas::new(body.w as usize, body.h as usize);
+        let mut sub = self.list_sub.replace(Canvas::new(0, 0));
+        sub.reuse(body.w as usize, body.h as usize);
         sub.set_origin(body.x, body.y);
         let bold = fonts.bold.as_ref().or(fonts.regular.as_ref());
         for (h, y) in heads {
@@ -3384,6 +3414,7 @@ impl Catalog {
             self.paint_tile(&mut sub, it, r, t, fonts, w, sel, hover);
         }
         c.blit(&sub, body.x as i32, body.y as i32);
+        self.list_sub.replace(sub);
     }
 
     /// Eine Kachel der Liste in `r`: Schnittbild, Name, Angabe, Zahl der
@@ -5115,9 +5146,12 @@ mod tests {
                 scale,
             };
             let mut c = Catalog::open(&s, None);
+            // Wie die App: Bytes eines ganzen Bildes zurückgeben
             let full = median(&mut || {
                 c.damage.clear();
-                std::hint::black_box(c.paint_frame(&theme, &f, &win));
+                if let Frame::Full { px, .. } = c.paint_frame(&theme, &f, &win) {
+                    c.give_back(std::hint::black_box(px));
+                }
             });
             let (tiles, ..) = c.list_layout(&theme, &win);
             let thick = c.field_rect(&theme, &win, FieldId::Thick(1)).unwrap();

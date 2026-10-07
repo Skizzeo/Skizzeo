@@ -37,9 +37,13 @@ pub struct Company {
 /// in die Statuszeile, nicht in einen Dialog ([`quiet`]).
 const UNKNOWN_TAIL: &str = "unbekannte Angaben übersprungen, alles andere ist geladen.";
 
+/// Schluss des Hinweises auf Typen mit ungültigem Deckenauflager (Regel 21),
+/// ebenfalls für die Statuszeile.
+const BEARING_TAIL: &str = "gebaut wie „ganze tragende Schicht“.";
+
 /// Hinweis für die Statuszeile statt eines Dialogs?
 pub fn quiet(hint: &str) -> bool {
-    hint.ends_with(UNKNOWN_TAIL)
+    hint.ends_with(UNKNOWN_TAIL) || hint.ends_with(BEARING_TAIL)
 }
 
 /// Wo sich Skizzeo merkt, welche Fassungen eines Firmenkatalogs schon einen
@@ -144,11 +148,23 @@ impl Company {
                 match read_szk(&text) {
                     Ok(lib) => {
                         let unknown = lib.foreign.unknown;
+                        let bearings = lib.invalid_bearings();
                         self.lib = lib;
                         let mut hints = self.add_stock();
-                        // Fremdes aus einer neueren Fassung: einmal je Fassung der Datei
-                        if unknown > 0 && first_time(&self.path) {
-                            hints.push(format!("Firmenkatalog: {unknown} {UNKNOWN_TAIL}"));
+                        // Fremdes aus einer neueren Fassung und ungültige
+                        // Auflager: ein Hinweis, einmal je Fassung der Datei
+                        if (unknown > 0 || !bearings.is_empty()) && first_time(&self.path) {
+                            let mut text = String::from("Firmenkatalog:");
+                            if !bearings.is_empty() {
+                                text += &format!(
+                                    " Deckenauflager von {} ungültig, {BEARING_TAIL}",
+                                    bearings.join(", ")
+                                );
+                            }
+                            if unknown > 0 {
+                                text += &format!(" {unknown} {UNKNOWN_TAIL}");
+                            }
+                            hints.push(text);
                         }
                         hints
                     }
@@ -265,6 +281,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// Ein Firmentyp mit ungültigem Deckenauflager (Regel 21) kommt mit ins
+    /// Projekt, behält seine Tiefe und wird wie „ganze tragende Schicht“
+    /// gebaut; die Statuszeile nennt ihn einmal je Fassung.
+    #[test]
+    fn firmentyp_mit_ungueltigem_auflager_kommt_mit() {
+        let d = dir("auflager");
+        let p = d.join(FILE_NAME);
+        let mut lib = Library::standard();
+        let mono = lib.type_by_guid(sk_model::MONO_TYPE_GUID).unwrap();
+        let mut t = lib.types.get(mono).unwrap().clone();
+        t.guid = Guid(0x77);
+        t.code = "AW-F".into();
+        t.name = "Firmentyp".into();
+        lib.types.insert(t);
+        let n = lib.types.len();
+        assert_eq!(n, 8);
+        let text = write_szk(&lib);
+        let i = text.find("code=\"AW-F\"").unwrap();
+        let j = i + text[i..].find("bearing=240").unwrap();
+        let text = format!("{}bearing=400{}", &text[..j], &text[j + 11..]);
+        std::fs::write(&p, &text).unwrap();
+        let (c, h) = Company::load(&p, false);
+        assert_eq!(h.len(), 1, "{h:?}");
+        assert!(quiet(&h[0]) && h[0].contains("AW-F"), "{h:?}");
+        let m = Model::from_library(&c.lib);
+        assert_eq!(m.layer_sets().len(), n, "der 8. Typ kommt mit");
+        let id = m.type_by_guid(Guid(0x77)).unwrap();
+        let ft = m.layer_set(id).unwrap();
+        assert!(matches!(ft.bearing, sk_model::Bearing::Depth { depth, .. } if depth == 400.0));
+        assert!(m.bearing_problem(ft).is_some());
+        assert!(m.check().iter().any(|x| x.contains("Auflagertiefe")));
+        // Zweites Laden derselben Fassung: kein Hinweis mehr
+        let (_, h) = Company::load(&p, false);
+        assert!(h.is_empty(), "{h:?}");
     }
 
     #[test]

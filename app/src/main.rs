@@ -1121,6 +1121,7 @@ impl App {
             match cat.paint_frame(&self.theme, &self.ui.fonts, &win) {
                 catalog_view::Frame::Full { x, y, w, h, px } => {
                     self.renderer.set_overlay(OVERLAY_PREFS, x, y, w, h, &px);
+                    cat.give_back(px);
                 }
                 catalog_view::Frame::Parts(parts) => {
                     for (x, y, w, h, px) in parts {
@@ -1136,9 +1137,10 @@ impl App {
             return;
         };
         let (c, x, y) = p.paint(&self.theme, &self.ui.fonts, &win, &self.scene);
-        let px = c.to_premul_rgba8();
+        let px = p.bytes(&c);
         self.renderer
             .set_overlay(OVERLAY_PREFS, x, y, c.width as u32, c.height as u32, &px);
+        p.give_back(c, px);
         self.redraw = true;
     }
 

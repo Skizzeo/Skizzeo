@@ -54,6 +54,8 @@ pub struct QuantityWindow {
     /// „wird aktualisiert“ darin zeigt: Beim Ziehen im Modell wird nur die
     /// Pille neu gezeichnet, nicht das ganze Fenster (Review 1g).
     shown: Vec<u8>,
+    /// Leinwand der Bilder, behält ihren Speicher ([`Canvas::reuse`]).
+    canvas: Canvas,
     pill_shown: Option<(u8, u8)>,
     /// Hover oder Auswahl haben sich geändert: nur die Zeilen neu zeichnen,
     /// deren Band anders aussieht (Review 1h, U5). Dazu Bänder und Knopf,
@@ -81,6 +83,7 @@ impl QuantityWindow {
             seam_flash: None,
             was_busy: false,
             shown: Vec::new(),
+            canvas: Canvas::new(0, 0),
             pill_shown: None,
             bands_dirty: false,
             bands_shown: Vec::new(),
@@ -352,7 +355,10 @@ impl QuantityWindow {
             }
         }
         if full {
-            self.shown = self.paint(t, fonts, now).to_premul_rgba8();
+            let mut c = std::mem::replace(&mut self.canvas, Canvas::new(0, 0));
+            self.paint_rows_into(&mut c, t, fonts, now, 0, self.h);
+            c.premul_rgba8_into(&mut self.shown);
+            self.canvas = c;
             self.dirty = false;
             self.pill_shown = key;
             self.scroll_shown = scroll;
@@ -376,9 +382,10 @@ impl QuantityWindow {
             if y1 <= y0 {
                 continue;
             }
-            let band = self
-                .paint_rows(t, fonts, now, y0 as u32, y1 as u32)
-                .to_premul_rgba8();
+            let mut c = std::mem::replace(&mut self.canvas, Canvas::new(0, 0));
+            self.paint_rows_into(&mut c, t, fonts, now, y0 as u32, y1 as u32);
+            let band = c.to_premul_rgba8();
+            self.canvas = c;
             let at = (y0 * w * 4) as usize;
             self.shown[at..at + band.len()].copy_from_slice(&band);
         }
@@ -388,18 +395,35 @@ impl QuantityWindow {
     }
 
     /// Ganzes Fensterbild: Blatt, Fuge zum Hauptfenster, Titelleiste.
+    #[cfg(test)]
     pub fn paint(&self, t: &Theme, fonts: &Fonts, now: Instant) -> Canvas {
         self.paint_rows(t, fonts, now, 0, self.h)
     }
 
     /// Ausschnitt des Fensterbilds, Zeilen `y0..y1`.
+    #[cfg(test)]
     fn paint_rows(&self, t: &Theme, fonts: &Fonts, now: Instant, y0: u32, y1: u32) -> Canvas {
+        let mut c = Canvas::new(0, 0);
+        self.paint_rows_into(&mut c, t, fonts, now, y0, y1);
+        c
+    }
+
+    /// Wie [`QuantityWindow::paint_rows`] auf eine vorhandene Leinwand.
+    fn paint_rows_into(
+        &self,
+        c: &mut Canvas,
+        t: &Theme,
+        fonts: &Fonts,
+        now: Instant,
+        y0: u32,
+        y1: u32,
+    ) {
         let (w, h) = (self.w as usize, y1.saturating_sub(y0) as usize);
-        let mut c = Canvas::new(w, h);
+        c.reuse(w, h);
         c.clear(t.ui.sheet_bg);
         c.set_origin(0.0, y0 as f32);
         if let Some(l) = &self.list {
-            l.paint(&mut c, t, fonts, now);
+            l.paint(c, t, fonts, now);
         }
         // Titelleiste nur, wenn der Ausschnitt sie berührt
         if y0 < self.title.height() {
@@ -416,7 +440,6 @@ impl QuantityWindow {
             };
             c.fill_rect(0.0, 0.0, (SEAM * s).max(1.0), self.h as f32, col);
         }
-        c
     }
 }
 

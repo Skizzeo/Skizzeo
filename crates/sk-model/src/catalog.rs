@@ -11,7 +11,7 @@ use crate::attr::{Fill, Pen, Surface};
 use crate::guid::Guid;
 use crate::id::{Arena, Id};
 use crate::library::{
-    Bearing, LayerSet, LayerSetId, Material, MaterialDisplay, MaterialId, TypeCategory,
+    Bearing, LayerSet, LayerSetId, MatCategory, Material, MaterialDisplay, MaterialId, TypeCategory,
 };
 use crate::model::{free_code, same_type, Model, ETICS_TYPE_GUID, EXTERIOR_TYPE_GUID};
 use crate::szo::{
@@ -63,6 +63,32 @@ impl PartialEq for Library {
 }
 
 impl Library {
+    /// Kurzzeichen der Typen mit ungültigem Deckenauflager (Regel 21, wie
+    /// [`Model::bearing_problem`]). Sie werden übernommen und wie „ganze
+    /// tragende Schicht“ gebaut.
+    pub fn invalid_bearings(&self) -> Vec<String> {
+        self.types
+            .iter()
+            .filter(|(_, t)| match t.bearing {
+                Bearing::Core => false,
+                Bearing::Depth { strip, .. } => {
+                    t.bearing_problem().is_some()
+                        || !self
+                            .materials
+                            .get(strip)
+                            .is_some_and(|m| m.category == MatCategory::Insulation)
+                }
+            })
+            .map(|(_, t)| {
+                if t.code.is_empty() {
+                    t.name.clone()
+                } else {
+                    t.code.clone()
+                }
+            })
+            .collect()
+    }
+
     /// Alle Typen eines Projekts mit seinen Standardtypen, z. B. der
     /// eingebaute Startbestand aus [`Model::new`].
     pub fn from_model(m: &Model) -> Library {
@@ -526,8 +552,10 @@ pub fn import_type(m: &mut Model, lib: &Library, g: Guid) -> Option<LayerSetId> 
         ..t
     };
     match existing {
-        Some(id) => m.set_layer_set(id, new).then_some(id),
-        None => m.add_layer_set(new),
+        // Ein ungültiges Auflager kommt mit und wird wie „ganze tragende
+        // Schicht“ gebaut (wie aus einer .szo); der Katalog meldet es
+        Some(id) => m.adopt_set_layer_set(id, new).then_some(id),
+        None => m.adopt_layer_set(new),
     }
 }
 
