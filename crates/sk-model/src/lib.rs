@@ -43,11 +43,12 @@ pub use library::{
     MaterialDisplay, MaterialId, MaterialLayer, TypeCategory, TYPE_PROPS,
 };
 pub use model::{
-    building_index, refusal_lines, refusal_text, Cut, Defaults, Deleted, Model, NumberError,
-    Project, Refusal, CAVITY_TYPE_GUID, CUT_NAMES, ETICS_TYPE_GUID, EXTERIOR_TYPE_GUID, FLOOR_PART,
-    FLOOR_THICKNESS, FOOTING_PART, FOOTING_WIDTH, INTERIOR_115_TYPE_GUID, INTERIOR_240_TYPE_GUID,
-    INTERIOR_TYPE_GUID, MAX_FOUNDATION, MAX_SOFFIT, MIN_CLEAR, MIN_FOOTING, MIN_RECESS, MIN_SOFFIT,
-    MONO_TYPE_GUID, SLAB_PART, SLAB_THICKNESS, SOFFIT_PART, SOFFIT_THICKNESS, STRIP_PART,
+    building_index, refusal_lines, refusal_text, Cut, Defaults, Deleted, FlushError, Model,
+    NumberError, Project, Refusal, CAVITY_TYPE_GUID, CUT_NAMES, ETICS_TYPE_GUID,
+    EXTERIOR_TYPE_GUID, FLOOR_PART, FLOOR_THICKNESS, FOOTING_PART, FOOTING_WIDTH,
+    INTERIOR_115_TYPE_GUID, INTERIOR_240_TYPE_GUID, INTERIOR_TYPE_GUID, MAX_FOUNDATION, MAX_SOFFIT,
+    MIN_CLEAR, MIN_FOOTING, MIN_RECESS, MIN_SOFFIT, MONO_TYPE_GUID, SLAB_PART, SLAB_THICKNESS,
+    SOFFIT_PART, SOFFIT_THICKNESS, STRIP_PART,
 };
 pub use qto::{
     edge_strip_qto, edge_strip_qto_of, floor_qto, floor_qto_of, foundation_qto, foundation_qto_of,

@@ -2036,6 +2036,108 @@ impl Model {
         self.set_offset(wall, 0.0).is_some() && self.set_linked(wall, true)
     }
 
+    /// „Bündig setzen“ mit Zielwand (Jörn 07.10. 07:53): `wall` rückt an
+    /// `target`, danach ist das Paar gekoppelt. Steht `target` unter `wall`,
+    /// ist das [`Model::set_flush`]. Steht es darüber, wandert das Segment
+    /// des Zuges darunter wie beim Ziehen am Fuß (Gummiband): Gründung,
+    /// Decke und die gekoppelten Wände darüber gehen mit, gelöste bleiben
+    /// stehen; die Zielwand selbst bleibt, wo sie ist. Ändert nichts, wenn
+    /// es abgelehnt wird.
+    pub fn flush_to(
+        &mut self,
+        wall: ElementId,
+        target: ElementId,
+    ) -> Result<Vec<RunId>, FlushError> {
+        if self.wall_below(wall) == Some(target) {
+            return if self.stack_offset(wall) == Some((0.0, true)) {
+                Ok(Vec::new())
+            } else if self.set_offset(wall, 0.0).is_some() && self.set_linked(wall, true) {
+                Ok(self.segment_of(wall).map(|s| vec![s.0]).unwrap_or_default())
+            } else {
+                Err(FlushError::Invalid)
+            };
+        }
+        let (run, pts) = self.flush_up_points(wall, target)?;
+        let (d, linked) = self.stack_offset(target).ok_or(FlushError::NotPartners)?;
+        if d == 0.0 {
+            if !linked {
+                self.set_linked(target, true);
+            }
+            return Ok(Vec::new());
+        }
+        if linked {
+            self.set_linked(target, false);
+        }
+        let Some(out) = self.set_run_points(run, &pts) else {
+            if linked {
+                self.set_linked(target, true);
+            }
+            return Err(FlushError::Invalid);
+        };
+        self.set_linked(target, true);
+        Ok(out)
+    }
+
+    /// Ginge [`Model::flush_to`]? Für den Hinweis beim Überfahren der
+    /// Zielwand; ändert nichts.
+    pub fn can_flush_to(&self, wall: ElementId, target: ElementId) -> Result<(), FlushError> {
+        if self.wall_below(wall) == Some(target) {
+            let (run, seg) = self.segment_of(wall).ok_or(FlushError::NotPartners)?;
+            let below = self.run_below(run).ok_or(FlushError::NotPartners)?;
+            let lower = self.base_chain(below).ok_or(FlushError::Invalid)?;
+            let mut offsets: Vec<f64> = self
+                .run(run)
+                .ok_or(FlushError::Invalid)?
+                .segments
+                .iter()
+                .map(|w| self.stack_offset(*w).map_or(0.0, |o| o.0))
+                .collect();
+            *offsets.get_mut(seg).ok_or(FlushError::Invalid)? = 0.0;
+            return match lower.with_segment_offsets(&offsets) {
+                Some(c) if room_inside(&c) && self.lengths_fit(run, &c, &lower) => Ok(()),
+                _ => Err(FlushError::Invalid),
+            };
+        }
+        let (run, pts) = self.flush_up_points(wall, target)?;
+        // Probe mit gelöster Zielwand: sie bleibt stehen, der Rest folgt
+        let mut probe = self.clone();
+        if let Some(ElementKind::Wall(Wall {
+            coupling: Some(c), ..
+        })) = probe.elements.get_mut(target).map(|e| &mut e.kind)
+        {
+            c.linked = false;
+        }
+        if probe.stack_fits(run, &pts) {
+            Ok(())
+        } else {
+            Err(FlushError::Invalid)
+        }
+    }
+
+    /// Zug von `wall` und seine neuen Punkte, wenn `wall` an die Wand
+    /// `target` darüber rückt.
+    fn flush_up_points(
+        &self,
+        wall: ElementId,
+        target: ElementId,
+    ) -> Result<(RunId, Vec<Vec3>), FlushError> {
+        if self.wall_below(target) != Some(wall) {
+            return Err(FlushError::NotPartners);
+        }
+        // Eine gestapelte Wand an die darüber: ihr eigener Versatz müsste
+        // mitwandern (drei Geschosse, noch nicht vorgesehen)
+        if self.stack_offset(wall).is_some() {
+            return Err(FlushError::Unsupported);
+        }
+        let (run, seg) = self.segment_of(wall).ok_or(FlushError::NotPartners)?;
+        let (d, _) = self.stack_offset(target).ok_or(FlushError::NotPartners)?;
+        let c = self.chain(run).ok_or(FlushError::Invalid)?;
+        let c = c
+            .with_segment_moved(seg, c.outward_sign() * d)
+            .ok_or(FlushError::Invalid)?;
+        Ok((run, c.points))
+    }
+
     /// Legt den Zug `up` auf den Zug `below` (mit den Versätzen seiner Wände)
     /// und koppelt Wand k an Wand k darunter; gelöste Wände bleiben gelöst
     /// und stehen still.
@@ -5115,6 +5217,30 @@ fn match_segments(old: &[(Vec3, Vec3)], new: &[(Vec3, Vec3)]) -> Vec<Option<usiz
 /// entstehen nicht für Reste darunter, etwa aus alten Dateien (Review 1t T1).
 pub const MIN_OFFSET: f64 = 20.0;
 
+/// Warum „Bündig setzen“ an eine Zielwand nicht geht ([`Model::flush_to`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlushError {
+    /// Die Zielwand steht nicht direkt über oder unter der Wand.
+    NotPartners,
+    /// Die Wand steht selbst auf einem Geschoss darunter (mehr als zwei
+    /// Geschosse).
+    Unsupported,
+    /// Ein Wandrest würde zu kurz (Regel 30), der Umriss kreuzte sich oder
+    /// es bliebe kein Raum.
+    Invalid,
+}
+
+impl FlushError {
+    /// Text für die Hinweiskarte.
+    pub fn message(self) -> &'static str {
+        match self {
+            FlushError::NotPartners => "Die Zielwand steht nicht direkt über oder unter dieser Wand.",
+            FlushError::Unsupported => "Diese Wand steht selbst auf einer Wand darunter; sie kann nicht an die Wand darüber rücken.",
+            FlushError::Invalid => "Bündig geht hier nicht: Ein Wandstück würde zu kurz oder der Grundriss ungültig.",
+        }
+    }
+}
+
 /// Bleibt innerhalb der Wand eines geschlossenen Zuges ein Raum (Innenfläche
 /// mit dem robusten Versatz)? Sonst entstünde keine Decke (G7 K2).
 fn room_inside(c: &WallChain) -> bool {
@@ -5888,6 +6014,111 @@ mod og_phase2 {
         let c = m.chain(eg).unwrap();
         let c = c.with_segment_moved(3, c.outward_sign() * -300.0).unwrap();
         assert!(m.set_run_points(eg, &c.points).is_none());
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    #[test]
+    fn eg_rueckt_an_die_og_wand() {
+        // Jörn 07.10. 07:53: Zielwand frei. OG-Nordwand gelöst bei +300,
+        // dann „Bündig setzen“ mit Ziel OG: die EG-Nordwand rückt 300 nach
+        // außen, die OG-Wand bleibt, das Paar ist gekoppelt bei 0.
+        let (mut m, eg, og) = gebaeude();
+        let w = m.wall_at(og, 1).unwrap();
+        let e = m.wall_at(eg, 1).unwrap();
+        set_coupling(&mut m, w, None);
+        assert!(drag(&mut m, og, 1, 300.0));
+        assert_eq!(m.can_flush_to(e, w), Ok(()));
+        assert_eq!(m.can_flush_to(e, e), Err(FlushError::NotPartners));
+        assert_eq!(
+            m.can_flush_to(w, m.wall_at(eg, 0).unwrap()),
+            Err(FlushError::NotPartners)
+        );
+        let out = m.flush_to(e, w).unwrap();
+        assert!(out.contains(&eg) && out.contains(&og));
+        m.sync_soffits();
+        assert_eq!(ys(&m, eg), (8300.0, 8300.0));
+        assert_eq!(ys(&m, og), (8300.0, 8300.0));
+        assert_eq!(m.stack_offset(w), Some((0.0, true)));
+        // Die gekoppelten OG-Nachbarn folgen den EG-Ecken, alles bündig
+        assert_eq!(m.run(og).unwrap().points, m.run(eg).unwrap().points);
+        assert!(m.chain(eg).unwrap().joints.overhang.is_none());
+        assert!(m.soffit_floors().is_empty());
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        // Ein zweites Mal ändert nichts
+        assert_eq!(m.flush_to(e, w), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn eg_rueckt_nach_innen_und_gekoppelt_mit_versatz() {
+        // Gekoppelt bei −300 (Rücksprung): Ziel OG zieht die EG-Wand 300 nach
+        // innen; ein anderes gelöstes OG-Segment bleibt stehen
+        let (mut m, eg, og) = mit_versatz(-300.0);
+        let w = m.wall_at(og, 1).unwrap();
+        let e = m.wall_at(eg, 1).unwrap();
+        let ost = m.wall_at(og, 2).unwrap();
+        assert!(m.set_linked(ost, false));
+        assert!(m.set_offset(ost, 200.0).is_some());
+        let ost_x = m.run(og).unwrap().points[2].x;
+        assert!(m.flush_to(e, w).is_ok());
+        m.sync_soffits();
+        assert_eq!(ys(&m, eg), (7700.0, 7700.0));
+        assert_eq!(ys(&m, og), (7700.0, 7700.0));
+        assert_eq!(m.stack_offset(w), Some((0.0, true)));
+        assert_eq!(m.run(og).unwrap().points[2].x, ost_x);
+        assert!(m
+            .stack_offset(ost)
+            .is_some_and(|(d, l)| near(d, 200.0) && !l));
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    #[test]
+    fn bündig_ans_eg_wie_bisher_und_abgelehnt_ohne_aenderung() {
+        let (mut m, eg, og) = mit_versatz(300.0);
+        let w = m.wall_at(og, 1).unwrap();
+        let e = m.wall_at(eg, 1).unwrap();
+        // Ziel EG: das OG rückt (bisheriges „Bündig setzen“)
+        assert!(m.flush_to(w, e).is_ok());
+        assert_eq!(ys(&m, og), (8000.0, 8000.0));
+        assert_eq!(ys(&m, eg), (8000.0, 8000.0));
+        // EG mit 200-mm-Sprung, OG-Wand rechts davon gelöst bei −300: rückte
+        // die EG-Wand ans OG, kehrte sich der EG-Sprung um → abgelehnt,
+        // nichts ändert sich
+        let mut m = Model::with_seed(73);
+        let b = m.add_building(2);
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(5000.0, 8000.0, 0.0),
+            vec3(5000.0, 8200.0, 0.0),
+            vec3(10000.0, 8200.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        let eg = m.build_from_polygon(b, &pts).unwrap();
+        let og = m.runs_above(eg)[0];
+        let w = m.wall_at(og, 3).unwrap();
+        let e = m.wall_at(eg, 3).unwrap();
+        // die Wand links vom Sprung gelöst bei −300: oben bleibt der Sprung
+        // 200 lang (7700 → 7900), unten kehrte er sich um
+        let a = m.wall_at(og, 1).unwrap();
+        assert!(m.set_linked(a, false));
+        assert!(m.set_offset(a, -300.0).is_some());
+        assert!(m.set_linked(w, false));
+        assert!(m.set_offset(w, -300.0).is_some());
+        m.sync_soffits();
+        let before = (
+            m.run(eg).unwrap().points.clone(),
+            m.run(og).unwrap().points.clone(),
+        );
+        assert_eq!(m.can_flush_to(e, w), Err(FlushError::Invalid));
+        assert_eq!(m.flush_to(e, w), Err(FlushError::Invalid));
+        assert_eq!(
+            before,
+            (
+                m.run(eg).unwrap().points.clone(),
+                m.run(og).unwrap().points.clone()
+            )
+        );
+        assert_eq!(m.stack_offset(w), Some((-300.0, false)));
         assert!(m.check().is_empty(), "{:?}", m.check());
     }
 

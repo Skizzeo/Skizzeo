@@ -129,6 +129,11 @@ fn drag_point(cam: &Camera, x: f64, y: f64, w: f64, h: f64, z: f64) -> Option<Ve
     }
 }
 
+/// Texte der Zielwahl „Bündig setzen“ (E20 §3) unter den Namen, die die
+/// Abnahme A174 erwartet; sie stehen in [`crate::flush_pick`].
+#[cfg(test)]
+pub use crate::flush_pick::{CARD as FLUSH_PICK, REFUSED as FLUSH_REFUSED};
+
 /// Fußlinie des Partners darunter in 3D (OG Phase 2): durchgehend in
 /// `link_on`, Breite `size.link_line`, über allem.
 pub fn partner_line(a: Vec3, b: Vec3, scale: f32, theme: &Theme) -> Helper {

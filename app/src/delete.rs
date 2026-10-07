@@ -157,6 +157,9 @@ pub struct HintCard {
     hover: bool,
     /// Punkt in `ui.danger` statt Akzent (es kann Arbeit verloren gehen).
     pub danger: bool,
+    /// Neben den Bauteilen statt darunter: darüber, sonst darunter, sonst
+    /// seitlich; nie über ihnen (E20 §6.4).
+    pub beside: bool,
 }
 
 /// Maße der Karte (dip): Rand links bis zum Punkt, Punkt, Text ab, Rand
@@ -187,7 +190,13 @@ impl HintCard {
             link_hover: false,
             hover: false,
             danger: false,
+            beside: false,
         }
+    }
+
+    /// Stehen lassen, bis sie ausdrücklich ausgeblendet wird (Zielkarte).
+    pub fn hold(&mut self) {
+        self.deadline = self.start + Duration::from_secs(24 * 3600);
     }
 
     /// Sofort ausblenden (in `fade_ms`), auch unter der Maus.
@@ -228,6 +237,21 @@ impl HintCard {
         let (ww, wh, top) = win;
         let gap = 14.0 * s;
         let (x, y) = match bounds {
+            Some(b) if self.beside => {
+                let x = b.x + (b.w - w) * 0.5;
+                let (above, below) = (b.y - gap - h, b.y + b.h + gap);
+                if above >= top + 8.0 * s {
+                    (x, above)
+                } else if below + h <= wh - 8.0 * s {
+                    (x, below)
+                } else if b.x + b.w + gap + w <= ww - 8.0 * s {
+                    (b.x + b.w + gap, b.y + (b.h - h) * 0.5)
+                } else if b.x - gap - w >= 8.0 * s {
+                    (b.x - gap - w, b.y + (b.h - h) * 0.5)
+                } else {
+                    (x, wh - h - 24.0 * s)
+                }
+            }
             Some(b) => {
                 let x = b.x + (b.w - w) * 0.5;
                 let below = b.y + b.h + gap;

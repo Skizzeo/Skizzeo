@@ -13,6 +13,7 @@ mod catalog_view;
 mod delete;
 mod document;
 mod draw_table;
+mod flush_pick;
 mod link_view;
 mod menu;
 mod nav;
@@ -179,6 +180,8 @@ const OVERLAY_CARD_SCRIM: usize = OVERLAY_HINT + 3;
 const OVERLAY_CARD: usize = OVERLAY_HINT + 4;
 /// Hinweis an der Maus, über allem.
 const OVERLAY_TIP: usize = OVERLAY_HINT + 5;
+/// Maßzahl am Weg beim „Bündig setzen“ (E20).
+const OVERLAY_PICK: usize = OVERLAY_HINT + 6;
 
 /// Versatz am Band beim Ziehen (OG Phase 2): „Versatz +0,30“, unter 2 cm
 /// „bündig“.
@@ -599,8 +602,19 @@ struct App {
     chip_hover: Option<sk_model::ElementId>,
     /// Die Statuszeile zeigt den Hinweis zum Ziehen einer gestapelten Wand.
     drag_notice: bool,
-    /// „Bündig setzen“ gleitet: Wand, ihr Zug, Versatz am Anfang, Beginn.
-    flush_anim: Option<(sk_model::ElementId, sk_model::RunId, f64, Instant)>,
+    /// „Bündig setzen“ gleitet: rückende Wand, ihr Zug, Versatz am
+    /// Anfang, Beginn, Zielwand.
+    flush_anim: Option<(
+        sk_model::ElementId,
+        sk_model::RunId,
+        f64,
+        Instant,
+        sk_model::ElementId,
+    )>,
+    /// Zielwahl beim „Bündig setzen“ (E20) und ihr Maß im Bild (Schlüssel
+    /// des gezeichneten Bildes).
+    pick: Option<flush_pick::FlushPick>,
+    pick_label: Option<(String, u32, u64)>,
     /// Fehlschläge des Sicherns in Folge (F-13 §8) und ein Befehl aus einem
     /// Verweis, der das Fenster braucht („Jetzt speichern“).
     save_fail: autosave::FailNotice,
@@ -871,7 +885,7 @@ impl App {
     /// Das Band lässt sich in allen Ansichten ziehen, nur nicht während einer
     /// Wandeingabe oder an der Schnittlinie.
     fn edit_enabled(&self) -> bool {
-        !self.tool.is_active() && !self.sect.is_busy()
+        !self.tool.is_active() && !self.sect.is_busy() && self.pick.is_none()
     }
 
     /// Schnittlinie greifen nur im Grundriss und ohne angefangenen Wandzug.
@@ -2293,6 +2307,9 @@ impl App {
             }
             return !self.quit;
         }
+        if self.pick.is_some() && self.handle_pick(e) {
+            return !self.quit;
+        }
         // Hinweis in der Statuszeile: erst nach Nachfrage, Fenstern und
         // Dateimenü, die den Klick zuerst bekommen
         if let Event::MouseDown {
@@ -3015,6 +3032,10 @@ impl App {
     /// und Aufleuchten beenden.
     fn sync_erase(&mut self) {
         let now = self.now();
+        // Nach der Ablehnungskarte kommt die Zielkarte wieder
+        if self.pick.is_some() && self.hint.is_none() {
+            self.pick_card();
+        }
         if let Some((t0, _)) = &self.erase_flash {
             if now.saturating_sub(*t0) as f32 >= self.theme.size.flash_ms {
                 self.erase_flash = None;
@@ -3839,13 +3860,17 @@ impl App {
         if self.scene.set_linked(wall, !linked) {
             self.upload_model();
             self.sync_props();
+            // Neben dem Paar, damit die Karte keine der Wände verdeckt (E20 §6.4)
+            let pair = [Some(wall), self.scene.model().wall_below(wall)];
             self.hint = (!linked && offset != 0.0).then(|| {
-                delete::HintCard::new(
+                let mut h = delete::HintCard::new(
                     relink_lines(offset),
                     Some(("Bündig setzen", delete::Link::Flush(wall))),
-                    vec![wall],
+                    pair.into_iter().flatten().collect(),
                     Instant::now(),
-                )
+                );
+                h.beside = true;
+                h
             });
             self.hint_dirty = true;
             self.redraw = true;
@@ -3877,26 +3902,182 @@ impl App {
         }
     }
 
-    /// „Bündig setzen“ (Hinweis oder Paneel): die OG-Wand gleitet in
-    /// `anim_ms` (ease-out) auf das EG; ein Schritt.
+    /// „Bündig setzen“ (Hinweis oder Paneel): beginnt die Zielwahl (E20);
+    /// ohne Versatz wird nur gekoppelt.
     fn flush(&mut self, wall: sk_model::ElementId) {
         self.finish_flush();
-        let m = self.scene.model();
-        let (Some((o, _)), Some((run, _))) = (m.stack_offset(wall), m.segment_of(wall)) else {
+        self.cancel_pick(false);
+        match flush_pick::FlushPick::start(self.scene.model(), wall) {
+            Some(p) => {
+                self.pick = Some(p);
+                self.pick_card();
+                self.refresh_cursor();
+            }
+            None => {
+                if let Some(below) = self.scene.model().wall_below(wall) {
+                    self.flush_now(wall, below);
+                }
+            }
+        }
+    }
+
+    /// Zielkarte „Zielwand anklicken“ neben dem Paar; sie bleibt, solange
+    /// die Zielwahl läuft.
+    fn pick_card(&mut self) {
+        let Some(p) = &self.pick else {
             return;
         };
-        if self.theme.size.anim_ms > 0.0 && o != 0.0 {
+        let lines = flush_pick::CARD.map(String::from).to_vec();
+        let mut h = delete::HintCard::new(lines, None, p.candidates().to_vec(), Instant::now());
+        h.beside = true;
+        h.hold();
+        self.hint = Some(h);
+        self.hint_dirty = true;
+        self.redraw = true;
+    }
+
+    /// Zielwahl beenden; `notice`: „Bündig setzen abgebrochen.“ zeigen.
+    fn cancel_pick(&mut self, notice: bool) {
+        if self.pick.take().is_none() {
+            return;
+        }
+        let fade = self.theme.size.fade_ms * (self.theme.size.anim_ms > 0.0) as u8 as f32;
+        if let Some(h) = self.hint.as_mut().filter(|h| h.beside) {
+            h.dismiss(Instant::now(), fade);
+        }
+        if notice {
+            self.drag_notice = false;
+            self.notice = Some(Notice {
+                text: flush_pick::CANCELLED.into(),
+                since: None,
+                rect: (0.0, 0.0, 0.0, 0.0),
+                time: std::time::Duration::from_secs(3),
+                catalog: false,
+            });
+        }
+        self.refresh_cursor();
+        self.redraw = true;
+    }
+
+    /// Kandidat unter dem Bildpunkt (Ansicht): das Bauteil unter der Maus,
+    /// im Grundriss auch der Fuß der OG-Wand.
+    fn pick_hit(&mut self, x: f64, y: f64) -> Option<sk_model::ElementId> {
+        let (vw, vh, _) = self.view_size();
+        let (view, plane) = (self.ui.view, self.plane());
+        let hit = selection::pick_at(&mut self.scene, &self.cam, view, plane, x, y, vw, vh);
+        let p = self.pick.as_ref()?;
+        if p.target_of(hit).is_some() || view != ViewKind::Plan {
+            return hit;
+        }
+        p.plan_hit(&self.scene, &self.cam, x, y, vw, vh).or(hit)
+    }
+
+    /// Maus und Tasten während der Zielwahl. `true`, wenn sie das Ereignis
+    /// genommen hat; Bewegungen und Klicks auf Paneele gehen weiter.
+    fn handle_pick(&mut self, e: Event) -> bool {
+        let model = self.scene.model();
+        if !self.pick.as_mut().is_some_and(|p| p.refresh(model)) {
+            self.cancel_pick(false);
+            return false;
+        }
+        let th = self.top() as f64;
+        let in_view = |a: &App, x: f64, y: f64| {
+            y >= th && !a.ui.over(x, y, a.w, a.top()) && a.wheel_hit(x, y).is_none()
+        };
+        let act = match e {
+            Event::MouseMove { x, y, .. } => {
+                let hit = if in_view(self, x, y) {
+                    self.pick_hit(x, y - th)
+                } else {
+                    None
+                };
+                if self.pick.as_mut().is_some_and(|p| p.hover(hit)) {
+                    self.redraw = true;
+                }
+                return false;
+            }
+            Event::MouseLeave => {
+                if self.pick.as_mut().is_some_and(|p| p.hover(None)) {
+                    self.redraw = true;
+                }
+                return false;
+            }
+            Event::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
+                if !in_view(self, x, y) {
+                    self.cancel_pick(false);
+                    return false;
+                }
+                let hit = self.pick_hit(x, y - th);
+                self.pick
+                    .as_ref()
+                    .map_or(flush_pick::Act::Cancel, |p| p.click(hit))
+            }
+            Event::MouseDown {
+                button: MouseButton::Right,
+                ..
+            } => flush_pick::Act::Cancel,
+            Event::Key {
+                key, down: true, ..
+            } => self
+                .pick
+                .as_ref()
+                .map_or(flush_pick::Act::None, |p| p.key(key)),
+            _ => return false,
+        };
+        match act {
+            flush_pick::Act::None => return false,
+            flush_pick::Act::Cancel => self.cancel_pick(true),
+            flush_pick::Act::Flush(w, to) => {
+                self.cancel_pick(false);
+                self.flush_to(w, to);
+            }
+            flush_pick::Act::Refused(t, e) => {
+                let lines = flush_pick::refused_lines(t, e).to_vec();
+                let anchor = self
+                    .pick
+                    .as_ref()
+                    .map_or(Vec::new(), |p| p.candidates().to_vec());
+                let mut h = delete::HintCard::new(lines, None, anchor, Instant::now());
+                h.danger = true;
+                h.beside = true;
+                self.hint = Some(h);
+                self.hint_dirty = true;
+                self.redraw = true;
+            }
+        }
+        true
+    }
+
+    /// Bündig setzen: `wall` gleitet in `anim_ms` (ease-out) an die Wand
+    /// `target`; ein Schritt.
+    fn flush_to(&mut self, wall: sk_model::ElementId, target: sk_model::ElementId) {
+        self.finish_flush();
+        let m = self.scene.model();
+        let upper = if m.wall_below(wall) == Some(target) {
+            wall
+        } else {
+            target
+        };
+        let (Some((o, _)), Some((run, _))) = (m.stack_offset(upper), m.segment_of(wall)) else {
+            return;
+        };
+        if self.theme.size.anim_ms > 0.0 && o != 0.0 && m.can_flush_to(wall, target).is_ok() {
             self.scene.begin("Bündig gesetzt");
-            self.flush_anim = Some((wall, run, o, Instant::now()));
+            self.flush_anim = Some((wall, run, o, Instant::now(), target));
             self.redraw = true;
             return;
         }
-        self.flush_now(wall);
+        self.flush_now(wall, target);
     }
 
     /// Ein Bild des Gleitens; am Ende der eigentliche Schritt.
     fn step_flush(&mut self) {
-        let Some((wall, _, from, start)) = self.flush_anim else {
+        let Some((wall, _, from, start, target)) = self.flush_anim else {
             return;
         };
         let u = start.elapsed().as_secs_f64() * 1000.0 / self.theme.size.anim_ms as f64;
@@ -3905,7 +4086,7 @@ impl App {
             return;
         }
         let e = 1.0 - (1.0 - u).powi(3);
-        if self.scene.set_offset(wall, from * (1.0 - e)) {
+        if self.scene.glide_flush(wall, target, from * (1.0 - e)) {
             self.upload_live();
         }
         self.redraw = true;
@@ -3913,23 +4094,28 @@ impl App {
 
     /// Gleiten sofort beenden (am Ende oder bei der nächsten Eingabe).
     fn finish_flush(&mut self) {
-        if let Some((wall, ..)) = self.flush_anim.take() {
+        if let Some((wall, .., target)) = self.flush_anim.take() {
             self.scene.rollback();
-            self.flush_now(wall);
+            self.flush_now(wall, target);
         }
     }
 
-    fn flush_now(&mut self, wall: sk_model::ElementId) {
-        if self.scene.set_flush(wall) {
+    fn flush_now(&mut self, wall: sk_model::ElementId, target: sk_model::ElementId) {
+        if self.scene.flush_to(wall, target) == Ok(true) {
             self.upload_model();
             self.sync_props();
+            self.drag_notice = false;
             self.notice = Some(Notice {
-                text: "OG-Wand bündig gesetzt.".into(),
+                text: flush_pick::done_text(self.scene.model(), wall, target).into(),
                 since: None,
                 rect: (0.0, 0.0, 0.0, 0.0),
                 time: std::time::Duration::from_secs(5),
                 catalog: false,
             });
+            // Die Zielwand leuchtet einmal kurz
+            if self.theme.size.anim_ms > 0.0 && self.theme.size.flash_ms > 0.0 {
+                self.erase_flash = Some((self.now(), vec![target]));
+            }
             self.redraw = true;
         }
     }
@@ -3955,16 +4141,23 @@ impl App {
     /// Statuszeile beim Ziehen einer gestapelten Wand (OG Phase 2): steht,
     /// solange gezogen wird.
     fn sync_drag_notice(&mut self) {
-        let want = self.edit.stack_drag(&self.scene).map(|d| match d {
-            wall_edit::StackDrag::Free => {
-                "Kette gelöst: nur die OG-Wand bewegt sich, das EG bleibt stehen."
-            }
-            wall_edit::StackDrag::Ctrl => "Strg: nur diese Wand, die Kette bleibt geschlossen.",
-        });
+        let want = self
+            .edit
+            .stack_drag(&self.scene)
+            .map(|d| match d {
+                wall_edit::StackDrag::Free => {
+                    "Kette gelöst: nur die OG-Wand bewegt sich, das EG bleibt stehen.".to_string()
+                }
+                wall_edit::StackDrag::Ctrl => {
+                    "Strg: nur diese Wand, die Kette bleibt geschlossen.".to_string()
+                }
+            })
+            // Zielwahl beim „Bündig setzen“: was über dem Kandidaten geschieht
+            .or_else(|| self.pick.as_ref().and_then(|p| p.status()));
         match want {
             Some(t) if self.notice.as_ref().is_none_or(|n| n.text != t) => {
                 self.notice = Some(Notice {
-                    text: t.into(),
+                    text: t,
                     since: None,
                     rect: (0.0, 0.0, 0.0, 0.0),
                     time: std::time::Duration::from_secs(3600),
@@ -4588,6 +4781,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         chip_hover: None,
         drag_notice: false,
         flush_anim: None,
+        pick: None,
+        pick_label: None,
         save_fail: autosave::FailNotice::default(),
         queued_command: None,
         hint: None,
@@ -4838,6 +5033,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 sk_platform::Cursor::Hand
             }
             (None, None) if a.chip_hover.is_some() => sk_platform::Cursor::Hand,
+            (None, None) if a.pick.as_ref().is_some_and(|p| p.hover.is_some()) => {
+                sk_platform::Cursor::Hand
+            }
             (None, None) if a.sect.over_mark() => sk_platform::Cursor::Hand,
             (None, None) => a.ui.cursor(),
         };
@@ -5014,6 +5212,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 helpers.extend(level_guide(v, a.scene.bounds(), z, scale, &a.theme));
             }
             helpers.extend(a.edit.helpers(&a.scene, &a.cam, scale, !drawing, &a.theme));
+            if let Some(p) = &a.pick {
+                helpers.extend(p.helpers(&a.scene, a.ui.view, scale, &a.theme));
+            }
             helpers.extend(a.tool.helpers(&a.cam, scale, &a.theme));
             a.renderer.set_helpers(&helpers);
 
@@ -5080,6 +5281,40 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                         if a.mark_keys[i].take().is_some() {
                             a.renderer.set_overlay(OVERLAY_MARKS + i, 0, 0, 0, 0, &[]);
                         }
+                    }
+                }
+            }
+
+            // Maßzahl am Weg der rückenden Wand (Zielwahl, E20)
+            let label = a
+                .pick
+                .as_ref()
+                .and_then(|p| p.path(&a.scene))
+                .and_then(|(p, q, t)| a.cam.project((p + q) * 0.5, vw, vh).map(|at| (at, t)));
+            match label {
+                Some(((x, y), t)) => {
+                    let key = (t, scale.to_bits(), a.theme.rev);
+                    if a.pick_label.as_ref() != Some(&key) {
+                        let c = flush_pick::paint_label(&a.ui.fonts, &key.0, scale, &a.theme);
+                        let px = c.to_premul_rgba8();
+                        a.renderer.set_overlay(
+                            OVERLAY_PICK,
+                            0,
+                            0,
+                            c.width as u32,
+                            c.height as u32,
+                            &px,
+                        );
+                        a.pick_label = Some(key);
+                    }
+                    let (w, h) = a.renderer.overlay_size(OVERLAY_PICK);
+                    let x = (x - w as f64 * 0.5).round() as i32;
+                    let y = (y + th as f64 - h as f64 * 0.5).round() as i32;
+                    a.renderer.move_overlay(OVERLAY_PICK, x, y);
+                }
+                None => {
+                    if a.pick_label.take().is_some() {
+                        a.renderer.set_overlay(OVERLAY_PICK, 0, 0, 0, 0, &[]);
                     }
                 }
             }

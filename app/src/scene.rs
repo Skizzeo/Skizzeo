@@ -1673,16 +1673,61 @@ impl Scene {
         self.stack_step(label, wall, |m| m.set_linked(wall, linked))
     }
 
-    /// „Bündig setzen“: Versatz 0 und gekoppelt, ein Schritt.
-    pub fn set_flush(&mut self, wall: sk_model::ElementId) -> bool {
-        if self
-            .model
-            .stack_offset(wall)
-            .is_none_or(|o| o == (0.0, true))
-        {
-            return false;
+    /// „Bündig setzen“ mit Zielwand (Jörn 07.10. 07:53): `wall` rückt an
+    /// `target` (die Wand direkt darüber oder darunter), ein Schritt
+    /// „Bündig gesetzt“. `Ok(false)`, wenn das Paar schon bündig gekoppelt
+    /// ist; `Err` mit dem Grund für die Hinweiskarte, dann ändert sich nichts.
+    pub fn flush_to(
+        &mut self,
+        wall: sk_model::ElementId,
+        target: sk_model::ElementId,
+    ) -> Result<bool, sk_model::FlushError> {
+        self.model.can_flush_to(wall, target)?;
+        let upper = if self.model.wall_below(wall) == Some(target) {
+            wall
+        } else {
+            target
+        };
+        if self.model.stack_offset(upper) == Some((0.0, true)) {
+            return Ok(false);
         }
-        self.stack_step("Bündig gesetzt", wall, |m| m.set_flush(wall))
+        let mut res = Ok(());
+        let ok = self.stack_step("Bündig gesetzt", wall, |m| {
+            res = m.flush_to(wall, target).map(|_| ());
+            res.is_ok()
+        });
+        res.map(|_| ok)
+    }
+
+    /// Ein Bild des Gleitens beim „Bündig setzen“ (im offenen Schritt):
+    /// `wall` rückt an `target`, bis der Versatz des Paars `rest` (mm) ist.
+    /// Rückt die EG-Wand, ist die OG-Wand dabei gelöst und bleibt stehen;
+    /// Platten und Decke folgen wie beim Ziehen am EG.
+    pub fn glide_flush(
+        &mut self,
+        wall: sk_model::ElementId,
+        target: sk_model::ElementId,
+        rest: f64,
+    ) -> bool {
+        if self.model.wall_below(wall) == Some(target) {
+            return self.set_offset(wall, rest);
+        }
+        let Some((now, linked)) = self.model.stack_offset(target) else {
+            return false;
+        };
+        if linked {
+            self.model.set_linked(target, false);
+        }
+        let moved = self.model.segment_of(wall).and_then(|(run, seg)| {
+            let c = self.model.chain(run)?;
+            let c = c.with_segment_moved(seg, c.outward_sign() * (now - rest))?;
+            Some((run, c.points))
+        });
+        let Some((run, pts)) = moved else {
+            return false;
+        };
+        self.set_run_points(run, &pts);
+        true
     }
 
     /// Versatz eingetippt (Paneel): nur dieses Segment, die Kette bleibt, wie
@@ -2257,6 +2302,51 @@ fn mesh_into(m: &mut MeshData, s: &Solid) {
 mod tests {
     use super::*;
     use sk_model::{Pen, RefSide};
+
+    #[test]
+    fn buendig_an_zielwand_ein_schritt() {
+        let mut s = Scene::with_model(Model::with_seed(74));
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        let mut eg = None;
+        assert!(s.edit_model("Gebäude erstellt", |m| {
+            let b = m.add_building(2);
+            eg = m.build_from_polygon(b, &pts);
+            eg.is_some()
+        }));
+        let eg = eg.unwrap();
+        let og = s.model().runs_above(eg)[0];
+        let (w, e) = (
+            s.model().wall_at(og, 1).unwrap(),
+            s.model().wall_at(eg, 1).unwrap(),
+        );
+        assert!(s.set_linked(w, false));
+        assert!(s.type_offset(w, 300.0));
+        let y = |s: &Scene, r| s.model().run(r).unwrap().points[1].y;
+        // Ziel OG: die EG-Wand rückt nach außen, ein Schritt
+        assert_eq!(s.flush_to(e, w), Ok(true));
+        assert_eq!((y(&s, eg), y(&s, og)), (8300.0, 8300.0));
+        assert_eq!(s.model().stack_offset(w), Some((0.0, true)));
+        assert_eq!(s.flush_to(e, w), Ok(false));
+        assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+        assert!(s.undo());
+        assert_eq!((y(&s, eg), y(&s, og)), (8000.0, 8300.0));
+        assert_eq!(s.model().stack_offset(w), Some((300.0, false)));
+        // Ziel EG: das OG rückt wie bisher
+        assert_eq!(s.flush_to(w, e), Ok(true));
+        assert_eq!((y(&s, eg), y(&s, og)), (8000.0, 8000.0));
+        // Keine Partner: Grund, kein Schritt
+        let label = s.undo_label();
+        assert_eq!(
+            s.flush_to(e, s.model().wall_at(og, 0).unwrap()),
+            Err(sk_model::FlushError::NotPartners)
+        );
+        assert_eq!(s.undo_label(), label);
+    }
 
     fn rechteck(x: f64) -> WallChain {
         WallChain {

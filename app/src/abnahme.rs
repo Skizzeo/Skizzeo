@@ -12620,6 +12620,425 @@ mod og_phase2 {
             pruefung(&s);
         }
     }
+
+    // Abnahmetests A169–A173: „Bündig setzen“ mit freier Zielwand (Jörn 07.10.
+    // 07:53: erst „Bündig setzen“, dann die Zielwand anklicken; die andere Wand
+    // des Paars rückt an sie). Vorbelegungen des Koordinators 07:53: beide Wände
+    // des Paars leuchten, Vorschau beim Überfahren, OG-Wand angeklickt = EG rückt
+    // ans OG, EG-Wand angeklickt = OG rückt ans EG wie bisher, Esc oder Klick ins
+    // Leere bricht ab, ein Rückgängig-Schritt; wandert das EG, gehen Bodenplatte,
+    // Frostschürze und Decken mit wie beim Ziehen am EG; ein zu kurzer Wandrest
+    // (Regel 30, G9) lässt alles stehen, ein Hinweis sagt warum.
+    // Dazu BIM Regel 36 (paket-og-phase2.md §6, Testvorschlag über den
+    // Koordinator 07:56) und Gestaltung einstellungen/paket-e20-zielwahl.md
+    // (§3 Texte, §7 Prüfpunkte; Enter = EG-Wand, Klick auf ein anderes Bauteil
+    // bricht ab, Ablehnung schon beim Hover).
+    // Spezifikation: test/abnahme-og-phase2.md. Bedienung im Fenster: H143–H146.
+    //
+    // Einbau: ans Ende von `mod og_phase2` in app/src/abnahme.rs (nach A168; nutzt
+    // dessen Adapter und Hilfen: prueffall, nr, kette, versetzen, versatz,
+    // eg_nord, punkte, pruefung, stand, BUENDIG, ud, abfangung_m, haus_mit_sprung,
+    // wand_zwischen, sprung_og; aus abnahme.rs m2, m3).
+    //
+    // Adapter auf die Kern-API aus geometrie/g10-buendig-an-zielwand.patch:
+    // `Scene::flush_to(wand, ziel) -> Result<bool, FlushError>` (`wand` rückt an
+    // `ziel`, ein Schritt „Bündig gesetzt“, Ok(false) = schon bündig),
+    // `Model::can_flush_to` (rein, für den Hover), `Model::wall_below` für das
+    // Paar, `FlushError::message()` für die Hinweiskarte. Die Tests sprechen von
+    // der Seite der Bedienung: `wand` ist die OG-Wand, an der „Bündig setzen“
+    // gewählt wurde, `ziel` die angeklickte Wand des Paars; die andere rückt.
+    // Statuszeile beim Hover und Ablehnungskarte nach E20 §3 stehen in A174
+    // (`a174-zielwahl-texte.rs`, dort noch angenommene Namen).
+
+    // ===== Adapter =====
+
+    /// Wände, die nach „Bündig setzen“ leuchten: (OG-Wand, EG-Partner); `None`,
+    /// wenn die Wand nicht gestapelt ist.
+    fn zielwahl(s: &Scene, wand: ElementId) -> Option<(ElementId, ElementId)> {
+        s.model().wall_below(wand).map(|eg| (wand, eg))
+    }
+
+    /// Die Wand, die rückt, wenn `ziel` angeklickt wird.
+    fn rueckt(s: &Scene, wand: ElementId, ziel: ElementId) -> ElementId {
+        match s.model().wall_below(wand) {
+            Some(eg) if ziel == wand => eg,
+            _ => wand,
+        }
+    }
+
+    /// Hover über `ziel`: geht es (Geist) oder nicht (roter Umriss, Grund)?
+    /// Ändert nichts.
+    fn vorschau(s: &Scene, wand: ElementId, ziel: ElementId) -> Result<(), String> {
+        s.model()
+            .can_flush_to(rueckt(s, wand, ziel), ziel)
+            .map_err(|e| e.message().to_string())
+    }
+
+    /// Klick auf `ziel`: die andere Wand des Paars rückt bündig an sie und wird
+    /// gekoppelt, ein Schritt „Bündig gesetzt“. Ok(false): schon bündig. Err =
+    /// Grund (Hinweiskarte), nichts geändert.
+    fn buendig_an(s: &mut Scene, wand: ElementId, ziel: ElementId) -> Result<bool, String> {
+        let w = rueckt(s, wand, ziel);
+        s.flush_to(w, ziel).map_err(|e| e.message().to_string())
+    }
+
+    // ===== Hilfen =====
+
+    /// Bodenplatte und Frostschürze des EG-Zugs: (Fläche m², Volumen m³, Umfang
+    /// m) und (Länge m, Volumen m³).
+    type Gruendung = ((f64, f64, f64), (f64, f64));
+    fn gruendung(s: &Scene, eg: RunId) -> Gruendung {
+        let (p, f) = s.foundation_qto(eg).expect("Gründung");
+        let m = |v: f64| (v / 10.0).round() / 100.0;
+        (
+            (m2(p.area), m3(p.volume), m(p.perimeter)),
+            (m(f.length), m3(f.volume)),
+        )
+    }
+
+    /// Alles, was beim Bündigsetzen gleich bleiben oder wie beim Ziehen am EG
+    /// werden muss.
+    type Lage = (Vec<Vec3>, Vec<Vec3>, Stand, Gruendung);
+    fn lage(s: &Scene, eg: RunId, og: RunId) -> Lage {
+        (
+            punkte(s, eg),
+            punkte(s, og),
+            stand(s, eg, og),
+            gruendung(s, eg),
+        )
+    }
+
+    fn datei(s: &Scene) -> String {
+        sk_model::szo::write(s.model())
+    }
+
+    /// Bezug: neues Prüfhaus, EG-Nordwand gekoppelt um `dy` gezogen.
+    fn bezug(seed: u64, dy: f64) -> Lage {
+        let (mut s, eg, og) = prueffall(seed);
+        assert!(eg_nord(&mut s, eg, dy));
+        pruefung(&s);
+        lage(&s, eg, og)
+    }
+
+    // ===== Tests =====
+
+    /// A169 (OG → EG wie bisher): AW-006 gelöst bei +300. „Bündig setzen“ lässt
+    /// AW-006 und AW-002 leuchten, beide sind gültige Ziele. Klick auf die EG-Wand AW-002: das OG rückt
+    /// ans EG, Versatz 0, gekoppelt, alle Mengen wie im bündigen Haus, das EG
+    /// bleibt. Ein Schritt „Bündig gesetzt“; Rückgängig gibt +300 gelöst zurück.
+    #[test]
+    fn a169_og_rueckt_ans_eg() {
+        let (mut s, eg, og) = prueffall(169);
+        let aw6 = nr(&s, "AW-006");
+        let aw2 = nr(&s, "AW-002");
+        assert!(kette(&mut s, aw6, false));
+        assert!(versetzen(&mut s, aw6, 300.0));
+        let eg_vorher = punkte(&s, eg);
+        assert_eq!(zielwahl(&s, aw6), Some((aw6, aw2)), "beide leuchten");
+        assert_eq!(
+            zielwahl(&s, aw2),
+            None,
+            "EG-Wand allein: kein Paar darunter"
+        );
+        assert_eq!(vorschau(&s, aw6, aw2), Ok(()));
+        assert_eq!(vorschau(&s, aw6, aw6), Ok(()));
+
+        assert_eq!(buendig_an(&mut s, aw6, aw2), Ok(true));
+        assert_eq!(s.undo_label(), Some("Bündig gesetzt"));
+        assert_eq!(versatz(&s, aw6), Some((0.0, true)));
+        assert_eq!(punkte(&s, eg), eg_vorher, "EG bleibt");
+        assert_eq!(punkte(&s, og), eg_vorher, "OG bündig auf dem EG");
+        assert_eq!(stand(&s, eg, og), BUENDIG);
+        assert_eq!(ud(&s, eg), None);
+        pruefung(&s);
+        assert_eq!(buendig_an(&mut s, aw6, aw2), Ok(false), "schon bündig");
+        assert_eq!(buendig_an(&mut s, aw6, aw6), Ok(false), "schon bündig");
+
+        assert!(s.undo(), "ein Schritt");
+        assert_eq!(versatz(&s, aw6), Some((300.0, false)));
+        assert_eq!(punkte(&s, eg), eg_vorher);
+    }
+
+    /// A170 (EG → OG): AW-006 gelöst bei +300 (Vorsprung) bzw. −300
+    /// (Rücksprung). Klick auf die OG-Wand AW-006: die EG-Nordwand rückt unter
+    /// sie. Danach ist alles wie beim gekoppelten Ziehen der EG-Nordwand um
+    /// +300 bzw. −300 in einem neuen Haus: Lage von EG und OG, Decken, Schalen,
+    /// Bodenplatte und Frostschürze. Versatz 0, gekoppelt, keine UD, keine
+    /// Abfangung, Guids bleiben (beim Vorsprung entfällt nur die UD). Ein Schritt; Rückgängig stellt EG und Versatz wieder her,
+    /// Wiederholen das Ergebnis.
+    #[test]
+    fn a170_eg_rueckt_ans_og() {
+        for (seed, d) in [(170, 300.0), (1700, -300.0)] {
+            let (mut s, eg, og) = prueffall(seed);
+            let aw6 = nr(&s, "AW-006");
+            assert!(kette(&mut s, aw6, false));
+            assert!(versetzen(&mut s, aw6, d));
+            let vorher = lage(&s, eg, og);
+            let og_vorher = punkte(&s, og);
+            let g = guids(&s);
+
+            assert_eq!(buendig_an(&mut s, aw6, aw6), Ok(true), "{d}");
+            assert_eq!(s.undo_label(), Some("Bündig gesetzt"));
+            assert_eq!(versatz(&s, aw6), Some((0.0, true)), "{d}");
+            assert_eq!(punkte(&s, og), og_vorher, "{d}: OG bleibt stehen");
+            let nachher = lage(&s, eg, og);
+            assert_eq!(nachher, bezug(seed + 1, d), "{d}: wie Ziehen am EG");
+            assert_eq!(ud(&s, eg), None, "{d}: keine UD");
+            assert_eq!(abfangung_m(&s, og), 0.0, "{d}: keine Abfangung");
+            assert_eq!(
+                decke_mengen(&s, eg).0,
+                decke_mengen(&s, og).0,
+                "{d}: DE-001 = OG-Kern, kein Streifen"
+            );
+            // Guids bleiben; nur die UD unter dem Vorsprung entfällt
+            let neu = guids(&s);
+            assert!(neu.iter().all(|x| g.contains(x)), "{d}: keine neue Guid");
+            assert_eq!(g.len() - neu.len(), usize::from(d > 0.0), "{d}: nur die UD");
+            pruefung(&s);
+
+            assert!(s.undo(), "{d}: ein Schritt");
+            assert_eq!(lage(&s, eg, og), vorher, "{d}: Rückgängig");
+            assert_eq!(versatz(&s, aw6), Some((d, false)));
+            assert!(s.redo());
+            assert_eq!(lage(&s, eg, og), nachher, "{d}: Wiederholen");
+        }
+
+        // Regel 36: Vorsprung mit Verblender (AW-49), Ziel OG: UD-Nummer und
+        // Abfangung entfallen
+        let (mut s, eg, og, aw6) = vorsprung_300(1701, "AW-49");
+        assert!(ud(&s, eg).is_some(), "Ausgang: UD unter dem Vorsprung");
+        assert!(abfangung_m(&s, og) > 0.0, "Ausgang: Abfangung");
+        assert_eq!(buendig_an(&mut s, aw6, aw6), Ok(true));
+        assert_eq!(ud(&s, eg), None, "UD entfällt");
+        assert_eq!(abfangung_m(&s, og), 0.0, "Abfangung 0");
+        pruefung(&s);
+    }
+
+    /// A171 (Vorschau und Abbruch, E20 §1, §7.5): Mit AW-006 gelöst bei +300
+    /// geht der Hover über beide Wände des Paars. Vorschau und Abbruch (Esc,
+    /// Klick ins Leere oder auf ein anderes Bauteil) ändern nichts: Datei
+    /// bytegleich, kein Schritt. Eine Wand außerhalb des Paars ist kein Ziel
+    /// (Grund), auch dann ändert sich nichts.
+    #[test]
+    fn a171_vorschau_und_abbruch() {
+        let (mut s, _, _) = prueffall(171);
+        let aw6 = nr(&s, "AW-006");
+        let aw2 = nr(&s, "AW-002");
+        assert!(kette(&mut s, aw6, false));
+        assert!(versetzen(&mut s, aw6, 300.0));
+        let vorher = datei(&s);
+        let schritt = s.undo_label();
+
+        assert!(zielwahl(&s, aw6).is_some());
+        assert_eq!(vorschau(&s, aw6, aw2), Ok(()));
+        assert_eq!(vorschau(&s, aw6, aw6), Ok(()));
+        // Abbruch: nichts angewendet
+        assert_eq!(datei(&s), vorher, "Vorschau ändert nichts");
+        assert_eq!(s.undo_label(), schritt, "kein Schritt");
+
+        // Wand außerhalb des Paars
+        for fremd in [nr(&s, "AW-005"), nr(&s, "AW-001")] {
+            assert!(vorschau(&s, aw6, fremd).is_err());
+            let grund = buendig_an(&mut s, aw6, fremd).expect_err("kein Ziel");
+            assert!(!grund.is_empty());
+            assert_eq!(datei(&s), vorher);
+            assert_eq!(s.undo_label(), schritt);
+        }
+        pruefung(&s);
+    }
+
+    /// A172 (Ablehnung, Grundriss ungültig; Vorlage Kerntest G10): Haus mit
+    /// 200-mm-Sprung in der Nordwand (EG 8000 → 8200). Im OG links gelöst −300
+    /// (7700), rechts gelöst −300 (7900, OG-Sprung 200). Rückte die EG-Wand
+    /// rechts unter das OG, kehrte sich der EG-Sprung um (7900 unter 8000):
+    /// abgelehnt mit Grund, schon beim Hover; alles bleibt, kein Schritt,
+    /// Prüfung leer. Gegenprobe: das OG rechts ans EG geht (OG-Sprung 500).
+    #[test]
+    fn a172_ablehnung_ungueltiger_grundriss() {
+        let (mut s, eg, og) = haus_mit_sprung(172, 200.0);
+        let links = wand_zwischen(&s, og, vec3(0.0, 8000.0, 0.0), vec3(5000.0, 8000.0, 0.0));
+        let rechts = wand_zwischen(
+            &s,
+            og,
+            vec3(5000.0, 8200.0, 0.0),
+            vec3(10000.0, 8200.0, 0.0),
+        );
+        let eg_rechts = wand_zwischen(
+            &s,
+            eg,
+            vec3(5000.0, 8200.0, 0.0),
+            vec3(10000.0, 8200.0, 0.0),
+        );
+        assert!(kette(&mut s, links, false));
+        assert!(versetzen(&mut s, links, -300.0));
+        assert!(kette(&mut s, rechts, false));
+        assert!(versetzen(&mut s, rechts, -300.0));
+        assert_eq!(sprung_og(&s, og), 200.0);
+        pruefung(&s);
+        let vorher = datei(&s);
+        let schritt = s.undo_label();
+
+        let grund = vorschau(&s, rechts, rechts).expect_err("Hover: abgelehnt");
+        assert!(!grund.is_empty());
+        let grund2 = buendig_an(&mut s, rechts, rechts).expect_err("abgelehnt");
+        assert_eq!(grund, grund2, "Grund schon beim Hover");
+        assert_eq!(datei(&s), vorher, "alles bleibt");
+        assert_eq!(s.undo_label(), schritt, "kein Schritt");
+        assert_eq!(versatz(&s, rechts), Some((-300.0, false)));
+        pruefung(&s);
+
+        // Gegenprobe: OG ans EG
+        assert_eq!(buendig_an(&mut s, rechts, eg_rechts), Ok(true));
+        assert_eq!(versatz(&s, rechts), Some((0.0, true)));
+        assert_eq!(sprung_og(&s, og), 500.0);
+        pruefung(&s);
+    }
+
+    /// A173 (Nachbarn im OG): AW-006 gelöst +300, die OG-Westwand gelöst −200.
+    /// EG rückt ans OG: die gekoppelten OG-Wände (Ost, Süd) folgen dem EG und
+    /// bleiben gekoppelt bei 0, die gelöste Westwand behält −200, die Nordwand
+    /// ist gekoppelt bei 0. Das OG schließt an der neuen Nordlinie y = 8300.
+    #[test]
+    fn a173_gekoppelte_nachbarn_gehen_mit() {
+        let (mut s, eg, og) = prueffall(173);
+        let aw6 = nr(&s, "AW-006");
+        let west = wand_zwischen(&s, og, vec3(0.0, 0.0, 0.0), vec3(0.0, 8000.0, 0.0));
+        let ost = wand_zwischen(&s, og, vec3(10000.0, 0.0, 0.0), vec3(10000.0, 8000.0, 0.0));
+        let sued = wand_zwischen(&s, og, vec3(0.0, 0.0, 0.0), vec3(10000.0, 0.0, 0.0));
+        assert!(kette(&mut s, aw6, false));
+        assert!(versetzen(&mut s, aw6, 300.0));
+        assert!(kette(&mut s, west, false));
+        assert!(versetzen(&mut s, west, -200.0));
+        pruefung(&s);
+
+        assert_eq!(buendig_an(&mut s, aw6, aw6), Ok(true));
+        assert_eq!(versatz(&s, aw6), Some((0.0, true)));
+        assert_eq!(versatz(&s, west), Some((-200.0, false)), "gelöst bleibt");
+        assert_eq!(versatz(&s, ost), Some((0.0, true)), "Ost folgt");
+        assert_eq!(versatz(&s, sued), Some((0.0, true)), "Süd folgt");
+        let nord = |r: RunId| {
+            punkte(&s, r)
+                .iter()
+                .map(|p| (p.y * 100.0).round() / 100.0)
+                .fold(f64::MIN, f64::max)
+        };
+        assert_eq!(nord(eg), 8300.0, "EG an der Nordlinie des OG");
+        assert_eq!(nord(og), 8300.0, "OG schließt bei 8300");
+        let og_p = punkte(&s, og);
+        assert!(
+            og_p.iter()
+                .any(|p| (p.x - 10000.0).abs() < 0.01 && (p.y - 8300.0).abs() < 0.01),
+            "Ostwand des OG reicht bis zur neuen Nordlinie: {og_p:?}"
+        );
+        pruefung(&s);
+    }
+
+    // Abnahmetest A174: Texte der Zielwahl „Bündig setzen“ nach
+    // einstellungen/paket-e20-zielwahl.md §3 (Statuszeile beim Hover mit Maß,
+    // Statuszeile nach dem Einrasten, Ablehnungskarte, Zielkarte).
+    // Spezifikation: test/abnahme-og-phase2.md. Aussehen: H143–H146.
+    //
+    // Einbau: ans Ende von `mod og_phase2` in app/src/abnahme.rs, nach A169–A173
+    // (nutzt prueffall, nr, kette, versetzen, haus_mit_sprung, wand_zwischen).
+    //
+    // Angenommene Namen stehen nur in den Adaptern (Vorschlag, frei wählbar):
+    // `crate::wall_edit::flush_status(model, wand, ziel) -> String` (die Wand
+    // `wand` rückt an `ziel`, wie `Scene::flush_to`; bei Ablehnung der Grund),
+    // `crate::wall_edit::flush_done(model, wand, ziel) -> String`,
+    // `crate::wall_edit::FLUSH_PICK` und `FLUSH_REFUSED` (je zwei Zeilen).
+    // Die Ablehnungskarte nach E20 weicht vom Text in `FlushError::message()`
+    // (G10) ab; der Test verlangt die E20-Zeilen auf der Karte.
+
+    // ===== Adapter =====
+
+    /// Statuszeile beim Hover: `wand` rückt an `ziel`.
+    fn status_hover(s: &Scene, wand: ElementId, ziel: ElementId) -> String {
+        crate::flush_pick::status_text(s.model(), wand, ziel)
+    }
+
+    /// Statuszeile nach dem Einrasten.
+    fn status_fertig(s: &Scene, wand: ElementId, ziel: ElementId) -> String {
+        crate::flush_pick::done_text(s.model(), wand, ziel).to_string()
+    }
+
+    fn zeilen(z: [&str; 2]) -> (String, String) {
+        (z[0].to_string(), z[1].to_string())
+    }
+
+    // ===== Test =====
+
+    /// A174 (E20 §3): AW-006 gelöst bei +300. Hover über AW-002 (OG rückt):
+    /// „Die OG-Wand rückt 0,30 m an die EG-Wand.“, über AW-006 (EG rückt):
+    /// „Die EG-Wand rückt 0,30 m an die OG-Wand.“; Rücksprung 3,33 m wie in
+    /// Jörns Bild: „… 3,33 m …“. Danach „OG-Wand bündig gesetzt.“ bzw.
+    /// „EG-Wand bündig gesetzt.“. Zielkarte „Zielwand anklicken“ / „Die andere
+    /// Wand rückt bündig an sie heran. Esc bricht ab.“. Ablehnung: Hover nennt
+    /// den Grund, Karte „Die EG-Wand kann hier nicht nachrücken.“ / „Daneben
+    /// bliebe ein zu kurzes Wandstück. Die OG-Wand an die EG-Wand setzen oder
+    /// die Nachbarwand erst anpassen.“
+    #[test]
+    fn a174_texte_der_zielwahl() {
+        let (mut s, _, _) = prueffall(174);
+        let aw6 = nr(&s, "AW-006");
+        let aw2 = nr(&s, "AW-002");
+        assert!(kette(&mut s, aw6, false));
+        assert!(versetzen(&mut s, aw6, 300.0));
+        assert_eq!(
+            status_hover(&s, aw6, aw2),
+            "Die OG-Wand rückt 0,30 m an die EG-Wand."
+        );
+        assert_eq!(
+            status_hover(&s, aw2, aw6),
+            "Die EG-Wand rückt 0,30 m an die OG-Wand."
+        );
+        assert_eq!(status_fertig(&s, aw6, aw2), "OG-Wand bündig gesetzt.");
+        assert_eq!(status_fertig(&s, aw2, aw6), "EG-Wand bündig gesetzt.");
+        assert!(versetzen(&mut s, aw6, -3630.0), "Rücksprung 3,33 m");
+        assert_eq!(
+            status_hover(&s, aw2, aw6),
+            "Die EG-Wand rückt 3,33 m an die OG-Wand."
+        );
+        assert_eq!(
+            zeilen(crate::wall_edit::FLUSH_PICK),
+            (
+                "Zielwand anklicken".to_string(),
+                "Die andere Wand rückt bündig an sie heran. Esc bricht ab.".to_string()
+            )
+        );
+
+        // Ablehnung (Fall aus A172)
+        let (mut s, eg, og) = haus_mit_sprung(1740, 200.0);
+        let links = wand_zwischen(&s, og, vec3(0.0, 8000.0, 0.0), vec3(5000.0, 8000.0, 0.0));
+        let rechts = wand_zwischen(
+            &s,
+            og,
+            vec3(5000.0, 8200.0, 0.0),
+            vec3(10000.0, 8200.0, 0.0),
+        );
+        let eg_rechts = wand_zwischen(
+            &s,
+            eg,
+            vec3(5000.0, 8200.0, 0.0),
+            vec3(10000.0, 8200.0, 0.0),
+        );
+        assert!(kette(&mut s, links, false) && versetzen(&mut s, links, -300.0));
+        assert!(kette(&mut s, rechts, false) && versetzen(&mut s, rechts, -300.0));
+        let grund = s.model().can_flush_to(eg_rechts, rechts).unwrap_err();
+        assert_eq!(
+            status_hover(&s, eg_rechts, rechts),
+            grund.message(),
+            "Grund beim Hover"
+        );
+        assert_eq!(
+            zeilen(crate::wall_edit::FLUSH_REFUSED),
+            (
+                "Die EG-Wand kann hier nicht nachrücken.".to_string(),
+                "Daneben bliebe ein zu kurzes Wandstück. Die OG-Wand an die EG-Wand setzen \
+                 oder die Nachbarwand erst anpassen."
+                    .to_string()
+            )
+        );
+    }
 }
 
 mod sichern_fehlschlag {
