@@ -32,6 +32,8 @@ pub enum Link {
     Unlock(ElementId),
     /// Fenster „Baustoffe …“ öffnen (Entdecken-Karte, Paket 5).
     Materials,
+    /// Hilfekarte öffnen (Entdecken-Karte „Hilfe“, Paket 9).
+    Help,
     /// × einer Entdecken-Karte: nur schließen.
     Dismiss,
 }

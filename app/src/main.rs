@@ -730,13 +730,9 @@ struct App {
     frame_measure: Option<frame_time::Measure>,
 }
 
-/// Schlüssel des Kartenbilds: Inhalt, Skalierung, Farbschema, Fenstergröße.
-type HelpKey = (
-    (help::Topic, bool, bool, u32, Option<help::Hit>),
-    u32,
-    u64,
-    (u32, u32),
-);
+/// Schlüssel des Kartenbilds: Inhalt, Skalierung, Farbschema, Fenstergröße
+/// und ob ein Fenster offen ist (Lage).
+type HelpKey = (help::ImageKey, u32, u64, (u32, u32, bool));
 
 /// Hinweis an der Maus (Text, Lage, seit wann gewünscht, schon sichtbar).
 struct Tip {
@@ -2706,9 +2702,10 @@ impl App {
 
     fn commit_wall(&mut self, wall: Option<sk_model::WallChain>) {
         if let Some(wall) = wall {
-            // Erstes geschlossenes Gebäude: Hinweis auf F1 (9b)
+            // Erstes geschlossenes Gebäude: Hinweis auf F1 (9b), als
+            // Hinweiskarte (Darstellung p9 §3.4)
             if self.tool.category == Category::ExteriorWall && wall.closed {
-                self.discover("help");
+                self.discover_card("help", "Hilfe", ("Hilfe öffnen", delete::Link::Help));
             }
             let set = self.tool_type_of(self.tool.category);
             self.scene
@@ -3638,7 +3635,7 @@ impl App {
             self.help.key_of_image(),
             s.to_bits(),
             self.theme.rev,
-            (self.w, self.h),
+            (self.w, self.h, ctx.window.is_some()),
         );
         if self.help_img.as_ref().map(|i| &i.0) != Some(&key) {
             // Anderes Thema bzw. Liste: das alte Bild blendet aus
@@ -3662,10 +3659,19 @@ impl App {
             );
             let (cw, _) = self.help.size();
             let top = self.top();
-            let views = self.ui.rect(Panel::Views, self.w, top);
             let m = (self.theme.size.panel_margin * s).round();
-            let x = (views.x - m - cw).max(m);
-            let y = top as f32 + m;
+            // Hauptfenster: links der rechten Spalte, oben bündig mit den
+            // Paneelen; über einem Fenster 16 dip vom rechten Rand und 12
+            // dip unter der Titelzeile (Darstellung p9 §2, Lage)
+            let (x, y) = if ctx.window.is_some() {
+                (
+                    (self.w as f32 - (16.0 * s).round() - cw).max(m),
+                    top as f32 + (12.0 * s).round(),
+                )
+            } else {
+                let views = self.ui.rect(Panel::Views, self.w, top);
+                ((views.x - m - cw).max(m), top as f32 + m)
+            };
             let px = c.to_premul_rgba8();
             let (ix, iy) = ((x - margin) as i32, (y - margin) as i32);
             let (w, h) = (c.width as u32, c.height as u32);
@@ -3903,8 +3909,15 @@ impl App {
             if let Some((size, anchor)) = size {
                 let bounds = self.screen_bounds(&anchor);
                 let win = (self.w as f32, self.h as f32, self.top() as f32);
+                let views = self.ui.rect(Panel::Views, self.w, self.top());
                 if let Some(h) = self.hint.as_mut() {
                     h.place(size, bounds, win, s);
+                    // Entdecken-Karte im Hauptfenster: unten rechts, aber
+                    // links der rechten Spalte (nicht über dem Baum)
+                    if let (true, Some(r)) = (h.discover, h.rect.as_mut()) {
+                        let m = (self.theme.size.panel_margin * s).round();
+                        r.x = (views.x - m - r.w).max(8.0 * s).round();
+                    }
                 }
             }
             match &self.hint {
@@ -4007,6 +4020,7 @@ impl App {
                 self.queued_command = Some(autosave::fail_notice_command(untitled));
             }
             delete::Link::Materials => self.open_materials(None),
+            delete::Link::Help => self.show_help(true),
             delete::Link::Dismiss => {}
         }
     }
@@ -5267,6 +5281,22 @@ impl App {
             error: false,
         });
         self.redraw = true;
+    }
+
+    /// Entdecken-Hinweis `id` beim ersten Mal als Hinweiskarte: Titel, Satz,
+    /// Verweis und ×; steht, bis sie geschlossen wird.
+    fn discover_card(&mut self, id: &str, title: &str, link: (&'static str, delete::Link)) {
+        if self.hints_seen.contains(id) {
+            return;
+        }
+        let Some(text) = hints::text(id) else {
+            return;
+        };
+        self.hints_seen.insert(id.to_string());
+        let lines = vec![title.to_string(), text.to_string()];
+        let card = delete::HintCard::new(lines, Some(link), Vec::new(), Instant::now());
+        self.hint = Some(card.discovering());
+        self.hint_dirty = true;
     }
 
     /// Lage des Baumpanels (Pixel, ohne Schatten): unter „Ansichten“ bis

@@ -206,6 +206,53 @@ impl Topic {
         Topic::Backups,
     ];
 
+    /// Gruppen der Liste „Alle Themen“ (Darstellung p9 §2, Liste).
+    pub const GROUPS: [(&'static str, &'static [Topic]); 5] = [
+        (
+            "Grundlagen",
+            &[Topic::Start, Topic::Navigation, Topic::File, Topic::Delete],
+        ),
+        (
+            "Zeichnen",
+            &[
+                Topic::Building,
+                Topic::Draw,
+                Topic::InnerWall,
+                Topic::Drag,
+                Topic::Upper,
+                Topic::Flush,
+            ],
+        ),
+        (
+            "Bauteile",
+            &[Topic::Wall, Topic::Foundation, Topic::Floor, Topic::Terrace],
+        ),
+        (
+            "Ansicht",
+            &[
+                Topic::Levels,
+                Topic::Section,
+                Topic::Tree,
+                Topic::Quantities,
+            ],
+        ),
+        (
+            "Fenster",
+            &[
+                Topic::Settings,
+                Topic::SettingsPens,
+                Topic::SettingsLineTypes,
+                Topic::SettingsFills,
+                Topic::SettingsSurfaces,
+                Topic::SettingsUi,
+                Topic::Catalog,
+                Topic::Materials,
+                Topic::Patterns,
+                Topic::Backups,
+            ],
+        ),
+    ];
+
     /// Kennung im Hilfetext.
     pub fn id(self) -> &'static str {
         match self {
@@ -347,6 +394,10 @@ pub fn topic(c: &HelpCtx) -> Topic {
 /// Grund der Karte mit Schatten je (Breite, Höhe, Skalierung, Schema).
 pub type Ground = ((usize, usize, u32, u64), Canvas);
 
+/// Schlüssel des Kartenbilds: gezeigtes Thema, Liste offen, gewählt,
+/// Rollstand, Hover, Thema des Tuns (für „Zurück zu …“ und „gerade“).
+pub type ImageKey = (Topic, bool, bool, u32, Option<Hit>, Topic);
+
 /// Zeile mit Stücken (Text, fett).
 type RichLine = Vec<(String, bool)>;
 
@@ -356,7 +407,7 @@ pub enum Hit {
     Close,
     /// „Alle Themen ▸“
     All,
-    /// „‹ Zurück“
+    /// „‹ Zurück zu „…““
     Back,
     /// Thema der aufgeklappten Liste.
     Item(Topic),
@@ -370,7 +421,8 @@ struct Layout {
     w: f32,
     h: f32,
     close: Rect,
-    all: Rect,
+    /// „Alle Themen ▸“ bzw. „‹ Zurück zu „…““ (es steht immer nur eins)
+    all: Option<Rect>,
     back: Option<Rect>,
     body: Rect,
     /// Höhe des ganzen Inhalts (rollt, wenn höher als `body`).
@@ -500,13 +552,14 @@ impl HelpCard {
     }
 
     /// Schlüssel des Bildes: ändert er sich, ist neu zu zeichnen.
-    pub fn key_of_image(&self) -> (Topic, bool, bool, u32, Option<Hit>) {
+    pub fn key_of_image(&self) -> ImageKey {
         (
             self.topic(),
             self.list,
             self.picked.is_some(),
             self.scroll.to_bits(),
             self.hover,
+            self.doing,
         )
     }
 
@@ -520,7 +573,7 @@ impl HelpCard {
         if inside(&l.close) {
             return Some(Hit::Close);
         }
-        if inside(&l.all) {
+        if l.all.as_ref().is_some_and(inside) {
             return Some(Hit::All);
         }
         if l.back.as_ref().is_some_and(inside) {
@@ -566,6 +619,8 @@ impl HelpCard {
 
     /// Bild der Karte mit Schatten (Rand `margin` Pixel ringsum), höchstens
     /// `max_h` Pixel hoch ohne Schatten. `ground` hält den Grund je Größe.
+    /// Maße nach Darstellung p9 §2: Breite 360, Kopf 44, Fuß 36, Spalte
+    /// 118, Zeile 16, 7 zwischen den Einträgen, Listenzeile 24 dip.
     pub fn paint(
         &mut self,
         fonts: &Fonts,
@@ -575,29 +630,45 @@ impl HelpCard {
         ground: &mut Option<Ground>,
     ) -> (Canvas, f32) {
         let px = t.size.font_small * s;
+        let px_head = t.size.font * s;
+        let px_group = t.size.font_detail * s;
         let reg = fonts.regular.as_ref();
         let bold = fonts.bold.as_ref().or(reg);
         let w = (360.0 * s).round();
         let pad = (12.0 * s).round();
-        let head = (36.0 * s).round();
-        let foot = (34.0 * s).round();
-        let line = (18.0 * s).round();
-        let gap = (6.0 * s).round();
-        let left_w = (124.0 * s).round();
+        let head = (44.0 * s).round();
+        let foot = (36.0 * s).round();
+        let line = (16.0 * s).round();
+        let gap = (7.0 * s).round();
+        let left_w = (118.0 * s).round();
         let right_w = w - 2.0 * pad - left_w - (8.0 * s).round();
-        let width =
-            |f: Option<&Font>, x: &str| f.map_or(x.len() as f32 * px * 0.5, |f| f.width(x, px));
+        let width_at = |f: Option<&Font>, x: &str, px: f32| {
+            f.map_or(x.chars().count() as f32 * px * 0.5, |f| f.width(x, px))
+        };
+        let width = |f: Option<&Font>, x: &str| width_at(f, x, px);
+        let cap_at = |px: f32| reg.map_or(px * 0.7, |f| f.cap_height(px));
+        let cap = cap_at(px);
+        let base = |top: f32, hh: f32| (top + (hh + cap) * 0.5).round();
 
-        // Inhalt: Zeilen des Themas bzw. die Liste
+        // Inhalt: Zeilen des Themas bzw. die Liste in Gruppen
         let topic = self.topic();
         let mut rows: Vec<(Vec<String>, Vec<RichLine>)> = Vec::new();
         let mut items = Vec::new();
+        let mut groups = Vec::new();
+        let ih = (24.0 * s).round();
+        let gh = (26.0 * s).round();
         let content = if self.list {
-            let ih = (26.0 * s).round();
-            for (i, tp) in Topic::ALL.iter().enumerate() {
-                items.push((*tp, i as f32 * ih, ih));
+            let mut y = 0.0;
+            for (name, topics) in Topic::GROUPS {
+                groups.push((name, y));
+                y += gh;
+                for tp in topics {
+                    items.push((*tp, y, ih));
+                    y += ih;
+                }
+                y += (4.0 * s).round();
             }
-            Topic::ALL.len() as f32 * ih
+            y
         } else {
             let mut h = 0.0;
             for (a, b) in topic.rows() {
@@ -606,10 +677,15 @@ impl HelpCard {
                 h += lines.len().max(left.len()).max(1) as f32 * line + gap;
                 rows.push((left, lines));
             }
-            (h - gap).max(0.0) + (10.0 * s).round()
+            (h - gap).max(0.0) + (12.0 * s).round()
         };
-        let body_max = (max_h - head - foot).max(line * 3.0);
-        let body_h = content.min(body_max).ceil();
+        let body_max = (max_h - head - foot).max(line * 3.0).floor();
+        // Die Liste nimmt immer die volle Höhe (die Karte springt nicht)
+        let body_h = if self.list {
+            body_max
+        } else {
+            content.min(body_max).ceil()
+        };
         let h = head + body_h + foot;
         let max = (content - body_h).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max);
@@ -626,9 +702,7 @@ impl HelpCard {
         let mut c = ground.as_ref().unwrap().1.clone();
         let (ox, oy) = (margin, margin);
 
-        // Kopf: „Hilfe · Titel“ und ✕
-        let cap = reg.map_or(px * 0.7, |f| f.cap_height(px));
-        let base = |top: f32, hh: f32| (top + (hh + cap) * 0.5).round();
+        // Kopf: Akzentpunkt, „Hilfe · “ gedämpft, Titel fett, ×
         let close_sz = (24.0 * s).round();
         let close = Rect::new(
             w - pad - close_sz + (4.0 * s).round(),
@@ -636,21 +710,28 @@ impl HelpCard {
             close_sz,
             close_sz,
         );
-        let title = if self.list {
-            "Hilfe · Alle Themen".to_string()
-        } else {
-            format!("Hilfe · {}", topic.title())
-        };
-        let title = widgets::ellipsize(bold, &title, px, close.x - pad - 4.0 * s);
-        widgets::text(
-            &mut c,
-            bold,
-            &title,
-            px,
+        let hy = oy + (0.5 * (head + cap_at(px_head))).round();
+        let dot = (8.0 * s).round();
+        let mut p = Path::new();
+        p.rounded_rect(
             ox + pad,
-            oy + base(0.0, head),
-            t.ui.text,
+            oy + ((head - dot) * 0.5).round(),
+            dot,
+            dot,
+            dot * 0.5,
         );
+        c.fill(&p, t.ui.accent);
+        let lead = "Hilfe · ";
+        let lx = ox + pad + dot + (8.0 * s).round();
+        widgets::text(&mut c, reg, lead, px_head, lx, hy, t.ui.text_dim);
+        let tx = lx + width_at(reg, lead, px_head);
+        let title = if self.list {
+            "Alle Themen"
+        } else {
+            topic.title()
+        };
+        let title = widgets::ellipsize(bold, title, px_head, ox + close.x - tx - 4.0 * s);
+        widgets::text(&mut c, bold, &title, px_head, tx, hy, t.ui.text);
         if self.hover == Some(Hit::Close) {
             let mut p = Path::new();
             p.rounded_rect(ox + close.x, oy + close.y, close.w, close.h, 4.0 * s);
@@ -681,37 +762,66 @@ impl HelpCard {
         sub.clear(t.ui.bg);
         let sy = -self.scroll;
         if self.list {
+            let inset = (4.0 * s).round();
+            for (name, a) in &groups {
+                let y = sy + a;
+                if y + gh < 0.0 || y > body_h {
+                    continue;
+                }
+                // Kapitälchen: Großbuchstaben, fett, klein, gedämpft
+                let gy = (y + gh - (8.0 * s).round()).round();
+                widgets::text(
+                    &mut sub,
+                    bold,
+                    &name.to_uppercase(),
+                    px_group,
+                    pad,
+                    gy,
+                    t.ui.text_dim,
+                );
+            }
+            let now = "gerade";
             for (tp, a, ih) in &items {
                 let y = sy + a;
                 if y + ih < 0.0 || y > body_h {
                     continue;
                 }
-                if self.hover == Some(Hit::Item(*tp)) {
-                    sub.fill_rect((4.0 * s).round(), y, w - (8.0 * s).round(), *ih, t.ui.hover);
+                let current = *tp == self.doing;
+                let row_w = w - 2.0 * inset;
+                if current {
+                    sub.fill_rect(inset, y, row_w, *ih, t.ui.pressed);
+                    sub.fill_rect(inset, y, (3.0 * s).round(), *ih, t.ui.accent);
+                } else if self.hover == Some(Hit::Item(*tp)) {
+                    sub.fill_rect(inset, y, row_w, *ih, t.ui.hover);
                 }
-                if *tp == self.doing {
-                    let mut p = Path::new();
-                    let r = 2.5 * s;
-                    p.rounded_rect(pad - r * 0.5, y + ih * 0.5 - r, 2.0 * r, 2.0 * r, r);
-                    sub.fill(&p, t.ui.accent);
+                if current && self.hover == Some(Hit::Item(*tp)) {
+                    sub.fill_rect(
+                        inset + (3.0 * s).round(),
+                        y,
+                        row_w - (3.0 * s).round(),
+                        *ih,
+                        t.ui.hover,
+                    );
                 }
-                let col = if *tp == topic {
-                    t.ui.text
-                } else {
-                    t.ui.text_dim
-                };
-                widgets::text(
-                    &mut sub,
-                    reg,
-                    tp.title(),
-                    px,
-                    pad + (10.0 * s).round(),
-                    base(y, *ih),
-                    col,
-                );
+                let nw = if current { width(reg, now) } else { 0.0 };
+                let x = pad + (6.0 * s).round();
+                let label =
+                    widgets::ellipsize(reg, tp.title(), px, w - x - pad - nw - (12.0 * s).round());
+                widgets::text(&mut sub, reg, &label, px, x, base(y, *ih), t.ui.text);
+                if current {
+                    widgets::text(
+                        &mut sub,
+                        reg,
+                        now,
+                        px,
+                        w - pad - (6.0 * s).round() - nw,
+                        base(y, *ih),
+                        t.ui.text_dim,
+                    );
+                }
             }
         } else {
-            let mut y = sy + (4.0 * s).round();
+            let mut y = sy + (6.0 * s).round();
             for (left, lines) in &rows {
                 let n = lines.len().max(left.len()).max(1) as f32;
                 if y + n * line >= 0.0 && y <= body_h {
@@ -751,63 +861,67 @@ impl HelpCard {
             c.fill(&p, t.ui.border);
         }
 
-        // Fuß: „Alle Themen ▸“, „‹ Zurück“, „F1 schließt“
+        // Fuß: „Alle Themen ▸“ bzw. „‹ Zurück zu „…““, „F1 schließt“
         let fy = head + body_h;
         widgets::separator(&mut c, ox + pad, oy + fy, w - 2.0 * pad, s, t);
-        // Verweis im Fuß; `arrow`: Pfeil dahinter (zu bzw. offen)
-        let link =
-            |c: &mut Canvas, label: &str, x: f32, hover: bool, arrow: Option<bool>| -> Rect {
-                let aw = if arrow.is_some() {
-                    (14.0 * s).round()
-                } else {
-                    0.0
-                };
-                let lw = width(reg, label) + aw;
-                let r = Rect::new(
-                    x - (6.0 * s).round(),
-                    fy + (5.0 * s).round(),
-                    lw + (12.0 * s).round(),
-                    foot - (10.0 * s).round(),
-                );
-                if hover {
-                    let mut p = Path::new();
-                    p.rounded_rect(ox + r.x, oy + r.y, r.w, r.h, 4.0 * s);
-                    c.fill(&p, t.ui.hover);
-                }
-                widgets::text(c, reg, label, px, ox + x, oy + base(fy, foot), t.ui.accent);
-                if let Some(open) = arrow {
-                    let ax = ox + x + width(reg, label) + (8.0 * s).round();
-                    let ay = oy + base(fy, foot) - cap * 0.5;
-                    widgets::disclosure(c, ax, ay, open, t.ui.accent, s);
-                }
-                r
-            };
-        let all = link(
-            &mut c,
-            "Alle Themen",
-            pad,
-            self.hover == Some(Hit::All),
-            Some(self.list),
-        );
-        let back = (self.picked.is_some() || self.list).then(|| {
-            link(
-                &mut c,
-                "‹ Zurück",
-                all.x + all.w + (14.0 * s).round(),
-                self.hover == Some(Hit::Back),
-                None,
-            )
-        });
         let hint = "F1 schließt";
+        let hint_w = width(reg, hint);
         widgets::text(
             &mut c,
             reg,
             hint,
             px,
-            ox + w - pad - width(reg, hint),
+            ox + w - pad - hint_w,
             oy + base(fy, foot),
             t.ui.text_dim,
         );
+        // Verweis im Fuß; `arrow`: Pfeil dahinter (zu bzw. offen)
+        let link = |c: &mut Canvas, label: &str, hover: bool, arrow: Option<bool>| -> Rect {
+            let aw = if arrow.is_some() {
+                (14.0 * s).round()
+            } else {
+                0.0
+            };
+            let x = pad;
+            let label = widgets::ellipsize(
+                reg,
+                label,
+                px,
+                w - 2.0 * pad - hint_w - aw - (24.0 * s).round(),
+            );
+            let lw = width(reg, &label) + aw;
+            let r = Rect::new(
+                x - (6.0 * s).round(),
+                fy + (6.0 * s).round(),
+                lw + (12.0 * s).round(),
+                foot - (12.0 * s).round(),
+            );
+            if hover {
+                let mut p = Path::new();
+                p.rounded_rect(ox + r.x, oy + r.y, r.w, r.h, 4.0 * s);
+                c.fill(&p, t.ui.hover);
+            }
+            widgets::text(c, reg, &label, px, ox + x, oy + base(fy, foot), t.ui.accent);
+            if let Some(open) = arrow {
+                let ax = ox + x + width(reg, &label) + (8.0 * s).round();
+                let ay = oy + base(fy, foot) - cap * 0.5;
+                widgets::disclosure(c, ax, ay, open, t.ui.accent, s);
+            }
+            r
+        };
+        let (all, back) = if self.picked.is_some() || self.list {
+            let label = format!("‹ Zurück zu „{}“", self.doing.title());
+            let r = link(&mut c, &label, self.hover == Some(Hit::Back), None);
+            (None, Some(r))
+        } else {
+            let r = link(
+                &mut c,
+                "Alle Themen",
+                self.hover == Some(Hit::All),
+                Some(false),
+            );
+            (Some(r), None)
+        };
 
         self.layout = Layout {
             w,

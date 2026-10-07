@@ -79,6 +79,9 @@ pub fn panel_filled(c: &mut Canvas, r: Rect, s: f32, t: &Theme, fill: Rgba) {
     c.fill(&p, fill);
 }
 
+/// Breite eines Tooltips höchstens (dip); darüber bricht der Text um.
+pub const TOOLTIP_MAX_W: f32 = 300.0;
+
 /// Hinweis an der Maus: Text auf dunklem Grund mit Rand. Liefert das Bild
 /// (Pixel).
 pub fn tooltip(fonts: &Fonts, text: &str, s: f32, t: &Theme) -> Canvas {
@@ -86,8 +89,8 @@ pub fn tooltip(fonts: &Fonts, text: &str, s: f32, t: &Theme) -> Canvas {
     let f = fonts.regular.as_ref();
     // Mehrzeilig mit „\n“; je Zeile 18 dip mehr. Dann ist Zeile 1 die
     // fette Überschrift, die übrigen sind gedämpft (wie E18).
-    let lines: Vec<&str> = text.split('\n').collect();
-    let multi = lines.len() > 1;
+    let src: Vec<&str> = text.split('\n').collect();
+    let multi = src.len() > 1;
     let font = |i: usize| {
         if multi && i == 0 {
             fonts.bold.as_ref().or(f)
@@ -95,16 +98,21 @@ pub fn tooltip(fonts: &Fonts, text: &str, s: f32, t: &Theme) -> Canvas {
             f
         }
     };
-    let tw = lines
+    let pad = (8.0 * s).round();
+    // Umbruch ab 300 dip (Paket 9 §3.1); jede Teilzeile behält die Art
+    // ihrer Zeile
+    let max_w = (TOOLTIP_MAX_W * s).round() - 2.0 * pad;
+    let lines: Vec<(String, usize)> = src
         .iter()
         .enumerate()
-        .map(|(i, l)| font(i).map_or(0.0, |f| f.width(l, px)))
+        .flat_map(|(i, l)| wrap(font(i), l, px, max_w).into_iter().map(move |x| (x, i)))
+        .collect();
+    let tw = lines
+        .iter()
+        .map(|(l, i)| font(*i).map_or(0.0, |f| f.width(l, px)))
         .fold(0.0, f32::max);
     let line = (18.0 * s).round();
-    let (pad, h) = (
-        (8.0 * s).round(),
-        (24.0 * s).round() + line * (lines.len() - 1) as f32,
-    );
+    let h = (24.0 * s).round() + line * (lines.len() - 1) as f32;
     let (w, b) = ((tw + 2.0 * pad).ceil(), s.round().max(1.0));
     let mut c = Canvas::new(w as usize, h as usize);
     let rad = 4.0 * s;
@@ -116,14 +124,14 @@ pub fn tooltip(fonts: &Fonts, text: &str, s: f32, t: &Theme) -> Canvas {
     c.fill(&p, t.ui.tooltip_bg);
     if let Some(f0) = f {
         let y0 = ((24.0 * s + f0.cap_height(px)) * 0.5).round();
-        for (i, l) in lines.iter().enumerate() {
-            let y = y0 + line * i as f32;
+        for (k, (l, i)) in lines.iter().enumerate() {
+            let y = y0 + line * k as f32;
             let col = match (multi, i) {
                 (false, _) => t.ui.tooltip_text,
                 (true, 0) => t.ui.text,
                 _ => t.ui.text_dim,
             };
-            font(i).unwrap_or(f0).draw(&mut c, l, px, pad, y, col);
+            font(*i).unwrap_or(f0).draw(&mut c, l, px, pad, y, col);
         }
     }
     c
