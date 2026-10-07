@@ -101,6 +101,30 @@ fn pattern_combo(id: ComboId, p: Option<&Pattern>, free: bool) -> (Vec<String>, 
             };
             (items, sel)
         }
+        ComboId::PatAnchors => {
+            let on = matches!(p, Some(Pattern::Concrete { anchors: true, .. }));
+            (vec!["ohne".into(), "mit".into()], on as usize)
+        }
+        ComboId::PatWoodDir => {
+            let lying = matches!(
+                p,
+                Some(Pattern::Timber {
+                    vertical: false,
+                    ..
+                })
+            );
+            (
+                vec!["senkrecht".into(), "waagerecht".into()],
+                lying as usize,
+            )
+        }
+        ComboId::PatGrid => {
+            let half = matches!(p, Some(Pattern::Tiles { half: true, .. }));
+            (
+                vec!["Kreuzfuge".into(), "Halbversatz".into()],
+                half as usize,
+            )
+        }
         _ => {
             let items = [
                 "Läufer halbsteinig",
@@ -172,7 +196,29 @@ pub(super) fn attr_unit(f: FieldId) -> &'static str {
         FieldId::Hatch(_, 0) => "°",
         FieldId::PatLen | FieldId::PatH | FieldId::PatJoint | FieldId::PatGrain => "mm",
         FieldId::PatShare(_) | FieldId::PatSpread | FieldId::PatFlame | FieldId::PatRelief => "%",
+        FieldId::PatNum(key) => num_spec(key).1,
         _ => "",
+    }
+}
+
+/// Beschriftung, Einheit und Nachkommastellen der Regler aus Paket 7 nach
+/// ihrem Schlüssel ([`proctex::limits`]); gleiche Schlüssel verschiedener
+/// Arten heißen gleich.
+fn num_spec(key: &str) -> (&'static str, &'static str, usize) {
+    match key {
+        "w" => ("Tafelbreite", "mm", 0),
+        "h" => ("Tafelhöhe", "mm", 0),
+        "joint" => ("Fuge", "mm", 1),
+        "cloud" => ("Wolkigkeit", "%", 0),
+        "pores" => ("Lunker", "%", 1),
+        "board" => ("Brettbreite", "mm", 0),
+        "grain" => ("Maserung", "%", 0),
+        "len" => ("Länge", "mm", 0),
+        "wid" => ("Breite", "mm", 0),
+        "spread" => ("Streuung", "%", 0),
+        "size" => ("Steingröße", "mm", 0),
+        "irr" => ("Unregelmäßigkeit", "%", 0),
+        _ => ("", "", 0),
     }
 }
 
@@ -756,6 +802,117 @@ impl Prefs {
                 );
                 random(l, &mut y);
             }
+            // Paket 7b: Regler der neuen Arten (paket-7 §2.1)
+            Some(
+                p @ (Pattern::Concrete { .. }
+                | Pattern::Timber { .. }
+                | Pattern::Tiles { .. }
+                | Pattern::Stone { .. }),
+            ) => {
+                let num = |l: &mut AttrLayout, y: &mut f32, key: &'static str| {
+                    row(
+                        l,
+                        y,
+                        num_spec(key).0,
+                        short,
+                        Target::Field(FieldId::PatNum(key)),
+                    );
+                };
+                let (ww, wh) = (t.size.swatch_w * s, t.size.swatch_h * s);
+                let fw = ((cw - 2.0 * 6.0 * s) / 3.0).floor();
+                let share_w = (fw - ww.min(fw) - 4.0 * s).max(30.0 * s);
+                // Farben mit Anteil daneben wie die Läuferfarben, dann Fuge
+                let colors = |l: &mut AttrLayout, y: &mut f32| {
+                    l.texts.push(UiText::label(x, *y + 18.0 * s, "Farben"));
+                    for k in 0..3 {
+                        let cx = vx + k as f32 * (fw + 6.0 * s);
+                        l.items.push((
+                            Rect::new(cx, *y + (fh - wh) * 0.5, ww.min(fw), wh),
+                            Target::Swatch(ColorTarget::PatStone(id, k)),
+                        ));
+                        let r = Rect::new(cx + fw - share_w, *y, share_w, fh);
+                        if k < 2 {
+                            l.items.push((r, Target::Field(FieldId::PatShare(k))));
+                        } else {
+                            let rest = self.pat_value(FieldId::PatShare(2), m);
+                            l.readonly.push((r, format!("{rest} %")));
+                        }
+                    }
+                    *y += step;
+                    l.texts.push(UiText::label(x, *y + 18.0 * s, "Fugenfarbe"));
+                    l.items.push((
+                        Rect::new(vx, *y + (fh - wh) * 0.5, ww, wh),
+                        Target::Swatch(ColorTarget::PatJoint(id)),
+                    ));
+                    *y += step;
+                };
+                match p {
+                    Pattern::Concrete { .. } => {
+                        num(l, &mut y, "w");
+                        num(l, &mut y, "h");
+                        l.texts.push(UiText::label(x, y + 18.0 * s, "Stoß"));
+                        l.items.push((
+                            Rect::new(vx, y, short, fh),
+                            Target::Field(FieldId::PatNum("joint")),
+                        ));
+                        y += step;
+                        row(
+                            l,
+                            &mut y,
+                            "Ankerlöcher",
+                            cw,
+                            Target::Combo(ComboId::PatAnchors),
+                        );
+                        num(l, &mut y, "cloud");
+                        num(l, &mut y, "pores");
+                    }
+                    Pattern::Timber { .. } => {
+                        row(
+                            l,
+                            &mut y,
+                            "Richtung",
+                            cw,
+                            Target::Combo(ComboId::PatWoodDir),
+                        );
+                        num(l, &mut y, "board");
+                        num(l, &mut y, "joint");
+                        num(l, &mut y, "grain");
+                        l.texts.push(UiText::label(x, y + 18.0 * s, "Holzfarben"));
+                        for k in 0..2 {
+                            let cx = vx + k as f32 * (fw + 6.0 * s);
+                            l.items.push((
+                                Rect::new(cx, y + (fh - wh) * 0.5, ww.min(fw), wh),
+                                Target::Swatch(ColorTarget::PatWood(id, k)),
+                            ));
+                        }
+                        y += step;
+                    }
+                    Pattern::Tiles { .. } => {
+                        l.texts
+                            .push(UiText::label(x, y + 18.0 * s, "Länge, Breite"));
+                        l.items.push((
+                            Rect::new(vx, y, short, fh),
+                            Target::Field(FieldId::PatNum("len")),
+                        ));
+                        l.items.push((
+                            Rect::new(vx + short + 8.0 * s, y, short, fh),
+                            Target::Field(FieldId::PatNum("wid")),
+                        ));
+                        y += step;
+                        num(l, &mut y, "joint");
+                        row(l, &mut y, "Raster", cw, Target::Combo(ComboId::PatGrid));
+                        colors(l, &mut y);
+                        num(l, &mut y, "spread");
+                    }
+                    _ => {
+                        num(l, &mut y, "size");
+                        num(l, &mut y, "joint");
+                        num(l, &mut y, "irr");
+                        colors(l, &mut y);
+                    }
+                }
+                random(l, &mut y);
+            }
             _ => {}
         }
         // Hinweise je Zeile (soll-p6-5)
@@ -897,9 +1054,10 @@ impl Prefs {
             (FieldId::PatLen, Pattern::Masonry { len, .. }) => num_short(len),
             (FieldId::PatH, Pattern::Masonry { h, .. }) => num_short(h),
             (FieldId::PatJoint, Pattern::Masonry { joint, .. }) => num_short(joint),
-            (FieldId::PatShare(k), Pattern::Masonry { palette, .. }) => {
-                num_short(palette[k.min(2)].1)
+            (FieldId::PatShare(k), mut p) => {
+                proctex::palette_mut(&mut p).map_or(String::new(), |pal| num_short(pal[k.min(2)].1))
             }
+            (FieldId::PatNum(key), p) => proctex::value(&p, key).map_or(String::new(), num_short),
             (FieldId::PatSpread, Pattern::Masonry { spread, .. })
             | (FieldId::PatSpread, Pattern::Plaster { spread, .. }) => num_short(spread),
             (FieldId::PatGrain, Pattern::Plaster { grain, .. }) => num_short(grain),
@@ -967,6 +1125,15 @@ impl Prefs {
                 };
                 format!("{label}: erlaubt {} bis {}{u}", num(lo, dec), num(hi, dec))
             })
+        };
+        // Anteil 1 oder 2 einer Palette; Anteil 3 ist der Rest auf 100 %
+        let share = |palette: &mut proctex::Palette, k: usize| -> Result<(), String> {
+            let k = k.min(1);
+            let other = palette[1 - k].1;
+            let v = range("Anteil", 0.0, 100.0 - other, 0, "%")?;
+            palette[k].1 = v;
+            palette[2].1 = 100.0 - v - other;
+            Ok(())
         };
         match f {
             FieldId::Dash(i, k) => {
@@ -1039,14 +1206,7 @@ impl Prefs {
                         FieldId::PatLen => *len = range("Steinlänge", 50.0, 600.0, 0, "mm")?,
                         FieldId::PatH => *h = range("Steinhöhe", 20.0, 300.0, 0, "mm")?,
                         FieldId::PatJoint => *joint = range("Fuge", 6.0, 15.0, 1, "mm")?,
-                        FieldId::PatShare(k) => {
-                            // Anteil 3 ist der Rest auf 100 %
-                            let k = k.min(1);
-                            let other = palette[1 - k].1;
-                            let v = range("Anteil", 0.0, 100.0 - other, 0, "%")?;
-                            palette[k].1 = v;
-                            palette[2].1 = 100.0 - v - other;
-                        }
+                        FieldId::PatShare(k) => share(palette, k)?,
                         FieldId::PatSpread => *spread = range("Streuung", 0.0, 20.0, 0, "%")?,
                         FieldId::PatFlame => *flame = range("Flammung", 0.0, 100.0, 0, "%")?,
                         FieldId::PatRelief => *relief = range("Relief", 0.0, 100.0, 0, "%")?,
@@ -1057,10 +1217,33 @@ impl Prefs {
                         FieldId::PatSpread => *spread = range("Streuung", 0.0, 10.0, 0, "%")?,
                         _ => return Ok(()),
                     },
-                    // Werte der Arten aus Paket 7 im Fenster „Muster“ (7b)
+                    Pattern::Tiles { palette, .. } | Pattern::Stone { palette, .. }
+                        if matches!(f, FieldId::PatShare(_)) =>
+                    {
+                        let FieldId::PatShare(k) = f else {
+                            return Ok(());
+                        };
+                        share(palette, k)?
+                    }
                     _ => return Ok(()),
                 }
                 self.put_pattern(id, Some(p), cx, out)?;
+            }
+            FieldId::PatNum(key) => {
+                let Some((id, mut p)) = self.sel_pattern(m) else {
+                    return Ok(());
+                };
+                let Some(&(_, lo, hi)) = proctex::limits(proctex::gen_word(&p))
+                    .iter()
+                    .find(|l| l.0 == key)
+                else {
+                    return Ok(());
+                };
+                let (label, unit, dec) = num_spec(key);
+                let v = range(label, lo, hi, dec, unit)?;
+                if proctex::value(&p, key) != Some(v) && proctex::set_value(&mut p, key, v) {
+                    self.put_pattern(id, Some(p), cx, out)?;
+                }
             }
             FieldId::Zigzag => {
                 let Some((id, fill)) = self.sel_fill(m) else {
@@ -1218,16 +1401,17 @@ impl Prefs {
                 let Some((sid, mut p)) = self.sel_pattern(m) else {
                     return;
                 };
-                let (Pattern::Masonry { seed, .. } | Pattern::Plaster { seed, .. }) = &mut p else {
+                if matches!(p, Pattern::Foreign(_)) {
                     return;
-                };
-                let old = *seed;
-                let mut k = 1u32;
-                while *seed == old {
-                    *seed =
+                }
+                let old = proctex::seed_of(&p);
+                let (mut seed, mut k) = (old, 1u32);
+                while seed == old {
+                    seed =
                         proctex::lowbias32(old ^ k.wrapping_mul(0x9e37_79b9)) & proctex::SEED_MAX;
                     k += 1;
                 }
+                p = proctex::with_seed(&p, seed);
                 let _ = self.put_pattern(sid, Some(p), cx, out);
             }
             Target::RowAdd | Target::RowDel => {
@@ -1325,7 +1509,12 @@ impl Prefs {
                 let items = vec!["Papier".into(), "Modell (folgt später)".into()];
                 (items, Vec::new(), sel)
             }
-            ComboId::PatKind | ComboId::PatFormat | ComboId::PatBond => {
+            ComboId::PatKind
+            | ComboId::PatFormat
+            | ComboId::PatBond
+            | ComboId::PatAnchors
+            | ComboId::PatWoodDir
+            | ComboId::PatGrid => {
                 let p = self.sel_pattern(m).map(|x| x.1);
                 let (items, sel) = pattern_combo(id, p.as_ref(), self.pat_free);
                 (items, Vec::new(), sel)
@@ -1420,6 +1609,20 @@ impl Prefs {
                     return;
                 };
                 *bond = BONDS[i.min(BONDS.len() - 1)];
+                if let Err(e) = self.put_pattern(sid, Some(p), cx, out) {
+                    self.error = Some(e);
+                }
+            }
+            ComboId::PatAnchors | ComboId::PatWoodDir | ComboId::PatGrid => {
+                let Some((sid, mut p)) = self.sel_pattern(m) else {
+                    return;
+                };
+                match (&mut p, id) {
+                    (Pattern::Concrete { anchors, .. }, ComboId::PatAnchors) => *anchors = i == 1,
+                    (Pattern::Timber { vertical, .. }, ComboId::PatWoodDir) => *vertical = i == 0,
+                    (Pattern::Tiles { half, .. }, ComboId::PatGrid) => *half = i == 1,
+                    _ => return,
+                }
                 if let Err(e) = self.put_pattern(sid, Some(p), cx, out) {
                     self.error = Some(e);
                 }
@@ -1709,7 +1912,12 @@ impl Prefs {
                 text.into()
             }
             ComboId::FillSpace => "Papier".into(),
-            ComboId::PatKind | ComboId::PatFormat | ComboId::PatBond => {
+            ComboId::PatKind
+            | ComboId::PatFormat
+            | ComboId::PatBond
+            | ComboId::PatAnchors
+            | ComboId::PatWoodDir
+            | ComboId::PatGrid => {
                 let p = self.sel_pattern(m).map(|x| x.1);
                 let (items, sel) = pattern_combo(id, p.as_ref(), self.pat_free);
                 items.get(sel).cloned().unwrap_or_default()
@@ -1765,5 +1973,114 @@ impl Prefs {
                 t.ui.field_unit,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::prefs::Ctx;
+    use sk_ui::widgets::Fonts;
+
+    fn win() -> Win {
+        Win {
+            w: 1600,
+            h: 1000,
+            top: 32,
+            scale: 1.0,
+        }
+    }
+
+    /// Paket 7b: Die Regler der neuen Arten stehen im Abschnitt „Muster“
+    /// und setzen das Muster; Flammung und Relief gelten als Musterfelder
+    /// (vorher liefen sie ins Leere).
+    #[test]
+    fn regler_aller_arten() {
+        let mut s = Scene::with_model(Model::with_seed(5));
+        let mut th = Theme::dark();
+        let mut st = crate::settings::Settings::new(
+            ["skizzeo", "--ohne-einstellungen"]
+                .map(String::from)
+                .into_iter(),
+            None,
+        );
+        let fonts = Fonts {
+            regular: None,
+            bold: None,
+            italic: None,
+        };
+        let mut p = Prefs::open(&mut s, &th);
+        p.tab = Tab::Surfaces;
+        let (id, _) = p.sel_surf(s.model()).expect("Oberfläche");
+        let mut out = Out::default();
+        for (name, keys) in [
+            (
+                "Sichtbeton mittelgrau",
+                &["w", "h", "joint", "cloud", "pores"][..],
+            ),
+            ("Holzschalung Lärche", &["board", "joint", "grain"][..]),
+            (
+                "Betonplatten 40 × 40",
+                &["len", "wid", "joint", "spread"][..],
+            ),
+            ("Naturstein", &["size", "joint", "irr"][..]),
+        ] {
+            let start = proctex::preset_named(name).unwrap().pattern.clone();
+            s.edit_attr(|m| m.set_surface_pattern(id, Some(start.clone())));
+            let l = p.attr_layout(&th, &win(), &s);
+            for key in keys {
+                let f = FieldId::PatNum(key);
+                assert!(
+                    l.items.iter().any(|(_, t)| *t == Target::Field(f)),
+                    "{name}: Feld {key}"
+                );
+                let &(_, lo, hi) = proctex::limits(proctex::gen_word(&start))
+                    .iter()
+                    .find(|x| x.0 == *key)
+                    .unwrap();
+                let v = ((lo + hi) / 2.0).round();
+                let mut cx = Ctx {
+                    scene: &mut s,
+                    theme: &mut th,
+                    settings: &mut st,
+                    fonts: &fonts,
+                    win: win(),
+                };
+                p.apply_value(f, &v.to_string(), &mut cx, &mut out)
+                    .unwrap_or_else(|e| panic!("{name} {key}: {e}"));
+                let now = s
+                    .model()
+                    .attr()
+                    .surface(id)
+                    .unwrap()
+                    .pattern
+                    .clone()
+                    .unwrap();
+                assert_eq!(proctex::value(&now, key), Some(v), "{name} {key}");
+            }
+        }
+        let start = proctex::masonry_default();
+        s.edit_attr(|m| m.set_surface_pattern(id, Some(start)));
+        let mut cx = Ctx {
+            scene: &mut s,
+            theme: &mut th,
+            settings: &mut st,
+            fonts: &fonts,
+            win: win(),
+        };
+        p.apply_value(FieldId::PatFlame, "40", &mut cx, &mut out)
+            .unwrap();
+        p.apply_value(FieldId::PatRelief, "30", &mut cx, &mut out)
+            .unwrap();
+        let now = s
+            .model()
+            .attr()
+            .surface(id)
+            .unwrap()
+            .pattern
+            .clone()
+            .unwrap();
+        assert_eq!(proctex::value(&now, "flame"), Some(40.0));
+        assert_eq!(proctex::value(&now, "relief"), Some(30.0));
     }
 }

@@ -250,6 +250,74 @@ fn limited_values(p: &Pattern) -> Vec<f32> {
     }
 }
 
+/// Wert zum Schlüssel aus [`limits`] (Ankerlöcher 0/1); anderer Schlüssel
+/// oder andere Art: `None`. Für die Regler (Paket 7b).
+pub fn value(p: &Pattern, key: &str) -> Option<f32> {
+    limits(gen_word(p))
+        .iter()
+        .zip(limited_values(p))
+        .find(|(l, _)| l.0 == key)
+        .map(|(_, v)| v)
+}
+
+/// Setzt den Wert zum Schlüssel aus [`limits`]; `false`, wenn die Art ihn
+/// nicht hat. Geprüft wird erst mit [`validate`].
+pub fn set_value(p: &mut Pattern, key: &str, v: f32) -> bool {
+    let slot = match (p, key) {
+        (Pattern::Masonry { len, .. }, "len") => len,
+        (Pattern::Masonry { h, .. }, "h") => h,
+        (Pattern::Masonry { joint, .. }, "joint") => joint,
+        (Pattern::Masonry { spread, .. }, "spread") => spread,
+        (Pattern::Masonry { flame, .. }, "flame") => flame,
+        (Pattern::Masonry { fend, .. }, "fend") => fend,
+        (Pattern::Masonry { relief, .. }, "relief") => relief,
+        (Pattern::Plaster { grain, .. }, "grain") => grain,
+        (Pattern::Plaster { spread, .. }, "spread") => spread,
+        (Pattern::Concrete { w, .. }, "w") => w,
+        (Pattern::Concrete { h, .. }, "h") => h,
+        (Pattern::Concrete { joint, .. }, "joint") => joint,
+        (Pattern::Concrete { anchors, .. }, "anchors") => {
+            *anchors = v >= 0.5;
+            return true;
+        }
+        (Pattern::Concrete { cloud, .. }, "cloud") => cloud,
+        (Pattern::Concrete { pores, .. }, "pores") => pores,
+        (Pattern::Timber { board, .. }, "board") => board,
+        (Pattern::Timber { joint, .. }, "joint") => joint,
+        (Pattern::Timber { grain, .. }, "grain") => grain,
+        (Pattern::Tiles { len, .. }, "len") => len,
+        (Pattern::Tiles { wid, .. }, "wid") => wid,
+        (Pattern::Tiles { joint, .. }, "joint") => joint,
+        (Pattern::Tiles { spread, .. }, "spread") => spread,
+        (Pattern::Stone { size, .. }, "size") => size,
+        (Pattern::Stone { joint, .. }, "joint") => joint,
+        (Pattern::Stone { irr, .. }, "irr") => irr,
+        _ => return false,
+    };
+    *slot = v;
+    true
+}
+
+/// Steinfarben mit Anteilen (Mauerwerk: Läufer, Platten, Naturstein).
+pub fn palette_mut(p: &mut Pattern) -> Option<&mut Palette> {
+    match p {
+        Pattern::Masonry { palette, .. }
+        | Pattern::Tiles { palette, .. }
+        | Pattern::Stone { palette, .. } => Some(palette),
+        _ => None,
+    }
+}
+
+/// Fugenfarbe (Mauerwerk, Platten, Naturstein).
+pub fn joint_rgb_mut(p: &mut Pattern) -> Option<&mut [u8; 3]> {
+    match p {
+        Pattern::Masonry { joint_rgb, .. }
+        | Pattern::Tiles { joint_rgb, .. }
+        | Pattern::Stone { joint_rgb, .. } => Some(joint_rgb),
+        _ => None,
+    }
+}
+
 /// Anteile ganzzahlig, Summe 100.
 fn check_palette(palette: &Palette) -> Result<(), String> {
     let mut sum = 0.0;
@@ -1941,6 +2009,27 @@ mod tests {
             }
             let n = (-160..=160).filter(|&q| t.cell(r, q) & 3 == 0).count();
             assert_eq!(js.len(), n, "Schicht {r}");
+        }
+    }
+
+    /// Paket 7b: Jeder Schlüssel der Reglergrenzen lässt sich lesen und
+    /// setzen, an jeder Werksvorlage.
+    #[test]
+    fn regler_lesen_und_setzen() {
+        for pr in presets() {
+            let mut p = pr.pattern.clone();
+            for &(key, lo, hi) in limits(gen_word(&p)) {
+                assert!(value(&p, key).is_some(), "{} {key}", pr.name);
+                let v = if key == "anchors" {
+                    1.0
+                } else {
+                    (lo + hi) / 2.0
+                };
+                assert!(set_value(&mut p, key, v), "{} {key}", pr.name);
+                assert_eq!(value(&p, key), Some(v), "{} {key}", pr.name);
+            }
+            assert!(!set_value(&mut p, "gibtsnicht", 1.0));
+            assert!(validate(&p).is_ok(), "{}", pr.name);
         }
     }
 }
