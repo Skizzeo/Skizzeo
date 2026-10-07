@@ -654,6 +654,8 @@ pub struct Prefs {
     /// Speicher dient dem nächsten.
     spare: Option<Canvas>,
     spare_px: Vec<u8>,
+    /// Fenstergrund mit Schatten je Größe, Skalierung und Schema.
+    ground: Option<((usize, usize, u32, u64), Canvas)>,
     /// Kacheln und Vorschauen der Attributreiter ([`crate::attr_pick`]).
     tiles: std::cell::RefCell<crate::attr_pick::Tiles>,
 }
@@ -691,6 +693,7 @@ impl Prefs {
             mouse: (-1.0, -1.0),
             spare: None,
             spare_px: Vec::new(),
+            ground: None,
             tiles: Default::default(),
         }
     }
@@ -2804,7 +2807,15 @@ impl Prefs {
         c.reuse((f.w + 2.0 * m) as usize, (f.h + 2.0 * m) as usize);
         let at = |r: Rect| Rect::new(r.x - f.x + m, r.y - f.y + m, r.w, r.h);
         let u = &t.ui;
-        widgets::panel(&mut c, Rect::new(m, m, f.w, f.h), s, t);
+        let key = (c.width, c.height, s.to_bits(), t.rev);
+        if self.ground.as_ref().map(|g| g.0) != Some(key) {
+            let mut g = Canvas::new(c.width, c.height);
+            widgets::panel(&mut g, Rect::new(m, m, f.w, f.h), s, t);
+            self.ground = Some((key, g));
+        }
+        if let Some((_, g)) = &self.ground {
+            c.copy_rows(g, 0, c.height);
+        }
         if self.flash_until.is_some() {
             let b = (2.0 * s).round();
             let rad = t.size.corner_radius * s;

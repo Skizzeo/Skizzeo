@@ -1310,21 +1310,6 @@ impl Renderer {
                 }
                 gl.glDisable(BLEND);
                 gl.glDepthMask(TRUE);
-                // Tiefe wieder nur vom Deckenden: Hilfslinien, Auswahl und
-                // Fang hinter Blassem bleiben sichtbar (Review 3h, Hinweis)
-                gl.glClear(DEPTH_BUFFER_BIT);
-                let p = self.faces.id;
-                gl.glUseProgram(p);
-                gl.glEnable(POLYGON_OFFSET_FILL);
-                gl.glPolygonOffset(1.0, 1.0);
-                gl.glDepthFunc(LESS);
-                gl.glColorMask(FALSE, FALSE, FALSE, FALSE);
-                for (_, m) in self.meshes.iter().enumerate().filter(|(i, _)| opaque(i)) {
-                    gl.glBindVertexArray(m.faces.vao);
-                    gl.glDrawArrays(TRIANGLES, 0, m.faces.count);
-                }
-                gl.glColorMask(TRUE, TRUE, TRUE, TRUE);
-                gl.glDisable(POLYGON_OFFSET_FILL);
             }
 
             // Boden durchscheinend über allem, was unter z = 0 liegt; über dem
@@ -1340,6 +1325,26 @@ impl Renderer {
                 gl.glDrawArrays(TRIANGLES, 0, 3);
                 gl.glDisable(BLEND);
                 gl.glDepthMask(TRUE);
+            }
+
+            // Tiefe wieder nur vom Deckenden: Hilfslinien, Auswahl und
+            // Fang hinter Blassem bleiben sichtbar (Review 3h, Hinweis). Erst
+            // nach dem Boden, sonst tönt er den Geist über leerem Boden (3l);
+            // ohne Hilfslinien braucht niemand die Tiefe
+            if ghost.is_some_and(|g| g.1 > 0.0) && self.helper_mesh.count > 0 {
+                gl.glClear(DEPTH_BUFFER_BIT);
+                let p = self.faces.id;
+                gl.glUseProgram(p);
+                gl.glEnable(POLYGON_OFFSET_FILL);
+                gl.glPolygonOffset(1.0, 1.0);
+                gl.glDepthFunc(LESS);
+                gl.glColorMask(FALSE, FALSE, FALSE, FALSE);
+                for (_, m) in self.meshes.iter().enumerate().filter(|(i, _)| opaque(i)) {
+                    gl.glBindVertexArray(m.faces.vao);
+                    gl.glDrawArrays(TRIANGLES, 0, m.faces.count);
+                }
+                gl.glColorMask(TRUE, TRUE, TRUE, TRUE);
+                gl.glDisable(POLYGON_OFFSET_FILL);
             }
 
             // Hilfslinien und Markierungen: erst die sichtbaren Teile, dann die

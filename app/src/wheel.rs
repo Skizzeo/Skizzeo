@@ -405,33 +405,25 @@ impl Wheel {
         }
     }
 
-    /// Lage im Fenster `w` × `h` (Pixel, mit Titelleiste): rechts am Rand,
-    /// senkrecht mittig unter „Ansichten“, nie höher als die Fenstermitte.
-    /// Ist ein Bauteil gewählt, rückt er links neben „Eigenschaften“, damit
-    /// das Paneel ihn nicht verdeckt.
-    pub fn geo(&self, ui: &Ui, w: u32, h: u32) -> Geo {
-        self.geo_at(ui, w, h, ui.has_props())
-    }
-
-    /// Linke Kante des Bogens samt Beschriftung an den Spitzen, wenn er
-    /// neben „Eigenschaften“ steht (Pixel): Bis hierhin darf der Grundriss.
+    /// Linke Kante des Bogens samt Beschriftung an den Spitzen (Pixel): Bis
+    /// hierhin darf der Grundriss.
     pub fn left_beside_props(&self, ui: &Ui, w: u32, h: u32) -> f32 {
-        let g = self.geo_at(ui, w, h, true);
+        let g = self.geo(ui, w, h);
         let tip = g.tip(true).0.min(g.tip(false).0);
         g.bounds(0.0).x.min(tip - TIP_LABEL_HALF * g.s)
     }
 
-    fn geo_at(&self, ui: &Ui, w: u32, h: u32, props: bool) -> Geo {
+    /// Lage im Fenster `w` × `h` (Pixel, mit Titelleiste): links neben der
+    /// rechten Spalte (Ansichten, Baum, Eigenschaften), im Abstand
+    /// `panel_margin`, senkrecht mittig unter „Ansichten“, nie höher als die
+    /// Fenstermitte (ac).
+    pub fn geo(&self, ui: &Ui, w: u32, h: u32) -> Geo {
         let z = &self.size;
         let s = ui.dpi();
         let views = ui.rect(Panel::Views, w, ui.top);
         let below = views.y + views.h;
         let cy = ((below + h as f32) / 2.0).max(h as f32 / 2.0);
-        let right = if props {
-            ui.rect(Panel::Props, w, ui.top).x - z.panel_margin * s
-        } else {
-            w as f32 - z.panel_margin * s
-        };
+        let right = views.x - z.panel_margin * s;
         let label_x = right - LABEL_COL * z.arc_label * s;
         let r = z.arc_r * s;
         let mid = label_x - LABEL_GAP * s - z.arc_band * 0.5 * s;

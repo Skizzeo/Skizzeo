@@ -5096,9 +5096,10 @@ fn a80_bogen_nur_im_grundriss() {
             (cy - soll).abs() < 1.0,
             "senkrecht {bw}×{bh}: {cy} ≠ {soll}"
         );
+        // Befund ac (Nachtrag 2): immer links neben der rechten Spalte
         let rechts = bogen_rechts(&w, &s, &ui, bw, bh);
         assert!(
-            (rechts - (bw as f32 - th.size.panel_margin)).abs() < 1.0,
+            (rechts - (views.x - th.size.panel_margin)).abs() < 1.0,
             "rechter Rand {bw}: {rechts}"
         );
         assert!(cx + r < rechts, "Schild rechts vom Bogen");
@@ -10917,10 +10918,12 @@ mod bogen_loeschen {
         for (bw, bh) in [(1280u32, 800u32), (1440, 900), (1920, 1080)] {
             ui.fit(1.0, bw, bh);
             ui.set_props(None);
+            // Befund ac (Nachtrag 2): links neben der rechten Spalte
+            let views = ui.rect(Panel::Views, bw, 32);
             let frei = bogen_rechts(&w, &s, &ui, bw, bh);
             assert!(
-                (frei - (bw as f32 - th.size.panel_margin)).abs() < 1.0,
-                "{bw}: ohne Auswahl am Rand"
+                (frei - (views.x - th.size.panel_margin)).abs() < 1.0,
+                "{bw}: ohne Auswahl links der Spalte"
             );
             ui.set_props(crate::selection::props(&s, el));
             assert!(ui.has_props());
