@@ -1,0 +1,247 @@
+[thema] id=start titel="Erste Schritte"
+Haus anlegen | Knopf „Gebäude“, Höhen prüfen, „Zeichnen beginnen“, Außenwand zeichnen
+Umsehen | Mausrad gedrückt dreht, **Umschalt** + Mausrad verschiebt, Mausrad dreht zum Zoomen
+Ansicht wechseln | Paneel „Ansichten“: 3D, Grundriss, Schnitt, Vorne, Hinten, Links, Rechts
+Bauteil wählen | Klick auf das Bauteil; rechts stehen Maße, Mengen und Felder
+Ändern | am violetten Band ziehen oder im Paneel Werte eintippen
+Mengen | Knopf „Mengenermittlung“ öffnet die Liste aller Bauteile
+Datei | Klick auf das Logo oben links, **F10** oder **Alt**
+Rückgängig | **Strg+Z**, wiederholen **Strg+Y**
+Hilfe | **F1** zeigt die Hilfe zu dem, was du gerade tust
+
+[thema] id=navigation titel="Navigation"
+Drehen | Mausrad gedrückt halten und ziehen; dreht um den Punkt unter der Maus
+Verschieben | **Umschalt** + Mausrad gedrückt
+Zoomen | Mausrad drehen, zoomt zum Mauszeiger
+Ansicht wechseln | Paneel „Ansichten“: 3D, Grundriss, Schnitt, Vorne, Hinten, Links, Rechts
+Bauteil ins Bild holen | Doppelklick auf eine Zeile im Baum oder im Mengenfenster
+
+[thema] id=gebaeude titel="Gebäude erstellen"
+Höhen | Dicke OG-Decke, lichte Höhe OG, Dicke EG-Decke, lichte Höhe EG, Dicke Sohlplatte
+Weiter | **Enter** oder **Tab** springt ins nächste Feld
+Wert zurück | **Esc** stellt den alten Wert her
+Ungültig | Ein falscher Wert sperrt „Zeichnen beginnen“ und nennt den Grund
+Zeichnen beginnen | danach die EG-Außenwand zeichnen; beim Schließen entsteht das ganze Haus
+Abbrechen | lässt nichts zurück
+
+[thema] id=zeichnen titel="Wände zeichnen"
+Punkte setzen | Linksklick; im Uhrzeigersinn zeichnen, Bezugsseite außen
+Länge tippen | Zahl tippen, **Enter** setzt den Punkt genau; die Maus gibt die Richtung
+Winkel tippen | nach der Länge **Tab**, Winkel gegen die vorige Wand (0° geradeaus, plus links)
+Bezugsseite | **Tab** ohne Eingabe: links, rechts oder Mitte
+90°-Sprung | **R** an oder aus; **Umschalt** halten kehrt kurz um
+Schließen | Klick auf den Startpunkt; Spurlinien helfen rechtwinklig
+Offenen Zug beenden | **Enter** ohne Eingabe oder Doppelklick
+Zurück | **Rücktaste** löscht eine Ziffer, ohne Eingabe den letzten Punkt
+Abbrechen | **Esc** schließt erst die Eingabe, das zweite **Esc** bricht den Zug ab
+
+[thema] id=innenwand titel="Innenwand"
+Starten | Knopf „Innenwand“ unter „Gebäude“; Bezugsseite ist die Achse
+Geschoss | Sie entsteht im aktiven Geschoss und wird nicht gestapelt
+Zeichnen | wie Wände zeichnen: Klick, Länge tippen und **Enter**, **Tab** für den Winkel
+Beenden | **Enter** oder Doppelklick
+Typ | Chip im Werkzeug: Klick öffnet die Typ-Liste
+Löschen | wählen, dann **Entf** oder Rechtsklick › Löschen
+
+[thema] id=ziehen titel="Wand verschieben"
+Greifen | über den Wandfuß fahren, violettes Band greifen und ziehen (10-mm-Raster)
+Wert tippen | beim Ziehen eine Zahl tippen, **Enter** übernimmt genau auf den Millimeter
+Nachkorrektur | direkt nach dem Loslassen Zahl tippen und **Enter** ersetzt den Schritt
+Versatz | an gelöster Wand: „0,30“ springt vor, „-0,30“ zurück; unter 2 cm bündig
+Nur diese Wand | mit **Strg** ziehen; ohne **Strg** geht der ganze Stapel mit
+Abbrechen | **Esc** schließt erst die Eingabe, das zweite **Esc** bricht das Ziehen ab
+Schnitt, Ansichten | dort an der violetten Kugel ziehen
+Gesperrt | Gesperrtes lässt sich nicht ziehen; entsperren im Baum
+
+[thema] id=og titel="Geschosse getrennt bearbeiten"
+Kette | über einen OG-Wandfuß fahren; Klick auf die Kette löst die Kopplung
+Versetzen | gelöstes OG-Band ziehen oder Versatz tippen; nur das OG bewegt sich
+Koppeln | Klick auf die graue Kette; der Versatz bleibt
+Vorsprung | Die Decke kragt aus, darunter entsteht die Untersichtdämmung
+Rücksprung | Auf der freien EG-Decke entsteht von selbst eine Dachterrasse
+Bündig setzen | in der Hinweiskarte oder im Paneel, Zeile „Kopplung“
+
+[thema] id=buendig titel="Bündig setzen"
+Ziel wählen | Beide Wände leuchten; die Wand anklicken, an die bündig gesetzt wird
+Vorschau | Beim Darüberfahren zeigt ein gestrichelter Umriss das Ergebnis
+EG als Ziel | **Enter** setzt das OG ans EG
+OG als Ziel | Klick auf die OG-Wand; Bodenplatte, Schürze und Decke gehen mit
+Roter Umriss | Diese Wand kann nicht nachrücken; ein Klick sagt warum
+Abbrechen | **Esc**, Klick ins Leere oder auf eine andere Wand
+
+[thema] id=wand titel="Wand"
+Paneel | zeigt Nummer, Typ, Maße und Mengen
+Typ wechseln | Klick auf den Typ-Chip; beim Überfahren zeigt das Modell die Vorschau
+Verschieben | am violetten Band ziehen, oder Zahl tippen
+Baustoff | Klick auf den Baustoffnamen öffnet „Baustoffe …“
+Löschen | Innenwand: **Entf**; Außenwände gehen nur mit „Gebäude löschen“
+Auswahl aufheben | Klick ins Leere oder **Esc**
+
+[thema] id=gruendung titel="Gründung"
+Entstehen | Sohlplatte und Frostschürze kommen mit dem Gebäude
+Wert ändern | ins Zahlenfeld klicken, Wert in cm tippen, **Enter** übernimmt, **Esc** verwirft
+Plattendicke | 10 bis 100 cm
+Sockelrücksprung | 0 (bündig) oder 2 bis 50 cm; Platte und Schürze springen gemeinsam
+Schürze | Breite 30 bis 45 cm (Standard 35), Tiefe 20 bis 300 cm ab Unterkante Platte
+Ungültig | roter Rahmen mit Grund
+
+[thema] id=decke titel="Decke"
+Entstehen | EG- und OG-Decke kommen mit dem Gebäude
+Dicke | Zahlenfeld „Dicke“ im Paneel
+Untersicht | bei OG-Vorsprung die Untersichtdämmung, Standard 12 cm
+Dachterrasse | Dämmung, Belag und Attikahöhe als Zahlenfelder, wenn das OG zurückspringt
+Löschen | Decken gehören zum Gebäude; ein Satz erklärt es
+
+[thema] id=dachterrasse titel="Dachterrasse"
+Entstehen | Springt das OG zurück, entsteht die Terrasse von selbst auf der EG-Decke
+Aufbau | harte Dämmung 8 cm, Belag 6 cm; die OG-Wand steht auf der Rohdecke
+Attika | Die EG-Außenschichten laufen 6 cm über den Belag, darauf das Attikablech
+Werte ändern | Belag anklicken, im Paneel Dämmung, Belag und „Attika über Belag“ tippen
+Mengen | Dämmung in m² und m³, Belag in m², Blech in m; Blech beim Dachdecker
+Verschwinden | „Bündig setzen“ oder OG nach außen; **Strg+Z** holt sie zurück
+Löschen | geht nicht einzeln; sie folgt dem Rücksprung des OG
+
+[thema] id=geschosse titel="Geschosse"
+Aktives Geschoss | Klick auf „Fundament“, „EG“ oder „OG“ im Paneel „Geschosse“
+Geschossbogen | im Grundriss rechts; Klick auf eine Spitze, Mausrad oder **Bild↑** / **Bild↓**
+Höhe ziehen | Griff an einer Geschosslinie; Fang 1 cm, mit **Umschalt** 5 cm, **Esc** bricht ab
+Höhe als Zahl | auf eine Maßzahl klicken, Wert in Metern, **Enter**
+Grundriss | schneidet 1,00 m über dem Geschossboden, das Geschoss darunter im Hintergrund
+Fundament | eigene Ebene; Wände zeichnen ist dort gesperrt
+Grenzen | ±0,00 liegt fest; lichte Höhe mindestens 1,00 m
+
+[thema] id=schnitt titel="Schnitte"
+Öffnen | „Schnitt“ öffnet den zuletzt benutzten Schnitt, zuerst A–A
+Wechseln | Schnittrad rechts: Klick, Mausrad über dem Rad oder **Bild↑** / **Bild↓**
+Blickrichtung | Knopf „⇄ Blickrichtung“ unter dem Rad, oder Klick auf einen Pfeil im Grundriss
+Linien verschieben | im Grundriss Linie A oder B greifen und ziehen (10-mm-Raster)
+Längs oder quer | steht automatisch unter dem Buchstaben
+Wand ändern | an der violetten Kugel ziehen
+
+[thema] id=baum titel="Baum, Ausblenden, Isolieren"
+Karten | rechte Spalte: Baum, Bauteil, Gewerk
+Ausblenden | Auge je Zeile; unten „Alles zeigen“
+Isolieren | Symbol beim Überfahren der Zeile; **Esc** oder „Beenden“ zeigt wieder alles
+Sperren | Schloss je Zeile; Gesperrtes hat keine Griffe
+Auswählen | Klick, mehrere mit **Umschalt** oder **Strg**; Doppelklick holt ins Bild
+Kontextmenü | Rechtsklick wie im Modell
+Rückgängig | **Strg+Z** nimmt Sperren zurück, Ausblenden nicht
+Platz | Grenze zwischen Baum und Eigenschaften ziehen; Klick auf den Reiter klappt zu
+
+[thema] id=datei titel="Datei und Rückgängig"
+Dateimenü | Logo oben links, **F10** oder **Alt** kurz
+Neu, Öffnen | **Strg+N**, **Strg+O**
+Speichern | **Strg+S**, unter neuem Namen **Strg+Umschalt+S**
+Schließen | **Strg+W**; bei Änderungen fragt Skizzeo nach
+Rückgängig | **Strg+Z** oder Knopf in der Titelleiste
+Wiederholen | **Strg+Y** oder **Strg+Umschalt+Z**
+Ungespeichert | • hinter dem Dateinamen
+Sichern | alle 5 Minuten automatisch, nie in deine Datei
+Bildzeit messen | Menü → „Bildzeit messen (10 s)“, unter „Hilfe“; Median und 95 % stehen danach unten, die Tabelle liegt neben der Datei
+
+[thema] id=einstellungen titel="Einstellungen"
+Öffnen | Dateimenü › „Einstellungen …“ oder **Strg+Komma**
+Reiter | Stifte, Linientypen, Schraffuren, Oberflächen, Bedienoberfläche
+Wirkung | Jede Änderung wirkt sofort; **OK** ist ein Rückgängig-Schritt
+Abbrechen | stellt alles genau wie vorher her
+Standard | „Auf Standard zurücksetzen“ je Reiter
+Gespeichert | Projektreiter in der .szo, Bedienoberfläche für alle Projekte
+
+[thema] id=einstellungen-stifte titel="Einstellungen · Stifte"
+Liste | Nr., Farbe, Muster, Breite, Name und wie oft verwendet
+Breite | ISO 128 von 0,13 bis 1,00 mm oder eigene
+Farbe | Klick aufs Farbfeld; R/G/B oder #RRGGBB tippen
+Neu, Duplizieren | Knöpfe unter der Liste
+Löschen | nur, solange der Stift nirgends verwendet wird
+
+[thema] id=einstellungen-linientypen titel="Einstellungen · Linientypen"
+Startsatz | Volllinie, Strichlinie, Strichpunktlinie, Punktlinie nach DIN
+Muster | höchstens zwei Zeilen: Strich und Lücke in mm, Punkt ja oder nein
+Vorschau | in 0,13, 0,35 und 0,70 mm
+Löschen | nur, solange der Linientyp nirgends verwendet wird
+
+[thema] id=einstellungen-schraffuren titel="Einstellungen · Schraffuren"
+Art | Leer, Vollfläche, Linien oder Zickzack
+Linien | bis zwei Scharen mit Winkel, Abstand, Versatz, Strich und Lücke in mm
+Farbe | kommt vom Baustoff, nicht von der Schraffur
+Löschen | nur, solange die Schraffur nirgends verwendet wird
+
+[thema] id=einstellungen-oberflaechen titel="Einstellungen · Oberflächen"
+Farben | Ansichtsfläche und Schnittfläche in 3D
+Muster | Abschnitt „Muster“: ohne, Mauerwerk, Putz und weitere Arten
+Mauerwerk | Steinformat, Fuge, Verband, Steinfarben, Fugenfarbe, Streuung
+Putz | Körnung und Streuung
+Zufall | Würfelsymbol zieht ein neues Steinbild bei gleichen Farben
+Mehr Muster | „Mehr Muster …“ öffnet das Fenster mit Vorlagen
+
+[thema] id=einstellungen-bedienoberflaeche titel="Einstellungen · Bedienoberfläche"
+Schema | Grundschema und Akzentfarbe
+Farbrollen | aufklappbare Gruppen für Flächen, Schrift, Eingabefelder, Geschosse
+3D-Umgebung | Himmel, Horizont, Boden
+Animationen | Dauer der Übergänge; 0 schaltet sie aus
+Muster in 3D | Schalter in der Gruppe 3D-Umgebung, für schwache Grafik; die Ansichten behalten ihre Fugen
+Mengenliste | Gruppe „Blatt (Mengenliste)“
+
+[thema] id=katalog titel="Bauteilkatalog"
+Öffnen | Dateimenü › „Bauteilkatalog …“ oder über den Typ-Chip
+Projekt | Schichten von außen nach innen; Name und Kurzzeichen folgen der Dicke
+Neu | aus dem Bürostandard, Duplizieren, Löschen
+Firma | Firmenkatalog zum Vergleich; „Ins Projekt übernehmen“
+Verbauten Typ ändern | beim **OK**: „Als neuen Typ speichern“ oder „Ändern“
+Baustoff | Rechtsklick auf eine Schicht öffnet „Baustoffe …“
+Einzelne Wand anders | dafür einen neuen Typ anlegen
+
+[thema] id=baustoffe titel="Baustoffe"
+Öffnen | Dateimenü › „Baustoffe …“, Baustoffname im Paneel oder Rechtsklick auf eine Schicht
+Ansehen | Reiter Projekt und Firma; λ, Rohdichte, Richtpreis und „Verwendet in“
+Mehr | „Mehr“ klappt alle Kennwerte auf
+Ändern | Werte tippen; **OK** ist ein Rückgängig-Schritt
+Duplizieren | immer möglich
+Löschen | nur, solange der Baustoff nirgends verwendet wird
+Firmenkatalog | „In den Firmenkatalog …“ und „Ins Projekt übernehmen“ samt Kennwerten
+
+[thema] id=muster titel="Muster"
+Vorlage | Klick links übernimmt sie in die Regler; ● zeigt die passende
+Vorschau | Nah, Ansicht 1:100 oder Fern
+Vorher/Nachher | Schalter an, Teiler ziehen
+Varianten | sechs Kacheln mit anderem Steinbild; ⟳ zieht neue
+Regler | rechts je Musterart, Zahlen mit Pfeiltasten
+Eigene Vorlage | „Als Vorlage speichern …“ legt sie im Firmenkatalog ab
+Übernehmen | **OK**; Abbrechen verwirft
+
+[thema] id=mengen titel="Mengenermittlung"
+Öffnen | Knopf „Mengenermittlung“ im Paneel „Ansichten“
+Gliedern | oben rechts „Gliedern nach“ Geschoss oder Gewerk
+Zeigen | Überfahren einer Zeile lässt das Bauteil leuchten, Klick wählt es
+Ins Bild holen | Doppelklick auf eine Zeile
+Löschen | **Entf** oder Rechtsklick auf eine Zeile
+Ausgabe | „Als Tabelle speichern“ legt eine CSV für Excel ab
+Fenster | wegziehen löst es, an der Kante rastet es wieder ein
+
+[thema] id=loeschen titel="Löschen"
+Innenwand | wählen, **Entf** oder Rechtsklick › Löschen
+Gebäude | Außenwände, Gründung, Decken und OG gehen nur zusammen, mit Rückfrage
+Abgeleitetes | Randdämmstreifen, Dachterrasse oder Attikablech: ein Satz erklärt, wo man es ändert
+Gesperrt | Gesperrtes lässt sich nicht löschen; entsperren im Baum
+Rückgängig | **Strg+Z**
+
+[thema] id=sicherungen titel="Sicherungen"
+Automatisch | alle 5 Minuten nach %APPDATA%\Skizzeo\Sicherungen, 7 Tage lang
+Nach einem Absturz | **Enter** stellt die Sicherung her, **Esc** verwirft sie
+Kachel wählen | **←** / **→**
+Alle Sicherungen | Dateimenü › „Sicherungen …“; ein Klick öffnet eine
+Scheitert es | Karte „Automatisches Sichern klappt gerade nicht.“ mit „Jetzt speichern“
+
+[knopf]
+Gebäude | Außenwand als Polygon zeichnen; beim Schließen entsteht das ganze Haus.
+Innenwand | Innenwand im aktiven Geschoss zeichnen.
+90°-Sprung | Beim Zeichnen springt die Richtung in 90°-Schritten; **R** schaltet um.
+3D | Haus räumlich ansehen.
+Grundriss | Waagerechter Schnitt durch das aktive Geschoss.
+Schnitt | Senkrechter Schnitt A–A oder B–B.
+Vorne | Ansicht von vorne.
+Hinten | Ansicht von hinten.
+Links | Ansicht von links.
+Rechts | Ansicht von rechts.
+Mengenermittlung | Liste aller Bauteile mit Mengen, nach Geschoss oder Gewerk.
+? | Hilfe zu dem, was du gerade tust.

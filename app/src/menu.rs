@@ -40,6 +40,10 @@ pub enum Command {
     Backups,
     /// Sicherung Nummer `i` der zuletzt gezeigten Liste öffnen.
     OpenBackup(usize),
+    /// Hilfekarte öffnen (F1, Paket 9).
+    Help,
+    /// „Bildzeit messen (10 s)“ (Paket 9, Handtest 0b).
+    MeasureFrameTime,
 }
 
 /// Antwort der Nachfrage „Änderungen speichern?“.
@@ -208,6 +212,13 @@ impl FileMenu {
             item("Bauteilkatalog …", "", Command::Catalog, true),
             item("Baustoffe …", "", Command::Materials, true),
             separator(),
+            item("Hilfe", "F1", Command::Help, true),
+            item(
+                "Bildzeit messen (10 s)",
+                "",
+                Command::MeasureFrameTime,
+                true,
+            ),
             item("Schließen", "Strg+W", Command::Close, true),
             item("Beenden", "Alt+F4", Command::Quit, true),
         ]

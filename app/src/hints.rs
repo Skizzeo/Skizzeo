@@ -6,7 +6,7 @@ use sk_model::szo::{Line, Record};
 use std::collections::BTreeSet;
 
 /// Kennung und Text je Hinweis.
-pub const HINTS: [(&str, &str); 4] = [
+pub const HINTS: [(&str, &str); 5] = [
     (
         "hide_counts",
         "Ausgeblendetes zählt in den Mengen weiter. ‚Alles zeigen‘ holt es zurück.",
@@ -23,6 +23,7 @@ pub const HINTS: [(&str, &str); 4] = [
         "measure",
         "Tipp: Eine Zahl tippen und Enter setzt die Wand genau auf diese Länge.",
     ),
+    ("help", "F1 zeigt die Hilfe zu dem, was du gerade tust."),
 ];
 
 /// Text zum Hinweis `id`.

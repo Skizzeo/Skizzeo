@@ -2648,6 +2648,12 @@ impl Catalog {
             })
     }
 
+    /// Klappliste, Inline-Eingabe, Rückfrage oder Ziehen offen: Esc gehört
+    /// zuerst ihnen (Paket 9, Nachtrag H9-1).
+    pub fn busy(&self) -> bool {
+        self.edit.is_some() || self.popup.is_some() || self.drag.is_some()
+    }
+
     pub fn wait(&self, t: &Theme) -> Option<Duration> {
         self.animating(t).then_some(Duration::from_millis(16))
     }

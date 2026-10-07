@@ -13,6 +13,9 @@ pub enum Button {
     Menu,
     Undo,
     Redo,
+    /// „?“ (Paket 9): Hilfekarte, eigene Gruppe rechts neben Rückgängig
+    /// und Wiederherstellen.
+    Help,
 }
 
 /// Linke Knopfgruppe (dip): Menü 46, Abstand 8, Rückgängig und
@@ -68,17 +71,34 @@ impl TitleBar {
         let undo = (menu + LEFT_GAP * s).round();
         let redo = undo + (HISTORY_W * s).round();
         let end = (redo + HISTORY_W * s).round();
+        let help = (end + LEFT_GAP * s).round();
         match b {
             Button::Menu => Some((0.0, menu)),
             Button::Undo => Some((undo, redo)),
             Button::Redo => Some((redo, end)),
+            Button::Help => Some((help, (help + HISTORY_W * s).round())),
             _ => None,
         }
     }
 
-    /// Breite der linken Gruppe (Pixel); dort ist die Leiste keine Ziehfläche.
+    /// Breite der linken Gruppe (Pixel): Menü, Rückgängig, Wiederherstellen.
     pub fn left_width(&self) -> u32 {
         self.left_span(Button::Redo).map_or(0, |s| s.1 as u32)
+    }
+
+    /// Breite links, die der App gehört (bis zum Ende von „?“); dort ist
+    /// die Leiste keine Ziehfläche.
+    pub fn caption_left(&self) -> u32 {
+        self.left_span(Button::Help).map_or(0, |s| s.1 as u32)
+    }
+
+    /// Knopf „?“ unter `(x, y)`.
+    pub fn help_at(&self, x: f64, y: f64) -> bool {
+        y >= 0.0
+            && y < self.height() as f64
+            && self
+                .left_span(Button::Help)
+                .is_some_and(|(a, z)| x >= a as f64 && x < z as f64)
     }
 
     /// Knopf der linken Gruppe unter `(x, y)`.
@@ -123,6 +143,9 @@ impl TitleBar {
         if let Some(b) = self.left_button_at(x, y) {
             return Some(b);
         }
+        if self.help_at(x, y) {
+            return Some(Button::Help);
+        }
         let bw = self.button_width() as f64;
         let right = width as f64;
         match ((right - x) / bw).floor() as i64 {
@@ -146,6 +169,7 @@ impl TitleBar {
             let x = ((width as f32 - tw) * 0.5).round();
             let left = self.left_width() as f32 + 8.0 * s;
             let right = width as f32 - self.buttons_width() as f32 - 8.0 * s;
+            let left = left.max(self.caption_left() as f32 + 8.0 * s);
             if x >= left && x + tw <= right {
                 let y = ((h as f32 + f.cap_height(px)) * 0.5).round();
                 let col = if self.active {
@@ -164,11 +188,12 @@ impl TitleBar {
             Button::Menu,
             Button::Undo,
             Button::Redo,
+            Button::Help,
             Button::Minimize,
             Button::Maximize,
             Button::Close,
         ] {
-            if self.side && matches!(b, Button::Menu | Button::Undo | Button::Redo) {
+            if self.side && matches!(b, Button::Menu | Button::Undo | Button::Redo | Button::Help) {
                 continue;
             }
             self.paint_button_at(t, &mut c, b, self.button_x(b, width));
@@ -251,6 +276,7 @@ impl TitleBar {
             Button::Undo | Button::Redo => {
                 self.paint_history_glyph(c, b == Button::Redo, x + bw * 0.5, glyph)
             }
+            Button::Help => self.paint_help_glyph(c, x + bw * 0.5, glyph),
             _ => self.paint_glyph(c, b, x + bw * 0.5, h as f32 * 0.5, glyph, bg),
         }
     }
@@ -323,6 +349,57 @@ impl TitleBar {
         c.fill(&q, fg);
     }
 
+    /// Fragezeichen im Kreis (14 dip, Strich 1,25 dip) für „?“.
+    fn paint_help_glyph(&self, c: &mut Canvas, cx: f32, fg: Rgba) {
+        let s = self.scale;
+        let cy = (self.height() as f32 * 0.5).round();
+        let r = 7.0 * s;
+        let w = (1.25 * s).max(1.0);
+        let n = 48;
+        let mut p = Path::new();
+        let pt = |i: usize, rad: f32| {
+            let a = std::f32::consts::TAU * i as f32 / n as f32;
+            (cx + rad * a.cos(), cy + rad * a.sin())
+        };
+        let (x, y) = pt(0, r + w * 0.5);
+        p.move_to(x, y);
+        for i in 1..=n {
+            let (x, y) = pt(i, r + w * 0.5);
+            p.line_to(x, y);
+        }
+        p.close();
+        let (x, y) = pt(0, r - w * 0.5);
+        p.move_to(x, y);
+        for i in (0..n).rev() {
+            let (x, y) = pt(i, r - w * 0.5);
+            p.line_to(x, y);
+        }
+        p.close();
+        c.fill(&p, fg);
+        // Haken des Fragezeichens: Bogen über oben nach rechts, dann
+        // schräg zur Mitte und senkrecht nach unten
+        let sw = (1.4 * s).max(1.0);
+        let (ax, ay, ar) = (cx, cy - 1.8 * s, 2.6 * s);
+        let k = 12;
+        let pts: Vec<(f32, f32)> = (0..=k)
+            .map(|i| {
+                let a = (165.0 - 225.0 * i as f32 / k as f32).to_radians();
+                (ax + ar * a.cos(), ay - ar * a.sin())
+            })
+            .collect();
+        let mut q = Path::new();
+        for i in 0..k {
+            q.segment(pts[i], pts[i + 1], sw);
+        }
+        q.segment(pts[k], (cx, cy + 0.6 * s), sw);
+        q.segment((cx, cy + 0.6 * s), (cx, cy + 1.6 * s), sw);
+        c.fill(&q, fg);
+        let d = 0.9 * s;
+        let mut dot = Path::new();
+        dot.rounded_rect(cx - d, cy + 3.1 * s, 2.0 * d, 2.0 * d, d);
+        c.fill(&dot, fg);
+    }
+
     fn paint_glyph(&self, c: &mut Canvas, b: Button, cx: f32, cy: f32, fg: Rgba, bg: Rgba) {
         let s = self.scale;
         let sw = s.round().max(1.0); // Strichstärke 1 dip, pixelgenau
@@ -347,7 +424,7 @@ impl TitleBar {
                 c.fill(&p, bg);
                 outline(c, x0, y0 + d, f, f, r, sw, fg);
             }
-            Button::Menu | Button::Undo | Button::Redo => {}
+            Button::Menu | Button::Undo | Button::Redo | Button::Help => {}
             Button::Close => {
                 let mut p = Path::new();
                 let k = sw * 0.35; // Strichenden leicht einrücken

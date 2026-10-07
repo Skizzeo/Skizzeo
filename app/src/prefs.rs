@@ -2950,6 +2950,28 @@ impl Prefs {
         self.flash_until = Some(Instant::now() + FLASH);
     }
 
+    /// Klappliste, Inline-Eingabe, Rückfrage oder Ziehen offen: Esc gehört
+    /// zuerst ihnen (Paket 9, Nachtrag H9-1).
+    pub fn busy(&self) -> bool {
+        self.edit.is_some() || self.popup.is_some() || self.drag.is_some()
+    }
+
+    /// Fenster „Muster“ offen (Hilfethema „muster“).
+    pub fn pattern_open(&self) -> bool {
+        self.pw.is_some()
+    }
+
+    /// Aktiver Reiter als Zahl (0 Stifte … 4 Bedienoberfläche).
+    pub fn tab_index(&self) -> u8 {
+        match self.tab {
+            Tab::Pens => 0,
+            Tab::LineTypes => 1,
+            Tab::Fills => 2,
+            Tab::Surfaces => 3,
+            Tab::Ui => 4,
+        }
+    }
+
     /// Wartezeit bis zum Ende des Aufblinkens.
     /// Wartezeit bis zum Ende des Aufblinkens; solange eine Vorschau auf
     /// ihre Verbandstabelle wartet oder einblendet, ein Bild (16 ms).

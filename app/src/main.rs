@@ -16,6 +16,8 @@ mod delete;
 mod document;
 mod draw_table;
 mod flush_pick;
+mod frame_time;
+mod help;
 mod hints;
 mod link_view;
 mod material_view;
@@ -198,12 +200,16 @@ const OVERLAY_CONTEXT: usize = OVERLAY_HINT + 2;
 /// außer dem Hinweis an der Maus.
 const OVERLAY_CARD_SCRIM: usize = OVERLAY_HINT + 3;
 const OVERLAY_CARD: usize = OVERLAY_HINT + 4;
+/// Hilfekarte (Paket 9) über allen Fenstern: das vorige Bild beim
+/// Überblenden und das jetzige.
+const OVERLAY_HELP_OLD: usize = OVERLAY_HINT + 5;
+const OVERLAY_HELP: usize = OVERLAY_HINT + 6;
 /// Hinweis an der Maus, über allem.
-const OVERLAY_TIP: usize = OVERLAY_HINT + 5;
+const OVERLAY_TIP: usize = OVERLAY_HINT + 7;
 /// Maßzahl am Weg beim „Bündig setzen“ (E20).
-const OVERLAY_PICK: usize = OVERLAY_HINT + 6;
+const OVERLAY_PICK: usize = OVERLAY_HINT + 8;
 /// Maßzahl bzw. Maßeingabe am Gummiband und beim Ziehen (Paket 8).
-const OVERLAY_INPUT: usize = OVERLAY_HINT + 7;
+const OVERLAY_INPUT: usize = OVERLAY_HINT + 9;
 
 /// So lange steht die Pille nach dem Loslassen (Nachkorrektur, Paket 8b).
 const POST_PILL: std::time::Duration = std::time::Duration::from_millis(1500);
@@ -704,7 +710,27 @@ struct App {
     /// Lage des Kartenbilds (für das Ausblenden).
     card_at: (i32, i32),
     backups: Vec<autosave::Entry>,
+    /// Hilfekarte (Paket 9), ihr Bild (Schlüssel, Lage links oben ohne
+    /// Schatten, Rand), ihr Grund je Größe, Ein- bzw. Ausblenden (Beginn
+    /// in ms der Uhr, einblenden) und Überblenden beim Themenwechsel.
+    help: help::HelpCard,
+    help_img: Option<(HelpKey, (f32, f32), f32)>,
+    help_ground: Option<help::Ground>,
+    help_fade: Option<(u64, bool)>,
+    help_swap: Option<u64>,
+    /// Bytes und Lage des gezeigten Bildes (für das Überblenden).
+    help_px: Option<(Vec<u8>, i32, i32, u32, u32)>,
+    /// „Bildzeit messen (10 s)“ läuft.
+    frame_measure: Option<frame_time::Measure>,
 }
+
+/// Schlüssel des Kartenbilds: Inhalt, Skalierung, Farbschema, Fenstergröße.
+type HelpKey = (
+    (help::Topic, bool, bool, u32, Option<help::Hit>),
+    u32,
+    u64,
+    (u32, u32),
+);
 
 /// Hinweis an der Maus (Text, Lage, seit wann gewünscht, schon sichtbar).
 struct Tip {
@@ -1261,6 +1287,8 @@ impl App {
             Command::Backups => self.open_backups(),
             Command::OpenBackup(_) => self.confirm_then(c, surface),
             Command::Delete => self.delete_selection(),
+            Command::Help => self.show_help(true),
+            Command::MeasureFrameTime => self.start_frame_measure(),
         }
     }
 
@@ -2064,6 +2092,22 @@ impl App {
         if !self.quantity.open {
             return;
         }
+        // F1 im Mengenfenster: Karte im Hauptfenster mit „Mengenermittlung“
+        if let Event::Key {
+            key: help::KEY_F1,
+            down,
+            ..
+        } = e
+        {
+            if down && self.save_dlg.is_none() {
+                let was = self.help.is_open();
+                self.help.open_with(help::Topic::Quantities);
+                if !was {
+                    self.help_toggled();
+                }
+            }
+            return;
+        }
         let Some(out) = self
             .quantity
             .handle(&e, &self.theme, &self.ui.fonts, &mut self.picking)
@@ -2654,6 +2698,10 @@ impl App {
 
     fn commit_wall(&mut self, wall: Option<sk_model::WallChain>) {
         if let Some(wall) = wall {
+            // Erstes geschlossenes Gebäude: Hinweis auf F1 (9b)
+            if self.tool.category == Category::ExteriorWall && wall.closed {
+                self.discover("help");
+            }
             let set = self.tool_type_of(self.tool.category);
             self.scene
                 .add_wall_typed(&wall, self.tool.category, Some(set));
@@ -2690,6 +2738,10 @@ impl App {
         // … ebenso ein Übergang der Sichtbarkeit (Paket 3)
         if matches!(e, Event::MouseDown { .. }) && self.scene.skip_vis_animation() {
             self.upload_model();
+        }
+        // Hilfekarte (Paket 9): F1, Esc und Klicks in die Karte vor den Fenstern
+        if self.handle_help(e) {
+            return !self.quit;
         }
         if self.card.is_some() && self.handle_card(e, surface) {
             return !self.quit;
@@ -3196,6 +3248,7 @@ impl App {
                                 Button::Menu => self.run_command(Command::OpenMenu, surface),
                                 Button::Undo => self.run_command(Command::Undo, surface),
                                 Button::Redo => self.run_command(Command::Redo, surface),
+                                Button::Help => self.run_command(Command::Help, surface),
                             }
                         }
                     }
@@ -3364,6 +3417,343 @@ impl App {
         self.sync_levels();
         self.sync_caption(surface);
         true
+    }
+
+    // --- Hilfe (Paket 9) -------------------------------------------------
+
+    /// Lage der App für die Themenwahl (§1.2).
+    fn help_ctx(&self) -> help::HelpCtx {
+        use help::{SelKind, Window};
+        let window = if self.card.is_some() {
+            Some(Window::Backups)
+        } else if let Some(p) = &self.prefs {
+            Some(if p.pattern_open() {
+                Window::Patterns
+            } else {
+                Window::Settings(p.tab_index())
+            })
+        } else if self.catalog.is_some() {
+            Some(Window::Catalog)
+        } else if self.materials.is_some() {
+            Some(Window::Materials)
+        } else {
+            None
+        };
+        let m = self.scene.model();
+        let selection = self.sel.id.and_then(|id| {
+            use sk_model::ElementKind as K;
+            Some(match m.element(id)?.kind {
+                K::Wall(_) if m.stack_offset(id).is_some() => SelKind::UpperWall,
+                K::Wall(_) => SelKind::Wall,
+                K::GroundSlab(_) | K::StripFooting(_) => SelKind::Foundation,
+                K::Floor(_) | K::EdgeStrip { .. } | K::SoffitInsulation { .. } => SelKind::Floor,
+                K::RoofTerrace { .. } | K::Coping { .. } => SelKind::Terrace,
+            })
+        });
+        help::HelpCtx {
+            window,
+            dialog: self.ui.dialog,
+            flush_pick: self.pick.is_some(),
+            dragging: self.edit.is_dragging() || self.edit.input().is_some(),
+            tool: self
+                .tool
+                .enabled
+                .then_some(self.tool.category == Category::InteriorWall),
+            isolating: self.scene.isolating().is_some(),
+            selection,
+            view: self.ui.view,
+        }
+    }
+
+    /// Etwas Inneres nimmt Esc vor der Karte (Nachtrag H9-1): Ziehen,
+    /// Eingabe, Rückfragen, Menüs, Klapplisten in Fenstern.
+    fn esc_inner(&self) -> bool {
+        self.edit.is_dragging()
+            || self.edit.input().is_some()
+            || self.tool.input().is_some()
+            || self.ui.level_dragging().is_some()
+            || self.sect.is_dragging()
+            || self.pick.is_some()
+            || self.ui.edit.is_some()
+            || self.save_dlg.is_some()
+            || self.menu.is_open()
+            || self.confirm.is_some()
+            || self.context.is_some()
+            || self.type_menu.is_some()
+            || self.prefs.as_ref().is_some_and(|p| p.busy())
+            || self.catalog.as_ref().is_some_and(|c| c.busy())
+            || self.materials.as_ref().is_some_and(|v| v.busy())
+    }
+
+    /// Hilfekarte öffnen bzw. schließen (F1, „?“, Menü „Hilfe“).
+    fn show_help(&mut self, open: bool) {
+        if open != self.help.is_open() {
+            self.help.set_open(open);
+            self.help_toggled();
+        }
+    }
+
+    fn help_toggled(&mut self) {
+        let t = self.now();
+        self.help_fade = Some((t, self.help.is_open()));
+        self.redraw = true;
+    }
+
+    /// Stelle der Karte unter `(x, y)` (Fenster-Pixel).
+    fn help_hit(&self, x: f64, y: f64) -> Option<help::Hit> {
+        let (_, (cx, cy), _) = self.help_img.as_ref()?;
+        self.help.hit(x as f32 - cx, y as f32 - cy)
+    }
+
+    /// F1, Esc, „?“ und die Maus über der Karte, vor allen Fenstern
+    /// (Nachtrag H9-1, H9-2, H9-6). `true`, wenn die Hilfe das Ereignis
+    /// genommen hat.
+    fn handle_help(&mut self, e: Event) -> bool {
+        let dragging = self.edit.is_dragging()
+            || self.nav.is_dragging()
+            || self.sect.is_dragging()
+            || self.ui.level_dragging().is_some();
+        match e {
+            Event::Key {
+                key: help::KEY_F1,
+                down,
+                ..
+            } => {
+                // Bei „Änderungen speichern?“ wirkt F1 nicht
+                if self.save_dlg.is_some() {
+                    return false;
+                }
+                if down && self.help.key(help::KEY_F1) {
+                    self.help_toggled();
+                }
+                true
+            }
+            Event::Key {
+                key: Key::Escape,
+                down: true,
+                ..
+            } if self.help.is_open() && !self.esc_inner() => {
+                self.help.key(Key::Escape);
+                self.help_toggled();
+                true
+            }
+            Event::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } if self.save_dlg.is_none() && self.title.help_at(x, y) => {
+                let open = !self.help.is_open();
+                self.show_help(open);
+                true
+            }
+            Event::MouseMove { x, y, .. } => {
+                let h = self.help_hit(x, y).filter(|_| !dragging);
+                if self.help.set_hover(h) {
+                    self.redraw = true;
+                }
+                if h.is_some() {
+                    self.mouse_at = Some((x, y));
+                }
+                h.is_some()
+            }
+            Event::MouseDown { button, x, y, .. } if !dragging => {
+                let Some(h) = self.help_hit(x, y) else {
+                    return false;
+                };
+                if button == MouseButton::Left {
+                    let open = self.help.is_open();
+                    self.help.click(h);
+                    if open != self.help.is_open() {
+                        self.help_toggled();
+                    }
+                }
+                true
+            }
+            Event::MouseUp { x, y, .. } if !dragging => self.help_hit(x, y).is_some(),
+            Event::Wheel { delta, x, y, .. } => {
+                if self.help_hit(x, y).is_none() {
+                    return false;
+                }
+                let step = 40.0 * self.ui.scale * (-delta as f32).signum();
+                self.help.scroll_by(step);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Thema dem Tun folgen lassen, Bild der Karte zeichnen bzw. ein-,
+    /// aus- und überblenden.
+    fn sync_help(&mut self) {
+        let t = self.now();
+        let ctx = self.help_ctx();
+        self.help.follow(help::topic(&ctx), t);
+        self.help.tick(t);
+        // Auch das letzte Bild eines Blendens muss noch gezeichnet werden
+        let blending = self.help_fade.is_some() || self.help_swap.is_some();
+        let anim = self.theme.size.anim_ms.max(0.0) as u64;
+        let progress = |t0: u64| {
+            if anim == 0 {
+                1.0
+            } else {
+                (t.saturating_sub(t0) as f32 / anim as f32).min(1.0)
+            }
+        };
+        let open = self.help.is_open();
+        let shown = match self.help_fade {
+            Some((t0, inn)) => {
+                let k = progress(t0);
+                if k >= 1.0 {
+                    self.help_fade = None;
+                }
+                if inn {
+                    k
+                } else {
+                    1.0 - k
+                }
+            }
+            None => open as u8 as f32,
+        };
+        if shown <= 0.0 && !open {
+            if self.help_img.take().is_some() {
+                self.renderer.set_overlay(OVERLAY_HELP, 0, 0, 0, 0, &[]);
+                self.renderer.set_overlay(OVERLAY_HELP_OLD, 0, 0, 0, 0, &[]);
+                self.help_px = None;
+                self.help_swap = None;
+                self.redraw = true;
+            }
+            return;
+        }
+        let s = self.ui.scale;
+        let key: HelpKey = (
+            self.help.key_of_image(),
+            s.to_bits(),
+            self.theme.rev,
+            (self.w, self.h),
+        );
+        if self.help_img.as_ref().map(|i| &i.0) != Some(&key) {
+            // Anderes Thema bzw. Liste: das alte Bild blendet aus
+            let other = self
+                .help_img
+                .as_ref()
+                .is_some_and(|i| (i.0 .0 .0, i.0 .0 .1) != (key.0 .0, key.0 .1));
+            if other && anim > 0 && self.help_fade.is_none() {
+                if let Some((px, x, y, w, h)) = &self.help_px {
+                    self.renderer
+                        .set_overlay(OVERLAY_HELP_OLD, *x, *y, *w, *h, px);
+                    self.help_swap = Some(t);
+                }
+            }
+            let (c, margin) = self.help.paint(
+                &self.ui.fonts,
+                s,
+                &self.theme,
+                self.h as f32 * 0.6,
+                &mut self.help_ground,
+            );
+            let (cw, _) = self.help.size();
+            let top = self.top();
+            let views = self.ui.rect(Panel::Views, self.w, top);
+            let m = (self.theme.size.panel_margin * s).round();
+            let x = (views.x - m - cw).max(m);
+            let y = top as f32 + m;
+            let px = c.to_premul_rgba8();
+            let (ix, iy) = ((x - margin) as i32, (y - margin) as i32);
+            let (w, h) = (c.width as u32, c.height as u32);
+            self.renderer.set_overlay(OVERLAY_HELP, ix, iy, w, h, &px);
+            self.help_px = Some((px, ix, iy, w, h));
+            self.help_img = Some((key, (x, y), margin));
+            self.redraw = true;
+        }
+        let swap = match self.help_swap {
+            Some(t0) => {
+                let k = progress(t0);
+                if k >= 1.0 {
+                    self.help_swap = None;
+                    self.renderer.set_overlay(OVERLAY_HELP_OLD, 0, 0, 0, 0, &[]);
+                }
+                k
+            }
+            None => 1.0,
+        };
+        if let Some((_, x, y, w, h)) = &self.help_px {
+            self.renderer
+                .place_overlay(OVERLAY_HELP, *x, *y, *w as i32, *h as i32, shown * swap);
+        }
+        if self.help_swap.is_some() {
+            let (w, h) = self.renderer.overlay_size(OVERLAY_HELP_OLD);
+            if let Some((_, x, y, ..)) = &self.help_px {
+                self.renderer
+                    .place_overlay(OVERLAY_HELP_OLD, *x, *y, w, h, shown * (1.0 - swap));
+            }
+        }
+        if blending {
+            self.redraw = true;
+        }
+    }
+
+    /// Wartezeit für die Karte: Bild für Bild beim Blenden, sonst bis zum
+    /// entprellten Themenwechsel; dazu das Ende der Bildzeitmessung.
+    fn help_wait(&self) -> Option<std::time::Duration> {
+        let blend = (self.help_fade.is_some() || self.help_swap.is_some()).then_some(FRAME);
+        let topic = self
+            .help
+            .wait(self.now())
+            .map(std::time::Duration::from_millis);
+        let measure = self.frame_measure.as_ref().map(|m| m.wait());
+        [blend, topic, measure].into_iter().flatten().min()
+    }
+
+    /// „Bildzeit messen (10 s)“: Erfassung wie `--zeiten` beginnen.
+    fn start_frame_measure(&mut self) {
+        self.frame_measure = Some(frame_time::Measure::new());
+        self.status(
+            "Bildzeit wird 10 s gemessen. Jetzt das Modell langsam drehen.".into(),
+            frame_time::SPAN,
+        );
+    }
+
+    /// Messung vorbei: Zeile in der Statuszeile, Tabelle neben der Datei.
+    fn sync_frame_measure(&mut self) {
+        if !self.frame_measure.as_ref().is_some_and(|m| m.done()) {
+            return;
+        }
+        let Some(m) = self.frame_measure.take() else {
+            return;
+        };
+        let mut line = frame_time::status_line(&m.total);
+        let (j, mo, t, h, mi) = sk_platform::local_date_time();
+        let name = frame_time::file_name(j as u32, mo as u32, t as u32, h as u32, mi as u32);
+        let dir = self
+            .doc
+            .path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(std::path::Path::to_path_buf)
+            .or_else(|| {
+                std::env::var_os("USERPROFILE")
+                    .map(|p| std::path::PathBuf::from(p).join("Documents"))
+            })
+            .unwrap_or_default();
+        let path = dir.join(&name);
+        if std::fs::write(&path, &m.table).is_err() {
+            line.push_str(&format!(" – Tabelle „{name}“ ließ sich nicht schreiben"));
+        }
+        self.status(line, std::time::Duration::from_secs(30));
+    }
+
+    /// Text in der Statuszeile für `time`.
+    fn status(&mut self, text: String, time: std::time::Duration) {
+        self.renderer.set_overlay(OVERLAY_NOTICE, 0, 0, 0, 0, &[]);
+        self.notice = Some(Notice {
+            text,
+            since: None,
+            rect: (0.0, 0.0, 0.0, 0.0),
+            time,
+            catalog: false,
+        });
+        self.redraw = true;
     }
 
     // --- Löschen (V?-9) ---------------------------------------------------
@@ -4153,7 +4543,7 @@ impl App {
         surface.set_caption_area(CaptionArea {
             height: th,
             buttons_width: self.title.buttons_width(),
-            left_width: self.title.left_width(),
+            left_width: self.title.caption_left(),
         });
     }
 
@@ -4276,6 +4666,7 @@ impl App {
         match self.title.hover {
             Some(Button::Undo) => return menu::history_hint(&self.scene, false),
             Some(Button::Redo) => return menu::history_hint(&self.scene, true),
+            Some(Button::Help) => return Some(tip_text(help::tooltip_lines("?"))),
             Some(_) => return None,
             None => {}
         }
@@ -4285,6 +4676,9 @@ impl App {
         }
         if let Some((_, o)) = self.edit.dragged_offset(&self.scene) {
             return Some(offset_label(o));
+        }
+        if let Some(t) = self.button_tip() {
+            return Some(t);
         }
         if let Some(t) = self
             .mouse_at
@@ -4301,6 +4695,41 @@ impl App {
             return faded.or_else(|| self.tree.tip(m)).filter(|t| !t.is_empty());
         }
         self.chain_tip()
+    }
+
+    /// Tooltip an Werkzeug- und Ansichtsknöpfen (9b): Name, Satz aus
+    /// `hilfe.txt`, „F1: mehr“; ein gesperrter Knopf nennt statt des Satzes
+    /// den Grund.
+    fn button_tip(&self) -> Option<String> {
+        let id = self.ui.hover?;
+        let name = match id {
+            Id::Building => "Gebäude",
+            Id::Interior => "Innenwand",
+            Id::Ortho => "90°-Sprung",
+            Id::Quantity => "Mengenermittlung",
+            Id::View(v) => match v {
+                ViewKind::Persp => "3D",
+                ViewKind::Plan => "Grundriss",
+                ViewKind::Section => "Schnitt",
+                ViewKind::Front => "Vorne",
+                ViewKind::Back => "Hinten",
+                ViewKind::Left => "Links",
+                ViewKind::Right => "Rechts",
+            },
+            _ => return None,
+        };
+        let reason = match id {
+            Id::Building if self.ui.upper_active => Some("Außenwände entstehen aus dem EG."),
+            Id::Building | Id::Interior if self.ui.foundation_active => {
+                Some("Im Fundament wird nicht gezeichnet.")
+            }
+            _ => None,
+        };
+        let mut lines = help::tooltip_lines(name);
+        if let (Some(r), true) = (reason, lines.len() == 3) {
+            lines[1] = r.into();
+        }
+        Some(tip_text(lines))
     }
 
     /// Hinweis am Kettensymbol unter der Maus.
@@ -5300,7 +5729,7 @@ impl App {
             .as_ref()
             .filter(|_| !self.edit.is_dragging())
             .and_then(|a| a.wait(self.scene.model(), &self.doc, self.clock.elapsed()));
-        [tip, hud, notice, hint, list, save]
+        [tip, hud, notice, hint, list, save, self.help_wait()]
             .into_iter()
             .flatten()
             .min()
@@ -5609,6 +6038,16 @@ fn coalesce_moves(events: &mut Vec<Event>) {
     });
 }
 
+/// Zeilen eines Tooltips als Text für [`sk_ui::widgets::tooltip`] (erste
+/// Zeile fett), ohne Fettschrift-Marken.
+fn tip_text(lines: Vec<String>) -> String {
+    lines
+        .iter()
+        .map(|l| help::plain(l))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn write_timing(path: &Option<String>, log: &mut String) {
     use std::io::Write;
     if let Some(p) = path {
@@ -5830,7 +6269,23 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         card_fade: None,
         card_at: (0, 0),
         backups: Vec::new(),
+        help: help::HelpCard::default(),
+        help_img: None,
+        help_ground: None,
+        help_fade: None,
+        help_swap: None,
+        help_px: None,
+        frame_measure: None,
     };
+    // `--hilfe <thema>` bzw. `--hilfe-liste`: Karte offen (Bildvergleich)
+    let help_arg = std::env::args().skip_while(|x| x != "--hilfe").nth(1);
+    if let Some(t) = help_arg.as_deref().and_then(help::Topic::from_id) {
+        a.help.open_with(t);
+    }
+    if std::env::args().any(|x| x == "--hilfe-liste") {
+        a.help.set_open(true);
+        a.help.toggle_list();
+    }
     if screenshot.is_none() {
         a.notice = quiet.into_iter().next().map(|text| Notice {
             text,
@@ -6155,6 +6610,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         a.sync_tool_chip();
         a.sync_tip();
         a.sync_measure();
+        a.sync_help();
+        a.sync_frame_measure();
         if let Some(id) = a.scene.take_locked() {
             a.show_locked(id, None);
             a.upload_model();
@@ -6619,6 +7076,16 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 if log.len() > 4096 {
                     write_timing(&timing_path, log);
                 }
+            }
+            if let Some(m) = a.frame_measure.as_mut() {
+                let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1000.0;
+                let now = Instant::now();
+                m.push([
+                    ms(t_events, t_handled),
+                    ms(t_handled, t_mesh),
+                    ms(t_mesh, t_draw),
+                    ms(t_draw, now),
+                ]);
             }
         }
     }

@@ -2006,6 +2006,12 @@ impl MaterialView {
             .is_some_and(|at| at.elapsed().as_secs_f32() * 1000.0 < t.size.anim_ms)
     }
 
+    /// Klappliste, Inline-Eingabe, Rückfrage oder Ziehen offen: Esc gehört
+    /// zuerst ihnen (Paket 9, Nachtrag H9-1).
+    pub fn busy(&self) -> bool {
+        self.edit.is_some() || self.popup.is_some() || self.drag.is_some()
+    }
+
     pub fn wait(&self, t: &Theme) -> Option<Duration> {
         (self.animating(t) || self.tiles.borrow().busy()).then_some(Duration::from_millis(16))
     }
