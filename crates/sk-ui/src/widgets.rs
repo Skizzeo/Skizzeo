@@ -84,11 +84,21 @@ pub fn panel_filled(c: &mut Canvas, r: Rect, s: f32, t: &Theme, fill: Rgba) {
 pub fn tooltip(fonts: &Fonts, text: &str, s: f32, t: &Theme) -> Canvas {
     let px = t.size.font_small * s;
     let f = fonts.regular.as_ref();
-    // Mehrzeilig mit „\n“; je Zeile 18 dip mehr
+    // Mehrzeilig mit „\n“; je Zeile 18 dip mehr. Dann ist Zeile 1 die
+    // fette Überschrift, die übrigen sind gedämpft (wie E18).
     let lines: Vec<&str> = text.split('\n').collect();
+    let multi = lines.len() > 1;
+    let font = |i: usize| {
+        if multi && i == 0 {
+            fonts.bold.as_ref().or(f)
+        } else {
+            f
+        }
+    };
     let tw = lines
         .iter()
-        .map(|l| f.map_or(0.0, |f| f.width(l, px)))
+        .enumerate()
+        .map(|(i, l)| font(i).map_or(0.0, |f| f.width(l, px)))
         .fold(0.0, f32::max);
     let line = (18.0 * s).round();
     let (pad, h) = (
@@ -104,11 +114,16 @@ pub fn tooltip(fonts: &Fonts, text: &str, s: f32, t: &Theme) -> Canvas {
     let mut p = Path::new();
     p.rounded_rect(b, b, w - 2.0 * b, h - 2.0 * b, rad - b);
     c.fill(&p, t.ui.tooltip_bg);
-    if let Some(f) = f {
-        let y0 = ((24.0 * s + f.cap_height(px)) * 0.5).round();
+    if let Some(f0) = f {
+        let y0 = ((24.0 * s + f0.cap_height(px)) * 0.5).round();
         for (i, l) in lines.iter().enumerate() {
             let y = y0 + line * i as f32;
-            f.draw(&mut c, l, px, pad, y, t.ui.tooltip_text);
+            let col = match (multi, i) {
+                (false, _) => t.ui.tooltip_text,
+                (true, 0) => t.ui.text,
+                _ => t.ui.text_dim,
+            };
+            font(i).unwrap_or(f0).draw(&mut c, l, px, pad, y, col);
         }
     }
     c

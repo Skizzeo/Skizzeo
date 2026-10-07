@@ -4543,6 +4543,36 @@ impl Model {
                     out.push(format!("Wandzug {id:?}: Segment {} ohne Länge", k + 1));
                 }
             }
+            if let Some(lower) = self.run_below(id).and_then(|b| self.run(b)) {
+                // Regel 28: gleiche Segmentzahl, Segment k über Segment k
+                if lower.segments.len() != r.segments.len() {
+                    out.push(format!(
+                        "Wandzug {id:?}: {} Segmente über {} im Geschoss darunter",
+                        r.segments.len(),
+                        lower.segments.len()
+                    ));
+                } else {
+                    for (k, w) in r.segments.iter().enumerate() {
+                        let Some(e) = self.element(*w) else { continue };
+                        if let ElementKind::Wall(Wall {
+                            coupling: Some(c), ..
+                        }) = e.kind
+                        {
+                            if c.below != lower.segments[k] {
+                                out.push(format!(
+                                    "{}: steht nicht über Segment {} darunter",
+                                    e.number,
+                                    k + 1
+                                ));
+                            }
+                        }
+                    }
+                }
+                // Regel 30: der Umriss oben schneidet sich nicht selbst
+                if r.closed && !sk_math::polygon::is_simple(&r.points) {
+                    out.push(format!("Wandzug {id:?}: Umriss schneidet sich selbst"));
+                }
+            }
             for e in &r.segments {
                 if self.segment_of(*e).map(|s| s.0) != Some(id) {
                     out.push(format!(
@@ -5070,6 +5100,44 @@ mod tests {
         assert!(out.contains(&nah) && !out.contains(&fern), "{out:?}");
         m.commit();
         assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    /// BIM Regeln 28 und 30 als eigene Befunde der Prüfung.
+    #[test]
+    fn pruefung_stapel_regeln_28_und_30() {
+        let (mut m, runs) = gebaeude(2);
+        let (eg, og) = (runs[0], runs[1]);
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        // Regel 28: Segment 1 oben zeigt auf Segment 2 darunter
+        let w = m.wall_at(og, 0).unwrap();
+        let falsch = m.wall_at(eg, 1).unwrap();
+        if let Some(ElementKind::Wall(x)) = m.elements.get_mut(w).map(|e| &mut e.kind) {
+            x.coupling = x.coupling.map(|c| Coupling { below: falsch, ..c });
+        }
+        assert!(
+            m.check()
+                .iter()
+                .any(|t| t.contains("steht nicht über Segment 1")),
+            "{:?}",
+            m.check()
+        );
+        // Regel 30: Umriss oben in Achterform
+        let (mut m, runs) = gebaeude(2);
+        let og = runs[1];
+        let acht = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+        ];
+        m.runs.get_mut(og).unwrap().points = acht.to_vec();
+        assert!(
+            m.check()
+                .iter()
+                .any(|t| t.contains("Umriss schneidet sich selbst")),
+            "{:?}",
+            m.check()
+        );
     }
 
     #[test]

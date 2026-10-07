@@ -57,6 +57,9 @@ pub struct WallEdit {
     /// Grundriss: nur die Füße des aktiven Geschosses greifen (Höhe des
     /// Wandfußes in mm).
     pub plan_z: Option<f64>,
+    /// Wand, über deren Kettensymbol die Maus steht: ihr Band bleibt
+    /// sichtbar (E16).
+    pub link_hover: Option<ElementId>,
     /// Schnittebene der Ansicht „Schnitt“ (Punkt, Normale zum Betrachter):
     /// Was davor liegt, ist weggeschnitten und verdeckt nichts.
     pub section: Option<(Vec3, Vec3)>,
@@ -123,6 +126,22 @@ fn drag_point(cam: &Camera, x: f64, y: f64, w: f64, h: f64, z: f64) -> Option<Ve
         Some(cam.ray(x, y, w, h).0)
     } else {
         cam.plane_point(x, y, w, h, z)
+    }
+}
+
+/// Fußlinie des Partners darunter in 3D (OG Phase 2): durchgehend in
+/// `link_on`, 1,5 px, über allem.
+pub fn partner_line(a: Vec3, b: Vec3, scale: f32, theme: &Theme) -> Helper {
+    let lift = |p: Vec3| [p.x as f32, p.y as f32, p.z as f32 + 2.0];
+    Helper {
+        a: lift(a),
+        b: lift(b),
+        color: theme.ui.link_on.to_f32(),
+        width: 1.5 * scale,
+        dash: 0.0,
+        pattern: sk_render::SOLID,
+        occlude: false,
+        round: false,
     }
 }
 
@@ -203,7 +222,11 @@ impl WallEdit {
 
     /// Wand unter der Maus bzw. die gezogene.
     pub fn active_wall(&self) -> Option<ElementId> {
-        self.drag.as_ref().map(|d| d.wall).or(self.hover)
+        self.drag
+            .as_ref()
+            .map(|d| d.wall)
+            .or(self.hover)
+            .or(self.link_hover)
     }
 
     /// Nächster Wandfuß unter der Maus unter den gegebenen Zügen.
@@ -461,7 +484,7 @@ impl WallEdit {
             occlude,
             round: true,
         };
-        let active = self.drag.as_ref().map(|d| d.wall).or(self.hover);
+        let active = self.active_wall();
 
         if side_view(cam) {
             if let Some(d) = &self.drag {
@@ -493,7 +516,12 @@ impl WallEdit {
                 .and_then(|(run, k)| scene.foot(run).and_then(|f| f.get(k).copied()));
             if let Some((a, b)) = partner {
                 let up = |p: Vec3| vec3(p.x, p.y, d.z);
-                out.push(line(up(a), up(b), theme.ui.link_on.to_f32(), 1.5, 6.0));
+                if occlude {
+                    // 3D: durchgehend und über allem (wie bei gewählter Wand)
+                    out.push(partner_line(up(a), up(b), scale, theme));
+                } else {
+                    out.push(line(up(a), up(b), theme.ui.link_on.to_f32(), 1.5, 6.0));
+                }
             }
         }
         // Sichtbar nur das Segment unter der Maus bzw. das gezogene

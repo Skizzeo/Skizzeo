@@ -716,13 +716,13 @@ fn outline(
             let Some(f) = scene.chain(run).and_then(|c| c.segment_footprint(seg)) else {
                 return Vec::new();
             };
-            let height = scene.chain(run).map_or(0.0, |c| c.height);
-            let top = if view == ViewKind::Plan {
-                scene.plan_cut().min(height)
+            let (base, height) = scene.chain(run).map_or((0.0, 0.0), |c| (c.base, c.height));
+            if view == ViewKind::Plan {
+                prism(&f, 0.0, scene.plan_cut().min(height));
             } else {
-                height
-            };
-            prism(&f, 0.0, top);
+                // Gestapelte Wand: vom eigenen Fuß (OK Trenndecke) an
+                prism(&f, base, base + height);
+            }
         }
         (None, Some(ElementKind::Floor(f))) => {
             // Über der Schnittebene des Grundrisses (EG): dort nicht hervorgehoben
@@ -1019,5 +1019,30 @@ mod tests {
         assert!(colors(&th)
             .iter()
             .all(|&c| c == [40.0 / 255.0, 120.0 / 255.0, 220.0 / 255.0, 1.0]));
+    }
+
+    #[test]
+    fn umriss_einer_og_wand_beginnt_an_ihrem_fuss() {
+        let mut s = Scene::with_model(Model::with_seed(5));
+        s.open_building_dialog();
+        let eg = s.add_wall(&rechteck()).unwrap();
+        let m = s.model();
+        let og = m
+            .runs()
+            .ids()
+            .find(|&r| r != eg && m.wall_at(r, 0).is_some_and(|w| m.wall_below(w).is_some()))
+            .expect("OG-Zug");
+        let id = m.wall_at(og, 0).unwrap();
+        let base = s.chain(og).unwrap().base;
+        assert!(base > 2000.0, "OG steht auf der Trenndecke");
+        let z: Vec<f32> = helpers(&s, id, ViewKind::Persp, None, 1.0, &Theme::dark())
+            .iter()
+            .flat_map(|h| [h.a[2], h.b[2]])
+            .collect();
+        let low = z.iter().copied().fold(f32::MAX, f32::min);
+        assert!(
+            (low - base as f32).abs() < 5.0,
+            "Umriss ab {low}, Fuß {base}"
+        );
     }
 }

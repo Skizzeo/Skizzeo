@@ -2481,6 +2481,7 @@ impl App {
                 };
                 if chip != self.chip_hover {
                     self.chip_hover = chip;
+                    self.edit.link_hover = chip;
                     self.redraw = true;
                 }
                 let sect_ev = if outside || chip.is_some() {
@@ -4757,6 +4758,54 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 helpers.extend(selection::helpers(
                     &a.scene, id, a.ui.view, plane, scale, &a.theme,
                 ));
+            }
+            // Gewählte OG-Wand mit Partner: Außenkante der Wand darunter auf
+            // Höhe ihres Fußes (OK Trenndecke), durchgehend über allem. Beim
+            // Ziehen zeichnet sie `edit.helpers`.
+            if a.ui.view == ViewKind::Persp && !a.edit.is_dragging() {
+                let m = a.scene.model();
+                for &id in &a.picking.selected {
+                    let own = m.segment_of(id);
+                    let below = m.wall_below(id).and_then(|w| m.segment_of(w));
+                    let foot = |(run, k): (sk_model::RunId, usize)| {
+                        a.scene.foot(run).and_then(|f| f.get(k).copied())
+                    };
+                    if let (Some((o, _)), Some((p, q))) = (own.and_then(foot), below.and_then(foot))
+                    {
+                        let up = |v: sk_math::Vec3| sk_math::vec3(v.x, v.y, o.z);
+                        helpers.push(wall_edit::partner_line(up(p), up(q), scale, &a.theme));
+                    }
+                }
+            }
+            // Feld „Dämmung“ im Fokus oder unter der Maus: die Untersicht-
+            // dämmung der Decke leuchtet wie beim Hover aus der Mengenliste
+            let soffit_field = Some(ui::Id::Field(ui::Field::Soffit));
+            if a.ui.edit.as_ref().map(|e| ui::Id::Field(e.field)) == soffit_field
+                || a.ui.hover == soffit_field
+            {
+                let m = a.scene.model();
+                let ud = a
+                    .picking
+                    .selected
+                    .iter()
+                    .find_map(|&id| match m.element(id)?.kind {
+                        sk_model::ElementKind::Floor(_) => m.soffit_of(id),
+                        sk_model::ElementKind::SoffitInsulation { .. } => Some(id),
+                        _ => None,
+                    });
+                if let Some(ud) = ud {
+                    helpers.extend(selection::hover_glow(
+                        &a.scene, ud, a.ui.view, plane, scale, &a.theme,
+                    ));
+                    helpers.extend(selection::hover_helpers(
+                        &a.scene,
+                        Some(ud),
+                        a.ui.view,
+                        plane,
+                        scale,
+                        &a.theme,
+                    ));
+                }
             }
             if let Some(z) = a.ui.level_drag_z() {
                 helpers.extend(level_guide(a.ui.view, a.scene.bounds(), z, scale, &a.theme));

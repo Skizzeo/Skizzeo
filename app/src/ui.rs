@@ -191,15 +191,24 @@ impl Field {
         matches!(self, Field::LevelBottom | Field::LevelTop(_))
     }
 
-    /// Wert, wie er im Feld steht (ohne Einheit).
+    /// Wert zum Bearbeiten (ohne Einheit, Minus als „-“). Der Versatz trägt
+    /// sein Vorzeichen auch nach außen: „+0,30“.
     fn text(self, mm: f64) -> String {
         if !self.in_metres() {
             cm_text(mm)
         } else if mm.round() < 0.0 {
             format!("-{}", m_text(mm))
+        } else if self == Field::Offset && mm.round() > 0.0 {
+            format!("+{}", m_text(mm))
         } else {
             m_text(mm)
         }
+    }
+
+    /// Wert, wie er im Feld steht, solange es nicht bearbeitet wird: Minus
+    /// als echtes Minuszeichen („−0,30“), 0 ohne Zeichen.
+    fn display(self, mm: f64) -> String {
+        self.text(mm).replacen('-', "\u{2212}", 1)
     }
 
     /// Wert mit Einheit für Hinweise.
@@ -1515,7 +1524,9 @@ impl Ui {
                 self.paint_dim_text(t, c, f, b);
                 return;
             }
-            let value = self.field_row(f).map_or(String::new(), |r| f.text(r.value));
+            let value = self
+                .field_row(f)
+                .map_or(String::new(), |r| f.display(r.value));
             let st = FieldState {
                 text: edit.map_or(&value, |e| &e.text),
                 unit: f.unit(),
@@ -2599,6 +2610,11 @@ mod tests {
                 .text(2635.0),
             "2,635"
         );
+        // Versatz mit Vorzeichen (OG Phase 2, Befund c)
+        assert_eq!(Field::Offset.display(300.0), "+0,30");
+        assert_eq!(Field::Offset.display(-300.0), "\u{2212}0,30");
+        assert_eq!(Field::Offset.display(0.0), "0,00");
+        assert_eq!(Field::Offset.text(-300.0), "-0,30");
 
         ui.focus_field(Field::Draft(Draft::FloorOg));
         let m = Modifiers::default();
