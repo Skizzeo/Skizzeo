@@ -254,7 +254,8 @@ pub fn paint(t: &Theme, linked: bool, hover: bool, size: f32, scale: f32) -> Can
     c.fill(&p, fill);
     let (cx, cy) = (size * 0.5, size * 0.5);
     let s = scale * k;
-    let (w, h, stroke) = (9.0 * s, 5.0 * s, 1.5 * s);
+    let z = &t.size;
+    let (w, h, stroke) = (z.link_icon_w * s, z.link_icon_h * s, z.link_icon_stroke * s);
     if linked {
         for dx in [-3.0, 3.0] {
             ring(&mut c, cx + dx * s, cy, w, h, 0.0, stroke, u.link_on);
@@ -323,7 +324,8 @@ fn ring(c: &mut Canvas, cx: f32, cy: f32, w: f32, h: f32, angle: f32, stroke: f3
 mod tests {
     use super::*;
 
-    /// Gekoppelt: Akzent in der Mitte; gelöst: grau; das Plättchen deckt.
+    /// Gekoppelt: Akzent in der Mitte; gelöst: grau; das Plättchen hat die
+    /// Fläche der schwebenden Bedienelemente (`hud_bg`).
     #[test]
     fn plaettchen_zeigt_den_zustand() {
         let t = Theme::dark();
@@ -334,7 +336,7 @@ mod tests {
             let v = c.to_rgba8();
             (v[i], v[i + 1], v[i + 2], v[i + 3])
         };
-        assert_eq!(px(&on, 1, 11).3, 255, "Plättchen deckt");
+        assert_eq!(px(&on, 1, 11).3, t.ui.hud_bg.3, "Plättchen wie hud_bg");
         let a = t.ui.link_on;
         let mut on_px = (0..22).flat_map(|x| (0..22).map(move |y| (x, y)));
         assert!(on_px

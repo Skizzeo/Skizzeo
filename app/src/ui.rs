@@ -1434,8 +1434,12 @@ impl Ui {
     /// Zeichnet ein Paneel. Liefert das Bild und seine Lage (links oben) im Fenster.
     pub fn paint(&mut self, t: &Theme, p: Panel, win_w: u32, top: u32) -> (&Canvas, i32, i32) {
         self.use_theme(t);
-        let base = self.paint_base(t, p, win_w, top);
-        let mut cur = base.clone();
+        let (spare, mut cur) = match self.images[panel_index(p)].take() {
+            Some(old) => (Some(old.base), old.cur),
+            None => (None, Canvas::new(0, 0)),
+        };
+        let base = self.paint_base(t, p, win_w, top, spare);
+        cur.copy_from(&base);
         for (id, b, label) in self.buttons(p) {
             self.paint_button(t, &mut cur, id, b, label);
         }
@@ -1571,12 +1575,22 @@ impl Ui {
     }
 
     /// Paneel ohne Knöpfe.
-    fn paint_base(&self, t: &Theme, p: Panel, win_w: u32, top: u32) -> Canvas {
+    fn paint_base(
+        &self,
+        t: &Theme,
+        p: Panel,
+        win_w: u32,
+        top: u32,
+        spare: Option<Canvas>,
+    ) -> Canvas {
         let (col, size) = (&t.ui, &t.size);
         let s = self.scale;
         let r = self.rect(p, win_w, top);
         let m = (size.panel_shadow * s).round();
-        let mut c = Canvas::new((r.w + 2.0 * m) as usize, (r.h + 2.0 * m) as usize);
+        // Leinwand des letzten Bildes wiederverwenden: keine frischen Seiten
+        // vom System (Review 1x)
+        let mut c = spare.unwrap_or_else(|| Canvas::new(0, 0));
+        c.reuse((r.w + 2.0 * m) as usize, (r.h + 2.0 * m) as usize);
         widgets::panel(&mut c, Rect::new(m, m, r.w, r.h), s, t);
         if p == Panel::Levels {
             self.paint_levels(t, &mut c, r.h);
@@ -2146,11 +2160,14 @@ impl Ui {
             return None;
         }
         let (w, h) = (old.cur.width, old.cur.height);
-        let base = self.paint_base(t, Panel::Levels, 0, self.top);
+        let old = self.images[i].take()?;
+        let base = self.paint_base(t, Panel::Levels, 0, self.top, Some(old.base));
         if (base.width, base.height) != (w, h) {
+            // Das ganze Paneel wird ohnehin neu gezeichnet
             return None;
         }
-        let mut cur = base.clone();
+        let mut cur = old.cur;
+        cur.copy_from(&base);
         for (id, b, label) in self.buttons(Panel::Levels) {
             self.paint_button(t, &mut cur, id, b, label);
         }
@@ -2482,6 +2499,24 @@ fn paint_chip(
 mod tests {
     use super::*;
     use sk_platform::Modifiers;
+
+    /// Paneelbilder malen in die Leinwand des letzten Bildes (Review 1x):
+    /// bytegleich wie frisch gemalt, auch nach anderer Skalierung.
+    #[test]
+    fn paneele_wiederverwendet_wie_neu() {
+        let t = Theme::dark();
+        let mut ui = Ui::new(1.0, &t);
+        for scale in [1.0, 1.5, 1.5, 1.0] {
+            ui.fit(scale, 1600, 900);
+            let mut fresh = Ui::new(1.0, &t);
+            fresh.fit(scale, 1600, 900);
+            for p in [Panel::Tools, Panel::Levels, Panel::Views, Panel::Props] {
+                let a = ui.paint(&t, p, 1600, 32).0.to_premul_rgba8();
+                let b = fresh.paint(&t, p, 1600, 32).0.to_premul_rgba8();
+                assert!(a == b, "{p:?} bei {scale}");
+            }
+        }
+    }
 
     fn click(ui: &mut Ui, x: f64, y: f64) -> Option<Id> {
         let m = Modifiers::default();

@@ -130,14 +130,14 @@ fn drag_point(cam: &Camera, x: f64, y: f64, w: f64, h: f64, z: f64) -> Option<Ve
 }
 
 /// Fußlinie des Partners darunter in 3D (OG Phase 2): durchgehend in
-/// `link_on`, 1,5 px, über allem.
+/// `link_on`, Breite `size.link_line`, über allem.
 pub fn partner_line(a: Vec3, b: Vec3, scale: f32, theme: &Theme) -> Helper {
     let lift = |p: Vec3| [p.x as f32, p.y as f32, p.z as f32 + 2.0];
     Helper {
         a: lift(a),
         b: lift(b),
         color: theme.ui.link_on.to_f32(),
-        width: 1.5 * scale,
+        width: theme.size.link_line * scale,
         dash: 0.0,
         pattern: sk_render::SOLID,
         occlude: false,
@@ -523,7 +523,8 @@ impl WallEdit {
                     // 3D: durchgehend und über allem (wie bei gewählter Wand)
                     out.push(partner_line(up(a), up(b), scale, theme));
                 } else {
-                    out.push(line(up(a), up(b), theme.ui.link_on.to_f32(), 1.5, 6.0));
+                    let w = theme.size.link_line;
+                    out.push(line(up(a), up(b), theme.ui.link_on.to_f32(), w, 6.0));
                 }
             }
         }

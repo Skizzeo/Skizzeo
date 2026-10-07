@@ -166,7 +166,7 @@ pub const F4_ROLES: [F4Role; 11] = [
     }),
 ];
 
-pub const SIZE_ROLES: [SizeRole; 65] = [
+pub const SIZE_ROLES: [SizeRole; 69] = [
     ("corner_radius", "Eckenradius", |t| {
         &mut t.size.corner_radius
     }),
@@ -284,6 +284,18 @@ pub const SIZE_ROLES: [SizeRole; 65] = [
     }),
     ("flash_ms", "Aufleuchten (ms)", |t| &mut t.size.flash_ms),
     ("fade_ms", "Ausblenden (ms)", |t| &mut t.size.fade_ms),
+    ("link_icon_w", "Kettenglied: Breite", |t| {
+        &mut t.size.link_icon_w
+    }),
+    ("link_icon_h", "Kettenglied: Höhe", |t| {
+        &mut t.size.link_icon_h
+    }),
+    ("link_icon_stroke", "Kettenglied: Strich", |t| {
+        &mut t.size.link_icon_stroke
+    }),
+    ("link_line", "Fußlinie des Partners", |t| {
+        &mut t.size.link_line
+    }),
     ("catalog_w", "Bauteilkatalog: Breite", |t| {
         &mut t.size.catalog_w
     }),

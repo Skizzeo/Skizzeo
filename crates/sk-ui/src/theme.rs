@@ -255,6 +255,12 @@ pub struct Sizes {
     /// Aus- und Einblenden gelöschter Bauteile und des Hinweises am Bauteil
     /// (Paket „Löschen“), ms.
     pub fade_ms: f32,
+    /// Kettensymbol (OG Phase 2): Glied breit und hoch, Strichstärke; Breite
+    /// der Fußlinie des Partners darunter (dip).
+    pub link_icon_w: f32,
+    pub link_icon_h: f32,
+    pub link_icon_stroke: f32,
+    pub link_line: f32,
     /// Bauteilkatalog (K3): Dialog, Liste links, Kachelzeile, Schnittbild-Kachel.
     pub catalog_w: f32,
     pub catalog_h: f32,
@@ -317,7 +323,7 @@ impl Theme {
                 hud_glow: accent,
                 link_on: accent,
                 link_off: rgb(160, 165, 172),
-                link_chip: rgb(74, 77, 85),
+                link_chip: Rgba(bg.0, bg.1, bg.2, 199),
                 sheet_bg: rgb(245, 244, 239),
                 sheet_text: rgb(34, 36, 40),
                 sheet_text_dim: rgb(112, 116, 122),
@@ -442,6 +448,10 @@ impl Theme {
                 qto_window_w: 520.0,
                 flash_ms: 600.0,
                 fade_ms: 150.0,
+                link_icon_w: 9.0,
+                link_icon_h: 5.0,
+                link_icon_stroke: 1.5,
+                link_line: 1.5,
                 catalog_w: 1080.0,
                 catalog_h: 720.0,
                 catalog_list_w: 270.0,

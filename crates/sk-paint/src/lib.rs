@@ -332,6 +332,17 @@ impl Canvas {
     /// durchsichtig wie [`Canvas::new`]. Behält den Speicher: ein ganzes
     /// Fensterbild braucht dann keine frischen Seiten vom System (unter
     /// Windows kommt jeder große Block neu von VirtualAlloc).
+    /// Wird zur Kopie von `other` und behält dabei den eigenen Speicher
+    /// (wie [`Canvas::reuse`]): pixelgleich zu `other.clone()`.
+    pub fn copy_from(&mut self, other: &Canvas) {
+        self.width = other.width;
+        self.height = other.height;
+        self.px.clone_from(&other.px);
+        self.acc.clone_from(&other.acc);
+        self.marks.clone_from(&other.marks);
+        self.origin = other.origin;
+    }
+
     pub fn reuse(&mut self, width: usize, height: usize) {
         if (width, height) != (self.width, self.height) {
             // Akkumulator und Marken passen nur zur alten Größe ([`Canvas::fill`])
@@ -967,6 +978,25 @@ mod tests {
             let mut buf = vec![7u8; 3];
             c.premul_rgba8_into(&mut buf);
             assert_eq!(buf, fresh.to_premul_rgba8());
+        }
+    }
+
+    /// `copy_from` ist eine Kopie wie `clone`, auch für das, was danach
+    /// darauf gemalt wird, und aus jeder Größe heraus.
+    #[test]
+    fn kopie_in_vorhandene_leinwand() {
+        let mut p = Path::new();
+        p.rounded_rect(3.3, 2.7, 41.5, 23.2, 6.0);
+        let mut q = Path::new();
+        q.rounded_rect(10.1, 8.6, 30.0, 20.0, 4.0);
+        let mut src = Canvas::new(64, 40);
+        src.fill(&p, Rgba(200, 40, 90, 255));
+        for mut c in [Canvas::new(0, 0), Canvas::new(64, 40), Canvas::new(90, 12)] {
+            c.copy_from(&src);
+            let mut want = src.clone();
+            c.fill(&q, Rgba(20, 140, 190, 128));
+            want.fill(&q, Rgba(20, 140, 190, 128));
+            assert_eq!(c.to_premul_rgba8(), want.to_premul_rgba8());
         }
     }
 

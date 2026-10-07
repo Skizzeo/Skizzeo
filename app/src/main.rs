@@ -520,6 +520,8 @@ struct App {
     /// Stand der Zeichentabelle, aus dem der Renderer-Stil stammt.
     /// Stand der hochgeladenen Aussehens-Tabelle: Attribute, Farbschema, Skalierung.
     looks_key: Option<(u64, u64, u32)>,
+    /// Bytepuffer für die Paneelbilder (wiederverwendet wie ihre Leinwände).
+    panel_px: Vec<u8>,
     /// Zuletzt hochgeladene Endsymbole der Schnittlinien (Linie, Anfang,
     /// gespiegelt, hervorgehoben, Skalierung).
     mark_keys: [Option<MarkKey>; MARKS],
@@ -902,7 +904,9 @@ impl App {
             return;
         };
         self.scene.set_cut(i, self.sect.lines[i].cut());
-        self.overlay_dirty = true;
+        // Kein Paneel zeigt Lage oder Blickrichtung: nicht alle Paneele neu
+        // zeichnen, das kostet je Mausbewegung bis 17 ms (Review 1x)
+        self.redraw = true;
         if self.ui.view == ViewKind::Section && i == self.scene.active_cut() {
             self.fit_camera();
             self.upload_model();
@@ -3689,9 +3693,9 @@ impl App {
             (OVERLAY_VIEWS, Panel::Views),
         ] {
             let (c, x, y) = self.ui.paint(&self.theme, p, self.w, th);
-            let px = c.to_premul_rgba8();
+            c.premul_rgba8_into(&mut self.panel_px);
             self.renderer
-                .set_overlay(slot, x, y, c.width as u32, c.height as u32, &px);
+                .set_overlay(slot, x, y, c.width as u32, c.height as u32, &self.panel_px);
         }
         self.dirty_buttons.clear();
         self.paint_props();
@@ -4284,9 +4288,15 @@ impl App {
         if self.ui.dialog {
             let th = self.title.height();
             let (c, x, y) = self.ui.paint(&self.theme, Panel::Dialog, self.w, th);
-            let px = c.to_premul_rgba8();
-            self.renderer
-                .set_overlay(OVERLAY_DIALOG, x, y, c.width as u32, c.height as u32, &px);
+            c.premul_rgba8_into(&mut self.panel_px);
+            self.renderer.set_overlay(
+                OVERLAY_DIALOG,
+                x,
+                y,
+                c.width as u32,
+                c.height as u32,
+                &self.panel_px,
+            );
             let k = self.theme.env.scrim;
             let a = k.3 as u32;
             let pm = |v: u8| ((v as u32 * a + 127) / 255) as u8;
@@ -4306,9 +4316,15 @@ impl App {
             let (c, x, y) = self
                 .ui
                 .paint(&self.theme, Panel::Props, self.w, self.title.height());
-            let px = c.to_premul_rgba8();
-            self.renderer
-                .set_overlay(OVERLAY_PROPS, x, y, c.width as u32, c.height as u32, &px);
+            c.premul_rgba8_into(&mut self.panel_px);
+            self.renderer.set_overlay(
+                OVERLAY_PROPS,
+                x,
+                y,
+                c.width as u32,
+                c.height as u32,
+                &self.panel_px,
+            );
         } else {
             self.renderer.set_overlay(OVERLAY_PROPS, 0, 0, 0, 0, &[]);
         }
@@ -4547,6 +4563,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         preview_shown: true,
         looks_key: None,
         mark_keys: [None; MARKS],
+        panel_px: Vec::new(),
         wheel,
         wheel_view: wheel_view::WheelView::new(OVERLAY_WHEEL),
         clock: Instant::now(),
