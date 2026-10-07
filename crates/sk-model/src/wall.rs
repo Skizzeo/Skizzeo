@@ -811,6 +811,7 @@ impl WallChain {
                     self
                 };
                 s.mat = mat;
+                s.layer = i as u8;
                 let (top, top_mat) = if z1 > cut {
                     (cut, mat | material::CUT)
                 } else {
@@ -912,6 +913,7 @@ impl WallChain {
             let v = |p: Vec3| (off(p) - lo) / t;
             s.mat = mat | material::CUT;
             s.elem = i as u32;
+            s.layer = li as u8;
             let (a, b) = (flat(a) + vec3(0.0, 0.0, z0), flat(b) + vec3(0.0, 0.0, z0));
             let up = vec3(0.0, 0.0, z1 - z0);
             let (v0, v1) = (z0 / t, z1 / t);
@@ -1092,8 +1094,9 @@ impl WallChain {
                     }
                 }
             }
-            for (e, &(p, q, _, _)) in ends.iter().enumerate() {
+            for (e, &(p, q, _, elem)) in ends.iter().enumerate() {
                 if face(e).1 {
+                    s.elem = elem as u32;
                     s.edge_kind = edge_kind::VIEW;
                     s.edge(p, q);
                     s.edge_kind = top_kind;
@@ -1110,6 +1113,8 @@ impl WallChain {
                 false
             };
             if !straight {
+                // Eckkante zum Segment, das an der Ecke beginnt
+                s.elem = j.min(m - 1) as u32;
                 s.edge_kind = kind_at(lo, edge_kind::VIEW);
                 s.edge(ca[j], ca[j] + up);
                 s.edge_kind = kind_at(hi, edge_kind::VIEW);
@@ -1342,6 +1347,45 @@ mod schichten {
             height: 3500.0,
             joints: Default::default(),
         }
+    }
+
+    /// Paket 3: Jede Fläche und Kante der Wand trägt Segment und Schicht
+    /// (außen → innen), auch geschnitten und im senkrechten Schnitt; der
+    /// Schnitt mit `clipped` reicht beides weiter.
+    #[test]
+    fn flaechen_und_kanten_tragen_segment_und_schicht() {
+        let w = haus(RefSide::Left);
+        let ok = |s: &Solid, what: &str| {
+            assert!(!s.triangles.is_empty() && !s.edges.is_empty(), "{what}");
+            let mut seen = [false; 2];
+            for t in &s.triangles {
+                assert!(t.elem < 4 && t.layer < 2, "{what}: {} {}", t.elem, t.layer);
+                seen[t.layer as usize] = true;
+            }
+            for e in &s.edges {
+                assert!(e.elem < 4 && e.layer < 2, "{what}: {} {}", e.elem, e.layer);
+            }
+            assert_eq!(seen, [true, true], "{what}");
+        };
+        ok(&w.solid(), "3D");
+        ok(&w.solid_cut_at(1000.0), "Grundriss");
+        let (p0, n) = (vec3(2500.0, 2000.0, 0.0), vec3(0.0, 1.0, 0.0));
+        ok(&w.section_caps(p0, n), "Schnitt");
+        let c = w.solid().clipped(p0, n);
+        ok(&c, "geklippt");
+        // Die Dämmung außen ist Schicht 0, der Gasbeton Schicht 1
+        let top = w.solid_cut_at(1000.0);
+        for t in top.triangles.iter().filter(|t| t.mat & material::CUT != 0) {
+            let want = if t.mat & !material::CUT == INSULATION {
+                0
+            } else {
+                1
+            };
+            assert_eq!(t.layer, want);
+        }
+        // Größe unverändert: die neuen Felder liegen in der Auffüllung
+        assert_eq!(std::mem::size_of::<crate::Tri>(), 152);
+        assert_eq!(std::mem::size_of::<crate::Edge>(), 56);
     }
 
     #[test]

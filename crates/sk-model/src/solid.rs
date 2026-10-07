@@ -106,11 +106,18 @@ impl SectionFrame {
     }
 }
 
+/// Schicht eines Teils ohne Schichtaufbau (einschichtig, Kappe, Blech).
+pub const NO_LAYER: u8 = 255;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Edge {
     pub a: Vec3,
     pub b: Vec3,
     pub kind: u8,
+    /// Teil des Körpers wie [`Tri::elem`].
+    pub elem: u32,
+    /// Schicht wie [`Tri::layer`].
+    pub layer: u8,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -123,9 +130,13 @@ pub struct Tri {
     pub uv: [[f64; 2]; 3],
     /// Teil des Körpers, zu dem das Dreieck gehört (bei Wänden: Segment im Zug).
     pub elem: u32,
+    /// Schicht im Aufbau des Bauteils (Wand außen → innen, Decke und
+    /// Terrasse oben → unten), [`NO_LAYER`] ohne Schicht. Nur Darstellung
+    /// (Sichtbarkeit je Schicht, Paket 3), wird nie gespeichert.
+    pub layer: u8,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Solid {
     pub triangles: Vec<Tri>,
     /// Sichtbare Kanten (Umrisse der Flächen, keine inneren Fugen).
@@ -134,8 +145,23 @@ pub struct Solid {
     pub mat: u16,
     /// Art der nächsten Kanten.
     pub edge_kind: u8,
-    /// Teil (Segment) für die nächsten Flächen.
+    /// Teil (Segment) für die nächsten Flächen und Kanten.
     pub elem: u32,
+    /// Schicht für die nächsten Flächen und Kanten.
+    pub layer: u8,
+}
+
+impl Default for Solid {
+    fn default() -> Solid {
+        Solid {
+            triangles: Vec::new(),
+            edges: Vec::new(),
+            mat: 0,
+            edge_kind: 0,
+            elem: 0,
+            layer: NO_LAYER,
+        }
+    }
 }
 
 impl Solid {
@@ -146,13 +172,14 @@ impl Solid {
 
     /// Viereck mit Musterkoordinaten je Ecke.
     pub fn quad_uv(&mut self, p: [Vec3; 4], normal: Vec3, uv: [[f64; 2]; 4]) {
-        let (mat, elem) = (self.mat, self.elem);
+        let (mat, elem, layer) = (self.mat, self.elem, self.layer);
         self.triangles.push(Tri {
             p: [p[0], p[1], p[2]],
             n: normal,
             mat,
             uv: [uv[0], uv[1], uv[2]],
             elem,
+            layer,
         });
         self.triangles.push(Tri {
             p: [p[0], p[2], p[3]],
@@ -160,6 +187,7 @@ impl Solid {
             mat,
             uv: [uv[0], uv[2], uv[3]],
             elem,
+            layer,
         });
     }
 
@@ -175,6 +203,7 @@ impl Solid {
                 mat: self.mat,
                 uv: [[0.0; 2]; 3],
                 elem: self.elem,
+                layer: self.layer,
             });
         }
     }
@@ -328,6 +357,7 @@ impl Solid {
             mat: self.mat,
             uv: [[0.0; 2]; 3],
             elem: self.elem,
+            layer: self.layer,
         });
     }
 
@@ -343,6 +373,8 @@ impl Solid {
                 a,
                 b,
                 kind: self.edge_kind,
+                elem: self.elem,
+                layer: self.layer,
             });
         }
     }
@@ -410,6 +442,7 @@ impl Solid {
                     mat: t.mat,
                     uv: [poly[0].1, poly[k].1, poly[k + 1].1],
                     elem: t.elem,
+                    layer: t.layer,
                 });
             }
         }
@@ -417,6 +450,8 @@ impl Solid {
             let (a, b) = (e.a, e.b);
             let (da, db) = (side(a), side(b));
             out.edge_kind = e.kind;
+            out.elem = e.elem;
+            out.layer = e.layer;
             match (da <= 0.0, db <= 0.0) {
                 (true, true) => out.edges.push(*e),
                 (false, false) => {}
@@ -427,7 +462,35 @@ impl Solid {
             }
         }
         out.edge_kind = edge_kind::VIEW;
+        out.elem = self.elem;
+        out.layer = self.layer;
         out
+    }
+
+    /// Setzt Teil und Schicht aller Flächen und Kanten (ein Teil, eine
+    /// Schicht).
+    pub fn stamp(&mut self, elem: u32, layer: u8) {
+        for t in &mut self.triangles {
+            t.elem = elem;
+            t.layer = layer;
+        }
+        for e in &mut self.edges {
+            e.elem = elem;
+            e.layer = layer;
+        }
+        self.elem = elem;
+        self.layer = layer;
+    }
+
+    /// Setzt nur die Schicht aller Flächen und Kanten.
+    pub fn stamp_layer(&mut self, layer: u8) {
+        for t in &mut self.triangles {
+            t.layer = layer;
+        }
+        for e in &mut self.edges {
+            e.layer = layer;
+        }
+        self.layer = layer;
     }
 }
 
@@ -503,17 +566,13 @@ fn without(e: Edge, mut cut: Vec<(f64, f64)>, out: &mut Vec<Edge>) {
             out.push(Edge {
                 a: at(from),
                 b: at(a),
-                kind: e.kind,
+                ..e
             });
         }
         from = f64::max(from, b);
     }
     if len - from > 1e-6 {
-        out.push(Edge {
-            a: at(from),
-            b: e.b,
-            kind: e.kind,
-        });
+        out.push(Edge { a: at(from), ..e });
     }
 }
 

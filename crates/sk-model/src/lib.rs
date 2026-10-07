@@ -63,7 +63,7 @@ pub use qto::{
     SoffitQto, TerraceQto, WallQto,
 };
 pub use solid::Solid;
-pub use solid::{edge_kind, material, merge_seam, Edge, SweepEnd, Tri};
+pub use solid::{edge_kind, material, merge_seam, Edge, SweepEnd, Tri, NO_LAYER};
 pub use terrace::{AttikaPiece, CopingPath, TerraceOutline, TerracePlan, COPING_DRIP};
 pub use trade::{Trade, TradeId};
 pub use txn::{step_label, Change, Direction, Touched, Txn};

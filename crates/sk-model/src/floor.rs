@@ -12,7 +12,9 @@
 //!
 //! [`Joints::slab_band`]: crate::wall::Joints::slab_band
 
-use crate::solid::{at_z, edge_kind, material, right_of, straight_at, SectionFrame, Solid};
+use crate::solid::{
+    at_z, edge_kind, material, right_of, straight_at, SectionFrame, Solid, NO_LAYER,
+};
 use crate::terrace::{attika_section_caps, attika_solid, coping_profile, TerracePlan};
 use crate::wall::WallChain;
 use sk_math::polygon;
@@ -114,6 +116,9 @@ pub struct FloorSlab {
     pub terrace: Option<TerraceParams>,
     /// Umrisse, Attika-Stücke und Blechpfad dazu (leer ohne Terrasse).
     pub terraces: TerracePlan,
+    /// Schicht der Rohdecke in ihrem Aufbau (Darstellung, Paket 3; das
+    /// Modell setzt die Kernschicht des Typs).
+    pub core_layer: u8,
 }
 
 impl FloorSlab {
@@ -242,6 +247,7 @@ impl FloorSlab {
             soffits: Vec::new(),
             terrace: None,
             terraces: TerracePlan::default(),
+            core_layer: 0,
         })
     }
 
@@ -255,6 +261,7 @@ impl FloorSlab {
     fn prism(&self, z0: f64, z1: f64, cut_top: bool) -> Solid {
         let mut s = Solid {
             mat: self.params.mat,
+            layer: self.core_layer,
             ..Solid::default()
         };
         let c = &self.outline;
@@ -374,6 +381,7 @@ impl FloorSlab {
         let mut s = Solid {
             mat: self.params.mat | material::CUT,
             edge_kind: edge_kind::CUT,
+            layer: self.core_layer,
             ..Solid::default()
         };
         for (a, b) in polygon::plane_intervals(&self.outline, p0, n, along) {
@@ -451,19 +459,20 @@ impl FloorSlab {
         Some((t.attika_from, top + t.upstand))
     }
 
-    /// Schichten des Aufbaus mit Höhen (UK, OK, Baustoff, Dämmung), von
-    /// unten nach oben.
-    fn terrace_layers(&self) -> Vec<(f64, f64, u16, bool)> {
+    /// Schichten des Aufbaus mit Höhen (UK, OK, Baustoff, Dämmung, Schicht
+    /// von oben gezählt), von unten nach oben.
+    fn terrace_layers(&self) -> Vec<(f64, f64, u16, bool, u8)> {
         let Some(t) = self.terrace.as_ref().filter(|_| !self.terraces.is_empty()) else {
             return Vec::new();
         };
         let mut z = self.params.top;
         t.layers
             .iter()
+            .enumerate()
             .rev()
-            .map(|&(d, mat, ins)| {
+            .map(|(i, &(d, mat, ins))| {
                 z += d;
-                (z - d, z, mat, ins)
+                (z - d, z, mat, ins, i as u8)
             })
             .collect()
     }
@@ -487,6 +496,7 @@ impl FloorSlab {
     pub fn terrace_solid(&self) -> Solid {
         let mut s = self.terrace_below(f64::INFINITY);
         if let Some((z0, _)) = self.terrace_band() {
+            s.layer = self.terrace_layers().first().map_or(NO_LAYER, |l| l.4);
             for t in &self.terraces.outlines {
                 for p in &t.parts {
                     s.cap(&polygon::to_ccw(p), z0, false);
@@ -504,20 +514,21 @@ impl FloorSlab {
     fn terrace_below(&self, cut: f64) -> Solid {
         let mut s = Solid::default();
         let layers = self.terrace_layers();
-        let Some(&(_, top, mat, _)) = layers.iter().rev().find(|l| l.0 < cut) else {
+        let Some(&(_, top, mat, _, li)) = layers.iter().rev().find(|l| l.0 < cut) else {
             return s;
         };
-        let (z, mat) = if cut < top {
+        let (z, mat, li) = if cut < top {
             // geschnittene Schicht: die oberste unter dem Schnitt
             let l = layers
                 .iter()
                 .find(|l| l.0 < cut && cut < l.1)
                 .unwrap_or(&layers[0]);
-            (cut, l.2 | material::CUT)
+            (cut, l.2 | material::CUT, l.4)
         } else {
-            (top, mat)
+            (top, mat, li)
         };
         s.mat = mat;
+        s.layer = li;
         s.edge_kind = if cut < top {
             edge_kind::CUT_LAYER
         } else {
@@ -551,8 +562,9 @@ impl FloorSlab {
         for t in &self.terraces.outlines {
             for p in &t.parts {
                 for (a, b) in polygon::plane_intervals(p, p0, n, along) {
-                    for &(z0, z1, mat, ins) in &layers {
+                    for &(z0, z1, mat, ins, li) in &layers {
                         s.mat = mat | material::CUT;
+                        s.layer = li;
                         let d = (z1 - z0).max(1.0);
                         let uv = if ins {
                             [[a / d, 0.0], [b / d, 0.0], [b / d, 1.0], [a / d, 1.0]]

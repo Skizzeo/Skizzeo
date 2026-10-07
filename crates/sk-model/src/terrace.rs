@@ -15,7 +15,7 @@
 //! der Attika und endet dort an derselben Fläche.
 
 use crate::model::MIN_OFFSET;
-use crate::solid::{at_z, edge_kind, material, right_of, SectionFrame, Solid, SweepEnd};
+use crate::solid::{at_z, edge_kind, material, right_of, SectionFrame, Solid, SweepEnd, NO_LAYER};
 use crate::wall::WallChain;
 use sk_math::{polygon, Vec3};
 
@@ -370,6 +370,7 @@ pub fn attika_solid(pieces: &[AttikaPiece], (z0, z1): (f64, f64), cut: f64) -> S
     for p in pieces {
         let [o0, o1, i1, i0] = p.quad;
         s.elem = p.seg as u32;
+        s.layer = p.layer.map_or(NO_LAYER, |l| l as u8);
         s.mat = p.mat;
         let d = (o1 - o0).normalized();
         let r = right_of(d);
@@ -442,6 +443,7 @@ pub fn attika_section_caps(
     let pt = |u: f64, z: f64| f.pt(u, z);
     for p in pieces {
         s.elem = p.seg as u32;
+        s.layer = p.layer.map_or(NO_LAYER, |l| l as u8);
         s.mat = p.mat | material::CUT;
         s.edge_kind = edge_kind::CUT_LAYER;
         let w = (p.quad[3] - p.quad[0]).length().max(1.0);

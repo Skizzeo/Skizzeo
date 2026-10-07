@@ -76,6 +76,9 @@ pub struct Foundation {
     pub outline: Vec<Vec3>,
     pub footing: FootingShape,
     pub params: FoundationParams,
+    /// Schicht der Platte und der Schürze in ihrem Aufbau (Darstellung,
+    /// Paket 3; das Modell setzt die Kernschicht).
+    pub layers: (u8, u8),
 }
 
 impl Foundation {
@@ -127,6 +130,7 @@ impl Foundation {
             outline,
             footing,
             params: *p,
+            layers: (0, 0),
         })
     }
 
@@ -179,6 +183,7 @@ impl Foundation {
     pub fn slab_solid(&self) -> Solid {
         let mut s = Solid {
             mat: self.params.slab_mat,
+            layer: self.layers.0,
             ..Solid::default()
         };
         let (zb, _) = self.levels();
@@ -212,6 +217,7 @@ impl Foundation {
     pub fn footing_solid(&self) -> Solid {
         let mut s = Solid {
             mat: self.params.footing_mat,
+            layer: self.layers.1,
             ..Solid::default()
         };
         let (zt, zb) = self.levels();
@@ -256,6 +262,7 @@ impl Foundation {
         let mat = self.params.footing_mat;
         let mut s = Solid {
             mat,
+            layer: self.layers.1,
             ..Solid::default()
         };
         let c0 = &self.outline;
@@ -291,6 +298,8 @@ impl Foundation {
                 a: at_z(c[i], z),
                 b: at_z(c[(i + 1) % n], z),
                 kind: edge_kind::BACKGROUND,
+                elem: 0,
+                layer: self.layers.0,
             })
             .collect()
     }
@@ -307,11 +316,13 @@ impl Foundation {
         let mut slab = Solid {
             mat: self.params.slab_mat | material::CUT,
             edge_kind: edge_kind::CUT,
+            layer: self.layers.0,
             ..Solid::default()
         };
         let mut foot = Solid {
             mat: self.params.footing_mat | material::CUT,
             edge_kind: edge_kind::CUT,
+            layer: self.layers.1,
             ..Solid::default()
         };
         let outer = polygon::plane_intervals(&self.outline, p0, n, along);

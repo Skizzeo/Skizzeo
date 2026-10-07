@@ -267,7 +267,13 @@ impl RunPart for Foundation {
             // darüber als Hintergrundlinie
             PlanMode::Foundation => {
                 out.append(&part(self.footing_cut_at(cut), FOOTING_PART));
-                out.edges.extend(self.slab_rim(cut + BACKGROUND_LIFT));
+                out.edges
+                    .extend(self.slab_rim(cut + BACKGROUND_LIFT).into_iter().map(|e| {
+                        sk_model::Edge {
+                            elem: SLAB_PART,
+                            ..e
+                        }
+                    }));
             }
             // Die Gründung liegt unter der Schnitthöhe: Draufsicht
             PlanMode::Cut => RunPart::solid(self, out),
@@ -2508,6 +2514,9 @@ fn part(mut s: Solid, part: u32) -> Solid {
     for t in &mut s.triangles {
         t.elem = part;
     }
+    for e in &mut s.edges {
+        e.elem = part;
+    }
     s
 }
 
@@ -2551,6 +2560,144 @@ fn mesh_into(m: &mut MeshData, s: &Solid) {
 mod tests {
     use super::*;
     use sk_model::{Pen, RefSide};
+
+    /// Paket 3 (Vor-Patch): Jede Fläche und Kante des Prüfhauses mit AW-49
+    /// und Dachterrasse trägt ein Bauteil; Wandflächen eine Schicht des
+    /// Wandtyps, Decke und Terrasse eine ihres Aufbaus, alles andere
+    /// [`sk_model::NO_LAYER`]. Gilt in 3D, im Grundriss (jede Art), im
+    /// Schnitt A und B und an den Hintergrundkanten; jede Schicht der Wand
+    /// hat Flächen.
+    #[test]
+    fn jede_flaeche_und_kante_traegt_bauteil_und_schicht() {
+        use sk_model::{Category, NO_LAYER};
+        let mut s = Scene::with_model(Model::with_seed(75));
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        let mut eg = None;
+        assert!(s.edit_model("Gebäude erstellt", |m| {
+            let b = m.add_building(2);
+            eg = m.build_from_polygon(b, &pts);
+            eg.is_some()
+        }));
+        let eg = eg.unwrap();
+        let og = s.model().runs_above(eg)[0];
+        let aw49 = s.model().type_by_guid(sk_model::CAVITY_TYPE_GUID).unwrap();
+        let nord = s.model().wall_at(og, 1).unwrap();
+        assert!(s.edit_model("Prüfhaus", |m| {
+            m.set_run_type(eg, aw49)
+                && m.set_run_type(og, aw49)
+                && m.set_linked(nord, false)
+                && m.set_offset(nord, -1500.0).is_some()
+        }));
+        let de = s.model().floor_of(eg).unwrap();
+        assert!(s.model().terrace_of(de).is_some(), "Dachterrasse");
+        s.rebuild_dirty(false);
+
+        let model = s.model.clone();
+        let check = |run: RunId, sol: &Solid, what: &str, per_layer: &mut Vec<usize>| {
+            let layers = |id: ElementId| model.element_layers(id).len();
+            let ok_layer = |id: ElementId, layer: u8| {
+                let e = model.element(id).unwrap();
+                match e.category {
+                    Category::ExteriorWall | Category::InteriorWall => {
+                        (layer as usize) < layers(id)
+                    }
+                    Category::Floor | Category::GroundSlab | Category::StripFooting => {
+                        (layer as usize) < layers(id).max(1)
+                    }
+                    Category::RoofTerrace => (layer as usize) < layers(id),
+                    _ => layer == NO_LAYER,
+                }
+            };
+            for t in &sol.triangles {
+                let id = model
+                    .part_of(run, t.elem)
+                    .unwrap_or_else(|| panic!("{what}: Fläche ohne Bauteil (Teil {})", t.elem));
+                assert!(
+                    ok_layer(id, t.layer),
+                    "{what}: Fläche {} Schicht {}",
+                    t.elem,
+                    t.layer
+                );
+                let e = model.element(id).unwrap();
+                if e.category == Category::ExteriorWall {
+                    per_layer[t.layer as usize] += 1;
+                }
+            }
+            for e in &sol.edges {
+                let id = model
+                    .part_of(run, e.elem)
+                    .unwrap_or_else(|| panic!("{what}: Kante ohne Bauteil (Teil {})", e.elem));
+                assert!(
+                    ok_layer(id, e.layer),
+                    "{what}: Kante {} Schicht {}",
+                    e.elem,
+                    e.layer
+                );
+            }
+        };
+        let nlayers = model.layer_set(aw49).unwrap().layers.len();
+        let planes = [
+            (vec3(5000.0, 4000.0, 0.0), vec3(0.0, 1.0, 0.0)),
+            (vec3(5000.0, 4000.0, 0.0), vec3(1.0, 0.0, 0.0)),
+            (vec3(5000.0, 7300.0, 0.0), vec3(0.0, -1.0, 0.0)),
+        ];
+        for run in [eg, og] {
+            let i = s
+                .cache
+                .iter()
+                .position(|c| c.as_ref().is_some_and(|c| c.id == run));
+            let c = s.cache[i.unwrap()].as_mut().unwrap();
+            let mut per_layer = vec![0; nlayers];
+            let solid = c.solid.clone();
+            check(run, &solid, "3D", &mut per_layer);
+            for (k, n) in per_layer.iter().enumerate() {
+                let air = model.layer_set(aw49).unwrap().layers[k].function
+                    == sk_model::LayerFunction::AirGap;
+                assert!(air || *n > 0, "Schicht {k} ohne Flächen");
+            }
+            for cut in [1000.0, 2900.0, 3900.0, 6000.0, -300.0] {
+                for mode in [PlanMode::Cut, PlanMode::Lower, PlanMode::Foundation] {
+                    let p = c.plan_solid(cut, mode);
+                    check(
+                        run,
+                        &p,
+                        &format!("Grundriss {cut} {mode:?}"),
+                        &mut vec![0; nlayers],
+                    );
+                }
+                let under = Solid {
+                    edges: c.under_edges(cut).to_vec(),
+                    ..Solid::default()
+                };
+                check(run, &under, "Hintergrund", &mut vec![0; nlayers]);
+            }
+            for pl in planes {
+                let sec = c
+                    .view_solid(ViewKind::Section, Some(pl), 0.0, PlanMode::Cut)
+                    .unwrap()
+                    .clone();
+                check(run, &sec, &format!("Schnitt {pl:?}"), &mut vec![0; nlayers]);
+                // Durch die Terrasse: Belag 0 und Dämmung 1
+                if run == eg && pl.1.x == 1.0 {
+                    let dt = model.terrace_of(de).unwrap();
+                    let mut got: Vec<u8> = sec
+                        .triangles
+                        .iter()
+                        .filter(|t| model.part_of(run, t.elem) == Some(dt))
+                        .map(|t| t.layer)
+                        .collect();
+                    got.sort();
+                    got.dedup();
+                    assert_eq!(got, [0, 1], "Schichten der Terrasse im Schnitt");
+                }
+            }
+        }
+    }
 
     #[test]
     fn buendig_an_zielwand_ein_schritt() {

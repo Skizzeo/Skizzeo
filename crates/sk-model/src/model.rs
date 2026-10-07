@@ -2999,10 +2999,11 @@ impl Model {
     /// `Err` wenn kein Körper entstehen kann.
     pub fn foundation(&self, run: RunId) -> Option<Result<Foundation, FoundationError>> {
         let (slab, footing) = self.foundation_of(run)?;
+        let footing = footing?;
         let ElementKind::GroundSlab(s) = self.element(slab)?.kind else {
             return None;
         };
-        let ElementKind::StripFooting(f) = self.element(footing?)?.kind else {
+        let ElementKind::StripFooting(f) = self.element(footing)?.kind else {
             return None;
         };
         if s.recess > 0.0 && s.recess < MIN_RECESS {
@@ -3018,7 +3019,20 @@ impl Model {
             slab_mat: material_key(s.material),
             footing_mat: material_key(f.material),
         };
-        Some(Foundation::from_chain(&chain, &p))
+        Some(Foundation::from_chain(&chain, &p).map(|mut x| {
+            x.layers = (self.core_layer(slab), self.core_layer(footing));
+            x
+        }))
+    }
+
+    /// Schicht des Kerns im Aufbau eines Bauteils ([`Model::element_layers`]),
+    /// für die Darstellung (Paket 3); ohne Kern die erste.
+    fn core_layer(&self, id: ElementId) -> u8 {
+        self.element_layers(id)
+            .iter()
+            .position(|l| l.core)
+            .unwrap_or(0)
+            .min(u8::MAX as usize - 1) as u8
     }
 
     /// Setzt den Sockelrücksprung einer Sohlplatte (mm). Erlaubt sind 0
@@ -3279,6 +3293,7 @@ impl Model {
         let strip = self.strip_params(run);
         let mut slab = FloorSlab::from_chain_over(chain, &p, strip, over);
         if let Ok(fs) = &mut slab {
+            fs.core_layer = self.core_layer(id);
             if fs.strip.is_some_and(|sp| sp.covered) {
                 fs.strip_covered = self.covered_segments(run);
             }
