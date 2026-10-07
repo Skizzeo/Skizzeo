@@ -3222,6 +3222,22 @@ impl Model {
             .segment_offsets_from(&self.base_chain(run)?)
     }
 
+    /// Dachterrassen auf der Decke über `run` (Review 2a R8, BIM Regel 41):
+    /// je zusammenhängende Folge von Segmenten, über denen das Geschoss
+    /// darüber um mindestens 20 mm lichte Tiefe zurückspringt, ein Umriss
+    /// zwischen dessen Außenfläche und der Deckenkante. Leer ohne Zug
+    /// darüber.
+    pub fn terrace_outlines(&self, run: RunId) -> Vec<crate::terrace::TerraceOutline> {
+        let (Some(own), Some(up)) = (
+            self.chain(run),
+            self.runs_above(run).first().and_then(|u| self.chain(*u)),
+        ) else {
+            return Vec::new();
+        };
+        let slab = own.overhang_chain().unwrap_or(own);
+        crate::terrace::terrace_outlines(&slab, &up)
+    }
+
     /// Vorsprung des Zuges darüber je Segment (≥ 0), wenn mindestens ein
     /// Segment vorspringt (G7 K4): Dort wachsen Decke, Untersichtdämmung und
     /// die Außenschichten mit.
@@ -6199,6 +6215,127 @@ mod og_phase2 {
         );
         assert_eq!(m.stack_offset(w), Some((-300.0, false)));
         assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    #[test]
+    fn dachterrasse_ueber_dem_ruecksprung() {
+        // BIM-Sollwert: AW-006 −1,50 → 9,72 × 1,36 = 13,2192 m²
+        let (m, eg, og) = mit_versatz(-1500.0);
+        let t = m.terrace_outlines(eg);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].segments, vec![1]);
+        assert!(near(t[0].area(), 9720.0 * 1360.0), "{}", t[0].area());
+        assert!(m.terrace_outlines(og).is_empty());
+        // Vorsprung und bündig: keine Terrasse
+        assert_eq!(m_area(&mit_versatz(300.0)), 0.0);
+        assert_eq!(m_area(&gebaeude()), 0.0);
+        // Lichte Tiefe 20 mm: Rücksprung 160 (WDVS 14) gilt, 150 nicht
+        assert!(near(m_area(&mit_versatz(-160.0)), 9720.0 * 20.0));
+        assert_eq!(m_area(&mit_versatz(-150.0)), 0.0);
+    }
+
+    #[test]
+    fn dachterrasse_richtung_spitze_winkel_und_vorsprung_daneben() {
+        let haus = |pts: &[Vec3], k: usize, d: f64, nb: Option<(usize, f64)>| {
+            let mut m = Model::with_seed(75);
+            let b = m.add_building(2);
+            let eg = m.build_from_polygon(b, pts).unwrap();
+            let og = m.runs_above(eg)[0];
+            for (k, d) in std::iter::once((k, d)).chain(nb) {
+                let w = m.wall_at(og, k).unwrap();
+                assert!(m.set_linked(w, false));
+                assert!(m.set_offset(w, d).is_some(), "{k} {d}");
+            }
+            m.sync_soffits();
+            assert!(m.check().is_empty(), "{:?}", m.check());
+            m.terrace_outlines(eg)
+        };
+        // Gegenrichtung: dasselbe Haus, Nord ist dort Segment 1 rückwärts
+        let ccw = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+        ];
+        let t = haus(&ccw, 2, -1500.0, None);
+        assert_eq!(t.len(), 1);
+        assert!(t[0].area() > 0.0);
+        // Spitze Winkel 20° und 35°: Fläche positiv, Umriss einfach
+        for deg in [20.0f64, 35.0] {
+            let a = deg.to_radians();
+            let tri = [
+                vec3(0.0, 0.0, 0.0),
+                vec3(14000.0 * a.cos(), 14000.0 * a.sin(), 0.0),
+                vec3(14000.0, 0.0, 0.0),
+            ];
+            for k in 0..3 {
+                let t = haus(&tri, k, -800.0, None);
+                assert_eq!(t.len(), 1, "{deg} {k}");
+                assert!(
+                    t[0].area() > 0.0 && t[0].parts.iter().all(|p| sk_math::polygon::is_simple(p))
+                );
+            }
+        }
+        // Nord −1,50, West springt 0,30 vor (UD): die Terrasse endet an der
+        // Deckenkante in OG-Lage (x = 0,14 − 0,30)
+        let (mut m, eg, og) = gebaeude();
+        for (k, d) in [(0, 300.0), (1, -1500.0)] {
+            let w = m.wall_at(og, k).unwrap();
+            assert!(m.set_linked(w, false));
+            assert!(m.set_offset(w, d).is_some());
+        }
+        m.sync_soffits();
+        let t = m.terrace_outlines(eg);
+        assert_eq!(t.len(), 1);
+        assert!(
+            near(t[0].area(), (9860.0 + 160.0) * 1360.0),
+            "{}",
+            t[0].area()
+        );
+    }
+
+    fn m_area(x: &(Model, RunId, RunId)) -> f64 {
+        x.0.terrace_outlines(x.1).iter().map(|t| t.area()).sum()
+    }
+
+    #[test]
+    fn dachterrasse_ueber_eck_und_ringsum() {
+        // Nord −1,50 und Ost −1,00 gelöst: eine Terrasse über Eck
+        let (mut m, eg, og) = gebaeude();
+        for (k, d) in [(1, -1500.0), (2, -1000.0)] {
+            let w = m.wall_at(og, k).unwrap();
+            assert!(m.set_linked(w, false));
+            assert!(m.set_offset(w, d).is_some());
+        }
+        let t = m.terrace_outlines(eg);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].segments, vec![1, 2]);
+        // Deckenumriss 9,72 × 7,72 minus der Teil des OG-Außenumrisses
+        // darin (x 0,14 … 9,00, y 0,14 … 6,50): Nord 1,36 tief, Ost 0,86
+        let want = 9720.0 * 7720.0 - (9000.0 - 140.0) * (6500.0 - 140.0);
+        assert!(near(t[0].area(), want), "{} {want}", t[0].area());
+        // Nord und Süd: zwei Terrassen
+        let (mut m, eg, og) = gebaeude();
+        for k in [1, 3] {
+            let w = m.wall_at(og, k).unwrap();
+            assert!(m.set_linked(w, false));
+            assert!(m.set_offset(w, -1000.0).is_some());
+        }
+        let t = m.terrace_outlines(eg);
+        assert_eq!(t.len(), 2);
+        assert!(t.iter().all(|t| near(t.area(), 9720.0 * 860.0)));
+        // Ringsum −1,00: ein Ring aus zwei Teilen, Fläche = Decke − OG-Umriss
+        let (mut m, eg, og) = gebaeude();
+        for k in 0..4 {
+            let w = m.wall_at(og, k).unwrap();
+            assert!(m.set_linked(w, false));
+            assert!(m.set_offset(w, -1000.0).is_some());
+        }
+        let t = m.terrace_outlines(eg);
+        assert_eq!((t.len(), t[0].parts.len()), (1, 2));
+        assert_eq!(t[0].segments, vec![0, 1, 2, 3]);
+        let want = 9720.0 * 7720.0 - 8000.0 * 6000.0;
+        assert!(near(t[0].area(), want), "{} {want}", t[0].area());
     }
 
     #[test]

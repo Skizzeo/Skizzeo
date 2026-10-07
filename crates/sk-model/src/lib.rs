@@ -20,6 +20,7 @@ pub mod model;
 pub mod qto;
 pub mod solid;
 pub mod szo;
+pub mod terrace;
 pub mod txn;
 #[cfg(test)]
 mod type_tests;
@@ -58,5 +59,6 @@ pub use qto::{
 };
 pub use solid::Solid;
 pub use solid::{edge_kind, material, merge_seam, Edge, Tri};
+pub use terrace::TerraceOutline;
 pub use txn::{step_label, Change, Direction, Touched, Txn};
 pub use wall::{EndCut, Gap, Joints, Layer, Line2, Overhang, RefSide, WallChain};
