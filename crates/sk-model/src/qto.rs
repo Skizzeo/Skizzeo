@@ -1268,7 +1268,11 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
                 if let (Some(x), Some(y)) = (s.area.as_mut(), area) {
                     *x += y;
                 }
-                s.length = s.length.zip(len).map(|(x, y)| x + y);
+                // Länge unabhängig vom Volumen summieren (Review K2)
+                s.length = match (s.length, len) {
+                    (Some(x), Some(y)) => Some(x + y),
+                    (x, y) => x.or(y),
+                };
             }
             None => sums.push(MaterialSum {
                 material: m,

@@ -854,7 +854,7 @@ impl Model {
     }
 
     /// Wird der Baustoff benutzt: in einer Schicht, als Randdämmstreifen
-    /// eines Typs (Regel 15) oder von Sohlplatte, Schürze, Decke?
+    /// eines Typs (Regel 15), von Sohlplatte, Schürze, Decke oder Blech?
     pub fn material_used(&self, id: MaterialId) -> bool {
         let in_types = self.layer_sets.iter().any(|(_, t)| {
             t.layers.iter().any(|l| l.material == id) || t.strip_material() == Some(id)
@@ -867,11 +867,12 @@ impl Model {
             }
             ElementKind::GroundSlab(g) => g.material == id,
             ElementKind::StripFooting(f) => f.material == id,
+            // Das Blech nutzt auch die Vorgabe ohne eigene Wahl (A235)
+            ElementKind::Coping { floor } => self.coping_material(*floor) == Some(id),
             ElementKind::Wall(_)
             | ElementKind::EdgeStrip { .. }
             | ElementKind::SoffitInsulation { .. }
-            | ElementKind::RoofTerrace { .. }
-            | ElementKind::Coping { .. } => false,
+            | ElementKind::RoofTerrace { .. } => false,
         });
         in_types || in_elements
     }

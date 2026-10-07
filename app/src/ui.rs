@@ -1277,6 +1277,15 @@ impl Ui {
     }
 
     /// Sichtbare Paneele; bei offenem Dialog nimmt nur er die Maus.
+    /// Lagen der gezeigten Paneele im Fenster (Pixel), etwa damit eine
+    /// Angabe im Plan nicht darunter verschwindet.
+    pub fn panel_rects(&self, win_w: u32, top: u32) -> Vec<Rect> {
+        self.panels()
+            .into_iter()
+            .map(|p| self.rect(p, win_w, top))
+            .collect()
+    }
+
     fn panels(&self) -> Vec<Panel> {
         if self.dialog {
             return vec![Panel::Dialog];

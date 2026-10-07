@@ -27,6 +27,7 @@ mod schedule_view;
 mod section;
 mod selection;
 mod settings;
+mod terrace_label;
 mod type_look;
 mod type_menu;
 mod ui;
@@ -186,27 +187,6 @@ const OVERLAY_CARD: usize = OVERLAY_HINT + 4;
 const OVERLAY_TIP: usize = OVERLAY_HINT + 5;
 /// Maßzahl am Weg beim „Bündig setzen“ (E20).
 const OVERLAY_PICK: usize = OVERLAY_HINT + 6;
-
-/// Angabe einer Fläche im Grundriss („Dachterrasse 13,22 m²“): Schrift in
-/// gedimmter Tinte auf durchsichtigem Grund.
-fn room_label(fonts: &sk_ui::widgets::Fonts, text: &str, s: f32, t: &Theme) -> sk_paint::Canvas {
-    let px = t.size.font_small * s;
-    let f = fonts.regular.as_ref();
-    let tw = f.map_or(text.len() as f32 * px * 0.5, |f| f.width(text, px));
-    let cap = f.map_or(px * 0.7, |f| f.cap_height(px));
-    let h = (cap * 2.0).ceil();
-    let mut c = sk_paint::Canvas::new(tw.ceil() as usize + 2, h as usize);
-    sk_ui::widgets::text(
-        &mut c,
-        f,
-        text,
-        px,
-        1.0,
-        ((h + cap) * 0.5).round(),
-        t.ui.sheet_text_dim,
-    );
-    c
-}
 
 /// Versatz am Band beim Ziehen (OG Phase 2): „Versatz +0,30“, unter 2 cm
 /// „bündig“.
@@ -5357,21 +5337,46 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 }
             }
 
-            // „Dachterrasse 13,22 m²“ mittig auf der Terrasse, gedimmt wie
-            // eine Raumangabe; nur, wenn die Angabe auf die Terrasse passt
+            // „Dachterrasse 13,22 m²“ auf der Terrasse, gedimmt wie eine
+            // Raumangabe, nach der Platzregel (Review 3f K1): nie über Wand,
+            // Attika oder Blech, 6 dip neben dem Kettensymbol
             let rooms: Vec<((f64, f64), String)> = if a.ui.view == ViewKind::Plan {
-                a.scene
-                    .terrace_labels()
-                    .into_iter()
-                    .filter_map(|(p, area)| {
-                        let at = a.cam.project(p, vw, vh)?;
-                        Some((
-                            at,
-                            format!("Dachterrasse {} m²", selection::de(area / 1e6, 2)),
-                        ))
-                    })
-                    .take(ROOMS)
-                    .collect()
+                let chips: Vec<terrace_label::Box> = a
+                    .chips
+                    .iter()
+                    .filter(|k| !k.linked)
+                    .map(|k| terrace_label::chip_box(k, scale as f64, th as f64))
+                    .collect();
+                // Nicht unter den Paneelen
+                let panels: Vec<terrace_label::Box> =
+                    a.ui.panel_rects(a.w, th)
+                        .iter()
+                        .map(|r| terrace_label::Box {
+                            x: r.x as f64,
+                            y: (r.y - th as f32) as f64,
+                            w: r.w as f64,
+                            h: r.h as f64,
+                        })
+                        .collect();
+                let pad = terrace_label::PAD * scale as f64;
+                terrace_label::labels(
+                    &a.scene,
+                    &a.cam,
+                    vw,
+                    vh,
+                    scale as f64,
+                    &a.ui.fonts,
+                    &a.theme,
+                    &chips,
+                    &panels,
+                )
+                .into_iter()
+                .filter_map(|(p, text)| {
+                    let (b, _) = p.shown()?;
+                    Some(((b.x + pad, b.y + pad), text))
+                })
+                .take(ROOMS)
+                .collect()
             } else {
                 Vec::new()
             };
@@ -5379,19 +5384,16 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 match rooms.get(i) {
                     Some(((x, y), text)) => {
                         let key = (text.clone(), scale.to_bits(), a.theme.rev);
-                        let at = |w: u32, h: u32| {
-                            (
-                                (x - w as f64 * 0.5).round() as i32,
-                                (y + th as f64 - h as f64 * 0.5).round() as i32,
-                            )
-                        };
+                        let at =
+                            |_: u32, _: u32| (x.round() as i32, (y + th as f64).round() as i32);
                         match &a.room_keys[i] {
                             Some((k, w, h)) if *k == key => {
                                 let (px_x, px_y) = at(*w, *h);
                                 a.renderer.move_overlay(OVERLAY_ROOMS + i, px_x, px_y);
                             }
                             _ => {
-                                let c = room_label(&a.ui.fonts, text, scale, &a.theme);
+                                let c =
+                                    terrace_label::paint(&a.ui.fonts, text, scale as f64, &a.theme);
                                 let (w, h) = (c.width as u32, c.height as u32);
                                 let (px_x, px_y) = at(w, h);
                                 let px = c.to_premul_rgba8();

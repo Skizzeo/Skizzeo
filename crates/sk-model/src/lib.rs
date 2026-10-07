@@ -64,7 +64,7 @@ pub use qto::{
 };
 pub use solid::Solid;
 pub use solid::{edge_kind, material, merge_seam, Edge, SweepEnd, Tri};
-pub use terrace::{AttikaPiece, CopingPath, TerraceOutline, TerracePlan};
+pub use terrace::{AttikaPiece, CopingPath, TerraceOutline, TerracePlan, COPING_DRIP};
 pub use trade::{Trade, TradeId};
 pub use txn::{step_label, Change, Direction, Touched, Txn};
 pub use wall::{Attika, EndCut, Gap, Joints, Layer, Line2, Overhang, RefSide, WallChain};

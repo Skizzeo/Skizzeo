@@ -31,6 +31,25 @@ type Aabb = (Vec3, Vec3);
 pub type Plane = (Vec3, Vec3);
 
 /// Abgeleitete Daten eines Wandzugs.
+/// Waagerechter Abstand des Punkts `p` von der Strecke `a`–`b` (mm).
+fn seg_dist(p: Vec3, a: Vec3, b: Vec3) -> f64 {
+    let flat = |v: Vec3| vec3(v.x, v.y, 0.0);
+    let (p, a, b) = (flat(p), flat(a), flat(b));
+    let d = b - a;
+    let t = ((p - a).dot(d) / d.dot(d).max(1e-12)).clamp(0.0, 1.0);
+    (a + d * t - p).length()
+}
+
+/// Eine Dachterrasse im Grundriss (Szene, mm, auf OK Belag).
+pub struct TerraceMark {
+    /// Größter Teil des Umrisses.
+    pub outline: Vec<Vec3>,
+    /// Fläche aller Teile (mm²).
+    pub area: f64,
+    /// Blechkante außen davor: Anfang, Ende, Richtung nach außen.
+    pub edge: Option<(Vec3, Vec3, Vec3)>,
+}
+
 struct RunCache {
     id: RunId,
     chain: WallChain,
@@ -1051,11 +1070,15 @@ impl Scene {
     }
 
     /// Dachterrassen im Grundriss des aktiven Geschosses (sie liegen auf
-    /// seinem Boden): Mitte des größten Teils auf OK Belag und Fläche (mm²)
-    /// je Terrasse, für die Angabe „Dachterrasse 13,22 m²“.
-    pub fn terrace_labels(&self) -> Vec<(Vec3, f64)> {
+    /// seinem Boden), für die Angabe „Dachterrasse 13,22 m²“: je Terrasse der
+    /// größte Teil und die Fläche, dazu die Sperrflächen im Grundriss (Wände
+    /// des Geschosses, Attika samt Blech), alles auf OK Belag.
+    pub fn terrace_marks(&self) -> (Vec<TerraceMark>, Vec<[Vec3; 4]>) {
         let active = self.active_storey();
-        let mut out = Vec::new();
+        let m = &self.model;
+        let mut marks = Vec::new();
+        let mut blocked = Vec::new();
+        let mut z = None;
         for c in self.cache.iter().flatten() {
             if self.plan_mode(c.id, active) != PlanMode::Lower {
                 continue;
@@ -1064,17 +1087,71 @@ impl Scene {
             let Some((_, top)) = f.terrace_band() else {
                 continue;
             };
+            z = Some(top);
+            let at = |p: Vec3| vec3(p.x, p.y, top);
+            // Blechband von der Innenkante der Attika bis zur Tropfkante
+            let w = f.terraces.width;
+            let mut edges = Vec::new();
+            for cp in &f.terraces.coping {
+                let n = cp.points.len();
+                let segs = if cp.closed { n } else { n.saturating_sub(1) };
+                for k in 0..segs {
+                    let (a, b) = (cp.points[k], cp.points[(k + 1) % n]);
+                    let d = vec3(b.x - a.x, b.y - a.y, 0.0);
+                    if d.length() < 1.0 {
+                        continue;
+                    }
+                    let r = vec3(d.y, -d.x, 0.0).normalized();
+                    let (i, o) = (r * -(w + 3.0), r * sk_model::COPING_DRIP);
+                    blocked.push([at(a + i), at(b + i), at(b + o), at(a + o)]);
+                    edges.push((at(a + o), at(b + o), r));
+                }
+            }
             for t in &f.terraces.outlines {
-                let largest = t
+                let Some(largest) = t
                     .parts
                     .iter()
-                    .max_by(|a, b| polygon::area(a).total_cmp(&polygon::area(b)));
-                if let Some(c) = largest.and_then(|p| polygon::centroid(p)) {
-                    out.push((vec3(c.x, c.y, top), t.area()));
+                    .max_by(|a, b| polygon::area(a).total_cmp(&polygon::area(b)))
+                else {
+                    continue;
+                };
+                let outline: Vec<Vec3> = largest.iter().map(|p| at(*p)).collect();
+                // Die Blechkante vor dieser Terrasse: die längste in ihrer Nähe
+                let near = |e: &(Vec3, Vec3, Vec3)| {
+                    let mid = (e.0 + e.1) * 0.5;
+                    outline
+                        .iter()
+                        .zip(outline.iter().cycle().skip(1))
+                        .map(|(p, q)| seg_dist(mid, *p, *q))
+                        .fold(f64::MAX, f64::min)
+                        <= w + sk_model::COPING_DRIP + 50.0
+                };
+                let edge = edges
+                    .iter()
+                    .filter(|e| near(e))
+                    .max_by(|a, b| (a.1 - a.0).length().total_cmp(&(b.1 - b.0).length()))
+                    .copied();
+                marks.push(TerraceMark {
+                    outline,
+                    area: t.area(),
+                    edge,
+                });
+            }
+        }
+        let Some(z) = z else {
+            return (marks, blocked);
+        };
+        for c in self.cache.iter().flatten() {
+            if m.run(c.id).map(|r| r.storey) != Some(active) {
+                continue;
+            }
+            for k in 0..c.chain.segment_count() {
+                if let Some(q) = c.chain.segment_footprint(k) {
+                    blocked.push(q.map(|p| vec3(p.x, p.y, z)));
                 }
             }
         }
-        out
+        (marks, blocked)
     }
 
     /// Mengen eines Attikablechs, aus der gezeichneten Decke.
@@ -2518,6 +2595,47 @@ mod tests {
             Err(sk_model::FlushError::NotPartners)
         );
         assert_eq!(s.undo_label(), label);
+    }
+
+    #[test]
+    fn blech_vorgabe_gilt_als_verwendet_und_terrasse_hat_kante() {
+        let mut s = Scene::with_model(Model::with_seed(75));
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        let mut eg = None;
+        assert!(s.edit_model("Gebäude erstellt", |m| {
+            let b = m.add_building(2);
+            eg = m.build_from_polygon(b, &pts);
+            eg.is_some()
+        }));
+        let og = s.model().runs_above(eg.unwrap())[0];
+        let w = s.model().wall_at(og, 1).unwrap();
+        assert!(s.set_linked(w, false));
+        assert!(s.type_offset(w, -1500.0));
+        let m = s.model();
+        let floor = m
+            .elements()
+            .iter()
+            .find_map(|(_, e)| match e.kind {
+                sk_model::ElementKind::Coping { floor } => Some(floor),
+                _ => None,
+            })
+            .expect("Attikablech");
+        let mat = m.coping_material(floor).expect("Vorgabe");
+        assert!(m.material_used(mat), "Vorgabe des Blechs");
+        assert!(s.set_active_storey(m.run(og).unwrap().storey));
+        let (marks, blocked) = s.terrace_marks();
+        assert_eq!(marks.len(), 1);
+        let (a, b, n) = marks[0].edge.expect("Blechkante");
+        assert!(
+            (a.y - b.y).abs() < 1.0 && a.y > 8000.0 && n.y > 0.9,
+            "{a:?} {b:?} {n:?}"
+        );
+        assert!(!blocked.is_empty());
     }
 
     fn rechteck(x: f64) -> WallChain {

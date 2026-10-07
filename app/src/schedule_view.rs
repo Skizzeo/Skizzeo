@@ -263,6 +263,9 @@ pub struct ListView {
     /// Zusätzliche Kopfhöhe (dip), wenn der Umschalter eine eigene Zeile
     /// braucht (schmales Fenster, lange Unterzeile); beim Zeichnen bestimmt.
     head_extra: Cell<f32>,
+    /// Maße des zuletzt gezeichneten Farbschemas: Lage und Rollgrenze ohne
+    /// Schema rechnen damit (Review K3).
+    sizes: Cell<Option<sk_ui::theme::Sizes>>,
 }
 
 impl ListView {
@@ -306,6 +309,7 @@ impl ListView {
             motion: None,
             hint_at: Vec::new(),
             head_extra: Cell::new(0.0),
+            sizes: Cell::new(None),
         };
         v.sync(s, false);
         v
@@ -420,8 +424,13 @@ impl ListView {
             && (l.group == Key::None || self.open_groups.contains(&l.group))
     }
 
+    /// Maße aus `t`, sonst die des zuletzt gezeichneten Schemas.
+    fn sizes(&self, t: Option<&Theme>) -> Option<sk_ui::theme::Sizes> {
+        t.map(|t| t.size).or(self.sizes.get())
+    }
+
     fn line_h(&self, l: &Line, t: Option<&Theme>) -> f32 {
-        let row = t.map_or(22.0, |t| t.size.qto_row);
+        let row = self.sizes(t).map_or(22.0, |z| z.qto_row);
         match l.kind {
             Kind::Building => 30.0,
             Kind::Storey => STOREY_ROW + STOREY_GAP,
@@ -443,10 +452,11 @@ impl ListView {
     /// (wenige Kacheln bleiben ein Drittel breit), höchstens so viele, wie
     /// mit `size.sheet_tile_min_w` in die Inhaltsbreite passen.
     fn tile_slots(&self, t: Option<&Theme>, n: usize) -> usize {
-        let pad = t.map_or(28.0, |t| t.size.sheet_pad);
-        let max_w = t.map_or(900.0, |t| t.size.qto_max_w);
+        let z = self.sizes(t);
+        let pad = z.map_or(28.0, |z| z.sheet_pad);
+        let max_w = z.map_or(900.0, |z| z.qto_max_w);
         let cw = (self.w as f32 / self.scale - 2.0 * pad).min(max_w).max(0.0);
-        let min_w = t.map_or(120.0, |t| t.size.sheet_tile_min_w);
+        let min_w = z.map_or(120.0, |z| z.sheet_tile_min_w);
         let fit = ((cw + TILE_GAP) / (min_w + TILE_GAP)).floor().max(1.0) as usize;
         n.max(3).min(fit)
     }
@@ -487,6 +497,7 @@ impl ListView {
 
     /// Bestimmt die Kopfhöhe nach der Lage des Umschalters.
     fn fit_head(&self, t: &Theme, fonts: &Fonts) {
+        self.sizes.set(Some(t.size));
         let own = self.toggle_layout(t, fonts).2;
         self.head_extra.set(if own { TOGGLE_ROW } else { 0.0 });
     }
