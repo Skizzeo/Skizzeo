@@ -433,6 +433,8 @@ pub struct Scene {
     undo: Vec<Txn>,
     /// Rückgängig gemachte Schritte für „Wiederholen“.
     redo: Vec<Txn>,
+    /// Zählt jeden neuen Schritt im Verlauf (Paket 8b, K3).
+    serial: u64,
     /// Zwischenspeicher je Wandzug, über den Arena-Platz der [`RunId`].
     cache: Vec<Option<RunCache>>,
     /// Wandzüge, die neu berechnet werden müssen.
@@ -726,6 +728,7 @@ impl Scene {
         let mut s = Scene {
             model,
             undo: Vec::new(),
+            serial: 0,
             redo: Vec::new(),
             cache: Vec::new(),
             dirty: Vec::new(),
@@ -1409,6 +1412,7 @@ impl Scene {
         match self.model.try_commit() {
             Ok(Some(t)) => {
                 self.undo.push(t);
+                self.serial += 1;
                 if self.undo.len() > HISTORY {
                     self.undo.remove(0);
                 }
@@ -1425,6 +1429,17 @@ impl Scene {
         self.live.clear();
         self.rebuild_dirty(false);
         self.settle();
+    }
+
+    /// Zähler der Schritte im Verlauf: wächst mit jedem neuen Schritt
+    /// (Nachkorrektur nur, solange er gleich bleibt; Paket 8b, K3).
+    pub fn step_serial(&self) -> u64 {
+        self.serial
+    }
+
+    /// „Wiederherstellen“ leeren (Nachkorrektur ohne neuen Schritt, K4).
+    pub fn clear_redo(&mut self) {
+        self.redo.clear();
     }
 
     /// Verwirft den offenen Schritt (Esc beim Ziehen); nur die betroffenen

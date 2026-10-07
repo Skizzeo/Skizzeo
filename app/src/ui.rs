@@ -277,6 +277,86 @@ impl FieldRow {
     }
 }
 
+/// Art eines getippten Maßes (Paket 8): Länge in m (> 0 bis 200 m),
+/// Winkel in Grad, Versatz in m mit Vorzeichen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MeasureKind {
+    Length,
+    Angle,
+    Offset,
+}
+
+/// Getipptes Maß, das nicht gilt; [`MeasureError::message`] für die
+/// Statuszeile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MeasureError(pub MeasureKind);
+
+impl MeasureError {
+    pub fn message(&self) -> &'static str {
+        match self.0 {
+            MeasureKind::Length => "Länge zwischen 0,01 und 200 m",
+            MeasureKind::Angle => "Winkel zwischen −360 und 360°",
+            MeasureKind::Offset => "Versatz zwischen −200 und 200 m",
+        }
+    }
+}
+
+/// Strenges Zahlbild für getippte Maße (Paket 8 §1.1, Nachtrag 3o): nur
+/// Ziffern, höchstens ein Dezimalkomma oder -punkt, ein führendes Minus nur
+/// bei Winkel und Versatz. Länge und Versatz kommen in mm (auf 1 mm
+/// gerundet), der Winkel in Grad (auf 0,1° gerundet).
+pub fn parse_measure(text: &str, kind: MeasureKind) -> Result<f64, MeasureError> {
+    let err = Err(MeasureError(kind));
+    let t = text.trim();
+    let (neg, body) = match t.strip_prefix('-') {
+        Some(b) if kind != MeasureKind::Length => (true, b),
+        Some(_) => return err,
+        None => (false, t),
+    };
+    let mut sep = false;
+    let mut digits = false;
+    for ch in body.chars() {
+        match ch {
+            '0'..='9' => digits = true,
+            ',' | '.' if !sep => sep = true,
+            _ => return err,
+        }
+    }
+    if !digits {
+        return err;
+    }
+    let Ok(v) = body.replace(',', ".").parse::<f64>() else {
+        return err;
+    };
+    let v = if neg { -v } else { v };
+    match kind {
+        MeasureKind::Length => {
+            let mm = (v * 1000.0).round();
+            if mm > 0.0 && mm <= 200_000.0 {
+                Ok(mm)
+            } else {
+                err
+            }
+        }
+        MeasureKind::Offset => {
+            let mm = (v * 1000.0).round();
+            if mm.abs() <= 200_000.0 {
+                Ok(mm + 0.0)
+            } else {
+                err
+            }
+        }
+        MeasureKind::Angle => {
+            let g = (v * 10.0).round() / 10.0;
+            if g.abs() <= 360.0 {
+                Ok(g + 0.0)
+            } else {
+                err
+            }
+        }
+    }
+}
+
 /// mm als Zentimeter mit höchstens einer Nachkommastelle, Dezimalkomma.
 pub fn cm_text(mm: f64) -> String {
     let t = (mm.round() / 10.0).to_string();

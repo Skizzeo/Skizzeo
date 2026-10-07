@@ -8,11 +8,16 @@
 //! - Spurlinien durch den Startpunkt (parallel und senkrecht zur ersten Wand sowie
 //!   entlang der Achsen) fangen den letzten Punkt rechtwinklig zum Anfang.
 //! - Rücktaste nimmt den letzten Punkt zurück, Esc bricht ab.
+//! - Paket 8: Am Gummiband steht seine Länge (Bezugslinie). Eine Ziffer öffnet
+//!   die Eingabe „Länge“, Tab das Feld „Winkel“ (gegen die vorige Wand, plus
+//!   nach links); Enter setzt den Punkt genau, Esc schließt erst die Eingabe.
 
 use crate::camera::Camera;
+use crate::measure_input::{opens, InputOutcome, MeasureInput};
+use crate::ui::MeasureKind;
 use sk_math::{vec3, Vec3};
 use sk_model::{Category, Layer, RefSide, WallChain};
-use sk_platform::{Event, Key, MouseButton};
+use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
 
@@ -71,7 +76,14 @@ pub struct WallTool {
     /// Fangbare Kanten des Hintergrunds (Geschoss darunter, E16), auf der
     /// Arbeitsebene.
     pub snaps: Vec<(Vec3, Vec3)>,
+    /// Getippte Länge und Winkel (Paket 8).
+    input: Option<MeasureInput>,
+    /// Länge des Gummibands auf dem Bildschirm (dip), für die Pille.
+    rubber_dip: f64,
 }
+
+/// Felder der Pille beim Zeichnen.
+pub const LABELS: [&str; 2] = ["Länge", "Winkel"];
 
 /// Ergebnis eines Ereignisses für die App.
 #[derive(Default)]
@@ -114,6 +126,8 @@ impl WallTool {
             z: 0.0,
             height: WALL_HEIGHT,
             snaps: Vec::new(),
+            input: None,
+            rubber_dip: 0.0,
         }
     }
 
@@ -123,6 +137,7 @@ impl WallTool {
         if category != self.category {
             self.points.clear();
             self.cursor = None;
+            self.input = None;
             self.category = category;
             self.ref_side = match category {
                 Category::InteriorWall => RefSide::Center,
@@ -134,6 +149,88 @@ impl WallTool {
 
     pub fn is_active(&self) -> bool {
         !self.points.is_empty()
+    }
+
+    /// Gesetzte Punkte des Zugs (Bezugslinie), ohne den Cursorpunkt.
+    pub fn points(&self) -> &[Vec3] {
+        &self.points
+    }
+
+    /// Offene Maßeingabe.
+    pub fn input(&self) -> Option<&MeasureInput> {
+        self.input.as_ref()
+    }
+
+    /// Richtung der vorigen Wand, bei der ersten die Waagerechte.
+    fn base_dir(&self) -> Vec3 {
+        match self.points.as_slice() {
+            [.., a, b] => {
+                let d = vec3(b.x - a.x, b.y - a.y, 0.0);
+                if d.length() > 1e-9 {
+                    d.normalized()
+                } else {
+                    Vec3::X
+                }
+            }
+            _ => Vec3::X,
+        }
+    }
+
+    /// Punkt aus getippter Länge und Winkel; ohne Winkel in Richtung der
+    /// (gefangenen) Maus. `None` ohne gültige Länge.
+    fn typed_point(&self) -> Option<Vec3> {
+        let i = self.input.as_ref()?;
+        if i.error.is_some() {
+            return None;
+        }
+        let len = i.value(0)?.ok()?;
+        let last = *self.points.last()?;
+        let dir = match i.value(1) {
+            Some(Ok(a)) => {
+                let (s, c) = a.to_radians().sin_cos();
+                let b = self.base_dir();
+                vec3(b.x * c - b.y * s, b.x * s + b.y * c, 0.0)
+            }
+            _ => {
+                let m = self.cursor.as_ref().map_or(Vec3::ZERO, |c| c.pos - last);
+                let m = vec3(m.x, m.y, 0.0);
+                if m.length() > 1e-6 {
+                    m.normalized()
+                } else {
+                    self.base_dir()
+                }
+            }
+        };
+        Some(last + dir * len)
+    }
+
+    /// Schließt der Punkt `p` den Zug (unter 1 mm am Start, ab drei Punkten)?
+    fn closes(&self, p: Vec3) -> bool {
+        self.points.len() >= 3 && (p - self.points[0]).length() < 1.0
+    }
+
+    /// Ende des Gummibands: getippter Punkt oder Cursor.
+    fn rubber_end(&self) -> Option<Vec3> {
+        self.typed_point()
+            .or_else(|| self.cursor.as_ref().map(|c| c.pos))
+    }
+
+    /// Pille am Gummiband: Anfang und Ende des Gummibands und der Text
+    /// (Länge der Bezugslinie bzw. die Eingabe). Ohne gesetzten Punkt und
+    /// bei einem Gummiband unter 1 dip ohne Eingabe keine Pille.
+    pub fn label(&self) -> Option<([Vec3; 2], String)> {
+        if !self.enabled {
+            return None;
+        }
+        let last = *self.points.last()?;
+        let end = self.rubber_end()?;
+        if let Some(i) = &self.input {
+            return Some(([last, end], i.text(LABELS)));
+        }
+        if self.rubber_dip < 1.0 {
+            return None;
+        }
+        Some(([last, end], crate::ui::m_text((end - last).length())))
     }
 
     fn chain(&self, points: Vec<Vec3>, closed: bool) -> WallChain {
@@ -158,9 +255,12 @@ impl WallTool {
             return None;
         }
         let mut pts = self.points.clone();
-        let closed = c.kind == SnapKind::Start;
+        let (end, closed) = match self.typed_point() {
+            Some(p) => (p, self.closes(p)),
+            None => (c.pos, c.kind == SnapKind::Start),
+        };
         if !closed {
-            pts.push(c.pos);
+            pts.push(end);
         }
         Some(self.chain(pts, closed))
     }
@@ -217,6 +317,12 @@ impl WallTool {
         } else {
             None
         };
+        let ends = self.points.last().copied().zip(self.rubber_end());
+        self.rubber_dip = ends
+            .and_then(|(a, b)| Some((cam.project(a, w, h)?, cam.project(b, w, h)?)))
+            .map_or(0.0, |(a, b)| {
+                ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt() / scale.max(1e-6)
+            });
     }
 
     /// Arbeitsebene und Vorschauhöhe aus dem aktiven Geschoss. Wechselt die
@@ -228,6 +334,7 @@ impl WallTool {
         if z != self.z {
             self.points.clear();
             self.cursor = None;
+            self.input = None;
         }
         (self.z, self.height) = (z, height);
         true
@@ -238,6 +345,7 @@ impl WallTool {
         self.enabled = on;
         self.points.clear();
         self.cursor = None;
+        self.input = None;
     }
 
     fn snap(&self, cam: &Camera, mx: f64, my: f64, w: f64, h: f64, scale: f64) -> Option<Cursor> {
@@ -425,6 +533,8 @@ impl WallTool {
                 y,
                 mods,
             } => {
+                // Ein Klick verwirft die getippte Zahl
+                self.input = None;
                 self.mouse = Some((x, y));
                 self.shift = mods.shift;
                 self.refresh(cam, w, h, scale);
@@ -461,6 +571,10 @@ impl WallTool {
                 if !down {
                     return out;
                 }
+                if self.input_key(key, mods, &mut out) {
+                    self.refresh(cam, w, h, scale);
+                    return out;
+                }
                 match key {
                     Key::Tab => {
                         self.ref_side = self.ref_side.next();
@@ -472,11 +586,13 @@ impl WallTool {
                         out.redraw = true;
                     }
                     Key::Escape => {
+                        self.input = None;
                         self.points.clear();
                         self.refresh(cam, w, h, scale);
                         out.redraw = true;
                     }
                     Key::Backspace => {
+                        self.input = None;
                         self.points.pop();
                         self.refresh(cam, w, h, scale);
                         out.redraw = true;
@@ -492,6 +608,47 @@ impl WallTool {
             _ => {}
         }
         out
+    }
+
+    /// Taste für die Maßeingabe: öffnet sie mit einer Ziffer (ab dem
+    /// ersten Punkt) bzw. gibt sie an die offene Eingabe. `true`, wenn die
+    /// Taste verbraucht ist; Buchstaben, Strg und Alt gehen ans Werkzeug.
+    fn input_key(&mut self, key: Key, mods: Modifiers, out: &mut Outcome) -> bool {
+        let Some(i) = self.input.as_mut() else {
+            let Key::Char(ch) = key else {
+                return false;
+            };
+            if self.points.is_empty() || !opens(ch, MeasureKind::Length, mods) {
+                return false;
+            }
+            let mut i = MeasureInput::new(MeasureKind::Length, Some(MeasureKind::Angle));
+            i.push(ch);
+            self.input = Some(i);
+            out.redraw = true;
+            return true;
+        };
+        match i.key(key, mods) {
+            InputOutcome::Ignored => return false,
+            InputOutcome::Changed | InputOutcome::Refused => {}
+            InputOutcome::Emptied | InputOutcome::Escape => self.input = None,
+            InputOutcome::EnterEmpty => {
+                self.input = None;
+                out.commit = self.finish_open();
+            }
+            InputOutcome::Enter => {
+                if let Some(p) = self.typed_point() {
+                    self.input = None;
+                    if self.closes(p) {
+                        let pts = std::mem::take(&mut self.points);
+                        out.commit = Some(self.chain(pts, true));
+                    } else {
+                        self.points.push(p);
+                    }
+                }
+            }
+        }
+        out.redraw = true;
+        true
     }
 
     fn finish_open(&mut self) -> Option<WallChain> {
@@ -545,9 +702,9 @@ impl WallTool {
 
         // Bezugslinie des Zuges inklusive Gummiband zum Cursor
         let mut pts = self.points.clone();
-        if let Some(c) = &self.cursor {
+        if let Some(end) = self.rubber_end() {
             if !pts.is_empty() {
-                pts.push(c.pos);
+                pts.push(end);
             }
         }
         for s in pts.windows(2) {

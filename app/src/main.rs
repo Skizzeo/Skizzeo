@@ -19,6 +19,7 @@ mod flush_pick;
 mod hints;
 mod link_view;
 mod material_view;
+mod measure_input;
 mod menu;
 mod musterprobe;
 mod nav;
@@ -201,6 +202,11 @@ const OVERLAY_CARD: usize = OVERLAY_HINT + 4;
 const OVERLAY_TIP: usize = OVERLAY_HINT + 5;
 /// Maßzahl am Weg beim „Bündig setzen“ (E20).
 const OVERLAY_PICK: usize = OVERLAY_HINT + 6;
+/// Maßzahl bzw. Maßeingabe am Gummiband und beim Ziehen (Paket 8).
+const OVERLAY_INPUT: usize = OVERLAY_HINT + 7;
+
+/// So lange steht die Pille nach dem Loslassen (Nachkorrektur, Paket 8b).
+const POST_PILL: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// Versatz am Band beim Ziehen (OG Phase 2): „Versatz +0,30“, unter 2 cm
 /// „bündig“.
@@ -662,6 +668,13 @@ struct App {
     /// Paneel zeigen den Zustand vor dem Gleiten.
     flush_keep: Option<sk_model::ElementId>,
     pick_label: Option<(String, u32, u64)>,
+    /// Bild der Pille (Paket 8): Text, Eingabe, Fehler, Feld, Skalierung,
+    /// Farbschema.
+    input_pill: Option<(String, bool, bool, usize, u32, u64)>,
+    /// Seit wann die Pille nach dem Loslassen steht (Nachkorrektur).
+    post_at: Option<Instant>,
+    /// Zuletzt in der Statuszeile genannter Fehler der Maßeingabe.
+    input_error: Option<String>,
     /// Fehlschläge des Sicherns in Folge (F-13 §8) und ein Befehl aus einem
     /// Verweis, der das Fenster braucht („Jetzt speichern“).
     save_fail: autosave::FailNotice,
@@ -3307,7 +3320,12 @@ impl App {
                 }
                 self.redraw |= eo.redraw;
                 if eo.consumed {
-                    // Esc hat das Ziehen abgebrochen
+                    // Esc hat das Ziehen abgebrochen bzw. die Eingabe am Band
+                } else if self.tool.input().is_some() {
+                    // Offene Maßeingabe vor jeder Esc-Kaskade (Paket 8, K2)
+                    let out = self.tool.handle(&e, &self.cam, vw, vh, sc);
+                    self.redraw |= out.redraw;
+                    self.commit_wall(out.commit);
                 } else if down && key == Key::Escape && self.scene.isolating().is_some() {
                     // Esc beendet zuerst das Isolieren (Paket 4)
                     let v = sk_model::view::Visibility {
@@ -4262,6 +4280,9 @@ impl App {
             None => {}
         }
         // Beim Ziehen einer gestapelten Wand: ihr Versatz (OG Phase 2)
+        if self.edit.pill(&self.scene).is_some() {
+            return None;
+        }
         if let Some((_, o)) = self.edit.dragged_offset(&self.scene) {
             return Some(offset_label(o));
         }
@@ -4583,6 +4604,165 @@ impl App {
     /// Abschnitte `[baum]` und `[hinweise]` für `einstellungen.txt`.
     fn panel_settings(&self) -> String {
         self.tree.settings_line() + &hints::line(&self.hints_seen)
+    }
+
+    /// Pille am Gummiband bzw. am gezogenen Band (Paket 8): Live-Länge oder
+    /// Eingabe, 12 dip neben der Mitte des Gummibands zur Außenseite; beim
+    /// Ziehen und danach an der Maus. Nach dem Loslassen blendet sie nach
+    /// [`POST_PILL`] in `anim_ms` aus.
+    fn paint_input_pill(&mut self, vw: f64, vh: f64, th: u32, scale: f32) {
+        let s = scale as f64;
+        let rev = self.theme.rev;
+        let tool = self.tool.label().map(|(ends, text)| {
+            let i = self.tool.input();
+            let key = (
+                text,
+                i.is_some(),
+                i.is_some_and(|i| i.error.is_some()),
+                i.map_or(0, |i| i.active),
+                scale.to_bits(),
+                rev,
+            );
+            (key, Some(ends))
+        });
+        let edit = || {
+            self.edit.pill(&self.scene).map(|(text, typing)| {
+                let i = self.edit.input();
+                let key = (
+                    text,
+                    typing,
+                    i.is_some_and(|i| i.error.is_some()),
+                    0,
+                    scale.to_bits(),
+                    rev,
+                );
+                (key, None)
+            })
+        };
+        let Some((key, ends)) = tool.or_else(edit) else {
+            self.post_at = None;
+            if self.input_pill.take().is_some() {
+                self.renderer.set_overlay(OVERLAY_INPUT, 0, 0, 0, 0, &[]);
+            }
+            return;
+        };
+        if self.input_pill.as_ref() != Some(&key) {
+            let c = match (ends.is_some(), self.tool.input(), self.edit.input()) {
+                (true, Some(i), _) => {
+                    i.paint(&self.ui.fonts, wall_tool::LABELS, scale, &self.theme)
+                }
+                (false, _, Some(i)) => i.paint(
+                    &self.ui.fonts,
+                    [self.edit.input_label(), ""],
+                    scale,
+                    &self.theme,
+                ),
+                _ => flush_pick::paint_label(&self.ui.fonts, &key.0, scale, &self.theme),
+            };
+            let px = c.to_premul_rgba8();
+            self.renderer
+                .set_overlay(OVERLAY_INPUT, 0, 0, c.width as u32, c.height as u32, &px);
+            self.input_pill = Some(key.clone());
+        }
+        let (w, h) = self.renderer.overlay_size(OVERLAY_INPUT);
+        let (pw, ph) = (w as f64, h as f64);
+        let at = match ends {
+            Some([p, q]) => {
+                // Außenseite: links der Zeichenrichtung (Bezugsseite rechts:
+                // rechts), im Bild gemessen
+                let d = vec3(q.x - p.x, q.y - p.y, 0.0);
+                let side = if self.tool.ref_side == sk_model::RefSide::Right {
+                    -1.0
+                } else {
+                    1.0
+                };
+                let n = vec3(-d.y, d.x, 0.0).normalized() * side;
+                let mid = (p + q) * 0.5;
+                let a = self.cam.project(mid, vw, vh);
+                let b = self.cam.project(mid + n * 100.0, vw, vh);
+                a.map(|a| {
+                    let dir = b.map_or((0.0, -1.0), |b| {
+                        let (x, y) = (b.0 - a.0, b.1 - a.1);
+                        let l = (x * x + y * y).sqrt();
+                        if l > 1e-6 {
+                            (x / l, y / l)
+                        } else {
+                            (0.0, -1.0)
+                        }
+                    });
+                    // Abstand bis zum Rand der Pille in Richtung `dir`
+                    let reach = 12.0 * s + (pw * 0.5 * dir.0.abs()).max(ph * 0.5 * dir.1.abs());
+                    (a.0 + dir.0 * reach, a.1 + dir.1 * reach + th as f64)
+                })
+            }
+            None => self
+                .mouse_at
+                .map(|(x, y)| (x + 14.0 * s + pw * 0.5, y + 20.0 * s + ph * 0.5)),
+        };
+        let Some((x, y)) = at else {
+            self.renderer.place_overlay(OVERLAY_INPUT, 0, 0, 0, 0, 0.0);
+            return;
+        };
+        // Nachkorrektur: stehen lassen, dann ausblenden
+        let post = ends.is_none() && !key.1 && !self.edit.is_dragging();
+        let alpha = if post {
+            let t0 = *self.post_at.get_or_insert_with(Instant::now);
+            let anim = self.theme.size.anim_ms.max(0.0) as f64;
+            let over = t0.elapsed().saturating_sub(POST_PILL).as_secs_f64() * 1000.0;
+            if over > 0.0 && over >= anim {
+                self.edit.end_post();
+                self.post_at = None;
+                self.input_pill = None;
+                self.renderer.set_overlay(OVERLAY_INPUT, 0, 0, 0, 0, &[]);
+                self.redraw = true;
+                return;
+            }
+            if anim > 0.0 {
+                (1.0 - over / anim) as f32
+            } else {
+                1.0
+            }
+        } else {
+            self.post_at = None;
+            1.0
+        };
+        let (x, y) = ((x - pw * 0.5).round() as i32, (y - ph * 0.5).round() as i32);
+        self.renderer
+            .place_overlay(OVERLAY_INPUT, x, y, w, h, alpha);
+    }
+
+    /// Wann die Pille nach dem Loslassen wieder gezeichnet werden muss.
+    fn pill_wait(&self) -> Option<std::time::Duration> {
+        let t0 = self.post_at?;
+        let e = t0.elapsed();
+        Some(if e < POST_PILL { POST_PILL - e } else { FRAME })
+    }
+
+    /// Fehler der Maßeingabe einmal in der Statuszeile nennen; dazu der
+    /// Entdecken-Hinweis beim ersten gesetzten Punkt (Paket 8).
+    fn sync_measure(&mut self) {
+        if self.tool.points().len() == 1 {
+            self.discover("measure");
+        }
+        let err = self
+            .tool
+            .input()
+            .or(self.edit.input())
+            .and_then(|i| i.error.clone());
+        if err != self.input_error {
+            if let Some(text) = &err {
+                self.renderer.set_overlay(OVERLAY_NOTICE, 0, 0, 0, 0, &[]);
+                self.notice = Some(Notice {
+                    text: text.clone(),
+                    since: None,
+                    rect: (0.0, 0.0, 0.0, 0.0),
+                    time: NOTICE_TIME,
+                    catalog: false,
+                });
+                self.redraw = true;
+            }
+            self.input_error = err;
+        }
     }
 
     /// Entdecken-Hinweis `id` beim ersten Mal (A0b), in der Statuszeile.
@@ -5628,6 +5808,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         pick: None,
         flush_keep: None,
         pick_label: None,
+        input_pill: None,
+        post_at: None,
+        input_error: None,
         save_fail: autosave::FailNotice::default(),
         queued_command: None,
         hint: None,
@@ -5878,7 +6061,11 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 (None, Some(v)) => v.wait(&a.theme),
                 (None, None) => a.prefs.as_ref().and_then(|p| p.wait()),
             };
-            let wait = match (a.tip_wait(), dlg_wait) {
+            let tip_wait = match (a.tip_wait(), a.pill_wait()) {
+                (Some(x), Some(y)) => Some(x.min(y)),
+                (x, y) => x.or(y),
+            };
+            let wait = match (tip_wait, dlg_wait) {
                 (Some(x), Some(y)) => Some(x.min(y)),
                 (x, y) => x.or(y),
             };
@@ -5967,6 +6154,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         a.sync_quantity(&surface);
         a.sync_tool_chip();
         a.sync_tip();
+        a.sync_measure();
         if let Some(id) = a.scene.take_locked() {
             a.show_locked(id, None);
             a.upload_model();
@@ -6380,6 +6568,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                     }
                 }
             }
+
+            a.paint_input_pill(vw, vh, th, scale);
 
             let mut view = a.cam.view(a.w, a.h - th);
             if drawing {

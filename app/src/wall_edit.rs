@@ -7,12 +7,20 @@
 //! Im Schnitt und in den Ansichten blickt man waagerecht auf das Modell. Dort
 //! lassen sich nur die Wände ziehen, die vom Betrachter weg laufen: Ihr Fuß
 //! erscheint als Punkt und wird beim Darüberfahren als Kugel gezeigt.
+//!
+//! Paket 8b: Beim Ziehen öffnet eine Ziffer die Eingabe „Versatz“ (gelöste
+//! bzw. mit Strg gezogene Wand) oder „Verschiebung“ (gekoppelt; die Seite
+//! zeigt die Maus). Enter übernimmt den Wert auf den Millimeter. Direkt nach
+//! dem Loslassen ersetzt ein getippter Wert mit Enter den letzten Schritt
+//! (Nachkorrektur), solange kein anderer Schritt dazwischen kam.
 
 use crate::camera::Camera;
+use crate::measure_input::{opens, InputOutcome, MeasureInput};
 use crate::scene::Scene;
+use crate::ui::MeasureKind;
 use sk_math::{dist_to_segment, vec3, Vec3};
 use sk_model::{ElementId, RunId, WallChain};
-use sk_platform::{Event, Key, MouseButton};
+use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
 
@@ -37,6 +45,93 @@ struct Drag {
     offset: Option<(ElementId, f64, f64)>,
     /// Zuletzt abgelehnt (der Stapel würde ungültig).
     blocked: bool,
+    /// Seite, zu der die Maus zuletzt gezogen hat (±1, Paket 8b).
+    side: f64,
+}
+
+impl Drag {
+    /// Was ein getippter Wert bewegt.
+    fn target(&self) -> Target {
+        Target {
+            run: self.run,
+            seg: self.seg,
+            original: self.original.clone(),
+            offset: self.offset.map(|o| o.0),
+            side: self.side,
+        }
+    }
+}
+
+/// Ziel eines getippten Werts (beim Ziehen und in der Nachkorrektur).
+#[derive(Clone)]
+struct Target {
+    run: RunId,
+    seg: usize,
+    original: WallChain,
+    /// Versatz dieser gestapelten Wand; sonst wandert das Segment.
+    offset: Option<ElementId>,
+    side: f64,
+}
+
+impl Target {
+    fn kind(&self) -> MeasureKind {
+        if self.offset.is_some() {
+            MeasureKind::Offset
+        } else {
+            MeasureKind::Length
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        if self.offset.is_some() {
+            "Versatz"
+        } else {
+            "Verschiebung"
+        }
+    }
+
+    /// Setzt den getippten Wert `v` (mm) genau, ohne das Raster.
+    fn apply(&self, scene: &mut Scene, v: f64) -> bool {
+        if let Some(wall) = self.offset {
+            return scene.set_offset(wall, v);
+        }
+        match self.original.with_segment_moved(self.seg, v * self.side) {
+            Some(moved) => {
+                if scene
+                    .chain(self.run)
+                    .is_none_or(|c| c.points != moved.points)
+                {
+                    scene.set_run_points(self.run, &moved.points);
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Erreichter Wert jetzt: Versatz bzw. Betrag der Verschiebung (mm).
+    fn value(&self, scene: &Scene) -> f64 {
+        if let Some(wall) = self.offset {
+            return scene.model().stack_offset(wall).map_or(0.0, |o| o.0);
+        }
+        let (Some(a), Some(b)) = (
+            self.original.points.get(self.seg),
+            scene
+                .chain(self.run)
+                .and_then(|c| c.points.get(self.seg).copied()),
+        ) else {
+            return 0.0;
+        };
+        let n = self.original.segment_normal(self.seg).unwrap_or(Vec3::ZERO);
+        (b - *a).dot(n).abs()
+    }
+}
+
+/// Das letzte Ziehen als Schritt im Verlauf (Nachkorrektur, K3).
+struct LastDrag {
+    target: Target,
+    serial: u64,
+    value: f64,
 }
 
 /// Was das Ziehen an einer gestapelten Wand tut (Statuszeile, OG Phase 2).
@@ -63,6 +158,10 @@ pub struct WallEdit {
     /// Schnittebene der Ansicht „Schnitt“ (Punkt, Normale zum Betrachter):
     /// Was davor liegt, ist weggeschnitten und verdeckt nichts.
     pub section: Option<(Vec3, Vec3)>,
+    /// Getippter Wert beim Ziehen bzw. in der Nachkorrektur (Paket 8b).
+    input: Option<MeasureInput>,
+    /// Letztes Ziehen, solange die Nachkorrektur möglich ist.
+    last: Option<LastDrag>,
 }
 
 /// Ergebnis eines Ereignisses für die App.
@@ -196,6 +295,192 @@ pub fn partner_line(a: Vec3, b: Vec3, scale: f32, theme: &Theme) -> Helper {
 }
 
 impl WallEdit {
+    /// Offene Maßeingabe beim Ziehen bzw. in der Nachkorrektur (Paket 8b).
+    pub fn input(&self) -> Option<&MeasureInput> {
+        self.input.as_ref()
+    }
+
+    /// Ist die Nachkorrektur des letzten Ziehens noch möglich (kein anderer
+    /// Schritt dazwischen, nichts wiederherzustellen)?
+    fn last_valid(&self, scene: &Scene) -> bool {
+        self.last
+            .as_ref()
+            .is_some_and(|l| l.serial == scene.step_serial() && scene.redo_label().is_none())
+    }
+
+    /// Pille statt des Hinweises am Band: Text und ob gerade getippt wird.
+    /// Beim Ziehen nur mit Eingabe, nach dem Loslassen mit dem erreichten
+    /// Wert (Nachkorrektur; die App blendet sie nach 1,5 s aus).
+    pub fn pill(&self, scene: &Scene) -> Option<(String, bool)> {
+        let label = match (&self.drag, &self.last) {
+            (Some(d), _) => d.target().label(),
+            (None, Some(l)) if self.last_valid(scene) => l.target.label(),
+            _ => return None,
+        };
+        if let Some(i) = &self.input {
+            return Some((i.text([label, ""]), true));
+        }
+        let l = self.last.as_ref().filter(|_| self.drag.is_none())?;
+        let v = l.value;
+        let text = if l.target.offset.is_some() {
+            let sign = if v > 0.0 {
+                "+"
+            } else if v < 0.0 {
+                "\u{2212}"
+            } else {
+                ""
+            };
+            format!("{label} {sign}{}", crate::ui::m_text(v))
+        } else {
+            format!("{label} {}", crate::ui::m_text(v))
+        };
+        Some((text, false))
+    }
+
+    /// Feldname der Pille: „Versatz“ oder „Verschiebung“.
+    pub fn input_label(&self) -> &'static str {
+        match (&self.drag, &self.last) {
+            (Some(d), _) => d.target().label(),
+            (None, Some(l)) => l.target.label(),
+            _ => "Verschiebung",
+        }
+    }
+
+    /// Nachkorrektur beenden (Zeit um, Klick, andere Taste).
+    pub fn end_post(&mut self) -> bool {
+        let had = self.last.is_some() && self.drag.is_none();
+        if self.drag.is_none() {
+            self.last = None;
+            self.input = None;
+        }
+        had
+    }
+
+    /// Getippten Wert beim Ziehen sofort zeigen (gültig: gesetzt).
+    fn apply_typed(&mut self, scene: &mut Scene) -> bool {
+        let (Some(d), Some(i)) = (&self.drag, &self.input) else {
+            return false;
+        };
+        let Some(Ok(v)) = i.value(0) else {
+            return false;
+        };
+        d.target().apply(scene, v)
+    }
+
+    /// Tasten beim Ziehen und in der Nachkorrektur; `None`: nicht für die
+    /// Eingabe (das Ziehen behandelt Esc wie bisher).
+    #[allow(clippy::too_many_arguments)]
+    fn input_key(
+        &mut self,
+        key: Key,
+        mods: Modifiers,
+        scene: &mut Scene,
+        cam: &Camera,
+        w: f64,
+        h: f64,
+        scale: f64,
+        enabled: bool,
+    ) -> Option<EditOutcome> {
+        let mut out = EditOutcome {
+            consumed: true,
+            redraw: true,
+            ..Default::default()
+        };
+        let dragging = self.drag.is_some();
+        let Some(i) = self.input.as_mut() else {
+            let kind = if let Some(d) = &self.drag {
+                d.target().kind()
+            } else if self.last_valid(scene) {
+                self.last.as_ref()?.target.kind()
+            } else {
+                // Eine andere Taste beendet die Nachkorrektur
+                if !matches!(key, Key::Shift | Key::Control | Key::Alt) {
+                    self.last = None;
+                }
+                return None;
+            };
+            let Key::Char(ch) = key else {
+                if !dragging && !matches!(key, Key::Shift | Key::Control | Key::Alt) {
+                    self.last = None;
+                }
+                return None;
+            };
+            if !opens(ch, kind, mods) {
+                if !dragging {
+                    self.last = None;
+                }
+                return None;
+            }
+            let mut i = MeasureInput::new(kind, None);
+            i.push(ch);
+            self.input = Some(i);
+            out.changed = self.apply_typed(scene);
+            return Some(out);
+        };
+        match i.key(key, mods) {
+            InputOutcome::Ignored => {
+                if !dragging {
+                    self.input = None;
+                    self.last = None;
+                }
+                return None;
+            }
+            InputOutcome::Changed | InputOutcome::Refused => {
+                out.changed = self.apply_typed(scene);
+            }
+            InputOutcome::Emptied | InputOutcome::Escape | InputOutcome::EnterEmpty => {
+                self.input = None;
+                if dragging {
+                    // Wieder die Maus
+                    out.changed = self.update_drag(scene, cam, w, h);
+                } else {
+                    self.last = None;
+                }
+            }
+            InputOutcome::Enter => {
+                let v = match i.value(0) {
+                    Some(Ok(v)) => v,
+                    _ => return Some(out),
+                };
+                self.input = None;
+                let serial = scene.step_serial();
+                let target = if let Some(d) = self.drag.take() {
+                    let t = d.target();
+                    t.apply(scene, v);
+                    scene.commit();
+                    t
+                } else {
+                    // Nachkorrektur: den letzten Schritt ersetzen (K3, K4)
+                    let Some(l) = self.last.take() else {
+                        return Some(out);
+                    };
+                    scene.undo();
+                    scene.begin("Wand verschoben");
+                    l.target.apply(scene, v);
+                    scene.commit();
+                    scene.clear_redo();
+                    l.target
+                };
+                self.remember(scene, serial, target);
+                // Die Pille schließt; eine neue Ziffer korrigiert erneut
+                self.last = None;
+                out.changed = true;
+                self.refresh(scene, cam, w, h, scale, enabled);
+            }
+        }
+        Some(out)
+    }
+
+    /// Merkt das Ziehen für die Nachkorrektur, wenn `commit` wirklich einen
+    /// Schritt angelegt hat (K3).
+    fn remember(&mut self, scene: &Scene, before: u64, target: Target) {
+        self.last = (scene.step_serial() != before).then(|| LastDrag {
+            value: target.value(scene),
+            target,
+            serial: scene.step_serial(),
+        });
+    }
+
     pub fn is_busy(&self) -> bool {
         self.hover.is_some() || self.drag.is_some()
     }
@@ -348,7 +633,25 @@ impl WallEdit {
         let Some(g) = drag_point(cam, mx, my, w, h, d.z) else {
             return false;
         };
-        let off = ((g - d.start).dot(d.normal) / STEP).round() * STEP;
+        let raw = (g - d.start).dot(d.normal);
+        let off = (raw / STEP).round() * STEP;
+        if self.input.is_some() {
+            // K8: nach der ersten Ziffer gibt die Maus nur noch die Seite an
+            if let Some(d) = self.drag.as_mut() {
+                if d.offset.is_none() && off != 0.0 {
+                    d.side = off.signum();
+                }
+            }
+            return self.apply_typed(scene);
+        }
+        if let Some(d) = self.drag.as_mut() {
+            if off != 0.0 {
+                d.side = off.signum();
+            }
+        }
+        let Some(d) = &self.drag else {
+            return false;
+        };
         if let Some((wall, o0, sign)) = d.offset {
             let want = o0 + off * sign;
             let now = scene.model().stack_offset(wall).map(|o| o.0);
@@ -397,12 +700,16 @@ impl WallEdit {
                     out.redraw = self.hover.take().is_some();
                 }
             }
+            Event::Wheel { .. } => {
+                out.redraw = self.end_post();
+            }
             Event::MouseDown {
                 button: MouseButton::Left,
                 x,
                 y,
                 mods,
             } => {
+                out.redraw = self.end_post();
                 self.mouse = Some((x, y));
                 self.refresh(scene, cam, w, h, scale, enabled);
                 let Some(wall) = self.hover else {
@@ -459,6 +766,7 @@ impl WallEdit {
                     original: original.clone(),
                     offset,
                     blocked: false,
+                    side: 1.0,
                 });
                 scene.begin("Wand verschoben");
                 out.redraw = true;
@@ -475,10 +783,24 @@ impl WallEdit {
                     {
                         out.clicked = Some(d.wall);
                     }
+                    // Getippt und noch nicht bestätigt: der Wert gilt wie
+                    // beim Ziehen, die Eingabe bleibt für die Nachkorrektur
+                    let serial = scene.step_serial();
                     scene.commit();
+                    self.remember(scene, serial, d.target());
                     out.consumed = true;
                     out.redraw = true;
                     self.refresh(scene, cam, w, h, scale, enabled);
+                }
+            }
+            Event::Key {
+                key,
+                down: true,
+                mods,
+                ..
+            } if key != Key::Escape || self.input.is_some() || self.drag.is_none() => {
+                if let Some(o) = self.input_key(key, mods, scene, cam, w, h, scale, enabled) {
+                    out = o;
                 }
             }
             Event::Key {
