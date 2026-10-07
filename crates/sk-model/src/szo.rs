@@ -665,6 +665,11 @@ fn write_props(out: &mut String, section: &str, owner: &str, g: Guid, props: &Pr
 
 /// Das Modell als `.szo`-Text.
 pub fn write(m: &Model) -> String {
+    crate::catalog::with_foreign(write_known(m), &m.foreign)
+}
+
+/// Was dieser Schreiber kennt, ohne Fremdes aus der gelesenen Datei.
+fn write_known(m: &Model) -> String {
     let mut out = format!("SZO {VERSION}\n# Skizzeo-Projekt\n");
     let a = m.attr();
     let pen_guid = |id| a.pen(id).map(|p| p.guid);
@@ -1001,6 +1006,49 @@ pub(crate) fn register<T>(
     Ok(())
 }
 
+/// Fremdes einer gelesenen Datei (F-17, F-17b, wie im Firmenkatalog):
+/// Zeilen bekannter Sätze mit unbekannten Schlüsseln oder Werten, gepaart
+/// mit der Zeile, die dieser Schreiber für denselben Satz schreibt, und die
+/// Sätze unbekannter Art in Dateireihenfolge.
+fn foreign(
+    model: &Model,
+    by: &HashMap<&str, Vec<Record>>,
+    lines: &[&str],
+    alien: &[usize],
+) -> crate::catalog::Foreign {
+    use crate::catalog::record_key;
+    let mut f = crate::catalog::Foreign::default();
+    let mut odd = Vec::new();
+    let mut count = HashMap::new();
+    for r in by.values().flatten() {
+        let n = r.unknown();
+        let key = record_key(r, &mut count);
+        if n > 0 {
+            f.unknown += n;
+            odd.push((key, lines[r.line - 1]));
+        }
+    }
+    if !odd.is_empty() {
+        let mine = write_known(model);
+        let mut count = HashMap::new();
+        let mut own = HashMap::new();
+        for (i, l) in mine.lines().enumerate() {
+            if let Ok(Some(r)) = Record::parse(i + 1, l) {
+                own.insert(record_key(&r, &mut count), l.to_string());
+            }
+        }
+        odd.sort();
+        for (key, theirs) in odd {
+            if let Some(l) = own.get(&key) {
+                f.lines.push((l.clone(), theirs.to_string()));
+            }
+        }
+    }
+    f.unknown += alien.len();
+    f.records = alien.iter().map(|&n| lines[n - 1].to_string()).collect();
+    f
+}
+
 /// Liest eine `.szo`-Datei. Neue Laufzeit-Kennungen, Guids aus der Datei; neue
 /// Guids kommen aus `guids`. Bei einem Fehler wird nichts übernommen.
 pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
@@ -1017,6 +1065,9 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     let v1 = version == 1;
     let v3 = version >= 3;
     let mut hints = Vec::new();
+    let lines: Vec<&str> = text.lines().collect();
+    // Sätze unbekannter Art (neuere Fassung, F-17b): roh behalten, ohne Hinweis
+    let mut alien: Vec<usize> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
     const KNOWN: [&str; 24] = [
         "pen", "linetype", "fill", "surface", "display", "trade", "material", "layerset", "layer",
@@ -1029,11 +1080,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         };
         match KNOWN.iter().find(|k| **k == r.section) {
             Some(k) => by.entry(k).or_default().push(r),
-            None => hints.push(format!(
-                "Zeile {}: unbekannter Abschnitt [{}] übersprungen",
-                i + 1,
-                r.section
-            )),
+            None => alien.push(i + 1),
         }
     }
     let empty = Vec::new();
@@ -1712,6 +1759,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     }
     model.set_active_cut(active_cut);
     hints.extend(model.check());
+    model.foreign = foreign(&model, &by, &lines, &alien);
     Ok(Loaded { model, hints })
 }
 
@@ -2509,15 +2557,22 @@ mod tests {
         assert_eq!(taken.len(), l.elements().len());
     }
 
+    /// F-17b: Ein unbekannter Abschnitt bleibt ohne Hinweis roh erhalten
+    /// (am Ende), ein unbekannter Schlüssel mit Hinweis an seiner Zeile;
+    /// ohne beides schreibt das Modell wie vorher.
     #[test]
-    fn unbekannter_abschnitt_und_schluessel_werden_uebersprungen() {
+    fn unbekannter_abschnitt_und_schluessel_bleiben() {
         let a = write(&house());
         let b = a.replacen("[storey]", "[zukunft] x=1\n[storey] neu=\"ja\"", 1);
         let l = load(&b).unwrap();
-        assert_eq!(l.hints.len(), 2, "{:?}", l.hints);
-        assert!(l.hints[0].contains("[zukunft]"));
-        assert!(l.hints[1].contains("„neu“"));
-        assert_eq!(write(&l.model), a);
+        assert_eq!(l.hints.len(), 1, "{:?}", l.hints);
+        assert!(l.hints[0].contains("„neu“"));
+        let c = write(&l.model);
+        let storey = b.lines().find(|x| x.starts_with("[storey]")).unwrap();
+        assert!(c.lines().any(|x| x == storey), "{c}");
+        assert!(c.ends_with("[zukunft] x=1\n"), "{c}");
+        assert_eq!(write_known(&l.model), a);
+        assert_eq!(write(&load(&c).unwrap().model), c, "zweiter Rundlauf");
     }
 
     #[test]

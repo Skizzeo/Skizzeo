@@ -100,6 +100,9 @@ pub struct Model {
     txn: Option<Open>,
     /// Jede Änderung muss in einem Schritt liegen (in der App; in Tests nicht).
     strict: bool,
+    /// Was eine neuere Fassung in die Datei geschrieben hat und dieser Leser
+    /// nicht kennt (F-17, F-17b): bleibt beim Speichern bytegleich.
+    pub(crate) foreign: crate::catalog::Foreign,
 }
 
 /// Merkt den Stand eines Datensatzes vor seiner ersten Änderung im offenen
@@ -478,6 +481,7 @@ impl Model {
             strict: false,
             cuts: Default::default(),
             active_cut: 0,
+            foreign: Default::default(),
         }
     }
 
@@ -533,6 +537,7 @@ impl Model {
             strict: false,
             cuts: Default::default(),
             active_cut: 0,
+            foreign: Default::default(),
         };
         m.joins = m.detect_all();
         m

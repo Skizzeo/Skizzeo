@@ -215,7 +215,7 @@ impl Library {
 /// und Guid, ohne Guid die Schlüsselfelder ([default]: Art, [typeprop]:
 /// Typ und Merkmal, [layer]: Typ). Mehrere Sätze mit derselben Kennung
 /// (Schichten eines Typs) zählen in Dateireihenfolge durch.
-fn record_key(r: &Record, count: &mut HashMap<String, usize>) -> String {
+pub(crate) fn record_key(r: &Record, count: &mut HashMap<String, usize>) -> String {
     let base = match r.opt("guid") {
         Some(g) => format!("{} guid={g}", r.section),
         None => format!(
@@ -233,8 +233,13 @@ fn record_key(r: &Record, count: &mut HashMap<String, usize>) -> String {
 
 /// Der Katalog als `.szk`-Text.
 pub fn write_szk(lib: &Library) -> String {
-    let plain = write_known(lib);
-    let f = &lib.foreign;
+    with_foreign(write_known(lib), &lib.foreign)
+}
+
+/// Text `plain`, wie dieser Schreiber ihn kennt, mit dem Fremden aus der
+/// gelesenen Datei: Zeilen mit unbekannten Angaben, solange ihr Eintrag
+/// unverändert ist, und Sätze unbekannter Art am Ende (F-17, F-17b).
+pub(crate) fn with_foreign(plain: String, f: &Foreign) -> String {
     if f.lines.is_empty() && f.records.is_empty() {
         return plain;
     }
