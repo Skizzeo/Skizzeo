@@ -28,6 +28,8 @@ pub enum Link {
     Save,
     /// OG-Wand bündig setzen (OG Phase 2, nach „wieder koppeln“).
     Flush(ElementId),
+    /// Gesperrtes Bauteil im Baum zeigen, sein Schloss leuchtet (Paket 4).
+    Unlock(ElementId),
 }
 
 /// Wörter für die nicht gelöschten Bauteile einer gemischten Auswahl:
@@ -104,6 +106,11 @@ pub fn hint(m: &Model, d: &Deleted) -> Vec<String> {
     let Some(&(id, r)) = d.refused.first() else {
         return Vec::new();
     };
+    if let Refusal::Locked(_) = r {
+        if d.removed.is_empty() {
+            return vec![sk_model::refusal_text(m, id, &r)];
+        }
+    }
     if d.removed.is_empty() {
         return refusal_lines(m, id, &r)
             .into_iter()

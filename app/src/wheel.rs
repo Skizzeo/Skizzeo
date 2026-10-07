@@ -613,6 +613,16 @@ impl Wheel {
         self.request(s, Step::By(if up { 1 } else { -1 }), t);
     }
 
+    /// Geschoss aus dem Baum (Paket 4): im Grundriss mit dem Übergang des
+    /// Bogens, sonst sofort.
+    pub fn go_to_level(&mut self, s: &mut Scene, id: StoreyId, t: u64) {
+        if self.track == Track::Levels {
+            self.request(s, Step::To(Stop::Level(id)), t);
+        } else {
+            set_active(s, Stop::Level(id));
+        }
+    }
+
     /// Klick auf Band oder Schild: nichts.
     pub fn click_band(&mut self, _s: &mut Scene, _t: u64) {}
 

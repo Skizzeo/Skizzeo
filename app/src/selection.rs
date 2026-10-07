@@ -389,6 +389,13 @@ fn foundation_props(
 
 /// Inhalt des Paneels „Eigenschaften“ für ein Bauteil.
 pub fn props(scene: &Scene, id: ElementId) -> Option<Props> {
+    let mut p = props_of(scene, id)?;
+    // Gesperrt (Paket 4), auch über die Quelle (Zahlenfelder der Decke)
+    p.locked = scene.model().is_locked(id);
+    Some(p)
+}
+
+fn props_of(scene: &Scene, id: ElementId) -> Option<Props> {
     let m = scene.model();
     let e = m.element(id)?;
     let q = scene.wall_qto(id);

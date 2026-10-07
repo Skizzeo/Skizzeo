@@ -330,6 +330,8 @@ const GROUPS: [(&str, &[&str]); 8] = [
             "ui.link_chip",
             "ui.link_on",
             "ui.link_off",
+            "ui.tree_hover",
+            "ui.isolate_band",
             "env.scrim",
         ],
     ),
@@ -2910,6 +2912,7 @@ impl Prefs {
             invalid: e.is_some_and(|e| e.invalid.is_some()),
             caret: e.map(|e| e.text.caret),
             select: e.map(|e| e.text.selection()),
+            disabled: false,
         }
     }
 

@@ -487,6 +487,8 @@ pub struct Props {
     /// Die Schichten stehen erst nach „Mehr …“ unter dem letzten Abschnitt
     /// (Dachterrasse); dann fehlt der Abschnitt „Aufbau“ unten.
     pub more: bool,
+    /// Gesperrt (Paket 4): Felder blass, darunter der Satz zum Entsperren.
+    pub locked: bool,
 }
 
 /// Kopplung einer gestapelten Wand im Paneel „Eigenschaften“.
@@ -583,6 +585,9 @@ pub struct Ui {
     /// Paneels „Geschosse“.
     win_h: f32,
     pub top: u32,
+    /// Platz des Baumpanels zwischen „Ansichten“ und „Eigenschaften“
+    /// (Pixel, samt Abstand darunter; Paket 4).
+    pub tree_slot: f32,
 }
 
 /// Paneelbild ohne Knöpfe und mit Knöpfen, in Paneelkoordinaten.
@@ -657,6 +662,8 @@ enum Row {
     Error(String),
     Separator,
     Hint(&'static str),
+    /// Schloss und „Gesperrt · Entsperren im Baum“ (Paket 4).
+    Locked,
 }
 
 fn tool_rows(
@@ -750,6 +757,9 @@ fn props_rows(p: &Props, edit: Option<&Edit>, more_open: bool) -> Vec<Row> {
     if p.stack.is_some() {
         rows.push(Row::Button(Id::PropsFlush, "bündig setzen"));
     }
+    if p.locked {
+        rows.push(Row::Locked);
+    }
     for sec in &p.sections {
         rows.extend([Row::Separator, Row::Label(sec.title)]);
         field_rows(&mut rows, &sec.fields);
@@ -781,6 +791,9 @@ fn props_rows(p: &Props, edit: Option<&Edit>, more_open: bool) -> Vec<Row> {
     notes_rows(&mut rows, p);
     rows
 }
+
+/// Satz unter einem gesperrten Bauteil (p4-5).
+const LOCKED_LINE: &str = "Gesperrt · Entsperren im Baum";
 
 /// Je Schicht Farbfeld mit Baustoff und Dicke, darunter die Menge.
 fn layer_rows(rows: &mut Vec<Row>, p: &Props) {
@@ -816,6 +829,7 @@ fn row_height(r: &Row) -> (f32, f32) {
         Row::More(..) => (17.0, 6.0),
         Row::Separator => (1.0, 10.0),
         Row::Hint(_) => (17.0, 0.0),
+        Row::Locked => (17.0, 6.0),
     }
 }
 
@@ -849,6 +863,7 @@ impl Ui {
             level_drag: None,
             win_h: 1e6,
             top: 32,
+            tree_slot: 0.0,
         }
     }
 
@@ -910,7 +925,7 @@ impl Ui {
         let s = self.scale;
         let size = &self.size;
         let pad = size.panel_pad * s;
-        let inner_w = (size.panel_width - 2.0 * size.panel_pad) * s;
+        let inner_w = (self.width(Panel::Props) - 2.0 * size.panel_pad) * s;
         if lx < pad || lx > pad + inner_w {
             return None;
         }
@@ -1211,10 +1226,19 @@ impl Ui {
         ((inner + 2.0 * self.size.panel_pad) * self.scale).round()
     }
 
+    /// Breite eines Paneels (dip): die rechte Spalte hat ihre eigene
+    /// (Paket 4), links gilt `panel_width`.
+    fn width(&self, p: Panel) -> f32 {
+        match p {
+            Panel::Views | Panel::Props => self.size.right_width,
+            _ => self.size.panel_width,
+        }
+    }
+
     /// Lage eines Paneels im Fenster (ohne Schatten).
     pub fn rect(&self, p: Panel, win_w: u32, top: u32) -> Rect {
         let s = self.scale;
-        let w = (self.size.panel_width * s).round();
+        let w = (self.width(p) * s).round();
         let m = (self.size.panel_margin * s).round();
         if p == Panel::Dialog {
             // Rechts neben dem Paneel „Geschosse“, oben bündig mit den Paneelen
@@ -1226,8 +1250,8 @@ impl Ui {
             Panel::Views | Panel::Props => win_w as f32 - m - w,
         };
         let y = match p {
-            // Unter „Ansichten“ bzw. „Werkzeuge“
-            Panel::Props => top as f32 + 2.0 * m + self.panel_height(Panel::Views),
+            // Unter „Ansichten“ und dem Baum bzw. unter „Werkzeuge“
+            Panel::Props => top as f32 + 2.0 * m + self.panel_height(Panel::Views) + self.tree_slot,
             Panel::Levels => top as f32 + 2.0 * m + self.panel_height(Panel::Tools),
             _ => top as f32 + m,
         };
@@ -1306,7 +1330,7 @@ impl Ui {
         }
         let s = self.scale;
         let pad = self.size.panel_pad;
-        let inner_w = (self.size.panel_width - 2.0 * pad) * s;
+        let inner_w = (self.width(p) - 2.0 * pad) * s;
         let mut y = pad * s;
         let x = pad * s;
         let mut out = Vec::new();
@@ -1379,13 +1403,24 @@ impl Ui {
             Id::Interior => self.foundation_active,
             Id::DialogMinus | Id::DialogPlus => true,
             Id::DialogStart => self.dialog_invalid(),
-            Id::PropsFlush => self
-                .props
-                .as_ref()
-                .and_then(|p| p.stack.as_ref())
-                .is_none_or(|st| !st.offset),
+            Id::PropsFlush => {
+                self.props_locked()
+                    || self
+                        .props
+                        .as_ref()
+                        .and_then(|p| p.stack.as_ref())
+                        .is_none_or(|st| !st.offset)
+            }
+            // Gesperrt (Paket 4): Felder, Typ und Kette blass
+            Id::Field(f) if Ui::field_panel(f) == Panel::Props => self.props_locked(),
+            Id::PropsType | Id::PropsLink => self.props_locked(),
             _ => false,
         }
+    }
+
+    /// Ist das gewählte Bauteil gesperrt?
+    fn props_locked(&self) -> bool {
+        self.props.as_ref().is_some_and(|p| p.locked)
     }
 
     /// Paneel und Knopf unter der Maus (Fensterkoordinaten).
@@ -1450,7 +1485,11 @@ impl Ui {
                 // der die Eingabe beendet
                 let start_blocked = self.dialog_invalid();
                 let field = match hit {
-                    Some((_, Some(Id::Field(f)))) if button == MouseButton::Left => Some(f),
+                    Some((_, Some(Id::Field(f))))
+                        if button == MouseButton::Left && !self.is_disabled(Id::Field(f)) =>
+                    {
+                        Some(f)
+                    }
                     _ => None,
                 };
                 // Klick neben das Feld in Eingabe beendet sie
@@ -1629,6 +1668,7 @@ impl Ui {
                 invalid: edit.is_some_and(|e| e.error.is_some()),
                 caret: edit.map(|e| e.caret),
                 select: edit.map(|e| e.selection()),
+                disabled: self.is_disabled(id),
             };
             widgets::field(c, &self.fonts, b, &st, s, t);
             return;
@@ -1707,7 +1747,7 @@ impl Ui {
 
         let (regular, bold) = (self.fonts.regular.as_ref(), self.fonts.bold.as_ref());
         let x = m + size.panel_pad * s;
-        let inner_w = (size.panel_width - 2.0 * size.panel_pad) * s;
+        let inner_w = (self.width(p) - 2.0 * size.panel_pad) * s;
         let mut y = m + size.panel_pad * s;
         for row in self.rows(p) {
             let (h, g) = row_height(&row);
@@ -1777,6 +1817,27 @@ impl Ui {
                     col.text_dim,
                 ),
                 Row::Separator => widgets::separator(&mut c, x, y, inner_w, s, t),
+                Row::Locked => {
+                    let px = size.font_detail * s;
+                    let ic = size.tree_icon * s;
+                    widgets::lock_icon(
+                        &mut c,
+                        x + ic * 0.5,
+                        y + 8.5 * s,
+                        widgets::Fill::Full,
+                        col.text_dim,
+                        s,
+                    );
+                    widgets::text(
+                        &mut c,
+                        regular,
+                        LOCKED_LINE,
+                        px,
+                        x + ic + size.tree_icon_gap * s,
+                        y + 13.0 * s,
+                        col.text_dim,
+                    )
+                }
                 Row::Hint(t) => widgets::text(
                     &mut c,
                     regular,

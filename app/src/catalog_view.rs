@@ -3957,6 +3957,7 @@ impl Catalog {
             invalid: e.is_some_and(|e| e.invalid.is_some()),
             caret: e.map(|e| e.text.caret),
             select: e.map(|e| e.text.selection()),
+            disabled: false,
         }
     }
 

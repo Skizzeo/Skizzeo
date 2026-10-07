@@ -95,6 +95,10 @@ pub struct Ui {
     pub sheet_flash: Rgba,
     pub sheet_select: Rgba,
     pub sheet_select_group: Rgba,
+    /// Baumpanel (Paket 4): Zeile unter der Maus; Band beim Isolieren
+    /// (Schrift `on_accent`).
+    pub tree_hover: Rgba,
+    pub isolate_band: Rgba,
 }
 
 /// Eigene Titelleiste.
@@ -262,6 +266,16 @@ pub struct Sizes {
     /// Zeichnungen (Grundriss, Schnitt, Ansichten); Kanten wie Flächen.
     pub ghost_alpha_3d: f32,
     pub ghost_alpha_paper: f32,
+    /// Rechte Spalte (Ansichten, Baum, Eigenschaften), Paket 4 (dip).
+    pub right_width: f32,
+    /// Baumpanel: Zeilenhöhe, Einzug je Ebene, Symbol (dip).
+    pub tree_row_h: f32,
+    pub tree_indent: f32,
+    pub tree_icon: f32,
+    /// Abstand zwischen den Symbolen einer Zeile (dip).
+    pub tree_icon_gap: f32,
+    /// Kleinangabe rechts in einer Baumzeile („EG“, „AW 36“).
+    pub tree_small: f32,
     /// Kettensymbol (OG Phase 2): Glied breit und hoch, Strichstärke; Breite
     /// der Fußlinie des Partners darunter und des Ziehgeists, Strichlänge
     /// beider gestrichelt (dip).
@@ -355,6 +369,8 @@ impl Theme {
                 sheet_flash: Rgba(accent.0, accent.1, accent.2, 120),
                 sheet_select: Rgba(accent.0, accent.1, accent.2, 84),
                 sheet_select_group: Rgba(accent.0, accent.1, accent.2, 26),
+                tree_hover: hover,
+                isolate_band: accent,
             },
             title: Title {
                 // Dunkel wie die Paneele, damit sie sich auch über dem Papier abhebt
@@ -472,6 +488,12 @@ impl Theme {
                 fade_ms: 150.0,
                 ghost_alpha_3d: 0.15,
                 ghost_alpha_paper: 0.25,
+                right_width: 220.0,
+                tree_row_h: 24.0,
+                tree_indent: 12.0,
+                tree_icon: 16.0,
+                tree_icon_gap: 4.0,
+                tree_small: 10.5,
                 link_icon_w: 9.0,
                 link_icon_h: 5.0,
                 link_icon_stroke: 1.5,
@@ -512,6 +534,7 @@ impl Theme {
             &mut self.ui.dim_text_hover,
             &mut self.ui.hud_glow,
             &mut self.ui.link_on,
+            &mut self.ui.isolate_band,
         ] {
             if *role == old {
                 *role = c;

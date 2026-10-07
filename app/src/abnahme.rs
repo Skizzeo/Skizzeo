@@ -18002,6 +18002,46 @@ mod baumpanel {
         s.set_visibility(v);
     }
 
+    // ===== Adapter Paket 4b =====
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    enum Symbol {
+        Auge,
+        Schloss,
+        Isolieren,
+        Loeschen,
+    }
+
+    /// Zeile unter `y` (Pixel ab Oberkante der Zeilenliste) bei Rollstand
+    /// `scroll` (Pixel), `rows` Zeilen, Anzeigemaßstab `scale`.
+    fn zeile_bei(y: f64, scroll: f64, rows: usize, scale: f64) -> Option<usize> {
+        crate::tree_panel::row_at(y, scroll, rows, scale)
+    }
+
+    /// Symbol unter `x` (Pixel links von der rechten Kante des Symbolstreifens)
+    /// in einer Zeile; `hover`: Zeile überfahren (Isolieren und Löschen da),
+    /// `lock_faded`: Schloss blass (abgeleitet), `delete_faded`: Löschen blass.
+    fn symbol_bei(
+        x: f64,
+        scale: f64,
+        hover: bool,
+        lock_faded: bool,
+        delete_faded: bool,
+    ) -> Option<Symbol> {
+        use crate::tree_panel::Icon;
+        let row = crate::tree_panel::RowIcons {
+            hover,
+            lock_faded,
+            delete_faded,
+        };
+        crate::tree_panel::icon_at(x, scale, &row).map(|i| match i {
+            Icon::Eye => Symbol::Auge,
+            Icon::Lock => Symbol::Schloss,
+            Icon::Isolate => Symbol::Isolieren,
+            Icon::Delete => Symbol::Loeschen,
+        })
+    }
+
     // ===== Hilfen =====
 
     fn nr(s: &Scene, nummer: &str) -> ElementId {
@@ -18737,6 +18777,70 @@ mod baumpanel {
         assert_eq!(ist, soll, "Zeilen bleiben");
         let zwei = sk_model::szo::read(&neu, sk_model::GuidGen::with_seed(1)).expect("öffnet");
         assert_eq!(sk_model::szo::write(&zwei.model), neu, "zweiter Rundlauf");
+    }
+
+    /// A226 (§3 4b, §4.7; p34 §5): Trefferflächen. Zeilenhöhe
+    /// `size.tree_row_h` 24 dip, Symbole 16 dip mit 4 dip Abstand, bei 100 %
+    /// und 150 %. Mitte einer Zeile trifft sie, der Rollstand verschiebt,
+    /// unter der letzten Zeile nichts. Im Symbolstreifen trifft die Mitte
+    /// jedes Feldes ein Symbol, die Lücke nichts. Ohne Überfahren nur Auge
+    /// und Schloss; ein blasses Schloss oder Löschen löst nichts aus.
+    #[test]
+    fn a226_trefferflaechen() {
+        for scale in [1.0, 1.5] {
+            let h = 24.0 * scale;
+            assert_eq!(zeile_bei(0.5 * h, 0.0, 10, scale), Some(0));
+            assert_eq!(zeile_bei(1.5 * h, 0.0, 10, scale), Some(1));
+            assert_eq!(zeile_bei(9.5 * h, 0.0, 10, scale), Some(9));
+            assert_eq!(
+                zeile_bei(10.5 * h, 0.0, 10, scale),
+                None,
+                "unter der letzten"
+            );
+            assert_eq!(zeile_bei(0.5 * h, 2.0 * h, 10, scale), Some(2), "Rollstand");
+            assert_eq!(zeile_bei(-1.0, 0.0, 10, scale), None);
+
+            let feld = 16.0 * scale;
+            let schritt = 20.0 * scale;
+            let mitte = |k: f64| k * schritt + feld / 2.0;
+            let luecke = |k: f64| k * schritt + feld + 2.0 * scale;
+            let mut alle: Vec<Symbol> = (0..4)
+                .map(|k| symbol_bei(mitte(k as f64), scale, true, false, false).expect("Feld"))
+                .collect();
+            alle.sort();
+            assert_eq!(
+                alle,
+                [
+                    Symbol::Auge,
+                    Symbol::Schloss,
+                    Symbol::Isolieren,
+                    Symbol::Loeschen
+                ],
+                "{scale}"
+            );
+            for k in 0..3 {
+                assert_eq!(
+                    symbol_bei(luecke(k as f64), scale, true, false, false),
+                    None
+                );
+            }
+            let ruhig: Vec<Symbol> = (0..4)
+                .filter_map(|k| symbol_bei(mitte(k as f64), scale, false, false, false))
+                .collect();
+            assert_eq!(
+                sortiert(&ruhig),
+                [Symbol::Auge, Symbol::Schloss],
+                "ohne Überfahren"
+            );
+            let blass: Vec<Symbol> = (0..4)
+                .filter_map(|k| symbol_bei(mitte(k as f64), scale, true, true, true))
+                .collect();
+            assert_eq!(
+                sortiert(&blass),
+                [Symbol::Auge, Symbol::Isolieren],
+                "blass löst nichts aus"
+            );
+        }
     }
 
     /// A227 (BIM Regel 67, bim/gewerke-kurznamen.md): Kurznamen der Gewerke.

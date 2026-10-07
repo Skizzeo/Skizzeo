@@ -223,6 +223,8 @@ pub struct FieldState<'a> {
     pub caret: Option<usize>,
     /// Markierter Bereich (Byte-Stellen, von < bis).
     pub select: Option<(usize, usize)>,
+    /// Gesperrt (Paket 4): Schrift blass, kein Hover.
+    pub disabled: bool,
 }
 
 /// Zahlenfeld: Grund, Rahmen, Zahl rechtsbündig vor der Einheit.
@@ -236,7 +238,12 @@ pub fn field(c: &mut Canvas, fonts: &Fonts, r: Rect, st: &FieldState, s: f32, t:
     let unit_w = f.width(st.unit, px);
     let unit_x = r.x + r.w - pad - unit_w;
     let base = (r.y + (r.h + f.cap_height(px)) * 0.5).round();
-    f.draw(c, st.unit, px, unit_x.round(), base, t.ui.field_unit);
+    let unit_col = if st.disabled {
+        t.ui.text_disabled
+    } else {
+        t.ui.field_unit
+    };
+    f.draw(c, st.unit, px, unit_x.round(), base, unit_col);
     let gap = if st.unit.is_empty() { 0.0 } else { 4.0 * s };
     let num_x = unit_x - gap - f.width(st.text, px);
     field_text(c, f, r, st, num_x, s, t);
@@ -294,7 +301,7 @@ fn field_frame(c: &mut Canvas, r: Rect, st: &FieldState, s: f32, t: &Theme) {
     } else {
         u.field_border
     };
-    let fill = if st.hover && !st.focus {
+    let fill = if st.hover && !st.focus && !st.disabled {
         u.field_hover
     } else {
         u.field
@@ -318,7 +325,12 @@ fn field_text(c: &mut Canvas, f: &Font, r: Rect, st: &FieldState, x: f32, s: f32
         let (x0, x1) = (at(a), at(z));
         c.fill_rect(x0, r.y + 4.0 * s, x1 - x0, r.h - 8.0 * s, u.text_select);
     }
-    f.draw(c, st.text, px, x.round(), base, u.field_text);
+    let col = if st.disabled {
+        u.text_disabled
+    } else {
+        u.field_text
+    };
+    f.draw(c, st.text, px, x.round(), base, col);
     if let Some(i) = st.caret.filter(|_| st.focus) {
         c.fill_rect(at(i).round(), r.y + 5.0 * s, b, r.h - 10.0 * s, u.caret);
     }
@@ -600,6 +612,149 @@ pub fn ring(c: &mut Canvas, x: f32, y: f32, r: f32, w: f32, color: Rgba) {
     if ri > 0.0 {
         p.rounded_rect_hole(x - ri, y - ri, 2.0 * ri, 2.0 * ri, ri);
     }
+    c.fill(&p, color);
+}
+
+/// Zustand eines Baumsymbols (Paket 4): ganz, teilweise oder gar nicht
+/// (Auge: sichtbar, teils, ausgeblendet; Schloss: zu, teils, offen).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fill {
+    Full,
+    Partial,
+    None,
+}
+
+/// Strichstärke der Baumsymbole (Pixel).
+fn icon_stroke(s: f32) -> f32 {
+    (1.3 * s).max(1.0)
+}
+
+/// Mandelform des Auges um `(x, y)`, Halbbreite `w`, Kontrollhöhe `h`.
+fn almond(p: &mut Path, x: f32, y: f32, w: f32, h: f32) {
+    p.move_to(x - w, y)
+        .quad_to((x, y - h), (x + w, y))
+        .quad_to((x, y + h), (x - w, y))
+        .close();
+}
+
+/// Auge (16 dip), Mitte `(x, y)`: offen mit Pupille, teilweise mit hohler
+/// Pupille, ausgeblendet durchgestrichen.
+pub fn eye_icon(c: &mut Canvas, x: f32, y: f32, state: Fill, color: Rgba, s: f32) {
+    let k = icon_stroke(s);
+    let (w, h) = (6.5 * s, 7.0 * s);
+    let mut p = Path::new();
+    almond(&mut p, x, y, w, h);
+    // Inneres gegenläufig: Loch
+    let (wi, hi) = (w - 1.6 * k, h - 2.2 * k);
+    p.move_to(x + wi, y)
+        .quad_to((x, y - hi), (x - wi, y))
+        .quad_to((x, y + hi), (x + wi, y))
+        .close();
+    match state {
+        Fill::Full => {
+            p.rounded_rect(x - 2.2 * s, y - 2.2 * s, 4.4 * s, 4.4 * s, 2.2 * s);
+        }
+        Fill::Partial => {
+            p.rounded_rect(x - 2.4 * s, y - 2.4 * s, 4.8 * s, 4.8 * s, 2.4 * s);
+            let r = 2.4 * s - k;
+            p.rounded_rect_hole(x - r, y - r, 2.0 * r, 2.0 * r, r);
+        }
+        Fill::None => {
+            p.segment((x - 6.0 * s, y + 5.0 * s), (x + 6.0 * s, y - 5.0 * s), k);
+        }
+    }
+    c.fill(&p, color);
+}
+
+/// Bogen als Strich (Mitte `(x, y)`, Halbmesser `r`, von `a0` bis `a1`
+/// Bogenmaß, y nach unten).
+fn arc(p: &mut Path, x: f32, y: f32, r: f32, a0: f32, a1: f32, k: f32) {
+    let n = 8;
+    let pt = |a: f32| (x + r * a.cos(), y + r * a.sin());
+    for i in 0..n {
+        let (t0, t1) = (i as f32 / n as f32, (i + 1) as f32 / n as f32);
+        p.segment(pt(a0 + (a1 - a0) * t0), pt(a0 + (a1 - a0) * t1), k);
+    }
+}
+
+/// Schloss (16 dip), Mitte `(x, y)`: zu mit gefülltem Körper, offen mit
+/// angehobenem Bügel und hohlem Körper, teilweise halb gefüllt.
+pub fn lock_icon(c: &mut Canvas, x: f32, y: f32, state: Fill, color: Rgba, s: f32) {
+    let k = icon_stroke(s);
+    let (bx, by, bw, bh) = (x - 4.5 * s, y - 0.5 * s, 9.0 * s, 6.5 * s);
+    let rad = 1.2 * s;
+    let mut p = Path::new();
+    p.rounded_rect(bx, by, bw, bh, rad);
+    match state {
+        Fill::Full => {}
+        Fill::None => {
+            p.rounded_rect_hole(
+                bx + k,
+                by + k,
+                bw - 2.0 * k,
+                bh - 2.0 * k,
+                (rad - k).max(0.0),
+            );
+        }
+        Fill::Partial => {
+            let hh = (bh - 2.0 * k) * 0.5;
+            p.rounded_rect_hole(bx + k, by + k, bw - 2.0 * k, hh, (rad - k).max(0.0));
+        }
+    }
+    // Bügel: Halbkreis über zwei Schenkeln; offen angehoben, nur der linke
+    // reicht in den Körper
+    let r = 3.0 * s;
+    let lift = if state == Fill::None { 2.0 * s } else { 0.0 };
+    let top = y - 3.5 * s - lift;
+    let pi = std::f32::consts::PI;
+    arc(&mut p, x, top, r, pi, 2.0 * pi, k);
+    p.segment((x - r, top), (x - r, by), k);
+    let right_end = if state == Fill::None {
+        top + 1.0 * s
+    } else {
+        by
+    };
+    p.segment((x + r, top), (x + r, right_end), k);
+    c.fill(&p, color);
+}
+
+/// Isolieren (16 dip): Fadenkreuz mit Ring und Punkt.
+pub fn isolate_icon(c: &mut Canvas, x: f32, y: f32, color: Rgba, s: f32) {
+    let k = icon_stroke(s);
+    let r = 4.5 * s;
+    let mut p = Path::new();
+    p.rounded_rect(x - r, y - r, 2.0 * r, 2.0 * r, r);
+    let ri = r - k;
+    p.rounded_rect_hole(x - ri, y - ri, 2.0 * ri, 2.0 * ri, ri);
+    let (a, b) = (r, 7.0 * s);
+    p.segment((x, y - a), (x, y - b), k)
+        .segment((x, y + a), (x, y + b), k)
+        .segment((x - a, y), (x - b, y), k)
+        .segment((x + a, y), (x + b, y), k);
+    let d = 1.2 * s;
+    p.rounded_rect(x - d, y - d, 2.0 * d, 2.0 * d, d);
+    c.fill(&p, color);
+}
+
+/// Löschen (16 dip): Papierkorb mit Deckel.
+pub fn trash_icon(c: &mut Canvas, x: f32, y: f32, color: Rgba, s: f32) {
+    let k = icon_stroke(s);
+    let mut p = Path::new();
+    p.segment((x - 5.5 * s, y - 4.5 * s), (x + 5.5 * s, y - 4.5 * s), k)
+        .segment((x - 2.0 * s, y - 6.0 * s), (x + 2.0 * s, y - 6.0 * s), k);
+    let (bx, by, bw, bh) = (x - 4.0 * s, y - 3.5 * s, 8.0 * s, 9.5 * s);
+    p.rounded_rect(bx, by, bw, bh, 1.0 * s);
+    p.rounded_rect_hole(bx + k, by, bw - 2.0 * k, bh - k, 0.5 * s);
+    p.segment(
+        (x - 1.4 * s, y - 1.5 * s),
+        (x - 1.4 * s, y + 4.0 * s),
+        k * 0.85,
+    )
+    .segment(
+        (x + 1.4 * s, y - 1.5 * s),
+        (x + 1.4 * s, y + 4.0 * s),
+        k * 0.85,
+    );
     c.fill(&p, color);
 }
 

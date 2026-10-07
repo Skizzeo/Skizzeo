@@ -20,7 +20,7 @@ pub type RgbaRole = (&'static str, &'static str, fn(&mut Theme) -> &mut Rgba);
 pub type F4Role = (&'static str, &'static str, fn(&mut Theme) -> &mut [f32; 4]);
 pub type SizeRole = (&'static str, &'static str, fn(&mut Theme) -> &mut f32);
 
-pub const RGBA_ROLES: [RgbaRole; 63] = [
+pub const RGBA_ROLES: [RgbaRole; 65] = [
     ("ui.bg", "Fläche", |t| &mut t.ui.bg),
     ("ui.border", "Rahmen", |t| &mut t.ui.border),
     ("ui.field", "Feld", |t| &mut t.ui.field),
@@ -138,6 +138,12 @@ pub const RGBA_ROLES: [RgbaRole; 63] = [
     ("ui.sheet_select_group", "Gruppe der Auswahl", |t| {
         &mut t.ui.sheet_select_group
     }),
+    ("ui.tree_hover", "Baum Zeile unter der Maus", |t| {
+        &mut t.ui.tree_hover
+    }),
+    ("ui.isolate_band", "Baum Band beim Isolieren", |t| {
+        &mut t.ui.isolate_band
+    }),
 ];
 
 pub const F4_ROLES: [F4Role; 11] = [
@@ -166,7 +172,7 @@ pub const F4_ROLES: [F4Role; 11] = [
     }),
 ];
 
-pub const SIZE_ROLES: [SizeRole; 80] = [
+pub const SIZE_ROLES: [SizeRole; 86] = [
     ("corner_radius", "Eckenradius", |t| {
         &mut t.size.corner_radius
     }),
@@ -292,6 +298,20 @@ pub const SIZE_ROLES: [SizeRole; 80] = [
     }),
     ("ghost_alpha_paper", "Isolieren: Deckkraft Zeichnung", |t| {
         &mut t.size.ghost_alpha_paper
+    }),
+    ("right_width", "Rechte Spalte: Breite", |t| {
+        &mut t.size.right_width
+    }),
+    ("tree_row_h", "Baum: Zeilenhöhe", |t| {
+        &mut t.size.tree_row_h
+    }),
+    ("tree_indent", "Baum: Einzug", |t| &mut t.size.tree_indent),
+    ("tree_icon", "Baum: Symbol", |t| &mut t.size.tree_icon),
+    ("tree_icon_gap", "Baum: Abstand der Symbole", |t| {
+        &mut t.size.tree_icon_gap
+    }),
+    ("tree_small", "Baum: Kleinangabe rechts", |t| {
+        &mut t.size.tree_small
     }),
     ("link_icon_w", "Kettenglied: Breite", |t| {
         &mut t.size.link_icon_w
@@ -600,6 +620,10 @@ pub struct Settings {
     /// Abschnitt `[mengenfenster]` (F2, [`crate::windows`]) und sein Stand beim Laden.
     pub windows: String,
     loaded_windows: String,
+    /// Abschnitte `[baum]` und `[hinweise]` (Paket 4) und ihr Stand beim
+    /// Laden.
+    pub panel: String,
+    loaded_panel: String,
     /// Abschnitt `[firmenkatalog] datei=…` (K2), unverändert weitergeschrieben.
     company_line: String,
     /// Ort des Firmenkatalogs aus der Datei; ohne ihn gilt der Vorgabeort.
@@ -622,6 +646,8 @@ impl Settings {
             loaded_recent: Recent::default(),
             windows: String::new(),
             loaded_windows: String::new(),
+            panel: String::new(),
+            loaded_panel: String::new(),
             company_line: String::new(),
             company: None,
         }
@@ -669,6 +695,11 @@ impl Settings {
                     .filter(|l| l.starts_with("[mengenfenster]"))
                     .map(|l| format!("{l}\n"))
                     .collect();
+                self.panel = text
+                    .lines()
+                    .filter(|l| l.starts_with("[baum]") || l.starts_with("[hinweise]"))
+                    .map(|l| format!("{l}\n"))
+                    .collect();
                 self.company_line = text
                     .lines()
                     .filter(|l| l.starts_with("[firmenkatalog]"))
@@ -687,6 +718,7 @@ impl Settings {
         self.loaded_rev = theme.rev;
         self.loaded_recent = self.recent.clone();
         self.loaded_windows = self.windows.clone();
+        self.loaded_panel = self.panel.clone();
         theme
     }
 
@@ -699,6 +731,7 @@ impl Settings {
         if theme.rev == self.loaded_rev
             && self.recent == self.loaded_recent
             && self.windows == self.loaded_windows
+            && self.panel == self.loaded_panel
         {
             return Ok(());
         }
@@ -707,7 +740,10 @@ impl Settings {
             .parent()
             .map_or(Ok(()), std::fs::create_dir_all)
             .and_then(|_| {
-                let text = write_all(theme, &self.recent) + &self.windows + &self.company_line;
+                let text = write_all(theme, &self.recent)
+                    + &self.windows
+                    + &self.panel
+                    + &self.company_line;
                 crate::document::write_synced(&tmp, text.as_bytes())
             })
             .and_then(|_| std::fs::rename(&tmp, path));
@@ -716,6 +752,7 @@ impl Settings {
                 self.loaded_rev = theme.rev;
                 self.loaded_recent = self.recent.clone();
                 self.loaded_windows = self.windows.clone();
+                self.loaded_panel = self.panel.clone();
                 Ok(())
             }
             Err(e) => {

@@ -15,6 +15,7 @@ mod delete;
 mod document;
 mod draw_table;
 mod flush_pick;
+mod hints;
 mod link_view;
 mod menu;
 mod nav;
@@ -29,6 +30,7 @@ mod section;
 mod selection;
 mod settings;
 mod terrace_label;
+mod tree_panel;
 mod type_look;
 mod type_menu;
 mod ui;
@@ -84,10 +86,13 @@ fn save_settings(
     theme: &Theme,
     recent: &menu::Recent,
     grouping: schedule_view::Grouping,
+    panel: String,
     surface: &Surface,
 ) {
     if settings.path.is_some() {
         settings.recent = recent.clone();
+        // Baumpanel: Karte, zugeklappt, Grenze; gesehene Hinweise (Paket 4)
+        settings.panel = panel;
         // Lage des Mengenfensters (F2) und Gliederung der Liste (Paket 1b)
         settings.windows = windows::write_settings_grouped(&surface.layout(), grouping);
     }
@@ -154,29 +159,31 @@ const OVERLAY_CHIPS: usize = OVERLAY_ROOMS + ROOMS;
 const OVERLAY_VIEWS: usize = OVERLAY_CHIPS + link_view::SLOTS;
 /// Paneel „Eigenschaften“.
 const OVERLAY_PROPS: usize = OVERLAY_VIEWS + 1;
-const OVERLAY_TOOLS: usize = OVERLAY_VIEWS + 2;
-const OVERLAY_SCRIM: usize = OVERLAY_VIEWS + 3;
+/// Baumpanel (Paket 4) zwischen „Ansichten“ und „Eigenschaften“.
+const OVERLAY_TREE: usize = OVERLAY_VIEWS + 2;
+const OVERLAY_TOOLS: usize = OVERLAY_VIEWS + 3;
+const OVERLAY_SCRIM: usize = OVERLAY_VIEWS + 4;
 /// Paneel „Geschosse“.
-const OVERLAY_LEVELS: usize = OVERLAY_VIEWS + 4;
+const OVERLAY_LEVELS: usize = OVERLAY_VIEWS + 5;
 /// Dialog „Gebäude erstellen“.
-const OVERLAY_DIALOG: usize = OVERLAY_VIEWS + 5;
-const OVERLAY_TITLE: usize = OVERLAY_VIEWS + 6;
+const OVERLAY_DIALOG: usize = OVERLAY_VIEWS + 6;
+const OVERLAY_TITLE: usize = OVERLAY_VIEWS + 7;
 /// Hinweis in der Statuszeile (F-17), unten in der Mitte.
-const OVERLAY_NOTICE: usize = OVERLAY_VIEWS + 7;
+const OVERLAY_NOTICE: usize = OVERLAY_VIEWS + 8;
 /// Dateimenü (E17), darüber die Nachfrage „Änderungen speichern?“ mit
 /// Abdunkeln.
-const OVERLAY_MENU: usize = OVERLAY_VIEWS + 8;
-const OVERLAY_SAVE_SCRIM: usize = OVERLAY_VIEWS + 9;
-const OVERLAY_SAVE: usize = OVERLAY_VIEWS + 10;
+const OVERLAY_MENU: usize = OVERLAY_VIEWS + 9;
+const OVERLAY_SAVE_SCRIM: usize = OVERLAY_VIEWS + 10;
+const OVERLAY_SAVE: usize = OVERLAY_VIEWS + 11;
 /// Einstellungsfenster (E5) und sein Aufklapper (Auswahlliste, Farbwähler,
 /// Nachfrage).
-const OVERLAY_PREFS: usize = OVERLAY_VIEWS + 11;
-const OVERLAY_PREFS_POPUP: usize = OVERLAY_VIEWS + 12;
+const OVERLAY_PREFS: usize = OVERLAY_VIEWS + 12;
+const OVERLAY_PREFS_POPUP: usize = OVERLAY_VIEWS + 13;
 /// Typ-Liste am Chip (K3).
-const OVERLAY_TYPE_MENU: usize = OVERLAY_VIEWS + 13;
+const OVERLAY_TYPE_MENU: usize = OVERLAY_VIEWS + 14;
 /// Geschossbogen im Grundriss (E18): Bogen, Aufleuchten, Schilder und
 /// Hinweis an der Spitze.
-const OVERLAY_WHEEL: usize = OVERLAY_VIEWS + 14;
+const OVERLAY_WHEEL: usize = OVERLAY_VIEWS + 15;
 /// Löschen (V?-9): Hinweis am Bauteil, Rückfrage „Gebäude löschen“ und
 /// Kontextmenü am Bauteil.
 const OVERLAY_HINT: usize = OVERLAY_WHEEL + wheel_view::SLOTS;
@@ -595,6 +602,16 @@ struct App {
     picking: picking::Picking,
     /// Mengenfenster (F2, B7).
     quantity: quantity::QuantityWindow,
+    /// Baumpanel (Paket 4) und sein Zustand in der App: Hover kommt aus dem
+    /// Baum, die Maus steht darüber, Auswahl kam aus dem Baum (dann kein
+    /// Aufklappen), zuletzt gesehene Auswahl, gesehene Entdecken-Hinweise.
+    tree: tree_panel::TreePanel,
+    hover_from_tree: bool,
+    in_tree: bool,
+    tree_picked: bool,
+    tree_primary: Option<sk_model::ElementId>,
+    tree_props: bool,
+    hints_seen: std::collections::BTreeSet<String>,
     /// Der Hover kommt aus der Liste (dann zeigt das Modell den Umriss);
     /// ein Hover im Modell selbst zeigt nur die Zeile in der Liste.
     hover_from_list: bool,
@@ -1101,6 +1118,7 @@ impl App {
         self.sect = Sections::default();
         self.sect.load(&self.scene);
         self.sel = Selection::default();
+        self.tree.reset();
         self.props_key = None;
         self.ui.set_props(None);
         self.props_dirty = true;
@@ -1290,11 +1308,13 @@ impl App {
         let (c, hints) = catalog::Company::load(&p, false);
         self.show_hints(hints, surface);
         self.settings.set_company_path(p);
+        let panel = self.panel_settings();
         save_settings(
             &mut self.settings,
             &self.theme,
             &self.recent,
             self.quantity.grouping,
+            panel,
             surface,
         );
         self.company = Some(c);
@@ -1871,7 +1891,7 @@ impl App {
 
     /// Hover im Modell: die Liste zeigt die Zeile (nur bei offenem Mengenfenster).
     fn model_hover(&mut self, hit: Option<sk_model::ElementId>) {
-        if !self.quantity.open {
+        if !self.quantity.open && self.tree.collapsed {
             return;
         }
         if std::mem::take(&mut self.hover_from_list) {
@@ -2388,6 +2408,12 @@ impl App {
         if self.type_menu.is_some() && self.handle_type_menu(e, surface) {
             return !self.quit;
         }
+        // Baumpanel (Paket 4) nimmt Maus und Rad über sich
+        if self.handle_tree(e, surface) {
+            self.sync_props();
+            self.sync_caption(surface);
+            return !self.quit;
+        }
         // Rechtsklick auf ein Bauteil: Kontextmenü (V?-9)
         if let Event::MouseDown {
             button: MouseButton::Right,
@@ -2715,8 +2741,9 @@ impl App {
                     ev
                 };
                 self.redraw |= self.tool.handle(&tool_ev, &self.cam, vw, vh, sc).redraw;
-                // Bauteil unter der Maus: die Mengenliste zeigt seine Zeile (B7)
-                if self.quantity.open {
+                // Bauteil unter der Maus: Mengenliste und Baum zeigen seine
+                // Zeile (B7, Paket 4)
+                if self.quantity.open || !self.tree.collapsed {
                     let free = !busy
                         && !outside
                         && !self.tool.enabled
@@ -2950,6 +2977,13 @@ impl App {
                 self.redraw |= eo.redraw;
                 if eo.consumed {
                     // Esc hat das Ziehen abgebrochen
+                } else if down && key == Key::Escape && self.scene.isolating().is_some() {
+                    // Esc beendet zuerst das Isolieren (Paket 4)
+                    let v = sk_model::view::Visibility {
+                        isolate: None,
+                        ..self.scene.model().visibility().clone()
+                    };
+                    self.fade_to(v);
                 } else if let Some(c) = command {
                     self.run_command(c, surface);
                 } else if down && key == Key::Escape && self.scene.building_pending() {
@@ -3213,6 +3247,13 @@ impl App {
             delete::Link::DeleteBuilding(b) => self.open_confirm(b),
             delete::Link::ChangeType(wall) => self.change_type_of(wall),
             delete::Link::Flush(wall) => self.flush(wall),
+            delete::Link::Unlock(id) => {
+                let s = self.ui.scale;
+                let m = self.scene.model();
+                self.tree
+                    .flash_lock(m, m.lock_source(id), &self.theme, s, Instant::now());
+                self.redraw = true;
+            }
             delete::Link::Save => {
                 let untitled = self.doc.path.is_none();
                 self.queued_command = Some(autosave::fail_notice_command(untitled));
@@ -3894,6 +3935,14 @@ impl App {
         {
             return Some(t);
         }
+        // Baumpanel: blasses Symbol mit Begründung, sonst die Zeile
+        if self.in_tree {
+            let m = self.scene.model();
+            let faded = self
+                .mouse_at
+                .and_then(|(x, _)| self.tree.faded_tip(m, x, &self.theme, self.ui.scale));
+            return faded.or_else(|| self.tree.tip(m)).filter(|t| !t.is_empty());
+        }
         self.chain_tip()
     }
 
@@ -4193,13 +4242,301 @@ impl App {
         }
     }
 
-    /// Hinweiskarte „AW-005 ist gesperrt.“, Punkt in `ui.danger`
-    /// (Paket 4 §1.7).
+    // --- Baumpanel (Paket 4) ----------------------------------------------
+
+    /// Abschnitte `[baum]` und `[hinweise]` für `einstellungen.txt`.
+    fn panel_settings(&self) -> String {
+        self.tree.settings_line() + &hints::line(&self.hints_seen)
+    }
+
+    /// Entdecken-Hinweis `id` beim ersten Mal (A0b), in der Statuszeile.
+    fn discover(&mut self, id: &str) {
+        if self.hints_seen.contains(id) {
+            return;
+        }
+        let Some(text) = hints::text(id) else {
+            return;
+        };
+        self.hints_seen.insert(id.to_string());
+        self.renderer.set_overlay(OVERLAY_NOTICE, 0, 0, 0, 0, &[]);
+        self.notice = Some(Notice {
+            text: text.into(),
+            since: None,
+            rect: (0.0, 0.0, 0.0, 0.0),
+            time: NOTICE_TIME,
+            catalog: false,
+        });
+        self.redraw = true;
+    }
+
+    /// Lage des Baumpanels (Pixel, ohne Schatten): unter „Ansichten“ bis
+    /// `panel_margin` über den Fensterrand; mit Auswahl darunter die
+    /// Eigenschaften in natürlicher Höhe, getrennt durch die Grenze.
+    fn tree_rect(&self) -> sk_ui::widgets::Rect {
+        let s = self.ui.scale;
+        let z = &self.theme.size;
+        let top = self.top();
+        let v = self.ui.rect(Panel::Views, self.w, top);
+        let m = (z.panel_margin * s).round();
+        let y = v.y + v.h + m;
+        let avail = (self.h as f32 - m - y).max(0.0);
+        let min = self.tree.min_height(z, s);
+        let h = if self.tree.collapsed {
+            min
+        } else if self.ui.has_props() {
+            let rh = (z.tree_row_h * s).round();
+            let props = self.ui.rect(Panel::Props, self.w, top).h;
+            let want = match self.tree.split {
+                Some(d) => (d * s).round(),
+                None => avail - m - props,
+            };
+            want.min(avail - m - 3.0 * rh).max(min)
+        } else {
+            avail.max(min)
+        };
+        sk_ui::widgets::Rect::new(v.x, y, v.w, h.round())
+    }
+
+    /// Baumpanel an Modell, Auswahl und Fenster angleichen und neu zeichnen,
+    /// wenn sich etwas geändert hat. Die Eigenschaften rücken mit.
+    fn sync_tree(&mut self) {
+        if self.w == 0 || self.ui.dialog {
+            return;
+        }
+        let now = Instant::now();
+        let s = self.ui.scale;
+        let props = self.ui.has_props();
+        let animate = props != self.tree_props;
+        self.tree_props = props;
+        self.tree.divider = props;
+        let r = self.tree_rect();
+        self.tree.place(r, &self.theme, now, animate);
+        if self.tree.growing(now, &self.theme) {
+            self.redraw = true;
+        }
+        let h = self.tree.height(now, &self.theme);
+        let m = (self.theme.size.panel_margin * s).round();
+        let slot = h + m;
+        if slot != self.ui.tree_slot {
+            self.ui.tree_slot = slot;
+            if props {
+                let (x, y) = self.ui.origin(Panel::Props, self.w, self.top());
+                self.renderer.move_overlay(OVERLAY_PROPS, x, y);
+            }
+            self.redraw = true;
+        }
+        // Auswahl im Modell: Ast aufklappen und hinrollen
+        let p = self.picking.primary();
+        if p != self.tree_primary {
+            self.tree_primary = p;
+            if let Some(id) = p.filter(|_| !self.tree_picked) {
+                self.tree.reveal(self.scene.model(), id, &self.theme, s);
+            }
+            self.tree_picked = false;
+        }
+        // Beim Ziehen nicht neu bauen (Leistung), danach einmal
+        if !self.edit.is_dragging() {
+            self.tree.sync(&self.scene, &self.picking, &self.theme, s);
+        }
+        // Befehlszeile (Bildvergleiche): überfahrene Zeile leuchtet im Modell
+        let cli = self.tree.cli_hover.is_some();
+        if let Some(a) = self.tree.apply_cli(self.scene.model()) {
+            self.tree_action(a);
+        }
+        if cli {
+            let ids = self.tree.hover_ids();
+            self.picking.set_hover(None, ids);
+            self.hover_from_list = true;
+            self.tree.sync(&self.scene, &self.picking, &self.theme, s);
+        }
+        if self.tree.dirty {
+            let c = self.tree.paint(
+                &self.theme,
+                &self.ui.fonts,
+                &self.scene,
+                &self.picking,
+                h,
+                s,
+            );
+            let sh = (self.theme.size.panel_shadow * s).round();
+            c.premul_rgba8_into(&mut self.panel_px);
+            self.renderer.set_overlay(
+                OVERLAY_TREE,
+                (r.x - sh) as i32,
+                (r.y - sh) as i32,
+                c.width as u32,
+                c.height as u32,
+                &self.panel_px,
+            );
+            self.redraw = true;
+        }
+    }
+
+    /// Maus über dem Baumpanel: `true`, wenn es das Ereignis genommen hat.
+    fn handle_tree(&mut self, e: Event, surface: &Surface) -> bool {
+        if self.w == 0
+            || self.ui.dialog
+            || self.ui.level_dragging().is_some()
+            || self.ui.edit.is_some() && matches!(e, Event::Key { .. })
+            || self.tool.is_active()
+            || self.nav.is_dragging()
+            || self.edit.is_dragging()
+            || self.sect.is_dragging()
+        {
+            return false;
+        }
+        let s = self.ui.scale;
+        let out = self
+            .tree
+            .handle(&e, &self.scene, &self.picking, &self.theme, s);
+        // Zeile unter der Maus: ihre Bauteile leuchten im Modell
+        let ids = self.tree.hover_ids();
+        if !ids.is_empty() || self.hover_from_tree {
+            if self.picking.set_hover(None, ids.clone()) {
+                self.redraw = true;
+            }
+            self.hover_from_tree = !ids.is_empty();
+            self.hover_from_list = self.hover_from_tree;
+        }
+        if out.relayout {
+            self.tree.dirty = true;
+        }
+        if let Some(a) = out.action {
+            self.tree_action(a);
+        }
+        if let Event::MouseMove { x, y, .. } = e {
+            if out.consumed {
+                if !self.in_tree {
+                    // Modell, Paneele und Titelleiste: die Maus ist weg
+                    self.in_tree = true;
+                    self.handle_inner(Event::MouseLeave, surface);
+                    self.dirty_title.extend(self.title.hover.take());
+                }
+                self.mouse_at = Some((x, y));
+            } else {
+                self.in_tree = false;
+            }
+        }
+        out.consumed
+    }
+
+    /// Handlung aus dem Baumpanel ausführen.
+    fn tree_action(&mut self, a: tree_panel::Action) {
+        use tree_panel::Action as A;
+        match a {
+            A::Select(ids) => self.tree_select(ids),
+            A::Storey(sid, ids) => {
+                self.tree_select(ids);
+                if matches!(self.ui.view, ViewKind::Plan | ViewKind::Section) {
+                    let t = self.now();
+                    self.wheel.go_to_level(&mut self.scene, sid, t);
+                } else {
+                    self.scene.set_active_storey(sid);
+                }
+                if self.ui.view == ViewKind::Plan {
+                    self.upload_model();
+                }
+                self.sync_levels();
+            }
+            A::Zoom(ids) => self.zoom_to(&ids),
+            A::Context { target, x, y, .. } => {
+                if !self.picking.is_selected(target) {
+                    self.tree_select(vec![target]);
+                }
+                self.close_type_menu(false);
+                let s = self.ui.scale;
+                self.context = Some(delete::ContextMenu::new(
+                    self.scene.model(),
+                    target,
+                    &self.picking.selected,
+                    x,
+                    y,
+                    (self.w, self.h, self.top()),
+                    &self.theme,
+                    s,
+                ));
+                self.context_dirty = true;
+                self.tip = None;
+                self.redraw = true;
+            }
+            A::Visibility(v) => self.fade_to(v),
+            A::Lock(ids, on) => {
+                let label = if on { "Gesperrt" } else { "Entsperrt" };
+                self.scene.edit_model(label, |m| {
+                    m.set_locked(&ids, on);
+                    true
+                });
+                self.upload_model();
+            }
+            A::Delete(ids) => {
+                self.picking.selected = ids;
+                self.tree_picked = true;
+                self.erase(false);
+            }
+            A::DeleteBuilding(b) => self.open_confirm(b),
+            A::Tab(t) => {
+                if t == sk_model::tree::Tab::Trade {
+                    self.discover("trades");
+                }
+            }
+        }
+        self.tree.dirty = true;
+    }
+
+    /// Auswahl aus dem Baum: Hauptfenster und Mengenliste folgen.
+    fn tree_select(&mut self, ids: Vec<sk_model::ElementId>) {
+        if self.picking.selected == ids {
+            return;
+        }
+        self.picking.selected = ids;
+        self.tree_picked = true;
+        self.quantity.dirty = true;
+        if self
+            .picking
+            .primary()
+            .is_some_and(|e| self.scene.follow_selection(e))
+        {
+            if self.ui.view == ViewKind::Plan {
+                self.upload_model();
+            }
+            self.sync_levels();
+        }
+        self.sync_props();
+        self.redraw = true;
+    }
+
+    /// Neue Sichtbarkeit mit Übergang (Baum, Esc). Erstes Ausblenden:
+    /// Entdecken-Hinweis.
+    fn fade_to(&mut self, v: sk_model::view::Visibility) {
+        let old = self.scene.model().visibility().clone();
+        let more = v.hidden.len() > old.hidden.len()
+            || v.hidden_cat.len() > old.hidden_cat.len()
+            || v.hidden_trade.len() > old.hidden_trade.len();
+        if self.scene.skip_vis_animation() {
+            self.upload_model();
+        }
+        if self.scene.fade_visibility(v) {
+            self.upload_model();
+            self.quantity.dirty = true;
+            self.redraw = true;
+            if more {
+                self.discover("hide_counts");
+            }
+        }
+        self.sync_props();
+    }
+
+    /// Hinweiskarte „AW-005 ist gesperrt.“ mit dem Verweis „Entsperren im
+    /// Baum mit dem Schloss“, Punkt in `ui.danger` (Paket 4 §1.7).
     fn show_locked(&mut self, id: sk_model::ElementId) {
         let m = self.scene.model();
         let n = m.element(id).map_or("Das Bauteil", |e| e.number.as_str());
+        let link = (
+            "Entsperren im Baum mit dem Schloss",
+            delete::Link::Unlock(id),
+        );
         let lines = vec![format!("{n} ist gesperrt.")];
-        let mut h = delete::HintCard::new(lines, None, vec![id], Instant::now());
+        let mut h = delete::HintCard::new(lines, Some(link), vec![id], Instant::now());
         h.danger = true;
         self.hint = Some(h);
         self.hint_dirty = true;
@@ -4391,7 +4728,15 @@ impl App {
             .as_ref()
             .and_then(|n| Some(n.time.saturating_sub(n.since?.elapsed())));
         let fade = self.theme.size.fade_ms * (self.theme.size.anim_ms > 0.0) as u8 as f32;
-        let hint = self.hint.as_ref().map(|h| h.wait(Instant::now(), fade));
+        // Gezeigte Deckkraft noch nicht am Ziel (Ende des Einblendens):
+        // ein Bild mehr
+        let hint = self.hint.as_ref().map(|h| {
+            let now = Instant::now();
+            match h.alpha(now, fade) {
+                Some(a) if a != self.hint_alpha => FRAME,
+                _ => h.wait(now, fade),
+            }
+        });
         let list = if self.quantity.open {
             self.quantity.wait(&self.theme, Instant::now())
         } else {
@@ -4411,11 +4756,13 @@ impl App {
     /// Normal beendet: Einstellungen schreiben, die Sicherung gilt als
     /// sauber beendet (keine Startkarte beim nächsten Start).
     fn closing(&mut self, surface: &Surface) {
+        let panel = self.panel_settings();
         save_settings(
             &mut self.settings,
             &self.theme,
             &self.recent,
             self.quantity.grouping,
+            panel,
             surface,
         );
         if let Some(a) = self.autosave.as_mut() {
@@ -4861,6 +5208,13 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         picking: picking::Picking::default(),
         quantity: quantity::QuantityWindow::new(),
         hover_from_list: false,
+        tree: tree_panel::TreePanel::new(),
+        hover_from_tree: false,
+        in_tree: false,
+        tree_picked: false,
+        tree_primary: None,
+        tree_props: false,
+        hints_seen: Default::default(),
         fly: None,
         quantity_busy: false,
         quantity_wanted: false,
@@ -4931,6 +5285,58 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             Err(e) => eprintln!("{e}"),
         }
     }
+    // Baumpanel für Bildvergleiche (Paket 4): `--karte bauteil`,
+    // `--sperren AW-005,…`, `--waehlen AW-005`, `--aufklappen Name,…`,
+    // `--ueberfahren Name`, `--baum-isolieren Name` (Namensanfang einer
+    // Zeile), `--sperrhinweis AW-005`
+    let arg = |k: &str| {
+        std::env::args()
+            .skip_while(|a| a != k)
+            .nth(1)
+            .map(|v| v.split(',').map(str::to_string).collect::<Vec<_>>())
+    };
+    let numbers = |a: &App, v: &[String]| -> Vec<sk_model::ElementId> {
+        v.iter()
+            .filter_map(|n| {
+                a.scene
+                    .model()
+                    .elements()
+                    .iter()
+                    .find(|(_, e)| e.number == *n)
+                    .map(|(id, _)| id)
+            })
+            .collect()
+    };
+    if let Some(t) = arg("--karte") {
+        let tab = match t.first().map(String::as_str) {
+            Some("bauteil") => sk_model::tree::Tab::Kind,
+            Some("gewerk") => sk_model::tree::Tab::Trade,
+            _ => sk_model::tree::Tab::Tree,
+        };
+        a.tree.tab = tab;
+    }
+    if let Some(v) = arg("--sperren") {
+        let ids = numbers(&a, &v);
+        a.scene.edit_model("Gesperrt", |m| {
+            m.set_locked(&ids, true);
+            true
+        });
+        a.upload_model();
+    }
+    if let Some(v) = arg("--waehlen") {
+        a.picking.selected = numbers(&a, &v);
+        a.sync_props();
+    }
+    a.tree.cli_open = arg("--aufklappen").unwrap_or_default();
+    a.tree.cli_hover = arg("--ueberfahren").and_then(|v| v.into_iter().next());
+    a.tree.cli_isolate = arg("--baum-isolieren").and_then(|v| v.into_iter().next());
+    if let Some(id) = arg("--sperrhinweis").and_then(|v| numbers(&a, &v).first().copied()) {
+        a.show_locked(id);
+        // Bleibt fürs Bildschirmfoto stehen
+        if let Some(h) = a.hint.as_mut() {
+            h.hold();
+        }
+    }
     // `--ansicht schnitt`: mit dieser Ansicht beginnen (Bildvergleiche);
     // `schnitt` zeigt Schnitt A, `schnitt-b` Schnitt B, dazu `--gespiegelt`
     // mit umgekehrtem Blick
@@ -4971,6 +5377,10 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     // Mengenfenster (F2, B7): gemerkte Lage, Breite aus dem Schema
     *surface.layout() = windows::read_settings(&a.settings.windows, &surface.monitors());
     a.quantity.grouping = windows::read_grouping(&a.settings.windows);
+    // Baumpanel: Karte, zugeklappt, Grenze (Paket 4)
+    let panel = a.settings.panel.clone();
+    a.tree.load_settings(&panel);
+    a.hints_seen = hints::seen(&panel);
     surface.layout().set_width_dip(a.theme.size.qto_window_w);
     if surface.layout().quantity_open() || std::env::args().any(|x| x == "--mengenfenster") {
         a.open_quantity(&surface);
@@ -5012,11 +5422,14 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             && a.auto_switch.is_none()
             && a.fly.is_none()
             && !a.scene.growing()
+            && !a.scene.vis_animating()
             && a.erase_fade.is_none()
             && a.turn.is_none()
             && a.erase_flash.is_none()
             && a.card_fade.is_none()
             && a.flush_anim.is_none()
+            && !a.tree.is_growing()
+            && !a.tree.dirty
         {
             // Leerlauf: Grundrisse der Nachbargeschosse vorbereiten, damit ein
             // Wechsel am Geschossbogen nichts neu rechnet (E18)
@@ -5118,6 +5531,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         a.sync_notice();
         a.sync_erase();
         a.sync_title_state();
+        a.sync_tree();
         if a.menu_dirty && !a.overlay_dirty && a.w > 0 {
             a.paint_menu();
         }

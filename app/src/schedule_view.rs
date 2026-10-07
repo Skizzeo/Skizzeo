@@ -242,6 +242,8 @@ pub struct ListView {
     stale: Option<Instant>,
     /// Kopfzeile: Gebäude und Stand.
     subtitle: String,
+    /// Bauteile mit Ausgeblendetem (Paket 4): steht hinter der Unterzeile.
+    hidden: usize,
     /// Zellen beim letzten Aufbau und ihr Aufleuchten.
     cells_old: HashMap<(Key, u8), String>,
     flash: HashMap<(Key, u8), Instant>,
@@ -297,6 +299,7 @@ impl ListView {
             runs: None,
             stale: None,
             subtitle: String::new(),
+            hidden: 0,
             cells_old: HashMap::new(),
             flash: HashMap::new(),
             hot: None,
@@ -327,12 +330,27 @@ impl ListView {
             self.runs = Some(runs);
             changed = true;
         }
+        let hidden = sk_model::tree::hidden_count(s.model());
+        if hidden != self.hidden {
+            self.hidden = hidden;
+            changed = true;
+        }
         let stale = s.schedule_stale();
         if stale != self.stale.is_some() {
             self.stale = stale.then(Instant::now);
             changed = true;
         }
         changed
+    }
+
+    /// Unterzeile: Gebäude und Stand, dahinter „2 Bauteile ausgeblendet“,
+    /// wenn im Modell etwas ausgeblendet ist (die Mengen bleiben ganz).
+    fn subtitle_text(&self) -> String {
+        match self.hidden {
+            0 => self.subtitle.clone(),
+            1 => format!("{} · 1 Bauteil ausgeblendet", self.subtitle),
+            n => format!("{} · {n} Bauteile ausgeblendet", self.subtitle),
+        }
     }
 
     /// Gliederung umschalten; die Zeilen baut das nächste [`ListView::sync`]
@@ -993,7 +1011,7 @@ impl ListView {
             (right - pw, by, bh, label, false)
         } else {
             let ph = 20.0 * s;
-            let sub_end = x0 + width(regular, &self.subtitle, px) + 16.0 * s;
+            let sub_end = x0 + width(regular, &self.subtitle_text(), px) + 16.0 * s;
             let x = x0 + cw - pw;
             // Mitte der Unterzeile (Grundlinie top + 52)
             let mid = top + 52.0 * s - cap * 0.5;
@@ -1508,7 +1526,7 @@ impl ListView {
         if let Some(f) = regular {
             f.draw(
                 c,
-                &self.subtitle,
+                &self.subtitle_text(),
                 10.5 * s,
                 x0,
                 top + 52.0 * s,
