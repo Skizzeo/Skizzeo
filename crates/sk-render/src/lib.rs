@@ -335,6 +335,8 @@ pub struct Renderer {
     looks: Looks,
     snap_prog: Program,
     snapshot: Option<Snapshot>,
+    /// Platz des blassen Netzes (Isolieren, Paket 3) und seine Deckkraft.
+    ghost: Option<(usize, f32)>,
 }
 
 const SKY_MAX: usize = 16;
@@ -443,6 +445,8 @@ uniform sampler2D u_looks;
 uniform int u_drawing;
 uniform vec3 u_light;
 uniform float u_ambient;
+// Deckkraft: 1 deckend, darunter blass (Isolieren) und ohne Schraffur
+uniform float u_alpha;
 vec4 look(int row) {
     return texelFetch(u_looks, ivec2(v_key & 0x7FFF, row), 0);
 }
@@ -468,12 +472,15 @@ void main() {
     if (u_drawing == 0) {
         vec3 c = look(cut ? 1 : 0).rgb;
         float d = max(dot(normalize(v_normal), u_light), 0.0);
-        o_color = vec4(c * (u_ambient + (1.0 - u_ambient) * d), 1.0);
+        o_color = vec4(c * (u_ambient + (1.0 - u_ambient) * d), u_alpha);
         return;
     }
     vec4 bg = look(2);
     vec3 c = bg.rgb;
-    if (cut) {
+    if (cut && u_alpha < 1.0) {
+        // Blasse Schnittfläche: Füllung ohne Schraffur
+        if (int(bg.a + 0.5) == 1) c = look(3).rgb;
+    } else if (cut) {
         int kind = int(bg.a + 0.5);
         vec4 fg = look(3);
         float ink = 0.0;
@@ -495,7 +502,7 @@ void main() {
         }
         c = mix(c, fg.rgb, ink);
     }
-    o_color = vec4(c, 1.0);
+    o_color = vec4(c, u_alpha);
 }
 "#;
 
@@ -577,9 +584,10 @@ flat in vec4 v_p0;
 flat in vec4 v_p1;
 flat in vec2 v_len_w;
 out vec4 o_color;
+uniform float u_alpha;
 void main() {
     if (v_p0.x + v_p0.y > 0.0 && !dash_ink(v_dist, v_len_w.x, v_p0, v_p1, v_len_w.y)) discard;
-    o_color = vec4(v_color, 1.0);
+    o_color = vec4(v_color, u_alpha);
 }
 "#;
 
@@ -747,6 +755,7 @@ impl Renderer {
                 looks: Looks::default(),
                 snap_prog,
                 snapshot: None,
+                ghost: None,
             })
         }
     }
@@ -808,6 +817,13 @@ impl Renderer {
             gl.glBindTexture(TEXTURE_2D, 0);
         }
         self.looks = looks.clone();
+    }
+
+    /// Netz in Platz `slot` blass mit Deckkraft `alpha` zeichnen (Isolieren,
+    /// Paket 3): nach allem Deckenden, nur die vorderste blasse Fläche je
+    /// Bildpunkt, ohne Schraffur. `None`: alle Plätze deckend.
+    pub fn set_ghost(&mut self, ghost: Option<(usize, f32)>) {
+        self.ghost = ghost;
     }
 
     /// Ersetzt das Netz in Platz `slot` (z. B. 0 = Modell, 1 = Vorschau).
@@ -1209,7 +1225,10 @@ impl Renderer {
             gl.glBindTexture(TEXTURE_2D, self.looks_tex);
             gl.glUniform1i(loc(gl, p, c"u_looks"), 1);
             gl.glActiveTexture(TEXTURE0);
-            for m in &self.meshes {
+            gl.glUniform1f(loc(gl, p, c"u_alpha"), 1.0);
+            let ghost = self.ghost.filter(|g| g.0 < self.meshes.len());
+            let opaque = |i: &usize| ghost.is_none_or(|g| g.0 != *i);
+            for (_, m) in self.meshes.iter().enumerate().filter(|(i, _)| opaque(i)) {
                 gl.glBindVertexArray(m.faces.vao);
                 gl.glDrawArrays(TRIANGLES, 0, m.faces.count);
             }
@@ -1234,9 +1253,49 @@ impl Renderer {
             let dash = edges.dash.as_flattened();
             gl.glUniform4fv(loc(gl, p, c"u_edge_dash"), 2 * n, dash.as_ptr());
             gl.glUniform1f(loc(gl, p, c"u_near"), view.near);
-            for m in self.meshes.iter().filter(|m| m.edges.count > 0) {
+            gl.glUniform1f(loc(gl, p, c"u_alpha"), 1.0);
+            for (_, m) in self
+                .meshes
+                .iter()
+                .enumerate()
+                .filter(|(i, m)| opaque(i) && m.edges.count > 0)
+            {
                 gl.glBindVertexArray(m.edges.vao);
                 gl.glDrawArraysInstanced(TRIANGLES, 0, 6, m.edges.count);
+            }
+
+            // Blasses (Review 3a G4): erst nur Tiefe, damit je Bildpunkt nur
+            // die vorderste blasse Fläche zählt, dann Farbe darüber gemischt,
+            // ohne Tiefe zu schreiben; Kanten wie die Flächen
+            if let Some((g, alpha)) = ghost.filter(|g| g.1 > 0.0) {
+                let m = &self.meshes[g];
+                let p = self.faces.id;
+                gl.glUseProgram(p);
+                gl.glEnable(POLYGON_OFFSET_FILL);
+                gl.glPolygonOffset(1.0, 1.0);
+                gl.glDepthFunc(LESS);
+                gl.glColorMask(FALSE, FALSE, FALSE, FALSE);
+                gl.glBindVertexArray(m.faces.vao);
+                gl.glDrawArrays(TRIANGLES, 0, m.faces.count);
+                gl.glColorMask(TRUE, TRUE, TRUE, TRUE);
+                gl.glDepthFunc(LEQUAL);
+                gl.glDepthMask(FALSE);
+                gl.glEnable(BLEND);
+                gl.glBlendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA);
+                gl.glUniform1f(loc(gl, p, c"u_alpha"), alpha);
+                gl.glDrawArrays(TRIANGLES, 0, m.faces.count);
+                gl.glUniform1f(loc(gl, p, c"u_alpha"), 1.0);
+                gl.glDisable(POLYGON_OFFSET_FILL);
+                if m.edges.count > 0 {
+                    let p = self.edges.id;
+                    gl.glUseProgram(p);
+                    gl.glUniform1f(loc(gl, p, c"u_alpha"), alpha);
+                    gl.glBindVertexArray(m.edges.vao);
+                    gl.glDrawArraysInstanced(TRIANGLES, 0, 6, m.edges.count);
+                    gl.glUniform1f(loc(gl, p, c"u_alpha"), 1.0);
+                }
+                gl.glDisable(BLEND);
+                gl.glDepthMask(TRUE);
             }
 
             // Boden durchscheinend über allem, was unter z = 0 liegt; über dem
@@ -1486,5 +1545,10 @@ unsafe fn program(gl: &Gl, vs: &str, fs: &str) -> Result<Program, String> {
 impl Renderer {
     pub fn set_style(&mut self, style: Style) {
         self.style = style;
+    }
+
+    /// Deckkraft des Bodens (0: Gelände ausgeblendet, Paket 3).
+    pub fn set_ground_opacity(&mut self, v: f32) {
+        self.style.ground_opacity = v;
     }
 }

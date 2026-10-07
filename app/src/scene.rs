@@ -9,16 +9,20 @@
 use crate::draw_table::DrawTable;
 use crate::ui::Field;
 use crate::ui::ViewKind;
+use crate::visible::{split, Class};
 use sk_math::{polygon, vec3, Vec3};
 use sk_model::qto::Schedule;
+use sk_model::view::{Isolate, Masks, Visibility};
 use sk_model::{
     edge_kind, floor_qto_of, foundation_qto_of, merge_seam, run_qto, BuildingId, Category, Deleted,
     Direction, Edge, ElementId, FloorQto, FloorSlab, FootingQto, Foundation, LayerSetId, Model,
-    Refusal, RunId, SlabQto, Solid, StoreyId, Touched, Txn, TypeCategory, WallChain, WallQto,
+    Refusal, RunId, SlabQto, Solid, StoreyId, Touched, Tri, Txn, TypeCategory, WallChain, WallQto,
     COPING_PART, FLOOR_PART, FOOTING_PART, SLAB_PART, SOFFIT_PART, STRIP_PART, TERRACE_PART,
 };
 use sk_render::MeshData;
 use sk_ui::theme::Theme;
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 /// Anzeigename der Gründung als Ebene (Paneel „Geschosse“, Geschossbogen).
 pub const FOUNDATION_NAME: &str = "Fundament";
@@ -411,6 +415,97 @@ pub struct Scene {
     grow: Option<Grow>,
     /// Hat [`Scene::mesh`] zuletzt ein gemischtes Netz geliefert?
     blend_shown: bool,
+    /// Zähler der Sichtbarkeitsänderungen (Paket 3); ändert die Revision nicht.
+    vis_rev: u64,
+    /// Laufender Übergang beim Aus- und Einblenden oder Isolieren.
+    vis_anim: Option<VisAnim>,
+    /// Masken je Zug und Teil (Review 3a G2), gültig für Revision,
+    /// Sichtbarkeit und Übergang.
+    vis_table: RefCell<VisTable>,
+    /// Blasses Netz zum zuletzt zusammengesetzten Modellnetz.
+    ghost: Option<(MeshKey, VisStamp, MeshData)>,
+}
+
+/// Übergang der Sichtbarkeit (§2): ändert nur die Deckkraft des blassen
+/// Netzes, nie die Netze selbst.
+struct VisAnim {
+    kind: VisFade,
+    /// Sichtbarkeit davor.
+    old: Visibility,
+    start: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum VisFade {
+    /// Bauteile verschwinden (1 → 0) bzw. erscheinen (0 → 1).
+    Out,
+    In,
+    /// Der Rest wird blass bzw. wieder deckend.
+    IsolateOn,
+    IsolateOff,
+}
+
+/// Stand, für den Masken und blasses Netz gelten: Revision, Sichtbarkeit,
+/// Übergang an oder aus.
+type VisStamp = (u64, u64, bool);
+
+#[derive(Default)]
+struct VisTable {
+    stamp: Option<VisStamp>,
+    masks: HashMap<(RunId, u32), Masks>,
+}
+
+/// Sicht auf Modell, Übergang und Maskentabelle, getrennt von den
+/// Zwischenspeichern der Züge.
+struct Vis<'a> {
+    model: &'a Model,
+    anim: Option<&'a VisAnim>,
+    table: &'a RefCell<VisTable>,
+    stamp: VisStamp,
+}
+
+impl Vis<'_> {
+    /// Masken eines Teils, je Stand einmal aufgelöst.
+    fn masks(&self, run: RunId, part: u32) -> Masks {
+        let mut t = self.table.borrow_mut();
+        if t.stamp != Some(self.stamp) {
+            t.stamp = Some(self.stamp);
+            t.masks.clear();
+        }
+        *t.masks.entry((run, part)).or_insert_with(|| {
+            let Some(id) = self.model.part_of(run, part) else {
+                return Masks::ALL;
+            };
+            let m = self.model;
+            match self.anim {
+                None => m.masks(id),
+                Some(a) => match a.kind {
+                    VisFade::IsolateOn => m.masks(id),
+                    VisFade::IsolateOff => m.masks_in(&a.old, id),
+                    // Was sich ändert, liegt für den Übergang im blassen Netz
+                    VisFade::Out | VisFade::In => {
+                        let (o, n) = (m.masks_in(&a.old, id), m.masks(id));
+                        Masks {
+                            solid: o.solid & n.solid,
+                            ghost: o.solid ^ n.solid,
+                        }
+                    }
+                },
+            }
+        })
+    }
+
+    fn class(&self, run: RunId, part: u32, layer: u8) -> Class {
+        let m = self.masks(run, part);
+        let bit = Masks::bit(layer);
+        if m.solid & bit != 0 {
+            Class::Solid
+        } else if m.ghost & bit != 0 {
+            Class::Ghost
+        } else {
+            Class::Hidden
+        }
+    }
 }
 
 /// Ansicht, Schnittebene und ausgelassene Züge eines Netzes.
@@ -592,6 +687,10 @@ impl Scene {
             shown_key: None,
             grow: None,
             blend_shown: false,
+            vis_rev: 0,
+            vis_anim: None,
+            vis_table: RefCell::default(),
+            ghost: None,
         };
         s.rebuild_dirty(false);
         s
@@ -2187,15 +2286,24 @@ impl Scene {
     }
 
     fn plain_mesh(&mut self, key: &MeshKey) -> MeshData {
-        let (view, section, except) = (key.0, key.1, &key.2);
-        let runs: Vec<RunId> = self
-            .cache
+        let runs = self.mesh_keys(key);
+        let [m, g] = self.mesh_split(key.0, key.1, &runs);
+        self.ghost = if self.filtering() {
+            Some((key.clone(), self.vis_stamp(), g))
+        } else {
+            None
+        };
+        m
+    }
+
+    /// Züge eines Netzes: alle außer den ausgelassenen.
+    fn mesh_keys(&self, key: &MeshKey) -> Vec<RunId> {
+        self.cache
             .iter()
             .flatten()
             .map(|c| c.id)
-            .filter(|id| !except.contains(id))
-            .collect();
-        self.mesh_runs(view, section, &runs)
+            .filter(|id| !key.2.contains(id))
+            .collect()
     }
 
     /// Schnitthöhe des Hintergrunds für den Zug `run`: sein Geschoss liegt
@@ -2305,25 +2413,62 @@ impl Scene {
             .flatten()
             .filter_map(|c| Some((c.id, self.under_cut(c.id)?)))
             .collect();
+        let filter = self.filtering();
+        let vis = Vis {
+            model: &self.model,
+            anim: self.vis_anim.as_ref(),
+            table: &self.vis_table,
+            stamp: self.vis_stamp(),
+        };
         let mut out = Vec::new();
         for (run, cut) in cuts {
             if let Some(Some(c)) = self.cache.get_mut(run.index() as usize) {
                 let at = |p: Vec3| vec3(p.x, p.y, floor);
-                out.extend(c.under_edges(cut).iter().map(|e| (at(e.a), at(e.b))));
+                // Kein Fang an Ausgeblendetem oder Blassem (§3.5)
+                out.extend(
+                    c.under_edges(cut)
+                        .iter()
+                        .filter(|e| !filter || vis.class(run, e.elem, e.layer) == Class::Solid)
+                        .map(|e| (at(e.a), at(e.b))),
+                );
             }
         }
         out
     }
 
-    /// Netz einzelner Wandzüge (Live-Netz beim Ziehen).
+    /// Netz einzelner Wandzüge (Live-Netz beim Ziehen): nur das Deckende.
     pub fn mesh_runs(
         &mut self,
         view: ViewKind,
         section: Option<Plane>,
         runs: &[RunId],
     ) -> MeshData {
+        let [m, _] = self.mesh_split(view, section, runs);
+        m
+    }
+
+    /// Wirkt gerade eine Sichtbarkeit auf die Netze (Ausgeblendetes,
+    /// Isolieren oder ein Übergang)?
+    fn filtering(&self) -> bool {
+        !self.model.visibility().is_plain() || self.vis_anim.is_some()
+    }
+
+    fn vis_stamp(&self) -> VisStamp {
+        (self.model.revision(), self.vis_rev, self.vis_anim.is_some())
+    }
+
+    /// Netze einzelner Wandzüge: deckend und blass (Paket 3). Gefiltert wird
+    /// je Körper vor dem Verschmelzen gestapelter Züge (Review 3a G1).
+    fn mesh_split(
+        &mut self,
+        view: ViewKind,
+        section: Option<Plane>,
+        runs: &[RunId],
+    ) -> [MeshData; 2] {
         let cut = self.plan_cut();
-        let mut m = MeshData::default();
+        let filter = self.filtering();
+        let stamp = self.vis_stamp();
+        let mut m = [MeshData::default(), MeshData::default()];
         if view == ViewKind::Plan {
             let active = self.active_storey();
             let modes: Vec<PlanMode> = runs.iter().map(|r| self.plan_mode(*r, active)).collect();
@@ -2332,18 +2477,40 @@ impl Scene {
             // des aktiven Geschosses (unter dessen Wänden)
             let floor = self.work_plane().0;
             let under: Vec<Option<f64>> = runs.iter().map(|r| self.under_cut(*r)).collect();
+            let vis = Vis {
+                model: &self.model,
+                anim: self.vis_anim.as_ref(),
+                table: &self.vis_table,
+                stamp,
+            };
             for (i, &run) in runs.iter().enumerate() {
                 if let Some(Some(c)) = self.cache.get_mut(run.index() as usize) {
                     if c.id == run {
                         if let Some(s) = c.view_solid(view, section, cut, modes[i]) {
-                            mesh_into(&mut m, s);
+                            if filter {
+                                let parts = split(s, |p, l| vis.class(run, p, l));
+                                for (k, x) in parts.iter().enumerate() {
+                                    mesh_into(&mut m[k], x);
+                                }
+                            } else {
+                                mesh_into(&mut m[0], s);
+                            }
                         }
                         if let Some(bcut) = under[i] {
                             let z = (floor + BACKGROUND_LIFT) as f32;
                             for e in c.under_edges(bcut) {
+                                let k = if filter {
+                                    match vis.class(run, e.elem, e.layer) {
+                                        Class::Solid => 0,
+                                        Class::Ghost => 1,
+                                        Class::Hidden => continue,
+                                    }
+                                } else {
+                                    0
+                                };
                                 let (mut a, mut b) = (e.a.to_f32(), e.b.to_f32());
                                 (a[2], b[2]) = (z, z);
-                                m.edges.push(([a, b], edge_kind::BACKGROUND as f32));
+                                m[k].edges.push(([a, b], edge_kind::BACKGROUND as f32));
                             }
                         }
                     }
@@ -2378,37 +2545,229 @@ impl Scene {
                 }
             }
         }
+        // Je Zug deckend und blass, vor dem Verschmelzen (G1)
+        let vis = Vis {
+            model: &self.model,
+            anim: self.vis_anim.as_ref(),
+            table: &self.vis_table,
+            stamp,
+        };
+        let mut parts: HashMap<RunId, [Solid; 2]> = HashMap::new();
+        if filter {
+            for &run in runs.iter().chain(&partners) {
+                if parts.contains_key(&run) {
+                    continue;
+                }
+                if let Some(s) = self.cached(run).and_then(|c| c.shown(view, section)) {
+                    parts.insert(run, split(s, |p, l| vis.class(run, p, l)));
+                }
+            }
+        }
+        let classes = if filter { 2 } else { 1 };
         for &run in runs {
             let Some(c) = self.cached(run) else {
                 continue;
             };
-            let Some(s) = c.shown(view, section) else {
+            let Some(whole) = c.shown(view, section) else {
                 continue;
             };
-            let lower = c
-                .below
-                .and_then(|b| self.cached(b))
-                .and_then(|b| b.shown(view, section));
-            let uppers: Vec<(f64, &Solid)> = above
-                .iter()
-                .filter(|(b, _)| *b == run)
-                .filter_map(|(_, u)| self.cached(*u))
-                .filter_map(|u| Some((u.chain.base, u.shown(view, section)?)))
-                .collect();
-            if lower.is_none() && uppers.is_empty() {
-                mesh_into(&mut m, s);
-                continue;
+            for (k, mk) in m.iter_mut().enumerate().take(classes) {
+                let pick = |r: RunId, s: &'_ Solid| -> Option<Solid> {
+                    if filter {
+                        parts.get(&r).map(|p| p[k].clone())
+                    } else {
+                        Some(s.clone())
+                    }
+                };
+                let lower = c
+                    .below
+                    .and_then(|b| self.cached(b))
+                    .and_then(|b| b.shown(view, section).map(|s| (b.id, s)))
+                    .and_then(|(b, s)| pick(b, s));
+                let uppers: Vec<(f64, Solid)> = above
+                    .iter()
+                    .filter(|(b, _)| *b == run)
+                    .filter_map(|(_, u)| self.cached(*u))
+                    .filter_map(|u| Some((u.chain.base, pick(u.id, u.shown(view, section)?)?)))
+                    .collect();
+                let own: &Solid = if filter {
+                    match parts.get(&run) {
+                        Some(p) => &p[k],
+                        None => continue,
+                    }
+                } else {
+                    whole
+                };
+                if lower.is_none() && uppers.is_empty() {
+                    mesh_into(mk, own);
+                    continue;
+                }
+                let mut x = own.clone();
+                if let Some(mut l) = lower {
+                    merge_seam(&mut l, &mut x, c.chain.base);
+                }
+                for (z, mut u) in uppers {
+                    merge_seam(&mut x, &mut u, z);
+                }
+                mesh_into(mk, &x);
             }
-            let mut x = s.clone();
-            if let Some(l) = lower {
-                merge_seam(&mut l.clone(), &mut x, c.chain.base);
-            }
-            for (z, u) in uppers {
-                merge_seam(&mut x, &mut u.clone(), z);
-            }
-            mesh_into(&mut m, &x);
         }
         m
+    }
+
+    /// Blasses Netz (Isolieren, Übergänge) zur Ansicht wie [`Scene::mesh`];
+    /// leer, wenn nichts blass ist.
+    pub fn ghost_mesh(
+        &mut self,
+        view: ViewKind,
+        section: Option<Plane>,
+        except: &[RunId],
+    ) -> MeshData {
+        if !self.filtering() {
+            return MeshData::default();
+        }
+        let key = (view, section, except.to_vec());
+        let stamp = self.vis_stamp();
+        if let Some((k, st, g)) = &self.ghost {
+            if *k == key && *st == stamp {
+                return g.clone();
+            }
+        }
+        let runs = self.mesh_keys(&key);
+        let [_, g] = self.mesh_split(view, section, &runs);
+        g
+    }
+
+    /// Zwischengespeicherter 3D-Körper eines Zugs (mit Stempeln an Dreieck
+    /// und Kante).
+    #[cfg(test)]
+    pub fn run_solid(&mut self, run: RunId) -> Option<&Solid> {
+        self.rebuild_dirty(false);
+        self.cached(run).map(|c| &c.solid)
+    }
+
+    // --- Sichtbarkeit (Paket 3) -------------------------------------------
+
+    /// Ändert die Sichtbarkeit sofort: kein Schritt, keine Revision, Mengen
+    /// bleiben. `false`, wenn sich nichts ändert.
+    pub fn set_visibility(&mut self, v: Visibility) -> bool {
+        if *self.model.visibility() == v {
+            return false;
+        }
+        self.model.set_visibility(v);
+        self.vis_rev += 1;
+        self.vis_anim = None;
+        true
+    }
+
+    /// Wie [`Scene::set_visibility`], mit Übergang in `anim_ms` (§2):
+    /// Ausgeblendetes wird durchsichtig, Erscheinendes deckend, beim
+    /// Isolieren wird der Rest blass bzw. wieder deckend.
+    #[cfg_attr(not(test), allow(dead_code))] // Baumpanel (Paket 4)
+    pub fn fade_visibility(&mut self, v: Visibility) -> bool {
+        let old = self.model.visibility().clone();
+        if !self.set_visibility(v) {
+            return false;
+        }
+        let new = self.model.visibility();
+        let kind = match (&old.isolate, &new.isolate) {
+            (None, Some(_)) => Some(VisFade::IsolateOn),
+            (Some(_), None) => Some(VisFade::IsolateOff),
+            (None, None) => {
+                let (mut out, mut inn) = (false, false);
+                for (id, _) in self.model.elements().iter() {
+                    let (o, n) = (self.model.masks_in(&old, id), self.model.masks(id));
+                    out |= o.solid & !n.solid != 0;
+                    inn |= n.solid & !o.solid != 0;
+                }
+                match (out, inn) {
+                    (true, false) => Some(VisFade::Out),
+                    (false, true) => Some(VisFade::In),
+                    _ => None,
+                }
+            }
+            (Some(_), Some(_)) => None,
+        };
+        if self.theme.size.anim_ms > 0.0 {
+            self.vis_anim = kind.map(|kind| VisAnim {
+                kind,
+                old,
+                start: self.now,
+            });
+        }
+        true
+    }
+
+    /// Läuft ein Übergang der Sichtbarkeit?
+    pub fn vis_animating(&self) -> bool {
+        self.vis_anim.is_some()
+    }
+
+    /// Stellt die Uhr; `true`, wenn der Übergang endet und die Netze neu
+    /// zusammengesetzt werden müssen.
+    pub fn vis_tick(&mut self, now: u64) -> bool {
+        self.now = now;
+        let ms = self.theme.size.anim_ms;
+        match &self.vis_anim {
+            Some(a) if ms <= 0.0 || now.saturating_sub(a.start) as f32 >= ms => {
+                self.vis_anim = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Endet ein laufender Übergang sofort (Klick, wie beim Wachsen)?
+    pub fn skip_vis_animation(&mut self) -> bool {
+        self.vis_anim.take().is_some()
+    }
+
+    /// Deckkraft des blassen Netzes in diesem Bild: beim Isolieren
+    /// `ghost_alpha_3d` bzw. `ghost_alpha_paper` (Zeichnung), im Übergang
+    /// dazwischen (ease-out).
+    pub fn ghost_alpha(&self, paper: bool) -> f32 {
+        let size = &self.theme.size;
+        let g = if paper {
+            size.ghost_alpha_paper
+        } else {
+            size.ghost_alpha_3d
+        };
+        let Some(a) = &self.vis_anim else {
+            return if self.model.visibility().isolate.is_some() {
+                g
+            } else {
+                0.0
+            };
+        };
+        let k = ease_out(self.now.saturating_sub(a.start) as f32 / size.anim_ms.max(1.0));
+        match a.kind {
+            VisFade::Out => 1.0 - k,
+            VisFade::In => k,
+            VisFade::IsolateOn => 1.0 + (g - 1.0) * k,
+            VisFade::IsolateOff => g + (1.0 - g) * k,
+        }
+    }
+
+    /// Ist das Bauteil zu sehen (nicht ganz ausgeblendet)? Blasses zählt.
+    pub fn visible(&self, id: ElementId) -> bool {
+        self.model.visibility().is_plain() || self.model.shown(id).0 != sk_model::view::Shown::None
+    }
+
+    /// Ist ein Bauteil anklickbar und fangbar (§3.5): nicht ausgeblendet,
+    /// beim Isolieren nur Isoliertes?
+    pub fn pickable(&self, id: ElementId) -> bool {
+        self.model.visibility().is_plain() || self.model.masks(id).solid != 0
+    }
+
+    /// Ist das Gelände ausgeblendet?
+    pub fn terrain_hidden(&self) -> bool {
+        self.model.visibility().terrain_hidden
+    }
+
+    /// Ist der Ast isoliert?
+    #[cfg_attr(not(test), allow(dead_code))] // Baumpanel (Paket 4)
+    pub fn isolating(&self) -> Option<&Isolate> {
+        self.model.visibility().isolate.as_ref()
     }
 
     /// Umschließender Quader des Modells.
@@ -2444,12 +2803,23 @@ impl Scene {
 
     /// Nächster Treffer eines Strahls: Abstand und getroffene Wand.
     pub fn raycast(&self, origin: Vec3, dir: Vec3) -> Option<(f64, ElementId)> {
+        let filter = self.filtering();
+        let vis = Vis {
+            model: &self.model,
+            anim: self.vis_anim.as_ref(),
+            table: &self.vis_table,
+            stamp: self.vis_stamp(),
+        };
         let mut best: Option<(f64, RunId, u32)> = None;
         for c in self.cache.iter().flatten() {
             if !c.bounds.is_some_and(|b| ray_hits_box(origin, dir, b)) {
                 continue;
             }
-            if let Some((t, seg)) = c.solid.raycast_elem(origin, dir) {
+            // Nur Deckendes ist anklickbar (§3.5): nichts Ausgeblendetes,
+            // beim Isolieren nichts Blasses
+            let run = c.id;
+            let keep = |t: &Tri| !filter || vis.class(run, t.elem, t.layer) == Class::Solid;
+            if let Some((t, seg)) = c.solid.raycast_where(origin, dir, keep) {
                 if best.is_none_or(|b| t < b.0) {
                     best = Some((t, c.id, seg));
                 }
@@ -2476,12 +2846,20 @@ impl Scene {
             .flatten()
             .map(|c| (c.id, self.plan_mode(c.id, active)))
             .collect();
+        let filter = self.filtering();
+        let vis = Vis {
+            model: &self.model,
+            anim: self.vis_anim.as_ref(),
+            table: &self.vis_table,
+            stamp: self.vis_stamp(),
+        };
         let mut best: Option<(f64, RunId, u32)> = None;
         for c in self.cache.iter_mut().flatten() {
             if !c.bounds.is_some_and(|b| ray_hits_box(origin, dir, b)) {
                 continue;
             }
             let id = c.id;
+            let keep = |t: &Tri| !filter || vis.class(id, t.elem, t.layer) == Class::Solid;
             if let Some((t, seg)) = c
                 .view_solid(
                     view,
@@ -2492,7 +2870,7 @@ impl Scene {
                         .find(|m| m.0 == id)
                         .map_or(PlanMode::Cut, |m| m.1),
                 )
-                .and_then(|s| s.raycast_elem(origin, dir))
+                .and_then(|s| s.raycast_where(origin, dir, keep))
             {
                 if best.is_none_or(|b| t < b.0) {
                     best = Some((t, id, seg));
@@ -2961,6 +3339,42 @@ mod tests {
         let live = s.mesh_runs(ViewKind::Persp, None, &[a]);
         assert_eq!(whole.faces.len(), rest.faces.len() + live.faces.len());
         assert_eq!(whole.edges.len(), rest.edges.len() + live.edges.len());
+    }
+
+    /// Paket 3 §2: Ausblenden gleitet in `anim_ms` von deckend nach
+    /// durchsichtig, Isolieren macht den Rest blass; ein Klick springt ans
+    /// Ende. Während des Übergangs ist nichts Ausgehendes anklickbar.
+    #[test]
+    fn sichtbarkeit_gleitet() {
+        let mut s = Scene::with_model(Model::with_seed(4));
+        s.add_wall(&rechteck(0.0)).unwrap();
+        let ms = s.theme.size.anim_ms as u64;
+        let w = s.model().elements().iter().next().unwrap().0;
+        let g = s.model().element(w).unwrap().guid;
+        s.set_now(1000);
+        let mut v = s.model().visibility().clone();
+        v.hidden.insert(g);
+        assert!(s.fade_visibility(v.clone()));
+        assert!(!s.fade_visibility(v), "gleich: nichts neu");
+        assert!(s.vis_animating() && !s.visible(w));
+        assert_eq!(s.ghost_alpha(false), 1.0);
+        assert!(!s.ghost_mesh(ViewKind::Persp, None, &[]).faces.is_empty());
+        assert!(!s.vis_tick(1000 + ms / 2));
+        assert!(s.ghost_alpha(false) > 0.0 && s.ghost_alpha(false) < 1.0);
+        assert!(s.vis_tick(1000 + ms));
+        assert_eq!(s.ghost_alpha(false), 0.0);
+        assert!(s.ghost_mesh(ViewKind::Persp, None, &[]).faces.is_empty());
+
+        let mut v = s.model().visibility().clone();
+        v.hidden.clear();
+        v.isolate = Some(Isolate::Elements([g].into_iter().collect()));
+        assert!(s.fade_visibility(v));
+        assert!(s.isolating().is_some());
+        assert!(s.skip_vis_animation());
+        let a = s.theme.size.ghost_alpha_3d;
+        assert_eq!(s.ghost_alpha(false), a);
+        assert_eq!(s.ghost_alpha(true), s.theme.size.ghost_alpha_paper);
+        assert!(s.pickable(w));
     }
 
     #[test]

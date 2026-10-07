@@ -25,6 +25,7 @@ pub mod trade;
 pub mod txn;
 #[cfg(test)]
 mod type_tests;
+pub mod view;
 pub mod wall;
 
 pub use attr::{

@@ -390,8 +390,20 @@ impl Solid {
 
     /// Nächster Treffer: Abstand und Teil ([`Tri::elem`]) des getroffenen Dreiecks.
     pub fn raycast_elem(&self, origin: Vec3, dir: Vec3) -> Option<(f64, u32)> {
+        self.raycast_where(origin, dir, |_| true)
+    }
+
+    /// Wie [`Solid::raycast_elem`], nur über die Dreiecke, für die `keep`
+    /// gilt (etwa nur Sichtbares, Paket 3).
+    pub fn raycast_where(
+        &self,
+        origin: Vec3,
+        dir: Vec3,
+        mut keep: impl FnMut(&Tri) -> bool,
+    ) -> Option<(f64, u32)> {
         self.triangles
             .iter()
+            .filter(|t| keep(t))
             .filter_map(|t| ray_triangle(origin, dir, t.p[0], t.p[1], t.p[2]).map(|d| (d, t.elem)))
             .min_by(|a, b| a.0.total_cmp(&b.0))
     }

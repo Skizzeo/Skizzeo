@@ -75,6 +75,8 @@ pub struct Model {
     cuts: [Cut; 2],
     /// Zuletzt gezeigter Schnitt (Kennung, A = 0); Ansichtszustand wie `cuts`.
     active_cut: usize,
+    /// Ausgeblendetes und Isoliertes (Paket 3); Ansichtszustand wie `cuts`.
+    pub(crate) visibility: crate::view::Visibility,
     /// Stifte, Schraffuren, Oberflächen und Bauteildarstellung.
     attr: Attributes,
     materials: Arena<Material>,
@@ -481,6 +483,7 @@ impl Model {
             strict: false,
             cuts: Default::default(),
             active_cut: 0,
+            visibility: Default::default(),
             foreign: Default::default(),
         }
     }
@@ -537,6 +540,7 @@ impl Model {
             strict: false,
             cuts: Default::default(),
             active_cut: 0,
+            visibility: Default::default(),
             foreign: Default::default(),
         };
         m.joins = m.detect_all();

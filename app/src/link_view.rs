@@ -91,6 +91,10 @@ pub fn chips(wnt: &Want) -> Vec<Chip> {
             let Some(wall) = m.wall_at(run, k) else {
                 continue;
             };
+            // Ausgeblendet oder blass (Paket 3): kein Kettenschild
+            if !wnt.scene.pickable(wall) {
+                continue;
+            }
             let Some((_, linked)) = m.stack_offset(wall) else {
                 continue;
             };

@@ -166,7 +166,7 @@ pub const F4_ROLES: [F4Role; 11] = [
     }),
 ];
 
-pub const SIZE_ROLES: [SizeRole; 78] = [
+pub const SIZE_ROLES: [SizeRole; 80] = [
     ("corner_radius", "Eckenradius", |t| {
         &mut t.size.corner_radius
     }),
@@ -287,6 +287,12 @@ pub const SIZE_ROLES: [SizeRole; 78] = [
     }),
     ("flash_ms", "Aufleuchten (ms)", |t| &mut t.size.flash_ms),
     ("fade_ms", "Ausblenden (ms)", |t| &mut t.size.fade_ms),
+    ("ghost_alpha_3d", "Isolieren: Deckkraft 3D", |t| {
+        &mut t.size.ghost_alpha_3d
+    }),
+    ("ghost_alpha_paper", "Isolieren: Deckkraft Zeichnung", |t| {
+        &mut t.size.ghost_alpha_paper
+    }),
     ("link_icon_w", "Kettenglied: Breite", |t| {
         &mut t.size.link_icon_w
     }),

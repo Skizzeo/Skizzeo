@@ -281,6 +281,7 @@ impl WallEdit {
             }
         }
         best.and_then(|(_, _, (run, k))| scene.model().wall_at(run, k))
+            .filter(|&e| scene.pickable(e))
     }
 
     /// Greifstelle neu bestimmen (nach Kamerawechsel oder Änderung der Wände).

@@ -120,6 +120,7 @@ gl_api! {
     fn glDisable(cap: GLenum);
     fn glDepthFunc(f: GLenum);
     fn glDepthMask(m: GLboolean);
+    fn glColorMask(r: GLboolean, g: GLboolean, b: GLboolean, a: GLboolean);
     fn glBlendFunc(s: GLenum, d: GLenum);
     fn glPolygonOffset(factor: GLfloat, units: GLfloat);
     fn glPixelStorei(p: GLenum, v: GLint);

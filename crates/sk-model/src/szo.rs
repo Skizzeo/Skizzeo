@@ -983,6 +983,26 @@ fn write_known(m: &Model) -> String {
             l.finish(&mut out);
         }
     }
+    // Ausgeblendetes (Paket 3 §3.6) nur, wenn es etwas gibt; Isolieren nie
+    let v = m.visibility();
+    for g in &v.hidden {
+        if m.elements().iter().any(|(_, e)| e.guid == *g) {
+            Line::new("hide").guid("elem", Some(*g)).finish(&mut out);
+        }
+    }
+    for c in &v.hidden_cat {
+        Line::new("hide")
+            .word("cat", crate::kinds::spec(*c).szo)
+            .finish(&mut out);
+    }
+    for t in &v.hidden_trade {
+        if m.trade(*t).is_some() {
+            Line::new("hide").guid("trade", Some(t.0)).finish(&mut out);
+        }
+    }
+    if v.terrain_hidden {
+        Line::new("hide").flag("terrain", true).finish(&mut out);
+    }
     out
 }
 
@@ -1069,10 +1089,10 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     // Sätze unbekannter Art (neuere Fassung, F-17b): roh behalten, ohne Hinweis
     let mut alien: Vec<usize> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 24] = [
+    const KNOWN: [&str; 25] = [
         "pen", "linetype", "fill", "surface", "display", "trade", "material", "layerset", "layer",
         "typeprop", "project", "building", "storey", "run", "wall", "slab", "footing", "floor",
-        "strip", "soffit", "terrace", "coping", "prop", "cut",
+        "strip", "soffit", "terrace", "coping", "prop", "cut", "hide",
     ];
     for (i, l) in text.lines().enumerate().skip(1) {
         let Some(r) = Record::parse(i + 1, l)? else {
@@ -1716,6 +1736,19 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
             }
         }
     }
+    // Ausgeblendetes (Paket 3 §3.6): nur Ansicht, Unbekanntes still verworfen
+    // je Zeile: Bauteil, Art, Gewerk, Gelände
+    type Hide = (Option<Guid>, Option<crate::Category>, Option<Guid>, bool);
+    let mut hide: Vec<Hide> = Vec::new();
+    for r in recs("hide") {
+        let g = |k: &str| r.opt(k).and_then(Guid::from_ifc);
+        let cat = r.opt("cat").and_then(|w| {
+            crate::Category::ALL
+                .into_iter()
+                .find(|c| crate::kinds::spec(*c).szo == w)
+        });
+        hide.push((g("elem"), cat, g("trade"), r.opt("terrain") == Some("1")));
+    }
     for recs in by.values() {
         for r in recs {
             r.unused(&mut hints);
@@ -1758,6 +1791,23 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         model.set_cut(i, c);
     }
     model.set_active_cut(active_cut);
+    let mut vis = crate::view::Visibility::default();
+    for (elem, cat, trade, terrain) in hide {
+        if let Some(g) = elem.filter(|g| model.elements().iter().any(|(_, e)| e.guid == *g)) {
+            vis.hidden.insert(g);
+        }
+        if let Some(c) = cat {
+            vis.hidden_cat.insert(c);
+        }
+        if let Some(t) = trade
+            .map(crate::TradeId)
+            .filter(|t| model.trade(*t).is_some())
+        {
+            vis.hidden_trade.insert(t);
+        }
+        vis.terrain_hidden |= terrain;
+    }
+    model.set_visibility(vis);
     hints.extend(model.check());
     model.foreign = foreign(&model, &by, &lines, &alien);
     Ok(Loaded { model, hints })

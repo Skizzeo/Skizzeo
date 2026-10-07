@@ -258,6 +258,10 @@ pub struct Sizes {
     /// Aus- und Einblenden gelöschter Bauteile und des Hinweises am Bauteil
     /// (Paket „Löschen“), ms.
     pub fade_ms: f32,
+    /// Deckkraft des Blassen beim Isolieren (Paket 3): in 3D und in den
+    /// Zeichnungen (Grundriss, Schnitt, Ansichten); Kanten wie Flächen.
+    pub ghost_alpha_3d: f32,
+    pub ghost_alpha_paper: f32,
     /// Kettensymbol (OG Phase 2): Glied breit und hoch, Strichstärke; Breite
     /// der Fußlinie des Partners darunter und des Ziehgeists, Strichlänge
     /// beider gestrichelt (dip).
@@ -466,6 +470,8 @@ impl Theme {
                 qto_window_w: 520.0,
                 flash_ms: 600.0,
                 fade_ms: 150.0,
+                ghost_alpha_3d: 0.15,
+                ghost_alpha_paper: 0.25,
                 link_icon_w: 9.0,
                 link_icon_h: 5.0,
                 link_icon_stroke: 1.5,

@@ -10,6 +10,7 @@ mod backup_card;
 mod camera;
 mod catalog;
 mod catalog_view;
+mod cli;
 mod delete;
 mod document;
 mod draw_table;
@@ -31,6 +32,7 @@ mod terrace_label;
 mod type_look;
 mod type_menu;
 mod ui;
+mod visible;
 mod wall_edit;
 mod wall_tool;
 mod wheel;
@@ -130,10 +132,11 @@ fn geometry(v: ViewKind) -> u8 {
 
 /// Oberflächenbilder in der Zeichenreihenfolge.
 /// Renderer-Ablagen für Netze: ruhendes Modell, Vorschau des Wandwerkzeugs,
-/// gezogener Wandzug.
+/// gezogener Wandzug, blasses Netz (Isolieren und Übergänge, Paket 3).
 const MESH_MODEL: usize = 0;
 const MESH_PREVIEW: usize = 1;
 const MESH_LIVE: usize = 2;
+const MESH_GHOST: usize = 3;
 /// Bildabstand für Animationen im Mengenfenster (das Hauptfenster läuft mit vsync).
 const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 
@@ -733,6 +736,8 @@ impl App {
             self.mesh_dirty = false;
             let mesh = self.scene.mesh(self.ui.view, plane, &self.live_runs);
             self.renderer.set_mesh(MESH_MODEL, &mesh);
+            let ghost = self.scene.ghost_mesh(self.ui.view, plane, &self.live_runs);
+            self.renderer.set_mesh(MESH_GHOST, &ghost);
         }
         if self.live_dirty {
             self.live_dirty = false;
@@ -2311,6 +2316,10 @@ impl App {
     fn handle(&mut self, e: Event, surface: &Surface) -> bool {
         // Ein Klick während der Wände wachsen: sofort Endstand (K3b)
         if matches!(e, Event::MouseDown { .. }) && self.scene.skip_animation() {
+            self.upload_model();
+        }
+        // … ebenso ein Übergang der Sichtbarkeit (Paket 3)
+        if matches!(e, Event::MouseDown { .. }) && self.scene.skip_vis_animation() {
             self.upload_model();
         }
         if self.card.is_some() && self.handle_card(e, surface) {
@@ -4868,6 +4877,25 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     if let Some(path) = document::path_from_args(std::env::args()) {
         a.open_path(&surface, path);
     }
+    // `--ausblenden`, `--isolieren`, `--gelaende-aus`: Sichtbarkeit für
+    // Bildvergleiche (Paket 3); ersetzt die aus der Datei
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|x| {
+        matches!(
+            x.as_str(),
+            "--ausblenden" | "--isolieren" | "--gelaende-aus"
+        )
+    }) {
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        match cli::visibility_args(&refs, a.scene.model()) {
+            Ok(v) => {
+                if a.scene.set_visibility(v) {
+                    a.upload_model();
+                }
+            }
+            Err(e) => eprintln!("{e}"),
+        }
+    }
     // `--ansicht schnitt`: mit dieser Ansicht beginnen (Bildvergleiche);
     // `schnitt` zeigt Schnitt A, `schnitt-b` Schnitt B, dazu `--gespiegelt`
     // mit umgekehrtem Blick
@@ -5039,6 +5067,12 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             a.mesh_dirty |= a.scene.grow_tick(t);
             a.redraw = true;
         }
+        // Ausblenden, Einblenden, Isolieren gleiten in `anim_ms`
+        if a.scene.vis_animating() {
+            let t = a.now();
+            a.mesh_dirty |= a.scene.vis_tick(t);
+            a.redraw = true;
+        }
         a.sync_quantity(&surface);
         a.sync_tool_chip();
         a.sync_tip();
@@ -5141,6 +5175,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                     helpers.extend(a.sect.helpers(&a.scene, &a.cam, vh, scale, &a.theme))
                 }
                 ViewKind::Persp => {}
+                // Gelände ausgeblendet: keine Geländelinie (Paket 3)
+                _ if a.scene.terrain_hidden() => {}
                 v => helpers.extend(ground_line(
                     a.side_like(v),
                     a.scene.bounds(),
@@ -5458,6 +5494,14 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             if (dx, k) != (0.0, 1.0) {
                 view = view.squeezed(dx, k, axis, a.w as f32);
             }
+            let ground = if a.scene.terrain_hidden() {
+                0.0
+            } else {
+                a.theme.env.ground_opacity
+            };
+            a.renderer.set_ground_opacity(ground);
+            let alpha = a.scene.ghost_alpha(drawing);
+            a.renderer.set_ghost(Some((MESH_GHOST, alpha)));
             a.renderer.draw(a.w, a.h, th, &view)?;
             let shown_at = a.now();
             a.wheel.shown(shown_at);

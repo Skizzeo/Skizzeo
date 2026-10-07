@@ -801,6 +801,10 @@ fn outline(
     theme: &Theme,
     color: [f32; 4],
 ) -> Vec<Helper> {
+    // Ausgeblendetes hat keinen Umriss (§3.5)
+    if !scene.visible(id) {
+        return Vec::new();
+    }
     let at = |p: Vec3, z: f64| vec3(p.x, p.y, z);
     let mut lines = Vec::new();
     // Umriss `f` von z0 bis z1 als Kanten (im Grundriss nur oben)

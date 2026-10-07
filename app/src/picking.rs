@@ -70,19 +70,21 @@ impl Picking {
         self.selected.clear();
     }
 
-    /// Bauteile, die es nicht mehr gibt (gelöscht, Rückgängig), fallen aus
-    /// Auswahl und Hover. `true`, wenn sich etwas geändert hat.
+    /// Bauteile, die es nicht mehr gibt (gelöscht, Rückgängig) oder die
+    /// ausgeblendet sind (Paket 3), fallen aus Auswahl und Hover. `true`,
+    /// wenn sich etwas geändert hat.
     pub fn validate(&mut self, scene: &Scene) -> bool {
         let m = scene.model();
+        let ok = |e: ElementId| m.element(e).is_some() && scene.visible(e);
         let n = self.selected.len();
-        self.selected.retain(|&e| m.element(e).is_some());
+        self.selected.retain(|&e| ok(e));
         let mut changed = n != self.selected.len();
-        if self.hover.is_some_and(|e| m.element(e).is_none()) {
+        if self.hover.is_some_and(|e| !ok(e)) {
             self.hover = None;
             changed = true;
         }
         let n = self.hover_group.len();
-        self.hover_group.retain(|&e| m.element(e).is_some());
+        self.hover_group.retain(|&e| ok(e));
         changed | (n != self.hover_group.len())
     }
 }
