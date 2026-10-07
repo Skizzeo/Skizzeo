@@ -137,6 +137,8 @@ pub struct AutoSave {
     background: bool,
     /// Laufende Sicherung; `false`, wenn sie nicht auf die Platte kam.
     job: Option<std::thread::JoinHandle<bool>>,
+    /// Ergebnis des zuletzt beendeten Versuchs, noch nicht abgeholt.
+    outcome: Option<bool>,
 }
 
 impl AutoSave {
@@ -149,6 +151,7 @@ impl AutoSave {
             written: None,
             background: false,
             job: None,
+            outcome: None,
         }
     }
 
@@ -180,7 +183,7 @@ impl AutoSave {
     pub fn tick(&mut self, m: &Model, doc: &Document, now: Duration) -> Option<PathBuf> {
         // Ging die letzte Sicherung schief (Platte voll, Ordner gesperrt),
         // gilt der Stand als ungesichert: nächster Versuch nach dem Takt
-        if self.job.as_ref().is_some_and(|j| j.is_finished()) && !self.finish() {
+        if self.job.as_ref().is_some_and(|j| j.is_finished()) && !self.collect() {
             self.covered = None;
         }
         let since = *self.since.get_or_insert(now);
@@ -190,7 +193,7 @@ impl AutoSave {
         let name = backup_name(doc.path.as_deref(), sk_platform::local_date_time());
         let path = self.dir.join(&name);
         let text = szo::write(m);
-        self.finish();
+        self.collect();
         // Je Projekt nur die jüngste: die älteren erst entfernen, wenn die
         // neue auf der Platte ist
         let mut lines = read_index(&self.dir);
@@ -225,7 +228,10 @@ impl AutoSave {
         if self.background {
             self.job = Some(std::thread::spawn(write));
         } else if !write() {
+            self.outcome = Some(false);
             return None;
+        } else {
+            self.outcome = Some(true);
         }
         self.written = Some(name);
         Some(path)
@@ -263,6 +269,22 @@ impl AutoSave {
         self.covered = None;
     }
 
+    /// Ergebnis des letzten beendeten Versuchs (einmal): `false`, wenn er
+    /// nicht auf die Platte kam (Hinweis F-13 §8).
+    pub fn take_outcome(&mut self) -> Option<bool> {
+        self.outcome.take()
+    }
+
+    /// Wie [`AutoSave::finish`], merkt sich das Ergebnis für die App.
+    fn collect(&mut self) -> bool {
+        if self.job.is_none() {
+            return true;
+        }
+        let ok = self.finish();
+        self.outcome = Some(ok);
+        ok
+    }
+
     /// Wartet, bis eine laufende Sicherung auf der Platte ist; `false`, wenn
     /// sie nicht geschrieben werden konnte.
     fn finish(&mut self) -> bool {
@@ -273,6 +295,84 @@ impl AutoSave {
 impl Drop for AutoSave {
     fn drop(&mut self) {
         self.finish();
+    }
+}
+
+// --- Hinweis beim Scheitern (F-13 §8) -----------------------------------------
+
+/// Frühestens so lange nach der letzten Karte erscheint sie wieder.
+const FAIL_AGAIN: Duration = Duration::from_secs(30 * 60);
+
+/// Was mit der Hinweiskarte „Automatisches Sichern klappt gerade nicht.“
+/// geschieht.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoticeStep {
+    Show,
+    Hide,
+    None,
+}
+
+/// Zähler der Fehlschläge in Folge und Sperre für die Karte: Ein einzelner
+/// Fehlschlag bleibt still, ab dem zweiten in Folge erscheint die Karte,
+/// danach höchstens alle 30 Minuten. Gelungenes Sichern oder Speichern
+/// setzt alles zurück; eine gezeigte Karte blendet dann aus.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FailNotice {
+    fails: u32,
+    last: Option<Duration>,
+    shown: bool,
+}
+
+impl FailNotice {
+    /// Ein Versuch im Takt zur Zeit `now` (seit Programmstart).
+    pub fn attempt(&mut self, ok: bool, now: Duration) -> NoticeStep {
+        if ok {
+            return self.reset();
+        }
+        self.fails += 1;
+        let free = self
+            .last
+            .is_none_or(|t| now.saturating_sub(t) >= FAIL_AGAIN);
+        if self.fails >= 2 && free {
+            self.last = Some(now);
+            self.shown = true;
+            return NoticeStep::Show;
+        }
+        NoticeStep::None
+    }
+
+    /// Die Datei wurde gespeichert.
+    pub fn saved(&mut self, _now: Duration) -> NoticeStep {
+        self.reset()
+    }
+
+    fn reset(&mut self) -> NoticeStep {
+        let shown = self.shown;
+        *self = FailNotice::default();
+        if shown {
+            NoticeStep::Hide
+        } else {
+            NoticeStep::None
+        }
+    }
+}
+
+/// Zeilen der Karte: fett, gedimmt, Verweis.
+pub fn fail_notice_lines() -> [String; 3] {
+    [
+        "Automatisches Sichern klappt gerade nicht.".into(),
+        "Der Ordner „Sicherungen“ ist voll oder gesperrt. Bitte die Datei speichern.".into(),
+        "Jetzt speichern".into(),
+    ]
+}
+
+/// Befehl hinter „Jetzt speichern“: wie Strg+S, bei Unbenannt „Speichern
+/// unter …“.
+pub fn fail_notice_command(untitled: bool) -> crate::menu::Command {
+    if untitled {
+        crate::menu::Command::SaveAs
+    } else {
+        crate::menu::Command::Save
     }
 }
 
@@ -533,6 +633,8 @@ mod tests {
             std::thread::yield_now();
         }
         assert_eq!(a.tick(&m, &doc, t(6)), None, "erst nach dem Takt");
+        assert_eq!(a.take_outcome(), Some(false), "Fehlschlag gemeldet");
+        assert_eq!(a.take_outcome(), None, "nur einmal");
         assert!(
             a.tick(&m, &doc, t(10)).is_some(),
             "ohne neue Änderung wiederholt"

@@ -551,6 +551,10 @@ struct App {
     drag_notice: bool,
     /// „Bündig setzen“ gleitet: Wand, ihr Zug, Versatz am Anfang, Beginn.
     flush_anim: Option<(sk_model::ElementId, sk_model::RunId, f64, Instant)>,
+    /// Fehlschläge des Sicherns in Folge (F-13 §8) und ein Befehl aus einem
+    /// Verweis, der das Fenster braucht („Jetzt speichern“).
+    save_fail: autosave::FailNotice,
+    queued_command: Option<Command>,
     /// Löschen (V?-9): Hinweis am Bauteil (und seine gezeigte Deckkraft),
     /// Kontextmenü, Rückfrage „Gebäude löschen“, jeweils ob ihr Bild neu zu
     /// zeichnen ist; Beginn des Aus- bzw. Einblendens und des Aufleuchtens
@@ -1467,6 +1471,8 @@ impl App {
                 if let Some(a) = self.autosave.as_mut() {
                     a.saved(&self.doc, now);
                 }
+                let step = self.save_fail.saved(now);
+                self.fail_notice(step);
                 true
             }
             Err(e) => {
@@ -2158,6 +2164,9 @@ impl App {
             return !self.quit;
         }
         if self.hint.is_some() && self.handle_hint(e) {
+            if let Some(c) = self.queued_command.take() {
+                self.run_command(c, surface);
+            }
             return !self.quit;
         }
         // Hinweis in der Statuszeile: erst nach Nachfrage, Fenstern und
@@ -2996,6 +3005,10 @@ impl App {
             delete::Link::DeleteBuilding(b) => self.open_confirm(b),
             delete::Link::ChangeType(wall) => self.change_type_of(wall),
             delete::Link::Flush(wall) => self.flush(wall),
+            delete::Link::Save => {
+                let untitled = self.doc.path.is_none();
+                self.queued_command = Some(autosave::fail_notice_command(untitled));
+            }
         }
     }
 
@@ -3712,6 +3725,31 @@ impl App {
         }
     }
 
+    /// Hinweiskarte, wenn das automatische Sichern scheitert (F-13 §8):
+    /// unten mittig, Punkt in `ui.danger`, Verweis „Jetzt speichern“.
+    fn fail_notice(&mut self, step: autosave::NoticeStep) {
+        let link = ("Jetzt speichern", delete::Link::Save);
+        match step {
+            autosave::NoticeStep::Show => {
+                let [a, b, _] = autosave::fail_notice_lines();
+                let mut h =
+                    delete::HintCard::new(vec![a, b], Some(link), Vec::new(), Instant::now());
+                h.danger = true;
+                self.hint = Some(h);
+                self.hint_dirty = true;
+                self.redraw = true;
+            }
+            autosave::NoticeStep::Hide => {
+                let fade = self.theme.size.fade_ms * (self.theme.size.anim_ms > 0.0) as u8 as f32;
+                if let Some(h) = self.hint.as_mut().filter(|h| h.link == Some(link)) {
+                    h.dismiss(Instant::now(), fade);
+                    self.redraw = true;
+                }
+            }
+            autosave::NoticeStep::None => {}
+        }
+    }
+
     /// „Bündig setzen“ (Hinweis oder Paneel): die OG-Wand gleitet in
     /// `anim_ms` (ease-out) auf das EG; ein Schritt.
     fn flush(&mut self, wall: sk_model::ElementId) {
@@ -4373,6 +4411,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         chip_hover: None,
         drag_notice: false,
         flush_anim: None,
+        save_fail: autosave::FailNotice::default(),
+        queued_command: None,
         hint: None,
         hint_dirty: false,
         hint_alpha: 0.0,
@@ -4533,8 +4573,13 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         // Automatisch sichern (F-13), nicht mitten im Ziehen
         if !a.edit.is_dragging() {
             let now = a.clock.elapsed();
-            if let Some(s) = a.autosave.as_mut() {
+            let outcome = a.autosave.as_mut().and_then(|s| {
                 s.tick(a.scene.model(), &a.doc, now);
+                s.take_outcome()
+            });
+            if let Some(ok) = outcome {
+                let step = a.save_fail.attempt(ok, now);
+                a.fail_notice(step);
             }
         }
         a.sync_wheel();

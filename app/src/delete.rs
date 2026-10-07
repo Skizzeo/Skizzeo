@@ -24,6 +24,8 @@ pub enum Link {
     /// Typ der Wand ändern (Randdämmstreifen: seine Wand).
     ChangeType(ElementId),
     Undo,
+    /// „Jetzt speichern“ (Sichern scheitert, F-13 §8): wie Strg+S.
+    Save,
     /// OG-Wand bündig setzen (OG Phase 2, nach „wieder koppeln“).
     Flush(ElementId),
 }
@@ -153,6 +155,8 @@ pub struct HintCard {
     pub rect: Option<Rect>,
     pub link_hover: bool,
     hover: bool,
+    /// Punkt in `ui.danger` statt Akzent (es kann Arbeit verloren gehen).
+    pub danger: bool,
 }
 
 /// Maße der Karte (dip): Rand links bis zum Punkt, Punkt, Text ab, Rand
@@ -182,7 +186,15 @@ impl HintCard {
             rect: None,
             link_hover: false,
             hover: false,
+            danger: false,
         }
+    }
+
+    /// Sofort ausblenden (in `fade_ms`), auch unter der Maus.
+    pub fn dismiss(&mut self, now: Instant, fade_ms: f32) {
+        self.hover = false;
+        let fade = Duration::from_secs_f32(fade_ms.max(0.0) / 1000.0);
+        self.deadline = self.deadline.min(now + fade);
     }
 
     /// Größe (Pixel, ohne Schatten).
@@ -335,7 +347,7 @@ impl HintCard {
             d,
             d * 0.5,
         );
-        c.fill(&p, u.accent);
+        c.fill(&p, if self.danger { u.danger } else { u.accent });
         base = base.round() + (cap * 0.5).round();
         let x = m + CARD_TEXT_X * s;
         for (i, l) in self.lines.iter().enumerate() {
