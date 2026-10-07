@@ -588,6 +588,10 @@ pub struct Ui {
     /// Platz des Baumpanels zwischen „Ansichten“ und „Eigenschaften“
     /// (Pixel, samt Abstand darunter; Paket 4).
     pub tree_slot: f32,
+    /// Höchste Höhe der „Eigenschaften“ (Pixel, 0 = ohne Grenze); ist der
+    /// Inhalt höher, rollt er mit dem Mausrad.
+    pub props_room: f32,
+    props_scroll: f32,
 }
 
 /// Paneelbild ohne Knöpfe und mit Knöpfen, in Paneelkoordinaten.
@@ -864,6 +868,8 @@ impl Ui {
             win_h: 1e6,
             top: 32,
             tree_slot: 0.0,
+            props_room: 0.0,
+            props_scroll: 0.0,
         }
     }
 
@@ -1210,6 +1216,51 @@ impl Ui {
     }
 
     fn panel_height(&self, p: Panel) -> f32 {
+        let h = self.natural_height(p);
+        if p == Panel::Props && self.props_room > 0.0 {
+            h.min(self.props_room.round())
+        } else {
+            h
+        }
+    }
+
+    /// Höhe der „Eigenschaften“ mit ganzem Inhalt (Pixel).
+    pub fn props_natural_height(&self) -> f32 {
+        self.natural_height(Panel::Props)
+    }
+
+    /// Wie weit der Inhalt eines Paneels nach oben gerollt ist (Pixel; nur
+    /// „Eigenschaften“).
+    fn scroll(&self, p: Panel) -> f32 {
+        if p != Panel::Props {
+            return 0.0;
+        }
+        let max = (self.natural_height(p) - self.panel_height(p)).max(0.0);
+        self.props_scroll.clamp(0.0, max)
+    }
+
+    /// Mausrad über den „Eigenschaften“ (`delta` in Rasten, + nach oben);
+    /// `true`, wenn der Inhalt gerollt ist.
+    pub fn scroll_props(&mut self, delta: f32) -> bool {
+        let old = self.scroll(Panel::Props);
+        let step = 3.0 * 20.0 * self.scale;
+        self.props_scroll = old - delta * step;
+        let new = self.scroll(Panel::Props);
+        self.props_scroll = new;
+        new != old
+    }
+
+    /// Neue Auswahl: Eigenschaften wieder von oben.
+    pub fn reset_props_scroll(&mut self) {
+        self.props_scroll = 0.0;
+    }
+
+    /// Liegt `(x, y)` (Fenster) über den „Eigenschaften“?
+    pub fn over_props(&self, x: f64, y: f64, win_w: u32, top: u32) -> bool {
+        self.has_props() && self.rect(Panel::Props, win_w, top).contains(x, y)
+    }
+
+    fn natural_height(&self, p: Panel) -> f32 {
         match p {
             Panel::Levels => return self.levels_layout().height,
             Panel::Dialog => return (self.size.dialog_h * self.scale).round(),
@@ -1331,7 +1382,7 @@ impl Ui {
         let s = self.scale;
         let pad = self.size.panel_pad;
         let inner_w = (self.width(p) - 2.0 * pad) * s;
-        let mut y = pad * s;
+        let mut y = pad * s - self.scroll(p);
         let x = pad * s;
         let mut out = Vec::new();
         for r in self.rows(p) {
@@ -1366,6 +1417,11 @@ impl Ui {
                 _ => {}
             }
             y += h + g;
+        }
+        // Gerollt: nur ganz sichtbare Knöpfe zeichnen und treffen
+        if self.natural_height(p) > self.panel_height(p) {
+            let (a, b) = (pad * s * 0.5, self.panel_height(p) - pad * s * 0.5);
+            out.retain(|(_, r, _)| r.y >= a && r.y + r.h <= b);
         }
         out
     }
@@ -1714,7 +1770,12 @@ impl Ui {
             let size = (crate::link_view::CHIP as f32 * s).round();
             let img = crate::link_view::paint(t, linked, st.hover, size, s);
             let y = b.y + ((b.h - size) * 0.5).round();
-            c.blit(&img, b.x.round() as i32, y as i32);
+            if st.disabled {
+                // Gesperrt: blass
+                c.blit_scaled(&img, b.x.round(), y.trunc(), 1.0, 0.4);
+            } else {
+                c.blit(&img, b.x.round() as i32, y as i32);
+            }
             return;
         }
         widgets::button(c, &self.fonts, b, label, st, s, t);
@@ -1748,7 +1809,10 @@ impl Ui {
         let (regular, bold) = (self.fonts.regular.as_ref(), self.fonts.bold.as_ref());
         let x = m + size.panel_pad * s;
         let inner_w = (self.width(p) - 2.0 * size.panel_pad) * s;
-        let mut y = m + size.panel_pad * s;
+        let scroll = self.scroll(p);
+        let rolls = self.natural_height(p) > r.h;
+        let frame = rolls.then(|| c.clone());
+        let mut y = m + size.panel_pad * s - scroll;
         for row in self.rows(p) {
             let (h, g) = row_height(&row);
             let (h, g) = (h * s, g * s);
@@ -1850,6 +1914,21 @@ impl Ui {
                 _ => {}
             }
             y += h + g;
+        }
+        // Gerollt: Rand oben und unten wieder frei, rechts ein schmaler
+        // Balken für Lage und Anteil
+        if let Some(frame) = frame {
+            let edge = size.panel_pad * s * 0.5;
+            let (a, b) = (m + edge, m + r.h - edge);
+            c.copy_rows(&frame, 0, a.floor() as usize);
+            c.copy_rows(&frame, b.ceil() as usize, c.height);
+            let natural = self.natural_height(p);
+            let track = b - a;
+            let thumb = (track * r.h / natural).max(16.0 * s);
+            let max = (natural - r.h).max(1.0);
+            let ty = a + (track - thumb) * scroll / max;
+            let bw = 3.0 * s;
+            c.fill_rect(m + r.w - bw - 3.0 * s, ty, bw, thumb, col.text_disabled);
         }
         c
     }
@@ -2615,7 +2694,13 @@ fn paint_chip(
     let bold = fonts.bold.as_ref().or(fonts.regular.as_ref());
     let px = t.size.font * s;
     let name = widgets::ellipsize(bold, &chip.name, px, max_w);
-    widgets::text(c, bold, &name, px, x, (r.y + 20.0 * s).round(), u.text);
+    // Gesperrt: Name und Angabe blass
+    let (main, dim) = if st.disabled {
+        (u.text_disabled, u.text_disabled)
+    } else {
+        (u.text, u.text_dim)
+    };
+    widgets::text(c, bold, &name, px, x, (r.y + 20.0 * s).round(), main);
     let pd = t.size.font_detail * s;
     let detail = widgets::ellipsize(fonts.regular.as_ref(), &chip.detail, pd, max_w);
     widgets::text(
@@ -2625,7 +2710,7 @@ fn paint_chip(
         pd,
         x,
         (r.y + 36.0 * s).round(),
-        u.text_dim,
+        dim,
     );
     // Pfeil: offen nach oben
     let (cx, cy) = (r.x + r.w - 12.0 * s, r.y + r.h * 0.5);
@@ -2642,7 +2727,7 @@ fn paint_chip(
             .line_to(cx, cy + a * 0.6)
             .close();
     }
-    c.fill(&p, u.text_dim);
+    c.fill(&p, dim);
     if chip.marked {
         let d = 3.0 * s;
         let mut p = Path::new();
@@ -3022,6 +3107,34 @@ mod tests {
     fn taste(ui: &mut Ui, k: Key) -> UiOut {
         ui.key(k, true, Modifiers::default())
             .expect("Feld in Eingabe")
+    }
+
+    /// Paket 4: Eigenschaften höher als ihr Platz rollen mit dem Rad; nur
+    /// ganz sichtbare Felder sind da, der Rollstand bleibt in den Grenzen.
+    #[test]
+    fn eigenschaften_rollen() {
+        let mut ui = Ui::new(1.0, &Theme::dark());
+        ui.set_props(Some(props_mit_feldern()));
+        let full = ui.props_natural_height();
+        let unten = ui.field_rect(Field::Recess).unwrap();
+        // Ohne Grenze: nichts zu rollen
+        assert!(!ui.scroll_props(-1.0));
+        ui.props_room = (unten.y + 4.0).round();
+        assert_eq!(ui.rect(Panel::Props, 1280, 32).h, ui.props_room);
+        assert!(ui.field_rect(Field::Recess).is_none(), "abgeschnitten");
+        assert!(ui.scroll_props(-1.0), "Rad nach unten rollt");
+        let mut n = 0;
+        while ui.scroll_props(-1.0) {
+            n += 1;
+            assert!(n < 50, "am Ende hält es an");
+        }
+        let b = ui.field_rect(Field::Recess).expect("hereingerollt");
+        assert_eq!(b.y, unten.y - (full - ui.props_room));
+        assert!(ui.scroll_props(5.0));
+        assert_eq!(ui.field_rect(Field::Recess), None);
+        assert!(ui.field_rect(Field::SlabThickness).is_some());
+        ui.reset_props_scroll();
+        assert!(!ui.scroll_props(1.0), "oben");
     }
 
     #[test]

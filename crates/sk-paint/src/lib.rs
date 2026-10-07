@@ -343,6 +343,21 @@ impl Canvas {
         self.origin = other.origin;
     }
 
+    /// Übernimmt die Zeilen `y0..y1` von `other` (gleiche Breite), etwa um
+    /// Rand und Kopf eines Paneels über gerolltem Inhalt wiederherzustellen.
+    pub fn copy_rows(&mut self, other: &Canvas, y0: usize, y1: usize) {
+        if other.width != self.width {
+            return;
+        }
+        let (a, b) = (
+            y0.min(self.height).min(other.height) * self.width,
+            y1.min(self.height).min(other.height) * self.width,
+        );
+        if a < b {
+            self.px[a..b].copy_from_slice(&other.px[a..b]);
+        }
+    }
+
     pub fn reuse(&mut self, width: usize, height: usize) {
         if (width, height) != (self.width, self.height) {
             // Akkumulator und Marken passen nur zur alten Größe ([`Canvas::fill`])

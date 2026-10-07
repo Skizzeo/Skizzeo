@@ -784,6 +784,10 @@ impl App {
         if key == self.props_key {
             return;
         }
+        // Anderes Bauteil: Eigenschaften wieder von oben
+        if key.map(|k| k.0) != self.props_key.map(|k| k.0) {
+            self.ui.reset_props_scroll();
+        }
         self.props_key = key;
         self.ui
             .set_props(self.sel.id.and_then(|id| selection::props(&self.scene, id)));
@@ -2913,6 +2917,14 @@ impl App {
             }
             // Getippte Zeichen braucht nur das Einstellungsfenster
             Event::Text(_) => {}
+            // Mausrad über den Eigenschaften: der Inhalt rollt (Paket 4)
+            Event::Wheel { delta, x, y, .. }
+                if !self.ui.dialog && self.ui.over_props(x, y, self.w, self.top()) =>
+            {
+                if self.ui.scroll_props(delta as f32) {
+                    self.props_dirty = true;
+                }
+            }
             // Mausrad über dem Geschossbogen: eine Raste = ein Geschoss
             Event::Wheel { delta, x, y, .. }
                 if y >= th && !self.ui.dialog && self.wheel_hit(x, y).is_some() =>
@@ -4285,7 +4297,8 @@ impl App {
             min
         } else if self.ui.has_props() {
             let rh = (z.tree_row_h * s).round();
-            let props = self.ui.rect(Panel::Props, self.w, top).h;
+            // Eigenschaften in natürlicher Höhe, höchstens 55 % der Spalte
+            let props = self.ui.props_natural_height().min(0.55 * avail);
             let want = match self.tree.split {
                 Some(d) => (d * s).round(),
                 None => avail - m - props,
@@ -4316,6 +4329,17 @@ impl App {
         }
         let h = self.tree.height(now, &self.theme);
         let m = (self.theme.size.panel_margin * s).round();
+        // Platz der Eigenschaften unter dem Baum (nach dem Übergang); mehr
+        // Inhalt rollt
+        let room = if props {
+            (self.h as f32 - m - (r.y + r.h + m)).max(0.0)
+        } else {
+            0.0
+        };
+        if room != self.ui.props_room {
+            self.ui.props_room = room;
+            self.props_dirty = true;
+        }
         let slot = h + m;
         if slot != self.ui.tree_slot {
             self.ui.tree_slot = slot;
@@ -4325,7 +4349,12 @@ impl App {
             }
             self.redraw = true;
         }
-        // Auswahl im Modell: Ast aufklappen und hinrollen
+        // Beim Ziehen nicht neu bauen (Leistung), danach einmal
+        if !self.edit.is_dragging() {
+            self.tree.sync(&self.scene, &self.picking, &self.theme, s);
+        }
+        // Auswahl im Modell: Ast aufklappen und hinrollen (nach dem Bau
+        // der Karten, auch beim ersten Bild)
         let p = self.picking.primary();
         if p != self.tree_primary {
             self.tree_primary = p;
@@ -4333,10 +4362,6 @@ impl App {
                 self.tree.reveal(self.scene.model(), id, &self.theme, s);
             }
             self.tree_picked = false;
-        }
-        // Beim Ziehen nicht neu bauen (Leistung), danach einmal
-        if !self.edit.is_dragging() {
-            self.tree.sync(&self.scene, &self.picking, &self.theme, s);
         }
         // Befehlszeile (Bildvergleiche): überfahrene Zeile leuchtet im Modell
         let cli = self.tree.cli_hover.is_some();
