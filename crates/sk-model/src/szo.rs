@@ -1030,7 +1030,7 @@ fn write_known(m: &Model) -> String {
     for s in sorted(a.surfaces().iter(), |s| s.guid) {
         match &s.pattern {
             Some(p) => crate::proctex::write_line(&mut out, s.guid, Some(p)),
-            None if crate::proctex::factory(&s.name).is_some() => {
+            None if crate::proctex::factory_for(s.guid).is_some() => {
                 crate::proctex::write_line(&mut out, s.guid, None)
             }
             None => {}
@@ -1282,7 +1282,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     for id in surface_ids.values() {
         if let Some(s) = surfaces.get_mut(*id) {
             if !patterned.contains(&s.guid) && s.pattern.is_none() {
-                s.pattern = crate::proctex::factory(&s.name);
+                s.pattern = crate::proctex::factory_for(s.guid);
             }
         }
     }

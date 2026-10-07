@@ -130,6 +130,31 @@ pub const FACING: &str = "Verblender (Vormauerziegel)";
 /// Name der Werks-Oberfläche des Putzes.
 pub const PLASTER: &str = "Putz";
 
+/// Guids der Werks-Oberflächen mit Werksmuster: in jedem Projekt dieselben
+/// (die eines neuen Projekts), damit das Werksmuster an der Oberfläche
+/// hängt und nicht an ihrem Namen (Regel 60, BIM-Befund 6a).
+pub const FACING_SURFACE_GUID: Guid = Guid(0x9202c7c486854fed87d5792dac919409);
+pub const PLASTER_SURFACE_GUID: Guid = Guid(0xd6c929c9454e426199aaa965bc7425fb);
+
+/// Guid der Werks-Oberfläche mit diesem Namen (beim Anlegen des
+/// Startbestands).
+pub fn factory_guid(surface: &str) -> Option<Guid> {
+    match surface {
+        FACING => Some(FACING_SURFACE_GUID),
+        PLASTER => Some(PLASTER_SURFACE_GUID),
+        _ => None,
+    }
+}
+
+/// Werksmuster der Werks-Oberfläche mit der Guid `g`.
+pub fn factory_for(g: Guid) -> Option<Pattern> {
+    match g {
+        FACING_SURFACE_GUID => factory(FACING),
+        PLASTER_SURFACE_GUID => factory(PLASTER),
+        _ => None,
+    }
+}
+
 /// Werksmuster einer Oberfläche des Startbestands (nach ihrem Namen), aus
 /// Jörns Referenztexturen: Klinker NF im wilden Verband „friesisch-bunt“,
 /// Reibeputz K2.
@@ -807,11 +832,13 @@ pub(crate) fn read_line(r: &Record, raw: &str) -> Result<Option<Pattern>, String
     let p = match gen {
         "none" => return Ok(None),
         "masonry" => {
-            let bond = match r.get("bond").map_err(bad)? {
-                "half" => Bond::Half,
-                "third" => Bond::Third,
-                "wild" => Bond::Wild,
-                b => return Err(format!("Verband „{b}“ unbekannt")),
+            // Unbekanntes Verbandswort (neuere Fassung): Zeile bleibt
+            // bytegleich, wenn der Rest stimmt (BIM-Befund 6a)
+            let (bond, known) = match r.get("bond").map_err(bad)? {
+                "half" => (Bond::Half, true),
+                "third" => (Bond::Third, true),
+                "wild" => (Bond::Wild, true),
+                _ => (Bond::Half, false),
             };
             let mut palette = [([0u8; 3], 0.0f32); 3];
             let pal = r.get("pal").map_err(bad)?;
@@ -831,7 +858,7 @@ pub(crate) fn read_line(r: &Record, raw: &str) -> Result<Option<Pattern>, String
                     .ok_or_else(|| format!("Anteil „{a}“"))?;
                 *slot = (c, a);
             }
-            Pattern::Masonry {
+            let p = Pattern::Masonry {
                 len: r.f32("len").map_err(bad)?,
                 h: r.f32("h").map_err(bad)?,
                 joint: r.f32("joint").map_err(bad)?,
@@ -840,7 +867,13 @@ pub(crate) fn read_line(r: &Record, raw: &str) -> Result<Option<Pattern>, String
                 palette,
                 spread: r.f32("spread").map_err(bad)?,
                 seed: r.int("seed").map_err(bad)?,
+            };
+            if !known {
+                validate(&p)?;
+                r.skip();
+                return Ok(Some(Pattern::Foreign(raw.to_string())));
             }
+            p
         }
         "plaster" => Pattern::Plaster {
             grain: r.f32("grain").map_err(bad)?,

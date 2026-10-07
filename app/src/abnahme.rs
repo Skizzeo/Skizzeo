@@ -20072,7 +20072,13 @@ mod muster {
     }
 
     fn muster(m: &Model, s: SurfaceId) -> Option<Pattern> {
-        m.attr().surface(s).unwrap().pattern.clone()
+        // Fremdes aus einer neueren Fassung zeigt kein Muster
+        m.attr()
+            .surface(s)
+            .unwrap()
+            .pattern
+            .clone()
+            .filter(|p| !matches!(p, Pattern::Foreign(_)))
     }
 
     fn muster_setzen(sc: &mut Scene, s: SurfaceId, p: Option<Pattern>) {
@@ -21029,5 +21035,140 @@ mod muster {
         let grund = |name: &str| m.attr().surface(flaeche(&m, name)).unwrap().color;
         assert_eq!(grund("Putz"), [0xec, 0xec, 0xed], "Reibeputz weiß");
         assert_eq!(grund("Stahlbeton"), [0x8e, 0x8e, 0x8d], "Beton mittelgrau");
+    }
+
+    /// A274 (BIM-Befund 6a, Koordinator 19:31; paket-6 §2.2): Ein
+    /// unbekanntes Verbandswort (später etwa `bond=block` aus Paket 7a)
+    /// macht die Zeile nicht ungültig. Sie bleibt bytegleich erhalten, die
+    /// Oberfläche zeigt kein Muster. Falsche Zahlen oder Farben werfen die
+    /// Zeile dagegen weiter mit Hinweis weg, auch mit unbekanntem Verband.
+    #[test]
+    fn a274_unbekannter_verband_bleibt() {
+        let mut s = Scene::with_model(Model::with_seed(274));
+        gebaeude(&mut s);
+        let g = sguid(s.model(), flaeche(s.model(), "Gasbeton"));
+        let text = sk_model::szo::write(s.model());
+        let zeile = |bond: &str, len: &str, jrgb: &str| {
+            format!(
+                "[pattern] surface={g} gen=masonry len={len} h=71 joint=10 bond={bond} jrgb={jrgb} pal=8a3b2a:40;9c4a33:35;6e2f22:25 spread=6 seed=17"
+            )
+        };
+        let zukunft = zeile("zukunft", "240", "d8d4cc");
+        let l = lesen(&format!("{text}{zukunft}\n"));
+        assert!(l.model.check().is_empty());
+        assert_eq!(
+            muster(&l.model, flaeche(&l.model, "Gasbeton")),
+            None,
+            "unbekannter Verband: ohne Muster"
+        );
+        let neu = sk_model::szo::write(&l.model);
+        assert!(
+            neu.lines().any(|z| z == zukunft),
+            "Zeile bleibt bytegleich: {:?}",
+            muster_zeilen(&neu)
+        );
+        assert_eq!(sk_model::szo::write(&lesen(&neu).model), neu, "Rundlauf");
+
+        for falsch in [
+            zeile("half", "abc", "d8d4cc"),
+            zeile("half", "240", "zzzzzz"),
+            zeile("zukunft", "abc", "d8d4cc"),
+            zeile("zukunft", "240", "zzzzzz"),
+        ] {
+            let l = lesen(&format!("{text}{falsch}\n"));
+            assert!(!l.hints.is_empty(), "Hinweis fehlt: {falsch}");
+            assert_eq!(muster(&l.model, flaeche(&l.model, "Gasbeton")), None);
+            let neu = sk_model::szo::write(&l.model);
+            assert!(
+                !muster_zeilen(&neu)
+                    .iter()
+                    .any(|z| z.contains(&format!("surface={g}"))),
+                "falsche Zeile bleibt: {falsch}"
+            );
+        }
+    }
+
+    /// A275 (BIM-Befund 6a, Koordinator 19:31; Regel 60): Das Werksmuster
+    /// hängt an der Guid der Werks-Oberfläche, nicht an ihrem Namen. Neues
+    /// Projekt (feste Guids der Startbibliothek):
+    /// - Eine umbenannte Werks-Oberfläche behält ihr Werksmuster, auch in
+    ///   einer Datei ohne `[pattern]`-Zeile, und schreibt bei Abwahl
+    ///   `gen=none`.
+    /// - Eine eigene Oberfläche mit dem Namen „Putz“ bekommt kein
+    ///   Werksmuster und schreibt keine Musterzeile.
+    #[test]
+    fn a275_werksmuster_nach_guid() {
+        let m = Model::new();
+        let pu = flaeche(&m, "Putz");
+        let g = sguid(&m, pu);
+        assert!(muster(&m, pu).is_some(), "Werksmuster Putz");
+        let text = sk_model::szo::write(&m);
+        let eigen = sk_model::GuidGen::with_seed(275).next_guid();
+        let alt = format!("[surface] guid={g} name=\"Putz\"");
+        let ohne: String = text
+            .lines()
+            .filter(|l| !(l.starts_with("[pattern]") && l.contains(&format!("surface={g}"))))
+            .map(|l| {
+                if l.starts_with(&alt) {
+                    let neu = l.replacen("name=\"Putz\"", "name=\"Putz innen\"", 1);
+                    format!(
+                        "{neu}\n{}\n",
+                        l.replacen(&g.to_string(), &eigen.to_string(), 1)
+                    )
+                } else {
+                    format!("{l}\n")
+                }
+            })
+            .collect();
+        assert!(ohne.contains("name=\"Putz innen\""), "Putz-Zeile gefunden");
+        let l = lesen(&ohne);
+        let s = |name: &str| {
+            l.model
+                .attr()
+                .surfaces()
+                .iter()
+                .find(|(_, x)| x.name == name)
+                .map(|(id, x)| (id, x.guid))
+                .unwrap_or_else(|| panic!("{name} fehlt"))
+        };
+        let (innen, gi) = s("Putz innen");
+        let (fremd, gf) = s("Putz");
+        assert_eq!((gi, gf), (g, eigen));
+        assert!(
+            matches!(muster(&l.model, innen), Some(Pattern::Plaster { grain, .. }) if grain == 2.0),
+            "umbenannte Werks-Oberfläche behält ihr Werksmuster"
+        );
+        assert_eq!(
+            muster(&l.model, fremd),
+            None,
+            "eigener „Putz“ ohne Werksmuster"
+        );
+        let neu = sk_model::szo::write(&l.model);
+        assert!(
+            !neu.contains(&format!("surface={eigen}")),
+            "eigener „Putz“ schreibt keine Zeile: {:?}",
+            muster_zeilen(&neu)
+        );
+
+        let mut w = Scene::with_model(l.model);
+        muster_setzen(&mut w, innen, None);
+        let neu = sk_model::szo::write(w.model());
+        assert!(
+            neu.lines()
+                .any(|z| z == format!("[pattern] surface={g} gen=none")),
+            "Abwahl der umbenannten Werks-Oberfläche: {:?}",
+            muster_zeilen(&neu)
+        );
+        let l = lesen(&neu);
+        assert_eq!(muster(&l.model, s_id(&l.model, g)), None, "Abwahl bleibt");
+    }
+
+    fn s_id(m: &Model, g: sk_model::Guid) -> SurfaceId {
+        m.attr()
+            .surfaces()
+            .iter()
+            .find(|(_, x)| x.guid == g)
+            .map(|(id, _)| id)
+            .expect("Oberfläche")
     }
 }

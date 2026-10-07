@@ -697,7 +697,7 @@ impl Prefs {
             _ => {}
         }
         let mut hint = String::from("Arten: ohne (Vorgabe), Mauerwerk, Putz.");
-        if o.pattern.is_some() && o.pattern == proctex::factory(&o.name) {
+        if o.pattern.is_some() && o.pattern == proctex::factory_for(o.guid) {
             hint.push_str(" Hier die Werkswerte.");
         }
         if matches!(o.pattern, Some(Pattern::Foreign(_))) {

@@ -189,12 +189,15 @@ impl Model {
         let (mut attr, st) = attr::defaults(&mut guids);
         let mut materials = Arena::new();
         let mut mat = |name: &str, category, priority, density, cut_fill, color, cut_color| {
+            // Werks-Oberflächen mit Werksmuster: feste Guid (Regel 60)
+            let next = guids.next_guid();
+            let guid = crate::proctex::factory_guid(name).unwrap_or(next);
             let surface = attr.add_surface(Surface {
-                guid: guids.next_guid(),
+                guid,
                 name: name.into(),
                 color,
                 cut_color,
-                pattern: crate::proctex::factory(name),
+                pattern: crate::proctex::factory_for(guid),
             });
             let d = MaterialDisplay {
                 cut_fill,
@@ -344,12 +347,14 @@ impl Model {
         // die älteren Guids gleich bleiben
         let mut mat =
             |name: &str, category, priority, density, lambda, cut_fill, color, cut_color| {
+                let next = guids.next_guid();
+                let guid = crate::proctex::factory_guid(name).unwrap_or(next);
                 let surface = attr.add_surface(Surface {
-                    guid: guids.next_guid(),
+                    guid,
                     name: name.into(),
                     color,
                     cut_color,
-                    pattern: crate::proctex::factory(name),
+                    pattern: crate::proctex::factory_for(guid),
                 });
                 let d = MaterialDisplay {
                     cut_fill,
