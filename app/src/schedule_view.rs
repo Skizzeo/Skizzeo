@@ -11,7 +11,7 @@
 use crate::delete::{self, Link};
 use crate::picking::Picking;
 use crate::scene::Scene;
-use sk_model::qto::{ElementQto, GroupQto, Schedule, StoreyQto};
+use sk_model::qto::{BuildingQto, ElementQto, GroupQto, LayerRow, Schedule, StoreyQto};
 use sk_model::{Category, Deleted, ElementId, LevelKind, Model};
 use sk_paint::font::Font;
 use sk_paint::{Canvas, Path, Rgba};
@@ -46,6 +46,42 @@ const COL_NR: f32 = 0.405;
 const COL_LEN: f32 = 0.69;
 const COL_AREA: f32 = 0.85;
 
+/// Gliederung der Liste (Paket 1b): nach Geschoss (Standard) oder nach
+/// Gewerk. Gemerkt in `einstellungen.txt`, nie in der Datei, ohne Rückgängig.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Grouping {
+    #[default]
+    Storey,
+    Trade,
+}
+
+impl Grouping {
+    pub const ALL: [Grouping; 2] = [Grouping::Storey, Grouping::Trade];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Grouping::Storey => "Geschoss",
+            Grouping::Trade => "Gewerk",
+        }
+    }
+
+    /// Wert in `einstellungen.txt`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Grouping::Storey => "geschoss",
+            Grouping::Trade => "gewerk",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<Grouping> {
+        Grouping::ALL.into_iter().find(|g| g.key() == k)
+    }
+}
+
+/// Umschalter „Gliedern nach“: Abstände (dip).
+const TOGGLE_PAD: f32 = 12.0;
+const TOGGLE_INSET: f32 = 3.0;
+
 /// Schlüssel einer Zeile: zum Auf- und Zuklappen und zum Wiedererkennen nach
 /// einer Neuberechnung (Aufleuchten).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -61,6 +97,13 @@ enum Key {
     /// Kontrollzeile einer Wandgruppe (wie [`Key::Group`]).
     GroupControl(u32, u8, u32),
     Tile(u32, u32),
+    /// Nach Gewerk: Gebäude, Reihe des Gewerks.
+    Trade(u32, u32),
+    /// Schichtgruppe: Gebäude und Reihe (je 16 Bit), Bauteilart, Baustoff,
+    /// Dicke in 1/100 mm.
+    Layer(u32, u8, u32, u32),
+    /// Bauteil mit Schicht.
+    LayerRow(u32, u32, u8),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,6 +143,8 @@ struct Line {
     /// Grund, warum kein Körper entsteht, oder Versatz einer gestapelten
     /// Wand (grau, kursiv).
     note: Option<String>,
+    /// Gedimmter Zusatz hinter dem Namen („DIN 18331“).
+    tag: Option<String>,
     tiles: Vec<Tile>,
 }
 
@@ -114,6 +159,7 @@ impl Line {
             elements: Vec::new(),
             cells: Default::default(),
             note: None,
+            tag: None,
             tiles: Vec::new(),
         }
     }
@@ -126,6 +172,8 @@ enum Hot {
     /// Dreieck einer Gruppenzeile (klappt auf und zu).
     Toggle(usize),
     Button,
+    /// Eine Hälfte des Umschalters „Gliedern nach“.
+    Grouping(Grouping),
 }
 
 /// Was ein Ereignis in der Liste für die App bedeutet.
@@ -137,6 +185,8 @@ pub enum ListOut {
     Zoom(Vec<ElementId>),
     /// „Als Tabelle speichern“.
     SaveCsv,
+    /// Gliederung umgeschaltet (in den Einstellungen merken).
+    Grouping(Grouping),
     /// Nur das Blatt neu zeichnen.
     Repaint,
 }
@@ -158,6 +208,7 @@ type MotionState<'a> = (HashMap<usize, f32>, Vec<(&'a Line, f32, f32, f32)>);
 type GroupRef = (String, Category, Vec<ElementId>);
 
 pub struct ListView {
+    grouping: Grouping,
     lines: Vec<Line>,
     groups: Vec<GroupRef>,
     /// Alle Bauteilzeilen in Listenreihenfolge (Bereichsauswahl).
@@ -204,8 +255,15 @@ pub struct ListView {
 
 impl ListView {
     /// Liste für das Modell der Szene (berechnet sie, falls nötig).
+    #[cfg(test)]
     pub fn new(s: &mut Scene) -> ListView {
+        ListView::grouped(s, Grouping::Storey)
+    }
+
+    /// Liste mit Gliederung `g`.
+    pub fn grouped(s: &mut Scene, g: Grouping) -> ListView {
         let mut v = ListView {
+            grouping: g,
             lines: Vec::new(),
             groups: Vec::new(),
             order: Vec::new(),
@@ -260,9 +318,24 @@ impl ListView {
         changed
     }
 
+    /// Gliederung umschalten; die Zeilen baut das nächste [`ListView::sync`]
+    /// neu (ohne Aufleuchten). `true`, wenn sie sich ändert.
+    pub fn set_grouping(&mut self, g: Grouping) -> bool {
+        if g == self.grouping {
+            return false;
+        }
+        self.grouping = g;
+        self.runs = None;
+        self.motion = None;
+        self.hint_at.clear();
+        self.scroll = 0.0;
+        self.target = 0.0;
+        true
+    }
+
     /// Zeilen neu aufbauen; Auf- und Zuklappen bleibt erhalten.
     fn rebuild(&mut self, m: &Model, sched: &Schedule, animate: bool) {
-        let (lines, groups) = build_lines(m, sched);
+        let (lines, groups) = build_lines(m, sched, self.grouping);
         // Fallen sichtbare Zeilen weg, rücken die übrigen sichtbar nach
         let keys: HashSet<Key> = lines.iter().map(|l| l.key).collect();
         let old: Vec<Line> = self
@@ -594,10 +667,9 @@ impl ListView {
             .order
             .iter()
             .find(|e| d.removed.contains(e))
-            .copied()
-            .map(elem_key);
+            .map(|e| self.row_key(*e));
         let anchor = match d.refused.first() {
-            Some(r) if d.removed.is_empty() => Some(elem_key(r.0)),
+            Some(r) if d.removed.is_empty() => Some(self.row_key(r.0)),
             _ => group.or(first_removed),
         };
         self.hint_at.clear();
@@ -614,7 +686,7 @@ impl ListView {
             }
         }
         for (id, _) in &d.refused {
-            self.row_flash.insert(elem_key(*id), now);
+            self.row_flash.insert(self.row_key(*id), now);
         }
         p.validate(s);
         self.hover = p.hovered().collect();
@@ -624,6 +696,15 @@ impl ListView {
             self.focus_group = None;
         }
         (lines, link)
+    }
+
+    /// Schlüssel der ersten Zeile des Bauteils (nach Gewerk steht eine Wand
+    /// in mehreren Gewerken).
+    fn row_key(&self, e: ElementId) -> Key {
+        self.lines
+            .iter()
+            .find(|l| l.kind == Kind::Row && l.elements.first() == Some(&e))
+            .map_or(elem_key(e), |l| l.key)
     }
 
     /// Rechtsklick auf eine Zeile: wählt sie, falls sie es noch nicht ist,
@@ -744,6 +825,28 @@ impl ListView {
     }
 
     #[cfg(test)]
+    /// Alle Zeilen als Text (Einzug, Bezeichnung, Zusatz, Zellen mit „ | “),
+    /// auch zugeklappte; Summenkacheln als „Baustoff: Wert“.
+    pub fn line_texts(&self) -> Vec<String> {
+        self.lines
+            .iter()
+            .map(|l| {
+                let mut t = "  ".repeat(l.depth as usize) + &l.cells[0];
+                if let Some(tag) = &l.tag {
+                    t = format!("{t} [{tag}]");
+                }
+                for c in &l.cells[1..] {
+                    t = format!("{t} | {c}");
+                }
+                for x in &l.tiles {
+                    t = format!("{t} {}: {}", x.name, x.value);
+                }
+                t
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
     fn rows_where(&self, f: impl Fn(ElementId) -> bool) -> Vec<String> {
         self.order
             .iter()
@@ -788,12 +891,81 @@ impl ListView {
         (x0 + w - bw, (self.top_dip() + 14.0) * s, bw, BUTTON_H * s)
     }
 
+    /// Umschalter „Gliedern nach“ (px): Lage der Beschriftung (x, Grundlinie)
+    /// oder `None`, wenn sie keinen Platz hat, und die beiden Hälften. Steht
+    /// rechts neben dem Titel vor „Als Tabelle speichern“, wenn Platz ist
+    /// (auch für die Pille „wird aktualisiert“), sonst darunter rechtsbündig.
+    #[allow(clippy::type_complexity)]
+    fn toggle_layout(
+        &self,
+        t: &Theme,
+        fonts: &Fonts,
+    ) -> (Option<(f32, f32)>, [(Grouping, (f32, f32, f32, f32)); 2]) {
+        let s = self.scale;
+        let (x0, cw) = self.content_x(t);
+        let (bx, by, _, bh) = self.button_rect(t, fonts);
+        let top = self.top_dip() * s;
+        let regular = fonts.regular.as_ref();
+        let bold = fonts.bold.as_ref().or(regular);
+        let px = 10.5 * s;
+        let width = |f: Option<&Font>, text: &str, px: f32| {
+            f.map_or(text.chars().count() as f32 * px * 0.55, |f| {
+                f.width(text, px)
+            })
+        };
+        let half = |g: Grouping| width(bold, g.label(), px) + 2.0 * TOGGLE_PAD * s;
+        let inset = TOGGLE_INSET * s;
+        let pw = half(Grouping::Storey) + half(Grouping::Trade) + 2.0 * inset;
+        let label_w = width(regular, "Gliedern nach", px) + 10.0 * s;
+        let title_end = x0
+            + width(bold, "Mengenermittlung", 19.0 * s)
+            + 12.0 * s
+            + width(regular, "wird aktualisiert", 10.0 * s)
+            + 40.0 * s
+            + 16.0 * s;
+        let right = bx - 12.0 * s;
+        let (pill_x, pill_y, ph, label) = if right - pw >= title_end {
+            let label = right - pw - label_w >= title_end;
+            (right - pw, by, bh, label)
+        } else {
+            let ph = 20.0 * s;
+            let sub_end = x0 + width(regular, &self.subtitle, px) + 16.0 * s;
+            let x = x0 + cw - pw;
+            (x, top + 47.0 * s, ph, x - label_w >= sub_end)
+        };
+        let cap = regular.map_or(7.5 * s, |f| f.cap_height(px));
+        let label = label.then_some((pill_x - label_w, pill_y + (ph + cap) * 0.5));
+        let w0 = half(Grouping::Storey);
+        let halves = [
+            (
+                Grouping::Storey,
+                (pill_x + inset, pill_y + inset, w0, ph - 2.0 * inset),
+            ),
+            (
+                Grouping::Trade,
+                (
+                    pill_x + inset + w0,
+                    pill_y + inset,
+                    half(Grouping::Trade),
+                    ph - 2.0 * inset,
+                ),
+            ),
+        ];
+        (label, halves)
+    }
+
     fn hit(&self, t: &Theme, fonts: &Fonts, x: f64, y: f64) -> Option<Hot> {
         let (x, y) = (x as f32, y as f32);
         let s = self.scale;
         let (bx, by, bw, bh) = self.button_rect(t, fonts);
         if x >= bx && x < bx + bw && y >= by && y < by + bh {
             return Some(Hot::Button);
+        }
+        let inset = TOGGLE_INSET * s;
+        for (g, (hx, hy, hw, hh)) in self.toggle_layout(t, fonts).1 {
+            if x >= hx && x < hx + hw && y >= hy - inset && y < hy + hh + inset {
+                return Some(Hot::Grouping(g));
+            }
         }
         let list_top = (self.top_dip() + HEAD) * s;
         if y < list_top {
@@ -839,8 +1011,11 @@ impl ListView {
         y: f64,
     ) -> Option<ListOut> {
         let hot = self.hit(t, fonts, x, y);
-        // Nur der Knopf sieht anders aus, wenn die Maus darüber steht
-        let button = |h: Option<Hot>| h == Some(Hot::Button);
+        // Nur Knopf und Umschalter sehen anders aus, wenn die Maus darübersteht
+        let button = |h: Option<Hot>| match h {
+            Some(Hot::Button | Hot::Grouping(_)) => h,
+            _ => None,
+        };
         let repaint = button(hot) != button(self.hot);
         self.hot = hot;
         let (one, group) = self.hover_of(hot);
@@ -852,7 +1027,8 @@ impl ListView {
     }
 
     pub fn mouse_leave(&mut self, p: &mut Picking) -> Option<ListOut> {
-        let button = self.hot.take() == Some(Hot::Button) || self.button_down;
+        let button =
+            matches!(self.hot.take(), Some(Hot::Button | Hot::Grouping(_))) || self.button_down;
         self.button_down = false;
         if p.set_hover(None, Vec::new()) {
             self.hover.clear();
@@ -875,6 +1051,7 @@ impl ListView {
                 self.button_down = true;
                 Some(ListOut::Repaint)
             }
+            Some(Hot::Grouping(g)) => self.set_grouping(g).then_some(ListOut::Grouping(g)),
             Some(Hot::Toggle(i)) => {
                 let k = self.lines[i].key;
                 if !self.open_groups.remove(&k) {
@@ -1291,11 +1468,16 @@ impl ListView {
                 u.text,
             );
         }
+        self.paint_toggle(c, t, fonts);
         // Spaltenköpfe und Linie
         if let Some(f) = regular {
             let px = 10.0 * s;
             let base = top + 79.0 * s;
-            f.draw(c, "Bauteil", px, x0, base, u.sheet_text_dim);
+            let first = match self.grouping {
+                Grouping::Storey => "Bauteil",
+                Grouping::Trade => "Leistung · Bauteil",
+            };
+            f.draw(c, first, px, x0, base, u.sheet_text_dim);
             f.draw(c, "Nr.", px, x0 + cw * COL_NR, base, u.sheet_text_dim);
             for (text, right) in [
                 ("Länge · Stück", COL_LEN),
@@ -1307,6 +1489,55 @@ impl ListView {
             }
         }
         c.fill_rect(x0, top + 86.0 * s, cw, s.max(1.0), u.sheet_rule);
+    }
+
+    /// Umschalter „Gliedern nach: Geschoss | Gewerk“ (Pille in `sheet_tile`,
+    /// die gewählte Hälfte in der Fläche des Knopfs).
+    fn paint_toggle(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts) {
+        let s = self.scale;
+        let u = &t.ui;
+        let regular = fonts.regular.as_ref();
+        let bold = fonts.bold.as_ref().or(regular);
+        let px = 10.5 * s;
+        let (label, halves) = self.toggle_layout(t, fonts);
+        let inset = TOGGLE_INSET * s;
+        let (_, (x, y, _, h)) = halves[0];
+        let (_, (x1, _, w1, _)) = halves[1];
+        let (px0, py0, pw, ph) = (
+            x - inset,
+            y - inset,
+            x1 + w1 + inset - (x - inset),
+            h + 2.0 * inset,
+        );
+        let mut p = Path::new();
+        p.rounded_rect(px0, py0, pw, ph, ph * 0.5);
+        c.fill(&p, u.sheet_tile);
+        if let (Some((lx, ly)), Some(f)) = (label, regular) {
+            f.draw(c, "Gliedern nach", px, lx, ly, u.sheet_text_dim);
+        }
+        for (g, (hx, hy, hw, hh)) in halves {
+            let on = g == self.grouping;
+            let (font, col) = if on {
+                let mut p = Path::new();
+                p.rounded_rect(hx, hy, hw, hh, hh * 0.5);
+                c.fill(&p, u.bg);
+                (bold, u.text)
+            } else if self.hot == Some(Hot::Grouping(g)) {
+                (regular, u.sheet_text)
+            } else {
+                (regular, u.sheet_text_dim)
+            };
+            let Some(f) = font else { continue };
+            let tw = f.width(g.label(), px);
+            f.draw(
+                c,
+                g.label(),
+                px,
+                hx + (hw - tw) * 0.5,
+                hy + (hh + f.cap_height(px)) * 0.5,
+                col,
+            );
+        }
     }
 
     /// Band einer Zeile: Farbe und Leiste links (Auswahl).
@@ -1420,6 +1651,10 @@ impl ListView {
             sk_ui::widgets::ellipsize(Some(f), &l.cells[0], px, room)
         };
         f.draw(c, &label, px, text_x, base, col);
+        if let (Some(tag), Some(fr)) = (&l.tag, regular) {
+            let tx = text_x + f.width(&label, px) + 10.0 * s;
+            fr.draw(c, tag, 10.0 * s, tx, base, u.sheet_text_dim);
+        }
         if let Some(note) = &l.note {
             if let Some(fi) = italic {
                 let nx = text_x + f.width(&label, px) + 10.0 * s;
@@ -1676,7 +1911,7 @@ fn m_vol(mm3: f64) -> String {
     format!("{} m³", de(mm3 / 1e9, 3))
 }
 
-fn build_lines(m: &Model, sched: &Schedule) -> (Vec<Line>, Vec<GroupRef>) {
+fn build_lines(m: &Model, sched: &Schedule, by: Grouping) -> (Vec<Line>, Vec<GroupRef>) {
     let mut lines = Vec::new();
     let mut groups = Vec::new();
     let many = sched.buildings.len() > 1;
@@ -1687,8 +1922,13 @@ fn build_lines(m: &Model, sched: &Schedule) -> (Vec<Line>, Vec<GroupRef>) {
             l.cells[0] = info.map_or(String::new(), |x| format!("{} ({})", x.name, x.number));
             lines.push(l);
         }
-        for st in &b.storeys {
-            storey_lines(m, st, &mut lines, &mut groups);
+        match by {
+            Grouping::Storey => {
+                for st in &b.storeys {
+                    storey_lines(m, st, &mut lines, &mut groups);
+                }
+            }
+            Grouping::Trade => trade_lines(m, b, &mut lines),
         }
         lines.push(Line::new(Kind::Rule, 0, Key::None));
         let mut head = Line::new(Kind::SumHead, 0, Key::None);
@@ -1716,6 +1956,167 @@ fn build_lines(m: &Model, sched: &Schedule) -> (Vec<Line>, Vec<GroupRef>) {
         storey_lines(m, st, &mut lines, &mut groups);
     }
     (lines, groups)
+}
+
+/// Schichten, die nach Gewerk zu aufklappbaren Gruppen zusammengefasst
+/// werden (wie die Wände nach Geschoss); die übrigen Bauteile stehen einzeln.
+fn layer_grouped(c: Category) -> bool {
+    is_wall(c) || c == Category::EdgeInsulation
+}
+
+/// ATV-Nummer gedimmt hinter dem Gewerk: „DIN 18331“; eigene Nummern der
+/// Firma stehen, wie sie sind.
+fn trade_tag(code: &str) -> String {
+    if code.len() == 5 && code.starts_with("18") && code.bytes().all(|b| b.is_ascii_digit()) {
+        format!("DIN {code}")
+    } else {
+        code.to_string()
+    }
+}
+
+/// Baustoff mit Dicke ohne Einheit: „Gasbeton 17,5“.
+fn layer_name(m: &Model, r: &LayerRow) -> String {
+    let name = m.material(r.material).map_or("–", |x| x.name.as_str());
+    format!("{name} {}", cm(r.thickness).trim_end_matches(" cm"))
+}
+
+/// Bezeichnung eines einzeln stehenden Bauteils nach Gewerk: wie nach
+/// Geschoss, bei mehrschichtigen Bauteilen „Bauteilart · Schicht“.
+fn layer_row_label(m: &Model, r: &LayerRow) -> String {
+    if !r.whole {
+        let name = m.material(r.material).map_or("–", |x| x.name.as_str());
+        return format!("{} · {name} {}", r.category.name(), cm(r.thickness));
+    }
+    let core = m
+        .element(r.element)
+        .and_then(|e| e.kind.core_thickness())
+        .unwrap_or(r.thickness);
+    match r.category {
+        Category::StripFooting => "Frostschürze".into(),
+        Category::GroundSlab => format!("Sohlplatte {}", cm(core)),
+        Category::Floor => format!("Decke über {} {}", storey_name(m, r.storey).1, cm(core)),
+        Category::SoffitInsulation => format!("Untersichtdämmung {}", cm(r.thickness)),
+        c => c.name().into(),
+    }
+}
+
+/// Mengen je Bauteil einer Schichtgruppe: Zeilen desselben Bauteils (zwei
+/// Schichten aus gleichem Baustoff und gleicher Dicke) zusammen.
+fn per_element(rows: &[LayerRow]) -> Vec<LayerRow> {
+    let mut out: Vec<LayerRow> = Vec::new();
+    for r in rows {
+        match out.iter_mut().find(|x| x.element == r.element) {
+            Some(x) => {
+                x.volume += r.volume;
+                x.area += r.area;
+            }
+            None => out.push(r.clone()),
+        }
+    }
+    out
+}
+
+/// Zeilen eines Gebäudes nach Gewerk (Paket 1b): Gewerk (aufklappbar, mit
+/// ATV-Nummer) → Schichtgruppe „Schicht · Bauteilgruppe“ (aufklappbar,
+/// Bauteile mit Geschoss) bzw. einzelne Bauteile.
+fn trade_lines(m: &Model, b: &BuildingQto, lines: &mut Vec<Line>) {
+    let bi = b.id.index();
+    for t in &b.by_trade {
+        let Some(tr) = m.trade(t.trade) else { continue };
+        let order = tr.order as u32;
+        let tkey = Key::Trade(bi, order);
+        let mut head = Line::new(Kind::Storey, 0, tkey);
+        head.cells[0] = tr.name.clone();
+        head.tag = Some(trade_tag(&tr.code));
+        for r in &t.rows {
+            if !head.elements.contains(&r.element) {
+                head.elements.push(r.element);
+            }
+        }
+        lines.push(head);
+        let mut i = 0;
+        while i < t.rows.len() {
+            let r = &t.rows[i];
+            let row_key = |r: &LayerRow| {
+                let e = r.element;
+                Key::LayerRow(e.index(), e.generation(), r.layer.min(255) as u8)
+            };
+            if !layer_grouped(r.category) {
+                let mut rl = Line::new(Kind::Row, 1, row_key(r));
+                rl.storey = tkey;
+                rl.elements = vec![r.element];
+                rl.cells[0] = layer_row_label(m, r);
+                rl.cells[1] = r.number.clone();
+                if r.length > 0.0 {
+                    rl.cells[2] = m_len(r.length);
+                }
+                if r.area > 0.0 {
+                    rl.cells[3] = m_area(r.area);
+                }
+                rl.cells[4] = m_vol(r.volume);
+                lines.push(rl);
+                i += 1;
+                continue;
+            }
+            let same = |x: &LayerRow| {
+                x.category == r.category
+                    && x.material == r.material
+                    && (x.thickness - r.thickness).abs() < 1e-6
+            };
+            let n = t.rows[i..].iter().take_while(|x| same(x)).count();
+            let rows = per_element(&t.rows[i..i + n]);
+            i += n;
+            let gkey = Key::Layer(
+                (bi << 16) | (order & 0xffff),
+                r.category as u8,
+                r.material.index(),
+                (r.thickness * 100.0).round() as u32,
+            );
+            let mut gl = Line::new(Kind::Group, 1, gkey);
+            gl.storey = tkey;
+            gl.elements = rows.iter().map(|x| x.element).collect();
+            gl.cells[0] = format!(
+                "{} · {}",
+                layer_name(m, r),
+                sk_model::kinds::spec(r.category).plural
+            );
+            gl.cells[1] = match rows.as_slice() {
+                [] => String::new(),
+                [one] => one.number.clone(),
+                [first, .., last] => {
+                    let tail = last.number.rsplit('-').next().unwrap_or(&last.number);
+                    format!("{} … {tail}", first.number)
+                }
+            };
+            let len: f64 = rows.iter().map(|x| x.length).sum();
+            gl.cells[2] = if len > 0.0 {
+                format!("{} · {}", m_len(len), rows.len())
+            } else {
+                rows.len().to_string()
+            };
+            let area: f64 = rows.iter().map(|x| x.area).sum();
+            if r.insulation && area > 0.0 {
+                gl.cells[3] = m_area(area);
+            }
+            gl.cells[4] = m_vol(rows.iter().map(|x| x.volume).sum());
+            lines.push(gl);
+            for x in &rows {
+                let mut rl = Line::new(Kind::Row, 2, row_key(x));
+                rl.storey = tkey;
+                rl.group = gkey;
+                rl.elements = vec![x.element];
+                rl.cells[0] = format!("{} · {}", x.number, storey_name(m, x.storey).1);
+                if x.length > 0.0 {
+                    rl.cells[2] = m_len(x.length);
+                }
+                if x.insulation && x.area > 0.0 {
+                    rl.cells[3] = m_area(x.area);
+                }
+                rl.cells[4] = m_vol(x.volume);
+                lines.push(rl);
+            }
+        }
+    }
 }
 
 fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut Vec<GroupRef>) {
@@ -1880,7 +2281,167 @@ fn csv_field(s: &str) -> String {
 
 /// „Als Tabelle speichern“: UTF-8 mit BOM, Semikolon, Dezimalkomma, alle
 /// Gruppen aufgeklappt, 4 Nachkommastellen (m, m², m³).
+#[cfg(test)]
 pub fn csv(m: &Model, sched: &Schedule) -> Vec<u8> {
+    csv_grouped(m, sched, Grouping::Storey)
+}
+
+/// Wie [`csv`] in der Gliederung des Mengenfensters (§12 Prüfpunkt 5).
+pub fn csv_grouped(m: &Model, sched: &Schedule, by: Grouping) -> Vec<u8> {
+    match by {
+        Grouping::Storey => csv_storeys(m, sched),
+        Grouping::Trade => csv_trades(m, sched),
+    }
+}
+
+/// Nach Gewerk (paket-1a §7): je Gewerk die Schichtgruppen mit
+/// Zwischensumme, die Bauteile mit Geschoss und der Kostengruppe der
+/// Schicht, die Summe des Gewerks; danach die Summen nach Baustoff.
+fn csv_trades(m: &Model, sched: &Schedule) -> Vec<u8> {
+    let mut out = String::new();
+    let mut row = |cols: [&str; 10]| {
+        let v: Vec<String> = cols.iter().map(|c| csv_field(c)).collect();
+        out.push_str(&v.join(";"));
+        out.push_str("\r\n");
+    };
+    row([
+        "Gebäude",
+        "Gewerk",
+        "Kostengruppe",
+        "Bauteil",
+        "Nr.",
+        "Geschoss",
+        "Länge (m)",
+        "Fläche (m²)",
+        "Volumen (m³)",
+        "Hinweis",
+    ]);
+    let len = |mm: f64| csv_num(mm / 1e3);
+    let area = |mm2: f64| csv_num(mm2 / 1e6);
+    let vol = |mm3: f64| csv_num(mm3 / 1e9);
+    let opt = |v: f64, f: &dyn Fn(f64) -> String| if v > 0.0 { f(v) } else { String::new() };
+    for b in &sched.buildings {
+        let gb = m.building(b.id).map_or(String::new(), |x| x.number.clone());
+        for t in &b.by_trade {
+            let Some(tr) = m.trade(t.trade) else { continue };
+            let trade = format!("{} {}", tr.code, tr.name);
+            let mut i = 0;
+            while i < t.rows.len() {
+                let r = &t.rows[i];
+                let kg = |x: &LayerRow| x.kg.map_or(String::new(), |k| k.to_string());
+                if !layer_grouped(r.category) {
+                    row([
+                        &gb,
+                        &trade,
+                        &kg(r),
+                        &layer_row_label(m, r),
+                        &r.number,
+                        &storey_name(m, r.storey).0,
+                        &opt(r.length, &len),
+                        &opt(r.area, &area),
+                        &vol(r.volume),
+                        "",
+                    ]);
+                    i += 1;
+                    continue;
+                }
+                let n = t.rows[i..]
+                    .iter()
+                    .take_while(|x| {
+                        x.category == r.category
+                            && x.material == r.material
+                            && (x.thickness - r.thickness).abs() < 1e-6
+                    })
+                    .count();
+                let rows = per_element(&t.rows[i..i + n]);
+                i += n;
+                let title = format!(
+                    "{} · {}",
+                    layer_name(m, r),
+                    sk_model::kinds::spec(r.category).plural
+                );
+                let a: f64 = rows.iter().map(|x| x.area).sum();
+                let range = match rows.as_slice() {
+                    [] => String::new(),
+                    [one] => one.number.clone(),
+                    [first, .., last] => {
+                        let tail = last.number.rsplit('-').next().unwrap_or(&last.number);
+                        format!("{} … {tail}", first.number)
+                    }
+                };
+                row([
+                    &gb,
+                    &trade,
+                    &kg(r),
+                    &format!("{title} (Summe, {} Stück)", rows.len()),
+                    &range,
+                    "",
+                    &opt(rows.iter().map(|x| x.length).sum(), &len),
+                    &if r.insulation {
+                        opt(a, &area)
+                    } else {
+                        String::new()
+                    },
+                    &vol(rows.iter().map(|x| x.volume).sum()),
+                    "",
+                ]);
+                for x in &rows {
+                    row([
+                        &gb,
+                        &trade,
+                        &kg(x),
+                        &title,
+                        &x.number,
+                        &storey_name(m, x.storey).0,
+                        &opt(x.length, &len),
+                        &if x.insulation {
+                            opt(x.area, &area)
+                        } else {
+                            String::new()
+                        },
+                        &vol(x.volume),
+                        "",
+                    ]);
+                }
+            }
+            row([
+                &gb,
+                &trade,
+                "",
+                &format!("Summe {}", tr.name),
+                "",
+                "",
+                "",
+                &t.area.map_or(String::new(), area),
+                &vol(t.volume),
+                "",
+            ]);
+        }
+        for x in &b.by_material {
+            let name = m
+                .material(x.material)
+                .map_or(String::new(), |y| y.name.clone());
+            row([
+                &gb,
+                "Summe nach Baustoff",
+                "",
+                &name,
+                "",
+                "",
+                "",
+                &x.area.map_or(String::new(), area),
+                &vol(x.volume),
+                "",
+            ]);
+        }
+    }
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(out.as_bytes());
+    bytes
+}
+
+/// Nach Geschoss (B7).
+fn csv_storeys(m: &Model, sched: &Schedule) -> Vec<u8> {
     let mut out = String::new();
     let mut row = |cols: [&str; 10]| {
         let v: Vec<String> = cols.iter().map(|c| csv_field(c)).collect();
@@ -2128,5 +2689,80 @@ mod tests {
         assert_eq!(cm(175.0), "17,5 cm");
         assert_eq!(csv_num(17.6), "17,6000");
         assert_eq!(csv_num(-1.31593), "-1,3159");
+    }
+
+    #[test]
+    fn gliederung_wird_gemerkt() {
+        use crate::windows::{read_grouping, write_settings_grouped, Windows};
+        let w = Windows::new(520.0);
+        // nach Geschoss: nichts zu merken, wie bisher
+        assert_eq!(write_settings_grouped(&w, Grouping::Storey), "");
+        let text = write_settings_grouped(&w, Grouping::Trade);
+        assert!(text.contains("gliederung=gewerk"), "{text}");
+        assert_eq!(read_grouping(&text), Grouping::Trade);
+        assert_eq!(read_grouping(""), Grouping::Storey);
+        assert_eq!(
+            read_grouping("[mengenfenster] gliederung=quer\n"),
+            Grouping::Storey
+        );
+    }
+
+    /// Eine Wand in zwei Gewerken (§12): Gasbeton bei Mauerarbeiten, WDVS
+    /// beim Fassadensystem, je als „Schicht · Bauteilgruppe“; die Summen
+    /// gleichen denen nach Geschoss.
+    #[test]
+    fn wand_in_zwei_gewerken() {
+        use sk_math::vec3;
+        use sk_model::{RefSide, WallChain};
+        let mut s = Scene::with_model(Model::with_seed(12));
+        let chain = WallChain {
+            base: 0.0,
+            points: vec![
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ],
+            closed: true,
+            ref_side: RefSide::Left,
+            layers: Vec::new(),
+            height: 2750.0,
+            joints: Default::default(),
+        };
+        s.add_wall(&chain).unwrap();
+        let v = ListView::grouped(&mut s, Grouping::Trade);
+        let t = v.line_texts();
+        let at = |p: &str| t.iter().position(|l| l.trim_start().starts_with(p));
+        let (Some(maurer), Some(gasbeton), Some(wdvs), Some(daemm)) = (
+            at("Mauerarbeiten [DIN 18330]"),
+            at("Gasbeton 17,5 · Außenwände | AW-001 … 008"),
+            at("Wärmedämm-Verbundsysteme [DIN 18345]"),
+            at("Dämmung (WDVS) 14 · Außenwände | AW-001 … 008"),
+        ) else {
+            panic!("{t:#?}");
+        };
+        assert!(
+            maurer < gasbeton && gasbeton < wdvs && wdvs < daemm,
+            "{t:#?}"
+        );
+        // Unter der Schichtgruppe die Wände mit ihrem Geschoss
+        assert!(
+            t[gasbeton + 1].trim_start().starts_with("AW-001 · EG"),
+            "{t:#?}"
+        );
+        // Summen nach Baustoff wie nach Geschoss
+        let g = ListView::grouped(&mut s, Grouping::Storey);
+        assert_eq!(t.last(), g.line_texts().last());
+        let mut v = v;
+        assert!(v.set_grouping(Grouping::Storey));
+        assert!(!v.set_grouping(Grouping::Storey));
+        v.sync(&mut s, false);
+        assert_eq!(v.line_texts(), g.line_texts());
+    }
+
+    #[test]
+    fn atv_nummer_hinter_gewerk() {
+        assert_eq!(trade_tag("18331"), "DIN 18331");
+        assert_eq!(trade_tag("F1"), "F1");
     }
 }

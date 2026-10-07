@@ -564,11 +564,61 @@ pub struct MaterialSum {
     pub area: Option<f64>,
 }
 
+/// Anteil eines Bauteils an einem Gewerk bzw. einer Kostengruppe: bei
+/// Wänden eine Schicht, sonst das Bauteil (Paket 1b). Mengen in mm, mm², mm³.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerRow {
+    pub element: ElementId,
+    pub number: String,
+    pub category: Category,
+    /// Geschoss der Gruppe (Sohlplatte und Frostschürze: Fundament).
+    pub storey: StoreyId,
+    /// Schicht in [`Model::element_layers`].
+    pub layer: usize,
+    pub material: MaterialId,
+    pub thickness: f64,
+    pub trade: Option<crate::trade::TradeId>,
+    pub kg: Option<u16>,
+    /// Länge in der Liste (Wände, Frostschürze, Randdämmstreifen), sonst 0.
+    pub length: f64,
+    /// Fläche: Platten und Decken; bei Dämmung die abgerechnete Fläche
+    /// (Wandschicht: Außenfläche), sonst 0.
+    pub area: f64,
+    pub volume: f64,
+    /// Baustoff ist Dämmung (Fläche zählt zur Summe des Gewerks).
+    pub insulation: bool,
+    /// Die Schicht ist die ganze Menge des Bauteils (einschichtig).
+    pub whole: bool,
+}
+
+/// Summe eines Gewerks in einem Gebäude mit seinen Zeilen; `area` (mm²)
+/// nur, wenn alle Anteile Dämmung sind (Dämmgewerk, paket-1a §7).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TradeSum {
+    pub trade: crate::trade::TradeId,
+    pub volume: f64,
+    pub area: Option<f64>,
+    /// Nach Bauteilart, Schicht (Baustoff, Dicke) und Nummer.
+    pub rows: Vec<LayerRow>,
+}
+
+/// Summe einer Kostengruppe (DIN 276) in einem Gebäude.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KgSum {
+    pub kg: u16,
+    pub volume: f64,
+    pub rows: Vec<LayerRow>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct BuildingQto {
     pub id: BuildingId,
     pub storeys: Vec<StoreyQto>,
     pub by_material: Vec<MaterialSum>,
+    /// Nach Gewerk in der Reihenfolge des Bauablaufs, nur vorkommende.
+    pub by_trade: Vec<TradeSum>,
+    /// Nach Kostengruppe, aufsteigend.
+    pub by_kg: Vec<KgSum>,
 }
 
 /// Die Mengenliste: abgeleitet, nie gespeichert.
@@ -770,10 +820,13 @@ pub fn schedule(model: &Model) -> Schedule {
             .filter(|s| !s.groups.is_empty())
             .collect();
         let by_material = material_sums(model, &storeys);
+        let rows = layer_rows(model, &storeys);
         sched.buildings.push(BuildingQto {
             id: bid,
             storeys,
             by_material,
+            by_trade: trade_sums(model, &rows),
+            by_kg: kg_sums(rows),
         });
     }
     // Was übrig ist, liegt in Geschossen ohne Gebäude
@@ -822,6 +875,149 @@ fn totals(rows: &[RowQto]) -> Totals {
         }
     }
     t
+}
+
+/// Zeilen nach Schicht über alle Bauteile mit Körper (Paket 1b): Wände je
+/// Schicht ohne Luft, die übrigen Bauteile je Schicht ihres Aufbaus. Eine
+/// Schicht neben dem Kern eines Bauteils mit Fläche zählt Fläche × Dicke.
+/// Sortiert nach Bauteilart, Baustoff, Dicke und Nummer.
+fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
+    let mut out = Vec::new();
+    for (st, row) in storeys.iter().flat_map(|s| {
+        s.groups
+            .iter()
+            .flat_map(move |g| g.rows.iter().map(move |r| (s.id, r)))
+    }) {
+        let (Some(q), Some(e)) = (&row.q, model.element(row.element)) else {
+            continue;
+        };
+        let layers = model.element_layers(row.element);
+        let insulation = |m: MaterialId| {
+            model
+                .material(m)
+                .is_some_and(|x| x.category == MatCategory::Insulation)
+        };
+        let mut push = |i: usize, length: f64, area: f64, volume: f64, whole: bool| {
+            let Some(l) = layers.get(i) else { return };
+            let ins = insulation(l.material);
+            out.push(LayerRow {
+                element: row.element,
+                number: row.number.clone(),
+                category: e.category,
+                storey: st,
+                layer: i,
+                material: l.material,
+                thickness: l.thickness,
+                trade: model.layer_trade(row.element, i),
+                kg: model.layer_kg(row.element, i),
+                length,
+                area: if ins || !matches!(q, ElementQto::Wall(_)) {
+                    area
+                } else {
+                    0.0
+                },
+                volume,
+                insulation: ins,
+                whole,
+            });
+        };
+        match q {
+            ElementQto::Wall(w) => {
+                let whole = w.layers.len() == 1;
+                for (i, l) in w.layers.iter().enumerate() {
+                    // Luftschicht ohne Körper (K4)
+                    let air = model
+                        .material(l.material)
+                        .is_some_and(|x| x.category == MatCategory::Air);
+                    if !air {
+                        push(i, w.list_length, l.side_area, l.volume, whole);
+                    }
+                }
+            }
+            q => {
+                let (length, area) = match q {
+                    ElementQto::Slab(s) => (0.0, s.area),
+                    ElementQto::Floor(f) => (0.0, f.area),
+                    ElementQto::Soffit(f) => (0.0, f.area),
+                    ElementQto::Footing(f) => (f.length, 0.0),
+                    ElementQto::Strip(f) => (f.length, 0.0),
+                    ElementQto::Wall(_) => (0.0, 0.0),
+                };
+                let whole = layers.len() == 1;
+                for (i, l) in layers.iter().enumerate() {
+                    let air = model
+                        .material(l.material)
+                        .is_some_and(|x| x.category == MatCategory::Air);
+                    if air {
+                        continue;
+                    }
+                    let v = if l.core || whole {
+                        q.volume()
+                    } else {
+                        area * l.thickness
+                    };
+                    push(i, length, area, v, whole);
+                }
+            }
+        }
+    }
+    let name = |m: MaterialId| model.material(m).map_or(String::new(), |x| x.name.clone());
+    out.sort_by(|a, b| {
+        (group_rank(a.category), name(a.material))
+            .cmp(&(group_rank(b.category), name(b.material)))
+            .then(a.thickness.total_cmp(&b.thickness))
+            .then(a.number.cmp(&b.number))
+            .then(a.layer.cmp(&b.layer))
+    });
+    out
+}
+
+/// Summen nach Gewerk in der Reihenfolge des Bauablaufs; Zeilen ohne Gewerk
+/// fehlen hier.
+fn trade_sums(model: &Model, rows: &[LayerRow]) -> Vec<TradeSum> {
+    let mut sums: Vec<TradeSum> = Vec::new();
+    for r in rows {
+        let Some(t) = r.trade else { continue };
+        let i = match sums.iter().position(|s| s.trade == t) {
+            Some(i) => i,
+            None => {
+                sums.push(TradeSum {
+                    trade: t,
+                    volume: 0.0,
+                    area: Some(0.0),
+                    rows: Vec::new(),
+                });
+                sums.len() - 1
+            }
+        };
+        let s = &mut sums[i];
+        s.volume += r.volume;
+        s.area = s.area.filter(|_| r.insulation).map(|a| a + r.area);
+        s.rows.push(r.clone());
+    }
+    sums.sort_by_key(|s| (model.trade(s.trade).map_or(u16::MAX, |t| t.order), s.trade));
+    sums
+}
+
+/// Summen nach Kostengruppe, aufsteigend.
+fn kg_sums(rows: Vec<LayerRow>) -> Vec<KgSum> {
+    let mut sums: Vec<KgSum> = Vec::new();
+    for r in rows {
+        let Some(kg) = r.kg else { continue };
+        match sums.iter_mut().find(|s| s.kg == kg) {
+            Some(s) => {
+                s.volume += r.volume;
+                s.rows.push(r);
+            }
+            None => sums.push(KgSum {
+                kg,
+                volume: r.volume,
+                rows: vec![r],
+            }),
+        }
+    }
+    sums.sort_by_key(|s| s.kg);
+    sums
 }
 
 /// Summe nach Baustoff über alle Bauteile mit Körper; Dämmung auch als Fläche.

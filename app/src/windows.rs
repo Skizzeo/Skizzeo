@@ -3,6 +3,7 @@
 //! nie in der `.szo`).
 
 use crate::document::Document;
+use crate::schedule_view::Grouping;
 use sk_model::szo::{Line, Record};
 pub use sk_platform::layout::{on_screen, Rect, WindowId, Windows, WIDTH_DIP};
 #[cfg(test)]
@@ -14,10 +15,17 @@ pub fn quantity_caption(doc: &Document, rev: u64) -> String {
 }
 
 /// Abschnitt für `einstellungen.txt`; leer, solange das Fenster nie offen war.
+#[cfg(test)]
 pub fn write_settings(w: &Windows) -> String {
+    write_settings_grouped(w, Grouping::Storey)
+}
+
+/// Wie [`write_settings`], dazu die Gliederung der Liste (Paket 1b);
+/// `gliederung=` steht nur, wenn sie nicht nach Geschoss ist.
+pub fn write_settings_grouped(w: &Windows, g: Grouping) -> String {
     let mut out = String::new();
     let rect = w.remembered_rect();
-    if !w.quantity_open() && rect.is_none() {
+    if !w.quantity_open() && rect.is_none() && g == Grouping::Storey {
         return out;
     }
     let mut l = Line::new("mengenfenster")
@@ -26,8 +34,21 @@ pub fn write_settings(w: &Windows) -> String {
     if let Some((x, y, b, h)) = rect {
         l = l.num("x", x).num("y", y).num("breite", b).num("hoehe", h);
     }
+    if g != Grouping::Storey {
+        l = l.word("gliederung", g.key());
+    }
     l.finish(&mut out);
     out
+}
+
+/// Gemerkte Gliederung der Liste; ohne Angabe nach Geschoss.
+pub fn read_grouping(text: &str) -> Grouping {
+    text.lines()
+        .enumerate()
+        .filter_map(|(i, l)| Record::parse(i + 1, l).ok().flatten())
+        .filter(|r| r.section == "mengenfenster")
+        .find_map(|r| r.opt("gliederung").and_then(Grouping::from_key))
+        .unwrap_or_default()
 }
 
 /// Liest den Abschnitt aus `einstellungen.txt`. `monitors`: Arbeitsbereiche

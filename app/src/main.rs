@@ -80,12 +80,13 @@ fn save_settings(
     settings: &mut settings::Settings,
     theme: &Theme,
     recent: &menu::Recent,
+    grouping: schedule_view::Grouping,
     surface: &Surface,
 ) {
     if settings.path.is_some() {
         settings.recent = recent.clone();
-        // Lage des Mengenfensters (F2)
-        settings.windows = windows::write_settings(&surface.layout());
+        // Lage des Mengenfensters (F2) und Gliederung der Liste (Paket 1b)
+        settings.windows = windows::write_settings_grouped(&surface.layout(), grouping);
     }
     if let Err(e) = settings.save_if_changed(theme) {
         eprintln!("{e}");
@@ -1276,7 +1277,13 @@ impl App {
         let (c, hints) = catalog::Company::load(&p, false);
         self.show_hints(hints, surface);
         self.settings.set_company_path(p);
-        save_settings(&mut self.settings, &self.theme, &self.recent, surface);
+        save_settings(
+            &mut self.settings,
+            &self.theme,
+            &self.recent,
+            self.quantity.grouping,
+            surface,
+        );
         self.company = Some(c);
         if let Some(cat) = self.catalog.as_mut() {
             cat.set_company(self.company.as_ref());
@@ -1768,7 +1775,8 @@ impl App {
             return;
         };
         let sched = self.scene.schedule().clone();
-        let bytes = schedule_view::csv(self.scene.model(), &sched);
+        let by = self.quantity.grouping;
+        let bytes = schedule_view::csv_grouped(self.scene.model(), &sched, by);
         if let Err(e) = std::fs::write(&path, bytes) {
             surface.message(
                 &format!("Die Tabelle konnte nicht gespeichert werden:\n{e}"),
@@ -4340,7 +4348,13 @@ impl App {
     /// Normal beendet: Einstellungen schreiben, die Sicherung gilt als
     /// sauber beendet (keine Startkarte beim nächsten Start).
     fn closing(&mut self, surface: &Surface) {
-        save_settings(&mut self.settings, &self.theme, &self.recent, surface);
+        save_settings(
+            &mut self.settings,
+            &self.theme,
+            &self.recent,
+            self.quantity.grouping,
+            surface,
+        );
         if let Some(a) = self.autosave.as_mut() {
             a.closed(&self.doc);
         }
@@ -4873,6 +4887,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     a.sync_caption(&surface);
     // Mengenfenster (F2, B7): gemerkte Lage, Breite aus dem Schema
     *surface.layout() = windows::read_settings(&a.settings.windows, &surface.monitors());
+    a.quantity.grouping = windows::read_grouping(&a.settings.windows);
     surface.layout().set_width_dip(a.theme.size.qto_window_w);
     if surface.layout().quantity_open() || std::env::args().any(|x| x == "--mengenfenster") {
         a.open_quantity(&surface);

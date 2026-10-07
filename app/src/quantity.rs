@@ -6,7 +6,7 @@
 use crate::delete::{Action, ContextMenu, HintCard, Link};
 use crate::picking::Picking;
 use crate::scene::Scene;
-use crate::schedule_view::{ListOut, ListView, RowBand};
+use crate::schedule_view::{Grouping, ListOut, ListView, RowBand};
 use sk_model::{Deleted, ElementId};
 use sk_paint::Canvas;
 use sk_platform::{CaptionArea, Event, Key, MouseButton, WindowCommand};
@@ -56,6 +56,8 @@ pub struct QuantityWindow {
     pub h: u32,
     pub title: TitleBar,
     pub list: Option<ListView>,
+    /// Gliederung der Liste (Paket 1b), aus den Einstellungen.
+    pub grouping: Grouping,
     /// Muss neu gezeichnet und gezeigt werden.
     pub dirty: bool,
     /// Angedockt (für die Fuge) und seit wann die Fuge aufblinkt.
@@ -95,6 +97,7 @@ impl QuantityWindow {
             h: 0,
             title,
             list: None,
+            grouping: Grouping::Storey,
             dirty: false,
             docked: true,
             seam_flash: None,
@@ -212,7 +215,8 @@ impl QuantityWindow {
 
     /// An Modell und gemeinsamen Zustand angleichen.
     pub fn sync(&mut self, s: &mut Scene, p: &Picking, animate: bool) {
-        let list = self.list.get_or_insert_with(|| ListView::new(s));
+        let g = self.grouping;
+        let list = self.list.get_or_insert_with(|| ListView::grouped(s, g));
         list.scale = self.title.scale;
         (list.w, list.h) = (self.w, self.h);
         if list.sync(s, animate) {
@@ -274,6 +278,12 @@ impl QuantityWindow {
             ListOut::SaveCsv => {
                 self.dirty = true;
                 Some(Out::SaveCsv)
+            }
+            // Die Zeilen baut das nächste `sync` neu
+            ListOut::Grouping(g) => {
+                self.grouping = g;
+                self.dirty = true;
+                None
             }
         }
     }
