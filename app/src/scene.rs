@@ -2187,6 +2187,32 @@ impl Scene {
         self.bounds
     }
 
+    /// Umschließender Quader des Körpers eines Bauteils (`None`: ohne
+    /// Körper), aus den Netzen der Wandzüge; rechnet veraltete Züge vorher
+    /// neu. Für Tests, später auch für „auf Bauteil zoomen“ im Baum.
+    #[cfg(test)]
+    pub fn element_bounds(&mut self, id: ElementId) -> Option<Aabb> {
+        self.rebuild_dirty(false);
+        let mut out: Option<Aabb> = None;
+        for c in self.cache.iter().flatten() {
+            for t in &c.solid.triangles {
+                if self.model.part_of(c.id, t.elem) != Some(id) {
+                    continue;
+                }
+                for p in t.p {
+                    out = Some(match out {
+                        None => (p, p),
+                        Some((lo, hi)) => (
+                            vec3(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z)),
+                            vec3(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z)),
+                        ),
+                    });
+                }
+            }
+        }
+        out
+    }
+
     /// Nächster Treffer eines Strahls: Abstand und getroffene Wand.
     pub fn raycast(&self, origin: Vec3, dir: Vec3) -> Option<(f64, ElementId)> {
         let mut best: Option<(f64, RunId, u32)> = None;

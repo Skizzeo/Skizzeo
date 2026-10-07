@@ -234,18 +234,8 @@ impl Model {
             changed: 1,
             bearing: Bearing::Core,
             layers: vec![
-                MaterialLayer {
-                    material: insulation,
-                    thickness: 140.0,
-                    function: LayerFunction::Insulation,
-                    core: false,
-                },
-                MaterialLayer {
-                    material: aerated,
-                    thickness: 175.0,
-                    function: LayerFunction::Structure,
-                    core: true,
-                },
+                MaterialLayer::new(insulation, 140.0, LayerFunction::Insulation),
+                MaterialLayer::new(aerated, 175.0, LayerFunction::Structure).core(),
             ],
         });
         let mut storeys = Arena::new();
@@ -374,11 +364,13 @@ impl Model {
             [255, 255, 255],
             [255, 255, 255],
         );
-        let layer = |material, thickness, function, core| MaterialLayer {
-            material,
-            thickness,
-            function,
-            core,
+        let layer = |material, thickness, function, core| {
+            let l = MaterialLayer::new(material, thickness, function);
+            if core {
+                l.core()
+            } else {
+                l
+            }
         };
         use LayerFunction as F;
         let wall_type = |guid, name: &str, code: &str, category, layers| LayerSet {
@@ -1002,11 +994,13 @@ impl Model {
         self.defaults.exterior_wall == id || self.defaults.interior_wall == id
     }
 
-    /// Standardtyp für neue Wände der Art.
+    /// Standardtyp für neue Wände der Art. Nur Wandarten haben einen
+    /// ([`TypeCategory::WALLS`]); waagerechte Bauteile kommen ohne Typ aus.
     pub fn default_type(&self, cat: TypeCategory) -> LayerSetId {
+        debug_assert!(cat.is_wall(), "{cat:?} hat keinen Standardtyp");
         match cat {
-            TypeCategory::ExteriorWall => self.defaults.exterior_wall,
             TypeCategory::InteriorWall => self.defaults.interior_wall,
+            _ => self.defaults.exterior_wall,
         }
     }
 
@@ -1073,6 +1067,7 @@ impl Model {
         match cat {
             TypeCategory::ExteriorWall => d.exterior_wall = id,
             TypeCategory::InteriorWall => d.interior_wall = id,
+            _ => return false,
         }
         if d == self.defaults {
             return true;
@@ -3461,6 +3456,85 @@ impl Model {
         true
     }
 
+    /// Aufbau eines Bauteils als Schichten (R4, bim/paket-r4-deckenschichten.md
+    /// §1.3): bei Wänden die Schichten des Typs. Decke, Sohlplatte und
+    /// Frostschürze haben ohne Typ den gedachten Einschicht-Aufbau aus
+    /// Baustoff und Dicke (Breite); mit Typ dessen Schichten von oben nach
+    /// unten, die Kernschicht mit Dicke und Baustoff vom Bauteil. `None`:
+    /// ohne eigenen Aufbau (Randdämmstreifen, Untersichtdämmung folgen
+    /// Wandtyp und Decke).
+    pub fn build_up(&self, id: ElementId) -> Option<Vec<MaterialLayer>> {
+        let e = self.element(id)?;
+        let typ = e.layer_set.and_then(|t| self.layer_set(t));
+        if let ElementKind::Wall(_) = e.kind {
+            return typ.map(|t| t.layers.clone());
+        }
+        let material = e.kind.material()?;
+        let thickness = e.kind.core_thickness()?;
+        let core = MaterialLayer::new(material, thickness, LayerFunction::Structure).core();
+        Some(match typ.filter(|t| t.category.variable_core()) {
+            Some(t) => t
+                .layers
+                .iter()
+                .map(|l| {
+                    if l.core {
+                        let mut core = l.with_material(material);
+                        core.thickness = thickness;
+                        core
+                    } else {
+                        *l
+                    }
+                })
+                .collect(),
+            None => vec![core],
+        })
+    }
+
+    /// Setzt den Typ einer Decke, Sohlplatte oder Frostschürze; `None`
+    /// heißt wieder gedachter Einschicht-Aufbau. Der Typ muss passen
+    /// (Regel 37); der Baustoff am Bauteil folgt seiner Kernschicht
+    /// (Regel 38), die Dicke bleibt am Bauteil.
+    pub fn set_slab_type(&mut self, id: ElementId, set: Option<LayerSetId>) -> bool {
+        let Some(e) = self.element(id) else {
+            return false;
+        };
+        if e.kind.material().is_none() {
+            return false;
+        }
+        let core = match set {
+            None => None,
+            Some(t) => {
+                let Some(t) = self
+                    .layer_set(t)
+                    .filter(|t| TypeCategory::of(e.category) == Some(t.category))
+                else {
+                    return false;
+                };
+                let Some(core) = t.layers.iter().find(|l| l.core) else {
+                    return false;
+                };
+                Some(core.material)
+            }
+        };
+        if e.layer_set == set && core.is_none_or(|m| e.kind.material() == Some(m)) {
+            return true;
+        }
+        note!(self, Element, self.elements, id);
+        if let Some(e) = self.elements.get_mut(id) {
+            e.layer_set = set;
+            if let Some(m) = core {
+                match &mut e.kind {
+                    ElementKind::Floor(f) => f.material = m,
+                    ElementKind::GroundSlab(s) => s.material = m,
+                    ElementKind::StripFooting(f) => f.material = m,
+                    _ => {}
+                }
+            }
+        }
+        self.touch();
+        true
+    }
+
     /// Hinweise, die keinen Fehler darstellen: Der Körper entsteht, aber etwas
     /// ist ungewöhnlich (Paneel „Eigenschaften“).
     pub fn warnings(&self, e: ElementId) -> Vec<String> {
@@ -4518,7 +4592,7 @@ impl Model {
             if let Some(s) = e.layer_set {
                 match self.layer_set(s) {
                     None => out.push(format!("{}: Aufbau fehlt", e.number)),
-                    // Regel 16: der Typ passt zur Wand
+                    // Regel 16/37: der Typ passt zum Bauteil
                     Some(t) if TypeCategory::of(e.category) != Some(t.category) => {
                         out.push(format!(
                             "{}: Typ {} passt nicht zur {}",
@@ -4527,9 +4601,19 @@ impl Model {
                             e.category.name()
                         ))
                     }
+                    // Regel 38: der Kernbaustoff ist der Baustoff am Bauteil
+                    Some(t) if t.category.variable_core() => {
+                        let core = t.layers.iter().find(|l| l.core).map(|l| l.material);
+                        if core.is_some() && core != e.kind.material() {
+                            out.push(format!(
+                                "{}: Baustoff weicht vom Kern des Typs {} ab",
+                                e.number, t.code
+                            ));
+                        }
+                    }
                     Some(_) => {}
                 }
-            } else if TypeCategory::of(e.category).is_some() {
+            } else if crate::kinds::spec(e.category).needs_type {
                 out.push(format!("{}: kein Bauteiltyp", e.number));
             }
             match e.kind {
@@ -4825,7 +4909,7 @@ impl Model {
             out.push(format!("Kurzzeichen {} doppelt vergeben", w[0]));
         }
         // Regel 18: die Standardtypen leben und haben ihre Art
-        for cat in TypeCategory::ALL {
+        for cat in TypeCategory::WALLS {
             match self.layer_set(self.default_type(cat)) {
                 Some(t) if t.category == cat => {}
                 Some(t) => out.push(format!(
@@ -5149,12 +5233,7 @@ pub(crate) fn interior_set(guid: Guid, material: MaterialId) -> LayerSet {
         note: String::new(),
         changed: 1,
         bearing: Bearing::Core,
-        layers: vec![MaterialLayer {
-            material,
-            thickness: 175.0,
-            function: LayerFunction::Structure,
-            core: true,
-        }],
+        layers: vec![MaterialLayer::new(material, 175.0, LayerFunction::Structure).core()],
     }
 }
 

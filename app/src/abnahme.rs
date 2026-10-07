@@ -13728,3 +13728,697 @@ mod schnitt_b {
         }
     }
 }
+
+mod bauteilarten {
+    use super::*;
+
+    // Abnahmetests A175–A180: eine Tabelle je Bauteilart (Review 2a R1,
+    // projektstruktur/bauteil-integration.md §4–5, Plan „Kategorisierung und
+    // Dachterrasse“ Paket 0/1). Spezifikation: test/abnahme-kategorien.md.
+    //
+    // Einbau: als `mod bauteilarten { use super::*; … }` ans Ende von
+    // app/src/abnahme.rs. Nutzt aus abnahme.rs: gebaeude, tool, click, key,
+    // cam3d, W, H.
+    //
+    // A175–A178 sind Sicherungstests für den reinen Umbau: Sie sind auf main
+    // 637f33c/d57e43f grün (Ausnahme A178, siehe dort) und müssen nach R1
+    // unverändert grün bleiben. Alle Namen, Präfixe, IFC-Klassen,
+    // Kostengruppen, Datei-Schlüsselwörter, Mengenzeilen und Löschtexte
+    // bleiben, wie sie sind. Ändert Paket 1 bewusst etwas daran (KG je
+    // Schicht in der CSV), passt Test die Erwartung an.
+    //
+    // A179–A180 prüfen die Registrierung `sk_model::kinds` (main 2f926dd:
+    // `kinds::spec(Category) -> &KindSpec`). Die Beispiele für den
+    // allgemeinen Integrationstest stehen im Test (`beispiel`), weil KindSpec
+    // kein `sample` hat; A179 verlangt für jede neue Kategorie ein Beispiel.
+    // Für die Höhenprüfung braucht A180 `Scene::element_bounds`
+    // (test/patches/element-bounds.patch). Heißen Dinge im Bau anders,
+    // ändert sich nur der Adapter.
+
+    use sk_model::{Category, ElementId, StoreyId};
+
+    // ===== Adapter R1 =====
+
+    use sk_model::kinds::{self, KindSpec};
+
+    /// Alle Einträge der Registrierung, je Kategorie einer.
+    fn arten() -> Vec<&'static KindSpec> {
+        Category::ALL.iter().map(|c| kinds::spec(*c)).collect()
+    }
+
+    /// Eintrag der Registrierung für eine Kategorie.
+    fn art(c: Category) -> &'static KindSpec {
+        kinds::spec(c)
+    }
+
+    /// (Kategorie, Präfix, Name, Mehrzahl, IFC wie `Category::ifc_class`,
+    /// KG, Wort in der .szo).
+    #[allow(clippy::type_complexity)]
+    fn angaben(
+        k: &KindSpec,
+    ) -> (
+        Category,
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+        Option<u16>,
+        &'static str,
+    ) {
+        (k.category, k.prefix, k.name, k.plural, k.ifc, k.kg, k.szo)
+    }
+
+    /// Höhenlage des Körpers eines Bauteils (UK, OK) in mm; `None`: ohne
+    /// Körper. `Scene::element_bounds` kommt mit test/patches/element-bounds.patch.
+    fn koerper_z(s: &mut Scene, id: ElementId) -> Option<(f64, f64)> {
+        s.element_bounds(id).map(|(lo, hi)| (lo.z, hi.z))
+    }
+
+    // ===== Hilfen =====
+
+    /// Musterhaus A: Dialog, Rechteck 10 × 8 m, AW 31,5 (WDVS 14), OG-Nordwand
+    /// AW-006 gelöst und 0,30 m vor (UD-001), EG-Innenwand IW 17,5 bei x = 5 m.
+    /// Mit `mono` danach Wandtyp AW-36,5 für den ganzen Stapel (RD-001 … 008).
+    fn musterhaus(seed: u64, mono: bool) -> Scene {
+        let mut s = Scene::with_model(Model::with_seed(seed));
+        let (eg, _og) = gebaeude(&mut s);
+        let w = nr(&s, "AW-006");
+        assert!(s.edit_model("Kopplung gelöst", |m| m.set_linked(w, false)));
+        assert!(s.edit_model("Wand verschoben", |m| m.move_segment(w, 300.0).is_some()));
+        let c = cam3d();
+        let set = s.model().defaults().interior_wall;
+        let mut t = tool(&s);
+        t.set_category(Category::InteriorWall, s.model().wall_layers(set));
+        click(&mut t, &c, vec3(5000.0, 0.0, 0.0));
+        click(&mut t, &c, vec3(5000.0, 8000.0, 0.0));
+        let iw = t.handle(&key(Key::Enter), &c, W, H, 1.0).commit.unwrap();
+        s.add_wall_as(&iw, Category::InteriorWall).unwrap();
+        if mono {
+            let t = s.model().type_by_guid(sk_model::MONO_TYPE_GUID).unwrap();
+            assert!(s.edit_model("Wandtyp", |m| m.set_run_type(eg, t)));
+        }
+        assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+        s
+    }
+
+    fn nr(s: &Scene, nummer: &str) -> ElementId {
+        s.model()
+            .elements()
+            .iter()
+            .find(|(_, e)| e.number == nummer)
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| panic!("{nummer} fehlt"))
+    }
+
+    fn csv_text(s: &mut Scene) -> String {
+        let l = s.schedule().clone();
+        String::from_utf8(crate::schedule_view::csv(s.model(), &l)).unwrap()
+    }
+
+    /// Die heutige Tabelle (main 637f33c): Name, Präfix, IFC, KG, IsExternal.
+    #[allow(clippy::type_complexity)]
+    const TABELLE: [(Category, &str, &str, &str, Option<u16>, bool); 12] = [
+        (
+            Category::ExteriorWall,
+            "Außenwand",
+            "AW",
+            "IfcWall",
+            Some(330),
+            true,
+        ),
+        (
+            Category::InteriorWall,
+            "Innenwand",
+            "IW",
+            "IfcWall",
+            Some(340),
+            false,
+        ),
+        (
+            Category::Floor,
+            "Geschossdecke",
+            "DE",
+            "IfcSlab.FLOOR",
+            Some(350),
+            false,
+        ),
+        (
+            Category::GroundSlab,
+            "Sohlplatte",
+            "SP",
+            "IfcSlab.BASESLAB",
+            Some(322),
+            false,
+        ),
+        (Category::Roof, "Dach", "DA", "IfcRoof", Some(360), false),
+        (
+            Category::Window,
+            "Fenster",
+            "FE",
+            "IfcWindow",
+            Some(330),
+            false,
+        ),
+        (Category::Door, "Tür", "TU", "IfcDoor", Some(340), false),
+        (
+            Category::Opening,
+            "Öffnung",
+            "OE",
+            "IfcOpeningElement",
+            None,
+            false,
+        ),
+        (Category::Space, "Raum", "R", "IfcSpace", None, false),
+        (
+            Category::StripFooting,
+            "Frostschürze",
+            "FS",
+            "IfcFooting.STRIP_FOOTING",
+            Some(322),
+            false,
+        ),
+        (
+            Category::EdgeInsulation,
+            "Randdämmstreifen",
+            "RD",
+            "IfcBuildingElementPart.INSULATION",
+            Some(330),
+            false,
+        ),
+        (
+            Category::SoffitInsulation,
+            "Untersichtdämmung",
+            "UD",
+            "IfcCovering.INSULATION",
+            Some(354),
+            false,
+        ),
+    ];
+
+    /// Bauteilarten, die es heute als Bauteil gibt: (Kategorie, Abschnitt und
+    /// Schlüsselwort in der .szo, Mehrzahl).
+    const ARTEN: [(Category, &str, &str, &str); 7] = [
+        (Category::ExteriorWall, "[wall]", "exterior", "Außenwände"),
+        (Category::InteriorWall, "[wall]", "interior", "Innenwände"),
+        (Category::Floor, "[floor]", "floor", "Decken"),
+        (Category::GroundSlab, "[slab]", "groundslab", "Sohlplatten"),
+        (
+            Category::StripFooting,
+            "[footing]",
+            "stripfooting",
+            "Frostschürzen",
+        ),
+        (
+            Category::EdgeInsulation,
+            "[strip]",
+            "edgeinsulation",
+            "Randdämmstreifen",
+        ),
+        (
+            Category::SoffitInsulation,
+            "[soffit]",
+            "soffitinsulation",
+            "Untersichtdämmungen",
+        ),
+    ];
+
+    /// A175 (R1): Die Angaben je Kategorie bleiben nach dem Umbau gleich:
+    /// Reihenfolge und Platz in `Category::ALL`, Name, Präfix, IFC-Klasse,
+    /// Kostengruppe, IsExternal; Typarten nur für AW und IW mit Name und
+    /// Präfix.
+    #[test]
+    fn a175_tabelle_je_bauteilart_unveraendert() {
+        assert_eq!(Category::ALL.len(), TABELLE.len());
+        for (i, (c, name, prefix, ifc, kg, ext)) in TABELLE.iter().enumerate() {
+            assert_eq!(Category::ALL[i], *c, "Reihenfolge");
+            assert_eq!(c.index(), i);
+            assert_eq!(c.name(), *name, "{c:?}");
+            assert_eq!(c.prefix(), *prefix, "{c:?}");
+            assert_eq!(c.ifc_class(), *ifc, "{c:?}");
+            assert_eq!(c.din276(), *kg, "{c:?}");
+            assert_eq!(c.is_external(), *ext, "{c:?}");
+        }
+        use sk_model::TypeCategory as T;
+        for c in Category::ALL {
+            let t = T::of(c);
+            match c {
+                Category::ExteriorWall => assert_eq!(t, Some(T::ExteriorWall)),
+                Category::InteriorWall => assert_eq!(t, Some(T::InteriorWall)),
+                // R4 öffnet Decke, Sohlplatte und Frostschürze (bim/paket-r4 §1.2)
+                Category::Floor | Category::GroundSlab | Category::StripFooting => {}
+                _ => assert_eq!(t, None, "{c:?} ohne Typ"),
+            }
+        }
+        assert_eq!(
+            (T::ExteriorWall.name(), T::ExteriorWall.prefix()),
+            ("Außenwand", "AW")
+        );
+        assert_eq!(
+            (T::InteriorWall.name(), T::InteriorWall.prefix()),
+            ("Innenwand", "IW")
+        );
+        assert_eq!(sk_model::type_code(T::ExteriorWall, 315.0), "AW-31,5");
+        assert_eq!(sk_model::type_code(T::InteriorWall, 240.0), "IW-24");
+    }
+
+    /// A176 (R1): Jede Bauteilart steht in der .szo im selben Abschnitt mit
+    /// demselben Schlüsselwort `cat=`, die Typen mit `cat=exterior|interior`.
+    /// Die Nummern tragen das Präfix der Art. Speichern → Öffnen → Speichern
+    /// ist bytegleich, für beide Musterhäuser.
+    #[test]
+    fn a176_datei_schluesselwoerter_unveraendert() {
+        for (seed, mono) in [(176, false), (1760, true)] {
+            let s = musterhaus(seed, mono);
+            let text = sk_model::szo::write(s.model());
+            assert!(text.starts_with("SZO 4\n"), "Version bleibt 4");
+            for (c, abschnitt, wort, _) in ARTEN {
+                let da = s.model().elements().iter().any(|(_, e)| e.category == c);
+                if !da {
+                    continue;
+                }
+                let zeilen: Vec<&str> = text
+                    .lines()
+                    .filter(|l| l.contains(&format!(" cat={wort} ")))
+                    .filter(|l| !l.starts_with("[layerset]"))
+                    .collect();
+                assert!(!zeilen.is_empty(), "{c:?}: cat={wort}");
+                for z in zeilen {
+                    assert!(z.starts_with(abschnitt), "{c:?}: {z}");
+                    assert!(
+                        z.contains(&format!("number=\"{}-", c.prefix())),
+                        "{c:?}: {z}"
+                    );
+                }
+            }
+            let typen: Vec<&str> = text
+                .lines()
+                .filter(|l| l.starts_with("[layerset]"))
+                .collect();
+            assert_eq!(typen.len(), 7, "Werkstypen");
+            assert!(typen
+                .iter()
+                .all(|l| l.contains(" cat=exterior ") || l.contains(" cat=interior ")));
+            let m2 = sk_model::szo::read(&text, sk_model::GuidGen::with_seed(1))
+                .expect("öffnen")
+                .model;
+            assert_eq!(sk_model::szo::write(&m2), text, "Rundlauf bytegleich");
+        }
+        // Musterhaus A hat alle Arten außer RD, Musterhaus B alle außer
+        // dem WDVS
+        let a = musterhaus(176, false);
+        let b = musterhaus(1760, true);
+        for (c, ..) in ARTEN {
+            let in_a = a.model().elements().iter().any(|(_, e)| e.category == c);
+            let in_b = b.model().elements().iter().any(|(_, e)| e.category == c);
+            assert!(in_a || in_b, "{c:?} kommt in einem Musterhaus vor");
+        }
+    }
+
+    /// Mengenliste von Musterhaus A als CSV (main 637f33c), Zeilenende hier LF.
+    const CSV_A: &str = concat!(
+        "\u{feff}",
+        r#"Gebäude;Geschoss;Kostengruppe;Bauteil;Nr.;Länge (m);Stück;Fläche (m²);Volumen (m³);Hinweis
+GB-01;Fundament;322;Frostschürze;FS-001;34,6000;1;;7,0238;
+GB-01;Fundament;322;Sohlplatte 22 cm;SP-001;;1;80,0000;17,6000;
+GB-01;Erdgeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS (Summe);AW-001 … 004;36,0000;4;;29,4573;
+GB-01;Erdgeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS AW-001, Höhe 2,855 m;AW-001;8,0000;1;;6,6208;
+GB-01;Erdgeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS AW-002, Höhe 2,855 m;AW-002;10,0000;1;;7,8731;
+GB-01;Erdgeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS AW-003, Höhe 2,855 m;AW-003;8,0000;1;;6,6208;
+GB-01;Erdgeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS AW-004, Höhe 2,855 m;AW-004;10,0000;1;;8,3425;
+GB-01;Erdgeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS: Dämmung (WDVS);;;;99,3800;13,6960;
+GB-01;Erdgeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS: Gasbeton;;;;;15,7613;
+GB-01;Erdgeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS: Abzug Deckenauflager;;;;;-1,3159;in der Decke enthalten
+GB-01;Erdgeschoss;340;Innenwände IW 17,5 Gasbeton (Summe);IW-001;7,3700;1;;3,3985;
+GB-01;Erdgeschoss;340;Innenwände IW 17,5 Gasbeton IW-001, Höhe 2,855 m;IW-001;7,3700;1;;3,3985;
+GB-01;Erdgeschoss;340;Innenwände IW 17,5 Gasbeton: Gasbeton;;;;;3,3985;
+GB-01;Erdgeschoss;340;Innenwände IW 17,5 Gasbeton: Abzug Deckenstreifen;;;;;-0,2837;in der Decke enthalten
+GB-01;Erdgeschoss;350;Decke über EG 22 cm;DE-001;;1;77,9544;17,1500;
+GB-01;Erdgeschoss;350;davon Auflager in den Außenwänden;DE-001;;;;1,3159;in der Decke enthalten
+GB-01;Erdgeschoss;354;Untersichtdämmung 12 cm;UD-001;;1;2,9160;0,3499;
+GB-01;Obergeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS (Summe);AW-005 … 008;36,6000;4;;30,9410;
+GB-01;Obergeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS AW-005, Höhe 2,855 m;AW-005;8,3000;1;;6,8934;
+GB-01;Obergeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS AW-006, Höhe 2,855 m;AW-006;10,0000;1;;8,8118;Versatz +0,30 m
+GB-01;Obergeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS AW-007, Höhe 2,855 m;AW-007;8,3000;1;;6,8934;
+GB-01;Obergeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS AW-008, Höhe 2,855 m;AW-008;10,0000;1;;8,3425;
+GB-01;Obergeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS: Dämmung (WDVS);;;;108,0970;14,9031;
+GB-01;Obergeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS: Gasbeton;;;;;16,0379;
+GB-01;Obergeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS: Abzug Deckenauflager;;;;;-1,3390;in der Decke enthalten
+GB-01;Obergeschoss;350;Decke über OG 22 cm;DE-002;;1;77,9544;17,1500;
+GB-01;Obergeschoss;350;davon Auflager in den Außenwänden;DE-002;;;;1,3390;in der Decke enthalten
+GB-01;Summe nach Baustoff;;Stahlbeton;;;;;58,9237;
+GB-01;Summe nach Baustoff;;Gasbeton;;;;;35,1977;
+GB-01;Summe nach Baustoff;;Dämmung (WDVS);;;;210,3930;28,9490;
+"#
+    );
+    /// Mengenliste von Musterhaus B als CSV (main 637f33c), Zeilenende hier LF.
+    const CSV_B: &str = concat!(
+        "\u{feff}",
+        r#"Gebäude;Geschoss;Kostengruppe;Bauteil;Nr.;Länge (m);Stück;Fläche (m²);Volumen (m³);Hinweis
+GB-01;Fundament;322;Frostschürze;FS-001;34,6000;1;;7,0238;
+GB-01;Fundament;322;Sohlplatte 22 cm;SP-001;;1;80,0000;17,6000;
+GB-01;Erdgeschoss;330;Außenwände AW monolithisch 36,5 (Summe);AW-001 … 004;36,0000;4;;33,2197;
+GB-01;Erdgeschoss;330;Außenwände AW monolithisch 36,5 AW-001, Höhe 2,855 m;AW-001;8,0000;1;;7,3432;
+GB-01;Erdgeschoss;330;Außenwände AW monolithisch 36,5 AW-002, Höhe 2,855 m;AW-002;10,0000;1;;9,2667;
+GB-01;Erdgeschoss;330;Außenwände AW monolithisch 36,5 AW-003, Höhe 2,855 m;AW-003;8,0000;1;;7,3432;
+GB-01;Erdgeschoss;330;Außenwände AW monolithisch 36,5 AW-004, Höhe 2,855 m;AW-004;10,0000;1;;9,2667;
+GB-01;Erdgeschoss;330;Außenwände AW monolithisch 36,5: Gasbeton;;;;;33,2197;
+GB-01;Erdgeschoss;330;Außenwände AW monolithisch 36,5: Abzug Deckenauflager;;;;;-2,7736;in der Decke enthalten
+GB-01;Erdgeschoss;330;Randdämmstreifen 12,5 cm × 22 cm;RD-001;8,1750;1;;0,2248;
+GB-01;Erdgeschoss;330;Randdämmstreifen 12,5 cm × 22 cm;RD-002;9,8750;1;;0,2716;
+GB-01;Erdgeschoss;330;Randdämmstreifen 12,5 cm × 22 cm;RD-003;8,1750;1;;0,2248;
+GB-01;Erdgeschoss;330;Randdämmstreifen 12,5 cm × 22 cm;RD-004;9,8750;1;;0,2716;
+GB-01;Erdgeschoss;340;Innenwände IW 17,5 Gasbeton (Summe);IW-001;7,2700;1;;3,3524;
+GB-01;Erdgeschoss;340;Innenwände IW 17,5 Gasbeton IW-001, Höhe 2,855 m;IW-001;7,2700;1;;3,3524;
+GB-01;Erdgeschoss;340;Innenwände IW 17,5 Gasbeton: Gasbeton;;;;;3,3524;
+GB-01;Erdgeschoss;340;Innenwände IW 17,5 Gasbeton: Abzug Deckenstreifen;;;;;-0,2799;in der Decke enthalten
+GB-01;Erdgeschoss;350;Decke über EG 22 cm;DE-001;;1;78,4875;17,2672;
+GB-01;Erdgeschoss;350;davon Auflager in den Außenwänden;DE-001;;;;2,7736;in der Decke enthalten
+GB-01;Erdgeschoss;354;Untersichtdämmung 12 cm;UD-001;;1;3,0000;0,3600;
+GB-01;Obergeschoss;330;Außenwände AW monolithisch 36,5 (Summe);AW-005 … 008;36,6000;4;;33,7968;
+GB-01;Obergeschoss;330;Außenwände AW monolithisch 36,5 AW-005, Höhe 2,855 m;AW-005;8,3000;1;;7,6317;
+GB-01;Obergeschoss;330;Außenwände AW monolithisch 36,5 AW-006, Höhe 2,855 m;AW-006;10,0000;1;;9,2667;Versatz +0,30 m
+GB-01;Obergeschoss;330;Außenwände AW monolithisch 36,5 AW-007, Höhe 2,855 m;AW-007;8,3000;1;;7,6317;
+GB-01;Obergeschoss;330;Außenwände AW monolithisch 36,5 AW-008, Höhe 2,855 m;AW-008;10,0000;1;;9,2667;
+GB-01;Obergeschoss;330;Außenwände AW monolithisch 36,5: Gasbeton;;;;;33,7968;
+GB-01;Obergeschoss;330;Außenwände AW monolithisch 36,5: Abzug Deckenauflager;;;;;-2,8217;in der Decke enthalten
+GB-01;Obergeschoss;330;Randdämmstreifen 12,5 cm × 22 cm;RD-005;8,1750;1;;0,2248;
+GB-01;Obergeschoss;330;Randdämmstreifen 12,5 cm × 22 cm;RD-006;9,8750;1;;0,2716;
+GB-01;Obergeschoss;330;Randdämmstreifen 12,5 cm × 22 cm;RD-007;8,1750;1;;0,2248;
+GB-01;Obergeschoss;330;Randdämmstreifen 12,5 cm × 22 cm;RD-008;9,8750;1;;0,2716;
+GB-01;Obergeschoss;350;Decke über OG 22 cm;DE-002;;1;78,4875;17,2672;
+GB-01;Obergeschoss;350;davon Auflager in den Außenwänden;DE-002;;;;2,8217;in der Decke enthalten
+GB-01;Summe nach Baustoff;;Stahlbeton;;;;;59,1583;
+GB-01;Summe nach Baustoff;;Gasbeton;;;;;70,3689;
+GB-01;Summe nach Baustoff;;Randdämmung;;;;3,0000;2,3455;
+"#
+    );
+
+    /// A177 (R1): Das Mengenfenster ist Zeile für Zeile gleich:
+    /// Gruppenreihenfolge nach Bauablauf (FS, SP, AW, RD, IW, DE, UD),
+    /// Gruppentitel, Kostengruppen, Mengen und Summen nach Baustoff.
+    #[test]
+    fn a177_mengenliste_unveraendert() {
+        for (seed, mono, soll) in [(176, false, CSV_A), (1760, true, CSV_B)] {
+            let mut s = musterhaus(seed, mono);
+            let csv = csv_text(&mut s);
+            assert!(!csv.replace("\r\n", "").contains('\n'), "Zeilenende CRLF");
+            assert_eq!(csv.replace("\r\n", "\n"), soll, "Musterhaus {seed}");
+        }
+    }
+
+    /// A178 (R1): Die Sätze beim Löschen bleiben, mit einer gewollten
+    /// Änderung: Die Rückfrage „Gebäude löschen?“ nennt jede Bauteilart mit
+    /// Namen. Auf 637f33c steht dort für die UD „1 weitere“, weil die Liste
+    /// in delete.rs die UD nicht kennt; aus der Tabelle heraus heißt es
+    /// „1 Untersichtdämmung“. Die Ablehnungen am Bauteil und der Satz bei
+    /// gemischter Auswahl bleiben wörtlich.
+    #[test]
+    fn a178_loeschtexte_aus_der_tabelle() {
+        let s = musterhaus(178, true);
+        let b = s.model().buildings().iter().next().unwrap().0;
+        assert_eq!(
+            crate::delete::parts_text(s.model(), b),
+            "Alle Bauteile dieses Gebäudes werden entfernt: 8 Außenwände, \
+             1 Innenwand, 2 Decken, Sohlplatte, Frostschürze, \
+             8 Randdämmstreifen, 1 Untersichtdämmung."
+        );
+        let ablehnung = |n: &str| {
+            let id = nr(&s, n);
+            s.model()
+                .can_delete(id)
+                .err()
+                .map(|r| sk_model::refusal_text(s.model(), id, &r))
+        };
+        let aw = "Außenwände gehören zum Gebäudeumriss. Zum Entfernen den \
+                  Umriss ändern oder das ganze Gebäude löschen.";
+        let gruendung = "Sohlplatte und Frostschürze folgen dem Umriss des Erdgeschosses.";
+        let de = "Die Decke ergibt sich aus dem Gebäudeumriss und bleibt, \
+                  solange das Gebäude steht.";
+        let rd = "Der Randdämmstreifen gehört zum Wandtyp; zum Entfernen den Wandtyp ändern.";
+        let ud = "Die Untersichtdämmung folgt dem Vorsprung des Geschosses \
+                  darüber; ihre Dicke steht bei der Decke.";
+        for (n, satz) in [
+            ("AW-001", Some(aw)),
+            ("AW-006", Some(aw)),
+            ("SP-001", Some(gruendung)),
+            ("FS-001", Some(gruendung)),
+            ("DE-001", Some(de)),
+            ("DE-002", Some(de)),
+            ("RD-001", Some(rd)),
+            ("UD-001", Some(ud)),
+            ("IW-001", None),
+        ] {
+            assert_eq!(ablehnung(n).as_deref(), satz, "{n}");
+        }
+        // Alles ausgewählt, Entf: nur die Innenwand geht
+        let mut s2 = Scene::with_model(s.model().clone());
+        let ids: Vec<ElementId> = s2.model().elements().iter().map(|(id, _)| id).collect();
+        let d = s2.delete_elements(&ids);
+        assert_eq!(
+            crate::delete::hint(s2.model(), &d),
+            [
+                "1 Wand gelöscht.",
+                "Außenwände, Decken, Sohlplatten, Frostschürzen und \
+                 Randdämmstreifen bleiben, sie gehören zum Gebäudeumriss \
+                 oder zum Wandtyp."
+            ]
+        );
+    }
+
+    /// Kategorien, die es noch nicht als Bauteil gibt (kein Beispiel).
+    const OHNE_BAUTEIL: [Category; 5] = [
+        Category::Roof,
+        Category::Window,
+        Category::Door,
+        Category::Opening,
+        Category::Space,
+    ];
+
+    /// A179 (R1): Die Registrierung `kinds::spec` hat für jede Kategorie
+    /// einen Eintrag mit denselben Angaben wie A175/A176: Kategorie, Präfix,
+    /// Name, Mehrzahl, IFC, KG und Wort in der Datei. Präfixe und Dateiwörter
+    /// sind eindeutig. Jede Kategorie mit Bauteilen hat ein Beispiel für
+    /// A180; kommt eine neue Kategorie dazu (DT, AB), schlägt dieser Test
+    /// fehl, bis A180 ein Beispiel für sie hat.
+    #[test]
+    fn a179_registrierung_je_bauteilart() {
+        let alle = arten();
+        assert_eq!(alle.len(), Category::ALL.len());
+        for (k, c) in alle.iter().zip(Category::ALL) {
+            let (kc, prefix, name, _, ifc, kg, _) = angaben(k);
+            assert_eq!(kc, c, "Reihenfolge wie Category::ALL");
+            assert_eq!(
+                (prefix, name, ifc, kg),
+                (c.prefix(), c.name(), c.ifc_class(), c.din276())
+            );
+            assert_eq!(
+                alle.iter().filter(|a| a.prefix == prefix).count(),
+                1,
+                "Präfix {prefix} eindeutig"
+            );
+            assert_eq!(
+                alle.iter().filter(|a| a.szo == k.szo).count(),
+                1,
+                "Dateiwort {} eindeutig",
+                k.szo
+            );
+            assert!(
+                OHNE_BAUTEIL.contains(&c) || ARTEN.iter().any(|a| a.0 == c),
+                "{c:?}: Beispiel in A180 fehlt"
+            );
+        }
+        for (c, _, wort, mehrzahl) in ARTEN {
+            let (.., plural, _, _, szo) = angaben(art(c));
+            assert_eq!(plural, mehrzahl, "{c:?}");
+            assert_eq!(szo, wort, "{c:?}");
+        }
+    }
+
+    /// Zahl der Bauteile je Kategorie.
+    fn zahl(s: &Scene, c: Category) -> usize {
+        s.model()
+            .elements()
+            .iter()
+            .filter(|(_, e)| e.category == c)
+            .count()
+    }
+
+    fn geschoss(s: &Scene, short: &str) -> StoreyId {
+        s.model()
+            .storeys()
+            .iter()
+            .find(|(_, st)| st.short == short)
+            .map(|(id, _)| id)
+            .unwrap()
+    }
+
+    /// Erstes Bauteil der Kategorie nach Nummer.
+    fn erstes(s: &Scene, c: Category) -> Option<ElementId> {
+        let m = s.model();
+        let mut v: Vec<(String, ElementId)> = m
+            .elements()
+            .iter()
+            .filter(|(_, e)| e.category == c)
+            .map(|(id, e)| (e.number.clone(), id))
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v.first().map(|x| x.1)
+    }
+
+    /// Beispiel der Kategorie `c` in einem leeren Projekt, in einem Schritt
+    /// „Beispiel“: das Haus 10 × 8 m direkt im Modell, für IW eine
+    /// Innenwand dazu, für RD der Typ AW-36,5, für UD AW-006 0,30 m vor.
+    /// Abgeleitete Bauteile entstehen beim Abschluss des Schritts.
+    fn beispiel(c: Category, s: &mut Scene) -> ElementId {
+        let mono = s.model().type_by_guid(sk_model::MONO_TYPE_GUID).unwrap();
+        assert!(s.edit_model("Beispiel", |m| {
+            if c == Category::EdgeInsulation {
+                m.set_default_type(sk_model::TypeCategory::ExteriorWall, mono);
+            }
+            let b = m.add_building(2);
+            let rechteck = [
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ];
+            let eg = m.build_from_polygon(b, &rechteck).unwrap();
+            match c {
+                Category::InteriorWall => {
+                    let st = m.run(eg).unwrap().storey;
+                    let t = m.default_type(sk_model::TypeCategory::InteriorWall);
+                    let iw = [vec3(5000.0, 0.0, 0.0), vec3(5000.0, 8000.0, 0.0)];
+                    m.add_wall_run(&iw, false, RefSide::Center, st, t, c)
+                        .is_some()
+                }
+                Category::SoffitInsulation => {
+                    let w = m
+                        .elements()
+                        .iter()
+                        .find(|(_, e)| e.number == "AW-006")
+                        .map(|(id, _)| id)
+                        .unwrap();
+                    m.set_linked(w, false) && m.move_segment(w, 300.0).is_some()
+                }
+                _ => true,
+            }
+        }));
+        erstes(s, c).unwrap_or_else(|| panic!("{c:?}: Beispiel fehlt"))
+    }
+
+    /// A180 (R1, bauteil-integration.md §5): Der allgemeine Integrationstest
+    /// läuft über alle Kategorien der Registrierung, die es als Bauteil gibt:
+    /// 1. Guid, Nummer mit Präfix, Kategorie, lebendes Geschoss (Regel 1).
+    /// 2. Höhe nur über LevelRef: EG 30 cm höher → OG-Bauteile wandern genau
+    ///    +300 mit, EG-Bauteile über ±0,00 gehen mit ihrer Oberkante mit
+    ///    (OK EG bzw. UK Decke), die Gründung bleibt.
+    /// 7. Speichern → Öffnen ist bytegleich, das Dateiwort steht in der Datei.
+    /// 8. Anlegen → Rückgängig → Wiederherstellen: dieselbe Guid und Nummer.
+    /// 9. Löschen folgt der Regel: entweder gelöscht ohne tote Verweise oder
+    ///    abgelehnt mit Satz.
+    /// 10. Die Art hat Mengen (eine Zeile mit ihrer Nummer im Mengenfenster).
+    /// 11. `Model::check()` ohne Befund.
+    ///
+    /// Punkt 3 (Gewerk und KG je Schicht) prüft A184/A185 mit Paket 1,
+    /// Punkte 4–6 (Baum, Ausblenden, Sperren) kommen mit Paket 3/4.
+    #[test]
+    fn a180_allgemeiner_integrationstest() {
+        for k in arten() {
+            let c = k.category;
+            if OHNE_BAUTEIL.contains(&c) {
+                continue;
+            }
+            let mut s = Scene::with_model(Model::with_seed(180));
+            let id = beispiel(c, &mut s);
+            let e = s.model().element(id).expect("Beispiel lebt").clone();
+            // 1
+            assert_eq!(e.category, c, "{c:?}");
+            assert!(
+                e.number.starts_with(&format!("{}-", k.prefix)),
+                "{c:?}: {}",
+                e.number
+            );
+            assert!(s.model().storey(e.storey).is_some(), "{c:?}: Geschoss");
+            let guids: Vec<_> = s.model().elements().iter().map(|(_, e)| e.guid).collect();
+            assert_eq!(
+                guids.iter().filter(|g| **g == e.guid).count(),
+                1,
+                "{c:?}: Guid eindeutig"
+            );
+            // 11
+            assert!(
+                s.model().check().is_empty(),
+                "{c:?}: {:?}",
+                s.model().check()
+            );
+            // 10
+            let csv = csv_text(&mut s);
+            assert!(
+                csv.lines().any(|l| l.contains(&format!(";{};", e.number))
+                    || l.contains(&format!(";{} …", e.number))),
+                "{c:?}: Mengenzeile für {}",
+                e.number
+            );
+            // 7
+            let text = sk_model::szo::write(s.model());
+            assert!(
+                text.contains(&format!(" cat={} ", k.szo)),
+                "{c:?}: Dateiwort"
+            );
+            let m2 = sk_model::szo::read(&text, sk_model::GuidGen::with_seed(1))
+                .expect("öffnen")
+                .model;
+            assert_eq!(sk_model::szo::write(&m2), text, "{c:?}: Rundlauf");
+            // 2
+            let og = geschoss(&s, "OG");
+            let eg = geschoss(&s, "EG");
+            let h = s.model().storey(eg).unwrap().height;
+            let vorher = koerper_z(&mut s, id).unwrap_or_else(|| panic!("{c:?}: Körper"));
+            assert!(s.edit_model("Geschosshöhe", |m| m.set_storey_height(eg, h + 300.0)));
+            let nachher = koerper_z(&mut s, id).unwrap();
+            if e.storey == og {
+                assert_eq!(
+                    (nachher.0 - vorher.0, nachher.1 - vorher.1),
+                    (300.0, 300.0),
+                    "{c:?}: OG wandert mit"
+                );
+            } else if vorher.1 > 0.0 {
+                assert_eq!(nachher.1 - vorher.1, 300.0, "{c:?}: Oberkante folgt dem EG");
+                assert!(
+                    nachher.0 == vorher.0 || nachher.0 - vorher.0 == 300.0,
+                    "{c:?}"
+                );
+            } else {
+                assert_eq!(nachher, vorher, "{c:?}: Gründung bleibt");
+            }
+            assert!(s.model().check().is_empty(), "{c:?}");
+            assert!(s.undo());
+            // 8
+            let n = zahl(&s, c);
+            assert!(s.undo(), "{c:?}: Anlegen rückgängig");
+            assert!(zahl(&s, c) < n, "{c:?}: weg nach Rückgängig");
+            assert!(s.redo());
+            let wieder = s
+                .model()
+                .elements()
+                .iter()
+                .find(|(_, x)| x.guid == e.guid)
+                .map(|(i, x)| (i, x.number.clone()));
+            let (id, nummer) = wieder.unwrap_or_else(|| panic!("{c:?}: Wiederherstellen"));
+            assert_eq!(nummer, e.number, "{c:?}: Nummer bleibt");
+            // 9
+            match s.model().can_delete(id) {
+                Ok(()) => {
+                    let d = s.delete_elements(&[id]);
+                    assert!(d.removed.contains(&id), "{c:?}");
+                    assert!(s.model().element(id).is_none());
+                    assert!(s.model().check().is_empty(), "{c:?}: keine toten Verweise");
+                }
+                Err(r) => {
+                    let satz = sk_model::refusal_text(s.model(), id, &r);
+                    assert!(satz.ends_with('.'), "{c:?}: Satz {satz}");
+                }
+            }
+        }
+    }
+}

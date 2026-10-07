@@ -108,6 +108,31 @@ pub struct MaterialLayer {
     pub core: bool,
 }
 
+impl MaterialLayer {
+    /// Schicht außerhalb des Kerns; weitere Angaben über die Builder
+    /// (R4a, bim/paket-r4-deckenschichten.md §1.1).
+    pub fn new(material: MaterialId, thickness: f64, function: LayerFunction) -> Self {
+        MaterialLayer {
+            material,
+            thickness,
+            function,
+            core: false,
+        }
+    }
+
+    /// Gehört zum tragenden Kern.
+    pub fn core(mut self) -> Self {
+        self.core = true;
+        self
+    }
+
+    /// Gleiche Schicht aus einem anderen Baustoff.
+    pub fn with_material(mut self, material: MaterialId) -> Self {
+        self.material = material;
+        self
+    }
+}
+
 /// Wie eine Geschossdecke auf dem Typ aufliegt (K5).
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum Bearing {
@@ -119,20 +144,46 @@ pub enum Bearing {
     Depth { depth: f64, strip: MaterialId },
 }
 
-/// Art eines Bauteiltyps: für welche Bauteile er taugt (K1). Weitere Arten
-/// (Decke, Dach …) nur auf Jörns Vorgabe.
+/// Art eines Bauteiltyps: für welche Bauteile er taugt (K1). Wandarten
+/// haben Werkstypen und einen Standardtyp; Decke, Sohlplatte und
+/// Frostschürze kommen ohne Typ aus (gedachter Einschicht-Aufbau,
+/// [`crate::Model::build_up`]) und können einen haben (R4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TypeCategory {
     ExteriorWall,
     InteriorWall,
+    Floor,
+    GroundSlab,
+    StripFooting,
 }
 
 impl TypeCategory {
-    pub const ALL: [TypeCategory; 2] = [TypeCategory::ExteriorWall, TypeCategory::InteriorWall];
+    pub const ALL: [TypeCategory; 5] = [
+        TypeCategory::ExteriorWall,
+        TypeCategory::InteriorWall,
+        TypeCategory::Floor,
+        TypeCategory::GroundSlab,
+        TypeCategory::StripFooting,
+    ];
 
-    /// Typart, die Bauteile der Kategorie brauchen; `None`: ohne Typ.
+    /// Wandarten: nur sie haben Werkstypen, Standardtyp, Werkzeug und einen
+    /// Platz im Katalogfenster.
+    pub const WALLS: [TypeCategory; 2] = [TypeCategory::ExteriorWall, TypeCategory::InteriorWall];
+
+    /// Typart, die zu Bauteilen der Kategorie passt; `None`: ohne Typ.
     pub fn of(c: Category) -> Option<TypeCategory> {
         crate::kinds::spec(c).type_category
+    }
+
+    /// Wandart (Schichten von außen nach innen).
+    pub fn is_wall(self) -> bool {
+        Self::WALLS.contains(&self)
+    }
+
+    /// Waagerechte Art (Schichten von oben nach unten) mit genau einer
+    /// Kernschicht, deren Dicke am Bauteil steht (Regel 38).
+    pub fn variable_core(self) -> bool {
+        !self.is_wall()
     }
 
     /// Kategorie der Bauteile dieser Typart.
@@ -140,6 +191,9 @@ impl TypeCategory {
         match self {
             TypeCategory::ExteriorWall => Category::ExteriorWall,
             TypeCategory::InteriorWall => Category::InteriorWall,
+            TypeCategory::Floor => Category::Floor,
+            TypeCategory::GroundSlab => Category::GroundSlab,
+            TypeCategory::StripFooting => Category::StripFooting,
         }
     }
 
@@ -169,8 +223,9 @@ pub fn type_code(category: TypeCategory, thickness: f64) -> String {
 /// `Pset_ManufacturerTypeInformation`). Weitere Schlüssel sind frei.
 pub const TYPE_PROPS: [&str; 4] = ["Brandschutz", "Schallschutz", "Hersteller", "Bemerkung"];
 
-/// Bauteiltyp (IFC: IfcWallType + IfcMaterialLayerSet). Schichten von außen
-/// nach innen. Bauteile verweisen darauf und kopieren nie Schichten.
+/// Bauteiltyp (IFC: IfcWallType bzw. IfcSlabType + IfcMaterialLayerSet).
+/// Schichten bei Wänden von außen nach innen, bei waagerechten Typen von
+/// oben nach unten. Bauteile verweisen darauf und kopieren nie Schichten.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayerSet {
     /// Ändert sich nie, auch nicht beim Übernehmen oder Zurückspeichern
@@ -228,7 +283,8 @@ impl LayerSet {
 
     /// Verstöße gegen die Regeln eines Typs: mindestens eine Schicht, jede
     /// dicker als 0, Kernschichten zusammenhängend, Kurzzeichen nicht leer;
-    /// Luftschichten nach Regel 20.
+    /// Luftschichten nach Regel 20; waagerechte Typen mit genau einer
+    /// Kernschicht (Regel 38).
     pub fn problems(&self) -> Vec<String> {
         let mut out = Vec::new();
         let who = if self.code.is_empty() {
@@ -254,6 +310,10 @@ impl LayerSet {
             .collect();
         if core.windows(2).any(|w| w[1] != w[0] + 1) {
             out.push(format!("Typ {who}: Kernschichten nicht zusammenhängend"));
+        }
+        // Regel 38: die Kernschicht trägt die Dicke des Bauteils
+        if self.category.variable_core() && core.len() != 1 {
+            out.push(format!("Typ {who}: braucht genau eine Kernschicht"));
         }
         // Regel 20: Luftschicht nie Kern, nie am Rand, nie zweimal nacheinander
         let air = |l: &MaterialLayer| l.function == LayerFunction::AirGap;

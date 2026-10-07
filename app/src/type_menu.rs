@@ -310,6 +310,7 @@ impl TypeMenu {
             let hint = match self.category {
                 TypeCategory::ExteriorWall => "Innenwände wählt das Werkzeug „Innenwand“.",
                 TypeCategory::InteriorWall => "Außenwände wählt das Werkzeug „Gebäude“.",
+                _ => "",
             };
             let y = (l.y + l.h + 16.0 * s).round();
             widgets::text(&mut c, regular, hint, pd, x0, y, u.text_dim);

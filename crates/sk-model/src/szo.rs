@@ -309,6 +309,13 @@ impl Record {
         self.link(key, table).map(Some)
     }
 
+    /// Satz bewusst übergangen (F-17): seine Schlüssel gelten als gelesen.
+    pub fn skip(&self) {
+        for f in &self.fields {
+            f.2.set(true);
+        }
+    }
+
     /// Nicht benutzte Schlüssel als Hinweis.
     pub fn unused(&self, hints: &mut Vec<String>) {
         for f in self.fields.iter().filter(|f| !f.2.get()) {
@@ -393,6 +400,15 @@ fn category(c: Category) -> &'static str {
 
 pub(crate) fn type_category(c: TypeCategory) -> &'static str {
     crate::kinds::spec(c.category()).szo
+}
+
+/// `set=` an Decke, Sohlplatte und Frostschürze nur mit Typ: Dateien ohne
+/// bleiben bytegleich (R4).
+fn slab_type(line: Line, m: &Model, e: &Element) -> Line {
+    match e.layer_set.and_then(|s| m.layer_set(s)) {
+        Some(t) => line.guid("set", Some(t.guid)),
+        None => line,
+    }
 }
 
 fn ref_side(r: RefSide) -> &'static str {
@@ -760,47 +776,59 @@ pub fn write(m: &Model) -> String {
         let ElementKind::GroundSlab(s) = e.kind else {
             continue;
         };
-        Line::new("slab")
-            .guid("guid", Some(e.guid))
-            .guid("run", m.run(s.run).map(|r| r.guid))
-            .text("number", &e.number)
-            .word("cat", category(e.category))
-            .guid("mat", mat_guid(s.material))
-            .word("top", &level(s.top))
-            .num("t", s.thickness)
-            .num("recess", s.recess)
-            .num("seq", e.seq)
-            .guid("storey", storey_guid(e.storey))
-            .finish(&mut out);
+        slab_type(
+            Line::new("slab")
+                .guid("guid", Some(e.guid))
+                .guid("run", m.run(s.run).map(|r| r.guid))
+                .text("number", &e.number)
+                .word("cat", category(e.category)),
+            m,
+            e,
+        )
+        .guid("mat", mat_guid(s.material))
+        .word("top", &level(s.top))
+        .num("t", s.thickness)
+        .num("recess", s.recess)
+        .num("seq", e.seq)
+        .guid("storey", storey_guid(e.storey))
+        .finish(&mut out);
     }
     for e in &walls {
         let ElementKind::StripFooting(f) = e.kind else {
             continue;
         };
-        Line::new("footing")
-            .guid("guid", Some(e.guid))
-            .guid("slab", m.element(f.slab).map(|x| x.guid))
-            .text("number", &e.number)
-            .word("cat", category(e.category))
-            .guid("mat", mat_guid(f.material))
-            .num("w", f.width)
-            .word("base", &level(f.base))
-            .num("seq", e.seq)
-            .guid("storey", storey_guid(e.storey))
-            .finish(&mut out);
+        slab_type(
+            Line::new("footing")
+                .guid("guid", Some(e.guid))
+                .guid("slab", m.element(f.slab).map(|x| x.guid))
+                .text("number", &e.number)
+                .word("cat", category(e.category)),
+            m,
+            e,
+        )
+        .guid("mat", mat_guid(f.material))
+        .num("w", f.width)
+        .word("base", &level(f.base))
+        .num("seq", e.seq)
+        .guid("storey", storey_guid(e.storey))
+        .finish(&mut out);
     }
     for e in &walls {
         let ElementKind::Floor(f) = e.kind else {
             continue;
         };
-        let mut l = Line::new("floor")
-            .guid("guid", Some(e.guid))
-            .guid("run", m.run(f.run).map(|r| r.guid))
-            .text("number", &e.number)
-            .word("cat", category(e.category))
-            .guid("mat", mat_guid(f.material))
-            .word("top", &level(f.top))
-            .num("t", f.thickness);
+        let mut l = slab_type(
+            Line::new("floor")
+                .guid("guid", Some(e.guid))
+                .guid("run", m.run(f.run).map(|r| r.guid))
+                .text("number", &e.number)
+                .word("cat", category(e.category)),
+            m,
+            e,
+        )
+        .guid("mat", mat_guid(f.material))
+        .word("top", &level(f.top))
+        .num("t", f.thickness);
         // Untersichtdämmung (G7 K4): nur abweichend vom Standard, damit
         // Dateien ohne Vorsprung bytegleich bleiben
         if f.soffit.thickness != crate::model::SOFFIT_THICKNESS {
@@ -993,7 +1021,8 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         let id = materials.insert(x);
         register(&mut mat_ids, &mut seen, r, g, id)?;
     }
-    let (mut layer_sets, set_ids) = read_types(&by, &mat_ids, &mut seen, version >= 4)?;
+    let (mut layer_sets, set_ids, passed) = read_types(&by, &mat_ids, &mut seen, version >= 4)?;
+    hints.extend(passed.hints);
 
     // Projekt, Gebäude und Geschosse
     let mut buildings = Arena::new();
@@ -1407,12 +1436,29 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
                     base: level(r, "base", LevelRef::bottom(found_level))?,
                 })
             };
+            let number = number(r)?;
+            // Typ nur, wenn gesetzt (R4); fehlt er, gilt der Einschicht-Aufbau
+            // aus „mat“ (Regel 40)
+            let layer_set = match r.opt("set") {
+                None | Some("-") => None,
+                Some(_) => {
+                    let g = r.guid("set")?;
+                    let id = set_ids.get(&g).copied();
+                    if id.is_none() {
+                        hints.push(format!(
+                            "Zeile {}: Typ von {number} fehlt, Aufbau aus dem Baustoff",
+                            r.line
+                        ));
+                    }
+                    id
+                }
+            };
             let e = Element {
                 guid: r.guid("guid")?,
-                number: number(r)?,
+                number,
                 category: keyword(r, "cat", &Category::ALL, category)?,
                 storey: r.link("storey", &storey_ids)?,
-                layer_set: None,
+                layer_set,
                 seq: r.int("seq")?,
                 kind,
                 props: Default::default(),
@@ -1693,32 +1739,79 @@ fn read_prop_value(r: &Record) -> Result<PropValue, LoadError> {
     }
 }
 
+/// Was [`read_types`] nach F-17 übergeht: Typen unbekannter Art mit ihren
+/// Schichten und Merkmalen (Zeilen und Guids) und Hinweise dazu.
+#[derive(Default)]
+pub(crate) struct Passed {
+    pub lines: Vec<usize>,
+    pub guids: Vec<Guid>,
+    pub hints: Vec<String>,
+}
+
 /// Bauteiltypen aus `[layerset]`, `[layer]` und `[typeprop]`. Vor SZO 4
 /// (`typed` falsch) fehlen Kurzzeichen und Art; sie stellt der Aufrufer
-/// danach ein ([`assign_codes`]).
+/// danach ein ([`assign_codes`]). Ein Typ unbekannter Art (aus einer
+/// neueren Fassung) wird übersprungen, eine unbekannte Schichtaufgabe gilt
+/// als Bekleidung (F-17, R4).
 #[allow(clippy::type_complexity)]
 pub(crate) fn read_types(
     by: &HashMap<&str, Vec<Record>>,
     mat_ids: &HashMap<Guid, Id<Material>>,
     seen: &mut HashMap<Guid, usize>,
     typed: bool,
-) -> Result<(Arena<LayerSet>, HashMap<Guid, LayerSetId>), LoadError> {
+) -> Result<(Arena<LayerSet>, HashMap<Guid, LayerSetId>, Passed), LoadError> {
     let empty = Vec::new();
     let recs = |k: &str| by.get(k).unwrap_or(&empty);
+    let mut passed = Passed::default();
+    if typed {
+        for r in recs("layerset") {
+            let cat = r.get("cat")?;
+            if !TypeCategory::ALL.iter().any(|&c| type_category(c) == cat) {
+                passed.hints.push(format!(
+                    "Zeile {}: Typ „{}“ unbekannter Art „{cat}“ übersprungen",
+                    r.line,
+                    r.opt("name").unwrap_or("")
+                ));
+                passed.guids.push(r.guid("guid")?);
+                passed.lines.push(r.line);
+                r.skip();
+            }
+        }
+    }
     let mut set_layers: HashMap<Guid, Vec<MaterialLayer>> = HashMap::new();
     for r in recs("layer") {
         let set = r.guid("set")?;
-        let layer = MaterialLayer {
-            material: r.link("mat", mat_ids)?,
-            thickness: r.f64("t")?,
-            function: keyword(r, "fn", &LAYER_FUNCTIONS, layer_function)?,
-            core: r.flag("core")?,
-        };
+        if passed.guids.contains(&set) {
+            passed.lines.push(r.line);
+            r.skip();
+            continue;
+        }
+        let function = keyword_or(
+            r,
+            "fn",
+            &LAYER_FUNCTIONS,
+            layer_function,
+            LayerFunction::Finish,
+        )?;
+        if r.replaced.get() > 0 {
+            passed.hints.push(format!(
+                "Zeile {}: unbekannte Schichtaufgabe „{}“, als Bekleidung gelesen",
+                r.line,
+                r.get("fn")?
+            ));
+        }
+        let mut layer = MaterialLayer::new(r.link("mat", mat_ids)?, r.f64("t")?, function);
+        layer.core = r.flag("core")?;
         set_layers.entry(set).or_default().push(layer);
     }
     let mut set_props: HashMap<Guid, PropSet> = HashMap::new();
     for r in recs("typeprop") {
         let set = r.guid("set")?;
+        if passed.guids.contains(&set) {
+            passed.lines.push(r.line);
+            r.skip();
+            continue;
+        }
         let key = r.get("key")?.to_string();
         let value = read_prop_value(r)?;
         set_props.entry(set).or_default().insert(key, value);
@@ -1727,6 +1820,9 @@ pub(crate) fn read_types(
     let mut set_ids = HashMap::new();
     for r in recs("layerset") {
         let guid = r.guid("guid")?;
+        if passed.guids.contains(&guid) {
+            continue;
+        }
         let (code, category, changed, note) = if typed {
             (
                 r.get("code")?.to_string(),
@@ -1776,7 +1872,8 @@ pub(crate) fn read_types(
             ));
         }
     }
-    Ok((layer_sets, set_ids))
+    passed.lines.sort_unstable();
+    Ok((layer_sets, set_ids, passed))
 }
 
 /// Ergänzt fehlendes λ an Werksbaustoffen (Nachtrag K5): Treffer über die
@@ -2364,5 +2461,224 @@ mod tests {
         assert_eq!(r.get("t").unwrap(), "a \"b\" \\ c\nd # e");
         assert!(Record::parse(1, "[x] t=\"offen").is_err());
         assert!(Record::parse(1, "  # nur Kommentar").unwrap().is_none());
+    }
+
+    // --- R4: Aufbau für Decke, Sohlplatte und Frostschürze ---------------
+
+    /// Haus mit einem Deckentyp „Estrich 50 + Kern“ (noch nicht gesetzt);
+    /// liefert die erste Decke und den Typ.
+    fn haus_mit_deckentyp() -> (Model, crate::ElementId, LayerSetId) {
+        let mut m = house();
+        let de = m
+            .elements()
+            .iter()
+            .find(|(_, e)| e.category == Category::Floor)
+            .map(|(id, _)| id)
+            .expect("Decke");
+        let beton = m.element(de).unwrap().kind.material().unwrap();
+        let putz = m
+            .materials()
+            .iter()
+            .find(|(_, x)| x.name == "Putz")
+            .map(|(id, _)| id)
+            .unwrap();
+        let t = m
+            .add_layer_set(LayerSet {
+                guid: Guid(0x4e00),
+                name: "Decke mit Estrich".into(),
+                code: "DE-E".into(),
+                category: TypeCategory::Floor,
+                layers: vec![
+                    MaterialLayer::new(putz, 50.0, LayerFunction::Finish),
+                    MaterialLayer::new(beton, 100.0, LayerFunction::Structure).core(),
+                ],
+                props: PropSet::new(),
+                note: String::new(),
+                changed: 1,
+                bearing: Bearing::Core,
+            })
+            .expect("Typ");
+        (m, de, t)
+    }
+
+    fn nach_guid(m: &Model, g: Guid) -> crate::ElementId {
+        m.elements()
+            .iter()
+            .find(|(_, e)| e.guid == g)
+            .map(|(id, _)| id)
+            .unwrap()
+    }
+
+    /// Ohne Typ hat jedes Bauteil mit Baustoff einen Einschicht-Aufbau aus
+    /// Baustoff und Dicke (Breite); Wände haben die Schichten ihres Typs.
+    #[test]
+    fn r4_gedachter_einschicht_aufbau() {
+        let m = house();
+        let mut seen = Vec::new();
+        for (id, e) in m.elements().iter() {
+            let a = m.build_up(id);
+            match e.kind {
+                ElementKind::Wall(_) => {
+                    let t = m.layer_set(e.layer_set.unwrap()).unwrap();
+                    assert_eq!(a.as_deref(), Some(&t.layers[..]));
+                }
+                ElementKind::Floor(_)
+                | ElementKind::GroundSlab(_)
+                | ElementKind::StripFooting(_) => {
+                    let one = MaterialLayer::new(
+                        e.kind.material().unwrap(),
+                        e.kind.core_thickness().unwrap(),
+                        LayerFunction::Structure,
+                    )
+                    .core();
+                    assert_eq!(a, Some(vec![one]), "{}", e.number);
+                    seen.push(e.category);
+                }
+                _ => assert_eq!(a, None, "{}", e.number),
+            }
+        }
+        for c in [
+            Category::Floor,
+            Category::GroundSlab,
+            Category::StripFooting,
+        ] {
+            assert!(seen.contains(&c), "{c:?} im Prüfhaus");
+        }
+    }
+
+    /// Decke mit Typ: Schichten von oben nach unten, der Kern mit Dicke und
+    /// Baustoff der Decke (variable Kernschicht, Regel 38). Ein Typ fremder
+    /// Art passt nicht (Regel 37).
+    #[test]
+    fn r4_decke_mit_typ() {
+        let (mut m, de, t) = haus_mit_deckentyp();
+        let dicke = m.element(de).unwrap().kind.core_thickness().unwrap();
+        let mat = m.element(de).unwrap().kind.material().unwrap();
+        assert!(m.set_slab_type(de, Some(t)));
+        assert_eq!(m.element(de).unwrap().layer_set, Some(t));
+        let a = m.build_up(de).unwrap();
+        assert_eq!(a.len(), 2);
+        assert_eq!(a.iter().map(|l| l.thickness).sum::<f64>(), 50.0 + dicke);
+        assert_eq!((a[1].core, a[1].material), (true, mat));
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        assert!(m.set_floor_thickness(de, 250.0));
+        assert_eq!(m.build_up(de).unwrap()[1].thickness, 250.0);
+        // Regel 37: Wandtyp an der Decke, Deckentyp an der Sohlplatte
+        let aw = m.defaults().exterior_wall;
+        assert!(!m.set_slab_type(de, Some(aw)));
+        let sp = m
+            .elements()
+            .iter()
+            .find(|(_, e)| e.category == Category::GroundSlab)
+            .map(|(id, _)| id)
+            .unwrap();
+        assert!(!m.set_slab_type(sp, Some(t)));
+        // Regel 38: Kernbaustoff = Baustoff am Bauteil (Datei von Hand
+        // geändert)
+        let putz = m.layer_set(t).unwrap().layers[0].material;
+        let g = |id| m.material(id).unwrap().guid.to_ifc();
+        let text = write(&m);
+        let zeile = text.lines().find(|l| l.starts_with("[floor]")).unwrap();
+        let falsch = zeile.replace(&format!(" mat={} ", g(mat)), &format!(" mat={} ", g(putz)));
+        assert_ne!(zeile, falsch);
+        let back = read(&text.replace(zeile, &falsch), GuidGen::with_seed(1)).unwrap();
+        assert!(
+            back.hints.iter().any(|p| p.contains("Kern des Typs")),
+            "{:?}",
+            back.hints
+        );
+        assert!(m.set_slab_type(de, None));
+        assert_eq!(m.build_up(de).unwrap().len(), 1);
+        // Regel 38 am Typ: waagerecht genau ein Kern
+        let mut zwei = m.layer_set(t).unwrap().clone();
+        zwei.layers[0].core = true;
+        assert!(zwei
+            .problems()
+            .iter()
+            .any(|p| p.contains("genau eine Kernschicht")));
+    }
+
+    /// Ohne Typ an Decke, Sohlplatte oder Frostschürze steht kein `set=` in
+    /// der Datei; mit Typ steht es, und der Rundlauf ist bytegleich.
+    #[test]
+    fn r4_typ_in_der_datei() {
+        let (mut m, de, t) = haus_mit_deckentyp();
+        let ohne = write(&m);
+        for l in ohne.lines().filter(|l| {
+            l.starts_with("[floor]") || l.starts_with("[slab]") || l.starts_with("[footing]")
+        }) {
+            assert!(!l.contains(" set="), "{l}");
+        }
+        assert!(ohne.contains(" cat=floor "), "Deckentyp in der Datei");
+        assert!(m.set_slab_type(de, Some(t)));
+        let mit = write(&m);
+        let g = m.layer_set(t).unwrap().guid.to_ifc();
+        assert!(mit
+            .lines()
+            .any(|l| l.starts_with("[floor]") && l.contains(&format!(" set={g} "))));
+        let back = read(&mit, GuidGen::with_seed(1)).unwrap();
+        assert!(back.hints.is_empty(), "{:?}", back.hints);
+        assert_eq!(write(&back.model), mit, "Rundlauf bytegleich");
+        let de2 = nach_guid(&back.model, m.element(de).unwrap().guid);
+        let form = |m: &Model, id| {
+            m.build_up(id)
+                .unwrap()
+                .iter()
+                .map(|l| (m.material(l.material).unwrap().guid, l.thickness, l.core))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(form(&back.model, de2), form(&m, de));
+    }
+
+    /// F-17: Ein Typ unbekannter Art (`cat=zukunft`) wird mit Hinweis
+    /// übersprungen; die Decke mit `set=` darauf öffnet mit Einschicht-Aufbau
+    /// aus `mat=` (Regel 40). Eine unbekannte Schichtaufgabe gilt als
+    /// Bekleidung.
+    #[test]
+    fn r4_unbekannte_art_und_aufgabe() {
+        let (mut m, de, t) = haus_mit_deckentyp();
+        assert!(m.set_slab_type(de, Some(t)));
+        let text = write(&m)
+            .lines()
+            .map(|l| match l.starts_with("[layerset]") {
+                true => l.replace(" cat=floor ", " cat=zukunft "),
+                false => l.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let back = read(&text, GuidGen::with_seed(1)).expect("öffnet");
+        assert!(
+            back.hints
+                .iter()
+                .any(|h| h.contains("unbekannter Art „zukunft“")),
+            "{:?}",
+            back.hints
+        );
+        assert!(
+            back.hints
+                .iter()
+                .any(|h| h.contains("Typ von DE-001 fehlt")),
+            "{:?}",
+            back.hints
+        );
+        let de2 = nach_guid(&back.model, m.element(de).unwrap().guid);
+        assert_eq!(back.model.element(de2).unwrap().layer_set, None);
+        assert_eq!(back.model.build_up(de2).unwrap().len(), 1);
+        assert!(back
+            .model
+            .layer_sets()
+            .iter()
+            .all(|(_, s)| s.code != "DE-E"));
+
+        let text = write(&house());
+        let text = text.replacen(" fn=insulation ", " fn=zukunft ", 1);
+        let back = read(&text, GuidGen::with_seed(1)).expect("öffnet");
+        assert!(
+            back.hints
+                .iter()
+                .any(|h| h.contains("unbekannte Schichtaufgabe „zukunft“")),
+            "{:?}",
+            back.hints
+        );
     }
 }

@@ -697,15 +697,8 @@ const CONFIRM_BUTTON: (f32, f32) = (120.0, 40.0);
 
 /// Text der Rückfrage: welche Bauteile verschwinden, je Art gezählt.
 pub fn parts_text(m: &Model, b: BuildingId) -> String {
-    let order = [
-        Category::ExteriorWall,
-        Category::InteriorWall,
-        Category::Floor,
-        Category::GroundSlab,
-        Category::StripFooting,
-        Category::EdgeInsulation,
-    ]
-    .map(|c| {
+    // Reihenfolge der Tabelle: AW, IW, DE, SP, FS, RD, UD
+    let order = Category::ALL.map(|c| {
         let k = sk_model::kinds::spec(c);
         (c, k.short, k.plural)
     });

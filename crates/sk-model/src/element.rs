@@ -170,6 +170,30 @@ pub struct Floor {
     pub soffit: Soffit,
 }
 
+impl ElementKind {
+    /// Baustoff am Bauteil selbst: bei Decke, Sohlplatte und Frostschürze
+    /// der Baustoff der Kernschicht. Wände tragen ihn im Typ.
+    pub fn material(&self) -> Option<MaterialId> {
+        match self {
+            ElementKind::Floor(f) => Some(f.material),
+            ElementKind::GroundSlab(s) => Some(s.material),
+            ElementKind::StripFooting(f) => Some(f.material),
+            _ => None,
+        }
+    }
+
+    /// Dicke der Kernschicht, die am Bauteil steht (Regel 38): Decke und
+    /// Sohlplatte die Dicke, Frostschürze die Breite.
+    pub fn core_thickness(&self) -> Option<f64> {
+        match self {
+            ElementKind::Floor(f) => Some(f.thickness),
+            ElementKind::GroundSlab(s) => Some(s.thickness),
+            ElementKind::StripFooting(f) => Some(f.width),
+            _ => None,
+        }
+    }
+}
+
 /// Sohlplatte unter einem geschlossenen Außenwandzug (IFC: IfcSlab BASESLAB).
 /// Ihr Umriss ist abgeleitet: Außenfläche des Zuges, um `recess` nach innen.
 #[derive(Clone, Copy, Debug, PartialEq)]

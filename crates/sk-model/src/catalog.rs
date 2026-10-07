@@ -176,6 +176,8 @@ impl Library {
         let set = match cat {
             TypeCategory::ExteriorWall => self.default_exterior,
             TypeCategory::InteriorWall => self.default_interior,
+            // Nur Wandarten haben einen Standardtyp
+            _ => return None,
         };
         set.filter(|id| self.types.get(*id).is_some_and(|t| t.category == cat))
             .or_else(|| {
@@ -311,6 +313,8 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
     ];
     let mut foreign = Foreign::default();
     let lines: Vec<&str> = text.lines().collect();
+    // Zeilen, die unverändert stehen bleiben, mit Zeilennummer
+    let mut alien: Vec<usize> = Vec::new();
     for (i, l) in lines.iter().enumerate().skip(1) {
         let Some(r) = Record::parse(i + 1, l)? else {
             continue;
@@ -319,7 +323,7 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
         match KNOWN.iter().find(|k| **k == r.section) {
             Some(k) => by.entry(k).or_default().push(r),
             None => {
-                foreign.records.push(l.to_string());
+                alien.push(i + 1);
                 foreign.unknown += 1;
             }
         }
@@ -364,10 +368,16 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
         let id = lib.materials.insert(x);
         register(&mut mat_ids, &mut seen, r, g, id)?;
     }
-    let (types, set_ids) = szo::read_types(&by, &mat_ids, &mut seen, true)?;
+    let (types, set_ids, passed) = szo::read_types(&by, &mat_ids, &mut seen, true)?;
     lib.types = types;
+    // Typen unbekannter Art (F-17) bleiben samt Schichten unverändert stehen
+    foreign.unknown += passed.guids.len();
+    alien.extend(&passed.lines);
     let mut codes: HashMap<&str, usize> = HashMap::new();
     for r in recs("layerset") {
+        if passed.lines.contains(&r.line) {
+            continue;
+        }
         let code = r.get("code")?;
         if let Some(first) = codes.insert(code, r.line) {
             return Err(err(
@@ -389,6 +399,15 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
         return Err(err(line, t.problems().join(", ")));
     }
     for r in recs("default") {
+        // Standard einer unbekannten oder waagerechten Art: bleibt stehen
+        let cat = r.get("cat")?;
+        let wall = TypeCategory::WALLS.iter().any(|&c| type_category(c) == cat);
+        if !wall {
+            r.skip();
+            alien.push(r.line);
+            foreign.unknown += 1;
+            continue;
+        }
         let cat = keyword(r, "cat", &TypeCategory::ALL, type_category)?;
         let g = r.guid("set")?;
         let id = set_ids
@@ -398,7 +417,7 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
             .ok_or_else(|| err(r.line, "[default]: „set“ ist kein Typ dieser Art"))?;
         match cat {
             TypeCategory::ExteriorWall => lib.default_exterior = Some(id),
-            TypeCategory::InteriorWall => lib.default_interior = Some(id),
+            _ => lib.default_interior = Some(id),
         }
     }
     for r in recs("stock") {
@@ -434,6 +453,8 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
             }
         }
     }
+    alien.sort_unstable();
+    foreign.records = alien.iter().map(|&n| lines[n - 1].to_string()).collect();
     lib.foreign = foreign;
     Ok(lib)
 }
@@ -531,7 +552,7 @@ pub fn import_type(m: &mut Model, lib: &Library, g: Guid) -> Option<LayerSetId> 
     let mut layers = Vec::with_capacity(t.layers.len());
     for l in &t.layers {
         let id = material(m, l.material)?;
-        layers.push(crate::library::MaterialLayer { material: id, ..*l });
+        layers.push(l.with_material(id));
     }
     let bearing = match t.bearing {
         Bearing::Core => Bearing::Core,
@@ -646,7 +667,7 @@ pub fn export_type(m: &Model, lib: &mut Library, g: Guid) -> bool {
         let Some(id) = material(lib, l.material) else {
             return false;
         };
-        layers.push(crate::library::MaterialLayer { material: id, ..*l });
+        layers.push(l.with_material(id));
     }
     let bearing = match t.bearing {
         Bearing::Core => Bearing::Core,
@@ -678,6 +699,7 @@ pub fn export_type(m: &Model, lib: &mut Library, g: Guid) -> bool {
     let slot = match cat {
         TypeCategory::ExteriorWall => &mut lib.default_exterior,
         TypeCategory::InteriorWall => &mut lib.default_interior,
+        _ => return true,
     };
     if slot.is_none() {
         *slot = Some(id);
@@ -691,7 +713,7 @@ impl Model {
     /// Art hat. Ohne Rückgängig; die Revision beginnt bei 0.
     pub fn from_library(lib: &Library) -> Model {
         let mut m = Model::new();
-        for cat in TypeCategory::ALL {
+        for cat in TypeCategory::WALLS {
             if lib.default_type(cat).is_none() {
                 continue;
             }
@@ -710,7 +732,7 @@ impl Model {
         for g in order {
             import_type(&mut m, lib, g);
         }
-        for cat in TypeCategory::ALL {
+        for cat in TypeCategory::WALLS {
             let set = lib
                 .default_type(cat)
                 .and_then(|id| lib.types.get(id))
@@ -749,11 +771,13 @@ mod tests {
         let [mw, sb, dae, putz, holz, luft] = mats[..] else {
             unreachable!()
         };
-        let lage = |material, thickness, function, core| MaterialLayer {
-            material,
-            thickness,
-            function,
-            core,
+        let lage = |material, thickness, function, core| {
+            let l = MaterialLayer::new(material, thickness, function);
+            if core {
+                l.core()
+            } else {
+                l
+            }
         };
         let vorlage = lib.types.iter().next().unwrap().1.clone();
         for (i, cat) in TypeCategory::ALL.into_iter().enumerate() {
@@ -767,13 +791,18 @@ mod tests {
                     lage(luft, 40.0, LayerFunction::AirGap, false),
                     lage(dae, 2.0, LayerFunction::Membrane, false),
                     lage(dae, 100.0, LayerFunction::Insulation, false),
-                    lage(mw, 175.0, LayerFunction::Structure, true),
+                    // waagerechte Typen: genau eine Kernschicht (Regel 38)
+                    lage(mw, 175.0, LayerFunction::Structure, cat.is_wall()),
                     lage(sb, 200.0, LayerFunction::Structure, true),
                     lage(holz, 20.0, LayerFunction::Finish, false),
                 ],
-                bearing: Bearing::Depth {
-                    depth: 300.0,
-                    strip: dae,
+                bearing: if cat.is_wall() {
+                    Bearing::Depth {
+                        depth: 300.0,
+                        strip: dae,
+                    }
+                } else {
+                    Bearing::Core
                 },
                 ..vorlage.clone()
             });
@@ -785,6 +814,41 @@ mod tests {
         let back = read_szk(&text).unwrap();
         assert_eq!(back, lib);
         assert_eq!(write_szk(&back), text);
+    }
+
+    /// F-17 (R4): Ein Typ unbekannter Art samt Schichten und Standard bleibt
+    /// beim Lesen außen vor und steht beim Schreiben unverändert wieder da.
+    #[test]
+    fn typ_unbekannter_art_bleibt_stehen() {
+        let text = write_szk(&Library::standard());
+        let typ = text.lines().find(|l| l.starts_with("[layerset] ")).unwrap();
+        let g = Record::parse(1, typ)
+            .unwrap()
+            .unwrap()
+            .get("guid")
+            .unwrap()
+            .to_string();
+        let neu = Guid(0x7e57).to_ifc();
+        let mut fremd: Vec<String> = text
+            .lines()
+            .filter(|l| l.contains(&g))
+            .map(|l| {
+                l.replace(&g, &neu)
+                    .replace(" cat=exterior ", " cat=zukunft ")
+                    .replace(" cat=interior ", " cat=zukunft ")
+            })
+            .collect();
+        fremd.push(format!("[default] cat=zukunft set={neu}"));
+        assert!(fremd.len() >= 3, "{fremd:?}");
+        let alt = format!("{text}{}\n", fremd.join("\n"));
+        let lib = read_szk(&alt).expect("öffnet");
+        assert_eq!(lib.types.len(), Library::standard().types.len());
+        assert!(lib.foreign.unknown >= 2);
+        let out = write_szk(&lib);
+        for l in &fremd {
+            assert!(out.lines().any(|o| o == l), "{l} fehlt in\n{out}");
+        }
+        assert_eq!(write_szk(&read_szk(&out).unwrap()), out);
     }
 
     /// Zwei gleiche Schichten eines Typs mit verschiedenen fremden Angaben:

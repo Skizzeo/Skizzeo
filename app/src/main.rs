@@ -1985,7 +1985,10 @@ impl App {
     fn tool_type_of(&self, cat: Category) -> sk_model::LayerSetId {
         let tc = sk_model::TypeCategory::of(cat).unwrap_or(sk_model::TypeCategory::ExteriorWall);
         let m = self.scene.model();
-        self.tool_type[tc as usize]
+        self.tool_type
+            .get(tc as usize)
+            .copied()
+            .flatten()
             .filter(|id| m.layer_set(*id).is_some_and(|t| t.category == tc))
             .unwrap_or_else(|| m.default_type(tc))
     }
@@ -2111,7 +2114,9 @@ impl App {
         };
         if menu.chip == Id::ToolType {
             let tc = menu.category;
-            self.tool_type[tc as usize] = Some(id);
+            if let Some(slot) = self.tool_type.get_mut(tc as usize) {
+                *slot = Some(id);
+            }
             self.close_type_menu(false);
             self.tool_chip_key = None;
             self.sync_tool_chip();

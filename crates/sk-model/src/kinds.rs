@@ -58,8 +58,11 @@ pub struct KindSpec {
     pub szo: &'static str,
     /// IFC-Eigenschaft IsExternal.
     pub external: bool,
-    /// Typart, die Bauteile der Kategorie brauchen; `None`: ohne Typ.
+    /// Typart, die zu Bauteilen der Kategorie passt; `None`: ohne Typ.
     pub type_category: Option<TypeCategory>,
+    /// Ein Typ ist Pflicht (Wände). Sonst gilt ohne Typ der gedachte
+    /// Einschicht-Aufbau ([`crate::Model::build_up`]).
+    pub needs_type: bool,
     /// Gibt es je Gebäude genau einmal (Sätze ohne Zahl).
     pub once: bool,
 }
@@ -105,6 +108,7 @@ const EXTERIOR_WALL: KindSpec = KindSpec {
     szo: "exterior",
     external: true,
     type_category: Some(TypeCategory::ExteriorWall),
+    needs_type: true,
     once: false,
 };
 
@@ -121,6 +125,7 @@ const INTERIOR_WALL: KindSpec = KindSpec {
     szo: "interior",
     external: false,
     type_category: Some(TypeCategory::InteriorWall),
+    needs_type: true,
     once: false,
 };
 
@@ -136,7 +141,8 @@ const FLOOR: KindSpec = KindSpec {
     qto_rank: 5,
     szo: "floor",
     external: false,
-    type_category: None,
+    type_category: Some(TypeCategory::Floor),
+    needs_type: false,
     once: false,
 };
 
@@ -152,7 +158,8 @@ const GROUND_SLAB: KindSpec = KindSpec {
     qto_rank: 1,
     szo: "groundslab",
     external: false,
-    type_category: None,
+    type_category: Some(TypeCategory::GroundSlab),
+    needs_type: false,
     once: true,
 };
 
@@ -169,6 +176,7 @@ const ROOF: KindSpec = KindSpec {
     szo: "roof",
     external: false,
     type_category: None,
+    needs_type: false,
     once: false,
 };
 
@@ -185,6 +193,7 @@ const WINDOW: KindSpec = KindSpec {
     szo: "window",
     external: false,
     type_category: None,
+    needs_type: false,
     once: false,
 };
 
@@ -201,6 +210,7 @@ const DOOR: KindSpec = KindSpec {
     szo: "door",
     external: false,
     type_category: None,
+    needs_type: false,
     once: false,
 };
 
@@ -217,6 +227,7 @@ const OPENING: KindSpec = KindSpec {
     szo: "opening",
     external: false,
     type_category: None,
+    needs_type: false,
     once: false,
 };
 
@@ -233,6 +244,7 @@ const SPACE: KindSpec = KindSpec {
     szo: "space",
     external: false,
     type_category: None,
+    needs_type: false,
     once: false,
 };
 
@@ -248,7 +260,8 @@ const STRIP_FOOTING: KindSpec = KindSpec {
     qto_rank: 0,
     szo: "stripfooting",
     external: false,
-    type_category: None,
+    type_category: Some(TypeCategory::StripFooting),
+    needs_type: false,
     once: true,
 };
 
@@ -267,6 +280,7 @@ const EDGE_INSULATION: KindSpec = KindSpec {
     szo: "edgeinsulation",
     external: false,
     type_category: None,
+    needs_type: false,
     once: false,
 };
 
@@ -285,6 +299,7 @@ const SOFFIT_INSULATION: KindSpec = KindSpec {
     szo: "soffitinsulation",
     external: false,
     type_category: None,
+    needs_type: false,
     once: false,
 };
 
@@ -313,15 +328,26 @@ mod tests {
         assert_eq!(spec(Category::InteriorWall).heading(), "INNENWÄNDE");
     }
 
-    /// Typarten verweisen zurück auf ihre Kategorie.
+    /// Typarten verweisen zurück auf ihre Kategorie; Pflicht ist ein Typ nur
+    /// bei Wänden.
     #[test]
     fn typarten_passen() {
         for c in Category::ALL {
-            if let Some(t) = spec(c).type_category {
+            let k = spec(c);
+            if let Some(t) = k.type_category {
                 assert_eq!(TypeCategory::of(c), Some(t));
-                assert_eq!(t.name(), spec(c).name);
-                assert_eq!(t.prefix(), spec(c).prefix);
+                assert_eq!(t.category(), c);
+                assert_eq!(t.name(), k.name);
+                assert_eq!(t.prefix(), k.prefix);
             }
+            assert_eq!(
+                k.needs_type,
+                k.type_category.is_some_and(TypeCategory::is_wall),
+                "{c:?}"
+            );
+        }
+        for t in TypeCategory::ALL {
+            assert_eq!(spec(t.category()).type_category, Some(t));
         }
     }
 }

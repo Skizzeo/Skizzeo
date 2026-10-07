@@ -588,7 +588,7 @@ impl Catalog {
         let tile_h = t.size.catalog_tile_h * s;
         let mut y = body.y - self.scroll;
         let (mut tiles, mut heads) = (Vec::new(), Vec::new());
-        for cat in TypeCategory::ALL {
+        for cat in TypeCategory::WALLS {
             let items = self.items_of(cat);
             if items.is_empty() {
                 continue;
@@ -642,7 +642,7 @@ impl Catalog {
         let Some(lib) = self.company_lib() else {
             return Vec::new();
         };
-        let mut v: Vec<(TypeCategory, Guid)> = TypeCategory::ALL
+        let mut v: Vec<(TypeCategory, Guid)> = TypeCategory::WALLS
             .iter()
             .flat_map(|cat| {
                 lib.types
@@ -1127,7 +1127,7 @@ impl Catalog {
                 if !c.contains(x, y) {
                     return None;
                 }
-                for (i, cat) in TypeCategory::ALL.into_iter().enumerate() {
+                for (i, cat) in TypeCategory::WALLS.into_iter().enumerate() {
                     let r = Rect::new(
                         c.x + (18.0 + i as f32 * 222.0) * s,
                         c.y + 64.0 * s,
@@ -2030,19 +2030,9 @@ impl Catalog {
         let before = self.draft.thickness();
         // Erste Schicht trägt, weitere sind innen Putz-artig dünn
         let layer = if structure {
-            MaterialLayer {
-                material,
-                thickness: 15.0,
-                function: LayerFunction::Finish,
-                core: false,
-            }
+            MaterialLayer::new(material, 15.0, LayerFunction::Finish)
         } else {
-            MaterialLayer {
-                material,
-                thickness: 175.0,
-                function: LayerFunction::Structure,
-                core: true,
-            }
+            MaterialLayer::new(material, 175.0, LayerFunction::Structure).core()
         };
         self.draft.layers.push(layer);
         self.thickness_changed(before, None, None);
@@ -2057,11 +2047,11 @@ impl Catalog {
                 if self.category_locked() {
                     return;
                 }
-                let sel = TypeCategory::ALL
+                let sel = TypeCategory::WALLS
                     .iter()
                     .position(|c| *c == self.draft.category);
                 (
-                    TypeCategory::ALL
+                    TypeCategory::WALLS
                         .iter()
                         .map(|c| (c.name().to_string(), None))
                         .collect(),
@@ -2161,7 +2151,7 @@ impl Catalog {
         };
         match cb.id {
             ComboId::Category => {
-                if let Some(cat) = TypeCategory::ALL.get(i) {
+                if let Some(cat) = TypeCategory::WALLS.get(i) {
                     if *cat != self.draft.category {
                         let t = self.draft.thickness();
                         if self.draft.code == type_code(self.draft.category, t) {
@@ -2531,7 +2521,7 @@ impl Catalog {
         }
         let keep_old: Vec<Guid> = renamed.iter().map(|x| x.0).collect();
         let work_guids: Vec<Guid> = lib.types.iter().map(|(_, t)| t.guid).collect();
-        let defaults: Vec<(TypeCategory, Guid)> = TypeCategory::ALL
+        let defaults: Vec<(TypeCategory, Guid)> = TypeCategory::WALLS
             .iter()
             .filter_map(|c| {
                 let id = lib.default_type(*c)?;
@@ -2707,12 +2697,7 @@ fn mat_look(m: &Model, t: &Theme, id: sk_model::MaterialId) -> TypeLook {
         name: String::new(),
         code: String::new(),
         category: TypeCategory::InteriorWall,
-        layers: vec![MaterialLayer {
-            material: id,
-            thickness: 100.0,
-            function: LayerFunction::Structure,
-            core: false,
-        }],
+        layers: vec![MaterialLayer::new(id, 100.0, LayerFunction::Structure)],
         props: Default::default(),
         note: String::new(),
         changed: 0,
@@ -3670,6 +3655,8 @@ impl Catalog {
         let text = match self.draft.category {
             TypeCategory::ExteriorWall => "Standard für neue Gebäude",
             TypeCategory::InteriorWall => "Standard für neue Innenwände",
+            // Waagerechte Arten zeigt das Katalogfenster nicht
+            _ => "Standard",
         };
         label(
             c,
@@ -4225,7 +4212,7 @@ impl Catalog {
                     r.y + 54.0 * s,
                     u.text_dim,
                 );
-                for (i, kind) in TypeCategory::ALL.into_iter().enumerate() {
+                for (i, kind) in TypeCategory::WALLS.into_iter().enumerate() {
                     let b = Rect::new(
                         r.x + (18.0 + i as f32 * 222.0) * s,
                         r.y + 64.0 * s,
@@ -4253,6 +4240,7 @@ impl Catalog {
                     let (title, sub) = match kind {
                         TypeCategory::ExteriorWall => ("Außenwand", "von außen nach innen"),
                         TypeCategory::InteriorWall => ("Innenwand", "eine oder mehr Schichten"),
+                        _ => (kind.name(), "von oben nach unten"),
                     };
                     label(
                         &mut c,
