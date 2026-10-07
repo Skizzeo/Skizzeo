@@ -15365,14 +15365,18 @@ mod nach_gewerk {
         (code.to_string(), m3, m2)
     }
 
-    /// Summe aller Baustoffe außer Luft (m³, 4 Stellen).
+    /// Summe aller Baustoffe außer Luft und dem Blech des Attikablechs
+    /// (m³, 4 Stellen): In m abgerechnete Bauteile tragen kein Volumen zur
+    /// Gewerksumme bei (BIM-Befund zu 0e8e08d, A198b).
     fn summe_baustoffe(s: &mut Scene) -> f64 {
         let l = s.schedule().clone();
         let m = s.model();
         r4(l.buildings[0]
             .by_material
             .iter()
-            .filter(|x| m.material(x.material).unwrap().name != "Luft")
+            .filter(|x| {
+                !["Luft", "Titanzink 0,7"].contains(&m.material(x.material).unwrap().name.as_str())
+            })
             .map(|x| x.volume)
             .sum::<f64>()
             / 1e9)
@@ -15383,7 +15387,7 @@ mod nach_gewerk {
     /// 18345), mit Fläche bei Dämmgewerken. Sollwerte von BIM für bündig,
     /// Vorsprung +0,30 (UD über ihre eingebaute Schicht 18345) und
     /// Rücksprung −0,30 (vor Paket 2; ab 2a mit DT, AB und Attika: 18338
-    /// 0,2196, 18345 28,3799 / 205,967 m²). Nach KG im bündigen Fall 322, 331,
+    /// 0,2177 ohne das Blech des AB, 18345 28,3799 / 205,967 m²). Nach KG im bündigen Fall 322, 331,
     /// 335, 351, beim Vorsprung dazu 354. Die Summe über alle Gewerke ist die
     /// Summe über alle Baustoffe. Eine Abweichung an der WDVS-Schicht
     /// (18330) verschiebt ihre Menge zu 18330, die Summe bleibt.
@@ -15421,7 +15425,9 @@ mod nach_gewerk {
         // Rücksprung −0,30: vor Paket 2a wie BIM; ab 2a entstehen DT und AB
         // (Regel 41, lichte Tiefe 0,16 m) mit Gewerk 18338, und das EG-WDVS
         // läuft als Attika bis +3,055 (A195). Werte gemessen mit
-        // geometrie/d1-d3-dachterrasse-v2.patch auf 4d5c8a4.
+        // geometrie/d1-d3-dachterrasse-v2.patch auf 4d5c8a4. 18338 ohne das
+        // Blech des AB (0,0019 m³, in m abgerechnet): Dämmung hart 0,1244 +
+        // Belag 0,0933.
         let mut s = pruefhaus(1881, -300.0);
         let mit_dt = s
             .model()
@@ -15436,7 +15442,7 @@ mod nach_gewerk {
                 [
                     ("18331".to_string(), 56.9992),
                     ("18330".to_string(), 31.2458),
-                    ("18338".to_string(), 0.2196),
+                    ("18338".to_string(), 0.2177),
                     ("18345".to_string(), 28.3799),
                 ]
             );
@@ -16496,6 +16502,59 @@ mod gewerk_flaeche_laenge {
         // Ohne Rücksprung kein 18338
         let mut s = pruefhaus(1982, &[]);
         assert!(flaeche_laenge(&mut s).iter().all(|x| x.0 != "18338"));
+    }
+
+    /// Je Gewerk des ersten Gebäudes: (ATV, Volumen m³).
+    fn volumen(s: &mut Scene) -> Vec<(String, f64)> {
+        let l = s.schedule().clone();
+        let m = s.model();
+        l.buildings[0]
+            .by_trade
+            .iter()
+            .map(|t| (m.trade(t.trade).unwrap().code.clone(), r4(t.volume / 1e9)))
+            .collect()
+    }
+
+    /// A198b (BIM-Befund zu 0e8e08d, Koordinator 11:56): Bauteile, die in m
+    /// abgerechnet werden, tragen kein Volumen zur Gewerksumme bei. Nord
+    /// −1,50: 18338 = 1,8507 m³ (Dämmung 1,0575 + Belag 0,7932; ohne das
+    /// Blech des AB, 0,0023 m³; auf 0e8e08d 1,8530), dazu 13,2192 m² und
+    /// 13,00 m. Abfangung (AW-49, OG-Nord +0,30, wie A159): 18330 hat
+    /// 10,485 m Abfangung und als Volumen genau die Summe seiner
+    /// Wandschichten Verblender, Kerndämmung und Gasbeton, 81,5458 m³; die
+    /// Abfangung bringt kein eigenes Volumen dazu (die Verblenderschicht der
+    /// Wände zählt weiter). Die UD-Kerndämmung (0,3373 m³) zählt bei 18345.
+    #[test]
+    fn a198b_meter_bauteile_ohne_volumen() {
+        let mut s = pruefhaus(1983, &["AW-006"]);
+        let v = volumen(&mut s);
+        let dd = v.iter().find(|x| x.0 == "18338").expect("18338").1;
+        assert_eq!(dd, 1.8507, "18338 ohne Blechvolumen");
+        assert_eq!(
+            eintrag(&flaeche_laenge(&mut s), "18338"),
+            (Some(13.2192), Some(13.0))
+        );
+
+        let mut s = Scene::with_model(Model::with_seed(1984));
+        let (eg, _) = gebaeude(&mut s);
+        let t = s
+            .model()
+            .layer_sets()
+            .iter()
+            .find(|(_, t)| t.code == "AW-49")
+            .map(|(id, _)| id)
+            .expect("Werkstyp AW-49");
+        assert!(s.edit_model("Wandtyp geändert", |m| m.set_run_type(eg, t)));
+        let w = nr(&s, "AW-006");
+        assert!(s.edit_model("Kopplung gelöst", |m| m.set_linked(w, false)));
+        assert!(s.edit_model("Wand verschoben", |m| m.move_segment(w, 300.0).is_some()));
+        let fl = flaeche_laenge(&mut s);
+        assert_eq!(eintrag(&fl, "18330").1, Some(10.485), "Abfangung");
+        let v = volumen(&mut s);
+        let maurer = v.iter().find(|x| x.0 == "18330").expect("18330").1;
+        assert_eq!(maurer, 81.5458, "nur Wandschichten, kein Abfangungsvolumen");
+        let wdvs = v.iter().find(|x| x.0 == "18345").expect("18345").1;
+        assert_eq!(wdvs, 0.3373, "UD-Kerndämmung");
     }
 }
 mod umriss_dt_ab {

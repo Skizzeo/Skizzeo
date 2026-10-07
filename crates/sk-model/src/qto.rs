@@ -1221,7 +1221,12 @@ fn trade_sums(model: &Model, rows: &[LayerRow]) -> Vec<TradeSum> {
             }
         };
         let s = &mut sums[i];
-        s.volume += r.volume;
+        // In m abgerechnete Bauteile (Attikablech) tragen kein Volumen bei
+        // (BIM-Befund A198b); die Abfangung hängt an der Verblenderschicht,
+        // deren Volumen zählt
+        if !(r.once && r.bill_length > 0.0) {
+            s.volume += r.volume;
+        }
         let first = !r.once || !counted.contains(&(t, r.element));
         if r.once {
             counted.push((t, r.element));
