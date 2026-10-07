@@ -84,8 +84,17 @@ pub fn panel_filled(c: &mut Canvas, r: Rect, s: f32, t: &Theme, fill: Rgba) {
 pub fn tooltip(fonts: &Fonts, text: &str, s: f32, t: &Theme) -> Canvas {
     let px = t.size.font_small * s;
     let f = fonts.regular.as_ref();
-    let tw = f.map_or(0.0, |f| f.width(text, px));
-    let (pad, h) = ((8.0 * s).round(), (24.0 * s).round());
+    // Mehrzeilig mit „\n“; je Zeile 18 dip mehr
+    let lines: Vec<&str> = text.split('\n').collect();
+    let tw = lines
+        .iter()
+        .map(|l| f.map_or(0.0, |f| f.width(l, px)))
+        .fold(0.0, f32::max);
+    let line = (18.0 * s).round();
+    let (pad, h) = (
+        (8.0 * s).round(),
+        (24.0 * s).round() + line * (lines.len() - 1) as f32,
+    );
     let (w, b) = ((tw + 2.0 * pad).ceil(), s.round().max(1.0));
     let mut c = Canvas::new(w as usize, h as usize);
     let rad = 4.0 * s;
@@ -96,8 +105,11 @@ pub fn tooltip(fonts: &Fonts, text: &str, s: f32, t: &Theme) -> Canvas {
     p.rounded_rect(b, b, w - 2.0 * b, h - 2.0 * b, rad - b);
     c.fill(&p, t.ui.tooltip_bg);
     if let Some(f) = f {
-        let y = ((h + f.cap_height(px)) * 0.5).round();
-        f.draw(&mut c, text, px, pad, y, t.ui.tooltip_text);
+        let y0 = ((24.0 * s + f.cap_height(px)) * 0.5).round();
+        for (i, l) in lines.iter().enumerate() {
+            let y = y0 + line * i as f32;
+            f.draw(&mut c, l, px, pad, y, t.ui.tooltip_text);
+        }
     }
     c
 }

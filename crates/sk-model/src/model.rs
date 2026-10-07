@@ -10,10 +10,10 @@ use crate::attr::{
 };
 use crate::element::{
     Building, BuildingId, Category, Coupling, Element, ElementId, ElementKind, Floor, GroundSlab,
-    LevelEdge, LevelKind, LevelRef, PropSet, PropValue, RunId, Storey, StoreyId, StripFooting,
-    Wall, WallRun,
+    LevelEdge, LevelKind, LevelRef, PropSet, PropValue, RunId, Soffit, Storey, StoreyId,
+    StripFooting, Wall, WallRun,
 };
-use crate::floor::{FloorError, FloorParams, FloorSlab, StripParams};
+use crate::floor::{FloorError, FloorParams, FloorSlab, SoffitParams, StripParams};
 use crate::foundation::{FootingShape, Foundation, FoundationError, FoundationParams};
 use crate::guid::{Guid, GuidGen};
 use crate::id::Arena;
@@ -24,7 +24,9 @@ use crate::library::{
 };
 use crate::solid::material;
 use crate::txn::{Change, Direction, Key, Open, Touched, Txn};
-use crate::wall::{clean_points, cross2, segment_count, EndCut, Layer, RefSide, WallChain};
+use crate::wall::{
+    clean_points, cross2, segment_count, EndCut, Layer, Overhang, RefSide, WallChain,
+};
 use sk_math::{vec3, Vec3};
 
 /// Voreinstellungen für neue Bauteile.
@@ -798,10 +800,12 @@ impl Model {
             t.layers.iter().any(|l| l.material == id) || t.strip_material() == Some(id)
         });
         let in_elements = self.elements.iter().any(|(_, e)| match &e.kind {
-            ElementKind::Floor(f) => f.material == id,
+            ElementKind::Floor(f) => f.material == id || f.soffit.material == Some(id),
             ElementKind::GroundSlab(g) => g.material == id,
             ElementKind::StripFooting(f) => f.material == id,
-            ElementKind::Wall(_) | ElementKind::EdgeStrip { .. } => false,
+            ElementKind::Wall(_)
+            | ElementKind::EdgeStrip { .. }
+            | ElementKind::SoffitInsulation { .. } => false,
         });
         in_types || in_elements
     }
@@ -1613,6 +1617,7 @@ impl Model {
                 x.coupling = Some(Coupling {
                     below: w,
                     offset: 0.0,
+                    linked: true,
                 });
             }
             segments.push(id);
@@ -1712,8 +1717,250 @@ impl Model {
         out
     }
 
+    /// Versatz je Segment des Zuges `up` gegenüber dem Zug darunter mit der
+    /// Geometrie `lower` und den Wänden `lsegs`, und welche Segmente gelöst
+    /// sind (ohne Kopplung, OG Phase 2). Gekoppelte Segmente behalten ihren
+    /// gespeicherten Versatz; gelöste behalten ihre Linie, ihr Versatz wird
+    /// aus der eigenen Lage gegen `lower` gemessen (G7 K1). Hat sich die
+    /// Segmentzahl geändert, siehe [`Model::recount_offsets`].
+    fn stack_offsets(
+        &self,
+        up: RunId,
+        lower: &WallChain,
+        lsegs: &[ElementId],
+    ) -> (Vec<f64>, Vec<bool>) {
+        let usegs = self.run(up).map(|r| r.segments.clone()).unwrap_or_default();
+        let coupling = |w: ElementId| match self.element(w).map(|e| &e.kind) {
+            Some(ElementKind::Wall(x)) => x.coupling,
+            _ => None,
+        };
+        if usegs.len() != lsegs.len() {
+            return self.recount_offsets(&usegs, lower, lsegs);
+        }
+        let free: Vec<bool> = usegs
+            .iter()
+            .map(|w| coupling(*w).is_some_and(|c| !c.linked))
+            .collect();
+        let measured = if free.iter().any(|f| *f) {
+            self.base_chain(up)
+                .and_then(|c| c.segment_offsets_from(lower))
+        } else {
+            None
+        };
+        let offsets = lsegs
+            .iter()
+            .enumerate()
+            .map(|(k, e)| {
+                if free[k] {
+                    return measured
+                        .as_ref()
+                        .and_then(|m| m.get(k).copied())
+                        .unwrap_or(0.0);
+                }
+                usegs
+                    .iter()
+                    .find_map(|w| coupling(*w).filter(|c| c.below == *e).map(|c| c.offset))
+                    .unwrap_or(0.0)
+            })
+            .collect();
+        (offsets, free)
+    }
+
+    /// Versatz und Zustand je Segment von `lower`, nachdem sich seine
+    /// Segmentzahl geändert hat (Regel 28): Ein Segment, dessen Wand schon
+    /// einen Partner oben hat, behält dessen Versatz und Zustand; ein neues
+    /// Teilstück erbt beides vom geraden Nachbarn, aus dem es geteilt wurde.
+    /// Sonst bündig und gekoppelt.
+    fn recount_offsets(
+        &self,
+        usegs: &[ElementId],
+        lower: &WallChain,
+        lsegs: &[ElementId],
+    ) -> (Vec<f64>, Vec<bool>) {
+        let partner = |e: ElementId| {
+            usegs
+                .iter()
+                .find_map(|w| match self.element(*w).map(|x| &x.kind) {
+                    Some(ElementKind::Wall(Wall {
+                        coupling: Some(c), ..
+                    })) if c.below == e => Some((c.offset, !c.linked)),
+                    _ => None,
+                })
+        };
+        let n = lsegs.len();
+        let normal = |k: usize| lower.segment_normal(k);
+        let straight = |a: usize, b: usize| match (normal(a), normal(b)) {
+            (Some(x), Some(y)) => x.dot(y) > 1.0 - 1e-9,
+            _ => false,
+        };
+        let closed = lower.closed;
+        let (mut offsets, mut free) = (vec![0.0; n], vec![false; n]);
+        for k in 0..n {
+            let own = partner(lsegs[k]);
+            let near = || {
+                let prev = (k > 0 || closed).then(|| (k + n - 1) % n);
+                let next = (k + 1 < n || closed).then(|| (k + 1) % n);
+                [prev, next]
+                    .into_iter()
+                    .flatten()
+                    .filter(|&j| j != k && straight(j, k))
+                    .find_map(|j| partner(lsegs[j]))
+            };
+            if let Some((o, f)) = own.or_else(near) {
+                offsets[k] = o;
+                free[k] = f;
+            }
+        }
+        (offsets, free)
+    }
+
+    /// Lassen sich alle über `id` gestapelten Züge auf die neuen Punkte
+    /// `points` von `id` legen (G7 K2)? Nein, wenn ein Segment verschwinden
+    /// oder kippen würde oder sich ein Umriss selbst schneidet; dann bleibt
+    /// das Gummiband stehen statt eine Decke zu verlieren.
+    fn stack_fits(&self, id: RunId, points: &[Vec3]) -> bool {
+        let Some(mut lower) = self.base_chain(id) else {
+            return true;
+        };
+        lower.points = points.to_vec();
+        let Some(lsegs) = self.run(id).map(|r| r.segments.clone()) else {
+            return true;
+        };
+        // Andere Segmentzahl: die Kopplungen werden neu zugeordnet (alles bündig)
+        if lower.segment_count() != lsegs.len() {
+            return true;
+        }
+        for up in self.runs_above(id) {
+            let (offsets, _) = self.stack_offsets(up, &lower, &lsegs);
+            match lower.with_segment_offsets(&offsets) {
+                Some(c) if room_inside(&c) && self.stack_fits(up, &c.points) => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// Stapelbezug einer gestapelten Wand: (Versatz in mm, + außen;
+    /// gekoppelt). `None`: keine gestapelte Wand (EG, Innenwand).
+    pub fn stack_offset(&self, wall: ElementId) -> Option<(f64, bool)> {
+        match self.element(wall)?.kind {
+            ElementKind::Wall(Wall {
+                coupling: Some(c), ..
+            }) => Some((c.offset, c.linked)),
+            _ => None,
+        }
+    }
+
+    /// Wand im Geschoss darunter, auf der `wall` steht.
+    pub fn wall_below(&self, wall: ElementId) -> Option<ElementId> {
+        match self.element(wall)?.kind {
+            ElementKind::Wall(Wall {
+                coupling: Some(c), ..
+            }) => Some(c.below),
+            _ => None,
+        }
+    }
+
+    /// Fuß der Kette: von `wall` über gekoppelte Glieder nach unten bis zum
+    /// ersten gelösten Glied oder zum EG. Ziehen ohne Strg an einer
+    /// gekoppelten OG-Wand zieht diese Wand (OG Phase 2).
+    pub fn chain_foot(&self, wall: ElementId) -> ElementId {
+        let mut at = wall;
+        while let Some((_, true)) = self.stack_offset(at) {
+            match self.wall_below(at) {
+                Some(b) if b != wall => at = b,
+                _ => break,
+            }
+        }
+        at
+    }
+
+    /// Kette am Segment öffnen bzw. schließen. Die Lage bleibt, der Versatz
+    /// auch (OG-16). `false` bei einer Wand ohne Partner darunter.
+    pub fn set_linked(&mut self, wall: ElementId, linked: bool) -> bool {
+        let Some((_, now)) = self.stack_offset(wall) else {
+            return false;
+        };
+        if now == linked {
+            return true;
+        }
+        note!(self, Element, self.elements, wall);
+        if let Some(ElementKind::Wall(Wall {
+            coupling: Some(c), ..
+        })) = self.elements.get_mut(wall).map(|e| &mut e.kind)
+        {
+            c.linked = linked;
+        }
+        if let Some((run, _)) = self.segment_of(wall) {
+            self.sync_parts(run);
+            self.update_joins(&[run]);
+        }
+        true
+    }
+
+    /// Versatz der gestapelten Wand `wall` auf `offset` (mm, + außen) setzen;
+    /// unter 20 mm rastet er auf 0 ein (Regel 31). Nur diese Wand und was
+    /// über ihr steht bewegt sich, der Zustand der Kette bleibt. `None`, wenn
+    /// der Stapel dabei ungültig würde (Segment verschwindet, Umriss kreuzt
+    /// sich, kein Raum, ein Erker über nur einen Teil der Wand).
+    pub fn set_offset(&mut self, wall: ElementId, offset: f64) -> Option<Vec<RunId>> {
+        let offset = if offset.abs() < MIN_OFFSET {
+            0.0
+        } else {
+            offset
+        };
+        let (run, seg) = self.segment_of(wall)?;
+        let (old, linked) = self.stack_offset(wall)?;
+        let below = self.run_below(run)?;
+        let lower = self.base_chain(below)?;
+        let lsegs = self.run(below)?.segments.clone();
+        let usegs = self.run(run)?.segments.clone();
+        if usegs.len() != lsegs.len() || !offset.is_finite() {
+            return None;
+        }
+        let mut offsets: Vec<f64> = usegs
+            .iter()
+            .map(|w| self.stack_offset(*w).map_or(0.0, |o| o.0))
+            .collect();
+        offsets[seg] = offset;
+        let c = lower.with_segment_offsets(&offsets)?;
+        if !room_inside(&c) {
+            return None;
+        }
+        if (old - offset).abs() < 1e-9 {
+            return Some(Vec::new());
+        }
+        let out = self.set_run_points(run, &c.points)?;
+        note!(self, Element, self.elements, wall);
+        if let Some(ElementKind::Wall(Wall {
+            coupling: Some(cp), ..
+        })) = self.elements.get_mut(wall).map(|e| &mut e.kind)
+        {
+            *cp = Coupling {
+                below: cp.below,
+                offset,
+                linked,
+            };
+        }
+        self.sync_parts(run);
+        self.update_joins(&[run]);
+        Some(out)
+    }
+
+    /// Versatz um `d` ändern ([`Model::set_offset`]).
+    pub fn move_segment(&mut self, wall: ElementId, d: f64) -> Option<Vec<RunId>> {
+        let (old, _) = self.stack_offset(wall)?;
+        self.set_offset(wall, old + d)
+    }
+
+    /// „Bündig setzen“: Versatz 0 und gekoppelt.
+    pub fn set_flush(&mut self, wall: ElementId) -> bool {
+        self.set_offset(wall, 0.0).is_some() && self.set_linked(wall, true)
+    }
+
     /// Legt den Zug `up` auf den Zug `below` (mit den Versätzen seiner Wände)
-    /// und koppelt Wand k an Wand k darunter.
+    /// und koppelt Wand k an Wand k darunter; gelöste Wände bleiben gelöst
+    /// und stehen still.
     fn follow_below(&mut self, up: RunId, below: RunId) {
         let (Some(lower), Some(lsegs)) = (
             self.base_chain(below),
@@ -1721,24 +1968,18 @@ impl Model {
         ) else {
             return;
         };
-        let offset_to = |m: &Model, e: ElementId| -> Option<f64> {
-            m.run(up)?
-                .segments
-                .iter()
-                .find_map(|w| match m.element(*w)?.kind {
-                    ElementKind::Wall(Wall {
-                        coupling: Some(c), ..
-                    }) if c.below == e => Some(c.offset),
-                    _ => None,
-                })
+        let (offsets, free) = self.stack_offsets(up, &lower, &lsegs);
+        let recount = self
+            .run(up)
+            .is_some_and(|r| r.segments.len() != lsegs.len());
+        let pts = match lower.with_segment_offsets(&offsets) {
+            Some(c) => c.points,
+            // Neue Segmentzahl: bündig neu auflegen, die Kopplungen folgen
+            None if recount => lower.points.clone(),
+            // Ungültig (siehe stack_fits): Zug bleibt liegen, statt bündig
+            // zu springen
+            None => return,
         };
-        let offsets: Vec<f64> = lsegs
-            .iter()
-            .map(|e| offset_to(self, *e).unwrap_or(0.0))
-            .collect();
-        let pts = lower
-            .with_segment_offsets(&offsets)
-            .map_or_else(|| lower.points.clone(), |c| c.points);
         let same = self
             .run(up)
             .is_some_and(|r| r.points == pts && r.segments.len() == lsegs.len());
@@ -1750,9 +1991,11 @@ impl Model {
             let Some(&b) = lsegs.get(k) else {
                 continue;
             };
+            // Gelöst: Versatz nachgeführt, die Kette bleibt offen
             let want = Coupling {
                 below: b,
                 offset: offsets[k],
+                linked: free.get(k) != Some(&true),
             };
             let now = match self.element(w).map(|e| &e.kind) {
                 Some(ElementKind::Wall(x)) => x.coupling,
@@ -1762,6 +2005,43 @@ impl Model {
                 note!(self, Element, self.elements, w);
                 if let Some(ElementKind::Wall(x)) = self.elements.get_mut(w).map(|e| &mut e.kind) {
                     x.coupling = Some(want);
+                }
+            }
+        }
+    }
+
+    /// Gelöste Segmente eines gestapelten Zuges, der selbst bewegt wurde:
+    /// ihr Versatz ist wieder die wahre Lage gegen den Zug darunter.
+    fn remeasure(&mut self, id: RunId) {
+        let Some(below) = self.run_below(id) else {
+            return;
+        };
+        let (Some(lower), Some(lsegs)) = (
+            self.base_chain(below),
+            self.run(below).map(|r| r.segments.clone()),
+        ) else {
+            return;
+        };
+        let (offsets, free) = self.stack_offsets(id, &lower, &lsegs);
+        let segs = self.run(id).map(|r| r.segments.clone()).unwrap_or_default();
+        if segs.len() != lsegs.len() {
+            return;
+        }
+        for (k, w) in segs.into_iter().enumerate() {
+            if !free[k] {
+                continue;
+            }
+            let now = match self.element(w).map(|e| &e.kind) {
+                Some(ElementKind::Wall(x)) => x.coupling,
+                _ => continue,
+            };
+            if let Some(c) = now.filter(|c| c.offset != offsets[k]) {
+                note!(self, Element, self.elements, w);
+                if let Some(ElementKind::Wall(x)) = self.elements.get_mut(w).map(|e| &mut e.kind) {
+                    x.coupling = Some(Coupling {
+                        offset: offsets[k],
+                        ..c
+                    });
                 }
             }
         }
@@ -1784,9 +2064,10 @@ impl Model {
             .filter(|(_, r)| r.closed)
             .map(|(id, r)| (id, r.points.clone()))
             .collect();
-        if !self.set_points(id, &flat) {
+        if !self.stack_fits(id, &flat) || !self.set_points(id, &flat) {
             return None;
         }
+        self.remeasure(id);
         let mut moved = Vec::new();
         let mut roots = vec![id];
         roots.extend(self.carry_stack(id));
@@ -1813,6 +2094,15 @@ impl Model {
         partners(self, &mut out);
         self.update_joins(&moved);
         partners(self, &mut out);
+        // Der Versatz zwischen den Geschossen formt Decke und Außenschichten
+        // darunter (G7 K4) und den Fuß darüber (K3)
+        for r in &moved {
+            for p in self.run_below(*r).into_iter().chain(self.runs_above(*r)) {
+                if !out.contains(&p) {
+                    out.push(p);
+                }
+            }
+        }
         // Innenwände, die unter eine mitbewegte Decke kommen oder sie verlassen
         // (Deckenband)
         for r in &moved {
@@ -1969,6 +2259,19 @@ impl Model {
         c.joints.strip_below = self
             .run_below(id)
             .is_some_and(|b| self.strip_params(b).is_some());
+        if c.joints.strip_below {
+            c.joints.strip_open = self.open_segments(id);
+        }
+        if let Some(Ok(f)) = &floor {
+            c.joints.overhang = self.overhang_offsets(id).map(|offsets| {
+                let (b, t) = f.band();
+                Overhang {
+                    offsets,
+                    from: f.soffit_band().map_or(b, |s| s.0),
+                    to: t,
+                }
+            });
+        }
         c.joints.slab_band = match &floor {
             Some(Ok(f)) => Some(f.band()),
             _ if self.category_of(id) == Some(Category::InteriorWall) => self
@@ -2165,6 +2468,7 @@ impl Model {
             ElementKind::StripFooting(f) => self.run_of(f.slab),
             ElementKind::Floor(f) => Some(f.run),
             ElementKind::EdgeStrip { wall, .. } => self.run_of(wall),
+            ElementKind::SoffitInsulation { floor } => self.run_of(floor),
         }
     }
 
@@ -2291,6 +2595,7 @@ impl Model {
             SLAB_PART => self.foundation_of(run).map(|f| f.0),
             FOOTING_PART => self.foundation_of(run).and_then(|f| f.1),
             FLOOR_PART => self.floor_of(run),
+            SOFFIT_PART => self.soffit_of(self.floor_of(run)?),
             p if (STRIP_PART..STRIP_PART + MAX_STRIPS).contains(&p) => {
                 let wall = self.wall_at(run, (p - STRIP_PART) as usize)?;
                 self.edge_strip_of(wall, self.floor_of(run)?)
@@ -2598,6 +2903,10 @@ impl Model {
                 material,
                 thickness: FLOOR_THICKNESS,
                 top: LevelRef::top(storey),
+                soffit: Soffit {
+                    thickness: SOFFIT_THICKNESS,
+                    material: None,
+                },
             }),
         );
     }
@@ -2696,11 +3005,232 @@ impl Model {
             thickness: f.thickness,
             mat: material_key(f.material),
         };
-        Some(FloorSlab::from_chain_with(
-            chain,
-            &p,
-            self.strip_params(run),
-        ))
+        let ext = self
+            .overhang_offsets(run)
+            .and_then(|o| Some((chain.with_segment_offsets(&o)?, o)));
+        let soffit = SoffitParams {
+            // Bis 1 m über dem Wandfuß (wie die lichte Höhe, G4)
+            thickness: f
+                .soffit
+                .thickness
+                .clamp(MIN_SOFFIT, MAX_SOFFIT)
+                .min((p.top - p.thickness - chain.base - MIN_CLEAR).max(0.0)),
+            mat: f
+                .soffit
+                .material
+                .or_else(|| self.soffit_material(run))
+                .map_or(material::PLAIN, material_key),
+        };
+        let over = ext.as_ref().map(|(c, o)| (c, &o[..], soffit));
+        let mut slab = FloorSlab::from_chain_over(chain, &p, self.strip_params(run), over);
+        if let Ok(f) = &mut slab {
+            if f.strip.is_some_and(|sp| sp.covered) {
+                f.strip_covered = self.covered_segments(run);
+            }
+        }
+        Some(slab)
+    }
+
+    /// Versatz nach außen je Segment des Zuges darüber gegenüber `run`, wie
+    /// er steht (gekoppelt oder gelöst). `None` ohne Zug darüber oder wenn
+    /// die Züge nicht zusammenpassen.
+    fn offsets_above(&self, run: RunId) -> Option<Vec<f64>> {
+        let up = *self.runs_above(run).first()?;
+        self.base_chain(up)?
+            .segment_offsets_from(&self.base_chain(run)?)
+    }
+
+    /// Vorsprung des Zuges darüber je Segment (≥ 0), wenn mindestens ein
+    /// Segment vorspringt (G7 K4): Dort wachsen Decke, Untersichtdämmung und
+    /// die Außenschichten mit.
+    fn overhang_offsets(&self, run: RunId) -> Option<Vec<f64>> {
+        let o: Vec<f64> = self
+            .offsets_above(run)?
+            .into_iter()
+            .map(|d| if d >= MIN_OVERHANG { d } else { 0.0 })
+            .collect();
+        o.iter().any(|d| *d > 0.0).then_some(o)
+    }
+
+    /// Je Segment des Zuges: springt es gegenüber dem Zug darunter zurück
+    /// (G7 K3)? Dort steht der Fuß neben dem Randdämmstreifen und zeichnet
+    /// im Schnitt seine Linie. Bündig oder vorspringend steht er auf dem
+    /// Streifen, der mit der Wand darüber wandert (K4).
+    fn open_segments(&self, run: RunId) -> Vec<bool> {
+        let n = self.run(run).map_or(0, |r| r.segments.len());
+        let Some(below) = self.run_below(run) else {
+            return vec![true; n];
+        };
+        match self.offsets_above(below) {
+            Some(o) if o.len() == n => o.iter().map(|d| *d <= -MIN_OVERHANG).collect(),
+            _ => vec![true; n],
+        }
+    }
+
+    /// Je Segment des Zuges: steht die Wand darüber bündig oder vorspringend
+    /// auf dem Randdämmstreifen (G7 K3, K4)? Springt sie zurück, deckt sie ihn
+    /// nicht ganz.
+    fn covered_segments(&self, run: RunId) -> Vec<bool> {
+        let n = self.run(run).map_or(0, |r| r.segments.len());
+        match self.offsets_above(run) {
+            Some(o) if o.len() == n => o.iter().map(|d| *d > -MIN_OVERHANG).collect(),
+            _ => vec![false; n],
+        }
+    }
+
+    /// Baustoff der Untersichtdämmung unter der Decke `floor`: die eigene
+    /// Wahl oder [`Model::soffit_material`].
+    pub fn soffit_material_of(&self, floor: ElementId) -> Option<MaterialId> {
+        let ElementKind::Floor(f) = self.element(floor)?.kind else {
+            return None;
+        };
+        f.soffit.material.or_else(|| self.soffit_material(f.run))
+    }
+
+    /// Baustoff der Untersichtdämmung ohne eigene Wahl (K4, BIM): die
+    /// äußerste Dämmschicht der Wand darüber; einschalig der Baustoff des
+    /// Randdämmstreifens; sonst der erste Dämmstoff im Projekt.
+    fn soffit_material(&self, run: RunId) -> Option<MaterialId> {
+        let set_of = |r: RunId| {
+            self.run(r)?
+                .segments
+                .first()
+                .and_then(|w| self.element(*w))
+                .and_then(|e| e.layer_set)
+                .and_then(|t| self.layer_set(t))
+        };
+        let insul = |m: MaterialId| {
+            self.material(m)
+                .is_some_and(|x| x.category == MatCategory::Insulation)
+        };
+        let above = self.runs_above(run).first().and_then(|u| set_of(*u));
+        let outer = |t: &LayerSet| {
+            t.layers
+                .iter()
+                .take_while(|l| !l.core)
+                .map(|l| l.material)
+                .find(|m| insul(*m))
+        };
+        above
+            .and_then(outer)
+            .or_else(|| set_of(run).and_then(outer))
+            .or_else(|| above.and_then(|t| t.strip_material()))
+            .or_else(|| set_of(run).and_then(|t| t.strip_material()))
+            .or_else(|| {
+                self.materials
+                    .iter()
+                    .find(|(_, m)| m.category == MatCategory::Insulation)
+                    .map(|(id, _)| id)
+            })
+    }
+
+    /// Setzt die Dicke der Untersichtdämmung einer Decke (mm,
+    /// [`MIN_SOFFIT`] … [`MAX_SOFFIT`]).
+    pub fn set_floor_soffit(&mut self, floor: ElementId, thickness: f64) -> bool {
+        if !matches!(
+            self.element(floor).map(|e| &e.kind),
+            Some(ElementKind::Floor(_))
+        ) || !(MIN_SOFFIT..=MAX_SOFFIT).contains(&thickness)
+        {
+            return false;
+        }
+        note!(self, Element, self.elements, floor);
+        if let Some(ElementKind::Floor(f)) = self.elements.get_mut(floor).map(|e| &mut e.kind) {
+            f.soffit.thickness = thickness;
+        }
+        self.touch();
+        true
+    }
+
+    /// Setzt den Baustoff der Untersichtdämmung (`None`: wie die Wand darüber).
+    pub fn set_floor_soffit_material(&mut self, floor: ElementId, m: Option<MaterialId>) -> bool {
+        if !matches!(
+            self.element(floor).map(|e| &e.kind),
+            Some(ElementKind::Floor(_))
+        ) || m.is_some_and(|m| self.material(m).is_none())
+        {
+            return false;
+        }
+        note!(self, Element, self.elements, floor);
+        if let Some(ElementKind::Floor(f)) = self.elements.get_mut(floor).map(|e| &mut e.kind) {
+            f.soffit.material = m;
+        }
+        self.touch();
+        true
+    }
+
+    /// Decken, unter denen eine Untersichtdämmung liegen muss (Regel 35):
+    /// die Decke kragt unter einem Vorsprung darüber aus.
+    pub fn soffit_floors(&self) -> Vec<ElementId> {
+        let mut out: Vec<(String, ElementId)> = self
+            .elements
+            .iter()
+            .filter_map(|(id, e)| match e.kind {
+                ElementKind::Floor(f) => match self.floor(f.run) {
+                    Some(Ok(s)) if !s.soffits.is_empty() => Some((e.number.clone(), id)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out.into_iter().map(|x| x.1).collect()
+    }
+
+    /// Untersichtdämmung unter einer Decke.
+    pub fn soffit_of(&self, floor: ElementId) -> Option<ElementId> {
+        self.elements
+            .iter()
+            .find(|(_, e)| e.kind == ElementKind::SoffitInsulation { floor })
+            .map(|(id, _)| id)
+    }
+
+    /// Legt fehlende Untersichtdämmungen an und entfernt überzählige (im
+    /// offenen Schritt oder nach dem Laden). Bleibt die Decke auskragend,
+    /// bleibt die Dämmung mit Guid und Nummer; entsteht sie neu, bekommt sie
+    /// eine neue (Regel 25).
+    fn sync_soffits(&mut self) {
+        let want = self.soffit_floors();
+        let have: Vec<(ElementId, ElementId)> = self
+            .elements
+            .iter()
+            .filter_map(|(id, e)| match e.kind {
+                ElementKind::SoffitInsulation { floor } => Some((id, floor)),
+                _ => None,
+            })
+            .collect();
+        let mut kept = Vec::with_capacity(have.len());
+        for (id, floor) in have {
+            if want.contains(&floor) && !kept.contains(&floor) {
+                kept.push(floor);
+            } else {
+                note!(self, Element, self.elements, id);
+                self.elements.remove(id);
+                self.touch();
+            }
+        }
+        for floor in want {
+            if kept.contains(&floor) {
+                continue;
+            }
+            let Some((storey, seq)) = self.element(floor).map(|e| (e.storey, e.seq)) else {
+                continue;
+            };
+            self.new_element(
+                Category::SoffitInsulation,
+                storey,
+                seq,
+                ElementKind::SoffitInsulation { floor },
+            );
+            self.touch();
+        }
+    }
+
+    /// Nach dem Laden: Untersichtdämmungen passend zu den Vorsprüngen.
+    pub(crate) fn complete_soffits(&mut self) {
+        let strict = std::mem::replace(&mut self.strict, false);
+        self.sync_soffits();
+        self.strict = strict;
     }
 
     /// Randdämmstreifen der Decke über dem Zug: aus dem Typ seiner Wände (K5).
@@ -3167,7 +3697,9 @@ impl Model {
                 ElementKind::GroundSlab(s) => refs.push(s.top),
                 ElementKind::StripFooting(f) => refs.push(f.base),
                 ElementKind::Floor(f) => refs.push(f.top),
-                ElementKind::Wall(_) | ElementKind::EdgeStrip { .. } => {}
+                ElementKind::Wall(_)
+                | ElementKind::EdgeStrip { .. }
+                | ElementKind::SoffitInsulation { .. } => {}
             }
         }
         if refs.iter().any(|r| !self.storeys.contains(r.storey)) {
@@ -3512,6 +4044,7 @@ impl Model {
     pub fn commit(&mut self) -> Option<Txn> {
         if self.txn.is_some() {
             self.sync_edge_strips();
+            self.sync_soffits();
         }
         self.close()
     }
@@ -3564,6 +4097,7 @@ impl Model {
                                 floors.push(f.run);
                             }
                             ElementKind::EdgeStrip { wall, .. } => strips.push(wall),
+                            ElementKind::SoffitInsulation { floor } => strips.push(floor),
                         }
                     }
                 }
@@ -3578,11 +4112,25 @@ impl Model {
         for r in floors {
             self.runs_under_floor(r).into_iter().for_each(|i| t.run(i));
         }
+        self.stack_partners(&mut t);
         let runs = t.runs.clone();
         for r in runs {
             self.joined_runs(r).into_iter().for_each(|p| t.run(p));
         }
         t.runs
+    }
+
+    /// Ergänzt die Züge darunter und darüber: Der Versatz zwischen ihnen
+    /// formt Decke und Außenschichten unten (G7 K4) und den Fuß oben (K3).
+    fn stack_partners(&self, t: &mut Touched) {
+        let runs = t.runs.clone();
+        for r in runs {
+            if self.run(r).is_none() {
+                continue;
+            }
+            self.run_below(r).into_iter().for_each(|b| t.run(b));
+            self.runs_above(r).into_iter().for_each(|u| t.run(u));
+        }
     }
 
     /// Trägt den heutigen Stand als „nachher“ ein.
@@ -3623,6 +4171,7 @@ impl Model {
                         // Wand oder Platte stehen ggf. selbst im Schritt
                         ElementKind::StripFooting(f) => footings.push(f.slab),
                         ElementKind::EdgeStrip { wall, .. } => footings.push(wall),
+                        ElementKind::SoffitInsulation { floor } => footings.push(floor),
                         ElementKind::Floor(f) => {
                             touched.run(f.run);
                             floors.push(f.run);
@@ -3691,6 +4240,7 @@ impl Model {
                 .into_iter()
                 .for_each(|i| touched.run(i));
         }
+        self.stack_partners(&mut touched);
         if touched.attr {
             self.attr.bump();
         }
@@ -3766,6 +4316,7 @@ impl Model {
     pub fn check(&self) -> Vec<String> {
         let mut out = Vec::new();
         let strips_wanted = self.edge_strip_pairs();
+        let soffits_wanted = self.soffit_floors();
         let mut guids = Vec::new();
         let mut numbers: Vec<&str> = Vec::new();
         for (id, e) in self.elements.iter() {
@@ -3876,6 +4427,33 @@ impl Model {
                     if !self.materials.contains(f.material) {
                         out.push(format!("{}: Baustoff fehlt", e.number));
                     }
+                    // Regel 35: Dicke der Untersichtdämmung je Decke
+                    if !(MIN_SOFFIT..=MAX_SOFFIT).contains(&f.soffit.thickness) {
+                        out.push(format!(
+                            "{}: Untersichtdämmung {} mm (erlaubt {MIN_SOFFIT}…{MAX_SOFFIT} mm)",
+                            e.number, f.soffit.thickness
+                        ));
+                    }
+                    if f.soffit
+                        .material
+                        .is_some_and(|m| !self.materials.contains(m))
+                    {
+                        out.push(format!(
+                            "{}: Baustoff der Untersichtdämmung fehlt",
+                            e.number
+                        ));
+                    }
+                }
+                ElementKind::SoffitInsulation { floor } => {
+                    // Regel 35: genau dann, wenn die Decke auskragt
+                    if !matches!(
+                        self.element(floor).map(|f| &f.kind),
+                        Some(ElementKind::Floor(_))
+                    ) {
+                        out.push(format!("{}: Decke fehlt", e.number));
+                    } else if !soffits_wanted.contains(&floor) {
+                        out.push(format!("{}: Decke kragt nicht aus", e.number));
+                    }
                 }
                 ElementKind::EdgeStrip { wall, floor } => {
                     // Regel 22: Wand und Decke gibt es, das Paar braucht ihn
@@ -3898,6 +4476,18 @@ impl Model {
                         ));
                     }
                 }
+            }
+        }
+        // Regel 35: unter jeder auskragenden Decke genau eine Untersichtdämmung
+        for floor in &soffits_wanted {
+            let n = self
+                .elements
+                .iter()
+                .filter(|(_, e)| e.kind == ElementKind::SoffitInsulation { floor: *floor })
+                .count();
+            if n != 1 {
+                let f = self.element(*floor).map_or("?", |f| f.number.as_str());
+                out.push(format!("{f}: {n} Untersichtdämmungen statt einer"));
             }
         }
         // Regel 22: zu jedem Paar genau ein Streifen
@@ -4118,6 +4708,14 @@ pub(crate) const STOREY_HEIGHT: f64 = 2855.0;
 pub(crate) const UPPER_HEIGHT: f64 = 2855.0;
 pub(crate) const FOUNDATION_DEPTH: f64 = 800.0;
 pub const FLOOR_THICKNESS: f64 = 220.0;
+/// Untersichtdämmung unter einem Vorsprung (Jörn 04:03, G7 K4, BIM Regel
+/// 35): 12 cm, einstellbar von 4 bis 30 cm, nie 0.
+pub const SOFFIT_THICKNESS: f64 = 120.0;
+pub const MIN_SOFFIT: f64 = 40.0;
+pub const MAX_SOFFIT: f64 = 300.0;
+/// Kleinster Versatz, der als Vor- oder Rücksprung zählt (mm); darunter
+/// gilt das Segment als bündig.
+const MIN_OVERHANG: f64 = 0.01;
 /// Sohlplatte neuer Gebäude (Jörn 10:13): 22 cm, die Frostschürze reicht
 /// darunter bis UK Gründung −0,80 (58 cm).
 pub const SLAB_THICKNESS: f64 = 220.0;
@@ -4141,6 +4739,8 @@ pub const FLOOR_PART: u32 = u32::MAX - 3;
 /// `STRIP_PART + k` (K5).
 pub const STRIP_PART: u32 = u32::MAX - 3 - MAX_STRIPS;
 const MAX_STRIPS: u32 = 1 << 16;
+/// Teil des Körpers eines Wandzugs: Untersichtdämmung unter seiner Decke (G7 K4).
+pub const SOFFIT_PART: u32 = STRIP_PART - 1;
 
 /// Warum keine Decke entsteht, als Satz.
 /// Zwei Stände eines Baustoffs unterscheiden sich höchstens in den
@@ -4366,6 +4966,16 @@ fn match_segments(old: &[(Vec3, Vec3)], new: &[(Vec3, Vec3)]) -> Vec<Option<usiz
         }
     }
     out
+}
+
+/// Kleinster Versatz einer gestapelten Wand; darunter rastet er auf 0 ein
+/// (Regel 31, wie der Sockelrücksprung).
+pub const MIN_OFFSET: f64 = 20.0;
+
+/// Bleibt innerhalb der Wand eines geschlossenen Zuges ein Raum (Innenfläche
+/// mit dem robusten Versatz)? Sonst entstünde keine Decke (G7 K2).
+fn room_inside(c: &WallChain) -> bool {
+    !c.closed || sk_math::polygon::inset(&c.face_corners(c.outer_offset()), c.thickness()).is_ok()
 }
 
 #[cfg(test)]
@@ -4845,5 +5455,507 @@ mod tests {
         m.add_pen(dup);
         m.commit();
         assert!(m.check().iter().any(|e| e.contains("Stiftnummer")));
+    }
+}
+
+/// OG Phase 2 im Kern (G7 K1–K3): gelöste und versetzte OG-Segmente.
+#[cfg(test)]
+mod og_phase2 {
+    use super::*;
+    use crate::qto::{run_qto, soffit_qto, WallQto};
+    use crate::solid::Solid;
+
+    fn gebaeude() -> (Model, RunId, RunId) {
+        let mut m = Model::with_seed(71);
+        let b = m.add_building(2);
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        let eg = m.build_from_polygon(b, &pts).unwrap();
+        let og = m.runs_above(eg)[0];
+        (m, eg, og)
+    }
+
+    /// Kopplung setzen; `None` löst die Kette (der Stapelbezug bleibt).
+    fn set_coupling(m: &mut Model, w: ElementId, c: Option<Coupling>) {
+        if let Some(ElementKind::Wall(x)) = m.elements.get_mut(w).map(|e| &mut e.kind) {
+            match (c, x.coupling.as_mut()) {
+                (Some(c), _) => x.coupling = Some(c),
+                (None, Some(now)) => now.linked = false,
+                (None, None) => {}
+            }
+        }
+    }
+
+    /// Zieht Segment `seg` um `out` nach außen (negativ: nach innen).
+    fn drag(m: &mut Model, run: RunId, seg: usize, out: f64) -> bool {
+        let c = m.chain(run).unwrap();
+        let c = c.with_segment_moved(seg, c.outward_sign() * out).unwrap();
+        m.set_run_points(run, &c.points).is_some()
+    }
+
+    fn ys(m: &Model, run: RunId) -> (f64, f64) {
+        let p = &m.run(run).unwrap().points;
+        (p[1].y, p[2].y)
+    }
+
+    #[test]
+    fn geloestes_segment_bleibt_stehen() {
+        let (mut m, eg, og) = gebaeude();
+        // OG-Wand y = 8 lösen und 0,30 m nach außen ziehen (Normale zeigt nach −y)
+        let w = m.wall_at(og, 1).unwrap();
+        set_coupling(&mut m, w, None);
+        assert!(drag(&mut m, og, 1, 300.0));
+        assert_eq!(ys(&m, og), (8300.0, 8300.0));
+        // EG-Wand y = 8 um 1 m nach außen: das gelöste OG-Segment bleibt stehen
+        assert!(drag(&mut m, eg, 1, 1000.0));
+        assert_eq!(ys(&m, eg), (9000.0, 9000.0));
+        assert_eq!(ys(&m, og), (8300.0, 8300.0));
+        // EG-Westwand 0,5 m nach außen: das gekoppelte OG-Segment folgt
+        assert!(drag(&mut m, eg, 0, 500.0));
+        let (ex, ox) = (
+            m.run(eg).unwrap().points[0].x,
+            m.run(og).unwrap().points[0].x,
+        );
+        assert!(
+            (ex + 500.0).abs() < 1e-6 && (ox + 500.0).abs() < 1e-6,
+            "{ex} {ox}"
+        );
+        assert_eq!(ys(&m, og), (8300.0, 8300.0));
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        // Bleibt gelöst, die übrigen bleiben gekoppelt
+        let coupling = |k: usize| match m.element(m.wall_at(og, k).unwrap()).map(|e| &e.kind) {
+            Some(ElementKind::Wall(x)) => x.coupling,
+            _ => None,
+        };
+        assert!(coupling(1).is_some_and(|c| !c.linked));
+        assert!((0..4)
+            .filter(|k| *k != 1)
+            .all(|k| coupling(k).is_some_and(|c| c.linked)));
+    }
+
+    #[test]
+    fn ungueltiger_stapel_klemmt_das_gummiband() {
+        let (mut m, eg, og) = gebaeude();
+        // OG-Wand y = 8 gekoppelt mit −7,0 m (steht bei y = 1 m, OG 1 m tief)
+        let w = m.wall_at(og, 1).unwrap();
+        let below = m.wall_at(eg, 1).unwrap();
+        set_coupling(
+            &mut m,
+            w,
+            Some(Coupling {
+                below,
+                offset: -7000.0,
+                linked: true,
+            }),
+        );
+        m.carry_stack(eg);
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        assert_eq!(ys(&m, og), (1000.0, 1000.0));
+        // EG-Südwand 0,6 m nach innen: im OG bliebe zwischen den Wänden
+        // (2 × 31,5 cm) kein Raum, die Decke fiele weg → abgelehnt
+        let before = m.run(eg).unwrap().points.clone();
+        assert!(!drag(&mut m, eg, 3, -600.0));
+        assert_eq!(m.run(eg).unwrap().points, before);
+        assert_eq!(ys(&m, og), (1000.0, 1000.0));
+        // 0,3 m nach innen geht noch (OG 0,7 m tief)
+        assert!(drag(&mut m, eg, 3, -300.0));
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    #[test]
+    fn streifen_offen_wo_das_og_versetzt_steht() {
+        let (mut m, eg, og) = gebaeude();
+        let w = m.wall_at(og, 1).unwrap();
+        let below = m.wall_at(eg, 1).unwrap();
+        let stelle = |m: &mut Model, offset: f64| {
+            set_coupling(
+                m,
+                w,
+                Some(Coupling {
+                    below,
+                    offset,
+                    linked: true,
+                }),
+            );
+            m.carry_stack(eg);
+        };
+        // Rücksprung: der Fuß steht neben dem Streifen (K3)
+        stelle(&mut m, -300.0);
+        assert_eq!(m.covered_segments(eg), vec![true, false, true, true]);
+        assert_eq!(m.open_segments(og), vec![false, true, false, false]);
+        // gelöst bleibt die Lage und damit der offene Streifen
+        set_coupling(&mut m, w, None);
+        assert_eq!(m.covered_segments(eg), vec![true, false, true, true]);
+        assert_eq!(m.open_segments(og), vec![false, true, false, false]);
+        // Vorsprung: der Streifen wandert mit der Deckenstirn nach außen und
+        // liegt wieder unter der Wand (K4)
+        stelle(&mut m, 300.0);
+        assert_eq!(m.covered_segments(eg), vec![true; 4]);
+        assert_eq!(m.open_segments(og), vec![false; 4]);
+    }
+
+    /// Gebäude mit der Nordwand im OG um `out` nach außen (gekoppelt).
+    fn mit_versatz(out: f64) -> (Model, RunId, RunId) {
+        let (mut m, eg, og) = gebaeude();
+        let w = m.wall_at(og, 1).unwrap();
+        let below = m.wall_at(eg, 1).unwrap();
+        set_coupling(
+            &mut m,
+            w,
+            Some(Coupling {
+                below,
+                offset: out,
+                linked: true,
+            }),
+        );
+        m.carry_stack(eg);
+        m.sync_soffits();
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        (m, eg, og)
+    }
+
+    fn near(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-3
+    }
+
+    #[test]
+    fn vorsprung_verlaengert_decke_untersicht_und_daemmung() {
+        let (m, eg, _) = mit_versatz(300.0);
+        // Decke bis Außenseite Kern OG: y = 8,30 − 0,14
+        let f = m.floor(eg).unwrap().unwrap();
+        let ymax = f.outline.iter().map(|p| p.y).fold(f64::MIN, f64::max);
+        assert!(near(ymax, 8160.0), "{ymax}");
+        assert!(near(f.area(), 9720.0 * 8020.0), "{}", f.area());
+        // Untersichtdämmung 12 cm unter dem auskragenden Streifen, zwischen
+        // den Kernen von EG und OG
+        let sp = f.soffit.unwrap();
+        assert!(near(sp.thickness, 120.0));
+        assert_eq!(f.soffit_band(), Some((2515.0, 2635.0)));
+        assert!(near(f.soffit_area(), 9720.0 * 300.0), "{}", f.soffit_area());
+        // als eigenes Bauteil UD unter DE-001 (BIM Regel 35)
+        let fl = m.floors_of(eg)[0];
+        let ud = m.soffit_of(fl).unwrap();
+        assert_eq!(m.element(ud).unwrap().number, "UD-001");
+        let q = soffit_qto(&m, ud).unwrap();
+        assert!(near(q.area, 9720.0 * 300.0));
+        assert!(near(q.volume, 9720.0 * 300.0 * 120.0));
+        assert!(m.can_delete(ud).is_err());
+        // Dämmung der EG-Wände ab UK Untersichtdämmung in der Lage des OG
+        let c = m.chain(eg).unwrap();
+        let o = c.joints.overhang.clone().unwrap();
+        assert_eq!(o.offsets, vec![0.0, 300.0, 0.0, 0.0]);
+        assert_eq!((o.from, o.to), (2515.0, 2855.0));
+        assert_eq!(
+            c.layer_parts(0),
+            vec![(0.0, 2515.0, false), (2515.0, 2855.0, true)]
+        );
+        // Kern: Tasche wie bisher
+        assert_eq!(c.layer_parts(1), vec![(0.0, 2635.0, false)]);
+        // Mengen (BIM): die herabgezogenen Abschnitte zählen zur OG-Wand.
+        // EG-Nordwand: Dämmung nur bis UK Untersicht; EG-Westwand bleibt ganz
+        let (w, o) = (run_qto(&m, eg), run_qto(&m, og_of(&m, eg)));
+        let nord = (10000.0 + 9720.0) * 0.5 * 140.0;
+        let west = (8000.0 + 7720.0) * 0.5 * 140.0;
+        assert!(near(w[1].layers[0].volume, nord * 2515.0));
+        assert!(near(w[0].layers[0].volume, west * 2855.0));
+        assert!(near(w[0].layers[0].side_area, 8000.0 * 2855.0));
+        assert!(near(w[1].layers[1].pocket, w[1].layers[1].area * 220.0));
+        // OG-Nordwand: dazu der ganze Abschnitt (gleich groß, 0,34 m hoch);
+        // OG-Westwand: das Eckstück über dem Vorsprung (0,30 × 0,14 × 0,34)
+        let og_west = (8300.0 + 8020.0) * 0.5 * 140.0;
+        assert!(near(o[1].layers[0].volume, nord * 2855.0 + nord * 340.0));
+        assert!(near(
+            o[0].layers[0].volume,
+            og_west * 2855.0 + 300.0 * 140.0 * 340.0
+        ));
+        assert!(near(
+            o[0].layers[0].side_area,
+            8300.0 * 2855.0 + 300.0 * 340.0
+        ));
+        let sum = |q: &[WallQto]| q.iter().map(|x| x.layers[0].volume).sum::<f64>();
+        assert!(near(
+            sum(&w),
+            nord * 2515.0 + nord * 2855.0 + 2.0 * west * 2855.0
+        ));
+        // Ohne Verblender keine Abfangung
+        assert!(o.iter().all(|x| x.facing_support == 0.0));
+    }
+
+    fn og_of(m: &Model, eg: RunId) -> RunId {
+        m.runs_above(eg)[0]
+    }
+
+    #[test]
+    fn verblender_wird_abgefangen() {
+        let (mut m, eg, og) = gebaeude();
+        // AW-49 (Verblender 11,5, Luft 6, Dämmung 14, Kern 17,5) auf alle Wände
+        let t = m
+            .layer_sets
+            .iter()
+            .find(|(_, x)| x.guid == CAVITY_TYPE_GUID)
+            .map(|(id, _)| id)
+            .unwrap();
+        for r in [eg, og] {
+            for w in m.run(r).unwrap().segments.clone() {
+                m.elements.get_mut(w).unwrap().layer_set = Some(t);
+            }
+        }
+        let w = m.wall_at(og, 1).unwrap();
+        let below = m.wall_at(eg, 1).unwrap();
+        set_coupling(
+            &mut m,
+            w,
+            Some(Coupling {
+                below,
+                offset: 300.0,
+                linked: true,
+            }),
+        );
+        m.carry_stack(eg);
+        m.sync_soffits();
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        let o = run_qto(&m, og);
+        // Nordwand: Achse des Verblenders über die ganze Länge (10,00 − 0,115);
+        // Seitenwände: je das Eckstück 0,30 m
+        assert!(
+            near(o[1].facing_support, 10000.0 - 115.0),
+            "{}",
+            o[1].facing_support
+        );
+        assert!(near(o[0].facing_support, 300.0), "{}", o[0].facing_support);
+        assert!(near(o[2].facing_support, 300.0));
+        assert!(near(o[3].facing_support, 0.0));
+        // Untersicht aus der Dämmschicht der OG-Wand (Kerndämmung)
+        let f = m.floor(eg).unwrap().unwrap();
+        let ins = m.layer_set(t).unwrap().layers[2].material;
+        assert_eq!(f.soffit.unwrap().mat, material_key(ins));
+    }
+
+    /// Kanten auf der Höhe `z`, die auf der Geraden x = `x` liegen: Länge.
+    fn kante_bei_x(s: &Solid, z: f64, x: f64) -> f64 {
+        s.edges
+            .iter()
+            .filter(|e| near(e.a.z, z) && near(e.b.z, z) && near(e.a.x, x) && near(e.b.x, x))
+            .map(|e| (e.b - e.a).length())
+            .sum()
+    }
+
+    #[test]
+    fn vorsprung_ohne_naht_auf_den_buendigen_seiten() {
+        let (m, eg, _) = mit_versatz(300.0);
+        let c = m.chain(eg).unwrap();
+        let s = c.solid();
+        // Westwand außen: unter dem Vorsprung nur das herabgezogene Stück
+        // (y 8,00 … 8,30), sonst läuft die Dämmung ohne Naht durch
+        assert!(
+            near(kante_bei_x(&s, 2515.0, 0.0), 300.0),
+            "{}",
+            kante_bei_x(&s, 2515.0, 0.0)
+        );
+        // Nordseite: Unterkante der herabgezogenen Dämmung bei y = 8,30 und
+        // EG-Dämmung unter der Untersicht bei y = 8,00
+        let north = |y: f64| -> f64 {
+            s.edges
+                .iter()
+                .filter(|e| near(e.a.z, 2515.0) && near(e.b.z, 2515.0))
+                .filter(|e| near(e.a.y, y) && near(e.b.y, y))
+                .map(|e| (e.b - e.a).length())
+                .sum()
+        };
+        assert!(north(8300.0) >= 10000.0 - 1e-3, "{}", north(8300.0));
+        assert!(north(8000.0) >= 10000.0 - 1e-3, "{}", north(8000.0));
+        // Schnitt durch die Westwand (Ebene y = 4 m): ohne Querlinie bei UK
+        // Untersicht; durch die Nordwand (x = 5 m) mit Untersicht und Stufe
+        let cw = c.section_caps(vec3(0.0, 4000.0, 0.0), vec3(0.0, 1.0, 0.0));
+        assert!(near(kante_bei_x(&cw, 2515.0, 0.0), 0.0));
+        assert!(cw
+            .edges
+            .iter()
+            .all(|e| !(near(e.a.z, 2515.0) && near(e.b.z, 2515.0))));
+        let cn = c.section_caps(vec3(5000.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0));
+        let at = |z: f64| {
+            cn.edges
+                .iter()
+                .filter(|e| near(e.a.z, z) && near(e.b.z, z))
+                .count()
+        };
+        assert!(at(2515.0) >= 2, "{}", at(2515.0));
+        let f = m.floor(eg).unwrap().unwrap();
+        let fc = f.soffit_section_caps(vec3(5000.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0));
+        let soffit = fc
+            .triangles
+            .iter()
+            .filter(|t| t.p.iter().all(|p| p.z <= 2635.0 + 1e-6))
+            .count();
+        assert!(soffit > 0);
+    }
+
+    #[test]
+    fn ruecksprung_laesst_decke_und_daemmung_stehen() {
+        let (bm, beg, _) = mit_versatz(0.0);
+        let (m, eg, og) = mit_versatz(-300.0);
+        let (f, bf) = (
+            m.floor(eg).unwrap().unwrap(),
+            bm.floor(beg).unwrap().unwrap(),
+        );
+        assert_eq!(f.outline, bf.outline);
+        assert!(f.soffit.is_none() && f.soffits.is_empty());
+        assert!(m.chain(eg).unwrap().joints.overhang.is_none());
+        assert_eq!(run_qto(&m, eg), run_qto(&bm, beg));
+        // Das OG steht auf der Decke; dort gibt es nichts herabzuziehen
+        let o = m.chain(og).unwrap();
+        assert!(o.joints.overhang.is_none());
+    }
+
+    #[test]
+    fn untersicht_einstellbar_und_rueckgaengig_als_ganzes() {
+        let (mut m, eg, og) = gebaeude();
+        let flaeche = m.floor(eg).unwrap().unwrap().area();
+        // OG-Nordwand lösen und 0,30 m vorziehen: ein Schritt
+        let w = m.wall_at(og, 1).unwrap();
+        m.begin("Vorziehen");
+        note!(m, Element, m.elements, w);
+        set_coupling(&mut m, w, None);
+        let out = {
+            let c = m.chain(og).unwrap();
+            let c = c.with_segment_moved(1, c.outward_sign() * 300.0).unwrap();
+            m.set_run_points(og, &c.points).unwrap()
+        };
+        // Die EG-Wand darunter ändert ihren Körper mit
+        assert!(out.contains(&eg), "{out:?}");
+        let t = m.commit().unwrap();
+        assert!(m.chain(eg).unwrap().joints.overhang.is_some());
+        assert!(m.floor(eg).unwrap().unwrap().area() > flaeche + 1.0);
+        // UD entsteht im selben Schritt
+        let fl = m.floors_of(eg)[0];
+        let ud = m.soffit_of(fl).unwrap();
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        // Dicke 40 … 300 mm, nie 0 (Regel 35); 20 cm: die Schichten reichen tiefer
+        m.begin("Untersicht");
+        assert!(!m.set_floor_soffit(fl, 0.0));
+        assert!(!m.set_floor_soffit(fl, MIN_SOFFIT - 1.0));
+        assert!(!m.set_floor_soffit(fl, MAX_SOFFIT + 1.0));
+        assert!(m.set_floor_soffit(fl, 200.0));
+        let t2 = m.commit().unwrap();
+        assert_eq!(m.chain(eg).unwrap().joints.overhang.unwrap().from, 2435.0);
+        assert_eq!(m.soffit_of(fl), Some(ud), "bleibt mit Nummer");
+        let touched = m.apply(&t2, Direction::Undo);
+        assert!(touched.runs.contains(&eg));
+        assert_eq!(m.chain(eg).unwrap().joints.overhang.unwrap().from, 2515.0);
+        // Rückgängig: alles wieder bündig, Decke wie vorher, keine UD
+        let touched = m.apply(&t, Direction::Undo);
+        assert!(touched.runs.contains(&eg), "{:?}", touched.runs);
+        assert!(m.chain(eg).unwrap().joints.overhang.is_none());
+        assert!(near(m.floor(eg).unwrap().unwrap().area(), flaeche));
+        assert!(m.soffit_of(fl).is_none());
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        m.apply(&t, Direction::Redo);
+        assert!(m.chain(eg).unwrap().joints.overhang.is_some());
+        assert_eq!(m.soffit_of(fl), Some(ud));
+    }
+
+    #[test]
+    fn untersicht_dicke_in_der_datei() {
+        let (mut m, eg, _) = mit_versatz(300.0);
+        let fl = m.floors_of(eg)[0];
+        m.allow_unstepped();
+        assert!(m.set_floor_soffit(fl, 160.0));
+        let text = crate::szo::write(&m);
+        assert!(text.contains("soffit=160"), "{text}");
+        assert!(
+            text.contains("[soffit]") || text.contains("soffit guid"),
+            "{text}"
+        );
+        let back = crate::szo::read(&text, crate::GuidGen::with_seed(3))
+            .unwrap()
+            .model;
+        let eg2 = back
+            .runs
+            .ids()
+            .find(|r| back.run_below(*r).is_none() && !back.runs_above(*r).is_empty())
+            .unwrap();
+        assert_eq!(
+            back.floor(eg2).unwrap().unwrap().soffit.unwrap().thickness,
+            160.0
+        );
+        assert!(back.check().is_empty(), "{:?}", back.check());
+        let ud = |b: &Model| {
+            b.elements()
+                .iter()
+                .find(|(_, e)| e.category == Category::SoffitInsulation)
+                .map(|(_, e)| (e.guid, e.number.clone()))
+        };
+        assert_eq!(ud(&back), ud(&m), "Guid und Nummer bleiben");
+        // Ohne Schlüssel (Datei vor K4): 12 cm; Standarddicke schreibt keinen
+        let old = text.replace(" soffit=160", "");
+        let back = crate::szo::read(&old, crate::GuidGen::with_seed(3))
+            .unwrap()
+            .model;
+        let eg3 = back
+            .runs
+            .ids()
+            .find(|r| back.run_below(*r).is_none() && !back.runs_above(*r).is_empty())
+            .unwrap();
+        assert_eq!(
+            back.floor(eg3).unwrap().unwrap().soffit.unwrap().thickness,
+            120.0
+        );
+    }
+    /// Lösen, Versatz, Einrasten unter 2 cm, wieder koppeln (Versatz bleibt),
+    /// bündig setzen; gekoppelt zieht der Fuß der Kette (OG Phase 2).
+    #[test]
+    fn koppeln_versatz_buendig() {
+        let (mut m, eg, og) = gebaeude();
+        let w = m.wall_at(og, 1).unwrap();
+        let p = m.wall_at(eg, 1).unwrap();
+        assert_eq!(m.stack_offset(p), None, "EG hat keinen Partner");
+        assert_eq!(m.chain_foot(w), p);
+        assert!(m.set_linked(w, false));
+        assert_eq!(m.chain_foot(w), w);
+        assert!(m.move_segment(w, -300.0).is_some());
+        assert_eq!(m.stack_offset(w), Some((-300.0, false)));
+        assert_eq!(ys(&m, og), (7700.0, 7700.0));
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        // EG +1,00: gelöstes OG bleibt, Versatz −1300
+        assert!(drag(&mut m, eg, 1, 1000.0));
+        assert_eq!(m.stack_offset(w), Some((-1300.0, false)));
+        assert_eq!(ys(&m, og), (7700.0, 7700.0));
+        // Koppeln: Versatz bleibt, EG −1,00 nimmt das OG mit
+        assert!(m.set_linked(w, true));
+        assert!(drag(&mut m, eg, 1, -1000.0));
+        assert_eq!(m.stack_offset(w), Some((-1300.0, true)));
+        assert_eq!(ys(&m, og), (6700.0, 6700.0));
+        // 1 cm rastet auf 0
+        assert!(m.set_offset(w, 10.0).is_some());
+        assert_eq!(m.stack_offset(w), Some((0.0, true)));
+        assert!(m.move_segment(w, 300.0).is_some());
+        assert!(m.set_flush(w));
+        assert_eq!(m.stack_offset(w), Some((0.0, true)));
+        assert_eq!(m.run(og).unwrap().points, m.run(eg).unwrap().points);
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    /// Gelöste Segmente schreiben `link=0`, sonst bleibt die Datei gleich;
+    /// `link=2` wird abgelehnt.
+    #[test]
+    fn datei_link() {
+        let (mut m, _, og) = gebaeude();
+        let plain = crate::szo::write(&m);
+        assert!(!plain.contains("link="));
+        let w = m.wall_at(og, 1).unwrap();
+        m.set_linked(w, false);
+        let text = crate::szo::write(&m);
+        assert_eq!(text.matches(" link=0").count(), 1);
+        let back = crate::szo::read(&text, GuidGen::with_seed(5))
+            .unwrap()
+            .model;
+        assert_eq!(crate::szo::write(&back), text);
+        let bad = text.replace(" link=0", " link=2");
+        let e = crate::szo::read(&bad, GuidGen::with_seed(5)).err().unwrap();
+        assert!(format!("{e:?}").contains("link"), "{e:?}");
     }
 }

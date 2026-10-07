@@ -8,7 +8,7 @@
 use crate::element::{BuildingId, Category, ElementId, ElementKind, RunId, StoreyId};
 use crate::floor::{FloorError, FloorSlab};
 use crate::foundation::{Foundation, FoundationError};
-use crate::library::{LayerFunction, LayerSetId, MatCategory, MaterialId};
+use crate::library::{LayerFunction, LayerSet, LayerSetId, MatCategory, MaterialId};
 use crate::model::Model;
 use crate::wall::WallChain;
 use sk_math::Vec3;
@@ -62,6 +62,102 @@ pub struct WallQto {
     /// Länge in der Mengenliste (mm): Außenwand Länge der Außenseite,
     /// Innenwand lichte Länge der tragenden Schicht.
     pub list_length: f64,
+    /// „Abfangung Verblender“ (mm): Länge, auf der der Verblender dieser
+    /// Wand über einem Vorsprung an UK Untersichtdämmung abgefangen wird
+    /// (G7 K4, BIM); 0 ohne Vorsprung oder ohne Verblender.
+    pub facing_support: f64,
+}
+
+/// Herabgezogene Außenschichten der Wand über `below` (G7 K4): je Segment
+/// und Schicht (Volumen mm³, Außenfläche mm²), je Segment die Abfangung des
+/// Verblenders (mm).
+struct Extension {
+    parts: Vec<Vec<(f64, f64)>>,
+    support: Vec<f64>,
+}
+
+/// [`Extension`] aus dem Wandzug darunter mit seinem Typ `set`; `None` ohne
+/// Vorsprung.
+fn extension(model: &Model, below: &WallChain, set: &LayerSet) -> Option<Extension> {
+    let ext = below.overhang_chain()?;
+    let offs = &below.joints.overhang.as_ref()?.offsets;
+    let core = set.layers.iter().position(|l| l.core)?;
+    let outer_first = below.outer_offset() <= below.inner_offset();
+    let m = below.segment_count();
+    let n = ext.clean_points().len();
+    let mut parts = vec![vec![(0.0, 0.0); set.layers.len()]; m];
+    let mut support = vec![0.0; m];
+    for (li, &(a, b, _)) in below.layer_offsets().iter().enumerate() {
+        let h_ext: f64 = below
+            .layer_parts(li)
+            .iter()
+            .filter(|p| p.2)
+            .map(|p| p.1 - p.0)
+            .sum();
+        let Some(l) = set.layers.get(li).filter(|_| h_ext > 0.0) else {
+            continue;
+        };
+        let air = l.function == LayerFunction::AirGap;
+        // Verblender: Vorsatzschale außen vor dem Kern, weder Dämmung noch Luft
+        let facing = li < core
+            && !air
+            && l.function != LayerFunction::Insulation
+            && model
+                .material(l.material)
+                .is_some_and(|x| !matches!(x.category, MatCategory::Insulation | MatCategory::Air));
+        let (ga, gb) = (
+            ext.face_corners_in(a, Some(li)),
+            ext.face_corners_in(b, Some(li)),
+        );
+        let (oa, ob) = (
+            below.face_corners_in(a, Some(li)),
+            below.face_corners_in(b, Some(li)),
+        );
+        for k in 0..m.min(offs.len()) {
+            let j = (k + 1) % n;
+            let side = if outer_first {
+                (ga[j] - ga[k]).length()
+            } else {
+                (gb[j] - gb[k]).length()
+            };
+            let own_side = if outer_first {
+                (oa[j] - oa[k]).length()
+            } else {
+                (ob[j] - ob[k]).length()
+            };
+            let (up_area, own_area) = if air {
+                (0.0, 0.0)
+            } else {
+                (
+                    area(&[ga[k], ga[j], gb[j], gb[k]]),
+                    area(&[oa[k], oa[j], ob[j], ob[k]]),
+                )
+            };
+            // Vorspringend: der ganze Abschnitt; Nachbarn: nur das Stück über
+            // die Ecke hinaus (der Rest ist die EG-Fassade in ihrer Flucht)
+            parts[k][li] = if offs[k] > 0.0 {
+                (up_area * h_ext, side * h_ext)
+            } else {
+                (
+                    (up_area - own_area).max(0.0) * h_ext,
+                    (side - own_side).max(0.0) * h_ext,
+                )
+            };
+            if facing {
+                // Achslänge oben gegen unten: am vorspringenden Segment ganz,
+                // an den Nachbarn das Stück, das über die Ecke hinausragt
+                let up = ((ga[j] - ga[k]).length() + (gb[j] - gb[k]).length()) * 0.5;
+                let low = ((oa[j] - oa[k]).length() + (ob[j] - ob[k]).length()) * 0.5;
+                let len = if offs[k] > 0.0 {
+                    up
+                } else {
+                    (up - low).max(0.0)
+                };
+                support[k] = f64::max(support[k], len);
+            }
+        }
+    }
+    Some(Extension { parts, support })
 }
 
 /// Fläche eines ebenen Vielecks in der Grundrissebene.
@@ -118,6 +214,28 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
             )
         })
         .collect();
+    // Herabgezogene Außenschichten (G7 K4): Sie stehen im Körper der Wand
+    // darunter und zählen zu dieser Wand (BIM), Segment k über Segment k
+    let from_below = model
+        .run_below(run)
+        .and_then(|b| Some((model.chain(b)?, model.run(b)?.segments.first().copied()?)))
+        .and_then(|(c, w)| {
+            let t = model
+                .element(w)?
+                .layer_set
+                .and_then(|t| model.layer_set(t))?;
+            let same = t.layers.len() == set.layers.len()
+                && t.layers
+                    .iter()
+                    .zip(&set.layers)
+                    .all(|(a, b)| a.material == b.material);
+            if same {
+                extension(model, &c, t)
+            } else {
+                None
+            }
+        })
+        .filter(|x| x.parts.len() == chain.segment_count());
     let n = pts.len();
     (0..chain.segment_count())
         .map(|k| {
@@ -130,16 +248,32 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                 .map(|(li, (l, (fa, fb)))| {
                     let quad = [fa[k], fa[j], fb[j], fb[k]];
                     // Luftschicht: ohne Körper, darum ohne Fläche und Volumen (K4)
-                    let area = if l.function == LayerFunction::AirGap {
-                        0.0
-                    } else {
-                        area(&quad)
+                    let air = l.function == LayerFunction::AirGap;
+                    let area = if air { 0.0 } else { area(&quad) };
+                    // netto: ohne das Band einer Geschossdecke (Auflagertasche);
+                    // verlängerte Abschnitte in der Lage der Wand darüber (K4)
+                    let parts = chain.layer_parts(li);
+                    let height = |e: bool| -> f64 {
+                        parts.iter().filter(|p| p.2 == e).map(|p| p.1 - p.0).sum()
                     };
-                    // netto: ohne das Band einer Geschossdecke (Auflagertasche)
-                    let hn: f64 = chain.layer_spans(li).iter().map(|(a, b)| b - a).sum();
-                    let volume = area * hn;
+                    let (h_own, h_ext) = (height(false), height(true));
+                    // dazu die herabgezogenen Abschnitte der Wand darüber
+                    let (v_up, s_up) = from_below
+                        .as_ref()
+                        .and_then(|x| x.parts[k].get(li).copied())
+                        .unwrap_or((0.0, 0.0));
+                    // Am vorspringenden Segment gehört der Abschnitt in OG-Lage
+                    // ganz zur Wand darüber, sonst bleibt er hier (dieselbe Flucht)
+                    let keep = chain
+                        .joints
+                        .overhang
+                        .as_ref()
+                        .is_none_or(|o| o.offsets.get(k).is_none_or(|d| *d <= 0.0));
+                    let h_here = if keep { h_own + h_ext } else { h_own };
+                    let volume = area * h_here + v_up;
                     let density = model.material(l.material).map_or(0.0, |m| m.density);
                     let (la, lb) = ((fa[j] - fa[k]).length(), (fb[j] - fb[k]).length());
+                    let lo = if outer_first { la } else { lb };
                     LayerQto {
                         material: l.material,
                         thickness: l.thickness,
@@ -147,8 +281,8 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                         area,
                         volume,
                         mass: volume * 1e-9 * density,
-                        pocket: (area * h - volume).max(0.0),
-                        side_area: if outer_first { la } else { lb } * h,
+                        pocket: (area * (h - h_own - h_ext)).max(0.0),
+                        side_area: lo * (h - h_ext + h_here - h_own) + s_up,
                     }
                 })
                 .collect();
@@ -180,6 +314,7 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                 volume_gross: footprint * h,
                 pocket: layers.iter().map(|l| l.pocket).sum(),
                 list_length,
+                facing_support: from_below.as_ref().map_or(0.0, |x| x.support[k]),
                 layers,
             }
         })
@@ -258,6 +393,36 @@ pub struct FloorQto {
     pub bearing: f64,
 }
 
+/// Mengen einer Untersichtdämmung (G7 K4, IFC IfcCovering INSULATION),
+/// Hauptmenge Fläche.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoffitQto {
+    /// Fläche unter dem auskragenden Streifen (mm²).
+    pub area: f64,
+    pub volume: f64,
+    pub thickness: f64,
+}
+
+/// Mengen der Untersichtdämmung einer schon berechneten Decke; `None` ohne
+/// Vorsprung.
+pub fn soffit_qto_of(f: &FloorSlab) -> Option<SoffitQto> {
+    let sp = f.soffit?;
+    Some(SoffitQto {
+        area: f.soffit_area(),
+        volume: f.soffit_volume(),
+        thickness: sp.thickness,
+    })
+}
+
+/// Mengen einer Untersichtdämmung.
+pub fn soffit_qto(model: &Model, soffit: ElementId) -> Option<SoffitQto> {
+    let ElementKind::SoffitInsulation { floor } = model.element(soffit)?.kind else {
+        return None;
+    };
+    let run = model.run_of(floor)?;
+    soffit_qto_of(&model.floor(run)?.ok()?)
+}
+
 /// Mengen der Decke über einem Wandzug; `None` ohne Decke oder wenn kein
 /// Körper entstehen kann.
 pub fn floor_qto(model: &Model, run: RunId) -> Option<FloorQto> {
@@ -326,6 +491,7 @@ pub enum ElementQto {
     Footing(FootingQto),
     Floor(FloorQto),
     Strip(EdgeStripQto),
+    Soffit(SoffitQto),
 }
 
 impl ElementQto {
@@ -337,6 +503,7 @@ impl ElementQto {
             ElementQto::Footing(f) => f.volume,
             ElementQto::Floor(f) => f.volume,
             ElementQto::Strip(f) => f.volume,
+            ElementQto::Soffit(f) => f.volume,
         }
     }
 }
@@ -416,7 +583,9 @@ fn group_rank(c: Category) -> u8 {
         Category::EdgeInsulation => 3,
         Category::InteriorWall => 4,
         Category::Floor => 5,
-        _ => 6,
+        // unter ihrer Decke
+        Category::SoffitInsulation => 6,
+        _ => 7,
     }
 }
 
@@ -496,6 +665,25 @@ pub fn schedule(model: &Model) -> Schedule {
                         )),
                     ),
                     _ => (None, Some("Kein Körper: Wand fehlt".into())),
+                }
+            }
+            ElementKind::SoffitInsulation { .. } => {
+                let f = floors.entry(run).or_insert_with(|| match model.floor(run) {
+                    Some(r) => r,
+                    None => Err(FloorError::NotClosed),
+                });
+                match f {
+                    Ok(f) => match soffit_qto_of(f) {
+                        Some(q) => (Some(ElementQto::Soffit(q)), None),
+                        None => (None, Some("Kein Körper: Decke kragt nicht aus".into())),
+                    },
+                    Err(err) => (
+                        None,
+                        Some(format!(
+                            "Kein Körper: {}",
+                            crate::model::explain_floor(*err)
+                        )),
+                    ),
                 }
             }
             ElementKind::Floor(_) => {
@@ -631,6 +819,7 @@ fn totals(rows: &[RowQto]) -> Totals {
             ElementQto::Slab(s) => t.area += s.area,
             ElementQto::Footing(f) => t.length += f.length,
             ElementQto::Strip(f) => t.length += f.length,
+            ElementQto::Soffit(f) => t.area += f.area,
             ElementQto::Floor(f) => {
                 t.area += f.area;
                 t.pocket += f.bearing;
@@ -673,6 +862,17 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
                 .and_then(|w| w.layer_set)
                 .and_then(|t| model.layer_set(t))
                 .and_then(|t| t.strip_material()),
+            ElementKind::SoffitInsulation { floor } => {
+                let run = model.run_of(floor)?;
+                model.floor(run)?.ok()?.soffit.and_then(|sp| {
+                    // Darstellungsschlüssel zurück zum Baustoff
+                    model
+                        .materials()
+                        .iter()
+                        .find(|(id, _)| crate::library::material_key(*id) == sp.mat)
+                        .map(|(id, _)| id)
+                })
+            }
             ElementKind::Wall(_) => None,
         });
         match (q, mat) {
@@ -687,6 +887,7 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
                     }
                 }
             }
+            (ElementQto::Soffit(f), Some(m)) => add(m, f.volume, f.area),
             (q, Some(m)) => add(m, q.volume(), 0.0),
             _ => {}
         }

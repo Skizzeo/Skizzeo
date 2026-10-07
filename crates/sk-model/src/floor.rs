@@ -59,6 +59,16 @@ pub struct StripParams {
     pub covered: bool,
 }
 
+/// Untersichtdämmung unter dem auskragenden Deckenstreifen, wo das
+/// Geschoss darüber vorspringt (OG Phase 2, G7 K4).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SoffitParams {
+    /// Dicke ab UK Decke nach unten, mm.
+    pub thickness: f64,
+    /// Baustoff (Darstellungsschlüssel).
+    pub mat: u16,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FloorSlab {
     /// Umriss gegen den Uhrzeigersinn, auf z = 0.
@@ -69,6 +79,14 @@ pub struct FloorSlab {
     /// Grundriss der Streifen je Wandsegment (auf z = 0): außen Anfang,
     /// außen Ende, innen Ende, innen Anfang, mit Gehrung wie die Wand.
     pub strips: Vec<[Vec3; 4]>,
+    /// Je Streifen: steht die Wand darüber bündig darauf (OG Phase 2, G7 K3)?
+    /// Leer: es gilt [`StripParams::covered`] für alle.
+    pub strip_covered: Vec<bool>,
+    /// Untersichtdämmung (K4), falls ein Segment vorspringt.
+    pub soffit: Option<SoffitParams>,
+    /// Grundriss der Untersichtdämmung je vorspringendem Segment (Segment,
+    /// auf z = 0): Kern EG Anfang, Ende, Kern darüber Ende, Anfang.
+    pub soffits: Vec<(usize, [Vec3; 4])>,
 }
 
 fn at_z(p: Vec3, z: f64) -> Vec3 {
@@ -92,6 +110,20 @@ impl FloorSlab {
         chain: &WallChain,
         p: &FloorParams,
         strip: Option<StripParams>,
+    ) -> Result<FloorSlab, FloorError> {
+        FloorSlab::from_chain_over(chain, p, strip, None)
+    }
+
+    /// Wie [`FloorSlab::from_chain_with`]; springt das Geschoss darüber vor
+    /// (`over`: Lage der Wand darüber als [`WallChain::overhang_chain`], der
+    /// Versatz je Segment und die Untersichtdämmung), folgt der Umriss dort
+    /// der Außenseite ihres tragenden Kerns, und unter dem auskragenden
+    /// Streifen liegt die Dämmung (G7 K4).
+    pub fn from_chain_over(
+        chain: &WallChain,
+        p: &FloorParams,
+        strip: Option<StripParams>,
+        over: Option<(&WallChain, &[f64], SoffitParams)>,
     ) -> Result<FloorSlab, FloorError> {
         if !chain.closed || chain.clean_points().len() < 3 {
             return Err(FloorError::NotClosed);
@@ -118,6 +150,8 @@ impl FloorSlab {
             Some(sp) => sp.width,
             None => chain.layers[..core].iter().map(|l| l.thickness).sum(),
         };
+        let own = chain;
+        let chain = over.map_or(chain, |o| o.0);
         let face = chain.face_corners(chain.outer_offset());
         let outline = if depth > 0.0 {
             polygon::inset(&face, depth)
@@ -145,6 +179,25 @@ impl FloorSlab {
                 .collect();
             slab.strip = Some(sp);
         }
+        if let Some((ext, offsets, sp)) = over.filter(|o| o.2.thickness > 0.0) {
+            // Zwischen den Außenseiten der tragenden Kerne unten und oben
+            let core_face = |c: &WallChain| {
+                let d: f64 = c.layers[..core].iter().map(|l| l.thickness).sum();
+                c.face_corners(c.outer_offset() + c.outward_sign() * -d)
+            };
+            let (a, b) = (core_face(own), core_face(ext));
+            let n = a.len().min(b.len());
+            slab.soffits = (0..own.segment_count().min(n))
+                .filter(|&k| offsets.get(k).is_some_and(|o| *o > 0.0))
+                .map(|k| {
+                    let j = (k + 1) % n;
+                    (k, [a[k], a[j], b[j], b[k]])
+                })
+                .collect();
+            if !slab.soffits.is_empty() {
+                slab.soffit = Some(sp);
+            }
+        }
         Ok(slab)
     }
 
@@ -165,6 +218,9 @@ impl FloorSlab {
             params: *p,
             strip: None,
             strips: Vec::new(),
+            strip_covered: Vec::new(),
+            soffit: None,
+            soffits: Vec::new(),
         })
     }
 
@@ -241,6 +297,65 @@ impl FloorSlab {
         self.prism(b, t, false)
     }
 
+    /// Körper der Untersichtdämmung (K4), leer ohne Vorsprung.
+    pub fn soffit_solid(&self) -> Solid {
+        match self.soffit_band() {
+            Some((z0, z1)) => self.soffit_prisms(z0, z1, false),
+            None => Solid::default(),
+        }
+    }
+
+    /// Untersichtdämmung waagerecht geschnitten in Höhe `cut` (Grundriss).
+    pub fn soffit_cut_at(&self, cut: f64) -> Solid {
+        match self.soffit_band().filter(|z| cut > z.0) {
+            Some((z0, z1)) => self.soffit_prisms(z0, z1.min(cut), cut < z1),
+            None => Solid::default(),
+        }
+    }
+
+    /// Höhenband der Untersichtdämmung (UK Dämmung, UK Decke), falls es sie gibt.
+    pub fn soffit_band(&self) -> Option<(f64, f64)> {
+        let sp = self.soffit?;
+        let (b, _) = self.band();
+        Some((b - sp.thickness, b))
+    }
+
+    /// Untersichtdämmung zwischen `z0` und `z1`. Sie liegt zwischen der
+    /// Decke, der EG-Wand und den herabgezogenen Außenschichten; in 3D
+    /// zeichnen diese die Kanten, als Schnitt oben ist sie umrandet.
+    fn soffit_prisms(&self, z0: f64, z1: f64, cut_top: bool) -> Solid {
+        let Some(sp) = self.soffit else {
+            return Solid::default();
+        };
+        let mut s = Solid {
+            mat: sp.mat,
+            ..Solid::default()
+        };
+        for (_, q) in &self.soffits {
+            let ring = polygon::to_ccw(q);
+            FloorSlab::cap(&mut s, &ring, z0, false);
+            s.mat = if cut_top {
+                sp.mat | material::CUT
+            } else {
+                sp.mat
+            };
+            FloorSlab::cap(&mut s, &ring, z1, true);
+            s.mat = sp.mat;
+            let n = ring.len();
+            for i in 0..n {
+                let (a, b) = (ring[i], ring[(i + 1) % n]);
+                let nr = right_of((b - a).normalized());
+                s.quad(at_z(a, z0), at_z(b, z0), at_z(b, z1), at_z(a, z1), nr);
+                if cut_top {
+                    s.edge_kind = edge_kind::CUT_LAYER;
+                    s.edge(at_z(a, z1), at_z(b, z1));
+                }
+            }
+        }
+        s.edge_kind = edge_kind::VIEW;
+        s
+    }
+
     /// Decke waagerecht geschnitten in Höhe `cut` (Grundriss): Liegt sie über
     /// dem Schnitt, ist der Körper leer (nichts zu zeichnen), liegt sie
     /// darunter, ganz, sonst bis zum Schnitt mit Schnittfläche oben.
@@ -277,6 +392,51 @@ impl FloorSlab {
         }
         s.edge_kind = edge_kind::VIEW;
         s
+    }
+
+    /// Schnittfläche der Untersichtdämmung (K4): Dämmschraffur, mitteldick
+    /// umrandet; oben zeichnet die Decke die Linie.
+    pub fn soffit_section_caps(&self, p0: Vec3, n: Vec3) -> Solid {
+        let (Some(sp), Some((z0, z1))) = (self.soffit, self.soffit_band()) else {
+            return Solid::default();
+        };
+        let n = vec3(n.x, n.y, 0.0).normalized();
+        let along = vec3(-n.y, n.x, 0.0);
+        let base = vec3(p0.x, p0.y, 0.0) - along * vec3(p0.x, p0.y, 0.0).dot(along);
+        let pt = |u: f64, z: f64| base + along * u + vec3(0.0, 0.0, z);
+        let mut s = Solid {
+            mat: sp.mat | material::CUT,
+            edge_kind: edge_kind::CUT_LAYER,
+            ..Solid::default()
+        };
+        let t = sp.thickness.max(1.0);
+        for (_, q) in &self.soffits {
+            for (a, b) in polygon::plane_intervals(q, p0, n, along) {
+                s.quad_uv(
+                    [pt(a, z0), pt(b, z0), pt(b, z1), pt(a, z1)],
+                    n,
+                    [[z0 / t, 0.0], [z0 / t, 1.0], [z1 / t, 1.0], [z1 / t, 0.0]],
+                );
+                s.edge(pt(a, z0), pt(b, z0));
+                s.edge(pt(a, z0), pt(a, z1));
+                s.edge(pt(b, z0), pt(b, z1));
+            }
+        }
+        s.edge_kind = edge_kind::VIEW;
+        s
+    }
+
+    /// Fläche der Untersichtdämmung (mm²).
+    pub fn soffit_area(&self) -> f64 {
+        self.soffits
+            .iter()
+            .fold(0.0, |a, (_, q)| a + polygon::area(q))
+    }
+
+    /// Volumen der Untersichtdämmung (mm³).
+    pub fn soffit_volume(&self) -> f64 {
+        self.soffit
+            .map_or(0.0, |sp| self.soffit_area() * sp.thickness)
     }
 
     // ---- Randdämmstreifen (K5) ----
@@ -401,8 +561,9 @@ impl FloorSlab {
                     s.edge(pt(u, zb), pt(u, zt));
                 }
             }
-            // Oberste Decke: der Streifen schließt die Kontur oben
-            if !sp.covered {
+            // Oberste Decke oder Wand darüber versetzt: der Streifen schließt
+            // die Kontur oben
+            if !self.strip_covered.get(k).copied().unwrap_or(sp.covered) {
                 s.edge(pt(a, zt), pt(b, zt));
             }
         }

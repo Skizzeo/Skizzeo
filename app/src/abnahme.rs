@@ -3015,8 +3015,9 @@ fn a51_mengen_je_geschoss() {
 }
 
 /// A52 (B12, Jörn 09:26): Das Gummiband am EG-Wandfuß ändert die Außenkontur
-/// des ganzen Gebäudes in einem Schritt. Der OG-Zug hat in Phase 1 keine
-/// eigenen Fußgriffe (E16), er folgt dem EG.
+/// des ganzen Gebäudes in einem Schritt. Seit OG Phase 2 hat auch der
+/// OG-Wandfuß einen Griff: Ist das Segment gekoppelt, zieht er ohne Strg den
+/// ganzen Stapel wie am EG (bim/paket-og-phase2.md §3; mehr in A152).
 #[test]
 fn a52_gummiband_zieht_alle_geschosse() {
     let mut s = Scene::with_model(Model::with_seed(52));
@@ -3030,10 +3031,13 @@ fn a52_gummiband_zieht_alle_geschosse() {
     assert!(s.undo(), "ein Schritt");
     assert_eq!(decke_mengen(&s, eg).0, 75.0384);
     assert_eq!(decke_mengen(&s, og).0, 75.0384);
-    // Am OG-Wandfuß gibt es keinen Griff: nichts ändert sich
+    // Am gekoppelten OG-Wandfuß: der ganze Stapel geht mit, ein Schritt
     ziehen_am_fuss(&mut s, 2855.0, 1000.0);
-    assert_eq!(decke_mengen(&s, og).0, 75.0384);
+    assert_eq!(decke_mengen(&s, eg).0, 84.7584, "DE-001");
+    assert_eq!(decke_mengen(&s, og).0, 84.7584, "DE-002");
     assert_eq!(s.chain(eg).unwrap().points, s.chain(og).unwrap().points);
+    assert!(s.undo());
+    assert_eq!(decke_mengen(&s, eg).0, 75.0384);
 }
 
 /// A53 (B11/B12): Höhen ändern: lichte Höhe OG und OK EG; Wände gehen mit.
@@ -11660,5 +11664,757 @@ mod sichern {
         assert_eq!(abstand(59), "59 Minuten neuer");
         assert_eq!(abstand(60), "1 Stunde neuer");
         assert_eq!(abstand(180), "3 Stunden neuer");
+    }
+}
+
+mod og_phase2 {
+    use super::*;
+    // Fassung 4 (07.10. 04:50): A156 Stufe beim Vorsprung bei UK UD +2,515 (OG-17,
+    // Außenschichten bis UK UD), Adapternamen wie im Bau (facing_support,
+    // set_floor_soffit). Ersetzt a145-a157-og-phase2-v3.rs.
+    // Fassung 3: feste Wandmengen von BIM 04:37, A159 für AW-49.
+    //
+    // Abnahmetests A145–A157 und A159: OG Phase 2, Geschosse getrennt bearbeiten
+    // (Kettensymbol je Segment). Jörn 07.10. 03:46 „OG Phase 2“, 04:12 „Baue es
+    // gemäß deinen Empfehlungen“ (Erker später, Rücksprungstreifen nur Darstellung).
+    // Grundlage: bim/paket-og-phase2.md (Regeln 28–35, „Fertig, wenn“),
+    // geometrie/paket-g7-og-phase2.md, einstellungen/paket-og2-gestaltung.md
+    // (soll-og2-1…3). Spezifikation: test/abnahme-og-phase2.md.
+    //
+    // Einbau: als `mod og_phase2 { use super::*; … }` ans Ende von
+    // app/src/abnahme.rs. Nutzt aus abnahme.rs: gebaeude, decke, decke_mengen,
+    // schale, ziehen_am_fuss, view_mesh, ViewKind, WallEdit, cam3d, px, m2, m3,
+    // W, H, EG_SCHALE.
+    // Dazu ändert `a052-og-fuss-zieht-den-stapel.patch` den Schluss von A52: Am
+    // gekoppelten OG-Wandfuß gibt es jetzt einen Griff (er zieht den Stapel).
+    //
+    // Prüfhaus wie A51: Dialog, Rechteck 10 × 8 m, Standardhöhen. Die OG-Wand bei
+    // y = 8 ist AW-006, ihr Partner AW-002 (BIM „Fertig, wenn“).
+    //
+    // Angenommene Namen stehen nur in den Adaptern (Vorschlag aus BIM §3, frei
+    // wählbar): `Model::{set_linked, set_flush, move_segment, stack_offset,
+    // soffit_of, set_floor_soffit}`, `Scene::soffit_qto`,
+    // `crate::schedule_view::offset_note`, für die Mengenzeile „Abfangung
+    // Verblender“ `WallQto::facing_support` (Länge in mm je Wand).
+
+    use sk_model::ElementId;
+
+    // ===== Adapter =====
+
+    /// Kette am Segment öffnen (`false`) oder schließen (`true`): ein Schritt.
+    /// `false`, wenn die Wand nicht gestapelt ist (EG, Innenwand).
+    fn kette(s: &mut Scene, wand: ElementId, gekoppelt: bool) -> bool {
+        let label = if gekoppelt {
+            "Wand gekoppelt"
+        } else {
+            "Kopplung gelöst"
+        };
+        s.edit_model(label, |m| m.set_linked(wand, gekoppelt))
+    }
+
+    /// „Bündig setzen“ (Hinweis oder Paneel): Versatz 0 und gekoppelt.
+    fn buendig(s: &mut Scene, wand: ElementId) -> bool {
+        s.edit_model("Bündig gesetzt", |m| m.set_flush(wand))
+    }
+
+    /// Versatz um `d` mm ändern (+ außen), wie Eintippen im Paneel oder Ziehen
+    /// am gelösten OG-Wandfuß; der Zustand bleibt.
+    fn versetzen(s: &mut Scene, wand: ElementId, d: f64) -> bool {
+        s.edit_model("Wand verschoben", |m| m.move_segment(wand, d).is_some())
+    }
+
+    /// (Versatz in mm auf 0,01 gerundet, gekoppelt?) bzw. `None`, wenn nicht
+    /// gestapelt.
+    fn versatz(s: &Scene, wand: ElementId) -> Option<(f64, bool)> {
+        s.model()
+            .stack_offset(wand)
+            .map(|(o, l)| ((o * 100.0).round() / 100.0, l))
+    }
+
+    /// Untersichtdämmung unter der Decke des Zugs `run`: (Nummer, m², m³).
+    fn ud(s: &Scene, run: RunId) -> Option<(String, f64, f64)> {
+        let de = decke(s, run)?;
+        let id = s.model().soffit_of(de)?;
+        let q = s.soffit_qto(id).expect("Mengen der UD");
+        Some((nummer(s, id), m2(q.area), m3(q.volume)))
+    }
+
+    fn ud_id(s: &Scene, run: RunId) -> Option<ElementId> {
+        s.model().soffit_of(decke(s, run)?)
+    }
+
+    /// Dicke der Untersichtdämmung an der Decke des Zugs `run` (mm), ein Schritt.
+    fn ud_dicke(s: &mut Scene, run: RunId, mm: f64) -> bool {
+        let de = decke(s, run).unwrap();
+        s.edit_model("Untersichtdämmung", |m| m.set_floor_soffit(de, mm))
+    }
+
+    /// Mengenzeile „Abfangung Verblender“ einer Wand in mm (0 ohne Verblender).
+    fn abfangung(s: &Scene, wand: ElementId) -> f64 {
+        s.wall_qto(wand).expect("Wandmengen").facing_support
+    }
+
+    /// Zusatz in der Zeile der Wand im Mengenfenster, z. B. „Versatz +0,30 m“.
+    fn versatz_text(s: &Scene, wand: ElementId) -> Option<String> {
+        crate::schedule_view::offset_note(s.model(), wand)
+    }
+
+    // ===== Hilfen =====
+
+    fn prueffall(seed: u64) -> (Scene, RunId, RunId) {
+        let mut s = Scene::with_model(Model::with_seed(seed));
+        let (eg, og) = gebaeude(&mut s);
+        (s, eg, og)
+    }
+
+    fn nr(s: &Scene, nummer: &str) -> ElementId {
+        s.model()
+            .elements()
+            .iter()
+            .find(|(_, e)| e.number == nummer)
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| panic!("{nummer} fehlt"))
+    }
+
+    fn nummer(s: &Scene, id: ElementId) -> String {
+        s.model().element(id).unwrap().number.clone()
+    }
+
+    /// Abfangung Verblender aller Wände eines Zugs in m (3 Stellen).
+    fn abfangung_m(s: &Scene, run: RunId) -> f64 {
+        let v: f64 = s
+            .model()
+            .run(run)
+            .unwrap()
+            .segments
+            .iter()
+            .map(|w| abfangung(s, *w))
+            .sum();
+        v.round() / 1e3
+    }
+
+    /// Volumen eines Baustoffs in allen Wänden eines Zugs (m³, 4 Stellen).
+    fn stoff(s: &Scene, run: RunId, name: &str) -> f64 {
+        let m = s.model();
+        let mut v = 0.0;
+        for w in &m.run(run).unwrap().segments {
+            for l in &s.wall_qto(*w).unwrap().layers {
+                if m.material(l.material).unwrap().name == name {
+                    v += l.volume;
+                }
+            }
+        }
+        r4(v / 1e9)
+    }
+
+    fn pruefung(s: &Scene) {
+        assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+    }
+
+    fn guids(s: &Scene) -> Vec<sk_model::Guid> {
+        let mut g: Vec<_> = s.model().elements().iter().map(|(_, e)| e.guid).collect();
+        g.sort();
+        g
+    }
+
+    fn punkte(s: &Scene, run: RunId) -> Vec<Vec3> {
+        s.model().run(run).unwrap().points.clone()
+    }
+
+    fn mods(ctrl: bool) -> Modifiers {
+        Modifiers {
+            ctrl,
+            ..Modifiers::default()
+        }
+    }
+
+    /// Gummiband am Wandfuß bei (2,5 m | y0 | z) um dy ziehen, wahlweise mit Strg.
+    fn fuss_ziehen(s: &mut Scene, y0: f64, z: f64, dy: f64, strg: bool) {
+        let c = cam3d();
+        let m = mods(strg);
+        let mut e = WallEdit::default();
+        let (x, y) = px(&c, vec3(2500.0, y0, z));
+        e.handle(&Event::MouseMove { x, y, mods: m }, s, &c, W, H, 1.0, true);
+        e.handle(
+            &Event::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                mods: m,
+            },
+            s,
+            &c,
+            W,
+            H,
+            1.0,
+            true,
+        );
+        let (x2, y2) = px(&c, vec3(2500.0, y0 + dy, z));
+        e.handle(
+            &Event::MouseMove {
+                x: x2,
+                y: y2,
+                mods: m,
+            },
+            s,
+            &c,
+            W,
+            H,
+            1.0,
+            true,
+        );
+        e.handle(
+            &Event::MouseUp {
+                button: MouseButton::Left,
+                x: x2,
+                y: y2,
+                mods: m,
+            },
+            s,
+            &c,
+            W,
+            H,
+            1.0,
+            true,
+        );
+    }
+
+    /// EG-Wand bei y = 8 über das Modell um dy verschieben (ohne Raster der
+    /// Maus), wie das Gummiband: ein Schritt „Wand verschoben“.
+    fn eg_nord(s: &mut Scene, eg: RunId, dy: f64) -> bool {
+        let p: Vec<Vec3> = punkte(s, eg)
+            .into_iter()
+            .map(|p| {
+                if (p.y - 8000.0).abs() < 1.0 {
+                    vec3(p.x, p.y + dy, p.z)
+                } else {
+                    p
+                }
+            })
+            .collect();
+        s.edit_model("Wand verschoben", |m| m.set_run_points(eg, &p).is_some())
+    }
+
+    /// Mengen im Überblick: DE-001, DE-002 (m², m³), Schale EG und OG.
+    type Stand = ((f64, f64), (f64, f64), (f64, f64), (f64, f64));
+    fn stand(s: &Scene, eg: RunId, og: RunId) -> Stand {
+        let d = |r| {
+            let q = decke_mengen(s, r);
+            (q.0, q.1)
+        };
+        (d(eg), d(og), schale(s, eg), schale(s, og))
+    }
+
+    const BUENDIG: Stand = (
+        (75.0384, 16.5084),
+        (75.0384, 16.5084),
+        EG_SCHALE,
+        (15.7613, 14.1654),
+    );
+
+    // ===== Tests =====
+
+    /// A145 (BIM §3, „Fertig, wenn: Lösen“, Regel 28): Kette an AW-006 öffnen
+    /// ändert keine Menge, keine Nummer, keine Guid; ein Schritt „Kopplung
+    /// gelöst“. Schließen: „Wand gekoppelt“. EG- und Innenwände haben keine
+    /// Kette.
+    #[test]
+    fn a145_kette_loesen_und_schliessen() {
+        let (mut s, eg, og) = prueffall(145);
+        let aw6 = nr(&s, "AW-006");
+        assert_eq!(versatz(&s, aw6), Some((0.0, true)), "neu: gekoppelt");
+        assert_eq!(versatz(&s, nr(&s, "AW-002")), None, "EG nicht gestapelt");
+        let vorher = guids(&s);
+        assert!(kette(&mut s, aw6, false));
+        assert_eq!(s.undo_label(), Some("Kopplung gelöst"));
+        assert_eq!(versatz(&s, aw6), Some((0.0, false)));
+        assert_eq!(stand(&s, eg, og), BUENDIG);
+        assert_eq!(guids(&s), vorher);
+        assert_eq!(nummer(&s, aw6), "AW-006");
+        assert_eq!(punkte(&s, eg), punkte(&s, og), "Lage unverändert");
+        pruefung(&s);
+        assert!(kette(&mut s, aw6, true));
+        assert_eq!(s.undo_label(), Some("Wand gekoppelt"));
+        assert_eq!(versatz(&s, aw6), Some((0.0, true)));
+        // EG-Wand: keine Kette, kein Schritt
+        let aw2 = nr(&s, "AW-002");
+        assert!(!kette(&mut s, aw2, false));
+        assert_eq!(s.undo_label(), Some("Wand gekoppelt"), "kein neuer Schritt");
+    }
+
+    /// A146 (BIM „Fertig, wenn: Rücksprung“, G7 §4): Gelöstes AW-006 um 0,30 m
+    /// nach innen. DE-002 72,1224 m² / 15,8669 m³, OG-Gasbeton netto 15,4846 m³,
+    /// Dämmung OG 13,9255 m³; EG und DE-001 unverändert; keine UD.
+    #[test]
+    fn a146_ruecksprung() {
+        let (mut s, eg, og) = prueffall(146);
+        let aw6 = nr(&s, "AW-006");
+        kette(&mut s, aw6, false);
+        assert!(versetzen(&mut s, aw6, -300.0));
+        assert_eq!(s.undo_label(), Some("Wand verschoben"));
+        assert_eq!(versatz(&s, aw6), Some((-300.0, false)));
+        assert_eq!(
+            stand(&s, eg, og),
+            (
+                (75.0384, 16.5084),
+                (72.1224, 15.8669),
+                EG_SCHALE,
+                (15.4846, 13.9255)
+            )
+        );
+        assert_eq!(ud(&s, eg), None, "Rücksprung: keine Untersichtdämmung");
+        assert_eq!(versatz_text(&s, aw6).as_deref(), Some("Versatz −0,30 m"));
+        assert_eq!(versatz_text(&s, nr(&s, "AW-005")), None, "Versatz 0: leer");
+        pruefung(&s);
+    }
+
+    /// A147 (BIM „Fertig, wenn: Vorsprung“, §4, Regeln 32 und 35): Gelöstes
+    /// AW-006 um 0,30 m nach außen. DE-002 77,9544 / 17,1500, OG-Gasbeton
+    /// 16,0379 m³, DE-001 kragt mit aus (77,9544 / 17,1500). UD-001 unter dem
+    /// ganzen Kragstreifen von Kern EG bis Kern OG (BIM 04:25): 2,9160 m², bei
+    /// 12 cm 0,3499 m³, bei 20 cm 0,5832 m³ (ein Schritt). Wandmengen (BIM
+    /// 04:37): EG-Gasbeton 15,7613, EG-Dämmung 13,6960 (endet an UK UD), OG-
+    /// Dämmung 14,9031 (reicht bis UK UD). Ohne Verblender keine Abfangung.
+    /// Dicke nur 40–300 mm. Direkt löschen wird abgelehnt.
+    #[test]
+    fn a147_vorsprung_mit_untersichtdaemmung() {
+        let (mut s, eg, og) = prueffall(147);
+        let aw6 = nr(&s, "AW-006");
+        kette(&mut s, aw6, false);
+        assert!(versetzen(&mut s, aw6, 300.0));
+        assert_eq!(versatz(&s, aw6), Some((300.0, false)));
+        assert_eq!(decke_mengen(&s, og).0, 77.9544, "DE-002");
+        assert_eq!(decke_mengen(&s, og).1, 17.15);
+        assert_eq!(decke_mengen(&s, eg).0, 77.9544, "DE-001 kragt aus");
+        assert_eq!(decke_mengen(&s, eg).1, 17.15);
+        assert_eq!(schale(&s, og), (16.0379, 14.9031), "OG: Dämmung bis UK UD");
+        assert_eq!(
+            schale(&s, eg),
+            (15.7613, 13.696),
+            "EG: Dämmung endet an UK UD"
+        );
+        assert_eq!(abfangung_m(&s, og), 0.0, "ohne Verblender keine Abfangung");
+        assert_eq!(
+            ud(&s, eg),
+            Some(("UD-001".to_string(), 2.916, 0.3499)),
+            "UD unter DE-001"
+        );
+        assert_eq!(ud(&s, og), None, "keine UD unter DE-002");
+        assert_eq!(versatz_text(&s, aw6).as_deref(), Some("Versatz +0,30 m"));
+        pruefung(&s);
+        // Dicke 20 cm: ein Schritt, Fläche bleibt
+        assert!(ud_dicke(&mut s, eg, 200.0));
+        assert_eq!(ud(&s, eg), Some(("UD-001".to_string(), 2.916, 0.5832)));
+        assert!(s.undo());
+        assert_eq!(ud(&s, eg), Some(("UD-001".to_string(), 2.916, 0.3499)));
+        // Grenzen 40–300 mm
+        assert!(!ud_dicke(&mut s, eg, 39.0));
+        assert!(!ud_dicke(&mut s, eg, 301.0));
+        assert!(ud_dicke(&mut s, eg, 40.0));
+        assert!(ud_dicke(&mut s, eg, 300.0));
+        s.undo();
+        s.undo();
+        // Direkt löschen: abgelehnt mit dem Satz aus §4
+        let id = ud_id(&s, eg).unwrap();
+        let r = s
+            .model()
+            .can_delete(id)
+            .expect_err("UD nicht direkt löschbar");
+        assert_eq!(
+            sk_model::refusal_text(s.model(), id, &r),
+            "Die Untersichtdämmung folgt dem Vorsprung des Geschosses darüber; ihre Dicke steht bei der Decke."
+        );
+        // Gelöste OG-Außenwand bleibt Teil des Umrisses: nicht löschbar
+        assert!(s.model().can_delete(aw6).is_err());
+        // UD entsteht und verschwindet mit dem Schritt des Ziehens
+        assert!(s.undo(), "Vorsprung zurück");
+        assert_eq!(ud(&s, eg), None);
+        assert_eq!(decke_mengen(&s, eg).0, 75.0384);
+        assert_eq!(schale(&s, eg), EG_SCHALE, "EG-Dämmung wieder voll");
+    }
+
+    /// A148 (BIM „Fertig, wenn“, Regel 35, Regel 25): Bei +0,10 m kragt DE-001
+    /// aus (76,0104 m² / 16,7223 m³), UD-001 0,9720 m² / 0,1166 m³ (BIM 04:25:
+    /// auch kleine Vorsprünge haben eine UD); EG-Dämmung 13,6960, OG-Dämmung
+    /// 14,7242 (BIM 04:37). Auf +0,30 bleibt es UD-001 mit
+    /// derselben Guid. Bündig setzen: DE-001 wieder 75,0384, UD weg. Springt das
+    /// Segment erneut 0,30 m vor, entsteht UD-002 mit neuer Guid.
+    #[test]
+    fn a148_kleiner_vorsprung_und_neue_ud() {
+        let (mut s, eg, og) = prueffall(148);
+        let aw6 = nr(&s, "AW-006");
+        kette(&mut s, aw6, false);
+        assert!(versetzen(&mut s, aw6, 100.0));
+        assert_eq!(
+            decke_mengen(&s, eg).0,
+            76.0104,
+            "DE-001 kragt auch hier aus"
+        );
+        assert_eq!(decke_mengen(&s, eg).1, 16.7223);
+        assert_eq!(schale(&s, eg), (15.7613, 13.696), "EG-Dämmung bis UK UD");
+        assert_eq!(schale(&s, og).1, 14.7242, "OG-Dämmung bis UK UD");
+        assert_eq!(ud(&s, eg), Some(("UD-001".to_string(), 0.972, 0.1166)));
+        pruefung(&s);
+        let g1 = s.model().element(ud_id(&s, eg).unwrap()).unwrap().guid;
+        assert!(versetzen(&mut s, aw6, 200.0), "auf +0,30");
+        assert_eq!(ud(&s, eg), Some(("UD-001".to_string(), 2.916, 0.3499)));
+        assert_eq!(
+            s.model().element(ud_id(&s, eg).unwrap()).unwrap().guid,
+            g1,
+            "dieselbe UD wächst mit"
+        );
+        assert!(buendig(&mut s, aw6));
+        assert_eq!(s.undo_label(), Some("Bündig gesetzt"));
+        assert_eq!(
+            versatz(&s, aw6),
+            Some((0.0, true)),
+            "bündig koppelt zugleich"
+        );
+        assert_eq!(stand(&s, eg, og), BUENDIG);
+        assert_eq!(ud(&s, eg), None);
+        kette(&mut s, aw6, false);
+        assert!(versetzen(&mut s, aw6, 300.0));
+        let (n, a, v) = ud(&s, eg).expect("neue UD");
+        assert_eq!((n.as_str(), a, v), ("UD-002", 2.916, 0.3499));
+        assert_ne!(s.model().element(ud_id(&s, eg).unwrap()).unwrap().guid, g1);
+        pruefung(&s);
+    }
+
+    /// A149 (BIM „Fertig, wenn: EG zieht, OG bleibt“, §2): Rücksprung −0,30
+    /// gelöst, dann EG-Wandfuß AW-002 um +1,00 m nach außen: DE-001 84,7584 m²,
+    /// das OG bleibt genau gleich, Versatz (−1300, gelöst), OG-Seitenwände
+    /// (gekoppelt) bleiben an x = 0 und x = 10.
+    #[test]
+    fn a149_eg_zieht_og_bleibt() {
+        let (mut s, eg, og) = prueffall(149);
+        let aw6 = nr(&s, "AW-006");
+        kette(&mut s, aw6, false);
+        versetzen(&mut s, aw6, -300.0);
+        let og_vorher = punkte(&s, og);
+        ziehen_am_fuss(&mut s, 0.0, 1000.0);
+        assert_eq!(decke_mengen(&s, eg).0, 84.7584, "DE-001");
+        assert_eq!(decke_mengen(&s, og).0, 72.1224, "DE-002 gleich");
+        assert_eq!(schale(&s, og), (15.4846, 13.9255), "OG gleich");
+        assert_eq!(versatz(&s, aw6), Some((-1300.0, false)));
+        assert_eq!(punkte(&s, og), og_vorher, "OG-Zug unverändert");
+        assert!(punkte(&s, og)
+            .iter()
+            .all(|p| p.x.abs() < 1e-6 || (p.x - 10000.0).abs() < 1e-6));
+        for w in ["AW-005", "AW-007", "AW-008"] {
+            assert!(versatz(&s, nr(&s, w)).unwrap().1, "{w} bleibt gekoppelt");
+        }
+        pruefung(&s);
+        assert!(s.undo(), "ein Schritt");
+        assert_eq!(versatz(&s, aw6), Some((-300.0, false)));
+        assert_eq!(decke_mengen(&s, eg).0, 75.0384);
+    }
+
+    /// A150 (BIM „Fertig, wenn: Wieder koppeln“, OG-16): Kette schließen, der
+    /// Versatz −1300 bleibt. EG-Wandfuß −1,00 m: AW-006 geht mit, DE-002 danach
+    /// 62,4024 m² (OG-Rechteck 10 × 6,70 m, Kern 9,72 × 6,42). BIM nannte
+    /// 61,6224 mit dem Vermerk „Test prüft nach“; das passt nicht zu 10 × 6,70.
+    #[test]
+    fn a150_wieder_koppeln_versatz_bleibt() {
+        let (mut s, eg, og) = prueffall(150);
+        let aw6 = nr(&s, "AW-006");
+        kette(&mut s, aw6, false);
+        versetzen(&mut s, aw6, -300.0);
+        ziehen_am_fuss(&mut s, 0.0, 1000.0);
+        assert!(kette(&mut s, aw6, true));
+        assert_eq!(versatz(&s, aw6), Some((-1300.0, true)), "Versatz bleibt");
+        assert_eq!(decke_mengen(&s, og).0, 72.1224, "Koppeln bewegt nichts");
+        fuss_ziehen(&mut s, 9000.0, 0.0, -1000.0, false);
+        assert_eq!(decke_mengen(&s, eg).0, 75.0384, "DE-001");
+        assert_eq!(decke_mengen(&s, og).0, 62.4024, "DE-002 geht mit");
+        assert_eq!(versatz(&s, aw6), Some((-1300.0, true)));
+        pruefung(&s);
+    }
+
+    /// A151 (Regel 31): Versatz 0 oder mindestens 20 mm. Beim eigenen Versetzen
+    /// rastet alles unter 20 mm auf 0; folgt ein gelöstes Segment dem EG, bleibt
+    /// der gemessene Versatz auch unter 20 mm.
+    #[test]
+    fn a151_raster_2_cm() {
+        let (mut s, eg, _) = prueffall(151);
+        let aw6 = nr(&s, "AW-006");
+        kette(&mut s, aw6, false);
+        for d in [10.0, 19.0, -10.0, -19.0] {
+            versetzen(&mut s, aw6, d);
+            assert_eq!(versatz(&s, aw6), Some((0.0, false)), "{d} mm rastet auf 0");
+        }
+        versetzen(&mut s, aw6, 20.0);
+        assert_eq!(versatz(&s, aw6), Some((20.0, false)));
+        versetzen(&mut s, aw6, -10.0);
+        assert_eq!(versatz(&s, aw6), Some((0.0, false)), "10 mm rastet auf 0");
+        // EG folgt: gemessener Versatz 15 mm bleibt
+        assert!(eg_nord(&mut s, eg, -15.0));
+        assert_eq!(versatz(&s, aw6), Some((15.0, false)));
+        pruefung(&s);
+    }
+
+    /// A152 (BIM §3, Gestaltung §1): Ziehen am OG-Wandfuß.
+    /// - gelöst: nur die OG-Wand, EG bleibt
+    /// - gekoppelt mit Strg: nur diese Wand, sie bleibt gekoppelt; zieht man
+    ///   danach das EG, gehen beide mit
+    /// - gekoppelt ohne Strg: wie am EG-Band, der ganze Stapel
+    #[test]
+    fn a152_ziehen_am_og_wandfuss() {
+        // gelöst
+        let (mut s, eg, og) = prueffall(152);
+        let aw6 = nr(&s, "AW-006");
+        kette(&mut s, aw6, false);
+        fuss_ziehen(&mut s, 8000.0, 2855.0, 300.0, false);
+        assert_eq!(versatz(&s, aw6), Some((300.0, false)));
+        assert_eq!(decke_mengen(&s, og).0, 77.9544);
+        assert_eq!(schale(&s, eg).0, EG_SCHALE.0, "EG bleibt");
+        assert_eq!(s.undo_label(), Some("Wand verschoben"));
+
+        // gekoppelt mit Strg
+        let (mut s, eg, og) = prueffall(1520);
+        let aw6 = nr(&s, "AW-006");
+        fuss_ziehen(&mut s, 8000.0, 2855.0, -300.0, true);
+        assert_eq!(versatz(&s, aw6), Some((-300.0, true)), "bleibt gekoppelt");
+        assert_eq!(decke_mengen(&s, og).0, 72.1224);
+        assert_eq!(decke_mengen(&s, eg).0, 75.0384);
+        ziehen_am_fuss(&mut s, 0.0, 1000.0);
+        assert_eq!(decke_mengen(&s, eg).0, 84.7584, "EG zieht");
+        assert_eq!(versatz(&s, aw6), Some((-300.0, true)), "OG geht mit");
+        assert_eq!(decke_mengen(&s, og).0, 81.8424, "OG 10 × 8,70 − 0,30");
+
+        // gekoppelt ohne Strg: der ganze Stapel
+        let (mut s, eg, og) = prueffall(1521);
+        fuss_ziehen(&mut s, 8000.0, 2855.0, 1000.0, false);
+        assert_eq!(decke_mengen(&s, eg).0, 84.7584, "EG mitgezogen");
+        assert_eq!(decke_mengen(&s, og).0, 84.7584);
+        assert_eq!(punkte(&s, eg), punkte(&s, og));
+        assert_eq!(versatz(&s, nr(&s, "AW-006")), Some((0.0, true)));
+        pruefung(&s);
+    }
+
+    /// A153 (BIM §2, Regel 28, „Fertig, wenn: Teilen“): Punkt im EG-Segment
+    /// AW-002 einfügen, während AW-006 gelöst um −0,30 steht: beide OG-Hälften
+    /// gelöst mit demselben Versatz, die neue Hälfte bekommt eine neue Nummer,
+    /// OG hat so viele Segmente wie EG.
+    #[test]
+    fn a153_teilen_vererbt_den_zustand() {
+        let (mut s, eg, og) = prueffall(153);
+        let aw6 = nr(&s, "AW-006");
+        kette(&mut s, aw6, false);
+        versetzen(&mut s, aw6, -300.0);
+        let mut p = punkte(&s, eg);
+        let i = (0..p.len())
+            .find(|&i| {
+                let (a, b) = (p[i], p[(i + 1) % p.len()]);
+                (a.y - 8000.0).abs() < 1.0 && (b.y - 8000.0).abs() < 1.0
+            })
+            .expect("Segment bei y = 8");
+        p.insert(i + 1, vec3(5000.0, 8000.0, 0.0));
+        assert!(s.edit_model("Punkt eingefügt", |m| m.set_run_points(eg, &p).is_some()));
+        let seg_eg = s.model().run(eg).unwrap().segments.len();
+        let seg_og = s.model().run(og).unwrap().segments.clone();
+        assert_eq!(seg_eg, 5);
+        assert_eq!(seg_og.len(), 5, "Regel 28");
+        let geloest: Vec<_> = seg_og
+            .iter()
+            .filter_map(|w| versatz(&s, *w))
+            .filter(|v| !v.1)
+            .collect();
+        assert_eq!(geloest, vec![(-300.0, false); 2], "beide Hälften gelöst");
+        assert!(seg_og.contains(&aw6), "AW-006 behält seine Kennung");
+        let neu: Vec<String> = seg_og
+            .iter()
+            .filter(|w| !versatz(&s, **w).unwrap().1 && **w != aw6)
+            .map(|w| nummer(&s, *w))
+            .collect();
+        assert_eq!(neu.len(), 1);
+        assert!(
+            !["AW-001", "AW-002", "AW-003", "AW-004", "AW-005", "AW-006", "AW-007", "AW-008"]
+                .contains(&neu[0].as_str())
+        );
+        assert_eq!(decke_mengen(&s, og).0, 72.1224, "OG-Umriss gleich");
+        pruefung(&s);
+    }
+
+    /// A154 (BIM „Fertig, wenn: Rückgängig“): Lösen, Versetzen, EG ziehen,
+    /// Koppeln, Bündig setzen sind je genau ein Schritt; Rückgängig stellt
+    /// Versatz, Zustand und Guids wieder her, Wiederherstellen dieselben Guids.
+    #[test]
+    fn a154_jeder_schritt_einzeln_rueckgaengig() {
+        let (mut s, eg, og) = prueffall(154);
+        let aw6 = nr(&s, "AW-006");
+        let mut stufen = vec![(versatz(&s, aw6), guids(&s), stand(&s, eg, og))];
+        let schritte: [&dyn Fn(&mut Scene); 5] = [
+            &|s| assert!(kette(s, aw6, false)),
+            &|s| assert!(versetzen(s, aw6, 300.0)),
+            &|s| ziehen_am_fuss(s, 0.0, 1000.0),
+            &|s| assert!(kette(s, aw6, true)),
+            &|s| assert!(buendig(s, aw6)),
+        ];
+        for f in schritte {
+            f(&mut s);
+            stufen.push((versatz(&s, aw6), guids(&s), stand(&s, eg, og)));
+        }
+        for k in (0..5).rev() {
+            assert!(s.undo(), "Schritt {k}");
+            assert_eq!(
+                (versatz(&s, aw6), guids(&s), stand(&s, eg, og)),
+                stufen[k],
+                "nach Rückgängig {k}"
+            );
+        }
+        for st in &stufen[1..] {
+            assert!(s.redo());
+            assert_eq!(&(versatz(&s, aw6), guids(&s), stand(&s, eg, og)), st);
+        }
+    }
+
+    /// A155 (BIM §5): Datei bleibt Version 4. Ohne gelöste Segmente kein
+    /// `link=` und kein `[soffit]`; mit gelöstem Segment `link=0` nur in dessen
+    /// Zeile, speichern, öffnen, speichern bytegleich (auch mit UD-001 und
+    /// Dicke 200). `link=2` wird mit Zeilennummer abgelehnt.
+    #[test]
+    fn a155_datei_link_und_soffit() {
+        let (mut s, eg, _) = prueffall(155);
+        let t = sk_model::szo::write(s.model());
+        assert!(t.starts_with("SZO 4"), "Version 4");
+        assert!(!t.contains("link=") && !t.contains("[soffit]") && !t.contains("soffit="));
+        let aw6 = nr(&s, "AW-006");
+        kette(&mut s, aw6, false);
+        versetzen(&mut s, aw6, 300.0);
+        ud_dicke(&mut s, eg, 200.0);
+        let t = sk_model::szo::write(s.model());
+        let mit: Vec<&str> = t.lines().filter(|l| l.contains("link=")).collect();
+        assert_eq!(mit.len(), 1, "nur das gelöste Segment");
+        assert!(mit[0].contains("number=\"AW-006\"") && mit[0].contains("link=0"));
+        let off = mit[0].find("off=").expect("off=");
+        assert!(off < mit[0].find("link=").unwrap(), "link nach off");
+        let sof: Vec<&str> = t.lines().filter(|l| l.starts_with("[soffit]")).collect();
+        assert_eq!(sof.len(), 1);
+        assert!(sof[0].contains("number=\"UD-001\""));
+        assert!(t
+            .lines()
+            .any(|l| l.starts_with("[floor]") && l.contains("soffit=200")));
+        let l = sk_model::szo::read(&t, sk_model::GuidGen::with_seed(1)).expect("öffnet");
+        assert_eq!(sk_model::szo::write(&l.model), t, "bytegleich");
+        let s2 = Scene::with_model(l.model);
+        assert_eq!(versatz(&s2, nr(&s2, "AW-006")), Some((300.0, false)));
+        assert_eq!(ud(&s2, eg).map(|u| u.0), Some("UD-001".to_string()));
+        // link=2
+        let k = t.lines().position(|l| l.contains("link=0")).unwrap() + 1;
+        let kaputt = t.replace("link=0", "link=2");
+        let e = sk_model::szo::read(&kaputt, sk_model::GuidGen::with_seed(1))
+            .err()
+            .expect("link=2 abgelehnt");
+        assert!(e.to_string().starts_with(&format!("Zeile {k}:")), "{e}");
+    }
+
+    /// A156 (BIM „Fertig, wenn: Ansicht“, §4, Gestaltung §1): Bei Versatz ≠ 0
+    /// zeigt die Ansicht Hinten (Nordfassade) eine waagerechte Stufenkante über
+    /// die Breite. Beim Rücksprung liegt sie an OK EG +2,855. Beim Vorsprung
+    /// laufen die OG-Außenschichten bis UK Untersichtdämmung herab (OG-17), die
+    /// Stufe liegt dann bei +2,515 (Kanten bei y 8000–8300). Gelöst, aber
+    /// bündig: keine Kante.
+    #[test]
+    fn a156_stufenkante_nur_bei_versatz() {
+        let kante = |s: &mut Scene, z: f32, y0: f32, y1: f32| {
+            let m = view_mesh(s, ViewKind::Back, None);
+            m.edges
+                .iter()
+                .filter(|e| (e.0[0][2] - z).abs() < 1e-2 && (e.0[1][2] - z).abs() < 1e-2)
+                .filter(|e| {
+                    e.0[0][1] > y0 - 1.0
+                        && e.0[0][1] < y1 + 1.0
+                        && e.0[0][0].min(e.0[1][0]) < 4000.0
+                        && e.0[0][0].max(e.0[1][0]) > 6000.0
+                })
+                .count()
+        };
+        let (mut s, _, _) = prueffall(156);
+        let aw6 = nr(&s, "AW-006");
+        kette(&mut s, aw6, false);
+        assert_eq!(
+            kante(&mut s, 2855.0, 7800.0, 8200.0),
+            0,
+            "gelöst, aber bündig: keine Naht"
+        );
+        assert_eq!(
+            kante(&mut s, 2515.0, 7800.0, 8400.0),
+            0,
+            "bündig: keine UD-Kante"
+        );
+        versetzen(&mut s, aw6, 300.0);
+        assert!(
+            kante(&mut s, 2515.0, 8000.0, 8300.0) > 0,
+            "Vorsprung: Stufe an UK UD +2,515"
+        );
+        s.undo();
+        versetzen(&mut s, aw6, -300.0);
+        assert!(
+            kante(&mut s, 2855.0, 7600.0, 8000.0) > 0,
+            "Rücksprung: Stufe bei +2,855"
+        );
+    }
+
+    /// A157 (Regeln 28–35): Prüfliste ohne Warnung in allen Fällen oben, auch
+    /// mit zwei gelösten Segmenten (AW-006 vor, AW-007 zurück) und nach
+    /// Speichern/Öffnen. Ein Umriss, der sich selbst schneiden würde (AW-006 um
+    /// 8,5 m nach innen), wird abgelehnt; der letzte gültige Stand bleibt.
+    #[test]
+    fn a157_pruefliste_und_ungueltige_lage() {
+        let (mut s, _, og) = prueffall(157);
+        let aw6 = nr(&s, "AW-006");
+        let aw7 = nr(&s, "AW-007");
+        kette(&mut s, aw6, false);
+        kette(&mut s, aw7, false);
+        versetzen(&mut s, aw6, 300.0);
+        versetzen(&mut s, aw7, -300.0);
+        pruefung(&s);
+        let t = sk_model::szo::write(s.model());
+        let l = sk_model::szo::read(&t, sk_model::GuidGen::with_seed(1)).unwrap();
+        assert!(l.model.check().is_empty(), "{:?}", l.model.check());
+        let vorher = punkte(&s, og);
+        assert!(!versetzen(&mut s, aw6, -8500.0), "Umriss ungültig");
+        assert_eq!(punkte(&s, og), vorher, "letzter gültiger Stand");
+        assert_eq!(versatz(&s, aw6), Some((300.0, false)));
+        pruefung(&s);
+    }
+
+    /// A159 (BIM „Fertig, wenn: AW-49“, §4, Regel 33): Dasselbe Prüfhaus mit
+    /// AW-49 (Verblender, Luftschicht, Kerndämmung, Gasbeton), AW-006 gelöst um
+    /// +0,30. EG: Kerndämmung 13,1531, Verblender 11,2822 m³ (enden an UK UD).
+    /// OG: Kerndämmung 14,3268, Verblender 12,2756 m³ (bis UK UD). UD 2,8110 m² /
+    /// 0,3373 m³ (Kragstreifen 9,37 × 0,30). Abfangung Verblender 10,485 m an
+    /// den OG-Wänden (Nord 9,885, West und Ost je 0,300). Bündig: keine
+    /// Abfangung mehr.
+    #[test]
+    fn a159_vorsprung_mit_verblender() {
+        let (mut s, eg, og) = prueffall(159);
+        let t = s
+            .model()
+            .layer_sets()
+            .iter()
+            .find(|(_, t)| t.code == "AW-49")
+            .map(|(id, _)| id)
+            .expect("Werkstyp AW-49");
+        assert!(s.edit_model("Wandtyp geändert", |m| m.set_run_type(eg, t)));
+        let aw6 = nr(&s, "AW-006");
+        kette(&mut s, aw6, false);
+        assert!(versetzen(&mut s, aw6, 300.0));
+        assert_eq!(stoff(&s, eg, "Kerndämmung (Mineralwolle)"), 13.1531);
+        assert_eq!(stoff(&s, eg, "Verblender (Vormauerziegel)"), 11.2822);
+        assert_eq!(stoff(&s, og, "Kerndämmung (Mineralwolle)"), 14.3268);
+        assert_eq!(stoff(&s, og, "Verblender (Vormauerziegel)"), 12.2756);
+        assert_eq!(ud(&s, eg), Some(("UD-001".to_string(), 2.811, 0.3373)));
+        assert_eq!(abfangung_m(&s, og), 10.485, "Abfangung Verblender");
+        assert_eq!(abfangung(&s, aw6), 9885.0, "Nord");
+        for w in ["AW-005", "AW-007"] {
+            assert!((abfangung(&s, nr(&s, w)) - 300.0).abs() < 0.5, "{w}");
+        }
+        assert_eq!(abfangung(&s, nr(&s, "AW-008")), 0.0, "Süd");
+        assert_eq!(abfangung_m(&s, eg), 0.0, "nur an OG-Wänden");
+        pruefung(&s);
+        assert!(buendig(&mut s, aw6));
+        assert_eq!(abfangung_m(&s, og), 0.0, "bündig: keine Abfangung");
+        assert_eq!(ud(&s, eg), None);
     }
 }

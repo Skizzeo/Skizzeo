@@ -75,6 +75,10 @@ pub enum Id {
     /// öffnet die Typ-Liste.
     ToolType,
     PropsType,
+    /// Gestapelte Wand (OG Phase 2): Kettensymbol (löst bzw. koppelt) und
+    /// „bündig setzen“.
+    PropsLink,
+    PropsFlush,
 }
 
 /// Ziehbare Ebene im Paneel „Geschosse“. ±0,00 liegt fest.
@@ -94,6 +98,10 @@ pub enum Field {
     FootingWidth,
     FootingDepth,
     FloorThickness,
+    /// Versatz einer gestapelten Wand in m (+ außen), OG Phase 2.
+    Offset,
+    /// Dicke der Untersichtdämmung an der Decke (OG-17).
+    Soffit,
     /// Paneel „Geschosse“ (in m): Kote der Gründungsunterkante, Kote der
     /// Oberkante eines Geschosses, Geschosshöhe (bei der Gründung die
     /// Gründungstiefe) und lichte Höhe.
@@ -165,7 +173,9 @@ impl Field {
 
     /// Zahl in Metern (sonst in Zentimetern).
     fn in_metres(self) -> bool {
-        self.is_level() || matches!(self, Field::Draft(Draft::ClearEg | Draft::ClearOg))
+        self.is_level()
+            || self == Field::Offset
+            || matches!(self, Field::Draft(Draft::ClearEg | Draft::ClearOg))
     }
 
     fn unit(self) -> &'static str {
@@ -452,6 +462,29 @@ pub struct Props {
     pub notes: Vec<String>,
     /// Typ der Wand (K3): Chip statt der Zeile mit dem Namen des Aufbaus.
     pub chip: Option<Chip>,
+    /// Gestapelte Wand (OG Phase 2): Zeilen „Kopplung“, „Versatz“ und
+    /// „bündig setzen“; das Feld „Versatz“ steht in `fields`.
+    pub stack: Option<Stack>,
+    /// Abschnitte nach den Zahlenfeldern, z. B. „Untersicht“ an der Decke.
+    pub sections: Vec<Section>,
+}
+
+/// Kopplung einer gestapelten Wand im Paneel „Eigenschaften“.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stack {
+    pub linked: bool,
+    /// „mit EG“ bzw. am EG-Segment „mit OG“.
+    pub partner: &'static str,
+    /// Versatz ≠ 0: „bündig setzen“ ist aktiv.
+    pub offset: bool,
+}
+
+/// Abschnitt im Paneel „Eigenschaften“: Überschrift, Felder, blasser Hinweis.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Section {
+    pub title: &'static str,
+    pub fields: Vec<FieldRow>,
+    pub hint: &'static str,
 }
 
 /// Typ-Chip (K3): Kachel mit Schnittbild, Name, „Kürzel · Dicke“, Pfeil.
@@ -468,6 +501,10 @@ pub struct Chip {
 
 /// Breite eines Zahlenfelds (dip).
 const FIELD_W: f32 = 60.0;
+/// Zeile „Kopplung“: Breite von Kettensymbol und Partner, Abstand des Texts
+/// vom linken Rand dieses Bereichs (dip).
+const LINK_W: f32 = 82.0;
+const LINK_CHIP_GAP: f32 = 30.0;
 
 /// Fenstergröße (dip), ab der die Paneele in voller Größe erscheinen.
 const FULL_W: f32 = 1440.0;
@@ -578,6 +615,8 @@ enum Row {
     Layer(Rgba, String),
     /// Typ-Chip (K3).
     TypeChip(Id),
+    /// „Kopplung“ links, rechts Kettensymbol (Knopf) und Partner.
+    Link(Id, &'static str),
     /// Bezeichnung links, Wert rechtsbündig.
     Value(&'static str, String),
     /// Blasser Text, eingerückt wie der Text einer Schichtzeile.
@@ -667,14 +706,28 @@ fn view_rows() -> Vec<Row> {
 fn props_rows(p: &Props, edit: Option<&Edit>) -> Vec<Row> {
     let mut rows = vec![Row::Title("Eigenschaften")];
     rows.extend(p.values.iter().map(|(k, v)| Row::Value(k, v.clone())));
-    if !p.fields.is_empty() {
+    if !p.fields.is_empty() || p.stack.is_some() {
         rows.push(Row::Separator);
     }
-    for f in &p.fields {
-        rows.push(Row::Field(f.field, f.label));
-        if let Some(e) = edit.filter(|e| e.field == f.field) {
-            rows.extend(e.error.clone().map(Row::Error));
+    if let Some(st) = &p.stack {
+        rows.push(Row::Link(Id::PropsLink, st.partner));
+    }
+    let field_rows = |rows: &mut Vec<Row>, fields: &[FieldRow]| {
+        for f in fields {
+            rows.push(Row::Field(f.field, f.label));
+            if let Some(e) = edit.filter(|e| e.field == f.field) {
+                rows.extend(e.error.clone().map(Row::Error));
+            }
         }
+    };
+    field_rows(&mut rows, &p.fields);
+    if p.stack.is_some() {
+        rows.push(Row::Button(Id::PropsFlush, "bündig setzen"));
+    }
+    for sec in &p.sections {
+        rows.extend([Row::Separator, Row::Label(sec.title)]);
+        field_rows(&mut rows, &sec.fields);
+        rows.push(Row::Text(sec.hint.into()));
     }
     let label = if p.chip.is_some() {
         "Typ"
@@ -710,6 +763,7 @@ fn row_height(r: &Row) -> (f32, f32) {
         Row::Label(_) => (18.0, 6.0),
         Row::Layer(..) => (18.0, 4.0),
         Row::TypeChip(_) => (46.0, 8.0),
+        Row::Link(..) => (26.0, 6.0),
         Row::Value(..) => (18.0, 4.0),
         Row::Field(..) => (26.0, 6.0),
         Row::Error(_) => (15.0, 6.0),
@@ -814,7 +868,11 @@ impl Ui {
         if f.is_level() {
             return self.levels.fields.iter().find(|r| r.field == f);
         }
-        self.props.as_ref()?.fields.iter().find(|r| r.field == f)
+        let p = self.props.as_ref()?;
+        p.fields
+            .iter()
+            .chain(p.sections.iter().flat_map(|s| &s.fields))
+            .find(|r| r.field == f)
     }
 
     fn field_panel(f: Field) -> Panel {
@@ -1179,6 +1237,10 @@ impl Ui {
                     out.push((Id::Field(f), Rect::new(x + inner_w - fw, y, fw, h), ""));
                 }
                 Row::TypeChip(id) => out.push((id, Rect::new(x, y, inner_w, h), "")),
+                Row::Link(id, ..) => {
+                    let cw = LINK_W * s;
+                    out.push((id, Rect::new(x + inner_w - cw, y, cw, h), ""));
+                }
                 _ => {}
             }
             y += h + g;
@@ -1204,7 +1266,9 @@ impl Ui {
             | Id::DialogPlus
             | Id::DialogCancel
             | Id::ToolType
-            | Id::PropsType => false,
+            | Id::PropsType
+            | Id::PropsLink
+            | Id::PropsFlush => false,
         }
     }
 
@@ -1216,6 +1280,11 @@ impl Ui {
             Id::Interior => self.foundation_active,
             Id::DialogMinus | Id::DialogPlus => true,
             Id::DialogStart => self.dialog_invalid(),
+            Id::PropsFlush => self
+                .props
+                .as_ref()
+                .and_then(|p| p.stack.as_ref())
+                .is_none_or(|st| !st.offset),
             _ => false,
         }
     }
@@ -1475,6 +1544,18 @@ impl Ui {
             paint_chip(c, &self.fonts, b, chip, st, s, t);
             return;
         }
+        if id == Id::PropsLink {
+            let linked = self
+                .props
+                .as_ref()
+                .and_then(|p| p.stack.as_ref())
+                .is_some_and(|st| st.linked);
+            let size = (crate::link_view::CHIP as f32 * s).round();
+            let img = crate::link_view::paint(t, linked, st.hover, size, s);
+            let y = b.y + ((b.h - size) * 0.5).round();
+            c.blit(&img, b.x.round() as i32, y as i32);
+            return;
+        }
         widgets::button(c, &self.fonts, b, label, st, s, t);
     }
 
@@ -1530,6 +1611,13 @@ impl Ui {
                 Row::Field(_, k) => {
                     let px = size.font_small * s;
                     widgets::text(&mut c, regular, k, px, x, y + 17.5 * s, col.text_dim);
+                }
+                Row::Link(_, partner) => {
+                    let px = size.font_small * s;
+                    let base = y + 17.5 * s;
+                    widgets::text(&mut c, regular, "Kopplung", px, x, base, col.text_dim);
+                    let tx = x + inner_w - (LINK_W - LINK_CHIP_GAP) * s;
+                    widgets::text(&mut c, regular, partner, px, tx, base, col.text);
                 }
                 Row::Error(t) => widgets::text(
                     &mut c,

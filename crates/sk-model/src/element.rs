@@ -41,10 +41,12 @@ pub enum Category {
     StripFooting,
     /// Randdämmstreifen vor dem Deckenauflager einer Außenwand (K5).
     EdgeInsulation,
+    /// Untersichtdämmung unter einer auskragenden Decke (OG Phase 2, G7 K4).
+    SoffitInsulation,
 }
 
 impl Category {
-    pub const ALL: [Category; 11] = [
+    pub const ALL: [Category; 12] = [
         Category::ExteriorWall,
         Category::InteriorWall,
         Category::Floor,
@@ -56,6 +58,7 @@ impl Category {
         Category::Space,
         Category::StripFooting,
         Category::EdgeInsulation,
+        Category::SoffitInsulation,
     ];
 
     /// Platz in [`Category::ALL`].
@@ -76,6 +79,7 @@ impl Category {
             Category::Space => "Raum",
             Category::StripFooting => "Frostschürze",
             Category::EdgeInsulation => "Randdämmstreifen",
+            Category::SoffitInsulation => "Untersichtdämmung",
         }
     }
 
@@ -93,6 +97,7 @@ impl Category {
             Category::Space => "R",
             Category::StripFooting => "FS",
             Category::EdgeInsulation => "RD",
+            Category::SoffitInsulation => "UD",
         }
     }
 
@@ -110,6 +115,7 @@ impl Category {
             Category::StripFooting => "IfcFooting.STRIP_FOOTING",
             // über IfcRelAggregates Teil der Wand
             Category::EdgeInsulation => "IfcBuildingElementPart.INSULATION",
+            Category::SoffitInsulation => "IfcCovering.INSULATION",
         }
     }
 
@@ -119,6 +125,8 @@ impl Category {
             Category::ExteriorWall | Category::Window | Category::EdgeInsulation => Some(330),
             Category::InteriorWall | Category::Door => Some(340),
             Category::Floor => Some(350),
+            // Deckenbekleidung
+            Category::SoffitInsulation => Some(353),
             Category::GroundSlab | Category::StripFooting => Some(322),
             Category::Roof => Some(360),
             Category::Opening | Category::Space => None,
@@ -173,6 +181,22 @@ pub enum ElementKind {
         wall: ElementId,
         floor: ElementId,
     },
+    /// Untersichtdämmung: nur der Verweis auf die auskragende Decke; Umriss
+    /// aus dem Vorsprung darüber, Dicke und Baustoff aus [`Floor::soffit`].
+    SoffitInsulation {
+        floor: ElementId,
+    },
+}
+
+/// Untersichtdämmung einer Decke (G7 K4). Jede Decke trägt den Wert, auch
+/// ohne Vorsprung, damit er erhalten bleibt, wenn einer entsteht.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Soffit {
+    /// Dicke ab UK Decke nach unten, mm (40 … 300).
+    pub thickness: f64,
+    /// `None`: Baustoff der äußersten Dämmschicht der Wand darüber, bei
+    /// einschaligen Typen der des Randdämmstreifens.
+    pub material: Option<MaterialId>,
 }
 
 /// Geschossdecke über einem geschlossenen Außenwandzug (IFC: IfcSlab FLOOR).
@@ -186,6 +210,9 @@ pub struct Floor {
     pub thickness: f64,
     /// Oberkante: OK Erdgeschoss (B11).
     pub top: LevelRef,
+    /// Untersichtdämmung unter dem auskragenden Streifen, wo das Geschoss
+    /// darüber vorspringt (G7 K4).
+    pub soffit: Soffit,
 }
 
 /// Sohlplatte unter einem geschlossenen Außenwandzug (IFC: IfcSlab BASESLAB).
@@ -224,14 +251,17 @@ pub struct Wall {
     pub coupling: Option<Coupling>,
 }
 
-/// Kopplung eines Wandsegments an das Segment im Geschoss direkt darunter:
-/// seine Bezugslinie ist die des Partners plus `offset` nach außen. Zieht
-/// man den Partner, geht das Segment im selben Schritt mit.
+/// Stapelbezug eines Wandsegments auf das Segment im Geschoss direkt
+/// darunter: seine Bezugslinie ist die des Partners plus `offset` nach
+/// außen. Gekoppelt (`linked`) geht es mit, wenn man den Partner zieht;
+/// gelöst bleibt es stehen und nur `offset` wird nachgeführt (OG Phase 2).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Coupling {
     pub below: ElementId,
-    /// mm quer zur Wand, + = nach außen; in Phase 1 immer 0.
+    /// mm quer zur Wand, + = nach außen; immer der wahre Abstand.
     pub offset: f64,
+    /// Kette zu: folgt dem Partner.
+    pub linked: bool,
 }
 
 /// Wandzug: die Eingabe, aus der die Wand-Bauteile entstehen.

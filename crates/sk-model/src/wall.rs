@@ -5,7 +5,7 @@
 //! Wird im Uhrzeigersinn gezeichnet, liegt links außen: Bezugsseite `Left`
 //! bedeutet dann „außen“, der Wandkörper wächst nach rechts ins Gebäude.
 
-use crate::solid::{edge_kind, material, Solid};
+use crate::solid::{edge_kind, material, merge_seam, Solid};
 use sk_math::{vec3, Vec3};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,6 +150,31 @@ pub struct Joints {
     /// Linie am Fuß; über dem Streifen läuft die Wand ohne Fuge weiter, über
     /// der Decke zeichnet die Decke ihre Kontur.
     pub strip_below: bool,
+    /// Je Segment: steht es gelöst oder versetzt auf dem Streifen (OG
+    /// Phase 2, G7 K3)? Dort zeichnet der Fuß im Schnitt seine Linie.
+    pub strip_open: Vec<bool>,
+    /// Das Geschoss darüber springt vor (OG Phase 2, G7 K4): Die nicht
+    /// tragenden Außenschichten laufen dort bis UK Untersichtdämmung herab.
+    pub overhang: Option<Overhang>,
+}
+
+/// Vorsprung des Geschosses darüber (G7 K4). Zwischen `from` (UK
+/// Untersichtdämmung) und `to` (OK Decke) liegen die Schichten außen vor
+/// dem tragenden Kern in der Lage der Wand darüber: Segment `i` um
+/// `offsets[i]` (≥ 0) nach außen, so dass sie die Deckenstirn decken und
+/// ohne Fuge in die Schichten darüber übergehen.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Overhang {
+    pub offsets: Vec<f64>,
+    pub from: f64,
+    pub to: f64,
+}
+
+impl Overhang {
+    /// Springt ein Segment vor?
+    pub fn any(&self) -> bool {
+        self.offsets.iter().any(|d| *d > 0.0)
+    }
 }
 
 impl Joints {
@@ -500,7 +525,7 @@ impl WallChain {
 
     /// Richtung „nach außen“ je Segment: +1, wenn die Außenfläche rechts der
     /// Zeichenrichtung liegt, sonst −1.
-    pub(crate) fn outward_sign(&self) -> f64 {
+    pub fn outward_sign(&self) -> f64 {
         let (_, hi) = self.span();
         if self.outer_offset() == hi {
             1.0
@@ -568,6 +593,10 @@ impl WallChain {
             if v.length() < 1.0 || v.dot(dirs[k]) <= 0.0 {
                 return None;
             }
+        }
+        // Nicht benachbarte Segmente dürfen sich auch nicht kreuzen (G7 K2)
+        if closed && !sk_math::polygon::is_simple(&out) {
+            return None;
         }
         Some(WallChain {
             points: out,
@@ -675,6 +704,66 @@ impl WallChain {
         }
     }
 
+    /// Abschnitte (von, bis, verlängert) der Schicht `layer`: wie
+    /// [`WallChain::layer_spans`], bei einem Vorsprung darüber (K4) die
+    /// Außenschichten zusätzlich geteilt; `true` liegt in der Lage von
+    /// [`WallChain::overhang_chain`].
+    pub fn layer_parts(&self, layer: usize) -> Vec<(f64, f64, bool)> {
+        let spans = self.layer_spans(layer);
+        let Some(o) = self
+            .joints
+            .overhang
+            .as_ref()
+            .filter(|o| o.any() && layer < self.band_layers().start)
+        else {
+            return spans.into_iter().map(|(a, b)| (a, b, false)).collect();
+        };
+        let mut out = Vec::with_capacity(spans.len() + 2);
+        for (z0, z1) in spans {
+            let cuts = [z0, o.from.clamp(z0, z1), o.to.clamp(z0, z1), z1];
+            for k in 0..3 {
+                if cuts[k + 1] - cuts[k] > 1e-6 {
+                    out.push((cuts[k], cuts[k + 1], k == 1));
+                }
+            }
+        }
+        out
+    }
+
+    /// Lage der verlängerten Außenschichten (K4): der Zug mit den Segmenten
+    /// um den Vorsprung des Geschosses darüber nach außen. `None` ohne
+    /// Vorsprung.
+    pub fn overhang_chain(&self) -> Option<WallChain> {
+        let o = self.joints.overhang.as_ref().filter(|o| o.any())?;
+        let mut c = self.with_segment_offsets(&o.offsets)?;
+        c.joints.overhang = None;
+        Some(c)
+    }
+
+    /// Gruppe eines Abschnitts für die Nähte bei einem Vorsprung (K4):
+    /// 0 bis UK Untersichtdämmung, 1 verlängert, 2 darüber.
+    fn part_group(&self, layer: usize, (z0, ext): (f64, bool)) -> usize {
+        match &self.joints.overhang {
+            _ if ext => 1,
+            Some(o) if layer < self.band_layers().start && z0 >= o.to - 1e-6 => 2,
+            _ => 0,
+        }
+    }
+
+    /// Fügt die Gruppen aus [`WallChain::part_group`] zusammen; wo eine
+    /// Schicht in derselben Flucht weiterläuft, ohne Naht.
+    fn join_parts(&self, mut g: [Solid; 3]) -> Solid {
+        if let Some(o) = &self.joints.overhang {
+            let [a, b, c] = &mut g;
+            merge_seam(a, b, o.from);
+            merge_seam(b, c, o.to);
+        }
+        let [mut a, b, c] = g;
+        a.append(&b);
+        a.append(&c);
+        a
+    }
+
     /// Wandkörper mit Gehrungen an den Ecken, eine Schale je Schicht.
     pub fn solid(&self) -> Solid {
         self.solid_below(f64::INFINITY)
@@ -689,7 +778,8 @@ impl WallChain {
     /// Alle Schichten bis Höhe `cut`; endet ein Abschnitt am Schnitt, ist seine
     /// Deckfläche Schnittfläche.
     fn solid_below(&self, cut: f64) -> Solid {
-        let mut s = Solid::default();
+        let ext = self.overhang_chain();
+        let mut g: [Solid; 3] = Default::default();
         for (i, ((lo, hi, mat), l)) in self
             .layer_offsets()
             .into_iter()
@@ -699,33 +789,34 @@ impl WallChain {
             if l.air {
                 continue;
             }
-            for (z0, z1) in self.layer_spans(i) {
+            for (z0, z1, e) in self.layer_parts(i) {
                 if z0 >= cut {
                     continue;
                 }
+                let s = &mut g[self.part_group(i, (z0, e))];
+                let chain = if e {
+                    ext.as_ref().unwrap_or(self)
+                } else {
+                    self
+                };
                 s.mat = mat;
                 let (top, top_mat) = if z1 > cut {
                     (cut, mat | material::CUT)
                 } else {
                     (z1, mat)
                 };
-                self.prism(&mut s, i, lo, hi, (z0, top), top_mat, l.cut_kind());
+                chain.prism(s, i, lo, hi, (z0, top), top_mat, l.cut_kind());
             }
         }
-        s
+        self.join_parts(g)
     }
 
     /// Schnittflächen der Wand mit der senkrechten Ebene durch `p0` mit Normale `n`
     /// (Flächen zeigen in Richtung `n`). Jede Schicht ist umrandet: der tragende Kern
     /// dick, die übrigen Schichten mitteldick.
     pub fn section_caps(&self, p0: Vec3, n: Vec3) -> Solid {
-        let mut s = Solid::default();
-        let Some((pts, _, dirs)) = self.layout() else {
-            return s;
-        };
-        let n = vec3(n.x, n.y, 0.0).normalized();
-        let along = vec3(-n.y, n.x, 0.0);
-        let side = |p: Vec3| (p - p0).dot(n);
+        let ext = self.overhang_chain();
+        let mut g: [Solid; 3] = Default::default();
         for (li, ((lo, hi, mat), l)) in self
             .layer_offsets()
             .into_iter()
@@ -735,89 +826,116 @@ impl WallChain {
             if l.air {
                 continue;
             }
-            let kind = l.cut_kind();
-            let spans = self.layer_spans(li);
-            let (cl, ch) = (
-                self.face_corners_in(lo, Some(li)),
-                self.face_corners_in(hi, Some(li)),
+            for (z0, z1, e) in self.layer_parts(li) {
+                let chain = if e {
+                    ext.as_ref().unwrap_or(self)
+                } else {
+                    self
+                };
+                let s = &mut g[self.part_group(li, (z0, e))];
+                chain.layer_caps(s, (li, lo, hi, mat), l.cut_kind(), (z0, z1), p0, n);
+            }
+        }
+        let mut s = self.join_parts(g);
+        s.edge_kind = edge_kind::VIEW;
+        s
+    }
+
+    /// Schnittflächen der Schicht `li` (Lage `lo`..`hi`, Baustoff `mat`)
+    /// zwischen `z0` und `z1`, siehe [`WallChain::section_caps`].
+    fn layer_caps(
+        &self,
+        s: &mut Solid,
+        (li, lo, hi, mat): (usize, f64, f64, u16),
+        kind: u8,
+        (z0, z1): (f64, f64),
+        p0: Vec3,
+        n: Vec3,
+    ) {
+        let Some((pts, _, dirs)) = self.layout() else {
+            return;
+        };
+        let n = vec3(n.x, n.y, 0.0).normalized();
+        let along = vec3(-n.y, n.x, 0.0);
+        let side = |p: Vec3| (p - p0).dot(n);
+        let (cl, ch) = (
+            self.face_corners_in(lo, Some(li)),
+            self.face_corners_in(hi, Some(li)),
+        );
+        let cnt = cl.len();
+        let t = (hi - lo).max(1.0);
+        for i in 0..self.segment_count() {
+            let j = (i + 1) % cnt;
+            let quad = [cl[i], cl[j], ch[j], ch[i]];
+            // Schnitt der Grundfläche (konvex) mit der Ebene: Strecke
+            let mut hits: Vec<Vec3> = Vec::new();
+            for k in 0..4 {
+                let (a, b) = (quad[k], quad[(k + 1) % 4]);
+                let (da, db) = (side(a), side(b));
+                if (da < 0.0) != (db < 0.0) {
+                    hits.push(a + (b - a) * (da / (da - db)));
+                }
+            }
+            if hits.len() < 2 {
+                continue;
+            }
+            hits.sort_by(|a, b| a.dot(along).total_cmp(&b.dot(along)));
+            let (a, b) = (hits[0], hits[hits.len() - 1]);
+            if (b - a).length() < 1e-6 {
+                continue;
+            }
+            // Lage quer zur Wand: auf welcher Wandfläche liegt ein Schnittpunkt?
+            let nr = right_of(dirs[i]);
+            let off = |p: Vec3| (flat(p) - pts[i]).dot(nr);
+            let v = |p: Vec3| (off(p) - lo) / t;
+            s.mat = mat | material::CUT;
+            s.elem = i as u32;
+            let (a, b) = (flat(a) + vec3(0.0, 0.0, z0), flat(b) + vec3(0.0, 0.0, z0));
+            let up = vec3(0.0, 0.0, z1 - z0);
+            let (v0, v1) = (z0 / t, z1 / t);
+            s.quad_uv(
+                [a, b, b + up, a + up],
+                n,
+                [[v0, v(a)], [v0, v(b)], [v1, v(b)], [v1, v(a)]],
             );
-            let cnt = cl.len();
-            let t = (hi - lo).max(1.0);
-            for i in 0..self.segment_count() {
-                let j = (i + 1) % cnt;
-                let quad = [cl[i], cl[j], ch[j], ch[i]];
-                // Schnitt der Grundfläche (konvex) mit der Ebene: Strecke
-                let mut hits: Vec<Vec3> = Vec::new();
-                for k in 0..4 {
-                    let (a, b) = (quad[k], quad[(k + 1) % 4]);
-                    let (da, db) = (side(a), side(b));
-                    if (da < 0.0) != (db < 0.0) {
-                        hits.push(a + (b - a) * (da / (da - db)));
-                    }
+            s.edge_kind = kind;
+            // Am Deckenband mit Randdämmstreifen keine Querlinie:
+            // die Decke zeichnet ihre eigene, der Streifen keine
+            let (mut bottom, top) = match self.joints.slab_band {
+                Some((zb, zt)) if self.joints.seamless => {
+                    ((z0 - zt).abs() < 1e-6, (z1 - zb).abs() < 1e-6)
                 }
-                if hits.len() < 2 {
-                    continue;
-                }
-                hits.sort_by(|a, b| a.dot(along).total_cmp(&b.dot(along)));
-                let (a, b) = (hits[0], hits[hits.len() - 1]);
-                if (b - a).length() < 1e-6 {
-                    continue;
-                }
-                // Lage quer zur Wand: auf welcher Wandfläche liegt ein Schnittpunkt?
-                let nr = right_of(dirs[i]);
-                let off = |p: Vec3| (flat(p) - pts[i]).dot(nr);
-                let v = |p: Vec3| (off(p) - lo) / t;
-                s.mat = mat | material::CUT;
-                s.elem = i as u32;
-                for &(z0, z1) in &spans {
-                    let (a, b) = (flat(a) + vec3(0.0, 0.0, z0), flat(b) + vec3(0.0, 0.0, z0));
-                    let up = vec3(0.0, 0.0, z1 - z0);
-                    let (v0, v1) = (z0 / t, z1 / t);
-                    s.quad_uv(
-                        [a, b, b + up, a + up],
-                        n,
-                        [[v0, v(a)], [v0, v(b)], [v1, v(b)], [v1, v(a)]],
-                    );
-                    s.edge_kind = kind;
-                    // Am Deckenband mit Randdämmstreifen keine Querlinie:
-                    // die Decke zeichnet ihre eigene, der Streifen keine
-                    let (mut bottom, top) = match self.joints.slab_band {
-                        Some((zb, zt)) if self.joints.seamless => {
-                            ((z0 - zt).abs() < 1e-6, (z1 - zb).abs() < 1e-6)
-                        }
-                        _ => (false, false),
-                    };
-                    bottom |= self.joints.strip_below && (z0 - self.base).abs() < 1e-6;
-                    if !bottom {
-                        s.edge(a, b);
-                    }
-                    if !top {
-                        s.edge(a + up, b + up);
-                    }
-                    for p in [a, b] {
-                        let o = off(p);
-                        let face = if (o - lo).abs() < 1e-3 {
-                            Some(lo)
-                        } else if (o - hi).abs() < 1e-3 {
-                            Some(hi)
-                        } else {
-                            None
-                        };
-                        let t = (flat(p) - pts[i]).dot(dirs[i]);
-                        if let Some(f) = face {
-                            if !self
-                                .gaps_at(i, f)
-                                .any(|(g0, g1)| t > g0 + 1e-6 && t < g1 - 1e-6)
-                            {
-                                s.edge(p, p + up);
-                            }
-                        }
+                _ => (false, false),
+            };
+            bottom |= self.joints.strip_below
+                && self.joints.strip_open.get(i) != Some(&true)
+                && (z0 - self.base).abs() < 1e-6;
+            if !bottom {
+                s.edge(a, b);
+            }
+            if !top {
+                s.edge(a + up, b + up);
+            }
+            for p in [a, b] {
+                let o = off(p);
+                let face = if (o - lo).abs() < 1e-3 {
+                    Some(lo)
+                } else if (o - hi).abs() < 1e-3 {
+                    Some(hi)
+                } else {
+                    None
+                };
+                let t = (flat(p) - pts[i]).dot(dirs[i]);
+                if let Some(f) = face {
+                    if !self
+                        .gaps_at(i, f)
+                        .any(|(g0, g1)| t > g0 + 1e-6 && t < g1 - 1e-6)
+                    {
+                        s.edge(p, p + up);
                     }
                 }
             }
         }
-        s.edge_kind = edge_kind::VIEW;
-        s
     }
 
     /// Fällt die Unter- bzw. Oberkante eines Abschnitts `z` auf der Fläche

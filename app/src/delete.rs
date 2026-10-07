@@ -24,6 +24,8 @@ pub enum Link {
     /// Typ der Wand ändern (Randdämmstreifen: seine Wand).
     ChangeType(ElementId),
     Undo,
+    /// OG-Wand bündig setzen (OG Phase 2, nach „wieder koppeln“).
+    Flush(ElementId),
 }
 
 /// Wörter für die nicht gelöschten Bauteile einer gemischten Auswahl:

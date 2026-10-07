@@ -20,7 +20,7 @@ pub type RgbaRole = (&'static str, &'static str, fn(&mut Theme) -> &mut Rgba);
 pub type F4Role = (&'static str, &'static str, fn(&mut Theme) -> &mut [f32; 4]);
 pub type SizeRole = (&'static str, &'static str, fn(&mut Theme) -> &mut f32);
 
-pub const RGBA_ROLES: [RgbaRole; 60] = [
+pub const RGBA_ROLES: [RgbaRole; 63] = [
     ("ui.bg", "Fläche", |t| &mut t.ui.bg),
     ("ui.border", "Rahmen", |t| &mut t.ui.border),
     ("ui.field", "Feld", |t| &mut t.ui.field),
@@ -78,6 +78,9 @@ pub const RGBA_ROLES: [RgbaRole; 60] = [
     ("ui.menu_bg", "Menü Fläche", |t| &mut t.ui.menu_bg),
     ("ui.hud_bg", "Schwebende Elemente", |t| &mut t.ui.hud_bg),
     ("ui.hud_glow", "Leuchten", |t| &mut t.ui.hud_glow),
+    ("ui.link_on", "Kette gekoppelt", |t| &mut t.ui.link_on),
+    ("ui.link_off", "Kette gelöst", |t| &mut t.ui.link_off),
+    ("ui.link_chip", "Kette Plättchen", |t| &mut t.ui.link_chip),
     ("title.bg", "Titelleiste", |t| &mut t.title.bg),
     ("title.glyph", "Symbole", |t| &mut t.title.glyph),
     ("title.glyph_inactive", "Symbole inaktiv", |t| {

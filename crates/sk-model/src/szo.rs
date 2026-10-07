@@ -16,7 +16,7 @@ use crate::attr::{
 };
 use crate::element::{
     Building, Category, Coupling, Element, ElementKind, Floor, GroundSlab, LevelEdge, LevelKind,
-    LevelRef, PropSet, PropValue, Storey, StripFooting, Wall, WallRun,
+    LevelRef, PropSet, PropValue, Soffit, Storey, StripFooting, Wall, WallRun,
 };
 use crate::guid::{Guid, GuidGen};
 use crate::id::{Arena, Id};
@@ -400,6 +400,7 @@ fn category(c: Category) -> &'static str {
         Category::Space => "space",
         Category::StripFooting => "stripfooting",
         Category::EdgeInsulation => "edgeinsulation",
+        Category::SoffitInsulation => "soffitinsulation",
     }
 }
 
@@ -756,9 +757,17 @@ pub fn write(m: &Model) -> String {
             .num("seq", e.seq)
             .guid("storey", storey_guid(e.storey));
         match w.coupling {
-            Some(c) => line
-                .guid("below", m.element(c.below).map(|x| x.guid))
-                .num("off", c.offset),
+            Some(c) => {
+                let line = line
+                    .guid("below", m.element(c.below).map(|x| x.guid))
+                    .num("off", c.offset);
+                // Nur gelöste Segmente: Dateien ohne bleiben bytegleich
+                if c.linked {
+                    line
+                } else {
+                    line.word("link", "0")
+                }
+            }
             None => line,
         }
         .finish(&mut out);
@@ -800,15 +809,23 @@ pub fn write(m: &Model) -> String {
         let ElementKind::Floor(f) = e.kind else {
             continue;
         };
-        Line::new("floor")
+        let mut l = Line::new("floor")
             .guid("guid", Some(e.guid))
             .guid("run", m.run(f.run).map(|r| r.guid))
             .text("number", &e.number)
             .word("cat", category(e.category))
             .guid("mat", mat_guid(f.material))
             .word("top", &level(f.top))
-            .num("t", f.thickness)
-            .num("seq", e.seq)
+            .num("t", f.thickness);
+        // Untersichtdämmung (G7 K4): nur abweichend vom Standard, damit
+        // Dateien ohne Vorsprung bytegleich bleiben
+        if f.soffit.thickness != crate::model::SOFFIT_THICKNESS {
+            l = l.num("soffit", f.soffit.thickness);
+        }
+        if let Some(sm) = f.soffit.material {
+            l = l.guid("soffit_mat", mat_guid(sm));
+        }
+        l.num("seq", e.seq)
             .guid("storey", storey_guid(e.storey))
             .finish(&mut out);
     }
@@ -819,6 +836,19 @@ pub fn write(m: &Model) -> String {
         Line::new("strip")
             .guid("guid", Some(e.guid))
             .guid("wall", m.element(wall).map(|x| x.guid))
+            .guid("floor", m.element(floor).map(|x| x.guid))
+            .text("number", &e.number)
+            .word("cat", category(e.category))
+            .num("seq", e.seq)
+            .guid("storey", storey_guid(e.storey))
+            .finish(&mut out);
+    }
+    for e in &walls {
+        let ElementKind::SoffitInsulation { floor } = e.kind else {
+            continue;
+        };
+        Line::new("soffit")
+            .guid("guid", Some(e.guid))
             .guid("floor", m.element(floor).map(|x| x.guid))
             .text("number", &e.number)
             .word("cat", category(e.category))
@@ -869,10 +899,10 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     let v3 = version >= 3;
     let mut hints = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 19] = [
+    const KNOWN: [&str; 20] = [
         "pen", "linetype", "fill", "surface", "display", "material", "layerset", "layer",
         "typeprop", "project", "building", "storey", "run", "wall", "slab", "footing", "floor",
-        "strip", "prop",
+        "strip", "soffit", "prop",
     ];
     for (i, l) in text.lines().enumerate().skip(1) {
         let Some(r) = Record::parse(i + 1, l)? else {
@@ -1241,7 +1271,17 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
             props: Default::default(),
         };
         if r.opt("below").is_some() {
-            below.push((r.line, r.guid("below")?, r.f64("off")?, e.guid));
+            let linked = match r.opt("link") {
+                None | Some("1") => true,
+                Some("0") => false,
+                Some(v) => {
+                    return Err(err(
+                        r.line,
+                        format!("[wall]: „link“ muss 0 oder 1 sein, nicht „{v}“"),
+                    ))
+                }
+            };
+            below.push((r.line, r.guid("below")?, r.f64("off")?, linked, e.guid));
         }
         let g = e.guid;
         let id = elements.insert(e);
@@ -1249,7 +1289,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         slots.entry(run).or_default().push((seg, id));
     }
     // Kopplungen erst, wenn alle Wände gelesen sind (Verweise nach vorn)
-    for (line, g, offset, me) in below {
+    for (line, g, offset, linked, me) in below {
         let target = elem_ids.get(&g).copied().filter(|id| {
             matches!(
                 elements.get(*id).map(|e: &Element| &e.kind),
@@ -1269,6 +1309,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
             w.coupling = Some(Coupling {
                 below: target,
                 offset,
+                linked,
             });
         }
     }
@@ -1284,9 +1325,25 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         }
         Ok(n)
     };
-    for (section, ix) in [("slab", 0), ("footing", 1), ("floor", 2), ("strip", 3)] {
+    for (section, ix) in [
+        ("slab", 0),
+        ("footing", 1),
+        ("floor", 2),
+        ("strip", 3),
+        ("soffit", 4),
+    ] {
         for r in recs(section) {
-            let kind = if ix == 3 {
+            let kind = if ix == 4 {
+                // Untersichtdämmung (G7 K4): nur der Verweis auf die Decke
+                let floor = r.link("floor", &elem_ids)?;
+                if !matches!(
+                    elements.get(floor).map(|e: &Element| &e.kind),
+                    Some(ElementKind::Floor(_))
+                ) {
+                    return Err(err(r.line, "[soffit]: „floor“ ist keine Decke"));
+                }
+                ElementKind::SoffitInsulation { floor }
+            } else if ix == 3 {
                 // Randdämmstreifen (K5): nur Verweise auf Wand und Decke
                 let wall = r.link("wall", &elem_ids)?;
                 let floor = r.link("floor", &elem_ids)?;
@@ -1305,6 +1362,17 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
                     thickness: r.f64("t")?,
                     // SZO 1: die feste Zahl (⅔ der Wandhöhe) wird verworfen
                     top: level(r, "top", LevelRef::top(ground))?,
+                    // vor G7 K4 ohne: Standard (wirkt nur bei Vorsprung)
+                    soffit: Soffit {
+                        thickness: match r.opt("soffit") {
+                            Some(_) => r.f64("soffit")?,
+                            None => crate::model::SOFFIT_THICKNESS,
+                        },
+                        material: match r.opt("soffit_mat") {
+                            Some(_) => Some(r.link("soffit_mat", &mat_ids)?),
+                            None => None,
+                        },
+                    },
                 })
             } else if ix == 0 {
                 ElementKind::GroundSlab(GroundSlab {
@@ -1418,6 +1486,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         hints.extend(model.complete_pre_b12());
     }
     model.complete_edge_strips();
+    model.complete_soffits();
     hints.extend(model.check());
     Ok(Loaded { model, hints })
 }

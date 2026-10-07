@@ -15,7 +15,7 @@ use sk_model::{
     edge_kind, floor_qto_of, foundation_qto_of, merge_seam, run_qto, BuildingId, Category, Deleted,
     Direction, Edge, ElementId, FloorQto, FloorSlab, FootingQto, Foundation, LayerSetId, Model,
     Refusal, RunId, SlabQto, Solid, StoreyId, Touched, Txn, TypeCategory, WallChain, WallQto,
-    FLOOR_PART, FOOTING_PART, SLAB_PART, STRIP_PART,
+    FLOOR_PART, FOOTING_PART, SLAB_PART, SOFFIT_PART, STRIP_PART,
 };
 use sk_render::MeshData;
 use sk_ui::theme::Theme;
@@ -81,6 +81,7 @@ impl RunCache {
         }
         if let Some(f) = &floor {
             solid.append(&part(f.solid(), FLOOR_PART));
+            solid.append(&part(f.soffit_solid(), SOFFIT_PART));
             for k in 0..f.strips.len() {
                 solid.append(&part(f.strip_solid(k), STRIP_PART + k as u32));
             }
@@ -168,6 +169,7 @@ impl RunCache {
                     }
                     if let Some(f) = &self.floor {
                         s.append(&part(f.section_caps(p0, n), FLOOR_PART));
+                        s.append(&part(f.soffit_section_caps(p0, n), SOFFIT_PART));
                         for k in 0..f.strips.len() {
                             let caps = f.strip_section_caps(k, p0, n);
                             s.append(&part(caps, STRIP_PART + k as u32));
@@ -213,6 +215,7 @@ impl RunCache {
                 }
                 if let Some(f) = floor {
                     s.append(&part(f.solid_cut_at(cut), FLOOR_PART));
+                    s.append(&part(f.soffit_cut_at(cut), SOFFIT_PART));
                     for k in 0..f.strips.len() {
                         s.append(&part(f.strip_cut_at(k, cut), STRIP_PART + k as u32));
                     }
@@ -938,6 +941,16 @@ impl Scene {
         self.cached(run)?.floor_qto.as_ref()
     }
 
+    /// Mengen einer Untersichtdämmung (OG Phase 2), aus der gezeichneten Decke.
+    pub fn soffit_qto(&self, soffit: ElementId) -> Option<sk_model::SoffitQto> {
+        let m = &self.model;
+        let sk_model::ElementKind::SoffitInsulation { floor } = m.element(soffit)?.kind else {
+            return None;
+        };
+        let run = m.run_of(floor)?;
+        sk_model::soffit_qto_of(self.floor(run)?)
+    }
+
     /// Mengen eines Randdämmstreifens (K5), aus der gezeichneten Decke.
     pub fn edge_strip_qto(&self, strip: ElementId) -> Option<sk_model::EdgeStripQto> {
         let m = &self.model;
@@ -1183,6 +1196,12 @@ impl Scene {
         if field == Field::FloorThickness {
             return self.set_floor_thickness(run, mm);
         }
+        if field == Field::Offset {
+            return self.stack_wall(id).is_some_and(|w| self.type_offset(w, mm));
+        }
+        if field == Field::Soffit {
+            return self.set_soffit(id, mm);
+        }
         let Some((slab, footing)) = m.foundation_of(run) else {
             return false;
         };
@@ -1340,6 +1359,31 @@ impl Scene {
         let ok = self.model.set_floor_thickness(id, mm);
         self.mark(run);
         for r in self.model.runs_under_floor(run) {
+            self.mark(r);
+        }
+        self.commit();
+        ok
+    }
+
+    /// Dicke der Untersichtdämmung an der Decke `id` (oder an der Decke der
+    /// Untersichtdämmung `id`): ein Schritt „Untersichtdämmung“; die
+    /// Außenschichten wandern mit.
+    pub fn set_soffit(&mut self, id: ElementId, mm: f64) -> bool {
+        let m = &self.model;
+        let floor = match m.element(id).map(|e| &e.kind) {
+            Some(sk_model::ElementKind::SoffitInsulation { floor }) => *floor,
+            Some(sk_model::ElementKind::Floor(_)) => id,
+            _ => return false,
+        };
+        let Some(sk_model::ElementKind::Floor(f)) = m.element(floor).map(|e| &e.kind) else {
+            return false;
+        };
+        if f.soffit.thickness == mm {
+            return false;
+        }
+        self.begin("Untersichtdämmung");
+        let ok = self.model.set_floor_soffit(floor, mm);
+        for r in self.model.step_touched() {
             self.mark(r);
         }
         self.commit();
@@ -1556,6 +1600,95 @@ impl Scene {
             }
             self.rebuild_dirty(true);
         }
+    }
+
+    /// Versatz einer gestapelten Wand beim Ziehen (OG Phase 2, im offenen
+    /// Schritt). `false`, wenn der Stapel dabei ungültig würde.
+    pub fn set_offset(&mut self, wall: sk_model::ElementId, offset: f64) -> bool {
+        let Some(runs) = self.model.set_offset(wall, offset) else {
+            return false;
+        };
+        let own = self.model.segment_of(wall).map(|s| s.0);
+        for r in runs.into_iter().chain(own) {
+            self.mark(r);
+            if !self.live.contains(&r) {
+                self.live.push(r);
+            }
+        }
+        self.rebuild_dirty(true);
+        true
+    }
+
+    /// Gestapelte Wand zu `id` (OG Phase 2): sie selbst oder, an einem
+    /// unteren Segment, die Wand darüber; `None` ohne Partner.
+    pub fn stack_wall(&self, id: sk_model::ElementId) -> Option<sk_model::ElementId> {
+        let m = &self.model;
+        if m.stack_offset(id).is_some() {
+            return Some(id);
+        }
+        m.elements()
+            .iter()
+            .find(|(w, _)| m.wall_below(*w) == Some(id))
+            .map(|(w, _)| w)
+    }
+
+    /// Kette einer gestapelten Wand schließen oder lösen (OG Phase 2): ein
+    /// Schritt „Wand gekoppelt“ bzw. „Kopplung gelöst“; der Versatz bleibt.
+    /// `false`, wenn sich nichts ändert.
+    pub fn set_linked(&mut self, wall: sk_model::ElementId, linked: bool) -> bool {
+        if self.model.stack_offset(wall).is_none_or(|o| o.1 == linked) {
+            return false;
+        }
+        let label = if linked {
+            "Wand gekoppelt"
+        } else {
+            "Kopplung gelöst"
+        };
+        self.stack_step(label, wall, |m| m.set_linked(wall, linked))
+    }
+
+    /// „Bündig setzen“: Versatz 0 und gekoppelt, ein Schritt.
+    pub fn set_flush(&mut self, wall: sk_model::ElementId) -> bool {
+        if self
+            .model
+            .stack_offset(wall)
+            .is_none_or(|o| o == (0.0, true))
+        {
+            return false;
+        }
+        self.stack_step("Bündig gesetzt", wall, |m| m.set_flush(wall))
+    }
+
+    /// Versatz eingetippt (Paneel): nur dieses Segment, die Kette bleibt, wie
+    /// sie ist. Ein Schritt „Wand verschoben“.
+    pub fn type_offset(&mut self, wall: sk_model::ElementId, offset: f64) -> bool {
+        let Some((now, _)) = self.model.stack_offset(wall) else {
+            return false;
+        };
+        if now == offset {
+            return false;
+        }
+        // Ungültige Lage: nichts geändert, der leere Schritt fällt weg
+        self.stack_step("Wand verschoben", wall, |m| {
+            m.set_offset(wall, offset).is_some()
+        })
+    }
+
+    /// Ein Schritt an einer gestapelten Wand; neu gebaut wird, was er berührt.
+    fn stack_step(
+        &mut self,
+        label: &'static str,
+        wall: sk_model::ElementId,
+        f: impl FnOnce(&mut Model) -> bool,
+    ) -> bool {
+        self.begin(label);
+        let ok = f(&mut self.model);
+        let own = self.model.segment_of(wall).map(|s| s.0);
+        for r in self.model.step_touched().into_iter().chain(own) {
+            self.mark(r);
+        }
+        self.commit();
+        ok
     }
 
     /// Züge im Live-Netz, während `run` gezogen wird: er selbst und alle, die

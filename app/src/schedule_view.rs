@@ -97,7 +97,8 @@ struct Line {
     group: Key,
     elements: Vec<ElementId>,
     cells: [String; CELLS],
-    /// Grund, warum kein Körper entsteht (grau, kursiv).
+    /// Grund, warum kein Körper entsteht, oder Versatz einer gestapelten
+    /// Wand (grau, kursiv).
     note: Option<String>,
     tiles: Vec<Tile>,
 }
@@ -1622,6 +1623,19 @@ fn cm(mm: f64) -> String {
     }
 }
 
+/// Zusatz in der Zeile einer gestapelten Wand mit Versatz (OG Phase 2):
+/// „Versatz +0,30 m“, „Versatz −0,30 m“; `None` bei Versatz 0 oder einer
+/// Wand ohne Partner darunter.
+pub fn offset_note(m: &Model, wall: ElementId) -> Option<String> {
+    let (o, _) = m.stack_offset(wall)?;
+    let v = o / 1000.0;
+    if (v * 100.0).round() == 0.0 {
+        return None;
+    }
+    let sign = if v > 0.0 { '+' } else { '−' };
+    Some(format!("Versatz {sign}{} m", de(v.abs(), 2)))
+}
+
 /// Zahl mit Dezimalkomma und Tausenderpunkt.
 pub fn de(v: f64, dec: usize) -> String {
     let neg = v < 0.0 && (v * 10f64.powi(dec as i32)).round() != 0.0;
@@ -1745,6 +1759,8 @@ fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut V
                             de(w.height / 1e3, 3) + " m"
                         );
                         rl.cells[4] = m_vol(w.volume);
+                        // Gestapelte Wand mit Versatz (OG Phase 2)
+                        rl.note = offset_note(m, r.element);
                     }
                     _ => {
                         rl.cells[0] = r.number.clone();
@@ -1753,6 +1769,20 @@ fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut V
                     }
                 }
                 lines.push(rl);
+                // Verblender über einem Vorsprung: Halfeneisen (OG-17)
+                if let Some(ElementQto::Wall(w)) = &r.q {
+                    if w.facing_support > 0.0 {
+                        let e = r.element;
+                        let key = Key::Control(e.index(), 2, e.generation());
+                        let mut cl = Line::new(Kind::Control, 3, key);
+                        cl.storey = skey;
+                        cl.group = gkey;
+                        cl.elements = vec![e];
+                        cl.cells[0] = "Abfangung Verblender".into();
+                        cl.cells[2] = m_len(w.facing_support);
+                        lines.push(cl);
+                    }
+                }
             }
             if g.total.pocket > 0.0 {
                 let mut cl = Line::new(Kind::Control, 2, Key::GroupControl(a, b, c));
@@ -1800,6 +1830,11 @@ fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut V
                 Some(ElementQto::Strip(f)) => {
                     rl.cells[0] = format!("Randdämmstreifen {} × {}", cm(f.width), cm(f.height));
                     rl.cells[2] = m_len(f.length);
+                    rl.cells[4] = m_vol(f.volume);
+                }
+                Some(ElementQto::Soffit(f)) => {
+                    rl.cells[0] = format!("Untersichtdämmung {}", cm(f.thickness));
+                    rl.cells[3] = m_area(f.area);
                     rl.cells[4] = m_vol(f.volume);
                 }
                 None => {
@@ -1916,7 +1951,7 @@ pub fn csv(m: &Model, sched: &Schedule) -> Vec<u8> {
                         len(w.list_length),
                         String::new(),
                         vol(w.volume),
-                        String::new(),
+                        offset_note(m, r.element).unwrap_or_default(),
                     ),
                     Some(ElementQto::Footing(f)) => (
                         "Frostschürze".into(),
@@ -1946,6 +1981,13 @@ pub fn csv(m: &Model, sched: &Schedule) -> Vec<u8> {
                         vol(f.volume),
                         String::new(),
                     ),
+                    Some(ElementQto::Soffit(f)) => (
+                        format!("Untersichtdämmung {}", cm(f.thickness)),
+                        String::new(),
+                        area(f.area),
+                        vol(f.volume),
+                        String::new(),
+                    ),
                     None => (
                         g.category.name().to_string(),
                         String::new(),
@@ -1957,6 +1999,22 @@ pub fn csv(m: &Model, sched: &Schedule) -> Vec<u8> {
                 row([
                     &gb, &sname, &kg, &bauteil, &r.number, &l, "1", &a, &v, &note,
                 ]);
+                if let Some(ElementQto::Wall(w)) = &r.q {
+                    if w.facing_support > 0.0 {
+                        row([
+                            &gb,
+                            &sname,
+                            &kg,
+                            "Abfangung Verblender",
+                            &r.number,
+                            &len(w.facing_support),
+                            "",
+                            "",
+                            "",
+                            "",
+                        ]);
+                    }
+                }
                 if let Some(ElementQto::Floor(f)) = &r.q {
                     if f.bearing > 0.0 {
                         row([

@@ -13,6 +13,7 @@ mod catalog_view;
 mod delete;
 mod document;
 mod draw_table;
+mod link_view;
 mod menu;
 mod nav;
 #[cfg(test)]
@@ -138,32 +139,34 @@ const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 // „Werkzeuge“, unter „Geschosse“ (E16), die Titelleiste ganz oben.
 /// Endsymbole der Schnittlinie im Grundriss (zwei Plätze).
 const OVERLAY_MARKS: usize = 0;
-const OVERLAY_VIEWS: usize = 2;
+/// Kettensymbole an gestapelten Wänden (OG Phase 2), unter den Paneelen.
+const OVERLAY_CHIPS: usize = 2;
+const OVERLAY_VIEWS: usize = OVERLAY_CHIPS + link_view::SLOTS;
 /// Paneel „Eigenschaften“.
-const OVERLAY_PROPS: usize = 3;
-const OVERLAY_TOOLS: usize = 4;
-const OVERLAY_SCRIM: usize = 5;
+const OVERLAY_PROPS: usize = OVERLAY_VIEWS + 1;
+const OVERLAY_TOOLS: usize = OVERLAY_VIEWS + 2;
+const OVERLAY_SCRIM: usize = OVERLAY_VIEWS + 3;
 /// Paneel „Geschosse“.
-const OVERLAY_LEVELS: usize = 6;
+const OVERLAY_LEVELS: usize = OVERLAY_VIEWS + 4;
 /// Dialog „Gebäude erstellen“.
-const OVERLAY_DIALOG: usize = 7;
-const OVERLAY_TITLE: usize = 8;
+const OVERLAY_DIALOG: usize = OVERLAY_VIEWS + 5;
+const OVERLAY_TITLE: usize = OVERLAY_VIEWS + 6;
 /// Hinweis in der Statuszeile (F-17), unten in der Mitte.
-const OVERLAY_NOTICE: usize = 9;
+const OVERLAY_NOTICE: usize = OVERLAY_VIEWS + 7;
 /// Dateimenü (E17), darüber die Nachfrage „Änderungen speichern?“ mit
 /// Abdunkeln.
-const OVERLAY_MENU: usize = 10;
-const OVERLAY_SAVE_SCRIM: usize = 11;
-const OVERLAY_SAVE: usize = 12;
+const OVERLAY_MENU: usize = OVERLAY_VIEWS + 8;
+const OVERLAY_SAVE_SCRIM: usize = OVERLAY_VIEWS + 9;
+const OVERLAY_SAVE: usize = OVERLAY_VIEWS + 10;
 /// Einstellungsfenster (E5) und sein Aufklapper (Auswahlliste, Farbwähler,
 /// Nachfrage).
-const OVERLAY_PREFS: usize = 13;
-const OVERLAY_PREFS_POPUP: usize = 14;
+const OVERLAY_PREFS: usize = OVERLAY_VIEWS + 11;
+const OVERLAY_PREFS_POPUP: usize = OVERLAY_VIEWS + 12;
 /// Typ-Liste am Chip (K3).
-const OVERLAY_TYPE_MENU: usize = 15;
+const OVERLAY_TYPE_MENU: usize = OVERLAY_VIEWS + 13;
 /// Geschossbogen im Grundriss (E18): Bogen, Aufleuchten, Schilder und
 /// Hinweis an der Spitze.
-const OVERLAY_WHEEL: usize = 16;
+const OVERLAY_WHEEL: usize = OVERLAY_VIEWS + 14;
 /// Löschen (V?-9): Hinweis am Bauteil, Rückfrage „Gebäude löschen“ und
 /// Kontextmenü am Bauteil.
 const OVERLAY_HINT: usize = OVERLAY_WHEEL + wheel_view::SLOTS;
@@ -175,6 +178,28 @@ const OVERLAY_CARD_SCRIM: usize = OVERLAY_HINT + 3;
 const OVERLAY_CARD: usize = OVERLAY_HINT + 4;
 /// Hinweis an der Maus, über allem.
 const OVERLAY_TIP: usize = OVERLAY_HINT + 5;
+
+/// Versatz am Band beim Ziehen (OG Phase 2): „Versatz +0,30“, unter 2 cm
+/// „bündig“.
+fn offset_label(o: f64) -> String {
+    if o == 0.0 {
+        return "bündig".into();
+    }
+    let sign = if o > 0.0 { '+' } else { '\u{2212}' };
+    format!("Versatz {sign}{}", schedule_view::de(o.abs() / 1000.0, 2))
+}
+
+/// Hinweis nach „wieder koppeln“ mit Versatz (OG-16).
+fn relink_lines(o: f64) -> Vec<String> {
+    let what = if o > 0.0 { "Vorsprung" } else { "Rücksprung" };
+    vec![
+        "Wieder gekoppelt.".into(),
+        format!(
+            "Der {what} von {} m bleibt, EG und OG gehen gemeinsam.",
+            schedule_view::de(o.abs() / 1000.0, 2)
+        ),
+    ]
+}
 
 /// Blickrichtung (yaw, pitch) der Parallelansichten.
 fn view_direction(v: ViewKind) -> (f64, f64) {
@@ -517,6 +542,15 @@ struct App {
     /// `--geschosswechsel N`: noch so viele Wechsel am Geschossbogen, dann
     /// beenden (Zeitmessung mit `--zeiten`); Richtung des nächsten.
     auto_switch: Option<(u32, bool)>,
+    /// Kettensymbole (OG Phase 2): ihre Bilder, die zuletzt gezeigten und das
+    /// unter der Maus.
+    link_view: link_view::LinkView,
+    chips: Vec<link_view::Chip>,
+    chip_hover: Option<sk_model::ElementId>,
+    /// Die Statuszeile zeigt den Hinweis zum Ziehen einer gestapelten Wand.
+    drag_notice: bool,
+    /// „Bündig setzen“ gleitet: Wand, ihr Zug, Versatz am Anfang, Beginn.
+    flush_anim: Option<(sk_model::ElementId, sk_model::RunId, f64, Instant)>,
     /// Löschen (V?-9): Hinweis am Bauteil (und seine gezeigte Deckkraft),
     /// Kontextmenü, Rückfrage „Gebäude löschen“, jeweils ob ihr Bild neu zu
     /// zeichnen ist; Beginn des Aus- bzw. Einblendens und des Aufleuchtens
@@ -607,6 +641,7 @@ impl App {
         let live = self
             .edit
             .dragging_run()
+            .or(self.flush_anim.map(|f| f.1))
             .map_or_else(Vec::new, |r| self.scene.live_set(r));
         if live != self.live_runs {
             self.live_runs = live;
@@ -790,6 +825,16 @@ impl App {
         self.ui.view == ViewKind::Plan && !self.tool.is_active()
     }
 
+    /// Grundriss: Höhe der Wandfüße des aktiven Geschosses (mm); nur sie
+    /// haben ein Band und ein Kettensymbol.
+    fn plan_z(&self) -> Option<f64> {
+        if self.ui.view != ViewKind::Plan {
+            return None;
+        }
+        let m = self.scene.model();
+        m.storey(self.scene.active_storey()).map(|s| s.elevation)
+    }
+
     /// Schnittebene der aktuellen Ansicht (nur im Schnitt).
     fn plane(&self) -> Option<(Vec3, Vec3)> {
         match self.ui.view {
@@ -800,6 +845,7 @@ impl App {
 
     fn refresh_cursor(&mut self) {
         self.edit.section = self.plane();
+        self.edit.plan_z = self.plan_z();
         let (vw, vh, sc) = self.view_size();
         self.tool.refresh(&self.cam, vw, vh, sc);
         let en = self.edit_enabled();
@@ -1709,6 +1755,16 @@ impl App {
                 }
             }
             Id::ToolType | Id::PropsType => self.open_type_menu(id),
+            Id::PropsLink => {
+                if let Some(w) = self.sel.id.and_then(|id| self.scene.stack_wall(id)) {
+                    self.toggle_link(w);
+                }
+            }
+            Id::PropsFlush => {
+                if let Some(w) = self.sel.id.and_then(|id| self.scene.stack_wall(id)) {
+                    self.flush(w);
+                }
+            }
             Id::DialogStart => self.close_building_dialog(true),
             Id::DialogCancel | Id::DialogClose => self.close_building_dialog(false),
             // Zahlenfelder melden sich über `UiOut::submit`, Griffe über
@@ -2254,7 +2310,14 @@ impl App {
     }
 
     fn handle_inner(&mut self, e: Event, surface: &Surface) -> bool {
+        if matches!(
+            e,
+            Event::MouseDown { .. } | Event::Key { down: true, .. } | Event::Wheel { .. }
+        ) {
+            self.finish_flush();
+        }
         self.edit.section = self.plane();
+        self.edit.plan_z = self.plan_z();
         let th = self.top() as f64;
         let (vw, vh, sc) = self.view_size();
         // Ereignis in Koordinaten der 3D-Ansicht (unterhalb der Titelleiste)
@@ -2400,7 +2463,22 @@ impl App {
                 let ev = in_view(e);
                 camera_moved |= self.nav.handle(&ev, &mut self.cam, &self.scene, vw, vh, sc);
                 let outside = (y < th || over_ui) && !busy;
-                let sect_ev = if outside { Event::MouseLeave } else { ev };
+                // Kettensymbol unter der Maus: Band und Schnittlinie darunter
+                // greifen nicht
+                let chip = if outside || busy {
+                    None
+                } else {
+                    link_view::hit(&self.chips, x, y, sc)
+                };
+                if chip != self.chip_hover {
+                    self.chip_hover = chip;
+                    self.redraw = true;
+                }
+                let sect_ev = if outside || chip.is_some() {
+                    Event::MouseLeave
+                } else {
+                    ev
+                };
                 let so = self
                     .sect
                     .handle(&sect_ev, &self.scene, &self.cam, vw, vh, sc, sen);
@@ -2409,7 +2487,7 @@ impl App {
                 if so.changed && self.ui.view == ViewKind::Section {
                     self.upload_model();
                 }
-                let edit_ev = if outside || self.sect.is_busy() {
+                let edit_ev = if outside || self.sect.is_busy() || chip.is_some() {
                     Event::MouseLeave
                 } else {
                     ev
@@ -2497,7 +2575,7 @@ impl App {
                 } else {
                     let out = self.ui.handle(&e, self.w, self.top());
                     self.apply_ui(&out);
-                    if !out.consumed {
+                    if !out.consumed && !self.press_chip(button, x, y, sc) {
                         let ev = in_view(e);
                         camera_moved |=
                             self.nav.handle(&ev, &mut self.cam, &self.scene, vw, vh, sc);
@@ -2917,6 +2995,7 @@ impl App {
             delete::Link::Undo => self.history(false),
             delete::Link::DeleteBuilding(b) => self.open_confirm(b),
             delete::Link::ChangeType(wall) => self.change_type_of(wall),
+            delete::Link::Flush(wall) => self.flush(wall),
         }
     }
 
@@ -3584,7 +3663,110 @@ impl App {
             Some(_) => return None,
             None => {}
         }
-        self.edit.coupled_hint().map(String::from)
+        // Beim Ziehen einer gestapelten Wand: ihr Versatz (OG Phase 2)
+        if let Some((_, o)) = self.edit.dragged_offset(&self.scene) {
+            return Some(offset_label(o));
+        }
+        self.chain_tip()
+    }
+
+    /// Hinweis am Kettensymbol unter der Maus.
+    fn chain_tip(&self) -> Option<String> {
+        let wall = self.chip_hover?;
+        let (_, linked) = self.scene.model().stack_offset(wall)?;
+        Some(link_view::tip(linked).to_string())
+    }
+
+    /// Klick auf ein Kettensymbol: löst bzw. koppelt sofort, ohne Rückfrage
+    /// (OG Phase 2). Wieder gekoppelt mit Versatz: Hinweis mit „Bündig
+    /// setzen“. `true`, wenn der Klick dem Symbol galt.
+    fn press_chip(&mut self, button: MouseButton, x: f64, y: f64, sc: f64) -> bool {
+        if button != MouseButton::Left || self.tool.is_active() {
+            return false;
+        }
+        let Some(wall) = link_view::hit(&self.chips, x, y, sc) else {
+            return false;
+        };
+        self.toggle_link(wall);
+        true
+    }
+
+    /// Kette der gestapelten Wand umschalten (Symbol im Plan oder Paneel).
+    fn toggle_link(&mut self, wall: sk_model::ElementId) {
+        let Some((offset, linked)) = self.scene.model().stack_offset(wall) else {
+            return;
+        };
+        if self.scene.set_linked(wall, !linked) {
+            self.upload_model();
+            self.sync_props();
+            self.hint = (!linked && offset != 0.0).then(|| {
+                delete::HintCard::new(
+                    relink_lines(offset),
+                    Some(("Bündig setzen", delete::Link::Flush(wall))),
+                    vec![wall],
+                    Instant::now(),
+                )
+            });
+            self.hint_dirty = true;
+            self.redraw = true;
+        }
+    }
+
+    /// „Bündig setzen“ (Hinweis oder Paneel): die OG-Wand gleitet in
+    /// `anim_ms` (ease-out) auf das EG; ein Schritt.
+    fn flush(&mut self, wall: sk_model::ElementId) {
+        self.finish_flush();
+        let m = self.scene.model();
+        let (Some((o, _)), Some((run, _))) = (m.stack_offset(wall), m.segment_of(wall)) else {
+            return;
+        };
+        if self.theme.size.anim_ms > 0.0 && o != 0.0 {
+            self.scene.begin("Bündig gesetzt");
+            self.flush_anim = Some((wall, run, o, Instant::now()));
+            self.redraw = true;
+            return;
+        }
+        self.flush_now(wall);
+    }
+
+    /// Ein Bild des Gleitens; am Ende der eigentliche Schritt.
+    fn step_flush(&mut self) {
+        let Some((wall, _, from, start)) = self.flush_anim else {
+            return;
+        };
+        let u = start.elapsed().as_secs_f64() * 1000.0 / self.theme.size.anim_ms as f64;
+        if u >= 1.0 {
+            self.finish_flush();
+            return;
+        }
+        let e = 1.0 - (1.0 - u).powi(3);
+        if self.scene.set_offset(wall, from * (1.0 - e)) {
+            self.upload_live();
+        }
+        self.redraw = true;
+    }
+
+    /// Gleiten sofort beenden (am Ende oder bei der nächsten Eingabe).
+    fn finish_flush(&mut self) {
+        if let Some((wall, ..)) = self.flush_anim.take() {
+            self.scene.rollback();
+            self.flush_now(wall);
+        }
+    }
+
+    fn flush_now(&mut self, wall: sk_model::ElementId) {
+        if self.scene.set_flush(wall) {
+            self.upload_model();
+            self.sync_props();
+            self.notice = Some(Notice {
+                text: "OG-Wand bündig gesetzt.".into(),
+                since: None,
+                rect: (0.0, 0.0, 0.0, 0.0),
+                time: std::time::Duration::from_secs(5),
+                catalog: false,
+            });
+            self.redraw = true;
+        }
     }
 
     /// Hinweise aus dem Laden: leise in die Statuszeile, der Rest als Meldung.
@@ -3605,8 +3787,38 @@ impl App {
         }
     }
 
+    /// Statuszeile beim Ziehen einer gestapelten Wand (OG Phase 2): steht,
+    /// solange gezogen wird.
+    fn sync_drag_notice(&mut self) {
+        let want = self.edit.stack_drag(&self.scene).map(|d| match d {
+            wall_edit::StackDrag::Free => {
+                "Kette gelöst: nur die OG-Wand bewegt sich, das EG bleibt stehen."
+            }
+            wall_edit::StackDrag::Ctrl => "Strg: nur diese Wand, die Kette bleibt geschlossen.",
+        });
+        match want {
+            Some(t) if self.notice.as_ref().is_none_or(|n| n.text != t) => {
+                self.notice = Some(Notice {
+                    text: t.into(),
+                    since: None,
+                    rect: (0.0, 0.0, 0.0, 0.0),
+                    time: std::time::Duration::from_secs(3600),
+                    catalog: false,
+                });
+                self.drag_notice = true;
+            }
+            None if std::mem::take(&mut self.drag_notice) => {
+                self.notice = None;
+                self.renderer.set_overlay(OVERLAY_NOTICE, 0, 0, 0, 0, &[]);
+                self.redraw = true;
+            }
+            _ => {}
+        }
+    }
+
     /// Hinweis in der Statuszeile zeigen, nach [`NOTICE_TIME`] wieder weg.
     fn sync_notice(&mut self) {
+        self.sync_drag_notice();
         let Some(n) = self.notice.as_mut() else {
             return;
         };
@@ -4156,6 +4368,11 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             .nth(1)
             .and_then(|n| n.parse().ok())
             .map(|n| (n, true)),
+        link_view: link_view::LinkView::new(OVERLAY_CHIPS),
+        chips: Vec::new(),
+        chip_hover: None,
+        drag_notice: false,
+        flush_anim: None,
         hint: None,
         hint_dirty: false,
         hint_alpha: 0.0,
@@ -4253,6 +4470,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             && a.erase_fade.is_none()
             && a.erase_flash.is_none()
             && a.card_fade.is_none()
+            && a.flush_anim.is_none()
         {
             // Leerlauf: Grundrisse der Nachbargeschosse vorbereiten, damit ein
             // Wechsel am Geschossbogen nichts neu rechnet (E18)
@@ -4377,6 +4595,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             (None, None) if a.hint.as_ref().is_some_and(|h| h.link_hover) => {
                 sk_platform::Cursor::Hand
             }
+            (None, None) if a.chip_hover.is_some() => sk_platform::Cursor::Hand,
             (None, None) => a.ui.cursor(),
         };
         surface.set_cursor(cursor);
@@ -4392,6 +4611,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             a.redraw = true;
             a.refresh_cursor();
         }
+        a.step_flush();
         if a.nav.is_animating() {
             let now = std::time::Instant::now();
             let dt = last_tick.map_or(1.0 / 60.0, |t| (now - t).as_secs_f64().min(0.1));
@@ -4499,6 +4719,32 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             helpers.extend(a.edit.helpers(&a.scene, &a.cam, scale, !drawing, &a.theme));
             helpers.extend(a.tool.helpers(&a.cam, scale, &a.theme));
             a.renderer.set_helpers(&helpers);
+
+            // Kettensymbole an den gestapelten Wänden (Grundriss und 3D)
+            let chips_on =
+                matches!(a.ui.view, ViewKind::Plan | ViewKind::Persp) && !a.tool.is_active();
+            a.chips = if chips_on {
+                link_view::chips(&link_view::Want {
+                    scene: &a.scene,
+                    cam: &a.cam,
+                    w: vw,
+                    h: vh,
+                    top: th as f64,
+                    scale: scale as f64,
+                    plan_z: a.plan_z(),
+                    band: a.edit.active_wall(),
+                    hover: a.chip_hover,
+                })
+            } else {
+                Vec::new()
+            };
+            a.link_view.show(
+                &mut a.renderer,
+                &a.chips,
+                &a.theme,
+                a.theme.rev,
+                scale as f64,
+            );
 
             // Endsymbole der Schnittlinie als kleine Bilder an den Linienenden
             let marks = if a.ui.view == ViewKind::Plan {

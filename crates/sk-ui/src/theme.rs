@@ -77,6 +77,11 @@ pub struct Ui {
     /// und Leuchten (die Abstufungen rechnet der Code als Deckkraft).
     pub hud_bg: Rgba,
     pub hud_glow: Rgba,
+    /// Kettensymbol je Wandsegment (OG Phase 2): Glieder gekoppelt bzw.
+    /// gelöst, Plättchen darunter (Fläche der Bogen-Beschriftungen).
+    pub link_on: Rgba,
+    pub link_off: Rgba,
+    pub link_chip: Rgba,
     /// Mengenfenster (B7): Blatt, Schrift, gedämpfte Schrift, Kontrollzeilen
     /// (kursiv), Haarlinien, Kacheln; Bänder für Hover, Aufleuchten, Auswahl
     /// und die Gruppe über der Auswahl (folgen dem Akzent).
@@ -310,6 +315,9 @@ impl Theme {
                 menu_bg: bg,
                 hud_bg: Rgba(bg.0, bg.1, bg.2, 199),
                 hud_glow: accent,
+                link_on: accent,
+                link_off: rgb(160, 165, 172),
+                link_chip: rgb(74, 77, 85),
                 sheet_bg: rgb(245, 244, 239),
                 sheet_text: rgb(34, 36, 40),
                 sheet_text_dim: rgb(112, 116, 122),
@@ -461,6 +469,7 @@ impl Theme {
             &mut self.ui.level_line_active,
             &mut self.ui.dim_text_hover,
             &mut self.ui.hud_glow,
+            &mut self.ui.link_on,
         ] {
             if *role == old {
                 *role = c;

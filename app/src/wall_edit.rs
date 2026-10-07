@@ -22,13 +22,30 @@ const PICK_PX: f64 = 8.0;
 const STEP: f64 = 10.0;
 
 struct Drag {
-    /// Gezogene Wand und ihr Platz im Wandzug.
+    /// Gegriffene Wand (ihr Band leuchtet) und der Zug, der sich bewegt, mit
+    /// dem Segment darin: am gekoppelten OG-Fuß ohne Strg der Fuß der Kette.
     wall: ElementId,
     run: RunId,
     seg: usize,
     start: Vec3,
     normal: Vec3,
+    /// Höhe der Ebene, auf der gemessen wird (Fuß der gegriffenen Wand).
+    z: f64,
     original: WallChain,
+    /// Nur den Versatz dieser gestapelten Wand ändern (gelöst, oder
+    /// gekoppelt mit Strg): Wand, Versatz beim Greifen, Vorzeichen nach außen.
+    offset: Option<(ElementId, f64, f64)>,
+    /// Zuletzt abgelehnt (der Stapel würde ungültig).
+    blocked: bool,
+}
+
+/// Was das Ziehen an einer gestapelten Wand tut (Statuszeile, OG Phase 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StackDrag {
+    /// Gelöst: nur die OG-Wand.
+    Free,
+    /// Gekoppelt mit Strg: nur diese Wand, die Kette bleibt geschlossen.
+    Ctrl,
 }
 
 #[derive(Default)]
@@ -37,8 +54,9 @@ pub struct WallEdit {
     hover: Option<ElementId>,
     drag: Option<Drag>,
     mouse: Option<(f64, f64)>,
-    /// Die Maus steht über dem Fuß einer gekoppelten OG-Wand (kein Band).
-    coupled: bool,
+    /// Grundriss: nur die Füße des aktiven Geschosses greifen (Höhe des
+    /// Wandfußes in mm).
+    pub plan_z: Option<f64>,
     /// Schnittebene der Ansicht „Schnitt“ (Punkt, Normale zum Betrachter):
     /// Was davor liegt, ist weggeschnitten und verdeckt nichts.
     pub section: Option<(Vec3, Vec3)>,
@@ -155,7 +173,37 @@ impl WallEdit {
     }
 
     fn pick(&self, scene: &Scene, cam: &Camera, w: f64, h: f64, scale: f64) -> Option<ElementId> {
-        self.pick_in(scene.feet(), scene, cam, w, h, scale)
+        // Seit OG Phase 2 haben auch die gestapelten Füße ein Band
+        let plan_z = self.plan_z;
+        let on_level = move |foot: &[(Vec3, Vec3)]| {
+            plan_z.is_none_or(|z| foot.first().is_none_or(|(a, _)| (a.z - z).abs() < 1.0))
+        };
+        let feet = scene
+            .feet()
+            .chain(scene.stacked_feet())
+            .filter(move |(_, _, f)| on_level(f));
+        self.pick_in(feet, scene, cam, w, h, scale)
+    }
+
+    /// Was das laufende Ziehen an einer gestapelten Wand tut.
+    pub fn stack_drag(&self, scene: &Scene) -> Option<StackDrag> {
+        let d = self.drag.as_ref()?;
+        let (wall, ..) = d.offset?;
+        Some(match scene.model().stack_offset(wall) {
+            Some((_, true)) => StackDrag::Ctrl,
+            _ => StackDrag::Free,
+        })
+    }
+
+    /// Gezogene gestapelte Wand und ihr Versatz jetzt (Anzeige am Band).
+    pub fn dragged_offset(&self, scene: &Scene) -> Option<(ElementId, f64)> {
+        let (wall, ..) = self.drag.as_ref()?.offset?;
+        Some((wall, scene.model().stack_offset(wall)?.0))
+    }
+
+    /// Wand unter der Maus bzw. die gezogene.
+    pub fn active_wall(&self) -> Option<ElementId> {
+        self.drag.as_ref().map(|d| d.wall).or(self.hover)
     }
 
     /// Nächster Wandfuß unter der Maus unter den gegebenen Zügen.
@@ -227,28 +275,26 @@ impl WallEdit {
         };
         let changed = hover != self.hover;
         self.hover = hover;
-        self.coupled = enabled
-            && hover.is_none()
-            && self
-                .pick_in(scene.stacked_feet(), scene, cam, w, h, scale)
-                .is_some();
         changed
-    }
-
-    /// Hinweis an der Maus: Fuß einer gekoppelten OG-Wand (A52).
-    pub fn coupled_hint(&self) -> Option<&'static str> {
-        (self.coupled && self.drag.is_none() && self.mouse.is_some())
-            .then_some("gekoppelt: am EG-Wandfuß ziehen")
     }
 
     fn update_drag(&mut self, scene: &mut Scene, cam: &Camera, w: f64, h: f64) -> bool {
         let (Some(d), Some((mx, my))) = (&self.drag, self.mouse) else {
             return false;
         };
-        let Some(g) = drag_point(cam, mx, my, w, h, d.original.base) else {
+        let Some(g) = drag_point(cam, mx, my, w, h, d.z) else {
             return false;
         };
         let off = ((g - d.start).dot(d.normal) / STEP).round() * STEP;
+        if let Some((wall, o0, sign)) = d.offset {
+            let want = o0 + off * sign;
+            let now = scene.model().stack_offset(wall).map(|o| o.0);
+            let ok = now == Some(want) || scene.set_offset(wall, want);
+            if let Some(d) = self.drag.as_mut() {
+                d.blocked = !ok;
+            }
+            return ok && now != scene.model().stack_offset(wall).map(|o| o.0);
+        }
         match d.original.with_segment_moved(d.seg, off) {
             Some(moved) if scene.chain(d.run).is_some_and(|c| c.points != moved.points) => {
                 scene.set_run_points(d.run, &moved.points);
@@ -284,7 +330,6 @@ impl WallEdit {
             }
             Event::MouseLeave => {
                 self.mouse = None;
-                self.coupled = false;
                 if self.drag.is_none() {
                     out.redraw = self.hover.take().is_some();
                 }
@@ -293,7 +338,7 @@ impl WallEdit {
                 button: MouseButton::Left,
                 x,
                 y,
-                ..
+                mods,
             } => {
                 self.mouse = Some((x, y));
                 self.refresh(scene, cam, w, h, scale, enabled);
@@ -301,16 +346,37 @@ impl WallEdit {
                     return out;
                 };
                 out.consumed = true;
-                let Some((run, seg)) = scene.model().segment_of(wall) else {
+                let Some((grip_run, grip_seg)) = scene.model().segment_of(wall) else {
+                    return out;
+                };
+                let Some(grip) = scene.chain(grip_run) else {
+                    return out;
+                };
+                let (z, normal) = (grip.base, grip.segment_normal(grip_seg));
+                // Gestapelt (OG Phase 2): gelöst oder mit Strg nur der eigene
+                // Versatz; gekoppelt ohne Strg zieht der Fuß der Kette
+                let ctrl = mods.ctrl;
+                let target = match scene.model().stack_offset(wall) {
+                    Some((o, linked)) if !linked || ctrl => {
+                        Some((wall, Some((wall, o, grip.outward_sign()))))
+                    }
+                    Some(_) => {
+                        let foot = scene.model().chain_foot(wall);
+                        let off = scene.model().stack_offset(foot).filter(|s| !s.1);
+                        Some((foot, off.map(|(o, _)| (foot, o, grip.outward_sign()))))
+                    }
+                    None => Some((wall, None)),
+                };
+                let Some((moving, offset)) = target else {
+                    return out;
+                };
+                let Some((run, seg)) = scene.model().segment_of(moving) else {
                     return out;
                 };
                 let Some(original) = scene.chain(run) else {
                     return out;
                 };
-                let (Some(start), Some(normal)) = (
-                    drag_point(cam, x, y, w, h, original.base),
-                    original.segment_normal(seg),
-                ) else {
+                let (Some(start), Some(normal)) = (drag_point(cam, x, y, w, h, z), normal) else {
                     return out;
                 };
                 self.drag = Some(Drag {
@@ -319,9 +385,12 @@ impl WallEdit {
                     seg,
                     start,
                     normal,
+                    z,
                     original: original.clone(),
+                    offset,
+                    blocked: false,
                 });
-                scene.begin("Wand verschieben");
+                scene.begin("Wand verschoben");
                 out.redraw = true;
             }
             Event::MouseUp {
@@ -410,10 +479,21 @@ impl WallEdit {
             return out;
         }
 
-        // Beim Ziehen: ursprüngliche Lage gestrichelt
+        // Beim Ziehen: ursprüngliche Lage gestrichelt; an einer gestapelten
+        // Wand zusätzlich die Lage des Partners darunter auf ihrer Höhe
         if let Some(d) = &self.drag {
             if let Some(&(a, b)) = d.original.outer_foot().get(d.seg) {
                 out.push(line(a, b, col.drag_ghost, 1.5, 6.0));
+            }
+            let m = scene.model();
+            let partner = d
+                .offset
+                .and_then(|(w, ..)| m.wall_below(w))
+                .and_then(|w| m.segment_of(w))
+                .and_then(|(run, k)| scene.foot(run).and_then(|f| f.get(k).copied()));
+            if let Some((a, b)) = partner {
+                let up = |p: Vec3| vec3(p.x, p.y, d.z);
+                out.push(line(up(a), up(b), theme.ui.link_on.to_f32(), 1.5, 6.0));
             }
         }
         // Sichtbar nur das Segment unter der Maus bzw. das gezogene
@@ -657,7 +737,7 @@ mod tests {
     /// A52: Der Fuß einer gekoppelten OG-Wand hat kein Band, nur den Hinweis
     /// „gekoppelt: am EG-Wandfuß ziehen“; am EG-Fuß greift das Band.
     #[test]
-    fn og_wandfuss_zeigt_nur_den_hinweis() {
+    fn og_wandfuss_hat_ein_band() {
         let mut s = Scene::new();
         s.open_building_dialog();
         let eg = s
@@ -691,13 +771,13 @@ mod tests {
             let (a, b) = s.foot(run).unwrap()[0];
             let (x, y) = at(&c, (a + b) * 0.5);
             e.handle(&Event::MouseMove { x, y, mods: m }, s, &c, W, H, 1.0, true);
-            (e.hover, e.coupled_hint())
+            e.hover
         };
-        let (hover, hint) = hover_at(&mut e, &mut s, og);
-        assert_eq!(hover, None, "kein Band am OG-Fuß");
-        assert_eq!(hint, Some("gekoppelt: am EG-Wandfuß ziehen"));
-        let (hover, hint) = hover_at(&mut e, &mut s, eg);
-        assert!(hover.is_some() && hint.is_none());
+        // Seit OG Phase 2 hat auch der OG-Fuß ein Band
+        let og_wall = s.model().wall_at(og, 0);
+        assert_eq!(hover_at(&mut e, &mut s, og), og_wall);
+        let eg_wall = s.model().wall_at(eg, 0);
+        assert_eq!(hover_at(&mut e, &mut s, eg), eg_wall);
     }
 
     #[test]

@@ -244,8 +244,10 @@ fn floor_props(
             100.0,
             600.0,
         )],
+        sections: soffit_section(m, id).into_iter().collect(),
         notes,
         chip: None,
+        ..Default::default()
     })
 }
 
@@ -299,6 +301,7 @@ fn strip_props(
         fields: Vec::new(),
         notes,
         chip: None,
+        ..Default::default()
     })
 }
 
@@ -357,9 +360,10 @@ fn foundation_props(
             ]);
             (f.material, f.width, q.map(|q| q.1.volume))
         }
-        ElementKind::Wall(_) | ElementKind::Floor(_) | ElementKind::EdgeStrip { .. } => {
-            return None
-        }
+        ElementKind::Wall(_)
+        | ElementKind::Floor(_)
+        | ElementKind::EdgeStrip { .. }
+        | ElementKind::SoffitInsulation { .. } => return None,
     };
     values.push(("Bauabschnitt", e.seq.to_string()));
     let mut notes = m.warnings(id);
@@ -377,6 +381,7 @@ fn foundation_props(
         fields,
         notes,
         chip: None,
+        ..Default::default()
     })
 }
 
@@ -403,6 +408,7 @@ pub fn props(scene: &Scene, id: ElementId) -> Option<Props> {
         ElementKind::Wall(_) => {}
         ElementKind::Floor(_) => return floor_props(scene, id, values),
         ElementKind::EdgeStrip { .. } => return strip_props(scene, id, values),
+        ElementKind::SoffitInsulation { floor } => return soffit_props(scene, id, floor, values),
         _ => return foundation_props(scene, id, values),
     }
     if let Some(q) = q {
@@ -439,6 +445,7 @@ pub fn props(scene: &Scene, id: ElementId) -> Option<Props> {
             })
             .collect()
     });
+    let stack = stack_row(scene, id);
     let chip = set.map(|s| {
         let mut c = type_chip(m, scene.theme(), s);
         // Eigene Merkmale überschreiben die des Typs
@@ -449,10 +456,114 @@ pub fn props(scene: &Scene, id: ElementId) -> Option<Props> {
         values,
         layer_set: set.map_or(String::new(), |s| s.name.clone()),
         layers,
-        fields: recess_field(m, id).into_iter().collect(),
+        fields: recess_field(m, id)
+            .into_iter()
+            .chain(stack.as_ref().map(|(w, _)| offset_field(m, *w)))
+            .collect(),
         notes: m.warnings(id),
         chip,
+        stack: stack.map(|(_, st)| st),
         ..Default::default()
+    })
+}
+
+/// Kopplung der Wand `id` (OG Phase 2): die gestapelte Wand selbst oder am
+/// EG-Segment ihr Partner oben, mit der Zeile „Kopplung“.
+fn stack_row(scene: &Scene, id: ElementId) -> Option<(ElementId, crate::ui::Stack)> {
+    let m = scene.model();
+    let upper = scene.stack_wall(id)?;
+    let (offset, linked) = m.stack_offset(upper)?;
+    // Am oberen Segment der Partner darunter (EG oder ein tieferes OG)
+    let below_eg = m
+        .wall_below(upper)
+        .and_then(|w| m.element(w))
+        .and_then(|b| m.storey(b.storey))
+        .is_some_and(|st| st.short == "EG");
+    let partner = match (upper == id, below_eg) {
+        (true, true) => "mit EG",
+        _ => "mit OG",
+    };
+    Some((
+        upper,
+        crate::ui::Stack {
+            linked,
+            partner,
+            offset: offset != 0.0,
+        },
+    ))
+}
+
+/// Feld „Versatz“ (m, + außen) der gestapelten Wand `wall`.
+fn offset_field(m: &Model, wall: ElementId) -> FieldRow {
+    FieldRow {
+        field: Field::Offset,
+        label: "Versatz",
+        value: m.stack_offset(wall).map_or(0.0, |o| o.0),
+        min: -5000.0,
+        max: 5000.0,
+        zero: false,
+    }
+}
+
+/// Paneel für eine Untersichtdämmung (OG-17): Fläche zuerst; ihre Dicke
+/// steht bei der Decke und lässt sich auch hier ändern.
+fn soffit_props(
+    scene: &Scene,
+    id: ElementId,
+    floor: ElementId,
+    mut values: Vec<(&'static str, String)>,
+) -> Option<Props> {
+    let m = scene.model();
+    let e = m.element(id)?;
+    let q = scene.soffit_qto(id);
+    let (t, vol) = (
+        q.as_ref().map_or(0.0, |q| q.thickness),
+        q.as_ref().map(|q| q.volume),
+    );
+    if let Some(q) = q {
+        values.extend([
+            ("Fläche", format!("{} m²", de(q.area / 1e6, 2))),
+            ("Volumen", format!("{} m³", de(q.volume / 1e9, 3))),
+        ]);
+    }
+    values.push((
+        "Decke",
+        m.element(floor).map_or("–".into(), |f| f.number.clone()),
+    ));
+    values.push(("Bauabschnitt", e.seq.to_string()));
+    let mat = m.soffit_material_of(floor);
+    Some(Props {
+        values,
+        layer_set: mat
+            .and_then(|x| m.material(x))
+            .map_or(String::new(), |x| x.name.clone()),
+        layers: mat
+            .and_then(|x| solid_layer(m, x, t, vol))
+            .into_iter()
+            .collect(),
+        set_label: "Baustoff",
+        sections: soffit_section(m, floor).into_iter().collect(),
+        notes: m.warnings(id),
+        ..Default::default()
+    })
+}
+
+/// Abschnitt „Untersicht“ an einer Decke, die über einem Vorsprung auskragt.
+fn soffit_section(m: &Model, floor: ElementId) -> Option<crate::ui::Section> {
+    m.soffit_of(floor)?;
+    let ElementKind::Floor(f) = &m.element(floor)?.kind else {
+        return None;
+    };
+    Some(crate::ui::Section {
+        title: "Untersicht",
+        fields: vec![field(
+            Field::Soffit,
+            "Dämmung",
+            f.soffit.thickness,
+            sk_model::MIN_SOFFIT,
+            sk_model::MAX_SOFFIT,
+        )],
+        hint: "nur unter Vorsprüngen",
     })
 }
 
@@ -640,6 +751,21 @@ fn outline(
                 return Vec::new();
             }
             prism(&q, b, t.min(scene.plan_cut()));
+        }
+        (None, Some(ElementKind::SoffitInsulation { floor })) => {
+            // Untersichtdämmung: je auskragendem Segment ein Streifen
+            let Some(slab) = m.run_of(*floor).and_then(|r| scene.floor(r)) else {
+                return Vec::new();
+            };
+            let Some((b, t)) = slab.soffit_band() else {
+                return Vec::new();
+            };
+            if view == ViewKind::Plan && b >= scene.plan_cut() {
+                return Vec::new();
+            }
+            for (_, q) in &slab.soffits {
+                prism(q, b, t.min(scene.plan_cut()));
+            }
         }
         (None, Some(kind)) => {
             let Some(found) = m.run_of(id).and_then(|r| scene.foundation(r)) else {
