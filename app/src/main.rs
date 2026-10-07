@@ -20,6 +20,7 @@ mod hints;
 mod link_view;
 mod material_view;
 mod menu;
+mod musterprobe;
 mod nav;
 mod pattern_view;
 #[cfg(test)]
@@ -5468,7 +5469,15 @@ fn new_model(company: Option<&catalog::Company>) -> sk_model::Model {
 }
 
 fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
-    let gl = Gl::load(|name| surface.gl_proc(name))?;
+    // `--musterprobe <ordner>` (B7): ohne GL-Kontext Exit-Code 2
+    let probe = std::env::args().skip_while(|a| a != "--musterprobe").nth(1);
+    let gl = match Gl::load(|name| surface.gl_proc(name)) {
+        Err(e) if probe.is_some() => {
+            eprintln!("musterprobe: kein GL-Kontext: {e}");
+            std::process::exit(2);
+        }
+        r => r?,
+    };
     // Farbschema aus %APPDATA%\Skizzeo\einstellungen.txt (fehlt sie: dunkel)
     let mut settings = settings::Settings::new(
         std::env::args(),
@@ -5497,7 +5506,19 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     }
     let mut scene = Scene::with_model(new_model(company.as_ref()));
     scene.set_theme(&theme);
-    let renderer = Renderer::new(gl, style(&theme.env))?;
+    let mut renderer = match Renderer::new(gl, style(&theme.env)) {
+        Err(e) if probe.is_some() => {
+            eprintln!("musterprobe: kein GL-Kontext: {e}");
+            std::process::exit(2);
+        }
+        r => r?,
+    };
+    if let Some(dir) = probe {
+        let code = musterprobe::run(std::path::Path::new(&dir), &theme, |l, m, v, s| {
+            renderer.pattern_probe(l, m, v, s)
+        });
+        std::process::exit(code);
+    }
     let cam = start_camera();
     let (w, h) = surface.size();
     // Außenwand-Aufbau aus der Bibliothek: Vorschau beim Zeichnen und Anzeige im Paneel

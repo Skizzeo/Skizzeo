@@ -433,6 +433,8 @@ pub struct Renderer {
     preview_target: Option<PreviewTarget>,
     /// Deckkraft des festgehaltenen vorigen Vorschaubilds.
     preview_fade: f32,
+    /// Probe `--musterprobe`: Muster in voller Nähe, ohne Kantenglättung.
+    preview_exact: bool,
 }
 
 const SKY_MAX: usize = 16;
@@ -1002,10 +1004,14 @@ float pattern_scale(int kind, vec4 p8, vec4 p9) {
 // Farbe der Oberfläche (Putz, Sichtbeton). Unter 1,5 px Musterteil ohne
 // Hash (P3), bis 3 px weich (P5). Waagerechte Flächen: Platten und
 // Naturstein mit Raster, Putz mit Korn, die übrigen in der Mischfarbe.
+// Probe `--musterprobe`: feste Bildpunktgröße (mm) statt der Ableitung,
+// 0 = aus
+uniform float u_px_fix;
 vec3 pattern_rgb(vec3 p, vec3 n, vec3 far, vec3 surf, vec4 p8, vec4 p9, vec4 p10, vec4 p11, vec4 p12, vec4 p13, vec4 p14) {
     vec3 q = pattern_uv(p, n);
     float px = max(length(vec2(dFdx(q.x), dFdy(q.x))), length(vec2(dFdx(q.y), dFdy(q.y))));
     px = max(px, 1e-6);
+    if (u_px_fix > 0.0) px = u_px_fix;
     int kind = int(p8.x + 0.5);
     if (q.z < 0.5 && kind != 2 && kind != 5 && kind != 6) return far;
     float fade = smoothstep(1.5, 3.0, pattern_scale(kind, p8, p9) / px);
@@ -1372,6 +1378,7 @@ impl Renderer {
                 preview_bond_tex: 0,
                 preview_target: None,
                 preview_fade: 0.0,
+                preview_exact: false,
             })
         }
     }
@@ -1786,6 +1793,8 @@ impl Renderer {
                 vec3(gl, q, c"u_light", st.light);
                 let ambient = if it.lit { st.ambient } else { 1.0 };
                 gl.glUniform1f(loc(gl, q, c"u_ambient"), ambient);
+                let exact = if self.preview_exact { 1e-3 } else { 0.0 };
+                gl.glUniform1f(loc(gl, q, c"u_px_fix"), exact);
                 let drawing = view.paper.is_some();
                 gl.glUniform1i(loc(gl, q, c"u_drawing"), drawing as GLint);
                 gl.glUniform1i(loc(gl, q, c"u_patterns"), view.patterns as GLint);
@@ -1836,6 +1845,64 @@ impl Renderer {
             gl.glBindVertexArray(0);
         }
         Ok(())
+    }
+
+    /// Probe `--musterprobe` (B7): zeichnet `mesh` mit dem Flächen-Shader in
+    /// ein `w` × `h`-Bild, ohne Licht, ohne Kanten und ohne Ausblenden in
+    /// die Ferne (volle Nähe), und liest es als RGBA8 zurück, Zeile 0 oben.
+    pub fn pattern_probe(
+        &mut self,
+        looks: &Looks,
+        mesh: &MeshData,
+        view: View,
+        (w, h): (i32, i32),
+    ) -> Result<Vec<u8>, String> {
+        if let Some(e) = &self.pattern_error {
+            return Err(format!("Muster im Shader nicht übersetzt: {e}"));
+        }
+        let keep = self.preview.take();
+        self.set_preview_looks(looks);
+        self.set_preview_mesh(0, mesh);
+        self.preview = Some(Preview {
+            at: [0, 0, w, h],
+            before: usize::MAX,
+            items: vec![PreviewItem {
+                rect: [0, 0, w, h],
+                clip: None,
+                view,
+                mesh: 0,
+                lit: false,
+                sky: false,
+            }],
+        });
+        self.preview_exact = true;
+        let r = self.render_preview();
+        self.preview_exact = false;
+        self.preview = keep;
+        self.preview_dirty = true;
+        r?;
+        let Some(tg) = self.preview_target.as_ref() else {
+            return Err("Vorschaupuffer fehlt.".into());
+        };
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        unsafe {
+            let gl = &self.gl;
+            gl.glBindFramebuffer(READ_FRAMEBUFFER, tg.fbo);
+            gl.glReadBuffer(COLOR_ATTACHMENT0);
+            gl.glPixelStorei(PACK_ALIGNMENT, 1);
+            gl.glReadPixels(
+                0,
+                0,
+                w,
+                h,
+                RGBA,
+                UNSIGNED_BYTE,
+                px.as_mut_ptr() as *mut c_void,
+            );
+            gl.glBindFramebuffer(READ_FRAMEBUFFER, 0);
+        }
+        let row = (w * 4) as usize;
+        Ok(px.chunks(row).rev().flatten().copied().collect())
     }
 
     pub fn capture_scene(&mut self) {

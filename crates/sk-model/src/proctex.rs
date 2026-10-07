@@ -1238,6 +1238,71 @@ fn masonry_rgb(p: &Pattern, u: f64, v: f64) -> [u8; 3] {
     to_u8(c)
 }
 
+/// Stein des Mauerwerks für die Probe `--musterprobe` (b7-kennwerte §1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProbeStone {
+    /// Schicht und Steinanfang (wilder Verband: Viertel, sonst Spalte).
+    pub row: i32,
+    pub start: i32,
+    pub head: bool,
+    /// Kernfarbe: Nummer der Palettenfarbe (Köpfe nach `hpal`).
+    pub core: usize,
+    pub geflammt: bool,
+}
+
+/// Familie am Punkt (u, v) aus der Rechnung, nicht aus der Farbe: 0/1/2 =
+/// erste/zweite/dritte Palettenfarbe (geflammte Enden zählen zur
+/// Endfarbe), `None` = Fuge; dazu der Stein. Nur Mauerwerk, sonst `None`.
+pub fn masonry_probe(p: &Pattern, u: f64, v: f64) -> Option<(usize, ProbeStone)> {
+    let Pattern::Masonry {
+        len,
+        h,
+        joint,
+        bond,
+        palette,
+        hpal,
+        flame,
+        fend,
+        seed,
+        ..
+    } = p
+    else {
+        return None;
+    };
+    let sp = locate(*len as f64, *h as f64, *joint as f64, *bond, *seed, u, v);
+    if sp.joint {
+        return None;
+    }
+    let hs = hash(sp.row, sp.stone, *seed);
+    let pal = match hpal {
+        Some(hp) if sp.head => hp,
+        _ => palette,
+    };
+    let (core, _) = texgen::pick(pal, hs);
+    let mut fam = core;
+    let mut geflammt = false;
+    if *flame > 0.0 && !sp.head && core == 0 {
+        if let Some((a, silver)) =
+            texgen::flame_at(sp.row, sp.stone, *seed, *flame, *fend, &sp.s, u, v)
+        {
+            geflammt = true;
+            if a > 0.5 {
+                fam = if silver { 2 } else { 1 };
+            }
+        }
+    }
+    Some((
+        fam,
+        ProbeStone {
+            row: sp.row,
+            start: sp.stone,
+            head: sp.head,
+            core,
+            geflammt,
+        },
+    ))
+}
+
 /// Farbe des Musters an (u, v) in mm; `base` ist die Farbe der Oberfläche
 /// (Putz, Sichtbeton). Ohne Ausblenden in die Ferne (das macht der Shader).
 pub fn sample(p: &Pattern, base: [u8; 3], u: f64, v: f64) -> [u8; 3] {
