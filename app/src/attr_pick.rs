@@ -46,11 +46,24 @@ pub struct Tiles {
     stamp: Option<(u64, u64, u32)>,
     theme: Option<Theme>,
     tiles: Vec<(TileKey, Canvas)>,
-    /// Ausschnitte des Fensterbildes mit fertiger Vorschau: Schlüssel,
-    /// Lage (ganze Bildpunkte) und Bild.
-    previews: Vec<((u8, TileKey), [i32; 4], Canvas)>,
+    /// Ausschnitte des Fensterbildes mit fertiger Vorschau.
+    previews: Vec<Preview>,
     /// Leinwand der Listenzeilen vom letzten Bild ([`Canvas::reuse`]).
     rows: Option<Canvas>,
+}
+
+/// Gemerkte große Vorschau: Schlüssel, Lage (ganze Bildpunkte) und Bild.
+struct Preview {
+    key: (u8, TileKey),
+    at: [i32; 4],
+    img: Canvas,
+    /// `None`: fertig gemalt. Sonst in der Mischfarbe gemalt, weil die
+    /// Verbandstabelle noch im Hintergrund lief; der Zähler
+    /// ([`proctex::bond_generation`]) von damals.
+    waiting: Option<u64>,
+    /// Bild in der Mischfarbe und Beginn, solange es über dem fertigen
+    /// ausblendet (`anim_ms`).
+    fade: Option<(Canvas, std::time::Instant)>,
 }
 
 impl std::fmt::Debug for Tiles {
@@ -90,13 +103,16 @@ impl Tiles {
 
     /// Große Vorschau im Bereich `r` von `c`: beim ersten Mal mit `paint`
     /// gemalt und der Ausschnitt gemerkt, danach nur kopiert (M2). `slot`
-    /// unterscheidet Vorschauen desselben Eintrags.
+    /// unterscheidet Vorschauen desselben Eintrags. `ready` = `false`: `paint`
+    /// malt vorläufig (Mischfarbe, Tabelle im Hintergrund); sobald `ready`
+    /// kommt, wird neu gemalt und das vorläufige Bild blendet aus.
     pub fn preview(
         &mut self,
         c: &mut Canvas,
         slot: u8,
         key: TileKey,
         r: Rect,
+        ready: bool,
         paint: impl FnOnce(&mut Canvas),
     ) {
         let (ox, oy) = c.origin();
@@ -112,21 +128,68 @@ impl Tiles {
             at[2] as f32 + ox,
             at[3] as f32 + oy,
         );
-        if let Some((_, _, img)) = self
+        let anim = self.theme.as_ref().map_or(0.0, |t| t.size.anim_ms);
+        let found = self
             .previews
             .iter()
-            .find(|(k, a, _)| *k == (slot, key) && *a == at)
-        {
-            c.copy_rect_from(img, x0, y0, x1, y1);
-            return;
+            .position(|p| p.key == (slot, key) && p.at == at);
+        let mut old = None;
+        if let Some(i) = found {
+            let p = &mut self.previews[i];
+            if p.waiting.is_none() || !ready {
+                if p.waiting.is_some() {
+                    // eine andere Tabelle wurde fertig: weiter warten
+                    p.waiting = Some(proctex::bond_generation());
+                }
+                c.copy_rect_from(&p.img, x0, y0, x1, y1);
+                if let Some((img, t0)) = &p.fade {
+                    let f = t0.elapsed().as_secs_f32() * 1000.0 / anim.max(1.0);
+                    if f < 1.0 {
+                        c.blit_scaled(img, x0, y0, 1.0, 1.0 - crate::scene::ease_out(f));
+                    } else {
+                        p.fade = None;
+                    }
+                }
+                return;
+            }
+            // Tabelle fertig: neu malen, das vorläufige Bild blendet aus
+            if anim > 0.0 {
+                old = Some((self.previews.remove(i).img, std::time::Instant::now()));
+            }
         }
         paint(c);
         let (w, h) = ((at[2] - at[0]).max(0), (at[3] - at[1]).max(0));
         let mut img = Canvas::new(w as usize, h as usize);
         img.set_origin(x0, y0);
         img.copy_rect_from(c, x0, y0, x1, y1);
-        self.previews.retain(|(k, _, _)| *k != (slot, key));
-        self.previews.push(((slot, key), at, img));
+        if let Some((o, _)) = &old {
+            c.blit_scaled(o, x0, y0, 1.0, 1.0);
+        }
+        self.previews.retain(|p| p.key != (slot, key));
+        self.previews.push(Preview {
+            key: (slot, key),
+            at,
+            img,
+            waiting: (!ready).then(proctex::bond_generation),
+            fade: old,
+        });
+    }
+
+    /// Wartet eine Vorschau auf ihre Verbandstabelle oder blendet gerade
+    /// ein? Dann fragt das Fenster in kurzen Abständen nach
+    /// ([`Tiles::tick`]).
+    pub fn busy(&self) -> bool {
+        self.previews
+            .iter()
+            .any(|p| p.waiting.is_some() || p.fade.is_some())
+    }
+
+    /// Neu zeichnen, weil eine Tabelle fertig wurde oder eingeblendet wird.
+    pub fn tick(&self) -> bool {
+        let g = proctex::bond_generation();
+        self.previews
+            .iter()
+            .any(|p| p.fade.is_some() || p.waiting.is_some_and(|w| w != g))
     }
 
     /// Leinwand für die Listenzeilen, durchsichtig in der Größe `w` × `h`;
@@ -512,7 +575,9 @@ pub(crate) fn paint_cube(c: &mut Canvas, r: Rect, o: &Surface, t: &Theme, s: f32
         .pattern
         .as_ref()
         .filter(|p| !matches!(p, Pattern::Foreign(_)));
-    match patterned {
+    // Tabelle des wilden Verbands noch im Hintergrund: Mischfarbe
+    let drawn = patterned.filter(|p| proctex::pattern_ready(p));
+    match drawn {
         // Paket 6: Muster auf den Seiten um die Ecke herum, der Deckel in
         // der Mischfarbe (waagerechte Flächen ohne Fugen)
         Some(p) => {
@@ -528,9 +593,10 @@ pub(crate) fn paint_cube(c: &mut Canvas, r: Rect, o: &Surface, t: &Theme, s: f32
             pattern_face(c, [down, right_b, mid], (edge, edge), p, o.color, &south);
         }
         None => {
-            poly(c, &[top, right, mid, left], shade(o.color, n_top));
-            poly(c, &[left, mid, down, left_b], shade(o.color, n_west));
-            poly(c, &[mid, right, right_b, down], shade(o.color, n_south));
+            let col = patterned.map_or(o.color, |p| proctex::mix(p, o.color));
+            poly(c, &[top, right, mid, left], shade(col, n_top));
+            poly(c, &[left, mid, down, left_b], shade(col, n_west));
+            poly(c, &[mid, right, right_b, down], shade(col, n_south));
         }
     }
     // Aufgeschnittene Ecke: obere Hälfte der Südseite nahe der Ecke, der
@@ -638,9 +704,24 @@ fn pattern_face(
     c.blit(&img, x0 as i32, y0 as i32);
 }
 
-/// Ansichtskachel eines Musters (Paket 6): Fläche in der Farbe der
-/// Ansichtsfläche, Fugen als Mittellinien im Stift „Ansichtsmuster“, 8
-/// Schichten hoch. Putz hat keine Fugen und bleibt leer.
+/// Hat das Muster Fugen für die Ansichtskachel? Putz und fugenloser
+/// Sichtbeton nicht.
+pub(crate) fn has_joints(p: &Pattern) -> bool {
+    match p {
+        Pattern::Masonry { .. }
+        | Pattern::Timber { .. }
+        | Pattern::Tiles { .. }
+        | Pattern::Stone { .. } => true,
+        Pattern::Concrete { joint, .. } => *joint > 0.0,
+        Pattern::Plaster { .. } | Pattern::Foreign(_) => false,
+    }
+}
+
+/// Ansichtskachel eines Musters (Paket 6, 7a): Fläche in der Farbe der
+/// Ansichtsfläche, Fugen als Mittellinien im Stift „Ansichtsmuster“;
+/// Mauerwerk 8 Schichten hoch, die anderen Arten so hoch wie die Kante des
+/// Vorschauwürfels. Ohne Fugen, oder solange die Verbandstabelle im
+/// Hintergrund läuft, bleibt die Fläche leer.
 pub(crate) fn paint_elevation_tile(
     c: &mut Canvas,
     r: Rect,
@@ -650,13 +731,20 @@ pub(crate) fn paint_elevation_tile(
     s: f32,
 ) {
     c.fill_rect(r.x, r.y, r.w, r.h, Rgba::from_rgb8(o.color));
-    let Some(p @ Pattern::Masonry { h, joint, .. }) = o.pattern.as_ref() else {
+    let Some(p) = o.pattern.as_ref() else {
         return;
     };
+    if !has_joints(p) || !proctex::pattern_ready(p) {
+        return;
+    }
     let pen = m.attr().pen(m.attr().display().pattern.pen);
     let ink = pen.map_or(t.env.edge, |p| Rgba::from_rgb8(p.color));
     let lw = (pen.map_or(0.13, |p| p.width_mm) * t.px_per_mm * s).max(0.8);
-    let k = r.h as f64 / (8.0 * (*h as f64 + *joint as f64));
+    let high = match p {
+        Pattern::Masonry { h, joint, .. } => 8.0 * (*h as f64 + *joint as f64),
+        _ => cube_edge_mm(p),
+    };
+    let k = r.h as f64 / high;
     let rect = sk_math::Rect2::new(0.0, 0.0, r.w as f64 / k, r.h as f64 / k);
     let mut path = Path::new();
     for (a, b) in proctex::joint_lines(p, rect) {
@@ -705,5 +793,43 @@ mod tests {
         // Andere Skalierung: neu
         tiles.sync(s.model(), &t, 1.5);
         assert!(tiles.tiles.is_empty());
+    }
+
+    /// Koordinator #35: Eine Vorschau, die auf ihre Verbandstabelle wartet,
+    /// bleibt vorläufig, bis `ready` kommt; dann wird neu gemalt und das
+    /// vorläufige Bild blendet in `anim_ms` aus.
+    #[test]
+    fn vorschau_wartet_und_blendet_ein() {
+        let m = Model::with_seed(5);
+        let t = Theme::dark();
+        let id = m.attr().surfaces().iter().next().expect("Oberfläche").0;
+        let key = TileKey::Surface(id);
+        let r = Rect::new(0.0, 0.0, 20.0, 20.0);
+        let mut tiles = Tiles::default();
+        tiles.sync(&m, &t, 1.0);
+        let mut c = Canvas::new(40, 40);
+        let red = Rgba(200, 0, 0, 255);
+        let blue = Rgba(0, 0, 200, 255);
+        let px = |c: &Canvas| c.to_rgba8()[(5 * 40 + 5) * 4..][..3].to_vec();
+        tiles.preview(&mut c, 0, key, r, false, |c| {
+            c.fill_rect(0.0, 0.0, 20.0, 20.0, red)
+        });
+        assert!(tiles.busy(), "wartet auf die Tabelle");
+        tiles.preview(&mut c, 0, key, r, false, |_| panic!("nur kopieren"));
+        assert!(t.size.anim_ms > 0.0);
+        tiles.preview(&mut c, 0, key, r, true, |c| {
+            c.fill_rect(0.0, 0.0, 20.0, 20.0, blue)
+        });
+        assert_eq!(
+            px(&c),
+            vec![200, 0, 0],
+            "vorläufiges Bild liegt noch darüber"
+        );
+        assert!(tiles.busy() && tiles.tick(), "blendet ein");
+        let f = tiles.previews[0].fade.as_mut().expect("Einblendung");
+        f.1 -= std::time::Duration::from_secs(5);
+        tiles.preview(&mut c, 0, key, r, true, |_| panic!("nur kopieren"));
+        assert_eq!(px(&c), vec![0, 0, 200], "fertig eingeblendet");
+        assert!(!tiles.busy() && !tiles.tick());
     }
 }

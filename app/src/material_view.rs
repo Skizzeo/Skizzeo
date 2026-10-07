@@ -2007,12 +2007,13 @@ impl MaterialView {
     }
 
     pub fn wait(&self, t: &Theme) -> Option<Duration> {
-        self.animating(t).then_some(Duration::from_millis(16))
+        (self.animating(t) || self.tiles.borrow().busy()).then_some(Duration::from_millis(16))
     }
 
-    /// Ein Bild weiter: `true`, wenn neu zu zeichnen ist.
+    /// Ein Bild weiter: `true`, wenn neu zu zeichnen ist (auch wenn eine
+    /// Verbandstabelle der Würfelvorschau fertig wurde oder einblendet).
     pub fn tick(&mut self, t: &Theme) -> bool {
-        let was = self.more_at.is_some();
+        let was = self.more_at.is_some() || self.tiles.borrow().tick();
         if self.more_at.is_some() && !self.animating(t) {
             self.more_at = None;
         }
@@ -2585,8 +2586,14 @@ impl MaterialView {
             let mut tiles = self.tiles.borrow_mut();
             tiles.sync(&self.work, t, s);
             let tk = attr_pick::TileKey::Material(key);
+            let cube_ready = self
+                .work
+                .attr()
+                .surface(d.surface)
+                .and_then(|o| o.pattern.as_ref())
+                .is_none_or(sk_model::proctex::pattern_ready);
             match i {
-                0 => tiles.preview(c, 10, tk, r, |c| {
+                0 => tiles.preview(c, 10, tk, r, true, |c| {
                     rounded(c, r, 6.0 * s, u.border);
                     rounded(
                         c,
@@ -2596,7 +2603,7 @@ impl MaterialView {
                     );
                     attr_pick::paint_fill_preview(c, inner, &self.work, t, s, d);
                 }),
-                1 => tiles.preview(c, 11, tk, r, |c| {
+                1 => tiles.preview(c, 11, tk, r, true, |c| {
                     rounded(c, r, 6.0 * s, u.border);
                     rounded(
                         c,
@@ -2619,7 +2626,7 @@ impl MaterialView {
                         col,
                     );
                 }),
-                _ => tiles.preview(c, 12, tk, r, |c| {
+                _ => tiles.preview(c, 12, tk, r, cube_ready, |c| {
                     rounded(c, r, 6.0 * s, u.border);
                     let ir = Rect::new(r.x + line, r.y + line, r.w - 2.0 * line, r.h - 2.0 * line);
                     if let Some(o) = self.work.attr().surface(d.surface) {

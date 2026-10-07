@@ -748,6 +748,20 @@ pub fn bond_table_ready(seed: u32) -> Option<std::sync::Arc<BondTable>> {
     None
 }
 
+/// Lässt sich das Muster sofort zeichnen? Der wilde Verband braucht seine
+/// Tabelle; fehlt sie, wird sie im Hintergrund gerechnet
+/// ([`bond_table_ready`]) und die Vorschau zeigt bis dahin die Mischfarbe.
+pub fn pattern_ready(p: &Pattern) -> bool {
+    match p {
+        Pattern::Masonry {
+            bond: Bond::Wild,
+            seed,
+            ..
+        } => bond_table_ready(*seed).is_some(),
+        _ => true,
+    }
+}
+
 /// Wird gerade eine Tabelle im Hintergrund gerechnet?
 pub fn bond_tables_pending() -> bool {
     !tables().1.is_empty()

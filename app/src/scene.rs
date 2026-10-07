@@ -641,7 +641,7 @@ fn morphable(a: &MeshData, b: &MeshData) -> bool {
 }
 
 /// ease-out 1 − (1 − u)³
-fn ease_out(u: f32) -> f32 {
+pub(crate) fn ease_out(u: f32) -> f32 {
     1.0 - (1.0 - u.clamp(0.0, 1.0)).powi(3)
 }
 

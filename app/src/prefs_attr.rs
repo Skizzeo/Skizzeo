@@ -10,7 +10,8 @@
 
 use super::*;
 use crate::attr_pick::{
-    fill_display, line_strip, paint_cube, paint_elevation_tile, paint_fill_preview, TileKey, Tiles,
+    fill_display, has_joints, line_strip, paint_cube, paint_elevation_tile, paint_fill_preview,
+    TileKey, Tiles,
 };
 use sk_model::proctex::{self, Bond, Pattern, BRICK_FORMATS};
 use sk_model::{Dash, Fill, FillId, FillKind, FillSpace, HatchLine, LineType, LineTypeId, Surface};
@@ -799,7 +800,7 @@ impl Prefs {
             (px + pw + gap, py)
         };
         let mut low = py + ph + 26.0 * s;
-        if matches!(o.pattern, Some(Pattern::Masonry { .. })) && ty + ph + 20.0 * s <= bottom {
+        if o.pattern.as_ref().is_some_and(has_joints) && ty + ph + 20.0 * s <= bottom {
             l.preview2 = Some(Rect::new(tx, ty, pw, ph));
             l.texts
                 .push(UiText::dim(tx, ty + ph + 16.0 * s, "Ansicht (Fugen)"));
@@ -1669,18 +1670,21 @@ impl Prefs {
                 Tab::LineTypes => self.paint_lt_preview(c, &mut tiles, pr, m, t, fonts, s),
                 Tab::Fills => {
                     if let Some((id, _)) = self.sel_fill(m) {
-                        tiles.preview(c, 0, TileKey::Fill(id), pr, |c| {
+                        tiles.preview(c, 0, TileKey::Fill(id), pr, true, |c| {
                             paint_fill_preview(c, pr, m, t, s, fill_display(m, id))
                         });
                     }
                 }
                 Tab::Surfaces => {
                     if let Some((id, o)) = self.sel_surf(m) {
-                        tiles.preview(c, 0, TileKey::Surface(id), pr, |c| {
+                        // wilder Verband: Tabelle über den Hintergrundweg,
+                        // bis dahin Mischfarbe, dann Einblendung
+                        let ready = o.pattern.as_ref().is_none_or(proctex::pattern_ready);
+                        tiles.preview(c, 0, TileKey::Surface(id), pr, ready, |c| {
                             paint_cube(c, pr, &o, t, s)
                         });
                         if let Some(r2) = l.preview2.map(at) {
-                            tiles.preview(c, 1, TileKey::Surface(id), r2, |c| {
+                            tiles.preview(c, 1, TileKey::Surface(id), r2, ready, |c| {
                                 paint_elevation_tile(c, r2, m, &o, t, s)
                             });
                         }
@@ -1741,7 +1745,7 @@ impl Prefs {
         let regular = fonts.regular.as_ref();
         let small = t.size.font_small * s;
         let row = r.h / PREVIEW_WIDTHS.len() as f32;
-        tiles.preview(c, 0, TileKey::LineType(id), r, |c| {
+        tiles.preview(c, 0, TileKey::LineType(id), r, true, |c| {
             for (i, mm) in PREVIEW_WIDTHS.iter().enumerate() {
                 let y = r.y + i as f32 * row;
                 let w = (mm * t.px_per_mm * s).max(0.6);

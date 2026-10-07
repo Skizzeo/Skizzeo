@@ -2842,18 +2842,32 @@ impl Prefs {
     }
 
     /// Wartezeit bis zum Ende des Aufblinkens.
+    /// Wartezeit bis zum Ende des Aufblinkens; solange eine Vorschau auf
+    /// ihre Verbandstabelle wartet oder einblendet, ein Bild (16 ms).
     pub fn wait(&self) -> Option<Duration> {
-        self.flash_until
-            .map(|u| u.saturating_duration_since(Instant::now()))
+        let flash = self
+            .flash_until
+            .map(|u| u.saturating_duration_since(Instant::now()));
+        let tiles = self
+            .tiles
+            .borrow()
+            .busy()
+            .then_some(Duration::from_millis(16));
+        match (flash, tiles) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
-    /// Aufblinken vorbei: `true`, wenn neu zu zeichnen ist.
+    /// Aufblinken vorbei, Verbandstabelle fertig oder Einblenden: `true`,
+    /// wenn neu zu zeichnen ist.
     pub fn tick(&mut self) -> bool {
+        let tiles = self.tiles.borrow().tick();
         if self.flash_until.is_some_and(|u| Instant::now() >= u) {
             self.flash_until = None;
             return true;
         }
-        false
+        tiles
     }
 
     pub fn cursor(&self) -> Cursor {
