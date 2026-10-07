@@ -34,6 +34,10 @@ pub enum Command {
     Catalog,
     /// Auswahl löschen (Entf, Paket „Löschen“).
     Delete,
+    /// Liste „Sicherungen …“ (F-13).
+    Backups,
+    /// Sicherung Nummer `i` der zuletzt gezeigten Liste öffnen.
+    OpenBackup(usize),
 }
 
 /// Antwort der Nachfrage „Änderungen speichern?“.
@@ -188,6 +192,7 @@ impl FileMenu {
                 enabled: true,
                 ..MenuItem::default()
             },
+            item("Sicherungen …", "", Command::Backups, true),
             separator(),
             item("Speichern", "Strg+S", Command::Save, save),
             item(

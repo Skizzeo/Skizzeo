@@ -5,6 +5,8 @@
 
 #[cfg(test)]
 mod abnahme;
+mod autosave;
+mod backup_card;
 mod camera;
 mod catalog;
 mod catalog_view;
@@ -167,8 +169,12 @@ const OVERLAY_WHEEL: usize = 16;
 const OVERLAY_HINT: usize = OVERLAY_WHEEL + wheel_view::SLOTS;
 const OVERLAY_CONFIRM: usize = OVERLAY_HINT + 1;
 const OVERLAY_CONTEXT: usize = OVERLAY_HINT + 2;
+/// Sicherungen (F-13): Abdunkeln und Startkarte bzw. Liste, über allem
+/// außer dem Hinweis an der Maus.
+const OVERLAY_CARD_SCRIM: usize = OVERLAY_HINT + 3;
+const OVERLAY_CARD: usize = OVERLAY_HINT + 4;
 /// Hinweis an der Maus, über allem.
-const OVERLAY_TIP: usize = OVERLAY_HINT + 3;
+const OVERLAY_TIP: usize = OVERLAY_HINT + 5;
 
 /// Blickrichtung (yaw, pitch) der Parallelansichten.
 fn view_direction(v: ViewKind) -> (f64, f64) {
@@ -524,6 +530,18 @@ struct App {
     confirm_dirty: bool,
     erase_fade: Option<u64>,
     erase_flash: Option<(u64, Vec<sk_model::ElementId>)>,
+    /// Automatisch sichern (F-13); `None` ohne `%APPDATA%` und bei
+    /// Bildvergleichen.
+    autosave: Option<autosave::AutoSave>,
+    /// Startkarte nach einem Absturz bzw. Liste „Sicherungen …“, ob ihr
+    /// Bild neu zu zeichnen ist, Beginn ihres Ausblendens (Uhr des
+    /// Geschossbogens, ms) und die Sicherungen der zuletzt gezeigten Liste.
+    card: Option<backup_card::BackupCard>,
+    card_dirty: bool,
+    card_fade: Option<u64>,
+    /// Lage des Kartenbilds (für das Ausblenden).
+    card_at: (i32, i32),
+    backups: Vec<autosave::Entry>,
 }
 
 /// Hinweis an der Maus (Text, Lage, seit wann gewünscht, schon sichtbar).
@@ -539,6 +557,9 @@ struct Notice {
     text: String,
     since: Option<Instant>,
     rect: (f64, f64, f64, f64),
+    /// So lange steht er; ein Klick öffnet den Bauteilkatalog (`catalog`).
+    time: std::time::Duration,
+    catalog: bool,
 }
 
 /// So lange steht ein Hinweis in der Statuszeile.
@@ -856,7 +877,12 @@ impl App {
     /// Ersetzt das Modell (Neu, Öffnen). Verlauf, Auswahl und angefangene
     /// Eingaben gehen weg; die Kamera zeigt das ganze Modell.
     fn replace_scene(&mut self, model: sk_model::Model) {
-        self.scene = Scene::with_model(model);
+        self.install_scene(Scene::with_model(model));
+    }
+
+    /// Wie [`App::replace_scene`] mit fertiger Szene.
+    fn install_scene(&mut self, scene: Scene) {
+        self.scene = scene;
         self.ui.dialog = false;
         self.snaps_key = None;
         self.scene.set_theme(&self.theme);
@@ -881,6 +907,11 @@ impl App {
         self.upload_model();
         self.overlay_dirty = true;
         self.refresh_cursor();
+        // Anderes Projekt: der Takt des Sicherns beginnt neu
+        let now = self.clock.elapsed();
+        if let Some(a) = self.autosave.as_mut() {
+            a.reset(now);
+        }
     }
 
     /// Befehl aus Menü, Titelleiste oder Kürzel ausführen. Neu, Öffnen,
@@ -910,6 +941,8 @@ impl App {
             Command::ClearRecent => self.recent.clear(),
             Command::Settings => self.open_prefs(),
             Command::Catalog => self.open_catalog(),
+            Command::Backups => self.open_backups(),
+            Command::OpenBackup(_) => self.confirm_then(c, surface),
             Command::Delete => self.delete_selection(),
         }
     }
@@ -1311,6 +1344,11 @@ impl App {
                 }
             }
             Command::Quit => self.quit = true,
+            Command::OpenBackup(i) => {
+                if let Some(e) = self.backups.get(i).cloned() {
+                    self.restore_backup(&e.path, e.original.as_deref(), surface);
+                }
+            }
             _ => {}
         }
     }
@@ -1379,6 +1417,10 @@ impl App {
                 self.remember(&path);
                 self.doc.mark_saved(path, self.scene.model().revision());
                 self.doc.saved_at = Some(sk_platform::local_time());
+                let now = self.clock.elapsed();
+                if let Some(a) = self.autosave.as_mut() {
+                    a.saved(&self.doc, now);
+                }
                 true
             }
             Err(e) => {
@@ -2037,6 +2079,9 @@ impl App {
         // Ein Klick während der Wände wachsen: sofort Endstand (K3b)
         if matches!(e, Event::MouseDown { .. }) && self.scene.skip_animation() {
             self.upload_model();
+        }
+        if self.card.is_some() && self.handle_card(e, surface) {
+            return !self.quit;
         }
         if self.save_dlg.is_some() && self.handle_save_dialog(e, surface) {
             return !self.quit;
@@ -3008,6 +3053,237 @@ impl App {
         );
     }
 
+    /// Startkarte nach einem Absturz (F-13) zeigen.
+    fn show_start_card(&mut self, f: autosave::Found) {
+        let now = std::time::SystemTime::now();
+        let card = backup_card::BackupCard::start(f, now, sk_platform::local_date_time());
+        self.open_card(card);
+    }
+
+    /// „Sicherungen …“ im Dateimenü: die Sicherungen als Liste.
+    fn open_backups(&mut self) {
+        let Some(dir) = autosave::folder() else {
+            return;
+        };
+        let now = std::time::SystemTime::now();
+        let card = backup_card::BackupCard::list(&dir, now, sk_platform::local_date_time());
+        self.open_card(card);
+    }
+
+    fn open_card(&mut self, card: backup_card::BackupCard) {
+        self.close_type_menu(false);
+        self.context = None;
+        self.context_dirty = true;
+        self.tip = None;
+        self.renderer.set_overlay(OVERLAY_TIP, 0, 0, 0, 0, &[]);
+        self.card = Some(card);
+        self.card_fade = None;
+        self.card_dirty = true;
+        self.redraw = true;
+    }
+
+    /// Karte der Sicherungen: nimmt Maus und Tasten; Fensterknöpfe der
+    /// Titelleiste und Fensterereignisse gehen durch.
+    fn handle_card(&mut self, e: Event, surface: &Surface) -> bool {
+        let th = self.top() as f64;
+        let (s, top) = (self.ui.scale, self.top());
+        let window_button = |a: &App, x: f64, y: f64| {
+            y < th
+                && matches!(
+                    a.title.button_at(x, y, a.w),
+                    Some(Button::Minimize | Button::Maximize | Button::Close)
+                )
+        };
+        match e {
+            Event::Resized { .. } | Event::ScaleChanged(_) => {
+                self.card_dirty = true;
+                return false;
+            }
+            // Schließen: Karte weg, die Nachfrage „Änderungen speichern?“
+            // muss erreichbar sein (eine unbeantwortete Startkarte kommt
+            // beim nächsten Start wieder)
+            Event::CloseRequested { .. } => {
+                self.card = None;
+                self.card_dirty = true;
+                return false;
+            }
+            Event::MouseMove { x, y, .. } if window_button(self, x, y) => return false,
+            Event::MouseDown { x, y, .. } | Event::MouseUp { x, y, .. }
+                if window_button(self, x, y) || self.title.pressed.is_some() =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+        let Some(c) = self.card.as_mut() else {
+            return false;
+        };
+        let (fonts, t) = (&self.ui.fonts, &self.theme);
+        let r = c.rect(fonts, t, s, self.w, self.h, top);
+        let answer = match e {
+            Event::MouseMove { x, y, .. } => {
+                self.mouse_at = Some((x, y));
+                if self.title.hover.is_some() {
+                    self.dirty_title.extend(self.title.hover.take());
+                }
+                self.card_dirty |= c.mouse_move(r, fonts, t, s, x, y);
+                None
+            }
+            Event::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
+                c.press(r, fonts, t, s, x, y);
+                self.card_dirty = true;
+                None
+            }
+            Event::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
+                self.card_dirty = true;
+                c.release(r, fonts, t, s, x, y, Instant::now())
+            }
+            Event::Key { key, down, .. } => {
+                if !down {
+                    return true;
+                }
+                self.card_dirty = true;
+                c.key(key)
+            }
+            Event::MouseDown { .. }
+            | Event::MouseUp { .. }
+            | Event::Wheel { .. }
+            | Event::Text(_)
+            | Event::MouseLeave => None,
+            _ => return false,
+        };
+        if let Some(a) = answer {
+            self.answer_card(a, surface);
+        }
+        true
+    }
+
+    /// Antwort der Karte; sie blendet aus.
+    fn answer_card(&mut self, a: backup_card::Answer, surface: &Surface) {
+        let Some(c) = self.card.take() else {
+            return;
+        };
+        // Altes Bild bleibt zum Ausblenden stehen
+        self.card_fade = self.erase_anim().then(|| self.now());
+        self.card_dirty = true;
+        self.redraw = true;
+        match a {
+            backup_card::Answer::Restore => {
+                if let Some(f) = c.found {
+                    self.restore_backup(&f.backup, f.original.as_deref(), surface);
+                }
+            }
+            backup_card::Answer::Discard => {
+                if let Some(f) = c.found {
+                    autosave::answered(&f.backup);
+                    // Mit einer Datei gestartet: die bleibt offen
+                    let fresh = self.doc.path.is_none() && !self.doc.is_dirty(self.scene.model());
+                    if let Some(o) = f.original.filter(|o| fresh && o.is_file()) {
+                        self.open_path(surface, o);
+                    }
+                }
+            }
+            backup_card::Answer::Open(i) => {
+                self.backups = c.entries;
+                self.confirm_then(Command::OpenBackup(i), surface);
+            }
+            backup_card::Answer::Close => {}
+        }
+        self.sync_caption(surface);
+    }
+
+    /// Sicherung öffnen wie „Wiederherstellen“: Stand der Sicherung mit dem
+    /// Pfad der gespeicherten Datei, ungespeichert; 5 s ein Hinweis.
+    fn restore_backup(
+        &mut self,
+        backup: &std::path::Path,
+        original: Option<&std::path::Path>,
+        surface: &Surface,
+    ) {
+        match autosave::restore(backup, original) {
+            Ok((scene, doc)) => {
+                autosave::answered(backup);
+                self.install_scene(scene);
+                self.doc = doc;
+                let now = std::time::SystemTime::now();
+                let at = std::fs::metadata(backup)
+                    .and_then(|m| m.modified())
+                    .unwrap_or(now);
+                let (.., h, m) = autosave::local_at(at, now, sk_platform::local_date_time());
+                self.notice = Some(Notice {
+                    text: format!("Sicherung von {h:02}:{m:02} wiederhergestellt."),
+                    since: None,
+                    rect: (0.0, 0.0, 0.0, 0.0),
+                    time: std::time::Duration::from_secs(5),
+                    catalog: false,
+                });
+                self.sync_levels();
+            }
+            Err(e) => surface.message(&e, true),
+        }
+    }
+
+    /// Karte samt Abdunkeln zeichnen bzw. ausblenden.
+    fn paint_card(&mut self) {
+        self.card_dirty = false;
+        self.redraw = true;
+        let th = self.top();
+        let scrim = menu::scrim_premul(self.theme.env.scrim);
+        let h = self.h.saturating_sub(th);
+        if let Some(t0) = self.card_fade {
+            // Ausblenden über fade_ms; das Bild steht schon
+            let ms = self.theme.size.fade_ms.max(1.0);
+            let k = 1.0 - (self.now().saturating_sub(t0) as f32 / ms);
+            if k <= 0.0 || self.card.is_some() {
+                self.card_fade = None;
+            } else {
+                let (w, hh) = self.renderer.overlay_size(OVERLAY_CARD);
+                let (x, y) = self.card_at;
+                self.renderer.place_overlay(OVERLAY_CARD, x, y, w, hh, k);
+                self.renderer.place_overlay(
+                    OVERLAY_CARD_SCRIM,
+                    0,
+                    th as i32,
+                    self.w as i32,
+                    h as i32,
+                    k,
+                );
+                return;
+            }
+        }
+        let Some(c) = &self.card else {
+            self.renderer.set_overlay(OVERLAY_CARD, 0, 0, 0, 0, &[]);
+            self.renderer
+                .set_overlay(OVERLAY_CARD_SCRIM, 0, 0, 0, 0, &[]);
+            return;
+        };
+        let s = self.ui.scale;
+        let r = c.rect(&self.ui.fonts, &self.theme, s, self.w, self.h, th);
+        let img = c.paint(&self.theme, &self.ui.fonts, s);
+        let m = (self.theme.size.panel_shadow * s).round();
+        self.card_at = ((r.x - m) as i32, (r.y - m) as i32);
+        self.renderer.set_overlay(
+            OVERLAY_CARD,
+            self.card_at.0,
+            self.card_at.1,
+            img.width as u32,
+            img.height as u32,
+            &img.to_premul_rgba8(),
+        );
+        self.renderer
+            .set_overlay_fill(OVERLAY_CARD_SCRIM, 0, th as i32, self.w, h, scrim);
+    }
+
     /// Rechtsklick in der Ansicht: Bauteil darunter wählen (eine Auswahl,
     /// zu der es gehört, bleibt) und das Kontextmenü öffnen. `false`, wenn
     /// dort kein Bauteil liegt.
@@ -3321,6 +3597,8 @@ impl App {
                 text,
                 since: None,
                 rect: (0.0, 0.0, 0.0, 0.0),
+                time: NOTICE_TIME,
+                catalog: true,
             });
         }
     }
@@ -3331,7 +3609,7 @@ impl App {
             return;
         };
         match n.since {
-            Some(at) if at.elapsed() >= NOTICE_TIME => {
+            Some(at) if at.elapsed() >= n.time => {
                 self.notice = None;
                 self.renderer.set_overlay(OVERLAY_NOTICE, 0, 0, 0, 0, &[]);
                 self.redraw = true;
@@ -3376,7 +3654,7 @@ impl App {
         let Some((rx, ry, rw, rh)) = self
             .notice
             .as_ref()
-            .filter(|n| n.since.is_some())
+            .filter(|n| n.since.is_some() && n.catalog)
             .map(|n| n.rect)
         else {
             return false;
@@ -3453,8 +3731,7 @@ impl App {
         let notice = self
             .notice
             .as_ref()
-            .and_then(|n| n.since)
-            .map(|at| NOTICE_TIME.saturating_sub(at.elapsed()));
+            .and_then(|n| Some(n.time.saturating_sub(n.since?.elapsed())));
         let fade = self.theme.size.fade_ms * (self.theme.size.anim_ms > 0.0) as u8 as f32;
         let hint = self.hint.as_ref().map(|h| h.wait(Instant::now(), fade));
         let list = if self.quantity.open {
@@ -3462,7 +3739,24 @@ impl App {
         } else {
             None
         };
-        [tip, hud, notice, hint, list].into_iter().flatten().min()
+        let save = self
+            .autosave
+            .as_ref()
+            .filter(|_| !self.edit.is_dragging())
+            .and_then(|a| a.wait(self.scene.model(), &self.doc, self.clock.elapsed()));
+        [tip, hud, notice, hint, list, save]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
+    /// Normal beendet: Einstellungen schreiben, die Sicherung gilt als
+    /// sauber beendet (keine Startkarte beim nächsten Start).
+    fn closing(&mut self, surface: &Surface) {
+        save_settings(&mut self.settings, &self.theme, &self.recent, surface);
+        if let Some(a) = self.autosave.as_mut() {
+            a.closed(&self.doc);
+        }
     }
 
     /// Uhr des Geschossbogens: Millisekunden seit dem Start.
@@ -3869,12 +4163,22 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         confirm_dirty: false,
         erase_fade: None,
         erase_flash: None,
+        autosave: autosave::folder()
+            .filter(|_| screenshot.is_none())
+            .map(|d| autosave::AutoSave::new(d).in_background()),
+        card: None,
+        card_dirty: false,
+        card_fade: None,
+        card_at: (0, 0),
+        backups: Vec::new(),
     };
     if screenshot.is_none() {
         a.notice = quiet.into_iter().next().map(|text| Notice {
             text,
             since: None,
             rect: (0.0, 0.0, 0.0, 0.0),
+            time: NOTICE_TIME,
+            catalog: true,
         });
     }
     a.upload_model();
@@ -3890,6 +4194,15 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         .and_then(|n| ViewKind::from_arg(&n))
     {
         a.set_view(v);
+    }
+    // Nach einem Absturz die Sicherung anbieten (F-13); räumt alte still
+    // weg. Nie bei Bildvergleichen und Zeitmessungen.
+    if screenshot.is_none() && a.auto_switch.is_none() {
+        if let Some(f) =
+            autosave::folder().and_then(|d| autosave::start(&d, std::time::SystemTime::now()))
+        {
+            a.show_start_card(f);
+        }
     }
     a.sync_caption(&surface);
     // Mengenfenster (F2, B7): gemerkte Lage, Breite aus dem Schema
@@ -3937,6 +4250,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             && !a.scene.growing()
             && a.erase_fade.is_none()
             && a.erase_flash.is_none()
+            && a.card_fade.is_none()
         {
             // Leerlauf: Grundrisse der Nachbargeschosse vorbereiten, damit ein
             // Wechsel am Geschossbogen nichts neu rechnet (E18)
@@ -3965,7 +4279,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                     if let Some(log) = timing.as_mut() {
                         write_timing(&timing_path, log);
                     }
-                    save_settings(&mut a.settings, &a.theme, &a.recent, &surface);
+                    a.closing(&surface);
                     return Ok(());
                 }
             }
@@ -3988,13 +4302,20 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 if let Some(log) = timing.as_mut() {
                     write_timing(&timing_path, log);
                 }
-                save_settings(&mut a.settings, &a.theme, &a.recent, &surface);
+                a.closing(&surface);
                 return Ok(());
             }
         }
 
         if std::mem::take(&mut a.quantity_wanted) {
             a.open_quantity(&surface);
+        }
+        // Automatisch sichern (F-13), nicht mitten im Ziehen
+        if !a.edit.is_dragging() {
+            let now = a.clock.elapsed();
+            if let Some(s) = a.autosave.as_mut() {
+                s.tick(a.scene.model(), &a.doc, now);
+            }
         }
         a.sync_wheel();
         if a.prefs.as_mut().is_some_and(|p| p.tick()) {
@@ -4037,6 +4358,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         }
         if a.confirm_dirty && a.w > 0 {
             a.paint_confirm();
+        }
+        if (a.card_dirty || a.card_fade.is_some()) && a.w > 0 {
+            a.paint_card();
         }
         if a.context_dirty && a.w > 0 {
             a.paint_context();

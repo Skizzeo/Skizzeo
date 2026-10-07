@@ -37,6 +37,16 @@ impl Document {
         }
     }
 
+    /// Aus einer Sicherung wiederhergestellt (F-13): Pfad der gespeicherten
+    /// Datei (oder keiner), aber ungespeichert, bis Strg+S sie schreibt.
+    pub fn restored(path: Option<PathBuf>) -> Document {
+        Document {
+            path,
+            saved_rev: u64::MAX,
+            saved_at: None,
+        }
+    }
+
     pub fn is_dirty(&self, model: &Model) -> bool {
         model.revision() != self.saved_rev
     }
