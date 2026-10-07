@@ -76,16 +76,8 @@ impl RunCache {
         builds: u32,
     ) -> RunCache {
         let mut solid = chain.solid();
-        if let Some(f) = &found {
-            solid.append(&part(f.slab_solid(), SLAB_PART));
-            solid.append(&part(f.footing_solid(), FOOTING_PART));
-        }
-        if let Some(f) = &floor {
-            solid.append(&part(f.solid(), FLOOR_PART));
-            solid.append(&part(f.soffit_solid(), SOFFIT_PART));
-            for k in 0..f.strips.len() {
-                solid.append(&part(f.strip_solid(k), STRIP_PART + k as u32));
-            }
+        for p in run_parts(&found, &floor) {
+            p.solid(&mut solid);
         }
         // Auf Höhe des Wandfußes (Wände im OG stehen auf ihrem Geschoss)
         let lift = vec3(0.0, 0.0, chain.base);
@@ -164,18 +156,8 @@ impl RunCache {
                     let (p0, n) = pl;
                     let mut s = self.solid.clipped(p0, n);
                     s.append(&self.chain.section_caps(p0, n));
-                    if let Some(f) = &self.found {
-                        let (slab, foot) = f.section_caps(p0, n);
-                        s.append(&part(slab, SLAB_PART));
-                        s.append(&part(foot, FOOTING_PART));
-                    }
-                    if let Some(f) = &self.floor {
-                        s.append(&part(f.section_caps(p0, n), FLOOR_PART));
-                        s.append(&part(f.soffit_section_caps(p0, n), SOFFIT_PART));
-                        for k in 0..f.strips.len() {
-                            let caps = f.strip_section_caps(k, p0, n);
-                            s.append(&part(caps, STRIP_PART + k as u32));
-                        }
+                    for p in run_parts(&self.found, &self.floor) {
+                        p.section_caps(&mut s, p0, n);
                     }
                     self.section.truncate(SECTION_KEEP - 1);
                     self.section.insert(0, (pl, s));
@@ -189,43 +171,17 @@ impl RunCache {
 }
 
 impl RunCache {
-    /// Grundrisskörper in Höhe `cut`.
+    /// Grundrisskörper in Höhe `cut`. Im Fundament (E18) keine Wände; liegt
+    /// der Zug unter dem aktiven Geschoss, nur die Teile ohne die Wand.
     fn plan_solid(&self, cut: f64, mode: PlanMode) -> Solid {
-        let (chain, found, floor) = (&self.chain, &self.found, &self.floor);
-        match mode {
-            // Fundament (E18): die Schürze geschnitten, der Plattenrand
-            // darüber als Hintergrundlinie, keine Wände
-            PlanMode::Foundation => {
-                let mut s = Solid::default();
-                if let Some(f) = found {
-                    s.append(&part(f.footing_cut_at(cut), FOOTING_PART));
-                    s.edges.extend(f.slab_rim(cut + BACKGROUND_LIFT));
-                }
-                s
-            }
-            // Die Gründung liegt unter der Schnitthöhe: Draufsicht. Die
-            // Decke liegt im EG darüber und bleibt leer, im OG darunter.
-            PlanMode::Cut | PlanMode::Lower => {
-                let lower = mode == PlanMode::Lower;
-                let mut s = if lower {
-                    Solid::default()
-                } else {
-                    chain.solid_cut_at(cut)
-                };
-                if let (Some(f), false) = (found, lower) {
-                    s.append(&part(f.slab_solid(), SLAB_PART));
-                    s.append(&part(f.footing_solid(), FOOTING_PART));
-                }
-                if let Some(f) = floor {
-                    s.append(&part(f.solid_cut_at(cut), FLOOR_PART));
-                    s.append(&part(f.soffit_cut_at(cut), SOFFIT_PART));
-                    for k in 0..f.strips.len() {
-                        s.append(&part(f.strip_cut_at(k, cut), STRIP_PART + k as u32));
-                    }
-                }
-                s
-            }
+        let mut s = match mode {
+            PlanMode::Cut => self.chain.solid_cut_at(cut),
+            PlanMode::Foundation | PlanMode::Lower => Solid::default(),
+        };
+        for p in run_parts(&self.found, &self.floor) {
+            p.plan(&mut s, cut, mode);
         }
+        s
     }
 
     fn has_plan(&self, cut: f64, mode: PlanMode) -> bool {
@@ -251,6 +207,91 @@ impl RunCache {
             }
         };
         self.under.get(i).map_or(&[], |(_, e)| e)
+    }
+}
+
+/// Abgeleitete Geometrie an einem Wandzug (Gründung, Decke mit Dämmung und
+/// Streifen): hängt ihre Körper für 3D, Grundriss und senkrechten Schnitt an
+/// `out` an, jeweils mit der Teilnummer je Bauteil (Review 2a, R2). Ein neues
+/// Bauteil am Zug braucht nur eine Umsetzung und einen Eintrag in
+/// [`run_parts`].
+trait RunPart {
+    /// Körper für 3D und Ansichten.
+    fn solid(&self, out: &mut Solid);
+    /// Grundriss in Schnitthöhe `cut`, je nachdem, wie der Zug zum aktiven
+    /// Geschoss liegt.
+    fn plan(&self, out: &mut Solid, cut: f64, mode: PlanMode);
+    /// Schnittflächen der senkrechten Ebene durch `p0` mit Normale `n`.
+    fn section_caps(&self, out: &mut Solid, p0: Vec3, n: Vec3);
+}
+
+/// Die Teile eines Zuges in fester Reihenfolge (sie bestimmt die Reihenfolge
+/// im Netz).
+fn run_parts<'a>(
+    found: &'a Option<Foundation>,
+    floor: &'a Option<FloorSlab>,
+) -> impl Iterator<Item = &'a dyn RunPart> {
+    let found = found.as_ref().map(|f| f as &dyn RunPart);
+    let floor = floor.as_ref().map(|f| f as &dyn RunPart);
+    found.into_iter().chain(floor)
+}
+
+impl RunPart for Foundation {
+    fn solid(&self, out: &mut Solid) {
+        out.append(&part(self.slab_solid(), SLAB_PART));
+        out.append(&part(self.footing_solid(), FOOTING_PART));
+    }
+
+    fn plan(&self, out: &mut Solid, cut: f64, mode: PlanMode) {
+        match mode {
+            // Fundament (E18): die Schürze geschnitten, der Plattenrand
+            // darüber als Hintergrundlinie
+            PlanMode::Foundation => {
+                out.append(&part(self.footing_cut_at(cut), FOOTING_PART));
+                out.edges.extend(self.slab_rim(cut + BACKGROUND_LIFT));
+            }
+            // Die Gründung liegt unter der Schnitthöhe: Draufsicht
+            PlanMode::Cut => RunPart::solid(self, out),
+            PlanMode::Lower => {}
+        }
+    }
+
+    fn section_caps(&self, out: &mut Solid, p0: Vec3, n: Vec3) {
+        let (slab, foot) = Foundation::section_caps(self, p0, n);
+        out.append(&part(slab, SLAB_PART));
+        out.append(&part(foot, FOOTING_PART));
+    }
+}
+
+impl RunPart for FloorSlab {
+    fn solid(&self, out: &mut Solid) {
+        out.append(&part(FloorSlab::solid(self), FLOOR_PART));
+        out.append(&part(self.soffit_solid(), SOFFIT_PART));
+        for k in 0..self.strips.len() {
+            out.append(&part(self.strip_solid(k), STRIP_PART + k as u32));
+        }
+    }
+
+    /// Die Decke liegt im EG über der Schnitthöhe und bleibt leer, im OG
+    /// darunter; im Fundament gibt es sie nicht.
+    fn plan(&self, out: &mut Solid, cut: f64, mode: PlanMode) {
+        if mode == PlanMode::Foundation {
+            return;
+        }
+        out.append(&part(self.solid_cut_at(cut), FLOOR_PART));
+        out.append(&part(self.soffit_cut_at(cut), SOFFIT_PART));
+        for k in 0..self.strips.len() {
+            out.append(&part(self.strip_cut_at(k, cut), STRIP_PART + k as u32));
+        }
+    }
+
+    fn section_caps(&self, out: &mut Solid, p0: Vec3, n: Vec3) {
+        out.append(&part(FloorSlab::section_caps(self, p0, n), FLOOR_PART));
+        out.append(&part(self.soffit_section_caps(p0, n), SOFFIT_PART));
+        for k in 0..self.strips.len() {
+            let caps = self.strip_section_caps(k, p0, n);
+            out.append(&part(caps, STRIP_PART + k as u32));
+        }
     }
 }
 
