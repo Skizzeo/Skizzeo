@@ -142,8 +142,11 @@ const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 /// Endsymbole der Schnittlinien A und B im Grundriss (je zwei Plätze).
 const OVERLAY_MARKS: usize = 0;
 const MARKS: usize = 2 * section::CUTS;
+/// Name und Fläche der Dachterrassen im Grundriss (wie eine Raumangabe).
+const OVERLAY_ROOMS: usize = OVERLAY_MARKS + MARKS;
+const ROOMS: usize = 4;
 /// Kettensymbole an gestapelten Wänden (OG Phase 2), unter den Paneelen.
-const OVERLAY_CHIPS: usize = OVERLAY_MARKS + MARKS;
+const OVERLAY_CHIPS: usize = OVERLAY_ROOMS + ROOMS;
 const OVERLAY_VIEWS: usize = OVERLAY_CHIPS + link_view::SLOTS;
 /// Paneel „Eigenschaften“.
 const OVERLAY_PROPS: usize = OVERLAY_VIEWS + 1;
@@ -183,6 +186,27 @@ const OVERLAY_CARD: usize = OVERLAY_HINT + 4;
 const OVERLAY_TIP: usize = OVERLAY_HINT + 5;
 /// Maßzahl am Weg beim „Bündig setzen“ (E20).
 const OVERLAY_PICK: usize = OVERLAY_HINT + 6;
+
+/// Angabe einer Fläche im Grundriss („Dachterrasse 13,22 m²“): Schrift in
+/// gedimmter Tinte auf durchsichtigem Grund.
+fn room_label(fonts: &sk_ui::widgets::Fonts, text: &str, s: f32, t: &Theme) -> sk_paint::Canvas {
+    let px = t.size.font_small * s;
+    let f = fonts.regular.as_ref();
+    let tw = f.map_or(text.len() as f32 * px * 0.5, |f| f.width(text, px));
+    let cap = f.map_or(px * 0.7, |f| f.cap_height(px));
+    let h = (cap * 2.0).ceil();
+    let mut c = sk_paint::Canvas::new(tw.ceil() as usize + 2, h as usize);
+    sk_ui::widgets::text(
+        &mut c,
+        f,
+        text,
+        px,
+        1.0,
+        ((h + cap) * 0.5).round(),
+        t.ui.sheet_text_dim,
+    );
+    c
+}
 
 /// Versatz am Band beim Ziehen (OG Phase 2): „Versatz +0,30“, unter 2 cm
 /// „bündig“.
@@ -468,6 +492,7 @@ fn zoom_camera(cam: &Camera, lo: Vec3, hi: Vec3, w: f64, h: f64) -> Camera {
 /// Stand eines Endsymbols: links, hervorgehoben, Skalierung, Stände von
 /// Farbschema und Zeichentabelle.
 type MarkKey = (usize, bool, bool, bool, u32, (u64, u64));
+type RoomKey = (String, u32, u64);
 
 struct App {
     renderer: Renderer,
@@ -529,6 +554,9 @@ struct App {
     /// Zuletzt hochgeladene Endsymbole der Schnittlinien (Linie, Anfang,
     /// gespiegelt, hervorgehoben, Skalierung).
     mark_keys: [Option<MarkKey>; MARKS],
+    /// Zuletzt hochgeladene Terrassenangaben (Text, Skalierung,
+    /// Farbschema) und ihre Bildgröße.
+    room_keys: [Option<(RoomKey, u32, u32)>; ROOMS],
     /// Letzte Mausposition im Fenster (Pixel).
     mouse_at: Option<(f64, f64)>,
     /// Hinweis an der Maus: erscheint nach [`TIP_DELAY`] Ruhe über derselben Stelle.
@@ -1331,6 +1359,7 @@ impl App {
         self.ui.fit(self.title.scale, self.w, self.h);
         self.looks_key = None;
         self.mark_keys = [None; MARKS];
+        self.room_keys = Default::default();
         self.overlay_dirty = true;
         self.prefs_dirty = true;
         self.prefs_popup_dirty = true;
@@ -1918,6 +1947,10 @@ impl App {
                 if let Some(w) = self.sel.id.and_then(|id| self.scene.stack_wall(id)) {
                     self.toggle_link(w);
                 }
+            }
+            Id::PropsMore => {
+                self.ui.toggle_more();
+                self.overlay_dirty = true;
             }
             Id::PropsFlush => {
                 if let Some(w) = self.sel.id.and_then(|id| self.scene.stack_wall(id)) {
@@ -3848,6 +3881,12 @@ impl App {
         if let Some((_, o)) = self.edit.dragged_offset(&self.scene) {
             return Some(offset_label(o));
         }
+        if let Some(t) = self
+            .mouse_at
+            .and_then(|(x, y)| self.ui.props_tip(x, y, self.w, self.top()))
+        {
+            return Some(t);
+        }
         self.chain_tip()
     }
 
@@ -4785,6 +4824,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         preview_shown: true,
         looks_key: None,
         mark_keys: [None; MARKS],
+        room_keys: Default::default(),
         panel_px: Vec::new(),
         wheel,
         wheel_view: wheel_view::WheelView::new(OVERLAY_WHEEL),
@@ -5312,6 +5352,58 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                     None => {
                         if a.mark_keys[i].take().is_some() {
                             a.renderer.set_overlay(OVERLAY_MARKS + i, 0, 0, 0, 0, &[]);
+                        }
+                    }
+                }
+            }
+
+            // „Dachterrasse 13,22 m²“ mittig auf der Terrasse, gedimmt wie
+            // eine Raumangabe; nur, wenn die Angabe auf die Terrasse passt
+            let rooms: Vec<((f64, f64), String)> = if a.ui.view == ViewKind::Plan {
+                a.scene
+                    .terrace_labels()
+                    .into_iter()
+                    .filter_map(|(p, area)| {
+                        let at = a.cam.project(p, vw, vh)?;
+                        Some((
+                            at,
+                            format!("Dachterrasse {} m²", selection::de(area / 1e6, 2)),
+                        ))
+                    })
+                    .take(ROOMS)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            for i in 0..ROOMS {
+                match rooms.get(i) {
+                    Some(((x, y), text)) => {
+                        let key = (text.clone(), scale.to_bits(), a.theme.rev);
+                        let at = |w: u32, h: u32| {
+                            (
+                                (x - w as f64 * 0.5).round() as i32,
+                                (y + th as f64 - h as f64 * 0.5).round() as i32,
+                            )
+                        };
+                        match &a.room_keys[i] {
+                            Some((k, w, h)) if *k == key => {
+                                let (px_x, px_y) = at(*w, *h);
+                                a.renderer.move_overlay(OVERLAY_ROOMS + i, px_x, px_y);
+                            }
+                            _ => {
+                                let c = room_label(&a.ui.fonts, text, scale, &a.theme);
+                                let (w, h) = (c.width as u32, c.height as u32);
+                                let (px_x, px_y) = at(w, h);
+                                let px = c.to_premul_rgba8();
+                                a.renderer
+                                    .set_overlay(OVERLAY_ROOMS + i, px_x, px_y, w, h, &px);
+                                a.room_keys[i] = Some((key, w, h));
+                            }
+                        }
+                    }
+                    None => {
+                        if a.room_keys[i].take().is_some() {
+                            a.renderer.set_overlay(OVERLAY_ROOMS + i, 0, 0, 0, 0, &[]);
                         }
                     }
                 }

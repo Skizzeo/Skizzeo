@@ -37,6 +37,23 @@ pub fn area(pts: &[Vec3]) -> f64 {
     signed_area(pts).abs()
 }
 
+/// Schwerpunkt der Fläche (z = 0); `None` ohne Fläche.
+pub fn centroid(pts: &[Vec3]) -> Option<Vec3> {
+    let a = signed_area(pts);
+    if a.abs() < 1e-9 {
+        return None;
+    }
+    let n = pts.len();
+    let (mut x, mut y) = (0.0, 0.0);
+    for i in 0..n {
+        let (p, q) = (pts[i], pts[(i + 1) % n]);
+        let c = cross2(p, q);
+        x += (p.x + q.x) * c;
+        y += (p.y + q.y) * c;
+    }
+    Some(vec3(x / (6.0 * a), y / (6.0 * a), 0.0))
+}
+
 /// Umfang des geschlossenen Polygons.
 pub fn perimeter(pts: &[Vec3]) -> f64 {
     let n = pts.len();
@@ -738,5 +755,23 @@ mod tests {
             vec3(0.0, 1.0, 0.0),
         );
         assert_eq!(iv, vec![(0.0, 5000.0)]);
+    }
+
+    #[test]
+    fn schwerpunkt_rechteck_und_winkel() {
+        let r = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(4.0, 0.0, 0.0),
+            vec3(4.0, 2.0, 0.0),
+            vec3(0.0, 2.0, 0.0),
+        ];
+        let c = centroid(&r).unwrap();
+        assert!((c.x - 2.0).abs() < 1e-9 && (c.y - 1.0).abs() < 1e-9);
+        // Uhrzeigersinn gibt denselben Punkt
+        let mut cw = r;
+        cw.reverse();
+        let d = centroid(&cw).unwrap();
+        assert!((d.x - 2.0).abs() < 1e-9 && (d.y - 1.0).abs() < 1e-9);
+        assert!(centroid(&r[..2]).is_none());
     }
 }

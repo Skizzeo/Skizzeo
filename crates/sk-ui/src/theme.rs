@@ -250,6 +250,9 @@ pub struct Sizes {
     pub qto_indent: f32,
     pub sheet_pad: f32,
     pub qto_max_w: f32,
+    /// Schmalste Kachel der Summe nach Baustoff (dip); passen nicht alle in
+    /// eine Zeile, brechen sie um.
+    pub sheet_tile_min_w: f32,
     pub qto_window_w: f32,
     pub flash_ms: f32,
     /// Aus- und Einblenden gelöschter Bauteile und des Hinweises am Bauteil
@@ -459,6 +462,7 @@ impl Theme {
                 qto_indent: 18.0,
                 sheet_pad: 28.0,
                 qto_max_w: 900.0,
+                sheet_tile_min_w: 120.0,
                 qto_window_w: 520.0,
                 flash_ms: 600.0,
                 fade_ms: 150.0,

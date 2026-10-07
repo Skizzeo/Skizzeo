@@ -17,6 +17,7 @@ use sk_paint::font::Font;
 use sk_paint::{Canvas, Path, Rgba};
 use sk_ui::theme::Theme;
 use sk_ui::widgets::{Fonts, Rect};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
@@ -33,8 +34,11 @@ const STOREY_GAP: f32 = 8.0;
 /// Kacheln der Summe nach Baustoff (dip).
 const TILE_H: f32 = 64.0;
 const TILE_GAP: f32 = 12.0;
-/// Schmalste Kachel (dip); passen nicht alle in eine Zeile, brechen sie um.
-const TILE_MIN_W: f32 = 120.0;
+/// Innenrand der Kachel, Schrift ihres Namens und Luft unter den Kacheln
+/// (dip). Die schmalste Kachel steht in `size.sheet_tile_min_w`.
+const TILE_PAD: f32 = 10.0;
+const TILE_NAME_PX: f32 = 10.0;
+const TILE_AFTER: f32 = 8.0;
 /// Knopf „Als Tabelle speichern“ (dip).
 const BUTTON_H: f32 = 28.0;
 const BUTTON_PAD: f32 = 16.0;
@@ -83,6 +87,9 @@ impl Grouping {
 /// Umschalter „Gliedern nach“: Abstände (dip).
 const TOGGLE_PAD: f32 = 12.0;
 const TOGGLE_INSET: f32 = 3.0;
+/// Eigene Zeile des Umschalters unter der Unterzeile (dip): der Abstand
+/// Unterzeile–Spaltenkopf.
+const TOGGLE_ROW: f32 = 27.0;
 
 /// Schlüssel einer Zeile: zum Auf- und Zuklappen und zum Wiedererkennen nach
 /// einer Neuberechnung (Aufleuchten).
@@ -253,6 +260,9 @@ pub struct ListView {
     /// Zeilen, unter der der Hinweis nach Entf steht: die erste, die es noch
     /// gibt.
     hint_at: Vec<Key>,
+    /// Zusätzliche Kopfhöhe (dip), wenn der Umschalter eine eigene Zeile
+    /// braucht (schmales Fenster, lange Unterzeile); beim Zeichnen bestimmt.
+    head_extra: Cell<f32>,
 }
 
 impl ListView {
@@ -295,6 +305,7 @@ impl ListView {
             row_flash: HashMap::new(),
             motion: None,
             hint_at: Vec::new(),
+            head_extra: Cell::new(0.0),
         };
         v.sync(s, false);
         v
@@ -423,19 +434,20 @@ impl ListView {
                     .len()
                     .div_ceil(self.tile_slots(t, l.tiles.len()))
                     .max(1);
-                rows as f32 * (TILE_H + TILE_GAP) + 8.0
+                rows as f32 * (TILE_H + TILE_GAP) + TILE_AFTER
             }
         }
     }
 
     /// Kacheln je Zeile der Summe nach Baustoff: mindestens drei Plätze
     /// (wenige Kacheln bleiben ein Drittel breit), höchstens so viele, wie
-    /// mit [`TILE_MIN_W`] in die Inhaltsbreite passen.
+    /// mit `size.sheet_tile_min_w` in die Inhaltsbreite passen.
     fn tile_slots(&self, t: Option<&Theme>, n: usize) -> usize {
         let pad = t.map_or(28.0, |t| t.size.sheet_pad);
         let max_w = t.map_or(900.0, |t| t.size.qto_max_w);
         let cw = (self.w as f32 / self.scale - 2.0 * pad).min(max_w).max(0.0);
-        let fit = ((cw + TILE_GAP) / (TILE_MIN_W + TILE_GAP)).floor().max(1.0) as usize;
+        let min_w = t.map_or(120.0, |t| t.size.sheet_tile_min_w);
+        let fit = ((cw + TILE_GAP) / (min_w + TILE_GAP)).floor().max(1.0) as usize;
         n.max(3).min(fit)
     }
 
@@ -460,12 +472,23 @@ impl ListView {
 
     /// Höhe des Listenbereichs (dip).
     fn view_h(&self) -> f32 {
-        (self.h as f32 / self.scale - self.top_dip() - HEAD).max(0.0)
+        (self.h as f32 / self.scale - self.top_dip() - self.head()).max(0.0)
     }
 
     /// Unterkante der Titelleiste (dip).
     fn top_dip(&self) -> f32 {
         32.0
+    }
+
+    /// Höhe des Kopfs über der Liste (dip).
+    fn head(&self) -> f32 {
+        HEAD + self.head_extra.get()
+    }
+
+    /// Bestimmt die Kopfhöhe nach der Lage des Umschalters.
+    fn fit_head(&self, t: &Theme, fonts: &Fonts) {
+        let own = self.toggle_layout(t, fonts).2;
+        self.head_extra.set(if own { TOGGLE_ROW } else { 0.0 });
     }
 
     fn clamp(&mut self) {
@@ -773,7 +796,7 @@ impl ListView {
         })?;
         let (x0, cw) = self.content_x(t);
         let pad = 10.0 * s;
-        let ys = (self.top_dip() + HEAD) * s + y * s - self.scroll_px() as f32;
+        let ys = (self.top_dip() + self.head()) * s + y * s - self.scroll_px() as f32;
         Some(Rect::new(x0 - pad, ys, cw + 2.0 * pad, h * s))
     }
 
@@ -916,11 +939,20 @@ impl ListView {
     /// rechts neben dem Titel vor „Als Tabelle speichern“, wenn Platz ist
     /// (auch für die Pille „wird aktualisiert“), sonst darunter rechtsbündig.
     #[allow(clippy::type_complexity)]
+    /// Lage des Umschalters: Beschriftung, Hälften und ob er eine eigene
+    /// Zeile braucht. Breit in der Titelzeile vor dem Knopf; sonst
+    /// rechtsbündig auf der Unterzeile, Mitte auf Mitte; reicht auch dort
+    /// der Platz nicht, darunter mit dem Abstand Unterzeile–Spaltenkopf.
+    #[allow(clippy::type_complexity)]
     fn toggle_layout(
         &self,
         t: &Theme,
         fonts: &Fonts,
-    ) -> (Option<(f32, f32)>, [(Grouping, (f32, f32, f32, f32)); 2]) {
+    ) -> (
+        Option<(f32, f32)>,
+        [(Grouping, (f32, f32, f32, f32)); 2],
+        bool,
+    ) {
         let s = self.scale;
         let (x0, cw) = self.content_x(t);
         let (bx, by, _, bh) = self.button_rect(t, fonts);
@@ -944,16 +976,23 @@ impl ListView {
             + 40.0 * s
             + 16.0 * s;
         let right = bx - 12.0 * s;
-        let (pill_x, pill_y, ph, label) = if right - pw >= title_end {
+        let cap = regular.map_or(7.5 * s, |f| f.cap_height(px));
+        let (pill_x, pill_y, ph, label, own) = if right - pw >= title_end {
             let label = right - pw - label_w >= title_end;
-            (right - pw, by, bh, label)
+            (right - pw, by, bh, label, false)
         } else {
             let ph = 20.0 * s;
             let sub_end = x0 + width(regular, &self.subtitle, px) + 16.0 * s;
             let x = x0 + cw - pw;
-            (x, top + 47.0 * s, ph, x - label_w >= sub_end)
+            // Mitte der Unterzeile (Grundlinie top + 52)
+            let mid = top + 52.0 * s - cap * 0.5;
+            if x >= sub_end {
+                (x, mid - ph * 0.5, ph, x - label_w >= sub_end, false)
+            } else {
+                let y = mid + TOGGLE_ROW * s - ph * 0.5;
+                (x, y, ph, x - label_w >= x0, true)
+            }
         };
-        let cap = regular.map_or(7.5 * s, |f| f.cap_height(px));
         let label = label.then_some((pill_x - label_w, pill_y + (ph + cap) * 0.5));
         let w0 = half(Grouping::Storey);
         let halves = [
@@ -971,10 +1010,11 @@ impl ListView {
                 ),
             ),
         ];
-        (label, halves)
+        (label, halves, own)
     }
 
     fn hit(&self, t: &Theme, fonts: &Fonts, x: f64, y: f64) -> Option<Hot> {
+        self.fit_head(t, fonts);
         let (x, y) = (x as f32, y as f32);
         let s = self.scale;
         let (bx, by, bw, bh) = self.button_rect(t, fonts);
@@ -987,7 +1027,7 @@ impl ListView {
                 return Some(Hot::Grouping(g));
             }
         }
-        let list_top = (self.top_dip() + HEAD) * s;
+        let list_top = (self.top_dip() + self.head()) * s;
         if y < list_top {
             return None;
         }
@@ -1280,7 +1320,7 @@ impl ListView {
     /// Auswahl nur ein Band, reicht es, dessen Zeilen neu zu zeichnen.
     pub fn row_bands(&self, t: &Theme) -> Vec<RowBand> {
         let s = self.scale;
-        let list_top = self.top_dip() * s + HEAD * s;
+        let list_top = (self.top_dip() + self.head()) * s;
         let mut out = Vec::new();
         for (i, y, h) in self.layout(Some(t)) {
             let ys = list_top + y * s - self.scroll_px() as f32;
@@ -1306,6 +1346,7 @@ impl ListView {
 
     /// Blatt unter der Titelleiste; die Leinwand ist schon mit `sheet_bg` gefüllt.
     pub fn paint(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts, now: Instant) {
+        self.fit_head(t, fonts);
         let s = self.scale;
         let top = self.top_dip() * s;
         let (x0, cw) = self.content_x(t);
@@ -1313,7 +1354,7 @@ impl ListView {
         let anim = t.size.anim_ms > 0.0;
 
         // Liste (unter dem Kopf, gerollt)
-        let list_top = top + HEAD * s;
+        let list_top = top + self.head() * s;
         let rows = self.layout(Some(t));
         let pad_band = 10.0 * s;
         let motion = self.motion_state(t, now);
@@ -1381,7 +1422,7 @@ impl ListView {
             self.paint_line(c, t, l, (x0, cw), band_y, band_h, fonts, now, anim);
         }
         // Kopf deckt die weggerollten Zeilen ab
-        if !outside(top, top + HEAD * s) {
+        if !outside(top, top + self.head() * s) {
             self.paint_head(c, t, fonts, now);
         }
         self.paint_scrollbar(c, t);
@@ -1390,7 +1431,7 @@ impl ListView {
     /// Laufleiste am rechten Rand der Liste.
     pub fn paint_scrollbar(&self, c: &mut Canvas, t: &Theme) {
         let s = self.scale;
-        let list_top = (self.top_dip() + HEAD) * s;
+        let list_top = (self.top_dip() + self.head()) * s;
         let content = self.content_h(Some(t));
         let view = self.view_h();
         if content > view + 1.0 {
@@ -1415,7 +1456,7 @@ impl ListView {
     /// Erste Fensterzeile der Liste unter dem Kopf; ab hier verschiebt das
     /// Rollen das Bild.
     pub fn list_y(&self) -> i32 {
-        ((self.top_dip() + HEAD) * self.scale).ceil() as i32
+        ((self.top_dip() + self.head()) * self.scale).ceil() as i32
     }
 
     /// Linke Kante der Spalte, in der nur die Laufleiste liegt (beim Rollen
@@ -1442,7 +1483,7 @@ impl ListView {
         let u = &t.ui;
         let regular = fonts.regular.as_ref();
         let bold = fonts.bold.as_ref().or(regular);
-        c.fill_rect(0.0, top, self.w as f32, HEAD * s, u.sheet_bg);
+        c.fill_rect(0.0, top, self.w as f32, self.head() * s, u.sheet_bg);
         if let Some(f) = bold {
             f.draw(
                 c,
@@ -1492,7 +1533,7 @@ impl ListView {
         // Spaltenköpfe und Linie
         if let Some(f) = regular {
             let px = 10.0 * s;
-            let base = top + 79.0 * s;
+            let base = top + (79.0 + self.head_extra.get()) * s;
             let first = match self.grouping {
                 Grouping::Storey => "Bauteil",
                 Grouping::Trade => "Leistung · Bauteil",
@@ -1508,7 +1549,8 @@ impl ListView {
                 f.draw(c, text, px, x0 + cw * right - tw, base, u.sheet_text_dim);
             }
         }
-        c.fill_rect(x0, top + 86.0 * s, cw, s.max(1.0), u.sheet_rule);
+        let rule = top + (86.0 + self.head_extra.get()) * s;
+        c.fill_rect(x0, rule, cw, s.max(1.0), u.sheet_rule);
     }
 
     /// Umschalter „Gliedern nach: Geschoss | Gewerk“ (Pille in `sheet_tile`,
@@ -1519,7 +1561,7 @@ impl ListView {
         let regular = fonts.regular.as_ref();
         let bold = fonts.bold.as_ref().or(regular);
         let px = 10.5 * s;
-        let (label, halves) = self.toggle_layout(t, fonts);
+        let (label, halves, _) = self.toggle_layout(t, fonts);
         let inset = TOGGLE_INSET * s;
         let (_, (x, y, _, h)) = halves[0];
         let (_, (x1, _, w1, _)) = halves[1];
@@ -1601,6 +1643,40 @@ impl ListView {
         }
     }
 
+    /// Bezeichnung einer Zeile, wie sie gezeigt wird: endet vor der
+    /// Nummernspalte (sonst „…“).
+    fn label_text(&self, l: &Line, f: &Font, px: f32, (x0, cw): (f32, f32), text_x: f32) -> String {
+        if l.cells[1].is_empty() {
+            l.cells[0].clone()
+        } else {
+            let room = x0 + cw * COL_NR - 8.0 * self.scale - text_x;
+            sk_ui::widgets::ellipsize(Some(f), &l.cells[0], px, room)
+        }
+    }
+
+    /// Voller Name der Zeile unter der Maus, wenn er gekürzt gezeigt wird
+    /// (Hinweis nach der Wartezeit).
+    pub fn tip_at(&self, t: &Theme, fonts: &Fonts, x: f64, y: f64) -> Option<String> {
+        let (Hot::Line(i) | Hot::Toggle(i)) = self.hit(t, fonts, x, y)? else {
+            return None;
+        };
+        let l = &self.lines[i];
+        // Nur einfache Zeilen und Gruppen werden gekürzt (Schrift 11)
+        if !matches!(l.kind, Kind::Row | Kind::Group) {
+            return None;
+        }
+        let s = self.scale;
+        let (x0, cw) = self.content_x(t);
+        let f = fonts.regular.as_ref()?;
+        let px = 11.0 * s;
+        let indent = x0 + l.depth as f32 * t.size.qto_indent * s;
+        let text_x = indent + if l.kind == Kind::Group { 12.0 * s } else { 0.0 };
+        let label = self.label_text(l, f, px, (x0, cw), text_x);
+        let x = x as f32;
+        (label != l.cells[0] && x >= text_x && x <= text_x + f.width(&label, px))
+            .then(|| l.cells[0].clone())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn paint_line(
         &self,
@@ -1663,13 +1739,7 @@ impl ListView {
             text_x += 12.0 * s;
         }
         let Some(f) = font else { return };
-        // Bezeichnung endet vor der Nummernspalte
-        let label = if l.cells[1].is_empty() {
-            l.cells[0].clone()
-        } else {
-            let room = x0 + cw * COL_NR - 8.0 * s - text_x;
-            sk_ui::widgets::ellipsize(Some(f), &l.cells[0], px, room)
-        };
+        let label = self.label_text(l, f, px, (x0, cw), text_x);
         f.draw(c, &label, px, text_x, base, col);
         if let (Some(tag), Some(fr)) = (&l.tag, regular) {
             let tx = text_x + f.width(&label, px) + 10.0 * s;
@@ -1759,18 +1829,12 @@ impl ListView {
             p.rounded_rect(x, y, tw, TILE_H * s, 6.0 * s);
             c.fill(&p, u.sheet_tile);
             if let Some(f) = fonts.regular.as_ref() {
-                let name = sk_ui::widgets::ellipsize(Some(f), &tile.name, 10.0 * s, tw - 20.0 * s);
-                f.draw(
-                    c,
-                    &name,
-                    10.0 * s,
-                    x + 10.0 * s,
-                    y + 18.0 * s,
-                    u.sheet_text_dim,
-                );
+                let (px, pad) = (TILE_NAME_PX * s, TILE_PAD * s);
+                let name = sk_ui::widgets::ellipsize(Some(f), &tile.name, px, tw - 2.0 * pad);
+                f.draw(c, &name, px, x + pad, y + 18.0 * s, u.sheet_text_dim);
             }
             if let Some(f) = fonts.bold.as_ref().or(fonts.regular.as_ref()) {
-                let vx = x + 10.0 * s;
+                let vx = x + TILE_PAD * s;
                 if let Some(a) = self.flash_alpha(tile.key, 0, t, now, anim) {
                     let w = f.width(&tile.value, 16.0 * s);
                     let mut p = Path::new();
@@ -1969,7 +2033,8 @@ fn build_lines(m: &Model, sched: &Schedule, by: Grouping) -> (Vec<Line>, Vec<Gro
                 name: m
                     .material(x.material)
                     .map_or(String::new(), |y| y.name.clone()),
-                value: m_vol(x.volume),
+                // Blech in m statt m³ (Attikablech)
+                value: x.length.map_or_else(|| m_vol(x.volume), m_len),
                 extra: x.area.map(m_area),
             })
             .collect();
@@ -2092,7 +2157,10 @@ fn trade_lines(m: &Model, b: &BuildingQto, lines: &mut Vec<Line>) {
                 if r.area > 0.0 {
                     rl.cells[3] = m_area(r.area);
                 }
-                rl.cells[4] = m_vol(r.volume);
+                // Attikablech: abgerechnet in m, ohne Volumen
+                if r.category != Category::Coping {
+                    rl.cells[4] = m_vol(r.volume);
+                }
                 lines.push(rl);
                 i += 1;
                 continue;
@@ -2282,9 +2350,9 @@ fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut V
                     parts = vec![("Dämmung", t.insulation_volume), ("Belag", t.finish_volume)];
                 }
                 Some(ElementQto::Coping(c)) => {
+                    // Abgerechnet in m, ohne Volumen
                     rl.cells[0] = "Attikablech".into();
                     rl.cells[2] = m_len(c.length);
-                    rl.cells[4] = m_vol(c.volume);
                 }
                 None => {
                     rl.cells[0] = g.category.name().into();
@@ -2398,7 +2466,11 @@ fn csv_trades(m: &Model, sched: &Schedule) -> Vec<u8> {
                         &storey_name(m, r.storey).0,
                         &opt(r.length, &len),
                         &opt(r.area, &area),
-                        &vol(r.volume),
+                        &if r.category == Category::Coping {
+                            String::new()
+                        } else {
+                            vol(r.volume)
+                        },
                         "",
                     ]);
                     i += 1;
@@ -2466,7 +2538,7 @@ fn csv_trades(m: &Model, sched: &Schedule) -> Vec<u8> {
                 &format!("Summe {}", tr.name),
                 "",
                 "",
-                "",
+                &t.length.map_or(String::new(), len),
                 &t.area.map_or(String::new(), area),
                 &vol(t.volume),
                 "",
@@ -2483,9 +2555,13 @@ fn csv_trades(m: &Model, sched: &Schedule) -> Vec<u8> {
                 &name,
                 "",
                 "",
-                "",
+                &x.length.map_or(String::new(), len),
                 &x.area.map_or(String::new(), area),
-                &vol(x.volume),
+                &if x.length.is_some() {
+                    String::new()
+                } else {
+                    vol(x.volume)
+                },
                 "",
             ]);
         }
@@ -2620,7 +2696,7 @@ fn csv_storeys(m: &Model, sched: &Schedule) -> Vec<u8> {
                         "Attikablech".into(),
                         len(c.length),
                         String::new(),
-                        vol(c.volume),
+                        String::new(),
                         format!("Abwicklung {} mm", c.girth.round()),
                     ),
                     None => (
@@ -2735,10 +2811,14 @@ fn csv_storeys(m: &Model, sched: &Schedule) -> Vec<u8> {
                 "",
                 &name,
                 "",
-                "",
+                &x.length.map_or(String::new(), len),
                 "",
                 &x.area.map_or(String::new(), area),
-                &vol(x.volume),
+                &if x.length.is_some() {
+                    String::new()
+                } else {
+                    vol(x.volume)
+                },
                 "",
             ]);
         }
@@ -2837,5 +2917,92 @@ mod tests {
     fn atv_nummer_hinter_gewerk() {
         assert_eq!(trade_tag("18331"), "DIN 18331");
         assert_eq!(trade_tag("F1"), "F1");
+    }
+
+    /// Liste mit einem Haus 10 × 8 m nach Gewerk in Breite `w` (dip).
+    fn gewerk_liste(w: u32) -> ListView {
+        use sk_math::vec3;
+        use sk_model::{RefSide, WallChain};
+        let mut s = Scene::with_model(Model::with_seed(14));
+        let chain = WallChain {
+            base: 0.0,
+            points: vec![
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ],
+            closed: true,
+            ref_side: RefSide::Left,
+            layers: Vec::new(),
+            height: 2750.0,
+            joints: Default::default(),
+        };
+        s.add_wall(&chain).unwrap();
+        let mut v = ListView::grouped(&mut s, Grouping::Trade);
+        v.subtitle = "Gebäude 1 (GB-01) · Stand 07.10.2026, 10:56".into();
+        v.w = w;
+        v
+    }
+
+    /// Einstellungen §14 (n): Bei 520 steht der Umschalter rechtsbündig auf
+    /// der Unterzeile, Mitte auf Mitte, der Kopf bleibt so hoch wie bisher;
+    /// reicht der Platz dort nicht, bekommt er eine eigene Zeile darunter
+    /// und die Liste rückt um diese Zeile nach unten.
+    #[test]
+    fn umschalter_auf_der_unterzeile() {
+        let (t, fonts) = (Theme::dark(), Fonts::system());
+        let v = gewerk_liste(520);
+        let (_, halves, own) = v.toggle_layout(&t, &fonts);
+        assert!(!own);
+        let (_, (x, y, w, h)) = halves[1];
+        let (x0, cw) = v.content_x(&t);
+        let inset = TOGGLE_INSET;
+        assert!((x + w + inset - (x0 + cw)).abs() < 1e-3, "rechtsbündig");
+        let cap = fonts.regular.as_ref().map_or(7.5, |f| f.cap_height(10.5));
+        let sub_mid = v.top_dip() + 52.0 - cap * 0.5;
+        assert!((y + h * 0.5 - sub_mid).abs() < 1e-3, "Mitte auf Mitte");
+        v.fit_head(&t, &fonts);
+        assert_eq!(v.head(), HEAD);
+
+        let v = gewerk_liste(320);
+        let (_, halves, own) = v.toggle_layout(&t, &fonts);
+        assert!(own);
+        let (_, (_, y2, _, h2)) = halves[0];
+        assert!((y2 + h2 * 0.5 - (sub_mid + TOGGLE_ROW)).abs() < 1e-3);
+        v.fit_head(&t, &fonts);
+        assert_eq!(v.head(), HEAD + TOGGLE_ROW);
+    }
+
+    /// Einstellungen §14 (o): Ein gekürzter Zeilenname gibt den vollen Namen
+    /// als Hinweis; ein ganz gezeigter nicht.
+    #[test]
+    fn gekuerzter_name_als_hinweis() {
+        let (t, fonts) = (Theme::dark(), Fonts::system());
+        if fonts.regular.is_none() {
+            return;
+        }
+        let v = gewerk_liste(520);
+        v.fit_head(&t, &fonts);
+        let list_top = v.top_dip() + v.head();
+        let lines: Vec<(usize, f32, f32)> = v.layout(Some(&t));
+        let mut cut = None;
+        let mut whole = None;
+        for (i, y, h) in lines {
+            let l = &v.lines[i];
+            let (x, yy) = (
+                v.content_x(&t).0 as f64 + 40.0,
+                (list_top + y + h * 0.5) as f64,
+            );
+            match v.tip_at(&t, &fonts, x, yy) {
+                Some(full) => cut = Some((full, l.cells[0].clone())),
+                None if l.kind == Kind::Row => whole = Some(l.cells[0].clone()),
+                None => {}
+            }
+        }
+        let (full, name) = cut.expect("eine Zeile ist gekürzt");
+        assert_eq!(full, name);
+        assert!(full.starts_with("Dämmung (WDVS) 14 · Außenwände"), "{full}");
+        assert!(whole.is_some());
     }
 }

@@ -601,6 +601,8 @@ fn terrace_props(
         layers,
         set_label: "Aufbau",
         sections: terrace_section(m, floor).into_iter().collect(),
+        // Dachterrasse: drei Felder, die Schichten erst nach „Mehr …“
+        more: !matches!(e.kind, ElementKind::Coping { .. }),
         notes: m.warnings(id),
         ..Default::default()
     })

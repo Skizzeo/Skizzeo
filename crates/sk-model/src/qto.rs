@@ -8,7 +8,7 @@
 use crate::element::{BuildingId, Category, ElementId, ElementKind, RunId, StoreyId};
 use crate::floor::{FloorError, FloorSlab};
 use crate::foundation::{Foundation, FoundationError};
-use crate::library::{LayerFunction, LayerSet, LayerSetId, MatCategory, MaterialId};
+use crate::library::{LayerFunction, LayerSet, LayerSetId, MatCategory, MaterialId, MaterialLayer};
 use crate::model::Model;
 use crate::wall::WallChain;
 use sk_math::Vec3;
@@ -74,6 +74,17 @@ pub struct WallQto {
 /// wird (mm). Dünnere Schalen und Putz tragen sich am Dämmsystem.
 pub const MIN_FACING: f64 = 70.0;
 
+/// Verblender: Vorsatzschale aus Mauerwerk oder Beton (vor dem Kern), ab
+/// MIN_FACING dick; Putz, Dämmung und Luft werden nie abgefangen (BIM).
+fn is_facing(model: &Model, l: &MaterialLayer) -> bool {
+    l.function != LayerFunction::AirGap
+        && l.function != LayerFunction::Insulation
+        && l.thickness >= MIN_FACING
+        && model
+            .material(l.material)
+            .is_some_and(|x| matches!(x.category, MatCategory::Masonry | MatCategory::Concrete))
+}
+
 /// Herabgezogene Außenschichten der Wand über `below` (G7 K4): je Segment
 /// und Schicht (Volumen mm³, Außenfläche mm²), je Segment die Abfangung des
 /// Verblenders (mm).
@@ -104,15 +115,7 @@ fn extension(model: &Model, below: &WallChain, set: &LayerSet) -> Option<Extensi
             continue;
         };
         let air = l.function == LayerFunction::AirGap;
-        // Verblender: Vorsatzschale aus Mauerwerk oder Beton vor dem Kern, ab
-        // MIN_FACING dick; Putz, Dämmung und Luft werden nie abgefangen (BIM)
-        let facing = li < core
-            && !air
-            && l.function != LayerFunction::Insulation
-            && l.thickness >= MIN_FACING
-            && model.material(l.material).is_some_and(|x| {
-                matches!(x.category, MatCategory::Masonry | MatCategory::Concrete)
-            });
+        let facing = li < core && is_facing(model, l);
         let (ga, gb) = (
             ext.face_corners_in(a, Some(li)),
             ext.face_corners_in(b, Some(li)),
@@ -697,6 +700,8 @@ pub struct MaterialSum {
     pub material: MaterialId,
     pub volume: f64,
     pub area: Option<f64>,
+    /// Länge (mm), wenn der Baustoff nur in m abgerechnet wird (Blech).
+    pub length: Option<f64>,
 }
 
 /// Anteil eines Bauteils an einem Gewerk bzw. einer Kostengruppe: bei
@@ -726,15 +731,27 @@ pub struct LayerRow {
     pub whole: bool,
     /// Die Wandschicht läuft als Attika über den Terrassenrand hoch (D2).
     pub attika: bool,
+    /// Abgerechnete Fläche für die Summe des Gewerks (mm²): Dachterrasse und
+    /// Untersichtdämmung je Bauteil, Dämmschicht mit ihrer Fläche, sonst 0.
+    pub bill_area: f64,
+    /// Abgerechnete Länge für die Summe des Gewerks (mm): Attikablech und
+    /// Abfangung des Verblenders, sonst 0.
+    pub bill_length: f64,
+    /// Fläche und Länge zählen je Bauteil und Gewerk nur einmal (Bauteil
+    /// mit mehreren Schichten im selben Gewerk, z. B. Dachterrasse).
+    pub once: bool,
 }
 
-/// Summe eines Gewerks in einem Gebäude mit seinen Zeilen; `area` (mm²)
-/// nur, wenn alle Anteile Dämmung sind (Dämmgewerk, paket-1a §7).
+/// Summe eines Gewerks in einem Gebäude mit seinen Zeilen. `area` (mm²) ist
+/// die Summe der in m² abgerechneten Bauteile (Dachterrasse, Untersicht-
+/// dämmung, Dämmschichten), `length` (mm) die der in m abgerechneten
+/// (Attikablech, Abfangung); `None` ohne solchen Anteil (BIM).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TradeSum {
     pub trade: crate::trade::TradeId,
     pub volume: f64,
     pub area: Option<f64>,
+    pub length: Option<f64>,
     /// Nach Bauteilart, Schicht (Baustoff, Dicke) und Nummer.
     pub rows: Vec<LayerRow>,
 }
@@ -1060,10 +1077,39 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                 .material(m)
                 .is_some_and(|x| x.category == MatCategory::Insulation)
         };
+        // Abrechnung je Bauteil (Fläche, Länge, einmal je Gewerk)
+        let bill = match q {
+            ElementQto::Terrace(t) => Some((t.area, 0.0)),
+            ElementQto::Soffit(f) => Some((f.area, 0.0)),
+            ElementQto::Coping(c) => Some((0.0, c.length)),
+            _ => None,
+        };
+        // Schicht, an der die Abfangung des Verblenders abgerechnet wird
+        let facing = match q {
+            ElementQto::Wall(w) if w.facing_support > 0.0 => {
+                let core = layers.iter().position(|l| l.core).unwrap_or(0);
+                layers[..core].iter().position(|l| is_facing(model, l))
+            }
+            _ => None,
+        };
         let mut push =
             |i: usize, length: f64, area: f64, volume: f64, whole: bool, attika: bool| {
                 let Some(l) = layers.get(i) else { return };
                 let ins = insulation(l.material);
+                let (bill_area, bill_length, once) = match (bill, q) {
+                    (Some((a, len)), _) => (a, len, true),
+                    (None, ElementQto::Wall(w)) => (
+                        if ins { area } else { 0.0 },
+                        if facing == Some(i) {
+                            w.facing_support
+                        } else {
+                            0.0
+                        },
+                        false,
+                    ),
+                    // Platten, Decken und Streifen: Dämmschicht mit Fläche
+                    (None, _) => (if ins { area } else { 0.0 }, 0.0, false),
+                };
                 out.push(LayerRow {
                     element: row.element,
                     number: row.number.clone(),
@@ -1084,6 +1130,9 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                     insulation: ins,
                     whole,
                     attika,
+                    bill_area,
+                    bill_length,
+                    once,
                 });
             };
         match q {
@@ -1150,6 +1199,7 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
 /// fehlen hier.
 fn trade_sums(model: &Model, rows: &[LayerRow]) -> Vec<TradeSum> {
     let mut sums: Vec<TradeSum> = Vec::new();
+    let mut counted: Vec<(crate::trade::TradeId, ElementId)> = Vec::new();
     for r in rows {
         let Some(t) = r.trade else { continue };
         let i = match sums.iter().position(|s| s.trade == t) {
@@ -1158,7 +1208,8 @@ fn trade_sums(model: &Model, rows: &[LayerRow]) -> Vec<TradeSum> {
                 sums.push(TradeSum {
                     trade: t,
                     volume: 0.0,
-                    area: Some(0.0),
+                    area: None,
+                    length: None,
                     rows: Vec::new(),
                 });
                 sums.len() - 1
@@ -1166,7 +1217,16 @@ fn trade_sums(model: &Model, rows: &[LayerRow]) -> Vec<TradeSum> {
         };
         let s = &mut sums[i];
         s.volume += r.volume;
-        s.area = s.area.filter(|_| r.insulation).map(|a| a + r.area);
+        let first = !r.once || !counted.contains(&(t, r.element));
+        if r.once {
+            counted.push((t, r.element));
+        }
+        if first && r.bill_area > 0.0 {
+            s.area = Some(s.area.unwrap_or(0.0) + r.bill_area);
+        }
+        if first && r.bill_length > 0.0 {
+            s.length = Some(s.length.unwrap_or(0.0) + r.bill_length);
+        }
         s.rows.push(r.clone());
     }
     sums.sort_by_key(|s| (model.trade(s.trade).map_or(u16::MAX, |t| t.order), s.trade));
@@ -1197,7 +1257,7 @@ fn kg_sums(rows: Vec<LayerRow>) -> Vec<KgSum> {
 /// Summe nach Baustoff über alle Bauteile mit Körper; Dämmung auch als Fläche.
 fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
     let mut sums: Vec<MaterialSum> = Vec::new();
-    let mut add = |m: MaterialId, v: f64, a: f64| {
+    let mut add = |m: MaterialId, v: f64, a: f64, len: Option<f64>| {
         let ins = model
             .material(m)
             .is_some_and(|x| x.category == MatCategory::Insulation);
@@ -1208,11 +1268,13 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
                 if let (Some(x), Some(y)) = (s.area.as_mut(), area) {
                     *x += y;
                 }
+                s.length = s.length.zip(len).map(|(x, y)| x + y);
             }
             None => sums.push(MaterialSum {
                 material: m,
                 volume: v,
                 area,
+                length: len,
             }),
         }
     };
@@ -1244,7 +1306,7 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
         match (q, mat) {
             (ElementQto::Terrace(t), _) => {
                 for &(m, _, v) in &t.layers {
-                    add(m, v, t.area);
+                    add(m, v, t.area, None);
                 }
             }
             (ElementQto::Wall(w), _) => {
@@ -1254,12 +1316,13 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
                         .material(l.material)
                         .is_some_and(|x| x.category == MatCategory::Air);
                     if !air {
-                        add(l.material, l.volume, l.side_area);
+                        add(l.material, l.volume, l.side_area, None);
                     }
                 }
             }
-            (ElementQto::Soffit(f), Some(m)) => add(m, f.volume, f.area),
-            (q, Some(m)) => add(m, q.volume(), 0.0),
+            (ElementQto::Soffit(f), Some(m)) => add(m, f.volume, f.area, None),
+            (ElementQto::Coping(c), Some(m)) => add(m, c.volume, 0.0, Some(c.length)),
+            (q, Some(m)) => add(m, q.volume(), 0.0, None),
             _ => {}
         }
     }

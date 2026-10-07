@@ -166,7 +166,7 @@ pub const F4_ROLES: [F4Role; 11] = [
     }),
 ];
 
-pub const SIZE_ROLES: [SizeRole; 77] = [
+pub const SIZE_ROLES: [SizeRole; 78] = [
     ("corner_radius", "Eckenradius", |t| {
         &mut t.size.corner_radius
     }),
@@ -278,6 +278,9 @@ pub const SIZE_ROLES: [SizeRole; 77] = [
     ("sheet_pad", "Mengenliste: Rand", |t| &mut t.size.sheet_pad),
     ("qto_max_w", "Mengenliste: größte Breite", |t| {
         &mut t.size.qto_max_w
+    }),
+    ("sheet_tile_min_w", "Mengenliste: schmalste Kachel", |t| {
+        &mut t.size.sheet_tile_min_w
     }),
     ("qto_window_w", "Mengenfenster: Breite", |t| {
         &mut t.size.qto_window_w

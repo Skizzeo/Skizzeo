@@ -85,6 +85,9 @@ pub struct QuantityWindow {
     pub hint: Option<HintCard>,
     /// Kontextmenü an einer Zeile und die Bauteile der Zeile.
     pub context: Option<(ContextMenu, Vec<ElementId>)>,
+    /// Voller Name einer gekürzten Zeile an der Maus (Fensterpixel), seit
+    /// wann er gewünscht ist und ob er schon steht.
+    tip: Option<(String, (f64, f64), Instant, bool)>,
 }
 
 impl QuantityWindow {
@@ -111,6 +114,7 @@ impl QuantityWindow {
             scroll_shown: 0,
             hint: None,
             context: None,
+            tip: None,
         }
     }
 
@@ -184,7 +188,26 @@ impl QuantityWindow {
 
     /// Wann sich der Hinweis wieder ändert (für die Ereignisschleife).
     pub fn wait(&self, t: &Theme, now: Instant) -> Option<Duration> {
-        self.hint.as_ref().map(|h| h.wait(now, Self::fade_ms(t)))
+        let hint = self.hint.as_ref().map(|h| h.wait(now, Self::fade_ms(t)));
+        let tip = self
+            .tip
+            .as_ref()
+            .filter(|x| !x.3)
+            .map(|x| crate::TIP_DELAY.saturating_sub(now.duration_since(x.2)));
+        hint.into_iter().chain(tip).min()
+    }
+
+    /// Hinweis mit dem vollen Namen nachführen: neuer Name beginnt die
+    /// Wartezeit, ohne Namen verschwindet er.
+    fn set_tip(&mut self, want: Option<(String, (f64, f64))>) {
+        let same = matches!((&self.tip, &want), (Some(a), Some(b)) if a.0 == b.0);
+        if same {
+            return;
+        }
+        if self.tip.take().is_some_and(|x| x.3) {
+            self.dirty = true;
+        }
+        self.tip = want.map(|(text, at)| (text, at, Instant::now(), false));
     }
 
     /// Menü und Hinweis schließen.
@@ -257,6 +280,12 @@ impl QuantityWindow {
                 Some(_) => {}
             }
         }
+        if let Some(tip) = self.tip.as_mut().filter(|x| !x.3) {
+            if now.duration_since(tip.2) >= crate::TIP_DELAY {
+                tip.3 = true;
+                self.dirty = true;
+            }
+        }
         if flashing || self.was_busy {
             self.dirty = true;
         }
@@ -290,6 +319,19 @@ impl QuantityWindow {
 
     /// Ereignis des Mengenfensters.
     pub fn handle(&mut self, e: &Event, t: &Theme, fonts: &Fonts, p: &mut Picking) -> Option<Out> {
+        match *e {
+            Event::MouseMove { x, y, .. } if self.context.is_none() => {
+                let want = self.list.as_ref().and_then(|l| l.tip_at(t, fonts, x, y));
+                self.set_tip(want.map(|w| (w, (x, y))));
+            }
+            Event::MouseMove { .. }
+            | Event::MouseLeave
+            | Event::MouseDown { .. }
+            | Event::Wheel { .. }
+            | Event::Key { .. }
+            | Event::Focus(false) => self.set_tip(None),
+            _ => {}
+        }
         if let Some(o) = self.handle_popups(e, t) {
             return o;
         }
@@ -687,6 +729,17 @@ impl QuantityWindow {
         if let Some((menu, _)) = &self.context {
             let (img, x, y) = menu.paint(t, fonts, s);
             c.blit(&img, x, y);
+        }
+        // Voller Name rechts unter der Maus (wie im Hauptfenster)
+        if let Some((text, (mx, my), _, true)) = &self.tip {
+            let img = sk_ui::widgets::tooltip(fonts, text, s, t);
+            let (iw, ih) = (img.width as f64, img.height as f64);
+            let x = (mx + 12.0 * s as f64).min(self.w as f64 - iw).max(0.0);
+            let mut y = my + 20.0 * s as f64;
+            if y + ih > self.h as f64 {
+                y = my - 8.0 * s as f64 - ih;
+            }
+            c.blit(&img, x.round() as i32, y.round() as i32);
         }
         // Titelleiste nur, wenn der Ausschnitt sie berührt
         if y0 < self.title.height() {

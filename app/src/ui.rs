@@ -79,6 +79,9 @@ pub enum Id {
     /// „bündig setzen“.
     PropsLink,
     PropsFlush,
+    /// „Mehr …“ unter dem Aufbau der Dachterrasse: klappt die Schichtliste
+    /// auf und zu.
+    PropsMore,
 }
 
 /// Ziehbare Ebene im Paneel „Geschosse“. ±0,00 liegt fest.
@@ -481,6 +484,9 @@ pub struct Props {
     pub stack: Option<Stack>,
     /// Abschnitte nach den Zahlenfeldern, z. B. „Untersicht“ an der Decke.
     pub sections: Vec<Section>,
+    /// Die Schichten stehen erst nach „Mehr …“ unter dem letzten Abschnitt
+    /// (Dachterrasse); dann fehlt der Abschnitt „Aufbau“ unten.
+    pub more: bool,
 }
 
 /// Kopplung einer gestapelten Wand im Paneel „Eigenschaften“.
@@ -518,6 +524,8 @@ const FIELD_W: f32 = 60.0;
 /// Zeile „Kopplung“: Breite von Kettensymbol und Partner, Abstand des Texts
 /// vom linken Rand dieses Bereichs (dip).
 const LINK_W: f32 = 82.0;
+/// Klickfläche von „Mehr …“ (dip).
+const MORE_W: f32 = 80.0;
 const LINK_CHIP_GAP: f32 = 30.0;
 
 /// Fenstergröße (dip), ab der die Paneele in voller Größe erscheinen.
@@ -558,6 +566,8 @@ pub struct Ui {
     dialog_fields: Vec<FieldRow>,
     /// Eigenschaften des gewählten Bauteils; ohne Auswahl kein Paneel.
     props: Option<Props>,
+    /// „Mehr …“ ist aufgeklappt (gilt, solange das Paneel es anbietet).
+    more_open: bool,
     /// Eingabe in einem Zahlenfeld.
     pub edit: Option<Edit>,
     /// Maße aus dem Farbschema (für Lage und Treffertest) und dessen Stand.
@@ -637,6 +647,8 @@ enum Row {
     Detail(String),
     /// Blasser Text über die ganze Breite.
     Text(String),
+    /// Verweis in Akzent („Mehr …“), klappt auf bzw. zu.
+    More(Id),
     Segments([(Id, &'static str); 3]),
     Pair([(Id, &'static str); 2]),
     /// Bezeichnung links, Zahlenfeld rechts.
@@ -717,7 +729,7 @@ fn view_rows() -> Vec<Row> {
     ]
 }
 
-fn props_rows(p: &Props, edit: Option<&Edit>) -> Vec<Row> {
+fn props_rows(p: &Props, edit: Option<&Edit>, more_open: bool) -> Vec<Row> {
     let mut rows = vec![Row::Title("Eigenschaften")];
     rows.extend(p.values.iter().map(|(k, v)| Row::Value(k, v.clone())));
     if !p.fields.is_empty() || p.stack.is_some() {
@@ -743,6 +755,15 @@ fn props_rows(p: &Props, edit: Option<&Edit>) -> Vec<Row> {
         field_rows(&mut rows, &sec.fields);
         rows.push(Row::Text(sec.hint.into()));
     }
+    if p.more {
+        // Schichtliste erst auf Klick, an Ort und Stelle
+        rows.push(Row::More(Id::PropsMore));
+        if more_open {
+            layer_rows(&mut rows, p);
+        }
+        notes_rows(&mut rows, p);
+        return rows;
+    }
     let label = if p.chip.is_some() {
         "Typ"
     } else if p.set_label.is_empty() {
@@ -756,17 +777,26 @@ fn props_rows(p: &Props, edit: Option<&Edit>) -> Vec<Row> {
     } else {
         rows.push(Row::Text(p.layer_set.clone()));
     }
+    layer_rows(&mut rows, p);
+    notes_rows(&mut rows, p);
+    rows
+}
+
+/// Je Schicht Farbfeld mit Baustoff und Dicke, darunter die Menge.
+fn layer_rows(rows: &mut Vec<Row>, p: &Props) {
     for (c, name, amount) in &p.layers {
         rows.push(Row::Layer(*c, name.clone()));
         if !amount.is_empty() {
             rows.push(Row::Detail(amount.clone()));
         }
     }
+}
+
+fn notes_rows(rows: &mut Vec<Row>, p: &Props) {
     if !p.notes.is_empty() {
         rows.push(Row::Separator);
         rows.extend(p.notes.iter().map(|n| Row::Text(n.clone())));
     }
-    rows
 }
 
 /// Höhe einer Zeile in dip und Abstand danach.
@@ -783,6 +813,7 @@ fn row_height(r: &Row) -> (f32, f32) {
         Row::Error(_) => (15.0, 6.0),
         Row::Detail(_) => (17.0, 6.0),
         Row::Text(_) => (17.0, 6.0),
+        Row::More(..) => (17.0, 6.0),
         Row::Separator => (1.0, 10.0),
         Row::Hint(_) => (17.0, 0.0),
     }
@@ -811,6 +842,7 @@ impl Ui {
             dialog: false,
             dialog_fields: Vec::new(),
             props: None,
+            more_open: false,
             edit: None,
             images: [None, None, None, None, None],
             levels: Levels::default(),
@@ -849,10 +881,9 @@ impl Ui {
                 self.foundation_active,
             ),
             Panel::Views => view_rows(),
-            Panel::Props => self
-                .props
-                .as_ref()
-                .map_or(Vec::new(), |p| props_rows(p, self.edit.as_ref())),
+            Panel::Props => self.props.as_ref().map_or(Vec::new(), |p| {
+                props_rows(p, self.edit.as_ref(), self.more_open)
+            }),
             Panel::Levels => vec![Row::Title("Geschosse")],
             Panel::Dialog => Vec::new(),
         }
@@ -860,6 +891,46 @@ impl Ui {
 
     pub fn props(&self) -> Option<&Props> {
         self.props.as_ref()
+    }
+
+    /// „Mehr …“ auf- bzw. zuklappen.
+    pub fn toggle_more(&mut self) {
+        self.more_open = !self.more_open;
+    }
+
+    /// Voller Text einer gekürzten Schicht- oder Mengenzeile im Paneel
+    /// „Eigenschaften“ unter der Maus (Hinweis).
+    pub fn props_tip(&self, x: f64, y: f64, win_w: u32, top: u32) -> Option<String> {
+        if self.dialog {
+            return None;
+        }
+        self.props.as_ref()?;
+        let r = self.rect(Panel::Props, win_w, top);
+        let (lx, ly) = ((x - r.x as f64) as f32, (y - r.y as f64) as f32);
+        let s = self.scale;
+        let size = &self.size;
+        let pad = size.panel_pad * s;
+        let inner_w = (size.panel_width - 2.0 * size.panel_pad) * s;
+        if lx < pad || lx > pad + inner_w {
+            return None;
+        }
+        let f = self.fonts.regular.as_ref();
+        let mut ry = pad;
+        for row in self.rows(Panel::Props) {
+            let (h, g) = row_height(&row);
+            let (h, g) = (h * s, g * s);
+            if ly >= ry && ly < ry + h {
+                let (t, tx, px) = match row {
+                    Row::Layer(_, t) => (t, pad + 20.0 * s, size.font_small * s),
+                    Row::Detail(t) => (t, pad + 20.0 * s, size.font_detail * s),
+                    _ => return None,
+                };
+                let shown = widgets::ellipsize(f, &t, px, pad + inner_w - tx);
+                return (shown != t).then_some(t);
+            }
+            ry += h + g;
+        }
+        None
     }
 
     /// Neuer Inhalt des Paneels „Eigenschaften“. Eine Eingabe in einem Feld,
@@ -871,6 +942,9 @@ impl Ui {
         });
         if !keep {
             self.edit = None;
+        }
+        if !p.as_ref().is_some_and(|p| p.more) {
+            self.more_open = false;
         }
         self.props = p;
     }
@@ -1255,6 +1329,7 @@ impl Ui {
                     let cw = LINK_W * s;
                     out.push((id, Rect::new(x + inner_w - cw, y, cw, h), ""));
                 }
+                Row::More(id) => out.push((id, Rect::new(x, y, MORE_W * s, h), "")),
                 _ => {}
             }
             y += h + g;
@@ -1282,7 +1357,8 @@ impl Ui {
             | Id::ToolType
             | Id::PropsType
             | Id::PropsLink
-            | Id::PropsFlush => false,
+            | Id::PropsFlush
+            | Id::PropsMore => false,
         }
     }
 
@@ -1564,6 +1640,22 @@ impl Ui {
             paint_chip(c, &self.fonts, b, chip, st, s, t);
             return;
         }
+        if id == Id::PropsMore {
+            let open = self.more_open;
+            let px = self.size.font_small * s;
+            let col = if st.hover { t.ui.text } else { t.ui.accent };
+            let text = if open { "Weniger" } else { "Mehr …" };
+            widgets::text(
+                c,
+                self.fonts.regular.as_ref(),
+                text,
+                px,
+                b.x,
+                b.y + 13.0 * s,
+                col,
+            );
+            return;
+        }
         if id == Id::PropsLink {
             let linked = self
                 .props
@@ -1628,15 +1720,10 @@ impl Ui {
                     let sw = 12.0 * s;
                     c.fill_rect(x, y + 3.0 * s, sw, sw, color);
                     let tx = x + sw + 8.0 * s;
-                    widgets::text(
-                        &mut c,
-                        regular,
-                        &t,
-                        size.font_small * s,
-                        tx,
-                        y + 13.5 * s,
-                        col.text_dim,
-                    );
+                    // Zu lang: gekürzt, der volle Name als Hinweis
+                    let px = size.font_small * s;
+                    let t = widgets::ellipsize(regular, &t, px, x + inner_w - tx);
+                    widgets::text(&mut c, regular, &t, px, tx, y + 13.5 * s, col.text_dim);
                 }
                 Row::Field(_, k) => {
                     let px = size.font_small * s;
@@ -1667,15 +1754,9 @@ impl Ui {
                 }
                 Row::Detail(t) => {
                     let tx = x + 20.0 * s;
-                    widgets::text(
-                        &mut c,
-                        regular,
-                        &t,
-                        size.font_detail * s,
-                        tx,
-                        y + 13.0 * s,
-                        col.text_dim,
-                    )
+                    let px = size.font_detail * s;
+                    let t = widgets::ellipsize(regular, &t, px, x + inner_w - tx);
+                    widgets::text(&mut c, regular, &t, px, tx, y + 13.0 * s, col.text_dim)
                 }
                 Row::Text(t) => widgets::text(
                     &mut c,

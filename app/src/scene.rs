@@ -9,7 +9,7 @@
 use crate::draw_table::DrawTable;
 use crate::ui::Field;
 use crate::ui::ViewKind;
-use sk_math::{vec3, Vec3};
+use sk_math::{polygon, vec3, Vec3};
 use sk_model::qto::Schedule;
 use sk_model::{
     edge_kind, floor_qto_of, foundation_qto_of, merge_seam, run_qto, BuildingId, Category, Deleted,
@@ -282,10 +282,14 @@ impl RunPart for FloorSlab {
         }
         out.append(&part(self.solid_cut_at(cut), FLOOR_PART));
         out.append(&part(self.soffit_cut_at(cut), SOFFIT_PART));
-        out.append(&part(self.terrace_cut_at(cut), TERRACE_PART));
-        // Das Attikablech liegt über dem Boden des Geschosses darüber.
+        // Terrasse und Attikablech liegen über dem Boden des Geschosses
+        // darüber und unter seiner Schnitthöhe: Ansichtslinien fein und in
+        // gedimmter Tinte (Stil des Hintergrunds, vorschlag-dachterrasse §4)
         if mode == PlanMode::Lower {
-            out.append(&part(self.coping_solid(), COPING_PART));
+            out.append(&part(seen_below(self.terrace_cut_at(cut)), TERRACE_PART));
+            out.append(&part(seen_below(self.coping_solid()), COPING_PART));
+        } else {
+            out.append(&part(self.terrace_cut_at(cut), TERRACE_PART));
         }
         for k in 0..self.strips.len() {
             out.append(&part(self.strip_cut_at(k, cut), STRIP_PART + k as u32));
@@ -302,6 +306,15 @@ impl RunPart for FloorSlab {
             out.append(&part(caps, STRIP_PART + k as u32));
         }
     }
+}
+
+/// Kanten eines Körpers unter der Schnitthöhe als feine, gedimmte
+/// Ansichtslinien.
+fn seen_below(mut s: Solid) -> Solid {
+    for e in &mut s.edges {
+        e.kind = edge_kind::BACKGROUND;
+    }
+    s
 }
 
 /// Wie ein Wandzug zum aktiven Geschoss liegt (Grundriss).
@@ -1035,6 +1048,33 @@ impl Scene {
         };
         let run = m.run_of(floor)?;
         sk_model::terrace_qto_of(m, floor, self.floor(run)?)
+    }
+
+    /// Dachterrassen im Grundriss des aktiven Geschosses (sie liegen auf
+    /// seinem Boden): Mitte des größten Teils auf OK Belag und Fläche (mm²)
+    /// je Terrasse, für die Angabe „Dachterrasse 13,22 m²“.
+    pub fn terrace_labels(&self) -> Vec<(Vec3, f64)> {
+        let active = self.active_storey();
+        let mut out = Vec::new();
+        for c in self.cache.iter().flatten() {
+            if self.plan_mode(c.id, active) != PlanMode::Lower {
+                continue;
+            }
+            let Some(f) = c.floor.as_ref() else { continue };
+            let Some((_, top)) = f.terrace_band() else {
+                continue;
+            };
+            for t in &f.terraces.outlines {
+                let largest = t
+                    .parts
+                    .iter()
+                    .max_by(|a, b| polygon::area(a).total_cmp(&polygon::area(b)));
+                if let Some(c) = largest.and_then(|p| polygon::centroid(p)) {
+                    out.push((vec3(c.x, c.y, top), t.area()));
+                }
+            }
+        }
+        out
     }
 
     /// Mengen eines Attikablechs, aus der gezeichneten Decke.
