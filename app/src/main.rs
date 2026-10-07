@@ -1970,7 +1970,9 @@ impl App {
                 self.upload_model();
             }
         } else if let (Some((field, mm)), Some(id)) = (out.submit, self.sel.id) {
-            if self.scene.set_field(id, field, mm) {
+            if let Some(b) = sk_model::edit_blocked(self.scene.model(), &[id]) {
+                self.show_locked(b);
+            } else if self.scene.set_field(id, field, mm) {
                 self.upload_model();
             }
         }
@@ -2061,12 +2063,18 @@ impl App {
             return;
         };
         let m = self.scene.model();
-        let (panel, cat, current, runs) = match chip {
+        let (panel, cat, current, runs, blocked) = match chip {
             Id::ToolType => {
                 let cat = self.tool.category;
                 let tc =
                     sk_model::TypeCategory::of(cat).unwrap_or(sk_model::TypeCategory::ExteriorWall);
-                (Panel::Tools, tc, Some(self.tool_type_of(cat)), Vec::new())
+                (
+                    Panel::Tools,
+                    tc,
+                    Some(self.tool_type_of(cat)),
+                    Vec::new(),
+                    None,
+                )
             }
             _ => {
                 // Alle gewählten Wände derselben Art wechseln mit
@@ -2088,9 +2096,16 @@ impl App {
                         }
                     }
                 }
-                (Panel::Props, tc, e.layer_set, runs)
+                // Typwechsel ändert den ganzen Kopplungsstapel (Paket 4 §2.2)
+                let blocked = sk_model::edit_blocked(m, &m.type_set(&runs));
+                (Panel::Props, tc, e.layer_set, runs, blocked)
             }
         };
+        if let Some(b) = blocked {
+            self.show_locked(b);
+            return;
+        }
+        let m = self.scene.model();
         let panel = self.ui.rect(panel, self.w, top);
         let menu = type_menu::TypeMenu::new(
             chip,
@@ -2787,6 +2802,9 @@ impl App {
                                 .handle(&ev, &mut self.scene, &self.cam, vw, vh, sc, en)
                         };
                         self.redraw |= eo.redraw;
+                        if let Some(id) = eo.locked {
+                            self.show_locked(id);
+                        }
                         if !eo.consumed {
                             // Ohne Wandeingabe wählt ein Klick ein Bauteil (beim Loslassen)
                             if let (Event::MouseDown { x, y, .. }, MouseButton::Left, false) =
@@ -3955,6 +3973,10 @@ impl App {
     fn flush(&mut self, wall: sk_model::ElementId) {
         self.finish_flush();
         self.cancel_pick(false);
+        if let Some(b) = sk_model::edit_blocked(self.scene.model(), &[wall]) {
+            self.show_locked(b);
+            return;
+        }
         match flush_pick::FlushPick::start(self.scene.model(), wall) {
             Some(p) => {
                 self.pick = Some(p);
@@ -4169,6 +4191,19 @@ impl App {
             }
             self.redraw = true;
         }
+    }
+
+    /// Hinweiskarte „AW-005 ist gesperrt.“, Punkt in `ui.danger`
+    /// (Paket 4 §1.7).
+    fn show_locked(&mut self, id: sk_model::ElementId) {
+        let m = self.scene.model();
+        let n = m.element(id).map_or("Das Bauteil", |e| e.number.as_str());
+        let lines = vec![format!("{n} ist gesperrt.")];
+        let mut h = delete::HintCard::new(lines, None, vec![id], Instant::now());
+        h.danger = true;
+        self.hint = Some(h);
+        self.hint_dirty = true;
+        self.redraw = true;
     }
 
     /// Hinweise aus dem Laden: leise in die Statuszeile, der Rest als Meldung.
@@ -5076,6 +5111,10 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         a.sync_quantity(&surface);
         a.sync_tool_chip();
         a.sync_tip();
+        if let Some(id) = a.scene.take_locked() {
+            a.show_locked(id);
+            a.upload_model();
+        }
         a.sync_notice();
         a.sync_erase();
         a.sync_title_state();

@@ -10,6 +10,7 @@ use crate::attr::{Display, Fill, FillId, LineType, LineTypeId, Pen, PenId, Surfa
 use crate::element::{Building, BuildingId, Element, ElementId, RunId, Storey, StoreyId, WallRun};
 use crate::library::{LayerSet, LayerSetId, Material, MaterialId};
 use crate::model::Defaults;
+use crate::trade::Trade;
 
 /// Ein geänderter Datensatz: `None` heißt „gab es nicht“ (angelegt bzw. gelöscht).
 #[derive(Clone, Debug, PartialEq)]
@@ -73,6 +74,11 @@ pub enum Change {
         old: Defaults,
         new: Defaults,
     },
+    /// Gewerke (Kurznamen, Regel 67), als Ganzes.
+    Trades {
+        old: Vec<Trade>,
+        new: Vec<Trade>,
+    },
 }
 
 impl Change {
@@ -91,6 +97,7 @@ impl Change {
             Change::Surface { old, new, .. } => old == new,
             Change::Display { old, new } => old == new,
             Change::Defaults { old, new } => old == new,
+            Change::Trades { old, new } => old == new,
         }
     }
 }
@@ -142,6 +149,7 @@ pub(crate) enum Key {
     Surface(SurfaceId),
     Display,
     Defaults,
+    Trades,
 }
 
 /// Offener Schritt.

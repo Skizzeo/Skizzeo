@@ -16,6 +16,8 @@ pub enum Refusal {
     Derived { from: ElementId },
     /// Das Bauteil gibt es nicht (mehr).
     Missing,
+    /// Gesperrt (Paket 4 §2.2): erst im Baum entsperren.
+    Locked(ElementId),
 }
 
 /// Ergebnis von [`Model::delete_elements`].
@@ -33,6 +35,9 @@ pub struct Deleted {
 /// Grund und Ausweg für ein nicht löschbares Bauteil, je Satz eine Zeile
 /// (Gestaltung „Löschen“, Fassung 1). Keine Nummern, keine Guids.
 pub fn refusal_lines(m: &Model, id: ElementId, r: &Refusal) -> Vec<&'static str> {
+    if matches!(r, Refusal::Locked(_)) {
+        return vec!["Entsperren im Baum mit dem Schloss."];
+    }
     if matches!(r, Refusal::BuildingOutline(_)) {
         return vec![
             "Außenwände gehören zum Gebäudeumriss.",
@@ -67,7 +72,14 @@ pub fn refusal_lines(m: &Model, id: ElementId, r: &Refusal) -> Vec<&'static str>
 /// Die Sätze aus [`refusal_lines`] hintereinander (Hinweis am gedimmten
 /// „Löschen“).
 pub fn refusal_text(m: &Model, id: ElementId, r: &Refusal) -> String {
-    refusal_lines(m, id, r).join(" ")
+    let lines = refusal_lines(m, id, r).join(" ");
+    match r {
+        Refusal::Locked(x) => {
+            let n = m.element(*x).map_or("Das Bauteil", |e| e.number.as_str());
+            format!("{n} ist gesperrt. {lines}")
+        }
+        _ => lines,
+    }
 }
 
 /// Stücke eines Zuges ohne die Segmente `drop`: zusammenhängende Folgen der
@@ -110,6 +122,8 @@ impl Model {
                 let closed = self.run(w.run).is_some_and(|r| r.closed);
                 if closed && e.category == Category::ExteriorWall {
                     Err(Refusal::BuildingOutline(self.building_of_element(id)))
+                } else if e.locked {
+                    Err(Refusal::Locked(id))
                 } else {
                     Ok(())
                 }

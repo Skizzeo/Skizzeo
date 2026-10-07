@@ -128,6 +128,10 @@ pub struct Element {
     pub seq: u16,
     pub kind: ElementKind,
     pub props: PropSet,
+    /// Gesperrt (Paket 4 §2.2): sichtbar und wählbar, aber nicht änderbar.
+    /// Nur Bauteile ohne Quelle tragen es; abgeleitete folgen ihrer Quelle
+    /// ([`crate::Model::is_locked`]).
+    pub locked: bool,
 }
 
 /// Parametrik je Bauteilart.

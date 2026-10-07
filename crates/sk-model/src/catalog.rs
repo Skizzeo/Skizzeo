@@ -380,6 +380,7 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
     // Gewerke (Paket 1a). Baustoffe älterer Kataloge bleiben ohne, damit
     // ihre Zeilen gleich bleiben; sie bekommen ihr Gewerk beim Übernehmen
     lib.trades = szo::read_trades(recs("trade"))?;
+    trade::dedup_shorts(&mut lib.trades);
     let mut mat_ids = HashMap::new();
     for r in recs("material") {
         let mut x = szo::read_material(r, &fill_ids, &pen_ids, &surface_ids)?;
@@ -897,6 +898,7 @@ mod tests {
             code: "F-1".into(),
             name: "Eigenes Gewerk".into(),
             order: 90,
+            short: None,
         };
         lib.trades.push(eigen.clone());
         let t = lib.types.ids().next().unwrap();

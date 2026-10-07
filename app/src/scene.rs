@@ -422,6 +422,8 @@ pub struct Scene {
     /// Masken je Zug und Teil (Review 3a G2), gültig für Revision,
     /// Sichtbarkeit und Übergang.
     vis_table: RefCell<VisTable>,
+    /// Ein Schritt hätte dieses gesperrte Bauteil geändert (Paket 4).
+    locked_hit: Option<ElementId>,
     /// Blasses Netz zum zuletzt zusammengesetzten Modellnetz.
     ghost: Option<(MeshKey, VisStamp, MeshData)>,
 }
@@ -690,6 +692,7 @@ impl Scene {
             vis_rev: 0,
             vis_anim: None,
             vis_table: RefCell::default(),
+            locked_hit: None,
             ghost: None,
         };
         s.rebuild_dirty(false);
@@ -1346,12 +1349,21 @@ impl Scene {
     /// Schließt den offenen Schritt und legt ihn in den Verlauf, falls er etwas
     /// geändert hat. Berechnet ausstehende Mengen und Wandzüge.
     pub fn commit(&mut self) {
-        if let Some(t) = self.model.commit() {
-            self.undo.push(t);
-            if self.undo.len() > HISTORY {
-                self.undo.remove(0);
+        match self.model.try_commit() {
+            Ok(Some(t)) => {
+                self.undo.push(t);
+                if self.undo.len() > HISTORY {
+                    self.undo.remove(0);
+                }
+                self.redo.clear();
             }
-            self.redo.clear();
+            Ok(None) => {}
+            // Sicherheitsnetz (Paket 4 §2.2): zurückgerollt, die App zeigt
+            // den Hinweis
+            Err(sk_model::Locked(id)) => {
+                self.locked_hit = Some(id);
+                self.mark_all();
+            }
         }
         self.live.clear();
         self.rebuild_dirty(false);
@@ -2757,6 +2769,12 @@ impl Scene {
     /// beim Isolieren nur Isoliertes?
     pub fn pickable(&self, id: ElementId) -> bool {
         self.model.visibility().is_plain() || self.model.masks(id).solid != 0
+    }
+
+    /// Bauteil, an dem der letzte Schritt wegen einer Sperre scheiterte
+    /// (einmal abholen).
+    pub fn take_locked(&mut self) -> Option<ElementId> {
+        self.locked_hit.take()
     }
 
     /// Ist das Gelände ausgeblendet?

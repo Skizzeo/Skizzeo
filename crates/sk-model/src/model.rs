@@ -77,6 +77,9 @@ pub struct Model {
     active_cut: usize,
     /// Ausgeblendetes und Isoliertes (Paket 3); Ansichtszustand wie `cuts`.
     pub(crate) visibility: crate::view::Visibility,
+    /// Reihenfolge, in der Bauteile gesperrt wurden (für die `[lock]`-Zeilen,
+    /// damit ein Rundlauf die Reihenfolge der Datei behält).
+    pub(crate) lock_order: Vec<Guid>,
     /// Stifte, Schraffuren, Oberflächen und Bauteildarstellung.
     attr: Attributes,
     materials: Arena<Material>,
@@ -134,6 +137,10 @@ macro_rules! note {
 #[path = "delete.rs"]
 mod delete;
 pub use delete::{refusal_lines, refusal_text, Deleted, Refusal};
+
+#[path = "lock.rs"]
+mod lock;
+pub use lock::{edit_blocked, Locked};
 
 impl Default for Model {
     fn default() -> Model {
@@ -484,6 +491,7 @@ impl Model {
             cuts: Default::default(),
             active_cut: 0,
             visibility: Default::default(),
+            lock_order: Vec::new(),
             foreign: Default::default(),
         }
     }
@@ -541,6 +549,7 @@ impl Model {
             cuts: Default::default(),
             active_cut: 0,
             visibility: Default::default(),
+            lock_order: Vec::new(),
             foreign: Default::default(),
         };
         m.joins = m.detect_all();
@@ -1578,6 +1587,8 @@ impl Model {
                 seg: seg as u32,
                 coupling: None,
             }),
+            // Neues ist nie gesperrt, auch nach einer gesperrten Vorlage
+            locked: false,
             ..template.clone()
         });
         note!(self, Element, new id);
@@ -1645,6 +1656,7 @@ impl Model {
                 coupling: None,
             }),
             props: PropSet::new(),
+            locked: false,
         };
         let segments = (0..count)
             .map(|k| self.new_wall(run, k, &template))
@@ -2879,6 +2891,7 @@ impl Model {
             seq,
             kind,
             props: PropSet::new(),
+            locked: false,
         });
         note!(self, Element, new id);
         id
@@ -3920,6 +3933,7 @@ impl Model {
                         | Change::Fill { .. }
                         | Change::Surface { .. }
                         | Change::Display { .. }
+                        | Change::Trades { .. }
                 )
             })
             .all(|c| matches!(c, Change::Run { .. } | Change::Element { .. }))
@@ -4173,6 +4187,46 @@ impl Model {
     /// Gewerk mit der ATV-Nummer `code`.
     pub fn trade_by_code(&self, code: &str) -> Option<TradeId> {
         self.trades.iter().find(|t| t.code == code).map(Trade::id)
+    }
+
+    /// Kurzname eines Gewerks (Regel 67) im offenen Schritt; `""` entfernt
+    /// ihn (dann gilt der Langname). `false`, wenn abgelehnt: mehr als 14
+    /// Zeichen, eine Ziffer, ein Zeilenumbruch oder doppelt (ohne Groß-
+    /// und Kleinschrift).
+    pub fn set_trade_short(&mut self, id: TradeId, k: &str) -> bool {
+        let k = k.trim();
+        if !crate::trade::short_ok(k) || self.trade(id).is_none() {
+            return false;
+        }
+        let low = k.to_lowercase();
+        let taken = self.trades.iter().any(|t| {
+            t.id() != id
+                && !k.is_empty()
+                && t.short.as_deref().map(str::to_lowercase) == Some(low.clone())
+        });
+        if taken {
+            return false;
+        }
+        let new = Some(k.to_string());
+        if self.trade(id).is_some_and(|t| t.short == new) {
+            return true;
+        }
+        match self.txn.as_mut() {
+            Some(t) => {
+                if t.noted.insert(Key::Trades) {
+                    t.changes.push(Change::Trades {
+                        old: self.trades.clone(),
+                        new: Vec::new(),
+                    });
+                }
+            }
+            None => debug_assert!(!self.strict, "Änderung ohne Schritt"),
+        }
+        if let Some(t) = self.trades.iter_mut().find(|t| t.id() == id) {
+            t.short = new;
+        }
+        self.touch();
+        true
     }
 
     /// Nimmt ein Gewerk aus dem Firmenkatalog auf, falls es fehlt
@@ -5092,9 +5146,16 @@ impl Model {
         self.txn.is_some()
     }
 
-    /// Schließt den offenen Schritt. `None`, wenn er nichts geändert hat.
-    /// Randdämmstreifen folgen Wänden, Decken und Typen im selben Schritt.
+    /// Schließt den offenen Schritt. `None`, wenn er nichts geändert hat
+    /// oder ein gesperrtes Bauteil geändert hätte ([`Model::try_commit`]).
     pub fn commit(&mut self) -> Option<Txn> {
+        self.try_commit().ok().flatten()
+    }
+
+    /// Schließt den offenen Schritt. Randdämmstreifen folgen Wänden, Decken
+    /// und Typen im selben Schritt. Ändert er ein gesperrtes Bauteil, wird
+    /// er ganz zurückgerollt (Sicherheitsnetz, Paket 4 §2.2).
+    pub fn try_commit(&mut self) -> Result<Option<Txn>, Locked> {
         if self.txn.is_some() {
             let scope = self.sync_scope();
             let scope = scope.as_deref();
@@ -5102,7 +5163,11 @@ impl Model {
             self.sync_soffits_in(scope);
             self.sync_terraces_in(scope);
         }
-        self.close()
+        if let Some(id) = self.locked_change() {
+            self.rollback();
+            return Err(Locked(id));
+        }
+        Ok(self.close())
     }
 
     fn close(&mut self) -> Option<Txn> {
@@ -5206,6 +5271,7 @@ impl Model {
             Change::Surface { id, new, .. } => *new = self.attr.surface(*id).cloned(),
             Change::Display { new, .. } => *new = self.attr.display().clone(),
             Change::Defaults { new, .. } => *new = self.defaults,
+            Change::Trades { new, .. } => *new = self.trades.clone(),
         }
     }
 
@@ -5281,6 +5347,7 @@ impl Model {
                 touched.attr = true;
             }
             Change::Defaults { old, new } => m.defaults = pick(dir, old, new),
+            Change::Trades { old, new } => m.trades = pick(dir, old, new),
         };
         // Rückwärts in umgekehrter Reihenfolge: ein Platz wird erst frei, dann neu belegt
         match dir {

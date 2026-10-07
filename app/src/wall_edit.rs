@@ -75,6 +75,50 @@ pub struct EditOutcome {
     pub consumed: bool,
     /// Band nur angeklickt, nicht verschoben: diese Wand auswählen.
     pub clicked: Option<ElementId>,
+    /// Greifen abgelehnt: dieses Bauteil ist gesperrt (Paket 4 §1.7).
+    pub locked: Option<ElementId>,
+}
+
+/// Wände, die das Ziehen am Fuß von `wall` ohne Strg ändern würde (Paket 4
+/// §2.2): die gezogene Wand (gekoppelt der Fuß der Kette), ihre Nachbarn im
+/// Zug (deren Ecken wandern) und alles, was gekoppelt darüber steht.
+#[cfg(test)]
+pub fn drag_set(m: &sk_model::Model, wall: ElementId) -> Vec<ElementId> {
+    drag_set_mods(m, wall, false)
+}
+
+/// Wie [`drag_set`]; mit Strg zieht eine gestapelte Wand nur sich selbst.
+pub fn drag_set_mods(m: &sk_model::Model, wall: ElementId, ctrl: bool) -> Vec<ElementId> {
+    let moving = match m.stack_offset(wall) {
+        Some((_, true)) if !ctrl => m.chain_foot(wall),
+        _ => wall,
+    };
+    let mut seeds = vec![moving];
+    if let Some((run, k)) = m.segment_of(moving) {
+        let r = m.run(run);
+        let n = r.map_or(0, |r| r.segments.len());
+        let closed = r.is_some_and(|r| r.closed);
+        if k > 0 || closed {
+            seeds.extend(m.wall_at(run, (k + n - 1) % n));
+        }
+        if k + 1 < n || closed {
+            seeds.extend(m.wall_at(run, (k + 1) % n));
+        }
+    }
+    let mut out: Vec<ElementId> = Vec::new();
+    while let Some(w) = seeds.pop() {
+        if out.contains(&w) {
+            continue;
+        }
+        out.push(w);
+        // Gekoppelt darüber: geht mit
+        for (id, _) in m.elements().iter() {
+            if m.wall_below(id) == Some(w) && m.stack_offset(id).is_some_and(|s| s.1) {
+                seeds.push(id);
+            }
+        }
+    }
+    out
 }
 
 /// Bildrechteck (x0, y0, x1, y1) eines Quaders auf dem Boden. `None`, wenn eine
@@ -280,8 +324,9 @@ impl WallEdit {
                 }
             }
         }
+        // Gesperrte Wände haben keine Griffe (Paket 4 §1.7)
         best.and_then(|(_, _, (run, k))| scene.model().wall_at(run, k))
-            .filter(|&e| scene.pickable(e))
+            .filter(|&e| scene.pickable(e) && !scene.model().element(e).is_some_and(|x| x.locked))
     }
 
     /// Greifstelle neu bestimmen (nach Kamerawechsel oder Änderung der Wände).
@@ -375,6 +420,13 @@ impl WallEdit {
                     return out;
                 };
                 out.consumed = true;
+                // Gesperrtes: beim Greifen ablehnen, nie ziehen und
+                // zurückspringen
+                let set = drag_set_mods(scene.model(), wall, mods.ctrl);
+                if let Some(id) = sk_model::edit_blocked(scene.model(), &set) {
+                    out.locked = Some(id);
+                    return out;
+                }
                 let Some((grip_run, grip_seg)) = scene.model().segment_of(wall) else {
                     return out;
                 };

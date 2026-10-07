@@ -5,7 +5,7 @@
 //! zwischen Wandzügen (B5a). Grundfläche, Ansichtsflächen und
 //! `volume_gross` bleiben brutto (ohne Verschnitt). Öffnungen gibt es noch nicht.
 
-use crate::element::{BuildingId, Category, ElementId, ElementKind, RunId, StoreyId};
+use crate::element::{BuildingId, Category, Element, ElementId, ElementKind, RunId, StoreyId};
 use crate::floor::{FloorError, FloorSlab};
 use crate::foundation::{Foundation, FoundationError};
 use crate::library::{LayerFunction, LayerSet, LayerSetId, MatCategory, MaterialId, MaterialLayer};
@@ -783,6 +783,17 @@ pub struct Schedule {
     pub loose: Vec<StoreyQto>,
 }
 
+/// Geschoss, unter dem ein Bauteil in Mengen und Baum steht: sein eigenes,
+/// Sohlplatte und Frostschürze unter dem Gründungsband (Kostengruppe 322).
+pub fn schedule_storey(model: &Model, e: &Element) -> StoreyId {
+    match e.category {
+        Category::GroundSlab | Category::StripFooting => {
+            model.foundation_level_of(e.storey).unwrap_or(e.storey)
+        }
+        _ => e.storey,
+    }
+}
+
 /// Reihenfolge der Gruppen nach Bauablauf ([`crate::kinds`]).
 fn group_rank(c: Category) -> u8 {
     crate::kinds::spec(c).qto_rank
@@ -931,13 +942,7 @@ pub fn schedule(model: &Model) -> Schedule {
                 }
             }
         };
-        // Fundament: Kostengruppe 322 unter dem Gründungsband
-        let storey = match e.category {
-            Category::GroundSlab | Category::StripFooting => {
-                model.foundation_level_of(e.storey).unwrap_or(e.storey)
-            }
-            _ => e.storey,
-        };
+        let storey = schedule_storey(model, e);
         let set = match e.kind {
             ElementKind::Wall(_) => e.layer_set,
             _ => None,

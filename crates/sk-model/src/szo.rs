@@ -586,15 +586,25 @@ pub(crate) fn used_trades<'a>(
     v
 }
 
-/// `[trade]` je verwendetem Gewerk, nach Reihe (Paket 1a §5).
+/// `[trade]` je verwendetem Gewerk, nach Reihe (Paket 1a §5), dazu jedes
+/// mit eigenem Kurznamen. `short=` nur, wenn er vom Startbestand abweicht
+/// (Regel 67): ohne eigene Kurznamen bleibt die Datei bytegleich.
 pub(crate) fn write_trades(out: &mut String, trades: &[Trade], used: &[TradeId]) {
-    for t in trades.iter().filter(|t| used.contains(&t.id())) {
-        Line::new("trade")
+    for t in trades {
+        let own = t.short.as_deref() != t.start_short();
+        if !used.contains(&t.id()) && !own {
+            continue;
+        }
+        let line = Line::new("trade")
             .guid("guid", Some(t.guid))
             .text("code", &t.code)
             .text("name", &t.name)
-            .num("order", t.order)
-            .finish(out);
+            .num("order", t.order);
+        let line = match own {
+            true => line.text("short", t.short.as_deref().unwrap_or("")),
+            false => line,
+        };
+        line.finish(out);
     }
 }
 
@@ -607,6 +617,9 @@ pub(crate) fn read_trades(recs: &[Record]) -> Result<Vec<Trade>, LoadError> {
             code: r.get("code")?.to_string(),
             name: r.get("name")?.to_string(),
             order: r.int("order")?,
+            short: r
+                .opt("short")
+                .map(|k| if trade::short_ok(k) { k } else { "" }.to_string()),
         });
     }
     Ok(trade::merge(read))
@@ -1003,6 +1016,10 @@ fn write_known(m: &Model) -> String {
     if v.terrain_hidden {
         Line::new("hide").flag("terrain", true).finish(&mut out);
     }
+    // Gesperrtes (Paket 4 §2.3): eine Zeile je Bauteil, nur wenn es eins gibt
+    for g in m.locked_in_order() {
+        Line::new("lock").guid("elem", Some(g)).finish(&mut out);
+    }
     out
 }
 
@@ -1089,10 +1106,10 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     // Sätze unbekannter Art (neuere Fassung, F-17b): roh behalten, ohne Hinweis
     let mut alien: Vec<usize> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 25] = [
+    const KNOWN: [&str; 26] = [
         "pen", "linetype", "fill", "surface", "display", "trade", "material", "layerset", "layer",
         "typeprop", "project", "building", "storey", "run", "wall", "slab", "footing", "floor",
-        "strip", "soffit", "terrace", "coping", "prop", "cut", "hide",
+        "strip", "soffit", "terrace", "coping", "prop", "cut", "hide", "lock",
     ];
     for (i, l) in text.lines().enumerate().skip(1) {
         let Some(r) = Record::parse(i + 1, l)? else {
@@ -1173,7 +1190,8 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     )?;
 
     // Bibliothek
-    let trades = read_trades(recs("trade"))?;
+    let mut trades = read_trades(recs("trade"))?;
+    hints.extend(trade::dedup_shorts(&mut trades));
     let mut materials = Arena::new();
     let mut mat_ids = HashMap::new();
     for r in recs("material") {
@@ -1457,6 +1475,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
                 coupling: None,
             }),
             props: Default::default(),
+            locked: false,
         };
         if r.opt("below").is_some() {
             let linked = match r.opt("link") {
@@ -1665,6 +1684,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
                 seq: r.int("seq")?,
                 kind,
                 props: Default::default(),
+                locked: false,
             };
             let g = e.guid;
             let id = elements.insert(e);
@@ -1736,6 +1756,11 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
             }
         }
     }
+    // Gesperrtes (Paket 4 §2.3): Modell, darum Unbekanntes mit Hinweis
+    let locks: Vec<(usize, Option<Guid>)> = recs("lock")
+        .iter()
+        .map(|r| (r.line, r.opt("elem").and_then(Guid::from_ifc)))
+        .collect();
     // Ausgeblendetes (Paket 3 §3.6): nur Ansicht, Unbekanntes still verworfen
     // je Zeile: Bauteil, Art, Gewerk, Gelände
     type Hide = (Option<Guid>, Option<crate::Category>, Option<Guid>, bool);
@@ -1808,6 +1833,21 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         vis.terrain_hidden |= terrain;
     }
     model.set_visibility(vis);
+    for (line, g) in locks {
+        let id = g.and_then(|g| {
+            model
+                .elements()
+                .iter()
+                .find(|(_, e)| e.guid == g)
+                .map(|x| x.0)
+        });
+        match id.filter(|&id| model.lock_source(id) == id) {
+            Some(id) => model.load_lock(id),
+            None => hints.push(format!(
+                "Zeile {line}: Sperre auf unbekanntes Bauteil, verworfen"
+            )),
+        }
+    }
     hints.extend(model.check());
     model.foreign = foreign(&model, &by, &lines, &alien);
     Ok(Loaded { model, hints })
