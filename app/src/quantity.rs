@@ -1127,6 +1127,9 @@ mod tests {
         assert!(p.selected.is_empty(), "Auswahl bereinigt");
         assert!(q.hint.is_none(), "alles gelöscht: kein Hinweis");
         q.sync(&mut s, &p, true);
+        // Das Nachrücken beginnt beim Angleichen (Uhrzeit); ab hier zählen,
+        // damit ein langsamer Lauf (Debug, volle Maschine) nicht kippt
+        let now = Instant::now();
         let l = q.list.as_ref().unwrap();
         assert!(l.flashing(), "Zeilen rücken nach");
         let fade = Duration::from_millis(t.size.fade_ms as u64);

@@ -20,7 +20,7 @@ pub type RgbaRole = (&'static str, &'static str, fn(&mut Theme) -> &mut Rgba);
 pub type F4Role = (&'static str, &'static str, fn(&mut Theme) -> &mut [f32; 4]);
 pub type SizeRole = (&'static str, &'static str, fn(&mut Theme) -> &mut f32);
 
-pub const RGBA_ROLES: [RgbaRole; 65] = [
+pub const RGBA_ROLES: [RgbaRole; 66] = [
     ("ui.bg", "Fläche", |t| &mut t.ui.bg),
     ("ui.border", "Rahmen", |t| &mut t.ui.border),
     ("ui.field", "Feld", |t| &mut t.ui.field),
@@ -135,6 +135,7 @@ pub const RGBA_ROLES: [RgbaRole; 65] = [
     ("ui.sheet_select", "Gewählte Zeile", |t| {
         &mut t.ui.sheet_select
     }),
+    ("ui.text_same", "Wie im Projekt", |t| &mut t.ui.text_same),
     ("ui.sheet_select_group", "Gruppe der Auswahl", |t| {
         &mut t.ui.sheet_select_group
     }),
@@ -172,7 +173,7 @@ pub const F4_ROLES: [F4Role; 11] = [
     }),
 ];
 
-pub const SIZE_ROLES: [SizeRole; 95] = [
+pub const SIZE_ROLES: [SizeRole; 96] = [
     ("corner_radius", "Eckenradius", |t| {
         &mut t.size.corner_radius
     }),
@@ -290,6 +291,9 @@ pub const SIZE_ROLES: [SizeRole; 95] = [
     }),
     ("qto_window_w", "Mengenfenster: Breite", |t| {
         &mut t.size.qto_window_w
+    }),
+    ("mat_mark", "Baustoffliste: Kachel", |t| {
+        &mut t.size.mat_mark
     }),
     ("flash_ms", "Aufleuchten (ms)", |t| &mut t.size.flash_ms),
     ("fade_ms", "Ausblenden (ms)", |t| &mut t.size.fade_ms),

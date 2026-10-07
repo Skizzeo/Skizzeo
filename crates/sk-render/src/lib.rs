@@ -1337,8 +1337,13 @@ impl Renderer {
             gl.glUniform1f(loc(gl, p, c"u_softness"), st.horizon_softness);
             vec3(gl, p, c"u_ground", st.ground);
             let n = st.sky.len().min(SKY_MAX);
-            let pos: Vec<f32> = st.sky[..n].iter().map(|s| s.0).collect();
-            let col: Vec<f32> = st.sky[..n].iter().flat_map(|s| s.1).collect();
+            // Ohne neue Vec je Bild (Review H2)
+            let mut pos = [0.0f32; SKY_MAX];
+            let mut col = [0.0f32; 3 * SKY_MAX];
+            for (i, s) in st.sky[..n].iter().enumerate() {
+                pos[i] = s.0;
+                col[3 * i..3 * i + 3].copy_from_slice(&s.1);
+            }
             gl.glUniform1i(loc(gl, p, c"u_sky_n"), n as i32);
             gl.glUniform1fv(loc(gl, p, c"u_sky_pos"), n as i32, pos.as_ptr());
             gl.glUniform3fv(loc(gl, p, c"u_sky_col"), n as i32, col.as_ptr());
@@ -1650,15 +1655,31 @@ unsafe fn upload<T>(gl: &Gl, data: &[T]) {
     );
 }
 
-unsafe fn loc(gl: &Gl, p: GLuint, name: &std::ffi::CStr) -> GLint {
-    gl.glGetUniformLocation(p, name.as_ptr() as *const GLchar)
+thread_local! {
+    /// Uniform-Positionen je Programm und Name (Review H1): einmal beim
+    /// Treiber erfragt statt in jedem Bild. Schlüssel ist die Adresse des
+    /// festen Namens; ein neues Programm mit derselben Nummer leert seine
+    /// Einträge ([`program`]). Gilt für einen GL-Kontext je Thread, wie
+    /// heute (ein `Renderer`).
+    static LOCS: std::cell::RefCell<std::collections::HashMap<(GLuint, usize), GLint>> =
+        Default::default();
 }
 
-unsafe fn mat(gl: &Gl, p: GLuint, name: &std::ffi::CStr, m: &[f32; 16]) {
+unsafe fn loc(gl: &Gl, p: GLuint, name: &'static std::ffi::CStr) -> GLint {
+    let key = (p, name.as_ptr() as usize);
+    if let Some(l) = LOCS.with(|c| c.borrow().get(&key).copied()) {
+        return l;
+    }
+    let l = gl.glGetUniformLocation(p, name.as_ptr() as *const GLchar);
+    LOCS.with(|c| c.borrow_mut().insert(key, l));
+    l
+}
+
+unsafe fn mat(gl: &Gl, p: GLuint, name: &'static std::ffi::CStr, m: &[f32; 16]) {
     gl.glUniformMatrix4fv(loc(gl, p, name), 1, FALSE, m.as_ptr());
 }
 
-unsafe fn vec3(gl: &Gl, p: GLuint, name: &std::ffi::CStr, v: [f32; 3]) {
+unsafe fn vec3(gl: &Gl, p: GLuint, name: &'static std::ffi::CStr, v: [f32; 3]) {
     gl.glUniform3f(loc(gl, p, name), v[0], v[1], v[2]);
 }
 
@@ -1692,6 +1713,7 @@ unsafe fn program(gl: &Gl, vs: &str, fs: &str) -> Result<Program, String> {
     let v = shader(gl, VERTEX_SHADER, vs)?;
     let f = shader(gl, FRAGMENT_SHADER, fs)?;
     let p = gl.glCreateProgram();
+    LOCS.with(|c| c.borrow_mut().retain(|k, _| k.0 != p));
     gl.glAttachShader(p, v);
     gl.glAttachShader(p, f);
     gl.glLinkProgram(p);

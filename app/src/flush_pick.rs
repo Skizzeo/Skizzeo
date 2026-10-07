@@ -439,14 +439,7 @@ fn edge_dist(poly: &[(f64, f64)], p: (f64, f64)) -> f64 {
     (0..n)
         .map(|i| {
             let (a, b) = (poly[i], poly[(i + 1) % n]);
-            let (vx, vy) = (b.0 - a.0, b.1 - a.1);
-            let l2 = vx * vx + vy * vy;
-            let t = if l2 > 0.0 {
-                (((p.0 - a.0) * vx + (p.1 - a.1) * vy) / l2).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            (a.0 + vx * t - p.0).hypot(a.1 + vy * t - p.1)
+            sk_math::dist_to_segment(p, a, b)
         })
         .fold(f64::MAX, f64::min)
 }

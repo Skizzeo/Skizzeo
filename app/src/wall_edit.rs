@@ -10,7 +10,7 @@
 
 use crate::camera::Camera;
 use crate::scene::Scene;
-use sk_math::{vec3, Vec3};
+use sk_math::{dist_to_segment, vec3, Vec3};
 use sk_model::{ElementId, RunId, WallChain};
 use sk_platform::{Event, Key, MouseButton};
 use sk_render::Helper;
@@ -193,18 +193,6 @@ pub fn partner_line(a: Vec3, b: Vec3, scale: f32, theme: &Theme) -> Helper {
         occlude: false,
         round: false,
     }
-}
-
-fn dist_to_segment(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
-    let (vx, vy) = (b.0 - a.0, b.1 - a.1);
-    let len2 = vx * vx + vy * vy;
-    let t = if len2 > 0.0 {
-        (((p.0 - a.0) * vx + (p.1 - a.1) * vy) / len2).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let (qx, qy) = (a.0 + vx * t, a.1 + vy * t);
-    ((p.0 - qx).powi(2) + (p.1 - qy).powi(2)).sqrt()
 }
 
 impl WallEdit {

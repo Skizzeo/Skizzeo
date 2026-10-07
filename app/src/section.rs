@@ -10,7 +10,7 @@
 
 use crate::camera::Camera;
 use crate::scene::Scene;
-use sk_math::{vec3, Vec3};
+use sk_math::{dist_to_segment, vec3, Vec3};
 use sk_model::{Cut, CUT_NAMES};
 use sk_paint::{Canvas, Path, Rgba};
 use sk_platform::{Event, MouseButton};
@@ -193,17 +193,6 @@ pub struct Mark {
 /// Bildgröße eines Endsymbols in Pixeln.
 fn mark_size(scale: f32) -> f32 {
     (2.0 * MARK_HALF * scale).round()
-}
-
-fn dist_to_segment(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
-    let (vx, vy) = (b.0 - a.0, b.1 - a.1);
-    let len2 = vx * vx + vy * vy;
-    let t = if len2 > 0.0 {
-        (((p.0 - a.0) * vx + (p.1 - a.1) * vy) / len2).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    ((p.0 - a.0 - vx * t).powi(2) + (p.1 - a.1 - vy * t).powi(2)).sqrt()
 }
 
 /// Richtung im Bild (Pixel, y nach unten) einer waagerechten Richtung im

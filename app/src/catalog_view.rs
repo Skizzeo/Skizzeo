@@ -44,7 +44,6 @@ const PROPS_X: f32 = 880.0;
 const ROW_H: f32 = 34.0;
 const ROWS_Y: f32 = 442.0;
 /// Grün für „wie im Projekt“ (Marke im Firmenreiter).
-pub(crate) const SAME: Rgba = Rgba::rgb(126, 196, 140);
 /// Funktionen in der Auswahl.
 const FUNCTIONS: [(LayerFunction, &str); 5] = [
     (LayerFunction::Structure, "tragend"),
@@ -2876,7 +2875,7 @@ fn paint_pill(c: &mut Canvas, fonts: &Fonts, right: f32, y: f32, mark: Mark, s: 
     let (fill, edge, text) = match mark {
         Mark::Standard => (Some(u.accent), u.accent, u.on_accent),
         Mark::OnlyProject | Mark::CompanyNewer | Mark::ProjectNewer => (None, u.accent, u.accent),
-        Mark::Same => (None, SAME, SAME),
+        Mark::Same => (None, t.ui.text_same, t.ui.text_same),
         Mark::NotInProject => (None, u.text_dim, u.text_dim),
     };
     match fill {

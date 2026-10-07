@@ -33,6 +33,9 @@ pub struct Ui {
     pub text_dim: Rgba,
     /// Schrift auf Akzentflächen.
     pub on_accent: Rgba,
+    /// Kennzeichen „wie im Projekt“ (Bauteilkatalog, Baustoffe, Reiter
+    /// Firma).
+    pub text_same: Rgba,
     pub accent: Rgba,
     pub accent_hover: Rgba,
     pub hover: Rgba,
@@ -258,6 +261,8 @@ pub struct Sizes {
     /// eine Zeile, brechen sie um.
     pub sheet_tile_min_w: f32,
     pub qto_window_w: f32,
+    /// Darstellungskachel vor einem Baustoff in Listen (dip).
+    pub mat_mark: f32,
     pub flash_ms: f32,
     /// Aus- und Einblenden gelöschter Bauteile und des Hinweises am Bauteil
     /// (Paket „Löschen“), ms.
@@ -338,6 +343,7 @@ impl Theme {
                 field: rgb(20, 25, 32),
                 text,
                 text_dim: rgb(160, 165, 172),
+                text_same: rgb(126, 196, 140),
                 on_accent: bg,
                 accent,
                 accent_hover: rgb(248, 196, 96),
@@ -495,6 +501,7 @@ impl Theme {
                 sheet_pad: 28.0,
                 qto_max_w: 900.0,
                 sheet_tile_min_w: 120.0,
+                mat_mark: 16.0,
                 qto_window_w: 520.0,
                 flash_ms: 600.0,
                 fade_ms: 150.0,

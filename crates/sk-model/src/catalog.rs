@@ -213,7 +213,8 @@ impl Library {
 
 /// Kennung eines Satzes zum Wiederfinden in der eigenen Ausgabe: Abschnitt
 /// und Guid, ohne Guid die Schlüsselfelder ([default]: Art, [typeprop]:
-/// Typ und Merkmal, [layer]: Typ). Mehrere Sätze mit derselben Kennung
+/// Typ und Merkmal, [layer]: Typ, [matprop]/[prop]: Baustoff bzw.
+/// Bauteil und Merkmal). Mehrere Sätze mit derselben Kennung
 /// (Schichten eines Typs) zählen in Dateireihenfolge durch.
 pub(crate) fn record_key(r: &Record, count: &mut HashMap<String, usize>) -> String {
     // Muster (Paket 6) gehören über `surface=` zu ihrer Oberfläche
@@ -224,10 +225,12 @@ pub(crate) fn record_key(r: &Record, count: &mut HashMap<String, usize>) -> Stri
     let base = match id {
         Some((k, g)) => format!("{} {k}={g}", r.section),
         None => format!(
-            "{} set={} cat={} key={}",
+            "{} set={} cat={} mat={} elem={} key={}",
             r.section,
             r.opt("set").unwrap_or(""),
             r.opt("cat").unwrap_or(""),
+            r.opt("mat").unwrap_or(""),
+            r.opt("elem").unwrap_or(""),
             r.opt("key").unwrap_or("")
         ),
     };
@@ -926,11 +929,13 @@ pub fn import_material(m: &mut Model, lib: &Library, g: Guid) -> bool {
     let air = find(&lib.materials, g, |y| y.guid)
         .and_then(|id| lib.materials.get(id))
         .is_none_or(|x| x.category == MatCategory::Air);
-    !air && adopt_material(m, lib, g)
+    !air && adopt_material(m, lib, g, false)
 }
 
-/// [`import_material`] für jeden Baustoff, auch Luft.
-fn adopt_material(m: &mut Model, lib: &Library, g: Guid) -> bool {
+/// [`import_material`] für jeden Baustoff, auch Luft. `exact` (OK im
+/// Materialfenster): Name und Gewerk genau wie in der Kopie, ohne
+/// Ausweichnamen und ohne Gewerk nach Baustoffart (Review 3n/2, 3n/3).
+fn adopt_material(m: &mut Model, lib: &Library, g: Guid, exact: bool) -> bool {
     let Some(x) = find(&lib.materials, g, |y| y.guid).and_then(|id| lib.materials.get(id)) else {
         return false;
     };
@@ -948,10 +953,17 @@ fn adopt_material(m: &mut Model, lib: &Library, g: Guid) -> bool {
         .iter()
         .find(|(_, y)| y.guid == g)
         .map(|(id, _)| id);
-    let name = m.free_material_name(&x.name, existing);
+    let (name, trade) = if exact {
+        (x.name.clone(), x.trade)
+    } else {
+        (
+            m.free_material_name(&x.name, existing),
+            x.trade.or_else(|| trade::for_material(&x.name, x.category)),
+        )
+    };
     let new = Material {
         name,
-        trade: x.trade.or_else(|| trade::for_material(&x.name, x.category)),
+        trade,
         ..with_display(x, d)
     };
     match existing {
@@ -979,6 +991,32 @@ pub fn sync_materials(m: &mut Model, work: &Model) -> bool {
     for id in gone {
         changed |= m.remove_material(id);
     }
+    // Namen, die in der Kopie getauscht oder weitergereicht wurden: erst
+    // auf freie Zwischennamen, damit jeder Baustoff genau seinen neuen
+    // Namen bekommt (Review 3n/2)
+    let target = |g: Guid| {
+        work.materials()
+            .iter()
+            .find(|(_, x)| x.guid == g)
+            .map(|(_, x)| x.name.clone())
+    };
+    let moving: Vec<(MaterialId, Material)> = m
+        .materials()
+        .iter()
+        .filter(|(_, x)| target(x.guid).is_some_and(|n| n != x.name))
+        .map(|(id, x)| (id, x.clone()))
+        .collect();
+    for (id, x) in moving {
+        let mut k = 1;
+        let tmp = loop {
+            let n = format!("{} ~{k}", x.name);
+            if !m.materials().iter().any(|(_, y)| y.name == n) {
+                break n;
+            }
+            k += 1;
+        };
+        changed |= m.set_material(id, Material { name: tmp, ..x });
+    }
     let mut lib = Library {
         trades: work.trades().to_vec(),
         ..Library::default()
@@ -997,7 +1035,7 @@ pub fn sync_materials(m: &mut Model, work: &Model) -> bool {
             .find(|(_, z)| z.guid == x.guid)
             .is_some_and(|(_, z)| same_material(m, z, &lib, y));
         if !same {
-            changed |= adopt_material(m, &lib, x.guid);
+            changed |= adopt_material(m, &lib, x.guid, true);
         }
     }
     changed
@@ -1047,6 +1085,52 @@ mod tests {
     use super::*;
     use crate::library::{LayerFunction, MatCategory, MaterialLayer};
     use crate::txn::Direction;
+
+    /// Review 3n/2, 3n/3, 3n/7: OK im Materialfenster tauscht Namen genau,
+    /// setzt kein Gewerk nach Baustoffart und ein neues Gewerk geht mit
+    /// Rückgängig wieder weg.
+    #[test]
+    fn baustoffe_uebernehmen_genau() {
+        let mut m = Model::with_seed(31);
+        m.require_steps();
+        let ids: Vec<MaterialId> = m.materials().ids().take(2).collect();
+        let (a, b) = (
+            m.material(ids[0]).unwrap().clone(),
+            m.material(ids[1]).unwrap().clone(),
+        );
+        let mut work = m.clone();
+        let mut x = a.clone();
+        x.name = b.name.clone();
+        x.trade = None;
+        x.density += 1.0;
+        let mut y = b.clone();
+        y.name = a.name.clone();
+        work.begin("Kopie");
+        // Zwischenname, damit die Kopie selbst gültig bleibt
+        assert!(work.set_material(
+            ids[1],
+            Material {
+                name: "~".into(),
+                ..y.clone()
+            }
+        ));
+        assert!(work.set_material(ids[0], x));
+        assert!(work.set_material(ids[1], y));
+        work.commit();
+        m.begin("Baustoffe geändert");
+        assert!(sync_materials(&mut m, &work));
+        let tx = m.commit().unwrap();
+        assert_eq!(m.material(ids[0]).unwrap().name, b.name, "getauscht");
+        assert_eq!(m.material(ids[1]).unwrap().name, a.name, "getauscht");
+        assert_eq!(
+            m.material(ids[0]).unwrap().trade,
+            None,
+            "kein Gewerk nach Art"
+        );
+        m.apply(&tx, Direction::Undo);
+        assert_eq!(m.material(ids[0]).unwrap(), &a);
+        assert_eq!(m.material(ids[1]).unwrap(), &b);
+    }
 
     /// Jede Baustoffkategorie, Typart und Schichtaufgabe übersteht Schreiben
     /// und Lesen (ein K3-Programm las „cat=air“ aus K4 nicht).

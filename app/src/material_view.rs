@@ -11,7 +11,7 @@
 
 use crate::attr_pick::{self, Pick, Tiles};
 use crate::catalog::{Company, SaveResult};
-use crate::catalog_view::{Frame, SAME};
+use crate::catalog_view::Frame;
 use crate::prefs::Win;
 use crate::scene::Scene;
 use sk_model::matprop::{self, MatPropKind, PRICE, PRICE_DATE, PRICE_UNIT};
@@ -26,6 +26,7 @@ use sk_ui::text_edit::TextEdit;
 use sk_ui::theme::Theme;
 use sk_ui::widgets::{self, ButtonState, FieldState, Fonts, Rect};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 /// Rückgängig-Schritt beim OK.
@@ -461,9 +462,17 @@ pub struct MaterialView {
     marks: RefCell<(Option<TileStamp>, Vec<Mark>)>,
     /// „Verwendet in“ je Revision der Kopie und Baustoff (M4).
     uses: RefCell<Option<(u64, MaterialId, Vec<Use>)>>,
+    /// „Im Projekt verwendet“ je Revision der Kopie und Baustoff, nur für
+    /// gefragte (sichtbare) Baustoffe (Review 3n).
+    used: RefCell<(u64, HashMap<MaterialId, bool>)>,
     /// Bereiche, die sich seit dem letzten Bild geändert haben; leer: alles.
     damage: Vec<Option<Rect>>,
     img: Option<Canvas>,
+    /// Fenstergrund mit Schatten je Größe, Skalierung und Schema (Review 3n,
+    /// wie 3k).
+    ground: Option<((usize, usize, u32, u64), Canvas)>,
+    /// Leinwand für „Mehr“, je Bild wiederverwendet.
+    more_img: RefCell<Canvas>,
 }
 
 impl MaterialView {
@@ -507,8 +516,11 @@ impl MaterialView {
             tiles: RefCell::default(),
             marks: RefCell::new((None, Vec::new())),
             uses: RefCell::new(None),
+            used: RefCell::new((u64::MAX, HashMap::new())),
             damage: Vec::new(),
             img: None,
+            ground: None,
+            more_img: RefCell::new(Canvas::new(0, 0)),
         };
         v.set_company(company);
         v.sel = select
@@ -593,6 +605,17 @@ impl MaterialView {
         u
     }
 
+    /// Steckt der Baustoff im Projekt? Einmal je Revision und Baustoff
+    /// statt in jedem Bild über alle Bauteile.
+    fn used(&self, id: MaterialId) -> bool {
+        let rev = self.work.revision();
+        let mut c = self.used.borrow_mut();
+        if c.0 != rev {
+            *c = (rev, HashMap::new());
+        }
+        *c.1.entry(id).or_insert_with(|| self.work.material_used(id))
+    }
+
     fn matches(&self, x: &Material) -> bool {
         let q = self.search.trim().to_lowercase();
         if q.is_empty() {
@@ -664,7 +687,7 @@ impl MaterialView {
         self.tab == Tab::Project
             && self
                 .sel_id()
-                .is_some_and(|id| self.work.can_remove_material(id))
+                .is_some_and(|id| !self.used(id) && self.work.can_remove_material(id))
     }
 
     // --- Lage ----------------------------------------------------------------
@@ -1170,6 +1193,13 @@ impl MaterialView {
             } else {
                 0.0
             };
+            // Ein zu langer erster Name wird vor „· +N weitere“ gekürzt
+            // (Prüfung ae)
+            let name = if i == 0 && x + width(&name) + more > right {
+                widgets::ellipsize(f, &name, px, (right - x - more).max(0.0))
+            } else {
+                name
+            };
             let wl = width(&name);
             if i > 0 && x + sep + wl + width(&tail) + more > right {
                 rest = format!(" · +{} weitere", n - i);
@@ -1232,7 +1262,6 @@ impl MaterialView {
 
     fn full(&mut self, out: &mut Out) {
         self.damage.clear();
-        self.img = None;
         out.repaint = true;
     }
 
@@ -1642,6 +1671,7 @@ impl MaterialView {
                 out.closed = true;
             }
             Target::Combo(id) => self.open_list(id, t, &w, cx.fonts),
+            Target::Btn(b) if self.btn_disabled(b) => {}
             Target::Btn(Btn::Duplicate) => {
                 if let Some(id) = self.sel_id() {
                     if let Some(n) = self.work.duplicate_material(id) {
@@ -1682,6 +1712,20 @@ impl MaterialView {
             }
             Target::Item(i) => self.choose(i, cx, out),
             Target::Field(_) | Target::Card => {}
+        }
+    }
+
+    /// Blasser Knopf: reagiert nicht (Review 3n/8).
+    fn btn_disabled(&self, b: Btn) -> bool {
+        match b {
+            Btn::Delete => !self.can_delete(),
+            Btn::Export => self.sel_id().is_none_or(|id| {
+                self.work
+                    .material(id)
+                    .is_none_or(|x| x.category == MatCategory::Air)
+            }),
+            Btn::Import => self.csel.is_none_or(|g| self.lib_mat(g).is_none()),
+            _ => false,
         }
     }
 
@@ -1767,7 +1811,14 @@ impl MaterialView {
         match l.id {
             ComboId::Category => {
                 if let Some(c) = CATS.get(i) {
-                    input(&mut self.work, mid, "Art", c.name());
+                    let same = self.work.material(mid).is_some_and(|x| x.category == *c);
+                    if !same && !input(&mut self.work, mid, "Art", c.name()) {
+                        // Review 3n/8: nicht still ablehnen
+                        self.message = Some(format!(
+                            "„{}“ passt nicht zu den Kennwerten (z. B. Preis oder Rohdichte); erst diese leeren.",
+                            c.name()
+                        ));
+                    }
                 }
             }
             ComboId::Trade => {
@@ -1958,7 +2009,6 @@ impl MaterialView {
         }
         if was {
             self.damage.clear();
-            self.img = None;
         }
         was
     }
@@ -2037,7 +2087,18 @@ impl MaterialView {
         let (cw, ch) = ((f.w + 2.0 * m) as usize, (f.h + 2.0 * m) as usize);
         let mut c = self.img.take().unwrap_or_else(|| Canvas::new(0, 0));
         c.reuse(cw, ch);
-        c.clear(Rgba(0, 0, 0, 0));
+        // Grund mit Schatten einmal je Größe, dann nur kopiert (Review 3n)
+        let key = (cw, ch, s.to_bits(), t.rev);
+        if self.ground.as_ref().map(|g| g.0) != Some(key) {
+            let mut g = Canvas::new(cw, ch);
+            g.set_origin(f.x - m, f.y - m);
+            widgets::panel(&mut g, f, s, t);
+            g.set_origin(0.0, 0.0);
+            self.ground = Some((key, g));
+        }
+        if let Some((_, g)) = &self.ground {
+            c.copy_rows(g, 0, ch);
+        }
         c.set_origin(f.x - m, f.y - m);
         self.paint_into(&mut c, t, fonts, w);
         c.set_origin(0.0, 0.0);
@@ -2049,7 +2110,6 @@ impl MaterialView {
         let f = self.frame(t, w);
         let s = w.scale;
         let u = &t.ui;
-        widgets::panel(c, f, s, t);
         let (regular, bold) = (
             fonts.regular.as_ref(),
             fonts.bold.as_ref().or(fonts.regular.as_ref()),
@@ -2144,16 +2204,7 @@ impl MaterialView {
         }
         // Fuß
         for (b, r, text) in self.foot_buttons(t, w) {
-            let disabled = match b {
-                Btn::Delete => !self.can_delete(),
-                Btn::Export => self.sel_id().is_none_or(|id| {
-                    self.work
-                        .material(id)
-                        .is_none_or(|x| x.category == MatCategory::Air)
-                }),
-                Btn::Import => self.csel.is_none_or(|g| self.lib_mat(g).is_none()),
-                _ => false,
-            };
+            let disabled = self.btn_disabled(b);
             let st = ButtonState {
                 hover: self.hover == Some(Target::Btn(b)) && !disabled,
                 pressed: self.pressed == Some(Target::Btn(b)),
@@ -2245,7 +2296,7 @@ impl MaterialView {
             Some(x) => x.display(),
             None => self.lib_display(g)?,
         };
-        let px = (16.0 * s).round();
+        let px = (t.size.mat_mark * s).round();
         let img = attr_pick::tile(&self.work, t, &d, px, px, s);
         cache.1.push((g, img.clone()));
         Some(img)
@@ -2351,7 +2402,7 @@ impl MaterialView {
                     } else if self.hover == Some(Target::Row(g)) {
                         rounded(&mut sub, r, 4.0 * s, u.hover);
                     }
-                    let ts = (16.0 * s).round();
+                    let ts = (t.size.mat_mark * s).round();
                     if let Some(img) = self.mark_tile(t, s, g) {
                         sub.blit(
                             &img,
@@ -2365,13 +2416,14 @@ impl MaterialView {
                         .as_ref()
                         .and_then(|v| v.iter().find(|x| x.0 == g).map(|x| x.1));
                     let (mark_text, mark_col) = match mark {
-                        Some(TypeState::Same) => ("wie im Projekt", SAME),
+                        Some(TypeState::Same) => ("wie im Projekt", u.text_same),
                         Some(TypeState::Differs) => ("abweichend", u.accent),
                         Some(TypeState::OnlyProject) => ("nicht in Firma", u.text_dim),
                         Some(TypeState::OnlyCompany) => ("nicht im Projekt", u.text_dim),
                         None => ("", u.text_dim),
                     };
-                    let mpx = t.size.font_detail * s;
+                    // Kennzeichen klein wie im Baum (Prüfung af, soll-p5-3)
+                    let mpx = t.size.tree_small * s;
                     let mw = regular.map_or(0.0, |f| f.width(mark_text, mpx));
                     let room =
                         r.x + r.w - nx - 8.0 * s - if mw > 0.0 { mw + 8.0 * s } else { 12.0 * s };
@@ -2388,7 +2440,7 @@ impl MaterialView {
                             mark_col,
                         );
                     } else if self.tab == Tab::Project
-                        && self.mat_id(g).is_some_and(|id| self.work.material_used(id))
+                        && self.mat_id(g).is_some_and(|id| self.used(id))
                     {
                         // Punkt „im Projekt verwendet“
                         let tw = font.map_or(0.0, |f| f.width(&shown, px));
@@ -2717,7 +2769,9 @@ impl MaterialView {
         let body = self.more_body(t, w);
         // Aufklappen: die Fläche wächst nach unten, der Inhalt blendet ein
         let h = (body.h * p).round().max(1.0);
-        let mut sub = Canvas::new(body.w.max(1.0) as usize, h as usize);
+        // Leinwand wiederverwendet statt je Bild neu (Review 3n)
+        let mut sub = self.more_img.replace(Canvas::new(0, 0));
+        sub.reuse(body.w.max(1.0) as usize, h as usize);
         sub.set_origin(body.x, body.y);
         sub.clear(u.bg);
         let lpx = t.size.font_small * s;
@@ -2825,7 +2879,13 @@ impl MaterialView {
         sub.set_origin(0.0, 0.0);
         let (ox, oy) = c.origin();
         let a = if p < 1.0 { p } else { 1.0 };
-        c.blit_scaled(&sub, body.x - ox + ox, body.y - oy + oy, 1.0, a);
+        // Ganz offen auf ganzen Pixeln: gerade kopieren statt abtasten
+        if a >= 1.0 && body.x.fract() == 0.0 && body.y.fract() == 0.0 {
+            c.blit(&sub, body.x as i32, body.y as i32);
+        } else {
+            c.blit_scaled(&sub, body.x - ox + ox, body.y - oy + oy, 1.0, a);
+        }
+        self.more_img.replace(sub);
     }
 
     fn paint_company(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts, w: &Win) {
@@ -2947,13 +3007,41 @@ impl MaterialView {
                 keys.push((k.clone(), k));
             }
         }
+        // Name und Gewerk, wenn sie abweichen: Die Liste nennt den Baustoff
+        // dann „abweichend“ (Review 3n/9)
+        let trade_text = |x: Option<&Material>, from_lib: bool| -> String {
+            let id = x.and_then(|x| x.trade);
+            let t = id.and_then(|id| {
+                if from_lib {
+                    lib.trades.iter().find(|t| t.id() == id).cloned()
+                } else {
+                    self.work.trade(id).cloned()
+                }
+            });
+            t.map_or("–".into(), |t| format!("{} {}", t.code, t.name))
+        };
+        if let (Some(a), Some(b)) = (mine_m, theirs) {
+            if a.name != b.name {
+                keys.insert(0, ("\u{1}name".into(), "Name".into()));
+            }
+            if trade_text(Some(a), false) != trade_text(Some(b), true) {
+                keys.push(("\u{1}trade".into(), "Gewerk".into()));
+            }
+        }
         let display_same = match (mine_m, theirs) {
             (Some(a), Some(_)) => self.lib_display(g).is_some_and(|d| d == a.display()),
             _ => true,
         };
         let mut y = ty + 32.0 * s;
         for (k, text) in keys {
-            let (a, b) = (val(mine_m, &k), val(theirs, &k));
+            let (a, b) = match k.as_str() {
+                "\u{1}name" => (
+                    mine_m.map_or("–".into(), |x| x.name.clone()),
+                    theirs.map_or("–".into(), |x| x.name.clone()),
+                ),
+                "\u{1}trade" => (trade_text(mine_m, false), trade_text(theirs, true)),
+                _ => (val(mine_m, &k), val(theirs, &k)),
+            };
             let differs = mine_m.is_some() && theirs.is_some() && a != b;
             label(c, regular, &text, px, cols[0], y, u.text_dim);
             label(c, regular, &a, px, cols[1], y, u.text);
@@ -2987,7 +3075,6 @@ impl MaterialView {
             label(c, regular, &l, px, x0, y, u.text_dim);
             y += 20.0 * s;
         }
-        let _ = lib;
     }
 
     fn paint_popup_list(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts, w: &Win, l: &List) {

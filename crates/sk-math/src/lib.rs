@@ -313,9 +313,30 @@ pub fn ray_triangle(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Optio
     (t > 0.0).then_some(t)
 }
 
+/// Abstand des Punkts `p` von der Strecke `a`–`b` in der Ebene.
+pub fn dist_to_segment(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (vx, vy) = (b.0 - a.0, b.1 - a.1);
+    let len2 = vx * vx + vy * vy;
+    let t = if len2 > 0.0 {
+        (((p.0 - a.0) * vx + (p.1 - a.1) * vy) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    ((p.0 - a.0 - vx * t).powi(2) + (p.1 - a.1 - vy * t).powi(2)).sqrt()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn abstand_zur_strecke() {
+        let (a, b) = ((0.0, 0.0), (10.0, 0.0));
+        assert!(close(dist_to_segment((5.0, 3.0), a, b), 3.0));
+        assert!(close(dist_to_segment((-3.0, 4.0), a, b), 5.0));
+        assert!(close(dist_to_segment((13.0, 4.0), a, b), 5.0));
+        assert!(close(dist_to_segment((3.0, 4.0), a, a), 5.0));
+    }
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9

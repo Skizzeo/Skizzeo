@@ -1923,12 +1923,15 @@ impl Scene {
 
     fn edit_types_now(&mut self, label: &'static str, f: impl FnOnce(&mut Model) -> bool) -> bool {
         let rev = self.model.revision();
-        let mats: Vec<_> = self
-            .model
-            .materials()
-            .iter()
-            .map(|(_, x)| x.clone())
-            .collect();
+        // Nur was Netze und Zeichentabelle trägt; Name, Kennwerte, Preis und
+        // Gewerk bauen keine Netze neu (Review 3n/5)
+        let shape = |m: &Model| -> Vec<_> {
+            m.materials()
+                .iter()
+                .map(|(_, x)| (x.guid, x.category, x.priority, x.display()))
+                .collect()
+        };
+        let mats = shape(&self.model);
         let sets: Vec<_> = self
             .model
             .layer_sets()
@@ -1937,13 +1940,7 @@ impl Scene {
             .collect();
         self.begin(label);
         f(&mut self.model);
-        let mats_now: Vec<_> = self
-            .model
-            .materials()
-            .iter()
-            .map(|(_, x)| x.clone())
-            .collect();
-        if mats_now != mats {
+        if shape(&self.model) != mats {
             self.table = DrawTable::resolve(&self.model, &self.theme);
             self.mark_all();
         } else {

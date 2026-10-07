@@ -2818,6 +2818,40 @@ mod tests {
         assert_eq!(write(&load(&c).unwrap().model), c, "zweiter Rundlauf");
     }
 
+    /// Review 3n: Fremde Schlüssel an [matprop]-Zeilen bleiben beim
+    /// richtigen Baustoff, auch wenn eine neuere Fassung die Zeilen anders
+    /// ordnet (Satzkennung mit `mat=`).
+    #[test]
+    fn fremder_kennwert_bleibt_beim_baustoff() {
+        let mut m = house();
+        let ids: Vec<_> = m
+            .materials()
+            .iter()
+            .filter(|(_, x)| crate::matprop::price_unit(x.category).is_some())
+            .map(|(id, _)| id)
+            .take(2)
+            .collect();
+        assert_eq!(ids.len(), 2);
+        for (i, id) in ids.iter().enumerate() {
+            let mut x = m.material(*id).unwrap().clone();
+            x.props
+                .insert("Richtpreis".into(), PropValue::Number(10.0 + i as f64));
+            assert!(m.set_material(*id, x));
+        }
+        let a = write(&m);
+        let rows: Vec<&str> = a.lines().filter(|l| l.starts_with("[matprop]")).collect();
+        assert_eq!(rows.len(), 2, "{a}");
+        // Getauscht, die zweite Zeile mit fremdem Schlüssel
+        let marked = format!("{} zukunft=1", rows[1]);
+        let b = a
+            .replacen(rows[0], "@@", 1)
+            .replacen(rows[1], rows[0], 1)
+            .replacen("@@", &marked, 1);
+        let c = write(&load(&b).unwrap().model);
+        assert!(c.lines().any(|l| l == marked), "{c}");
+        assert!(c.lines().any(|l| l == rows[0]), "{c}");
+    }
+
     #[test]
     fn kaputter_verweis_nennt_die_zeile() {
         let a = write(&house());

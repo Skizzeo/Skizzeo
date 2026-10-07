@@ -4400,6 +4400,19 @@ impl Model {
     /// (gleiche Guid: das Projekt behält seins).
     pub(crate) fn ensure_trade(&mut self, t: &Trade) {
         if self.trade(t.id()).is_none() {
+            // Review 3n/7: mit Rückgängig
+            match self.txn.as_mut() {
+                Some(x) => {
+                    if x.noted.insert(Key::Trades) {
+                        x.changes.push(Change::Trades {
+                            old: self.trades.clone(),
+                            new: Vec::new(),
+                        });
+                    }
+                }
+                None => debug_assert!(!self.strict, "Änderung ohne Schritt"),
+            }
+            self.touch();
             self.trades.push(t.clone());
             self.trades.sort_by_key(|t| (t.order, t.guid));
         }
