@@ -3879,13 +3879,24 @@ impl Model {
     }
 
     /// Züge, deren abgeleitete Bauteile der offene Schritt ändern kann
-    /// (Z4): die von [`Model::step_touched`]. `None` (alle), sobald der
-    /// Schritt mehr als Züge und Bauteile ändert, etwa einen Typ, einen
-    /// Baustoff oder ein Geschoss.
+    /// (Z4): die von [`Model::step_touched`]. Reine Darstellung (Stifte,
+    /// Linien, Schraffuren, Oberflächen, Anzeige) zählt nicht (Review 2d
+    /// T8). `None` (alle), sobald der Schritt mehr als Züge und Bauteile
+    /// ändert, etwa einen Typ, einen Baustoff oder ein Geschoss.
     fn sync_scope(&self) -> Option<Vec<RunId>> {
         let open = self.txn.as_ref()?;
         open.changes
             .iter()
+            .filter(|c| {
+                !matches!(
+                    c,
+                    Change::Pen { .. }
+                        | Change::LineType { .. }
+                        | Change::Fill { .. }
+                        | Change::Surface { .. }
+                        | Change::Display { .. }
+                )
+            })
             .all(|c| matches!(c, Change::Run { .. } | Change::Element { .. }))
             .then(|| self.step_touched())
     }
@@ -7360,6 +7371,25 @@ mod og_phase2 {
         assert!(m.set_layer_set(t, x));
         assert!(m.sync_scope().is_none());
         m.commit();
+        // Reine Darstellung: kein Zug, kein Abgleich (T8)
+        let (pid, pen) = m
+            .attr()
+            .pens()
+            .iter()
+            .next()
+            .map(|(id, p)| (id, p.clone()))
+            .unwrap();
+        m.begin("Stift");
+        assert!(m.set_pen(
+            pid,
+            crate::Pen {
+                color: [255, 0, 0],
+                ..pen
+            }
+        ));
+        assert_eq!(m.sync_scope(), Some(Vec::new()));
+        m.commit();
+        assert!(m.check().is_empty(), "{:?}", m.check());
     }
 
     /// AW-49: Verblender und Kerndämmung wachsen um die Attika, der Kern
