@@ -352,40 +352,34 @@ pub(crate) fn stone_point(cx: i32, cy: i32, s: f64, irr: f64, seed: u32) -> Vec2
     )
 }
 
-/// Nächster Zellpunkt (Gitterzelle) und genauer Abstand zur Zellgrenze in
-/// mm: erst 3 × 3 Zellen, dann die Grenzen gegen 5 × 5 Nachbarn
-/// (gleich breite Fuge auch an Schrägen, Review 3d N1).
+/// Nächster Zellpunkt (Gitterzelle) und Abstand zur Zellgrenze in mm, aus
+/// einer Suche über 3 × 3 Zellen: die Grenze ist die nächste
+/// Mittelsenkrechte zu den übrigen Punkten derselben Suche (Review 3t,
+/// statt einer zweiten Schleife über 5 × 5 Nachbarn; gleich im Shader).
 pub(crate) fn stone_cell(s: f64, irr: f64, seed: u32, u: f64, v: f64) -> ((i32, i32), f64) {
     let (gx, gy) = ((u / s).floor() as i32, (v / s).floor() as i32);
     let x = vec2(u, v);
+    let mut pts = [x; 9];
     let mut best = (gx, gy);
-    let mut bd = f64::MAX;
-    for dy in -1..=1 {
-        for dx in -1..=1 {
-            let p = stone_point(gx + dx, gy + dy, s, irr, seed);
-            let d = (p - x).length_squared();
-            if d < bd {
-                bd = d;
-                best = (gx + dx, gy + dy);
-            }
+    let (mut a, mut bd) = (0, f64::MAX);
+    for (i, p) in pts.iter_mut().enumerate() {
+        let (dx, dy) = (i as i32 % 3 - 1, i as i32 / 3 - 1);
+        *p = stone_point(gx + dx, gy + dy, s, irr, seed);
+        let d = (*p - x).length_squared();
+        if d < bd {
+            (a, bd) = (i, d);
+            best = (gx + dx, gy + dy);
         }
     }
-    let a = stone_point(best.0, best.1, s, irr, seed);
+    let pa = pts[a];
     let mut edge = f64::MAX;
-    for dy in -2..=2 {
-        for dx in -2..=2 {
-            if dx == 0 && dy == 0 {
-                continue;
-            }
-            let p = stone_point(best.0 + dx, best.1 + dy, s, irr, seed);
-            let n = p - a;
-            let l = n.length();
-            if l < 1e-9 {
-                continue;
-            }
-            let m = (a + p) * 0.5;
-            edge = edge.min((m - x).dot(n) / l);
+    for (i, p) in pts.iter().enumerate() {
+        let n = *p - pa;
+        let l = n.length();
+        if i == a || l < 1e-9 {
+            continue;
         }
+        edge = edge.min(((pa + *p) * 0.5 - x).dot(n) / l);
     }
     (best, edge)
 }

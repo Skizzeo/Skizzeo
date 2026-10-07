@@ -952,36 +952,34 @@ vec2 stone_point(int cx, int cy, float s, float irr, uint seed) {
     uint hh = pat_hash(cx, cy, seed);
     return vec2((float(cx) + 0.5 + (h01(hh, 0) - 0.5) * irr) * s, (float(cy) + 0.5 + (h01(hh, 16) - 0.5) * irr) * s);
 }
-// Nächste Zelle (xy) und Abstand zur Zellgrenze in mm (z)
+// Nächste Zelle (xy) und Abstand zur Zellgrenze in mm (z): eine Suche über
+// 3 × 3 Zellen, Grenze = nächste Mittelsenkrechte zu den übrigen Punkten
+// (Review 3t), wie `texgen::stone_cell`
 vec3 stone_cell(float u, float v, float s, float irr, uint seed) {
     int gx = int(floor(u / s));
     int gy = int(floor(v / s));
     vec2 x = vec2(u, v);
-    ivec2 best = ivec2(gx, gy);
+    vec2 pts[9];
+    int a = 0;
     float bd = 1e30;
-    for (int dy = -1; dy <= 1; dy++) {
-        for (int dx = -1; dx <= 1; dx++) {
-            vec2 d = stone_point(gx + dx, gy + dy, s, irr, seed) - x;
-            float dd = dot(d, d);
-            if (dd < bd) {
-                bd = dd;
-                best = ivec2(gx + dx, gy + dy);
-            }
+    for (int i = 0; i < 9; i++) {
+        pts[i] = stone_point(gx + i % 3 - 1, gy + i / 3 - 1, s, irr, seed);
+        vec2 d = pts[i] - x;
+        float dd = dot(d, d);
+        if (dd < bd) {
+            bd = dd;
+            a = i;
         }
     }
-    vec2 a = stone_point(best.x, best.y, s, irr, seed);
+    vec2 pa = pts[a];
     float edge = 1e30;
-    for (int dy = -2; dy <= 2; dy++) {
-        for (int dx = -2; dx <= 2; dx++) {
-            if (dx == 0 && dy == 0) continue;
-            vec2 p = stone_point(best.x + dx, best.y + dy, s, irr, seed);
-            vec2 n = p - a;
-            float l = length(n);
-            if (l < 1e-6) continue;
-            edge = min(edge, dot((a + p) * 0.5 - x, n) / l);
-        }
+    for (int i = 0; i < 9; i++) {
+        vec2 n = pts[i] - pa;
+        float l = length(n);
+        if (i == a || l < 1e-6) continue;
+        edge = min(edge, dot((pa + pts[i]) * 0.5 - x, n) / l);
     }
-    return vec3(vec2(best), edge);
+    return vec3(float(gx + a % 3 - 1), float(gy + a / 3 - 1), edge);
 }
 vec3 stone_rgb(float u, float v, float px, vec4 p8, vec4 p9, vec4 p10, vec4 p11) {
     uint seed = uint(p9.z + 0.5);
@@ -998,7 +996,8 @@ float pattern_scale(int kind, vec4 p8, vec4 p9) {
     if (kind == 3) return 32.0;
     if (kind == 4) return p8.y + p8.z;
     if (kind == 5) return min(p8.y, p8.z) + p8.w;
-    return p8.y;
+    // Naturstein früher in die Mischfarbe: ab 6 px je Stein (Review 3t)
+    return p8.y * 0.25;
 }
 // Farbe in 3D (6b, 7a): `far` ist die Mischfarbe (Ferne), `surf` die
 // Farbe der Oberfläche (Putz, Sichtbeton). Unter 1,5 px Musterteil ohne

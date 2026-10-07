@@ -69,6 +69,8 @@ pub(super) struct PatWin {
     /// Übergang nach Vorlagen- oder Variantenwahl: Beginn; `hold` = das
     /// jetzige Vorschaubild festhalten (holt `main.rs` ab).
     changed: Option<Instant>,
+    /// `anim_ms` des laufenden Farbschemas (beim Zeichnen gemerkt).
+    anim: f32,
     hold: bool,
     /// Zähler der Verbandstabellen, solange eine Vorschau darauf wartet.
     waiting: Option<u64>,
@@ -140,6 +142,7 @@ impl PatWin {
             name: String::new(),
             error: None,
             changed: None,
+            anim: 0.0,
             hold: false,
             waiting: None,
         }
@@ -435,7 +438,9 @@ impl Prefs {
             if let Some((id, o)) = self.sel_surf(cx.scene.model()) {
                 self.edit = None;
                 self.popup = None;
-                self.pw = Some(PatWin::new(id, &o));
+                let mut pw = PatWin::new(id, &o);
+                pw.anim = cx.theme.size.anim_ms;
+                self.pw = Some(pw);
             }
             return;
         }
@@ -499,15 +504,15 @@ impl Prefs {
     pub(super) fn pw_busy(&self) -> bool {
         self.pw
             .as_ref()
-            .is_some_and(|p| p.waiting.is_some() || p.progress(self.saved.size.anim_ms).is_some())
+            .is_some_and(|p| p.waiting.is_some() || p.progress(p.anim).is_some())
     }
 
     /// Neu zeichnen: Übergang läuft oder Tabelle fertig geworden.
     pub(super) fn pw_tick(&mut self) -> bool {
-        let anim = self.saved.size.anim_ms;
         let Some(p) = self.pw.as_mut() else {
             return false;
         };
+        let anim = p.anim;
         let fading = p.changed.is_some();
         if fading && p.progress(anim).is_none() {
             p.changed = None;
@@ -599,6 +604,9 @@ impl Prefs {
         w: &Win,
         sc: &Scene,
     ) -> (Canvas, i32, i32) {
+        if let Some(p) = self.pw.as_mut() {
+            p.anim = t.size.anim_ms;
+        }
         let f = self.frame(t, w);
         let s = w.scale;
         let m = (t.size.panel_shadow * s).round();

@@ -264,6 +264,13 @@ pub fn run(
         return 1;
     }
     let mut code = 0;
+    // Die App hat unter Windows keine Konsole: alles auch nach ergebnis.txt
+    let mut report = String::new();
+    let mut say = |line: String| {
+        println!("{line}");
+        report.push_str(&line);
+        report.push_str("\r\n");
+    };
     for p in probes() {
         let (w, h) = p.size;
         let cpu = cpu_image(&p);
@@ -282,7 +289,7 @@ pub fn run(
             let (npy, csv, line) = families(&p);
             write("friesisch-familien.npy".into(), &npy);
             write("friesisch-steine.csv".into(), csv.as_bytes());
-            println!("friesisch (Rechnung): {line}");
+            say(format!("friesisch (Rechnung): {line}"));
         }
         match gpu(&looks, &mesh, view, (w as i32, h as i32)) {
             Ok(img) => {
@@ -292,23 +299,30 @@ pub fn run(
                 );
                 let d = compare(&cpu, &img, p.size);
                 let ok = d.outside == 0;
-                println!(
+                say(format!(
                     "{}: {} – größte Abweichung {}, außerhalb {} Bildpunkte – {}",
                     p.art,
                     p.preset.name,
                     d.max,
                     d.outside,
                     if ok { "bestanden" } else { "NICHT bestanden" }
-                );
+                ));
                 if !ok {
                     code = 1;
                 }
             }
             Err(e) => {
-                println!("{}: {} – GPU: {e} – NICHT bestanden", p.art, p.preset.name);
+                say(format!(
+                    "{}: {} – GPU: {e} – NICHT bestanden",
+                    p.art, p.preset.name
+                ));
                 code = 1;
             }
         }
+    }
+    let path = dir.join("ergebnis.txt");
+    if let Err(e) = std::fs::write(&path, report) {
+        eprintln!("musterprobe: {}: {e}", path.display());
     }
     code
 }

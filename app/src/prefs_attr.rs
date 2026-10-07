@@ -914,7 +914,7 @@ impl Prefs {
                         ));
                         y += step;
                         num(l, &mut y, "joint");
-                        row(l, &mut y, "Raster", cw, Target::Combo(ComboId::PatGrid));
+                        row(l, &mut y, "Verlegung", cw, Target::Combo(ComboId::PatGrid));
                         colors(l, &mut y);
                         num(l, &mut y, "spread");
                     }

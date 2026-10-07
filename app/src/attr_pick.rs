@@ -50,6 +50,9 @@ pub struct Tiles {
     previews: Vec<Preview>,
     /// Leinwand der Listenzeilen vom letzten Bild ([`Canvas::reuse`]).
     rows: Option<Canvas>,
+    /// Zähler der Verbandstabellen beim letzten [`Tiles::tick`]: Eine
+    /// fertige Tabelle löst genau ein neues Bild aus (Review 3u).
+    seen: std::cell::Cell<u64>,
 }
 
 /// Gemerkte große Vorschau: Schlüssel, Lage (ganze Bildpunkte) und Bild.
@@ -178,18 +181,33 @@ impl Tiles {
     /// Wartet eine Vorschau auf ihre Verbandstabelle oder blendet gerade
     /// ein? Dann fragt das Fenster in kurzen Abständen nach
     /// ([`Tiles::tick`]).
+    ///
+    /// Nach der Uhr bzw. danach, ob noch eine Tabelle rechnet, nicht danach,
+    /// ob die Vorschau noch gemalt wird: Wählt man vorher etwas anderes,
+    /// bliebe das Fenster sonst wach (Review 3u).
     pub fn busy(&self) -> bool {
-        self.previews
-            .iter()
-            .any(|p| p.waiting.is_some() || p.fade.is_some())
+        let pending =
+            self.previews.iter().any(|p| p.waiting.is_some()) && proctex::bond_tables_pending();
+        pending || self.fading()
     }
 
-    /// Neu zeichnen, weil eine Tabelle fertig wurde oder eingeblendet wird.
+    /// Neu zeichnen, weil eine Tabelle fertig wurde (einmal je fertiger
+    /// Tabelle) oder eingeblendet wird.
     pub fn tick(&self) -> bool {
         let g = proctex::bond_generation();
-        self.previews
-            .iter()
-            .any(|p| p.fade.is_some() || p.waiting.is_some_and(|w| w != g))
+        let done = self.seen.replace(g) != g && self.previews.iter().any(|p| p.waiting.is_some());
+        done || self.fading()
+    }
+
+    /// Blendet eine Vorschau gerade aus (`anim_ms` und ein Bild, damit das
+    /// Ende noch gemalt wird)?
+    fn fading(&self) -> bool {
+        let anim = self.theme.as_ref().map_or(0.0, |t| t.size.anim_ms);
+        self.previews.iter().any(|p| {
+            p.fade
+                .as_ref()
+                .is_some_and(|(_, t0)| t0.elapsed().as_secs_f32() * 1000.0 < anim + 32.0)
+        })
     }
 
     /// Leinwand für die Listenzeilen, durchsichtig in der Größe `w` × `h`;
@@ -814,7 +832,11 @@ mod tests {
         tiles.preview(&mut c, 0, key, r, false, |c| {
             c.fill_rect(0.0, 0.0, 20.0, 20.0, red)
         });
-        assert!(tiles.busy(), "wartet auf die Tabelle");
+        // eine langsame Tabelle (Startwert mit rund 0,8 s) rechnet noch
+        let slow = 3_819_774;
+        if sk_model::proctex::bond_table_ready(slow).is_none() {
+            assert!(tiles.busy(), "wartet auf die Tabelle");
+        }
         tiles.preview(&mut c, 0, key, r, false, |_| panic!("nur kopieren"));
         assert!(t.size.anim_ms > 0.0);
         tiles.preview(&mut c, 0, key, r, true, |c| {
@@ -831,5 +853,74 @@ mod tests {
         tiles.preview(&mut c, 0, key, r, true, |_| panic!("nur kopieren"));
         assert_eq!(px(&c), vec![0, 0, 200], "fertig eingeblendet");
         assert!(!tiles.busy() && !tiles.tick());
+    }
+}
+
+#[cfg(test)]
+mod nachfragen {
+    use super::*;
+    /// Review 3u: Vorschau A wartet auf ihre Tabelle, dann wird B gewählt
+    /// und A nicht mehr gemalt. Ist die Tabelle fertig, hört das Nachfragen
+    /// auf (vorher alle 16 ms ein neues Bild, bis sich das Modell änderte).
+    #[test]
+    fn verwaiste_wartende_vorschau() {
+        let m = Model::with_seed(5);
+        let t = Theme::dark();
+        let mut ids = m.attr().surfaces().iter().map(|(id, _)| id);
+        let (a, b) = (ids.next().unwrap(), ids.next().unwrap());
+        let r = Rect::new(0.0, 0.0, 20.0, 20.0);
+        let mut tiles = Tiles::default();
+        tiles.sync(&m, &t, 1.0);
+        let mut c = Canvas::new(40, 40);
+        tiles.preview(&mut c, 0, TileKey::Surface(a), r, false, |_| {});
+        // eine Tabelle wird im Hintergrund fertig
+        let seed = 4_242_421;
+        // (und alle, die andere Tests angestoßen haben)
+        let start = std::time::Instant::now();
+        while sk_model::proctex::bond_table_ready(seed).is_none()
+            || sk_model::proctex::bond_tables_pending()
+        {
+            assert!(start.elapsed().as_secs() < 60, "Hintergrund fertig");
+            std::thread::yield_now();
+        }
+        assert!(tiles.tick(), "einmal neu malen");
+        let mut n = 0;
+        for _ in 0..100 {
+            if tiles.tick() {
+                n += 1;
+            }
+            // jedes Bild malt nur noch B
+            tiles.preview(&mut c, 0, TileKey::Surface(b), r, true, |_| {});
+        }
+        assert_eq!(n, 0, "{n} neue Bilder");
+        assert!(!tiles.busy(), "Fenster fragt weiter alle 16 ms nach");
+    }
+
+    /// Review 3u: Einblenden begonnen, dann nicht mehr gemalt; nach
+    /// `anim_ms` ist Ruhe.
+    #[test]
+    fn verwaistes_einblenden() {
+        let m = Model::with_seed(5);
+        let t = Theme::dark();
+        let mut ids = m.attr().surfaces().iter().map(|(id, _)| id);
+        let (a, b) = (ids.next().unwrap(), ids.next().unwrap());
+        let r = Rect::new(0.0, 0.0, 20.0, 20.0);
+        let mut tiles = Tiles::default();
+        tiles.sync(&m, &t, 1.0);
+        let mut c = Canvas::new(40, 40);
+        tiles.preview(&mut c, 0, TileKey::Surface(a), r, false, |_| {});
+        tiles.preview(&mut c, 0, TileKey::Surface(a), r, true, |_| {});
+        std::thread::sleep(std::time::Duration::from_millis(
+            (t.size.anim_ms as u64) + 100,
+        ));
+        let mut n = 0;
+        for _ in 0..100 {
+            if tiles.tick() {
+                n += 1;
+            }
+            tiles.preview(&mut c, 0, TileKey::Surface(b), r, true, |_| {});
+        }
+        assert_eq!(n, 0, "{n} neue Bilder");
+        assert!(!tiles.busy(), "Fenster fragt weiter alle 16 ms nach");
     }
 }
