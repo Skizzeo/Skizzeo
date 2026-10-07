@@ -405,6 +405,8 @@ pub struct Out {
     pub pick_company: bool,
     /// Bauteilkatalog mit diesem Typ öffnen („Verwendet in“).
     pub open_type: Option<Guid>,
+    /// Was beim OK nicht übernommen werden konnte (Review 3n/4).
+    pub problems: Vec<String>,
 }
 
 pub struct Ctx<'a> {
@@ -554,9 +556,16 @@ impl MaterialView {
 
     /// OK: alle Änderungen als ein Schritt „Baustoffe geändert“. `true`,
     /// wenn sich etwas geändert hat.
+    #[cfg(test)]
     pub fn ok(&mut self, s: &mut Scene) -> bool {
+        self.ok_report(s, &mut Vec::new())
+    }
+
+    /// Wie [`MaterialView::ok`]; was nicht übernommen werden konnte, steht
+    /// in `problems` (Review 3n/4).
+    pub fn ok_report(&mut self, s: &mut Scene, problems: &mut Vec<String>) -> bool {
         let work = &self.work;
-        s.edit_types(STEP, |m| sk_model::sync_materials(m, work))
+        s.edit_types(STEP, |m| sk_model::sync_materials_report(m, work, problems))
     }
 
     /// Abbrechen: die Kopie wird verworfen, das Modell bleibt.
@@ -1630,7 +1639,7 @@ impl MaterialView {
                 if self.edit.is_some() {
                     return;
                 }
-                out.applied = self.ok(cx.scene);
+                out.applied = self.ok_report(cx.scene, &mut out.problems);
                 out.closed = true;
             }
             Target::Tab(tab) => {
@@ -1667,7 +1676,7 @@ impl MaterialView {
             Target::AddKey => self.begin_edit(Field::NewKey),
             Target::Use(id) => {
                 out.open_type = self.work.layer_set(id).map(|x| x.guid);
-                out.applied = self.ok(cx.scene);
+                out.applied = self.ok_report(cx.scene, &mut out.problems);
                 out.closed = true;
             }
             Target::Combo(id) => self.open_list(id, t, &w, cx.fonts),

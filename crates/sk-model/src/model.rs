@@ -861,10 +861,28 @@ impl Model {
             return false;
         };
         let key = format!("surface={}", s.guid);
-        self.foreign
-            .records
-            .retain(|r| !(r.starts_with("[pattern]") && r.split_whitespace().any(|w| w == key)));
-        self.set_surface(id, Surface { pattern, ..s })
+        let mine =
+            |r: &String| r.starts_with("[pattern]") && r.split_whitespace().any(|w| w == key);
+        if !self.set_surface(id, Surface { pattern, ..s }) {
+            return false;
+        }
+        // erst nach gelungenem Setzen und mit Rückgängig (Review 3q/4)
+        if self.foreign.records.iter().any(mine) {
+            match self.txn.as_mut() {
+                Some(t) => {
+                    if t.noted.insert(Key::ForeignRecords) {
+                        t.changes.push(Change::ForeignRecords {
+                            old: self.foreign.records.clone(),
+                            new: Vec::new(),
+                        });
+                    }
+                }
+                None => debug_assert!(!self.strict, "Änderung ohne Schritt"),
+            }
+            self.foreign.records.retain(|r| !mine(r));
+            self.touch();
+        }
+        true
     }
 
     pub fn set_display(&mut self, d: Display) {
@@ -1034,6 +1052,30 @@ impl Model {
     /// Ersetzt einen Baustoff (Materialfenster, Paket 5). Abgelehnt, wenn der
     /// Name leer oder vergeben ist, eine Darstellung oder das Gewerk fehlt,
     /// die Guid wechselt oder ein Kennwert die Regeln 50–53 verletzt.
+    /// Nur den Namen eines Baustoffs ändern, ohne die übrigen Werte zu
+    /// prüfen (Zwischennamen beim Tauschen, Review 3q/2): Der Name muss
+    /// frei und nicht leer sein.
+    pub(crate) fn rename_material(&mut self, id: MaterialId, name: &str) -> bool {
+        if name.trim().is_empty()
+            || self
+                .materials
+                .iter()
+                .any(|(o, x)| o != id && x.name == name)
+        {
+            return false;
+        }
+        if self.materials.get(id).is_none_or(|x| x.name == name) {
+            return self.materials.get(id).is_some();
+        }
+        note!(self, Material, self.materials, id);
+        if let Some(x) = self.materials.get_mut(id) {
+            x.name = name.to_string();
+        }
+        self.touch();
+        self.attr.bump();
+        true
+    }
+
     pub fn set_material(&mut self, id: MaterialId, m: Material) -> bool {
         let Some(old) = self.materials.get(id) else {
             return false;
@@ -4106,6 +4148,7 @@ impl Model {
                         | Change::Surface { .. }
                         | Change::Display { .. }
                         | Change::Trades { .. }
+                        | Change::ForeignRecords { .. }
                 )
             })
             .all(|c| matches!(c, Change::Run { .. } | Change::Element { .. }))
@@ -5457,6 +5500,7 @@ impl Model {
             Change::Display { new, .. } => *new = self.attr.display().clone(),
             Change::Defaults { new, .. } => *new = self.defaults,
             Change::Trades { new, .. } => *new = self.trades.clone(),
+            Change::ForeignRecords { new, .. } => *new = self.foreign.records.clone(),
         }
     }
 
@@ -5533,6 +5577,7 @@ impl Model {
             }
             Change::Defaults { old, new } => m.defaults = pick(dir, old, new),
             Change::Trades { old, new } => m.trades = pick(dir, old, new),
+            Change::ForeignRecords { old, new } => m.foreign.records = pick(dir, old, new),
         };
         // Rückwärts in umgekehrter Reihenfolge: ein Platz wird erst frei, dann neu belegt
         match dir {

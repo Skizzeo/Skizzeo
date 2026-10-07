@@ -508,11 +508,11 @@ pub(crate) fn paint_cube(c: &mut Canvas, r: Rect, o: &Surface, t: &Theme, s: f32
         c.fill(&p, col);
     };
     let (n_top, n_west, n_south) = ([0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]);
-    match o
+    let patterned = o
         .pattern
         .as_ref()
-        .filter(|p| !matches!(p, Pattern::Foreign(_)))
-    {
+        .filter(|p| !matches!(p, Pattern::Foreign(_)));
+    match patterned {
         // Paket 6: Muster auf den Seiten um die Ecke herum, der Deckel in
         // der Mischfarbe (waagerechte Flächen ohne Fugen)
         Some(p) => {
@@ -533,21 +533,19 @@ pub(crate) fn paint_cube(c: &mut Canvas, r: Rect, o: &Surface, t: &Theme, s: f32
             poly(c, &[mid, right, right_b, down], shade(o.color, n_south));
         }
     }
-    // Aufgeschnittene Ecke: obere Hälfte der Südseite nahe der Ecke
-    let lerp =
-        |p: (f32, f32), q: (f32, f32), f: f32| (p.0 + (q.0 - p.0) * f, p.1 + (q.1 - p.1) * f);
-    let h = 0.5;
-    let p0 = lerp(mid, right, h);
-    let p1 = right;
-    let p2 = lerp(right, right_b, h);
-    let p3 = lerp(p0, lerp(down, right_b, h), h);
-    poly(c, &[p0, p1, p2, p3], shade(o.cut_color, n_south));
-    let lerp_top = lerp(top, right, h);
-    poly(
-        c,
-        &[lerp_top, right, p0, lerp(mid, top, 1.0 - h)],
-        shade(o.cut_color, n_top),
-    );
+    // Aufgeschnittene Ecke: obere Hälfte der Südseite nahe der Ecke, der
+    // Deckel bleibt gleichmäßig (soll-e6, Einstellungen (ak)); mit Muster
+    // ohne Schnittecke wie soll-p6-5
+    if patterned.is_none() {
+        let lerp =
+            |p: (f32, f32), q: (f32, f32), f: f32| (p.0 + (q.0 - p.0) * f, p.1 + (q.1 - p.1) * f);
+        let h = 0.5;
+        let p0 = lerp(mid, right, h);
+        let p1 = right;
+        let p2 = lerp(right, right_b, h);
+        let p3 = lerp(p0, lerp(down, right_b, h), h);
+        poly(c, &[p0, p1, p2, p3], shade(o.cut_color, n_south));
+    }
     // Kanten
     let ink = t.env.edge;
     let lw = (0.9 * s).max(0.8);

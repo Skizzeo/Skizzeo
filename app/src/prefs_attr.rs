@@ -1137,7 +1137,8 @@ impl Prefs {
                 let old = *seed;
                 let mut k = 1u32;
                 while *seed == old {
-                    *seed = proctex::lowbias32(old ^ k.wrapping_mul(0x9e37_79b9)) & 0xff_ffff;
+                    *seed =
+                        proctex::lowbias32(old ^ k.wrapping_mul(0x9e37_79b9)) & proctex::SEED_MAX;
                     k += 1;
                 }
                 let _ = self.put_pattern(sid, Some(p), cx, out);
@@ -1420,8 +1421,15 @@ impl Prefs {
         let users = self.sel_users(m);
         let mut hints: Vec<String> = Vec::new();
         if !users.is_empty() {
-            hints.push("Löschen gesperrt: wird verwendet von".into());
-            hints.push(users.join(", "));
+            // umbrochen, gekürzt erst am Ende der letzten Zeile
+            // (Einstellungen (al))
+            let all = format!("Löschen gesperrt: wird verwendet von {}", users.join(", "));
+            let mut lines = widgets::wrap(regular, &all, small, lr.w);
+            if lines.len() > 3 {
+                lines.truncate(3);
+                lines[2].push_str(" …");
+            }
+            hints.extend(lines);
         }
         if self.tab == Tab::Fills {
             hints.push("Farben kommen vom Baustoff".into());

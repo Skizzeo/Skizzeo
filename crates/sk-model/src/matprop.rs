@@ -215,9 +215,12 @@ pub fn check_density(c: MatCategory, v: f64) -> Result<(), String> {
 /// Kennwerte in der Reihenfolge von [`MAT_PROPS`], der Richtpreis mit seiner
 /// Einheit (`unit=`), dann die eigenen. Ohne Kennwerte keine Zeile.
 pub(crate) fn write_lines(out: &mut String, g: Guid, props: &PropSet) {
+    // Die Preiseinheit steht als `unit=` am Richtpreis; ohne Richtpreis in
+    // einer eigenen Zeile (Review 3n/6)
+    let has_price = props.contains_key(PRICE);
     let fixed = MAT_PROPS
         .iter()
-        .filter(|p| p.key != PRICE_UNIT)
+        .filter(|p| p.key != PRICE_UNIT || !has_price)
         .map(|p| p.key);
     let custom = props
         .keys()
@@ -255,21 +258,25 @@ pub(crate) fn read_line(r: &Record, c: MatCategory, props: &mut PropSet) -> Resu
         ))
     };
     let key = normalize_key(r.opt("key").unwrap_or(""));
-    let value = match (r.opt("value"), r.opt("num"), r.opt("bool")) {
-        (Some(t), _, _) => PropValue::Text(t.to_string()),
-        (None, Some(n), _) => match n.parse::<f64>() {
+    // Nur den ersten Wert lesen; weitere bleiben als fremde Schlüssel
+    // erhalten (Review 3n/6)
+    let value = if let Some(t) = r.opt("value") {
+        PropValue::Text(t.to_string())
+    } else if let Some(n) = r.opt("num") {
+        match n.parse::<f64>() {
             Ok(n) if n.is_finite() => PropValue::Number(n),
             _ => return drop(format!("„{key}“: keine Zahl")),
-        },
-        (None, None, Some(b)) => PropValue::Bool(b == "1"),
-        (None, None, None) => return drop(format!("„{key}“ ohne Wert")),
+        }
+    } else if let Some(b) = r.opt("bool") {
+        PropValue::Bool(b == "1")
+    } else {
+        return drop(format!("„{key}“ ohne Wert"));
     };
     if let Err(why) = check_prop(c, &key, &value) {
         return drop(format!("„{key}“: {why}"));
     }
-    let unit = r.opt("unit");
     if key == PRICE {
-        match unit {
+        match r.opt("unit") {
             Some(u) if PRICE_UNITS.contains(&u) => {
                 props.insert(PRICE_UNIT.into(), PropValue::Text(u.into()));
             }
@@ -311,6 +318,23 @@ mod tests {
         for s in ["13/2026", "00/2026", "2026-10", "1/2026", "10/26"] {
             assert!(!valid_price_date(s), "{s}");
         }
+    }
+
+    /// Review 3n/6: Preiseinheit ohne Richtpreis übersteht Schreiben und
+    /// Lesen.
+    #[test]
+    fn preiseinheit_ohne_richtpreis() {
+        let mut props = PropSet::new();
+        props.insert(PRICE_UNIT.into(), PropValue::Text("m2".into()));
+        let mut out = String::new();
+        write_lines(&mut out, Guid(7), &props);
+        assert_eq!(out.lines().count(), 1, "{out}");
+        let r = Record::parse(1, out.lines().next().unwrap())
+            .unwrap()
+            .unwrap();
+        let mut back = PropSet::new();
+        read_line(&r, MatCategory::Masonry, &mut back).unwrap();
+        assert_eq!(back, props);
     }
 
     #[test]

@@ -49,6 +49,9 @@ pub struct MatLook {
     pub zigzag_period: f32,
     /// Muster der Oberfläche (Paket 6), Looks-Zeilen 8–11.
     pub pattern: [[f32; 4]; 4],
+    /// Startwert des wilden Verbands (Deckkraft des Musters in Zeile 12
+    /// hängt an seiner Tabelle, [`DrawTable::looks_with`]).
+    pub wild_seed: Option<u32>,
 }
 
 /// Strichbreite (Bildpunkte bei 96 dpi) und Farbe.
@@ -138,6 +141,7 @@ const NO_MATERIAL: MatLook = MatLook {
     line_count: 0,
     zigzag_period: 1.0,
     pattern: [[0.0; 4]; 4],
+    wild_seed: None,
 };
 
 /// Aussehen von Flächen ohne Baustoff (und Rückfall bei fehlenden Verweisen).
@@ -178,6 +182,14 @@ pub fn mat_look(
             (rgb(s.color), rgb(s.cut_color))
         });
     look.pattern = pattern_rows(model, d.surface);
+    look.wild_seed = match a.surface(d.surface).and_then(|s| s.pattern.as_ref()) {
+        Some(sk_model::proctex::Pattern::Masonry {
+            bond: sk_model::proctex::Bond::Wild,
+            seed,
+            ..
+        }) => Some(*seed),
+        _ => None,
+    };
     if let Some(f) = a.fill(d.cut_fill) {
         if f.space == FillSpace::Model {
             // Bis E3b wie papierbezogen
@@ -339,20 +351,50 @@ impl DrawTable {
     }
 
     /// Alles, was der Renderer zum Aussehen braucht.
+    #[cfg(test)]
     pub fn looks(&self, px_scale: f32) -> Looks {
+        self.looks_with(px_scale, |_| 1.0)
+    }
+
+    /// Wie [`DrawTable::looks`], Deckkraft der Muster mit wildem Verband je
+    /// Startwert aus `fade` (Einblenden). Liegt eine Verbandstabelle noch
+    /// nicht vor, rechnet sie im Hintergrund, und die Fläche zeigt bis
+    /// dahin ihre Mischfarbe (Deckkraft 0, Koordinator 19:55).
+    pub fn looks_with(&self, px_scale: f32, fade: impl Fn(u32) -> f32) -> Looks {
+        let tables: Vec<_> = self
+            .bonds
+            .iter()
+            .map(|&seed| sk_model::proctex::bond_table_ready(seed))
+            .collect();
+        let opacity = |seed: u32| {
+            self.bonds
+                .iter()
+                .zip(&tables)
+                .find(|(s, _)| **s == seed)
+                .map_or(0.0, |(_, t)| if t.is_some() { fade(seed) } else { 0.0 })
+        };
+        let mut texels = self.pack(px_scale);
+        let keys = self.mats.len();
+        for (k, m) in self.mats.iter().enumerate() {
+            if let Some(seed) = m.wild_seed {
+                texels[12 * keys + k][0] = opacity(seed);
+            }
+        }
         Looks {
-            keys: self.mats.len(),
-            texels: self.pack(px_scale),
+            keys,
+            texels,
             drawing: self.edge_looks(true, px_scale),
             model: self.edge_looks(false, px_scale),
             pattern_ink: {
                 let (w, c) = self.pattern;
                 [c[0], c[1], c[2], w * px_scale]
             },
-            bond: self
-                .bonds
+            bond: tables
                 .iter()
-                .flat_map(|&seed| sk_model::proctex::bond_table(seed).cells.clone())
+                .flat_map(|t| {
+                    t.as_ref()
+                        .map_or_else(|| vec![0; sk_render::BOND_TABLE_BYTES], |t| t.cells.clone())
+                })
                 .collect(),
         }
     }
@@ -380,6 +422,8 @@ pub fn look_rows(m: &MatLook, px_scale: f32) -> [[f32; 4]; LOOK_ROWS] {
     t[6] = [offsets[0], offsets[1], m.line_count as f32, m.zigzag_period];
     t[7] = dashes;
     t[8..12].copy_from_slice(&m.pattern);
+    // Deckkraft des Musters (Einblenden nach der Verbandstabelle)
+    t[12] = [1.0, 0.0, 0.0, 0.0];
     t
 }
 

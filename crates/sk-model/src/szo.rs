@@ -1082,6 +1082,13 @@ pub(crate) fn read_patterns(
                 }
             }
             Err(e) => {
+                // Die Oberfläche bleibt ohne Muster, auch eine Werks-Oberfläche
+                // bekommt nicht still ihr Werksmuster; eine zweite Zeile
+                // bleibt unverändert stehen (Review 3q/3)
+                done.push(g);
+                if let Some(s) = surfaces.get_mut(id) {
+                    s.pattern = None;
+                }
                 r.skip();
                 hints.push(format!(
                     "Zeile {}: Muster für „{name}“ verworfen ({e})",
@@ -1279,10 +1286,16 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         &mut hints,
         &mut alien,
     );
+    // Dateien vor Paket 6a haben gar keinen `[pattern]`-Satz und zufällige
+    // Guids an den Werks-Oberflächen: einmalig nach dem Namen; das nächste
+    // Speichern schreibt das Muster aus, danach hängt es an der Guid
+    // (BIM-Befund zu cb8eda4, Regel 60)
+    let alt = recs("pattern").is_empty();
     for id in surface_ids.values() {
         if let Some(s) = surfaces.get_mut(*id) {
             if !patterned.contains(&s.guid) && s.pattern.is_none() {
-                s.pattern = crate::proctex::factory_for(s.guid);
+                s.pattern = crate::proctex::factory_for(s.guid)
+                    .or_else(|| alt.then(|| crate::proctex::factory(&s.name)).flatten());
             }
         }
     }
@@ -2450,9 +2463,14 @@ fn read_display(
             None => {
                 // Fugen in Ansichten (Paket 6): der ergänzte Stift, Volllinie
                 if let (Some(pen), "pattern") = (pattern_pen, name.as_str()) {
+                    // Volllinie: leeres Strichmuster, sonst der erste Typ
+                    // (Review 3q/1: nicht die kleinste Guid, die ist oft die
+                    // Strichlinie)
                     let line_type = line_types
-                        .ids()
-                        .next()
+                        .iter()
+                        .find(|(_, l)| l.pattern.is_empty())
+                        .map(|(id, _)| id)
+                        .or_else(|| line_types.ids().next())
                         .ok_or_else(|| err(0, "Darstellung „pattern“ fehlt, kein Linientyp"))?;
                     resolved.push(EdgeStyle { pen, line_type });
                     continue;

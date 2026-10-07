@@ -540,7 +540,12 @@ struct App {
     preview_shown: bool,
     /// Stand der Zeichentabelle, aus dem der Renderer-Stil stammt.
     /// Stand der hochgeladenen Aussehens-Tabelle: Attribute, Farbschema, Skalierung.
-    looks_key: Option<(u64, u64, u32)>,
+    looks_key: Option<(u64, u64, u32, u64)>,
+    /// Startwerte des wilden Verbands, deren Tabelle noch im Hintergrund
+    /// rechnet (Flächen zeigen die Mischfarbe), und die gerade
+    /// einblendenden (Startwert, Beginn).
+    bond_wait: Vec<u32>,
+    bond_fades: Vec<(u32, Instant)>,
     /// Bytepuffer für die Paneelbilder (wiederverwendet wie ihre Leinwände).
     panel_px: Vec<u8>,
     /// Zuletzt hochgeladene Endsymbole der Schnittlinien (Linie, Anfang,
@@ -733,16 +738,73 @@ impl App {
         self.redraw = true;
     }
 
+    /// Verbandstabellen des wilden Verbands (Koordinator 19:55): Eine
+    /// Tabelle, die im Hintergrund fertig geworden ist, blendet in `anim_ms`
+    /// ein. Gibt an, ob gerade eingeblendet wird.
+    fn sync_bonds(&mut self) -> bool {
+        let now = Instant::now();
+        let anim = self.theme.size.anim_ms;
+        let bonds = self.scene.table().bonds.clone();
+        for seed in bonds {
+            let ready = sk_model::proctex::bond_table_ready(seed).is_some();
+            let waiting = self.bond_wait.iter().position(|s| *s == seed);
+            match (ready, waiting) {
+                (false, None) => self.bond_wait.push(seed),
+                (true, Some(i)) => {
+                    self.bond_wait.remove(i);
+                    if anim > 0.0 {
+                        self.bond_fades.push((seed, now));
+                    }
+                }
+                _ => {}
+            }
+        }
+        let n = self.bond_fades.len();
+        self.bond_fades
+            .retain(|f| now.duration_since(f.1).as_secs_f32() * 1000.0 < anim);
+        if !self.bond_fades.is_empty() {
+            self.redraw = true;
+        }
+        n > 0
+    }
+
+    /// Fertig gewordene Verbandstabelle oder laufendes Einblenden: neu zeichnen.
+    fn bonds_busy(&mut self) {
+        let done = self
+            .bond_wait
+            .iter()
+            .any(|&s| sk_model::proctex::bond_table_ready(s).is_some());
+        if done || !self.bond_fades.is_empty() {
+            self.redraw = true;
+        }
+    }
+
     /// Erzeugt die vorgemerkten Netze. Beim Ziehen liegt der gezogene Wandzug in
     /// einem eigenen Live-Netz; nur dieses wird dann je Bild neu erzeugt und
     /// hochgeladen, das ruhende Netz bleibt auf der Grafikkarte.
     fn build_mesh(&mut self) {
         // Attribute oder Skalierung geändert: nur die Tabelle neu, die Netze bleiben
+        let fading = self.sync_bonds();
         let t = self.scene.table();
-        let key = (t.rev, t.theme_rev, self.title.scale.to_bits());
-        if self.looks_key != Some(key) {
+        let key = (
+            t.rev,
+            t.theme_rev,
+            self.title.scale.to_bits(),
+            sk_model::proctex::bond_generation(),
+        );
+        if self.looks_key != Some(key) || fading {
             self.looks_key = Some(key);
-            self.renderer.set_looks(&t.looks(self.title.scale));
+            let now = Instant::now();
+            let ms = self.theme.size.anim_ms.max(1.0);
+            let fades = &self.bond_fades;
+            let fade = |seed: u32| {
+                fades.iter().find(|f| f.0 == seed).map_or(1.0, |f| {
+                    let u = (now.duration_since(f.1).as_secs_f32() * 1000.0 / ms).min(1.0);
+                    1.0 - (1.0 - u).powi(3)
+                })
+            };
+            self.renderer
+                .set_looks(&t.looks_with(self.title.scale, fade));
         }
         let live = self
             .edit
@@ -1406,6 +1468,10 @@ impl App {
         if out.pick_company {
             self.pick_company(surface);
         }
+        if !out.problems.is_empty() {
+            // Review 3n/4: nichts still verwerfen
+            surface.message(&out.problems.join("\n"), false);
+        }
         if out.applied {
             self.upload_model();
             self.props_key = None;
@@ -1475,7 +1541,9 @@ impl App {
         }
         self.ui.hover = None;
         self.title.hover = None;
-        let p = prefs::Prefs::open(&mut self.scene, &self.theme).with_memory(&self.prefs_mem);
+        let p = prefs::Prefs::open(&mut self.scene, &self.theme)
+            .with_memory(&self.prefs_mem)
+            .with_pattern_error(self.renderer.pattern_error());
         self.prefs = Some(p);
         self.prefs_dirty = true;
         self.overlay_dirty = true;
@@ -5404,6 +5472,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         live_runs: Vec::new(),
         preview_shown: true,
         looks_key: None,
+        bond_wait: Vec::new(),
+        bond_fades: Vec::new(),
         mark_keys: [None; MARKS],
         room_keys: Default::default(),
         panel_px: Vec::new(),
@@ -5469,6 +5539,16 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             time: NOTICE_TIME,
             catalog: true,
         });
+        if a.notice.is_none() && a.renderer.pattern_error().is_some() {
+            // Review 3q: Flächen ohne Muster, das Programm läuft weiter
+            a.notice = Some(Notice {
+                text: "Muster in 3D aus: Der Grafiktreiber übersetzt die Muster nicht.".into(),
+                since: None,
+                rect: (0.0, 0.0, 0.0, 0.0),
+                time: NOTICE_TIME,
+                catalog: false,
+            });
+        }
     }
     a.upload_model();
     a.sync_levels();
@@ -5663,6 +5743,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             && !a.scene.growing()
             && !a.scene.vis_animating()
             && a.erase_fade.is_none()
+            && a.bond_fades.is_empty()
             && a.turn.is_none()
             && a.erase_flash.is_none()
             && a.card_fade.is_none()
@@ -5684,7 +5765,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 (Some(x), Some(y)) => Some(x.min(y)),
                 (x, y) => x.or(y),
             };
-            let wait = match (wait, a.quantity_busy) {
+            let wait = match (wait, a.quantity_busy || !a.bond_wait.is_empty()) {
                 (w, true) => Some(w.map_or(FRAME, |w| w.min(FRAME))),
                 (w, false) => w,
             };
@@ -5758,6 +5839,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             a.mesh_dirty |= a.scene.grow_tick(t);
             a.redraw = true;
         }
+        // Verbandstabelle fertig: einblenden
+        a.bonds_busy();
         // Ausblenden, Einblenden, Isolieren gleiten in `anim_ms`
         if a.scene.vis_animating() {
             let t = a.now();

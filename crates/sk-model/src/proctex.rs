@@ -72,6 +72,9 @@ pub const HEIGHT_MM: (f32, f32) = (20.0, 300.0);
 pub const SPREAD_MASONRY: f32 = 20.0;
 pub const SPREAD_PLASTER: f32 = 10.0;
 pub const GRAIN_MM: (f32, f32) = (0.5, 5.0);
+/// Größter Startwert (BIM-Nachtrag 4 zu Regel 57/61): 24 Bit, damit der
+/// Shader ihn als `float` genau bekommt.
+pub const SEED_MAX: u32 = 0xff_ffff;
 
 /// Prüft die Werte (Regel 57); `Err` nennt den ersten Verstoß.
 pub fn validate(p: &Pattern) -> Result<(), String> {
@@ -83,6 +86,9 @@ pub fn validate(p: &Pattern) -> Result<(), String> {
         }
     };
     match p {
+        Pattern::Masonry { seed, .. } | Pattern::Plaster { seed, .. } if *seed > SEED_MAX => {
+            Err(format!("Startwert {seed} außerhalb 0–{SEED_MAX}"))
+        }
         Pattern::Masonry {
             len,
             h,
@@ -277,22 +283,95 @@ impl BondTable {
     }
 }
 
-/// Verbandstabelle zum Startwert; je Startwert einmal gerechnet und gehalten.
+/// Fertige Verbandstabelle des Werksmusters (Startwert 17), mitgeliefert,
+/// damit der erste Start nicht rechnet (Koordinator 19:55). Der Test
+/// `werkstabelle_wie_gerechnet` hält sie gleich mit [`wild_table`].
+const BUILTIN_SEED: u32 = 17;
+static BUILTIN_TABLE: &[u8; WILD_SIZE * WILD_SIZE] = include_bytes!("verband17.bin");
+
+type Tables = Vec<(u32, std::sync::Arc<BondTable>)>;
+
+/// Gerechnete Tabellen (die zuletzt genutzten 16) und Startwerte, die
+/// gerade im Hintergrund gerechnet werden.
+static TABLES: std::sync::Mutex<(Tables, Vec<u32>)> =
+    std::sync::Mutex::new((Vec::new(), Vec::new()));
+/// Zählt fertig gewordene Hintergrundrechnungen ([`bond_generation`]).
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn tables() -> std::sync::MutexGuard<'static, (Tables, Vec<u32>)> {
+    TABLES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Schon vorhandene Tabelle (mitgeliefert oder gerechnet).
+fn cached(c: &mut Tables, seed: u32) -> Option<std::sync::Arc<BondTable>> {
+    if seed == BUILTIN_SEED {
+        static B: std::sync::OnceLock<std::sync::Arc<BondTable>> = std::sync::OnceLock::new();
+        return Some(
+            B.get_or_init(|| {
+                std::sync::Arc::new(BondTable {
+                    cells: BUILTIN_TABLE.to_vec(),
+                })
+            })
+            .clone(),
+        );
+    }
+    let i = c.iter().position(|(s, _)| *s == seed)?;
+    let t = c.remove(i);
+    c.push(t.clone());
+    Some(t.1)
+}
+
+fn keep(c: &mut Tables, seed: u32, t: std::sync::Arc<BondTable>) {
+    if !c.iter().any(|(s, _)| *s == seed) {
+        if c.len() >= 16 {
+            c.remove(0);
+        }
+        c.push((seed, t));
+    }
+}
+
+/// Verbandstabelle zum Startwert; je Startwert einmal gerechnet und
+/// gehalten. Rechnet, wenn nötig, sofort (bis rund 0,5 s): für Vorschau,
+/// Ansicht und Test. Der Zeichenpfad nimmt [`bond_table_ready`].
 pub fn bond_table(seed: u32) -> std::sync::Arc<BondTable> {
-    use std::sync::{Arc, Mutex};
-    static CACHE: Mutex<Vec<(u32, Arc<BondTable>)>> = Mutex::new(Vec::new());
-    let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(i) = c.iter().position(|(s, _)| *s == seed) {
-        let t = c.remove(i);
-        c.push(t.clone());
-        return t.1;
+    if let Some(t) = cached(&mut tables().0, seed) {
+        return t;
     }
-    let t = Arc::new(wild_table(seed));
-    if c.len() >= 16 {
-        c.remove(0);
-    }
-    c.push((seed, t.clone()));
+    let t = std::sync::Arc::new(wild_table(seed));
+    keep(&mut tables().0, seed, t.clone());
     t
+}
+
+/// Verbandstabelle, wenn sie schon vorliegt; sonst wird sie im Hintergrund
+/// gerechnet (einmal je Startwert) und die Antwort ist `None`: Die Fläche
+/// zeigt bis dahin ihre Mischfarbe (Koordinator 19:55).
+pub fn bond_table_ready(seed: u32) -> Option<std::sync::Arc<BondTable>> {
+    let mut g = tables();
+    if let Some(t) = cached(&mut g.0, seed) {
+        return Some(t);
+    }
+    if !g.1.contains(&seed) {
+        g.1.push(seed);
+        std::thread::spawn(move || {
+            let t = std::sync::Arc::new(wild_table(seed));
+            let mut g = tables();
+            keep(&mut g.0, seed, t);
+            g.1.retain(|s| *s != seed);
+            GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+    None
+}
+
+/// Wird gerade eine Tabelle im Hintergrund gerechnet?
+pub fn bond_tables_pending() -> bool {
+    !tables().1.is_empty()
+}
+
+/// Zähler der fertigen Hintergrundrechnungen: ändert er sich, liegen neue
+/// Tabellen vor.
+pub fn bond_generation() -> u64 {
+    GENERATION.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 type Row = u128;
@@ -892,6 +971,33 @@ pub(crate) fn read_line(r: &Record, raw: &str) -> Result<Option<Pattern>, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Die mitgelieferte Werkstabelle ist die gerechnete (Startwert 17).
+    #[test]
+    fn werkstabelle_wie_gerechnet() {
+        assert_eq!(wild_table(BUILTIN_SEED).cells, BUILTIN_TABLE.to_vec());
+    }
+
+    /// Ein fremder Startwert kommt aus dem Hintergrund und gleicht der
+    /// sofort gerechneten Tabelle.
+    #[test]
+    fn tabelle_im_hintergrund() {
+        let seed = 9_876_543;
+        let g0 = bond_generation();
+        let mut t = bond_table_ready(seed);
+        let start = std::time::Instant::now();
+        while t.is_none() {
+            assert!(start.elapsed().as_secs() < 60, "Hintergrund fertig");
+            std::thread::yield_now();
+            t = bond_table_ready(seed);
+        }
+        assert!(bond_generation() > g0);
+        assert_eq!(t.unwrap().cells, wild_table(seed).cells);
+        assert!(
+            bond_table_ready(BUILTIN_SEED).is_some(),
+            "Werkstabelle sofort"
+        );
+    }
 
     /// Werksmuster friesisch-bunt mit Startwert `seed`.
     fn wild(seed: u32) -> Pattern {

@@ -29,7 +29,7 @@ pub struct Style {
 pub const EDGE_KINDS: usize = 8;
 
 /// Zeilen der Aussehens-Tabelle je Darstellungsschlüssel.
-pub const LOOK_ROWS: usize = 12;
+pub const LOOK_ROWS: usize = 13;
 
 /// Breite (Bildpunkte) und Farbe je Kantenart, für Zeichnung oder 3D.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -107,6 +107,7 @@ pub fn dash_ink(dist: f32, len: f32, p: &DashPattern, w: f32) -> bool {
 /// | 9 | Verbandversatz (0,5 / ⅓ / −1 wild), Streuung %, Startwert, Körnung mm | |
 /// | 10 | Steinfarbe 1 (r·65536 + g·256 + b), Anteil 1 %, Steinfarbe 2, Anteil 2 % | |
 /// | 11 | Steinfarbe 3, Fugenfarbe, Anteil 3 %, Mischfarbe (3D ohne Muster) | |
+/// | 12 | Deckkraft des Musters 0..1 (wilder Verband: 0, bis seine Tabelle vorliegt, dann eingeblendet) | |
 ///
 /// Eine Schar sind die Linien `cx·x + cy·y − Versatz = n·Periode` in
 /// Bildpunkten; der Abstand eines Pixels zur nächsten Linie ist
@@ -346,6 +347,9 @@ pub struct Renderer {
     gl: Gl,
     sky: Program,
     faces: Program,
+    /// Meldung des Treibers, wenn der Flächen-Shader mit Mustern nicht
+    /// übersetzt werden konnte; dann zeichnet er ohne Muster.
+    pattern_error: Option<String>,
     edges: Program,
     overlay: Program,
     helpers: Program,
@@ -510,7 +514,7 @@ void main() {
         if (!cut && int(look(8).x + 0.5) == 1) c = unpack_rgb(look(11).w);
         // Paket 6b: Steine und Putzkorn, weich zur Mischfarbe in der Ferne
         if (!cut && u_alpha >= 1.0 && u_patterns == 2 && int(look(8).x + 0.5) != 0) {
-            c = pattern_rgb(v_model, v_normal, c, look(8), look(9), look(10), look(11));
+            c = mix(c, pattern_rgb(v_model, v_normal, c, look(8), look(9), look(10), look(11)), look(12).x);
         }
         float d = max(dot(normalize(v_normal), u_light), 0.0);
         o_color = vec4(c * (u_ambient + (1.0 - u_ambient) * d), u_alpha);
@@ -520,7 +524,7 @@ void main() {
     vec3 c = bg.rgb;
     if (!cut && u_alpha >= 1.0 && u_patterns == 1 && int(look(8).x + 0.5) == 1) {
         // Ansicht: Fugen als Mittellinien in Tinte, keine Steinfarben
-        float ink = pattern_lines(v_model, v_normal, look(8), look(9), u_pattern_ink.a);
+        float ink = pattern_lines(v_model, v_normal, look(8), look(9), u_pattern_ink.a) * look(12).x;
         c = mix(c, u_pattern_ink.rgb, ink);
     }
     if (cut && u_alpha < 1.0) {
@@ -933,12 +937,44 @@ void main() {
 }
 "#;
 
+/// Ersatz für [`PATTERN_GLSL`], wenn der Treiber die Muster nicht übersetzt:
+/// dieselben Funktionen, die der Flächen-Shader ruft, ohne Muster und ohne
+/// Ganzzahl-Bitrechnung.
+pub const PATTERN_FALLBACK_GLSL: &str = r#"
+vec3 unpack_rgb(float f) {
+    float r = floor(f / 65536.0);
+    float g = floor((f - r * 65536.0) / 256.0);
+    float b = f - r * 65536.0 - g * 256.0;
+    return vec3(r, g, b) / 255.0;
+}
+float pattern_lines(vec3 p, vec3 n, vec4 p8, vec4 p9, float w) {
+    return 0.0;
+}
+vec3 pattern_rgb(vec3 p, vec3 n, vec3 base, vec4 p8, vec4 p9, vec4 p10, vec4 p11) {
+    return base;
+}
+"#;
+
 impl Renderer {
+    /// Konnte der Flächen-Shader die Muster nicht übersetzen, die Meldung
+    /// des Treibers (zum Anzeigen); es wird ohne Muster gezeichnet.
+    pub fn pattern_error(&self) -> Option<&str> {
+        self.pattern_error.as_deref()
+    }
+
     pub fn new(gl: Gl, style: Style) -> Result<Renderer, String> {
         unsafe {
             let sky = program(&gl, FULLSCREEN_VS, SKY_FS)?;
+            // Muster im Flächen-Shader; scheitert der Treiber daran, zeichnet
+            // das Programm ohne Muster weiter statt nicht zu starten (3q)
             let face_fs = format!("#version 330 core\n{PATTERN_GLSL}{FACE_FS}");
-            let faces = program(&gl, FACE_VS, &face_fs)?;
+            let (faces, pattern_error) = match program(&gl, FACE_VS, &face_fs) {
+                Ok(p) => (p, None),
+                Err(e) => {
+                    let plain = format!("#version 330 core\n{PATTERN_FALLBACK_GLSL}{FACE_FS}");
+                    (program(&gl, FACE_VS, &plain)?, Some(e))
+                }
+            };
             let edges = program(&gl, EDGE_VS, &with_dash(EDGE_FS))?;
             let overlay = program(&gl, FULLSCREEN_VS, OVERLAY_FS)?;
             let helpers = program(&gl, HELPER_VS, &with_dash(HELPER_FS))?;
@@ -951,6 +987,7 @@ impl Renderer {
                 gl,
                 sky,
                 faces,
+                pattern_error,
                 edges,
                 overlay,
                 helpers,
@@ -1857,5 +1894,33 @@ impl Renderer {
     /// Deckkraft des Bodens (0: Gelände ausgeblendet, Paket 3).
     pub fn set_ground_opacity(&mut self, v: f32) {
         self.style.ground_opacity = v;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Kopf jeder Funktion in `glsl` (`typ name(…) {`), nach Name.
+    fn heads(glsl: &str) -> Vec<(&str, &str)> {
+        glsl.lines()
+            .filter(|l| !l.starts_with(' ') && l.trim_end().ends_with('{') && l.contains('('))
+            .filter_map(|l| {
+                let name = l.split('(').next()?.split_whitespace().last()?;
+                Some((name, l.trim_end()))
+            })
+            .collect()
+    }
+
+    /// Review 3q: Der Ersatz ohne Muster deckt jede Musterfunktion, die der
+    /// Flächen-Shader ruft, mit derselben Signatur.
+    #[test]
+    fn ersatz_ohne_muster_deckt_den_flaechen_shader() {
+        let fallback = heads(PATTERN_FALLBACK_GLSL);
+        for (name, head) in heads(PATTERN_GLSL) {
+            if FACE_FS.contains(&format!("{name}(")) {
+                assert!(fallback.contains(&(name, head)), "Ersatz fehlt: {head}");
+            }
+        }
     }
 }

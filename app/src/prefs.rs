@@ -686,6 +686,9 @@ pub struct Prefs {
     recent: Vec<Rgba>,
     /// Fehler beim Schreiben der Einstellungsdatei.
     error: Option<String>,
+    /// Der Grafiktreiber übersetzt die Muster nicht (Review 3q): „Muster in
+    /// 3D“ ist dann gesperrt, die Zeile darunter nennt den Grund.
+    pattern_error: Option<String>,
     mouse: (f64, f64),
     /// Leinwand und Bytes des letzten Bildes ([`Prefs::give_back`]): ihr
     /// Speicher dient dem nächsten.
@@ -728,6 +731,7 @@ impl Prefs {
             flash_until: None,
             recent: Vec::new(),
             error: None,
+            pattern_error: None,
             mouse: (-1.0, -1.0),
             spare: None,
             spare_px: Vec::new(),
@@ -737,6 +741,13 @@ impl Prefs {
     }
 
     /// Lage, Reiter und zuletzt benutzte Farben aus der Sitzung.
+    /// Meldung des Treibers, wenn der Flächen-Shader ohne Muster läuft
+    /// ([`sk_render::Renderer::pattern_error`]).
+    pub fn with_pattern_error(mut self, e: Option<&str>) -> Prefs {
+        self.pattern_error = e.map(str::to_string);
+        self
+    }
+
     pub fn with_memory(mut self, m: &Memory) -> Prefs {
         self.pos = m.pos;
         self.tab = m.tab;
@@ -1163,12 +1174,29 @@ impl Prefs {
             role_target("env.edge"),
         );
         // Paket 6: Steine und Putzkorn in 3D; aus = Mischfarbe
-        texts.push(UiText::label(rx, y + 15.0 * s, "Muster in 3D"));
+        let name = "Muster in 3D";
+        texts.push(if self.pattern_error.is_some() {
+            UiText::dim(rx, y + 15.0 * s, name)
+        } else {
+            UiText::label(rx, y + 15.0 * s, name)
+        });
+        let cb = t.size.checkbox * s;
         items.push((
-            Rect::new(vx, y + 2.0 * s, 18.0 * s, 18.0 * s),
+            Rect::new(vx, y + 11.0 * s - cb / 2.0, cb, cb),
             Target::Patterns3d,
         ));
         y += 30.0 * s;
+        if let Some(e) = &self.pattern_error {
+            // Rückfall ohne Muster (Review 3q): Grund in einer leisen Zeile
+            let why = e.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+            texts.push(UiText::wrapped_in(
+                rx,
+                y + 4.0 * s,
+                format!("Aus: Der Grafiktreiber übersetzt die Muster nicht. {why}"),
+                rw - 8.0 * s,
+            ));
+            y += 40.0 * s;
+        }
         y += 12.0 * s;
         texts.push(UiText::heading(rx, y + 18.0 * s, "Bildschirm"));
         y += 34.0 * s;
@@ -1825,6 +1853,7 @@ impl Prefs {
             }
             Target::Group(g) => self.groups_open[g] = !self.groups_open[g],
             Target::Advanced => self.advanced = !self.advanced,
+            Target::Patterns3d if self.pattern_error.is_some() => {}
             Target::Patterns3d => {
                 let t = &mut *cx.theme;
                 t.env.patterns_3d = !t.env.patterns_3d;
@@ -3538,7 +3567,8 @@ impl Prefs {
                     widgets::field(&mut cc, fonts, rr, &st, s, t);
                 }
                 Target::Patterns3d => {
-                    widgets::checkbox(&mut cc, rr, t.env.patterns_3d, hover, s, t);
+                    let off = self.pattern_error.is_some();
+                    widgets::checkbox(&mut cc, rr, t.env.patterns_3d && !off, hover && !off, s, t);
                 }
                 Target::Group(_) | Target::Advanced if hover => {
                     let mut p = Path::new();

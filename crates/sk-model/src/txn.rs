@@ -79,6 +79,12 @@ pub enum Change {
         old: Vec<Trade>,
         new: Vec<Trade>,
     },
+    /// Sätze unbekannter Art aus der gelesenen Datei (F-17), als Ganzes
+    /// (Review 3q/4: fremde `[pattern]`-Zeilen fallen mit Rückgängig weg).
+    ForeignRecords {
+        old: Vec<String>,
+        new: Vec<String>,
+    },
 }
 
 impl Change {
@@ -98,6 +104,7 @@ impl Change {
             Change::Display { old, new } => old == new,
             Change::Defaults { old, new } => old == new,
             Change::Trades { old, new } => old == new,
+            Change::ForeignRecords { old, new } => old == new,
         }
     }
 }
@@ -150,6 +157,7 @@ pub(crate) enum Key {
     Display,
     Defaults,
     Trades,
+    ForeignRecords,
 }
 
 /// Offener Schritt.

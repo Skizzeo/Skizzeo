@@ -980,7 +980,15 @@ fn adopt_material(m: &mut Model, lib: &Library, g: Guid, exact: bool) -> bool {
 /// `work` fehlt, wird gelöscht, Neues und Geändertes kommt über die Guid
 /// samt Darstellung und Gewerk. `true`: etwas hat sich geändert.
 pub fn sync_materials(m: &mut Model, work: &Model) -> bool {
+    sync_materials_report(m, work, &mut Vec::new())
+}
+
+/// Wie [`sync_materials`]; was nicht übernommen werden konnte, steht als
+/// Satz in `problems` (Review 3n/4: nicht still verwerfen).
+pub fn sync_materials_report(m: &mut Model, work: &Model, problems: &mut Vec<String>) -> bool {
     let mut changed = false;
+    let name_of =
+        |m: &Model, id: MaterialId| m.material(id).map_or(String::new(), |x| x.name.clone());
     let keep: Vec<Guid> = work.materials().iter().map(|(_, x)| x.guid).collect();
     let gone: Vec<MaterialId> = m
         .materials()
@@ -989,7 +997,14 @@ pub fn sync_materials(m: &mut Model, work: &Model) -> bool {
         .map(|(id, _)| id)
         .collect();
     for id in gone {
-        changed |= m.remove_material(id);
+        let name = name_of(m, id);
+        if m.remove_material(id) {
+            changed = true;
+        } else {
+            problems.push(format!(
+                "„{name}“ konnte nicht gelöscht werden (wird noch verwendet)."
+            ));
+        }
     }
     // Namen, die in der Kopie getauscht oder weitergereicht wurden: erst
     // auf freie Zwischennamen, damit jeder Baustoff genau seinen neuen
@@ -1000,6 +1015,7 @@ pub fn sync_materials(m: &mut Model, work: &Model) -> bool {
             .find(|(_, x)| x.guid == g)
             .map(|(_, x)| x.name.clone())
     };
+    let mut renamed: Vec<(MaterialId, String, String)> = Vec::new();
     let moving: Vec<(MaterialId, Material)> = m
         .materials()
         .iter()
@@ -1015,7 +1031,10 @@ pub fn sync_materials(m: &mut Model, work: &Model) -> bool {
             }
             k += 1;
         };
-        changed |= m.set_material(id, Material { name: tmp, ..x });
+        // nur der Name, ohne Wertprüfung (Review 3q/2)
+        changed |= m.rename_material(id, &tmp);
+        let tmp = m.material(id).map_or(tmp, |y| y.name.clone());
+        renamed.push((id, x.name.clone(), tmp));
     }
     let mut lib = Library {
         trades: work.trades().to_vec(),
@@ -1023,6 +1042,7 @@ pub fn sync_materials(m: &mut Model, work: &Model) -> bool {
     };
     for (id, x) in work.materials().iter() {
         if !put_in_library(work, &mut lib, id) {
+            problems.push(format!("„{}“ konnte nicht übernommen werden.", x.name));
             continue;
         }
         let Some(y) = find(&lib.materials, x.guid, |y| y.guid).and_then(|id| lib.materials.get(id))
@@ -1035,7 +1055,25 @@ pub fn sync_materials(m: &mut Model, work: &Model) -> bool {
             .find(|(_, z)| z.guid == x.guid)
             .is_some_and(|(_, z)| same_material(m, z, &lib, y));
         if !same {
-            changed |= adopt_material(m, &lib, x.guid, true);
+            if adopt_material(m, &lib, x.guid, true) {
+                changed = true;
+            } else {
+                problems.push(format!(
+                    "„{}“ wurde nicht übernommen: ein Wert ist ungültig.",
+                    x.name
+                ));
+            }
+        }
+    }
+    // Zwischennamen nie stehen lassen: Was nicht übernommen wurde, bekommt
+    // seinen Zielnamen, sonst den alten zurück (Review 3q/2)
+    for (id, old, tmp) in renamed {
+        let Some(g) = m.material(id).filter(|x| x.name == tmp).map(|x| x.guid) else {
+            continue;
+        };
+        let want = target(g).unwrap_or_else(|| old.clone());
+        if !m.rename_material(id, &want) && !m.rename_material(id, &old) {
+            problems.push(format!("„{old}“ behält den Zwischennamen „{tmp}“."));
         }
     }
     changed
