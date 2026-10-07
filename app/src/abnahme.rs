@@ -22348,7 +22348,8 @@ mod texturen {
         let l = lesen(&format!("{text}{neu}"));
         assert!(l.model.check().is_empty());
         let geschrieben = sk_model::szo::write(&l.model);
-        let ist: Vec<&str> = zeilen(&geschrieben, "[pattern]")
+        // Der Schreiber ordnet nach Guid der Oberfläche (Bauthread 20:55)
+        let mut ist: Vec<&str> = zeilen(&geschrieben, "[pattern]")
             .into_iter()
             .filter(|z| {
                 [a, b, c, d, e]
@@ -22356,7 +22357,10 @@ mod texturen {
                     .any(|g| z.contains(&format!("surface={g}")))
             })
             .collect();
-        assert_eq!(ist, neu.lines().collect::<Vec<_>>());
+        let mut soll: Vec<&str> = neu.lines().collect();
+        ist.sort_unstable();
+        soll.sort_unstable();
+        assert_eq!(ist, soll);
 
         let lib = sk_model::Library::from_model(s.model());
         let szk = sk_model::write_szk(&lib);
