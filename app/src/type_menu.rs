@@ -216,10 +216,8 @@ impl TypeMenu {
         );
         let x0 = self.x + (PAD + 6.0) * s;
         if self.tool() {
-            let label = match self.category {
-                TypeCategory::ExteriorWall => "AUSSENWÄNDE",
-                TypeCategory::InteriorWall => "INNENWÄNDE",
-            };
+            let label = sk_model::kinds::spec(self.category.category()).heading();
+            let label = label.as_str();
             let y = self.y + (PAD + 14.0) * s;
             widgets::text(
                 &mut c,

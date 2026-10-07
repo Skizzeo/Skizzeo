@@ -1579,10 +1579,11 @@ fn storey_name(m: &Model, id: sk_model::StoreyId) -> (String, String) {
 /// Titel einer Wandgruppe: im Blatt kurz („Außenwände AW 31,5“), in der
 /// Tabelle mit dem ganzen Namen des Aufbaus.
 fn group_title(m: &Model, g: &GroupQto, short: bool) -> String {
-    let (name, code) = match g.category {
-        Category::ExteriorWall => ("Außenwände", "AW"),
-        Category::InteriorWall => ("Innenwände", "IW"),
-        c => (c.name(), ""),
+    let k = sk_model::kinds::spec(g.category);
+    let (name, code) = if is_wall(g.category) {
+        (k.plural, k.prefix)
+    } else {
+        (k.name, "")
     };
     let set = g.layer_set.and_then(|s| m.layer_set(s));
     match set {

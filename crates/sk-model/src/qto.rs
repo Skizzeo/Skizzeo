@@ -579,20 +579,9 @@ pub struct Schedule {
     pub loose: Vec<StoreyQto>,
 }
 
-/// Reihenfolge der Gruppen nach Bauablauf.
+/// Reihenfolge der Gruppen nach Bauablauf ([`crate::kinds`]).
 fn group_rank(c: Category) -> u8 {
-    match c {
-        Category::StripFooting => 0,
-        Category::GroundSlab => 1,
-        Category::ExteriorWall => 2,
-        // neben den Außenwänden (K5)
-        Category::EdgeInsulation => 3,
-        Category::InteriorWall => 4,
-        Category::Floor => 5,
-        // unter ihrer Decke
-        Category::SoffitInsulation => 6,
-        _ => 7,
-    }
+    crate::kinds::spec(c).qto_rank
 }
 
 /// Reihenfolge der Baustoffsummen.

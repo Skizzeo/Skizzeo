@@ -388,27 +388,11 @@ const LAYER_FUNCTIONS: [LayerFunction; 5] = [
 ];
 
 fn category(c: Category) -> &'static str {
-    match c {
-        Category::ExteriorWall => "exterior",
-        Category::InteriorWall => "interior",
-        Category::Floor => "floor",
-        Category::GroundSlab => "groundslab",
-        Category::Roof => "roof",
-        Category::Window => "window",
-        Category::Door => "door",
-        Category::Opening => "opening",
-        Category::Space => "space",
-        Category::StripFooting => "stripfooting",
-        Category::EdgeInsulation => "edgeinsulation",
-        Category::SoffitInsulation => "soffitinsulation",
-    }
+    crate::kinds::spec(c).szo
 }
 
 pub(crate) fn type_category(c: TypeCategory) -> &'static str {
-    match c {
-        TypeCategory::ExteriorWall => "exterior",
-        TypeCategory::InteriorWall => "interior",
-    }
+    crate::kinds::spec(c.category()).szo
 }
 
 fn ref_side(r: RefSide) -> &'static str {

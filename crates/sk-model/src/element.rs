@@ -2,6 +2,7 @@
 
 use crate::guid::Guid;
 use crate::id::Id;
+use crate::kinds::spec;
 use crate::library::{LayerSetId, MaterialId};
 use crate::wall::RefSide;
 use sk_math::Vec3;
@@ -24,7 +25,8 @@ pub struct Building {
     pub number: String,
 }
 
-/// Bauteilkategorie: bestimmt Nummernpräfix, IFC-Klasse und DIN-276-Kostengruppe.
+/// Bauteilkategorie: bestimmt Nummernpräfix, IFC-Klasse und DIN-276-Kostengruppe
+/// (Tabelle in [`crate::kinds`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Category {
     ExteriorWall,
@@ -66,76 +68,29 @@ impl Category {
         self as usize
     }
 
+    /// Name, z. B. „Außenwand“ ([`crate::kinds`]).
     pub fn name(self) -> &'static str {
-        match self {
-            Category::ExteriorWall => "Außenwand",
-            Category::InteriorWall => "Innenwand",
-            Category::Floor => "Geschossdecke",
-            Category::GroundSlab => "Sohlplatte",
-            Category::Roof => "Dach",
-            Category::Window => "Fenster",
-            Category::Door => "Tür",
-            Category::Opening => "Öffnung",
-            Category::Space => "Raum",
-            Category::StripFooting => "Frostschürze",
-            Category::EdgeInsulation => "Randdämmstreifen",
-            Category::SoffitInsulation => "Untersichtdämmung",
-        }
+        spec(self).name
     }
 
     /// Präfix der Bauteilnummer, z. B. „AW“ für AW-001.
     pub fn prefix(self) -> &'static str {
-        match self {
-            Category::ExteriorWall => "AW",
-            Category::InteriorWall => "IW",
-            Category::Floor => "DE",
-            Category::GroundSlab => "SP",
-            Category::Roof => "DA",
-            Category::Window => "FE",
-            Category::Door => "TU",
-            Category::Opening => "OE",
-            Category::Space => "R",
-            Category::StripFooting => "FS",
-            Category::EdgeInsulation => "RD",
-            Category::SoffitInsulation => "UD",
-        }
+        spec(self).prefix
     }
 
     /// IFC-Klasse mit vordefiniertem Typ, falls nötig.
     pub fn ifc_class(self) -> &'static str {
-        match self {
-            Category::ExteriorWall | Category::InteriorWall => "IfcWall",
-            Category::Floor => "IfcSlab.FLOOR",
-            Category::GroundSlab => "IfcSlab.BASESLAB",
-            Category::Roof => "IfcRoof",
-            Category::Window => "IfcWindow",
-            Category::Door => "IfcDoor",
-            Category::Opening => "IfcOpeningElement",
-            Category::Space => "IfcSpace",
-            Category::StripFooting => "IfcFooting.STRIP_FOOTING",
-            // über IfcRelAggregates Teil der Wand
-            Category::EdgeInsulation => "IfcBuildingElementPart.INSULATION",
-            Category::SoffitInsulation => "IfcCovering.INSULATION",
-        }
+        spec(self).ifc
     }
 
     /// Kostengruppe nach DIN 276 (Räume und Öffnungen haben keine).
     pub fn din276(self) -> Option<u16> {
-        match self {
-            Category::ExteriorWall | Category::Window | Category::EdgeInsulation => Some(330),
-            Category::InteriorWall | Category::Door => Some(340),
-            Category::Floor => Some(350),
-            // Deckenbekleidung (DIN 276:2018-12; 353 sind dort Deckenbeläge)
-            Category::SoffitInsulation => Some(354),
-            Category::GroundSlab | Category::StripFooting => Some(322),
-            Category::Roof => Some(360),
-            Category::Opening | Category::Space => None,
-        }
+        spec(self).kg
     }
 
     /// IFC-Eigenschaft IsExternal.
     pub fn is_external(self) -> bool {
-        matches!(self, Category::ExteriorWall)
+        spec(self).external
     }
 }
 

@@ -425,7 +425,7 @@ fn follow_name(name: &str, old: f64, new: f64) -> Option<String> {
 }
 
 /// Kacheln, Gruppenköpfe (Text, y) und Gesamthöhe der Liste.
-type ListLayout = (Vec<(Item, Rect)>, Vec<(&'static str, f32)>, f32);
+type ListLayout = (Vec<(Item, Rect)>, Vec<(String, f32)>, f32);
 
 impl Catalog {
     pub fn open(scene: &Scene, company: Option<&Company>) -> Catalog {
@@ -593,10 +593,7 @@ impl Catalog {
             if items.is_empty() {
                 continue;
             }
-            let head = match cat {
-                TypeCategory::ExteriorWall => "AUSSENWÄNDE",
-                TypeCategory::InteriorWall => "INNENWÄNDE",
-            };
+            let head = sk_model::kinds::spec(cat.category()).heading();
             heads.push((head, y));
             y += 24.0 * s;
             for it in items {
@@ -3398,7 +3395,7 @@ impl Catalog {
             label(
                 &mut sub,
                 bold,
-                h,
+                &h,
                 t.size.font_detail * s,
                 left + 18.0 * s,
                 y + 16.0 * s,

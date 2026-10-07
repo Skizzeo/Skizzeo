@@ -14,6 +14,7 @@ pub mod foundation;
 pub mod guid;
 pub mod id;
 pub mod join;
+pub mod kinds;
 pub mod library;
 pub mod model;
 pub mod qto;

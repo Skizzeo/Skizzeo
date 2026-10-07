@@ -132,26 +132,24 @@ impl TypeCategory {
 
     /// Typart, die Bauteile der Kategorie brauchen; `None`: ohne Typ.
     pub fn of(c: Category) -> Option<TypeCategory> {
-        match c {
-            Category::ExteriorWall => Some(TypeCategory::ExteriorWall),
-            Category::InteriorWall => Some(TypeCategory::InteriorWall),
-            _ => None,
+        crate::kinds::spec(c).type_category
+    }
+
+    /// Kategorie der Bauteile dieser Typart.
+    pub fn category(self) -> Category {
+        match self {
+            TypeCategory::ExteriorWall => Category::ExteriorWall,
+            TypeCategory::InteriorWall => Category::InteriorWall,
         }
     }
 
     pub fn name(self) -> &'static str {
-        match self {
-            TypeCategory::ExteriorWall => "Außenwand",
-            TypeCategory::InteriorWall => "Innenwand",
-        }
+        crate::kinds::spec(self.category()).name
     }
 
     /// Präfix des Kurzzeichens, z. B. „AW“ für AW-1.
     pub fn prefix(self) -> &'static str {
-        match self {
-            TypeCategory::ExteriorWall => "AW",
-            TypeCategory::InteriorWall => "IW",
-        }
+        crate::kinds::spec(self.category()).prefix
     }
 }
 

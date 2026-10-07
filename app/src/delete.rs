@@ -31,15 +31,24 @@ pub enum Link {
 }
 
 /// Wörter für die nicht gelöschten Bauteile einer gemischten Auswahl:
-/// Einzahl mit Artikel, Mehrzahl, Pronomen.
-fn kind_words(c: Category) -> Option<(&'static str, &'static str, &'static str)> {
-    Some(match c {
-        Category::ExteriorWall => ("Die Außenwand", "Außenwände", "sie"),
-        Category::Floor => ("Die Decke", "Decken", "sie"),
-        Category::GroundSlab => ("Die Sohlplatte", "Sohlplatten", "sie"),
-        Category::StripFooting => ("Die Frostschürze", "Frostschürzen", "sie"),
-        Category::EdgeInsulation => ("Der Randdämmstreifen", "Randdämmstreifen", "er"),
-        _ => return None,
+/// Einzahl mit Artikel, Mehrzahl, Pronomen (aus [`sk_model::kinds`]). Nur
+/// für die Arten, deren Löschen abgelehnt werden kann.
+fn kind_words(c: Category) -> Option<(String, &'static str, &'static str)> {
+    let refusable = matches!(
+        c,
+        Category::ExteriorWall
+            | Category::Floor
+            | Category::GroundSlab
+            | Category::StripFooting
+            | Category::EdgeInsulation
+    );
+    let k = sk_model::kinds::spec(c);
+    refusable.then(|| {
+        (
+            format!("{} {}", k.genus.article(), k.short),
+            k.plural,
+            k.genus.pronoun(),
+        )
     })
 }
 
@@ -689,17 +698,17 @@ const CONFIRM_BUTTON: (f32, f32) = (120.0, 40.0);
 /// Text der Rückfrage: welche Bauteile verschwinden, je Art gezählt.
 pub fn parts_text(m: &Model, b: BuildingId) -> String {
     let order = [
-        (Category::ExteriorWall, "Außenwand", "Außenwände"),
-        (Category::InteriorWall, "Innenwand", "Innenwände"),
-        (Category::Floor, "Decke", "Decken"),
-        (Category::GroundSlab, "Sohlplatte", "Sohlplatten"),
-        (Category::StripFooting, "Frostschürze", "Frostschürzen"),
-        (
-            Category::EdgeInsulation,
-            "Randdämmstreifen",
-            "Randdämmstreifen",
-        ),
-    ];
+        Category::ExteriorWall,
+        Category::InteriorWall,
+        Category::Floor,
+        Category::GroundSlab,
+        Category::StripFooting,
+        Category::EdgeInsulation,
+    ]
+    .map(|c| {
+        let k = sk_model::kinds::spec(c);
+        (c, k.short, k.plural)
+    });
     let parts = m.building_parts(b);
     let count = |c: Category| {
         parts
@@ -712,9 +721,7 @@ pub fn parts_text(m: &Model, b: BuildingId) -> String {
         match count(c) {
             0 => {}
             // Sohlplatte und Frostschürze gibt es je Gebäude einmal: ohne Zahl
-            1 if matches!(c, Category::GroundSlab | Category::StripFooting) => {
-                names.push(one.to_string())
-            }
+            1 if sk_model::kinds::spec(c).once => names.push(one.to_string()),
             1 => names.push(format!("1 {one}")),
             n => names.push(format!("{n} {many}")),
         }
