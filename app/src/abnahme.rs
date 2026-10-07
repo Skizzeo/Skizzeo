@@ -25093,6 +25093,13 @@ mod bildzeit {
     // 95-%-Quantil ist der Wert mit dem Rang ⌈0,95 · n⌉ (nächster Rang, kein
     // Mitteln). Zahlen mit zwei Nachkommastellen und Dezimalkomma, „1 Bild“
     // in der Einzahl. Angenommene Namen stehen NUR in den Adaptern.
+    //
+    // Nachtrag (Review 3w Befund 3, Koordinator 22:36): Mit VSync liegt die
+    // Gesamtzeit immer bei etwa 16,7 ms. Die Zeile nennt deshalb zusätzlich
+    // die Arbeit je Bild (Ereignisse + Netz + Zeichnen, ohne Tauschen):
+    // „Bildzeit: Median …, 95 % … · Arbeit: Median …, 95 % … (N Bilder)“,
+    // beide mit zwei Nachkommastellen wie bisher. Angenommen: Feld
+    // `Measure::work` (ms je Bild) und `status_line(gesamt, arbeit)`.
 
     // ===== Adapter =====
 
@@ -25101,9 +25108,19 @@ mod bildzeit {
         crate::frame_time::stats(ms)
     }
 
-    /// Zeile für die Statuszeile.
-    fn zeile(ms: &[f64]) -> String {
-        crate::frame_time::status_line(ms)
+    /// Zeile für die Statuszeile aus Gesamt- und Arbeitszeiten je Bild.
+    fn zeile(gesamt: &[f64], arbeit: &[f64]) -> String {
+        crate::frame_time::status_line(gesamt, arbeit)
+    }
+
+    /// Messung mit diesen Bildern (Ereignisse, Netz, Zeichnen, Tauschen):
+    /// (Gesamt je Bild, Arbeit je Bild, Tabelle).
+    fn messen(bilder: &[[f64; 4]]) -> (Vec<f64>, Vec<f64>, String) {
+        let mut m = crate::frame_time::Measure::new();
+        for b in bilder {
+            m.push(*b);
+        }
+        (m.total, m.work, m.table)
     }
 
     /// Dateiname der Tabelle zur Ortszeit (Jahr, Monat, Tag, Stunde, Minute).
@@ -25115,16 +25132,16 @@ mod bildzeit {
 
     /// A294 (Koordinator 19:39, 20:04): Median und 95-%-Quantil aus einer
     /// Liste in beliebiger Reihenfolge; leere Liste, ein Wert, gerade und
-    /// ungerade Anzahl; Zeilenformat und Dateiname.
+    /// ungerade Anzahl; Zeilenformat mit Arbeit ohne Tauschen und Dateiname.
     #[test]
     fn a294_bildzeit_auswerten() {
         assert_eq!(auswertung(&[]), None);
-        assert_eq!(zeile(&[]), "Bildzeit: keine Bilder gemessen");
+        assert_eq!(zeile(&[], &[]), "Bildzeit: keine Bilder gemessen");
 
         assert_eq!(auswertung(&[4.2]), Some((4.2, 4.2, 1)));
         assert_eq!(
-            zeile(&[4.2]),
-            "Bildzeit: Median 4,20 ms, 95 % 4,20 ms (1 Bild)"
+            zeile(&[4.2], &[1.5]),
+            "Bildzeit: Median 4,20 ms, 95 % 4,20 ms · Arbeit: Median 1,50 ms, 95 % 1,50 ms (1 Bild)"
         );
 
         // ungerade: mittlerer Wert, Reihenfolge egal
@@ -25145,14 +25162,45 @@ mod bildzeit {
         assert_eq!(auswertung(&v), Some((5.0, 5.0, 100)));
 
         assert_eq!(
-            zeile(&[16.666, 4.0, 8.126]),
-            "Bildzeit: Median 8,13 ms, 95 % 16,67 ms (3 Bilder)"
+            zeile(&[16.666, 4.0, 8.126], &[2.0, 0.5, 6.004]),
+            "Bildzeit: Median 8,13 ms, 95 % 16,67 ms · Arbeit: Median 2,00 ms, 95 % 6,00 ms (3 Bilder)"
         );
         let v: Vec<f64> = (1..=601).map(|i| f64::from(i) / 100.0).collect();
+        let a: Vec<f64> = v.iter().map(|x| x / 2.0).collect();
         assert_eq!(
-            zeile(&v),
-            "Bildzeit: Median 3,01 ms, 95 % 5,71 ms (601 Bilder)"
+            zeile(&v, &a),
+            "Bildzeit: Median 3,01 ms, 95 % 5,71 ms · Arbeit: Median 1,50 ms, 95 % 2,85 ms (601 Bilder)"
         );
+
+        // Mit VSync: Gesamt immer ≈ 16,7 ms, die Arbeit zeigt die Reserve.
+        // Arbeit = Ereignisse + Netz + Zeichnen, ohne Tauschen; die Tabelle
+        // bleibt wie bisher.
+        let bilder: Vec<[f64; 4]> = (0..20)
+            .map(|i| {
+                [
+                    0.5,
+                    0.25,
+                    3.0 + f64::from(i % 4),
+                    16.7 - 3.75 - f64::from(i % 4),
+                ]
+            })
+            .collect();
+        let (gesamt, arbeit, tabelle) = messen(&bilder);
+        assert_eq!(gesamt.len(), 20);
+        assert_eq!(arbeit.len(), 20);
+        for (b, (g, a)) in bilder.iter().zip(gesamt.iter().zip(&arbeit)) {
+            assert!((g - b.iter().sum::<f64>()).abs() < 1e-9, "Gesamt");
+            assert!(
+                (a - (b[0] + b[1] + b[2])).abs() < 1e-9,
+                "Arbeit ohne Tauschen"
+            );
+        }
+        assert_eq!(
+            zeile(&gesamt, &arbeit),
+            "Bildzeit: Median 16,70 ms, 95 % 16,70 ms · Arbeit: Median 5,25 ms, 95 % 6,75 ms (20 Bilder)"
+        );
+        assert!(tabelle.starts_with("ereignisse;netz;zeichnen;tauschen;gesamt\n"));
+        assert_eq!(tabelle.lines().count(), 21, "Kopf und 20 Bilder");
 
         assert_eq!(dateiname(2026, 10, 7, 9, 5), "bildzeit-20261007-0905.csv");
         assert_eq!(dateiname(2026, 1, 31, 23, 59), "bildzeit-20260131-2359.csv");

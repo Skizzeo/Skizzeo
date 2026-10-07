@@ -726,6 +726,9 @@ struct App {
     help_swap: Option<u64>,
     /// Bytes und Lage des gezeigten Bildes (für das Überblenden).
     help_px: Option<(Vec<u8>, i32, i32, u32, u32)>,
+    /// Die Maus wurde außerhalb der Karte gedrückt und ist noch unten: Bewegen
+    /// und Loslassen gehören dem, der das Drücken bekam (Review 3w).
+    help_press_elsewhere: bool,
     /// „Bildzeit messen (10 s)“ läuft.
     frame_measure: Option<frame_time::Measure>,
 }
@@ -3518,6 +3521,8 @@ impl App {
             || self.nav.is_dragging()
             || self.sect.is_dragging()
             || self.ui.level_dragging().is_some();
+        // Auch Ziehen in Fenstern (Rollbalken, Farbwähler, Fenster selbst)
+        let pressed = dragging || self.help_press_elsewhere;
         match e {
             Event::Key {
                 key: help::KEY_F1,
@@ -3553,7 +3558,7 @@ impl App {
                 true
             }
             Event::MouseMove { x, y, .. } => {
-                let h = self.help_hit(x, y).filter(|_| !dragging);
+                let h = self.help_hit(x, y).filter(|_| !pressed);
                 if self.help.set_hover(h) {
                     self.redraw = true;
                 }
@@ -3562,8 +3567,10 @@ impl App {
                 }
                 h.is_some()
             }
-            Event::MouseDown { button, x, y, .. } if !dragging => {
-                let Some(h) = self.help_hit(x, y) else {
+            Event::MouseDown { button, x, y, .. } => {
+                let h = self.help_hit(x, y).filter(|_| !dragging);
+                self.help_press_elsewhere = h.is_none();
+                let Some(h) = h else {
                     return false;
                 };
                 if button == MouseButton::Left {
@@ -3575,7 +3582,10 @@ impl App {
                 }
                 true
             }
-            Event::MouseUp { x, y, .. } if !dragging => self.help_hit(x, y).is_some(),
+            Event::MouseUp { x, y, .. } => {
+                let elsewhere = std::mem::take(&mut self.help_press_elsewhere);
+                !dragging && !elsewhere && self.help_hit(x, y).is_some()
+            }
             Event::Wheel { delta, x, y, .. } => {
                 if self.help_hit(x, y).is_none() {
                     return false;
@@ -3657,6 +3667,8 @@ impl App {
                 self.h as f32 * 0.6,
                 &mut self.help_ground,
             );
+            let px = c.to_premul_rgba8();
+            let (w, h) = (c.width as u32, c.height as u32);
             let (cw, _) = self.help.size();
             let top = self.top();
             let m = (self.theme.size.panel_margin * s).round();
@@ -3672,9 +3684,7 @@ impl App {
                 let views = self.ui.rect(Panel::Views, self.w, top);
                 ((views.x - m - cw).max(m), top as f32 + m)
             };
-            let px = c.to_premul_rgba8();
             let (ix, iy) = ((x - margin) as i32, (y - margin) as i32);
-            let (w, h) = (c.width as u32, c.height as u32);
             self.renderer.set_overlay(OVERLAY_HELP, ix, iy, w, h, &px);
             self.help_px = Some((px, ix, iy, w, h));
             self.help_img = Some((key, (x, y), margin));
@@ -3736,7 +3746,7 @@ impl App {
         let Some(m) = self.frame_measure.take() else {
             return;
         };
-        let mut line = frame_time::status_line(&m.total);
+        let mut line = frame_time::status_line(&m.total, &m.work);
         let (j, mo, t, h, mi) = sk_platform::local_date_time();
         let name = frame_time::file_name(j as u32, mo as u32, t as u32, h as u32, mi as u32);
         let dir = self
@@ -6369,6 +6379,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         help_fade: None,
         help_swap: None,
         help_px: None,
+        help_press_elsewhere: false,
         frame_measure: None,
     };
     // `--hilfe <thema>` bzw. `--hilfe-liste`: Karte offen (Bildvergleich)

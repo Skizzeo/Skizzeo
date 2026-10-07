@@ -442,6 +442,9 @@ pub struct HelpCard {
     scroll: f32,
     hover: Option<Hit>,
     layout: Layout,
+    /// Bild und Inhaltsbild des letzten Malens: behalten den Speicher
+    /// (Review 3w, wie 3k: frische Seiten kosten mehr als das Malen).
+    bufs: Option<(Canvas, Canvas)>,
 }
 
 impl HelpCard {
@@ -628,7 +631,7 @@ impl HelpCard {
         t: &Theme,
         max_h: f32,
         ground: &mut Option<Ground>,
-    ) -> (Canvas, f32) {
+    ) -> (&Canvas, f32) {
         let px = t.size.font_small * s;
         let px_head = t.size.font * s;
         let px_group = t.size.font_detail * s;
@@ -699,7 +702,12 @@ impl HelpCard {
             widgets::panel(&mut c, Rect::new(margin, margin, w, h), s, t);
             *ground = Some((gk, c));
         }
-        let mut c = ground.as_ref().unwrap().1.clone();
+        let mut bufs = self
+            .bufs
+            .take()
+            .unwrap_or_else(|| (Canvas::new(0, 0), Canvas::new(0, 0)));
+        let (c, sub) = (&mut bufs.0, &mut bufs.1);
+        c.copy_from(&ground.as_ref().unwrap().1);
         let (ox, oy) = (margin, margin);
 
         // Kopf: Akzentpunkt, „Hilfe · “ gedämpft, Titel fett, ×
@@ -723,7 +731,7 @@ impl HelpCard {
         c.fill(&p, t.ui.accent);
         let lead = "Hilfe · ";
         let lx = ox + pad + dot + (8.0 * s).round();
-        widgets::text(&mut c, reg, lead, px_head, lx, hy, t.ui.text_dim);
+        widgets::text(c, reg, lead, px_head, lx, hy, t.ui.text_dim);
         let tx = lx + width_at(reg, lead, px_head);
         let title = if self.list {
             "Alle Themen"
@@ -731,7 +739,7 @@ impl HelpCard {
             topic.title()
         };
         let title = widgets::ellipsize(bold, title, px_head, ox + close.x - tx - 4.0 * s);
-        widgets::text(&mut c, bold, &title, px_head, tx, hy, t.ui.text);
+        widgets::text(c, bold, &title, px_head, tx, hy, t.ui.text);
         if self.hover == Some(Hit::Close) {
             let mut p = Path::new();
             p.rounded_rect(ox + close.x, oy + close.y, close.w, close.h, 4.0 * s);
@@ -747,18 +755,11 @@ impl HelpCard {
         p.segment((cx - d, cy - d), (cx + d, cy + d), sw);
         p.segment((cx + d, cy - d), (cx - d, cy + d), sw);
         c.fill(&p, t.ui.text_dim);
-        widgets::separator(
-            &mut c,
-            ox + pad,
-            oy + head - s.max(1.0),
-            w - 2.0 * pad,
-            s,
-            t,
-        );
+        widgets::separator(c, ox + pad, oy + head - s.max(1.0), w - 2.0 * pad, s, t);
 
         // Inhalt, gerollt und auf den Inhaltsbereich beschnitten
         let body = Rect::new(0.0, head, w, body_h);
-        let mut sub = Canvas::new(w as usize, body_h.max(1.0) as usize);
+        sub.reuse(w as usize, body_h.max(1.0) as usize);
         sub.clear(t.ui.bg);
         let sy = -self.scroll;
         if self.list {
@@ -771,7 +772,7 @@ impl HelpCard {
                 // Kapitälchen: Großbuchstaben, fett, klein, gedämpft
                 let gy = (y + gh - (8.0 * s).round()).round();
                 widgets::text(
-                    &mut sub,
+                    sub,
                     bold,
                     &name.to_uppercase(),
                     px_group,
@@ -807,10 +808,10 @@ impl HelpCard {
                 let x = pad + (6.0 * s).round();
                 let label =
                     widgets::ellipsize(reg, tp.title(), px, w - x - pad - nw - (12.0 * s).round());
-                widgets::text(&mut sub, reg, &label, px, x, base(y, *ih), t.ui.text);
+                widgets::text(sub, reg, &label, px, x, base(y, *ih), t.ui.text);
                 if current {
                     widgets::text(
-                        &mut sub,
+                        sub,
                         reg,
                         now,
                         px,
@@ -827,7 +828,7 @@ impl HelpCard {
                 if y + n * line >= 0.0 && y <= body_h {
                     for (k, a) in left.iter().enumerate() {
                         let yy = base(y + k as f32 * line, line);
-                        widgets::text(&mut sub, reg, a, px, pad, yy, t.ui.text);
+                        widgets::text(sub, reg, a, px, pad, yy, t.ui.text);
                     }
                     for (k, l) in lines.iter().enumerate() {
                         let mut x = pad + left_w + (8.0 * s).round();
@@ -838,7 +839,7 @@ impl HelpCard {
                             } else {
                                 (reg, t.ui.text_dim)
                             };
-                            widgets::text(&mut sub, f, word, px, x, yy, col);
+                            widgets::text(sub, f, word, px, x, yy, col);
                             x += width(f, word);
                         }
                     }
@@ -846,7 +847,7 @@ impl HelpCard {
                 y += n * line + gap;
             }
         }
-        c.blit(&sub, (ox + body.x) as i32, (oy + body.y) as i32);
+        c.blit(sub, (ox + body.x) as i32, (oy + body.y) as i32);
         if max > 0.0 {
             let track = Rect::new(
                 ox + w - (8.0 * s).round(),
@@ -863,11 +864,11 @@ impl HelpCard {
 
         // Fuß: „Alle Themen ▸“ bzw. „‹ Zurück zu „…““, „F1 schließt“
         let fy = head + body_h;
-        widgets::separator(&mut c, ox + pad, oy + fy, w - 2.0 * pad, s, t);
+        widgets::separator(c, ox + pad, oy + fy, w - 2.0 * pad, s, t);
         let hint = "F1 schließt";
         let hint_w = width(reg, hint);
         widgets::text(
-            &mut c,
+            c,
             reg,
             hint,
             px,
@@ -911,15 +912,10 @@ impl HelpCard {
         };
         let (all, back) = if self.picked.is_some() || self.list {
             let label = format!("‹ Zurück zu „{}“", self.doing.title());
-            let r = link(&mut c, &label, self.hover == Some(Hit::Back), None);
+            let r = link(c, &label, self.hover == Some(Hit::Back), None);
             (None, Some(r))
         } else {
-            let r = link(
-                &mut c,
-                "Alle Themen",
-                self.hover == Some(Hit::All),
-                Some(false),
-            );
+            let r = link(c, "Alle Themen", self.hover == Some(Hit::All), Some(false));
             (Some(r), None)
         };
 
@@ -933,6 +929,7 @@ impl HelpCard {
             content,
             items,
         };
+        let c = &self.bufs.insert(bufs).0;
         (c, margin)
     }
 
@@ -1035,6 +1032,36 @@ mod tests {
         // schmal: ein Wort je Zeile
         let w = rich_wrap(None, None, "a b c", 10.0, 6.0);
         assert_eq!(w.len(), 3);
+    }
+
+    /// Review 3w: Das Malen behält Bild und Inhaltsbild. Nach Thema, Liste,
+    /// Hover und anderer Höhe gleicht das Bild dem einer frischen Karte.
+    #[test]
+    fn behaltener_speicher_malt_gleich() {
+        let (t, fonts) = (Theme::dark(), Fonts::system());
+        let mut ground = None;
+        let mut k = HelpCard::default();
+        k.follow(Topic::Start, 0);
+        k.set_open(true);
+        k.paint(&fonts, 1.5, &t, 900.0, &mut ground);
+        k.toggle_list();
+        k.set_hover(Some(Hit::Close));
+        k.paint(&fonts, 1.5, &t, 900.0, &mut ground);
+        k.pick(Topic::Draw);
+        k.set_hover(None);
+        let a = k
+            .paint(&fonts, 1.5, &t, 400.0, &mut ground)
+            .0
+            .to_premul_rgba8();
+        let mut f = HelpCard::default();
+        f.follow(Topic::Start, 0);
+        f.set_open(true);
+        f.pick(Topic::Draw);
+        let b = f
+            .paint(&fonts, 1.5, &t, 400.0, &mut None)
+            .0
+            .to_premul_rgba8();
+        assert!(a == b, "Bild mit behaltenem Speicher weicht ab");
     }
 
     #[test]

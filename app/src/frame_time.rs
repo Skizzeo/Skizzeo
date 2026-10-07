@@ -35,16 +35,19 @@ fn de(v: f64) -> String {
     format!("{v:.2}").replace('.', ",")
 }
 
-/// Zeile für die Statuszeile.
-pub fn status_line(ms: &[f64]) -> String {
-    match stats(ms) {
-        None => "Bildzeit: keine Bilder gemessen".into(),
-        Some((m, p, n)) => format!(
-            "Bildzeit: Median {} ms, 95 % {} ms ({n} {})",
+/// Zeile für die Statuszeile: Gesamtzeit je Bild (mit dem Warten auf
+/// VSync) und die Arbeit (Ereignisse, Netz, Zeichnen; ohne Tauschen).
+pub fn status_line(total: &[f64], work: &[f64]) -> String {
+    match (stats(total), stats(work)) {
+        (Some((m, p, n)), Some((wm, wp, _))) => format!(
+            "Bildzeit: Median {} ms, 95 % {} ms · Arbeit: Median {} ms, 95 % {} ms ({n} {})",
             de(m),
             de(p),
+            de(wm),
+            de(wp),
             if n == 1 { "Bild" } else { "Bilder" }
         ),
+        _ => "Bildzeit: keine Bilder gemessen".into(),
     }
 }
 
@@ -53,10 +56,12 @@ pub fn file_name(j: u32, mo: u32, t: u32, h: u32, mi: u32) -> String {
     format!("bildzeit-{j:04}{mo:02}{t:02}-{h:02}{mi:02}.csv")
 }
 
-/// Laufende Messung: Beginn, Gesamtzeiten je Bild (ms) und die Tabelle.
+/// Laufende Messung: Beginn, Gesamtzeit und Arbeit je Bild (ms) und die
+/// Tabelle.
 pub struct Measure {
     pub start: Instant,
     pub total: Vec<f64>,
+    pub work: Vec<f64>,
     pub table: String,
 }
 
@@ -65,6 +70,7 @@ impl Measure {
         Measure {
             start: Instant::now(),
             total: Vec::new(),
+            work: Vec::new(),
             table: HEADER.into(),
         }
     }
@@ -73,6 +79,7 @@ impl Measure {
     pub fn push(&mut self, parts: [f64; 4]) {
         let sum: f64 = parts.iter().sum();
         self.total.push(sum);
+        self.work.push(parts[..3].iter().sum());
         let cols: Vec<String> = parts
             .iter()
             .chain([sum].iter())
@@ -101,6 +108,7 @@ mod tests {
         let mut m = Measure::new();
         m.push([0.5, 0.25, 3.0, 1.0]);
         assert_eq!(m.total, [4.75]);
+        assert_eq!(m.work, [3.75]);
         assert_eq!(m.table, format!("{HEADER}0,500;0,250;3,000;1,000;4,750\n"));
         assert!(!m.done());
     }
