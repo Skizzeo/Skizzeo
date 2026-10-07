@@ -1074,7 +1074,7 @@ impl Prefs {
             u.text_dim,
         );
         let v = self.pw.as_ref().map_or(String::new(), |p| p.name.clone());
-        let st = self.field_state(FieldId::PresetName, &v, "");
+        let st = self.field_state(FieldId::PresetName, &v, "", at(field));
         widgets::text_field(&mut c, fonts, at(field), &st, s, t);
         // Kein Rückgängig: die Rückfrage steht gleich hier (paket-7 §1.2)
         let note = "Kommt in den Firmenkatalog; das lässt sich hier nicht rückgängig machen.";

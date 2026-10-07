@@ -14,12 +14,14 @@ use crate::catalog::{Company, SaveResult};
 use crate::catalog_view::Frame;
 use crate::prefs::Win;
 use crate::scene::Scene;
+use crate::window_kit::{
+    intersect, label, num_text as de, outline, parse_num, pixel_strips, prop_text, rounded,
+};
 use sk_model::matprop::{self, MatPropKind, PRICE, PRICE_DATE, PRICE_UNIT};
 use sk_model::{
     compare_materials, import_material, Guid, LayerSetId, Library, MatCategory, Material,
     MaterialDisplay, MaterialId, Model, PropValue, TypeCategory, TypeState, Use,
 };
-use sk_paint::font::Font;
 use sk_paint::{Canvas, Path, Rgba};
 use sk_platform::{Cursor, Event, Key, Modifiers, MouseButton};
 use sk_ui::text_edit::TextEdit;
@@ -50,20 +52,6 @@ const MORE_ARROW: f32 = 14.0;
 const FOOT: f32 = 56.0;
 
 // --- Eingabe (rein) ---------------------------------------------------------
-
-/// Zahl in deutscher oder englischer Schreibweise („0,09“, „0.09“).
-fn parse_num(t: &str) -> Option<f64> {
-    t.trim()
-        .replace(',', ".")
-        .parse::<f64>()
-        .ok()
-        .filter(|v| v.is_finite())
-}
-
-/// Zahl, wie das Fenster sie zeigt: kürzeste exakte Form mit Komma.
-fn de(v: f64) -> String {
-    format!("{v}").replace('.', ",")
-}
 
 /// Felder, die Eigenschaften des Baustoffs selbst sind (keine Kennwerte).
 const OWN_FIELDS: [&str; 6] = [
@@ -191,17 +179,6 @@ fn set_trade(m: &mut Model, id: MaterialId, trade: Option<sk_model::trade::Trade
 }
 
 /// Darstellungsverweise setzen (Schraffur, Stifte, Oberfläche).
-fn set_display(m: &mut Model, id: MaterialId, d: MaterialDisplay) -> bool {
-    let Some(mut x) = m.material(id).cloned() else {
-        return false;
-    };
-    x.cut_fill = d.cut_fill;
-    x.cut_fg = d.cut_fg;
-    x.cut_bg = d.cut_bg;
-    x.surface = d.surface;
-    m.set_material(id, x)
-}
-
 /// Gespeicherte Preiseinheit, falls ein Richtpreis steht.
 fn stored_unit(x: &Material) -> Option<&str> {
     x.props.get(PRICE)?;
@@ -467,9 +444,17 @@ pub struct MaterialView {
     /// „Im Projekt verwendet“ je Revision der Kopie und Baustoff, nur für
     /// gefragte (sichtbare) Baustoffe (Review 3n).
     used: RefCell<(u64, HashMap<MaterialId, bool>)>,
-    /// Bereiche, die sich seit dem letzten Bild geändert haben; leer: alles.
-    damage: Vec<Option<Rect>>,
+    /// Ziele, deren Hervorhebung sich seit dem letzten Bild geändert hat
+    /// (vorher und nachher, B6); leer: alles.
+    damage: Vec<Option<Target>>,
+    /// Das nächste Bild ganz malen (jede Änderung außer dem Überfahren).
+    full_frame: bool,
+    /// Letztes ganzes Bild; Teilbilder erneuern es stellenweise.
     img: Option<Canvas>,
+    /// Größe, Skalierung, Schema und Lage, für die `img` gilt.
+    img_key: Option<(usize, usize, u32, u64, i32, i32)>,
+    /// Leinwand für Teilbilder, behält ihren Speicher.
+    scratch: Canvas,
     /// Fenstergrund mit Schatten je Größe, Skalierung und Schema (Review 3n,
     /// wie 3k).
     ground: Option<((usize, usize, u32, u64), Canvas)>,
@@ -520,7 +505,10 @@ impl MaterialView {
             uses: RefCell::new(None),
             used: RefCell::new((u64::MAX, HashMap::new())),
             damage: Vec::new(),
+            full_frame: true,
             img: None,
+            img_key: None,
+            scratch: Canvas::new(0, 0),
             ground: None,
             more_img: RefCell::new(Canvas::new(0, 0)),
         };
@@ -533,6 +521,7 @@ impl MaterialView {
 
     /// Reiter „Firma“ zeigen (Bildvergleiche, `--baustoffe-firma`).
     pub fn show_company(&mut self) {
+        self.full_frame = true;
         self.tab = Tab::Company;
         self.csel = self.sel;
     }
@@ -540,7 +529,7 @@ impl MaterialView {
     /// Neuer Stand des Firmenkatalogs (nach Neuladen oder neuem Ort).
     pub fn set_company(&mut self, company: Option<&Company>) {
         self.company = company.map(|c| (c.library().clone(), c.path().display().to_string()));
-        self.damage.clear();
+        self.full_frame = true;
     }
 
     /// Die Kopie, die das Fenster bearbeitet.
@@ -1072,11 +1061,9 @@ impl MaterialView {
     /// Text eines Felds außerhalb der Eingabe.
     fn field_value(&self, f: &Field) -> String {
         let x = self.sel_id().and_then(|id| self.work.material(id));
-        let prop = |k: &str| match x.and_then(|x| x.props.get(k)) {
-            Some(PropValue::Number(n)) => de(*n),
-            Some(PropValue::Text(t)) => t.clone(),
-            Some(PropValue::Bool(b)) => if *b { "ja" } else { "nein" }.into(),
-            None => String::new(),
+        let prop = |k: &str| {
+            x.and_then(|x| x.props.get(k))
+                .map_or(String::new(), prop_text)
         };
         match f {
             Field::Search => self.search.clone(),
@@ -1238,6 +1225,17 @@ impl MaterialView {
     /// Ein Ereignis, solange das Fenster offen ist (es nimmt alle Maus- und
     /// Tastenereignisse).
     pub fn handle(&mut self, e: &Event, cx: &mut Ctx) -> Out {
+        let hovers = self.damage.len();
+        let mut out = self.handle_now(e, cx);
+        // Nur das Überfahren malt Teilbilder; alles andere das ganze Fenster
+        if out.repaint || out.moved || out.closed {
+            self.full_frame = true;
+        }
+        out.repaint |= self.damage.len() > hovers;
+        out
+    }
+
+    fn handle_now(&mut self, e: &Event, cx: &mut Ctx) -> Out {
         let mut out = Out::default();
         match *e {
             Event::MouseMove { x, y, .. } => self.mouse_move(x, y, cx, &mut out),
@@ -1262,7 +1260,7 @@ impl MaterialView {
             } => self.key(key, mods, cx, &mut out),
             Event::Text(c) => self.text(c, &mut out),
             Event::MouseLeave if self.hover.is_some() => {
-                self.set_hover(None, &mut out);
+                self.set_hover(None);
             }
             _ => {}
         }
@@ -1270,30 +1268,74 @@ impl MaterialView {
     }
 
     fn full(&mut self, out: &mut Out) {
-        self.damage.clear();
+        self.full_frame = true;
         out.repaint = true;
     }
 
-    fn set_hover(&mut self, h: Option<Target>, out: &mut Out) {
+    /// Ziel unter der Maus wechselt: vorheriges und neues kommen in die
+    /// Teilbilder des nächsten Bildes ([`MaterialView::handle`] fordert es an).
+    fn set_hover(&mut self, h: Option<Target>) {
         if h == self.hover {
             return;
         }
         let old = self.hover.take();
         self.hover = h;
-        out.repaint = true;
-        if self.img.is_none() {
-            return;
-        }
-        // Teilbild nur, wenn beide Ziele eine Lage haben
-        self.damage.push(old.and_then(|t| self.hover_area(&t)));
-        let new = self.hover.clone();
-        self.damage.push(new.and_then(|t| self.hover_area(&t)));
+        self.damage.push(old);
+        self.damage.push(self.hover.clone());
     }
 
-    /// Bereich, den ein Ziel unter der Maus ändert (in Fensterkoordinaten,
-    /// ohne Lage `None`: ganz malen). Die Lage hängt am letzten Bild.
-    fn hover_area(&self, _t: &Target) -> Option<Rect> {
-        None
+    /// Bereiche (Fensterkoordinaten), die die Hervorhebung von `h` ändert;
+    /// `None`: unbekannt, ganz malen. Gleiche Lagen wie [`MaterialView::hit`].
+    fn hover_area(&self, h: &Target, t: &Theme, w: &Win, fonts: &Fonts) -> Option<Vec<Rect>> {
+        let row = |want: Row| {
+            let i = self.rows().into_iter().position(|(r, _)| r == want)?;
+            let r = intersect(self.row_rect(t, w, i), self.list_body(t, w))?;
+            Some(vec![r])
+        };
+        Some(match h {
+            Target::Card => Vec::new(),
+            Target::Close => vec![self.close_rect(t, w)],
+            Target::Tab(tab) => vec![self.tab_rect(t, w, *tab)],
+            Target::PathLink => vec![self.path_link(t, w, fonts)?],
+            Target::Group(c) => row(Row::Group(*c))?,
+            Target::Row(g) => row(Row::Item(*g))?,
+            Target::Field(f) => vec![self.field_rect(t, w, f)?],
+            Target::Combo(id) => vec![self.combo_rect(t, w, fonts, *id)?],
+            Target::Use(id) => self
+                .use_links(t, w, fonts)
+                .0
+                .into_iter()
+                .filter(|l| l.ty == Some(*id))
+                .map(|l| l.rect)
+                .collect(),
+            Target::More => vec![self.more_link(t, w, fonts)],
+            Target::AddKey => {
+                if self.more_progress_now() < 1.0 {
+                    return None;
+                }
+                let tg = Some(Target::AddKey);
+                vec![self.more_layout(t, w).into_iter().find(|x| x.0 == tg)?.2]
+            }
+            // Der Hinweis am blassen „Löschen“ ist breiter als der Knopf
+            Target::Btn(Btn::Delete) => return None,
+            Target::Btn(b) => match &self.popup {
+                Some(Popup::Confirm(_)) => {
+                    let all = self.confirm_buttons(t, w);
+                    vec![all.into_iter().find(|x| x.0 == *b)?.1]
+                }
+                _ if *b == Btn::Duplicate => vec![self.duplicate_rect(t, w)],
+                _ => vec![self.foot_buttons(t, w).into_iter().find(|x| x.0 == *b)?.1],
+            },
+            Target::Item(j) => {
+                let Some(Popup::List(l)) = &self.popup else {
+                    return None;
+                };
+                let (r, k) = self.list_rect(t, w, fonts, l);
+                let i = j.checked_sub(l.first).filter(|i| *i < k)?;
+                let rh = (t.size.mat_row * w.scale).round();
+                vec![Rect::new(r.x, r.y + i as f32 * rh, r.w, rh)]
+            }
+        })
     }
 
     fn mouse_move(&mut self, x: f64, y: f64, cx: &mut Ctx, out: &mut Out) {
@@ -1319,7 +1361,7 @@ impl MaterialView {
             None => {}
         }
         let h = self.hit(t, &w, cx.fonts, x, y);
-        self.set_hover(h, out);
+        self.set_hover(h);
     }
 
     fn mouse_down(&mut self, x: f64, y: f64, mods: Modifiers, cx: &mut Ctx, out: &mut Out) {
@@ -1846,7 +1888,7 @@ impl MaterialView {
                     return;
                 };
                 if attr_pick::pick_apply(&self.work, p, i, &mut d) {
-                    set_display(&mut self.work, mid, d);
+                    self.work.set_material_display(mid, d);
                 }
             }
         }
@@ -2024,7 +2066,7 @@ impl MaterialView {
             self.more_at = None;
         }
         if was {
-            self.damage.clear();
+            self.full_frame = true;
         }
         was
     }
@@ -2047,31 +2089,6 @@ impl MaterialView {
 
 // --- Zeichnen -------------------------------------------------------------------
 
-fn label(c: &mut Canvas, f: Option<&Font>, text: &str, px: f32, x: f32, y: f32, col: Rgba) {
-    if let Some(f) = f {
-        f.draw(c, text, px, x.round(), y.round(), col);
-    }
-}
-
-fn rounded(c: &mut Canvas, r: Rect, rad: f32, col: Rgba) {
-    let mut p = Path::new();
-    p.rounded_rect(r.x, r.y, r.w, r.h, rad);
-    c.fill(&p, col);
-}
-
-fn outline(c: &mut Canvas, r: Rect, rad: f32, b: f32, col: Rgba) {
-    let mut p = Path::new();
-    p.rounded_rect(r.x, r.y, r.w, r.h, rad);
-    p.rounded_rect_hole(
-        r.x + b,
-        r.y + b,
-        r.w - 2.0 * b,
-        r.h - 2.0 * b,
-        (rad - b).max(0.0),
-    );
-    c.fill(&p, col);
-}
-
 /// Unterstrich unter einem Verweis beim Überfahren.
 fn underline(c: &mut Canvas, x: f32, y: f32, w: f32, s: f32, col: Rgba) {
     c.fill_rect(x, (y + 2.0 * s).round(), w, s.round().max(1.0), col);
@@ -2080,19 +2097,72 @@ fn underline(c: &mut Canvas, x: f32, y: f32, w: f32, s: f32, col: Rgba) {
 impl MaterialView {
     /// Malt das Fenster: das ganze Bild oder die Ausschnitte, die sich seit
     /// dem letzten geändert haben.
+    /// Nach einem Wechsel unter der Maus nur die betroffenen Zeilen, Felder
+    /// und Knöpfe (B6, wie U7), pixelgleich zum ganzen Bild; sonst, nach
+    /// Theme- oder Skalierungswechsel und beim ersten Bild alles.
     pub fn paint_frame(&mut self, t: &Theme, fonts: &Fonts, w: &Win) -> Frame {
-        let (c, x, y) = self.paint(t, fonts, w);
-        let px = c.to_premul_rgba8();
-        let (cw, ch) = (c.width as u32, c.height as u32);
-        self.img = Some(c);
-        self.damage.clear();
-        Frame::Full {
-            x,
-            y,
-            w: cw,
-            h: ch,
-            px,
+        let f = self.frame(t, w);
+        let s = w.scale;
+        let m = (t.size.panel_shadow * s).round();
+        let (cw, ch) = ((f.w + 2.0 * m) as usize, (f.h + 2.0 * m) as usize);
+        let (ox, oy) = (f.x - m, f.y - m);
+        let key = (cw, ch, s.to_bits(), t.rev, ox as i32, oy as i32);
+        let targets = std::mem::take(&mut self.damage);
+        let mut full = std::mem::take(&mut self.full_frame)
+            || targets.is_empty()
+            || self.img.is_none()
+            || self.img_key != Some(key);
+        let mut rects = Vec::new();
+        for h in targets.iter().flatten() {
+            if full {
+                break;
+            }
+            match self.hover_area(h, t, w, fonts) {
+                Some(v) => rects.extend(v),
+                None => full = true,
+            }
         }
+        let pad = (4.0 * s).ceil();
+        let parts = pixel_strips(&rects, pad, (ox, oy), (cw, ch));
+        let area: usize = parts.iter().map(|p| (p.2 - p.0) * (p.3 - p.1)).sum();
+        if full || area * 2 > cw * ch {
+            let (c, x, y) = self.paint(t, fonts, w);
+            let px = c.to_premul_rgba8();
+            let (cw, ch) = (c.width as u32, c.height as u32);
+            self.img = Some(c);
+            self.img_key = Some(key);
+            return Frame::Full {
+                x,
+                y,
+                w: cw,
+                h: ch,
+                px,
+            };
+        }
+        let mut out = Vec::with_capacity(parts.len());
+        for (x0, y0, x1, y1) in parts {
+            let mut sub = std::mem::replace(&mut self.scratch, Canvas::new(0, 0));
+            sub.reuse(x1 - x0, y1 - y0);
+            // Grund des Ausschnitts, dann das Fenster darüber wie im ganzen Bild
+            if let Some((_, g)) = &self.ground {
+                sub.set_origin(x0 as f32, y0 as f32);
+                sub.copy_rect_from(g, x0 as f32, y0 as f32, x1 as f32, y1 as f32);
+            }
+            sub.set_origin(ox + x0 as f32, oy + y0 as f32);
+            self.paint_into(&mut sub, t, fonts, w);
+            if let Some(img) = self.img.as_mut() {
+                img.put(&sub, x0, y0);
+            }
+            out.push((
+                x0 as i32,
+                y0 as i32,
+                sub.width as u32,
+                sub.height as u32,
+                sub.to_premul_rgba8(),
+            ));
+            self.scratch = sub;
+        }
+        Frame::Parts(out)
     }
 
     /// Das ganze Fenster samt Schatten; Lage der linken oberen Ecke.
@@ -3000,12 +3070,7 @@ impl MaterialView {
                     }
                     _ => "–".into(),
                 },
-                k => match x.props.get(k) {
-                    Some(PropValue::Number(n)) => de(*n),
-                    Some(PropValue::Text(t)) => t.clone(),
-                    Some(PropValue::Bool(b)) => if *b { "ja" } else { "nein" }.into(),
-                    None => "–".into(),
-                },
+                k => x.props.get(k).map_or("–".into(), prop_text),
             }
         };
         let mine_m = mine.map(|m| m.1);

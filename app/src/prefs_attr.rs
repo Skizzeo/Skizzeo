@@ -1631,6 +1631,11 @@ impl Prefs {
         let list = names(m, self.tab);
         // Kacheln nur der sichtbaren Zeilen, aus dem Speicher (M1)
         let keys = self.thumb_keys(m);
+        // Lage einer Zeile im Fensterbild, auf den sichtbaren Teil begrenzt
+        let seen_row = |r: Rect| {
+            let seen = Rect::new(body.x + r.x, body.y + r.y, r.w, r.h);
+            crate::window_kit::intersect(seen, body).unwrap_or(seen)
+        };
         for (i, (name, r)) in list.iter().zip(&l.rows).enumerate() {
             let r = Rect::new(r.x - l.body.x, r.y - l.body.y, r.w, r.h);
             if r.y + r.h < 0.0 || r.y > body.h {
@@ -1640,7 +1645,7 @@ impl Prefs {
                 let b = line;
                 bc.fill_rect(r.x, r.y, r.w, r.h, u.accent);
                 bc.fill_rect(r.x + b, r.y + b, r.w - 2.0 * b, r.h - 2.0 * b, u.pressed);
-            } else if self.hover == Some(Target::Row(i)) {
+            } else if self.hov(Target::Row(i), seen_row(r)) {
                 bc.fill_rect(r.x, r.y, r.w, r.h, u.hover);
             }
             let base = r.y + (r.h + regular.map_or(font * 0.7, |f| f.cap_height(font))) * 0.5;
@@ -1656,7 +1661,7 @@ impl Prefs {
         tiles.give_rows(bc);
         if let Some(b) = l.bar {
             let total = l.content_h.max(1.0);
-            let hover = self.hover == Some(Target::Bar(BarId::List))
+            let hover = self.hov(Target::Bar(BarId::List), at(b))
                 || matches!(self.drag, Some(Drag::Bar(BarId::List, _)));
             widgets::scrollbar(c, at(b), l.scroll / total, l.body.h / total, hover, s, t);
         }
@@ -1669,7 +1674,7 @@ impl Prefs {
             ]) {
                 let disabled = self.attr_disabled(tg, m);
                 let st = ButtonState {
-                    hover: self.hover == Some(tg) && !disabled,
+                    hover: self.hov(tg, at(*r)) && !disabled,
                     pressed: self.pressed == Some(tg) && self.hover == Some(tg) && !disabled,
                     active: false,
                     disabled,
@@ -1818,11 +1823,11 @@ impl Prefs {
         }
         for (r, tg) in &l.items {
             let rr = at(*r);
-            let hover = self.hover == Some(*tg);
+            let hover = self.hov(*tg, rr);
             match *tg {
                 Target::Field(f) => {
                     let v = self.attr_field_value(f, sc);
-                    let st = self.field_state(f, &v, attr_unit(f));
+                    let st = self.field_state(f, &v, attr_unit(f), rr);
                     if f == FieldId::Name {
                         widgets::text_field(c, fonts, rr, &st, s, t);
                     } else {

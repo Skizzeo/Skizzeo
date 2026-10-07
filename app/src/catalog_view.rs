@@ -17,6 +17,7 @@ use crate::type_look::{
     cm_text, paint_section, paint_thumb, section_layer_at, type_look, Patterns, SectionMarks,
     TypeLook,
 };
+use crate::window_kit::{intersect, label, outline, parse_num, pixel_strips, prop_text, rounded};
 use sk_model::{
     compare, import_type, type_code, ElementId, Guid, LayerFunction, LayerSet, LayerSetId, Library,
     MatCategory, Material, MaterialLayer, Model, PropValue, TypeCategory, TypeState, TYPE_PROPS,
@@ -303,6 +304,8 @@ pub struct Catalog {
     damage: Vec<Area>,
     /// Letztes ganzes Bild; Teilbilder erneuern es stellenweise.
     img: Option<Canvas>,
+    /// Größe, Skalierung, Schema und Lage, für die `img` gilt.
+    img_key: Option<(usize, usize, u32, u64, i32, i32)>,
     /// Bytes des letzten ganzen Bildes nach dem Hochladen zurück
     /// ([`Catalog::give_back`]): ihr Speicher dient dem nächsten.
     bytes: Vec<u8>,
@@ -367,14 +370,6 @@ pub enum Frame {
     Parts(Vec<(i32, i32, u32, u32, Vec<u8>)>),
 }
 
-fn prop_text(v: &PropValue) -> String {
-    match v {
-        PropValue::Text(t) => t.clone(),
-        PropValue::Number(n) => format!("{n}").replace('.', ","),
-        PropValue::Bool(b) => if *b { "ja" } else { "nein" }.into(),
-    }
-}
-
 /// Zahl mit Komma.
 fn de(v: f64, dec: usize) -> String {
     format!("{v:.dec$}").replace('.', ",")
@@ -388,11 +383,6 @@ fn cm_field(mm: f64) -> String {
     } else {
         de(cm, 1)
     }
-}
-
-fn parse_num(t: &str) -> Option<f64> {
-    let v: f64 = t.trim().replace(',', ".").parse().ok()?;
-    v.is_finite().then_some(v)
 }
 
 /// Dicke aus dem Feld (cm, 0,5 bis 100, Schritt 0,5) in mm.
@@ -468,6 +458,7 @@ impl Catalog {
             blink: None,
             damage: Vec::new(),
             img: None,
+            img_key: None,
             bytes: Vec::new(),
             scratch: Canvas::new(0, 0),
             list_sub: std::cell::RefCell::new(Canvas::new(0, 0)),
@@ -2792,37 +2783,6 @@ fn mat_cat_rect(card: Rect, i: usize, s: f32) -> Rect {
 
 // --- Zeichnen -------------------------------------------------------------------
 
-fn label(
-    c: &mut Canvas,
-    f: Option<&sk_paint::font::Font>,
-    t: &str,
-    px: f32,
-    x: f32,
-    y: f32,
-    col: Rgba,
-) {
-    widgets::text(c, f, t, px, x.round(), y.round(), col);
-}
-
-fn rounded(c: &mut Canvas, r: Rect, rad: f32, col: Rgba) {
-    let mut p = Path::new();
-    p.rounded_rect(r.x, r.y, r.w, r.h, rad);
-    c.fill(&p, col);
-}
-
-fn outline(c: &mut Canvas, r: Rect, rad: f32, b: f32, col: Rgba) {
-    let mut p = Path::new();
-    p.rounded_rect(r.x, r.y, r.w, r.h, rad);
-    p.rounded_rect_hole(
-        r.x + b,
-        r.y + b,
-        r.w - 2.0 * b,
-        r.h - 2.0 * b,
-        (rad - b).max(0.0),
-    );
-    c.fill(&p, col);
-}
-
 fn with_alpha(c: Rgba, a: f32) -> Rgba {
     Rgba(
         c.0,
@@ -3056,11 +3016,10 @@ impl Catalog {
         let (ox, oy) = (f.x - m, f.y - m);
         let areas = std::mem::take(&mut self.damage);
         let mut rects = Vec::new();
-        let mut full = areas.is_empty()
-            || self
-                .img
-                .as_ref()
-                .is_none_or(|c| (c.width, c.height) != (cw, ch));
+        // Theme, Skalierung oder Lage gewechselt: ganz (Darstellung n9 §2.3)
+        let key = (cw, ch, s.to_bits(), t.rev, ox as i32, oy as i32);
+        let moved = self.img_key.replace(key) != Some(key);
+        let mut full = areas.is_empty() || self.img.is_none() || moved;
         for a in &areas {
             match self.area_rects(*a, t, w, fonts) {
                 Some(v) => rects.extend(v),
@@ -3069,16 +3028,8 @@ impl Catalog {
         }
         // In Bildpunkte des Fensters, mit Rand für Umrisse und Glättung
         let pad = (4.0 * s).ceil();
-        let mut parts: Vec<(usize, usize, usize, usize)> = Vec::new();
-        for r in rects {
-            let x0 = ((r.x - pad - ox).floor().max(0.0) as usize).min(cw);
-            let y0 = ((r.y - pad - oy).floor().max(0.0) as usize).min(ch);
-            let x1 = ((r.x + r.w + pad - ox).ceil().max(0.0) as usize).min(cw);
-            let y1 = ((r.y + r.h + pad - oy).ceil().max(0.0) as usize).min(ch);
-            if x1 > x0 && y1 > y0 {
-                merge_rect(&mut parts, (x0, y0, x1, y1));
-            }
-        }
+        // Streifen über die ganze Breite: bitgenau wie das ganze Bild
+        let parts = pixel_strips(&rects, pad, (ox, oy), (cw, ch));
         let area: usize = parts.iter().map(|p| (p.2 - p.0) * (p.3 - p.1)).sum();
         if full || area * 2 > cw * ch {
             // Bild und Bytes des letzten ganzen Bildes weiterverwenden
@@ -3096,39 +3047,12 @@ impl Catalog {
                 px,
             };
         }
-        // Das Schnittbild allein (Übergang, Hervorhebung einer Schicht): es
-        // liegt mit Abstand auf der Paneelfläche, darunter ist nur deren Farbe
-        let sec = self.section_rect(t, w);
-        let sec_px = (
-            ((sec.x - pad - ox).floor().max(0.0) as usize).min(cw),
-            ((sec.y - pad - oy).floor().max(0.0) as usize).min(ch),
-            ((sec.x + sec.w + pad - ox).ceil().max(0.0) as usize).min(cw),
-            ((sec.y + sec.h + pad - oy).ceil().max(0.0) as usize).min(ch),
-        );
         let mut out = Vec::with_capacity(parts.len());
         for (x0, y0, x1, y1) in parts {
             let mut sub = std::mem::replace(&mut self.scratch, Canvas::new(0, 0));
             sub.reuse(x1 - x0, y1 - y0);
             sub.set_origin(ox + x0 as f32, oy + y0 as f32);
-            if self.tab == Tab::Project && (x0, y0, x1, y1) == sec_px {
-                // Fläche nur am Rand und in den runden Ecken; innen deckt das
-                // Papier des Schnittbilds
-                let (sx, sy) = sub.origin();
-                let (w_, h_) = (sub.width as f32, sub.height as f32);
-                let e = pad + 6.0 * s;
-                for (x, y, ww, hh) in [
-                    (sx, sy, w_, e),
-                    (sx, sy + h_ - e, w_, e),
-                    (sx, sy, e, h_),
-                    (sx + w_ - e, sy, e, h_),
-                ] {
-                    sub.fill_rect(x, y, ww, hh, t.ui.bg);
-                }
-                let font = fonts.regular.as_ref();
-                self.paint_section_view(&mut sub, t, font, w);
-            } else {
-                self.paint_into(&mut sub, t, fonts, w);
-            }
+            self.paint_into(&mut sub, t, fonts, w);
             if let Some(img) = self.img.as_mut() {
                 img.put(&sub, x0, y0);
             }
@@ -3198,7 +3122,8 @@ impl Catalog {
                     Target::Field(FieldId::Thick(i))
                     | Target::Combo(ComboId::Material(i) | ComboId::Function(i))
                     | Target::Grip(i)
-                    | Target::Remove(i) => layer(i),
+                    | Target::Remove(i)
+                    | Target::Section(i) => layer(i),
                     Target::Field(fi) => vec![self.field_rect(t, w, fi)?],
                     Target::Combo(id) => vec![self.combo_rect(t, w, id)],
                     Target::AddLayer => vec![self.add_layer_rect(t, w)],
@@ -3207,7 +3132,6 @@ impl Catalog {
                         vec![Rect::new(st.x, st.y, 260.0 * s, st.h)]
                     }
                     Target::Bearing(_) => vec![self.bearing_box(t, w)],
-                    Target::Section(_) => vec![self.section_rect(t, w)],
                     // Auswahllisten und Karten liegen in eigenem Bild
                     Target::Choice(_)
                     | Target::NewCat(_)
@@ -4822,28 +4746,6 @@ fn differences(
     v
 }
 
-/// Schnitt zweier Rechtecke auf ganze Bildpunkte; `None`, wenn leer.
-fn intersect(a: Rect, b: Rect) -> Option<Rect> {
-    let x0 = a.x.max(b.x).round();
-    let y0 = a.y.max(b.y).round();
-    let x1 = (a.x + a.w).min(b.x + b.w).round();
-    let y1 = (a.y + a.h).min(b.y + b.h).round();
-    (x1 > x0 && y1 > y0).then(|| Rect::new(x0, y0, x1 - x0, y1 - y0))
-}
-
-/// Fügt ein Teilbild (x0, y0, x1, y1) hinzu; überlappende werden zum
-/// umschließenden Rechteck vereinigt.
-fn merge_rect(parts: &mut Vec<(usize, usize, usize, usize)>, mut r: (usize, usize, usize, usize)) {
-    while let Some(i) = parts
-        .iter()
-        .position(|p| p.0 < r.2 && r.0 < p.2 && p.1 < r.3 && r.1 < p.3)
-    {
-        let p = parts.swap_remove(i);
-        r = (r.0.min(p.0), r.1.min(p.1), r.2.max(p.2), r.3.max(p.3));
-    }
-    parts.push(r);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5018,6 +4920,7 @@ mod tests {
                 let img = c.img.as_ref().unwrap();
                 img.width * img.height
             };
+            let mut prev = (0.0, 0.0);
             for (x, y) in [
                 mid(tiles[1].1),
                 mid(tiles[2].1),
@@ -5039,15 +4942,23 @@ mod tests {
                     mods: Modifiers::default(),
                 };
                 assert!(c.handle(&e, &mut cx).repaint);
-                let Frame::Parts(parts) = c.paint_frame(&theme, &f, &win) else {
-                    panic!("Teilbild erwartet bei {x}, {y}");
-                };
-                let area: usize = parts.iter().map(|p| (p.2 * p.3) as usize).sum();
-                assert!(!parts.is_empty() && area * 2 < total, "{area} von {total}");
+                // Streifen über die ganze Breite: Schichtzeile samt
+                // Schnittbild ist fast das halbe Fenster und darf ganz malen
+                match c.paint_frame(&theme, &f, &win) {
+                    Frame::Parts(parts) => {
+                        let area: usize = parts.iter().map(|p| (p.2 * p.3) as usize).sum();
+                        assert!(!parts.is_empty() && area * 2 < total, "{area} von {total}");
+                    }
+                    Frame::Full { .. } => assert!(
+                        [(x, y), prev].contains(&mid(thick)),
+                        "Teilbild erwartet bei {x}, {y}"
+                    ),
+                }
+                prev = (x, y);
                 let a = c.img.as_ref().unwrap().to_premul_rgba8();
                 let b = c.paint(&theme, &f, &win).0.to_premul_rgba8();
                 let diff = a.iter().zip(&b).map(|(p, q)| p.abs_diff(*q)).max();
-                assert!(diff <= Some(1), "Abweichung {diff:?} bei {x}, {y}");
+                assert_eq!(diff, Some(0), "Abweichung {diff:?} bei {x}, {y}");
             }
             // Übergang der Schichtgrenzen: nur das Schnittbild (sehr langsam,
             // damit Teil- und Vergleichsbild denselben Stand zeigen)
@@ -5062,7 +4973,7 @@ mod tests {
             let a = c.img.as_ref().unwrap().to_premul_rgba8();
             let b = c.paint(&slow, &f, &win).0.to_premul_rgba8();
             let diff = a.iter().zip(&b).map(|(p, q)| p.abs_diff(*q)).max();
-            assert!(diff <= Some(1), "Übergang: Abweichung {diff:?}");
+            assert_eq!(diff, Some(0), "Übergang: Abweichung {diff:?}");
             c.anim = None;
             // Klick: ganzes Bild
             let mut cx = Ctx {
@@ -5164,7 +5075,7 @@ mod tests {
             let a = c.img.as_ref().unwrap().to_premul_rgba8();
             let b = c.paint(&theme, &f, &win).0.to_premul_rgba8();
             let diff = a.iter().zip(&b).map(|(p, q)| p.abs_diff(*q)).max();
-            assert!(diff <= Some(1), "Abweichung {diff:?}");
+            assert_eq!(diff, Some(0), "Abweichung {diff:?}");
             // Dieselbe Stelle noch einmal: nichts zu malen
             assert!(!c.handle(&e, &mut cx).repaint);
         }
@@ -5483,7 +5394,7 @@ mod tests {
             let iw = c.img.as_ref().unwrap().width;
             for (i, (p, q)) in a.iter().zip(&b).enumerate() {
                 assert!(
-                    p.abs_diff(*q) <= 1,
+                    p == q,
                     "Flug: Abweichung {} bei {}, {} (Kopie {r:?})",
                     p.abs_diff(*q),
                     (i / 4 % iw) as f32 + fr.x - m,
@@ -5502,7 +5413,7 @@ mod tests {
             let a = c.img.as_ref().unwrap().to_premul_rgba8();
             let b = c.paint(&normal, &f, &win).0.to_premul_rgba8();
             let diff = a.iter().zip(&b).map(|(p, q)| p.abs_diff(*q)).max();
-            assert!(diff <= Some(1), "Rest der Kopie: {diff:?}");
+            assert_eq!(diff, Some(0), "Rest der Kopie: {diff:?}");
             // Ohne Animationen: keine Kopie, der Übergang ist sofort vorbei
             let mut off = Theme::dark();
             off.size.anim_ms = 0.0;

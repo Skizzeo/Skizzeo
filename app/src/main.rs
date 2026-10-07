@@ -46,6 +46,7 @@ mod wall_edit;
 mod wall_tool;
 mod wheel;
 mod wheel_view;
+mod window_kit;
 mod windows;
 
 use camera::Camera;
@@ -1735,10 +1736,16 @@ impl App {
         self.paint_prefs_popup();
         let win = self.prefs_win();
         if let Some(v) = self.materials.as_mut() {
-            if let catalog_view::Frame::Full { x, y, w, h, px } =
-                v.paint_frame(&self.theme, &self.ui.fonts, &win)
-            {
-                self.renderer.set_overlay(OVERLAY_PREFS, x, y, w, h, &px);
+            // Nach dem Überfahren nur die Ausschnitte (B6)
+            match v.paint_frame(&self.theme, &self.ui.fonts, &win) {
+                catalog_view::Frame::Full { x, y, w, h, px } => {
+                    self.renderer.set_overlay(OVERLAY_PREFS, x, y, w, h, &px);
+                }
+                catalog_view::Frame::Parts(parts) => {
+                    for (x, y, w, h, px) in parts {
+                        self.renderer.update_overlay(OVERLAY_PREFS, x, y, w, h, &px);
+                    }
+                }
             }
             self.redraw = true;
             return;
@@ -1770,11 +1777,18 @@ impl App {
             self.sync_pattern_preview();
             return;
         };
-        let (c, x, y) = p.paint(&self.theme, &self.ui.fonts, &win, &self.scene);
-        let px = p.bytes(&c);
-        self.renderer
-            .set_overlay(OVERLAY_PREFS, x, y, c.width as u32, c.height as u32, &px);
-        p.give_back(c, px);
+        // Nach dem Überfahren nur Streifen (A302)
+        match p.paint_frame(&self.theme, &self.ui.fonts, &win, &self.scene) {
+            catalog_view::Frame::Full { x, y, w, h, px } => {
+                self.renderer.set_overlay(OVERLAY_PREFS, x, y, w, h, &px);
+                p.give_back_bytes(px);
+            }
+            catalog_view::Frame::Parts(parts) => {
+                for (x, y, w, h, px) in parts {
+                    self.renderer.update_overlay(OVERLAY_PREFS, x, y, w, h, &px);
+                }
+            }
+        }
         self.sync_pattern_preview();
         self.redraw = true;
     }

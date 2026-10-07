@@ -11,8 +11,10 @@
 //!
 //! Alles hier ist Zustand und Zeichnen; `main.rs` lädt die Bilder hoch.
 
+use crate::catalog_view::Frame;
 use crate::scene::Scene;
 use crate::settings::{Settings, F4_ROLES, RGBA_ROLES, SIZE_ROLES};
+use crate::window_kit::label;
 use sk_model::{AttrRef, GuidGen, Model, Pen, PenId, SurfaceId};
 use sk_paint::{hsv_to_rgb, rgb_to_hsv, Canvas, Path, Rgba};
 use sk_platform::{Cursor, Event, Key, Modifiers, MouseButton};
@@ -739,6 +741,22 @@ pub struct Prefs {
     spare_px: Vec<u8>,
     /// Fenstergrund mit Schatten je Größe, Skalierung und Schema.
     ground: Option<((usize, usize, u32, u64), Canvas)>,
+    /// Letztes ganzes Bild; Teilbilder erneuern es stellenweise (A302).
+    img: Option<Canvas>,
+    /// Größe, Skalierung, Schema und Lage, für die `img` gilt.
+    img_key: Option<(usize, usize, u32, u64, i32, i32)>,
+    /// Ziele unter der Maus vorher und nachher seit dem letzten Bild; leer:
+    /// alles neu.
+    damage: Vec<Option<Target>>,
+    /// Das nächste Bild ganz malen (jede Änderung außer dem Überfahren).
+    full_frame: bool,
+    /// Nur das Ziel unter der Maus hat gewechselt (in `handle` gesetzt).
+    hover_moved: bool,
+    /// Was beim letzten Bild vom Überfahren abhing: Ziel und Lage im
+    /// Fensterbild ([`Prefs::hov`]).
+    hover_map: std::cell::RefCell<Vec<(Target, Rect)>>,
+    /// Leinwand für Teilbilder, behält ihren Speicher.
+    scratch: Canvas,
     /// Kacheln und Vorschauen der Attributreiter ([`crate::attr_pick`]).
     tiles: std::cell::RefCell<crate::attr_pick::Tiles>,
     /// Fenster „Muster“ über der gewählten Oberfläche (Paket 7b).
@@ -785,6 +803,13 @@ impl Prefs {
             spare: None,
             spare_px: Vec::new(),
             ground: None,
+            img: None,
+            img_key: None,
+            damage: Vec::new(),
+            full_frame: true,
+            hover_moved: false,
+            hover_map: Default::default(),
+            scratch: Canvas::new(0, 0),
             tiles: Default::default(),
             pw: None,
             company_presets: Vec::new(),
@@ -1746,6 +1771,18 @@ impl Prefs {
     /// Ein Ereignis, solange das Fenster offen ist (es nimmt alle Maus- und
     /// Tastenereignisse).
     pub fn handle(&mut self, e: &Event, cx: &mut Ctx) -> Out {
+        let before = self.hover;
+        let out = self.handle_now(e, cx);
+        // Nur das Überfahren malt Teilbilder (A302); alles andere ganz
+        if std::mem::take(&mut self.hover_moved) {
+            self.damage.extend([before, self.hover]);
+        } else if out.repaint || out.moved || out.theme || out.model || out.closed {
+            self.full_frame = true;
+        }
+        out
+    }
+
+    fn handle_now(&mut self, e: &Event, cx: &mut Ctx) -> Out {
         let mut out = Out::default();
         match *e {
             Event::MouseMove { x, y, mods } => self.mouse_move(x, y, mods, cx, &mut out),
@@ -1771,6 +1808,7 @@ impl Prefs {
             Event::Text(c) => self.text(c, cx, &mut out),
             Event::MouseLeave if self.hover.is_some() => {
                 self.hover = None;
+                self.hover_moved = true;
                 out = Out::all();
             }
             _ => {}
@@ -1821,6 +1859,7 @@ impl Prefs {
         if h != self.hover {
             let popup = self.popup.is_some();
             self.hover = h;
+            self.hover_moved = true;
             out.repaint = true;
             out.popup = popup;
         }
@@ -2994,8 +3033,10 @@ impl Prefs {
         let tiles = self.pw_tick() | tiles;
         if self.flash_until.is_some_and(|u| Instant::now() >= u) {
             self.flash_until = None;
+            self.full_frame = true;
             return true;
         }
+        self.full_frame |= tiles;
         tiles
     }
 
@@ -3074,18 +3115,6 @@ fn is_picker_field(f: FieldId) -> bool {
 // --- Zeichnen -------------------------------------------------------------------
 
 /// Text mit Grundlinie bei `y`.
-fn label(
-    c: &mut Canvas,
-    f: Option<&sk_paint::font::Font>,
-    t: &str,
-    px: f32,
-    x: f32,
-    y: f32,
-    col: Rgba,
-) {
-    widgets::text(c, f, t, px, x, y, col);
-}
-
 impl Prefs {
     /// Gewählten Stift in den sichtbaren Bereich rollen (nach Neu, Pfeilen).
     fn settle_scroll(&mut self, t: &Theme, w: &Win, s: &Scene) {
@@ -3110,10 +3139,89 @@ impl Prefs {
         px
     }
 
-    /// Leinwand und Bytes nach dem Hochladen zum Wiederverwenden.
-    pub fn give_back(&mut self, c: Canvas, px: Vec<u8>) {
-        self.spare = Some(c);
+    /// Nächstes Bild für die App (A302): Nach einem Wechsel unter der Maus
+    /// nur Streifen um das vorherige und das neue Ziel, bitgenau wie das
+    /// ganze Bild; sonst, nach Theme- oder Skalierungswechsel und im Fenster
+    /// „Muster“ das ganze Fenster.
+    pub fn paint_frame(&mut self, t: &Theme, fonts: &Fonts, w: &Win, sc: &Scene) -> Frame {
+        let f = self.frame(t, w);
+        let s = w.scale;
+        let m = (t.size.panel_shadow * s).round();
+        let (cw, ch) = ((f.w + 2.0 * m) as usize, (f.h + 2.0 * m) as usize);
+        let (ox, oy) = self.origin(t, w);
+        let key = (cw, ch, s.to_bits(), t.rev, ox, oy);
+        let targets = std::mem::take(&mut self.damage);
+        let moved = self.img_key.replace(key) != Some(key);
+        let full = std::mem::take(&mut self.full_frame)
+            || moved
+            || targets.is_empty()
+            || self.img.is_none()
+            || self.pw.is_some()
+            || self.flash_until.is_some()
+            || self.pending_scroll.is_some();
+        let rects: Vec<Rect> = {
+            let map = self.hover_map.borrow();
+            targets
+                .iter()
+                .flatten()
+                .flat_map(|h| map.iter().filter(move |e| e.0 == *h).map(|e| e.1))
+                .collect()
+        };
+        let pad = (4.0 * s).ceil();
+        let parts = crate::window_kit::pixel_strips(&rects, pad, (0.0, 0.0), (cw, ch));
+        let area: usize = parts.iter().map(|p| (p.2 - p.0) * (p.3 - p.1)).sum();
+        if full || area * 2 > cw * ch {
+            let (c, x, y) = self.paint(t, fonts, w, sc);
+            let px = self.bytes(&c);
+            let (iw, ih) = (c.width as u32, c.height as u32);
+            if self.pw.is_some() {
+                self.spare = Some(c);
+                self.img = None;
+            } else {
+                self.img = Some(c);
+            }
+            return Frame::Full {
+                x,
+                y,
+                w: iw,
+                h: ih,
+                px,
+            };
+        }
+        let mut out = Vec::with_capacity(parts.len());
+        for (x0, y0, x1, y1) in parts {
+            let mut sub = std::mem::replace(&mut self.scratch, Canvas::new(0, 0));
+            sub.reuse(x1 - x0, y1 - y0);
+            sub.set_origin(x0 as f32, y0 as f32);
+            if let Some((_, g)) = &self.ground {
+                sub.copy_rect_from(g, x0 as f32, y0 as f32, x1 as f32, y1 as f32);
+            }
+            self.paint_body(&mut sub, t, fonts, w, sc);
+            if let Some(img) = self.img.as_mut() {
+                img.put(&sub, x0, y0);
+            }
+            out.push((
+                x0 as i32,
+                y0 as i32,
+                sub.width as u32,
+                sub.height as u32,
+                sub.to_premul_rgba8(),
+            ));
+            self.scratch = sub;
+        }
+        Frame::Parts(out)
+    }
+
+    /// Bytes eines ganzen Bildes nach dem Hochladen zum Wiederverwenden.
+    pub fn give_back_bytes(&mut self, px: Vec<u8>) {
         self.spare_px = px;
+    }
+
+    /// Ist `tg` unter der Maus? Merkt die Lage `r` im Fensterbild, damit
+    /// ein Wechsel nur dort neu malt (A302).
+    fn hov(&self, tg: Target, r: Rect) -> bool {
+        self.hover_map.borrow_mut().push((tg, r));
+        self.hover == Some(tg)
     }
 
     /// Fensterbild samt Schatten und seine Lage im Programmfenster.
@@ -3125,10 +3233,12 @@ impl Prefs {
         let f = self.frame(t, w);
         let s = w.scale;
         let m = (t.size.panel_shadow * s).round();
-        let mut c = self.spare.take().unwrap_or_else(|| Canvas::new(0, 0));
+        let mut c = self
+            .img
+            .take()
+            .or_else(|| self.spare.take())
+            .unwrap_or_else(|| Canvas::new(0, 0));
         c.reuse((f.w + 2.0 * m) as usize, (f.h + 2.0 * m) as usize);
-        let at = |r: Rect| Rect::new(r.x - f.x + m, r.y - f.y + m, r.w, r.h);
-        let u = &t.ui;
         let key = (c.width, c.height, s.to_bits(), t.rev);
         if self.ground.as_ref().map(|g| g.0) != Some(key) {
             let mut g = Canvas::new(c.width, c.height);
@@ -3138,6 +3248,20 @@ impl Prefs {
         if let Some((_, g)) = &self.ground {
             c.copy_rows(g, 0, c.height);
         }
+        self.paint_body(&mut c, t, fonts, w, sc);
+        let (x, y) = self.origin(t, w);
+        (c, x, y)
+    }
+
+    /// Alles über dem Grund, in Koordinaten des Fensterbilds (ein Teilbild
+    /// setzt dafür seinen Ursprung).
+    fn paint_body(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts, w: &Win, sc: &Scene) {
+        self.hover_map.borrow_mut().clear();
+        let f = self.frame(t, w);
+        let s = w.scale;
+        let m = (t.size.panel_shadow * s).round();
+        let at = |r: Rect| Rect::new(r.x - f.x + m, r.y - f.y + m, r.w, r.h);
+        let u = &t.ui;
         if self.flash_until.is_some() {
             let b = (2.0 * s).round();
             let rad = t.size.corner_radius * s;
@@ -3153,7 +3277,7 @@ impl Prefs {
         // Kopf
         let px_title = t.size.font_title * s;
         label(
-            &mut c,
+            c,
             bold,
             "Einstellungen",
             px_title,
@@ -3162,7 +3286,7 @@ impl Prefs {
             u.text,
         );
         let cr = at(self.close_rect(t, w));
-        if self.hover == Some(Target::Close) {
+        if self.hov(Target::Close, cr) {
             let mut p = Path::new();
             p.rounded_rect(cr.x, cr.y, cr.w, cr.h, 4.0 * s);
             c.fill(&p, u.hover);
@@ -3188,13 +3312,13 @@ impl Prefs {
         for project in [true, false] {
             let r = at(self.group_rect(t, w, project));
             let text = if project { "PROJEKT" } else { "PROGRAMM" };
-            label(&mut c, bold, text, small, r.x, r.y + 14.0 * s, u.text_dim);
+            label(c, bold, text, small, r.x, r.y + 14.0 * s, u.text_dim);
         }
         for tab in Tab::ALL {
             let r = at(self.tab_rect(t, w, tab));
-            let hover = self.hover == Some(Target::Tab(tab));
+            let hover = self.hov(Target::Tab(tab), r);
             widgets::tab_item(
-                &mut c,
+                c,
                 fonts,
                 r,
                 tab.label(),
@@ -3207,19 +3331,19 @@ impl Prefs {
         }
         // Inhalt
         match self.tab {
-            Tab::Pens => self.paint_pens(&mut c, t, fonts, w, sc, &at),
-            Tab::Ui => self.paint_ui(&mut c, t, fonts, w, &at),
-            _ => self.paint_attr(&mut c, t, fonts, w, sc, &at),
+            Tab::Pens => self.paint_pens(c, t, fonts, w, sc, &at),
+            Tab::Ui => self.paint_ui(c, t, fonts, w, &at),
+            _ => self.paint_attr(c, t, fonts, w, sc, &at),
         }
         // Fuß
         for (b, r, text) in self.button_rects(t, w) {
             let st = ButtonState {
-                hover: self.hover == Some(Target::Btn(b)),
+                hover: self.hov(Target::Btn(b), at(r)),
                 pressed: self.pressed == Some(Target::Btn(b)) && self.hover == Some(Target::Btn(b)),
                 active: b == Btn::Ok,
                 disabled: b == Btn::Reset && !self.tab.enabled(),
             };
-            widgets::button(&mut c, fonts, at(r), text, st, s, t);
+            widgets::button(c, fonts, at(r), text, st, s, t);
         }
         let msg = self
             .edit
@@ -3232,18 +3356,23 @@ impl Prefs {
             let max = at(cancel.1).x - 14.0 * s - x0;
             let text = widgets::ellipsize(regular, &msg, small, max);
             let y = at(reset.1).y + 20.0 * s;
-            label(&mut c, regular, &text, small, x0, y, u.field_invalid);
+            label(c, regular, &text, small, x0, y, u.field_invalid);
         }
-        let (x, y) = self.origin(t, w);
-        (c, x, y)
     }
 
-    fn field_state<'a>(&'a self, f: FieldId, value: &'a str, unit: &'a str) -> FieldState<'a> {
+    /// Zustand eines Felds an der Stelle `r` im Fensterbild.
+    fn field_state<'a>(
+        &'a self,
+        f: FieldId,
+        value: &'a str,
+        unit: &'a str,
+        r: Rect,
+    ) -> FieldState<'a> {
         let e = self.edit.as_ref().filter(|e| e.field == f);
         FieldState {
             text: e.map_or(value, |e| e.text.text.as_str()),
             unit,
-            hover: self.hover == Some(Target::Field(f)),
+            hover: self.hov(Target::Field(f), r),
             focus: e.is_some(),
             invalid: e.is_some_and(|e| e.invalid.is_some()),
             caret: e.map(|e| e.text.caret),
@@ -3309,8 +3438,10 @@ impl Prefs {
                 continue;
             }
             let sel = self.pen_sel == Some(*id);
-            let hover =
-                matches!(self.hover, Some(Target::PenRow(h) | Target::PenUsed(h)) if h == *id);
+            // Lage im Fensterbild, auf den sichtbaren Teil der Liste begrenzt
+            let seen = Rect::new(body.x + r.x, body.y + r.y, r.w, r.h);
+            let seen = crate::window_kit::intersect(seen, body).unwrap_or(seen);
+            let hover = self.hov(Target::PenRow(*id), seen) | self.hov(Target::PenUsed(*id), seen);
             if sel {
                 let b = s.round().max(1.0);
                 bc.fill_rect(r.x, r.y, r.w, r.h, u.accent);
@@ -3366,7 +3497,7 @@ impl Prefs {
         c.blit(&bc, body.x as i32, body.y as i32);
         if let Some(b) = l.bar {
             let total = l.content_h.max(1.0);
-            let hover = self.hover == Some(Target::Bar(BarId::Pens))
+            let hover = self.hov(Target::Bar(BarId::Pens), at(b))
                 || matches!(self.drag, Some(Drag::Bar(BarId::Pens, _)));
             widgets::scrollbar(c, at(b), l.scroll / total, l.body.h / total, hover, s, t);
         }
@@ -3386,7 +3517,7 @@ impl Prefs {
             ),
         ] {
             let st = ButtonState {
-                hover: self.hover == Some(tg) && !disabled,
+                hover: self.hov(tg, at(r)) && !disabled,
                 pressed: self.pressed == Some(tg) && self.hover == Some(tg) && !disabled,
                 active: false,
                 disabled,
@@ -3434,10 +3565,10 @@ impl Prefs {
             );
         };
         lab(c, l.name, "Name");
-        let st = self.field_state(FieldId::PenName, &pen.name, "");
+        let st = self.field_state(FieldId::PenName, &pen.name, "", at(l.name));
         widgets::text_field(c, fonts, at(l.name), &st, s, t);
         lab(c, l.color, "Farbe");
-        let hover = self.hover == Some(Target::Swatch(ColorTarget::Pen(*id)));
+        let hover = self.hov(Target::Swatch(ColorTarget::Pen(*id)), at(l.color));
         widgets::swatch(c, at(l.color), Rgba::from_rgb8(pen.color), hover, s, t);
         let rgb = format!("{} · {} · {}", pen.color[0], pen.color[1], pen.color[2]);
         let cr = at(l.color);
@@ -3462,7 +3593,7 @@ impl Prefs {
             fonts,
             at(l.width),
             &shown,
-            self.hover == Some(Target::Combo(ComboId::PenWidth)),
+            self.hov(Target::Combo(ComboId::PenWidth), at(l.width)),
             open,
             s,
             t,
@@ -3470,7 +3601,7 @@ impl Prefs {
         if self.show_custom(sc) {
             lab(c, l.custom, "Eigene");
             let v = num(pen.width_mm, 2);
-            let st = self.field_state(FieldId::PenWidth, &v, "mm");
+            let st = self.field_state(FieldId::PenWidth, &v, "mm", at(l.custom));
             widgets::field(c, fonts, at(l.custom), &st, s, t);
         } else {
             let y = at(l.custom).y + 12.0 * s;
@@ -3709,7 +3840,10 @@ impl Prefs {
             if rr.y + rr.h < 0.0 || rr.y > area.h {
                 continue;
             }
-            let hover = self.hover == Some(*tg);
+            // Lage im Fensterbild, auf den sichtbaren Bereich begrenzt
+            let seen = Rect::new(area.x + rr.x, area.y + rr.y, rr.w, rr.h);
+            let seen = crate::window_kit::intersect(seen, area).unwrap_or(seen);
+            let hover = self.hov(*tg, seen);
             match *tg {
                 Target::Combo(id) => {
                     let open = matches!(&self.popup, Some(Popup::Combo(cb)) if cb.id == id);
@@ -3739,7 +3873,7 @@ impl Prefs {
                 Target::Field(f) => {
                     let v = self.field_value_theme(f, t);
                     let unit = field_range(f).map_or("", |r| r.3);
-                    let st = self.field_state(f, &v, unit);
+                    let st = self.field_state(f, &v, unit, seen);
                     widgets::field(&mut cc, fonts, rr, &st, s, t);
                 }
                 Target::Patterns3d => {
@@ -3760,7 +3894,7 @@ impl Prefs {
         c.blit(&cc, area.x as i32, area.y as i32);
         if let Some(b) = l.bar {
             let total = l.content_h.max(1.0);
-            let hover = self.hover == Some(Target::Bar(BarId::Ui))
+            let hover = self.hov(Target::Bar(BarId::Ui), at(b))
                 || matches!(self.drag, Some(Drag::Bar(BarId::Ui, _)));
             widgets::scrollbar(c, at(b), l.scroll / total, l.area.h / total, hover, s, t);
         }
@@ -3922,7 +4056,7 @@ impl Prefs {
                         u.text_dim,
                     );
                     let v = [now.0, now.1, now.2][i].to_string();
-                    let st = self.field_state(f, &v, "");
+                    let st = self.field_state(f, &v, "", fr);
                     widgets::field(&mut c, fonts, fr, &st, s, t);
                 }
                 let hx = at(l.hex);
@@ -3936,7 +4070,7 @@ impl Prefs {
                     u.text_dim,
                 );
                 let hexv = to_hex([now.0, now.1, now.2]);
-                let st = self.field_state(FieldId::PickHex, &hexv, "");
+                let st = self.field_state(FieldId::PickHex, &hexv, "", hx);
                 widgets::text_field(&mut c, fonts, hx, &st, s, t);
                 let ry = at(Rect::new(0.0, l.recent_y, 0.0, 0.0)).y;
                 label(

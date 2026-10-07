@@ -402,8 +402,9 @@ impl Canvas {
 
     /// Die Leinwand zeigt ab jetzt den Ausschnitt ab `(x, y)` eines größeren
     /// Bildes: Pfade in dessen Koordinaten landen an der richtigen Stelle.
-    /// Ganzzahlig gewählt, gleicht der Ausschnitt dem ganzen Bild bis auf
-    /// Rundung (höchstens eine Stufe bei Kurven mit Bruchteilkoordinaten).
+    /// Ganzzahlig gewählt und über die ganze Breite des Bildes (Streifen),
+    /// gleicht der Ausschnitt dem ganzen Bild bitgenau; schmaler bis auf
+    /// Rundung (höchstens eine Stufe am linken Rand angeschnittener Pfade).
     pub fn set_origin(&mut self, x: f32, y: f32) {
         self.origin = (x, y);
     }
@@ -440,14 +441,6 @@ impl Canvas {
         if w == 0 || h == 0 {
             return;
         }
-        if self.origin != (0.0, 0.0) {
-            let (ox, oy) = self.origin;
-            let moved = path.transformed(1.0, -ox, -oy);
-            self.origin = (0.0, 0.0);
-            self.fill(&moved, c);
-            self.origin = (ox, oy);
-            return;
-        }
         let stride = w + 2;
         let nb = stride.div_ceil(BLOCK);
         // Akkumulator und Blockmarken bleiben zwischen Aufrufen genullt;
@@ -458,7 +451,17 @@ impl Canvas {
             self.marks.clear();
             self.marks.resize(nb * h, 0);
         }
-        let polys = path.flatten(0.2);
+        // Erst zerlegen, dann verschieben: die Kurvenpunkte hängen so nicht
+        // vom Ursprung ab, und bei ganzzahligem Ursprung ist das Verschieben
+        // exakt. Ein Ausschnitt gleicht dem ganzen Bild dann bitgenau
+        // (Darstellung n9 §2.1).
+        let mut polys = path.flatten(0.2);
+        if self.origin != (0.0, 0.0) {
+            let (ox, oy) = self.origin;
+            for p in polys.iter_mut().flatten() {
+                (p.x, p.y) = (p.x - ox, p.y - oy);
+            }
+        }
         let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
         for p in polys.iter().flatten() {
             (x0, y0, x1, y1) = (x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y));
@@ -908,16 +911,17 @@ pub(crate) fn accumulate_line(
     }
     let dxdy = (p1.x - p0.x) / (p1.y - p0.y);
     let xmax = w as f32 - 0.0001;
-    let mut x = p0.x;
-    if p0.y < 0.0 {
-        x -= p0.y * dxdy;
-    }
     let y_start = p0.y.max(0.0) as usize;
     let y_end = (p1.y.ceil() as usize).min(h);
     for y in y_start..y_end {
         let row = y * stride;
-        let dy = ((y + 1) as f32).min(p1.y) - (y as f32).max(p0.y);
-        let xnext = x + dxdy * dy;
+        // Lage je Zeile aus dem Anfang gerechnet, nicht fortgeschrieben: so
+        // hängt sie nicht davon ab, wo die Leinwand oben beginnt (Teilbilder
+        // gleichen dem ganzen Bild bitgenau)
+        let (ya, yb) = ((y as f32).max(p0.y), ((y + 1) as f32).min(p1.y));
+        let x = p0.x + (ya - p0.y) * dxdy;
+        let xnext = p0.x + (yb - p0.y) * dxdy;
+        let dy = yb - ya;
         let d = dy * dir;
         // Waagerecht auf die Bildfläche begrenzen; die Windungszahl bleibt erhalten.
         let (xa, xb) = (x.clamp(0.0, xmax), xnext.clamp(0.0, xmax));
@@ -953,7 +957,6 @@ pub(crate) fn accumulate_line(
             }
             acc[row + x1i] += d * am;
         }
-        x = xnext;
     }
 }
 
