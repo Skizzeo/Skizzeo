@@ -1968,7 +1968,14 @@ impl Model {
         ) else {
             return;
         };
-        let (offsets, free) = self.stack_offsets(up, &lower, &lsegs);
+        let (mut offsets, free) = self.stack_offsets(up, &lower, &lsegs);
+        // Gelöste Wand, die durch das Ziehen darunter fast bündig steht: rastet
+        // wie beim Ziehen am Fuß unter 20 mm auf 0 ein (Regel 31, Review 1t T1)
+        for (d, f) in offsets.iter_mut().zip(&free) {
+            if *f && d.abs() < MIN_OFFSET {
+                *d = 0.0;
+            }
+        }
         let recount = self
             .run(up)
             .is_some_and(|r| r.segments.len() != lsegs.len());
@@ -3047,7 +3054,7 @@ impl Model {
         let o: Vec<f64> = self
             .offsets_above(run)?
             .into_iter()
-            .map(|d| if d >= MIN_OVERHANG { d } else { 0.0 })
+            .map(|d| if d >= MIN_OFFSET { d } else { 0.0 })
             .collect();
         o.iter().any(|d| *d > 0.0).then_some(o)
     }
@@ -3062,7 +3069,7 @@ impl Model {
             return vec![true; n];
         };
         match self.offsets_above(below) {
-            Some(o) if o.len() == n => o.iter().map(|d| *d <= -MIN_OVERHANG).collect(),
+            Some(o) if o.len() == n => o.iter().map(|d| *d <= -MIN_OFFSET).collect(),
             _ => vec![true; n],
         }
     }
@@ -3073,7 +3080,7 @@ impl Model {
     fn covered_segments(&self, run: RunId) -> Vec<bool> {
         let n = self.run(run).map_or(0, |r| r.segments.len());
         match self.offsets_above(run) {
-            Some(o) if o.len() == n => o.iter().map(|d| *d > -MIN_OVERHANG).collect(),
+            Some(o) if o.len() == n => o.iter().map(|d| *d > -MIN_OFFSET).collect(),
             _ => vec![false; n],
         }
     }
@@ -4554,17 +4561,42 @@ impl Model {
                 } else {
                     for (k, w) in r.segments.iter().enumerate() {
                         let Some(e) = self.element(*w) else { continue };
-                        if let ElementKind::Wall(Wall {
-                            coupling: Some(c), ..
-                        }) = e.kind
-                        {
-                            if c.below != lower.segments[k] {
-                                out.push(format!(
-                                    "{}: steht nicht über Segment {} darunter",
-                                    e.number,
-                                    k + 1
-                                ));
+                        match e.kind {
+                            ElementKind::Wall(Wall {
+                                coupling: Some(c), ..
+                            }) => {
+                                if c.below != lower.segments[k] {
+                                    out.push(format!(
+                                        "{}: steht nicht über Segment {} darunter",
+                                        e.number,
+                                        k + 1
+                                    ));
+                                }
                             }
+                            // Gelöst heißt `linked = false`, der Bezug bleibt
+                            ElementKind::Wall(_) => {
+                                out.push(format!("{}: ohne Stapelbezug", e.number));
+                            }
+                            _ => {}
+                        }
+                    }
+                    // Regel 30: jedes Segment mindestens min(Wanddicke,
+                    // Länge des Partners) lang
+                    let (n, nl) = (r.points.len(), lower.points.len());
+                    for (k, w) in r.segments.iter().enumerate() {
+                        let Some(e) = self.element(*w) else { continue };
+                        let len = (r.points[(k + 1) % n] - r.points[k]).length();
+                        let partner = (lower.points[(k + 1) % nl] - lower.points[k]).length();
+                        let dicke = e
+                            .layer_set
+                            .and_then(|t| self.layer_sets.get(t))
+                            .map_or(0.0, |t| t.thickness());
+                        let min = dicke.min(partner);
+                        if len >= 1.0 && len + 0.5 < min {
+                            out.push(format!(
+                                "{}: {:.0} mm lang, kürzer als {:.0} mm",
+                                e.number, len, min
+                            ));
                         }
                     }
                 }
@@ -4743,9 +4775,6 @@ pub const FLOOR_THICKNESS: f64 = 220.0;
 pub const SOFFIT_THICKNESS: f64 = 120.0;
 pub const MIN_SOFFIT: f64 = 40.0;
 pub const MAX_SOFFIT: f64 = 300.0;
-/// Kleinster Versatz, der als Vor- oder Rücksprung zählt (mm); darunter
-/// gilt das Segment als bündig.
-const MIN_OVERHANG: f64 = 0.01;
 /// Sohlplatte neuer Gebäude (Jörn 10:13): 22 cm, die Frostschürze reicht
 /// darunter bis UK Gründung −0,80 (58 cm).
 pub const SLAB_THICKNESS: f64 = 220.0;
@@ -4999,7 +5028,9 @@ fn match_segments(old: &[(Vec3, Vec3)], new: &[(Vec3, Vec3)]) -> Vec<Option<usiz
 }
 
 /// Kleinster Versatz einer gestapelten Wand; darunter rastet er auf 0 ein
-/// (Regel 31, wie der Sockelrücksprung).
+/// (Regel 31, wie der Sockelrücksprung). Erst ab ihm zählt ein Segment als
+/// Vor- oder Rücksprung: Deckenstreifen, Untersichtdämmung und Abfangung
+/// entstehen nicht für Reste darunter, etwa aus alten Dateien (Review 1t T1).
 pub const MIN_OFFSET: f64 = 20.0;
 
 /// Bleibt innerhalb der Wand eines geschlossenen Zuges ein Raum (Innenfläche
@@ -5135,6 +5166,29 @@ mod tests {
             m.check()
                 .iter()
                 .any(|t| t.contains("Umriss schneidet sich selbst")),
+            "{:?}",
+            m.check()
+        );
+        // Regel 28: ein Segment ganz ohne Bezug
+        let (mut m, runs) = gebaeude(2);
+        let w = m.wall_at(runs[1], 2).unwrap();
+        if let Some(ElementKind::Wall(x)) = m.elements.get_mut(w).map(|e| &mut e.kind) {
+            x.coupling = None;
+        }
+        assert!(
+            m.check().iter().any(|t| t.contains("ohne Stapelbezug")),
+            "{:?}",
+            m.check()
+        );
+        // Regel 30: Segment kürzer als min(Wanddicke, Partnerlänge)
+        let (mut m, runs) = gebaeude(2);
+        let og = runs[1];
+        let p = m.run(og).unwrap().points.clone();
+        // Ecke 1 so weit vorziehen, dass Segment 1 nur 100 mm lang ist
+        let d = (p[1] - p[0]).normalized();
+        m.runs.get_mut(og).unwrap().points[1] = p[0] + d * 100.0;
+        assert!(
+            m.check().iter().any(|t| t.contains("100 mm lang")),
             "{:?}",
             m.check()
         );
@@ -5691,6 +5745,45 @@ mod og_phase2 {
     }
 
     #[test]
+    fn eg_faengt_geloestes_og_unter_2_cm() {
+        // Review 1t T1: OG-Nordwand gelöst bei +300, EG-Nordfuß 290 nach außen
+        let (mut m, eg, og) = gebaeude();
+        let w = m.wall_at(og, 1).unwrap();
+        set_coupling(&mut m, w, None);
+        assert!(drag(&mut m, og, 1, 300.0));
+        assert!(drag(&mut m, eg, 1, 290.0));
+        // Gemessen wären 10 mm: das Segment rastet bündig ein und bleibt gelöst
+        assert_eq!(m.stack_offset(w), Some((0.0, false)));
+        assert_eq!(ys(&m, og), ys(&m, eg));
+        assert!(m.chain(eg).unwrap().joints.overhang.is_none());
+        assert!(m.soffit_floors().is_empty());
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        // Ab 20 mm bleibt der Versatz stehen
+        let (mut m, eg, og) = gebaeude();
+        let w = m.wall_at(og, 1).unwrap();
+        set_coupling(&mut m, w, None);
+        assert!(drag(&mut m, og, 1, 300.0));
+        assert!(drag(&mut m, eg, 1, 280.0));
+        assert!(m.stack_offset(w).is_some_and(|(d, l)| near(d, 20.0) && !l));
+        assert!(m.chain(eg).unwrap().joints.overhang.is_some());
+    }
+
+    #[test]
+    fn rest_unter_2_cm_ist_kein_vorsprung() {
+        // Alte Datei: 10 mm Versatz gespeichert. Decke, UD und Außenschichten
+        // bleiben wie bündig.
+        let (m, eg, _) = mit_versatz(10.0);
+        assert!(m.chain(eg).unwrap().joints.overhang.is_none());
+        assert!(m.soffit_floors().is_empty());
+        let f = m.floor(eg).unwrap().unwrap();
+        assert!(near(f.area(), 9720.0 * 7720.0), "{}", f.area());
+        // Zurückgesetzt um 10 mm: der Randstreifen gilt als gedeckt
+        let (m, eg, og) = mit_versatz(-10.0);
+        assert!(m.covered_segments(eg).iter().all(|c| *c));
+        assert!(m.open_segments(og).iter().all(|o| !*o));
+    }
+
+    #[test]
     fn vorsprung_verlaengert_decke_untersicht_und_daemmung() {
         let (m, eg, _) = mit_versatz(300.0);
         // Decke bis Außenseite Kern OG: y = 8,30 − 0,14
@@ -5912,6 +6005,14 @@ mod og_phase2 {
             .filter(|t| t.p.iter().all(|p| p.z <= 2635.0 + 1e-6))
             .count();
         assert!(soffit > 0);
+        // Dämmschraffur längs der Schicht (Jörn 05:41): v quer über die Dicke
+        // (unten 0, oben 1), u läuft waagerecht
+        for t in &fc.triangles {
+            for (p, uv) in t.p.iter().zip(t.uv) {
+                let v = if near(p.z, 2515.0) { 0.0 } else { 1.0 };
+                assert!(near(uv[1], v), "{p:?} {uv:?}");
+            }
+        }
     }
 
     #[test]

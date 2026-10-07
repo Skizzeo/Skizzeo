@@ -415,7 +415,9 @@ impl FloorSlab {
                 s.quad_uv(
                     [pt(a, z0), pt(b, z0), pt(b, z1), pt(a, z1)],
                     n,
-                    [[z0 / t, 0.0], [z0 / t, 1.0], [z1 / t, 1.0], [z1 / t, 0.0]],
+                    // Zickzack längs der Schicht (waagerecht), Zacken über
+                    // die Dicke: u längs in Dicken, v von unten (0) nach oben
+                    [[a / t, 0.0], [b / t, 0.0], [b / t, 1.0], [a / t, 1.0]],
                 );
                 s.edge(pt(a, z0), pt(b, z0));
                 s.edge(pt(a, z0), pt(a, z1));

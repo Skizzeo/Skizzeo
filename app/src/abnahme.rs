@@ -12131,8 +12131,9 @@ mod og_phase2 {
     }
 
     /// A151 (Regel 31): Versatz 0 oder mindestens 20 mm. Beim eigenen Versetzen
-    /// rastet alles unter 20 mm auf 0; folgt ein gelöstes Segment dem EG, bleibt
-    /// der gemessene Versatz auch unter 20 mm.
+    /// rastet alles unter 20 mm auf 0. Seit Review 1t (T1) gilt das auch, wenn
+    /// ein gelöstes Segment dem EG folgt: Fällt der Abstand unter 20 mm, fängt
+    /// die EG-Linie das Segment bündig (mehr in A160).
     #[test]
     fn a151_raster_2_cm() {
         let (mut s, eg, _) = prueffall(151);
@@ -12146,9 +12147,9 @@ mod og_phase2 {
         assert_eq!(versatz(&s, aw6), Some((20.0, false)));
         versetzen(&mut s, aw6, -10.0);
         assert_eq!(versatz(&s, aw6), Some((0.0, false)), "10 mm rastet auf 0");
-        // EG folgt: gemessener Versatz 15 mm bleibt
+        // EG folgt: gemessen wären 15 mm, die EG-Linie fängt bündig
         assert!(eg_nord(&mut s, eg, -15.0));
-        assert_eq!(versatz(&s, aw6), Some((15.0, false)));
+        assert_eq!(versatz(&s, aw6), Some((0.0, false)));
         pruefung(&s);
     }
 
@@ -12416,6 +12417,82 @@ mod og_phase2 {
         assert!(buendig(&mut s, aw6));
         assert_eq!(abfangung_m(&s, og), 0.0, "bündig: keine Abfangung");
         assert_eq!(ud(&s, eg), None);
+    }
+
+    // Abnahmetest A160: Fällt der Abstand eines gelösten OG-Segments beim Ziehen
+    // am EG unter 20 mm, fängt die EG-Linie das Segment bündig (Review 1t,
+    // Befund T1; Regel 31). Spezifikation: test/abnahme-og-phase2.md.
+    //
+    // Einbau: ans Ende von `mod og_phase2` in app/src/abnahme.rs (nutzt dessen
+    // Adapter und Hilfen: prueffall, nr, kette, versetzen, versatz, eg_nord, ud,
+    // abfangung_m, decke_mengen, punkte, pruefung). Dazu ändert
+    // `a151-eg-faengt-buendig.patch` den Schluss von A151 (dort blieben 15 mm
+    // stehen).
+    //
+    // Keine neuen Adapter: Der Fang steckt im Modell (Geometriekern), getestet
+    // wird über `eg_nord` (EG-Nordwand per `set_run_points`, wie das Gummiband).
+
+    /// Prüfhaus mit dem Werkstyp `typ` am EG-Zug, AW-006 gelöst bei +300.
+    fn vorsprung_300(seed: u64, typ: &str) -> (Scene, RunId, RunId, ElementId) {
+        let (mut s, eg, og) = prueffall(seed);
+        if typ != "AW-31,5" {
+            let t = s
+                .model()
+                .layer_sets()
+                .iter()
+                .find(|(_, t)| t.code == typ)
+                .map(|(id, _)| id)
+                .expect("Werkstyp");
+            assert!(s.edit_model("Wandtyp geändert", |m| m.set_run_type(eg, t)));
+        }
+        let aw6 = nr(&s, "AW-006");
+        assert!(kette(&mut s, aw6, false));
+        assert!(versetzen(&mut s, aw6, 300.0));
+        (s, eg, og, aw6)
+    }
+
+    /// A160 (Review 1t T1, Regel 31): OG-Nordwand gelöst bei +300, dann den
+    /// EG-Nordfuß 290 (bzw. 295) nach außen. Gemessen wären 10 (5) mm; das
+    /// Segment rastet bündig ein: Versatz 0, OG- und EG-Zug gleich, kein
+    /// Kragstreifen an DE-001 (DE-001 = DE-002 = Kern 9,72 × 8,01 bzw. 8,015),
+    /// keine UD, bei AW-49 keine Abfangung. Wieder koppeln: 0. Gegenprobe 260:
+    /// 40 mm Vorsprung bleiben, mit Kragstreifen und UD (0,3888 m², 12 cm
+    /// 0,0467 m³).
+    #[test]
+    fn a160_eg_faengt_geloestes_og_buendig() {
+        for (d, de) in [(290.0, 77.8572), (295.0, 77.9058)] {
+            let (mut s, eg, og, aw6) = vorsprung_300(160, "AW-31,5");
+            assert!(eg_nord(&mut s, eg, d));
+            assert_eq!(versatz(&s, aw6), Some((0.0, false)), "{d}: gefangen");
+            assert_eq!(punkte(&s, eg), punkte(&s, og), "{d}: bündig");
+            assert_eq!(decke_mengen(&s, eg).0, de, "{d}: DE-001 ohne Kragstreifen");
+            assert_eq!(decke_mengen(&s, og).0, de, "{d}: DE-002");
+            assert_eq!(ud(&s, eg), None, "{d}: keine UD");
+            pruefung(&s);
+            assert!(kette(&mut s, aw6, true));
+            assert_eq!(versatz(&s, aw6), Some((0.0, true)), "{d}: koppeln ergibt 0");
+            assert!(s.undo() && s.undo(), "Koppeln und EG-Zug je ein Schritt");
+            assert_eq!(versatz(&s, aw6), Some((300.0, false)));
+        }
+
+        // AW-49: keine Abfangung
+        let (mut s, eg, og, aw6) = vorsprung_300(1600, "AW-49");
+        assert!(abfangung_m(&s, og) > 0.0, "Ausgang: Abfangung bei +300");
+        assert!(eg_nord(&mut s, eg, 290.0));
+        assert_eq!(versatz(&s, aw6), Some((0.0, false)));
+        assert_eq!(abfangung_m(&s, og), 0.0, "AW-49: keine Abfangung");
+        assert_eq!(ud(&s, eg), None);
+        pruefung(&s);
+
+        // Gegenprobe 260: 40 mm Vorsprung bleiben
+        let (mut s, eg, og, aw6) = vorsprung_300(1601, "AW-31,5");
+        assert!(eg_nord(&mut s, eg, 260.0));
+        assert_eq!(versatz(&s, aw6), Some((40.0, false)), "40 mm bleiben");
+        assert_ne!(punkte(&s, eg), punkte(&s, og));
+        assert_eq!(decke_mengen(&s, eg).0, 77.9544, "DE-001 kragt 40 mm aus");
+        assert_eq!(decke_mengen(&s, og).0, 77.9544);
+        assert_eq!(ud(&s, eg), Some(("UD-001".to_string(), 0.3888, 0.0467)));
+        pruefung(&s);
     }
 }
 
