@@ -153,34 +153,52 @@ impl MeasureInput {
         parts.join("  ")
     }
 
-    /// Pille als Bild: wie die Maßzahl beim Bündig-Setzen, mit Rand 1 dip
-    /// (Akzent bzw. Fehlerfarbe) und einem ruhigen Cursor hinter dem
-    /// aktiven Feld.
+    /// Pille als Bild (Darstellung §2.2): Fläche wie ein Paneel, Rand 1 dip
+    /// (Fokus bzw. Fehlerfarbe), Etiketten und Einheit gedämpft, Werte in
+    /// Textfarbe, ein leeres Feld als „–“, zwei Felder durch einen feinen
+    /// Strich getrennt; ein ruhiger Cursor hinter dem Wert des aktiven
+    /// Felds.
     pub fn paint(&self, fonts: &Fonts, labels: [&str; 2], s: f32, t: &Theme) -> Canvas {
         let px = t.size.font_small * s;
         let f = fonts.regular.as_ref();
-        let width = |x: &str| f.map_or(x.len() as f32 * px * 0.5, |f| f.width(x, px));
-        let text = self.text(labels);
-        // Cursor hinter dem Inhalt des aktiven Felds
-        let head = {
-            let mut probe = self.clone();
-            if self.active == 0 {
-                probe.fields[1].clear();
-                probe.active = 0;
-            }
-            let full = probe.text(labels);
-            let unit = if self.kinds[self.active] == Some(MeasureKind::Angle) {
-                "°"
-            } else {
-                " m"
+        let width = |x: &str| f.map_or(x.chars().count() as f32 * px * 0.5, |f| f.width(x, px));
+        // Stücke je Feld: (Text, Farbe); `None` = Trennstrich
+        let mut parts: Vec<Option<(String, Rgba)>> = Vec::new();
+        let mut caret_after = 0;
+        for (i, label) in labels.iter().enumerate() {
+            let Some(k) = self.kinds[i] else {
+                continue;
             };
-            full[..full.len() - unit.len()].to_string()
+            if i > 0 {
+                parts.push(None);
+            }
+            let unit = if k == MeasureKind::Angle { "°" } else { " m" };
+            parts.push(Some((format!("{label} "), t.ui.text_dim)));
+            let v = &self.fields[i];
+            if v.is_empty() {
+                if i == self.active {
+                    caret_after = parts.len();
+                }
+                parts.push(Some(("–".into(), t.ui.text_dim)));
+            } else {
+                parts.push(Some((v.clone(), t.ui.text)));
+                if i == self.active {
+                    caret_after = parts.len();
+                }
+            }
+            parts.push(Some((unit.into(), t.ui.text_dim)));
+        }
+        let gap = (8.0 * s).round();
+        let piece_w = |p: &Option<(String, Rgba)>| match p {
+            Some((x, _)) => width(x),
+            None => 2.0 * gap + s.max(1.0),
         };
+        let tw: f32 = parts.iter().map(piece_w).sum();
         let (pad, h) = (
             (t.size.dim_label_pad * s).round(),
             (t.size.dim_label_h * s).round(),
         );
-        let w = (width(&text) + 2.0 * pad + 2.0 * s).ceil();
+        let w = (tw + 2.0 * pad + 2.0 * s).ceil();
         let mut c = Canvas::new(w as usize, h as usize);
         let r = t.size.dim_label_radius * s;
         let border = if self.error.is_some() {
@@ -194,11 +212,42 @@ impl MeasureInput {
         c.fill(&p, border);
         let mut p = Path::new();
         p.rounded_rect(b, b, w - 2.0 * b, h - 2.0 * b, (r - b).max(0.0));
-        c.fill(&p, Rgba::from_f32(t.interact.shadow_band));
+        c.fill(&p, t.ui.bg);
         let cap = f.map_or(px * 0.7, |f| f.cap_height(px));
         let base = ((h + cap) * 0.5).round();
-        sk_ui::widgets::text(&mut c, f, &text, px, pad, base, t.ui.dim_text);
-        let cx = (pad + width(&head)).round() + 0.5 * s;
+        let mut x = pad;
+        let mut caret_x = pad;
+        for (n, part) in parts.iter().enumerate() {
+            if n == caret_after {
+                caret_x = x;
+            }
+            match part {
+                Some((text, col)) => {
+                    sk_ui::widgets::text(&mut c, f, text, px, x, base, *col);
+                }
+                None => {
+                    let lx = (x + gap).round();
+                    c.fill_rect(
+                        lx,
+                        (4.0 * s).round(),
+                        s.max(1.0),
+                        h - (8.0 * s).round(),
+                        t.ui.border,
+                    );
+                }
+            }
+            x += piece_w(part);
+        }
+        if caret_after >= parts.len() {
+            caret_x = x;
+        }
+        // Leeres Feld: der Cursor steht vor dem „–“
+        let cx = caret_x.round()
+            + if self.fields[self.active].is_empty() {
+                -s
+            } else {
+                0.5 * s
+            };
         c.fill_rect(
             cx,
             base - cap - 2.0 * s,

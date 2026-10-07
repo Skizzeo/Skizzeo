@@ -23425,6 +23425,19 @@ mod masseingabe {
             .map(|(o, l)| ((o * 100.0).round() / 100.0, l))
     }
 
+    // ===== Adapter Nachtrag Paket 8 (A299, A300) =====
+
+    /// Text der Pille nach dem Loslassen bzw. nach Enter (Nachkorrektur).
+    fn pille_nachher(e: &WallEdit, s: &Scene) -> Option<String> {
+        e.pill(s).map(|(text, _)| text)
+    }
+
+    /// Live-Länge am Gummiband (paket-p8-darstellung §2.1): zwei
+    /// Nachkommastellen, Komma, „ m“. Angenommener Name.
+    fn live_laenge(mm: f64) -> String {
+        crate::ui::live_length_text(mm)
+    }
+
     // ===== Hilfen =====
 
     const OHNE: Modifiers = Modifiers {
@@ -24183,6 +24196,94 @@ mod masseingabe {
         e_taste(&mut e, &mut s, Key::Enter);
         assert_eq!(versatz(&s, aw6), Some((0.0, false)));
         assert_eq!(s.undo_label(), label, "kein Schritt");
+    }
+    /// A299 (paket-8 §1.2 und Abnahme 9, Koordinator 21:53): Ein getippter
+    /// Versatz unter 0,02 m setzt die Wand bündig, und die Pille sagt das
+    /// wie der Hinweis beim Ziehen: „Versatz bündig“ statt einer Zahl.
+    /// Ab 0,02 m bleibt die Zahl mit Vorzeichen. Enter beendet das Ziehen
+    /// wie das Loslassen, danach steht die Pille mit dem erreichten Wert
+    /// (Nachkorrektur, die App blendet sie nach 1,5 s aus). Dasselbe gilt,
+    /// wenn die Maus unter 2 cm loslässt.
+    #[test]
+    fn a299_bundig_nach_getipptem_versatz() {
+        // Ausgang: gelöste OG-Wand mit Vorsprung +0,30 (eigener Schritt)
+        let vorsprung = |seed: u64| {
+            let (mut s, aw6) = geloest(seed);
+            let mut e = WallEdit::default();
+            greifen(&mut e, &mut s, og_fuss(8000.0));
+            e_maus(&mut e, &mut s, og_fuss(8100.0));
+            e_zeichen(&mut e, &mut s, "0,30");
+            e_taste(&mut e, &mut s, Key::Enter);
+            assert_eq!(versatz(&s, aw6), Some((300.0, false)));
+            (s, aw6)
+        };
+        for (text, soll, pille) in [
+            ("0,01", 0.0, "Versatz bündig"),
+            ("0", 0.0, "Versatz bündig"),
+            ("-0,019", 0.0, "Versatz bündig"),
+            ("0,02", 20.0, "Versatz +0,02"),
+            ("-0,25", -250.0, "Versatz \u{2212}0,25"),
+        ] {
+            let (mut s, aw6) = vorsprung(2990);
+            let mut e = WallEdit::default();
+            greifen(&mut e, &mut s, og_fuss(8300.0));
+            e_maus(&mut e, &mut s, og_fuss(8200.0));
+            e_zeichen(&mut e, &mut s, text);
+            e_taste(&mut e, &mut s, Key::Enter);
+            assert_eq!(versatz(&s, aw6), Some((soll, false)), "„{text}“");
+            assert_eq!(
+                pille_nachher(&e, &s).as_deref(),
+                Some(pille),
+                "Pille nach „{text}“ Enter"
+            );
+        }
+
+        let (mut s, aw6) = vorsprung(2991);
+        let mut e = WallEdit::default();
+        greifen(&mut e, &mut s, og_fuss(8300.0));
+        e_maus(&mut e, &mut s, og_fuss(8100.0));
+        e_maus(&mut e, &mut s, og_fuss(8012.0));
+        loslassen(&mut e, &mut s, og_fuss(8012.0));
+        assert_eq!(versatz(&s, aw6), Some((0.0, false)), "rastet auf bündig");
+        assert_eq!(
+            pille_nachher(&e, &s).as_deref(),
+            Some("Versatz bündig"),
+            "Pille nach dem Loslassen"
+        );
+    }
+
+    /// A300 (aq, paket-p8-darstellung §2.1, Koordinator 21:53): Die
+    /// Live-Länge am Gummiband steht immer als „4,37 m“: Komma, zwei
+    /// Nachkommastellen, „ m“, auch wenn der Wert nicht auf 10 mm liegt.
+    /// Das Werkzeug zeigt genau diesen Text für die Länge des Gummibands.
+    #[test]
+    fn a300_live_laenge_zwei_stellen_mit_m() {
+        for (mm, soll) in [
+            (4370.0, "4,37 m"),
+            (4372.0, "4,37 m"),
+            (4376.0, "4,38 m"),
+            (3000.0, "3,00 m"),
+            (12.0, "0,01 m"),
+            (12345.6, "12,35 m"),
+            (200000.0, "200,00 m"),
+        ] {
+            assert_eq!(live_laenge(mm), soll, "{mm} mm");
+        }
+
+        let s = Scene::with_model(Model::with_seed(300));
+        let c = cam_plan(&s);
+        let mut t = tool(&s);
+        click(&mut t, &c, vec3(0.0, 0.0, 0.0));
+        for p in [
+            vec3(3000.0, 120.0, 0.0),
+            vec3(4372.0, 1013.0, 0.0),
+            vec3(-1234.0, 2345.0, 0.0),
+        ] {
+            maus(&mut t, &c, p);
+            let ([a, b], text) = t.label().expect("Live-Länge");
+            assert_eq!(text, live_laenge((b - a).length()), "bei {p:?}");
+            assert!(text.ends_with(" m"), "{text}");
+        }
     }
 }
 

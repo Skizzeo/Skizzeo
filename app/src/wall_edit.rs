@@ -322,7 +322,9 @@ impl WallEdit {
         }
         let l = self.last.as_ref().filter(|_| self.drag.is_none())?;
         let v = l.value;
-        let text = if l.target.offset.is_some() {
+        let text = if l.target.offset.is_some() && v == 0.0 {
+            format!("{label} bündig")
+        } else if l.target.offset.is_some() {
             let sign = if v > 0.0 {
                 "+"
             } else if v < 0.0 {
@@ -461,9 +463,10 @@ impl WallEdit {
                     scene.clear_redo();
                     l.target
                 };
+                // Die Pille bleibt wie nach dem Loslassen stehen (die App
+                // blendet sie nach 1,5 s aus); eine neue Ziffer korrigiert
+                // erneut
                 self.remember(scene, serial, target);
-                // Die Pille schließt; eine neue Ziffer korrigiert erneut
-                self.last = None;
                 out.changed = true;
                 self.refresh(scene, cam, w, h, scale, enabled);
             }

@@ -132,6 +132,11 @@ pub fn tooltip(fonts: &Fonts, text: &str, s: f32, t: &Theme) -> Canvas {
 /// Unaufdringlicher Hinweis in der Statuszeile (F-17): gedämpfte Schrift
 /// mit einem Akzentpunkt davor, auf Paneelgrund mit feinem Rand.
 pub fn notice(fonts: &Fonts, text: &str, s: f32, t: &Theme) -> Canvas {
+    notice_dot(fonts, text, s, t, t.ui.accent)
+}
+
+/// Wie [`notice`] mit eigener Farbe des Punkts (Fehler: `field_invalid`).
+pub fn notice_dot(fonts: &Fonts, text: &str, s: f32, t: &Theme, dot_color: Rgba) -> Canvas {
     let px = t.size.font_small * s;
     let f = fonts.regular.as_ref();
     let tw = f.map_or(0.0, |f| f.width(text, px));
@@ -147,7 +152,7 @@ pub fn notice(fonts: &Fonts, text: &str, s: f32, t: &Theme) -> Canvas {
     c.fill(&p, t.ui.bg);
     let mut p = Path::new();
     p.rounded_rect(pad, (h - dot) * 0.5, dot, dot, dot * 0.5);
-    c.fill(&p, t.ui.accent);
+    c.fill(&p, dot_color);
     if let Some(f) = f {
         let y = ((h + f.cap_height(px)) * 0.5).round();
         f.draw(&mut c, text, px, pad + dot + 8.0 * s, y, t.ui.text_dim);

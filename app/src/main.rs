@@ -210,6 +210,8 @@ const OVERLAY_TIP: usize = OVERLAY_HINT + 7;
 const OVERLAY_PICK: usize = OVERLAY_HINT + 8;
 /// Maßzahl bzw. Maßeingabe am Gummiband und beim Ziehen (Paket 8).
 const OVERLAY_INPUT: usize = OVERLAY_HINT + 9;
+/// Live-Pille, die beim ersten Tippen in die Eingabe überblendet.
+const OVERLAY_INPUT_OLD: usize = OVERLAY_HINT + 10;
 
 /// So lange steht die Pille nach dem Loslassen (Nachkorrektur, Paket 8b).
 const POST_PILL: std::time::Duration = std::time::Duration::from_millis(1500);
@@ -679,6 +681,10 @@ struct App {
     input_pill: Option<(String, bool, bool, usize, u32, u64)>,
     /// Seit wann die Pille nach dem Loslassen steht (Nachkorrektur).
     post_at: Option<Instant>,
+    /// Bytes und Größe des gezeigten Pillenbilds und der Beginn des
+    /// Überblendens von der Live-Pille zur Eingabe (Darstellung §2.4).
+    input_px: Option<(Vec<u8>, u32, u32)>,
+    input_swap: Option<Instant>,
     /// Zuletzt in der Statuszeile genannter Fehler der Maßeingabe.
     input_error: Option<String>,
     /// Fehlschläge des Sicherns in Folge (F-13 §8) und ein Befehl aus einem
@@ -748,6 +754,8 @@ struct Notice {
     /// So lange steht er; ein Klick öffnet den Bauteilkatalog (`catalog`).
     time: std::time::Duration,
     catalog: bool,
+    /// Fehler (Maßeingabe): Punkt in `field_invalid` statt im Akzent.
+    error: bool,
 }
 
 /// So lange steht ein Hinweis in der Statuszeile.
@@ -3752,6 +3760,7 @@ impl App {
             rect: (0.0, 0.0, 0.0, 0.0),
             time,
             catalog: false,
+            error: false,
         });
         self.redraw = true;
     }
@@ -4308,6 +4317,7 @@ impl App {
                     rect: (0.0, 0.0, 0.0, 0.0),
                     time: std::time::Duration::from_secs(5),
                     catalog: false,
+                    error: false,
                 });
                 self.sync_levels();
             }
@@ -4858,6 +4868,7 @@ impl App {
                 rect: (0.0, 0.0, 0.0, 0.0),
                 time: std::time::Duration::from_secs(3),
                 catalog: false,
+                error: false,
             });
         }
         self.refresh_cursor();
@@ -5019,6 +5030,7 @@ impl App {
                 rect: (0.0, 0.0, 0.0, 0.0),
                 time: std::time::Duration::from_secs(5),
                 catalog: false,
+                error: false,
             });
             // Die Zielwand leuchtet einmal kurz
             if self.theme.size.anim_ms > 0.0 && self.theme.size.flash_ms > 0.0 {
@@ -5072,10 +5084,24 @@ impl App {
             self.post_at = None;
             if self.input_pill.take().is_some() {
                 self.renderer.set_overlay(OVERLAY_INPUT, 0, 0, 0, 0, &[]);
+                self.input_px = None;
+            }
+            if self.input_swap.take().is_some() {
+                self.renderer
+                    .set_overlay(OVERLAY_INPUT_OLD, 0, 0, 0, 0, &[]);
             }
             return;
         };
         if self.input_pill.as_ref() != Some(&key) {
+            // Live-Pille → Eingabe: die alte blendet in `anim_ms` aus
+            let live_before = self.input_pill.as_ref().is_some_and(|k| !k.1);
+            if live_before && key.1 && self.theme.size.anim_ms > 0.0 {
+                if let Some((px, w, h)) = &self.input_px {
+                    self.renderer
+                        .set_overlay(OVERLAY_INPUT_OLD, 0, 0, *w, *h, px);
+                    self.input_swap = Some(Instant::now());
+                }
+            }
             let c = match (ends.is_some(), self.tool.input(), self.edit.input()) {
                 (true, Some(i), _) => {
                     i.paint(&self.ui.fonts, wall_tool::LABELS, scale, &self.theme)
@@ -5091,6 +5117,7 @@ impl App {
             let px = c.to_premul_rgba8();
             self.renderer
                 .set_overlay(OVERLAY_INPUT, 0, 0, c.width as u32, c.height as u32, &px);
+            self.input_px = Some((px, c.width as u32, c.height as u32));
             self.input_pill = Some(key.clone());
         }
         let (w, h) = self.renderer.overlay_size(OVERLAY_INPUT);
@@ -5155,13 +5182,39 @@ impl App {
             self.post_at = None;
             1.0
         };
+        // Überblenden: beide Bilder an derselben Mitte, die Lage bleibt
+        let swap = self.input_swap.map(|t0| {
+            let anim = self.theme.size.anim_ms.max(1.0) as f64;
+            (t0.elapsed().as_secs_f64() * 1000.0 / anim).min(1.0) as f32
+        });
+        let (cx, cy) = (x, y);
         let (x, y) = ((x - pw * 0.5).round() as i32, (y - ph * 0.5).round() as i32);
         self.renderer
-            .place_overlay(OVERLAY_INPUT, x, y, w, h, alpha);
+            .place_overlay(OVERLAY_INPUT, x, y, w, h, alpha * swap.unwrap_or(1.0));
+        match swap {
+            Some(k) if k < 1.0 => {
+                let (ow, oh) = self.renderer.overlay_size(OVERLAY_INPUT_OLD);
+                let ox = (cx - ow as f64 * 0.5).round() as i32;
+                let oy = (cy - oh as f64 * 0.5).round() as i32;
+                self.renderer
+                    .place_overlay(OVERLAY_INPUT_OLD, ox, oy, ow, oh, alpha * (1.0 - k));
+                self.redraw = true;
+            }
+            Some(_) => {
+                self.input_swap = None;
+                self.renderer
+                    .set_overlay(OVERLAY_INPUT_OLD, 0, 0, 0, 0, &[]);
+                self.redraw = true;
+            }
+            None => {}
+        }
     }
 
     /// Wann die Pille nach dem Loslassen wieder gezeichnet werden muss.
     fn pill_wait(&self) -> Option<std::time::Duration> {
+        if self.input_swap.is_some() {
+            return Some(FRAME);
+        }
         let t0 = self.post_at?;
         let e = t0.elapsed();
         Some(if e < POST_PILL { POST_PILL - e } else { FRAME })
@@ -5187,6 +5240,7 @@ impl App {
                     rect: (0.0, 0.0, 0.0, 0.0),
                     time: NOTICE_TIME,
                     catalog: false,
+                    error: true,
                 });
                 self.redraw = true;
             }
@@ -5210,6 +5264,7 @@ impl App {
             rect: (0.0, 0.0, 0.0, 0.0),
             time: NOTICE_TIME,
             catalog: false,
+            error: false,
         });
         self.redraw = true;
     }
@@ -5539,6 +5594,7 @@ impl App {
                 rect: (0.0, 0.0, 0.0, 0.0),
                 time: NOTICE_TIME,
                 catalog: true,
+                error: false,
             });
         }
     }
@@ -5567,6 +5623,7 @@ impl App {
                     rect: (0.0, 0.0, 0.0, 0.0),
                     time: std::time::Duration::from_secs(3600),
                     catalog: false,
+                    error: false,
                 });
                 self.drag_notice = true;
             }
@@ -5605,7 +5662,12 @@ impl App {
             }
             None if self.w > 0 => {
                 let s = self.ui.scale;
-                let c = sk_ui::widgets::notice(&self.ui.fonts, &n.text, s, &self.theme);
+                let dot = if n.error {
+                    self.theme.ui.field_invalid
+                } else {
+                    self.theme.ui.accent
+                };
+                let c = sk_ui::widgets::notice_dot(&self.ui.fonts, &n.text, s, &self.theme, dot);
                 let (cw, ch) = (c.width as f64, c.height as f64);
                 let x = ((self.w as f64 - cw) * 0.5).round();
                 let y = (self.h as f64 - ch - 16.0 * s as f64).round();
@@ -6249,6 +6311,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         pick_label: None,
         input_pill: None,
         post_at: None,
+        input_px: None,
+        input_swap: None,
         input_error: None,
         save_fail: autosave::FailNotice::default(),
         queued_command: None,
@@ -6293,6 +6357,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             rect: (0.0, 0.0, 0.0, 0.0),
             time: NOTICE_TIME,
             catalog: true,
+            error: false,
         });
         if a.notice.is_none() && a.renderer.pattern_error().is_some() {
             // Review 3q: Flächen ohne Muster, das Programm läuft weiter
@@ -6302,6 +6367,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 rect: (0.0, 0.0, 0.0, 0.0),
                 time: NOTICE_TIME,
                 catalog: false,
+                error: false,
             });
         }
     }

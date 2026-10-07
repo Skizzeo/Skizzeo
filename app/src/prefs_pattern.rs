@@ -517,7 +517,12 @@ impl Prefs {
         if fading && p.progress(anim).is_none() {
             p.changed = None;
         }
+        // Einmal je neuer Tabelle (Review 3u): die nächste Vorschau setzt
+        // `waiting` wieder, wenn sie noch wartet
         let ready = p.waiting.is_some_and(|g| g != proctex::bond_generation());
+        if ready {
+            p.waiting = None;
+        }
         fading || ready
     }
 
@@ -534,7 +539,11 @@ impl Prefs {
         let l = self.pw_layout(t, w);
         let s = w.scale;
         let pw = self.pw.as_mut()?;
-        let o = sc.model().attr().surface(pw.surface)?;
+        // Oberfläche weg (etwa nach Rückgängig): auf nichts mehr warten
+        let Some(o) = sc.model().attr().surface(pw.surface) else {
+            pw.waiting = None;
+            return None;
+        };
         pw.sync(o.pattern.as_ref());
         let after = Look {
             pattern: o.pattern.clone(),

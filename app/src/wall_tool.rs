@@ -230,7 +230,10 @@ impl WallTool {
         if self.rubber_dip < 1.0 {
             return None;
         }
-        Some(([last, end], crate::ui::m_text((end - last).length())))
+        Some((
+            [last, end],
+            crate::ui::live_length_text((end - last).length()),
+        ))
     }
 
     fn chain(&self, points: Vec<Vec3>, closed: bool) -> WallChain {

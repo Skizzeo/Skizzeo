@@ -371,6 +371,12 @@ pub fn m_text(mm: f64) -> String {
     format!("{:.*}", d, mm / 1000.0).replace('.', ",")
 }
 
+/// Live-Länge am Gummiband (Paket 8, Darstellung §2.1): immer zwei
+/// Nachkommastellen mit Komma und „ m“, z. B. „4,37 m“.
+pub fn live_length_text(mm: f64) -> String {
+    format!("{:.2} m", mm.abs() / 1000.0).replace('.', ",")
+}
+
 /// Höhenkote wie in der Bauzeichnung: ±0,00, +2,855, −0,80.
 pub fn kote_text(mm: f64) -> String {
     let r = mm.round();
@@ -800,13 +806,10 @@ fn tool_rows(
         ]),
         Row::Button(Id::Ortho, "90°-Sprung"),
         Row::Separator,
-        Row::Hint("Klick setzt Punkte, Klick auf"),
-        Row::Hint("den Startpunkt schließt"),
-        Row::Hint("Tab: Bezugsseite wechseln"),
-        Row::Hint("R: 90°-Sprung"),
-        Row::Hint("Esc: Eingabe beenden"),
-        Row::Hint("Violettes Band ziehen:"),
-        Row::Hint("Wand verschieben"),
+        // Drei kurze Zeilen (Paket 8, Darstellung §2.7); mehr in der Hilfe (F1)
+        Row::Hint("Klick setzt Punkte."),
+        Row::Hint("Zahl + Enter setzt genau."),
+        Row::Hint("Tab: Winkel, Esc: zu"),
     ]);
     rows
 }
@@ -3583,10 +3586,12 @@ mod levels_tests {
 
     /// A47 und Test 5 aus E14: auch im kleinen Fenster nichts abgeschnitten;
     /// reicht der Platz nicht, wird es eine Liste mit denselben Zahlen.
+    /// Seit dem kürzeren Werkzeug-Hinweis (Paket 8, §2.7) reicht der Platz
+    /// bis knapp unter 400 px Höhe.
     #[test]
     fn kleines_fenster_diagramm_oder_liste() {
         let (mut ui, _) = ui_mit_geschossen();
-        for (w, h, list) in [(900u32, 600u32, false), (900, 440, false), (900, 400, true)] {
+        for (w, h, list) in [(900u32, 600u32, false), (900, 440, false), (900, 380, true)] {
             ui.fit(1.0, w, h);
             let r = ui.rect(Panel::Levels, w, 32);
             let t = ui.rect(Panel::Tools, w, 32);
@@ -3726,7 +3731,7 @@ mod levels_tests {
         ui.set_levels(s.levels());
         assert!(band(&ui, "OG").active && !band(&ui, "EG").active);
         // Auch in der Liste (kleines Fenster)
-        ui.fit(1.0, 900, 400);
+        ui.fit(1.0, 900, 380);
         assert!(ui.levels_layout().list);
         assert!(name_at(&ui, og.id).is_some());
         assert!(name_at(&ui, band(&ui, "Fundament").id).is_some());
