@@ -194,6 +194,7 @@ impl Model {
                 name: name.into(),
                 color,
                 cut_color,
+                pattern: crate::proctex::factory(name),
             });
             let d = MaterialDisplay {
                 cut_fill,
@@ -235,7 +236,8 @@ impl Model {
             900,
             2500.0,
             st.masonry,
-            [214, 214, 210],
+            // Jörns Referenz „Sichtbeton mittelgrau“ (Paket 6 §1.1)
+            [142, 142, 141],
             [150, 150, 148],
         );
         let plaster = mat(
@@ -244,7 +246,8 @@ impl Model {
             100,
             1400.0,
             st.empty,
-            [240, 238, 232],
+            // Jörns Referenz „Reibeputz weiß“ (Paket 6 §1.1)
+            [236, 236, 237],
             [200, 198, 192],
         );
         let mut layer_sets = Arena::new();
@@ -346,6 +349,7 @@ impl Model {
                     name: name.into(),
                     color,
                     cut_color,
+                    pattern: crate::proctex::factory(name),
                 });
                 let d = MaterialDisplay {
                     cut_fill,
@@ -365,8 +369,10 @@ impl Model {
             1800.0,
             Some(0.68),
             st.masonry,
-            [168, 74, 52],
-            [140, 62, 46],
+            // Paket 6 (Darstellung §3.5): Ansichtsfläche weiß (Fugen in der
+            // Ansicht auf Papier), in 3D zeigen die Steine ihre Farben
+            [255, 255, 255],
+            [150, 80, 62],
         );
         let cavity = mat(
             "Kerndämmung (Mineralwolle)",
@@ -466,6 +472,13 @@ impl Model {
             strip: edge,
         };
         layer_sets.insert(mono);
+        // Paket 6: Stift „Ansichtsmuster“ für die Fugen in Ansichten, mit
+        // fester Guid, damit die übrigen Guids gleich bleiben
+        let pen = attr::pattern_pen(attr::PATTERN_PEN_GUID, |_| false);
+        let pen = attr.add_pen(pen);
+        let mut d = attr.display().clone();
+        d.pattern.pen = pen;
+        attr.set_display(d);
         // Paket 1a: Gewerk je Startbaustoff
         let ids: Vec<MaterialId> = materials.ids().collect();
         for id in ids {
@@ -829,6 +842,24 @@ impl Model {
         let ok = self.attr.set_surface(id, s);
         self.revision += ok as u64;
         ok
+    }
+
+    /// Muster einer Oberfläche setzen oder abwählen (Paket 6). Fremde
+    /// `[pattern]`-Zeilen derselben Oberfläche aus der gelesenen Datei fallen
+    /// weg, damit nach dem Speichern genau eine Zeile gilt (Regel 64).
+    pub fn set_surface_pattern(
+        &mut self,
+        id: SurfaceId,
+        pattern: Option<crate::proctex::Pattern>,
+    ) -> bool {
+        let Some(s) = self.attr.surface(id).cloned() else {
+            return false;
+        };
+        let key = format!("surface={}", s.guid);
+        self.foreign
+            .records
+            .retain(|r| !(r.starts_with("[pattern]") && r.split_whitespace().any(|w| w == key)));
+        self.set_surface(id, Surface { pattern, ..s })
     }
 
     pub fn set_display(&mut self, d: Display) {
@@ -3830,6 +3861,7 @@ impl Model {
             name: name.into(),
             color,
             cut_color,
+            pattern: None,
         });
         let d = MaterialDisplay {
             cut_fill,
@@ -6937,27 +6969,27 @@ mod tests {
                 ..
             }
         )));
-        assert_eq!(m.next_pen_number(), 10);
+        assert_eq!(m.next_pen_number(), 11);
         m.begin("Stift");
         assert!(!m.remove_pen(strong), "verwendet");
         let p = Pen {
             guid: m.new_guid(),
             number: m.next_pen_number(),
-            name: "Stift 10".into(),
+            name: "Stift 11".into(),
             color: [0, 0, 0],
             width_mm: 0.25,
         };
         let id = m.add_pen(p);
         let t = m.commit().unwrap();
-        assert_eq!(m.attr().pens().len(), 10);
+        assert_eq!(m.attr().pens().len(), 11);
         assert!(m.check().is_empty(), "{:?}", m.check());
         m.begin("Löschen");
         assert!(m.remove_pen(id));
         let del = m.commit().unwrap();
         assert!(m.attr().pen(id).is_none());
-        assert_eq!(m.next_pen_number(), 10);
+        assert_eq!(m.next_pen_number(), 11);
         m.apply(&del, Direction::Undo);
-        assert_eq!(m.attr().pen(id).unwrap().number, 10);
+        assert_eq!(m.attr().pen(id).unwrap().number, 11);
         m.apply(&t, Direction::Undo);
         assert!(m.attr().pen(id).is_none());
         assert!(m.check().is_empty());

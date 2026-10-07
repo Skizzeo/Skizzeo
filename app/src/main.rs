@@ -6185,6 +6185,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             if drawing {
                 view.paper = Some(a.scene.table().paper);
             }
+            view.patterns = draw_table::pattern_mode(a.ui.view, false);
             // Geschosswechsel: der neue Grundriss gleitet an seinen Platz
             if a.view_shift != 0.0 {
                 view = view.shifted(a.view_shift, (a.h - th) as f32);

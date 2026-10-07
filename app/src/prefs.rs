@@ -151,6 +151,14 @@ enum FieldId {
     Hatch(usize, usize),
     /// Schraffur Zickzack: Periode in Schichtdicken.
     Zigzag,
+    /// Muster (Oberfläche): Steinlänge und -höhe bei Format „frei“, Fuge,
+    /// Anteil der Steinfarbe 1–3, Streuung, Körnung.
+    PatLen,
+    PatH,
+    PatJoint,
+    PatShare(usize),
+    PatSpread,
+    PatGrain,
 }
 
 /// Auswahllisten.
@@ -160,6 +168,10 @@ enum ComboId {
     Scheme,
     FillKind,
     FillSpace,
+    /// Muster: Art, Steinformat, Verband.
+    PatKind,
+    PatFormat,
+    PatBond,
 }
 
 /// Wessen Farbe ein Farbfeld zeigt.
@@ -175,6 +187,9 @@ enum ColorTarget {
     /// Oberfläche: Ansichtsfläche bzw. Schnittfläche in 3D.
     SurfFace(SurfaceId),
     SurfCut(SurfaceId),
+    /// Muster: Steinfarbe 1–3 und Fugenfarbe.
+    PatStone(SurfaceId, usize),
+    PatJoint(SurfaceId),
 }
 
 /// Bildlaufleisten.
@@ -213,6 +228,8 @@ enum Target {
     Check(usize),
     /// „Zeile/Schar hinzufügen“ bzw. „… entfernen“.
     RowAdd,
+    /// Muster: neuer Startwert („Zufall“).
+    PatRandom,
     RowDel,
     Group(usize),
     Dot(ColorTarget),
@@ -439,6 +456,8 @@ fn role_label(c: ColorTarget) -> &'static str {
         ColorTarget::Pen(_) => "Farbe",
         ColorTarget::SurfFace(_) => "Farbe Ansichtsfläche",
         ColorTarget::SurfCut(_) => "Farbe Schnittfläche 3D",
+        ColorTarget::PatStone(..) => "Steinfarbe",
+        ColorTarget::PatJoint(_) => "Fugenfarbe",
     }
 }
 
@@ -558,7 +577,16 @@ fn field_range(f: FieldId) -> Option<(f32, f32, usize, &'static str)> {
         },
         FieldId::PickR | FieldId::PickG | FieldId::PickB => Some((0.0, 255.0, 0, "")),
         FieldId::PenName | FieldId::PickHex => None,
-        FieldId::Name | FieldId::Dash(..) | FieldId::Hatch(..) | FieldId::Zigzag => None,
+        FieldId::Name
+        | FieldId::Dash(..)
+        | FieldId::Hatch(..)
+        | FieldId::Zigzag
+        | FieldId::PatLen
+        | FieldId::PatH
+        | FieldId::PatJoint
+        | FieldId::PatShare(_)
+        | FieldId::PatSpread
+        | FieldId::PatGrain => None,
     }
 }
 
@@ -574,7 +602,15 @@ fn field_label(f: FieldId) -> &'static str {
         FieldId::PickB => "B",
         FieldId::PickHex => "Hex",
         FieldId::Name => "Name",
-        FieldId::Dash(..) | FieldId::Hatch(..) | FieldId::Zigzag => "",
+        FieldId::Dash(..)
+        | FieldId::Hatch(..)
+        | FieldId::Zigzag
+        | FieldId::PatLen
+        | FieldId::PatH
+        | FieldId::PatJoint
+        | FieldId::PatShare(_)
+        | FieldId::PatSpread
+        | FieldId::PatGrain => "",
     }
 }
 
@@ -603,7 +639,11 @@ fn role_color(t: &Theme, c: ColorTarget) -> Rgba {
         ColorTarget::Accent => t.ui.accent,
         ColorTarget::SkyTop => t.env.sky.last().map_or(t.ui.bg, |s| s.1),
         ColorTarget::SkyHorizon => t.env.sky.first().map_or(t.ui.bg, |s| s.1),
-        ColorTarget::Pen(_) | ColorTarget::SurfFace(_) | ColorTarget::SurfCut(_) => t.ui.text,
+        ColorTarget::Pen(_)
+        | ColorTarget::SurfFace(_)
+        | ColorTarget::SurfCut(_)
+        | ColorTarget::PatStone(..)
+        | ColorTarget::PatJoint(_) => t.ui.text,
     }
 }
 
@@ -631,6 +671,8 @@ pub struct Prefs {
     advanced: bool,
     /// „Eigene …“ gewählt: Feld für die Breite statt des Hinweises.
     custom_width: bool,
+    /// Muster: Steinformat „frei“ gewählt (Länge und Höhe als Felder).
+    pat_free: bool,
     hover: Option<Target>,
     pressed: Option<Target>,
     edit: Option<Edit>,
@@ -674,6 +716,7 @@ impl Prefs {
             attr_scroll: [0.0; 4],
             advanced: false,
             custom_width: false,
+            pat_free: false,
             hover: None,
             pressed: None,
             edit: None,
@@ -882,7 +925,9 @@ impl Prefs {
         let y = if project {
             HEAD + 10.0
         } else {
-            HEAD + 32.0 + 5.0 * TAB_ROW + 10.0
+            // unter dem letzten Projektreiter (seit Paket 5 ohne „Baustoffe“)
+            let n = Tab::ALL.iter().position(|&x| x == Tab::Ui).unwrap_or(0) as f32;
+            HEAD + 32.0 + n * TAB_ROW + 10.0
         };
         Rect::new(f.x + 16.0 * s, f.y + y * s, 120.0 * s, 18.0 * s)
     }
@@ -1497,8 +1542,9 @@ enum TextKind {
     /// Fette Zwischenüberschrift.
     Title,
     /// Leise, eine Zeile je Eintrag (`\n`), lange Einträge umbrochen statt
-    /// gekürzt (Spalte „Verwendet von“ neben der Vorschau).
-    Wrap,
+    /// gekürzt (Spalte „Verwendet von“ neben der Vorschau), höchstens so
+    /// breit (dip × Skalierung).
+    Wrap(f32),
 }
 
 impl UiText {
@@ -1540,7 +1586,15 @@ impl UiText {
             x,
             y,
             text: text.into(),
-            kind: TextKind::Wrap,
+            kind: TextKind::Wrap(f32::INFINITY),
+        }
+    }
+    fn wrapped_in(x: f32, y: f32, text: impl Into<String>, w: f32) -> UiText {
+        UiText {
+            x,
+            y,
+            text: text.into(),
+            kind: TextKind::Wrap(w),
         }
     }
     fn group(x: f32, y: f32, text: impl Into<String>, open: bool) -> UiText {
@@ -1785,6 +1839,7 @@ impl Prefs {
             | Target::AttrDel
             | Target::RowAdd
             | Target::RowDel
+            | Target::PatRandom
             | Target::Item(_)
             | Target::PickRecent(_)
             | Target::PickOld
@@ -1899,7 +1954,8 @@ impl Prefs {
             | Target::AttrDup
             | Target::AttrDel
             | Target::RowAdd
-            | Target::RowDel => self.attr_click(p, cx, out),
+            | Target::RowDel
+            | Target::PatRandom => self.attr_click(p, cx, out),
             Target::Item(i) => self.choose(i, cx, out),
             Target::PickOld => {
                 if let Some(Popup::Picker(p)) = &self.popup {
@@ -2101,9 +2157,16 @@ impl Prefs {
             FieldId::PickG => pick.1.to_string(),
             FieldId::PickB => pick.2.to_string(),
             FieldId::PickHex => to_hex([pick.0, pick.1, pick.2]),
-            FieldId::Name | FieldId::Dash(..) | FieldId::Hatch(..) | FieldId::Zigzag => {
-                self.attr_field_value(f, s)
-            }
+            FieldId::Name
+            | FieldId::Dash(..)
+            | FieldId::Hatch(..)
+            | FieldId::Zigzag
+            | FieldId::PatLen
+            | FieldId::PatH
+            | FieldId::PatJoint
+            | FieldId::PatShare(_)
+            | FieldId::PatSpread
+            | FieldId::PatGrain => self.attr_field_value(f, s),
         }
     }
 
@@ -2343,6 +2406,18 @@ impl Prefs {
                     Rgba::from_rgb8(if face { o.color } else { o.cut_color })
                 })
             }
+            ColorTarget::PatStone(id, _) | ColorTarget::PatJoint(id) => {
+                let o = s.model().attr().surface(id);
+                match o.and_then(|o| o.pattern.as_ref()) {
+                    Some(sk_model::proctex::Pattern::Masonry {
+                        palette, joint_rgb, ..
+                    }) => Rgba::from_rgb8(match ct {
+                        ColorTarget::PatStone(_, k) => palette[k.min(2)].0,
+                        _ => *joint_rgb,
+                    }),
+                    _ => t.ui.text,
+                }
+            }
             _ => role_color(t, ct),
         }
     }
@@ -2375,6 +2450,28 @@ impl Prefs {
                     }
                     *slot = [c.0, c.1, c.2];
                     m.set_surface(id, o)
+                });
+            }
+            ColorTarget::PatStone(id, _) | ColorTarget::PatJoint(id) => {
+                out.model |= cx.scene.edit_attr(|m| {
+                    let Some(Some(mut p)) = m.attr().surface(id).map(|o| o.pattern.clone()) else {
+                        return false;
+                    };
+                    let sk_model::proctex::Pattern::Masonry {
+                        palette, joint_rgb, ..
+                    } = &mut p
+                    else {
+                        return false;
+                    };
+                    let slot = match ct {
+                        ColorTarget::PatStone(_, k) => &mut palette[k.min(2)].0,
+                        _ => joint_rgb,
+                    };
+                    if *slot == [c.0, c.1, c.2] {
+                        return false;
+                    }
+                    *slot = [c.0, c.1, c.2];
+                    m.set_surface_pattern(id, Some(p))
                 });
             }
             ColorTarget::Accent => {
@@ -2475,7 +2572,10 @@ impl Prefs {
         let (t, w) = (&*cx.theme, cx.win);
         match ct {
             ColorTarget::Pen(_) => self.pens_layout(t, &w, cx.scene).color,
-            ColorTarget::SurfFace(_) | ColorTarget::SurfCut(_) => self
+            ColorTarget::SurfFace(_)
+            | ColorTarget::SurfCut(_)
+            | ColorTarget::PatStone(..)
+            | ColorTarget::PatJoint(_) => self
                 .attr_layout(t, &w, cx.scene)
                 .items
                 .iter()
@@ -2734,7 +2834,16 @@ impl Prefs {
 fn is_attr_field(f: FieldId) -> bool {
     matches!(
         f,
-        FieldId::Name | FieldId::Dash(..) | FieldId::Hatch(..) | FieldId::Zigzag
+        FieldId::Name
+            | FieldId::Dash(..)
+            | FieldId::Hatch(..)
+            | FieldId::Zigzag
+            | FieldId::PatLen
+            | FieldId::PatH
+            | FieldId::PatJoint
+            | FieldId::PatShare(_)
+            | FieldId::PatSpread
+            | FieldId::PatGrain
     )
 }
 
@@ -3333,7 +3442,7 @@ impl Prefs {
                     label(&mut cc, bold, &tx.text, t.size.font_title * s, x, y, u.text)
                 }
                 TextKind::Label => label(&mut cc, regular, &tx.text, font, x, y, u.text_dim),
-                TextKind::Dim | TextKind::Wrap => {
+                TextKind::Dim | TextKind::Wrap(_) => {
                     label(&mut cc, regular, &tx.text, small, x, y, u.field_unit)
                 }
                 TextKind::Title => label(&mut cc, bold, &tx.text, font, x, y, u.text),

@@ -109,6 +109,34 @@ impl Neg for Vec3 {
     }
 }
 
+/// Punkt in einer Fläche (Musterkoordinaten u, v in mm).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Vec2 {
+    pub x: f64,
+    pub y: f64,
+}
+
+pub const fn vec2(x: f64, y: f64) -> Vec2 {
+    Vec2 { x, y }
+}
+
+/// Achsparalleles Rechteck in einer Fläche.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Rect2 {
+    pub min: Vec2,
+    pub max: Vec2,
+}
+
+impl Rect2 {
+    /// Rechteck zwischen zwei Ecken, gleich in welcher Reihenfolge.
+    pub fn new(x0: f64, y0: f64, x1: f64, y1: f64) -> Rect2 {
+        Rect2 {
+            min: vec2(x0.min(x1), y0.min(y1)),
+            max: vec2(x0.max(x1), y0.max(y1)),
+        }
+    }
+}
+
 /// 4×4-Matrix, spaltenweise gespeichert (`c[spalte][zeile]`) wie in OpenGL.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mat4 {

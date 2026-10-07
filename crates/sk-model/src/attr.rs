@@ -123,6 +123,9 @@ pub struct Surface {
     pub name: String,
     pub color: [u8; 3],
     pub cut_color: [u8; 3],
+    /// Prozedurales Muster (Paket 6): Fugen in Ansichten, Steine und Korn
+    /// in 3D; ändert nie Mengen oder Geometrie (Regel 56).
+    pub pattern: Option<crate::proctex::Pattern>,
 }
 
 /// Stift und Linientyp einer Kante.
@@ -147,6 +150,8 @@ pub struct Display {
     pub section_ends: EdgeStyle,
     /// Grundriss des Geschosses darunter, wenn ein Obergeschoss aktiv ist (E16).
     pub background: EdgeStyle,
+    /// Fugenmuster in den Ansichten (Paket 6), Stift „Ansichtsmuster“.
+    pub pattern: EdgeStyle,
     /// Papiergrund der Zeichnungsansichten.
     pub paper: [u8; 3],
 }
@@ -207,6 +212,7 @@ pub fn display_slots(d: &Display) -> Vec<(&'static str, EdgeStyle)> {
     v.push(("Schnittlinie", d.section_line));
     v.push(("Schnittlinie Enden", d.section_ends));
     v.push(("Hintergrund", d.background));
+    v.push(("Fugen in Ansichten", d.pattern));
     v
 }
 
@@ -388,6 +394,7 @@ impl Attributes {
             &d.section_line,
             &d.section_ends,
             &d.background,
+            &d.pattern,
         ]);
         let mut out = Vec::new();
         let mut numbers: Vec<u16> = self.pens.iter().map(|(_, p)| p.number).collect();
@@ -448,6 +455,30 @@ pub struct Standard {
 
 /// Nummer des Stifts „Hintergrund“ (E16), in älteren Dateien ergänzt.
 pub(crate) const BACKGROUND_PEN: u16 = 9;
+
+/// Werks-Stift der Fugen in Ansichten (Paket 6): Nummer, Name, Farbe, Breite.
+/// Ältere Dateien bekommen ihn beim Öffnen.
+pub const PATTERN_PEN: (u16, &str, [u8; 3], f32) = (10, "Ansichtsmuster", [96, 96, 96], 0.13);
+
+/// Feste Guid des Stifts „Ansichtsmuster“, in jedem Projekt gleich (wie die
+/// Werkstypen), damit die übrigen Guids des Startsatzes gleich bleiben.
+pub const PATTERN_PEN_GUID: Guid = Guid(0x25d4de18452e4d84aba3d0fd35e1ba32);
+
+/// Der Stift „Ansichtsmuster“; ist Nummer 10 vergeben, die nächste freie
+/// Nummer.
+pub(crate) fn pattern_pen(guid: Guid, taken: impl Fn(u16) -> bool) -> Pen {
+    let (mut number, name, color, width_mm) = PATTERN_PEN;
+    while taken(number) {
+        number += 1;
+    }
+    Pen {
+        guid,
+        number,
+        name: name.into(),
+        color,
+        width_mm,
+    }
+}
 
 /// Starttabellen. Die Werte ergeben dieselbe Zeichnung wie vor den Tabellen
 /// (bei 5,5 px je mm).
@@ -517,6 +548,8 @@ pub fn defaults(guids: &mut GuidGen) -> (Attributes, Standard) {
             section_line: style(sect_thin),
             section_ends: style(sect_strong),
             background: style(under),
+            // Startwert; das Modell setzt den Stift „Ansichtsmuster“
+            pattern: style(fine),
             paper: [245, 244, 239],
         },
         rev: 0,
@@ -540,7 +573,8 @@ mod tests {
         let m = Model::with_seed(1);
         assert!(m.check().is_empty(), "{:?}", m.check());
         let a = m.attr();
-        assert_eq!(a.pens().len(), 9);
+        // Paket 6: Stift 10 „Ansichtsmuster“
+        assert_eq!(a.pens().len(), 10);
         // E16: Stift 9 „Hintergrund“ für den Grundriss darunter
         let bg = a.pen(a.display().background.pen).unwrap();
         assert_eq!(

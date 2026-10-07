@@ -717,6 +717,7 @@ fn write_known(m: &Model) -> String {
     slot(&mut out, "section_line", &d.section_line);
     slot(&mut out, "section_ends", &d.section_ends);
     slot(&mut out, "background", &d.background);
+    slot(&mut out, "pattern", &d.pattern);
     Line::new("display")
         .word("slot", "paper")
         .color("color", d.paper)
@@ -1024,7 +1025,72 @@ fn write_known(m: &Model) -> String {
     for x in sorted(m.materials().iter(), |x| x.guid) {
         crate::matprop::write_lines(&mut out, x.guid, &x.props);
     }
+    // Muster (Paket 6 §2.2): je Oberfläche mit Muster eine Zeile; eine
+    // Werks-Oberfläche ohne Muster schreibt die Abwahl (Regel 60)
+    for s in sorted(a.surfaces().iter(), |s| s.guid) {
+        match &s.pattern {
+            Some(p) => crate::proctex::write_line(&mut out, s.guid, Some(p)),
+            None if crate::proctex::factory(&s.name).is_some() => {
+                crate::proctex::write_line(&mut out, s.guid, None)
+            }
+            None => {}
+        }
+    }
     out
+}
+
+/// Zeilen `[pattern]` an die gelesenen Oberflächen (`.szo` und `.szk`,
+/// Regeln 57, 59, 60). Je Oberfläche gilt die erste Zeile; weitere bleiben
+/// mit Hinweis unverändert stehen (ihre Zeilennummern kommen nach `keep`).
+/// Ein Verweis auf eine unbekannte Oberfläche und falsche Werte werden mit
+/// Hinweis verworfen. Gibt die Oberflächen mit einer gültigen oder
+/// abwählenden Zeile zurück.
+pub(crate) fn read_patterns(
+    recs: &[Record],
+    lines: &[&str],
+    ids: &HashMap<Guid, Id<Surface>>,
+    surfaces: &mut Arena<Surface>,
+    hints: &mut Vec<String>,
+    keep: &mut Vec<usize>,
+) -> Vec<Guid> {
+    let mut done: Vec<Guid> = Vec::new();
+    for r in recs {
+        let g = r.opt("surface").and_then(Guid::from_ifc);
+        let Some((g, id)) = g.and_then(|g| ids.get(&g).map(|id| (g, *id))) else {
+            r.skip();
+            hints.push(format!(
+                "Zeile {}: Muster für unbekannte Oberfläche, verworfen",
+                r.line
+            ));
+            continue;
+        };
+        let name = surfaces.get(id).map_or(String::new(), |s| s.name.clone());
+        if done.contains(&g) {
+            r.skip();
+            keep.push(r.line);
+            hints.push(format!(
+                "Zeile {}: zweites Muster für „{name}“, es gilt das erste",
+                r.line
+            ));
+            continue;
+        }
+        match crate::proctex::read_line(r, lines[r.line - 1]) {
+            Ok(p) => {
+                done.push(g);
+                if let Some(s) = surfaces.get_mut(id) {
+                    s.pattern = p;
+                }
+            }
+            Err(e) => {
+                r.skip();
+                hints.push(format!(
+                    "Zeile {}: Muster für „{name}“ verworfen ({e})",
+                    r.line
+                ));
+            }
+        }
+    }
+    done
 }
 
 /// Zeilen `[matprop]` an die gelesenen Baustoffe (`.szo` und `.szk`).
@@ -1141,10 +1207,11 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     // Sätze unbekannter Art (neuere Fassung, F-17b): roh behalten, ohne Hinweis
     let mut alien: Vec<usize> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 27] = [
+    const KNOWN: [&str; 28] = [
         "pen", "linetype", "fill", "surface", "display", "trade", "material", "layerset", "layer",
         "typeprop", "project", "building", "storey", "run", "wall", "slab", "footing", "floor",
         "strip", "soffit", "terrace", "coping", "prop", "cut", "hide", "lock", "matprop",
+        "pattern",
     ];
     for (i, l) in text.lines().enumerate().skip(1) {
         let Some(r) = Record::parse(i + 1, l)? else {
@@ -1202,6 +1269,23 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         let id = surfaces.insert(s);
         register(&mut surface_ids, &mut seen, r, g, id)?;
     }
+    // Muster (Paket 6); Werks-Oberflächen ohne Zeile zeigen ihr Werksmuster
+    // ab dem Öffnen und schreiben es beim nächsten Speichern
+    let patterned = read_patterns(
+        recs("pattern"),
+        &lines,
+        &surface_ids,
+        &mut surfaces,
+        &mut hints,
+        &mut alien,
+    );
+    for id in surface_ids.values() {
+        if let Some(s) = surfaces.get_mut(*id) {
+            if !patterned.contains(&s.guid) && s.pattern.is_none() {
+                s.pattern = crate::proctex::factory(&s.name);
+            }
+        }
+    }
     // Vor E16: Stift 9 „Hintergrund“ ergänzen, wenn die Datei keinen hat
     let has_background = recs("display")
         .iter()
@@ -1215,12 +1299,29 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
             });
         }
     }
+    // Vor Paket 6: Stift „Ansichtsmuster“ ergänzen, wenn die Datei keine
+    // Fugen-Darstellung hat
+    let has_pattern = recs("display")
+        .iter()
+        .any(|r| r.get("slot").is_ok_and(|s| s == "pattern"));
+    let pattern_pen = (!has_pattern).then(|| {
+        let g = crate::attr::PATTERN_PEN_GUID;
+        match pen_ids.get(&g) {
+            Some(id) => *id,
+            None => {
+                let taken = |n: u16| pens.iter().any(|(_, p)| p.number == n);
+                let p = crate::attr::pattern_pen(g, taken);
+                pens.insert(p)
+            }
+        }
+    });
     let display = read_display(
         recs("display"),
         &pens,
         &line_types,
         &pen_ids,
         &lt_ids,
+        pattern_pen,
         &mut hints,
     )?;
 
@@ -1886,6 +1987,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         }
     }
     hints.extend(model.check());
+    alien.sort_unstable();
     model.foreign = foreign(&model, &by, &lines, &alien);
     Ok(Loaded { model, hints })
 }
@@ -2003,6 +2105,7 @@ pub(crate) fn read_surface(r: &Record) -> Result<Surface, LoadError> {
         name: r.get("name")?.to_string(),
         color: r.color("color")?,
         cut_color: r.color("cut")?,
+        pattern: None,
     })
 }
 
@@ -2283,6 +2386,7 @@ fn read_display(
     line_types: &Arena<LineType>,
     pen_ids: &HashMap<Guid, Id<Pen>>,
     lt_ids: &HashMap<Guid, Id<LineType>>,
+    pattern_pen: Option<Id<Pen>>,
     hints: &mut Vec<String>,
 ) -> Result<Display, LoadError> {
     let (std_attr, _) = crate::attr::defaults(&mut GuidGen::with_seed(0));
@@ -2317,6 +2421,7 @@ fn read_display(
     slots.push(("section_line".into(), sd.section_line));
     slots.push(("section_ends".into(), sd.section_ends));
     slots.push(("background".into(), sd.background));
+    slots.push(("pattern".into(), sd.pattern));
     let mut styles: Vec<Option<EdgeStyle>> = vec![None; slots.len()];
     let mut paper = None;
     for r in recs {
@@ -2343,6 +2448,15 @@ fn read_display(
         let s = match s {
             Some(s) => s,
             None => {
+                // Fugen in Ansichten (Paket 6): der ergänzte Stift, Volllinie
+                if let (Some(pen), "pattern") = (pattern_pen, name.as_str()) {
+                    let line_type = line_types
+                        .ids()
+                        .next()
+                        .ok_or_else(|| err(0, "Darstellung „pattern“ fehlt, kein Linientyp"))?;
+                    resolved.push(EdgeStyle { pen, line_type });
+                    continue;
+                }
                 // Der Hintergrund (E16) fehlt in allen älteren Dateien: still ergänzen
                 if name != "background" {
                     hints.push(format!("Darstellung „{name}“ fehlt, Startwert gesetzt"));
@@ -2375,6 +2489,7 @@ fn read_display(
         section_line: resolved[2 * n + 1],
         section_ends: resolved[2 * n + 2],
         background: resolved[2 * n + 3],
+        pattern: resolved[2 * n + 4],
         paper,
     })
 }
@@ -2451,6 +2566,7 @@ mod tests {
             name: "Klinker rot".into(),
             color: [160, 60, 40],
             cut_color: [200, 90, 70],
+            pattern: None,
         });
         m
     }

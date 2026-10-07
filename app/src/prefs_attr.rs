@@ -9,7 +9,10 @@
 //! ([`sk_render::fill_color`], [`sk_render::dash_ink`]).
 
 use super::*;
-use crate::attr_pick::{fill_display, line_strip, paint_cube, paint_fill_preview, TileKey, Tiles};
+use crate::attr_pick::{
+    fill_display, line_strip, paint_cube, paint_elevation_tile, paint_fill_preview, TileKey, Tiles,
+};
+use sk_model::proctex::{self, Bond, Pattern, BRICK_FORMATS};
 use sk_model::{Dash, Fill, FillId, FillKind, FillSpace, HatchLine, LineType, LineTypeId, Surface};
 
 /// Breite der Liste links (dip).
@@ -29,6 +32,57 @@ const NEW_DASH: Dash = Dash {
 const NEW_HATCH: HatchLine = HatchLine::solid(45.0, 2.0, 0.0);
 
 // --- Daten ----------------------------------------------------------------------
+
+/// Steinformat zu Länge und Höhe ([`BRICK_FORMATS`]).
+fn format_index(len: f32, h: f32) -> Option<usize> {
+    BRICK_FORMATS.iter().position(|f| f.1 == len && f.2 == h)
+}
+
+/// Einträge und Wahl der Musterlisten (Art, Steinformat, Verband).
+fn pattern_combo(id: ComboId, p: Option<&Pattern>, free: bool) -> (Vec<String>, usize) {
+    match id {
+        ComboId::PatKind => {
+            let mut items = vec!["ohne".to_string(), "Mauerwerk".into(), "Putz".into()];
+            let sel = match p {
+                None => 0,
+                Some(Pattern::Masonry { .. }) => 1,
+                Some(Pattern::Plaster { .. }) => 2,
+                Some(Pattern::Foreign(_)) => {
+                    items.push("unbekannt (neuere Version)".into());
+                    3
+                }
+            };
+            (items, sel)
+        }
+        ComboId::PatFormat => {
+            let mut items: Vec<String> = BRICK_FORMATS
+                .iter()
+                .map(|f| format!("{} {} × {}", f.0, f.1, f.2))
+                .collect();
+            items.push("frei".into());
+            let sel = match p {
+                Some(Pattern::Masonry { len, h, .. }) if !free => {
+                    format_index(*len, *h).unwrap_or(BRICK_FORMATS.len())
+                }
+                _ => BRICK_FORMATS.len(),
+            };
+            (items, sel)
+        }
+        _ => {
+            let items = ["Läufer halbsteinig", "Läufer drittelsteinig", "wild"];
+            let sel = match p {
+                Some(Pattern::Masonry {
+                    bond: Bond::Half, ..
+                }) => 0,
+                Some(Pattern::Masonry {
+                    bond: Bond::Third, ..
+                }) => 1,
+                _ => 2,
+            };
+            (items.map(String::from).to_vec(), sel)
+        }
+    }
+}
 
 fn lt_list(m: &Model) -> Vec<(LineTypeId, LineType)> {
     let a = m.attr();
@@ -80,6 +134,8 @@ pub(super) fn attr_unit(f: FieldId) -> &'static str {
     match f {
         FieldId::Dash(..) | FieldId::Hatch(_, 1..) => "mm",
         FieldId::Hatch(_, 0) => "°",
+        FieldId::PatLen | FieldId::PatH | FieldId::PatJoint | FieldId::PatGrain => "mm",
+        FieldId::PatShare(_) | FieldId::PatSpread => "%",
         _ => "",
     }
 }
@@ -179,6 +235,8 @@ pub(super) struct AttrLayout {
     /// Nur zum Ablesen (BIM-Daten): Feld und Text.
     pub readonly: Vec<(Rect, String)>,
     pub preview: Option<Rect>,
+    /// Zweite Vorschau (Oberflächen mit Muster: Ansichtskachel).
+    pub preview2: Option<Rect>,
 }
 
 impl Prefs {
@@ -304,6 +362,7 @@ impl Prefs {
             texts: Vec::new(),
             readonly: Vec::new(),
             preview: None,
+            preview2: None,
         };
         match self.tab {
             Tab::LineTypes => self.lt_side(&mut l, t, s, m),
@@ -512,34 +571,172 @@ impl Prefs {
                 .push((Rect::new(vx, y + 2.0 * s, ww, wh), Target::Swatch(ct)));
             y += 30.0 * s;
         }
-        y += 6.0 * s;
-        l.texts.push(UiText::dim(
-            x,
-            y + 10.0 * s,
-            "Glanz, Transparenz und Textur folgen später.",
-        ));
-        y += 42.0 * s;
-        l.texts.push(UiText::group_title(x, y, "Vorschau"));
-        y += 10.0 * s;
+        y += 4.0 * s;
+        self.pattern_side(l, t, s, m, (id, &o), y);
+    }
+
+    /// Abschnitt „Muster“ einer Oberfläche (Paket 6, soll-p6-5): links die
+    /// Regler ab `y`, rechts die Vorschau (Würfel, Ansichtskachel); passt
+    /// die Spalte nicht daneben, steht die Vorschau darunter.
+    fn pattern_side(
+        &self,
+        l: &mut AttrLayout,
+        t: &Theme,
+        s: f32,
+        m: &Model,
+        (id, o): (SurfaceId, &Surface),
+        mut y: f32,
+    ) {
+        let (x, sw) = (l.side.x, l.side.w);
+        let fh = t.size.field_height * s;
         let bottom = l.side.y + l.side.h;
-        let ph = (t.size.preview_h * s).min(bottom - y).max(40.0 * s);
-        let pw = (200.0 * s).min(sw * 0.56);
-        l.preview = Some(Rect::new(x, y, pw, ph));
-        let tx = x + pw + 14.0 * s;
-        let mut ty = y + 14.0 * s;
-        for line in ["Licht wie in der", "3D-Ansicht; Ecke", "in Schnittfarbe."] {
-            l.texts.push(UiText::dim(tx, ty, line));
-            ty += 18.0 * s;
-        }
-        ty += 10.0 * s;
-        let users = self.sel_users(m);
-        l.texts.push(UiText::dim(tx, ty, "Verwendet von:"));
-        ty += 18.0 * s;
-        if users.is_empty() {
-            l.texts.push(UiText::dim(tx, ty, "nichts"));
+        let gap = 12.0 * s;
+        // Regler ab vx (kurze Beschriftungen), Listen cw breit
+        let vx = x + 104.0 * s;
+        let cw = (sw - (vx - x)).min(150.0 * s);
+        let free = sw - (vx - x) - cw - gap;
+        let right = free >= 90.0 * s;
+        let pw = if right {
+            free.min(120.0 * s)
         } else {
-            l.texts.push(UiText::wrapped(tx, ty, users.join("\n")));
+            110.0 * s
+        };
+        let short = 66.0 * s;
+        let step = fh + 5.0 * s;
+        let top = y;
+        l.texts.push(UiText::group_title(x, y + 14.0 * s, "Muster"));
+        y += 24.0 * s;
+        let row = |l: &mut AttrLayout, y: &mut f32, label: &str, w: f32, tg: Target| {
+            l.texts.push(UiText::label(x, *y + 18.0 * s, label));
+            l.items.push((Rect::new(vx, *y, w, fh), tg));
+            *y += step;
+        };
+        row(l, &mut y, "Art", cw, Target::Combo(ComboId::PatKind));
+        let random = |l: &mut AttrLayout, y: f32| {
+            let bx = vx + short + 8.0 * s;
+            let r = Rect::new(bx, y, (vx + cw - bx).max(60.0 * s), fh);
+            l.items.push((r, Target::PatRandom));
+        };
+        match &o.pattern {
+            Some(Pattern::Masonry { len, h, .. }) => {
+                row(
+                    l,
+                    &mut y,
+                    "Steinformat",
+                    cw,
+                    Target::Combo(ComboId::PatFormat),
+                );
+                if self.pat_free || format_index(*len, *h).is_none() {
+                    l.texts.push(UiText::label(x, y + 18.0 * s, "Länge, Höhe"));
+                    l.items
+                        .push((Rect::new(vx, y, short, fh), Target::Field(FieldId::PatLen)));
+                    l.items.push((
+                        Rect::new(vx + short + 8.0 * s, y, short, fh),
+                        Target::Field(FieldId::PatH),
+                    ));
+                    y += step;
+                }
+                row(l, &mut y, "Fuge", short, Target::Field(FieldId::PatJoint));
+                row(l, &mut y, "Verband", cw, Target::Combo(ComboId::PatBond));
+                let (ww, wh) = (t.size.swatch_w * s, t.size.swatch_h * s);
+                let fw = ((cw - 2.0 * 6.0 * s) / 3.0).floor();
+                l.texts.push(UiText::label(x, y + 18.0 * s, "Steinfarben"));
+                for k in 0..3 {
+                    let cx = vx + k as f32 * (fw + 6.0 * s);
+                    l.items.push((
+                        Rect::new(cx, y + (fh - wh) * 0.5, ww.min(fw), wh),
+                        Target::Swatch(ColorTarget::PatStone(id, k)),
+                    ));
+                }
+                y += step;
+                l.texts.push(UiText::label(x, y + 18.0 * s, "Anteile"));
+                for k in 0..2 {
+                    l.items.push((
+                        Rect::new(vx + k as f32 * (fw + 6.0 * s), y, fw, fh),
+                        Target::Field(FieldId::PatShare(k)),
+                    ));
+                }
+                let rest = self.pat_value(FieldId::PatShare(2), m);
+                l.readonly.push((
+                    Rect::new(vx + 2.0 * (fw + 6.0 * s), y, fw, fh),
+                    format!("{rest} %"),
+                ));
+                y += step;
+                l.texts.push(UiText::label(x, y + 18.0 * s, "Fugenfarbe"));
+                l.items.push((
+                    Rect::new(vx, y + (fh - wh) * 0.5, ww, wh),
+                    Target::Swatch(ColorTarget::PatJoint(id)),
+                ));
+                y += step;
+                random(l, y);
+                row(
+                    l,
+                    &mut y,
+                    "Streuung",
+                    short,
+                    Target::Field(FieldId::PatSpread),
+                );
+            }
+            Some(Pattern::Plaster { .. }) => {
+                row(
+                    l,
+                    &mut y,
+                    "Körnung",
+                    short,
+                    Target::Field(FieldId::PatGrain),
+                );
+                random(l, y);
+                row(
+                    l,
+                    &mut y,
+                    "Streuung",
+                    short,
+                    Target::Field(FieldId::PatSpread),
+                );
+            }
+            _ => {}
         }
+        let mut hint = String::from("Arten: ohne (Vorgabe), Mauerwerk, Putz.");
+        if o.pattern.is_some() && o.pattern == proctex::factory(&o.name) {
+            hint.push_str(" Hier die Werkswerte.");
+        }
+        if matches!(o.pattern, Some(Pattern::Foreign(_))) {
+            hint = "Muster aus einer neueren Programmversion; bleibt erhalten.".into();
+        }
+        // Vorschau: rechte Spalte ab der Überschrift „Muster“, sonst darunter
+        let (px, mut py) = if right {
+            (x + sw - pw, top)
+        } else {
+            (x, y + 4.0 * s)
+        };
+        l.texts
+            .push(UiText::group_title(px, py + 14.0 * s, "Vorschau"));
+        py += 24.0 * s;
+        let ph = pw.min((bottom - py - 24.0 * s).max(40.0 * s));
+        l.preview = Some(Rect::new(px, py, pw, ph));
+        l.texts
+            .push(UiText::dim(px, py + ph + 16.0 * s, "3D (Würfel)"));
+        let (tx, ty) = if right {
+            (px, py + ph + 26.0 * s)
+        } else {
+            (px + pw + gap, py)
+        };
+        let mut low = py + ph + 26.0 * s;
+        if matches!(o.pattern, Some(Pattern::Masonry { .. })) && ty + ph + 20.0 * s <= bottom {
+            l.preview2 = Some(Rect::new(tx, ty, pw, ph));
+            l.texts
+                .push(UiText::dim(tx, ty + ph + 16.0 * s, "Ansicht (Fugen)"));
+            low = low.max(ty + ph + 26.0 * s);
+        }
+        let y = if right { y } else { low };
+        let wrap_w = if right {
+            (sw - pw - gap).max(120.0 * s)
+        } else {
+            sw
+        };
+        // Die Verwender stehen unter der Liste („Löschen gesperrt …“)
+        l.texts
+            .push(UiText::wrapped_in(x, y + 10.0 * s, hint, wrap_w));
     }
 
     // --- Treffer --------------------------------------------------------------
@@ -603,8 +800,50 @@ impl Prefs {
                 Some(FillKind::Zigzag { period }) => num(period, 1),
                 _ => String::new(),
             },
+            _ => self.pat_value(f, m),
+        }
+    }
+
+    /// Muster der gewählten Oberfläche.
+    fn sel_pattern(&self, m: &Model) -> Option<(SurfaceId, Pattern)> {
+        self.sel_surf(m)
+            .and_then(|(id, o)| o.pattern.map(|p| (id, p)))
+    }
+
+    /// Text eines Musterfelds.
+    fn pat_value(&self, f: FieldId, m: &Model) -> String {
+        let Some((_, p)) = self.sel_pattern(m) else {
+            return String::new();
+        };
+        match (f, p) {
+            (FieldId::PatLen, Pattern::Masonry { len, .. }) => num_short(len),
+            (FieldId::PatH, Pattern::Masonry { h, .. }) => num_short(h),
+            (FieldId::PatJoint, Pattern::Masonry { joint, .. }) => num_short(joint),
+            (FieldId::PatShare(k), Pattern::Masonry { palette, .. }) => {
+                num_short(palette[k.min(2)].1)
+            }
+            (FieldId::PatSpread, Pattern::Masonry { spread, .. })
+            | (FieldId::PatSpread, Pattern::Plaster { spread, .. }) => num_short(spread),
+            (FieldId::PatGrain, Pattern::Plaster { grain, .. }) => num_short(grain),
             _ => String::new(),
         }
+    }
+
+    /// Setzt das Muster der gewählten Oberfläche (geprüft nach Regel 57).
+    fn put_pattern(
+        &mut self,
+        id: SurfaceId,
+        p: Option<Pattern>,
+        cx: &mut Ctx,
+        out: &mut Out,
+    ) -> Result<(), String> {
+        if let Some(p) = &p {
+            proctex::validate(p)?;
+        }
+        out.model |= cx.scene.edit_attr(|m| {
+            m.attr().surface(id).is_some_and(|o| o.pattern != p) && m.set_surface_pattern(id, p)
+        });
+        Ok(())
     }
 
     pub(super) fn apply_attr_value(
@@ -695,6 +934,47 @@ impl Prefs {
                     out.model |= cx.scene.edit_attr(|m| m.set_fill(id, fill));
                 }
             }
+            FieldId::PatLen
+            | FieldId::PatH
+            | FieldId::PatJoint
+            | FieldId::PatShare(_)
+            | FieldId::PatSpread
+            | FieldId::PatGrain => {
+                let Some((id, mut p)) = self.sel_pattern(m) else {
+                    return Ok(());
+                };
+                match &mut p {
+                    Pattern::Masonry {
+                        len,
+                        h,
+                        joint,
+                        palette,
+                        spread,
+                        ..
+                    } => match f {
+                        FieldId::PatLen => *len = range("Steinlänge", 50.0, 600.0, 0, "mm")?,
+                        FieldId::PatH => *h = range("Steinhöhe", 20.0, 300.0, 0, "mm")?,
+                        FieldId::PatJoint => *joint = range("Fuge", 6.0, 15.0, 1, "mm")?,
+                        FieldId::PatShare(k) => {
+                            // Anteil 3 ist der Rest auf 100 %
+                            let k = k.min(1);
+                            let other = palette[1 - k].1;
+                            let v = range("Anteil", 0.0, 100.0 - other, 0, "%")?;
+                            palette[k].1 = v;
+                            palette[2].1 = 100.0 - v - other;
+                        }
+                        FieldId::PatSpread => *spread = range("Streuung", 0.0, 20.0, 0, "%")?,
+                        _ => return Ok(()),
+                    },
+                    Pattern::Plaster { grain, spread, .. } => match f {
+                        FieldId::PatGrain => *grain = range("Körnung", 0.5, 5.0, 1, "mm")?,
+                        FieldId::PatSpread => *spread = range("Streuung", 0.0, 10.0, 0, "%")?,
+                        _ => return Ok(()),
+                    },
+                    Pattern::Foreign(_) => return Ok(()),
+                }
+                self.put_pattern(id, Some(p), cx, out)?;
+            }
             FieldId::Zigzag => {
                 let Some((id, fill)) = self.sel_fill(m) else {
                     return Ok(());
@@ -775,6 +1055,7 @@ impl Prefs {
                 name,
                 color: [c.0, c.1, c.2],
                 cut_color: [c.0, c.1, c.2],
+                pattern: None,
             }));
             true
         });
@@ -845,6 +1126,22 @@ impl Prefs {
                 out.model = true;
             }
             Target::AttrDel => out.model |= self.delete(cx.scene),
+            Target::PatRandom => {
+                // Neuer Startwert unter 2^24 (Looks-Zeilen, RGBA32F exakt)
+                let Some((sid, mut p)) = self.sel_pattern(m) else {
+                    return;
+                };
+                let (Pattern::Masonry { seed, .. } | Pattern::Plaster { seed, .. }) = &mut p else {
+                    return;
+                };
+                let old = *seed;
+                let mut k = 1u32;
+                while *seed == old {
+                    *seed = proctex::lowbias32(old ^ k.wrapping_mul(0x9e37_79b9)) & 0xff_ffff;
+                    k += 1;
+                }
+                let _ = self.put_pattern(sid, Some(p), cx, out);
+            }
             Target::RowAdd | Target::RowDel => {
                 let add = p == Target::RowAdd;
                 if let Some((id, mut l)) = self.sel_lt(m) {
@@ -940,6 +1237,11 @@ impl Prefs {
                 let items = vec!["Papier".into(), "Modell (folgt später)".into()];
                 (items, Vec::new(), sel)
             }
+            ComboId::PatKind | ComboId::PatFormat | ComboId::PatBond => {
+                let p = self.sel_pattern(m).map(|x| x.1);
+                let (items, sel) = pattern_combo(id, p.as_ref(), self.pat_free);
+                (items, Vec::new(), sel)
+            }
             ComboId::PenWidth | ComboId::Scheme => (Vec::new(), Vec::new(), 0),
         };
         (items, icons, sel, anchor)
@@ -973,6 +1275,53 @@ impl Prefs {
                 // Modellbezogen zeichnet der Shader noch nicht: bleibt Papier
                 if i == 1 {
                     self.error = Some("Modellbezogene Schraffuren folgen später".into());
+                }
+            }
+            ComboId::PatKind => {
+                let Some((sid, o)) = self.sel_surf(m) else {
+                    return;
+                };
+                self.pat_free = false;
+                let p = match (i, o.pattern) {
+                    (1, Some(p @ Pattern::Masonry { .. }))
+                    | (2, Some(p @ Pattern::Plaster { .. })) => Some(p),
+                    (1, _) => Some(proctex::masonry_default()),
+                    (2, _) => Some(proctex::plaster_default()),
+                    (3, Some(p @ Pattern::Foreign(_))) => Some(p),
+                    _ => None,
+                };
+                if let Err(e) = self.put_pattern(sid, p, cx, out) {
+                    self.error = Some(e);
+                }
+            }
+            ComboId::PatFormat => {
+                let Some((sid, mut p)) = self.sel_pattern(m) else {
+                    return;
+                };
+                let Pattern::Masonry { len, h, .. } = &mut p else {
+                    return;
+                };
+                if let Some(f) = BRICK_FORMATS.get(i) {
+                    self.pat_free = false;
+                    (*len, *h) = (f.1, f.2);
+                    if let Err(e) = self.put_pattern(sid, Some(p), cx, out) {
+                        self.error = Some(e);
+                    }
+                } else {
+                    self.pat_free = true;
+                    out.repaint = true;
+                }
+            }
+            ComboId::PatBond => {
+                let Some((sid, mut p)) = self.sel_pattern(m) else {
+                    return;
+                };
+                let Pattern::Masonry { bond, .. } = &mut p else {
+                    return;
+                };
+                *bond = [Bond::Half, Bond::Third, Bond::Wild][i.min(2)];
+                if let Err(e) = self.put_pattern(sid, Some(p), cx, out) {
+                    self.error = Some(e);
                 }
             }
             ComboId::PenWidth | ComboId::Scheme => {}
@@ -1117,7 +1466,8 @@ impl Prefs {
                     label(c, bold, &fit(bold, font), font, r.x, r.y, u.text)
                 }
                 // je Eintrag eine oder mehrere Zeilen, bis zum unteren Rand
-                TextKind::Wrap => {
+                TextKind::Wrap(w) => {
+                    let max = max.min(w);
                     let lines = tx
                         .text
                         .lines()
@@ -1165,6 +1515,15 @@ impl Prefs {
                         .unwrap_or(false);
                     widgets::checkbox(c, rr, on, hover, s, t);
                 }
+                Target::PatRandom => {
+                    let st = ButtonState {
+                        hover,
+                        pressed: self.pressed == Some(*tg) && hover,
+                        active: false,
+                        disabled: false,
+                    };
+                    widgets::button(c, fonts, rr, "⚄ Zufall", st, s, t);
+                }
                 Target::RowAdd | Target::RowDel => {
                     let disabled = self.attr_disabled(*tg, m);
                     let what = if self.tab == Tab::Fills {
@@ -1206,6 +1565,11 @@ impl Prefs {
                         tiles.preview(c, 0, TileKey::Surface(id), pr, |c| {
                             paint_cube(c, pr, &o, t, s)
                         });
+                        if let Some(r2) = l.preview2.map(at) {
+                            tiles.preview(c, 1, TileKey::Surface(id), r2, |c| {
+                                paint_elevation_tile(c, r2, m, &o, t, s)
+                            });
+                        }
                     }
                 }
                 _ => {}
@@ -1227,6 +1591,11 @@ impl Prefs {
                 text.into()
             }
             ComboId::FillSpace => "Papier".into(),
+            ComboId::PatKind | ComboId::PatFormat | ComboId::PatBond => {
+                let p = self.sel_pattern(m).map(|x| x.1);
+                let (items, sel) = pattern_combo(id, p.as_ref(), self.pat_free);
+                items.get(sel).cloned().unwrap_or_default()
+            }
             ComboId::PenWidth | ComboId::Scheme => String::new(),
         }
     }

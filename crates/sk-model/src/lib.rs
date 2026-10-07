@@ -18,6 +18,7 @@ pub mod kinds;
 pub mod library;
 pub mod matprop;
 pub mod model;
+pub mod proctex;
 pub mod qto;
 pub mod solid;
 pub mod szo;
@@ -35,8 +36,8 @@ pub use attr::{
     FillSpace, HatchLine, LineType, LineTypeId, Pen, PenId, Surface, SurfaceId,
 };
 pub use catalog::{
-    compare, compare_materials, export_material, export_type, import_material, import_type,
-    read_szk, sync_materials, write_szk, Library, TypeState,
+    compare, compare_materials, compare_surfaces, export_material, export_surface, export_type,
+    import_material, import_type, read_szk, sync_materials, write_szk, Library, TypeState,
 };
 pub use element::{
     Building, BuildingId, Category, Coupling, Element, ElementId, ElementKind, LevelEdge,

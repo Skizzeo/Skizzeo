@@ -47,6 +47,8 @@ pub struct MatLook {
     pub line_count: u8,
     /// Zickzack: Periode längs in Schichtdicken.
     pub zigzag_period: f32,
+    /// Muster der Oberfläche (Paket 6), Looks-Zeilen 8–11.
+    pub pattern: [[f32; 4]; 4],
 }
 
 /// Strichbreite (Bildpunkte bei 96 dpi) und Farbe.
@@ -69,6 +71,8 @@ pub struct DrawTable {
     pub section_ends: Stroke,
     /// Grundriss des Geschosses darunter (E16, Kantenart `BACKGROUND`).
     pub background: Stroke,
+    /// Fugen in Ansichten (Paket 6, Stift „Ansichtsmuster“).
+    pub pattern: Stroke,
     /// Strichmuster (E4) in Bildpunkten bei 96 dpi, je Kantenart bzw. Linie.
     pub drawing_dash: [DashPattern; edge_kind::COUNT],
     pub model_dash: [DashPattern; edge_kind::COUNT],
@@ -130,6 +134,7 @@ const NO_MATERIAL: MatLook = MatLook {
     }; 2],
     line_count: 0,
     zigzag_period: 1.0,
+    pattern: [[0.0; 4]; 4],
 };
 
 /// Aussehen von Flächen ohne Baustoff (und Rückfall bei fehlenden Verweisen).
@@ -169,6 +174,7 @@ pub fn mat_look(
         .map_or((fallback.face, fallback.cut), |s| {
             (rgb(s.color), rgb(s.cut_color))
         });
+    look.pattern = pattern_rows(model, d.surface);
     if let Some(f) = a.fill(d.cut_fill) {
         if f.space == FillSpace::Model {
             // Bis E3b wie papierbezogen
@@ -265,6 +271,7 @@ impl DrawTable {
             section_line: stroke(&d.section_line),
             section_ends: stroke(&d.section_ends),
             background: stroke(&d.background),
+            pattern: stroke(&d.pattern),
             drawing_dash: d.drawing.map(|s| dash_px(model, s.line_type, px_per_mm)),
             model_dash: d.model3d.map(|s| dash_px(model, s.line_type, px_per_mm)),
             background_dash: dash_px(model, d.background.line_type, px_per_mm),
@@ -334,6 +341,10 @@ impl DrawTable {
             texels: self.pack(px_scale),
             drawing: self.edge_looks(true, px_scale),
             model: self.edge_looks(false, px_scale),
+            pattern_ink: {
+                let (w, c) = self.pattern;
+                [c[0], c[1], c[2], w * px_scale]
+            },
         }
     }
 }
@@ -359,7 +370,106 @@ pub fn look_rows(m: &MatLook, px_scale: f32) -> [[f32; 4]; LOOK_ROWS] {
     }
     t[6] = [offsets[0], offsets[1], m.line_count as f32, m.zigzag_period];
     t[7] = dashes;
+    t[8..12].copy_from_slice(&m.pattern);
     t
+}
+
+/// Farbe als eine Zahl `r·65536 + g·256 + b`, in `f32` exakt (bis 2²⁴).
+pub fn pack_rgb(c: [u8; 3]) -> f32 {
+    (c[0] as u32 * 65536 + c[1] as u32 * 256 + c[2] as u32) as f32
+}
+
+/// Umkehrung von [`pack_rgb`] (wie im Shader).
+#[cfg(test)]
+pub fn unpack_rgb(f: f32) -> [u8; 3] {
+    let n = f as u32;
+    [(n >> 16) as u8, (n >> 8) as u8, n as u8]
+}
+
+/// Looks-Zeilen 8–11 einer Oberfläche (Aufbau: [`sk_render::Looks`]):
+/// ohne Muster und bei Fremdem Art 0.
+pub fn pattern_rows(m: &Model, s: sk_model::SurfaceId) -> [[f32; 4]; 4] {
+    use sk_model::proctex::{Bond, Pattern};
+    let mut t = [[0.0; 4]; 4];
+    let pattern = m.attr().surface(s).and_then(|x| x.pattern.as_ref());
+    match pattern {
+        Some(Pattern::Masonry {
+            len,
+            h,
+            joint,
+            bond,
+            joint_rgb,
+            palette,
+            spread,
+            seed,
+        }) => {
+            let offset = match bond {
+                Bond::Half => 0.5,
+                Bond::Third => 1.0 / 3.0,
+                Bond::Wild => -1.0,
+            };
+            t[0] = [1.0, *len, *h, *joint];
+            t[1] = [offset, *spread, *seed as f32, 0.0];
+            t[2] = [
+                pack_rgb(palette[0].0),
+                palette[0].1,
+                pack_rgb(palette[1].0),
+                palette[1].1,
+            ];
+            // Mischfarbe für 3D ohne Muster
+            let mix = pattern.map_or([0; 3], |p| sk_model::proctex::mix(p, [0; 3]));
+            t[3] = [
+                pack_rgb(palette[2].0),
+                pack_rgb(*joint_rgb),
+                palette[2].1,
+                pack_rgb(mix),
+            ];
+        }
+        Some(Pattern::Plaster {
+            grain,
+            spread,
+            seed,
+        }) => {
+            t[0] = [2.0, 0.0, 0.0, 0.0];
+            t[1] = [0.0, *spread, *seed as f32, *grain];
+        }
+        Some(Pattern::Foreign(_)) | None => {}
+    }
+    t
+}
+
+/// Wie eine Fläche ihr Muster zeigt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PatternUse {
+    None,
+    /// Ansicht: nur Fugenlinien in Tinte.
+    Lines,
+    /// 3D: Steinfarben und Fugen.
+    Colors,
+}
+
+/// Musterdarstellung einer Fläche (paket-6 §3.3): Ansichten zeigen Linien
+/// (auch mit Schalter „Muster in 3D“ aus), 3D Farben nur mit Schalter;
+/// geschnittene Flächen, Grundriss, Schnitt und Blasses nie.
+pub fn pattern_use(view: crate::ui::ViewKind, cut: bool, alpha: f32, on: bool) -> PatternUse {
+    use crate::ui::ViewKind as V;
+    if cut || alpha < 1.0 {
+        return PatternUse::None;
+    }
+    match view {
+        V::Front | V::Back | V::Left | V::Right => PatternUse::Lines,
+        V::Persp if on => PatternUse::Colors,
+        _ => PatternUse::None,
+    }
+}
+
+/// `u_patterns` einer Ansicht (Flächen deckend, nicht geschnitten).
+pub fn pattern_mode(view: crate::ui::ViewKind, on: bool) -> i32 {
+    match pattern_use(view, false, 1.0, on) {
+        PatternUse::None => sk_render::pattern_mode::NONE,
+        PatternUse::Lines => sk_render::pattern_mode::LINES,
+        PatternUse::Colors => sk_render::pattern_mode::COLORS,
+    }
 }
 
 /// Texel einer Linienschar und ihr Versatz.

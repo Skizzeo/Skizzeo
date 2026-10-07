@@ -29,7 +29,7 @@ pub struct Style {
 pub const EDGE_KINDS: usize = 8;
 
 /// Zeilen der Aussehens-Tabelle je Darstellungsschlüssel.
-pub const LOOK_ROWS: usize = 8;
+pub const LOOK_ROWS: usize = 12;
 
 /// Breite (Bildpunkte) und Farbe je Kantenart, für Zeichnung oder 3D.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -103,6 +103,10 @@ pub fn dash_ink(dist: f32, len: f32, p: &DashPattern, w: f32) -> bool {
 /// | 5 | Schar 2: cx, cy, Periode px | Abstandsfaktor k |
 /// | 6 | Versatz Schar 1, Versatz Schar 2, Anzahl Scharen | Zickzack-Periode |
 /// | 7 | Strich und Lücke Schar 1, Strich und Lücke Schar 2 (px, 0 = durchgezogen) | |
+/// | 8 | Muster (Paket 6): Art 0 ohne, 1 Mauerwerk, 2 Putz; Steinlänge, Steinhöhe, Fuge (mm) | |
+/// | 9 | Verbandversatz (0,5 / ⅓ / −1 wild), Streuung %, Startwert, Körnung mm | |
+/// | 10 | Steinfarbe 1 (r·65536 + g·256 + b), Anteil 1 %, Steinfarbe 2, Anteil 2 % | |
+/// | 11 | Steinfarbe 3, Fugenfarbe, Anteil 3 %, Mischfarbe (3D ohne Muster) | |
 ///
 /// Eine Schar sind die Linien `cx·x + cy·y − Versatz = n·Periode` in
 /// Bildpunkten; der Abstand eines Pixels zur nächsten Linie ist
@@ -114,6 +118,18 @@ pub struct Looks {
     pub texels: Vec<[f32; 4]>,
     pub drawing: EdgeLooks,
     pub model: EdgeLooks,
+    /// Fugen in Ansichten (Stift „Ansichtsmuster“): Farbe 0..1, Breite px.
+    pub pattern_ink: [f32; 4],
+}
+
+/// Musterdarstellung einer Ansicht (Uniform `u_patterns`).
+pub mod pattern_mode {
+    /// Kein Muster.
+    pub const NONE: i32 = 0;
+    /// Ansichten: nur Fugenlinien in Tinte.
+    pub const LINES: i32 = 1;
+    /// 3D: Steinfarben und Fugen.
+    pub const COLORS: i32 = 2;
 }
 
 /// Schraffur einer Schnittfläche in der Zeichnung an einem Bildpunkt, mit
@@ -230,6 +246,9 @@ pub struct View {
     /// Zeichnungsdarstellung: einfarbiger Papiergrund statt Himmel und Boden,
     /// Flächen ohne Schattierung.
     pub paper: Option<[f32; 3]>,
+    /// Musterdarstellung ([`pattern_mode`]); geschnittene und blasse
+    /// Flächen zeigen nie ein Muster.
+    pub patterns: i32,
 }
 
 /// Dreiecksnetz für die GPU.
@@ -428,21 +447,29 @@ uniform vec3 u_origin;
 out vec3 v_normal;
 flat out int v_key;
 out vec2 v_uv;
+// Modelllage in mm (Musterkoordinaten, Paket 6)
+out vec3 v_model;
 void main() {
     v_normal = a_normal;
     v_key = int(a_key + 0.5);
     v_uv = a_uv;
+    v_model = a_pos;
     gl_Position = u_vp * vec4(a_pos + u_origin, 1.0);
 }
 "#;
 
-const FACE_FS: &str = r#"#version 330 core
+const FACE_FS: &str = r#"
 in vec3 v_normal;
 flat in int v_key;
 in vec2 v_uv;
+in vec3 v_model;
 out vec4 o_color;
 uniform sampler2D u_looks;
 uniform int u_drawing;
+// Musterdarstellung: 0 aus, 1 Fugenlinien (Ansichten), 2 Farben (3D)
+uniform int u_patterns;
+// Stift „Ansichtsmuster“: Farbe, Breite px
+uniform vec4 u_pattern_ink;
 uniform vec3 u_light;
 uniform float u_ambient;
 // Deckkraft: 1 deckend, darunter blass (Isolieren) und ohne Schraffur
@@ -471,12 +498,20 @@ void main() {
     bool cut = (v_key & 0x8000) != 0;
     if (u_drawing == 0) {
         vec3 c = look(cut ? 1 : 0).rgb;
+        // Mauerwerk ohne Muster in 3D: Mischfarbe der Steine statt der
+        // Ansichtsfläche (Paket 6, Zeile 12 Feld 4)
+        if (!cut && int(look(8).x + 0.5) == 1) c = unpack_rgb(look(11).w);
         float d = max(dot(normalize(v_normal), u_light), 0.0);
         o_color = vec4(c * (u_ambient + (1.0 - u_ambient) * d), u_alpha);
         return;
     }
     vec4 bg = look(2);
     vec3 c = bg.rgb;
+    if (!cut && u_alpha >= 1.0 && u_patterns == 1 && int(look(8).x + 0.5) == 1) {
+        // Ansicht: Fugen als Mittellinien in Tinte, keine Steinfarben
+        float ink = pattern_lines(v_model, v_normal, look(8), look(9), u_pattern_ink.a);
+        c = mix(c, u_pattern_ink.rgb, ink);
+    }
     if (cut && u_alpha < 1.0) {
         // Blasse Schnittfläche: Füllung ohne Schraffur
         if (int(bg.a + 0.5) == 1) c = look(3).rgb;
@@ -503,6 +538,103 @@ void main() {
         c = mix(c, fg.rgb, ink);
     }
     o_color = vec4(c, u_alpha);
+}
+"#;
+
+/// Muster (Paket 6) im Fragment-Shader: Hash, Verbände und Fugen. Zeile
+/// für Zeile dieselbe Rechnung wie `sk_model::proctex` (lowbias32, Regel
+/// 61); nur Ganzzahlen und `floor`, kein Gleitkomma-Hash (Review 3c P6).
+/// Erwartet die Funktion `look(row)` (Zeilen 8–11 der Tabelle).
+pub const PATTERN_GLSL: &str = r#"
+// Farbe aus r·65536 + g·256 + b (Looks-Zeilen 11/12)
+vec3 unpack_rgb(float f) {
+    int n = int(f + 0.5);
+    return vec3(float((n >> 16) & 255), float((n >> 8) & 255), float(n & 255)) / 255.0;
+}
+uint lowbias32(uint x) {
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+uint pat_hash(int row, int col, uint seed) {
+    uint a = lowbias32(uint(row) ^ (seed * 0x9e3779b9u));
+    return lowbias32(a + uint(col) * 0x85ebca6bu);
+}
+// Wilder Verband: Abschnitte zu 12 Einheiten (halber Stein), Anfang je
+// Schicht φ = m·row + c mit m = 2 oder −1, Läufermitten fest bei 0, 2, 7
+int wild_phi(int row, uint seed) {
+    uint s = lowbias32(seed ^ 0x63d83595u);
+    int slope = (s & 1u) == 1u ? 2 : -1;
+    int i = slope * row + int((s >> 1) % 12u);
+    return i - 12 * int(floor(float(i) / 12.0));
+}
+// Stein (Nummer) und Abstand zur nächsten Stoßfuge in Einheiten
+vec2 wild_stone(int row, float t, uint seed) {
+    float x = t - float(wild_phi(row, seed));
+    float xf = floor(x);
+    float fr = x - xf;
+    int xi = int(xf);
+    int p = int(floor(xf / 12.0));
+    int k = xi - 12 * p;
+    uint h = pat_hash(row, p, seed ^ 0xa511e9b3u);
+    int j[7] = int[7](1, 3, ((h >> 31) & 1u) == 1u ? 4 : 5, 6, 8,
+                      ((h >> 30) & 1u) == 1u ? 9 : 10, 11);
+    int s = -1;
+    int e = 13;
+    for (int n = 0; n < 7; n++) {
+        if (j[n] <= k) s = j[n];
+        else if (e > 12) e = j[n];
+    }
+    float y = float(k) + fr;
+    return vec2(float(12 * p + s), min(y - float(s), float(e) - y));
+}
+// Musterkoordinaten (mm): senkrechte Fläche u längs, v = Höhe über ±0,00;
+// waagerechte Fläche: x, y. z: 1 senkrecht, 0 waagerecht
+vec3 pattern_uv(vec3 p, vec3 n) {
+    n = normalize(n);
+    if (abs(n.z) < 0.5) {
+        vec2 t = normalize(vec2(-n.y, n.x));
+        return vec3(dot(p.xy, t), p.z, 1.0);
+    }
+    return vec3(p.x, p.y, 0.0);
+}
+// Stein an (u, v) in Reihe `row`: Nummer und Abstand zur Stoßfugenmitte (mm)
+vec2 masonry_stone(float u, int row, vec4 p8, vec4 p9) {
+    float a = p8.y + p8.w;
+    uint seed = uint(p9.z + 0.5);
+    if (p9.x < 0.0) {
+        vec2 w = wild_stone(row, 2.0 * u / a + float(row) * 0.5, seed);
+        return vec2(w.x, w.y * a * 0.5);
+    }
+    float off;
+    if (p9.x > 0.4) {
+        off = float(row & 1) * a * 0.5;
+    } else {
+        off = float(row - 3 * int(floor(float(row) / 3.0))) * a / 3.0;
+    }
+    float col = floor((u + off) / a);
+    float x = u + off - col * a;
+    return vec2(col, min(x, a - x));
+}
+// Fugenlinien der Ansicht: Tinte 0..1 mit Stiftbreite `w` px; weich aus
+// zwischen 3 und 1,5 px Schichtabstand, darunter ohne Rechnung (P3)
+float pattern_lines(vec3 p, vec3 n, vec4 p8, vec4 p9, float w) {
+    vec3 q = pattern_uv(p, n);
+    if (q.z < 0.5) return 0.0;
+    float course = p8.z + p8.w;
+    float px = max(length(vec2(dFdx(q.x), dFdy(q.x))), length(vec2(dFdx(q.y), dFdy(q.y))));
+    px = max(px, 1e-6);
+    float fade = smoothstep(1.5, 3.0, course / px);
+    if (fade <= 0.0) return 0.0;
+    float rf = floor(q.y / course);
+    int row = int(rf);
+    float dv = min(q.y - rf * course, (rf + 1.0) * course - q.y);
+    float du = masonry_stone(q.x, row, p8, p9).y;
+    float ink = clamp(w * 0.5 + 0.5 - min(du, dv) / px, 0.0, 1.0);
+    return ink * fade;
 }
 "#;
 
@@ -735,7 +867,8 @@ impl Renderer {
     pub fn new(gl: Gl, style: Style) -> Result<Renderer, String> {
         unsafe {
             let sky = program(&gl, FULLSCREEN_VS, SKY_FS)?;
-            let faces = program(&gl, FACE_VS, FACE_FS)?;
+            let face_fs = format!("#version 330 core\n{PATTERN_GLSL}{FACE_FS}");
+            let faces = program(&gl, FACE_VS, &face_fs)?;
             let edges = program(&gl, EDGE_VS, &with_dash(EDGE_FS))?;
             let overlay = program(&gl, FULLSCREEN_VS, OVERLAY_FS)?;
             let helpers = program(&gl, HELPER_VS, &with_dash(HELPER_FS))?;
@@ -1228,6 +1361,9 @@ impl Renderer {
             gl.glUniform1f(loc(gl, p, c"u_ambient"), st.ambient);
             let drawing = view.paper.is_some();
             gl.glUniform1i(loc(gl, p, c"u_drawing"), drawing as GLint);
+            gl.glUniform1i(loc(gl, p, c"u_patterns"), view.patterns as GLint);
+            let ink = self.looks.pattern_ink;
+            gl.glUniform4f(loc(gl, p, c"u_pattern_ink"), ink[0], ink[1], ink[2], ink[3]);
             gl.glActiveTexture(TEXTURE0 + 1);
             gl.glBindTexture(TEXTURE_2D, self.looks_tex);
             gl.glUniform1i(loc(gl, p, c"u_looks"), 1);

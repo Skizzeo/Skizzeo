@@ -167,6 +167,7 @@ impl Camera {
                 None => [0.0, 0.0, 0.0, 0.997],
             },
             paper: None,
+            patterns: sk_render::pattern_mode::NONE,
         }
     }
 

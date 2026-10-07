@@ -11,6 +11,7 @@
 
 use crate::draw_table::{look_rows, mat_look};
 use crate::prefs::num;
+use sk_model::proctex::{self, Pattern};
 use sk_model::{
     Dash, FillId, LineTypeId, MaterialDisplay, MaterialId, Model, Pen, PenId, Surface, SurfaceId,
 };
@@ -283,7 +284,15 @@ pub(crate) fn make_tile(m: &Model, t: &Theme, s: f32, key: TileKey) -> Option<Ca
             a.fill(id)?;
             fill_tile(m, t, id, s)
         }
-        TileKey::Surface(id) => swatch_icon(Rgba::from_rgb8(a.surface(id)?.color), s, t),
+        // mit Muster die Mischfarbe, wie die Fläche in 3D aus der Ferne
+        TileKey::Surface(id) => {
+            let o = a.surface(id)?;
+            let rgb = o
+                .pattern
+                .as_ref()
+                .map_or(o.color, |p| proctex::mix(p, o.color));
+            swatch_icon(Rgba::from_rgb8(rgb), s, t)
+        }
         TileKey::Pen(id) => swatch_icon(Rgba::from_rgb8(a.pen(id)?.color), s, t),
         TileKey::Material(id) => tile(m, t, &m.material(id)?.display(), tw, th, s),
     })
@@ -499,9 +508,31 @@ pub(crate) fn paint_cube(c: &mut Canvas, r: Rect, o: &Surface, t: &Theme, s: f32
         c.fill(&p, col);
     };
     let (n_top, n_west, n_south) = ([0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]);
-    poly(c, &[top, right, mid, left], shade(o.color, n_top));
-    poly(c, &[left, mid, down, left_b], shade(o.color, n_west));
-    poly(c, &[mid, right, right_b, down], shade(o.color, n_south));
+    match o
+        .pattern
+        .as_ref()
+        .filter(|p| !matches!(p, Pattern::Foreign(_)))
+    {
+        // Paket 6: Muster auf den Seiten um die Ecke herum, der Deckel in
+        // der Mischfarbe (waagerechte Flächen ohne Fugen)
+        Some(p) => {
+            let edge = cube_edge_mm(p);
+            poly(
+                c,
+                &[top, right, mid, left],
+                shade(proctex::mix(p, o.color), n_top),
+            );
+            let west = |rgb| shade(rgb, n_west);
+            let south = |rgb| shade(rgb, n_south);
+            pattern_face(c, [left_b, down, left], (0.0, edge), p, o.color, &west);
+            pattern_face(c, [down, right_b, mid], (edge, edge), p, o.color, &south);
+        }
+        None => {
+            poly(c, &[top, right, mid, left], shade(o.color, n_top));
+            poly(c, &[left, mid, down, left_b], shade(o.color, n_west));
+            poly(c, &[mid, right, right_b, down], shade(o.color, n_south));
+        }
+    }
     // Aufgeschnittene Ecke: obere Hälfte der Südseite nahe der Ecke
     let lerp =
         |p: (f32, f32), q: (f32, f32), f: f32| (p.0 + (q.0 - p.0) * f, p.1 + (q.1 - p.1) * f);
@@ -535,6 +566,99 @@ pub(crate) fn paint_cube(c: &mut Canvas, r: Rect, o: &Surface, t: &Theme, s: f32
         p.segment(a, b, lw);
     }
     c.fill(&p, ink);
+}
+
+/// Kantenlänge des Vorschauwürfels mit Muster (mm): 11 Schichten
+/// Mauerwerk bzw. 50 Körner Putz.
+fn cube_edge_mm(p: &Pattern) -> f64 {
+    match p {
+        Pattern::Masonry { h, joint, .. } => 11.0 * (*h as f64 + *joint as f64),
+        Pattern::Plaster { grain, .. } => 50.0 * *grain as f64,
+        Pattern::Foreign(_) => 1000.0,
+    }
+}
+
+/// Malt eine Würfelseite mit Muster: Parallelogramm aus `q` = (unten
+/// links, unten rechts, oben links) in Bildpunkten, `uv` = (u am linken
+/// Rand, Kantenlänge) in mm, v von unten. Je Bildpunkt 2 × 2 Proben
+/// ([`proctex::sample`], dieselbe Formel wie der Shader).
+fn pattern_face(
+    c: &mut Canvas,
+    q: [(f32, f32); 3],
+    uv: (f64, f64),
+    p: &Pattern,
+    base: [u8; 3],
+    shade: &dyn Fn([u8; 3]) -> Rgba,
+) {
+    let (o, ex, ey) = (
+        q[0],
+        (q[1].0 - q[0].0, q[1].1 - q[0].1),
+        (q[2].0 - q[0].0, q[2].1 - q[0].1),
+    );
+    let det = ex.0 * ey.1 - ex.1 * ey.0;
+    if det.abs() < 1e-3 {
+        return;
+    }
+    let xs = [q[0].0, q[1].0, q[2].0, q[1].0 + ey.0];
+    let ys = [q[0].1, q[1].1, q[2].1, q[1].1 + ey.1];
+    let x0 = xs.iter().copied().fold(f32::MAX, f32::min).floor();
+    let y0 = ys.iter().copied().fold(f32::MAX, f32::min).floor();
+    let x1 = xs.iter().copied().fold(f32::MIN, f32::max).ceil();
+    let y1 = ys.iter().copied().fold(f32::MIN, f32::max).ceil();
+    let (w, h) = ((x1 - x0).max(0.0) as usize, (y1 - y0).max(0.0) as usize);
+    let (u0, edge) = uv;
+    let img = Canvas::from_fn(w, h, |px, py| {
+        let (mut acc, mut n) = ([0u32; 3], 0u32);
+        for (sx, sy) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] {
+            let dx = x0 + px as f32 + sx - o.0;
+            let dy = y0 + py as f32 + sy - o.1;
+            let a = (dx * ey.1 - dy * ey.0) / det;
+            let b = (ex.0 * dy - ex.1 * dx) / det;
+            if !(0.0..1.0).contains(&a) || !(0.0..1.0).contains(&b) {
+                continue;
+            }
+            let rgb = proctex::sample(p, base, u0 + a as f64 * edge, b as f64 * edge);
+            let Rgba(r, g, b, _) = shade(rgb);
+            acc[0] += r as u32;
+            acc[1] += g as u32;
+            acc[2] += b as u32;
+            n += 1;
+        }
+        if n == 0 {
+            return Rgba(0, 0, 0, 0);
+        }
+        let avg = |v: u32| ((v + n / 2) / n) as u8;
+        Rgba(avg(acc[0]), avg(acc[1]), avg(acc[2]), (n * 255 / 4) as u8)
+    });
+    c.blit(&img, x0 as i32, y0 as i32);
+}
+
+/// Ansichtskachel eines Musters (Paket 6): Fläche in der Farbe der
+/// Ansichtsfläche, Fugen als Mittellinien im Stift „Ansichtsmuster“, 8
+/// Schichten hoch. Putz hat keine Fugen und bleibt leer.
+pub(crate) fn paint_elevation_tile(
+    c: &mut Canvas,
+    r: Rect,
+    m: &Model,
+    o: &Surface,
+    t: &Theme,
+    s: f32,
+) {
+    c.fill_rect(r.x, r.y, r.w, r.h, Rgba::from_rgb8(o.color));
+    let Some(p @ Pattern::Masonry { h, joint, .. }) = o.pattern.as_ref() else {
+        return;
+    };
+    let pen = m.attr().pen(m.attr().display().pattern.pen);
+    let ink = pen.map_or(t.env.edge, |p| Rgba::from_rgb8(p.color));
+    let lw = (pen.map_or(0.13, |p| p.width_mm) * t.px_per_mm * s).max(0.8);
+    let k = r.h as f64 / (8.0 * (*h as f64 + *joint as f64));
+    let rect = sk_math::Rect2::new(0.0, 0.0, r.w as f64 / k, r.h as f64 / k);
+    let mut path = Path::new();
+    for (a, b) in proctex::joint_lines(p, rect) {
+        let pt = |v: sk_math::Vec2| (r.x + (v.x * k) as f32, r.y + r.h - (v.y * k) as f32);
+        path.segment(pt(a), pt(b), lw);
+    }
+    c.fill(&path, ink);
 }
 
 #[cfg(test)]

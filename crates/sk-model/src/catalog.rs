@@ -216,8 +216,13 @@ impl Library {
 /// Typ und Merkmal, [layer]: Typ). Mehrere Sätze mit derselben Kennung
 /// (Schichten eines Typs) zählen in Dateireihenfolge durch.
 pub(crate) fn record_key(r: &Record, count: &mut HashMap<String, usize>) -> String {
-    let base = match r.opt("guid") {
-        Some(g) => format!("{} guid={g}", r.section),
+    // Muster (Paket 6) gehören über `surface=` zu ihrer Oberfläche
+    let id = r
+        .opt("guid")
+        .map(|g| ("guid", g))
+        .or_else(|| r.opt("surface").map(|g| ("surface", g)));
+    let base = match id {
+        Some((k, g)) => format!("{} {k}={g}", r.section),
         None => format!(
             "{} set={} cat={} key={}",
             r.section,
@@ -318,6 +323,12 @@ fn write_known(lib: &Library) -> String {
     for x in sorted(lib.materials.iter(), |x| x.guid) {
         crate::matprop::write_lines(&mut out, x.guid, &x.props);
     }
+    // Muster (Paket 6 §2.2), nur an Oberflächen mit Muster
+    for x in sorted(lib.surfaces.iter(), |x| x.guid) {
+        if let Some(p) = &x.pattern {
+            crate::proctex::write_line(&mut out, x.guid, Some(p));
+        }
+    }
     out
 }
 
@@ -327,9 +338,9 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     check_header(text.lines().next(), "SZK", VERSION)?;
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 12] = [
+    const KNOWN: [&str; 13] = [
         "pen", "linetype", "fill", "surface", "trade", "material", "layerset", "layer", "typeprop",
-        "default", "stock", "matprop",
+        "default", "stock", "matprop", "pattern",
     ];
     let mut foreign = Foreign::default();
     let lines: Vec<&str> = text.lines().collect();
@@ -381,6 +392,18 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
         let id = lib.surfaces.insert(s);
         register(&mut surface_ids, &mut seen, r, g, id)?;
     }
+    // Muster (Paket 6); zweite Zeilen bleiben unverändert stehen
+    let mut kept = Vec::new();
+    szo::read_patterns(
+        recs("pattern"),
+        &lines,
+        &surface_ids,
+        &mut lib.surfaces,
+        &mut hints,
+        &mut kept,
+    );
+    foreign.unknown += kept.len();
+    alien.extend(kept);
     // Gewerke (Paket 1a). Baustoffe älterer Kataloge bleiben ohne, damit
     // ihre Zeilen gleich bleiben; sie bekommen ihr Gewerk beim Übernehmen
     lib.trades = szo::read_trades(recs("trade"))?;
@@ -795,6 +818,43 @@ fn same_material(m: &Model, x: &Material, lib: &Library, y: &Material) -> bool {
         lib.surfaces.get(y.surface).map(|s| s.guid),
     );
     mine == theirs && with_display(x, y.display()) == *y
+}
+
+/// Abgleich der Oberflächen von Projekt und Firmenkatalog nach Guid,
+/// sortiert (Paket 6 §2.2): gleich, wenn Name, Farben und Muster gleich sind.
+pub fn compare_surfaces(m: &Model, lib: &Library) -> Vec<(Guid, TypeState)> {
+    let mut out = Vec::new();
+    for (_, x) in m.attr().surfaces().iter() {
+        let state =
+            match find(&lib.surfaces, x.guid, |y| y.guid).and_then(|id| lib.surfaces.get(id)) {
+                None => TypeState::OnlyProject,
+                Some(y) if y == x => TypeState::Same,
+                Some(_) => TypeState::Differs,
+            };
+        out.push((x.guid, state));
+    }
+    for (_, y) in lib.surfaces.iter() {
+        if !m.attr().surfaces().iter().any(|(_, x)| x.guid == y.guid) {
+            out.push((y.guid, TypeState::OnlyCompany));
+        }
+    }
+    out.sort_by_key(|x| x.0);
+    out
+}
+
+/// Schreibt eine Projekt-Oberfläche samt Muster in den Firmenkatalog; gleiche
+/// Guid überschreibt sie. `false`: keine solche Oberfläche.
+pub fn export_surface(m: &Model, lib: &mut Library, id: crate::SurfaceId) -> bool {
+    let Some(s) = m.attr().surface(id) else {
+        return false;
+    };
+    match find(&lib.surfaces, s.guid, |y| y.guid) {
+        Some(at) => lib.surfaces.set(at, Some(s.clone())),
+        None => {
+            lib.surfaces.insert(s.clone());
+        }
+    }
+    true
 }
 
 /// Abgleich der Baustoffe von Projekt und Firmenkatalog nach Guid, sortiert
