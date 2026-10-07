@@ -102,6 +102,11 @@ pub enum Field {
     Offset,
     /// Dicke der Untersichtdämmung an der Decke (OG-17).
     Soffit,
+    /// Dachterrasse (D1–D3): Dicken von Dämmung und Belag ihres Typs,
+    /// Attika über OK Belag an der Decke.
+    TerraceInsulation,
+    TerraceFinish,
+    Upstand,
     /// Paneel „Geschosse“ (in m): Kote der Gründungsunterkante, Kote der
     /// Oberkante eines Geschosses, Geschosshöhe (bei der Gründung die
     /// Gründungstiefe) und lichte Höhe.

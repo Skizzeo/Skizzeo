@@ -45,10 +45,15 @@ pub enum Category {
     EdgeInsulation,
     /// Untersichtdämmung unter einer auskragenden Decke (OG Phase 2, G7 K4).
     SoffitInsulation,
+    /// Dachterrasse auf einer Decke, über der das Geschoss zurückspringt
+    /// (BIM Regel 41).
+    RoofTerrace,
+    /// Attikablech am Rand der Dachterrasse (BIM Regel 46).
+    Coping,
 }
 
 impl Category {
-    pub const ALL: [Category; 12] = [
+    pub const ALL: [Category; 14] = [
         Category::ExteriorWall,
         Category::InteriorWall,
         Category::Floor,
@@ -61,6 +66,8 @@ impl Category {
         Category::StripFooting,
         Category::EdgeInsulation,
         Category::SoffitInsulation,
+        Category::RoofTerrace,
+        Category::Coping,
     ];
 
     /// Platz in [`Category::ALL`].
@@ -141,6 +148,38 @@ pub enum ElementKind {
     SoffitInsulation {
         floor: ElementId,
     },
+    /// Dachterrasse: nur der Verweis auf die Decke; Umriss aus dem
+    /// Rücksprung darüber, Aufbau aus [`Terrace::build_up`] (BIM §3).
+    RoofTerrace {
+        floor: ElementId,
+    },
+    /// Attikablech: Verweis auf dieselbe Decke (keine Ladereihenfolge),
+    /// Pfad auf OK Attika, Baustoff aus [`Terrace::coping_mat`].
+    Coping {
+        floor: ElementId,
+    },
+}
+
+/// Dachterrasse einer Decke (BIM §3). Jede Decke trägt die Werte, auch ohne
+/// Rücksprung, damit sie erhalten bleiben, wenn einer entsteht.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Terrace {
+    /// Aufbau; `None`: Werkstyp „Dachterrasse 14“.
+    pub build_up: Option<LayerSetId>,
+    /// Attika über OK Belag, mm (0 … 300).
+    pub upstand: f64,
+    /// Baustoff des Attikablechs; `None`: Titanzink 0,7.
+    pub coping_mat: Option<MaterialId>,
+}
+
+impl Default for Terrace {
+    fn default() -> Self {
+        Terrace {
+            build_up: None,
+            upstand: crate::model::TERRACE_UPSTAND,
+            coping_mat: None,
+        }
+    }
 }
 
 /// Untersichtdämmung einer Decke (G7 K4). Jede Decke trägt den Wert, auch
@@ -168,6 +207,9 @@ pub struct Floor {
     /// Untersichtdämmung unter dem auskragenden Streifen, wo das Geschoss
     /// darüber vorspringt (G7 K4).
     pub soffit: Soffit,
+    /// Dachterrasse, Attika und Attikablech, wo das Geschoss darüber
+    /// zurückspringt (BIM paket-dachterrasse).
+    pub terrace: Terrace,
 }
 
 impl ElementKind {

@@ -66,7 +66,7 @@ pub struct KindSpec {
     /// Gibt es je Gebäude genau einmal (Sätze ohne Zahl).
     pub once: bool,
     /// ATV-Nummer des Gewerks, wenn der Baustoff keins vorschlägt
-    /// (Paket 1a); bei allen heutigen Arten keins.
+    /// (Paket 1a); Dachterrasse und Attikablech: Dachdecker.
     pub default_trade: Option<&'static str>,
 }
 
@@ -92,11 +92,13 @@ pub fn spec(c: Category) -> &'static KindSpec {
         Category::StripFooting => &STRIP_FOOTING,
         Category::EdgeInsulation => &EDGE_INSULATION,
         Category::SoffitInsulation => &SOFFIT_INSULATION,
+        Category::RoofTerrace => &ROOF_TERRACE,
+        Category::Coping => &COPING,
     }
 }
 
 /// Rang im Mengenfenster für alles, was dort keinen eigenen Platz hat.
-const LAST: u8 = 7;
+const LAST: u8 = 9;
 
 const EXTERIOR_WALL: KindSpec = KindSpec {
     category: Category::ExteriorWall,
@@ -316,6 +318,45 @@ const SOFFIT_INSULATION: KindSpec = KindSpec {
     needs_type: false,
     once: false,
     default_trade: None,
+};
+
+/// Dachbelag über beheiztem Raum (DIN 276:2018 363, bim/paket-dachterrasse
+/// §2); im Mengenfenster nach der Decke, vor dem Attikablech.
+const ROOF_TERRACE: KindSpec = KindSpec {
+    category: Category::RoofTerrace,
+    name: "Dachterrasse",
+    short: "Dachterrasse",
+    plural: "Dachterrassen",
+    genus: Genus::Feminine,
+    prefix: "DT",
+    ifc: "IfcCovering.ROOFING",
+    kg: Some(363),
+    qto_rank: 7,
+    szo: "roofterrace",
+    external: true,
+    type_category: Some(TypeCategory::RoofTerrace),
+    needs_type: false,
+    once: false,
+    default_trade: Some("18338"),
+};
+
+/// Dachrandabschluss der Terrasse (KG 363, IFC 4.2 COPING).
+const COPING: KindSpec = KindSpec {
+    category: Category::Coping,
+    name: "Attikablech",
+    short: "Attikablech",
+    plural: "Attikableche",
+    genus: Genus::Neuter,
+    prefix: "AB",
+    ifc: "IfcCovering.COPING",
+    kg: Some(363),
+    qto_rank: 8,
+    szo: "coping",
+    external: true,
+    type_category: None,
+    needs_type: false,
+    once: false,
+    default_trade: Some("18338"),
 };
 
 #[cfg(test)]

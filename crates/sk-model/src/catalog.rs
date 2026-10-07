@@ -811,7 +811,7 @@ mod tests {
                 ..vorlage.clone()
             }));
         }
-        let [mw, sb, dae, putz, holz, luft] = mats[..] else {
+        let [mw, sb, dae, putz, holz, luft, _blech] = mats[..] else {
             unreachable!()
         };
         let lage = |material, thickness, function, core| {
@@ -830,13 +830,19 @@ mod tests {
                 code: format!("{}-P", cat.prefix()),
                 category: cat,
                 layers: vec![
-                    lage(putz, 15.0, LayerFunction::Finish, false),
+                    lage(putz, 20.0, LayerFunction::Finish, false),
                     lage(luft, 40.0, LayerFunction::AirGap, false),
                     lage(dae, 2.0, LayerFunction::Membrane, false),
                     lage(dae, 100.0, LayerFunction::Insulation, false),
-                    // waagerechte Typen: genau eine Kernschicht (Regel 38)
+                    // waagerechte Typen: genau eine Kernschicht (Regel 38),
+                    // die Dachterrasse keine (Regel 39)
                     lage(mw, 175.0, LayerFunction::Structure, cat.is_wall()),
-                    lage(sb, 200.0, LayerFunction::Structure, true),
+                    lage(
+                        sb,
+                        200.0,
+                        LayerFunction::Structure,
+                        cat != TypeCategory::RoofTerrace,
+                    ),
                     lage(holz, 20.0, LayerFunction::Finish, false),
                 ],
                 bearing: if cat.is_wall() {

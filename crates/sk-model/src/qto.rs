@@ -34,6 +34,8 @@ pub struct LayerQto {
     /// Außenfläche der Schicht: Länge der äußeren Schichtkante × Höhe (mm²),
     /// für die Abrechnung des WDVS nach Fläche.
     pub side_area: f64,
+    /// Davon Attika über dem Terrassenrand (D2), mm³; im Volumen enthalten.
+    pub attika: f64,
 }
 
 /// Mengen eines Wandsegments.
@@ -178,6 +180,26 @@ fn area(p: &[Vec3]) -> f64 {
     twice.abs() * 0.5
 }
 
+/// Attika der Schicht `li` über Segment `k` (D2): Volumen (mm³) und
+/// Außenfläche (mm², nur an der äußersten Schicht).
+fn attika_of(chain: &WallChain, k: usize, li: usize) -> (f64, f64) {
+    let Some(a) = &chain.joints.attika else {
+        return (0.0, 0.0);
+    };
+    let h = (a.band.1 - a.band.0).max(0.0);
+    a.pieces
+        .iter()
+        .filter(|p| p.seg == k && p.layer == Some(li))
+        .fold((0.0, 0.0), |(v, s), p| {
+            let side = if p.contour[0] {
+                (p.quad[1] - p.quad[0]).length() * h
+            } else {
+                0.0
+            };
+            (v + area(&p.quad) * h, s + side)
+        })
+}
+
 /// Mengen aller Segmente eines Wandzugs, in Segmentreihenfolge.
 pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
     let (Some(chain), Some(r)) = (model.chain(run), model.run(run)) else {
@@ -276,7 +298,10 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                         .as_ref()
                         .is_none_or(|o| o.offsets.get(k).is_none_or(|d| *d <= 0.0));
                     let h_here = if keep { h_own + h_ext } else { h_own };
-                    let volume = area * h_here + v_up;
+                    // Attika über dem Terrassenrand (D2, BIM E2): Mehrmenge der
+                    // Schicht, die sie verlängert
+                    let (v_att, s_att) = attika_of(&chain, k, li);
+                    let volume = area * h_here + v_up + v_att;
                     let density = model.material(l.material).map_or(0.0, |m| m.density);
                     let (la, lb) = ((fa[j] - fa[k]).length(), (fb[j] - fb[k]).length());
                     let lo = if outer_first { la } else { lb };
@@ -288,7 +313,8 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                         volume,
                         mass: volume * 1e-9 * density,
                         pocket: (area * (h - h_own - h_ext)).max(0.0),
-                        side_area: lo * (h - h_ext + h_here - h_own) + s_up,
+                        side_area: lo * (h - h_ext + h_here - h_own) + s_up + s_att,
+                        attika: v_att,
                     }
                 })
                 .collect();
@@ -429,6 +455,102 @@ pub fn soffit_qto(model: &Model, soffit: ElementId) -> Option<SoffitQto> {
     soffit_qto_of(&model.floor(run)?.ok()?)
 }
 
+/// Mengen einer Dachterrasse (D1, IFC IfcCovering ROOFING), Hauptmenge
+/// Fläche (BIM §6).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerraceQto {
+    /// Fläche des Umrisses (mm²).
+    pub area: f64,
+    /// Volumen aller Schichten (mm³).
+    pub volume: f64,
+    /// Volumen der Dämmschichten bzw. der Beläge (mm³).
+    pub insulation_volume: f64,
+    pub finish_volume: f64,
+    /// Je Schicht von oben nach unten: Baustoff, Dicke, Volumen.
+    pub layers: Vec<(MaterialId, f64, f64)>,
+    /// Größte lichte Tiefe (mm).
+    pub depth: f64,
+}
+
+/// Mengen eines Attikablechs (D3, IfcCovering COPING), Hauptmenge Länge.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CopingQto {
+    /// Länge an der Außenkante der Attika (mm, BIM §6).
+    pub length: f64,
+    /// Abwicklung (Zuschnitt), mm.
+    pub girth: f64,
+    pub material: Option<MaterialId>,
+    /// Blechvolumen: Länge × Abwicklung × wahre Dicke 0,7 mm (mm³).
+    pub volume: f64,
+}
+
+/// Wahre Dicke des Attikablechs (mm), Merkmal (BIM E4).
+pub const COPING_SHEET: f64 = 0.7;
+
+/// Mengen der Dachterrasse auf der Decke `floor` aus ihrer schon
+/// berechneten Geometrie; `None` ohne Terrasse.
+pub fn terrace_qto_of(model: &Model, floor: ElementId, f: &FloorSlab) -> Option<TerraceQto> {
+    if f.terraces.is_empty() {
+        return None;
+    }
+    let area = f.terrace_area();
+    let layers: Vec<(MaterialId, f64, f64)> = model
+        .terrace_layers(floor)
+        .iter()
+        .filter(|l| l.function != LayerFunction::AirGap)
+        .map(|l| (l.material, l.thickness, l.thickness * area))
+        .collect();
+    let by = |pick: &dyn Fn(LayerFunction) -> bool| -> f64 {
+        model
+            .terrace_layers(floor)
+            .iter()
+            .filter(|l| pick(l.function))
+            .map(|l| l.thickness * area)
+            .sum()
+    };
+    Some(TerraceQto {
+        area,
+        volume: layers.iter().map(|l| l.2).sum(),
+        insulation_volume: by(&|x| x == LayerFunction::Insulation),
+        finish_volume: by(&|x| x != LayerFunction::Insulation && x != LayerFunction::AirGap),
+        layers,
+        depth: f.terraces.depth(),
+    })
+}
+
+/// Mengen einer Dachterrasse.
+pub fn terrace_qto(model: &Model, terrace: ElementId) -> Option<TerraceQto> {
+    let ElementKind::RoofTerrace { floor } = model.element(terrace)?.kind else {
+        return None;
+    };
+    let run = model.run_of(floor)?;
+    terrace_qto_of(model, floor, &model.floor(run)?.ok()?)
+}
+
+/// Mengen des Attikablechs an der Decke `floor` aus ihrer Geometrie.
+pub fn coping_qto_of(model: &Model, floor: ElementId, f: &FloorSlab) -> Option<CopingQto> {
+    if f.terraces.coping.is_empty() {
+        return None;
+    }
+    let length = f.coping_length();
+    let girth = crate::terrace::coping_girth(f.terraces.width);
+    Some(CopingQto {
+        length,
+        girth,
+        material: model.coping_material(floor),
+        volume: length * girth * COPING_SHEET,
+    })
+}
+
+/// Mengen eines Attikablechs.
+pub fn coping_qto(model: &Model, coping: ElementId) -> Option<CopingQto> {
+    let ElementKind::Coping { floor } = model.element(coping)?.kind else {
+        return None;
+    };
+    let run = model.run_of(floor)?;
+    coping_qto_of(model, floor, &model.floor(run)?.ok()?)
+}
+
 /// Mengen der Decke über einem Wandzug; `None` ohne Decke oder wenn kein
 /// Körper entstehen kann.
 pub fn floor_qto(model: &Model, run: RunId) -> Option<FloorQto> {
@@ -466,9 +588,18 @@ pub struct EdgeStripQto {
 pub fn edge_strip_qto_of(f: &FloorSlab, seg: usize) -> Option<EdgeStripQto> {
     let sp = f.strip?;
     f.strips.get(seg)?;
+    // Attika vor der Deckenkante (D2): die Zone des Streifens läuft hoch
+    let attika = f.attika_band().map_or(0.0, |(z0, z1)| {
+        f.terraces
+            .attika
+            .iter()
+            .filter(|p| p.seg == seg && p.layer.is_none())
+            .map(|p| area(&p.quad) * (z1 - z0).max(0.0))
+            .sum()
+    });
     Some(EdgeStripQto {
         length: f.strip_length(seg),
-        volume: f.strip_volume(seg),
+        volume: f.strip_volume(seg) + attika,
         width: sp.width,
         height: f.params.thickness,
     })
@@ -498,6 +629,8 @@ pub enum ElementQto {
     Floor(FloorQto),
     Strip(EdgeStripQto),
     Soffit(SoffitQto),
+    Terrace(TerraceQto),
+    Coping(CopingQto),
 }
 
 impl ElementQto {
@@ -510,6 +643,8 @@ impl ElementQto {
             ElementQto::Floor(f) => f.volume,
             ElementQto::Strip(f) => f.volume,
             ElementQto::Soffit(f) => f.volume,
+            ElementQto::Terrace(t) => t.volume,
+            ElementQto::Coping(c) => c.volume,
         }
     }
 }
@@ -589,6 +724,8 @@ pub struct LayerRow {
     pub insulation: bool,
     /// Die Schicht ist die ganze Menge des Bauteils (einschichtig).
     pub whole: bool,
+    /// Die Wandschicht läuft als Attika über den Terrassenrand hoch (D2).
+    pub attika: bool,
 }
 
 /// Summe eines Gewerks in einem Gebäude mit seinen Zeilen; `area` (mm²)
@@ -643,6 +780,7 @@ fn material_rank(c: MatCategory) -> u8 {
         MatCategory::Insulation => 3,
         MatCategory::Plaster => 4,
         MatCategory::Air => 5,
+        MatCategory::Metal => 6,
     }
 }
 
@@ -729,6 +867,29 @@ pub fn schedule(model: &Model) -> Schedule {
                             crate::model::explain_floor(*err)
                         )),
                     ),
+                }
+            }
+            ElementKind::RoofTerrace { floor } | ElementKind::Coping { floor } => {
+                let f = floors.entry(run).or_insert_with(|| match model.floor(run) {
+                    Some(r) => r,
+                    None => Err(FloorError::NotClosed),
+                });
+                let dt = matches!(e.kind, ElementKind::RoofTerrace { .. });
+                let q = match &*f {
+                    Ok(f) if dt => terrace_qto_of(model, floor, f).map(ElementQto::Terrace),
+                    Ok(f) => coping_qto_of(model, floor, f).map(ElementQto::Coping),
+                    Err(_) => None,
+                };
+                match (q, &*f) {
+                    (Some(q), _) => (Some(q), None),
+                    (None, Err(err)) => (
+                        None,
+                        Some(format!(
+                            "Kein Körper: {}",
+                            crate::model::explain_floor(*err)
+                        )),
+                    ),
+                    (None, Ok(_)) => (None, Some("Kein Körper: kein Rücksprung darüber".into())),
                 }
             }
             ElementKind::Floor(_) => {
@@ -868,6 +1029,8 @@ fn totals(rows: &[RowQto]) -> Totals {
             ElementQto::Footing(f) => t.length += f.length,
             ElementQto::Strip(f) => t.length += f.length,
             ElementQto::Soffit(f) => t.area += f.area,
+            ElementQto::Terrace(f) => t.area += f.area,
+            ElementQto::Coping(f) => t.length += f.length,
             ElementQto::Floor(f) => {
                 t.area += f.area;
                 t.pocket += f.bearing;
@@ -897,30 +1060,32 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                 .material(m)
                 .is_some_and(|x| x.category == MatCategory::Insulation)
         };
-        let mut push = |i: usize, length: f64, area: f64, volume: f64, whole: bool| {
-            let Some(l) = layers.get(i) else { return };
-            let ins = insulation(l.material);
-            out.push(LayerRow {
-                element: row.element,
-                number: row.number.clone(),
-                category: e.category,
-                storey: st,
-                layer: i,
-                material: l.material,
-                thickness: l.thickness,
-                trade: model.layer_trade(row.element, i),
-                kg: model.layer_kg(row.element, i),
-                length,
-                area: if ins || !matches!(q, ElementQto::Wall(_)) {
-                    area
-                } else {
-                    0.0
-                },
-                volume,
-                insulation: ins,
-                whole,
-            });
-        };
+        let mut push =
+            |i: usize, length: f64, area: f64, volume: f64, whole: bool, attika: bool| {
+                let Some(l) = layers.get(i) else { return };
+                let ins = insulation(l.material);
+                out.push(LayerRow {
+                    element: row.element,
+                    number: row.number.clone(),
+                    category: e.category,
+                    storey: st,
+                    layer: i,
+                    material: l.material,
+                    thickness: l.thickness,
+                    trade: model.layer_trade(row.element, i),
+                    kg: model.layer_kg(row.element, i),
+                    length,
+                    area: if ins || !matches!(q, ElementQto::Wall(_)) {
+                        area
+                    } else {
+                        0.0
+                    },
+                    volume,
+                    insulation: ins,
+                    whole,
+                    attika,
+                });
+            };
         match q {
             ElementQto::Wall(w) => {
                 let whole = w.layers.len() == 1;
@@ -930,7 +1095,14 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                         .material(l.material)
                         .is_some_and(|x| x.category == MatCategory::Air);
                     if !air {
-                        push(i, w.list_length, l.side_area, l.volume, whole);
+                        push(
+                            i,
+                            w.list_length,
+                            l.side_area,
+                            l.volume,
+                            whole,
+                            l.attika > 0.0,
+                        );
                     }
                 }
             }
@@ -941,6 +1113,8 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                     ElementQto::Soffit(f) => (0.0, f.area),
                     ElementQto::Footing(f) => (f.length, 0.0),
                     ElementQto::Strip(f) => (f.length, 0.0),
+                    ElementQto::Terrace(t) => (0.0, t.area),
+                    ElementQto::Coping(c) => (c.length, 0.0),
                     ElementQto::Wall(_) => (0.0, 0.0),
                 };
                 let whole = layers.len() == 1;
@@ -956,7 +1130,7 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                     } else {
                         area * l.thickness
                     };
-                    push(i, length, area, v, whole);
+                    push(i, length, area, v, whole, false);
                 }
             }
         }
@@ -1064,9 +1238,15 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
                         .map(|(id, _)| id)
                 })
             }
-            ElementKind::Wall(_) => None,
+            ElementKind::Coping { floor } => model.coping_material(floor),
+            ElementKind::Wall(_) | ElementKind::RoofTerrace { .. } => None,
         });
         match (q, mat) {
+            (ElementQto::Terrace(t), _) => {
+                for &(m, _, v) in &t.layers {
+                    add(m, v, t.area);
+                }
+            }
             (ElementQto::Wall(w), _) => {
                 for l in &w.layers {
                     // Luftschicht ohne Körper: keine Summe „Luft“ (K4)

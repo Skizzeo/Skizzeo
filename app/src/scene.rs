@@ -15,7 +15,7 @@ use sk_model::{
     edge_kind, floor_qto_of, foundation_qto_of, merge_seam, run_qto, BuildingId, Category, Deleted,
     Direction, Edge, ElementId, FloorQto, FloorSlab, FootingQto, Foundation, LayerSetId, Model,
     Refusal, RunId, SlabQto, Solid, StoreyId, Touched, Txn, TypeCategory, WallChain, WallQto,
-    FLOOR_PART, FOOTING_PART, SLAB_PART, SOFFIT_PART, STRIP_PART,
+    COPING_PART, FLOOR_PART, FOOTING_PART, SLAB_PART, SOFFIT_PART, STRIP_PART, TERRACE_PART,
 };
 use sk_render::MeshData;
 use sk_ui::theme::Theme;
@@ -267,6 +267,8 @@ impl RunPart for FloorSlab {
     fn solid(&self, out: &mut Solid) {
         out.append(&part(FloorSlab::solid(self), FLOOR_PART));
         out.append(&part(self.soffit_solid(), SOFFIT_PART));
+        out.append(&part(self.terrace_solid(), TERRACE_PART));
+        out.append(&part(self.coping_solid(), COPING_PART));
         for k in 0..self.strips.len() {
             out.append(&part(self.strip_solid(k), STRIP_PART + k as u32));
         }
@@ -280,6 +282,11 @@ impl RunPart for FloorSlab {
         }
         out.append(&part(self.solid_cut_at(cut), FLOOR_PART));
         out.append(&part(self.soffit_cut_at(cut), SOFFIT_PART));
+        out.append(&part(self.terrace_cut_at(cut), TERRACE_PART));
+        // Das Attikablech liegt über dem Boden des Geschosses darüber.
+        if mode == PlanMode::Lower {
+            out.append(&part(self.coping_solid(), COPING_PART));
+        }
         for k in 0..self.strips.len() {
             out.append(&part(self.strip_cut_at(k, cut), STRIP_PART + k as u32));
         }
@@ -288,6 +295,8 @@ impl RunPart for FloorSlab {
     fn section_caps(&self, out: &mut Solid, p0: Vec3, n: Vec3) {
         out.append(&part(FloorSlab::section_caps(self, p0, n), FLOOR_PART));
         out.append(&part(self.soffit_section_caps(p0, n), SOFFIT_PART));
+        out.append(&part(self.terrace_section_caps(p0, n), TERRACE_PART));
+        out.append(&part(self.coping_section_caps(p0, n), COPING_PART));
         for k in 0..self.strips.len() {
             let caps = self.strip_section_caps(k, p0, n);
             out.append(&part(caps, STRIP_PART + k as u32));
@@ -1018,6 +1027,26 @@ impl Scene {
         sk_model::soffit_qto_of(self.floor(run)?)
     }
 
+    /// Mengen einer Dachterrasse, aus der gezeichneten Decke.
+    pub fn terrace_qto(&self, terrace: ElementId) -> Option<sk_model::TerraceQto> {
+        let m = &self.model;
+        let sk_model::ElementKind::RoofTerrace { floor } = m.element(terrace)?.kind else {
+            return None;
+        };
+        let run = m.run_of(floor)?;
+        sk_model::terrace_qto_of(m, floor, self.floor(run)?)
+    }
+
+    /// Mengen eines Attikablechs, aus der gezeichneten Decke.
+    pub fn coping_qto(&self, coping: ElementId) -> Option<sk_model::CopingQto> {
+        let m = &self.model;
+        let sk_model::ElementKind::Coping { floor } = m.element(coping)?.kind else {
+            return None;
+        };
+        let run = m.run_of(floor)?;
+        sk_model::coping_qto_of(m, floor, self.floor(run)?)
+    }
+
     /// Mengen eines Randdämmstreifens (K5), aus der gezeichneten Decke.
     pub fn edge_strip_qto(&self, strip: ElementId) -> Option<sk_model::EdgeStripQto> {
         let m = &self.model;
@@ -1269,6 +1298,12 @@ impl Scene {
         if field == Field::Soffit {
             return self.set_soffit(id, mm);
         }
+        if matches!(
+            field,
+            Field::TerraceInsulation | Field::TerraceFinish | Field::Upstand
+        ) {
+            return self.set_terrace_field(id, field, mm);
+        }
         let Some((slab, footing)) = m.foundation_of(run) else {
             return false;
         };
@@ -1435,6 +1470,36 @@ impl Scene {
     /// Dicke der Untersichtdämmung an der Decke `id` (oder an der Decke der
     /// Untersichtdämmung `id`): ein Schritt „Untersichtdämmung“; die
     /// Außenschichten wandern mit.
+    /// Feld im Abschnitt „Aufbau“ der Dachterrasse (D1, H152): Dämmung und
+    /// Belag ändern ihren Typ, die Attika steht an der Decke. Ein Schritt.
+    pub fn set_terrace_field(&mut self, id: ElementId, field: Field, mm: f64) -> bool {
+        use sk_model::ElementKind::{Coping, Floor, RoofTerrace};
+        let m = &self.model;
+        let floor = match m.element(id).map(|e| &e.kind) {
+            Some(RoofTerrace { floor } | Coping { floor }) => *floor,
+            Some(Floor(_)) => id,
+            _ => return false,
+        };
+        if field == Field::Upstand {
+            return self.edit_model("Attika", |m| m.set_floor_upstand(floor, mm));
+        }
+        let func = match field {
+            Field::TerraceInsulation => sk_model::LayerFunction::Insulation,
+            _ => sk_model::LayerFunction::Finish,
+        };
+        let Some(t) = m.terrace_type_of(floor) else {
+            return false;
+        };
+        let Some(mut set) = m.layer_set(t).cloned() else {
+            return false;
+        };
+        match set.layers.iter_mut().find(|l| l.function == func) {
+            Some(l) if l.thickness != mm => l.thickness = mm,
+            _ => return false,
+        }
+        self.edit_model("Aufbau der Dachterrasse", |m| m.set_layer_set(t, set))
+    }
+
     pub fn set_soffit(&mut self, id: ElementId, mm: f64) -> bool {
         let m = &self.model;
         let floor = match m.element(id).map(|e| &e.kind) {

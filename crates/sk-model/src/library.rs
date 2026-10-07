@@ -22,16 +22,19 @@ pub enum MatCategory {
     Timber,
     /// Ruhende Luftschicht: zählt zur Dicke, hat aber keinen Körper (K4).
     Air,
+    /// Blech (Attikablech, Dachterrasse D3).
+    Metal,
 }
 
 impl MatCategory {
-    pub const ALL: [MatCategory; 6] = [
+    pub const ALL: [MatCategory; 7] = [
         MatCategory::Masonry,
         MatCategory::Concrete,
         MatCategory::Insulation,
         MatCategory::Plaster,
         MatCategory::Timber,
         MatCategory::Air,
+        MatCategory::Metal,
     ];
 
     pub fn name(self) -> &'static str {
@@ -42,6 +45,7 @@ impl MatCategory {
             MatCategory::Plaster => "Putz",
             MatCategory::Timber => "Holz",
             MatCategory::Air => "Luft",
+            MatCategory::Metal => "Metall",
         }
     }
 }
@@ -162,7 +166,8 @@ pub enum Bearing {
 /// Art eines Bauteiltyps: für welche Bauteile er taugt (K1). Wandarten
 /// haben Werkstypen und einen Standardtyp; Decke, Sohlplatte und
 /// Frostschürze kommen ohne Typ aus (gedachter Einschicht-Aufbau,
-/// [`crate::Model::element_layers`]) und können einen haben (R4).
+/// [`crate::Model::element_layers`]) und können einen haben (R4). Die
+/// Dachterrasse hat immer einen, ohne Kern (Werkstyp „Dachterrasse 14“).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TypeCategory {
     ExteriorWall,
@@ -170,15 +175,17 @@ pub enum TypeCategory {
     Floor,
     GroundSlab,
     StripFooting,
+    RoofTerrace,
 }
 
 impl TypeCategory {
-    pub const ALL: [TypeCategory; 5] = [
+    pub const ALL: [TypeCategory; 6] = [
         TypeCategory::ExteriorWall,
         TypeCategory::InteriorWall,
         TypeCategory::Floor,
         TypeCategory::GroundSlab,
         TypeCategory::StripFooting,
+        TypeCategory::RoofTerrace,
     ];
 
     /// Wandarten: nur sie haben Werkstypen, Standardtyp, Werkzeug und einen
@@ -198,7 +205,7 @@ impl TypeCategory {
     /// Waagerechte Art (Schichten von oben nach unten) mit genau einer
     /// Kernschicht, deren Dicke am Bauteil steht (Regel 38).
     pub fn variable_core(self) -> bool {
-        !self.is_wall()
+        !self.is_wall() && self != TypeCategory::RoofTerrace
     }
 
     /// Kategorie der Bauteile dieser Typart.
@@ -209,6 +216,7 @@ impl TypeCategory {
             TypeCategory::Floor => Category::Floor,
             TypeCategory::GroundSlab => Category::GroundSlab,
             TypeCategory::StripFooting => Category::StripFooting,
+            TypeCategory::RoofTerrace => Category::RoofTerrace,
         }
     }
 
@@ -221,6 +229,10 @@ impl TypeCategory {
         crate::kinds::spec(self.category()).prefix
     }
 }
+
+/// Dicken von Belag und Dämmung der Dachterrasse (mm, Steckbrief DT §2).
+pub const TERRACE_FINISH: (f64, f64) = (20.0, 150.0);
+pub const TERRACE_INSULATION: (f64, f64) = (40.0, 300.0);
 
 /// Kurzzeichen aus Typart und Dicke in cm, z. B. „AW-31,5“, „IW-17,5“.
 pub fn type_code(category: TypeCategory, thickness: f64) -> String {
@@ -329,6 +341,27 @@ impl LayerSet {
         // Regel 38: die Kernschicht trägt die Dicke des Bauteils
         if self.category.variable_core() && core.len() != 1 {
             out.push(format!("Typ {who}: braucht genau eine Kernschicht"));
+        }
+        // Regel 39: die Dachterrasse liegt auf der Rohdecke, ohne Kern; Belag
+        // und Dämmung in den Grenzen des Paneels (Steckbrief DT §2)
+        if self.category == TypeCategory::RoofTerrace {
+            if !core.is_empty() {
+                out.push(format!("Typ {who}: Dachterrasse ohne Kernschicht"));
+            }
+            for l in &self.layers {
+                let range = match l.function {
+                    LayerFunction::Finish => Some(TERRACE_FINISH),
+                    LayerFunction::Insulation => Some(TERRACE_INSULATION),
+                    _ => None,
+                };
+                if let Some((lo, hi)) = range.filter(|r| !(r.0..=r.1).contains(&l.thickness)) {
+                    out.push(format!(
+                        "Typ {who}: Schicht {} bis {} cm",
+                        cm_de(lo),
+                        cm_de(hi)
+                    ));
+                }
+            }
         }
         // Regel 20: Luftschicht nie Kern, nie am Rand, nie zweimal nacheinander
         let air = |l: &MaterialLayer| l.function == LayerFunction::AirGap;

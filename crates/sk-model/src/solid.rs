@@ -315,7 +315,7 @@ impl Solid {
     }
 
     /// Dreieck mit Umlauf passend zur Normale `nrm`.
-    fn oriented_tri(&mut self, p: [Vec3; 3], nrm: Vec3) {
+    pub(crate) fn oriented_tri(&mut self, p: [Vec3; 3], nrm: Vec3) {
         let c = (p[1] - p[0]).cross(p[2] - p[0]);
         let p = if c.dot(nrm) < 0.0 {
             [p[0], p[2], p[1]]
@@ -332,7 +332,7 @@ impl Solid {
     }
 
     /// Viereck (eben) mit Umlauf passend zur Normale `nrm`.
-    fn oriented_quad(&mut self, p: [Vec3; 4], nrm: Vec3) {
+    pub(crate) fn oriented_quad(&mut self, p: [Vec3; 4], nrm: Vec3) {
         self.oriented_tri([p[0], p[1], p[2]], nrm);
         self.oriented_tri([p[0], p[2], p[3]], nrm);
     }

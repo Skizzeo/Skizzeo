@@ -11946,7 +11946,9 @@ mod og_phase2 {
 
     /// A146 (BIM „Fertig, wenn: Rücksprung“, G7 §4): Gelöstes AW-006 um 0,30 m
     /// nach innen. DE-002 72,1224 m² / 15,8669 m³, OG-Gasbeton netto 15,4846 m³,
-    /// Dämmung OG 13,9255 m³; EG und DE-001 unverändert; keine UD.
+    /// Dämmung OG 13,9255 m³; DE-001 und EG-Gasbeton unverändert; keine UD.
+    /// Seit der Dachterrasse (Paket 2b, Regel 45) läuft das EG-WDVS am
+    /// Rücksprung als Attika bis +3,055: EG-Dämmung 14,4543 statt 14,1654.
     #[test]
     fn a146_ruecksprung() {
         let (mut s, eg, og) = prueffall(146);
@@ -11960,7 +11962,7 @@ mod og_phase2 {
             (
                 (75.0384, 16.5084),
                 (72.1224, 15.8669),
-                EG_SCHALE,
+                (15.7613, 14.4543),
                 (15.4846, 13.9255)
             )
         );
@@ -12766,7 +12768,8 @@ mod og_phase2 {
     /// sie. Danach ist alles wie beim gekoppelten Ziehen der EG-Nordwand um
     /// +300 bzw. −300 in einem neuen Haus: Lage von EG und OG, Decken, Schalen,
     /// Bodenplatte und Frostschürze. Versatz 0, gekoppelt, keine UD, keine
-    /// Abfangung, Guids bleiben (beim Vorsprung entfällt nur die UD). Ein Schritt; Rückgängig stellt EG und Versatz wieder her,
+    /// Abfangung, Guids bleiben (beim Vorsprung entfällt nur die UD, beim
+    /// Rücksprung DT und AB). Ein Schritt; Rückgängig stellt EG und Versatz wieder her,
     /// Wiederholen das Ergebnis.
     #[test]
     fn a170_eg_rueckt_ans_og() {
@@ -12792,10 +12795,12 @@ mod og_phase2 {
                 decke_mengen(&s, og).0,
                 "{d}: DE-001 = OG-Kern, kein Streifen"
             );
-            // Guids bleiben; nur die UD unter dem Vorsprung entfällt
+            // Guids bleiben; nur die UD unter dem Vorsprung entfällt, beim
+            // Rücksprung Dachterrasse und Attikablech (Paket 2a/2c)
             let neu = guids(&s);
             assert!(neu.iter().all(|x| g.contains(x)), "{d}: keine neue Guid");
-            assert_eq!(g.len() - neu.len(), usize::from(d > 0.0), "{d}: nur die UD");
+            let weg = if d > 0.0 { 1 } else { 2 };
+            assert_eq!(g.len() - neu.len(), weg, "{d}: nur UD bzw. DT und AB");
             pruefung(&s);
 
             assert!(s.undo(), "{d}: ein Schritt");
@@ -13839,7 +13844,7 @@ mod bauteilarten {
 
     /// Die heutige Tabelle (main 637f33c): Name, Präfix, IFC, KG, IsExternal.
     #[allow(clippy::type_complexity)]
-    const TABELLE: [(Category, &str, &str, &str, Option<u16>, bool); 12] = [
+    const TABELLE: [(Category, &str, &str, &str, Option<u16>, bool); 14] = [
         (
             Category::ExteriorWall,
             "Außenwand",
@@ -13915,6 +13920,23 @@ mod bauteilarten {
             Some(354),
             false,
         ),
+        // Paket 2a/2c (bim/paket-dachterrasse.md, Steckbriefe DT und AB)
+        (
+            Category::RoofTerrace,
+            "Dachterrasse",
+            "DT",
+            "IfcCovering.ROOFING",
+            Some(363),
+            true,
+        ),
+        (
+            Category::Coping,
+            "Attikablech",
+            "AB",
+            "IfcCovering.COPING",
+            Some(363),
+            true,
+        ),
     ];
 
     /// Bauteilarten, die es heute als Bauteil gibt: (Kategorie, Abschnitt und
@@ -13968,6 +13990,8 @@ mod bauteilarten {
                 Category::InteriorWall => assert_eq!(t, Some(T::InteriorWall)),
                 // R4 öffnet Decke, Sohlplatte und Frostschürze (bim/paket-r4 §1.2)
                 Category::Floor | Category::GroundSlab | Category::StripFooting => {}
+                // Paket 2a: Werkstyp „Dachterrasse 14“
+                Category::RoofTerrace => assert_eq!(t, Some(T::RoofTerrace)),
                 _ => assert_eq!(t, None, "{c:?} ohne Typ"),
             }
         }
@@ -14187,6 +14211,18 @@ GB-01;Summe nach Baustoff;;Randdämmung;;;;3,0000;2,3455;
         );
     }
 
+    /// Seit Paket 2a/2c: Dachterrasse und Attikablech (nicht in den
+    /// Musterhäusern von A176, die den Stand 637f33c festhalten).
+    const ARTEN_2A: [(Category, &str, &str, &str); 2] = [
+        (
+            Category::RoofTerrace,
+            "[terrace]",
+            "roofterrace",
+            "Dachterrassen",
+        ),
+        (Category::Coping, "[coping]", "coping", "Attikableche"),
+    ];
+
     /// Kategorien, die es noch nicht als Bauteil gibt (kein Beispiel).
     const OHNE_BAUTEIL: [Category; 5] = [
         Category::Roof,
@@ -14225,11 +14261,11 @@ GB-01;Summe nach Baustoff;;Randdämmung;;;;3,0000;2,3455;
                 k.szo
             );
             assert!(
-                OHNE_BAUTEIL.contains(&c) || ARTEN.iter().any(|a| a.0 == c),
+                OHNE_BAUTEIL.contains(&c) || ARTEN.iter().chain(&ARTEN_2A).any(|a| a.0 == c),
                 "{c:?}: Beispiel in A180 fehlt"
             );
         }
-        for (c, _, wort, mehrzahl) in ARTEN {
+        for (c, _, wort, mehrzahl) in ARTEN.into_iter().chain(ARTEN_2A) {
             let (.., plural, _, _, szo) = angaben(art(c));
             assert_eq!(plural, mehrzahl, "{c:?}");
             assert_eq!(szo, wort, "{c:?}");
@@ -14269,7 +14305,8 @@ GB-01;Summe nach Baustoff;;Randdämmung;;;;3,0000;2,3455;
 
     /// Beispiel der Kategorie `c` in einem leeren Projekt, in einem Schritt
     /// „Beispiel“: das Haus 10 × 8 m direkt im Modell, für IW eine
-    /// Innenwand dazu, für RD der Typ AW-36,5, für UD AW-006 0,30 m vor.
+    /// Innenwand dazu, für RD der Typ AW-36,5, für UD AW-006 0,30 m vor,
+    /// für DT und AB AW-006 1,50 m zurück.
     /// Abgeleitete Bauteile entstehen beim Abschluss des Schritts.
     fn beispiel(c: Category, s: &mut Scene) -> ElementId {
         let mono = s.model().type_by_guid(sk_model::MONO_TYPE_GUID).unwrap();
@@ -14301,6 +14338,15 @@ GB-01;Summe nach Baustoff;;Randdämmung;;;;3,0000;2,3455;
                         .map(|(id, _)| id)
                         .unwrap();
                     m.set_linked(w, false) && m.move_segment(w, 300.0).is_some()
+                }
+                Category::RoofTerrace | Category::Coping => {
+                    let w = m
+                        .elements()
+                        .iter()
+                        .find(|(_, e)| e.number == "AW-006")
+                        .map(|(id, _)| id)
+                        .unwrap();
+                    m.set_linked(w, false) && m.move_segment(w, -1500.0).is_some()
                 }
                 _ => true,
             }
@@ -15438,5 +15484,909 @@ mod nach_gewerk {
         );
         assert!(s.undo());
         assert_eq!(nach_gewerk(&mut s).len(), 3);
+    }
+}
+mod dachterrasse {
+    use super::*;
+
+    // Abnahmetests A189–A194: Dachterrasse DT, Fläche und Aufbau (Commit 2a;
+    // bim/paket-dachterrasse.md E1–E3, Regeln 41–44, endgültige Sollwerte
+    // 08:54; Steckbrief bauteile/dt-dachterrasse.md; geometrie/
+    // machbarkeit-dachterrasse.md D0a/D1). Spezifikation:
+    // test/abnahme-dachterrasse.md. Setzt R4a und 1a voraus
+    // (`element_layers`, `layer_trade`, `layer_kg`) und
+    // test/patches/element-bounds.patch.
+    //
+    // Einbau: als `mod dachterrasse { use super::*; … }` ans Ende von
+    // app/src/abnahme.rs. Nutzt aus abnahme.rs: gebaeude, decke, r4.
+    //
+    // Prüfhaus wie paket-og-phase2 §8: Dialog, 10 × 8 m, AW-31,5 (WDVS 140 +
+    // Gasbeton 175), Standardhöhen (OK Rohdecke EG +2,855). OG-Wände AW-005
+    // West, AW-006 Nord, AW-007 Ost, AW-008 Süd über AW-001 … 004.
+    //
+    // Angenommene Namen stehen nur in den Adaptern: `Model::terrace_of`,
+    // `Model::terrace_outlines`, `Scene::terrace_qto` mit `area,
+    // insulation_volume, finish_volume`, Merkmal „begehbar“ über
+    // `Model::props_of`, `Model::set_floor_upstand`, `Category::RoofTerrace`,
+    // `TypeCategory::RoofTerrace`.
+
+    use sk_model::{Category, ElementId, LayerFunction, PropValue, RunId, TypeCategory};
+
+    // ===== Adapter 2a =====
+
+    /// Dachterrasse auf der Decke `de` (`None`: keine).
+    fn dt(s: &Scene, de: ElementId) -> Option<ElementId> {
+        s.model().terrace_of(de)
+    }
+
+    /// Zahl der zusammenhängenden Terrassenstücke über dem EG-Zug (ein Ring
+    /// ringsum zählt als ein Stück).
+    fn stuecke(s: &Scene, eg: RunId) -> usize {
+        s.model().terrace_outlines(eg).len()
+    }
+
+    /// (Fläche m², Dämmung m³, Belag m³), auf 4 Stellen.
+    fn dt_mengen(s: &Scene, id: ElementId) -> (f64, f64, f64) {
+        let q = s.terrace_qto(id).expect("Mengen der Dachterrasse");
+        (
+            r4(q.area / 1e6),
+            r4(q.insulation_volume / 1e9),
+            r4(q.finish_volume / 1e9),
+        )
+    }
+
+    fn begehbar(s: &Scene, id: ElementId) -> bool {
+        matches!(
+            s.model().props_of(id).get("begehbar"),
+            Some(PropValue::Bool(true))
+        )
+    }
+
+    /// Attikahöhe über OK Belag an der Decke (mm), ein Schritt.
+    fn attika(s: &mut Scene, de: ElementId, mm: f64) -> bool {
+        s.edit_model("Attikahöhe", |m| m.set_floor_upstand(de, mm))
+    }
+
+    fn koerper_z(s: &mut Scene, id: ElementId) -> (f64, f64) {
+        let (lo, hi) = s.element_bounds(id).expect("Körper");
+        (lo.z.round(), hi.z.round())
+    }
+
+    // ===== Hilfen =====
+
+    fn nr(s: &Scene, nummer: &str) -> ElementId {
+        s.model()
+            .elements()
+            .iter()
+            .find(|(_, e)| e.number == nummer)
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| panic!("{nummer} fehlt"))
+    }
+
+    fn hat(s: &Scene, nummer: &str) -> bool {
+        s.model().elements().iter().any(|(_, e)| e.number == nummer)
+    }
+
+    fn zahl(s: &Scene, c: Category) -> usize {
+        s.model()
+            .elements()
+            .iter()
+            .filter(|(_, e)| e.category == c)
+            .count()
+    }
+
+    fn guid(s: &Scene, id: ElementId) -> sk_model::Guid {
+        s.model().element(id).unwrap().guid
+    }
+
+    fn pruefung(s: &Scene) {
+        assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+    }
+
+    /// OG-Wand lösen und um `d` mm versetzen (+ außen), je ein Schritt.
+    fn versetzen(s: &mut Scene, wand: &str, d: f64) {
+        let w = nr(s, wand);
+        if s.model().stack_offset(w).is_some_and(|(_, l)| l) {
+            assert!(s.edit_model("Kopplung gelöst", |m| m.set_linked(w, false)));
+        }
+        assert!(
+            s.edit_model("Wand verschoben", |m| m.move_segment(w, d).is_some()),
+            "{wand} um {d}"
+        );
+    }
+
+    /// Prüfhaus; `rueck`: OG-Wände, die um je 1,50 m zurückspringen.
+    fn pruefhaus(seed: u64, rueck: &[&str]) -> (Scene, RunId, RunId) {
+        let mut s = Scene::with_model(Model::with_seed(seed));
+        let (eg, og) = gebaeude(&mut s);
+        for w in rueck {
+            versetzen(&mut s, w, -1500.0);
+        }
+        pruefung(&s);
+        (s, eg, og)
+    }
+
+    fn typ(s: &Scene, code: &str) -> sk_model::LayerSetId {
+        s.model()
+            .layer_sets()
+            .iter()
+            .find(|(_, t)| t.code == code)
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| panic!("Typ {code}"))
+    }
+
+    /// Zahlenfeld im Paneel „Aufbau“: Dicke der Schicht `i` des Projekttyps
+    /// der Terrasse (0 Belag, 1 Dämmung), ein Schritt; `false`: abgelehnt.
+    fn aufbau_dicke(s: &mut Scene, i: usize, mm: f64) -> bool {
+        let id = typ(s, "DT-14");
+        let mut t = s.model().layer_set(id).unwrap().clone();
+        t.layers[i].thickness = mm;
+        s.edit_model("Aufbau geändert", |m| m.set_layer_set(id, t.clone()))
+    }
+
+    /// A189 (D0a, Regel 41): Die Terrassenfläche entsteht aus den
+    /// Rücksprüngen, zusammenhängend über Ecken. Nord −1,50: ein Stück,
+    /// 9,72 × 1,36 = 13,2192 m² (Deckenkante bis Außenfläche OG-WDVS, Enden
+    /// an den Kernaußenflächen der Nachbarn). Nord und Ost über Eck: ein
+    /// Stück, 75,0384 − 8,36 × 6,36 = 21,8688 m². Nord und Süd: zwei Stücke,
+    /// 26,4384 m². Ringsum: ein Ring, 75,0384 − 7,00 × 5,00 = 40,0384 m².
+    /// Ein DT je Decke (E3), egal wie viele Stücke.
+    #[test]
+    fn a189_terrassenflaeche_aus_den_ruecksprungen() {
+        for (seed, rueck, flaeche, n) in [
+            (189, &["AW-006"][..], 13.2192, 1),
+            (1890, &["AW-006", "AW-007"][..], 21.8688, 1),
+            (1891, &["AW-006", "AW-008"][..], 26.4384, 2),
+            (
+                1892,
+                &["AW-005", "AW-006", "AW-007", "AW-008"][..],
+                40.0384,
+                1,
+            ),
+        ] {
+            let (s, eg, _) = pruefhaus(seed, rueck);
+            let de = decke(&s, eg).unwrap();
+            let id = dt(&s, de).unwrap_or_else(|| panic!("{rueck:?}: DT"));
+            assert_eq!(dt_mengen(&s, id).0, flaeche, "{rueck:?}");
+            assert_eq!(stuecke(&s, eg), n, "{rueck:?}: Stücke");
+            assert_eq!(
+                zahl(&s, Category::RoofTerrace),
+                1,
+                "{rueck:?}: ein DT je Decke"
+            );
+            assert_eq!(s.model().element(id).unwrap().number, "DT-001");
+            assert!(dt(&s, decke(&s, s.model().runs_above(eg)[0]).unwrap()).is_none());
+        }
+    }
+
+    /// Haus 10 × 8 direkt im Modell, Punkte im Uhrzeigersinn oder dagegen.
+    fn haus_richtung(seed: u64, gegen: bool) -> (Scene, RunId, RunId) {
+        let mut s = Scene::with_model(Model::with_seed(seed));
+        let mut pts = vec![
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        if gegen {
+            pts.reverse();
+        }
+        let mut eg = None;
+        assert!(s.edit_model("Gebäude erstellt", |m| {
+            let b = m.add_building(2);
+            eg = m.build_from_polygon(b, &pts);
+            eg.is_some()
+        }));
+        let eg = eg.unwrap();
+        let og = s.model().runs_above(eg)[0];
+        (s, eg, og)
+    }
+
+    /// OG-Wand, deren Segment bei y = 8000 liegt (Nordwand).
+    fn nordwand(s: &Scene, og: RunId) -> ElementId {
+        let r = s.model().run(og).unwrap();
+        let n = r.points.len();
+        (0..n)
+            .find(|&k| {
+                let (p, q) = (r.points[k], r.points[(k + 1) % n]);
+                (p.y - 8000.0).abs() < 1.0 && (q.y - 8000.0).abs() < 1.0
+            })
+            .map(|k| r.segments[k])
+            .unwrap()
+    }
+
+    /// A189b (D0a): Die Terrasse folgt der Umlaufrichtung. `build_from_polygon`
+    /// legt die Wände links der Punkte an (RefSide::Left): im Uhrzeigersinn
+    /// steht das Haus innerhalb der Punkte (10 × 8, Terrasse 9,72 × 1,36 =
+    /// 13,2192 m²), gegen den Uhrzeigersinn außerhalb (10,63 × 8,63,
+    /// Terrasse zwischen den Kernaußenflächen 10,35 × 1,36 = 14,0760 m²).
+    /// In beiden Fällen liegt sie auf der Decke zwischen OG-Außenfläche und
+    /// Deckenkante (Probe auf 952a6fa).
+    #[test]
+    fn a189b_beide_umlaufrichtungen() {
+        for (gegen, soll) in [
+            (false, (13.2192, 1.0575, 0.7932)),
+            (true, (14.076, 1.1261, 0.8446)),
+        ] {
+            let (mut s, eg, og) = haus_richtung(1893, gegen);
+            let w = nordwand(&s, og);
+            assert!(s.edit_model("Kopplung gelöst", |m| m.set_linked(w, false)));
+            assert!(s.edit_model("Wand verschoben", |m| m.move_segment(w, -1500.0).is_some()));
+            pruefung(&s);
+            let id = dt(&s, decke(&s, eg).unwrap()).expect("DT");
+            assert_eq!(dt_mengen(&s, id), soll, "gegen = {gegen}");
+        }
+    }
+
+    /// A190 (D1, Regeln 43/44, Sollwerte 08:54): Nord −1,50 ergibt DT-001
+    /// mit 13,2192 m², Dämmung 1,0575 m³, Belag 0,7932 m³, begehbar.
+    /// Aufbau aus dem Werkstyp „Dachterrasse 14“ (DT-14, Typart DT, ohne
+    /// Kern): Belag 60 über Dämmung hart 80, Gewerk 18338 und KG 363 je
+    /// Schicht. Körper von OK Rohdecke +2,855 bis OK Belag +2,995. DE-002
+    /// 60,4584 m², DE-001 75,0384 m², keine UD. Einordnung DT, IfcCovering
+    /// ROOFING, KG 363. Höhen nur relativ: EG 30 cm höher → +3,155 …
+    /// +3,295. Dämmung 100 im Paneel → 1,3219 m³, OK Belag +3,015;
+    /// Grenzen Dämmung 40–300, Belag 20–150.
+    #[test]
+    fn a190_aufbau_und_mengen() {
+        let (mut s, eg, og) = pruefhaus(190, &["AW-006"]);
+        let de = decke(&s, eg).unwrap();
+        let id = dt(&s, de).expect("DT");
+        let m = s.model();
+        let e = m.element(id).unwrap();
+        assert_eq!(
+            (e.number.as_str(), e.category),
+            ("DT-001", Category::RoofTerrace)
+        );
+        assert_eq!(dt_mengen(&s, id), (13.2192, 1.0575, 0.7932));
+        assert!(begehbar(&s, id));
+        let c = Category::RoofTerrace;
+        assert_eq!(
+            (c.prefix(), c.ifc_class(), c.din276()),
+            ("DT", "IfcCovering.ROOFING", Some(363))
+        );
+        let t = s.model().layer_set(typ(&s, "DT-14")).unwrap();
+        assert_eq!(
+            (t.name.as_str(), t.category),
+            ("Dachterrasse 14", TypeCategory::RoofTerrace)
+        );
+        let m = s.model();
+        let aufbau: Vec<(String, f64, LayerFunction, bool)> = m
+            .element_layers(id)
+            .iter()
+            .map(|l| {
+                (
+                    m.material(l.material).unwrap().name.clone(),
+                    l.thickness,
+                    l.function,
+                    l.core,
+                )
+            })
+            .collect();
+        assert_eq!(
+            aufbau,
+            [
+                (
+                    "Terrassenbelag".to_string(),
+                    60.0,
+                    LayerFunction::Finish,
+                    false
+                ),
+                (
+                    "Dämmung hart (Terrasse)".to_string(),
+                    80.0,
+                    LayerFunction::Insulation,
+                    false
+                ),
+            ]
+        );
+        for i in 0..2 {
+            let gw = m
+                .layer_trade(id, i)
+                .and_then(|t| m.trade(t))
+                .map(|t| t.code.clone());
+            assert_eq!(gw.as_deref(), Some("18338"), "Schicht {i}");
+            assert_eq!(m.layer_kg(id, i), Some(363), "Schicht {i}");
+        }
+        assert_eq!(r4(s.floor_qto(og).unwrap().area / 1e6), 60.4584, "DE-002");
+        assert_eq!(r4(s.floor_qto(eg).unwrap().area / 1e6), 75.0384, "DE-001");
+        assert_eq!(zahl(&s, Category::SoffitInsulation), 0);
+        assert_eq!(koerper_z(&mut s, id), (2855.0, 2995.0));
+
+        // Höhen nur relativ (Regel 43)
+        let st = s.model().run(eg).unwrap().storey;
+        let h = s.model().storey(st).unwrap().height;
+        assert!(s.edit_model("Geschosshöhe", |m| m.set_storey_height(st, h + 300.0)));
+        assert_eq!(koerper_z(&mut s, id), (3155.0, 3295.0));
+        pruefung(&s);
+        assert!(s.undo());
+
+        // Paneel „Aufbau“: Dicken ändern den Projekttyp
+        assert!(aufbau_dicke(&mut s, 1, 100.0));
+        assert_eq!(dt_mengen(&s, id), (13.2192, 1.3219, 0.7932));
+        assert_eq!(koerper_z(&mut s, id), (2855.0, 3015.0));
+        pruefung(&s);
+        assert!(s.undo());
+        let schritt = s.undo_label();
+        for (i, falsch) in [(1, 39.0), (1, 301.0), (0, 19.0), (0, 151.0)] {
+            assert!(
+                !aufbau_dicke(&mut s, i, falsch),
+                "Schicht {i}: {falsch} abgelehnt"
+            );
+        }
+        assert_eq!(s.undo_label(), schritt, "kein Schritt");
+        assert_eq!(dt_mengen(&s, id), (13.2192, 1.0575, 0.7932));
+    }
+
+    /// A191 (E1, E3, Regel 41): Die Terrasse entsteht im selben Schritt wie
+    /// der Rücksprung und verschwindet mit ihm. Lichte Tiefe 10 mm (−150 bei
+    /// 140 WDVS): nichts; 20 mm (−160): DT mit 0,1944 m², nicht begehbar.
+    /// Rückgängig/Wiederherstellen: dieselbe Guid und Nummer. Wechsel auf
+    /// Vorsprung +0,30: DT-001 weg, eine UD entsteht; zurück auf −1,50:
+    /// DT-002 mit neuer Guid. Zweimal Rückgängig bringt DT-001 zurück.
+    /// Bündig setzen (Regel 36) lässt das DT verschwinden.
+    #[test]
+    fn a191_entsteht_und_verschwindet_mit_dem_ruecksprung() {
+        let (mut s, eg, _) = pruefhaus(191, &[]);
+        let de = decke(&s, eg).unwrap();
+        assert!(dt(&s, de).is_none(), "bündig: keine Terrasse");
+        versetzen(&mut s, "AW-006", -150.0);
+        assert!(dt(&s, de).is_none(), "lichte Tiefe 10 mm");
+        pruefung(&s);
+        versetzen(&mut s, "AW-006", -10.0);
+        let id = dt(&s, de).expect("lichte Tiefe 20 mm");
+        assert_eq!(dt_mengen(&s, id).0, 0.1944);
+        assert!(!begehbar(&s, id));
+        pruefung(&s);
+        assert!(s.undo());
+        assert!(dt(&s, de).is_none());
+
+        versetzen(&mut s, "AW-006", -1350.0);
+        let id = dt(&s, de).expect("−1,50");
+        assert_eq!(dt_mengen(&s, id).0, 13.2192);
+        // die Nummer DT-001 ist schon verbraucht (Regel 27): neue Nummer
+        let n1 = s.model().element(id).unwrap().number.clone();
+        let g1 = guid(&s, id);
+        assert!(s.undo());
+        assert!(dt(&s, de).is_none(), "Rückgängig nimmt die Terrasse mit");
+        assert!(s.redo());
+        let id = dt(&s, de).unwrap();
+        assert_eq!(
+            (guid(&s, id), s.model().element(id).unwrap().number.clone()),
+            (g1, n1.clone())
+        );
+
+        versetzen(&mut s, "AW-006", 1800.0);
+        assert!(dt(&s, de).is_none(), "Vorsprung: kein DT");
+        assert_eq!(zahl(&s, Category::SoffitInsulation), 1, "UD entsteht");
+        pruefung(&s);
+        versetzen(&mut s, "AW-006", -1800.0);
+        let id2 = dt(&s, de).expect("wieder Rücksprung");
+        assert_ne!(guid(&s, id2), g1, "neues Bauteil");
+        assert_ne!(s.model().element(id2).unwrap().number, n1, "neue Nummer");
+        assert_eq!(zahl(&s, Category::SoffitInsulation), 0);
+        assert!(s.undo());
+        assert!(s.undo());
+        let id = dt(&s, de).expect("DT von vorher");
+        assert_eq!(
+            (guid(&s, id), s.model().element(id).unwrap().number.clone()),
+            (g1, n1)
+        );
+
+        let w = nr(&s, "AW-006");
+        assert!(s.edit_model("Bündig gesetzt", |m| m.set_flush(w)));
+        assert!(dt(&s, de).is_none(), "bündig gesetzt");
+        assert!(!hat(&s, "DT-001") && !hat(&s, "DT-002"));
+        pruefung(&s);
+    }
+
+    /// A192 (E3, Regel 42): Mischfall an derselben Decke. Nord −1,50 und
+    /// Süd +0,30: DT-001 (13,2192 m²) und UD-001 (0,30 × 9,72 = 2,9160 m²)
+    /// nebeneinander, Prüfung ohne Befund.
+    #[test]
+    fn a192_mischfall_ud_und_dt() {
+        let (mut s, eg, _) = pruefhaus(192, &["AW-006"]);
+        versetzen(&mut s, "AW-008", 300.0);
+        let de = decke(&s, eg).unwrap();
+        let id = dt(&s, de).expect("DT");
+        assert_eq!(dt_mengen(&s, id).0, 13.2192);
+        let ud = s.model().soffit_of(de).expect("UD");
+        assert_eq!(r4(s.soffit_qto(ud).unwrap().area / 1e6), 2.916);
+        assert_eq!(
+            (
+                zahl(&s, Category::RoofTerrace),
+                zahl(&s, Category::SoffitInsulation)
+            ),
+            (1, 1)
+        );
+        pruefung(&s);
+    }
+
+    fn lesen(text: &str) -> sk_model::szo::Loaded {
+        sk_model::szo::read(text, sk_model::GuidGen::with_seed(1)).expect("öffnet")
+    }
+
+    /// A193 (paket-dachterrasse §3, F-17): `.szo` bleibt 4. Mit DT stehen
+    /// `[terrace] guid number="DT-001" floor=<Guid DE-001>` und der
+    /// Projekttyp `[layerset] cat=roofterrace` mit zwei `[layer]`; `[floor]`
+    /// ohne `terrace=`/`upstand=`, solange beides Standard ist. Attika 100 →
+    /// `upstand=100`. Rundlauf bytegleich. Fehlt die `[terrace]`-Zeile,
+    /// ergänzt der Leser das DT mit Hinweis. Ohne Rücksprung steht nichts
+    /// davon in der Datei.
+    #[test]
+    fn a193_datei() {
+        let (mut s, eg, _) = pruefhaus(193, &[]);
+        let ohne = sk_model::szo::write(s.model());
+        assert!(!ohne.contains("[terrace]") && !ohne.contains("cat=roofterrace"));
+        versetzen(&mut s, "AW-006", -1500.0);
+        let de = decke(&s, eg).unwrap();
+        let text = sk_model::szo::write(s.model());
+        assert!(text.starts_with("SZO 4\n"));
+        let gde = s.model().element(de).unwrap().guid.to_string();
+        let zeilen: Vec<&str> = text
+            .lines()
+            .filter(|l| l.starts_with("[terrace]"))
+            .collect();
+        assert_eq!(zeilen.len(), 1);
+        assert!(
+            zeilen[0].contains("number=\"DT-001\"") && zeilen[0].contains(&format!("floor={gde}"))
+        );
+        let typ_zeile = text
+            .lines()
+            .find(|l| l.starts_with("[layerset]") && l.contains(" cat=roofterrace "))
+            .expect("Projekttyp DT-14");
+        assert!(typ_zeile.contains("code=\"DT-14\""));
+        let tguid = s
+            .model()
+            .layer_set(typ(&s, "DT-14"))
+            .unwrap()
+            .guid
+            .to_string();
+        assert_eq!(
+            text.lines()
+                .filter(|l| l.starts_with("[layer]") && l.contains(&format!("set={tguid}")))
+                .count(),
+            2
+        );
+        let fz = text
+            .lines()
+            .find(|l| l.starts_with("[floor]") && l.contains("number=\"DE-001\""))
+            .unwrap();
+        assert!(!fz.contains("terrace=") && !fz.contains("upstand="), "{fz}");
+        assert_eq!(sk_model::szo::write(&lesen(&text).model), text, "Rundlauf");
+
+        assert!(attika(&mut s, de, 100.0));
+        let t2 = sk_model::szo::write(s.model());
+        let fz = t2
+            .lines()
+            .find(|l| l.starts_with("[floor]") && l.contains("number=\"DE-001\""))
+            .unwrap();
+        assert!(fz.contains(" upstand=100"), "{fz}");
+        assert_eq!(sk_model::szo::write(&lesen(&t2).model), t2, "Rundlauf");
+
+        let ohne_zeile: String = text
+            .lines()
+            .filter(|l| !l.starts_with("[terrace]"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let geladen = lesen(&ohne_zeile);
+        assert!(!geladen.hints.is_empty(), "Hinweis");
+        let m = &geladen.model;
+        assert_eq!(
+            m.elements()
+                .iter()
+                .filter(|(_, e)| e.category == Category::RoofTerrace)
+                .count(),
+            1,
+            "ergänzt"
+        );
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    /// A194 (Löschregel, Regel 27): DT lässt sich nicht löschen, mit dem
+    /// Satz nach Einstellungen §1 (Koordinator 09:25); „Gebäude löschen?“
+    /// nennt „1 Dachterrasse“.
+    #[test]
+    fn a194_loeschen_abgelehnt() {
+        let (s, eg, _) = pruefhaus(194, &["AW-006"]);
+        let id = dt(&s, decke(&s, eg).unwrap()).unwrap();
+        let r = s.model().can_delete(id).expect_err("nicht löschbar");
+        assert_eq!(
+            sk_model::refusal_text(s.model(), id, &r),
+            "Die Dachterrasse folgt dem Rücksprung des OG. Ihren Aufbau stellst du im Paneel ein."
+        );
+        let b = s.model().buildings().iter().next().unwrap().0;
+        assert!(crate::delete::parts_text(s.model(), b).contains("1 Dachterrasse"));
+    }
+}
+mod attika {
+    use super::*;
+
+    // Abnahmetest A195: Attika, die EG-Schichten außerhalb der Deckenkante
+    // bis OK Attika (Commit 2b; bim/paket-dachterrasse.md E2, Regel 45,
+    // Sollwerte 08:54; geometrie/machbarkeit-dachterrasse.md D2).
+    // Spezifikation: test/abnahme-dachterrasse.md. Setzt 2a und
+    // test/patches/element-bounds.patch voraus.
+    //
+    // Einbau: als `mod attika { use super::*; … }` ans Ende von
+    // app/src/abnahme.rs. Nutzt aus abnahme.rs: gebaeude, decke, aw_schicht.
+    //
+    // Angenommene Namen nur im Adapter: `Model::set_floor_upstand`.
+
+    use sk_model::{ElementId, RunId};
+
+    // ===== Adapter 2b =====
+
+    fn attika_hoehe(s: &mut Scene, de: ElementId, mm: f64) -> bool {
+        s.edit_model("Attikahöhe", |m| m.set_floor_upstand(de, mm))
+    }
+
+    fn ok(s: &mut Scene, id: ElementId) -> f64 {
+        s.element_bounds(id).expect("Körper").1.z.round()
+    }
+
+    // ===== Hilfen =====
+
+    fn nr(s: &Scene, nummer: &str) -> ElementId {
+        s.model()
+            .elements()
+            .iter()
+            .find(|(_, e)| e.number == nummer)
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| panic!("{nummer} fehlt"))
+    }
+
+    fn pruefung(s: &Scene) {
+        assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+    }
+
+    fn haus(seed: u64, code: Option<&str>, nord: f64) -> (Scene, RunId) {
+        let mut s = Scene::with_model(Model::with_seed(seed));
+        let (eg, _) = gebaeude(&mut s);
+        if let Some(code) = code {
+            let t = s
+                .model()
+                .layer_sets()
+                .iter()
+                .find(|(_, t)| t.code == code)
+                .map(|(id, _)| id)
+                .unwrap();
+            assert!(s.edit_model("Wandtyp", |m| m.set_run_type(eg, t)));
+        }
+        if nord != 0.0 {
+            let w = nr(&s, "AW-006");
+            assert!(s.edit_model("Kopplung gelöst", |m| m.set_linked(w, false)));
+            assert!(s.edit_model("Wand verschoben", |m| m.move_segment(w, nord).is_some()));
+        }
+        pruefung(&s);
+        (s, eg)
+    }
+
+    /// Volumen je Schicht über alle Wände eines Zugs, m³ (4 Stellen).
+    fn schichten(s: &Scene, run: RunId) -> Vec<f64> {
+        let m = s.model();
+        let walls = &m.run(run).unwrap().segments;
+        let n = s.wall_qto(walls[0]).unwrap().layers.len();
+        (0..n)
+            .map(|i| {
+                r4(walls
+                    .iter()
+                    .map(|w| s.wall_qto(*w).unwrap().layers[i].volume)
+                    .sum::<f64>()
+                    / 1e9)
+            })
+            .collect()
+    }
+
+    /// A195 (E2, Regel 45, Sollwerte 08:54): Nord −1,50 bei AW-31,5: das
+    /// EG-WDVS wächst um die Attika, 1,7808 m² Grundriss × 0,20 m = 0,3562
+    /// m³, EG-Dämmung 14,5215 m³ (ungerundet 14,521528); Gasbeton bleibt 15,7613. Die Attika läuft
+    /// über AW-002 (Nord) und die Stirnstücke an AW-001 und AW-003 bis OK
+    /// Attika +3,055; AW-004 (Süd) endet wie bisher bei +2,855. Attika 100
+    /// → +3,095 und 1,7808 × 0,24 = 0,4274 m³. AW-49: Verblender, Luft und
+    /// Kerndämmung wachsen, der Kern bleibt. Prüfung ohne Befund.
+    #[test]
+    fn a195_attika_an_der_eg_wand() {
+        let (s0, eg0) = haus(195, None, 0.0);
+        let buendig = schichten(&s0, eg0);
+        assert_eq!(buendig, [14.1654, 15.7613]);
+
+        let (mut s, eg) = haus(1950, None, -1500.0);
+        assert_eq!(schichten(&s, eg), [14.5215, 15.7613]);
+        assert_eq!(r4(aw_schicht(&s, eg, 0) - aw_schicht(&s0, eg0, 0)), 0.3562);
+        for (n, z) in [
+            ("AW-001", 3055.0),
+            ("AW-002", 3055.0),
+            ("AW-003", 3055.0),
+            ("AW-004", 2855.0),
+        ] {
+            let id = nr(&s, n);
+            assert_eq!(ok(&mut s, id), z, "{n}");
+        }
+        let de = decke(&s, eg).unwrap();
+        assert!(attika_hoehe(&mut s, de, 100.0));
+        let id = nr(&s, "AW-002");
+        assert_eq!(ok(&mut s, id), 3095.0);
+        assert_eq!(schichten(&s, eg)[0], r4(14.1654 + 0.427392));
+        pruefung(&s);
+        assert!(s.undo());
+        assert_eq!(schichten(&s, eg), [14.5215, 15.7613]);
+        let schritt = s.undo_label();
+        assert!(!attika_hoehe(&mut s, de, 301.0), "0–300");
+        assert!(!attika_hoehe(&mut s, de, -1.0), "0–300");
+        assert_eq!(s.undo_label(), schritt);
+
+        let (b, ebv) = haus(1951, Some("AW-49"), 0.0);
+        let vorher = schichten(&b, ebv);
+        let (mut b, eb) = haus(1952, Some("AW-49"), -1500.0);
+        let nachher = schichten(&b, eb);
+        for i in 0..3 {
+            if i == 1 {
+                continue; // Luft ohne Menge
+            }
+            assert!(nachher[i] > vorher[i], "Schicht {i} wächst");
+        }
+        assert_eq!(nachher[3], vorher[3], "Kern bleibt");
+        let id = nr(&b, "AW-002");
+        assert_eq!(ok(&mut b, id), 3055.0);
+        pruefung(&b);
+    }
+}
+mod attikablech {
+    use super::*;
+
+    // Abnahmetests A196–A197: Profilextrusion und Attikablech AB (Commit 2c;
+    // geometrie/machbarkeit-dachterrasse.md D0b/D3, Review R7;
+    // bim/paket-dachterrasse.md E3/E4, Regel 46, Sollwerte 08:54; Steckbrief
+    // bauteile/ab-attikablech.md). Spezifikation:
+    // test/abnahme-dachterrasse.md. Setzt 2a, 2b, 1a und
+    // test/patches/element-bounds.patch voraus.
+    //
+    // Einbau: als `mod attikablech { use super::*; … }` ans Ende von
+    // app/src/abnahme.rs. Nutzt aus abnahme.rs: gebaeude, decke, r4.
+    //
+    // Fassung 2 (09:45): Extrusion über `Solid::sweep` wie auf main seit
+    // 952a6fa. Angenommene Namen nur in den Adaptern: `Model::coping_of`,
+    // `Scene::coping_qto` mit `length`, Merkmal „Abwicklung“ über
+    // `Model::props_of`, `Category::Coping`.
+
+    use sk_math::Vec3;
+    use sk_model::{Category, ElementId, PropValue, RunId, Solid};
+
+    // ===== Adapter 2c =====
+
+    /// Profil (quer rechts der Laufrichtung, hoch) in mm längs `pfad`
+    /// ziehen, Ecken auf Gehrung, offene Enden gerade (D0b, auf main seit
+    /// 952a6fa).
+    fn extrusion(pfad: &[Vec3], geschlossen: bool, profil: &[(f64, f64)]) -> Solid {
+        let mut k = Solid::default();
+        k.sweep(
+            pfad,
+            geschlossen,
+            profil,
+            [sk_model::solid::SweepEnd::Square; 2],
+        );
+        k
+    }
+
+    fn ab(s: &Scene, de: ElementId) -> Option<ElementId> {
+        s.model().coping_of(de)
+    }
+
+    /// Länge an der Außenkante in m (2 Stellen).
+    fn ab_laenge(s: &Scene, id: ElementId) -> f64 {
+        (s.coping_qto(id).expect("Mengen AB").length / 10.0).round() / 100.0
+    }
+
+    fn abwicklung(s: &Scene, id: ElementId) -> f64 {
+        match s.model().props_of(id).get("Abwicklung") {
+            Some(PropValue::Number(v)) => *v,
+            x => panic!("Abwicklung: {x:?}"),
+        }
+    }
+
+    // ===== Hilfen =====
+
+    /// Rauminhalt eines geschlossenen Körpers (mm³) über die
+    /// Dreiecksnormalen; positiv, wenn die Flächen nach außen zeigen.
+    fn volumen(k: &Solid) -> f64 {
+        k.triangles
+            .iter()
+            .map(|t| t.p[0].dot(t.p[1].cross(t.p[2])) / 6.0)
+            .sum()
+    }
+
+    fn nr(s: &Scene, nummer: &str) -> ElementId {
+        s.model()
+            .elements()
+            .iter()
+            .find(|(_, e)| e.number == nummer)
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| panic!("{nummer} fehlt"))
+    }
+
+    fn pruefung(s: &Scene) {
+        assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+    }
+
+    fn versetzen(s: &mut Scene, wand: &str, d: f64) {
+        let w = nr(s, wand);
+        if s.model().stack_offset(w).is_some_and(|(_, l)| l) {
+            assert!(s.edit_model("Kopplung gelöst", |m| m.set_linked(w, false)));
+        }
+        assert!(s.edit_model("Wand verschoben", |m| m.move_segment(w, d).is_some()));
+    }
+
+    fn pruefhaus(seed: u64, rueck: &[&str]) -> (Scene, RunId) {
+        let mut s = Scene::with_model(Model::with_seed(seed));
+        let (eg, _) = gebaeude(&mut s);
+        for w in rueck {
+            versetzen(&mut s, w, -1500.0);
+        }
+        pruefung(&s);
+        (s, eg)
+    }
+
+    const QUADRAT: [(f64, f64); 4] = [(-50.0, 0.0), (50.0, 0.0), (50.0, 100.0), (-50.0, 100.0)];
+
+    /// A196 (D0b, R7): Profilextrusion. Rechteck 10 × 8 m geschlossen, Profil
+    /// 100 × 100 mittig auf dem Pfad: Rauminhalt = 100 × 100 × 36 000 mm
+    /// (Gehrungen heben sich auf), Flächen nach außen. Offener Winkel 10 + 8
+    /// m mit geraden Enden: 100 × 100 × 18 000. Spitzer Winkel 20°: endlicher,
+    /// positiver Körper innerhalb eines vernünftigen Rahmens (Gehrung
+    /// begrenzt). Kurzes Segment 50 mm: kein Fehler.
+    #[test]
+    fn a196_profilextrusion() {
+        let rechteck = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+        ];
+        for pfad in [rechteck.to_vec(), rechteck.iter().rev().copied().collect()] {
+            let k = extrusion(&pfad, true, &QUADRAT);
+            assert!((volumen(&k) - 1e4 * 36000.0).abs() < 1e3, "{}", volumen(&k));
+            let (lo, hi) = k.bounds().unwrap();
+            assert_eq!((lo.z, hi.z), (0.0, 100.0));
+            assert_eq!((lo.x.round(), hi.x.round()), (-50.0, 10050.0));
+        }
+        let winkel = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+        ];
+        let k = extrusion(&winkel, false, &QUADRAT);
+        assert!(
+            (volumen(&k).abs() - 1e4 * 18000.0).abs() < 1e3,
+            "{}",
+            volumen(&k)
+        );
+
+        let a = 20f64.to_radians();
+        let spitz = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+            vec3(10000.0 - 10000.0 * a.cos(), 10000.0 * a.sin(), 0.0),
+        ];
+        let k = extrusion(&spitz, false, &QUADRAT);
+        let (lo, hi) = k.bounds().unwrap();
+        assert!(lo.x.is_finite() && hi.x.is_finite() && volumen(&k).abs() > 0.0);
+        assert!(hi.x < 10000.0 + 1000.0, "Gehrungsspitze begrenzt: {}", hi.x);
+
+        let kurz = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(50.0, 0.0, 0.0),
+            vec3(50.0, 5000.0, 0.0),
+        ];
+        assert!(!extrusion(&kurz, false, &QUADRAT).is_empty());
+    }
+
+    /// A197 (D3, E3/E4, Regel 46, Sollwerte 08:54): Nord −1,50 ergibt
+    /// AB-001 auf DE-001: Länge an der Außenkante 13,00 m (10,00 + 2 × 1,50),
+    /// Abwicklung 250 mm (140 + 20 + 50 + 40), Gewerk 18338 über die
+    /// eingebaute Schicht (der Baustoff Titanzink schlägt 18339 vor), KG 363,
+    /// AB / IfcCovering COPING. Das Blech sitzt auf OK Attika +3,055, keine
+    /// Kante unter OK Belag +2,995. Nord+Ost 21,00 m, Nord+Süd 26,00 m,
+    /// ringsum 36,00 m (geschlossen). Wechsel auf Vorsprung: AB weg; zurück:
+    /// neue Nummer; Rückgängig bringt AB-001 zurück. Löschen abgelehnt.
+    /// Datei: `[coping] number="AB-001" floor=<Guid DE-001>`, Rundlauf
+    /// bytegleich, fehlende Zeile wird mit Hinweis ergänzt.
+    #[test]
+    fn a197_attikablech() {
+        let (mut s, eg) = pruefhaus(197, &["AW-006"]);
+        let de = decke(&s, eg).unwrap();
+        let id = ab(&s, de).expect("AB");
+        let m = s.model();
+        assert_eq!(m.element(id).unwrap().number, "AB-001");
+        let c = Category::Coping;
+        assert_eq!(
+            (c.prefix(), c.ifc_class(), c.din276()),
+            ("AB", "IfcCovering.COPING", Some(363))
+        );
+        assert_eq!(ab_laenge(&s, id), 13.0);
+        assert_eq!(abwicklung(&s, id), 250.0);
+        let gw = m
+            .layer_trade(id, 0)
+            .and_then(|t| m.trade(t))
+            .map(|t| t.code.clone());
+        assert_eq!(gw.as_deref(), Some("18338"));
+        assert_eq!(m.layer_kg(id, 0), Some(363));
+        let (lo, hi) = s.element_bounds(id).expect("Körper");
+        assert!(hi.z >= 3055.0 && hi.z < 3055.0 + 100.0, "{}", hi.z);
+        assert!(
+            lo.z > 2995.0 && lo.z < 3055.0,
+            "Schenkel enden über dem Belag: {}",
+            lo.z
+        );
+        pruefung(&s);
+
+        for (seed, rueck, laenge) in [
+            (1970, &["AW-006", "AW-007"][..], 21.0),
+            (1971, &["AW-006", "AW-008"][..], 26.0),
+            (1972, &["AW-005", "AW-006", "AW-007", "AW-008"][..], 36.0),
+        ] {
+            let (s, eg) = pruefhaus(seed, rueck);
+            let id = ab(&s, decke(&s, eg).unwrap()).expect("AB");
+            assert_eq!(ab_laenge(&s, id), laenge, "{rueck:?}");
+            assert_eq!(
+                s.model()
+                    .elements()
+                    .iter()
+                    .filter(|(_, e)| e.category == Category::Coping)
+                    .count(),
+                1,
+                "ein AB je Decke"
+            );
+        }
+
+        // Wechsel und Rückgängig (E3)
+        let g1 = s.model().element(id).unwrap().guid;
+        versetzen(&mut s, "AW-006", 1800.0);
+        assert!(ab(&s, de).is_none(), "Vorsprung: kein AB");
+        versetzen(&mut s, "AW-006", -1800.0);
+        let id2 = ab(&s, de).expect("AB neu");
+        assert_ne!(s.model().element(id2).unwrap().number, "AB-001");
+        assert!(s.undo());
+        assert!(s.undo());
+        let id = ab(&s, de).expect("AB-001 zurück");
+        assert_eq!(
+            (
+                s.model().element(id).unwrap().guid,
+                s.model().element(id).unwrap().number.as_str()
+            ),
+            (g1, "AB-001")
+        );
+
+        let r = s.model().can_delete(id).expect_err("nicht löschbar");
+        assert_eq!(
+            sk_model::refusal_text(s.model(), id, &r),
+            "Das Attikablech folgt der Dachterrasse. Seinen Baustoff stellst du im Paneel ein."
+        );
+
+        let text = sk_model::szo::write(s.model());
+        let gde = s.model().element(de).unwrap().guid.to_string();
+        let z: Vec<&str> = text.lines().filter(|l| l.starts_with("[coping]")).collect();
+        assert_eq!(z.len(), 1);
+        assert!(z[0].contains("number=\"AB-001\"") && z[0].contains(&format!("floor={gde}")));
+        let lesen =
+            |t: &str| sk_model::szo::read(t, sk_model::GuidGen::with_seed(1)).expect("öffnet");
+        assert_eq!(sk_model::szo::write(&lesen(&text).model), text, "Rundlauf");
+        let ohne: String = text
+            .lines()
+            .filter(|l| !l.starts_with("[coping]"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let geladen = lesen(&ohne);
+        assert!(!geladen.hints.is_empty());
+        assert_eq!(
+            geladen
+                .model
+                .elements()
+                .iter()
+                .filter(|(_, e)| e.category == Category::Coping)
+                .count(),
+            1
+        );
+        assert!(geladen.model.check().is_empty());
     }
 }

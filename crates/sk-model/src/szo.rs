@@ -16,7 +16,7 @@ use crate::attr::{
 };
 use crate::element::{
     Building, Category, Coupling, Element, ElementKind, Floor, GroundSlab, LevelEdge, LevelKind,
-    LevelRef, PropSet, PropValue, Soffit, Storey, StripFooting, Wall, WallRun,
+    LevelRef, PropSet, PropValue, Soffit, Storey, StripFooting, Terrace, Wall, WallRun,
 };
 use crate::guid::{Guid, GuidGen};
 use crate::id::{Arena, Id};
@@ -372,10 +372,11 @@ fn mat_category(c: MatCategory) -> &'static str {
         MatCategory::Plaster => "plaster",
         MatCategory::Timber => "timber",
         MatCategory::Air => "air",
+        MatCategory::Metal => "metal",
     }
 }
 
-const MAT_CATEGORIES: [MatCategory; 6] = MatCategory::ALL;
+const MAT_CATEGORIES: [MatCategory; 7] = MatCategory::ALL;
 
 fn layer_function(f: LayerFunction) -> &'static str {
     match f {
@@ -898,6 +899,16 @@ pub fn write(m: &Model) -> String {
         if let Some(sm) = f.soffit.material {
             l = l.guid("soffit_mat", mat_guid(sm));
         }
+        // Dachterrasse (D1–D3): ebenso nur abweichend
+        if let Some(t) = f.terrace.build_up.and_then(|t| m.layer_set(t)) {
+            l = l.guid("terrace", Some(t.guid));
+        }
+        if f.terrace.upstand != crate::model::TERRACE_UPSTAND {
+            l = l.num("upstand", f.terrace.upstand);
+        }
+        if let Some(cm) = f.terrace.coping_mat {
+            l = l.guid("coping_mat", mat_guid(cm));
+        }
         l.num("seq", e.seq)
             .guid("storey", storey_guid(e.storey))
             .finish(&mut out);
@@ -926,6 +937,27 @@ pub fn write(m: &Model) -> String {
             .text("number", &e.number)
             .word("cat", category(e.category))
             .num("seq", e.seq)
+            .guid("storey", storey_guid(e.storey))
+            .finish(&mut out);
+    }
+    // Dachterrasse und Attikablech (D1–D3): nur, wenn es sie gibt
+    for e in &walls {
+        let (word, floor) = match e.kind {
+            ElementKind::RoofTerrace { floor } => ("terrace", floor),
+            ElementKind::Coping { floor } => ("coping", floor),
+            _ => continue,
+        };
+        let l = Line::new(word)
+            .guid("guid", Some(e.guid))
+            .guid("floor", m.element(floor).map(|x| x.guid))
+            .text("number", &e.number)
+            .word("cat", category(e.category));
+        let l = if word == "terrace" {
+            slab_type(l, m, e)
+        } else {
+            l
+        };
+        l.num("seq", e.seq)
             .guid("storey", storey_guid(e.storey))
             .finish(&mut out);
     }
@@ -986,10 +1018,10 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     let v3 = version >= 3;
     let mut hints = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 22] = [
+    const KNOWN: [&str; 24] = [
         "pen", "linetype", "fill", "surface", "display", "trade", "material", "layerset", "layer",
         "typeprop", "project", "building", "storey", "run", "wall", "slab", "footing", "floor",
-        "strip", "soffit", "prop", "cut",
+        "strip", "soffit", "terrace", "coping", "prop", "cut",
     ];
     for (i, l) in text.lines().enumerate().skip(1) {
         let Some(r) = Record::parse(i + 1, l)? else {
@@ -1420,9 +1452,25 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         ("floor", 2),
         ("strip", 3),
         ("soffit", 4),
+        ("terrace", 5),
+        ("coping", 6),
     ] {
         for r in recs(section) {
-            let kind = if ix == 4 {
+            let kind = if ix >= 5 {
+                // Dachterrasse, Attikablech (D1–D3): nur der Verweis auf die Decke
+                let floor = r.link("floor", &elem_ids)?;
+                if !matches!(
+                    elements.get(floor).map(|e: &Element| &e.kind),
+                    Some(ElementKind::Floor(_))
+                ) {
+                    return Err(err(r.line, format!("[{section}]: „floor“ ist keine Decke")));
+                }
+                if ix == 5 {
+                    ElementKind::RoofTerrace { floor }
+                } else {
+                    ElementKind::Coping { floor }
+                }
+            } else if ix == 4 {
                 // Untersichtdämmung (G7 K4): nur der Verweis auf die Decke
                 let floor = r.link("floor", &elem_ids)?;
                 if !matches!(
@@ -1459,6 +1507,32 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
                         },
                         material: match r.opt("soffit_mat") {
                             Some(_) => Some(r.link("soffit_mat", &mat_ids)?),
+                            None => None,
+                        },
+                    },
+                    // vor D1 ohne: Werkstyp, 6 cm, Titanzink (wirkt nur bei
+                    // Rücksprung)
+                    terrace: Terrace {
+                        build_up: match r.opt("terrace") {
+                            Some(_) => {
+                                let g = r.guid("terrace")?;
+                                let id = set_ids.get(&g).copied();
+                                if id.is_none() {
+                                    hints.push(format!(
+                                        "Zeile {}: Typ der Dachterrasse fehlt, Werkstyp",
+                                        r.line
+                                    ));
+                                }
+                                id
+                            }
+                            None => None,
+                        },
+                        upstand: match r.opt("upstand") {
+                            Some(_) => r.f64("upstand")?,
+                            None => crate::model::TERRACE_UPSTAND,
+                        },
+                        coping_mat: match r.opt("coping_mat") {
+                            Some(_) => Some(r.link("coping_mat", &mat_ids)?),
                             None => None,
                         },
                     },
@@ -1632,6 +1706,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     }
     model.complete_edge_strips();
     model.complete_soffits();
+    hints.extend(model.complete_terraces());
     for (i, c) in cuts {
         model.set_cut(i, c);
     }

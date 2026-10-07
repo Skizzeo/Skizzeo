@@ -13,6 +13,7 @@
 //! [`Joints::slab_band`]: crate::wall::Joints::slab_band
 
 use crate::solid::{at_z, edge_kind, material, right_of, straight_at, SectionFrame, Solid};
+use crate::terrace::{attika_section_caps, attika_solid, coping_profile, TerracePlan};
 use crate::wall::WallChain;
 use sk_math::polygon;
 use sk_math::{vec3, Vec3};
@@ -69,6 +70,28 @@ pub struct SoffitParams {
     pub mat: u16,
 }
 
+/// Dachterrasse auf der Decke mit Attika und Blech (D1–D3): Aufbau und
+/// Höhen, aus dem Modell aufgelöst.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerraceParams {
+    /// Schichten von oben nach unten: Dicke (mm), Baustoff
+    /// (Darstellungsschlüssel), Dämmschicht (Schraffur längs).
+    pub layers: Vec<(f64, u16, bool)>,
+    /// Unterkante der Attika: Krone der Wand darunter (z, absolut).
+    pub attika_from: f64,
+    /// Attika über OK Belag (mm).
+    pub upstand: f64,
+    /// Baustoff des Blechs (Darstellungsschlüssel).
+    pub coping_mat: u16,
+}
+
+impl TerraceParams {
+    /// Dicke des Aufbaus (mm).
+    pub fn thickness(&self) -> f64 {
+        self.layers.iter().map(|l| l.0).sum()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FloorSlab {
     /// Umriss gegen den Uhrzeigersinn, auf z = 0.
@@ -87,6 +110,10 @@ pub struct FloorSlab {
     /// Grundriss der Untersichtdämmung je vorspringendem Segment (Segment,
     /// auf z = 0): Kern EG Anfang, Ende, Kern darüber Ende, Anfang.
     pub soffits: Vec<(usize, [Vec3; 4])>,
+    /// Dachterrasse, falls das Geschoss darüber zurückspringt (D1).
+    pub terrace: Option<TerraceParams>,
+    /// Umrisse, Attika-Stücke und Blechpfad dazu (leer ohne Terrasse).
+    pub terraces: TerracePlan,
 }
 
 impl FloorSlab {
@@ -213,6 +240,8 @@ impl FloorSlab {
             strip_covered: Vec::new(),
             soffit: None,
             soffits: Vec::new(),
+            terrace: None,
+            terraces: TerracePlan::default(),
         })
     }
 
@@ -402,6 +431,229 @@ impl FloorSlab {
     pub fn soffit_volume(&self) -> f64 {
         self.soffit
             .map_or(0.0, |sp| self.soffit_area() * sp.thickness)
+    }
+
+    // ---- Dachterrasse, Attika, Attikablech (D1–D3) ----
+
+    /// Höhenband des Terrassenaufbaus (OK Rohdecke, OK Belag).
+    pub fn terrace_band(&self) -> Option<(f64, f64)> {
+        let t = self
+            .terrace
+            .as_ref()
+            .filter(|_| !self.terraces.is_empty())?;
+        Some((self.params.top, self.params.top + t.thickness()))
+    }
+
+    /// Höhenband der Attika (Wandkrone darunter, OK Attika).
+    pub fn attika_band(&self) -> Option<(f64, f64)> {
+        let t = self.terrace.as_ref()?;
+        let (_, top) = self.terrace_band()?;
+        Some((t.attika_from, top + t.upstand))
+    }
+
+    /// Schichten des Aufbaus mit Höhen (UK, OK, Baustoff, Dämmung), von
+    /// unten nach oben.
+    fn terrace_layers(&self) -> Vec<(f64, f64, u16, bool)> {
+        let Some(t) = self.terrace.as_ref().filter(|_| !self.terraces.is_empty()) else {
+            return Vec::new();
+        };
+        let mut z = self.params.top;
+        t.layers
+            .iter()
+            .rev()
+            .map(|&(d, mat, ins)| {
+                z += d;
+                (z - d, z, mat, ins)
+            })
+            .collect()
+    }
+
+    /// Fläche der Dachterrasse (mm²).
+    pub fn terrace_area(&self) -> f64 {
+        self.terraces.area()
+    }
+
+    /// Volumen je Schicht des Aufbaus von oben nach unten (mm³).
+    pub fn terrace_volumes(&self) -> Vec<f64> {
+        let a = self.terrace_area();
+        self.terrace
+            .as_ref()
+            .map_or_else(Vec::new, |t| t.layers.iter().map(|l| l.0 * a).collect())
+    }
+
+    /// Körper der Dachterrasse für 3D und Ansichten. Ringsum stößt sie an
+    /// Attika und Wand darüber: Oberfläche des Belags und Unterseite auf der
+    /// Rohdecke, Fugen der Schichten an keiner Stelle sichtbar.
+    pub fn terrace_solid(&self) -> Solid {
+        let mut s = self.terrace_below(f64::INFINITY);
+        if let Some((z0, _)) = self.terrace_band() {
+            for t in &self.terraces.outlines {
+                for p in &t.parts {
+                    s.cap(&polygon::to_ccw(p), z0, false);
+                }
+            }
+        }
+        s
+    }
+
+    /// Dachterrasse waagerecht geschnitten in Höhe `cut` (Grundriss).
+    pub fn terrace_cut_at(&self, cut: f64) -> Solid {
+        self.terrace_below(cut)
+    }
+
+    fn terrace_below(&self, cut: f64) -> Solid {
+        let mut s = Solid::default();
+        let layers = self.terrace_layers();
+        let Some(&(_, top, mat, _)) = layers.iter().rev().find(|l| l.0 < cut) else {
+            return s;
+        };
+        let (z, mat) = if cut < top {
+            // geschnittene Schicht: die oberste unter dem Schnitt
+            let l = layers
+                .iter()
+                .find(|l| l.0 < cut && cut < l.1)
+                .unwrap_or(&layers[0]);
+            (cut, l.2 | material::CUT)
+        } else {
+            (top, mat)
+        };
+        s.mat = mat;
+        s.edge_kind = if cut < top {
+            edge_kind::CUT_LAYER
+        } else {
+            edge_kind::VIEW
+        };
+        for t in &self.terraces.outlines {
+            for p in &t.parts {
+                let ring = polygon::to_ccw(p);
+                s.cap(&ring, z, true);
+                let n = ring.len();
+                for i in 0..n {
+                    s.edge(at_z(ring[i], z), at_z(ring[(i + 1) % n], z));
+                }
+            }
+        }
+        s.edge_kind = edge_kind::VIEW;
+        s
+    }
+
+    /// Schnittflächen der Dachterrasse: je Schicht umrandet, Dämmung mit
+    /// Schraffur längs (waagerecht), Belag ohne.
+    pub fn terrace_section_caps(&self, p0: Vec3, n: Vec3) -> Solid {
+        let f = SectionFrame::new(p0, n);
+        let (n, along) = (f.n, f.along);
+        let pt = |u: f64, z: f64| f.pt(u, z);
+        let mut s = Solid {
+            edge_kind: edge_kind::CUT_LAYER,
+            ..Solid::default()
+        };
+        let layers = self.terrace_layers();
+        for t in &self.terraces.outlines {
+            for p in &t.parts {
+                for (a, b) in polygon::plane_intervals(p, p0, n, along) {
+                    for &(z0, z1, mat, ins) in &layers {
+                        s.mat = mat | material::CUT;
+                        let d = (z1 - z0).max(1.0);
+                        let uv = if ins {
+                            [[a / d, 0.0], [b / d, 0.0], [b / d, 1.0], [a / d, 1.0]]
+                        } else {
+                            [[0.0; 2]; 4]
+                        };
+                        s.quad_uv([pt(a, z0), pt(b, z0), pt(b, z1), pt(a, z1)], n, uv);
+                        s.edge(pt(a, z1), pt(b, z1));
+                        s.edge(pt(a, z0), pt(a, z1));
+                        s.edge(pt(b, z0), pt(b, z1));
+                    }
+                }
+            }
+        }
+        s.edge_kind = edge_kind::VIEW;
+        s
+    }
+
+    /// Körper der Attika ohne die Wand (Grundriss eines Geschosses darüber,
+    /// in dem die Wand selbst nicht erscheint).
+    pub fn attika_solid(&self) -> Solid {
+        match self.attika_band() {
+            Some(b) => attika_solid(&self.terraces.attika, b, f64::INFINITY),
+            None => Solid::default(),
+        }
+    }
+
+    /// Körper des Attikablechs (D3): Profil längs der Außenfläche der
+    /// Attika auf OK Attika, Enden an der Außenfläche des Geschosses darüber.
+    pub fn coping_solid(&self) -> Solid {
+        let (Some(t), Some((_, z))) = (&self.terrace, self.attika_band()) else {
+            return Solid::default();
+        };
+        let mut s = Solid {
+            mat: t.coping_mat,
+            ..Solid::default()
+        };
+        let profile = coping_profile(self.terraces.width);
+        for c in &self.terraces.coping {
+            let path: Vec<Vec3> = c.points.iter().map(|p| at_z(*p, z)).collect();
+            s.sweep(&path, c.closed, &profile, c.ends);
+        }
+        s.edge_kind = edge_kind::VIEW;
+        s
+    }
+
+    /// Schnittfläche des Attikablechs: das Profil in der Ebene, kräftig
+    /// umrandet.
+    pub fn coping_section_caps(&self, p0: Vec3, n: Vec3) -> Solid {
+        let (Some(t), Some((_, z))) = (&self.terrace, self.attika_band()) else {
+            return Solid::default();
+        };
+        let nn = vec3(n.x, n.y, 0.0).normalized();
+        let mut s = Solid {
+            mat: t.coping_mat | material::CUT,
+            edge_kind: edge_kind::CUT,
+            ..Solid::default()
+        };
+        let profile = coping_profile(self.terraces.width);
+        let flat2: Vec<Vec3> = profile.iter().map(|p| vec3(p.0, p.1, 0.0)).collect();
+        let tris = polygon::triangulate(&flat2);
+        for c in &self.terraces.coping {
+            let m = c.points.len();
+            let segs = if c.closed { m } else { m.saturating_sub(1) };
+            for k in 0..segs {
+                let (a, b) = (c.points[k], c.points[(k + 1) % m]);
+                let (da, db) = ((a - p0).dot(nn), (b - p0).dot(nn));
+                if (da < 0.0) == (db < 0.0) || (da - db).abs() < 1e-9 {
+                    continue;
+                }
+                let x = a + (b - a) * (da / (da - db));
+                let d = vec3(b.x - a.x, b.y - a.y, 0.0).normalized();
+                let r = right_of(d);
+                let dn = d.dot(nn);
+                // Querrichtung in der Ebene (das Profil geschert)
+                let q = r - d * (r.dot(nn) / dn);
+                let at = |(u, h): (f64, f64)| vec3(x.x, x.y, z) + q * u + vec3(0.0, 0.0, h);
+                for tri in &tris {
+                    s.oriented_tri(tri.map(|i| at(profile[i])), nn);
+                }
+                let np = profile.len();
+                for i in 0..np {
+                    s.edge(at(profile[i]), at(profile[(i + 1) % np]));
+                }
+            }
+        }
+        s.edge_kind = edge_kind::VIEW;
+        s
+    }
+
+    /// Länge des Attikablechs an der Außenkante der Attika (mm).
+    pub fn coping_length(&self) -> f64 {
+        self.terraces.coping_length()
+    }
+
+    /// Schnittflächen der Attika ohne die Wand.
+    pub fn attika_section_caps(&self, p0: Vec3, n: Vec3) -> Solid {
+        match self.attika_band() {
+            Some(b) => attika_section_caps(&self.terraces.attika, b, p0, n),
+            None => Solid::default(),
+        }
     }
 
     // ---- Randdämmstreifen (K5) ----

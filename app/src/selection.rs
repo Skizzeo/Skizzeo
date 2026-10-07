@@ -363,7 +363,9 @@ fn foundation_props(
         ElementKind::Wall(_)
         | ElementKind::Floor(_)
         | ElementKind::EdgeStrip { .. }
-        | ElementKind::SoffitInsulation { .. } => return None,
+        | ElementKind::SoffitInsulation { .. }
+        | ElementKind::RoofTerrace { .. }
+        | ElementKind::Coping { .. } => return None,
     };
     values.push(("Bauabschnitt", e.seq.to_string()));
     let mut notes = m.warnings(id);
@@ -409,6 +411,9 @@ pub fn props(scene: &Scene, id: ElementId) -> Option<Props> {
         ElementKind::Floor(_) => return floor_props(scene, id, values),
         ElementKind::EdgeStrip { .. } => return strip_props(scene, id, values),
         ElementKind::SoffitInsulation { floor } => return soffit_props(scene, id, floor, values),
+        ElementKind::RoofTerrace { floor } | ElementKind::Coping { floor } => {
+            return terrace_props(scene, id, floor, values)
+        }
         _ => return foundation_props(scene, id, values),
     }
     if let Some(q) = q {
@@ -545,6 +550,106 @@ fn soffit_props(
         sections: soffit_section(m, floor).into_iter().collect(),
         notes: m.warnings(id),
         ..Default::default()
+    })
+}
+
+/// Paneel für Dachterrasse und Attikablech (D1–D3, soll-dt-3): Hauptmenge
+/// zuerst, darunter der Abschnitt „Aufbau“ mit Dämmung, Belag und Attika.
+fn terrace_props(
+    scene: &Scene,
+    id: ElementId,
+    floor: ElementId,
+    mut values: Vec<(&'static str, String)>,
+) -> Option<Props> {
+    let m = scene.model();
+    let e = m.element(id)?;
+    let mut layers = Vec::new();
+    let mut label = String::new();
+    if let ElementKind::Coping { .. } = e.kind {
+        if let Some(q) = scene.coping_qto(id) {
+            values.extend([
+                ("Länge", format!("{} m", de(q.length / 1e3, 2))),
+                ("Abwicklung", format!("{} mm", q.girth.round())),
+            ]);
+        }
+        let mat = m.coping_material(floor);
+        label = mat
+            .and_then(|x| m.material(x))
+            .map_or(String::new(), |x| x.name.clone());
+    } else {
+        let q = scene.terrace_qto(id);
+        if let Some(q) = &q {
+            values.extend([
+                ("Fläche", format!("{} m²", de(q.area / 1e6, 2))),
+                ("Volumen", format!("{} m³", de(q.volume / 1e9, 3))),
+            ]);
+            for &(mat, t, v) in &q.layers {
+                layers.extend(solid_layer(m, mat, t, Some(v)));
+            }
+        }
+        if let Some(t) = m.terrace_type_of(floor).and_then(|t| m.layer_set(t)) {
+            label = t.name.clone();
+        }
+    }
+    values.push((
+        "Decke",
+        m.element(floor).map_or("–".into(), |f| f.number.clone()),
+    ));
+    Some(Props {
+        values,
+        layer_set: label,
+        layers,
+        set_label: "Aufbau",
+        sections: terrace_section(m, floor).into_iter().collect(),
+        notes: m.warnings(id),
+        ..Default::default()
+    })
+}
+
+/// Abschnitt „Aufbau“ der Dachterrasse: Dämmung und Belag ändern ihren Typ,
+/// die Attika steht an der Decke.
+fn terrace_section(m: &Model, floor: ElementId) -> Option<crate::ui::Section> {
+    m.terrace_of(floor)?;
+    let ElementKind::Floor(f) = &m.element(floor)?.kind else {
+        return None;
+    };
+    let t = m.terrace_type_of(floor).and_then(|t| m.layer_set(t))?;
+    let thick = |func: sk_model::LayerFunction| {
+        t.layers
+            .iter()
+            .find(|l| l.function == func)
+            .map_or(0.0, |l| l.thickness)
+    };
+    let (ins, fin) = (sk_model::TERRACE_INSULATION, sk_model::TERRACE_FINISH);
+    Some(crate::ui::Section {
+        title: "Aufbau",
+        fields: vec![
+            field(
+                Field::TerraceInsulation,
+                "Dämmung",
+                thick(sk_model::LayerFunction::Insulation),
+                ins.0,
+                ins.1,
+            ),
+            field(
+                Field::TerraceFinish,
+                "Belag",
+                thick(sk_model::LayerFunction::Finish),
+                fin.0,
+                fin.1,
+            ),
+            FieldRow {
+                zero: true,
+                ..field(
+                    Field::Upstand,
+                    "Attika über Belag",
+                    f.terrace.upstand,
+                    0.0,
+                    sk_model::MAX_UPSTAND,
+                )
+            },
+        ],
+        hint: "folgt dem Rücksprung des OG",
     })
 }
 

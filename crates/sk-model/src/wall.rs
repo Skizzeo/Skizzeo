@@ -156,6 +156,17 @@ pub struct Joints {
     /// Das Geschoss darüber springt vor (OG Phase 2, G7 K4): Die nicht
     /// tragenden Außenschichten laufen dort bis UK Untersichtdämmung herab.
     pub overhang: Option<Overhang>,
+    /// Das Geschoss darüber springt zurück (D2): Die Schichten außerhalb
+    /// der Deckenkante laufen über dem Terrassenrand bis OK Attika weiter.
+    pub attika: Option<Attika>,
+}
+
+/// Attika über der Wandkrone (BIM E2): Stücke der Außenschichten zwischen
+/// `band.0` (Krone) und `band.1` (OK Attika), je Segment.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Attika {
+    pub band: (f64, f64),
+    pub pieces: Vec<crate::terrace::AttikaPiece>,
 }
 
 /// Vorsprung des Geschosses darüber (G7 K4). Zwischen `from` (UK
@@ -808,7 +819,13 @@ impl WallChain {
                 chain.prism(s, i, lo, hi, (z0, top), top_mat, l.cut_kind());
             }
         }
-        self.join_parts(g)
+        let mut s = self.join_parts(g);
+        if let Some(a) = &self.joints.attika {
+            let mut up = crate::terrace::attika_solid(&a.pieces, a.band, cut);
+            merge_seam(&mut s, &mut up, a.band.0);
+            s.append(&up);
+        }
+        s
     }
 
     /// Schnittflächen der Wand mit der senkrechten Ebene durch `p0` mit Normale `n`
@@ -837,6 +854,11 @@ impl WallChain {
             }
         }
         let mut s = self.join_parts(g);
+        if let Some(a) = &self.joints.attika {
+            let mut up = crate::terrace::attika_section_caps(&a.pieces, a.band, p0, n);
+            merge_seam(&mut s, &mut up, a.band.0);
+            s.append(&up);
+        }
         s.edge_kind = edge_kind::VIEW;
         s
     }

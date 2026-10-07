@@ -117,6 +117,7 @@ pub fn for_category(c: MatCategory) -> Option<TradeId> {
         MatCategory::Timber => "18334",
         MatCategory::Insulation => "18345",
         MatCategory::Plaster => "18350",
+        MatCategory::Metal => "18339",
         MatCategory::Air => return None,
     })
 }
@@ -134,6 +135,12 @@ pub fn for_material(name: &str, c: MatCategory) -> Option<TradeId> {
 /// auch wenn ihr Baustoff etwas anderes vorschlägt.
 pub fn soffit() -> Option<TradeId> {
     start_id("18345")
+}
+
+/// Dachterrasse und Attikablech: Dachdecker (Jörn 08:37, bim/paket-
+/// dachterrasse.md §2), auch beim Blech, das nach VOB/C der Klempner wäre.
+pub fn roofing() -> Option<TradeId> {
+    start_id("18338")
 }
 
 /// Startbestand und Gewerke aus einer Datei zusammenführen: gleiche Guid

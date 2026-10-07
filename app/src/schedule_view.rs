@@ -33,6 +33,8 @@ const STOREY_GAP: f32 = 8.0;
 /// Kacheln der Summe nach Baustoff (dip).
 const TILE_H: f32 = 64.0;
 const TILE_GAP: f32 = 12.0;
+/// Schmalste Kachel (dip); passen nicht alle in eine Zeile, brechen sie um.
+const TILE_MIN_W: f32 = 120.0;
 /// Knopf „Als Tabelle speichern“ (dip).
 const BUTTON_H: f32 = 28.0;
 const BUTTON_PAD: f32 = 16.0;
@@ -415,8 +417,26 @@ impl ListView {
             Kind::Group | Kind::Row | Kind::Control => row,
             Kind::Rule => 16.0,
             Kind::SumHead => 30.0,
-            Kind::Tiles => TILE_H + TILE_GAP + 8.0,
+            Kind::Tiles => {
+                let rows = l
+                    .tiles
+                    .len()
+                    .div_ceil(self.tile_slots(t, l.tiles.len()))
+                    .max(1);
+                rows as f32 * (TILE_H + TILE_GAP) + 8.0
+            }
         }
+    }
+
+    /// Kacheln je Zeile der Summe nach Baustoff: mindestens drei Plätze
+    /// (wenige Kacheln bleiben ein Drittel breit), höchstens so viele, wie
+    /// mit [`TILE_MIN_W`] in die Inhaltsbreite passen.
+    fn tile_slots(&self, t: Option<&Theme>, n: usize) -> usize {
+        let pad = t.map_or(28.0, |t| t.size.sheet_pad);
+        let max_w = t.map_or(900.0, |t| t.size.qto_max_w);
+        let cw = (self.w as f32 / self.scale - 2.0 * pad).min(max_w).max(0.0);
+        let fit = ((cw + TILE_GAP) / (TILE_MIN_W + TILE_GAP)).floor().max(1.0) as usize;
+        n.max(3).min(fit)
     }
 
     /// Sichtbare Zeilen mit Oberkante und Höhe (dip, ab Listenanfang).
@@ -1728,18 +1748,21 @@ impl ListView {
     ) {
         let s = self.scale;
         let u = &t.ui;
-        let n = l.tiles.len().max(3) as f32;
+        let slots = self.tile_slots(Some(t), l.tiles.len());
+        let n = slots as f32;
         let gap = TILE_GAP * s;
         let tw = ((cw - gap * (n - 1.0)) / n).max(40.0 * s);
         for (k, tile) in l.tiles.iter().enumerate() {
-            let x = x0 + k as f32 * (tw + gap);
+            let x = x0 + (k % slots) as f32 * (tw + gap);
+            let y = y + (k / slots) as f32 * (TILE_H + TILE_GAP) * s;
             let mut p = Path::new();
             p.rounded_rect(x, y, tw, TILE_H * s, 6.0 * s);
             c.fill(&p, u.sheet_tile);
             if let Some(f) = fonts.regular.as_ref() {
+                let name = sk_ui::widgets::ellipsize(Some(f), &tile.name, 10.0 * s, tw - 20.0 * s);
                 f.draw(
                     c,
-                    &tile.name,
+                    &name,
                     10.0 * s,
                     x + 10.0 * s,
                     y + 18.0 * s,
@@ -1980,6 +2003,21 @@ fn layer_name(m: &Model, r: &LayerRow) -> String {
     format!("{name} {}", cm(r.thickness).trim_end_matches(" cm"))
 }
 
+/// Titel einer Schichtgruppe: „Gasbeton 17,5 · Außenwände“, mit
+/// „, mit Attika“, wenn die Schicht über einen Terrassenrand hochläuft.
+fn layer_group_title(m: &Model, r: &LayerRow, rows: &[LayerRow]) -> String {
+    let attika = if rows.iter().any(|x| x.attika) {
+        ", mit Attika"
+    } else {
+        ""
+    };
+    format!(
+        "{} · {}{attika}",
+        layer_name(m, r),
+        sk_model::kinds::spec(r.category).plural
+    )
+}
+
 /// Bezeichnung eines einzeln stehenden Bauteils nach Gewerk: wie nach
 /// Geschoss, bei mehrschichtigen Bauteilen „Bauteilart · Schicht“.
 fn layer_row_label(m: &Model, r: &LayerRow) -> String {
@@ -2009,6 +2047,7 @@ fn per_element(rows: &[LayerRow]) -> Vec<LayerRow> {
             Some(x) => {
                 x.volume += r.volume;
                 x.area += r.area;
+                x.attika |= r.attika;
             }
             None => out.push(r.clone()),
         }
@@ -2075,11 +2114,7 @@ fn trade_lines(m: &Model, b: &BuildingQto, lines: &mut Vec<Line>) {
             let mut gl = Line::new(Kind::Group, 1, gkey);
             gl.storey = tkey;
             gl.elements = rows.iter().map(|x| x.element).collect();
-            gl.cells[0] = format!(
-                "{} · {}",
-                layer_name(m, r),
-                sk_model::kinds::spec(r.category).plural
-            );
+            gl.cells[0] = layer_group_title(m, r, &rows);
             gl.cells[1] = match rows.as_slice() {
                 [] => String::new(),
                 [one] => one.number.clone(),
@@ -2206,6 +2241,7 @@ fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut V
             rl.elements = vec![r.element];
             rl.cells[1] = r.number.clone();
             let mut control = None;
+            let mut parts: Vec<(&str, f64)> = Vec::new();
             match &r.q {
                 Some(ElementQto::Footing(f)) => {
                     rl.cells[0] = "Frostschürze".into();
@@ -2239,6 +2275,17 @@ fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut V
                     rl.cells[3] = m_area(f.area);
                     rl.cells[4] = m_vol(f.volume);
                 }
+                Some(ElementQto::Terrace(t)) => {
+                    rl.cells[0] = "Dachterrasse".into();
+                    rl.cells[3] = m_area(t.area);
+                    rl.cells[4] = m_vol(t.volume);
+                    parts = vec![("Dämmung", t.insulation_volume), ("Belag", t.finish_volume)];
+                }
+                Some(ElementQto::Coping(c)) => {
+                    rl.cells[0] = "Attikablech".into();
+                    rl.cells[2] = m_len(c.length);
+                    rl.cells[4] = m_vol(c.volume);
+                }
                 None => {
                     rl.cells[0] = g.category.name().into();
                     rl.cells[4] = "–".into();
@@ -2256,6 +2303,18 @@ fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut V
                 cl.storey = skey;
                 cl.cells[0] = "davon Auflager in den Außenwänden".into();
                 cl.cells[4] = m_vol(b);
+                lines.push(cl);
+            }
+            // Dachterrasse: Dämmung und Belag je für sich (soll-dt-3)
+            for (i, (name, v)) in parts.into_iter().enumerate() {
+                let mut cl = Line::new(
+                    Kind::Control,
+                    2,
+                    Key::Control(ekey.index(), 3 + i as u8, ekey.generation()),
+                );
+                cl.storey = skey;
+                cl.cells[0] = format!("davon {name}");
+                cl.cells[4] = m_vol(v);
                 lines.push(cl);
             }
         }
@@ -2355,11 +2414,7 @@ fn csv_trades(m: &Model, sched: &Schedule) -> Vec<u8> {
                     .count();
                 let rows = per_element(&t.rows[i..i + n]);
                 i += n;
-                let title = format!(
-                    "{} · {}",
-                    layer_name(m, r),
-                    sk_model::kinds::spec(r.category).plural
-                );
+                let title = layer_group_title(m, r, &rows);
                 let a: f64 = rows.iter().map(|x| x.area).sum();
                 let range = match rows.as_slice() {
                     [] => String::new(),
@@ -2549,6 +2604,24 @@ fn csv_storeys(m: &Model, sched: &Schedule) -> Vec<u8> {
                         area(f.area),
                         vol(f.volume),
                         String::new(),
+                    ),
+                    Some(ElementQto::Terrace(t)) => (
+                        "Dachterrasse".into(),
+                        String::new(),
+                        area(t.area),
+                        vol(t.volume),
+                        format!(
+                            "Dämmung {} m³, Belag {} m³",
+                            de(t.insulation_volume / 1e9, 3),
+                            de(t.finish_volume / 1e9, 3)
+                        ),
+                    ),
+                    Some(ElementQto::Coping(c)) => (
+                        "Attikablech".into(),
+                        len(c.length),
+                        String::new(),
+                        vol(c.volume),
+                        format!("Abwicklung {} mm", c.girth.round()),
                     ),
                     None => (
                         g.category.name().to_string(),

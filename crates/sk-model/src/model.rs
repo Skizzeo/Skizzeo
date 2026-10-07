@@ -11,9 +11,9 @@ use crate::attr::{
 use crate::element::{
     Building, BuildingId, Category, Coupling, Element, ElementId, ElementKind, Floor, GroundSlab,
     LevelEdge, LevelKind, LevelRef, PropSet, PropValue, RunId, Soffit, Storey, StoreyId,
-    StripFooting, Wall, WallRun,
+    StripFooting, Terrace, Wall, WallRun,
 };
-use crate::floor::{FloorError, FloorParams, FloorSlab, SoffitParams, StripParams};
+use crate::floor::{FloorError, FloorParams, FloorSlab, SoffitParams, StripParams, TerraceParams};
 use crate::foundation::{FootingShape, Foundation, FoundationError, FoundationParams};
 use crate::guid::{Guid, GuidGen};
 use crate::id::Arena;
@@ -26,7 +26,7 @@ use crate::solid::material;
 use crate::trade::{self, Trade, TradeId};
 use crate::txn::{Change, Direction, Key, Open, Touched, Txn};
 use crate::wall::{
-    clean_points, cross2, segment_count, EndCut, Layer, Overhang, RefSide, WallChain,
+    clean_points, cross2, segment_count, Attika, EndCut, Layer, Overhang, RefSide, WallChain,
 };
 use sk_math::{vec3, Vec3};
 
@@ -855,12 +855,18 @@ impl Model {
             t.layers.iter().any(|l| l.material == id) || t.strip_material() == Some(id)
         });
         let in_elements = self.elements.iter().any(|(_, e)| match &e.kind {
-            ElementKind::Floor(f) => f.material == id || f.soffit.material == Some(id),
+            ElementKind::Floor(f) => {
+                f.material == id
+                    || f.soffit.material == Some(id)
+                    || f.terrace.coping_mat == Some(id)
+            }
             ElementKind::GroundSlab(g) => g.material == id,
             ElementKind::StripFooting(f) => f.material == id,
             ElementKind::Wall(_)
             | ElementKind::EdgeStrip { .. }
-            | ElementKind::SoffitInsulation { .. } => false,
+            | ElementKind::SoffitInsulation { .. }
+            | ElementKind::RoofTerrace { .. }
+            | ElementKind::Coping { .. } => false,
         });
         in_types || in_elements
     }
@@ -1197,6 +1203,25 @@ impl Model {
             .and_then(|s| self.layer_set(s))
             .map_or_else(PropSet::new, |t| t.props.clone());
         p.extend(e.props.iter().map(|(k, v)| (k.clone(), v.clone())));
+        // Abgeleitete Merkmale der Dachterrasse und des Blechs (BIM §6)
+        if let ElementKind::RoofTerrace { floor } | ElementKind::Coping { floor } = e.kind {
+            let slab = self
+                .run_of(floor)
+                .and_then(|r| self.floor(r))
+                .and_then(|f| f.ok());
+            if let Some(f) = slab.filter(|f| !f.terraces.is_empty()) {
+                match e.kind {
+                    ElementKind::RoofTerrace { .. } => {
+                        let walk = f.terraces.depth() >= WALKABLE_DEPTH - 1e-6;
+                        p.insert("begehbar".into(), PropValue::Bool(walk));
+                    }
+                    _ => {
+                        let g = crate::terrace::coping_girth(f.terraces.width);
+                        p.insert("Abwicklung".into(), PropValue::Number(g));
+                    }
+                }
+            }
+        }
         p
     }
 
@@ -2469,6 +2494,15 @@ impl Model {
                 }
             });
         }
+        if let Some(Ok(f)) = &floor {
+            c.joints.attika = f
+                .attika_band()
+                .filter(|b| b.1 > b.0 + 1e-6)
+                .map(|band| Attika {
+                    band,
+                    pieces: f.terraces.attika.clone(),
+                });
+        }
         c.joints.slab_band = match &floor {
             Some(Ok(f)) => Some(f.band()),
             _ if self.category_of(id) == Some(Category::InteriorWall) => self
@@ -2665,7 +2699,9 @@ impl Model {
             ElementKind::StripFooting(f) => self.run_of(f.slab),
             ElementKind::Floor(f) => Some(f.run),
             ElementKind::EdgeStrip { wall, .. } => self.run_of(wall),
-            ElementKind::SoffitInsulation { floor } => self.run_of(floor),
+            ElementKind::SoffitInsulation { floor }
+            | ElementKind::RoofTerrace { floor }
+            | ElementKind::Coping { floor } => self.run_of(floor),
         }
     }
 
@@ -2793,6 +2829,8 @@ impl Model {
             FOOTING_PART => self.foundation_of(run).and_then(|f| f.1),
             FLOOR_PART => self.floor_of(run),
             SOFFIT_PART => self.soffit_of(self.floor_of(run)?),
+            TERRACE_PART => self.terrace_of(self.floor_of(run)?),
+            COPING_PART => self.coping_of(self.floor_of(run)?),
             p if (STRIP_PART..STRIP_PART + MAX_STRIPS).contains(&p) => {
                 let wall = self.wall_at(run, (p - STRIP_PART) as usize)?;
                 self.edge_strip_of(wall, self.floor_of(run)?)
@@ -3104,6 +3142,7 @@ impl Model {
                     thickness: SOFFIT_THICKNESS,
                     material: None,
                 },
+                terrace: Terrace::default(),
             }),
         );
     }
@@ -3219,10 +3258,39 @@ impl Model {
                 .map_or(material::PLAIN, material_key),
         };
         let over = ext.as_ref().map(|(c, o)| (c, &o[..], soffit));
-        let mut slab = FloorSlab::from_chain_over(chain, &p, self.strip_params(run), over);
-        if let Ok(f) = &mut slab {
-            if f.strip.is_some_and(|sp| sp.covered) {
-                f.strip_covered = self.covered_segments(run);
+        let strip = self.strip_params(run);
+        let mut slab = FloorSlab::from_chain_over(chain, &p, strip, over);
+        if let Ok(fs) = &mut slab {
+            if fs.strip.is_some_and(|sp| sp.covered) {
+                fs.strip_covered = self.covered_segments(run);
+            }
+            // Dachterrasse über dem Rücksprung darüber (D1–D3): Deckenkante
+            // ist der Umriss der Decke (Kern oder Randdämmstreifen innen)
+            let up = self
+                .runs_above(run)
+                .first()
+                .and_then(|u| self.base_chain(*u));
+            if let Some(up) = up {
+                let below = ext.as_ref().map_or(chain, |(c, _)| c);
+                let depth = match strip {
+                    Some(sp) if sp.width > 0.0 => sp.width,
+                    _ => {
+                        let core = below.layers.iter().position(|l| l.core).unwrap_or(0);
+                        below.layers[..core].iter().map(|l| l.thickness).sum()
+                    }
+                };
+                let plan = crate::terrace::terrace_plan(below, &up, depth, strip.map(|s| s.mat));
+                if !plan.is_empty() {
+                    fs.terrace = Some(TerraceParams {
+                        layers: self.terrace_params_layers(id, &f.terrace),
+                        attika_from: chain.top(),
+                        upstand: f.terrace.upstand.clamp(0.0, MAX_UPSTAND),
+                        coping_mat: self
+                            .coping_material_of(&f.terrace)
+                            .map_or(material::PLAIN, material_key),
+                    });
+                    fs.terraces = plan;
+                }
             }
         }
         Some(slab)
@@ -3243,14 +3311,10 @@ impl Model {
     /// zwischen dessen Außenfläche und der Deckenkante. Leer ohne Zug
     /// darüber.
     pub fn terrace_outlines(&self, run: RunId) -> Vec<crate::terrace::TerraceOutline> {
-        let (Some(own), Some(up)) = (
-            self.chain(run),
-            self.runs_above(run).first().and_then(|u| self.chain(*u)),
-        ) else {
-            return Vec::new();
-        };
-        let slab = own.overhang_chain().unwrap_or(own);
-        crate::terrace::terrace_outlines(&slab, &up)
+        match self.floor(run) {
+            Some(Ok(f)) => f.terraces.outlines,
+            _ => Vec::new(),
+        }
     }
 
     /// Vorsprung des Zuges darüber je Segment (≥ 0), wenn mindestens ein
@@ -3446,6 +3510,390 @@ impl Model {
         self.strict = strict;
     }
 
+    // --- Dachterrasse, Attika, Attikablech (D1–D3) ------------------------
+
+    /// Typ der Dachterrasse einer Decke: der gewählte oder der Werkstyp
+    /// „Dachterrasse 14“, sobald es ihn im Projekt gibt.
+    pub fn terrace_type_of(&self, floor: ElementId) -> Option<LayerSetId> {
+        let ElementKind::Floor(f) = self.element(floor)?.kind else {
+            return None;
+        };
+        self.terrace_type(&f.terrace)
+    }
+
+    fn terrace_type(&self, t: &Terrace) -> Option<LayerSetId> {
+        t.build_up
+            .filter(|id| {
+                self.layer_set(*id)
+                    .is_some_and(|x| x.category == TypeCategory::RoofTerrace)
+            })
+            .or_else(|| self.type_by_guid(TERRACE_TYPE_GUID))
+    }
+
+    /// Schichten der Dachterrasse auf der Decke `floor`, von oben nach unten
+    /// (die einzige Leseschnittstelle, BIM §3): die des Typs. Leer, solange
+    /// es den Werkstyp noch nicht gibt (vor der ersten Terrasse).
+    pub fn terrace_layers(&self, floor: ElementId) -> Vec<MaterialLayer> {
+        self.terrace_type_of(floor)
+            .and_then(|t| self.layer_set(t))
+            .map_or_else(Vec::new, |t| t.layers.clone())
+    }
+
+    /// Schichten für den Körper; ohne Typ der Werkstyp ohne Baustoffe (nur
+    /// im offenen Schritt, bis [`Model::sync_terraces`] ihn anlegt).
+    fn terrace_params_layers(&self, floor: ElementId, t: &Terrace) -> Vec<(f64, u16, bool)> {
+        let ins = |m: MaterialId| {
+            self.material(m)
+                .is_some_and(|x| x.category == MatCategory::Insulation)
+        };
+        match self.terrace_type(t).and_then(|t| self.layer_set(t)) {
+            Some(set) => set
+                .layers
+                .iter()
+                .filter(|l| l.function != LayerFunction::AirGap)
+                .map(|l| (l.thickness, material_key(l.material), ins(l.material)))
+                .collect(),
+            None => {
+                let _ = floor;
+                TERRACE_BUILD_UP
+                    .iter()
+                    .map(|&(d, f)| (d, material::PLAIN, f == LayerFunction::Insulation))
+                    .collect()
+            }
+        }
+    }
+
+    /// Baustoff des Attikablechs: die Wahl an der Decke oder Titanzink 0,7.
+    fn coping_material_of(&self, t: &Terrace) -> Option<MaterialId> {
+        t.coping_mat
+            .filter(|m| self.materials.contains(*m))
+            .or_else(|| self.material_by_guid(COPING_MAT_GUID))
+    }
+
+    /// Baustoff des Attikablechs einer Decke.
+    pub fn coping_material(&self, floor: ElementId) -> Option<MaterialId> {
+        let ElementKind::Floor(f) = self.element(floor)?.kind else {
+            return None;
+        };
+        self.coping_material_of(&f.terrace)
+    }
+
+    fn material_by_guid(&self, g: Guid) -> Option<MaterialId> {
+        self.materials
+            .iter()
+            .find(|(_, m)| m.guid == g)
+            .map(|(id, _)| id)
+    }
+
+    /// Eingebauter Baustoff mit fester Guid; fehlt er, wird er angelegt
+    /// (rückgängig machbar). Darstellung wie ein Baustoff derselben Art
+    /// (Dämmung: Zickzack), sonst ohne Schraffur.
+    #[allow(clippy::too_many_arguments)]
+    fn builtin_material(
+        &mut self,
+        guid: Guid,
+        name: &str,
+        category: MatCategory,
+        priority: u16,
+        density: f64,
+        lambda: Option<f64>,
+        color: [u8; 3],
+        cut_color: [u8; 3],
+        trade: Option<TradeId>,
+    ) -> Option<MaterialId> {
+        if let Some(id) = self.material_by_guid(guid) {
+            return Some(id);
+        }
+        let like = self
+            .materials
+            .iter()
+            .find(|(_, m)| m.category == category)
+            .or_else(|| self.materials.iter().next())
+            .map(|(_, m)| m.clone());
+        let empty = self
+            .attr
+            .fills()
+            .iter()
+            .find(|(_, f)| f.kind == crate::attr::FillKind::Empty)
+            .map(|(id, _)| id);
+        let cut_fill = match (&like, category) {
+            (Some(m), MatCategory::Insulation) => m.cut_fill,
+            (Some(m), _) => empty.unwrap_or(m.cut_fill),
+            (None, _) => empty.or_else(|| self.attr.fills().ids().next())?,
+        };
+        let (cut_fg, cut_bg) = match &like {
+            Some(m) => (m.cut_fg, m.cut_bg),
+            None => {
+                let p = self.attr.pens().ids().next()?;
+                (p, p)
+            }
+        };
+        let sg = self.new_guid();
+        let surface = self.add_surface(Surface {
+            guid: sg,
+            name: name.into(),
+            color,
+            cut_color,
+        });
+        Some(self.add_material(Material {
+            guid,
+            name: name.into(),
+            category,
+            priority,
+            density,
+            lambda,
+            cut_fill,
+            cut_fg,
+            cut_bg,
+            surface,
+            trade,
+        }))
+    }
+
+    /// Werkstyp „Dachterrasse 14“ (DT-14): Belag 6 über Dämmung hart 8, ohne
+    /// Kern; fehlt er, wird er samt Baustoffen angelegt.
+    fn ensure_terrace_type(&mut self) -> Option<LayerSetId> {
+        if let Some(id) = self.type_by_guid(TERRACE_TYPE_GUID) {
+            return Some(id);
+        }
+        let finish = self.builtin_material(
+            TERRACE_FINISH_GUID,
+            "Terrassenbelag",
+            MatCategory::Concrete,
+            500,
+            2200.0,
+            Some(1.65),
+            [196, 190, 178],
+            [172, 166, 154],
+            trade::roofing(),
+        )?;
+        let insulation = self.builtin_material(
+            TERRACE_INSULATION_GUID,
+            "Dämmung hart (Terrasse)",
+            MatCategory::Insulation,
+            300,
+            30.0,
+            Some(0.035),
+            [214, 226, 236],
+            [180, 200, 222],
+            trade::roofing(),
+        )?;
+        let [(d0, f0), (d1, f1)] = TERRACE_BUILD_UP;
+        let code = self.free_code("DT-14");
+        self.add_layer_set(LayerSet {
+            guid: TERRACE_TYPE_GUID,
+            name: "Dachterrasse 14".into(),
+            code,
+            category: TypeCategory::RoofTerrace,
+            layers: vec![
+                MaterialLayer::new(finish, d0, f0),
+                // Dämmung der Terrasse legt immer der Dachdecker (BIM §2)
+                MaterialLayer::new(insulation, d1, f1).trade(trade::roofing()),
+            ],
+            props: PropSet::new(),
+            note: String::new(),
+            changed: 1,
+            bearing: Bearing::Core,
+        })
+    }
+
+    /// Titanzink 0,7 für das Attikablech; fehlt er, wird er angelegt.
+    fn ensure_coping_material(&mut self) -> Option<MaterialId> {
+        self.builtin_material(
+            COPING_MAT_GUID,
+            "Titanzink 0,7",
+            MatCategory::Metal,
+            900,
+            7200.0,
+            Some(110.0),
+            [150, 158, 164],
+            [110, 118, 124],
+            trade::for_category(MatCategory::Metal),
+        )
+    }
+
+    /// Decken mit Dachterrasse (Regel 41): über ihr springt das Geschoss um
+    /// mindestens 20 mm lichte Tiefe zurück. Nach Nummer.
+    pub fn terrace_floors(&self) -> Vec<ElementId> {
+        let mut out: Vec<(String, ElementId)> = self
+            .elements
+            .iter()
+            .filter_map(|(id, e)| match e.kind {
+                ElementKind::Floor(f) => match self.floor(f.run) {
+                    Some(Ok(s)) if !s.terraces.is_empty() => Some((e.number.clone(), id)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out.into_iter().map(|x| x.1).collect()
+    }
+
+    /// Dachterrasse auf einer Decke.
+    pub fn terrace_of(&self, floor: ElementId) -> Option<ElementId> {
+        self.elements
+            .iter()
+            .find(|(_, e)| e.kind == ElementKind::RoofTerrace { floor })
+            .map(|(id, _)| id)
+    }
+
+    /// Attikablech an der Dachterrasse einer Decke.
+    pub fn coping_of(&self, floor: ElementId) -> Option<ElementId> {
+        self.elements
+            .iter()
+            .find(|(_, e)| e.kind == ElementKind::Coping { floor })
+            .map(|(id, _)| id)
+    }
+
+    /// Legt fehlende Dachterrassen und Attikableche an und entfernt
+    /// überzählige (E3, wie [`Model::sync_soffits`]): je Decke höchstens
+    /// eins von jeder Art; bleibt der Rücksprung, bleiben Guid und Nummer.
+    /// Beim ersten Mal kommen Werkstyp und Baustoffe dazu. Liefert die Zahl
+    /// der angelegten und entfernten Bauteile.
+    fn sync_terraces(&mut self) -> (usize, usize) {
+        let want = self.terrace_floors();
+        if !want.is_empty() {
+            self.ensure_terrace_type();
+            if want.iter().any(|f| {
+                matches!(self.element(*f).map(|e| &e.kind),
+                    Some(ElementKind::Floor(x)) if x.terrace.coping_mat.is_none())
+            }) {
+                self.ensure_coping_material();
+            }
+        }
+        let (mut added, mut removed) = (0, 0);
+        for category in [Category::RoofTerrace, Category::Coping] {
+            let kind = |floor| match category {
+                Category::RoofTerrace => ElementKind::RoofTerrace { floor },
+                _ => ElementKind::Coping { floor },
+            };
+            let have: Vec<(ElementId, ElementId)> = self
+                .elements
+                .iter()
+                .filter_map(|(id, e)| match e.kind {
+                    ElementKind::RoofTerrace { floor } if category == Category::RoofTerrace => {
+                        Some((id, floor))
+                    }
+                    ElementKind::Coping { floor } if category == Category::Coping => {
+                        Some((id, floor))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let mut kept = Vec::with_capacity(have.len());
+            for (id, floor) in have {
+                if want.contains(&floor) && !kept.contains(&floor) {
+                    kept.push(floor);
+                } else {
+                    note!(self, Element, self.elements, id);
+                    self.elements.remove(id);
+                    self.touch();
+                    removed += 1;
+                }
+            }
+            for &floor in &want {
+                if kept.contains(&floor) {
+                    continue;
+                }
+                let Some((storey, seq)) = self.element(floor).map(|e| (e.storey, e.seq)) else {
+                    continue;
+                };
+                self.new_element(category, storey, seq, kind(floor));
+                self.touch();
+                added += 1;
+            }
+        }
+        // Der Typ der Dachterrasse folgt der Wahl an der Decke
+        for floor in want {
+            let (Some(dt), t) = (self.terrace_of(floor), self.terrace_type_of(floor)) else {
+                continue;
+            };
+            if self.element(dt).is_some_and(|e| e.layer_set != t) {
+                note!(self, Element, self.elements, dt);
+                if let Some(e) = self.elements.get_mut(dt) {
+                    e.layer_set = t;
+                }
+                self.touch();
+            }
+        }
+        (added, removed)
+    }
+
+    /// Nach dem Laden: Dachterrassen und Attikableche passend zu den
+    /// Rücksprüngen; liefert Hinweise, wenn welche ergänzt oder entfernt
+    /// wurden (Regel 46).
+    pub(crate) fn complete_terraces(&mut self) -> Vec<String> {
+        let strict = std::mem::replace(&mut self.strict, false);
+        let (added, removed) = self.sync_terraces();
+        self.strict = strict;
+        let mut out = Vec::new();
+        if added > 0 {
+            out.push("Dachterrasse bzw. Attikablech ergänzt".to_string());
+        }
+        if removed > 0 {
+            out.push("Dachterrasse bzw. Attikablech ohne Rücksprung entfernt".to_string());
+        }
+        out
+    }
+
+    /// Setzt die Attikahöhe über OK Belag einer Decke (mm, 0 …
+    /// [`MAX_UPSTAND`]).
+    pub fn set_floor_upstand(&mut self, floor: ElementId, mm: f64) -> bool {
+        self.edit_terrace(floor, |t| {
+            ((0.0..=MAX_UPSTAND).contains(&mm)).then(|| t.upstand = mm)
+        })
+    }
+
+    /// Setzt den Baustoff des Attikablechs (`None`: Titanzink 0,7).
+    pub fn set_floor_coping_material(&mut self, floor: ElementId, m: Option<MaterialId>) -> bool {
+        if m.is_some_and(|m| self.material(m).is_none()) {
+            return false;
+        }
+        self.edit_terrace(floor, |t| {
+            t.coping_mat = m;
+            Some(())
+        })
+    }
+
+    /// Setzt den Typ der Dachterrasse einer Decke (`None`: Werkstyp); er
+    /// muss die Typart Dachterrasse haben.
+    pub fn set_floor_terrace_type(&mut self, floor: ElementId, t: Option<LayerSetId>) -> bool {
+        if t.is_some_and(|t| {
+            self.layer_set(t)
+                .is_none_or(|x| x.category != TypeCategory::RoofTerrace)
+        }) {
+            return false;
+        }
+        self.edit_terrace(floor, |x| {
+            x.build_up = t;
+            Some(())
+        })
+    }
+
+    fn edit_terrace(
+        &mut self,
+        floor: ElementId,
+        f: impl FnOnce(&mut Terrace) -> Option<()>,
+    ) -> bool {
+        let Some(ElementKind::Floor(old)) = self.element(floor).map(|e| e.kind.clone()) else {
+            return false;
+        };
+        let mut t = old.terrace;
+        if f(&mut t).is_none() {
+            return false;
+        }
+        if t == old.terrace {
+            return true;
+        }
+        note!(self, Element, self.elements, floor);
+        if let Some(ElementKind::Floor(x)) = self.elements.get_mut(floor).map(|e| &mut e.kind) {
+            x.terrace = t;
+        }
+        self.touch();
+        true
+    }
+
     /// Randdämmstreifen der Decke über dem Zug: aus dem Typ seiner Wände (K5).
     fn strip_params(&self, run: RunId) -> Option<StripParams> {
         let t = self
@@ -3525,6 +3973,18 @@ impl Model {
                         ]
                     })
                     .unwrap_or_default();
+            }
+            ElementKind::RoofTerrace { floor } => return self.terrace_layers(floor),
+            // Eingebauter Ein-Schicht-Aufbau (Steckbrief AB §2): Gewerk nach
+            // Jörn der Dachdecker, auch wenn Titanzink den Klempner vorschlägt.
+            ElementKind::Coping { floor } => {
+                let Some(m) = self.coping_material(floor) else {
+                    return Vec::new();
+                };
+                let t = crate::qto::COPING_SHEET;
+                return vec![
+                    MaterialLayer::new(m, t, LayerFunction::Finish).trade(trade::roofing())
+                ];
             }
             _ => {}
         }
@@ -4184,7 +4644,9 @@ impl Model {
                 ElementKind::Floor(f) => refs.push(f.top),
                 ElementKind::Wall(_)
                 | ElementKind::EdgeStrip { .. }
-                | ElementKind::SoffitInsulation { .. } => {}
+                | ElementKind::SoffitInsulation { .. }
+                | ElementKind::RoofTerrace { .. }
+                | ElementKind::Coping { .. } => {}
             }
         }
         if refs.iter().any(|r| !self.storeys.contains(r.storey)) {
@@ -4530,6 +4992,7 @@ impl Model {
         if self.txn.is_some() {
             self.sync_edge_strips();
             self.sync_soffits();
+            self.sync_terraces();
         }
         self.close()
     }
@@ -4582,7 +5045,9 @@ impl Model {
                                 floors.push(f.run);
                             }
                             ElementKind::EdgeStrip { wall, .. } => strips.push(wall),
-                            ElementKind::SoffitInsulation { floor } => strips.push(floor),
+                            ElementKind::SoffitInsulation { floor }
+                            | ElementKind::RoofTerrace { floor }
+                            | ElementKind::Coping { floor } => strips.push(floor),
                         }
                     }
                 }
@@ -4656,7 +5121,9 @@ impl Model {
                         // Wand oder Platte stehen ggf. selbst im Schritt
                         ElementKind::StripFooting(f) => footings.push(f.slab),
                         ElementKind::EdgeStrip { wall, .. } => footings.push(wall),
-                        ElementKind::SoffitInsulation { floor } => footings.push(floor),
+                        ElementKind::SoffitInsulation { floor }
+                        | ElementKind::RoofTerrace { floor }
+                        | ElementKind::Coping { floor } => footings.push(floor),
                         ElementKind::Floor(f) => {
                             touched.run(f.run);
                             floors.push(f.run);
@@ -4802,6 +5269,7 @@ impl Model {
         let mut out = Vec::new();
         let strips_wanted = self.edge_strip_pairs();
         let soffits_wanted = self.soffit_floors();
+        let terraces_wanted = self.terrace_floors();
         let mut guids = Vec::new();
         let mut numbers: Vec<&str> = Vec::new();
         for (id, e) in self.elements.iter() {
@@ -4938,6 +5406,40 @@ impl Model {
                             e.number
                         ));
                     }
+                    // Regel 43: Attika 0 … 30 cm, Typ der Terrasse passend
+                    if !(0.0..=MAX_UPSTAND).contains(&f.terrace.upstand) {
+                        out.push(format!(
+                            "{}: Attika {} mm über Belag (erlaubt 0…{MAX_UPSTAND} mm)",
+                            e.number, f.terrace.upstand
+                        ));
+                    }
+                    if f.terrace.build_up.is_some_and(|t| {
+                        self.layer_set(t)
+                            .is_none_or(|x| x.category != TypeCategory::RoofTerrace)
+                    }) {
+                        out.push(format!("{}: Typ der Dachterrasse ungültig", e.number));
+                    }
+                    if f.terrace
+                        .coping_mat
+                        .is_some_and(|m| !self.materials.contains(m))
+                    {
+                        out.push(format!("{}: Baustoff des Attikablechs fehlt", e.number));
+                    }
+                }
+                ElementKind::RoofTerrace { floor } | ElementKind::Coping { floor } => {
+                    // Regeln 41/46: genau dann, wenn darüber ein Rücksprung ist
+                    if !matches!(
+                        self.element(floor).map(|f| &f.kind),
+                        Some(ElementKind::Floor(_))
+                    ) {
+                        out.push(format!("{}: Decke fehlt", e.number));
+                    } else if !terraces_wanted.contains(&floor) {
+                        out.push(format!("{}: kein Rücksprung über der Decke", e.number));
+                    } else if matches!(e.kind, ElementKind::RoofTerrace { .. })
+                        && e.layer_set != self.terrace_type_of(floor)
+                    {
+                        out.push(format!("{}: Typ weicht von der Decke ab", e.number));
+                    }
                 }
                 ElementKind::SoffitInsulation { floor } => {
                     // Regel 35: genau dann, wenn die Decke auskragt
@@ -4983,6 +5485,26 @@ impl Model {
             if n != 1 {
                 let f = self.element(*floor).map_or("?", |f| f.number.as_str());
                 out.push(format!("{f}: {n} Untersichtdämmungen statt einer"));
+            }
+        }
+        // Regeln 41/46: auf jeder Decke mit Rücksprung darüber genau eine
+        // Dachterrasse und ein Attikablech
+        for floor in &terraces_wanted {
+            for (kind, what) in [
+                (
+                    ElementKind::RoofTerrace { floor: *floor },
+                    "Dachterrassen statt einer",
+                ),
+                (
+                    ElementKind::Coping { floor: *floor },
+                    "Attikableche statt einem",
+                ),
+            ] {
+                let n = self.elements.iter().filter(|(_, e)| e.kind == kind).count();
+                if n != 1 {
+                    let f = self.element(*floor).map_or("?", |f| f.number.as_str());
+                    out.push(format!("{f}: {n} {what}"));
+                }
             }
         }
         // Regel 22: zu jedem Paar genau ein Streifen
@@ -5306,6 +5828,27 @@ pub const STRIP_PART: u32 = u32::MAX - 3 - MAX_STRIPS;
 const MAX_STRIPS: u32 = 1 << 16;
 /// Teil des Körpers eines Wandzugs: Untersichtdämmung unter seiner Decke (G7 K4).
 pub const SOFFIT_PART: u32 = STRIP_PART - 1;
+/// Teil des Körpers eines Wandzugs: Dachterrasse und Attikablech auf seiner
+/// Decke (D1, D3).
+pub const TERRACE_PART: u32 = STRIP_PART - 2;
+pub const COPING_PART: u32 = STRIP_PART - 3;
+/// Attika über OK Belag (Jörn 08:35, BIM §3): 6 cm, einstellbar 0 bis 30 cm.
+pub const TERRACE_UPSTAND: f64 = 60.0;
+pub const MAX_UPSTAND: f64 = 300.0;
+/// Werkstyp „Dachterrasse 14“ (R4 §1.4) und die eingebauten Baustoffe von
+/// Dachterrasse und Attikablech: feste Guids, angelegt, sobald das erste
+/// Bauteil sie braucht (ältere Dateien bleiben bytegleich).
+pub const TERRACE_TYPE_GUID: Guid = Guid(0xa75aeb4f33ba46c696cd177dded0ab96);
+pub const TERRACE_FINISH_GUID: Guid = Guid(0x79bfecdae5104f34bd95a7116f06ba0c);
+pub const TERRACE_INSULATION_GUID: Guid = Guid(0xd750cacad2e543e3a3e35c5c7f3d8d41);
+pub const COPING_MAT_GUID: Guid = Guid(0x97fe946502194178be60bb9eb54c46fb);
+/// Aufbau des Werkstyps von oben nach unten (Jörn 08:31–08:33).
+const TERRACE_BUILD_UP: [(f64, LayerFunction); 2] = [
+    (60.0, LayerFunction::Finish),
+    (80.0, LayerFunction::Insulation),
+];
+/// Ab dieser lichten Tiefe gilt die Terrasse als begehbar (BIM E1), mm.
+pub const WALKABLE_DEPTH: f64 = 500.0;
 
 /// Warum keine Decke entsteht, als Satz.
 /// Zwei Stände eines Baustoffs unterscheiden sich höchstens in den
@@ -6180,6 +6723,7 @@ mod og_phase2 {
             "{ex} {ox}"
         );
         assert_eq!(ys(&m, og), (8300.0, 8300.0));
+        m.sync_terraces();
         assert!(m.check().is_empty(), "{:?}", m.check());
         // Bleibt gelöst, die übrigen bleiben gekoppelt
         let coupling = |k: usize| match m.element(m.wall_at(og, k).unwrap()).map(|e| &e.kind) {
@@ -6208,6 +6752,7 @@ mod og_phase2 {
             }),
         );
         m.carry_stack(eg);
+        m.sync_terraces();
         assert!(m.check().is_empty(), "{:?}", m.check());
         assert_eq!(ys(&m, og), (1000.0, 1000.0));
         // EG-Südwand 0,6 m nach innen: im OG bliebe zwischen den Wänden
@@ -6269,6 +6814,7 @@ mod og_phase2 {
         );
         m.carry_stack(eg);
         m.sync_soffits();
+        m.sync_terraces();
         assert!(m.check().is_empty(), "{:?}", m.check());
         (m, eg, og)
     }
@@ -6325,6 +6871,7 @@ mod og_phase2 {
         // 80 mm lassen 320 mm stehen und gehen
         assert!(m.set_offset(w, 80.0).is_some());
         m.sync_soffits();
+        m.sync_terraces();
         assert!(m.check().is_empty(), "{:?}", m.check());
         // Das Gummiband am EG klemmt ebenso: EG-Sprung auf 100 mm kürzen
         // ließe über dem gelösten OG 20 mm Stummel
@@ -6353,6 +6900,7 @@ mod og_phase2 {
         let out = m.flush_to(e, w).unwrap();
         assert!(out.contains(&eg) && out.contains(&og));
         m.sync_soffits();
+        m.sync_terraces();
         assert_eq!(ys(&m, eg), (8300.0, 8300.0));
         assert_eq!(ys(&m, og), (8300.0, 8300.0));
         assert_eq!(m.stack_offset(w), Some((0.0, true)));
@@ -6378,6 +6926,7 @@ mod og_phase2 {
         let ost_x = m.run(og).unwrap().points[2].x;
         assert!(m.flush_to(e, w).is_ok());
         m.sync_soffits();
+        m.sync_terraces();
         assert_eq!(ys(&m, eg), (7700.0, 7700.0));
         assert_eq!(ys(&m, og), (7700.0, 7700.0));
         assert_eq!(m.stack_offset(w), Some((0.0, true)));
@@ -6422,6 +6971,7 @@ mod og_phase2 {
         assert!(m.set_linked(w, false));
         assert!(m.set_offset(w, -300.0).is_some());
         m.sync_soffits();
+        m.sync_terraces();
         let before = (
             m.run(eg).unwrap().points.clone(),
             m.run(og).unwrap().points.clone(),
@@ -6469,6 +7019,7 @@ mod og_phase2 {
                 assert!(m.set_offset(w, d).is_some(), "{k} {d}");
             }
             m.sync_soffits();
+            m.sync_terraces();
             assert!(m.check().is_empty(), "{:?}", m.check());
             m.terrace_outlines(eg)
         };
@@ -6507,6 +7058,7 @@ mod og_phase2 {
             assert!(m.set_offset(w, d).is_some());
         }
         m.sync_soffits();
+        m.sync_terraces();
         let t = m.terrace_outlines(eg);
         assert_eq!(t.len(), 1);
         assert!(
@@ -6518,6 +7070,202 @@ mod og_phase2 {
 
     fn m_area(x: &(Model, RunId, RunId)) -> f64 {
         x.0.terrace_outlines(x.1).iter().map(|t| t.area()).sum()
+    }
+
+    fn r4(x: f64) -> f64 {
+        (x * 1e4).round() / 1e4
+    }
+
+    /// Prüfhaus (paket-dachterrasse §6): OG-Nord −1,50 im Schritt gelöst
+    /// und versetzt; je Rücksprung `rueck` (Segment, mm).
+    fn pruefhaus(rueck: &[(usize, f64)]) -> (Model, RunId, RunId) {
+        let (mut m, eg, og) = gebaeude();
+        for &(k, d) in rueck {
+            let w = m.wall_at(og, k).unwrap();
+            m.begin("Wand verschoben");
+            assert!(m.set_linked(w, false));
+            assert!(m.set_offset(w, d).is_some(), "{k} {d}");
+            m.commit();
+        }
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        (m, eg, og)
+    }
+
+    /// D1–D3 gegen die endgültigen Sollwerte (BIM 08:54): DT 13,2192 m²,
+    /// Dämmung 1,0575 m³, Belag 0,7932 m³, AB 13,00 m an der Außenkante,
+    /// Abwicklung 250 mm, Attika-Mehrmenge WDVS 0,3562 m³, EG-Dämmung
+    /// 14,5215 m³; Höhen +2,855 / +2,995 / +3,055.
+    #[test]
+    fn dachterrasse_sollwerte_pruefhaus() {
+        let (m0, eg0, _) = gebaeude();
+        let wdvs0: f64 = run_qto(&m0, eg0).iter().map(|w| w.layers[0].volume).sum();
+        assert_eq!(r4(wdvs0 / 1e9), 14.1654);
+
+        let (m, eg, og) = pruefhaus(&[(1, -1500.0)]);
+        let de = m.floor_of(eg).unwrap();
+        let dt = m.terrace_of(de).expect("DT");
+        let ab = m.coping_of(de).expect("AB");
+        assert_eq!(m.element(dt).unwrap().number, "DT-001");
+        assert_eq!(m.element(ab).unwrap().number, "AB-001");
+        assert!(m.terrace_of(m.floor_of(og).unwrap()).is_none());
+        let t = m
+            .layer_set(m.element(dt).unwrap().layer_set.unwrap())
+            .unwrap();
+        assert_eq!(
+            (t.code.as_str(), t.name.as_str()),
+            ("DT-14", "Dachterrasse 14")
+        );
+        assert_eq!(t.category, TypeCategory::RoofTerrace);
+        let q = crate::qto::terrace_qto(&m, dt).unwrap();
+        assert_eq!(
+            (
+                r4(q.area / 1e6),
+                r4(q.insulation_volume / 1e9),
+                r4(q.finish_volume / 1e9)
+            ),
+            (13.2192, 1.0575, 0.7932)
+        );
+        let c = crate::qto::coping_qto(&m, ab).unwrap();
+        assert!(near(c.length, 13000.0), "{}", c.length);
+        assert_eq!(c.girth, 250.0);
+        assert_eq!(m.props_of(dt).get("begehbar"), Some(&PropValue::Bool(true)));
+        assert_eq!(
+            m.props_of(ab).get("Abwicklung"),
+            Some(&PropValue::Number(250.0))
+        );
+        let f = m.floor(eg).unwrap().unwrap();
+        assert_eq!(f.terrace_band(), Some((2855.0, 2995.0)));
+        assert_eq!(f.attika_band(), Some((2855.0, 3055.0)));
+        let qs = run_qto(&m, eg);
+        let wdvs: f64 = qs.iter().map(|w| w.layers[0].volume).sum();
+        // 14,165368 + 0,35616 = 14,521528 (BIM rundete die Summanden: 14,5216)
+        assert_eq!(r4(wdvs / 1e9), 14.5215);
+        assert_eq!(r4((wdvs - wdvs0) / 1e9), 0.3562);
+        assert_eq!(qs[3], run_qto(&m0, eg0)[3], "Süd ohne Attika");
+        // Körper: Terrasse bis OK Belag, Attika bis OK Attika, Blech darauf
+        let z = |s: &Solid| s.bounds().map(|(lo, hi)| (lo.z.round(), hi.z.round()));
+        assert_eq!(z(&f.terrace_solid()), Some((2855.0, 2995.0)));
+        let wall = m.chain(eg).unwrap().solid();
+        assert_eq!(z(&wall).unwrap().1, 3055.0);
+        let (lo, hi) = f.coping_solid().bounds().unwrap();
+        assert!(lo.z > 2995.0 && lo.z < 3055.0 && hi.z >= 3055.0 && hi.z < 3100.0);
+        // DE-002 folgt dem OG, DE-001 unverändert, keine UD
+        assert_eq!(r4(m.floor(og).unwrap().unwrap().area() / 1e6), 60.4584);
+        assert_eq!(r4(f.area() / 1e6), 75.0384);
+        assert!(m.soffit_floors().is_empty());
+
+        // Datei: nur ergänzt, Rundlauf bytegleich, fehlende Zeile ergänzt
+        let text = crate::szo::write(&m);
+        assert!(text.starts_with("SZO 4\n"));
+        assert_eq!(
+            text.lines().filter(|l| l.starts_with("[terrace]")).count(),
+            1
+        );
+        assert_eq!(
+            text.lines().filter(|l| l.starts_with("[coping]")).count(),
+            1
+        );
+        assert!(text.contains(" cat=roofterrace "), "Projekttyp");
+        let read = |t: &str| crate::szo::read(t, GuidGen::with_seed(3)).unwrap();
+        let back = read(&text);
+        assert!(back.hints.is_empty(), "{:?}", back.hints);
+        assert_eq!(crate::szo::write(&back.model), text);
+        let ohne: String = text
+            .lines()
+            .filter(|l| !l.starts_with("[terrace]") && !l.starts_with("[coping]"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let back = read(&ohne);
+        assert!(!back.hints.is_empty());
+        assert!(back.model.check().is_empty(), "{:?}", back.model.check());
+        let (_, b0, _) = gebaeude();
+        let _ = b0;
+        let plain = crate::szo::write(&m0);
+        assert!(!plain.contains("[terrace]") && !plain.contains("roofterrace"));
+    }
+
+    /// E3: Wechsel auf Vorsprung nimmt DT und AB mit, die UD entsteht;
+    /// zurück entstehen sie mit neuen Nummern. Über Eck, zwei Stücke und
+    /// ringsum hat das Blech 21, 26 und 36 m (A197).
+    #[test]
+    fn dachterrasse_wechsel_und_laengen() {
+        let (mut m, eg, og) = pruefhaus(&[(1, -1500.0)]);
+        let de = m.floor_of(eg).unwrap();
+        let w = m.wall_at(og, 1).unwrap();
+        m.begin("Wand verschoben");
+        assert!(m.set_offset(w, 300.0).is_some());
+        m.commit();
+        assert!(m.terrace_of(de).is_none() && m.coping_of(de).is_none());
+        assert!(m.soffit_of(de).is_some());
+        m.begin("Wand verschoben");
+        assert!(m.set_offset(w, -1500.0).is_some());
+        m.commit();
+        let dt = m.terrace_of(de).unwrap();
+        assert_eq!(m.element(dt).unwrap().number, "DT-002");
+        assert_eq!(
+            m.element(m.coping_of(de).unwrap()).unwrap().number,
+            "AB-002"
+        );
+        assert!(m.check().is_empty(), "{:?}", m.check());
+
+        for (rueck, len, area) in [
+            (vec![(1, -1500.0), (2, -1500.0)], 21000.0, 21.8688),
+            (vec![(1, -1500.0), (3, -1500.0)], 26000.0, 26.4384),
+            (
+                vec![(0, -1500.0), (1, -1500.0), (2, -1500.0), (3, -1500.0)],
+                36000.0,
+                40.0384,
+            ),
+        ] {
+            let (m, eg, _) = pruefhaus(&rueck);
+            let de = m.floor_of(eg).unwrap();
+            let c = crate::qto::coping_qto(&m, m.coping_of(de).unwrap()).unwrap();
+            assert!(near(c.length, len), "{rueck:?}: {}", c.length);
+            let q = crate::qto::terrace_qto(&m, m.terrace_of(de).unwrap()).unwrap();
+            assert_eq!(r4(q.area / 1e6), area, "{rueck:?}");
+            let f = m.floor(eg).unwrap().unwrap();
+            assert!(!f.coping_solid().is_empty());
+            assert!(m.chain(eg).unwrap().solid().bounds().unwrap().1.z > 3054.0);
+        }
+    }
+
+    /// AW-49: Verblender und Kerndämmung wachsen um die Attika, der Kern
+    /// bleibt (A195); monolithisch läuft die Zone des Randdämmstreifens hoch.
+    #[test]
+    fn attika_mehrschalig_und_monolithisch() {
+        for (guid, grows) in [(CAVITY_TYPE_GUID, vec![0, 2]), (MONO_TYPE_GUID, vec![])] {
+            let base = |rueck: f64| {
+                let (mut m, eg, og) = gebaeude();
+                let t = m.type_by_guid(guid).unwrap();
+                m.begin("Wandtyp");
+                assert!(m.set_run_type(eg, t));
+                assert!(m.set_run_type(og, t));
+                m.commit();
+                if rueck != 0.0 {
+                    let w = m.wall_at(og, 1).unwrap();
+                    m.begin("Wand verschoben");
+                    assert!(m.set_linked(w, false));
+                    assert!(m.set_offset(w, rueck).is_some());
+                    m.commit();
+                }
+                assert!(m.check().is_empty(), "{:?}", m.check());
+                (m, eg)
+            };
+            let (a, ea) = base(0.0);
+            let (b, eb) = base(-1500.0);
+            let (qa, qb) = (run_qto(&a, ea), run_qto(&b, eb));
+            let sum = |q: &[WallQto], i: usize| q.iter().map(|w| w.layers[i].volume).sum::<f64>();
+            for i in 0..qa[0].layers.len() {
+                if grows.contains(&i) {
+                    assert!(sum(&qb, i) > sum(&qa, i) + 1.0, "{guid:?} Schicht {i}");
+                } else {
+                    assert!(near(sum(&qb, i), sum(&qa, i)), "{guid:?} Schicht {i}");
+                }
+            }
+            let de = b.floor_of(eb).unwrap();
+            assert!(b.terrace_of(de).is_some());
+            assert!(b.chain(eb).unwrap().solid().bounds().unwrap().1.z > 3054.0);
+        }
     }
 
     #[test]
@@ -6670,6 +7418,7 @@ mod og_phase2 {
         );
         m.carry_stack(eg);
         m.sync_soffits();
+        m.sync_terraces();
         assert!(m.check().is_empty(), "{:?}", m.check());
         let o = run_qto(&m, og);
         // Nordwand: Achse des Verblenders über die ganze Länge (10,00 − 0,115);
@@ -6731,6 +7480,7 @@ mod og_phase2 {
             );
             m.carry_stack(eg);
             m.sync_soffits();
+            m.sync_terraces();
             let o = run_qto(&m, og);
             assert!(
                 near(o[0].facing_support, soll),
@@ -6818,7 +7568,13 @@ mod og_phase2 {
         assert_eq!(f.outline, bf.outline);
         assert!(f.soffit.is_none() && f.soffits.is_empty());
         assert!(m.chain(eg).unwrap().joints.overhang.is_none());
-        assert_eq!(run_qto(&m, eg), run_qto(&bm, beg));
+        // Der Kern bleibt; die Außenschicht wächst nur um die Attika (D2)
+        let (q, bq) = (run_qto(&m, eg), run_qto(&bm, beg));
+        for (a, b) in q.iter().zip(&bq) {
+            assert_eq!(a.layers[1], b.layers[1]);
+        }
+        assert!(q[1].layers[0].volume > bq[1].layers[0].volume);
+        assert_eq!(q[3], bq[3], "Süd ohne Attika");
         // Das OG steht auf der Decke; dort gibt es nichts herabzuziehen
         let o = m.chain(og).unwrap();
         assert!(o.joints.overhang.is_none());
@@ -6932,6 +7688,7 @@ mod og_phase2 {
         assert!(m.move_segment(w, -300.0).is_some());
         assert_eq!(m.stack_offset(w), Some((-300.0, false)));
         assert_eq!(ys(&m, og), (7700.0, 7700.0));
+        m.sync_terraces();
         assert!(m.check().is_empty(), "{:?}", m.check());
         // EG +1,00: gelöstes OG bleibt, Versatz −1300
         assert!(drag(&mut m, eg, 1, 1000.0));
@@ -6949,6 +7706,8 @@ mod og_phase2 {
         assert!(m.set_flush(w));
         assert_eq!(m.stack_offset(w), Some((0.0, true)));
         assert_eq!(m.run(og).unwrap().points, m.run(eg).unwrap().points);
+        m.sync_soffits();
+        m.sync_terraces();
         assert!(m.check().is_empty(), "{:?}", m.check());
     }
 
