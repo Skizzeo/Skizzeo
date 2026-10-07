@@ -219,6 +219,7 @@ impl FileMenu {
                 Command::MeasureFrameTime,
                 true,
             ),
+            separator(),
             item("Schließen", "Strg+W", Command::Close, true),
             item("Beenden", "Alt+F4", Command::Quit, true),
         ]

@@ -3585,6 +3585,7 @@ fn a60_dateimenue_eintraege_und_ausgrauen() {
         ("—", "", false),
         ("Hilfe", "F1", true),
         ("Bildzeit messen (10 s)", "", true),
+        ("—", "", false),
         ("Schließen", "Strg+W", true),
         ("Beenden", "Alt+F4", true),
     ]
@@ -4124,10 +4125,11 @@ fn a66_einstellungen_aufrufen() {
     assert_eq!(z[i + 2].0, "Baustoffe …");
     assert_eq!(z[i + 3].0, "—");
     // Paket 9 (Koordinator 20:04): „Hilfe“ und „Bildzeit messen (10 s)“
-    // direkt vor „Schließen“
+    // vor „Schließen“, als eigene Gruppe (Darstellung p9 §3.3, (au))
     assert_eq!(z[i + 4].0, "Hilfe");
     assert_eq!(z[i + 5].0, "Bildzeit messen (10 s)");
-    assert_eq!(z[i + 6].0, "Schließen");
+    assert_eq!(z[i + 6].0, "—", "eigene Gruppe");
+    assert_eq!(z[i + 7].0, "Schließen");
     let komma = Key::Other(0xBC);
     let mut k = Shortcuts::default();
     assert_eq!(
