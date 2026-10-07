@@ -6,7 +6,7 @@ use sk_render::View;
 
 const PITCH_LIMIT: f64 = 89.5 * std::f64::consts::PI / 180.0;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Camera {
     pub eye: Vec3,
     /// Blickrichtung waagerecht, Bogenmaß gegen den Uhrzeigersinn ab +X.

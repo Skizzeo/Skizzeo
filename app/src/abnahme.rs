@@ -14,7 +14,7 @@ use crate::selection::{self, Selection};
 use crate::ui::{Id, Panel, Ui, ViewKind};
 use crate::wall_edit::WallEdit;
 use crate::wall_tool::WallTool;
-use crate::{fit_parallel, fit_parallel_in, fit_perspective};
+use crate::{fit_parallel, fit_parallel_in, fit_perspective, plan_camera};
 use sk_math::{vec3, Vec3};
 use sk_model::{edge_kind, FillKind, Model, RefSide, RunId, WallChain};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
@@ -10726,6 +10726,40 @@ mod loeschen_oberflaeche {
                 "{bw}: neben dem Paneel"
             );
             ui.set_props(None);
+        }
+    }
+
+    /// Auch im schmalen Hauptfenster (Mengenfenster angedockt) liegt der
+    /// eingepasste Grundriss zwischen „Werkzeuge“ und dem Bogen.
+    #[test]
+    fn grundriss_passt_auch_angedockt() {
+        let th = Theme::dark();
+        let w = crate::wheel::Wheel::new(&th, false);
+        let mut s = Scene::with_model(Model::with_seed(3));
+        haus_b11(&mut s);
+        let (lo, hi) = s.bounds().unwrap();
+        let mut ui = Ui::new(1.0, &th);
+        for (bw, bh, scale) in [
+            (920u32, 800u32, 1.0f32),
+            (1000, 700, 1.0),
+            (1380, 1000, 1.5),
+        ] {
+            ui.fit(scale, bw, bh);
+            let top = ui.top;
+            let c = plan_camera(&ui, &w, Some((lo, hi)), bw, bh, top);
+            let (vw, vh) = (bw as f64, (bh - top) as f64);
+            let tools = ui.rect(Panel::Tools, bw, top);
+            let x0 = (tools.x + tools.w) as f64;
+            let x1 = w.left_beside_props(&ui, bw, bh) as f64;
+            for i in 0..8 {
+                let p = vec3(
+                    if i & 1 == 0 { lo.x } else { hi.x },
+                    if i & 2 == 0 { lo.y } else { hi.y },
+                    if i & 4 == 0 { lo.z } else { hi.z },
+                );
+                let (x, _) = c.project(p, vw, vh).unwrap();
+                assert!(x > x0 && x < x1, "{bw}: Ecke bei {x}, frei {x0}…{x1}");
+            }
         }
     }
 

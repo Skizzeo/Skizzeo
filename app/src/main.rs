@@ -220,6 +220,31 @@ fn fit_parallel_in(
     Camera::parallel(center + r * shift, yaw, pitch, half)
 }
 
+/// Grundriss eingepasst zwischen „Werkzeuge“ und dem Platz, den der
+/// Geschossbogen neben „Eigenschaften“ braucht (e06cada), für ein
+/// Hauptfenster `w` × `h` mit der Titelleiste `top` (Pixel): Der Bogen steht
+/// nie im Plan, auch nach Andocken des Mengenfensters oder Größeziehen.
+pub(crate) fn plan_camera(
+    ui: &Ui,
+    wheel: &wheel::Wheel,
+    bounds: Option<(Vec3, Vec3)>,
+    w: u32,
+    h: u32,
+    top: u32,
+) -> Camera {
+    let (vw, vh) = (w as f64, h.saturating_sub(top) as f64);
+    let tools = ui.rect(Panel::Tools, w, top);
+    let s = ui.dpi() as f64;
+    let x0 = (tools.x + tools.w) as f64 + 16.0 * s;
+    let x1 = wheel.left_beside_props(ui, w, h) as f64 - 16.0 * s;
+    if x1 - x0 >= vw * 0.3 {
+        fit_parallel_in(ViewKind::Plan, bounds, x1 - x0, vw, vh, (x0 + x1) * 0.5)
+    } else {
+        let free_w = (vw - 2.0 * (tools.x + tools.w) as f64).max(vw * 0.3);
+        fit_parallel(ViewKind::Plan, bounds, free_w, vh)
+    }
+}
+
 /// Geländelinie in Schnitt und Ansichten (kräftig, über das Gebäude hinaus).
 fn ground_line(
     v: ViewKind,
@@ -375,6 +400,9 @@ struct App {
     title: TitleBar,
     ui: Ui,
     cam: Camera,
+    /// Zuletzt eingepasste Kamera (bei neuer Fenstergröße neu einpassen,
+    /// solange sie unverändert ist).
+    fitted: Option<Camera>,
     /// Letzte 3D-Kamera, um aus den Parallelansichten zurückzukehren.
     cam3d: Camera,
     /// Die gemerkte 3D-Kamera stammt aus einer Zeit ohne Modell.
@@ -768,7 +796,7 @@ impl App {
         }
         let same_mesh = geometry(v) == geometry(self.ui.view);
         self.ui.view = v;
-        self.cam = self.camera_for(v);
+        self.fit_camera();
         if matches!(v, ViewKind::Plan | ViewKind::Section) {
             self.sect.ensure(&self.scene);
         }
@@ -785,6 +813,23 @@ impl App {
         self.refresh_cursor();
     }
 
+    /// Kamera der aktiven Ansicht neu setzen und merken, dass sie eingepasst ist.
+    fn fit_camera(&mut self) {
+        self.cam = self.camera_for(self.ui.view);
+        self.fitted = Some(self.cam.clone());
+    }
+
+    /// Neue Fenstergröße (Größeziehen, Mengenfenster an- oder abgedockt):
+    /// Steht der Grundriss noch so, wie er eingepasst wurde, wird er für die
+    /// neue Größe neu eingepasst. Hat der Benutzer verschoben oder gezoomt,
+    /// bleibt seine Ansicht.
+    fn refit_plan(&mut self) {
+        if self.ui.view == ViewKind::Plan && self.fitted.as_ref() == Some(&self.cam) {
+            self.fit_camera();
+            self.redraw = true;
+        }
+    }
+
     /// Kamera beim Wechsel in die Ansicht `v`.
     fn camera_for(&self, v: ViewKind) -> Camera {
         let (vw, vh, _) = self.view_size();
@@ -796,19 +841,14 @@ impl App {
                 Some((lo, hi)) if self.cam3d_empty => fit_perspective(lo, hi),
                 _ => self.cam3d.clone(),
             },
-            // Grundriss: zwischen „Werkzeuge“ und dem Platz des
-            // Geschossbogens neben „Eigenschaften“, damit der Bogen nie im
-            // Plan steht
-            ViewKind::Plan => {
-                let s = self.ui.dpi() as f64;
-                let x0 = (tools.x + tools.w) as f64 + 16.0 * s;
-                let x1 = self.wheel.left_beside_props(&self.ui, self.w, self.h) as f64 - 16.0 * s;
-                if x1 - x0 >= vw * 0.3 {
-                    fit_parallel_in(v, self.scene.bounds(), x1 - x0, vw, vh, (x0 + x1) * 0.5)
-                } else {
-                    fit_parallel(v, self.scene.bounds(), free_w, vh)
-                }
-            }
+            ViewKind::Plan => plan_camera(
+                &self.ui,
+                &self.wheel,
+                self.scene.bounds(),
+                self.w,
+                self.h,
+                self.top(),
+            ),
             _ => fit_parallel(v, self.scene.bounds(), free_w, vh),
         }
     }
@@ -834,7 +874,7 @@ impl App {
         self.looks_key = None;
         self.cam3d = start_camera();
         self.cam3d_empty = true;
-        self.cam = self.camera_for(self.ui.view);
+        self.fit_camera();
         if matches!(self.ui.view, ViewKind::Plan | ViewKind::Section) {
             self.sect.ensure(&self.scene);
         }
@@ -2240,12 +2280,14 @@ impl App {
                 } else {
                     self.layout_dirty = true;
                 }
+                self.refit_plan();
                 self.redraw = true;
             }
             Event::ScaleChanged(s) => {
                 self.title.scale = s;
                 self.ui.top = self.title.height();
                 self.ui.fit(s, self.w, self.h);
+                self.refit_plan();
                 self.overlay_dirty = true;
                 self.redraw = true;
             }
@@ -3755,6 +3797,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         cam3d: cam.clone(),
         cam3d_empty: true,
         cam,
+        fitted: None,
         nav: Navigation::default(),
         tool,
         edit: WallEdit::default(),
