@@ -166,7 +166,7 @@ pub const F4_ROLES: [F4Role; 11] = [
     }),
 ];
 
-pub const SIZE_ROLES: [SizeRole; 69] = [
+pub const SIZE_ROLES: [SizeRole; 70] = [
     ("corner_radius", "Eckenradius", |t| {
         &mut t.size.corner_radius
     }),
@@ -295,6 +295,9 @@ pub const SIZE_ROLES: [SizeRole; 69] = [
     }),
     ("link_line", "Fußlinie des Partners", |t| {
         &mut t.size.link_line
+    }),
+    ("link_dash", "Fußlinie: Strichlänge", |t| {
+        &mut t.size.link_dash
     }),
     ("catalog_w", "Bauteilkatalog: Breite", |t| {
         &mut t.size.catalog_w

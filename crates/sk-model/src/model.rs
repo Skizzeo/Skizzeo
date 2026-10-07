@@ -1881,11 +1881,41 @@ impl Model {
         for up in self.runs_above(id) {
             let (offsets, _) = self.stack_offsets(up, &lower, &lsegs);
             match lower.with_segment_offsets(&offsets) {
-                Some(c) if room_inside(&c) && self.stack_fits(up, &c.points) => {}
+                Some(c)
+                    if room_inside(&c)
+                        && self.lengths_fit(up, &c, &lower)
+                        && self.stack_fits(up, &c.points) => {}
                 _ => return false,
             }
         }
         true
+    }
+
+    /// Regel 30: Ist jedes Segment von `c` (neue Lage des Zuges `up`)
+    /// mindestens min(Wanddicke, Länge des Partners in `lower`) lang? Sonst
+    /// bliebe nach dem Versetzen ein Wandstummel, den die Prüfung meldet.
+    /// Stummel, die schon der Zug darunter hat, bleiben erlaubt.
+    fn lengths_fit(&self, up: RunId, c: &WallChain, lower: &WallChain) -> bool {
+        let Some(r) = self.run(up) else {
+            return true;
+        };
+        let (n, nl) = (c.points.len(), lower.points.len());
+        if n != r.points.len() || nl != n {
+            return true;
+        }
+        r.segments.iter().enumerate().all(|(k, w)| {
+            if !c.closed && k + 1 >= n {
+                return true;
+            }
+            let len = (c.points[(k + 1) % n] - c.points[k]).length();
+            let partner = (lower.points[(k + 1) % nl] - lower.points[k]).length();
+            let dicke = self
+                .element(*w)
+                .and_then(|e| e.layer_set)
+                .and_then(|t| self.layer_sets.get(t))
+                .map_or(0.0, |t| t.thickness());
+            len < 1.0 || len + 0.5 >= dicke.min(partner)
+        })
     }
 
     /// Stapelbezug einer gestapelten Wand: (Versatz in mm, + außen;
@@ -1972,7 +2002,7 @@ impl Model {
             .collect();
         offsets[seg] = offset;
         let c = lower.with_segment_offsets(&offsets)?;
-        if !room_inside(&c) {
+        if !room_inside(&c) || !self.lengths_fit(run, &c, &lower) {
             return None;
         }
         if (old - offset).abs() < 1e-9 {
@@ -5826,6 +5856,39 @@ mod og_phase2 {
         assert!(drag(&mut m, eg, 1, 280.0));
         assert!(m.stack_offset(w).is_some_and(|(d, l)| near(d, 20.0) && !l));
         assert!(m.chain(eg).unwrap().joints.overhang.is_some());
+    }
+
+    #[test]
+    fn versatz_laesst_keinen_stummel_stehen() {
+        // Routine 07.10.: EG-Nordwand mit 400-mm-Sprung; die OG-Wand davor
+        // 300 nach außen ließe vom Sprung 100 mm übrig (Regel 30: mindestens
+        // min(Wanddicke, Partner) = 315 mm). Der Versatz wird abgelehnt.
+        let mut m = Model::with_seed(72);
+        let b = m.add_building(2);
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(5000.0, 8000.0, 0.0),
+            vec3(5000.0, 8400.0, 0.0),
+            vec3(10000.0, 8400.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        let eg = m.build_from_polygon(b, &pts).unwrap();
+        let og = m.runs_above(eg)[0];
+        let w = m.wall_at(og, 1).unwrap();
+        assert!(m.set_linked(w, false));
+        assert!(m.set_offset(w, 300.0).is_none());
+        assert_eq!(m.stack_offset(w), Some((0.0, false)));
+        // 80 mm lassen 320 mm stehen und gehen
+        assert!(m.set_offset(w, 80.0).is_some());
+        m.sync_soffits();
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        // Das Gummiband am EG klemmt ebenso: EG-Sprung auf 100 mm kürzen
+        // ließe über dem gelösten OG 20 mm Stummel
+        let c = m.chain(eg).unwrap();
+        let c = c.with_segment_moved(3, c.outward_sign() * -300.0).unwrap();
+        assert!(m.set_run_points(eg, &c.points).is_none());
+        assert!(m.check().is_empty(), "{:?}", m.check());
     }
 
     #[test]

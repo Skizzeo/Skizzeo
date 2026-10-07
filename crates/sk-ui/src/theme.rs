@@ -256,11 +256,13 @@ pub struct Sizes {
     /// (Paket „Löschen“), ms.
     pub fade_ms: f32,
     /// Kettensymbol (OG Phase 2): Glied breit und hoch, Strichstärke; Breite
-    /// der Fußlinie des Partners darunter (dip).
+    /// der Fußlinie des Partners darunter und des Ziehgeists, Strichlänge
+    /// beider gestrichelt (dip).
     pub link_icon_w: f32,
     pub link_icon_h: f32,
     pub link_icon_stroke: f32,
     pub link_line: f32,
+    pub link_dash: f32,
     /// Bauteilkatalog (K3): Dialog, Liste links, Kachelzeile, Schnittbild-Kachel.
     pub catalog_w: f32,
     pub catalog_h: f32,
@@ -452,6 +454,7 @@ impl Theme {
                 link_icon_h: 5.0,
                 link_icon_stroke: 1.5,
                 link_line: 1.5,
+                link_dash: 6.0,
                 catalog_w: 1080.0,
                 catalog_h: 720.0,
                 catalog_list_w: 270.0,

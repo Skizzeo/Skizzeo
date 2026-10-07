@@ -12494,6 +12494,132 @@ mod og_phase2 {
         assert_eq!(ud(&s, eg), Some(("UD-001".to_string(), 0.3888, 0.0467)));
         pruefung(&s);
     }
+
+    // Abnahmetest A168: Ein gelöster OG-Versatz lässt keinen Wandstummel unter
+    // Regel 30 stehen (Robustheitsprüfung Geometriekern 07.10.,
+    // geometrie/g9-regel30-kein-stummel.patch). Spezifikation:
+    // test/abnahme-og-phase2.md.
+    //
+    // Einbau: ans Ende von `mod og_phase2` in app/src/abnahme.rs (nutzt dessen
+    // Adapter und Hilfen: kette, versetzen, versatz, punkte, pruefung).
+    //
+    // Keine neuen Adapter. Das Prüfhaus mit Sprung in der Nordwand entsteht direkt
+    // im Modell (`add_building`, `build_from_polygon`), damit auch Sprünge von
+    // 30 mm möglich sind, die das Zeichenraster nicht trifft.
+
+    /// Haus 10 m breit, Nordwand mit Sprung: links (x 0…5) bei y = 8000, rechts
+    /// (x 5…10) bei y = 8000 + `sprung`. Liefert Szene, EG- und OG-Zug.
+    fn haus_mit_sprung(seed: u64, sprung: f64) -> (Scene, RunId, RunId) {
+        let mut s = Scene::with_model(Model::with_seed(seed));
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(5000.0, 8000.0, 0.0),
+            vec3(5000.0, 8000.0 + sprung, 0.0),
+            vec3(10000.0, 8000.0 + sprung, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        let mut eg = None;
+        assert!(s.edit_model("Gebäude erstellt", |m| {
+            let b = m.add_building(2);
+            eg = m.build_from_polygon(b, &pts);
+            eg.is_some()
+        }));
+        let eg = eg.unwrap();
+        let og = s.model().runs_above(eg)[0];
+        (s, eg, og)
+    }
+
+    /// Wand des Zugs `run`, deren Segment von `a` nach `b` (oder umgekehrt) läuft.
+    fn wand_zwischen(s: &Scene, run: RunId, a: Vec3, b: Vec3) -> ElementId {
+        let r = s.model().run(run).unwrap();
+        let n = r.points.len();
+        let nah = |p: Vec3, q: Vec3| (p - q).length() < 1.0;
+        (0..n)
+            .find(|&k| {
+                let (p, q) = (r.points[k], r.points[(k + 1) % n]);
+                (nah(p, a) && nah(q, b)) || (nah(p, b) && nah(q, a))
+            })
+            .map(|k| r.segments[k])
+            .expect("Wand zwischen den Punkten")
+    }
+
+    /// Länge des Sprungs (Segment bei x = 5000) im OG-Zug.
+    fn sprung_og(s: &Scene, og: RunId) -> f64 {
+        let p = punkte(s, og);
+        let n = p.len();
+        (0..n)
+            .map(|k| (p[k], p[(k + 1) % n]))
+            .filter(|(a, b)| (a.x - 5000.0).abs() < 1.0 && (b.x - 5000.0).abs() < 1.0)
+            .map(|(a, b)| (a - b).length())
+            .next()
+            .expect("Sprung im OG")
+    }
+
+    /// A168 (Regel 30, Geometriekern g9): Die OG-Wand vor dem 400-mm-Sprung wird
+    /// gelöst. +300 ließe vom Sprung 100 mm stehen (Mindestmaß min(Wanddicke
+    /// 315, Partner 400) = 315): abgelehnt, kein Schritt, Versatz bleibt 0, die
+    /// Prüfung bleibt leer. +90 (Rest 310) ebenso; +80 (Rest 320) geht. Bei
+    /// Sprüngen von 30 und 50 mm wird schon +20 abgelehnt (Rest 10 bzw. 30 unter
+    /// dem Partner). Das Gummiband am EG klemmt ebenso: OG links bei +80 gelöst,
+    /// den EG-Sprung auf 100 mm kürzen ließe im OG 20 mm stehen, abgelehnt, das
+    /// EG bleibt, wie es war.
+    #[test]
+    fn a168_versatz_laesst_keinen_stummel_stehen() {
+        let (mut s, eg, og) = haus_mit_sprung(168, 400.0);
+        let links = wand_zwischen(&s, og, vec3(0.0, 8000.0, 0.0), vec3(5000.0, 8000.0, 0.0));
+        assert!(kette(&mut s, links, false));
+        pruefung(&s);
+        let schritt = s.undo_label();
+        for d in [300.0, 90.0] {
+            assert!(!versetzen(&mut s, links, d), "+{d}: Stummel abgelehnt");
+            assert_eq!(versatz(&s, links), Some((0.0, false)), "+{d}: bleibt 0");
+            assert_eq!(sprung_og(&s, og), 400.0, "+{d}: Sprung unverändert");
+            assert_eq!(s.undo_label(), schritt, "+{d}: kein Schritt");
+            pruefung(&s);
+        }
+        assert!(versetzen(&mut s, links, 80.0), "+80: Rest 320 mm");
+        assert_eq!(versatz(&s, links), Some((80.0, false)));
+        assert_eq!(sprung_og(&s, og), 320.0);
+        pruefung(&s);
+
+        // Gummiband am EG: rechten Teil der Nordwand 300 nach innen
+        let vorher = punkte(&s, eg);
+        let p: Vec<Vec3> = vorher
+            .iter()
+            .map(|p| {
+                if (p.y - 8400.0).abs() < 1.0 {
+                    vec3(p.x, p.y - 300.0, p.z)
+                } else {
+                    *p
+                }
+            })
+            .collect();
+        let schritt = s.undo_label();
+        assert!(
+            !s.edit_model("Wand verschoben", |m| m.set_run_points(eg, &p).is_some()),
+            "EG klemmt: im OG blieben 20 mm"
+        );
+        assert_eq!(punkte(&s, eg), vorher, "EG unverändert");
+        assert_eq!(versatz(&s, links), Some((80.0, false)));
+        assert_eq!(s.undo_label(), schritt, "kein Schritt");
+        pruefung(&s);
+
+        // Kleine Sprünge: schon +20 ist zu viel
+        for (seed, sprung) in [(1680, 30.0), (1681, 50.0)] {
+            let (mut s, _, og) = haus_mit_sprung(seed, sprung);
+            pruefung(&s);
+            let links = wand_zwischen(&s, og, vec3(0.0, 8000.0, 0.0), vec3(5000.0, 8000.0, 0.0));
+            assert!(kette(&mut s, links, false));
+            assert!(
+                !versetzen(&mut s, links, 20.0),
+                "Sprung {sprung}: +20 abgelehnt"
+            );
+            assert_eq!(versatz(&s, links), Some((0.0, false)));
+            assert_eq!(sprung_og(&s, og), sprung);
+            pruefung(&s);
+        }
+    }
 }
 
 mod sichern_fehlschlag {

@@ -509,7 +509,8 @@ impl WallEdit {
             if let Some(&(a, b)) = d.original.outer_foot().get(d.seg) {
                 // Auf Höhe des Wandfußes wie das Band (OG-Wände)
                 let lift = vec3(0.0, 0.0, d.original.base);
-                out.push(line(a + lift, b + lift, col.drag_ghost, 1.5, 6.0));
+                let (w, dash) = (theme.size.link_line, theme.size.link_dash);
+                out.push(line(a + lift, b + lift, col.drag_ghost, w, dash));
             }
             let m = scene.model();
             let partner = d
@@ -523,8 +524,8 @@ impl WallEdit {
                     // 3D: durchgehend und über allem (wie bei gewählter Wand)
                     out.push(partner_line(up(a), up(b), scale, theme));
                 } else {
-                    let w = theme.size.link_line;
-                    out.push(line(up(a), up(b), theme.ui.link_on.to_f32(), w, 6.0));
+                    let (w, dash) = (theme.size.link_line, theme.size.link_dash);
+                    out.push(line(up(a), up(b), theme.ui.link_on.to_f32(), w, dash));
                 }
             }
         }
