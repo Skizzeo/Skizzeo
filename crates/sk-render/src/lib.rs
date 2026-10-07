@@ -585,9 +585,16 @@ flat in vec4 v_p1;
 flat in vec2 v_len_w;
 out vec4 o_color;
 uniform float u_alpha;
+// Blasse Kanten im Zeichenmodus: mit dem Papier (rgb) vorgemischt und
+// deckend (a = 1), damit sich deckungsgleiche Kanten nicht stapeln
+uniform vec4 u_premix;
 void main() {
     if (v_p0.x + v_p0.y > 0.0 && !dash_ink(v_dist, v_len_w.x, v_p0, v_p1, v_len_w.y)) discard;
-    o_color = vec4(v_color, u_alpha);
+    if (u_premix.a > 0.5) {
+        o_color = vec4(mix(u_premix.rgb, v_color, u_alpha), 1.0);
+    } else {
+        o_color = vec4(v_color, u_alpha);
+    }
 }
 "#;
 
@@ -1254,6 +1261,7 @@ impl Renderer {
             gl.glUniform4fv(loc(gl, p, c"u_edge_dash"), 2 * n, dash.as_ptr());
             gl.glUniform1f(loc(gl, p, c"u_near"), view.near);
             gl.glUniform1f(loc(gl, p, c"u_alpha"), 1.0);
+            gl.glUniform4f(loc(gl, p, c"u_premix"), 0.0, 0.0, 0.0, 0.0);
             for (_, m) in self
                 .meshes
                 .iter()
@@ -1290,12 +1298,33 @@ impl Renderer {
                     let p = self.edges.id;
                     gl.glUseProgram(p);
                     gl.glUniform1f(loc(gl, p, c"u_alpha"), alpha);
+                    // Zeichenmodus: vorgemischt und deckend (Prüfung p3-4, w)
+                    if let Some(c) = view.paper {
+                        gl.glUniform4f(loc(gl, p, c"u_premix"), c[0], c[1], c[2], 1.0);
+                        gl.glDisable(BLEND);
+                    }
                     gl.glBindVertexArray(m.edges.vao);
                     gl.glDrawArraysInstanced(TRIANGLES, 0, 6, m.edges.count);
                     gl.glUniform1f(loc(gl, p, c"u_alpha"), 1.0);
+                    gl.glUniform4f(loc(gl, p, c"u_premix"), 0.0, 0.0, 0.0, 0.0);
                 }
                 gl.glDisable(BLEND);
                 gl.glDepthMask(TRUE);
+                // Tiefe wieder nur vom Deckenden: Hilfslinien, Auswahl und
+                // Fang hinter Blassem bleiben sichtbar (Review 3h, Hinweis)
+                gl.glClear(DEPTH_BUFFER_BIT);
+                let p = self.faces.id;
+                gl.glUseProgram(p);
+                gl.glEnable(POLYGON_OFFSET_FILL);
+                gl.glPolygonOffset(1.0, 1.0);
+                gl.glDepthFunc(LESS);
+                gl.glColorMask(FALSE, FALSE, FALSE, FALSE);
+                for (_, m) in self.meshes.iter().enumerate().filter(|(i, _)| opaque(i)) {
+                    gl.glBindVertexArray(m.faces.vao);
+                    gl.glDrawArrays(TRIANGLES, 0, m.faces.count);
+                }
+                gl.glColorMask(TRUE, TRUE, TRUE, TRUE);
+                gl.glDisable(POLYGON_OFFSET_FILL);
             }
 
             // Boden durchscheinend über allem, was unter z = 0 liegt; über dem

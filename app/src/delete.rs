@@ -120,6 +120,60 @@ pub fn hint(m: &Model, d: &Deleted) -> Vec<String> {
     vec![removed_line(d.removed.len()), rest_sentence(m, &d.refused)]
 }
 
+/// Handlung, die ein gesperrtes Bauteil ablehnt (Sperrkarte).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Act {
+    Drag,
+    Flush,
+    Type,
+    Field,
+}
+
+/// Zweite Zeile der Sperrkarte: warum `blocked` mitbetroffen ist, wenn an
+/// `acted` gehandelt wurde. `None`, wenn es dasselbe Bauteil ist.
+fn locked_why(m: &Model, blocked: ElementId, acted: ElementId, act: Act) -> Option<String> {
+    if blocked == acted {
+        return None;
+    }
+    let (b, a) = (m.element(blocked)?, m.element(acted)?);
+    let what = match act {
+        Act::Drag => "Das Ziehen",
+        Act::Flush => "Das bündige Setzen",
+        Act::Type => "Der Typwechsel",
+        Act::Field => "Die Änderung",
+    };
+    let verb = match act {
+        Act::Drag | Act::Flush => "mitbewegen",
+        Act::Type | Act::Field => "mitändern",
+    };
+    let wall = |c| matches!(c, Category::ExteriorWall | Category::InteriorWall);
+    if wall(b.category) && wall(a.category) && b.storey != a.storey {
+        let st = m.storey(b.storey).map_or("", |s| s.short.as_str());
+        return Some(format!("{what} würde die gekoppelte {st}-Wand {verb}."));
+    }
+    Some(format!("{what} würde auch {} {verb}.", b.number))
+}
+
+/// Zeilen der Sperrkarte: „AW-005 ist gesperrt.“ und, wenn an einem anderen
+/// Bauteil gehandelt wurde, warum es mitbetroffen ist.
+pub fn locked_card(m: &Model, blocked: ElementId, acted: Option<(ElementId, Act)>) -> Vec<String> {
+    let n = m
+        .element(blocked)
+        .map_or("Das Bauteil", |e| e.number.as_str());
+    let mut lines = vec![format!("{n} ist gesperrt.")];
+    if let Some((a, act)) = acted {
+        lines.extend(locked_why(m, blocked, a, act));
+    }
+    lines
+}
+
+/// Sperrkarte, wenn das Ziehen von `grabbed` an der Sperre von `blocked`
+/// scheitert (A267).
+#[cfg(test)]
+pub fn locked_lines(m: &Model, blocked: ElementId, grabbed: ElementId) -> Vec<String> {
+    locked_card(m, blocked, Some((grabbed, Act::Drag)))
+}
+
 /// Zeile 1 nach dem Löschen: allgemein „Wand“, wie in soll-loeschen-4
 /// abgenommen.
 pub fn removed_line(n: usize) -> String {

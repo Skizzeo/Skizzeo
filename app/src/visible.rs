@@ -63,13 +63,74 @@ pub fn split(s: &Solid, class: impl Fn(u32, u8) -> Class) -> [Solid; 2] {
             out[k].triangles.push(*t);
         }
     }
-    let tris = SegIndex::of_triangles(&s.triangles);
     let kinds = Kinds::of(&s.edges);
+    // Dreiecke außerhalb der Klasse deckend bzw. blass (meist wenige): nur wo
+    // eins davon anliegt, ändert sich eine Kante (Review 3h)
+    let others = [Class::Solid, Class::Ghost].map(|cls| {
+        if !tc.contains(&cls) && !ec.contains(&cls) {
+            return SegIndex::default();
+        }
+        SegIndex::build(
+            s.triangles
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| tc[*i] != cls)
+                .flat_map(|(i, t)| {
+                    (0..3).map(move |m| ((i * 3 + m) as u32, t.p[m], t.p[(m + 1) % 3]))
+                }),
+        )
+    });
+    // Erst die Strecken an einer Grenze sammeln (Fugen und Dreiecksseiten),
+    // dann die volle Nachbarschaft nur in ihrem Bereich aufbauen
+    let mut region: Option<(Vec3, Vec3)> = None;
+    let mut grow = |a: Vec3, b: Vec3| region = Some(union(region, (lo(a, b), hi(a, b))));
+    let fine: Vec<usize> = (0..s.edges.len())
+        .filter(|&i| {
+            let e = &s.edges[i];
+            let hit = e.kind == edge_kind::FINE
+                && ec[i]
+                    .slot()
+                    .is_some_and(|k| !others[k].adjacent(&s.triangles, e.a, e.b, None).is_empty());
+            if hit {
+                grow(e.a, e.b);
+            }
+            hit
+        })
+        .collect();
+    let mut sides: [Vec<(usize, usize)>; 2] = [Vec::new(), Vec::new()];
+    for (i, t) in s.triangles.iter().enumerate() {
+        let Some(k) = tc[i].slot() else { continue };
+        for m in 0..3 {
+            let (a, b) = (t.p[m], t.p[(m + 1) % 3]);
+            if !others[k].adjacent(&s.triangles, a, b, Some(i)).is_empty() {
+                grow(a, b);
+                sides[k].push((i, m));
+            }
+        }
+    }
+    let Some(region) = region else {
+        // keine Grenze: Kanten nur verteilen
+        for (e, c) in s.edges.iter().zip(&ec) {
+            if let Some(k) = c.slot() {
+                out[k].edges.push(*e);
+            }
+        }
+        return out;
+    };
+    let inside = |a: Vec3, b: Vec3| overlaps((lo(a, b), hi(a, b)), region);
+    let tris = SegIndex::build(
+        s.triangles
+            .iter()
+            .enumerate()
+            .flat_map(|(i, t)| (0..3).map(move |m| ((i * 3 + m) as u32, t.p[m], t.p[(m + 1) % 3])))
+            .filter(|(_, a, b)| inside(*a, *b)),
+    );
     // Vorhandene Kanten: eine Fuge ohne Nachbarn derselben Klasse wird Kontur
-    for (e, c) in s.edges.iter().zip(&ec) {
+    let mut fine = fine.into_iter().peekable();
+    for (i, (e, c)) in s.edges.iter().zip(&ec).enumerate() {
         let Some(k) = c.slot() else { continue };
         let mut e = *e;
-        if e.kind == edge_kind::FINE {
+        if fine.next_if_eq(&i).is_some() {
             let adj = tris.adjacent(&s.triangles, e.a, e.b, None);
             let own: Vec<usize> = adj.into_iter().filter(|&j| tc[j] == *c).collect();
             if !two_sided(&s.triangles, &own, e.a, e.b) {
@@ -81,31 +142,31 @@ pub fn split(s: &Solid, class: impl Fn(u32, u8) -> Class) -> [Solid; 2] {
         out[k].edges.push(e);
     }
     // Neue Grenzkanten, wo ein Nachbar in eine andere Klasse fiel
-    for (k, cls) in [Class::Solid, Class::Ghost].into_iter().enumerate() {
-        let kept = SegIndex::of_edges(&out[k].edges);
+    for (k, sides) in sides.iter().enumerate() {
+        let kept = SegIndex::build(
+            out[k]
+                .edges
+                .iter()
+                .enumerate()
+                .map(|(i, e)| (i as u32, e.a, e.b))
+                .filter(|(_, a, b)| inside(*a, *b)),
+        );
         let mut new_edges = Vec::new();
-        for (i, t) in s.triangles.iter().enumerate() {
-            if tc[i] != cls {
+        for &(i, m) in sides {
+            let t = &s.triangles[i];
+            let (a, b) = (t.p[m], t.p[(m + 1) % 3]);
+            let adj = tris.adjacent(&s.triangles, a, b, Some(i));
+            let own: Vec<usize> = adj.iter().copied().filter(|&j| tc[j] == tc[i]).collect();
+            if continues(&s.triangles, t, &own, a, b) || kept.covers(&out[k].edges, a, b) {
                 continue;
             }
-            for m in 0..3 {
-                let (a, b) = (t.p[m], t.p[(m + 1) % 3]);
-                let adj = tris.adjacent(&s.triangles, a, b, Some(i));
-                if !adj.iter().any(|&j| tc[j] != cls) {
-                    continue;
-                }
-                let own: Vec<usize> = adj.iter().copied().filter(|&j| tc[j] == cls).collect();
-                if continues(&s.triangles, t, &own, a, b) || kept.covers(&out[k].edges, a, b) {
-                    continue;
-                }
-                new_edges.push(Edge {
-                    a,
-                    b,
-                    kind: kinds.contour(t),
-                    elem: t.elem,
-                    layer: t.layer,
-                });
-            }
+            new_edges.push(Edge {
+                a,
+                b,
+                kind: kinds.contour(t),
+                elem: t.elem,
+                layer: t.layer,
+            });
         }
         out[k].edges.extend(new_edges);
     }
@@ -204,8 +265,11 @@ impl Kinds {
 
 /// Strecken im Raster (Dreiecksseiten oder Kanten), für die Suche nach
 /// deckungsgleichen Strecken.
+#[derive(Default)]
 struct SegIndex {
     cells: HashMap<(i64, i64, i64), Vec<u32>>,
+    /// Umschließender Quader aller Strecken (schneller Ausschluss).
+    bounds: Option<(Vec3, Vec3)>,
 }
 
 fn lo(a: Vec3, b: Vec3) -> Vec3 {
@@ -214,6 +278,22 @@ fn lo(a: Vec3, b: Vec3) -> Vec3 {
 
 fn hi(a: Vec3, b: Vec3) -> Vec3 {
     vec3(a.x.max(b.x) + TOL, a.y.max(b.y) + TOL, a.z.max(b.z) + TOL)
+}
+
+/// Vereinigung zweier Quader.
+fn union(a: Option<(Vec3, Vec3)>, (l, h): (Vec3, Vec3)) -> (Vec3, Vec3) {
+    match a {
+        None => (l, h),
+        Some((bl, bh)) => (
+            vec3(bl.x.min(l.x), bl.y.min(l.y), bl.z.min(l.z)),
+            vec3(bh.x.max(h.x), bh.y.max(h.y), bh.z.max(h.z)),
+        ),
+    }
+}
+
+/// Berühren oder schneiden sich zwei Quader?
+fn overlaps((l, h): (Vec3, Vec3), (bl, bh): (Vec3, Vec3)) -> bool {
+    l.x <= bh.x && h.x >= bl.x && l.y <= bh.y && h.y >= bl.y && l.z <= bh.z && h.z >= bl.z
 }
 
 fn cell(p: Vec3) -> (i64, i64, i64) {
@@ -227,7 +307,9 @@ fn cell(p: Vec3) -> (i64, i64, i64) {
 impl SegIndex {
     fn build(segs: impl Iterator<Item = (u32, Vec3, Vec3)>) -> SegIndex {
         let mut cells: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::new();
+        let mut bounds: Option<(Vec3, Vec3)> = None;
         for (id, a, b) in segs {
+            bounds = Some(union(bounds, (lo(a, b), hi(a, b))));
             let (lo, hi) = (cell(lo(a, b)), cell(hi(a, b)));
             for x in lo.0..=hi.0 {
                 for y in lo.1..=hi.1 {
@@ -237,25 +319,17 @@ impl SegIndex {
                 }
             }
         }
-        SegIndex { cells }
-    }
-
-    fn of_triangles(tris: &[Tri]) -> SegIndex {
-        SegIndex::build(
-            tris.iter().enumerate().flat_map(|(i, t)| {
-                (0..3).map(move |m| ((i * 3 + m) as u32, t.p[m], t.p[(m + 1) % 3]))
-            }),
-        )
-    }
-
-    fn of_edges(edges: &[Edge]) -> SegIndex {
-        SegIndex::build(edges.iter().enumerate().map(|(i, e)| (i as u32, e.a, e.b)))
+        SegIndex { cells, bounds }
     }
 
     /// Kennungen in den Zellen um die Strecke, ohne Doppel.
     fn near(&self, a: Vec3, b: Vec3) -> Vec<u32> {
-        let (lo, hi) = (cell(lo(a, b)), cell(hi(a, b)));
         let mut out = Vec::new();
+        let (l, h) = (lo(a, b), hi(a, b));
+        if !self.bounds.is_some_and(|b| overlaps((l, h), b)) {
+            return out;
+        }
+        let (lo, hi) = (cell(l), cell(h));
         for x in lo.0..=hi.0 {
             for y in lo.1..=hi.1 {
                 for z in lo.2..=hi.2 {
@@ -368,6 +442,23 @@ mod tests {
         assert_eq!(a.edges.iter().filter(am_stoss).count(), 2);
         assert_eq!(b.edges.iter().filter(am_stoss).count(), 2);
         assert_eq!(a.triangles.len() + b.triangles.len(), s.triangles.len());
+    }
+
+    /// Eine feine Kante fern vom ausgeblendeten Teil bleibt fein, wie ohne
+    /// Ausblenden (Review 3h: nur an der Grenze ändert sich etwas).
+    #[test]
+    fn feine_kante_fern_der_grenze_bleibt() {
+        let mut s = zwei_bloecke();
+        s.elem = 0;
+        s.edge_kind = edge_kind::FINE;
+        s.edge(vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 300.0));
+        let [a, _] = split(&s, |p, _| if p == 0 { Class::Solid } else { Class::Hidden });
+        let fein = a
+            .edges
+            .iter()
+            .filter(|e| e.a.x.abs() < 1e-6 && e.b.x.abs() < 1e-6)
+            .any(|e| e.kind == edge_kind::FINE);
+        assert!(fein, "{:?}", a.edges);
     }
 
     #[test]

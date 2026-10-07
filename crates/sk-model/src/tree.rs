@@ -344,7 +344,7 @@ fn kind_tab(m: &Model, members: &mut Vec<ElementId>) -> Vec<Node> {
     };
     for (cat, ids) in by_kind(m, &all) {
         let spec = crate::kinds::spec(cat);
-        let label = format!("{} ({})", spec.plural, ids.len());
+        let label = count_label(spec, ids.len());
         let k = l.open(NodeKey::Kind(cat), label, span(m, &ids), 0);
         let mut types: Vec<Option<crate::LayerSetId>> = Vec::new();
         for &id in &ids {
@@ -505,4 +505,12 @@ pub fn lock(m: &Model, t: &ProjectTree, i: usize) -> State {
     }
     let locked = ids.iter().filter(|&&id| m.is_locked(id)).count();
     State::of(locked, ids.len() - locked, ids.len())
+}
+
+/// Artzeile der Karte „Bauteil“: „Außenwände (8)“, bei einem
+/// „Dachterrasse (1)“ (Einzahl wie soll-p4-3, Prüfung ab). Die Karte
+/// „Baum“ bleibt in der Mehrzahl („Innenwände (1)“, soll-p4-7).
+fn count_label(spec: &crate::kinds::KindSpec, n: usize) -> String {
+    let word = if n == 1 { spec.short } else { spec.plural };
+    format!("{word} ({n})")
 }

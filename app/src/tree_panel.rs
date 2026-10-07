@@ -10,10 +10,12 @@ use crate::scene::Scene;
 use sk_model::tree::{self, Node, NodeKey, ProjectTree, State, Tab};
 use sk_model::view::{Isolate, Visibility};
 use sk_model::{ElementId, Guid, LevelKind, Model, Refusal};
+use sk_paint::font::Font;
 use sk_paint::{Canvas, Path};
 use sk_platform::{Event, Modifiers, MouseButton};
 use sk_ui::theme::{Sizes, Theme};
 use sk_ui::widgets::{self, Fill, Fonts, Rect};
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::time::Instant;
 
@@ -234,6 +236,18 @@ pub struct TreePanel {
     /// Zuletzt gezeichneter Stand (neu zeichnen nur bei Änderung).
     look: Option<Look>,
     pub dirty: bool,
+    /// Nur diese sichtbaren Zeilen neu (Hover, Leuchten; Review 3i B2).
+    rows_dirty: Vec<usize>,
+    /// Zeile, die zuletzt durch den Modell-Hover leuchtete (B1).
+    glow: Option<usize>,
+    /// Panelgrund je (Breite, Höhe, Grenze, Maßstab, Schema) (B3).
+    base: RefCell<Option<(BaseKey, Canvas)>>,
+    /// Letztes ganzes Bild und seine Panelhöhe; im Übergang die größere (B4).
+    img: Option<(Canvas, f32)>,
+    /// Höhe, auf die das zuletzt gezeigte Bild gekürzt war.
+    cut_h: Option<f32>,
+    /// Lage der Zeilenliste im letzten ganzen Bild.
+    shown: Option<Shown>,
     /// Bildvergleiche (Befehlszeile): aufzuklappende Zeilen, überfahrene
     /// Zeile und zu isolierende Zeile, je nach Namensanfang.
     pub cli_open: Vec<String>,
@@ -241,15 +255,54 @@ pub struct TreePanel {
     pub cli_isolate: Option<String>,
 }
 
-/// Was das Bild bestimmt, außer der Maus.
+/// Was das Bild bestimmt, außer der Maus und der leuchtenden Zeile.
 #[derive(Clone, Debug, PartialEq)]
 struct Look {
     rev: u64,
     vis: Visibility,
     selected: Vec<ElementId>,
-    model_hover: Option<ElementId>,
     theme: u64,
     scale: f32,
+}
+
+type BaseKey = (u32, u32, u32, u32, u64);
+
+/// Zeilenliste im letzten ganzen Bild: Oberkante, Höhe (Pixel), sichtbare
+/// Zeilen, Panelhöhe.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Shown {
+    top: f32,
+    list_h: f32,
+    first: usize,
+    last: usize,
+    h: f32,
+}
+
+/// Was eine Zeile zum Zeichnen braucht (ganz oder als Teilbild).
+struct RowCx<'a> {
+    m: &'a Model,
+    t: &'a Theme,
+    regular: Option<&'a Font>,
+    bold: Option<&'a Font>,
+    selected: BTreeSet<Guid>,
+    model_hover: Option<Guid>,
+    iso: bool,
+    w: f32,
+    s: f32,
+    rh: f32,
+    gap: f32,
+    pad: f32,
+    px: f32,
+    cap: f32,
+    inset: f32,
+}
+
+/// Bild des Panels für die App.
+pub enum TreeOut {
+    /// Ganzes Bild (an `rect - panel_shadow`).
+    Full(Canvas),
+    /// Teilbilder: Lage im ganzen Bild (Pixel) und Bild.
+    Parts(Vec<(usize, usize, Canvas)>),
 }
 
 impl Default for TreePanel {
@@ -281,6 +334,12 @@ impl TreePanel {
             last_click: None,
             look: None,
             dirty: true,
+            rows_dirty: Vec::new(),
+            glow: None,
+            base: RefCell::default(),
+            img: None,
+            cut_h: None,
+            shown: None,
             cli_open: Vec::new(),
             cli_hover: None,
             cli_isolate: None,
@@ -368,7 +427,6 @@ impl TreePanel {
             rev,
             vis: m.visibility().clone(),
             selected: picking.selected.clone(),
-            model_hover: picking.hover,
             theme: t.rev,
             scale,
         };
@@ -376,7 +434,13 @@ impl TreePanel {
             self.look = Some(look);
             self.dirty = true;
         }
-        self.dirty
+        // Leuchtende Zeile (Modell-Hover): nur die zwei Zeilen neu (B1, B2)
+        let glow = self.glow_row(m, picking);
+        if glow != self.glow {
+            self.rows_dirty.extend(self.glow.into_iter().chain(glow));
+            self.glow = glow;
+        }
+        self.dirty || !self.rows_dirty.is_empty()
     }
 
     fn refresh_rows(&mut self) {
@@ -475,6 +539,11 @@ impl TreePanel {
         true
     }
 
+    /// Steht ein neues Bild aus (ganz oder Zeilen)?
+    pub fn needs_paint(&self) -> bool {
+        self.dirty || !self.rows_dirty.is_empty()
+    }
+
     /// Gleitet die Höhe gerade?
     pub fn is_growing(&self) -> bool {
         self.grow.is_some() || self.flash.is_some()
@@ -494,20 +563,23 @@ impl TreePanel {
     /// Läuft der Übergang der Höhe noch? Endet er, ist er vorbei.
     pub fn growing(&mut self, now: Instant, t: &Theme) -> bool {
         let ms = |at: Instant| now.duration_since(at).as_secs_f32() * 1000.0;
-        if self.flash.is_some_and(|(_, at)| ms(at) >= t.size.flash_ms) {
-            self.flash = None;
-            self.dirty = true;
-        }
-        if self.flash.is_some() {
-            self.dirty = true;
+        // Leuchtendes Schloss: nur seine Zeile neu
+        if let Some((i, at)) = self.flash {
+            match self.rows.iter().position(|&r| r == i) {
+                Some(vi) => self.rows_dirty.push(vi),
+                None => self.dirty = true,
+            }
+            if ms(at) >= t.size.flash_ms {
+                self.flash = None;
+            }
         }
         let Some(g) = self.grow else {
             return self.flash.is_some();
         };
+        // Die Höhe gleitet ohne neues Malen ([`TreePanel::render`], B4)
         if ms(g.start) >= t.size.anim_ms {
             self.grow = None;
         }
-        self.dirty = true;
         true
     }
 
@@ -615,11 +687,7 @@ impl TreePanel {
     fn row_icons(&self, m: &Model, i: usize, hover: bool) -> RowIcons {
         let n = &self.nodes()[i];
         let ids = self.tree.elements(self.tab, i);
-        let single = match n.key {
-            NodeKey::Element(_) => ids.first().copied(),
-            _ => None,
-        };
-        let lock_faded = single.is_some_and(|id| m.lock_source(id) != id);
+        let lock_faded = lock_faded(m, &self.tree, self.tab, i);
         let delete_faded = match n.key {
             NodeKey::Project | NodeKey::Terrain | NodeKey::Storey(_) => true,
             NodeKey::Building(_) => false,
@@ -669,17 +737,10 @@ impl TreePanel {
         match *e {
             Event::MouseMove { x, y, .. } => {
                 let hit = self.hit(m, x, y, t, s);
-                if hit != self.hover {
-                    self.hover = hit;
-                    self.dirty = true;
-                }
+                self.set_hover(hit);
                 out.consumed = hit.is_some();
             }
-            Event::MouseLeave => {
-                if self.hover.take().is_some() {
-                    self.dirty = true;
-                }
-            }
+            Event::MouseLeave => self.set_hover(None),
             Event::Wheel { delta, x, y, .. } => {
                 if !self.over(x, y, t, s) {
                     return out;
@@ -1101,6 +1162,33 @@ impl TreePanel {
 
     // --- Zeichnen ---------------------------------------------------------
 
+    /// Neue Lage der Maus im Panel. Wechselt nur die Zeile unter ihr, werden
+    /// nur die beiden Zeilen neu gemalt (B2); die durch den Modell-Hover
+    /// leuchtende Zeile erlischt, solange die Maus im Panel ist.
+    fn set_hover(&mut self, hit: Option<Hit>) {
+        if hit == self.hover {
+            return;
+        }
+        let rowish = |h: Option<Hit>| match h {
+            None | Some(Hit::Panel) => true,
+            Some(h) => h.row().is_some(),
+        };
+        if rowish(self.hover) && rowish(hit) {
+            self.rows_dirty.extend(
+                self.hover
+                    .and_then(Hit::row)
+                    .into_iter()
+                    .chain(hit.and_then(Hit::row)),
+            );
+            if self.hover.is_none() != hit.is_none() {
+                self.rows_dirty.extend(self.glow);
+            }
+        } else {
+            self.dirty = true;
+        }
+        self.hover = hit;
+    }
+
     /// Zeichnet das Panel (Höhe `h` Pixel, ohne Schatten) samt Schatten und
     /// Grenze darunter. Liefert das Bild; es liegt bei
     /// `rect - panel_shadow`.
@@ -1114,29 +1202,33 @@ impl TreePanel {
         s: f32,
     ) -> Canvas {
         self.dirty = false;
+        self.rows_dirty.clear();
         let m = scene.model();
         let z = &t.size;
         let u = &t.ui;
         let sh = (z.panel_shadow * s).round();
         let w = self.rect.w;
-        let grip = if self.divider && !self.collapsed {
-            (z.panel_margin * s).round()
-        } else {
-            0.0
+        let grip = self.grip(z, s);
+        // Panelgrund je Größe, Schema und Maßstab einmal (Review 3i B3)
+        let key = (w.to_bits(), h.to_bits(), grip.to_bits(), s.to_bits(), t.rev);
+        let mut c = {
+            let mut base = self.base.borrow_mut();
+            if base.as_ref().map(|b| b.0) != Some(key) {
+                let mut c = Canvas::new((w + 2.0 * sh) as usize, (h + 2.0 * sh + grip) as usize);
+                widgets::panel(&mut c, Rect::new(sh, sh, w, h), s, t);
+                *base = Some((key, c));
+            }
+            base.as_ref().map(|b| b.1.clone()).expect("eben gesetzt")
         };
-        let mut c = Canvas::new((w + 2.0 * sh) as usize, (h + 2.0 * sh + grip) as usize);
-        widgets::panel(&mut c, Rect::new(sh, sh, w, h), s, t);
-        let (regular, bold) = (
-            fonts.regular.as_ref(),
-            fonts.bold.as_ref().or(fonts.regular.as_ref()),
-        );
-        let pad = z.panel_pad * s;
-        let gap = (z.tree_icon_gap * s).round();
-        let px = z.font_small * s;
+        let cx = self.row_cx(t, fonts, m, picking, s);
+        let (regular, bold) = (cx.regular, cx.bold);
+        let pad = cx.pad;
+        let gap = cx.gap;
+        let px = cx.px;
         let head = self.header(z, s);
         // Karten
         let colw = (w - 2.0 * pad) / 3.0;
-        let cap = regular.map_or(px * 0.7, |f| f.cap_height(px));
+        let cap = cx.cap;
         let ty = sh + ((pad * 0.5 + head - gap + cap) * 0.5).round();
         for (k, tab) in Tab::ALL.into_iter().enumerate() {
             let active = tab == self.tab;
@@ -1156,12 +1248,13 @@ impl TreePanel {
             }
         }
         widgets::separator(&mut c, sh + pad, sh + head, w - 2.0 * pad, s, t);
+        self.shown = None;
         if self.collapsed {
             return c;
         }
-        let inset = pad - 2.0 * gap;
+        let inset = cx.inset;
         let top0 = head + gap;
-        let rh = (z.tree_row_h * s).round();
+        let rh = cx.rh;
         // Band beim Isolieren bzw. Hinweiszeile
         if self.isolating(m) {
             let bh = rh + gap;
@@ -1225,136 +1318,17 @@ impl TreePanel {
         list.clear(u.bg);
         let first = (self.scroll / rh).floor() as usize;
         let last = (((self.scroll + list_h) / rh).ceil() as usize).min(self.rows.len());
-        let selected: BTreeSet<Guid> = picking
-            .selected
-            .iter()
-            .filter_map(|&id| m.element(id).map(|e| e.guid))
-            .collect();
-        let model_hover = picking
-            .hover
-            .filter(|_| self.hover.is_none())
-            .and_then(|id| m.element(id).map(|e| e.guid));
-        let iso = m.visibility().isolate.is_some();
         for vi in first..last {
-            let i = self.rows[vi];
-            let n = &self.nodes()[i];
-            let y = vi as f32 * rh - self.scroll;
-            let hovered = self.hover.and_then(Hit::row) == Some(vi);
-            let guid = match n.key {
-                NodeKey::Element(g) | NodeKey::TradeElement(_, g) => Some(g),
-                _ => None,
-            };
-            let sel = guid.is_some_and(|g| selected.contains(&g));
-            let glow = guid.is_some() && guid == model_hover;
-            if sel || hovered || glow {
-                let mut p = Path::new();
-                p.rounded_rect(inset, y, w - 2.0 * inset, rh, 4.0 * s);
-                list.fill(&p, if sel { u.pressed } else { u.tree_hover });
-            }
-            if sel {
-                let bw = (0.75 * gap).max(2.0 * s).round();
-                let mut p = Path::new();
-                p.rounded_rect(inset, y + gap, bw, rh - 2.0 * gap, bw * 0.5);
-                list.fill(&p, u.accent);
-            }
-            let ids = self.tree.elements(self.tab, i);
-            let dim = iso && !ids.is_empty() && ids.iter().all(|&id| m.masks(id).solid == 0);
-            let cy = y + rh * 0.5;
-            if n.has_children(i) {
-                let open = self.open[self.tab.index()].contains(&n.key);
-                let col = if self.hover == Some(Hit::Arrow(vi)) {
-                    u.text
-                } else {
-                    u.text_dim
-                };
-                widgets::disclosure(&mut list, self.arrow_x(n, z, s), cy, open, col, s);
-            }
-            // Symbole von rechts
-            let icons = self.row_icons(m, i, hovered);
-            let xr = w - pad;
-            let step = (z.tree_icon + z.tree_icon_gap) * s;
-            let mut strip_left = xr;
-            for (k, &ic) in slots(self.tab, &n.key).iter().enumerate() {
-                if !shown(ic, &icons) {
-                    continue;
-                }
-                let cx = xr - z.tree_icon * s * 0.5 - k as f32 * step;
-                strip_left = cx - z.tree_icon * s * 0.5;
-                let under = self.hover == Some(Hit::Icon(vi, ic));
-                let faded = !live(ic, &icons);
-                let col = if faded {
-                    u.text_disabled
-                } else if under {
-                    u.text
-                } else {
-                    u.text_dim
-                };
-                match ic {
-                    Icon::Eye => {
-                        let st = tree::eye(m, &self.tree, self.tab, i);
-                        widgets::eye_icon(&mut list, cx, cy, fill(st), col, s);
-                    }
-                    Icon::Lock => {
-                        let st = lock_state(m, ids);
-                        // Gesperrt: Schloss in Schrift, auch ohne Maus
-                        let col = if st == State::Full && !faded {
-                            u.text
-                        } else {
-                            col
-                        };
-                        // Nach dem Verweis der Hinweiskarte: Akzent, der
-                        // in `flash_ms` vergeht
-                        let col = match self.flash {
-                            Some((at, start)) if at == i && self.tab == Tab::Tree => {
-                                let k = Instant::now().duration_since(start).as_secs_f32() * 1000.0
-                                    / t.size.flash_ms.max(1.0);
-                                mix(u.accent, col, k.clamp(0.0, 1.0))
-                            }
-                            _ => col,
-                        };
-                        widgets::lock_icon(&mut list, cx, cy, fill(st), col, s);
-                    }
-                    Icon::Isolate => {
-                        let on = self
-                            .isolated
-                            .as_ref()
-                            .is_some_and(|(t, k, _)| *t == self.tab && *k == n.key);
-                        let col = if on { u.accent } else { col };
-                        widgets::isolate_icon(&mut list, cx, cy, col, s);
-                    }
-                    Icon::Delete => widgets::trash_icon(&mut list, cx, cy, col, s),
-                }
-            }
-            // Name, rechts klein die Angabe, solange sie mit Abstand passt
-            let top_row = matches!(
-                (self.tab, &n.key),
-                (Tab::Tree, NodeKey::Project | NodeKey::Building(_))
-                    | (Tab::Kind, NodeKey::Kind(_))
-                    | (Tab::Trade, NodeKey::Trade(_))
-            );
-            let f = if top_row { bold } else { regular };
-            let tx = self.text_x(n, z, s);
-            let label = row_label(m, n);
-            let end = strip_left - 1.5 * gap;
-            let right = right_text(m, self.tab, n);
-            let spx = z.tree_small * s;
-            let lw = f.map_or(0.0, |f| f.width(&label, px));
-            let rw = regular.map_or(0.0, |f| f.width(&right, spx));
-            let show_right = !right.is_empty() && !hovered && tx + lw + 1.5 * gap + rw <= end;
-            let max_w = if show_right {
-                end - rw - 1.5 * gap - tx
-            } else {
-                end - tx
-            };
-            let label = widgets::ellipsize(f, &label, px, max_w.max(0.0));
-            let col = if dim { u.text_dim } else { u.text };
-            let base = (cy + cap * 0.5).round();
-            widgets::text(&mut list, f, &label, px, tx, base, col);
-            if show_right {
-                widgets::text(&mut list, regular, &right, spx, end - rw, base, u.text_dim);
-            }
+            self.paint_row(&mut list, &cx, vi);
         }
         c.put(&list, sh as usize, (sh + top) as usize);
+        self.shown = Some(Shown {
+            top: sh + top,
+            list_h,
+            first,
+            last,
+            h,
+        });
         // Grenze: zwei kurze Striche unter dem Panel
         if grip > 0.0 {
             let lw = rh;
@@ -1370,6 +1344,315 @@ impl TreePanel {
             c.fill_rect(sh + (w - lw) * 0.5, gy + d * 0.5 - lh * 0.5, lw, lh, col);
         }
         c
+    }
+
+    /// Höhe der Grenze unter dem Panel (Pixel).
+    fn grip(&self, z: &Sizes, s: f32) -> f32 {
+        if self.divider && !self.collapsed {
+            (z.panel_margin * s).round()
+        } else {
+            0.0
+        }
+    }
+
+    /// Was jede Zeile zum Zeichnen braucht.
+    fn row_cx<'a>(
+        &self,
+        t: &'a Theme,
+        fonts: &'a Fonts,
+        m: &'a Model,
+        picking: &Picking,
+        s: f32,
+    ) -> RowCx<'a> {
+        let z = &t.size;
+        let regular = fonts.regular.as_ref();
+        let bold = fonts.bold.as_ref().or(regular);
+        let px = z.font_small * s;
+        let gap = (z.tree_icon_gap * s).round();
+        let pad = z.panel_pad * s;
+        RowCx {
+            m,
+            t,
+            regular,
+            bold,
+            selected: picking
+                .selected
+                .iter()
+                .filter_map(|&id| m.element(id).map(|e| e.guid))
+                .collect(),
+            model_hover: self.glow_guid(m, picking),
+            iso: m.visibility().isolate.is_some(),
+            w: self.rect.w,
+            s,
+            rh: (z.tree_row_h * s).round(),
+            gap,
+            pad,
+            px,
+            cap: regular.map_or(px * 0.7, |f| f.cap_height(px)),
+            inset: pad - 2.0 * gap,
+        }
+    }
+
+    /// Bauteil, das durch den Modell-Hover leuchtet (nicht, solange die
+    /// Maus über dem Panel ist).
+    fn glow_guid(&self, m: &Model, picking: &Picking) -> Option<Guid> {
+        picking
+            .hover
+            .filter(|_| self.hover.is_none())
+            .and_then(|id| m.element(id).map(|e| e.guid))
+    }
+
+    /// Sichtbare Zeile (Index in `rows`), die durch den Modell-Hover
+    /// leuchtet (Review 3i B1): Hover über Bauteile ohne sichtbare Zeile
+    /// ändert das Bild nicht.
+    fn glow_row(&self, m: &Model, picking: &Picking) -> Option<usize> {
+        let g = self.glow_guid(m, picking)?;
+        let sh = self.shown?;
+        (sh.first..sh.last).find(|&vi| {
+            self.rows.get(vi).is_some_and(|&i| {
+                matches!(
+                    self.nodes()[i].key,
+                    NodeKey::Element(x) | NodeKey::TradeElement(_, x) if x == g
+                )
+            })
+        })
+    }
+
+    /// Zeichnet die sichtbare Zeile `vi` in die Zeilenliste `list` (ihre
+    /// Koordinaten; für Teilbilder mit Ursprung).
+    fn paint_row(&self, list: &mut Canvas, cx: &RowCx, vi: usize) {
+        let y = vi as f32 * cx.rh - self.scroll;
+        let (m, t, u, z) = (cx.m, cx.t, &cx.t.ui, &cx.t.size);
+        let (s, w, rh, gap, pad, px, cap, inset) =
+            (cx.s, cx.w, cx.rh, cx.gap, cx.pad, cx.px, cx.cap, cx.inset);
+        let (regular, bold) = (cx.regular, cx.bold);
+        let Some(&i) = self.rows.get(vi) else {
+            return;
+        };
+        let n = &self.nodes()[i];
+        let hovered = self.hover.and_then(Hit::row) == Some(vi);
+        let guid = match n.key {
+            NodeKey::Element(g) | NodeKey::TradeElement(_, g) => Some(g),
+            _ => None,
+        };
+        let sel = guid.is_some_and(|g| cx.selected.contains(&g));
+        let glow = guid.is_some() && guid == cx.model_hover;
+        if sel || hovered || glow {
+            let mut p = Path::new();
+            p.rounded_rect(inset, y, w - 2.0 * inset, rh, 4.0 * s);
+            list.fill(&p, if sel { u.pressed } else { u.tree_hover });
+        }
+        if sel {
+            let bw = (0.75 * gap).max(2.0 * s).round();
+            let mut p = Path::new();
+            p.rounded_rect(inset, y + gap, bw, rh - 2.0 * gap, bw * 0.5);
+            list.fill(&p, u.accent);
+        }
+        let ids = self.tree.elements(self.tab, i);
+        let dim = cx.iso && !ids.is_empty() && ids.iter().all(|&id| m.masks(id).solid == 0);
+        let cy = y + rh * 0.5;
+        if n.has_children(i) {
+            let open = self.open[self.tab.index()].contains(&n.key);
+            let col = if self.hover == Some(Hit::Arrow(vi)) {
+                u.text
+            } else {
+                u.text_dim
+            };
+            widgets::disclosure(list, self.arrow_x(n, z, s), cy, open, col, s);
+        }
+        // Symbole von rechts
+        let icons = self.row_icons(m, i, hovered);
+        let xr = w - pad;
+        let step = (z.tree_icon + z.tree_icon_gap) * s;
+        let mut strip_left = xr;
+        for (k, &ic) in slots(self.tab, &n.key).iter().enumerate() {
+            if !shown(ic, &icons) {
+                continue;
+            }
+            let cx = xr - z.tree_icon * s * 0.5 - k as f32 * step;
+            strip_left = cx - z.tree_icon * s * 0.5;
+            let under = self.hover == Some(Hit::Icon(vi, ic));
+            let faded = !live(ic, &icons);
+            let col = if faded {
+                u.text_disabled
+            } else if under {
+                u.text
+            } else {
+                u.text_dim
+            };
+            match ic {
+                Icon::Eye => {
+                    let st = tree::eye(m, &self.tree, self.tab, i);
+                    widgets::eye_icon(list, cx, cy, fill(st), col, s);
+                }
+                Icon::Lock => {
+                    let st = lock_state(m, ids);
+                    // Gesperrt: Schloss in Schrift, auch ohne Maus
+                    let col = if st == State::Full && !faded {
+                        u.text
+                    } else {
+                        col
+                    };
+                    // Nach dem Verweis der Hinweiskarte: Akzent, der
+                    // in `flash_ms` vergeht
+                    let col = match self.flash {
+                        Some((at, start)) if at == i && self.tab == Tab::Tree => {
+                            let k = Instant::now().duration_since(start).as_secs_f32() * 1000.0
+                                / t.size.flash_ms.max(1.0);
+                            mix(u.accent, col, k.clamp(0.0, 1.0))
+                        }
+                        _ => col,
+                    };
+                    widgets::lock_icon(list, cx, cy, fill(st), col, s);
+                }
+                Icon::Isolate => {
+                    let on = self
+                        .isolated
+                        .as_ref()
+                        .is_some_and(|(t, k, _)| *t == self.tab && *k == n.key);
+                    let col = if on { u.accent } else { col };
+                    widgets::isolate_icon(list, cx, cy, col, s);
+                }
+                Icon::Delete => widgets::trash_icon(list, cx, cy, col, s),
+            }
+        }
+        // Name, rechts klein die Angabe, solange sie mit Abstand passt
+        let top_row = matches!(
+            (self.tab, &n.key),
+            (Tab::Tree, NodeKey::Project | NodeKey::Building(_))
+                | (Tab::Kind, NodeKey::Kind(_))
+                | (Tab::Trade, NodeKey::Trade(_))
+        );
+        let f = if top_row { bold } else { regular };
+        let tx = self.text_x(n, z, s);
+        let label = row_label(m, n);
+        let end = strip_left - 1.5 * gap;
+        let right = right_text(m, self.tab, n);
+        let spx = z.tree_small * s;
+        let lw = f.map_or(0.0, |f| f.width(&label, px));
+        let rw = regular.map_or(0.0, |f| f.width(&right, spx));
+        let show_right = !right.is_empty() && !hovered && tx + lw + 1.5 * gap + rw <= end;
+        let max_w = if show_right {
+            end - rw - 1.5 * gap - tx
+        } else {
+            end - tx
+        };
+        let label = widgets::ellipsize(f, &label, px, max_w.max(0.0));
+        let col = if dim { u.text_dim } else { u.text };
+        let base = (cy + cap * 0.5).round();
+        widgets::text(list, f, &label, px, tx, base, col);
+        if show_right {
+            widgets::text(list, regular, &right, spx, end - rw, base, u.text_dim);
+        }
+    }
+
+    /// Bild für die App (Review 3i B2, 3j B4): ganz neu, wenn sich mehr als
+    /// die Hover-Zeilen geändert hat; sonst nur die betroffenen Zeilenbänder.
+    /// Gleitet die Höhe, wird einmal in der größeren Höhe gezeichnet und je
+    /// Bild nur der sichtbare Teil mit dem Unterrand gezeigt. `None`:
+    /// nichts zu tun.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render(
+        &mut self,
+        t: &Theme,
+        fonts: &Fonts,
+        scene: &Scene,
+        picking: &Picking,
+        h: f32,
+        s: f32,
+    ) -> Option<TreeOut> {
+        let tall = self.grow.map_or(h, |g| g.from.max(g.to).max(h).round());
+        let full = self.dirty
+            || self.img.as_ref().is_none_or(|(c, at)| {
+                *at != tall
+                    || c.width as f32 != self.rect.w + 2.0 * (t.size.panel_shadow * s).round()
+            });
+        if full {
+            let c = self.paint(t, fonts, scene, picking, tall, s);
+            self.img = Some((c, tall));
+            self.cut_h = None;
+        } else if !self.rows_dirty.is_empty() {
+            let parts = self.repaint_rows(t, fonts, scene.model(), picking, s);
+            if self.cut_h.is_none() || self.cut_h == Some(tall) {
+                return Some(TreeOut::Parts(parts));
+            }
+        } else if self.cut_h == Some(h) || (self.cut_h.is_none() && tall == h) {
+            return None;
+        }
+        let (img, at) = self.img.as_ref()?;
+        if *at == h {
+            self.cut_h = None;
+            return Some(TreeOut::Full(img.clone()));
+        }
+        // Übergang: oberer Teil bis zum Ende der Liste, dann der Unterrand
+        // samt runden Ecken und Schatten; deren Zeilen neben der Liste
+        // stammen vom Unterrand, unter der Liste von oben
+        let z = &t.size;
+        let sh = (z.panel_shadow * s).round();
+        let gap = (z.tree_icon_gap * s).round();
+        let grip = self.grip(z, s);
+        let foot = (gap + sh + grip) as usize;
+        let keep = ((sh + h - gap).max(0.0) as usize).min(img.height);
+        let tail = (foot + (2.0 * z.corner_radius * s).ceil() as usize).min(keep + foot);
+        let from = keep + foot - tail;
+        let mut c = Canvas::new(img.width, keep + foot);
+        c.copy_rows(img, 0, from);
+        c.copy_rows_at(img, img.height.saturating_sub(tail), from, tail);
+        if let Some(v) = self.shown {
+            let y0 = from.max(v.top as usize);
+            c.copy_span(img, y0, keep, sh as usize, (sh + self.rect.w) as usize);
+        }
+        self.cut_h = Some(h);
+        Some(TreeOut::Full(c))
+    }
+
+    /// Malt nur die Zeilenbänder in `rows_dirty` neu, ins letzte ganze Bild,
+    /// und liefert sie als Ausschnitte (Lage im Bild, Bild).
+    fn repaint_rows(
+        &mut self,
+        t: &Theme,
+        fonts: &Fonts,
+        m: &Model,
+        picking: &Picking,
+        s: f32,
+    ) -> Vec<(usize, usize, Canvas)> {
+        let mut vis: Vec<usize> = std::mem::take(&mut self.rows_dirty);
+        vis.sort_unstable();
+        vis.dedup();
+        let Some(sh) = self.shown else {
+            return Vec::new();
+        };
+        let cx = self.row_cx(t, fonts, m, picking, s);
+        let pad = (t.size.panel_shadow * s).round() as usize;
+        let mut out = Vec::new();
+        let Some((img, _)) = self.img.take() else {
+            return out;
+        };
+        let mut img = img;
+        // Was eine Zeile über ihr Band hinaus malt (Kantenglättung der
+        // Symbole), deckt ein Rand ab; darin malen die Nachbarn mit
+        let edge = (2.0 * s).ceil();
+        for vi in vis.into_iter().filter(|v| (sh.first..sh.last).contains(v)) {
+            // Band der Zeile in Listenkoordinaten, auf die Liste begrenzt
+            let y = vi as f32 * cx.rh - self.scroll;
+            let y0 = (y - edge).floor().max(0.0);
+            let y1 = (y + cx.rh + edge).ceil().min(sh.list_h.floor());
+            if y1 <= y0 {
+                continue;
+            }
+            let mut band = Canvas::new(cx.w as usize, (y1 - y0) as usize);
+            band.set_origin(0.0, y0);
+            band.clear(t.ui.bg);
+            for n in vi.saturating_sub(1).max(sh.first)..(vi + 2).min(sh.last) {
+                self.paint_row(&mut band, &cx, n);
+            }
+            band.set_origin(0.0, 0.0);
+            let at = (sh.top + y0) as usize;
+            img.put(&band, pad, at);
+            out.push((pad, at, band));
+        }
+        self.img = Some((img, sh.h));
+        out
     }
 
     // --- einstellungen.txt ------------------------------------------------
@@ -1409,6 +1692,23 @@ impl TreePanel {
                 .filter(|v| v.is_finite() && *v > 0.0);
         }
         self.refresh_rows();
+    }
+}
+
+/// Schloss der Zeile `i` der Karte `tab` blass: Es wirkt nicht, weil das
+/// Bauteil bzw. alles unter der Art- oder Gruppenzeile abgeleitet ist und
+/// seiner Quelle folgt (y).
+pub fn lock_faded(m: &Model, tree: &ProjectTree, tab: Tab, i: usize) -> bool {
+    let Some(n) = tree.tab(tab).get(i) else {
+        return false;
+    };
+    let ids = tree.elements(tab, i);
+    match n.key {
+        NodeKey::Element(_) => ids.first().is_some_and(|&id| m.lock_source(id) != id),
+        NodeKey::Kind(_) | NodeKey::Group(..) | NodeKey::KindType(..) => {
+            !ids.is_empty() && ids.iter().all(|&id| m.lock_source(id) != id)
+        }
+        _ => false,
     }
 }
 
@@ -1647,4 +1947,120 @@ pub fn hidden_elsewhere(m: &Model, tab: Tab) -> Option<String> {
 fn mix(a: sk_paint::Rgba, b: sk_paint::Rgba, k: f32) -> sk_paint::Rgba {
     let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * k).round() as u8;
     sk_paint::Rgba(m(a.0, b.0), m(a.1, b.1), m(a.2, b.2), m(a.3, b.3))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sk_math::vec3;
+    use sk_model::{RefSide, WallChain};
+
+    fn haus() -> Scene {
+        let mut s = Scene::with_model(Model::with_seed(7));
+        let w = WallChain {
+            base: 0.0,
+            points: vec![
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ],
+            closed: true,
+            ref_side: RefSide::Left,
+            layers: Vec::new(),
+            height: 3500.0,
+            joints: Default::default(),
+        };
+        s.add_wall(&w).unwrap();
+        s
+    }
+
+    /// Größter Unterschied je Kanal (8-Bit-Stufen); Teilbilder mit
+    /// Ursprung runden Kanten auf halben Bildpunkten um höchstens eine Stufe
+    /// anders.
+    fn steps(a: &Canvas, b: &Canvas) -> u8 {
+        assert_eq!((a.width, a.height), (b.width, b.height));
+        bytes(a)
+            .iter()
+            .zip(bytes(b))
+            .map(|(p, q)| p.abs_diff(q))
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn bytes(c: &Canvas) -> Vec<u8> {
+        let mut v = Vec::new();
+        c.premul_rgba8_into(&mut v);
+        v
+    }
+
+    fn panel(s: &Scene, t: &Theme, h: f32) -> TreePanel {
+        let mut p = TreePanel::new();
+        p.place(Rect::new(10.0, 10.0, 280.0, h), t, Instant::now(), false);
+        p.sync(s, &Picking::default(), t, 1.0);
+        p
+    }
+
+    /// Review 3i B2: Wechselt nur die Zeile unter der Maus, malt das Panel
+    /// nur die beiden Zeilenbänder neu; das Bild ist (bis auf eine Stufe)
+    /// dasselbe wie ganz neu gemalt.
+    #[test]
+    fn hover_malt_nur_zeilen() {
+        let (s, t, f) = (haus(), Theme::dark(), Fonts::system());
+        let pk = Picking::default();
+        let mut p = panel(&s, &t, 400.0);
+        assert!(matches!(
+            p.render(&t, &f, &s, &pk, 400.0, 1.0),
+            Some(TreeOut::Full(_))
+        ));
+        assert!(
+            p.render(&t, &f, &s, &pk, 400.0, 1.0).is_none(),
+            "nichts neu"
+        );
+        for hit in [
+            Some(Hit::Row(2)),
+            Some(Hit::Icon(3, Icon::Eye)),
+            Some(Hit::Panel),
+            None,
+        ] {
+            p.set_hover(hit);
+            assert!(!p.dirty);
+            match p.render(&t, &f, &s, &pk, 400.0, 1.0) {
+                Some(TreeOut::Parts(parts)) => assert!(parts.len() <= 2),
+                None => {}
+                _ => panic!("nur Zeilen erwartet: {hit:?}"),
+            }
+            let mut q = panel(&s, &t, 400.0);
+            q.hover = hit;
+            let ganz = q.paint(&t, &f, &s, &pk, 400.0, 1.0);
+            assert!(steps(&p.img.as_ref().unwrap().0, &ganz) <= 1, "{hit:?}");
+        }
+    }
+
+    /// Review 3j B4: Gleitet die Höhe, wird nicht je Bild neu gemalt; das
+    /// gekürzte Bild gleicht einem ganz gemalten in dieser Höhe.
+    #[test]
+    fn gleiten_ohne_neues_malen() {
+        let (s, t, f) = (haus(), Theme::dark(), Fonts::system());
+        let pk = Picking::default();
+        let mut p = panel(&s, &t, 400.0);
+        p.render(&t, &f, &s, &pk, 400.0, 1.0);
+        let now = Instant::now();
+        p.place(Rect::new(10.0, 10.0, 280.0, 250.0), &t, now, true);
+        p.divider = false;
+        let Some(TreeOut::Full(_)) = p.render(&t, &f, &s, &pk, 400.0, 1.0) else {
+            panic!("Bild in der größeren Höhe");
+        };
+        let tall = p.img.as_ref().unwrap().0.height;
+        for h in [360.0, 300.0, 251.0] {
+            let Some(TreeOut::Full(c)) = p.render(&t, &f, &s, &pk, h, 1.0) else {
+                panic!("gekürztes Bild");
+            };
+            assert_eq!(p.img.as_ref().unwrap().0.height, tall, "nicht neu gemalt");
+            let mut q = panel(&s, &t, h);
+            let ganz = q.paint(&t, &f, &s, &pk, h, 1.0);
+            assert_eq!((c.width, c.height), (ganz.width, ganz.height));
+            assert!(bytes(&c) == bytes(&ganz), "{h}");
+        }
+    }
 }

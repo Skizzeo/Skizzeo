@@ -358,6 +358,35 @@ impl Canvas {
         }
     }
 
+    /// Übernimmt den Bereich Spalten `x0..x1`, Zeilen `y0..y1` von `other`
+    /// (gleiche Breite) an dieselbe Stelle.
+    pub fn copy_span(&mut self, other: &Canvas, y0: usize, y1: usize, x0: usize, x1: usize) {
+        if other.width != self.width {
+            return;
+        }
+        let x1 = x1.min(self.width);
+        if x0 >= x1 {
+            return;
+        }
+        let w = self.width;
+        for y in y0..y1.min(self.height).min(other.height) {
+            self.px[y * w + x0..y * w + x1].copy_from_slice(&other.px[y * w + x0..y * w + x1]);
+        }
+    }
+
+    /// Übernimmt `n` Zeilen von `other` (gleiche Breite) ab Zeile `src_y`
+    /// nach Zeile `dst_y`; was übersteht, fällt weg.
+    pub fn copy_rows_at(&mut self, other: &Canvas, src_y: usize, dst_y: usize, n: usize) {
+        if other.width != self.width {
+            return;
+        }
+        let n = n
+            .min(other.height.saturating_sub(src_y))
+            .min(self.height.saturating_sub(dst_y));
+        let w = self.width;
+        self.px[dst_y * w..(dst_y + n) * w].copy_from_slice(&other.px[src_y * w..(src_y + n) * w]);
+    }
+
     pub fn reuse(&mut self, width: usize, height: usize) {
         if (width, height) != (self.width, self.height) {
             // Akkumulator und Marken passen nur zur alten Größe ([`Canvas::fill`])

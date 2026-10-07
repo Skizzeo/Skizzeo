@@ -1996,7 +1996,7 @@ impl App {
             }
         } else if let (Some((field, mm)), Some(id)) = (out.submit, self.sel.id) {
             if let Some(b) = sk_model::edit_blocked(self.scene.model(), &[id]) {
-                self.show_locked(b);
+                self.show_locked(b, Some((id, delete::Act::Field)));
             } else if self.scene.set_field(id, field, mm) {
                 self.upload_model();
             }
@@ -2127,7 +2127,7 @@ impl App {
             }
         };
         if let Some(b) = blocked {
-            self.show_locked(b);
+            self.show_locked(b, self.sel.id.map(|id| (id, delete::Act::Type)));
             return;
         }
         let m = self.scene.model();
@@ -2834,8 +2834,8 @@ impl App {
                                 .handle(&ev, &mut self.scene, &self.cam, vw, vh, sc, en)
                         };
                         self.redraw |= eo.redraw;
-                        if let Some(id) = eo.locked {
-                            self.show_locked(id);
+                        if let Some((id, wall)) = eo.locked {
+                            self.show_locked(id, Some((wall, delete::Act::Drag)));
                         }
                         if !eo.consumed {
                             // Ohne Wandeingabe wählt ein Klick ein Bauteil (beim Loslassen)
@@ -4036,7 +4036,7 @@ impl App {
         self.finish_flush();
         self.cancel_pick(false);
         if let Some(b) = sk_model::edit_blocked(self.scene.model(), &[wall]) {
-            self.show_locked(b);
+            self.show_locked(b, Some((wall, delete::Act::Flush)));
             return;
         }
         match flush_pick::FlushPick::start(self.scene.model(), wall) {
@@ -4375,26 +4375,44 @@ impl App {
             self.hover_from_list = true;
             self.tree.sync(&self.scene, &self.picking, &self.theme, s);
         }
-        if self.tree.dirty {
-            let c = self.tree.paint(
-                &self.theme,
-                &self.ui.fonts,
-                &self.scene,
-                &self.picking,
-                h,
-                s,
-            );
-            let sh = (self.theme.size.panel_shadow * s).round();
-            c.premul_rgba8_into(&mut self.panel_px);
-            self.renderer.set_overlay(
-                OVERLAY_TREE,
-                (r.x - sh) as i32,
-                (r.y - sh) as i32,
-                c.width as u32,
-                c.height as u32,
-                &self.panel_px,
-            );
-            self.redraw = true;
+        let out = self.tree.render(
+            &self.theme,
+            &self.ui.fonts,
+            &self.scene,
+            &self.picking,
+            h,
+            s,
+        );
+        match out {
+            Some(tree_panel::TreeOut::Full(c)) => {
+                let sh = (self.theme.size.panel_shadow * s).round();
+                c.premul_rgba8_into(&mut self.panel_px);
+                self.renderer.set_overlay(
+                    OVERLAY_TREE,
+                    (r.x - sh) as i32,
+                    (r.y - sh) as i32,
+                    c.width as u32,
+                    c.height as u32,
+                    &self.panel_px,
+                );
+                self.redraw = true;
+            }
+            // Nur Zeilenbänder (Hover, Leuchten)
+            Some(tree_panel::TreeOut::Parts(parts)) => {
+                for (x, y, c) in parts {
+                    c.premul_rgba8_into(&mut self.panel_px);
+                    self.renderer.update_overlay(
+                        OVERLAY_TREE,
+                        x as i32,
+                        y as i32,
+                        c.width as u32,
+                        c.height as u32,
+                        &self.panel_px,
+                    );
+                }
+                self.redraw = true;
+            }
+            None => {}
         }
     }
 
@@ -4554,14 +4572,20 @@ impl App {
 
     /// Hinweiskarte „AW-005 ist gesperrt.“ mit dem Verweis „Entsperren im
     /// Baum mit dem Schloss“, Punkt in `ui.danger` (Paket 4 §1.7).
-    fn show_locked(&mut self, id: sk_model::ElementId) {
+    /// Hinweiskarte „AW-005 ist gesperrt.“; `acted`: das Bauteil, an dem
+    /// gehandelt wurde, und wie. Ist es ein anderes, sagt die zweite Zeile,
+    /// warum das gesperrte betroffen ist (Prüfung p4-7, aa).
+    fn show_locked(
+        &mut self,
+        id: sk_model::ElementId,
+        acted: Option<(sk_model::ElementId, delete::Act)>,
+    ) {
         let m = self.scene.model();
-        let n = m.element(id).map_or("Das Bauteil", |e| e.number.as_str());
         let link = (
             "Entsperren im Baum mit dem Schloss",
             delete::Link::Unlock(id),
         );
-        let lines = vec![format!("{n} ist gesperrt.")];
+        let lines = delete::locked_card(m, id, acted);
         let mut h = delete::HintCard::new(lines, Some(link), vec![id], Instant::now());
         h.danger = true;
         self.hint = Some(h);
@@ -5356,8 +5380,11 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     a.tree.cli_open = arg("--aufklappen").unwrap_or_default();
     a.tree.cli_hover = arg("--ueberfahren").and_then(|v| v.into_iter().next());
     a.tree.cli_isolate = arg("--baum-isolieren").and_then(|v| v.into_iter().next());
-    if let Some(id) = arg("--sperrhinweis").and_then(|v| numbers(&a, &v).first().copied()) {
-        a.show_locked(id);
+    // `--sperrhinweis AW-005,AW-001`: Sperre beim Ziehen von AW-001
+    if let Some(ids) = arg("--sperrhinweis").map(|v| numbers(&a, &v)) {
+        if let Some(&id) = ids.first() {
+            a.show_locked(id, ids.get(1).map(|&w| (w, delete::Act::Drag)));
+        }
         // Bleibt fürs Bildschirmfoto stehen
         if let Some(h) = a.hint.as_mut() {
             h.hold();
@@ -5455,7 +5482,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             && a.card_fade.is_none()
             && a.flush_anim.is_none()
             && !a.tree.is_growing()
-            && !a.tree.dirty
+            && !a.tree.needs_paint()
         {
             // Leerlauf: Grundrisse der Nachbargeschosse vorbereiten, damit ein
             // Wechsel am Geschossbogen nichts neu rechnet (E18)
@@ -5551,7 +5578,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         a.sync_tool_chip();
         a.sync_tip();
         if let Some(id) = a.scene.take_locked() {
-            a.show_locked(id);
+            a.show_locked(id, None);
             a.upload_model();
         }
         a.sync_notice();

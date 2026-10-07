@@ -23,6 +23,7 @@ use sk_render::MeshData;
 use sk_ui::theme::Theme;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Anzeigename der Gründung als Ebene (Paneel „Geschosse“, Geschossbogen).
 pub const FOUNDATION_NAME: &str = "Fundament";
@@ -88,7 +89,26 @@ struct RunCache {
     floor_qto: Option<FloorQto>,
     /// Wie oft dieser Zug berechnet wurde (für Tests und Messung).
     builds: u32,
+    /// Geteilte Körper (deckend, blass) je Ansicht, gültig für die Masken
+    /// ihrer Teile (Review 3h, G2): eine Änderung teilt nur neu gebaute
+    /// Züge neu, eine neue Revision allein nichts. Zuletzt gefragte zuerst.
+    splits: RefCell<Vec<Split>>,
 }
+
+/// Körper, aus dem ein Zug geteilt wurde.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SplitKey {
+    /// 3D und Ansichten.
+    Solid,
+    Section(Plane),
+    Plan(f64, PlanMode),
+}
+
+/// Ein geteilter Körper: wovon, für welche Masken je Teil, Ergebnis.
+type Split = (SplitKey, Vec<(u32, Masks)>, Rc<[Solid; 2]>);
+
+/// So viele geteilte Körper behält ein Zug (3D, Schnitt A und B, Grundriss).
+const SPLIT_KEEP: usize = 4;
 
 impl RunCache {
     fn new(
@@ -130,7 +150,44 @@ impl RunCache {
             floor,
             floor_qto: None,
             builds,
+            splits: RefCell::default(),
         }
+    }
+
+    /// Schon berechneter Grundrisskörper in Höhe `cut`.
+    fn plan_at(&self, cut: f64, mode: PlanMode) -> Option<&Solid> {
+        self.plan
+            .iter()
+            .find(|(c, m, _)| (*c, *m) == (cut, mode))
+            .map(|(_, _, s)| s)
+    }
+
+    /// `s` (der Körper zu `key`) geteilt nach den Masken seiner Teile;
+    /// gleiche Masken wie zuletzt: aus dem Speicher.
+    fn split(&self, key: SplitKey, s: &Solid, vis: &Vis) -> Rc<[Solid; 2]> {
+        let mut parts: Vec<u32> = s
+            .triangles
+            .iter()
+            .map(|t| t.elem)
+            .chain(s.edges.iter().map(|e| e.elem))
+            .collect();
+        parts.sort_unstable();
+        parts.dedup();
+        let masks: Vec<(u32, Masks)> = parts
+            .into_iter()
+            .map(|p| (p, vis.masks(self.id, p)))
+            .collect();
+        let mut v = self.splits.borrow_mut();
+        if let Some(i) = v.iter().position(|(k, m, _)| *k == key && *m == masks) {
+            let hit = v.remove(i);
+            let out = hit.2.clone();
+            v.insert(0, hit);
+            return out;
+        }
+        let out = Rc::new(split(s, |p, l| vis.class(self.id, p, l)));
+        v.truncate(SPLIT_KEEP - 1);
+        v.insert(0, (key, masks, out.clone()));
+        out
     }
 
     /// Schon berechneter Körper einer Ansicht (nach [`RunCache::view_solid`]).
@@ -2498,9 +2555,11 @@ impl Scene {
             for (i, &run) in runs.iter().enumerate() {
                 if let Some(Some(c)) = self.cache.get_mut(run.index() as usize) {
                     if c.id == run {
-                        if let Some(s) = c.view_solid(view, section, cut, modes[i]) {
+                        c.view_solid(view, section, cut, modes[i]);
+                        if let Some(s) = c.plan_at(cut, modes[i]) {
                             if filter {
-                                let parts = split(s, |p, l| vis.class(run, p, l));
+                                let key = SplitKey::Plan(cut, modes[i]);
+                                let parts = c.split(key, s, &vis);
                                 for (k, x) in parts.iter().enumerate() {
                                     mesh_into(&mut m[k], x);
                                 }
@@ -2564,14 +2623,20 @@ impl Scene {
             table: &self.vis_table,
             stamp,
         };
-        let mut parts: HashMap<RunId, [Solid; 2]> = HashMap::new();
+        let mut parts: HashMap<RunId, Rc<[Solid; 2]>> = HashMap::new();
         if filter {
+            let key = match section {
+                Some(pl) if view == ViewKind::Section => SplitKey::Section(pl),
+                _ => SplitKey::Solid,
+            };
             for &run in runs.iter().chain(&partners) {
                 if parts.contains_key(&run) {
                     continue;
                 }
-                if let Some(s) = self.cached(run).and_then(|c| c.shown(view, section)) {
-                    parts.insert(run, split(s, |p, l| vis.class(run, p, l)));
+                if let Some(c) = self.cached(run) {
+                    if let Some(s) = c.shown(view, section) {
+                        parts.insert(run, c.split(key, s, &vis));
+                    }
                 }
             }
         }
@@ -3393,6 +3458,52 @@ mod tests {
         assert_eq!(s.ghost_alpha(false), a);
         assert_eq!(s.ghost_alpha(true), s.theme.size.ghost_alpha_paper);
         assert!(s.pickable(w));
+    }
+
+    /// Review 3h G2: Das Teilen in deckend und blass hängt an Körper und
+    /// Masken, nicht an der Revision. Eine Änderung an einem Haus teilt
+    /// nur dessen Züge neu; das andere behält seine geteilten Körper.
+    #[test]
+    fn teilen_nur_neu_gebauter_zuege() {
+        let mut s = Scene::with_model(Model::with_seed(5));
+        let a = s.add_wall(&rechteck(0.0)).unwrap();
+        let b = s.add_wall(&rechteck(10000.0)).unwrap();
+        let mut v = s.model().visibility().clone();
+        v.hidden_cat.insert(Category::Floor);
+        assert!(s.set_visibility(v));
+        s.mesh(ViewKind::Persp, None, &[]);
+        let geteilt = |s: &Scene, r: RunId| {
+            s.cached(r)
+                .and_then(|c| c.splits.borrow().first().map(|x| x.2.clone()))
+                .expect("geteilt")
+        };
+        let (va, vb) = (geteilt(&s, a), geteilt(&s, b));
+        // Neue Revision ohne neuen Körper: nichts neu geteilt
+        let w = s.model().wall_at(a, 0).unwrap();
+        let rev = s.model().revision();
+        s.begin("Merkmal");
+        let text = Some(sk_model::PropValue::Text("neu".into()));
+        assert!(s.model.set_prop(w, "Bemerkung", text));
+        s.commit();
+        assert!(s.model().revision() > rev);
+        s.mesh(ViewKind::Persp, None, &[]);
+        assert!(Rc::ptr_eq(&va, &geteilt(&s, a)), "Revision allein");
+        // Ein Zug neu gebaut: nur er wird neu geteilt
+        s.mark(a);
+        s.rebuild_dirty(false);
+        s.mesh(ViewKind::Persp, None, &[]);
+        assert!(!Rc::ptr_eq(&va, &geteilt(&s, a)), "neu gebaut, neu geteilt");
+        assert!(
+            Rc::ptr_eq(&vb, &geteilt(&s, b)),
+            "anderer Zug aus dem Speicher"
+        );
+        // Andere Masken: neu geteilt
+        let mut v = s.model().visibility().clone();
+        v.hidden_cat.clear();
+        v.hidden_cat.insert(Category::ExteriorWall);
+        assert!(s.set_visibility(v));
+        s.mesh(ViewKind::Persp, None, &[]);
+        assert!(!Rc::ptr_eq(&vb, &geteilt(&s, b)));
     }
 
     #[test]

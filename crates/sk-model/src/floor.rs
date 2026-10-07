@@ -491,17 +491,32 @@ impl FloorSlab {
     }
 
     /// Körper der Dachterrasse für 3D und Ansichten. Ringsum stößt sie an
-    /// Attika und Wand darüber: Oberfläche des Belags und Unterseite auf der
-    /// Rohdecke, Fugen der Schichten an keiner Stelle sichtbar.
+    /// Attika und Wand darüber: Oberfläche des Belags, Unterseite auf der
+    /// Rohdecke und Seiten je Schicht, ohne Kanten der Schichtfugen.
     pub fn terrace_solid(&self) -> Solid {
         let mut s = self.terrace_below(f64::INFINITY);
         if let Some((z0, _)) = self.terrace_band() {
-            s.layer = self.terrace_layers().first().map_or(NO_LAYER, |l| l.4);
+            let layers = self.terrace_layers();
+            let top_mat = s.mat;
+            s.layer = layers.first().map_or(NO_LAYER, |l| l.4);
             for t in &self.terraces.outlines {
                 for p in &t.parts {
                     s.cap(&polygon::to_ccw(p), z0, false);
                 }
             }
+            // Seiten je Schicht, ohne Kanten: an Wand und Attika liegen sie
+            // verdeckt; sind diese ausgeblendet, schließen sie den Körper,
+            // und die Unterseite auf der Rohdecke bleibt unsichtbar (sonst
+            // flimmerte sie dort mit der Deckfläche, Prüfung p3-1 x)
+            for &(a, b, mat, _, li) in &layers {
+                (s.mat, s.layer) = (mat, li);
+                for t in &self.terraces.outlines {
+                    for p in &t.parts {
+                        s.sides(&polygon::to_ccw(p), a, b, true);
+                    }
+                }
+            }
+            s.mat = top_mat;
         }
         s
     }

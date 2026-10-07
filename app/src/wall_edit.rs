@@ -75,8 +75,9 @@ pub struct EditOutcome {
     pub consumed: bool,
     /// Band nur angeklickt, nicht verschoben: diese Wand auswählen.
     pub clicked: Option<ElementId>,
-    /// Greifen abgelehnt: dieses Bauteil ist gesperrt (Paket 4 §1.7).
-    pub locked: Option<ElementId>,
+    /// Greifen abgelehnt: dieses Bauteil ist gesperrt (Paket 4 §1.7),
+    /// dazu die gegriffene Wand.
+    pub locked: Option<(ElementId, ElementId)>,
 }
 
 /// Wände, die das Ziehen am Fuß von `wall` ohne Strg ändern würde (Paket 4
@@ -424,7 +425,7 @@ impl WallEdit {
                 // zurückspringen
                 let set = drag_set_mods(scene.model(), wall, mods.ctrl);
                 if let Some(id) = sk_model::edit_blocked(scene.model(), &set) {
-                    out.locked = Some(id);
+                    out.locked = Some((id, wall));
                     return out;
                 }
                 let Some((grip_run, grip_seg)) = scene.model().segment_of(wall) else {
