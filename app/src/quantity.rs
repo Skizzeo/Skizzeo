@@ -1,11 +1,13 @@
 //! Mengenfenster (F2, B7): eigenes Programmfenster mit derselben Titelleiste
 //! wie das Hauptfenster; darunter das Blatt der Mengenermittlung
 //! ([`ListView`]). Hover und Auswahl laufen über den gemeinsamen Zustand.
+//! Entf, Kontextmenü und Hinweis nach dem Löschen wie im Hauptfenster (H119).
 
+use crate::delete::{Action, ContextMenu, HintCard, Link};
 use crate::picking::Picking;
 use crate::scene::Scene;
 use crate::schedule_view::{ListOut, ListView, RowBand};
-use sk_model::ElementId;
+use sk_model::{Deleted, ElementId};
 use sk_paint::Canvas;
 use sk_platform::{CaptionArea, Event, Key, MouseButton, WindowCommand};
 use sk_ui::theme::Theme;
@@ -34,6 +36,17 @@ pub enum Out {
     SaveCsv,
     Command(WindowCommand),
     Close,
+    /// Entf: die gemeinsame Auswahl löschen.
+    Delete,
+    /// Rechtsklick (Fensterpixel): Menü an der Zeile öffnen.
+    OpenContext {
+        x: f64,
+        y: f64,
+    },
+    /// Befehl aus dem Menü: Bauteil des Menüs, Bauteile der Zeile.
+    Action(Action, ElementId, Vec<ElementId>),
+    /// Verweis im Hinweis.
+    Link(Link),
 }
 
 pub struct QuantityWindow {
@@ -66,6 +79,10 @@ pub struct QuantityWindow {
     /// Rollstand des gezeigten Bildes (px): Rollen verschiebt das Bild und
     /// zeichnet nur die frei werdenden Zeilen (U6b).
     scroll_shown: i32,
+    /// Hinweis nach Entf unter der Zeile (H119).
+    pub hint: Option<HintCard>,
+    /// Kontextmenü an einer Zeile und die Bauteile der Zeile.
+    pub context: Option<(ContextMenu, Vec<ElementId>)>,
 }
 
 impl QuantityWindow {
@@ -89,6 +106,88 @@ impl QuantityWindow {
             bands_shown: Vec::new(),
             button_shown: (false, false),
             scroll_shown: 0,
+            hint: None,
+            context: None,
+        }
+    }
+
+    /// Ein- und Ausblenden des Hinweises (ms).
+    fn fade_ms(t: &Theme) -> f32 {
+        if t.size.anim_ms > 0.0 {
+            t.size.fade_ms
+        } else {
+            0.0
+        }
+    }
+
+    /// Hinweis unter der Zeile zeigen (leer: keiner).
+    pub fn show_hint(
+        &mut self,
+        lines: Vec<String>,
+        link: Option<(&'static str, Link)>,
+        now: Instant,
+    ) {
+        self.hint = (!lines.is_empty()).then(|| HintCard::new(lines, link, Vec::new(), now));
+        self.dirty = true;
+    }
+
+    /// Nach dem Löschen aus der Liste (Entf oder Menü): Hinweis, Aufleuchten
+    /// der abgelehnten Zeilen, bereinigte Auswahl.
+    pub fn erased(&mut self, s: &Scene, d: &Deleted, p: &mut Picking, now: Instant) {
+        let Some(l) = self.list.as_mut() else { return };
+        let (lines, link) = l.erased(s, d, p, now);
+        self.show_hint(lines, link, now);
+    }
+
+    /// Entf löscht hier etwas (sonst „Hier ist kein Bauteil gewählt.“).
+    pub fn part_selected(&self, p: &Picking) -> bool {
+        self.list.as_ref().is_some_and(|l| l.part_selected(p))
+    }
+
+    /// Rechtsklick auf eine Zeile: wählt sie und öffnet das Menü. `false`
+    /// auf Geschoss- und Summenzeilen.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_context(
+        &mut self,
+        s: &Scene,
+        p: &mut Picking,
+        x: f64,
+        y: f64,
+        t: &Theme,
+        fonts: &Fonts,
+    ) -> bool {
+        let Some(l) = self.list.as_mut() else {
+            return false;
+        };
+        let Some((target, ids)) = l.context_at(t, fonts, p, x, y) else {
+            return false;
+        };
+        let menu = ContextMenu::for_list(
+            s.model(),
+            target,
+            &p.selected,
+            x,
+            y,
+            (self.w, self.h, self.title.height()),
+            t,
+            self.title.scale,
+        );
+        self.context = Some((menu, ids));
+        self.hint = None;
+        self.bands_dirty = true;
+        self.dirty = true;
+        true
+    }
+
+    /// Wann sich der Hinweis wieder ändert (für die Ereignisschleife).
+    pub fn wait(&self, t: &Theme, now: Instant) -> Option<Duration> {
+        self.hint.as_ref().map(|h| h.wait(now, Self::fade_ms(t)))
+    }
+
+    /// Menü und Hinweis schließen.
+    pub fn close_popups(&mut self) {
+        if self.context.take().is_some() || self.hint.take().is_some() {
+            self.dirty = true;
         }
     }
 
@@ -144,6 +243,16 @@ impl QuantityWindow {
                 self.dirty = true;
             }
         }
+        if let Some(h) = &self.hint {
+            match h.alpha(now, Self::fade_ms(t)) {
+                None => {
+                    self.hint = None;
+                    self.dirty = true;
+                }
+                Some(a) if a < 1.0 => flashing = true,
+                Some(_) => {}
+            }
+        }
         if flashing || self.was_busy {
             self.dirty = true;
         }
@@ -171,6 +280,9 @@ impl QuantityWindow {
 
     /// Ereignis des Mengenfensters.
     pub fn handle(&mut self, e: &Event, t: &Theme, fonts: &Fonts, p: &mut Picking) -> Option<Out> {
+        if let Some(o) = self.handle_popups(e, t) {
+            return o;
+        }
         match *e {
             Event::Resized { width, height } => {
                 (self.w, self.h) = (width, height);
@@ -259,6 +371,17 @@ impl QuantityWindow {
                 self.list.as_mut()?.wheel(delta, t, anim);
                 None
             }
+            Event::MouseDown {
+                button: MouseButton::Right,
+                x,
+                y,
+                ..
+            } if y >= self.title.height() as f64 => Some(Out::OpenContext { x, y }),
+            Event::Key {
+                key: Key::Delete,
+                down: true,
+                ..
+            } => Some(Out::Delete),
             Event::Key {
                 key: Key::Escape,
                 down: true,
@@ -274,6 +397,108 @@ impl QuantityWindow {
         }
     }
 
+    /// Menü und Hinweis nehmen Ereignisse zuerst. `Some(out)`: verbraucht.
+    fn handle_popups(&mut self, e: &Event, t: &Theme) -> Option<Option<Out>> {
+        let s = self.title.scale;
+        if let Some((c, ids)) = self.context.as_mut() {
+            match *e {
+                Event::MouseMove { x, y, .. } => {
+                    if c.mouse_move(t, s, x, y) {
+                        self.dirty = true;
+                    }
+                    return Some(None);
+                }
+                Event::MouseDown {
+                    button: MouseButton::Left,
+                    x,
+                    y,
+                    ..
+                } => {
+                    if !c.press(t, s, x, y) {
+                        self.context = None;
+                        self.dirty = true;
+                    }
+                    return Some(None);
+                }
+                Event::MouseUp {
+                    button: MouseButton::Left,
+                    x,
+                    y,
+                    ..
+                } => {
+                    let a = c.release(t, s, x, y);
+                    let out = a.map(|a| Out::Action(a, c.target, std::mem::take(ids)));
+                    if out.is_some() {
+                        self.context = None;
+                        self.dirty = true;
+                    }
+                    return Some(out);
+                }
+                Event::MouseDown {
+                    button: MouseButton::Right,
+                    ..
+                } => {
+                    // Schließt und öffnet an der neuen Stelle
+                    self.context = None;
+                    self.dirty = true;
+                }
+                Event::Key {
+                    key: Key::Delete,
+                    down: true,
+                    ..
+                } => {
+                    self.context = None;
+                    self.dirty = true;
+                    return Some(Some(Out::Delete));
+                }
+                Event::Key {
+                    key, down: true, ..
+                } => {
+                    self.dirty = true;
+                    return Some(match c.key(key) {
+                        Err(()) => {
+                            self.context = None;
+                            None
+                        }
+                        Ok(None) => None,
+                        Ok(Some(a)) => {
+                            let out = Out::Action(a, c.target, std::mem::take(ids));
+                            self.context = None;
+                            Some(out)
+                        }
+                    });
+                }
+                Event::MouseLeave | Event::Focus(false) => {}
+                _ => {}
+            }
+        }
+        if let Some(h) = self.hint.as_mut() {
+            match *e {
+                Event::MouseMove { x, y, .. } => {
+                    if h.mouse_move(x, y, s, t, Instant::now()) {
+                        self.dirty = true;
+                    }
+                }
+                Event::MouseDown {
+                    button: MouseButton::Left,
+                    x,
+                    y,
+                    ..
+                } => match h.click(x, y, s, t) {
+                    None => {}
+                    Some(None) => return Some(None),
+                    Some(Some(l)) => {
+                        self.hint = None;
+                        self.dirty = true;
+                        return Some(Some(Out::Link(l)));
+                    }
+                },
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// Neues Fensterbild, falls nötig: das ganze Bild oder nur die Zeilen
     /// (von, bis), die sich geändert haben. Hover und Auswahl zeichnen die
     /// Zeilen mit anderem Band, die Pille ihre Zeilen, Rollen verschiebt die
@@ -283,6 +508,7 @@ impl QuantityWindow {
             return None;
         }
         let (w, h) = (self.w as i32, self.h as i32);
+        self.place_hint(t, fonts);
         let key = self.list.as_ref().and_then(|l| l.pill_key(t, now));
         // Neu zu zeichnende Zeilenbereiche und was davon gezeigt werden muss
         let mut paint: Vec<(i32, i32)> = Vec::new();
@@ -394,6 +620,21 @@ impl QuantityWindow {
         (y1 > y0).then_some((&self.shown[..], Some((y0 as u32, y1 as u32))))
     }
 
+    /// Hinweis unter seine Zeile legen (folgt dem Rollen).
+    fn place_hint(&mut self, t: &Theme, fonts: &Fonts) {
+        let (Some(h), Some(l)) = (self.hint.as_mut(), self.list.as_ref()) else {
+            return;
+        };
+        let s = self.title.scale;
+        let size = h.size(t, fonts, s);
+        let before = h.rect;
+        let top = l.list_y() as f32;
+        h.place(size, l.hint_rect(t), (self.w as f32, self.h as f32, top), s);
+        if h.rect != before {
+            self.dirty = true;
+        }
+    }
+
     /// Ganzes Fensterbild: Blatt, Fuge zum Hauptfenster, Titelleiste.
     #[cfg(test)]
     pub fn paint(&self, t: &Theme, fonts: &Fonts, now: Instant) -> Canvas {
@@ -424,6 +665,18 @@ impl QuantityWindow {
         c.set_origin(0.0, y0 as f32);
         if let Some(l) = &self.list {
             l.paint(c, t, fonts, now);
+        }
+        let s = self.title.scale;
+        if let Some(hc) = &self.hint {
+            if let (Some(r), Some(a)) = (hc.rect, hc.alpha(now, Self::fade_ms(t))) {
+                let img = hc.paint(t, fonts, s);
+                let m = (t.size.panel_shadow * s).round();
+                c.blit_scaled(&img, r.x - m, r.y - m, 1.0, a);
+            }
+        }
+        if let Some((menu, _)) = &self.context {
+            let (img, x, y) = menu.paint(t, fonts, s);
+            c.blit(&img, x, y);
         }
         // Titelleiste nur, wenn der Ausschnitt sie berührt
         if y0 < self.title.height() {
@@ -712,5 +965,237 @@ mod tests {
             }
             assert!(shifted >= 4, "{scale}: {shifted} Mal verschoben");
         }
+    }
+
+    /// Gebäude mit einer Außenwand und drei Innenwänden im EG.
+    fn haus_h119() -> (Scene, Vec<ElementId>) {
+        let mut s = Scene::with_model(Model::with_seed(1));
+        s.edit_model("Gebäude erstellt", |m| {
+            m.add_building(2);
+            true
+        });
+        let b = s.model().buildings().ids().last().unwrap();
+        let eg = s.model().ground_of(Some(b)).unwrap();
+        s.set_active_storey(eg);
+        let mut walls = Vec::new();
+        for (k, y) in [0.0, 3000.0, 6000.0, 9000.0].into_iter().enumerate() {
+            // Zuerst der geschlossene Umriss (Außenwände: abgelehnt)
+            let (cat, points, closed) = if k == 0 {
+                let r = [
+                    (0.0, 0.0),
+                    (10000.0, 0.0),
+                    (10000.0, 12000.0),
+                    (0.0, 12000.0),
+                ];
+                let pts = r.iter().map(|&(x, y)| vec3(x, y, 0.0)).collect();
+                (sk_model::Category::ExteriorWall, pts, true)
+            } else {
+                let pts = vec![vec3(0.0, y, 0.0), vec3(10000.0, y, 0.0)];
+                (sk_model::Category::InteriorWall, pts, false)
+            };
+            let run = s
+                .add_wall_as(
+                    &WallChain {
+                        base: 0.0,
+                        points,
+                        closed,
+                        ref_side: RefSide::Left,
+                        layers: Vec::new(),
+                        height: 3500.0,
+                        joints: Default::default(),
+                    },
+                    cat,
+                )
+                .unwrap();
+            walls.push(s.model().wall_at(run, 0).unwrap());
+        }
+        (s, walls)
+    }
+
+    fn taste(k: Key) -> Event {
+        Event::Key {
+            key: k,
+            down: true,
+            repeat: false,
+            mods: Default::default(),
+        }
+    }
+
+    /// Band der gewählten Zeile (Fensterpixel von, bis).
+    fn gewaehlte_zeile(q: &QuantityWindow, t: &Theme) -> (i32, i32) {
+        let bands = q.list.as_ref().unwrap().row_bands(t);
+        let b = bands
+            .iter()
+            .find(|b| b.2 == Some((t.ui.sheet_select, true)))
+            .expect("gewählte Zeile sichtbar");
+        (b.0, b.1)
+    }
+
+    /// H119: Entf im Mengenfenster meldet sich bei der App; gelöschte Zeilen
+    /// blenden aus, die übrigen rücken nach, danach ist Ruhe. Ohne Hinweis,
+    /// wenn alles gelöscht wurde.
+    #[test]
+    fn entf_blendet_aus_und_rueckt_nach() {
+        let (t, fonts) = (Theme::dark(), Fonts::system());
+        let (mut s, walls) = haus_h119();
+        let mut p = Picking {
+            selected: vec![walls[1]],
+            ..Default::default()
+        };
+        let mut q = QuantityWindow::new();
+        (q.w, q.h) = (520, 800);
+        let now = Instant::now();
+        q.sync(&mut s, &p, true);
+        q.frame(&t, &fonts, now);
+        assert_eq!(
+            q.handle(&taste(Key::Delete), &t, &fonts, &mut p),
+            Some(Out::Delete)
+        );
+        assert!(q.part_selected(&p));
+        let d = s.delete_elements(&p.selected.clone());
+        assert_eq!(d.removed.len(), 1);
+        q.erased(&s, &d, &mut p, now);
+        assert!(p.selected.is_empty(), "Auswahl bereinigt");
+        assert!(q.hint.is_none(), "alles gelöscht: kein Hinweis");
+        q.sync(&mut s, &p, true);
+        let l = q.list.as_ref().unwrap();
+        assert!(l.flashing(), "Zeilen rücken nach");
+        let fade = Duration::from_millis(t.size.fade_ms as u64);
+        let anim = Duration::from_millis(t.size.anim_ms as u64);
+        assert!(q.tick(&t, now + fade / 2), "blendet aus");
+        let half = q.paint(&t, &fonts, now + fade / 2).to_premul_rgba8();
+        let moved = q.paint(&t, &fonts, now + fade + anim / 2).to_premul_rgba8();
+        assert_ne!(half, moved, "erst ausblenden, dann nachrücken");
+        let end = now + fade + anim + Duration::from_millis(t.size.flash_ms as u64 + 50);
+        q.tick(&t, end);
+        assert!(!q.tick(&t, end), "danach Ruhe");
+        assert!(!q.list.as_ref().unwrap().flashing());
+
+        // Ohne Übergänge: sofort fertig
+        let mut t0 = Theme::dark();
+        t0.size.anim_ms = 0.0;
+        p.selected = vec![walls[2]];
+        q.sync(&mut s, &p, false);
+        let d = s.delete_elements(&p.selected.clone());
+        q.erased(&s, &d, &mut p, now);
+        q.sync(&mut s, &p, true);
+        assert!(!q.tick(&t0, now), "anim_ms = 0: nichts läuft");
+    }
+
+    /// H119: Abgelehnt (Außenwand) leuchtet die Zeile, der Hinweis steht
+    /// darunter. Nach einem Klick auf die Geschosszeile löscht Entf nichts.
+    #[test]
+    fn ablehnung_hinweis_unter_der_zeile() {
+        let (t, fonts) = (Theme::dark(), Fonts::system());
+        let (mut s, walls) = haus_h119();
+        let mut p = Picking {
+            selected: vec![walls[0]],
+            ..Default::default()
+        };
+        let mut q = QuantityWindow::new();
+        (q.w, q.h) = (520, 800);
+        let now = Instant::now();
+        q.sync(&mut s, &p, true);
+        q.frame(&t, &fonts, now);
+        let (_, row_bottom) = gewaehlte_zeile(&q, &t);
+        let rev = s.model().revision();
+        let d = s.delete_elements(&p.selected.clone());
+        assert!(d.removed.is_empty());
+        q.erased(&s, &d, &mut p, now);
+        assert_eq!(s.model().revision(), rev);
+        let h = q.hint.as_ref().expect("Hinweis");
+        assert_eq!(h.lines[0], "Außenwände gehören zum Gebäudeumriss.");
+        assert!(q.list.as_ref().unwrap().flashing(), "Zeile leuchtet");
+        q.sync(&mut s, &p, true);
+        q.tick(&t, now + Duration::from_millis(10));
+        q.frame(&t, &fonts, now + Duration::from_millis(10));
+        let r = q.hint.as_ref().unwrap().rect.expect("gelegt");
+        assert!(
+            r.y >= row_bottom as f32,
+            "unter der Zeile: {} < {row_bottom}",
+            r.y
+        );
+        assert!(q.wait(&t, now).is_some());
+
+        // Klick auf die Geschosszeile: kein Bauteil
+        let bands = q.list.as_ref().unwrap().row_bands(&t);
+        let (y0, y1, _) = bands[0];
+        let down = Event::MouseDown {
+            button: MouseButton::Left,
+            x: 80.0,
+            y: (y0 + y1) as f64 * 0.5,
+            mods: Default::default(),
+        };
+        q.handle(&down, &t, &fonts, &mut p);
+        assert!(!q.part_selected(&p), "Geschosszeile angeklickt");
+        p.selected = vec![walls[1]];
+        q.list.as_mut().unwrap().follow(&mut s, &p);
+        assert!(q.part_selected(&p), "Auswahl von außen: wieder ein Bauteil");
+        // Summe nach Baustoff (letzte Zeile): ebenfalls kein Bauteil
+        let bands = q.list.as_ref().unwrap().row_bands(&t);
+        let (y0, y1, _) = *bands.last().unwrap();
+        let sum = Event::MouseDown {
+            button: MouseButton::Left,
+            x: 80.0,
+            y: (y0 + y1) as f64 * 0.5,
+            mods: Default::default(),
+        };
+        q.handle(&sum, &t, &fonts, &mut p);
+        assert!(!q.part_selected(&p), "Summenzeile angeklickt");
+    }
+
+    /// H119: Rechtsklick auf eine Zeile öffnet das Menü des Modells mit „Im
+    /// Modell zeigen“ oben und ohne „Eigenschaften“; Enter führt aus.
+    #[test]
+    fn menue_an_der_zeile() {
+        let (t, fonts) = (Theme::dark(), Fonts::system());
+        let (mut s, walls) = haus_h119();
+        let mut p = Picking {
+            selected: vec![walls[1]],
+            ..Default::default()
+        };
+        let mut q = QuantityWindow::new();
+        (q.w, q.h) = (520, 800);
+        let now = Instant::now();
+        q.sync(&mut s, &p, false);
+        q.frame(&t, &fonts, now);
+        let (y0, y1) = gewaehlte_zeile(&q, &t);
+        let (x, y) = (120.0, (y0 + y1) as f64 * 0.5);
+        let right = Event::MouseDown {
+            button: MouseButton::Right,
+            x,
+            y,
+            mods: Default::default(),
+        };
+        assert_eq!(
+            q.handle(&right, &t, &fonts, &mut p),
+            Some(Out::OpenContext { x, y })
+        );
+        assert!(q.open_context(&s, &mut p, x, y, &t, &fonts));
+        let labels: Vec<String> = q
+            .context
+            .as_ref()
+            .unwrap()
+            .0
+            .actions()
+            .into_iter()
+            .map(|a| a.0)
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert_eq!(labels[0], "Im Modell zeigen");
+        assert!(labels.contains(&"Löschen".to_string()));
+        assert!(!labels.contains(&"Eigenschaften".to_string()));
+        assert!(matches!(q.frame(&t, &fonts, now), Some((_, None))));
+        q.handle(&taste(Key::Other(0x28)), &t, &fonts, &mut p);
+        let out = q.handle(&taste(Key::Enter), &t, &fonts, &mut p);
+        assert_eq!(
+            out,
+            Some(Out::Action(Action::ShowInModel, walls[1], vec![walls[1]]))
+        );
+        assert!(q.context.is_none());
+        // Auf der Geschosszeile kein Menü
+        let bands = q.list.as_ref().unwrap().row_bands(&t);
+        let gy = (bands[0].0 + bands[0].1) as f64 * 0.5;
+        assert!(!q.open_context(&s, &mut p, 80.0, gy, &t, &fonts));
     }
 }

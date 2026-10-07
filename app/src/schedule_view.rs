@@ -1,19 +1,22 @@
 //! Mengenermittlung im zweiten Fenster (B7): die Liste aus
 //! [`sk_model::qto::schedule`] als Blatt, mit Auf- und Zuklappen, Hover und
 //! Auswahl über den gemeinsamen Zustand [`Picking`], Aufleuchten geänderter
-//! Werte und „Als Tabelle speichern“ (.csv).
+//! Werte und „Als Tabelle speichern“ (.csv). Entf und Rechtsklick löschen
+//! wie im Hauptfenster (H119); gelöschte Zeilen blenden aus, die übrigen
+//! rücken nach.
 //!
 //! Die Liste wird nie hier berechnet: [`Scene::schedule`] rechnet einmal je
 //! Modellstand. Hover und Auswahl setzen nur das Blatt neu.
 
+use crate::delete::{self, Link};
 use crate::picking::Picking;
 use crate::scene::Scene;
 use sk_model::qto::{ElementQto, GroupQto, Schedule, StoreyQto};
-use sk_model::{Category, ElementId, LevelKind, Model};
+use sk_model::{Category, Deleted, ElementId, LevelKind, Model};
 use sk_paint::font::Font;
 use sk_paint::{Canvas, Path, Rgba};
 use sk_ui::theme::Theme;
-use sk_ui::widgets::Fonts;
+use sk_ui::widgets::{Fonts, Rect};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
@@ -51,9 +54,12 @@ enum Key {
     None,
     Building(u32),
     Storey(u32),
+    /// Geschoss, Bauteilart, Aufbau: bleibt, wenn davor eine Gruppe wegfällt.
     Group(u32, u8, u32),
     Element(u32, u32),
     Control(u32, u8, u32),
+    /// Kontrollzeile einer Wandgruppe (wie [`Key::Group`]).
+    GroupControl(u32, u8, u32),
     Tile(u32, u32),
 }
 
@@ -134,6 +140,18 @@ pub enum ListOut {
     Repaint,
 }
 
+/// Nachrücken nach dem Löschen (H119): weggefallene Zeilen blenden in
+/// `fade_ms` aus, danach rücken die übrigen in `anim_ms` an ihre neue Lage.
+struct Motion {
+    start: Instant,
+    /// Sichtbare Zeilen vor dem Löschen, in Listenreihenfolge.
+    old: Vec<Line>,
+}
+
+/// Lage während des Nachrückens: Versatz je Zeile (Index, dip, zur neuen
+/// Lage addiert) und weggefallene Zeilen (alte Oberkante, Höhe, Deckkraft).
+type MotionState<'a> = (HashMap<usize, f32>, Vec<(&'a Line, f32, f32, f32)>);
+
 /// Bauteilgruppe für Hover und Klick auf eine Gruppenzeile: Kurzname des
 /// Geschosses der Gruppe, Bauteilart, Bauteile.
 type GroupRef = (String, Category, Vec<ElementId>);
@@ -170,6 +188,17 @@ pub struct ListView {
     button_down: bool,
     last_click: Option<(Instant, usize)>,
     last_tick: Option<Instant>,
+    /// Die Auswahl stammt vom Klick auf diese Gruppenzeile (Entf meldet dann
+    /// „N Wände gelöscht.“ mit „Rückgängig“).
+    focus_group: Option<Key>,
+    /// Zuletzt eine Geschoss- oder Summenzeile angeklickt: Entf löscht nichts.
+    focus_none: bool,
+    /// Abgelehnte Zeilen leuchten einmal auf (`sheet_flash`).
+    row_flash: HashMap<Key, Instant>,
+    motion: Option<Motion>,
+    /// Zeilen, unter der der Hinweis nach Entf steht: die erste, die es noch
+    /// gibt.
+    hint_at: Vec<Key>,
 }
 
 impl ListView {
@@ -200,6 +229,11 @@ impl ListView {
             button_down: false,
             last_click: None,
             last_tick: None,
+            focus_group: None,
+            focus_none: false,
+            row_flash: HashMap::new(),
+            motion: None,
+            hint_at: Vec::new(),
         };
         v.sync(s, false);
         v
@@ -228,6 +262,21 @@ impl ListView {
     /// Zeilen neu aufbauen; Auf- und Zuklappen bleibt erhalten.
     fn rebuild(&mut self, m: &Model, sched: &Schedule, animate: bool) {
         let (lines, groups) = build_lines(m, sched);
+        // Fallen sichtbare Zeilen weg, rücken die übrigen sichtbar nach
+        let keys: HashSet<Key> = lines.iter().map(|l| l.key).collect();
+        let old: Vec<Line> = self
+            .lines
+            .iter()
+            .filter(|l| self.line_visible(l))
+            .cloned()
+            .collect();
+        let gone = old
+            .iter()
+            .any(|l| l.key != Key::None && !keys.contains(&l.key));
+        self.motion = (animate && gone).then(|| Motion {
+            start: Instant::now(),
+            old,
+        });
         self.lines = lines;
         self.groups = groups;
         self.order = self
@@ -363,6 +412,10 @@ impl ListView {
     /// Ansicht des Hauptfensters). `true`, wenn neu gezeichnet werden muss.
     pub fn follow(&mut self, _s: &mut Scene, p: &Picking) -> bool {
         let hover: Vec<ElementId> = p.hovered().collect();
+        if p.selected != self.selected {
+            self.focus_group = None;
+            self.focus_none = false;
+        }
         let mut changed = hover != self.hover || p.selected != self.selected;
         self.hover = hover;
         self.selected = p.selected.clone();
@@ -418,6 +471,8 @@ impl ListView {
     }
 
     fn click_element(&mut self, p: &mut Picking, id: ElementId, ctrl: bool, shift: bool) {
+        self.focus_group = None;
+        self.focus_none = false;
         let range = shift
             .then(|| {
                 let a = self.order.iter().position(|e| Some(*e) == self.anchor)?;
@@ -435,7 +490,16 @@ impl ListView {
             }
             Some(r) => p.selected = r,
             None => {
-                p.click(id, ctrl);
+                // Wie beim Loslassen im Hauptfenster (A139)
+                match crate::selection::release_pick(None, Some(Some(id)), ctrl, false, &p.selected)
+                {
+                    crate::selection::PickChange::Keep => {}
+                    crate::selection::PickChange::Replace(e) => {
+                        p.select_only(e);
+                    }
+                    crate::selection::PickChange::Add(e)
+                    | crate::selection::PickChange::Remove(e) => p.click(e, true),
+                }
                 self.anchor = Some(id);
             }
         }
@@ -448,10 +512,17 @@ impl ListView {
     /// Klick auf eine Gruppenzeile: wählt alle ihre Bauteile.
     pub fn click_group(&mut self, _s: &mut Scene, p: &mut Picking, gs: &str, art: Category) {
         let g = self.group(gs, art);
-        self.select_all(p, g);
+        let key = self
+            .lines
+            .iter()
+            .find(|l| l.kind == Kind::Group && l.elements == g)
+            .map(|l| l.key);
+        self.select_all(p, g, key);
     }
 
-    fn select_all(&mut self, p: &mut Picking, g: Vec<ElementId>) {
+    fn select_all(&mut self, p: &mut Picking, g: Vec<ElementId>, key: Option<Key>) {
+        self.focus_group = key;
+        self.focus_none = false;
         self.anchor = g.first().copied();
         p.selected = g;
         self.shown_primary = p.primary();
@@ -465,9 +536,197 @@ impl ListView {
     }
 
     pub fn clear_selection(&mut self, p: &mut Picking) {
+        self.focus_group = None;
+        self.focus_none = false;
         p.selected.clear();
         self.selected.clear();
         self.shown_primary = None;
+    }
+
+    // --- Löschen (H119) ----------------------------------------------------
+
+    /// Entf löscht: Es ist etwas gewählt, und zuletzt wurde keine Geschoss-
+    /// oder Summenzeile angeklickt.
+    pub fn part_selected(&self, p: &Picking) -> bool {
+        !p.selected.is_empty() && !self.focus_none
+    }
+
+    /// Entf, während das Mengenfenster vorne ist: löscht die gemeinsame
+    /// Auswahl nach denselben Regeln wie im Hauptfenster (ein Schritt) und
+    /// gibt den Hinweis unter der Zeile Zeile für Zeile zurück (leer: kein
+    /// Hinweis).
+    #[cfg(test)]
+    pub fn delete_key(&mut self, s: &mut Scene, p: &mut Picking) -> Vec<String> {
+        if !self.part_selected(p) {
+            return vec![delete::NO_PART.to_string()];
+        }
+        let ids = p.selected.clone();
+        let d = s.delete_elements(&ids);
+        self.erased(s, &d, p, Instant::now()).0
+    }
+
+    /// Nach dem Löschen aus der Liste: Hinweis (Zeilen und Verweis), Zeile
+    /// dafür, Aufleuchten der abgelehnten Zeilen, bereinigte Auswahl. Eine
+    /// Gruppenzeile meldet immer „N Wände gelöscht.“ mit „Rückgängig“.
+    pub fn erased(
+        &mut self,
+        s: &Scene,
+        d: &Deleted,
+        p: &mut Picking,
+        now: Instant,
+    ) -> (Vec<String>, Option<(&'static str, Link)>) {
+        let m = s.model();
+        let group = self.focus_group.filter(|_| !d.removed.is_empty());
+        let lines = if group.is_some() && d.refused.is_empty() {
+            vec![delete::removed_line(d.removed.len())]
+        } else {
+            delete::hint(m, d)
+        };
+        let link = if group.is_some() {
+            Some(("Rückgängig", Link::Undo))
+        } else {
+            delete::hint_link(m, d)
+        };
+        // Hinweis unter der abgelehnten Zeile, sonst unter der Gruppe bzw.
+        // unter der Zeile, die über der gelöschten stand
+        let first_removed = self
+            .order
+            .iter()
+            .find(|e| d.removed.contains(e))
+            .copied()
+            .map(elem_key);
+        let anchor = match d.refused.first() {
+            Some(r) if d.removed.is_empty() => Some(elem_key(r.0)),
+            _ => group.or(first_removed),
+        };
+        self.hint_at.clear();
+        if let Some(a) = anchor {
+            self.hint_at.push(a);
+            if let Some(i) = self.lines.iter().position(|l| l.key == a) {
+                let above: Vec<Key> = self.lines[..i]
+                    .iter()
+                    .rev()
+                    .filter(|l| l.key != Key::None && self.line_visible(l))
+                    .map(|l| l.key)
+                    .collect();
+                self.hint_at.extend(above);
+            }
+        }
+        for (id, _) in &d.refused {
+            self.row_flash.insert(elem_key(*id), now);
+        }
+        p.validate(s);
+        self.hover = p.hovered().collect();
+        self.selected = p.selected.clone();
+        self.shown_primary = p.primary();
+        if !d.removed.is_empty() {
+            self.focus_group = None;
+        }
+        (lines, link)
+    }
+
+    /// Rechtsklick auf eine Zeile: wählt sie, falls sie es noch nicht ist,
+    /// und gibt das Bauteil für das Menü und die Bauteile der Zeile („Im
+    /// Modell zeigen“). `None` auf Geschoss- und Summenzeilen.
+    pub fn context_at(
+        &mut self,
+        t: &Theme,
+        fonts: &Fonts,
+        p: &mut Picking,
+        x: f64,
+        y: f64,
+    ) -> Option<(ElementId, Vec<ElementId>)> {
+        let (Hot::Line(i) | Hot::Toggle(i)) = self.hit(t, fonts, x, y)? else {
+            return None;
+        };
+        let l = self.lines[i].clone();
+        let first = *l.elements.first()?;
+        match l.kind {
+            Kind::Row => {
+                if !p.selected.contains(&first) {
+                    self.click_element(p, first, false, false);
+                }
+            }
+            Kind::Group => {
+                if p.selected != l.elements {
+                    self.select_all(p, l.elements.clone(), Some(l.key));
+                }
+            }
+            _ => return None,
+        }
+        self.focus_none = false;
+        Some((first, l.elements))
+    }
+
+    /// Rechteck (Fensterpixel) der Zeile, unter der der Hinweis nach Entf
+    /// steht; `None`: unten in der Mitte.
+    pub fn hint_rect(&self, t: &Theme) -> Option<Rect> {
+        let s = self.scale;
+        let layout = self.layout(Some(t));
+        let (_, y, h) = self.hint_at.iter().find_map(|k| {
+            layout
+                .iter()
+                .find(|(i, _, _)| self.lines[*i].key == *k)
+                .copied()
+        })?;
+        let (x0, cw) = self.content_x(t);
+        let pad = 10.0 * s;
+        let ys = (self.top_dip() + HEAD) * s + y * s - self.scroll_px() as f32;
+        Some(Rect::new(x0 - pad, ys, cw + 2.0 * pad, h * s))
+    }
+
+    /// Lage während des Nachrückens (siehe [`MotionState`]); `None`, wenn
+    /// nichts nachrückt.
+    fn motion_state(&self, t: &Theme, now: Instant) -> Option<MotionState<'_>> {
+        let mo = self.motion.as_ref()?;
+        let (fade, anim) = (t.size.fade_ms.max(0.0), t.size.anim_ms);
+        if anim <= 0.0 {
+            return None;
+        }
+        let e = now.saturating_duration_since(mo.start).as_secs_f32() * 1000.0;
+        if e >= fade + anim {
+            return None;
+        }
+        let ghost_a = if fade > 0.0 { 1.0 - e / fade } else { 0.0 };
+        let k = if e < fade {
+            1.0
+        } else {
+            let x = ((e - fade) / anim).clamp(0.0, 1.0);
+            1.0 - x * x * (3.0 - 2.0 * x)
+        };
+        let mut old_y: HashMap<Key, f32> = HashMap::new();
+        let mut ghosts = Vec::new();
+        let new_keys: HashSet<Key> = self.lines.iter().map(|l| l.key).collect();
+        let mut y = 0.0;
+        for l in &mo.old {
+            let h = self.line_h(l, Some(t));
+            if l.key != Key::None {
+                old_y.insert(l.key, y);
+                if !new_keys.contains(&l.key) && ghost_a > 0.0 {
+                    ghosts.push((l, y, h, ghost_a));
+                }
+            }
+            y += h;
+        }
+        let mut shift = HashMap::new();
+        let mut last = 0.0;
+        for (i, y, _) in self.layout(Some(t)) {
+            if let Some(oy) = old_y.get(&self.lines[i].key) {
+                last = oy - y;
+            }
+            shift.insert(i, last * k);
+        }
+        Some((shift, ghosts))
+    }
+
+    /// Deckkraft des Aufleuchtens einer abgelehnten Zeile.
+    fn row_flash_alpha(&self, key: Key, t: &Theme, now: Instant, anim: bool) -> Option<f32> {
+        if !anim {
+            return None;
+        }
+        let at = self.row_flash.get(&key)?;
+        let k = now.duration_since(*at).as_secs_f32() * 1000.0 / t.size.flash_ms.max(1.0);
+        (k < 1.0).then_some(1.0 - k * k)
     }
 
     #[cfg(test)]
@@ -634,6 +893,8 @@ impl ListView {
                     self.last_click = None;
                     return Some(ListOut::Zoom(l.elements));
                 }
+                // Geschoss- und Summenzeilen sind keine Bauteile (H119)
+                self.focus_none = !matches!(l.kind, Kind::Group | Kind::Row);
                 match l.kind {
                     Kind::Storey => {
                         if !self.closed_storeys.remove(&l.key) {
@@ -643,7 +904,7 @@ impl ListView {
                         Some(ListOut::Repaint)
                     }
                     Kind::Group => {
-                        self.select_all(p, l.elements);
+                        self.select_all(p, l.elements, Some(l.key));
                         Some(ListOut::Picking { selection: true })
                     }
                     Kind::Row => {
@@ -698,7 +959,19 @@ impl ListView {
         let flash = std::time::Duration::from_millis(t.size.flash_ms.max(0.0) as u64);
         self.flash
             .retain(|_, at| anim && now.duration_since(*at) < flash);
-        busy |= !self.flash.is_empty();
+        self.row_flash
+            .retain(|_, at| anim && now.duration_since(*at) < flash);
+        let motion = std::time::Duration::from_secs_f32(
+            (t.size.fade_ms.max(0.0) + t.size.anim_ms.max(0.0)) / 1000.0,
+        );
+        if self
+            .motion
+            .as_ref()
+            .is_some_and(|m| !anim || now.duration_since(m.start) >= motion)
+        {
+            self.motion = None;
+        }
+        busy |= self.flashing();
         busy
     }
 
@@ -845,18 +1118,44 @@ impl ListView {
         let list_top = top + HEAD * s;
         let rows = self.layout(Some(t));
         let pad_band = 10.0 * s;
+        let motion = self.motion_state(t, now);
         // Zeichnet die Leinwand nur einen Streifen (Hover, Auswahl, Pille),
         // bleiben Zeilen und Kopf außerhalb weg: Schrift kostet je Zeile
         let (v0, v1) = c.visible_y();
         let margin = 4.0 * s;
         let outside = |a: f32, b: f32| b + margin < v0 || a - margin > v1;
+        // Weggefallene Zeilen an ihrer alten Lage, blenden aus
+        if let Some((_, ghosts)) = &motion {
+            for &(l, y, h, a) in ghosts {
+                let ys = list_top + y * s - self.scroll_px() as f32;
+                if outside(ys, ys + h * s) || ys + h * s < list_top {
+                    continue;
+                }
+                self.paint_line(c, t, l, (x0, cw), ys, h * s, fonts, now, anim);
+                c.fill_rect(
+                    x0 - pad_band,
+                    ys,
+                    cw + 2.0 * pad_band,
+                    h * s,
+                    alpha(u.sheet_bg, 1.0 - a),
+                );
+            }
+        }
         for &(i, y, h) in &rows {
-            let ys = list_top + y * s - self.scroll_px() as f32;
+            let off = motion
+                .as_ref()
+                .and_then(|m| m.0.get(&i))
+                .copied()
+                .unwrap_or(0.0);
+            let ys = list_top + (y + off) * s - self.scroll_px() as f32;
             if ys + h * s < list_top - 40.0 * s {
                 continue;
             }
-            if ys > self.h as f32 || ys - margin > v1 {
+            if motion.is_none() && (ys > self.h as f32 || ys - margin > v1) {
                 break;
+            }
+            if ys > self.h as f32 {
+                continue;
             }
             if outside(ys, ys + h * s) {
                 continue;
@@ -875,6 +1174,11 @@ impl ListView {
                 if bar {
                     c.fill_rect(x0 - pad_band, band_y, 3.0 * s, band_h, u.accent);
                 }
+            }
+            if let Some(a) = self.row_flash_alpha(l.key, t, now, anim) {
+                let mut p = Path::new();
+                p.rounded_rect(x0 - pad_band, band_y, cw + 2.0 * pad_band, band_h, 3.0 * s);
+                c.fill(&p, alpha(u.sheet_flash, a));
             }
             self.paint_line(c, t, l, (x0, cw), band_y, band_h, fonts, now, anim);
         }
@@ -929,7 +1233,7 @@ impl ListView {
 
     /// Geänderte Werte leuchten noch auf (dann ganze Bilder).
     pub fn flashing(&self) -> bool {
-        !self.flash.is_empty()
+        !self.flash.is_empty() || !self.row_flash.is_empty() || self.motion.is_some()
     }
 
     /// Kopf über der Liste: Titel, Unterzeile, Pille, Knopf, Spaltenköpfe.
@@ -1249,10 +1553,11 @@ fn storey_key(id: sk_model::StoreyId) -> Key {
     Key::Storey(id.index())
 }
 
-fn group_key(st: sk_model::StoreyId, i: usize, g: &GroupQto) -> Key {
-    Key::Group(
+/// Geschoss, Bauteilart, Aufbau einer Wandgruppe ([`Key::Group`]).
+fn group_id(st: sk_model::StoreyId, g: &GroupQto) -> (u32, u8, u32) {
+    (
         st.index(),
-        i as u8,
+        g.category as u8,
         g.layer_set.map_or(u32::MAX, |s| s.index()),
     )
 }
@@ -1409,14 +1714,15 @@ fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut V
         .flat_map(|g| g.rows.iter().map(|r| r.element))
         .collect();
     lines.push(head);
-    for (gi, g) in st.groups.iter().enumerate() {
+    for g in &st.groups {
         groups.push((
             short.clone(),
             g.category,
             g.rows.iter().map(|r| r.element).collect(),
         ));
         if is_wall(g.category) {
-            let gkey = group_key(st.id, gi, g);
+            let (a, b, c) = group_id(st.id, g);
+            let gkey = Key::Group(a, b, c);
             let mut gl = Line::new(Kind::Group, 1, gkey);
             gl.storey = skey;
             gl.elements = g.rows.iter().map(|r| r.element).collect();
@@ -1449,7 +1755,7 @@ fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut V
                 lines.push(rl);
             }
             if g.total.pocket > 0.0 {
-                let mut cl = Line::new(Kind::Control, 2, Key::Control(st.id.index(), gi as u8, 0));
+                let mut cl = Line::new(Kind::Control, 2, Key::GroupControl(a, b, c));
                 cl.storey = skey;
                 cl.group = gkey;
                 cl.cells[0] = match g.category {

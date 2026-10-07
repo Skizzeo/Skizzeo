@@ -97,13 +97,20 @@ pub fn hint(m: &Model, d: &Deleted) -> Vec<String> {
             .map(String::from)
             .collect();
     }
-    // Allgemein „Wand“, wie in soll-loeschen-4 abgenommen
-    let first = match d.removed.len() {
+    vec![removed_line(d.removed.len()), rest_sentence(m, &d.refused)]
+}
+
+/// Zeile 1 nach dem Löschen: allgemein „Wand“, wie in soll-loeschen-4
+/// abgenommen.
+pub fn removed_line(n: usize) -> String {
+    match n {
         1 => "1 Wand gelöscht.".to_string(),
         n => format!("{n} Wände gelöscht."),
-    };
-    vec![first, rest_sentence(m, &d.refused)]
+    }
 }
+
+/// Entf im Mengenfenster auf einer Geschoss- oder Summenzeile (H119).
+pub const NO_PART: &str = "Hier ist kein Bauteil gewählt.";
 
 /// Verweis im Hinweis: „Rückgängig“ nach einem Teil-Löschen, sonst der
 /// Ausweg zum ersten abgelehnten Bauteil.
@@ -355,6 +362,9 @@ impl HintCard {
 /// Befehl einer Zeile des Kontextmenüs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Action {
+    /// Nur im Mengenfenster: die Bauteile der Zeile ins Bild holen (wie
+    /// Doppelklick).
+    ShowInModel,
     ChangeType,
     Properties,
     Delete,
@@ -396,6 +406,27 @@ impl ContextMenu {
         t: &Theme,
         s: f32,
     ) -> ContextMenu {
+        Self::build(m, target, selection, false).at(x, y, win, t, s)
+    }
+
+    /// Dasselbe Menü an einer Zeile des Mengenfensters (H119): oben „Im
+    /// Modell zeigen“, ohne „Eigenschaften“ (das Paneel steht im
+    /// Hauptfenster).
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_list(
+        m: &Model,
+        target: ElementId,
+        selection: &[ElementId],
+        x: f64,
+        y: f64,
+        win: (u32, u32, u32),
+        t: &Theme,
+        s: f32,
+    ) -> ContextMenu {
+        Self::build(m, target, selection, true).at(x, y, win, t, s)
+    }
+
+    fn build(m: &Model, target: ElementId, selection: &[ElementId], list: bool) -> ContextMenu {
         let cat = m.element(target).map(|e| e.category);
         let typed = matches!(
             cat,
@@ -409,16 +440,24 @@ impl ContextMenu {
             ..MenuItem::default()
         };
         let mut items = Vec::new();
+        if list {
+            items.push((
+                row("Im Modell zeigen", "", true, false),
+                Some(Action::ShowInModel),
+            ));
+        }
         if typed {
             items.push((
                 row("Wandtyp ändern …", "", true, false),
                 Some(Action::ChangeType),
             ));
         }
-        items.push((
-            row("Eigenschaften", "", true, false),
-            Some(Action::Properties),
-        ));
+        if !list {
+            items.push((
+                row("Eigenschaften", "", true, false),
+                Some(Action::Properties),
+            ));
+        }
         items.push((menu::separator(), None));
         let deletable = selection.iter().any(|id| m.can_delete(*id).is_ok());
         items.push((
@@ -439,7 +478,7 @@ impl ContextMenu {
                 Some(Action::DeleteBuilding),
             ));
         }
-        let mut c = ContextMenu {
+        ContextMenu {
             target,
             items,
             x: 0.0,
@@ -448,8 +487,12 @@ impl ContextMenu {
             hover: None,
             pressed: false,
             refusal,
-        };
-        let (w, h) = c.size(t, s);
+        }
+    }
+
+    /// An die Maus `(x, y)`, so verschoben, dass es ins Fenster passt.
+    fn at(mut self, x: f64, y: f64, win: (u32, u32, u32), t: &Theme, s: f32) -> ContextMenu {
+        let (w, h) = self.size(t, s);
         let (ww, wh, top) = (win.0 as f32, win.1 as f32, win.2 as f32);
         let mut mx = x as f32;
         let mut my = y as f32;
@@ -459,9 +502,9 @@ impl ContextMenu {
         if my + h > wh {
             my = (my - h).max(top);
         }
-        c.x = mx.round();
-        c.y = my.round();
-        c
+        self.x = mx.round();
+        self.y = my.round();
+        self
     }
 
     /// Zeilen: Text, wählbar, Befehl (Trenner ohne Text und Befehl).

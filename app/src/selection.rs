@@ -54,6 +54,51 @@ impl Selection {
     }
 }
 
+/// Was ein Klick beim Loslassen mit der gemeinsamen Auswahl macht.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickChange {
+    /// Kein Klick (gezogen): Auswahl bleibt.
+    Keep,
+    /// Genau dieses Bauteil wählen (`None`: nichts).
+    Replace(Option<ElementId>),
+    /// Strg+Klick: zur Auswahl dazunehmen bzw. herausnehmen.
+    Add(ElementId),
+    Remove(ElementId),
+}
+
+/// Auswahl beim Loslassen, ohne Fenster: `band` ist das Bauteil, dessen
+/// Band angeklickt wurde, `hit` der Treffer eines Klicks in die Ansicht
+/// (`None`: gezogen, kein Klick; `Some(None)`: ins Leere). Das Band geht
+/// vor. Strg nimmt dazu oder heraus und behält die Auswahl beim Klick ins
+/// Leere, außer das Werkzeug zeichnet gerade.
+pub fn release_pick(
+    band: Option<ElementId>,
+    hit: Option<Option<ElementId>>,
+    ctrl: bool,
+    tool: bool,
+    selected: &[ElementId],
+) -> PickChange {
+    let target = match band {
+        Some(b) => Some(b),
+        None => match hit {
+            None => return PickChange::Keep,
+            Some(h) => h,
+        },
+    };
+    match target {
+        Some(id) if ctrl && !tool => {
+            if selected.contains(&id) {
+                PickChange::Remove(id)
+            } else {
+                PickChange::Add(id)
+            }
+        }
+        // Strg+Klick daneben: wer sammelt, verliert nichts
+        None if ctrl && !tool => PickChange::Keep,
+        t => PickChange::Replace(t),
+    }
+}
+
 /// Bauteil unter dem Bildpunkt `(x, y)` der Ansicht.
 #[allow(clippy::too_many_arguments)]
 pub fn pick_at(

@@ -1395,6 +1395,7 @@ impl App {
     fn close_quantity(&mut self, surface: &Surface) {
         surface.close_quantity();
         self.quantity.open = false;
+        self.quantity.close_popups();
         if self.ui.quantity_open {
             self.ui.quantity_open = false;
             self.dirty_buttons.push(Id::Quantity);
@@ -1416,28 +1417,55 @@ impl App {
         else {
             return;
         };
+        // Löschen, Menü und Verweise ändern Modell und Auswahl: das
+        // Hauptfenster gleicht sich an wie nach eigenen Ereignissen
+        let model = matches!(
+            out,
+            quantity::Out::Delete | quantity::Out::Action(..) | quantity::Out::Link(_)
+        );
         match out {
-            quantity::Out::Picking { selection } => {
-                self.hover_from_list = true;
-                self.redraw = true;
-                if selection {
-                    if self
-                        .picking
-                        .primary()
-                        .is_some_and(|e| self.scene.follow_selection(e))
-                    {
-                        if self.ui.view == ViewKind::Plan {
-                            self.upload_model();
-                        }
-                        self.sync_levels();
-                    }
-                    self.sync_props();
-                }
-            }
+            quantity::Out::Picking { selection } => self.list_picked(selection),
             quantity::Out::Zoom(ids) => self.zoom_to(&ids),
             quantity::Out::SaveCsv => self.save_csv(surface),
             quantity::Out::Command(c) => surface.quantity_command(c),
             quantity::Out::Close => self.close_quantity(surface),
+            quantity::Out::Delete => self.erase(true),
+            quantity::Out::OpenContext { x, y } => {
+                let (t, f) = (&self.theme, &self.ui.fonts);
+                if self
+                    .quantity
+                    .open_context(&self.scene, &mut self.picking, x, y, t, f)
+                {
+                    self.list_picked(true);
+                }
+            }
+            quantity::Out::Action(a, target, ids) => self.context_action(a, target, Some(ids)),
+            quantity::Out::Link(l) => self.follow_link(l),
+        }
+        if model {
+            self.sync_ui();
+            self.sync_props();
+            self.sync_levels();
+            self.sync_caption(surface);
+        }
+    }
+
+    /// Hover oder Auswahl kamen aus der Liste: Hauptfenster angleichen.
+    fn list_picked(&mut self, selection: bool) {
+        self.hover_from_list = true;
+        self.redraw = true;
+        if selection {
+            if self
+                .picking
+                .primary()
+                .is_some_and(|e| self.scene.follow_selection(e))
+            {
+                if self.ui.view == ViewKind::Plan {
+                    self.upload_model();
+                }
+                self.sync_levels();
+            }
+            self.sync_props();
         }
     }
 
@@ -2456,33 +2484,26 @@ impl App {
                     mods,
                 } = ev
                 {
-                    let hit = if eo.clicked.is_some() {
-                        // Band angeklickt, aber nicht verschoben
-                        self.sel.release(x, y, sc);
-                        Some(eo.clicked)
-                    } else if self.sel.release(x, y, sc) {
+                    // Band angeklickt (auch ohne Verschieben) oder Klick in die Ansicht
+                    let clicked = self.sel.release(x, y, sc);
+                    let hit = (eo.clicked.is_none() && clicked).then(|| {
                         let (view, plane) = (self.ui.view, self.plane());
-                        Some(selection::pick_at(
-                            &mut self.scene,
-                            &self.cam,
-                            view,
-                            plane,
-                            x,
-                            y,
-                            vw,
-                            vh,
-                        ))
-                    } else {
-                        None
-                    };
-                    // Strg+Klick nimmt dazu bzw. heraus (Löschen mehrerer)
-                    match hit {
-                        Some(Some(id)) if mods.ctrl && !self.tool.enabled => {
+                        selection::pick_at(&mut self.scene, &self.cam, view, plane, x, y, vw, vh)
+                    });
+                    let change = selection::release_pick(
+                        eo.clicked,
+                        hit,
+                        mods.ctrl,
+                        self.tool.enabled,
+                        &self.picking.selected,
+                    );
+                    match change {
+                        selection::PickChange::Keep => {}
+                        selection::PickChange::Replace(id) => self.select(id),
+                        selection::PickChange::Add(id) | selection::PickChange::Remove(id) => {
                             self.picking.click(id, true);
                             self.redraw = true;
                         }
-                        Some(hit) => self.select(hit),
-                        None => {}
                     }
                 }
             }
@@ -2596,8 +2617,23 @@ impl App {
     /// löschbar sind, in einem Schritt. Gelöschtes blendet aus, Abgelehntes
     /// leuchtet einmal, der Hinweis am Bauteil sagt, was blieb und warum.
     fn delete_selection(&mut self) {
+        self.erase(false);
+    }
+
+    /// Löschen aus dem Hauptfenster oder (`list`) aus dem Mengenfenster
+    /// (H119): dort steht der Hinweis unter der Zeile, das Modell blendet
+    /// aus und leuchtet mit, ohne zweiten Hinweis.
+    fn erase(&mut self, list: bool) {
         let ids = self.picking.selected.clone();
-        if ids.is_empty() || self.tool.is_active() || self.edit.is_dragging() {
+        if self.tool.is_active() || self.edit.is_dragging() {
+            return;
+        }
+        if list && !self.quantity.part_selected(&self.picking) {
+            let lines = vec![delete::NO_PART.to_string()];
+            self.quantity.show_hint(lines, None, Instant::now());
+            return;
+        }
+        if ids.is_empty() {
             return;
         }
         self.close_type_menu(false);
@@ -2611,9 +2647,19 @@ impl App {
         }
         let d = self.scene.delete_elements(&ids);
         let m = self.scene.model();
-        let lines = delete::hint(m, &d);
-        let link = delete::hint_link(m, &d);
+        let (lines, link) = if list {
+            (Vec::new(), None)
+        } else {
+            (delete::hint(m, &d), delete::hint_link(m, &d))
+        };
         let anchor = delete::hint_anchor(&d);
+        if list {
+            let now = Instant::now();
+            self.quantity
+                .erased(&self.scene, &d, &mut self.picking, now);
+        } else if self.quantity.hint.take().is_some() {
+            self.quantity.dirty = true;
+        }
         if !d.removed.is_empty() {
             if fade {
                 self.erase_fade = Some(self.now());
@@ -3019,12 +3065,19 @@ impl App {
             let target = c.target;
             self.context = None;
             self.context_dirty = true;
-            self.context_action(a, target);
+            self.context_action(a, target, None);
         }
         true
     }
 
-    fn context_action(&mut self, a: delete::Action, target: sk_model::ElementId) {
+    /// Befehl aus dem Kontextmenü; `list`: aus dem Mengenfenster, mit den
+    /// Bauteilen der Zeile.
+    fn context_action(
+        &mut self,
+        a: delete::Action,
+        target: sk_model::ElementId,
+        list: Option<Vec<sk_model::ElementId>>,
+    ) {
         match a {
             delete::Action::ChangeType => {
                 // Randdämmstreifen: der Typ seiner Wand
@@ -3043,7 +3096,12 @@ impl App {
                 self.change_type_of(wall);
             }
             delete::Action::Properties => self.select(Some(target)),
-            delete::Action::Delete => self.delete_selection(),
+            delete::Action::ShowInModel => {
+                if let Some(ids) = list {
+                    self.zoom_to(&ids);
+                }
+            }
+            delete::Action::Delete => self.erase(list.is_some()),
             delete::Action::DeleteBuilding => {
                 if let Some(b) = self.scene.model().building_of_element(target) {
                     self.open_confirm(b);
@@ -3357,7 +3415,12 @@ impl App {
             .map(|at| NOTICE_TIME.saturating_sub(at.elapsed()));
         let fade = self.theme.size.fade_ms * (self.theme.size.anim_ms > 0.0) as u8 as f32;
         let hint = self.hint.as_ref().map(|h| h.wait(Instant::now(), fade));
-        [tip, hud, notice, hint].into_iter().flatten().min()
+        let list = if self.quantity.open {
+            self.quantity.wait(&self.theme, Instant::now())
+        } else {
+            None
+        };
+        [tip, hud, notice, hint, list].into_iter().flatten().min()
     }
 
     /// Uhr des Geschossbogens: Millisekunden seit dem Start.
