@@ -48,6 +48,38 @@ pub fn straight_at(c: &[Vec3], i: usize) -> bool {
     (u.x * w.y - u.y * w.x).abs() < 1e-9 && u.dot(w) > 0.0
 }
 
+/// Gehrungsgrenze von [`Solid::sweep`]: wie die Wandecken (Sinus des
+/// Eckwinkels).
+const MIN_SIN: f64 = 0.2;
+
+/// Ende eines offenen Pfads von [`Solid::sweep`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SweepEnd {
+    /// Rechtwinklig zum letzten Segment.
+    Square,
+    /// Gekappt an der senkrechten Ebene durch den Punkt mit der waagerechten
+    /// Normale (z. B. Außenfläche der Wand, an die das Blech stößt).
+    Plane(Vec3, Vec3),
+}
+
+/// Profilpunkt (quer `q`) am offenen Ende `p` mit Richtung `d`.
+fn end_point(end: &SweepEnd, p: Vec3, d: Vec3, q: f64) -> Vec3 {
+    let a = p + right_of(d) * q;
+    match *end {
+        SweepEnd::Square => a,
+        SweepEnd::Plane(p0, n) => {
+            let n = vec3(n.x, n.y, 0.0);
+            let dn = d.dot(n);
+            if dn.abs() < 1e-9 {
+                a
+            } else {
+                let a0 = vec3(a.x, a.y, p0.z);
+                a + d * ((p0 - a0).dot(n) / dn)
+            }
+        }
+    }
+}
+
 /// Senkrechte Schnittebene durch `p0` mit waagerechter Normale `n`: `along`
 /// läuft in der Ebene, [`SectionFrame::pt`] setzt Punkte aus Lauflänge und
 /// Höhe zusammen (gleiche Lauflänge wie [`polygon::plane_intervals`]).
@@ -158,6 +190,151 @@ impl Solid {
             let nr = if outward { r } else { -r };
             self.quad(at_z(a, z0), at_z(b, z0), at_z(b, z1), at_z(a, z1), nr);
         }
+    }
+
+    /// Profilextrusion entlang des waagerechten Linienzugs `path` (Review 2a
+    /// R7, Attika-Blech D3): `profile` ist ein einfaches Polygon aus Punkten
+    /// (quer rechts der Laufrichtung, hoch über dem Pfad) in mm. Ecken auf
+    /// Gehrung (Schnitt der versetzten Geraden), spitze Ecken auf
+    /// `|quer| / MIN_SIN` begrenzt; offene Enden nach `ends` mit Deckel.
+    /// Flächen nach außen gerichtet, Kanten längs jeder Profilecke und um die
+    /// Deckel.
+    pub fn sweep(
+        &mut self,
+        path: &[Vec3],
+        closed: bool,
+        profile: &[(f64, f64)],
+        ends: [SweepEnd; 2],
+    ) {
+        let path: Vec<Vec3> = path
+            .iter()
+            .enumerate()
+            .filter(|(i, p)| *i == 0 || (**p - path[i - 1]).length() > 1e-6)
+            .map(|(_, p)| *p)
+            .collect();
+        let mut path = path;
+        if closed && path.len() > 2 && (path[0] - path[path.len() - 1]).length() <= 1e-6 {
+            path.pop();
+        }
+        let (n, m) = (path.len(), profile.len());
+        if n < 2 || m < 3 || (closed && n < 3) {
+            return;
+        }
+        let segs = if closed { n } else { n - 1 };
+        let dirs: Vec<Vec3> = (0..segs)
+            .map(|k| {
+                let d = path[(k + 1) % n] - path[k];
+                vec3(d.x, d.y, 0.0).normalized()
+            })
+            .collect();
+        // Profil gegen den Uhrzeigersinn (quer, hoch) für Normalen nach außen
+        let area2: f64 = (0..m)
+            .map(|i| {
+                let (a, b) = (profile[i], profile[(i + 1) % m]);
+                a.0 * b.1 - b.0 * a.1
+            })
+            .sum();
+        let prof: Vec<(f64, f64)> = if area2 < 0.0 {
+            profile.iter().rev().copied().collect()
+        } else {
+            profile.to_vec()
+        };
+        // Punkt von Profilecke (q, h) an Pfadpunkt j
+        let at = |j: usize, (q, h): (f64, f64)| -> Vec3 {
+            let p = path[j];
+            let on = |d: Vec3| p + right_of(d) * q;
+            let base = match (closed || j > 0, closed || j + 1 < n) {
+                (true, true) => {
+                    let (d0, d1) = (dirs[(j + segs - 1) % segs], dirs[j % segs]);
+                    let c = d0.x * d1.y - d0.y * d1.x;
+                    if c.abs() < 1e-9 {
+                        on(d1)
+                    } else {
+                        let (a, b) = (on(d0), on(d1));
+                        let w = b - a;
+                        let x = a + d0 * ((w.x * d1.y - w.y * d1.x) / c);
+                        let lim = q.abs() / MIN_SIN;
+                        let off = x - p;
+                        if off.length() > lim {
+                            p + off.normalized() * lim
+                        } else {
+                            x
+                        }
+                    }
+                }
+                (false, _) => end_point(&ends[0], p, dirs[0], q),
+                (_, false) => end_point(&ends[1], p, dirs[segs - 1], q),
+            };
+            vec3(base.x, base.y, p.z + h)
+        };
+        let ring: Vec<Vec<Vec3>> = (0..n)
+            .map(|j| prof.iter().map(|&pq| at(j, pq)).collect())
+            .collect();
+        for k in 0..segs {
+            let (a, b) = (&ring[k], &ring[(k + 1) % n]);
+            let r = right_of(dirs[k]);
+            for i in 0..m {
+                let i1 = (i + 1) % m;
+                let (dq, dh) = (prof[i1].0 - prof[i].0, prof[i1].1 - prof[i].1);
+                // äußere Normale der Profilkante (Profil gegen den Uhrzeigersinn)
+                let nrm = (r * dh + vec3(0.0, 0.0, -dq)).normalized();
+                self.oriented_quad([a[i], b[i], b[i1], a[i1]], nrm);
+            }
+            for i in 0..m {
+                self.edge(a[i], b[i]);
+            }
+        }
+        if !closed {
+            let tris =
+                polygon::triangulate(&prof.iter().map(|p| vec3(p.0, p.1, 0.0)).collect::<Vec<_>>());
+            // Deckel senkrecht zur Laufrichtung oder in der Kappebene
+            let cap_n = |e: &SweepEnd, d: Vec3| match *e {
+                SweepEnd::Plane(_, pn) => {
+                    let pn = vec3(pn.x, pn.y, 0.0).normalized();
+                    if pn.dot(d) < 0.0 {
+                        pn * -1.0
+                    } else {
+                        pn
+                    }
+                }
+                SweepEnd::Square => d,
+            };
+            for (j, nrm) in [
+                (0, cap_n(&ends[0], dirs[0] * -1.0)),
+                (n - 1, cap_n(&ends[1], dirs[segs - 1])),
+            ] {
+                let pts = &ring[j];
+                for t in &tris {
+                    self.oriented_tri([pts[t[0]], pts[t[1]], pts[t[2]]], nrm);
+                }
+                for i in 0..m {
+                    self.edge(pts[i], pts[(i + 1) % m]);
+                }
+            }
+        }
+    }
+
+    /// Dreieck mit Umlauf passend zur Normale `nrm`.
+    fn oriented_tri(&mut self, p: [Vec3; 3], nrm: Vec3) {
+        let c = (p[1] - p[0]).cross(p[2] - p[0]);
+        let p = if c.dot(nrm) < 0.0 {
+            [p[0], p[2], p[1]]
+        } else {
+            p
+        };
+        self.triangles.push(Tri {
+            p,
+            n: nrm,
+            mat: self.mat,
+            uv: [[0.0; 2]; 3],
+            elem: self.elem,
+        });
+    }
+
+    /// Viereck (eben) mit Umlauf passend zur Normale `nrm`.
+    fn oriented_quad(&mut self, p: [Vec3; 4], nrm: Vec3) {
+        self.oriented_tri([p[0], p[1], p[2]], nrm);
+        self.oriented_tri([p[0], p[2], p[3]], nrm);
     }
 
     pub fn edge(&mut self, a: Vec3, b: Vec3) {
@@ -437,4 +614,142 @@ pub fn merge_seam(lower: &mut Solid, upper: &mut Solid, z: f64) {
         k += 1;
         !drop_b[k - 1]
     });
+}
+
+#[cfg(test)]
+mod sweep_tests {
+    use super::*;
+
+    /// Rauminhalt eines geschlossenen, nach außen gerichteten Netzes.
+    fn volume(s: &Solid) -> f64 {
+        s.triangles
+            .iter()
+            .map(|t| t.p[0].dot(t.p[1].cross(t.p[2])) / 6.0)
+            .sum()
+    }
+
+    fn normals_fit(s: &Solid) -> bool {
+        s.triangles.iter().all(|t| {
+            let c = (t.p[1] - t.p[0]).cross(t.p[2] - t.p[0]);
+            c.length() < 1e-9 || c.dot(t.n) > 0.0
+        })
+    }
+
+    const RECHTECK: [(f64, f64); 4] = [(0.0, 0.0), (100.0, 0.0), (100.0, 20.0), (0.0, 20.0)];
+
+    #[test]
+    fn geschlossenes_rechteck_ist_profil_mal_schwerlinie() {
+        // Umlauf gegen den Uhrzeigersinn: rechts = außen, Schwerlinie 50 mm außen
+        let path = [
+            vec3(0.0, 0.0, 3000.0),
+            vec3(10000.0, 0.0, 3000.0),
+            vec3(10000.0, 8000.0, 3000.0),
+            vec3(0.0, 8000.0, 3000.0),
+        ];
+        for prof in [RECHTECK.to_vec(), RECHTECK.iter().rev().copied().collect()] {
+            let mut s = Solid::default();
+            s.sweep(&path, true, &prof, [SweepEnd::Square; 2]);
+            let l = 2.0 * (10100.0 + 8100.0);
+            assert!((volume(&s) - 2000.0 * l).abs() < 1e-3, "{}", volume(&s));
+            assert!(normals_fit(&s));
+            let (lo, hi) = s.bounds().unwrap();
+            assert_eq!(
+                (lo.x, lo.y, lo.z, hi.x, hi.y, hi.z),
+                (-100.0, -100.0, 3000.0, 10100.0, 8100.0, 3020.0)
+            );
+        }
+        // Gegenrichtung: rechts = innen, Schwerlinie 50 mm innen
+        let rev: Vec<Vec3> = path.iter().rev().copied().collect();
+        let mut s = Solid::default();
+        s.sweep(&rev, true, &RECHTECK, [SweepEnd::Square; 2]);
+        assert!((volume(&s) - 2000.0 * 2.0 * (9900.0 + 7900.0)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn offener_zug_mit_ebenenende() {
+        // U-Zug wie die Attika um eine Terrasse: Enden an der Wand y = 6500
+        let path = [
+            vec3(70.0, 6500.0, 0.0),
+            vec3(70.0, 7930.0, 0.0),
+            vec3(9930.0, 7930.0, 0.0),
+            vec3(9930.0, 6500.0, 0.0),
+        ];
+        let wand = SweepEnd::Plane(vec3(0.0, 6500.0, 0.0), vec3(0.0, 1.0, 0.0));
+        let prof = [(-70.0, 0.0), (70.0, 0.0), (70.0, 10.0), (-70.0, 10.0)];
+        let mut s = Solid::default();
+        s.sweep(&path, false, &prof, [wand, wand]);
+        assert!(normals_fit(&s));
+        // Mittellinie 1,43 + 9,86 + 1,43, Profil 140 × 10
+        assert!(
+            (volume(&s) - 1400.0 * 12720.0).abs() < 1e-3,
+            "{}",
+            volume(&s)
+        );
+        let (lo, _) = s.bounds().unwrap();
+        assert!((lo.y - 6500.0).abs() < 1e-9);
+        // Schräge Kappebene: Enden liegen in der Ebene
+        let schraeg = SweepEnd::Plane(vec3(0.0, 6500.0, 0.0), vec3(0.2, 1.0, 0.0));
+        let mut s = Solid::default();
+        s.sweep(&path, false, &prof, [schraeg, SweepEnd::Square]);
+        assert!(normals_fit(&s));
+        let n = vec3(0.2, 1.0, 0.0);
+        let near_start: Vec<Vec3> = s
+            .triangles
+            .iter()
+            .flat_map(|t| t.p)
+            .filter(|p| p.y < 6600.0 && p.x < 500.0)
+            .collect();
+        assert!(!near_start.is_empty());
+        assert!(near_start
+            .iter()
+            .all(|p| vec3(p.x, p.y - 6500.0, 0.0).dot(n).abs() < 1e-6));
+    }
+
+    #[test]
+    fn spitze_winkel_und_kurze_stuecke() {
+        for deg in [10.0f64, 20.0, 60.0, 170.0] {
+            let a = deg.to_radians();
+            let path = [
+                vec3(0.0, 0.0, 0.0),
+                vec3(5000.0, 0.0, 0.0),
+                vec3(5000.0 - 5000.0 * a.cos(), 5000.0 * a.sin(), 0.0),
+            ];
+            for prof in [
+                RECHTECK.to_vec(),
+                vec![(-50.0, 0.0), (50.0, 0.0), (0.0, 30.0)],
+            ] {
+                let mut s = Solid::default();
+                s.sweep(&path, false, &prof, [SweepEnd::Square; 2]);
+                assert!(normals_fit(&s), "{deg}");
+                assert!(s
+                    .triangles
+                    .iter()
+                    .all(|t| t.p.iter().all(|p| p.x.is_finite() && p.y.is_finite())));
+                let (lo, hi) = s.bounds().unwrap();
+                // Gehrungsspitze begrenzt (|quer| / MIN_SIN)
+                assert!((hi - lo).length() < 12000.0, "{deg}");
+                assert!(volume(&s) > 0.0, "{deg}");
+            }
+        }
+        // Kurze Stücke, doppelte Punkte und Zwischenpunkte auf gerader Linie
+        let path = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(1.0, 0.0, 0.0),
+            vec3(1.0, 0.0, 0.0),
+            vec3(500.0, 0.0, 0.0),
+            vec3(1000.0, 0.0, 0.0),
+            vec3(1000.0, 30.0, 0.0),
+        ];
+        let mut s = Solid::default();
+        s.sweep(&path, false, &RECHTECK, [SweepEnd::Square; 2]);
+        assert!(normals_fit(&s));
+        assert!(s
+            .triangles
+            .iter()
+            .all(|t| t.p.iter().all(|p| p.x.is_finite())));
+        // Zu wenig Punkte: nichts
+        let mut s = Solid::default();
+        s.sweep(&path[..1], false, &RECHTECK, [SweepEnd::Square; 2]);
+        assert!(s.is_empty());
+    }
 }
