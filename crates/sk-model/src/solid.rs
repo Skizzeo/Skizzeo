@@ -1,6 +1,6 @@
 //! Einfacher Körper aus Dreiecken und sichtbaren Kanten (Darstellung und Treffertest).
 
-use sk_math::{ray_triangle, vec3, Vec3};
+use sk_math::{polygon, ray_triangle, vec3, Vec3};
 
 /// Baustoff einer Fläche als Darstellungsschlüssel (siehe [`crate::material_key`]).
 /// Farbe und Schraffur stehen in der Baustoffbibliothek des Modells.
@@ -26,6 +26,52 @@ pub mod edge_kind {
     /// Hintergrund: Grundriss des Geschosses unter dem aktiven (E16); Stil aus
     /// [`crate::Display::background`], nicht aus den Tabellen je Art.
     pub const BACKGROUND: u8 = 4;
+}
+
+/// Punkt `p` auf Höhe `z`.
+pub fn at_z(p: Vec3, z: f64) -> Vec3 {
+    vec3(p.x, p.y, z)
+}
+
+/// Rechte Normale einer waagerechten Richtung (bei Umriss gegen den
+/// Uhrzeigersinn: außen).
+pub fn right_of(d: Vec3) -> Vec3 {
+    vec3(d.y, -d.x, 0.0)
+}
+
+/// Läuft der geschlossene Umriss `c` an Punkt `i` gerade weiter (dort keine
+/// senkrechte Kante)?
+pub fn straight_at(c: &[Vec3], i: usize) -> bool {
+    let n = c.len();
+    let (a, b, d) = (c[(i + n - 1) % n], c[i], c[(i + 1) % n]);
+    let (u, w) = ((b - a).normalized(), (d - b).normalized());
+    (u.x * w.y - u.y * w.x).abs() < 1e-9 && u.dot(w) > 0.0
+}
+
+/// Senkrechte Schnittebene durch `p0` mit waagerechter Normale `n`: `along`
+/// läuft in der Ebene, [`SectionFrame::pt`] setzt Punkte aus Lauflänge und
+/// Höhe zusammen (gleiche Lauflänge wie [`polygon::plane_intervals`]).
+#[derive(Clone, Copy, Debug)]
+pub struct SectionFrame {
+    /// Normale, waagerecht und normiert.
+    pub n: Vec3,
+    /// Richtung in der Ebene.
+    pub along: Vec3,
+    base: Vec3,
+}
+
+impl SectionFrame {
+    pub fn new(p0: Vec3, n: Vec3) -> SectionFrame {
+        let n = vec3(n.x, n.y, 0.0).normalized();
+        let along = vec3(-n.y, n.x, 0.0);
+        let base = vec3(p0.x, p0.y, 0.0) - along * vec3(p0.x, p0.y, 0.0).dot(along);
+        SectionFrame { n, along, base }
+    }
+
+    /// Punkt in der Ebene bei Lauflänge `u` und Höhe `z`.
+    pub fn pt(&self, u: f64, z: f64) -> Vec3 {
+        self.base + self.along * u + vec3(0.0, 0.0, z)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -83,6 +129,35 @@ impl Solid {
             uv: [uv[0], uv[2], uv[3]],
             elem,
         });
+    }
+
+    /// Waagerechte Fläche aus dem Polygon `pts` auf Höhe `z`, nach oben
+    /// (`up`) oder nach unten gerichtet.
+    pub fn cap(&mut self, pts: &[Vec3], z: f64, up: bool) {
+        let nrm = vec3(0.0, 0.0, if up { 1.0 } else { -1.0 });
+        for t in polygon::triangulate(pts) {
+            let [a, b, c] = t.map(|k| at_z(pts[k], z));
+            self.triangles.push(Tri {
+                p: if up { [a, b, c] } else { [a, c, b] },
+                n: nrm,
+                mat: self.mat,
+                uv: [[0.0; 2]; 3],
+                elem: self.elem,
+            });
+        }
+    }
+
+    /// Senkrechte Seitenflächen entlang des geschlossenen Umrisses `c`
+    /// zwischen `z0` und `z1`, nach außen (`outward`, rechts der Laufrichtung)
+    /// oder nach innen gerichtet; ohne Kanten.
+    pub fn sides(&mut self, c: &[Vec3], z0: f64, z1: f64, outward: bool) {
+        let n = c.len();
+        for i in 0..n {
+            let (a, b) = (c[i], c[(i + 1) % n]);
+            let r = right_of((b - a).normalized());
+            let nr = if outward { r } else { -r };
+            self.quad(at_z(a, z0), at_z(b, z0), at_z(b, z1), at_z(a, z1), nr);
+        }
     }
 
     pub fn edge(&mut self, a: Vec3, b: Vec3) {

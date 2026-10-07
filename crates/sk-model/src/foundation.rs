@@ -12,10 +12,10 @@
 //! fehlt in beiden Körpern, und keine Kante zeichnet die Trennung, weder in 3D
 //! noch im Schnitt.
 
-use crate::solid::{edge_kind, material, Edge, Solid};
+use crate::solid::{at_z, edge_kind, material, straight_at, Edge, SectionFrame, Solid};
 use crate::wall::WallChain;
 use sk_math::polygon::{self, Inset, InsetError};
-use sk_math::{vec3, Vec3};
+use sk_math::Vec3;
 
 /// Maße und Baustoffe der Gründung (mm, Baustoff als Darstellungsschlüssel).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -76,23 +76,6 @@ pub struct Foundation {
     pub outline: Vec<Vec3>,
     pub footing: FootingShape,
     pub params: FoundationParams,
-}
-
-/// Rechte Normale einer Richtung (bei Umriss gegen den Uhrzeigersinn: außen).
-fn right_of(d: Vec3) -> Vec3 {
-    vec3(d.y, -d.x, 0.0)
-}
-
-fn at_z(p: Vec3, z: f64) -> Vec3 {
-    vec3(p.x, p.y, z)
-}
-
-/// Gerade weiter an Punkt `i` (keine Kante zeichnen)?
-fn straight(c: &[Vec3], i: usize) -> bool {
-    let n = c.len();
-    let (a, b, d) = (c[(i + n - 1) % n], c[i], c[(i + 1) % n]);
-    let (u, w) = ((b - a).normalized(), (d - b).normalized());
-    (u.x * w.y - u.y * w.x).abs() < 1e-9 && u.dot(w) > 0.0
 }
 
 impl Foundation {
@@ -174,34 +157,12 @@ impl Foundation {
             .collect()
     }
 
-    /// Waagerechte Fläche aus dem Polygon `pts` auf Höhe `z`.
-    fn cap(s: &mut Solid, pts: &[Vec3], z: f64, up: bool) {
-        let nrm = vec3(0.0, 0.0, if up { 1.0 } else { -1.0 });
-        for t in polygon::triangulate(pts) {
-            let [a, b, c] = t.map(|k| at_z(pts[k], z));
-            let p = if up { [a, b, c] } else { [a, c, b] };
-            s.triangles.push(crate::solid::Tri {
-                p,
-                n: nrm,
-                mat: s.mat,
-                uv: [[0.0; 2]; 3],
-                elem: s.elem,
-            });
-        }
-    }
-
     /// Seitenflächen entlang `c` zwischen `z0` (unten) und `z1`, nach außen
     /// (`outward`) oder nach innen gerichtet; senkrechte Kanten an den Ecken.
     fn walls(s: &mut Solid, c: &[Vec3], z0: f64, z1: f64, outward: bool) {
-        let n = c.len();
-        for i in 0..n {
-            let (a, b) = (c[i], c[(i + 1) % n]);
-            let d = (b - a).normalized();
-            let nr = if outward { right_of(d) } else { -right_of(d) };
-            s.quad(at_z(a, z0), at_z(b, z0), at_z(b, z1), at_z(a, z1), nr);
-        }
-        for i in 0..n {
-            if !straight(c, i) {
+        s.sides(c, z0, z1, outward);
+        for i in 0..c.len() {
+            if !straight_at(c, i) {
                 s.edge(at_z(c[i], z0), at_z(c[i], z1));
             }
         }
@@ -222,23 +183,23 @@ impl Foundation {
         };
         let (zb, _) = self.levels();
         let c0 = &self.outline;
-        Foundation::cap(&mut s, c0, 0.0, true);
+        s.cap(c0, 0.0, true);
         Foundation::walls(&mut s, c0, zb, 0.0, true);
         Foundation::ring(&mut s, c0, 0.0);
         match (&self.footing, self.seamless()) {
             (FootingShape::Ring(inset), seamless) => {
                 // Unterseite nur innerhalb der Schürze sichtbar
-                Foundation::cap(&mut s, &inset.pts, zb, false);
+                s.cap(&inset.pts, zb, false);
                 Foundation::ring(&mut s, &inset.pts, zb);
                 if !seamless {
                     for cell in self.ring_cells(inset) {
-                        Foundation::cap(&mut s, &cell, zb, false);
+                        s.cap(&cell, zb, false);
                     }
                     Foundation::ring(&mut s, c0, zb);
                 }
             }
             (FootingShape::Full(_), false) => {
-                Foundation::cap(&mut s, c0, zb, false);
+                s.cap(c0, zb, false);
                 Foundation::ring(&mut s, c0, zb);
             }
             (FootingShape::Full(_), true) => {}
@@ -265,16 +226,16 @@ impl Foundation {
                 Foundation::walls(&mut s, &inset.pts, zb, zt, false);
                 Foundation::ring(&mut s, &inset.pts, zb);
                 for cell in self.ring_cells(inset) {
-                    Foundation::cap(&mut s, &cell, zb, false);
+                    s.cap(&cell, zb, false);
                     if !self.seamless() {
-                        Foundation::cap(&mut s, &cell, zt, true);
+                        s.cap(&cell, zt, true);
                     }
                 }
             }
             FootingShape::Full(_) => {
-                Foundation::cap(&mut s, c0, zb, false);
+                s.cap(c0, zb, false);
                 if !self.seamless() {
-                    Foundation::cap(&mut s, c0, zt, true);
+                    s.cap(c0, zt, true);
                 }
             }
         }
@@ -306,12 +267,12 @@ impl Foundation {
                 Foundation::walls(&mut s, &inset.pts, zb, cut, false);
                 s.mat = mat | material::CUT;
                 for cell in self.ring_cells(inset) {
-                    Foundation::cap(&mut s, &cell, cut, true);
+                    s.cap(&cell, cut, true);
                 }
                 s.edge_kind = edge_kind::CUT;
                 Foundation::ring(&mut s, &inset.pts, cut);
             }
-            FootingShape::Full(_) => Foundation::cap(&mut s, c0, cut, true),
+            FootingShape::Full(_) => s.cap(c0, cut, true),
         }
         s.edge_kind = edge_kind::CUT;
         Foundation::ring(&mut s, c0, cut);
@@ -339,10 +300,9 @@ impl Foundation {
     /// Vereinigung ist kräftig ([`edge_kind::CUT`]); bei gleichem Baustoff gibt
     /// es keine Linie zwischen Platte und Schürze.
     pub fn section_caps(&self, p0: Vec3, n: Vec3) -> (Solid, Solid) {
-        let n = vec3(n.x, n.y, 0.0).normalized();
-        let along = vec3(-n.y, n.x, 0.0);
-        let base = vec3(p0.x, p0.y, 0.0) - along * vec3(p0.x, p0.y, 0.0).dot(along);
-        let pt = |u: f64, z: f64| base + along * u + vec3(0.0, 0.0, z);
+        let f = SectionFrame::new(p0, n);
+        let (n, along) = (f.n, f.along);
+        let pt = |u: f64, z: f64| f.pt(u, z);
         let (zt, zb) = self.levels();
         let mut slab = Solid {
             mat: self.params.slab_mat | material::CUT,
@@ -464,6 +424,7 @@ impl Foundation {
 mod tests {
     use super::*;
     use crate::wall::{Layer, RefSide};
+    use sk_math::vec3;
 
     const CONCRETE: u16 = 7;
 

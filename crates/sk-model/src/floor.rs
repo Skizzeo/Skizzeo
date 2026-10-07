@@ -12,7 +12,7 @@
 //!
 //! [`Joints::slab_band`]: crate::wall::Joints::slab_band
 
-use crate::solid::{edge_kind, material, Solid, Tri};
+use crate::solid::{at_z, edge_kind, material, right_of, straight_at, SectionFrame, Solid};
 use crate::wall::WallChain;
 use sk_math::polygon;
 use sk_math::{vec3, Vec3};
@@ -87,14 +87,6 @@ pub struct FloorSlab {
     /// Grundriss der Untersichtdämmung je vorspringendem Segment (Segment,
     /// auf z = 0): Kern EG Anfang, Ende, Kern darüber Ende, Anfang.
     pub soffits: Vec<(usize, [Vec3; 4])>,
-}
-
-fn at_z(p: Vec3, z: f64) -> Vec3 {
-    vec3(p.x, p.y, z)
-}
-
-fn right_of(d: Vec3) -> Vec3 {
-    vec3(d.y, -d.x, 0.0)
 }
 
 impl FloorSlab {
@@ -229,30 +221,6 @@ impl FloorSlab {
         (self.params.top - self.params.thickness, self.params.top)
     }
 
-    fn cap(s: &mut Solid, pts: &[Vec3], z: f64, up: bool) {
-        let nrm = vec3(0.0, 0.0, if up { 1.0 } else { -1.0 });
-        for t in polygon::triangulate(pts) {
-            let [a, b, c] = t.map(|k| at_z(pts[k], z));
-            s.triangles.push(Tri {
-                p: if up { [a, b, c] } else { [a, c, b] },
-                n: nrm,
-                mat: s.mat,
-                uv: [[0.0; 2]; 3],
-                elem: s.elem,
-            });
-        }
-    }
-
-    /// Senkrechte Ecke an Punkt `i` (nicht dort, wo der Umriss gerade weiterläuft)?
-    fn corner(c: &[Vec3], i: usize) -> bool {
-        let n = c.len();
-        let (u, w) = (
-            (c[i] - c[(i + n - 1) % n]).normalized(),
-            (c[(i + 1) % n] - c[i]).normalized(),
-        );
-        !((u.x * w.y - u.y * w.x).abs() < 1e-9 && u.dot(w) > 0.0)
-    }
-
     /// Deckenkörper zwischen `z0` und `z1`; ist `cut_top`, trägt die Deckfläche
     /// [`material::CUT`] und ist kräftig umrandet.
     fn prism(&self, z0: f64, z1: f64, cut_top: bool) -> Solid {
@@ -262,18 +230,17 @@ impl FloorSlab {
         };
         let c = &self.outline;
         let n = c.len();
-        FloorSlab::cap(&mut s, c, z0, false);
+        s.cap(c, z0, false);
         s.mat = if cut_top {
             self.params.mat | material::CUT
         } else {
             self.params.mat
         };
-        FloorSlab::cap(&mut s, c, z1, true);
+        s.cap(c, z1, true);
         s.mat = self.params.mat;
+        s.sides(c, z0, z1, true);
         for i in 0..n {
             let (a, b) = (c[i], c[(i + 1) % n]);
-            let nr = right_of((b - a).normalized());
-            s.quad(at_z(a, z0), at_z(b, z0), at_z(b, z1), at_z(a, z1), nr);
             s.edge_kind = edge_kind::VIEW;
             s.edge(at_z(a, z0), at_z(b, z0));
             s.edge_kind = if cut_top {
@@ -282,7 +249,7 @@ impl FloorSlab {
                 edge_kind::VIEW
             };
             s.edge(at_z(a, z1), at_z(b, z1));
-            if FloorSlab::corner(c, i) {
+            if !straight_at(c, i) {
                 s.edge_kind = edge_kind::VIEW;
                 s.edge(at_z(a, z0), at_z(a, z1));
             }
@@ -333,22 +300,20 @@ impl FloorSlab {
         };
         for (_, q) in &self.soffits {
             let ring = polygon::to_ccw(q);
-            FloorSlab::cap(&mut s, &ring, z0, false);
+            s.cap(&ring, z0, false);
             s.mat = if cut_top {
                 sp.mat | material::CUT
             } else {
                 sp.mat
             };
-            FloorSlab::cap(&mut s, &ring, z1, true);
+            s.cap(&ring, z1, true);
             s.mat = sp.mat;
-            let n = ring.len();
-            for i in 0..n {
-                let (a, b) = (ring[i], ring[(i + 1) % n]);
-                let nr = right_of((b - a).normalized());
-                s.quad(at_z(a, z0), at_z(b, z0), at_z(b, z1), at_z(a, z1), nr);
-                if cut_top {
-                    s.edge_kind = edge_kind::CUT_LAYER;
-                    s.edge(at_z(a, z1), at_z(b, z1));
+            s.sides(&ring, z0, z1, true);
+            if cut_top {
+                s.edge_kind = edge_kind::CUT_LAYER;
+                let n = ring.len();
+                for i in 0..n {
+                    s.edge(at_z(ring[i], z1), at_z(ring[(i + 1) % n], z1));
                 }
             }
         }
@@ -373,10 +338,9 @@ impl FloorSlab {
     /// Schnittflächen mit der senkrechten Ebene durch `p0` mit Normale `n`
     /// (Flächen zeigen in Richtung `n`), ringsum kräftig umrandet.
     pub fn section_caps(&self, p0: Vec3, n: Vec3) -> Solid {
-        let n = vec3(n.x, n.y, 0.0).normalized();
-        let along = vec3(-n.y, n.x, 0.0);
-        let base = vec3(p0.x, p0.y, 0.0) - along * vec3(p0.x, p0.y, 0.0).dot(along);
-        let pt = |u: f64, z: f64| base + along * u + vec3(0.0, 0.0, z);
+        let f = SectionFrame::new(p0, n);
+        let (n, along) = (f.n, f.along);
+        let pt = |u: f64, z: f64| f.pt(u, z);
         let (zb, zt) = self.band();
         let mut s = Solid {
             mat: self.params.mat | material::CUT,
@@ -400,10 +364,9 @@ impl FloorSlab {
         let (Some(sp), Some((z0, z1))) = (self.soffit, self.soffit_band()) else {
             return Solid::default();
         };
-        let n = vec3(n.x, n.y, 0.0).normalized();
-        let along = vec3(-n.y, n.x, 0.0);
-        let base = vec3(p0.x, p0.y, 0.0) - along * vec3(p0.x, p0.y, 0.0).dot(along);
-        let pt = |u: f64, z: f64| base + along * u + vec3(0.0, 0.0, z);
+        let f = SectionFrame::new(p0, n);
+        let (n, along) = (f.n, f.along);
+        let pt = |u: f64, z: f64| f.pt(u, z);
         let mut s = Solid {
             mat: sp.mat | material::CUT,
             edge_kind: edge_kind::CUT_LAYER,
@@ -523,10 +486,9 @@ impl FloorSlab {
         let (Some(sp), Some(q)) = (self.strip, self.strips.get(k)) else {
             return Solid::default();
         };
-        let n = vec3(n.x, n.y, 0.0).normalized();
-        let along = vec3(-n.y, n.x, 0.0);
-        let base = vec3(p0.x, p0.y, 0.0) - along * vec3(p0.x, p0.y, 0.0).dot(along);
-        let pt = |u: f64, z: f64| base + along * u + vec3(0.0, 0.0, z);
+        let f = SectionFrame::new(p0, n);
+        let (n, along) = (f.n, f.along);
+        let pt = |u: f64, z: f64| f.pt(u, z);
         let (zb, zt) = self.band();
         let mut s = Solid {
             mat: sp.mat | material::CUT,
