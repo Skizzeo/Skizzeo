@@ -380,14 +380,19 @@ impl WheelView {
         t: u64,
     ) {
         let up = match wheel.hover {
-            Some(Part::Up) => true,
-            Some(Part::Down) => false,
+            Some(Part::Up) => Some(true),
+            Some(Part::Down) => Some(false),
+            Some(Part::Mirror) => None,
             _ => return,
         };
         if !wheel.hint_due(t) || wheel.animating(t) {
             return;
         }
-        let Some((line, kote)) = wheel.arrow_hint(s, up, input) else {
+        let hint = match up {
+            Some(up) => wheel.arrow_hint(s, up, input),
+            None => Some((crate::section::MIRROR_HINT.to_string(), String::new())),
+        };
+        let Some((line, kote)) = hint else {
             return;
         };
         let slot = self.base + SLOTS - 1;
@@ -398,9 +403,18 @@ impl WheelView {
         }
         let (w, h) = r.overlay_size(slot);
         let (w, h) = (w as f32, h as f32);
-        let tip = g.tip(up);
-        let x = (tip.0 - g.head_w * 0.5 - 8.0 * g.s - w).max(0.0);
-        let y = tip.1 - h * 0.5;
-        Self::place(r, placed, slot, (x, y, w, h), self.fade);
+        let (x, y) = match up {
+            Some(up) => {
+                let tip = g.tip(up);
+                (tip.0 - g.head_w * 0.5 - 8.0 * g.s - w, tip.1 - h * 0.5)
+            }
+            // Knopf „Blickrichtung“: links daneben
+            None => {
+                let (bx, by) = wheel::mirror_at(g);
+                let bh = r.overlay_size(self.base + SLOTS - 2).1 as f32;
+                (bx - 8.0 * g.s - w, by + (bh - h) * 0.5)
+            }
+        };
+        Self::place(r, placed, slot, (x.max(0.0), y, w, h), self.fade);
     }
 }

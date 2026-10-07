@@ -301,9 +301,6 @@ pub struct Scene {
     theme: Theme,
     /// Aktives Geschoss (Sitzungszustand, nicht in der Datei); `None` = EG.
     active: Option<sk_model::StoreyId>,
-    /// Schnitt der Ansicht „Schnitt“ (A = 0, B = 1; Sitzungszustand wie das
-    /// aktive Geschoss).
-    active_cut: usize,
     /// Gebäude, dessen Dialog offen ist oder dessen Polygon gerade gezeichnet
     /// wird (ein offener Schritt „Gebäude erstellt“), und das vorher aktive
     /// Geschoss.
@@ -497,7 +494,6 @@ impl Scene {
             table,
             theme,
             active: None,
-            active_cut: 0,
             pending: None,
             draft: BuildingDraft::default(),
             pending_rev: 0,
@@ -736,18 +732,18 @@ impl Scene {
         true
     }
 
-    /// Schnitt der Ansicht „Schnitt“.
+    /// Schnitt der Ansicht „Schnitt“ (steht mit in der Datei).
     pub fn active_cut(&self) -> usize {
-        self.active_cut
+        self.model.active_cut()
     }
 
     /// Anderen Schnitt zeigen; `false`, wenn es ihn nicht gibt oder er es
     /// schon ist.
     pub fn set_active_cut(&mut self, i: usize) -> bool {
-        if i >= sk_model::CUT_NAMES.len() || i == self.active_cut {
+        if i >= sk_model::CUT_NAMES.len() || i == self.model.active_cut() {
             return false;
         }
-        self.active_cut = i;
+        self.model.set_active_cut(i);
         true
     }
 

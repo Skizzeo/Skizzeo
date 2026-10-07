@@ -289,7 +289,9 @@ pub(crate) fn plan_camera(
 }
 
 /// Schnitt eingepasst wie der Grundriss (links vom Schnittrad), Blick in
-/// die Richtung `dir` des aktiven Schnitts.
+/// die Richtung `dir` des aktiven Schnitts. Alle Schnitte haben einen
+/// Maßstab (der breiteste bestimmt ihn) und ±0,00 auf derselben Bildhöhe
+/// (E19 §8): Eingepasst wird ein im Grundriss quadratischer Rahmen.
 pub(crate) fn section_camera(
     ui: &Ui,
     wheel: &wheel::Wheel,
@@ -297,6 +299,11 @@ pub(crate) fn section_camera(
     (w, h, top): (u32, u32, u32),
     dir: Vec3,
 ) -> Camera {
+    let bounds = bounds.map(|(lo, hi)| {
+        let c = (lo + hi) * 0.5;
+        let r = 0.5 * (hi.x - lo.x).max(hi.y - lo.y);
+        (vec3(c.x - r, c.y - r, lo.z), vec3(c.x + r, c.y + r, hi.z))
+    });
     let (vw, vh) = (w as f64, h.saturating_sub(top) as f64);
     let tools = ui.rect(Panel::Tools, w, top);
     let s = ui.dpi() as f64;
@@ -563,6 +570,10 @@ struct App {
     wheel_acc: f64,
     wheel_press: bool,
     view_shift: f32,
+    /// Schnittbild waagerecht: Versatz (Pixel), Stauchung, Achse (Pixel).
+    view_squeeze: (f32, f32, f32),
+    /// Blatt wenden beim Spiegeln (E19): Beginn und Achse (Pixel).
+    turn: Option<(u64, f32)>,
     /// Gemeinsamer Hover- und Auswahlzustand beider Fenster (F2).
     picking: picking::Picking,
     /// Mengenfenster (F2, B7).
@@ -910,14 +921,22 @@ impl App {
     }
 
     /// Knopf „Blickrichtung“ am Schnittrad: den gezeigten Schnitt spiegeln,
-    /// das alte Bild blendet über.
+    /// das Bild wendet sich wie ein Blatt (E19 §4).
     fn mirror_cut(&mut self) {
         let i = self.scene.active_cut();
         self.sect.lines[i].ensure(&self.scene);
         self.sect.lines[i].mirror();
-        if self.theme.size.fade_ms > 0.0 && self.theme.size.anim_ms > 0.0 && self.w > 0 {
+        if !self.wheel.instant() && self.w > 0 {
+            // Achse: Mitte des Gebäudes im Bild
+            let (vw, vh, _) = self.view_size();
+            let c = self
+                .scene
+                .bounds()
+                .map_or(vec3(0.0, 0.0, 0.0), |(lo, hi)| (lo + hi) * 0.5);
+            let axis = self.cam.project(c, vw, vh).map_or(vw * 0.5, |p| p.0) as f32;
             self.renderer.capture_scene();
-            self.erase_fade = Some(self.now());
+            self.erase_fade = None;
+            self.turn = Some((self.now(), axis));
         }
         let so = section::SectionOutcome {
             changed: true,
@@ -948,11 +967,9 @@ impl App {
         }
         let same_mesh = geometry(v) == geometry(self.ui.view);
         self.ui.view = v;
-        // Der Knopf „Schnitt“ öffnet Schnitt A; der Bogen blättert dort
-        // durch die Schnitte, im Grundriss durch die Geschosse
-        if v == ViewKind::Section {
-            self.scene.set_active_cut(section::CUT_A);
-        }
+        // Der Knopf „Schnitt“ öffnet den zuletzt benutzten Schnitt (zuerst
+        // A); der Bogen blättert dort durch die Schnitte, im Grundriss durch
+        // die Geschosse
         self.wheel.set_track(if v == ViewKind::Section {
             wheel::Track::Cuts
         } else {
@@ -1043,7 +1060,7 @@ impl App {
         self.nav = Navigation::default();
         self.edit = WallEdit::default();
         self.sect = Sections::default();
-        self.sect.load(self.scene.model().cuts());
+        self.sect.load(&self.scene);
         self.sel = Selection::default();
         self.props_key = None;
         self.ui.set_props(None);
@@ -4188,13 +4205,41 @@ impl App {
             self.refresh_cursor();
         }
         self.view_shift = 0.0;
+        self.view_squeeze = (0.0, 1.0, 0.0);
+        let turn = self.turn.filter(|_| self.ui.view == ViewKind::Section);
         match self.wheel.progress(t).filter(|_| plan) {
             Some((e, sw)) => {
-                // Nach oben: das alte Geschoss sinkt weg, das neue kommt von oben
-                let dir = sw.steps.signum() as f32;
                 let slide = wheel::SLIDE * self.ui.dpi();
-                self.renderer.set_snapshot(1.0 - e, dir * slide * e);
-                self.view_shift = -dir * slide * (1.0 - e);
+                if let (wheel::Stop::Cut(a), wheel::Stop::Cut(b)) = (sw.from, sw.to) {
+                    // Schnitte: seitlich, zu B gleitet das alte Bild nach
+                    // links und das neue kommt von rechts
+                    let dir = if b > a { -1.0 } else { 1.0 };
+                    self.renderer.set_snapshot_xy(1.0 - e, dir * slide * e, 0.0);
+                    self.view_squeeze = (-dir * slide * (1.0 - e), 1.0, 0.0);
+                } else {
+                    // Nach oben: das alte Geschoss sinkt weg, das neue kommt von oben
+                    let dir = sw.steps.signum() as f32;
+                    self.renderer.set_snapshot(1.0 - e, dir * slide * e);
+                    self.view_shift = -dir * slide * (1.0 - e);
+                }
+                self.redraw = true;
+            }
+            None if turn.is_some() => {
+                // Blatt wenden: das alte Bild staucht sich zur Achse, dann
+                // öffnet sich das neue, in der Mitte leicht abgedunkelt
+                let (t0, axis) = turn.unwrap_or_default();
+                let p = t.saturating_sub(t0) as f32 / self.theme.size.anim_ms.max(1.0);
+                let e = wheel::ease_in_out_cubic(p.min(1.0));
+                if p >= 1.0 {
+                    self.turn = None;
+                    self.renderer.release_snapshot();
+                } else if e < 0.5 {
+                    let shade = 1.0 - 0.15 * (std::f32::consts::PI * e).sin();
+                    self.renderer.set_snapshot_turn(1.0 - 2.0 * e, axis, shade);
+                } else {
+                    self.renderer.set_snapshot(0.0, 0.0);
+                    self.view_squeeze = (0.0, 2.0 * e - 1.0, axis);
+                }
                 self.redraw = true;
             }
             None => match self.erase_fade {
@@ -4508,6 +4553,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         wheel_acc: 0.0,
         wheel_press: false,
         view_shift: 0.0,
+        view_squeeze: (0.0, 1.0, 0.0),
+        turn: None,
         picking: picking::Picking::default(),
         quantity: quantity::QuantityWindow::new(),
         hover_from_list: false,
@@ -4560,14 +4607,28 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         a.open_path(&surface, path);
     }
     // `--ansicht schnitt`: mit dieser Ansicht beginnen (Bildvergleiche);
-    // `schnitt-b` zeigt Schnitt B
+    // `schnitt` zeigt Schnitt A, `schnitt-b` Schnitt B, dazu `--gespiegelt`
+    // mit umgekehrtem Blick
     let start = std::env::args().skip_while(|a| a != "--ansicht").nth(1);
-    let cut_b = start.as_deref() == Some("schnitt-b");
-    let start = if cut_b { Some("schnitt".into()) } else { start };
+    let cut = match start.as_deref() {
+        Some("schnitt") => Some(section::CUT_A),
+        Some("schnitt-b") => Some(section::CUT_B),
+        _ => None,
+    };
+    let start = if cut.is_some() {
+        Some("schnitt".into())
+    } else {
+        start
+    };
     if let Some(v) = start.and_then(|n| ViewKind::from_arg(&n)) {
+        if let Some(i) = cut {
+            a.scene.set_active_cut(i);
+        }
         a.set_view(v);
-        if cut_b && a.scene.set_active_cut(section::CUT_B) {
-            a.sect.ensure(&a.scene);
+        if let Some(i) = cut.filter(|_| std::env::args().any(|x| x == "--gespiegelt")) {
+            a.sect.lines[i].ensure(&a.scene);
+            a.sect.lines[i].mirror();
+            a.scene.set_cut(i, a.sect.lines[i].cut());
             a.fit_camera();
             a.upload_model();
         }
@@ -4626,6 +4687,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             && a.fly.is_none()
             && !a.scene.growing()
             && a.erase_fade.is_none()
+            && a.turn.is_none()
             && a.erase_flash.is_none()
             && a.card_fade.is_none()
             && a.flush_anim.is_none()
@@ -5012,6 +5074,11 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             // Geschosswechsel: der neue Grundriss gleitet an seinen Platz
             if a.view_shift != 0.0 {
                 view = view.shifted(a.view_shift, (a.h - th) as f32);
+            }
+            // Schnittwechsel gleitet seitlich, Spiegeln wendet das Blatt
+            let (dx, k, axis) = a.view_squeeze;
+            if (dx, k) != (0.0, 1.0) {
+                view = view.squeezed(dx, k, axis, a.w as f32);
             }
             a.renderer.draw(a.w, a.h, th, &view)?;
             let shown_at = a.now();

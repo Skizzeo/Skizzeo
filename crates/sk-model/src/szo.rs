@@ -860,14 +860,17 @@ pub fn write(m: &Model) -> String {
         write_props(&mut out, "prop", "elem", e.guid, &e.props);
     }
     // Schnitte nur, wenn sie einmal gezeigt wurden: sonst bleibt die Datei
-    // bytegleich
-    for (name, c) in crate::model::CUT_NAMES.iter().zip(m.cuts()) {
+    // bytegleich; `active=1` nur, wenn zuletzt nicht A gezeigt wurde
+    for (i, (name, c)) in crate::model::CUT_NAMES.iter().zip(m.cuts()).enumerate() {
         if let Some(pos) = c.pos {
-            Line::new("cut")
+            let mut l = Line::new("cut")
                 .word("name", name)
                 .num("pos", pos)
-                .flag("flip", c.flip)
-                .finish(&mut out);
+                .flag("flip", c.flip);
+            if i != 0 && i == m.active_cut() {
+                l = l.flag("active", true);
+            }
+            l.finish(&mut out);
         }
     }
     out
@@ -1465,23 +1468,39 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     }
     // Schnitte (Lage, Blickrichtung); ältere Dateien haben keine
     let mut cuts = Vec::new();
+    let mut active_cut = 0;
     for r in recs("cut") {
+        // Eine fehlerhafte Zeile gibt einen Hinweis und wird übersprungen
+        // (Ansichtszustand, das Projekt öffnet trotzdem)
+        let flag = |k: &str| match r.opt(k) {
+            Some(_) => r.flag(k),
+            None => Ok(false),
+        };
         let name = r.opt("name").unwrap_or("");
-        match crate::model::CUT_NAMES.iter().position(|n| *n == name) {
-            Some(i) => cuts.push((
-                i,
-                crate::model::Cut {
+        let parsed = match crate::model::CUT_NAMES.iter().position(|n| *n == name) {
+            Some(i) => (|| {
+                let cut = crate::model::Cut {
                     pos: Some(r.f64("pos")?),
-                    flip: match r.opt("flip") {
-                        Some(_) => r.flag("flip")?,
-                        None => false,
-                    },
-                },
-            )),
-            None => hints.push(format!(
-                "Zeile {}: [cut]: Schnitt „{name}“ unbekannt, übersprungen",
-                r.line
-            )),
+                    flip: flag("flip")?,
+                };
+                Ok((i, cut, flag("active")?))
+            })(),
+            None => Err(err(r.line, format!("[cut]: Schnitt „{name}“ unbekannt"))),
+        };
+        match parsed {
+            Ok((i, cut, active)) => {
+                cuts.push((i, cut));
+                if active {
+                    active_cut = i;
+                }
+            }
+            Err(e) => {
+                // Die übrigen Schlüssel der Zeile nicht noch einmal melden
+                for k in ["name", "pos", "flip", "active"] {
+                    r.opt(k);
+                }
+                hints.push(format!("{e}, übersprungen"));
+            }
         }
     }
     for recs in by.values() {
@@ -1522,6 +1541,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     for (i, c) in cuts {
         model.set_cut(i, c);
     }
+    model.set_active_cut(active_cut);
     hints.extend(model.check());
     Ok(Loaded { model, hints })
 }
@@ -2110,7 +2130,15 @@ mod tests {
         let l = load(&a).unwrap();
         assert!(l.hints.is_empty(), "{:?}", l.hints);
         assert_eq!(l.model.cuts(), m.cuts());
+        assert_eq!(l.model.active_cut(), 0);
         assert_eq!(write(&l.model), a);
+        // Zuletzt gezeigt: B
+        m.set_active_cut(1);
+        let b = write(&m);
+        assert!(b.contains("[cut] name=B pos=5000.5 flip=1 active=1"), "{b}");
+        let l = load(&b).unwrap();
+        assert_eq!(l.model.active_cut(), 1);
+        assert_eq!(write(&l.model), b);
         let l = load(&a.replace("name=B", "name=C")).unwrap();
         assert!(l.hints.iter().any(|h| h.contains("„C“")), "{:?}", l.hints);
         assert_eq!(l.model.cuts()[1], crate::model::Cut::default());

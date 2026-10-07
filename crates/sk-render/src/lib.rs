@@ -197,6 +197,18 @@ impl View {
         }
         self
     }
+
+    /// Dieselbe Ansicht um `dx` Pixel nach rechts verschoben und waagerecht
+    /// um `k` gestaucht (Achse bei `axis` Pixel von links, Ansichtsbreite `w`).
+    pub fn squeezed(mut self, dx: f32, k: f32, axis: f32, w: f32) -> View {
+        let w = w.max(1.0);
+        let a = 2.0 * axis / w - 1.0;
+        let d = 2.0 * dx / w + (1.0 - k) * a;
+        for c in 0..4 {
+            self.view_proj[c * 4] = k * self.view_proj[c * 4] + d * self.view_proj[c * 4 + 3];
+        }
+        self
+    }
 }
 
 /// Kameradaten für ein Bild. Alle Matrizen sind kamerarelativ (Auge im Ursprung),
@@ -291,6 +303,10 @@ struct Snapshot {
     /// Deckkraft und Versatz nach unten (Pixel) beim nächsten Bild.
     alpha: f32,
     offset: f32,
+    /// Versatz nach rechts (Pixel).
+    offset_x: f32,
+    /// Blatt wenden: (Stauchung 0…1, Achse in Pixeln von links, Helligkeit).
+    turn: Option<(f32, f32, f32)>,
 }
 
 struct Target {
@@ -664,16 +680,38 @@ void main() {
 }
 "#;
 
-/// Festgehaltenes Bild, um `u_offset` (Anteil der Höhe) nach unten versetzt.
+/// Festgehaltenes Bild, um `u_offset` (Anteil der Höhe) nach unten und
+/// `u_offset_x` (Anteil der Breite) nach rechts versetzt. Beim Wenden
+/// (`u_turn` > 0) waagerecht um `u_squash` gestaucht (Achse `u_axis` in NDC),
+/// die Zeichnung abgedunkelt um `u_shade`, daneben deckend der Grund aus der
+/// Bildecke.
 const SNAPSHOT_FS: &str = r#"#version 330 core
 in vec2 v_ndc;
 out vec4 o_color;
 uniform sampler2D u_tex;
 uniform float u_alpha;
 uniform float u_offset;
+uniform float u_offset_x;
+uniform float u_turn;
+uniform float u_squash;
+uniform float u_axis;
+uniform float u_shade;
 void main() {
-    vec2 uv = vec2(v_ndc.x * 0.5 + 0.5, v_ndc.y * 0.5 + 0.5 + u_offset);
-    if (uv.y < 0.0 || uv.y > 1.0) discard;
+    if (u_turn > 0.0) {
+        float x = u_axis + (v_ndc.x - u_axis) / max(u_squash, 1e-4);
+        vec3 ground = texture(u_tex, vec2(0.002, 0.998)).rgb;
+        if (abs(x) > 1.0) {
+            o_color = vec4(ground, 1.0);
+        } else {
+            // Nur die Zeichnung dunkelt ab, der Grund bleibt
+            vec3 c = texture(u_tex, vec2(x * 0.5 + 0.5, v_ndc.y * 0.5 + 0.5)).rgb;
+            bool bare = all(lessThan(abs(c - ground), vec3(0.01)));
+            o_color = vec4(bare ? c : c * u_shade, 1.0);
+        }
+        return;
+    }
+    vec2 uv = vec2(v_ndc.x * 0.5 + 0.5 - u_offset_x, v_ndc.y * 0.5 + 0.5 + u_offset);
+    if (uv.y < 0.0 || uv.y > 1.0 || uv.x < 0.0 || uv.x > 1.0) discard;
     o_color = vec4(texture(u_tex, uv).rgb * u_alpha, u_alpha);
 }
 "#;
@@ -966,6 +1004,8 @@ impl Renderer {
                     h,
                     alpha: 0.0,
                     offset: 0.0,
+                    offset_x: 0.0,
+                    turn: None,
                 });
             }
             if let Some(s) = &mut self.snapshot {
@@ -974,15 +1014,30 @@ impl Renderer {
                 gl.glBindFramebuffer(DRAW_FRAMEBUFFER, s.fbo);
                 gl.glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, COLOR_BUFFER_BIT, NEAREST as GLenum);
                 gl.glBindFramebuffer(FRAMEBUFFER, 0);
-                (s.alpha, s.offset) = (1.0, 0.0);
+                (s.alpha, s.offset, s.offset_x, s.turn) = (1.0, 0.0, 0.0, None);
             }
         }
     }
 
     /// Deckkraft und Versatz (Pixel nach unten) des festgehaltenen Bildes.
     pub fn set_snapshot(&mut self, alpha: f32, offset_px: f32) {
+        self.set_snapshot_xy(alpha, 0.0, offset_px);
+    }
+
+    /// Wie [`Renderer::set_snapshot`], dazu ein Versatz nach rechts (Pixel).
+    pub fn set_snapshot_xy(&mut self, alpha: f32, dx: f32, dy: f32) {
         if let Some(s) = &mut self.snapshot {
-            (s.alpha, s.offset) = (alpha.clamp(0.0, 1.0), offset_px);
+            (s.alpha, s.offset, s.offset_x, s.turn) = (alpha.clamp(0.0, 1.0), dy, dx, None);
+        }
+    }
+
+    /// Blatt wenden: das festgehaltene Bild deckt alles, waagerecht um
+    /// `squash` (1 = ganz, 0 = Strich) zur Achse `axis_px` gestaucht und auf
+    /// `shade` abgedunkelt; daneben der Grund aus der Bildecke.
+    pub fn set_snapshot_turn(&mut self, squash: f32, axis_px: f32, shade: f32) {
+        if let Some(s) = &mut self.snapshot {
+            s.alpha = 1.0;
+            s.turn = Some((squash.clamp(0.0, 1.0), axis_px, shade));
         }
     }
 
@@ -1242,6 +1297,15 @@ impl Renderer {
                 gl.glUniform1i(loc(gl, p, c"u_tex"), 0);
                 gl.glUniform1f(loc(gl, p, c"u_alpha"), sn.alpha);
                 gl.glUniform1f(loc(gl, p, c"u_offset"), sn.offset / sn.h.max(1) as f32);
+                gl.glUniform1f(loc(gl, p, c"u_offset_x"), sn.offset_x / sn.w.max(1) as f32);
+                let (turn, (squash, axis, shade)) = match sn.turn {
+                    Some(t) => (1.0, t),
+                    None => (0.0, (1.0, 0.0, 1.0)),
+                };
+                gl.glUniform1f(loc(gl, p, c"u_turn"), turn);
+                gl.glUniform1f(loc(gl, p, c"u_squash"), squash);
+                gl.glUniform1f(loc(gl, p, c"u_axis"), 2.0 * axis / sn.w.max(1) as f32 - 1.0);
+                gl.glUniform1f(loc(gl, p, c"u_shade"), shade);
                 gl.glBindVertexArray(self.empty_vao);
                 gl.glDrawArrays(TRIANGLES, 0, 3);
                 gl.glDisable(BLEND);

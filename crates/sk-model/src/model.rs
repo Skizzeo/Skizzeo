@@ -72,6 +72,8 @@ pub struct Model {
     project: Project,
     /// Schnitte A und B.
     cuts: [Cut; 2],
+    /// Zuletzt gezeigter Schnitt (Kennung, A = 0); Ansichtszustand wie `cuts`.
+    active_cut: usize,
     /// Stifte, Schraffuren, Oberflächen und Bauteildarstellung.
     attr: Attributes,
     materials: Arena<Material>,
@@ -469,6 +471,7 @@ impl Model {
             txn: None,
             strict: false,
             cuts: Default::default(),
+            active_cut: 0,
         }
     }
 
@@ -522,6 +525,7 @@ impl Model {
             txn: None,
             strict: false,
             cuts: Default::default(),
+            active_cut: 0,
         };
         m.joins = m.detect_all();
         m
@@ -541,6 +545,18 @@ impl Model {
     pub fn set_cut(&mut self, i: usize, cut: Cut) {
         if let Some(c) = self.cuts.get_mut(i) {
             *c = cut;
+        }
+    }
+
+    /// Zuletzt gezeigter Schnitt (A = 0).
+    pub fn active_cut(&self) -> usize {
+        self.active_cut
+    }
+
+    /// Gezeigten Schnitt merken (Ansichtszustand wie [`Model::set_cut`]).
+    pub fn set_active_cut(&mut self, i: usize) {
+        if i < self.cuts.len() {
+            self.active_cut = i;
         }
     }
 
@@ -4557,6 +4573,10 @@ impl Model {
         }
         for (id, r) in self.runs.iter() {
             guids.push(r.guid);
+            // Regel 26: ein Zug ist nie leer
+            if r.segments.is_empty() {
+                out.push(format!("Wandzug {id:?}: leer, ohne Segment"));
+            }
             let count = segment_count(r.points.len(), r.closed);
             if r.segments.len() != count {
                 out.push(format!(
@@ -5221,6 +5241,14 @@ mod tests {
         m.runs.get_mut(og).unwrap().points[1] = p[0] + d * 100.0;
         assert!(
             m.check().iter().any(|t| t.contains("100 mm lang")),
+            "{:?}",
+            m.check()
+        );
+        // Regel 26: ein leerer Zug fällt auf
+        let (mut m, runs) = gebaeude(2);
+        m.runs.get_mut(runs[1]).unwrap().segments.clear();
+        assert!(
+            m.check().iter().any(|t| t.contains("leer, ohne Segment")),
             "{:?}",
             m.check()
         );

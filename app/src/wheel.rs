@@ -164,12 +164,12 @@ pub fn kote(s: &Scene, id: StoreyId) -> String {
     kote_text(s.model().storey(id).map_or(0.0, |st| st.elevation))
 }
 
-/// Plätze des Bogens von unten nach oben: die Geschosse bzw. die Schnitte,
-/// A oben (Bild↓ und die Spitze unten blättern im Alphabet weiter).
+/// Plätze des Bogens von unten nach oben: die Geschosse bzw. die Schnitte
+/// in der Reihenfolge [`section::ORDER`].
 pub fn stops(s: &Scene, track: Track) -> Vec<Stop> {
     match track {
         Track::Levels => levels(s).into_iter().map(Stop::Level).collect(),
-        Track::Cuts => (0..section::CUTS).rev().map(Stop::Cut).collect(),
+        Track::Cuts => section::ORDER.iter().map(|&c| Stop::Cut(c)).collect(),
     }
 }
 
@@ -202,7 +202,7 @@ pub fn stop_sub(s: &Scene, stop: Stop) -> String {
         Stop::Level(id) => kote(s, id),
         Stop::Cut(i) => {
             let flip = s.model().cuts().get(i).is_some_and(|c| c.flip);
-            section::subtitle(i, flip)
+            section::subtitle(i, flip, s.bounds())
         }
     }
 }
@@ -501,11 +501,10 @@ impl Wheel {
         }
         let id = self.neighbor_id(s, up)?;
         let arrow = if up { "↑" } else { "↓" };
-        let name = match id {
-            Stop::Level(l) => full_name(s, l),
-            Stop::Cut(i) => format!("Schnitt {}", section::title(i)),
-        };
-        Some((format!("{name} {arrow}"), stop_sub(s, id)))
+        match id {
+            Stop::Level(l) => Some((format!("{} {arrow}", full_name(s, l)), kote(s, l))),
+            Stop::Cut(i) => Some(section::arrow_hint(i, up, stop_sub(s, id))),
+        }
     }
 
     /// Läuft zur Zeit `t` ein Wechsel?
@@ -669,13 +668,13 @@ impl Wheel {
 
     /// Ist der Hinweis an der Spitze unter der Maus fällig?
     pub fn hint_due(&self, t: u64) -> bool {
-        matches!(self.hover, Some(Part::Up | Part::Down))
+        matches!(self.hover, Some(Part::Up | Part::Down | Part::Mirror))
             && t >= self.hover_since + (self.size.hover_delay_hud * 1000.0) as u64
     }
 
     /// Wann der Hinweis fällig wird (ms ab `t`), solange er noch aussteht.
     pub fn hint_wait(&self, t: u64) -> Option<u64> {
-        if !matches!(self.hover, Some(Part::Up | Part::Down)) {
+        if !matches!(self.hover, Some(Part::Up | Part::Down | Part::Mirror)) {
             return None;
         }
         let due = self.hover_since + (self.size.hover_delay_hud * 1000.0) as u64;
@@ -891,7 +890,8 @@ pub fn paint_mirror(fonts: &Fonts, g: &Geo, t: &Theme, hover: bool) -> Canvas {
     let s = g.s;
     let f = fonts.regular.as_ref();
     let px = t.size.arc_label_small * s;
-    let label = "Blickrichtung";
+    // Das Zeichen ⇄ ist gezeichnet, nicht aus der Schrift
+    let label = section::MIRROR_LABEL.trim_start_matches('⇄').trim_start();
     let (padx, pady, icon, gap) = (7.0 * s, 5.0 * s, 14.0 * s, 6.0 * s);
     let cap = f.map_or(px * 0.7, |f| f.cap_height(px));
     let tw = f.map_or(px * 0.6 * label.chars().count() as f32, |f| {

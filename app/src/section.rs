@@ -98,31 +98,48 @@ pub fn mirror(cut: Cut) -> Cut {
     }
 }
 
-/// Nächster Schnitt beim Blättern (der Bogen hat dieselbe Reihenfolge,
-/// [`crate::wheel::stops`]): `down` (Spitze unten, Bild↓) geht im
-/// Alphabet weiter (A → B), sonst zurück; an den Enden keiner.
-#[allow(dead_code)] // für Abnahme und Tests
-pub fn next(active: usize, down: bool) -> Option<usize> {
-    if down {
-        (active + 1 < CUTS).then_some(active + 1)
-    } else {
-        active.checked_sub(1)
-    }
-}
+/// Reihenfolge der Schnitte am Rad von unten nach oben: A oben, die Spitze
+/// unten (Bild↓) geht im Alphabet weiter (A → B).
+pub const ORDER: [usize; CUTS] = [CUT_B, CUT_A];
 
-/// Unterzeile am Schnittrad: Art und, falls gespiegelt, der Hinweis.
-pub fn subtitle(id: usize, flip: bool) -> String {
-    let kind = if id == CUT_B {
+/// Art des Schnitts aus dem Gebäude (E19 §8): Läuft die Linie parallel zur
+/// längeren Seite, ist es ein Längsschnitt, sonst ein Querschnitt; bei
+/// gleich langen Seiten oder ohne Gebäude keine Angabe.
+pub fn kind(id: usize, bounds: Option<(Vec3, Vec3)>) -> Option<&'static str> {
+    let (lo, hi) = bounds?;
+    let (dx, dy) = (hi.x - lo.x, hi.y - lo.y);
+    if (dx - dy).abs() < 1.0 {
+        return None;
+    }
+    // A läuft längs x, B längs y
+    let along_longer = if id == CUT_B { dy > dx } else { dx > dy };
+    Some(if along_longer {
         "Längsschnitt"
     } else {
         "Querschnitt"
-    };
-    if flip {
-        format!("{kind} · gespiegelt")
-    } else {
-        kind.into()
+    })
+}
+
+/// Unterzeile am Schnittrad: Art und, falls gespiegelt, der Hinweis.
+pub fn subtitle(id: usize, flip: bool, bounds: Option<(Vec3, Vec3)>) -> String {
+    match (kind(id, bounds), flip) {
+        (Some(k), true) => format!("{k} · gespiegelt"),
+        (Some(k), false) => k.into(),
+        (None, true) => "gespiegelt".into(),
+        (None, false) => String::new(),
     }
 }
+
+/// Hinweis an der Spitze des Rads, die zum Schnitt `id` führt: „Schnitt
+/// B–B ↓“, darunter die Unterzeile wie am Rad.
+pub fn arrow_hint(id: usize, up: bool, sub: String) -> (String, String) {
+    let arrow = if up { "↑" } else { "↓" };
+    (format!("Schnitt {} {arrow}", title(id)), sub)
+}
+
+/// Knopf unter dem Schnittrad und sein Hinweis (E19 §2).
+pub const MIRROR_LABEL: &str = "⇄ Blickrichtung";
+pub const MIRROR_HINT: &str = "Blick umdrehen (in die andere Richtung schauen)";
 
 /// Name am Schnittrad: „A–A“.
 pub fn title(id: usize) -> String {
@@ -519,9 +536,9 @@ impl Default for Sections {
 }
 
 impl Sections {
-    /// Lage und Blickrichtung aus der Datei.
-    pub fn load(&mut self, cuts: &[Cut; CUTS]) {
-        for (l, c) in self.lines.iter_mut().zip(cuts) {
+    /// Lage und Blickrichtung aus dem Modell (der Datei).
+    pub fn load(&mut self, scene: &Scene) {
+        for (l, c) in self.lines.iter_mut().zip(scene.model().cuts()) {
             l.set_cut(*c);
         }
     }
@@ -637,12 +654,17 @@ mod tests {
             (default_pos(CUT_A, m), default_pos(CUT_B, m)),
             (4000.0, 5000.0)
         );
-        assert_eq!(next(CUT_A, true), Some(CUT_B));
-        assert_eq!(next(CUT_B, true), None);
-        assert_eq!(next(CUT_B, false), Some(CUT_A));
-        assert_eq!(next(CUT_A, false), None);
+        // A oben, B unten
+        assert_eq!(ORDER, [CUT_B, CUT_A]);
         assert_eq!(title(CUT_B), "B–B");
-        assert_eq!(subtitle(CUT_A, true), "Querschnitt · gespiegelt");
+        // 10 × 8 m: A läuft längs der langen Seite
+        let b = Some((vec3(0.0, 0.0, 0.0), vec3(10000.0, 8000.0, 5000.0)));
+        assert_eq!(subtitle(CUT_A, true, b), "Längsschnitt · gespiegelt");
+        assert_eq!(subtitle(CUT_B, false, b), "Querschnitt");
+        let q = Some((vec3(0.0, 0.0, 0.0), vec3(8000.0, 8000.0, 5000.0)));
+        assert_eq!(subtitle(CUT_B, false, q), "");
+        assert_eq!(subtitle(CUT_B, true, None), "gespiegelt");
+        assert_eq!(arrow_hint(CUT_A, true, String::new()).0, "Schnitt A–A ↑");
     }
 
     fn ev(x: f64, y: f64, kind: u8) -> Event {
