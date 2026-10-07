@@ -172,7 +172,7 @@ pub const F4_ROLES: [F4Role; 11] = [
     }),
 ];
 
-pub const SIZE_ROLES: [SizeRole; 86] = [
+pub const SIZE_ROLES: [SizeRole; 95] = [
     ("corner_radius", "Eckenradius", |t| {
         &mut t.size.corner_radius
     }),
@@ -362,6 +362,25 @@ pub const SIZE_ROLES: [SizeRole; 86] = [
     }),
     ("catalog_thumb_h", "Schnittbild-Kachel: Höhe", |t| {
         &mut t.size.catalog_thumb_h
+    }),
+    ("mat_w", "Baustoffe: Breite", |t| &mut t.size.mat_w),
+    ("mat_h", "Baustoffe: Höhe", |t| &mut t.size.mat_h),
+    ("mat_list_w", "Baustoffe: Liste", |t| &mut t.size.mat_list_w),
+    ("mat_row", "Baustoffe: Zeile", |t| &mut t.size.mat_row),
+    ("mat_preview", "Baustoffe: Vorschau", |t| {
+        &mut t.size.mat_preview
+    }),
+    ("mat_label_w", "Baustoffe: Beschriftung", |t| {
+        &mut t.size.mat_label_w
+    }),
+    ("mat_num_w", "Baustoffe: Zahlfeld", |t| {
+        &mut t.size.mat_num_w
+    }),
+    ("mat_name_font", "Baustoffe: Schrift Name", |t| {
+        &mut t.size.mat_name_font
+    }),
+    ("mat_caption", "Baustoffe: Schrift Vorschau", |t| {
+        &mut t.size.mat_caption
     }),
 ];
 

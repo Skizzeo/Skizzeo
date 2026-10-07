@@ -30,6 +30,10 @@ pub enum Link {
     Flush(ElementId),
     /// Gesperrtes Bauteil im Baum zeigen, sein Schloss leuchtet (Paket 4).
     Unlock(ElementId),
+    /// Fenster „Baustoffe …“ öffnen (Entdecken-Karte, Paket 5).
+    Materials,
+    /// × einer Entdecken-Karte: nur schließen.
+    Dismiss,
 }
 
 /// Wörter für die nicht gelöschten Bauteile einer gemischten Auswahl:
@@ -230,6 +234,10 @@ pub struct HintCard {
     /// Neben den Bauteilen statt darunter: darüber, sonst darunter, sonst
     /// seitlich; nie über ihnen (E20 §6.4).
     pub beside: bool,
+    /// Entdecken-Karte (Paket 5 §1.1): × oben rechts, steht bis zum
+    /// Schließen, sitzt unten rechts im Blatt.
+    pub discover: bool,
+    close_hover: bool,
 }
 
 /// Maße der Karte (dip): Rand links bis zum Punkt, Punkt, Text ab, Rand
@@ -242,6 +250,8 @@ const CARD_TOP: f32 = 22.0;
 const CARD_LINE: f32 = 20.0;
 const CARD_LINK: f32 = 24.0;
 const CARD_BOTTOM: f32 = 18.0;
+/// Platz für das × der Entdecken-Karte (dip, Kantenlänge der Trefferfläche).
+const CARD_CLOSE: f32 = 24.0;
 
 impl HintCard {
     pub fn new(
@@ -261,7 +271,16 @@ impl HintCard {
             hover: false,
             danger: false,
             beside: false,
+            discover: false,
+            close_hover: false,
         }
+    }
+
+    /// Entdecken-Karte: steht, bis × oder der Verweis sie schließt.
+    pub fn discovering(mut self) -> HintCard {
+        self.discover = true;
+        self.hold();
+        self
     }
 
     /// Stehen lassen, bis sie ausdrücklich ausgeblendet wird (Zielkarte).
@@ -294,6 +313,9 @@ impl HintCard {
         if self.link.is_some() {
             h += CARD_LINK;
         }
+        if self.discover {
+            tw += CARD_CLOSE * s;
+        }
         (
             (tw + (CARD_TEXT_X + CARD_RIGHT) * s).ceil(),
             (h * s + regular.map_or(px * 0.7, |f| f.cap_height(px))).ceil(),
@@ -307,6 +329,7 @@ impl HintCard {
         let (ww, wh, top) = win;
         let gap = 14.0 * s;
         let (x, y) = match bounds {
+            _ if self.discover => (ww - w - 24.0 * s, wh - h - 24.0 * s),
             Some(b) if self.beside => {
                 let x = b.x + (b.w - w) * 0.5;
                 let (above, below) = (b.y - gap - h, b.y + b.h + gap);
@@ -388,9 +411,19 @@ impl HintCard {
         }
         self.hover = over;
         let link = over && self.link_rect(r, s, t).is_some_and(|l| l.contains(x, y));
-        let changed = link != self.link_hover;
+        let close = over && self.close_rect(r, s).is_some_and(|c| c.contains(x, y));
+        let changed = link != self.link_hover || close != self.close_hover;
         self.link_hover = link;
+        self.close_hover = close;
         changed
+    }
+
+    /// Trefferfläche des × (Entdecken-Karte) im Fenster.
+    fn close_rect(&self, r: Rect, s: f32) -> Option<Rect> {
+        self.discover.then(|| {
+            let d = CARD_CLOSE * s;
+            Rect::new(r.x + r.w - d - 8.0 * s, r.y + 8.0 * s, d, d)
+        })
     }
 
     /// Bereich des Verweises im Fenster.
@@ -415,6 +448,9 @@ impl HintCard {
         let r = self.rect?;
         if !r.contains(x, y) {
             return None;
+        }
+        if self.close_rect(r, s).is_some_and(|c| c.contains(x, y)) {
+            return Some(Some(Link::Dismiss));
         }
         let hit = self.link_rect(r, s, t).is_some_and(|l| l.contains(x, y));
         Some(if hit { self.link.map(|l| l.1) } else { None })
@@ -460,6 +496,21 @@ impl HintCard {
                 u.accent
             };
             widgets::text(&mut c, bold, l, px, x, base, col);
+        }
+        if let Some(cr) = self.rect.and_then(|r| self.close_rect(r, s)) {
+            // × in Kartenkoordinaten
+            let r = self.rect.unwrap_or_default();
+            let cr = Rect::new(cr.x - r.x + m, cr.y - r.y + m, cr.w, cr.h);
+            if self.close_hover {
+                let mut p = Path::new();
+                p.rounded_rect(cr.x, cr.y, cr.w, cr.h, 6.0 * s);
+                c.fill(&p, u.hover);
+            }
+            let (cx0, cy0, d) = (cr.x + cr.w * 0.5, cr.y + cr.h * 0.5, 4.5 * s);
+            let mut p = Path::new();
+            p.segment((cx0 - d, cy0 - d), (cx0 + d, cy0 + d), 1.4 * s);
+            p.segment((cx0 - d, cy0 + d), (cx0 + d, cy0 - d), 1.4 * s);
+            c.fill(&p, u.text_dim);
         }
         c
     }

@@ -53,6 +53,15 @@ pub enum NumberError {
     NoElement,
 }
 
+/// Wo ein Baustoff steckt ([`Model::material_uses`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Use {
+    /// Typ mit der Zahl seiner Bauteile.
+    Type(LayerSetId, usize),
+    /// Bauteil ohne Typ.
+    Element(ElementId),
+}
+
 /// Lage und Blickrichtung eines Schnitts (A quer, B längs). Ansichtszustand:
 /// kein Rückgängig-Schritt, ändert die Revision nicht, steht aber in der
 /// Datei.
@@ -186,19 +195,20 @@ impl Model {
                 color,
                 cut_color,
             });
-            materials.insert(Material {
-                guid: guids.next_guid(),
-                name: name.into(),
-                category,
-                priority,
-                density,
-                lambda: None,
+            let d = MaterialDisplay {
                 cut_fill,
                 cut_fg: st.hatch_pen,
                 cut_bg: st.background,
                 surface,
-                trade: None,
-            })
+            };
+            materials.insert(Material::new(
+                guids.next_guid(),
+                name,
+                category,
+                priority,
+                density,
+                d,
+            ))
         };
         use MatCategory as C;
         let aerated = mat(
@@ -337,19 +347,16 @@ impl Model {
                     color,
                     cut_color,
                 });
-                materials.insert(Material {
-                    guid: guids.next_guid(),
-                    name: name.into(),
-                    category,
-                    priority,
-                    density,
-                    lambda,
+                let d = MaterialDisplay {
                     cut_fill,
                     cut_fg: st.hatch_pen,
                     cut_bg: st.background,
                     surface,
-                    trade: None,
-                })
+                };
+                materials.insert(
+                    Material::new(guids.next_guid(), name, category, priority, density, d)
+                        .lambda(lambda),
+                )
             };
         let facing = mat(
             "Verblender (Vormauerziegel)",
@@ -866,39 +873,167 @@ impl Model {
         id
     }
 
-    /// Wird der Baustoff benutzt: in einer Schicht, als Randdämmstreifen
-    /// eines Typs (Regel 15), von Sohlplatte, Schürze, Decke oder Blech?
+    /// Wird der Baustoff benutzt ([`Model::material_uses`], Regel 15)?
     pub fn material_used(&self, id: MaterialId) -> bool {
-        let in_types = self.layer_sets.iter().any(|(_, t)| {
-            t.layers.iter().any(|l| l.material == id) || t.strip_material() == Some(id)
-        });
-        let in_elements = self.elements.iter().any(|(_, e)| match &e.kind {
-            ElementKind::Floor(f) => {
-                f.material == id
-                    || f.soffit.material == Some(id)
-                    || f.terrace.coping_mat == Some(id)
-            }
-            ElementKind::GroundSlab(g) => g.material == id,
-            ElementKind::StripFooting(f) => f.material == id,
-            // Das Blech nutzt auch die Vorgabe ohne eigene Wahl (A235)
-            ElementKind::Coping { floor } => self.coping_material(*floor) == Some(id),
-            ElementKind::Wall(_)
-            | ElementKind::EdgeStrip { .. }
-            | ElementKind::SoffitInsulation { .. }
-            | ElementKind::RoofTerrace { .. } => false,
-        });
-        in_types || in_elements
+        !self.material_uses(id).is_empty()
     }
 
-    /// Löscht einen unbenutzten Baustoff ([`Model::material_used`]). `false`,
-    /// wenn er benutzt wird oder fehlt; dann bleibt alles, wie es ist.
+    /// Wo der Baustoff steckt („Verwendet in“, Regel 15): jeder Typ mit ihm
+    /// in einer Schicht oder als Randdämmstreifen, auch unbenutzte, mit der
+    /// Zahl seiner Bauteile; dann Bauteile ohne Typ: Sohlplatte, Schürze,
+    /// Decke (auch ihre Untersichtdämmung) und das Attikablech, auch mit der
+    /// Vorgabe ohne eigene Wahl (A235).
+    pub fn material_uses(&self, id: MaterialId) -> Vec<Use> {
+        let mut out = Vec::new();
+        for (t, s) in self.layer_sets.iter() {
+            if s.layers.iter().any(|l| l.material == id) || s.strip_material() == Some(id) {
+                let n = self
+                    .elements
+                    .iter()
+                    .filter(|(_, e)| match e.kind {
+                        ElementKind::RoofTerrace { floor } => {
+                            self.terrace_type_of(floor) == Some(t)
+                        }
+                        _ => e.layer_set == Some(t),
+                    })
+                    .count();
+                out.push(Use::Type(t, n));
+            }
+        }
+        let copings: Vec<ElementId> = self
+            .elements
+            .iter()
+            .filter_map(|(_, e)| match e.kind {
+                ElementKind::Coping { floor } => Some(floor),
+                _ => None,
+            })
+            .collect();
+        for (e, x) in self.elements.iter() {
+            let hit = match &x.kind {
+                ElementKind::Floor(f) => {
+                    f.material == id
+                        || f.soffit.material == Some(id)
+                        // Die Wahl des Blechs zählt am Blech, fehlt es, an der Decke
+                        || (f.terrace.coping_mat == Some(id) && !copings.contains(&e))
+                }
+                ElementKind::GroundSlab(g) => g.material == id,
+                ElementKind::StripFooting(f) => f.material == id,
+                ElementKind::Coping { floor } => self.coping_material(*floor) == Some(id),
+                ElementKind::Wall(_)
+                | ElementKind::EdgeStrip { .. }
+                | ElementKind::SoffitInsulation { .. }
+                | ElementKind::RoofTerrace { .. } => false,
+            };
+            if hit {
+                out.push(Use::Element(e));
+            }
+        }
+        out
+    }
+
+    /// Darf der Baustoff gelöscht werden (§1.4, Regeln 15 und 55)? Nicht,
+    /// wenn etwas auf ihn verweist; Luft und die eingebauten Baustoffe von
+    /// Dachterrasse und Attikablech nie. Kennwerte halten nichts fest.
+    pub fn can_remove_material(&self, id: MaterialId) -> bool {
+        self.materials.get(id).is_some_and(|m| {
+            m.category != MatCategory::Air
+                && ![
+                    TERRACE_FINISH_GUID,
+                    TERRACE_INSULATION_GUID,
+                    COPING_MAT_GUID,
+                ]
+                .contains(&m.guid)
+        }) && !self.material_used(id)
+    }
+
+    /// Löscht einen Baustoff, der gelöscht werden darf
+    /// ([`Model::can_remove_material`]). `false`: nichts geändert.
     pub fn remove_material(&mut self, id: MaterialId) -> bool {
-        if !self.materials.contains(id) || self.material_used(id) {
+        if !self.can_remove_material(id) {
             return false;
         }
         note!(self, Material, self.materials, id);
         self.touch();
         self.materials.remove(id).is_some()
+    }
+
+    /// Kopie eines Baustoffs mit neuer Guid und dem nächsten freien Namen
+    /// „Gasbeton (2)“, „(3)“ …; Kennwerte und Darstellung wie das Vorbild
+    /// (Entscheidung 20: Neues entsteht per Duplizieren). `None`: fehlt.
+    pub fn duplicate_material(&mut self, id: MaterialId) -> Option<MaterialId> {
+        let x = self.materials.get(id)?.clone();
+        let stem = match x.name.rsplit_once(" (") {
+            Some((a, b))
+                if b.strip_suffix(')')
+                    .is_some_and(|n| n.parse::<u32>().is_ok()) =>
+            {
+                a.to_string()
+            }
+            _ => x.name.clone(),
+        };
+        let name = (2..)
+            .map(|n| format!("{stem} ({n})"))
+            .find(|n| !self.materials.iter().any(|(_, m)| m.name == *n))?;
+        let guid = self.new_guid();
+        Some(self.add_material(Material { guid, name, ..x }))
+    }
+
+    /// `name`, wenn kein anderer Baustoff als `except` ihn trägt, sonst der
+    /// nächste freie „Name (2)“, „(3)“ …
+    pub fn free_material_name(&self, name: &str, except: Option<MaterialId>) -> String {
+        let taken = |n: &str| {
+            self.materials
+                .iter()
+                .any(|(id, m)| Some(id) != except && m.name == n)
+        };
+        if !taken(name) {
+            return name.to_string();
+        }
+        (2..)
+            .map(|n| format!("{name} ({n})"))
+            .find(|n| !taken(n))
+            .unwrap_or_else(|| name.to_string())
+    }
+
+    /// Ersetzt einen Baustoff (Materialfenster, Paket 5). Abgelehnt, wenn der
+    /// Name leer oder vergeben ist, eine Darstellung oder das Gewerk fehlt,
+    /// die Guid wechselt oder ein Kennwert die Regeln 50–53 verletzt.
+    pub fn set_material(&mut self, id: MaterialId, m: Material) -> bool {
+        let Some(old) = self.materials.get(id) else {
+            return false;
+        };
+        if *old == m {
+            return true;
+        }
+        let a = &self.attr;
+        let ok = old.guid == m.guid
+            && !m.name.trim().is_empty()
+            && !self
+                .materials
+                .iter()
+                .any(|(o, x)| o != id && x.name == m.name)
+            && a.fill(m.cut_fill).is_some()
+            && a.pen(m.cut_fg).is_some()
+            && a.pen(m.cut_bg).is_some()
+            && a.surface(m.surface).is_some()
+            && m.trade.is_none_or(|t| self.trade(t).is_some())
+            && crate::matprop::check_density(m.category, m.density).is_ok()
+            && m.lambda
+                .is_none_or(|l| crate::matprop::check_lambda(m.category, l).is_ok())
+            && m.props.iter().all(|(k, v)| {
+                *k == crate::matprop::normalize_key(k)
+                    && crate::matprop::check_prop(m.category, k, v).is_ok()
+            });
+        if !ok {
+            return false;
+        }
+        note!(self, Material, self.materials, id);
+        if let Some(x) = self.materials.get_mut(id) {
+            *x = m;
+        }
+        self.touch();
+        self.attr.bump();
+        true
     }
 
     pub fn layer_sets(&self) -> &Arena<LayerSet> {
@@ -3696,19 +3831,19 @@ impl Model {
             color,
             cut_color,
         });
-        Some(self.add_material(Material {
-            guid,
-            name: name.into(),
-            category,
-            priority,
-            density,
-            lambda,
+        let d = MaterialDisplay {
             cut_fill,
             cut_fg,
             cut_bg,
             surface,
-            trade,
-        }))
+        };
+        Some(
+            self.add_material(
+                Material::new(guid, name, category, priority, density, d)
+                    .lambda(lambda)
+                    .trade(trade),
+            ),
+        )
     }
 
     /// Werkstyp „Dachterrasse 14“ (DT-14): Belag 6 über Dämmung hart 8, ohne

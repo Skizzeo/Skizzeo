@@ -6,7 +6,7 @@ use sk_model::szo::{Line, Record};
 use std::collections::BTreeSet;
 
 /// Kennung und Text je Hinweis.
-pub const HINTS: [(&str, &str); 2] = [
+pub const HINTS: [(&str, &str); 3] = [
     (
         "hide_counts",
         "Ausgeblendetes zählt in den Mengen weiter. ‚Alles zeigen‘ holt es zurück.",
@@ -14,6 +14,10 @@ pub const HINTS: [(&str, &str); 2] = [
     (
         "trades",
         "Die Gewerke folgen der VOB/C und kommen vom Baustoff. Das Mengenfenster gliedert auch nach Gewerk.",
+    ),
+    (
+        "materials",
+        "Preise und Kennwerte\nder Baustoffe pflegst du unter „Baustoffe …“.",
     ),
 ];
 

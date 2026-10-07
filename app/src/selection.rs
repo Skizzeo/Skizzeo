@@ -160,16 +160,18 @@ fn solid_layer(
     mat: MaterialId,
     t: f64,
     volume: Option<f64>,
-) -> Option<(Rgba, String, String)> {
+) -> Option<crate::ui::LayerRow> {
     let x = m.material(mat)?;
     let rgb = m.attr().surface(x.surface)?.cut_color;
     let amount = volume.map_or(String::new(), |v| {
         format!("{} m³ · {} kg", de(v / 1e9, 3), de(v / 1e9 * x.density, 0))
     });
+    let thick = format!("{} cm ", cm(t));
     Some((
         Rgba::from_rgb8(rgb),
-        format!("{} cm {}", cm(t), x.name),
+        format!("{thick}{}", x.name),
         amount,
+        Some((x.guid, thick.len())),
     ))
 }
 
@@ -449,10 +451,12 @@ fn props_of(scene: &Scene, id: ElementId) -> Option<Props> {
                     .map_or(String::new(), |lq| {
                         format!("{} m³ · {} kg", de(lq.volume / 1e9, 3), de(lq.mass, 0))
                     });
+                let thick = format!("{} cm ", cm(l.thickness));
                 Some((
                     Rgba::from_rgb8(rgb),
-                    format!("{} cm {}", cm(l.thickness), mat.name),
+                    format!("{thick}{}", mat.name),
                     amount,
+                    Some((mat.guid, thick.len())),
                 ))
             })
             .collect()

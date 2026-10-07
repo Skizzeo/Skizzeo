@@ -9,13 +9,8 @@
 //! ([`sk_render::fill_color`], [`sk_render::dash_ink`]).
 
 use super::*;
-use crate::attr_pick::{
-    self, fill_display, line_strip, paint_cube, paint_fill_preview, Pick, TileKey, Tiles,
-};
-use sk_model::{
-    Dash, Fill, FillId, FillKind, FillSpace, HatchLine, LineType, LineTypeId, Material,
-    MaterialDisplay, MaterialId, Surface,
-};
+use crate::attr_pick::{fill_display, line_strip, paint_cube, paint_fill_preview, TileKey, Tiles};
+use sk_model::{Dash, Fill, FillId, FillKind, FillSpace, HatchLine, LineType, LineTypeId, Surface};
 
 /// Breite der Liste links (dip).
 const LIST_W: f32 = 250.0;
@@ -35,17 +30,6 @@ const NEW_HATCH: HatchLine = HatchLine::solid(45.0, 2.0, 0.0);
 
 // --- Daten ----------------------------------------------------------------------
 
-/// Darstellungsverweis, den eine Auswahlliste des Reiters „Baustoffe“ setzt.
-fn mat_pick(id: ComboId) -> Option<Pick> {
-    match id {
-        ComboId::MatFill => Some(Pick::Fill),
-        ComboId::MatFg => Some(Pick::Fg),
-        ComboId::MatBg => Some(Pick::Bg),
-        ComboId::MatSurface => Some(Pick::Surface),
-        _ => None,
-    }
-}
-
 fn lt_list(m: &Model) -> Vec<(LineTypeId, LineType)> {
     let a = m.attr();
     a.line_types().iter().map(|(i, l)| (i, l.clone())).collect()
@@ -61,10 +45,6 @@ fn surf_list(m: &Model) -> Vec<(SurfaceId, Surface)> {
     a.surfaces().iter().map(|(i, o)| (i, o.clone())).collect()
 }
 
-fn mat_list(m: &Model) -> Vec<(MaterialId, Material)> {
-    m.materials().iter().map(|(i, x)| (i, x.clone())).collect()
-}
-
 /// Namen der Tabelle eines Reiters.
 fn names(m: &Model, tab: Tab) -> Vec<String> {
     let a = m.attr();
@@ -73,7 +53,6 @@ fn names(m: &Model, tab: Tab) -> Vec<String> {
         Tab::LineTypes => a.line_types().iter().map(|(_, l)| l.name.clone()).collect(),
         Tab::Fills => a.fills().iter().map(|(_, f)| f.name.clone()).collect(),
         Tab::Surfaces => a.surfaces().iter().map(|(_, o)| o.name.clone()).collect(),
-        Tab::Materials => m.materials().iter().map(|(_, x)| x.name.clone()).collect(),
         Tab::Ui => Vec::new(),
     }
 }
@@ -172,48 +151,6 @@ pub(super) fn reset_attr_tab(s: &mut Scene, tab: Tab) {
                     }
                 }
             }
-            Tab::Materials => {
-                for (_, d) in start.materials().iter() {
-                    let Some((id, mat)) = mat_list(m).into_iter().find(|(_, x)| x.name == d.name)
-                    else {
-                        continue;
-                    };
-                    // Verweise des Startsatzes über Name bzw. Stiftnummer
-                    let fill = sa.fill(d.cut_fill).and_then(|f| {
-                        fill_list(m)
-                            .into_iter()
-                            .find(|(_, x)| x.name == f.name)
-                            .map(|(i, _)| i)
-                    });
-                    let pen = |p: PenId| {
-                        let nr = sa.pen(p)?.number;
-                        let a = m.attr();
-                        a.pens()
-                            .iter()
-                            .find(|(_, x)| x.number == nr)
-                            .map(|(i, _)| i)
-                    };
-                    let surface = sa.surface(d.surface).and_then(|o| {
-                        surf_list(m)
-                            .into_iter()
-                            .find(|(_, x)| x.name == o.name)
-                            .map(|(i, _)| i)
-                    });
-                    if let (Some(cut_fill), Some(cut_fg), Some(cut_bg), Some(surface)) =
-                        (fill, pen(d.cut_fg), pen(d.cut_bg), surface)
-                    {
-                        let want = MaterialDisplay {
-                            cut_fill,
-                            cut_fg,
-                            cut_bg,
-                            surface,
-                        };
-                        if mat.display() != want {
-                            m.set_material_display(id, want);
-                        }
-                    }
-                }
-            }
             Tab::Pens | Tab::Ui => {}
         }
         true
@@ -230,7 +167,7 @@ pub(super) struct AttrLayout {
     pub bar: Option<Rect>,
     pub scroll: f32,
     pub content_h: f32,
-    /// Neu, Duplizieren, Löschen (nicht bei Baustoffen).
+    /// Neu, Duplizieren, Löschen.
     pub buttons: Option<[Rect; 3]>,
     /// Grundlinie des Hinweises unter den Knöpfen.
     pub hint_y: f32,
@@ -265,11 +202,6 @@ impl Prefs {
     fn sel_surf(&self, m: &Model) -> Option<(SurfaceId, Surface)> {
         (self.tab == Tab::Surfaces)
             .then(|| self.sel_index(m).and_then(|i| surf_list(m).get(i).cloned()))?
-    }
-
-    fn sel_mat(&self, m: &Model) -> Option<(MaterialId, Material)> {
-        (self.tab == Tab::Materials)
-            .then(|| self.sel_index(m).and_then(|i| mat_list(m).get(i).cloned()))?
     }
 
     /// Verwender des gewählten Eintrags.
@@ -322,10 +254,8 @@ impl Prefs {
         let list_w = (LIST_W * s).min(c.w * 0.42).round();
         let list = Rect::new(c.x, c.y, list_w, c.h);
         let row = t.size.table_row * s;
-        let has_buttons = self.tab != Tab::Materials;
         // Knöpfe + zwei Hinweiszeilen (Schraffuren: vier)
         let foot = match self.tab {
-            Tab::Materials => 8.0,
             Tab::Fills => 130.0,
             _ => 96.0,
         } * s;
@@ -366,7 +296,7 @@ impl Prefs {
             bar,
             scroll,
             content_h,
-            buttons: has_buttons.then(|| [b(0.0, 66.0), b(72.0, 110.0), b(188.0, 80.0)]),
+            buttons: Some([b(0.0, 66.0), b(72.0, 110.0), b(188.0, 80.0)]),
             hint_y: by + 30.0 * s + 22.0 * s,
             thumb_x,
             side,
@@ -379,7 +309,6 @@ impl Prefs {
             Tab::LineTypes => self.lt_side(&mut l, t, s, m),
             Tab::Fills => self.fill_side(&mut l, t, s, m),
             Tab::Surfaces => self.surf_side(&mut l, t, s, m),
-            Tab::Materials => self.mat_side(&mut l, t, s, m),
             _ => {}
         }
         l
@@ -611,63 +540,6 @@ impl Prefs {
         } else {
             l.texts.push(UiText::wrapped(tx, ty, users.join("\n")));
         }
-    }
-
-    fn mat_side(&self, l: &mut AttrLayout, t: &Theme, s: f32, m: &Model) {
-        let Some((_, mat)) = self.sel_mat(m) else {
-            return;
-        };
-        let (x, y0, sw) = (l.side.x, l.side.y, l.side.w);
-        let fh = t.size.field_height * s;
-        let vx = x + 124.0 * s;
-        let vw = (sw - 124.0 * s).min(240.0 * s);
-        l.texts
-            .push(UiText::heading(x, y0 + 18.0 * s, mat.name.clone()));
-        let mut y = y0 + 32.0 * s;
-        l.texts
-            .push(UiText::group_title(x, y + 14.0 * s, "Darstellung"));
-        y += 22.0 * s;
-        for (label, id) in [
-            ("Schraffur", ComboId::MatFill),
-            ("Stift Schraffur", ComboId::MatFg),
-            ("Stift Grund", ComboId::MatBg),
-            ("Oberfläche 3D", ComboId::MatSurface),
-        ] {
-            l.texts.push(UiText::label(x, y + 18.0 * s, label));
-            l.items.push((Rect::new(vx, y, vw, fh), Target::Combo(id)));
-            y += fh + 6.0 * s;
-        }
-        y += 10.0 * s;
-        l.texts
-            .push(UiText::group_title(x, y + 14.0 * s, "BIM-Daten"));
-        y += 22.0 * s;
-        let rw = (150.0 * s).min(vw);
-        let lambda = mat.lambda.map_or("–".to_string(), |v| num(v as f32, 3));
-        for (label, value) in [
-            ("Kategorie", mat.category.name().to_string()),
-            ("Priorität", mat.priority.to_string()),
-            (
-                "Rohdichte",
-                format!("{} kg/m³", num_short(mat.density as f32)),
-            ),
-            ("λ", format!("{lambda} W/(mK)")),
-        ] {
-            l.texts.push(UiText::label(x, y + 17.0 * s, label));
-            l.readonly.push((Rect::new(vx, y, rw, fh - 2.0 * s), value));
-            y += fh + 2.0 * s;
-        }
-        l.texts.push(UiText::dim(
-            x,
-            y + 14.0 * s,
-            "Diese Werte pflegt die Bauteilverwaltung (BIM).",
-        ));
-        y += 40.0 * s;
-        l.texts.push(UiText::group_title(x, y, "Vorschau"));
-        y += 10.0 * s;
-        let bottom = l.side.y + l.side.h;
-        let ph = (t.size.preview_h * s).min(bottom - y).max(30.0 * s);
-        let pw = (t.size.preview_w * s).min(sw);
-        l.preview = Some(Rect::new(x, y, pw, ph));
     }
 
     // --- Treffer --------------------------------------------------------------
@@ -1044,7 +916,6 @@ impl Prefs {
         cx: &Ctx,
     ) -> (Vec<String>, Vec<Option<Canvas>>, usize, Rect) {
         let (t, w) = (&*cx.theme, cx.win);
-        let s = w.scale;
         let m = cx.scene.model();
         let l = self.attr_layout(t, &w, cx.scene);
         let anchor = l
@@ -1053,7 +924,6 @@ impl Prefs {
             .find(|(_, tg)| *tg == Target::Combo(id))
             .map_or(l.side, |(r, _)| *r);
         let fill = self.sel_fill(m).map(|x| x.1);
-        let mat = self.sel_mat(m).map(|x| x.1);
         let (items, icons, sel) = match id {
             ComboId::FillKind => {
                 let sel = match fill.map(|f| f.kind) {
@@ -1069,13 +939,6 @@ impl Prefs {
                 let sel = fill.is_some_and(|f| f.space == FillSpace::Model) as usize;
                 let items = vec!["Papier".into(), "Modell (folgt später)".into()];
                 (items, Vec::new(), sel)
-            }
-            ComboId::MatFill | ComboId::MatFg | ComboId::MatBg | ComboId::MatSurface => {
-                let (Some(pick), Some(mat)) = (mat_pick(id), mat) else {
-                    return (Vec::new(), Vec::new(), 0, anchor);
-                };
-                let mut tiles = self.tiles.borrow_mut();
-                attr_pick::pick_items(m, &mut tiles, t, s, pick, &mat.display())
             }
             ComboId::PenWidth | ComboId::Scheme => (Vec::new(), Vec::new(), 0),
         };
@@ -1112,21 +975,6 @@ impl Prefs {
                     self.error = Some("Modellbezogene Schraffuren folgen später".into());
                 }
             }
-            ComboId::MatFill | ComboId::MatFg | ComboId::MatBg | ComboId::MatSurface => {
-                let Some((mid, mat)) = self.sel_mat(m) else {
-                    return;
-                };
-                let mut d = mat.display();
-                let Some(pick) = mat_pick(id) else {
-                    return;
-                };
-                if !attr_pick::pick_apply(m, pick, i, &mut d) {
-                    return;
-                }
-                if d != mat.display() {
-                    out.model |= cx.scene.edit_attr(|m| m.set_material_display(mid, d));
-                }
-            }
             ComboId::PenWidth | ComboId::Scheme => {}
         }
     }
@@ -1158,7 +1006,6 @@ impl Prefs {
         label(c, bold, "Name", small, lr.x + 8.0 * s, head_y, u.text_dim);
         let right = match self.tab {
             Tab::Surfaces => "Farbe",
-            Tab::Materials => "Schnitt",
             _ => "Muster",
         };
         let tx = at(Rect::new(l.thumb_x, 0.0, 0.0, 0.0)).x;
@@ -1229,7 +1076,7 @@ impl Prefs {
         }
         if self.tab == Tab::Fills {
             hints.push("Farben kommen vom Baustoff".into());
-            hints.push("(Reiter „Baustoffe“).".into());
+            hints.push("(Dateimenü „Baustoffe …“).".into());
         }
         for (k, h) in hints.iter().enumerate() {
             let text = widgets::ellipsize(regular, h, small, lr.w);
@@ -1304,8 +1151,8 @@ impl Prefs {
                 }
                 Target::Combo(id) => {
                     let open = matches!(&self.popup, Some(Popup::Combo(cb)) if cb.id == id);
-                    let (text, icon) = self.combo_shown(id, &mut tiles, m, t, s);
-                    widgets::combo_icon(c, fonts, rr, &text, icon.as_ref(), hover, open, s, t);
+                    let text = self.combo_shown(id, m);
+                    widgets::combo_icon(c, fonts, rr, &text, None, hover, open, s, t);
                 }
                 Target::Swatch(ct) => {
                     let col = self.color_of(ct, sc, t);
@@ -1361,37 +1208,14 @@ impl Prefs {
                         });
                     }
                 }
-                Tab::Materials => {
-                    if let Some((id, mat)) = self.sel_mat(m) {
-                        let cube_w = (pr.h * 0.9).min(pr.w * 0.3);
-                        let wall = Rect::new(pr.x, pr.y, pr.w - cube_w - 12.0 * s, pr.h);
-                        tiles.preview(c, 0, TileKey::Material(id), wall, |c| {
-                            paint_fill_preview(c, wall, m, t, s, mat.display())
-                        });
-                        if let Some(o) = m.attr().surface(mat.surface) {
-                            let cr = Rect::new(pr.x + pr.w - cube_w, pr.y, cube_w, pr.h);
-                            tiles.preview(c, 1, TileKey::Material(id), cr, |c| {
-                                paint_cube(c, cr, o, t, s)
-                            });
-                        }
-                    }
-                }
                 _ => {}
             }
         }
     }
 
-    /// Text und Bildchen einer geschlossenen Auswahlliste.
-    fn combo_shown(
-        &self,
-        id: ComboId,
-        tiles: &mut Tiles,
-        m: &Model,
-        t: &Theme,
-        s: f32,
-    ) -> (String, Option<Canvas>) {
+    /// Text einer geschlossenen Auswahlliste.
+    fn combo_shown(&self, id: ComboId, m: &Model) -> String {
         let fill = self.sel_fill(m).map(|x| x.1);
-        let mat = self.sel_mat(m).map(|x| x.1);
         match id {
             ComboId::FillKind => {
                 let text = match fill.map(|f| f.kind) {
@@ -1400,18 +1224,10 @@ impl Prefs {
                     Some(FillKind::Lines(_)) => "Linien",
                     _ => "Zickzack",
                 };
-                (text.into(), None)
+                text.into()
             }
-            ComboId::FillSpace => ("Papier".into(), None),
-            ComboId::MatFill | ComboId::MatFg | ComboId::MatBg | ComboId::MatSurface => {
-                match (mat_pick(id), mat) {
-                    (Some(pick), Some(x)) => {
-                        attr_pick::pick_shown(m, tiles, t, s, pick, &x.display())
-                    }
-                    _ => (String::new(), None),
-                }
-            }
-            ComboId::PenWidth | ComboId::Scheme => (String::new(), None),
+            ComboId::FillSpace => "Papier".into(),
+            ComboId::PenWidth | ComboId::Scheme => String::new(),
         }
     }
 
@@ -1421,7 +1237,6 @@ impl Prefs {
             Tab::LineTypes => lt_list(m).iter().map(|x| TileKey::LineType(x.0)).collect(),
             Tab::Fills => fill_list(m).iter().map(|x| TileKey::Fill(x.0)).collect(),
             Tab::Surfaces => surf_list(m).iter().map(|x| TileKey::Surface(x.0)).collect(),
-            Tab::Materials => mat_list(m).iter().map(|x| TileKey::Material(x.0)).collect(),
             _ => Vec::new(),
         }
     }

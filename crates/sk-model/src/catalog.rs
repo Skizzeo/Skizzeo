@@ -314,6 +314,10 @@ fn write_known(lib: &Library) -> String {
     for g in &lib.stock {
         Line::new("stock").guid("set", Some(*g)).finish(&mut out);
     }
+    // Baustoffkennwerte (Paket 5 §2.3) nur, wenn gesetzt
+    for x in sorted(lib.materials.iter(), |x| x.guid) {
+        crate::matprop::write_lines(&mut out, x.guid, &x.props);
+    }
     out
 }
 
@@ -323,9 +327,9 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     check_header(text.lines().next(), "SZK", VERSION)?;
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 11] = [
+    const KNOWN: [&str; 12] = [
         "pen", "linetype", "fill", "surface", "trade", "material", "layerset", "layer", "typeprop",
-        "default", "stock",
+        "default", "stock", "matprop",
     ];
     let mut foreign = Foreign::default();
     let lines: Vec<&str> = text.lines().collect();
@@ -393,6 +397,7 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
         let id = lib.materials.insert(x);
         register(&mut mat_ids, &mut seen, r, g, id)?;
     }
+    szo::read_matprops(recs("matprop"), &mat_ids, &mut lib.materials, &mut hints);
     let (types, set_ids, passed) = szo::read_types(&by, &mat_ids, &mut seen, true)?;
     lib.types = types;
     // Typen unbekannter Art (F-17) bleiben samt Schichten unverändert stehen
@@ -670,33 +675,8 @@ pub fn export_type(m: &Model, lib: &mut Library, g: Guid) -> bool {
         Some(match find(&lib.materials, x.guid, |y| y.guid) {
             Some(id) => id,
             None => {
-                let a = m.attr();
-                let pen = |lib: &mut Library, id| -> Option<Id<Pen>> {
-                    let p = a.pen(id)?;
-                    match find(&lib.pens, p.guid, |q| q.guid) {
-                        Some(id) => Some(id),
-                        None => {
-                            let number = lib.next_pen_number();
-                            Some(lib.pens.insert(Pen {
-                                number,
-                                ..p.clone()
-                            }))
-                        }
-                    }
-                };
-                let (cut_fg, cut_bg) = (pen(lib, x.cut_fg)?, pen(lib, x.cut_bg)?);
-                let (f, s) = (a.fill(x.cut_fill)?, a.surface(x.surface)?);
-                let cut_fill = find(&lib.fills, f.guid, |q| q.guid)
-                    .unwrap_or_else(|| lib.fills.insert(f.clone()));
-                let surface = find(&lib.surfaces, s.guid, |q| q.guid)
-                    .unwrap_or_else(|| lib.surfaces.insert(s.clone()));
-                lib.materials.insert(Material {
-                    cut_fill,
-                    cut_fg,
-                    cut_bg,
-                    surface,
-                    ..x.clone()
-                })
+                let d = export_display(m, lib, x)?;
+                lib.materials.insert(with_display(x, d))
             }
         })
     };
@@ -754,6 +734,213 @@ pub fn export_type(m: &Model, lib: &mut Library, g: Guid) -> bool {
         *slot = Some(id);
     }
     true
+}
+
+/// Baustoff `x` mit der Darstellung `d` (Kennungen einer anderen Tabelle).
+fn with_display(x: &Material, d: MaterialDisplay) -> Material {
+    Material {
+        cut_fill: d.cut_fill,
+        cut_fg: d.cut_fg,
+        cut_bg: d.cut_bg,
+        surface: d.surface,
+        ..x.clone()
+    }
+}
+
+/// Darstellung eines Projekt-Baustoffs im Firmenkatalog: vorhandene über
+/// die Guid, fehlende neu (ein Stift mit der nächsten freien Nummer).
+fn export_display(m: &Model, lib: &mut Library, x: &Material) -> Option<MaterialDisplay> {
+    let a = m.attr();
+    let pen = |lib: &mut Library, id| -> Option<Id<Pen>> {
+        let p = a.pen(id)?;
+        match find(&lib.pens, p.guid, |q| q.guid) {
+            Some(id) => Some(id),
+            None => {
+                let number = lib.next_pen_number();
+                Some(lib.pens.insert(Pen {
+                    number,
+                    ..p.clone()
+                }))
+            }
+        }
+    };
+    let (cut_fg, cut_bg) = (pen(lib, x.cut_fg)?, pen(lib, x.cut_bg)?);
+    let (f, s) = (a.fill(x.cut_fill)?, a.surface(x.surface)?);
+    let cut_fill =
+        find(&lib.fills, f.guid, |q| q.guid).unwrap_or_else(|| lib.fills.insert(f.clone()));
+    let surface =
+        find(&lib.surfaces, s.guid, |q| q.guid).unwrap_or_else(|| lib.surfaces.insert(s.clone()));
+    Some(MaterialDisplay {
+        cut_fill,
+        cut_fg,
+        cut_bg,
+        surface,
+    })
+}
+
+/// Gleicher Baustoff in Projekt und Firmenkatalog (Paket 5 §1.3): alle
+/// Angaben samt Kennwerten, die Darstellung über die Guids.
+fn same_material(m: &Model, x: &Material, lib: &Library, y: &Material) -> bool {
+    let a = m.attr();
+    let mine = (
+        a.fill(x.cut_fill).map(|f| f.guid),
+        a.pen(x.cut_fg).map(|p| p.guid),
+        a.pen(x.cut_bg).map(|p| p.guid),
+        a.surface(x.surface).map(|s| s.guid),
+    );
+    let theirs = (
+        lib.fills.get(y.cut_fill).map(|f| f.guid),
+        lib.pens.get(y.cut_fg).map(|p| p.guid),
+        lib.pens.get(y.cut_bg).map(|p| p.guid),
+        lib.surfaces.get(y.surface).map(|s| s.guid),
+    );
+    mine == theirs && with_display(x, y.display()) == *y
+}
+
+/// Abgleich der Baustoffe von Projekt und Firmenkatalog nach Guid, sortiert
+/// (Paket 5 §1.3). Luft fehlt: sie wird weder übernommen noch
+/// zurückgespeichert.
+pub fn compare_materials(m: &Model, lib: &Library) -> Vec<(Guid, TypeState)> {
+    let mut out = Vec::new();
+    for (_, x) in m.materials().iter() {
+        if x.category == MatCategory::Air {
+            continue;
+        }
+        let state =
+            match find(&lib.materials, x.guid, |y| y.guid).and_then(|id| lib.materials.get(id)) {
+                None => TypeState::OnlyProject,
+                Some(y) if same_material(m, x, lib, y) => TypeState::Same,
+                Some(_) => TypeState::Differs,
+            };
+        out.push((x.guid, state));
+    }
+    for (_, y) in lib.materials.iter() {
+        if y.category != MatCategory::Air && !m.materials().iter().any(|(_, x)| x.guid == y.guid) {
+            out.push((y.guid, TypeState::OnlyCompany));
+        }
+    }
+    out.sort_by_key(|x| x.0);
+    out
+}
+
+/// Schreibt einen Projekt-Baustoff samt Kennwerten in den Firmenkatalog
+/// („In den Firmenkatalog …“, danach [`write_szk`]); gleiche Guid
+/// überschreibt ihn. Darstellung und Gewerk kommen mit, wenn sie fehlen.
+/// `false`: kein solcher Baustoff, oder Luft.
+pub fn export_material(m: &Model, lib: &mut Library, id: MaterialId) -> bool {
+    m.material(id)
+        .is_some_and(|x| x.category != MatCategory::Air)
+        && put_in_library(m, lib, id)
+}
+
+/// [`export_material`] für jeden Baustoff, auch Luft.
+fn put_in_library(m: &Model, lib: &mut Library, id: MaterialId) -> bool {
+    let Some(x) = m.material(id) else {
+        return false;
+    };
+    let Some(d) = export_display(m, lib, x) else {
+        return false;
+    };
+    if let Some(t) = x.trade.and_then(|t| m.trade(t)) {
+        if !lib.trades.iter().any(|y| y.guid == t.guid) {
+            lib.trades.push(t.clone());
+            lib.trades.sort_by_key(|t| (t.order, t.guid));
+        }
+    }
+    let new = with_display(x, d);
+    match find(&lib.materials, x.guid, |y| y.guid).and_then(|id| lib.materials.get_mut(id)) {
+        Some(old) => *old = new,
+        None => {
+            lib.materials.insert(new);
+        }
+    }
+    true
+}
+
+/// Holt einen Baustoff samt Kennwerten aus dem Firmenkatalog ins Projekt
+/// („Ins Projekt übernehmen“; der Aufrufer öffnet den Schritt). Gleiche
+/// Guid überschreibt den Projekt-Baustoff, Mengen bleiben, Preis und
+/// Kennwerte ändern sich. Ist der Name schon vergeben, gilt der nächste
+/// freie. `false`: nichts geändert.
+pub fn import_material(m: &mut Model, lib: &Library, g: Guid) -> bool {
+    let air = find(&lib.materials, g, |y| y.guid)
+        .and_then(|id| lib.materials.get(id))
+        .is_none_or(|x| x.category == MatCategory::Air);
+    !air && adopt_material(m, lib, g)
+}
+
+/// [`import_material`] für jeden Baustoff, auch Luft.
+fn adopt_material(m: &mut Model, lib: &Library, g: Guid) -> bool {
+    let Some(x) = find(&lib.materials, g, |y| y.guid).and_then(|id| lib.materials.get(id)) else {
+        return false;
+    };
+    let Some(d) = import_display(m, lib, x) else {
+        return false;
+    };
+    if let Some(t) = x
+        .trade
+        .and_then(|t| lib.trades.iter().find(|y| y.id() == t))
+    {
+        m.ensure_trade(t);
+    }
+    let existing = m
+        .materials()
+        .iter()
+        .find(|(_, y)| y.guid == g)
+        .map(|(id, _)| id);
+    let name = m.free_material_name(&x.name, existing);
+    let new = Material {
+        name,
+        trade: x.trade.or_else(|| trade::for_material(&x.name, x.category)),
+        ..with_display(x, d)
+    };
+    match existing {
+        Some(id) => m.material(id) != Some(&new) && m.set_material(id, new),
+        None => {
+            m.add_material(new);
+            true
+        }
+    }
+}
+
+/// Übernimmt die Baustoffe der Arbeitskopie `work` ins Modell (OK im
+/// Materialfenster, Paket 5 §1.3; der Aufrufer öffnet den Schritt): was in
+/// `work` fehlt, wird gelöscht, Neues und Geändertes kommt über die Guid
+/// samt Darstellung und Gewerk. `true`: etwas hat sich geändert.
+pub fn sync_materials(m: &mut Model, work: &Model) -> bool {
+    let mut changed = false;
+    let keep: Vec<Guid> = work.materials().iter().map(|(_, x)| x.guid).collect();
+    let gone: Vec<MaterialId> = m
+        .materials()
+        .iter()
+        .filter(|(_, x)| !keep.contains(&x.guid))
+        .map(|(id, _)| id)
+        .collect();
+    for id in gone {
+        changed |= m.remove_material(id);
+    }
+    let mut lib = Library {
+        trades: work.trades().to_vec(),
+        ..Library::default()
+    };
+    for (id, x) in work.materials().iter() {
+        if !put_in_library(work, &mut lib, id) {
+            continue;
+        }
+        let Some(y) = find(&lib.materials, x.guid, |y| y.guid).and_then(|id| lib.materials.get(id))
+        else {
+            continue;
+        };
+        let same = m
+            .materials()
+            .iter()
+            .find(|(_, z)| z.guid == x.guid)
+            .is_some_and(|(_, z)| same_material(m, z, &lib, y));
+        if !same {
+            changed |= adopt_material(m, &lib, x.guid);
+        }
+    }
+    changed
 }
 
 impl Model {

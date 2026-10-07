@@ -303,6 +303,18 @@ pub struct Sizes {
     pub catalog_tile_h: f32,
     pub catalog_thumb_w: f32,
     pub catalog_thumb_h: f32,
+    /// Fenster „Baustoffe“ (Paket 5): Fenster, Liste links, Zeile der Liste
+    /// und der Felder, Vorschau, Beschriftungsspalte, Zahlfeld, Schrift des
+    /// Namens und der Vorschau-Beschriftung (dip).
+    pub mat_w: f32,
+    pub mat_h: f32,
+    pub mat_list_w: f32,
+    pub mat_row: f32,
+    pub mat_preview: f32,
+    pub mat_label_w: f32,
+    pub mat_num_w: f32,
+    pub mat_name_font: f32,
+    pub mat_caption: f32,
 }
 
 const fn rgb(r: u8, g: u8, b: u8) -> Rgba {
@@ -512,6 +524,15 @@ impl Theme {
                 catalog_tile_h: 48.0,
                 catalog_thumb_w: 30.0,
                 catalog_thumb_h: 34.0,
+                mat_w: 1000.0,
+                mat_h: 640.0,
+                mat_list_w: 270.0,
+                mat_row: 26.0,
+                mat_preview: 96.0,
+                mat_label_w: 135.0,
+                mat_num_w: 96.0,
+                mat_name_font: 15.0,
+                mat_caption: 10.5,
                 hover_delay_hud: 0.25,
             },
             px_per_mm: 5.5,

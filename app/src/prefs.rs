@@ -35,18 +35,17 @@ pub enum Tab {
     LineTypes,
     Fills,
     Surfaces,
-    Materials,
     Ui,
 }
 
 impl Tab {
-    /// Reihenfolge in der Reiterleiste: fünf Projekt-, ein Programmreiter.
-    const ALL: [Tab; 6] = [
+    /// Reihenfolge in der Reiterleiste: vier Projekt-, ein Programmreiter
+    /// (die Baustoffe haben seit Paket 5 ihr eigenes Fenster).
+    const ALL: [Tab; 5] = [
         Tab::Pens,
         Tab::LineTypes,
         Tab::Fills,
         Tab::Surfaces,
-        Tab::Materials,
         Tab::Ui,
     ];
 
@@ -56,7 +55,6 @@ impl Tab {
             Tab::LineTypes => "Linientypen",
             Tab::Fills => "Schraffuren",
             Tab::Surfaces => "Oberflächen",
-            Tab::Materials => "Baustoffe",
             Tab::Ui => "Bedienoberfläche",
         }
     }
@@ -66,14 +64,13 @@ impl Tab {
         true
     }
 
-    /// Platz der Attributreiter (Linientypen … Baustoffe) in den Feldern
+    /// Platz der Attributreiter (Linientypen … Oberflächen) in den Feldern
     /// `attr_sel` und `attr_scroll`.
     fn attr_slot(self) -> Option<usize> {
         match self {
             Tab::LineTypes => Some(0),
             Tab::Fills => Some(1),
             Tab::Surfaces => Some(2),
-            Tab::Materials => Some(3),
             _ => None,
         }
     }
@@ -163,10 +160,6 @@ enum ComboId {
     Scheme,
     FillKind,
     FillSpace,
-    MatFill,
-    MatFg,
-    MatBg,
-    MatSurface,
 }
 
 /// Wessen Farbe ein Farbfeld zeigt.
@@ -3645,7 +3638,6 @@ impl Prefs {
                     Tab::LineTypes => "Alle Linientypen auf Standard zurücksetzen?",
                     Tab::Fills => "Alle Schraffuren auf Standard zurücksetzen?",
                     Tab::Surfaces => "Alle Oberflächen auf Standard zurücksetzen?",
-                    Tab::Materials => "Baustoffdarstellung auf Standard zurücksetzen?",
                     Tab::Ui => "Bedienoberfläche auf Standard zurücksetzen?",
                 };
                 label(

@@ -4,7 +4,7 @@
 //! Startbestand. Was nicht lesbar ist, wird zum Hinweis; Skizzeo arbeitet
 //! dann mit dem eingebauten Startbestand weiter und blockiert nie.
 
-use sk_model::{export_type, Guid, Model};
+use sk_model::{export_material, export_type, Guid, MaterialId, Model};
 use sk_model::{read_szk, write_szk, Library};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -244,6 +244,23 @@ impl Company {
     /// seit dem Laden geändert, wird nichts geschrieben ([`SaveResult::Changed`]);
     /// es gibt keine Sperren.
     pub fn save_type(&mut self, m: &Model, g: Guid) -> SaveResult {
+        self.save_with(|lib| export_type(m, lib, g), "Typ nicht im Projekt")
+    }
+
+    /// Speichert einen Baustoff in den Katalog zurück, sonst wie
+    /// [`Company::save_type`].
+    pub fn save_material(&mut self, m: &Model, id: MaterialId) -> SaveResult {
+        self.save_with(
+            |lib| export_material(m, lib, id),
+            "Baustoff nicht im Projekt",
+        )
+    }
+
+    fn save_with(
+        &mut self,
+        export: impl FnOnce(&mut Library) -> bool,
+        missing: &str,
+    ) -> SaveResult {
         if self.broken {
             return SaveResult::Failed(format!(
                 "Firmenkatalog {} ist nicht lesbar und wird nicht überschrieben",
@@ -254,8 +271,8 @@ impl Company {
             return SaveResult::Changed;
         }
         let mut lib = self.lib.clone();
-        if !export_type(m, &mut lib, g) {
-            return SaveResult::Failed("Typ nicht im Projekt".into());
+        if !export(&mut lib) {
+            return SaveResult::Failed(missing.into());
         }
         match write_atomic(&self.path, &write_szk(&lib)) {
             Ok(()) => {

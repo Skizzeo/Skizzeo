@@ -44,7 +44,7 @@ const PROPS_X: f32 = 880.0;
 const ROW_H: f32 = 34.0;
 const ROWS_Y: f32 = 442.0;
 /// Grün für „wie im Projekt“ (Marke im Firmenreiter).
-const SAME: Rgba = Rgba::rgb(126, 196, 140);
+pub(crate) const SAME: Rgba = Rgba::rgb(126, 196, 140);
 /// Funktionen in der Auswahl.
 const FUNCTIONS: [(LayerFunction, &str); 5] = [
     (LayerFunction::Structure, "tragend"),
@@ -112,6 +112,8 @@ enum ComboId {
     Function(usize),
     /// Baustoff des Randdämmstreifens.
     Strip,
+    /// Rechtsklick auf eine Schicht: „Baustoff bearbeiten …“ (Paket 5).
+    Edit(usize),
 }
 
 /// Knöpfe unter der Liste, unten und in den Karten.
@@ -238,6 +240,9 @@ pub struct Out {
     pub highlight: Option<Vec<ElementId>>,
     /// Ort des Firmenkatalogs wählen („ändern …“).
     pub pick_company: bool,
+    /// Fenster „Baustoffe …“ mit diesem Baustoff öffnen (der Katalog ist
+    /// ohne Änderungen geschlossen).
+    pub open_material: Option<Guid>,
 }
 
 impl Out {
@@ -315,6 +320,10 @@ pub struct Catalog {
     fly_drawn: Option<Rect>,
     /// Reiter, der nach Übernehmen oder Speichern einmal pulst.
     pulse: Option<(Tab, Instant)>,
+    /// Stand der Arbeitskopie beim Öffnen: gleich heißt „nichts geändert“.
+    opened: u64,
+    /// Gewählt: „Baustoff bearbeiten …“ (an [`Out::open_material`]).
+    edit_material: Option<Guid>,
     /// Marke einer Kachel, die überblendet: vorige Marke und Beginn.
     fade: Option<(Item, Option<Mark>, Instant)>,
     /// Zeitpunkt des Bildes, das gerade entsteht: alle Teilbilder zeigen
@@ -468,13 +477,21 @@ impl Catalog {
             fly_img: None,
             fly_drawn: None,
             pulse: None,
+            opened: 0,
+            edit_material: None,
             fade: None,
             paint_now: None,
             #[cfg(test)]
             test_clock: None,
         };
         c.set_company(company);
+        c.opened = c.work.revision();
         c
+    }
+
+    /// Hat sich seit dem Öffnen etwas geändert?
+    fn pending(&self) -> bool {
+        self.draft_new || self.work.revision() != self.opened
     }
 
     /// Neuer Stand des Firmenkatalogs (nach Speichern, Neuladen, neuem Ort).
@@ -730,6 +747,7 @@ impl Catalog {
             ComboId::Material(i) => self.r(t, w, 324.0, ROWS_Y + i as f32 * ROW_H, 250.0, 26.0),
             ComboId::Function(i) => self.r(t, w, 680.0, ROWS_Y + i as f32 * ROW_H, 150.0, 26.0),
             ComboId::Strip => self.r(t, w, RIGHT_X + 150.0, 340.0, 150.0, 26.0),
+            ComboId::Edit(i) => self.combo_rect(t, w, ComboId::Material(i)),
         }
     }
 
@@ -1181,6 +1199,10 @@ impl Catalog {
 
     pub fn handle(&mut self, e: &Event, cx: &mut Ctx) -> Out {
         let mut out = self.dispatch(e, cx);
+        if let Some(g) = self.edit_material.take() {
+            out.open_material = Some(g);
+            out.closed = true;
+        }
         // Nur Hervorhebungen kennen ihren Bereich; alles andere malt ganz
         if out.repaint && self.damage.is_empty() {
             self.damage.push(Area::Full);
@@ -1201,6 +1223,12 @@ impl Catalog {
                 y,
                 mods,
             } => self.mouse_down(x, y, mods, cx, &mut out),
+            Event::MouseDown {
+                button: MouseButton::Right,
+                x,
+                y,
+                ..
+            } => self.right_down(x, y, cx, &mut out),
             Event::MouseUp {
                 button: MouseButton::Left,
                 x,
@@ -1282,6 +1310,25 @@ impl Catalog {
             out.repaint = true;
             out.popup = self.popup.is_some();
         }
+    }
+
+    /// Rechtsklick auf eine Schicht (Baustofffeld oder Schnittbild):
+    /// „Baustoff bearbeiten …“, solange der Katalog nichts Ungespeichertes
+    /// hat (sonst ginge es verloren).
+    fn right_down(&mut self, x: f64, y: f64, cx: &mut Ctx, out: &mut Out) {
+        if self.popup.is_some() || self.tab != Tab::Project || self.pending() {
+            return;
+        }
+        let (t, w) = (cx.theme, cx.win);
+        let row = match self.hit(t, &w, cx.fonts, x, y) {
+            Some(Target::Combo(ComboId::Material(i)) | Target::Section(i)) => i,
+            _ => return,
+        };
+        if self.is_air(row) {
+            return;
+        }
+        self.open_combo(ComboId::Edit(row), cx);
+        *out = Out::all();
     }
 
     fn mouse_down(&mut self, x: f64, y: f64, mods: Modifiers, cx: &mut Ctx, out: &mut Out) {
@@ -1958,6 +2005,20 @@ impl Catalog {
         }
     }
 
+    /// Zeigt den Projekttyp mit der Guid `g` (aus „Verwendet in“ im Fenster
+    /// „Baustoffe …“).
+    pub fn show_guid(&mut self, g: Guid) {
+        let id = self
+            .work
+            .layer_sets()
+            .iter()
+            .find(|(_, t)| t.guid == g)
+            .map(|(id, _)| id);
+        if let Some(id) = id {
+            self.show(id);
+        }
+    }
+
     /// Zeigt den Projekttyp `id` (ohne Prüfung des bisherigen Entwurfs).
     fn show(&mut self, id: LayerSetId) {
         if let Some(t) = self.work.layer_set(id) {
@@ -2103,6 +2164,7 @@ impl Catalog {
                     sel,
                 )
             }
+            ComboId::Edit(_) => (vec![("Baustoff bearbeiten …".to_string(), None)], None),
         };
         self.end_edit(true);
         self.popup = Some(Popup::Combo(Combo {
@@ -2240,6 +2302,10 @@ impl Catalog {
                     }
                     self.commit_draft();
                 }
+            }
+            ComboId::Edit(row) => {
+                let mat = self.draft.layers.get(row).map(|l| l.material);
+                self.edit_material = mat.and_then(|m| self.work.material(m)).map(|x| x.guid);
             }
         }
     }

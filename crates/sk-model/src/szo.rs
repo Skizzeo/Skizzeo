@@ -21,8 +21,8 @@ use crate::element::{
 use crate::guid::{Guid, GuidGen};
 use crate::id::{Arena, Id};
 use crate::library::{
-    type_code, Bearing, LayerFunction, LayerSet, LayerSetId, MatCategory, Material, MaterialLayer,
-    TypeCategory,
+    type_code, Bearing, LayerFunction, LayerSet, LayerSetId, MatCategory, Material,
+    MaterialDisplay, MaterialLayer, TypeCategory,
 };
 use crate::model::{Defaults, Model, Project};
 use crate::solid::edge_kind;
@@ -1020,7 +1020,42 @@ fn write_known(m: &Model) -> String {
     for g in m.locked_in_order() {
         Line::new("lock").guid("elem", Some(g)).finish(&mut out);
     }
+    // Baustoffkennwerte (Paket 5 §2.3) nur, wenn gesetzt
+    for x in sorted(m.materials().iter(), |x| x.guid) {
+        crate::matprop::write_lines(&mut out, x.guid, &x.props);
+    }
     out
+}
+
+/// Zeilen `[matprop]` an die gelesenen Baustoffe (`.szo` und `.szk`).
+pub(crate) fn read_matprops(
+    recs: &[Record],
+    mat_ids: &HashMap<Guid, Id<Material>>,
+    materials: &mut Arena<Material>,
+    hints: &mut Vec<String>,
+) {
+    for r in recs {
+        let x = r
+            .opt("mat")
+            .and_then(Guid::from_ifc)
+            .and_then(|g| mat_ids.get(&g))
+            .and_then(|&id| materials.get_mut(id));
+        let res = match x {
+            Some(x) => crate::matprop::read_line(r, x.category, &mut x.props),
+            None => {
+                for k in ["key", "value", "num", "bool", "unit"] {
+                    r.opt(k);
+                }
+                Err(format!(
+                    "Zeile {}: Kennwert für unbekannten Baustoff, verworfen",
+                    r.line
+                ))
+            }
+        };
+        if let Err(h) = res {
+            hints.push(h);
+        }
+    }
 }
 
 // --- Lesen ----------------------------------------------------------------
@@ -1106,10 +1141,10 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     // Sätze unbekannter Art (neuere Fassung, F-17b): roh behalten, ohne Hinweis
     let mut alien: Vec<usize> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 26] = [
+    const KNOWN: [&str; 27] = [
         "pen", "linetype", "fill", "surface", "display", "trade", "material", "layerset", "layer",
         "typeprop", "project", "building", "storey", "run", "wall", "slab", "footing", "floor",
-        "strip", "soffit", "terrace", "coping", "prop", "cut", "hide", "lock",
+        "strip", "soffit", "terrace", "coping", "prop", "cut", "hide", "lock", "matprop",
     ];
     for (i, l) in text.lines().enumerate().skip(1) {
         let Some(r) = Record::parse(i + 1, l)? else {
@@ -1200,6 +1235,8 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         let id = materials.insert(x);
         register(&mut mat_ids, &mut seen, r, g, id)?;
     }
+    // Kennwerte (Paket 5): Falsches und Unbekanntes mit Hinweis verworfen
+    read_matprops(recs("matprop"), &mat_ids, &mut materials, &mut hints);
     let (mut layer_sets, set_ids, passed) = read_types(&by, &mat_ids, &mut seen, version >= 4)?;
     hints.extend(passed.hints);
 
@@ -1979,26 +2016,26 @@ pub(crate) fn read_material(
         "-" => None,
         _ => Some(r.f64("lambda")?),
     };
-    Ok(Material {
-        guid: r.guid("guid")?,
-        name: r.get("name")?.to_string(),
-        // Unbekannte Art (neuere Fassung): wie Mauerwerk, die Zeile bleibt
-        category: keyword_or(
-            r,
-            "cat",
-            &MAT_CATEGORIES,
-            mat_category,
-            MatCategory::Masonry,
-        )?,
-        priority: r.int("prio")?,
-        density: r.f64("rho")?,
-        lambda,
+    let guid = r.guid("guid")?;
+    let name = r.get("name")?;
+    // Unbekannte Art (neuere Fassung): wie Mauerwerk, die Zeile bleibt
+    let category = keyword_or(
+        r,
+        "cat",
+        &MAT_CATEGORIES,
+        mat_category,
+        MatCategory::Masonry,
+    )?;
+    let (priority, density) = (r.int("prio")?, r.f64("rho")?);
+    let d = MaterialDisplay {
         cut_fill: r.link("fill", fill_ids)?,
         cut_fg: r.link("fg", pen_ids)?,
         cut_bg: r.link("bg", pen_ids)?,
         surface: r.link("surface", surface_ids)?,
-        trade: trade_ref(r)?,
-    })
+    };
+    Ok(Material::new(guid, name, category, priority, density, d)
+        .lambda(lambda)
+        .trade(trade_ref(r)?))
 }
 
 /// `trade=` als Verweis; ob es das Gewerk gibt, prüft [`known_trades`].

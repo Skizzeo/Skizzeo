@@ -72,6 +72,9 @@ pub struct Material {
     pub surface: SurfaceId,
     /// Gewerk, das der Baustoff für seine Schichten vorschlägt (Paket 1a).
     pub trade: Option<TradeId>,
+    /// Kennwerte (Paket 5): feste Schlüssel aus [`crate::MAT_PROPS`] und
+    /// eigene; Rohdichte und λ stehen in ihren Feldern.
+    pub props: PropSet,
 }
 
 /// Die Darstellungsverweise eines Baustoffs: Schnittstelle zwischen BIM und
@@ -85,6 +88,44 @@ pub struct MaterialDisplay {
 }
 
 impl Material {
+    /// Baustoff ohne λ, Gewerk und Kennwerte; weitere Angaben über die
+    /// Builder (wie [`MaterialLayer::new`]).
+    pub fn new(
+        guid: Guid,
+        name: impl Into<String>,
+        category: MatCategory,
+        priority: u16,
+        density: f64,
+        d: MaterialDisplay,
+    ) -> Self {
+        Material {
+            guid,
+            name: name.into(),
+            category,
+            priority,
+            density,
+            lambda: None,
+            cut_fill: d.cut_fill,
+            cut_fg: d.cut_fg,
+            cut_bg: d.cut_bg,
+            surface: d.surface,
+            trade: None,
+            props: PropSet::new(),
+        }
+    }
+
+    /// Wärmeleitfähigkeit in W/(mK).
+    pub fn lambda(mut self, lambda: Option<f64>) -> Self {
+        self.lambda = lambda;
+        self
+    }
+
+    /// Gewerk, das der Baustoff vorschlägt.
+    pub fn trade(mut self, trade: Option<TradeId>) -> Self {
+        self.trade = trade;
+        self
+    }
+
     pub fn display(&self) -> MaterialDisplay {
         MaterialDisplay {
             cut_fill: self.cut_fill,

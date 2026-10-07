@@ -82,6 +82,8 @@ pub enum Id {
     /// „Mehr …“ unter dem Aufbau der Dachterrasse: klappt die Schichtliste
     /// auf und zu.
     PropsMore,
+    /// Baustoffname einer Schicht (Paket 5): öffnet „Baustoffe …“ mit ihm.
+    PropsMaterial(sk_model::Guid),
 }
 
 /// Ziehbare Ebene im Paneel „Geschosse“. ±0,00 liegt fest.
@@ -462,6 +464,10 @@ const LEVEL_LIST_ROW: f32 = 22.0;
 const CHAIN_OUTER: f32 = 2.0;
 const CHAIN_GAP: f32 = 40.0;
 
+/// Schichtzeile im Paneel „Eigenschaften“: Farbfeld, Text, Menge und der
+/// Baustoff samt Anfang seines Namens im Text.
+pub type LayerRow = (Rgba, String, String, Option<(sk_model::Guid, usize)>);
+
 /// Inhalt des Paneels „Eigenschaften“.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Props {
@@ -469,8 +475,9 @@ pub struct Props {
     pub values: Vec<(&'static str, String)>,
     /// Name des Aufbaus.
     pub layer_set: String,
-    /// Je Schicht: Farbfeld, „14 cm Dämmung (WDVS)“ und „3,796 m³ · 76 kg“.
-    pub layers: Vec<(Rgba, String, String)>,
+    /// Je Schicht: Farbfeld, „14 cm Dämmung (WDVS)“, „3,796 m³ · 76 kg“
+    /// und der Baustoff mit dem Anfang seines Namens im Text (Verweis).
+    pub layers: Vec<LayerRow>,
     /// Überschrift über `layer_set`; leer heißt „Aufbau“.
     pub set_label: &'static str,
     /// Zahlenfelder (Parameter des Bauteils), zwischen Werten und Aufbau.
@@ -528,6 +535,9 @@ const FIELD_W: f32 = 60.0;
 const LINK_W: f32 = 82.0;
 /// Klickfläche von „Mehr …“ (dip).
 const MORE_W: f32 = 80.0;
+/// Farbfeld einer Schichtzeile und Abstand zum Text (dip).
+const LAYER_SWATCH: f32 = 12.0;
+const LAYER_GAP: f32 = 8.0;
 const LINK_CHIP_GAP: f32 = 30.0;
 
 /// Fenstergröße (dip), ab der die Paneele in voller Größe erscheinen.
@@ -645,7 +655,8 @@ enum Row {
     Title(&'static str),
     Button(Id, &'static str),
     Label(&'static str),
-    Layer(Rgba, String),
+    /// Farbfeld, Text, Baustoff samt Anfang seines Namens (Verweis).
+    Layer(Rgba, String, Option<(sk_model::Guid, usize)>),
     /// Typ-Chip (K3).
     TypeChip(Id),
     /// „Kopplung“ links, rechts Kettensymbol (Knopf) und Partner.
@@ -698,7 +709,7 @@ fn tool_rows(
     if chip {
         rows.push(Row::TypeChip(Id::ToolType));
     } else {
-        rows.extend(layers.iter().map(|(c, t)| Row::Layer(*c, t.clone())));
+        rows.extend(layers.iter().map(|(c, t)| Row::Layer(*c, t.clone(), None)));
     }
     rows.extend([
         Row::Label("Bezugsseite"),
@@ -801,8 +812,8 @@ const LOCKED_LINE: &str = "Gesperrt · Entsperren im Baum";
 
 /// Je Schicht Farbfeld mit Baustoff und Dicke, darunter die Menge.
 fn layer_rows(rows: &mut Vec<Row>, p: &Props) {
-    for (c, name, amount) in &p.layers {
-        rows.push(Row::Layer(*c, name.clone()));
+    for (c, name, amount, link) in &p.layers {
+        rows.push(Row::Layer(*c, name.clone(), *link));
         if !amount.is_empty() {
             rows.push(Row::Detail(amount.clone()));
         }
@@ -942,7 +953,7 @@ impl Ui {
             let (h, g) = (h * s, g * s);
             if ly >= ry && ly < ry + h {
                 let (t, tx, px) = match row {
-                    Row::Layer(_, t) => (t, pad + 20.0 * s, size.font_small * s),
+                    Row::Layer(_, t, _) => (t, pad + 20.0 * s, size.font_small * s),
                     Row::Detail(t) => (t, pad + 20.0 * s, size.font_detail * s),
                     _ => return None,
                 };
@@ -1414,6 +1425,16 @@ impl Ui {
                     out.push((id, Rect::new(x + inner_w - cw, y, cw, h), ""));
                 }
                 Row::More(id) => out.push((id, Rect::new(x, y, MORE_W * s, h), "")),
+                Row::Layer(_, t, Some((g, at))) => {
+                    // Nur der Name ist Verweis (Zeichnen wie unten)
+                    let f = self.fonts.regular.as_ref();
+                    let px = self.size.font_small * s;
+                    let width = |x: &str| f.map_or(0.0, |f| f.width(x, px));
+                    let tx = x + (LAYER_SWATCH + LAYER_GAP) * s;
+                    let nx = tx + width(&t[..at]);
+                    let nw = width(&t[at..]).min(x + inner_w - nx).max(0.0);
+                    out.push((Id::PropsMaterial(g), Rect::new(nx, y, nw, h), ""));
+                }
                 _ => {}
             }
             y += h + g;
@@ -1447,7 +1468,8 @@ impl Ui {
             | Id::PropsType
             | Id::PropsLink
             | Id::PropsFlush
-            | Id::PropsMore => false,
+            | Id::PropsMore
+            | Id::PropsMaterial(_) => false,
         }
     }
 
@@ -1745,6 +1767,28 @@ impl Ui {
             paint_chip(c, &self.fonts, b, chip, st, s, t);
             return;
         }
+        if let Id::PropsMaterial(g) = id {
+            let name = self.props.as_ref().and_then(|p| {
+                p.layers
+                    .iter()
+                    .find_map(|l| l.3.filter(|x| x.0 == g).map(|(_, at)| &l.1[at..]))
+            });
+            let regular = self.fonts.regular.as_ref();
+            let px = self.size.font_small * s;
+            let col = if st.hover {
+                t.ui.accent_hover
+            } else {
+                t.ui.accent
+            };
+            let name = widgets::ellipsize(regular, name.unwrap_or(""), px, b.w);
+            let base = b.y + 13.5 * s;
+            widgets::text(c, regular, &name, px, b.x, base, col);
+            if st.hover {
+                let w = regular.map_or(b.w, |f| f.width(&name, px));
+                c.fill_rect(b.x, (base + 2.0 * s).round(), w, s.round().max(1.0), col);
+            }
+            return;
+        }
         if id == Id::PropsMore {
             let open = self.more_open;
             let px = self.size.font_small * s;
@@ -1829,13 +1873,15 @@ impl Ui {
                 Row::Label(t) => {
                     widgets::text(&mut c, regular, t, size.font * s, x, y + 14.0 * s, col.text)
                 }
-                Row::Layer(color, t) => {
-                    let sw = 12.0 * s;
+                Row::Layer(color, t, link) => {
+                    let sw = LAYER_SWATCH * s;
                     c.fill_rect(x, y + 3.0 * s, sw, sw, color);
-                    let tx = x + sw + 8.0 * s;
+                    let tx = x + sw + LAYER_GAP * s;
+                    // Der Name als Verweis kommt mit den Knöpfen
+                    let t = link.map_or(t.as_str(), |(_, at)| &t[..at]);
                     // Zu lang: gekürzt, der volle Name als Hinweis
                     let px = size.font_small * s;
-                    let t = widgets::ellipsize(regular, &t, px, x + inner_w - tx);
+                    let t = widgets::ellipsize(regular, t, px, x + inner_w - tx);
                     widgets::text(&mut c, regular, &t, px, tx, y + 13.5 * s, col.text_dim);
                 }
                 Row::Field(_, k) => {

@@ -18,6 +18,7 @@ mod draw_table;
 mod flush_pick;
 mod hints;
 mod link_view;
+mod material_view;
 mod menu;
 mod nav;
 #[cfg(test)]
@@ -577,6 +578,10 @@ struct App {
     company: Option<catalog::Company>,
     /// Bauteilkatalog (K3), wie das Einstellungsfenster in dessen Ebenen.
     catalog: Option<catalog_view::Catalog>,
+    /// Fenster „Baustoffe …“ (Paket 5), wie der Bauteilkatalog vorn; ob
+    /// „Mehr“ in dieser Sitzung offen war.
+    materials: Option<material_view::MaterialView>,
+    mat_more: bool,
     /// Typ, den das Werkzeug zeichnet, je Typart (K3: Außen-, Innenwand);
     /// `None`: der Standardtyp.
     tool_type: [Option<sk_model::LayerSetId>; 2],
@@ -1173,15 +1178,21 @@ impl App {
             Command::ClearRecent => self.recent.clear(),
             Command::Settings => self.open_prefs(),
             Command::Catalog => self.open_catalog(),
+            Command::Materials => self.open_materials(None),
             Command::Backups => self.open_backups(),
             Command::OpenBackup(_) => self.confirm_then(c, surface),
             Command::Delete => self.delete_selection(),
         }
     }
 
+    /// Ein Fenster liegt vorn (Einstellungen, Bauteilkatalog, Baustoffe).
+    fn modal(&self) -> bool {
+        self.prefs.is_some() || self.catalog.is_some() || self.materials.is_some()
+    }
+
     /// Bauteilkatalog öffnen (K3); er liegt vorn wie das Einstellungsfenster.
     fn open_catalog(&mut self) {
-        if self.catalog.is_some() || self.prefs.is_some() {
+        if self.modal() {
             return;
         }
         self.close_type_menu(false);
@@ -1288,6 +1299,126 @@ impl App {
             self.sync_levels();
             self.refresh_cursor();
         }
+        if let Some(g) = out.open_material {
+            self.open_materials(Some(g));
+        }
+        self.sync_caption(surface);
+        true
+    }
+
+    /// Fenster „Baustoffe …“ öffnen (Paket 5), auf Wunsch mit diesem
+    /// Baustoff gewählt.
+    fn open_materials(&mut self, select: Option<sk_model::Guid>) {
+        if self.modal() {
+            return;
+        }
+        self.close_type_menu(false);
+        if self.ui.dialog {
+            self.close_building_dialog(false);
+        }
+        self.ui.hover = None;
+        self.title.hover = None;
+        self.materials = Some(material_view::MaterialView::open_with(
+            &self.scene,
+            self.company.as_ref(),
+            select,
+            self.mat_more,
+        ));
+        self.prefs_dirty = true;
+        self.overlay_dirty = true;
+    }
+
+    /// Offenes Fenster „Baustoffe …“: nimmt Maus und Tasten wie der
+    /// Bauteilkatalog ([`App::handle_catalog`]).
+    fn handle_materials(&mut self, e: Event, surface: &Surface) -> bool {
+        let th = self.top() as f64;
+        let window_button = |a: &App, x: f64, y: f64| {
+            y < th
+                && matches!(
+                    a.title.button_at(x, y, a.w),
+                    Some(Button::Minimize | Button::Maximize | Button::Close)
+                )
+        };
+        match e {
+            Event::CloseRequested { .. } => {
+                // Wie „Abbrechen“: nichts übernommen
+                if let Some(v) = self.materials.take() {
+                    self.mat_more = v.more();
+                }
+                self.paint_prefs();
+                return false;
+            }
+            Event::Resized { .. }
+            | Event::ScaleChanged(_)
+            | Event::Maximized(_)
+            | Event::Focus(_)
+            | Event::Redraw => {
+                self.prefs_dirty = true;
+                return false;
+            }
+            Event::MouseMove { x, y, .. } => {
+                self.mouse_at = Some((x, y));
+                let over = if window_button(self, x, y) {
+                    self.title.button_at(x, y, self.w)
+                } else {
+                    None
+                };
+                if over != self.title.hover {
+                    self.dirty_title
+                        .extend(self.title.hover.into_iter().chain(over));
+                    self.title.hover = over;
+                }
+            }
+            Event::MouseDown { x, y, .. } | Event::MouseUp { x, y, .. }
+                if window_button(self, x, y) || self.title.pressed.is_some() =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+        let win = self.prefs_win();
+        let standard = self.settings.company_place().is_some_and(|(_, s)| s);
+        let Some(v) = self.materials.as_mut() else {
+            return false;
+        };
+        let mut cx = material_view::Ctx {
+            scene: &mut self.scene,
+            theme: &self.theme,
+            fonts: &self.ui.fonts,
+            win,
+            company: self.company.as_mut(),
+            company_standard: standard,
+        };
+        let out = v.handle(&e, &mut cx);
+        if out.closed {
+            self.mat_more = v.more();
+            self.materials = None;
+            self.overlay_dirty = true;
+        }
+        if out.moved {
+            if let Some(v) = &self.materials {
+                let (x, y) = v.origin(&self.theme, &win);
+                self.renderer.move_overlay(OVERLAY_PREFS, x, y);
+                self.redraw = true;
+            }
+        }
+        self.prefs_dirty |= out.repaint || out.closed;
+        if out.pick_company {
+            self.pick_company(surface);
+        }
+        if out.applied {
+            self.upload_model();
+            self.props_key = None;
+            self.tool_chip_key = None;
+            self.sync_levels();
+            self.refresh_cursor();
+        }
+        if let Some(g) = out.open_type {
+            self.open_catalog();
+            if let Some(c) = self.catalog.as_mut() {
+                c.show_guid(g);
+            }
+        }
         self.sync_caption(surface);
         true
     }
@@ -1326,6 +1457,9 @@ impl App {
         if let Some(cat) = self.catalog.as_mut() {
             cat.set_company(self.company.as_ref());
         }
+        if let Some(v) = self.materials.as_mut() {
+            v.set_company(self.company.as_ref());
+        }
         self.prefs_dirty = true;
         self.prefs_popup_dirty = true;
     }
@@ -1333,7 +1467,7 @@ impl App {
     /// Einstellungsfenster öffnen; ist es offen, bleibt es (es liegt ohnehin
     /// vorn).
     fn open_prefs(&mut self) {
-        if self.prefs.is_some() || self.catalog.is_some() {
+        if self.modal() {
             return;
         }
         if self.ui.dialog {
@@ -1473,6 +1607,15 @@ impl App {
         self.prefs_dirty = false;
         self.paint_prefs_popup();
         let win = self.prefs_win();
+        if let Some(v) = self.materials.as_mut() {
+            if let catalog_view::Frame::Full { x, y, w, h, px } =
+                v.paint_frame(&self.theme, &self.ui.fonts, &win)
+            {
+                self.renderer.set_overlay(OVERLAY_PREFS, x, y, w, h, &px);
+            }
+            self.redraw = true;
+            return;
+        }
         if let Some(cat) = self.catalog.as_mut() {
             if cat.asking() {
                 // Die Rückfrage zeigt die Wände: das Fenster tritt zurück
@@ -1713,6 +1856,14 @@ impl App {
         if !self.ui.quantity_open {
             self.ui.quantity_open = true;
             self.dirty_buttons.push(Id::Quantity);
+        }
+        // Entdecken (Paket 5 §1.1): einmalig die Karte zu „Baustoffe …“
+        if self.hints_seen.insert("materials".into()) {
+            if let Some(text) = hints::text("materials") {
+                let lines = text.lines().map(str::to_string).collect();
+                let link = ("Baustoffe öffnen", delete::Link::Materials);
+                self.quantity.discover(lines, link, Instant::now());
+            }
         }
     }
 
@@ -1962,6 +2113,7 @@ impl App {
                 self.ui.toggle_more();
                 self.overlay_dirty = true;
             }
+            Id::PropsMaterial(g) => self.open_materials(Some(g)),
             Id::PropsFlush => {
                 if let Some(w) = self.sel.id.and_then(|id| self.scene.stack_wall(id)) {
                     self.flush(w);
@@ -2374,6 +2526,9 @@ impl App {
         if self.catalog.is_some() && self.handle_catalog(e, surface) {
             return !self.quit;
         }
+        if self.materials.is_some() && self.handle_materials(e, surface) {
+            return !self.quit;
+        }
         if self.menu.is_open() && self.handle_menu(e, surface) {
             return !self.quit;
         }
@@ -2403,8 +2558,7 @@ impl App {
         {
             if self.save_dlg.is_none()
                 && !self.menu.is_open()
-                && self.catalog.is_none()
-                && self.prefs.is_none()
+                && !self.modal()
                 && self.click_notice(x, y)
             {
                 return true;
@@ -3271,6 +3425,8 @@ impl App {
                 let untitled = self.doc.path.is_none();
                 self.queued_command = Some(autosave::fail_notice_command(untitled));
             }
+            delete::Link::Materials => self.open_materials(None),
+            delete::Link::Dismiss => {}
         }
     }
 
@@ -3892,7 +4048,7 @@ impl App {
     /// Knöpfe der Titelleiste an Verlauf und Menü angleichen.
     fn sync_title_state(&mut self) {
         // Bei offenem Einstellungsfenster gesperrt (E5)
-        let free = self.prefs.is_none() && self.catalog.is_none();
+        let free = !self.modal();
         let undo = free && self.scene.undo_label().is_some();
         let redo = free && self.scene.redo_label().is_some();
         let open = self.menu.is_open();
@@ -3919,6 +4075,9 @@ impl App {
         }
         if let Some(c) = &self.catalog {
             return c.tip();
+        }
+        if let Some(v) = &self.materials {
+            return v.tip();
         }
         if let Some(c) = &self.context {
             return c.tip();
@@ -4831,8 +4990,7 @@ impl App {
     fn wheel_show(&self) -> wheel_view::Show {
         let blocked = self.ui.dialog
             || self.menu.is_open()
-            || self.prefs.is_some()
-            || self.catalog.is_some()
+            || self.modal()
             || self.save_dlg.is_some()
             || self.confirm.is_some();
         if !self.wheel.visible(self.ui.view, false) {
@@ -5225,6 +5383,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         settings,
         company,
         catalog: None,
+        materials: None,
+        mat_more: false,
         tool_type: [None, None],
         type_menu: None,
         type_menu_dirty: false,
@@ -5390,6 +5550,32 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             h.hold();
         }
     }
+    // Fenster „Baustoffe …“ für Bildvergleiche (Paket 5): `--firmenkatalog
+    // datei.szk`, `--baustoffe Namensanfang`, `--baustoffe-mehr`,
+    // `--baustoffe-firma`
+    if let Some(p) = std::env::args()
+        .skip_while(|a| a != "--firmenkatalog")
+        .nth(1)
+    {
+        a.company = Some(catalog::Company::load(std::path::Path::new(&p), false).0);
+    }
+    if let Some(v) = arg("--baustoffe") {
+        let name = v.join(",");
+        let g = a
+            .scene
+            .model()
+            .materials()
+            .iter()
+            .find(|(_, x)| x.name.starts_with(&name))
+            .map(|(_, x)| x.guid);
+        a.mat_more = std::env::args().any(|x| x == "--baustoffe-mehr");
+        a.open_materials(g);
+        if std::env::args().any(|x| x == "--baustoffe-firma") {
+            if let Some(v) = a.materials.as_mut() {
+                v.show_company();
+            }
+        }
+    }
     // `--ansicht schnitt`: mit dieser Ansicht beginnen (Bildvergleiche);
     // `schnitt` zeigt Schnitt A, `schnitt-b` Schnitt B, dazu `--gespiegelt`
     // mit umgekehrtem Blick
@@ -5489,9 +5675,10 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             if a.ui.view == ViewKind::Plan && a.scene.plans_pending() {
                 a.scene.prepare_neighbor_plans();
             }
-            let dlg_wait = match &a.catalog {
-                Some(c) => c.wait(&a.theme),
-                None => a.prefs.as_ref().and_then(|p| p.wait()),
+            let dlg_wait = match (&a.catalog, &a.materials) {
+                (Some(c), _) => c.wait(&a.theme),
+                (None, Some(v)) => v.wait(&a.theme),
+                (None, None) => a.prefs.as_ref().and_then(|p| p.wait()),
             };
             let wait = match (a.tip_wait(), dlg_wait) {
                 (Some(x), Some(y)) => Some(x.min(y)),
@@ -5562,6 +5749,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         if a.catalog.as_mut().is_some_and(|c| c.tick(theme)) {
             a.prefs_dirty = true;
         }
+        if a.materials.as_mut().is_some_and(|v| v.tick(theme)) {
+            a.prefs_dirty = true;
+        }
         // Wände wachsen nach einem Typwechsel (K3b)
         if a.scene.growing() {
             let t = a.now();
@@ -5619,6 +5809,10 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         let cursor = match (&a.prefs, &a.catalog) {
             (Some(p), _) => p.cursor(),
             (None, Some(c)) => c.cursor(),
+            (None, None) if a.materials.is_some() => a
+                .materials
+                .as_ref()
+                .map_or(sk_platform::Cursor::Arrow, |v| v.cursor()),
             (None, None) if a.wheel_hand() => sk_platform::Cursor::Hand,
             (None, None) if a.hint.as_ref().is_some_and(|h| h.link_hover) => {
                 sk_platform::Cursor::Hand

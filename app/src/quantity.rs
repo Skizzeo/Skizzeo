@@ -138,6 +138,12 @@ impl QuantityWindow {
         self.dirty = true;
     }
 
+    /// Entdecken-Karte (Paket 5 §1.1) unten rechts im Blatt.
+    pub fn discover(&mut self, lines: Vec<String>, link: (&'static str, Link), now: Instant) {
+        self.hint = Some(HintCard::new(lines, Some(link), Vec::new(), now).discovering());
+        self.dirty = true;
+    }
+
     /// Nach dem Löschen aus der Liste (Entf oder Menü): Hinweis, Aufleuchten
     /// der abgelehnten Zeilen, bereinigte Auswahl.
     pub fn erased(&mut self, s: &Scene, d: &Deleted, p: &mut Picking, now: Instant) {
