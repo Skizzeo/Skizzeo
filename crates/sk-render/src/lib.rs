@@ -501,6 +501,10 @@ void main() {
         // Mauerwerk ohne Muster in 3D: Mischfarbe der Steine statt der
         // Ansichtsfläche (Paket 6, Zeile 12 Feld 4)
         if (!cut && int(look(8).x + 0.5) == 1) c = unpack_rgb(look(11).w);
+        // Paket 6b: Steine und Putzkorn, weich zur Mischfarbe in der Ferne
+        if (!cut && u_alpha >= 1.0 && u_patterns == 2 && int(look(8).x + 0.5) != 0) {
+            c = pattern_rgb(v_model, v_normal, c, look(8), look(9), look(10), look(11));
+        }
         float d = max(dot(normalize(v_normal), u_light), 0.0);
         o_color = vec4(c * (u_ambient + (1.0 - u_ambient) * d), u_alpha);
         return;
@@ -618,6 +622,84 @@ vec2 masonry_stone(float u, int row, vec4 p8, vec4 p9) {
     float col = floor((u + off) / a);
     float x = u + off - col * a;
     return vec2(col, min(x, a - x));
+}
+// Hash als Anteil 0..1 (24 Bit), wie `unit` in Rust
+float pat_unit(uint h) {
+    return float(h >> 8) / 16777216.0;
+}
+// Steinfarbe: Familie nach den Anteilen (ganzzahlig wie in Rust),
+// Helligkeit gestreut
+vec3 stone_rgb(int row, int stone, vec4 p9, vec4 p10, vec4 p11) {
+    uint seed = uint(p9.z + 0.5);
+    uint h = pat_hash(row, stone, seed);
+    uint x = (h >> 8) * 100u;
+    float cols[3] = float[3](p10.x, p10.z, p11.x);
+    float shares[3] = float[3](p10.y, p10.w, p11.z);
+    uint cum = 0u;
+    float c = cols[0];
+    for (int i = 0; i < 3; i++) {
+        if (shares[i] <= 0.0) continue;
+        cum += uint(shares[i] + 0.5);
+        c = cols[i];
+        if (x < (cum << 24)) break;
+    }
+    vec3 rgb = unpack_rgb(c);
+    if (p9.y <= 0.0) return rgb;
+    float f = 1.0 + p9.y / 100.0 * (2.0 * pat_unit(lowbias32(h ^ 0x68e31da4u)) - 1.0);
+    return clamp(rgb * f, 0.0, 1.0);
+}
+// Helligkeit des Putzes (Körnung p9.w mm, Streuung p9.y %), wie
+// `plaster_light` in Rust
+float plaster_light(float u, float v, vec4 p9) {
+    uint seed = uint(p9.z + 0.5);
+    float gx = u / (p9.w * 1.5);
+    float gy = v / p9.w;
+    float ix = floor(gx);
+    float iy = floor(gy);
+    float fx = gx - ix;
+    float fy = gy - iy;
+    int jx = int(ix);
+    int jy = int(iy);
+    float n00 = pat_unit(pat_hash(jy, jx, seed));
+    float n10 = pat_unit(pat_hash(jy, jx + 1, seed));
+    float n01 = pat_unit(pat_hash(jy + 1, jx, seed));
+    float n11 = pat_unit(pat_hash(jy + 1, jx + 1, seed));
+    float sx = fx * fx * (3.0 - 2.0 * fx);
+    float sy = fy * fy * (3.0 - 2.0 * fy);
+    float a = n00 + (n10 - n00) * sx;
+    float b = n01 + (n11 - n01) * sx;
+    float k = a + (b - a) * sy;
+    float t = clamp((k - 0.45) / 0.55, 0.0, 1.0);
+    float shade = t * t * (3.0 - 2.0 * t);
+    return 1.0 + p9.y / 100.0 * (0.5 - 2.5 * shade);
+}
+// Farbe in 3D (6b): `base` ist die Farbe ohne Muster (Mauerwerk: die
+// Mischfarbe, Putz: die Ansichtsfläche). Unter 1,5 px Schicht bzw. Korn
+// ohne Hash (P3), bis 3 px weich (P5); waagerechte Flächen bei Mauerwerk
+// in der Mischfarbe.
+vec3 pattern_rgb(vec3 p, vec3 n, vec3 base, vec4 p8, vec4 p9, vec4 p10, vec4 p11) {
+    vec3 q = pattern_uv(p, n);
+    float px = max(length(vec2(dFdx(q.x), dFdy(q.x))), length(vec2(dFdx(q.y), dFdy(q.y))));
+    px = max(px, 1e-6);
+    if (int(p8.x + 0.5) == 2) {
+        float fade = smoothstep(1.5, 3.0, p9.w / px);
+        if (fade <= 0.0) return base;
+        return clamp(base * mix(1.0, plaster_light(q.x, q.y, p9), fade), 0.0, 1.0);
+    }
+    if (q.z < 0.5) return base;
+    float j = p8.w;
+    float course = p8.z + j;
+    float fade = smoothstep(1.5, 3.0, course / px);
+    if (fade <= 0.0) return base;
+    float rf = floor((q.y + j * 0.5) / course);
+    int row = int(rf);
+    float dv = q.y + j * 0.5 - rf * course;
+    vec2 st = masonry_stone(q.x, row, p8, p9);
+    // Abstand in den Stein hinein (mm): Lagerfuge unten [0, j), Stoßfuge ±j/2
+    float inside = min(min(dv - j, course - dv), st.y - j * 0.5);
+    float k = clamp(inside / px + 0.5, 0.0, 1.0);
+    vec3 c = mix(unpack_rgb(p11.y), stone_rgb(row, int(st.x), p9, p10, p11), k);
+    return mix(base, c, fade);
 }
 // Fugenlinien der Ansicht: Tinte 0..1 mit Stiftbreite `w` px; weich aus
 // zwischen 3 und 1,5 px Schichtabstand, darunter ohne Rechnung (P3)

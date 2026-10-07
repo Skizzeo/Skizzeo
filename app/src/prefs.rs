@@ -234,6 +234,8 @@ enum Target {
     Group(usize),
     Dot(ColorTarget),
     Advanced,
+    /// Schalter „Muster in 3D“ (Bedienoberfläche).
+    Patterns3d,
     /// Aufklapper: Zeile der Auswahlliste, Farbwähler.
     Item(usize),
     PickSv,
@@ -1160,6 +1162,13 @@ impl Prefs {
             "Kanten ohne Stift",
             role_target("env.edge"),
         );
+        // Paket 6: Steine und Putzkorn in 3D; aus = Mischfarbe
+        texts.push(UiText::label(rx, y + 15.0 * s, "Muster in 3D"));
+        items.push((
+            Rect::new(vx, y + 2.0 * s, 18.0 * s, 18.0 * s),
+            Target::Patterns3d,
+        ));
+        y += 30.0 * s;
         y += 12.0 * s;
         texts.push(UiText::heading(rx, y + 18.0 * s, "Bildschirm"));
         y += 34.0 * s;
@@ -1816,6 +1825,12 @@ impl Prefs {
             }
             Target::Group(g) => self.groups_open[g] = !self.groups_open[g],
             Target::Advanced => self.advanced = !self.advanced,
+            Target::Patterns3d => {
+                let t = &mut *cx.theme;
+                t.env.patterns_3d = !t.env.patterns_3d;
+                t.rev += 1;
+                out.theme = true;
+            }
             Target::Dot(ct) => {
                 let c = role_color(&Theme::dark(), ct);
                 self.set_color(ct, c, cx, out);
@@ -3521,6 +3536,9 @@ impl Prefs {
                     let unit = field_range(f).map_or("", |r| r.3);
                     let st = self.field_state(f, &v, unit);
                     widgets::field(&mut cc, fonts, rr, &st, s, t);
+                }
+                Target::Patterns3d => {
+                    widgets::checkbox(&mut cc, rr, t.env.patterns_3d, hover, s, t);
                 }
                 Target::Group(_) | Target::Advanced if hover => {
                     let mut p = Path::new();

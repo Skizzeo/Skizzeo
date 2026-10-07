@@ -481,6 +481,11 @@ pub fn write(theme: &Theme) -> String {
             .num("ground_opacity", t.env.ground_opacity)
             .finish(&mut out);
     }
+    if t.env.patterns_3d != b.env.patterns_3d {
+        Line::new("env")
+            .word("patterns_3d", if t.env.patterns_3d { "1" } else { "0" })
+            .finish(&mut out);
+    }
     if t.env.sky != b.env.sky {
         for (k, c) in &t.env.sky {
             Line::new("sky")
@@ -586,6 +591,14 @@ pub fn read_all(text: &str) -> (Theme, Recent, Vec<String>) {
                     match r.f32("ground_opacity") {
                         Ok(v) if (0.0..=1.0).contains(&v) => t.env.ground_opacity = v,
                         _ => skip(&mut hints, "ground_opacity (0 bis 1)"),
+                    }
+                }
+                if let Some(v) = r.opt("patterns_3d") {
+                    any = true;
+                    match v {
+                        "1" => t.env.patterns_3d = true,
+                        "0" => t.env.patterns_3d = false,
+                        _ => skip(&mut hints, "patterns_3d (0 oder 1)"),
                     }
                 }
                 if !any {

@@ -165,6 +165,9 @@ pub struct Environment {
     pub fill_fallback: Rgba,
     /// Abdunkeln des Modellfensters hinter einem Dialog (E16).
     pub scrim: Rgba,
+    /// Muster (Steine, Putzkorn) in 3D zeigen (Paket 6, Schalter „Muster in
+    /// 3D“); aus zeigt Mauerwerk die Mischfarbe.
+    pub patterns_3d: bool,
 }
 
 /// Maße in Bildpunkten bei Skalierung 1.
@@ -443,6 +446,7 @@ impl Theme {
                 paper_fallback: rgb(245, 244, 239),
                 fill_fallback: rgb(255, 255, 255),
                 scrim: Rgba(0, 0, 0, 89),
+                patterns_3d: true,
             },
             size: Sizes {
                 corner_radius: 10.0,
