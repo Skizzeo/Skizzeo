@@ -97,7 +97,7 @@ Entstehen | Springt das OG zurück, entsteht die Terrasse von selbst auf der EG-
 Aufbau | harte Dämmung 8 cm, Belag 6 cm; die OG-Wand steht auf der Rohdecke
 Attika | Die EG-Außenschichten laufen 6 cm über den Belag, darauf das Attikablech
 Werte ändern | Belag anklicken, im Paneel Dämmung, Belag und „Attika über Belag“ tippen
-Mengen | Dämmung in m² und m³, Belag in m², Blech in m; Blech beim Dachdecker
+Mengen | Fläche in m², Dämmung und Belag je in m³, Blech in m ohne Volumen; alles beim Dachdecker
 Verschwinden | „Bündig setzen“ oder OG nach außen; **Strg+Z** holt sie zurück
 Löschen | geht nicht einzeln; sie folgt dem Rücksprung des OG
 
@@ -212,6 +212,8 @@ Eigene Vorlage | „Als Vorlage speichern …“ legt sie im Firmenkatalog ab
 [thema] id=mengen titel="Mengenermittlung"
 Öffnen | Knopf „Mengenermittlung“ im Paneel „Ansichten“
 Gliedern | oben rechts „Gliedern nach“ Geschoss oder Gewerk
+Gewerksumme | jede Fläche einmal je Bauteil; in m Abgerechnetes (Attikablech) zählt ohne Volumen
+Preise | Richtpreise stehen bei den Baustoffen; Kosten rechnet die Liste noch nicht
 Zeigen | Überfahren einer Zeile lässt das Bauteil leuchten, Klick wählt es
 Ins Bild holen | Doppelklick auf eine Zeile
 Löschen | **Entf** oder Rechtsklick auf eine Zeile
