@@ -1049,9 +1049,6 @@ impl Model {
             .unwrap_or_else(|| name.to_string())
     }
 
-    /// Ersetzt einen Baustoff (Materialfenster, Paket 5). Abgelehnt, wenn der
-    /// Name leer oder vergeben ist, eine Darstellung oder das Gewerk fehlt,
-    /// die Guid wechselt oder ein Kennwert die Regeln 50–53 verletzt.
     /// Nur den Namen eines Baustoffs ändern, ohne die übrigen Werte zu
     /// prüfen (Zwischennamen beim Tauschen, Review 3q/2): Der Name muss
     /// frei und nicht leer sein.
@@ -1076,6 +1073,9 @@ impl Model {
         true
     }
 
+    /// Ersetzt einen Baustoff (Materialfenster, Paket 5). Abgelehnt, wenn der
+    /// Name leer oder vergeben ist, eine Darstellung oder das Gewerk fehlt,
+    /// die Guid wechselt oder ein Kennwert die Regeln 50–53 verletzt.
     pub fn set_material(&mut self, id: MaterialId, m: Material) -> bool {
         let Some(old) = self.materials.get(id) else {
             return false;

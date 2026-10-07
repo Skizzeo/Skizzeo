@@ -708,10 +708,9 @@ fn cached(c: &mut Tables, seed: u32) -> Option<std::sync::Arc<BondTable>> {
 }
 
 fn keep(c: &mut Tables, seed: u32, t: std::sync::Arc<BondTable>) {
+    // Ohne Obergrenze: eine Tabelle sind 16 KiB, und jede Oberfläche mit
+    // wildem Verband braucht ihre ständig (Review 3s, A296)
     if !c.iter().any(|(s, _)| *s == seed) {
-        if c.len() >= 16 {
-            c.remove(0);
-        }
         c.push((seed, t));
     }
 }

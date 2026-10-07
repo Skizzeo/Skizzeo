@@ -1083,15 +1083,17 @@ pub(crate) fn read_patterns(
             }
             Err(e) => {
                 // Die Oberfläche bleibt ohne Muster, auch eine Werks-Oberfläche
-                // bekommt nicht still ihr Werksmuster; eine zweite Zeile
-                // bleibt unverändert stehen (Review 3q/3)
+                // bekommt nicht still ihr Werksmuster; die Zeile bleibt
+                // bytegleich stehen, bis man ein Muster setzt (Review 3q/3, 3s)
                 done.push(g);
                 if let Some(s) = surfaces.get_mut(id) {
-                    s.pattern = None;
+                    s.pattern = Some(crate::proctex::Pattern::Foreign(
+                        lines[r.line - 1].to_string(),
+                    ));
                 }
                 r.skip();
                 hints.push(format!(
-                    "Zeile {}: Muster für „{name}“ verworfen ({e})",
+                    "Zeile {}: Muster für „{name}“ ungültig ({e}); bleibt unverändert, ohne Muster",
                     r.line
                 ));
             }

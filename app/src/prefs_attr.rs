@@ -1477,6 +1477,14 @@ impl Prefs {
             let mut lines = widgets::wrap(regular, &all, small, lr.w);
             if lines.len() > 3 {
                 lines.truncate(3);
+                // „ …“ passt noch in die dritte Zeile (Einstellungen (al))
+                let fits =
+                    |l: &str| regular.is_none_or(|f| f.width(&format!("{l} …"), small) <= lr.w);
+                while !lines[2].is_empty() && !fits(&lines[2]) {
+                    lines[2].pop();
+                }
+                let end = lines[2].trim_end().len();
+                lines[2].truncate(end);
                 lines[2].push_str(" …");
             }
             hints.extend(lines);

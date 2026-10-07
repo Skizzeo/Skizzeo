@@ -21045,8 +21045,9 @@ mod muster {
     /// A274 (BIM-Befund 6a, Koordinator 19:31; paket-6 §2.2): Ein
     /// unbekanntes Verbandswort (später etwa `bond=block` aus Paket 7a)
     /// macht die Zeile nicht ungültig. Sie bleibt bytegleich erhalten, die
-    /// Oberfläche zeigt kein Muster. Falsche Zahlen oder Farben werfen die
-    /// Zeile dagegen weiter mit Hinweis weg, auch mit unbekanntem Verband.
+    /// Oberfläche zeigt kein Muster. Falsche Zahlen oder Farben geben einen
+    /// Hinweis und kein Muster; die Zeile selbst bleibt seit Review 3s
+    /// (Koordinator 20:32, F-17b) ebenfalls bytegleich, siehe A297.
     #[test]
     fn a274_unbekannter_verband_bleibt() {
         let mut s = Scene::with_model(Model::with_seed(274));
@@ -21084,12 +21085,11 @@ mod muster {
             assert!(!l.hints.is_empty(), "Hinweis fehlt: {falsch}");
             assert_eq!(muster(&l.model, flaeche(&l.model, "Gasbeton")), None);
             let neu = sk_model::szo::write(&l.model);
-            assert!(
-                !muster_zeilen(&neu)
-                    .iter()
-                    .any(|z| z.contains(&format!("surface={g}"))),
-                "falsche Zeile bleibt: {falsch}"
-            );
+            let eigene: Vec<&str> = muster_zeilen(&neu)
+                .into_iter()
+                .filter(|z| z.contains(&format!("surface={g}")))
+                .collect();
+            assert_eq!(eigene, [falsch.as_str()], "falsche Zeile bleibt bytegleich");
         }
     }
 
@@ -21166,6 +21166,118 @@ mod muster {
         );
         let l = lesen(&neu);
         assert_eq!(muster(&l.model, s_id(&l.model, g)), None, "Abwahl bleibt");
+    }
+
+    /// A296 (Review 3s, Koordinator 20:32): Mit 17 und mehr verschiedenen
+    /// wilden Startwerten kommt die Hintergrundrechnung zur Ruhe, und jede
+    /// Tabelle wird nur einmal gerechnet. Ursache war der Speicher für nur
+    /// 16 Tabellen: Die 17. verdrängte die älteste, die beim nächsten
+    /// Neuaufbau wieder bestellt wurde, ohne Ende.
+    /// - 20 Startwerte, die sonst kein Test nutzt, werden wie im Zeichenpfad
+    ///   immer wieder mit `bond_table_ready` abgefragt, bis alle 20 in einem
+    ///   Durchgang da sind (höchstens 60 s).
+    /// - Danach kommen bei weiteren Durchgängen, auch über `bond_table`,
+    ///   dieselben Tabellen zurück (gleicher Zeiger, also nicht neu
+    ///   gerechnet), und für sie läuft nichts mehr im Hintergrund.
+    #[test]
+    fn a296_viele_wilde_startwerte_kommen_zur_ruhe() {
+        use sk_model::proctex::{bond_table, bond_table_ready, bond_tables_pending};
+        use std::sync::Arc;
+        let seeds: Vec<u32> = (0..20).map(|i| 0x00a2_9600 + i).collect();
+        let bis = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let erste = loop {
+            let r: Vec<_> = seeds.iter().map(|s| bond_table_ready(*s)).collect();
+            if r.iter().all(Option::is_some) {
+                break r.into_iter().flatten().collect::<Vec<_>>();
+            }
+            let fehlt = r.iter().filter(|x| x.is_none()).count();
+            assert!(
+                std::time::Instant::now() < bis,
+                "nach 60 s fehlen noch {fehlt} von 20 Tabellen"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        for runde in 0..3 {
+            for (s, t) in seeds.iter().zip(&erste) {
+                let r = bond_table_ready(*s).unwrap_or_else(|| {
+                    panic!("Runde {runde}: Tabelle {s:#x} verdrängt und neu bestellt")
+                });
+                assert!(Arc::ptr_eq(&r, t), "Runde {runde}: {s:#x} neu gerechnet");
+                assert!(Arc::ptr_eq(&bond_table(*s), t), "bond_table {s:#x}");
+            }
+        }
+        // Andere Tests können eigene Tabellen bestellen; die Rechnung muss
+        // trotzdem in kurzer Zeit zur Ruhe kommen.
+        let bis = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while bond_tables_pending() {
+            assert!(
+                std::time::Instant::now() < bis,
+                "Hintergrund kommt nicht zur Ruhe"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        for (s, t) in seeds.iter().zip(&erste) {
+            assert!(Arc::ptr_eq(&bond_table_ready(*s).unwrap(), t), "{s:#x}");
+        }
+    }
+
+    /// A297 (Review 3s zu 3q/3, Koordinator 20:32; F-17b): Eine ungültige
+    /// `[pattern]`-Zeile (etwa `joint=20`, für eine neuere Fassung gültig)
+    /// übersteht Laden und Speichern bytegleich, wie ein unbekanntes
+    /// Verbandswort (A274). Beim Lesen gibt es einen Hinweis, die Oberfläche
+    /// hat kein Muster, auch eine Werks-Oberfläche bekommt keins
+    /// untergeschoben, und es entsteht keine zweite Zeile (`gen=none`) für
+    /// sie. Erst ein neu gesetztes Muster ersetzt die Zeile (Regel 64).
+    #[test]
+    fn a297_ungueltige_musterzeile_bleibt() {
+        let m = Model::new();
+        let text = sk_model::szo::write(&m);
+        let gb = sguid(&m, flaeche(&m, "Gasbeton"));
+        let vb = sguid(&m, flaeche(&m, "Verblender (Vormauerziegel)"));
+        let ziegel = |g: sk_model::Guid, joint: &str| {
+            format!(
+                "[pattern] surface={g} gen=masonry len=240 h=71 joint={joint} bond=half jrgb=d8d4cc pal=8a3b2a:40;9c4a33:35;6e2f22:25 spread=6 seed=17"
+            )
+        };
+        let a = ziegel(gb, "20");
+        let b = ziegel(vb, "20");
+        let c = format!("[pattern] surface={gb} gen=plaster grain=9 spread=4 seed=5");
+        for (falsch, g) in [(&a, gb), (&b, vb), (&c, gb)] {
+            let ohne: String = text
+                .lines()
+                .filter(|l| !(l.starts_with("[pattern]") && l.contains(&format!("surface={g}"))))
+                .map(|l| format!("{l}\n"))
+                .collect();
+            let l = lesen(&format!("{ohne}{falsch}\n"));
+            assert!(!l.hints.is_empty(), "Hinweis fehlt: {falsch}");
+            assert!(l.model.check().is_empty());
+            let s = s_id(&l.model, g);
+            assert_eq!(muster(&l.model, s), None, "kein Muster: {falsch}");
+            let neu = sk_model::szo::write(&l.model);
+            let eigene: Vec<&str> = muster_zeilen(&neu)
+                .into_iter()
+                .filter(|z| z.contains(&format!("surface={g}")))
+                .collect();
+            assert_eq!(eigene, [falsch.as_str()], "bytegleich, keine zweite Zeile");
+            let l2 = lesen(&neu);
+            assert_eq!(muster(&l2.model, s_id(&l2.model, g)), None);
+            assert_eq!(sk_model::szo::write(&l2.model), neu, "Rundlauf");
+
+            let mut w = Scene::with_model(l2.model);
+            let s = s_id(w.model(), g);
+            muster_setzen(&mut w, s, Some(sk_model::proctex::plaster_default()));
+            let neu = sk_model::szo::write(w.model());
+            let eigene: Vec<&str> = muster_zeilen(&neu)
+                .into_iter()
+                .filter(|z| z.contains(&format!("surface={g}")))
+                .collect();
+            assert_eq!(eigene.len(), 1, "eine Zeile je Oberfläche: {eigene:?}");
+            assert!(eigene[0].contains("gen=plaster"), "{}", eigene[0]);
+            assert!(
+                !neu.contains(falsch.as_str()),
+                "neues Muster ersetzt die Zeile"
+            );
+        }
     }
 
     fn s_id(m: &Model, g: sk_model::Guid) -> SurfaceId {
@@ -21562,7 +21674,13 @@ mod texturen {
     }
 
     fn muster(m: &Model, s: SurfaceId) -> Option<Pattern> {
-        m.attr().surface(s).unwrap().pattern.clone()
+        // Fremdes und unverändert Behaltenes zeigt kein Muster (wie mod muster)
+        m.attr()
+            .surface(s)
+            .unwrap()
+            .pattern
+            .clone()
+            .filter(|p| !matches!(p, Pattern::Foreign(_)))
     }
 
     fn muster_setzen(sc: &mut Scene, s: SurfaceId, p: Option<Pattern>) {
@@ -22214,6 +22332,19 @@ mod texturen {
              [pattern] surface={d} gen=stone size=300 joint=15 irr=60 jrgb=96928a pal=bfa98a:40;a8916f:35;cdbb9c:25 seed=31\n\
              [pattern] surface={e} gen=masonry len=240 h=71 joint=10 bond=wild jrgb=d1cbc2 pal=87493c:79;675549:9;7b6d65:12 hpal=87493c:50;675549:50 flame=100 fend=64 relief=100 spread=7 seed=17\n"
         );
+        // Werks-Oberflächen (Stahlbeton, Putz, Verblender) tragen schon eine
+        // Zeile; eine zweite bliebe nach §2.2 hinter der ersten stehen
+        // (Bauthread 20:40). Darum vorher die eigenen Zeilen der fünf entfernen.
+        let text: String = text
+            .lines()
+            .filter(|z| {
+                !(z.starts_with("[pattern]")
+                    && [a, b, c, d, e]
+                        .iter()
+                        .any(|g| z.contains(&format!("surface={g} "))))
+            })
+            .map(|z| format!("{z}\n"))
+            .collect();
         let l = lesen(&format!("{text}{neu}"));
         assert!(l.model.check().is_empty());
         let geschrieben = sk_model::szo::write(&l.model);
