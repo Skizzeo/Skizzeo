@@ -29,7 +29,7 @@ pub struct Style {
 pub const EDGE_KINDS: usize = 8;
 
 /// Zeilen der Aussehens-Tabelle je Darstellungsschlüssel.
-pub const LOOK_ROWS: usize = 13;
+pub const LOOK_ROWS: usize = 15;
 
 /// Breite (Bildpunkte) und Farbe je Kantenart, für Zeichnung oder 3D.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -103,11 +103,24 @@ pub fn dash_ink(dist: f32, len: f32, p: &DashPattern, w: f32) -> bool {
 /// | 5 | Schar 2: cx, cy, Periode px | Abstandsfaktor k |
 /// | 6 | Versatz Schar 1, Versatz Schar 2, Anzahl Scharen | Zickzack-Periode |
 /// | 7 | Strich und Lücke Schar 1, Strich und Lücke Schar 2 (px, 0 = durchgezogen) | |
-/// | 8 | Muster (Paket 6): Art 0 ohne, 1 Mauerwerk, 2 Putz; Steinlänge, Steinhöhe, Fuge (mm) | |
-/// | 9 | Verbandversatz (0,5 / ⅓ / −1 wild), Streuung %, Startwert, Körnung mm | |
-/// | 10 | Steinfarbe 1 (r·65536 + g·256 + b), Anteil 1 %, Steinfarbe 2, Anteil 2 % | |
-/// | 11 | Steinfarbe 3, Fugenfarbe, Anteil 3 %, Mischfarbe (3D ohne Muster) | |
-/// | 12 | Deckkraft des Musters 0..1 (wilder Verband: 0, bis seine Tabelle vorliegt, dann eingeblendet) | |
+/// | 8 | Muster: Art 0 ohne, 1 Mauerwerk, 2 Putz, 3 Sichtbeton, 4 Holz, 5 Platten, 6 Naturstein; dann je Art (unten) | |
+/// | 9 | je Art; Feld b immer der Startwert | |
+/// | 10 | Farbe 1 (r·65536 + g·256 + b), Anteil 1 %, Farbe 2, Anteil 2 % | |
+/// | 11 | Farbe 3, Fugenfarbe, Anteil 3 % | Mischfarbe (Ferne, 3D ohne Muster) |
+/// | 12 | Flammung %, Enden braun %, Relief % bzw. Poren % | Deckkraft des Musters 0..1 (wilder Verband: 0, bis seine Tabelle vorliegt, dann eingeblendet) |
+/// | 13 | Kopffarbe 1, Anteil 1, Kopffarbe 2, Anteil 2 (ohne `hpal` wie Zeile 10) | |
+/// | 14 | Kopffarbe 3, –, Anteil 3 | |
+///
+/// Zeilen 8 und 9 je Art (r g b a):
+///
+/// | Art | Zeile 8 | Zeile 9 |
+/// |---|---|---|
+/// | 1 Mauerwerk | Länge, Höhe, Fuge | Verband (0,5 / ⅓ / −1 wild / 2 Block / 3 Kreuz), Streuung %, Startwert, Nummer der Verbandstabelle |
+/// | 2 Putz | – | –, Streuung %, Startwert, Körnung mm |
+/// | 3 Sichtbeton | Tafel Breite, Höhe, Stoßbreite | Anker 0/1, Wolkigkeit %, Startwert |
+/// | 4 Holz | Brettbreite, Fuge, senkrecht 0/1 | Maserung %, –, Startwert; Zeile 10: Holzfarbe 1, –, Holzfarbe 2 |
+/// | 5 Platten | Länge, Breite, Fuge | Halbversatz 0/1, Streuung %, Startwert |
+/// | 6 Naturstein | Steingröße, Fuge, Unregelmäßigkeit % | –, –, Startwert |
 ///
 /// Eine Schar sind die Linien `cx·x + cy·y − Versatz = n·Periode` in
 /// Bildpunkten; der Abstand eines Pixels zur nächsten Linie ist
@@ -509,12 +522,15 @@ void main() {
     bool cut = (v_key & 0x8000) != 0;
     if (u_drawing == 0) {
         vec3 c = look(cut ? 1 : 0).rgb;
-        // Mauerwerk ohne Muster in 3D: Mischfarbe der Steine statt der
-        // Ansichtsfläche (Paket 6, Zeile 12 Feld 4)
-        if (!cut && int(look(8).x + 0.5) == 1) c = unpack_rgb(look(11).w);
-        // Paket 6b: Steine und Putzkorn, weich zur Mischfarbe in der Ferne
-        if (!cut && u_alpha >= 1.0 && u_patterns == 2 && int(look(8).x + 0.5) != 0) {
-            c = mix(c, pattern_rgb(v_model, v_normal, c, look(8), look(9), look(10), look(11)), look(12).x);
+        // Muster ohne Darstellung in 3D: Mischfarbe statt der Ansichtsfläche
+        // (Zeile 11, Feld w); Putz bleibt in seiner Farbe (Paket 6)
+        int kind = int(look(8).x + 0.5);
+        vec3 surf = c;
+        if (!cut && kind != 0 && kind != 2) c = unpack_rgb(look(11).w);
+        // Paket 6b/7a: Muster, weich zur Mischfarbe in der Ferne
+        if (!cut && u_alpha >= 1.0 && u_patterns == 2 && kind != 0) {
+            vec3 far = kind == 2 ? unpack_rgb(look(11).w) : c;
+            c = mix(c, pattern_rgb(v_model, v_normal, far, surf, look(8), look(9), look(10), look(11), look(12), look(13), look(14)), look(12).w);
         }
         float d = max(dot(normalize(v_normal), u_light), 0.0);
         o_color = vec4(c * (u_ambient + (1.0 - u_ambient) * d), u_alpha);
@@ -522,9 +538,9 @@ void main() {
     }
     vec4 bg = look(2);
     vec3 c = bg.rgb;
-    if (!cut && u_alpha >= 1.0 && u_patterns == 1 && int(look(8).x + 0.5) == 1) {
+    if (!cut && u_alpha >= 1.0 && u_patterns == 1 && int(look(8).x + 0.5) != 0) {
         // Ansicht: Fugen als Mittellinien in Tinte, keine Steinfarben
-        float ink = pattern_lines(v_model, v_normal, look(8), look(9), u_pattern_ink.a) * look(12).x;
+        float ink = pattern_lines(v_model, v_normal, look(8), look(9), u_pattern_ink.a) * look(12).w;
         c = mix(c, u_pattern_ink.rgb, ink);
     }
     if (cut && u_alpha < 1.0) {
@@ -556,12 +572,13 @@ void main() {
 }
 "#;
 
-/// Muster (Paket 6) im Fragment-Shader: Hash, Verbände und Fugen. Zeile
-/// für Zeile dieselbe Rechnung wie `sk_model::proctex` (lowbias32, Regel
-/// 61); nur Ganzzahlen und `floor`, kein Gleitkomma-Hash (Review 3c P6).
-/// Erwartet die Funktion `look(row)` (Zeilen 8–11 der Tabelle).
+/// Muster (Paket 6, 7) im Fragment-Shader: Hash, Verbände, Fugen und die
+/// Arten aus Paket 7. Zeile für Zeile dieselbe Rechnung wie
+/// `sk_model::proctex` und `texgen` (lowbias32, Regel 61); nur Ganzzahlen
+/// und `floor`, kein Gleitkomma-Hash (Review 3c P6). Bekommt die
+/// Looks-Zeilen 8–14 als Argumente.
 pub const PATTERN_GLSL: &str = r#"
-// Farbe aus r·65536 + g·256 + b (Looks-Zeilen 11/12)
+// Farbe aus r·65536 + g·256 + b (Looks-Zeilen 10–14)
 vec3 unpack_rgb(float f) {
     int n = int(f + 0.5);
     return vec3(float((n >> 16) & 255), float((n >> 8) & 255), float(n & 255)) / 255.0;
@@ -578,19 +595,68 @@ uint pat_hash(int row, int col, uint seed) {
     uint a = lowbias32(uint(row) ^ (seed * 0x9e3779b9u));
     return lowbias32(a + uint(col) * 0x85ebca6bu);
 }
+// Hash als Anteil 0..1 (24 Bit), wie `unit` in Rust
+float pat_unit(uint h) {
+    return float(h >> 8) / 16777216.0;
+}
+// 16 Bit ab `shift` als 0..1, wie `texgen::h01`
+float h01(uint h, int shift) {
+    return float((h >> uint(shift)) & 0xffffu) / 65535.0;
+}
+// Näherungsweise normalverteilt (σ 1), wie `texgen::gauss3`
+float gauss3(uint h) {
+    float a = float((h & 1023u) + ((h >> 10) & 1023u) + ((h >> 20) & 1023u)) / 1023.0;
+    return (a - 1.5) * 2.0;
+}
+// Wertrauschen −1..1 auf einem Gitter cu × cv mm, wie `texgen::vnoise`
+float vnoise(float u, float v, float cu, float cv, uint seed) {
+    float x = u / cu;
+    float y = v / cv;
+    float gx = floor(x);
+    float gy = floor(y);
+    float fx = x - gx;
+    float fy = y - gy;
+    int ix = int(gx);
+    int iy = int(gy);
+    float a = h01(pat_hash(ix, iy, seed), 0) * 2.0 - 1.0;
+    float b = h01(pat_hash(ix + 1, iy, seed), 0) * 2.0 - 1.0;
+    float c = h01(pat_hash(ix, iy + 1, seed), 0) * 2.0 - 1.0;
+    float d = h01(pat_hash(ix + 1, iy + 1, seed), 0) * 2.0 - 1.0;
+    float sx = fx * fx * (3.0 - 2.0 * fx);
+    float sy = fy * fy * (3.0 - 2.0 * fy);
+    return (a * (1.0 - sx) + b * sx) * (1.0 - sy) + (c * (1.0 - sx) + d * sx) * sy;
+}
+// Je Zelle ein Wert −1..1, wie `texgen::cellnoise`
+float cellnoise(float u, float v, float cell, uint seed) {
+    return h01(pat_hash(int(floor(u / cell)), int(floor(v / cell)), seed), 0) * 2.0 - 1.0;
+}
+// Helligkeit je Stein bzw. Platte: ± Streuung % (Paket 6)
+float spread_factor(uint h, float spread) {
+    if (spread <= 0.0) return 1.0;
+    return 1.0 + spread / 100.0 * (2.0 * pat_unit(lowbias32(h ^ 0x68e31da4u)) - 1.0);
+}
+// Farbe (0–255) nach den Anteilen einer Palette (zwei Zeilen wie 10/11),
+// ganzzahlig wie `texgen::pick`; `fam` = Nummer der Farbe
+vec3 pat_pick(vec4 a, vec4 b, uint h, out int fam) {
+    uint x = (h >> 8) * 100u;
+    float cols[3] = float[3](a.x, a.z, b.x);
+    float shares[3] = float[3](a.y, a.w, b.z);
+    uint cum = 0u;
+    float c = cols[0];
+    fam = 0;
+    for (int i = 0; i < 3; i++) {
+        if (shares[i] <= 0.0) continue;
+        cum += uint(shares[i]);
+        c = cols[i];
+        fam = i;
+        if (x < (cum << 24)) break;
+    }
+    return unpack_rgb(c) * 255.0;
+}
 // Wilder Verband: Verbandstabellen untereinander (je 128 Schichten × 128
 // Viertel, R8UI), Byte = Abstand zum Steinanfang (Bits 0–1) und Kopf (Bit 2),
 // wie `sk_model::proctex::BondTable`
 uniform usampler2D u_bond;
-// Stein (Anfang in Vierteln) und Abstand zur nächsten Stoßfuge in mm
-vec2 wild_stone(int row, float u, float a, int tab) {
-    float x = 4.0 * u / a;
-    int q = int(floor(x));
-    uint c = texelFetch(u_bond, ivec2(q & 127, (row & 127) + 128 * tab), 0).r;
-    int start = q - int(c & 3u);
-    float n = (c & 4u) != 0u ? 2.0 : 4.0;
-    return vec2(float(start), min(x - float(start), float(start) + n - x) * a * 0.25);
-}
 // Musterkoordinaten (mm): senkrechte Fläche u längs, v = Höhe über ±0,00;
 // waagerechte Fläche: x, y. z: 1 senkrecht, 0 waagerecht
 vec3 pattern_uv(vec3 p, vec3 n) {
@@ -601,114 +667,349 @@ vec3 pattern_uv(vec3 p, vec3 n) {
     }
     return vec3(p.x, p.y, 0.0);
 }
-// Stein an (u, v) in Reihe `row`: Nummer und Abstand zur Stoßfugenmitte (mm)
-vec2 masonry_stone(float u, int row, vec4 p8, vec4 p9) {
+// Stein an u in Reihe `row`, wie `locate` in Rust: Nummer, Lage ab der
+// Stoßfugenmitte am Steinanfang (mm), Achsmaß (mm), Kopf 0/1.
+// Verband p9.x: 0,5 halb, ⅓ Drittel, −1 wild, 2 Block, 3 Kreuz
+vec4 masonry_stone(float u, int row, vec4 p8, vec4 p9) {
     float a = p8.y + p8.w;
-    if (p9.x < 0.0) return wild_stone(row, u, a, int(p9.w + 0.5));
-    float off;
-    if (p9.x > 0.4) {
+    if (p9.x < 0.0) {
+        float x = 4.0 * u / a;
+        int q = int(floor(x));
+        uint c = texelFetch(u_bond, ivec2(q & 127, (row & 127) + 128 * int(p9.w + 0.5)), 0).r;
+        int start = q - int(c & 3u);
+        bool head = (c & 4u) != 0u;
+        float n = head ? 2.0 : 4.0;
+        return vec4(float(start), (x - float(start)) * a * 0.25, n * a * 0.25, head ? 1.0 : 0.0);
+    }
+    float off = 0.0;
+    float pitch = a;
+    float head = 0.0;
+    if (p9.x > 1.5) {
+        if ((row & 1) == 1) {
+            // Kopfschicht: halbe Steine, um ¼ Stein versetzt
+            off = a * 0.25;
+            pitch = a * 0.5;
+            head = 1.0;
+        } else if (p9.x > 2.5 && ((row >> 1) & 1) == 1) {
+            off = a * 0.5;
+        }
+    } else if (p9.x > 0.4) {
         off = float(row & 1) * a * 0.5;
     } else {
         off = float(row - 3 * int(floor(float(row) / 3.0))) * a / 3.0;
     }
-    float col = floor((u + off) / a);
-    float x = u + off - col * a;
-    return vec2(col, min(x, a - x));
+    float col = floor((u + off) / pitch);
+    return vec4(col, u + off - col * pitch, pitch, head);
 }
-// Hash als Anteil 0..1 (24 Bit), wie `unit` in Rust
-float pat_unit(uint h) {
-    return float(h >> 8) / 16777216.0;
+// Rissrillen (Regel 70) wie `texgen::grooves`: Höhe der Nulllinie
+float groove_n(float u, float w, uint seed) {
+    return vnoise(u, w, 34.0, 6.0, seed + 43u) + 0.35 * vnoise(u, w, 11.0, 3.0, seed + 44u);
 }
-// Steinfarbe: Familie nach den Anteilen (ganzzahlig wie in Rust),
-// Helligkeit gestreut
-vec3 stone_rgb(int row, int stone, vec4 p9, vec4 p10, vec4 p11) {
+float groove_dist(float u, float w, uint seed) {
+    float d = abs(groove_n(u, w + 0.5, seed) - groove_n(u, w - 0.5, seed));
+    return abs(groove_n(u, w, seed)) / max(d, 0.03);
+}
+// Mauerwerk (0–255): Familie nach den Anteilen (Köpfe nach Zeilen 13/14),
+// Flammung roter Läufer, Streuung, Relief mit Gewicht `rw` (Ferne)
+vec3 masonry_rgb(float u, float v, float px, vec4 p8, vec4 p9, vec4 p10, vec4 p11, vec4 p12, vec4 p13, vec4 p14) {
     uint seed = uint(p9.z + 0.5);
-    uint h = pat_hash(row, stone, seed);
-    uint x = (h >> 8) * 100u;
-    float cols[3] = float[3](p10.x, p10.z, p11.x);
-    float shares[3] = float[3](p10.y, p10.w, p11.z);
-    uint cum = 0u;
-    float c = cols[0];
-    for (int i = 0; i < 3; i++) {
-        if (shares[i] <= 0.0) continue;
-        cum += uint(shares[i] + 0.5);
-        c = cols[i];
-        if (x < (cum << 24)) break;
+    float h = p8.z;
+    float j = p8.w;
+    float course = h + j;
+    float rf = floor((v + j * 0.5) / course);
+    int row = int(rf);
+    float dv = v + j * 0.5 - rf * course;
+    vec4 st = masonry_stone(u, row, p8, p9);
+    int stone = int(st.x);
+    float x = st.y;
+    float pitch = st.z;
+    bool head = st.w > 0.5;
+    float uin = x - j * 0.5;
+    float slen = pitch - j;
+    float vin = dv - j;
+    // Relief nur nah: Rillen unter 3 px Breite ausblenden (paket-7 §8.6)
+    float rl = p12.z / 100.0 * smoothstep(1.5, 3.0, 1.4 / px);
+    vec3 jc = unpack_rgb(p11.y) * 255.0;
+    if (p12.z > 0.0) jc += rl / (p12.z / 100.0) * 6.0 * 1.7320508 * cellnoise(u, v, 1.5, seed + 13u);
+    uint hs = pat_hash(row, stone, seed);
+    int fam;
+    vec3 c = head ? pat_pick(p13, p14, hs, fam) : pat_pick(p10, p11, hs, fam);
+    if (p12.x > 0.0 && !head && fam == 0) {
+        uint h2 = pat_hash(row, stone, seed + 5u);
+        if (h01(h2, 0) < p12.x / 100.0) {
+            float cen = 0.5 + 0.05 * gauss3(lowbias32(h2 + 1u));
+            float wid = clamp(0.53 + 0.23 * gauss3(lowbias32(h2 + 2u)), 0.15, 0.85);
+            bool silver = h01(h2, 16) >= p12.y / 100.0;
+            float xl = (cen - wid * 0.5) * slen + 10.0 * vnoise(u, v, 40.0, 30.0, seed + 9u);
+            float xr = (cen + wid * 0.5) * slen + 10.0 * vnoise(u, v, 40.0, 30.0, seed + 10u);
+            float red = smoothstep(0.0, 1.0, (uin - xl) / 66.0 + 0.5) * smoothstep(0.0, 1.0, (xr - uin) / 66.0 + 0.5);
+            float e = 1.0 - red;
+            vec3 end = unpack_rgb(silver ? p11.x : p10.z) * 255.0;
+            c = c * (1.0 - e) + end * e;
+            if (e > 0.5) fam = silver ? 2 : 1;
+        }
     }
-    vec3 rgb = unpack_rgb(c);
-    if (p9.y <= 0.0) return rgb;
-    float f = 1.0 + p9.y / 100.0 * (2.0 * pat_unit(lowbias32(h ^ 0x68e31da4u)) - 1.0);
-    return clamp(rgb * f, 0.0, 1.0);
+    // Mit Relief normalverteilt (wie `masonry_rgb` in Rust)
+    c *= p12.z > 0.0 ? 1.0 + p9.y / 100.0 * gauss3(lowbias32(hs ^ 0x27d4eb2du)) : spread_factor(hs, p9.y);
+    if (rl > 0.0) {
+        float k = fam == 2 ? 1.25 : 1.0;
+        float fk = k * 14.0 * rl * 1.7320508 * cellnoise(u, v, 1.5, seed + 11u);
+        float dk = 0.0;
+        float rm = 0.0;
+        if (vin > 1.5 && vin < h - 1.5 && uin > 1.5 && uin < slen - 1.5) {
+            float seg = vnoise(u, v, 30.0, 14.0, seed + 45u) + 0.4 * vnoise(u, v, 9.0, 6.0, seed + 46u);
+            float on = clamp((seg - 0.12) / 0.15, 0.0, 1.0) * rl;
+            if (on > 0.0) {
+                dk = clamp(1.0 - (groove_dist(u, v, seed) - 0.7) / 0.7, 0.0, 1.0) * on;
+                float rim = clamp(1.0 - (groove_dist(u, v - 2.2, seed) - 1.0) / 0.7, 0.0, 1.0) * on;
+                rm = clamp(rim - dk, 0.0, 1.0);
+            }
+        }
+        bool sp = h01(pat_hash(int(floor(u / 1.5)), int(floor(v / 1.5)), seed + 12u), 0) < 0.07;
+        float lift = 25.0 * rl * max(rm, sp ? 1.0 - dk : 0.0);
+        c = (c + fk) * (1.0 - 0.75 * rl * dk) + lift;
+    }
+    // Kante weich: Abstand in den Stein hinein (mm)
+    float inside = min(min(vin, course - dv), min(x, pitch - x) - j * 0.5);
+    return mix(jc, c, clamp(inside / px + 0.5, 0.0, 1.0));
 }
-// Helligkeit des Putzes (Körnung p9.w mm, Streuung p9.y %), wie
-// `plaster_light` in Rust
-float plaster_light(float u, float v, vec4 p9) {
+// Reibeputz (paket-7 §8.5) wie `texgen::plaster`: Höhe des Korns
+float plaster_h(float a, float b, float lx, float ly, uint seed) {
+    return vnoise(a, b, lx, ly, seed) + 0.6 * vnoise(a, b, lx * 0.5, ly * 0.5, seed + 1u)
+        + 0.25 * vnoise(a, b, lx * 2.0, ly * 2.0, seed + 2u);
+}
+vec3 plaster_rgb(float u, float v, vec3 base, vec4 p9) {
     uint seed = uint(p9.z + 0.5);
-    float gx = u / (p9.w * 1.5);
-    float gy = v / p9.w;
-    float ix = floor(gx);
-    float iy = floor(gy);
-    float fx = gx - ix;
-    float fy = gy - iy;
-    int jx = int(ix);
-    int jy = int(iy);
-    float n00 = pat_unit(pat_hash(jy, jx, seed));
-    float n10 = pat_unit(pat_hash(jy, jx + 1, seed));
-    float n01 = pat_unit(pat_hash(jy + 1, jx, seed));
-    float n11 = pat_unit(pat_hash(jy + 1, jx + 1, seed));
-    float sx = fx * fx * (3.0 - 2.0 * fx);
-    float sy = fy * fy * (3.0 - 2.0 * fy);
-    float a = n00 + (n10 - n00) * sx;
-    float b = n01 + (n11 - n01) * sx;
-    float k = a + (b - a) * sy;
-    float t = clamp((k - 0.45) / 0.55, 0.0, 1.0);
-    float shade = t * t * (3.0 - 2.0 * t);
-    return 1.0 + p9.y / 100.0 * (0.5 - 2.5 * shade);
+    float lx = p9.w * 1.4;
+    float ly = lx / 1.5;
+    float d = ly * 0.3;
+    float slope = (plaster_h(u, v + d, lx, ly, seed) - plaster_h(u, v - d, lx, ly, seed)) / (2.0 * d) * ly;
+    float sh = max(0.75 * slope - 0.35 * plaster_h(u, v, lx, ly, seed) - 0.12, 0.0);
+    float k = p9.y / 4.0 * 28.0;
+    vec3 top = base + 6.0;
+    return max(top - k * sh, top - 48.0);
 }
-// Farbe in 3D (6b): `base` ist die Farbe ohne Muster (Mauerwerk: die
-// Mischfarbe, Putz: die Ansichtsfläche). Unter 1,5 px Schicht bzw. Korn
-// ohne Hash (P3), bis 3 px weich (P5); waagerechte Flächen bei Mauerwerk
-// in der Mischfarbe.
-vec3 pattern_rgb(vec3 p, vec3 n, vec3 base, vec4 p8, vec4 p9, vec4 p10, vec4 p11) {
+// Sichtbeton (Regel 69) wie `texgen::concrete`; Feinkorn, Poren und Sand
+// mit Gewicht `fine` (aus zwischen 1 und 0,5 px je mm, p7 §5)
+vec3 concrete_rgb(float u, float v, float px, float fine, vec3 base, vec4 p8, vec4 p9, vec4 p12) {
+    uint s = uint(p9.z + 0.5);
+    float cl = p9.y / 2.0;
+    float big = (1.1 * vnoise(u, v, 32.0, 32.0, s) + 0.8 * vnoise(u, v, 64.0, 64.0, s + 1u)
+        + 0.7 * vnoise(u, v, 160.0, 160.0, s + 2u)) * cl * 1.6;
+    float dl = big;
+    float kl = 0.0;
+    if (fine > 0.0) {
+        float mid = (2.9 * vnoise(u, v, 4.0, 4.0, s + 3u) + 2.3 * vnoise(u, v, 8.0, 16.0, s + 4u)
+            + 1.6 * vnoise(u, v, 16.0, 32.0, s + 5u)) * 1.6;
+        float fd = mid + 6.0 * 1.7320508 * cellnoise(u, v, 1.0, s + 6u);
+        float pores = p12.z;
+        if (pores > 0.0) {
+            float f = pores / 0.5;
+            float gx = floor(u / 10.0);
+            float gy = floor(v / 10.0);
+            uint hh = pat_hash(int(gx), int(gy), s + 23u);
+            if (h01(hh, 0) < 0.117 * f) {
+                float cx = (gx + 0.3 + 0.4 * h01(hh, 8)) * 10.0;
+                float cy = (gy + 0.3 + 0.4 * h01(hh, 16)) * 10.0;
+                float dia = clamp(2.3 * exp(0.3 * gauss3(pat_hash(int(gx), int(gy), s + 29u))), 1.5, 4.5);
+                kl = clamp(dia * 0.5 - length(vec2(u - cx, v - cy)) + 0.5, 0.0, 1.0);
+            }
+            float mx = floor(u / 5.0);
+            float my = floor(v / 5.0);
+            uint hm = pat_hash(int(mx), int(my), s + 31u);
+            float pcx = (mx + 0.2 + 0.6 * h01(hm, 8)) * 5.0;
+            float pcy = (my + 0.2 + 0.6 * h01(hm, 16)) * 5.0;
+            float pr = 0.5 + 0.3 * h01(lowbias32(hm + 3u), 0);
+            if (h01(hm, 0) < 0.18 * f && length(vec2(u - pcx, v - pcy)) < pr) fd -= 35.0;
+            uint hsd = pat_hash(int(mx), int(my), s + 37u);
+            float scx = (mx + 0.1 + 0.8 * h01(hsd, 8)) * 5.0;
+            float scy = (my + 0.1 + 0.8 * h01(hsd, 16)) * 5.0;
+            if (h01(hsd, 0) < 0.1425 * f && abs(u - scx) < 0.5 && abs(v - scy) < 0.5) fd += 25.0;
+        }
+        dl += fine * fd;
+        kl *= fine;
+    }
+    float f = 1.0 - 0.65 * kl;
+    float w = p8.y;
+    float h = p8.z;
+    float j = p8.w;
+    if (j > 0.0) {
+        float du = abs(u - floor(u / w + 0.5) * w);
+        float dv = abs(v - floor(v / h + 0.5) * h);
+        f *= 1.0 - 0.18 * clamp((j * 0.5 - min(du, dv)) / px + 0.5, 0.0, 1.0);
+    }
+    if (p9.x > 0.5) {
+        float ax = u - w * 0.25;
+        float ay = v - h * 0.5;
+        ax -= floor(ax / (w * 0.5) + 0.5) * w * 0.5;
+        ay -= floor(ay / h + 0.5) * h;
+        if (ax * ax + ay * ay < 144.0) f *= 0.7;
+    }
+    return (base + dl) * f;
+}
+// Holzschalung wie `texgen::timber`: Dreieckswelle −1..1, Periode 1
+float pat_wave(float x) {
+    float t = 1.0 - 4.0 * abs(x - floor(x) - 0.5);
+    return t * (1.5 - 0.5 * t * t);
+}
+vec3 timber_rgb(float u, float v, float px, vec4 p8, vec4 p9, vec4 p10) {
+    uint seed = uint(p9.z + 0.5);
+    float a = p8.w > 0.5 ? u : v;
+    float b = p8.w > 0.5 ? v : u;
+    float j = p8.z;
+    float p = p8.y + j;
+    float xa = a + j * 0.5;
+    float kf = floor(xa / p);
+    int k = int(kf);
+    float ai = xa - kf * p;
+    uint hh = pat_hash(k, 3, seed);
+    vec3 c = unpack_rgb((hh & 1u) == 1u ? p10.x : p10.z) * 255.0;
+    float br = 1.0 + 0.08 * (float((hh >> 8) & 255u) / 255.0 * 2.0 - 1.0);
+    float t = ai - j;
+    float warp = vnoise(t, b, 90.0, 90.0, seed + uint(k - 97 * int(floor(float(k) / 97.0))));
+    float g = p9.x / 100.0 * pat_wave((t * 0.22 + warp * 5.0) / 6.2831853);
+    float inside = min(ai - j, p - ai);
+    float f = mix(0.45, 1.0, clamp(inside / px + 0.5, 0.0, 1.0));
+    return c * br * (1.0 + g) * f;
+}
+// Platten wie `texgen::tile_at`
+vec3 tiles_rgb(float u, float v, float px, vec4 p8, vec4 p9, vec4 p10, vec4 p11) {
+    uint seed = uint(p9.z + 0.5);
+    float j = p8.w;
+    float pu = p8.y + j;
+    float pv = p8.z + j;
+    float y = v + j * 0.5;
+    float row = floor(y / pv);
+    float dv = y - row * pv;
+    int r = int(row);
+    float off = (p9.x > 0.5 && (r & 1) == 1) ? pu * 0.5 : 0.0;
+    float x = u + off + j * 0.5;
+    float col = floor(x / pu);
+    float du = x - col * pu;
+    uint hs = pat_hash(r, int(col), seed);
+    int fam;
+    vec3 c = pat_pick(p10, p11, hs, fam) * spread_factor(hs, p9.y);
+    float inside = min(min(du - j, pu - du), min(dv - j, pv - dv));
+    return mix(unpack_rgb(p11.y) * 255.0, c, clamp(inside / px + 0.5, 0.0, 1.0));
+}
+// Naturstein (Voronoi) wie `texgen::stone_point`/`stone_cell`
+vec2 stone_point(int cx, int cy, float s, float irr, uint seed) {
+    uint hh = pat_hash(cx, cy, seed);
+    return vec2((float(cx) + 0.5 + (h01(hh, 0) - 0.5) * irr) * s, (float(cy) + 0.5 + (h01(hh, 16) - 0.5) * irr) * s);
+}
+// Nächste Zelle (xy) und Abstand zur Zellgrenze in mm (z)
+vec3 stone_cell(float u, float v, float s, float irr, uint seed) {
+    int gx = int(floor(u / s));
+    int gy = int(floor(v / s));
+    vec2 x = vec2(u, v);
+    ivec2 best = ivec2(gx, gy);
+    float bd = 1e30;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            vec2 d = stone_point(gx + dx, gy + dy, s, irr, seed) - x;
+            float dd = dot(d, d);
+            if (dd < bd) {
+                bd = dd;
+                best = ivec2(gx + dx, gy + dy);
+            }
+        }
+    }
+    vec2 a = stone_point(best.x, best.y, s, irr, seed);
+    float edge = 1e30;
+    for (int dy = -2; dy <= 2; dy++) {
+        for (int dx = -2; dx <= 2; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            vec2 p = stone_point(best.x + dx, best.y + dy, s, irr, seed);
+            vec2 n = p - a;
+            float l = length(n);
+            if (l < 1e-6) continue;
+            edge = min(edge, dot((a + p) * 0.5 - x, n) / l);
+        }
+    }
+    return vec3(vec2(best), edge);
+}
+vec3 stone_rgb(float u, float v, float px, vec4 p8, vec4 p9, vec4 p10, vec4 p11) {
+    uint seed = uint(p9.z + 0.5);
+    vec3 cell = stone_cell(u, v, p8.y, p8.w / 100.0, seed);
+    uint hs = pat_hash(int(cell.x), int(cell.y), seed + 1u);
+    int fam;
+    vec3 c = pat_pick(p10, p11, hs, fam) * spread_factor(hs, 4.0);
+    return mix(unpack_rgb(p11.y) * 255.0, c, clamp((cell.z - p8.z * 0.5) / px + 0.5, 0.0, 1.0));
+}
+// Größe der Musterteile (mm) für das Ausblenden in die Ferne
+float pattern_scale(int kind, vec4 p8, vec4 p9) {
+    if (kind == 1) return p8.z + p8.w;
+    if (kind == 2) return p9.w;
+    if (kind == 3) return 32.0;
+    if (kind == 4) return p8.y + p8.z;
+    if (kind == 5) return min(p8.y, p8.z) + p8.w;
+    return p8.y;
+}
+// Farbe in 3D (6b, 7a): `far` ist die Mischfarbe (Ferne), `surf` die
+// Farbe der Oberfläche (Putz, Sichtbeton). Unter 1,5 px Musterteil ohne
+// Hash (P3), bis 3 px weich (P5). Waagerechte Flächen: Platten und
+// Naturstein mit Raster, Putz mit Korn, die übrigen in der Mischfarbe.
+vec3 pattern_rgb(vec3 p, vec3 n, vec3 far, vec3 surf, vec4 p8, vec4 p9, vec4 p10, vec4 p11, vec4 p12, vec4 p13, vec4 p14) {
     vec3 q = pattern_uv(p, n);
     float px = max(length(vec2(dFdx(q.x), dFdy(q.x))), length(vec2(dFdx(q.y), dFdy(q.y))));
     px = max(px, 1e-6);
-    if (int(p8.x + 0.5) == 2) {
-        float fade = smoothstep(1.5, 3.0, p9.w / px);
-        if (fade <= 0.0) return base;
-        return clamp(base * mix(1.0, plaster_light(q.x, q.y, p9), fade), 0.0, 1.0);
+    int kind = int(p8.x + 0.5);
+    if (q.z < 0.5 && kind != 2 && kind != 5 && kind != 6) return far;
+    float fade = smoothstep(1.5, 3.0, pattern_scale(kind, p8, p9) / px);
+    if (fade <= 0.0) return far;
+    vec3 c;
+    if (kind == 1) {
+        c = masonry_rgb(q.x, q.y, px, p8, p9, p10, p11, p12, p13, p14);
+    } else if (kind == 2) {
+        c = plaster_rgb(q.x, q.y, surf * 255.0, p9);
+    } else if (kind == 3) {
+        c = concrete_rgb(q.x, q.y, px, smoothstep(0.5, 1.0, 1.0 / px), surf * 255.0, p8, p9, p12);
+    } else if (kind == 4) {
+        c = timber_rgb(q.x, q.y, px, p8, p9, p10);
+    } else if (kind == 5) {
+        c = tiles_rgb(q.x, q.y, px, p8, p9, p10, p11);
+    } else {
+        c = stone_rgb(q.x, q.y, px, p8, p9, p10, p11);
     }
-    if (q.z < 0.5) return base;
-    float j = p8.w;
-    float course = p8.z + j;
-    float fade = smoothstep(1.5, 3.0, course / px);
-    if (fade <= 0.0) return base;
-    float rf = floor((q.y + j * 0.5) / course);
-    int row = int(rf);
-    float dv = q.y + j * 0.5 - rf * course;
-    vec2 st = masonry_stone(q.x, row, p8, p9);
-    // Abstand in den Stein hinein (mm): Lagerfuge unten [0, j), Stoßfuge ±j/2
-    float inside = min(min(dv - j, course - dv), st.y - j * 0.5);
-    float k = clamp(inside / px + 0.5, 0.0, 1.0);
-    vec3 c = mix(unpack_rgb(p11.y), stone_rgb(row, int(st.x), p9, p10, p11), k);
-    return mix(base, c, fade);
+    return mix(far, clamp(c / 255.0, 0.0, 1.0), fade);
 }
-// Fugenlinien der Ansicht: Tinte 0..1 mit Stiftbreite `w` px; weich aus
-// zwischen 3 und 1,5 px Schichtabstand, darunter ohne Rechnung (P3)
+// Abstand (mm) zur nächsten Linie im Raster `pitch`
+float grid_dist(float x, float pitch) {
+    return abs(x - floor(x / pitch + 0.5) * pitch);
+}
+// Fugenlinien der Ansicht wie `joint_lines`: Tinte 0..1 mit Stiftbreite
+// `w` px; weich aus zwischen 3 und 1,5 px Musterteil, darunter ohne
+// Rechnung (P3)
 float pattern_lines(vec3 p, vec3 n, vec4 p8, vec4 p9, float w) {
     vec3 q = pattern_uv(p, n);
-    if (q.z < 0.5) return 0.0;
-    float course = p8.z + p8.w;
+    int kind = int(p8.x + 0.5);
+    if (kind == 2 || (kind == 3 && p8.w <= 0.0)) return 0.0;
+    if (q.z < 0.5 && kind != 5 && kind != 6) return 0.0;
     float px = max(length(vec2(dFdx(q.x), dFdy(q.x))), length(vec2(dFdx(q.y), dFdy(q.y))));
     px = max(px, 1e-6);
-    float fade = smoothstep(1.5, 3.0, course / px);
+    float fade = smoothstep(1.5, 3.0, (kind == 3 ? min(p8.y, p8.z) : pattern_scale(kind, p8, p9)) / px);
     if (fade <= 0.0) return 0.0;
-    float rf = floor(q.y / course);
-    int row = int(rf);
-    float dv = min(q.y - rf * course, (rf + 1.0) * course - q.y);
-    float du = masonry_stone(q.x, row, p8, p9).y;
-    float ink = clamp(w * 0.5 + 0.5 - min(du, dv) / px, 0.0, 1.0);
-    return ink * fade;
+    float d;
+    if (kind == 1) {
+        float course = p8.z + p8.w;
+        float rf = floor(q.y / course);
+        float dv = min(q.y - rf * course, (rf + 1.0) * course - q.y);
+        vec4 st = masonry_stone(q.x, int(rf), p8, p9);
+        d = min(min(st.y, st.z - st.y), dv);
+    } else if (kind == 3) {
+        d = min(grid_dist(q.x, p8.y), grid_dist(q.y, p8.z));
+    } else if (kind == 4) {
+        d = grid_dist(p8.w > 0.5 ? q.x : q.y, p8.y + p8.z);
+    } else if (kind == 5) {
+        float pu = p8.y + p8.w;
+        float pv = p8.z + p8.w;
+        float rf = floor(q.y / pv);
+        float off = (p9.x > 0.5 && (int(rf) & 1) == 1) ? pu * 0.5 : 0.0;
+        d = min(grid_dist(q.x + off, pu), grid_dist(q.y, pv));
+    } else {
+        d = max(stone_cell(q.x, q.y, p8.y, p8.w / 100.0, uint(p9.z + 0.5)).z, 0.0);
+    }
+    return clamp(w * 0.5 + 0.5 - d / px, 0.0, 1.0) * fade;
 }
 "#;
 
@@ -950,8 +1251,8 @@ vec3 unpack_rgb(float f) {
 float pattern_lines(vec3 p, vec3 n, vec4 p8, vec4 p9, float w) {
     return 0.0;
 }
-vec3 pattern_rgb(vec3 p, vec3 n, vec3 base, vec4 p8, vec4 p9, vec4 p10, vec4 p11) {
-    return base;
+vec3 pattern_rgb(vec3 p, vec3 n, vec3 far, vec3 surf, vec4 p8, vec4 p9, vec4 p10, vec4 p11, vec4 p12, vec4 p13, vec4 p14) {
+    return far;
 }
 "#;
 

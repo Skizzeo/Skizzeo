@@ -23,6 +23,7 @@ pub mod qto;
 pub mod solid;
 pub mod szo;
 pub mod terrace;
+pub(crate) mod texgen;
 pub mod trade;
 pub mod tree;
 pub mod txn;
@@ -37,8 +38,8 @@ pub use attr::{
 };
 pub use catalog::{
     compare, compare_materials, compare_surfaces, export_material, export_surface, export_type,
-    import_material, import_type, read_szk, sync_materials, sync_materials_report, write_szk,
-    Library, TypeState,
+    import_material, import_type, read_szk, save_preset, sync_materials, sync_materials_report,
+    write_szk, Library, TypeState,
 };
 pub use element::{
     Building, BuildingId, Category, Coupling, Element, ElementId, ElementKind, LevelEdge,

@@ -38,18 +38,50 @@ fn format_index(len: f32, h: f32) -> Option<usize> {
     BRICK_FORMATS.iter().position(|f| f.1 == len && f.2 == h)
 }
 
+/// Musterarten in der Auswahl „Art“ (Paket 6, 7a).
+const KIND_NAMES: [&str; 7] = [
+    "ohne",
+    "Mauerwerk",
+    "Putz",
+    "Sichtbeton",
+    "Holzschalung",
+    "Platten",
+    "Naturstein",
+];
+
+/// Vorlage, mit der eine neue Art aus Paket 7 beginnt.
+const KIND_PRESETS: [&str; 4] = [
+    "Sichtbeton mittelgrau",
+    "Holzschalung Lärche",
+    "Betonplatten 40 × 40",
+    "Naturstein",
+];
+
+/// Verbände in der Auswahl „Verband“.
+const BONDS: [Bond; 5] = [
+    Bond::Half,
+    Bond::Third,
+    Bond::Wild,
+    Bond::Block,
+    Bond::Cross,
+];
+
 /// Einträge und Wahl der Musterlisten (Art, Steinformat, Verband).
 fn pattern_combo(id: ComboId, p: Option<&Pattern>, free: bool) -> (Vec<String>, usize) {
     match id {
         ComboId::PatKind => {
-            let mut items = vec!["ohne".to_string(), "Mauerwerk".into(), "Putz".into()];
+            let mut items: Vec<String> = KIND_NAMES.iter().map(|k| k.to_string()).collect();
             let sel = match p {
                 None => 0,
                 Some(Pattern::Masonry { .. }) => 1,
                 Some(Pattern::Plaster { .. }) => 2,
+                Some(Pattern::Concrete { .. }) => 3,
+                Some(Pattern::Timber { .. }) => 4,
+                Some(Pattern::Tiles { .. }) => 5,
+                Some(Pattern::Stone { .. }) => 6,
                 Some(Pattern::Foreign(_)) => {
                     items.push("unbekannt (neuere Version)".into());
-                    3
+                    KIND_NAMES.len()
                 }
             };
             (items, sel)
@@ -69,14 +101,17 @@ fn pattern_combo(id: ComboId, p: Option<&Pattern>, free: bool) -> (Vec<String>, 
             (items, sel)
         }
         _ => {
-            let items = ["Läufer halbsteinig", "Läufer drittelsteinig", "wild"];
+            let items = [
+                "Läufer halbsteinig",
+                "Läufer drittelsteinig",
+                "wild",
+                "Blockverband",
+                "Kreuzverband",
+            ];
             let sel = match p {
-                Some(Pattern::Masonry {
-                    bond: Bond::Half, ..
-                }) => 0,
-                Some(Pattern::Masonry {
-                    bond: Bond::Third, ..
-                }) => 1,
+                Some(Pattern::Masonry { bond, .. }) => {
+                    BONDS.iter().position(|b| b == bond).unwrap_or(2)
+                }
                 _ => 2,
             };
             (items.map(String::from).to_vec(), sel)
@@ -696,7 +731,9 @@ impl Prefs {
             }
             _ => {}
         }
-        let mut hint = String::from("Arten: ohne (Vorgabe), Mauerwerk, Putz.");
+        let mut hint = String::from(
+            "Arten: ohne (Vorgabe), Mauerwerk, Putz, Sichtbeton, Holzschalung, Platten, Naturstein.",
+        );
         if o.pattern.is_some() && o.pattern == proctex::factory_for(o.guid) {
             hint.push_str(" Hier die Werkswerte.");
         }
@@ -971,7 +1008,8 @@ impl Prefs {
                         FieldId::PatSpread => *spread = range("Streuung", 0.0, 10.0, 0, "%")?,
                         _ => return Ok(()),
                     },
-                    Pattern::Foreign(_) => return Ok(()),
+                    // Werte der Arten aus Paket 7 im Fenster „Muster“ (7b)
+                    _ => return Ok(()),
                 }
                 self.put_pattern(id, Some(p), cx, out)?;
             }
@@ -1283,12 +1321,24 @@ impl Prefs {
                     return;
                 };
                 self.pat_free = false;
+                let kind = |p: &Pattern| std::mem::discriminant(p);
                 let p = match (i, o.pattern) {
+                    (0, _) => None,
                     (1, Some(p @ Pattern::Masonry { .. }))
                     | (2, Some(p @ Pattern::Plaster { .. })) => Some(p),
                     (1, _) => Some(proctex::masonry_default()),
                     (2, _) => Some(proctex::plaster_default()),
-                    (3, Some(p @ Pattern::Foreign(_))) => Some(p),
+                    (3..=6, old) => {
+                        let start =
+                            proctex::preset_named(KIND_PRESETS[i - 3]).map(|v| v.pattern.clone());
+                        match old {
+                            Some(p) if start.as_ref().is_some_and(|s| kind(s) == kind(&p)) => {
+                                Some(p)
+                            }
+                            _ => start,
+                        }
+                    }
+                    (_, Some(p @ Pattern::Foreign(_))) => Some(p),
                     _ => None,
                 };
                 if let Err(e) = self.put_pattern(sid, p, cx, out) {
@@ -1320,7 +1370,7 @@ impl Prefs {
                 let Pattern::Masonry { bond, .. } = &mut p else {
                     return;
                 };
-                *bond = [Bond::Half, Bond::Third, Bond::Wild][i.min(2)];
+                *bond = BONDS[i.min(BONDS.len() - 1)];
                 if let Err(e) = self.put_pattern(sid, Some(p), cx, out) {
                     self.error = Some(e);
                 }

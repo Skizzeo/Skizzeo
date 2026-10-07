@@ -1,16 +1,19 @@
-//! Prozedurale Muster der Oberflächen (Paket 6): Mauerwerk mit Fugen und
-//! Putzkörnung, aus wenigen Zahlen erzeugt, ohne Bild.
+//! Prozedurale Muster der Oberflächen (Pakete 6 und 7): Mauerwerk, Putz,
+//! Sichtbeton, Holzschalung, Platten und Naturstein, aus wenigen Zahlen
+//! erzeugt, ohne Bild.
 //!
 //! [`sample`] ist die Formel für Vorschau und Test; der Fragment-Shader
 //! (`sk_render::PATTERN_GLSL`) rechnet Zeile für Zeile dasselbe. Der Zufall
 //! ist ein reiner Ganzzahl-Hash ([`hash`], BIM-Regel 61): gleiche Datei,
-//! gleiches Bild auf jedem Rechner.
+//! gleiches Bild auf jedem Rechner. Die Formeln der Feinheiten (Flammung,
+//! Relief, Reibeputz, Lunker, Holz, Naturstein) stehen in `texgen`.
 //!
 //! Koordinaten: `u` waagerecht längs der Fläche, `v` senkrecht ab ±0,00, in
 //! mm. Lagerfugen liegen mit ihrer Mitte bei `v = k·(h + Fuge)`.
 
 use crate::guid::Guid;
 use crate::szo::{Line, Record};
+use crate::texgen::{self, InStone};
 use sk_math::{vec2, Rect2, Vec2};
 
 /// Verband des Mauerwerks.
@@ -23,26 +26,88 @@ pub enum Bond {
     /// Wilder Verband aus Läufern und Köpfen (Regel 58, Jörns Vorlage
     /// „friesisch-bunt“) aus der Verbandstabelle, siehe [`bond_table`].
     Wild,
+    /// Blockverband: Läufer- und Kopfschichten im Wechsel, alle
+    /// Läuferschichten übereinander (Paket 7).
+    Block,
+    /// Kreuzverband: wie Block, jede zweite Läuferschicht um einen halben
+    /// Stein versetzt.
+    Cross,
 }
+
+/// Bis zu drei Farben mit Anteil in % (Summe 100; Anteil 0 = nicht gesetzt).
+pub type Palette = [([u8; 3], f32); 3];
 
 /// Muster einer Oberfläche.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Pattern {
     /// Steine mit Fugen. Maße in mm, Anteile der Steinfarben in % (Summe
     /// 100, Farben mit Anteil 0 gelten als nicht gesetzt), Streuung in %
-    /// Helligkeit je Stein.
+    /// Helligkeit je Stein. Paket 7: `hpal` Farben der Köpfe (fehlt es,
+    /// gilt `palette`), `flame` Anteil der geflammten roten Läufer %,
+    /// `fend` Anteil davon mit braun-grauen Enden % (Regel 68), `relief`
+    /// Rillen und Feinkorn % (Regel 70).
     Masonry {
         len: f32,
         h: f32,
         joint: f32,
         bond: Bond,
         joint_rgb: [u8; 3],
-        palette: [([u8; 3], f32); 3],
+        palette: Palette,
+        hpal: Option<Palette>,
+        flame: f32,
+        fend: f32,
+        relief: f32,
         spread: f32,
         seed: u32,
     },
-    /// Putz: Körnung in mm, Streuung in % Helligkeit, Farbe der Oberfläche.
+    /// Putz (Reibeputz, paket-7 §8.5): Körnung in mm, Streuung = Tiefe der
+    /// Schatten in %, Farbe der Oberfläche.
     Plaster { grain: f32, spread: f32, seed: u32 },
+    /// Sichtbeton (Regel 69): Schaltafel `w` × `h` mm, Stoßbreite `joint`
+    /// mm (0 = keine Stöße), Ankerlöcher, Wolkigkeit % und Lunker %
+    /// (`pores`), Farbe der Oberfläche.
+    Concrete {
+        w: f32,
+        h: f32,
+        joint: f32,
+        anchors: bool,
+        cloud: f32,
+        pores: f32,
+        seed: u32,
+    },
+    /// Holzschalung: Bretter senkrecht oder waagerecht, Brettbreite und
+    /// Fuge in mm, Maserung %, zwei Holzfarben im Wechsel nach Hash.
+    Timber {
+        vertical: bool,
+        board: f32,
+        joint: f32,
+        grain: f32,
+        c1: [u8; 3],
+        c2: [u8; 3],
+        seed: u32,
+    },
+    /// Platten `len` × `wid` mm im Kreuzfugenraster, mit `half` je zweite
+    /// Reihe um eine halbe Platte versetzt.
+    Tiles {
+        len: f32,
+        wid: f32,
+        joint: f32,
+        half: bool,
+        joint_rgb: [u8; 3],
+        palette: Palette,
+        spread: f32,
+        seed: u32,
+    },
+    /// Naturstein: Zellen (Voronoi) mit mittlerer Größe `size` mm, Fuge mm,
+    /// Unregelmäßigkeit `irr` %.
+    Stone {
+        size: f32,
+        joint: f32,
+        irr: f32,
+        joint_rgb: [u8; 3],
+        palette: Palette,
+        seed: u32,
+    },
     /// Zeile einer neueren Fassung mit unbekanntem `gen=` (F-17): bleibt
     /// bytegleich, dargestellt wird ohne Muster.
     Foreign(String),
@@ -76,71 +141,372 @@ pub const GRAIN_MM: (f32, f32) = (0.5, 5.0);
 /// Shader ihn als `float` genau bekommt.
 pub const SEED_MAX: u32 = 0xff_ffff;
 
-/// Prüft die Werte (Regel 57); `Err` nennt den ersten Verstoß.
-pub fn validate(p: &Pattern) -> Result<(), String> {
-    let within = |v: f32, (lo, hi): (f32, f32), what: &str| {
-        if v.is_finite() && v >= lo && v <= hi {
-            Ok(())
-        } else {
-            Err(format!("{what} {v} außerhalb {lo}–{hi}"))
-        }
-    };
+/// Grenzen der Regler je Art (Regeln 57, 62, 68–70): Schlüssel wie in der
+/// Datei, kleinster und größter Wert. Test liest dieselbe Tabelle.
+const LIMITS_MASONRY: [(&str, f32, f32); 7] = [
+    ("len", LEN_MM.0, LEN_MM.1),
+    ("h", HEIGHT_MM.0, HEIGHT_MM.1),
+    ("joint", JOINT_MM.0, JOINT_MM.1),
+    ("spread", 0.0, SPREAD_MASONRY),
+    ("flame", 0.0, 100.0),
+    ("fend", 0.0, 100.0),
+    ("relief", 0.0, 100.0),
+];
+const LIMITS_PLASTER: [(&str, f32, f32); 2] = [
+    ("grain", GRAIN_MM.0, GRAIN_MM.1),
+    ("spread", 0.0, SPREAD_PLASTER),
+];
+const LIMITS_CONCRETE: [(&str, f32, f32); 6] = [
+    ("w", 500.0, 6000.0),
+    ("h", 250.0, 3000.0),
+    ("joint", 0.0, 10.0),
+    ("anchors", 0.0, 1.0),
+    ("cloud", 0.0, 20.0),
+    ("pores", 0.0, 2.0),
+];
+const LIMITS_TIMBER: [(&str, f32, f32); 3] = [
+    ("board", 40.0, 400.0),
+    ("joint", 0.0, 30.0),
+    ("grain", 0.0, 20.0),
+];
+const LIMITS_TILES: [(&str, f32, f32); 4] = [
+    ("len", 50.0, 1500.0),
+    ("wid", 50.0, 1500.0),
+    ("joint", 2.0, 20.0),
+    ("spread", 0.0, 20.0),
+];
+const LIMITS_STONE: [(&str, f32, f32); 3] = [
+    ("size", 80.0, 1000.0),
+    ("joint", 5.0, 40.0),
+    ("irr", 0.0, 100.0),
+];
+
+/// Grenzen der Regler zum `gen=`-Wort; unbekanntes Wort: leer.
+pub fn limits(gen: &str) -> &'static [(&'static str, f32, f32)] {
+    match gen {
+        "masonry" => &LIMITS_MASONRY,
+        "plaster" => &LIMITS_PLASTER,
+        "concrete" => &LIMITS_CONCRETE,
+        "timber" => &LIMITS_TIMBER,
+        "tiles" => &LIMITS_TILES,
+        "stone" => &LIMITS_STONE,
+        _ => &[],
+    }
+}
+
+/// `gen=`-Wort einer Art.
+pub fn gen_word(p: &Pattern) -> &'static str {
     match p {
-        Pattern::Masonry { seed, .. } | Pattern::Plaster { seed, .. } if *seed > SEED_MAX => {
-            Err(format!("Startwert {seed} außerhalb 0–{SEED_MAX}"))
-        }
+        Pattern::Masonry { .. } => "masonry",
+        Pattern::Plaster { .. } => "plaster",
+        Pattern::Concrete { .. } => "concrete",
+        Pattern::Timber { .. } => "timber",
+        Pattern::Tiles { .. } => "tiles",
+        Pattern::Stone { .. } => "stone",
+        Pattern::Foreign(_) => "",
+    }
+}
+
+/// Werte eines Musters zu den Schlüsseln aus [`limits`].
+fn limited_values(p: &Pattern) -> Vec<f32> {
+    match p {
         Pattern::Masonry {
             len,
             h,
             joint,
-            palette,
+            spread,
+            flame,
+            fend,
+            relief,
+            ..
+        } => vec![*len, *h, *joint, *spread, *flame, *fend, *relief],
+        Pattern::Plaster { grain, spread, .. } => vec![*grain, *spread],
+        Pattern::Concrete {
+            w,
+            h,
+            joint,
+            anchors,
+            cloud,
+            pores,
+            ..
+        } => vec![*w, *h, *joint, *anchors as u8 as f32, *cloud, *pores],
+        Pattern::Timber {
+            board,
+            joint,
+            grain,
+            ..
+        } => vec![*board, *joint, *grain],
+        Pattern::Tiles {
+            len,
+            wid,
+            joint,
             spread,
             ..
-        } => {
-            within(*len, LEN_MM, "Steinlänge")?;
-            within(*h, HEIGHT_MM, "Steinhöhe")?;
-            within(*joint, JOINT_MM, "Fuge")?;
-            within(*spread, (0.0, SPREAD_MASONRY), "Streuung")?;
-            let mut sum = 0.0;
-            for (_, a) in palette {
-                if !(a.is_finite() && *a >= 0.0 && a.fract() == 0.0) {
-                    return Err(format!("Anteil {a} nicht ganzzahlig"));
-                }
-                sum += a;
-            }
-            if sum != 100.0 {
-                return Err(format!("Anteile ergeben {sum} statt 100 %"));
-            }
-            Ok(())
-        }
-        Pattern::Plaster { grain, spread, .. } => {
-            within(*grain, GRAIN_MM, "Körnung")?;
-            within(*spread, (0.0, SPREAD_PLASTER), "Streuung")
-        }
-        Pattern::Foreign(_) => Ok(()),
+        } => vec![*len, *wid, *joint, *spread],
+        Pattern::Stone {
+            size, joint, irr, ..
+        } => vec![*size, *joint, *irr],
+        Pattern::Foreign(_) => Vec::new(),
     }
 }
 
-// --- Werksmuster --------------------------------------------------------
+/// Anteile ganzzahlig, Summe 100.
+fn check_palette(palette: &Palette) -> Result<(), String> {
+    let mut sum = 0.0;
+    for (_, a) in palette {
+        if !(a.is_finite() && *a >= 0.0 && a.fract() == 0.0) {
+            return Err(format!("Anteil {a} nicht ganzzahlig"));
+        }
+        sum += a;
+    }
+    if sum != 100.0 {
+        return Err(format!("Anteile ergeben {sum} statt 100 %"));
+    }
+    Ok(())
+}
+
+/// Prüft die Werte (Regeln 57, 62); `Err` nennt den ersten Verstoß.
+pub fn validate(p: &Pattern) -> Result<(), String> {
+    let seed = seed_of(p);
+    if seed > SEED_MAX {
+        return Err(format!("Startwert {seed} außerhalb 0–{SEED_MAX}"));
+    }
+    for (&(key, lo, hi), v) in limits(gen_word(p)).iter().zip(limited_values(p)) {
+        if !(v.is_finite() && v >= lo && v <= hi) {
+            return Err(format!("{key} {v} außerhalb {lo}–{hi}"));
+        }
+    }
+    match p {
+        Pattern::Masonry { palette, hpal, .. } => {
+            check_palette(palette)?;
+            hpal.as_ref().map_or(Ok(()), check_palette)
+        }
+        Pattern::Tiles { palette, .. } | Pattern::Stone { palette, .. } => check_palette(palette),
+        _ => Ok(()),
+    }
+}
+
+// --- Vorlagen und Werksmuster -------------------------------------------
 
 /// Kernfarben der Läufer „Röben Jever friesisch-bunt“ (BIM-Nachtrag 2,
 /// 18:25, nach referenz/texturen/auswertung.md): Rot, Braun-grau, Silbergrau.
-const FRIES: [([u8; 3], f32); 3] = [
+const FRIES: Palette = [
     ([0x87, 0x49, 0x3c], 79.0),
     ([0x67, 0x55, 0x49], 9.0),
     ([0x7b, 0x6d, 0x65], 12.0),
 ];
+/// Köpfe friesisch-bunt: Rot und Braun-grau je 50 %.
+const FRIES_HEADS: Palette = [
+    ([0x87, 0x49, 0x3c], 50.0),
+    ([0x67, 0x55, 0x49], 50.0),
+    ([0, 0, 0], 0.0),
+];
+
+/// Vorlage im Fenster „Muster“: Name, Muster und Grundfarbe der Oberfläche.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PatternPreset {
+    pub name: String,
+    pub pattern: Pattern,
+    pub base: [u8; 3],
+}
+
+/// Firmenvorlage im Firmenkatalog (`[patternpreset]` in `.szk`, Regel 65).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompanyPreset {
+    pub guid: Guid,
+    pub name: String,
+    pub pattern: Pattern,
+    pub base: [u8; 3],
+}
+
+fn masonry(
+    (len, h, joint): (f32, f32, f32),
+    bond: Bond,
+    joint_rgb: [u8; 3],
+    palette: Palette,
+    spread: f32,
+    seed: u32,
+) -> Pattern {
+    Pattern::Masonry {
+        len,
+        h,
+        joint,
+        bond,
+        joint_rgb,
+        palette,
+        hpal: None,
+        flame: 0.0,
+        fend: 64.0,
+        relief: 0.0,
+        spread,
+        seed,
+    }
+}
+
+fn preset(name: &str, pattern: Pattern, base: [u8; 3]) -> PatternPreset {
+    PatternPreset {
+        name: name.to_string(),
+        pattern,
+        base,
+    }
+}
+
+fn make_presets() -> Vec<PatternPreset> {
+    let red: Palette = [
+        ([0x8a, 0x3b, 0x2a], 40.0),
+        ([0x9c, 0x4a, 0x33], 35.0),
+        ([0x6e, 0x2f, 0x22], 25.0),
+    ];
+    let fries = Pattern::Masonry {
+        len: 240.0,
+        h: 71.0,
+        joint: 10.0,
+        bond: Bond::Wild,
+        joint_rgb: [0xd1, 0xcb, 0xc2],
+        palette: FRIES,
+        hpal: Some(FRIES_HEADS),
+        flame: 100.0,
+        fend: 64.0,
+        relief: 100.0,
+        spread: 7.0,
+        seed: 17,
+    };
+    let ks: Palette = [
+        ([0xe6, 0xe3, 0xda], 40.0),
+        ([0xde, 0xdb, 0xd2], 35.0),
+        ([0xec, 0xe9, 0xe2], 25.0),
+    ];
+    vec![
+        preset(
+            "Klinker rot",
+            masonry(
+                (240.0, 71.0, 10.0),
+                Bond::Half,
+                [0xd8, 0xd4, 0xcc],
+                red,
+                6.0,
+                17,
+            ),
+            [0x8a, 0x3b, 0x2a],
+        ),
+        preset("Klinker friesisch-bunt", fries, [0x87, 0x49, 0x3c]),
+        preset(
+            "Kalksandstein sichtbar",
+            masonry(
+                (240.0, 113.0, 10.0),
+                Bond::Half,
+                [0xc9, 0xc6, 0xbe],
+                ks,
+                3.0,
+                9,
+            ),
+            [0xe6, 0xe3, 0xda],
+        ),
+        preset(
+            "Reibeputz weiß",
+            Pattern::Plaster {
+                grain: 2.0,
+                spread: 4.0,
+                seed: 3,
+            },
+            [0xec, 0xec, 0xed],
+        ),
+        preset(
+            "Putz grob",
+            Pattern::Plaster {
+                grain: 3.0,
+                spread: 6.0,
+                seed: 4,
+            },
+            [0xec, 0xe9, 0xe0],
+        ),
+        preset(
+            "Sichtbeton mittelgrau",
+            Pattern::Concrete {
+                w: 2500.0,
+                h: 500.0,
+                joint: 0.0,
+                anchors: false,
+                cloud: 2.0,
+                pores: 0.5,
+                seed: 11,
+            },
+            [0x8e, 0x8e, 0x8d],
+        ),
+        preset(
+            "Holzschalung Lärche",
+            Pattern::Timber {
+                vertical: true,
+                board: 120.0,
+                joint: 8.0,
+                grain: 5.0,
+                c1: [0xb0, 0x80, 0x54],
+                c2: [0xc0, 0x92, 0x64],
+                seed: 21,
+            },
+            [0xb8, 0x89, 0x5c],
+        ),
+        preset(
+            "Betonplatten 40 × 40",
+            Pattern::Tiles {
+                len: 400.0,
+                wid: 400.0,
+                joint: 5.0,
+                half: false,
+                joint_rgb: [0x6e, 0x6e, 0x6a],
+                palette: [
+                    ([0x9a, 0x9a, 0x96], 40.0),
+                    ([0xa6, 0xa5, 0xa0], 35.0),
+                    ([0x8e, 0x8e, 0x8a], 25.0),
+                ],
+                spread: 4.0,
+                seed: 13,
+            },
+            [0xa0, 0xa0, 0x9c],
+        ),
+        preset(
+            "Naturstein",
+            Pattern::Stone {
+                size: 300.0,
+                joint: 15.0,
+                irr: 60.0,
+                joint_rgb: [0x96, 0x92, 0x8a],
+                palette: [
+                    ([0xbf, 0xa9, 0x8a], 40.0),
+                    ([0xa8, 0x91, 0x6f], 35.0),
+                    ([0xcd, 0xbb, 0x9c], 25.0),
+                ],
+                seed: 31,
+            },
+            [0xbf, 0xa9, 0x8a],
+        ),
+    ]
+}
+
+/// Die neun Werksvorlagen in Listenreihenfolge (paket-7 §2.2, §8.1).
+pub fn presets() -> &'static [PatternPreset] {
+    static P: std::sync::OnceLock<Vec<PatternPreset>> = std::sync::OnceLock::new();
+    P.get_or_init(make_presets)
+}
+
+/// Werksvorlage mit diesem Namen.
+pub fn preset_named(name: &str) -> Option<&'static PatternPreset> {
+    presets().iter().find(|p| p.name == name)
+}
 
 /// Name der Werks-Oberfläche des Verblenders.
 pub const FACING: &str = "Verblender (Vormauerziegel)";
 /// Name der Werks-Oberfläche des Putzes.
 pub const PLASTER: &str = "Putz";
+/// Name der Werks-Oberfläche des Stahlbetons.
+pub const CONCRETE: &str = "Stahlbeton";
 
 /// Guids der Werks-Oberflächen mit Werksmuster: in jedem Projekt dieselben
 /// (die eines neuen Projekts), damit das Werksmuster an der Oberfläche
 /// hängt und nicht an ihrem Namen (Regel 60, BIM-Befund 6a).
 pub const FACING_SURFACE_GUID: Guid = Guid(0x9202c7c486854fed87d5792dac919409);
 pub const PLASTER_SURFACE_GUID: Guid = Guid(0xd6c929c9454e426199aaa965bc7425fb);
+pub const CONCRETE_SURFACE_GUID: Guid = Guid(0x01243c6e2af74256bbb674ca2a7e8e2b);
 
 /// Guid der Werks-Oberfläche mit diesem Namen (beim Anlegen des
 /// Startbestands).
@@ -148,6 +514,7 @@ pub fn factory_guid(surface: &str) -> Option<Guid> {
     match surface {
         FACING => Some(FACING_SURFACE_GUID),
         PLASTER => Some(PLASTER_SURFACE_GUID),
+        CONCRETE => Some(CONCRETE_SURFACE_GUID),
         _ => None,
     }
 }
@@ -157,32 +524,21 @@ pub fn factory_for(g: Guid) -> Option<Pattern> {
     match g {
         FACING_SURFACE_GUID => factory(FACING),
         PLASTER_SURFACE_GUID => factory(PLASTER),
+        CONCRETE_SURFACE_GUID => factory(CONCRETE),
         _ => None,
     }
 }
 
-/// Werksmuster einer Oberfläche des Startbestands (nach ihrem Namen), aus
-/// Jörns Referenztexturen: Klinker NF im wilden Verband „friesisch-bunt“,
-/// Reibeputz K2.
+/// Werksmuster einer Oberfläche des Startbestands (nach ihrem Namen): die
+/// drei Vorlagen nach Jörns Referenztexturen (paket-7 §8.1).
 pub fn factory(surface: &str) -> Option<Pattern> {
-    match surface {
-        FACING => Some(Pattern::Masonry {
-            len: 240.0,
-            h: 71.0,
-            joint: 10.0,
-            bond: Bond::Wild,
-            joint_rgb: [0xd1, 0xcb, 0xc2],
-            palette: FRIES,
-            spread: 7.0,
-            seed: 17,
-        }),
-        PLASTER => Some(Pattern::Plaster {
-            grain: 2.0,
-            spread: 4.0,
-            seed: 3,
-        }),
-        _ => None,
-    }
+    let name = match surface {
+        FACING => "Klinker friesisch-bunt",
+        PLASTER => "Reibeputz weiß",
+        CONCRETE => "Sichtbeton mittelgrau",
+        _ => return None,
+    };
+    preset_named(name).map(|p| p.pattern.clone())
 }
 
 /// Vorgabe beim Wählen von „Mauerwerk“ an einer Oberfläche ohne Muster
@@ -194,6 +550,34 @@ pub fn masonry_default() -> Pattern {
 /// Vorgabe beim Wählen von „Putz“: Körnung 2, Streuung 4.
 pub fn plaster_default() -> Pattern {
     factory(PLASTER).expect("Werksmuster Putz")
+}
+
+/// Startwert eines Musters (Fremdes: 0).
+pub fn seed_of(p: &Pattern) -> u32 {
+    match p {
+        Pattern::Masonry { seed, .. }
+        | Pattern::Plaster { seed, .. }
+        | Pattern::Concrete { seed, .. }
+        | Pattern::Timber { seed, .. }
+        | Pattern::Tiles { seed, .. }
+        | Pattern::Stone { seed, .. } => *seed,
+        Pattern::Foreign(_) => 0,
+    }
+}
+
+/// Dasselbe Muster mit anderem Startwert.
+pub fn with_seed(p: &Pattern, s: u32) -> Pattern {
+    let mut p = p.clone();
+    match &mut p {
+        Pattern::Masonry { seed, .. }
+        | Pattern::Plaster { seed, .. }
+        | Pattern::Concrete { seed, .. }
+        | Pattern::Timber { seed, .. }
+        | Pattern::Tiles { seed, .. }
+        | Pattern::Stone { seed, .. } => *seed = s,
+        Pattern::Foreign(_) => {}
+    }
+    p
 }
 
 // --- Zufall -------------------------------------------------------------
@@ -259,6 +643,8 @@ pub const WILD_CHAIN: u32 = 4;
 
 /// Salz für die Streuung je Stein.
 const SPREAD_SALT: u32 = 0x68e3_1da4;
+/// Salz der normalverteilten Streuung mit Relief (wie muster.py).
+const RELIEF_SALT: u32 = 0x27d4_eb2d;
 
 /// Verbandstabelle: je Schicht und Viertel ein Byte, Bits 0–1 Abstand zum
 /// Steinanfang in Vierteln, Bit 2 Kopf. Zeile für Zeile (Schicht 0 zuerst),
@@ -626,220 +1012,494 @@ fn fallback_rows() -> Vec<Row> {
 }
 // --- Stein und Fuge -----------------------------------------------------
 
-/// Lage eines Punkts im Mauerwerk: Reihe, Stein, Fuge ja/nein.
+/// Lage eines Punkts im Mauerwerk: Reihe, Stein, Fuge ja/nein, Kopf, Lage
+/// im Stein.
 struct Spot {
     row: i32,
     stone: i32,
     joint: bool,
+    head: bool,
+    s: InStone,
 }
 
 #[allow(clippy::too_many_arguments)]
 fn locate(len: f64, h: f64, joint: f64, bond: Bond, seed: u32, u: f64, v: f64) -> Spot {
     let course = h + joint;
-    let row = ((v + joint / 2.0) / course).floor();
-    let dv = v + joint / 2.0 - row * course;
-    let row = row as i32;
+    let rf = ((v + joint / 2.0) / course).floor();
+    let dv = v + joint / 2.0 - rf * course;
+    let row = rf as i32;
     let a = len + joint;
-    let (stone, du) = match bond {
+    // Stein, Lage ab der Stoßfugenmitte am Steinanfang, Achsmaß, Kopf
+    let regular = |off: f64, pitch: f64| {
+        let col = ((u + off) / pitch).floor();
+        (col as i32, u + off - col * pitch, pitch)
+    };
+    let (stone, x, pitch, head) = match bond {
         Bond::Wild => {
             // Viertel-Koordinate; Stoßfugen auf ganzen Vierteln
-            let x = 4.0 * u / a;
-            let (start, n) = bond_table(seed).stone(row, x.floor() as i32);
-            let d = (x - start as f64).min((start + n) as f64 - x);
-            (start, d * a / 4.0)
+            let q = 4.0 * u / a;
+            let (start, n) = bond_table(seed).stone(row, q.floor() as i32);
+            (
+                start,
+                (q - start as f64) * a / 4.0,
+                n as f64 * a / 4.0,
+                n == 2,
+            )
         }
         Bond::Half | Bond::Third => {
             let off = match bond {
                 Bond::Half => (row & 1) as f64 * a / 2.0,
                 _ => row.rem_euclid(3) as f64 * a / 3.0,
             };
-            let col = ((u + off) / a).floor();
-            let x = u + off - col * a;
-            (col as i32, x.min(a - x))
+            let (c, x, p) = regular(off, a);
+            (c, x, p, false)
+        }
+        Bond::Block | Bond::Cross => {
+            if row.rem_euclid(2) == 1 {
+                // Kopfschicht: halbe Steine, um ¼ Stein versetzt
+                let (c, x, p) = regular(a / 4.0, a / 2.0);
+                (c, x, p, true)
+            } else {
+                let shift = bond == Bond::Cross && row.div_euclid(2).rem_euclid(2) == 1;
+                let (c, x, p) = regular(if shift { a / 2.0 } else { 0.0 }, a);
+                (c, x, p, false)
+            }
         }
     };
     Spot {
         row,
         stone,
-        joint: dv < joint || du < joint / 2.0,
+        joint: dv < joint || x.min(pitch - x) < joint / 2.0,
+        head,
+        s: InStone {
+            uin: x - joint / 2.0,
+            slen: pitch - joint,
+            vin: dv - joint,
+            h,
+        },
     }
 }
 
-/// Farbe eines Steins: Familie nach den Anteilen, Helligkeit gestreut.
-fn stone_rgb(
-    palette: &[([u8; 3], f32); 3],
-    spread: f32,
-    seed: u32,
-    row: i32,
-    stone: i32,
-) -> [u8; 3] {
-    let h = hash(row, stone, seed);
-    // Ganzzahlig wie im Shader: (h >> 8)·100 < Summe der Anteile · 2²⁴
-    let x = (h >> 8) as u64 * 100;
-    let mut cum = 0u64;
-    let mut c = palette[0].0;
-    for (rgb, share) in palette {
-        if *share <= 0.0 {
-            continue;
-        }
-        cum += *share as u64;
-        c = *rgb;
-        if x < cum << 24 {
-            break;
-        }
-    }
+fn to_u8(c: texgen::Rgb) -> [u8; 3] {
+    c.map(|x| x.round().clamp(0.0, 255.0) as u8)
+}
+
+/// Helligkeit je Stein bzw. Platte: ± Streuung % gleichverteilt (Paket 6).
+fn spread_factor(h: u32, spread: f32) -> f64 {
     if spread <= 0.0 {
-        return c;
+        return 1.0;
     }
-    let f = 1.0 + spread / 100.0 * (2.0 * unit(lowbias32(h ^ SPREAD_SALT)) - 1.0);
-    scale(c, f)
+    (1.0 + spread / 100.0 * (2.0 * unit(lowbias32(h ^ SPREAD_SALT)) - 1.0)) as f64
 }
 
-fn scale(c: [u8; 3], f: f32) -> [u8; 3] {
-    c.map(|x| (x as f32 * f).round().clamp(0.0, 255.0) as u8)
-}
-
-/// Helligkeit des Putzes an (u, v): Kornkuppen auf einem hellen Plateau,
-/// Schatten darunter (Reibeputz, auswertung.md §2); Korn waagerecht 1,5 : 1.
-fn plaster_light(grain: f32, spread: f32, seed: u32, u: f64, v: f64) -> f32 {
-    let gx = (u / (grain as f64 * 1.5)) as f32;
-    let gy = (v / grain as f64) as f32;
-    let (ix, iy) = (gx.floor(), gy.floor());
-    let (fx, fy) = (gx - ix, gy - iy);
-    let (ix, iy) = (ix as i32, iy as i32);
-    let n = |dx: i32, dy: i32| unit(hash(iy + dy, ix + dx, seed));
-    let sx = fx * fx * (3.0 - 2.0 * fx);
-    let sy = fy * fy * (3.0 - 2.0 * fy);
-    let a = n(0, 0) + (n(1, 0) - n(0, 0)) * sx;
-    let b = n(0, 1) + (n(1, 1) - n(0, 1)) * sx;
-    let k = a + (b - a) * sy;
-    let t = ((k - 0.45) / 0.55).clamp(0.0, 1.0);
-    let shade = t * t * (3.0 - 2.0 * t);
-    1.0 + spread / 100.0 * (0.5 - 2.5 * shade)
+/// Farbe des Mauerwerks an (u, v): Familie nach den Anteilen (Köpfe nach
+/// `hpal`), Flammung roter Läufer, Streuung, Relief.
+fn masonry_rgb(p: &Pattern, u: f64, v: f64) -> [u8; 3] {
+    let Pattern::Masonry {
+        len,
+        h,
+        joint,
+        bond,
+        joint_rgb,
+        palette,
+        hpal,
+        flame,
+        fend,
+        relief,
+        spread,
+        seed,
+    } = p
+    else {
+        return [0; 3];
+    };
+    let sp = locate(*len as f64, *h as f64, *joint as f64, *bond, *seed, u, v);
+    if sp.joint {
+        return if *relief > 0.0 {
+            to_u8(texgen::relief_joint(*joint_rgb, *seed, u, v))
+        } else {
+            *joint_rgb
+        };
+    }
+    let hs = hash(sp.row, sp.stone, *seed);
+    let pal = match hpal {
+        Some(hp) if sp.head => hp,
+        _ => palette,
+    };
+    let (fam0, c0) = texgen::pick(pal, hs);
+    let mut c = texgen::rgb(c0);
+    let mut fam = fam0;
+    if *flame > 0.0 && !sp.head && fam0 == 0 {
+        if let Some((a, silver)) =
+            texgen::flame_at(sp.row, sp.stone, *seed, *flame, *fend, &sp.s, u, v)
+        {
+            let end = texgen::rgb(palette[if silver { 2 } else { 1 }].0);
+            for k in 0..3 {
+                c[k] = c[k] * (1.0 - a) + end[k] * a;
+            }
+            if a > 0.5 {
+                fam = if silver { 2 } else { 1 };
+            }
+        }
+    }
+    // Mit Relief streut die Helligkeit wie in Jörns Vorlage normalverteilt
+    // (σ = Streuung, einstellungen/muster.py); ohne bleibt das Paket-6-Bild
+    let f = if *relief > 0.0 {
+        1.0 + *spread as f64 / 100.0 * texgen::gauss3(lowbias32(hs ^ RELIEF_SALT))
+    } else {
+        spread_factor(hs, *spread)
+    };
+    if f != 1.0 {
+        c = c.map(|x| x * f);
+    }
+    if *relief > 0.0 {
+        c = texgen::relief_stone(c, fam == 2, *seed, *relief, &sp.s, u, v);
+    }
+    to_u8(c)
 }
 
 /// Farbe des Musters an (u, v) in mm; `base` ist die Farbe der Oberfläche
-/// (Putz). Ohne Ausblenden in die Ferne (das macht der Shader).
+/// (Putz, Sichtbeton). Ohne Ausblenden in die Ferne (das macht der Shader).
 pub fn sample(p: &Pattern, base: [u8; 3], u: f64, v: f64) -> [u8; 3] {
+    match p {
+        Pattern::Masonry { .. } => masonry_rgb(p, u, v),
+        Pattern::Plaster {
+            grain,
+            spread,
+            seed,
+        } => to_u8(texgen::plaster(base, *grain, *spread, *seed, u, v)),
+        Pattern::Concrete {
+            w,
+            h,
+            joint,
+            anchors,
+            cloud,
+            pores,
+            seed,
+        } => to_u8(texgen::concrete(
+            base, *w, *h, *joint, *anchors, *cloud, *pores, *seed, u, v,
+        )),
+        Pattern::Timber {
+            vertical,
+            board,
+            joint,
+            grain,
+            c1,
+            c2,
+            seed,
+        } => to_u8(texgen::timber(
+            *vertical, *board, *joint, *grain, *c1, *c2, *seed, u, v,
+        )),
+        Pattern::Tiles {
+            len,
+            wid,
+            joint,
+            half,
+            joint_rgb,
+            palette,
+            spread,
+            seed,
+        } => {
+            let (row, col, j) =
+                texgen::tile_at(*len as f64, *wid as f64, *joint as f64, *half, u, v);
+            if j {
+                return *joint_rgb;
+            }
+            let hs = hash(row, col, *seed);
+            let f = spread_factor(hs, *spread);
+            to_u8(texgen::rgb(texgen::pick(palette, hs).1).map(|x| x * f))
+        }
+        Pattern::Stone {
+            size,
+            joint,
+            irr,
+            joint_rgb,
+            palette,
+            seed,
+        } => {
+            let ((cx, cy), edge) =
+                texgen::stone_cell(*size as f64, *irr as f64 / 100.0, *seed, u, v);
+            if edge < *joint as f64 / 2.0 {
+                return *joint_rgb;
+            }
+            let hs = hash(cx, cy, seed.wrapping_add(1));
+            let f = spread_factor(hs, STONE_SPREAD);
+            to_u8(texgen::rgb(texgen::pick(palette, hs).1).map(|x| x * f))
+        }
+        Pattern::Foreign(_) => base,
+    }
+}
+
+/// Feste Streuung je Naturstein in % (kein Regler).
+const STONE_SPREAD: f32 = 4.0;
+
+/// Mittlere Kernbreite geflammter Läufer (Regel 68).
+const FLAME_CORE: f64 = 0.53;
+
+/// Mischfarbe aus der Ferne. Mauerwerk aus den Flächenanteilen der Farben
+/// (ohne Verbandstabelle, darum auch, solange sie noch rechnet); die
+/// übrigen Arten als Mittel von [`sample`] über 64 × 64 Punkte
+/// (paket-7 §8.6), je Muster einmal gerechnet.
+pub fn mix(p: &Pattern, base: [u8; 3]) -> [u8; 3] {
+    match p {
+        Pattern::Foreign(_) => base,
+        Pattern::Masonry { .. } => masonry_mix(p),
+        _ => {
+            use std::sync::Mutex;
+            static CACHE: Mutex<Vec<(String, [u8; 3])>> = Mutex::new(Vec::new());
+            let key = format!("{p:?}{base:?}");
+            if let Some(c) = CACHE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .find(|x| x.0 == key)
+            {
+                return c.1;
+            }
+            let mut acc = [0.0f64; 3];
+            for i in 0..64 {
+                for k in 0..64 {
+                    let c = sample(p, base, 13.7 + i as f64 * 61.3, 7.9 + k as f64 * 47.9);
+                    for j in 0..3 {
+                        acc[j] += c[j] as f64;
+                    }
+                }
+            }
+            let c = to_u8(acc.map(|x| x / 4096.0));
+            let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            if cache.len() >= 64 {
+                cache.remove(0);
+            }
+            cache.push((key, c));
+            c
+        }
+    }
+}
+
+/// Mischfarbe des Mauerwerks (wie `mix_rgb` in einstellungen/muster.py):
+/// Läufer und Köpfe nach ihrer Fläche, Flammung, Relief, Fuge.
+fn masonry_mix(p: &Pattern) -> [u8; 3] {
+    let Pattern::Masonry {
+        len,
+        h,
+        joint,
+        bond,
+        joint_rgb,
+        palette,
+        hpal,
+        flame,
+        fend,
+        relief,
+        ..
+    } = p
+    else {
+        return [0; 3];
+    };
+    let (len, h, j) = (*len as f64, *h as f64, *joint as f64);
+    let a = len + j;
+    // Anteil der Köpfe an der Steinfläche
+    let heads = match bond {
+        Bond::Half | Bond::Third => 0.0,
+        Bond::Block | Bond::Cross => {
+            let k = a / 2.0 - j;
+            k / (k + len)
+        }
+        Bond::Wild => {
+            let (lf, kf) = (0.7 * len, 0.3 * (a / 2.0 - j));
+            kf / (lf + kf)
+        }
+    };
+    let norm = |pal: &Palette| {
+        let t: f32 = pal.iter().map(|x| x.1).sum();
+        pal.map(|(c, s)| (texgen::rgb(c), if t > 0.0 { (s / t) as f64 } else { 0.0 }))
+    };
+    let run = norm(palette);
+    let head = norm(hpal.as_ref().unwrap_or(palette));
+    let (f, fe) = (*flame as f64 / 100.0, *fend as f64 / 100.0);
+    let mut c = [0.0f64; 3];
+    for k in 0..3 {
+        let mut x = 0.0;
+        for (i, (rgb, s)) in run.iter().enumerate() {
+            let mut share = *s;
+            if i == 0 {
+                share *= 1.0 - f + f * FLAME_CORE;
+            }
+            x += rgb[k] * share;
+        }
+        let red = run[0].1 * f * (1.0 - FLAME_CORE);
+        x += run[1].0[k] * red * fe + run[2].0[k] * red * (1.0 - fe);
+        let y: f64 = head.iter().map(|(rgb, s)| rgb[k] * s).sum();
+        c[k] = x * (1.0 - heads) + y * heads;
+    }
+    let rl = *relief as f64 / 100.0;
+    if rl > 0.0 {
+        c = c.map(|x| x * (1.0 - 0.75 * 0.075 * rl) + 25.0 * 0.136 * rl);
+    }
+    let area = len * h / (a * (h + j));
+    let jr = texgen::rgb(*joint_rgb);
+    to_u8([0, 1, 2].map(|k| jr[k] * (1.0 - area) + c[k] * area))
+}
+
+/// Strecke auf das Rechteck beschnitten (Liang–Barsky).
+fn clip(a: Vec2, b: Vec2, r: Rect2) -> Option<(Vec2, Vec2)> {
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    for (p, q) in [
+        (-dx, a.x - r.min.x),
+        (dx, r.max.x - a.x),
+        (-dy, a.y - r.min.y),
+        (dy, r.max.y - a.y),
+    ] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+        } else {
+            let t = q / p;
+            if p < 0.0 {
+                t0 = t0.max(t);
+            } else {
+                t1 = t1.min(t);
+            }
+        }
+    }
+    (t0 < t1).then(|| {
+        (
+            vec2(a.x + t0 * dx, a.y + t0 * dy),
+            vec2(a.x + t1 * dx, a.y + t1 * dy),
+        )
+    })
+}
+
+/// Linien `x = k·pitch − off` (senkrecht, `vertical`) bzw. `y = …` über das
+/// ganze Rechteck.
+fn grid_lines(out: &mut Vec<(Vec2, Vec2)>, r: Rect2, pitch: f64, vertical: bool) {
+    let (lo, hi) = if vertical {
+        (r.min.x, r.max.x)
+    } else {
+        (r.min.y, r.max.y)
+    };
+    for k in (lo / pitch).ceil() as i64..=(hi / pitch).floor() as i64 {
+        let x = k as f64 * pitch;
+        out.push(if vertical {
+            (vec2(x, r.min.y), vec2(x, r.max.y))
+        } else {
+            (vec2(r.min.x, x), vec2(r.max.x, x))
+        });
+    }
+}
+
+/// Fugen als Mittellinien in einem Rechteck (mm): Lagerfugen über die ganze
+/// Breite, Stoßfugen je Reihe zwischen ihren Lagerfugen, Naturstein als
+/// Zellgrenzen; alles auf das Rechteck beschnitten. Für die Ansichtskachel,
+/// Test und später PDF/DXF.
+pub fn joint_lines(p: &Pattern, rect: Rect2) -> Vec<(Vec2, Vec2)> {
+    let (u0, v0, u1, v1) = (rect.min.x, rect.min.y, rect.max.x, rect.max.y);
+    let mut out = Vec::new();
     match p {
         Pattern::Masonry {
             len,
             h,
             joint,
             bond,
-            joint_rgb,
-            palette,
-            spread,
             seed,
+            ..
         } => {
-            let s = locate(*len as f64, *h as f64, *joint as f64, *bond, *seed, u, v);
-            if s.joint {
-                *joint_rgb
-            } else {
-                stone_rgb(palette, *spread, *seed, s.row, s.stone)
+            let (len, h, joint) = (*len as f64, *h as f64, *joint as f64);
+            let course = h + joint;
+            let a = len + joint;
+            grid_lines(&mut out, rect, course, false);
+            let r0 = (v0 / course).floor() as i32;
+            let r1 = (v1 / course).ceil() as i32;
+            for row in r0..r1 {
+                let lo = (row as f64 * course).max(v0);
+                let hi = ((row + 1) as f64 * course).min(v1);
+                if hi <= lo {
+                    continue;
+                }
+                let mut push = |u: f64| {
+                    if u >= u0 && u <= u1 {
+                        out.push((vec2(u, lo), vec2(u, hi)));
+                    }
+                };
+                let (off, pitch) = match bond {
+                    Bond::Wild => {
+                        let t = bond_table(*seed);
+                        let q0 = (4.0 * u0 / a).ceil() as i32;
+                        let q1 = (4.0 * u1 / a).floor() as i32;
+                        for q in q0..=q1 {
+                            if t.cell(row, q) & 3 == 0 {
+                                push(q as f64 * a / 4.0);
+                            }
+                        }
+                        continue;
+                    }
+                    Bond::Half => ((row & 1) as f64 * a / 2.0, a),
+                    Bond::Third => (row.rem_euclid(3) as f64 * a / 3.0, a),
+                    Bond::Block | Bond::Cross if row.rem_euclid(2) == 1 => (a / 4.0, a / 2.0),
+                    Bond::Block => (0.0, a),
+                    Bond::Cross => (row.div_euclid(2).rem_euclid(2) as f64 * a / 2.0, a),
+                };
+                let c0 = ((u0 + off) / pitch).ceil() as i64;
+                let c1 = ((u1 + off) / pitch).floor() as i64;
+                for c in c0..=c1 {
+                    push(c as f64 * pitch - off);
+                }
             }
         }
-        Pattern::Plaster {
-            grain,
-            spread,
-            seed,
-        } => scale(base, plaster_light(*grain, *spread, *seed, u, v)),
-        Pattern::Foreign(_) => base,
-    }
-}
-
-/// Mischfarbe aus der Ferne: Steinfarben nach Anteil und Fläche, Fuge nach
-/// ihrem Flächenanteil; Putz und Fremdes in der Farbe der Oberfläche.
-pub fn mix(p: &Pattern, base: [u8; 3]) -> [u8; 3] {
-    let Pattern::Masonry {
-        len,
-        h,
-        joint,
-        joint_rgb,
-        palette,
-        ..
-    } = p
-    else {
-        return base;
-    };
-    let stone = len * h / ((len + joint) * (h + joint));
-    let mut c = [0.0f32; 3];
-    for (rgb, share) in palette {
-        for k in 0..3 {
-            c[k] += rgb[k] as f32 * share / 100.0;
-        }
-    }
-    let mut out = [0u8; 3];
-    for k in 0..3 {
-        out[k] = (c[k] * stone + joint_rgb[k] as f32 * (1.0 - stone))
-            .round()
-            .clamp(0.0, 255.0) as u8;
-    }
-    out
-}
-
-/// Fugen als Mittellinien in einem Rechteck (mm): Lagerfugen über die ganze
-/// Breite, Stoßfugen je Reihe zwischen ihren Lagerfugen; alles auf das
-/// Rechteck beschnitten. Für die Ansichtskachel, Test und später PDF/DXF.
-pub fn joint_lines(p: &Pattern, rect: Rect2) -> Vec<(Vec2, Vec2)> {
-    let Pattern::Masonry {
-        len,
-        h,
-        joint,
-        bond,
-        seed,
-        ..
-    } = p
-    else {
-        return Vec::new();
-    };
-    let (len, h, joint) = (*len as f64, *h as f64, *joint as f64);
-    let (u0, v0, u1, v1) = (rect.min.x, rect.min.y, rect.max.x, rect.max.y);
-    let course = h + joint;
-    let a = len + joint;
-    let mut out = Vec::new();
-    let k0 = (v0 / course).ceil() as i64;
-    let k1 = (v1 / course).floor() as i64;
-    for k in k0..=k1 {
-        let v = k as f64 * course;
-        out.push((vec2(u0, v), vec2(u1, v)));
-    }
-    let r0 = (v0 / course).floor() as i32;
-    let r1 = (v1 / course).ceil() as i32;
-    for row in r0..r1 {
-        let lo = (row as f64 * course).max(v0);
-        let hi = ((row + 1) as f64 * course).min(v1);
-        if hi <= lo {
-            continue;
-        }
-        let mut push = |u: f64| {
-            if u >= u0 && u <= u1 {
-                out.push((vec2(u, lo), vec2(u, hi)));
+        Pattern::Concrete { w, h, joint, .. } => {
+            if *joint > 0.0 {
+                grid_lines(&mut out, rect, *w as f64, true);
+                grid_lines(&mut out, rect, *h as f64, false);
             }
-        };
-        match bond {
-            Bond::Wild => {
-                let t = bond_table(*seed);
-                let q0 = (4.0 * u0 / a).ceil() as i32;
-                let q1 = (4.0 * u1 / a).floor() as i32;
-                for q in q0..=q1 {
-                    if t.cell(row, q) & 3 == 0 {
-                        push(q as f64 * a / 4.0);
+        }
+        Pattern::Timber {
+            vertical,
+            board,
+            joint,
+            ..
+        } => grid_lines(&mut out, rect, (*board + *joint) as f64, *vertical),
+        Pattern::Tiles {
+            len,
+            wid,
+            joint,
+            half,
+            ..
+        } => {
+            let (pu, pv) = ((*len + *joint) as f64, (*wid + *joint) as f64);
+            grid_lines(&mut out, rect, pv, false);
+            for row in (v0 / pv).floor() as i64..(v1 / pv).ceil() as i64 {
+                let lo = (row as f64 * pv).max(v0);
+                let hi = ((row + 1) as f64 * pv).min(v1);
+                if hi <= lo {
+                    continue;
+                }
+                let off = if *half && row.rem_euclid(2) == 1 {
+                    pu / 2.0
+                } else {
+                    0.0
+                };
+                for c in ((u0 + off) / pu).ceil() as i64..=((u1 + off) / pu).floor() as i64 {
+                    let u = c as f64 * pu - off;
+                    out.push((vec2(u, lo), vec2(u, hi)));
+                }
+            }
+        }
+        Pattern::Stone {
+            size, irr, seed, ..
+        } => {
+            let s = *size as f64;
+            let irr = *irr as f64 / 100.0;
+            for cy in (v0 / s).floor() as i32 - 2..=(v1 / s).floor() as i32 + 2 {
+                for cx in (u0 / s).floor() as i32 - 2..=(u1 / s).floor() as i32 + 2 {
+                    for (a, b) in texgen::stone_outline(cx, cy, s, irr, *seed) {
+                        if let Some(l) = clip(a, b, rect) {
+                            out.push(l);
+                        }
                     }
                 }
             }
-            Bond::Half | Bond::Third => {
-                let off = match bond {
-                    Bond::Half => (row & 1) as f64 * a / 2.0,
-                    _ => row.rem_euclid(3) as f64 * a / 3.0,
-                };
-                let c0 = ((u0 + off) / a).ceil() as i64;
-                let c1 = ((u1 + off) / a).floor() as i64;
-                for c in c0..=c1 {
-                    push(c as f64 * a - off);
-                }
-            }
         }
+        Pattern::Plaster { .. } | Pattern::Foreign(_) => {}
     }
     out
 }
@@ -851,6 +1511,138 @@ fn bond_word(b: Bond) -> &'static str {
         Bond::Half => "half",
         Bond::Third => "third",
         Bond::Wild => "wild",
+        Bond::Block => "block",
+        Bond::Cross => "cross",
+    }
+}
+
+fn palette_word(palette: &Palette) -> String {
+    let pal: Vec<String> = palette
+        .iter()
+        .filter(|(_, a)| *a > 0.0)
+        .map(|(c, a)| format!("{}:{a}", crate::szo::hex(*c)))
+        .collect();
+    pal.join(";")
+}
+
+/// Schlüssel eines Musters nach `[pattern] surface=…` bzw. nach dem Namen
+/// einer Vorlage (`[patternpreset]`): ab `gen=`.
+pub(crate) fn write_keys(l: Line, p: &Pattern) -> Line {
+    match p {
+        Pattern::Foreign(_) => l,
+        Pattern::Masonry {
+            len,
+            h,
+            joint,
+            bond,
+            joint_rgb,
+            palette,
+            hpal,
+            flame,
+            fend,
+            relief,
+            spread,
+            seed,
+        } => {
+            let mut l = l
+                .word("gen", "masonry")
+                .num("len", len)
+                .num("h", h)
+                .num("joint", joint)
+                .word("bond", bond_word(*bond))
+                .color("jrgb", *joint_rgb)
+                .word("pal", &palette_word(palette));
+            if let Some(hp) = hpal {
+                l = l.word("hpal", &palette_word(hp));
+            }
+            if *flame > 0.0 {
+                l = l.num("flame", flame);
+            }
+            if *flame > 0.0 || *fend != 64.0 {
+                l = l.num("fend", fend);
+            }
+            if *relief > 0.0 {
+                l = l.num("relief", relief);
+            }
+            l.num("spread", spread).num("seed", seed)
+        }
+        Pattern::Plaster {
+            grain,
+            spread,
+            seed,
+        } => l
+            .word("gen", "plaster")
+            .num("grain", grain)
+            .num("spread", spread)
+            .num("seed", seed),
+        Pattern::Concrete {
+            w,
+            h,
+            joint,
+            anchors,
+            cloud,
+            pores,
+            seed,
+        } => l
+            .word("gen", "concrete")
+            .num("w", w)
+            .num("h", h)
+            .num("joint", joint)
+            .flag("anchors", *anchors)
+            .num("cloud", cloud)
+            .num("pores", pores)
+            .num("seed", seed),
+        Pattern::Timber {
+            vertical,
+            board,
+            joint,
+            grain,
+            c1,
+            c2,
+            seed,
+        } => l
+            .word("gen", "timber")
+            .word("dir", if *vertical { "v" } else { "h" })
+            .num("board", board)
+            .num("joint", joint)
+            .num("grain", grain)
+            .color("c1", *c1)
+            .color("c2", *c2)
+            .num("seed", seed),
+        Pattern::Tiles {
+            len,
+            wid,
+            joint,
+            half,
+            joint_rgb,
+            palette,
+            spread,
+            seed,
+        } => l
+            .word("gen", "tiles")
+            .num("len", len)
+            .num("wid", wid)
+            .num("joint", joint)
+            .word("bond", if *half { "half" } else { "cross" })
+            .color("jrgb", *joint_rgb)
+            .word("pal", &palette_word(palette))
+            .num("spread", spread)
+            .num("seed", seed),
+        Pattern::Stone {
+            size,
+            joint,
+            irr,
+            joint_rgb,
+            palette,
+            seed,
+        } => l
+            .word("gen", "stone")
+            .num("size", size)
+            .num("joint", joint)
+            .num("irr", irr)
+            .color("jrgb", *joint_rgb)
+            .word("pal", &palette_word(palette))
+            .num("seed", seed),
     }
 }
 
@@ -863,50 +1655,44 @@ pub(crate) fn write_line(out: &mut String, surface: Guid, p: Option<&Pattern>) {
             out.push_str(raw);
             out.push('\n');
         }
-        Some(Pattern::Masonry {
-            len,
-            h,
-            joint,
-            bond,
-            joint_rgb,
-            palette,
-            spread,
-            seed,
-        }) => {
-            let pal: Vec<String> = palette
-                .iter()
-                .filter(|(_, a)| *a > 0.0)
-                .map(|(c, a)| format!("{}:{a}", crate::szo::hex(*c)))
-                .collect();
-            l.word("gen", "masonry")
-                .num("len", len)
-                .num("h", h)
-                .num("joint", joint)
-                .word("bond", bond_word(*bond))
-                .color("jrgb", *joint_rgb)
-                .word("pal", &pal.join(";"))
-                .num("spread", spread)
-                .num("seed", seed)
-                .finish(out)
-        }
-        Some(Pattern::Plaster {
-            grain,
-            spread,
-            seed,
-        }) => l
-            .word("gen", "plaster")
-            .num("grain", grain)
-            .num("spread", spread)
-            .num("seed", seed)
-            .finish(out),
+        Some(p) => write_keys(l, p).finish(out),
     }
 }
 
-/// Liest eine Zeile `[pattern]` (ohne `surface=`): `Ok(None)` = Abwahl,
-/// `Err` = falscher Wert (Hinweis, ohne Muster). `raw` ist die Zeile, wie sie
-/// in der Datei steht (für unbekanntes `gen=`).
+/// Palette aus `pal=`/`hpal=`: bis drei `rrggbb:Anteil`.
+fn read_palette(pal: &str) -> Result<Palette, String> {
+    let mut palette = [([0u8; 3], 0.0f32); 3];
+    let parts: Vec<&str> = pal.split(';').collect();
+    if parts.len() > 3 {
+        return Err(format!("{} Farben, höchstens 3", parts.len()));
+    }
+    for (slot, part) in palette.iter_mut().zip(&parts) {
+        let (c, a) = part
+            .split_once(':')
+            .ok_or_else(|| format!("Farbe „{part}“ ohne Anteil"))?;
+        let c = crate::szo::parse_hex(c).ok_or_else(|| format!("Farbe „{c}“"))?;
+        let a: f32 = a
+            .parse()
+            .ok()
+            .filter(|a: &f32| a.is_finite())
+            .ok_or_else(|| format!("Anteil „{a}“"))?;
+        *slot = (c, a);
+    }
+    Ok(palette)
+}
+
+/// Liest die Schlüssel ab `gen=` (Zeile `[pattern]` ohne `surface=` bzw.
+/// `[patternpreset]`): `Ok(None)` = Abwahl, `Err` = falscher Wert (Hinweis,
+/// ohne Muster). `raw` ist die Zeile, wie sie in der Datei steht (für
+/// unbekanntes `gen=` und unbekannten Verband).
 pub(crate) fn read_line(r: &Record, raw: &str) -> Result<Option<Pattern>, String> {
     let bad = |e: crate::szo::LoadError| e.message;
+    let num = |key: &str| r.f32(key).map_err(bad);
+    let opt = |key: &str, default: f32| match r.opt(key) {
+        None => Ok(default),
+        Some(_) => r.f32(key).map_err(bad),
+    };
+    let seed = || r.int::<u32>("seed").map_err(bad);
     let gen = r.get("gen").map_err(bad)?;
     let p = match gen {
         "none" => return Ok(None),
@@ -917,35 +1703,27 @@ pub(crate) fn read_line(r: &Record, raw: &str) -> Result<Option<Pattern>, String
                 "half" => (Bond::Half, true),
                 "third" => (Bond::Third, true),
                 "wild" => (Bond::Wild, true),
+                "block" => (Bond::Block, true),
+                "cross" => (Bond::Cross, true),
                 _ => (Bond::Half, false),
             };
-            let mut palette = [([0u8; 3], 0.0f32); 3];
-            let pal = r.get("pal").map_err(bad)?;
-            let parts: Vec<&str> = pal.split(';').collect();
-            if parts.len() > 3 {
-                return Err(format!("{} Steinfarben, höchstens 3", parts.len()));
-            }
-            for (slot, part) in palette.iter_mut().zip(&parts) {
-                let (c, a) = part
-                    .split_once(':')
-                    .ok_or_else(|| format!("Steinfarbe „{part}“ ohne Anteil"))?;
-                let c = crate::szo::parse_hex(c).ok_or_else(|| format!("Farbe „{c}“"))?;
-                let a: f32 = a
-                    .parse()
-                    .ok()
-                    .filter(|a: &f32| a.is_finite())
-                    .ok_or_else(|| format!("Anteil „{a}“"))?;
-                *slot = (c, a);
-            }
+            let hpal = match r.opt("hpal") {
+                Some(t) => Some(read_palette(t)?),
+                None => None,
+            };
             let p = Pattern::Masonry {
-                len: r.f32("len").map_err(bad)?,
-                h: r.f32("h").map_err(bad)?,
-                joint: r.f32("joint").map_err(bad)?,
+                len: num("len")?,
+                h: num("h")?,
+                joint: num("joint")?,
                 bond,
                 joint_rgb: r.color("jrgb").map_err(bad)?,
-                palette,
-                spread: r.f32("spread").map_err(bad)?,
-                seed: r.int("seed").map_err(bad)?,
+                palette: read_palette(r.get("pal").map_err(bad)?)?,
+                hpal,
+                flame: opt("flame", 0.0)?,
+                fend: opt("fend", 64.0)?,
+                relief: opt("relief", 0.0)?,
+                spread: num("spread")?,
+                seed: seed()?,
             };
             if !known {
                 validate(&p)?;
@@ -955,9 +1733,53 @@ pub(crate) fn read_line(r: &Record, raw: &str) -> Result<Option<Pattern>, String
             p
         }
         "plaster" => Pattern::Plaster {
-            grain: r.f32("grain").map_err(bad)?,
-            spread: r.f32("spread").map_err(bad)?,
-            seed: r.int("seed").map_err(bad)?,
+            grain: num("grain")?,
+            spread: num("spread")?,
+            seed: seed()?,
+        },
+        "concrete" => Pattern::Concrete {
+            w: num("w")?,
+            h: num("h")?,
+            joint: num("joint")?,
+            anchors: r.flag("anchors").map_err(bad)?,
+            cloud: num("cloud")?,
+            pores: num("pores")?,
+            seed: seed()?,
+        },
+        "timber" => Pattern::Timber {
+            vertical: match r.get("dir").map_err(bad)? {
+                "v" => true,
+                "h" => false,
+                d => return Err(format!("Richtung „{d}“ (v oder h)")),
+            },
+            board: num("board")?,
+            joint: num("joint")?,
+            grain: num("grain")?,
+            c1: r.color("c1").map_err(bad)?,
+            c2: r.color("c2").map_err(bad)?,
+            seed: seed()?,
+        },
+        "tiles" => Pattern::Tiles {
+            len: num("len")?,
+            wid: num("wid")?,
+            joint: num("joint")?,
+            half: match r.get("bond").map_err(bad)? {
+                "cross" => false,
+                "half" => true,
+                b => return Err(format!("Verlegung „{b}“ (cross oder half)")),
+            },
+            joint_rgb: r.color("jrgb").map_err(bad)?,
+            palette: read_palette(r.get("pal").map_err(bad)?)?,
+            spread: num("spread")?,
+            seed: seed()?,
+        },
+        "stone" => Pattern::Stone {
+            size: num("size")?,
+            joint: num("joint")?,
+            irr: num("irr")?,
+            joint_rgb: r.color("jrgb").map_err(bad)?,
+            palette: read_palette(r.get("pal").map_err(bad)?)?,
+            seed: seed()?,
         },
         _ => {
             r.skip();
@@ -1001,28 +1823,7 @@ mod tests {
 
     /// Werksmuster friesisch-bunt mit Startwert `seed`.
     fn wild(seed: u32) -> Pattern {
-        match masonry_default() {
-            Pattern::Masonry {
-                len,
-                h,
-                joint,
-                bond,
-                joint_rgb,
-                palette,
-                spread,
-                ..
-            } => Pattern::Masonry {
-                len,
-                h,
-                joint,
-                bond,
-                joint_rgb,
-                palette,
-                spread,
-                seed,
-            },
-            p => p,
-        }
+        with_seed(&masonry_default(), seed)
     }
 
     /// Stoßfugen (Viertel-Index) je Schicht im Bereich.

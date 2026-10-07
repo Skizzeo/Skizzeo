@@ -120,6 +120,41 @@ pub const fn vec2(x: f64, y: f64) -> Vec2 {
     Vec2 { x, y }
 }
 
+impl Vec2 {
+    pub fn dot(self, o: Vec2) -> f64 {
+        self.x * o.x + self.y * o.y
+    }
+
+    pub fn length_squared(self) -> f64 {
+        self.dot(self)
+    }
+
+    pub fn length(self) -> f64 {
+        self.dot(self).sqrt()
+    }
+}
+
+impl Add for Vec2 {
+    type Output = Vec2;
+    fn add(self, o: Vec2) -> Vec2 {
+        vec2(self.x + o.x, self.y + o.y)
+    }
+}
+
+impl Sub for Vec2 {
+    type Output = Vec2;
+    fn sub(self, o: Vec2) -> Vec2 {
+        vec2(self.x - o.x, self.y - o.y)
+    }
+}
+
+impl Mul<f64> for Vec2 {
+    type Output = Vec2;
+    fn mul(self, s: f64) -> Vec2 {
+        vec2(self.x * s, self.y * s)
+    }
+}
+
 /// Achsparalleles Rechteck in einer Fläche.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rect2 {

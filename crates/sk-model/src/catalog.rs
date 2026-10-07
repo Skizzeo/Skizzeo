@@ -8,12 +8,13 @@
 //! bleiben, wie sie sind (Regel 8). Datei lesen und schreiben macht die App.
 
 use crate::attr::{Fill, Pen, Surface};
-use crate::guid::Guid;
+use crate::guid::{Guid, GuidGen};
 use crate::id::{Arena, Id};
 use crate::library::{
     Bearing, LayerSet, LayerSetId, MatCategory, Material, MaterialDisplay, MaterialId, TypeCategory,
 };
 use crate::model::{free_code, same_type, Model, ETICS_TYPE_GUID, EXTERIOR_TYPE_GUID};
+use crate::proctex::{CompanyPreset, Pattern};
 use crate::szo::{
     self, check_header, err, keyword, register, sorted, type_category, Line, LoadError, Record,
 };
@@ -41,6 +42,9 @@ pub struct Library {
     /// Werkstypen, die der Katalog schon angeboten bekam (K4): fehlt einer
     /// davon, hat das Büro ihn entfernt, und er kommt nicht wieder.
     pub stock: Vec<Guid>,
+    /// Firmenvorlagen für Muster (Paket 7 §2.2, Regel 65), in der
+    /// Reihenfolge der Datei bzw. des Speicherns.
+    pub presets: Vec<CompanyPreset>,
     /// Was eine neuere Fassung geschrieben hat und dieser Leser nicht kennt.
     pub foreign: Foreign,
 }
@@ -332,7 +336,86 @@ fn write_known(lib: &Library) -> String {
             crate::proctex::write_line(&mut out, x.guid, Some(p));
         }
     }
+    // Firmenvorlagen (Paket 7 §2.2): gleiche Schlüssel wie `[pattern]`
+    for v in &lib.presets {
+        preset_line(v).finish(&mut out);
+    }
     out
+}
+
+fn preset_line(v: &CompanyPreset) -> Line {
+    let l = Line::new("patternpreset")
+        .guid("guid", Some(v.guid))
+        .text("name", &v.name)
+        .color("base", v.base);
+    crate::proctex::write_keys(l, &v.pattern)
+}
+
+/// Liest eine Zeile `[patternpreset]`; `Err` = verworfen (Grund).
+fn read_preset(r: &Record, raw: &str) -> Result<CompanyPreset, String> {
+    let guid = r.guid("guid").map_err(|e| e.message)?;
+    let name = r.get("name").map_err(|e| e.message)?.to_string();
+    if name.trim().is_empty() {
+        return Err("Name leer".into());
+    }
+    if crate::proctex::preset_named(&name).is_some() {
+        return Err(format!("„{name}“ ist eine Werksvorlage"));
+    }
+    let base = r.color("base").map_err(|e| e.message)?;
+    match crate::proctex::read_line(r, raw)? {
+        Some(
+            p @ (Pattern::Masonry { .. }
+            | Pattern::Plaster { .. }
+            | Pattern::Concrete { .. }
+            | Pattern::Timber { .. }
+            | Pattern::Tiles { .. }
+            | Pattern::Stone { .. }),
+        ) => Ok(CompanyPreset {
+            guid,
+            name,
+            pattern: p,
+            base,
+        }),
+        Some(Pattern::Foreign(_)) => Err("Muster einer neueren Fassung".into()),
+        None => Err("ohne Muster".into()),
+    }
+}
+
+/// „Als Vorlage speichern …“ (Paket 7 §2.2): legt eine Firmenvorlage mit
+/// neuer Guid an. Abgelehnt werden ein leerer Name, der Name einer
+/// Werksvorlage oder einer vorhandenen Firmenvorlage und ungültige Werte.
+pub fn save_preset(
+    lib: &mut Library,
+    name: &str,
+    pattern: &Pattern,
+    base: [u8; 3],
+) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Bitte einen Namen eingeben.".into());
+    }
+    if crate::proctex::preset_named(name).is_some() {
+        return Err(format!("„{name}“ ist schon eine Werksvorlage."));
+    }
+    if lib.presets.iter().any(|v| v.name == name) {
+        return Err(format!("„{name}“ gibt es schon."));
+    }
+    if matches!(pattern, Pattern::Foreign(_)) {
+        return Err("Dieses Muster kennt diese Fassung nicht.".into());
+    }
+    crate::proctex::validate(pattern)?;
+    let mut gen = GuidGen::from_time();
+    let mut guid = gen.next_guid();
+    while lib.presets.iter().any(|v| v.guid == guid) {
+        guid = gen.next_guid();
+    }
+    lib.presets.push(CompanyPreset {
+        guid,
+        name: name.to_string(),
+        pattern: pattern.clone(),
+        base,
+    });
+    Ok(())
 }
 
 /// Liest einen Firmenkatalog. Bei einem Fehler wird nichts übernommen; der
@@ -341,9 +424,21 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     check_header(text.lines().next(), "SZK", VERSION)?;
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 13] = [
-        "pen", "linetype", "fill", "surface", "trade", "material", "layerset", "layer", "typeprop",
-        "default", "stock", "matprop", "pattern",
+    const KNOWN: [&str; 14] = [
+        "pen",
+        "linetype",
+        "fill",
+        "surface",
+        "trade",
+        "material",
+        "layerset",
+        "layer",
+        "typeprop",
+        "default",
+        "stock",
+        "matprop",
+        "pattern",
+        "patternpreset",
     ];
     let mut foreign = Foreign::default();
     let lines: Vec<&str> = text.lines().collect();
@@ -481,6 +576,25 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
     }
     lib.stock.sort();
     lib.stock.dedup();
+    // Firmenvorlagen (Paket 7): Unbrauchbare bleiben unverändert stehen
+    // (Hinweis), damit eine neuere Fassung sie wiederfindet
+    for r in recs("patternpreset") {
+        let raw = lines[r.line - 1];
+        let dup = |g: Guid, n: &str| lib.presets.iter().any(|v| v.guid == g || v.name == n);
+        match read_preset(r, raw) {
+            Ok(v) if !dup(v.guid, &v.name) => lib.presets.push(v),
+            res => {
+                let why = res.map_or_else(|e| e, |v| format!("„{}“ doppelt", v.name));
+                hints.push(format!(
+                    "Zeile {}: Firmenvorlage übersprungen ({why})",
+                    r.line
+                ));
+                r.skip();
+                alien.push(r.line);
+                foreign.unknown += 1;
+            }
+        }
+    }
     // Unbekannte Schlüssel und Werte: zählen, und die Zeile merken, damit
     // sie unverändert zurückgeschrieben wird. Zugeordnet wird über die
     // Kennung des Satzes ([`record_key`]), auch bei Sätzen ohne Guid.

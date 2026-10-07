@@ -47,8 +47,8 @@ pub struct MatLook {
     pub line_count: u8,
     /// Zickzack: Periode längs in Schichtdicken.
     pub zigzag_period: f32,
-    /// Muster der Oberfläche (Paket 6), Looks-Zeilen 8–11.
-    pub pattern: [[f32; 4]; 4],
+    /// Muster der Oberfläche (Paket 6, 7), Looks-Zeilen 8–14.
+    pub pattern: [[f32; 4]; 7],
     /// Startwert des wilden Verbands (Deckkraft des Musters in Zeile 12
     /// hängt an seiner Tabelle, [`DrawTable::looks_with`]).
     pub wild_seed: Option<u32>,
@@ -140,7 +140,7 @@ const NO_MATERIAL: MatLook = MatLook {
     }; 2],
     line_count: 0,
     zigzag_period: 1.0,
-    pattern: [[0.0; 4]; 4],
+    pattern: [[0.0; 4]; 7],
     wild_seed: None,
 };
 
@@ -377,7 +377,7 @@ impl DrawTable {
         let keys = self.mats.len();
         for (k, m) in self.mats.iter().enumerate() {
             if let Some(seed) = m.wild_seed {
-                texels[12 * keys + k][0] = opacity(seed);
+                texels[12 * keys + k][3] = opacity(seed);
             }
         }
         Looks {
@@ -421,9 +421,9 @@ pub fn look_rows(m: &MatLook, px_scale: f32) -> [[f32; 4]; LOOK_ROWS] {
     }
     t[6] = [offsets[0], offsets[1], m.line_count as f32, m.zigzag_period];
     t[7] = dashes;
-    t[8..12].copy_from_slice(&m.pattern);
+    t[8..15].copy_from_slice(&m.pattern);
     // Deckkraft des Musters (Einblenden nach der Verbandstabelle)
-    t[12] = [1.0, 0.0, 0.0, 0.0];
+    t[12][3] = 1.0;
     t
 }
 
@@ -460,12 +460,22 @@ pub fn wild_seeds(m: &Model) -> Vec<u32> {
     out
 }
 
-/// Looks-Zeilen 8–11 einer Oberfläche (Aufbau: [`sk_render::Looks`]):
-/// ohne Muster und bei Fremdem Art 0.
-pub fn pattern_rows(m: &Model, s: sk_model::SurfaceId) -> [[f32; 4]; 4] {
-    use sk_model::proctex::{Bond, Pattern};
-    let mut t = [[0.0; 4]; 4];
-    let pattern = m.attr().surface(s).and_then(|x| x.pattern.as_ref());
+/// Looks-Zeilen 8–14 einer Oberfläche (Aufbau: [`sk_render::Looks`]):
+/// ohne Muster und bei Fremdem Art 0. Die Deckkraft (Zeile 12, Feld w)
+/// setzt [`look_rows`].
+pub fn pattern_rows(m: &Model, s: sk_model::SurfaceId) -> [[f32; 4]; 7] {
+    use sk_model::proctex::{Bond, Palette, Pattern};
+    let mut t = [[0.0; 4]; 7];
+    let surface = m.attr().surface(s);
+    let pattern = surface.and_then(|x| x.pattern.as_ref());
+    let base = surface.map_or([0; 3], |x| x.color);
+    // Palette in zwei Zeilen: Farbe 1, Anteil 1, Farbe 2, Anteil 2 | Farbe 3,
+    // (frei), Anteil 3, (frei)
+    let pal = |t: &mut [[f32; 4]; 7], row: usize, p: &Palette| {
+        t[row] = [pack_rgb(p[0].0), p[0].1, pack_rgb(p[1].0), p[1].1];
+        t[row + 1][0] = pack_rgb(p[2].0);
+        t[row + 1][2] = p[2].1;
+    };
     match pattern {
         Some(Pattern::Masonry {
             len,
@@ -474,6 +484,10 @@ pub fn pattern_rows(m: &Model, s: sk_model::SurfaceId) -> [[f32; 4]; 4] {
             bond,
             joint_rgb,
             palette,
+            hpal,
+            flame,
+            fend,
+            relief,
             spread,
             seed,
         }) => {
@@ -481,25 +495,17 @@ pub fn pattern_rows(m: &Model, s: sk_model::SurfaceId) -> [[f32; 4]; 4] {
                 Bond::Half => 0.5,
                 Bond::Third => 1.0 / 3.0,
                 Bond::Wild => -1.0,
+                Bond::Block => 2.0,
+                Bond::Cross => 3.0,
             };
             t[0] = [1.0, *len, *h, *joint];
             // Nummer der Verbandstabelle (Looks-Zeile 9, Feld w)
             let table = wild_seeds(m).iter().position(|x| x == seed).unwrap_or(0);
             t[1] = [offset, *spread, *seed as f32, table as f32];
-            t[2] = [
-                pack_rgb(palette[0].0),
-                palette[0].1,
-                pack_rgb(palette[1].0),
-                palette[1].1,
-            ];
-            // Mischfarbe für 3D ohne Muster
-            let mix = pattern.map_or([0; 3], |p| sk_model::proctex::mix(p, [0; 3]));
-            t[3] = [
-                pack_rgb(palette[2].0),
-                pack_rgb(*joint_rgb),
-                palette[2].1,
-                pack_rgb(mix),
-            ];
+            pal(&mut t, 2, palette);
+            t[3][1] = pack_rgb(*joint_rgb);
+            t[4] = [*flame, *fend, *relief, 0.0];
+            pal(&mut t, 5, hpal.as_ref().unwrap_or(palette));
         }
         Some(Pattern::Plaster {
             grain,
@@ -509,7 +515,67 @@ pub fn pattern_rows(m: &Model, s: sk_model::SurfaceId) -> [[f32; 4]; 4] {
             t[0] = [2.0, 0.0, 0.0, 0.0];
             t[1] = [0.0, *spread, *seed as f32, *grain];
         }
+        Some(Pattern::Concrete {
+            w,
+            h,
+            joint,
+            anchors,
+            cloud,
+            pores,
+            seed,
+        }) => {
+            t[0] = [3.0, *w, *h, *joint];
+            t[1] = [*anchors as u8 as f32, *cloud, *seed as f32, 0.0];
+            t[4][2] = *pores;
+        }
+        Some(Pattern::Timber {
+            vertical,
+            board,
+            joint,
+            grain,
+            c1,
+            c2,
+            seed,
+        }) => {
+            t[0] = [4.0, *board, *joint, *vertical as u8 as f32];
+            t[1] = [*grain, 0.0, *seed as f32, 0.0];
+            t[2] = [pack_rgb(*c1), 0.0, pack_rgb(*c2), 0.0];
+        }
+        Some(Pattern::Tiles {
+            len,
+            wid,
+            joint,
+            half,
+            joint_rgb,
+            palette,
+            spread,
+            seed,
+        }) => {
+            t[0] = [5.0, *len, *wid, *joint];
+            t[1] = [*half as u8 as f32, *spread, *seed as f32, 0.0];
+            pal(&mut t, 2, palette);
+            t[3][1] = pack_rgb(*joint_rgb);
+        }
+        Some(Pattern::Stone {
+            size,
+            joint,
+            irr,
+            joint_rgb,
+            palette,
+            seed,
+        }) => {
+            t[0] = [6.0, *size, *joint, *irr];
+            t[1] = [0.0, 0.0, *seed as f32, 0.0];
+            pal(&mut t, 2, palette);
+            t[3][1] = pack_rgb(*joint_rgb);
+        }
         Some(Pattern::Foreign(_)) | None => {}
+    }
+    // Mischfarbe für 3D aus der Ferne und ohne Muster (Zeile 11, Feld w)
+    if t[0][0] > 0.0 {
+        if let Some(p) = pattern {
+            t[3][3] = pack_rgb(sk_model::proctex::mix(p, base));
+        }
     }
     t
 }
