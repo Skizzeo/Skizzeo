@@ -8,6 +8,7 @@ mod abnahme;
 mod camera;
 mod catalog;
 mod catalog_view;
+mod delete;
 mod document;
 mod draw_table;
 mod menu;
@@ -161,8 +162,13 @@ const OVERLAY_TYPE_MENU: usize = 15;
 /// Geschossbogen im Grundriss (E18): Bogen, Aufleuchten, Schilder und
 /// Hinweis an der Spitze.
 const OVERLAY_WHEEL: usize = 16;
+/// Löschen (V?-9): Hinweis am Bauteil, Rückfrage „Gebäude löschen“ und
+/// Kontextmenü am Bauteil.
+const OVERLAY_HINT: usize = OVERLAY_WHEEL + wheel_view::SLOTS;
+const OVERLAY_CONFIRM: usize = OVERLAY_HINT + 1;
+const OVERLAY_CONTEXT: usize = OVERLAY_HINT + 2;
 /// Hinweis an der Maus, über allem.
-const OVERLAY_TIP: usize = OVERLAY_WHEEL + wheel_view::SLOTS;
+const OVERLAY_TIP: usize = OVERLAY_HINT + 3;
 
 /// Blickrichtung (yaw, pitch) der Parallelansichten.
 fn view_direction(v: ViewKind) -> (f64, f64) {
@@ -461,6 +467,19 @@ struct App {
     /// `--geschosswechsel N`: noch so viele Wechsel am Geschossbogen, dann
     /// beenden (Zeitmessung mit `--zeiten`); Richtung des nächsten.
     auto_switch: Option<(u32, bool)>,
+    /// Löschen (V?-9): Hinweis am Bauteil (und seine gezeigte Deckkraft),
+    /// Kontextmenü, Rückfrage „Gebäude löschen“, jeweils ob ihr Bild neu zu
+    /// zeichnen ist; Beginn des Aus- bzw. Einblendens und des Aufleuchtens
+    /// abgelehnter Bauteile (Uhr des Geschossbogens, ms).
+    hint: Option<delete::HintCard>,
+    hint_dirty: bool,
+    hint_alpha: f32,
+    context: Option<delete::ContextMenu>,
+    context_dirty: bool,
+    confirm: Option<delete::ConfirmCard>,
+    confirm_dirty: bool,
+    erase_fade: Option<u64>,
+    erase_flash: Option<(u64, Vec<sk_model::ElementId>)>,
 }
 
 /// Hinweis an der Maus (Text, Lage, seit wann gewünscht, schon sichtbar).
@@ -822,6 +841,7 @@ impl App {
             Command::ClearRecent => self.recent.clear(),
             Command::Settings => self.open_prefs(),
             Command::Catalog => self.open_catalog(),
+            Command::Delete => self.delete_selection(),
         }
     }
 
@@ -1231,12 +1251,29 @@ impl App {
         if self.tool.is_active() || self.edit.is_dragging() {
             return;
         }
+        // Ein Lösch-Schritt blendet ein bzw. wieder aus (V?-9)
+        let label = if redo {
+            self.scene.redo_label()
+        } else {
+            self.scene.undo_label()
+        };
+        let fade = self.erase_anim() && label.is_some_and(|l| l.ends_with("gelöscht"));
+        if fade {
+            self.renderer.capture_scene();
+        }
         let changed = if redo {
             self.scene.redo()
         } else {
             self.scene.undo()
         };
+        if fade && changed {
+            self.erase_fade = Some(self.now());
+        } else if fade {
+            self.renderer.release_snapshot();
+        }
         if changed {
+            self.hint = None;
+            self.hint_dirty = true;
             self.upload_model();
             self.sync_levels();
             self.refresh_cursor();
@@ -1916,6 +1953,15 @@ impl App {
         if self.menu.is_open() && self.handle_menu(e, surface) {
             return !self.quit;
         }
+        if self.confirm.is_some() && self.handle_confirm(e) {
+            return !self.quit;
+        }
+        if self.context.is_some() && self.handle_context(e) {
+            return !self.quit;
+        }
+        if self.hint.is_some() && self.handle_hint(e) {
+            return !self.quit;
+        }
         // Hinweis in der Statuszeile: erst nach Nachfrage, Fenstern und
         // Dateimenü, die den Klick zuerst bekommen
         if let Event::MouseDown {
@@ -1936,6 +1982,18 @@ impl App {
         }
         if self.type_menu.is_some() && self.handle_type_menu(e, surface) {
             return !self.quit;
+        }
+        // Rechtsklick auf ein Bauteil: Kontextmenü (V?-9)
+        if let Event::MouseDown {
+            button: MouseButton::Right,
+            x,
+            y,
+            ..
+        } = e
+        {
+            if self.open_context(x, y) {
+                return true;
+            }
         }
         self.handle_inner(e, surface) && !self.quit
     }
@@ -2366,7 +2424,7 @@ impl App {
                     button: MouseButton::Left,
                     x,
                     y,
-                    ..
+                    mods,
                 } = ev
                 {
                     if eo.clicked.is_some() {
@@ -2385,7 +2443,14 @@ impl App {
                             vw,
                             vh,
                         );
-                        self.select(hit);
+                        // Strg+Klick nimmt dazu bzw. heraus (Löschen mehrerer)
+                        match hit {
+                            Some(id) if mods.ctrl && !self.tool.enabled => {
+                                self.picking.click(id, true);
+                                self.redraw = true;
+                            }
+                            _ => self.select(hit),
+                        }
                     }
                 }
             }
@@ -2485,6 +2550,493 @@ impl App {
         self.sync_levels();
         self.sync_caption(surface);
         true
+    }
+
+    // --- Löschen (V?-9) ---------------------------------------------------
+
+    /// Ausblenden und Aufleuchten an (`anim_ms` > 0; `fade_ms` bzw.
+    /// `flash_ms` 0 schaltet nur das eine aus).
+    fn erase_anim(&self) -> bool {
+        self.theme.size.anim_ms > 0.0 && self.theme.size.fade_ms > 0.0 && self.w > 0
+    }
+
+    /// Entf bzw. „Löschen“: die gewählten Bauteile löschen, soweit sie
+    /// löschbar sind, in einem Schritt. Gelöschtes blendet aus, Abgelehntes
+    /// leuchtet einmal, der Hinweis am Bauteil sagt, was blieb und warum.
+    fn delete_selection(&mut self) {
+        let ids = self.picking.selected.clone();
+        if ids.is_empty() || self.tool.is_active() || self.edit.is_dragging() {
+            return;
+        }
+        self.close_type_menu(false);
+        if self.scene.skip_animation() {
+            self.upload_model();
+        }
+        let m = self.scene.model();
+        let fade = self.erase_anim() && ids.iter().any(|id| m.can_delete(*id).is_ok());
+        if fade {
+            self.renderer.capture_scene();
+        }
+        let d = self.scene.delete_elements(&ids);
+        let m = self.scene.model();
+        let lines = delete::hint(m, &d);
+        let link = delete::hint_link(m, &d);
+        let anchor = delete::hint_anchor(&d);
+        if !d.removed.is_empty() {
+            if fade {
+                self.erase_fade = Some(self.now());
+            }
+            self.upload_model();
+            self.sync_levels();
+            self.refresh_cursor();
+        } else if fade {
+            self.renderer.release_snapshot();
+        }
+        if self.theme.size.anim_ms > 0.0 && self.theme.size.flash_ms > 0.0 && !anchor.is_empty() {
+            self.erase_flash = Some((self.now(), anchor.clone()));
+            self.redraw = true;
+        }
+        self.hint =
+            (!lines.is_empty()).then(|| delete::HintCard::new(lines, link, anchor, Instant::now()));
+        self.hint_dirty = true;
+    }
+
+    /// Bildschirmrechteck (Fenster-Pixel) um die Bauteile in der Ansicht.
+    fn screen_bounds(&self, ids: &[sk_model::ElementId]) -> Option<sk_ui::widgets::Rect> {
+        let (vw, vh, _) = self.view_size();
+        let th = self.top() as f64;
+        let plane = self.plane();
+        let (mut lo, mut hi) = ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN));
+        for &id in ids {
+            for h in selection::helpers(&self.scene, id, self.ui.view, plane, 1.0, &self.theme) {
+                for p in [h.a, h.b] {
+                    let p = vec3(p[0] as f64, p[1] as f64, p[2] as f64);
+                    if let Some((x, y)) = self.cam.project(p, vw, vh) {
+                        lo = (lo.0.min(x), lo.1.min(y));
+                        hi = (hi.0.max(x), hi.1.max(y));
+                    }
+                }
+            }
+        }
+        // Ganz außerhalb der Ansicht: unten in der Mitte
+        let lo = (lo.0.max(0.0), lo.1.max(0.0));
+        let hi = (hi.0.min(vw), hi.1.min(vh));
+        (lo.0 <= hi.0 && lo.1 <= hi.1).then(|| {
+            sk_ui::widgets::Rect::new(
+                lo.0 as f32,
+                (lo.1 + th) as f32,
+                (hi.0 - lo.0) as f32,
+                (hi.1 - lo.1) as f32,
+            )
+        })
+    }
+
+    /// Hinweis am Bauteil: Bild zeichnen (beim ersten Mal unter die
+    /// Bauteile legen), Deckkraft nachführen, nach der Zeit weg; Ausblenden
+    /// und Aufleuchten beenden.
+    fn sync_erase(&mut self) {
+        let now = self.now();
+        if let Some((t0, _)) = &self.erase_flash {
+            if now.saturating_sub(*t0) as f32 >= self.theme.size.flash_ms {
+                self.erase_flash = None;
+            }
+            self.redraw = true;
+        }
+        if self.w == 0 {
+            return;
+        }
+        let fade = if self.theme.size.anim_ms > 0.0 {
+            self.theme.size.fade_ms
+        } else {
+            0.0
+        };
+        let s = self.ui.scale;
+        if std::mem::take(&mut self.hint_dirty) {
+            self.redraw = true;
+            let size = self
+                .hint
+                .as_ref()
+                .filter(|h| h.rect.is_none())
+                .map(|h| (h.size(&self.theme, &self.ui.fonts, s), h.anchor.clone()));
+            if let Some((size, anchor)) = size {
+                let bounds = self.screen_bounds(&anchor);
+                let win = (self.w as f32, self.h as f32, self.top() as f32);
+                if let Some(h) = self.hint.as_mut() {
+                    h.place(size, bounds, win, s);
+                }
+            }
+            match &self.hint {
+                Some(h) => {
+                    let c = h.paint(&self.theme, &self.ui.fonts, s);
+                    let r = h.rect.unwrap_or_default();
+                    let m = (self.theme.size.panel_shadow * s).round();
+                    self.renderer.set_overlay(
+                        OVERLAY_HINT,
+                        (r.x - m) as i32,
+                        (r.y - m) as i32,
+                        c.width as u32,
+                        c.height as u32,
+                        &c.to_premul_rgba8(),
+                    );
+                    self.hint_alpha = 1.0;
+                }
+                None => self.renderer.set_overlay(OVERLAY_HINT, 0, 0, 0, 0, &[]),
+            }
+        }
+        let Some(h) = &self.hint else {
+            return;
+        };
+        match h.alpha(Instant::now(), fade) {
+            None => {
+                self.hint = None;
+                self.renderer.set_overlay(OVERLAY_HINT, 0, 0, 0, 0, &[]);
+                self.redraw = true;
+            }
+            Some(a) if a != self.hint_alpha => {
+                let r = h.rect.unwrap_or_default();
+                let m = (self.theme.size.panel_shadow * s).round();
+                let (w, ht) = self.renderer.overlay_size(OVERLAY_HINT);
+                self.renderer.place_overlay(
+                    OVERLAY_HINT,
+                    (r.x - m) as i32,
+                    (r.y - m) as i32,
+                    w,
+                    ht,
+                    a,
+                );
+                self.hint_alpha = a;
+                self.redraw = true;
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// Maus am Hinweis: darüber bleibt er stehen; ein Klick auf den Verweis
+    /// führt ihn aus, ein Klick auf die Karte bewirkt sonst nichts.
+    fn handle_hint(&mut self, e: Event) -> bool {
+        let s = self.ui.scale;
+        let Some(h) = self.hint.as_mut() else {
+            return false;
+        };
+        match e {
+            Event::MouseMove { x, y, .. } => {
+                if h.mouse_move(x, y, s, &self.theme, Instant::now()) {
+                    self.hint_dirty = true;
+                }
+                false
+            }
+            Event::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => match h.click(x, y, s, &self.theme) {
+                None => false,
+                Some(link) => {
+                    if let Some(l) = link {
+                        self.hint = None;
+                        self.hint_dirty = true;
+                        self.follow_link(l);
+                    }
+                    true
+                }
+            },
+            _ => false,
+        }
+    }
+
+    /// Verweis im Hinweis: Rückgängig, Rückfrage „Gebäude löschen“ oder die
+    /// Typ-Liste der Wand.
+    fn follow_link(&mut self, l: delete::Link) {
+        match l {
+            delete::Link::Undo => self.history(false),
+            delete::Link::DeleteBuilding(b) => self.open_confirm(b),
+            delete::Link::ChangeType(wall) => self.change_type_of(wall),
+        }
+    }
+
+    /// Typ-Liste im Paneel „Eigenschaften“ für diese Wand öffnen.
+    fn change_type_of(&mut self, wall: sk_model::ElementId) {
+        if !self.picking.is_selected(wall) {
+            self.select(Some(wall));
+        }
+        self.sync_props();
+        if self.type_menu.is_none() {
+            self.open_type_menu(Id::PropsType);
+        }
+    }
+
+    /// Rückfrage „Gebäude N löschen?“ zeigen; das Gebäude leuchtet.
+    fn open_confirm(&mut self, b: sk_model::BuildingId) {
+        self.close_type_menu(false);
+        self.context = None;
+        self.context_dirty = true;
+        self.hint = None;
+        self.hint_dirty = true;
+        self.confirm = delete::ConfirmCard::new(self.scene.model(), b);
+        self.confirm_dirty = true;
+        self.tip = None;
+        self.redraw = true;
+    }
+
+    /// Rückfrage: nimmt Klicks und Tasten; Mausrad und mittlere Taste
+    /// bewegen weiter die Kamera.
+    fn handle_confirm(&mut self, e: Event) -> bool {
+        let (s, top) = (self.ui.scale, self.top());
+        let Some(c) = self.confirm.as_mut() else {
+            return false;
+        };
+        let (fonts, t) = (&self.ui.fonts, &self.theme);
+        let r = c.rect(fonts, t, s, self.w, self.h, top);
+        let answer = match e {
+            Event::MouseMove { x, y, .. } => {
+                self.mouse_at = Some((x, y));
+                self.confirm_dirty |= c.mouse_move(r, fonts, t, s, x, y);
+                return !self.nav.is_dragging();
+            }
+            Event::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
+                c.press(r, fonts, t, s, x, y);
+                self.confirm_dirty = true;
+                None
+            }
+            Event::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
+                self.confirm_dirty = true;
+                c.release(r, fonts, t, s, x, y)
+            }
+            Event::MouseDown {
+                button: MouseButton::Right,
+                ..
+            }
+            | Event::MouseUp {
+                button: MouseButton::Right,
+                ..
+            } => None,
+            Event::Key { key, down, .. } => {
+                if !down {
+                    return true;
+                }
+                self.confirm_dirty = true;
+                c.key(key)
+            }
+            _ => return false,
+        };
+        if let Some(a) = answer {
+            self.answer_confirm(a);
+        }
+        true
+    }
+
+    /// Antwort der Rückfrage: „Löschen“ entfernt das Gebäude in einem
+    /// Schritt und blendet es aus; sonst bleibt alles.
+    fn answer_confirm(&mut self, a: delete::Answer) {
+        let Some(c) = self.confirm.take() else {
+            return;
+        };
+        self.confirm_dirty = true;
+        self.redraw = true;
+        if a != delete::Answer::Delete {
+            return;
+        }
+        let fade = self.erase_anim();
+        if fade {
+            self.renderer.capture_scene();
+        }
+        if !self.scene.remove_building(c.building) {
+            if fade {
+                self.renderer.release_snapshot();
+            }
+            return;
+        }
+        if fade {
+            self.erase_fade = Some(self.now());
+        }
+        self.select(None);
+        self.upload_model();
+        self.sync_levels();
+        self.overlay_dirty = true;
+        self.refresh_cursor();
+    }
+
+    fn paint_confirm(&mut self) {
+        self.confirm_dirty = false;
+        self.redraw = true;
+        let Some(c) = &self.confirm else {
+            self.renderer.set_overlay(OVERLAY_CONFIRM, 0, 0, 0, 0, &[]);
+            return;
+        };
+        let s = self.ui.scale;
+        let r = c.rect(&self.ui.fonts, &self.theme, s, self.w, self.h, self.top());
+        let img = c.paint(&self.theme, &self.ui.fonts, s);
+        let m = (self.theme.size.panel_shadow * s).round();
+        self.renderer.set_overlay(
+            OVERLAY_CONFIRM,
+            (r.x - m) as i32,
+            (r.y - m) as i32,
+            img.width as u32,
+            img.height as u32,
+            &img.to_premul_rgba8(),
+        );
+    }
+
+    /// Rechtsklick in der Ansicht: Bauteil darunter wählen (eine Auswahl,
+    /// zu der es gehört, bleibt) und das Kontextmenü öffnen. `false`, wenn
+    /// dort kein Bauteil liegt.
+    fn open_context(&mut self, x: f64, y: f64) -> bool {
+        let top = self.top();
+        let th = top as f64;
+        if y < th
+            || self.ui.dialog
+            || self.ui.level_dragging().is_some()
+            || self.tool.is_active()
+            || self.edit.is_dragging()
+            || self.nav.is_dragging()
+            || self.ui.over(x, y, self.w, top)
+            || self.wheel_hit(x, y).is_some()
+        {
+            return false;
+        }
+        let (vw, vh, _) = self.view_size();
+        let (view, plane) = (self.ui.view, self.plane());
+        let hit = selection::pick_at(&mut self.scene, &self.cam, view, plane, x, y - th, vw, vh);
+        let Some(hit) = hit else {
+            return false;
+        };
+        if !self.picking.is_selected(hit) {
+            self.select(Some(hit));
+        }
+        self.close_type_menu(false);
+        let s = self.ui.scale;
+        self.context = Some(delete::ContextMenu::new(
+            self.scene.model(),
+            hit,
+            &self.picking.selected,
+            x,
+            y,
+            (self.w, self.h, top),
+            &self.theme,
+            s,
+        ));
+        self.context_dirty = true;
+        self.tip = None;
+        self.redraw = true;
+        true
+    }
+
+    /// Offenes Kontextmenü: nimmt Maus und Tasten; ein Klick daneben
+    /// schließt es (ein Rechtsklick öffnet es dort neu).
+    fn handle_context(&mut self, e: Event) -> bool {
+        let s = self.ui.scale;
+        let Some(c) = self.context.as_mut() else {
+            return false;
+        };
+        let t = &self.theme;
+        let action = match e {
+            Event::MouseMove { x, y, .. } => {
+                self.mouse_at = Some((x, y));
+                self.context_dirty |= c.mouse_move(t, s, x, y);
+                return true;
+            }
+            Event::MouseDown { button, x, y, .. } => {
+                if !c.press(t, s, x, y) {
+                    self.context = None;
+                    self.context_dirty = true;
+                    if button == MouseButton::Right {
+                        self.open_context(x, y);
+                    }
+                }
+                return true;
+            }
+            Event::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => c.release(t, s, x, y),
+            Event::MouseUp { .. } | Event::Wheel { .. } => return true,
+            Event::Key { key, down, .. } => {
+                if !down {
+                    return true;
+                }
+                self.context_dirty = true;
+                match c.key(key) {
+                    Ok(a) => a,
+                    Err(()) => {
+                        self.context = None;
+                        return true;
+                    }
+                }
+            }
+            Event::Focus(false) => {
+                self.context = None;
+                self.context_dirty = true;
+                return false;
+            }
+            _ => return false,
+        };
+        if let Some(a) = action {
+            let target = c.target;
+            self.context = None;
+            self.context_dirty = true;
+            self.context_action(a, target);
+        }
+        true
+    }
+
+    fn context_action(&mut self, a: delete::Action, target: sk_model::ElementId) {
+        match a {
+            delete::Action::ChangeType => {
+                // Randdämmstreifen: der Typ seiner Wand
+                let wall = match self.scene.model().can_delete(target) {
+                    Err(sk_model::Refusal::Derived { from })
+                        if self
+                            .scene
+                            .model()
+                            .element(target)
+                            .is_some_and(|e| e.category == Category::EdgeInsulation) =>
+                    {
+                        from
+                    }
+                    _ => target,
+                };
+                self.change_type_of(wall);
+            }
+            delete::Action::Properties => self.select(Some(target)),
+            delete::Action::Delete => self.delete_selection(),
+            delete::Action::DeleteBuilding => {
+                if let Some(b) = self.scene.model().building_of_element(target) {
+                    self.open_confirm(b);
+                }
+            }
+        }
+    }
+
+    fn paint_context(&mut self) {
+        self.context_dirty = false;
+        self.redraw = true;
+        match &self.context {
+            None => self.renderer.set_overlay(OVERLAY_CONTEXT, 0, 0, 0, 0, &[]),
+            Some(c) => {
+                let (img, x, y) = c.paint(&self.theme, &self.ui.fonts, self.ui.scale);
+                self.renderer.set_overlay(
+                    OVERLAY_CONTEXT,
+                    x,
+                    y,
+                    img.width as u32,
+                    img.height as u32,
+                    &img.to_premul_rgba8(),
+                );
+            }
+        }
     }
 
     fn paint_title(&mut self, surface: &Surface) {
@@ -2604,10 +3156,14 @@ impl App {
         if let Some(c) = &self.catalog {
             return c.tip();
         }
+        if let Some(c) = &self.context {
+            return c.tip();
+        }
         if self.ui.dialog
             || self.ui.level_dragging().is_some()
             || self.menu.is_open()
             || self.save_dlg.is_some()
+            || self.confirm.is_some()
         {
             return None;
         }
@@ -2767,7 +3323,9 @@ impl App {
             .as_ref()
             .and_then(|n| n.since)
             .map(|at| NOTICE_TIME.saturating_sub(at.elapsed()));
-        [tip, hud, notice].into_iter().flatten().min()
+        let fade = self.theme.size.fade_ms * (self.theme.size.anim_ms > 0.0) as u8 as f32;
+        let hint = self.hint.as_ref().map(|h| h.wait(Instant::now(), fade));
+        [tip, hud, notice, hint].into_iter().flatten().min()
     }
 
     /// Uhr des Geschossbogens: Millisekunden seit dem Start.
@@ -2776,13 +3334,15 @@ impl App {
     }
 
     /// Was der Geschossbogen zeigen soll: nur im Grundriss, sanft weg,
-    /// solange ein Dialog, das Dateimenü oder die Einstellungen offen sind.
+    /// solange ein Dialog, das Dateimenü, die Einstellungen oder die Rückfrage
+    /// „Gebäude löschen“ offen sind.
     fn wheel_show(&self) -> wheel_view::Show {
         let blocked = self.ui.dialog
             || self.menu.is_open()
             || self.prefs.is_some()
             || self.catalog.is_some()
-            || self.save_dlg.is_some();
+            || self.save_dlg.is_some()
+            || self.confirm.is_some();
         if !self.wheel.visible(self.ui.view, false) {
             wheel_view::Show::Off
         } else if !self.wheel.visible(self.ui.view, blocked) {
@@ -2841,7 +3401,20 @@ impl App {
                 self.view_shift = -dir * slide * (1.0 - e);
                 self.redraw = true;
             }
-            None => self.renderer.release_snapshot(),
+            None => match self.erase_fade {
+                // Gelöschtes blendet in `fade_ms` aus, Rückgängig blendet ein
+                Some(t0) => {
+                    let e = t.saturating_sub(t0) as f32 / self.theme.size.fade_ms.max(1.0);
+                    if e >= 1.0 {
+                        self.erase_fade = None;
+                        self.renderer.release_snapshot();
+                    } else {
+                        self.renderer.set_snapshot(1.0 - e, 0.0);
+                    }
+                    self.redraw = true;
+                }
+                None => self.renderer.release_snapshot(),
+            },
         }
         let show = self.wheel_show();
         if show != wheel_view::Show::On {
@@ -3149,6 +3722,15 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             .nth(1)
             .and_then(|n| n.parse().ok())
             .map(|n| (n, true)),
+        hint: None,
+        hint_dirty: false,
+        hint_alpha: 0.0,
+        context: None,
+        context_dirty: false,
+        confirm: None,
+        confirm_dirty: false,
+        erase_fade: None,
+        erase_flash: None,
     };
     if screenshot.is_none() {
         a.notice = quiet.into_iter().next().map(|text| Notice {
@@ -3215,6 +3797,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             && a.auto_switch.is_none()
             && a.fly.is_none()
             && !a.scene.growing()
+            && a.erase_fade.is_none()
+            && a.erase_flash.is_none()
         {
             // Leerlauf: Grundrisse der Nachbargeschosse vorbereiten, damit ein
             // Wechsel am Geschossbogen nichts neu rechnet (E18)
@@ -3292,6 +3876,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         a.sync_tool_chip();
         a.sync_tip();
         a.sync_notice();
+        a.sync_erase();
         a.sync_title_state();
         if a.menu_dirty && !a.overlay_dirty && a.w > 0 {
             a.paint_menu();
@@ -3312,6 +3897,12 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         if a.type_menu_dirty && a.w > 0 {
             a.paint_type_menu();
         }
+        if a.confirm_dirty && a.w > 0 {
+            a.paint_confirm();
+        }
+        if a.context_dirty && a.w > 0 {
+            a.paint_context();
+        }
         if a.w > 0 {
             a.paint_buttons(&surface);
         }
@@ -3319,6 +3910,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             (Some(p), _) => p.cursor(),
             (None, Some(c)) => c.cursor(),
             (None, None) if a.wheel_hand() => sk_platform::Cursor::Hand,
+            (None, None) if a.hint.as_ref().is_some_and(|h| h.link_hover) => {
+                sk_platform::Cursor::Hand
+            }
             (None, None) => a.ui.cursor(),
         };
         surface.set_cursor(cursor);
@@ -3402,6 +3996,33 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 helpers.extend(selection::fading_glow(
                     &a.scene, h, a.ui.view, plane, scale, &a.theme, k,
                 ));
+            }
+            // Abgelehnte Bauteile leuchten einmal, das ganze Gebäude, solange
+            // die Rückfrage steht (V?-9)
+            if let Some((t0, ids)) = &a.erase_flash {
+                let ms = a.theme.size.flash_ms;
+                let t = a.now().saturating_sub(*t0) as f32;
+                if t < ms {
+                    let k = scene::GROW_GLOW * (1.0 - t / ms);
+                    for &h in ids {
+                        helpers.extend(selection::fading_glow(
+                            &a.scene, h, a.ui.view, plane, scale, &a.theme, k,
+                        ));
+                    }
+                }
+            }
+            if let Some(c) = &a.confirm {
+                for &h in &c.parts {
+                    helpers.extend(selection::fading_glow(
+                        &a.scene,
+                        h,
+                        a.ui.view,
+                        plane,
+                        scale,
+                        &a.theme,
+                        scene::GROW_GLOW,
+                    ));
+                }
             }
             for &id in &a.picking.selected {
                 helpers.extend(selection::helpers(

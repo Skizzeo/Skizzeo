@@ -20,7 +20,7 @@ pub type RgbaRole = (&'static str, &'static str, fn(&mut Theme) -> &mut Rgba);
 pub type F4Role = (&'static str, &'static str, fn(&mut Theme) -> &mut [f32; 4]);
 pub type SizeRole = (&'static str, &'static str, fn(&mut Theme) -> &mut f32);
 
-pub const RGBA_ROLES: [RgbaRole; 59] = [
+pub const RGBA_ROLES: [RgbaRole; 60] = [
     ("ui.bg", "Fläche", |t| &mut t.ui.bg),
     ("ui.border", "Rahmen", |t| &mut t.ui.border),
     ("ui.field", "Feld", |t| &mut t.ui.field),
@@ -44,6 +44,7 @@ pub const RGBA_ROLES: [RgbaRole; 59] = [
     ("ui.field_invalid", "Feld ungültig", |t| {
         &mut t.ui.field_invalid
     }),
+    ("ui.danger", "Löschen (Gebäude)", |t| &mut t.ui.danger),
     ("ui.field_text", "Feld Text", |t| &mut t.ui.field_text),
     ("ui.field_unit", "Einheit", |t| &mut t.ui.field_unit),
     ("ui.caret", "Schreibmarke", |t| &mut t.ui.caret),
@@ -162,7 +163,7 @@ pub const F4_ROLES: [F4Role; 11] = [
     }),
 ];
 
-pub const SIZE_ROLES: [SizeRole; 64] = [
+pub const SIZE_ROLES: [SizeRole; 65] = [
     ("corner_radius", "Eckenradius", |t| {
         &mut t.size.corner_radius
     }),
@@ -279,6 +280,7 @@ pub const SIZE_ROLES: [SizeRole; 64] = [
         &mut t.size.qto_window_w
     }),
     ("flash_ms", "Aufleuchten (ms)", |t| &mut t.size.flash_ms),
+    ("fade_ms", "Ausblenden (ms)", |t| &mut t.size.fade_ms),
     ("catalog_w", "Bauteilkatalog: Breite", |t| {
         &mut t.size.catalog_w
     }),

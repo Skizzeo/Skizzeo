@@ -12,10 +12,10 @@ use crate::ui::ViewKind;
 use sk_math::{vec3, Vec3};
 use sk_model::qto::Schedule;
 use sk_model::{
-    edge_kind, floor_qto_of, foundation_qto_of, merge_seam, run_qto, BuildingId, Category,
+    edge_kind, floor_qto_of, foundation_qto_of, merge_seam, run_qto, BuildingId, Category, Deleted,
     Direction, Edge, ElementId, FloorQto, FloorSlab, FootingQto, Foundation, LayerSetId, Model,
-    RunId, SlabQto, Solid, StoreyId, Touched, Txn, TypeCategory, WallChain, WallQto, FLOOR_PART,
-    FOOTING_PART, SLAB_PART, STRIP_PART,
+    Refusal, RunId, SlabQto, Solid, StoreyId, Touched, Txn, TypeCategory, WallChain, WallQto,
+    FLOOR_PART, FOOTING_PART, SLAB_PART, STRIP_PART,
 };
 use sk_render::MeshData;
 use sk_ui::theme::Theme;
@@ -1368,6 +1368,63 @@ impl Scene {
         self.begin("Sockelrücksprung");
         let ok = self.model.set_slab_recess(slab, next);
         self.mark(run);
+        self.commit();
+        ok
+    }
+
+    /// Entf bzw. „Löschen“ (Paket „Löschen“): löscht, was von `ids` löschbar
+    /// ist, in einem Schritt „Bauteil gelöscht“ bzw. „N Bauteile gelöscht“.
+    /// Ist nichts löschbar, entsteht kein Schritt und das Modell bleibt
+    /// unberührt. Neu gerechnet werden die betroffenen Züge und ihre Partner.
+    pub fn delete_elements(&mut self, ids: &[ElementId]) -> Deleted {
+        let m = &self.model;
+        let mut ok: Vec<ElementId> = Vec::new();
+        for &id in ids {
+            if m.can_delete(id).is_ok() && !ok.contains(&id) {
+                ok.push(id);
+            }
+        }
+        if ok.is_empty() {
+            let mut d = Deleted::default();
+            for &id in ids {
+                match m.can_delete(id) {
+                    Err(r) if r != Refusal::Missing && !d.refused.iter().any(|x| x.0 == id) => {
+                        d.refused.push((id, r))
+                    }
+                    _ => {}
+                }
+            }
+            return d;
+        }
+        let mut marks: Vec<RunId> = Vec::new();
+        for &id in &ok {
+            if let Some((r, _)) = m.segment_of(id) {
+                marks.push(r);
+                marks.extend(m.joined_runs(r));
+            }
+        }
+        let label = match ok.len() {
+            1 => "Bauteil gelöscht",
+            n => sk_model::step_label(format!("{n} Bauteile gelöscht")),
+        };
+        self.begin(label);
+        let d = self.model.delete_elements(ids);
+        marks.extend(self.model.step_touched());
+        for r in marks {
+            self.mark(r);
+        }
+        self.commit();
+        d
+    }
+
+    /// „Gebäude löschen“ (Paket „Löschen“): ein Schritt „Gebäude gelöscht“.
+    pub fn remove_building(&mut self, b: BuildingId) -> bool {
+        if self.model.building(b).is_none() {
+            return false;
+        }
+        self.begin("Gebäude gelöscht");
+        let ok = self.model.remove_building(b);
+        self.mark_all();
         self.commit();
         ok
     }

@@ -663,7 +663,7 @@ pub fn write(m: &Model) -> String {
     let storey_guid = |id| m.storey(id).map(|s| s.guid);
     let p = m.project();
     let defaults = m.defaults();
-    Line::new("project")
+    let line = Line::new("project")
         .guid("guid", Some(p.guid))
         .text("name", &p.name)
         .guid("storey", storey_guid(defaults.storey))
@@ -671,8 +671,17 @@ pub fn write(m: &Model) -> String {
             "wallset",
             m.layer_set(defaults.exterior_wall).map(|s| s.guid),
         )
-        .guid("iwset", m.layer_set(defaults.interior_wall).map(|s| s.guid))
-        .finish(&mut out);
+        .guid("iwset", m.layer_set(defaults.interior_wall).map(|s| s.guid));
+    // Nummernzähler nur, wenn gelöscht wurde (Regel 25): sonst ergibt er
+    // sich aus der höchsten Nummer
+    let gaps = m.number_gaps();
+    let line = if gaps.is_empty() {
+        line
+    } else {
+        let v: Vec<String> = gaps.iter().map(|(p, n)| format!("{p}:{n}")).collect();
+        line.word("next", &v.join(","))
+    };
+    line.finish(&mut out);
     for b in sorted(m.buildings().iter(), |b| b.guid) {
         Line::new("building")
             .guid("guid", Some(b.guid))
@@ -1032,6 +1041,26 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         guid: p.guid("guid")?,
         name: p.get("name")?.to_string(),
     };
+    // Nummernzähler (Regel 25), z. B. „IW:1,GB:2“; fehlt er, gilt die höchste
+    // vorhandene Nummer
+    let mut counters = Vec::new();
+    for part in p
+        .opt("next")
+        .unwrap_or("")
+        .split(',')
+        .filter(|x| !x.is_empty())
+    {
+        match part
+            .split_once(':')
+            .and_then(|(k, n)| Some((k, n.parse::<u32>().ok()?)))
+        {
+            Some((k, n)) => counters.push((k.to_string(), n)),
+            None => hints.push(format!(
+                "Zeile {}: Nummernzähler „{part}“ übersprungen",
+                p.line
+            )),
+        }
+    }
     if let Some(first) = seen.insert(project.guid, p.line) {
         return Err(err(
             p.line,
@@ -1375,6 +1404,13 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     let mut model = Model::from_parts(
         project, attr, materials, layer_sets, buildings, storeys, elements, runs, defaults, guids,
     );
+    for (k, n) in counters {
+        if !model.raise_counter(&k, n) {
+            hints.push(format!(
+                "[project]: Nummernzähler „{k}“ unbekannt, übersprungen"
+            ));
+        }
+    }
     hints.extend(model.complete_pre_b9());
     hints.extend(model.complete_line_types());
     hints.extend(model.complete_pre_b10());

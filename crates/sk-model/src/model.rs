@@ -66,6 +66,9 @@ pub struct Model {
     defaults: Defaults,
     /// Zuletzt vergebene laufende Nummer je Kategorie (wird nie zurückgesetzt).
     numbers: [u32; Category::ALL.len()],
+    /// Zuletzt vergebene Gebäudenummer (GB-02 → 2); nie neu vergeben, nur
+    /// ein verworfener Schritt nimmt sie zurück.
+    building_number: u32,
     revision: u64,
     guids: GuidGen,
     /// Offener Schritt für Rückgängig ([`Model::begin`]).
@@ -97,6 +100,10 @@ macro_rules! note {
         }
     }};
 }
+
+#[path = "delete.rs"]
+mod delete;
+pub use delete::{refusal_lines, refusal_text, Deleted, Refusal};
 
 impl Default for Model {
     fn default() -> Model {
@@ -437,6 +444,7 @@ impl Model {
                 interior_wall,
             },
             numbers: [0; Category::ALL.len()],
+            building_number: 0,
             revision: 0,
             guids,
             txn: None,
@@ -471,6 +479,11 @@ impl Model {
                 *c = (*c).max(n);
             }
         }
+        let building_number = buildings
+            .iter()
+            .filter_map(|(_, b)| building_index(&b.number))
+            .max()
+            .unwrap_or(0);
         let mut m = Model {
             project,
             attr,
@@ -483,6 +496,7 @@ impl Model {
             joins: Vec::new(),
             defaults,
             numbers,
+            building_number,
             revision: 0,
             guids,
             txn: None,
@@ -1212,19 +1226,20 @@ impl Model {
     pub fn add_building(&mut self, storeys: u8) -> BuildingId {
         let storeys = storeys.max(1) as usize;
         let template = self.levels_in(None);
-        let n = self.buildings.len() + 1;
-        let mut k = n;
+        // Nummern werden nie neu vergeben, auch nicht nach dem Löschen
+        let mut k = self.building_number;
         let number = loop {
+            k += 1;
             let s = format!("GB-{k:02}");
             if self.buildings.iter().all(|(_, b)| b.number != s) {
                 break s;
             }
-            k += 1;
         };
+        self.building_number = k;
         let guid = self.new_guid();
         let b = self.buildings.insert(Building {
             guid,
-            name: format!("Gebäude {n}"),
+            name: format!("Gebäude {k}"),
             number,
         });
         note!(self, Building, new b);
@@ -2622,6 +2637,7 @@ impl Model {
             name: "Gebäude 1".into(),
             number: "GB-01".into(),
         });
+        self.building_number = self.building_number.max(1);
         let levels = self.levels_in(None);
         let ground = self.ground_of(None);
         let mut z = None;
@@ -3480,6 +3496,7 @@ impl Model {
     pub fn begin(&mut self, label: &'static str) {
         debug_assert!(self.txn.is_none(), "Schritt schon offen");
         self.txn = Some(Open {
+            building_number: self.building_number,
             label,
             changes: Vec::new(),
             noted: Default::default(),
@@ -3515,6 +3532,9 @@ impl Model {
     /// Verwirft den offenen Schritt und stellt den Stand bei [`Model::begin`]
     /// wieder her (Esc beim Ziehen).
     pub fn rollback(&mut self) -> Touched {
+        if let Some(open) = &self.txn {
+            self.building_number = open.building_number;
+        }
         match self.close() {
             Some(t) => self.apply(&t, Direction::Undo),
             None => Touched::default(),
@@ -3953,6 +3973,7 @@ impl Model {
             }
         }
         out.extend(self.check_levels());
+        out.extend(self.check_delete());
         let mut codes: Vec<&str> = Vec::new();
         for (_, set) in self.layer_sets.iter() {
             out.extend(set.problems());
@@ -4063,6 +4084,11 @@ pub const INTERIOR_240_TYPE_GUID: Guid = Guid(0x399dbdcd165ab68f996acfde24d981df
 /// Werkstyp aus K5: AW monolithisch 36,5 mit Randdämmstreifen.
 pub const MONO_TYPE_GUID: Guid = Guid(0x9c03de8332f6e5a1d90474f347dbbf7e);
 /// Art eines Werkstyps nach seiner festen Guid.
+/// Laufende Zahl einer Gebäudenummer: „GB-02“ → 2.
+pub fn building_index(number: &str) -> Option<u32> {
+    number.strip_prefix("GB-")?.parse().ok()
+}
+
 pub(crate) fn werk_category(g: Guid) -> Option<TypeCategory> {
     match g {
         EXTERIOR_TYPE_GUID | ETICS_TYPE_GUID | CAVITY_TYPE_GUID | MONO_TYPE_GUID => {

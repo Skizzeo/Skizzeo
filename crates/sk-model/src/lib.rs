@@ -43,10 +43,11 @@ pub use library::{
     MaterialDisplay, MaterialId, MaterialLayer, TypeCategory, TYPE_PROPS,
 };
 pub use model::{
-    Defaults, Model, NumberError, Project, CAVITY_TYPE_GUID, ETICS_TYPE_GUID, EXTERIOR_TYPE_GUID,
-    FLOOR_PART, FLOOR_THICKNESS, FOOTING_PART, FOOTING_WIDTH, INTERIOR_115_TYPE_GUID,
-    INTERIOR_240_TYPE_GUID, INTERIOR_TYPE_GUID, MAX_FOUNDATION, MIN_CLEAR, MIN_FOOTING, MIN_RECESS,
-    MONO_TYPE_GUID, SLAB_PART, SLAB_THICKNESS, STRIP_PART,
+    building_index, refusal_lines, refusal_text, Defaults, Deleted, Model, NumberError, Project,
+    Refusal, CAVITY_TYPE_GUID, ETICS_TYPE_GUID, EXTERIOR_TYPE_GUID, FLOOR_PART, FLOOR_THICKNESS,
+    FOOTING_PART, FOOTING_WIDTH, INTERIOR_115_TYPE_GUID, INTERIOR_240_TYPE_GUID,
+    INTERIOR_TYPE_GUID, MAX_FOUNDATION, MIN_CLEAR, MIN_FOOTING, MIN_RECESS, MONO_TYPE_GUID,
+    SLAB_PART, SLAB_THICKNESS, STRIP_PART,
 };
 pub use qto::{
     edge_strip_qto, edge_strip_qto_of, floor_qto, floor_qto_of, foundation_qto, foundation_qto_of,
@@ -54,5 +55,5 @@ pub use qto::{
 };
 pub use solid::Solid;
 pub use solid::{edge_kind, material, merge_seam, Edge, Tri};
-pub use txn::{Change, Direction, Touched, Txn};
+pub use txn::{step_label, Change, Direction, Touched, Txn};
 pub use wall::{EndCut, Gap, Joints, Layer, Line2, RefSide, WallChain};

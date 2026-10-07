@@ -1221,6 +1221,11 @@ impl Ui {
     }
 
     /// Paneel und Knopf unter der Maus (Fensterkoordinaten).
+    /// Liegt `(x, y)` (Fenster) über einem Paneel?
+    pub fn over(&self, x: f64, y: f64, win_w: u32, top: u32) -> bool {
+        self.hit(x, y, win_w, top).is_some()
+    }
+
     fn hit(&self, x: f64, y: f64, win_w: u32, top: u32) -> Option<(Panel, Option<Id>)> {
         if self.dialog {
             // Modal: alles unterhalb der Titelleiste gehört dem Dialog

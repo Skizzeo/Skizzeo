@@ -341,7 +341,10 @@ const GROUPS: [(&str, &[&str]); 8] = [
             "ui.tooltip_text",
         ],
     ),
-    ("Akzent", &["ui.accent", "ui.accent_hover", "ui.hud_glow"]),
+    (
+        "Akzent",
+        &["ui.accent", "ui.accent_hover", "ui.hud_glow", "ui.danger"],
+    ),
     (
         "Eingabefelder",
         &[
@@ -546,7 +549,7 @@ fn field_range(f: FieldId) -> Option<(f32, f32, usize, &'static str)> {
         FieldId::Softness => Some((0.0, 5.0, 2, "")),
         FieldId::PxPerMm => Some((2.0, 12.0, 1, "px/mm")),
         FieldId::Size(i) => match SIZE_ROLES[i].0 {
-            "anim_ms" => Some((0.0, 600.0, 0, "ms")),
+            "anim_ms" | "fade_ms" => Some((0.0, 600.0, 0, "ms")),
             "hover_delay_hud" => Some((0.0, 2.0, 2, "s")),
             "arc_span_deg" => Some((20.0, 80.0, 0, "°")),
             _ => {

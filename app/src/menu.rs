@@ -32,6 +32,8 @@ pub enum Command {
     Settings,
     /// Bauteilkatalog (K3).
     Catalog,
+    /// Auswahl löschen (Entf, Paket „Löschen“).
+    Delete,
 }
 
 /// Antwort der Nachfrage „Änderungen speichern?“.
@@ -91,6 +93,8 @@ pub struct MenuItem {
     pub enabled: bool,
     pub separator: bool,
     pub command: Option<Command>,
+    /// Unumkehrbar Großes in `ui.danger` („Gebäude löschen …“).
+    pub danger: bool,
 }
 
 fn item(label: &str, shortcut: &str, command: Command, enabled: bool) -> MenuItem {
@@ -103,7 +107,7 @@ fn item(label: &str, shortcut: &str, command: Command, enabled: bool) -> MenuIte
     }
 }
 
-fn separator() -> MenuItem {
+pub(crate) fn separator() -> MenuItem {
     MenuItem {
         separator: true,
         ..MenuItem::default()
@@ -115,8 +119,8 @@ const RECENT_ROW: usize = 2;
 
 /// Abstände im Menü (dip): Rand oben und unten, Trennlinie, Zeile einer
 /// Datei im Untermenü (zwei Zeilen), Text links und rechts.
-const PAD: f32 = 4.0;
-const SEP_H: f32 = 9.0;
+pub(crate) const PAD: f32 = 4.0;
+pub(crate) const SEP_H: f32 = 9.0;
 const FILE_ROW: f32 = 44.0;
 const INSET: f32 = 12.0;
 
@@ -526,7 +530,15 @@ fn step(items: &[MenuItem], from: Option<usize>, down: bool) -> Option<usize> {
 }
 
 /// Eine Zeile zeichnen: Grund unter der Maus, Text, Kürzel bzw. Pfeil.
-fn paint_row(c: &mut Canvas, t: &Theme, fonts: &Fonts, s: f32, r: Rect, it: &MenuItem, hot: bool) {
+pub(crate) fn paint_row(
+    c: &mut Canvas,
+    t: &Theme,
+    fonts: &Fonts,
+    s: f32,
+    r: Rect,
+    it: &MenuItem,
+    hot: bool,
+) {
     let u = &t.ui;
     if it.separator {
         let y = r.y + r.h * 0.5;
@@ -545,7 +557,9 @@ fn paint_row(c: &mut Canvas, t: &Theme, fonts: &Fonts, s: f32, r: Rect, it: &Men
         );
         c.fill(&p, u.hover);
     }
-    let (fg, dim) = if it.enabled {
+    let (fg, dim) = if it.enabled && it.danger {
+        (u.danger, u.text_dim)
+    } else if it.enabled {
         (u.text, u.text_dim)
     } else {
         (u.text_disabled, u.text_disabled)
@@ -694,6 +708,7 @@ impl Shortcuts {
                 Some(Command::Redo)
             }
             (Key::Other(0x79), false, false, _) => Some(Command::OpenMenu),
+            (Key::Delete, false, false, false) => Some(Command::Delete),
             // Komma-Taste (VK_OEM_COMMA, als Zeichen oder als Code)
             (Key::Char(',') | Key::Other(0xBC), true, false, false) => Some(Command::Settings),
             _ => None,

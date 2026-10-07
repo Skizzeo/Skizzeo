@@ -148,6 +148,25 @@ pub(crate) enum Key {
 #[derive(Clone, Debug)]
 pub(crate) struct Open {
     pub label: &'static str,
+    /// Gebäudenummer beim Öffnen: ein verworfener Schritt gibt sie zurück.
+    pub building_number: u32,
     pub changes: Vec<Change>,
     pub noted: std::collections::HashSet<Key>,
+}
+
+/// Bezeichnung eines Schritts mit Zahl („3 Bauteile gelöscht“) als
+/// `&'static str`: jede Fassung wird einmal abgelegt und danach geteilt.
+pub fn step_label(text: String) -> &'static str {
+    use std::sync::{Mutex, OnceLock};
+    static KNOWN: OnceLock<Mutex<Vec<&'static str>>> = OnceLock::new();
+    let mut known = KNOWN
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(k) = known.iter().find(|k| **k == text) {
+        return k;
+    }
+    let k: &'static str = Box::leak(text.into_boxed_str());
+    known.push(k);
+    k
 }

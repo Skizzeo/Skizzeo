@@ -45,6 +45,9 @@ pub struct Ui {
     pub field_hover: Rgba,
     pub field_focus: Rgba,
     pub field_invalid: Rgba,
+    /// Unumkehrbar Großes (Paket „Löschen“): „Gebäude löschen …“, Rand und
+    /// Knopf der Rückfrage. Nur dafür.
+    pub danger: Rgba,
     /// Zahl, Einheit dahinter, Schreibmarke, markierter Text.
     pub field_text: Rgba,
     pub field_unit: Rgba,
@@ -244,6 +247,9 @@ pub struct Sizes {
     pub qto_max_w: f32,
     pub qto_window_w: f32,
     pub flash_ms: f32,
+    /// Aus- und Einblenden gelöschter Bauteile und des Hinweises am Bauteil
+    /// (Paket „Löschen“), ms.
+    pub fade_ms: f32,
     /// Bauteilkatalog (K3): Dialog, Liste links, Kachelzeile, Schnittbild-Kachel.
     pub catalog_w: f32,
     pub catalog_h: f32,
@@ -284,6 +290,7 @@ impl Theme {
                 field_hover: rgb(26, 32, 40),
                 field_focus: accent,
                 field_invalid: rgb(214, 84, 64),
+                danger: rgb(214, 84, 64),
                 field_text: text,
                 field_unit: rgb(160, 165, 172),
                 caret: text,
@@ -426,6 +433,7 @@ impl Theme {
                 qto_max_w: 900.0,
                 qto_window_w: 520.0,
                 flash_ms: 600.0,
+                fade_ms: 150.0,
                 catalog_w: 1080.0,
                 catalog_h: 720.0,
                 catalog_list_w: 270.0,
