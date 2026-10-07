@@ -2709,11 +2709,17 @@ impl Model {
     /// jede Wand eines Zuges unter seiner Decke, deren Typ das Auflager
     /// `Depth` hat. In Nummernreihenfolge: Gebäude, Geschoss, Segment.
     pub fn edge_strip_pairs(&self) -> Vec<(ElementId, ElementId)> {
+        self.edge_strip_pairs_in(None)
+    }
+
+    /// [`Model::edge_strip_pairs`] nur an den Decken der Züge `scope`
+    /// (`None`: alle).
+    fn edge_strip_pairs_in(&self, scope: Option<&[RunId]>) -> Vec<(ElementId, ElementId)> {
         let mut floors: Vec<(String, f64, ElementId, RunId)> = self
             .elements
             .iter()
             .filter_map(|(id, e)| match e.kind {
-                ElementKind::Floor(f) => {
+                ElementKind::Floor(f) if in_scope(scope, f.run) => {
                     let r = self.run(f.run)?;
                     let st = self.storey(r.storey)?;
                     let b = st
@@ -2781,13 +2787,19 @@ impl Model {
     /// Legt fehlende Randdämmstreifen an und entfernt überzählige, im offenen
     /// Schritt. Bleibt das Paar (Wand, Decke), bleibt der Streifen mit Guid
     /// und Nummer.
-    fn sync_edge_strips(&mut self) {
-        let want = self.edge_strip_pairs();
+    /// Mit `scope` nur an den Decken dieser Züge (Z4, die übrigen stehen
+    /// unverändert).
+    fn sync_edge_strips(&mut self, scope: Option<&[RunId]>) {
+        let want = self.edge_strip_pairs_in(scope);
         let have: Vec<(ElementId, (ElementId, ElementId))> = self
             .elements
             .iter()
             .filter_map(|(id, e)| match e.kind {
-                ElementKind::EdgeStrip { wall, floor } => Some((id, (wall, floor))),
+                ElementKind::EdgeStrip { wall, floor }
+                    if self.floor_in_scope(floor, scope) || self.element(wall).is_none() =>
+                {
+                    Some((id, (wall, floor)))
+                }
                 _ => None,
             })
             .collect();
@@ -3439,11 +3451,15 @@ impl Model {
     /// Decken, unter denen eine Untersichtdämmung liegen muss (Regel 35):
     /// die Decke kragt unter einem Vorsprung darüber aus.
     pub fn soffit_floors(&self) -> Vec<ElementId> {
+        self.soffit_floors_in(None)
+    }
+
+    fn soffit_floors_in(&self, scope: Option<&[RunId]>) -> Vec<ElementId> {
         let mut out: Vec<(String, ElementId)> = self
             .elements
             .iter()
             .filter_map(|(id, e)| match e.kind {
-                ElementKind::Floor(f) => match self.floor(f.run) {
+                ElementKind::Floor(f) if in_scope(scope, f.run) => match self.floor(f.run) {
                     Some(Ok(s)) if !s.soffits.is_empty() => Some((e.number.clone(), id)),
                     _ => None,
                 },
@@ -3467,12 +3483,19 @@ impl Model {
     /// bleibt die Dämmung mit Guid und Nummer; entsteht sie neu, bekommt sie
     /// eine neue (Regel 25).
     fn sync_soffits(&mut self) {
-        let want = self.soffit_floors();
+        self.sync_soffits_in(None);
+    }
+
+    /// [`Model::sync_soffits`] nur an den Decken der Züge `scope` (Z4).
+    fn sync_soffits_in(&mut self, scope: Option<&[RunId]>) {
+        let want = self.soffit_floors_in(scope);
         let have: Vec<(ElementId, ElementId)> = self
             .elements
             .iter()
             .filter_map(|(id, e)| match e.kind {
-                ElementKind::SoffitInsulation { floor } => Some((id, floor)),
+                ElementKind::SoffitInsulation { floor } if self.floor_in_scope(floor, scope) => {
+                    Some((id, floor))
+                }
                 _ => None,
             })
             .collect();
@@ -3715,11 +3738,17 @@ impl Model {
     /// Decken mit Dachterrasse (Regel 41): über ihr springt das Geschoss um
     /// mindestens 20 mm lichte Tiefe zurück. Nach Nummer.
     pub fn terrace_floors(&self) -> Vec<ElementId> {
+        self.terrace_floors_in(None)
+    }
+
+    /// [`Model::terrace_floors`] nur unter den Zügen `scope` (T6: die
+    /// Decke wird nur dort neu gerechnet, wo der Schritt etwas geändert hat).
+    fn terrace_floors_in(&self, scope: Option<&[RunId]>) -> Vec<ElementId> {
         let mut out: Vec<(String, ElementId)> = self
             .elements
             .iter()
             .filter_map(|(id, e)| match e.kind {
-                ElementKind::Floor(f) => match self.floor(f.run) {
+                ElementKind::Floor(f) if in_scope(scope, f.run) => match self.floor(f.run) {
                     Some(Ok(s)) if !s.terraces.is_empty() => Some((e.number.clone(), id)),
                     _ => None,
                 },
@@ -3752,7 +3781,13 @@ impl Model {
     /// Beim ersten Mal kommen Werkstyp und Baustoffe dazu. Liefert die Zahl
     /// der angelegten und entfernten Bauteile.
     fn sync_terraces(&mut self) -> (usize, usize) {
-        let want = self.terrace_floors();
+        self.sync_terraces_in(None)
+    }
+
+    /// [`Model::sync_terraces`] nur an den Decken der Züge `scope`; Terrasse
+    /// und Blech je Decke kommen aus einer Liste (T7).
+    fn sync_terraces_in(&mut self, scope: Option<&[RunId]>) -> (usize, usize) {
+        let want = self.terrace_floors_in(scope);
         if !want.is_empty() {
             self.ensure_terrace_type();
             if want.iter().any(|f| {
@@ -3762,53 +3797,67 @@ impl Model {
                 self.ensure_coping_material();
             }
         }
+        // (Bauteil, Decke, Terrasse?) aller betroffenen DT und AB
+        let have: Vec<(ElementId, ElementId, bool)> = self
+            .elements
+            .iter()
+            .filter_map(|(id, e)| match e.kind {
+                ElementKind::RoofTerrace { floor } => Some((id, floor, true)),
+                ElementKind::Coping { floor } => Some((id, floor, false)),
+                _ => None,
+            })
+            .filter(|&(_, floor, _)| self.floor_in_scope(floor, scope))
+            .collect();
         let (mut added, mut removed) = (0, 0);
-        for category in [Category::RoofTerrace, Category::Coping] {
-            let kind = |floor| match category {
-                Category::RoofTerrace => ElementKind::RoofTerrace { floor },
-                _ => ElementKind::Coping { floor },
+        // Terrasse je gewünschter Decke (für den Typ unten)
+        let mut terraces: Vec<(ElementId, ElementId)> = Vec::with_capacity(want.len());
+        let mut copings: Vec<ElementId> = Vec::with_capacity(want.len());
+        for (id, floor, dt) in have {
+            let kept = if dt {
+                terraces.iter().any(|x| x.0 == floor)
+            } else {
+                copings.contains(&floor)
             };
-            let have: Vec<(ElementId, ElementId)> = self
-                .elements
-                .iter()
-                .filter_map(|(id, e)| match e.kind {
-                    ElementKind::RoofTerrace { floor } if category == Category::RoofTerrace => {
-                        Some((id, floor))
-                    }
-                    ElementKind::Coping { floor } if category == Category::Coping => {
-                        Some((id, floor))
-                    }
-                    _ => None,
-                })
-                .collect();
-            let mut kept = Vec::with_capacity(have.len());
-            for (id, floor) in have {
-                if want.contains(&floor) && !kept.contains(&floor) {
-                    kept.push(floor);
+            if want.contains(&floor) && !kept {
+                if dt {
+                    terraces.push((floor, id));
                 } else {
-                    note!(self, Element, self.elements, id);
-                    self.elements.remove(id);
-                    self.touch();
-                    removed += 1;
+                    copings.push(floor);
                 }
+            } else {
+                note!(self, Element, self.elements, id);
+                self.elements.remove(id);
+                self.touch();
+                removed += 1;
             }
+        }
+        for category in [Category::RoofTerrace, Category::Coping] {
             for &floor in &want {
-                if kept.contains(&floor) {
+                let dt = category == Category::RoofTerrace;
+                if (dt && terraces.iter().any(|x| x.0 == floor))
+                    || (!dt && copings.contains(&floor))
+                {
                     continue;
                 }
                 let Some((storey, seq)) = self.element(floor).map(|e| (e.storey, e.seq)) else {
                     continue;
                 };
-                self.new_element(category, storey, seq, kind(floor));
+                let kind = if dt {
+                    ElementKind::RoofTerrace { floor }
+                } else {
+                    ElementKind::Coping { floor }
+                };
+                let id = self.new_element(category, storey, seq, kind);
+                if dt {
+                    terraces.push((floor, id));
+                }
                 self.touch();
                 added += 1;
             }
         }
         // Der Typ der Dachterrasse folgt der Wahl an der Decke
-        for floor in want {
-            let (Some(dt), t) = (self.terrace_of(floor), self.terrace_type_of(floor)) else {
-                continue;
-            };
+        for (floor, dt) in terraces {
+            let t = self.terrace_type_of(floor);
             if self.element(dt).is_some_and(|e| e.layer_set != t) {
                 note!(self, Element, self.elements, dt);
                 if let Some(e) = self.elements.get_mut(dt) {
@@ -3818,6 +3867,27 @@ impl Model {
             }
         }
         (added, removed)
+    }
+
+    /// Die Decke `floor` gehört zu einem Zug in `scope` oder gibt es nicht
+    /// mehr (dann fallen ihre abgeleiteten Bauteile weg).
+    fn floor_in_scope(&self, floor: ElementId, scope: Option<&[RunId]>) -> bool {
+        match self.element(floor).map(|e| &e.kind) {
+            Some(ElementKind::Floor(f)) => in_scope(scope, f.run),
+            _ => true,
+        }
+    }
+
+    /// Züge, deren abgeleitete Bauteile der offene Schritt ändern kann
+    /// (Z4): die von [`Model::step_touched`]. `None` (alle), sobald der
+    /// Schritt mehr als Züge und Bauteile ändert, etwa einen Typ, einen
+    /// Baustoff oder ein Geschoss.
+    fn sync_scope(&self) -> Option<Vec<RunId>> {
+        let open = self.txn.as_ref()?;
+        open.changes
+            .iter()
+            .all(|c| matches!(c, Change::Run { .. } | Change::Element { .. }))
+            .then(|| self.step_touched())
     }
 
     /// Nach dem Laden: Dachterrassen und Attikableche passend zu den
@@ -4990,9 +5060,11 @@ impl Model {
     /// Randdämmstreifen folgen Wänden, Decken und Typen im selben Schritt.
     pub fn commit(&mut self) -> Option<Txn> {
         if self.txn.is_some() {
-            self.sync_edge_strips();
-            self.sync_soffits();
-            self.sync_terraces();
+            let scope = self.sync_scope();
+            let scope = scope.as_deref();
+            self.sync_edge_strips(scope);
+            self.sync_soffits_in(scope);
+            self.sync_terraces_in(scope);
         }
         self.close()
     }
@@ -6105,6 +6177,11 @@ impl FlushError {
 /// mit dem robusten Versatz)? Sonst entstünde keine Decke (G7 K2).
 fn room_inside(c: &WallChain) -> bool {
     !c.closed || sk_math::polygon::inset(&c.face_corners(c.outer_offset()), c.thickness()).is_ok()
+}
+
+/// `run` liegt in `scope` (`None`: alles).
+fn in_scope(scope: Option<&[RunId]>, run: RunId) -> bool {
+    scope.is_none_or(|s| s.contains(&run))
 }
 
 #[cfg(test)]
@@ -7227,6 +7304,62 @@ mod og_phase2 {
             assert!(!f.coping_solid().is_empty());
             assert!(m.chain(eg).unwrap().solid().bounds().unwrap().1.z > 3054.0);
         }
+    }
+
+    /// Z4/T6: Ein Schritt rechnet abgeleitete Bauteile nur an den Zügen, die
+    /// er berührt; das Ergebnis gleicht dem Abgleich über das ganze Modell.
+    #[test]
+    fn abgleich_nur_an_den_zuegen_des_schritts() {
+        let (mut m, eg, og) = gebaeude();
+        let b2 = m.add_building(2);
+        let pts = [
+            vec3(20000.0, 0.0, 0.0),
+            vec3(20000.0, 8000.0, 0.0),
+            vec3(30000.0, 8000.0, 0.0),
+            vec3(30000.0, 0.0, 0.0),
+        ];
+        let eg2 = m.build_from_polygon(b2, &pts).unwrap();
+        let og2 = m.runs_above(eg2)[0];
+        let ganz = |m: &Model| {
+            let mut x = m.clone();
+            x.sync_edge_strips(None);
+            x.sync_soffits();
+            let t = x.sync_terraces();
+            (t, x.elements.len() == m.elements.len())
+        };
+        for (run, k, d) in [
+            (og, 1, -1500.0),
+            (og2, 2, 300.0),
+            (og, 1, 300.0),
+            (og, 1, -800.0),
+        ] {
+            let w = m.wall_at(run, k).unwrap();
+            m.begin("Wand verschoben");
+            m.set_linked(w, false);
+            assert!(m.set_offset(w, d).is_some());
+            let scope = m.sync_scope().expect("nur Züge und Bauteile");
+            let (this, other) = if run == og {
+                ([eg, og], [eg2, og2])
+            } else {
+                ([eg2, og2], [eg, og])
+            };
+            assert!(this.iter().all(|r| scope.contains(r)), "{scope:?}");
+            assert!(other.iter().all(|r| !scope.contains(r)), "{scope:?}");
+            m.commit();
+            assert_eq!(ganz(&m), ((0, 0), true), "{k} {d}");
+            assert!(m.check().is_empty(), "{:?}", m.check());
+        }
+        let de = m.floor_of(eg).unwrap();
+        assert!(m.terrace_of(de).is_some() && m.coping_of(de).is_some());
+        assert!(m.soffit_of(m.floor_of(eg2).unwrap()).is_some());
+        // Typänderung: Abgleich über alles
+        let t = m.type_by_guid(MONO_TYPE_GUID).unwrap();
+        m.begin("Typ");
+        let mut x = m.layer_set(t).unwrap().clone();
+        x.note = "geändert".into();
+        assert!(m.set_layer_set(t, x));
+        assert!(m.sync_scope().is_none());
+        m.commit();
     }
 
     /// AW-49: Verblender und Kerndämmung wachsen um die Attika, der Kern
