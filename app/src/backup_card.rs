@@ -112,6 +112,10 @@ pub struct BackupCard {
     hover: Option<Hit>,
     pressed: Option<Hit>,
     last_click: Option<(Instant, usize)>,
+    /// Leinwand und Bytes des letzten Bildes ([`BackupCard::give_back`]):
+    /// Überfahren der Kacheln malt neu und braucht so keine frischen Seiten.
+    spare: Option<Canvas>,
+    spare_px: Vec<u8>,
 }
 
 /// Ortszeit des Zeitpunkts `t` als Kachelangabe („heute, 03:41“).
@@ -171,6 +175,8 @@ impl BackupCard {
             hover: None,
             pressed: None,
             last_click: None,
+            spare: None,
+            spare_px: Vec::new(),
         }
     }
 
@@ -213,6 +219,8 @@ impl BackupCard {
             hover: None,
             pressed: None,
             last_click: None,
+            spare: None,
+            spare_px: Vec::new(),
         }
     }
 
@@ -439,10 +447,25 @@ impl BackupCard {
     }
 
     /// Bild samt Schatten; Lage links oben = `rect` minus Schatten.
-    pub fn paint(&self, t: &Theme, fonts: &Fonts, s: f32) -> Canvas {
+    /// Kartenbild als vormultiplizierte Bytes in den Puffer des letzten
+    /// Bildes; danach beides mit [`BackupCard::give_back`] zurück.
+    pub fn bytes(&mut self, c: &Canvas) -> Vec<u8> {
+        let mut px = std::mem::take(&mut self.spare_px);
+        c.premul_rgba8_into(&mut px);
+        px
+    }
+
+    /// Leinwand und Bytes nach dem Hochladen zum Wiederverwenden.
+    pub fn give_back(&mut self, c: Canvas, px: Vec<u8>) {
+        self.spare = Some(c);
+        self.spare_px = px;
+    }
+
+    pub fn paint(&mut self, t: &Theme, fonts: &Fonts, s: f32) -> Canvas {
         let (w, h) = self.size(fonts, t, s);
         let m = (t.size.panel_shadow * s).round();
-        let mut c = Canvas::new((w + 2.0 * m) as usize, (h + 2.0 * m) as usize);
+        let mut c = self.spare.take().unwrap_or_else(|| Canvas::new(0, 0));
+        c.reuse((w + 2.0 * m) as usize, (h + 2.0 * m) as usize);
         widgets::panel(&mut c, Rect::new(m, m, w, h), s, t);
         let u = &t.ui;
         let (regular, bold) = (fonts.regular.as_ref(), fonts.bold.as_ref());

@@ -66,7 +66,8 @@ fn read_index(dir: &Path) -> Vec<Line> {
         .collect()
 }
 
-/// Schreibt das Verzeichnis; Zeilen ohne Datei fallen weg.
+/// Schreibt das Verzeichnis (atomar: ein Absturz dabei verliert kein
+/// „offen“); Zeilen ohne Datei fallen weg.
 fn write_index(dir: &Path, lines: &[Line]) {
     let text: String = lines
         .iter()
@@ -80,7 +81,7 @@ fn write_index(dir: &Path, lines: &[Line]) {
             format!("{}\t{state}\t{orig}\n", l.name)
         })
         .collect();
-    let _ = std::fs::write(dir.join(INDEX), text);
+    write_atomic(&dir.join(INDEX), &text);
 }
 
 /// Sicherung als „normal beendet“ vermerken.
@@ -134,7 +135,8 @@ pub struct AutoSave {
     written: Option<String>,
     /// Auf einem eigenen Faden schreiben (App); sonst sofort (Tests).
     background: bool,
-    job: Option<std::thread::JoinHandle<()>>,
+    /// Laufende Sicherung; `false`, wenn sie nicht auf die Platte kam.
+    job: Option<std::thread::JoinHandle<bool>>,
 }
 
 impl AutoSave {
@@ -176,6 +178,11 @@ impl AutoSave {
     /// Öffnen, Speichern oder der letzten Sicherung [`INTERVAL`] vergangen
     /// ist. `Some(pfad)`, wenn jetzt eine Sicherung geschrieben wird.
     pub fn tick(&mut self, m: &Model, doc: &Document, now: Duration) -> Option<PathBuf> {
+        // Ging die letzte Sicherung schief (Platte voll, Ordner gesperrt),
+        // gilt der Stand als ungesichert: nächster Versuch nach dem Takt
+        if self.job.as_ref().is_some_and(|j| j.is_finished()) && !self.finish() {
+            self.covered = None;
+        }
         let since = *self.since.get_or_insert(now);
         if !self.changed(m, doc) || now.saturating_sub(since) < INTERVAL {
             return None;
@@ -216,9 +223,7 @@ impl AutoSave {
             true
         };
         if self.background {
-            self.job = Some(std::thread::spawn(move || {
-                write();
-            }));
+            self.job = Some(std::thread::spawn(write));
         } else if !write() {
             return None;
         }
@@ -258,11 +263,10 @@ impl AutoSave {
         self.covered = None;
     }
 
-    /// Wartet, bis eine laufende Sicherung auf der Platte ist.
-    fn finish(&mut self) {
-        if let Some(j) = self.job.take() {
-            let _ = j.join();
-        }
+    /// Wartet, bis eine laufende Sicherung auf der Platte ist; `false`, wenn
+    /// sie nicht geschrieben werden konnte.
+    fn finish(&mut self) -> bool {
+        self.job.take().is_none_or(|j| j.join().unwrap_or(false))
     }
 }
 
@@ -372,12 +376,20 @@ pub fn list_in(dir: &Path) -> Vec<Entry> {
     v
 }
 
-/// Sicherungen älter als [`KEEP`] still entfernen.
+/// Sicherungen älter als [`KEEP`] still entfernen, ebenso liegen
+/// gebliebene Zwischendateien (`.tmp`, Absturz beim Schreiben).
 pub fn clean_in(dir: &Path, now: SystemTime) {
     let mut gone = false;
     for e in list_in(dir) {
         if now.duration_since(e.modified).is_ok_and(|d| d > KEEP) {
             gone |= std::fs::remove_file(&e.path).is_ok();
+        }
+    }
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        let tmp = p.extension().is_some_and(|x| x.eq_ignore_ascii_case("tmp"));
+        if tmp && modified(&p).is_some_and(|t| now.duration_since(t).is_ok_and(|d| d > KEEP)) {
+            let _ = std::fs::remove_file(&p);
         }
     }
     if gone {
@@ -497,6 +509,48 @@ mod tests {
             "haus 2026-10-07 03-41.szo\tbeendet\tD:\\Projekte\\haus.szo\n"
         );
         assert_eq!(start(&d, SystemTime::now()), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+    /// Kam eine Sicherung im Hintergrund nicht auf die Platte (hier: der
+    /// Ordner ist eine Datei), versucht der Takt es wieder, auch ohne neue
+    /// Änderung. Liegen gebliebene Zwischendateien räumt der Start nach
+    /// [`KEEP`] weg; das Verzeichnis selbst hinterlässt keine.
+    #[test]
+    fn fehlschlag_wird_wiederholt_und_tmp_geraeumt() {
+        let d = std::env::temp_dir().join(format!("skizzeo-sicherungen-f-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let gesperrt = d.join("gesperrt");
+        std::fs::write(&gesperrt, "keine Ordner").unwrap();
+        let m = Model::with_seed(1);
+        // Ungespeichert geändert: anderer Stand als beim Öffnen
+        let doc = Document::opened(d.join("haus.szo"), m.revision() + 1);
+        let mut a = AutoSave::new(gesperrt.clone()).in_background();
+        let t = |min: u64| Duration::from_secs(min * 60);
+        assert_eq!(a.tick(&m, &doc, t(0)), None);
+        assert!(a.tick(&m, &doc, t(5)).is_some(), "fällig, Faden startet");
+        while !a.job.as_ref().unwrap().is_finished() {
+            std::thread::yield_now();
+        }
+        assert_eq!(a.tick(&m, &doc, t(6)), None, "erst nach dem Takt");
+        assert!(
+            a.tick(&m, &doc, t(10)).is_some(),
+            "ohne neue Änderung wiederholt"
+        );
+        drop(a);
+
+        // Zwischendateien: alte weg, frische (vielleicht ein zweites
+        // Skizzeo beim Schreiben) bleiben
+        let alt = d.join("haus 2026-09-01 10-00.szo.tmp");
+        std::fs::write(&alt, "halb").unwrap();
+        let spaeter = SystemTime::now() + KEEP + Duration::from_secs(60);
+        clean_in(&d, SystemTime::now());
+        assert!(alt.is_file());
+        clean_in(&d, spaeter);
+        assert!(!alt.is_file());
+        write_index(&d, &[]);
+        assert!(!d.join("sicherungen.txt.tmp").exists());
+        assert!(d.join(INDEX).is_file());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

@@ -3261,7 +3261,7 @@ impl App {
                 return;
             }
         }
-        let Some(c) = &self.card else {
+        let Some(c) = self.card.as_mut() else {
             self.renderer.set_overlay(OVERLAY_CARD, 0, 0, 0, 0, &[]);
             self.renderer
                 .set_overlay(OVERLAY_CARD_SCRIM, 0, 0, 0, 0, &[]);
@@ -3270,6 +3270,7 @@ impl App {
         let s = self.ui.scale;
         let r = c.rect(&self.ui.fonts, &self.theme, s, self.w, self.h, th);
         let img = c.paint(&self.theme, &self.ui.fonts, s);
+        let px = c.bytes(&img);
         let m = (self.theme.size.panel_shadow * s).round();
         self.card_at = ((r.x - m) as i32, (r.y - m) as i32);
         self.renderer.set_overlay(
@@ -3278,8 +3279,9 @@ impl App {
             self.card_at.1,
             img.width as u32,
             img.height as u32,
-            &img.to_premul_rgba8(),
+            &px,
         );
+        c.give_back(img, px);
         self.renderer
             .set_overlay_fill(OVERLAY_CARD_SCRIM, 0, th as i32, self.w, h, scrim);
     }
