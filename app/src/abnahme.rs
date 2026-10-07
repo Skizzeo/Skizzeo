@@ -3502,6 +3502,32 @@ fn a58_titelleiste_linke_knopfgruppe() {
     }
 }
 
+/// A301 (Paket 9 §1.3, Bauthread 21:51): Knopf „?“ in der Titelleiste als
+/// eigene Gruppe, 8 px hinter Wiederherstellen (142–182 px). A58 bleibt:
+/// `left_width` 134, bei 140 kein Knopf. An die Plattform geht
+/// `caption_left` bis zum Ende von „?“; erst dahinter ist Ziehfläche.
+/// Skaliert mit.
+#[test]
+fn a301_titelleiste_hilfeknopf() {
+    for scale in [1.0f32, 1.5] {
+        let t = TitleBar::new(scale);
+        let p = |v: f64| v * scale as f64;
+        assert_eq!(t.caption_left(), (182.0 * scale).round() as u32, "{scale}");
+        assert_eq!(t.left_width(), (134.0 * scale).round() as u32);
+        assert!(!t.help_at(p(140.0), p(10.0)), "Abstand 8 px");
+        assert!(t.help_at(p(143.0), p(10.0)), "Anfang „?“");
+        assert!(t.help_at(p(160.0), p(31.0)), "„?“");
+        assert!(t.help_at(p(181.0), p(10.0)), "Ende „?“");
+        assert!(!t.help_at(p(186.0), p(10.0)), "dahinter Ziehfläche");
+        assert!(!t.help_at(p(160.0), p(40.0)), "unter der Leiste");
+        assert_eq!(
+            linker_knopf(&t, p(160.0), p(10.0)),
+            None,
+            "nicht Teil der linken Gruppe"
+        );
+    }
+}
+
 /// A59 (E17 §1, Test 2): Rückgängig und Wiederherstellen als Knöpfe. Leeres
 /// Modell: beide ausgegraut. Nach „Wand zeichnen“ ist Rückgängig aktiv mit
 /// dem Namen des Schritts; zurückgenommen wird Wiederherstellen aktiv.
