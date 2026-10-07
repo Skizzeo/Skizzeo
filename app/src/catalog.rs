@@ -256,6 +256,32 @@ impl Company {
         )
     }
 
+    /// Speichert eine Mustervorlage („Als Vorlage speichern …“ im Fenster
+    /// „Muster“), sonst wie [`Company::save_type`]; ein ungültiger Name
+    /// kommt als [`SaveResult::Failed`] mit dem Grund zurück.
+    pub fn save_preset(
+        &mut self,
+        name: &str,
+        pattern: &sk_model::proctex::Pattern,
+        base: [u8; 3],
+    ) -> SaveResult {
+        let mut why = String::new();
+        let r = self.save_with(
+            |lib| match sk_model::save_preset(lib, name, pattern, base) {
+                Ok(()) => true,
+                Err(e) => {
+                    why = e;
+                    false
+                }
+            },
+            "",
+        );
+        match r {
+            SaveResult::Failed(e) if e.is_empty() => SaveResult::Failed(why),
+            r => r,
+        }
+    }
+
     fn save_with(
         &mut self,
         export: impl FnOnce(&mut Library) -> bool,

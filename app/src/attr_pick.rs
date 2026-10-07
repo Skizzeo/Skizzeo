@@ -635,7 +635,7 @@ pub(crate) fn paint_cube(c: &mut Canvas, r: Rect, o: &Surface, t: &Theme, s: f32
 /// Kantenlänge des Vorschauwürfels mit Muster (mm): 11 Schichten
 /// Mauerwerk, 50 Körner Putz, 40 cm Sichtbeton, 6 Bretter, 3 Platten bzw.
 /// 3 Natursteine.
-fn cube_edge_mm(p: &Pattern) -> f64 {
+pub(crate) fn cube_edge_mm(p: &Pattern) -> f64 {
     match p {
         Pattern::Masonry { h, joint, .. } => 11.0 * (*h as f64 + *joint as f64),
         Pattern::Plaster { grain, .. } => 50.0 * *grain as f64,

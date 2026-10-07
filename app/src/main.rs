@@ -21,6 +21,7 @@ mod link_view;
 mod material_view;
 mod menu;
 mod nav;
+mod pattern_view;
 #[cfg(test)]
 mod perf;
 mod picking;
@@ -577,6 +578,8 @@ struct App {
     prefs_mem: prefs::Memory,
     prefs_dirty: bool,
     prefs_popup_dirty: bool,
+    /// Stand der Vorschau im Fenster „Muster“ (Lage, Szene), `None` = aus.
+    pattern_preview: Option<([i32; 4], pattern_view::Input)>,
     /// Einstellungsdatei (Ort, Stand beim Laden).
     settings: settings::Settings,
     /// Firmenkatalog (K2); `None` ohne Einstellungen: eingebauter Startbestand.
@@ -1545,6 +1548,9 @@ impl App {
             .with_memory(&self.prefs_mem)
             .with_pattern_error(self.renderer.pattern_error());
         self.prefs = Some(p);
+        if let (Some(p), Some(c)) = (self.prefs.as_mut(), &self.company) {
+            p.set_company_presets(c.library().presets.clone());
+        }
         self.prefs_dirty = true;
         self.overlay_dirty = true;
     }
@@ -1655,6 +1661,10 @@ impl App {
                 self.renderer.move_overlay(OVERLAY_PREFS, x, y);
                 self.redraw = true;
             }
+            self.sync_pattern_preview();
+        }
+        if out.save_preset {
+            self.save_pattern_preset();
         }
         self.prefs_dirty |= out.repaint || out.closed;
         self.prefs_popup_dirty |= out.popup || out.closed;
@@ -1708,6 +1718,7 @@ impl App {
         }
         let Some(p) = self.prefs.as_mut() else {
             self.renderer.set_overlay(OVERLAY_PREFS, 0, 0, 0, 0, &[]);
+            self.sync_pattern_preview();
             return;
         };
         let (c, x, y) = p.paint(&self.theme, &self.ui.fonts, &win, &self.scene);
@@ -1715,7 +1726,91 @@ impl App {
         self.renderer
             .set_overlay(OVERLAY_PREFS, x, y, c.width as u32, c.height as u32, &px);
         p.give_back(c, px);
+        self.sync_pattern_preview();
         self.redraw = true;
+    }
+
+    /// Vorschau im Fenster „Muster“ (Paket 7b): Szene und Aussehen nur bei
+    /// Änderung neu hochladen, sonst nur Lage und Überblendung setzen. Stift
+    /// „Ansichtsmuster“, Papier und Kanten kommen aus der Zeichentabelle.
+    fn sync_pattern_preview(&mut self) {
+        let win = self.prefs_win();
+        let pv = self
+            .prefs
+            .as_mut()
+            .and_then(|p| p.pattern_preview(&self.theme, &win, &self.scene));
+        let Some(mut pv) = pv else {
+            if self.pattern_preview.take().is_some() {
+                self.renderer.set_preview(None);
+                self.redraw = true;
+            }
+            return;
+        };
+        let t = self.scene.table();
+        let s = self.title.scale;
+        let (w, c) = t.pattern;
+        pv.input.ink = [c[0], c[1], c[2], w * s];
+        pv.input.paper = t.paper;
+        pv.input.model_edges = t.edge_looks(false, s);
+        pv.input.drawing_edges = t.edge_looks(true, s);
+        if pv.hold {
+            self.renderer.hold_preview();
+        }
+        // Aussehen immer abgleichen: eine fertig gewordene Verbandstabelle
+        // ändert es ohne neue Szene
+        self.renderer
+            .set_preview_looks(&pattern_view::preview_looks(&pv.input, &self.theme));
+        let same = self
+            .pattern_preview
+            .as_ref()
+            .is_some_and(|(at, inp)| at[2..] == pv.at[2..] && *inp == pv.input);
+        if same {
+            self.renderer.move_preview(pv.at[0], pv.at[1]);
+        } else {
+            let (meshes, items) = pattern_view::preview_scene(&pv.input);
+            for (i, m) in meshes.iter().enumerate() {
+                self.renderer.set_preview_mesh(i, m);
+            }
+            self.renderer.set_preview(Some(sk_render::Preview {
+                at: pv.at,
+                before: OVERLAY_PREFS,
+                items,
+            }));
+        }
+        self.pattern_preview = Some((pv.at, pv.input));
+        let fade = self
+            .prefs
+            .as_ref()
+            .map_or(0.0, |p| p.pattern_fade(&self.theme));
+        self.renderer.set_preview_fade(fade);
+        self.redraw = true;
+    }
+
+    /// „Als Vorlage speichern …“: in den Firmenkatalog schreiben und das
+    /// Ergebnis im Fuß des Fensters „Muster“ zeigen.
+    fn save_pattern_preset(&mut self) {
+        let Some(p) = self.prefs.as_mut() else {
+            return;
+        };
+        let Some((name, pattern, base)) = p.take_save_preset() else {
+            return;
+        };
+        let r = match self.company.as_mut() {
+            None => Err("Kein Firmenkatalog geladen (Bauteilkatalog ▸ „ändern …“).".to_string()),
+            Some(c) => match c.save_preset(&name, &pattern, base) {
+                catalog::SaveResult::Saved => Ok(name.trim().to_string()),
+                catalog::SaveResult::Changed => Err(
+                    "Der Firmenkatalog wurde inzwischen geändert; bitte neu laden und erneut speichern."
+                        .to_string(),
+                ),
+                catalog::SaveResult::Failed(e) => Err(e),
+            },
+        };
+        p.preset_saved(r);
+        if let Some(c) = &self.company {
+            p.set_company_presets(c.library().presets.clone());
+        }
+        self.prefs_dirty = true;
     }
 
     fn paint_prefs_popup(&mut self) {
@@ -5447,6 +5542,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         prefs: None,
         prefs_mem: prefs::Memory::default(),
         prefs_dirty: false,
+        pattern_preview: None,
         prefs_popup_dirty: false,
         settings,
         company,

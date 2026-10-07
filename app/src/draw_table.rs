@@ -464,11 +464,24 @@ pub fn wild_seeds(m: &Model) -> Vec<u32> {
 /// ohne Muster und bei Fremdem Art 0. Die Deckkraft (Zeile 12, Feld w)
 /// setzt [`look_rows`].
 pub fn pattern_rows(m: &Model, s: sk_model::SurfaceId) -> [[f32; 4]; 7] {
-    use sk_model::proctex::{Bond, Palette, Pattern};
-    let mut t = [[0.0; 4]; 7];
     let surface = m.attr().surface(s);
     let pattern = surface.and_then(|x| x.pattern.as_ref());
     let base = surface.map_or([0; 3], |x| x.color);
+    let seeds = wild_seeds(m);
+    pattern_rows_for(pattern, base, |seed| {
+        seeds.iter().position(|x| *x == seed).unwrap_or(0)
+    })
+}
+
+/// Wie [`pattern_rows`] für ein Muster mit Grundfarbe `base`; `table`
+/// nennt den Platz der Verbandstabelle zum Startwert (Vorschau „Muster“).
+pub fn pattern_rows_for(
+    pattern: Option<&sk_model::proctex::Pattern>,
+    base: [u8; 3],
+    table: impl Fn(u32) -> usize,
+) -> [[f32; 4]; 7] {
+    use sk_model::proctex::{Bond, Palette, Pattern};
+    let mut t = [[0.0; 4]; 7];
     // Palette in zwei Zeilen: Farbe 1, Anteil 1, Farbe 2, Anteil 2 | Farbe 3,
     // (frei), Anteil 3, (frei)
     let pal = |t: &mut [[f32; 4]; 7], row: usize, p: &Palette| {
@@ -500,7 +513,7 @@ pub fn pattern_rows(m: &Model, s: sk_model::SurfaceId) -> [[f32; 4]; 7] {
             };
             t[0] = [1.0, *len, *h, *joint];
             // Nummer der Verbandstabelle (Looks-Zeile 9, Feld w)
-            let table = wild_seeds(m).iter().position(|x| x == seed).unwrap_or(0);
+            let table = table(*seed);
             t[1] = [offset, *spread, *seed as f32, table as f32];
             pal(&mut t, 2, palette);
             t[3][1] = pack_rgb(*joint_rgb);

@@ -339,7 +339,7 @@ impl Prefs {
             .then(|| self.sel_index(m).and_then(|i| fill_list(m).get(i).cloned()))?
     }
 
-    fn sel_surf(&self, m: &Model) -> Option<(SurfaceId, Surface)> {
+    pub(super) fn sel_surf(&self, m: &Model) -> Option<(SurfaceId, Surface)> {
         (self.tab == Tab::Surfaces)
             .then(|| self.sel_index(m).and_then(|i| surf_list(m).get(i).cloned()))?
     }
@@ -388,6 +388,10 @@ impl Prefs {
     }
 
     pub(super) fn attr_layout(&self, t: &Theme, w: &Win, sc: &Scene) -> AttrLayout {
+        // Fenster „Muster“: seine Regler rechts (Paket 7b)
+        if self.pw.is_some() {
+            return self.pw_controls(t, w, sc);
+        }
         let c = self.content(t, w);
         let s = w.scale;
         let m = sc.model();
@@ -654,13 +658,16 @@ impl Prefs {
             y += 30.0 * s;
         }
         y += 4.0 * s;
-        self.pattern_side(l, t, s, m, (id, &o), y);
+        self.pattern_side(l, t, s, m, (id, &o), y, false);
     }
 
     /// Abschnitt „Muster“ einer Oberfläche (Paket 6, soll-p6-5): links die
     /// Regler ab `y`, rechts die Vorschau (Würfel, Ansichtskachel); passt
     /// die Spalte nicht daneben, steht die Vorschau darunter.
-    fn pattern_side(
+    /// `window`: rechte Spalte des Fensters „Muster“ (nur die Regler, die
+    /// Art als Liste über die ganze Breite, ohne Vorschau und Hinweise).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn pattern_side(
         &self,
         l: &mut AttrLayout,
         t: &Theme,
@@ -668,13 +675,14 @@ impl Prefs {
         m: &Model,
         (id, o): (SurfaceId, &Surface),
         mut y: f32,
+        window: bool,
     ) {
         let (x, sw) = (l.side.x, l.side.w);
         let fh = t.size.field_height * s;
         let bottom = l.side.y + l.side.h;
         let gap = 12.0 * s;
         // Regler ab vx (kurze Beschriftungen), Listen cw breit
-        let vx = x + 104.0 * s;
+        let vx = x + if window { 90.0 } else { 104.0 } * s;
         let cw = (sw - (vx - x)).min(150.0 * s);
         let free = sw - (vx - x) - cw - gap;
         let right = free >= 90.0 * s;
@@ -686,14 +694,20 @@ impl Prefs {
         let short = 66.0 * s;
         let step = fh + 5.0 * s;
         let top = y;
-        l.texts.push(UiText::group_title(x, y + 14.0 * s, "Muster"));
-        y += 24.0 * s;
         let row = |l: &mut AttrLayout, y: &mut f32, label: &str, w: f32, tg: Target| {
             l.texts.push(UiText::label(x, *y + 18.0 * s, label));
             l.items.push((Rect::new(vx, *y, w, fh), tg));
             *y += step;
         };
-        row(l, &mut y, "Art", cw, Target::Combo(ComboId::PatKind));
+        if window {
+            let r = Rect::new(x, y, sw.min(200.0 * s), fh);
+            l.items.push((r, Target::Combo(ComboId::PatKind)));
+            y += step + 8.0 * s;
+        } else {
+            l.texts.push(UiText::group_title(x, y + 14.0 * s, "Muster"));
+            y += 24.0 * s;
+            row(l, &mut y, "Art", cw, Target::Combo(ComboId::PatKind));
+        }
         // „Zufall“ in eigener Zeile unter den Werten (soll-p6-5)
         let random = |l: &mut AttrLayout, y: &mut f32| {
             let r = Rect::new(vx, *y, (cw * 0.6).max(60.0 * s), fh);
@@ -915,6 +929,15 @@ impl Prefs {
             }
             _ => {}
         }
+        if window {
+            return;
+        }
+        // Verweis ins Fenster „Muster“ (paket-7 §1.1), in Akzentfarbe
+        l.items.push((
+            Rect::new(vx, y, cw.max(110.0 * s), fh),
+            Target::Pw(Pw::Open),
+        ));
+        y += step;
         // Hinweise je Zeile (soll-p6-5)
         let mut hint = if o.pattern.is_none() {
             String::from(
@@ -1115,25 +1138,7 @@ impl Prefs {
             return Ok(());
         }
         let range = |label: &str, lo: f32, hi: f32, dec: usize, unit: &str| {
-            let v = parse_num(text).filter(|v| *v >= lo - 1e-6 && *v <= hi + 1e-6);
-            let scale = 10f32.powi(dec as i32);
-            v.map(|v| (v * scale).round() / scale).ok_or_else(|| {
-                let u = if unit.is_empty() {
-                    String::new()
-                } else {
-                    format!(" {unit}")
-                };
-                format!("{label}: erlaubt {} bis {}{u}", num(lo, dec), num(hi, dec))
-            })
-        };
-        // Anteil 1 oder 2 einer Palette; Anteil 3 ist der Rest auf 100 %
-        let share = |palette: &mut proctex::Palette, k: usize| -> Result<(), String> {
-            let k = k.min(1);
-            let other = palette[1 - k].1;
-            let v = range("Anteil", 0.0, 100.0 - other, 0, "%")?;
-            palette[k].1 = v;
-            palette[2].1 = 100.0 - v - other;
-            Ok(())
+            field_range(text, label, (lo, hi), dec, unit)
         };
         match f {
             FieldId::Dash(i, k) => {
@@ -1188,61 +1193,14 @@ impl Prefs {
             | FieldId::PatSpread
             | FieldId::PatGrain
             | FieldId::PatFlame
-            | FieldId::PatRelief => {
-                let Some((id, mut p)) = self.sel_pattern(m) else {
+            | FieldId::PatRelief
+            | FieldId::PatNum(_) => {
+                let Some((id, p)) = self.sel_pattern(m) else {
                     return Ok(());
                 };
-                match &mut p {
-                    Pattern::Masonry {
-                        len,
-                        h,
-                        joint,
-                        palette,
-                        flame,
-                        relief,
-                        spread,
-                        ..
-                    } => match f {
-                        FieldId::PatLen => *len = range("Steinlänge", 50.0, 600.0, 0, "mm")?,
-                        FieldId::PatH => *h = range("Steinhöhe", 20.0, 300.0, 0, "mm")?,
-                        FieldId::PatJoint => *joint = range("Fuge", 6.0, 15.0, 1, "mm")?,
-                        FieldId::PatShare(k) => share(palette, k)?,
-                        FieldId::PatSpread => *spread = range("Streuung", 0.0, 20.0, 0, "%")?,
-                        FieldId::PatFlame => *flame = range("Flammung", 0.0, 100.0, 0, "%")?,
-                        FieldId::PatRelief => *relief = range("Relief", 0.0, 100.0, 0, "%")?,
-                        _ => return Ok(()),
-                    },
-                    Pattern::Plaster { grain, spread, .. } => match f {
-                        FieldId::PatGrain => *grain = range("Körnung", 0.5, 5.0, 1, "mm")?,
-                        FieldId::PatSpread => *spread = range("Streuung", 0.0, 10.0, 0, "%")?,
-                        _ => return Ok(()),
-                    },
-                    Pattern::Tiles { palette, .. } | Pattern::Stone { palette, .. }
-                        if matches!(f, FieldId::PatShare(_)) =>
-                    {
-                        let FieldId::PatShare(k) = f else {
-                            return Ok(());
-                        };
-                        share(palette, k)?
-                    }
-                    _ => return Ok(()),
-                }
-                self.put_pattern(id, Some(p), cx, out)?;
-            }
-            FieldId::PatNum(key) => {
-                let Some((id, mut p)) = self.sel_pattern(m) else {
-                    return Ok(());
-                };
-                let Some(&(_, lo, hi)) = proctex::limits(proctex::gen_word(&p))
-                    .iter()
-                    .find(|l| l.0 == key)
-                else {
-                    return Ok(());
-                };
-                let (label, unit, dec) = num_spec(key);
-                let v = range(label, lo, hi, dec, unit)?;
-                if proctex::value(&p, key) != Some(v) && proctex::set_value(&mut p, key, v) {
-                    self.put_pattern(id, Some(p), cx, out)?;
+                let q = pattern_field_id(&p, f, text)?;
+                if q != p {
+                    self.put_pattern(id, Some(q), cx, out)?;
                 }
             }
             FieldId::Zigzag => {
@@ -1758,6 +1716,60 @@ impl Prefs {
             );
         }
         // Bearbeiten
+        self.paint_attr_items(c, &l, t, fonts, s, sc, at);
+        if let Some(pr) = l.preview {
+            let pr = at(pr);
+            // Große Vorschauen nur bei Auswahl- oder Darstellungswechsel
+            // neu (M2)
+            match self.tab {
+                Tab::LineTypes => self.paint_lt_preview(c, &mut tiles, pr, m, t, fonts, s),
+                Tab::Fills => {
+                    if let Some((id, _)) = self.sel_fill(m) {
+                        tiles.preview(c, 0, TileKey::Fill(id), pr, true, |c| {
+                            paint_fill_preview(c, pr, m, t, s, fill_display(m, id))
+                        });
+                    }
+                }
+                Tab::Surfaces => {
+                    if let Some((id, o)) = self.sel_surf(m) {
+                        // wilder Verband: Tabelle über den Hintergrundweg,
+                        // bis dahin Mischfarbe, dann Einblendung
+                        let ready = o.pattern.as_ref().is_none_or(proctex::pattern_ready);
+                        tiles.preview(c, 0, TileKey::Surface(id), pr, ready, |c| {
+                            paint_cube(c, pr, &o, t, s)
+                        });
+                        if let Some(r2) = l.preview2.map(at) {
+                            tiles.preview(c, 1, TileKey::Surface(id), r2, ready, |c| {
+                                paint_elevation_tile(c, r2, m, &o, t, s)
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Beschriftungen, Felder, Listen und Knöpfe einer Lage (Attributreiter
+    /// und Regler des Fensters „Muster“).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn paint_attr_items(
+        &self,
+        c: &mut Canvas,
+        l: &AttrLayout,
+        t: &Theme,
+        fonts: &Fonts,
+        s: f32,
+        sc: &Scene,
+        at: &dyn Fn(Rect) -> Rect,
+    ) {
+        let u = &t.ui;
+        let m = sc.model();
+        let (regular, bold) = (
+            fonts.regular.as_ref(),
+            fonts.bold.as_ref().or(fonts.regular.as_ref()),
+        );
+        let (font, small) = (t.size.font * s, t.size.font_small * s);
         for tx in &l.texts {
             let r = at(Rect::new(tx.x, tx.y, 0.0, 0.0));
             // nie über den rechten Rand des Bearbeitungsbereichs hinaus
@@ -1833,6 +1845,12 @@ impl Prefs {
                         .unwrap_or(false);
                     widgets::checkbox(c, rr, on, hover, s, t);
                 }
+                Target::Pw(Pw::Open) => {
+                    let col = if hover { u.accent_hover } else { u.accent };
+                    let cap = regular.map_or(font * 0.7, |f| f.cap_height(font));
+                    let y = rr.y + (rr.h + cap) * 0.5;
+                    label(c, regular, "Mehr Muster …", font, rr.x, y, col);
+                }
                 Target::PatRandom => {
                     let st = ButtonState {
                         hover,
@@ -1861,37 +1879,6 @@ impl Prefs {
                         disabled,
                     };
                     widgets::button(c, fonts, rr, &text, st, s, t);
-                }
-                _ => {}
-            }
-        }
-        if let Some(pr) = l.preview {
-            let pr = at(pr);
-            // Große Vorschauen nur bei Auswahl- oder Darstellungswechsel
-            // neu (M2)
-            match self.tab {
-                Tab::LineTypes => self.paint_lt_preview(c, &mut tiles, pr, m, t, fonts, s),
-                Tab::Fills => {
-                    if let Some((id, _)) = self.sel_fill(m) {
-                        tiles.preview(c, 0, TileKey::Fill(id), pr, true, |c| {
-                            paint_fill_preview(c, pr, m, t, s, fill_display(m, id))
-                        });
-                    }
-                }
-                Tab::Surfaces => {
-                    if let Some((id, o)) = self.sel_surf(m) {
-                        // wilder Verband: Tabelle über den Hintergrundweg,
-                        // bis dahin Mischfarbe, dann Einblendung
-                        let ready = o.pattern.as_ref().is_none_or(proctex::pattern_ready);
-                        tiles.preview(c, 0, TileKey::Surface(id), pr, ready, |c| {
-                            paint_cube(c, pr, &o, t, s)
-                        });
-                        if let Some(r2) = l.preview2.map(at) {
-                            tiles.preview(c, 1, TileKey::Surface(id), r2, ready, |c| {
-                                paint_elevation_tile(c, r2, m, &o, t, s)
-                            });
-                        }
-                    }
                 }
                 _ => {}
             }
@@ -1974,6 +1961,119 @@ impl Prefs {
             );
         }
     }
+}
+
+/// Zahl aus `text` in `lo..=hi`, gerundet auf `dec` Stellen; sonst die
+/// Meldung „Bezeichnung: erlaubt … bis …“.
+fn field_range(
+    text: &str,
+    label: &str,
+    (lo, hi): (f32, f32),
+    dec: usize,
+    unit: &str,
+) -> Result<f32, String> {
+    let v = parse_num(text).filter(|v| *v >= lo - 1e-6 && *v <= hi + 1e-6);
+    let scale = 10f32.powi(dec as i32);
+    v.map(|v| (v * scale).round() / scale).ok_or_else(|| {
+        let u = if unit.is_empty() {
+            String::new()
+        } else {
+            format!(" {unit}")
+        };
+        format!("{label}: erlaubt {} bis {}{u}", num(lo, dec), num(hi, dec))
+    })
+}
+
+/// Muster nach Eingabe von `text` in das Musterfeld `f` (Grenzen, Rundung
+/// und Meldungen der Einstellungen). Passt das Feld nicht zur Art, kommt
+/// das Muster unverändert zurück.
+fn pattern_field_id(p: &Pattern, f: FieldId, text: &str) -> Result<Pattern, String> {
+    let range = |label: &str, lo: f32, hi: f32, dec: usize, unit: &str| {
+        field_range(text, label, (lo, hi), dec, unit)
+    };
+    // Anteil 1 oder 2 einer Palette; Anteil 3 ist der Rest auf 100 %
+    let share = |palette: &mut proctex::Palette, k: usize| -> Result<(), String> {
+        let k = k.min(1);
+        let other = palette[1 - k].1;
+        let v = range("Anteil", 0.0, 100.0 - other, 0, "%")?;
+        palette[k].1 = v;
+        palette[2].1 = 100.0 - v - other;
+        Ok(())
+    };
+    let mut p = p.clone();
+    if let FieldId::PatNum(key) = f {
+        let Some(&(_, lo, hi)) = proctex::limits(proctex::gen_word(&p))
+            .iter()
+            .find(|l| l.0 == key)
+        else {
+            return Ok(p);
+        };
+        let (label, unit, dec) = num_spec(key);
+        let v = range(label, lo, hi, dec, unit)?;
+        if proctex::value(&p, key) != Some(v) {
+            proctex::set_value(&mut p, key, v);
+        }
+        return Ok(p);
+    }
+    match &mut p {
+        Pattern::Masonry {
+            len,
+            h,
+            joint,
+            palette,
+            flame,
+            relief,
+            spread,
+            ..
+        } => match f {
+            FieldId::PatLen => *len = range("Steinlänge", 50.0, 600.0, 0, "mm")?,
+            FieldId::PatH => *h = range("Steinhöhe", 20.0, 300.0, 0, "mm")?,
+            FieldId::PatJoint => *joint = range("Fuge", 6.0, 15.0, 1, "mm")?,
+            FieldId::PatShare(k) => share(palette, k)?,
+            FieldId::PatSpread => *spread = range("Streuung", 0.0, 20.0, 0, "%")?,
+            FieldId::PatFlame => *flame = range("Flammung", 0.0, 100.0, 0, "%")?,
+            FieldId::PatRelief => *relief = range("Relief", 0.0, 100.0, 0, "%")?,
+            _ => {}
+        },
+        Pattern::Plaster { grain, spread, .. } => match f {
+            FieldId::PatGrain => *grain = range("Körnung", 0.5, 5.0, 1, "mm")?,
+            FieldId::PatSpread => *spread = range("Streuung", 0.0, 10.0, 0, "%")?,
+            _ => {}
+        },
+        Pattern::Tiles { palette, .. } | Pattern::Stone { palette, .. } => {
+            if let FieldId::PatShare(k) = f {
+                share(palette, k)?
+            }
+        }
+        _ => {}
+    }
+    Ok(p)
+}
+
+/// Wie ein Musterfeld der Einstellungen, mit dem Schlüssel des Felds:
+/// "len", "h", "joint", "share1", "share2", "spread", "grain", "flame",
+/// "relief" oder ein Schlüssel aus [`proctex::limits`] (Abnahme A298).
+#[cfg(test)]
+pub fn pattern_field(p: &Pattern, key: &str, text: &str) -> Result<Pattern, String> {
+    let f = match key {
+        "len" => FieldId::PatLen,
+        "h" => FieldId::PatH,
+        "joint" => FieldId::PatJoint,
+        "share1" => FieldId::PatShare(0),
+        "share2" => FieldId::PatShare(1),
+        "spread" => FieldId::PatSpread,
+        "grain" => FieldId::PatGrain,
+        "flame" => FieldId::PatFlame,
+        "relief" => FieldId::PatRelief,
+        _ => match proctex::limits(proctex::gen_word(p))
+            .iter()
+            .find(|l| l.0 == key)
+        {
+            Some(l) => FieldId::PatNum(l.0),
+            None => return Ok(p.clone()),
+        },
+    };
+    pattern_field_id(p, f, text)
 }
 
 #[cfg(test)]

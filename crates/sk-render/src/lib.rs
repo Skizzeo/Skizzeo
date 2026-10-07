@@ -356,6 +356,48 @@ struct Target {
     height: i32,
 }
 
+/// Teilbild der Vorschau im Fenster „Muster“ (Paket 7b): eine kleine
+/// Szene mit eigener Kamera in einem Bereich des Vorschaubilds.
+#[derive(Clone, Copy, Debug)]
+pub struct PreviewItem {
+    /// Bereich im Vorschaubild: links, oben, Breite, Höhe (Pixel).
+    pub rect: [i32; 4],
+    /// Nur dieser Ausschnitt wird gezeichnet (Vorher/Nachher-Teiler).
+    pub clip: Option<[i32; 4]>,
+    pub view: View,
+    /// Netz aus [`Renderer::set_preview_mesh`].
+    pub mesh: usize,
+    /// Licht wie im Modell; sonst flach (Varianten von vorne).
+    pub lit: bool,
+    /// Himmel und Boden dahinter.
+    pub sky: bool,
+}
+
+/// Vorschau mit dem Flächen-Shader in einem eigenen Bild (Review 3d): nur
+/// bei Änderung neu gezeichnet, dann als Bild unter das Oberflächenbild
+/// `before` gelegt, das an diesen Stellen durchsichtig ist.
+#[derive(Clone, Debug)]
+pub struct Preview {
+    /// Lage im Fenster (links, oben) und Größe des Vorschaubilds (Pixel).
+    pub at: [i32; 4],
+    pub before: usize,
+    pub items: Vec<PreviewItem>,
+}
+
+/// Bild der Vorschau: mehrfach abgetastet gezeichnet, aufgelöst in eine
+/// Textur; neu angelegt nur bei anderer Größe.
+struct PreviewTarget {
+    ms_fbo: GLuint,
+    ms: [GLuint; 2],
+    fbo: GLuint,
+    tex: GLuint,
+    /// Festgehaltenes voriges Bild zum Überblenden (Vorlagenwechsel).
+    prev_fbo: GLuint,
+    prev_tex: GLuint,
+    w: i32,
+    h: i32,
+}
+
 pub struct Renderer {
     gl: Gl,
     sky: Program,
@@ -380,6 +422,17 @@ pub struct Renderer {
     snapshot: Option<Snapshot>,
     /// Platz des blassen Netzes (Isolieren, Paket 3) und seine Deckkraft.
     ghost: Option<(usize, f32)>,
+    /// Vorschau im Fenster „Muster“ (Paket 7b) mit eigenen Netzen und
+    /// eigener Aussehens-Tabelle.
+    preview: Option<Preview>,
+    preview_dirty: bool,
+    preview_meshes: Vec<GpuMesh>,
+    preview_looks: Looks,
+    preview_looks_tex: GLuint,
+    preview_bond_tex: GLuint,
+    preview_target: Option<PreviewTarget>,
+    /// Deckkraft des festgehaltenen vorigen Vorschaubilds.
+    preview_fade: f32,
 }
 
 const SKY_MAX: usize = 16;
@@ -1196,9 +1249,15 @@ in vec2 v_ndc;
 out vec4 o_color;
 uniform sampler2D u_tex;
 uniform float u_alpha;
+// 1: Zeilen von unten (gezeichnetes Bild, Vorschau „Muster“)
+uniform float u_flip;
 void main() {
-    vec2 uv = vec2(v_ndc.x * 0.5 + 0.5, 0.5 - v_ndc.y * 0.5);
-    o_color = texture(u_tex, uv) * u_alpha;
+    if (u_flip > 0.5) {
+        // Teilbilder decken ihren Bereich; die Lücken verdeckt das Fenster
+        o_color = vec4(texture(u_tex, v_ndc * 0.5 + 0.5).rgb, 1.0) * u_alpha;
+        return;
+    }
+    o_color = texture(u_tex, vec2(v_ndc.x * 0.5 + 0.5, 0.5 - v_ndc.y * 0.5)) * u_alpha;
 }
 "#;
 
@@ -1305,6 +1364,14 @@ impl Renderer {
                 snap_prog,
                 snapshot: None,
                 ghost: None,
+                preview: None,
+                preview_dirty: false,
+                preview_meshes: Vec::new(),
+                preview_looks: Looks::default(),
+                preview_looks_tex: 0,
+                preview_bond_tex: 0,
+                preview_target: None,
+                preview_fade: 0.0,
             })
         }
     }
@@ -1333,80 +1400,13 @@ impl Renderer {
         if *looks == self.looks {
             return;
         }
-        let gl = &self.gl;
-        let keys = looks.keys.max(1);
-        let mut texels = looks.texels.clone();
-        texels.resize(keys * LOOK_ROWS, [0.0; 4]);
         unsafe {
-            if self.looks_tex == 0 {
-                gl.glGenTextures(1, &mut self.looks_tex);
-                gl.glBindTexture(TEXTURE_2D, self.looks_tex);
-                for (p, v) in [
-                    (TEXTURE_MIN_FILTER, NEAREST),
-                    (TEXTURE_MAG_FILTER, NEAREST),
-                    (TEXTURE_WRAP_S, CLAMP_TO_EDGE),
-                    (TEXTURE_WRAP_T, CLAMP_TO_EDGE),
-                ] {
-                    gl.glTexParameteri(TEXTURE_2D, p, v);
-                }
-            }
-            gl.glBindTexture(TEXTURE_2D, self.looks_tex);
-            gl.glPixelStorei(UNPACK_ALIGNMENT, 4);
-            gl.glTexImage2D(
-                TEXTURE_2D,
-                0,
-                RGBA32F as GLint,
-                keys as i32,
-                LOOK_ROWS as i32,
-                0,
-                RGBA,
-                FLOAT,
-                texels.as_ptr() as *const c_void,
-            );
-            gl.glBindTexture(TEXTURE_2D, 0);
+            upload_looks(&self.gl, &mut self.looks_tex, looks);
             if self.bond_tex == 0 || looks.bond != self.looks.bond {
-                self.upload_bond(&looks.bond);
+                upload_bond(&self.gl, &mut self.bond_tex, &looks.bond);
             }
         }
         self.looks = looks.clone();
-    }
-
-    /// Verbandstabellen als Ganzzahl-Textur (R8UI, 128 breit); ohne wilden
-    /// Verband eine leere Tabelle, damit die Textur vollständig ist.
-    fn upload_bond(&mut self, bond: &[u8]) {
-        let gl = &self.gl;
-        let mut data = bond.to_vec();
-        let n = data.len().div_ceil(BOND_TABLE_BYTES).max(1);
-        data.resize(n * BOND_TABLE_BYTES, 0);
-        unsafe {
-            if self.bond_tex == 0 {
-                gl.glGenTextures(1, &mut self.bond_tex);
-                gl.glBindTexture(TEXTURE_2D, self.bond_tex);
-                for (p, v) in [
-                    (TEXTURE_MIN_FILTER, NEAREST),
-                    (TEXTURE_MAG_FILTER, NEAREST),
-                    (TEXTURE_WRAP_S, CLAMP_TO_EDGE),
-                    (TEXTURE_WRAP_T, CLAMP_TO_EDGE),
-                ] {
-                    gl.glTexParameteri(TEXTURE_2D, p, v);
-                }
-            }
-            gl.glBindTexture(TEXTURE_2D, self.bond_tex);
-            gl.glPixelStorei(UNPACK_ALIGNMENT, 1);
-            gl.glTexImage2D(
-                TEXTURE_2D,
-                0,
-                R8UI as GLint,
-                128,
-                (128 * n) as i32,
-                0,
-                RED_INTEGER,
-                UNSIGNED_BYTE,
-                data.as_ptr() as *const c_void,
-            );
-            gl.glPixelStorei(UNPACK_ALIGNMENT, 4);
-            gl.glBindTexture(TEXTURE_2D, 0);
-        }
     }
 
     /// Netz in Platz `slot` blass mit Deckkraft `alpha` zeichnen (Isolieren,
@@ -1421,25 +1421,7 @@ impl Renderer {
         while self.meshes.len() <= slot {
             self.meshes.push(GpuMesh::default());
         }
-        let gl = &self.gl;
-        let gm = &mut self.meshes[slot];
-        unsafe {
-            fill(
-                gl,
-                &mut gm.faces,
-                &mesh.faces,
-                &[(3, 0), (3, 12), (1, 24), (2, 28)],
-            );
-
-            // Eine Instanz je Kante (28 Byte); der Vertex-Shader zieht sie zu zwei
-            // Dreiecken auf die Breite ihrer Kantenart auf.
-            let v: Vec<[f32; 7]> = mesh
-                .edges
-                .iter()
-                .map(|([a, b], wf)| [a[0], a[1], a[2], b[0], b[1], b[2], *wf])
-                .collect();
-            fill_with(gl, &mut gm.edges, &v, &[(3, 0), (3, 12), (1, 24)], 1);
-        }
+        unsafe { upload_mesh(&self.gl, &mut self.meshes[slot], mesh) };
     }
 
     /// Hilfslinien und Markierungen für das nächste Bild.
@@ -1571,6 +1553,291 @@ impl Renderer {
 
     /// Hält das zuletzt gezeichnete Bild der Modellansicht fest (ohne
     /// Oberfläche), um es beim nächsten Bildern überzublenden.
+    /// Aussehens-Tabelle der Vorschau (Schlüssel der Vorschaunetze).
+    pub fn set_preview_looks(&mut self, looks: &Looks) {
+        if *looks == self.preview_looks && self.preview_looks_tex != 0 {
+            return;
+        }
+        unsafe {
+            upload_looks(&self.gl, &mut self.preview_looks_tex, looks);
+            if self.preview_bond_tex == 0 || looks.bond != self.preview_looks.bond {
+                upload_bond(&self.gl, &mut self.preview_bond_tex, &looks.bond);
+            }
+        }
+        self.preview_looks = looks.clone();
+        self.preview_dirty = true;
+    }
+
+    /// Netz `slot` der Vorschau.
+    pub fn set_preview_mesh(&mut self, slot: usize, mesh: &MeshData) {
+        while self.preview_meshes.len() <= slot {
+            self.preview_meshes.push(GpuMesh::default());
+        }
+        let gm = &mut self.preview_meshes[slot];
+        unsafe { upload_mesh(&self.gl, gm, mesh) };
+        self.preview_dirty = true;
+    }
+
+    /// Vorschau zeigen (neu zeichnen beim nächsten Bild) oder ausblenden.
+    pub fn set_preview(&mut self, p: Option<Preview>) {
+        self.preview = p;
+        self.preview_dirty = true;
+    }
+
+    /// Hält das jetzige Vorschaubild fest; es liegt mit Deckkraft
+    /// [`Renderer::set_preview_fade`] über dem neuen (Übergang beim
+    /// Vorlagenwechsel in `anim_ms`).
+    pub fn hold_preview(&mut self) {
+        if let Some(t) = &self.preview_target {
+            let gl = &self.gl;
+            unsafe {
+                gl.glBindFramebuffer(READ_FRAMEBUFFER, t.fbo);
+                gl.glBindFramebuffer(DRAW_FRAMEBUFFER, t.prev_fbo);
+                gl.glBlitFramebuffer(
+                    0,
+                    0,
+                    t.w,
+                    t.h,
+                    0,
+                    0,
+                    t.w,
+                    t.h,
+                    COLOR_BUFFER_BIT,
+                    NEAREST as GLenum,
+                );
+                gl.glBindFramebuffer(FRAMEBUFFER, 0);
+            }
+            self.preview_fade = 1.0;
+        }
+    }
+
+    pub fn set_preview_fade(&mut self, alpha: f32) {
+        self.preview_fade = alpha.clamp(0.0, 1.0);
+    }
+
+    /// Verschiebt die Vorschau mit dem Fenster, ohne neu zu zeichnen.
+    pub fn move_preview(&mut self, x: i32, y: i32) {
+        if let Some(p) = &mut self.preview {
+            (p.at[0], p.at[1]) = (x, y);
+        }
+    }
+
+    /// Bild der Vorschau in der Größe `w` × `h` bereitstellen.
+    fn ensure_preview_target(&mut self, w: i32, h: i32) -> Result<(), String> {
+        if self
+            .preview_target
+            .as_ref()
+            .is_some_and(|t| (t.w, t.h) == (w, h))
+        {
+            return Ok(());
+        }
+        let gl = &self.gl;
+        unsafe {
+            if let Some(t) = self.preview_target.take() {
+                gl.glDeleteFramebuffers(1, &t.ms_fbo);
+                gl.glDeleteRenderbuffers(2, t.ms.as_ptr());
+                gl.glDeleteFramebuffers(1, &t.fbo);
+                gl.glDeleteTextures(1, &t.tex);
+                gl.glDeleteFramebuffers(1, &t.prev_fbo);
+                gl.glDeleteTextures(1, &t.prev_tex);
+            }
+            let (mut ms_fbo, mut ms) = (0, [0u32; 2]);
+            gl.glGenFramebuffers(1, &mut ms_fbo);
+            gl.glGenRenderbuffers(2, ms.as_mut_ptr());
+            gl.glBindFramebuffer(FRAMEBUFFER, ms_fbo);
+            gl.glBindRenderbuffer(RENDERBUFFER, ms[0]);
+            gl.glRenderbufferStorageMultisample(RENDERBUFFER, self.samples, RGBA8, w, h);
+            gl.glFramebufferRenderbuffer(FRAMEBUFFER, COLOR_ATTACHMENT0, RENDERBUFFER, ms[0]);
+            gl.glBindRenderbuffer(RENDERBUFFER, ms[1]);
+            gl.glRenderbufferStorageMultisample(
+                RENDERBUFFER,
+                self.samples,
+                DEPTH_COMPONENT24,
+                w,
+                h,
+            );
+            gl.glFramebufferRenderbuffer(FRAMEBUFFER, DEPTH_ATTACHMENT, RENDERBUFFER, ms[1]);
+            let status = gl.glCheckFramebufferStatus(FRAMEBUFFER);
+            // Bild und voriges Bild als Texturen mit eigenem Puffer
+            let target = |gl: &Gl| {
+                let (mut fbo, mut tex) = (0, 0);
+                gl.glGenTextures(1, &mut tex);
+                gl.glBindTexture(TEXTURE_2D, tex);
+                gl.glTexImage2D(
+                    TEXTURE_2D,
+                    0,
+                    RGBA8 as GLint,
+                    w,
+                    h,
+                    0,
+                    RGBA,
+                    UNSIGNED_BYTE,
+                    std::ptr::null(),
+                );
+                gl.glTexParameteri(TEXTURE_2D, TEXTURE_MIN_FILTER, NEAREST);
+                gl.glTexParameteri(TEXTURE_2D, TEXTURE_MAG_FILTER, NEAREST);
+                gl.glTexParameteri(TEXTURE_2D, TEXTURE_WRAP_S, CLAMP_TO_EDGE);
+                gl.glTexParameteri(TEXTURE_2D, TEXTURE_WRAP_T, CLAMP_TO_EDGE);
+                gl.glGenFramebuffers(1, &mut fbo);
+                gl.glBindFramebuffer(FRAMEBUFFER, fbo);
+                gl.glFramebufferTexture2D(FRAMEBUFFER, COLOR_ATTACHMENT0, TEXTURE_2D, tex, 0);
+                gl.glClearColor(0.0, 0.0, 0.0, 0.0);
+                gl.glClear(COLOR_BUFFER_BIT);
+                (fbo, tex)
+            };
+            let (fbo, tex) = target(gl);
+            let (prev_fbo, prev_tex) = target(gl);
+            gl.glBindFramebuffer(FRAMEBUFFER, 0);
+            self.preview_target = Some(PreviewTarget {
+                ms_fbo,
+                ms,
+                fbo,
+                tex,
+                prev_fbo,
+                prev_tex,
+                w,
+                h,
+            });
+            if status != FRAMEBUFFER_COMPLETE {
+                return Err(format!(
+                    "Vorschaupuffer unvollständig (Status {status:#x})."
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Zeichnet die Teilbilder der Vorschau in ihr Bild (nur nach einer
+    /// Änderung).
+    fn render_preview(&mut self) -> Result<(), String> {
+        let Some(p) = self.preview.clone() else {
+            return Ok(());
+        };
+        let (w, h) = (p.at[2].max(1), p.at[3].max(1));
+        self.ensure_preview_target(w, h)?;
+        let Some(tg) = self.preview_target.as_ref() else {
+            return Ok(());
+        };
+        let gl = &self.gl;
+        let st = &self.style;
+        let looks = &self.preview_looks;
+        unsafe {
+            gl.glBindFramebuffer(FRAMEBUFFER, tg.ms_fbo);
+            gl.glViewport(0, 0, w, h);
+            gl.glDisable(SCISSOR_TEST);
+            gl.glDisable(BLEND);
+            gl.glDisable(CULL_FACE);
+            gl.glEnable(MULTISAMPLE);
+            gl.glClearColor(0.0, 0.0, 0.0, 0.0);
+            gl.glClearDepth(1.0);
+            gl.glDepthMask(TRUE);
+            gl.glClear(COLOR_BUFFER_BIT | DEPTH_BUFFER_BIT);
+            gl.glEnable(SCISSOR_TEST);
+            gl.glEnable(DEPTH_TEST);
+            for it in &p.items {
+                let Some(m) = self.preview_meshes.get(it.mesh) else {
+                    continue;
+                };
+                let [rx, ry, rw, rh] = it.rect;
+                let vy = h - ry - rh;
+                gl.glViewport(rx, vy, rw, rh);
+                let [cx, cy, cw, ch] = it.clip.unwrap_or(it.rect);
+                gl.glScissor(cx, h - cy - ch, cw, ch);
+                let view = &it.view;
+                if let Some(c) = view.paper {
+                    gl.glClearColor(c[0], c[1], c[2], 1.0);
+                    gl.glClear(COLOR_BUFFER_BIT);
+                    gl.glClearColor(0.0, 0.0, 0.0, 0.0);
+                }
+                if it.sky && view.paper.is_none() {
+                    gl.glDepthFunc(ALWAYS);
+                    let q = self.sky.id;
+                    gl.glUseProgram(q);
+                    mat(gl, q, c"u_inv_vp", &view.inv_view_proj);
+                    mat(gl, q, c"u_vp", &view.view_proj);
+                    gl.glUniform1f(loc(gl, q, c"u_eye_z"), view.eye_z);
+                    // gl_FragCoord zählt im ganzen Bild: Horizont um den Bereich versetzt
+                    gl.glUniform1f(loc(gl, q, c"u_horizon_px"), view.horizon_px + vy as f32);
+                    gl.glUniform1f(loc(gl, q, c"u_height"), rh as f32);
+                    gl.glUniform1f(loc(gl, q, c"u_softness"), st.horizon_softness);
+                    vec3(gl, q, c"u_ground", st.ground);
+                    let n = st.sky.len().min(SKY_MAX);
+                    let mut pos = [0.0f32; SKY_MAX];
+                    let mut col = [0.0f32; 3 * SKY_MAX];
+                    for (i, s) in st.sky[..n].iter().enumerate() {
+                        pos[i] = s.0;
+                        col[3 * i..3 * i + 3].copy_from_slice(&s.1);
+                    }
+                    gl.glUniform1i(loc(gl, q, c"u_sky_n"), n as i32);
+                    gl.glUniform1fv(loc(gl, q, c"u_sky_pos"), n as i32, pos.as_ptr());
+                    gl.glUniform3fv(loc(gl, q, c"u_sky_col"), n as i32, col.as_ptr());
+                    gl.glUniform1i(loc(gl, q, c"u_overlay"), 0);
+                    gl.glBindVertexArray(self.empty_vao);
+                    gl.glDrawArrays(TRIANGLES, 0, 3);
+                }
+                // Flächen
+                gl.glDepthFunc(LESS);
+                gl.glEnable(POLYGON_OFFSET_FILL);
+                gl.glPolygonOffset(1.0, 1.0);
+                let q = self.faces.id;
+                gl.glUseProgram(q);
+                mat(gl, q, c"u_vp", &view.view_proj);
+                vec3(gl, q, c"u_origin", view.origin_rel);
+                vec3(gl, q, c"u_light", st.light);
+                let ambient = if it.lit { st.ambient } else { 1.0 };
+                gl.glUniform1f(loc(gl, q, c"u_ambient"), ambient);
+                let drawing = view.paper.is_some();
+                gl.glUniform1i(loc(gl, q, c"u_drawing"), drawing as GLint);
+                gl.glUniform1i(loc(gl, q, c"u_patterns"), view.patterns as GLint);
+                let ink = looks.pattern_ink;
+                gl.glUniform4f(loc(gl, q, c"u_pattern_ink"), ink[0], ink[1], ink[2], ink[3]);
+                gl.glActiveTexture(TEXTURE0 + 1);
+                gl.glBindTexture(TEXTURE_2D, self.preview_looks_tex);
+                gl.glUniform1i(loc(gl, q, c"u_looks"), 1);
+                gl.glActiveTexture(TEXTURE0 + 2);
+                gl.glBindTexture(TEXTURE_2D, self.preview_bond_tex);
+                gl.glUniform1i(loc(gl, q, c"u_bond"), 2);
+                gl.glActiveTexture(TEXTURE0);
+                gl.glUniform1f(loc(gl, q, c"u_alpha"), 1.0);
+                gl.glBindVertexArray(m.faces.vao);
+                gl.glDrawArrays(TRIANGLES, 0, m.faces.count);
+                gl.glDisable(POLYGON_OFFSET_FILL);
+                // Kanten
+                if m.edges.count > 0 {
+                    gl.glDepthFunc(LEQUAL);
+                    let q = self.edges.id;
+                    gl.glUseProgram(q);
+                    mat(gl, q, c"u_vp", &view.view_proj);
+                    vec3(gl, q, c"u_origin", view.origin_rel);
+                    let edges = if drawing {
+                        &looks.drawing
+                    } else {
+                        &looks.model
+                    };
+                    gl.glUniform2f(loc(gl, q, c"u_viewport"), rw as f32, rh as f32);
+                    let n = EDGE_KINDS as i32;
+                    gl.glUniform1fv(loc(gl, q, c"u_edge_width"), n, edges.width.as_ptr());
+                    let colors = edges.color.as_flattened();
+                    gl.glUniform3fv(loc(gl, q, c"u_edge_color"), n, colors.as_ptr());
+                    let dash = edges.dash.as_flattened();
+                    gl.glUniform4fv(loc(gl, q, c"u_edge_dash"), 2 * n, dash.as_ptr());
+                    gl.glUniform1f(loc(gl, q, c"u_near"), view.near);
+                    gl.glUniform1f(loc(gl, q, c"u_alpha"), 1.0);
+                    gl.glUniform4f(loc(gl, q, c"u_premix"), 0.0, 0.0, 0.0, 0.0);
+                    gl.glBindVertexArray(m.edges.vao);
+                    gl.glDrawArraysInstanced(TRIANGLES, 0, 6, m.edges.count);
+                }
+            }
+            gl.glDisable(SCISSOR_TEST);
+            gl.glBindFramebuffer(READ_FRAMEBUFFER, tg.ms_fbo);
+            gl.glBindFramebuffer(DRAW_FRAMEBUFFER, tg.fbo);
+            gl.glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, COLOR_BUFFER_BIT, NEAREST as GLenum);
+            gl.glBindFramebuffer(FRAMEBUFFER, 0);
+            gl.glBindVertexArray(0);
+        }
+        Ok(())
+    }
+
     pub fn capture_scene(&mut self) {
         let Some(t) = &self.target else {
             return;
@@ -1753,6 +2020,10 @@ impl Renderer {
         let (w, h) = (win_w as i32, win_h as i32 - top as i32);
         if w <= 0 || h <= 0 {
             return Ok(());
+        }
+        if self.preview.is_some() && self.preview_dirty {
+            self.preview_dirty = false;
+            self.render_preview()?;
         }
         self.ensure_target(w, h)?;
         let target_fbo = self.target.as_ref().map_or(0, |t| t.fbo);
@@ -2006,11 +2277,34 @@ impl Renderer {
             gl.glUniform1i(loc(gl, p, c"u_tex"), 0);
             gl.glBindVertexArray(self.empty_vao);
             let u_alpha = loc(gl, p, c"u_alpha");
-            for o in self
-                .overlays
-                .iter()
-                .filter(|o| o.w > 0 && o.h > 0 && o.alpha > 0.0)
-            {
+            let u_flip = loc(gl, p, c"u_flip");
+            // Vorschau (Fenster „Muster“) unter ihrem Fensterbild, aus ihrer
+            // Textur (Zeilen von unten)
+            let preview = self
+                .preview
+                .as_ref()
+                .zip(self.preview_target.as_ref())
+                .map(|(pv, tg)| (pv.before, pv.at, (tg.tex, tg.prev_tex)));
+            let fade = self.preview_fade;
+            let draw_preview = |at: [i32; 4], (tex, prev): (GLuint, GLuint)| {
+                gl.glViewport(at[0], win_h as i32 - at[1] - at[3], at[2], at[3]);
+                gl.glUniform1f(u_flip, 1.0);
+                for (t, a) in [(tex, 1.0), (prev, fade)] {
+                    if a > 0.0 {
+                        gl.glBindTexture(TEXTURE_2D, t);
+                        gl.glUniform1f(u_alpha, a);
+                        gl.glDrawArrays(TRIANGLES, 0, 3);
+                    }
+                }
+                gl.glUniform1f(u_flip, 0.0);
+            };
+            for (i, o) in self.overlays.iter().enumerate() {
+                if let Some((_, at, tex)) = preview.filter(|p| p.0 == i) {
+                    draw_preview(at, tex);
+                }
+                if o.w <= 0 || o.h <= 0 || o.alpha <= 0.0 {
+                    continue;
+                }
                 gl.glViewport(o.x, win_h as i32 - o.y - o.h, o.w, o.h);
                 gl.glBindTexture(TEXTURE_2D, o.tex);
                 // gestreckte Bilder (Animation) geglättet, sonst Pixel für Pixel
@@ -2023,6 +2317,9 @@ impl Renderer {
                 gl.glTexParameteri(TEXTURE_2D, TEXTURE_MAG_FILTER, f);
                 gl.glUniform1f(u_alpha, o.alpha);
                 gl.glDrawArrays(TRIANGLES, 0, 3);
+            }
+            if let Some((_, at, tex)) = preview.filter(|p| p.0 >= self.overlays.len()) {
+                draw_preview(at, tex);
             }
             gl.glDisable(BLEND);
             gl.glBindVertexArray(0);
@@ -2066,6 +2363,92 @@ const CORNERS: [[f32; 2]; 6] = [
 ];
 
 /// Lädt Vertexdaten in `b` und legt die Attribute (Anzahl, Byte-Versatz) fest.
+/// Flächen und Kanten eines Netzes in seine Puffer.
+unsafe fn upload_mesh(gl: &Gl, gm: &mut GpuMesh, mesh: &MeshData) {
+    fill(
+        gl,
+        &mut gm.faces,
+        &mesh.faces,
+        &[(3, 0), (3, 12), (1, 24), (2, 28)],
+    );
+    // Eine Instanz je Kante (28 Byte); der Vertex-Shader zieht sie zu zwei
+    // Dreiecken auf die Breite ihrer Kantenart auf.
+    let v: Vec<[f32; 7]> = mesh
+        .edges
+        .iter()
+        .map(|([a, b], wf)| [a[0], a[1], a[2], b[0], b[1], b[2], *wf])
+        .collect();
+    fill_with(gl, &mut gm.edges, &v, &[(3, 0), (3, 12), (1, 24)], 1);
+}
+
+/// Aussehens-Tabelle als Gleitkomma-Textur (Schlüssel × [`LOOK_ROWS`]).
+unsafe fn upload_looks(gl: &Gl, tex: &mut GLuint, looks: &Looks) {
+    let keys = looks.keys.max(1);
+    let mut texels = looks.texels.clone();
+    texels.resize(keys * LOOK_ROWS, [0.0; 4]);
+    if *tex == 0 {
+        gl.glGenTextures(1, tex);
+        gl.glBindTexture(TEXTURE_2D, *tex);
+        for (p, v) in [
+            (TEXTURE_MIN_FILTER, NEAREST),
+            (TEXTURE_MAG_FILTER, NEAREST),
+            (TEXTURE_WRAP_S, CLAMP_TO_EDGE),
+            (TEXTURE_WRAP_T, CLAMP_TO_EDGE),
+        ] {
+            gl.glTexParameteri(TEXTURE_2D, p, v);
+        }
+    }
+    gl.glBindTexture(TEXTURE_2D, *tex);
+    gl.glPixelStorei(UNPACK_ALIGNMENT, 4);
+    gl.glTexImage2D(
+        TEXTURE_2D,
+        0,
+        RGBA32F as GLint,
+        keys as i32,
+        LOOK_ROWS as i32,
+        0,
+        RGBA,
+        FLOAT,
+        texels.as_ptr() as *const c_void,
+    );
+    gl.glBindTexture(TEXTURE_2D, 0);
+}
+
+/// Verbandstabellen als Ganzzahl-Textur (R8UI, 128 breit); ohne wilden
+/// Verband eine leere Tabelle, damit die Textur vollständig ist.
+unsafe fn upload_bond(gl: &Gl, tex: &mut GLuint, bond: &[u8]) {
+    let mut data = bond.to_vec();
+    let n = data.len().div_ceil(BOND_TABLE_BYTES).max(1);
+    data.resize(n * BOND_TABLE_BYTES, 0);
+    if *tex == 0 {
+        gl.glGenTextures(1, tex);
+        gl.glBindTexture(TEXTURE_2D, *tex);
+        for (p, v) in [
+            (TEXTURE_MIN_FILTER, NEAREST),
+            (TEXTURE_MAG_FILTER, NEAREST),
+            (TEXTURE_WRAP_S, CLAMP_TO_EDGE),
+            (TEXTURE_WRAP_T, CLAMP_TO_EDGE),
+        ] {
+            gl.glTexParameteri(TEXTURE_2D, p, v);
+        }
+    }
+    gl.glBindTexture(TEXTURE_2D, *tex);
+    gl.glPixelStorei(UNPACK_ALIGNMENT, 1);
+    gl.glTexImage2D(
+        TEXTURE_2D,
+        0,
+        R8UI as GLint,
+        128,
+        (128 * n) as i32,
+        0,
+        RED_INTEGER,
+        UNSIGNED_BYTE,
+        data.as_ptr() as *const c_void,
+    );
+    gl.glPixelStorei(UNPACK_ALIGNMENT, 4);
+    gl.glBindTexture(TEXTURE_2D, 0);
+}
+
 unsafe fn fill<T>(gl: &Gl, b: &mut GpuBuffer, data: &[T], attrs: &[(i32, usize)]) {
     fill_with(gl, b, data, attrs, 0);
 }

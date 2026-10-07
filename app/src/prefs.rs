@@ -23,9 +23,14 @@ use std::time::{Duration, Instant};
 
 #[path = "prefs_attr.rs"]
 mod attr_tabs;
+#[path = "prefs_pattern.rs"]
+mod pattern_win;
 #[cfg(test)]
 pub use attr_tabs::name_free;
+#[cfg(test)]
+pub use attr_tabs::pattern_field;
 use attr_tabs::{attr_unit, reset_attr_tab};
+use pattern_win::{PatWin, Pw};
 
 /// Reiter des Fensters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -110,6 +115,10 @@ pub struct Out {
     pub model: bool,
     /// Fenster geschlossen (OK, Abbrechen, ×).
     pub closed: bool,
+    /// „Als Vorlage speichern …“ im Fenster „Muster“: Name, Muster und
+    /// Grundfarbe für den Firmenkatalog.
+    /// Abholen mit [`Prefs::take_save_preset`].
+    pub save_preset: bool,
 }
 
 impl Out {
@@ -165,6 +174,8 @@ enum FieldId {
     /// Regler der Arten aus Paket 7 nach ihrem Schlüssel in
     /// [`sk_model::proctex::limits`] (Tafelbreite, Brettbreite, …).
     PatNum(&'static str),
+    /// Name der neuen Firmenvorlage („Als Vorlage speichern …“).
+    PresetName,
 }
 
 /// Auswahllisten.
@@ -257,6 +268,8 @@ enum Target {
     PickOld,
     /// Nachfrage „Zurücksetzen?“: 0 = Zurücksetzen, 1 = Abbrechen.
     Confirm(usize),
+    /// Fenster „Muster“ (Paket 7b) und sein Verweis „Mehr Muster …“.
+    Pw(Pw),
 }
 
 /// Ziehen mit der Maus.
@@ -270,6 +283,8 @@ enum Drag {
     Hue,
     /// Markieren im Textfeld.
     Select,
+    /// Teiler „Vorher/Nachher“ im Fenster „Muster“.
+    Split,
 }
 
 /// Feld in Eingabe: Text, Stand beim Hineingehen.
@@ -316,6 +331,9 @@ enum Popup {
     Picker(Box<Picker>),
     /// Nachfrage „… auf Standard zurücksetzen?“ (Knopf mit Fokus).
     Confirm(usize),
+    /// „Als Vorlage speichern …“: Name und Rückfrage in einem (Knopf mit
+    /// Fokus).
+    SaveAs(usize),
 }
 
 /// Breiten der ISO-128-Reihe (mm).
@@ -606,7 +624,8 @@ fn field_range(f: FieldId) -> Option<(f32, f32, usize, &'static str)> {
         | FieldId::PatGrain
         | FieldId::PatFlame
         | FieldId::PatRelief
-        | FieldId::PatNum(_) => None,
+        | FieldId::PatNum(_)
+        | FieldId::PresetName => None,
     }
 }
 
@@ -634,6 +653,7 @@ fn field_label(f: FieldId) -> &'static str {
         | FieldId::PatFlame
         | FieldId::PatRelief
         | FieldId::PatNum(_) => "",
+        FieldId::PresetName => "Name",
     }
 }
 
@@ -721,6 +741,12 @@ pub struct Prefs {
     ground: Option<((usize, usize, u32, u64), Canvas)>,
     /// Kacheln und Vorschauen der Attributreiter ([`crate::attr_pick`]).
     tiles: std::cell::RefCell<crate::attr_pick::Tiles>,
+    /// Fenster „Muster“ über der gewählten Oberfläche (Paket 7b).
+    pw: Option<PatWin>,
+    /// Firmenvorlagen aus dem Firmenkatalog (`main.rs` setzt sie).
+    company_presets: Vec<sk_model::proctex::CompanyPreset>,
+    /// Wartende „Als Vorlage speichern …“: Name, Muster, Grundfarbe.
+    save_preset: Option<(String, sk_model::proctex::Pattern, [u8; 3])>,
 }
 
 impl Prefs {
@@ -760,6 +786,9 @@ impl Prefs {
             spare_px: Vec::new(),
             ground: None,
             tiles: Default::default(),
+            pw: None,
+            company_presets: Vec::new(),
+            save_preset: None,
         }
     }
 
@@ -907,8 +936,13 @@ impl Prefs {
         let m = t.size.panel_margin * s;
         let avail_w = w.w as f32 - 2.0 * m;
         let avail_h = w.h as f32 - w.top as f32 - 2.0 * m;
-        let ww = (t.size.settings_w * s).min(avail_w).max(MIN_W * s);
-        let hh = (t.size.settings_h * s).min(avail_h).max(MIN_H * s);
+        let (dw, dh) = if self.pw.is_some() {
+            pattern_win::SIZE
+        } else {
+            (t.size.settings_w, t.size.settings_h)
+        };
+        let ww = (dw * s).min(avail_w).max(MIN_W * s);
+        let hh = (dh * s).min(avail_h).max(MIN_H * s);
         (ww.round(), hh.round())
     }
 
@@ -1301,6 +1335,9 @@ impl Prefs {
         if !f.contains(x, y) {
             return None;
         }
+        if self.pw.is_some() {
+            return self.pw_hit(t, w, s, x, y);
+        }
         if self.close_rect(t, w).contains(x, y) {
             return Some(Target::Close);
         }
@@ -1549,6 +1586,7 @@ impl Prefs {
                 // Im Wähler, aber auf nichts: nimmt den Klick, tut nichts
                 Some(Target::Item(usize::MAX))
             }
+            Popup::SaveAs(_) => self.save_as_hit(t, w, x, y),
             Popup::Confirm(_) => {
                 let (r, b) = self.confirm_layout(t, w);
                 if !r.contains(x, y) {
@@ -1761,6 +1799,11 @@ impl Prefs {
                 self.drag_picker(x, y, cx, out);
                 return;
             }
+            Some(Drag::Split) => {
+                self.pw_drag_split(x, cx);
+                out.repaint = true;
+                return;
+            }
             Some(Drag::Select) => {
                 if let Some(f) = self.edit.as_ref().map(|e| e.field) {
                     if let Some(i) = self.caret_from_mouse(f, x, cx) {
@@ -1806,7 +1849,9 @@ impl Prefs {
                         | Target::PickHue
                         | Target::PickRecent(_)
                         | Target::PickOld
-                ) || matches!(h, Target::Field(f) if is_picker_field(f))
+                ) || matches!(h, Target::Field(f) if is_picker_field(f) || f == FieldId::PresetName)
+                    || (matches!(h, Target::Confirm(_))
+                        && matches!(self.popup, Some(Popup::SaveAs(_))))
                     || (matches!(h, Target::Combo(_))
                         && matches!(self.popup, Some(Popup::Combo(_))))
             });
@@ -1896,6 +1941,11 @@ impl Prefs {
             Target::Check(i) => self.toggle_dot(i, cx, out),
             Target::PickSv => self.drag = Some(Drag::Sv),
             Target::PickHue => self.drag = Some(Drag::Hue),
+            Target::Pw(Pw::Split) => {
+                self.drag = Some(Drag::Split);
+                self.pw_drag_split(x, cx);
+            }
+            Target::Pw(_) => self.pressed = Some(target),
             Target::Close
             | Target::Btn(_)
             | Target::PenNew
@@ -1995,6 +2045,10 @@ impl Prefs {
                     self.popup = Some(Popup::Confirm(0));
                 }
             }
+            Target::Confirm(i) if matches!(self.popup, Some(Popup::SaveAs(_))) => {
+                self.save_as_click(i, cx, out)
+            }
+            Target::Pw(p) => self.pw_click(p, cx, out),
             Target::Confirm(0) => {
                 self.popup = None;
                 self.reset_tab(cx.scene, cx.theme, self.tab);
@@ -2042,6 +2096,22 @@ impl Prefs {
 
     fn key(&mut self, key: Key, mods: Modifiers, cx: &mut Ctx, out: &mut Out) {
         *out = Out::all();
+        if let Some(Popup::SaveAs(f)) = self.popup {
+            match key {
+                Key::Enter => {
+                    self.end_edit(true, cx, out);
+                    self.save_as_click(f, cx, out);
+                }
+                Key::Escape => {
+                    self.edit = None;
+                    self.popup = None;
+                }
+                Key::Tab if self.edit.is_none() => self.popup = Some(Popup::SaveAs(1 - f.min(1))),
+                _ if self.edit.is_some() => self.edit_key(key, mods, cx, out),
+                _ => {}
+            }
+            return;
+        }
         if let Some(Popup::Confirm(f)) = self.popup {
             match key {
                 Key::Enter => self.click(Target::Confirm(f), cx, out),
@@ -2082,6 +2152,14 @@ impl Prefs {
             match key {
                 Key::Enter => self.close_popup(true, cx, out),
                 Key::Escape => self.close_popup(false, cx, out),
+                _ => {}
+            }
+            return;
+        }
+        if self.pw.is_some() {
+            match key {
+                Key::Enter => self.pw_click(Pw::Ok, cx, out),
+                Key::Escape => self.pw_click(Pw::Cancel, cx, out),
                 _ => {}
             }
             return;
@@ -2237,6 +2315,7 @@ impl Prefs {
             | FieldId::PatFlame
             | FieldId::PatRelief
             | FieldId::PatNum(_) => self.attr_field_value(f, s),
+            FieldId::PresetName => self.pw.as_ref().map_or(String::new(), |p| p.name.clone()),
         }
     }
 
@@ -2291,6 +2370,13 @@ impl Prefs {
     ) -> Result<(), String> {
         if is_attr_field(f) {
             return self.apply_attr_value(f, text, cx, out);
+        }
+        if f == FieldId::PresetName {
+            if let Some(p) = self.pw.as_mut() {
+                p.name = text.to_string();
+                p.error = None;
+            }
+            return Ok(());
         }
         if f == FieldId::PenName {
             let Some(id) = self.pen_sel else {
@@ -2441,6 +2527,7 @@ impl Prefs {
                     _ => l.hex,
                 })
             }
+            FieldId::PresetName => Some(self.save_as_layout(t, &w).1),
             _ if is_attr_field(f) => self
                 .attr_layout(t, &w, cx.scene)
                 .items
@@ -2870,11 +2957,8 @@ impl Prefs {
         let flash = self
             .flash_until
             .map(|u| u.saturating_duration_since(Instant::now()));
-        let tiles = self
-            .tiles
-            .borrow()
-            .busy()
-            .then_some(Duration::from_millis(16));
+        let tiles =
+            (self.tiles.borrow().busy() || self.pw_busy()).then_some(Duration::from_millis(16));
         match (flash, tiles) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -2885,6 +2969,7 @@ impl Prefs {
     /// wenn neu zu zeichnen ist.
     pub fn tick(&mut self) -> bool {
         let tiles = self.tiles.borrow().tick();
+        let tiles = self.pw_tick() | tiles;
         if self.flash_until.is_some_and(|u| Instant::now() >= u) {
             self.flash_until = None;
             return true;
@@ -3011,6 +3096,9 @@ impl Prefs {
 
     /// Fensterbild samt Schatten und seine Lage im Programmfenster.
     pub fn paint(&mut self, t: &Theme, fonts: &Fonts, w: &Win, sc: &Scene) -> (Canvas, i32, i32) {
+        if self.pw.is_some() {
+            return self.pw_paint(t, fonts, w, sc);
+        }
         self.settle_scroll(t, w, sc);
         let f = self.frame(t, w);
         let s = w.scale;
@@ -3852,6 +3940,7 @@ impl Prefs {
                 self.popup = Some(Popup::Picker(p));
                 return Some((c, (r.x - m) as i32, (r.y - m) as i32));
             }
+            Popup::SaveAs(focus) => self.save_as_paint(*focus, t, fonts, w),
             Popup::Confirm(focus) => {
                 let (r, b) = self.confirm_layout(t, w);
                 let mut c = Canvas::new((r.w + 2.0 * m) as usize, (r.h + 2.0 * m) as usize);
