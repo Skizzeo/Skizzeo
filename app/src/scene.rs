@@ -44,7 +44,8 @@ struct RunCache {
     /// Hintergrund des Geschosses darüber (E16); je Schnitthöhe.
     under: Vec<(f64, Vec<Edge>)>,
     /// Senkrechter Schnitt für die zuletzt gefragte Ebene.
-    section: Option<(Plane, Solid)>,
+    /// Schnittkörper der zuletzt gezeigten Ebenen (A und B), neueste zuerst.
+    section: Vec<(Plane, Solid)>,
     bounds: Option<Aabb>,
     /// Äußerer Wandfuß je Segment (Gummiband).
     foot: Vec<(Vec3, Vec3)>,
@@ -106,7 +107,7 @@ impl RunCache {
             foot_bounds,
             solid,
             chain,
-            section: None,
+            section: Vec::new(),
             qto: Vec::new(),
             below: None,
             found,
@@ -121,11 +122,9 @@ impl RunCache {
     fn shown(&self, view: ViewKind, section: Option<Plane>) -> Option<&Solid> {
         match (view, section) {
             (ViewKind::Plan, _) => self.plan.first().map(|(_, _, s)| s),
-            (ViewKind::Section, Some(pl)) => self
-                .section
-                .as_ref()
-                .filter(|(p, _)| *p == pl)
-                .map(|(_, s)| s),
+            (ViewKind::Section, Some(pl)) => {
+                self.section.iter().find(|(p, _)| *p == pl).map(|(_, s)| s)
+            }
             (ViewKind::Section, None) => None,
             _ => Some(&self.solid),
         }
@@ -158,7 +157,10 @@ impl RunCache {
                 self.plan.get(i).map(|(_, _, s)| s)
             }
             (ViewKind::Section, Some(pl)) => {
-                if self.section.as_ref().is_none_or(|(p, _)| *p != pl) {
+                if let Some(i) = self.section.iter().position(|(p, _)| *p == pl) {
+                    let hit = self.section.remove(i);
+                    self.section.insert(0, hit);
+                } else {
                     let (p0, n) = pl;
                     let mut s = self.solid.clipped(p0, n);
                     s.append(&self.chain.section_caps(p0, n));
@@ -175,9 +177,10 @@ impl RunCache {
                             s.append(&part(caps, STRIP_PART + k as u32));
                         }
                     }
-                    self.section = Some((pl, s));
+                    self.section.truncate(SECTION_KEEP - 1);
+                    self.section.insert(0, (pl, s));
                 }
-                self.section.as_ref().map(|(_, s)| s)
+                self.section.first().map(|(_, s)| s)
             }
             (ViewKind::Section, None) => None,
             _ => Some(&self.solid),
@@ -265,6 +268,8 @@ enum PlanMode {
 /// So viele Grundrisse merkt sich ein Wandzug (aktives Geschoss, die beiden
 /// Nachbarn und einen Rest).
 const PLAN_KEEP: usize = 4;
+/// So viele Schnittebenen behält ein Wandzug (Schnitt A und B).
+const SECTION_KEEP: usize = 2;
 
 /// Hintergrund im Grundriss knapp über dem Boden des aktiven Geschosses (mm):
 /// über dessen Decke, unter den eigenen Wänden.
@@ -296,6 +301,9 @@ pub struct Scene {
     theme: Theme,
     /// Aktives Geschoss (Sitzungszustand, nicht in der Datei); `None` = EG.
     active: Option<sk_model::StoreyId>,
+    /// Schnitt der Ansicht „Schnitt“ (A = 0, B = 1; Sitzungszustand wie das
+    /// aktive Geschoss).
+    active_cut: usize,
     /// Gebäude, dessen Dialog offen ist oder dessen Polygon gerade gezeichnet
     /// wird (ein offener Schritt „Gebäude erstellt“), und das vorher aktive
     /// Geschoss.
@@ -489,6 +497,7 @@ impl Scene {
             table,
             theme,
             active: None,
+            active_cut: 0,
             pending: None,
             draft: BuildingDraft::default(),
             pending_rev: 0,
@@ -725,6 +734,27 @@ impl Scene {
         }
         self.active = Some(id);
         true
+    }
+
+    /// Schnitt der Ansicht „Schnitt“.
+    pub fn active_cut(&self) -> usize {
+        self.active_cut
+    }
+
+    /// Anderen Schnitt zeigen; `false`, wenn es ihn nicht gibt oder er es
+    /// schon ist.
+    pub fn set_active_cut(&mut self, i: usize) -> bool {
+        if i >= sk_model::CUT_NAMES.len() || i == self.active_cut {
+            return false;
+        }
+        self.active_cut = i;
+        true
+    }
+
+    /// Lage und Blickrichtung eines Schnitts für die Datei merken (ohne
+    /// Schritt, wie die Kamera).
+    pub fn set_cut(&mut self, i: usize, c: sk_model::Cut) {
+        self.model.set_cut(i, c);
     }
 
     /// Arbeitsebene des Wandwerkzeugs: (UK, Geschosshöhe) des aktiven

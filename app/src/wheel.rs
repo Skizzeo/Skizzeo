@@ -7,8 +7,13 @@
 //! Der Bogen wählt nur das aktive Geschoss (Sitzungszustand): kein
 //! Rückgängig-Eintrag, keine Änderung an der Datei. Zeiten in Millisekunden
 //! seit einem beliebigen Anfang, damit sich alles ohne Warten prüfen lässt.
+//!
+//! Derselbe Bogen ist in der Ansicht „Schnitt“ das Schnittrad
+//! ([`Track::Cuts`]): Er blättert durch die Schnitte A–A und B–B, groß steht
+//! der aktive Schnitt mit seiner Art, darunter ein Knopf „Blickrichtung“.
 
 use crate::scene::{Scene, FOUNDATION_NAME};
+use crate::section;
 use crate::ui::{kote_text, Panel, Ui, ViewKind};
 use sk_model::StoreyId;
 use sk_paint::{Canvas, Path, Rgba};
@@ -40,13 +45,32 @@ pub enum Part {
     Up,
     Down,
     Band,
+    /// Knopf „Blickrichtung“ am Schnittrad.
+    Mirror,
+}
+
+/// Wodurch der Bogen blättert.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Track {
+    /// Geschosse im Grundriss (E18).
+    #[default]
+    Levels,
+    /// Schnitte in der Ansicht „Schnitt“.
+    Cuts,
+}
+
+/// Ein Platz auf dem Bogen: ein Geschoss oder ein Schnitt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Stop {
+    Level(StoreyId),
+    Cut(usize),
 }
 
 /// Ein Wechsel: Richtung in Plätzen (+ = nach oben).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Switch {
-    pub from: StoreyId,
-    pub to: StoreyId,
+    pub from: Stop,
+    pub to: Stop,
     pub steps: i32,
 }
 
@@ -64,10 +88,12 @@ struct Anim {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Step {
     By(i32),
-    To(StoreyId),
+    To(Stop),
 }
 
 pub struct Wheel {
+    /// Geschosse oder Schnitte.
+    pub track: Track,
     size: Sizes,
     screenshot: bool,
     anim: Option<Anim>,
@@ -136,6 +162,49 @@ fn full_name(s: &Scene, id: StoreyId) -> String {
 /// Kote der Unterkante.
 pub fn kote(s: &Scene, id: StoreyId) -> String {
     kote_text(s.model().storey(id).map_or(0.0, |st| st.elevation))
+}
+
+/// Plätze des Bogens von unten nach oben: die Geschosse bzw. die Schnitte,
+/// A oben (Bild↓ und die Spitze unten blättern im Alphabet weiter).
+pub fn stops(s: &Scene, track: Track) -> Vec<Stop> {
+    match track {
+        Track::Levels => levels(s).into_iter().map(Stop::Level).collect(),
+        Track::Cuts => (0..section::CUTS).rev().map(Stop::Cut).collect(),
+    }
+}
+
+/// Aktiver Platz.
+pub fn active(s: &Scene, track: Track) -> Stop {
+    match track {
+        Track::Levels => Stop::Level(s.active_storey()),
+        Track::Cuts => Stop::Cut(s.active_cut()),
+    }
+}
+
+fn set_active(s: &mut Scene, to: Stop) -> bool {
+    match to {
+        Stop::Level(id) => s.set_active_storey(id),
+        Stop::Cut(i) => s.set_active_cut(i),
+    }
+}
+
+/// Kurzname eines Platzes („EG“, „A–A“).
+pub fn stop_name(s: &Scene, stop: Stop) -> String {
+    match stop {
+        Stop::Level(id) => short_name(s, id),
+        Stop::Cut(i) => section::title(i),
+    }
+}
+
+/// Zeile unter dem großen Namen: Kote bzw. Art des Schnitts.
+pub fn stop_sub(s: &Scene, stop: Stop) -> String {
+    match stop {
+        Stop::Level(id) => kote(s, id),
+        Stop::Cut(i) => {
+            let flip = s.model().cuts().get(i).is_some_and(|c| c.flip);
+            section::subtitle(i, flip)
+        }
+    }
 }
 
 /// Lage des Bogens im Fenster (Pixel, y nach unten).
@@ -271,7 +340,7 @@ fn poly_path(p: &mut Path, pts: &[Pt]) {
 /// Geschoss, 0 = Nachbar) und Deckkraft.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LabelPlace {
-    pub storey: StoreyId,
+    pub storey: Stop,
     pub x: f32,
     pub y: f32,
     pub big: f32,
@@ -281,6 +350,7 @@ pub struct LabelPlace {
 impl Wheel {
     pub fn new(th: &Theme, screenshot: bool) -> Wheel {
         Wheel {
+            track: Track::Levels,
             size: th.size,
             screenshot,
             anim: None,
@@ -309,10 +379,30 @@ impl Wheel {
         }
     }
 
-    /// Nur im Grundriss und nicht, solange ein Dialog, das Dateimenü oder das
-    /// Einstellungsfenster offen ist (`blocked`).
+    /// Nur im Grundriss (Schnittrad: nur im Schnitt) und nicht, solange ein
+    /// Dialog, das Dateimenü oder das Einstellungsfenster offen ist
+    /// (`blocked`).
     pub fn visible(&self, view: ViewKind, blocked: bool) -> bool {
-        view == ViewKind::Plan && !blocked
+        view == self.home() && !blocked
+    }
+
+    /// Ansicht, in der der Bogen steht.
+    fn home(&self) -> ViewKind {
+        match self.track {
+            Track::Levels => ViewKind::Plan,
+            Track::Cuts => ViewKind::Section,
+        }
+    }
+
+    /// Geschosse oder Schnitte; ein laufender Wechsel endet.
+    pub fn set_track(&mut self, track: Track) {
+        if self.track != track {
+            self.track = track;
+            self.anim = None;
+            self.queued = None;
+            self.started = None;
+            self.hover = None;
+        }
     }
 
     /// Lage im Fenster `w` × `h` (Pixel, mit Titelleiste): rechts am Rand,
@@ -372,10 +462,10 @@ impl Wheel {
         self.geo(ui, w, h).right
     }
 
-    /// Geschoss über (`up`) bzw. unter dem aktiven.
-    fn neighbor_id(&self, s: &Scene, up: bool) -> Option<StoreyId> {
-        let l = levels(s);
-        let i = l.iter().position(|x| *x == s.active_storey())?;
+    /// Platz über (`up`) bzw. unter dem aktiven.
+    fn neighbor_id(&self, s: &Scene, up: bool) -> Option<Stop> {
+        let l = stops(s, self.track);
+        let i = l.iter().position(|x| *x == active(s, self.track))?;
         if up {
             l.get(i + 1).copied()
         } else {
@@ -390,14 +480,14 @@ impl Wheel {
     #[cfg(test)]
     /// Aktives Geschoss: Name und Kote.
     pub fn center(&self, s: &Scene) -> (String, String) {
-        let a = s.active_storey();
-        (short_name(s, a), kote(s, a))
+        let a = active(s, self.track);
+        (stop_name(s, a), stop_sub(s, a))
     }
 
     #[cfg(test)]
     /// Beschriftung an der Spitze (`None`: ausgegraut, ohne Beschriftung).
     pub fn neighbor(&self, s: &Scene, up: bool) -> Option<String> {
-        self.neighbor_id(s, up).map(|id| short_name(s, id))
+        self.neighbor_id(s, up).map(|id| stop_name(s, id))
     }
 
     /// Hinweis an der Spitze: „Obergeschoss ↑“ und Kote, beim angefangenen
@@ -411,7 +501,11 @@ impl Wheel {
         }
         let id = self.neighbor_id(s, up)?;
         let arrow = if up { "↑" } else { "↓" };
-        Some((format!("{} {arrow}", full_name(s, id)), kote(s, id)))
+        let name = match id {
+            Stop::Level(l) => full_name(s, l),
+            Stop::Cut(i) => format!("Schnitt {}", section::title(i)),
+        };
+        Some((format!("{name} {arrow}"), stop_sub(s, id)))
     }
 
     /// Läuft zur Zeit `t` ein Wechsel?
@@ -479,9 +573,9 @@ impl Wheel {
     }
 
     fn run(&mut self, s: &mut Scene, step: Step, t: u64) {
-        let from = s.active_storey();
-        let levels = levels(s);
-        let index = |id: StoreyId| levels.iter().position(|x| *x == id);
+        let from = active(s, self.track);
+        let levels = stops(s, self.track);
+        let index = |id: Stop| levels.iter().position(|x| *x == id);
         let Some(i) = index(from) else {
             return;
         };
@@ -498,7 +592,7 @@ impl Wheel {
                 None => return,
             },
         };
-        if steps == 0 || !s.set_active_storey(to) {
+        if steps == 0 || !set_active(s, to) {
             return;
         }
         let switch = Switch { from, to, steps };
@@ -532,7 +626,7 @@ impl Wheel {
 
     /// Bild↑/Bild↓ im Grundriss; `true`, wenn der Bogen die Taste nimmt.
     pub fn key(&mut self, s: &mut Scene, view: ViewKind, key: Key, input: bool, t: u64) -> bool {
-        if view != ViewKind::Plan || input {
+        if view != self.home() || input {
             return false;
         }
         let n = match key {
@@ -546,7 +640,13 @@ impl Wheel {
 
     /// Klick auf einen Geschossnamen im Paneel: derselbe Wechsel.
     pub fn select(&mut self, s: &mut Scene, id: StoreyId, t: u64) {
-        self.request(s, Step::To(id), t);
+        self.request(s, Step::To(Stop::Level(id)), t);
+    }
+
+    /// Schnitt direkt zeigen (mit demselben Wechsel).
+    #[allow(dead_code)] // für die Abnahme
+    pub fn select_cut(&mut self, s: &mut Scene, i: usize, t: u64) {
+        self.request(s, Step::To(Stop::Cut(i)), t);
     }
 
     /// Der Grundriss des Ziels war nicht vorbereitet: die Animation beginnt
@@ -589,10 +689,10 @@ impl Wheel {
         s: &Scene,
         g: &Geo,
         t: u64,
-        size: impl Fn(StoreyId) -> ((f32, f32), (f32, f32)),
+        size: impl Fn(Stop) -> ((f32, f32), (f32, f32)),
     ) -> Vec<LabelPlace> {
-        let a = s.active_storey();
-        let levels = levels(s);
+        let a = active(s, self.track);
+        let levels = stops(s, self.track);
         let Some(ia) = levels.iter().position(|x| *x == a) else {
             return Vec::new();
         };
@@ -776,6 +876,58 @@ pub fn paint_small(fonts: &Fonts, name: &str, g: &Geo, t: &Theme, color: Rgba) -
     p.rounded_rect(0.0, 0.0, w, h, 4.0 * s);
     c.fill(&p, t.ui.hud_bg);
     sk_ui::widgets::text(&mut c, f, name, px, padx, pady + cap, color);
+    c
+}
+
+/// Linke obere Ecke des Knopfs „Blickrichtung“ (Höhe `h`): unter dem
+/// großen Schild, bündig mit ihm.
+pub fn mirror_at(g: &Geo) -> (f32, f32) {
+    (g.label_x, g.cy + 34.0 * g.s)
+}
+
+/// Knopf „Blickrichtung“ am Schnittrad: zwei gegenläufige Pfeile und der
+/// Text, unter der Maus in Akzentfarbe.
+pub fn paint_mirror(fonts: &Fonts, g: &Geo, t: &Theme, hover: bool) -> Canvas {
+    let s = g.s;
+    let f = fonts.regular.as_ref();
+    let px = t.size.arc_label_small * s;
+    let label = "Blickrichtung";
+    let (padx, pady, icon, gap) = (7.0 * s, 5.0 * s, 14.0 * s, 6.0 * s);
+    let cap = f.map_or(px * 0.7, |f| f.cap_height(px));
+    let tw = f.map_or(px * 0.6 * label.chars().count() as f32, |f| {
+        f.width(label, px)
+    });
+    let (w, h) = (
+        (padx + icon + gap + tw + padx).ceil(),
+        (cap + 2.0 * pady).ceil().max(22.0 * s),
+    );
+    let mut c = Canvas::new(w as usize, h as usize);
+    let mut p = Path::new();
+    p.rounded_rect(0.0, 0.0, w, h, 4.0 * s);
+    c.fill(&p, t.ui.hud_bg);
+    let col = if hover { t.ui.accent } else { t.ui.text_dim };
+    // ⇄: oben nach rechts, unten nach links
+    let (x0, x1) = (padx, padx + icon);
+    let (yu, yd) = (h * 0.5 - 3.5 * s, h * 0.5 + 3.5 * s);
+    let line = 1.4 * s;
+    let head = 3.5 * s;
+    for (y, right) in [(yu, true), (yd, false)] {
+        let mut p = Path::new();
+        p.rounded_rect(x0, y - line * 0.5, icon, line, 0.0);
+        c.fill(&p, col);
+        let (tip, back) = if right {
+            (x1, x1 - head)
+        } else {
+            (x0, x0 + head)
+        };
+        let mut p = Path::new();
+        p.move_to(tip, y)
+            .line_to(back, y - head)
+            .line_to(back, y + head)
+            .close();
+        c.fill(&p, col);
+    }
+    sk_ui::widgets::text(&mut c, f, label, px, x1 + gap, (h + cap) * 0.5, col);
     c
 }
 

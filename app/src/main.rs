@@ -41,7 +41,7 @@ use draw_table::DrawTable;
 use menu::Command;
 use nav::Navigation;
 use scene::Scene;
-use section::SectionLine;
+use section::Sections;
 use selection::Selection;
 use sk_math::{vec3, Vec3};
 use sk_model::Category;
@@ -137,10 +137,11 @@ const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 // Oberflächenbilder in Zeichenreihenfolge: Endsymbole unter den Paneelen,
 // das Abdunkeln hinter dem Dialog über „Ansichten“, „Eigenschaften“ und
 // „Werkzeuge“, unter „Geschosse“ (E16), die Titelleiste ganz oben.
-/// Endsymbole der Schnittlinie im Grundriss (zwei Plätze).
+/// Endsymbole der Schnittlinien A und B im Grundriss (je zwei Plätze).
 const OVERLAY_MARKS: usize = 0;
+const MARKS: usize = 2 * section::CUTS;
 /// Kettensymbole an gestapelten Wänden (OG Phase 2), unter den Paneelen.
-const OVERLAY_CHIPS: usize = 2;
+const OVERLAY_CHIPS: usize = OVERLAY_MARKS + MARKS;
 const OVERLAY_VIEWS: usize = OVERLAY_CHIPS + link_view::SLOTS;
 /// Paneel „Eigenschaften“.
 const OVERLAY_PROPS: usize = OVERLAY_VIEWS + 1;
@@ -228,8 +229,19 @@ fn fit_parallel_in(
     h: f64,
     x: f64,
 ) -> Camera {
+    fit_parallel_dir(view_direction(v), bounds, w, vw, h, x)
+}
+
+/// Wie [`fit_parallel_in`] mit freier Blickrichtung (yaw, pitch).
+fn fit_parallel_dir(
+    (yaw, pitch): (f64, f64),
+    bounds: Option<(Vec3, Vec3)>,
+    w: f64,
+    vw: f64,
+    h: f64,
+    x: f64,
+) -> Camera {
     let (lo, hi) = bounds.unwrap_or((vec3(-2000.0, -2000.0, 0.0), vec3(12000.0, 10000.0, 3500.0)));
-    let (yaw, pitch) = view_direction(v);
     let center = (lo + hi) * 0.5;
     let probe = Camera::parallel(center, yaw, pitch, 1.0);
     let (r, u) = (probe.right(), probe.up());
@@ -273,6 +285,29 @@ pub(crate) fn plan_camera(
     } else {
         let free_w = (vw - 2.0 * (tools.x + tools.w) as f64).max(vw * 0.3);
         fit_parallel(ViewKind::Plan, bounds, free_w, vh)
+    }
+}
+
+/// Schnitt eingepasst wie der Grundriss (links vom Schnittrad), Blick in
+/// die Richtung `dir` des aktiven Schnitts.
+pub(crate) fn section_camera(
+    ui: &Ui,
+    wheel: &wheel::Wheel,
+    bounds: Option<(Vec3, Vec3)>,
+    (w, h, top): (u32, u32, u32),
+    dir: Vec3,
+) -> Camera {
+    let (vw, vh) = (w as f64, h.saturating_sub(top) as f64);
+    let tools = ui.rect(Panel::Tools, w, top);
+    let s = ui.dpi() as f64;
+    let yaw = dir.y.atan2(dir.x);
+    let x0 = (tools.x + tools.w) as f64 + 16.0 * s;
+    let x1 = wheel.left_beside_props(ui, w, h) as f64 - 16.0 * s;
+    if x1 - x0 >= vw * 0.3 {
+        fit_parallel_dir((yaw, 0.0), bounds, x1 - x0, vw, vh, (x0 + x1) * 0.5)
+    } else {
+        let free_w = (vw - 2.0 * (tools.x + tools.w) as f64).max(vw * 0.3);
+        fit_parallel_dir((yaw, 0.0), bounds, free_w, vw, vh, vw * 0.5)
     }
 }
 
@@ -421,7 +456,7 @@ fn zoom_camera(cam: &Camera, lo: Vec3, hi: Vec3, w: f64, h: f64) -> Camera {
 
 /// Stand eines Endsymbols: links, hervorgehoben, Skalierung, Stände von
 /// Farbschema und Zeichentabelle.
-type MarkKey = (bool, bool, u32, (u64, u64));
+type MarkKey = (usize, bool, bool, bool, u32, (u64, u64));
 
 struct App {
     renderer: Renderer,
@@ -441,8 +476,9 @@ struct App {
     nav: Navigation,
     tool: WallTool,
     edit: WallEdit,
-    /// Schnittlinie (im Grundriss verschiebbar) für die Ansicht „Schnitt“.
-    sect: SectionLine,
+    /// Schnittlinien A und B (im Grundriss verschiebbar, Pfeil spiegelt)
+    /// für die Ansicht „Schnitt“.
+    sect: Sections,
     /// Gewähltes Bauteil.
     sel: Selection,
     /// Stand, für den das Paneel „Eigenschaften“ zuletzt gefüllt wurde
@@ -477,8 +513,9 @@ struct App {
     /// Stand der Zeichentabelle, aus dem der Renderer-Stil stammt.
     /// Stand der hochgeladenen Aussehens-Tabelle: Attribute, Farbschema, Skalierung.
     looks_key: Option<(u64, u64, u32)>,
-    /// Zuletzt hochgeladene Endsymbole der Schnittlinie (links, hervorgehoben, Skalierung).
-    mark_keys: [Option<MarkKey>; 2],
+    /// Zuletzt hochgeladene Endsymbole der Schnittlinien (Linie, Anfang,
+    /// gespiegelt, hervorgehoben, Skalierung).
+    mark_keys: [Option<MarkKey>; MARKS],
     /// Letzte Mausposition im Fenster (Pixel).
     mouse_at: Option<(f64, f64)>,
     /// Hinweis an der Maus: erscheint nach [`TIP_DELAY`] Ruhe über derselben Stelle.
@@ -842,9 +879,53 @@ impl App {
     /// Schnittebene der aktuellen Ansicht (nur im Schnitt).
     fn plane(&self) -> Option<(Vec3, Vec3)> {
         match self.ui.view {
-            ViewKind::Section => self.sect.plane(),
+            ViewKind::Section => self.sect.plane(self.scene.active_cut()),
             _ => None,
         }
+    }
+
+    /// Eine Schnittlinie wurde verschoben oder gespiegelt: Stand für die
+    /// Datei merken; zeigt die Ansicht diesen Schnitt, neu rechnen.
+    fn cut_changed(&mut self, so: &section::SectionOutcome) {
+        let Some(i) = so.line.filter(|_| so.changed) else {
+            return;
+        };
+        self.scene.set_cut(i, self.sect.lines[i].cut());
+        self.overlay_dirty = true;
+        if self.ui.view == ViewKind::Section && i == self.scene.active_cut() {
+            self.fit_camera();
+            self.upload_model();
+            self.refresh_cursor();
+        }
+    }
+
+    /// Für Gelände- und Höhenlinien: Schnitt B blickt wie die Seitenansicht
+    /// längs x.
+    fn side_like(&self, v: ViewKind) -> ViewKind {
+        if v == ViewKind::Section && self.scene.active_cut() == section::CUT_B {
+            ViewKind::Left
+        } else {
+            v
+        }
+    }
+
+    /// Knopf „Blickrichtung“ am Schnittrad: den gezeigten Schnitt spiegeln,
+    /// das alte Bild blendet über.
+    fn mirror_cut(&mut self) {
+        let i = self.scene.active_cut();
+        self.sect.lines[i].ensure(&self.scene);
+        self.sect.lines[i].mirror();
+        if self.theme.size.fade_ms > 0.0 && self.theme.size.anim_ms > 0.0 && self.w > 0 {
+            self.renderer.capture_scene();
+            self.erase_fade = Some(self.now());
+        }
+        let so = section::SectionOutcome {
+            changed: true,
+            line: Some(i),
+            ..Default::default()
+        };
+        self.cut_changed(&so);
+        self.redraw = true;
     }
 
     fn refresh_cursor(&mut self) {
@@ -867,6 +948,16 @@ impl App {
         }
         let same_mesh = geometry(v) == geometry(self.ui.view);
         self.ui.view = v;
+        // Der Knopf „Schnitt“ öffnet Schnitt A; der Bogen blättert dort
+        // durch die Schnitte, im Grundriss durch die Geschosse
+        if v == ViewKind::Section {
+            self.scene.set_active_cut(section::CUT_A);
+        }
+        self.wheel.set_track(if v == ViewKind::Section {
+            wheel::Track::Cuts
+        } else {
+            wheel::Track::Levels
+        });
         self.fit_camera();
         if matches!(v, ViewKind::Plan | ViewKind::Section) {
             self.sect.ensure(&self.scene);
@@ -920,6 +1011,17 @@ impl App {
                 self.h,
                 self.top(),
             ),
+            ViewKind::Section => {
+                let i = self.scene.active_cut();
+                let flip = self.sect.lines.get(i).is_some_and(|l| l.flip);
+                section_camera(
+                    &self.ui,
+                    &self.wheel,
+                    self.scene.bounds(),
+                    (self.w, self.h, self.top()),
+                    section::view_dir(i, flip),
+                )
+            }
             _ => fit_parallel(v, self.scene.bounds(), free_w, vh),
         }
     }
@@ -940,7 +1042,8 @@ impl App {
         self.set_wall_kind(self.tool.category);
         self.nav = Navigation::default();
         self.edit = WallEdit::default();
-        self.sect = SectionLine::default();
+        self.sect = Sections::default();
+        self.sect.load(self.scene.model().cuts());
         self.sel = Selection::default();
         self.props_key = None;
         self.ui.set_props(None);
@@ -1178,7 +1281,7 @@ impl App {
         self.ui.use_theme(&self.theme);
         self.ui.fit(self.title.scale, self.w, self.h);
         self.looks_key = None;
-        self.mark_keys = [None; 2];
+        self.mark_keys = [None; MARKS];
         self.overlay_dirty = true;
         self.prefs_dirty = true;
         self.prefs_popup_dirty = true;
@@ -2423,7 +2526,7 @@ impl App {
                     self.model_hover(None);
                 }
                 let t = self.now();
-                self.wheel.set_hover(None, t);
+                self.redraw |= self.wheel.set_hover(None, t);
                 self.dirty_title.extend(self.title.hover.take());
                 let out = self.ui.handle(&e, self.w, self.top());
                 self.apply_ui(&out);
@@ -2457,7 +2560,8 @@ impl App {
                     self.wheel_hit(x, y)
                 };
                 let t = self.now();
-                self.wheel.set_hover(part, t);
+                // der Knopf „Blickrichtung“ leuchtet unter der Maus
+                self.redraw |= self.wheel.set_hover(part, t);
                 let over_ui = if busy {
                     false
                 } else if part.is_some() {
@@ -2493,10 +2597,7 @@ impl App {
                     .sect
                     .handle(&sect_ev, &self.scene, &self.cam, vw, vh, sc, sen);
                 self.redraw |= so.redraw;
-                // Der Grundriss hängt nicht von der Schnittlinie ab, nur die Ansicht „Schnitt“
-                if so.changed && self.ui.view == ViewKind::Section {
-                    self.upload_model();
-                }
+                self.cut_changed(&so);
                 let edit_ev = if outside || self.sect.is_busy() || chip.is_some() {
                     Event::MouseLeave
                 } else {
@@ -2565,6 +2666,7 @@ impl App {
                     Some(wheel::Part::Down) => {
                         self.wheel.click_arrow(&mut self.scene, false, input, t)
                     }
+                    Some(wheel::Part::Mirror) => self.mirror_cut(),
                     _ => self.wheel.click_band(&mut self.scene, t),
                 }
             }
@@ -2593,6 +2695,7 @@ impl App {
                             .sect
                             .handle(&ev, &self.scene, &self.cam, vw, vh, sc, sen);
                         self.redraw |= so.redraw;
+                        self.cut_changed(&so);
                         let en = self.edit_enabled();
                         let eo = if so.consumed {
                             wall_edit::EditOutcome {
@@ -2647,6 +2750,7 @@ impl App {
                     .sect
                     .handle(&ev, &self.scene, &self.cam, vw, vh, sc, sen);
                 self.redraw |= so.redraw;
+                self.cut_changed(&so);
                 let en = self.edit_enabled();
                 let eo = self
                     .edit
@@ -2722,12 +2826,13 @@ impl App {
                 }
                 _ => {}
             },
-            // Bild↑/Bild↓ wechseln im Grundriss das Geschoss (E18)
+            // Bild↑/Bild↓ wechseln im Grundriss das Geschoss (E18), im
+            // Schnitt den Schnitt
             Event::Key {
                 key: key @ (wheel::KEY_PAGE_UP | wheel::KEY_PAGE_DOWN),
                 down: true,
                 ..
-            } if self.ui.view == ViewKind::Plan => {
+            } if matches!(self.ui.view, ViewKind::Plan | ViewKind::Section) => {
                 let t = self.now();
                 let (view, input) = (self.ui.view, self.tool.is_active());
                 self.wheel.key(&mut self.scene, view, key, input, t);
@@ -4051,6 +4156,7 @@ impl App {
         match self.wheel.hover {
             Some(wheel::Part::Up) => self.wheel.arrow_enabled(&self.scene, true, input),
             Some(wheel::Part::Down) => self.wheel.arrow_enabled(&self.scene, false, input),
+            Some(wheel::Part::Mirror) => true,
             _ => false,
         }
     }
@@ -4061,12 +4167,18 @@ impl App {
     fn sync_wheel(&mut self) {
         let t = self.now();
         self.wheel.tick(&mut self.scene, t);
-        let plan = self.ui.view == ViewKind::Plan;
+        // Grundriss (Geschosse) oder Schnitt (Schnittrad)
+        let plan = self.wheel.visible(self.ui.view, false);
         if self.wheel.take_started().is_some() {
             if plan && self.wheel.animating(t) && self.w > 0 {
                 self.renderer.capture_scene();
                 // Die Zeit läuft ab dem ersten Bild mit dem neuen Grundriss
                 self.wheel.wait_for_first_frame();
+            }
+            if plan && self.ui.view == ViewKind::Section {
+                // Anderer Schnitt: eigene Lage und Blickrichtung
+                self.sect.ensure(&self.scene);
+                self.fit_camera();
             }
             if plan {
                 self.upload_model();
@@ -4348,7 +4460,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         nav: Navigation::default(),
         tool,
         edit: WallEdit::default(),
-        sect: SectionLine::default(),
+        sect: Sections::default(),
         sel: Selection::default(),
         props_key: None,
         snaps_key: None,
@@ -4389,7 +4501,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         live_runs: Vec::new(),
         preview_shown: true,
         looks_key: None,
-        mark_keys: [None; 2],
+        mark_keys: [None; MARKS],
         wheel,
         wheel_view: wheel_view::WheelView::new(OVERLAY_WHEEL),
         clock: Instant::now(),
@@ -4447,13 +4559,18 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     if let Some(path) = document::path_from_args(std::env::args()) {
         a.open_path(&surface, path);
     }
-    // `--ansicht schnitt`: mit dieser Ansicht beginnen (Bildvergleiche)
-    if let Some(v) = std::env::args()
-        .skip_while(|a| a != "--ansicht")
-        .nth(1)
-        .and_then(|n| ViewKind::from_arg(&n))
-    {
+    // `--ansicht schnitt`: mit dieser Ansicht beginnen (Bildvergleiche);
+    // `schnitt-b` zeigt Schnitt B
+    let start = std::env::args().skip_while(|a| a != "--ansicht").nth(1);
+    let cut_b = start.as_deref() == Some("schnitt-b");
+    let start = if cut_b { Some("schnitt".into()) } else { start };
+    if let Some(v) = start.and_then(|n| ViewKind::from_arg(&n)) {
         a.set_view(v);
+        if cut_b && a.scene.set_active_cut(section::CUT_B) {
+            a.sect.ensure(&a.scene);
+            a.fit_camera();
+            a.upload_model();
+        }
     }
     // Nach einem Absturz die Sicherung anbieten (F-13); räumt alte still
     // weg. Nie bei Bildvergleichen und Zeitmessungen.
@@ -4642,6 +4759,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 sk_platform::Cursor::Hand
             }
             (None, None) if a.chip_hover.is_some() => sk_platform::Cursor::Hand,
+            (None, None) if a.sect.over_mark() => sk_platform::Cursor::Hand,
             (None, None) => a.ui.cursor(),
         };
         surface.set_cursor(cursor);
@@ -4695,7 +4813,12 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                     helpers.extend(a.sect.helpers(&a.scene, &a.cam, vh, scale, &a.theme))
                 }
                 ViewKind::Persp => {}
-                v => helpers.extend(ground_line(v, a.scene.bounds(), scale, a.scene.table())),
+                v => helpers.extend(ground_line(
+                    a.side_like(v),
+                    a.scene.bounds(),
+                    scale,
+                    a.scene.table(),
+                )),
             }
             let plane = a.plane();
             // Hover aus der Mengenliste: leuchtender Umriss mit weichem Schein
@@ -4808,7 +4931,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 }
             }
             if let Some(z) = a.ui.level_drag_z() {
-                helpers.extend(level_guide(a.ui.view, a.scene.bounds(), z, scale, &a.theme));
+                let v = a.side_like(a.ui.view);
+                helpers.extend(level_guide(v, a.scene.bounds(), z, scale, &a.theme));
             }
             helpers.extend(a.edit.helpers(&a.scene, &a.cam, scale, !drawing, &a.theme));
             helpers.extend(a.tool.helpers(&a.cam, scale, &a.theme));
@@ -4846,21 +4970,21 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             } else {
                 Vec::new()
             };
-            for i in 0..2 {
+            for i in 0..MARKS {
                 match marks.get(i) {
-                    Some(m) => {
+                    Some((k, m)) => {
                         // Bild nur neu zeichnen, wenn es sich ändert; sonst nur verschieben
+                        let line = &a.sect.lines[*k];
                         let revs = (a.theme.rev, a.scene.table().rev);
-                        let key = (m.left, a.sect.is_busy(), scale.to_bits(), revs);
-                        let (ax, ay) = a.sect.mark_anchor(m.left, scale);
+                        let key = (*k, m.left, line.flip, line.is_busy(), scale.to_bits(), revs);
+                        let (ax, ay) = line.mark_anchor(m.left, scale);
                         let x = (m.x - ax as f64).round() as i32;
                         let y = (m.y + th as f64 - ay as f64).round() as i32;
                         if a.mark_keys[i] == Some(key) {
                             a.renderer.move_overlay(OVERLAY_MARKS + i, x, y);
                         } else {
                             let (c, _, _) =
-                                a.sect
-                                    .paint_mark(&a.scene, &a.theme, &a.ui.fonts, m.left, scale);
+                                line.paint_mark(&a.scene, &a.theme, &a.ui.fonts, m.left, scale);
                             let px = c.to_premul_rgba8();
                             a.renderer.set_overlay(
                                 OVERLAY_MARKS + i,

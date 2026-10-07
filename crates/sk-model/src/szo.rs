@@ -859,6 +859,17 @@ pub fn write(m: &Model) -> String {
     for e in &walls {
         write_props(&mut out, "prop", "elem", e.guid, &e.props);
     }
+    // Schnitte nur, wenn sie einmal gezeigt wurden: sonst bleibt die Datei
+    // bytegleich
+    for (name, c) in crate::model::CUT_NAMES.iter().zip(m.cuts()) {
+        if let Some(pos) = c.pos {
+            Line::new("cut")
+                .word("name", name)
+                .num("pos", pos)
+                .flag("flip", c.flip)
+                .finish(&mut out);
+        }
+    }
     out
 }
 
@@ -899,10 +910,10 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     let v3 = version >= 3;
     let mut hints = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 20] = [
+    const KNOWN: [&str; 21] = [
         "pen", "linetype", "fill", "surface", "display", "material", "layerset", "layer",
         "typeprop", "project", "building", "storey", "run", "wall", "slab", "footing", "floor",
-        "strip", "soffit", "prop",
+        "strip", "soffit", "prop", "cut",
     ];
     for (i, l) in text.lines().enumerate().skip(1) {
         let Some(r) = Record::parse(i + 1, l)? else {
@@ -1452,6 +1463,27 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
             .props
             .insert(key, value);
     }
+    // Schnitte (Lage, Blickrichtung); ältere Dateien haben keine
+    let mut cuts = Vec::new();
+    for r in recs("cut") {
+        let name = r.opt("name").unwrap_or("");
+        match crate::model::CUT_NAMES.iter().position(|n| *n == name) {
+            Some(i) => cuts.push((
+                i,
+                crate::model::Cut {
+                    pos: Some(r.f64("pos")?),
+                    flip: match r.opt("flip") {
+                        Some(_) => r.flag("flip")?,
+                        None => false,
+                    },
+                },
+            )),
+            None => hints.push(format!(
+                "Zeile {}: [cut]: Schnitt „{name}“ unbekannt, übersprungen",
+                r.line
+            )),
+        }
+    }
     for recs in by.values() {
         for r in recs {
             r.unused(&mut hints);
@@ -1487,6 +1519,9 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     }
     model.complete_edge_strips();
     model.complete_soffits();
+    for (i, c) in cuts {
+        model.set_cut(i, c);
+    }
     hints.extend(model.check());
     Ok(Loaded { model, hints })
 }
@@ -2046,6 +2081,39 @@ mod tests {
         assert!(a.contains("short=\"2. OG\""), "{a}");
         let l = load(&a).unwrap();
         assert_eq!(write(&l.model), a);
+    }
+
+    /// Schnitte A und B: Lage und Blickrichtung stehen in der Datei, nie
+    /// gezeigte fehlen (Datei bleibt bytegleich), Unbekanntes wird gemeldet.
+    #[test]
+    fn schnitte_in_der_datei() {
+        let mut m = Model::with_seed(16);
+        let leer = write(&m);
+        assert!(!leer.contains("[cut]"));
+        m.set_cut(
+            0,
+            crate::model::Cut {
+                pos: Some(4000.0),
+                flip: false,
+            },
+        );
+        m.set_cut(
+            1,
+            crate::model::Cut {
+                pos: Some(5000.5),
+                flip: true,
+            },
+        );
+        let a = write(&m);
+        assert!(a.contains("[cut] name=A pos=4000 flip=0"), "{a}");
+        assert!(a.contains("[cut] name=B pos=5000.5 flip=1"), "{a}");
+        let l = load(&a).unwrap();
+        assert!(l.hints.is_empty(), "{:?}", l.hints);
+        assert_eq!(l.model.cuts(), m.cuts());
+        assert_eq!(write(&l.model), a);
+        let l = load(&a.replace("name=B", "name=C")).unwrap();
+        assert!(l.hints.iter().any(|h| h.contains("„C“")), "{:?}", l.hints);
+        assert_eq!(l.model.cuts()[1], crate::model::Cut::default());
     }
 
     #[test]

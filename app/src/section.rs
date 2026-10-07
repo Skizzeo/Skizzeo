@@ -1,10 +1,17 @@
-//! Schnittlinie im Grundriss nach DIN 1356: dünne Strichpunktlinie mit kräftigen
-//! Enden, Pfeile in Blickrichtung und Kennbuchstaben „A“. Im Grundriss lässt sie
-//! sich greifen und quer verschieben; die Ansicht „Schnitt“ folgt ihr.
+//! Schnittlinien im Grundriss nach DIN 1356: dünne Strichpunktlinie mit
+//! kräftigen Enden, Pfeile in Blickrichtung und Kennbuchstaben. Schnitt A
+//! (quer) liegt waagerecht im Grundriss und blickt nach +y, Schnitt B (längs)
+//! ist um 90° gedreht und blickt nach +x. Im Grundriss lässt sich jede Linie
+//! greifen und quer verschieben, ein Klick auf einen Pfeil spiegelt die
+//! Blickrichtung; die Ansicht „Schnitt“ folgt dem aktiven Schnitt.
+//!
+//! Die Entscheidungen stehen als reine Funktionen oben (Richtung, Ebene,
+//! Anfangslage, Spiegeln, Wechsel), damit sie sich ohne Fenster prüfen lassen.
 
 use crate::camera::Camera;
 use crate::scene::Scene;
 use sk_math::{vec3, Vec3};
+use sk_model::{Cut, CUT_NAMES};
 use sk_paint::{Canvas, Path, Rgba};
 use sk_platform::{Event, MouseButton};
 use sk_render::{DashPattern, Helper, SOLID};
@@ -28,34 +35,147 @@ const PICK_PX: f64 = 8.0;
 const OVERHANG: f64 = 1500.0;
 /// Raster beim Verschieben (mm).
 const STEP: f64 = 10.0;
+/// Länge des Pfeils vom Linienende bis zur Spitze (dip).
+const ARROW: f32 = 36.0;
+/// Halbe Kantenlänge des Bildes eines Endsymbols (dip); der Bezugspunkt
+/// liegt in der Mitte.
+const MARK_HALF: f32 = 52.0;
 
-#[derive(Default)]
+/// Kennung von Schnitt A (quer) und B (längs).
+pub const CUT_A: usize = 0;
+pub const CUT_B: usize = 1;
+/// Zahl der Schnitte.
+pub const CUTS: usize = CUT_NAMES.len();
+
+// ===== Reine Funktionen =====
+
+/// Blickrichtung des Schnitts `id` (waagerecht, Länge 1): A nach +y, B nach
+/// +x, gespiegelt umgekehrt.
+pub fn view_dir(id: usize, flip: bool) -> Vec3 {
+    let d = if id == CUT_B {
+        vec3(1.0, 0.0, 0.0)
+    } else {
+        vec3(0.0, 1.0, 0.0)
+    };
+    if flip {
+        d * -1.0
+    } else {
+        d
+    }
+}
+
+/// Richtung der Linie im Grundriss (A längs x, B längs y).
+pub fn line_dir(id: usize) -> Vec3 {
+    if id == CUT_B {
+        vec3(0.0, 1.0, 0.0)
+    } else {
+        vec3(1.0, 0.0, 0.0)
+    }
+}
+
+/// Schnittebene: Punkt und Normale zum Betrachter (gegen die Blickrichtung).
+pub fn plane_of(id: usize, cut: Cut) -> Option<(Vec3, Vec3)> {
+    let pos = cut.pos?;
+    let p = if id == CUT_B {
+        vec3(pos, 0.0, 0.0)
+    } else {
+        vec3(0.0, pos, 0.0)
+    };
+    Some((p, view_dir(id, cut.flip) * -1.0))
+}
+
+/// Anfangslage: mittig durch das Modell, quer zur Linie, im Raster.
+pub fn default_pos(id: usize, center: Vec3) -> f64 {
+    let c = if id == CUT_B { center.x } else { center.y };
+    (c / STEP).round() * STEP
+}
+
+/// Blickrichtung umkehren; die Lage bleibt.
+pub fn mirror(cut: Cut) -> Cut {
+    Cut {
+        flip: !cut.flip,
+        ..cut
+    }
+}
+
+/// Nächster Schnitt beim Blättern (der Bogen hat dieselbe Reihenfolge,
+/// [`crate::wheel::stops`]): `down` (Spitze unten, Bild↓) geht im
+/// Alphabet weiter (A → B), sonst zurück; an den Enden keiner.
+#[allow(dead_code)] // für Abnahme und Tests
+pub fn next(active: usize, down: bool) -> Option<usize> {
+    if down {
+        (active + 1 < CUTS).then_some(active + 1)
+    } else {
+        active.checked_sub(1)
+    }
+}
+
+/// Unterzeile am Schnittrad: Art und, falls gespiegelt, der Hinweis.
+pub fn subtitle(id: usize, flip: bool) -> String {
+    let kind = if id == CUT_B {
+        "Längsschnitt"
+    } else {
+        "Querschnitt"
+    };
+    if flip {
+        format!("{kind} · gespiegelt")
+    } else {
+        kind.into()
+    }
+}
+
+/// Name am Schnittrad: „A–A“.
+pub fn title(id: usize) -> String {
+    let n = CUT_NAMES.get(id).copied().unwrap_or("?");
+    format!("{n}–{n}")
+}
+
+// ===== Linie im Grundriss =====
+
 pub struct SectionLine {
-    /// Lage der senkrechten Schnittebene (y in mm); Blick in +y.
+    /// Schnitt A ([`CUT_A`]) oder B ([`CUT_B`]).
+    pub id: usize,
+    /// Lage der senkrechten Schnittebene quer zur Linie (A: y, B: x, mm).
     pub y: Option<f64>,
+    /// Blick gespiegelt.
+    pub flip: bool,
     hover: bool,
+    /// Maus über einem Pfeil: ein Klick spiegelt.
+    hover_mark: bool,
     /// Beim Ziehen: Abstand zwischen Griffpunkt und Linie.
     drag: Option<f64>,
+}
+
+impl Default for SectionLine {
+    /// Schnitt A.
+    fn default() -> SectionLine {
+        SectionLine::new(CUT_A)
+    }
 }
 
 #[derive(Default)]
 pub struct SectionOutcome {
     pub redraw: bool,
-    /// Lage geändert: Schnitt neu berechnen.
+    /// Lage oder Blickrichtung geändert: Schnitt neu berechnen.
     pub changed: bool,
     pub consumed: bool,
+    /// Ein Klick auf den Pfeil hat die Blickrichtung umgekehrt.
+    pub mirrored: bool,
+    /// Welche Linie sich geändert hat ([`Sections`]).
+    pub line: Option<usize>,
 }
 
 /// Lage eines Endsymbols im Bild (Pixel der 3D-Ansicht).
 pub struct Mark {
     pub x: f64,
     pub y: f64,
+    /// Anfang der Linie (A: links, B: unten).
     pub left: bool,
 }
 
 /// Bildgröße eines Endsymbols in Pixeln.
-fn mark_size(scale: f32) -> (f32, f32) {
-    ((44.0 * scale).round(), (52.0 * scale).round())
+fn mark_size(scale: f32) -> f32 {
+    (2.0 * MARK_HALF * scale).round()
 }
 
 fn dist_to_segment(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
@@ -69,34 +189,85 @@ fn dist_to_segment(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
     ((p.0 - a.0 - vx * t).powi(2) + (p.1 - a.1 - vy * t).powi(2)).sqrt()
 }
 
+/// Richtung im Bild (Pixel, y nach unten) einer waagerechten Richtung im
+/// Grundriss (Blick von oben, +y nach oben).
+fn screen(d: Vec3) -> (f32, f32) {
+    (d.x as f32, -d.y as f32)
+}
+
 impl SectionLine {
-    /// Setzt die Schnittlinie beim ersten Gebrauch in die Mitte des Modells.
-    pub fn ensure(&mut self, scene: &Scene) {
-        if self.y.is_none() {
-            self.y = scene.center().map(|c| (c.y / STEP).round() * STEP);
+    pub fn new(id: usize) -> SectionLine {
+        SectionLine {
+            id,
+            y: None,
+            flip: false,
+            hover: false,
+            hover_mark: false,
+            drag: None,
         }
     }
 
-    /// Schnittebene: Punkt und Normale zum Betrachter (Blick in +y).
+    /// Stand für die Datei.
+    pub fn cut(&self) -> Cut {
+        Cut {
+            pos: self.y,
+            flip: self.flip,
+        }
+    }
+
+    /// Stand aus der Datei übernehmen.
+    pub fn set_cut(&mut self, c: Cut) {
+        self.y = c.pos;
+        self.flip = c.flip;
+    }
+
+    /// Setzt die Schnittlinie beim ersten Gebrauch in die Mitte des Modells.
+    pub fn ensure(&mut self, scene: &Scene) {
+        if self.y.is_none() {
+            self.y = scene.center().map(|c| default_pos(self.id, c));
+        }
+    }
+
+    /// Schnittebene: Punkt und Normale zum Betrachter.
     pub fn plane(&self) -> Option<(Vec3, Vec3)> {
-        self.y.map(|y| (vec3(0.0, y, 0.0), vec3(0.0, -1.0, 0.0)))
+        plane_of(self.id, self.cut())
+    }
+
+    /// Blickrichtung umkehren.
+    pub fn mirror(&mut self) {
+        self.set_cut(mirror(self.cut()));
     }
 
     pub fn is_busy(&self) -> bool {
-        self.hover || self.drag.is_some()
+        self.hover || self.hover_mark || self.drag.is_some()
     }
 
     pub fn is_dragging(&self) -> bool {
         self.drag.is_some()
     }
 
-    /// Anfang und Ende der Linie (x-Bereich des Modells mit Überstand).
+    /// Maus über einem Pfeil (Zeiger „Hand“).
+    pub fn over_mark(&self) -> bool {
+        self.hover_mark
+    }
+
+    /// Anfang und Ende der Linie (Bereich des Modells mit Überstand).
     fn ends(&self, scene: &Scene) -> Option<(Vec3, Vec3)> {
         let y = self.y?;
-        let (x0, x1) = scene
-            .bounds()
-            .map_or((-2000.0, 12000.0), |(lo, hi)| (lo.x, hi.x));
-        Some((vec3(x0 - OVERHANG, y, 0.0), vec3(x1 + OVERHANG, y, 0.0)))
+        let b = self.id == CUT_B;
+        let (lo, hi) = scene.bounds().map_or(
+            if b {
+                (-2000.0, 10000.0)
+            } else {
+                (-2000.0, 12000.0)
+            },
+            |(lo, hi)| if b { (lo.y, hi.y) } else { (lo.x, hi.x) },
+        );
+        Some(if b {
+            (vec3(y, lo - OVERHANG, 0.0), vec3(y, hi + OVERHANG, 0.0))
+        } else {
+            (vec3(lo - OVERHANG, y, 0.0), vec3(hi + OVERHANG, y, 0.0))
+        })
     }
 
     fn near(&self, scene: &Scene, cam: &Camera, m: (f64, f64), w: f64, h: f64, scale: f64) -> bool {
@@ -107,6 +278,24 @@ impl SectionLine {
             (Some(pa), Some(pb)) => dist_to_segment(m, pa, pb) < PICK_PX * scale,
             _ => false,
         }
+    }
+
+    /// Liegt die Maus auf einem der beiden Pfeile?
+    fn near_mark(
+        &self,
+        scene: &Scene,
+        cam: &Camera,
+        m: (f64, f64),
+        w: f64,
+        h: f64,
+        scale: f64,
+    ) -> bool {
+        let (dx, dy) = screen(view_dir(self.id, self.flip));
+        let len = ARROW as f64 * scale;
+        self.marks(scene, cam, w, h).iter().any(|k| {
+            let tip = (k.x + dx as f64 * len, k.y + dy as f64 * len);
+            dist_to_segment(m, (k.x, k.y), tip) < 10.0 * scale
+        })
     }
 
     /// Verarbeitet ein Ereignis (Koordinaten der 3D-Ansicht). `enabled` nur im Grundriss.
@@ -123,14 +312,15 @@ impl SectionLine {
     ) -> SectionOutcome {
         let mut out = SectionOutcome::default();
         if !enabled && self.drag.is_none() {
-            out.redraw = std::mem::take(&mut self.hover);
+            out.redraw = std::mem::take(&mut self.hover) | std::mem::take(&mut self.hover_mark);
             return out;
         }
+        let across = |g: Vec3| if self.id == CUT_B { g.x } else { g.y };
         match *e {
             Event::MouseMove { x, y, .. } => {
                 if let Some(off) = self.drag {
                     if let Some(g) = cam.ground_point(x, y, w, h) {
-                        let ny = ((g.y - off) / STEP).round() * STEP;
+                        let ny = ((across(g) - off) / STEP).round() * STEP;
                         if self.y != Some(ny) {
                             self.y = Some(ny);
                             out.changed = true;
@@ -138,14 +328,16 @@ impl SectionLine {
                         }
                     }
                 } else {
-                    let hover = self.near(scene, cam, (x, y), w, h, scale);
-                    out.redraw = hover != self.hover;
-                    self.hover = hover;
+                    let mark = self.near_mark(scene, cam, (x, y), w, h, scale);
+                    let hover = !mark && self.near(scene, cam, (x, y), w, h, scale);
+                    out.redraw = (hover, mark) != (self.hover, self.hover_mark);
+                    (self.hover, self.hover_mark) = (hover, mark);
                 }
             }
             Event::MouseLeave => {
                 if self.drag.is_none() {
-                    out.redraw = std::mem::take(&mut self.hover);
+                    out.redraw =
+                        std::mem::take(&mut self.hover) | std::mem::take(&mut self.hover_mark);
                 }
             }
             Event::MouseDown {
@@ -154,10 +346,19 @@ impl SectionLine {
                 y,
                 ..
             } => {
+                if self.near_mark(scene, cam, (x, y), w, h, scale) {
+                    self.mirror();
+                    self.hover_mark = true;
+                    out.mirrored = true;
+                    out.changed = true;
+                    out.consumed = true;
+                    out.redraw = true;
+                    return out;
+                }
                 self.hover = self.near(scene, cam, (x, y), w, h, scale);
                 if self.hover {
                     if let (Some(g), Some(sy)) = (cam.ground_point(x, y, w, h), self.y) {
-                        self.drag = Some(g.y - sy);
+                        self.drag = Some(across(g) - sy);
                         out.consumed = true;
                         out.redraw = true;
                     }
@@ -204,7 +405,7 @@ impl SectionLine {
             occlude: false,
             round: false,
         };
-        let dx = vec3(end, 0.0, 0.0);
+        let dx = line_dir(self.id) * end;
         vec![
             line(a + dx, b - dx, t.section_line, t.section_dash),
             line(a, a + dx, t.section_ends, SOLID),
@@ -223,17 +424,10 @@ impl SectionLine {
             .collect()
     }
 
-    /// Bezugspunkt (Linienende) im Bild eines Endsymbols.
-    pub fn mark_anchor(&self, left: bool, scale: f32) -> (f32, f32) {
-        let (cw, ch) = mark_size(scale);
-        (
-            if left {
-                10.0 * scale
-            } else {
-                cw - 10.0 * scale
-            },
-            ch - 6.0 * scale,
-        )
+    /// Bezugspunkt (Linienende) im Bild eines Endsymbols: die Mitte.
+    pub fn mark_anchor(&self, _left: bool, scale: f32) -> (f32, f32) {
+        let c = mark_size(scale) * 0.5;
+        (c, c)
     }
 
     /// Bild eines Endsymbols (Pfeil in Blickrichtung und Buchstabe) und sein
@@ -247,39 +441,278 @@ impl SectionLine {
         scale: f32,
     ) -> (Canvas, f32, f32) {
         let s = scale;
-        let (cw, ch) = mark_size(scale);
-        let mut c = Canvas::new(cw as usize, ch as usize);
+        let size = mark_size(scale);
+        let mut c = Canvas::new(size as usize, size as usize);
         let color = Rgba::from_f32(if self.is_busy() {
             theme.interact.drag
         } else {
             scene.table().section_ends.1
         });
-        // Bezugspunkt: am Linienende; der Pfeil steht senkrecht darauf (Blick nach oben = +y)
         let (ax, ay) = self.mark_anchor(left, scale);
-        let shaft = 2.4 * s;
+        // Pfeil senkrecht zur Linie in Blickrichtung, Buchstabe zur
+        // Linienmitte hin
+        let (dx, dy) = screen(view_dir(self.id, self.flip));
+        let (nx, ny) = (-dy, dx);
+        let (lx, ly) = screen(line_dir(self.id));
+        let (ix, iy) = if left { (lx, ly) } else { (-lx, -ly) };
+        let at = |along: f32, side: f32| (ax + dx * along + nx * side, ay + dy * along + ny * side);
+        let shaft = 1.2 * s;
         let mut p = Path::new();
-        p.move_to(ax - shaft * 0.5, ay)
-            .line_to(ax + shaft * 0.5, ay)
-            .line_to(ax + shaft * 0.5, ay - 22.0 * s)
-            .line_to(ax - shaft * 0.5, ay - 22.0 * s)
-            .close();
+        let pts = [
+            at(0.0, -shaft),
+            at(0.0, shaft),
+            at(22.0 * s, shaft),
+            at(22.0 * s, -shaft),
+        ];
+        p.move_to(pts[0].0, pts[0].1);
+        for q in &pts[1..] {
+            p.line_to(q.0, q.1);
+        }
+        p.close();
         c.fill(&p, color);
         let mut p = Path::new();
-        p.move_to(ax, ay - 36.0 * s)
-            .line_to(ax + 6.5 * s, ay - 20.0 * s)
-            .line_to(ax - 6.5 * s, ay - 20.0 * s)
+        let (t, l, r) = (
+            at(ARROW * s, 0.0),
+            at(20.0 * s, 6.5 * s),
+            at(20.0 * s, -6.5 * s),
+        );
+        p.move_to(t.0, t.1)
+            .line_to(l.0, l.1)
+            .line_to(r.0, r.1)
             .close();
         c.fill(&p, color);
         if let Some(f) = fonts.bold.as_ref().or(fonts.regular.as_ref()) {
             let px = theme.size.font_mark * s;
-            let tw = f.width("A", px);
-            let tx = if left {
-                ax + 7.0 * s
-            } else {
-                ax - 7.0 * s - tw
-            };
-            f.draw(&mut c, "A", px, tx.round(), (ay - 8.0 * s).round(), color);
+            let letter = CUT_NAMES.get(self.id).copied().unwrap_or("?");
+            let (tw, cap) = (f.width(letter, px), f.cap_height(px));
+            // Mitte des Buchstabens: vom Linienende in Blickrichtung und zur
+            // Linienmitte, je um den halben Buchstaben mehr
+            let half = |vx: f32, vy: f32| (vx.abs() * tw + vy.abs() * cap) * 0.5;
+            let a = 8.0 * s + half(dx, dy);
+            let b = 7.0 * s + half(ix, iy);
+            let (cx, cy) = (ax + dx * a + ix * b, ay + dy * a + iy * b);
+            f.draw(
+                &mut c,
+                letter,
+                px,
+                (cx - tw * 0.5).round(),
+                (cy + cap * 0.5).round(),
+                color,
+            );
         }
         (c, ax, ay)
+    }
+}
+
+/// Beide Schnittlinien im Grundriss: Ereignisse gehen an die gezogene,
+/// sonst an alle; die erste, die einen Klick nimmt, behält ihn.
+pub struct Sections {
+    pub lines: [SectionLine; CUTS],
+}
+
+impl Default for Sections {
+    fn default() -> Sections {
+        Sections {
+            lines: [SectionLine::new(CUT_A), SectionLine::new(CUT_B)],
+        }
+    }
+}
+
+impl Sections {
+    /// Lage und Blickrichtung aus der Datei.
+    pub fn load(&mut self, cuts: &[Cut; CUTS]) {
+        for (l, c) in self.lines.iter_mut().zip(cuts) {
+            l.set_cut(*c);
+        }
+    }
+
+    pub fn ensure(&mut self, scene: &Scene) {
+        for l in &mut self.lines {
+            l.ensure(scene);
+        }
+    }
+
+    /// Ebene des Schnitts `active`.
+    pub fn plane(&self, active: usize) -> Option<(Vec3, Vec3)> {
+        self.lines.get(active).and_then(|l| l.plane())
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.lines.iter().any(|l| l.is_busy())
+    }
+
+    pub fn is_dragging(&self) -> bool {
+        self.lines.iter().any(|l| l.is_dragging())
+    }
+
+    pub fn over_mark(&self) -> bool {
+        self.lines.iter().any(|l| l.over_mark())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn handle(
+        &mut self,
+        e: &Event,
+        scene: &Scene,
+        cam: &Camera,
+        w: f64,
+        h: f64,
+        scale: f64,
+        enabled: bool,
+    ) -> SectionOutcome {
+        let mut out = SectionOutcome::default();
+        let dragging = self.lines.iter().position(|l| l.is_dragging());
+        let mut taken = false;
+        for (i, l) in self.lines.iter_mut().enumerate() {
+            let ev = match (dragging, taken) {
+                (Some(d), _) if d != i => continue,
+                (None, true) => &Event::MouseLeave,
+                _ => e,
+            };
+            let o = l.handle(ev, scene, cam, w, h, scale, enabled);
+            out.redraw |= o.redraw;
+            out.mirrored |= o.mirrored;
+            if o.changed {
+                out.changed = true;
+                out.line = Some(i);
+            }
+            if o.consumed {
+                out.consumed = true;
+                taken = matches!(e, Event::MouseDown { .. });
+            }
+        }
+        out
+    }
+
+    pub fn helpers(
+        &self,
+        scene: &Scene,
+        cam: &Camera,
+        h: f64,
+        scale: f32,
+        theme: &Theme,
+    ) -> Vec<Helper> {
+        self.lines
+            .iter()
+            .flat_map(|l| l.helpers(scene, cam, h, scale, theme))
+            .collect()
+    }
+
+    /// Endsymbole beider Linien mit der Kennung ihrer Linie.
+    pub fn marks(&self, scene: &Scene, cam: &Camera, w: f64, h: f64) -> Vec<(usize, Mark)> {
+        self.lines
+            .iter()
+            .enumerate()
+            .flat_map(|(i, l)| l.marks(scene, cam, w, h).into_iter().map(move |m| (i, m)))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn richtung_ebene_und_spiegeln() {
+        assert_eq!(view_dir(CUT_A, false), vec3(0.0, 1.0, 0.0));
+        assert_eq!(view_dir(CUT_A, true), vec3(0.0, -1.0, 0.0));
+        assert_eq!(view_dir(CUT_B, false), vec3(1.0, 0.0, 0.0));
+        assert_eq!(view_dir(CUT_B, true), vec3(-1.0, 0.0, 0.0));
+        let c = Cut {
+            pos: Some(4000.0),
+            flip: false,
+        };
+        assert_eq!(
+            plane_of(CUT_B, c),
+            Some((vec3(4000.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0)))
+        );
+        assert_eq!(
+            plane_of(CUT_A, mirror(c)),
+            Some((vec3(0.0, 4000.0, 0.0), vec3(0.0, 1.0, 0.0)))
+        );
+        assert_eq!(mirror(mirror(c)), c);
+        assert_eq!(plane_of(CUT_A, Cut::default()), None);
+        let m = vec3(5004.0, 3996.0, 1000.0);
+        assert_eq!(
+            (default_pos(CUT_A, m), default_pos(CUT_B, m)),
+            (4000.0, 5000.0)
+        );
+        assert_eq!(next(CUT_A, true), Some(CUT_B));
+        assert_eq!(next(CUT_B, true), None);
+        assert_eq!(next(CUT_B, false), Some(CUT_A));
+        assert_eq!(next(CUT_A, false), None);
+        assert_eq!(title(CUT_B), "B–B");
+        assert_eq!(subtitle(CUT_A, true), "Querschnitt · gespiegelt");
+    }
+
+    fn ev(x: f64, y: f64, kind: u8) -> Event {
+        let mods = sk_platform::Modifiers {
+            shift: false,
+            ctrl: false,
+            alt: false,
+        };
+        let button = MouseButton::Left;
+        match kind {
+            0 => Event::MouseDown { button, x, y, mods },
+            1 => Event::MouseMove { x, y, mods },
+            _ => Event::MouseUp { button, x, y, mods },
+        }
+    }
+
+    /// Beide Linien im Grundriss: B liegt mittig quer zu A, lässt sich für
+    /// sich verschieben, und ein Klick auf ihren Pfeil spiegelt nur B.
+    #[test]
+    fn zwei_linien_ziehen_und_spiegeln() {
+        let (w, h) = (1440.0, 778.0);
+        let mut s = Scene::with_model(sk_model::Model::with_seed(5));
+        s.add_wall(&sk_model::WallChain {
+            base: 0.0,
+            points: vec![
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ],
+            closed: true,
+            ref_side: sk_model::RefSide::Left,
+            layers: Vec::new(),
+            height: 2750.0,
+            joints: Default::default(),
+        })
+        .unwrap();
+        let c = crate::fit_parallel(crate::ui::ViewKind::Plan, s.bounds(), w, h);
+        let mut sect = Sections::default();
+        sect.ensure(&s);
+        let (a, b) = (sect.lines[CUT_A].cut(), sect.lines[CUT_B].cut());
+        assert_eq!((a.pos, b.pos), (Some(4000.0), Some(5000.0)));
+        assert_eq!(sect.marks(&s, &c, w, h).len(), 4);
+
+        // B greifen (abseits von A) und nach x = 6,00 m ziehen
+        let px = |p: Vec3| c.project(p, w, h).unwrap();
+        let (x, y) = px(vec3(5000.0, 2000.0, 0.0));
+        assert!(sect.handle(&ev(x, y, 0), &s, &c, w, h, 1.0, true).consumed);
+        let (x2, y2) = px(vec3(6003.0, 2000.0, 0.0));
+        let o = sect.handle(&ev(x2, y2, 1), &s, &c, w, h, 1.0, true);
+        assert!(o.changed && o.line == Some(CUT_B));
+        sect.handle(&ev(x2, y2, 2), &s, &c, w, h, 1.0, true);
+        assert_eq!(sect.lines[CUT_B].cut().pos, Some(6000.0));
+        assert_eq!(sect.lines[CUT_A].cut(), a, "A bleibt liegen");
+        let (p0, n) = sect.plane(CUT_B).unwrap();
+        assert_eq!((p0.x, n), (6000.0, vec3(-1.0, 0.0, 0.0)));
+
+        // Pfeil von B (zeigt nach +x, im Bild nach rechts) anklicken
+        let (_, m) = sect
+            .marks(&s, &c, w, h)
+            .into_iter()
+            .find(|(i, m)| *i == CUT_B && m.left)
+            .unwrap();
+        let o = sect.handle(&ev(m.x + 20.0, m.y, 0), &s, &c, w, h, 1.0, true);
+        assert!(o.mirrored && o.consumed && o.line == Some(CUT_B));
+        assert!(sect.lines[CUT_B].cut().flip && !sect.lines[CUT_A].cut().flip);
+        assert_eq!(sect.plane(CUT_B).unwrap().1, vec3(1.0, 0.0, 0.0));
+        // Der Pfeil zeigt jetzt nach links: derselbe Punkt trifft nichts mehr
+        sect.handle(&ev(m.x + 20.0, m.y, 2), &s, &c, w, h, 1.0, true);
+        let o = sect.handle(&ev(m.x + 20.0, m.y, 0), &s, &c, w, h, 1.0, true);
+        assert!(!o.mirrored);
     }
 }

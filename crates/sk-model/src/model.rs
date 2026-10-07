@@ -52,9 +52,26 @@ pub enum NumberError {
     NoElement,
 }
 
+/// Lage und Blickrichtung eines Schnitts (A quer, B längs). Ansichtszustand:
+/// kein Rückgängig-Schritt, ändert die Revision nicht, steht aber in der
+/// Datei.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Cut {
+    /// Lage der Schnittebene quer zur Linie (A: y, B: x, mm); `None`, solange
+    /// der Schnitt nie gezeigt wurde.
+    pub pos: Option<f64>,
+    /// Blick gespiegelt (A: nach −y statt +y, B: nach −x statt +x).
+    pub flip: bool,
+}
+
+/// Namen der Schnitte in der Reihenfolge ihrer Kennung.
+pub const CUT_NAMES: [&str; 2] = ["A", "B"];
+
 #[derive(Clone, Debug)]
 pub struct Model {
     project: Project,
+    /// Schnitte A und B.
+    cuts: [Cut; 2],
     /// Stifte, Schraffuren, Oberflächen und Bauteildarstellung.
     attr: Attributes,
     materials: Arena<Material>,
@@ -451,6 +468,7 @@ impl Model {
             guids,
             txn: None,
             strict: false,
+            cuts: Default::default(),
         }
     }
 
@@ -503,6 +521,7 @@ impl Model {
             guids,
             txn: None,
             strict: false,
+            cuts: Default::default(),
         };
         m.joins = m.detect_all();
         m
@@ -510,6 +529,19 @@ impl Model {
 
     pub fn project(&self) -> &Project {
         &self.project
+    }
+
+    /// Schnitte A und B (Ansichtszustand, siehe [`Cut`]).
+    pub fn cuts(&self) -> &[Cut; 2] {
+        &self.cuts
+    }
+
+    /// Lage oder Blickrichtung eines Schnitts ändern: ohne Schritt und ohne
+    /// neue Revision, wie Kamera und Zoom.
+    pub fn set_cut(&mut self, i: usize, cut: Cut) {
+        if let Some(c) = self.cuts.get_mut(i) {
+            *c = cut;
+        }
     }
 
     /// Steigt bei jeder Änderung.

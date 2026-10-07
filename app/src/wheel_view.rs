@@ -5,8 +5,7 @@
 
 use crate::scene::Scene;
 use crate::ui::Ui;
-use crate::wheel::{self, Geo, Part, Wheel, FADE_MS};
-use sk_model::StoreyId;
+use crate::wheel::{self, Geo, Part, Stop, Track, Wheel, FADE_MS};
 use sk_paint::Canvas;
 use sk_render::Renderer;
 use sk_ui::theme::Theme;
@@ -15,12 +14,14 @@ use std::collections::HashMap;
 
 /// Höchstens so viele Geschosse bekommen Schilder (Fundament bis Dach).
 pub const MAX_LEVELS: usize = 8;
-/// Belegte Plätze ab dem ersten: Bogen, Aufleuchten, Schilder, Hinweis.
-pub const SLOTS: usize = 3 + 2 * MAX_LEVELS;
+/// Belegte Plätze ab dem ersten: Bogen, Aufleuchten, Schilder, Knopf
+/// „Blickrichtung“ (Schnittrad), Hinweis.
+pub const SLOTS: usize = 4 + 2 * MAX_LEVELS;
 
 /// Stand eines Bildes: was darin steht und wofür es gezeichnet wurde.
 type ArcKey = (u64, [u32; 4], Option<Part>, (bool, bool));
-type LabelKey = (StoreyId, String, String, bool, u64, [u32; 2]);
+type LabelKey = (Stop, String, String, bool, u64, [u32; 2]);
+type MirrorKey = (bool, u64, u32);
 type HintKey = (String, String, u64, u32);
 /// Breite und Höhe eines Bildes (Pixel).
 type Size = (f32, f32);
@@ -37,6 +38,7 @@ pub struct WheelView {
     big: Vec<Option<LabelKey>>,
     small: Vec<Option<LabelKey>>,
     hint: Option<HintKey>,
+    mirror: Option<MirrorKey>,
     placed: Vec<Placed>,
     /// Trefferflächen der Schilder (Fenster-Pixel) und ihr Teil.
     hits: Vec<(Rect, Part)>,
@@ -65,6 +67,7 @@ impl WheelView {
             big: vec![None; MAX_LEVELS],
             small: vec![None; MAX_LEVELS],
             hint: None,
+            mirror: None,
             placed: Vec::new(),
             hits: Vec::new(),
             fade: 0.0,
@@ -79,6 +82,7 @@ impl WheelView {
         self.big.iter_mut().for_each(|k| *k = None);
         self.small.iter_mut().for_each(|k| *k = None);
         self.hint = None;
+        self.mirror = None;
     }
 
     /// Wird gerade ein- oder ausgeblendet (die Schleife zeichnet weiter)?
@@ -126,6 +130,7 @@ impl WheelView {
             let g = wheel.geo(ui, w, h);
             self.sync_arc(r, wheel, s, &g, th, input, &mut placed, t);
             self.sync_labels(r, wheel, s, &g, th, &ui.fonts, input, &mut placed, t);
+            self.sync_mirror(r, wheel, &g, th, &ui.fonts, &mut placed);
             self.sync_hint(r, wheel, s, &g, th, &ui.fonts, input, &mut placed, t);
         }
         // Alles, was dieses Mal nicht liegt, ausblenden
@@ -249,13 +254,15 @@ impl WheelView {
         placed: &mut Vec<Placed>,
         t: u64,
     ) {
-        let levels = wheel::levels(s);
-        let active = levels.iter().position(|x| *x == s.active_storey());
+        let levels = wheel::stops(s, wheel.track);
+        let active = levels
+            .iter()
+            .position(|x| *x == wheel::active(s, wheel.track));
         let fit = [g.s.to_bits(), (g.right - g.label_x).to_bits()];
-        let mut sizes: HashMap<StoreyId, (Size, Size)> = HashMap::new();
+        let mut sizes: HashMap<Stop, (Size, Size)> = HashMap::new();
         for (i, &id) in levels.iter().enumerate().take(MAX_LEVELS) {
-            let name = wheel::short_name(s, id);
-            let kote = wheel::kote(s, id);
+            let name = wheel::stop_name(s, id);
+            let kote = wheel::stop_sub(s, id);
             // Kleines Schild an der Spitze unter der Maus in Akzentfarbe
             let hovered = !input
                 && active.is_some_and(|a| match wheel.hover {
@@ -329,6 +336,33 @@ impl WheelView {
             };
             self.hits.push((Rect::new(x, y, w, h), part));
         }
+    }
+
+    /// Knopf „Blickrichtung“ unter dem großen Schild (nur am Schnittrad).
+    fn sync_mirror(
+        &mut self,
+        r: &mut Renderer,
+        wheel: &Wheel,
+        g: &Geo,
+        th: &Theme,
+        fonts: &Fonts,
+        placed: &mut Vec<Placed>,
+    ) {
+        if wheel.track != Track::Cuts {
+            return;
+        }
+        let slot = self.base + SLOTS - 2;
+        let hover = wheel.hover == Some(Part::Mirror);
+        let key = (hover, th.rev, g.s.to_bits());
+        if self.mirror.as_ref() != Some(&key) {
+            Self::upload(r, slot, &wheel::paint_mirror(fonts, g, th, hover));
+            self.mirror = Some(key);
+        }
+        let (w, h) = r.overlay_size(slot);
+        let (w, h) = (w as f32, h as f32);
+        let (x, y) = wheel::mirror_at(g);
+        Self::place(r, placed, slot, (x, y, w, h), self.fade);
+        self.hits.push((Rect::new(x, y, w, h), Part::Mirror));
     }
 
     /// Hinweis links neben der Spitze unter der Maus, nach kurzer Ruhe.
