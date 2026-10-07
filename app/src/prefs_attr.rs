@@ -9,19 +9,18 @@
 //! ([`sk_render::fill_color`], [`sk_render::dash_ink`]).
 
 use super::*;
-use crate::draw_table::{look_rows, mat_look};
+use crate::attr_pick::{
+    self, fill_display, line_strip, paint_cube, paint_fill_preview, Pick, TileKey, Tiles,
+};
 use sk_model::{
     Dash, Fill, FillId, FillKind, FillSpace, HatchLine, LineType, LineTypeId, Material,
     MaterialDisplay, MaterialId, Surface,
 };
-use sk_render::{DashPattern, SOLID};
 
 /// Breite der Liste links (dip).
 const LIST_W: f32 = 250.0;
 /// Zeilenabstand umbrochener Einträge (dip).
 const WRAP_LINE: f32 = 18.0;
-/// Breite der Spalte „Muster“ im Reiter „Linientypen“ (dip).
-const LT_THUMB_W: f32 = 80.0;
 /// Höchstzahl der Musterzeilen bzw. Linienscharen (Zeichentabelle).
 const MAX_ROWS: usize = 2;
 /// Strichbreiten der Linientyp-Vorschau (mm).
@@ -35,6 +34,17 @@ const NEW_DASH: Dash = Dash {
 const NEW_HATCH: HatchLine = HatchLine::solid(45.0, 2.0, 0.0);
 
 // --- Daten ----------------------------------------------------------------------
+
+/// Darstellungsverweis, den eine Auswahlliste des Reiters „Baustoffe“ setzt.
+fn mat_pick(id: ComboId) -> Option<Pick> {
+    match id {
+        ComboId::MatFill => Some(Pick::Fill),
+        ComboId::MatFg => Some(Pick::Fg),
+        ComboId::MatBg => Some(Pick::Bg),
+        ComboId::MatSurface => Some(Pick::Surface),
+        _ => None,
+    }
+}
 
 fn lt_list(m: &Model) -> Vec<(LineTypeId, LineType)> {
     let a = m.attr();
@@ -84,16 +94,6 @@ fn unique(m: &Model, tab: Tab, base: &str) -> String {
         })
         .find(|n| !taken.contains(n))
         .unwrap_or_default()
-}
-
-/// Stift mit dieser Nummer, sonst der erste.
-fn pen_by_number(m: &Model, nr: u16) -> Option<PenId> {
-    let a = m.attr();
-    a.pens()
-        .iter()
-        .find(|(_, p)| p.number == nr)
-        .or_else(|| a.pens().iter().next())
-        .map(|(id, _)| id)
 }
 
 /// Einheit eines Felds der Attributreiter.
@@ -352,7 +352,7 @@ impl Prefs {
             )
         };
         let thumb_w = match self.tab {
-            Tab::LineTypes => LT_THUMB_W,
+            Tab::LineTypes => crate::attr_pick::LT_THUMB_W,
             Tab::Surfaces => t.size.swatch_w,
             _ => t.size.list_thumb_w,
         } * s;
@@ -1054,7 +1054,6 @@ impl Prefs {
             .map_or(l.side, |(r, _)| *r);
         let fill = self.sel_fill(m).map(|x| x.1);
         let mat = self.sel_mat(m).map(|x| x.1);
-        let icon_sw = |c: [u8; 3]| Some(swatch_icon(Rgba::from_rgb8(c), s, t));
         let (items, icons, sel) = match id {
             ComboId::FillKind => {
                 let sel = match fill.map(|f| f.kind) {
@@ -1071,38 +1070,12 @@ impl Prefs {
                 let items = vec!["Papier".into(), "Modell (folgt später)".into()];
                 (items, Vec::new(), sel)
             }
-            ComboId::MatFill => {
-                let list = fill_list(m);
-                let sel = mat
-                    .and_then(|x| list.iter().position(|(i, _)| *i == x.cut_fill))
-                    .unwrap_or(0);
-                let icons = list
-                    .iter()
-                    .map(|(i, _)| Some(fill_tile(m, t, *i, s)))
-                    .collect();
-                (list.into_iter().map(|(_, f)| f.name).collect(), icons, sel)
-            }
-            ComboId::MatFg | ComboId::MatBg => {
-                let list = pens_sorted(m);
-                let cur = mat.map(|x| {
-                    if id == ComboId::MatFg {
-                        x.cut_fg
-                    } else {
-                        x.cut_bg
-                    }
-                });
-                let sel = list.iter().position(|p| Some(p.0) == cur).unwrap_or(0);
-                let icons = list.iter().map(|(_, p)| icon_sw(p.color)).collect();
-                let items = list.iter().map(|(_, p)| pen_label(p)).collect();
-                (items, icons, sel)
-            }
-            ComboId::MatSurface => {
-                let list = surf_list(m);
-                let sel = mat
-                    .and_then(|x| list.iter().position(|(i, _)| *i == x.surface))
-                    .unwrap_or(0);
-                let icons = list.iter().map(|(_, o)| icon_sw(o.color)).collect();
-                (list.into_iter().map(|(_, o)| o.name).collect(), icons, sel)
+            ComboId::MatFill | ComboId::MatFg | ComboId::MatBg | ComboId::MatSurface => {
+                let (Some(pick), Some(mat)) = (mat_pick(id), mat) else {
+                    return (Vec::new(), Vec::new(), 0, anchor);
+                };
+                let mut tiles = self.tiles.borrow_mut();
+                attr_pick::pick_items(m, &mut tiles, t, s, pick, &mat.display())
             }
             ComboId::PenWidth | ComboId::Scheme => (Vec::new(), Vec::new(), 0),
         };
@@ -1144,29 +1117,11 @@ impl Prefs {
                     return;
                 };
                 let mut d = mat.display();
-                match id {
-                    ComboId::MatFill => {
-                        let Some((f, _)) = fill_list(m).get(i).cloned() else {
-                            return;
-                        };
-                        d.cut_fill = f;
-                    }
-                    ComboId::MatSurface => {
-                        let Some((o, _)) = surf_list(m).get(i).cloned() else {
-                            return;
-                        };
-                        d.surface = o;
-                    }
-                    _ => {
-                        let Some((p, _)) = pens_sorted(m).get(i).cloned() else {
-                            return;
-                        };
-                        if id == ComboId::MatFg {
-                            d.cut_fg = p;
-                        } else {
-                            d.cut_bg = p;
-                        }
-                    }
+                let Some(pick) = mat_pick(id) else {
+                    return;
+                };
+                if !attr_pick::pick_apply(m, pick, i, &mut d) {
+                    return;
                 }
                 if d != mat.display() {
                     out.model |= cx.scene.edit_attr(|m| m.set_material_display(mid, d));
@@ -1212,10 +1167,13 @@ impl Prefs {
         c.fill_rect(lr.x, at(l.body).y - line, lr.w, line, u.border);
         // Zeilen in eigenem Bild (Bildlauf schneidet ab)
         let body = at(l.body);
-        let mut bc = Canvas::new(body.w.ceil() as usize, body.h.ceil() as usize);
+        let mut tiles = self.tiles.borrow_mut();
+        tiles.sync(m, t, s);
+        let mut bc = tiles.take_rows(body.w.ceil() as usize, body.h.ceil() as usize);
         let sel = self.sel_index(m);
         let list = names(m, self.tab);
-        let thumbs = self.thumbs(m, t, s);
+        // Kacheln nur der sichtbaren Zeilen, aus dem Speicher (M1)
+        let keys = self.thumb_keys(m);
         for (i, (name, r)) in list.iter().zip(&l.rows).enumerate() {
             let r = Rect::new(r.x - l.body.x, r.y - l.body.y, r.w, r.h);
             if r.y + r.h < 0.0 || r.y > body.h {
@@ -1232,12 +1190,13 @@ impl Prefs {
             let thumb_x = l.thumb_x - l.body.x;
             let name = widgets::ellipsize(regular, name, font, thumb_x - 20.0 * s);
             label(&mut bc, regular, &name, font, 8.0 * s, base, u.text);
-            if let Some(img) = thumbs.get(i) {
+            if let Some(img) = keys.get(i).and_then(|&k| tiles.get(m, t, s, k)) {
                 let y = r.y + (r.h - img.height as f32) * 0.5;
                 bc.blit(img, thumb_x as i32, y as i32);
             }
         }
         c.blit(&bc, body.x as i32, body.y as i32);
+        tiles.give_rows(bc);
         if let Some(b) = l.bar {
             let total = l.content_h.max(1.0);
             let hover = self.hover == Some(Target::Bar(BarId::List))
@@ -1345,7 +1304,7 @@ impl Prefs {
                 }
                 Target::Combo(id) => {
                     let open = matches!(&self.popup, Some(Popup::Combo(cb)) if cb.id == id);
-                    let (text, icon) = self.combo_shown(id, m, t, s);
+                    let (text, icon) = self.combo_shown(id, &mut tiles, m, t, s);
                     widgets::combo_icon(c, fonts, rr, &text, icon.as_ref(), hover, open, s, t);
                 }
                 Target::Swatch(ct) => {
@@ -1384,26 +1343,36 @@ impl Prefs {
         }
         if let Some(pr) = l.preview {
             let pr = at(pr);
+            // Große Vorschauen nur bei Auswahl- oder Darstellungswechsel
+            // neu (M2)
             match self.tab {
-                Tab::LineTypes => self.paint_lt_preview(c, pr, m, t, fonts, s),
+                Tab::LineTypes => self.paint_lt_preview(c, &mut tiles, pr, m, t, fonts, s),
                 Tab::Fills => {
                     if let Some((id, _)) = self.sel_fill(m) {
-                        paint_fill_preview(c, pr, m, t, s, fill_display(m, id));
+                        tiles.preview(c, 0, TileKey::Fill(id), pr, |c| {
+                            paint_fill_preview(c, pr, m, t, s, fill_display(m, id))
+                        });
                     }
                 }
                 Tab::Surfaces => {
-                    if let Some((_, o)) = self.sel_surf(m) {
-                        paint_cube(c, pr, &o, t, s);
+                    if let Some((id, o)) = self.sel_surf(m) {
+                        tiles.preview(c, 0, TileKey::Surface(id), pr, |c| {
+                            paint_cube(c, pr, &o, t, s)
+                        });
                     }
                 }
                 Tab::Materials => {
-                    if let Some((_, mat)) = self.sel_mat(m) {
+                    if let Some((id, mat)) = self.sel_mat(m) {
                         let cube_w = (pr.h * 0.9).min(pr.w * 0.3);
                         let wall = Rect::new(pr.x, pr.y, pr.w - cube_w - 12.0 * s, pr.h);
-                        paint_fill_preview(c, wall, m, t, s, mat.display());
+                        tiles.preview(c, 0, TileKey::Material(id), wall, |c| {
+                            paint_fill_preview(c, wall, m, t, s, mat.display())
+                        });
                         if let Some(o) = m.attr().surface(mat.surface) {
                             let cr = Rect::new(pr.x + pr.w - cube_w, pr.y, cube_w, pr.h);
-                            paint_cube(c, cr, o, t, s);
+                            tiles.preview(c, 1, TileKey::Material(id), cr, |c| {
+                                paint_cube(c, cr, o, t, s)
+                            });
                         }
                     }
                 }
@@ -1413,11 +1382,16 @@ impl Prefs {
     }
 
     /// Text und Bildchen einer geschlossenen Auswahlliste.
-    fn combo_shown(&self, id: ComboId, m: &Model, t: &Theme, s: f32) -> (String, Option<Canvas>) {
+    fn combo_shown(
+        &self,
+        id: ComboId,
+        tiles: &mut Tiles,
+        m: &Model,
+        t: &Theme,
+        s: f32,
+    ) -> (String, Option<Canvas>) {
         let fill = self.sel_fill(m).map(|x| x.1);
         let mat = self.sel_mat(m).map(|x| x.1);
-        let a = m.attr();
-        let sw = |c: [u8; 3]| Some(swatch_icon(Rgba::from_rgb8(c), s, t));
         match id {
             ComboId::FillKind => {
                 let text = match fill.map(|f| f.kind) {
@@ -1429,74 +1403,56 @@ impl Prefs {
                 (text.into(), None)
             }
             ComboId::FillSpace => ("Papier".into(), None),
-            ComboId::MatFill => mat.map_or((String::new(), None), |x| {
-                let name = a.fill(x.cut_fill).map_or("–".into(), |f| f.name.clone());
-                (name, Some(fill_tile(m, t, x.cut_fill, s)))
-            }),
-            ComboId::MatFg | ComboId::MatBg => mat.map_or((String::new(), None), |x| {
-                let id = if id == ComboId::MatFg {
-                    x.cut_fg
-                } else {
-                    x.cut_bg
-                };
-                a.pen(id)
-                    .map_or(("–".into(), None), |p| (pen_label(p), sw(p.color)))
-            }),
-            ComboId::MatSurface => mat.map_or((String::new(), None), |x| {
-                a.surface(x.surface)
-                    .map_or(("–".into(), None), |o| (o.name.clone(), sw(o.color)))
-            }),
+            ComboId::MatFill | ComboId::MatFg | ComboId::MatBg | ComboId::MatSurface => {
+                match (mat_pick(id), mat) {
+                    (Some(pick), Some(x)) => {
+                        attr_pick::pick_shown(m, tiles, t, s, pick, &x.display())
+                    }
+                    _ => (String::new(), None),
+                }
+            }
             ComboId::PenWidth | ComboId::Scheme => (String::new(), None),
         }
     }
 
-    /// Vorschaubilder der Listenzeilen.
-    fn thumbs(&self, m: &Model, t: &Theme, s: f32) -> Vec<Canvas> {
-        let (tw, th) = (t.size.list_thumb_w * s, t.size.list_thumb_h * s);
+    /// Kacheln der Listenzeilen ([`attr_pick::Tiles`] malt sie).
+    fn thumb_keys(&self, m: &Model) -> Vec<TileKey> {
         match self.tab {
-            Tab::LineTypes => lt_list(m)
-                .iter()
-                .map(|(_, l)| {
-                    let w = 0.35 * t.px_per_mm * s;
-                    line_strip(m, t, &l.pattern, LT_THUMB_W * s, th, w, s)
-                })
-                .collect(),
-            Tab::Fills => fill_list(m)
-                .iter()
-                .map(|(id, _)| fill_tile(m, t, *id, s))
-                .collect(),
-            Tab::Surfaces => surf_list(m)
-                .iter()
-                .map(|(_, o)| swatch_icon(Rgba::from_rgb8(o.color), s, t))
-                .collect(),
-            Tab::Materials => mat_list(m)
-                .iter()
-                .map(|(_, x)| tile(m, t, &x.display(), tw, th, s))
-                .collect(),
+            Tab::LineTypes => lt_list(m).iter().map(|x| TileKey::LineType(x.0)).collect(),
+            Tab::Fills => fill_list(m).iter().map(|x| TileKey::Fill(x.0)).collect(),
+            Tab::Surfaces => surf_list(m).iter().map(|x| TileKey::Surface(x.0)).collect(),
+            Tab::Materials => mat_list(m).iter().map(|x| TileKey::Material(x.0)).collect(),
             _ => Vec::new(),
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn paint_lt_preview(
         &self,
         c: &mut Canvas,
+        tiles: &mut Tiles,
         r: Rect,
         m: &Model,
         t: &Theme,
         fonts: &Fonts,
         s: f32,
     ) {
-        let Some((_, lt)) = self.sel_lt(m) else {
+        let Some((id, lt)) = self.sel_lt(m) else {
             return;
         };
         let regular = fonts.regular.as_ref();
         let small = t.size.font_small * s;
         let row = r.h / PREVIEW_WIDTHS.len() as f32;
+        tiles.preview(c, 0, TileKey::LineType(id), r, |c| {
+            for (i, mm) in PREVIEW_WIDTHS.iter().enumerate() {
+                let y = r.y + i as f32 * row;
+                let w = (mm * t.px_per_mm * s).max(0.6);
+                let img = line_strip(m, t, &lt.pattern, r.w, row - 6.0 * s, w, s);
+                c.blit(&img, r.x as i32, y as i32);
+            }
+        });
         for (i, mm) in PREVIEW_WIDTHS.iter().enumerate() {
             let y = r.y + i as f32 * row;
-            let w = (mm * t.px_per_mm * s).max(0.6);
-            let img = line_strip(m, t, &lt.pattern, r.w, row - 6.0 * s, w, s);
-            c.blit(&img, r.x as i32, y as i32);
             label(
                 c,
                 regular,
@@ -1508,222 +1464,4 @@ impl Prefs {
             );
         }
     }
-}
-
-// --- Bildchen und Vorschauen ------------------------------------------------------
-
-/// „Nr. – Name“ eines Stifts in Auswahllisten.
-fn pen_label(p: &Pen) -> String {
-    format!("{} – {} {}", p.number, p.name, num(p.width_mm, 2))
-}
-
-/// Farbfeld als Bildchen in Auswahllisten und Listen.
-fn swatch_icon(col: Rgba, s: f32, t: &Theme) -> Canvas {
-    let (w, h) = ((t.size.swatch_w * s).round(), (t.size.swatch_h * s).round());
-    let mut c = Canvas::new(w as usize, h as usize);
-    widgets::swatch(&mut c, Rect::new(0.0, 0.0, w, h), col, false, s, t);
-    c
-}
-
-/// Strichmuster in Bildpunkten bei Skalierung `s`.
-fn pattern_px(pattern: &[Dash], px_per_mm: f32, s: f32) -> DashPattern {
-    let mut p = SOLID;
-    for (slot, d) in p.iter_mut().zip(pattern) {
-        *slot = [
-            d.len_mm * px_per_mm * s,
-            d.gap_mm * px_per_mm * s,
-            d.dot as u8 as f32,
-            0.0,
-        ];
-    }
-    p
-}
-
-/// Waagerechte Linie im Muster auf Papiergrund (Liste und Vorschau).
-fn line_strip(m: &Model, t: &Theme, pattern: &[Dash], w: f32, h: f32, lw: f32, s: f32) -> Canvas {
-    let paper = Rgba::from_rgb8(m.attr().display().paper);
-    let ink = t.env.edge;
-    let (cw, ch) = (w.round().max(1.0) as usize, h.round().max(1.0) as usize);
-    let p = pattern_px(pattern, t.px_per_mm, s);
-    let x0 = 6.0 * s;
-    let len = w - 2.0 * x0;
-    let half = lw * 0.5;
-    let mid = ch as f32 * 0.5;
-    Canvas::from_fn(cw, ch, |x, y| {
-        let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
-        let d = fx - x0;
-        // Abdeckung quer zur Linie (weicher Rand)
-        let cov = (half + 0.5 - (fy - mid).abs()).clamp(0.0, 1.0);
-        if (0.0..=len).contains(&d) && cov > 0.0 && sk_render::dash_ink(d, len, &p, lw) {
-            mix(paper, ink, cov)
-        } else {
-            paper
-        }
-    })
-}
-
-fn mix(a: Rgba, b: Rgba, f: f32) -> Rgba {
-    let m = |p: u8, q: u8| (p as f32 + (q as f32 - p as f32) * f).round() as u8;
-    Rgba(m(a.0, b.0), m(a.1, b.1), m(a.2, b.2), 255)
-}
-
-/// Darstellungsverweise für die Vorschau einer Schraffur ohne Baustoff:
-/// Stift 4 (Schraffur) auf Stift 5 (Grund).
-fn fill_display(m: &Model, fill: FillId) -> MaterialDisplay {
-    let d = m.attr().display();
-    let any = d.drawing[0].pen;
-    let surface = m
-        .attr()
-        .surfaces()
-        .iter()
-        .next()
-        .map(|(i, _)| i)
-        .or_else(|| m.materials().iter().next().map(|(_, x)| x.surface));
-    MaterialDisplay {
-        cut_fill: fill,
-        cut_fg: pen_by_number(m, 4).unwrap_or(any),
-        cut_bg: pen_by_number(m, 5).unwrap_or(any),
-        surface: surface.unwrap_or_else(|| {
-            m.materials()
-                .iter()
-                .next()
-                .map(|(_, x)| x.surface)
-                .expect("Oberfläche")
-        }),
-    }
-}
-
-/// Kachel einer Schraffur in der Liste (Stift 4 auf Stift 5).
-fn fill_tile(m: &Model, t: &Theme, fill: FillId, s: f32) -> Canvas {
-    let (w, h) = (t.size.list_thumb_w * s, t.size.list_thumb_h * s);
-    tile(m, t, &fill_display(m, fill), w, h, s)
-}
-
-/// Schnittfläche nach der Formel des Shaders, mit Rand in Stift „Schnitt“.
-fn hatch_image(m: &Model, t: &Theme, d: &MaterialDisplay, w: usize, h: usize, s: f32) -> Canvas {
-    let look = mat_look(m, t, d, &mut Vec::new());
-    let rows = look_rows(&look, s);
-    let hf = h as f32;
-    // Zickzack: die Kachel ist eine Schicht, quer 0..1
-    let th = hf.max(1.0);
-    Canvas::from_fn(w, h, |x, y| {
-        let (fx, fy) = (x as f32 + 0.5, hf - y as f32 - 0.5);
-        let c = sk_render::fill_color(&rows, fx, fy, [fx / th, fy / th], [1.0 / th, 1.0 / th]);
-        Rgba::from_f32([c[0], c[1], c[2], 1.0])
-    })
-}
-
-/// Kleine Kachel mit dünnem Rand (Liste, Auswahlliste).
-fn tile(m: &Model, t: &Theme, d: &MaterialDisplay, w: f32, h: f32, s: f32) -> Canvas {
-    let (wi, hi) = (w.round().max(2.0) as usize, h.round().max(2.0) as usize);
-    let mut c = Canvas::new(wi, hi);
-    c.fill_rect(0.0, 0.0, wi as f32, hi as f32, t.ui.border);
-    let b = (s.round().max(1.0) as usize).min(wi.min(hi) / 2 - 1);
-    let inner = hatch_image(m, t, d, wi - 2 * b, hi - 2 * b, s);
-    c.blit(&inner, b as i32, b as i32);
-    c
-}
-
-/// Vorschau einer Schnittfläche: Rechteck mit Umriss in Stift „Schnitt“
-/// (Kantenart `CUT`), innen die Schraffur in den Baustofffarben.
-fn paint_fill_preview(c: &mut Canvas, r: Rect, m: &Model, t: &Theme, s: f32, d: MaterialDisplay) {
-    let a = m.attr();
-    let cut = a.pen(a.display().drawing[sk_model::edge_kind::CUT as usize].pen);
-    let lw = cut
-        .map_or(1.0, |p| (p.width_mm * t.px_per_mm * s).max(1.0))
-        .round();
-    let ink = cut.map_or(t.env.edge, |p| Rgba::from_rgb8(p.color));
-    c.fill_rect(r.x, r.y, r.w, r.h, ink);
-    let (w, h) = ((r.w - 2.0 * lw).max(1.0), (r.h - 2.0 * lw).max(1.0));
-    let img = hatch_image(m, t, &d, w as usize, h as usize, s);
-    c.blit(&img, (r.x + lw) as i32, (r.y + lw) as i32);
-}
-
-/// Würfel schräg von oben vor Himmel und Boden. Die Seiten werden wie in der
-/// 3D-Ansicht beleuchtet (Lichtrichtung und Umgebungshelligkeit des
-/// Renderers); die vordere obere Ecke ist in der Schnittfarbe aufgeschnitten.
-fn paint_cube(c: &mut Canvas, r: Rect, o: &Surface, t: &Theme, s: f32) {
-    let st = crate::style(&t.env);
-    let shade = |col: [u8; 3], n: [f32; 3]| {
-        let l = st.light;
-        let d = (n[0] * l[0] + n[1] * l[1] + n[2] * l[2]).max(0.0);
-        let k = st.ambient + (1.0 - st.ambient) * d;
-        let f = |v: u8| ((v as f32 / 255.0 * k).clamp(0.0, 1.0) * 255.0).round() as u8;
-        Rgba(f(col[0]), f(col[1]), f(col[2]), 255)
-    };
-    // Himmel (oben) und Boden
-    let sky_top = t.env.sky.last().map_or(t.ui.bg, |x| x.1);
-    let sky_low = t.env.sky.first().map_or(t.ui.bg, |x| x.1);
-    let horizon = r.y + r.h * 0.62;
-    let bg = Canvas::from_fn(r.w as usize, r.h as usize, |_, y| {
-        let fy = r.y + y as f32;
-        if fy >= horizon {
-            t.env.ground
-        } else {
-            mix(
-                sky_top,
-                sky_low,
-                ((fy - r.y) / (horizon - r.y)).clamp(0.0, 1.0),
-            )
-        }
-    });
-    c.blit(&bg, r.x as i32, r.y as i32);
-    // Blick von Südwesten wie die Startansicht: links die Westseite
-    // (−x), rechts die Südseite (−y), oben das Dach (+z)
-    let a = (r.h * 0.34).min(r.w * 0.36);
-    let (cx, cy) = (r.x + r.w * 0.5, r.y + r.h * 0.52);
-    let k = 0.866 * a;
-    let top = (cx, cy - a);
-    let left = (cx - k, cy - a * 0.5);
-    let mid = (cx, cy);
-    let right = (cx + k, cy - a * 0.5);
-    let down = (cx, cy + a);
-    let left_b = (cx - k, cy + a * 0.5);
-    let right_b = (cx + k, cy + a * 0.5);
-    let poly = |c: &mut Canvas, pts: &[(f32, f32)], col: Rgba| {
-        let mut p = Path::new();
-        p.move_to(pts[0].0, pts[0].1);
-        for q in &pts[1..] {
-            p.line_to(q.0, q.1);
-        }
-        p.close();
-        c.fill(&p, col);
-    };
-    let (n_top, n_west, n_south) = ([0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]);
-    poly(c, &[top, right, mid, left], shade(o.color, n_top));
-    poly(c, &[left, mid, down, left_b], shade(o.color, n_west));
-    poly(c, &[mid, right, right_b, down], shade(o.color, n_south));
-    // Aufgeschnittene Ecke: obere Hälfte der Südseite nahe der Ecke
-    let lerp =
-        |p: (f32, f32), q: (f32, f32), f: f32| (p.0 + (q.0 - p.0) * f, p.1 + (q.1 - p.1) * f);
-    let h = 0.5;
-    let p0 = lerp(mid, right, h);
-    let p1 = right;
-    let p2 = lerp(right, right_b, h);
-    let p3 = lerp(p0, lerp(down, right_b, h), h);
-    poly(c, &[p0, p1, p2, p3], shade(o.cut_color, n_south));
-    let lerp_top = lerp(top, right, h);
-    poly(
-        c,
-        &[lerp_top, right, p0, lerp(mid, top, 1.0 - h)],
-        shade(o.cut_color, n_top),
-    );
-    // Kanten
-    let ink = t.env.edge;
-    let lw = (0.9 * s).max(0.8);
-    let mut p = Path::new();
-    for (a, b) in [
-        (top, right),
-        (right, right_b),
-        (right_b, down),
-        (down, left_b),
-        (left_b, left),
-        (left, top),
-        (left, mid),
-        (mid, right),
-        (mid, down),
-    ] {
-        p.segment(a, b, lw);
-    }
-    c.fill(&p, ink);
 }

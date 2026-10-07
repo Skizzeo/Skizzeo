@@ -460,7 +460,7 @@ pub fn pen_users(m: &Model, id: PenId) -> Vec<String> {
 }
 
 /// Zahl mit deutschem Komma.
-fn num(v: f32, decimals: usize) -> String {
+pub(crate) fn num(v: f32, decimals: usize) -> String {
     format!("{v:.decimals$}").replace('.', ",")
 }
 
@@ -654,6 +654,8 @@ pub struct Prefs {
     /// Speicher dient dem nächsten.
     spare: Option<Canvas>,
     spare_px: Vec<u8>,
+    /// Kacheln und Vorschauen der Attributreiter ([`crate::attr_pick`]).
+    tiles: std::cell::RefCell<crate::attr_pick::Tiles>,
 }
 
 impl Prefs {
@@ -689,6 +691,7 @@ impl Prefs {
             mouse: (-1.0, -1.0),
             spare: None,
             spare_px: Vec::new(),
+            tiles: Default::default(),
         }
     }
 

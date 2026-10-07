@@ -5,6 +5,7 @@
 
 #[cfg(test)]
 mod abnahme;
+mod attr_pick;
 mod autosave;
 mod backup_card;
 mod camera;
