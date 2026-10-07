@@ -70,7 +70,7 @@ pub struct Want<'a> {
 pub fn chips(wnt: &Want) -> Vec<Chip> {
     let m = wnt.scene.model();
     let mut out = Vec::new();
-    for (run, _, foot) in wnt.scene.stacked_feet() {
+    'runs: for (run, _, foot) in wnt.scene.stacked_feet() {
         if let Some(z) = wnt.plan_z {
             if foot.first().is_some_and(|(a, _)| (a.z - z).abs() >= 1.0) {
                 continue;
@@ -80,6 +80,11 @@ pub fn chips(wnt: &Want) -> Vec<Chip> {
             continue;
         };
         for (k, &(a, b)) in foot.iter().enumerate() {
+            // Mehr Plätze gibt es nicht: was nicht gezeigt wird, ist auch
+            // nicht klickbar, und die Sichtprüfung spart sich den Rest
+            if out.len() >= SLOTS {
+                break 'runs;
+            }
             let Some(wall) = m.wall_at(run, k) else {
                 continue;
             };
@@ -336,5 +341,69 @@ mod tests {
             .clone()
             .any(|(x, y)| px(&on, x, y) == (a.0, a.1, a.2, 255)));
         assert!(!on_px.any(|(x, y)| px(&off, x, y) == (a.0, a.1, a.2, 255)));
+    }
+    /// Mehr gelöste Segmente als Plätze: Es gibt nur so viele Plättchen,
+    /// wie gezeigt werden können; ein ungezeigtes ist nicht klickbar.
+    #[test]
+    fn hoechstens_so_viele_wie_plaetze() {
+        use sk_math::vec3;
+        let mut s = Scene::new();
+        s.edit_model("Gebäude erstellt", |m| {
+            m.add_building(2);
+            true
+        });
+        let b = s.model().buildings().ids().last().unwrap();
+        let eg = s.model().ground_of(Some(b)).unwrap();
+        s.set_active_storey(eg);
+        // Zahnkante mit 20 Segmenten
+        let mut points = vec![vec3(0.0, 0.0, 0.0)];
+        for i in 0..4 {
+            let x = i as f64 * 3000.0;
+            points.push(vec3(x + 1500.0, 0.0, 0.0));
+            points.push(vec3(x + 1500.0, -1000.0, 0.0));
+            points.push(vec3(x + 3000.0, -1000.0, 0.0));
+            points.push(vec3(x + 3000.0, 0.0, 0.0));
+        }
+        points.push(vec3(12000.0, 9000.0, 0.0));
+        points.push(vec3(0.0, 9000.0, 0.0));
+        s.add_wall(&sk_model::WallChain {
+            base: 0.0,
+            points,
+            closed: true,
+            ref_side: sk_model::RefSide::Center,
+            layers: Vec::new(),
+            height: 2750.0,
+            joints: Default::default(),
+        })
+        .unwrap();
+        let m = s.model();
+        let og: Vec<ElementId> = m
+            .elements()
+            .iter()
+            .map(|(w, _)| w)
+            .filter(|w| m.stack_offset(*w).is_some())
+            .collect();
+        assert!(og.len() > SLOTS, "{}", og.len());
+        for w in og {
+            s.set_linked(w, false);
+        }
+        let z = s.stacked_feet().next().unwrap().2[0].0.z;
+        let cam = Camera::looking_at(
+            vec3(6000.0, 4000.0, 60000.0),
+            vec3(6000.0, 4000.0, 0.0),
+            45.0,
+        );
+        let c = chips(&Want {
+            scene: &s,
+            cam: &cam,
+            w: 1600.0,
+            h: 1000.0,
+            top: 32.0,
+            scale: 1.0,
+            plan_z: Some(z),
+            band: None,
+            hover: None,
+        });
+        assert_eq!(c.len(), SLOTS);
     }
 }

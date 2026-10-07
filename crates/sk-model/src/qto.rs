@@ -68,6 +68,10 @@ pub struct WallQto {
     pub facing_support: f64,
 }
 
+/// Kleinste Dicke einer Vorsatzschale, die über einem Vorsprung abgefangen
+/// wird (mm). Dünnere Schalen und Putz tragen sich am Dämmsystem.
+pub const MIN_FACING: f64 = 70.0;
+
 /// Herabgezogene Außenschichten der Wand über `below` (G7 K4): je Segment
 /// und Schicht (Volumen mm³, Außenfläche mm²), je Segment die Abfangung des
 /// Verblenders (mm).
@@ -98,13 +102,15 @@ fn extension(model: &Model, below: &WallChain, set: &LayerSet) -> Option<Extensi
             continue;
         };
         let air = l.function == LayerFunction::AirGap;
-        // Verblender: Vorsatzschale außen vor dem Kern, weder Dämmung noch Luft
+        // Verblender: Vorsatzschale aus Mauerwerk oder Beton vor dem Kern, ab
+        // MIN_FACING dick; Putz, Dämmung und Luft werden nie abgefangen (BIM)
         let facing = li < core
             && !air
             && l.function != LayerFunction::Insulation
-            && model
-                .material(l.material)
-                .is_some_and(|x| !matches!(x.category, MatCategory::Insulation | MatCategory::Air));
+            && l.thickness >= MIN_FACING
+            && model.material(l.material).is_some_and(|x| {
+                matches!(x.category, MatCategory::Masonry | MatCategory::Concrete)
+            });
         let (ga, gb) = (
             ext.face_corners_in(a, Some(li)),
             ext.face_corners_in(b, Some(li)),

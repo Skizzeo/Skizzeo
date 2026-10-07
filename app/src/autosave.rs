@@ -141,6 +141,9 @@ pub struct AutoSave {
     outcome: Option<bool>,
 }
 
+/// Abstand, in dem die Ereignisschleife nach einem schreibenden Faden sieht.
+const JOB_POLL: Duration = Duration::from_millis(50);
+
 impl AutoSave {
     /// Sichert in den Ordner `dir`.
     pub fn new(dir: PathBuf) -> AutoSave {
@@ -238,8 +241,13 @@ impl AutoSave {
     }
 
     /// Wie lange bis zur nächsten Sicherung (Ereignisschleife); `None`, wenn
-    /// nichts zu sichern ist.
+    /// nichts zu sichern ist. Schreibt ein Faden noch, kurz: Sein Ergebnis
+    /// (Hinweiskarte bei Fehlschlag, §8) soll nicht auf die nächste Eingabe
+    /// warten.
     pub fn wait(&self, m: &Model, doc: &Document, now: Duration) -> Option<Duration> {
+        if self.job.is_some() {
+            return Some(JOB_POLL);
+        }
         if !self.changed(m, doc) {
             return None;
         }
@@ -629,6 +637,9 @@ mod tests {
         let t = |min: u64| Duration::from_secs(min * 60);
         assert_eq!(a.tick(&m, &doc, t(0)), None);
         assert!(a.tick(&m, &doc, t(5)).is_some(), "fällig, Faden startet");
+        // Die Schleife sieht bald wieder nach, nicht erst bei der nächsten
+        // Eingabe (Hinweiskarte erscheint auch bei stiller Maus)
+        assert_eq!(a.wait(&m, &doc, t(5)), Some(JOB_POLL));
         while !a.job.as_ref().unwrap().is_finished() {
             std::thread::yield_now();
         }

@@ -5803,6 +5803,58 @@ mod og_phase2 {
         assert_eq!(f.soffit.unwrap().mat, material_key(ins));
     }
 
+    #[test]
+    fn putz_und_duenne_schalen_werden_nicht_abgefangen() {
+        // Vorsatzschale aus Putz (z. B. WDVS mit Oberputz) oder unter 7 cm:
+        // keine Abfangung; Mauerwerk ab 7 cm schon (BIM, Review 1t T5)
+        let plaster = |m: &Model| {
+            m.materials
+                .iter()
+                .find(|(_, x)| x.category == MatCategory::Plaster)
+                .map(|(id, _)| id)
+                .unwrap()
+        };
+        for (putz, dicke, soll) in [(true, 115.0, 0.0), (false, 60.0, 0.0), (false, 70.0, 300.0)] {
+            let (mut m, eg, og) = gebaeude();
+            let t = m
+                .layer_sets
+                .iter()
+                .find(|(_, x)| x.guid == CAVITY_TYPE_GUID)
+                .map(|(id, _)| id)
+                .unwrap();
+            let p = plaster(&m);
+            let l = &mut m.layer_sets.get_mut(t).unwrap().layers[0];
+            if putz {
+                l.material = p;
+            }
+            l.thickness = dicke;
+            for r in [eg, og] {
+                for w in m.run(r).unwrap().segments.clone() {
+                    m.elements.get_mut(w).unwrap().layer_set = Some(t);
+                }
+            }
+            let w = m.wall_at(og, 1).unwrap();
+            let below = m.wall_at(eg, 1).unwrap();
+            set_coupling(
+                &mut m,
+                w,
+                Some(Coupling {
+                    below,
+                    offset: 300.0,
+                    linked: true,
+                }),
+            );
+            m.carry_stack(eg);
+            m.sync_soffits();
+            let o = run_qto(&m, og);
+            assert!(
+                near(o[0].facing_support, soll),
+                "{putz} {dicke}: {}",
+                o[0].facing_support
+            );
+        }
+    }
+
     /// Kanten auf der Höhe `z`, die auf der Geraden x = `x` liegen: Länge.
     fn kante_bei_x(s: &Solid, z: f64, x: f64) -> f64 {
         s.edges

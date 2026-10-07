@@ -125,8 +125,8 @@ impl Category {
             Category::ExteriorWall | Category::Window | Category::EdgeInsulation => Some(330),
             Category::InteriorWall | Category::Door => Some(340),
             Category::Floor => Some(350),
-            // Deckenbekleidung
-            Category::SoffitInsulation => Some(353),
+            // Deckenbekleidung (DIN 276:2018-12; 353 sind dort Deckenbeläge)
+            Category::SoffitInsulation => Some(354),
             Category::GroundSlab | Category::StripFooting => Some(322),
             Category::Roof => Some(360),
             Category::Opening | Category::Space => None,

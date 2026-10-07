@@ -489,7 +489,8 @@ impl WallEdit {
         if side_view(cam) {
             if let Some(d) = &self.drag {
                 if let Some(&(a, b)) = d.original.outer_foot().get(d.seg) {
-                    out.push(dot((a + b) * 0.5, col.drag_ghost, 8.0));
+                    let lift = vec3(0.0, 0.0, d.original.base);
+                    out.push(dot((a + b) * 0.5 + lift, col.drag_ghost, 8.0));
                 }
             }
             let segment = active.and_then(|e| scene.model().segment_of(e));
@@ -506,7 +507,9 @@ impl WallEdit {
         // Wand zusätzlich die Lage des Partners darunter auf ihrer Höhe
         if let Some(d) = &self.drag {
             if let Some(&(a, b)) = d.original.outer_foot().get(d.seg) {
-                out.push(line(a, b, col.drag_ghost, 1.5, 6.0));
+                // Auf Höhe des Wandfußes wie das Band (OG-Wände)
+                let lift = vec3(0.0, 0.0, d.original.base);
+                out.push(line(a + lift, b + lift, col.drag_ghost, 1.5, 6.0));
             }
             let m = scene.model();
             let partner = d
