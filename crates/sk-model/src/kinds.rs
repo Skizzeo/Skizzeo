@@ -61,10 +61,13 @@ pub struct KindSpec {
     /// Typart, die zu Bauteilen der Kategorie passt; `None`: ohne Typ.
     pub type_category: Option<TypeCategory>,
     /// Ein Typ ist Pflicht (Wände). Sonst gilt ohne Typ der gedachte
-    /// Einschicht-Aufbau ([`crate::Model::build_up`]).
+    /// Einschicht-Aufbau ([`crate::Model::element_layers`]).
     pub needs_type: bool,
     /// Gibt es je Gebäude genau einmal (Sätze ohne Zahl).
     pub once: bool,
+    /// ATV-Nummer des Gewerks, wenn der Baustoff keins vorschlägt
+    /// (Paket 1a); bei allen heutigen Arten keins.
+    pub default_trade: Option<&'static str>,
 }
 
 impl KindSpec {
@@ -110,6 +113,7 @@ const EXTERIOR_WALL: KindSpec = KindSpec {
     type_category: Some(TypeCategory::ExteriorWall),
     needs_type: true,
     once: false,
+    default_trade: None,
 };
 
 const INTERIOR_WALL: KindSpec = KindSpec {
@@ -127,6 +131,7 @@ const INTERIOR_WALL: KindSpec = KindSpec {
     type_category: Some(TypeCategory::InteriorWall),
     needs_type: true,
     once: false,
+    default_trade: None,
 };
 
 const FLOOR: KindSpec = KindSpec {
@@ -144,6 +149,7 @@ const FLOOR: KindSpec = KindSpec {
     type_category: Some(TypeCategory::Floor),
     needs_type: false,
     once: false,
+    default_trade: None,
 };
 
 const GROUND_SLAB: KindSpec = KindSpec {
@@ -161,6 +167,7 @@ const GROUND_SLAB: KindSpec = KindSpec {
     type_category: Some(TypeCategory::GroundSlab),
     needs_type: false,
     once: true,
+    default_trade: None,
 };
 
 const ROOF: KindSpec = KindSpec {
@@ -178,6 +185,7 @@ const ROOF: KindSpec = KindSpec {
     type_category: None,
     needs_type: false,
     once: false,
+    default_trade: None,
 };
 
 const WINDOW: KindSpec = KindSpec {
@@ -195,6 +203,7 @@ const WINDOW: KindSpec = KindSpec {
     type_category: None,
     needs_type: false,
     once: false,
+    default_trade: None,
 };
 
 const DOOR: KindSpec = KindSpec {
@@ -212,6 +221,7 @@ const DOOR: KindSpec = KindSpec {
     type_category: None,
     needs_type: false,
     once: false,
+    default_trade: None,
 };
 
 const OPENING: KindSpec = KindSpec {
@@ -229,6 +239,7 @@ const OPENING: KindSpec = KindSpec {
     type_category: None,
     needs_type: false,
     once: false,
+    default_trade: None,
 };
 
 const SPACE: KindSpec = KindSpec {
@@ -246,6 +257,7 @@ const SPACE: KindSpec = KindSpec {
     type_category: None,
     needs_type: false,
     once: false,
+    default_trade: None,
 };
 
 const STRIP_FOOTING: KindSpec = KindSpec {
@@ -263,6 +275,7 @@ const STRIP_FOOTING: KindSpec = KindSpec {
     type_category: Some(TypeCategory::StripFooting),
     needs_type: false,
     once: true,
+    default_trade: None,
 };
 
 /// Über IfcRelAggregates Teil der Wand; im Mengenfenster neben den
@@ -282,6 +295,7 @@ const EDGE_INSULATION: KindSpec = KindSpec {
     type_category: None,
     needs_type: false,
     once: false,
+    default_trade: None,
 };
 
 /// Deckenbekleidung (DIN 276:2018-12; 353 sind dort Deckenbeläge); im
@@ -301,6 +315,7 @@ const SOFFIT_INSULATION: KindSpec = KindSpec {
     type_category: None,
     needs_type: false,
     once: false,
+    default_trade: None,
 };
 
 #[cfg(test)]

@@ -8,6 +8,7 @@ use crate::element::{Category, PropSet};
 use crate::guid::Guid;
 use crate::id::Id;
 use crate::solid::material;
+use crate::trade::TradeId;
 
 pub type MaterialId = Id<Material>;
 pub type LayerSetId = Id<LayerSet>;
@@ -65,6 +66,8 @@ pub struct Material {
     pub cut_bg: PenId,
     /// Oberfläche in 3D.
     pub surface: SurfaceId,
+    /// Gewerk, das der Baustoff für seine Schichten vorschlägt (Paket 1a).
+    pub trade: Option<TradeId>,
 }
 
 /// Die Darstellungsverweise eines Baustoffs: Schnittstelle zwischen BIM und
@@ -106,6 +109,10 @@ pub struct MaterialLayer {
     pub function: LayerFunction,
     /// Gehört zum tragenden Kern.
     pub core: bool,
+    /// Gewerk abweichend vom Baustoff (Paket 1a, [`crate::Model::layer_trade`]).
+    pub trade: Option<TradeId>,
+    /// Kostengruppe abweichend von der Tabelle ([`crate::Model::layer_kg`]).
+    pub kg: Option<u16>,
 }
 
 impl MaterialLayer {
@@ -117,7 +124,15 @@ impl MaterialLayer {
             thickness,
             function,
             core: false,
+            trade: None,
+            kg: None,
         }
+    }
+
+    /// Gewerk abweichend vom Baustoff.
+    pub fn trade(mut self, trade: Option<TradeId>) -> Self {
+        self.trade = trade;
+        self
     }
 
     /// Gehört zum tragenden Kern.
@@ -147,7 +162,7 @@ pub enum Bearing {
 /// Art eines Bauteiltyps: für welche Bauteile er taugt (K1). Wandarten
 /// haben Werkstypen und einen Standardtyp; Decke, Sohlplatte und
 /// Frostschürze kommen ohne Typ aus (gedachter Einschicht-Aufbau,
-/// [`crate::Model::build_up`]) und können einen haben (R4).
+/// [`crate::Model::element_layers`]) und können einen haben (R4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TypeCategory {
     ExteriorWall,

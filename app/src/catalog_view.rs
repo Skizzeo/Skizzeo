@@ -2279,6 +2279,8 @@ impl Catalog {
                     category: nm.cat,
                     density,
                     lambda: lambda.filter(|v| *v > 0.0),
+                    // Gewerk nach Baustoffart (Paket 1a §3)
+                    trade: sk_model::trade::for_category(nm.cat),
                     ..tpl
                 });
                 if let Some(l) = self.draft.layers.get_mut(nm.row) {

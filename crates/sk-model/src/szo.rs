@@ -26,6 +26,7 @@ use crate::library::{
 };
 use crate::model::{Defaults, Model, Project};
 use crate::solid::edge_kind;
+use crate::trade::{self, Trade, TradeId};
 use crate::wall::{segment_count, RefSide};
 use sk_math::vec3;
 use std::cell::Cell;
@@ -557,11 +558,57 @@ pub(crate) fn write_material(
         Some(l) => line.num("lambda", l),
         None => line.word("lambda", "-"),
     };
-    line.guid("fill", fill)
+    let line = line
+        .guid("fill", fill)
         .guid("fg", fg)
         .guid("bg", bg)
-        .guid("surface", surface)
-        .finish(out);
+        .guid("surface", surface);
+    // Gewerk nur, wenn gesetzt (Paket 1a)
+    match x.trade {
+        Some(t) => line.guid("trade", Some(t.0)),
+        None => line,
+    }
+    .finish(out);
+}
+
+/// Gewerke, die ein Baustoff oder eine Schicht nennt, je einmal.
+pub(crate) fn used_trades<'a>(
+    materials: impl Iterator<Item = &'a Material>,
+    types: impl Iterator<Item = &'a LayerSet>,
+) -> Vec<TradeId> {
+    let mut v: Vec<TradeId> = materials
+        .filter_map(|x| x.trade)
+        .chain(types.flat_map(|t| t.layers.iter().filter_map(|l| l.trade)))
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// `[trade]` je verwendetem Gewerk, nach Reihe (Paket 1a §5).
+pub(crate) fn write_trades(out: &mut String, trades: &[Trade], used: &[TradeId]) {
+    for t in trades.iter().filter(|t| used.contains(&t.id())) {
+        Line::new("trade")
+            .guid("guid", Some(t.guid))
+            .text("code", &t.code)
+            .text("name", &t.name)
+            .num("order", t.order)
+            .finish(out);
+    }
+}
+
+/// Gewerke aus `[trade]`, zusammengeführt mit dem Startbestand.
+pub(crate) fn read_trades(recs: &[Record]) -> Result<Vec<Trade>, LoadError> {
+    let mut read = Vec::new();
+    for r in recs {
+        read.push(Trade {
+            guid: r.guid("guid")?,
+            code: r.get("code")?.to_string(),
+            name: r.get("name")?.to_string(),
+            order: r.int("order")?,
+        });
+    }
+    Ok(trade::merge(read))
 }
 
 /// Bauteiltyp mit seinen Schichten und Merkmalen.
@@ -582,13 +629,22 @@ pub(crate) fn write_type(
     }
     line.text("note", &s.note).finish(out);
     for l in &s.layers {
-        Line::new("layer")
+        let line = Line::new("layer")
             .guid("set", Some(s.guid))
             .guid("mat", mat_guid(l.material))
             .num("t", l.thickness)
             .word("fn", layer_function(l.function))
-            .flag("core", l.core)
-            .finish(out);
+            .flag("core", l.core);
+        // Abweichung von Baustoff bzw. Tabelle nur, wenn gesetzt (Paket 1a)
+        let line = match l.trade {
+            Some(t) => line.guid("trade", Some(t.0)),
+            None => line,
+        };
+        match l.kg {
+            Some(k) => line.num("kg", k),
+            None => line,
+        }
+        .finish(out);
     }
     write_props(out, "typeprop", "set", s.guid, &s.props);
 }
@@ -648,6 +704,11 @@ pub fn write(m: &Model) -> String {
         .finish(&mut out);
 
     let mat_guid = |id| m.material(id).map(|x| x.guid);
+    let used = used_trades(
+        m.materials().iter().map(|(_, x)| x),
+        m.layer_sets().iter().map(|(_, t)| t),
+    );
+    write_trades(&mut out, m.trades(), &used);
     for x in sorted(m.materials().iter(), |x| x.guid) {
         let refs = [
             a.fill(x.cut_fill).map(|f| f.guid),
@@ -925,8 +986,8 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     let v3 = version >= 3;
     let mut hints = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 21] = [
-        "pen", "linetype", "fill", "surface", "display", "material", "layerset", "layer",
+    const KNOWN: [&str; 22] = [
+        "pen", "linetype", "fill", "surface", "display", "trade", "material", "layerset", "layer",
         "typeprop", "project", "building", "storey", "run", "wall", "slab", "footing", "floor",
         "strip", "soffit", "prop", "cut",
     ];
@@ -1013,6 +1074,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     )?;
 
     // Bibliothek
+    let trades = read_trades(recs("trade"))?;
     let mut materials = Arena::new();
     let mut mat_ids = HashMap::new();
     for r in recs("material") {
@@ -1560,6 +1622,8 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
             ));
         }
     }
+    model.adopt_trades(trades);
+    hints.extend(model.complete_trades(recs("trade").is_empty()));
     hints.extend(model.complete_pre_b9());
     hints.extend(model.complete_line_types());
     hints.extend(model.complete_pre_b10());
@@ -1720,7 +1784,16 @@ pub(crate) fn read_material(
         cut_fg: r.link("fg", pen_ids)?,
         cut_bg: r.link("bg", pen_ids)?,
         surface: r.link("surface", surface_ids)?,
+        trade: trade_ref(r)?,
     })
+}
+
+/// `trade=` als Verweis; ob es das Gewerk gibt, prüft [`known_trades`].
+fn trade_ref(r: &Record) -> Result<Option<TradeId>, LoadError> {
+    match r.opt("trade") {
+        None => Ok(None),
+        Some(_) => Ok(Some(TradeId(r.guid("trade")?))),
+    }
 }
 
 /// Wert eines Merkmals: `value` (Text), `num` oder `bool`.
@@ -1800,8 +1873,21 @@ pub(crate) fn read_types(
                 r.get("fn")?
             ));
         }
-        let mut layer = MaterialLayer::new(r.link("mat", mat_ids)?, r.f64("t")?, function);
+        let mut layer =
+            MaterialLayer::new(r.link("mat", mat_ids)?, r.f64("t")?, function).trade(trade_ref(r)?);
         layer.core = r.flag("core")?;
+        if r.opt("kg").is_some() {
+            let kg: u16 = r.int("kg")?;
+            // Regel 49: nur Gruppe 300
+            if trade::valid_kg(kg) {
+                layer.kg = Some(kg);
+            } else {
+                passed.hints.push(format!(
+                    "Zeile {}: Kostengruppe {kg} ungültig, übergangen",
+                    r.line
+                ));
+            }
+        }
         set_layers.entry(set).or_default().push(layer);
     }
     let mut set_props: HashMap<Guid, PropSet> = HashMap::new();
@@ -2516,11 +2602,11 @@ mod tests {
         let m = house();
         let mut seen = Vec::new();
         for (id, e) in m.elements().iter() {
-            let a = m.build_up(id);
+            let a = m.element_layers(id);
             match e.kind {
                 ElementKind::Wall(_) => {
                     let t = m.layer_set(e.layer_set.unwrap()).unwrap();
-                    assert_eq!(a.as_deref(), Some(&t.layers[..]));
+                    assert_eq!(a, t.layers);
                 }
                 ElementKind::Floor(_)
                 | ElementKind::GroundSlab(_)
@@ -2531,10 +2617,10 @@ mod tests {
                         LayerFunction::Structure,
                     )
                     .core();
-                    assert_eq!(a, Some(vec![one]), "{}", e.number);
+                    assert_eq!(a, vec![one], "{}", e.number);
                     seen.push(e.category);
                 }
-                _ => assert_eq!(a, None, "{}", e.number),
+                _ => assert!(a.len() <= 1, "{}", e.number),
             }
         }
         for c in [
@@ -2556,13 +2642,13 @@ mod tests {
         let mat = m.element(de).unwrap().kind.material().unwrap();
         assert!(m.set_slab_type(de, Some(t)));
         assert_eq!(m.element(de).unwrap().layer_set, Some(t));
-        let a = m.build_up(de).unwrap();
+        let a = m.element_layers(de);
         assert_eq!(a.len(), 2);
         assert_eq!(a.iter().map(|l| l.thickness).sum::<f64>(), 50.0 + dicke);
         assert_eq!((a[1].core, a[1].material), (true, mat));
         assert!(m.check().is_empty(), "{:?}", m.check());
         assert!(m.set_floor_thickness(de, 250.0));
-        assert_eq!(m.build_up(de).unwrap()[1].thickness, 250.0);
+        assert_eq!(m.element_layers(de)[1].thickness, 250.0);
         // Regel 37: Wandtyp an der Decke, Deckentyp an der Sohlplatte
         let aw = m.defaults().exterior_wall;
         assert!(!m.set_slab_type(de, Some(aw)));
@@ -2588,7 +2674,7 @@ mod tests {
             back.hints
         );
         assert!(m.set_slab_type(de, None));
-        assert_eq!(m.build_up(de).unwrap().len(), 1);
+        assert_eq!(m.element_layers(de).len(), 1);
         // Regel 38 am Typ: waagerecht genau ein Kern
         let mut zwei = m.layer_set(t).unwrap().clone();
         zwei.layers[0].core = true;
@@ -2621,8 +2707,7 @@ mod tests {
         assert_eq!(write(&back.model), mit, "Rundlauf bytegleich");
         let de2 = nach_guid(&back.model, m.element(de).unwrap().guid);
         let form = |m: &Model, id| {
-            m.build_up(id)
-                .unwrap()
+            m.element_layers(id)
                 .iter()
                 .map(|l| (m.material(l.material).unwrap().guid, l.thickness, l.core))
                 .collect::<Vec<_>>()
@@ -2663,7 +2748,7 @@ mod tests {
         );
         let de2 = nach_guid(&back.model, m.element(de).unwrap().guid);
         assert_eq!(back.model.element(de2).unwrap().layer_set, None);
-        assert_eq!(back.model.build_up(de2).unwrap().len(), 1);
+        assert_eq!(back.model.element_layers(de2).len(), 1);
         assert!(back
             .model
             .layer_sets()

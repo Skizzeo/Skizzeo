@@ -17,6 +17,7 @@ use crate::model::{free_code, same_type, Model, ETICS_TYPE_GUID, EXTERIOR_TYPE_G
 use crate::szo::{
     self, check_header, err, keyword, register, sorted, type_category, Line, LoadError, Record,
 };
+use crate::trade::{self, Trade};
 use std::collections::HashMap;
 
 /// Hauptversion des Formats.
@@ -32,6 +33,8 @@ pub struct Library {
     pub surfaces: Arena<Surface>,
     pub materials: Arena<Material>,
     pub types: Arena<LayerSet>,
+    /// Gewerke (Paket 1a); geschrieben werden nur die verwendeten.
+    pub trades: Vec<Trade>,
     /// Standardtypen für neue Projekte.
     pub default_exterior: Option<LayerSetId>,
     pub default_interior: Option<LayerSetId>,
@@ -92,7 +95,10 @@ impl Library {
     /// Alle Typen eines Projekts mit seinen Standardtypen, z. B. der
     /// eingebaute Startbestand aus [`Model::new`].
     pub fn from_model(m: &Model) -> Library {
-        let mut lib = Library::default();
+        let mut lib = Library {
+            trades: m.trades().to_vec(),
+            ..Library::default()
+        };
         let mut order: Vec<Guid> = m.layer_sets().iter().map(|(_, t)| t.guid).collect();
         order.sort();
         for g in order {
@@ -272,6 +278,11 @@ fn write_known(lib: &Library) -> String {
         szo::write_surface(&mut out, s);
     }
     let pen = |id| lib.pens.get(id).map(|p| p.guid);
+    let used = szo::used_trades(
+        lib.materials.iter().map(|(_, x)| x),
+        lib.types.iter().map(|(_, t)| t),
+    );
+    szo::write_trades(&mut out, &lib.trades, &used);
     for x in sorted(lib.materials.iter(), |x| x.guid) {
         let refs = [
             lib.fills.get(x.cut_fill).map(|f| f.guid),
@@ -307,8 +318,8 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     check_header(text.lines().next(), "SZK", VERSION)?;
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 10] = [
-        "pen", "linetype", "fill", "surface", "material", "layerset", "layer", "typeprop",
+    const KNOWN: [&str; 11] = [
+        "pen", "linetype", "fill", "surface", "trade", "material", "layerset", "layer", "typeprop",
         "default", "stock",
     ];
     let mut foreign = Foreign::default();
@@ -361,9 +372,17 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
         let id = lib.surfaces.insert(s);
         register(&mut surface_ids, &mut seen, r, g, id)?;
     }
+    // Gewerke (Paket 1a). Baustoffe älterer Kataloge bleiben ohne, damit
+    // ihre Zeilen gleich bleiben; sie bekommen ihr Gewerk beim Übernehmen
+    lib.trades = szo::read_trades(recs("trade"))?;
     let mut mat_ids = HashMap::new();
     for r in recs("material") {
-        let x = szo::read_material(r, &fill_ids, &pen_ids, &surface_ids)?;
+        let mut x = szo::read_material(r, &fill_ids, &pen_ids, &surface_ids)?;
+        if x.trade
+            .is_some_and(|t| !lib.trades.iter().any(|y| y.id() == t))
+        {
+            x.trade = None;
+        }
         let g = x.guid;
         let id = lib.materials.insert(x);
         register(&mut mat_ids, &mut seen, r, g, id)?;
@@ -544,6 +563,8 @@ pub fn import_type(m: &mut Model, lib: &Library, g: Guid) -> Option<LayerSetId> 
                     cut_fg: d.cut_fg,
                     cut_bg: d.cut_bg,
                     surface: d.surface,
+                    // Kataloge vor Paket 1a: Gewerk wie bei alten Projekten
+                    trade: x.trade.or_else(|| trade::for_material(&x.name, x.category)),
                     ..x.clone()
                 })
             }
@@ -553,6 +574,17 @@ pub fn import_type(m: &mut Model, lib: &Library, g: Guid) -> Option<LayerSetId> 
     for l in &t.layers {
         let id = material(m, l.material)?;
         layers.push(l.with_material(id));
+    }
+    // Gewerke, die Baustoffe und Schichten nennen, kommen mit
+    for id in szo::used_trades(
+        t.layers
+            .iter()
+            .filter_map(|l| lib.materials.get(l.material)),
+        std::iter::once(&t),
+    ) {
+        if let Some(x) = lib.trades.iter().find(|x| x.id() == id) {
+            m.ensure_trade(x);
+        }
     }
     let bearing = match t.bearing {
         Bearing::Core => Bearing::Core,
@@ -668,6 +700,17 @@ pub fn export_type(m: &Model, lib: &mut Library, g: Guid) -> bool {
             return false;
         };
         layers.push(l.with_material(id));
+    }
+    for id in szo::used_trades(
+        t.layers.iter().filter_map(|l| m.material(l.material)),
+        std::iter::once(&t),
+    ) {
+        if let Some(x) = m.trade(id) {
+            if !lib.trades.iter().any(|y| y.guid == x.guid) {
+                lib.trades.push(x.clone());
+                lib.trades.sort_by_key(|t| (t.order, t.guid));
+            }
+        }
     }
     let bearing = match t.bearing {
         Bearing::Core => Bearing::Core,
@@ -814,6 +857,54 @@ mod tests {
         let back = read_szk(&text).unwrap();
         assert_eq!(back, lib);
         assert_eq!(write_szk(&back), text);
+    }
+
+    /// Paket 1a: Der Katalog schreibt die verwendeten Gewerke und liest sie
+    /// wieder; ein eigenes Gewerk an einer Schicht kommt beim Übernehmen
+    /// mit ins Projekt.
+    #[test]
+    fn gewerke_im_katalog() {
+        let mut lib = Library::standard();
+        let text = write_szk(&lib);
+        let codes: Vec<&str> = text
+            .lines()
+            .filter(|l| l.starts_with("[trade] "))
+            .map(|l| {
+                l.split("code=\"")
+                    .nth(1)
+                    .unwrap()
+                    .split('"')
+                    .next()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(codes, ["18330", "18345"], "nach Reihe, nur verwendete");
+        assert_eq!(read_szk(&text).unwrap(), lib);
+
+        let eigen = Trade {
+            guid: Guid(0x1a7e),
+            code: "F-1".into(),
+            name: "Eigenes Gewerk".into(),
+            order: 90,
+        };
+        lib.trades.push(eigen.clone());
+        let t = lib.types.ids().next().unwrap();
+        let mut typ = lib.types.get(t).unwrap().clone();
+        typ.guid = Guid(0x1a7f);
+        typ.code = "AW-F".into();
+        typ.layers[0].trade = Some(eigen.id());
+        typ.layers[0].kg = Some(336);
+        lib.types.insert(typ);
+        let text = write_szk(&lib);
+        assert!(text.contains("code=\"F-1\""));
+        let back = read_szk(&text).unwrap();
+        assert_eq!(back, lib);
+
+        let mut m = Model::with_seed(1);
+        let id = import_type(&mut m, &back, Guid(0x1a7f)).unwrap();
+        assert_eq!(m.trade(eigen.id()), Some(&eigen));
+        assert_eq!(m.layer_set(id).unwrap().layers[0].kg, Some(336));
+        assert!(m.check().is_empty(), "{:?}", m.check());
     }
 
     /// F-17 (R4): Ein Typ unbekannter Art samt Schichten und Standard bleibt

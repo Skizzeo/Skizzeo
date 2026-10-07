@@ -23,6 +23,7 @@ use crate::library::{
     MaterialDisplay, MaterialId, MaterialLayer, TypeCategory,
 };
 use crate::solid::material;
+use crate::trade::{self, Trade, TradeId};
 use crate::txn::{Change, Direction, Key, Open, Touched, Txn};
 use crate::wall::{
     clean_points, cross2, segment_count, EndCut, Layer, Overhang, RefSide, WallChain,
@@ -78,6 +79,9 @@ pub struct Model {
     attr: Attributes,
     materials: Arena<Material>,
     layer_sets: Arena<LayerSet>,
+    /// Gewerke nach Reihe (Paket 1a): Startbestand, Firmenanpassungen aus
+    /// der Datei.
+    trades: Vec<Trade>,
     buildings: Arena<Building>,
     storeys: Arena<Storey>,
     elements: Arena<Element>,
@@ -181,6 +185,7 @@ impl Model {
                 cut_fg: st.hatch_pen,
                 cut_bg: st.background,
                 surface,
+                trade: None,
             })
         };
         use MatCategory as C;
@@ -331,6 +336,7 @@ impl Model {
                     cut_fg: st.hatch_pen,
                     cut_bg: st.background,
                     surface,
+                    trade: None,
                 })
             };
         let facing = mat(
@@ -441,11 +447,19 @@ impl Model {
             strip: edge,
         };
         layer_sets.insert(mono);
+        // Paket 1a: Gewerk je Startbaustoff
+        let ids: Vec<MaterialId> = materials.ids().collect();
+        for id in ids {
+            if let Some(x) = materials.get_mut(id) {
+                x.trade = trade::for_material(&x.name, x.category);
+            }
+        }
         Model {
             project,
             attr,
             materials,
             layer_sets,
+            trades: trade::start_trades(),
             buildings: Arena::new(),
             storeys,
             elements: Arena::new(),
@@ -504,6 +518,7 @@ impl Model {
             attr,
             materials,
             layer_sets,
+            trades: trade::start_trades(),
             buildings,
             storeys,
             elements,
@@ -3476,19 +3491,47 @@ impl Model {
     /// §1.3): bei Wänden die Schichten des Typs. Decke, Sohlplatte und
     /// Frostschürze haben ohne Typ den gedachten Einschicht-Aufbau aus
     /// Baustoff und Dicke (Breite); mit Typ dessen Schichten von oben nach
-    /// unten, die Kernschicht mit Dicke und Baustoff vom Bauteil. `None`:
-    /// ohne eigenen Aufbau (Randdämmstreifen, Untersichtdämmung folgen
-    /// Wandtyp und Decke).
-    pub fn build_up(&self, id: ElementId) -> Option<Vec<MaterialLayer>> {
-        let e = self.element(id)?;
+    /// unten, die Kernschicht mit Dicke und Baustoff vom Bauteil.
+    /// Randdämmstreifen und Untersichtdämmung haben eine eingebaute Schicht
+    /// aus Wandtyp bzw. Decke; die der Untersichtdämmung gehört zum
+    /// Fassadensystem (Paket 1a). Leer: ohne Baustoff.
+    pub fn element_layers(&self, id: ElementId) -> Vec<MaterialLayer> {
+        let Some(e) = self.element(id) else {
+            return Vec::new();
+        };
         let typ = e.layer_set.and_then(|t| self.layer_set(t));
-        if let ElementKind::Wall(_) = e.kind {
-            return typ.map(|t| t.layers.clone());
+        match e.kind {
+            ElementKind::Wall(_) => return typ.map(|t| t.layers.clone()).unwrap_or_default(),
+            ElementKind::EdgeStrip { wall, .. } => {
+                let t = self
+                    .element(wall)
+                    .and_then(|w| w.layer_set)
+                    .and_then(|t| self.layer_set(t));
+                return t
+                    .and_then(|t| Some((t.strip_material()?, t.strip_width()?)))
+                    .map(|(m, w)| vec![MaterialLayer::new(m, w, LayerFunction::Insulation)])
+                    .unwrap_or_default();
+            }
+            ElementKind::SoffitInsulation { floor } => {
+                let Some(ElementKind::Floor(f)) = self.element(floor).map(|x| &x.kind) else {
+                    return Vec::new();
+                };
+                return self
+                    .soffit_material_of(floor)
+                    .map(|m| {
+                        vec![
+                            MaterialLayer::new(m, f.soffit.thickness, LayerFunction::Insulation)
+                                .trade(trade::soffit()),
+                        ]
+                    })
+                    .unwrap_or_default();
+            }
+            _ => {}
         }
-        let material = e.kind.material()?;
-        let thickness = e.kind.core_thickness()?;
-        let core = MaterialLayer::new(material, thickness, LayerFunction::Structure).core();
-        Some(match typ.filter(|t| t.category.variable_core()) {
+        let (Some(material), Some(thickness)) = (e.kind.material(), e.kind.core_thickness()) else {
+            return Vec::new();
+        };
+        match typ.filter(|t| t.category.variable_core()) {
             Some(t) => t
                 .layers
                 .iter()
@@ -3502,8 +3545,173 @@ impl Model {
                     }
                 })
                 .collect(),
-            None => vec![core],
+            None => vec![MaterialLayer::new(material, thickness, LayerFunction::Structure).core()],
+        }
+    }
+
+    /// Gewerk der Schicht `i` von [`Model::element_layers`]: Schicht vor
+    /// Baustoff vor Bauteilart (R4 §3). `None`: kein Gewerk (Luft).
+    pub fn layer_trade(&self, id: ElementId, i: usize) -> Option<TradeId> {
+        let l = *self.element_layers(id).get(i)?;
+        l.trade
+            .or_else(|| self.material(l.material)?.trade)
+            .or_else(|| {
+                let c = crate::kinds::spec(self.element(id)?.category).default_trade?;
+                self.trade_by_code(c)
+            })
+    }
+
+    /// Kostengruppe der Schicht `i` (DIN 276:2018): die an der Schicht,
+    /// sonst nach Bauteilart und Lage zum Kern (paket-1a §4). Innenwände
+    /// tragen ab 175 mm Kern (341), sonst 342.
+    pub fn layer_kg(&self, id: ElementId, i: usize) -> Option<u16> {
+        let e = self.element(id)?;
+        let layers = self.element_layers(id);
+        let l = layers.get(i)?;
+        if l.kg.is_some() {
+            return l.kg;
+        }
+        let first = layers.iter().position(|l| l.core);
+        let last = layers.iter().rposition(|l| l.core);
+        let core: f64 = layers.iter().filter(|l| l.core).map(|l| l.thickness).sum();
+        // (vor bzw. über dem Kern, Kern, hinter bzw. unter dem Kern)
+        let (before, at, after) = match e.category {
+            Category::ExteriorWall => (335, 331, 336),
+            Category::InteriorWall if core >= 175.0 - 1e-6 => (345, 341, 345),
+            Category::InteriorWall => (345, 342, 345),
+            Category::Floor => (353, 351, 354),
+            Category::GroundSlab => (324, 322, 325),
+            Category::StripFooting => (322, 322, 322),
+            // ohne Kern: Teil der Deckenrandschale bzw. Deckenbekleidung
+            Category::EdgeInsulation => return Some(331),
+            Category::SoffitInsulation => return Some(354),
+            c => return c.din276(),
+        };
+        Some(match (first, last) {
+            (Some(f), _) if i < f => before,
+            (_, Some(l)) if i > l => after,
+            (Some(_), Some(_)) => at,
+            _ => return e.category.din276(),
         })
+    }
+
+    /// Gewerke nach Reihe.
+    pub fn trades(&self) -> &[Trade] {
+        &self.trades
+    }
+
+    pub fn trade(&self, id: TradeId) -> Option<&Trade> {
+        self.trades.iter().find(|t| t.guid == id.0)
+    }
+
+    /// Gewerk mit der ATV-Nummer `code`.
+    pub fn trade_by_code(&self, code: &str) -> Option<TradeId> {
+        self.trades.iter().find(|t| t.code == code).map(Trade::id)
+    }
+
+    /// Nimmt ein Gewerk aus dem Firmenkatalog auf, falls es fehlt
+    /// (gleiche Guid: das Projekt behält seins).
+    pub(crate) fn ensure_trade(&mut self, t: &Trade) {
+        if self.trade(t.id()).is_none() {
+            self.trades.push(t.clone());
+            self.trades.sort_by_key(|t| (t.order, t.guid));
+        }
+    }
+
+    /// Gewerke aus einer Datei ([`trade::merge`]).
+    pub(crate) fn adopt_trades(&mut self, trades: Vec<Trade>) {
+        self.trades = trades;
+    }
+
+    /// Nach dem Laden (Paket 1a §3, §5): Dateien vor 1a (`old`, ohne
+    /// `[trade]`) bekommen still die Gewerke der Startbaustoffe bzw. nach
+    /// Baustoffart. Verweise auf unbekannte Gewerke fallen mit Hinweis weg.
+    /// Gilt nicht als Änderung.
+    pub(crate) fn complete_trades(&mut self, old: bool) -> Vec<String> {
+        let mut hints = Vec::new();
+        let known: Vec<TradeId> = self.trades.iter().map(Trade::id).collect();
+        let ids: Vec<MaterialId> = self.materials.ids().collect();
+        for id in ids {
+            let Some(x) = self.materials.get_mut(id) else {
+                continue;
+            };
+            if old && x.trade.is_none() {
+                x.trade = trade::for_material(&x.name, x.category);
+            } else if x.trade.is_some_and(|t| !known.contains(&t)) {
+                hints.push(format!("Baustoff „{}“: Gewerk unbekannt, entfernt", x.name));
+                x.trade = None;
+            }
+        }
+        let ids: Vec<LayerSetId> = self.layer_sets.ids().collect();
+        for id in ids {
+            let Some(t) = self.layer_sets.get_mut(id) else {
+                continue;
+            };
+            for l in &mut t.layers {
+                if l.trade.is_some_and(|g| !known.contains(&g)) {
+                    hints.push(format!(
+                        "Typ {}: Gewerk einer Schicht unbekannt, entfernt",
+                        t.code
+                    ));
+                    l.trade = None;
+                }
+            }
+        }
+        hints
+    }
+
+    /// Gewerk, das der Baustoff vorschlägt (`None`: keins). `false`:
+    /// unbekannter Baustoff oder Gewerk.
+    pub fn set_material_trade(&mut self, id: MaterialId, t: Option<TradeId>) -> bool {
+        if t.is_some_and(|t| self.trade(t).is_none()) {
+            return false;
+        }
+        let Some(x) = self.materials.get(id) else {
+            return false;
+        };
+        if x.trade == t {
+            return true;
+        }
+        note!(self, Material, self.materials, id);
+        if let Some(x) = self.materials.get_mut(id) {
+            x.trade = t;
+        }
+        self.touch();
+        true
+    }
+
+    /// Gewerk an Schicht `i` des Typs abweichend vom Baustoff (`None`:
+    /// wie der Baustoff); alle Bauteile des Typs folgen.
+    pub fn set_layer_trade(&mut self, typ: LayerSetId, i: usize, t: Option<TradeId>) -> bool {
+        if t.is_some_and(|t| self.trade(t).is_none()) {
+            return false;
+        }
+        self.edit_layer(typ, i, |l| l.trade = t)
+    }
+
+    /// Kostengruppe an Schicht `i` des Typs (`None`: nach Tabelle); nur
+    /// 311–399 (Regel 49).
+    pub fn set_layer_kg(&mut self, typ: LayerSetId, i: usize, kg: Option<u16>) -> bool {
+        if kg.is_some_and(|k| !trade::valid_kg(k)) {
+            return false;
+        }
+        self.edit_layer(typ, i, |l| l.kg = kg)
+    }
+
+    fn edit_layer(
+        &mut self,
+        typ: LayerSetId,
+        i: usize,
+        f: impl FnOnce(&mut MaterialLayer),
+    ) -> bool {
+        let Some(mut t) = self.layer_sets.get(typ).cloned() else {
+            return false;
+        };
+        let Some(l) = t.layers.get_mut(i) else {
+            return false;
+        };
+        f(l);
+        self.set_layer_set(typ, t)
     }
 
     /// Setzt den Typ einer Decke, Sohlplatte oder Frostschürze; `None`
@@ -4985,8 +5193,22 @@ impl Model {
                 if !self.materials.contains(l.material) {
                     out.push(format!("Aufbau {}: Baustoff fehlt", s.name));
                 }
+                // Regel 47 und 49: Gewerk lebt, KG in der Gruppe 300
+                if l.trade.is_some_and(|t| self.trade(t).is_none()) {
+                    out.push(format!("Aufbau {}: Gewerk fehlt", s.name));
+                }
+                if l.kg.is_some_and(|k| !trade::valid_kg(k)) {
+                    out.push(format!("Aufbau {}: Kostengruppe ungültig", s.name));
+                }
             }
         }
+        for (_, x) in self.materials.iter() {
+            if x.trade.is_some_and(|t| self.trade(t).is_none()) {
+                out.push(format!("Baustoff {}: Gewerk fehlt", x.name));
+            }
+        }
+        // Regel 48: Gewerke eindeutig
+        out.extend(trade::problems(&self.trades));
         for j in &self.joins {
             if self.segment_of(j.a).map(|s| s.0) != Some(j.a_run)
                 || self.segment_of(j.b).map(|s| s.0) != Some(j.b_run)
