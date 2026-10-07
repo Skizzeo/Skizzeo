@@ -170,7 +170,7 @@ pub(super) fn attr_unit(f: FieldId) -> &'static str {
         FieldId::Dash(..) | FieldId::Hatch(_, 1..) => "mm",
         FieldId::Hatch(_, 0) => "°",
         FieldId::PatLen | FieldId::PatH | FieldId::PatJoint | FieldId::PatGrain => "mm",
-        FieldId::PatShare(_) | FieldId::PatSpread => "%",
+        FieldId::PatShare(_) | FieldId::PatSpread | FieldId::PatFlame | FieldId::PatRelief => "%",
         _ => "",
     }
 }
@@ -647,10 +647,11 @@ impl Prefs {
             *y += step;
         };
         row(l, &mut y, "Art", cw, Target::Combo(ComboId::PatKind));
-        let random = |l: &mut AttrLayout, y: f32| {
-            let bx = vx + short + 8.0 * s;
-            let r = Rect::new(bx, y, (vx + cw - bx).max(60.0 * s), fh);
+        // „Zufall“ in eigener Zeile unter den Werten (soll-p6-5)
+        let random = |l: &mut AttrLayout, y: &mut f32| {
+            let r = Rect::new(vx, *y, (cw * 0.6).max(60.0 * s), fh);
             l.items.push((r, Target::PatRandom));
+            *y += step;
         };
         match &o.pattern {
             Some(Pattern::Masonry { len, h, .. }) => {
@@ -675,35 +676,59 @@ impl Prefs {
                 row(l, &mut y, "Verband", cw, Target::Combo(ComboId::PatBond));
                 let (ww, wh) = (t.size.swatch_w * s, t.size.swatch_h * s);
                 let fw = ((cw - 2.0 * 6.0 * s) / 3.0).floor();
-                l.texts.push(UiText::label(x, y + 18.0 * s, "Steinfarben"));
+                // Farbe mit Anteil daneben (soll-p6-5, Einstellungen (aj))
+                let share_w = (fw - ww.min(fw) - 4.0 * s).max(30.0 * s);
+                l.texts.push(UiText::label(x, y + 18.0 * s, "Läuferfarben"));
                 for k in 0..3 {
                     let cx = vx + k as f32 * (fw + 6.0 * s);
                     l.items.push((
                         Rect::new(cx, y + (fh - wh) * 0.5, ww.min(fw), wh),
                         Target::Swatch(ColorTarget::PatStone(id, k)),
                     ));
+                    let r = Rect::new(cx + fw - share_w, y, share_w, fh);
+                    if k < 2 {
+                        l.items.push((r, Target::Field(FieldId::PatShare(k))));
+                    } else {
+                        let rest = self.pat_value(FieldId::PatShare(2), m);
+                        l.readonly.push((r, format!("{rest} %")));
+                    }
                 }
                 y += step;
-                l.texts.push(UiText::label(x, y + 18.0 * s, "Anteile"));
-                for k in 0..2 {
-                    l.items.push((
-                        Rect::new(vx + k as f32 * (fw + 6.0 * s), y, fw, fh),
-                        Target::Field(FieldId::PatShare(k)),
-                    ));
+                if let Some(Pattern::Masonry { hpal: Some(hp), .. }) = &o.pattern {
+                    l.texts.push(UiText::label(x, y + 18.0 * s, "Kopffarben"));
+                    for (k, (_, a)) in hp.iter().enumerate().filter(|(_, c)| c.1 > 0.0) {
+                        let cx = vx + k as f32 * (fw + 6.0 * s);
+                        l.items.push((
+                            Rect::new(cx, y + (fh - wh) * 0.5, ww.min(fw), wh),
+                            Target::Swatch(ColorTarget::PatHead(id, k)),
+                        ));
+                        l.readonly.push((
+                            Rect::new(cx + fw - share_w, y, share_w, fh),
+                            format!("{} %", num_short(*a)),
+                        ));
+                    }
+                    y += step;
                 }
-                let rest = self.pat_value(FieldId::PatShare(2), m);
-                l.readonly.push((
-                    Rect::new(vx + 2.0 * (fw + 6.0 * s), y, fw, fh),
-                    format!("{rest} %"),
-                ));
-                y += step;
                 l.texts.push(UiText::label(x, y + 18.0 * s, "Fugenfarbe"));
                 l.items.push((
                     Rect::new(vx, y + (fh - wh) * 0.5, ww, wh),
                     Target::Swatch(ColorTarget::PatJoint(id)),
                 ));
                 y += step;
-                random(l, y);
+                row(
+                    l,
+                    &mut y,
+                    "Flammung",
+                    short,
+                    Target::Field(FieldId::PatFlame),
+                );
+                row(
+                    l,
+                    &mut y,
+                    "Relief",
+                    short,
+                    Target::Field(FieldId::PatRelief),
+                );
                 row(
                     l,
                     &mut y,
@@ -711,6 +736,7 @@ impl Prefs {
                     short,
                     Target::Field(FieldId::PatSpread),
                 );
+                random(l, &mut y);
             }
             Some(Pattern::Plaster { .. }) => {
                 row(
@@ -720,7 +746,6 @@ impl Prefs {
                     short,
                     Target::Field(FieldId::PatGrain),
                 );
-                random(l, y);
                 row(
                     l,
                     &mut y,
@@ -728,17 +753,32 @@ impl Prefs {
                     short,
                     Target::Field(FieldId::PatSpread),
                 );
+                random(l, &mut y);
             }
             _ => {}
         }
-        let mut hint = String::from(
-            "Arten: ohne (Vorgabe), Mauerwerk, Putz, Sichtbeton, Holzschalung, Platten, Naturstein.",
-        );
+        // Hinweise je Zeile (soll-p6-5)
+        let mut hint = if o.pattern.is_none() {
+            String::from(
+                "Arten: ohne (Vorgabe), Mauerwerk, Putz, Sichtbeton, Holzschalung, Platten, \
+                 Naturstein.",
+            )
+        } else {
+            String::new()
+        };
         if o.pattern.is_some() && o.pattern == proctex::factory_for(o.guid) {
-            hint.push_str(" Hier die Werkswerte.");
+            hint.push_str("Werkswerte nach Jörns Vorlage.\n");
+        }
+        if matches!(o.pattern, Some(Pattern::Masonry { .. })) {
+            hint.push_str(
+                "Flammung: rote Läufer laufen zu den Enden grau aus.\n\
+                 Relief: Brandrillen und Sinterpunkte; 0 % = glatt.",
+            );
         }
         if matches!(o.pattern, Some(Pattern::Foreign(_))) {
-            hint = "Muster aus einer neueren Programmversion; bleibt erhalten.".into();
+            hint =
+                "Muster, das diese Programmversion nicht lesen kann; bleibt unverändert erhalten."
+                    .into();
         }
         // Vorschau: rechte Spalte ab der Überschrift „Muster“, sonst darunter
         let (px, mut py) = if right {
@@ -862,6 +902,8 @@ impl Prefs {
             (FieldId::PatSpread, Pattern::Masonry { spread, .. })
             | (FieldId::PatSpread, Pattern::Plaster { spread, .. }) => num_short(spread),
             (FieldId::PatGrain, Pattern::Plaster { grain, .. }) => num_short(grain),
+            (FieldId::PatFlame, Pattern::Masonry { flame, .. }) => num_short(flame),
+            (FieldId::PatRelief, Pattern::Masonry { relief, .. }) => num_short(relief),
             _ => String::new(),
         }
     }
@@ -976,7 +1018,9 @@ impl Prefs {
             | FieldId::PatJoint
             | FieldId::PatShare(_)
             | FieldId::PatSpread
-            | FieldId::PatGrain => {
+            | FieldId::PatGrain
+            | FieldId::PatFlame
+            | FieldId::PatRelief => {
                 let Some((id, mut p)) = self.sel_pattern(m) else {
                     return Ok(());
                 };
@@ -986,6 +1030,8 @@ impl Prefs {
                         h,
                         joint,
                         palette,
+                        flame,
+                        relief,
                         spread,
                         ..
                     } => match f {
@@ -1001,6 +1047,8 @@ impl Prefs {
                             palette[2].1 = 100.0 - v - other;
                         }
                         FieldId::PatSpread => *spread = range("Streuung", 0.0, 20.0, 0, "%")?,
+                        FieldId::PatFlame => *flame = range("Flammung", 0.0, 100.0, 0, "%")?,
+                        FieldId::PatRelief => *relief = range("Relief", 0.0, 100.0, 0, "%")?,
                         _ => return Ok(()),
                     },
                     Pattern::Plaster { grain, spread, .. } => match f {

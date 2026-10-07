@@ -159,6 +159,9 @@ enum FieldId {
     PatShare(usize),
     PatSpread,
     PatGrain,
+    /// Mauerwerk (Paket 7): Flammung und Relief in %.
+    PatFlame,
+    PatRelief,
 }
 
 /// Auswahllisten.
@@ -187,8 +190,9 @@ enum ColorTarget {
     /// Oberfläche: Ansichtsfläche bzw. Schnittfläche in 3D.
     SurfFace(SurfaceId),
     SurfCut(SurfaceId),
-    /// Muster: Steinfarbe 1–3 und Fugenfarbe.
+    /// Muster: Steinfarbe 1–3 (Läufer), Kopffarbe 1–3 und Fugenfarbe.
     PatStone(SurfaceId, usize),
+    PatHead(SurfaceId, usize),
     PatJoint(SurfaceId),
 }
 
@@ -458,7 +462,8 @@ fn role_label(c: ColorTarget) -> &'static str {
         ColorTarget::Pen(_) => "Farbe",
         ColorTarget::SurfFace(_) => "Farbe Ansichtsfläche",
         ColorTarget::SurfCut(_) => "Farbe Schnittfläche 3D",
-        ColorTarget::PatStone(..) => "Steinfarbe",
+        ColorTarget::PatStone(..) => "Läuferfarbe",
+        ColorTarget::PatHead(..) => "Kopffarbe",
         ColorTarget::PatJoint(_) => "Fugenfarbe",
     }
 }
@@ -588,7 +593,9 @@ fn field_range(f: FieldId) -> Option<(f32, f32, usize, &'static str)> {
         | FieldId::PatJoint
         | FieldId::PatShare(_)
         | FieldId::PatSpread
-        | FieldId::PatGrain => None,
+        | FieldId::PatGrain
+        | FieldId::PatFlame
+        | FieldId::PatRelief => None,
     }
 }
 
@@ -612,7 +619,9 @@ fn field_label(f: FieldId) -> &'static str {
         | FieldId::PatJoint
         | FieldId::PatShare(_)
         | FieldId::PatSpread
-        | FieldId::PatGrain => "",
+        | FieldId::PatGrain
+        | FieldId::PatFlame
+        | FieldId::PatRelief => "",
     }
 }
 
@@ -645,6 +654,7 @@ fn role_color(t: &Theme, c: ColorTarget) -> Rgba {
         | ColorTarget::SurfFace(_)
         | ColorTarget::SurfCut(_)
         | ColorTarget::PatStone(..)
+        | ColorTarget::PatHead(..)
         | ColorTarget::PatJoint(_) => t.ui.text,
     }
 }
@@ -2210,7 +2220,9 @@ impl Prefs {
             | FieldId::PatJoint
             | FieldId::PatShare(_)
             | FieldId::PatSpread
-            | FieldId::PatGrain => self.attr_field_value(f, s),
+            | FieldId::PatGrain
+            | FieldId::PatFlame
+            | FieldId::PatRelief => self.attr_field_value(f, s),
         }
     }
 
@@ -2450,13 +2462,19 @@ impl Prefs {
                     Rgba::from_rgb8(if face { o.color } else { o.cut_color })
                 })
             }
-            ColorTarget::PatStone(id, _) | ColorTarget::PatJoint(id) => {
+            ColorTarget::PatStone(id, _)
+            | ColorTarget::PatHead(id, _)
+            | ColorTarget::PatJoint(id) => {
                 let o = s.model().attr().surface(id);
                 match o.and_then(|o| o.pattern.as_ref()) {
                     Some(sk_model::proctex::Pattern::Masonry {
-                        palette, joint_rgb, ..
+                        palette,
+                        hpal,
+                        joint_rgb,
+                        ..
                     }) => Rgba::from_rgb8(match ct {
                         ColorTarget::PatStone(_, k) => palette[k.min(2)].0,
+                        ColorTarget::PatHead(_, k) => hpal.unwrap_or(*palette)[k.min(2)].0,
                         _ => *joint_rgb,
                     }),
                     _ => t.ui.text,
@@ -2496,19 +2514,27 @@ impl Prefs {
                     m.set_surface(id, o)
                 });
             }
-            ColorTarget::PatStone(id, _) | ColorTarget::PatJoint(id) => {
+            ColorTarget::PatStone(id, _)
+            | ColorTarget::PatHead(id, _)
+            | ColorTarget::PatJoint(id) => {
                 out.model |= cx.scene.edit_attr(|m| {
                     let Some(Some(mut p)) = m.attr().surface(id).map(|o| o.pattern.clone()) else {
                         return false;
                     };
                     let sk_model::proctex::Pattern::Masonry {
-                        palette, joint_rgb, ..
+                        palette,
+                        hpal,
+                        joint_rgb,
+                        ..
                     } = &mut p
                     else {
                         return false;
                     };
+                    // Ohne eigene Kopffarben beginnen sie bei den Läuferfarben
+                    let heads = hpal.get_or_insert(*palette);
                     let slot = match ct {
                         ColorTarget::PatStone(_, k) => &mut palette[k.min(2)].0,
+                        ColorTarget::PatHead(_, k) => &mut heads[k.min(2)].0,
                         _ => joint_rgb,
                     };
                     if *slot == [c.0, c.1, c.2] {
@@ -2619,6 +2645,7 @@ impl Prefs {
             ColorTarget::SurfFace(_)
             | ColorTarget::SurfCut(_)
             | ColorTarget::PatStone(..)
+            | ColorTarget::PatHead(..)
             | ColorTarget::PatJoint(_) => self
                 .attr_layout(t, &w, cx.scene)
                 .items
