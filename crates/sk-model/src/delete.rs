@@ -201,13 +201,12 @@ impl Model {
             };
             for (k, &s) in segs.iter().enumerate() {
                 let e = r.segments[s];
-                let now = self.element(e).map(|x| x.kind.clone());
-                let want = Some(ElementKind::Wall(Wall {
-                    run,
-                    seg: k as u32,
-                    coupling: None,
-                }));
-                if now != want {
+                // Nur Zug und Segment ändern sich; die Kopplung bleibt
+                let moved = !matches!(
+                    self.element(e).map(|x| &x.kind),
+                    Some(ElementKind::Wall(w)) if w.run == run && w.seg == k as u32
+                );
+                if moved {
                     note!(self, Element, self.elements, e);
                     if let Some(ElementKind::Wall(w)) =
                         self.elements.get_mut(e).map(|x| &mut x.kind)

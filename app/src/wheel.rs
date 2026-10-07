@@ -104,24 +104,15 @@ pub fn ease_in_out_cubic(t: f32) -> f32 {
     }
 }
 
-/// Ebenen, durch die der Bogen blättert, von unten nach oben: die des
-/// aktiven Gebäudes. Ohne Gebäude (nur EG gezeichnet) gibt es das
-/// Obergeschoss der Vorlage noch nicht, nur Fundament und EG.
+/// Halbe Breite des breitesten kleinen Schilds an einer Spitze
+/// („Fundament“, dip), für den Platz links vom Bogen.
+const TIP_LABEL_HALF: f32 = 48.0;
+
+/// Ebenen, durch die der Bogen blättert, von unten nach oben: dieselben,
+/// die das Paneel „Geschosse“ zeigt ([`Scene::level_ids`]), auch die der
+/// Vorlage ohne Gebäude.
 pub fn levels(s: &Scene) -> Vec<StoreyId> {
-    let m = s.model();
-    let a = s.active_storey();
-    let l = m.group_levels(a);
-    if m.storey(a).is_some_and(|st| st.building.is_some()) {
-        return l;
-    }
-    let eg = m.ground_storey(a);
-    l.into_iter()
-        .filter(|&id| {
-            Some(id) == eg
-                || m.storey(id)
-                    .is_some_and(|st| st.kind == sk_model::LevelKind::Foundation)
-        })
-        .collect()
+    s.level_ids()
 }
 
 /// Kurzname eines Geschosses im Bogen („EG“, „OG“, „Fundament“).
@@ -329,12 +320,24 @@ impl Wheel {
     /// Ist ein Bauteil gewählt, rückt er links neben „Eigenschaften“, damit
     /// das Paneel ihn nicht verdeckt.
     pub fn geo(&self, ui: &Ui, w: u32, h: u32) -> Geo {
+        self.geo_at(ui, w, h, ui.has_props())
+    }
+
+    /// Linke Kante des Bogens samt Beschriftung an den Spitzen, wenn er
+    /// neben „Eigenschaften“ steht (Pixel): Bis hierhin darf der Grundriss.
+    pub fn left_beside_props(&self, ui: &Ui, w: u32, h: u32) -> f32 {
+        let g = self.geo_at(ui, w, h, true);
+        let tip = g.tip(true).0.min(g.tip(false).0);
+        g.bounds(0.0).x.min(tip - TIP_LABEL_HALF * g.s)
+    }
+
+    fn geo_at(&self, ui: &Ui, w: u32, h: u32, props: bool) -> Geo {
         let z = &self.size;
         let s = ui.dpi();
         let views = ui.rect(Panel::Views, w, ui.top);
         let below = views.y + views.h;
         let cy = ((below + h as f32) / 2.0).max(h as f32 / 2.0);
-        let right = if ui.has_props() {
+        let right = if props {
             ui.rect(Panel::Props, w, ui.top).x - z.panel_margin * s
         } else {
             w as f32 - z.panel_margin * s

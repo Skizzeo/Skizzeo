@@ -183,6 +183,20 @@ fn view_direction(v: ViewKind) -> (f64, f64) {
 
 /// Parallelkamera, die das ganze Modell (oder ein leeres Baufeld) zeigt.
 fn fit_parallel(v: ViewKind, bounds: Option<(Vec3, Vec3)>, w: f64, h: f64) -> Camera {
+    fit_parallel_in(v, bounds, w, w, h, w * 0.5)
+}
+
+/// Wie [`fit_parallel`], aber das Modell passt in die Breite `w` und steht
+/// waagerecht bei `x` (Pixel der Ansicht mit der Breite `vw`), etwa links
+/// vom Platz, den der Geschossbogen im Grundriss braucht.
+fn fit_parallel_in(
+    v: ViewKind,
+    bounds: Option<(Vec3, Vec3)>,
+    w: f64,
+    vw: f64,
+    h: f64,
+    x: f64,
+) -> Camera {
     let (lo, hi) = bounds.unwrap_or((vec3(-2000.0, -2000.0, 0.0), vec3(12000.0, 10000.0, 3500.0)));
     let (yaw, pitch) = view_direction(v);
     let center = (lo + hi) * 0.5;
@@ -201,7 +215,9 @@ fn fit_parallel(v: ViewKind, bounds: Option<(Vec3, Vec3)>, w: f64, h: f64) -> Ca
     // Nur die Breite zwischen den Paneelen nutzen
     let aspect = (w / h.max(1.0)).max(0.1);
     let half = (wu.max(wr / aspect) * 1.2).max(2000.0);
-    Camera::parallel(center, yaw, pitch, half)
+    // Mitte des Bildes um den Versatz der Ziel-Mitte verschieben
+    let shift = (vw * 0.5 - x) * 2.0 * half / h.max(1.0);
+    Camera::parallel(center + r * shift, yaw, pitch, half)
 }
 
 /// Geländelinie in Schnitt und Ansichten (kräftig, über das Gebäude hinaus).
@@ -780,6 +796,19 @@ impl App {
                 Some((lo, hi)) if self.cam3d_empty => fit_perspective(lo, hi),
                 _ => self.cam3d.clone(),
             },
+            // Grundriss: zwischen „Werkzeuge“ und dem Platz des
+            // Geschossbogens neben „Eigenschaften“, damit der Bogen nie im
+            // Plan steht
+            ViewKind::Plan => {
+                let s = self.ui.dpi() as f64;
+                let x0 = (tools.x + tools.w) as f64 + 16.0 * s;
+                let x1 = self.wheel.left_beside_props(&self.ui, self.w, self.h) as f64 - 16.0 * s;
+                if x1 - x0 >= vw * 0.3 {
+                    fit_parallel_in(v, self.scene.bounds(), x1 - x0, vw, vh, (x0 + x1) * 0.5)
+                } else {
+                    fit_parallel(v, self.scene.bounds(), free_w, vh)
+                }
+            }
             _ => fit_parallel(v, self.scene.bounds(), free_w, vh),
         }
     }
@@ -2427,13 +2456,13 @@ impl App {
                     mods,
                 } = ev
                 {
-                    if eo.clicked.is_some() {
+                    let hit = if eo.clicked.is_some() {
                         // Band angeklickt, aber nicht verschoben
                         self.sel.release(x, y, sc);
-                        self.select(eo.clicked);
+                        Some(eo.clicked)
                     } else if self.sel.release(x, y, sc) {
                         let (view, plane) = (self.ui.view, self.plane());
-                        let hit = selection::pick_at(
+                        Some(selection::pick_at(
                             &mut self.scene,
                             &self.cam,
                             view,
@@ -2442,15 +2471,18 @@ impl App {
                             y,
                             vw,
                             vh,
-                        );
-                        // Strg+Klick nimmt dazu bzw. heraus (Löschen mehrerer)
-                        match hit {
-                            Some(id) if mods.ctrl && !self.tool.enabled => {
-                                self.picking.click(id, true);
-                                self.redraw = true;
-                            }
-                            _ => self.select(hit),
+                        ))
+                    } else {
+                        None
+                    };
+                    // Strg+Klick nimmt dazu bzw. heraus (Löschen mehrerer)
+                    match hit {
+                        Some(Some(id)) if mods.ctrl && !self.tool.enabled => {
+                            self.picking.click(id, true);
+                            self.redraw = true;
                         }
+                        Some(hit) => self.select(hit),
+                        None => {}
                     }
                 }
             }

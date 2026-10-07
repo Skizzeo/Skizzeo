@@ -14,7 +14,7 @@ use crate::selection::{self, Selection};
 use crate::ui::{Id, Panel, Ui, ViewKind};
 use crate::wall_edit::WallEdit;
 use crate::wall_tool::WallTool;
-use crate::{fit_parallel, fit_perspective};
+use crate::{fit_parallel, fit_parallel_in, fit_perspective};
 use sk_math::{vec3, Vec3};
 use sk_model::{edge_kind, FillKind, Model, RefSide, RunId, WallChain};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
@@ -5083,16 +5083,22 @@ fn a80_bogen_nur_im_grundriss() {
         );
         assert!(cx + r < rechts, "Schild rechts vom Bogen");
     }
-    // Noch kein Gebäude (nur die Vorlage): oben ausgegraut ohne Beschriftung.
+    // Noch kein Gebäude (nur die Vorlage): Der Bogen zeigt dieselben
+    // Geschosse wie das Paneel, also oben das OG der Vorlage (Koordinator
+    // 07.10. 03:04, vorher ausgegraut; siehe A137).
     // Bauthread: Ein geschlossenes Rechteck legt schon das ganze Gebäude mit
     // OG an (Modellierungsansatz), daher hier ohne Zeichnen.
     let s = Scene::with_model(Model::with_seed(80));
     assert_eq!(
         bogen_text(&w, &s),
-        t("EG", "±0,00", None, Some("Fundament"))
+        t("EG", "±0,00", Some("OG"), Some("Fundament"))
     );
-    assert!(!spitze_frei(&w, &s, true, false));
-    assert_eq!(spitze_hinweis(&w, &s, true, false), None, "ausgegraut");
+    assert!(spitze_frei(&w, &s, true, false));
+    assert_eq!(
+        spitze_hinweis(&w, &s, true, false),
+        Some(("Obergeschoss ↑".into(), "+2,855".into())),
+        "wie mit Gebäude"
+    );
 }
 
 /// A81 (E18 §3, §5, Tests 2, 3, 5): Spitzen wechseln, an den Enden gesperrt;
@@ -10332,7 +10338,7 @@ mod loeschen {
         assert_eq!(
             hinweis,
             zeilen(&[
-                "1 Innenwand gelöscht.",
+                "1 Wand gelöscht.",
                 "Außenwände und Decken bleiben, sie gehören zum Gebäudeumriss."
             ])
         );
@@ -10346,7 +10352,7 @@ mod loeschen {
         assert_eq!(
             hinweis,
             zeilen(&[
-                "1 Innenwand gelöscht.",
+                "1 Wand gelöscht.",
                 "Die Außenwand bleibt, sie gehört zum Gebäudeumriss."
             ])
         );
@@ -10676,6 +10682,53 @@ mod loeschen_oberflaeche {
         );
     }
 
+    /// Nacharbeit 3: Der Grundriss passt zwischen „Werkzeuge“ und den
+    /// Platz des Geschossbogens neben „Eigenschaften“; der Bogen steht so
+    /// nie im Plan, auch wenn er wegen einer Auswahl ausweicht.
+    #[test]
+    fn grundriss_laesst_platz_fuer_den_bogen() {
+        let th = Theme::dark();
+        let w = crate::wheel::Wheel::new(&th, false);
+        let mut s = Scene::with_model(Model::with_seed(3));
+        haus_b11(&mut s);
+        let (lo, hi) = s.bounds().unwrap();
+        let mut ui = Ui::new(1.0, &th);
+        for (bw, bh) in [(1280u32, 800u32), (1440, 900), (1920, 1080)] {
+            ui.fit(1.0, bw, bh);
+            let (vw, vh) = (bw as f64, bh as f64 - 32.0);
+            let tools = ui.rect(Panel::Tools, bw, 32);
+            let x0 = (tools.x + tools.w) as f64;
+            let x1 = w.left_beside_props(&ui, bw, bh) as f64;
+            let c = fit_parallel_in(
+                ViewKind::Plan,
+                Some((lo, hi)),
+                x1 - x0,
+                vw,
+                vh,
+                (x0 + x1) * 0.5,
+            );
+            for i in 0..8 {
+                let p = vec3(
+                    if i & 1 == 0 { lo.x } else { hi.x },
+                    if i & 2 == 0 { lo.y } else { hi.y },
+                    if i & 4 == 0 { lo.z } else { hi.z },
+                );
+                let (x, _) = c.project(p, vw, vh).unwrap();
+                assert!(x > x0 && x < x1, "{bw}: Ecke bei {x}, frei {x0}…{x1}");
+            }
+            ui.set_props(crate::selection::props(
+                &s,
+                erstes(&s, Category::ExteriorWall),
+            ));
+            let g = w.geo(&ui, bw, bh);
+            assert!(
+                g.right <= ui.rect(Panel::Props, bw, 32).x,
+                "{bw}: neben dem Paneel"
+            );
+            ui.set_props(None);
+        }
+    }
+
     /// Schritt-Bezeichnungen mit Zahl werden geteilt, nicht je Aufruf neu.
     #[test]
     fn schrittnamen_mit_zahl() {
@@ -10701,5 +10754,129 @@ mod loeschen_oberflaeche {
         );
         let strg = Modifiers { ctrl: true, ..ohne };
         assert_eq!(k.key(Key::Delete, true, strg, true), None);
+    }
+}
+
+// A137: Geschossbogen nach „Gebäude löschen“ wie das Paneel
+mod bogen_loeschen {
+    use super::*;
+
+    // Abnahmetest A137: Geschossbogen nach „Gebäude löschen“ (Nacharbeit zu
+    // 7fa905b, Koordinator 07.10. 03:04). Der Bogen zeigt dieselben Geschosse wie
+    // das Paneel „Geschosse“, auch wenn nur noch die Vorlage steht (Ist-Bild
+    // loeschen-3c: Paneel mit OG, Bogen oben ausgegraut). Ist ein Bauteil gewählt,
+    // steht der Bogen links neben „Eigenschaften“.
+    // Spezifikation: test/abnahme-loeschen.md (A137).
+    //
+    // Einbau: als `mod bogen_loeschen { use super::*; … }` ans Ende von
+    // app/src/abnahme.rs. Nutzt aus abnahme.rs die E18-Adapter (bogen,
+    // bogen_text, spitze_frei, spitze_klick, tick, bogen_lage, bogen_rechts),
+    // haus_b11 und test_dir. Eigener Adapter nur `gebaeude_loeschen`, wie in
+    // `mod loeschen`.
+
+    use sk_model::{BuildingId, Model};
+
+    // ===== Adapter =====
+
+    fn gebaeude_loeschen(s: &mut Scene, b: BuildingId) -> bool {
+        s.remove_building(b)
+    }
+
+    // ===== Hilfen =====
+
+    /// Bogen und Paneel zeigen dasselbe: Das aktive Geschoss in der Mitte ist das
+    /// aktive Band, die Spitzen nennen die Nachbarbänder im Paneel (oder sind
+    /// ausgegraut, wenn das Paneel dort keines hat).
+    fn wie_paneel(w: &crate::wheel::Wheel, s: &Scene, ctx: &str) {
+        let l = s.levels();
+        let i = l
+            .bands
+            .iter()
+            .position(|b| b.active)
+            .unwrap_or_else(|| panic!("{ctx}: kein aktives Band"));
+        let name = |k: Option<usize>| k.and_then(|k| l.bands.get(k)).map(|b| b.name.clone());
+        let ((mitte, _), oben, unten) = bogen_text(w, s);
+        assert_eq!(Some(mitte), name(Some(i)), "{ctx}: Mitte");
+        assert_eq!(oben, name(Some(i + 1)), "{ctx}: Spitze oben");
+        assert_eq!(unten, name(i.checked_sub(1)), "{ctx}: Spitze unten");
+        assert_eq!(spitze_frei(w, s, true, false), oben.is_some(), "{ctx}");
+        assert_eq!(spitze_frei(w, s, false, false), unten.is_some(), "{ctx}");
+    }
+
+    fn erstes_gebaeude(s: &Scene) -> BuildingId {
+        s.model()
+            .buildings()
+            .iter()
+            .next()
+            .map(|(id, _)| id)
+            .unwrap()
+    }
+
+    // ===== Tests =====
+
+    /// A137: Bogen und Paneel zeigen dieselben Geschosse: ohne Gebäude, mit
+    /// Gebäude, nach „Gebäude löschen“ (Vorlage mit OG: Spitze oben „OG“, frei,
+    /// ein Klick führt ins OG), nach Rückgängig, Wiederholen und nach Speichern
+    /// und Öffnen der Vorlage. Mit gewähltem Bauteil liegt der ganze Bogen samt
+    /// Schild links von „Eigenschaften“ (Abstand panel_margin), ohne Auswahl
+    /// wieder am rechten Rand; drei Fenstergrößen.
+    #[test]
+    fn a137_bogen_wie_paneel_nach_gebaeude_loeschen() {
+        let th = Theme::dark();
+        let mut w = bogen(&th);
+        let s = Scene::with_model(Model::with_seed(137));
+        wie_paneel(&w, &s, "ohne Gebäude");
+
+        let mut s = Scene::with_model(Model::with_seed(137));
+        haus_b11(&mut s);
+        wie_paneel(&w, &s, "mit Gebäude");
+        let b = erstes_gebaeude(&s);
+        assert!(gebaeude_loeschen(&mut s, b));
+        assert!(
+            s.levels().bands.iter().any(|b| b.name == "OG"),
+            "Paneel zeigt das OG der Vorlage"
+        );
+        wie_paneel(&w, &s, "nach Gebäude löschen");
+        assert_eq!(bogen_text(&w, &s).1.as_deref(), Some("OG"));
+        spitze_klick(&mut w, &mut s, true, false, 0);
+        tick(&mut w, &mut s, 1000);
+        assert_eq!(bogen_text(&w, &s).0 .0, "OG", "Spitze führt ins OG");
+        wie_paneel(&w, &s, "Vorlage im OG");
+        assert!(s.undo());
+        wie_paneel(&w, &s, "Rückgängig");
+        assert!(s.redo());
+        wie_paneel(&w, &s, "Wiederholen");
+        let text = sk_model::szo::write(s.model());
+        let p = test_dir("a137").join("vorlage.szo");
+        std::fs::write(&p, text).unwrap();
+        let l = crate::document::load(&p).expect("öffnet");
+        let s2 = Scene::with_model(l.model);
+        wie_paneel(&w, &s2, "Vorlage gespeichert und geöffnet");
+
+        // Ausweichen neben „Eigenschaften“
+        let mut s = Scene::with_model(Model::with_seed(137));
+        let (aw, _) = haus_b11(&mut s);
+        let el = s.model().wall_at(aw, 0).unwrap();
+        let mut ui = Ui::new(1.0, &th);
+        for (bw, bh) in [(1280u32, 800u32), (1440, 900), (1920, 1080)] {
+            ui.fit(1.0, bw, bh);
+            ui.set_props(None);
+            let frei = bogen_rechts(&w, &s, &ui, bw, bh);
+            assert!(
+                (frei - (bw as f32 - th.size.panel_margin)).abs() < 1.0,
+                "{bw}: ohne Auswahl am Rand"
+            );
+            ui.set_props(crate::selection::props(&s, el));
+            assert!(ui.has_props());
+            let props = ui.rect(Panel::Props, bw, 32);
+            let rechts = bogen_rechts(&w, &s, &ui, bw, bh);
+            assert!(
+                rechts <= props.x - th.size.panel_margin + 1.0,
+                "{bw}: Bogen {rechts} reicht unter Eigenschaften ({})",
+                props.x
+            );
+            let (cx, _, r) = bogen_lage(&w, &ui, bw, bh);
+            assert!(cx + r < rechts, "{bw}: Bogen links vom Schild");
+        }
     }
 }

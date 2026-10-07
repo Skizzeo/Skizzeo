@@ -97,12 +97,10 @@ pub fn hint(m: &Model, d: &Deleted) -> Vec<String> {
             .map(String::from)
             .collect();
     }
-    let inner = d.kinds.iter().all(|c| *c == Category::InteriorWall);
-    let first = match (inner, d.removed.len()) {
-        (true, 1) => "1 Innenwand gelöscht.".to_string(),
-        (true, n) => format!("{n} Innenwände gelöscht."),
-        (false, 1) => "1 Wand gelöscht.".to_string(),
-        (false, n) => format!("{n} Wände gelöscht."),
+    // Allgemein „Wand“, wie in soll-loeschen-4 abgenommen
+    let first = match d.removed.len() {
+        1 => "1 Wand gelöscht.".to_string(),
+        n => format!("{n} Wände gelöscht."),
     };
     vec![first, rest_sentence(m, &d.refused)]
 }

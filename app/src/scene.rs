@@ -1223,6 +1223,13 @@ impl Scene {
         ok
     }
 
+    /// Ebenen des aktiven Gebäudes (ohne Gebäude: der Vorlage, etwa nach
+    /// „Gebäude löschen“) von unten nach oben. Paneel „Geschosse“ und
+    /// Geschossbogen zeigen genau diese.
+    pub fn level_ids(&self) -> Vec<sk_model::StoreyId> {
+        self.model.group_levels(self.active_storey())
+    }
+
     /// Inhalt des Paneels „Geschosse“: Bänder, lichte Höhe des EG und die
     /// änderbaren Zahlen mit ihren Grenzen.
     pub fn levels(&self) -> crate::ui::Levels {
@@ -1238,7 +1245,7 @@ impl Scene {
             max,
             zero: false,
         };
-        for id in m.group_levels(active) {
+        for id in self.level_ids() {
             let Some(st) = m.storey(id) else {
                 continue;
             };

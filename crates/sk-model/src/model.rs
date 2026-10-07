@@ -4083,12 +4083,12 @@ pub const INTERIOR_115_TYPE_GUID: Guid = Guid(0x2f8dff421c184680660acedac925c20e
 pub const INTERIOR_240_TYPE_GUID: Guid = Guid(0x399dbdcd165ab68f996acfde24d981df);
 /// Werkstyp aus K5: AW monolithisch 36,5 mit Randdämmstreifen.
 pub const MONO_TYPE_GUID: Guid = Guid(0x9c03de8332f6e5a1d90474f347dbbf7e);
-/// Art eines Werkstyps nach seiner festen Guid.
 /// Laufende Zahl einer Gebäudenummer: „GB-02“ → 2.
 pub fn building_index(number: &str) -> Option<u32> {
     number.strip_prefix("GB-")?.parse().ok()
 }
 
+/// Art eines Werkstyps nach seiner festen Guid.
 pub(crate) fn werk_category(g: Guid) -> Option<TypeCategory> {
     match g {
         EXTERIOR_TYPE_GUID | ETICS_TYPE_GUID | CAVITY_TYPE_GUID | MONO_TYPE_GUID => {
