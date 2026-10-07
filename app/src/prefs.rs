@@ -3000,6 +3000,13 @@ impl Prefs {
         self.pw.is_some()
     }
 
+    /// Reiter zeigen, ohne zu klicken (Abnahme A302).
+    #[cfg(test)]
+    pub(crate) fn show_tab(&mut self, tab: Tab) {
+        self.tab = tab;
+        self.full_frame = true;
+    }
+
     /// Aktiver Reiter als Zahl (0 Stifte … 4 Bedienoberfläche).
     pub fn tab_index(&self) -> u8 {
         match self.tab {

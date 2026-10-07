@@ -25243,14 +25243,32 @@ mod teilbilder {
         Einstellungen(Box<Prefs>),
     }
 
-    const ARTEN: [&str; 3] = ["Baustoffe", "Katalog", "Einstellungen"];
+    // Die Einstellungen mit jedem Reiter: Linientypen, Schraffuren und
+    // Oberflächen haben gemerkte Vorschauen (Review 3x)
+    const ARTEN: [&str; 7] = [
+        "Baustoffe",
+        "Katalog",
+        "Einstellungen",
+        "Einstellungen · Linientypen",
+        "Einstellungen · Schraffuren",
+        "Einstellungen · Oberflächen",
+        "Einstellungen · Bedienoberfläche",
+    ];
 
     fn oeffnen(art: &str, s: &mut Scene, th: &Theme) -> Fenster {
-        match art {
-            "Baustoffe" => Fenster::Baustoffe(Box::new(MaterialView::open(s))),
-            "Katalog" => Fenster::Katalog(Box::new(Catalog::open(s, None))),
-            _ => Fenster::Einstellungen(Box::new(Prefs::open(s, th))),
-        }
+        use crate::prefs::Tab;
+        let tab = match art {
+            "Baustoffe" => return Fenster::Baustoffe(Box::new(MaterialView::open(s))),
+            "Katalog" => return Fenster::Katalog(Box::new(Catalog::open(s, None))),
+            "Einstellungen · Linientypen" => Tab::LineTypes,
+            "Einstellungen · Schraffuren" => Tab::Fills,
+            "Einstellungen · Oberflächen" => Tab::Surfaces,
+            "Einstellungen · Bedienoberfläche" => Tab::Ui,
+            _ => Tab::Pens,
+        };
+        let mut p = Prefs::open(s, th);
+        p.show_tab(tab);
+        Fenster::Einstellungen(Box::new(p))
     }
 
     fn einstellungen_ohne_datei() -> crate::settings::Settings {
@@ -25386,6 +25404,10 @@ mod teilbilder {
     /// Erste abweichende Stelle (x, y) oder `None`.
     fn abweichung(a: &Schirm, b: &(usize, usize, Vec<u8>)) -> Option<(usize, usize)> {
         assert_eq!((a.w, a.h), (b.0, b.1), "Bildgröße");
+        // erst als Ganzes vergleichen: im Debug sonst ein Großteil der Laufzeit
+        if a.px == b.2 {
+            return None;
+        }
         a.px.chunks(4)
             .zip(b.2.chunks(4))
             .position(|(p, q)| p != q)

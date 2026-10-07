@@ -18,3 +18,7 @@ panic = "abort"
 # sonst sekundenlang je Startwert.
 [profile.dev.package.sk-model]
 opt-level = 2
+
+# Malen: A302 malt im Test einige Tausend ganze Fensterbilder (Review 3x).
+[profile.dev.package.sk-paint]
+opt-level = 2

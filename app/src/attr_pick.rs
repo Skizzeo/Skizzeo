@@ -118,19 +118,19 @@ impl Tiles {
         ready: bool,
         paint: impl FnOnce(&mut Canvas),
     ) {
-        let (ox, oy) = c.origin();
+        // Lage im ganzen Bild, unabhängig vom Ursprung der Leinwand: ein
+        // Teilbild (Streifen) findet so die Vorschau des ganzen Bildes
         let at = [
-            (r.x - ox).floor() as i32,
-            (r.y - oy).floor() as i32,
-            (r.x + r.w - ox).ceil() as i32,
-            (r.y + r.h - oy).ceil() as i32,
+            r.x.floor() as i32,
+            r.y.floor() as i32,
+            (r.x + r.w).ceil() as i32,
+            (r.y + r.h).ceil() as i32,
         ];
-        let (x0, y0, x1, y1) = (
-            at[0] as f32 + ox,
-            at[1] as f32 + oy,
-            at[2] as f32 + ox,
-            at[3] as f32 + oy,
-        );
+        let (x0, y0, x1, y1) = (at[0] as f32, at[1] as f32, at[2] as f32, at[3] as f32);
+        // Liegt nur ein Teil der Vorschau auf der Leinwand, wird nichts
+        // gemerkt: das gemerkte Bild bliebe sonst außerhalb leer (Review 3x)
+        let (ox, oy) = c.origin();
+        let whole = x0 >= ox && y0 >= oy && x1 <= ox + c.width as f32 && y1 <= oy + c.height as f32;
         let anim = self.theme.as_ref().map_or(0.0, |t| t.size.anim_ms);
         let found = self
             .previews
@@ -155,10 +155,17 @@ impl Tiles {
                 }
                 return;
             }
+            if !whole {
+                paint(c);
+                return;
+            }
             // Tabelle fertig: neu malen, das vorläufige Bild blendet aus
             if anim > 0.0 {
                 old = Some((self.previews.remove(i).img, std::time::Instant::now()));
             }
+        } else if !whole {
+            paint(c);
+            return;
         }
         paint(c);
         let (w, h) = ((at[2] - at[0]).max(0), (at[3] - at[1]).max(0));
@@ -853,6 +860,49 @@ mod tests {
         tiles.preview(&mut c, 0, key, r, true, |_| panic!("nur kopieren"));
         assert_eq!(px(&c), vec![0, 0, 200], "fertig eingeblendet");
         assert!(!tiles.busy() && !tiles.tick());
+    }
+
+    /// Review 3x: Streifen (Teilbilder, A302) über einer Vorschau nehmen
+    /// das gemerkte Bild des ganzen Fensters und merken selbst nichts. Vorher
+    /// hing die Lage vom Ursprung ab: zwei Streifen mit gleichem Ursprung und
+    /// verschiedener Höhe kopierten leere Zeilen, und ein Streifen ab Zeile 0
+    /// gab dem ganzen Bild ein abgeschnittenes Bild zurück.
+    #[test]
+    fn streifen_merken_nichts() {
+        let m = Model::with_seed(5);
+        let t = Theme::dark();
+        let id = m.attr().surfaces().iter().next().expect("Oberfläche").0;
+        let key = TileKey::Surface(id);
+        let r = Rect::new(4.0, 6.0, 20.0, 20.0);
+        let mut tiles = Tiles::default();
+        tiles.sync(&m, &t, 1.0);
+        let red = Rgba(200, 0, 0, 255);
+        let paint = |c: &mut Canvas| c.fill_rect(4.0, 6.0, 20.0, 20.0, red);
+        let mut full = Canvas::new(30, 30);
+        tiles.preview(&mut full, 0, key, r, true, paint);
+        let want = full.to_rgba8();
+        // Streifen über die ganze Breite: Zeilen 0–9, 10–14, 10–19
+        for (y0, y1) in [(0, 10), (10, 15), (10, 20)] {
+            let mut sub = Canvas::new(30, y1 - y0);
+            sub.set_origin(0.0, y0 as f32);
+            tiles.preview(&mut sub, 0, key, r, true, |_| panic!("nur kopieren"));
+            let got = sub.to_rgba8();
+            assert_eq!(
+                got[..],
+                want[y0 * 30 * 4..y1 * 30 * 4],
+                "Streifen {y0}–{y1}"
+            );
+        }
+        // Ein Streifen, der die Vorschau nicht kennt, malt nur sich selbst
+        let mut other = Tiles::default();
+        other.sync(&m, &t, 1.0);
+        let mut sub = Canvas::new(30, 10);
+        sub.set_origin(0.0, 0.0);
+        other.preview(&mut sub, 0, key, r, true, paint);
+        assert!(other.previews.is_empty(), "angeschnitten: nichts gemerkt");
+        let mut c = Canvas::new(30, 30);
+        tiles.preview(&mut c, 0, key, r, true, |_| panic!("nur kopieren"));
+        assert_eq!(c.to_rgba8(), want, "ganzes Bild danach unverändert");
     }
 }
 
