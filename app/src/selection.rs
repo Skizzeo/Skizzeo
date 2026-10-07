@@ -818,6 +818,14 @@ fn outline(
             }
         }
     };
+    // Nur der Grundriss endet an seiner Schnitthöhe
+    let clip = |t: f64| {
+        if view == ViewKind::Plan {
+            t.min(scene.plan_cut())
+        } else {
+            t
+        }
+    };
     let m = scene.model();
     match (m.segment_of(id), m.element(id).map(|e| &e.kind)) {
         (Some((run, seg)), _) => {
@@ -841,7 +849,7 @@ fn outline(
             if view == ViewKind::Plan && b >= scene.plan_cut() {
                 return Vec::new();
             }
-            prism(&slab.outline, b, t.min(scene.plan_cut()));
+            prism(&slab.outline, b, clip(t));
         }
         (None, Some(ElementKind::EdgeStrip { wall, .. })) => {
             // Umriss des Streifens, obwohl seine Kanten sonst fehlen (K5)
@@ -858,7 +866,7 @@ fn outline(
             if view == ViewKind::Plan && b >= scene.plan_cut() {
                 return Vec::new();
             }
-            prism(&q, b, t.min(scene.plan_cut()));
+            prism(&q, b, clip(t));
         }
         (None, Some(ElementKind::SoffitInsulation { floor })) => {
             // Untersichtdämmung: je auskragendem Segment ein Streifen
@@ -872,8 +880,41 @@ fn outline(
                 return Vec::new();
             }
             for (_, q) in &slab.soffits {
-                prism(q, b, t.min(scene.plan_cut()));
+                prism(q, b, clip(t));
             }
+        }
+        (None, Some(ElementKind::RoofTerrace { floor })) => {
+            // Dachterrasse: ihr Umriss von OK Rohdecke bis OK Belag
+            let Some(slab) = m.run_of(*floor).and_then(|r| scene.floor(r)) else {
+                return Vec::new();
+            };
+            let Some((b, t)) = slab.terrace_band() else {
+                return Vec::new();
+            };
+            if view == ViewKind::Plan && b >= scene.plan_cut() {
+                return Vec::new();
+            }
+            for o in &slab.terraces.outlines {
+                for q in &o.parts {
+                    prism(q, b, clip(t));
+                }
+            }
+        }
+        (None, Some(ElementKind::Coping { floor })) => {
+            // Attikablech: die Kanten seines Profils über der Attikakrone
+            let Some(slab) = m.run_of(*floor).and_then(|r| scene.floor(r)) else {
+                return Vec::new();
+            };
+            let body = slab.coping_solid();
+            let low = body
+                .edges
+                .iter()
+                .map(|e| e.a.z.min(e.b.z))
+                .fold(f64::MAX, f64::min);
+            if view == ViewKind::Plan && low >= scene.plan_cut() {
+                return Vec::new();
+            }
+            lines.extend(body.edges.iter().map(|e| (e.a, e.b)));
         }
         (None, Some(kind)) => {
             let Some(found) = m.run_of(id).and_then(|r| scene.foundation(r)) else {
@@ -1151,6 +1192,40 @@ mod tests {
         assert!(
             (low - base as f32).abs() < 5.0,
             "Umriss ab {low}, Fuß {base}"
+        );
+    }
+
+    /// Der Umriss einer Decke in 3D reicht über ihre ganze Dicke; die
+    /// Schnitthöhe des Grundrisses (aktives EG) kürzt ihn nur im Grundriss.
+    #[test]
+    fn deckenumriss_in_3d_ungekuerzt() {
+        let mut m = Model::with_seed(22);
+        let b = m.add_building(2);
+        let pts = [
+            sk_math::vec3(0.0, 0.0, 0.0),
+            sk_math::vec3(0.0, 8000.0, 0.0),
+            sk_math::vec3(10000.0, 8000.0, 0.0),
+            sk_math::vec3(10000.0, 0.0, 0.0),
+        ];
+        m.build_from_polygon(b, &pts).unwrap();
+        let s = Scene::with_model(m);
+        let (de, _) = s
+            .model()
+            .elements()
+            .iter()
+            .filter(|(_, e)| e.category == sk_model::Category::Floor)
+            .min_by(|a, b| a.1.number.cmp(&b.1.number))
+            .unwrap();
+        let z: Vec<f32> = helpers(&s, de, ViewKind::Persp, None, 1.0, &Theme::dark())
+            .iter()
+            .flat_map(|h| [h.a[2], h.b[2]])
+            .collect();
+        let (lo, hi) = z
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(a, b), &v| (a.min(v), b.max(v)));
+        assert!(
+            (lo - 2635.0).abs() < 1.0 && (hi - 2855.0).abs() < 1.0,
+            "{lo}–{hi}"
         );
     }
 }
