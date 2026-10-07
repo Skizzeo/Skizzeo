@@ -120,7 +120,13 @@ pub struct Looks {
     pub model: EdgeLooks,
     /// Fugen in Ansichten (Stift „Ansichtsmuster“): Farbe 0..1, Breite px.
     pub pattern_ink: [f32; 4],
+    /// Verbandstabellen des wilden Verbands untereinander, je
+    /// [`BOND_TABLE_BYTES`] (Nummer in Looks-Zeile 9, Feld w).
+    pub bond: Vec<u8>,
 }
+
+/// Größe einer Verbandstabelle: 128 Schichten × 128 Viertel.
+pub const BOND_TABLE_BYTES: usize = 128 * 128;
 
 /// Musterdarstellung einer Ansicht (Uniform `u_patterns`).
 pub mod pattern_mode {
@@ -351,6 +357,7 @@ pub struct Renderer {
     target: Option<Target>,
     style: Style,
     looks_tex: GLuint,
+    bond_tex: GLuint,
     looks: Looks,
     snap_prog: Program,
     snapshot: Option<Snapshot>,
@@ -567,33 +574,18 @@ uint pat_hash(int row, int col, uint seed) {
     uint a = lowbias32(uint(row) ^ (seed * 0x9e3779b9u));
     return lowbias32(a + uint(col) * 0x85ebca6bu);
 }
-// Wilder Verband: Abschnitte zu 12 Einheiten (halber Stein), Anfang je
-// Schicht φ = m·row + c mit m = 2 oder −1, Läufermitten fest bei 0, 2, 7
-int wild_phi(int row, uint seed) {
-    uint s = lowbias32(seed ^ 0x63d83595u);
-    int slope = (s & 1u) == 1u ? 2 : -1;
-    int i = slope * row + int((s >> 1) % 12u);
-    return i - 12 * int(floor(float(i) / 12.0));
-}
-// Stein (Nummer) und Abstand zur nächsten Stoßfuge in Einheiten
-vec2 wild_stone(int row, float t, uint seed) {
-    float x = t - float(wild_phi(row, seed));
-    float xf = floor(x);
-    float fr = x - xf;
-    int xi = int(xf);
-    int p = int(floor(xf / 12.0));
-    int k = xi - 12 * p;
-    uint h = pat_hash(row, p, seed ^ 0xa511e9b3u);
-    int j[7] = int[7](1, 3, ((h >> 31) & 1u) == 1u ? 4 : 5, 6, 8,
-                      ((h >> 30) & 1u) == 1u ? 9 : 10, 11);
-    int s = -1;
-    int e = 13;
-    for (int n = 0; n < 7; n++) {
-        if (j[n] <= k) s = j[n];
-        else if (e > 12) e = j[n];
-    }
-    float y = float(k) + fr;
-    return vec2(float(12 * p + s), min(y - float(s), float(e) - y));
+// Wilder Verband: Verbandstabellen untereinander (je 128 Schichten × 128
+// Viertel, R8UI), Byte = Abstand zum Steinanfang (Bits 0–1) und Kopf (Bit 2),
+// wie `sk_model::proctex::BondTable`
+uniform usampler2D u_bond;
+// Stein (Anfang in Vierteln) und Abstand zur nächsten Stoßfuge in mm
+vec2 wild_stone(int row, float u, float a, int tab) {
+    float x = 4.0 * u / a;
+    int q = int(floor(x));
+    uint c = texelFetch(u_bond, ivec2(q & 127, (row & 127) + 128 * tab), 0).r;
+    int start = q - int(c & 3u);
+    float n = (c & 4u) != 0u ? 2.0 : 4.0;
+    return vec2(float(start), min(x - float(start), float(start) + n - x) * a * 0.25);
 }
 // Musterkoordinaten (mm): senkrechte Fläche u längs, v = Höhe über ±0,00;
 // waagerechte Fläche: x, y. z: 1 senkrecht, 0 waagerecht
@@ -608,11 +600,7 @@ vec3 pattern_uv(vec3 p, vec3 n) {
 // Stein an (u, v) in Reihe `row`: Nummer und Abstand zur Stoßfugenmitte (mm)
 vec2 masonry_stone(float u, int row, vec4 p8, vec4 p9) {
     float a = p8.y + p8.w;
-    uint seed = uint(p9.z + 0.5);
-    if (p9.x < 0.0) {
-        vec2 w = wild_stone(row, 2.0 * u / a + float(row) * 0.5, seed);
-        return vec2(w.x, w.y * a * 0.5);
-    }
+    if (p9.x < 0.0) return wild_stone(row, u, a, int(p9.w + 0.5));
     float off;
     if (p9.x > 0.4) {
         off = float(row & 1) * a * 0.5;
@@ -974,6 +962,7 @@ impl Renderer {
                 target: None,
                 style,
                 looks_tex: 0,
+                bond_tex: 0,
                 looks: Looks::default(),
                 snap_prog,
                 snapshot: None,
@@ -1037,8 +1026,49 @@ impl Renderer {
                 texels.as_ptr() as *const c_void,
             );
             gl.glBindTexture(TEXTURE_2D, 0);
+            if self.bond_tex == 0 || looks.bond != self.looks.bond {
+                self.upload_bond(&looks.bond);
+            }
         }
         self.looks = looks.clone();
+    }
+
+    /// Verbandstabellen als Ganzzahl-Textur (R8UI, 128 breit); ohne wilden
+    /// Verband eine leere Tabelle, damit die Textur vollständig ist.
+    fn upload_bond(&mut self, bond: &[u8]) {
+        let gl = &self.gl;
+        let mut data = bond.to_vec();
+        let n = data.len().div_ceil(BOND_TABLE_BYTES).max(1);
+        data.resize(n * BOND_TABLE_BYTES, 0);
+        unsafe {
+            if self.bond_tex == 0 {
+                gl.glGenTextures(1, &mut self.bond_tex);
+                gl.glBindTexture(TEXTURE_2D, self.bond_tex);
+                for (p, v) in [
+                    (TEXTURE_MIN_FILTER, NEAREST),
+                    (TEXTURE_MAG_FILTER, NEAREST),
+                    (TEXTURE_WRAP_S, CLAMP_TO_EDGE),
+                    (TEXTURE_WRAP_T, CLAMP_TO_EDGE),
+                ] {
+                    gl.glTexParameteri(TEXTURE_2D, p, v);
+                }
+            }
+            gl.glBindTexture(TEXTURE_2D, self.bond_tex);
+            gl.glPixelStorei(UNPACK_ALIGNMENT, 1);
+            gl.glTexImage2D(
+                TEXTURE_2D,
+                0,
+                R8UI as GLint,
+                128,
+                (128 * n) as i32,
+                0,
+                RED_INTEGER,
+                UNSIGNED_BYTE,
+                data.as_ptr() as *const c_void,
+            );
+            gl.glPixelStorei(UNPACK_ALIGNMENT, 4);
+            gl.glBindTexture(TEXTURE_2D, 0);
+        }
     }
 
     /// Netz in Platz `slot` blass mit Deckkraft `alpha` zeichnen (Isolieren,
@@ -1454,6 +1484,9 @@ impl Renderer {
             gl.glActiveTexture(TEXTURE0 + 1);
             gl.glBindTexture(TEXTURE_2D, self.looks_tex);
             gl.glUniform1i(loc(gl, p, c"u_looks"), 1);
+            gl.glActiveTexture(TEXTURE0 + 2);
+            gl.glBindTexture(TEXTURE_2D, self.bond_tex);
+            gl.glUniform1i(loc(gl, p, c"u_bond"), 2);
             gl.glActiveTexture(TEXTURE0);
             gl.glUniform1f(loc(gl, p, c"u_alpha"), 1.0);
             let ghost = self.ghost.filter(|g| g.0 < self.meshes.len());

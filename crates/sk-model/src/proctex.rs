@@ -21,7 +21,7 @@ pub enum Bond {
     /// Läufer drittelsteinig versetzt.
     Third,
     /// Wilder Verband aus Läufern und Köpfen (Regel 58, Jörns Vorlage
-    /// „friesisch-bunt“), siehe [`WILD_PERIOD`].
+    /// „friesisch-bunt“) aus der Verbandstabelle, siehe [`bond_table`].
     Wild,
 }
 
@@ -192,84 +192,334 @@ fn unit(h: u32) -> f32 {
 
 // --- Wilder Verband -----------------------------------------------------
 //
-// Rechnung in Einheiten e = (Länge + Fuge)/2 (halber Stein im Achsmaß); ein
-// Läufer ist 2 e, ein Kopf 1 e lang. Die Schicht r hat ihre Stoßfugen auf den
-// Viertelsteinen q = e/2 mit der Parität von r: `u = (2·t − r)·q` für eine
-// ganze Einheit t. Benachbarte Schichten teilen darum nie eine Stoßfuge, die
-// Überbindung ist mindestens ¼ Stein.
+// Rechnung in Vierteln q = (Länge + Fuge)/4 (62,5 mm bei NF). Ein Läufer
+// ist 4 q, ein Kopf 2 q lang. Schicht r hat ihre Stoßfugen auf den Vierteln
+// mit der Parität von r; benachbarte Schichten teilen darum nie eine
+// Stoßfuge, die Überbindung ist mindestens ¼ Stein.
 //
-// Jede Schicht ist in Abschnitte zu 12 e geteilt (5 Läufer, 2 Köpfe wie in
-// Jörns Vorlage: Kopfanteil 2/7 ≈ 29 %). Ein Abschnitt hat feste
-// Läufermitten bei 0, 2 und 7 e ab seinem Anfang φ(r); dazwischen wählt der
-// Zufall je Abschnitt die Lage der zwei Köpfe (L K L oder K L L). Die
-// Anfänge wandern je Schicht um eine feste Steigung, φ(r) = m·r + c mit
-// m = 2 oder m = −1 (spiegelbildlich, ¾ Stein je Schicht nach rechts oder
-// links); nur diese zwei Steigungen erfüllen alle Regeln zugleich (Suche
-// über alle φ-Folgen, Bericht 6a): In je 6 aufeinanderfolgenden Schichten
-// trifft jede Fugentreppe (je Schicht ¼ Stein nach links oder rechts) auf
-// eine Läufermitte, ebenso jede Fuge, die in k, k + 2, k + 4, k + 6 stehen
-// bliebe. So läuft keine Treppe über mehr als 5 Schichten, keine Fuge steht
-// in mehr als 3 Schichten k, k + 2, k + 4, nie stehen mehr als 4 Läufer
-// oder 2 Köpfe nebeneinander (Regel 58, BIM-Nachträge 2 und 3).
+// Der Verband steht in einer Tabelle von 128 Schichten × 128 Vierteln, die
+// ringsum periodisch ist (paket-6 §8.1): bei NF 8,0 m breit, 10,37 m hoch.
+// Ob eine Fuge eine Treppe oder Kette zu lang macht, hängt an den Schichten
+// darunter; das lässt sich nicht je Pixel aus einem Hash entscheiden. Die
+// Tabelle hängt nur vom Startwert ab. Die Farben nutzen die absolute
+// Stein-Nummer, darum wiederholt sich das Farbbild nie.
+//
+// Regeln (Regel 58, Koordinator 18:13, 18:58, 19:07), auch über beide Nähte:
+// nur Läufer und Köpfe, höchstens 4 Läufer und 2 Köpfe in Folge, Treppen
+// über höchstens 5 Schichten, dieselbe Fuge in k, k + 2, … höchstens
+// [`WILD_CHAIN`]-mal, in je 8 Schichten keine Folge doppelt (auch
+// verschoben), Kopfanteil um 30 % mit Streuung je Schicht.
+//
+// Erzeugung Schicht für Schicht von unten: Jede mögliche Fuge bekommt
+// Kosten nach der Länge der Treppen und Ketten, die sie verlängert (zu lang
+// = verboten), dazu ein Rauschen aus dem Hash. Die Schicht ist ein Kreis aus
+// Läufern und Köpfen mit den geringsten Kosten (Rückwärtsrechnung über die
+// Stellen, 6 Zustände: 1–4 Läufer bzw. 1–2 Köpfe in Folge). Linien aus
+// Schicht 0 zählen länger, und kurz vor der Naht schauen die Kosten in die
+// untersten Schichten; so schließt sich der Kreis oben. Geht eine Schicht
+// nicht, rechnet die Suche einige Schichten darunter mit neuem Rauschen neu.
 
-/// Länge eines Abschnitts in Einheiten.
-pub const WILD_PERIOD: i32 = 12;
+/// Schichten und Viertel der Verbandstabelle.
+pub const WILD_SIZE: usize = 128;
+/// Treppen über höchstens so viele Schichten.
+pub const WILD_STAIR: u32 = 5;
+/// Dieselbe Stoßfuge in k, k + 2, k + 4 … höchstens so oft.
+pub const WILD_CHAIN: u32 = 4;
 
-/// Salz für die Wahl von Steigung und Versatz.
-const WILD_SALT: u32 = 0x63d8_3595;
-/// Salz für die Kopflage je Abschnitt.
-const BLOCK_SALT: u32 = 0xa511_e9b3;
 /// Salz für die Streuung je Stein.
 const SPREAD_SALT: u32 = 0x68e3_1da4;
 
-/// Stoßfugen eines Abschnitts in Einheiten ab seinem Anfang (aufsteigend):
-/// Läufer 1–3, dann L K L oder K L L in 3–8 und 8–13.
-fn wild_joints(h: u32) -> [i32; 7] {
-    let b1 = (h >> 31) & 1;
-    let b2 = (h >> 30) & 1;
-    [
-        1,
-        3,
-        if b1 == 1 { 4 } else { 5 },
-        6,
-        8,
-        if b2 == 1 { 9 } else { 10 },
-        11,
-    ]
+/// Verbandstabelle: je Schicht und Viertel ein Byte, Bits 0–1 Abstand zum
+/// Steinanfang in Vierteln, Bit 2 Kopf. Zeile für Zeile (Schicht 0 zuerst),
+/// so lädt sie auch die Grafikkarte (R8UI, 128 × 128).
+#[derive(Debug, PartialEq, Eq)]
+pub struct BondTable {
+    pub cells: Vec<u8>,
 }
 
-/// Anfang φ des Abschnitts 0 in Schicht `row`, in Einheiten.
-fn wild_phi(row: i32, seed: u32) -> i32 {
-    let s = lowbias32(seed ^ WILD_SALT);
-    let slope = if s & 1 == 1 { 2 } else { -1 };
-    let shift = ((s >> 1) % WILD_PERIOD as u32) as i32;
-    (slope * row + shift).rem_euclid(WILD_PERIOD)
+impl BondTable {
+    /// Byte an Schicht `row`, Viertel `q` (beliebig, periodisch).
+    pub fn cell(&self, row: i32, q: i32) -> u8 {
+        let n = WILD_SIZE as i32;
+        self.cells[row.rem_euclid(n) as usize * WILD_SIZE + q.rem_euclid(n) as usize]
+    }
+
+    /// Stein an Viertel `q` der Schicht `row`: Anfang (absolut) und Länge
+    /// in Vierteln.
+    pub fn stone(&self, row: i32, q: i32) -> (i32, i32) {
+        let c = self.cell(row, q);
+        (q - (c & 3) as i32, if c & 4 != 0 { 2 } else { 4 })
+    }
 }
 
-/// Stein im wilden Verband an Einheit `t` (gebrochen) der Schicht `row`:
-/// Nummer des Steins (Anfang in Einheiten ab φ) und Abstand zur nächsten
-/// Stoßfuge in Einheiten.
-fn wild_stone(row: i32, t: f64, seed: u32) -> (i32, f64) {
-    let x = t - wild_phi(row, seed) as f64;
-    let xi = x.floor();
-    let fr = x - xi;
-    let xi = xi as i32;
-    let p = xi.div_euclid(WILD_PERIOD);
-    let k = xi.rem_euclid(WILD_PERIOD);
-    let j = wild_joints(hash(row, p, seed ^ BLOCK_SALT));
-    let mut s = -1;
-    let mut e = WILD_PERIOD + 1;
-    for &q in &j {
-        if q <= k {
-            s = q;
-        } else if e > WILD_PERIOD {
-            e = q;
+/// Verbandstabelle zum Startwert; je Startwert einmal gerechnet und gehalten.
+pub fn bond_table(seed: u32) -> std::sync::Arc<BondTable> {
+    use std::sync::{Arc, Mutex};
+    static CACHE: Mutex<Vec<(u32, Arc<BondTable>)>> = Mutex::new(Vec::new());
+    let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(i) = c.iter().position(|(s, _)| *s == seed) {
+        let t = c.remove(i);
+        c.push(t.clone());
+        return t.1;
+    }
+    let t = Arc::new(wild_table(seed));
+    if c.len() >= 16 {
+        c.remove(0);
+    }
+    c.push((seed, t.clone()));
+    t
+}
+
+type Row = u128;
+const W: usize = WILD_SIZE;
+const R: usize = WILD_SIZE;
+const INF: u32 = u32::MAX / 4;
+/// Kosten einer Linie nach ihrer Länge.
+const WT: [u32; 9] = [0, 0, 1, 3, 9, 27, 81, 243, 729];
+/// Linien aus Schicht 0 zählen so viel länger.
+const BOTTOM: u32 = 3;
+/// Rauschen je Fuge, Kosten je Läufer, Kopf (Kopfanteil ≈ 30 %).
+const NOISE: u32 = 200;
+const COST_RUNNER: u32 = 165;
+const COST_HEAD: i64 = 40;
+
+fn bit(m: Row, q: i64) -> bool {
+    (m >> q.rem_euclid(W as i64)) & 1 == 1
+}
+
+/// Lauf nach einem Stein der Länge `l` (Zustand 0–3: 1–4 Läufer,
+/// 4–5: 1–2 Köpfe in Folge).
+fn run_next(s: usize, l: usize) -> Option<usize> {
+    match (l, s) {
+        (4, 0..=2) => Some(s + 1),
+        (4, 3) => None,
+        (4, _) => Some(0),
+        (_, 4) => Some(5),
+        (_, 5) => None,
+        _ => Some(4),
+    }
+}
+
+/// Länge der Linie durch Fuge (r, q), je Schicht `dr` weiter und `dq`
+/// versetzt: nach unten und über die Naht in die schon erzeugten
+/// untersten Schichten. Dazu, ob sie bis Schicht 0 reicht.
+fn line(rows: &[Row], r: usize, q: usize, dr: usize, dq: i64) -> (u32, bool) {
+    let mut n = 1;
+    let mut rr = r as i64 - dr as i64;
+    let mut x = q as i64 - dq;
+    while rr >= 0 && bit(rows[rr as usize], x) {
+        n += 1;
+        rr -= dr as i64;
+        x -= dq;
+    }
+    let bottom = rr + (dr as i64) < dr as i64;
+    let mut rr = r + dr;
+    let mut x = q as i64 + dq;
+    while rr >= R && rr - R < r && bit(rows[rr - R], x) {
+        n += 1;
+        rr += dr;
+        x += dq;
+    }
+    (n, bottom)
+}
+
+/// Vorschau über die Naht für Schichten kurz vor dem Ende: Die Linie läuft
+/// in den untersten Schichten weiter; zählt sie mit den Schichten dazwischen
+/// zu lang, kostet die Fuge mehr.
+fn ahead(rows: &[Row], r: usize, q: usize, dr: usize, dq: i64, n: u32, lim: u32) -> u32 {
+    let gap = (R - 1 - r) / dr;
+    if gap == 0 || gap > 6 {
+        return 0;
+    }
+    let mut rr = r + dr * (gap + 1) - R;
+    let mut x = q as i64 + dq * (gap as i64 + 1);
+    let mut u = 0;
+    while rr < r && bit(rows[rr], x) {
+        u += 1;
+        rr += dr;
+        x += dq;
+    }
+    let tot = n + gap as u32 + u;
+    if u == 0 || tot <= lim {
+        return 0;
+    }
+    (40 * (tot - lim).min(6)) >> (gap - 1).min(3)
+}
+
+/// Kosten einer Fuge je Viertel der Schicht `r` (INF = verboten).
+fn joint_costs(rows: &[Row], r: usize, sd: u32) -> [u32; W] {
+    let mut c = [INF; W];
+    for q in (r & 1..W).step_by(2) {
+        let (a, a0) = line(rows, r, q, 1, 1);
+        let (b, b0) = line(rows, r, q, 1, -1);
+        let (k, k0) = line(rows, r, q, 2, 0);
+        if a > WILD_STAIR || b > WILD_STAIR || k > WILD_CHAIN {
+            continue;
+        }
+        let w = |n: u32, bottom: bool| WT[(n + if bottom { BOTTOM } else { 0 }).min(8) as usize];
+        let look = ahead(rows, r, q, 1, 1, a, WILD_STAIR)
+            + ahead(rows, r, q, 1, -1, b, WILD_STAIR)
+            + 3 * ahead(rows, r, q, 2, 0, k, WILD_CHAIN);
+        c[q] = 10 * (w(a, a0) + w(b, b0) + 3 * w(k, k0))
+            + look
+            + hash(r as i32, q as i32, sd) % (NOISE + 1);
+    }
+    c
+}
+
+/// Günstigste Schicht als Kreis ab Fuge `start`: beginnt mit einem Läufer,
+/// endet mit einem Kopf (so zählen die Folgen über die Naht richtig).
+fn cheapest_row(c: &[u32; W], start: usize, cl: u32, ck: u32) -> Option<(u32, Row)> {
+    if c[start] >= INF || c[(start + 4) % W] >= INF {
+        return None;
+    }
+    let mut best = [[INF; 6]; W + 1];
+    let mut pick = [[0u8; 6]; W + 1];
+    best[W][4] = 0;
+    best[W][5] = 0;
+    for p in (4..W).step_by(2).rev() {
+        for s in 0..6 {
+            for l in [2usize, 4] {
+                if p + l > W {
+                    continue;
+                }
+                let j = if p + l < W { c[(start + p + l) % W] } else { 0 };
+                let Some(t) = run_next(s, l) else { continue };
+                if j >= INF || best[p + l][t] >= INF {
+                    continue;
+                }
+                let v = best[p + l][t] + j + if l == 2 { ck } else { cl };
+                if v < best[p][s] {
+                    best[p][s] = v;
+                    pick[p][s] = l as u8;
+                }
+            }
         }
     }
-    let y = k as f64 + fr;
-    (WILD_PERIOD * p + s, (y - s as f64).min(e as f64 - y))
+    if best[4][0] >= INF {
+        return None;
+    }
+    let mut m: Row = (1 << start) | (1 << ((start + 4) % W));
+    let (mut p, mut s) = (4, 0);
+    while p < W {
+        let l = pick[p][s] as usize;
+        s = run_next(s, l)?;
+        p += l;
+        if p < W {
+            m |= 1 << ((start + p) % W);
+        }
+    }
+    Some((best[4][0] + c[start] + c[(start + 4) % W] + cl, m))
 }
 
+/// Steinfolge einer Schicht unabhängig von der Verschiebung (kleinste
+/// Drehung der Längen).
+fn row_key(m: Row) -> Vec<u8> {
+    let js: Vec<usize> = (0..W).filter(|&q| bit(m, q as i64)).collect();
+    let d: Vec<u8> = (0..js.len())
+        .map(|i| (js.get(i + 1).copied().unwrap_or(js[0] + W) - js[i]) as u8)
+        .collect();
+    (0..d.len())
+        .map(|i| [&d[i..], &d[..i]].concat())
+        .min()
+        .unwrap_or_default()
+}
+
+/// Alle Schichten; None, wenn die Suche festläuft.
+fn wild_rows(seed: u32) -> Option<Vec<Row>> {
+    let mut rows = vec![0 as Row; R];
+    let mut keys: Vec<Vec<u8>> = vec![Vec::new(); R];
+    let mut tries = vec![0u32; R];
+    let mut back = 0u32;
+    let mut r = 0;
+    while r < R {
+        let salt = tries[r].wrapping_mul(0x27d4_eb2f);
+        let c = joint_costs(&rows, r, lowbias32(seed ^ salt ^ 0x51ed));
+        // Kopfneigung je Schicht gestreut (Kopfanteil schwankt)
+        let ck = (COST_HEAD + (hash(r as i32, 0xb1a5, seed) % 21) as i64 - 10).max(0) as u32;
+        let mut found: Option<(u32, Row)> = None;
+        for t in 0..W / 2 {
+            let h = hash(r as i32, t as i32, seed ^ salt ^ 0x7f4a);
+            let start = (r & 1) + 2 * (h as usize % (W / 2));
+            if let Some(x) = cheapest_row(&c, start, COST_RUNNER, ck) {
+                if found.is_none_or(|f| x.0 < f.0) {
+                    found = Some(x);
+                }
+            }
+            if found.is_some() && t >= 6 {
+                break;
+            }
+        }
+        if let Some((_, m)) = found {
+            // keine Folge doppelt in 8 Schichten, auch über die Naht
+            let key = row_key(m);
+            let twin = (r.saturating_sub(7)..r).any(|x| keys[x] == key)
+                || (r + 8 > R && (0..r + 8 - R).any(|x| keys[x] == key));
+            if !twin || tries[r] >= 1000 {
+                keys[r] = key;
+                rows[r] = m;
+                r += 1;
+                continue;
+            }
+            tries[r] += 1;
+            continue;
+        }
+        back += 1;
+        if back > 2000 || r == 0 {
+            return None;
+        }
+        let d = if r + 10 > R {
+            3 + back as usize % 14
+        } else {
+            2 + back as usize % 6
+        };
+        let r0 = r.saturating_sub(d);
+        for x in r0..=r {
+            rows[x] = 0;
+            keys[x].clear();
+            if x > r0 {
+                tries[x] = 0;
+            }
+        }
+        tries[r0] += 1;
+        r = r0;
+    }
+    Some(rows)
+}
+
+fn wild_table(seed: u32) -> BondTable {
+    let rows = (0..64u32)
+        .find_map(|k| wild_rows(seed ^ k.wrapping_mul(0x9e37_79b1)))
+        .unwrap_or_else(fallback_rows);
+    let mut cells = vec![0u8; R * W];
+    for (r, &m) in rows.iter().enumerate() {
+        let js: Vec<usize> = (0..W).filter(|&q| bit(m, q as i64)).collect();
+        for (i, &a) in js.iter().enumerate() {
+            let b = js.get(i + 1).copied().unwrap_or(js[0] + W);
+            let head = if b - a == 2 { 4 } else { 0 };
+            for k in 0..b - a {
+                cells[r * W + (a + k) % W] = k as u8 | head;
+            }
+        }
+    }
+    BondTable { cells }
+}
+
+/// Notfall, falls keine Suche schließt (kommt in den Tests nicht vor):
+/// je Schicht 12 × (Läufer, Läufer, Kopf) und zwei Läufer, versetzt.
+fn fallback_rows() -> Vec<Row> {
+    (0..R)
+        .map(|r| {
+            let mut m: Row = 0;
+            let mut q = (r & 1) + 2 * (r * 5 % (W / 2));
+            for i in 0..38 {
+                m |= 1 << (q % W);
+                q += if i % 3 == 2 && i < 36 { 2 } else { 4 };
+            }
+            m
+        })
+        .collect()
+}
 // --- Stein und Fuge -----------------------------------------------------
 
 /// Lage eines Punkts im Mauerwerk: Reihe, Stein, Fuge ja/nein.
@@ -288,9 +538,11 @@ fn locate(len: f64, h: f64, joint: f64, bond: Bond, seed: u32, u: f64, v: f64) -
     let a = len + joint;
     let (stone, du) = match bond {
         Bond::Wild => {
-            let t = 2.0 * u / a + row as f64 / 2.0;
-            let (s, d) = wild_stone(row, t, seed);
-            (s, d * a / 2.0)
+            // Viertel-Koordinate; Stoßfugen auf ganzen Vierteln
+            let x = 4.0 * u / a;
+            let (start, n) = bond_table(seed).stone(row, x.floor() as i32);
+            let d = (x - start as f64).min((start + n) as f64 - x);
+            (start, d * a / 4.0)
         }
         Bond::Half | Bond::Third => {
             let off = match bond {
@@ -463,17 +715,12 @@ pub fn joint_lines(p: &Pattern, rect: Rect2) -> Vec<(Vec2, Vec2)> {
         };
         match bond {
             Bond::Wild => {
-                // Stoßfugen u = (2·t − r)·a/4 für die Fugen-Einheiten t
-                let t0 = 2.0 * u0 / a + row as f64 / 2.0;
-                let t1 = 2.0 * u1 / a + row as f64 / 2.0;
-                let phi = wild_phi(row, *seed);
-                let p0 = ((t0 - phi as f64) / WILD_PERIOD as f64).floor() as i32;
-                let p1 = ((t1 - phi as f64) / WILD_PERIOD as f64).floor() as i32;
-                for pp in p0..=p1 {
-                    let base = phi + WILD_PERIOD * pp;
-                    for q in wild_joints(hash(row, pp, *seed ^ BLOCK_SALT)) {
-                        let t = (base + q) as f64;
-                        push((2.0 * t - row as f64) * a / 4.0);
+                let t = bond_table(*seed);
+                let q0 = (4.0 * u0 / a).ceil() as i32;
+                let q1 = (4.0 * u1 / a).floor() as i32;
+                for q in q0..=q1 {
+                    if t.cell(row, q) & 3 == 0 {
+                        push(q as f64 * a / 4.0);
                     }
                 }
             }
@@ -660,44 +907,87 @@ mod tests {
         .collect()
     }
 
+    /// Regeln der Verbandstabelle ringsum über beide Nähte (§8.1).
     #[test]
-    fn wild_treppen_und_folgen() {
-        for seed in [0, 1, 17, 4711, 99, 123_456] {
-            let rows = quarter_joints(seed, -30..30, 40);
-            for (i, r) in rows.iter().enumerate() {
-                let row = i as i64 - 30;
-                for w in r.windows(2) {
-                    let d = w[1] - w[0];
-                    assert!(d == 2 || d == 4, "Stein {d} Viertel");
-                    assert_eq!(w[0].rem_euclid(2), row.rem_euclid(2), "Parität");
+    fn verbandstabelle_ringsum() {
+        let n = WILD_SIZE as i64;
+        for seed in [1, 17, 4711] {
+            let t = bond_table(seed);
+            let j = |r: i64, q: i64| t.cell(r as i32, q as i32) & 3 == 0;
+            let (mut heads, mut all) = (0, 0);
+            let mut shares = Vec::new();
+            let mut keys = Vec::new();
+            for r in 0..n {
+                let js: Vec<i64> = (0..n).filter(|&q| j(r, q)).collect();
+                assert!(js.iter().all(|q| q.rem_euclid(2) == r & 1), "Parität");
+                let d: Vec<i64> = (0..js.len())
+                    .map(|i| js.get(i + 1).copied().unwrap_or(js[0] + n) - js[i])
+                    .collect();
+                assert!(d.iter().all(|&x| x == 2 || x == 4), "Stein {d:?}");
+                for q in 0..n {
+                    let (start, len) = t.stone(r as i32, q as i32);
+                    assert!(j(r, start as i64) && q - (start as i64) < len as i64);
+                    assert_eq!(
+                        len == 2,
+                        d.contains(&2) && t.cell(r as i32, q as i32) & 4 != 0
+                    );
                 }
-                let lens: Vec<i64> = r.windows(2).map(|w| w[1] - w[0]).collect();
-                for run in lens.chunk_by(|a, b| a == b) {
+                let dd = [d.clone(), d.clone()].concat();
+                for run in dd.chunk_by(|a, b| a == b) {
                     let max = if run[0] == 2 { 2 } else { 4 };
-                    assert!(run.len() <= max, "Folge {run:?}");
+                    assert!(run.len() <= max, "Folge {run:?} in Schicht {r}");
                 }
+                let h = d.iter().filter(|&&x| x == 2).count();
+                heads += h;
+                all += d.len();
+                shares.push(h as f64 / d.len() as f64 * 100.0);
+                keys.push((0..d.len()).map(|i| [&d[i..], &d[..i]].concat()).min());
             }
-            for d in [1i64, -1] {
-                for i in 0..rows.len() {
-                    for &x in &rows[i] {
-                        let mut n = 1;
-                        while i + n < rows.len() && rows[i + n].contains(&(x + d * n as i64)) {
-                            n += 1;
+            for r in 0..n {
+                for q in (0..n).filter(|&q| j(r, q)) {
+                    for dq in [1, -1] {
+                        let mut k = 1;
+                        while k <= n && j(r + k, q + dq * k) {
+                            k += 1;
                         }
-                        // am Rand abgeschnitten nur kürzer
-                        assert!(n <= 5, "Treppe {n} ab {i}, {x}");
+                        assert!(k as u32 <= WILD_STAIR, "Treppe {k} ab {r}, {q}");
                     }
+                    let mut k = 1;
+                    while k <= n && j(r + 2 * k, q) {
+                        k += 1;
+                    }
+                    assert!(k as u32 <= WILD_CHAIN, "Kette {k} ab {r}, {q}");
+                }
+                for d in 1..8 {
+                    assert_ne!(
+                        keys[r as usize],
+                        keys[((r + d) % n) as usize],
+                        "Folge doppelt ab {r}"
+                    );
                 }
             }
-            for i in 0..rows.len() {
-                for &x in &rows[i] {
-                    let mut n = 1;
-                    while i + 2 * n < rows.len() && rows[i + 2 * n].contains(&x) {
-                        n += 1;
-                    }
-                    assert!(n <= 3, "Fuge {x} {n}-mal in k, k + 2, … ab {i}");
-                }
+            let share = heads as f64 / all as f64 * 100.0;
+            assert!((share - 30.0).abs() <= 3.0, "Kopfanteil {share:.1}");
+            let mean = shares.iter().sum::<f64>() / n as f64;
+            let sd = (shares.iter().map(|a| (a - mean).powi(2)).sum::<f64>() / n as f64).sqrt();
+            assert!(sd >= 2.0, "Streuung {sd:.2}");
+            assert_eq!(*t, wild_table(seed), "deterministisch");
+        }
+        assert_ne!(bond_table(17).cells, bond_table(18).cells);
+    }
+
+    /// Fugenlinien und Farbformel lesen dieselbe Tabelle.
+    #[test]
+    fn fugen_aus_der_tabelle() {
+        let t = bond_table(17);
+        let rows = quarter_joints(17, -3..140, 40);
+        for (i, js) in rows.iter().enumerate() {
+            let r = i as i32 - 3;
+            for &q in js {
+                assert_eq!(t.cell(r, q as i32) & 3, 0, "Schicht {r}, Viertel {q}");
             }
+            let n = (-160..=160).filter(|&q| t.cell(r, q) & 3 == 0).count();
+            assert_eq!(js.len(), n, "Schicht {r}");
         }
     }
 }

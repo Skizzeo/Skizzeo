@@ -73,6 +73,9 @@ pub struct DrawTable {
     pub background: Stroke,
     /// Fugen in Ansichten (Paket 6, Stift „Ansichtsmuster“).
     pub pattern: Stroke,
+    /// Startwerte der Verbandstabellen (wilder Verband) in der Reihenfolge
+    /// ihrer Nummer, siehe [`wild_seeds`].
+    pub bonds: Vec<u32>,
     /// Strichmuster (E4) in Bildpunkten bei 96 dpi, je Kantenart bzw. Linie.
     pub drawing_dash: [DashPattern; edge_kind::COUNT],
     pub model_dash: [DashPattern; edge_kind::COUNT],
@@ -272,6 +275,7 @@ impl DrawTable {
             section_ends: stroke(&d.section_ends),
             background: stroke(&d.background),
             pattern: stroke(&d.pattern),
+            bonds: wild_seeds(model),
             drawing_dash: d.drawing.map(|s| dash_px(model, s.line_type, px_per_mm)),
             model_dash: d.model3d.map(|s| dash_px(model, s.line_type, px_per_mm)),
             background_dash: dash_px(model, d.background.line_type, px_per_mm),
@@ -345,6 +349,11 @@ impl DrawTable {
                 let (w, c) = self.pattern;
                 [c[0], c[1], c[2], w * px_scale]
             },
+            bond: self
+                .bonds
+                .iter()
+                .flat_map(|&seed| sk_model::proctex::bond_table(seed).cells.clone())
+                .collect(),
         }
     }
 }
@@ -386,6 +395,27 @@ pub fn unpack_rgb(f: f32) -> [u8; 3] {
     [(n >> 16) as u8, (n >> 8) as u8, n as u8]
 }
 
+/// Startwerte aller Oberflächen mit wildem Verband, ohne Doppelte, in der
+/// Reihenfolge der Oberflächen: Nummer = Platz der Verbandstabelle in
+/// [`sk_render::Looks::bond`].
+pub fn wild_seeds(m: &Model) -> Vec<u32> {
+    use sk_model::proctex::{Bond, Pattern};
+    let mut out = Vec::new();
+    for (_, s) in m.attr().surfaces().iter() {
+        if let Some(Pattern::Masonry {
+            bond: Bond::Wild,
+            seed,
+            ..
+        }) = &s.pattern
+        {
+            if !out.contains(seed) {
+                out.push(*seed);
+            }
+        }
+    }
+    out
+}
+
 /// Looks-Zeilen 8–11 einer Oberfläche (Aufbau: [`sk_render::Looks`]):
 /// ohne Muster und bei Fremdem Art 0.
 pub fn pattern_rows(m: &Model, s: sk_model::SurfaceId) -> [[f32; 4]; 4] {
@@ -409,7 +439,9 @@ pub fn pattern_rows(m: &Model, s: sk_model::SurfaceId) -> [[f32; 4]; 4] {
                 Bond::Wild => -1.0,
             };
             t[0] = [1.0, *len, *h, *joint];
-            t[1] = [offset, *spread, *seed as f32, 0.0];
+            // Nummer der Verbandstabelle (Looks-Zeile 9, Feld w)
+            let table = wild_seeds(m).iter().position(|x| x == seed).unwrap_or(0);
+            t[1] = [offset, *spread, *seed as f32, table as f32];
             t[2] = [
                 pack_rgb(palette[0].0),
                 palette[0].1,

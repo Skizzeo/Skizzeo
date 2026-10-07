@@ -20579,7 +20579,10 @@ mod muster {
     /// A251 (Regeln 59, 64, F-17): Höchstens ein `[pattern]` je Oberfläche:
     /// bei einer zweiten Zeile gilt die erste, mit Hinweis. Unbekannte
     /// Oberfläche: Hinweis, verworfen. Unbekanntes `gen=` und unbekannte
-    /// Schlüssel bleiben bytegleich. Regel 64: Steht eine fremde Zeile
+    /// Schlüssel bleiben bytegleich (die Werkszeile „friesisch-bunt“ aus
+    /// Paket 7 mit `hpal=`, `flame=`, `fend=`, `relief=`; ab Paket 7 sind sie
+    /// bekannt und die Zeile bleibt gleich, wenn der Bau sie in dieser
+    /// Reihenfolge schreibt). Regel 64: Steht eine fremde Zeile
     /// (`gen=tiles` aus einer neueren Fassung) an einer Oberfläche, und der
     /// Nutzer setzt dort ein eigenes Muster bzw. „ohne“, steht nach dem
     /// Speichern genau eine `[pattern]`-Zeile für diese Oberfläche.
@@ -20609,7 +20612,7 @@ mod muster {
 
         let zukunft = format!("[pattern] surface={g} gen=zukunft a=1 b=\"x\"");
         let schluessel = format!(
-            "[pattern] surface={v} gen=masonry len=240 h=71 joint=10 bond=half jrgb=d8d4cc pal=8a3b2a:40;9c4a33:35;6e2f22:25 spread=6 seed=17 relief=2"
+            "[pattern] surface={v} gen=masonry len=240 h=71 joint=10 bond=wild jrgb=d1cbc2 pal=87493c:79;675549:9;7b6d65:12 hpal=87493c:50;675549:50 flame=100 fend=64 relief=100 spread=7 seed=17"
         );
         let ohne_v: String = text
             .lines()
@@ -20793,25 +20796,31 @@ mod muster {
             .collect()
     }
 
-    /// Prüft den wilden Verband (Regel 58, BIM-Nachtrag 18:10,
-    /// Koordinator 18:13 nach referenz/texturen/auswertung.md) in einem
-    /// Rechteck; gibt (Köpfe, Läufer) zurück. q = ¼ Stein im Achsmaß
-    /// ((Länge + Fuge)/4, 62,5 mm bei NF).
+    /// Prüft den wilden Verband (Regel 58, BIM-Nachträge 2/3, Koordinator
+    /// 18:13, 18:47, 18:58, 19:02) in einem Rechteck; gibt (Köpfe, Läufer)
+    /// zurück. q = ¼ Stein im Achsmaß ((Länge + Fuge)/4, 62,5 mm bei NF).
     /// - Zwischen zwei Stoßfugen einer Reihe liegt ein Kopf (2q) oder ein
     ///   Läufer (4q).
     /// - Versatz ¼ Stein: Jede Stoßfuge liegt zu jeder Stoßfuge der
     ///   Nachbarreihe auf q + k·2q, also Überbindung mindestens q und keine
-    ///   Stoßfuge durch zwei Schichten.
+    ///   gemeinsame Stoßfuge.
     /// - Höchstens 2 Köpfe nebeneinander, höchstens 4 Läufer in Folge.
     /// - Fugentreppen (Stoßfugen in Folgeschichten je q in dieselbe
     ///   Richtung versetzt) über höchstens 5 Schichten.
-    /// - Dieselbe Stoßfuge in Schicht k und k + 2 höchstens 2-mal
-    ///   hintereinander (also höchstens in k, k + 2, k + 4).
     /// - In jedem Fenster von 64 Schichten wiederholt sich keine Folge von
     ///   3 Schichten (gleiche Stoßfugen an gleicher Stelle).
+    /// - Kein linearer Verband: In je 8 aufeinanderfolgenden Schichten
+    ///   mindestens 6 verschiedene Steinfolgen, unabhängig von der
+    ///   Verschiebung (zwei Schichten gelten als gleich, wenn die Folge der
+    ///   einen ohne je 2 Randsteine in der anderen vorkommt).
+    /// - Der Kopfanteil schwankt je Schicht: Streuung über die Schichten
+    ///   mindestens 2 Prozentpunkte (Tabelle seed 17: 3,7).
     ///
     /// Am Rand abgeschnittene Folgen und Treppen werden nur kürzer, darum
     /// gelten die Höchstwerte auch dort.
+    /// - Fugenketten (dieselbe Stoßfuge in k, k + 2, k + 4, …) höchstens 4
+    ///   Fugen lang (K = 4, Koordinator 19:32; mit K = 3 periodisch nicht
+    ///   lösbar).
     fn wild_pruefen(p: &Pattern, rechteck: (f64, f64, f64, f64)) -> (usize, usize) {
         let Pattern::Masonry { len, joint, .. } = p else {
             panic!("{p:?}")
@@ -20821,9 +20830,12 @@ mod muster {
         let r = reihen(p, u0, v0, u1, v1);
         assert!(r.len() > 20, "Reihen: {}", r.len());
         let (mut k, mut l) = (0, 0);
+        let mut folgen: Vec<String> = Vec::new();
+        let mut anteile: Vec<f64> = Vec::new();
         for (v, xs) in &r {
             assert!(xs.len() > 5, "Reihe {v}: {xs:?}");
             let mut folge = (' ', 0);
+            let mut text = String::new();
             for w in xs.windows(2) {
                 let d = w[1] - w[0];
                 let art = if (d - 2.0 * q).abs() < 0.01 {
@@ -20839,6 +20851,7 @@ mod muster {
                         4.0 * q
                     )
                 };
+                text.push(art);
                 folge = if folge.0 == art {
                     (art, folge.1 + 1)
                 } else {
@@ -20852,6 +20865,8 @@ mod muster {
                     folge.1
                 );
             }
+            anteile.push(text.matches('K').count() as f64 / text.len() as f64 * 100.0);
+            folgen.push(text);
         }
         for w in r.windows(2) {
             let ((va, a), (_, b)) = (&w[0], &w[1]);
@@ -20883,7 +20898,10 @@ mod muster {
                 while i + 2 * n < r.len() && da(&r[i + 2 * n].1, *x) {
                     n += 1;
                 }
-                assert!(n <= 3, "Reihe {v}, Fuge {x}: {n}-mal in k, k + 2, …");
+                assert!(
+                    n <= 4,
+                    "Reihe {v}, Fuge {x}: Kette über {n} Fugen (k, k + 2, …)"
+                );
             }
         }
         let schicht =
@@ -20900,39 +20918,65 @@ mod muster {
                 );
             }
         }
+        let innen = |t: &str| t[2..t.len() - 2].to_string();
+        let gleich = |a: &str, b: &str| b.contains(&innen(a)) || a.contains(&innen(b));
+        for (i, w) in folgen.windows(8).enumerate() {
+            let verschieden = (0..8)
+                .filter(|&a| (0..a).all(|b| !gleich(&w[a], &w[b])))
+                .count();
+            assert!(
+                verschieden >= 6,
+                "ab Reihe {}: nur {verschieden} verschiedene Folgen in 8 Schichten",
+                r[i].0
+            );
+        }
+        let n = anteile.len() as f64;
+        let mittel = anteile.iter().sum::<f64>() / n;
+        let streu = (anteile.iter().map(|a| (a - mittel).powi(2)).sum::<f64>() / n).sqrt();
+        assert!(
+            streu >= 2.0,
+            "Kopfanteil je Schicht fast gleich: Streuung {streu:.2} Prozentpunkte"
+        );
         (k, l)
     }
 
-    /// A268 (Regel 58 ergänzt, BIM-Nachtrag 18:10, Koordinator 18:13,
-    /// Jörns Vorlage „Röben Jever friesisch-bunt“): wilder Verband.
+    /// A268 (Regel 58, BIM-Nachträge 2/3, Koordinator 18:13, 18:47, 18:58,
+    /// 19:02; Jörns Vorlage „Röben Jever friesisch-bunt“): wilder Verband.
+    /// Die Verbandstabelle ist 128 Schichten × 128 Viertel groß und ringsum
+    /// periodisch (projektstruktur/paket-6-prozedural.md §8.1). Geprüft wird
+    /// darum ein Rechteck über beide Nähte (u −1,0 … 9,5 m bei 8,0 m
+    /// Periode, v −1,5 … 10,9 m bei 10,368 m Periode) für 50 Startwerte und
+    /// zusätzlich 17 und 4711:
     /// - Läufer und Köpfe mischen sich; in jeder Reihe nur diese zwei
     ///   Steinlängen.
     /// - Versatz ¼ Stein zur Nachbarschicht (62,5 mm bei NF, 55,5 mm bei
-    ///   WF mit Fuge 12), keine Stoßfuge durch zwei Schichten.
+    ///   WF mit Fuge 12), keine gemeinsame Stoßfuge.
     /// - Höchstens 2 Köpfe nebeneinander, 4 Läufer in Folge, Treppen über
-    ///   höchstens 5 Schichten, dieselbe Fuge in k und k + 2 höchstens
-    ///   2-mal hintereinander, keine Folge von 3 Schichten doppelt in 64.
+    ///   höchstens 5 Schichten, Fugenketten in k, k + 2, … höchstens 4 Fugen,
+    ///   keine Folge von 3 Schichten doppelt in 64.
+    /// - In je 8 Schichten mindestens 6 verschiedene Steinfolgen unabhängig
+    ///   von der Verschiebung; Kopfanteil schwankt je Schicht.
     /// - Kopfanteil 29 % ± 4 Prozentpunkte nach Anzahl (Vorlage: 32 von
-    ///   112; mit allen Regeln zusammen erreicht ein Probeaufbau 30–32 %).
+    ///   112; B7: 30 ± 3).
     /// - Auch unter ±0,00 und bei anderem Format, deterministisch, anderer
     ///   Startwert gibt einen anderen Verband.
     #[test]
     fn a268_wilder_verband() {
-        let gross = (-5000.0, -2000.0, 5000.0, 3500.0);
-        for seed in [17, 4711] {
+        let ringsum = (-1000.0, -1500.0, 9500.0, 10_900.0);
+        for seed in (1..=50).chain([17, 4711]) {
             let p = friesisch(7.0, seed);
-            let (k, l) = wild_pruefen(&p, gross);
+            let (k, l) = wild_pruefen(&p, ringsum);
             let anteil = k as f64 / (k + l) as f64 * 100.0;
             assert!(
                 (anteil - 29.0).abs() <= 4.0,
                 "Startwert {seed}: Kopfanteil {anteil:.1} % ({k} Köpfe, {l} Läufer)"
             );
-            assert_eq!(
-                fugen(&p, -1000.0, -500.0, 1000.0, 500.0),
-                fugen(&friesisch(7.0, seed), -1000.0, -500.0, 1000.0, 500.0),
-                "deterministisch"
-            );
         }
+        assert_eq!(
+            fugen(&friesisch(7.0, 17), -1000.0, -500.0, 1000.0, 500.0),
+            fugen(&friesisch(7.0, 17), -1000.0, -500.0, 1000.0, 500.0),
+            "deterministisch"
+        );
         assert_ne!(
             fugen(&friesisch(7.0, 17), 0.0, 0.0, 2000.0, 1000.0),
             fugen(&friesisch(7.0, 18), 0.0, 0.0, 2000.0, 1000.0),
