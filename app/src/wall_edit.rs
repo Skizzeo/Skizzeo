@@ -495,14 +495,19 @@ impl WallEdit {
             if let Some(d) = &self.drag {
                 if let Some(&(a, b)) = d.original.outer_foot().get(d.seg) {
                     let lift = vec3(0.0, 0.0, d.original.base);
-                    out.push(dot((a + b) * 0.5 + lift, col.drag_ghost, 8.0));
+                    out.push(dot(
+                        (a + b) * 0.5 + lift,
+                        col.drag_ghost,
+                        theme.size.drag_dot,
+                    ));
                 }
             }
             let segment = active.and_then(|e| scene.model().segment_of(e));
             if let Some((run, k)) = segment {
                 if let Some((a, b)) = scene.foot(run).and_then(|f| f.get(k).copied()) {
-                    out.push(dot((a + b) * 0.5, col.shadow_band, 15.0));
-                    out.push(dot((a + b) * 0.5, col.drag_hot, 12.0));
+                    let sz = &theme.size;
+                    out.push(dot((a + b) * 0.5, col.shadow_band, sz.drag_dot_shadow));
+                    out.push(dot((a + b) * 0.5, col.drag_hot, sz.drag_dot_hot));
                 }
             }
             return out;

@@ -614,6 +614,9 @@ struct App {
     /// Zielwahl beim „Bündig setzen“ (E20) und ihr Maß im Bild (Schlüssel
     /// des gezeichneten Bildes).
     pick: Option<flush_pick::FlushPick>,
+    /// Während des Gleitens gelöste, vorher gekoppelte OG-Wand: Kette und
+    /// Paneel zeigen den Zustand vor dem Gleiten.
+    flush_keep: Option<sk_model::ElementId>,
     pick_label: Option<(String, u32, u64)>,
     /// Fehlschläge des Sicherns in Folge (F-13 §8) und ein Befehl aus einem
     /// Verweis, der das Fenster braucht („Jetzt speichern“).
@@ -732,7 +735,11 @@ impl App {
     /// Paneel „Eigenschaften“ an Auswahl und Modell angleichen. Beim Ziehen bleibt
     /// es stehen; die neuen Mengen kommen beim Loslassen.
     fn sync_props(&mut self) {
-        if self.edit.is_dragging() || self.ui.level_dragging().is_some() {
+        // Beim Gleiten („Bündig setzen“) bleibt das Paneel auf dem Stand davor
+        if self.edit.is_dragging()
+            || self.ui.level_dragging().is_some()
+            || self.flush_anim.is_some()
+        {
             return;
         }
         if self.picking.validate(&self.scene) {
@@ -4067,6 +4074,8 @@ impl App {
             return;
         };
         if self.theme.size.anim_ms > 0.0 && o != 0.0 && m.can_flush_to(wall, target).is_ok() {
+            self.flush_keep =
+                (upper == target && m.stack_offset(target).is_some_and(|s| s.1)).then_some(target);
             self.scene.begin("Bündig gesetzt");
             self.flush_anim = Some((wall, run, o, Instant::now(), target));
             self.redraw = true;
@@ -4095,6 +4104,7 @@ impl App {
     /// Gleiten sofort beenden (am Ende oder bei der nächsten Eingabe).
     fn finish_flush(&mut self) {
         if let Some((wall, .., target)) = self.flush_anim.take() {
+            self.flush_keep = None;
             self.scene.rollback();
             self.flush_now(wall, target);
         }
@@ -4782,6 +4792,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         drag_notice: false,
         flush_anim: None,
         pick: None,
+        flush_keep: None,
         pick_label: None,
         save_fail: autosave::FailNotice::default(),
         queued_command: None,
@@ -5213,7 +5224,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             }
             helpers.extend(a.edit.helpers(&a.scene, &a.cam, scale, !drawing, &a.theme));
             if let Some(p) = &a.pick {
-                helpers.extend(p.helpers(&a.scene, a.ui.view, scale, &a.theme));
+                helpers.extend(p.helpers(&a.scene, a.ui.view, plane, scale, &a.theme));
             }
             helpers.extend(a.tool.helpers(&a.cam, scale, &a.theme));
             a.renderer.set_helpers(&helpers);
@@ -5232,6 +5243,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                     plan_z: a.plan_z(),
                     band: a.edit.active_wall(),
                     hover: a.chip_hover,
+                    keep_linked: a.flush_keep,
                 })
             } else {
                 Vec::new()

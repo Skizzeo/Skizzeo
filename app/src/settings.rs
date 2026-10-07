@@ -166,7 +166,7 @@ pub const F4_ROLES: [F4Role; 11] = [
     }),
 ];
 
-pub const SIZE_ROLES: [SizeRole; 70] = [
+pub const SIZE_ROLES: [SizeRole; 77] = [
     ("corner_radius", "Eckenradius", |t| {
         &mut t.size.corner_radius
     }),
@@ -298,6 +298,23 @@ pub const SIZE_ROLES: [SizeRole; 70] = [
     }),
     ("link_dash", "Fußlinie: Strichlänge", |t| {
         &mut t.size.link_dash
+    }),
+    ("glow_w", "Schein um Bauteil", |t| &mut t.size.glow_w),
+    ("dim_label_pad", "Maßzahl im Bild: Rand", |t| {
+        &mut t.size.dim_label_pad
+    }),
+    ("dim_label_h", "Maßzahl im Bild: Höhe", |t| {
+        &mut t.size.dim_label_h
+    }),
+    ("dim_label_radius", "Maßzahl im Bild: Ecken", |t| {
+        &mut t.size.dim_label_radius
+    }),
+    ("drag_dot", "Ziehpunkt", |t| &mut t.size.drag_dot),
+    ("drag_dot_hot", "Ziehpunkt unter der Maus", |t| {
+        &mut t.size.drag_dot_hot
+    }),
+    ("drag_dot_shadow", "Ziehpunkt: Schatten", |t| {
+        &mut t.size.drag_dot_shadow
     }),
     ("catalog_w", "Bauteilkatalog: Breite", |t| {
         &mut t.size.catalog_w

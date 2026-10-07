@@ -263,6 +263,18 @@ pub struct Sizes {
     pub link_icon_stroke: f32,
     pub link_line: f32,
     pub link_dash: f32,
+    /// Schein um ein hervorgehobenes Bauteil (Hover aus der Mengenliste,
+    /// Zielwand beim „Bündig setzen“), dip.
+    pub glow_w: f32,
+    /// Maßzahl im Bild (Weg beim „Bündig setzen“): Rand, Höhe, Eckradius.
+    pub dim_label_pad: f32,
+    pub dim_label_h: f32,
+    pub dim_label_radius: f32,
+    /// Ziehpunkt am Wandfuß in Parallelansichten: ruhend, unter der Maus,
+    /// Schatten darunter (Durchmesser, dip).
+    pub drag_dot: f32,
+    pub drag_dot_hot: f32,
+    pub drag_dot_shadow: f32,
     /// Bauteilkatalog (K3): Dialog, Liste links, Kachelzeile, Schnittbild-Kachel.
     pub catalog_w: f32,
     pub catalog_h: f32,
@@ -455,6 +467,13 @@ impl Theme {
                 link_icon_stroke: 1.5,
                 link_line: 1.5,
                 link_dash: 6.0,
+                glow_w: 8.0,
+                dim_label_pad: 6.0,
+                dim_label_h: 20.0,
+                dim_label_radius: 4.0,
+                drag_dot: 8.0,
+                drag_dot_hot: 12.0,
+                drag_dot_shadow: 15.0,
                 catalog_w: 1080.0,
                 catalog_h: 720.0,
                 catalog_list_w: 270.0,

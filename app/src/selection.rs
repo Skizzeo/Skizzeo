@@ -646,9 +646,10 @@ pub fn hover_glow(
     theme: &Theme,
 ) -> Vec<Helper> {
     let [r, g, b, a] = theme.interact.hover_element;
-    let mut v = outline(scene, id, view, section, scale, theme, [r, g, b, a * 0.43]);
+    let glow = [r, g, b, a * crate::scene::GROW_GLOW];
+    let mut v = outline(scene, id, view, section, scale, theme, glow);
     for h in &mut v {
-        h.width = 8.0 * scale;
+        h.width = theme.size.glow_w * scale;
         h.round = true;
     }
     v
@@ -668,7 +669,7 @@ pub fn fading_glow(
     let [r, g, b, a] = theme.interact.hover_element;
     let mut v = outline(scene, id, view, section, scale, theme, [r, g, b, a * k]);
     for h in &mut v {
-        h.width = 8.0 * scale;
+        h.width = theme.size.glow_w * scale;
         h.round = true;
     }
     let full = k / crate::scene::GROW_GLOW;

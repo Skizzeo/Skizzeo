@@ -63,6 +63,9 @@ pub struct Want<'a> {
     pub band: Option<ElementId>,
     /// Plättchen unter der Maus.
     pub hover: Option<ElementId>,
+    /// Gilt als gekoppelt, obwohl gerade gelöst: die OG-Wand, an die beim
+    /// „Bündig setzen“ die EG-Wand gleitet (Zustand vor dem Gleiten).
+    pub keep_linked: Option<ElementId>,
 }
 
 /// Die Plättchen der gestapelten Wände: gelöste immer, gekoppelte nur am
@@ -91,6 +94,7 @@ pub fn chips(wnt: &Want) -> Vec<Chip> {
             let Some((_, linked)) = m.stack_offset(wall) else {
                 continue;
             };
+            let linked = linked || wnt.keep_linked == Some(wall);
             let near = wnt.band == Some(wall) || wnt.hover == Some(wall);
             if linked && !near {
                 continue;
@@ -404,6 +408,7 @@ mod tests {
             scale: 1.0,
             plan_z: Some(z),
             band: None,
+            keep_linked: None,
             hover: None,
         });
         assert_eq!(c.len(), SLOTS);

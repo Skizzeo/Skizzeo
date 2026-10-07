@@ -5,6 +5,7 @@
 
 use crate::camera::Camera;
 use crate::scene::Scene;
+use crate::selection;
 use crate::ui::ViewKind;
 use sk_math::{vec3, Vec3};
 use sk_model::{ElementId, FlushError, Model, WallChain};
@@ -268,7 +269,14 @@ impl FlushPick {
     /// Hilfslinien der Zielwahl (E20 §2): Kandidaten in `link_on`, der unter
     /// der Maus wie gewählt mit Schein, dazu der Geist der anderen Wand an
     /// ihrer künftigen Lage und der Weg; abgelehnt rot und ohne Geist.
-    pub fn helpers(&self, scene: &Scene, view: ViewKind, scale: f32, theme: &Theme) -> Vec<Helper> {
+    pub fn helpers(
+        &self,
+        scene: &Scene,
+        view: ViewKind,
+        section: Option<(Vec3, Vec3)>,
+        scale: f32,
+        theme: &Theme,
+    ) -> Vec<Helper> {
         let sz = &theme.size;
         let line = |a: Vec3, b: Vec3, color: [f32; 4], width: f32, dash: f32| Helper {
             a: a.to_f32(),
@@ -295,13 +303,9 @@ impl FlushPick {
             let edges = prism(&c, k, view, plan_cut);
             match hovered {
                 Some((h, Ok(_))) if h == t => {
-                    let [r, g, b, a] = theme.interact.hover_element;
-                    for &(p, q) in &edges {
-                        out.push(line(p, q, [r, g, b, a * 0.43], 8.0, 0.0));
-                    }
-                    for &(p, q) in &edges {
-                        out.push(line(p, q, theme.interact.select, sz.outline, 0.0));
-                    }
+                    // Wie gewählt, mit dem Schein des Hovers aus der Mengenliste
+                    out.extend(selection::hover_glow(scene, e, view, section, scale, theme));
+                    out.extend(selection::helpers(scene, e, view, section, scale, theme));
                 }
                 Some((h, Err(_))) if h == t => {
                     for &(p, q) in &edges {
@@ -379,11 +383,14 @@ pub fn paint_label(
     let px = t.size.font_small * s;
     let f = fonts.regular.as_ref();
     let tw = f.map_or(text.len() as f32 * px * 0.5, |f| f.width(text, px));
-    let (pad, h) = ((6.0 * s).round(), (20.0 * s).round());
+    let (pad, h) = (
+        (t.size.dim_label_pad * s).round(),
+        (t.size.dim_label_h * s).round(),
+    );
     let w = (tw + 2.0 * pad).ceil();
     let mut c = sk_paint::Canvas::new(w as usize, h as usize);
     let mut p = sk_paint::Path::new();
-    p.rounded_rect(0.0, 0.0, w, h, 4.0 * s);
+    p.rounded_rect(0.0, 0.0, w, h, t.size.dim_label_radius * s);
     c.fill(&p, sk_paint::Rgba::from_f32(t.interact.shadow_band));
     let cap = f.map_or(px * 0.7, |f| f.cap_height(px));
     let base = ((h + cap) * 0.5).round();
@@ -491,7 +498,7 @@ mod tests {
         assert_eq!(path.2, "0,30 m");
         assert!(((path.0 - path.1).length() - 300.0).abs() < 1e-6);
         assert!(!pick
-            .helpers(&s, ViewKind::Persp, 1.0, &Theme::dark())
+            .helpers(&s, ViewKind::Persp, None, 1.0, &Theme::dark())
             .is_empty());
         assert_eq!(pick.click(Some(w)), Act::Flush(p, w));
         assert_eq!(pick.click(Some(p)), Act::Flush(w, p));
@@ -507,10 +514,10 @@ mod tests {
 
     #[test]
     fn ohne_versatz_keine_zielwahl() {
-        let (s, w, p) = haus();
-        let mut m = s.model().clone();
-        assert!(m.set_flush(w));
-        assert!(FlushPick::start(&m, w).is_none());
-        assert!(FlushPick::start(&m, p).is_none(), "EG hat keinen Partner");
+        let (mut s, w, p) = haus();
+        assert!(s.edit_model("Bündig gesetzt", |m| m.set_flush(w)));
+        let m = s.model();
+        assert!(FlushPick::start(m, w).is_none());
+        assert!(FlushPick::start(m, p).is_none(), "EG hat keinen Partner");
     }
 }
