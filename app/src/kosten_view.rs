@@ -2885,3 +2885,311 @@ mod tests {
         w.erster_eindeutig().expect("ein eindeutiger Name")
     }
 }
+
+/// Abnahme KA-2a/b durch Test (paket-ka2 §6 Nr. 3, 6a, 7, 10).
+#[cfg(test)]
+mod abnahme_ka2 {
+    use super::*;
+    use sk_cost::{Herkunft, HerkunftArt, Op, SatzId};
+
+    fn haus() -> Scene {
+        let m = sk_model::szo::read_with(
+            include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo"),
+            sk_model::GuidGen::with_seed(1),
+            &sk_cost::lesen::ABSCHNITTE_SZO,
+        )
+        .expect("lädt")
+        .model;
+        Scene::with_model(m)
+    }
+
+    fn h() -> Herkunft {
+        Herkunft::neu(HerkunftArt::Manual, "2026-10-08", "11:40")
+    }
+
+    fn leistung(s: &Scene, kurz: &str) -> sk_cost::katalog::Leistung {
+        let k = sk_cost::lesen::katalog(s.model(), None);
+        k.leistungen
+            .iter()
+            .find(|l| l.kurz.starts_with(kurz))
+            .unwrap_or_else(|| panic!("{kurz}"))
+            .clone()
+    }
+
+    /// Nr. 3: Im Modus Material zählt eine NU-Position nicht, die Fußzeile
+    /// nennt sie mit ihrer Summe.
+    #[test]
+    fn nr3_nu_im_modus_material() {
+        let mut s = haus();
+        let w20 = leistung(&s, "WDVS EPS 035 d=140mm");
+        let mut daten = sk_cost::preis::bauleistung(&w20);
+        daten.nu = Some(Dez::ganz(110));
+        s.kosten(
+            None,
+            &h(),
+            Op::BauleistungAendern {
+                bauleistung: w20.guid,
+                daten,
+            },
+        )
+        .unwrap();
+        let mut v = KostenView::new();
+        v.modus = Modus::Material;
+        v.sync(&mut s, None);
+        let b = v.blatt().unwrap();
+        assert_eq!(b.nu, Cent(2_195_545));
+        assert_eq!(v.netto(), Some(Cent(3_114_834 - 997_975)));
+        let z = v
+            .zeilen()
+            .iter()
+            .find(|z| z.text.starts_with("WDVS EPS 035"))
+            .expect("WDVS-Zeile");
+        assert_eq!(z.betrag, None, "{z:?}");
+        let f = v.fuss();
+        assert!(
+            f.iter()
+                .any(|x| x.text.contains("NU-Position") && x.text.contains("21.955,45")),
+            "{:?}",
+            f.iter().map(|x| &x.text).collect::<Vec<_>>()
+        );
+    }
+
+    /// Nr. 6a: Projekt ohne die Deckenleistung B30 (ausgemustert): die
+    /// Decken stehen grau unter ihrem Gewerk, die Fußzeile nennt sie; in
+    /// der CSV keine OZ doppelt, WDVS unter 2.01.0020.
+    #[test]
+    fn nr6a_ohne_preis_und_oz() {
+        let mut s = haus();
+        let b30 = leistung(&s, "Stb-Decke Ortbeton");
+        s.kosten(
+            None,
+            &h(),
+            Op::Ausmustern {
+                satz: SatzId {
+                    abschnitt: "service",
+                    kennung: b30.guid.to_ifc(),
+                },
+            },
+        )
+        .unwrap();
+        let mut v = KostenView::new();
+        v.sync(&mut s, None);
+        let z = v.zeilen();
+        let grau: Vec<&Zeile> = z.iter().filter(|x| x.art == Art::Ohne).collect();
+        assert!(
+            grau.iter().any(|x| x.leise.starts_with("Geschossdecke")),
+            "{grau:?}"
+        );
+        let i = z
+            .iter()
+            .position(|x| x.art == Art::Ohne && x.leise.starts_with("Geschossdecke"))
+            .unwrap();
+        let g = z[..i]
+            .iter()
+            .rev()
+            .find(|x| x.art == Art::Gruppe && x.ebene == 0)
+            .unwrap();
+        assert!(
+            g.text.contains("Beton"),
+            "Decke unter ihrem Gewerk: {}",
+            g.text
+        );
+        let f = v.fuss();
+        assert!(
+            f.iter()
+                .any(|x| x.text == "Ohne Preis: " && x.verweis.contains("Geschossdecke")),
+            "{:?}",
+            f.iter().map(|x| (&x.text, &x.verweis)).collect::<Vec<_>>()
+        );
+        // OZ: einmal je Position, mit Los
+        let mut v = KostenView::new();
+        let mut s = haus();
+        v.sync(&mut s, None);
+        let csv = String::from_utf8(v.csv("Standardhaus", "08.10.2026")).unwrap();
+        assert!(csv.contains(";2.01.0020;WDVS"), "{csv}");
+        let mut oz: Vec<&str> = csv
+            .lines()
+            .skip_while(|l| !l.starts_with("Gliederung;"))
+            .skip(1)
+            .take_while(|l| !l.starts_with("Netto;"))
+            .filter_map(|l| l.split(';').nth(2))
+            .filter(|o| !o.is_empty())
+            .collect();
+        let n = oz.len();
+        oz.sort();
+        oz.dedup();
+        assert_eq!(oz.len(), n, "keine OZ zweimal: {oz:?}");
+    }
+
+    /// Nr. 7: AW Porenbeton 20 cm ergibt eine eigene Zeile „geschätzt nach
+    /// M10“ mit EP 57,17; die Fußzeile nennt „davon geschätzt“.
+    #[test]
+    fn nr7_geschaetzt() {
+        let mut s = haus();
+        let m = s.model();
+        let (id, mut t) = m
+            .layer_sets()
+            .iter()
+            .find(|(id, t)| t.code.starts_with("AW") && !m.type_users(*id).is_empty())
+            .map(|(id, t)| (id, t.clone()))
+            .unwrap();
+        let l = t
+            .layers
+            .iter_mut()
+            .find(|l| {
+                m.material(l.material)
+                    .is_some_and(|x| x.name == "Porenbeton")
+            })
+            .unwrap();
+        l.thickness = 200.0;
+        s.edit_types("Dicke", |m| m.set_layer_set(id, t));
+        let mut v = KostenView::new();
+        v.sync(&mut s, None);
+        let z: Vec<&Zeile> = v.zeilen().iter().filter(|x| x.geschaetzt).collect();
+        assert!(
+            z.iter()
+                .any(|x| x.leise.contains("geschätzt nach") && x.ep == "57,17"),
+            "{z:?}"
+        );
+        let f = v.fuss();
+        assert!(
+            f.iter().any(|x| x.text.starts_with("davon geschätzt")),
+            "{:?}",
+            f.iter().map(|x| &x.text).collect::<Vec<_>>()
+        );
+    }
+
+    /// Nr. 10: `[mengenfenster] blatt=kosten` wird geschrieben und gelesen;
+    /// ohne Angabe das Mengenblatt.
+    #[test]
+    fn nr10_blatt_wird_gemerkt() {
+        use crate::cards::Blatt;
+        use crate::windows::{read_blatt, write_settings_blatt, Windows, WIDTH_DIP};
+        let w = Windows::new(WIDTH_DIP);
+        let g = crate::schedule_view::Grouping::default();
+        let text = write_settings_blatt(&w, g, Blatt::Kosten);
+        assert!(text.contains("blatt=kosten"), "{text}");
+        assert_eq!(read_blatt(&text), Blatt::Kosten);
+        assert_eq!(read_blatt(""), Blatt::Mengen);
+        assert_eq!(crate::cards::KNOPF, "Mengen · Kosten");
+    }
+    /// Nr. 5 (Teil): Mit offenem Kostenblatt erhöht ein Loslassen nach Wand
+    /// verschieben `schedule_runs` um genau 1, die Kosten folgen im selben
+    /// Lauf.
+    #[test]
+    fn nr5_loslassen_ein_lauf() {
+        let mut s = haus();
+        let mut v = KostenView::new();
+        v.sync(&mut s, None);
+        let runs = s.schedule_runs();
+        let netto = v.netto().unwrap();
+        let run = s.model().runs().ids().next().unwrap();
+        let moved = s.chain(run).unwrap().with_segment_moved(0, -500.0).unwrap();
+        s.begin("Wand verschieben");
+        s.set_run_points(run, &moved.points);
+        s.commit();
+        v.sync(&mut s, None);
+        assert_eq!(s.schedule_runs(), runs + 1);
+        assert_ne!(v.netto().unwrap(), netto, "Kosten folgen");
+        v.sync(&mut s, None);
+        assert_eq!(s.schedule_runs(), runs + 1);
+    }
+    /// Review 3ai: Die Oberfläche addiert keine Gruppensummen selbst. Für
+    /// RH-1 bis RH-3 und jede Gliederung sind die Gruppensummen der Ansicht
+    /// die des Kostenblatts (`nach_gewerk`, `nach_geschoss`, `nach_kg`), der
+    /// „Rundungsausgleich“ der des Blatts (RH-1 Geschoss +0,03, RH-2 KG
+    /// −1,60), und die CSV trägt dieselben Summen.
+    #[test]
+    fn gruppensummen_aus_dem_kostenblatt() {
+        for (name, text) in [
+            (
+                "RH-1",
+                include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo"),
+            ),
+            (
+                "RH-2",
+                include_str!("../../crates/sk-cost/referenz/rh2-mehrschalig.szo"),
+            ),
+            (
+                "RH-3",
+                include_str!("../../crates/sk-cost/referenz/rh3-versatz-dachterrasse.szo"),
+            ),
+        ] {
+            let m = sk_model::szo::read_with(
+                text,
+                sk_model::GuidGen::with_seed(1),
+                &sk_cost::lesen::ABSCHNITTE_SZO,
+            )
+            .unwrap()
+            .model;
+            let mut s = Scene::with_model(m);
+            let mut v = KostenView::new();
+            for g in Gliederung::ALLE {
+                v.gliederung = g;
+                v.sync(&mut s, None);
+                let b = v.blatt().unwrap().clone();
+                let (mut soll, ausgleich): (Vec<i64>, Cent) = match g {
+                    Gliederung::Gewerk => (b.nach_gewerk.iter().map(|x| x.1 .0).collect(), Cent(0)),
+                    Gliederung::Geschoss => (
+                        b.nach_geschoss.iter().map(|x| x.1 .0).collect(),
+                        b.ausgleich_geschoss,
+                    ),
+                    Gliederung::Kostengruppe => {
+                        (b.nach_kg.iter().map(|x| x.1 .0).collect(), b.ausgleich_kg)
+                    }
+                };
+                soll.retain(|c| *c != 0);
+                soll.sort();
+                let z = v.zeilen();
+                // Gruppen der untersten Teilung (bei KG die dreistelligen)
+                let mut ist: Vec<i64> = z
+                    .iter()
+                    .filter(|x| x.art == Art::Gruppe)
+                    .filter(|x| match g {
+                        Gliederung::Kostengruppe => x
+                            .text
+                            .split(' ')
+                            .next()
+                            .and_then(|n| n.parse::<u16>().ok())
+                            .is_some_and(|n| b.nach_kg.iter().any(|k| k.0 == Some(n))),
+                        _ => x.ebene == 0,
+                    })
+                    .filter_map(|x| x.betrag.map(|c| c.0))
+                    .filter(|c| *c != 0)
+                    .collect();
+                ist.sort();
+                assert_eq!(ist, soll, "{name} {g:?}");
+                let aus: Vec<Cent> = z
+                    .iter()
+                    .filter(|x| x.art == Art::Ausgleich)
+                    .filter_map(|x| x.betrag)
+                    .collect();
+                if ausgleich == Cent(0) {
+                    assert!(aus.is_empty(), "{name} {g:?}: {aus:?}");
+                } else {
+                    assert_eq!(aus, [ausgleich], "{name} {g:?}");
+                }
+                assert_eq!(v.netto(), Some(b.netto), "{name} {g:?}");
+                // CSV: dieselben Gruppensummen und dasselbe Netto
+                let csv = String::from_utf8(v.csv(name, "08.10.2026")).unwrap();
+                let zahl = |c: Cent| euro(c).replace('.', "");
+                let gruppen: Vec<String> = z
+                    .iter()
+                    .filter(|x| x.art == Art::Gruppe)
+                    .map(|x| x.betrag.map(zahl).unwrap_or_default())
+                    .collect();
+                let csv_gruppen: Vec<String> = csv
+                    .lines()
+                    .map(|l| l.split(';').collect::<Vec<_>>())
+                    .filter(|c| c.len() == 14 && c[3] == "Summe")
+                    .map(|c| c[11].to_string())
+                    .collect();
+                assert_eq!(csv_gruppen, gruppen, "{name} {g:?}");
+                assert!(
+                    csv.contains(&format!("\r\nNetto;{}\r\n", zahl(b.netto))),
+                    "{name} {g:?}"
+                );
+            }
+        }
+    }
+}
