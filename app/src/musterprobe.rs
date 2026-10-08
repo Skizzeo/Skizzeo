@@ -4,7 +4,9 @@
 //! dazu `friesisch` (Klinker friesisch-bunt mit Flammung und Relief) mit
 //! Familienkarte und Steinliste. Vergleich je Bildpunkt und Kanal auf
 //! höchstens 2 Farbstufen; ein Rand von 1 px an Fugen- und Rillenkanten
-//! zählt nicht. Exit-Code 0 bestanden, 1 nicht bestanden, 2 ohne GL.
+//! zählt nicht, auch nicht ein Bildpunkt, dessen Mitte genau auf einer
+//! Kante der Rechnung liegt ([`KNIFE`]). Exit-Code 0 bestanden, 1 nicht
+//! bestanden, 2 ohne GL.
 
 use crate::camera::Camera;
 use crate::pattern_view::{self, Input, Look, Stage};
@@ -16,6 +18,16 @@ use std::path::Path;
 
 /// Abweichung je Kanal, die noch als gleich gilt (Farbstufen von 255).
 pub const TOL: u8 = 2;
+
+/// Liegt eine Pixelmitte so nah (mm) neben einer Kante der Rechnung (Fuge,
+/// Rille, Kornzelle), darf die Grafikkarte die Farbe von jenseits der Kante
+/// oder eine Mischung beider zeigen: sie rechnet die Lage in f32 und glättet
+/// die Kante über 1 µm (`u_px_fix`). Zwei Abstände, weil hinter mancher
+/// Kante die Farbe gleich steil weiterläuft (Rillen). Handtest 27e:
+/// Platten 40 × 40 haben ihre Fugenkanten bei 1 mm je px genau auf den
+/// Pixelmitten, Klinker friesisch-bunt (1,464 mm je px) jede 125. Spalte
+/// auf einer Grenze des Korns (1,5 mm).
+pub const KNIFE: [f64; 2] = [0.001, 0.01];
 
 /// Eine Probe: Dateiname, Vorlage, Größe (px), mm je px, Ausschnitt ab
 /// (u, v) in mm.
@@ -92,24 +104,51 @@ pub fn cpu_image(p: &Probe) -> Vec<u8> {
     px
 }
 
-/// Ergebnis des Vergleichs: größte Abweichung (Farbstufen) und Bildpunkte
-/// außerhalb der Toleranz (ohne den Rand an Kanten).
+/// Ergebnis des Vergleichs: größte Abweichung (Farbstufen), Bildpunkte
+/// außerhalb der Toleranz und Bildpunkte über [`TOL`], die als Kante
+/// zählen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Diff {
     pub max: u8,
     pub outside: usize,
+    pub edge: usize,
+}
+
+/// `g` liegt auf der Strecke von `a` nach `b` (Mischung an einer weichen
+/// Kante), je Kanal auf [`TOL`] genau; `b` selbst eingeschlossen.
+fn between(a: [u8; 3], b: [u8; 3], g: [u8; 3]) -> bool {
+    let k = (0..3).max_by_key(|&k| a[k].abs_diff(b[k])).unwrap_or(0);
+    let span = b[k] as f64 - a[k] as f64;
+    let t = if span == 0.0 {
+        0.0
+    } else {
+        ((g[k] as f64 - a[k] as f64) / span).clamp(0.0, 1.0)
+    };
+    (0..3).all(|k| {
+        (a[k] as f64 + t * (b[k] as f64 - a[k] as f64) - g[k] as f64).abs() <= TOL as f64 + 0.5
+    })
 }
 
 /// Vergleicht GPU- mit CPU-Kachel. Ein Bildpunkt über [`TOL`] zählt nicht,
-/// wenn er einem der 8 Nachbarn der CPU-Kachel gleicht: dort liegt eine
-/// Fugen- oder Rillenkante höchstens 1 px anders.
-pub fn compare(cpu: &[u8], gpu: &[u8], (w, h): (usize, usize)) -> Diff {
+/// wenn er einem der 8 Nachbarn der CPU-Kachel gleicht (eine Fugen- oder
+/// Rillenkante liegt höchstens 1 px anders) oder wenn `knife(x, y, g)` ihn
+/// als Messerkante gelten lässt.
+pub fn compare(
+    cpu: &[u8],
+    gpu: &[u8],
+    (w, h): (usize, usize),
+    knife: impl Fn(usize, usize, [u8; 3]) -> bool,
+) -> Diff {
     let at = |img: &[u8], x: usize, y: usize| {
         let i = 4 * (y * w + x);
         [img[i], img[i + 1], img[i + 2]]
     };
     let near = |a: [u8; 3], b: [u8; 3]| (0..3).all(|k| a[k].abs_diff(b[k]) <= TOL);
-    let mut d = Diff { max: 0, outside: 0 };
+    let mut d = Diff {
+        max: 0,
+        outside: 0,
+        edge: 0,
+    };
     for y in 0..h {
         for x in 0..w {
             let (c, g) = (at(cpu, x, y), at(gpu, x, y));
@@ -122,12 +161,30 @@ pub fn compare(cpu: &[u8], gpu: &[u8], (w, h): (usize, usize)) -> Diff {
                 (x.saturating_sub(1)..(x + 2).min(w))
                     .any(|nx| (nx, ny) != (x, y) && near(at(cpu, nx, ny), g))
             });
-            if !edge {
+            if edge || knife(x, y, g) {
+                d.edge += 1;
+            } else {
                 d.outside += 1;
             }
         }
     }
     d
+}
+
+/// Messerkante: Die Rechnung um einen der [`KNIFE`]-Abstände in eine der
+/// 8 Richtungen verschoben gibt eine andere Farbe, und `g` liegt zwischen
+/// der Farbe an der Pixelmitte und dieser (beide Enden eingeschlossen).
+pub fn knife(p: &Probe, x: usize, y: usize, g: [u8; 3]) -> bool {
+    let (u, v) = spot(p, x, y);
+    let at = |du: f64, dv: f64| proctex::sample(&p.preset.pattern, p.preset.base, u + du, v + dv);
+    let c = at(0.0, 0.0);
+    KNIFE.iter().any(|&k| {
+        let dirs = [(-k, 0.0), (k, 0.0), (0.0, -k), (0.0, k)];
+        let diag = [(-k, -k), (k, k), (-k, k), (k, -k)];
+        dirs.into_iter()
+            .chain(diag)
+            .any(|(du, dv)| between(c, at(du, dv), g))
+    })
 }
 
 /// Wandstück der Probe: Ebene y = 0 von (u0, v0) über `w` × `h` mm.
@@ -297,14 +354,15 @@ pub fn run(
                     format!("gpu-{}.png", p.art),
                     &sk_paint::encode_png(w as u32, h as u32, &img),
                 );
-                let d = compare(&cpu, &img, p.size);
+                let d = compare(&cpu, &img, p.size, |x, y, g| knife(&p, x, y, g));
                 let ok = d.outside == 0;
                 say(format!(
-                    "{}: {} – größte Abweichung {}, außerhalb {} Bildpunkte – {}",
+                    "{}: {} – größte Abweichung {}, außerhalb {} Bildpunkte, an Kanten {} – {}",
                     p.art,
                     p.preset.name,
                     d.max,
                     d.outside,
+                    d.edge,
                     if ok { "bestanden" } else { "NICHT bestanden" }
                 ));
                 if !ok {
@@ -345,16 +403,191 @@ mod tests {
         ];
         let mut gpu = cpu;
         gpu[4..7].copy_from_slice(&[200, 200, 200]);
+        let none = |_: usize, _: usize, _: [u8; 3]| false;
         assert_eq!(
-            compare(&cpu, &gpu, (w, h)),
+            compare(&cpu, &gpu, (w, h), none),
             Diff {
                 max: 190,
-                outside: 0
+                outside: 0,
+                edge: 1
             }
         );
         gpu[12..15].copy_from_slice(&[90, 90, 90]);
-        assert_eq!(compare(&cpu, &gpu, (w, h)).outside, 1);
-        assert_eq!(compare(&cpu, &cpu, (w, h)), Diff { max: 0, outside: 0 });
+        assert_eq!(compare(&cpu, &gpu, (w, h), none).outside, 1);
+        let all = |_: usize, _: usize, _: [u8; 3]| true;
+        assert_eq!(compare(&cpu, &gpu, (w, h), all).outside, 0);
+        assert_eq!(
+            compare(&cpu, &cpu, (w, h), none),
+            Diff {
+                max: 0,
+                outside: 0,
+                edge: 0
+            }
+        );
+        // Mischung an einer weichen Kante liegt dazwischen, ein Fleck nicht
+        assert!(between([110, 110, 106], [166, 165, 160], [138, 137, 133]));
+        assert!(between([110, 110, 106], [166, 165, 160], [166, 165, 160]));
+        assert!(!between([110, 110, 106], [166, 165, 160], [138, 110, 133]));
+        assert!(!between([110, 110, 106], [110, 110, 106], [140, 140, 140]));
+    }
+
+    /// Handtest 27e: Platten 40 × 40 haben bei 1 mm je px ihre Fugenkanten
+    /// genau auf Pixelmitten, die Grafikkarte zeigt dort die halbe Mischung
+    /// (Kante über 1 µm geglättet). Das ist eine Messerkante, eine falsche
+    /// Plattenfarbe nicht.
+    #[test]
+    fn messerkante_platten() {
+        let p = probes().into_iter().find(|p| p.art == "platten").unwrap();
+        let (w, h) = p.size;
+        let cpu = cpu_image(&p);
+        // Spalte mit Fugenkante: links Fuge, an der Pixelmitte schon Platte
+        let joint = [0x6e, 0x6e, 0x6a];
+        let y = 200;
+        let x = (1..w)
+            .find(|&x| {
+                let (u, v) = spot(&p, x, y);
+                let s = |du: f64| proctex::sample(&p.preset.pattern, p.preset.base, u + du, v);
+                s(-KNIFE[0]) == joint && s(0.0) != joint
+            })
+            .expect("Fugenkante auf einer Pixelmitte");
+        let i = 4 * (y * w + x);
+        let c = [cpu[i], cpu[i + 1], cpu[i + 2]];
+        let (u, v) = spot(&p, x, y);
+        let j = proctex::sample(&p.preset.pattern, p.preset.base, u - KNIFE[0], v);
+        let half = [0, 1, 2].map(|k| ((c[k] as u16 + j[k] as u16) / 2) as u8);
+        assert!(knife(&p, x, y, half), "halbe Mischung an der Kante");
+        assert!(knife(&p, x, y, j), "Fugenfarbe an der Kante");
+        // Mitten in einer Platte ist nichts Kante
+        let (xm, ym) = (x + 100, y + 50);
+        let i = 4 * (ym * w + xm);
+        let wrong = [cpu[i].wrapping_add(20), cpu[i + 1], cpu[i + 2]];
+        assert!(!knife(&p, xm, ym, wrong));
+        // Ganzes Bild: jede Kante halb gemischt bleibt bestanden, ein
+        // anderer Startwert nicht
+        let mut gpu = cpu.clone();
+        for y in 0..h {
+            for x in 0..w {
+                let (u, v) = spot(&p, x, y);
+                let s = |du: f64, dv: f64| {
+                    proctex::sample(&p.preset.pattern, p.preset.base, u + du, v + dv)
+                };
+                let (a, b, e) = (s(0.0, 0.0), s(-KNIFE[0], 0.0), s(0.0, -KNIFE[0]));
+                let o = if a != b { b } else { e };
+                let i = 4 * (y * w + x);
+                for k in 0..3 {
+                    gpu[i + k] = ((a[k] as u16 + o[k] as u16) / 2) as u8;
+                }
+            }
+        }
+        let d = compare(&cpu, &gpu, p.size, |x, y, g| knife(&p, x, y, g));
+        assert_eq!(d.outside, 0, "{d:?}");
+        assert!(d.edge > 1000, "{d:?}");
+        let other = Probe {
+            preset: Box::leak(Box::new(PatternPreset {
+                pattern: proctex::with_seed(&p.preset.pattern, 14),
+                ..p.preset.clone()
+            })),
+            ..p
+        };
+        let gpu = cpu_image(&other);
+        let d = compare(&cpu, &gpu, p.size, |x, y, g| knife(&p, x, y, g));
+        assert!(d.outside > 10_000, "{d:?}");
+    }
+
+    /// A309 Gegenfall zu 27e: Die Messerkante entschuldigt nur Pixelmitten
+    /// bis 0,01 mm neben einer Kante. Eine um 0,1 mm verschobene Fuge und
+    /// eine falsche Flächenfarbe bleiben „nicht bestanden“.
+    #[test]
+    fn a309_messerkante_gegenfall() {
+        let p = probes().into_iter().find(|p| p.art == "platten").unwrap();
+        let s = |q: &Probe, u: f64, v: f64| proctex::sample(&q.preset.pattern, q.preset.base, u, v);
+        // Fugenkante auf der Pixelmitte (x, 200) wie in messerkante_platten
+        let joint = [0x6e, 0x6e, 0x6a];
+        let y = 200;
+        let x = (1..p.size.0)
+            .find(|&x| {
+                let (u, v) = spot(&p, x, y);
+                s(&p, u - KNIFE[0], v) == joint && s(&p, u, v) != joint
+            })
+            .expect("Fugenkante auf einer Pixelmitte");
+        let (ue, ve) = spot(&p, x, y);
+        // Pixelmitte 0,1 mm in der Fuge: Plattenfarbe oder halbe Mischung
+        // dort ist keine Messerkante
+        let near = Probe {
+            at: (p.at.0 - 0.1, p.at.1),
+            ..probes().into_iter().find(|p| p.art == "platten").unwrap()
+        };
+        let (u, v) = spot(&near, x, y);
+        assert_eq!(s(&near, u, v), joint);
+        let plate = s(&p, ue + 0.5, ve);
+        let half = [0, 1, 2].map(|k| ((joint[k] as u16 + plate[k] as u16) / 2) as u8);
+        assert!(
+            !knife(&near, x, y, plate),
+            "Plattenfarbe 0,1 mm vor der Kante"
+        );
+        assert!(!knife(&near, x, y, half), "Mischung 0,1 mm vor der Kante");
+        // Ganzes Bild bei 0,02 mm je px um die Kante: Fuge 0,1 mm (5 px)
+        // verschoben fällt durch, unverschoben mit Messerkanten nicht
+        let fine = Probe {
+            size: (512, 64),
+            mm: 0.02,
+            at: (ue - 5.0 - 0.01, ve - 0.64),
+            ..probes().into_iter().find(|p| p.art == "platten").unwrap()
+        };
+        let cpu = cpu_image(&fine);
+        let (w, h) = fine.size;
+        let mut gpu = cpu.clone();
+        for yy in 0..h {
+            for xx in 0..w {
+                let (u, v) = spot(&fine, xx, yy);
+                let c = s(&fine, u + 0.1, v);
+                gpu[4 * (yy * w + xx)..][..3].copy_from_slice(&c);
+            }
+        }
+        let d = compare(&cpu, &gpu, fine.size, |x, y, g| knife(&fine, x, y, g));
+        assert!(d.outside >= 3 * h, "Fuge 0,1 mm verschoben: {d:?}");
+        let d = compare(&cpu, &cpu, fine.size, |x, y, g| knife(&fine, x, y, g));
+        assert_eq!(d.outside, 0, "{d:?}");
+        // Bei 1 mm je px: Fuge 2 mm verschoben und ganze Fläche Rot + 5
+        // fallen durch (0,1 mm deckt hier schon die 1-px-Regel aus §B7)
+        let cpu = cpu_image(&p);
+        let (w, h) = p.size;
+        let mut moved = cpu.clone();
+        let mut red = cpu.clone();
+        for yy in 0..h {
+            for xx in 0..w {
+                let (u, v) = spot(&p, xx, yy);
+                let i = 4 * (yy * w + xx);
+                moved[i..i + 3].copy_from_slice(&s(&p, u + 2.0, v));
+                red[i] = if cpu[i] <= 250 {
+                    cpu[i] + 5
+                } else {
+                    cpu[i] - 5
+                };
+            }
+        }
+        let d = compare(&cpu, &moved, p.size, |x, y, g| knife(&p, x, y, g));
+        assert!(d.outside >= 500, "Fuge 2 mm verschoben: {d:?}");
+        let d = compare(&cpu, &red, p.size, |x, y, g| knife(&p, x, y, g));
+        assert!(d.outside > w * h / 2, "Fläche Rot + 5: {d:?}");
+        // Falsche Flächenfarbe (Rot + 20 auf 20 × 20 px) in jeder Probe
+        for q in probes() {
+            let (w, h) = q.size;
+            let cpu = cpu_image(&q);
+            let mut gpu = cpu.clone();
+            for yy in h / 2..h / 2 + 20 {
+                for xx in w / 2..w / 2 + 20 {
+                    let i = 4 * (yy * w + xx);
+                    gpu[i] = if cpu[i] <= 235 {
+                        cpu[i] + 20
+                    } else {
+                        cpu[i] - 20
+                    };
+                }
+            }
+            let d = compare(&cpu, &gpu, q.size, |x, y, g| knife(&q, x, y, g));
+            assert!(d.outside >= 200, "{}: {d:?}", q.art);
+        }
     }
 
     /// Familienkarte als gültiges `.npy` (Kopf auf 64 Byte), Fugen −1.
