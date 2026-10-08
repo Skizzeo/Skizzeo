@@ -142,6 +142,26 @@ pub fn umkehr(jetzt: &Katalog, vorher: &Katalog, stand: u32) -> Result<Vec<Op>, 
     let Some(dieser) = st.iter().find(|s| s.stand == stand) else {
         return Err(abgelehnt(stand, "diesen Stand gibt es nicht".into()));
     };
+    // Ablage aus einer anderen Fassung (Datei zurückgespielt, die
+    // Standnummern wiederholen sich): Sie ist nicht der Stand davor
+    let firma = matches!(vorher.quelle, crate::katalog::Quelle::Firma { .. });
+    if let Some(k) = vorher.kopf.as_ref().filter(|_| firma) {
+        let fremd = k.stand + 1 != stand
+            || jetzt.kopf.as_ref().is_some_and(|j| j.guid != k.guid)
+            || vorher
+                .protokoll
+                .iter()
+                .any(|p| !jetzt.protokoll.contains(p));
+        if fremd {
+            return Err(abgelehnt(
+                stand,
+                format!(
+                    "der abgelegte Stand {} gehört zu einer anderen Fassung des Firmenkatalogs",
+                    stand - 1
+                ),
+            ));
+        }
+    }
     let mut saetze: Vec<(&str, &str)> = Vec::new();
     for e in &dieser.eintraege {
         let x = (e.rec.as_str(), e.of.as_str());
@@ -663,6 +683,23 @@ mod tests {
         assert!(e[0].satz.contains(&a.name), "{}", e[0].satz);
         // Unbekannter Stand
         assert!(umkehr(&k3, &k0, 9).is_err());
+        // Die Ablage muss der Stand davor sein
+        assert!(umkehr(&k3, &katalog(&t1), 3).is_err());
+        // Zurückgespielt (Review 3as): Stand 1 wieder eingesetzt, danach
+        // Stand 2 und 3 einer anderen Fassung. Die Ablage stand-0002 der
+        // alten Fassung wird nicht als Stand davor gelesen.
+        let lohn = |w| Op::FirmenwertSetzen {
+            schluessel: "wage".into(),
+            wert: Dez::ganz(w),
+        };
+        let t2b = schreiben(&t1, &[lohn(70)]);
+        let t3b = schreiben(&t2b, &[lohn(72)]);
+        let e = umkehr(&katalog(&t3b), &katalog(&t2), 3).unwrap_err();
+        assert!(e[0].satz.contains("anderen Fassung"), "{}", e[0].satz);
+        assert_eq!(
+            umkehr(&katalog(&t3b), &katalog(&t2b), 3).unwrap(),
+            [lohn(70)]
+        );
     }
 
     /// Bauleistung geändert und Artikel neu angelegt: zurück heißt alte

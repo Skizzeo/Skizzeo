@@ -584,8 +584,12 @@ impl Company {
                 .unwrap_or(Path::new("."))
                 .join("firmenkatalog-staende");
             let alt = dir.join(format!("stand-{:04}.szk", neu.stand_vorher));
-            if !alt.exists() {
+            // Liegt dort ein anderer Text (Datei zurückgespielt, die
+            // Standnummern wiederholen sich), kommt er beiseite und wird nie
+            // überschrieben; die Ablage ist immer der Stand davor (Review 3as)
+            if std::fs::read(&alt).ok().as_deref() != Some(text.as_bytes()) {
                 std::fs::create_dir_all(&dir)
+                    .and_then(|_| beiseite(&alt))
                     .and_then(|_| crate::document::write_synced(&alt, text.as_bytes()))
                     .map_err(|e| Meldung::aus_io(ergebnis, was, &dir, &e))?;
             }
@@ -687,6 +691,22 @@ impl Company {
             }
         }
     }
+}
+
+/// Eine vorhandene Ablage `pfad` unter einen freien Namen umbenennen
+/// (`stand-0003.frueher-1.szk`, …); fehlt sie, geschieht nichts.
+fn beiseite(pfad: &Path) -> std::io::Result<()> {
+    if !pfad.exists() {
+        return Ok(());
+    }
+    let stamm = pfad.file_stem().and_then(|s| s.to_str()).unwrap_or("stand");
+    for i in 1.. {
+        let neu = pfad.with_file_name(format!("{stamm}.frueher-{i}.szk"));
+        if !neu.exists() {
+            return std::fs::rename(pfad, neu);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1035,6 +1055,47 @@ mod tests {
             Some(sk_cost::Dez(alt.0 + 3_000_000)),
             "Kostensätze bleiben"
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Review 3as: Ein zurückgespielter Firmenkatalog wiederholt die
+    /// Standnummern. Die Ablage der alten Fassung wird nie überschrieben,
+    /// sondern kommt beiseite; unter `stand-000n.szk` liegt immer der Stand
+    /// davor dieser Fassung, und „Zurücknehmen“ rechnet gegen ihn.
+    #[test]
+    fn zurueckgespielt_ueberschreibt_keine_ablage() {
+        let d = dir("zurueckgespielt");
+        let p = d.join(FILE_NAME);
+        let (mut c, _) = Company::load(&p, true);
+        let m = Model::from_library(c.library());
+        let herkunft = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "12:00");
+        let lohn = |w: i64| sk_cost::Op::FirmenwertSetzen {
+            schluessel: "wage".into(),
+            wert: sk_cost::Dez::ganz(w),
+        };
+        c.fuer_firma(&herkunft, &[lohn(61)]).unwrap();
+        c.fuer_firma(&herkunft, &[lohn(62)]).unwrap();
+        let sicherung = std::fs::read_to_string(&p).unwrap();
+        c.fuer_firma(&herkunft, &[lohn(63)]).unwrap();
+        c.fuer_firma(&herkunft, &[lohn(64)]).unwrap();
+        let staende = d.join("firmenkatalog-staende");
+        let alt3 = std::fs::read_to_string(staende.join("stand-0003.szk")).unwrap();
+        // Stand 2 zurückgespielt, dann zwei neue Stände
+        std::fs::write(&p, &sicherung).unwrap();
+        c.reload(false);
+        c.fuer_firma(&herkunft, &[lohn(70)]).unwrap();
+        let neu3 = std::fs::read_to_string(&p).unwrap();
+        c.fuer_firma(&herkunft, &[lohn(72)]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(staende.join("stand-0003.frueher-1.szk")).unwrap(),
+            alt3
+        );
+        assert_eq!(
+            std::fs::read_to_string(staende.join("stand-0003.szk")).unwrap(),
+            neu3
+        );
+        let ops = c.umkehr(&m, 4).unwrap();
+        assert_eq!(ops, [lohn(70)]);
         let _ = std::fs::remove_dir_all(&d);
     }
 
