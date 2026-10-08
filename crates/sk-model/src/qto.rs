@@ -670,12 +670,40 @@ pub fn floor_formwork_of(model: &Model, run: RunId, f: &FloorSlab) -> FormworkQt
 
 /// [`floor_formwork_of`] mit den schon gerechneten Mengen `own` des Zugs.
 fn floor_formwork_with(model: &Model, run: RunId, f: &FloorSlab, own: &[WallQto]) -> FormworkQto {
-    let mut supports = Vec::new();
     let inner = model.runs_under_outline(run, Some(&f.outline));
-    let mut runs: Vec<(RunId, std::borrow::Cow<[WallQto]>)> = vec![(run, own.into())];
-    runs.extend(inner.into_iter().map(|r| (r, run_qto(model, r).into())));
-    for (r, qs) in &runs {
-        let r = *r;
+    let inner: Vec<(RunId, Vec<WallQto>)> =
+        inner.into_iter().map(|r| (r, run_qto(model, r))).collect();
+    let runs = std::iter::once((run, own)).chain(inner.iter().map(|(r, q)| (*r, q.as_slice())));
+    floor_formwork_from(model, f, runs)
+}
+
+/// Wie [`floor_formwork_with`] für die Mengenliste: die Mengen der Züge
+/// (eigener und Innenwände darunter) aus `walls`, jeder Zug nur einmal
+/// gerechnet (Review 3ad: sonst je Decke alle Innenwände darunter neu).
+fn floor_formwork_cached(
+    model: &Model,
+    run: RunId,
+    f: &FloorSlab,
+    walls: &mut HashMap<RunId, Vec<WallQto>>,
+) -> FormworkQto {
+    let mut runs = model.runs_under_outline(run, Some(&f.outline));
+    runs.insert(0, run);
+    for &r in &runs {
+        walls.entry(r).or_insert_with(|| run_qto(model, r));
+    }
+    let walls = &*walls;
+    floor_formwork_from(model, f, runs.iter().map(|r| (*r, walls[r].as_slice())))
+}
+
+/// Schalungsmengen der Decke `f` aus den Mengen der Züge unter ihr
+/// (zuerst der eigene).
+fn floor_formwork_from<'a>(
+    model: &Model,
+    f: &FloorSlab,
+    runs: impl Iterator<Item = (RunId, &'a [WallQto])>,
+) -> FormworkQto {
+    let mut supports = Vec::new();
+    for (r, qs) in runs {
         for (k, w) in qs.iter().enumerate() {
             let Some(wall) = model.wall_at(r, k) else {
                 continue;
@@ -1137,9 +1165,8 @@ pub fn schedule(model: &Model) -> Schedule {
                 match f {
                     Ok(f) => {
                         let mut q = floor_qto_of(f);
-                        let qs = walls.entry(run).or_insert_with(|| run_qto(model, run));
-                        q.bearing = qs.iter().map(|w| w.pocket).sum();
-                        q.formwork = Some(floor_formwork_with(model, run, f, qs));
+                        q.formwork = Some(floor_formwork_cached(model, run, f, &mut walls));
+                        q.bearing = walls[&run].iter().map(|w| w.pocket).sum();
                         (Some(ElementQto::Floor(q)), None)
                     }
                     Err(err) => (
