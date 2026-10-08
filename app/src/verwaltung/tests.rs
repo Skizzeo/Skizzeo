@@ -1168,3 +1168,52 @@ fn ruecknahme_nach_fremder_aenderung_neu_gerechnet() {
     assert!(m.contains("wieder geändert"), "{m}");
     assert_eq!(nachher, datei, "Stand von B bleibt");
 }
+
+/// Review 3at (Befund E): Nach „Zurücknehmen“ setzt der Nutzer denselben
+/// Wert selbst anders. Scheitert OK an einer fremden Änderung an einem
+/// anderen Satz, rechnet das Fenster die Rücknahme neu; die eigene spätere
+/// Eingabe bleibt dabei stehen.
+#[test]
+fn ruecknahme_neu_gerechnet_laesst_spaetere_eingabe() {
+    let (mut a, dir) = firma("umkehr-e2");
+    let pfad = a.path().to_path_buf();
+    let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "19:10");
+    let mut s = haus();
+    let mut v = Verwaltung::open(&s, Some(&a), None);
+    v.waehlen(Knoten::Firmenwerte);
+    assert!(v.eingeben(&Feld::Wert("wage".into()), "65"));
+    s.fuer_firma(STEP, &mut a, &h, v.ops()).expect("Stand A");
+    let stand_a = a
+        .library()
+        .ext("catalog")
+        .next()
+        .and_then(|r| r.line.split(' ').find_map(|w| w.strip_prefix("stand=")))
+        .and_then(|n| n.parse::<u32>().ok())
+        .expect("Stand im Kopf");
+    let mut v = Verwaltung::open(&s, Some(&a), None);
+    v.zuruecknehmen(
+        stand_a,
+        a.umkehr(s.model(), stand_a).map_err(|m| m.to_string()),
+    );
+    v.waehlen(Knoten::Firmenwerte);
+    assert!(v.eingeben(&Feld::Wert("wage".into()), "62"));
+    let g = leistung(&v, AW24);
+    v.waehlen(Knoten::Leistung(g));
+    assert!(v.eingeben(&Feld::Stunden, "0,45"));
+    // Platz B ändert dieselbe Bauleistung (nicht den Lohn)
+    let (mut b, _) = Company::laden(&pfad, true);
+    let mut s2 = haus();
+    let mut vb = Verwaltung::open(&s2, Some(&b), None);
+    vb.waehlen(Knoten::Leistung(g));
+    assert!(vb.eingeben(&Feld::Stunden, "0,7"));
+    s2.fuer_firma(STEP, &mut b, &h, vb.ops()).expect("Stand B");
+    assert!(s.fuer_firma(STEP, &mut a, &h, v.ops()).is_err());
+    v.neu_grundlage(&a);
+    let ops = v.ops().to_vec();
+    let _ = std::fs::remove_dir_all(&dir);
+    let lohn = ops.iter().find_map(|o| match o {
+        Op::FirmenwertSetzen { schluessel, wert } if schluessel == "wage" => Some(*wert),
+        _ => None,
+    });
+    assert_eq!(lohn, Some(Dez::ganz(62)), "{ops:?}");
+}

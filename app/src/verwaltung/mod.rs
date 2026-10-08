@@ -381,8 +381,16 @@ impl Verwaltung {
         if let Some(n) = self.zurueck.take() {
             let alt = std::mem::take(&mut self.umkehr_ops);
             self.ops.retain(|o| !alt.contains(o));
+            // Was der Nutzer nach der Rücknahme selbst anders gesetzt hat,
+            // bleibt (Review 3at); die neu gerechnete Rücknahme ersetzt es
+            // nicht
+            let eigen: Vec<String> = self.ops.iter().filter_map(op_schluessel).collect();
             match company.umkehr(&self.m, n) {
                 Ok(ops) => {
+                    let ops = ops
+                        .into_iter()
+                        .filter(|o| op_schluessel(o).is_none_or(|k| !eigen.contains(&k)))
+                        .collect();
                     self.zuruecknehmen(n, Ok(ops));
                     return;
                 }
