@@ -8182,6 +8182,23 @@ mod og_phase2 {
                 ts.trade
             );
         }
+        // Geschossfläche (verwaltung §9, Entscheid Architektur 07:35): EG
+        // Kernumriss + Decke unter dem OG = 2 × 75,0384, ohne SP 80,00 und
+        // ohne die Terrassendecke DE-002
+        assert_eq!(r4(s.floor_area(&m) / 1e6), 150.0768);
+        for n in [1u8, 3] {
+            let mut mn = Model::with_seed(12);
+            let bn = mn.add_building(n);
+            let pts = [
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ];
+            mn.build_from_polygon(bn, &pts).unwrap();
+            let a = crate::qto::schedule(&mn).floor_area(&mn);
+            assert_eq!(r4(a / 1e6), r4(f64::from(n) * 75.0384), "{n}");
+        }
         // Anderes Gebäude: nichts aus diesem
         let mut m2 = m.clone();
         let b2 = m2.add_building(1);

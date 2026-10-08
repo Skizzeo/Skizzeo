@@ -1365,6 +1365,31 @@ impl Schedule {
         out.formwork = formwork_rows(&out);
         out
     }
+
+    /// Geschossfläche (Rohbaumaß, mm², stammdaten/verwaltung.md §9): je
+    /// Geschoss der Umriss an der Außenseite der tragenden Schicht, im
+    /// untersten Geschoss der Kernumriss der Wände (= Decke darüber), in
+    /// jedem weiteren die Decke darunter. Die Sohlplatte zählt nicht mit
+    /// ihrem Maß unter der Außendämmung, die oberste Decke nicht. Aus den
+    /// Zeilen dieser Mengenliste, ohne Geometrie.
+    pub fn floor_area(&self, model: &Model) -> f64 {
+        self.buildings
+            .iter()
+            .flat_map(|b| &b.storeys)
+            .chain(&self.loose)
+            .flat_map(|s| &s.groups)
+            .flat_map(|g| &g.rows)
+            .filter_map(|r| match &r.q {
+                Some(ElementQto::Floor(f)) => Some((model.run_of(r.element)?, f.area)),
+                _ => None,
+            })
+            .map(|(run, area)| {
+                let lowest = model.run_below(run).is_none();
+                let above = !model.runs_above(run).is_empty();
+                area * (f64::from(u8::from(lowest)) + f64::from(u8::from(above)))
+            })
+            .sum()
+    }
 }
 
 /// Grund, warum Sohlplatte und Frostschürze keinen Körper haben.
