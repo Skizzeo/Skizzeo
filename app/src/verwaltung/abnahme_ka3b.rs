@@ -11,6 +11,9 @@
 //!   mit dem freigegebenen Stand; nach „Freigeben“ Stand + 1, Ablage
 //!   bytegleich, Entwurf weg, und dieses Haus folgt späteren
 //!   Firmenänderungen über die Abgleichzeile.
+//! - Review 3au: „Stunden für dieses und neue Häuser“ mit Kennwort baut
+//!   auf dem offenen Entwurf auf; nach „Freigeben“ rechnen dieses und ein
+//!   neues Haus gleich (Befund H).
 //! - Ein Entwurf auf altem Stand scheitert sichtbar und überschreibt
 //!   nichts.
 
@@ -468,4 +471,116 @@ fn abnahme_ka3b_alter_entwurf_scheitert_sichtbar() {
     let k = sk_cost::lesen::firma_oder_werk(&sk_model::Model::new(), Some(c.library()));
     assert_eq!(k.werte.lohn, Dez::ganz(63), "{name}: Bs Stand bleibt");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review 3au (40b4441) an RH-1 bis RH-3: Im Entwurf steht an einer
+/// Bauleistung, mit der das Haus rechnet, Gerät 2,00 (Verwaltung). Danach
+/// setzt derselbe Admin im Preisblatt die Stunden „für dieses und neue
+/// Häuser“. Der Entwurf behält das Gerät, nach „Freigeben“ hat die Firma
+/// beides, und ein neues Haus rechnet gleich wie dieses.
+#[test]
+fn abnahme_ka3b_stunden_neue_haeuser_behaelt_entwurf() {
+    for (name, text) in haeuser() {
+        let d = ordner(&format!("3au-{name}"));
+        let mut s = szene(text);
+        let mut c = mit_kennwort(&d, &mut s);
+        let vorher = netto(&mut s, &c);
+        let blatt = s.kostenblatt(Some((c.library(), c.stand())), &sk_cost::Umfang::projekt());
+        let k = s.katalog(Some((c.library(), c.stand())));
+        let leistung = blatt
+            .positionen
+            .iter()
+            .filter_map(|z| match z.quelle {
+                sk_cost::rechnung::Quelle::Leistung(g) => k.leistung(g),
+                _ => None,
+            })
+            .find(|l| l.stunden != Dez::NULL && l.geraet != Dez::ganz(2))
+            .unwrap_or_else(|| panic!("{name}: keine Bauleistung mit Stunden"))
+            .clone();
+        let g = leistung.guid;
+        // Verwaltung: Gerät 2,00 in den Entwurf
+        let mut v = Verwaltung::open(&s, Some(&c), None);
+        v.waehlen(Knoten::Leistung(g));
+        assert!(v.eingeben(&Feld::Geraet, "2"), "{name}");
+        assert!(v.entwurf_faellig(), "{name}: {:?}", v.befunde);
+        c.fuer_entwurf(&h(), v.ops()).expect("Entwurf geschrieben");
+        v.entwurf_gespeichert(&c);
+        // Preisblatt: Stunden doppelt, auch für neue Häuser
+        let k = s.katalog(Some((c.library(), c.stand())));
+        let l = k.leistung(g).unwrap().clone();
+        let mut daten = sk_cost::preis::bauleistung(&l);
+        let stunden = Dez(leistung.stunden.0 * 2);
+        daten.stunden = stunden;
+        let hinweis = s
+            .fuer_firma_auch_hier(
+                "Stunden für neue Häuser",
+                &mut c,
+                &h(),
+                &[Op::BauleistungAendern {
+                    bauleistung: g,
+                    daten,
+                }],
+            )
+            .unwrap_or_else(|b| panic!("{name}: {b:?}"));
+        assert_eq!(
+            hinweis.map(|m| m.to_string()).as_deref(),
+            Some(crate::catalog::IM_ENTWURF),
+            "{name}"
+        );
+        let im_entwurf = |c: &Company| {
+            let e = sk_model::read_szk_with(
+                &std::fs::read_to_string(c.entwurf_pfad()).unwrap(),
+                &sk_cost::lesen::ABSCHNITTE_SZK,
+            )
+            .unwrap();
+            let e = sk_cost::verwaltung::wie_freigegeben(&e);
+            sk_cost::lesen::firma_oder_werk(&sk_model::Model::new(), Some(&e))
+                .leistung(g)
+                .unwrap()
+                .clone()
+        };
+        let e = im_entwurf(&c);
+        assert_eq!(
+            (e.stunden, e.geraet),
+            (stunden, Dez::ganz(2)),
+            "{name}: Entwurf behält Gerät"
+        );
+        // Freigeben: Firma hat beides, neues Haus rechnet wie dieses
+        s.freigeben(FREIGEGEBEN, &mut c, &h()).expect("freigegeben");
+        let f = sk_cost::lesen::firma_oder_werk(&sk_model::Model::new(), Some(c.library()))
+            .leistung(g)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            (f.stunden, f.geraet),
+            (stunden, Dez::ganz(2)),
+            "{name}: Firma nach Freigeben"
+        );
+        // Dieses Haus folgt der eigenen Freigabe: keine Marke proj=1 mehr an
+        // der Bauleistung, Gerät 2,00 wie in der Firma (Befund H)
+        let lh = s
+            .katalog(Some((c.library(), c.stand())))
+            .leistung(g)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            (lh.stunden, lh.geraet),
+            (stunden, Dez::ganz(2)),
+            "{name}: dieses Haus nach Freigeben"
+        );
+        let hier = netto(&mut s, &c);
+        let (c2, _) = Company::laden(&d.join("firmenkatalog.szk"), false);
+        let mut s3 = szene(text);
+        assert_eq!(netto(&mut s3, &c2), hier, "{name}: neues Haus");
+        assert_ne!(hier, vorher, "{name}");
+        eprintln!(
+            "KA3B-3au {name}: {} Stunden {} → {}, Gerät 2,00, netto {:.2} → {:.2} €",
+            leistung.kurz,
+            leistung.stunden.text(),
+            stunden.text(),
+            vorher as f64 / 100.0,
+            hier as f64 / 100.0
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }
