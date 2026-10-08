@@ -29,6 +29,10 @@ pub enum Ort {
     Schicht { typ: Guid, schicht: usize },
     /// Ein Bauteil.
     Bauteil(Guid),
+    /// Eine Position im LV, mit ihrer OZ ohne Los (AVA, KA-4).
+    Position(String),
+    /// Kopf und Vorbemerkungen des LV (AVA, KA-4).
+    Kopf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,6 +77,8 @@ impl Befund {
             Ort::Satz { abschnitt, kennung } => format!("{abschnitt} {kennung}"),
             Ort::Schicht { typ, schicht } => format!("Typ {} Schicht {schicht}", typ.to_ifc()),
             Ort::Bauteil(g) => format!("Bauteil {}", g.to_ifc()),
+            Ort::Position(oz) => format!("Position {oz}"),
+            Ort::Kopf => "Kopf".to_string(),
         };
         format!("Regel {} · {ort}: {}", self.regel, self.satz)
     }

@@ -19,7 +19,7 @@ use sk_model::{BuildingId, ElementId, Guid, MaterialLayer, Model, StoreyId};
 use std::collections::HashMap;
 
 /// Kleinste Einheit je Einheit (mm, mm², mm³, g): so viele je Einheit.
-fn skala(e: Einheit) -> i128 {
+pub(crate) fn skala(e: Einheit) -> i128 {
     match e {
         Einheit::M2 => 1_000_000,
         Einheit::M3 => 1_000_000_000,
@@ -31,13 +31,13 @@ fn skala(e: Einheit) -> i128 {
 }
 
 /// Menge in kleinster Einheit → Menge auf 3 Stellen (Regel 83).
-fn drei(menge: i128, e: Einheit) -> Dez {
+pub(crate) fn drei(menge: i128, e: Einheit) -> Dez {
     let milli = runden(menge * 1000, skala(e));
     Dez((milli * 1000) as i64)
 }
 
 /// GP = Menge (3 Stellen) × EP, auf den Cent.
-fn gp(menge: Dez, ep: Cent) -> Cent {
+pub(crate) fn gp(menge: Dez, ep: Cent) -> Cent {
     Cent(runden(menge.0 as i128 * ep.0 as i128, Dez::SKALA as i128) as i64)
 }
 
@@ -61,6 +61,10 @@ pub struct Ansatz {
     pub menge: i128,
     /// Folgeposition: die auslösende Bauleistung („aus B30 Decke“).
     pub aus: Option<Guid>,
+    /// Auflagertasche der Wandschicht (mm³), schon von `menge` abgezogen;
+    /// nur bei Positionen nach Volumen, sonst 0 (Zeile „− Auflager“ im
+    /// Mengenansatz des LV, `LayerRow.pocket`).
+    pub auflager: i128,
 }
 
 /// Was eine Position rechnet.
@@ -760,6 +764,7 @@ pub fn kosten_mit(
             kg: r.kg,
             menge,
             aus: None,
+            auflager: 0,
         };
         let gewerk_schicht = r.trade.and_then(|t| m.trade(t)).map(|t| t.guid);
         let mut legen = |key: PosKey,
@@ -841,12 +846,21 @@ pub fn kosten_mit(
                     _ => Quelle::Leistung(l.guid),
                 };
                 let menge = menge_von(l.bezug, false).unwrap_or(0);
+                let wand = matches!(r.category, Category::ExteriorWall | Category::InteriorWall);
+                let auflager = if l.bezug == Bezug::Volumen && wand {
+                    ganz(r.pocket)
+                } else {
+                    0
+                };
                 legen(
                     (quelle, w.stoff, None),
                     l.einheit,
                     Some(l.gewerk),
                     w.preis_fehlt,
-                    ansatz(menge),
+                    Ansatz {
+                        auflager,
+                        ..ansatz(menge)
+                    },
                     w.dicke,
                 );
                 // Folgepositionen (Regel 85), Ort und KG der Quelle

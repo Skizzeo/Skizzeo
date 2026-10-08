@@ -177,6 +177,18 @@ pub fn kosten_mit(
     crate::rechnung::kosten_mit(sp, m, sched, k, u)
 }
 
+/// Das LV des Loses `w.los` im Umfang `u` (KA-4a): ordnet das Kostenblatt
+/// desselben Umfangs um und rechnet nichts neu (Regeln 86, 94, 101).
+pub fn lv(
+    m: &Model,
+    sched: &sk_model::qto::Schedule,
+    k: &Katalog,
+    u: &crate::Umfang,
+    w: &crate::lv::LvWahl,
+) -> crate::lv::Lv {
+    crate::lv::lv_aus(m, &kosten(m, sched, k, u), k, w)
+}
+
 /// Bauleistung der Schicht `schicht` im Typ `typ` mit Grund (Regel 81).
 pub fn zuordnung(
     m: &Model,

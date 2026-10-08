@@ -347,6 +347,21 @@ fn nutzersaetze_sauber() {
             }
             // „Bauleistung wählen“ für jede Zeile ohne Bauleistung
             let kat = s.katalog(lib.map(|l| (l, 1)));
+            // Prüfen im LV jedes Loses, mit und ohne Untertitel; Preisstand
+            // gegen ein spätes Datum, damit er sich meldet
+            for los in kat.lose.iter().filter(|l| l.parent.is_none()) {
+                for untertitel in [false, true] {
+                    let w = sk_cost::lv::LvWahl {
+                        los: los.guid,
+                        untertitel,
+                        preise: true,
+                        heute: Some((2030, 1)),
+                    };
+                    for b in sk_cost::lv::lv_aus(s.model(), &blatt, &kat, &w).befunde {
+                        dazu(&format!("RH-{} LV {}", n + 1, los.nr), &b.satz);
+                    }
+                }
+            }
             for z in &blatt.ohne {
                 let Some(a) = sk_cost::wahl::auswahl(s.model(), &kat, z) else {
                     continue;

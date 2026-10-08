@@ -12,6 +12,7 @@ pub mod geld;
 pub mod gliederung;
 pub mod katalog;
 pub mod lesen;
+pub mod lv;
 pub mod op;
 pub mod preis;
 pub mod rechnung;
