@@ -170,13 +170,14 @@ pub enum Topic {
     Patterns,
     Quantities,
     Costs,
+    Ava,
     Delete,
     Backups,
 }
 
 impl Topic {
     /// Alle Themen in der Reihenfolge der Liste „Alle Themen“.
-    pub const ALL: [Topic; 29] = [
+    pub const ALL: [Topic; 30] = [
         Topic::Start,
         Topic::Navigation,
         Topic::Building,
@@ -204,6 +205,7 @@ impl Topic {
         Topic::Patterns,
         Topic::Quantities,
         Topic::Costs,
+        Topic::Ava,
         Topic::Delete,
         Topic::Backups,
     ];
@@ -237,6 +239,7 @@ impl Topic {
                 Topic::Tree,
                 Topic::Quantities,
                 Topic::Costs,
+                Topic::Ava,
             ],
         ),
         (
@@ -286,6 +289,7 @@ impl Topic {
             Topic::Patterns => "muster",
             Topic::Quantities => "mengen",
             Topic::Costs => "kosten",
+            Topic::Ava => "ava",
             Topic::Delete => "loeschen",
             Topic::Backups => "sicherungen",
         }
@@ -1030,11 +1034,34 @@ mod tests {
         }
         assert!(zeile(k, "Grau").unwrap().contains("„Bauleistung wählen …“"));
         let m = h.section("mengen").unwrap();
-        assert_eq!(m.title, "Mengen und Kosten");
+        assert_eq!(m.title, "Mengen, Kosten, AVA");
         assert!(zeile(m, "Gebäude").unwrap().contains("ganze Projekt"));
         assert_eq!(zeile(m, "Preise"), None);
         assert!(m.rows.len() <= 10);
         assert_eq!(Topic::from_id("kosten"), Some(Topic::Costs));
+    }
+
+    /// KA-4d (paket-ka4 §7): Thema „AVA · Leistungsverzeichnis“ mit den
+    /// sieben Zeilen; F1 im Blatt AVA.
+    #[test]
+    fn hilfe_ava() {
+        let h = help();
+        let a = h.section("ava").expect("Thema AVA");
+        assert_eq!(a.title, "AVA · Leistungsverzeichnis");
+        let namen: Vec<&str> = a.rows.iter().map(|(x, _)| x.as_str()).collect();
+        assert_eq!(
+            namen,
+            [
+                "Los wählen",
+                "Anfrage",
+                "Position",
+                "Kopf",
+                "Prüfen",
+                "Geschosse getrennt",
+                "Ausgabe"
+            ]
+        );
+        assert_eq!(Topic::from_id("ava"), Some(Topic::Ava));
     }
 
     #[test]

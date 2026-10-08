@@ -2163,13 +2163,12 @@ impl App {
         {
             if down && self.save_dlg.is_none() {
                 let was = self.help.is_open();
-                // im Reiter Kosten das Thema „Kosten“
-                self.help
-                    .open_with(if self.quantity.blatt() == cards::Blatt::Kosten {
-                        help::Topic::Costs
-                    } else {
-                        help::Topic::Quantities
-                    });
+                // im Reiter Kosten das Thema „Kosten“, in AVA „AVA“
+                self.help.open_with(match self.quantity.blatt() {
+                    cards::Blatt::Kosten => help::Topic::Costs,
+                    cards::Blatt::Ava => help::Topic::Ava,
+                    cards::Blatt::Mengen => help::Topic::Quantities,
+                });
                 if !was {
                     self.help_toggled();
                 }
@@ -2374,11 +2373,18 @@ impl App {
             .map_or("Unbenannt".to_string(), |s| {
                 s.to_string_lossy().into_owned()
             });
-        let kosten = self.quantity.blatt() == cards::Blatt::Kosten;
-        let suggested = if kosten {
-            format!("{stem} Kosten.csv")
-        } else {
-            format!("{stem} Mengenermittlung.csv")
+        let blatt = self.quantity.blatt();
+        let kosten = blatt == cards::Blatt::Kosten;
+        let ava = self
+            .quantity
+            .ava
+            .as_ref()
+            .filter(|_| blatt == cards::Blatt::Ava);
+        let suggested = match ava.and_then(|a| a.los_name()) {
+            // „haus LV Rohbau.csv“ (paket-ka4 §4)
+            Some(los) => format!("{stem} LV {los}.csv"),
+            None if kosten => format!("{stem} Kosten.csv"),
+            None => format!("{stem} Mengenermittlung.csv"),
         };
         let filters = [
             ("Tabelle für Excel (*.csv)", "*.csv"),
@@ -2388,7 +2394,14 @@ impl App {
         else {
             return;
         };
+        let ava = self
+            .quantity
+            .ava
+            .as_ref()
+            .filter(|_| blatt == cards::Blatt::Ava);
         let bytes = match self.quantity.kosten.as_ref().filter(|_| kosten) {
+            // Blatt AVA: das LV des gewählten Loses (ka-4-fach §3.6)
+            _ if ava.is_some() => ava.map(|a| a.csv()).unwrap_or_default(),
             // Reiter Kosten: Kosten-CSV wie die Anzeige (ka-2-fach §2.5)
             Some(k) => {
                 let (y, mo, d, h, mi) = sk_platform::local_date_time();

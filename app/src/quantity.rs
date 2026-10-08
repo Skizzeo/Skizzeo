@@ -608,7 +608,7 @@ impl QuantityWindow {
                 let o = match self.blatt() {
                     Blatt::Mengen => self.list.as_mut()?.mouse_up(t, fonts, x, y),
                     Blatt::Kosten => self.kosten.as_mut()?.mouse_up(t, fonts, x, y),
-                    Blatt::Ava => None,
+                    Blatt::Ava => self.ava.as_mut()?.mouse_up(t, fonts, x, y),
                 };
                 self.list_out(o)
             }

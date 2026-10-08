@@ -108,6 +108,8 @@ enum Hot {
     Mehr,
     Untertitel,
     Feld(kopf::Feld),
+    /// „LV … als Tabelle speichern“.
+    Knopf,
 }
 
 /// Punkt im Baum: grün Preis da, Akzent Preis fehlt, grau leer.
@@ -284,6 +286,10 @@ pub struct AvaView {
     feld: Option<(kopf::Feld, TextEdit)>,
     /// Umfang und Stand für den aufgeklappten Kopf.
     kopf_umfang: (String, String),
+    /// „Referenzpreise 10/2026“ bzw. „Preise Firmenkatalog“; leer ohne
+    /// Preise.
+    preisquelle: String,
+    knopf_down: bool,
 }
 
 impl Default for AvaView {
@@ -329,6 +335,8 @@ impl AvaView {
             mehr_offen: false,
             feld: None,
             kopf_umfang: (String::new(), String::new()),
+            preisquelle: String::new(),
+            knopf_down: false,
         }
     }
 
@@ -433,6 +441,11 @@ impl AvaView {
             changed |= self.springe(&sp);
         }
         self.projekt = Some(s.model().project().clone());
+        self.preisquelle = if self.preise {
+            sk_cost::lesen::preisquelle(&kat)
+        } else {
+            String::new()
+        };
         if self.untertitel != untertitel {
             self.untertitel = untertitel;
             changed = true;
@@ -645,6 +658,9 @@ impl AvaView {
 
     fn hit(&self, t: &Theme, fonts: &Fonts, x: f64, y: f64) -> Option<Hot> {
         let (x, y) = (x as f32, y as f32);
+        if inside(self.knopf_rect(t, fonts), x, y) {
+            return Some(Hot::Knopf);
+        }
         if let Some(h) = self.kopf_hit(t, fonts, x, y) {
             return h;
         }
@@ -769,6 +785,10 @@ impl AvaView {
             | Hot::Mehr
             | Hot::Untertitel
             | Hot::Feld(_) => None,
+            Hot::Knopf => {
+                self.knopf_down = true;
+                Some(ListOut::Repaint)
+            }
             Hot::Preise(b) => (b != self.preise).then(|| {
                 self.preise = b;
                 ListOut::Repaint
@@ -924,6 +944,7 @@ impl AvaView {
         self.leiste.paint(c, t, fonts, self.leiste_lage(t), now);
         self.paint_schalter(c, t, regular, bold);
         self.paint_kopf(c, t, regular, bold);
+        self.paint_knopf(c, t, fonts);
         let linie = self.body_top() - 8.0 * s;
         c.fill_rect(x0, linie, cw, s.max(1.0), u.sheet_rule);
         self.paint_baum(c, t, regular, bold);
@@ -1728,6 +1749,7 @@ pub fn detail(m: &Model, kat: &Katalog, lv: &Lv, oz: &str) -> Option<Detail> {
 
 #[cfg(test)]
 mod bild;
+mod csv;
 mod kopf;
 #[cfg(test)]
 mod tests;

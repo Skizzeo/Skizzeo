@@ -209,9 +209,9 @@ Regler | rechts je Musterart, Zahlen mit Pfeiltasten
 Eigene Vorlage | „Als Vorlage speichern …“ legt sie im Firmenkatalog ab
 Übernehmen | **OK**; Abbrechen verwirft
 
-[thema] id=mengen titel="Mengen und Kosten"
+[thema] id=mengen titel="Mengen, Kosten, AVA"
 Öffnen | Knopf „Mengen · Kosten · AVA“ im Paneel „Ansichten“
-Karten | Mengen und Kosten; jede Karte zeigt ihre Zahl, sie läuft mit dem Modell mit
+Karten | Mengen, Kosten und AVA; jede Karte zeigt ihre Zahl, sie läuft mit dem Modell mit
 Gebäude | ab zwei Gebäuden wählt das Feld vor den Chips ein Gebäude oder das ganze Projekt
 Geschosse | Klick auf einen Chip zeigt nur dieses Geschoss, jeder weitere nimmt eines dazu oder weg; „Alle“ holt alle zurück
 Gliedern | „Gliedern“ nach Geschoss oder Gewerk, bei Kosten auch Kostengruppe
@@ -231,6 +231,15 @@ Andere Werte | eine Zeile oben nennt, was für neue Häuser anders ist; „über
 Geschätzt | keine genaue Bauleistung; gerechnet nach der nächsten Dicke oder dem Richtpreis
 Grau | keine passende Bauleistung; Zeile überfahren, dann „Bauleistung wählen …“
 Referenzpreise | Stand 10/2026, unverbindlich, netto
+
+[thema] id=ava titel="AVA · Leistungsverzeichnis"
+Los wählen | im Baum links; der Baum zeigt Lose und Titel
+Anfrage | „Für Anfrage (leer)“ lässt EP und GP frei, „Mit Preisen“ füllt sie
+Position | Klick öffnet unten Mengenansatz je Geschoss, Preisanteile und Eigenschaften
+Kopf | „Kopf und Vorbemerkungen“; Bauvorhaben, Aufsteller und Datum setzt Skizzeo selbst
+Prüfen | im Baum unten; ein Klick führt zur Stelle
+Geschosse getrennt | „Mehr“ › „Geschosse als Untertitel“
+Ausgabe | „LV … als Tabelle speichern“ schreibt das gewählte Los als CSV
 
 [thema] id=loeschen titel="Löschen"
 Innenwand | wählen, **Entf** oder Rechtsklick › Löschen

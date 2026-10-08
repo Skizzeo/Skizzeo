@@ -469,3 +469,119 @@ fn bauvorhaben_und_untertitel() {
     let mut c = Canvas::new(1400, 900);
     v.paint(&mut c, &Theme::dark(), &fonts, Instant::now());
 }
+
+fn csv_zeilen(v: &AvaView) -> Vec<Vec<String>> {
+    let b = v.csv();
+    let t = String::from_utf8(b).unwrap();
+    let t = t.strip_prefix('\u{feff}').expect("BOM");
+    t.split("\r\n")
+        .map(|z| z.split(';').map(str::to_string).collect())
+        .collect()
+}
+
+fn cent(s: &str) -> i64 {
+    let (e, c) = s.split_once(',').expect(s);
+    e.parse::<i64>().unwrap() * 100 + c.parse::<i64>().unwrap()
+}
+
+/// KA-4d: CSV mit Kopf, Positionen und Zusammenstellung; GP = Menge × EP
+/// auf den Cent, Titelsumme = Summe der Zeilen, Netto = Summe der Titel,
+/// Einheiten als GAEB-Wörter; Werte wie im LV.
+#[test]
+fn csv_rechnet_nach() {
+    let mut s = haus();
+    let mut v = AvaView::new();
+    (v.w, v.h) = (1400, 900);
+    v.datei = "haus.szo".into();
+    v.sync(&mut s, None);
+    assert_eq!(v.knopf_text(), "LV Rohbau als Tabelle speichern");
+    let z = csv_zeilen(&v);
+    let wert = |k: &str| z.iter().find(|r| r[0] == k).map(|r| r[1].clone());
+    assert_eq!(wert("Leistungsverzeichnis").as_deref(), Some("LV Rohbau"));
+    assert_eq!(wert("Bauvorhaben").as_deref(), Some("Haus"));
+    assert_eq!(wert("LV-Art").as_deref(), Some(v.lv().unwrap().kopf.art));
+    assert!(wert("Preisquelle").is_some_and(|p| p.starts_with("Referenzpreise")));
+    assert!(wert("Vorbemerkungen").is_some_and(|p| p.contains("VOB/C")));
+    let kopf = z.iter().position(|r| r[0] == "OZ").expect("Spaltenkopf");
+    assert_eq!(z[kopf], ["OZ", "Kurztext", "Menge", "ME", "EP", "GP"]);
+    let lv = v.lv().unwrap();
+    let mut titel_summe = 0;
+    let mut n = 0;
+    let mut netto_titel = 0;
+    for r in &z[kopf + 1..] {
+        if r.len() < 6 {
+            continue;
+        }
+        if r[0].matches('.').count() == 1 && !r[4].is_empty() {
+            // Position: GP = Menge × EP auf den Cent
+            let menge: f64 = r[2].replace(',', ".").parse().unwrap();
+            let ep = cent(&r[4]);
+            let gp = cent(&r[5]);
+            assert_eq!(gp, (menge * ep as f64).round() as i64, "{r:?}");
+            assert!(
+                ["m2", "m3", "m", "t", "St"].contains(&r[3].as_str()),
+                "{r:?}"
+            );
+            let p = lv
+                .titel
+                .iter()
+                .flat_map(|t| &t.positionen)
+                .find(|p| p.oz == r[0])
+                .unwrap();
+            assert_eq!(Some(Cent(gp)), p.gp, "{r:?}");
+            titel_summe += gp;
+            n += 1;
+        } else if r[1].starts_with("Summe ") && r[1] != "Summe netto" && r[1] != "Summe brutto" {
+            assert_eq!(cent(&r[5]), titel_summe, "{r:?}");
+            netto_titel += titel_summe;
+            titel_summe = 0;
+        } else if r[1] == "Summe netto" {
+            assert_eq!(cent(&r[5]), netto_titel);
+            assert_eq!(Some(Cent(netto_titel)), lv.zusammenstellung.netto);
+        }
+    }
+    assert_eq!(n, lv.anzahl());
+}
+
+/// „Für Anfrage (leer)“: EP, GP und alle Summen leer.
+#[test]
+fn csv_anfrage_leer() {
+    let mut s = haus();
+    let mut v = blatt(&mut s);
+    v.preise = false;
+    v.sync(&mut s, None);
+    let z = csv_zeilen(&v);
+    let kopf = z.iter().position(|r| r[0] == "OZ").unwrap();
+    assert!(!z.iter().any(|r| r[0] == "Preisquelle"));
+    for r in z[kopf + 1..].iter().filter(|r| r.len() >= 6) {
+        assert!(r[4].is_empty() && r[5].is_empty(), "{r:?}");
+    }
+    let pos = z[kopf + 1..]
+        .iter()
+        .filter(|r| r.len() >= 6 && !r[2].is_empty())
+        .count();
+    assert_eq!(pos, v.lv().unwrap().anzahl());
+}
+
+/// Der Knopf: drücken und loslassen auf ihm gibt „Als Tabelle speichern“.
+#[test]
+fn knopf_speichert() {
+    let Some(fonts) = schrift() else {
+        return;
+    };
+    let t = Theme::dark();
+    let mut s = haus();
+    let mut v = blatt(&mut s);
+    let (x, y, w, h) = v.knopf_rect(&t, &fonts);
+    let xy = ((x + w * 0.5) as f64, (y + h * 0.5) as f64);
+    let mut p = Picking::default();
+    let mods = sk_platform::Modifiers::default();
+    assert_eq!(
+        v.mouse_down(&t, &fonts, &mut p, xy, mods),
+        Some(ListOut::Repaint)
+    );
+    assert_eq!(v.mouse_up(&t, &fonts, xy.0, xy.1), Some(ListOut::SaveCsv));
+    // Daneben losgelassen: nichts gespeichert
+    v.mouse_down(&t, &fonts, &mut p, xy, mods);
+    assert_eq!(v.mouse_up(&t, &fonts, 5.0, 5.0), Some(ListOut::Repaint));
+}
