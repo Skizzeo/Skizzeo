@@ -47,9 +47,9 @@ pub enum Gilt {
 }
 
 impl Gilt {
-    const ALLE: [Gilt; 2] = [Gilt::NurHaus, Gilt::NeueHaeuser];
+    pub(crate) const ALLE: [Gilt; 2] = [Gilt::NurHaus, Gilt::NeueHaeuser];
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Gilt::NurHaus => "Nur dieses Haus",
             Gilt::NeueHaeuser => "Auch für neue Häuser",

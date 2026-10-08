@@ -22,6 +22,7 @@ mod help;
 mod hints;
 mod kosten_view;
 mod link_view;
+mod lohn_blatt;
 mod material_view;
 mod measure_input;
 mod menu;
@@ -2211,20 +2212,7 @@ impl App {
                 text,
             } => {
                 let label = self.scene.bezeichnung(text);
-                match self.company.as_mut() {
-                    Some(c) => match self.scene.fuer_firma(label, c, &h, &ops) {
-                        Ok(hinweis) => hinweis.map(|t| (t, false)),
-                        Err(e) => Some((
-                            format!("{e}. Nichts geändert; „Nur dieses Haus“ geht weiterhin."),
-                            true,
-                        )),
-                    },
-                    None => Some((
-                        "Kein Firmenkatalog geladen. Nichts geändert; „Nur dieses Haus“ geht weiterhin."
-                            .into(),
-                        true,
-                    )),
-                }
+                self.fuer_firma_melden(label, &h, &ops)
             }
             kosten_view::Schreiben::Preis { ops, .. } => {
                 self.kosten_folge("Preis im Projekt geändert", &h, &ops)
@@ -2239,6 +2227,19 @@ impl App {
             }
             kosten_view::Schreiben::Bauleistung(op) => {
                 self.kosten_folge("Bauleistung gewählt", &h, &[*op])
+            }
+            kosten_view::Schreiben::Lohn { wert, gilt } => {
+                let label = self
+                    .scene
+                    .bezeichnung(lohn_blatt::LohnBlatt::bezeichnung(wert, gilt));
+                let op = sk_cost::Op::FirmenwertSetzen {
+                    schluessel: "wage".into(),
+                    wert,
+                };
+                match gilt {
+                    preis_blatt::Gilt::NurHaus => self.kosten_folge(label, &h, &[op]),
+                    preis_blatt::Gilt::NeueHaeuser => self.fuer_firma_melden(label, &h, &[op]),
+                }
             }
             kosten_view::Schreiben::Lassen(stand) => {
                 let op = sk_cost::Op::AbgleichLassen { stand };
@@ -2258,6 +2259,30 @@ impl App {
         }
         self.quantity.dirty = true;
         self.redraw = true;
+    }
+
+    /// „Auch für neue Häuser“ über `Scene::fuer_firma`; der Hinweis oder
+    /// der Grund, warum nichts geändert wurde.
+    fn fuer_firma_melden(
+        &mut self,
+        label: &'static str,
+        h: &sk_cost::Herkunft,
+        ops: &[sk_cost::Op],
+    ) -> Option<(String, bool)> {
+        match self.company.as_mut() {
+            Some(c) => match self.scene.fuer_firma(label, c, h, ops) {
+                Ok(hinweis) => hinweis.map(|t| (t, false)),
+                Err(e) => Some((
+                    format!("{e}. Nichts geändert; „Nur dieses Haus“ geht weiterhin."),
+                    true,
+                )),
+            },
+            None => Some((
+                "Kein Firmenkatalog geladen. Nichts geändert; „Nur dieses Haus“ geht weiterhin."
+                    .into(),
+                true,
+            )),
+        }
     }
 
     /// Projektschritt über `Scene::kosten_folge`; der Befundsatz, wenn der
@@ -2396,6 +2421,16 @@ impl App {
         }
         let anim = self.theme.size.anim_ms > 0.0;
         self.quantity.set_docked(surface.layout().docked(), anim);
+        // Hinweiskarte mit dem Lohnfeld einmal je Arbeitsplatz beim ersten
+        // Öffnen der Kosten (paket-ka2 §4, gemerkt wie die übrigen Hinweise)
+        if self.quantity.blatt() == cards::Blatt::Kosten
+            && self.hints_seen.insert("kosten_lohn".into())
+        {
+            self.quantity
+                .kosten
+                .get_or_insert_with(kosten_view::KostenView::new)
+                .lohn_karte();
+        }
         let firma = self.company.as_ref().map(|c| (c.library(), c.stand()));
         self.quantity
             .sync_mit(&mut self.scene, &self.picking, firma, anim);

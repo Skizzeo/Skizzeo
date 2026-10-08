@@ -12,6 +12,7 @@
 //! (`preis_blatt.rs`) zeigt beim Tippen das Blatt auf dem Katalog mit den
 //! getippten Werten.
 
+use crate::lohn_blatt::{self, LohnBlatt};
 use crate::picking::Picking;
 use crate::preis_blatt::{self, Gilt, PreisBlatt};
 use crate::scene::Scene;
@@ -562,6 +563,8 @@ enum Hot {
     Lassen,
     /// „Bauleistung wählen …“ an der grauen Zeile.
     Waehlen(usize),
+    /// Stundenlohn in der Kachel Lohnanteil (öffnet das Lohnfeld).
+    Lohnsatz,
 }
 
 /// Was das Preisblatt schreiben lässt (die App führt es über
@@ -581,6 +584,11 @@ pub enum Schreiben {
     Lassen(u32),
     /// „Bauleistung gewählt“ (`BauleistungZuordnen`).
     Bauleistung(Box<Op>),
+    /// Verrechnungslohn für dieses Haus oder auch für neue Häuser.
+    Lohn {
+        wert: Dez,
+        gilt: Gilt,
+    },
 }
 
 /// Kosten beim Tippen im Preisblatt: Operationen und die Blätter darauf.
@@ -655,6 +663,10 @@ pub struct KostenView {
     wahl_wunsch: Option<(usize, ElementId)>,
     waehlbar: HashSet<usize>,
     waehlbar_von: Option<(*const Kostenblatt, *const Katalog)>,
+    /// Lohnfeld (Hinweiskarte oder Blatt an der Kachel) und sein Öffnen
+    /// beim nächsten `sync`.
+    lohn: Option<LohnBlatt>,
+    lohn_wunsch: Option<lohn_blatt::Form>,
 }
 
 impl Default for KostenView {
@@ -703,6 +715,8 @@ impl KostenView {
             wahl_wunsch: None,
             waehlbar: HashSet::new(),
             waehlbar_von: None,
+            lohn: None,
+            lohn_wunsch: None,
         }
     }
 
@@ -742,6 +756,21 @@ impl KostenView {
         changed |= self.sync_preis(s, firma, &kat, &blatt, &alle);
         changed |= self.sync_abgleich(s, firma, &kat, &blatt);
         changed |= self.sync_wahl(s, &kat, &blatt);
+        if let Some(form) = self.lohn_wunsch.take() {
+            let firma_lohn = s.firmenkatalog(firma).werte.lohn;
+            let titel = match form {
+                lohn_blatt::Form::Karte => {
+                    lohn_blatt::kartentitel(&sk_cost::lesen::preisquelle(&kat))
+                }
+                lohn_blatt::Form::Blatt => "Stundenlohn".into(),
+            };
+            let mut l = LohnBlatt::neu(form, titel, kat.werte.lohn, firma_lohn);
+            l.scale = self.scale;
+            self.preis_schliessen();
+            self.wahl = None;
+            self.lohn = Some(l);
+            changed = true;
+        }
         // Beim Tippen im Preisblatt zeigen Zeilen, Summen und Chips die
         // Vorschau; Namen, Preisquelle und Lohn bleiben aus dem Katalog
         let (blatt, ganz) = match &self.live {
@@ -990,12 +1019,56 @@ impl KostenView {
 
     /// Ist ein Blatt offen (Preis oder Bauleistung; Tasten gehen dorthin)?
     pub fn blatt_offen(&self) -> bool {
-        self.preis.is_some() || self.wahl.is_some()
+        self.preis.is_some() || self.wahl.is_some() || self.lohn.is_some()
+    }
+
+    /// Hinweiskarte mit dem Lohnfeld beim ersten Öffnen der Kosten.
+    pub fn lohn_karte(&mut self) {
+        self.lohn_wunsch = Some(lohn_blatt::Form::Karte);
+    }
+
+    /// Ergebnis des Lohnfelds.
+    fn lohn_aus(&mut self, aus: lohn_blatt::Aus) -> Option<ListOut> {
+        use lohn_blatt::Aus;
+        Some(match aus {
+            Aus::Repaint => ListOut::Repaint,
+            Aus::Schliessen => {
+                self.lohn = None;
+                ListOut::Repaint
+            }
+            Aus::Schreiben { wert, gilt } => {
+                self.lohn = None;
+                ListOut::Kosten(Schreiben::Lohn { wert, gilt })
+            }
+        })
+    }
+
+    /// Stundenlohn in der Kachel Lohnanteil: Text davor, Verweis, danach und
+    /// die Fläche des Verweises (px).
+    fn lohnsatz_lage(&self, t: &Theme, fonts: &Fonts) -> Option<(String, String, String, Rect)> {
+        let b = self.blatt.as_deref()?;
+        let s = self.scale;
+        let (x0, cw) = self.content_x(t);
+        let tw = ((cw - 2.0 * TILE_GAP * s) / 3.0).max(0.0);
+        let x = x0 + 2.0 * (tw + TILE_GAP * s) + 12.0 * s;
+        let vor = format!("Lohn {} € (", euro(b.lohn));
+        let link = format!("{} €/h", euro(self.lohnsatz.cent()));
+        let nach = format!(") · Material {} €", euro(b.stoff));
+        let px = 10.0 * s;
+        let w = |t: &str| {
+            fonts
+                .regular
+                .as_ref()
+                .map_or(t.chars().count() as f32 * px * 0.55, |f| f.width(t, px))
+        };
+        let lx = x + w(&vor);
+        let y = self.tiles_top() + 44.0 * s;
+        Some((vor, link.clone(), nach, (lx, y, w(&link), 14.0 * s)))
     }
 
     /// Beide Blätter schließen, ohne zu schreiben.
     pub fn blaetter_schliessen(&mut self) -> bool {
-        self.wahl.take().is_some() | self.preis_schliessen()
+        self.wahl.take().is_some() | self.lohn.take().is_some() | self.preis_schliessen()
     }
 
     /// Ergebnis des Blatts „Bauleistung wählen …“.
@@ -1107,9 +1180,26 @@ impl KostenView {
         wb.scale = s;
     }
 
+    /// Lohnfeld an den Stundenlohn der Kachel bzw. unten rechts legen.
+    fn lege_lohn(&mut self, t: &Theme) {
+        let Some(l) = self.lohn.as_mut() else {
+            return;
+        };
+        l.fenster = (self.w as f32, self.h as f32);
+        l.scale = self.scale;
+        let s = self.scale;
+        let (x0, cw) = self.content_x(t);
+        let tw = ((cw - 2.0 * TILE_GAP * s) / 3.0).max(0.0);
+        let x = x0 + 2.0 * (tw + TILE_GAP * s);
+        let y = self.tiles_top();
+        let l = self.lohn.as_mut().expect("eben gesehen");
+        l.set_anker((x + 12.0 * s, y + 40.0 * s, x + tw * 0.6, y + 58.0 * s));
+    }
+
     /// Preisblatt an die EP-Zelle und die Fenstergröße legen.
     fn lege_preis(&mut self, t: &Theme) {
         self.lege_wahl(t);
+        self.lege_lohn(t);
         let Some(key) = self.preis.as_ref().map(|p| p.key) else {
             return;
         };
@@ -1131,6 +1221,10 @@ impl KostenView {
         mods: sk_platform::Modifiers,
     ) -> Option<Option<ListOut>> {
         self.lege_preis(t);
+        if let Some(l) = self.lohn.as_mut() {
+            let aus = l.key(key, mods);
+            return Some(aus.and_then(|a| self.lohn_aus(a)));
+        }
         if let Some(w) = self.wahl.as_mut() {
             let aus = w.key(key, mods);
             return Some(aus.and_then(|a| self.wahl_aus(a)));
@@ -1141,6 +1235,10 @@ impl KostenView {
 
     /// Getipptes Zeichen fürs Preisblatt.
     pub fn text(&mut self, ch: char) -> Option<ListOut> {
+        if let Some(l) = self.lohn.as_mut() {
+            let aus = l.text(ch)?;
+            return self.lohn_aus(aus);
+        }
         if let Some(w) = self.wahl.as_mut() {
             let aus = w.text(ch)?;
             return self.wahl_aus(aus);
@@ -1437,6 +1535,12 @@ impl KostenView {
         if let Some((g, _)) = gl.iter().find(|(_, r)| inside(*r, x, y)) {
             return Some(Hot::Gliederung(*g));
         }
+        if self
+            .lohnsatz_lage(t, fonts)
+            .is_some_and(|(_, _, _, r)| inside(r, x, y))
+        {
+            return Some(Hot::Lohnsatz);
+        }
         if let Some((h, _)) = self
             .fuss_rects(t, fonts)
             .into_iter()
@@ -1489,6 +1593,16 @@ impl KostenView {
         y: f64,
     ) -> Option<ListOut> {
         self.lege_preis(t);
+        if let Some(l) = self.lohn.as_mut() {
+            let repaint = l.mouse_move(fonts, x as f32, y as f32);
+            if l.enthaelt(x as f32, y as f32) || l.form == lohn_blatt::Form::Blatt {
+                let mut out = repaint.then_some(ListOut::Repaint);
+                if self.hot.take().is_some() {
+                    out = Some(ListOut::Repaint);
+                }
+                return out;
+            }
+        }
         if let Some(w) = self.wahl.as_mut() {
             let repaint = w.mouse_move(x as f32, y as f32);
             if w.enthaelt(x as f32, y as f32) {
@@ -1557,6 +1671,13 @@ impl KostenView {
         mods: sk_platform::Modifiers,
     ) -> Option<ListOut> {
         self.lege_preis(t);
+        if let Some(l) = self.lohn.as_mut() {
+            // Die Karte steht neben der Arbeit; das Blatt schreibt daneben
+            if l.enthaelt(x as f32, y as f32) || l.form == lohn_blatt::Form::Blatt {
+                let aus = l.mouse_down(fonts, x as f32, y as f32)?;
+                return self.lohn_aus(aus);
+            }
+        }
         if let Some(w) = self.wahl.as_mut() {
             // Klick daneben schließt ohne Spur
             let aus = w.mouse_down(fonts, x as f32, y as f32)?;
@@ -1639,6 +1760,10 @@ impl KostenView {
             Hot::Geschaetzt => self.springe(|z| z.geschaetzt),
             Hot::OhnePreis => self.springe(|z| z.art == Art::Ohne),
             Hot::Abgleich => None,
+            Hot::Lohnsatz => {
+                self.lohn_wunsch = Some(lohn_blatt::Form::Blatt);
+                Some(ListOut::Repaint)
+            }
             Hot::Waehlen(i) => {
                 let j = self.zeilen.get(i)?.ohne?;
                 let el = self.blatt.as_deref()?.ohne.get(j)?.element;
@@ -1686,6 +1811,13 @@ impl KostenView {
         if let Some(w) = self.wahl.as_mut() {
             return w.wheel(delta).then_some(ListOut::Repaint);
         }
+        if self
+            .lohn
+            .as_ref()
+            .is_some_and(|l| l.form == lohn_blatt::Form::Blatt)
+        {
+            return None;
+        }
         if self.preis.is_some() {
             return None;
         }
@@ -1704,6 +1836,11 @@ impl KostenView {
     }
 
     pub fn tip_at(&self, t: &Theme, fonts: &Fonts, x: f64, y: f64) -> Option<String> {
+        if let Some(l) = self.lohn.as_ref() {
+            if l.enthaelt(x as f32, y as f32) {
+                return l.tip_at(fonts, x as f32, y as f32);
+            }
+        }
         if let Some(w) = self.wahl.as_ref() {
             if w.enthaelt(x as f32, y as f32) {
                 return w.tip_at(x as f32, y as f32);
@@ -1788,6 +1925,9 @@ impl KostenView {
         }
         if let Some(w) = &self.wahl {
             w.paint(c, t, fonts);
+        }
+        if let Some(l) = &self.lohn {
+            l.paint(c, t, fonts);
         }
     }
 
@@ -2175,7 +2315,24 @@ impl KostenView {
                     y + 18.0 * s,
                     u.sheet_text_dim,
                 );
-                if !klein.is_empty() {
+                if k == 2 {
+                    // „60,00 €/h“ als Verweis aufs Lohnfeld (Bedienbarkeit 4.7)
+                    if let Some((vor, link, nach, (lx, ..))) = self.lohnsatz_lage(t, fonts) {
+                        let px = 10.0 * s;
+                        let by = y + 54.0 * s;
+                        f.draw(c, &vor, px, x + 12.0 * s, by, u.sheet_text_dim);
+                        let col = if self.hot == Some(Hot::Lohnsatz) {
+                            u.accent_hover
+                        } else {
+                            u.accent
+                        };
+                        f.draw(c, &link, px, lx, by, col);
+                        let nx = lx + f.width(&link, px);
+                        let rest = (x + tw - 12.0 * s - nx).max(0.0);
+                        let nach = sk_ui::widgets::ellipsize(Some(f), &nach, px, rest);
+                        f.draw(c, &nach, px, nx, by, u.sheet_text_dim);
+                    }
+                } else if !klein.is_empty() {
                     let k = sk_ui::widgets::ellipsize(Some(f), klein, 10.0 * s, tw - 24.0 * s);
                     f.draw(
                         c,
@@ -2885,6 +3042,55 @@ mod tests {
         assert!(s.undo());
         v.sync(&mut s, None);
         assert_eq!(v.blatt().unwrap().ohne.len(), grau);
+    }
+
+    /// Lohnfeld: die Hinweiskarte schreibt mit Enter für dieses und neue
+    /// Häuser; der Stundenlohn in der Kachel öffnet das Blatt, Esc schließt.
+    #[test]
+    fn lohnfeld_karte_und_kachel() {
+        let t = Theme::dark();
+        let fonts = Fonts {
+            regular: None,
+            bold: None,
+            italic: None,
+        };
+        let mut s = haus();
+        let mut v = KostenView::new();
+        (v.w, v.h) = (1200, 900);
+        v.lohn_karte();
+        v.sync(&mut s, None);
+        assert!(v.blatt_offen());
+        let mods = sk_platform::Modifiers::default();
+        for ch in "65".chars() {
+            v.text(ch);
+        }
+        let out = v.key(&t, sk_platform::Key::Enter, mods);
+        assert_eq!(
+            out,
+            Some(Some(ListOut::Kosten(Schreiben::Lohn {
+                wert: Dez::ganz(65),
+                gilt: Gilt::NeueHaeuser
+            })))
+        );
+        assert!(!v.blatt_offen());
+        // Kachel Lohnanteil: „60,00 €/h“ ist der Verweis
+        let (_, link, _, (x, y, w, h)) = v.lohnsatz_lage(&t, &fonts).unwrap();
+        assert_eq!(link, "60,00 €/h");
+        let (x, y) = ((x + w * 0.5) as f64, (y + h * 0.5) as f64);
+        let mut p = Picking::default();
+        v.mouse_move(&t, &fonts, &mut p, x, y);
+        assert_eq!(v.tip_at(&t, &fonts, x, y), None);
+        assert_eq!(
+            v.mouse_down(&t, &fonts, &mut p, (x, y), mods),
+            Some(ListOut::Repaint)
+        );
+        v.sync(&mut s, None);
+        assert!(v.blatt_offen());
+        assert_eq!(
+            v.key(&t, sk_platform::Key::Escape, mods),
+            Some(Some(ListOut::Repaint))
+        );
+        assert!(!v.blatt_offen());
     }
 
     /// Kurzname des ersten wählbaren Eintrags, der eindeutig ist.
