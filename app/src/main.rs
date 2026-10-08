@@ -1313,7 +1313,7 @@ impl App {
             Command::Undo | Command::Redo => self.history(c == Command::Redo),
             Command::OpenMenu => {
                 self.menu.open();
-                self.menu.vorschlaege = self.company.as_ref().map_or(0, |c| c.vorschlaege_zahl());
+                self.menu.vorschlaege = self.company.as_mut().map_or(0, |c| c.vorschlaege_zahl());
                 self.tip = None;
                 self.renderer.set_overlay(OVERLAY_TIP, 0, 0, 0, 0, &[]);
             }

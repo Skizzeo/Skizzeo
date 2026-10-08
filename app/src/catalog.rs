@@ -36,6 +36,9 @@ pub struct Company {
     /// Abläufe `kind=user` aus Werk und `geladen` für den Reiter Kosten
     /// (paket-ka3b §3), beim Laden und Schreiben gelesen.
     haus_ablaeufe: Vec<(sk_model::Guid, String)>,
+    /// Zahl der Vorschläge zu Änderungszeit und Länge des Entwurfs
+    /// (Review 3aw: das Dateimenü liest nur die Metadaten).
+    vorschlaege_merk: Option<((Option<SystemTime>, u64), usize)>,
     /// Die Datei ließ sich nicht lesen: nie darüber schreiben.
     broken: bool,
     /// Zählt jede Änderung des Katalogs im Speicher (Laden, Schreiben).
@@ -345,6 +348,7 @@ impl Company {
             stamp: None,
             geladen: String::new(),
             haus_ablaeufe: Vec::new(),
+            vorschlaege_merk: None,
             broken: false,
             gen: 0,
             zuletzt: Vec::new(),
@@ -695,17 +699,30 @@ impl Company {
 
     /// Offene Vorschläge im Entwurf, wie er jetzt auf der Platte steht
     /// (Bedienbarkeit 17.2: „Verwaltung … · 2 Vorschläge“ im Dateimenü);
-    /// der geladene Entwurf bleibt, wie er ist.
-    pub fn vorschlaege_zahl(&self) -> usize {
-        let Ok(roh) = std::fs::read_to_string(self.entwurf_pfad()) else {
+    /// der geladene Entwurf bleibt, wie er ist. Gelesen wird nur, wenn
+    /// sich Änderungszeit oder Länge geändert haben (Review 3aw).
+    pub fn vorschlaege_zahl(&mut self) -> usize {
+        let pfad = self.entwurf_pfad();
+        let Ok(meta) = std::fs::metadata(&pfad) else {
+            self.vorschlaege_merk = None;
             return 0;
         };
-        if !roh.contains("[proposal]") {
-            return 0;
+        let merk = (meta.modified().ok(), meta.len());
+        if let Some((m, n)) = self.vorschlaege_merk {
+            if m == merk {
+                return n;
+            }
         }
-        let voll = sk_cost::verwaltung::entwurf_voll(&self.geladen, &roh);
-        sk_model::read_szk_with(&voll, &sk_cost::lesen::ABSCHNITTE_SZK)
-            .map_or(0, |l| sk_cost::verwaltung::vorschlaege(&l).len())
+        let n = match std::fs::read_to_string(&pfad) {
+            Ok(roh) if roh.contains("[proposal]") => {
+                let voll = sk_cost::verwaltung::entwurf_voll(&self.geladen, &roh);
+                sk_model::read_szk_with(&voll, &sk_cost::lesen::ABSCHNITTE_SZK)
+                    .map_or(0, |l| sk_cost::verwaltung::vorschlaege(&l).len())
+            }
+            _ => 0,
+        };
+        self.vorschlaege_merk = Some((merk, n));
+        n
     }
 
     /// Rolle dieses Platzes (KA-3b1): `true`, solange das gesetzte
