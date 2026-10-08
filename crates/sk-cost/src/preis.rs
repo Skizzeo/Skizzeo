@@ -7,8 +7,8 @@
 
 use crate::befund::Ort;
 use crate::geld::{Cent, Dez};
-use crate::katalog::{Einheit, Katalog};
-use crate::op::SatzId;
+use crate::katalog::{Einheit, Katalog, Leistung};
+use crate::op::{Bauleistung, Op, SatzId};
 use crate::rechnung::{feste_ep, mit_zuschlag, stoff_teile, Position, Quelle, Stoffteil};
 use sk_model::{Guid, Model};
 
@@ -124,6 +124,65 @@ pub fn abweichend(k: &Katalog, a: &Aufbau) -> Vec<SatzId> {
     out
 }
 
+/// Felder einer Bauleistung, wie `BauleistungAendern` sie nimmt.
+pub fn bauleistung(l: &Leistung) -> Bauleistung {
+    Bauleistung {
+        kurz: l.kurz.clone(),
+        gewerk: l.gewerk,
+        titel: l.titel,
+        pos: l.pos,
+        einheit: l.einheit,
+        bezug: l.bezug,
+        stunden: l.stunden,
+        geraet: l.geraet,
+        sonst: l.sonst,
+        nu: l.nu,
+        kg: l.kg,
+        kategorien: l.kategorien.clone(),
+        mat: l.mat,
+        tmin: l.tmin,
+        tmax: l.tmax,
+        funktion: l.funktion.clone(),
+    }
+}
+
+/// Was im Preisblatt steht: Aufwandswert und Preise der Hauptstoffe.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Eingabe {
+    pub stunden: Option<Dez>,
+    pub preise: Vec<(Guid, Dez)>,
+}
+
+/// Operationen zum Preisblatt (paket-ka2 §4): `PreisSetzen` je geändertem
+/// Stoffpreis, `BauleistungAendern` bei geändertem Aufwandswert. Leer, wenn
+/// nichts anders ist. `stand`: Monat des Preises („10/2026“).
+pub fn preis_ops(k: &Katalog, a: &Aufbau, e: &Eingabe, stand: &str) -> Vec<Op> {
+    let mut ops = Vec::new();
+    for (g, p) in &e.preise {
+        let alt = k.artikel(*g).and_then(|x| x.preis);
+        if alt != Some(*p) {
+            ops.push(Op::PreisSetzen {
+                artikel: *g,
+                preis: Some(*p),
+                stand: stand.to_string(),
+                quelle: "Preisblatt".into(),
+            });
+        }
+    }
+    if let (Some(h), Some(l)) = (e.stunden, k.leistung(a.leistung)) {
+        if h != l.stunden {
+            ops.push(Op::BauleistungAendern {
+                bauleistung: l.guid,
+                daten: Bauleistung {
+                    stunden: h,
+                    ..bauleistung(l)
+                },
+            });
+        }
+    }
+    ops
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,5 +235,26 @@ mod tests {
         let stein = &a.stoffe[0];
         let weitere = auch_fuer(&k, stein.artikel.unwrap(), a.leistung);
         assert!(!weitere.is_empty(), "Planstein auch in IW");
+        // KA-2c Abnahme 11: Planstein 20,50 → EP 27,00 + 20,50 + 4,84
+        let e = Eingabe {
+            stunden: Some(a.stunden),
+            preise: vec![(stein.artikel.unwrap(), Dez::lesen("20.5", 4).unwrap())],
+        };
+        let ops = preis_ops(&k, &a, &e, "10/2026");
+        assert_eq!(ops.len(), 1, "nur der Preis");
+        let plan = crate::vorschau(&m, None, crate::Rolle::Admin, &ops).unwrap();
+        let neu = aufbau(&m, &plan.katalog, mw).unwrap();
+        assert_eq!(neu.ep, Cent(5_234));
+        assert_eq!(neu.lohn, Cent(2_700));
+        assert!(preis_ops(
+            &k,
+            &a,
+            &Eingabe {
+                stunden: Some(a.stunden),
+                preise: vec![]
+            },
+            ""
+        )
+        .is_empty());
     }
 }
