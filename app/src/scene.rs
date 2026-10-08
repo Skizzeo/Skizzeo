@@ -2323,7 +2323,14 @@ impl Scene {
             Some(entwurf.as_ref().unwrap_or(firma.library())),
         );
         let fuer_firma = sk_cost::preis::auf_firma(ops, &fk);
-        self.fuer_firma_mit(label, firma, herkunft, &fuer_firma, Some(ops), false)
+        // Dieses Haus nimmt dieselbe Zeile wie der Entwurf: Nach „Freigeben“
+        // ist sie gleich der Firma, und der eigene Vermerk fällt weg. Mit
+        // der Zeile des Hauses bliebe es bei dessen übrigen Feldern (Befund H)
+        let hier = match sk_cost::verwaltung::hat_kennwort(firma.library()) {
+            true => fuer_firma.clone(),
+            false => ops.to_vec(),
+        };
+        self.fuer_firma_mit(label, firma, herkunft, &fuer_firma, Some(&hier), false)
     }
 
     /// `hier`: die Operationen am Haus, wenn es den gewählten Wert auch
