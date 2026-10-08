@@ -2197,7 +2197,19 @@ impl Scene {
             ops,
         )
         .map_err(satz)?;
+        // Ohne Kopie rechnet dieses Haus mit der Firma. Damit Strg+Z genau
+        // diese Änderung zurücknimmt (und nicht den letzten Bauschritt),
+        // bekommt es vorher still die Kopie der bisherigen Werte; der
+        // Schritt danach bringt die neuen. Rückgängig: dieses Haus wieder
+        // mit den bisherigen Werten, neue Häuser mit den neuen.
+        let vorher = (!sk_cost::op::hat_kopie(&self.model)).then(|| firma.library().clone());
         let (neu, mut hinweis) = firma.fuer_firma(herkunft, ops)?;
+        if let Some(alt) = vorher.filter(|_| !neu.saetze.is_empty()) {
+            self.begin(label);
+            sk_cost::op::kopie_anlegen(&mut self.model, Some(&alt));
+            // ohne eigenen Schritt: der Stand vor der Änderung
+            let _ = self.model.try_commit();
+        }
         if sk_cost::op::hat_kopie(&self.model) && !neu.saetze.is_empty() {
             let op = sk_cost::Op::StandUebernehmen { saetze: neu.saetze };
             if let Err(b) = self.kosten_folge(

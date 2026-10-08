@@ -1330,7 +1330,18 @@ pub fn ausfuehren(
 /// `[costproject] catalog/stand`; ohne bleibt es ohne Kostenzeile. Für ein
 /// frisches Modell vor dem ersten Schritt (kein Rückgängig).
 pub fn neues_projekt(m: &mut Model, firma: Option<&Library>) {
-    if firma_bezug(m, firma).is_none() || hat_kopie(m) {
+    if firma_bezug(m, firma).is_none() {
+        return;
+    }
+    kopie_anlegen(m, firma);
+}
+
+/// Kopie der geltenden Quelle (Firma, sonst Werk) ins Projekt, wenn es noch
+/// keine hat; im offenen Schritt oder auf einem Modell ohne Verlauf. Für
+/// „Auch für neue Häuser“ ohne Kopie: Mit der Kopie der bisherigen Werte
+/// nimmt Strg+Z die Änderung für dieses Haus zurück.
+pub fn kopie_anlegen(m: &mut Model, firma: Option<&Library>) {
+    if hat_kopie(m) {
         return;
     }
     let k = kopie(m, firma);
@@ -1472,11 +1483,29 @@ pub fn firma_anwenden(
         b.extend(neu);
         return Err(b);
     }
-    // Hat sich ein betroffener Satz seit dem Laden geändert?
+    // Hat sich ein betroffener Satz seit dem Laden geändert? Ein Stand
+    // ohne eigene Kostensätze rechnet mit dem Werksbestand; dessen Zeilen
+    // gelten dort als geladen (sonst wäre jede Werkszeile „fremd geändert“,
+    // sobald ein anderer Platz den ersten Stand geschrieben hat).
+    let mut werk = ExtStore::default();
+    werk.declare(&satz::ABSCHNITTE_SZK);
+    for (a, l) in crate::werk_zeilen() {
+        if a != "catalog" && a != "log" {
+            werk.push_read(a, l);
+        }
+    }
     let zeile_in = |l: &Library, s: &SatzId| {
-        l.ext(s.abschnitt)
-            .find(|r| r.id.as_deref() == Some(s.kennung.as_str()))
-            .map(|r| r.line.clone())
+        let eigen = stamm.iter().any(|x| l.ext(x).next().is_some());
+        let zeile = |st: &ExtStore| {
+            st.section(s.abschnitt)
+                .find(|r| r.id.as_deref() == Some(s.kennung.as_str()))
+                .map(|r| r.line.clone())
+        };
+        if eigen {
+            zeile(&l.ext)
+        } else {
+            zeile(&werk)
+        }
     };
     for x in &a.aend {
         if zeile_in(&lib, &x.satz) != zeile_in(&alt, &x.satz) {
@@ -2027,6 +2056,27 @@ mod tests {
         let lib = sk_model::read_szk_with(&f.text, &satz::ABSCHNITTE_SZK).unwrap();
         let k = lesen::katalog(&Model::from_library(&lib), Some(&lib));
         assert!(k.befunde.iter().all(|b| b.regel != 90), "{:#?}", k.befunde);
+    }
+
+    /// Startbestand ohne eigene Sätze: Hat ein anderer Platz inzwischen den
+    /// ersten Stand geschrieben (Lohn), gelingt ein anderer Satz von hier;
+    /// derselbe Satz gibt den Befund (Test, Befund zu Nr. 8a F5).
+    #[test]
+    fn firma_anwenden_erster_stand_von_zwei_plaetzen() {
+        let leer = sk_model::write_szk(&Library::standard());
+        let datei = firma_anwenden(&leer, &leer, Rolle::Admin, &hand(), &[lohn(65)])
+            .unwrap()
+            .text;
+        let mwst = Op::FirmenwertSetzen {
+            schluessel: "vat".into(),
+            wert: Dez::ganz(7),
+        };
+        let f = firma_anwenden(&datei, &leer, Rolle::Admin, &hand(), &[mwst]).unwrap();
+        assert!(f.text.contains("[rate] key=wage num=65\n"), "{}", f.text);
+        assert!(f.text.contains("[rate] key=vat num=7\n"));
+        assert_eq!((f.stand_vorher, f.stand), (1, 2));
+        let e = firma_anwenden(&datei, &leer, Rolle::Admin, &hand(), &[lohn(70)]).unwrap_err();
+        assert!(e[0].satz.contains("inzwischen geändert"), "{e:?}");
     }
 
     /// Regel 92: Übernehmen bringt die Firmenzeile ins Projekt; sind danach

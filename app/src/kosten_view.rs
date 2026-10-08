@@ -2721,13 +2721,20 @@ mod tests {
                 "10/2026",
             )
         };
-        // Ohne Projektkopie: nur die Firma, kein Rückgängig-Schritt
-        let undo = s.undo_label();
+        // Ohne Projektkopie: Firma und dieses Haus, ein Schritt; Strg+Z nimmt
+        // ihn nur für dieses Haus zurück, nie den Bauschritt davor
+        let vorher = s.undo_label();
         let label = s.bezeichnung("Planstein 20,50 €/m² für dieses und neue Häuser".into());
         assert_eq!(s.fuer_firma(label, &mut c, &h, &setze("20.5")), Ok(None));
-        assert_eq!(s.undo_label(), undo);
+        assert_eq!(s.undo_label(), Some(label));
         assert_eq!(ep(&mut s, &c, false).ep, Cent(5_234));
         assert_eq!(ep(&mut s, &c, true).ep, Cent(5_234));
+        assert!(s.undo());
+        assert_eq!(s.undo_label(), vorher, "der Bauschritt davor bleibt");
+        assert_eq!(ep(&mut s, &c, false).ep, Cent(5_400));
+        assert_eq!(ep(&mut s, &c, true).ep, Cent(5_234));
+        assert!(s.redo());
+        assert_eq!(ep(&mut s, &c, false).ep, Cent(5_234));
         // Nur dieses Haus: 21,00 im Projekt, die Firma bleibt bei 20,50
         let f = Some(c.library());
         s.kosten_folge("Preis im Projekt geändert", f, &h, &setze("21"))
