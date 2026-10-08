@@ -2781,6 +2781,11 @@ impl Model {
 
     /// Innenwandzüge, die die Decke über dem Zug `run` unterbricht.
     pub fn runs_under_floor(&self, run: RunId) -> Vec<RunId> {
+        self.runs_under_outline(run, None)
+    }
+
+    /// [`Model::runs_under_floor`] zum schon berechneten Deckenumriss.
+    pub(crate) fn runs_under_outline(&self, run: RunId, slab: Option<&[Vec3]>) -> Vec<RunId> {
         let Some(r) = self.run(run).filter(|r| r.closed) else {
             return Vec::new();
         };
@@ -2799,11 +2804,15 @@ impl Model {
         if near.is_empty() {
             return Vec::new();
         }
-        let Some(Ok(slab)) = self.floor(run) else {
-            return Vec::new();
+        let outline = match slab {
+            Some(o) => o.to_vec(),
+            None => match self.floor(run) {
+                Some(Ok(f)) => f.outline,
+                _ => return Vec::new(),
+            },
         };
         near.into_iter()
-            .filter(|(_, m)| m.iter().any(|p| contains(&slab.outline, *p)))
+            .filter(|(_, m)| m.iter().any(|p| contains(&outline, *p)))
             .map(|(r, _)| r)
             .collect()
     }
@@ -7637,6 +7646,112 @@ mod og_phase2 {
             assert!(!f.coping_solid().is_empty());
             assert!(m.chain(eg).unwrap().solid().bounds().unwrap().1.z > 3054.0);
         }
+    }
+
+    /// KA-0: Schalfläche ohne Auflager auf Außen- und Innenwänden,
+    /// Randschalung am Umfang, Auflager je Wand. Prüfhaus 10 × 8 m, AW-31,5:
+    /// Decke 9,72 × 7,72 = 75,0384 m², Kernring 5,9815 m², Schalfläche
+    /// 69,0569 m² (0,92-fach), Randschalung 34,88 m × 22 cm; Innenwände
+    /// IW-24 1,44 m² und IW-11,5 0,345 m² mindern die Schalfläche.
+    #[test]
+    fn schalung_der_decke_ohne_auflager() {
+        let (mut m, eg, _) = gebaeude();
+        let de = m.floor_of(eg).unwrap();
+        let q = crate::qto::formwork_qto(&m, de).unwrap();
+        assert_eq!(r4(q.support_area() / 1e6), 5.9815);
+        assert_eq!(r4(q.soffit / 1e6), 69.0569);
+        assert_eq!(r4(q.edge / 1e3), 34.88);
+        assert_eq!((q.edge_height, q.edge_lost), (220.0, 0.0));
+        assert_eq!(q.supports.len(), 4);
+        assert!(q.supports.iter().all(|s| s.bearing));
+        // Innenwände unter der Decke
+        let st = m.run(eg).unwrap().storey;
+        let iw24 = m.type_by_guid(INTERIOR_240_TYPE_GUID).unwrap();
+        let iw115 = m.type_by_guid(INTERIOR_115_TYPE_GUID).unwrap();
+        m.begin("Innenwände");
+        let a = m.add_wall_run(
+            &[vec3(5000.0, 1000.0, 0.0), vec3(5000.0, 7000.0, 0.0)],
+            false,
+            RefSide::Left,
+            st,
+            iw24,
+            Category::InteriorWall,
+        );
+        let b = m.add_wall_run(
+            &[vec3(1000.0, 4000.0, 0.0), vec3(4000.0, 4000.0, 0.0)],
+            false,
+            RefSide::Left,
+            st,
+            iw115,
+            Category::InteriorWall,
+        );
+        m.commit();
+        let (a, b) = (
+            m.wall_at(a.unwrap(), 0).unwrap(),
+            m.wall_at(b.unwrap(), 0).unwrap(),
+        );
+        let q = crate::qto::formwork_qto(&m, de).unwrap();
+        let s = |w| q.supports.iter().find(|s| s.wall == w).unwrap();
+        assert_eq!((r4(s(a).area / 1e6), s(a).bearing), (1.44, true));
+        // tragend nach Typ (LayerSet::load_bearing, eine Quelle mit KG und
+        // IFC); die Schalfläche zieht beide ab
+        let lb = |t| m.layer_set(t).unwrap().load_bearing();
+        assert_eq!((r4(s(b).area / 1e6), s(b).bearing), (0.345, lb(iw115)));
+        assert_eq!(r4(q.soffit / 1e6), r4(69.0569 - 1.44 - 0.345));
+        let extra = if lb(iw115) { 0.345 } else { 0.0 };
+        assert_eq!(r4(q.bearing_area() / 1e6), r4(5.9815 + 1.44 + extra));
+        // Sohlplatte: keine Schalfläche, Randschalung am Umfang
+        let (slab, _) = m.foundation_of(eg).unwrap();
+        let p = crate::qto::formwork_qto(&m, slab).unwrap();
+        assert_eq!(p.soffit, 0.0);
+        assert!(p.edge > 0.0 && p.supports.is_empty());
+        // Monolithisch: Randdämmstreifen ersetzen die Randschalung
+        let (mut m, eg, og) = gebaeude();
+        let t = m.type_by_guid(MONO_TYPE_GUID).unwrap();
+        m.begin("Wandtyp");
+        assert!(m.set_run_type(eg, t) && m.set_run_type(og, t));
+        m.commit();
+        let de = m.floor_of(eg).unwrap();
+        let q = crate::qto::formwork_qto(&m, de).unwrap();
+        assert!(q.edge_lost > 0.0, "{q:?}");
+        let f = m.floor(eg).unwrap().unwrap();
+        assert!((q.edge + q.edge_lost - f.perimeter()).abs() < 1e-6);
+        assert!(crate::qto::formwork_qto(&m, m.wall_at(eg, 0).unwrap()).is_none());
+        // Ein Durchlauf: Mengenliste und floor_qto tragen dieselbe Schalung
+        let fq = crate::qto::floor_qto(&m, eg).unwrap();
+        assert_eq!(fq.formwork.as_ref(), Some(&q));
+        let row = crate::qto::schedule(&m)
+            .buildings
+            .iter()
+            .flat_map(|b| &b.storeys)
+            .flat_map(|st| &st.groups)
+            .flat_map(|g| &g.rows)
+            .find_map(|r| match &r.q {
+                Some(crate::qto::ElementQto::Floor(f)) if r.element == de => f.formwork.clone(),
+                _ => None,
+            });
+        assert_eq!(row.as_ref(), Some(&q));
+        let (slab, _) = m.foundation_of(eg).unwrap();
+        let (sq, _) = crate::qto::foundation_qto(&m, eg).unwrap();
+        assert_eq!(Some(sq.formwork), crate::qto::formwork_qto(&m, slab));
+    }
+
+    /// BIM Regel 84: Innenfläche je Schicht, innere Kante × Höhe.
+    #[test]
+    fn innenflaeche_der_schicht() {
+        let (m, eg, _) = gebaeude();
+        let qs = crate::qto::run_qto(&m, eg);
+        let w = &qs[0];
+        let core = w.layers.last().unwrap();
+        // Innenkante des Gasbetons × Höhe ohne Deckenband
+        assert!(core.side_inner_area > 0.0);
+        let h = w.height - core.pocket / core.area;
+        let inner_len = core.side_inner_area / h;
+        assert!(
+            inner_len < core.length && core.length < core.side_area / w.height + 1.0,
+            "{inner_len} {}",
+            core.length
+        );
     }
 
     /// Z4/T6: Ein Schritt rechnet abgeleitete Bauteile nur an den Zügen, die

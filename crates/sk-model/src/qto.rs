@@ -36,6 +36,10 @@ pub struct LayerQto {
     pub side_area: f64,
     /// Davon Attika über dem Terrassenrand (D2), mm³; im Volumen enthalten.
     pub attika: f64,
+    /// Innenfläche der Schicht: Länge der inneren Schichtkante × Höhe der
+    /// Schicht im eigenen Geschoss (mm², Innenputz nach DIN 18350, BIM
+    /// Regel 84).
+    pub side_inner_area: f64,
 }
 
 /// Mengen eines Wandsegments.
@@ -307,7 +311,7 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                     let volume = area * h_here + v_up + v_att;
                     let density = model.material(l.material).map_or(0.0, |m| m.density);
                     let (la, lb) = ((fa[j] - fa[k]).length(), (fb[j] - fb[k]).length());
-                    let lo = if outer_first { la } else { lb };
+                    let (lo, li_len) = if outer_first { (la, lb) } else { (lb, la) };
                     LayerQto {
                         material: l.material,
                         thickness: l.thickness,
@@ -318,6 +322,7 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                         pocket: (area * (h - h_own - h_ext)).max(0.0),
                         side_area: lo * (h - h_ext + h_here - h_own) + s_up + s_att,
                         attika: v_att,
+                        side_inner_area: if air { 0.0 } else { li_len * h_here },
                     }
                 })
                 .collect();
@@ -372,6 +377,8 @@ pub struct SlabQto {
     pub perimeter: f64,
     pub thickness: f64,
     pub recess: f64,
+    /// Schalung (KA-0): Randschalung am Umfang, keine Schalfläche.
+    pub formwork: FormworkQto,
 }
 
 /// Mengen einer Frostschürze (IFC: Qto_FootingBaseQuantities), Hauptmenge Länge.
@@ -401,6 +408,7 @@ pub fn foundation_qto_of(f: &Foundation) -> (SlabQto, FootingQto) {
             perimeter: f.slab_perimeter(),
             thickness: p.slab_thickness,
             recess: p.recess,
+            formwork: slab_formwork_of(f),
         },
         FootingQto {
             length: f.footing_axis_length(),
@@ -426,6 +434,9 @@ pub struct FloorQto {
     /// des Zugs (mm³), im Volumen enthalten. 0, solange nicht bekannt
     /// ([`floor_qto_of`] kennt die Wände nicht).
     pub bearing: f64,
+    /// Schalung (KA-0), aus [`floor_qto`] und der Mengenliste; `None` aus
+    /// [`floor_qto_of`] (kennt die Wände nicht).
+    pub formwork: Option<FormworkQto>,
 }
 
 /// Mengen einer Untersichtdämmung (G7 K4, IFC IfcCovering INSULATION),
@@ -557,8 +568,11 @@ pub fn coping_qto(model: &Model, coping: ElementId) -> Option<CopingQto> {
 /// Mengen der Decke über einem Wandzug; `None` ohne Decke oder wenn kein
 /// Körper entstehen kann.
 pub fn floor_qto(model: &Model, run: RunId) -> Option<FloorQto> {
-    let mut q = floor_qto_of(&model.floor(run)?.ok()?);
-    q.bearing = run_qto(model, run).iter().map(|w| w.pocket).sum();
+    let f = model.floor(run)?.ok()?;
+    let mut q = floor_qto_of(&f);
+    let qs = run_qto(model, run);
+    q.bearing = qs.iter().map(|w| w.pocket).sum();
+    q.formwork = Some(floor_formwork_with(model, run, &f, &qs));
     Some(q)
 }
 
@@ -571,7 +585,143 @@ pub fn floor_qto_of(f: &FloorSlab) -> FloorQto {
         thickness: f.params.thickness,
         top: f.params.top,
         bearing: 0.0,
+        formwork: None,
     }
+}
+
+/// Auflager einer Decke auf einer Wand (KA-0): Aufstandsfläche der Tasche.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SupportQto {
+    pub wall: ElementId,
+    /// Fläche, auf der die Decke in der Wand aufliegt (mm²).
+    pub area: f64,
+    /// Tragende Wand ([`LayerSet::load_bearing`]).
+    pub bearing: bool,
+}
+
+/// Abgeleitete Schalungsmengen einer Decke oder Sohlplatte (KA-0, Kosten-
+/// Analyse Fassung 1 §4.1: Folgepositionen „Deckenschalung“ und
+/// „Randschalung“). Keine Schicht, kein Bauteil, nur gelesen.
+///
+/// Vorgemerkt, noch nicht gerechnet: Abzüge für Öffnungen und Aussparungen
+/// nach VOB/C (DIN 18331), sobald es Deckenöffnungen gibt.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FormworkQto {
+    /// Schalfläche der Untersicht (mm²): Deckenfläche ohne die Auflager auf
+    /// Außen- und Innenwänden (kosten/ka-0-fach.md §1.4). Sohlplatte: 0
+    /// (liegt auf dem Baugrund).
+    pub soffit: f64,
+    /// Randschalung (mm): Umfang ohne die Länge an Randdämmstreifen.
+    pub edge: f64,
+    /// Höhe der Randschalung = Dicke (mm).
+    pub edge_height: f64,
+    /// Davon an Randdämmstreifen, die dort die Schalung ersetzen (mm).
+    pub edge_lost: f64,
+    /// Auflager je Wand unter der Decke (Außenwände des Zugs und
+    /// Innenwände darunter); leer bei der Sohlplatte.
+    pub supports: Vec<SupportQto>,
+}
+
+impl FormworkQto {
+    /// Summe der Auflager (mm²).
+    pub fn support_area(&self) -> f64 {
+        self.supports.iter().map(|s| s.area).sum()
+    }
+
+    /// Davon auf tragenden Wänden (mm²).
+    pub fn bearing_area(&self) -> f64 {
+        self.supports
+            .iter()
+            .filter(|s| s.bearing)
+            .map(|s| s.area)
+            .sum()
+    }
+}
+
+/// Schalungsmengen einer Decke oder Sohlplatte; `None` für andere Bauteile
+/// oder ohne Körper.
+pub fn formwork_qto(model: &Model, element: ElementId) -> Option<FormworkQto> {
+    match model.element(element)?.kind {
+        ElementKind::Floor(f) => {
+            let slab = model.floor(f.run)?.ok()?;
+            Some(floor_formwork_of(model, f.run, &slab))
+        }
+        ElementKind::GroundSlab(s) => Some(slab_formwork_of(&model.foundation(s.run)?.ok()?)),
+        _ => None,
+    }
+}
+
+/// Schalungsmengen der Sohlplatte: Randschalung = Umfang × Dicke, ohne
+/// Schalfläche (liegt auf) und ohne verlorenen Anteil.
+pub fn slab_formwork_of(f: &Foundation) -> FormworkQto {
+    FormworkQto {
+        soffit: 0.0,
+        edge: f.slab_perimeter(),
+        edge_height: f.params.slab_thickness,
+        edge_lost: 0.0,
+        supports: Vec::new(),
+    }
+}
+
+/// Schalungsmengen der schon berechneten Decke `f` über dem Zug `run`.
+pub fn floor_formwork_of(model: &Model, run: RunId, f: &FloorSlab) -> FormworkQto {
+    floor_formwork_with(model, run, f, &run_qto(model, run))
+}
+
+/// [`floor_formwork_of`] mit den schon gerechneten Mengen `own` des Zugs.
+fn floor_formwork_with(model: &Model, run: RunId, f: &FloorSlab, own: &[WallQto]) -> FormworkQto {
+    let mut supports = Vec::new();
+    let inner = model.runs_under_outline(run, Some(&f.outline));
+    let mut runs: Vec<(RunId, std::borrow::Cow<[WallQto]>)> = vec![(run, own.into())];
+    runs.extend(inner.into_iter().map(|r| (r, run_qto(model, r).into())));
+    for (r, qs) in &runs {
+        let r = *r;
+        for (k, w) in qs.iter().enumerate() {
+            let Some(wall) = model.wall_at(r, k) else {
+                continue;
+            };
+            let area: f64 = w
+                .layers
+                .iter()
+                .filter(|l| l.pocket > 1e-6)
+                .map(|l| l.area)
+                .sum();
+            if area <= 0.0 {
+                continue;
+            }
+            let bearing = bearing_wall(model, wall);
+            supports.push(SupportQto {
+                wall,
+                area,
+                bearing,
+            });
+        }
+    }
+    let lost: f64 = (0..f.strips.len())
+        .filter(|&k| f.strip_length(k) > 1e-6)
+        .map(|k| (f.strips[k][2] - f.strips[k][3]).length())
+        .sum();
+    let mut q = FormworkQto {
+        soffit: 0.0,
+        edge: (f.perimeter() - lost).max(0.0),
+        edge_height: f.params.thickness,
+        edge_lost: lost,
+        supports,
+    };
+    q.soffit = (f.area() - q.support_area()).max(0.0);
+    q
+}
+
+/// Tragende Wand: ihr Typ hat eine tragende Kernschicht
+/// ([`LayerSet::load_bearing`], zugleich IFC LoadBearing). Offen für BIM:
+/// Eine 11,5er-Innenwand mit Kern „tragend“ gilt danach als tragend, auch
+/// wenn sie meist erst nach der Decke gemauert wird.
+fn bearing_wall(model: &Model, wall: ElementId) -> bool {
+    model
+        .element(wall)
+        .and_then(|e| e.layer_set)
+        .and_then(|t| model.layer_set(t))
+        .is_some_and(LayerSet::load_bearing)
 }
 
 /// Mengen eines Randdämmstreifens (K5), Hauptmenge Länge.
@@ -930,6 +1080,7 @@ pub fn schedule(model: &Model) -> Schedule {
                         let mut q = floor_qto_of(f);
                         let qs = walls.entry(run).or_insert_with(|| run_qto(model, run));
                         q.bearing = qs.iter().map(|w| w.pocket).sum();
+                        q.formwork = Some(floor_formwork_with(model, run, f, qs));
                         (Some(ElementQto::Floor(q)), None)
                     }
                     Err(err) => (
