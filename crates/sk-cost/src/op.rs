@@ -1024,6 +1024,21 @@ fn kopie(m: &Model, firma: Option<&Library>) -> ExtStore {
     out
 }
 
+/// `saetze` ohne die, die das Projekt `m` selbst abweichend hält (Regel 89):
+/// was „Auch für neue Häuser“ und die Verwaltung beim OK dem offenen Haus
+/// übernehmen, ohne seine eigenen Werte zu überschreiben.
+pub fn ohne_abweichung(m: &Model, saetze: Vec<SatzId>) -> Vec<SatzId> {
+    let markiert: HashSet<&str> = m
+        .ext("origin")
+        .filter(|r| projektherkunft(&r.line))
+        .filter_map(|r| r.id.as_deref())
+        .collect();
+    saetze
+        .into_iter()
+        .filter(|s| !markiert.contains(s.kennung.as_str()))
+        .collect()
+}
+
 /// Entstand die `[origin]`-Zeile im Projekt (`proj=1`, Regel 89)?
 pub(crate) fn projektherkunft(zeile: &str) -> bool {
     crate::zeile::zerlegen(zeile)

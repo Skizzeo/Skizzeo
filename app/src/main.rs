@@ -2462,7 +2462,7 @@ impl App {
         self.redraw = true;
     }
 
-    /// „Auch für neue Häuser“ über `Scene::fuer_firma`; der Hinweis oder
+    /// „Auch für neue Häuser“ über `Scene::fuer_firma_auch_hier`; der Hinweis oder
     /// der Grund, warum nichts geändert wurde.
     fn fuer_firma_melden(
         &mut self,
@@ -2471,7 +2471,7 @@ impl App {
         ops: &[sk_cost::Op],
     ) -> Option<(meldung::Meldung, bool)> {
         match self.company.as_mut() {
-            Some(c) => match self.scene.fuer_firma(label, c, h, ops) {
+            Some(c) => match self.scene.fuer_firma_auch_hier(label, c, h, ops) {
                 Ok(hinweis) => {
                     let wert = label.strip_suffix(preis_blatt::FUER_NEUE).unwrap_or(label);
                     self.doc.fuer_neue_merken(c.zuletzt_geaendert(), wert);

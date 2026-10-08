@@ -344,7 +344,10 @@ fn auch_fuer_neue_haeuser() {
     // ihn nur für dieses Haus zurück, nie den Bauschritt davor
     let vorher = s.undo_label();
     let label = s.bezeichnung("Planstein 20,50 €/m² für dieses und neue Häuser".into());
-    assert_eq!(s.fuer_firma(label, &mut c, &h, &setze("20.5")), Ok(None));
+    assert_eq!(
+        s.fuer_firma_auch_hier(label, &mut c, &h, &setze("20.5")),
+        Ok(None)
+    );
     assert_eq!(s.undo_label(), Some(label));
     assert_eq!(ep(&mut s, &c, false).ep, Cent(5_234));
     assert_eq!(ep(&mut s, &c, true).ep, Cent(5_234));
@@ -362,7 +365,10 @@ fn auch_fuer_neue_haeuser() {
     assert_eq!(ep(&mut s, &c, true).ep, Cent(5_234));
     // Auch für neue Häuser mit Kopie: Firma und Projekt 19,00, ein Schritt
     let label = s.bezeichnung("Planstein 19,00 €/m² für dieses und neue Häuser".into());
-    assert_eq!(s.fuer_firma(label, &mut c, &h, &setze("19")), Ok(None));
+    assert_eq!(
+        s.fuer_firma_auch_hier(label, &mut c, &h, &setze("19")),
+        Ok(None)
+    );
     assert_eq!(s.undo_label(), Some(label));
     assert_eq!(ep(&mut s, &c, false).ep, Cent(5_084));
     assert_eq!(ep(&mut s, &c, true).ep, Cent(5_084));

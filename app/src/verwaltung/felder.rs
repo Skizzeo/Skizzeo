@@ -309,7 +309,7 @@ impl Verwaltung {
                 b.absatz(
                     0.0,
                     y,
-                    "Preise gelten für neue Häuser und für jedes Haus, das mit dem Firmenkatalog rechnet. Einen Artikel wählst du links.",
+                    "Preise gelten für neue Häuser und für dieses Haus. Einen Artikel wählst du links.",
                     Farbe::Dim,
                 );
             }
@@ -376,7 +376,7 @@ impl Verwaltung {
                 b.absatz(
                     0.0,
                     y,
-                    "Jedes OK schreibt einen neuen Stand des Firmenkatalogs. Um eine Änderung zurückzunehmen, wähle ihren Stand und klicke „Diese Änderung zurücknehmen“. Häuser, die schon eine Kopie haben, rechnen weiter mit ihr.",
+                    "Jedes OK schreibt einen neuen Stand des Firmenkatalogs. Um eine Änderung zurückzunehmen, wähle ihren Stand und klicke „Diese Änderung zurücknehmen“. Gespeicherte Häuser behalten ihre Werte und zeigen oben „Für neue Häuser gilt …“.",
                     Farbe::Dim,
                 );
             }
@@ -398,7 +398,37 @@ impl Verwaltung {
                 );
             }
         }
+        if !self.ohne_firma {
+            return b.teile;
+        }
+        // Ohne Firmenkatalog nur ansehen (Bedienbarkeit 13.4): Felder
+        // lesen, Änderungsknöpfe weg
         b.teile
+            .into_iter()
+            .filter(|t| {
+                !matches!(
+                    t.ziel,
+                    Some(Ziel::Aktion(
+                        Aktion::Bestaetigen(_)
+                            | Aktion::Ausmustern(_)
+                            | Aktion::Wiederherstellen(_)
+                            | Aktion::Zuruecknehmen(_)
+                    ))
+                )
+            })
+            .map(|t| match t.art {
+                Art::Feld { text, einheit, .. } => Teil {
+                    r: t.r,
+                    art: Art::Lese(if einheit.is_empty() {
+                        text
+                    } else {
+                        format!("{text} {einheit}")
+                    }),
+                    ziel: None,
+                },
+                _ => t,
+            })
+            .collect()
     }
 
     fn fehlt(&self, b: &mut Bau) {
@@ -844,7 +874,7 @@ impl Verwaltung {
         let q = b.kurz(&text("source"), PX, false, b.w - WERT_X);
         b.text(WERT_X, y, q, PX, false, Farbe::Text);
         y += 28.0;
-        b.label(y, "Gilt für");
+        b.label(y, "Steckt in");
         let auch = sk_cost::preis::auch_fuer(k, a.guid, Guid(0));
         let t = if auch.is_empty() {
             "keine Bauleistung".to_string()
@@ -999,7 +1029,7 @@ impl Verwaltung {
         b.absatz(
             0.0,
             y,
-            "Das Referenzhaus rechnet mit dem Firmenkatalog samt deinen Änderungen, nie mit einer eigenen Kopie.",
+            "Das Referenzhaus rechnet immer mit dem Firmenkatalog samt deinen Änderungen, auch wenn es selbst andere Werte gespeichert hat.",
             Farbe::Dim,
         );
     }

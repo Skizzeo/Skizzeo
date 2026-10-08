@@ -295,6 +295,12 @@ pub const KURZ_MAX: usize = 70;
 /// (`firma_anwenden`), nur wird nichts geschrieben. Ein Fehler sind die
 /// Befunde, die OK sperren.
 pub fn mit_ops(text: &str, ops: &[Op]) -> Result<Library, Vec<Befund>> {
+    mit_ops_saetze(text, ops).map(|x| x.0)
+}
+
+/// Wie [`mit_ops`], dazu die geänderten Stammsätze (für die Vorschau des
+/// offenen Hauses: `StandUebernehmen` beim OK, Regel 89).
+pub fn mit_ops_saetze(text: &str, ops: &[Op]) -> Result<(Library, Vec<SatzId>), Vec<Befund>> {
     // Regel 79 Nachtrag: ein Kurztext über 70 Zeichen gilt beim Lesen,
     // sperrt aber in der Verwaltung
     let lang: Vec<Befund> = ops
@@ -323,13 +329,14 @@ pub fn mit_ops(text: &str, ops: &[Op]) -> Result<Library, Vec<Befund>> {
     // Mit dem Datum von heute, damit die Herkunft im Fenster stimmt
     let h = Herkunft::jetzt(HerkunftArt::Manual);
     let neu = crate::firma_anwenden(text, text, Rolle::Admin, &h, ops)?;
-    sk_model::read_szk_with(&neu.text, &crate::lesen::ABSCHNITTE_SZK).map_err(|_| {
+    let lib = sk_model::read_szk_with(&neu.text, &crate::lesen::ABSCHNITTE_SZK).map_err(|_| {
         vec![Befund::fehler(
             93,
             befund::r93("Vorschau", "der geänderte Firmenkatalog ist nicht lesbar"),
             Ort::Datei,
         )]
-    })
+    })?;
+    Ok((lib, neu.saetze))
 }
 
 /// Regel 97 als Sperre der Verwaltung (paket-ka3a §3, BIM 10:40): die

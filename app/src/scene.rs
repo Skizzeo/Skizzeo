@@ -2228,12 +2228,41 @@ impl Scene {
     /// Firma ist nie Teil des Rückgängig-Schritts; Strg+Z nimmt nur das
     /// Projekt zurück. `Err`: nichts geschrieben, der Satz für die Meldung.
     /// `Ok`: ein Hinweis für die Statuszeile, wenn es einen gibt.
+    ///
+    /// Werte, die dieses Haus selbst abweichend hält, bleiben (Regel 89),
+    /// etwa beim OK der Verwaltung. Wer an diesem Haus ausdrücklich „für
+    /// dieses und neue Häuser“ ändert, nimmt [`Scene::fuer_firma_auch_hier`].
     pub fn fuer_firma(
         &mut self,
         label: &'static str,
         firma: &mut crate::catalog::Company,
         herkunft: &sk_cost::Herkunft,
         ops: &[sk_cost::Op],
+    ) -> Result<Option<crate::meldung::Meldung>, crate::meldung::Meldung> {
+        self.fuer_firma_mit(label, firma, herkunft, ops, true)
+    }
+
+    /// Wie [`Scene::fuer_firma`], aber dieses Haus übernimmt die geänderten
+    /// Sätze auch dort, wo es abweicht: Preisblatt und Lohnkarte, an denen
+    /// der Nutzer genau diesen Wert für dieses und neue Häuser setzt (Regel
+    /// 89, „außer der Nutzer wählt sie ausdrücklich“).
+    pub fn fuer_firma_auch_hier(
+        &mut self,
+        label: &'static str,
+        firma: &mut crate::catalog::Company,
+        herkunft: &sk_cost::Herkunft,
+        ops: &[sk_cost::Op],
+    ) -> Result<Option<crate::meldung::Meldung>, crate::meldung::Meldung> {
+        self.fuer_firma_mit(label, firma, herkunft, ops, false)
+    }
+
+    fn fuer_firma_mit(
+        &mut self,
+        label: &'static str,
+        firma: &mut crate::catalog::Company,
+        herkunft: &sk_cost::Herkunft,
+        ops: &[sk_cost::Op],
+        eigene_behalten: bool,
     ) -> Result<Option<crate::meldung::Meldung>, crate::meldung::Meldung> {
         use crate::meldung::Meldung;
         let satz = |b: Vec<sk_cost::Befund>| Meldung::aus_befunden(&b, "Nichts geändert.");
@@ -2263,8 +2292,13 @@ impl Scene {
             // wenn der Schritt danach scheitert oder nichts ändert
             self.redo.clear();
         }
-        if sk_cost::op::hat_kopie(&self.model) && !neu.saetze.is_empty() {
-            let op = sk_cost::Op::StandUebernehmen { saetze: neu.saetze };
+        let saetze = if eigene_behalten {
+            sk_cost::op::ohne_abweichung(&self.model, neu.saetze)
+        } else {
+            neu.saetze
+        };
+        if sk_cost::op::hat_kopie(&self.model) && !saetze.is_empty() {
+            let op = sk_cost::Op::StandUebernehmen { saetze };
             if let Err(b) = self.kosten_folge(
                 label,
                 Some(firma.library()),

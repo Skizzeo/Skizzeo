@@ -76,6 +76,9 @@ enum Ziel {
     Ok,
     Abbrechen,
     Kopf,
+    /// Rückfrage „n Änderungen verwerfen?“ (Bedienbarkeit 13.3).
+    Zurueck,
+    Verwerfen,
 }
 
 /// Was die App nach einem Ereignis tun muss.
@@ -145,6 +148,8 @@ pub struct Verwaltung {
     zurueck: Option<u32>,
     /// Lücken nach Regel 97 beim Öffnen; sperren nur neue.
     luecken0: Vec<String>,
+    /// Rückfrage vor dem Verwerfen (Esc, ×) steht im Fuß.
+    frage: bool,
 }
 
 /// „0,55“ statt „0.55“.
@@ -217,6 +222,7 @@ impl Verwaltung {
         };
         let vorher = sk_cost::lesen::firma_oder_werk(&m, Some(&lib0));
         let titel = match &vorher.kopf {
+            _ if company.is_none() => "Firmenkatalog nicht erreichbar · nur ansehen".to_string(),
             _ if matches!(vorher.quelle, sk_cost::katalog::Quelle::Werk { .. }) => format!(
                 "Firmenkatalog · Werksbestand {}",
                 sk_cost::lesen::werksstand()
@@ -234,7 +240,7 @@ impl Verwaltung {
                 sk_cost::lesen::werksstand()
             ),
         };
-        let wirkung = wirkung::Wirkung::laden(&lib0);
+        let wirkung = wirkung::Wirkung::laden(&lib0, &m);
         let mut v = Verwaltung {
             basis,
             lib: lib0.clone(),
@@ -264,6 +270,7 @@ impl Verwaltung {
             meldung: None,
             zurueck: None,
             luecken0: Vec::new(),
+            frage: false,
         };
         let gibt_es = |k: &Knoten| match k {
             Knoten::Leistung(g) => v.jetzt.leistung(*g).is_some(),
@@ -313,6 +320,7 @@ impl Verwaltung {
     /// Nach jeder Änderung der Operationen: Vorschau, Befunde, Wirkzeile.
     fn neu_rechnen(&mut self) {
         self.meldung = None;
+        let mut saetze = Vec::new();
         if self.ops.is_empty() {
             self.zurueck = None;
             self.lib = self.lib0.clone();
@@ -320,8 +328,9 @@ impl Verwaltung {
             self.befunde.clear();
             self.fehler_feld = None;
         } else {
-            match sk_cost::verwaltung::mit_ops(&self.basis, &self.ops) {
-                Ok(lib) => {
+            match sk_cost::verwaltung::mit_ops_saetze(&self.basis, &self.ops) {
+                Ok((lib, s)) => {
+                    saetze = s;
                     self.jetzt = sk_cost::lesen::firma_oder_werk(&self.m, Some(&lib));
                     self.lib = lib;
                     self.fehler_feld = None;
@@ -343,7 +352,7 @@ impl Verwaltung {
                 }
             }
         }
-        self.wirkung.rechnen(&self.lib);
+        self.wirkung.rechnen(&self.lib, &saetze);
     }
 
     /// Ist `op` gleich dem Stand beim Öffnen (dann entfällt sie)?
@@ -598,18 +607,33 @@ impl Verwaltung {
 
     fn knoepfe(&self, w: &Win) -> [(Ziel, Rect, &'static str); 2] {
         let (ww, hh) = self.dip(w);
+        let (links, rechts) = if self.frage {
+            ((Ziel::Zurueck, "Zurück"), (Ziel::Verwerfen, "Verwerfen"))
+        } else {
+            ((Ziel::Abbrechen, "Abbrechen"), (Ziel::Ok, "OK"))
+        };
         [
             (
-                Ziel::Abbrechen,
+                links.0,
                 self.r(w, ww - 260.0, hh - 48.0, 120.0, 32.0),
-                "Abbrechen",
+                links.1,
             ),
             (
-                Ziel::Ok,
+                rechts.0,
                 self.r(w, ww - 130.0, hh - 48.0, 110.0, 32.0),
-                "OK",
+                rechts.1,
             ),
         ]
+    }
+
+    /// Esc oder ×: mit gesammelten Änderungen erst fragen (Bedienbarkeit
+    /// 13.3); „Abbrechen“ verwirft ohne Frage, weil es ausdrücklich ist.
+    fn schliessen(&mut self, out: &mut Out) {
+        if self.ops.is_empty() {
+            out.closed = true;
+        } else {
+            self.frage = true;
+        }
     }
 
     /// Breite der Grundstufe (dip).
@@ -722,7 +746,9 @@ impl Verwaltung {
                 if p.is_some() && p == h {
                     match p {
                         Some(Ziel::Ok) => self.ok(&mut out),
-                        Some(Ziel::Abbrechen) | Some(Ziel::Schliessen) => out.closed = true,
+                        Some(Ziel::Abbrechen) | Some(Ziel::Verwerfen) => out.closed = true,
+                        Some(Ziel::Schliessen) => self.schliessen(&mut out),
+                        Some(Ziel::Zurueck) => self.frage = false,
                         _ => {}
                     }
                 }
@@ -799,7 +825,22 @@ impl Verwaltung {
         if h != Some(Ziel::Suche) {
             self.such_edit = None;
         }
+        // Rückfrage offen: nur ihre Knöpfe; jeder andere Klick nimmt sie zurück
+        if self.frage && !matches!(h, Some(Ziel::Zurueck | Ziel::Verwerfen)) {
+            self.frage = false;
+        }
+        let nur_ansehen = |a: &Aktion| {
+            matches!(
+                a,
+                Aktion::Bestaetigen(_)
+                    | Aktion::Ausmustern(_)
+                    | Aktion::Wiederherstellen(_)
+                    | Aktion::Zuruecknehmen(_)
+            )
+        };
         match h {
+            Some(Ziel::Feld(_)) if self.ohne_firma => {}
+            Some(Ziel::Aktion(a)) if self.ohne_firma && nur_ansehen(&a) => {}
             Some(Ziel::Kopf) => {
                 let f = self.frame(&cx.win);
                 self.drag = Some((x, y, f.x, f.y));
@@ -840,7 +881,13 @@ impl Verwaltung {
                     out.open_type = Some(g);
                 }
             }
-            Some(z @ (Ziel::Ok | Ziel::Abbrechen | Ziel::Schliessen)) => {
+            Some(
+                z @ (Ziel::Ok
+                | Ziel::Abbrechen
+                | Ziel::Schliessen
+                | Ziel::Zurueck
+                | Ziel::Verwerfen),
+            ) => {
                 let gesperrt = z == Ziel::Ok && self.gesperrt();
                 if !gesperrt {
                     self.pressed = Some(z);
@@ -865,7 +912,9 @@ impl Verwaltung {
         let such = self.edit.is_none() && self.such_edit.is_some();
         if self.edit.is_none() && !such {
             match key {
-                Key::Escape => out.closed = true,
+                // Rückfrage: Esc und Enter bleiben im Fenster
+                Key::Escape | Key::Enter if self.frage => self.frage = false,
+                Key::Escape => self.schliessen(out),
                 Key::Enter => self.ok(out),
                 _ => {}
             }
@@ -1129,10 +1178,30 @@ impl Verwaltung {
             fonts.bold.as_ref().or(fonts.regular.as_ref()),
         );
         let px = t.size.font_small * s;
-        let base = fy + (FOOT * 0.5 + 4.5) * s;
+        // Zwei Zeilen: oben Wirkzeile, Befund oder Rückfrage, darunter für
+        // wen die Änderung gilt (Bedienbarkeit 13.1)
+        let base = fy + 27.0 * s;
         let f = self.frame(w);
         let mut x = f.x + 20.0 * s;
         let rand = self.knoepfe(w)[0].1.x - 16.0 * s;
+        let gilt = if self.ohne_firma {
+            "Ohne Firmenkatalog lässt sich hier nichts speichern."
+        } else {
+            "Gilt für neue Häuser und dieses Haus, außer wo es eigene Werte hat. Gespeicherte Häuser zeigen oben „Für neue Häuser gilt …“."
+        };
+        let unten = widgets::ellipsize(regular, gilt, px, rand - x);
+        label(c, regular, &unten, px, x, base + 20.0 * s, u.text_dim);
+        if self.frage {
+            let n = self.ops.len();
+            let frage = if n == 1 {
+                "Eine Änderung verwerfen?".to_string()
+            } else {
+                format!("{n} Änderungen verwerfen?")
+            };
+            let text = widgets::ellipsize(bold, &frage, px, rand - x);
+            label(c, bold, &text, px, x, base, u.text);
+            return;
+        }
         let satz = self
             .meldung
             .clone()
@@ -1148,7 +1217,7 @@ impl Verwaltung {
             label(c, regular, &text, px, x, base, u.field_invalid);
             return;
         }
-        for (i, (name, alt, neu)) in wirkung::zeile(&self.wirkung.haeuser).iter().enumerate() {
+        for (i, (name, alt, neu)) in wirkung::zeile(self.wirkung.alle()).iter().enumerate() {
             let breite =
                 |font: Option<&sk_paint::font::Font>, t: &str| font.map_or(0.0, |f| f.width(t, px));
             if i > 0 {

@@ -24,6 +24,16 @@ fn leistung(v: &Verwaltung, kurz: &str) -> Guid {
         .guid
 }
 
+/// Ein frischer Firmenkatalog in einem eigenen Ordner (danach löschen).
+fn firma(name: &str) -> (Company, PathBuf) {
+    let dir =
+        std::env::temp_dir().join(format!("skizzeo-verwaltung-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (c, _) = Company::laden(&dir.join("firmenkatalog.szk"), true);
+    (c, dir)
+}
+
 const AW24: &str = "AW Porenbeton-Planstein PP2-0,35 d=24cm";
 
 fn win() -> Win {
@@ -142,14 +152,14 @@ fn aufwandswert_live() {
     let sched = sk_model::qto::schedule(m);
     let netto = sk_cost::lesen::kosten(m, &sched, &k, &sk_cost::Umfang::projekt()).netto;
     assert_eq!(h.nachher, netto);
-    let teile = wirkung::zeile(&v.wirkung.haeuser);
+    let teile = wirkung::zeile(v.wirkung.haeuser.iter());
     assert_eq!(teile[0].0, "Standardhaus");
     assert!(teile[0].1.is_some(), "alt durchgestrichen");
     assert_eq!(s.model().revision(), rev, "Projekt unverändert");
     assert!(v.eingeben(&Feld::Stunden, &komma(alt)));
     assert!(v.ops.is_empty(), "{:?}", v.ops);
     assert_eq!(v.vorher_text(&Feld::Stunden), None);
-    let teile = wirkung::zeile(&v.wirkung.haeuser);
+    let teile = wirkung::zeile(v.wirkung.haeuser.iter());
     assert_eq!(teile[0].0, "Standardhaus unverändert");
     assert_eq!(teile[0].1, None);
 }
@@ -212,7 +222,9 @@ fn ungueltig_sperrt() {
 #[test]
 fn papierkorb_und_firmenwerte() {
     let s = haus();
-    let mut v = Verwaltung::open(&s, None, None);
+    let (c, dir) = firma("korb");
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    let _ = std::fs::remove_dir_all(&dir);
     let g = leistung(&v, AW24);
     let satz = SatzId::neu("service", g.to_ifc());
     v.aktion(Aktion::Ausmustern(satz.clone()));
@@ -286,7 +298,8 @@ fn ok_schreibt_firma() {
         },
         &mut cx,
     );
-    assert!(out.closed && !out.ok);
+    // Mit Änderungen fragt Esc erst (Bedienbarkeit 13.3)
+    assert!(!out.closed && !out.ok && v.frage);
     assert_eq!(std::fs::read(&pfad).unwrap(), datei);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -427,6 +440,159 @@ fn protokoll_zuruecknehmen() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Bedienbarkeit 13.3: Esc und × fragen bei gesammelten Änderungen nach,
+/// Abbrechen verwirft ohne Frage; ohne Änderungen schließt Esc sofort.
+#[test]
+fn verwerfen_fragt() {
+    let s = haus();
+    let fonts = schriften();
+    let w = win();
+    let mut cx = Ctx {
+        fonts: &fonts,
+        win: w,
+    };
+    let taste = |k| Event::Key {
+        key: k,
+        down: true,
+        repeat: false,
+        mods: Modifiers::default(),
+    };
+    let klick = |v: &mut Verwaltung, cx: &mut Ctx, r: Rect| {
+        let (x, y) = ((r.x + r.w * 0.5) as f64, (r.y + r.h * 0.5) as f64);
+        let mods = Modifiers::default();
+        let b = MouseButton::Left;
+        v.handle(
+            &Event::MouseDown {
+                button: b,
+                x,
+                y,
+                mods,
+            },
+            cx,
+        );
+        v.handle(
+            &Event::MouseUp {
+                button: b,
+                x,
+                y,
+                mods,
+            },
+            cx,
+        )
+    };
+    let mut v = Verwaltung::open(&s, None, None);
+    assert!(v.handle(&taste(Key::Escape), &mut cx).closed);
+    v.waehlen(Knoten::Firmenwerte);
+    v.eingeben(&Feld::Wert("wage".into()), "70");
+    // Esc: Rückfrage, Esc noch einmal: zurück ins Fenster
+    assert!(!v.handle(&taste(Key::Escape), &mut cx).closed);
+    assert!(v.frage);
+    assert_eq!(v.knoepfe(&w)[1].2, "Verwerfen");
+    assert!(!v.handle(&taste(Key::Escape), &mut cx).closed);
+    assert!(!v.frage && !v.ops().is_empty());
+    // ×: Rückfrage, „Zurück“ behält, „Verwerfen“ schließt
+    let x = v.close_rect(&w);
+    assert!(!klick(&mut v, &mut cx, x).closed && v.frage);
+    let zurueck = v.knoepfe(&w)[0].1;
+    assert!(!klick(&mut v, &mut cx, zurueck).closed && !v.frage);
+    klick(&mut v, &mut cx, x);
+    let verwerfen = v.knoepfe(&w)[1].1;
+    assert!(klick(&mut v, &mut cx, verwerfen).closed);
+    // Abbrechen fragt nicht
+    let mut v = Verwaltung::open(&s, None, None);
+    v.eingeben(&Feld::Wert("wage".into()), "70");
+    let abbrechen = v.knoepfe(&w)[0].1;
+    assert!(klick(&mut v, &mut cx, abbrechen).closed);
+}
+
+/// Bedienbarkeit 13.4: Ohne Firmenkatalog sagt der Kopf es gleich, und
+/// die Felder sind nur zum Lesen.
+#[test]
+fn ohne_firma_nur_ansehen() {
+    let s = haus();
+    let fonts = schriften();
+    let w = win();
+    let mut v = Verwaltung::open(&s, None, None);
+    assert_eq!(v.titel, "Firmenkatalog nicht erreichbar · nur ansehen");
+    let teile = v.teile_px(&w, &fonts);
+    assert!(teile
+        .iter()
+        .all(|(_, t)| !matches!(t.art, felder::Art::Feld { .. })));
+    assert!(teile
+        .iter()
+        .any(|(_, t)| matches!(t.art, felder::Art::Lese(_))));
+    let mut cx = Ctx {
+        fonts: &fonts,
+        win: w,
+    };
+    let (r, _) = teile
+        .iter()
+        .find(|(_, t)| matches!(t.art, felder::Art::Lese(_)))
+        .unwrap();
+    v.handle(
+        &Event::MouseDown {
+            button: MouseButton::Left,
+            x: (r.x + 5.0) as f64,
+            y: (r.y + 5.0) as f64,
+            mods: Modifiers::default(),
+        },
+        &mut cx,
+    );
+    assert!(v.edit.is_none());
+    v.waehlen(Knoten::Papierkorb);
+    let (c, dir) = firma("nur-ansehen");
+    let mit = Verwaltung::open(&s, Some(&c), None);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!mit.titel.contains("nur ansehen"), "{}", mit.titel);
+}
+
+/// Bedienbarkeit 13.1: Die Wirkzeile nennt zuerst dieses Haus. Ohne Kopie
+/// rechnet es mit der Firma; mit Kopie übernimmt es beim OK die geänderten
+/// Sätze, wo es nicht selbst abweicht (Regel 89).
+#[test]
+fn dieses_haus_in_der_wirkzeile() {
+    let s = haus();
+    let mut v = Verwaltung::open(&s, None, None);
+    // Eine Außenwand, mit der das Standardhaus (= dieses Haus) rechnet
+    let g = v
+        .jetzt
+        .leistungen
+        .iter()
+        .find(|l| {
+            l.kurz.starts_with("AW Porenbeton") && v.wirkung.haeuser[0].genutzt.contains(&l.guid)
+        })
+        .unwrap()
+        .guid;
+    v.waehlen(Knoten::Leistung(g));
+    v.eingeben(&Feld::Stunden, "0,3");
+    let teile = wirkung::zeile(v.wirkung.alle());
+    assert_eq!(teile[0].0, "Dieses Haus");
+    assert!(teile[0].1.is_some());
+    assert_eq!(teile[1].0, "Standardhaus");
+    // Mit Kopie: folgt der Änderung
+    let mut m = s.model().clone();
+    m.begin("Kopie");
+    sk_cost::op::kopie_anlegen(&mut m, Some(&Library::standard()));
+    let _ = m.try_commit();
+    assert!(sk_cost::op::hat_kopie(&m));
+    let s2 = Scene::with_model(m);
+    let mut v = Verwaltung::open(&s2, None, None);
+    let d = v.wirkung.dieses.as_ref().unwrap();
+    let vorher = d.vorher;
+    v.waehlen(Knoten::Leistung(g));
+    v.eingeben(&Feld::Stunden, "0,3");
+    let d = v.wirkung.dieses.as_ref().unwrap();
+    assert_eq!(d.vorher, vorher);
+    assert!(d.nachher < d.vorher, "{:?} {:?}", d.nachher, d.vorher);
+    assert_eq!(
+        d.nachher, v.wirkung.haeuser[0].nachher,
+        "gleiches Haus, gleiche Summe"
+    );
+    // Leeres Haus: kein Eintrag
+    let leer = Scene::with_model(sk_model::Model::new());
+    assert!(Verwaltung::open(&leer, None, None).wirkung.dieses.is_none());
+}
+
 /// Klick in den Baum wählt und klappt; Klick in ein Feld öffnet es, Enter
 /// übernimmt. Malen geht in jeder Seite.
 #[test]
@@ -435,7 +601,9 @@ fn bedienen_und_malen() {
     let fonts = schriften();
     let t = Theme::dark();
     let w = win();
-    let mut v = Verwaltung::open(&s, None, None);
+    let (c, dir) = firma("bedienen");
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    let _ = std::fs::remove_dir_all(&dir);
     let mut cx = Ctx {
         fonts: &fonts,
         win: w,
@@ -520,7 +688,9 @@ fn istbilder_ka3() {
         top: 30,
         scale: 1.0,
     };
-    let mut v = Verwaltung::open(&s, None, None);
+    let (c, tmp) = firma("ist");
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    let _ = std::fs::remove_dir_all(&tmp);
     let g = leistung(&v, AW24);
     v.waehlen(Knoten::Leistung(g));
     v.eingeben(&Feld::Stunden, "0,45");
