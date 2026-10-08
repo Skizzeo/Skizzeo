@@ -242,7 +242,11 @@ impl QuantityWindow {
         if self.context.take().is_some() || self.hint.take().is_some() {
             self.dirty = true;
         }
-        if self.kosten.as_mut().is_some_and(|k| k.preis_schliessen()) {
+        if self
+            .kosten
+            .as_mut()
+            .is_some_and(|k| k.blaetter_schliessen())
+        {
             self.dirty = true;
         }
     }
@@ -589,7 +593,7 @@ impl QuantityWindow {
                 mods,
                 ..
             } if self.blatt() == Blatt::Kosten
-                && self.kosten.as_ref().is_some_and(|k| k.preis_offen()) =>
+                && self.kosten.as_ref().is_some_and(|k| k.blatt_offen()) =>
             {
                 let o = self.kosten.as_mut()?.key(t, key, mods)?;
                 self.list_out(o)

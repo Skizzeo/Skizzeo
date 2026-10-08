@@ -30,7 +30,7 @@ const W: f32 = 420.0;
 const PAD: f32 = 16.0;
 const RADIUS: f32 = 8.0;
 /// Spitze zum EP (dip).
-const SPITZE: f32 = 8.0;
+pub(crate) const SPITZE: f32 = 8.0;
 const ZEILE: f32 = 34.0;
 const FELD_X: f32 = 170.0;
 const FELD_W: f32 = 104.0;
@@ -106,9 +106,9 @@ enum Ziel {
     Innen,
 }
 
-type Rect = (f32, f32, f32, f32);
+pub(crate) type Rect = (f32, f32, f32, f32);
 
-fn inside((rx, ry, rw, rh): Rect, x: f32, y: f32) -> bool {
+pub(crate) fn inside((rx, ry, rw, rh): Rect, x: f32, y: f32) -> bool {
     x >= rx && x < rx + rw && y >= ry && y < ry + rh
 }
 
@@ -971,7 +971,14 @@ impl PreisBlatt {
 }
 
 /// Helle Fläche mit Schatten wie Menüs, Radius 8 und der Spitze zum EP.
-fn flaeche(c: &mut Canvas, (x, y, w, h): Rect, anker: Rect, unten: bool, s: f32, t: &Theme) {
+pub(crate) fn flaeche(
+    c: &mut Canvas,
+    (x, y, w, h): Rect,
+    anker: Rect,
+    unten: bool,
+    s: f32,
+    t: &Theme,
+) {
     let u = &t.ui;
     let rad = RADIUS * s;
     for i in 1..=4 {

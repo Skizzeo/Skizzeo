@@ -46,6 +46,7 @@ mod type_menu;
 mod ui;
 mod umfang_view;
 mod visible;
+mod wahl_blatt;
 mod wall_edit;
 mod wall_tool;
 mod wheel;
@@ -2235,6 +2236,9 @@ impl App {
             kosten_view::Schreiben::Uebernehmen(saetze) => {
                 let op = sk_cost::Op::StandUebernehmen { saetze };
                 self.kosten_folge("Werte für neue Häuser übernommen", &h, &[op])
+            }
+            kosten_view::Schreiben::Bauleistung(op) => {
+                self.kosten_folge("Bauleistung gewählt", &h, &[*op])
             }
             kosten_view::Schreiben::Lassen(stand) => {
                 let op = sk_cost::Op::AbgleichLassen { stand };

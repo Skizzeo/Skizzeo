@@ -148,6 +148,8 @@ pub struct OhneZeile {
     pub dicke: Dez,
     pub einheit: Einheit,
     pub menge: Dez,
+    /// Mengenbezüge, die das Bauteil hat (Regel 80, „Bauleistung wählen“).
+    pub bezuege: Vec<Bezug>,
 }
 
 /// Das Kostenblatt eines Umfangs (Bausteingrenze §5, ka-0-fach §1.6).
@@ -298,7 +300,7 @@ pub struct Stoffteil {
 /// Stoffanteile in 10⁻¹² €, mit Zuschlag auf den Cent. `faktor`: Umrechnung
 /// bei „geschätzt nach“ (Schichtdicke, nur m² und Artikel mit Dicke).
 #[allow(clippy::too_many_arguments)]
-fn stoff_ep(
+pub(crate) fn stoff_ep(
     k: &Katalog,
     l: &Leistung,
     schicht: Option<(Dez, Option<&Material>)>,
@@ -910,6 +912,15 @@ pub fn kosten_mit(
                     dicke: w.dicke,
                     einheit,
                     menge: drei(menge, einheit),
+                    bezuege: [
+                        (Bezug::Flaeche, r.face),
+                        (Bezug::Volumen, r.volume),
+                        (Bezug::Laenge, r.length.max(r.bill_length)),
+                    ]
+                    .into_iter()
+                    .filter(|(_, v)| ganz(*v) > 0)
+                    .map(|(b, _)| b)
+                    .collect(),
                 });
             }
         }

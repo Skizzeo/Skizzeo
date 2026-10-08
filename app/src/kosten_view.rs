@@ -17,6 +17,7 @@ use crate::preis_blatt::{self, Gilt, PreisBlatt};
 use crate::scene::Scene;
 use crate::schedule_view::ListOut;
 use crate::umfang_view::{self, Leiste};
+use crate::wahl_blatt::{self, WahlBlatt};
 use sk_cost::abgleich::Abgleich;
 use sk_cost::gliederung::{Gruppe, Schluessel, Teilung};
 use sk_cost::katalog::{Einheit, Katalog};
@@ -121,6 +122,8 @@ pub struct Zeile {
     pub key: u64,
     /// Gliederung, unter der die Zeile steht (CSV-Spalte).
     pub gruppe: String,
+    /// Zeile ohne Bauleistung im Kostenblatt („Bauleistung wählen …“).
+    pub ohne: Option<usize>,
 }
 
 impl Zeile {
@@ -139,6 +142,7 @@ impl Zeile {
             elements: Vec::new(),
             key: 0,
             gruppe: String::new(),
+            ohne: None,
         }
     }
 }
@@ -358,7 +362,7 @@ impl Bau<'_> {
 
     /// Zeilen ohne Bauleistung (grau, Menge, kein Preis).
     fn ohne(&self, out: &mut Vec<Zeile>, welche: &[usize], ebene: u8, gruppe: &str) {
-        for o in welche.iter().map(|&j| &self.b.ohne[j]) {
+        for (&j, o) in welche.iter().map(|j| (j, &self.b.ohne[*j])) {
             let name = self.m.element(o.element).map_or(String::new(), |e| {
                 sk_model::kinds::spec(e.category).name.to_string()
             });
@@ -377,6 +381,7 @@ impl Bau<'_> {
             z.leise = format!("{name} · ohne Bauleistung");
             z.menge = menge_text(o.menge, o.einheit);
             z.elements = vec![o.element];
+            z.ohne = Some(j);
             out.push(z);
         }
     }
@@ -555,6 +560,8 @@ enum Hot {
     Abgleich,
     Uebernehmen,
     Lassen,
+    /// „Bauleistung wählen …“ an der grauen Zeile.
+    Waehlen(usize),
 }
 
 /// Was das Preisblatt schreiben lässt (die App führt es über
@@ -572,6 +579,8 @@ pub enum Schreiben {
     /// Abgleichzeile: Werte für neue Häuser übernehmen bzw. so lassen.
     Uebernehmen(Vec<SatzId>),
     Lassen(u32),
+    /// „Bauleistung gewählt“ (`BauleistungZuordnen`).
+    Bauleistung(Box<Op>),
 }
 
 /// Kosten beim Tippen im Preisblatt: Operationen und die Blätter darauf.
@@ -580,6 +589,9 @@ struct Live {
     blatt: Rc<Kostenblatt>,
     ganz: Rc<Kostenblatt>,
 }
+
+/// Verweis an grauen Zeilen (Einstellungen §3 KA-2 Punkt 4).
+const WAEHLEN: &str = "Bauleistung wählen …";
 
 /// Doppelklick (ms), wie im Mengenblatt.
 const DOUBLE_MS: u128 = 450;
@@ -636,6 +648,13 @@ pub struct KostenView {
     /// nachher für den Tooltip an „übernehmen“, und woraus er bestimmt ist.
     abgleich: Option<(Abgleich, Option<(Cent, Cent)>)>,
     abgleich_von: Option<(*const Kostenblatt, *const Katalog)>,
+    /// Blatt „Bauleistung wählen …“, sein Öffnen beim nächsten `sync`
+    /// (Zeile ohne Bauleistung und Bauteil) und die grauen Zeilen, für die
+    /// es etwas zu wählen gibt.
+    wahl: Option<WahlBlatt>,
+    wahl_wunsch: Option<(usize, ElementId)>,
+    waehlbar: HashSet<usize>,
+    waehlbar_von: Option<(*const Kostenblatt, *const Katalog)>,
 }
 
 impl Default for KostenView {
@@ -680,6 +699,10 @@ impl KostenView {
             eigen_von: None,
             abgleich: None,
             abgleich_von: None,
+            wahl: None,
+            wahl_wunsch: None,
+            waehlbar: HashSet::new(),
+            waehlbar_von: None,
         }
     }
 
@@ -718,6 +741,7 @@ impl KostenView {
         changed |= self.sync_eigen(s, firma, &kat, &blatt);
         changed |= self.sync_preis(s, firma, &kat, &blatt, &alle);
         changed |= self.sync_abgleich(s, firma, &kat, &blatt);
+        changed |= self.sync_wahl(s, &kat, &blatt);
         // Beim Tippen im Preisblatt zeigen Zeilen, Summen und Chips die
         // Vorschau; Namen, Preisquelle und Lohn bleiben aus dem Katalog
         let (blatt, ganz) = match &self.live {
@@ -848,6 +872,48 @@ impl KostenView {
         changed
     }
 
+    /// Graue Zeilen mit Wahl und das Blatt „Bauleistung wählen …“ öffnen.
+    fn sync_wahl(&mut self, s: &Scene, kat: &Rc<Katalog>, blatt: &Rc<Kostenblatt>) -> bool {
+        let mut changed = false;
+        let von = (Rc::as_ptr(blatt), Rc::as_ptr(kat));
+        if self.waehlbar_von != Some(von) {
+            self.waehlbar_von = Some(von);
+            self.waehlbar = blatt
+                .ohne
+                .iter()
+                .enumerate()
+                .filter(|(_, z)| sk_cost::wahl::waehlbar(kat, z))
+                .map(|(j, _)| j)
+                .collect();
+            // Das Blatt gehört zu einer Zeile, die es so nicht mehr gibt
+            if self.wahl.as_ref().is_some_and(|w| {
+                blatt
+                    .ohne
+                    .get(w.ohne)
+                    .is_none_or(|z| z.element != w.element)
+            }) {
+                self.wahl = None;
+            }
+            changed = true;
+        }
+        if let Some((j, el)) = self.wahl_wunsch.take() {
+            let z = blatt.ohne.get(j).filter(|z| z.element == el);
+            let a = z.and_then(|z| sk_cost::wahl::auswahl(s.model(), kat, z));
+            let titel = self
+                .zeilen
+                .iter()
+                .find(|x| x.ohne == Some(j))
+                .map_or_else(String::new, |x| x.text.clone());
+            if let (Some(z), Some(a)) = (z, a) {
+                let mut w = WahlBlatt::neu((j, el), &titel, menge_text(z.menge, z.einheit), a);
+                w.scale = self.scale;
+                self.wahl = Some(w);
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// Text der Abgleichzeile, wenn sie steht.
     #[cfg(test)]
     pub fn abgleich_zeile(&self) -> Option<String> {
@@ -916,9 +982,60 @@ impl KostenView {
         true
     }
 
-    /// Ist das Preisblatt offen (Tasten gehen dann dorthin)?
+    /// Ist das Preisblatt offen?
+    #[cfg(test)]
     pub fn preis_offen(&self) -> bool {
         self.preis.is_some()
+    }
+
+    /// Ist ein Blatt offen (Preis oder Bauleistung; Tasten gehen dorthin)?
+    pub fn blatt_offen(&self) -> bool {
+        self.preis.is_some() || self.wahl.is_some()
+    }
+
+    /// Beide Blätter schließen, ohne zu schreiben.
+    pub fn blaetter_schliessen(&mut self) -> bool {
+        self.wahl.take().is_some() | self.preis_schliessen()
+    }
+
+    /// Ergebnis des Blatts „Bauleistung wählen …“.
+    fn wahl_aus(&mut self, aus: wahl_blatt::Aus) -> Option<ListOut> {
+        use wahl_blatt::Aus;
+        Some(match aus {
+            Aus::Repaint => ListOut::Repaint,
+            Aus::Schliessen => {
+                self.wahl = None;
+                ListOut::Repaint
+            }
+            Aus::Waehlen(g) => {
+                let w = self.wahl.take()?;
+                let z = self.blatt.as_deref()?.ohne.get(w.ohne)?;
+                ListOut::Kosten(Schreiben::Bauleistung(Box::new(sk_cost::wahl::zuordnen(
+                    z, g,
+                )?)))
+            }
+        })
+    }
+
+    /// Verweis „Bauleistung wählen …“ rechts in einer grauen Zeile (px).
+    fn waehlen_rect(&self, t: &Theme, fonts: &Fonts, y: f32, h: f32) -> Rect {
+        let s = self.scale;
+        let (x0, cw) = self.content_x(t);
+        let px = 11.0 * s;
+        let w = fonts
+            .bold
+            .as_ref()
+            .or(fonts.regular.as_ref())
+            .map_or(120.0 * s, |f| f.width(WAEHLEN, px));
+        (x0 + cw - w, y, w, h)
+    }
+
+    /// Zeile `i` zeigt beim Überfahren „Bauleistung wählen …“.
+    fn zeigt_waehlen(&self, i: usize) -> bool {
+        self.zeilen
+            .get(i)
+            .and_then(|z| z.ohne)
+            .is_some_and(|j| self.waehlbar.contains(&j))
     }
 
     /// Preisblatt schließen, ohne zu schreiben.
@@ -969,8 +1086,30 @@ impl KostenView {
             .map(|(_, y, h)| (r - 70.0 * s, y, r + 4.0 * s, y + h))
     }
 
+    /// Blatt „Bauleistung wählen …“ an den Verweis der Zeile legen.
+    fn lege_wahl(&mut self, t: &Theme) {
+        let Some(j) = self.wahl.as_ref().map(|w| w.ohne) else {
+            return;
+        };
+        let s = self.scale;
+        let (x0, cw) = self.content_x(t);
+        let anker = self
+            .sichtbar()
+            .into_iter()
+            .find(|(i, _, _)| self.zeilen[*i].ohne == Some(j))
+            .map(|(_, y, h)| (x0 + cw - 120.0 * s, y, x0 + cw, y + h));
+        let (w, h) = (self.w as f32, self.h as f32);
+        let wb = self.wahl.as_mut().expect("eben gesehen");
+        if let Some(r) = anker {
+            wb.set_anker(r);
+        }
+        wb.fenster = (w, h);
+        wb.scale = s;
+    }
+
     /// Preisblatt an die EP-Zelle und die Fenstergröße legen.
     fn lege_preis(&mut self, t: &Theme) {
+        self.lege_wahl(t);
         let Some(key) = self.preis.as_ref().map(|p| p.key) else {
             return;
         };
@@ -992,12 +1131,20 @@ impl KostenView {
         mods: sk_platform::Modifiers,
     ) -> Option<Option<ListOut>> {
         self.lege_preis(t);
+        if let Some(w) = self.wahl.as_mut() {
+            let aus = w.key(key, mods);
+            return Some(aus.and_then(|a| self.wahl_aus(a)));
+        }
         let aus = self.preis.as_mut()?.key(key, mods);
         Some(aus.and_then(|a| self.preis_aus(a)))
     }
 
     /// Getipptes Zeichen fürs Preisblatt.
     pub fn text(&mut self, ch: char) -> Option<ListOut> {
+        if let Some(w) = self.wahl.as_mut() {
+            let aus = w.text(ch)?;
+            return self.wahl_aus(aus);
+        }
         let aus = self.preis.as_mut()?.text(ch)?;
         self.preis_aus(aus)
     }
@@ -1305,7 +1452,10 @@ impl KostenView {
         self.sichtbar()
             .into_iter()
             .find(|(_, ry, rh)| y >= *ry && y < ry + rh)
-            .map(|(i, _, _)| {
+            .map(|(i, ry, rh)| {
+                if self.zeigt_waehlen(i) && inside(self.waehlen_rect(t, fonts, ry, rh), x, y) {
+                    return Hot::Waehlen(i);
+                }
                 let z = &self.zeilen[i];
                 let dx = x0 + z.ebene as f32 * INDENT * s;
                 let dreieck =
@@ -1339,6 +1489,16 @@ impl KostenView {
         y: f64,
     ) -> Option<ListOut> {
         self.lege_preis(t);
+        if let Some(w) = self.wahl.as_mut() {
+            let repaint = w.mouse_move(x as f32, y as f32);
+            if w.enthaelt(x as f32, y as f32) {
+                let mut out = repaint.then_some(ListOut::Repaint);
+                if self.hot.take().is_some() {
+                    out = Some(ListOut::Repaint);
+                }
+                return out;
+            }
+        }
         if let Some(pb) = self.preis.as_mut() {
             let repaint = pb.mouse_move(fonts, x as f32, y as f32);
             if pb.enthaelt(x as f32, y as f32) {
@@ -1359,6 +1519,7 @@ impl KostenView {
         }
         let hot = self.hit(t, fonts, x, y);
         let look = |h: Option<Hot>| match h {
+            Some(Hot::Zeile(i, _)) if self.zeigt_waehlen(i) => h,
             Some(Hot::Zeile(..)) | None => None,
             h => h,
         };
@@ -1396,6 +1557,11 @@ impl KostenView {
         mods: sk_platform::Modifiers,
     ) -> Option<ListOut> {
         self.lege_preis(t);
+        if let Some(w) = self.wahl.as_mut() {
+            // Klick daneben schließt ohne Spur
+            let aus = w.mouse_down(fonts, x as f32, y as f32)?;
+            return self.wahl_aus(aus);
+        }
         if let Some(pb) = self.preis.as_mut() {
             // Klick daneben schreibt und schließt (wie Enter)
             let aus = pb.mouse_down(fonts, x as f32, y as f32)?;
@@ -1473,6 +1639,12 @@ impl KostenView {
             Hot::Geschaetzt => self.springe(|z| z.geschaetzt),
             Hot::OhnePreis => self.springe(|z| z.art == Art::Ohne),
             Hot::Abgleich => None,
+            Hot::Waehlen(i) => {
+                let j = self.zeilen.get(i)?.ohne?;
+                let el = self.blatt.as_deref()?.ohne.get(j)?.element;
+                self.wahl_wunsch = Some((j, el));
+                Some(ListOut::Repaint)
+            }
             Hot::Uebernehmen => {
                 let (a, _) = self.abgleich.as_ref()?;
                 Some(ListOut::Kosten(Schreiben::Uebernehmen(a.saetze.clone())))
@@ -1511,6 +1683,9 @@ impl KostenView {
 
     pub fn wheel(&mut self, delta: f64, t: &Theme) -> Option<ListOut> {
         // Das Blatt hängt am EP: solange es offen ist, rollt die Liste nicht
+        if let Some(w) = self.wahl.as_mut() {
+            return w.wheel(delta).then_some(ListOut::Repaint);
+        }
         if self.preis.is_some() {
             return None;
         }
@@ -1529,6 +1704,11 @@ impl KostenView {
     }
 
     pub fn tip_at(&self, t: &Theme, fonts: &Fonts, x: f64, y: f64) -> Option<String> {
+        if let Some(w) = self.wahl.as_ref() {
+            if w.enthaelt(x as f32, y as f32) {
+                return w.tip_at(x as f32, y as f32);
+            }
+        }
         if let Some(pb) = self.preis.as_ref() {
             if pb.enthaelt(x as f32, y as f32) {
                 return pb.tip_at(fonts, x as f32, y as f32);
@@ -1605,6 +1785,9 @@ impl KostenView {
             .paint_field_list(c, t, fonts, self.leiste_lage(t));
         if let Some(pb) = &self.preis {
             pb.paint(c, t, fonts);
+        }
+        if let Some(w) = &self.wahl {
+            w.paint(c, t, fonts);
         }
     }
 
@@ -1924,6 +2107,14 @@ impl KostenView {
                     col
                 };
                 zahl(c, &z.gp, x0 + cw, f, gcol);
+            }
+            let ueber =
+                matches!(self.hot, Some(Hot::Zeile(j, _)) | Some(Hot::Waehlen(j)) if j == i);
+            if ueber && self.zeigt_waehlen(i) {
+                if let Some(b) = bold {
+                    let (lx, ..) = self.waehlen_rect(t, fonts, y, h);
+                    b.draw(c, WAEHLEN, px, lx, base, u.accent);
+                }
             }
             if z.art == Art::Gruppe && z.ebene == 0 {
                 c.fill_rect(x0, y + h - s.max(1.0), cw, s.max(1.0), u.sheet_rule);
@@ -2628,5 +2819,69 @@ mod tests {
         assert_eq!(v.abgleich_zeile(), None);
         assert_eq!(v.list_top(), oben);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Graue Zeile: überfahren zeigt „Bauleistung wählen …“, Klick öffnet das
+    /// Blatt, Klick auf einen Eintrag schreibt `BauleistungZuordnen`; danach
+    /// ist die Zeile eine Position.
+    #[test]
+    fn bauleistung_waehlen() {
+        let t = Theme::dark();
+        let fonts = Fonts {
+            regular: None,
+            bold: None,
+            italic: None,
+        };
+        let mut s = haus();
+        let mut v = KostenView::new();
+        (v.w, v.h) = (1200, 1400);
+        v.sync(&mut s, None);
+        let grau = v.blatt().unwrap().ohne.len();
+        let i = v
+            .zeilen()
+            .iter()
+            .position(|z| z.ohne.is_some_and(|j| v.waehlbar.contains(&j)))
+            .expect("graue Zeile mit Wahl");
+        let (_, y, h) = v
+            .sichtbar()
+            .into_iter()
+            .find(|(j, _, _)| *j == i)
+            .expect("sichtbar");
+        let (lx, ly, lw, lh) = v.waehlen_rect(&t, &fonts, y, h);
+        let (x, y) = ((lx + lw * 0.5) as f64, (ly + lh * 0.5) as f64);
+        let mut p = Picking::default();
+        let mods = sk_platform::Modifiers::default();
+        v.mouse_move(&t, &fonts, &mut p, x, y);
+        assert_eq!(v.hot, Some(Hot::Waehlen(i)));
+        assert_eq!(
+            v.mouse_down(&t, &fonts, &mut p, (x, y), mods),
+            Some(ListOut::Repaint)
+        );
+        v.sync(&mut s, None);
+        assert!(v.blatt_offen());
+        // Enter mit Suchtext, der genau einen Treffer lässt
+        let w = v.wahl.as_ref().unwrap();
+        let erste = w_erste(w);
+        for ch in erste.chars() {
+            v.text(ch);
+        }
+        let out = v.key(&t, sk_platform::Key::Enter, mods);
+        let Some(Some(ListOut::Kosten(Schreiben::Bauleistung(op)))) = out else {
+            panic!("{out:?}");
+        };
+        assert!(!v.blatt_offen());
+        let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "12:00");
+        s.kosten_folge("Bauleistung gewählt", None, &h, &[*op])
+            .unwrap();
+        v.sync(&mut s, None);
+        assert!(v.blatt().unwrap().ohne.len() < grau);
+        assert!(s.undo());
+        v.sync(&mut s, None);
+        assert_eq!(v.blatt().unwrap().ohne.len(), grau);
+    }
+
+    /// Kurzname des ersten wählbaren Eintrags, der eindeutig ist.
+    fn w_erste(w: &WahlBlatt) -> String {
+        w.erster_eindeutig().expect("ein eindeutiger Name")
     }
 }
