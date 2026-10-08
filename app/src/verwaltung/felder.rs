@@ -353,18 +353,7 @@ impl Verwaltung {
                     Farbe::Dim,
                 );
             }
-            Knoten::Haeuser => {
-                let y = b.kopf(
-                    "Referenzhäuser",
-                    "Häuser, an denen du die Wirkung einer Änderung siehst",
-                );
-                b.absatz(
-                    0.0,
-                    y,
-                    "Jedes Referenzhaus rechnet mit dem Firmenkatalog samt deinen Änderungen. Die Summen stehen unten links.",
-                    Farbe::Dim,
-                );
-            }
+            Knoten::Haeuser => self.haeuser(&mut b),
             Knoten::Protokoll => {
                 let n = sk_cost::verwaltung::protokoll(&self.vorher).len();
                 let unter = match n {
@@ -413,6 +402,7 @@ impl Verwaltung {
                             | Aktion::Ausmustern(_)
                             | Aktion::Wiederherstellen(_)
                             | Aktion::Zuruecknehmen(_)
+                            | Aktion::AlsReferenz
                     ))
                 )
             })
@@ -992,44 +982,159 @@ impl Verwaltung {
     }
 
     fn haus(&self, b: &mut Bau, i: usize) {
+        use super::wirkung::{aenderung, euro_ganz, FLAECHE_TIPP};
         let Some(h) = self.wirkung.haeuser.get(i) else {
             self.fehlt(b);
             return;
         };
-        let mut y = b.kopf(&h.name, "Referenzhaus des Werks");
-        b.label(y, "Summe netto");
-        let x = b.text(
-            WERT_X,
-            y,
-            super::wirkung::euro_ganz(h.vorher),
-            PX,
-            h.vorher == h.nachher,
-            Farbe::Text,
-        );
-        if h.vorher != h.nachher {
-            if let Some(Teil {
-                art: Art::Text { durch, farbe, .. },
-                ..
-            }) = b.teile.last_mut()
-            {
-                *durch = true;
-                *farbe = Farbe::Leise;
-            }
-            let x = b.text(x + 10.0, y, "→", PX, false, Farbe::Text);
-            b.text(
-                x + 10.0,
+        let unter = match &h.datei {
+            None => "Referenzhaus des Werks · Standardhaus 1b".to_string(),
+            Some(d) => format!("Eigenes Referenzhaus · {d}"),
+        };
+        let mut y = b.kopf(&h.name, &unter);
+        if let Some(f) = &h.fehler {
+            y = b.absatz(0.0, y, f, Farbe::Fehler) + 12.0;
+            b.absatz(
+                0.0,
                 y,
-                super::wirkung::euro_ganz(h.nachher),
-                PX,
-                true,
-                Farbe::Text,
+                "Skizzeo ändert die Datei nicht. Öffne sie in Skizzeo und speichere sie neu, oder nimm sie aus dem Ordner.",
+                Farbe::Dim,
             );
+            return;
         }
+        b.label(y, "Summe netto");
+        self.vorher_nachher(b, WERT_X, y, euro_ganz(h.vorher), euro_ganz(h.nachher));
         y += ABSTAND;
+        b.label(y, "Änderung");
+        let a = if h.vorher == h.nachher {
+            "keine".to_string()
+        } else {
+            aenderung(h.vorher, h.nachher)
+        };
+        b.text(WERT_X, y, a, PX, h.vorher != h.nachher, Farbe::Text);
+        y += ABSTAND;
+        let x = b.text_art(
+            0.0,
+            y,
+            "€/m² Geschossfläche (Rohbaumaß)".into(),
+            PX,
+            false,
+            Farbe::Dim,
+            false,
+            Some(Ziel::Tipp(FLAECHE_TIPP)),
+        );
+        let m2 = |c| {
+            h.je_m2(c)
+                .map_or("–".to_string(), |e| format!("{} €/m²", tausend(e)))
+        };
+        self.vorher_nachher(b, (x + 16.0).max(WERT_X), y, m2(h.vorher), m2(h.nachher));
+        y += ABSTAND;
+        b.label(y, "Geschossfläche");
+        let f = if h.flaeche > 0.0 {
+            format!("{} m²", komma_2(h.flaeche / 1e6))
+        } else {
+            "– (Haus ohne Decke)".to_string()
+        };
+        b.text(WERT_X, y, f, PX, false, Farbe::Text);
+        y += ABSTAND;
+        if let Some(t) = h.hinweis() {
+            y = b.absatz(0.0, y, &t, Farbe::Dim) + 8.0;
+        }
         b.absatz(
             0.0,
             y,
             "Das Referenzhaus rechnet immer mit dem Firmenkatalog samt deinen Änderungen, auch wenn es selbst andere Werte gespeichert hat.",
+            Farbe::Dim,
+        );
+    }
+
+    /// „alt → neu“ mit altem Wert durchgestrichen; gleich: nur der Wert fett.
+    fn vorher_nachher(&self, b: &mut Bau, x: f32, y: f32, alt: String, neu: String) {
+        if alt == neu {
+            b.text(x, y, neu, PX, true, Farbe::Text);
+            return;
+        }
+        let x = b.text_art(x, y, alt, PX, false, Farbe::Leise, true, None);
+        let x = b.text(x + 10.0, y, "→", PX, false, Farbe::Text);
+        b.text(x + 10.0, y, neu, PX, true, Farbe::Text);
+    }
+
+    /// Übersicht „Referenzhäuser“: je Haus Summe, Änderung und €/m².
+    fn haeuser(&self, b: &mut Bau) {
+        use super::wirkung::{aenderung, euro_ganz, FLAECHE_TIPP, IN_DER_ZEILE};
+        let n = self.wirkung.haeuser.len();
+        let mut y = b.kopf(
+            "Referenzhäuser",
+            &if n == 1 {
+                "Das Standardhaus des Werks".to_string()
+            } else {
+                format!("{n} Häuser, an denen du die Wirkung einer Änderung siehst")
+            },
+        );
+        let sp = [0.0, b.w * 0.34, b.w * 0.56, b.w * 0.78];
+        b.text(sp[0], y, "Haus", KLEIN, false, Farbe::Dim);
+        b.text(sp[1], y, "Summe netto", KLEIN, false, Farbe::Dim);
+        b.text(sp[2], y, "Änderung", KLEIN, false, Farbe::Dim);
+        b.text_art(
+            sp[3],
+            y,
+            "€/m² (Rohbaumaß)".into(),
+            KLEIN,
+            false,
+            Farbe::Dim,
+            false,
+            Some(Ziel::Tipp(FLAECHE_TIPP)),
+        );
+        y += 24.0;
+        b.linie(y - 4.0);
+        y += 8.0;
+        for (i, h) in self.wirkung.haeuser.iter().enumerate() {
+            let t = b.kurz(&h.name, PX, true, sp[1] - 16.0);
+            if h.fehler.is_some() {
+                b.text(sp[0], y, t, PX, true, Farbe::Leise);
+                b.text(sp[1], y, "nicht lesbar", PX, false, Farbe::Fehler);
+                y += 28.0;
+                continue;
+            }
+            b.text_art(
+                sp[0],
+                y,
+                t,
+                PX,
+                true,
+                Farbe::Akzent,
+                false,
+                Some(Ziel::Aktion(Aktion::HausOeffnen(i))),
+            );
+            b.text(sp[1], y, euro_ganz(h.nachher), PX, false, Farbe::Text);
+            let a = if h.vorher == h.nachher {
+                "–".to_string()
+            } else {
+                aenderung(h.vorher, h.nachher)
+            };
+            b.text(sp[2], y, a, PX, false, Farbe::Text);
+            let m2 = h
+                .je_m2(h.nachher)
+                .map_or("–".to_string(), |e| format!("{} €/m²", tausend(e)));
+            b.text(sp[3], y, m2, PX, false, Farbe::Text);
+            y += 28.0;
+        }
+        y += 16.0;
+        if self.ordner.is_some() {
+            b.knopf(
+                0.0,
+                y,
+                "Aktuelles Haus als Referenzhaus",
+                Aktion::AlsReferenz,
+            );
+            y += ABSTAND + 8.0;
+        }
+        b.absatz(
+            0.0,
+            y,
+            &format!(
+                "Eigene Referenzhäuser liegen als Dateien im Ordner „referenzhaeuser“ neben dem Firmenkatalog. Jedes rechnet mit dem Firmenkatalog samt deinen Änderungen. Die Zeile unten zeigt dieses Haus und die ersten {IN_DER_ZEILE}."
+            ),
             Farbe::Dim,
         );
     }
@@ -1336,4 +1441,26 @@ pub fn malen(
             Art::Linie => c.fill_rect(r.x, r.y, r.w, s.round().max(1.0), u.border),
         }
     }
+}
+
+/// Ganze Zahl mit Tausenderpunkt: „1.234“.
+fn tausend(n: i64) -> String {
+    let t = n.abs().to_string();
+    let mut out = String::new();
+    for (i, c) in t.chars().enumerate() {
+        if i > 0 && (t.len() - i).is_multiple_of(3) {
+            out.push('.');
+        }
+        out.push(c);
+    }
+    if n < 0 {
+        format!("−{out}")
+    } else {
+        out
+    }
+}
+
+/// Zwei Nachkommastellen mit Komma: „150,08“.
+fn komma_2(x: f64) -> String {
+    format!("{x:.2}").replace('.', ",")
 }

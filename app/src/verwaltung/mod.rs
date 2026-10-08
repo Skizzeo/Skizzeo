@@ -65,6 +65,10 @@ pub enum Aktion {
     TypOeffnen(Guid),
     /// „Diese Änderung zurücknehmen“ für einen Stand (KA-3a3).
     Zuruecknehmen(u32),
+    /// „Aktuelles Haus als Referenzhaus“ (KA-3a4): Dateikopie in den Ordner.
+    AlsReferenz,
+    /// Referenzhaus im Baum wählen.
+    HausOeffnen(usize),
 }
 
 /// Ziel unter der Maus.
@@ -81,6 +85,8 @@ enum Ziel {
     /// Rückfrage „n Änderungen verwerfen?“ (Bedienbarkeit 13.3).
     Zurueck,
     Verwerfen,
+    /// Text mit Tooltip.
+    Tipp(&'static str),
 }
 
 /// Was die App nach einem Ereignis tun muss.
@@ -148,6 +154,12 @@ pub struct Verwaltung {
     meldung: Option<String>,
     /// Stand, dessen Rücknahme in den gesammelten Änderungen steckt.
     zurueck: Option<u32>,
+    /// Ordner der eigenen Referenzhäuser (ohne Firmenkatalog keiner).
+    ordner: Option<std::path::PathBuf>,
+    /// Name des offenen Hauses für „Aktuelles Haus als Referenzhaus“.
+    haus_name: String,
+    /// Die von den gesammelten Änderungen geänderten Stammsätze.
+    saetze: Vec<SatzId>,
     /// Lücken nach Regel 97 beim Öffnen; sperren nur neue.
     luecken0: Vec<String>,
     /// Rückfrage vor dem Verwerfen (Esc, ×) steht im Fuß.
@@ -242,7 +254,8 @@ impl Verwaltung {
                 sk_cost::lesen::werksstand()
             ),
         };
-        let wirkung = wirkung::Wirkung::laden(&lib0, &m);
+        let ordner = company.and_then(|c| c.path().parent().map(|p| p.join(wirkung::ORDNER)));
+        let wirkung = wirkung::Wirkung::laden(&lib0, &m, ordner.as_deref());
         let mut v = Verwaltung {
             basis,
             lib: lib0.clone(),
@@ -271,6 +284,9 @@ impl Verwaltung {
             wirkung,
             meldung: None,
             zurueck: None,
+            ordner,
+            haus_name: "Haus".into(),
+            saetze: Vec::new(),
             luecken0: Vec::new(),
             frage: false,
         };
@@ -355,6 +371,50 @@ impl Verwaltung {
             }
         }
         self.wirkung.rechnen(&self.lib, &saetze);
+        self.saetze = saetze;
+    }
+
+    /// Name des offenen Hauses (Dateiname ohne Endung).
+    pub fn set_haus_name(&mut self, name: &str) {
+        let n = name.strip_suffix(".szo").unwrap_or(name).trim();
+        if !n.is_empty() {
+            self.haus_name = n.to_string();
+        }
+    }
+
+    /// „Aktuelles Haus als Referenzhaus“ (KA-3a4, Regel 106): nur eine
+    /// Dateikopie des offenen Hauses in den Ordner, keine Operation, kein
+    /// `[log]`. Danach die Häuser neu laden und rechnen.
+    fn als_referenz(&mut self) {
+        let Some(ordner) = self.ordner.clone() else {
+            self.meldung =
+                Some("Ohne Firmenkatalog gibt es keinen Ordner für Referenzhäuser.".into());
+            return;
+        };
+        let pfad = wirkung::frei(&ordner, &self.haus_name);
+        let r = std::fs::create_dir_all(&ordner)
+            .map_err(|e| {
+                crate::meldung::Meldung::aus_io(
+                    "Referenzhaus nicht abgelegt",
+                    "Ordner für Referenzhäuser anlegen",
+                    &ordner,
+                    &e,
+                )
+            })
+            .and_then(|_| crate::document::save(&self.m, &pfad));
+        match r {
+            Ok(()) => {
+                self.wirkung = wirkung::Wirkung::laden(&self.lib0, &self.m, Some(ordner.as_path()));
+                self.wirkung.rechnen(&self.lib, &self.saetze);
+                let name = pfad
+                    .file_stem()
+                    .map_or(String::new(), |n| n.to_string_lossy().into_owned());
+                if let Some(i) = self.wirkung.haeuser.iter().position(|h| h.name == name) {
+                    self.waehlen(Knoten::Haus(i));
+                }
+            }
+            Err(m) => self.meldung = Some(m.to_string()),
+        }
     }
 
     /// Ist `op` gleich dem Stand beim Öffnen (dann entfällt sie)?
@@ -540,6 +600,8 @@ impl Verwaltung {
             Aktion::TypOeffnen(g) => return Some(g),
             // Geht über die App (Archiv der Stände)
             Aktion::Zuruecknehmen(_) => {}
+            Aktion::AlsReferenz => self.als_referenz(),
+            Aktion::HausOeffnen(i) => self.waehlen(Knoten::Haus(i)),
         }
         None
     }
@@ -838,10 +900,12 @@ impl Verwaltung {
                     | Aktion::Ausmustern(_)
                     | Aktion::Wiederherstellen(_)
                     | Aktion::Zuruecknehmen(_)
+                    | Aktion::AlsReferenz
             )
         };
         match h {
             Some(Ziel::Feld(_)) if self.ohne_firma => {}
+            Some(Ziel::Tipp(_)) => {}
             Some(Ziel::Aktion(a)) if self.ohne_firma && nur_ansehen(&a) => {}
             Some(Ziel::Kopf) => {
                 let f = self.frame(&cx.win);
@@ -1060,7 +1124,9 @@ impl Verwaltung {
             let px = t.size.font * s;
             let zahl_w = z.anzahl.map_or(0.0, |_| 34.0 * s);
             let text = widgets::ellipsize(font, &z.text, px, r.x + r.w - tx - zahl_w - 6.0 * s);
-            label(c, font, &text, px, tx, base, u.text);
+            // Unlesbares Referenzhaus grau (Regel 106)
+            let farbe = if z.grau { u.text_disabled } else { u.text };
+            label(c, font, &text, px, tx, base, farbe);
             if let (Some(n), Some(fr)) = (z.anzahl, regular) {
                 let ns = n.to_string();
                 let pxs = t.size.font_small * s;
@@ -1169,6 +1235,16 @@ impl Verwaltung {
             };
             widgets::button(c, fonts, r, text, st, s, t);
         }
+        // Tooltip über allem, unter dem Text, im Fenster gehalten
+        if let Some(Ziel::Tipp(tipp)) = &self.hover {
+            let ziel = Some(Ziel::Tipp(tipp));
+            if let Some((r, _)) = self.teile_px(w, fonts).iter().find(|(_, x)| x.ziel == ziel) {
+                let tt = widgets::tooltip(fonts, tipp, s, t);
+                let x = r.x.min(f.x + f.w - tt.width as f32 - 8.0 * s).max(f.x);
+                let y = r.y + r.h + 6.0 * s;
+                c.blit(&tt, x.round() as i32, y.round() as i32);
+            }
+        }
     }
 
     /// Fuß links: Wirkzeile, sonst der sperrende Befund oder die Meldung.
@@ -1219,9 +1295,25 @@ impl Verwaltung {
             label(c, regular, &text, px, x, base, u.field_invalid);
             return;
         }
-        for (i, (name, alt, neu)) in wirkung::zeile(self.wirkung.alle()).iter().enumerate() {
-            let breite =
-                |font: Option<&sk_paint::font::Font>, t: &str| font.map_or(0.0, |f| f.width(t, px));
+        let teile = wirkung::zeile(self.wirkung.alle());
+        let breite =
+            |font: Option<&sk_paint::font::Font>, t: &str| font.map_or(0.0, |f| f.width(t, px));
+        for (i, (h, (name, alt, neu))) in self.wirkung.alle().zip(&teile).enumerate() {
+            let p = wirkung::prozent(h.vorher, h.nachher).filter(|_| alt.is_some());
+            // Passt der Eintrag nicht mehr, steht dort „+ n weitere“
+            let gesamt = breite(regular, "·")
+                + breite(regular, name)
+                + alt.as_ref().map_or(0.0, |a| {
+                    breite(regular, a) + breite(regular, "→") + 16.0 * s
+                })
+                + breite(bold, neu)
+                + p.as_ref().map_or(0.0, |p| breite(regular, p) + 8.0 * s)
+                + 24.0 * s;
+            if i > 0 && x + gesamt > rand {
+                let rest = format!("+ {} weitere", teile.len() - i);
+                label(c, regular, &rest, px, x, base, u.text_dim);
+                break;
+            }
             if i > 0 {
                 label(c, regular, "·", px, x, base, u.text_dim);
                 x += breite(regular, "·") + 8.0 * s;
@@ -1243,10 +1335,12 @@ impl Verwaltung {
                 x += breite(regular, "→") + 8.0 * s;
             }
             label(c, bold, neu, px, x, base, u.text);
-            x += breite(bold, neu) + 16.0 * s;
-            if x > rand {
-                break;
+            x += breite(bold, neu) + 8.0 * s;
+            if let Some(p) = p {
+                label(c, regular, &p, px, x, base, u.text_dim);
+                x += breite(regular, &p) + 8.0 * s;
             }
+            x += 8.0 * s;
         }
     }
 }

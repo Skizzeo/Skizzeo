@@ -39,6 +39,8 @@ pub struct Zeile {
     /// Hat Kinder (Pfeil davor).
     pub ast: bool,
     pub offen: bool,
+    /// Grau: ein Referenzhaus, das sich nicht lesen lässt.
+    pub grau: bool,
 }
 
 /// Ein Eintrag mit seinen Kindern, bevor Suche und Aufklappen greifen.
@@ -47,6 +49,7 @@ struct Eintrag {
     text: String,
     anzahl: Option<usize>,
     kinder: Vec<Eintrag>,
+    grau: bool,
 }
 
 fn blatt(knoten: Knoten, text: impl Into<String>) -> Eintrag {
@@ -55,6 +58,7 @@ fn blatt(knoten: Knoten, text: impl Into<String>) -> Eintrag {
         text: text.into(),
         anzahl: None,
         kinder: Vec::new(),
+        grau: false,
     }
 }
 
@@ -64,6 +68,7 @@ fn ast(knoten: Knoten, text: &str, kinder: Vec<Eintrag>, anzahl: usize) -> Eintr
         text: text.into(),
         anzahl: Some(anzahl),
         kinder,
+        grau: false,
     }
 }
 
@@ -155,7 +160,10 @@ impl Verwaltung {
             .haeuser
             .iter()
             .enumerate()
-            .map(|(i, h)| blatt(Knoten::Haus(i), h.name.clone()))
+            .map(|(i, h)| Eintrag {
+                grau: h.fehler.is_some(),
+                ..blatt(Knoten::Haus(i), h.name.clone())
+            })
             .collect();
         let staende: Vec<Eintrag> = sk_cost::verwaltung::protokoll(&self.vorher)
             .into_iter()
@@ -228,6 +236,7 @@ impl Verwaltung {
             anzahl: e.anzahl,
             ast,
             offen: ast && offen,
+            grau: e.grau,
         });
         if !ast {
             if passt(&e.text) {

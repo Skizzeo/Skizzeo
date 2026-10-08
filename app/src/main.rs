@@ -1481,11 +1481,9 @@ impl App {
         }
         self.ui.hover = None;
         self.title.hover = None;
-        self.verwaltung = Some(verwaltung::Verwaltung::open(
-            &self.scene,
-            self.company.as_ref(),
-            wahl,
-        ));
+        let mut v = verwaltung::Verwaltung::open(&self.scene, self.company.as_ref(), wahl);
+        v.set_haus_name(&self.doc.name());
+        self.verwaltung = Some(v);
         self.prefs_dirty = true;
         self.overlay_dirty = true;
     }

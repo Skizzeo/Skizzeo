@@ -593,6 +593,142 @@ fn dieses_haus_in_der_wirkzeile() {
     assert!(Verwaltung::open(&leer, None, None).wirkung.dieses.is_none());
 }
 
+/// Abnahme 13 (KA-3a4): €/m² Geschossfläche (Rohbaumaß) des Standardhauses
+/// = Summe netto ÷ 150,08 m² (2 × 75,0384), auf ganze €.
+#[test]
+fn standardhaus_je_m2() {
+    let s = haus();
+    let v = Verwaltung::open(&s, None, None);
+    let h = &v.wirkung.haeuser[0];
+    assert!((h.flaeche / 1e6 - 150.0768).abs() < 1e-3, "{}", h.flaeche);
+    let soll = (h.vorher.0 as f64 / 100.0 / 150.0768).round() as i64;
+    assert_eq!(h.je_m2(h.vorher), Some(soll));
+    let leer = Verwaltung::open(&Scene::with_model(sk_model::Model::new()), None, None);
+    assert!(leer.wirkung.dieses.is_none());
+    assert_eq!(
+        wirkung::aenderung(sk_cost::Cent(100_000), sk_cost::Cent(100_800)),
+        "+8 € (+0,8 %)"
+    );
+    assert_eq!(
+        wirkung::aenderung(sk_cost::Cent(6_226_100), sk_cost::Cent(6_009_000)),
+        "−2.171 € (−3,5 %)"
+    );
+}
+
+/// KA-3a4, Regel 106: eigene Referenzhäuser aus `referenzhaeuser/` nach
+/// Dateiname; unlesbar grau mit Befund und nie geändert; ohne Kostenzeile
+/// ein Hinweis; Unterordner und andere Endungen zählen nicht. „Aktuelles
+/// Haus als Referenzhaus“ ist nur eine Dateikopie, das Haus rechnet dann
+/// mit dem Firmenkatalog, nicht mit seiner Kopie (S5, Fall 12).
+#[test]
+fn referenzhaeuser_im_ordner() {
+    let (c, dir) = firma("referenz");
+    let ordner = dir.join(wirkung::ORDNER);
+    std::fs::create_dir_all(ordner.join("unter")).unwrap();
+    let rh2 = include_str!("../../../crates/sk-cost/referenz/rh2-mehrschalig.szo");
+    let rh3 = include_str!("../../../crates/sk-cost/referenz/rh3-versatz-dachterrasse.szo");
+    std::fs::write(ordner.join("b-mehrschalig.szo"), rh2).unwrap();
+    std::fs::write(ordner.join("a-versatz.szo"), rh3).unwrap();
+    std::fs::write(ordner.join("kaputt.szo"), "kein Haus").unwrap();
+    std::fs::write(ordner.join("notiz.txt"), "x").unwrap();
+    std::fs::write(ordner.join("unter").join("c.szo"), rh2).unwrap();
+    std::fs::write(
+        ordner.join("leer.szo"),
+        sk_model::szo::write(&sk_model::Model::new()),
+    )
+    .unwrap();
+    // Dieses Haus mit eigener Kopie, Lohn 70 nur hier
+    let mut s = haus();
+    s.kosten_folge(
+        "Lohn nur dieses Haus",
+        Some(c.library()),
+        &sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "17:00"),
+        &[Op::FirmenwertSetzen {
+            schluessel: "wage".into(),
+            wert: Dez::ganz(70),
+        }],
+    )
+    .unwrap();
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    let namen: Vec<&str> = v.wirkung.haeuser.iter().map(|h| h.name.as_str()).collect();
+    assert_eq!(
+        namen,
+        [
+            "Standardhaus",
+            "a-versatz",
+            "b-mehrschalig",
+            "kaputt",
+            "leer"
+        ]
+    );
+    let kaputt = &v.wirkung.haeuser[3];
+    assert!(
+        kaputt.fehler.as_deref().is_some_and(|f| f
+            .starts_with("Referenzhaus kaputt.szo lässt sich nicht lesen (")
+            && f.ends_with("); es wird nicht gerechnet.")),
+        "{:?}",
+        kaputt.fehler
+    );
+    assert_eq!(
+        v.wirkung.haeuser[4].hinweis().as_deref(),
+        Some("Referenzhaus leer.szo hat keine Kostenzeile.")
+    );
+    assert!(v.wirkung.haeuser[1].vorher.0 > 0 && v.wirkung.haeuser[2].vorher.0 > 0);
+    // Im Baum grau, in der Wirkzeile nicht; nichts davon sperrt OK
+    v.waehlen(Knoten::Haus(3));
+    let z = v.zeilen();
+    assert!(z.iter().any(|z| z.knoten == Knoten::Haus(3) && z.grau));
+    let zeile: Vec<String> = wirkung::zeile(v.wirkung.alle())
+        .into_iter()
+        .map(|t| t.0)
+        .collect();
+    assert_eq!(zeile.len(), 5, "{zeile:?}");
+    assert!(zeile.iter().all(|t| !t.starts_with("kaputt")));
+    v.waehlen(Knoten::Firmenwerte);
+    v.eingeben(&Feld::Wert("wage".into()), "65");
+    assert!(!v.gesperrt());
+    // Aktuelles Haus als Referenzhaus: rechnet mit der Firma (65), nicht
+    // mit seiner Kopie (70)
+    v.set_haus_name("Muster Meier.szo");
+    v.aktion(Aktion::AlsReferenz);
+    assert!(ordner.join("Muster Meier.szo").exists(), "{:?}", v.meldung);
+    let i = v
+        .wirkung
+        .haeuser
+        .iter()
+        .position(|h| h.name == "Muster Meier")
+        .unwrap();
+    assert_eq!(v.wahl, Knoten::Haus(i));
+    let neu = &v.wirkung.haeuser[i];
+    let std = &v.wirkung.haeuser[0];
+    assert_eq!(
+        (neu.vorher, neu.nachher),
+        (std.vorher, std.nachher),
+        "wie das Standardhaus"
+    );
+    let d = v.wirkung.dieses.as_ref().unwrap();
+    assert_eq!(d.vorher, d.nachher, "dieses Haus behält 70 (Regel 89)");
+    assert!(neu.nachher > neu.vorher);
+    v.aktion(Aktion::AlsReferenz);
+    assert!(ordner.join("Muster Meier (2).szo").exists());
+    // Malen samt Tooltip
+    let fonts = schriften();
+    let w = win();
+    v.waehlen(Knoten::Haeuser);
+    v.hover = Some(Ziel::Tipp(wirkung::FLAECHE_TIPP));
+    v.paint(&Theme::dark(), &fonts, &w);
+    for k in (0..v.wirkung.haeuser.len()).map(Knoten::Haus) {
+        v.waehlen(k);
+        v.paint(&Theme::dark(), &fonts, &w);
+    }
+    assert_eq!(
+        std::fs::read_to_string(ordner.join("kaputt.szo")).unwrap(),
+        "kein Haus",
+        "nie geändert"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Klick in den Baum wählt und klappt; Klick in ein Feld öffnet es, Enter
 /// übernimmt. Malen geht in jeder Seite.
 #[test]
@@ -740,5 +876,27 @@ fn istbilder_ka3() {
     v.zuruecknehmen(n, r);
     let (b, _, _) = v.paint(&t, &fonts, &w);
     std::fs::write(dir.join("ist-ka-3-protokoll-zurueck.png"), b.to_png()).unwrap();
+    // Referenzhäuser (KA-3a4): zwei eigene, eins kaputt; Lohn 64,50
+    let ordner = tmp.join(wirkung::ORDNER);
+    std::fs::create_dir_all(&ordner).unwrap();
+    let rh2 = include_str!("../../../crates/sk-cost/referenz/rh2-mehrschalig.szo");
+    let rh3 = include_str!("../../../crates/sk-cost/referenz/rh3-versatz-dachterrasse.szo");
+    std::fs::write(ordner.join("Doppelhaus Mehrschalig.szo"), rh2).unwrap();
+    std::fs::write(ordner.join("Stadtvilla Dachterrasse.szo"), rh3).unwrap();
+    std::fs::write(ordner.join("Altbau kaputt.szo"), "kein Haus").unwrap();
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    v.waehlen(Knoten::Firmenwerte);
+    v.eingeben(&Feld::Wert("wage".into()), "66");
+    v.waehlen(Knoten::Haeuser);
+    let (b, _, _) = v.paint(&t, &fonts, &w);
+    std::fs::write(dir.join("ist-ka-3a4-referenzhaeuser.png"), b.to_png()).unwrap();
+    v.waehlen(Knoten::Haus(0));
+    v.hover = Some(Ziel::Tipp(wirkung::FLAECHE_TIPP));
+    let (b, _, _) = v.paint(&t, &fonts, &w);
+    std::fs::write(dir.join("ist-ka-3a4-standardhaus.png"), b.to_png()).unwrap();
+    v.hover = None;
+    v.waehlen(Knoten::Haus(1));
+    let (b, _, _) = v.paint(&t, &fonts, &w);
+    std::fs::write(dir.join("ist-ka-3a4-kaputt.png"), b.to_png()).unwrap();
     let _ = std::fs::remove_dir_all(&tmp);
 }
