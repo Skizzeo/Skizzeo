@@ -4560,14 +4560,24 @@ impl App {
                     .and_then(|m| m.modified())
                     .unwrap_or(now);
                 let (.., h, m) = autosave::local_at(at, now, sk_platform::local_date_time());
-                self.notice = Some(Notice {
-                    text: meldung::Meldung::mit(
-                        "Sicherung von {} wiederhergestellt.",
-                        &[&format!("{h:02}:{m:02}")],
+                let zeit = format!("{h:02}:{m:02}");
+                // Gespeicherte Datei nicht lesbar: sie bleibt, wie sie ist
+                let name = original
+                    .filter(|_| self.doc.path.is_none())
+                    .and_then(|o| o.file_name())
+                    .map(|n| n.to_string_lossy().into_owned());
+                let text = match &name {
+                    Some(n) => meldung::Meldung::mit(
+                        "Sicherung von {} wiederhergestellt. {} ist nicht lesbar und bleibt unverändert; bitte unter neuem Namen speichern.",
+                        &[&zeit, n],
                     ),
+                    None => meldung::Meldung::mit("Sicherung von {} wiederhergestellt.", &[&zeit]),
+                };
+                self.notice = Some(Notice {
+                    text,
                     since: None,
                     rect: (0.0, 0.0, 0.0, 0.0),
-                    time: std::time::Duration::from_secs(5),
+                    time: std::time::Duration::from_secs(if name.is_some() { 15 } else { 5 }),
                     catalog: false,
                     error: false,
                 });

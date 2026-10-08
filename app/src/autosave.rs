@@ -434,6 +434,10 @@ pub fn restore(
 ) -> Result<(Scene, Document), crate::meldung::Meldung> {
     let l = crate::document::load(backup)?;
     let s = Scene::with_model(l.model);
+    // Ist die gespeicherte Datei da, aber nicht lesbar (kaputt oder aus
+    // einer neueren Fassung), bleibt sie unangetastet: Strg+S fragt dann
+    // nach einem Namen, statt sie mit der Sicherung zu überschreiben
+    let original = original.filter(|o| !o.exists() || crate::document::load(o).is_ok());
     let doc = Document::restored(original.map(Path::to_path_buf));
     Ok((s, doc))
 }
@@ -596,6 +600,46 @@ mod tests {
             (2025, 12, 31, 23, 20)
         );
         assert_eq!(civil_from_days(days_from_civil(2024, 2, 29)), (2024, 2, 29));
+    }
+
+    /// Wiederherstellen: Die Sicherung bleibt liegen; eine gespeicherte
+    /// Datei, die kaputt ist oder aus einer neueren Fassung stammt, wird
+    /// nicht zum Speicherziel (Review 3am).
+    #[test]
+    fn wiederherstellen_laesst_unlesbares_original_stehen() {
+        let d =
+            std::env::temp_dir().join(format!("skizzeo-wiederherstellen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let sicherung = d.join("haus 2026-10-08 14-00.szo");
+        crate::document::save(&sk_model::Model::new(), &sicherung).unwrap();
+        let vorher = std::fs::read(&sicherung).unwrap();
+        let gut = d.join("gut.szo");
+        crate::document::save(&sk_model::Model::new(), &gut).unwrap();
+        let neuer = d.join("neuer.szo");
+        std::fs::write(&neuer, "SZO 99\n").unwrap();
+        let kaputt = d.join("kaputt.szo");
+        std::fs::write(&kaputt, "Hallo").unwrap();
+        let fehlt = d.join("fehlt.szo");
+        for (o, soll) in [
+            (&gut, true),
+            (&fehlt, true),
+            (&neuer, false),
+            (&kaputt, false),
+        ] {
+            let (_, doc) = restore(&sicherung, Some(o)).unwrap();
+            assert_eq!(doc.path.as_deref() == Some(o.as_path()), soll, "{o:?}");
+            assert_eq!(doc.path.is_none(), !soll, "{o:?}");
+        }
+        assert_eq!(std::fs::read(&sicherung).unwrap(), vorher);
+        assert_eq!(std::fs::read(&neuer).unwrap(), b"SZO 99\n");
+        // Kaputte Sicherung: Fehler als Satz, die Datei bleibt
+        std::fs::write(&sicherung, "SZO 4\nkaputt").unwrap();
+        let e = restore(&sicherung, Some(&gut)).err().unwrap();
+        assert!(e.starts_with("Projekt nicht geöffnet"), "{e}");
+        assert_eq!(std::fs::read(&sicherung).unwrap(), b"SZO 4\nkaputt");
+        crate::meldung::protokoll_im_test();
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Ungültige oder fremde Zeilen im Verzeichnis stören nicht; Zeilen
