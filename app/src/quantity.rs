@@ -657,7 +657,9 @@ impl QuantityWindow {
                 mods,
                 ..
             } if self.blatt() == Blatt::Kosten
-                && self.kosten.as_ref().is_some_and(|k| k.blatt_offen()) =>
+                && self.kosten.as_ref().is_some_and(|k| {
+                    k.blatt_offen() || (key == Key::Escape && k.unterschiede_offen())
+                }) =>
             {
                 let o = self.kosten.as_mut()?.key(t, key, mods)?;
                 self.list_out(o, t)

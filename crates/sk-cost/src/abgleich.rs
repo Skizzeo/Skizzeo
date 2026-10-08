@@ -29,6 +29,11 @@ pub struct Abgleich {
     pub texte: Vec<String>,
     /// Ein Satzteil hat keinen Wert („Stoffanteile von …“, „Los …“).
     pub ohne_wert: bool,
+    /// Abweichungen mit eigenem Projektwert (Regel 89): bleiben beim
+    /// Übernehmen; Satzteile wie `texte` (KA-3a5).
+    pub eigene: Vec<String>,
+    /// Stammsätze, die gleich sind (KA-3a5 „Unterschiede ansehen“).
+    pub gleich: usize,
 }
 
 impl Abgleich {
@@ -101,18 +106,28 @@ pub fn abgleich(m: &Model, firma: Option<&Library>) -> Option<Abgleich> {
     let mut saetze = Vec::new();
     let mut texte: Vec<String> = Vec::new();
     let mut ohne_wert = false;
+    let mut eigene: Vec<String> = Vec::new();
+    let mut gleich = 0;
     for a in STAMM {
         let (p, f) = (zeilen(projekt, a), zeilen(&bezug, a));
         let mut ids: Vec<&String> = p.keys().chain(f.keys()).collect();
         ids.sort();
         ids.dedup();
         for id in ids {
-            if markiert.contains(id.as_str()) || p.get(id) == f.get(id) {
+            if p.get(id) == f.get(id) {
+                gleich += 1;
                 continue;
             }
             let Some(abschnitt) = crate::satz::abschnitt(a).map(|x| x.name) else {
                 continue;
             };
+            if markiert.contains(id.as_str()) {
+                let (t, _) = text(a, id, &fk, &pk);
+                if !eigene.contains(&t) {
+                    eigene.push(t);
+                }
+                continue;
+            }
             saetze.push(SatzId::neu(abschnitt, id.clone()));
             let (t, wert) = text(a, id, &fk, &pk);
             if !texte.contains(&t) {
@@ -126,6 +141,8 @@ pub fn abgleich(m: &Model, firma: Option<&Library>) -> Option<Abgleich> {
         saetze,
         texte,
         ohne_wert,
+        eigene,
+        gleich,
     })
 }
 
@@ -286,6 +303,11 @@ mod tests {
         );
         assert_eq!(a.stand, neu.stand);
         assert_eq!(a.saetze, [SatzId::neu("rate", "wage")]);
+        // Unterschiede ansehen (KA-3a5): der eigene Preis bleibt, der Rest
+        // ist gleich
+        assert_eq!(a.eigene.len(), 1, "{:?}", a.eigene);
+        assert!(a.eigene[0].ends_with("(hier 99,00)"), "{:?}", a.eigene);
+        assert!(a.gleich > 50, "{}", a.gleich);
         // so lassen: weg bis zum nächsten Stand
         let mut m2 = m.clone();
         m2.begin("Lassen");
@@ -328,6 +350,8 @@ mod tests {
             saetze: Vec::new(),
             texte: vec!["Lohn 65,00 €/h (hier 60,00)".into()],
             ohne_wert: false,
+            eigene: Vec::new(),
+            gleich: 0,
         };
         assert_eq!(
             a.zeile(),

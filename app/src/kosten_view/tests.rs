@@ -429,7 +429,8 @@ fn abgleichzeile_fuer_neue_haeuser() {
         Some("Für neue Häuser gilt Lohn 65,00 €/h (hier 60,00)")
     );
     assert_eq!(v.list_top(), oben + ABGLEICH_H * v.scale);
-    let (_, _, _, _, (ux, uy, uw, uh), (lx, ..)) = v.abgleich_lage(&t, &fonts).unwrap();
+    let lage = v.abgleich_lage(&t, &fonts).unwrap();
+    let ((ux, uy, uw, uh), (lx, ..)) = (lage.uebernehmen, lage.lassen);
     let (x, y) = ((ux + uw * 0.5) as f64, (uy + uh * 0.5) as f64);
     // Die Vorschau entsteht erst über „übernehmen“ (Review 3ak)
     let mut p = Picking::default();
@@ -448,11 +449,77 @@ fn abgleichzeile_fuer_neue_haeuser() {
         lassen,
         Some(ListOut::Kosten(Schreiben::Lassen(_)))
     ));
+    // KA-3a5: „Unterschiede ansehen“ öffnet das Blatt; abweichend, der
+    // eigene Preis bleibt, Zahl der gleichen Einträge
+    assert!(!v.unterschiede_offen());
+    let (ax, ay) = v.ansehen_mitte(&t, &fonts).unwrap();
+    assert_eq!(
+        v.mouse_down(&t, &fonts, &mut p, (ax, ay), mods),
+        Some(ListOut::Repaint)
+    );
+    assert!(v.unterschiede_offen());
+    let z = v.unterschiede_zeilen();
+    assert_eq!(
+        z[..3],
+        [
+            unterschiede::Zeile::Titel(
+                "Unterschiede zum Firmenkatalog".into(),
+                format!(
+                    "Stand {}",
+                    c.library().ext("catalog").next().map_or(0, |r| {
+                        r.line
+                            .split(' ')
+                            .find_map(|w| w.strip_prefix("stand="))
+                            .and_then(|n| n.parse::<u32>().ok())
+                            .unwrap_or(0)
+                    })
+                )
+            ),
+            unterschiede::Zeile::Kopf("Abweichend", "„übernehmen“ setzt den Wert für neue Häuser"),
+            unterschiede::Zeile::Eintrag("Lohn 65,00 €/h (hier 60,00)".into()),
+        ]
+    );
+    assert_eq!(
+        z[3],
+        unterschiede::Zeile::Kopf("Eigener Wert dieses Hauses", "bleibt auch beim Übernehmen")
+    );
+    assert!(
+        matches!(&z[4], unterschiede::Zeile::Eintrag(e) if e.ends_with("(hier 99,00)")),
+        "{z:?}"
+    );
+    assert!(
+        matches!(z.last(), Some(unterschiede::Zeile::Fuss(f)) if f.ends_with("Einträge gleich")),
+        "{z:?}"
+    );
+    // Klick auf das Blatt tut nichts und trifft nichts darunter
+    let ((bx, by, bw, bh), _) = v.unterschiede_lage(&t, &fonts).unwrap();
+    let mitte = ((bx + bw * 0.5) as f64, (by + bh * 0.5) as f64);
+    assert_eq!(v.tip_at(&t, &fonts, mitte.0, mitte.1), None);
+    assert_eq!(v.mouse_down(&t, &fonts, &mut p, mitte, mods), None);
+    assert!(v.unterschiede_offen());
+    // Esc schließt, nochmals öffnen, Klick daneben schließt
+    assert_eq!(
+        v.key(&t, sk_platform::Key::Escape, mods),
+        Some(Some(ListOut::Repaint))
+    );
+    assert!(!v.unterschiede_offen());
+    v.mouse_down(&t, &fonts, &mut p, (ax, ay), mods);
+    assert!(v.unterschiede_offen());
+    let daneben = ((bx + bw + 40.0) as f64, (by + bh + 40.0) as f64);
+    assert_eq!(
+        v.mouse_down(&t, &fonts, &mut p, daneben, mods),
+        Some(ListOut::Repaint)
+    );
+    assert!(!v.unterschiede_offen());
+    // „übernehmen“ wirkt auch bei offenem Blatt und schließt es
+    v.mouse_down(&t, &fonts, &mut p, (ax, ay), mods);
+    assert!(v.unterschiede_offen());
     let Some(ListOut::Kosten(Schreiben::Uebernehmen(saetze))) =
         v.mouse_down(&t, &fonts, &mut p, (x, y), mods)
     else {
         panic!("übernehmen");
     };
+    assert!(!v.unterschiede_offen());
     let op = Op::StandUebernehmen { saetze };
     s.kosten_folge("Übernommen", Some(c.library()), &h, &[op])
         .unwrap();

@@ -150,6 +150,7 @@ impl Zeile {
 mod bild;
 #[cfg(test)]
 mod tests;
+mod unterschiede;
 mod zeilen;
 
 pub use zeilen::{chip_summen, euro_ganz, menge_text, zeilen};
@@ -216,8 +217,10 @@ enum Hot {
     /// Verweis in der Fußzeile: geschätzte bzw. graue Zeilen.
     Geschaetzt,
     OhnePreis,
-    /// Abgleichzeile: Text (Liste im Tooltip), „übernehmen“, „so lassen“.
+    /// Abgleichzeile: Text (Liste im Tooltip), „Unterschiede ansehen“,
+    /// „übernehmen“, „so lassen“.
     Abgleich,
+    Ansehen,
     Uebernehmen,
     Lassen,
     /// „Bauleistung wählen …“ an der grauen Zeile.
@@ -343,6 +346,8 @@ pub struct KostenView {
     /// Kostenblatt, zu dem die Netto-Vorschau von „übernehmen“ gehört; sie
     /// wird erst gerechnet, wenn die Maus auf „übernehmen“ steht.
     abgleich_netto_von: Option<*const Kostenblatt>,
+    /// Blatt „Unterschiede ansehen“ offen (KA-3a5).
+    unterschiede: bool,
     /// Blatt „Bauleistung wählen …“, sein Öffnen beim nächsten `sync`
     /// (Zeile ohne Bauleistung und Bauteil) und die grauen Zeilen, für die
     /// es etwas zu wählen gibt.
@@ -404,6 +409,7 @@ impl KostenView {
             abgleich: None,
             abgleich_von: None,
             abgleich_netto_von: None,
+            unterschiede: false,
             wahl: None,
             wahl_wunsch: None,
             wahl_nach: None,
@@ -592,6 +598,7 @@ impl KostenView {
             if changed {
                 self.clamp();
             }
+            self.unterschiede &= self.abgleich.is_some();
         }
         // Netto-Vorschau nur für den Tooltip an „übernehmen“
         let ptr = Rc::as_ptr(blatt);
@@ -1003,6 +1010,10 @@ impl KostenView {
         mods: sk_platform::Modifiers,
     ) -> Option<Option<ListOut>> {
         self.lege_preis(t);
+        if self.unterschiede && key == sk_platform::Key::Escape {
+            self.unterschiede = false;
+            return Some(Some(ListOut::Repaint));
+        }
         if let Some(l) = self.lohn.as_mut() {
             let aus = l.key(key, mods);
             return Some(aus.and_then(|a| self.lohn_aus(a)));
@@ -1071,37 +1082,6 @@ impl KostenView {
     /// Erste Zeile der Liste (px).
     fn list_top(&self) -> f32 {
         self.top_px() + self.head() * self.scale
-    }
-
-    /// Abgleichzeile: x des Texts, Grundlinie, Text (gekürzt), Textfläche,
-    /// „übernehmen“ und „so lassen“ (px).
-    fn abgleich_lage(
-        &self,
-        t: &Theme,
-        fonts: &Fonts,
-    ) -> Option<(f32, f32, String, Rect, Rect, Rect)> {
-        let (a, _) = self.abgleich.as_ref()?;
-        let s = self.scale;
-        let (x0, cw) = self.content_x(t);
-        let px = 11.0 * s;
-        let regular = fonts.regular.as_ref();
-        let bold = fonts.bold.as_ref().or(regular);
-        let breite = |f: Option<&sk_paint::font::Font>, text: &str| {
-            f.map_or(text.chars().count() as f32 * px * 0.55, |f| {
-                f.width(text, px)
-            })
-        };
-        let base = self.top_px() + ABGLEICH_Y * s;
-        let x = x0 + 12.0 * s;
-        let sep = breite(regular, " · ");
-        let (wu, wl) = (breite(bold, "übernehmen"), breite(bold, "so lassen"));
-        let platz = (x0 + cw - x - 2.0 * sep - wu - wl).max(0.0);
-        let text = sk_ui::widgets::ellipsize(regular, &a.zeile(), px, platz);
-        let wt = breite(regular, &text);
-        let (y, h) = (base - 14.0 * s, ABGLEICH_H * s);
-        let u = x + wt + sep;
-        let l = u + wu + sep;
-        Some((x, base, text, (x, y, wt, h), (u, y, wu, h), (l, y, wl, h)))
     }
 
     /// Oberkante der Kacheln (px).
@@ -1330,6 +1310,9 @@ impl KostenView {
 
     fn hit(&self, t: &Theme, fonts: &Fonts, x: f64, y: f64) -> Option<Hot> {
         let (x, y) = (x as f32, y as f32);
+        if self.auf_unterschieden(t, fonts, x, y) {
+            return None;
+        }
         if let Some(h) = self.leiste.hit(fonts, self.leiste_lage(t), x, y) {
             return Some(Hot::Umfang(h));
         }
@@ -1339,11 +1322,12 @@ impl KostenView {
         if inside(self.button_rect(t, fonts), x, y) {
             return Some(Hot::Button);
         }
-        if let Some((_, _, _, text, u, l)) = self.abgleich_lage(t, fonts) {
+        if let Some(a) = self.abgleich_lage(t, fonts) {
             for (r, h) in [
-                (u, Hot::Uebernehmen),
-                (l, Hot::Lassen),
-                (text, Hot::Abgleich),
+                (a.ansehen, Hot::Ansehen),
+                (a.uebernehmen, Hot::Uebernehmen),
+                (a.lassen, Hot::Lassen),
+                (a.text_r, Hot::Abgleich),
             ] {
                 if inside(r, x, y) {
                     return Some(h);
@@ -1511,6 +1495,17 @@ impl KostenView {
             return self.preis_aus(aus);
         }
         let hot = self.hit(t, fonts, x, y);
+        // Offenes Blatt „Unterschiede“: Klick darauf tut nichts, daneben
+        // schließt es; „übernehmen“ und „so lassen“ wirken trotzdem
+        if self.unterschiede {
+            if self.auf_unterschieden(t, fonts, x as f32, y as f32) {
+                return None;
+            }
+            if !matches!(hot, Some(Hot::Uebernehmen | Hot::Lassen | Hot::Ansehen)) {
+                self.unterschiede = false;
+                return Some(ListOut::Repaint);
+            }
+        }
         if let Some(Hot::Umfang(h)) = hot {
             self.leiste.click(h, mods.ctrl);
             return Some(ListOut::Repaint);
@@ -1582,6 +1577,10 @@ impl KostenView {
             Hot::Geschaetzt => self.springe(|z| z.geschaetzt),
             Hot::OhnePreis => self.springe(|z| z.art == Art::Ohne),
             Hot::Abgleich => None,
+            Hot::Ansehen => {
+                self.unterschiede = !self.unterschiede;
+                Some(ListOut::Repaint)
+            }
             Hot::Lohnsatz => {
                 self.lohn_wunsch = Some(lohn_blatt::Form::Blatt);
                 Some(ListOut::Repaint)
@@ -1593,10 +1592,12 @@ impl KostenView {
                 Some(ListOut::Repaint)
             }
             Hot::Uebernehmen => {
+                self.unterschiede = false;
                 let (a, _) = self.abgleich.as_ref()?;
                 Some(ListOut::Kosten(Schreiben::Uebernehmen(a.saetze.clone())))
             }
             Hot::Lassen => {
+                self.unterschiede = false;
                 let (a, _) = self.abgleich.as_ref()?;
                 Some(ListOut::Kosten(Schreiben::Lassen(a.stand)))
             }
@@ -1773,6 +1774,7 @@ impl KostenView {
         self.paint_scrollbar(c, t);
         self.leiste
             .paint_field_list(c, t, fonts, self.leiste_lage(t));
+        self.paint_unterschiede(c, t, fonts);
         if let Some(pb) = &self.preis {
             pb.paint(c, t, fonts);
         }
@@ -1895,63 +1897,6 @@ impl KostenView {
             s.max(1.0),
             u.sheet_rule,
         );
-    }
-
-    /// „● Für neue Häuser gilt … · übernehmen · so lassen“.
-    fn paint_abgleich(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts) {
-        let Some((x, base, text, _, (ux, _, _, _), (lx, _, _, _))) = self.abgleich_lage(t, fonts)
-        else {
-            return;
-        };
-        let (s, u) = (self.scale, &t.ui);
-        let px = 11.0 * s;
-        let regular = fonts.regular.as_ref();
-        let bold = fonts.bold.as_ref().or(regular);
-        let (x0, _) = self.content_x(t);
-        let cap = regular.map_or(8.0 * s, |f| f.cap_height(px));
-        let mut p = Path::new();
-        let d = 3.0 * s;
-        p.rounded_rect(x0, base - cap * 0.5 - d, 2.0 * d, 2.0 * d, d);
-        c.fill(&p, u.accent);
-        if let Some(f) = regular {
-            f.draw(c, &text, px, x, base, u.sheet_text);
-            f.draw(
-                c,
-                " · ",
-                px,
-                ux - f.width(" · ", px),
-                base,
-                u.sheet_text_dim,
-            );
-            f.draw(
-                c,
-                " · ",
-                px,
-                lx - f.width(" · ", px),
-                base,
-                u.sheet_text_dim,
-            );
-        }
-        if let Some(f) = bold {
-            let unter = |h| self.hot == Some(h);
-            let farbe = |h, c| if unter(h) { u.text } else { c };
-            f.draw(
-                c,
-                "übernehmen",
-                px,
-                ux,
-                base,
-                crate::cards::verweis(u, unter(Hot::Uebernehmen)),
-            );
-            f.draw(
-                c,
-                "so lassen",
-                px,
-                lx,
-                base,
-                farbe(Hot::Lassen, u.sheet_text_dim),
-            );
-        }
     }
 
     #[allow(clippy::too_many_arguments)]

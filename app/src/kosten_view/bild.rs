@@ -24,7 +24,13 @@ impl KostenView {
 
     /// Mitte von „übernehmen“ in der Abgleichzeile.
     pub(crate) fn uebernehmen_mitte(&self, t: &Theme, fonts: &Fonts) -> Option<(f64, f64)> {
-        let (_, _, _, _, (x, y, w, h), _) = self.abgleich_lage(t, fonts)?;
+        let (x, y, w, h) = self.abgleich_lage(t, fonts)?.uebernehmen;
+        Some(((x + w * 0.5) as f64, (y + h * 0.5) as f64))
+    }
+
+    /// Mitte von „Unterschiede ansehen“ in der Abgleichzeile (KA-3a5).
+    pub(crate) fn ansehen_mitte(&self, t: &Theme, fonts: &Fonts) -> Option<(f64, f64)> {
+        let (x, y, w, h) = self.abgleich_lage(t, fonts)?.ansehen;
         Some(((x + w * 0.5) as f64, (y + h * 0.5) as f64))
     }
 
