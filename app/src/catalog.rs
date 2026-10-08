@@ -1328,7 +1328,7 @@ mod abnahme_ka2c2_haus {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Abgleich ab drei Unterschieden: „3 Werte für neue Häuser sind anders“,
+    /// Abgleich ab drei Unterschieden: „3 Änderungen für neue Häuser“,
     /// die Liste trägt alle drei.
     #[test]
     fn abgleich_ab_drei_werten() {
@@ -1349,7 +1349,7 @@ mod abnahme_ka2c2_haus {
         .unwrap();
         let ab = abgleich(b.model(), Some(c.library())).unwrap();
         assert_eq!(ab.texte.len(), 3, "{:?}", ab.texte);
-        assert_eq!(ab.zeile(), "3 Werte für neue Häuser sind anders");
+        assert_eq!(ab.zeile(), "3 Änderungen für neue Häuser");
         assert_eq!(ab.saetze.len(), 3);
         let _ = std::fs::remove_dir_all(&d);
     }

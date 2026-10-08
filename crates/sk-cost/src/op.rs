@@ -336,11 +336,7 @@ impl Op {
                 "wage" => format!("Lohn {} €/h", wert.cent().deutsch()),
                 "surcharge" => format!("Zuschlag Stoff {} %", komma(*wert)),
                 "vat" => format!("MwSt. {} %", komma(*wert)),
-                k => format!(
-                    "Bewehrungsgrad {} {} kg/m³",
-                    k.strip_prefix("steel.").unwrap_or(k),
-                    komma(*wert)
-                ),
+                k => format!("{} {} kg/m³", crate::wort::bewehrungsgrad(k), komma(*wert)),
             },
             Op::LosAnlegen {
                 name, los: None, ..

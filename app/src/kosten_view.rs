@@ -1552,10 +1552,12 @@ impl KostenView {
             }
             Hot::Abgleich => {
                 let (a, _) = self.abgleich.as_ref()?;
-                (a.texte.len() > 2)
-                    .then(|| format!("Für neue Häuser gilt:\n{}", a.texte.join("\n")))
+                Some(a.tooltip())
             }
             Hot::Uebernehmen => self.tip_uebernehmen(),
+            Hot::Lassen => Some(
+                "Dieses Haus rechnet weiter mit seinen Werten. Die Zeile kommt wieder, wenn sich für neue Häuser erneut etwas ändert.".into(),
+            ),
             Hot::Gliederung(Gliederung::Kostengruppe) => Some(
                 "Kostengruppe nach DIN 276, wie sie Architekten und Bauherren verwenden".into(),
             ),

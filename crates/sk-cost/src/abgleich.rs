@@ -1,7 +1,9 @@
 //! Abgleich mit dem Firmenkatalog (Regel 92, paket-ka2 §5, Bedienbarkeit
 //! 4.3): Welche Stammsätze der Projektkopie weichen von der Firma ab, ohne
 //! eine eigene Projektabweichung zu sein? Daraus die Abgleichzeile „Für neue
-//! Häuser gilt Lohn 65,00 €/h (hier 60,00) · übernehmen · so lassen“.
+//! Häuser gilt Lohn 65,00 €/h (hier 60,00) · übernehmen · so lassen“, mit
+//! einem Unterschied ohne Wert „Für neue Häuser geändert: …“ (Bedienbarkeit
+//! 8.1).
 //! „übernehmen“ ist `StandUebernehmen` mit diesen Sätzen, „so lassen“
 //! `AbgleichLassen` mit dem Firmenstand.
 
@@ -25,18 +27,37 @@ pub struct Abgleich {
     /// Je Unterschied ein Satzteil mit Werten, Firma zuerst: „Lohn 65,00 €/h
     /// (hier 60,00)“. Gleichartige Sätze einer Bauleistung stehen einmal.
     pub texte: Vec<String>,
+    /// Ein Satzteil hat keinen Wert („Stoffanteile von …“, „Los …“).
+    pub ohne_wert: bool,
 }
 
 impl Abgleich {
     /// Text der Abgleichzeile ohne die Verweise: bis zwei Unterschiede im
-    /// Satz, ab drei die Zahl (Liste im Tooltip).
+    /// Satz, ab drei die Zahl (Liste im Tooltip). Hat ein Teil keinen Wert,
+    /// heißt es „geändert:“ statt „gilt“ (Bedienbarkeit 8.1).
     pub fn zeile(&self) -> String {
         match self.texte.as_slice() {
-            [a] => format!("Für neue Häuser gilt {a}"),
-            [a, b] => format!("Für neue Häuser gilt {a}, {b}"),
-            v => format!("{} Werte für neue Häuser sind anders", v.len()),
+            v if v.len() > 2 => format!("{} Änderungen für neue Häuser", v.len()),
+            v if self.ohne_wert => format!("Für neue Häuser geändert: {}", v.join(", ")),
+            v => format!("Für neue Häuser gilt {}", v.join(", ")),
         }
     }
+
+    /// Tooltip der Zeile: Kopf und je Unterschied eine Zeile. Er steht
+    /// immer, denn die Zeile kann gekürzt sein (Bedienbarkeit 8.3).
+    pub fn tooltip(&self) -> String {
+        let kopf = if self.ohne_wert {
+            "Für neue Häuser geändert:"
+        } else {
+            "Für neue Häuser gilt:"
+        };
+        format!("{kopf}\n{}", self.texte.join("\n"))
+    }
+}
+
+/// Deutsch mit Komma, ganze Zahlen ohne Stellen („80“, „82,5“; kg/m³).
+fn ganz_oder_komma(d: Dez) -> String {
+    d.text().replace('.', ",")
 }
 
 /// Deutsch mit Komma und mindestens zwei Stellen („65,00“, „0,45“).
@@ -79,6 +100,7 @@ pub fn abgleich(m: &Model, firma: Option<&Library>) -> Option<Abgleich> {
     };
     let mut saetze = Vec::new();
     let mut texte: Vec<String> = Vec::new();
+    let mut ohne_wert = false;
     for a in STAMM {
         let (p, f) = (zeilen(projekt, a), zeilen(&bezug, a));
         let mut ids: Vec<&String> = p.keys().chain(f.keys()).collect();
@@ -92,8 +114,9 @@ pub fn abgleich(m: &Model, firma: Option<&Library>) -> Option<Abgleich> {
                 continue;
             };
             saetze.push(SatzId::neu(abschnitt, id.clone()));
-            let t = text(a, id, &fk, &pk);
+            let (t, wert) = text(a, id, &fk, &pk);
             if !texte.contains(&t) {
+                ohne_wert |= !wert;
                 texte.push(t);
             }
         }
@@ -102,15 +125,19 @@ pub fn abgleich(m: &Model, firma: Option<&Library>) -> Option<Abgleich> {
         stand,
         saetze,
         texte,
+        ohne_wert,
     })
 }
 
-/// Satzteil zu einem abweichenden Satz, Firma zuerst, „hier“ das Projekt.
-fn text(abschnitt: &str, id: &str, f: &Katalog, p: &Katalog) -> String {
+/// Satzteil zu einem abweichenden Satz, Firma zuerst, „hier“ das Projekt;
+/// `true`, wenn er einen Wert nennt. Ein Name, der sich nicht auflösen
+/// lässt, heißt „ein Eintrag“, nie nach seiner Kennung.
+fn text(abschnitt: &str, id: &str, f: &Katalog, p: &Katalog) -> (String, bool) {
+    use crate::wort::EIN_EINTRAG;
     let g = Guid::from_ifc(id);
     let leistung = |l: Option<Guid>| {
         l.and_then(|l| f.leistung(l).or_else(|| p.leistung(l)))
-            .map_or_else(|| id.to_string(), |l| l.kurz.clone())
+            .map_or_else(|| EIN_EINTRAG.to_string(), |l| l.kurz.clone())
     };
     match abschnitt {
         "rate" => {
@@ -125,43 +152,45 @@ fn text(abschnitt: &str, id: &str, f: &Katalog, p: &Katalog) -> String {
                     .find(|(w, _)| s.strip_prefix("steel.") == Some(w.as_str()))
                     .map(|x| x.1),
             };
-            let (name, einheit) = match id {
-                "wage" => ("Lohn".to_string(), " €/h"),
-                "surcharge" => ("Zuschlag Stoff".to_string(), " %"),
-                "vat" => ("MwSt.".to_string(), " %"),
-                s => (
-                    format!("Bewehrungsgrad {}", s.strip_prefix("steel.").unwrap_or(s)),
-                    " kg/m³",
-                ),
+            let (name, einheit, z): (String, &str, fn(Dez) -> String) = match id {
+                "wage" => ("Lohn".into(), " €/h", zahl),
+                "surcharge" => ("Zuschlag Stoff".into(), " %", zahl),
+                "vat" => ("MwSt.".into(), " %", zahl),
+                s => (crate::wort::bewehrungsgrad(s), " kg/m³", ganz_oder_komma),
             };
             match (wert(f), wert(p)) {
-                (Some(a), Some(b)) => format!("{name} {}{einheit} (hier {})", zahl(a), zahl(b)),
-                (Some(a), None) => format!("{name} {}{einheit}", zahl(a)),
-                _ => format!("{name} anders"),
+                (Some(a), Some(b)) => (format!("{name} {}{einheit} (hier {})", z(a), z(b)), true),
+                (Some(a), None) => (format!("{name} {}{einheit}", z(a)), true),
+                _ => (name, false),
             }
         }
         "article" => {
             let (a, b) = (g.and_then(|g| f.artikel(g)), g.and_then(|g| p.artikel(g)));
-            let name = a.or(b).map_or_else(|| id.to_string(), |x| x.name.clone());
+            let name = a
+                .or(b)
+                .map_or_else(|| EIN_EINTRAG.to_string(), |x| x.name.clone());
             match (a.and_then(|x| x.preis), b.and_then(|x| x.preis)) {
                 (Some(x), Some(y)) if x != y => {
                     let e = a.map_or("", |a| a.einheit.zeichen());
-                    format!("{name} {} €/{e} (hier {})", zahl(x), zahl(y))
+                    (format!("{name} {} €/{e} (hier {})", zahl(x), zahl(y)), true)
                 }
-                _ => format!("{name} anders"),
+                _ => (name, false),
             }
         }
         "service" => {
             let (a, b) = (g.and_then(|g| f.leistung(g)), g.and_then(|g| p.leistung(g)));
             let name = leistung(g);
             match (a, b) {
-                (Some(x), Some(y)) if x.stunden != y.stunden => format!(
-                    "Aufwandswert {name} {} h/{} (hier {})",
-                    zahl(x.stunden),
-                    x.einheit.zeichen(),
-                    zahl(y.stunden)
+                (Some(x), Some(y)) if x.stunden != y.stunden => (
+                    format!(
+                        "Aufwandswert {name} {} h/{} (hier {})",
+                        zahl(x.stunden),
+                        x.einheit.zeichen(),
+                        zahl(y.stunden)
+                    ),
+                    true,
                 ),
-                _ => format!("{name} anders"),
+                _ => (name, false),
             }
         }
         "svcpart" => {
@@ -171,7 +200,7 @@ fn text(abschnitt: &str, id: &str, f: &Katalog, p: &Katalog) -> String {
                 .chain(&p.anteile)
                 .find(|x| Some(x.guid) == g)
                 .map(|x| x.leistung);
-            format!("Stoffanteile von {}", leistung(l))
+            (format!("Stoffanteile von {}", leistung(l)), false)
         }
         "svcfollow" => {
             let l = f
@@ -180,13 +209,13 @@ fn text(abschnitt: &str, id: &str, f: &Katalog, p: &Katalog) -> String {
                 .chain(&p.folgen)
                 .find(|x| Some(x.guid) == g)
                 .map(|x| x.leistung);
-            format!("Folgepositionen von {}", leistung(l))
+            (format!("Folgepositionen von {}", leistung(l)), false)
         }
         _ => {
             let name = g
                 .and_then(|g| f.los(g).or_else(|| p.los(g)))
-                .map_or_else(|| id.to_string(), |l| l.name.clone());
-            format!("Los {name}")
+                .map_or_else(|| EIN_EINTRAG.to_string(), |l| l.name.clone());
+            (format!("Los {name}"), false)
         }
     }
 }
@@ -272,5 +301,58 @@ mod tests {
         let k = lesen::katalog(&m, Some(&firma));
         assert_eq!(k.werte.lohn, Dez::ganz(65));
         assert_eq!(k.artikel(art.guid).unwrap().preis, Some(Dez::ganz(99)));
+    }
+
+    /// Bedienbarkeit 8.1 und 8.2: Satzteile ohne Wert machen „geändert:“,
+    /// ab drei steht die Zahl; Bewehrungsgrad nach der Bauteilart; ein
+    /// Name ohne Auflösung ist „ein Eintrag“.
+    #[test]
+    fn saetze_ohne_wert_und_namen() {
+        let leer = lesen::werk(&Model::new());
+        let (t, w) = text("svcpart", "0000000000000000000XYZ", &leer, &leer);
+        assert_eq!((t.as_str(), w), ("Stoffanteile von ein Eintrag", false));
+        let (t, w) = text("article", "0000000000000000000XYZ", &leer, &leer);
+        assert_eq!((t.as_str(), w), ("ein Eintrag", false));
+        let mut hier = leer.clone();
+        hier.werte.stahl = vec![("groundslab".into(), Dez::ganz(100))];
+        let mut firma = leer.clone();
+        firma.werte.stahl = vec![("groundslab".into(), Dez::ganz(80))];
+        let (t, w) = text("rate", "steel.groundslab", &firma, &hier);
+        assert_eq!(
+            (t.as_str(), w),
+            ("Bewehrungsgrad Sohlplatte 80 kg/m³ (hier 100)", true)
+        );
+        let a = Abgleich {
+            stand: 2,
+            saetze: Vec::new(),
+            texte: vec!["Lohn 65,00 €/h (hier 60,00)".into()],
+            ohne_wert: false,
+        };
+        assert_eq!(
+            a.zeile(),
+            "Für neue Häuser gilt Lohn 65,00 €/h (hier 60,00)"
+        );
+        assert_eq!(
+            a.tooltip(),
+            "Für neue Häuser gilt:\nLohn 65,00 €/h (hier 60,00)"
+        );
+        let a = Abgleich {
+            texte: vec![
+                "Lohn 65,00 €/h (hier 60,00)".into(),
+                "Stoffanteile von AW Porenbeton 17,5".into(),
+            ],
+            ohne_wert: true,
+            ..a
+        };
+        assert_eq!(
+            a.zeile(),
+            "Für neue Häuser geändert: Lohn 65,00 €/h (hier 60,00), Stoffanteile von AW Porenbeton 17,5"
+        );
+        assert!(a.tooltip().starts_with("Für neue Häuser geändert:\n"));
+        let a = Abgleich {
+            texte: vec!["a".into(), "b".into(), "c".into()],
+            ..a
+        };
+        assert_eq!(a.zeile(), "3 Änderungen für neue Häuser");
     }
 }
