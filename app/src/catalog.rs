@@ -124,12 +124,44 @@ struct Stempel {
 }
 
 fn stempel(p: &Path) -> Option<Stempel> {
-    let bytes = std::fs::read(p).ok()?;
-    Some(Stempel {
-        zeit: modified(p),
+    lesen_mit_stempel(p).ok().map(|(_, s)| s)
+}
+
+/// Inhalt und Stempel aus einem Lesen. Die Zeit kommt vor dem Lesen: Ändert
+/// ein anderer Platz die Datei dazwischen, passt der Stempel später nicht
+/// mehr, und es wird nichts Veraltetes zurückgeschrieben.
+fn lesen_mit_stempel(p: &Path) -> std::io::Result<(Vec<u8>, Stempel)> {
+    let zeit = modified(p);
+    let bytes = std::fs::read(p)?;
+    let s = Stempel {
+        zeit,
         laenge: bytes.len() as u64,
         inhalt: fingerprint(&bytes),
-    })
+    };
+    Ok((bytes, s))
+}
+
+/// Eindeutig je Prozess und Aufruf (Sperre, temporäre Datei).
+fn kennung() -> String {
+    let n = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    format!("{}-{n}", std::process::id())
+}
+
+/// Alter der Datei `p` nach der Uhr des Ablageorts: Auf einem Netzlaufwerk
+/// setzt der Server die Änderungszeit, die eigene Uhr kann abweichen. Eine
+/// frisch angelegte Datei daneben gibt dessen „jetzt“; geht das nicht, gilt
+/// die eigene Uhr.
+fn alter(p: &Path) -> Option<Duration> {
+    let m = modified(p)?;
+    let uhr = p.with_extension(format!("szk.uhr-{}", kennung()));
+    let jetzt = std::fs::write(&uhr, b"")
+        .ok()
+        .and_then(|_| modified(&uhr))
+        .unwrap_or_else(SystemTime::now);
+    let _ = std::fs::remove_file(&uhr);
+    jetzt.duration_since(m).ok()
 }
 
 /// Ab diesem Alter gilt eine Sperrdatei als liegen geblieben.
@@ -140,15 +172,27 @@ pub const GESPERRT: &str =
     "Firmenkatalog wird gerade an einem anderen Platz gespeichert · nochmal versuchen";
 
 /// Sperrdatei `firmenkatalog.szk.lock` neben dem Katalog (Bausteingrenze
-/// §5): mit `create_new` angelegt, Inhalt Platz und Uhrzeit; gelöscht, wenn
-/// sie fallen gelassen wird.
+/// §5): mit `create_new` angelegt, Inhalt Platz, Uhrzeit und eine Kennung;
+/// gelöscht, wenn sie fallen gelassen wird und noch die eigene ist.
 struct Sperre {
     path: PathBuf,
+    inhalt: String,
+}
+
+impl Sperre {
+    /// Liegt noch die eigene Sperre? Übernehmen zwei Plätze gleichzeitig
+    /// eine liegen gebliebene, löscht der zweite die frische des ersten;
+    /// vor dem Schreiben merkt es so der, dessen Sperre weg ist.
+    fn gilt(&self) -> bool {
+        std::fs::read_to_string(&self.path).is_ok_and(|t| t == self.inhalt)
+    }
 }
 
 impl Drop for Sperre {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        if self.gilt() {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -164,7 +208,7 @@ fn sperren(path: &Path) -> Result<(Sperre, Option<String>), String> {
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_else(|_| "unbekannter Platz".into());
     let (j, mo, t, h, mi) = sk_platform::local_date_time();
-    let inhalt = format!("{platz} {t:02}.{mo:02}.{j} {h:02}:{mi:02}\n");
+    let inhalt = format!("{platz} {t:02}.{mo:02}.{j} {h:02}:{mi:02} {}\n", kennung());
     let anlegen = || {
         std::fs::OpenOptions::new()
             .write(true)
@@ -175,9 +219,7 @@ fn sperren(path: &Path) -> Result<(Sperre, Option<String>), String> {
     let mut f = match anlegen() {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            let alt = modified(&lock)
-                .and_then(|m| m.elapsed().ok())
-                .is_some_and(|d| d > SPERRE_ALT);
+            let alt = alter(&lock).is_some_and(|d| d > SPERRE_ALT);
             if !alt {
                 return Err(GESPERRT.into());
             }
@@ -196,16 +238,21 @@ fn sperren(path: &Path) -> Result<(Sperre, Option<String>), String> {
             ))
         }
     };
-    let _ = f.write_all(inhalt.as_bytes());
-    Ok((Sperre { path: lock }, hinweis))
+    f.write_all(inhalt.as_bytes())
+        .and_then(|_| f.sync_all())
+        .map_err(|e| format!("Firmenkatalog {} nicht gesperrt: {e}", path.display()))?;
+    Ok((Sperre { path: lock, inhalt }, hinweis))
 }
 
-/// Schreibt atomar: erst eine temporäre Datei daneben, dann umbenennen.
+/// Schreibt atomar: erst eine temporäre Datei daneben, dann umbenennen
+/// (unter Windows `MoveFileExW` mit Ersetzen). Die temporäre Datei ist je
+/// Aufruf eine eigene: Schreiben zwei Plätze zugleich, benennt keiner die
+/// halb geschriebene des anderen um.
 fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension("szk.tmp");
+    let tmp = path.with_extension(format!("szk.{}.tmp", kennung()));
     let res = crate::document::write_synced(&tmp, text.as_bytes())
         .and_then(|_| std::fs::rename(&tmp, path));
     if res.is_err() {
@@ -236,9 +283,14 @@ impl Company {
         let shown = self.path.display();
         self.broken = false;
         self.gen += 1;
-        match std::fs::read_to_string(&self.path) {
-            Ok(text) => {
-                self.stamp = stempel(&self.path);
+        let gelesen = lesen_mit_stempel(&self.path).and_then(|(b, s)| {
+            String::from_utf8(b)
+                .map(|t| (t, s))
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        });
+        match gelesen {
+            Ok((text, s)) => {
+                self.stamp = Some(s);
                 match read_szk_with(&text, &sk_cost::lesen::ABSCHNITTE_SZK) {
                     Ok(lib) => {
                         self.geladen = text.clone();
@@ -319,6 +371,14 @@ impl Company {
         // bleibt sonst bytegleich (Reihenfolge, fremde Zeilen)
         let text = write_szk(&self.lib);
         if text != before {
+            // Unter der Sperre und nur über den gelesenen Stand; sonst bleibt
+            // die Ergänzung im Speicher und kommt beim nächsten Laden wieder
+            let Ok((sperre, _)) = sperren(&self.path) else {
+                return hints;
+            };
+            if stempel(&self.path) != self.stamp || !sperre.gilt() {
+                return hints;
+            }
             match write_atomic(&self.path, &text) {
                 Ok(()) => {
                     self.stamp = stempel(&self.path);
@@ -436,6 +496,9 @@ impl Company {
                     .map_err(|e| format!("Voriger Stand nicht abgelegt: {e}"))?;
             }
         }
+        if !sperre.gilt() {
+            return Err(GESPERRT.into());
+        }
         write_atomic(&self.path, &neu.text).map_err(|e| {
             format!(
                 "Firmenkatalog {} nicht gespeichert: {e}",
@@ -460,7 +523,7 @@ impl Company {
         }
         // Unter derselben Sperre wie die Kostensätze (KA-2c2): sonst
         // schriebe es veraltete Sätze aus dem Speicher zurück
-        let _sperre = match sperren(&self.path) {
+        let sperre = match sperren(&self.path) {
             Ok((s, _)) => s,
             Err(e) => return SaveResult::Failed(e),
         };
@@ -472,6 +535,9 @@ impl Company {
             return SaveResult::Failed(missing.into());
         }
         let text = write_szk(&lib);
+        if !sperre.gilt() {
+            return SaveResult::Failed(GESPERRT.into());
+        }
         match write_atomic(&self.path, &text) {
             Ok(()) => {
                 self.lib = lib;
@@ -830,6 +896,36 @@ mod tests {
             Some(sk_cost::Dez(alt.0 + 3_000_000)),
             "Kostensätze bleiben"
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Review 3aj: Übernimmt ein anderer Platz die Sperre, merkt es der
+    /// erste vor dem Schreiben und löscht die fremde Sperre nicht. Die
+    /// temporäre Datei ist je Aufruf eine eigene; eine fremde bleibt.
+    #[test]
+    fn sperre_nur_eigene_und_eigene_temporaere_datei() {
+        let d = dir("sperre-eigen");
+        let p = d.join(FILE_NAME);
+        let lock = p.with_extension("szk.lock");
+        let (s, h) = sperren(&p).unwrap();
+        assert!(h.is_none() && s.gilt());
+        std::fs::write(&lock, "anderer Platz").unwrap();
+        assert!(!s.gilt());
+        drop(s);
+        assert_eq!(std::fs::read_to_string(&lock).unwrap(), "anderer Platz");
+        std::fs::remove_file(&lock).unwrap();
+        // fremde halb geschriebene temporäre Datei wird nicht umbenannt
+        let fremd = p.with_extension("szk.tmp");
+        std::fs::write(&fremd, "halb").unwrap();
+        write_atomic(&p, "ganz").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "ganz");
+        assert_eq!(std::fs::read_to_string(&fremd).unwrap(), "halb");
+        let reste = std::fs::read_dir(&d)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+            .count();
+        assert_eq!(reste, 1, "nur die fremde");
         let _ = std::fs::remove_dir_all(&d);
     }
 }
