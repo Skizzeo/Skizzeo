@@ -727,7 +727,7 @@ fn dieses_haus_in_der_wirkzeile() {
     assert!(Verwaltung::open(&leer, None, None).wirkung.dieses.is_none());
 }
 
-/// Abnahme 13 (KA-3a4): €/m² Geschossfläche (Rohbaumaß) des Standardhauses
+/// Abnahme 13 (KA-3a4): €/m² Grundfläche des Standardhauses
 /// = Summe netto ÷ 135,50 m², auf ganze €. Je Geschoss der Kernumriss der
 /// eigenen Außenwände (Entscheid 17:20): EG 75,0384, OG mit Rücksprung
 /// 60,4584 (vorher 2 × 75,0384 über die Decke unter dem OG).

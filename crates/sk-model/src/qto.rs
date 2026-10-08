@@ -1366,7 +1366,7 @@ impl Schedule {
         out
     }
 
-    /// Geschossfläche (Rohbaumaß, mm², stammdaten/verwaltung.md §9,
+    /// Grundfläche (mm², außen an der tragenden Wand, stammdaten/verwaltung.md §9,
     /// Entscheid 17:20): je Geschoss der Umriss an der Außenseite der
     /// tragenden Schicht seiner **eigenen** Außenwände, ohne Außendämmung
     /// ([`Model::core_area`] je geschlossenem Außenwandzug dieser Liste).

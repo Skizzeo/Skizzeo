@@ -3007,7 +3007,7 @@ impl Model {
     /// der Außenseite seiner tragenden Schicht, ohne Außendämmung, mit
     /// derselben Eckberechnung wie die Decke, aber nur aus der eigenen Kette
     /// (kein Versatz des Geschosses darüber). Rechnet keine Körper.
-    /// Geschossfläche, stammdaten/verwaltung.md §9 (Entscheid 17:20).
+    /// Grundfläche, stammdaten/verwaltung.md §9 (Entscheid 17:20).
     pub fn core_area(&self, run: RunId) -> Option<f64> {
         let chain = self.base_chain(run)?;
         if !chain.closed || chain.clean_points().len() < 3 {
@@ -8203,7 +8203,7 @@ mod og_phase2 {
                 ts.trade
             );
         }
-        // Geschossfläche (verwaltung §9, Entscheid Architektur 17:20): je
+        // Grundfläche (verwaltung §9, Entscheid Architektur 17:20): je
         // Geschoss der Kernumriss seiner eigenen Außenwände. EG 9,72 × 7,72,
         // OG mit Rücksprung Nord 1,50 nur 9,72 × 6,22: Terrasse und die
         // OG-Dämmung auf der Decke zählen nicht (vorher 2 × 75,0384)

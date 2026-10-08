@@ -1115,7 +1115,7 @@ impl Verwaltung {
         let x = b.text_art(
             0.0,
             y,
-            "€/m² Geschossfläche (Rohbaumaß)".into(),
+            "€/m² Grundfläche (außen an der tragenden Wand)".into(),
             PX,
             false,
             Farbe::Dim,
@@ -1128,11 +1128,11 @@ impl Verwaltung {
         };
         self.vorher_nachher(b, (x + 16.0).max(WERT_X), y, m2(h.vorher), m2(h.nachher));
         y += ABSTAND;
-        b.label(y, "Geschossfläche");
+        b.label(y, "Grundfläche");
         let f = if h.flaeche > 0.0 {
             format!("{} m²", komma_2(h.flaeche / 1e6))
         } else {
-            "– (Haus ohne Decke)".to_string()
+            "– (kein geschlossener Außenwandzug)".to_string()
         };
         b.text(WERT_X, y, f, PX, false, Farbe::Text);
         y += ABSTAND;
@@ -1177,7 +1177,7 @@ impl Verwaltung {
         b.text_art(
             sp[3],
             y,
-            "€/m² (Rohbaumaß)".into(),
+            "€/m² Grundfläche".into(),
             KLEIN,
             false,
             Farbe::Dim,

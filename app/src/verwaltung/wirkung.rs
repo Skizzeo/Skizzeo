@@ -20,8 +20,8 @@ pub const ORDNER: &str = "referenzhaeuser";
 /// Höchstens so viele Referenzhäuser zeigt die Wirkzeile (Regel 106).
 pub const IN_DER_ZEILE: usize = 5;
 
-/// Tooltip an „€/m² Geschossfläche (Rohbaumaß)“ (verwaltung.md §9).
-pub const FLAECHE_TIPP: &str = "Geschossfläche (Rohbaumaß)\nSumme der Geschossflächen, gemessen an der tragenden Außenwand, ohne Außendämmung.\nNicht die BGF nach DIN 277, also nicht mit BKI-Kennwerten vergleichen.\nWohnfläche folgt, sobald es Räume gibt.";
+/// Tooltip an „€/m² Grundfläche“ (verwaltung.md §9, Kosten A3).
+pub const FLAECHE_TIPP: &str = "Grundfläche\nSumme der Grundflächen aller Geschosse, gemessen außen an der tragenden Wand,\nohne Dämmung und Verblender. Je Geschoss zählen seine eigenen Außenwände,\neine Dachterrasse also nicht.\nNicht die BGF nach DIN 277, also nicht mit BKI-Kennwerten vergleichen.\nWohnfläche folgt, sobald es Räume gibt.";
 
 /// Ein Referenzhaus mit seiner Mengenliste.
 pub struct Haus {
@@ -37,7 +37,8 @@ pub struct Haus {
     /// Das offene Haus: rechnet mit seiner Kopie, die beim OK die
     /// geänderten Sätze übernimmt (Regel 89), sonst mit der Firma.
     eigen: bool,
-    /// Geschossfläche (Rohbaumaß) in mm², 0 ohne Decke.
+    /// Grundfläche in mm² (außen an der tragenden Wand), 0 ohne
+    /// geschlossenen Außenwandzug.
     pub flaeche: f64,
     /// Dateiname eines eigenen Referenzhauses; `None` beim Standardhaus.
     pub datei: Option<String>,
@@ -113,7 +114,7 @@ impl Haus {
             .then(|| format!("Referenzhaus {datei} hat keine Kostenzeile."))
     }
 
-    /// €/m² Geschossfläche (Rohbaumaß) auf ganze €; `None` ohne Fläche.
+    /// €/m² Grundfläche auf ganze €; `None` ohne Fläche.
     pub fn je_m2(&self, c: Cent) -> Option<i64> {
         (self.flaeche > 0.0).then(|| (c.0 as f64 / 100.0 / (self.flaeche / 1e6)).round() as i64)
     }
