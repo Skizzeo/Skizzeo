@@ -1283,6 +1283,15 @@ impl Scene {
         ok
     }
 
+    /// Projektangaben (Bauvorhaben, Bauherr, Aufsteller; KA-4c) als ein
+    /// Schritt. `false`, wenn sich nichts geändert hat.
+    pub fn projekt_setzen(&mut self, label: &'static str, p: sk_model::Project) -> bool {
+        self.begin(label);
+        let ok = self.model.set_project(p);
+        self.commit();
+        ok
+    }
+
     /// Öffnet den Schritt des Einstellungsfensters (E5, auch nach
     /// „Übernehmen“). Liefert die Revision zu Beginn für [`Scene::cancel_settings`].
     pub fn begin_settings(&mut self) -> u64 {

@@ -33,4 +33,23 @@ impl AvaView {
         let (_, (x, y, w, h)) = segs[i];
         ((x + w * 0.5) as f64, (y + h * 0.5) as f64)
     }
+
+    /// Mitte von „Kopf und Vorbemerkungen“, „Bauherr fehlt“ oder „Mehr“.
+    pub(crate) fn kopf_mitte(&self, t: &Theme, fonts: &Fonts, was: &str) -> Option<(f64, f64)> {
+        let ziel = match was {
+            "Mehr" => Hot::Mehr,
+            "Bauherr fehlt" => Hot::BauherrFehlt,
+            _ => Hot::Kopf,
+        };
+        let (x0, cw) = self.content_x(t);
+        let y = self.top_px() + (SWITCH_TOP + SWITCH_H * 0.5) * self.scale;
+        let mut x = x0;
+        while x < x0 + cw {
+            if self.hit(t, fonts, x as f64, y as f64) == Some(ziel) {
+                return Some((x as f64 + 4.0, y as f64));
+            }
+            x += 2.0;
+        }
+        None
+    }
 }

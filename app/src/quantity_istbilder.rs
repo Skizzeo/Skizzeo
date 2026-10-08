@@ -249,6 +249,46 @@ fn istbilder_ka4() {
     assert!(!q.ava.as_ref().unwrap().preise);
     b.ablegen(&mut q, "ist-ka-4c-anfrage.png");
 
+    // KA-4c: Geschosse als Untertitel, „Mehr“ offen, für Anfrage
+    let mut s4 = standardhaus();
+    let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "15:00");
+    let op = sk_cost::Op::LvGliederungSetzen { untertitel: true };
+    s4.kosten_folge("LV nach Geschossen gegliedert", None, &h, &[op])
+        .unwrap();
+    b.p = Picking::default();
+    let mut q = QuantityWindow::new();
+    q.datei = "haus.szo".into();
+    (q.w, q.h) = (1440, 1000);
+    q.sync(&mut s4, &b.p, false);
+    q.waehlen(Blatt::Ava, &b.t);
+    q.sync(&mut s4, &b.p, false);
+    let a = q.ava.as_mut().unwrap();
+    let xy = a.schalter_mitte(&b.t, &b.fonts, 0);
+    a.mouse_down(&b.t, &b.fonts, &mut b.p, xy, mods);
+    let xy = a.kopf_mitte(&b.t, &b.fonts, "Mehr").expect("Mehr");
+    a.mouse_down(&b.t, &b.fonts, &mut b.p, xy, mods);
+    q.sync(&mut s4, &b.p, false);
+    b.ablegen(&mut q, "ist-ka-4c-untertitel.png");
+
+    // KA-4c: Kopf aufgeklappt über „Bauherr fehlt“, Bauherr wird getippt
+    b.p = Picking::default();
+    let mut q = QuantityWindow::new();
+    q.datei = "haus.szo".into();
+    (q.w, q.h) = (1440, 860);
+    q.sync(&mut s, &b.p, false);
+    q.waehlen(Blatt::Ava, &b.t);
+    q.sync(&mut s, &b.p, false);
+    let a = q.ava.as_mut().unwrap();
+    let xy = a
+        .kopf_mitte(&b.t, &b.fonts, "Bauherr fehlt")
+        .expect("fehlt");
+    a.mouse_down(&b.t, &b.fonts, &mut b.p, xy, mods);
+    for ch in "Familie Muster".chars() {
+        a.text(ch);
+    }
+    q.sync(&mut s, &b.p, false);
+    b.ablegen(&mut q, "ist-ka-4c-kopf.png");
+
     // KA-4d: Zusammenstellung und Prüfen
     for (name, zusammen) in [
         ("ist-ka-4d-zusammenstellung.png", true),

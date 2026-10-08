@@ -2262,6 +2262,19 @@ impl App {
                     preis_blatt::Gilt::NeueHaeuser => self.fuer_firma_melden(label, &h, &[op]),
                 }
             }
+            kosten_view::Schreiben::Projekt { projekt, label } => {
+                self.scene.projekt_setzen(label, projekt);
+                None
+            }
+            kosten_view::Schreiben::Gliederung(untertitel) => {
+                let label = if untertitel {
+                    "LV nach Geschossen gegliedert"
+                } else {
+                    "LV ohne Geschosse gegliedert"
+                };
+                let op = sk_cost::Op::LvGliederungSetzen { untertitel };
+                self.kosten_folge(label, &h, &[op])
+            }
             kosten_view::Schreiben::Lassen(stand) => {
                 let op = sk_cost::Op::AbgleichLassen { stand };
                 self.kosten_folge("Werte für neue Häuser nicht übernommen", &h, &[op])
@@ -2456,6 +2469,7 @@ impl App {
                 .lohn_karte();
         }
         let firma = self.company.as_ref().map(|c| (c.library(), c.stand()));
+        self.quantity.datei = self.doc.name();
         self.quantity
             .sync_mit(&mut self.scene, &self.picking, firma, anim);
         let now = Instant::now();

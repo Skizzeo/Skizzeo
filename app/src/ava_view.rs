@@ -18,6 +18,7 @@ use sk_cost::{Cent, Dez, Katalog};
 use sk_model::{ElementId, Guid, Model};
 use sk_paint::font::Font;
 use sk_paint::{Canvas, Path, Rgba};
+use sk_ui::text_edit::TextEdit;
 use sk_ui::theme::Theme;
 use sk_ui::widgets::Fonts;
 use std::rc::Rc;
@@ -99,6 +100,14 @@ enum Hot {
     Zeile(usize),
     Reiter(Reiter),
     Schliessen,
+    /// „Kopf und Vorbemerkungen“ auf- und zuklappen.
+    Kopf,
+    /// „Bauherr fehlt“: öffnet den Kopf mit dem Feld Bauherr.
+    BauherrFehlt,
+    /// „Mehr“ und darin „Geschosse als Untertitel“.
+    Mehr,
+    Untertitel,
+    Feld(kopf::Feld),
 }
 
 /// Punkt im Baum: grün Preis da, Akzent Preis fehlt, grau leer.
@@ -264,6 +273,17 @@ pub struct AvaView {
     pub subtitle: String,
     /// Zahl der Karte: „LV Rohbau · 7 Pos.“
     pub karte: String,
+    /// Dateiname („haus.szo“): Bauvorhaben ohne `Project.site`.
+    pub datei: String,
+    projekt: Option<sk_model::Project>,
+    /// `[costproject] lvstorey`.
+    untertitel: bool,
+    kopf_offen: bool,
+    mehr_offen: bool,
+    /// Feld im Kopf in Bearbeitung.
+    feld: Option<(kopf::Feld, TextEdit)>,
+    /// Umfang und Stand für den aufgeklappten Kopf.
+    kopf_umfang: (String, String),
 }
 
 impl Default for AvaView {
@@ -302,6 +322,13 @@ impl AvaView {
             selected: Vec::new(),
             subtitle: String::new(),
             karte: String::new(),
+            datei: String::new(),
+            projekt: None,
+            untertitel: false,
+            kopf_offen: false,
+            mehr_offen: false,
+            feld: None,
+            kopf_umfang: (String::new(), String::new()),
         }
     }
 
@@ -405,19 +432,30 @@ impl AvaView {
         if let Some(sp) = self.sprung.take() {
             changed |= self.springe(&sp);
         }
+        self.projekt = Some(s.model().project().clone());
+        if self.untertitel != untertitel {
+            self.untertitel = untertitel;
+            changed = true;
+        }
         let mut text = format!("LV {}", lv.kopf.los);
-        if let Some(b) = lv.kopf.bauvorhaben.as_deref().filter(|b| !b.is_empty()) {
+        let b = self.bauvorhaben(&lv);
+        if !b.is_empty() {
             text += &format!(" · Bauvorhaben {b}");
         }
         if let Some(a) = lv.kopf.aufsteller.as_deref().filter(|a| !a.is_empty()) {
             text += &format!(" · Aufsteller {a}");
         }
-        text += " · ";
-        text += &umfang_view::umfang_text(
+        let ut = umfang_view::umfang_text(
             s.model(),
             &self.leiste.umfang,
             sk_platform::local_date_time(),
         );
+        text += " · ";
+        text += &ut;
+        self.kopf_umfang = match ut.split_once(" · Stand ") {
+            Some((a, b)) => (a.to_string(), b.to_string()),
+            None => (ut.clone(), String::new()),
+        };
         if changed || self.subtitle.is_empty() {
             self.subtitle = text;
         }
@@ -486,7 +524,7 @@ impl AvaView {
     }
 
     fn body_top(&self) -> f32 {
-        self.top_px() + BODY * self.scale
+        self.top_px() + (BODY + self.kopf_h()) * self.scale
     }
 
     fn bottom(&self) -> f32 {
@@ -607,6 +645,9 @@ impl AvaView {
 
     fn hit(&self, t: &Theme, fonts: &Fonts, x: f64, y: f64) -> Option<Hot> {
         let (x, y) = (x as f32, y as f32);
+        if let Some(h) = self.kopf_hit(t, fonts, x, y) {
+            return h;
+        }
         if let Some(h) = self.leiste.hit(fonts, self.leiste_lage(t), x, y) {
             return Some(Hot::Umfang(h));
         }
@@ -695,6 +736,25 @@ impl AvaView {
         mods: sk_platform::Modifiers,
     ) -> Option<ListOut> {
         let hot = self.hit(t, fonts, x, y);
+        // Klick neben das Feld schreibt es; neben „Mehr“ schließt es
+        let mut out = None;
+        let im_feld = matches!((&self.feld, hot), (Some((f, _)), Some(Hot::Feld(g))) if *f == g);
+        if self.feld.is_some() && !im_feld {
+            out = self.feld_schliessen(true);
+        }
+        if self.mehr_offen && !matches!(hot, Some(Hot::Mehr | Hot::Untertitel)) {
+            self.mehr_offen = false;
+            out = out.or(Some(ListOut::Repaint));
+        }
+        if let Some(o) = self.kopf_klick(t, fonts, hot, x) {
+            return Some(match out {
+                Some(ListOut::Kosten(w)) => ListOut::Kosten(w),
+                _ => o,
+            });
+        }
+        if out.is_some() {
+            return out;
+        }
         if let Some(Hot::Umfang(h)) = hot {
             self.leiste.click(h, mods.ctrl);
             return Some(ListOut::Repaint);
@@ -703,7 +763,12 @@ impl AvaView {
             return Some(ListOut::Repaint);
         }
         match hot? {
-            Hot::Umfang(_) => None,
+            Hot::Umfang(_)
+            | Hot::Kopf
+            | Hot::BauherrFehlt
+            | Hot::Mehr
+            | Hot::Untertitel
+            | Hot::Feld(_) => None,
             Hot::Preise(b) => (b != self.preise).then(|| {
                 self.preise = b;
                 ListOut::Repaint
@@ -858,6 +923,7 @@ impl AvaView {
         regular.draw(c, &sub, 10.5 * s, x0, top + SUB_Y * s, u.sheet_text_dim);
         self.leiste.paint(c, t, fonts, self.leiste_lage(t), now);
         self.paint_schalter(c, t, regular, bold);
+        self.paint_kopf(c, t, regular, bold);
         let linie = self.body_top() - 8.0 * s;
         c.fill_rect(x0, linie, cw, s.max(1.0), u.sheet_rule);
         self.paint_baum(c, t, regular, bold);
@@ -865,19 +931,13 @@ impl AvaView {
         self.paint_detail(c, t, fonts, regular, bold);
         self.leiste
             .paint_field_list(c, t, fonts, self.leiste_lage(t));
+        self.paint_mehr(c, t, fonts);
     }
 
     fn paint_schalter(&self, c: &mut Canvas, t: &Theme, regular: &Font, bold: &Font) {
         let s = self.scale;
         let u = &t.ui;
         let px = 10.5 * s;
-        // Die Fonts für die Lage: hier sind sie da
-        let fonts = Fonts {
-            regular: None,
-            bold: None,
-            italic: None,
-        };
-        let _ = fonts;
         let (lx, segs) = self.schalter_mit(t, regular, bold);
         let inset = 2.0 * s;
         let (first, last) = (segs[0].1, segs[1].1);
@@ -1668,5 +1728,6 @@ pub fn detail(m: &Model, kat: &Katalog, lv: &Lv, oz: &str) -> Option<Detail> {
 
 #[cfg(test)]
 mod bild;
+mod kopf;
 #[cfg(test)]
 mod tests;

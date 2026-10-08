@@ -1,4 +1,5 @@
 use super::*;
+use sk_platform::Key;
 use sk_ui::theme::Theme;
 
 impl AvaView {
@@ -332,4 +333,139 @@ fn detail_kostengruppe_und_ausgleich() {
         .find(|p| p.kurztext.contains("Planstein"))
         .unwrap();
     assert_eq!(p.kg, Some(331), "{}", p.kurztext);
+}
+
+/// Liberation Sans, wenn da (der Kopf misst seine Knöpfe mit der Schrift).
+fn schrift() -> Option<Fonts> {
+    let lib = std::path::Path::new("/usr/share/fonts/truetype/liberation");
+    let lade = |n: &str| std::fs::read(lib.join(n)).ok().and_then(Font::parse);
+    let f = Fonts::system();
+    if f.regular.is_some() {
+        return Some(f);
+    }
+    Some(Fonts {
+        regular: Some(lade("LiberationSans-Regular.ttf")?),
+        bold: lade("LiberationSans-Bold.ttf"),
+        italic: None,
+    })
+}
+
+fn klick_auf(v: &mut AvaView, fonts: &Fonts, p: &mut Picking, hot: Hot) -> Option<ListOut> {
+    let t = Theme::dark();
+    let s = v.scale;
+    let (x0, cw) = v.content_x(&t);
+    let y0 = v.top_px();
+    // Raster über Kopfzeile und Kopf absuchen
+    let mut y = y0;
+    while y < y0 + 400.0 * s {
+        let mut x = x0;
+        while x < x0 + cw {
+            if v.hit(&t, fonts, x as f64, y as f64) == Some(hot) {
+                let mods = sk_platform::Modifiers::default();
+                return v.mouse_down(&t, fonts, p, (x as f64, y as f64), mods);
+            }
+            x += 4.0;
+        }
+        y += 4.0;
+    }
+    panic!("{hot:?} nicht gefunden");
+}
+
+/// KA-4c: „Bauherr fehlt“ öffnet den Kopf mit dem Feld Bauherr; Eingabe
+/// und Enter schreiben `Project.client` als ein Schritt „Bauherr gesetzt“;
+/// danach ist der Hinweis weg. Esc verwirft.
+#[test]
+fn bauherr_fehlt_oeffnet_das_feld() {
+    let Some(fonts) = schrift() else {
+        return;
+    };
+    let mut s = haus();
+    let mut v = blatt(&mut s);
+    let mut p = Picking::default();
+    assert!(s.model().project().client.is_empty());
+    assert!(v.bauherr_fehlt());
+    let vorher = v.body_top();
+    assert_eq!(
+        klick_auf(&mut v, &fonts, &mut p, Hot::BauherrFehlt),
+        Some(ListOut::Repaint)
+    );
+    assert!(v.kopf_offen && v.feld_offen());
+    assert!(v.body_top() > vorher, "Kopf schiebt Baum und Tabelle");
+    // Esc verwirft
+    for ch in "Fam".chars() {
+        v.text(ch);
+    }
+    let mods = sk_platform::Modifiers::default();
+    assert_eq!(v.key(Key::Escape, mods), Some(ListOut::Repaint));
+    assert!(!v.feld_offen());
+    klick_auf(&mut v, &fonts, &mut p, Hot::Feld(kopf::Feld::Bauherr));
+    for ch in "Familie Muster".chars() {
+        v.text(ch);
+    }
+    let Some(ListOut::Kosten(crate::kosten_view::Schreiben::Projekt { projekt, label })) =
+        v.key(Key::Enter, mods)
+    else {
+        panic!("kein Schritt");
+    };
+    assert_eq!(label, "Bauherr gesetzt");
+    assert_eq!(projekt.client, "Familie Muster");
+    assert!(s.projekt_setzen(label, projekt));
+    assert_eq!(s.undo_label(), Some("Bauherr gesetzt"));
+    v.sync(&mut s, None);
+    assert!(!v.bauherr_fehlt());
+    assert_eq!(
+        v.lv().unwrap().kopf.bauherr.as_deref(),
+        Some("Familie Muster")
+    );
+    assert!(s.undo());
+    v.sync(&mut s, None);
+    assert!(v.bauherr_fehlt());
+}
+
+/// Bauvorhaben ohne `Project.site` aus dem Dateinamen; „Mehr“ ›
+/// „Geschosse als Untertitel“ gibt `LvGliederungSetzen`, danach sind die
+/// OZ dreistufig.
+#[test]
+fn bauvorhaben_und_untertitel() {
+    let Some(fonts) = schrift() else {
+        return;
+    };
+    let mut s = haus();
+    let mut v = AvaView::new();
+    (v.w, v.h) = (1400, 900);
+    v.top = 120.0;
+    v.datei = "haus.szo".into();
+    v.sync(&mut s, None);
+    assert!(v.subtitle.contains("Bauvorhaben Haus"), "{}", v.subtitle);
+    let mut p = Picking::default();
+    assert_eq!(
+        klick_auf(&mut v, &fonts, &mut p, Hot::Mehr),
+        Some(ListOut::Repaint)
+    );
+    let Some(ListOut::Kosten(crate::kosten_view::Schreiben::Gliederung(true))) =
+        klick_auf(&mut v, &fonts, &mut p, Hot::Untertitel)
+    else {
+        panic!("keine Gliederung");
+    };
+    assert!(!v.mehr_offen);
+    let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "15:00");
+    let op = sk_cost::Op::LvGliederungSetzen { untertitel: true };
+    s.kosten_folge("LV nach Geschossen gegliedert", None, &h, &[op])
+        .unwrap();
+    v.sync(&mut s, None);
+    assert!(v.untertitel);
+    let oz: Vec<&str> = v
+        .zeilen()
+        .iter()
+        .filter(|z| z.art == Art::Position)
+        .map(|z| z.oz.as_str())
+        .collect();
+    assert!(!oz.is_empty());
+    assert!(oz.iter().all(|o| o.split('.').count() == 3), "{oz:?}");
+    // Zeichnen mit offenem Kopf und offener Karte
+    v.kopf_offen = true;
+    v.mehr_offen = true;
+    v.sync(&mut s, None);
+    let mut c = Canvas::new(1400, 900);
+    v.paint(&mut c, &Theme::dark(), &fonts, Instant::now());
 }

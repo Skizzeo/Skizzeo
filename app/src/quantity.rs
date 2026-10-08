@@ -68,6 +68,8 @@ pub struct QuantityWindow {
     pub karten: Karten,
     pub kosten: Option<KostenView>,
     pub ava: Option<AvaView>,
+    /// Dateiname für das Bauvorhaben im AVA-Kopf („haus.szo“).
+    pub datei: String,
     /// Gliederung der Liste (Paket 1b), aus den Einstellungen.
     pub grouping: Grouping,
     /// Muss neu gezeichnet und gezeigt werden.
@@ -115,6 +117,7 @@ impl QuantityWindow {
             karten: Karten::new(Blatt::Mengen),
             kosten: None,
             ava: None,
+            datei: String::new(),
             grouping: Grouping::Storey,
             dirty: false,
             docked: true,
@@ -321,6 +324,9 @@ impl QuantityWindow {
         list.top = Self::sheet_top();
         kosten.top = Self::sheet_top();
         ava.top = Self::sheet_top();
+        if ava.datei != self.datei {
+            ava.datei.clone_from(&self.datei);
+        }
         list.scale = self.title.scale;
         kosten.scale = self.title.scale;
         ava.scale = self.title.scale;
@@ -647,6 +653,22 @@ impl QuantityWindow {
             }
             Event::Text(ch) if self.blatt() == Blatt::Kosten => {
                 let o = self.kosten.as_mut()?.text(ch);
+                self.list_out(o)
+            }
+            // Das Kopffeld im Blatt AVA ebenso
+            Event::Key {
+                key,
+                down: true,
+                mods,
+                ..
+            } if self.blatt() == Blatt::Ava
+                && self.ava.as_ref().is_some_and(|a| a.feld_offen()) =>
+            {
+                let o = self.ava.as_mut()?.key(key, mods);
+                self.list_out(o)
+            }
+            Event::Text(ch) if self.blatt() == Blatt::Ava => {
+                let o = self.ava.as_mut()?.text(ch);
                 self.list_out(o)
             }
             Event::Key {
