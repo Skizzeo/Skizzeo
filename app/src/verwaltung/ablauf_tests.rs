@@ -255,5 +255,101 @@ fn istbilder_ka3b5() {
     v.ablauf_weiter();
     let (b, _, _) = v.paint(&t, &fonts, &w);
     std::fs::write(ziel.join("ist-ka-3b5-ablauf-anlegen.png"), b.to_png()).unwrap();
+    // Aus dem Reiter Kosten: nur das Blatt, Preis für Mörtel je kg
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    let g = v.haus_ablaeufe()[0].0;
+    v.ablauf_im_haus(g);
+    let moertel = v
+        .jetzt
+        .artikel
+        .iter()
+        .find(|a| a.einheit == sk_cost::katalog::Einheit::Kg && !a.retired)
+        .unwrap()
+        .name
+        .clone();
+    v.assistent.as_mut().unwrap().te[0] = TextEdit::new(&moertel);
+    waehlen(&mut v, &moertel);
+    v.ablauf_weiter();
+    v.a_tippen(0, "1,25");
+    let (b, _, _) = v.paint(&t, &fonts, &w);
+    std::fs::write(ziel.join("ist-ka-3b5-haendlerpreis.png"), b.to_png()).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// paket-ka3b §3: „Händlerpreis für dieses Haus eintragen“ (`kind=user`)
+/// läuft an einem Platz ohne eingegebenes Kennwort aus dem Reiter Kosten:
+/// nur das Blatt, keine Abfrage. Für Mörtel in kg heißt die Seite „Preis je
+/// kg“; „Eintragen“ gibt einen Preis für dieses Haus, den die App als einen
+/// Schritt schreibt. Die Firmendatei bleibt bytegleich. Esc schließt.
+#[test]
+fn haendlerpreis_im_haus() {
+    let dir = ordner("haendler");
+    let (c, mut s) = mit_kennwort(&dir);
+    s.rolle = sk_cost::Rolle::Nutzer;
+    let firma = std::fs::read(c.path()).unwrap();
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    let haus = v.haus_ablaeufe();
+    assert_eq!(haus.len(), 1);
+    assert_eq!(haus[0].1, "Händlerpreis für dieses Haus eintragen");
+    assert_eq!(c.haus_ablaeufe(), &haus[..], "dieselben wie in der App");
+    assert!(v.verwaltungs_ablaeufe().all(|a| a.guid != haus[0].0));
+    assert!(!v.ablauf_im_haus(stein(&v)), "kein Ablauf der Verwaltung");
+    assert!(v.ablauf_im_haus(haus[0].0));
+    assert!(v.abfrage.is_none());
+    assert_eq!(v.assistent.as_ref().unwrap().seiten.len(), 3);
+    let fonts = super::tests::schriften();
+    let w = Win {
+        w: 1180,
+        h: 820,
+        top: 30,
+        scale: 1.0,
+    };
+    let (bild, _, _) = v.paint(&Theme::dark(), &fonts, &w);
+    assert!(bild.width < 900, "nur das Blatt");
+    let moertel = v
+        .jetzt
+        .artikel
+        .iter()
+        .find(|a| a.einheit == sk_cost::katalog::Einheit::Kg && !a.retired)
+        .unwrap()
+        .clone();
+    let x = v.assistent.as_mut().unwrap();
+    x.te[0] = TextEdit::new(&moertel.name);
+    waehlen(&mut v, &moertel.name);
+    v.ablauf_weiter();
+    let x = v.assistent.as_ref().unwrap();
+    assert_eq!(
+        v.seiten_name(&x.a, &x.seiten, 1, &x.antworten),
+        "Preis je kg"
+    );
+    v.a_tippen(0, "1,25");
+    v.ablauf_weiter();
+    v.a_tippen(0, "Angebot Müller");
+    v.ablauf_weiter();
+    let h2 = v.fuer_haus.take().expect("an die App");
+    assert!(v.assistent.is_some(), "offen, bis die App geschrieben hat");
+    assert_eq!(h2.schluss, "Preis 1,25 € für dieses Haus eingetragen.");
+    s.kosten_folge(
+        "Händlerpreis für dieses Haus eintragen",
+        Some(c.library()),
+        &h(),
+        &h2.ops,
+    )
+    .expect("im Haus");
+    let k = s.katalog(Some((c.library(), c.stand())));
+    assert_eq!(k.artikel(moertel.guid).unwrap().preis, Some(Dez(1_250_000)));
+    assert_eq!(std::fs::read(c.path()).unwrap(), firma, "Firma bytegleich");
+    let mut cx = Ctx {
+        fonts: &fonts,
+        win: w,
+    };
+    let esc = Event::Key {
+        key: Key::Escape,
+        down: true,
+        repeat: false,
+        mods: Modifiers::default(),
+    };
+    let out = v.handle(&esc, &mut cx);
+    assert!(out.closed && out.haus.is_none() && v.ops().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -9,8 +9,8 @@ use super::*;
 use sk_cost::ablauf::{self, Ablauf, Antworten, Art, Feldart, Zugang};
 
 /// Blatt (dip).
-const A_W: f32 = 820.0;
-const A_H: f32 = 540.0;
+pub(super) const A_W: f32 = 820.0;
+pub(super) const A_H: f32 = 540.0;
 const KOPF: f32 = 60.0;
 const FUSS: f32 = 66.0;
 const SPALTE: f32 = 250.0;
@@ -64,6 +64,15 @@ pub(super) struct Assistent {
     pub pressed: Option<AZiel>,
 }
 
+/// Fertiger Ablauf für dieses Haus (Reiter Kosten): die App schreibt die
+/// Operationen als einen Rückgängig-Schritt mit dem Namen des Ablaufs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FuerHaus {
+    pub name: String,
+    pub ops: Vec<Op>,
+    pub schluss: String,
+}
+
 /// „Baustoff“ aus `baustoff`.
 fn gross(key: &str) -> String {
     let k = key.replace('_', " ");
@@ -112,17 +121,52 @@ impl Verwaltung {
 
     /// Name einer Seite: der Knopf bei der Abschlussseite mit mehreren
     /// Textfeldern („Anlegen“), sonst der Name der Frage („Preis je m²“).
-    pub(super) fn seiten_name(&self, a: &Ablauf, seiten: &[Vec<usize>], i: usize) -> String {
+    /// Die Einheit folgt dem gewählten Artikel („Preis je kg“).
+    pub(super) fn seiten_name(
+        &self,
+        a: &Ablauf,
+        seiten: &[Vec<usize>],
+        i: usize,
+        antworten: &Antworten,
+    ) -> String {
         let seite = &seiten[i];
         if seite.len() > 1 {
             return verb(a).to_string();
         }
         let s = &a.schritte[seite[0]];
-        match (&s.typ, s.per.first()) {
-            (Some(Feldart::Geld), Some(p)) => {
-                format!("{} je {}", gross(&s.key), p.einheit.zeichen())
-            }
+        match (&s.typ, ablauf::grundeinheit(s, antworten, &self.jetzt)) {
+            (Some(Feldart::Geld), Some(e)) => format!("{} je {}", gross(&s.key), e.zeichen()),
             _ => gross(&s.key),
+        }
+    }
+
+    /// Abläufe für den Reiter Kosten: `kind=user`, gültig, nicht
+    /// ausgemustert (paket-ka3b §3).
+    pub fn haus_ablaeufe(&self) -> Vec<(Guid, String)> {
+        self.ablaeufe
+            .iter()
+            .filter(|a| a.zugang == Zugang::User && !a.retired && a.befund.is_none())
+            .map(|a| (a.guid, a.name.clone()))
+            .collect()
+    }
+
+    /// Ablauf `kind=user` aus dem Reiter Kosten: nur das Blatt, ohne die
+    /// Verwaltung dahinter und ohne Kennwort; „Eintragen“ gibt die
+    /// Operationen an die App ([`Out::haus`]). `false`: kein solcher Ablauf.
+    pub fn ablauf_im_haus(&mut self, g: Guid) -> bool {
+        if !self.haus_ablaeufe().iter().any(|(x, _)| *x == g) {
+            return false;
+        }
+        self.projekt = true;
+        self.abfrage = None;
+        self.ablauf_starten(g);
+        self.assistent.is_some()
+    }
+
+    /// Schreiben ins Haus gescheitert: das Blatt bleibt mit dem Grund offen.
+    pub fn ablauf_fehler(&mut self, e: String) {
+        if let Some(x) = self.assistent.as_mut() {
+            x.fehler = Some((usize::MAX, e));
         }
     }
 
@@ -291,6 +335,15 @@ impl Verwaltung {
                 .filter_map(|s| s.regel)
                 .collect();
         let schluss = ablauf::schluss(&x.a, &x.antworten);
+        if self.projekt {
+            // Ins Haus schreibt die App, geprüft wie jede Projektänderung
+            self.fuer_haus = Some(FuerHaus {
+                name: x.a.name.clone(),
+                ops,
+                schluss,
+            });
+            return;
+        }
         let mut alle = self.ops.clone();
         alle.extend(ops.iter().cloned());
         let entwurf = self.freigabe.is_some();
@@ -383,6 +436,9 @@ impl Verwaltung {
 
     fn a_rect(&self, w: &Win) -> Rect {
         let (ww, hh) = self.dip(w);
+        if self.projekt {
+            return self.r(w, 0.0, 0.0, ww, hh);
+        }
         let (bw, bh) = (A_W.min(ww - 20.0), A_H.min(hh - 20.0));
         self.r(w, (ww - bw) * 0.5, (hh - bh) * 0.5, bw, bh)
     }
@@ -475,11 +531,12 @@ impl Verwaltung {
                 Some(Feldart::Geld) if s.per.len() > 1 => {
                     let f = self.a_feld(w, 0);
                     let s0 = w.scale;
-                    for (n, _) in s.per.iter().enumerate() {
+                    let sichtbar = ablauf::einheiten_sichtbar(s, &x.antworten, &self.jetzt);
+                    for (i, &n) in sichtbar.iter().enumerate() {
                         v.push((
                             AZiel::Einheit(n),
                             Rect::new(
-                                f.x + n as f32 * 76.0 * s0,
+                                f.x + i as f32 * 76.0 * s0,
                                 f.y + f.h + 10.0 * s0,
                                 (72.0 * s0).round(),
                                 (26.0 * s0).round(),
@@ -694,7 +751,9 @@ impl Verwaltung {
 
     /// „in den Entwurf“ bzw. „in den Firmenkatalog“ (soll-ka-3d).
     fn a_ziel(&self) -> &'static str {
-        if self.freigabe.is_some() {
+        if self.projekt {
+            "für dieses Haus"
+        } else if self.freigabe.is_some() {
             "in den Entwurf"
         } else {
             "in den Firmenkatalog"
@@ -702,7 +761,7 @@ impl Verwaltung {
     }
 
     /// Antwort für die Liste links: „200 mm“, „25,30 €/m²“.
-    fn a_antwort_text(x: &Assistent, j: usize) -> String {
+    fn a_antwort_text(&self, x: &Assistent, j: usize) -> String {
         let s = &x.a.schritte[j];
         let Some(a) = x.antworten.get(&s.key) else {
             return String::new();
@@ -710,10 +769,10 @@ impl Verwaltung {
         if a.anzeige.is_empty() {
             return String::new();
         }
-        match (&s.typ, s.per.first()) {
+        match (&s.typ, ablauf::grundeinheit(s, &x.antworten, &self.jetzt)) {
             (Some(Feldart::Mm), _) => format!("{} mm", a.anzeige),
             (Some(Feldart::Stunden), _) => format!("{} h", a.anzeige),
-            (Some(Feldart::Geld), Some(p)) => format!("{} €/{}", a.anzeige, p.einheit.zeichen()),
+            (Some(Feldart::Geld), Some(e)) => format!("{} €/{}", a.anzeige, e.zeichen()),
             (Some(Feldart::Geld), None) => format!("{} €", a.anzeige),
             _ => a.anzeige.clone(),
         }
@@ -724,10 +783,14 @@ impl Verwaltung {
             return;
         };
         let (s, u) = (w.scale, &t.ui);
-        let f = self.frame(w);
-        c.fill_rect(f.x, f.y, f.w, f.h, sk_paint::Rgba(0, 0, 0, 110));
         let r = self.a_rect(w);
-        widgets::panel(c, r, s, t);
+        // Über der Verwaltung abgedunkelt; allein (Reiter Kosten) ist das
+        // Blatt das Fenster
+        if !self.projekt {
+            let f = self.frame(w);
+            c.fill_rect(f.x, f.y, f.w, f.h, sk_paint::Rgba(0, 0, 0, 110));
+            widgets::panel(c, r, s, t);
+        }
         let (bw, bh) = self.a_dip(w);
         let (regular, bold) = (
             fonts.regular.as_ref(),
@@ -813,7 +876,7 @@ impl Verwaltung {
                 let nw = bold.map_or(0.0, |f| f.width(&n, 11.0 * s));
                 label(c, bold, &n, 11.0 * s, cx0 - nw * 0.5, cy0 + 4.0 * s, col);
             }
-            let name = self.seiten_name(&x.a, &x.seiten, i);
+            let name = self.seiten_name(&x.a, &x.seiten, i, &x.antworten);
             let (lx, ly) = at(56.0, y0 + 22.0);
             let font = if jetzt { bold } else { regular };
             let name = widgets::ellipsize(font, &name, 13.0 * s, (SPALTE - 70.0) * s);
@@ -829,7 +892,7 @@ impl Verwaltung {
             let unter = if fertig {
                 x.seiten[i]
                     .iter()
-                    .map(|&j| Self::a_antwort_text(x, j))
+                    .map(|&j| self.a_antwort_text(x, j))
                     .filter(|t| !t.is_empty())
                     .collect::<Vec<_>>()
                     .join(" · ")
@@ -858,7 +921,7 @@ impl Verwaltung {
         label(c, regular, &n_von, 12.0 * s, sx, sy, u.text_dim);
         let rbreite = (bw - RX - 28.0) * s;
         let frage = if seite.len() > 1 {
-            self.seiten_name(&x.a, &x.seiten, x.seite)
+            self.seiten_name(&x.a, &x.seiten, x.seite, &x.antworten)
         } else {
             ablauf::einsetzen(&x.a.schritte[seite[0]].text, &x.antworten)
         };
@@ -876,13 +939,15 @@ impl Verwaltung {
                 .iter()
                 .take(x.seite)
                 .flatten()
-                .map(|&j| Self::a_antwort_text(x, j))
+                .map(|&j| self.a_antwort_text(x, j))
                 .filter(|t| !t.is_empty())
                 .collect();
             teile.push(ziel.to_string());
             teile.join(" · ")
         } else {
-            let wo = if self.freigabe.is_some() {
+            let wo = if self.projekt {
+                "als ein Schritt, den Strg+Z zurücknimmt"
+            } else if self.freigabe.is_some() {
                 "als eine Änderung im Entwurf"
             } else {
                 "mit OK im Firmenkatalog"
@@ -946,10 +1011,11 @@ impl Verwaltung {
             let (lx, _) = (self.a_rect(w).x + RX * s, 0.0);
             label(c, regular, &st.text, 13.0 * s, lx, base.round(), u.text_dim);
         }
-        let einheit = match (&st.typ, st.per.get(x.per[j])) {
+        let pe = ablauf::preiseinheit(st, x.per[j], &x.antworten, &self.jetzt);
+        let einheit = match (&st.typ, pe) {
             (Some(Feldart::Mm), _) => "mm".to_string(),
             (Some(Feldart::Stunden), _) => "h".to_string(),
-            (Some(Feldart::Geld), Some(p)) => format!("€/{}", p.einheit.zeichen()),
+            (Some(Feldart::Geld), Some(e)) => format!("€/{}", e.zeichen()),
             (Some(Feldart::Geld), None) => "€".to_string(),
             _ => String::new(),
         };
@@ -1074,9 +1140,11 @@ impl Verwaltung {
         let st = &x.a.schritte[j];
         let mut y = fr.y + fr.h + 10.0 * s;
         if st.per.len() > 1 {
-            for (n, p) in st.per.iter().enumerate() {
+            let sichtbar = ablauf::einheiten_sichtbar(st, &x.antworten, &self.jetzt);
+            for (i, &n) in sichtbar.iter().enumerate() {
+                let e = ablauf::preiseinheit(st, n, &x.antworten, &self.jetzt);
                 let r = Rect::new(
-                    fr.x + n as f32 * 76.0 * s,
+                    fr.x + i as f32 * 76.0 * s,
                     y,
                     (72.0 * s).round(),
                     (26.0 * s).round(),
@@ -1090,7 +1158,7 @@ impl Verwaltung {
                 } else {
                     rounded(c, r, 6.0 * s, u.pressed);
                 }
-                let text = sk_cost::einheit::je_text(p.einheit);
+                let text = e.map(sk_cost::einheit::je_text).unwrap_or_default();
                 let col = match (an, geht) {
                     (true, _) => u.on_accent,
                     (false, true) => u.text,

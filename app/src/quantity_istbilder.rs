@@ -176,6 +176,13 @@ fn istbilder_ka1_ka2() {
     b.p = Picking::default();
     let k = q.kosten.as_mut().unwrap();
     k.set_vorschlag(true);
+    // paket-ka3b §3: der Werksablauf `kind=user` oben links vom Knopf
+    let werk: Vec<_> = sk_cost::ablauf::lesen(&[sk_cost::WERK])
+        .into_iter()
+        .filter(|a| a.zugang == sk_cost::ablauf::Zugang::User)
+        .map(|a| (a.guid, a.name))
+        .collect();
+    k.set_ablaeufe(&werk);
     let xy = k
         .ep_mitte(&b.t, "Porenbeton-Planstein")
         .expect("EP Mauerwerk");

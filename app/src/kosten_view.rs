@@ -229,6 +229,8 @@ enum Hot {
     Waehlen(usize),
     /// Stundenlohn in der Kachel Lohnanteil (öffnet das Lohnfeld).
     Lohnsatz,
+    /// Verweis auf Ablauf n („Händlerpreis für dieses Haus eintragen …“).
+    Ablauf(usize),
 }
 
 /// Was das Preisblatt schreiben lässt (die App führt es über
@@ -368,6 +370,9 @@ pub struct KostenView {
     /// beim nächsten `sync`.
     lohn: Option<LohnBlatt>,
     lohn_wunsch: Option<lohn_blatt::Form>,
+    /// Abläufe `kind=user` (paket-ka3b §3) als leise Verweise links vom
+    /// Knopf; setzt die App.
+    ablaeufe: Vec<(sk_model::Guid, String)>,
 }
 
 impl Default for KostenView {
@@ -424,6 +429,7 @@ impl KostenView {
             waehlbar_von: None,
             lohn: None,
             lohn_wunsch: None,
+            ablaeufe: Vec::new(),
         }
     }
 
@@ -803,6 +809,42 @@ impl KostenView {
             l.set_vorschlag(vorschlag);
         }
         true
+    }
+
+    /// Abläufe für dieses Haus (`kind=user`); `true`, wenn sich etwas
+    /// geändert hat.
+    pub fn set_ablaeufe(&mut self, a: &[(sk_model::Guid, String)]) -> bool {
+        if self.ablaeufe == a {
+            return false;
+        }
+        self.ablaeufe = a.to_vec();
+        true
+    }
+
+    /// Verweise auf die Abläufe rechtsbündig links vom Knopf, solange sie
+    /// neben den Titel passen (px).
+    fn ablauf_rects(&self, t: &Theme, fonts: &Fonts) -> Vec<(usize, Rect)> {
+        let s = self.scale;
+        let (x0, _) = self.content_x(t);
+        let (bx, by, _, bh) = self.button_rect(t, fonts);
+        let mut x = bx - 16.0 * s;
+        let mut v = Vec::new();
+        for (i, (_, name)) in self.ablaeufe.iter().enumerate() {
+            let text = format!("{name} …");
+            let w = fonts
+                .regular
+                .as_ref()
+                .map_or(text.chars().count() as f32 * 6.0 * s, |f| {
+                    f.width(&text, 11.0 * s)
+                });
+            if x - w < x0 + 160.0 * s {
+                break;
+            }
+            x -= w;
+            v.push((i, (x, by, w, bh)));
+            x -= 16.0 * s;
+        }
+        v
     }
 
     /// Hinweiskarte mit dem Lohnfeld beim ersten Öffnen der Kosten.
@@ -1350,6 +1392,13 @@ impl KostenView {
         if inside(self.button_rect(t, fonts), x, y) {
             return Some(Hot::Button);
         }
+        if let Some((i, _)) = self
+            .ablauf_rects(t, fonts)
+            .into_iter()
+            .find(|(_, r)| inside(*r, x, y))
+        {
+            return Some(Hot::Ablauf(i));
+        }
         if let Some(a) = self.abgleich_lage(t, fonts) {
             for (r, h) in [
                 (a.ansehen, Hot::Ansehen),
@@ -1546,6 +1595,10 @@ impl KostenView {
             Hot::Button => {
                 self.button_down = true;
                 Some(ListOut::Repaint)
+            }
+            Hot::Ablauf(i) => {
+                self.blaetter_schliessen();
+                self.ablaeufe.get(i).map(|(g, _)| ListOut::Ablauf(*g))
             }
             Hot::Modus(m) => (m != self.modus).then(|| {
                 self.modus = m;
@@ -1842,6 +1895,15 @@ impl KostenView {
             f.draw(c, &text, 10.5 * s, x0, top + SUB_Y * s, u.sheet_text_dim);
         }
         self.paint_abgleich(c, t, fonts);
+        // Leise Verweise auf die Abläufe für dieses Haus
+        if let Some(f) = regular {
+            let px = 11.0 * s;
+            for (i, (lx, ly, _, lh)) in self.ablauf_rects(t, fonts) {
+                let col = crate::cards::verweis(u, self.hot == Some(Hot::Ablauf(i)));
+                let text = format!("{} …", self.ablaeufe[i].1);
+                f.draw(c, &text, px, lx, ly + (lh + f.cap_height(px)) * 0.5, col);
+            }
+        }
         // Knopf „Als Tabelle speichern“
         let (bx, by, bw, bh) = self.button_rect(t, fonts);
         let bg = if self.button_down {

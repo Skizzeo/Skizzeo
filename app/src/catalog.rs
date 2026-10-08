@@ -33,6 +33,9 @@ pub struct Company {
     /// Inhalt der Datei beim Laden bzw. letzten Schreiben: der Stand, den
     /// der Nutzer gesehen hat (`firma_anwenden`, Bausteingrenze §5).
     geladen: String,
+    /// Abläufe `kind=user` aus Werk und `geladen` für den Reiter Kosten
+    /// (paket-ka3b §3), beim Laden und Schreiben gelesen.
+    haus_ablaeufe: Vec<(sk_model::Guid, String)>,
     /// Die Datei ließ sich nicht lesen: nie darüber schreiben.
     broken: bool,
     /// Zählt jede Änderung des Katalogs im Speicher (Laden, Schreiben).
@@ -341,6 +344,7 @@ impl Company {
             lib: Library::standard(),
             stamp: None,
             geladen: String::new(),
+            haus_ablaeufe: Vec::new(),
             broken: false,
             gen: 0,
             zuletzt: Vec::new(),
@@ -374,7 +378,7 @@ impl Company {
                 self.stamp = Some(s);
                 match read_szk_with(&text, &sk_cost::lesen::ABSCHNITTE_SZK) {
                     Ok(lib) => {
-                        self.geladen = text.clone();
+                        self.geladen_merken(text.clone());
                         let unknown = lib.foreign.unknown;
                         let bearings = lib.invalid_bearings();
                         self.lib = lib;
@@ -429,7 +433,7 @@ impl Company {
                 match write_atomic(&self.path, &text) {
                     Ok(()) => {
                         self.stamp = stempel(&self.path);
-                        self.geladen = text;
+                        self.geladen_merken(text);
                         Vec::new()
                     }
                     Err(e) => vec![Meldung::aus_io(
@@ -444,7 +448,7 @@ impl Company {
             Err(e) => {
                 self.lib = Library::standard();
                 self.stamp = None;
-                self.geladen = String::new();
+                self.geladen_merken(String::new());
                 vec![Meldung::aus_io(
                     "Firmenkatalog nicht geladen",
                     "Firmenkatalog laden",
@@ -491,7 +495,7 @@ impl Company {
             match write_atomic(&self.path, &text) {
                 Ok(()) => {
                     self.stamp = stempel(&self.path);
-                    self.geladen = text;
+                    self.geladen_merken(text);
                 }
                 Err(e) => hints.push(Meldung::aus_io(
                     "Firmenkatalog nicht ergänzt",
@@ -671,6 +675,22 @@ impl Company {
             .as_deref()
             .map(|e| sk_cost::verwaltung::entwurf_voll(&self.geladen, e));
         self.entwurf = roh;
+    }
+
+    /// Freigegebener Dateiinhalt und die Abläufe daraus.
+    fn geladen_merken(&mut self, text: String) {
+        self.haus_ablaeufe = sk_cost::ablauf::lesen(&[sk_cost::WERK, &text])
+            .into_iter()
+            .filter(|a| a.zugang == sk_cost::ablauf::Zugang::User)
+            .filter(|a| !a.retired && a.befund.is_none())
+            .map(|a| (a.guid, a.name))
+            .collect();
+        self.geladen = text;
+    }
+
+    /// Abläufe für dieses Haus (`kind=user`, gültig, nicht ausgemustert).
+    pub fn haus_ablaeufe(&self) -> &[(sk_model::Guid, String)] {
+        &self.haus_ablaeufe
     }
 
     /// Offene Vorschläge im Entwurf, wie er jetzt auf der Platte steht
@@ -1032,7 +1052,7 @@ impl Company {
                 self.lib = lib;
                 self.gen += 1;
                 self.stamp = stempel(&self.path);
-                self.geladen = text;
+                self.geladen_merken(text);
                 SaveResult::Saved
             }
             Err(e) => {

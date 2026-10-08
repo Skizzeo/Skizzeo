@@ -789,3 +789,39 @@ fn fuer_neue_haeuser_nur_der_gewaehlte_wert() {
     assert_eq!((y.stunden, y.geraet), (Dez::lesen("0.9", 4).unwrap(), drei));
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// paket-ka3b §3: Abläufe `kind=user` stehen leise links vom Knopf; ein
+/// Klick startet den Ablauf für dieses Haus. Passt der Verweis nicht neben
+/// den Titel, fehlt er.
+#[test]
+fn ablauf_verweis() {
+    let t = Theme::dark();
+    let fonts = Fonts {
+        regular: None,
+        bold: None,
+        italic: None,
+    };
+    let mut s = haus();
+    let mut v = KostenView::new();
+    (v.w, v.h) = (1200, 900);
+    v.sync(&mut s, None);
+    assert!(v.ablauf_rects(&t, &fonts).is_empty());
+    let g = sk_model::Guid(7);
+    let liste = [(g, "Händlerpreis für dieses Haus eintragen".to_string())];
+    assert!(v.set_ablaeufe(&liste));
+    assert!(!v.set_ablaeufe(&liste), "unverändert");
+    let r = v.ablauf_rects(&t, &fonts);
+    assert_eq!(r.len(), 1);
+    let (x, y, w, h) = r[0].1;
+    let knopf = v.button_rect(&t, &fonts);
+    assert!(x + w < knopf.0, "links vom Knopf");
+    let (x, y) = ((x + w * 0.5) as f64, (y + h * 0.5) as f64);
+    let mut p = Picking::default();
+    let mods = sk_platform::Modifiers::default();
+    assert_eq!(
+        v.mouse_down(&t, &fonts, &mut p, (x, y), mods),
+        Some(ListOut::Ablauf(g))
+    );
+    (v.w, v.h) = (420, 900);
+    assert!(v.ablauf_rects(&t, &fonts).is_empty(), "zu schmal");
+}

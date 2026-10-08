@@ -216,6 +216,8 @@ pub enum ListOut {
     /// „Kennwort eingeben …“ im Preis- oder Lohnblatt: nur die Abfrage
     /// (Bedienbarkeit 16.1).
     Kennwort,
+    /// Ablauf `kind=user` für dieses Haus starten (paket-ka3b §3).
+    Ablauf(sk_model::Guid),
 }
 
 /// Nachrücken nach dem Löschen (H119): weggefallene Zeilen blenden in

@@ -776,7 +776,7 @@ impl Verwaltung {
             y = b.absatz(0.0, y, &a.ask, Farbe::Dim) + 12.0;
         }
         for (i, _) in seiten.iter().enumerate() {
-            let label = self.seiten_name(a, &seiten, i);
+            let label = self.seiten_name(a, &seiten, i, &sk_cost::ablauf::Antworten::new());
             b.text(
                 0.0,
                 y,

@@ -165,6 +165,10 @@ pub struct Out {
     /// Vorschau: diese Änderung im Entwurf verwerfen
     /// (`Company::entwurf_satz_verwerfen`).
     pub satz_verwerfen: Option<SatzId>,
+    /// Ablauf aus dem Reiter Kosten fertig: die App schreibt ins Haus
+    /// (`Scene::kosten_folge`), danach schließen bzw.
+    /// [`Verwaltung::ablauf_fehler`].
+    pub haus: Option<assistent::FuerHaus>,
 }
 
 pub struct Ctx<'a> {
@@ -251,6 +255,9 @@ pub struct Verwaltung {
     abfrage: Option<kennwort::Abfrage>,
     /// Nur die Abfrage, aus „Kennwort eingeben …“ (Bedienbarkeit 16.1).
     nur_kennwort: bool,
+    /// Nur ein Ablauf `kind=user` für dieses Haus (Reiter Kosten).
+    projekt: bool,
+    fuer_haus: Option<assistent::FuerHaus>,
     /// Blatt „Verwaltungskennwort setzen“.
     setz: Option<kennwort::Setzen>,
     /// Mit Verwaltungskennwort: der freigegebene Stand neben dem Entwurf
@@ -408,6 +415,8 @@ impl Verwaltung {
             je: None,
             abfrage: None,
             nur_kennwort: false,
+            projekt: false,
+            fuer_haus: None,
             setz: None,
             freigabe,
             versucht: Vec::new(),
@@ -982,6 +991,11 @@ impl Verwaltung {
         if self.abfrage.is_some() {
             return ((kennwort::ABF_W * s).round(), (kennwort::ABF_H * s).round());
         }
+        if self.projekt {
+            let ww = (assistent::A_W * s).min(w.w as f32);
+            let hh = (assistent::A_H * s).min((w.h - w.top) as f32);
+            return (ww.round(), hh.round());
+        }
         let ww = (W * s).min(w.w as f32);
         let hh = (H * s).min((w.h - w.top) as f32);
         (ww.round(), hh.round())
@@ -1161,6 +1175,9 @@ impl Verwaltung {
     pub fn handle(&mut self, e: &Event, cx: &mut Ctx) -> Out {
         let mut out = self.handle_innen(e, cx);
         out.entwurf = self.entwurf_faellig();
+        out.haus = self.fuer_haus.take();
+        // Ablauf für dieses Haus: ohne Blatt kein Fenster
+        out.closed |= self.projekt && self.assistent.is_none();
         out
     }
 
@@ -1488,6 +1505,10 @@ impl Verwaltung {
     fn paint_into(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts, w: &Win) {
         if self.abfrage.is_some() {
             self.abfrage_malen(c, t, fonts, w);
+            return;
+        }
+        if self.projekt {
+            self.assistent_malen(c, t, fonts, w);
             return;
         }
         let f = self.frame(w);

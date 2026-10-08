@@ -594,8 +594,8 @@ pub fn antwort(
             let einheit_text = match typ {
                 Feldart::Mm => " mm".to_string(),
                 Feldart::Stunden => " h".to_string(),
-                _ => match s.per.get(per) {
-                    Some(p) => format!(" €/{}", p.einheit.zeichen()),
+                _ => match preiseinheit(s, per, antworten, k) {
+                    Some(e) => format!(" €/{}", e.zeichen()),
                     None => " €".to_string(),
                 },
             };
@@ -672,8 +672,35 @@ fn umrechnen(
     einheit::umrechnen(d, s.per[per].einheit, &a, None).map_err(|b| b.satz)
 }
 
+/// Einheit der ersten Preisangabe: Verweist eine Umrechnung auf einen
+/// gewählten Artikel, ist es dessen Einheit (ein Händlerpreis für Mörtel
+/// ist €/kg, nicht €/m²), sonst die erste aus `per`.
+pub fn grundeinheit(s: &Schritt, antworten: &Antworten, k: &Katalog) -> Option<Einheit> {
+    let erst = s.per.first()?.einheit;
+    let artikel = s
+        .per
+        .iter()
+        .filter_map(|p| antworten.get(p.quelle.as_deref()?))
+        .find_map(|a| k.artikel(Guid::from_ifc(&a.wert)?));
+    Some(artikel.map_or(erst, |a| a.einheit))
+}
+
+/// Einheit der Preisangabe `per`: die erste ist [`grundeinheit`].
+pub fn preiseinheit(
+    s: &Schritt,
+    per: usize,
+    antworten: &Antworten,
+    k: &Katalog,
+) -> Option<Einheit> {
+    match per {
+        0 => grundeinheit(s, antworten, k),
+        n => s.per.get(n).map(|p| p.einheit),
+    }
+}
+
 /// Ist Preiseinheit `per` der Frage `s` mit den bisherigen Antworten
-/// wählbar? `Err`: der Grund für die graue Einheit (Regel 108).
+/// wählbar? `Err`: der Grund für die graue Einheit (Regel 108). Eine
+/// weitere Einheit, die schon die erste ist, entfällt.
 pub fn einheit_waehlbar(
     s: &Schritt,
     per: usize,
@@ -683,7 +710,19 @@ pub fn einheit_waehlbar(
     if per == 0 {
         return Ok(());
     }
+    if preiseinheit(s, per, antworten, k) == grundeinheit(s, antworten, k) {
+        return Err("Das ist schon die Einheit des Artikels.".into());
+    }
     umrechnen(s, per, Dez::EINS, antworten, k).map(|_| ())
+}
+
+/// Die Preiseinheiten, die die Frage zeigt (Index in `per`): die erste und
+/// jede weitere, die nicht dieselbe ist.
+pub fn einheiten_sichtbar(s: &Schritt, antworten: &Antworten, k: &Katalog) -> Vec<usize> {
+    let grund = grundeinheit(s, antworten, k);
+    (0..s.per.len())
+        .filter(|&n| n == 0 || s.per.get(n).map(|p| p.einheit) != grund)
+        .collect()
 }
 
 /// Die Operationen nach dem letzten Schritt (Regel 104), Angaben aus den
@@ -898,6 +937,65 @@ mod tests {
             schluss(&a, &ant),
             "Stein Porenbeton-Stein d=300mm mit 33,00 €/m² angelegt."
         );
+    }
+
+    /// Händlerpreis für einen Artikel in kg: Die erste Einheit ist €/kg,
+    /// nicht €/m²; „je m³“ und „je Stück“ sind grau, der Preis geht wie
+    /// eingegeben in `preis_setzen`. Bei einem Stein in m² rechnet „je m³“.
+    #[test]
+    fn haendlerpreis_in_der_einheit_des_artikels() {
+        let a = werk()
+            .into_iter()
+            .find(|a| a.name == "Händlerpreis für dieses Haus eintragen")
+            .unwrap();
+        let k = crate::lesen::werk(&sk_model::Model::new());
+        let s = &a.schritte;
+        assert_eq!(
+            grundeinheit(&s[1], &Antworten::new(), &k),
+            Some(Einheit::M2)
+        );
+        let kg = k
+            .artikel
+            .iter()
+            .find(|x| x.einheit == Einheit::Kg && !x.retired)
+            .expect("ein Artikel in kg");
+        let mut ant = Antworten::new();
+        ant.insert(
+            "artikel".into(),
+            antwort(&s[0], &kg.guid.to_ifc(), &kg.name, 0, &ant, &k).unwrap(),
+        );
+        assert_eq!(grundeinheit(&s[1], &ant, &k), Some(Einheit::Kg));
+        assert_eq!(einheiten_sichtbar(&s[1], &ant, &k), [0, 1, 2]);
+        assert!(einheit_waehlbar(&s[1], 1, &ant, &k).is_err());
+        assert!(einheit_waehlbar(&s[1], 2, &ant, &k).is_err());
+        assert_eq!(
+            antwort(&s[1], "0", "", 0, &ant, &k).unwrap_err(),
+            "Bitte zwischen 0,01 €/kg und 100.000,00 €/kg."
+        );
+        let p = antwort(&s[1], "1,25", "", 0, &ant, &k).unwrap();
+        ant.insert("preis".into(), p);
+        ant.insert(
+            "quelle".into(),
+            antwort(&s[2], "Angebot Müller", "", 0, &ant, &k).unwrap(),
+        );
+        let ops = ops(&a, &ant, "10/2026").unwrap();
+        assert!(
+            matches!(&ops[..], [Op::PreisSetzen { artikel, preis, quelle, .. }]
+                if *artikel == kg.guid && *preis == Some(Dez(1_250_000)) && quelle == "Angebot Müller"),
+            "{ops:?}"
+        );
+        // Stein in m²: „je m³“ rechnet über die Dicke
+        let stein = k
+            .artikel
+            .iter()
+            .find(|x| x.einheit == Einheit::M2 && x.t.is_some() && !x.retired)
+            .unwrap();
+        ant.insert(
+            "artikel".into(),
+            antwort(&s[0], &stein.guid.to_ifc(), &stein.name, 0, &ant, &k).unwrap(),
+        );
+        assert_eq!(grundeinheit(&s[1], &ant, &k), Some(Einheit::M2));
+        assert!(einheit_waehlbar(&s[1], 1, &ant, &k).is_ok());
     }
 
     /// Regel 102: Eine Lücke in `nr`, ein unbekannter Vorgang oder ein

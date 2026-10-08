@@ -1612,6 +1612,27 @@ impl App {
         }
     }
 
+    /// Ablauf `kind=user` aus dem Reiter Kosten (paket-ka3b §3): nur das
+    /// Blatt des Assistenten, ohne Kennwort; „Eintragen“ schreibt ins Haus
+    /// als einen Rückgängig-Schritt.
+    fn ablauf_im_haus(&mut self, g: sk_model::Guid) {
+        if self.modal() {
+            return;
+        }
+        self.close_type_menu(false);
+        if self.ui.dialog {
+            self.close_building_dialog(false);
+        }
+        self.ui.hover = None;
+        self.title.hover = None;
+        let mut v = verwaltung::Verwaltung::open(&self.scene, self.company.as_ref(), None);
+        if v.ablauf_im_haus(g) {
+            self.verwaltung = Some(v);
+            self.prefs_dirty = true;
+            self.overlay_dirty = true;
+        }
+    }
+
     /// Offenes Fenster „Verwaltung …“: Maus und Tasten wie „Baustoffe …“;
     /// OK schreibt über `Scene::fuer_firma` (Bausteingrenze §5).
     fn handle_verwaltung(&mut self, e: Event, surface: &Surface) -> bool {
@@ -1665,7 +1686,7 @@ impl App {
             fonts: &self.ui.fonts,
             win,
         };
-        let out = v.handle(&e, &mut cx);
+        let mut out = v.handle(&e, &mut cx);
         if out.frei {
             self.admin = true;
             self.scene.rolle = sk_cost::Rolle::Admin;
@@ -1676,6 +1697,27 @@ impl App {
                 k.set_vorschlag(false);
             }
             self.quantity.dirty = true;
+        }
+        if let Some(haus) = out.haus.take() {
+            let h = sk_cost::Herkunft::jetzt(sk_cost::HerkunftArt::Manual);
+            let label = self.scene.bezeichnung(haus.name);
+            match self.kosten_folge(label, &h, &haus.ops) {
+                Some((m, true)) => {
+                    if let Some(v) = self.verwaltung.as_mut() {
+                        v.ablauf_fehler(m.to_string());
+                    }
+                }
+                _ => {
+                    self.verwaltung = None;
+                    self.overlay_dirty = true;
+                    self.status(meldung::Meldung::mit("{}", &[&haus.schluss]), NOTICE_TIME);
+                    self.quantity.dirty = true;
+                    self.redraw = true;
+                }
+            }
+            self.prefs_dirty = true;
+            self.sync_caption(surface);
+            return true;
         }
         if out.ok {
             let ops = v.ops().to_vec();
@@ -2537,6 +2579,12 @@ impl App {
                     surface.command(WindowCommand::Activate);
                 }
             }
+            quantity::Out::Ablauf(g) => {
+                self.ablauf_im_haus(g);
+                if self.verwaltung.is_some() {
+                    surface.command(WindowCommand::Activate);
+                }
+            }
         }
         if model {
             self.sync_ui();
@@ -2842,6 +2890,9 @@ impl App {
         let vorschlag = self.rolle() == sk_cost::Rolle::Nutzer;
         if let Some(k) = self.quantity.kosten.as_mut() {
             k.set_vorschlag(vorschlag);
+            if let Some(c) = &self.company {
+                k.set_ablaeufe(c.haus_ablaeufe());
+            }
         }
         let firma = self.company.as_ref().map(|c| (c.library(), c.stand()));
         self.quantity.datei = self.doc.name();

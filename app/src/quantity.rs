@@ -59,6 +59,8 @@ pub enum Out {
     Verwaltung(sk_model::Guid),
     /// Nur die Abfrage des Verwaltungskennworts (Bedienbarkeit 16.1).
     Kennwort,
+    /// Ablauf `kind=user` für dieses Haus (paket-ka3b §3).
+    Ablauf(sk_model::Guid),
 }
 
 pub struct QuantityWindow {
@@ -480,6 +482,7 @@ impl QuantityWindow {
             }
             ListOut::Verwaltung(g) => Some(Out::Verwaltung(g)),
             ListOut::Kennwort => Some(Out::Kennwort),
+            ListOut::Ablauf(g) => Some(Out::Ablauf(g)),
         }
     }
 
