@@ -85,6 +85,15 @@ fn istbilder_ka1_ka2() {
     let mut q = b.fenster(&mut s, 1240, 820, Blatt::Mengen);
     b.ablegen(&mut q, "ist-ka-1-karten.png");
 
+    // Jörn 08.10.: schmales Fenster bei 125 %, Gliedern nach Gewerk; der
+    // Knopf liegt nicht mehr hinter dem Umschalter
+    let mut q = QuantityWindow::new();
+    q.title.scale = 1.25;
+    q.grouping = Grouping::Trade;
+    (q.w, q.h) = (820, 500);
+    q.sync(&mut s, &b.p, false);
+    b.ablegen(&mut q, "ist-mengen-schmal.png");
+
     // KA-1b: Umfang EG + OG (RH-1 hat ein Gebäude, also ohne Gebäudefeld)
     let mut q = b.fenster(&mut s, 1240, 400, Blatt::Kosten);
     let k = q.kosten.as_mut().unwrap();

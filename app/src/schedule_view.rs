@@ -1036,7 +1036,10 @@ impl ListView {
             // Mitte der Unterzeile (Grundlinie top + 52)
             let mid = top + 52.0 * s - cap * 0.5;
             if x >= sub_end {
-                (x, mid - ph * 0.5, ph, x - label_w >= sub_end, false)
+                // Nie unter den Knopf darüber (Jörn 08.10.: der Knopf lag
+                // bei schmalem Fenster hinter dem Umschalter)
+                let y = (mid - ph * 0.5).max(by + bh + 4.0 * s);
+                (x, y, ph, x - label_w >= sub_end, false)
             } else {
                 let y = mid + TOGGLE_ROW * s - ph * 0.5;
                 (x, y, ph, x - label_w >= x0, true)

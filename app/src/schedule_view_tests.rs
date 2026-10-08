@@ -238,7 +238,10 @@ fn umschalter_auf_der_unterzeile() {
     assert!((x + w + inset - (x0 + cw)).abs() < 1e-3, "rechtsbündig");
     let cap = fonts.regular.as_ref().map_or(7.5, |f| f.cap_height(10.5));
     let sub_mid = v.top_dip() + 52.0 - cap * 0.5;
-    assert!((y + h * 0.5 - sub_mid).abs() < 1e-3, "Mitte auf Mitte");
+    // Mitte auf Mitte, aber nie unter den Knopf (Jörn 08.10.)
+    let (_, by, _, bh) = v.button_rect(&t, &fonts);
+    let soll = (sub_mid - h * 0.5 - TOGGLE_INSET).max(by + bh + 4.0) + TOGGLE_INSET;
+    assert!((y - soll).abs() < 1e-3, "{y} statt {soll}");
     v.fit_head(&t, &fonts);
     assert_eq!(v.head(), HEAD);
 
@@ -281,4 +284,45 @@ fn gekuerzter_name_als_hinweis() {
     assert_eq!(full, name);
     assert!(full.starts_with("Dämmung (WDVS) 14 · Außenwände"), "{full}");
     assert!(whole.is_some());
+}
+
+/// Jörn 08.10. (Bild): Bei schmalem Fenster lag „Als Tabelle speichern“
+/// hinter dem Umschalter „Gliedern nach“. Knopf und Umschalter überlappen
+/// bei keiner Breite und keiner Skalierung.
+#[test]
+fn knopf_und_umschalter_ueberlappen_nie() {
+    let t = Theme::dark();
+    let lib = std::path::Path::new("/usr/share/fonts/truetype/liberation");
+    let lade = |n: &str| {
+        std::fs::read(lib.join(n))
+            .ok()
+            .and_then(sk_paint::font::Font::parse)
+    };
+    let echte = Fonts {
+        regular: lade("LiberationSans-Regular.ttf"),
+        bold: lade("LiberationSans-Bold.ttf"),
+        italic: None,
+    };
+    for fonts in [Fonts::system(), echte] {
+        for scale in [1.0, 1.25, 1.5] {
+            for w in (300..1400).step_by(20) {
+                let mut v = gewerk_liste(w);
+                v.scale = scale;
+                let (bx, by, bw, bh) = v.button_rect(&t, &fonts);
+                let (label, halves, _) = v.toggle_layout(&t, &fonts);
+                let i = TOGGLE_INSET * scale;
+                let (_, (x, y, _, h)) = halves[0];
+                let (_, (x2, _, w2, _)) = halves[1];
+                let (px, py, pw, ph) = (x - i, y - i, x2 + w2 + i - (x - i), h + 2.0 * i);
+                let frei = px + pw <= bx || bx + bw <= px || py + ph <= by || by + bh <= py;
+                assert!(
+                    frei,
+                    "Breite {w}, Skala {scale}: Knopf und Umschalter überlappen"
+                );
+                if let Some((lx, _)) = label {
+                    assert!(lx >= 0.0);
+                }
+            }
+        }
+    }
 }
