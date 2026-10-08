@@ -302,7 +302,12 @@ pub struct KostenView {
     /// Abgleich mit dem Firmenkatalog (Regel 92) mit netto vorher und
     /// nachher für den Tooltip an „übernehmen“, und woraus er bestimmt ist.
     abgleich: Option<(Abgleich, Option<(Cent, Cent)>)>,
-    abgleich_von: Option<(*const Kostenblatt, *const Katalog)>,
+    /// Stempel von Katalog und Firmenkatalog des Abgleichs: Ein Bauschritt
+    /// ändert keine Preise und rechnet ihn nicht neu (Review 3ak).
+    abgleich_von: Option<(u64, u64)>,
+    /// Kostenblatt, zu dem die Netto-Vorschau von „übernehmen“ gehört; sie
+    /// wird erst gerechnet, wenn die Maus auf „übernehmen“ steht.
+    abgleich_netto_von: Option<*const Kostenblatt>,
     /// Blatt „Bauleistung wählen …“, sein Öffnen beim nächsten `sync`
     /// (Zeile ohne Bauleistung und Bauteil) und die grauen Zeilen, für die
     /// es etwas zu wählen gibt.
@@ -358,6 +363,7 @@ impl KostenView {
             eigen_von: None,
             abgleich: None,
             abgleich_von: None,
+            abgleich_netto_von: None,
             wahl: None,
             wahl_wunsch: None,
             waehlbar: HashSet::new(),
@@ -525,27 +531,56 @@ impl KostenView {
         kat: &Rc<Katalog>,
         blatt: &Rc<Kostenblatt>,
     ) -> bool {
-        let von = (Rc::as_ptr(blatt), Rc::as_ptr(kat));
-        if self.abgleich_von == Some(von) {
-            return false;
+        let von = (kat.stempel, firma.map_or(0, |f| f.1));
+        let mut changed = false;
+        if self.abgleich_von != Some(von) {
+            self.abgleich_von = Some(von);
+            self.abgleich_netto_von = None;
+            let neu = sk_cost::abgleich::abgleich(s.model(), firma.map(|f| f.0));
+            let alt = self.abgleich.take();
+            changed = neu.as_ref() != alt.as_ref().map(|a| &a.0);
+            self.abgleich = neu.map(|a| match alt {
+                Some((b, netto)) if b == a => (a, netto),
+                _ => (a, None),
+            });
+            if changed {
+                self.clamp();
+            }
         }
-        self.abgleich_von = Some(von);
-        let neu = sk_cost::abgleich::abgleich(s.model(), firma.map(|f| f.0)).map(|a| {
-            let op = Op::StandUebernehmen {
-                saetze: a.saetze.clone(),
-            };
-            let netto = s
-                .kosten_live(firma, &[op], &[&self.leiste.umfang])
-                .ok()
-                .and_then(|(_, b)| Some((blatt.netto, b.first()?.netto)));
-            (a, netto)
-        });
-        let changed = neu != self.abgleich;
-        self.abgleich = neu;
-        if changed {
-            self.clamp();
+        // Netto-Vorschau nur für den Tooltip an „übernehmen“
+        let ptr = Rc::as_ptr(blatt);
+        if self.hot == Some(Hot::Uebernehmen) && self.abgleich_netto_von != Some(ptr) {
+            if let Some((a, netto)) = self.abgleich.as_mut() {
+                self.abgleich_netto_von = Some(ptr);
+                let op = Op::StandUebernehmen {
+                    saetze: a.saetze.clone(),
+                };
+                *netto = s
+                    .kosten_live(firma, &[op], &[&self.leiste.umfang])
+                    .ok()
+                    .and_then(|(_, b)| Some((blatt.netto, b.first()?.netto)));
+                changed = true;
+            }
         }
         changed
+    }
+
+    /// Tooltip an „übernehmen“; ohne Vorschau ohne Beträge.
+    pub fn tip_uebernehmen(&self) -> Option<String> {
+        let (_, netto) = self.abgleich.as_ref()?;
+        Some(match netto {
+            Some((v, n)) => format!(
+                "Mit den Werten für neue Häuser: {} € → {} € netto · Eigene Werte dieses Hauses bleiben stehen.",
+                euro(*v),
+                euro(*n)
+            ),
+            None => "Rechnet mit den Werten für neue Häuser · Eigene Werte dieses Hauses bleiben stehen.".into(),
+        })
+    }
+
+    /// Steht die Maus auf „übernehmen“?
+    pub fn auf_uebernehmen(&self) -> bool {
+        self.hot == Some(Hot::Uebernehmen)
     }
 
     /// Graue Zeilen mit Wahl und das Blatt „Bauleistung wählen …“ öffnen.
@@ -1520,15 +1555,7 @@ impl KostenView {
                 (a.texte.len() > 2)
                     .then(|| format!("Für neue Häuser gilt:\n{}", a.texte.join("\n")))
             }
-            Hot::Uebernehmen => {
-                let (_, netto) = self.abgleich.as_ref()?;
-                let (v, n) = (*netto)?;
-                Some(format!(
-                    "Mit den Werten für neue Häuser: {} € → {} € netto · Eigene Werte dieses Hauses bleiben stehen.",
-                    euro(v),
-                    euro(n)
-                ))
-            }
+            Hot::Uebernehmen => self.tip_uebernehmen(),
             Hot::Gliederung(Gliederung::Kostengruppe) => Some(
                 "Kostengruppe nach DIN 276, wie sie Architekten und Bauherren verwenden".into(),
             ),

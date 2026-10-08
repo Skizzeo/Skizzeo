@@ -417,10 +417,17 @@ fn abgleichzeile_fuer_neue_haeuser() {
     assert_eq!(v.list_top(), oben + ABGLEICH_H * v.scale);
     let (_, _, _, _, (ux, uy, uw, uh), (lx, ..)) = v.abgleich_lage(&t, &fonts).unwrap();
     let (x, y) = ((ux + uw * 0.5) as f64, (uy + uh * 0.5) as f64);
+    // Die Vorschau entsteht erst über „übernehmen“ (Review 3ak)
+    let mut p = Picking::default();
+    v.mouse_move(&t, &fonts, &mut p, x, y);
+    assert!(v
+        .tip_at(&t, &fonts, x, y)
+        .unwrap()
+        .starts_with("Rechnet mit"));
+    v.sync(&mut s, Some((c.library(), c.stand())));
     let tip = v.tip_at(&t, &fonts, x, y).unwrap();
     assert!(tip.starts_with("Mit den Werten für neue Häuser: "), "{tip}");
     assert!(tip.ends_with("netto · Eigene Werte dieses Hauses bleiben stehen."));
-    let mut p = Picking::default();
     let mods = sk_platform::Modifiers::default();
     let lassen = v.mouse_down(&t, &fonts, &mut p, ((lx + 2.0) as f64, y), mods);
     assert!(matches!(

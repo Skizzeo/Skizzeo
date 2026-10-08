@@ -320,6 +320,13 @@ impl QuantityWindow {
         }
         if kosten.sync(s, firma) && aktiv == Blatt::Kosten {
             self.dirty = true;
+            // Die Netto-Vorschau an „übernehmen“ entsteht erst beim
+            // Überfahren: den wartenden Tooltip nachziehen
+            if kosten.auf_uebernehmen() {
+                if let (Some(tip), Some(neu)) = (self.tip.as_mut(), kosten.tip_uebernehmen()) {
+                    tip.0 = neu;
+                }
+            }
         }
         // Liegen die Zeilen danach anders (aufgeklappt, gerollt), zeichnet
         // `frame` doch das ganze Bild
