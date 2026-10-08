@@ -1071,3 +1071,115 @@ fn perf_kosten() {
          = schedule() + kosten_mit."
     );
 }
+
+/// KA-1 Abnahme 11: Chip-Klick am größten Prüfhaus bis zum fertigen Bild
+/// des Mengenfensters (520 × 1000) unter 15 ms (Release, Median aus drei
+/// Läufen je zehn Klicks). Der Klick wechselt zwischen „nur EG“ und allen.
+#[test]
+#[ignore]
+fn perf_chip_klick() {
+    use crate::picking::Picking;
+    use crate::quantity::QuantityWindow;
+    use crate::umfang_view;
+    use sk_ui::theme::Theme;
+    use sk_ui::widgets::Fonts;
+    println!();
+    println!("{:<34} {:>9}", "Modell (gestapelt)", "Chip");
+    let (t, fonts) = (Theme::dark(), Fonts::system());
+    for (name, houses, storeys, annexes, budget) in [
+        ("Referenz: 4 Geschosse + 2 Nebengeb.", 1, 4u8, 2, false),
+        ("Groß: 2 Häuser à 4 G. + 2 Nebengeb.", 2, 4, 2, true),
+    ] {
+        let mut s = reference_stacked(houses, storeys, annexes);
+        let p = Picking::default();
+        let mut q = QuantityWindow::new();
+        (q.w, q.h) = (520, 1000);
+        q.sync(&mut s, &p, false);
+        let now = Instant::now();
+        q.frame(&t, &fonts, now);
+        let runs = s.schedule_runs();
+        let mut laeufe = Vec::new();
+        for _ in 0..3 {
+            laeufe.push(time(10, || {
+                let l = q.list.as_mut().unwrap();
+                let chips = umfang_view::umfang_chips(s.model(), l.umfang.gebaeude);
+                let eg = chips.iter().position(|c| c.name == "EG").unwrap();
+                if umfang_view::alle_an(&l.umfang, &chips) {
+                    umfang_view::klick(&mut l.umfang, &chips, eg, false);
+                } else {
+                    umfang_view::alle(&mut l.umfang);
+                }
+                q.sync(&mut s, &p, false);
+                std::hint::black_box(q.frame(&t, &fonts, now).is_some());
+            }));
+        }
+        assert_eq!(
+            s.schedule_runs(),
+            runs,
+            "Chip-Klick rechnet die Mengen nicht neu"
+        );
+        laeufe.sort_by(|a, b| a.total_cmp(b));
+        let ms = laeufe[1];
+        println!("{name:<34} {ms:>9.3}");
+        if budget && cfg!(not(debug_assertions)) {
+            assert!(ms < 15.0, "{name}: Chip-Klick {ms:.3} ms ≥ 15 ms");
+        }
+    }
+    println!("Zeiten in ms: Umfang ändern, Liste im Umfang, ganzes Fensterbild.");
+}
+
+/// KA-1 Abnahme 8 und 11a: Mit offenem Mengenblatt erhöht ein Loslassen nach
+/// Wand verschieben `schedule_runs` um genau 1, ein Chip-Klick nicht. Der
+/// Umfang ändert weder `revision` noch Verlauf noch die Datei.
+#[test]
+fn ka1_umfang_ohne_neurechnung_und_ohne_datei() {
+    use crate::picking::Picking;
+    use crate::quantity::QuantityWindow;
+    use crate::umfang_view;
+    let text = include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo");
+    let m = sk_model::szo::read_with(
+        text,
+        sk_model::GuidGen::with_seed(1),
+        &sk_cost::lesen::ABSCHNITTE_SZO,
+    )
+    .unwrap()
+    .model;
+    let mut s = Scene::with_model(m);
+    let p = Picking::default();
+    let mut q = QuantityWindow::new();
+    (q.w, q.h) = (520, 1000);
+    q.sync(&mut s, &p, false);
+    let runs = s.schedule_runs();
+    let datei = sk_model::szo::write(s.model());
+    let rev = (s.model().revision(), s.model().ext_revision());
+    let undo = s.undo_label();
+    // Chip „EG“: nur EG, keine neue Berechnung, nichts am Modell
+    {
+        let l = q.list.as_mut().unwrap();
+        let chips = umfang_view::umfang_chips(s.model(), l.umfang.gebaeude);
+        let eg = chips.iter().position(|c| c.name == "EG").unwrap();
+        assert!(umfang_view::klick(&mut l.umfang, &chips, eg, false));
+    }
+    q.sync(&mut s, &p, false);
+    assert_eq!(s.schedule_runs(), runs, "Chip-Klick");
+    assert_eq!((s.model().revision(), s.model().ext_revision()), rev);
+    assert_eq!(s.undo_label(), undo);
+    assert_eq!(sk_model::szo::write(s.model()), datei);
+    // Wand verschieben und loslassen: genau eine Berechnung, Umfang bleibt
+    let run = s.model().runs().ids().next().unwrap();
+    let moved = s.chain(run).unwrap().with_segment_moved(0, -100.0).unwrap();
+    s.begin("Wand verschieben");
+    s.set_run_points(run, &moved.points);
+    s.commit();
+    q.sync(&mut s, &p, false);
+    assert_eq!(s.schedule_runs(), runs + 1, "Loslassen");
+    q.sync(&mut s, &p, false);
+    assert_eq!(s.schedule_runs(), runs + 1);
+    let l = q.list.as_ref().unwrap();
+    let chips = umfang_view::umfang_chips(s.model(), l.umfang.gebaeude);
+    let an: Vec<bool> = chips
+        .iter()
+        .map(|c| umfang_view::an(&l.umfang, c))
+        .collect();
+    assert_eq!(an, [false, true, false], "nur EG bleibt gewählt");
+}
