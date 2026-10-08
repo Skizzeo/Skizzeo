@@ -71,6 +71,23 @@ pub fn preisquelle(k: &Katalog) -> String {
     }
 }
 
+/// Fingerabdruck dessen, was [`katalog`] außerhalb der Kostenzeilen aus dem
+/// Modell liest (Umfeld: Baustoffe mit Guid, Name und Art für Regel 73 und
+/// R73-W, Gewerke). Wer den Katalog je `ext_revision` merkt, nimmt ihn
+/// dazu: Ein umbenannter Baustoff ändert die Übersetzung der Werkspreise.
+pub fn umfeld_stempel(m: &Model) -> u64 {
+    let mut h = katalog::FNV_START;
+    for (_, x) in m.materials().iter() {
+        h = katalog::fnv(h, &x.guid.0.to_le_bytes());
+        h = katalog::fnv(h, x.name.as_bytes());
+        h = katalog::fnv(h, &[x.category as u8, b'|']);
+    }
+    for t in m.trades() {
+        h = katalog::fnv(h, &t.guid.0.to_le_bytes());
+    }
+    h
+}
+
 /// Wirksame Stammdaten nach Bausteingrenze §6: Projektkopie, sonst der
 /// freigegebene Firmenkatalog mit Kostensätzen, sonst der Werksbestand.
 /// Ein Projekt gilt als Kopie, wenn es `[costproject]` oder einen

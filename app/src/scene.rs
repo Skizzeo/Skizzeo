@@ -488,12 +488,12 @@ pub struct Scene {
     schedule_in: Option<(u64, Umfang, Rc<Schedule>)>,
     /// Wie oft die Liste berechnet wurde (Messung, Abnahme).
     schedule_runs: u64,
-    /// Kosten (KA-2): wirksamer Katalog je (`ext_revision`, Firmenstand),
+    /// Kosten (KA-2): wirksamer Katalog je (`ext_revision`, Firmenstand, Umfeld),
     /// die letzten zwei Kostenblätter je (Berechnung der Liste,
     /// Katalogstempel, Umfang; der Reiter fragt den Umfang und für die
     /// Chip-Summen alle Geschosse) und der Zwischenspeicher der Zuordnung
     /// (Bausteingrenze §5).
-    katalog: Option<((u64, u64), Rc<sk_cost::Katalog>)>,
+    katalog: Option<((u64, u64, u64), Rc<sk_cost::Katalog>)>,
     kostenblatt: Vec<((u64, u64, Umfang), Rc<sk_cost::Kostenblatt>)>,
     kostenspeicher: sk_cost::Kostenspeicher,
     /// Offener Schritt „Typ gewechselt“ als Vorschau (K3).
@@ -832,10 +832,15 @@ impl Scene {
     }
 
     /// Wirksamer Kostenkatalog (Projekt, Firma oder Werk), gemerkt je
-    /// `ext_revision` und Firmenstand. `firma`: Firmenkatalog und sein Stand
+    /// `ext_revision`, Firmenstand und Baustoffen und Gewerken des Modells
+    /// (`lesen::umfeld_stempel`). `firma`: Firmenkatalog und sein Stand
     /// ([`crate::catalog::Company::stand`]).
     pub fn katalog(&mut self, firma: Option<(&sk_model::Library, u64)>) -> Rc<sk_cost::Katalog> {
-        let key = (self.model.ext_revision(), firma.map_or(0, |f| f.1));
+        let key = (
+            self.model.ext_revision(),
+            firma.map_or(0, |f| f.1),
+            sk_cost::lesen::umfeld_stempel(&self.model),
+        );
         if let Some((k, kat)) = &self.katalog {
             if *k == key {
                 return kat.clone();
@@ -3219,6 +3224,39 @@ fn mesh_into(m: &mut MeshData, s: &Solid) {
 
 #[cfg(test)]
 mod tests {
+    /// Review 3ai: Der gemerkte Katalog hängt auch an den Baustoffen des
+    /// Modells (R73-W). Umbenennen von „Stahlbeton“ in einer Altdatei nimmt
+    /// die Werkspreise weg; Katalog und Kostenblatt folgen sofort.
+    #[test]
+    fn katalog_folgt_umbenanntem_baustoff() {
+        let text = include_str!("abnahme_p5.szo");
+        let m = sk_model::szo::read_with(
+            text,
+            sk_model::GuidGen::with_seed(1),
+            &sk_cost::lesen::ABSCHNITTE_SZO,
+        )
+        .unwrap()
+        .model;
+        let mut s = Scene::with_model(m);
+        let u = sk_model::qto::Umfang::projekt();
+        let vorher = s.kostenblatt(None, &u).netto;
+        let (id, mut x) = s
+            .model()
+            .materials()
+            .iter()
+            .find(|(_, x)| x.name == "Stahlbeton")
+            .map(|(id, x)| (id, x.clone()))
+            .unwrap();
+        x.name = "Beton alt".into();
+        assert!(s.edit_model("Name", |m| m.set_material(id, x)));
+        let frisch = sk_cost::lesen::katalog(s.model(), None);
+        assert_eq!(s.katalog(None).befunde, frisch.befunde);
+        let sched = sk_model::qto::schedule(s.model());
+        let soll = sk_cost::lesen::kosten(s.model(), &sched, &frisch, &u).netto;
+        assert_ne!(soll, vorher);
+        assert_eq!(s.kostenblatt(None, &u).netto, soll);
+    }
+
     use super::*;
     use sk_model::{Pen, RefSide};
 
