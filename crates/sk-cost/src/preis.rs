@@ -7,7 +7,7 @@
 
 use crate::befund::Ort;
 use crate::geld::{Cent, Dez};
-use crate::katalog::{Einheit, Katalog, Leistung};
+use crate::katalog::{fnv, Einheit, Katalog, Leistung};
 use crate::op::{Bauleistung, Op, SatzId};
 use crate::rechnung::{feste_ep, mit_zuschlag, stoff_teile, Position, Quelle, Stoffteil};
 use sk_model::{Guid, Model};
@@ -183,6 +183,54 @@ pub fn preis_ops(k: &Katalog, a: &Aufbau, e: &Eingabe, stand: &str) -> Vec<Op> {
     ops
 }
 
+impl Katalog {
+    /// Katalog mit noch nicht ausgeführten Operationen des Preisblatts
+    /// (paket-ka2 §3, „Katalog::mit“): `PreisSetzen` und
+    /// `BauleistungAendern` direkt auf einer Kopie, mit neuem Stempel. Rein
+    /// im Speicher und ohne Prüfung; geschrieben und geprüft wird über
+    /// `ausfuehren_folge`. `None` bei anderen Operationen oder unbekannten
+    /// Sätzen, dann gilt [`crate::vorschau`].
+    pub fn mit(&self, ops: &[Op]) -> Option<Katalog> {
+        let mut k = self.clone();
+        let mut h = fnv(k.stempel, b"mit");
+        for op in ops {
+            match op {
+                Op::PreisSetzen { artikel, preis, .. } => {
+                    let a = k.artikel.iter_mut().find(|a| a.guid == *artikel)?;
+                    a.preis = *preis;
+                    h = fnv(h, artikel.to_ifc().as_bytes());
+                    h = fnv(h, preis.map_or(String::new(), |p| p.text()).as_bytes());
+                }
+                Op::BauleistungAendern { bauleistung, daten } => {
+                    let l = k.leistungen.iter_mut().find(|l| l.guid == *bauleistung)?;
+                    let d = daten.clone();
+                    l.kurz = d.kurz;
+                    l.gewerk = d.gewerk;
+                    l.titel = d.titel;
+                    l.pos = d.pos;
+                    l.einheit = d.einheit;
+                    l.bezug = d.bezug;
+                    l.stunden = d.stunden;
+                    l.geraet = d.geraet;
+                    l.sonst = d.sonst;
+                    l.nu = d.nu;
+                    l.kg = d.kg;
+                    l.kategorien = d.kategorien;
+                    l.mat = d.mat;
+                    l.tmin = d.tmin;
+                    l.tmax = d.tmax;
+                    l.funktion = d.funktion;
+                    h = fnv(h, bauleistung.to_ifc().as_bytes());
+                    h = fnv(h, format!("{:?}", l).as_bytes());
+                }
+                _ => return None,
+            }
+        }
+        k.stempel = h;
+        Some(k)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,6 +294,33 @@ mod tests {
         let neu = aufbau(&m, &plan.katalog, mw).unwrap();
         assert_eq!(neu.ep, Cent(5_234));
         assert_eq!(neu.lohn, Cent(2_700));
+        // Katalog::mit rechnet dasselbe wie der Plan, auf den Cent
+        let schnell = k.mit(&ops).expect("Preis");
+        assert_ne!(schnell.stempel, k.stempel);
+        let sched = qto::schedule(&m);
+        let u = crate::Umfang::projekt();
+        assert_eq!(
+            lesen::kosten(&m, &sched, &schnell, &u).netto,
+            lesen::kosten(&m, &sched, &plan.katalog, &u).netto
+        );
+        let h = Dez::lesen("0.5", 4).unwrap();
+        let ops2 = preis_ops(
+            &k,
+            &a,
+            &Eingabe {
+                stunden: Some(h),
+                preise: vec![],
+            },
+            "",
+        );
+        let plan2 = crate::vorschau(&m, None, crate::Rolle::Admin, &ops2).unwrap();
+        assert_eq!(
+            lesen::kosten(&m, &sched, &k.mit(&ops2).unwrap(), &u).netto,
+            lesen::kosten(&m, &sched, &plan2.katalog, &u).netto
+        );
+        assert!(k
+            .mit(&[Op::AbweichungZuruecknehmen { saetze: vec![] }])
+            .is_none());
         assert!(preis_ops(
             &k,
             &a,
