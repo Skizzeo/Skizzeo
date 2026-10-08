@@ -207,6 +207,15 @@ fn istbilder_ka1_ka2() {
     k.mouse_move(&b.t, &b.fonts, &mut b.p, x, y);
     q.sync_mit(&mut s, &b.p, firma, false);
     b.ablegen(&mut q, "ist-ka-2d-abgleich.png");
+    // KA-3a5: „Unterschiede ansehen“ offen
+    let k = q.kosten.as_mut().unwrap();
+    let (x, y) = k.ansehen_mitte(&b.t, &b.fonts).unwrap();
+    let mods = sk_platform::Modifiers::default();
+    k.mouse_down(&b.t, &b.fonts, &mut b.p, (x, y), mods);
+    k.mouse_move(&b.t, &b.fonts, &mut b.p, x, y);
+    assert!(k.unterschiede_offen());
+    q.sync_mit(&mut s, &b.p, firma, false);
+    b.ablegen(&mut q, "ist-ka-3a5-unterschiede.png");
     let _ = std::fs::remove_dir_all(&d);
 
     // KA-2e: „Bauleistung wählen …“ an Dachterrasse · Dämmung hart
