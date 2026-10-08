@@ -25009,7 +25009,7 @@ mod hilfe {
         "Hinten",
         "Links",
         "Rechts",
-        "Mengenermittlung",
+        "Mengen · Kosten",
         "?",
     ];
 
