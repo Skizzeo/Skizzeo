@@ -586,3 +586,48 @@ fn doppelte_oz_im_pruefen() {
     let lv = lv_aus(&m, &b, &lesen::katalog(&m, None), &wahl(true, true));
     assert!(lv.befunde.iter().all(|b| b.regel != 86));
 }
+
+/// Kostengruppe der Position wie im Kostenblatt (Review 3ao): Hat die
+/// Bauleistung eine eigene (Firma, 330), zählt trotzdem die der Bauteile
+/// (331); verschiedene Kostengruppen der Bauteile ergeben keine.
+#[test]
+fn kostengruppe_wie_im_kostenblatt() {
+    let m = rh1();
+    let ers: Vec<(String, String)> = ["10", "20", "30"]
+        .iter()
+        .map(|p| {
+            (
+                format!("title=1S7bUW0010080300000003 pos={p} "),
+                format!("title=1S7bUW0010080300000003 pos={p} kg=330 "),
+            )
+        })
+        .collect();
+    let e: Vec<(&str, &str)> = ers.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    let k = werk_mit(&m, &e);
+    let s = qto::schedule(&m);
+    let b = lesen::kosten(&m, &s, &k, &Umfang::projekt());
+    let mut gesehen = 0;
+    for los in k.lose.iter().filter(|l| l.parent.is_none()) {
+        let w = LvWahl {
+            los: los.guid,
+            ..wahl(false, true)
+        };
+        for p in lv_aus(&m, &b, &k, &w)
+            .titel
+            .iter()
+            .flat_map(|t| &t.positionen)
+        {
+            let mut kgs: Vec<Option<u16>> = p
+                .blatt
+                .iter()
+                .flat_map(|i| b.positionen[*i].ansatz.iter().map(|a| a.kg))
+                .collect();
+            kgs.sort();
+            kgs.dedup();
+            let soll = if kgs.len() == 1 { kgs[0] } else { None };
+            assert_eq!(p.kg, soll, "{} {}", p.oz, p.kurztext);
+            gesehen += usize::from(p.kurztext.contains("Planstein"));
+        }
+    }
+    assert!(gesehen > 0);
+}

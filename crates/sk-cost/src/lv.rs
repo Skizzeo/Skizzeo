@@ -449,16 +449,19 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
                 Ort::Position(oz_basis.clone()),
             ));
         }
-        // Kostengruppe der Bauleistung, sonst die gemeinsame der Bauteile
-        let kg = l.kg.or_else(|| {
+        // Kostengruppe wie im Kostenblatt: die gemeinsame der Bauteile
+        // (`nach_kg` bucht nach `Ansatz.kg`); verschiedene ergeben keine.
+        // Die der Bauleistung nur, wenn kein Bauteil eine hat
+        let kg = {
             let mut kgs = ansatz.iter().map(|a| a.kg);
-            let erste = kgs.next()?;
-            if kgs.all(|x| x == erste) {
-                erste
-            } else {
-                None
+            let erste = kgs.next().flatten();
+            match erste {
+                Some(_) if kgs.all(|x| x == erste) => erste,
+                Some(_) => None,
+                None if ansatz.iter().all(|a| a.kg.is_none()) => l.kg,
+                None => None,
             }
-        });
+        };
         let ep = (w.preise && !mehrere).then_some(p0.ep);
         let anteile = (w.preise && !mehrere).then_some(Anteile {
             lohn: p0.lohn,
