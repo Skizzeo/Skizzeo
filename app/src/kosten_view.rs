@@ -147,6 +147,8 @@ impl Zeile {
 }
 
 #[cfg(test)]
+mod abnahme_ka3a5;
+#[cfg(test)]
 mod bild;
 #[cfg(test)]
 mod tests;
