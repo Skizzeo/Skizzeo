@@ -203,6 +203,8 @@ pub struct Ursprung {
     pub kind: String,
     /// `confirmed` nach Regel 88 auch bei `manual` + `open`.
     pub bestaetigt: bool,
+    /// `proj=1`: im Projekt entstanden, Marke der Abweichung (Regel 89).
+    pub proj: bool,
     pub satz: Satz,
 }
 
@@ -946,6 +948,7 @@ pub fn lesen<'a>(
             rec,
             bestaetigt: !offen || kind == "manual" || kind == "factory",
             kind,
+            proj: s.flag("proj"),
             satz: r.satz,
         });
     }

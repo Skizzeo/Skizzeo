@@ -478,6 +478,12 @@ pub const ORIGIN: Abschnitt = Abschnitt {
         f("url", TEXT, false, "Fundstelle"),
         f("region", TEXT, false, "Preisregion"),
         f(
+            "proj",
+            Art::Flag,
+            false,
+            "nur .szo: im Projekt entstanden, Marke der Abweichung (Regel 89)",
+        ),
+        f(
             "conf",
             Art::Wort(&["sure", "mid", "rough"]),
             false,

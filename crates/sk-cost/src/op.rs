@@ -430,6 +430,9 @@ struct Arbeit<'a> {
     bezug: Option<(Katalog, ExtStore)>,
     /// Stand des Firmenkatalogs für `StandUebernehmen`.
     firma: Option<(Guid, u32)>,
+    /// Im Projekt (`.szo`): jede geschriebene Herkunft trägt `proj=1`
+    /// (Regel 89, Nachtrag BIM 09:40).
+    projekt: bool,
 }
 
 impl Arbeit<'_> {
@@ -514,6 +517,9 @@ impl Arbeit<'_> {
         }
         if let Some(c) = h.sicher {
             s.setzen("conf", Some(Wert::Wort(c.wort().into())));
+        }
+        if self.projekt {
+            s.setzen("proj", Some(Wert::Flag(true)));
         }
         let alt = self
             .zeilen
@@ -834,11 +840,12 @@ impl Arbeit<'_> {
                         Some(l) => self.put(sec, &id.kennung, l),
                         None => self.remove(sec, &id.kennung),
                     }
-                    // Marke weg; eine Werksherkunft der Vorlage kommt mit
+                    // Marke weg; die Herkunft der Vorlage kommt mit, ohne
+                    // `proj` (Regel 89)
                     match bezug
                         .section("origin")
                         .find(|r| r.id.as_deref() == Some(id.kennung.as_str()))
-                        .filter(|r| werksherkunft(&r.line))
+                        .filter(|r| !projektherkunft(&r.line))
                     {
                         Some(r) => self.put("origin", &id.kennung, r.line.clone()),
                         None => self.remove("origin", &id.kennung),
@@ -877,7 +884,7 @@ impl Arbeit<'_> {
         let markiert: HashSet<&str> = self
             .zeilen
             .section("origin")
-            .filter(|r| !r.line.contains(" kind=factory"))
+            .filter(|r| projektherkunft(&r.line))
             .filter_map(|r| r.id.as_deref())
             .collect();
         let zeilen = |s: &ExtStore| -> HashSet<(String, String)> {
@@ -987,9 +994,11 @@ fn kopie(m: &Model, firma: Option<&Library>) -> ExtStore {
             let Some(id) = &r.id else { continue };
             let ok = match a {
                 "rate" => raten.contains(id),
-                // nur Werksherkunft: eine Hand-, Import- oder KI-Herkunft
-                // wäre im Projekt die Marke einer Abweichung (Regel 89)
-                "origin" => (gueltig.contains(id) || raten.contains(id)) && werksherkunft(&r.line),
+                // Herkunft aller `kind` unverändert und ohne `proj`; die
+                // Marke der Abweichung hängt an `proj` (Regeln 89, 92)
+                "origin" => {
+                    (gueltig.contains(id) || raten.contains(id)) && !projektherkunft(&r.line)
+                }
                 _ => gueltig.contains(id),
             };
             if ok {
@@ -1007,10 +1016,10 @@ fn kopie(m: &Model, firma: Option<&Library>) -> ExtStore {
     out
 }
 
-/// Ist die `[origin]`-Zeile eine Werksherkunft (`kind=factory`)?
-fn werksherkunft(zeile: &str) -> bool {
+/// Entstand die `[origin]`-Zeile im Projekt (`proj=1`, Regel 89)?
+fn projektherkunft(zeile: &str) -> bool {
     crate::zeile::zerlegen(zeile)
-        .is_some_and(|z| z.paare.iter().any(|(k, v)| k == "kind" && v == "factory"))
+        .is_some_and(|z| z.paare.iter().any(|(k, v)| k == "proj" && v == "1"))
 }
 
 /// Zeilen der Quelle (Firma oder Werk) und ihr Kopf (Guid, Stand).
@@ -1130,6 +1139,7 @@ pub fn planen(
         op: 0,
         bezug,
         firma: fb.map(|f| (f.2, f.3)),
+        projekt: true,
     };
     for (i, op) in ops.iter().enumerate() {
         a.op = i;
@@ -1389,6 +1399,7 @@ pub fn firma_anwenden(
         op: 0,
         bezug: None,
         firma: None,
+        projekt: false,
     };
     for (i, op) in ops.iter().enumerate() {
         a.op = i;
@@ -1991,6 +2002,65 @@ mod tests {
         assert!(lesen::befunde(&m, &k)
             .iter()
             .all(|b| b.regel != 92 && b.regel != 89));
+    }
+
+    /// Abnahme 10 und 24 (Regel 89, Nachtrag BIM 09:40): Die Kopie nimmt
+    /// die Herkunft aller `kind` unverändert und ohne `proj` mit; die Marke
+    /// hängt an `proj=1`, das jede Operation im Projekt schreibt;
+    /// `AbweichungZuruecknehmen` stellt Zeile und Firmenherkunft wieder her.
+    #[test]
+    fn herkunft_proj_und_marke() {
+        let text = firmentext(3);
+        let mut imp = Herkunft::neu(HerkunftArt::Import, "2026-10-01", "08:00");
+        imp.quelle = "Händlerliste".into();
+        imp.sicher = Some(Sicherheit::Rough);
+        let f = firma_anwenden(&text, &text, Rolle::Admin, &imp, &[lohn(63)]).unwrap();
+        let firma_origin = f
+            .text
+            .lines()
+            .find(|l| l.starts_with("[origin] key=wage "))
+            .unwrap()
+            .to_string();
+        assert!(firma_origin.contains(" kind=import status=open "));
+        assert!(!firma_origin.contains("proj"), "{firma_origin}");
+        let lib = sk_model::read_szk_with(&f.text, &satz::ABSCHNITTE_SZK).unwrap();
+        let mut m = Model::from_library(&lib);
+        neues_projekt(&mut m, Some(&lib));
+        m.require_steps();
+        let origin = |m: &Model| {
+            m.ext("origin")
+                .find(|r| r.id.as_deref() == Some("wage"))
+                .map(|r| r.line.clone())
+        };
+        assert_eq!(origin(&m).as_deref(), Some(firma_origin.as_str()));
+        let k = lesen::katalog(&m, Some(&lib));
+        let u = k.herkunft_von("rate", "wage").unwrap();
+        assert_eq!(
+            (u.kind.as_str(), u.bestaetigt, u.proj),
+            ("import", false, false)
+        );
+        assert!(lesen::befunde(&m, &k).iter().all(|b| b.regel != 89));
+        // Operation im Projekt: proj=1 und Marke
+        schritt(&mut m, Some(&lib), &hand(), &[lohn(70)]).unwrap();
+        let l = origin(&m).unwrap();
+        assert!(l.contains(" kind=manual ") && l.contains(" proj=1"), "{l}");
+        let k = lesen::katalog(&m, Some(&lib));
+        assert!(k.herkunft_von("rate", "wage").unwrap().proj);
+        assert!(lesen::befunde(&m, &k).iter().any(|b| b.regel == 89));
+        // zurücknehmen: Zeile und Firmenherkunft ohne proj
+        schritt(
+            &mut m,
+            Some(&lib),
+            &hand(),
+            &[Op::AbweichungZuruecknehmen {
+                saetze: vec![SatzId::neu("rate", "wage")],
+            }],
+        )
+        .unwrap();
+        assert_eq!(origin(&m).as_deref(), Some(firma_origin.as_str()));
+        let k = lesen::katalog(&m, Some(&lib));
+        assert_eq!(k.werte.lohn, Dez::ganz(63));
+        assert!(lesen::befunde(&m, &k).iter().all(|b| b.regel != 89));
     }
 
     #[test]

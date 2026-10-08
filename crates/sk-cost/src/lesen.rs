@@ -166,7 +166,7 @@ pub fn befunde(m: &Model, k: &Katalog) -> Vec<Befund> {
         }
         // 89: Projektabweichung ist markiert
         let st = stand.map_or("?".to_string(), |s| s.to_string());
-        for u in k.herkunft.iter().filter(|u| u.kind != "factory") {
+        for u in k.herkunft.iter().filter(|u| u.proj) {
             let name = match u.rec.as_str() {
                 "article" => sk_model::Guid::from_ifc(&u.key)
                     .and_then(|g| k.artikel(g))
