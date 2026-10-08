@@ -643,11 +643,12 @@ impl Model {
         &self.ext
     }
 
-    /// Zeilen mit unbekannten Angaben aus der Datei: so, wie dieser Leser
-    /// den Eintrag schreibt, die wievielte gleiche eigene Zeile, und wie er
-    /// in der Datei stand (A311, Review 3ac).
-    pub fn foreign_lines(&self) -> &[(String, usize, String)] {
-        &self.foreign.lines
+    /// Ungültige `svc=` an Schichten, die beim Speichern noch roh
+    /// zurückgeschrieben werden (A311, Regel 72): Typ, Schicht (ab 0) und
+    /// Wert. Ändert man die Schicht, fällt der Wert weg (F-17b); Rückgängig
+    /// bringt ihn wieder. Für Befund 99 in `sk-cost`.
+    pub fn raw_svc(&self) -> Vec<crate::RawSvc> {
+        crate::szo::raw_svc(self)
     }
 
     /// Steigt bei jeder Änderung im Erweiterungsspeicher (auch Rückgängig).

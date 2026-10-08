@@ -40,7 +40,7 @@ pub use attr::{
 pub use catalog::{
     compare, compare_materials, compare_surfaces, export_material, export_surface, export_type,
     import_material, import_type, read_szk, read_szk_with, save_preset, sync_materials,
-    sync_materials_report, write_szk, Library, TypeState,
+    sync_materials_report, write_szk, Library, RawSvc, TypeState,
 };
 pub use element::{
     Building, BuildingId, Category, Coupling, Element, ElementId, ElementKind, LevelEdge,

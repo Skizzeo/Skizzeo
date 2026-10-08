@@ -137,8 +137,25 @@ pub fn befunde(m: &Model, k: &Katalog) -> Vec<Befund> {
             ));
         }
     }
-    // 99 auch für ein ungültiges `svc=`, das roh in der Datei steht (A311)
-    roh_svc(m, &mut out);
+    // 99 auch für ein ungültiges svc=, das roh in der Datei bleibt (A311)
+    for r in m.raw_svc() {
+        let Some((_, t)) = m.layer_sets().iter().find(|(_, t)| t.guid == r.set) else {
+            continue;
+        };
+        let b = t
+            .layers
+            .get(r.layer)
+            .and_then(|l| m.material(l.material))
+            .map_or("?", |x| x.name.as_str());
+        out.push(Befund::warnung(
+            99,
+            befund::r99(&t.name, b),
+            Ort::Schicht {
+                typ: t.guid,
+                schicht: r.layer,
+            },
+        ));
+    }
     if let Quelle::Projekt { stand, .. } = &k.quelle {
         // 92: neuerer Firmenstand, solange nicht „so lassen“
         let eigen = stand.unwrap_or(0);
@@ -199,65 +216,6 @@ pub fn befunde(m: &Model, k: &Katalog) -> Vec<Befund> {
         }
     }
     out
-}
-
-/// Befund 99 je Schicht, deren `svc=` in der Datei keine Guid ist: Die Zeile
-/// steht roh im Modell (`foreign_lines`) und wird geschrieben, solange die
-/// Schicht unverändert ist; die Schicht ist ihre Stelle unter den
-/// Schichtzeilen ihres Typs.
-fn roh_svc(m: &Model, out: &mut Vec<Befund>) {
-    let kaputt: Vec<&str> = m
-        .foreign_lines()
-        .iter()
-        .filter(|(_, _, roh)| {
-            crate::zeile::zerlegen(roh).is_some_and(|z| {
-                z.abschnitt == "layer"
-                    && z.paare
-                        .iter()
-                        .any(|(k, v)| k == "svc" && sk_model::Guid::from_ifc(v).is_none())
-            })
-        })
-        .map(|(_, _, roh)| roh.as_str())
-        .collect();
-    if kaputt.is_empty() {
-        return;
-    }
-    let text = sk_model::szo::write(m);
-    let mut nr: std::collections::HashMap<String, usize> = Default::default();
-    let mut gesehen: Vec<&str> = Vec::new();
-    for l in text.lines() {
-        let Some(z) = crate::zeile::zerlegen(l).filter(|z| z.abschnitt == "layer") else {
-            continue;
-        };
-        let Some(set) = z.paare.iter().find(|p| p.0 == "set").map(|p| p.1.clone()) else {
-            continue;
-        };
-        let n = nr.entry(set.clone()).or_default();
-        let i = *n;
-        *n += 1;
-        // gleiche Zeilen (gleiche Schichten) nur so oft wie gemeldet
-        let mal = kaputt.iter().filter(|k| **k == l).count();
-        if mal <= gesehen.iter().filter(|g| **g == l).count() {
-            continue;
-        }
-        gesehen.push(l);
-        let Some(g) = sk_model::Guid::from_ifc(&set) else {
-            continue;
-        };
-        let Some((_, t)) = m.layer_sets().iter().find(|(_, t)| t.guid == g) else {
-            continue;
-        };
-        let b = t
-            .layers
-            .get(i)
-            .and_then(|x| m.material(x.material))
-            .map_or("?", |x| x.name.as_str());
-        out.push(Befund::warnung(
-            99,
-            befund::r99(&t.name, b),
-            Ort::Schicht { typ: g, schicht: i },
-        ));
-    }
 }
 
 #[cfg(test)]
@@ -407,5 +365,37 @@ mod tests {
             .satz
             .ends_with("Die gewählte Bauleistung gibt es nicht (mehr); es gilt die Regel."));
         assert_eq!(szo::write(&m), kaputt);
+    }
+
+    /// Abnahme 25a: Ein ungültiges `svc=` (A311) gibt Befund 99 an genau
+    /// dieser Schicht (Zuordnen und Rückgängig: sk-model
+    /// `a311_raw_svc_nennt_typ_und_schicht`).
+    #[test]
+    fn ungueltige_bauleistung_gibt_befund_99() {
+        let mut m = projekt(2, 65);
+        let id = m.layer_sets().ids().next().unwrap();
+        let mut t = m.layer_set(id).unwrap().clone();
+        let svc = Guid::from_ifc("0000000000000000000S99").unwrap();
+        t.layers[0].svc = Some(svc);
+        m.begin("svc");
+        m.set_layer_set(id, t);
+        m.commit().unwrap();
+        let typ = m.layer_set(id).unwrap().guid;
+        let text = sk_model::szo::write(&m).replace(&format!(" svc={}", svc.to_ifc()), " svc=abc");
+        let m = sk_model::szo::read_with(
+            &text,
+            sk_model::GuidGen::with_seed(7),
+            &crate::satz::ABSCHNITTE_SZO,
+        )
+        .unwrap()
+        .model;
+        assert!(sk_model::szo::write(&m).contains(" svc=abc"), "bleibt roh");
+        let k = katalog(&m, Some(&firma(3, "released", 70)));
+        let b: Vec<_> = befunde(&m, &k)
+            .into_iter()
+            .filter(|b| b.regel == 99)
+            .collect();
+        assert_eq!(b.len(), 1, "{b:#?}");
+        assert_eq!(b[0].ort, Ort::Schicht { typ, schicht: 0 });
     }
 }

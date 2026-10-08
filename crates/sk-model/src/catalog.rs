@@ -74,6 +74,12 @@ impl PartialEq for Library {
 }
 
 impl Library {
+    /// Ungültige `svc=` an Schichten der Firmentypen, die roh erhalten
+    /// bleiben (A311); für Befund 99.
+    pub fn raw_svc(&self) -> Vec<RawSvc> {
+        raw_svc(&self.foreign, || write_known(self))
+    }
+
     /// Zeilen eines Erweiterungsabschnitts (KA-0b) in Dateireihenfolge.
     pub fn ext<'a>(&'a self, section: &'a str) -> impl Iterator<Item = &'a crate::ExtRec> + 'a {
         self.ext.section(section)
@@ -286,6 +292,65 @@ pub(crate) fn own_lines(mine: &str) -> HashMap<String, (&str, usize)> {
         }
     }
     own
+}
+
+/// Ein ungültiges `svc=` an einer Schicht, das beim Speichern noch roh
+/// zurückgeschrieben wird (A311, Regel 72): Typ, Schicht (ab 0) und der
+/// Wert, wie er in der Datei steht. `sk-cost` meldet daraus Befund 99.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawSvc {
+    pub set: Guid,
+    pub layer: usize,
+    pub value: String,
+}
+
+/// Die ungültigen `svc=` aus `f`, die [`with_foreign`] in `plain` noch
+/// einsetzt: gleiche Zuordnung wie dort, also nur solange die Schicht
+/// unverändert ist. `plain` wird nur gebaut, wenn es solche Zeilen gibt.
+pub(crate) fn raw_svc(f: &Foreign, plain: impl FnOnce() -> String) -> Vec<RawSvc> {
+    let odd: Vec<(&str, usize, String)> = f
+        .lines
+        .iter()
+        .filter_map(|(mine, nth, theirs)| {
+            let r = Record::parse(0, theirs).ok()??;
+            let v = r.opt("svc").filter(|_| r.section == "layer")?;
+            Guid::from_ifc(v)
+                .is_none()
+                .then(|| (mine.as_str(), *nth, v.to_string()))
+        })
+        .collect();
+    if odd.is_empty() {
+        return Vec::new();
+    }
+    let plain = plain();
+    let mut out = Vec::new();
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    let mut per_set: HashMap<Guid, usize> = HashMap::new();
+    for (i, l) in plain.lines().enumerate() {
+        let n = seen.entry(l).or_insert(0);
+        let nth = *n;
+        *n += 1;
+        let Ok(Some(r)) = Record::parse(i + 1, l) else {
+            continue;
+        };
+        if r.section != "layer" {
+            continue;
+        }
+        let Some(set) = r.opt("set").and_then(Guid::from_ifc) else {
+            continue;
+        };
+        let k = per_set.entry(set).or_insert(0);
+        let layer = *k;
+        *k += 1;
+        if let Some((_, _, v)) = odd.iter().find(|(mine, at, _)| *at == nth && *mine == l) {
+            out.push(RawSvc {
+                set,
+                layer,
+                value: v.clone(),
+            });
+        }
+    }
+    out
 }
 
 /// Der Katalog als `.szk`-Text.

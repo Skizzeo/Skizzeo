@@ -688,6 +688,11 @@ pub fn write(m: &Model) -> String {
     crate::catalog::with_foreign(text, &m.foreign)
 }
 
+/// Ungültige `svc=` an Schichten, die roh erhalten bleiben (A311).
+pub(crate) fn raw_svc(m: &Model) -> Vec<crate::RawSvc> {
+    crate::catalog::raw_svc(&m.foreign, || write_known(m))
+}
+
 /// Was dieser Schreiber kennt, ohne Fremdes aus der gelesenen Datei.
 fn write_known(m: &Model) -> String {
     let mut out = format!("SZO {VERSION}\n# Skizzeo-Projekt\n");
@@ -3481,6 +3486,75 @@ mod tests {
         assert_ne!(kaputt, text);
         let back = load(&kaputt).unwrap();
         assert_eq!(write(&back.model), kaputt, "bytegleich");
+    }
+
+    /// KA-0d, Befund 99: `Model::raw_svc` nennt Typ, Schicht und rohen Wert,
+    /// genau solange die Datei ihn zurückschreibt; nach Zuordnen weg, nach
+    /// Rückgängig wieder da. Gleiche Schichten: die richtige.
+    #[test]
+    fn a311_raw_svc_nennt_typ_und_schicht() {
+        use crate::txn::Direction;
+        let mut m = house();
+        assert!(m.raw_svc().is_empty());
+        let id = m.layer_sets().ids().next().unwrap();
+        let mut s = m.layer_set(id).unwrap().clone();
+        let l0 = s.layers[0];
+        s.layers.insert(0, l0);
+        let svc = m.new_guid();
+        s.layers[1].svc = Some(svc);
+        assert!(m.set_layer_set(id, s));
+        let set = m.layer_set(id).unwrap().guid;
+        let text = write(&m);
+        assert!(load(&text).unwrap().model.raw_svc().is_empty(), "gültig");
+        let kaputt = text.replace(&format!(" svc={}", svc.to_ifc()), " svc=nix");
+        let mut b = load(&kaputt).unwrap().model;
+        let id = b
+            .layer_sets()
+            .iter()
+            .find(|(_, s)| s.guid == set)
+            .map(|(i, _)| i)
+            .unwrap();
+        let roh = vec![crate::RawSvc {
+            set,
+            layer: 1,
+            value: "nix".into(),
+        }];
+        assert_eq!(b.raw_svc(), roh);
+        // Zuordnen an der Schicht ersetzt den rohen Wert, Rückgängig holt ihn
+        let mut s = b.layer_set(id).unwrap().clone();
+        s.layers[1].svc = Some(svc);
+        b.begin("Bauleistung zuordnen");
+        assert!(b.set_layer_set(id, s));
+        let t = b.commit().unwrap();
+        assert!(b.raw_svc().is_empty());
+        assert!(!write(&b).contains(" svc=nix"));
+        b.apply(&t, Direction::Undo);
+        assert_eq!(b.raw_svc(), roh);
+        assert_eq!(write(&b), kaputt, "bytegleich nach Rückgängig");
+    }
+
+    /// Wie oben für den Firmenkatalog.
+    #[test]
+    fn a311_raw_svc_im_firmenkatalog() {
+        let mut lib = crate::catalog::Library::from_model(&house());
+        let id = lib.types.ids().next().unwrap();
+        let t = lib.types.get_mut(id).unwrap();
+        let set = t.guid;
+        let svc = Guid::from_ifc("0Svc000000000000000001").unwrap();
+        t.layers[0].svc = Some(svc);
+        let text = crate::write_szk(&lib);
+        let kaputt = text.replace(&format!(" svc={}", svc.to_ifc()), " svc=-x-");
+        assert_ne!(kaputt, text);
+        let back = crate::read_szk(&kaputt).unwrap();
+        assert_eq!(crate::write_szk(&back), kaputt);
+        assert_eq!(
+            back.raw_svc(),
+            vec![crate::RawSvc {
+                set,
+                layer: 0,
+                value: "-x-".into(),
+            }]
+        );
     }
 
     /// A311 (Nachtrag KA-0c/d zu §6 Nr. 4/7, R7): Ein ungültiges `svc=` an
