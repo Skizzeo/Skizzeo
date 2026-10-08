@@ -17,6 +17,9 @@ pub struct Document {
     /// Ortszeit (Stunde, Minute) des letzten Speicherns oder Öffnens, für
     /// die Nachfrage „Änderungen speichern?“ (E17).
     pub saved_at: Option<(u8, u8)>,
+    /// Werte, die seit dem letzten Speichern schon für neue Häuser gelten
+    /// („Lohn 65,00 €/h“); die Nachfrage nennt sie (paket-ka2 §5, 4.5).
+    pub fuer_neue: Vec<String>,
 }
 
 impl Document {
@@ -26,6 +29,7 @@ impl Document {
             path: None,
             saved_rev: rev,
             saved_at: None,
+            fuer_neue: Vec::new(),
         }
     }
 
@@ -34,6 +38,7 @@ impl Document {
             path: Some(path),
             saved_rev: rev,
             saved_at: None,
+            fuer_neue: Vec::new(),
         }
     }
 
@@ -44,6 +49,7 @@ impl Document {
             path,
             saved_rev: u64::MAX,
             saved_at: None,
+            fuer_neue: Vec::new(),
         }
     }
 
@@ -54,6 +60,21 @@ impl Document {
     pub fn mark_saved(&mut self, path: PathBuf, rev: u64) {
         self.path = Some(path);
         self.saved_rev = rev;
+        self.fuer_neue.clear();
+    }
+
+    /// Ein Wert gilt jetzt auch für neue Häuser; ein späterer Wert desselben
+    /// Satzes („Lohn …“) ersetzt den früheren.
+    pub fn fuer_neue_merken(&mut self, wert: &str) {
+        let kopf = |t: &str| {
+            t.split(|c: char| c.is_ascii_digit())
+                .next()
+                .unwrap_or("")
+                .to_string()
+        };
+        let k = kopf(wert);
+        self.fuer_neue.retain(|x| kopf(x) != k);
+        self.fuer_neue.push(wert.to_string());
     }
 
     /// Dateiname oder „Unbenannt“.

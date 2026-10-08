@@ -684,10 +684,27 @@ pub fn save_question(doc: &Document, saved: Option<(u8, u8)>) -> (String, Option
         .or_else(|| name.strip_suffix(".SZO"))
         .unwrap_or(&name);
     let q = format!("Änderungen an „{stem}“ speichern?");
-    let detail =
-        doc.path.as_ref().and(saved).map(|(h, m)| {
-            format!("Ohne Speichern gehen die Änderungen seit {h:02}:{m:02} verloren.")
-        });
+    let mut zeilen: Vec<String> = doc
+        .path
+        .as_ref()
+        .and(saved)
+        .map(|(h, m)| format!("Ohne Speichern gehen die Änderungen seit {h:02}:{m:02} verloren."))
+        .into_iter()
+        .collect();
+    // Was schon für neue Häuser gilt, bleibt (Bedienbarkeit 4.5)
+    match doc.fuer_neue.as_slice() {
+        [] => {}
+        [a] => zeilen.push(format!("Für neue Häuser gilt schon {a}.")),
+        [a, b] => zeilen.push(format!("Für neue Häuser gilt schon {a} und {b}.")),
+        v => zeilen.push(format!(
+            "{} Werte für neue Häuser sind schon gespeichert und bleiben.",
+            v.len()
+        )),
+    }
+    if matches!(doc.fuer_neue.len(), 1 | 2) {
+        zeilen.push("Das bleibt, auch wenn du dieses Haus nicht speicherst.".into());
+    }
+    let detail = (!zeilen.is_empty()).then(|| zeilen.join("\n"));
     (q, detail)
 }
 
@@ -797,7 +814,13 @@ impl SaveDialog {
 
     /// Größe (Pixel) ohne Schatten.
     fn size(&self, s: f32) -> (f32, f32) {
-        let h = if self.detail.is_some() { 140.0 } else { 110.0 };
+        let n = self.detail.as_ref().map_or(0, |d| d.lines().count());
+        let h = 110.0
+            + if n > 0 {
+                30.0 + 18.0 * (n - 1) as f32
+            } else {
+                0.0
+            };
         ((SAVE_W * s).round(), (h * s).round())
     }
 
@@ -872,7 +895,11 @@ impl SaveDialog {
         if let Some(d) = &self.detail {
             let px2 = t.size.font * s;
             let b2 = base + 14.0 * s + cap(px2);
-            widgets::text(&mut c, regular, d, px2, x, b2, t.ui.text_dim);
+            for (i, l) in d.lines().enumerate() {
+                let y = b2 + 18.0 * s * i as f32;
+                let l = widgets::ellipsize(regular, l, px2, w - 40.0 * s);
+                widgets::text(&mut c, regular, &l, px2, x, y, t.ui.text_dim);
+            }
         }
         for (i, b) in self.button_rects(s).iter().enumerate() {
             let st = ButtonState {
@@ -898,6 +925,36 @@ pub fn scrim_premul(k: Rgba) -> [u8; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Nachfrage nach einer Änderung für neue Häuser (Bedienbarkeit 4.5):
+    /// ein Wert mit dem Satz, dass er bleibt; derselbe Satz ersetzt den
+    /// früheren; ab drei Werten die Zahl; Speichern leert die Liste.
+    #[test]
+    fn nachfrage_nennt_werte_fuer_neue_haeuser() {
+        let mut doc = Document::opened(std::path::PathBuf::from("Haus.szo"), 0);
+        doc.fuer_neue_merken("Lohn 62,00 €/h");
+        doc.fuer_neue_merken("Lohn 65,00 €/h");
+        let (_, d) = save_question(&doc, Some((10, 12)));
+        assert_eq!(
+            d.as_deref(),
+            Some(
+                "Ohne Speichern gehen die Änderungen seit 10:12 verloren.\n\
+                 Für neue Häuser gilt schon Lohn 65,00 €/h.\n\
+                 Das bleibt, auch wenn du dieses Haus nicht speicherst."
+            )
+        );
+        let dlg = SaveDialog::new(String::new(), d);
+        assert_eq!(dlg.size(1.0).1, 176.0);
+        doc.fuer_neue_merken("Planstein 20,50 €/m²");
+        doc.fuer_neue_merken("MwSt. 7,00 %");
+        let (_, d) = save_question(&doc, None);
+        assert_eq!(
+            d.as_deref(),
+            Some("3 Werte für neue Häuser sind schon gespeichert und bleiben.")
+        );
+        doc.mark_saved(std::path::PathBuf::from("Haus.szo"), 1);
+        assert_eq!(save_question(&doc, None).1, None);
+    }
 
     #[test]
     fn menue_trifft_zeilen_und_untermenue() {

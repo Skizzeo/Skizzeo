@@ -2271,7 +2271,11 @@ impl App {
     ) -> Option<(String, bool)> {
         match self.company.as_mut() {
             Some(c) => match self.scene.fuer_firma(label, c, h, ops) {
-                Ok(hinweis) => hinweis.map(|t| (t, false)),
+                Ok(hinweis) => {
+                    let wert = label.strip_suffix(preis_blatt::FUER_NEUE).unwrap_or(label);
+                    self.doc.fuer_neue_merken(wert);
+                    hinweis.map(|t| (t, false))
+                }
                 Err(e) => Some((
                     format!("{e}. Nichts geändert; „Nur dieses Haus“ geht weiterhin."),
                     true,
