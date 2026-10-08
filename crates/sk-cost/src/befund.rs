@@ -94,6 +94,11 @@ pub fn r73(satz: &str, art: &str, kennung: &str) -> String {
     format!("{satz} verweist auf {art} {kennung}, die es in dieser Datei nicht gibt.")
 }
 
+/// R73-W (Bausteingrenze §6): Werksbaustoff einer älteren Datei.
+pub fn r73w(name: &str) -> String {
+    format!("Baustoff {name}: Werkspreise über den Namen zugeordnet (ältere Datei).")
+}
+
 pub fn r74(abschnitt: &str, kennung: &str) -> String {
     format!("{abschnitt} {kennung} kommt doppelt vor; es gilt die erste Zeile.")
 }

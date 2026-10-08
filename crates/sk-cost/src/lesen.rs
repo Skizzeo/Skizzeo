@@ -398,4 +398,153 @@ mod tests {
         assert_eq!(b.len(), 1, "{b:#?}");
         assert_eq!(b[0].ort, Ort::Schicht { typ, schicht: 0 });
     }
+
+    /// Jörns p5.szo (Altdatei, Werksbaustoffe unter anderen Guids).
+    fn p5() -> Model {
+        let text = include_str!("../../../app/src/abnahme_p5.szo");
+        sk_model::szo::read_with(text, sk_model::GuidGen::with_seed(1), &ABSCHNITTE_SZO)
+            .expect("p5 lädt")
+            .model
+    }
+
+    fn baustoff(m: &Model, name: &str) -> Guid {
+        m.materials()
+            .iter()
+            .find(|(_, x)| x.name == name)
+            .map(|(_, x)| x.guid)
+            .unwrap_or_else(|| panic!("{name}"))
+    }
+
+    fn fehler_73(k: &Katalog) -> usize {
+        k.befunde
+            .iter()
+            .filter(|b| b.regel == 73 && b.schwere == crate::Schwere::Fehler)
+            .count()
+    }
+
+    /// Prüft die Übersetzung in `k` für p5: Stahlbeton und Putz der Datei
+    /// tragen Werkssätze, kein Fehler 73, je Baustoff ein Hinweis.
+    fn uebersetzt(m: &Model, k: &Katalog) {
+        assert_eq!(fehler_73(k), 0, "{:#?}", k.befunde);
+        for name in ["Stahlbeton", "Putz"] {
+            let g = Some(baustoff(m, name));
+            assert!(k.leistungen.iter().any(|l| l.mat == g), "{name}");
+        }
+        let h: Vec<&str> = k
+            .befunde
+            .iter()
+            .filter(|b| b.regel == 73 && b.schwere == crate::Schwere::Hinweis)
+            .map(|b| b.satz.as_str())
+            .collect();
+        assert!(
+            h.contains(
+                &"Baustoff Stahlbeton: Werkspreise über den Namen zugeordnet (ältere Datei)."
+            ),
+            "{h:#?}"
+        );
+        let mut d = h.clone();
+        d.dedup();
+        assert_eq!(d.len(), h.len(), "je Baustoff ein Hinweis");
+    }
+
+    /// Abnahme 28a: dieselbe Übersetzung für Werk, Projektkopie und einen
+    /// Firmenkatalog mit Werks-Guids; geschrieben wird nichts.
+    #[test]
+    fn r73w_werk_kopie_firma() {
+        let m = p5();
+        let vorher = sk_model::szo::write(&m);
+        uebersetzt(&m, &werk(&m));
+        // Firma mit den Zeilen des Werksbestands
+        let mut lib = Library::standard();
+        for (a, l) in crate::werk_zeilen() {
+            let id = sk_model::ext::rec_id(l).unwrap_or_default();
+            lib.ext_put(a, &id, l.to_string(), None);
+        }
+        let k = katalog(&m, Some(&lib));
+        assert!(matches!(k.quelle, Quelle::Firma { .. }), "{:?}", k.quelle);
+        uebersetzt(&m, &k);
+        // Projektkopie mit Werks-Guids
+        let mut kopie = p5();
+        kopie.begin("Kopie");
+        for (a, l) in crate::werk_zeilen() {
+            let id = sk_model::ext::rec_id(l).unwrap_or_default();
+            kopie.ext_put(a, &id, l.to_string(), None);
+        }
+        kopie.commit().unwrap();
+        let k = katalog(&kopie, None);
+        assert!(matches!(k.quelle, Quelle::Projekt { .. }), "{:?}", k.quelle);
+        uebersetzt(&kopie, &k);
+        // Datei bleibt bytegleich
+        let _ = katalog(&m, None);
+        assert_eq!(sk_model::szo::write(&m), vorher);
+    }
+
+    /// Abnahme 28a: zwei Baustoffe „Putz“ gleicher Kategorie, keine
+    /// Übersetzung, Fehler 73 bleibt.
+    #[test]
+    fn r73w_mehrdeutig_bleibt_73() {
+        let mut m = p5();
+        let (_, putz) = m
+            .materials()
+            .iter()
+            .find(|(_, x)| x.name == "Putz")
+            .map(|(id, x)| (id, x.clone()))
+            .unwrap();
+        let mut zweiter = putz.clone();
+        zweiter.guid = Guid::from_ifc("0000000000000000000P02").unwrap();
+        m.begin("Putz");
+        m.add_material(zweiter);
+        m.commit().unwrap();
+        let k = werk(&m);
+        assert!(fehler_73(&k) > 0, "{:#?}", k.befunde);
+        assert!(!k.leistungen.iter().any(|l| l.mat == Some(putz.guid)
+            || l.mat == Some(Guid::from_ifc("0000000000000000000P02").unwrap())));
+        // Stahlbeton bleibt übersetzt
+        let g = Some(baustoff(&m, "Stahlbeton"));
+        assert!(k.leistungen.iter().any(|l| l.mat == g));
+    }
+
+    /// Ein neues Projekt übersetzt nichts und hat keinen Hinweis.
+    #[test]
+    fn r73w_neues_projekt_ohne_hinweis() {
+        let m = Model::new();
+        let k = werk(&m);
+        assert!(k.befunde.is_empty(), "{:#?}", k.befunde);
+    }
+
+    /// Abnahme 28a: p3-ohne-wdvs.szo ohne Fehler 73, jeder Werksbaustoff mit
+    /// Werksleistung greift am gleichnamigen Baustoff der Datei.
+    #[test]
+    fn r73w_p3_ohne_wdvs() {
+        let text = include_str!("../tests/daten/p3-ohne-wdvs.szo");
+        let m = sk_model::szo::read_with(text, sk_model::GuidGen::with_seed(1), &ABSCHNITTE_SZO)
+            .expect("p3 lädt")
+            .model;
+        let k = werk(&m);
+        assert_eq!(fehler_73(&k), 0, "{:#?}", k.befunde);
+        let neu = Model::new();
+        let wk = werk(&neu);
+        let mut geprueft = 0;
+        for (_, w) in neu.materials().iter() {
+            if !wk.leistungen.iter().any(|l| l.mat == Some(w.guid)) {
+                continue;
+            }
+            let x: Vec<_> = m
+                .materials()
+                .iter()
+                .filter(|(_, x)| {
+                    x.category == w.category && sk_model::szo::werksname(&x.name, &w.name)
+                })
+                .collect();
+            if let [(_, x)] = x[..] {
+                geprueft += 1;
+                assert!(
+                    k.leistungen.iter().any(|l| l.mat == Some(x.guid)),
+                    "{}",
+                    x.name
+                );
+            }
+        }
+        assert!(geprueft >= 3, "nur {geprueft}");
+    }
 }

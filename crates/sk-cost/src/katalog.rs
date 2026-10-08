@@ -385,37 +385,78 @@ impl Katalog {
 
 /// Was der Leser außerhalb der Kostenzeilen kennen muss (Regel 73).
 pub struct Umfeld {
-    /// Baustoffe mit Namen (für Verweise und Befundsätze).
+    /// Baustoffe mit Namen (für Verweise und Befundsätze): die der Datei und
+    /// die Werksbaustoffe, die sie nicht führt (gelöscht, kein Fehler).
     pub materialien: HashMap<Guid, String>,
     /// Gewerke der Datei und des Startbestands (`trade::merge`).
     pub gewerke: HashSet<Guid>,
+    /// Werksbaustoffe in älteren Dateien (R73-W, Bausteingrenze §6):
+    /// Werks-Guid → Guid und Name des einen Baustoffs der Datei mit gleicher
+    /// Kategorie und gleichem oder altem Namen.
+    pub uebersetzung: HashMap<Guid, (Guid, String)>,
 }
 
 impl Umfeld {
     pub fn aus_modell(m: &sk_model::Model) -> Umfeld {
         Umfeld::neu(
-            m.materials().iter().map(|(_, x)| (x.guid, x.name.clone())),
+            m.materials().iter().map(|(_, x)| x),
             m.trades().iter().map(|t| t.guid),
         )
     }
 
     pub fn aus_bibliothek(lib: &sk_model::Library) -> Umfeld {
         Umfeld::neu(
-            lib.materials.iter().map(|(_, x)| (x.guid, x.name.clone())),
+            lib.materials.iter().map(|(_, x)| x),
             lib.trades.iter().map(|t| t.guid),
         )
     }
 
-    fn neu(
-        mats: impl Iterator<Item = (Guid, String)>,
+    fn neu<'a>(
+        mats: impl Iterator<Item = &'a sk_model::library::Material>,
         gewerke: impl Iterator<Item = Guid>,
     ) -> Umfeld {
         let mut g: HashSet<Guid> = gewerke.collect();
         g.extend(sk_model::trade::start_trades().iter().map(|t| t.guid));
-        Umfeld {
-            materialien: mats.collect(),
-            gewerke: g,
+        let mats: Vec<_> = mats.collect();
+        let mut materialien: HashMap<Guid, String> =
+            mats.iter().map(|x| (x.guid, x.name.clone())).collect();
+        let mut uebersetzung = HashMap::new();
+        let start = sk_model::Model::new();
+        for (_, w) in start.materials().iter() {
+            if materialien.contains_key(&w.guid) {
+                continue;
+            }
+            let mut treffer = mats
+                .iter()
+                .filter(|x| x.category == w.category && sk_model::szo::werksname(&x.name, &w.name));
+            match (treffer.next(), treffer.next()) {
+                // genau einer: übersetzen
+                (Some(x), None) => {
+                    uebersetzung.insert(w.guid, (x.guid, x.name.clone()));
+                }
+                // keiner: gelöscht, die Werkssätze greifen an keiner Schicht
+                (None, _) => {
+                    materialien.insert(w.guid, w.name.clone());
+                }
+                // mehrere: bleibt ein toter Verweis (Regel 73)
+                _ => {}
+            }
         }
+        Umfeld {
+            materialien,
+            gewerke: g,
+            uebersetzung,
+        }
+    }
+
+    /// Kennt der Leser den Baustoff `g` (Regel 73)?
+    fn kennt(&self, g: Guid) -> bool {
+        self.materialien.contains_key(&g) || self.uebersetzung.contains_key(&g)
+    }
+
+    /// Baustoff der Datei zu `mat=` (R73-W übersetzt Werks-Guids).
+    fn mat(&self, g: Option<Guid>) -> Option<Guid> {
+        g.map(|g| self.uebersetzung.get(&g).map_or(g, |x| x.0))
     }
 
     fn baustoff(&self, g: Guid) -> String {
@@ -580,7 +621,7 @@ pub fn lesen<'a>(
         let s = &r.satz;
         let guid = s.guid("guid").unwrap();
         let name = s.text("name").unwrap_or_default().to_string();
-        if let Some(m) = s.guid("mat").filter(|m| !u.materialien.contains_key(m)) {
+        if let Some(m) = s.guid("mat").filter(|m| !u.kennt(*m)) {
             let t = befund::r73(&format!("Artikel {name}"), "den Baustoff", &m.to_ifc());
             bf.push(Befund::fehler(73, t, satz_ort("article", guid.to_ifc())));
             continue;
@@ -606,7 +647,7 @@ pub fn lesen<'a>(
         k.artikel.push(Artikel {
             guid,
             name,
-            mat: s.guid("mat"),
+            mat: u.mat(s.guid("mat")),
             t: s.zahl("t"),
             einheit,
             preis: s.zahl("price"),
@@ -677,7 +718,7 @@ pub fn lesen<'a>(
             }
             Some(_) => {}
         }
-        if let Some(m) = s.guid("mat").filter(|m| !u.materialien.contains_key(m)) {
+        if let Some(m) = s.guid("mat").filter(|m| !u.kennt(*m)) {
             bf.push(Befund::fehler(
                 73,
                 befund::r73(&wer, "den Baustoff", &m.to_ifc()),
@@ -731,7 +772,7 @@ pub fn lesen<'a>(
             nu: s.zahl("nu"),
             kg,
             kategorien: s.woerter("cats").to_vec(),
-            mat: s.guid("mat"),
+            mat: u.mat(s.guid("mat")),
             tmin,
             tmax,
             funktion: s.text("fn").map(str::to_string),
@@ -996,6 +1037,19 @@ pub fn lesen<'a>(
             befund::r87(&name),
             satz_ort(rec, g.to_ifc()),
         ));
+    }
+    // R73-W: je übersetztem Baustoff ein leiser Hinweis
+    let mut genutzt: Vec<&(Guid, String)> = u
+        .uebersetzung
+        .values()
+        .filter(|(g, _)| {
+            let m = Some(*g);
+            k.artikel.iter().any(|a| a.mat == m) || k.leistungen.iter().any(|l| l.mat == m)
+        })
+        .collect();
+    genutzt.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+    for (_, name) in genutzt {
+        bf.push(Befund::hinweis(73, befund::r73w(name), Ort::Datei));
     }
     k.befunde = bf;
     k

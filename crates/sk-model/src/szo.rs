@@ -2378,18 +2378,28 @@ pub(crate) fn read_types(
     Ok((layer_sets, set_ids, passed))
 }
 
+/// Alte Namen von Werksbaustoffen zu ihrem heutigen Werksnamen (E8:
+/// „Gasbeton“ heißt seit KA-0a3 „Porenbeton“). Die einzige Liste; λ hier und
+/// die Werkspreise in `sk-cost` (R73-W) lesen sie.
+pub const ALTNAMEN: [(&str, &str); 1] = [("Gasbeton", "Porenbeton")];
+
+/// Trägt ein Baustoff namens `name` in einer älteren Datei den Werksbaustoff
+/// `werk` (gleicher oder alter Name)?
+pub fn werksname(name: &str, werk: &str) -> bool {
+    name == werk
+        || ALTNAMEN
+            .iter()
+            .any(|(alt, neu)| *alt == name && *neu == werk)
+}
+
 /// Ergänzt fehlendes λ an Werksbaustoffen (Nachtrag K5): Treffer über die
 /// Guid, sonst über Name und Kategorie der vier alten Startbaustoffe (Dateien
 /// vor 137fca7 haben zeitbasierte Guids). Der alte Name zählt unter dem
-/// heutigen Werksnamen („Gasbeton“ heißt seit KA-0a3 „Porenbeton“).
+/// heutigen Werksnamen ([`ALTNAMEN`]).
 /// Vorhandenes λ bleibt; das Modell gilt danach als unverändert.
 fn add_lambda(materials: &mut Arena<Material>) {
-    const OLD: [(&str, &str); 4] = [
-        ("Gasbeton", "Porenbeton"),
-        ("Dämmung (WDVS)", "Dämmung (WDVS)"),
-        ("Stahlbeton", "Stahlbeton"),
-        ("Putz", "Putz"),
-    ];
+    // Namen der vier alten Startbaustoffe in Altdateien
+    const ALT: [&str; 4] = ["Gasbeton", "Dämmung (WDVS)", "Stahlbeton", "Putz"];
     let werk = Model::new();
     let ids: Vec<_> = materials.ids().collect();
     for id in ids {
@@ -2398,10 +2408,12 @@ fn add_lambda(materials: &mut Arena<Material>) {
         };
         let by_guid = werk.materials().iter().find(|(_, w)| w.guid == x.guid);
         let by_name = || {
-            let (_, neu) = OLD.iter().find(|(alt, _)| *alt == x.name)?;
+            if !ALT.contains(&x.name.as_str()) {
+                return None;
+            }
             werk.materials()
                 .iter()
-                .find(|(_, w)| w.name == *neu && w.category == x.category)
+                .find(|(_, w)| werksname(&x.name, &w.name) && w.category == x.category)
         };
         let lambda = by_guid.or_else(by_name).and_then(|(_, w)| w.lambda);
         if let Some(x) = materials.get_mut(id) {
