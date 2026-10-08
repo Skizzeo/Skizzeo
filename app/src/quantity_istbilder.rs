@@ -202,3 +202,70 @@ fn istbilder_ka1_ka2() {
     assert!(q.kosten.as_ref().unwrap().blatt_offen());
     b.ablegen(&mut q, "ist-ka-2e-bauleistung-waehlen.png");
 }
+
+#[test]
+#[ignore = "legt Ist-Bilder ab, nur mit SKIZZEO_ISTBILDER"]
+fn istbilder_ka4() {
+    let Some(dir) = std::env::var_os("SKIZZEO_ISTBILDER").map(PathBuf::from) else {
+        return;
+    };
+    let Some(fonts) = schriften() else {
+        return;
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut b = Bilder {
+        t: Theme::dark(),
+        fonts,
+        dir,
+        p: Picking::default(),
+    };
+    let mods = sk_platform::Modifiers::default();
+
+    // KA-4: LV beim Öffnen, Maus auf der Stb-Decke
+    let mut s = standardhaus();
+    let mut q = b.fenster(&mut s, 1440, 760, Blatt::Ava);
+    let a = q.ava.as_mut().unwrap();
+    let (x, y) = a.position_mitte(&b.t, "Stb-Decke").expect("Stb-Decke");
+    a.mouse_move(&b.t, &b.fonts, &mut b.p, x, y);
+    q.sync(&mut s, &b.p, false);
+    b.ablegen(&mut q, "ist-ka-4-lv.png");
+
+    // KA-4b: Position Planstein gewählt, Detail mit Mengenansatz
+    b.p = Picking::default();
+    let mut q = b.fenster(&mut s, 1440, 960, Blatt::Ava);
+    let a = q.ava.as_mut().unwrap();
+    let xy = a.position_mitte(&b.t, "Planstein").expect("Planstein");
+    a.mouse_down(&b.t, &b.fonts, &mut b.p, xy, mods);
+    q.sync(&mut s, &b.p, false);
+    b.ablegen(&mut q, "ist-ka-4b-position.png");
+
+    // KA-4c: Für Anfrage (leer)
+    b.p = Picking::default();
+    let mut q = b.fenster(&mut s, 1440, 760, Blatt::Ava);
+    let a = q.ava.as_mut().unwrap();
+    let xy = a.schalter_mitte(&b.t, &b.fonts, 0);
+    a.mouse_down(&b.t, &b.fonts, &mut b.p, xy, mods);
+    q.sync(&mut s, &b.p, false);
+    assert!(!q.ava.as_ref().unwrap().preise);
+    b.ablegen(&mut q, "ist-ka-4c-anfrage.png");
+
+    // KA-4d: Zusammenstellung und Prüfen
+    for (name, zusammen) in [
+        ("ist-ka-4d-zusammenstellung.png", true),
+        ("ist-ka-4d-pruefen.png", false),
+    ] {
+        b.p = Picking::default();
+        let mut q = b.fenster(&mut s, 1440, 760, Blatt::Ava);
+        let a = q.ava.as_mut().unwrap();
+        let xy = a
+            .knoten_mitte(&b.t, |k| match k {
+                crate::ava_view::Knoten::Zusammenstellung => zusammen,
+                crate::ava_view::Knoten::Pruefen(_) => !zusammen,
+                _ => false,
+            })
+            .expect("Knoten");
+        a.mouse_down(&b.t, &b.fonts, &mut b.p, xy, mods);
+        q.sync(&mut s, &b.p, false);
+        b.ablegen(&mut q, name);
+    }
+}

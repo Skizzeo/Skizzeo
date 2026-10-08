@@ -283,3 +283,53 @@ fn zeichnet_in_allen_lagen() {
         }
     }
 }
+
+/// Bauteilnummern im Mengenansatz: durchgehende Reihe kurz, sonst Komma.
+#[test]
+fn nummern_kurz_als_reihe() {
+    let n = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        nummern_kurz(&n(&["AW-001", "AW-002", "AW-003", "AW-004"])),
+        "AW-001 … 004"
+    );
+    assert_eq!(nummern_kurz(&n(&["AW-001", "AW-002"])), "AW-001, AW-002");
+    assert_eq!(
+        nummern_kurz(&n(&["AW-001", "AW-003", "AW-004"])),
+        "AW-001, AW-003, AW-004"
+    );
+    assert_eq!(
+        nummern_kurz(&n(&["AW-001", "IW-002", "IW-003"])),
+        "AW-001, IW-002, IW-003"
+    );
+    assert_eq!(nummern_kurz(&n(&["DT-001"])), "DT-001");
+}
+
+/// Planstein: Kostengruppe aus den Bauteilen (331), nie „Ohne
+/// Kostengruppe“ in der Preisspalte; Rundungsausgleich ohne Geschoss.
+#[test]
+fn detail_kostengruppe_und_ausgleich() {
+    let mut s = haus();
+    let v = blatt(&mut s);
+    let lv = v.lv().unwrap();
+    let kat = s.katalog(None);
+    for p in lv.titel.iter().flat_map(|t| &t.positionen) {
+        let d = detail(s.model(), &kat, lv, &p.oz).expect("Detail");
+        assert!(
+            d.preis.iter().all(|l| !l.contains("Ohne Kostengruppe")),
+            "{:?}",
+            d.preis
+        );
+        for a in &d.ansatz {
+            if a[1] == "Rundungsausgleich" {
+                assert!(a[0].is_empty() && a[3].is_empty(), "{a:?}");
+            }
+        }
+    }
+    let p = lv
+        .titel
+        .iter()
+        .flat_map(|t| &t.positionen)
+        .find(|p| p.kurztext.contains("Planstein"))
+        .unwrap();
+    assert_eq!(p.kg, Some(331), "{}", p.kurztext);
+}

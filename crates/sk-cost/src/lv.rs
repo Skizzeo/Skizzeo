@@ -449,6 +449,16 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
                 Ort::Position(oz_basis.clone()),
             ));
         }
+        // Kostengruppe der Bauleistung, sonst die gemeinsame der Bauteile
+        let kg = l.kg.or_else(|| {
+            let mut kgs = ansatz.iter().map(|a| a.kg);
+            let erste = kgs.next()?;
+            if kgs.all(|x| x == erste) {
+                erste
+            } else {
+                None
+            }
+        });
         let ep = (w.preise && !mehrere).then_some(p0.ep);
         let anteile = (w.preise && !mehrere).then_some(Anteile {
             lohn: p0.lohn,
@@ -474,7 +484,7 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
             untertitel: uu,
             art: Positionsart::Normal,
             gewerk: l.gewerk,
-            kg: l.kg,
+            kg,
             anteile,
             preis_fehlt,
             mehrere_preise: mehrere,

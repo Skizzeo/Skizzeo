@@ -1000,14 +1000,13 @@ impl AvaView {
                     guid,
                 } => {
                     let gewaehlt = Some(*guid) == self.los && self.ansicht == Ansicht::Lv;
-                    let dreieck = if *offen { "▾" } else { "▸" };
-                    regular.draw(
+                    sk_ui::widgets::disclosure(
                         c,
-                        dreieck,
-                        9.0 * s,
-                        x,
-                        mitte(y, h, regular),
+                        x + 3.5 * s,
+                        y + h * 0.5,
+                        *offen,
                         u.sheet_text_dim,
+                        s,
                     );
                     let col = if gewaehlt {
                         u.sheet_text
@@ -1192,8 +1191,11 @@ impl AvaView {
             let base = y + (h + regular.cap_height(px)) * 0.5;
             let auswahl =
                 !z.elemente.is_empty() && z.elemente.iter().any(|e| self.selected.contains(e));
-            let schwebt =
-                !z.elemente.is_empty() && z.elemente.iter().any(|e| self.hover.contains(e));
+            // Schwebt die Maus über einer Zeile, nur diese; sonst die
+            // Zeilen der Bauteile unter der Maus im Modell
+            let schwebt = !matches!(self.hot, Some(Hot::Zeile(_)))
+                && !z.elemente.is_empty()
+                && z.elemente.iter().any(|e| self.hover.contains(e));
             let gewaehlt = z.art == Art::Position
                 && self.ansicht == Ansicht::Lv
                 && self.gewaehlt.as_deref() == Some(z.oz.as_str());
@@ -1348,11 +1350,18 @@ impl AvaView {
                 let max_zeilen = ((fy + fh - y - zeile) / zeile).floor().max(0.0) as usize;
                 let herkunft_w = preis_x - 16.0 * s - spalten[3];
                 for a in d.ansatz.iter().take(max_zeilen) {
+                    let ausgleich = a[0].is_empty();
                     regular.draw(c, &a[0], px, spalten[0], y, u.sheet_text);
-                    let bt = sk_ui::widgets::ellipsize(Some(regular), &a[1], px, 200.0 * s);
-                    regular.draw(c, &bt, px, spalten[1], y, u.sheet_text_dim);
                     let mw = regular.width(&a[2], px);
-                    regular.draw(c, &a[2], px, menge_r - mw, y, u.sheet_text);
+                    let bw = menge_r - mw - 12.0 * s - spalten[1];
+                    let bt = sk_ui::widgets::ellipsize(Some(regular), &a[1], px, bw);
+                    regular.draw(c, &bt, px, spalten[1], y, u.sheet_text_dim);
+                    let mcol = if ausgleich {
+                        u.sheet_text_dim
+                    } else {
+                        u.sheet_text
+                    };
+                    regular.draw(c, &a[2], px, menge_r - mw, y, mcol);
                     let hk = sk_ui::widgets::ellipsize(Some(regular), &a[3], px, herkunft_w);
                     regular.draw(c, &hk, px, spalten[3], y, u.sheet_text_dim);
                     y += zeile;
@@ -1413,6 +1422,26 @@ fn menge_zahl(d: Dez) -> String {
         tausender(&(a / 1000).to_string()),
         a % 1000
     )
+}
+
+/// Bauteilnummern kurz: eine durchgehende Reihe gleicher Art als
+/// „AW-001 … 004“, sonst mit Komma.
+fn nummern_kurz(n: &[String]) -> String {
+    let teil = |x: &str| {
+        let i = x.rfind(|c: char| !c.is_ascii_digit()).map_or(0, |i| i + 1);
+        let (a, z) = x.split_at(i);
+        Some((a.to_string(), z.to_string(), z.parse::<u64>().ok()?))
+    };
+    let t: Option<Vec<_>> = n.iter().map(|x| teil(x)).collect();
+    if let Some(t) = t.filter(|t| t.len() > 2) {
+        let reihe = t
+            .windows(2)
+            .all(|w| w[0].0 == w[1].0 && w[1].2 == w[0].2 + 1);
+        if reihe {
+            return format!("{} … {}", n[0], t[t.len() - 1].1);
+        }
+    }
+    n.join(", ")
 }
 
 fn betrag(c: Option<Cent>) -> String {
@@ -1549,10 +1578,15 @@ pub fn detail(m: &Model, kat: &Katalog, lv: &Lv, oz: &str) -> Option<Detail> {
                     elemente.push(*e);
                 }
             }
+            let menge = format!("{} {einheit}", menge_zahl(a.menge));
+            if a.elemente.is_empty() && a.nummern.is_empty() {
+                // Rundungsausgleich: ohne Geschoss, Text unter „Bauteile“
+                return [String::new(), a.herkunft.clone(), menge, String::new()];
+            }
             [
                 geschoss_name(m, a.geschoss),
-                a.nummern.join(", "),
-                format!("{} {einheit}", menge_zahl(a.menge)),
+                nummern_kurz(&a.nummern),
+                menge,
                 a.herkunft.clone(),
             ]
         })
@@ -1604,7 +1638,10 @@ pub fn detail(m: &Model, kat: &Katalog, lv: &Lv, oz: &str) -> Option<Detail> {
         preis.push("Ohne Preise (Anfrage).".into());
         anteile.push(("Preis".into(), "ohne Preise (Anfrage)".into()));
     }
-    preis.push(format!("Gewerk {gewerk} · Kostengruppe {}", kg_name(p.kg)));
+    preis.push(format!("Gewerk {gewerk}"));
+    if p.kg.is_some() {
+        preis.push(format!("Kostengruppe {}", kg_name(p.kg)));
+    }
     let bauleistung = kat
         .leistung(p.quelle)
         .map_or_else(String::new, |l| l.kurz.clone());
@@ -1629,5 +1666,7 @@ pub fn detail(m: &Model, kat: &Katalog, lv: &Lv, oz: &str) -> Option<Detail> {
     })
 }
 
+#[cfg(test)]
+mod bild;
 #[cfg(test)]
 mod tests;
