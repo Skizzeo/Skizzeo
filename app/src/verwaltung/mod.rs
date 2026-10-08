@@ -10,6 +10,8 @@
 //! (Bausteingrenze §5, die App führt es aus), Abbrechen verwirft; bis dahin
 //! ist nichts geschrieben. Es gibt keinen Entwurf und keine Freigabe.
 
+#[cfg(test)]
+mod abnahme_ka3a2;
 mod baum;
 mod felder;
 #[cfg(test)]
