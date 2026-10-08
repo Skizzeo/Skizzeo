@@ -366,7 +366,9 @@ mod tests {
             &a,
             &Eingabe {
                 stunden: Some(a.stunden),
-                preise: vec![]
+                preise: vec![],
+                eingaben: vec![],
+                conv: vec![],
             },
             ""
         )
