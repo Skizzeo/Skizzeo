@@ -2386,10 +2386,13 @@ impl App {
             }
         };
         if let Err(e) = std::fs::write(&path, bytes) {
-            surface.message(
-                &format!("Die Tabelle konnte nicht gespeichert werden:\n{e}"),
-                true,
+            let m = meldung::Meldung::aus_io(
+                "Tabelle nicht gespeichert",
+                "Tabelle speichern",
+                &path,
+                &e,
             );
+            surface.message(&m, true);
         }
     }
 

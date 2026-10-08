@@ -42,6 +42,14 @@ impl Meldung {
         Meldung(b.satz.clone())
     }
 
+    /// Satz des ersten Befunds, sonst `sonst`, ohne Fehlerprotokoll: Beim
+    /// Tippen ist ein abgelehnter Wert kein Fehler, und das Protokoll
+    /// bekäme sonst bei jeder Taste eine Zeile (und einen Dateizugriff).
+    pub fn vorschau(b: &[sk_cost::Befund], sonst: &'static str) -> Self {
+        b.first()
+            .map_or_else(|| Meldung::satz(sonst), |x| Meldung(x.satz.clone()))
+    }
+
     /// Der erste Befund, sonst `sonst`; alle gehen ins Fehlerprotokoll.
     pub fn aus_befunden(b: &[sk_cost::Befund], sonst: &'static str) -> Self {
         for x in b.iter().skip(1) {
@@ -220,15 +228,25 @@ pub fn protokoll(zeile: &str) {
         let dir = std::path::PathBuf::from(a).join("Skizzeo");
         let _ = std::fs::create_dir_all(&dir);
         let (j, mo, t, h, mi) = sk_platform::local_date_time();
+        let datei = dir.join("fehlerprotokoll.txt");
+        // Begrenzt: Ab 1 MB wird die Datei zu „fehlerprotokoll-alt.txt“
+        // (eine ältere fällt weg), zusammen also höchstens etwa 2 MB
+        if std::fs::metadata(&datei).is_ok_and(|m| m.len() > PROTOKOLL_GRENZE) {
+            let _ = std::fs::rename(&datei, dir.join("fehlerprotokoll-alt.txt"));
+        }
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(dir.join("fehlerprotokoll.txt"))
+            .open(&datei)
         {
             let _ = writeln!(f, "{t:02}.{mo:02}.{j} {h:02}:{mi:02} {zeile}");
         }
     }
 }
+
+/// Größe, ab der das Fehlerprotokoll neu beginnt.
+#[cfg(not(test))]
+const PROTOKOLL_GRENZE: u64 = 1 << 20;
 
 #[cfg(test)]
 thread_local! {
@@ -281,6 +299,31 @@ mod tests {
             log[0].contains("/irgendwo/tief") && log[0].contains("kaputt"),
             "{log:?}"
         );
+    }
+
+    /// Beim Tippen schreibt ein abgelehnter Wert nichts ins Protokoll;
+    /// Projekt speichern nennt die Datei nur mit Namen (Review 3al).
+    #[test]
+    fn vorschau_still_und_projekt_ohne_pfad() {
+        protokoll_im_test();
+        let b = [sk_cost::Befund::fehler(
+            76,
+            "Der Preis ist zu hoch.",
+            sk_cost::befund::Ort::Datei,
+        )];
+        assert_eq!(Meldung::vorschau(&b, "Nichts."), "Der Preis ist zu hoch.");
+        assert_eq!(Meldung::vorschau(&[], "Nichts."), "Nichts.");
+        assert!(protokoll_im_test().is_empty());
+
+        let d = std::env::temp_dir().join("skizzeo-meldung-ohne-pfad");
+        let m = sk_model::Model::new();
+        let e = crate::document::save(&m, &d.join("fehlt").join("Haus.szo")).unwrap_err();
+        assert!(!e.contains("skizzeo-meldung-ohne-pfad"), "{e}");
+        assert!(!e.contains("os error"), "{e}");
+        assert!(e.starts_with("Projekt nicht gespeichert"), "{e}");
+        let e = crate::document::load(&d.join("fehlt.szo")).err().unwrap();
+        assert!(!e.contains("skizzeo-meldung-ohne-pfad"), "{e}");
+        assert_eq!(protokoll_im_test().len(), 2);
     }
 
     #[test]

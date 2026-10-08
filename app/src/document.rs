@@ -1,5 +1,6 @@
 //! Das offene Projekt als Datei: Pfad, gespeicherter Stand, Laden und Speichern.
 
+use crate::meldung::Meldung;
 use sk_model::{szo, GuidGen, Model};
 use std::path::{Path, PathBuf};
 
@@ -102,7 +103,7 @@ impl Document {
 /// Speichert atomar: erst `name.szo.tmp` schreiben und auf die Platte bringen,
 /// dann umbenennen. Eine alte Datei bleibt heil, wenn das Schreiben scheitert
 /// oder der Rechner dabei ausgeht.
-pub fn save(model: &Model, path: &Path) -> Result<(), String> {
+pub fn save(model: &Model, path: &Path) -> Result<(), Meldung> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
@@ -111,7 +112,7 @@ pub fn save(model: &Model, path: &Path) -> Result<(), String> {
         .and_then(|_| std::fs::rename(&tmp, path))
         .map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
-            format!("„{}“ konnte nicht gespeichert werden: {e}", path.display())
+            Meldung::aus_io("Projekt nicht gespeichert", "Speichern", path, &e)
         })
 }
 
@@ -128,7 +129,7 @@ pub fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// Lädt eine Datei. Fehler als lesbarer Text; Hinweise gehen an den Aufrufer.
 pub fn load(path: &Path) -> Result<szo::Loaded, String> {
     let bytes = std::fs::read(path)
-        .map_err(|e| format!("„{}“ konnte nicht geöffnet werden: {e}", path.display()))?;
+        .map_err(|e| Meldung::aus_io("Projekt nicht geöffnet", "Öffnen", path, &e).to_string())?;
     let text = String::from_utf8(bytes)
         .map_err(|_| format!("„{}“ ist keine Skizzeo-Datei (kein UTF-8).", path.display()))?;
     szo::read_with(&text, GuidGen::from_time(), &sk_cost::lesen::ABSCHNITTE_SZO)

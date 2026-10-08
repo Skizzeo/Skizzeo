@@ -714,7 +714,7 @@ impl KostenView {
                 self.live = Some(Live { ops, blatt, ganz });
             }
             Err(b) => {
-                pb.set_live(Err(crate::meldung::Meldung::aus_befunden(
+                pb.set_live(Err(crate::meldung::Meldung::vorschau(
                     &b,
                     "Dieser Wert geht nicht.",
                 )));
