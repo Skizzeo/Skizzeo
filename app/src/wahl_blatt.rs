@@ -96,6 +96,18 @@ impl WahlBlatt {
         }
     }
 
+    /// Die Zeile, für die gewählt wird („DT-001 PIR-Dämmung“).
+    pub fn zeile(&self) -> &str {
+        self.titel
+            .strip_prefix("Bauleistung für ")
+            .unwrap_or(&self.titel)
+    }
+
+    /// Der Eintrag zur Bauleistung `g`.
+    pub fn gewaehlt(&self, g: Guid) -> Option<&Wahl> {
+        self.auswahl.alle().find(|w| w.leistung == g)
+    }
+
     pub fn set_anker(&mut self, r: Rect) {
         self.anker = r;
     }

@@ -230,7 +230,12 @@ pub enum Schreiben {
     Uebernehmen(Vec<SatzId>),
     Lassen(u32),
     /// „Bauleistung gewählt“ (`BauleistungZuordnen`).
-    Bauleistung(Box<Op>),
+    Bauleistung {
+        op: Box<Op>,
+        /// „DT-001 PIR-Dämmung steht jetzt unter WDV-Systeme (DIN 18345).“,
+        /// wenn die Zeile zu einem anderen Gewerk kommt.
+        hinweis: Option<String>,
+    },
     /// Verrechnungslohn für dieses Haus oder auch für neue Häuser.
     Lohn {
         wert: Dez,
@@ -247,6 +252,9 @@ struct Live {
 
 /// Verweis an grauen Zeilen (Einstellungen §3 KA-2 Punkt 4).
 const WAEHLEN: &str = "Bauleistung wählen …";
+
+/// So lange ist die eben zugeordnete Position markiert.
+const BLITZ: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// Doppelklick (ms), wie im Mengenblatt.
 const DOUBLE_MS: u128 = 450;
@@ -295,6 +303,10 @@ pub struct KostenView {
     live_neu: bool,
     /// Letzter Klick auf einen EP (Zeile, Zeit) für den Doppelklick.
     klick: Option<(usize, Instant)>,
+    /// Nach „Bauleistung wählen“: Bauteil und Bauleistung der neuen
+    /// Position; die Liste springt hin und markiert sie kurz (Bedienbarkeit
+    /// 8.6). Die Zeit setzt der erste Aufbau, der sie findet.
+    blitz: Option<(ElementId, sk_model::Guid, Option<Instant>)>,
     /// Im Projekt geänderte Positionen mit dem EP der Firma (Punkt am EP,
     /// CSV-Spalte Projektabweichung) und woraus sie bestimmt sind.
     eigen: HashMap<usize, Cent>,
@@ -359,6 +371,7 @@ impl KostenView {
             live: None,
             live_neu: false,
             klick: None,
+            blitz: None,
             eigen: HashMap::new(),
             eigen_von: None,
             abgleich: None,
@@ -460,6 +473,7 @@ impl KostenView {
             );
             self.gebaut = Some(key);
             changed = true;
+            self.blitz_suchen(&blatt);
         }
         if self.ganz.as_ref().is_none_or(|g| !Rc::ptr_eq(g, &ganz)) || changed {
             self.leiste.summen = chip_summen(&ganz, self.leiste.chips(), self.modus)
@@ -765,9 +779,13 @@ impl KostenView {
             Aus::Waehlen(g) => {
                 let w = self.wahl.take()?;
                 let z = self.blatt.as_deref()?.ohne.get(w.ohne)?;
-                ListOut::Kosten(Schreiben::Bauleistung(Box::new(sk_cost::wahl::zuordnen(
-                    z, g,
-                )?)))
+                let op = Box::new(sk_cost::wahl::zuordnen(z, g)?);
+                let hinweis = w
+                    .gewaehlt(g)
+                    .and_then(|x| x.fremd.as_ref())
+                    .map(|gewerk| format!("{} steht jetzt unter {gewerk}.", w.zeile()));
+                self.blitz = Some((w.element, g, None));
+                ListOut::Kosten(Schreiben::Bauleistung { op, hinweis })
             }
         })
     }
@@ -1463,6 +1481,33 @@ impl KostenView {
         }
     }
 
+    /// Nach „Bauleistung wählen“ zur neuen Position springen und die
+    /// Markierung starten; findet der Aufbau sie nicht, ist sie vorbei.
+    fn blitz_suchen(&mut self, blatt: &Kostenblatt) {
+        let Some((el, g, None)) = self.blitz else {
+            return;
+        };
+        let passt = |z: &Zeile| {
+            z.pos.is_some_and(|(p, _)| {
+                blatt.positionen.get(p).is_some_and(|x| match x.quelle {
+                    sk_cost::rechnung::Quelle::Leistung(l)
+                    | sk_cost::rechnung::Quelle::Geschaetzt(l) => l == g,
+                    _ => false,
+                })
+            }) && z.elements.contains(&el)
+        };
+        self.blitz = self.springe(passt).map(|_| (el, g, Some(Instant::now())));
+    }
+
+    /// Zeile `i` ist die eben zugeordnete Position.
+    fn blitzt(&self, i: usize, now: Instant) -> bool {
+        let Some((el, _, Some(at))) = self.blitz else {
+            return false;
+        };
+        let z = &self.zeilen[i];
+        now.duration_since(at) < BLITZ && z.pos.is_some() && z.elements.contains(&el)
+    }
+
     /// Zur ersten Zeile, die `f` erfüllt, rollen.
     fn springe(&mut self, f: impl Fn(&Zeile) -> bool) -> Option<ListOut> {
         let mut y = 0.0;
@@ -1510,7 +1555,16 @@ impl KostenView {
 
     pub fn tick(&mut self, t: &Theme, now: Instant) -> bool {
         self.lege_preis(t);
-        self.leiste.tick(t, now)
+        let mut weiter = self.leiste.tick(t, now);
+        if let Some((_, _, Some(at))) = self.blitz {
+            if now.duration_since(at) < BLITZ {
+                weiter = true;
+            } else {
+                self.blitz = None;
+                weiter = true;
+            }
+        }
+        weiter
     }
 
     pub fn overlay_open(&self) -> bool {
@@ -1573,7 +1627,7 @@ impl KostenView {
         let fuss = self.fuss();
         self.fuss_zeilen.set(fuss.len());
         c.fill_rect(0.0, self.top_px(), self.w as f32, self.h as f32, u.sheet_bg);
-        self.paint_rows(c, t, fonts);
+        self.paint_rows(c, t, fonts, now);
         // Kopf deckt weggerollte Zeilen ab
         c.fill_rect(
             0.0,
@@ -1837,7 +1891,7 @@ impl KostenView {
         }
     }
 
-    fn paint_rows(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts) {
+    fn paint_rows(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts, now: Instant) {
         let s = self.scale;
         let u = &t.ui;
         let (x0, cw) = self.content_x(t);
@@ -1850,7 +1904,7 @@ impl KostenView {
             let sel =
                 !z.elements.is_empty() && z.elements.iter().all(|e| self.selected.contains(e));
             let hov = !z.elements.is_empty() && z.elements.iter().all(|e| self.hover.contains(e));
-            if sel {
+            if sel || self.blitzt(i, now) {
                 c.fill_rect(x0 - 10.0 * s, y, cw + 20.0 * s, h, u.sheet_select);
                 c.fill_rect(x0 - 10.0 * s, y, 3.0 * s, h, u.accent);
             } else if hov

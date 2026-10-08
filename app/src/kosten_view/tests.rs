@@ -1,6 +1,7 @@
 //! Tests der Kostenansicht (ausgelagert, R4: Dateien unter 3.000 Zeilen).
 
 use super::*;
+use std::time::Instant;
 
 fn haus() -> Scene {
     let m = sk_model::szo::read_with(
@@ -493,15 +494,30 @@ fn bauleistung_waehlen() {
         v.text(ch);
     }
     let out = v.key(&t, sk_platform::Key::Enter, mods);
-    let Some(Some(ListOut::Kosten(Schreiben::Bauleistung(op)))) = out else {
+    let Some(Some(ListOut::Kosten(Schreiben::Bauleistung { op, hinweis }))) = out else {
         panic!("{out:?}");
     };
     assert!(!v.blatt_offen());
+    // Bedienbarkeit 8.6: Hinweis nur beim Wechsel des Gewerks
+    if let Some(t) = &hinweis {
+        assert!(
+            t.contains(" steht jetzt unter ") && t.ends_with(")."),
+            "{t}"
+        );
+    }
     let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "12:00");
     s.kosten_folge("Bauleistung gewählt", None, &h, &[*op])
         .unwrap();
     v.sync(&mut s, None);
     assert!(v.blatt().unwrap().ohne.len() < grau);
+    // die Liste steht auf der neuen Position und markiert sie
+    let now = Instant::now();
+    let j = (0..v.zeilen().len())
+        .find(|j| v.blitzt(*j, now))
+        .expect("neue Position markiert");
+    assert!(v.sichtbar().iter().any(|(k, _, _)| *k == j), "in Sicht");
+    assert!(v.tick(&t, now));
+    assert!(!v.blitzt(j, now + BLITZ));
     assert!(s.undo());
     v.sync(&mut s, None);
     assert_eq!(v.blatt().unwrap().ohne.len(), grau);

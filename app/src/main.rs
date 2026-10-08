@@ -2232,9 +2232,9 @@ impl App {
                 let op = sk_cost::Op::StandUebernehmen { saetze };
                 self.kosten_folge("Werte für neue Häuser übernommen", &h, &[op])
             }
-            kosten_view::Schreiben::Bauleistung(op) => {
-                self.kosten_folge("Bauleistung gewählt", &h, &[*op])
-            }
+            kosten_view::Schreiben::Bauleistung { op, hinweis } => self
+                .kosten_folge("Bauleistung gewählt", &h, &[*op])
+                .or(hinweis.map(|t| (t, false))),
             kosten_view::Schreiben::Lohn { wert, gilt } => {
                 let label = self
                     .scene
