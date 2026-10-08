@@ -634,7 +634,13 @@ impl Company {
                 ))
             }
         };
-        let jetzt = sk_cost::lesen::firma_oder_werk(m, Some(&self.lib));
+        // Gegen die Datei, wie sie jetzt ist: Hat ein anderer Platz denselben
+        // Satz später wieder geändert, kommt der Befund mit dem Satz hier und
+        // nicht erst als „anderswo geändert“ beim OK (Testhinweis D)
+        let datei = std::fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|t| sk_model::read_szk_with(&t, &sk_cost::lesen::ABSCHNITTE_SZK).ok());
+        let jetzt = sk_cost::lesen::firma_oder_werk(m, Some(datei.as_ref().unwrap_or(&self.lib)));
         let davor = sk_cost::lesen::firma_oder_werk(m, vorher.as_ref());
         sk_cost::verwaltung::umkehr(&jetzt, &davor, stand)
             .map_err(|b| Meldung::aus_befunden(&b, nicht))

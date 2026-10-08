@@ -1080,3 +1080,40 @@ fn fremde_aenderung_wird_vor_dem_zweiten_ok_gezeigt() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(text.contains("hours=0.45"), "{text}");
 }
+
+/// Testhinweis D: Platz A hat Stand n geschrieben, Platz B danach denselben
+/// Satz wieder geändert. Nimmt A (alter Stand im Speicher) Stand n zurück,
+/// kommt gleich der Befund mit dem Satz, nicht erst beim OK „anderswo
+/// geändert“; die Datei bleibt.
+#[test]
+fn zuruecknehmen_liest_die_datei_neu() {
+    let (mut a, dir) = firma("umkehr-neu");
+    let pfad = a.path().to_path_buf();
+    let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "17:40");
+    let mut s = haus();
+    let mut v = Verwaltung::open(&s, Some(&a), None);
+    v.waehlen(Knoten::Firmenwerte);
+    assert!(v.eingeben(&Feld::Wert("wage".into()), "65"));
+    s.fuer_firma(STEP, &mut a, &h, v.ops()).expect("Stand A");
+    // Stand aus dem Kopf der Datei
+    let stand_a: u32 = std::fs::read_to_string(&pfad)
+        .unwrap()
+        .lines()
+        .find(|l| l.starts_with("[catalog]"))
+        .and_then(|l| l.split(' ').find_map(|w| w.strip_prefix("stand=")))
+        .and_then(|n| n.parse().ok())
+        .expect("Stand im Kopf");
+    let (mut b, _) = Company::laden(&pfad, true);
+    let mut s2 = haus();
+    let mut vb = Verwaltung::open(&s2, Some(&b), None);
+    vb.waehlen(Knoten::Firmenwerte);
+    assert!(vb.eingeben(&Feld::Wert("wage".into()), "70"));
+    s2.fuer_firma(STEP, &mut b, &h, vb.ops()).expect("Stand B");
+    let datei = std::fs::read(&pfad).unwrap();
+    let r = a.umkehr(s.model(), stand_a).map_err(|m| m.to_string());
+    let nachher = std::fs::read(&pfad).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&dir);
+    let m = r.expect_err("derselbe Satz wurde später geändert");
+    assert!(m.contains("wieder geändert"), "{m}");
+    assert_eq!(nachher, datei);
+}
