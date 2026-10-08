@@ -1217,6 +1217,7 @@ pub fn ausfuehren_folge(
     herkunft: &Herkunft,
     ops: &[Op],
 ) -> Result<(), Vec<Befund>> {
+    debug_assert!(m.in_step(), "Kostenoperation ohne offenen Schritt");
     let seed = m.new_guid().0 as u64;
     let plan = planen(m, firma, rolle, herkunft, ops, GuidGen::with_seed(seed))?;
     m.ext_declare(&satz::ABSCHNITTE_SZO);
@@ -1240,15 +1241,15 @@ pub fn ausfuehren_folge(
             bauleistung,
         } = op
         {
-            let gefunden = m
+            // `planen` hat Typ und Schicht geprüft; ein Typ mit gemeldetem
+            // Problem (Regel 21) bekommt die Bauleistung trotzdem
+            let id = m
                 .layer_sets()
                 .iter()
                 .find(|(_, t)| t.guid == *typ)
-                .map(|(id, t)| (id, t.clone()));
-            if let Some((id, mut t)) = gefunden {
-                t.layers[*schicht].svc = *bauleistung;
-                m.set_layer_set(id, t);
-            }
+                .map(|(id, _)| id);
+            let ok = id.is_some_and(|id| m.set_layer_svc(id, *schicht, *bauleistung));
+            debug_assert!(ok, "Schicht nach der Prüfung nicht gefunden");
         }
     }
     Ok(())
@@ -2076,5 +2077,39 @@ mod tests {
         }
         assert_eq!(tag_aus_tagen(0), (1970, 1, 1));
         assert_eq!(tag_aus_tagen(20_734), (2026, 10, 8));
+    }
+
+    #[test]
+    fn bauleistung_auch_am_typ_mit_problem() {
+        // Review 3ae: AW-36,5 mit Streifen aus Porenbeton (Regel 21). Die
+        // Zuordnung kommt an, ein Schritt, Rückgängig gibt die Datei zurück
+        let t = szo::write(&Model::new()).replace(
+            "bearing=240 strip=2dv8rsAYH3ovLj1KIg1$Mo",
+            "bearing=240 strip=2wuC33GkTD9Qack6WJ4EsM",
+        );
+        let mut m = szo::read(&t, GuidGen::with_seed(7)).unwrap().model;
+        let (id, typ) = m
+            .layer_sets()
+            .iter()
+            .find(|(_, t)| t.code == "AW-36,5")
+            .map(|(id, t)| (id, t.guid))
+            .unwrap();
+        assert!(m.bearing_problem(m.layer_set(id).unwrap()).is_some());
+        let g = lesen::werk(&m).leistungen[0].guid;
+        let h = Herkunft::neu(HerkunftArt::Manual, "2026-10-08", "09:00");
+        let vorher = szo::write(&m);
+        m.begin("Bauleistung");
+        let op = Op::BauleistungZuordnen {
+            typ,
+            schicht: 0,
+            bauleistung: Some(g),
+        };
+        ausfuehren(&mut m, None, Rolle::Admin, &h, op).unwrap();
+        let t = m.commit().unwrap();
+        assert_eq!(m.layer_set(id).unwrap().layers[0].svc, Some(g));
+        m.apply(&t, Direction::Undo);
+        assert_eq!(szo::write(&m), vorher);
+        m.apply(&t, Direction::Redo);
+        assert_eq!(m.layer_set(id).unwrap().layers[0].svc, Some(g));
     }
 }

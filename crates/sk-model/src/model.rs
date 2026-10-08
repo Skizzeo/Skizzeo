@@ -1290,6 +1290,26 @@ impl Model {
         self.replace_layer_set(id, s, true)
     }
 
+    /// Setzt nur die Bauleistung einer Schicht (`svc=`, Regel 99). Anders
+    /// als [`Model::set_layer_set`] prüft das den Typ nicht noch einmal:
+    /// Die Bauleistung ändert keine Geometrie und muss auch an einem Typ
+    /// mit gemeldetem Problem (Regel 21) ankommen. Anschlüsse bleiben.
+    pub fn set_layer_svc(&mut self, id: LayerSetId, layer: usize, svc: Option<Guid>) -> bool {
+        let Some(l) = self.layer_sets.get(id).and_then(|t| t.layers.get(layer)) else {
+            return false;
+        };
+        if l.svc == svc {
+            return true;
+        }
+        note!(self, LayerSet, self.layer_sets, id);
+        if let Some(t) = self.layer_sets.get_mut(id) {
+            t.layers[layer].svc = svc;
+            t.changed += 1;
+        }
+        self.touch();
+        true
+    }
+
     /// Wie [`Model::set_layer_set`] mit ungültigem Deckenauflager wie
     /// [`Model::adopt_layer_set`].
     pub(crate) fn adopt_set_layer_set(&mut self, id: LayerSetId, s: LayerSet) -> bool {
