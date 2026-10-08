@@ -38,7 +38,7 @@ impl AvaView {
     pub(crate) fn kopf_mitte(&self, t: &Theme, fonts: &Fonts, was: &str) -> Option<(f64, f64)> {
         let ziel = match was {
             "Mehr" => Hot::Mehr,
-            "Bauherr fehlt" => Hot::BauherrFehlt,
+            "Bauherr fehlt" | "Aufsteller fehlt" => Hot::BauherrFehlt,
             _ => Hot::Kopf,
         };
         let (x0, cw) = self.content_x(t);

@@ -475,8 +475,21 @@ fn csv_zeilen(v: &AvaView) -> Vec<Vec<String>> {
     let t = String::from_utf8(b).unwrap();
     let t = t.strip_prefix('\u{feff}').expect("BOM");
     t.split("\r\n")
-        .map(|z| z.split(';').map(str::to_string).collect())
+        .map(|z| z.split(';').map(text_zelle).collect())
         .collect()
+}
+
+/// Zellinhalt wie in der Tabellenkalkulation: die Zelle `="01.02"` (in der
+/// Datei gequotet) ist der Text „01.02“; sonst macht Excel ein Datum daraus.
+fn text_zelle(roh: &str) -> String {
+    let z = match roh.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
+        Some(r) => r.replace("\"\"", "\""),
+        None => roh.to_string(),
+    };
+    match z.strip_prefix("=\"").and_then(|r| r.strip_suffix('"')) {
+        Some(r) => r.to_string(),
+        None => z,
+    }
 }
 
 fn cent(s: &str) -> i64 {
@@ -584,4 +597,120 @@ fn knopf_speichert() {
     // Daneben losgelassen: nichts gespeichert
     v.mouse_down(&t, &fonts, &mut p, xy, mods);
     assert_eq!(v.mouse_up(&t, &fonts, 5.0, 5.0), Some(ListOut::Repaint));
+}
+
+/// Prüfen führt zur Stelle (paket-ka4 §4, Bedienbarkeit 12.2): „Ohne
+/// Bauleistung“ öffnet im Reiter Kosten „Bauleistung wählen …“ an der
+/// grauen Zeile, „Bauherr fehlt“ und „Aufsteller fehlt“ öffnen ihr Feld;
+/// Erfülltes steht grün darunter. Der Werksbestand ist kein Aufsteller
+/// (Kosten A1).
+#[test]
+fn pruefen_fuehrt_zur_stelle() {
+    let t = Theme::dark();
+    let mut s = haus();
+    let mut v = blatt(&mut s);
+    let mut p = Picking::default();
+    let mods = sk_platform::Modifiers::default();
+    let lv = v.lv().unwrap();
+    assert_eq!(lv.kopf.aufsteller, None, "nie „Skizzeo-Werksbestand“");
+    assert!(lv.befunde.iter().any(|b| b.satz == "Aufsteller fehlt"));
+    v.zeige(Ansicht::Pruefen);
+    v.sync(&mut s, None);
+    let zeile =
+        |v: &AvaView, f: &dyn Fn(&Zeile) -> bool| v.zeilen().iter().position(f).expect("Zeile");
+    let i = zeile(&v, &|z| z.text.starts_with("Ohne Bauleistung"));
+    let Some(Ziel::Waehlen(el)) = v.zeilen()[i].ziel.clone() else {
+        panic!("{:?}", v.zeilen()[i].ziel);
+    };
+    let (x, y) = mitte(&v, i);
+    assert_eq!(
+        v.mouse_down(&t, &leer(), &mut p, (x, y), mods),
+        Some(ListOut::WaehlenIm(el))
+    );
+    // Der Reiter Kosten öffnet das Blatt an der grauen Zeile
+    let mut k = crate::kosten_view::KostenView::new();
+    (k.w, k.h) = (1200, 900);
+    k.sync(&mut s, None);
+    assert!(!k.blatt_offen());
+    k.waehlen_fuer(el);
+    k.sync(&mut s, None);
+    assert!(k.blatt_offen(), "Bauleistung wählen …");
+    // Kopf: zuerst der Bauherr, dann der Aufsteller
+    for (satz, feld) in [
+        ("Bauherr fehlt", kopf::Feld::Bauherr),
+        ("Aufsteller fehlt", kopf::Feld::Aufsteller),
+    ] {
+        let i = zeile(&v, &|z| z.text == satz);
+        assert_eq!(v.zeilen()[i].ziel, Some(Ziel::Kopf(feld)));
+        assert_eq!(
+            v.zeilen()[i].ziel.as_ref().unwrap().verweis(),
+            "Eintragen …"
+        );
+    }
+    let gruen: Vec<&str> = v
+        .zeilen()
+        .iter()
+        .filter(|z| z.art == Art::Erfuellt)
+        .map(|z| z.text.as_str())
+        .collect();
+    assert!(
+        gruen.contains(&"Kurztexte höchstens 70 Zeichen"),
+        "{gruen:?}"
+    );
+    assert!(!gruen.contains(&"Kopf vollständig"));
+    assert!(!gruen.contains(&"Alle Bauteile haben eine Bauleistung"));
+    let i = zeile(&v, &|z| z.text == "Bauherr fehlt");
+    let (x, y) = mitte(&v, i);
+    assert_eq!(
+        v.mouse_down(&t, &leer(), &mut p, (x, y), mods),
+        Some(ListOut::Repaint)
+    );
+    assert!(v.kopf_offen && v.feld_offen());
+}
+
+/// Jörns Excel-Handtest: OZ wie „01.02“ (Untertitel) oder „01.0010“ würde
+/// das deutsche Excel zum Datum bzw. zur Zahl machen. Jede OZ-Zelle steht
+/// deshalb als `="…"` in der CSV, auch Titel („01“) und die
+/// Zusammenstellung; Mengen und Beträge bleiben Zahlen.
+#[test]
+fn csv_oz_bleibt_text() {
+    let mut s = haus();
+    let mut v = blatt(&mut s);
+    let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "12:00");
+    s.kosten_folge(
+        "LV nach Geschossen gegliedert",
+        None,
+        &h,
+        &[sk_cost::Op::LvGliederungSetzen { untertitel: true }],
+    )
+    .unwrap();
+    v.sync(&mut s, None);
+    let text = String::from_utf8(v.csv()).unwrap();
+    let zeilen: Vec<Vec<&str>> = text.split("\r\n").map(|z| z.split(';').collect()).collect();
+    let kopf = zeilen.iter().position(|r| r[0] == "OZ").unwrap();
+    let mut gesehen = 0;
+    for r in &zeilen[kopf + 1..] {
+        let oz = r[0];
+        if oz.is_empty() || oz == "Zusammenstellung" {
+            continue;
+        }
+        // "=""01.02.0030""" → in Excel die Formel ="01.02.0030", also Text
+        assert!(
+            oz.starts_with("\"=\"\"") && oz.ends_with("\"\"\""),
+            "OZ nicht als Text: {r:?}"
+        );
+        let innen = &oz[4..oz.len() - 3];
+        assert!(
+            innen.chars().all(|c| c.is_ascii_digit() || c == '.'),
+            "{innen}"
+        );
+        gesehen += 1;
+        // Mengen und Beträge bleiben Zahlen mit Dezimalkomma
+        for zahl in r.iter().skip(2).filter(|x| !x.is_empty() && x.len() < 20) {
+            assert!(!zahl.starts_with('"'), "{r:?}");
+        }
+    }
+    assert!(gesehen > 10, "{gesehen}");
+    // Untertitel „01.02“ steht als Text da
+    assert!(text.contains("\"=\"\"01.02\"\"\";Erdgeschoss"), "{text}");
 }

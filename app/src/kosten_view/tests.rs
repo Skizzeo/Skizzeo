@@ -195,7 +195,11 @@ fn zahlen_und_csv() {
     assert!(csv.contains("\r\nModus;Material + Lohn\r\n"));
     // OZ mit Los, Frostschürze unter 1.01.0020; Zeilen ohne Bauleistung
     // ohne OZ, Menge und Einheit getrennt
-    assert!(csv.contains(";1.01.0020;Frostschürze"), "{csv}");
+    // OZ als Text für Excel: ="1.01.0020"
+    assert!(
+        csv.contains(";\"=\"\"1.01.0020\"\"\";Frostschürze"),
+        "{csv}"
+    );
     let kopf = csv.lines().find(|l| l.starts_with("Gliederung;")).unwrap();
     let spalten = kopf.split(';').count();
     assert_eq!(spalten, 14);

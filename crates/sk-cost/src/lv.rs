@@ -102,6 +102,9 @@ pub struct LvPosition {
     pub art: Positionsart,
     pub gewerk: Guid,
     pub kg: Option<u16>,
+    /// Bauteile mit verschiedenen KG (B60 an Sohlplatte und Decke): Menge
+    /// je KG, nach KG; sonst leer.
+    pub kg_teile: Vec<(u16, Dez)>,
     pub anteile: Option<Anteile>,
     /// Ein Artikel ohne Preis (Punkt in Akzent).
     pub preis_fehlt: bool,
@@ -244,7 +247,14 @@ fn untertitel_von(m: &Model, st: StoreyId) -> (u32, String) {
         .iter()
         .position(|(_, id)| *id == st)
         .map_or(0, |i| i + 1);
-    (nr as u32, s.name.clone())
+    // Wie der Chip und der Geschossbogen: „Fundament“ (Bedienbarkeit 1.1,
+    // soll-ka-4c), nicht der Name im Modell
+    let name = if s.kind == sk_model::LevelKind::Foundation {
+        "Fundament".to_string()
+    } else {
+        s.name.clone()
+    };
+    (nr as u32, name)
 }
 
 /// Zeilen des Mengenansatzes je für sich auf 3 Stellen (ka-0-fach §1.9,
@@ -462,6 +472,25 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
                 None => None,
             }
         };
+        // Verschiedene KG nicht verschweigen (Kosten B2): Menge je KG
+        let kg_teile: Vec<(u16, Dez)> = {
+            let mut t: Vec<(u16, i128)> = Vec::new();
+            for a in ansatz.iter().filter(|_| kg.is_none()) {
+                let Some(x) = a.kg else { continue };
+                match t.iter_mut().find(|y| y.0 == x) {
+                    Some(y) => y.1 += a.menge,
+                    None => t.push((x, a.menge)),
+                }
+            }
+            t.sort_by_key(|x| x.0);
+            if t.len() > 1 {
+                t.into_iter()
+                    .map(|(x, v)| (x, drei(v, l.einheit)))
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        };
         let ep = (w.preise && !mehrere).then_some(p0.ep);
         let anteile = (w.preise && !mehrere).then_some(Anteile {
             lohn: p0.lohn,
@@ -488,6 +517,7 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
             art: Positionsart::Normal,
             gewerk: l.gewerk,
             kg,
+            kg_teile: kg_teile.clone(),
             anteile,
             preis_fehlt,
             mehrere_preise: mehrere,
@@ -730,9 +760,12 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
     // Kopf und Vorbemerkungen (Regel 107)
     let pr = m.project();
     let text = |s: &str| (!s.trim().is_empty()).then(|| s.to_string());
+    // Aufsteller: Verfasser im Projekt, sonst der Name eines echten
+    // Firmenkatalogs; der Werksbestand ist eine Preisquelle, kein
+    // Aufsteller (Kosten A1, Bedienbarkeit 12.1)
     let firma = match &k.quelle {
-        crate::katalog::Quelle::Firma { name, .. } => Some(name.clone()),
-        _ => k.kopf.as_ref().map(|c| c.name.clone()),
+        crate::katalog::Quelle::Firma { name, .. } => text(name),
+        _ => None,
     };
     let kopf = LvKopf {
         bauvorhaben: text(&pr.site),
@@ -751,6 +784,9 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
     };
     if kopf.bauherr.is_none() {
         befunde.push(Befund::hinweis(0, "Bauherr fehlt", Ort::Kopf));
+    }
+    if kopf.aufsteller.is_none() {
+        befunde.push(Befund::hinweis(0, "Aufsteller fehlt", Ort::Kopf));
     }
     if kopf.vorbemerkungen.is_none() {
         befunde.push(Befund::hinweis(

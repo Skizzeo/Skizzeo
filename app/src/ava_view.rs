@@ -102,7 +102,8 @@ enum Hot {
     Schliessen,
     /// „Kopf und Vorbemerkungen“ auf- und zuklappen.
     Kopf,
-    /// „Bauherr fehlt“: öffnet den Kopf mit dem Feld Bauherr.
+    /// „Bauherr fehlt“ bzw. „Aufsteller fehlt“: öffnet den Kopf mit dem
+    /// fehlenden Feld.
     BauherrFehlt,
     /// „Mehr“ und darin „Geschosse als Untertitel“.
     Mehr,
@@ -179,6 +180,35 @@ pub enum Art {
     Leise,
     /// Punkt im Prüfen.
     Befund(Schwere),
+    /// Erfüllter Punkt im Prüfen (grün).
+    Erfuellt,
+}
+
+/// Wohin ein Punkt im Prüfen führt (paket-ka4 §4: Position, Bauteil im
+/// Modell oder Kopf).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Ziel {
+    /// Position mit OZ ohne Los.
+    Position(String),
+    /// Bauteil ohne Bauleistung: im Reiter Kosten „Bauleistung wählen …“
+    /// (Bedienbarkeit 12.2).
+    Waehlen(ElementId),
+    /// Bauteil im Modell wählen.
+    Bauteil(ElementId),
+    /// Feld im Kopf öffnen.
+    Kopf(kopf::Feld),
+}
+
+impl Ziel {
+    /// Verweis rechts am Punkt.
+    fn verweis(&self) -> &'static str {
+        match self {
+            Ziel::Position(_) => "zur Position",
+            Ziel::Waehlen(_) => "Bauleistung wählen …",
+            Ziel::Bauteil(_) => "im Modell zeigen",
+            Ziel::Kopf(_) => "Eintragen …",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -193,8 +223,8 @@ pub struct Zeile {
     pub elemente: Vec<ElementId>,
     /// Titel der Zeile (Sprung aus dem Baum).
     titel: Option<Guid>,
-    /// Ziel eines Befunds: OZ ohne Los.
-    ziel: Option<String>,
+    /// Ziel eines Punkts im Prüfen.
+    ziel: Option<Ziel>,
 }
 
 impl Zeile {
@@ -218,7 +248,7 @@ impl Zeile {
             Art::Titel => ROW_TITEL,
             Art::Untertitel => ROW_UNTER,
             Art::Summe => 26.0,
-            Art::Befund(_) => 26.0,
+            Art::Befund(_) | Art::Erfuellt => 26.0,
             Art::Position | Art::Leise => ROW_POS,
         }
     }
@@ -418,7 +448,7 @@ impl AvaView {
             self.zeilen = match self.ansicht {
                 Ansicht::Lv => lv_zeilen(&lv),
                 Ansicht::Zusammenstellung => zusammenstellung(&lv),
-                Ansicht::Pruefen => pruefen(&lv),
+                Ansicht::Pruefen => pruefen(s.model(), &lv),
             };
             self.gebaut = Some(key);
             changed = true;
@@ -838,13 +868,26 @@ impl AvaView {
                         self.selected = p.selected.clone();
                         Some(ListOut::Picking { selection: true })
                     }
-                    Art::Befund(_) => {
-                        let oz = z.ziel?;
-                        self.zeige(Ansicht::Lv);
-                        self.gewaehlt = Some(oz.clone());
-                        self.sprung = Some(Sprung::Oz(oz));
-                        Some(ListOut::Repaint)
-                    }
+                    Art::Befund(_) => match z.ziel? {
+                        Ziel::Position(oz) => {
+                            self.zeige(Ansicht::Lv);
+                            self.gewaehlt = Some(oz.clone());
+                            self.sprung = Some(Sprung::Oz(oz));
+                            Some(ListOut::Repaint)
+                        }
+                        Ziel::Waehlen(el) => Some(ListOut::WaehlenIm(el)),
+                        Ziel::Bauteil(el) => {
+                            p.selected = vec![el];
+                            self.selected = p.selected.clone();
+                            Some(ListOut::Picking { selection: true })
+                        }
+                        Ziel::Kopf(f) => {
+                            self.kopf_offen = true;
+                            self.feld_oeffnen(f);
+                            self.clamp();
+                            Some(ListOut::Repaint)
+                        }
+                    },
                     _ => None,
                 }
             }
@@ -1238,7 +1281,7 @@ impl AvaView {
         }
         let linie = self.body_top() + HEAD_ROW * s;
         c.fill_rect(tx, linie, r - tx, s.max(1.0), u.sheet_rule);
-        if self.detail.is_none() {
+        if self.detail.is_none() && self.ansicht == Ansicht::Lv {
             regular.draw(
                 c,
                 HINWEIS,
@@ -1289,16 +1332,36 @@ impl AvaView {
                 c.fill_rect(tx - 8.0 * s, y, 3.0 * s, h, u.accent);
             }
             match z.art {
+                // Anfrage: je Summe genau eine leere Linie für den Bieter
+                // (Kosten B3)
                 Art::Titel => {
                     let base = y + h - 9.0 * s;
                     bold.draw(c, &z.oz, 12.0 * s, tx, base, u.sheet_text);
                     bold.draw(c, &z.text, 12.0 * s, tx + OZ_W * s, base, u.sheet_text);
-                    rechts(c, bold, &z.gp, 12.0 * s, r, base, u.sheet_text);
+                    if self.preise {
+                        rechts(c, bold, &z.gp, 12.0 * s, r, base, u.sheet_text);
+                    } else {
+                        leer_strich(c, r, base);
+                    }
                 }
                 Art::Untertitel => {
                     bold.draw(c, &z.oz, px, tx, base, u.sheet_text_dim);
                     bold.draw(c, &z.text, px, tx + OZ_W * s, base, u.sheet_text_dim);
-                    rechts(c, bold, &z.gp, px, r, base, u.sheet_text_dim);
+                    if self.preise {
+                        rechts(c, bold, &z.gp, px, r, base, u.sheet_text_dim);
+                    } else {
+                        leer_strich(c, r, base);
+                    }
+                }
+                // Titelsumme in der Zusammenstellung: nur der Betrag
+                Art::Position if self.ansicht == Ansicht::Zusammenstellung => {
+                    regular.draw(c, &z.oz, px, tx, base, u.sheet_text);
+                    regular.draw(c, &z.text, px, tx + OZ_W * s, base, u.sheet_text);
+                    if self.preise {
+                        rechts(c, regular, &z.gp, px, r, base, u.sheet_text);
+                    } else {
+                        leer_strich(c, r, base);
+                    }
                 }
                 Art::Position => {
                     regular.draw(c, &z.oz, px, tx, base, u.sheet_text);
@@ -1327,7 +1390,11 @@ impl AvaView {
                 }
                 Art::Summe => {
                     regular.draw(c, &z.text, px, tx + OZ_W * s, base, u.sheet_text);
-                    rechts(c, bold, &z.gp, px, r, base, u.sheet_text);
+                    if self.preise {
+                        rechts(c, bold, &z.gp, px, r, base, u.sheet_text);
+                    } else {
+                        leer_strich(c, r, base);
+                    }
                 }
                 Art::Leise => {
                     regular.draw(c, &z.text, 10.5 * s, tx + OZ_W * s, base, u.sheet_text_dim);
@@ -1342,11 +1409,15 @@ impl AvaView {
                     let platz = r - tx - 140.0 * s;
                     let text = sk_ui::widgets::ellipsize(Some(regular), &z.text, px, platz);
                     regular.draw(c, &text, px, tx + 16.0 * s, base, u.sheet_text);
-                    if z.ziel.is_some() {
+                    if let Some(ziel) = &z.ziel {
                         let hot = self.hot == Some(Hot::Zeile(i));
                         let col = crate::cards::verweis(u, hot);
-                        rechts(c, bold, "zur Position", 10.5 * s, r, base, col);
+                        rechts(c, bold, ziel.verweis(), 10.5 * s, r, base, col);
                     }
+                }
+                Art::Erfuellt => {
+                    Self::paint_punkt(c, (tx + 4.0 * s, y + h * 0.5), 3.5 * s, u.text_same);
+                    regular.draw(c, &z.text, px, tx + 16.0 * s, base, u.sheet_text);
                 }
             }
         }
@@ -1529,6 +1600,11 @@ fn betrag(c: Option<Cent>) -> String {
     c.map_or_else(String::new, euro)
 }
 
+/// Satz unter der Zusammenstellung, wenn eine Position keinen Preis hat
+/// (Bildschirm und CSV, Kosten A2).
+pub const UNVOLLSTAENDIG: &str =
+    "Unvollständig: Nicht jede Position hat einen Preis (siehe Prüfen).";
+
 /// Tabelle des LV: Titel mit Summe, Untertitel, Positionen. Leere Titel
 /// stehen nur im Baum.
 pub fn lv_zeilen(lv: &Lv) -> Vec<Zeile> {
@@ -1601,18 +1677,14 @@ pub fn zusammenstellung(lv: &Lv) -> Vec<Zeile> {
         v.push(x);
     }
     if z.unvollstaendig {
-        v.push(Zeile::neu(
-            Art::Leise,
-            "",
-            "Unvollständig: Nicht jede Position hat einen Preis (siehe Prüfen).",
-        ));
+        v.push(Zeile::neu(Art::Leise, "", UNVOLLSTAENDIG));
     }
     v
 }
 
 /// Prüfen: offene Punkte zuerst, dann Hinweise; ein Punkt mit Position
 /// führt dorthin.
-pub fn pruefen(lv: &Lv) -> Vec<Zeile> {
+pub fn pruefen(m: &Model, lv: &Lv) -> Vec<Zeile> {
     let (offen, hinweise): (Vec<_>, Vec<_>) = lv
         .befunde
         .iter()
@@ -1629,14 +1701,58 @@ pub fn pruefen(lv: &Lv) -> Vec<Zeile> {
         ));
         for b in liste {
             let mut z = Zeile::neu(Art::Befund(b.schwere), "", b.satz.clone());
-            if let Ort::Position(oz) = &b.ort {
-                z.ziel = Some(oz.clone());
-            }
+            z.ziel = match &b.ort {
+                Ort::Position(oz) => Some(Ziel::Position(oz.clone())),
+                Ort::Bauteil(g) => {
+                    m.elements()
+                        .iter()
+                        .find(|(_, e)| e.guid == *g)
+                        .map(|(el, _)| {
+                            if b.satz.starts_with("Ohne Bauleistung") {
+                                Ziel::Waehlen(el)
+                            } else {
+                                Ziel::Bauteil(el)
+                            }
+                        })
+                }
+                Ort::Kopf => kopf::Feld::ALLE
+                    .into_iter()
+                    .find(|f| b.satz == format!("{} fehlt", f.label()))
+                    .map(Ziel::Kopf),
+                _ => None,
+            };
             v.push(z);
         }
     }
-    if v.is_empty() {
-        v.push(Zeile::neu(Art::Leise, "", "Nichts zu prüfen."));
+    // Erfüllte Punkte in Grün (soll-ka-4d); Erledigtes wandert von selbst
+    // hierher
+    let hat = |f: &dyn Fn(&sk_cost::Befund) -> bool| lv.befunde.iter().any(f);
+    let mit_preisen = lv.kopf.art == "mit Preisen";
+    let erfuellt = [
+        (
+            !hat(&|b| {
+                b.satz.starts_with("Ohne Bauleistung") || b.satz.starts_with("Nicht ausgeschrieben")
+            }),
+            "Alle Bauteile haben eine Bauleistung",
+        ),
+        (
+            mit_preisen && !hat(&|b| b.satz.starts_with("Preis fehlt")),
+            "Alle Positionen haben einen Preis",
+        ),
+        (!hat(&|b| b.regel == 79), "Kurztexte höchstens 70 Zeichen"),
+        (
+            mit_preisen && !hat(&|b| b.satz.starts_with("Preisstand")),
+            "Preise jünger als 12 Monate",
+        ),
+        (
+            !hat(&|b| b.ort == Ort::Kopf && b.satz.ends_with(" fehlt")),
+            "Kopf vollständig",
+        ),
+    ];
+    for (ok, text) in erfuellt {
+        if ok {
+            v.push(Zeile::neu(Art::Erfuellt, "", text));
+        }
     }
     v
 }
@@ -1720,6 +1836,19 @@ pub fn detail(m: &Model, kat: &Katalog, lv: &Lv, oz: &str) -> Option<Detail> {
         anteile.push(("Preis".into(), "ohne Preise (Anfrage)".into()));
     }
     preis.push(format!("Gewerk {gewerk}"));
+    let kg_text = if p.kg_teile.is_empty() {
+        kg_name(p.kg)
+    } else {
+        // Kosten B2: „Kostengruppen 322, 351 (nach Bauteilen)“
+        let nrn: Vec<String> = p.kg_teile.iter().map(|(k, _)| k.to_string()).collect();
+        preis.push(format!("Kostengruppen {} (nach Bauteilen)", nrn.join(", ")));
+        let teile: Vec<String> = p
+            .kg_teile
+            .iter()
+            .map(|(k, m)| format!("{k}: {} {einheit}", menge_zahl(*m)))
+            .collect();
+        teile.join(" · ")
+    };
     if p.kg.is_some() {
         preis.push(format!("Kostengruppe {}", kg_name(p.kg)));
     }
@@ -1731,7 +1860,7 @@ pub fn detail(m: &Model, kat: &Katalog, lv: &Lv, oz: &str) -> Option<Detail> {
         ("Positionsart".into(), p.art.name().to_string()),
         ("Einheit".into(), einheit.to_string()),
         ("Gewerk".into(), gewerk),
-        ("Kostengruppe".into(), kg_name(p.kg)),
+        ("Kostengruppe".into(), kg_text),
         ("Bauleistung".into(), bauleistung),
         ("Bauteile".into(), elemente.len().to_string()),
     ];

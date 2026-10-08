@@ -344,6 +344,9 @@ pub struct KostenView {
     /// es etwas zu wählen gibt.
     wahl: Option<WahlBlatt>,
     wahl_wunsch: Option<(usize, ElementId)>,
+    /// Aus dem Prüfen des AVA: zur grauen Zeile dieses Bauteils und dort
+    /// „Bauleistung wählen …“ öffnen, sobald das Blatt steht.
+    wahl_nach: Option<ElementId>,
     waehlbar: HashSet<usize>,
     waehlbar_von: Option<(*const Kostenblatt, *const Katalog)>,
     /// Lohnfeld (Hinweiskarte oder Blatt an der Kachel) und sein Öffnen
@@ -399,6 +402,7 @@ impl KostenView {
             abgleich_netto_von: None,
             wahl: None,
             wahl_wunsch: None,
+            wahl_nach: None,
             waehlbar: HashSet::new(),
             waehlbar_von: None,
             lohn: None,
@@ -645,6 +649,13 @@ impl KostenView {
             }
             changed = true;
         }
+        if let Some(el) = self.wahl_nach.take() {
+            if let Some(j) = blatt.ohne.iter().position(|z| z.element == el) {
+                self.springe(|z| z.ohne == Some(j));
+                self.wahl_wunsch = Some((j, el));
+                changed = true;
+            }
+        }
         if let Some((j, el)) = self.wahl_wunsch.take() {
             let z = blatt.ohne.get(j).filter(|z| z.element == el);
             let a = z.and_then(|z| sk_cost::wahl::auswahl(s.model(), kat, z));
@@ -666,6 +677,13 @@ impl KostenView {
             }
         }
         changed
+    }
+
+    /// Zur grauen Zeile des Bauteils `el` und dort „Bauleistung wählen …“
+    /// öffnen (Prüfen im AVA, Bedienbarkeit 12.2); wirkt beim nächsten
+    /// `sync`.
+    pub fn waehlen_fuer(&mut self, el: ElementId) {
+        self.wahl_nach = Some(el);
     }
 
     /// Text der Abgleichzeile, wenn sie steht.
@@ -2247,7 +2265,7 @@ impl KostenView {
                     zeile(&[
                         &z.gruppe,
                         &kennung,
-                        &p.oz,
+                        &csv_text(&p.oz),
                         &p.kurz,
                         &menge(m, p.einheit),
                         p.einheit.zeichen(),
@@ -2323,6 +2341,17 @@ fn col_menge(x0: f32, cw: f32) -> f32 {
 
 fn col_ep(x0: f32, cw: f32) -> f32 {
     x0 + cw * 0.82
+}
+
+/// Zelle, die eine Tabellenkalkulation als Text lesen soll: OZ wie
+/// „01.02“ oder „01.0010“ würde das deutsche Excel sonst zum Datum oder zur
+/// Zahl machen. `="01.02"` bleibt Text; leer bleibt leer.
+pub(crate) fn csv_text(s: &str) -> String {
+    if s.is_empty() {
+        String::new()
+    } else {
+        format!("=\"{}\"", s.replace('"', "\"\""))
+    }
 }
 
 fn csv_feld(s: &str) -> String {
@@ -2453,7 +2482,8 @@ mod abnahme_ka2 {
         let mut s = haus();
         v.sync(&mut s, None);
         let csv = String::from_utf8(v.csv("Standardhaus", "08.10.2026")).unwrap();
-        assert!(csv.contains(";2.01.0020;WDVS"), "{csv}");
+        // OZ als Text für Excel: ="2.01.0020"
+        assert!(csv.contains(";\"=\"\"2.01.0020\"\"\";WDVS"), "{csv}");
         let mut oz: Vec<&str> = csv
             .lines()
             .skip_while(|l| !l.starts_with("Gliederung;"))

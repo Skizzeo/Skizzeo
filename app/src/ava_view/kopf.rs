@@ -1,6 +1,7 @@
 //! Kopfzeile des Blatts AVA (KA-4c, paket-ka4 §4): „Kopf und
 //! Vorbemerkungen“ zum Aufklappen mit den Feldern Bauvorhaben, Bauherr und
-//! Aufsteller, „Bauherr fehlt“ und „Mehr“ › „Geschosse als Untertitel“.
+//! Aufsteller, „Bauherr fehlt“ bzw. „Aufsteller fehlt“ und „Mehr“ ›
+//! „Geschosse als Untertitel“.
 
 use super::*;
 use crate::kosten_view::Schreiben;
@@ -20,7 +21,6 @@ const RECHTS_X: f32 = 460.0;
 const MAX_ZEICHEN: usize = 200;
 
 pub const KOPF: &str = "Kopf und Vorbemerkungen";
-pub const FEHLT: &str = "Bauherr fehlt";
 pub const MEHR: &str = "Mehr";
 pub const UNTERTITEL: &str = "Geschosse als Untertitel";
 
@@ -114,6 +114,21 @@ impl AvaView {
             .is_some_and(|p| p.client.trim().is_empty())
     }
 
+    /// Das Kopffeld hinter dem Verweis „… fehlt“: zuerst der Bauherr, dann
+    /// der Aufsteller (weder Verfasser noch Firmenkatalog, Kosten A1).
+    pub(super) fn fehlt(&self) -> Option<Feld> {
+        if self.bauherr_fehlt() {
+            return Some(Feld::Bauherr);
+        }
+        let lv = self.lv.as_deref()?;
+        (self.projekt.is_some() && lv.kopf.aufsteller.is_none()).then_some(Feld::Aufsteller)
+    }
+
+    /// „Bauherr fehlt“ bzw. „Aufsteller fehlt“.
+    pub(super) fn fehlt_text(&self) -> Option<String> {
+        self.fehlt().map(|f| format!("{} fehlt", f.label()))
+    }
+
     /// Ein Feld im Kopf nimmt Tasten und Zeichen.
     pub fn feld_offen(&self) -> bool {
         self.feld.is_some()
@@ -127,8 +142,8 @@ impl AvaView {
         let px = 10.5 * s;
         let kw = 14.0 * s + bold.width(KOPF, px) + 4.0 * s;
         let kopf = (x0, y, kw, h);
-        let fehlt = self.bauherr_fehlt().then(|| {
-            let fw = bold.width(FEHLT, 10.0 * s) + 8.0 * s;
+        let fehlt = self.fehlt_text().map(|f| {
+            let fw = bold.width(&f, 10.0 * s) + 8.0 * s;
             (x0 + kw + 20.0 * s, y, fw, h)
         });
         let (lx, _) = self.schalter_mit(t, regular, bold);
@@ -209,7 +224,7 @@ impl AvaView {
             }
             Hot::BauherrFehlt => {
                 self.kopf_offen = true;
-                self.feld_oeffnen(Feld::Bauherr);
+                self.feld_oeffnen(self.fehlt().unwrap_or(Feld::Bauherr));
                 self.clamp();
                 Some(ListOut::Repaint)
             }
@@ -239,7 +254,7 @@ impl AvaView {
         }
     }
 
-    fn feld_oeffnen(&mut self, f: Feld) {
+    pub(super) fn feld_oeffnen(&mut self, f: Feld) {
         let wert = self.projekt.as_ref().map_or("", |p| f.wert(p));
         self.feld = Some((f, TextEdit::new(wert)));
     }
@@ -338,10 +353,10 @@ impl AvaView {
             let y = mitte(z.kopf, bold, px) + 2.0 * s;
             c.fill_rect(z.kopf.0 + 14.0 * s, y, w, s.max(1.0), u.sheet_text_dim);
         }
-        if let Some(r) = z.fehlt {
-            bold.draw(c, FEHLT, 10.0 * s, r.0, mitte(r, bold, 10.0 * s), u.accent);
+        if let (Some(r), Some(f)) = (z.fehlt, self.fehlt_text()) {
+            bold.draw(c, &f, 10.0 * s, r.0, mitte(r, bold, 10.0 * s), u.accent);
             if self.hot == Some(Hot::BauherrFehlt) {
-                let w = bold.width(FEHLT, 10.0 * s);
+                let w = bold.width(&f, 10.0 * s);
                 let y = mitte(r, bold, 10.0 * s) + 2.0 * s;
                 c.fill_rect(r.0, y, w, s.max(1.0), u.accent);
             }
@@ -403,9 +418,10 @@ impl AvaView {
                     let (text, col) = if wert.is_empty() {
                         match (f, lv) {
                             (Feld::Bauvorhaben, Some(lv)) => (self.bauvorhaben(lv), u.sheet_hint),
-                            (Feld::Aufsteller, Some(lv)) => {
-                                (lv.kopf.aufsteller.clone().unwrap_or_default(), u.sheet_hint)
-                            }
+                            (Feld::Aufsteller, Some(lv)) => match lv.kopf.aufsteller.clone() {
+                                Some(a) => (a, u.sheet_hint),
+                                None => ("fehlt".to_string(), u.accent),
+                            },
                             (Feld::Bauherr, _) => ("fehlt".to_string(), u.accent),
                             _ => (String::new(), u.sheet_hint),
                         }

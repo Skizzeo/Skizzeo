@@ -152,7 +152,7 @@ fn fall_3_geschosse_als_untertitel() {
         .iter()
         .map(|u| u.name.as_str())
         .collect();
-    assert_eq!(u_namen, ["Gründung", "Erdgeschoss", "Obergeschoss"]);
+    assert_eq!(u_namen, ["Fundament", "Erdgeschoss", "Obergeschoss"]);
     // ungerundet gleich: Ansatz des Kostenblatts
     let ganz = ohne.titel[0]
         .positionen
@@ -626,8 +626,50 @@ fn kostengruppe_wie_im_kostenblatt() {
             kgs.dedup();
             let soll = if kgs.len() == 1 { kgs[0] } else { None };
             assert_eq!(p.kg, soll, "{} {}", p.oz, p.kurztext);
-            gesehen += usize::from(p.kurztext.contains("Planstein"));
+            if p.kurztext.contains("Planstein") {
+                // Kosten B1: die KG der Bauleistung gilt auch im Blatt
+                assert_eq!(p.kg, Some(330), "{}", p.kurztext);
+                gesehen += 1;
+            }
         }
     }
     assert!(gesehen > 0);
+}
+
+/// Kosten B2: Betonstahl an Sohlplatte, Frostschürze und Decke hat keine
+/// gemeinsame KG; die Position nennt die Menge je KG.
+#[test]
+fn verschiedene_kostengruppen_mit_mengen() {
+    let m = rh1();
+    let k = lesen::werk(&m);
+    let s = qto::schedule(&m);
+    let b = lesen::kosten(&m, &s, &k, &Umfang::projekt());
+    let rohbau = k
+        .lose
+        .iter()
+        .find(|l| l.parent.is_none() && l.name == "Rohbau")
+        .expect("Los Rohbau");
+    let w = LvWahl {
+        los: rohbau.guid,
+        ..wahl(false, true)
+    };
+    let lv = lv_aus(&m, &b, &k, &w);
+    let p = lv
+        .titel
+        .iter()
+        .flat_map(|t| &t.positionen)
+        .find(|p| p.kurztext.contains("Betonstahl"))
+        .expect("Betonstahl");
+    assert_eq!(p.kg, None);
+    let kgs: Vec<u16> = p.kg_teile.iter().map(|t| t.0).collect();
+    assert!(kgs.len() > 1 && kgs.contains(&351), "{kgs:?}");
+    assert!(kgs.windows(2).all(|w| w[0] < w[1]));
+    // Einheitliche KG: keine Teile
+    let b10 = lv
+        .titel
+        .iter()
+        .flat_map(|t| &t.positionen)
+        .find(|p| p.kg.is_some())
+        .expect("Position mit einer KG");
+    assert!(b10.kg_teile.is_empty());
 }

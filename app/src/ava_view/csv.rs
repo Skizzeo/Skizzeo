@@ -2,6 +2,7 @@
 //! rechts und die CSV des gewählten Loses, Werte wie in der Anzeige.
 
 use super::*;
+use crate::kosten_view::csv_text;
 
 const BUTTON_H: f32 = 26.0;
 const BUTTON_PAD: f32 = 12.0;
@@ -138,7 +139,7 @@ impl AvaView {
         zeile(&[]);
         zeile(&["OZ", "Kurztext", "Menge", "ME", "EP", "GP"]);
         for t in lv.titel.iter().filter(|t| !t.positionen.is_empty()) {
-            zeile(&[&t.nr, &t.name]);
+            zeile(&[&csv_text(&t.nr), &t.name]);
             let mut uu = None;
             let summe_uu = |uu: Option<u32>, zeile: &mut dyn FnMut(&[&str])| {
                 if let Some(u) = t.untertitel.iter().find(|u| Some(u.nr) == uu) {
@@ -151,11 +152,11 @@ impl AvaView {
                     summe_uu(uu, &mut zeile);
                     uu = p.untertitel;
                     if let Some(u) = t.untertitel.iter().find(|u| Some(u.nr) == uu) {
-                        zeile(&[&u.oz, &u.name]);
+                        zeile(&[&csv_text(&u.oz), &u.name]);
                     }
                 }
                 zeile(&[
-                    &p.oz,
+                    &csv_text(&p.oz),
                     &p.kurztext,
                     &menge_zahl(p.menge).replace('.', ""),
                     gaeb(p.einheit),
@@ -164,14 +165,19 @@ impl AvaView {
                 ]);
             }
             summe_uu(uu, &mut zeile);
-            let text = format!("Summe {} {}", t.nr, t.name);
+            // Kosten A2: eine Summe ohne alle Preise nicht still zu niedrig
+            let text = if t.unvollstaendig && self.preise {
+                format!("Summe {} {} (unvollständig)", t.nr, t.name)
+            } else {
+                format!("Summe {} {}", t.nr, t.name)
+            };
             zeile(&["", &text, "", "", "", &zahl(t.summe)]);
         }
         zeile(&[]);
         let z = &lv.zusammenstellung;
         zeile(&["Zusammenstellung"]);
         for (nr, name, summe) in &z.zeilen {
-            zeile(&[nr, name, "", "", "", &zahl(*summe)]);
+            zeile(&[&csv_text(nr), name, "", "", "", &zahl(*summe)]);
         }
         let satz = z.mwst_satz.text().replace('.', ",");
         zeile(&["", "Summe netto", "", "", "", &zahl(z.netto)]);
@@ -181,6 +187,9 @@ impl AvaView {
         }
         zeile(&["", &format!("MwSt. {satz} %"), "", "", "", &zahl(z.mwst)]);
         zeile(&["", "Summe brutto", "", "", "", &zahl(z.brutto)]);
+        if z.unvollstaendig {
+            zeile(&["", UNVOLLSTAENDIG]);
+        }
         out.into_bytes()
     }
 }

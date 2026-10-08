@@ -55,7 +55,8 @@ pub struct Ansatz {
     pub nummer: String,
     pub geschoss: StoreyId,
     pub gebaeude: Option<BuildingId>,
-    /// Kostengruppe (Folgepositionen: die der Quelle, Regel 95).
+    /// Kostengruppe: die der Bauleistung, sonst die des Bauteils
+    /// (Folgepositionen: des auslösenden Bauteils, Regel 95).
     pub kg: Option<u16>,
     /// Menge in der kleinsten Einheit (mm, mm², mm³, g), ganzzahlig.
     pub menge: i128,
@@ -857,8 +858,10 @@ pub fn kosten_mit(
                     l.einheit,
                     Some(l.gewerk),
                     w.preis_fehlt,
+                    // KG der Bauleistung, sonst die des Bauteils (wie im LV)
                     Ansatz {
                         auflager,
+                        kg: l.kg.or(r.kg),
                         ..ansatz(menge)
                     },
                     w.dicke,
@@ -896,6 +899,7 @@ pub fn kosten_mit(
                         *pf,
                         Ansatz {
                             aus: Some(l.guid),
+                            kg: fl.kg.or(r.kg),
                             ..ansatz(menge)
                         },
                         Dez::NULL,

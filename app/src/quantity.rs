@@ -441,8 +441,16 @@ impl QuantityWindow {
         scrolling || flashing || pill
     }
 
-    fn list_out(&mut self, o: Option<ListOut>) -> Option<Out> {
+    fn list_out(&mut self, o: Option<ListOut>, t: &Theme) -> Option<Out> {
         match o? {
+            ListOut::WaehlenIm(el) => {
+                self.waehlen(Blatt::Kosten, t);
+                if let Some(k) = self.kosten.as_mut() {
+                    k.waehlen_fuer(el);
+                }
+                self.dirty = true;
+                None
+            }
             ListOut::Repaint => {
                 self.dirty = true;
                 None
@@ -550,7 +558,7 @@ impl QuantityWindow {
                     Blatt::Kosten => self.kosten.as_mut()?.mouse_move(t, fonts, p, x, y),
                     Blatt::Ava => self.ava.as_mut()?.mouse_move(t, fonts, p, x, y),
                 };
-                self.list_out(o)
+                self.list_out(o, t)
             }
             Event::MouseLeave => {
                 if self.title.hover.take().is_some() {
@@ -564,7 +572,7 @@ impl QuantityWindow {
                     Blatt::Kosten => self.kosten.as_mut()?.mouse_leave(p),
                     Blatt::Ava => self.ava.as_mut()?.mouse_leave(p),
                 };
-                self.list_out(o)
+                self.list_out(o, t)
             }
             Event::MouseDown {
                 button: MouseButton::Left,
@@ -586,7 +594,7 @@ impl QuantityWindow {
                     Blatt::Kosten => self.kosten.as_mut()?.mouse_down(t, fonts, p, (x, y), mods),
                     Blatt::Ava => self.ava.as_mut()?.mouse_down(t, fonts, p, (x, y), mods),
                 };
-                self.list_out(o)
+                self.list_out(o, t)
             }
             Event::MouseUp {
                 button: MouseButton::Left,
@@ -610,7 +618,7 @@ impl QuantityWindow {
                     Blatt::Kosten => self.kosten.as_mut()?.mouse_up(t, fonts, x, y),
                     Blatt::Ava => self.ava.as_mut()?.mouse_up(t, fonts, x, y),
                 };
-                self.list_out(o)
+                self.list_out(o, t)
             }
             Event::Wheel { delta, .. } => {
                 // Kein ganzes Bild: `frame` verschiebt um den neuen Rollstand
@@ -622,11 +630,11 @@ impl QuantityWindow {
                     }
                     Blatt::Kosten => {
                         let o = self.kosten.as_mut()?.wheel(delta, t);
-                        self.list_out(o)
+                        self.list_out(o, t)
                     }
                     Blatt::Ava => {
                         let o = self.ava.as_mut()?.wheel(delta, t);
-                        self.list_out(o)
+                        self.list_out(o, t)
                     }
                 }
             }
@@ -649,11 +657,11 @@ impl QuantityWindow {
                 && self.kosten.as_ref().is_some_and(|k| k.blatt_offen()) =>
             {
                 let o = self.kosten.as_mut()?.key(t, key, mods)?;
-                self.list_out(o)
+                self.list_out(o, t)
             }
             Event::Text(ch) if self.blatt() == Blatt::Kosten => {
                 let o = self.kosten.as_mut()?.text(ch);
-                self.list_out(o)
+                self.list_out(o, t)
             }
             // Das Kopffeld im Blatt AVA ebenso
             Event::Key {
@@ -665,11 +673,11 @@ impl QuantityWindow {
                 && self.ava.as_ref().is_some_and(|a| a.feld_offen()) =>
             {
                 let o = self.ava.as_mut()?.key(key, mods);
-                self.list_out(o)
+                self.list_out(o, t)
             }
             Event::Text(ch) if self.blatt() == Blatt::Ava => {
                 let o = self.ava.as_mut()?.text(ch);
-                self.list_out(o)
+                self.list_out(o, t)
             }
             Event::Key {
                 key: Key::Delete,

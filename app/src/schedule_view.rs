@@ -208,6 +208,9 @@ pub enum ListOut {
     Repaint,
     /// Preisblatt im Reiter Kosten: über `Scene::kosten_folge` schreiben.
     Kosten(crate::kosten_view::Schreiben),
+    /// Aus dem Prüfen des AVA: Reiter Kosten, zur grauen Zeile dieses
+    /// Bauteils und „Bauleistung wählen …“ (Bedienbarkeit 12.2).
+    WaehlenIm(ElementId),
 }
 
 /// Nachrücken nach dem Löschen (H119): weggefallene Zeilen blenden in
