@@ -186,6 +186,38 @@ impl Wirkung {
     }
 
     /// Regel 97 als Sperre (paket-ka3a §3) gegen das Standardhaus.
+    /// Neue Grundlage ohne die Häuser neu zu lesen (nach dem Schreiben in
+    /// den Entwurf, KA-3b2): „vorher“ ist jetzt `firma`.
+    pub fn grundlage(&mut self, firma: &Library) {
+        for h in self.dieses.iter_mut().chain(self.haeuser.iter_mut()) {
+            h.vorher = h.rechnen(firma, &[]);
+            h.nachher = h.vorher;
+        }
+    }
+
+    /// Summe netto jedes lesbaren Referenzhauses mit `a` und mit `b`, dazu
+    /// seine Grundfläche (Vorschau, KA-3b3). Danach rechnet `rechnen` die
+    /// Wirkzeile neu.
+    pub fn vergleich(&mut self, a: &Library, b: &Library) -> Vec<(String, Cent, Cent, f64)> {
+        self.haeuser
+            .iter_mut()
+            .filter(|h| h.fehler.is_none())
+            .map(|h| {
+                let x = h.rechnen(a, &[]);
+                let y = h.rechnen(b, &[]);
+                (h.name.clone(), x, y, h.flaeche)
+            })
+            .collect()
+    }
+
+    /// Summe netto des ersten Referenzhauses (Standardhaus) mit `firma`.
+    pub fn erstes(&mut self, firma: &Library) -> Option<Cent> {
+        self.haeuser
+            .first_mut()
+            .filter(|h| h.fehler.is_none())
+            .map(|h| h.rechnen(firma, &[]))
+    }
+
     pub fn luecken(&self, k: &sk_cost::katalog::Katalog) -> Vec<sk_cost::Befund> {
         self.haeuser.first().map_or(Vec::new(), |h| {
             sk_cost::verwaltung::luecken(k, &h.m, &h.sched)

@@ -1473,6 +1473,81 @@ impl App {
         self.overlay_dirty = true;
     }
 
+    /// Verwaltung mit Kennwort (KA-3b2/3b3): Eingaben in den Entwurf
+    /// schreiben, eine Änderung oder den ganzen Entwurf verwerfen, freigeben.
+    fn verwaltung_entwurf(&mut self, out: &verwaltung::Out, schreiben: bool) {
+        let (Some(v), Some(c)) = (self.verwaltung.as_mut(), self.company.as_mut()) else {
+            return;
+        };
+        let h = sk_cost::Herkunft::jetzt(sk_cost::HerkunftArt::Manual);
+        if schreiben {
+            let ops = v.ops().to_vec();
+            match c.fuer_entwurf(&h, &ops) {
+                Ok(_) => v.entwurf_gespeichert(c),
+                Err(m) => {
+                    v.neu_grundlage(c);
+                    v.fehler(m.to_string());
+                }
+            }
+        }
+        if let Some(satz) = &out.satz_verwerfen {
+            match c.entwurf_satz_verwerfen(satz) {
+                Ok(()) => v.entwurf_gespeichert(c),
+                Err(m) => {
+                    v.neu_grundlage(c);
+                    v.vorschau_fehler(m.to_string());
+                }
+            }
+        }
+        if out.entwurf_verwerfen {
+            match c.entwurf_verwerfen() {
+                Ok(_) => v.entwurf_gespeichert(c),
+                Err(m) => {
+                    v.neu_grundlage(c);
+                    v.vorschau_fehler(m.to_string());
+                }
+            }
+        }
+        if out.freigeben {
+            match self.scene.freigeben(verwaltung::FREIGEGEBEN, c, &h) {
+                Ok(hinweis) => {
+                    let stand =
+                        sk_cost::lesen::firma_oder_werk(self.scene.model(), Some(c.library()))
+                            .firma_stand
+                            .unwrap_or(0);
+                    v.entwurf_gespeichert(c);
+                    v.freigegeben_als(stand);
+                    // Mit der Freigabe kann das Kennwort weg sein
+                    self.scene.rolle = self.rolle();
+                    self.overlay_dirty = true;
+                    self.upload_model();
+                    self.props_key = None;
+                    if let Some(text) = hinweis {
+                        self.renderer.set_overlay(OVERLAY_NOTICE, 0, 0, 0, 0, &[]);
+                        self.notice = Some(Notice {
+                            text,
+                            since: None,
+                            rect: (0.0, 0.0, 0.0, 0.0),
+                            time: NOTICE_TIME,
+                            catalog: false,
+                            error: false,
+                        });
+                    }
+                    self.quantity.dirty = true;
+                    self.redraw = true;
+                }
+                Err(m) => {
+                    if let Some(v) = self.verwaltung.as_mut() {
+                        if let Some(c) = &self.company {
+                            v.neu_grundlage(c);
+                        }
+                        v.vorschau_fehler(m.to_string());
+                    }
+                }
+            }
+        }
+    }
+
     /// Rolle dieser Sitzung (KA-3b1): mit Verwaltungskennwort Nutzer, bis
     /// es hier eingegeben ist; am Einzelplatz jeder Administrator.
     fn rolle(&self) -> sk_cost::Rolle {
@@ -1496,6 +1571,10 @@ impl App {
         }
         self.ui.hover = None;
         self.title.hover = None;
+        // Mit Kennwort zeigt die Verwaltung den Entwurf, wie er jetzt ist
+        if let Some(c) = self.company.as_mut() {
+            c.entwurf_laden();
+        }
         let mut v = verwaltung::Verwaltung::open(&self.scene, self.company.as_ref(), wahl);
         v.set_haus_name(&self.doc.name());
         if self.rolle() == sk_cost::Rolle::Nutzer {
@@ -1611,6 +1690,7 @@ impl App {
             }
             self.prefs_dirty = true;
         }
+        let mut entwurf = out.entwurf;
         if let Some(stand) = out.zurueck {
             let r = match self.company.as_ref() {
                 Some(c) => c.umkehr(self.scene.model(), stand),
@@ -1618,7 +1698,12 @@ impl App {
             };
             if let Some(v) = self.verwaltung.as_mut() {
                 v.zuruecknehmen(stand, r.map_err(|m| m.to_string()));
+                entwurf |= v.entwurf_faellig();
             }
+            self.prefs_dirty = true;
+        }
+        if entwurf || out.freigeben || out.entwurf_verwerfen || out.satz_verwerfen.is_some() {
+            self.verwaltung_entwurf(&out, entwurf);
             self.prefs_dirty = true;
         }
         if out.closed {

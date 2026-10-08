@@ -237,6 +237,52 @@ fn text(abschnitt: &str, id: &str, f: &Katalog, p: &Katalog) -> (String, bool) {
     }
 }
 
+/// Die Sätze aus `saetze`, die dieses Haus als eigene Abweichung hält (Regel
+/// 89), deren Zeile aber jetzt gleich der Firma ist, bei einer Bauleistung
+/// samt Stoffanteilen und Folgepositionen. Nach „Freigeben“ (KA-3b3) ist so
+/// ein eigener Wert der Firmenwert: `AbweichungZuruecknehmen` löst dann nur
+/// den Vermerk, und das Haus folgt späteren Firmenänderungen wieder.
+pub fn eigen_wie_firma(m: &Model, firma: Option<&Library>, saetze: &[SatzId]) -> Vec<SatzId> {
+    let Some((_, bezug, _, _)) = firma_bezug(m, firma) else {
+        return Vec::new();
+    };
+    let projekt = m.ext_store();
+    let markiert: HashSet<&str> = projekt
+        .section("origin")
+        .filter(|r| projektherkunft(&r.line))
+        .filter_map(|r| r.id.as_deref())
+        .collect();
+    let zeile = |s: &ExtStore, a: &str, id: &str| {
+        s.section(a)
+            .find(|r| r.id.as_deref() == Some(id))
+            .map(|r| r.line.clone())
+    };
+    // Stoffanteile und Folgepositionen einer Bauleistung, je Seite
+    let teile = |s: &ExtStore, g: &str| -> BTreeMap<(String, String), String> {
+        ["svcpart", "svcfollow"]
+            .iter()
+            .flat_map(|a| s.section(a).map(move |r| (*a, r)))
+            .filter(|(_, r)| {
+                crate::zeile::zerlegen(&r.line)
+                    .is_some_and(|z| z.paare.iter().any(|(k, v)| k == "service" && v == g))
+            })
+            .filter_map(|(a, r)| Some(((a.to_string(), r.id.clone()?), r.line.clone())))
+            .collect()
+    };
+    saetze
+        .iter()
+        .filter(|s| markiert.contains(s.kennung.as_str()))
+        .filter(|s| {
+            let gleich = zeile(projekt, s.abschnitt, &s.kennung)
+                .is_some_and(|p| Some(p) == zeile(&bezug, s.abschnitt, &s.kennung));
+            gleich
+                && (s.abschnitt != "service"
+                    || teile(projekt, &s.kennung) == teile(&bezug, &s.kennung))
+        })
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

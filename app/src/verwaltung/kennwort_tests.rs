@@ -187,7 +187,10 @@ fn kennwort_entfernen() {
     v.handle(&taste(Key::Enter), &mut cx);
     v.handle(&taste(Key::Enter), &mut cx);
     assert!(matches!(v.ops(), [Op::KennwortSetzen { pw }] if pw.ist_leer()));
+    // Mit Kennwort kommt das in den Entwurf; erst die Freigabe entfernt es
     s.fuer_firma(STEP, &mut c, &h(), v.ops()).unwrap();
+    assert!(sk_cost::verwaltung::hat_kennwort(c.library()));
+    s.freigeben(super::FREIGEGEBEN, &mut c, &h()).unwrap();
     assert!(!sk_cost::verwaltung::hat_kennwort(c.library()));
     let mut salze = Vec::new();
     for _ in 0..2 {

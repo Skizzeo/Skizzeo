@@ -363,19 +363,19 @@ impl Verwaltung {
             }
             Knoten::Haeuser => self.haeuser(&mut b),
             Knoten::Protokoll => {
-                let n = sk_cost::verwaltung::protokoll(&self.vorher).len();
+                let n = sk_cost::verwaltung::protokoll(self.freigegeben()).len();
                 let unter = match n {
                     0 => "Noch keine Änderung".to_string(),
                     1 => "Eine Änderung".to_string(),
                     n => format!("{n} Änderungen"),
                 };
                 let y = b.kopf("Protokoll", &unter);
-                b.absatz(
-                    0.0,
-                    y,
-                    "Jedes OK schreibt einen neuen Stand des Firmenkatalogs. Um eine Änderung zurückzunehmen, wähle ihren Stand und klicke „Diese Änderung zurücknehmen“. Gespeicherte Häuser behalten ihre Werte und zeigen oben „Für neue Häuser gilt …“.",
-                    Farbe::Dim,
-                );
+                let satz = if self.freigabe.is_some() {
+                    "Jedes „Freigeben“ schreibt einen neuen Stand des Firmenkatalogs. Um eine Änderung zurückzunehmen, wähle ihren Stand und klicke „Diese Änderung zurücknehmen“; das kommt in den Entwurf. Gespeicherte Häuser behalten ihre Werte und zeigen oben „Für neue Häuser gilt …“."
+                } else {
+                    "Jedes OK schreibt einen neuen Stand des Firmenkatalogs. Um eine Änderung zurückzunehmen, wähle ihren Stand und klicke „Diese Änderung zurücknehmen“. Gespeicherte Häuser behalten ihre Werte und zeigen oben „Für neue Häuser gilt …“."
+                };
+                b.absatz(0.0, y, satz, Farbe::Dim);
             }
             Knoten::Papierkorb => {
                 let n = k.artikel.iter().filter(|a| a.retired).count()
@@ -633,7 +633,14 @@ impl Verwaltung {
             sk_cost::Op::KennwortSetzen { pw } => Some(pw.ist_leer()),
             _ => None,
         });
+        // Mit Kennwort steht eine Änderung erst im Entwurf (KA-3b2)
+        let im_entwurf = self
+            .freigabe
+            .as_ref()
+            .is_some_and(|f| f.saetze.iter().any(|s| s.abschnitt == "catalog"));
         let satz = match (geplant, gesetzt) {
+            (None, true) if im_entwurf => "Im Entwurf geändert: Das neue Kennwort gilt nach „Freigeben“, bis dahin das bisherige.",
+            (None, false) if im_entwurf => "Im Entwurf entfernt: Nach „Freigeben“ arbeitet Skizzeo wieder als Einzelplatz.",
             (Some(true), _) => "Wird mit OK entfernt: Danach arbeitet Skizzeo wieder als Einzelplatz.",
             (Some(false), _) => "Wird mit OK gesetzt.",
             (None, true) => "Gesetzt: Änderungen sammeln sich in einem Entwurf; die anderen Plätze sehen sie erst nach „Freigeben“.",
@@ -1257,8 +1264,9 @@ impl Verwaltung {
     }
 
     fn stand(&self, b: &mut Bau, n: u32) {
-        // Das Protokoll beim Öffnen: gesammelte Änderungen sind noch kein Stand
-        let k = &self.vorher;
+        // Das Protokoll beim Öffnen: gesammelte Änderungen sind noch kein Stand,
+        // auch nicht der Entwurf
+        let k = self.freigegeben();
         let st = sk_cost::verwaltung::protokoll(k);
         let Some(s) = st.iter().find(|s| s.stand == n) else {
             self.fehlt(b);
@@ -1332,12 +1340,12 @@ impl Verwaltung {
                 Aktion::Zuruecknehmen(n),
             );
             y += ABSTAND + 8.0;
-            b.absatz(
-                0.0,
-                y,
-                "Setzt die alten Werte dieses Stands wieder ein. Mit OK entsteht daraus ein neuer Stand; dieser hier bleibt im Protokoll.",
-                Farbe::Dim,
-            );
+            let satz = if self.freigabe.is_some() {
+                "Setzt die alten Werte dieses Stands in den Entwurf. Mit „Freigeben“ entsteht daraus ein neuer Stand; dieser hier bleibt im Protokoll."
+            } else {
+                "Setzt die alten Werte dieses Stands wieder ein. Mit OK entsteht daraus ein neuer Stand; dieser hier bleibt im Protokoll."
+            };
+            b.absatz(0.0, y, satz, Farbe::Dim);
         }
     }
 }

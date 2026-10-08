@@ -445,6 +445,10 @@ fn nutzersaetze_sauber() {
     for t in crate::verwaltung::kennwort_saetze() {
         dazu("Kennwort", t);
     }
+    // Entwurf und Freigabe (KA-3b2/3b3)
+    for t in crate::verwaltung::entwurf_saetze() {
+        dazu("Entwurf", t);
+    }
 
     // Abgleichzeile: ein Wert, mehrere Werte
     let (mut c, _) = Company::laden(&d.join("abgleich").join("firmenkatalog.szk"), true);
@@ -524,6 +528,9 @@ fn nutzersaetze_sauber() {
     fest.extend(
         [
             crate::catalog::GESPERRT,
+            crate::catalog::MIT_KENNWORT,
+            crate::catalog::IM_ENTWURF,
+            crate::catalog::ENTWURF_GEAENDERT,
             crate::flush_pick::CANCELLED,
             crate::NICHTS_GEAENDERT,
         ]

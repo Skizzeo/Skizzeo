@@ -2235,7 +2235,19 @@ impl Scene {
         herkunft: &sk_cost::Herkunft,
         ops: &[sk_cost::Op],
     ) -> Result<Option<crate::meldung::Meldung>, crate::meldung::Meldung> {
-        self.fuer_firma_mit(label, firma, herkunft, ops, None)
+        self.fuer_firma_mit(label, firma, herkunft, ops, None, false)
+    }
+
+    /// „Freigeben als Stand n+1“ aus der Vorschau der Verwaltung (KA-3b3,
+    /// [`crate::catalog::Company::freigeben`]); dieses Haus zieht nach wie
+    /// bei [`Scene::fuer_firma`].
+    pub fn freigeben(
+        &mut self,
+        label: &'static str,
+        firma: &mut crate::catalog::Company,
+        herkunft: &sk_cost::Herkunft,
+    ) -> Result<Option<crate::meldung::Meldung>, crate::meldung::Meldung> {
+        self.fuer_firma_mit(label, firma, herkunft, &[], None, true)
     }
 
     /// Wie [`Scene::fuer_firma`], aber dieses Haus übernimmt den gewählten
@@ -2254,11 +2266,12 @@ impl Scene {
     ) -> Result<Option<crate::meldung::Meldung>, crate::meldung::Meldung> {
         let fk = sk_cost::lesen::firma_oder_werk(&self.model, Some(firma.library()));
         let fuer_firma = sk_cost::preis::auf_firma(ops, &fk);
-        self.fuer_firma_mit(label, firma, herkunft, &fuer_firma, Some(ops))
+        self.fuer_firma_mit(label, firma, herkunft, &fuer_firma, Some(ops), false)
     }
 
     /// `hier`: die Operationen am Haus, wenn es den gewählten Wert auch
     /// dort übernimmt, wo es abweicht; `None`: es behält seine Abweichungen.
+    /// `freigabe`: statt `ops` den Entwurf freigeben.
     fn fuer_firma_mit(
         &mut self,
         label: &'static str,
@@ -2266,15 +2279,20 @@ impl Scene {
         herkunft: &sk_cost::Herkunft,
         ops: &[sk_cost::Op],
         hier: Option<&[sk_cost::Op]>,
+        freigabe: bool,
     ) -> Result<Option<crate::meldung::Meldung>, crate::meldung::Meldung> {
         use crate::meldung::Meldung;
         let satz = |b: Vec<sk_cost::Befund>| Meldung::aus_befunden(&b, "Nichts geändert.");
         // Den Firmenkatalog ändert nur, wer verwaltet (KA-3b1)
         if self.rolle != sk_cost::Rolle::Admin {
-            if let Some(op) = ops.first() {
+            let was = match ops.first() {
+                Some(op) => Some(op.bezeichnung()),
+                None => freigabe.then(|| "Freigeben".to_string()),
+            };
+            if let Some(was) = was {
                 return Err(satz(vec![sk_cost::Befund::fehler(
                     93,
-                    sk_cost::befund::r93(&op.bezeichnung(), "nur in der Verwaltung"),
+                    sk_cost::befund::r93(&was, "nur in der Verwaltung"),
                     sk_cost::befund::Ort::Datei,
                 )]));
             }
@@ -2290,13 +2308,33 @@ impl Scene {
             sk_cost::vorschau(&self.model, Some(firma.library()), self.rolle, &am_haus)
                 .map_err(satz)?;
         }
+        // Mit Verwaltungskennwort ändert nur die Freigabe den Firmenkatalog:
+        // Die Änderung kommt in den Entwurf, dieses Haus nimmt den
+        // gewählten Wert als eigenen (KA-3b2; bis KA-3b4 „Der Firma
+        // vorschlagen“ bringt)
+        if !freigabe && sk_cost::verwaltung::hat_kennwort(firma.library()) {
+            firma.fuer_entwurf(herkunft, ops)?;
+            if let Some(hier) = hier.filter(|h| !h.is_empty()) {
+                if let Err(b) = self.kosten_folge(label, Some(firma.library()), herkunft, hier) {
+                    return Ok(Some(Meldung::mit(
+                        "Im Entwurf gespeichert, dieses Haus nicht geändert: {}",
+                        &[&satz(b)],
+                    )));
+                }
+            }
+            return Ok(Some(Meldung::satz(crate::catalog::IM_ENTWURF)));
+        }
         // Ohne Kopie rechnet dieses Haus mit der Firma. Damit Strg+Z genau
         // diese Änderung zurücknimmt (und nicht den letzten Bauschritt),
         // bekommt es vorher still die Kopie der bisherigen Werte; der
         // Schritt danach bringt die neuen. Rückgängig: dieses Haus wieder
         // mit den bisherigen Werten, neue Häuser mit den neuen.
         let vorher = (!sk_cost::op::hat_kopie(&self.model)).then(|| firma.library().clone());
-        let neu = firma.fuer_firma(herkunft, ops)?;
+        let neu = if freigabe {
+            firma.freigeben(herkunft)?
+        } else {
+            firma.fuer_firma(herkunft, ops)?
+        };
         let mut hinweis = None;
         if let Some(alt) = vorher.filter(|_| !neu.saetze.is_empty()) {
             self.begin(label);
@@ -2320,6 +2358,16 @@ impl Scene {
             .collect();
         if !saetze.is_empty() {
             folge.insert(0, sk_cost::Op::StandUebernehmen { saetze });
+        }
+        // Nach der Freigabe ist ein eigener Wert, den dieses Haus mit „Auch
+        // für neue Häuser“ in den Entwurf gab, der Firmenwert: Vermerk lösen,
+        // sonst folgte das Haus späteren Firmenänderungen nicht mehr
+        if freigabe {
+            let frei =
+                sk_cost::abgleich::eigen_wie_firma(&self.model, Some(firma.library()), &neu.saetze);
+            if !frei.is_empty() {
+                folge.insert(0, sk_cost::Op::AbweichungZuruecknehmen { saetze: frei });
+            }
         }
         if sk_cost::op::hat_kopie(&self.model) && !folge.is_empty() {
             if let Err(b) = self.kosten_folge(label, Some(firma.library()), herkunft, &folge) {

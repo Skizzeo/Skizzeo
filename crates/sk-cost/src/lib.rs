@@ -30,8 +30,8 @@ pub use befund::{Befund, Ort, Schwere};
 pub use geld::{Cent, Dez};
 pub use katalog::Katalog;
 pub use op::{
-    ausfuehren, ausfuehren_folge, firma_anwenden, neues_projekt, pruefen, vorschau,
-    vorschau_kosten, Aenderung, FirmaNeu, Herkunft, HerkunftArt, Op, Plan, Rolle, SatzId,
+    ausfuehren, ausfuehren_folge, entwurf_anwenden, firma_anwenden, neues_projekt, pruefen,
+    vorschau, vorschau_kosten, Aenderung, FirmaNeu, Herkunft, HerkunftArt, Op, Plan, Rolle, SatzId,
     Sicherheit, Ziel,
 };
 pub use rechnung::{Kostenblatt, Kostenspeicher, Position};

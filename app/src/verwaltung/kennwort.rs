@@ -132,7 +132,9 @@ impl Verwaltung {
         let Some(a) = self.abfrage.as_mut() else {
             return;
         };
-        if sk_cost::verwaltung::kennwort_stimmt(&self.lib0, &a.te.text) {
+        // Es gilt das freigegebene Kennwort, nicht eines im Entwurf
+        let lib = self.freigabe.as_ref().map_or(&self.lib0, |f| &f.lib);
+        if sk_cost::verwaltung::kennwort_stimmt(lib, &a.te.text) {
             self.abfrage = None;
             self.pos = None;
             out.frei = true;

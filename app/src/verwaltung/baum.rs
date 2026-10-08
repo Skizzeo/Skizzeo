@@ -167,7 +167,7 @@ impl Verwaltung {
                 ..blatt(Knoten::Haus(i), h.name.clone())
             })
             .collect();
-        let staende: Vec<Eintrag> = sk_cost::verwaltung::protokoll(&self.vorher)
+        let staende: Vec<Eintrag> = sk_cost::verwaltung::protokoll(self.freigegeben())
             .into_iter()
             .map(|s| {
                 blatt(

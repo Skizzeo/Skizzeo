@@ -39,6 +39,9 @@ pub struct Company {
     gen: u64,
     /// Die Sätze, die das letzte „Auch für neue Häuser“ geändert hat.
     zuletzt: Vec<sk_cost::SatzId>,
+    /// Entwurf beim letzten Lesen bzw. Schreiben (KA-3b2); `None`: keiner
+    /// offen.
+    entwurf: Option<String>,
 }
 
 /// Schluss des Hinweises auf Fremdes aus einer neueren Fassung; er gehört
@@ -178,6 +181,20 @@ pub const GESPERRT: &str =
 const NICHT_GESPEICHERT: (&str, &str) =
     ("Firmenkatalog nicht gespeichert", "Firmenkatalog speichern");
 
+const ENTWURF_NICHT_GESPEICHERT: (&str, &str) = ("Entwurf nicht gespeichert", "Entwurf speichern");
+const NICHT_FREIGEGEBEN: (&str, &str) = ("Nicht freigegeben", "Firmenkatalog freigeben");
+const NICHT_VERWORFEN: (&str, &str) = ("Entwurf nicht verworfen", "Entwurf ablegen");
+
+/// Mit Verwaltungskennwort gilt eine Firmenänderung erst nach der Freigabe.
+pub const MIT_KENNWORT: &str = "Mit Verwaltungskennwort ändert die Verwaltung einen Entwurf; die anderen Plätze sehen ihn erst nach „Freigeben“.";
+
+/// „Auch für neue Häuser“ mit Verwaltungskennwort (KA-3b2).
+pub const IM_ENTWURF: &str = "Für neue Häuser im Entwurf gespeichert; die anderen Plätze sehen es nach „Freigeben“ in der Verwaltung.";
+
+/// Zwei Administratoren am selben Entwurf (paket-ka3b §3).
+pub const ENTWURF_GEAENDERT: &str =
+    "Der Entwurf wurde inzwischen an einem anderen Platz geändert und ist neu geladen.";
+
 /// Schluss der Hinweise, wenn der Katalog nicht geladen ist.
 const STARTBESTAND: &str = "Skizzeo arbeitet mit dem eingebauten Startbestand.";
 
@@ -307,8 +324,10 @@ impl Company {
             broken: false,
             gen: 0,
             zuletzt: Vec::new(),
+            entwurf: None,
         };
         let hints = c.reload(standard_place);
+        c.entwurf_laden();
         (c, hints)
     }
 
@@ -560,6 +579,17 @@ impl Company {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(e) => return Err(Meldung::aus_io(ergebnis, was, &self.path, &e)),
         };
+        // Mit Verwaltungskennwort ändert nur die Freigabe den freigegebenen
+        // Stand (paket-ka3b §3); auch wenn ein anderer Platz es eben erst
+        // gesetzt hat
+        let lib = sk_model::read_szk_with(&text, &sk_cost::lesen::ABSCHNITTE_SZK);
+        if lib.is_ok_and(|l| sk_cost::verwaltung::hat_kennwort(&l)) {
+            if text != self.geladen {
+                drop(sperre);
+                self.reload(false);
+            }
+            return Err(Meldung::satz(MIT_KENNWORT));
+        }
         let neu = match sk_cost::firma_anwenden(
             &text,
             &self.geladen,
@@ -577,23 +607,8 @@ impl Company {
                 return Err(m);
             }
         };
-        if !text.is_empty() {
-            let dir = self
-                .path
-                .parent()
-                .unwrap_or(Path::new("."))
-                .join("firmenkatalog-staende");
-            let alt = dir.join(format!("stand-{:04}.szk", neu.stand_vorher));
-            // Liegt dort ein anderer Text (Datei zurückgespielt, die
-            // Standnummern wiederholen sich), kommt er beiseite und wird nie
-            // überschrieben; die Ablage ist immer der Stand davor (Review 3as)
-            if std::fs::read(&alt).ok().as_deref() != Some(text.as_bytes()) {
-                std::fs::create_dir_all(&dir)
-                    .and_then(|_| beiseite(&alt))
-                    .and_then(|_| crate::document::write_synced(&alt, text.as_bytes()))
-                    .map_err(|e| Meldung::aus_io(ergebnis, was, &dir, &e))?;
-            }
-        }
+        // Die Ablage ist immer der Stand davor
+        self.ablegen(&text, neu.stand_vorher, NICHT_GESPEICHERT)?;
         if !sperre.gilt() {
             return Err(Meldung::satz(GESPERRT));
         }
@@ -603,6 +618,220 @@ impl Company {
         self.reload(false);
         self.zuletzt = neu.saetze.clone();
         Ok(neu)
+    }
+
+    /// `firmenkatalog.entwurf.szk` neben der Firmendatei (KA-3b2, verwaltung.md
+    /// §4).
+    pub fn entwurf_pfad(&self) -> PathBuf {
+        let stamm = self
+            .path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("firmenkatalog");
+        self.path.with_file_name(format!("{stamm}.entwurf.szk"))
+    }
+
+    /// Liest den Entwurf (fehlt er, ist keiner offen) und merkt ihn als den
+    /// Stand, den die Verwaltung zeigt.
+    pub fn entwurf_laden(&mut self) -> Option<&str> {
+        self.entwurf = std::fs::read_to_string(self.entwurf_pfad()).ok();
+        self.entwurf.as_deref()
+    }
+
+    /// Der Entwurf beim letzten [`Company::entwurf_laden`] oder Schreiben.
+    pub fn entwurf(&self) -> Option<&str> {
+        self.entwurf.as_deref()
+    }
+
+    /// Unter der Sperre: Entwurf und Firmendatei, wie sie jetzt auf der
+    /// Platte stehen. Weicht der Entwurf von dem ab, den die Verwaltung
+    /// zeigt (zwei Administratoren), gibt es nur die Meldung und den neu
+    /// gelesenen Entwurf (paket-ka3b §3, wie KA-3a Abnahme 11).
+    fn entwurf_pruefen(
+        &mut self,
+        was: (&'static str, &'static str),
+    ) -> Result<(Sperre, String, Option<String>), Meldung> {
+        if self.broken {
+            return Err(Meldung::satz(
+                "Der Firmenkatalog ist nicht lesbar und wird nicht überschrieben.",
+            ));
+        }
+        let sperre = sperren(&self.path)?;
+        let firma = std::fs::read_to_string(&self.path)
+            .map_err(|e| Meldung::aus_io(was.0, was.1, &self.path, &e))?;
+        let pfad = self.entwurf_pfad();
+        let entwurf = match std::fs::read_to_string(&pfad) {
+            Ok(t) => Some(t),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(Meldung::aus_io(was.0, was.1, &pfad, &e)),
+        };
+        // Ohne Entwurf darf die Firmendatei sich geändert haben (ein
+        // Bauteiltyp, eine Freigabe): `entwurf_anwenden` prüft je Satz gegen
+        // den geladenen Stand
+        if entwurf != self.entwurf {
+            drop(sperre);
+            self.reload(false);
+            self.entwurf_laden();
+            return Err(Meldung::satz(ENTWURF_GEAENDERT));
+        }
+        Ok((sperre, firma, entwurf))
+    }
+
+    /// Mit Verwaltungskennwort (KA-3b2): `ops` in den Entwurf statt in den
+    /// freigegebenen Stand. Ohne offenen Entwurf ist der freigegebene Stand
+    /// die Vorlage. Die Firmendatei bleibt bytegleich; die anderen Plätze
+    /// sehen nichts davon bis zur Freigabe.
+    pub fn fuer_entwurf(
+        &mut self,
+        herkunft: &sk_cost::Herkunft,
+        ops: &[sk_cost::Op],
+    ) -> Result<sk_cost::FirmaNeu, Meldung> {
+        let (ergebnis, was) = ENTWURF_NICHT_GESPEICHERT;
+        let (sperre, firma, entwurf) = self.entwurf_pruefen(ENTWURF_NICHT_GESPEICHERT)?;
+        let geladen = match &entwurf {
+            Some(e) => e.clone(),
+            None => self.geladen.clone(),
+        };
+        // Der Entwurf beginnt auf einem neueren Firmenstand: den dann auch
+        // hier laden, sonst zählte die Vorschau fremde Änderungen mit
+        let neue_firma = entwurf.is_none() && firma != self.geladen;
+        let basis = entwurf.unwrap_or(firma);
+        let neu =
+            match sk_cost::entwurf_anwenden(&basis, &geladen, sk_cost::Rolle::Admin, herkunft, ops)
+            {
+                Ok(n) => n,
+                Err(b) => {
+                    let m = Meldung::aus_befunden(&b, "Entwurf nicht geändert.");
+                    if basis != geladen {
+                        drop(sperre);
+                        self.reload(false);
+                    }
+                    return Err(m);
+                }
+            };
+        if !sperre.gilt() {
+            return Err(Meldung::satz(GESPERRT));
+        }
+        let pfad = self.entwurf_pfad();
+        write_atomic(&pfad, &neu.text).map_err(|e| Meldung::aus_io(ergebnis, was, &pfad, &e))?;
+        drop(sperre);
+        if neue_firma {
+            self.reload(false);
+        }
+        self.entwurf = Some(neu.text.clone());
+        // Für neue Häuser gilt es erst nach der Freigabe
+        self.zuletzt.clear();
+        Ok(neu)
+    }
+
+    /// „Änderung verwerfen“ in der Vorschau (KA-3b3): `satz` im Entwurf
+    /// wieder wie freigegeben ([`sk_cost::verwaltung::entwurf_ohne`]).
+    pub fn entwurf_satz_verwerfen(&mut self, satz: &sk_cost::SatzId) -> Result<(), Meldung> {
+        let (ergebnis, was) = ENTWURF_NICHT_GESPEICHERT;
+        let (sperre, firma, entwurf) = self.entwurf_pruefen(ENTWURF_NICHT_GESPEICHERT)?;
+        let Some(entwurf) = entwurf else {
+            return Err(Meldung::satz("Es gibt keinen Entwurf."));
+        };
+        let neu = sk_cost::verwaltung::entwurf_ohne(&firma, &entwurf, satz)
+            .map_err(|b| Meldung::aus_befunden(&b, "Entwurf nicht geändert."))?;
+        if !sperre.gilt() {
+            return Err(Meldung::satz(GESPERRT));
+        }
+        let pfad = self.entwurf_pfad();
+        write_atomic(&pfad, &neu).map_err(|e| Meldung::aus_io(ergebnis, was, &pfad, &e))?;
+        drop(sperre);
+        self.entwurf = Some(neu);
+        Ok(())
+    }
+
+    /// „Freigeben als Stand n+1“ (KA-3b3): unter der Sperre die Firmendatei
+    /// neu lesen, aus dem Entwurf nur die Kostenabschnitte übernehmen
+    /// (Bauteiltypen eines anderen Platzes bleiben, S3), den Stand davor
+    /// ablegen, atomar schreiben, danach den Entwurf entfernen.
+    pub fn freigeben(
+        &mut self,
+        herkunft: &sk_cost::Herkunft,
+    ) -> Result<sk_cost::FirmaNeu, Meldung> {
+        let (ergebnis, was) = NICHT_FREIGEGEBEN;
+        let (sperre, firma, entwurf) = self.entwurf_pruefen(NICHT_FREIGEGEBEN)?;
+        let Some(entwurf) = entwurf else {
+            return Err(Meldung::satz("Es gibt keinen Entwurf zum Freigeben."));
+        };
+        let neu = sk_cost::verwaltung::freigeben(&firma, &entwurf, herkunft)
+            .map_err(|b| Meldung::aus_befunden(&b, "Nichts freigegeben."))?;
+        self.ablegen(&firma, neu.stand_vorher, NICHT_FREIGEGEBEN)?;
+        if !sperre.gilt() {
+            return Err(Meldung::satz(GESPERRT));
+        }
+        write_atomic(&self.path, &neu.text)
+            .map_err(|e| Meldung::aus_io(ergebnis, was, &self.path, &e))?;
+        let pfad = self.entwurf_pfad();
+        // Ohne den Entwurf ist die Freigabe trotzdem gültig; ein liegen
+        // gebliebener Entwurf beruht auf dem alten Stand und lässt sich
+        // nicht noch einmal freigeben
+        let weg = std::fs::remove_file(&pfad);
+        drop(sperre);
+        self.reload(false);
+        self.entwurf_laden();
+        self.zuletzt = neu.saetze.clone();
+        weg.map_err(|e| {
+            Meldung::aus_io(
+                "Freigegeben, aber der Entwurf ist noch da",
+                "Entwurf entfernen",
+                &pfad,
+                &e,
+            )
+        })?;
+        Ok(neu)
+    }
+
+    /// „Entwurf verwerfen“ (KA-3b3, verwaltung.md §3): Der Entwurf kommt nach
+    /// `firmenkatalog-staende/entwurf-verworfen-{Datum}-{Zeit}.szk`, nie
+    /// gelöscht; die Firmendatei bleibt bytegleich. Liefert die Ablage.
+    pub fn entwurf_verwerfen(&mut self) -> Result<PathBuf, Meldung> {
+        let (ergebnis, was) = NICHT_VERWORFEN;
+        let (sperre, _, entwurf) = self.entwurf_pruefen(NICHT_VERWORFEN)?;
+        let Some(entwurf) = entwurf else {
+            return Err(Meldung::satz("Es gibt keinen Entwurf zum Verwerfen."));
+        };
+        let dir = self.staende();
+        let (j, mo, t, h, mi) = sk_platform::local_date_time();
+        let name = format!("entwurf-verworfen-{j}-{mo:02}-{t:02}-{h:02}{mi:02}");
+        let ziel = std::fs::create_dir_all(&dir)
+            .and_then(|_| neu_anlegen(&dir, &name, entwurf.as_bytes()))
+            .map_err(|e| Meldung::aus_io(ergebnis, was, &dir, &e))?;
+        if !sperre.gilt() {
+            return Err(Meldung::satz(GESPERRT));
+        }
+        let pfad = self.entwurf_pfad();
+        std::fs::remove_file(&pfad).map_err(|e| Meldung::aus_io(ergebnis, was, &pfad, &e))?;
+        drop(sperre);
+        self.entwurf = None;
+        Ok(ziel)
+    }
+
+    /// Den Stand `stand` (Text `text`) nach `firmenkatalog-staende/
+    /// stand-000n.szk` legen. Liegt dort ein anderer Text (Datei
+    /// zurückgespielt, die Standnummern wiederholen sich), kommt er beiseite
+    /// und wird nie überschrieben (Review 3as).
+    fn ablegen(
+        &self,
+        text: &str,
+        stand: u32,
+        (ergebnis, was): (&'static str, &'static str),
+    ) -> Result<(), Meldung> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        let dir = self.staende();
+        let alt = dir.join(format!("stand-{stand:04}.szk"));
+        if std::fs::read(&alt).ok().as_deref() != Some(text.as_bytes()) {
+            std::fs::create_dir_all(&dir)
+                .and_then(|_| beiseite(&alt))
+                .and_then(|_| crate::document::write_synced(&alt, text.as_bytes()))
+                .map_err(|e| Meldung::aus_io(ergebnis, was, &dir, &e))?;
+        }
+        Ok(())
     }
 
     /// Ordner der früheren Stände neben dem Firmenkatalog.
@@ -691,6 +920,32 @@ impl Company {
             }
         }
     }
+}
+
+/// `{name}.szk` in `dir` exklusiv anlegen (`create_new`), sonst
+/// `{name}-2.szk`, …; nie über eine vorhandene Datei.
+fn neu_anlegen(dir: &Path, name: &str, inhalt: &[u8]) -> std::io::Result<PathBuf> {
+    use std::io::Write;
+    for i in 1u32.. {
+        let pfad = match i {
+            1 => dir.join(format!("{name}.szk")),
+            _ => dir.join(format!("{name}-{i}.szk")),
+        };
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&pfad)
+        {
+            Ok(mut f) => {
+                f.write_all(inhalt)?;
+                f.sync_all()?;
+                return Ok(pfad);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("u32 reicht")
 }
 
 /// Eine vorhandene Ablage `pfad` unter einem freien Namen sichern

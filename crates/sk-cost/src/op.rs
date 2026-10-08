@@ -1491,6 +1491,32 @@ pub fn firma_anwenden(
     herkunft: &Herkunft,
     ops: &[Op],
 ) -> Result<FirmaNeu, Vec<Befund>> {
+    datei_anwenden(text, geladen, rolle, herkunft, ops, false)
+}
+
+/// Wie [`firma_anwenden`], aber in den Entwurf (KA-3b2, verwaltung.md §5):
+/// `text` ist der Entwurf oder, solange keiner offen ist, der freigegebene
+/// Stand als Vorlage. Der Kopf bekommt `status=draft` und behält Stand und
+/// Datum; die `[log]`-Zeilen tragen den Stand, mit dem sie freigegeben
+/// werden (Stand + 1).
+pub fn entwurf_anwenden(
+    text: &str,
+    geladen: &str,
+    rolle: Rolle,
+    herkunft: &Herkunft,
+    ops: &[Op],
+) -> Result<FirmaNeu, Vec<Befund>> {
+    datei_anwenden(text, geladen, rolle, herkunft, ops, true)
+}
+
+fn datei_anwenden(
+    text: &str,
+    geladen: &str,
+    rolle: Rolle,
+    herkunft: &Herkunft,
+    ops: &[Op],
+    entwurf: bool,
+) -> Result<FirmaNeu, Vec<Befund>> {
     let lies = |t: &str| sk_model::read_szk_with(t, &satz::ABSCHNITTE_SZK);
     let fehler = |g: &str| {
         vec![Befund::fehler(
@@ -1600,11 +1626,16 @@ pub fn firma_anwenden(
         let mut s = Satz::neu(&satz::CATALOG);
         s.setzen("guid", Some(Wert::Guid(GuidGen::from_time().next_guid())));
         s.setzen("name", Some(Wert::Text("Firmenkatalog".into())));
+        s.setzen("stand", Some(Wert::Ganz(i64::from(stand_vorher))));
         s.setzen("status", Some(Wert::Wort("released".into())));
         s
     });
-    kopf.setzen("stand", Some(Wert::Ganz(i64::from(stand))));
-    kopf.setzen("date", Some(Wert::Text(herkunft.datum.clone())));
+    if entwurf {
+        kopf.setzen("status", Some(Wert::Wort("draft".into())));
+    } else {
+        kopf.setzen("stand", Some(Wert::Ganz(i64::from(stand))));
+        kopf.setzen("date", Some(Wert::Text(herkunft.datum.clone())));
+    }
     // Verwaltungskennwort (KA-3b1): nur der Prüfwert
     let mut kennwort: Vec<(bool, bool)> = Vec::new();
     for op in ops {
@@ -1628,11 +1659,14 @@ pub fn firma_anwenden(
         .filter_map(|r| r.id.as_deref().and_then(|k| k.parse::<u32>().ok()))
         .max()
         .unwrap_or(0);
+    // Im Entwurf vorläufig der freigegebene Stand; die Freigabe setzt den
+    // neuen (Regel 91)
+    let log_stand = if entwurf { stand_vorher } else { stand };
     let mut log = |lib: &mut Library, op: &str, rec: &str, of: &str, o: String, n: String| {
         key += 1;
         let mut s = Satz::neu(&satz::LOG);
         s.setzen("key", Some(Wert::Ganz(i64::from(key))));
-        s.setzen("stand", Some(Wert::Ganz(i64::from(stand))));
+        s.setzen("stand", Some(Wert::Ganz(i64::from(log_stand))));
         s.setzen(
             "time",
             Some(Wert::Text(format!("{}T{}", herkunft.datum, herkunft.zeit))),
@@ -1710,7 +1744,7 @@ pub fn firma_anwenden(
     Ok(FirmaNeu {
         text: sk_model::write_szk(&lib),
         stand_vorher,
-        stand,
+        stand: if entwurf { stand_vorher } else { stand },
         saetze,
     })
 }

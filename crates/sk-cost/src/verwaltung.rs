@@ -434,6 +434,391 @@ pub const STANDARDHAUS: &str = include_str!("../referenz/rh1-standardhaus.szo");
 /// Höchstlänge eines Kurztexts in Zeichen (Regel 79 Nachtrag, GAEB).
 pub const KURZ_MAX: usize = 70;
 
+/// Stammabschnitte des Firmenkatalogs: Hat eine Datei keinen davon, rechnet
+/// sie mit dem Werksbestand.
+const STAMM: [&str; 6] = ["article", "service", "svcpart", "svcfollow", "rate", "lot"];
+
+/// Die Kostenzeilen, die `lib` gelten lässt, je (Abschnitt, Kennung): die
+/// eigenen, ohne eigene die des Werks. `[catalog]` und `[log]` zählen
+/// nicht.
+fn geltende_zeilen(lib: &Library) -> std::collections::BTreeMap<(String, String), String> {
+    let eigen = STAMM.iter().any(|x| lib.ext(x).next().is_some());
+    let mut z = std::collections::BTreeMap::new();
+    let mut dazu = |sec: &str, line: &str| {
+        if sec == "catalog" || sec == "log" {
+            return;
+        }
+        if let Some(id) = sk_model::ext::rec_id(line) {
+            z.insert((sec.to_string(), id), line.to_string());
+        }
+    };
+    if eigen {
+        for r in lib.ext.recs() {
+            dazu(&r.section, &r.line);
+        }
+    } else {
+        for (a, l) in crate::werk_zeilen() {
+            dazu(a, l);
+        }
+    }
+    z
+}
+
+/// Die Stammsätze, in denen der Entwurf vom freigegebenen Stand abweicht
+/// (Pille „Entwurf · n Änderungen“, Punkt im Baum, Vorschau; KA-3b2).
+/// Herkunftszeilen zählen beim Satz, den sie beschreiben.
+pub fn entwurf_saetze(freigegeben: &Library, entwurf: &Library) -> Vec<SatzId> {
+    let (a, b) = (geltende_zeilen(freigegeben), geltende_zeilen(entwurf));
+    let mut v: Vec<SatzId> = Vec::new();
+    // Stoffanteile und Folgepositionen zählen bei ihrer Bauleistung
+    let feld = |l: &String, name: &str| {
+        crate::zeile::zerlegen(l).and_then(|z| {
+            z.paare
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, w)| w.clone())
+        })
+    };
+    let mut dazu = |sec: &str, id: &str| {
+        let leistung = matches!(sec, "svcpart" | "svcfollow")
+            .then(|| {
+                let k = (sec.to_string(), id.to_string());
+                b.get(&k).or(a.get(&k)).and_then(|l| feld(l, "service"))
+            })
+            .flatten();
+        let (sec, id) = match &leistung {
+            Some(g) => ("service", g.as_str()),
+            None => (sec, id),
+        };
+        let Some(a) = crate::satz::abschnitt(sec) else {
+            return;
+        };
+        let s = SatzId::neu(a.name, id);
+        if !v.contains(&s) {
+            v.push(s);
+        }
+    };
+    for k in a.keys().chain(b.keys()) {
+        if a.get(k) == b.get(k) {
+            continue;
+        }
+        if k.0 == "origin" {
+            // `key` der Herkunft ist die Kennung des beschriebenen Satzes
+            let rec = b.get(k).or(a.get(k)).and_then(|l| feld(l, "rec"));
+            if let Some(rec) = rec {
+                dazu(&rec, &k.1);
+            }
+        } else {
+            dazu(&k.0, &k.1);
+        }
+    }
+    // Das Verwaltungskennwort zählt mit (es gilt erst mit der Freigabe)
+    let (ka, kb) = (kopf(freigegeben), kopf(entwurf));
+    let pw =
+        |k: &Option<crate::satz::Satz>| k.as_ref().and_then(|k| k.text("pw").map(str::to_string));
+    if pw(&ka) != pw(&kb) {
+        if let Some(id) = kb.or(ka).and_then(|k| k.kennung()) {
+            v.push(SatzId::neu("catalog", &id));
+        }
+    }
+    v
+}
+
+/// Katalog aus den geltenden Kostenzeilen von `lib`, auch aus einem
+/// Entwurf (Verweise gegen die Baustoffe von `lib`).
+pub fn katalog_von(lib: &Library, stand: u32) -> Katalog {
+    let eigen = STAMM.iter().any(|x| lib.ext(x).next().is_some());
+    let mut z: Vec<(&str, &str)> = Vec::new();
+    for sec in crate::satz::ABSCHNITTE_SZK {
+        if eigen || sec == "catalog" || sec == "log" {
+            z.extend(lib.ext(sec).map(|r| (sec, r.line.as_str())));
+        }
+    }
+    if !eigen {
+        z.extend(
+            crate::werk_zeilen()
+                .into_iter()
+                .filter(|(a, _)| *a != "catalog" && *a != "log"),
+        );
+    }
+    let name = kopf(lib)
+        .and_then(|k| k.text("name").map(str::to_string))
+        .unwrap_or_else(|| "Firmenkatalog".into());
+    crate::katalog::lesen(
+        z,
+        &crate::katalog::Umfeld::aus_bibliothek(lib),
+        crate::katalog::Quelle::Firma { name, stand },
+    )
+}
+
+/// Der Entwurf `lib`, gelesen wie ein freigegebener Firmenkatalog: nur für
+/// die Verwaltung, die ihn bearbeitet, und ihre Vorschau (KA-3b2). Sonst
+/// wird ein Entwurf nirgends als Firmenkatalog gelesen (Regel 91).
+pub fn wie_freigegeben(lib: &Library) -> Library {
+    let mut l = lib.clone();
+    if let Some(mut k) = kopf(lib).filter(|k| k.text("status") == Some("draft")) {
+        k.setzen("status", Some(crate::satz::Wert::Wort("released".into())));
+        if let Some(id) = k.kennung() {
+            l.ext_put("catalog", &id, k.zeile(), None);
+        }
+    }
+    l
+}
+
+/// Ist `lib` ein Entwurf (`[catalog] status=draft`)?
+pub fn ist_entwurf(lib: &Library) -> bool {
+    kopf(lib).is_some_and(|k| k.text("status") == Some("draft"))
+}
+
+fn kopf(lib: &Library) -> Option<crate::satz::Satz> {
+    let r = lib.ext("catalog").next()?;
+    let z = crate::zeile::zerlegen(&r.line)?;
+    crate::satz::Satz::lesen(&crate::satz::CATALOG, &z).ok()
+}
+
+/// „Freigeben als Stand n+1“ (KA-3b3, verwaltung.md §4/§5): `firma` ist die
+/// freigegebene Datei unter Sperre, frisch gelesen, `entwurf` der Entwurf.
+/// Übernommen werden nur die Kostenabschnitte (BIM §3.1–§3.8, §3.11) und
+/// das Kennwort aus dem Kopf; Bauteiltypen, Stifte und Schraffuren bleiben
+/// aus `firma` (S3). Der Kopf bekommt Stand + 1, Datum und
+/// `status=released`. Beruht der Entwurf auf einem anderen Stand oder
+/// bringt er neue Fehler (Regeln 71–92), gibt es nur die Befunde.
+pub fn freigeben(
+    firma: &str,
+    entwurf: &str,
+    herkunft: &Herkunft,
+) -> Result<crate::op::FirmaNeu, Vec<Befund>> {
+    let fehler = |g: String| vec![Befund::fehler(93, befund::r93("Freigeben", &g), Ort::Datei)];
+    let lies = |t: &str| sk_model::read_szk_with(t, &crate::satz::ABSCHNITTE_SZK);
+    let mut lib = lies(firma).map_err(|_| fehler("der Firmenkatalog ist nicht lesbar".into()))?;
+    let e = lies(entwurf).map_err(|_| fehler("der Entwurf ist nicht lesbar".into()))?;
+    let stand_f = kopf(&lib).and_then(|k| k.ganz("stand")).unwrap_or(0) as u32;
+    let mut kopf_e = kopf(&e).ok_or_else(|| fehler("der Entwurf hat keinen Kopf".into()))?;
+    let stand_e = kopf_e.ganz("stand").unwrap_or(0) as u32;
+    if stand_e != stand_f {
+        return Err(fehler(format!(
+            "der Entwurf beruht auf Stand {stand_e}, freigegeben ist inzwischen Stand {stand_f}"
+        )));
+    }
+    let k_f = katalog_von(&lib, stand_f);
+    let k_e = katalog_von(&e, stand_e);
+    let neu: Vec<Befund> = k_e
+        .befunde
+        .iter()
+        .filter(|b| b.schwere == befund::Schwere::Fehler && !k_f.befunde.contains(b))
+        .cloned()
+        .collect();
+    if !neu.is_empty() {
+        return Err(neu);
+    }
+    let saetze = entwurf_saetze(&lib, &e);
+    let stand = stand_f + 1;
+    // Protokollzeilen, die der Entwurf dazugeschrieben hat, bekommen den
+    // neuen Stand (Regel 91)
+    let bis = lib
+        .ext("log")
+        .filter_map(|r| r.id.as_deref().and_then(|k| k.parse::<u32>().ok()))
+        .max()
+        .unwrap_or(0);
+    // Kostenabschnitte ganz aus dem Entwurf
+    lib.ext_declare(&crate::satz::ABSCHNITTE_SZK);
+    for sec in crate::satz::ABSCHNITTE_SZK {
+        let alt: Vec<String> = lib.ext(sec).filter_map(|r| r.id.clone()).collect();
+        for id in alt {
+            lib.ext_remove(sec, &id);
+        }
+        if sec == "catalog" {
+            continue;
+        }
+        for r in e.ext(sec) {
+            let Some(id) = &r.id else {
+                continue;
+            };
+            let neu = sec == "log" && id.parse::<u32>().is_ok_and(|k| k > bis);
+            let zeile = crate::zeile::zerlegen(&r.line)
+                .filter(|_| neu)
+                .and_then(|z| crate::satz::Satz::lesen(&crate::satz::LOG, &z).ok())
+                .map_or_else(
+                    || r.line.clone(),
+                    |mut s| {
+                        s.setzen("stand", Some(crate::satz::Wert::Ganz(i64::from(stand))));
+                        s.zeile()
+                    },
+                );
+            lib.ext_put(sec, id, zeile, None);
+        }
+    }
+    kopf_e.setzen("stand", Some(crate::satz::Wert::Ganz(i64::from(stand))));
+    kopf_e.setzen(
+        "date",
+        Some(crate::satz::Wert::Text(herkunft.datum.clone())),
+    );
+    kopf_e.setzen("status", Some(crate::satz::Wert::Wort("released".into())));
+    let id = kopf_e.kennung().unwrap_or_default();
+    lib.ext_put("catalog", &id, kopf_e.zeile(), None);
+    Ok(crate::op::FirmaNeu {
+        text: sk_model::write_szk(&lib),
+        stand_vorher: stand_f,
+        stand,
+        saetze,
+    })
+}
+
+/// Wie `satz` im Entwurf vom freigegebenen Stand abweicht (Vorschau,
+/// KA-3b3): je geändertem Feld (Schlüssel, alt, neu), Zahlen wie in der
+/// Datei. Ein neuer Satz ist („+“, –, –), ein entfernter („-“, –, –);
+/// geänderte Stoffanteile oder Folgepositionen einer Bauleistung stehen als
+/// („svcpart“, –, –) bzw. („svcfollow“, –, –). Vom Kennwort steht nur, ob
+/// es gesetzt ist, nie der Prüfwert.
+pub fn entwurf_felder(
+    freigegeben: &Library,
+    entwurf: &Library,
+    satz: &SatzId,
+) -> Vec<(String, Option<String>, Option<String>)> {
+    if satz.abschnitt == "catalog" {
+        let pw = |l: &Library| kopf(l).is_some_and(|k| k.wert("pw").is_some());
+        let wort =
+            |b: bool| Some(if b { "gesetzt" } else { "" }.to_string()).filter(|w| !w.is_empty());
+        return vec![("pw".into(), wort(pw(freigegeben)), wort(pw(entwurf)))];
+    }
+    let (a, b) = (geltende_zeilen(freigegeben), geltende_zeilen(entwurf));
+    let k = (satz.abschnitt.to_string(), satz.kennung.clone());
+    let paare = |l: Option<&String>| -> Vec<(String, String)> {
+        l.and_then(|l| crate::zeile::zerlegen(l))
+            .map_or(Vec::new(), |z| z.paare)
+    };
+    let mut out = match (a.get(&k), b.get(&k)) {
+        (None, Some(_)) => vec![("+".to_string(), None, None)],
+        (Some(_), None) => vec![("-".to_string(), None, None)],
+        (la, lb) => {
+            let (pa, pb) = (paare(la), paare(lb));
+            let mut keys: Vec<&String> = pa.iter().map(|p| &p.0).collect();
+            for (x, _) in &pb {
+                if !keys.contains(&x) {
+                    keys.push(x);
+                }
+            }
+            keys.into_iter()
+                .filter(|x| x.as_str() != "guid")
+                .filter_map(|x| {
+                    let va = pa.iter().find(|p| &p.0 == x).map(|p| p.1.clone());
+                    let vb = pb.iter().find(|p| &p.0 == x).map(|p| p.1.clone());
+                    (va != vb).then(|| (x.clone(), va, vb))
+                })
+                .collect()
+        }
+    };
+    if satz.abschnitt == "service" {
+        for sec in ["svcpart", "svcfollow"] {
+            let teile = |m: &std::collections::BTreeMap<(String, String), String>| {
+                m.iter()
+                    .filter(|(k, l)| {
+                        k.0 == sec
+                            && paare(Some(l))
+                                .iter()
+                                .any(|(n, v)| n == "service" && *v == satz.kennung)
+                    })
+                    .map(|(k, l)| (k.1.clone(), l.clone()))
+                    .collect::<Vec<_>>()
+            };
+            if teile(&a) != teile(&b) {
+                out.push((sec.to_string(), None, None));
+            }
+        }
+    }
+    out
+}
+
+/// „Änderung verwerfen“ in der Vorschau (KA-3b3, paket-ka3b §3): Der Satz
+/// `satz` im Entwurf `entwurf` bekommt wieder seine Zeilen aus dem
+/// freigegebenen Stand `firma` (eine Bauleistung mit Stoffanteilen,
+/// Folgepositionen und Herkunft); was es dort nicht gibt, fällt weg. Die
+/// `[log]`-Zeilen, die der Entwurf dazu geschrieben hat, fallen mit weg.
+pub fn entwurf_ohne(firma: &str, entwurf: &str, satz: &SatzId) -> Result<String, Vec<Befund>> {
+    let fehler = |g: &str| {
+        vec![Befund::fehler(
+            93,
+            befund::r93("Änderung verwerfen", g),
+            Ort::Datei,
+        )]
+    };
+    let lies = |t: &str| sk_model::read_szk_with(t, &crate::satz::ABSCHNITTE_SZK);
+    let f = lies(firma).map_err(|_| fehler("der Firmenkatalog ist nicht lesbar"))?;
+    let mut e = lies(entwurf).map_err(|_| fehler("der Entwurf ist nicht lesbar"))?;
+    let alt = geltende_zeilen(&f);
+    let jetzt = geltende_zeilen(&e);
+    let feld = |l: &String, name: &str| {
+        crate::zeile::zerlegen(l).and_then(|z| {
+            z.paare
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, w)| w.clone())
+        })
+    };
+    // Die Zeilen des Satzes, in beiden Ständen
+    let mut zeilen: Vec<(String, String)> = Vec::new();
+    if satz.abschnitt != "catalog" {
+        zeilen.push((satz.abschnitt.to_string(), satz.kennung.clone()));
+    }
+    if satz.abschnitt == "service" {
+        for (k, l) in alt.iter().chain(jetzt.iter()) {
+            if matches!(k.0.as_str(), "svcpart" | "svcfollow")
+                && feld(l, "service").as_deref() == Some(satz.kennung.as_str())
+                && !zeilen.contains(k)
+            {
+                zeilen.push(k.clone());
+            }
+        }
+    }
+    let ids: Vec<String> = zeilen.iter().map(|k| k.1.clone()).collect();
+    for k in &zeilen {
+        let herkunft = ("origin".to_string(), k.1.clone());
+        for k in [k, &herkunft] {
+            match alt.get(k) {
+                Some(l) => {
+                    e.ext_declare(&crate::satz::ABSCHNITTE_SZK);
+                    e.ext_put(&k.0, &k.1, l.clone(), None);
+                }
+                None => {
+                    e.ext_remove(&k.0, &k.1);
+                }
+            }
+        }
+    }
+    // Verwaltungskennwort
+    let mut kopf_id = None;
+    if satz.abschnitt == "catalog" {
+        let mut k = kopf(&e).ok_or_else(|| fehler("der Entwurf hat keinen Kopf"))?;
+        k.setzen("pw", kopf(&f).and_then(|k| k.wert("pw").cloned()));
+        let id = k.kennung().unwrap_or_default();
+        e.ext_put("catalog", &id, k.zeile(), None);
+        kopf_id = Some(id);
+    }
+    // Protokollzeilen des Entwurfs zu diesem Satz
+    let bis = f
+        .ext("log")
+        .filter_map(|r| r.id.as_deref().and_then(|k| k.parse::<u32>().ok()))
+        .max()
+        .unwrap_or(0);
+    let weg: Vec<String> = e
+        .ext("log")
+        .filter(|r| {
+            r.id.as_deref()
+                .and_then(|k| k.parse::<u32>().ok())
+                .is_some_and(|k| k > bis)
+        })
+        .filter(|r| {
+            let of = feld(&r.line, "of");
+            of.is_some_and(|of| ids.contains(&of) || kopf_id.as_ref() == Some(&of))
+        })
+        .filter_map(|r| r.id.clone())
+        .collect();
+    for id in weg {
+        e.ext_remove("log", &id);
+    }
+    Ok(sk_model::write_szk(&e))
+}
+
 /// Der Firmenkatalog `text` mit den gesammelten Operationen der Verwaltung,
 /// rein im Speicher (paket-ka3a §3): derselbe Weg wie beim OK
 /// (`firma_anwenden`), nur wird nichts geschrieben. Ein Fehler sind die
@@ -445,6 +830,16 @@ pub fn mit_ops(text: &str, ops: &[Op]) -> Result<Library, Vec<Befund>> {
 /// Wie [`mit_ops`], dazu die geänderten Stammsätze (für die Vorschau des
 /// offenen Hauses: `StandUebernehmen` beim OK, Regel 89).
 pub fn mit_ops_saetze(text: &str, ops: &[Op]) -> Result<(Library, Vec<SatzId>), Vec<Befund>> {
+    mit_ops_in(text, ops, false)
+}
+
+/// Wie [`mit_ops_saetze`]; mit `entwurf` derselbe Weg wie beim Schreiben in
+/// den Entwurf (`entwurf_anwenden`, KA-3b2).
+pub fn mit_ops_in(
+    text: &str,
+    ops: &[Op],
+    entwurf: bool,
+) -> Result<(Library, Vec<SatzId>), Vec<Befund>> {
     // Regel 79 Nachtrag: ein Kurztext über 70 Zeichen gilt beim Lesen,
     // sperrt aber in der Verwaltung
     let lang: Vec<Befund> = ops
@@ -472,7 +867,11 @@ pub fn mit_ops_saetze(text: &str, ops: &[Op]) -> Result<(Library, Vec<SatzId>), 
     }
     // Mit dem Datum von heute, damit die Herkunft im Fenster stimmt
     let h = Herkunft::jetzt(HerkunftArt::Manual);
-    let neu = crate::firma_anwenden(text, text, Rolle::Admin, &h, ops)?;
+    let neu = if entwurf {
+        crate::entwurf_anwenden(text, text, Rolle::Admin, &h, ops)?
+    } else {
+        crate::firma_anwenden(text, text, Rolle::Admin, &h, ops)?
+    };
     let lib = sk_model::read_szk_with(&neu.text, &crate::lesen::ABSCHNITTE_SZK).map_err(|_| {
         vec![Befund::fehler(
             93,
@@ -740,6 +1139,86 @@ mod tests {
         firma_anwenden(text, text, Rolle::Admin, &hand(), ops)
             .unwrap()
             .text
+    }
+
+    /// KA-3b2/3b3 (paket-ka3b Abnahme 3 und 5): Mit Kennwort schreibt der
+    /// Administrator in den Entwurf (`status=draft`, Stand bleibt, `[log]`
+    /// mit dem kommenden Stand); der freigegebene Stand bleibt bytegleich.
+    /// Freigeben macht Stand 2 aus den Kostenabschnitten des Entwurfs, ein
+    /// inzwischen an einem anderen Platz gespeicherter Bauteiltyp bleibt (S3).
+    #[test]
+    fn entwurf_und_freigabe() {
+        let t0 = sk_model::write_szk(&Library::standard());
+        let lies = |t: &str| sk_model::read_szk_with(t, &crate::satz::ABSCHNITTE_SZK).unwrap();
+        let pw = Op::KennwortSetzen {
+            pw: Pruefwert::neu("Mauer", [3; 16]),
+        };
+        let t1 = schreiben(&t0, &[pw]);
+        let k1 = katalog(&t1);
+        let lohn = Op::FirmenwertSetzen {
+            schluessel: "wage".into(),
+            wert: Dez::ganz(62),
+        };
+        let a = k1.artikel.iter().find(|a| a.preis.is_some()).unwrap();
+        let preis = Op::PreisSetzen {
+            artikel: a.guid,
+            preis: Some(Dez::ganz(31)),
+            stand: "10/2026".into(),
+            quelle: "Händler".into(),
+            eingabe: String::new(),
+        };
+        let e1 = crate::entwurf_anwenden(&t1, &t1, Rolle::Admin, &hand(), &[lohn]).unwrap();
+        assert_eq!((e1.stand_vorher, e1.stand), (1, 1));
+        let e2 = crate::entwurf_anwenden(&e1.text, &e1.text, Rolle::Admin, &hand(), &[preis])
+            .unwrap()
+            .text;
+        let kopf = e2.lines().find(|l| l.starts_with("[catalog]")).unwrap();
+        assert!(
+            kopf.contains("status=draft") && kopf.contains("stand=1"),
+            "{kopf}"
+        );
+        assert!(ist_entwurf(&lies(&e2)) && !ist_entwurf(&lies(&t1)));
+        let neu = |t: &str, st: &str| {
+            t.lines()
+                .filter(|l| l.starts_with("[log]") && l.contains(st))
+                .count()
+        };
+        assert_eq!(neu(&e2, "stand=1"), neu(&t1, "stand=1") + 2);
+        assert!(katalog_von(&lies(&e2), 1)
+            .befunde
+            .iter()
+            .all(|b| b.regel == 91));
+        let s = entwurf_saetze(&lies(&t1), &lies(&e2));
+        assert_eq!(s.len(), 2, "{s:?}");
+        assert!(s.contains(&SatzId::neu("rate", "wage")));
+        assert!(s.contains(&SatzId::neu("article", a.guid.to_ifc())));
+        // Ein anderer Platz speichert inzwischen einen Bauteiltyp
+        let mut lib = lies(&t1);
+        let id = lib.types.iter().next().unwrap().0;
+        lib.types.get_mut(id).unwrap().name = "Typ von Platz B".into();
+        let t1b = sk_model::write_szk(&lib);
+        let f = freigeben(&t1b, &e2, &hand()).unwrap();
+        assert_eq!((f.stand_vorher, f.stand), (1, 2));
+        assert_eq!(f.saetze.len(), 2);
+        let k2 = katalog(&f.text);
+        assert_eq!(k2.werte.lohn, Dez::ganz(62));
+        assert_eq!(k2.artikel(a.guid).unwrap().preis, Some(Dez::ganz(31)));
+        let kopf = f.text.lines().find(|l| l.starts_with("[catalog]")).unwrap();
+        assert!(
+            kopf.contains("status=released") && kopf.contains("stand=2"),
+            "{kopf}"
+        );
+        assert!(kopf.contains("pw=pbkdf2-sha256"), "Kennwort bleibt: {kopf}");
+        assert!(f.text.contains("Typ von Platz B"), "S3: Bauteiltyp bleibt");
+        assert!(kennwort_stimmt(&lies(&f.text), "Mauer"));
+        assert_eq!(neu(&f.text, "stand=2"), 2);
+        assert_eq!(protokoll(&k2).iter().filter(|st| st.stand == 2).count(), 1);
+        // Inzwischen freigegeben: der Entwurf passt nicht mehr
+        let e = freigeben(&f.text, &e2, &hand()).unwrap_err();
+        assert!(e[0].satz.contains("beruht auf Stand 1"), "{}", e[0].satz);
+        // Der Entwurf allein gilt nie als Firmenkatalog (Regel 91)
+        let k = crate::lesen::firma_oder_werk(&Model::new(), Some(&lies(&e2)));
+        assert!(k.befunde.iter().any(|b| b.regel == 91));
     }
 
     /// KA-3a Abnahme 15: zwei Stände, „Diese Änderung zurücknehmen“ am

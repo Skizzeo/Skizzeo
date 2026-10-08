@@ -10,7 +10,9 @@
 //! (Bausteingrenze §5, die App führt es aus), Abbrechen verwirft; bis dahin
 //! ist nichts geschrieben. Ist ein Verwaltungskennwort gesetzt und an diesem
 //! Platz nicht eingegeben, steht statt des Fensters erst die Abfrage
-//! „Verwaltung öffnen“ ([`kennwort`]).
+//! „Verwaltung öffnen“ ([`kennwort`]). Mit Kennwort ändert die Verwaltung
+//! einen Entwurf: jede Eingabe wird gleich dorthin geschrieben, die
+//! Vorschau gibt ihn frei ([`entwurf`]).
 
 #[cfg(test)]
 mod abnahme_ka3a2;
@@ -19,6 +21,9 @@ mod abnahme_ka3a34;
 #[cfg(test)]
 mod abnahme_ka3a7;
 mod baum;
+mod entwurf;
+#[cfg(test)]
+mod entwurf_tests;
 mod felder;
 mod kennwort;
 #[cfg(test)]
@@ -28,6 +33,12 @@ mod tests;
 mod wirkung;
 
 pub use baum::Knoten;
+
+/// Sätze von Entwurf und Vorschau für die Satzprüfung.
+#[cfg(test)]
+pub fn entwurf_saetze() -> [&'static str; 2] {
+    entwurf::SAETZE
+}
 
 /// Sätze des Verwaltungskennworts für die Satzprüfung.
 #[cfg(test)]
@@ -53,6 +64,8 @@ use std::collections::HashSet;
 
 /// Rückgängig-Schritt im offenen Haus beim OK.
 pub const STEP: &str = "Firmenkatalog geändert";
+/// Rückgängig-Schritt im offenen Haus bei „Freigeben“ (KA-3b3).
+pub const FREIGEGEBEN: &str = "Firmenkatalog freigegeben";
 
 /// Fenstergröße und Teile (dip, soll-ka-3).
 const W: f32 = 1120.0;
@@ -108,6 +121,8 @@ enum Ziel {
     Verwerfen,
     /// Text mit Tooltip.
     Tipp(&'static str),
+    /// Pille „Entwurf · n Änderungen“ und Knopf „Vorschau …“ (KA-3b3).
+    Vorschau,
 }
 
 /// Was die App nach einem Ereignis tun muss.
@@ -128,6 +143,17 @@ pub struct Out {
     /// Verwaltungskennwort eingegeben: Die App führt diesen Platz ab jetzt
     /// als Verwaltung (KA-3b1).
     pub frei: bool,
+    /// Mit Kennwort: [`Verwaltung::ops`] in den Entwurf schreiben
+    /// (`Company::fuer_entwurf`), danach [`Verwaltung::entwurf_gespeichert`]
+    /// bzw. [`Verwaltung::fehler`] (KA-3b2).
+    pub entwurf: bool,
+    /// Vorschau: „Freigeben als Stand n+1“ (`Company::freigeben`).
+    pub freigeben: bool,
+    /// Vorschau: den ganzen Entwurf verwerfen (`Company::entwurf_verwerfen`).
+    pub entwurf_verwerfen: bool,
+    /// Vorschau: diese Änderung im Entwurf verwerfen
+    /// (`Company::entwurf_satz_verwerfen`).
+    pub satz_verwerfen: Option<SatzId>,
 }
 
 pub struct Ctx<'a> {
@@ -212,6 +238,14 @@ pub struct Verwaltung {
     abfrage: Option<kennwort::Abfrage>,
     /// Blatt „Verwaltungskennwort setzen“.
     setz: Option<kennwort::Setzen>,
+    /// Mit Verwaltungskennwort: der freigegebene Stand neben dem Entwurf
+    /// (KA-3b2). `basis` ist dann der Entwurf, solange einer offen ist.
+    freigabe: Option<entwurf::Freigabe>,
+    /// Die Operationen, deren Schreiben in den Entwurf zuletzt angestoßen
+    /// wurde (nach einem Fehler nicht noch einmal dieselben).
+    versucht: Vec<Op>,
+    /// Blatt „Vorschau · Entwurf → Stand n+1“ (KA-3b3).
+    vorschau: Option<entwurf::Vorschau>,
 }
 
 /// „0,55“ statt „0.55“.
@@ -254,12 +288,12 @@ fn titel(vorher: &Katalog, ohne_firma: bool) -> String {
             sk_cost::lesen::werksstand()
         ),
         Some(k) => {
-            let datum = k.satz.text("date").unwrap_or_default();
-            format!(
-                "Firmenkatalog „{}“ · vom {}",
-                k.name,
-                baum::zeit_text(datum)
-            )
+            let datum = baum::zeit_text(k.satz.text("date").unwrap_or_default());
+            // Kopfzeilen nennen den Stand (Bedienbarkeit 2.6)
+            match k.stand {
+                0 => format!("Firmenkatalog „{}“ · vom {datum}", k.name),
+                n => format!("Firmenkatalog „{}“ · Stand {n} vom {datum}", k.name),
+            }
         }
         None => format!(
             "Firmenkatalog · Werksbestand {}",
@@ -301,26 +335,21 @@ impl Verwaltung {
     /// OK schreibt nicht), auf Wunsch mit `wahl` gewählt.
     pub fn open(scene: &Scene, company: Option<&Company>, wahl: Option<Knoten>) -> Verwaltung {
         let m = scene.model().clone();
-        let (basis, lib0) = match company {
-            Some(c) => (c.geladen().to_string(), c.library().clone()),
-            None => (String::new(), Library::standard()),
-        };
-        // Ohne Datei schreibt die erste Änderung sie neu; die Vorschau
-        // braucht dann einen lesbaren leeren Katalog
-        let basis = if basis.trim().is_empty() {
-            sk_model::write_szk(&lib0)
-        } else {
-            basis
-        };
+        // Mit Verwaltungskennwort arbeitet die Verwaltung am Entwurf
+        let freigabe = company
+            .filter(|c| sk_cost::verwaltung::hat_kennwort(c.library()))
+            .map(|c| entwurf::Freigabe::neu(&m, c));
+        let (basis, lib0, kaputt) = entwurf::grundlage(company, freigabe.is_some());
+        let ohne_firma = company.is_none() || kaputt;
         let vorher = sk_cost::lesen::firma_oder_werk(&m, Some(&lib0));
-        let titel = titel(&vorher, company.is_none());
+        let titel = titel(freigabe.as_ref().map_or(&vorher, |f| &f.kat), ohne_firma);
         let ordner = company.and_then(|c| c.path().parent().map(|p| p.join(wirkung::ORDNER)));
         let wirkung = wirkung::Wirkung::laden(&lib0, &m, ordner.as_deref());
         let mut v = Verwaltung {
             basis,
             lib: lib0.clone(),
             lib0,
-            ohne_firma: company.is_none(),
+            ohne_firma,
             titel,
             m,
             jetzt: vorher.clone(),
@@ -354,6 +383,9 @@ impl Verwaltung {
             je: None,
             abfrage: None,
             setz: None,
+            freigabe,
+            versucht: Vec::new(),
+            vorschau: None,
         };
         let gibt_es = |k: &Knoten| match k {
             Knoten::Leistung(g) => v.jetzt.leistung(*g).is_some(),
@@ -369,6 +401,10 @@ impl Verwaltung {
         });
         v.waehlen(w);
         v.luecken0 = v.luecken_jetzt();
+        if kaputt {
+            v.meldung = Some(entwurf::KAPUTT.into());
+        }
+        v.entwurf_zaehlen();
         v
     }
 
@@ -386,20 +422,22 @@ impl Verwaltung {
     /// auf: die Eingaben bleiben, „vorher“ zeigt die Werte des anderen
     /// Platzes. Sonst überschriebe das nächste OK sie ungesehen (Review 3ar).
     pub fn neu_grundlage(&mut self, company: &Company) {
-        if company.geladen() == self.basis {
+        // Der freigegebene Stand neben dem Entwurf (ein anderer Platz hat
+        // freigegeben)
+        if self
+            .freigabe
+            .as_ref()
+            .is_some_and(|f| f.text != company.geladen())
+        {
+            self.freigabe = Some(entwurf::Freigabe::neu(&self.m, company));
+        }
+        let (basis, lib0, kaputt) = entwurf::grundlage(Some(company), self.freigabe.is_some());
+        if basis == self.basis {
+            self.entwurf_zaehlen();
             return;
         }
-        let lib0 = company.library().clone();
-        self.basis = if company.geladen().trim().is_empty() {
-            sk_model::write_szk(&lib0)
-        } else {
-            company.geladen().to_string()
-        };
-        self.vorher = sk_cost::lesen::firma_oder_werk(&self.m, Some(&lib0));
-        self.titel = titel(&self.vorher, self.ohne_firma);
-        self.wirkung = wirkung::Wirkung::laden(&lib0, &self.m, self.ordner.as_deref());
-        self.lib0 = lib0;
-        self.luecken0 = self.luecken_jetzt();
+        self.ohne_firma |= kaputt;
+        self.basis_setzen(basis, lib0, true);
         // Eine Rücknahme ist gegen den alten Stand gerechnet: gegen den
         // neuen neu rechnen, sonst schriebe das nächste OK die alten Werte
         // über die Änderung des anderen Platzes (Befund E)
@@ -423,6 +461,24 @@ impl Verwaltung {
             }
         }
         self.neu_rechnen();
+    }
+
+    /// Neue Grundlage `basis` (Text) und `lib0`; `ganz`: Referenzhäuser neu
+    /// lesen, sonst nur neu rechnen.
+    fn basis_setzen(&mut self, basis: String, lib0: Library, ganz: bool) {
+        self.basis = basis;
+        self.vorher = sk_cost::lesen::firma_oder_werk(&self.m, Some(&lib0));
+        self.titel = titel(
+            self.freigabe.as_ref().map_or(&self.vorher, |f| &f.kat),
+            self.ohne_firma,
+        );
+        if ganz {
+            self.wirkung = wirkung::Wirkung::laden(&lib0, &self.m, self.ordner.as_deref());
+        } else {
+            self.wirkung.grundlage(&lib0);
+        }
+        self.lib0 = lib0;
+        self.luecken0 = self.luecken_jetzt();
     }
 
     /// Die gesammelten Operationen (für OK).
@@ -464,9 +520,16 @@ impl Verwaltung {
             self.befunde.clear();
             self.fehler_feld = None;
         } else {
-            match sk_cost::verwaltung::mit_ops_saetze(&self.basis, &self.ops) {
+            let entwurf = self.freigabe.is_some();
+            match sk_cost::verwaltung::mit_ops_in(&self.basis, &self.ops, entwurf) {
                 Ok((lib, s)) => {
                     saetze = s;
+                    // Der Entwurf rechnet hier wie ein Firmenkatalog
+                    let lib = if entwurf {
+                        sk_cost::verwaltung::wie_freigegeben(&lib)
+                    } else {
+                        lib
+                    };
                     self.jetzt = sk_cost::lesen::firma_oder_werk(&self.m, Some(&lib));
                     self.lib = lib;
                     self.fehler_feld = None;
@@ -490,6 +553,7 @@ impl Verwaltung {
         }
         self.wirkung.rechnen(&self.lib, &saetze);
         self.saetze = saetze;
+        self.entwurf_zaehlen();
     }
 
     /// Name des offenen Hauses (Dateiname ohne Endung).
@@ -926,14 +990,25 @@ impl Verwaltung {
         self.r(w, 10.0, y, LISTE - 20.0, ZEILE)
     }
 
-    fn knoepfe(&self, w: &Win) -> [(Ziel, Rect, &'static str); 2] {
+    fn knoepfe(&self, w: &Win) -> Vec<(Ziel, Rect, &'static str)> {
         let (ww, hh) = self.dip(w);
         let (links, rechts) = if self.frage {
             ((Ziel::Zurueck, "Zurück"), (Ziel::Verwerfen, "Verwerfen"))
+        } else if self.freigabe.is_some() {
+            // Im Entwurf ist jede Eingabe gleich geschrieben: kein OK, nur
+            // die Vorschau (soll-ka-3b)
+            return match self.entwurf_anzahl() {
+                0 => Vec::new(),
+                _ => vec![(
+                    Ziel::Vorschau,
+                    self.r(w, ww - 190.0, hh - 48.0, 170.0, 32.0),
+                    "Vorschau …",
+                )],
+            };
         } else {
             ((Ziel::Abbrechen, "Abbrechen"), (Ziel::Ok, "OK"))
         };
-        [
+        vec![
             (
                 links.0,
                 self.r(w, ww - 260.0, hh - 48.0, 120.0, 32.0),
@@ -999,6 +1074,9 @@ impl Verwaltung {
         if !f.contains(x, y) {
             return None;
         }
+        if self.pille_rect(w, fonts).is_some_and(|r| r.contains(x, y)) {
+            return Some(Ziel::Vorschau);
+        }
         if dy < HEAD {
             return Some(Ziel::Kopf);
         }
@@ -1030,11 +1108,20 @@ impl Verwaltung {
     // --- Ereignisse -----------------------------------------------------------
 
     pub fn handle(&mut self, e: &Event, cx: &mut Ctx) -> Out {
+        let mut out = self.handle_innen(e, cx);
+        out.entwurf = self.entwurf_faellig();
+        out
+    }
+
+    fn handle_innen(&mut self, e: &Event, cx: &mut Ctx) -> Out {
         if self.abfrage.is_some() {
             return self.abfrage_handle(e, cx);
         }
         if self.setz.is_some() {
             return self.setz_handle(e, cx);
+        }
+        if self.vorschau.is_some() {
+            return self.vorschau_handle(e, cx);
         }
         let mut out = Out::default();
         match *e {
@@ -1076,6 +1163,7 @@ impl Verwaltung {
                         Some(Ziel::Abbrechen) | Some(Ziel::Verwerfen) => out.closed = true,
                         Some(Ziel::Schliessen) => self.schliessen(&mut out),
                         Some(Ziel::Zurueck) => self.frage = false,
+                        Some(Ziel::Vorschau) => self.vorschau_oeffnen(),
                         _ => {}
                     }
                 }
@@ -1129,7 +1217,8 @@ impl Verwaltung {
 
     fn ok(&mut self, out: &mut Out) {
         self.ende_edit(true);
-        if self.gesperrt() {
+        // Im Entwurf gibt es kein OK: geschrieben wird je Eingabe
+        if self.gesperrt() || self.freigabe.is_some() {
             return;
         }
         if self.ops.is_empty() {
@@ -1214,6 +1303,7 @@ impl Verwaltung {
             }
             Some(
                 z @ (Ziel::Ok
+                | Ziel::Vorschau
                 | Ziel::Abbrechen
                 | Ziel::Schliessen
                 | Ziel::Zurueck
@@ -1396,6 +1486,22 @@ impl Verwaltung {
             // Unlesbares Referenzhaus grau (Regel 106)
             let farbe = if z.grau { u.text_disabled } else { u.text };
             label(c, font, &text, px, tx, base, farbe);
+            // Punkt an Einträgen, die der Entwurf ändert (soll-ka-3b)
+            if self.entwurf_geaendert(&z.knoten) {
+                let tw = font.map_or(0.0, |f| f.width(&text, px));
+                let d = 3.0 * s;
+                rounded(
+                    c,
+                    Rect {
+                        x: (tx + tw + 8.0 * s).round(),
+                        y: (r.y + r.h * 0.5 - d).round(),
+                        w: 2.0 * d,
+                        h: 2.0 * d,
+                    },
+                    d,
+                    u.accent,
+                );
+            }
             if let (Some(n), Some(fr)) = (z.anzahl, regular) {
                 let ns = n.to_string();
                 let pxs = t.size.font_small * s;
@@ -1472,6 +1578,7 @@ impl Verwaltung {
             f.y + 34.0 * s,
             u.text_dim,
         );
+        self.pille_malen(c, t, fonts, w);
         let cr = self.close_rect(w);
         if self.hover == Some(Ziel::Schliessen) {
             rounded(c, cr, 6.0 * s, u.hover);
@@ -1515,6 +1622,7 @@ impl Verwaltung {
             }
         }
         self.setz_malen(c, t, fonts, w);
+        self.vorschau_malen(c, t, fonts, w);
     }
 
     /// Fuß links: Wirkzeile, sonst der sperrende Befund oder die Meldung.
@@ -1531,9 +1639,17 @@ impl Verwaltung {
         let base = fy + 27.0 * s;
         let f = self.frame(w);
         let mut x = f.x + 20.0 * s;
-        let rand = self.knoepfe(w)[0].1.x - 16.0 * s;
+        let rand = self
+            .knoepfe(w)
+            .first()
+            .map_or(f.x + f.w - 20.0 * s, |k| k.1.x - 16.0 * s);
         let gilt = if self.ohne_firma {
             "Ohne Firmenkatalog lässt sich hier nichts speichern."
+        } else if self.freigabe.is_some() {
+            if self.entwurf_fuss(c, t, fonts, w, fy, rand) {
+                return;
+            }
+            ""
         } else {
             "Gilt für neue Häuser und dieses Haus, außer wo es eigene Werte hat. Gespeicherte Häuser zeigen oben „Für neue Häuser gilt …“."
         };
