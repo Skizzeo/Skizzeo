@@ -457,6 +457,10 @@ type LvSchluessel = ((u64, u64, Umfang), u64, sk_cost::lv::LvWahl);
 
 pub struct Scene {
     model: Model,
+    /// Rolle dieser Sitzung für Kostenoperationen (KA-3b1): `Nutzer`, wenn
+    /// der Firmenkatalog ein Verwaltungskennwort hat und es hier nicht
+    /// eingegeben ist; sonst `Admin`. Die App setzt sie.
+    pub rolle: sk_cost::Rolle,
     /// Schritte für „Rückgängig“ (die ältesten fallen nach [`HISTORY`] weg).
     undo: Vec<Txn>,
     /// Rückgängig gemachte Schritte für „Wiederholen“.
@@ -780,6 +784,7 @@ impl Scene {
             undo: Vec::new(),
             serial: 0,
             redo: Vec::new(),
+            rolle: sk_cost::Rolle::Admin,
             cache: Vec::new(),
             dirty: Vec::new(),
             all_dirty: true,
@@ -969,10 +974,7 @@ impl Scene {
         // (`Katalog::mit`), alles andere über den Plan
         let k = match self.katalog(firma).mit(ops) {
             Some(k) => k,
-            None => {
-                sk_cost::vorschau(&self.model, firma.map(|f| f.0), sk_cost::Rolle::Admin, ops)?
-                    .katalog
-            }
+            None => sk_cost::vorschau(&self.model, firma.map(|f| f.0), self.rolle, ops)?.katalog,
         };
         let k = Rc::new(k);
         // Gleiche Umfänge (Blatt und Chips ohne Abwahl) nur einmal rechnen
@@ -2201,15 +2203,9 @@ impl Scene {
         ops: &[sk_cost::Op],
     ) -> Result<(), Vec<sk_cost::Befund>> {
         // Erst prüfen: ein abgelehnter Plan öffnet keinen Schritt
-        sk_cost::vorschau(&self.model, firma, sk_cost::Rolle::Admin, ops)?;
+        sk_cost::vorschau(&self.model, firma, self.rolle, ops)?;
         self.begin(label);
-        match sk_cost::ausfuehren_folge(
-            &mut self.model,
-            firma,
-            sk_cost::Rolle::Admin,
-            herkunft,
-            ops,
-        ) {
+        match sk_cost::ausfuehren_folge(&mut self.model, firma, self.rolle, herkunft, ops) {
             Ok(()) => {
                 self.commit();
                 Ok(())
@@ -2273,13 +2269,27 @@ impl Scene {
     ) -> Result<Option<crate::meldung::Meldung>, crate::meldung::Meldung> {
         use crate::meldung::Meldung;
         let satz = |b: Vec<sk_cost::Befund>| Meldung::aus_befunden(&b, "Nichts geändert.");
-        sk_cost::vorschau(
-            &self.model,
-            Some(firma.library()),
-            sk_cost::Rolle::Admin,
-            ops,
-        )
-        .map_err(satz)?;
+        // Den Firmenkatalog ändert nur, wer verwaltet (KA-3b1)
+        if self.rolle != sk_cost::Rolle::Admin {
+            if let Some(op) = ops.first() {
+                return Err(satz(vec![sk_cost::Befund::fehler(
+                    93,
+                    sk_cost::befund::r93(&op.bezeichnung(), "nur in der Verwaltung"),
+                    sk_cost::befund::Ort::Datei,
+                )]));
+            }
+        }
+        // Vorab am Haus geprüft; das Kennwort gilt nur in der Firma und
+        // prüft `Company::fuer_firma`
+        let am_haus: Vec<sk_cost::Op> = ops
+            .iter()
+            .filter(|o| !matches!(o, sk_cost::Op::KennwortSetzen { .. }))
+            .cloned()
+            .collect();
+        if !am_haus.is_empty() {
+            sk_cost::vorschau(&self.model, Some(firma.library()), self.rolle, &am_haus)
+                .map_err(satz)?;
+        }
         // Ohne Kopie rechnet dieses Haus mit der Firma. Damit Strg+Z genau
         // diese Änderung zurücknimmt (und nicht den letzten Bauschritt),
         // bekommt es vorher still die Kopie der bisherigen Werte; der
@@ -2334,7 +2344,7 @@ impl Scene {
     ) -> Result<sk_cost::Plan, Vec<sk_cost::Befund>> {
         self.schedule();
         let sched = self.schedule.as_ref().expect("gerade berechnet").1.clone();
-        sk_cost::vorschau_kosten(&self.model, &sched, firma, sk_cost::Rolle::Admin, ops, u)
+        sk_cost::vorschau_kosten(&self.model, &sched, firma, self.rolle, ops, u)
     }
 
     /// Ändert Bauteiltypen in einem Schritt (K3: „OK“ im Bauteilkatalog).

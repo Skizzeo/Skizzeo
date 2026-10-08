@@ -273,9 +273,16 @@ enum Flash {
     U = 2,
 }
 
+/// Hinweis am gesperrten „In den Firmenkatalog …“ (KA-3b1).
+pub(crate) const NUR_LESBAR: &str =
+    "Nur lesbar: In den Firmenkatalog speichert erst, wer unter „Verwaltung …“ das Kennwort eingibt";
+
 pub struct Catalog {
     work: Model,
     pub tab: Tab,
+    /// Verwaltungskennwort gesetzt und hier nicht eingegeben (KA-3b1): die
+    /// Firma nur lesen, nicht hineinspeichern.
+    nutzer: bool,
     /// Gewählter Projekttyp; `None` mit `draft_new`: neuer Typ.
     sel: Option<LayerSetId>,
     draft: LayerSet,
@@ -438,6 +445,7 @@ impl Catalog {
         let mut c = Catalog {
             work,
             tab: Tab::Project,
+            nutzer: false,
             sel,
             draft,
             draft_new: false,
@@ -1415,7 +1423,7 @@ impl Catalog {
             Target::Btn(Btn::Delete) => self.delete(),
             Target::Btn(Btn::Action) => match self.tab {
                 Tab::Project => {
-                    if self.blocked() || cx.company.is_none() || self.draft_new {
+                    if self.nutzer || self.blocked() || cx.company.is_none() || self.draft_new {
                         return;
                     }
                     self.popup = Some(Popup::Export(self.draft.guid, false));
@@ -2346,7 +2354,7 @@ impl Catalog {
                 self.commit_draft();
             }
             Some(Popup::Export(g, changed)) => {
-                let Some(company) = cx.company.as_deref_mut() else {
+                let Some(company) = cx.company.as_deref_mut().filter(|_| !self.nutzer) else {
                     self.popup = None;
                     return;
                 };
@@ -2375,6 +2383,11 @@ impl Catalog {
             _ => {}
         }
         let _ = out;
+    }
+
+    /// Rolle Nutzer (KA-3b1): „In den Firmenkatalog …“ gesperrt.
+    pub fn set_nutzer(&mut self, nutzer: bool) {
+        self.nutzer = nutzer;
     }
 
     /// Neuer Typ aus einem Typ des Firmenkatalogs oder leer.
@@ -2710,6 +2723,9 @@ impl Catalog {
             }
             Target::Btn(Btn::Action) if self.tab == Tab::Project && self.company.is_none() => {
                 Some("Ohne Einstellungen gibt es keinen Firmenkatalog".into())
+            }
+            Target::Btn(Btn::Action) if self.tab == Tab::Project && self.nutzer => {
+                Some(NUR_LESBAR.into())
             }
             Target::Grip(_) => Some("Ziehen sortiert um".into()),
             Target::Bearing(true) => self.fixed_blocked().map(Into::into),
@@ -3264,7 +3280,7 @@ impl Catalog {
         for (b, r, text) in self.foot_buttons(t, w) {
             let disabled = b == Btn::Action
                 && (no_company
-                    || (self.tab == Tab::Project && self.draft_new)
+                    || (self.tab == Tab::Project && (self.draft_new || self.nutzer))
                     || (self.tab == Tab::Company && self.csel.is_none()));
             widgets::button(
                 c,

@@ -205,6 +205,13 @@ pub enum Op {
         artikel: Guid,
         conv: Option<Dez>,
     },
+    /// `[catalog] pw` (KA-3b1): Prüfwert des Verwaltungskennworts
+    /// (PBKDF2, Review 3at); leer heißt zurück zum Einzelplatz. Nur im
+    /// Firmenkatalog; das Kennwort selbst steht nirgends, auch nicht in der
+    /// Operation.
+    KennwortSetzen {
+        pw: crate::verwaltung::Pruefwert,
+    },
     BauleistungAnlegen(Bauleistung),
     BauleistungAendern {
         bauleistung: Guid,
@@ -265,7 +272,7 @@ pub enum Op {
 
 /// Alle Operationen mit festem Namen (für Schema, `[log] op`, Abläufe):
 /// Name, Angaben, nur in der Verwaltung.
-pub const NAMEN: [(&str, &str, bool); 17] = [
+pub const NAMEN: [(&str, &str, bool); 18] = [
     ("artikel_anlegen", "baustoff name dicke guete format einheit preis stand quelle lieferant standard", true),
     ("preis_setzen", "artikel preis stand quelle", false),
     ("bauleistung_anlegen", "kurz gewerk titel pos einheit bezug stunden geraet sonst nu kg kategorien mat tmin tmax funktion", true),
@@ -283,6 +290,7 @@ pub const NAMEN: [(&str, &str, bool); 17] = [
     ("abgleich_lassen", "stand", false),
     ("lv_gliederung_setzen", "untertitel", false),
     ("umrechnung_setzen", "artikel conv (leer = entfernen)", false),
+    ("kennwort_setzen", "pw (Prüfwert pbkdf2-sha256$…, leer = Einzelplatz)", true),
 ];
 
 /// „65,5“ statt „65.5“.
@@ -311,6 +319,7 @@ impl Op {
             Op::AbgleichLassen { .. } => 14,
             Op::LvGliederungSetzen { .. } => 15,
             Op::UmrechnungSetzen { .. } => 16,
+            Op::KennwortSetzen { .. } => 17,
         }
     }
 
@@ -331,6 +340,8 @@ impl Op {
                 format!("Umrechnung gesetzt: {} Stück je Einheit", komma(*c))
             }
             Op::UmrechnungSetzen { conv: None, .. } => "Umrechnung entfernt".into(),
+            Op::KennwortSetzen { pw } if pw.ist_leer() => "Verwaltungskennwort entfernt".into(),
+            Op::KennwortSetzen { .. } => "Verwaltungskennwort gesetzt".into(),
             Op::BauleistungAnlegen(d) => format!("Bauleistung angelegt: {}", d.kurz),
             Op::BauleistungAendern { daten, .. } => format!("Bauleistung geändert: {}", daten.kurz),
             Op::StoffanteilSetzen { nr, anteil, .. } => match anteil {
@@ -678,6 +689,15 @@ impl Arbeit<'_> {
                 s.setzen("conv", conv.map(Wert::Zahl));
                 let id = self.satz_schreiben(&s, op)?;
                 self.herkunft_setzen("article", &id);
+            }
+            // Schreibt `firma_anwenden` in den Kopf; ein Projekt hat keins
+            Op::KennwortSetzen { pw } => {
+                if ziel == Ziel::Projekt {
+                    return Err(abgelehnt(op, "das Kennwort gilt nur im Firmenkatalog"));
+                }
+                if !pw.ist_leer() && crate::verwaltung::Pruefwert::lesen(pw.text()).is_none() {
+                    return Err(abgelehnt(op, "der Prüfwert ist nicht lesbar"));
+                }
             }
             Op::BauleistungAnlegen(d) => {
                 let g = self.neue_guid();
@@ -1481,8 +1501,10 @@ pub fn firma_anwenden(
     };
     let mut lib = lies(text).map_err(|_| fehler("der Firmenkatalog ist nicht lesbar"))?;
     let alt = lies(geladen).map_err(|_| fehler("der geladene Stand ist nicht lesbar"))?;
+    // Den Firmenkatalog ändert ein Nutzer nie, auch keinen Preis (KA-3b1,
+    // verwaltung.md §3: „nur Projekt“)
     for op in ops {
-        if op.nur_admin() && rolle != Rolle::Admin {
+        if rolle == Rolle::Nutzer || (op.nur_admin() && rolle != Rolle::Admin) {
             return Err(abgelehnt(op, "nur in der Verwaltung"));
         }
     }
@@ -1583,6 +1605,15 @@ pub fn firma_anwenden(
     });
     kopf.setzen("stand", Some(Wert::Ganz(i64::from(stand))));
     kopf.setzen("date", Some(Wert::Text(herkunft.datum.clone())));
+    // Verwaltungskennwort (KA-3b1): nur der Prüfwert
+    let mut kennwort: Vec<(bool, bool)> = Vec::new();
+    for op in ops {
+        if let Op::KennwortSetzen { pw } = op {
+            kennwort.push((kopf.wert("pw").is_some(), !pw.ist_leer()));
+            let neu = (!pw.ist_leer()).then(|| Wert::Text(pw.text().to_string()));
+            kopf.setzen("pw", neu);
+        }
+    }
     let kopf_id = kopf.kennung().unwrap_or_default();
     lib.ext_declare(&satz::ABSCHNITTE_SZK);
     lib.ext_put("catalog", &kopf_id, kopf.zeile(), None);
@@ -1662,6 +1693,18 @@ pub fn firma_anwenden(
             &x.satz.kennung,
             o,
             n,
+        );
+    }
+    // Das Protokoll nennt nur „gesetzt“, nie die Prüfsumme
+    let wort = |b: bool| if b { "gesetzt" } else { "" }.to_string();
+    for (war, ist) in kennwort {
+        log(
+            &mut lib,
+            "kennwort_setzen",
+            "catalog",
+            &kopf_id,
+            wort(war),
+            wort(ist),
         );
     }
     Ok(FirmaNeu {

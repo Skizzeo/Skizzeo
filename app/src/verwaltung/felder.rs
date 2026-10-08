@@ -286,6 +286,7 @@ impl Verwaltung {
         let k = &self.jetzt;
         match self.wahl.clone() {
             Knoten::Firmenwerte => self.firmenwerte(&mut b),
+            Knoten::Kennwort => self.kennwort_seite(&mut b),
             Knoten::Leistung(g) => match k.leistung(g) {
                 Some(l) => self.leistung(&mut b, l),
                 None => self.fehlt(&mut b),
@@ -623,6 +624,29 @@ impl Verwaltung {
             self.feld_zeile(b, y, &name, Feld::Wert(key), 130.0, einheit.into());
             y += ABSTAND;
         }
+    }
+
+    /// „Verwaltungskennwort“ (soll-ka-3c): Satz zum Ist-Zustand und Knopf.
+    fn kennwort_seite(&self, b: &mut Bau) {
+        let gesetzt = sk_cost::verwaltung::hat_kennwort(&self.lib0);
+        let geplant = self.ops.iter().find_map(|o| match o {
+            sk_cost::Op::KennwortSetzen { pw } => Some(pw.ist_leer()),
+            _ => None,
+        });
+        let satz = match (geplant, gesetzt) {
+            (Some(true), _) => "Wird mit OK entfernt: Danach arbeitet Skizzeo wieder als Einzelplatz.",
+            (Some(false), _) => "Wird mit OK gesetzt.",
+            (None, true) => "Gesetzt: Änderungen sammeln sich in einem Entwurf; die anderen Plätze sehen sie erst nach „Freigeben“.",
+            (None, false) => "Nicht gesetzt: Skizzeo arbeitet als Einzelplatz, jede Änderung gilt mit OK.",
+        };
+        let y = b.kopf("Verwaltungskennwort", "");
+        let y = b.absatz(0.0, y - 46.0, satz, Farbe::Dim) + 20.0;
+        let knopf = if gesetzt || geplant == Some(false) {
+            "Kennwort ändern …"
+        } else {
+            "Verwaltungskennwort setzen …"
+        };
+        b.knopf(0.0, y, knopf, Aktion::Kennwort);
     }
 
     fn leistung(&self, b: &mut Bau, l: &Leistung) {

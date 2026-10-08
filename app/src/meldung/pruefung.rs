@@ -419,6 +419,7 @@ fn nutzersaetze_sauber() {
     }
     for t in [
         r::r71(),
+        r::r72_pw(),
         r::r73("Bauleistung Mauerwerk 17,5", "einen Artikel, den"),
         r::r73w("Porenbeton"),
         r::r75("Verrechnungslohn"),
@@ -438,6 +439,11 @@ fn nutzersaetze_sauber() {
         r::r99("AW Porenbeton 17,5", "Porenbeton"),
     ] {
         dazu("Regel", &t);
+    }
+
+    // Verwaltungskennwort (KA-3b1)
+    for t in crate::verwaltung::kennwort_saetze() {
+        dazu("Kennwort", t);
     }
 
     // Abgleichzeile: ein Wert, mehrere Werte

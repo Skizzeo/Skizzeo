@@ -321,6 +321,33 @@ extern "system" {
 const CF_UNICODETEXT: u32 = 13;
 const GMEM_MOVEABLE: u32 = 0x0002;
 
+#[link(name = "bcrypt")]
+extern "system" {
+    fn BCryptGenRandom(alg: HANDLE, buf: *mut u8, len: u32, flags: u32) -> i32;
+}
+
+const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 2;
+
+/// Zufallsbytes vom System-Zufallsgenerator.
+pub fn zufall(buf: &mut [u8]) -> std::io::Result<()> {
+    for teil in buf.chunks_mut(1 << 20) {
+        // SAFETY: Puffer und Länge gehören zusammen, kein Algorithmus-Handle
+        // mit BCRYPT_USE_SYSTEM_PREFERRED_RNG
+        let st = unsafe {
+            BCryptGenRandom(
+                null_mut(),
+                teil.as_mut_ptr(),
+                teil.len() as u32,
+                BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+            )
+        };
+        if st != 0 {
+            return Err(std::io::Error::other(format!("BCryptGenRandom {st:#x}")));
+        }
+    }
+    Ok(())
+}
+
 /// Text aus der Zwischenablage (`None`, wenn keiner da ist).
 pub fn clipboard_text() -> Option<String> {
     unsafe {

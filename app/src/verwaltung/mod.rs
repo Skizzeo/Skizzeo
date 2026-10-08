@@ -8,7 +8,9 @@
 //! Speicher ([`sk_cost::verwaltung::mit_ops`], derselbe Weg wie beim OK).
 //! OK schreibt alles als einen neuen Stand über `Scene::fuer_firma`
 //! (Bausteingrenze §5, die App führt es aus), Abbrechen verwirft; bis dahin
-//! ist nichts geschrieben. Es gibt keinen Entwurf und keine Freigabe.
+//! ist nichts geschrieben. Ist ein Verwaltungskennwort gesetzt und an diesem
+//! Platz nicht eingegeben, steht statt des Fensters erst die Abfrage
+//! „Verwaltung öffnen“ ([`kennwort`]).
 
 #[cfg(test)]
 mod abnahme_ka3a2;
@@ -18,11 +20,20 @@ mod abnahme_ka3a34;
 mod abnahme_ka3a7;
 mod baum;
 mod felder;
+mod kennwort;
+#[cfg(test)]
+mod kennwort_tests;
 #[cfg(test)]
 mod tests;
 mod wirkung;
 
 pub use baum::Knoten;
+
+/// Sätze des Verwaltungskennworts für die Satzprüfung.
+#[cfg(test)]
+pub fn kennwort_saetze() -> [&'static str; 5] {
+    kennwort::SAETZE
+}
 
 use crate::catalog::Company;
 use crate::catalog_view::Frame;
@@ -77,6 +88,8 @@ pub enum Aktion {
     Je(Einheit),
     /// Vorgeschlagene Stück je Einheit bestätigen (Regel 108).
     ConvBestaetigen(Guid),
+    /// Blatt „Verwaltungskennwort setzen“ öffnen (KA-3b1).
+    Kennwort,
 }
 
 /// Ziel unter der Maus.
@@ -112,6 +125,9 @@ pub struct Out {
     /// Stand zurücknehmen: die App holt die Operationen über
     /// `Company::umkehr` und gibt sie an [`Verwaltung::zuruecknehmen`].
     pub zurueck: Option<u32>,
+    /// Verwaltungskennwort eingegeben: Die App führt diesen Platz ab jetzt
+    /// als Verwaltung (KA-3b1).
+    pub frei: bool,
 }
 
 pub struct Ctx<'a> {
@@ -191,6 +207,11 @@ pub struct Verwaltung {
     /// Rückfrage vor dem Verwerfen (Esc, ×) steht im Fuß.
     frage: bool,
     je: Option<Je>,
+    /// Abfrage „Verwaltung öffnen“ (Kennwort gesetzt, an diesem Platz noch
+    /// nicht eingegeben).
+    abfrage: Option<kennwort::Abfrage>,
+    /// Blatt „Verwaltungskennwort setzen“.
+    setz: Option<kennwort::Setzen>,
 }
 
 /// „0,55“ statt „0.55“.
@@ -331,6 +352,8 @@ impl Verwaltung {
             luecken0: Vec::new(),
             frage: false,
             je: None,
+            abfrage: None,
+            setz: None,
         };
         let gibt_es = |k: &Knoten| match k {
             Knoten::Leistung(g) => v.jetzt.leistung(*g).is_some(),
@@ -832,6 +855,7 @@ impl Verwaltung {
             Aktion::HausOeffnen(i) => self.waehlen(Knoten::Haus(i)),
             Aktion::Je(e) => self.je_waehlen(e),
             Aktion::ConvBestaetigen(g) => self.conv_bestaetigen(g),
+            Aktion::Kennwort => self.setz = Some(kennwort::Setzen::default()),
         }
         None
     }
@@ -840,6 +864,9 @@ impl Verwaltung {
 
     fn size(&self, w: &Win) -> (f32, f32) {
         let s = w.scale;
+        if self.abfrage.is_some() {
+            return ((kennwort::ABF_W * s).round(), (kennwort::ABF_H * s).round());
+        }
         let ww = (W * s).min(w.w as f32);
         let hh = (H * s).min((w.h - w.top) as f32);
         (ww.round(), hh.round())
@@ -1003,6 +1030,12 @@ impl Verwaltung {
     // --- Ereignisse -----------------------------------------------------------
 
     pub fn handle(&mut self, e: &Event, cx: &mut Ctx) -> Out {
+        if self.abfrage.is_some() {
+            return self.abfrage_handle(e, cx);
+        }
+        if self.setz.is_some() {
+            return self.setz_handle(e, cx);
+        }
         let mut out = Out::default();
         match *e {
             Event::MouseMove { x, y, .. } => {
@@ -1132,6 +1165,7 @@ impl Verwaltung {
                     | Aktion::Zuruecknehmen(_)
                     | Aktion::AlsReferenz
                     | Aktion::ConvBestaetigen(_)
+                    | Aktion::Kennwort
             )
         };
         match h {
@@ -1299,6 +1333,10 @@ impl Verwaltung {
     }
 
     fn paint_into(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts, w: &Win) {
+        if self.abfrage.is_some() {
+            self.abfrage_malen(c, t, fonts, w);
+            return;
+        }
         let f = self.frame(w);
         let s = w.scale;
         let u = &t.ui;
@@ -1476,6 +1514,7 @@ impl Verwaltung {
                 c.blit(&tt, x.round() as i32, y.round() as i32);
             }
         }
+        self.setz_malen(c, t, fonts, w);
     }
 
     /// Fuß links: Wirkzeile, sonst der sperrende Befund oder die Meldung.

@@ -46,7 +46,7 @@ fn win() -> Win {
 }
 
 /// Schriften fürs Messen (Liberation Sans, wenn keine Systemschrift).
-fn schriften() -> Fonts {
+pub(super) fn schriften() -> Fonts {
     let f = Fonts::system();
     if f.regular.is_some() {
         return f;

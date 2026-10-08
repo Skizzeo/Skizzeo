@@ -189,6 +189,12 @@ pub fn r92(stand: u32, eigener: &str) -> String {
 }
 
 /// `vorgang`: Anzeigename (`Op::bezeichnung`), nie der Operationsname.
+/// Regel 72 an `[catalog] pw` in anderer Form (BIM §4): Die Verwaltung ist
+/// gesperrt, der Katalog gilt.
+pub fn r72_pw() -> String {
+    "Das Verwaltungskennwort in dieser Datei ist nicht lesbar. Die Hilfe sagt, wie man es zurücksetzt.".into()
+}
+
 pub fn r93(vorgang: &str, grund: &str) -> String {
     format!("Änderung „{vorgang}“ abgelehnt: {grund}.")
 }

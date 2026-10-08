@@ -616,6 +616,9 @@ struct App {
     materials: Option<material_view::MaterialView>,
     /// Fenster „Verwaltung …“ (KA-3a2).
     verwaltung: Option<verwaltung::Verwaltung>,
+    /// Verwaltungskennwort in dieser Sitzung eingegeben (KA-3b1): Rolle
+    /// Administrator bis Skizzeo schließt.
+    admin: bool,
     mat_more: bool,
     /// Typ, den das Werkzeug zeichnet, je Typart (K3: Außen-, Innenwand);
     /// `None`: der Standardtyp.
@@ -1342,10 +1345,9 @@ impl App {
         }
         self.ui.hover = None;
         self.title.hover = None;
-        self.catalog = Some(catalog_view::Catalog::open(
-            &self.scene,
-            self.company.as_ref(),
-        ));
+        let mut c = catalog_view::Catalog::open(&self.scene, self.company.as_ref());
+        c.set_nutzer(self.rolle() == sk_cost::Rolle::Nutzer);
+        self.catalog = Some(c);
         self.prefs_dirty = true;
         self.overlay_dirty = true;
     }
@@ -1459,14 +1461,27 @@ impl App {
         }
         self.ui.hover = None;
         self.title.hover = None;
-        self.materials = Some(material_view::MaterialView::open_with(
+        let mut m = material_view::MaterialView::open_with(
             &self.scene,
             self.company.as_ref(),
             select,
             self.mat_more,
-        ));
+        );
+        m.set_nutzer(self.rolle() == sk_cost::Rolle::Nutzer);
+        self.materials = Some(m);
         self.prefs_dirty = true;
         self.overlay_dirty = true;
+    }
+
+    /// Rolle dieser Sitzung (KA-3b1): mit Verwaltungskennwort Nutzer, bis
+    /// es hier eingegeben ist; am Einzelplatz jeder Administrator.
+    fn rolle(&self) -> sk_cost::Rolle {
+        match &self.company {
+            Some(c) if !self.admin && sk_cost::verwaltung::hat_kennwort(c.library()) => {
+                sk_cost::Rolle::Nutzer
+            }
+            _ => sk_cost::Rolle::Admin,
+        }
     }
 
     /// Fenster „Verwaltung …“ öffnen (KA-3a2), auf Wunsch mit diesem
@@ -1483,6 +1498,9 @@ impl App {
         self.title.hover = None;
         let mut v = verwaltung::Verwaltung::open(&self.scene, self.company.as_ref(), wahl);
         v.set_haus_name(&self.doc.name());
+        if self.rolle() == sk_cost::Rolle::Nutzer {
+            v.sperren();
+        }
         self.verwaltung = Some(v);
         self.prefs_dirty = true;
         self.overlay_dirty = true;
@@ -1542,6 +1560,11 @@ impl App {
             win,
         };
         let out = v.handle(&e, &mut cx);
+        if out.frei {
+            self.admin = true;
+            self.scene.rolle = sk_cost::Rolle::Admin;
+            self.quantity.dirty = true;
+        }
         if out.ok {
             let ops = v.ops().to_vec();
             let h = sk_cost::Herkunft::jetzt(sk_cost::HerkunftArt::Manual);
@@ -1551,6 +1574,14 @@ impl App {
             };
             match r {
                 Ok(hinweis) => {
+                    // Wer das Kennwort setzt, kennt es
+                    if ops
+                        .iter()
+                        .any(|o| matches!(o, sk_cost::Op::KennwortSetzen { pw } if !pw.ist_leer()))
+                    {
+                        self.admin = true;
+                    }
+                    self.scene.rolle = self.rolle();
                     self.verwaltung = None;
                     self.overlay_dirty = true;
                     self.upload_model();
@@ -3152,6 +3183,7 @@ impl App {
     /// Ein Ereignis; `false` beendet die Schleife. Die Nachfrage „Änderungen
     /// speichern?“ und das offene Dateimenü nehmen Maus und Tasten zuerst.
     fn handle(&mut self, e: Event, surface: &Surface) -> bool {
+        self.scene.rolle = self.rolle();
         // Ein Klick während der Wände wachsen: sofort Endstand (K3b)
         if matches!(e, Event::MouseDown { .. }) && self.scene.skip_animation() {
             self.upload_model();
@@ -6739,6 +6771,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         catalog: None,
         materials: None,
         verwaltung: None,
+        admin: false,
         mat_more: false,
         tool_type: [None, None],
         type_menu: None,

@@ -9,6 +9,8 @@ use sk_model::Guid;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Knoten {
     Firmenwerte,
+    /// „Verwaltungskennwort“ unter Firmenwerte (KA-3b1).
+    Kennwort,
     /// Ast „Baustoffe und Preise“ und ein Artikel darin.
     Artikel,
     ArtikelSatz(Guid),
@@ -195,7 +197,14 @@ impl Verwaltung {
             korb.len(),
         );
         vec![
-            blatt(Knoten::Firmenwerte, "Firmenwerte"),
+            if self.ohne_firma {
+                blatt(Knoten::Firmenwerte, "Firmenwerte")
+            } else {
+                Eintrag {
+                    kinder: vec![blatt(Knoten::Kennwort, "Verwaltungskennwort")],
+                    ..blatt(Knoten::Firmenwerte, "Firmenwerte")
+                }
+            },
             ast(Knoten::Artikel, "Baustoffe und Preise", artikel, n_artikel),
             ast(
                 Knoten::Leistungen,
@@ -302,6 +311,7 @@ impl Verwaltung {
             Knoten::Typ(_) => auf(Knoten::Typen),
             Knoten::Haus(_) => auf(Knoten::Haeuser),
             Knoten::Stand(_) => auf(Knoten::Protokoll),
+            Knoten::Kennwort => auf(Knoten::Firmenwerte),
             _ => {}
         }
     }

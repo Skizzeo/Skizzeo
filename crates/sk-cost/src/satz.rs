@@ -37,8 +37,9 @@ pub enum Art {
     Monat,
     /// Zeitpunkt `JJJJ-MM-TTThh:mm`.
     Zeit,
-    /// 64 Hexziffern.
-    Hex64,
+    /// Prüfwert des Verwaltungskennworts
+    /// `pbkdf2-sha256$runden$salz-hex$hash-hex` (KA-3b1, Review 3at).
+    Pw,
     /// Kennung ohne Leerzeichen und Anführungszeichen (Guid oder Wort).
     Schluessel,
 }
@@ -83,7 +84,7 @@ impl Art {
             Art::Tag => "Datum JJJJ-MM-TT".into(),
             Art::Monat => "Stand MM/JJJJ".into(),
             Art::Zeit => "Zeit JJJJ-MM-TTThh:mm".into(),
-            Art::Hex64 => "64 Hexziffern".into(),
+            Art::Pw => "pbkdf2-sha256$Runden$Salz$Prüfwert".into(),
             Art::Schluessel => "Kennung (Wort oder Guid)".into(),
         }
     }
@@ -250,11 +251,12 @@ pub const CATALOG: Abschnitt = Abschnitt {
             true,
             "freigegeben oder Entwurf",
         ),
-        f(
+        // Abweichend von Regel 72: eine andere Form gilt nicht, bleibt
+        // bytegleich und sperrt die Verwaltung (BIM §3.1 `pw`)
+        weich(
             "pw",
-            Art::Hex64,
-            false,
-            "Prüfsumme des Verwaltungskennworts",
+            Art::Pw,
+            "Prüfwert des Verwaltungskennworts (PBKDF2-HMAC-SHA256)",
         ),
     ],
 };
@@ -648,7 +650,7 @@ impl Wert {
         Some(match self {
             Wert::Guid(g) => g.to_ifc(),
             Wert::Text(t) => match art {
-                Art::Tag | Art::Monat | Art::Zeit | Art::Hex64 | Art::Schluessel => t.clone(),
+                Art::Tag | Art::Monat | Art::Zeit | Art::Pw | Art::Schluessel => t.clone(),
                 _ => zeile::text(t),
             },
             Wert::Ganz(v) => v.to_string(),
@@ -796,8 +798,8 @@ fn wert_lesen_in(abschnitt: Option<&str>, feld: &'static Feld, v: &str) -> Resul
             }
             Wert::Text(v.to_string())
         }
-        Art::Hex64 => {
-            if v.len() != 64 || !v.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Art::Pw => {
+            if crate::verwaltung::Pruefwert::lesen(v).is_none() {
                 return Err(bad("einen Prüfwert"));
             }
             Wert::Text(v.to_string())

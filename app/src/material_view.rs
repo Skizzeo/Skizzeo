@@ -428,6 +428,8 @@ struct UseLink {
 pub struct MaterialView {
     work: Model,
     pub tab: Tab,
+    /// Rolle Nutzer (KA-3b1): die Firma nur lesen.
+    nutzer: bool,
     sel: Option<Guid>,
     csel: Option<Guid>,
     company: Option<(Library, String)>,
@@ -496,6 +498,7 @@ impl MaterialView {
         let mut v = MaterialView {
             work,
             tab: Tab::Project,
+            nutzer: false,
             sel: None,
             csel: None,
             company: None,
@@ -536,6 +539,11 @@ impl MaterialView {
         self.full_frame = true;
         self.tab = Tab::Company;
         self.csel = self.sel;
+    }
+
+    /// Rolle Nutzer (KA-3b1): „In den Firmenkatalog …“ gesperrt.
+    pub fn set_nutzer(&mut self, nutzer: bool) {
+        self.nutzer = nutzer;
     }
 
     /// Neuer Stand des Firmenkatalogs (nach Neuladen oder neuem Ort).
@@ -1786,11 +1794,14 @@ impl MaterialView {
     fn btn_disabled(&self, b: Btn) -> bool {
         match b {
             Btn::Delete => !self.can_delete(),
-            Btn::Export => self.sel_id().is_none_or(|id| {
-                self.work
-                    .material(id)
-                    .is_none_or(|x| x.category == MatCategory::Air)
-            }),
+            Btn::Export => {
+                self.nutzer
+                    || self.sel_id().is_none_or(|id| {
+                        self.work
+                            .material(id)
+                            .is_none_or(|x| x.category == MatCategory::Air)
+                    })
+            }
             Btn::Import => self.csel.is_none_or(|g| self.lib_mat(g).is_none()),
             _ => false,
         }
@@ -1803,7 +1814,7 @@ impl MaterialView {
         let Some(id) = self.mat_id(g) else {
             return;
         };
-        let Some(company) = cx.company.as_deref_mut() else {
+        let Some(company) = cx.company.as_deref_mut().filter(|_| !self.nutzer) else {
             return;
         };
         let mut result = company.save_material(&self.work, id);
@@ -2099,7 +2110,8 @@ impl MaterialView {
 
     /// Hinweis an der Maus (Hinweise zum Löschen stehen im Fenster).
     pub fn tip(&self) -> Option<String> {
-        None
+        (self.nutzer && self.hover == Some(Target::Btn(Btn::Export)))
+            .then(|| crate::catalog_view::NUR_LESBAR.into())
     }
 }
 

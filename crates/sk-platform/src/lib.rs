@@ -474,6 +474,20 @@ pub fn local_date_time() -> (u16, u8, u8, u8, u8) {
     }
 }
 
+/// Zufallsbytes vom System (Salz des Verwaltungskennworts, KA-3b1):
+/// Windows `BCryptGenRandom`, sonst `/dev/urandom`.
+pub fn zufall(buf: &mut [u8]) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        win32::zufall(buf)
+    }
+    #[cfg(not(windows))]
+    {
+        use std::io::Read;
+        std::fs::File::open("/dev/urandom")?.read_exact(buf)
+    }
+}
+
 /// Text aus der Zwischenablage. Außerhalb von Windows eine Ablage nur für
 /// diesen Prozess (Tests).
 pub fn clipboard_text() -> Option<String> {

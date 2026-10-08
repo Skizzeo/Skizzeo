@@ -130,6 +130,129 @@ fn ruhestand(ops: &mut Vec<Op>, rec: &'static str, of: &str, vorher: bool, jetzt
     }
 }
 
+/// Runden für PBKDF2 ab Werk (rund 0,1 s einmal beim Prüfen) und erlaubter
+/// Bereich beim Lesen (BIM §3.1 `pw`).
+pub const RUNDEN: u32 = 200_000;
+const RUNDEN_MIN: u32 = 100_000;
+const RUNDEN_MAX: u32 = 10_000_000;
+
+/// Prüfwert des Verwaltungskennworts für `[catalog] pw` (KA-3b1, Review
+/// 3at): `pbkdf2-sha256$runden$salz-hex$hash-hex`, PBKDF2-HMAC-SHA256 mit
+/// 16 Byte Zufallssalz je Kennwort. Leer: kein Kennwort (zurück zum
+/// Einzelplatz). Das Kennwort selbst steht nirgends; `Debug` zeigt auch den
+/// Prüfwert nicht.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Pruefwert(String);
+
+impl std::fmt::Debug for Pruefwert {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_empty() {
+            "Pruefwert(leer)"
+        } else {
+            "Pruefwert(…)"
+        })
+    }
+}
+
+impl Pruefwert {
+    /// Prüfwert von `kennwort` mit `salz`; leeres Kennwort: leer.
+    pub fn neu(kennwort: &str, salz: [u8; 16]) -> Pruefwert {
+        Pruefwert::mit_runden(kennwort, salz, RUNDEN)
+    }
+
+    pub fn mit_runden(kennwort: &str, salz: [u8; 16], runden: u32) -> Pruefwert {
+        if kennwort.is_empty() {
+            return Pruefwert::default();
+        }
+        let mut h = [0u8; 32];
+        crate::sha256::pbkdf2(kennwort.as_bytes(), &salz, runden, &mut h);
+        Pruefwert(format!(
+            "pbkdf2-sha256${runden}${}${}",
+            crate::sha256::hex(&salz),
+            crate::sha256::hex(&h)
+        ))
+    }
+
+    /// Ein Prüfwert in der Form aus BIM §3.1; sonst `None`.
+    pub fn lesen(text: &str) -> Option<Pruefwert> {
+        Pruefwert::teile(text)?;
+        Some(Pruefwert(text.to_string()))
+    }
+
+    /// Runden, Salz (16 Byte) und Hash (32 Byte).
+    fn teile(text: &str) -> Option<(u32, Vec<u8>, Vec<u8>)> {
+        let mut t = text.split('$');
+        if t.next()? != "pbkdf2-sha256" {
+            return None;
+        }
+        let runden = t.next()?;
+        if runden.is_empty() || !runden.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let runden: u32 = runden.parse().ok()?;
+        let salz = crate::sha256::aus_hex(t.next()?)?;
+        let hash = crate::sha256::aus_hex(t.next()?)?;
+        let ok = (RUNDEN_MIN..=RUNDEN_MAX).contains(&runden)
+            && salz.len() == 16
+            && hash.len() == 32
+            && t.next().is_none();
+        ok.then_some((runden, salz, hash))
+    }
+
+    pub fn ist_leer(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Text für `[catalog] pw`.
+    pub fn text(&self) -> &str {
+        &self.0
+    }
+
+    /// Stimmt `kennwort`? Vergleich in konstanter Zeit.
+    fn stimmt(&self, kennwort: &str) -> bool {
+        let Some((runden, salz, hash)) = Pruefwert::teile(&self.0) else {
+            return false;
+        };
+        let mut h = [0u8; 32];
+        crate::sha256::pbkdf2(kennwort.as_bytes(), &salz, runden, &mut h);
+        crate::sha256::gleich(&h, &hash)
+    }
+}
+
+/// `[catalog] pw` eines Firmenkatalogs: `Some(Ok)` lesbar, `Some(Err(()))`
+/// in anderer Form (sperrt), `None` ohne Kennwort.
+fn pw(lib: &sk_model::Library) -> Option<Result<Pruefwert, ()>> {
+    let r = lib.ext("catalog").next()?;
+    let z = crate::zeile::zerlegen(&r.line)?;
+    let s = crate::satz::Satz::lesen(&crate::satz::CATALOG, &z).ok()?;
+    match s.wert("pw")? {
+        crate::satz::Wert::Text(t) => Some(Pruefwert::lesen(t).ok_or(())),
+        _ => Some(Err(())),
+    }
+}
+
+/// Hat der Firmenkatalog ein Verwaltungskennwort (mehrere Plätze)? Auch
+/// eines in anderer Form zählt: Es sperrt die Verwaltung.
+pub fn hat_kennwort(lib: &sk_model::Library) -> bool {
+    pw(lib).is_some()
+}
+
+/// Ist das Kennwort lesbar (oder keins gesetzt)? Sonst Befund 72 mit
+/// [`crate::befund::r72_pw`].
+pub fn kennwort_lesbar(lib: &sk_model::Library) -> bool {
+    !matches!(pw(lib), Some(Err(())))
+}
+
+/// Stimmt `kennwort` mit `[catalog] pw`? Ohne Kennwort stimmt jedes, mit
+/// einem in anderer Form keins.
+pub fn kennwort_stimmt(lib: &sk_model::Library, kennwort: &str) -> bool {
+    match pw(lib) {
+        None => true,
+        Some(Ok(p)) => p.stimmt(kennwort),
+        Some(Err(())) => false,
+    }
+}
+
 /// „Diese Änderung zurücknehmen“ für Stand `stand` (paket-ka3a §2 KA-3a1):
 /// die Operationen, die jeden in diesem Stand geänderten Satz auf seinen
 /// Wert davor setzen. `jetzt` ist der Firmenkatalog heute, `vorher` der
@@ -700,6 +823,97 @@ mod tests {
             umkehr(&katalog(&t3b), &katalog(&t2b), 3).unwrap(),
             [lohn(70)]
         );
+    }
+
+    /// KA-3b1: Kennwort setzen schreibt nur die Prüfsumme (64 Hex, Salz
+    /// Katalog-Guid) und eine `[log]`-Zeile ohne Prüfsumme; leer entfernt
+    /// es. Nur Admin, nur Firma.
+    #[test]
+    fn kennwort_setzen() {
+        let t0 = sk_model::write_szk(&Library::standard());
+        let lies = |t: &str| sk_model::read_szk_with(t, &crate::satz::ABSCHNITTE_SZK).unwrap();
+        assert!(!hat_kennwort(&lies(&t0)));
+        assert!(kennwort_stimmt(&lies(&t0), "egal"));
+        let setzen = |k: &str, salz: u8| Op::KennwortSetzen {
+            pw: Pruefwert::neu(k, [salz; 16]),
+        };
+        let t1 = schreiben(&t0, &[setzen("Mauer 7", 1)]);
+        let lib = lies(&t1);
+        assert!(hat_kennwort(&lib) && kennwort_lesbar(&lib));
+        assert!(kennwort_stimmt(&lib, "Mauer 7"));
+        assert!(!kennwort_stimmt(&lib, "mauer 7"));
+        assert!(!kennwort_stimmt(&lib, ""));
+        let kopf = t1.lines().find(|l| l.starts_with("[catalog]")).unwrap();
+        let pw = kopf.split(' ').find_map(|w| w.strip_prefix("pw=")).unwrap();
+        let teile: Vec<&str> = pw.split('$').collect();
+        assert_eq!(teile[..2], ["pbkdf2-sha256", "200000"], "{pw}");
+        assert_eq!((teile[2], teile[3].len()), ("01".repeat(16).as_str(), 64));
+        // Python: hashlib.pbkdf2_hmac('sha256', b'Mauer 7', b'\x01'*16, 200000)
+        assert_eq!(
+            teile[3],
+            "ceaf65f4bae3f720542f0e86cb9a7ca05ed1b2c11b283d21730656118c13aa3d"
+        );
+        assert!(!t1.contains("Mauer 7"), "das Kennwort steht nirgends");
+        // Dasselbe Kennwort mit anderem Salz: anderer Prüfwert
+        assert_ne!(Pruefwert::neu("Mauer 7", [2; 16]).text(), pw);
+        assert_eq!(
+            format!("{:?}", setzen("Mauer 7", 1)),
+            "KennwortSetzen { pw: Pruefwert(…) }"
+        );
+        let log: Vec<&str> = t1.lines().filter(|l| l.starts_with("[log]")).collect();
+        let l = log
+            .iter()
+            .find(|l| l.contains("op=kennwort_setzen"))
+            .unwrap();
+        assert!(
+            l.contains(r#"new="gesetzt""#) && !l.contains(teile[3]),
+            "{l}"
+        );
+        assert!(l.contains("rec=catalog"), "{l}");
+        // Zurück zum Einzelplatz
+        let t2 = schreiben(&t1, &[setzen("", 1)]);
+        assert!(!hat_kennwort(&lies(&t2)));
+        let l = t2
+            .lines()
+            .rfind(|l| l.contains("op=kennwort_setzen"))
+            .unwrap();
+        assert!(l.contains(r#"old="gesetzt""#) && !l.contains("new="), "{l}");
+        // Andere Form: der Katalog gilt, pw bleibt bytegleich, gesperrt
+        for alt in [
+            "pw=5c1f0e2d",
+            "pw=pbkdf2-sha256$99999$0101010101010101010101010101010101$00",
+            &format!(
+                "pw=pbkdf2-sha256$50000${}${}",
+                "01".repeat(16),
+                "00".repeat(32)
+            ),
+        ] {
+            let t3 = t1.replace(&format!("pw={pw}"), alt);
+            let lib = lies(&t3);
+            assert!(hat_kennwort(&lib) && !kennwort_lesbar(&lib), "{alt}");
+            assert!(!kennwort_stimmt(&lib, "Mauer 7"));
+            let lohn = Op::FirmenwertSetzen {
+                schluessel: "wage".into(),
+                wert: Dez::ganz(66),
+            };
+            let t4 = schreiben(&t3, &[lohn]);
+            assert!(t4.contains(alt), "bytegleich: {alt}");
+        }
+        // Nur Admin, nur Firma, nur lesbare Prüfwerte
+        let e = firma_anwenden(&t0, &t0, Rolle::Nutzer, &hand(), &[setzen("x", 1)]).unwrap_err();
+        assert_eq!(e[0].regel, 93);
+        let lohn = Op::FirmenwertSetzen {
+            schluessel: "wage".into(),
+            wert: Dez::ganz(65),
+        };
+        let e = firma_anwenden(&t0, &t0, Rolle::Nutzer, &hand(), &[lohn]).unwrap_err();
+        assert!(
+            e[0].satz.ends_with("nur in der Verwaltung."),
+            "{}",
+            e[0].satz
+        );
+        let m = Model::new();
+        assert!(crate::vorschau(&m, None, Rolle::Admin, &[setzen("x", 1)]).is_err());
     }
 
     /// Bauleistung geändert und Artikel neu angelegt: zurück heißt alte
