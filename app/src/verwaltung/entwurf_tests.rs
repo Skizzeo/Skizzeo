@@ -597,3 +597,59 @@ fn vorschlaege_fuer_die_firma() {
     assert_eq!(v.entwurf_anzahl(), 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Review 3av: Das Haus hat an einer Bauleistung ein eigenes Gerät (5,00,
+/// Regel 89), der Entwurf 2,00. „Stunden für dieses und neue Häuser“ mit
+/// Kennwort gibt dem Haus die Stunden, das eigene Gerät bleibt (wie ohne
+/// Kennwort); der Entwurf behält sein Gerät.
+#[test]
+fn neue_haeuser_mit_kennwort_behaelt_eigene_werte() {
+    let (mut c, mut s, dir) = mit_kennwort("entwurf-eigenes-geraet");
+    let v = Verwaltung::open(&s, Some(&c), None);
+    let g = v
+        .jetzt
+        .leistungen
+        .iter()
+        .find(|l| {
+            l.kurz
+                .starts_with("AW Porenbeton-Planstein PP2-0,35 d=24cm")
+        })
+        .unwrap()
+        .guid;
+    // Haus: eigenes Gerät 5
+    let k = s.katalog(Some((c.library(), c.stand())));
+    let l = k.leistung(g).unwrap().clone();
+    let op = Op::BauleistungAendern {
+        bauleistung: g,
+        daten: sk_cost::op::Bauleistung {
+            geraet: Dez::ganz(5),
+            ..sk_cost::preis::bauleistung(&l)
+        },
+    };
+    s.kosten_folge("Gerät", Some(c.library()), &h(), &[op])
+        .unwrap();
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    v.waehlen(Knoten::Leistung(g));
+    assert!(v.eingeben(&Feld::Geraet, "2"));
+    schreiben(&mut v, &mut c);
+    let k = s.katalog(Some((c.library(), c.stand())));
+    let l = k.leistung(g).unwrap().clone();
+    assert_eq!(l.geraet, Dez::ganz(5));
+    let op = Op::BauleistungAendern {
+        bauleistung: g,
+        daten: sk_cost::op::Bauleistung {
+            stunden: Dez::lesen("0.9", 4).unwrap(),
+            ..sk_cost::preis::bauleistung(&l)
+        },
+    };
+    s.fuer_firma_auch_hier("Stunden für neue Häuser", &mut c, &h(), &[op])
+        .expect("in den Entwurf");
+    let x = s
+        .katalog(Some((c.library(), c.stand())))
+        .leistung(g)
+        .unwrap()
+        .clone();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(x.stunden, Dez::lesen("0.9", 4).unwrap());
+    assert_eq!(x.geraet, Dez::ganz(5), "eigenes Gerät des Hauses bleibt");
+}

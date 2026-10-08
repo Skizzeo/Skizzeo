@@ -2325,9 +2325,20 @@ impl Scene {
         let fuer_firma = sk_cost::preis::auf_firma(ops, &fk);
         // Dieses Haus nimmt dieselbe Zeile wie der Entwurf: Nach „Freigeben“
         // ist sie gleich der Firma, und der eigene Vermerk fällt weg. Mit
-        // der Zeile des Hauses bliebe es bei dessen übrigen Feldern (Befund H)
-        let hier = match sk_cost::verwaltung::hat_kennwort(firma.library()) {
-            true => fuer_firma.clone(),
+        // der Zeile des Hauses bliebe es bei dessen übrigen Feldern (Befund H).
+        // Ein Satz mit eigenen Werten (Regel 89) behält die Zeile des Hauses
+        // wie ohne Kennwort; nur der gewählte Wert kommt dazu (Review 3av)
+        let hier: Vec<sk_cost::Op> = match sk_cost::verwaltung::hat_kennwort(firma.library()) {
+            true => ops
+                .iter()
+                .zip(&fuer_firma)
+                .map(|(haus, entwurf)| {
+                    let eigen = ziel(haus).is_some_and(|z| {
+                        sk_cost::op::ohne_abweichung(&self.model, vec![z]).is_empty()
+                    });
+                    if eigen { haus } else { entwurf }.clone()
+                })
+                .collect(),
             false => ops.to_vec(),
         };
         self.fuer_firma_mit(label, firma, herkunft, &fuer_firma, Some(&hier), false)
