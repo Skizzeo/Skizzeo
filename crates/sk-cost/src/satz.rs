@@ -192,6 +192,13 @@ const NAME: Art = Art::Text {
     max: 70,
     zeile: true,
 };
+/// Kurztext einer Bauleistung: einzeilig, Überlänge ist kein Lesefehler
+/// (Regel 79 „Überlänge“: Die Bauleistung rechnet und steht im LV, das
+/// LV-Prüfen meldet die Zeichenzahl; die Verwaltung nimmt höchstens 70).
+const KURZ: Art = Art::Text {
+    max: usize::MAX,
+    zeile: true,
+};
 const fn zahl(min: i64, max: i64, min_offen: bool, stellen: u32) -> Art {
     Art::Zahl {
         min: Dez::ganz(min),
@@ -303,7 +310,7 @@ pub const SERVICE: Abschnitt = Abschnitt {
     bedeutung: "Bauleistung mit Aufwandswert und Zuordnungsregel",
     felder: &[
         f("guid", Art::Guid, true, "Kennung"),
-        f("short", NAME, true, "Kurztext"),
+        f("short", KURZ, true, "Kurztext"),
         f("trade", Art::Guid, true, "Gewerk"),
         f("title", Art::Guid, true, "Titel im LV ([lot] mit parent)"),
         f(

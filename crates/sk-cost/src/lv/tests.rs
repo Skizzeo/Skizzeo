@@ -453,9 +453,10 @@ fn lv_nimmt_menge_und_ep_aus_dem_kostenblatt() {
     }
 }
 
-/// Kurztext mit 71 Zeichen ist ein Fehler (Abnahme 6): schon beim Lesen
-/// (Regel 72, Feldtabelle `short` höchstens 70), die Bauleistung fehlt
-/// dann im LV.
+/// Kurztext mit 71 Zeichen ist ein Fehler im LV-Prüfen (Abnahme 6, Regel
+/// 79 „Überlänge“, Fachprüfung KA-4a P2): Die Bauleistung bleibt gültig,
+/// rechnet und steht im LV; der Befund nennt OZ mit Los und Zeichenzahl.
+/// Beim Lesen gibt es dazu keinen Fehler.
 #[test]
 fn kurztext_mit_71_zeichen() {
     let m = rh1();
@@ -468,13 +469,12 @@ fn kurztext_mit_71_zeichen() {
             &format!("short=\"{lang}\""),
         )],
     );
-    let f = k.befunde.iter().find(|f| f.regel == 72).expect("72");
-    assert_eq!(f.schwere, Schwere::Fehler);
     assert!(
-        f.satz.contains("Kurztext ist länger als 70 Zeichen"),
-        "{}",
-        f.satz
+        !k.befunde.iter().any(|f| f.satz.contains("länger als 70")),
+        "{:?}",
+        k.befunde
     );
+    assert!(k.leistungen.iter().any(|l| l.kurz == lang), "gültig");
     let lv = lesen::lv(
         &m,
         &qto::schedule(&m),
@@ -483,10 +483,18 @@ fn kurztext_mit_71_zeichen() {
         &wahl(false, true),
     );
     assert!(
-        ozs(&lv)[0].1.iter().all(|oz| oz != "01.0010"),
+        ozs(&lv)[0].1.iter().any(|oz| oz == "01.0010"),
         "{:?}",
         ozs(&lv)
     );
+    let f = lv
+        .befunde
+        .iter()
+        .find(|f| f.regel == 79)
+        .expect("Befund 79 im LV-Prüfen");
+    assert_eq!(f.schwere, Schwere::Fehler);
+    assert!(f.satz.contains("71 Zeichen"), "{}", f.satz);
+    assert!(f.satz.contains(".01.0010"), "OZ mit Los: {}", f.satz);
 }
 
 /// Leere Titel (Bedienbarkeit 2.10) bleiben in der Liste mit 0 Positionen,
