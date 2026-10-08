@@ -39,7 +39,7 @@ pub struct LayerQto {
     /// Innenfläche der Schicht: Länge der inneren Schichtkante × Höhe der
     /// Schicht im eigenen Geschoss (mm², Innenputz nach DIN 18350, BIM
     /// Regel 84).
-    pub side_inner_area: f64,
+    pub inner_area: f64,
 }
 
 /// Mengen eines Wandsegments.
@@ -322,7 +322,7 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                         pocket: (area * (h - h_own - h_ext)).max(0.0),
                         side_area: lo * (h - h_ext + h_here - h_own) + s_up + s_att,
                         attika: v_att,
-                        side_inner_area: if air { 0.0 } else { li_len * h_here },
+                        inner_area: if air { 0.0 } else { li_len * h_here },
                     }
                 })
                 .collect();
@@ -890,6 +890,61 @@ pub struct LayerRow {
     /// Fläche und Länge zählen je Bauteil und Gewerk nur einmal (Bauteil
     /// mit mehreren Schichten im selben Gewerk, z. B. Dachterrasse).
     pub once: bool,
+    /// Abrechnungsfläche der Schicht nach Regel 84 (mm², KA-0a2,
+    /// architektur/paket-ka0.md §3.3): Wandschicht nach Lage, Decke und
+    /// Sohlplatte mit `area`, Untersicht und Dachterrasse mit `bill_area`.
+    pub face: f64,
+    /// Auflagertasche (mm³) für die Zeile „− Auflager“ im Mengenansatz:
+    /// Wandschicht ihr Abzug durch die Decke, Decke ihr Auflager in den
+    /// Wänden, sonst 0.
+    pub pocket: f64,
+}
+
+/// Lage einer Wandschicht für die Abrechnungsfläche (Regel 84).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Face {
+    /// Nettovolumen ÷ Dicke.
+    Mean,
+    /// Außenfläche der Schicht (`side_area`).
+    Outer,
+    /// Innenfläche der Schicht (`inner_area`).
+    Inner,
+}
+
+/// Abrechnungsfläche der Wandschicht `i` (Regel 84): Kern, Mauerwerk,
+/// Kerndämmung und Innenwandschichten nach Volumen ÷ Dicke; WDVS, Verblender
+/// sowie Putz und Bekleidung außen nach Außenfläche, innen nach Innenfläche.
+fn wall_face(model: &Model, layers: &[MaterialLayer], i: usize, interior: bool) -> Face {
+    let Some(l) = layers.get(i) else {
+        return Face::Mean;
+    };
+    let cat = model.material(l.material).map(|m| m.category);
+    let Some(core) = layers.iter().position(|l| l.core) else {
+        return Face::Mean;
+    };
+    let finish = cat == Some(MatCategory::Plaster)
+        || (l.function == LayerFunction::Finish
+            && !matches!(cat, Some(MatCategory::Masonry | MatCategory::Concrete)));
+    if l.core {
+        return Face::Mean;
+    }
+    let outside = i < core;
+    if finish {
+        return if outside { Face::Outer } else { Face::Inner };
+    }
+    if interior || !outside {
+        return Face::Mean;
+    }
+    if is_facing(model, l) {
+        return Face::Outer;
+    }
+    // Dämmung außen: ohne Schale davor WDVS (Außenfläche), sonst Kerndämmung
+    let shell_before = layers[..i].iter().any(|x| is_facing(model, x));
+    if cat == Some(MatCategory::Insulation) && !shell_before {
+        Face::Outer
+    } else {
+        Face::Mean
+    }
 }
 
 /// Summe eines Gewerks in einem Gebäude mit seinen Zeilen. `area` (mm²) ist
@@ -931,6 +986,10 @@ pub struct Schedule {
     pub buildings: Vec<BuildingQto>,
     /// Bauteile in Geschossen ohne Gebäude (Vorlage), damit keines fehlt.
     pub loose: Vec<StoreyQto>,
+    /// Schalung je Decke und Sohlplatte mit Körper (KA-0a2), in der
+    /// Reihenfolge der Zeilen; aus den schon gerechneten Mengen, damit
+    /// „Kosten live“ nur liest.
+    pub formwork: Vec<(ElementId, FormworkQto)>,
 }
 
 /// Geschoss, unter dem ein Bauteil in Mengen und Baum steht: sein eigenes,
@@ -1176,7 +1235,69 @@ pub fn schedule(model: &Model) -> Schedule {
             sched.loose.push(s);
         }
     }
+    sched.formwork = formwork_rows(&sched);
     sched
+}
+
+/// Schalung je Decke und Sohlplatte aus den Zeilen der Mengenliste.
+fn formwork_rows(sched: &Schedule) -> Vec<(ElementId, FormworkQto)> {
+    sched
+        .buildings
+        .iter()
+        .flat_map(|b| &b.storeys)
+        .chain(&sched.loose)
+        .flat_map(|s| &s.groups)
+        .flat_map(|g| &g.rows)
+        .filter_map(|r| match &r.q {
+            Some(ElementQto::Floor(f)) => Some((r.element, f.formwork.clone()?)),
+            Some(ElementQto::Slab(s)) => Some((r.element, s.formwork.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Umfang einer Auswertung (Regel 95, architektur/paket-ka0.md §4): ein
+/// Gebäude oder das Projekt (`None`), ohne die abgewählten Geschosse. Ein
+/// neues Geschoss ist damit gewählt.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Umfang {
+    pub gebaeude: Option<BuildingId>,
+    /// Abgewählte Geschosse; das Fundament steht unter seinem Gründungsband.
+    pub ohne: Vec<StoreyId>,
+}
+
+impl Schedule {
+    /// Mengenliste im Umfang `u`: filtert die Geschosse und bildet die
+    /// Summen nach Baustoff, Gewerk und Kostengruppe und die Schalung neu.
+    /// Rechnet keine Geometrie. Geschosse ohne Gebäude zählen nur im Umfang
+    /// Projekt.
+    pub fn restrict(&self, model: &Model, u: &Umfang) -> Schedule {
+        let keep = |s: &&StoreyQto| !u.ohne.contains(&s.id);
+        let mut out = Schedule::default();
+        for b in &self.buildings {
+            if u.gebaeude.is_some_and(|g| g != b.id) {
+                continue;
+            }
+            let storeys: Vec<StoreyQto> = b.storeys.iter().filter(keep).cloned().collect();
+            if storeys.len() == b.storeys.len() {
+                out.buildings.push(b.clone());
+                continue;
+            }
+            let rows = layer_rows(model, &storeys);
+            out.buildings.push(BuildingQto {
+                id: b.id,
+                by_material: material_sums(model, &storeys),
+                by_trade: trade_sums(model, &rows),
+                by_kg: kg_sums(rows),
+                storeys,
+            });
+        }
+        if u.gebaeude.is_none() {
+            out.loose = self.loose.iter().filter(keep).cloned().collect();
+        }
+        out.formwork = formwork_rows(&out);
+        out
+    }
 }
 
 /// Grund, warum Sohlplatte und Frostschürze keinen Körper haben.
@@ -1248,49 +1369,73 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
             }
             _ => None,
         };
-        let mut push =
-            |i: usize, length: f64, area: f64, volume: f64, whole: bool, attika: bool| {
-                let Some(l) = layers.get(i) else { return };
-                let ins = insulation(l.material);
-                let (bill_area, bill_length, once) = match (bill, q) {
-                    (Some((a, len)), _) => (a, len, true),
-                    (None, ElementQto::Wall(w)) => (
-                        if ins { area } else { 0.0 },
-                        if facing == Some(i) {
-                            w.facing_support
-                        } else {
-                            0.0
-                        },
-                        false,
-                    ),
-                    // Platten, Decken und Streifen: Dämmschicht mit Fläche
-                    (None, _) => (if ins { area } else { 0.0 }, 0.0, false),
-                };
-                out.push(LayerRow {
-                    element: row.element,
-                    number: row.number.clone(),
-                    category: e.category,
-                    storey: st,
-                    layer: i,
-                    material: l.material,
-                    thickness: l.thickness,
-                    trade: model.layer_trade(row.element, i),
-                    kg: model.layer_kg(row.element, i),
-                    length,
-                    area: if ins || !matches!(q, ElementQto::Wall(_)) {
-                        area
+        let interior = e.category == Category::InteriorWall;
+        let mut push = |i: usize,
+                        length: f64,
+                        area: f64,
+                        volume: f64,
+                        whole: bool,
+                        attika: bool,
+                        inner: f64,
+                        pocket: f64| {
+            let Some(l) = layers.get(i) else { return };
+            let ins = insulation(l.material);
+            let (bill_area, bill_length, once) = match (bill, q) {
+                (Some((a, len)), _) => (a, len, true),
+                (None, ElementQto::Wall(w)) => (
+                    if ins { area } else { 0.0 },
+                    if facing == Some(i) {
+                        w.facing_support
                     } else {
                         0.0
                     },
-                    volume,
-                    insulation: ins,
-                    whole,
-                    attika,
-                    bill_area,
-                    bill_length,
-                    once,
-                });
+                    false,
+                ),
+                // Platten, Decken und Streifen: Dämmschicht mit Fläche
+                (None, _) => (if ins { area } else { 0.0 }, 0.0, false),
             };
+            let mean = if l.thickness > 0.0 {
+                volume / l.thickness
+            } else {
+                0.0
+            };
+            let face = match q {
+                ElementQto::Wall(_) => match wall_face(model, &layers, i, interior) {
+                    Face::Mean => mean,
+                    Face::Outer => area,
+                    Face::Inner => inner,
+                },
+                ElementQto::Floor(_) | ElementQto::Slab(_) => area,
+                ElementQto::Soffit(_) | ElementQto::Terrace(_) => bill_area,
+                _ => 0.0,
+            };
+            out.push(LayerRow {
+                element: row.element,
+                number: row.number.clone(),
+                category: e.category,
+                storey: st,
+                layer: i,
+                material: l.material,
+                thickness: l.thickness,
+                trade: model.layer_trade(row.element, i),
+                kg: model.layer_kg(row.element, i),
+                length,
+                area: if ins || !matches!(q, ElementQto::Wall(_)) {
+                    area
+                } else {
+                    0.0
+                },
+                volume,
+                insulation: ins,
+                whole,
+                attika,
+                bill_area,
+                bill_length,
+                once,
+                face,
+                pocket,
+            });
+        };
         match q {
             ElementQto::Wall(w) => {
                 let whole = w.layers.len() == 1;
@@ -1307,6 +1452,8 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                             l.volume,
                             whole,
                             l.attika > 0.0,
+                            l.inner_area,
+                            l.pocket,
                         );
                     }
                 }
@@ -1335,7 +1482,11 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                     } else {
                         area * l.thickness
                     };
-                    push(i, length, area, v, whole, false);
+                    let pocket = match q {
+                        ElementQto::Floor(f) if l.core || whole => f.bearing,
+                        _ => 0.0,
+                    };
+                    push(i, length, area, v, whole, false, 0.0, pocket);
                 }
             }
         }

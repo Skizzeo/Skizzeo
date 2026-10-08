@@ -70,7 +70,7 @@ pub use qto::{
     coping_qto, coping_qto_of, edge_strip_qto, edge_strip_qto_of, floor_formwork_of, floor_qto,
     floor_qto_of, formwork_qto, foundation_qto, foundation_qto_of, run_qto, soffit_qto,
     soffit_qto_of, terrace_qto, terrace_qto_of, wall_qto, CopingQto, EdgeStripQto, FloorQto,
-    FootingQto, FormworkQto, LayerQto, SlabQto, SoffitQto, SupportQto, TerraceQto, WallQto,
+    FootingQto, FormworkQto, LayerQto, SlabQto, SoffitQto, SupportQto, TerraceQto, Umfang, WallQto,
 };
 pub use solid::Solid;
 pub use solid::{edge_kind, material, merge_seam, Edge, SweepEnd, Tri, NO_LAYER};

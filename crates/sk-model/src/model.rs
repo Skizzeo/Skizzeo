@@ -7495,6 +7495,10 @@ mod og_phase2 {
         (x * 1e4).round() / 1e4
     }
 
+    fn r3(x: f64) -> f64 {
+        (x * 1e3).round() / 1e3
+    }
+
     /// Prüfhaus (paket-dachterrasse §6): OG-Nord −1,50 im Schritt gelöst
     /// und versetzt; je Rücksprung `rueck` (Segment, mm).
     fn pruefhaus(rueck: &[(usize, f64)]) -> (Model, RunId, RunId) {
@@ -7744,14 +7748,242 @@ mod og_phase2 {
         let w = &qs[0];
         let core = w.layers.last().unwrap();
         // Innenkante des Gasbetons × Höhe ohne Deckenband
-        assert!(core.side_inner_area > 0.0);
+        assert!(core.inner_area > 0.0);
         let h = w.height - core.pocket / core.area;
-        let inner_len = core.side_inner_area / h;
+        let inner_len = core.inner_area / h;
         assert!(
             inner_len < core.length && core.length < core.side_area / w.height + 1.0,
             "{inner_len} {}",
             core.length
         );
+    }
+
+    /// KA-0a2 Regel 84 (architektur/paket-ka0.md §3.3): Abrechnungsfläche
+    /// je Schicht. Standardhaus 1b (Prüfhaus Nord −1,50): Gasbeton 17,5
+    /// 30,139 m³, Fläche 172,224 m², WDVS nach Außenfläche 199,595 m²
+    /// (wie A198); Decke und Sohlplatte mit Fläche, DT mit Abrechnungsfläche,
+    /// Frostschürze und Attikablech 0.
+    #[test]
+    fn abrechnungsflaeche_nach_regel_84() {
+        let (m, _, _) = pruefhaus(&[(1, -1500.0)]);
+        let s = crate::qto::schedule(&m);
+        let rows: Vec<_> = s.buildings[0]
+            .by_trade
+            .iter()
+            .flat_map(|t| &t.rows)
+            .collect();
+        let named = |n: &str| {
+            rows.iter()
+                .filter(|r| m.material(r.material).unwrap().name == n)
+                .copied()
+                .collect::<Vec<_>>()
+        };
+        let sum = |v: &[&crate::qto::LayerRow], f: fn(&crate::qto::LayerRow) -> f64| {
+            v.iter().map(|r| f(r)).sum::<f64>()
+        };
+        let gb = named("Gasbeton");
+        assert_eq!(gb.len(), 8);
+        assert_eq!(r3(sum(&gb, |r| r.volume) / 1e9), 30.139);
+        // 30,13913 m³ ÷ 0,175 = 172,2236 m²: je Zeile Volumen ÷ Dicke, nicht
+        // aus dem gerundeten Volumen (30,139 ÷ 0,175 = 172,2229)
+        assert_eq!(r3(sum(&gb, |r| r.face) / 1e6), 172.224);
+        let wdvs = named("Dämmung (WDVS)");
+        assert!(wdvs.iter().all(|r| r.face == r.bill_area && r.face > 0.0));
+        assert_eq!(r3(sum(&wdvs, |r| r.face) / 1e6), 199.595);
+        for r in &rows {
+            let soll = match r.category {
+                Category::Floor | Category::GroundSlab => r.area,
+                Category::RoofTerrace => r.bill_area,
+                Category::StripFooting | Category::Coping => 0.0,
+                _ => continue,
+            };
+            assert_eq!(r.face, soll, "{} {}", r.number, r.layer);
+        }
+        // Lage je Schicht der sieben Werkstypen: M Volumen ÷ Dicke, A Außenfläche
+        for (g, lage) in [
+            (EXTERIOR_TYPE_GUID, "AM"),
+            (ETICS_TYPE_GUID, "AM"),
+            (CAVITY_TYPE_GUID, "A-MM"),
+            (MONO_TYPE_GUID, "M"),
+            (INTERIOR_TYPE_GUID, "M"),
+            (INTERIOR_115_TYPE_GUID, "M"),
+            (INTERIOR_240_TYPE_GUID, "M"),
+        ] {
+            let (mut m, eg, _) = gebaeude();
+            let t = m.type_by_guid(g).unwrap();
+            m.begin("Wandtyp");
+            let run = if werk_category(g) == Some(TypeCategory::ExteriorWall) {
+                assert!(m.set_run_type(eg, t));
+                eg
+            } else {
+                let st = m.run(eg).unwrap().storey;
+                m.add_wall_run(
+                    &[vec3(5000.0, 1000.0, 0.0), vec3(5000.0, 7000.0, 0.0)],
+                    false,
+                    RefSide::Left,
+                    st,
+                    t,
+                    Category::InteriorWall,
+                )
+                .unwrap()
+            };
+            m.commit();
+            assert_eq!(lage_der_schichten(&m, run), lage, "{g:?}");
+        }
+        // Putz außen nach Außenfläche, innen nach Innenfläche
+        let (mut m, eg, og) = gebaeude();
+        let putz = m
+            .materials
+            .iter()
+            .find(|(_, x)| x.category == MatCategory::Plaster)
+            .map(|(id, _)| id)
+            .unwrap();
+        let t = m.type_by_guid(ETICS_TYPE_GUID).unwrap();
+        let ls = &mut m.layer_sets.get_mut(t).unwrap().layers;
+        let p = MaterialLayer::new(putz, 15.0, LayerFunction::Finish);
+        ls.insert(0, p);
+        ls.push(p);
+        m.begin("Wandtyp");
+        assert!(m.set_run_type(eg, t) && m.set_run_type(og, t));
+        m.commit();
+        assert_eq!(lage_der_schichten(&m, eg), "AAMI");
+        let iw = m.type_by_guid(INTERIOR_TYPE_GUID).unwrap();
+        let ls = &mut m.layer_sets.get_mut(iw).unwrap().layers;
+        let p = MaterialLayer::new(putz, 10.0, LayerFunction::Finish);
+        ls.insert(0, p);
+        ls.push(p);
+        let st = m.run(eg).unwrap().storey;
+        m.begin("Innenwand");
+        // mit Ecke, damit Außen- und Innenfläche verschieden sind
+        let r = m.add_wall_run(
+            &[
+                vec3(5000.0, 1000.0, 0.0),
+                vec3(5000.0, 7000.0, 0.0),
+                vec3(8000.0, 7000.0, 0.0),
+            ],
+            false,
+            RefSide::Left,
+            st,
+            iw,
+            Category::InteriorWall,
+        );
+        m.commit();
+        assert_eq!(lage_der_schichten(&m, r.unwrap()), "AMI");
+    }
+
+    /// Lage je Schicht des ersten Segments von `run` aus `LayerRow.face`:
+    /// M Volumen ÷ Dicke, A Außenfläche, I Innenfläche, - ohne Zeile (Luft).
+    fn lage_der_schichten(m: &Model, run: RunId) -> String {
+        let w = m.wall_at(run, 0).unwrap();
+        let q = &crate::qto::run_qto(m, run)[0];
+        let s = crate::qto::schedule(m);
+        let rows: Vec<_> = s.buildings[0]
+            .by_kg
+            .iter()
+            .flat_map(|k| &k.rows)
+            .filter(|r| r.element == w)
+            .collect();
+        (0..q.layers.len())
+            .map(|i| {
+                let Some(r) = rows.iter().find(|r| r.layer == i) else {
+                    return '-';
+                };
+                let l = &q.layers[i];
+                assert_eq!(r.pocket, l.pocket);
+                let mean = r.volume / r.thickness;
+                // eindeutig: die drei Flächen liegen je Schicht auseinander
+                assert!((l.side_area - l.inner_area).abs() > 1e3, "{i}");
+                if r.face == l.side_area && (mean - l.side_area).abs() > 1e3 {
+                    'A'
+                } else if r.face == l.inner_area && (mean - l.inner_area).abs() > 1e3 {
+                    'I'
+                } else {
+                    assert!((r.face - mean).abs() < 1e-6, "{i} {} {mean}", r.face);
+                    'M'
+                }
+            })
+            .collect()
+    }
+
+    /// KA-0a2: Schalung und Auflagertasche in der Mengenliste aus den schon
+    /// gerechneten Mengen; `restrict` filtert nach Umfang (Regel 95, 96).
+    #[test]
+    fn schalung_und_umfang_in_der_mengenliste() {
+        let (m, eg, og) = pruefhaus(&[(1, -1500.0)]);
+        let s = crate::qto::schedule(&m);
+        let (slab, _) = m.foundation_of(eg).unwrap();
+        let (de1, de2) = (m.floor_of(eg).unwrap(), m.floor_of(og).unwrap());
+        let ids: Vec<_> = s.formwork.iter().map(|(e, _)| *e).collect();
+        assert_eq!(ids, [slab, de1, de2]);
+        for (e, f) in &s.formwork {
+            assert_eq!(crate::qto::formwork_qto(&m, *e).as_ref(), Some(f));
+        }
+        assert_eq!(r4(s.formwork[1].1.soffit / 1e6), 69.0569);
+        // Auflager: Decke trägt die Summe der Wandtaschen darunter
+        let rows: Vec<_> = s.buildings[0].by_kg.iter().flat_map(|k| &k.rows).collect();
+        let de = rows.iter().find(|r| r.element == de1).unwrap();
+        assert_eq!(de.pocket, crate::qto::floor_qto(&m, eg).unwrap().bearing);
+        let taschen: f64 = rows
+            .iter()
+            .filter(|r| r.category == Category::ExteriorWall && r.storey == de.storey)
+            .map(|r| r.pocket)
+            .sum();
+        assert!((taschen - de.pocket).abs() < 1.0, "{taschen} {}", de.pocket);
+        assert!(rows
+            .iter()
+            .filter(|r| r.element == slab)
+            .all(|r| r.pocket == 0.0));
+
+        // Umfang Projekt und Gebäude ohne Abwahl: unverändert
+        let b = s.buildings[0].id;
+        let alle = crate::qto::Umfang::default();
+        assert_eq!(s.restrict(&m, &alle), s);
+        let gb = crate::qto::Umfang {
+            gebaeude: Some(b),
+            ohne: vec![],
+        };
+        assert_eq!(s.restrict(&m, &gb), s);
+        // Geschosse einzeln ergeben zusammen dieselben Zeilen und Summen
+        let levels: Vec<StoreyId> = s.buildings[0].storeys.iter().map(|x| x.id).collect();
+        assert_eq!(levels.len(), 3);
+        let mut zeilen = 0;
+        let mut schalung = Vec::new();
+        let mut gewerk: std::collections::HashMap<crate::trade::TradeId, f64> =
+            std::collections::HashMap::new();
+        for l in &levels {
+            let u = crate::qto::Umfang {
+                gebaeude: Some(b),
+                ohne: levels.iter().copied().filter(|x| x != l).collect(),
+            };
+            let t = s.restrict(&m, &u);
+            assert_eq!(t.buildings.len(), 1);
+            let tb = &t.buildings[0];
+            assert!(tb.storeys.iter().all(|x| x.id == *l));
+            zeilen += tb.by_kg.iter().map(|k| k.rows.len()).sum::<usize>();
+            for ts in &tb.by_trade {
+                *gewerk.entry(ts.trade).or_default() += ts.volume;
+            }
+            schalung.extend(t.formwork);
+        }
+        assert_eq!(zeilen, rows.len());
+        assert_eq!(schalung, s.formwork);
+        for ts in &s.buildings[0].by_trade {
+            assert!(
+                (gewerk[&ts.trade] - ts.volume).abs() < 1.0,
+                "{:?}",
+                ts.trade
+            );
+        }
+        // Anderes Gebäude: nichts aus diesem
+        let mut m2 = m.clone();
+        let b2 = m2.add_building(1);
+        let u = crate::qto::Umfang {
+            gebaeude: Some(b2),
+            ohne: vec![],
+        };
+        let t = crate::qto::schedule(&m2).restrict(&m2, &u);
+        assert!(t.formwork.is_empty());
+        assert!(t.buildings.iter().all(|x| x.id == b2));
     }
 
     /// Z4/T6: Ein Schritt rechnet abgeleitete Bauteile nur an den Zügen, die
