@@ -1571,6 +1571,9 @@ impl App {
                 }
                 Err(m) => {
                     if let Some(v) = self.verwaltung.as_mut() {
+                        if let Some(c) = &self.company {
+                            v.neu_grundlage(c);
+                        }
                         v.fehler(m.to_string());
                     }
                 }

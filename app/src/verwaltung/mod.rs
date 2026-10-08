@@ -197,6 +197,29 @@ fn zahl(text: &str, stellen: u32) -> Option<Option<Dez>> {
     Dez::lesen(&t, stellen).map(Some)
 }
 
+/// Kopfzeile: Name und Datum des Firmenkatalogs bzw. Werksbestand.
+fn titel(vorher: &Katalog, ohne_firma: bool) -> String {
+    match &vorher.kopf {
+        _ if ohne_firma => "Firmenkatalog nicht erreichbar · nur ansehen".to_string(),
+        _ if matches!(vorher.quelle, sk_cost::katalog::Quelle::Werk { .. }) => format!(
+            "Firmenkatalog · Werksbestand {}",
+            sk_cost::lesen::werksstand()
+        ),
+        Some(k) => {
+            let datum = k.satz.text("date").unwrap_or_default();
+            format!(
+                "Firmenkatalog „{}“ · vom {}",
+                k.name,
+                baum::zeit_text(datum)
+            )
+        }
+        None => format!(
+            "Firmenkatalog · Werksbestand {}",
+            sk_cost::lesen::werksstand()
+        ),
+    }
+}
+
 /// Kennung einer Operation zum Zusammenfassen: eine spätere Eingabe am
 /// selben Satz ersetzt die frühere.
 fn op_schluessel(op: &Op) -> Option<String> {
@@ -235,25 +258,7 @@ impl Verwaltung {
             basis
         };
         let vorher = sk_cost::lesen::firma_oder_werk(&m, Some(&lib0));
-        let titel = match &vorher.kopf {
-            _ if company.is_none() => "Firmenkatalog nicht erreichbar · nur ansehen".to_string(),
-            _ if matches!(vorher.quelle, sk_cost::katalog::Quelle::Werk { .. }) => format!(
-                "Firmenkatalog · Werksbestand {}",
-                sk_cost::lesen::werksstand()
-            ),
-            Some(k) => {
-                let datum = k.satz.text("date").unwrap_or_default();
-                format!(
-                    "Firmenkatalog „{}“ · vom {}",
-                    k.name,
-                    baum::zeit_text(datum)
-                )
-            }
-            None => format!(
-                "Firmenkatalog · Werksbestand {}",
-                sk_cost::lesen::werksstand()
-            ),
-        };
+        let titel = titel(&vorher, company.is_none());
         let ordner = company.and_then(|c| c.path().parent().map(|p| p.join(wirkung::ORDNER)));
         let wirkung = wirkung::Wirkung::laden(&lib0, &m, ordner.as_deref());
         let mut v = Verwaltung {
@@ -303,13 +308,39 @@ impl Verwaltung {
                 .map_or(Knoten::Firmenwerte, |l| Knoten::Leistung(l.guid))
         });
         v.waehlen(w);
-        v.luecken0 = v
-            .wirkung
-            .luecken(&v.vorher)
+        v.luecken0 = v.luecken_jetzt();
+        v
+    }
+
+    /// Lücken nach Regel 97 der Grundlage (sperren nur neue).
+    fn luecken_jetzt(&self) -> Vec<String> {
+        self.wirkung
+            .luecken(&self.vorher)
             .into_iter()
             .map(|b| b.satz)
-            .collect();
-        v
+            .collect()
+    }
+
+    /// Hat ein anderer Platz den Firmenkatalog geändert, lädt OK ihn neu
+    /// (`Company::fuer_firma`). Die Vorschau setzt dann auf dem neuen Stand
+    /// auf: die Eingaben bleiben, „vorher“ zeigt die Werte des anderen
+    /// Platzes. Sonst überschriebe das nächste OK sie ungesehen (Review 3ar).
+    pub fn neu_grundlage(&mut self, company: &Company) {
+        if company.geladen() == self.basis {
+            return;
+        }
+        let lib0 = company.library().clone();
+        self.basis = if company.geladen().trim().is_empty() {
+            sk_model::write_szk(&lib0)
+        } else {
+            company.geladen().to_string()
+        };
+        self.vorher = sk_cost::lesen::firma_oder_werk(&self.m, Some(&lib0));
+        self.titel = titel(&self.vorher, self.ohne_firma);
+        self.wirkung = wirkung::Wirkung::laden(&lib0, &self.m, self.ordner.as_deref());
+        self.lib0 = lib0;
+        self.luecken0 = self.luecken_jetzt();
+        self.neu_rechnen();
     }
 
     /// Die gesammelten Operationen (für OK).

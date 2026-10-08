@@ -900,3 +900,37 @@ fn istbilder_ka3() {
     std::fs::write(dir.join("ist-ka-3a4-kaputt.png"), b.to_png()).unwrap();
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+/// Review 3ar: Ein anderer Platz ändert dieselbe Bauleistung; das erste OK
+/// scheitert und lädt den Katalog neu. Das Fenster steht danach auf dem
+/// neuen Stand, sonst schriebe das zweite OK 0,45 über 0,7, ohne dass 0,7
+/// je zu sehen war.
+#[test]
+fn fremde_aenderung_wird_vor_dem_zweiten_ok_gezeigt() {
+    let (mut c, dir) = firma("fremd");
+    let pfad = c.path().to_path_buf();
+    let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "16:00");
+    let mut s = haus();
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    let g = leistung(&v, AW24);
+    v.waehlen(Knoten::Leistung(g));
+    v.eingeben(&Feld::Stunden, "0,45");
+    let (mut c2, _) = Company::laden(&pfad, true);
+    let mut s2 = haus();
+    let mut v2 = Verwaltung::open(&s2, Some(&c2), None);
+    v2.waehlen(Knoten::Leistung(g));
+    v2.eingeben(&Feld::Stunden, "0,7");
+    s2.fuer_firma(STEP, &mut c2, &h, v2.ops())
+        .expect("anderer Platz schreibt");
+
+    assert!(s.fuer_firma(STEP, &mut c, &h, v.ops()).is_err());
+    v.neu_grundlage(&c);
+    v.fehler("geändert".into());
+    assert_eq!(v.vorher_text(&Feld::Stunden).as_deref(), Some("vorher 0,7"));
+    assert_eq!(v.meldung.as_deref(), Some("geändert"));
+    // Die Eingabe bleibt; erst jetzt, gesehen, schreibt OK sie
+    assert!(s.fuer_firma(STEP, &mut c, &h, v.ops()).is_ok());
+    let text = std::fs::read_to_string(&pfad).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(text.contains("hours=0.45"), "{text}");
+}
