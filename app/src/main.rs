@@ -2478,7 +2478,14 @@ impl App {
             return;
         }
         let top = self.top();
-        let Some(anchor) = self.ui.button_rect(chip, self.w, top) else {
+        let anchor = self.ui.button_rect(chip, self.w, top).or_else(|| {
+            // Eigenschaften zu niedrig für den Chip: Liste oben am Paneel
+            (chip == Id::PropsType && self.ui.has_props()).then(|| {
+                let p = self.ui.rect(Panel::Props, self.w, top);
+                sk_ui::widgets::Rect::new(p.x, p.y, p.w, 0.0)
+            })
+        });
+        let Some(anchor) = anchor else {
             return;
         };
         let m = self.scene.model();
@@ -4055,6 +4062,12 @@ impl App {
             self.select(Some(wall));
         }
         self.sync_props();
+        // Platz der Eigenschaften schon jetzt, nicht erst im nächsten Bild
+        self.sync_tree();
+        // Der Chip steht unter Mengen und Feldern; meist ist er hinausgerollt
+        if self.ui.reveal_props(Id::PropsType) {
+            self.props_dirty = true;
+        }
         if self.type_menu.is_none() {
             self.open_type_menu(Id::PropsType);
         }

@@ -1349,6 +1349,26 @@ impl Ui {
         self.props_scroll = 0.0;
     }
 
+    /// Rollt die „Eigenschaften“, bis der Knopf `id` ganz zu sehen ist, so
+    /// weit es geht oben im Paneel (der Typ-Chip steht unter Mengen und
+    /// Feldern und ist sonst meist hinausgerollt); `true`, wenn gerollt.
+    pub fn reveal_props(&mut self, id: Id) -> bool {
+        if !self.has_props() || self.buttons(Panel::Props).iter().any(|b| b.0 == id) {
+            return false;
+        }
+        let old = self.scroll(Panel::Props);
+        let Some((_, r, _)) = self
+            .laid_out_buttons(Panel::Props)
+            .into_iter()
+            .find(|b| b.0 == id)
+        else {
+            return false;
+        };
+        self.props_scroll = r.y + old - self.size.panel_pad * self.scale;
+        self.props_scroll = self.scroll(Panel::Props);
+        self.props_scroll != old
+    }
+
     /// Liegt `(x, y)` (Fenster) über den „Eigenschaften“?
     pub fn over_props(&self, x: f64, y: f64, win_w: u32, top: u32) -> bool {
         self.has_props() && self.rect(Panel::Props, win_w, top).contains(x, y)
@@ -1468,6 +1488,21 @@ impl Ui {
 
     /// Knöpfe eines Paneels in Paneelkoordinaten.
     fn buttons(&self, p: Panel) -> Vec<(Id, Rect, &'static str)> {
+        let mut out = self.laid_out_buttons(p);
+        // Gerollt: nur ganz sichtbare Knöpfe zeichnen und treffen
+        if matches!(p, Panel::Levels | Panel::Dialog) {
+            return out;
+        }
+        if self.natural_height(p) > self.panel_height(p) {
+            let pad = self.size.panel_pad * self.scale;
+            let (a, b) = (pad * 0.5, self.panel_height(p) - pad * 0.5);
+            out.retain(|(_, r, _)| r.y >= a && r.y + r.h <= b);
+        }
+        out
+    }
+
+    /// Alle Knöpfe eines Paneels am Rollstand, auch die hinausgerollten.
+    fn laid_out_buttons(&self, p: Panel) -> Vec<(Id, Rect, &'static str)> {
         match p {
             Panel::Levels => return self.level_buttons(),
             Panel::Dialog => return self.dialog_buttons(),
@@ -1521,11 +1556,6 @@ impl Ui {
                 _ => {}
             }
             y += h + g;
-        }
-        // Gerollt: nur ganz sichtbare Knöpfe zeichnen und treffen
-        if self.natural_height(p) > self.panel_height(p) {
-            let (a, b) = (pad * s * 0.5, self.panel_height(p) - pad * s * 0.5);
-            out.retain(|(_, r, _)| r.y >= a && r.y + r.h <= b);
         }
         out
     }

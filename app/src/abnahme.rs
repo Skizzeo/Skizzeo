@@ -10625,6 +10625,158 @@ mod loeschen_oberflaeche {
         assert!(png.width as f32 > r.w);
     }
 
+    /// A307 „Wandtyp ändern …“ (Sichtprüfung 08.10.): Die Typ-Liste hängt am Chip
+    /// der Eigenschaften. Der steht unter Mengen und Feldern und ist bei
+    /// üblicher Fenstergröße hinausgerollt, dann ging nichts auf. Jetzt rollt
+    /// er herein, die Liste zeigt alle Außenwandtypen, die Wahl stellt die
+    /// Wand in einem Schritt um.
+    #[test]
+    fn a307_wandtyp_aendern_rollt_den_chip_herein() {
+        use crate::type_menu::TypeMenu;
+        let mut s = Scene::with_model(Model::with_seed(189));
+        haus_b11(&mut s);
+        let aw = erstes(&s, Category::ExteriorWall);
+        let t = Theme::dark();
+        let mut ui = Ui::new(1.0, &t);
+        ui.set_props(selection::props(&s, aw));
+        // Platz unter Ansichten und Baum bei 1280 × 800
+        ui.props_room = 225.0;
+        assert_eq!(
+            ui.button_rect(Id::PropsType, 1280, 32),
+            None,
+            "ohne Rollen nicht zu sehen"
+        );
+        assert!(ui.reveal_props(Id::PropsType));
+        let chip = ui
+            .button_rect(Id::PropsType, 1280, 32)
+            .expect("hereingerollt");
+        let p = ui.rect(Panel::Props, 1280, 32);
+        assert!(
+            chip.y >= p.y && chip.y + chip.h <= p.y + p.h,
+            "{chip:?} in {p:?}"
+        );
+        assert!(!ui.reveal_props(Id::PropsType), "schon zu sehen");
+
+        let m = s.model();
+        let e = m.element(aw).unwrap();
+        let alt = e.layer_set;
+        let sk_model::ElementKind::Wall(w) = e.kind else {
+            panic!("Wand")
+        };
+        let menu = TypeMenu::new(
+            Id::PropsType,
+            m,
+            &t,
+            sk_model::TypeCategory::ExteriorWall,
+            alt,
+            vec![w.run],
+            chip,
+            p,
+            1.0,
+            (1280.0, 800.0),
+        );
+        let alle = m
+            .layer_sets()
+            .iter()
+            .filter(|(_, x)| x.category == sk_model::TypeCategory::ExteriorWall)
+            .count();
+        assert_eq!(menu.items.len(), alle, "alle Außenwandtypen");
+        let neu = menu
+            .items
+            .iter()
+            .find(|i| i.name == "AW mehrschalig 49")
+            .map(|i| i.id)
+            .expect("mehrschalige Wand in der Liste");
+        assert_ne!(Some(neu), alt);
+        assert!(s.preview_run_type(&[w.run], neu));
+        s.end_run_type(true);
+        assert_eq!(s.model().element(aw).unwrap().layer_set, Some(neu));
+        assert!(s.undo(), "ein Schritt");
+        assert_eq!(s.model().element(aw).unwrap().layer_set, alt);
+    }
+
+    /// A308 (zu A307): kleinere Fenster und 150 %. Bei 1280 × 800 und
+    /// 1024 × 640 (Platz 225 bzw. 120 dip) rollt der Chip ganz ins Paneel
+    /// und die Liste liegt ganz im Fenster. Ist das
+    /// Paneel niedriger als der Chip, bleibt er verborgen; die Liste hängt
+    /// dann oben am Paneel (Rückfall-Anker wie in `open_type_menu`) und liegt
+    /// ebenfalls ganz im Fenster, mit allen Außenwandtypen.
+    #[test]
+    fn a308_wandtyp_kleine_fenster_und_rueckfall() {
+        use crate::type_menu::TypeMenu;
+        let mut s = Scene::with_model(Model::with_seed(308));
+        haus_b11(&mut s);
+        let aw = erstes(&s, Category::ExteriorWall);
+        let t = Theme::dark();
+        let m = s.model();
+        let e = m.element(aw).unwrap();
+        let sk_model::ElementKind::Wall(w) = e.kind else {
+            panic!("Wand")
+        };
+        let alle = m
+            .layer_sets()
+            .iter()
+            .filter(|(_, x)| x.category == sk_model::TypeCategory::ExteriorWall)
+            .count();
+        for scale in [1.0f32, 1.5] {
+            for (ww, wh, room, sichtbar) in [
+                (1280u32, 800u32, 225.0f32, Some(true)),
+                (1024, 640, 120.0, Some(true)),
+                (1024, 640, 60.0, None),
+                (1024, 640, 12.0, Some(false)),
+            ] {
+                let (ww, wh) = ((ww as f32 * scale) as u32, (wh as f32 * scale) as u32);
+                let top = (32.0 * scale) as u32;
+                let fall = format!("{ww}×{wh} bei {scale}, Platz {room}");
+                let mut ui = Ui::new(scale, &t);
+                ui.set_props(selection::props(&s, aw));
+                ui.props_room = room * scale;
+                ui.reveal_props(Id::PropsType);
+                let p = ui.rect(Panel::Props, ww, top);
+                let anker = match ui.button_rect(Id::PropsType, ww, top) {
+                    Some(chip) => {
+                        assert_ne!(
+                            sichtbar,
+                            Some(false),
+                            "{fall}: Chip passt nicht und ist doch da"
+                        );
+                        assert!(
+                            chip.y >= p.y && chip.y + chip.h <= p.y + p.h,
+                            "{fall}: {chip:?} ganz in {p:?}"
+                        );
+                        chip
+                    }
+                    None => {
+                        assert_ne!(sichtbar, Some(true), "{fall}: Chip hereingerollt");
+                        sk_ui::widgets::Rect::new(p.x, p.y, p.w, 0.0)
+                    }
+                };
+                let menu = TypeMenu::new(
+                    Id::PropsType,
+                    m,
+                    &t,
+                    sk_model::TypeCategory::ExteriorWall,
+                    e.layer_set,
+                    vec![w.run],
+                    anker,
+                    p,
+                    scale,
+                    (ww as f32, wh as f32),
+                );
+                assert_eq!(menu.items.len(), alle, "{fall}: alle Außenwandtypen");
+                let r = menu.rect();
+                assert!(
+                    r.x >= 0.0 && r.y >= 0.0 && r.x + r.w <= ww as f32 + 0.5,
+                    "{fall}: Liste {r:?} im Fenster"
+                );
+                assert!(
+                    r.y + r.h <= wh as f32 + 0.5 || r.y == 0.0,
+                    "{fall}: Liste {r:?} unten im Fenster"
+                );
+            }
+        }
+    }
+
     /// H113, H116: Verweise im Hinweis und seine Zeit (150 ms ein, 5 s,
     /// unter der Maus länger, 150 ms aus); `anim_ms` = 0 ohne Blenden.
     #[test]
