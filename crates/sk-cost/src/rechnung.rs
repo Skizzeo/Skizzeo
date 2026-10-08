@@ -851,7 +851,12 @@ pub fn kosten_mit(
                     }
                     _ => {}
                 }
-                (kurz, k.oz(l), lo, ge, so, nu)
+                // Geschätzte Zeilen stehen in keinem LV und haben keine OZ
+                let oz = match p.quelle {
+                    Quelle::Leistung(_) => k.oz_voll(l),
+                    _ => String::new(),
+                };
+                (kurz, oz, lo, ge, so, nu)
             }
             Quelle::Richtpreis(b) => {
                 let name = m
@@ -984,21 +989,10 @@ pub fn kosten_mit(
                 .position(|s| *s == a.geschoss)
                 .unwrap_or(0) as u64
         });
-        // Schranke je Position: Teile × (0,0005 × EP + 0,005) €
-        let summe_teile: Cent = je_geschoss.iter().map(|t| t.1).sum();
-        let schranke = je_geschoss.len() as i128 * (p.ep.0 as i128 * 5 + 5_000);
-        if ((summe_teile - p.gp).0 as i128).abs() * 10_000 > schranke {
-            befunde.push(Befund::warnung(
-                96,
-                format!(
-                    "Summenprobe Geschosse, {}: Teile ergeben {}, das Ganze {}; erlaubt sind {} €.",
-                    p.kurz,
-                    summe_teile,
-                    p.gp,
-                    Cent((schranke / 10_000) as i64).deutsch()
-                ),
-                Ort::Datei,
-            ));
+        let je_kg = teile(&|a| a.kg.map_or(0, u64::from));
+        // Schranke je Position und Teilung: Teile × (0,0005 × EP + 0,005) €
+        for (art, t) in [("Geschosse", &je_geschoss), ("Kostengruppen", &je_kg)] {
+            befunde.extend(summenprobe(art, &p.kurz, t, p.ep, p.gp));
         }
         for (i, c) in je_geschoss {
             let st = geschoss_folge[i as usize];
@@ -1007,7 +1001,7 @@ pub fn kosten_mit(
                 None => nach_geschoss.push((st, c)),
             }
         }
-        for (kg, c) in teile(&|a| a.kg.map_or(0, u64::from)) {
+        for (kg, c) in je_kg {
             let kg = (kg > 0).then_some(kg as u16);
             match nach_kg.iter_mut().find(|(x, _)| *x == kg) {
                 Some((_, v)) => *v += c,
@@ -1060,4 +1054,43 @@ pub fn kosten_mit(
 /// Das Kostenblatt im Umfang `u` (Regel 98: liest nur).
 pub fn kosten(m: &Model, sched: &Schedule, k: &Katalog, u: &Umfang) -> Kostenblatt {
     kosten_mit(Kostenspeicher::default(), m, sched, k, u).0
+}
+
+/// Regel 96 je Position und Teilung: |Σ Teil-GP − GP| ≤ Teile × (0,0005 ×
+/// EP + 0,005) €. `teile` sind (Schlüssel, Teil-GP).
+fn summenprobe(art: &str, kurz: &str, teile: &[(u64, Cent)], ep: Cent, gp: Cent) -> Option<Befund> {
+    let summe: Cent = teile.iter().map(|t| t.1).sum();
+    let schranke = teile.len() as i128 * (ep.0 as i128 * 5 + 5_000);
+    (((summe - gp).0 as i128).abs() * 10_000 > schranke).then(|| {
+        Befund::warnung(
+            96,
+            format!(
+                "Summenprobe {art}, {kurz}: Teile ergeben {summe}, das Ganze {gp}; erlaubt sind {} €.",
+                Cent((schranke / 10_000) as i64).deutsch()
+            ),
+            Ort::Datei,
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regel 96 gilt für jede Teilung, auch nach Kostengruppen (Prüfung
+    /// BIM-Integration 10:40): zwei Teile, EP 100,00 € → Schranke 0,11 €.
+    #[test]
+    fn summenprobe_je_teilung() {
+        let ep = Cent(10_000);
+        let teile = [(1, Cent(5_000)), (2, Cent(5_011))];
+        assert!(summenprobe("Kostengruppen", "x", &teile, ep, Cent(10_000)).is_none());
+        let teile = [(1, Cent(5_000)), (2, Cent(5_012))];
+        let b = summenprobe("Kostengruppen", "x", &teile, ep, Cent(10_000)).unwrap();
+        assert_eq!(b.regel, 96);
+        assert!(
+            b.satz.starts_with("Summenprobe Kostengruppen, x:"),
+            "{}",
+            b.satz
+        );
+    }
 }

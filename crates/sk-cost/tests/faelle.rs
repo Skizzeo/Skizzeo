@@ -70,6 +70,8 @@ fn fall_20_nachunternehmer() {
     let b = blatt(&m, &k);
     let w = position(&b, "WDVS EPS 035 d=140mm");
     assert_eq!(w.nu, Some(Cent(11_000)));
+    // OZ mit Los, Los-Nr. nicht aufgefüllt (ka-4-fach §3.1, 10:35)
+    assert!(w.oz.starts_with("2.01."), "{}", w.oz);
     assert_eq!((w.lohn, w.stoff, w.ep), (Cent(0), Cent(0), Cent(11_000)));
     assert_eq!(w.gp, Cent(2_195_545));
     assert_eq!(w.stoff_gp, Cent(0));
@@ -152,6 +154,7 @@ fn fall_26_geschaetzt_nach_naechster_dicke() {
         (Cent(2_700), Cent(3_017), Cent(5_717))
     );
     assert!(matches!(p.quelle, sk_cost::rechnung::Quelle::Geschaetzt(_)));
+    assert_eq!(p.oz, "", "geschätzt: keine OZ (ka-4-fach §3.1, 10:35)");
     assert_eq!(b.geschaetzt, 1);
     assert_eq!(b.geschaetzt_betrag, p.gp);
     // 45 cm nach M30

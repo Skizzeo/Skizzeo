@@ -399,6 +399,20 @@ impl Katalog {
         let t = self.los(l.titel).map_or("?", |t| t.nr.as_str());
         format!("{t}.{:04}", l.pos)
     }
+
+    /// OZ mit Los davor („1.01.0020“): eindeutig über alle Lose. Für alles,
+    /// was Positionen mehrerer Lose zeigt (Kostenblatt, CSV, Befunde); im LV
+    /// eines Loses gilt [`Katalog::oz`].
+    pub fn oz_voll(&self, l: &Leistung) -> String {
+        match self
+            .los(l.titel)
+            .and_then(|t| t.parent)
+            .and_then(|p| self.los(p))
+        {
+            Some(los) => format!("{}.{}", los.nr, self.oz(l)),
+            None => self.oz(l),
+        }
+    }
 }
 
 /// Was der Leser außerhalb der Kostenzeilen kennen muss (Regel 73).
@@ -1038,7 +1052,7 @@ pub fn lesen<'a>(
     let mut oz: HashSet<(Guid, u16)> = HashSet::new();
     for l in k.leistungen.iter().filter(|l| !l.retired) {
         if !oz.insert((l.titel, l.pos)) {
-            let t = befund::r86(&k.oz(l));
+            let t = befund::r86(&k.oz_voll(l));
             bf.push(Befund::fehler(86, t, satz_ort("service", l.guid.to_ifc())));
         }
     }
@@ -1124,6 +1138,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(k.oz(m10), "02.0010");
+        assert_eq!(k.oz_voll(m10), "1.02.0010");
         assert_eq!(m10.stunden, Dez(450_000));
         assert_eq!(k.anteile_von(m10.guid).count(), 2);
         // Stand 7: Stück je Einheit an den Steinen
