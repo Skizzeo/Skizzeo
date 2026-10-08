@@ -306,6 +306,8 @@ pub struct KostenView {
     /// schlagen der Firma vor (KA-3b4); setzt die App über
     /// [`KostenView::set_vorschlag`].
     vorschlag: bool,
+    /// Kennwort hier eingegeben: „Auch für neue Häuser“ geht in den Entwurf.
+    entwurf: bool,
     blatt: Option<Rc<Kostenblatt>>,
     katalog: Option<Rc<Katalog>>,
     /// Kostenblatt aller Geschosse des Umfangs (Chip-Summen).
@@ -392,6 +394,7 @@ impl KostenView {
             scale: 1.0,
             top: 32.0,
             vorschlag: false,
+            entwurf: false,
             blatt: None,
             katalog: None,
             ganz: None,
@@ -479,6 +482,7 @@ impl KostenView {
             };
             let mut l = LohnBlatt::neu(form, titel, kat.werte.lohn, firma_lohn);
             l.set_vorschlag(self.vorschlag);
+            l.entwurf = self.entwurf;
             l.scale = self.scale;
             self.preis_schliessen();
             self.wahl = None;
@@ -741,6 +745,7 @@ impl KostenView {
                     PreisBlatt::neu(kat.clone(), a, f, (pos, key), preis_blatt::stand_jetzt());
                 pb.scale = self.scale;
                 pb.vorschlag = self.vorschlag;
+                pb.entwurf = self.entwurf;
                 self.preis = Some(pb);
                 self.live = None;
                 changed = true;
@@ -797,9 +802,19 @@ impl KostenView {
     /// Rolle der Sitzung (KA-3b4): auch offene Blätter folgen, etwa nach
     /// „Kennwort eingeben …“ (Bedienbarkeit 16.1). `true`, wenn sich etwas
     /// geändert hat.
-    pub fn set_vorschlag(&mut self, vorschlag: bool) -> bool {
-        if vorschlag == self.vorschlag {
+    pub fn set_vorschlag(&mut self, vorschlag: bool, entwurf: bool) -> bool {
+        if (vorschlag, entwurf) == (self.vorschlag, self.entwurf) {
             return false;
+        }
+        self.entwurf = entwurf;
+        if let Some(pb) = self.preis.as_mut() {
+            pb.entwurf = entwurf;
+        }
+        if let Some(l) = self.lohn.as_mut() {
+            l.entwurf = entwurf;
+        }
+        if vorschlag == self.vorschlag {
+            return true;
         }
         self.vorschlag = vorschlag;
         if let Some(pb) = self.preis.as_mut() {

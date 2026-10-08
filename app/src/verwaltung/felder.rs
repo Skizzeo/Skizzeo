@@ -642,7 +642,7 @@ impl Verwaltung {
     }
 
     /// „n Vorschläge aus Projekten“ (KA-3b4, paket-ka3b §1): je Vorschlag
-    /// Satz und Feld, alt → neu, Projekt und Datum, „Übernehmen“ und
+    /// Satz und Feld, alt → neu, Projekt und Datum, „In den Entwurf“ und
     /// „Ablehnen“. Kein Vorschlag verschwindet still.
     fn vorschlaege_zeigen(&self, b: &mut Bau, mut y: f32) {
         let n = self.vorschlaege.len();
@@ -660,7 +660,7 @@ impl Verwaltung {
         y = b.absatz(
             0.0,
             y,
-            "„Übernehmen“ schreibt den Wert in den Entwurf, „Ablehnen“ streicht den Vorschlag. Beides steht im Protokoll.",
+            "„In den Entwurf“ macht den Wert mit „Freigeben“ an allen Plätzen gültig, „Ablehnen“ streicht den Vorschlag. Beides steht im Protokoll.",
             Farbe::Dim,
         ) + 12.0;
         for v in &self.vorschlaege {
@@ -697,7 +697,9 @@ impl Verwaltung {
             let x = b.verweis(
                 b.w - 190.0,
                 y,
-                "Übernehmen",
+                // nicht „Übernehmen“: das heißt in der Abgleichzeile Firma →
+                // Haus (Bedienbarkeit 17)
+                "In den Entwurf",
                 Aktion::VorschlagUebernehmen(v.key),
             );
             b.verweis(x + 16.0, y, "Ablehnen", Aktion::VorschlagAblehnen(v.key));

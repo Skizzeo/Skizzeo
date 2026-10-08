@@ -1694,7 +1694,7 @@ impl App {
                 c.set_nutzer(false);
             }
             if let Some(k) = self.quantity.kosten.as_mut() {
-                k.set_vorschlag(false);
+                k.set_vorschlag(false, true);
             }
             self.quantity.dirty = true;
         }
@@ -2900,8 +2900,13 @@ impl App {
                 .lohn_karte();
         }
         let vorschlag = self.rolle() == sk_cost::Rolle::Nutzer;
+        let entwurf = !vorschlag
+            && self
+                .company
+                .as_ref()
+                .is_some_and(|c| sk_cost::verwaltung::hat_kennwort(c.library()));
         if let Some(k) = self.quantity.kosten.as_mut() {
-            k.set_vorschlag(vorschlag);
+            k.set_vorschlag(vorschlag, entwurf);
             if let Some(c) = &self.company {
                 k.set_ablaeufe(c.haus_ablaeufe());
             }

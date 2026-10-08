@@ -71,10 +71,13 @@ impl Gilt {
         }
     }
 
-    /// Tooltip am zweiten Segment (Bedienbarkeit 4.6).
-    pub(crate) fn tipp(vorschlag: bool) -> &'static str {
+    /// Tooltip am zweiten Segment (Bedienbarkeit 4.6); `entwurf`: mit
+    /// eingegebenem Kennwort geht der Wert in den Entwurf (Bedienbarkeit 17).
+    pub(crate) fn tipp(vorschlag: bool, entwurf: bool) -> &'static str {
         if vorschlag {
             "Der Firma vorschlagen: gilt hier gleich, für neue Häuser erst, wenn die Verwaltung ihn übernimmt"
+        } else if entwurf {
+            "Auch für neue Häuser: kommt in den Entwurf, gültig nach „Freigeben“"
         } else {
             "Auch für neue Häuser: speichert im Firmenkatalog"
         }
@@ -222,6 +225,8 @@ pub struct PreisBlatt {
     pub gilt: Gilt,
     /// Mit Kennwort, nicht eingegeben: „Der Firma vorschlagen“ (KA-3b4).
     pub vorschlag: bool,
+    /// Mit eingegebenem Kennwort: „Auch für neue Häuser“ geht in den Entwurf.
+    pub entwurf: bool,
     /// Befundsatz der Vorschau (ungültige Eingabe).
     pub fehler: Option<crate::meldung::Meldung>,
     hot: Option<Ziel>,
@@ -323,6 +328,7 @@ impl PreisBlatt {
             abweichend,
             gilt: Gilt::default(),
             vorschlag: false,
+            entwurf: false,
             fehler: None,
             hot: None,
             stand,
@@ -974,7 +980,9 @@ impl PreisBlatt {
     /// Tooltip am Segment (Bedienbarkeit 4.6).
     pub fn tip_at(&self, fonts: &Fonts, x: f32, y: f32) -> Option<String> {
         match self.hit(fonts, x, y)? {
-            Ziel::Segment(Gilt::NeueHaeuser) => Some(Gilt::tipp(self.vorschlag).into()),
+            Ziel::Segment(Gilt::NeueHaeuser) => {
+                Some(Gilt::tipp(self.vorschlag, self.entwurf).into())
+            }
             Ziel::Kennwort => Some(KENNWORT_TIPP.into()),
             _ => None,
         }

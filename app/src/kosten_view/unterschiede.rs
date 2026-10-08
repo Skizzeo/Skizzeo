@@ -140,9 +140,10 @@ impl KostenView {
         let Some((a, _)) = self.abgleich.as_ref() else {
             return Vec::new();
         };
+        // Ohne „Stand n“: die Zahl sagt dem Nutzer hier nichts (Bedienbarkeit 15)
         let mut z = vec![Zeile::Titel(
             "Unterschiede zum Firmenkatalog".into(),
-            format!("Stand {}", a.stand),
+            String::new(),
         )];
         z.push(Zeile::Kopf(
             "Abweichend",

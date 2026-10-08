@@ -203,7 +203,7 @@ Firmenkatalog | „In den Firmenkatalog …“ und „Ins Projekt übernehmen“
 
 [thema] id=verwaltung titel="Verwaltung"
 Öffnen | Dateimenü › „Verwaltung …“
-Inhalt | Firmenwerte, Baustoffe und Preise, Bauleistungen, Lose, Bauteiltypen, Referenzhäuser
+Inhalt | Firmenwerte, Baustoffe und Preise, Bauleistungen, Lose, Bauteiltypen, Referenzhäuser und Abläufe; ein Ablauf führt Schritt für Schritt, etwa zu einem neuen Stein mit Preis
 Ändern | Werte tippen; jede Änderung wirkt sofort, **OK** speichert sie im Firmenkatalog
 Zurück | „Protokoll“ › „Diese Änderung zurücknehmen“; Strg+Z betrifft nur das offene Haus
 Wirkung | die Zeile über **OK** zeigt, wie sich die Referenzhäuser ändern

@@ -175,7 +175,7 @@ fn istbilder_ka1_ka2() {
     let mut q = b.fenster(&mut s, 1240, 930, Blatt::Kosten);
     b.p = Picking::default();
     let k = q.kosten.as_mut().unwrap();
-    k.set_vorschlag(true);
+    k.set_vorschlag(true, false);
     // paket-ka3b §3: der Werksablauf `kind=user` oben links vom Knopf
     let werk: Vec<_> = sk_cost::ablauf::lesen(&[sk_cost::WERK])
         .into_iter()

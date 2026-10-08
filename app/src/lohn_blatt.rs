@@ -72,6 +72,8 @@ pub struct LohnBlatt {
     pub gilt: Gilt,
     /// Mit Kennwort, nicht eingegeben: „Der Firma vorschlagen“ (KA-3b4).
     pub vorschlag: bool,
+    /// Mit eingegebenem Kennwort: „Auch für neue Häuser“ geht in den Entwurf.
+    pub entwurf: bool,
     /// Tastenfokus auf dem Segment „Gilt für“ (nur das Blatt, Tab).
     segment: bool,
     hot: Option<Ziel>,
@@ -135,6 +137,7 @@ impl LohnBlatt {
                 Form::Blatt => Gilt::NurHaus,
             },
             vorschlag: false,
+            entwurf: false,
             segment: false,
             hot: None,
             anker: (0.0, 0.0, 0.0, 0.0),
@@ -500,7 +503,7 @@ impl LohnBlatt {
     pub fn tip_at(&self, fonts: &Fonts, x: f32, y: f32) -> Option<String> {
         match self.hit(fonts, x, y)? {
             Ziel::Segment(Gilt::NeueHaeuser) | Ziel::Auch => {
-                Some(Gilt::tipp(self.vorschlag).into())
+                Some(Gilt::tipp(self.vorschlag, self.entwurf).into())
             }
             Ziel::Kennwort => Some(preis_blatt::KENNWORT_TIPP.into()),
             _ => None,

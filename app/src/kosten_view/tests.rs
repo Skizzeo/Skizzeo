@@ -462,19 +462,8 @@ fn abgleichzeile_fuer_neue_haeuser() {
     assert_eq!(
         z[..3],
         [
-            unterschiede::Zeile::Titel(
-                "Unterschiede zum Firmenkatalog".into(),
-                format!(
-                    "Stand {}",
-                    c.library().ext("catalog").next().map_or(0, |r| {
-                        r.line
-                            .split(' ')
-                            .find_map(|w| w.strip_prefix("stand="))
-                            .and_then(|n| n.parse::<u32>().ok())
-                            .unwrap_or(0)
-                    })
-                )
-            ),
+            // ohne „Stand n“ rechts (Bedienbarkeit 15)
+            unterschiede::Zeile::Titel("Unterschiede zum Firmenkatalog".into(), String::new()),
             unterschiede::Zeile::Kopf("Abweichend", "„übernehmen“ holt diese Werte in dieses Haus"),
             unterschiede::Zeile::Eintrag("Lohn 65,00 €/h (hier 60,00)".into()),
         ]
