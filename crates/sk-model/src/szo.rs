@@ -2291,13 +2291,18 @@ pub(crate) fn read_types(
                 ));
             }
         }
+        // Gewählte Bauleistung (KA-0b); ein ungültiger Wert gilt nicht und
+        // bleibt als Fremdes bytegleich stehen (A311, Regel 72)
         if let Some(v) = r.opt("svc") {
             match Guid::from_ifc(v) {
                 Some(g) => layer.svc = Some(g),
-                None => passed.hints.push(format!(
-                    "Zeile {}: Bauleistung „{v}“ ungültig, übergangen",
-                    r.line
-                )),
+                None => {
+                    r.replaced.set(r.replaced.get() + 1);
+                    passed.hints.push(format!(
+                        "Zeile {}: Bauleistung „{v}“ ungültig, nicht benutzt; sie bleibt unverändert in der Datei",
+                        r.line
+                    ));
+                }
             }
         }
         set_layers.entry(set).or_default().push(layer);
@@ -3462,14 +3467,46 @@ mod tests {
                 .map(|(_, s)| s.layers[0].svc),
             Some(Some(svc))
         );
-        // ungültige Bauleistung: Hinweis, Zeile ohne svc
-        let kaputt = text.replace(&format!(" svc={}", svc.to_ifc()), " svc=nix");
-        let back = load(&kaputt).unwrap();
-        assert!(
-            back.hints.iter().any(|h| h.contains("Bauleistung")),
-            "{:?}",
-            back.hints
-        );
-        assert_eq!(write(&back.model).matches(" svc=").count(), 0);
+    }
+
+    /// A311 (Nachtrag KA-0c/d zu §6 Nr. 4/7, R7): Ein ungültiges `svc=` an
+    /// einer Schicht bleibt roh erhalten. Es wird nicht benutzt (Schicht ohne
+    /// Bauleistung), mit Befund „Bauleistung“ gemeldet und beim Speichern
+    /// unverändert zurückgeschrieben; die Datei bleibt bytegleich, auch nach
+    /// einer Änderung an anderer Stelle.
+    #[test]
+    fn a311_ungueltige_bauleistung_bleibt_erhalten() {
+        let mut m = house();
+        let id = m.layer_sets().ids().next().unwrap();
+        let mut s = m.layer_set(id).unwrap().clone();
+        let svc = m.new_guid();
+        s.layers[0].svc = Some(svc);
+        assert!(m.set_layer_set(id, s));
+        let set = m.layer_set(id).unwrap().guid;
+        let text = write(&m);
+        for roh in ["nix", "0Svc1", "-x-", "\"\""] {
+            let kaputt = text.replace(&format!(" svc={}", svc.to_ifc()), &format!(" svc={roh}"));
+            assert_ne!(kaputt, text);
+            let back = load(&kaputt).unwrap();
+            assert!(
+                back.hints.iter().any(|h| h.contains("Bauleistung")),
+                "{roh}: {:?}",
+                back.hints
+            );
+            let layer0 = back
+                .model
+                .layer_sets()
+                .iter()
+                .find(|(_, s)| s.guid == set)
+                .map(|(_, s)| s.layers[0].svc);
+            assert_eq!(layer0, Some(None), "{roh}: nicht benutzt");
+            assert_eq!(write(&back.model), kaputt, "{roh}: bytegleich");
+            // Änderung an anderer Stelle: der rohe Wert bleibt stehen
+            let mut b = back.model;
+            let w = b.runs().iter().next().map(|(_, r)| r.segments[0]).unwrap();
+            b.set_number(w, "AW-Süd").unwrap();
+            let neu = write(&b);
+            assert!(neu.contains(&format!(" svc={roh}")), "{roh}: nach Änderung");
+        }
     }
 }
