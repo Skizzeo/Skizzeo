@@ -47,6 +47,8 @@ pub struct Library {
     pub presets: Vec<CompanyPreset>,
     /// Was eine neuere Fassung geschrieben hat und dieser Leser nicht kennt.
     pub foreign: Foreign,
+    /// Zeilen der Erweiterungsabschnitte (KA-0b), gedeutet von `sk-cost`.
+    pub ext: crate::ext::ExtStore,
 }
 
 /// Fremdes aus einer neueren Fassung (F-17): bleibt beim Zurückschreiben
@@ -70,6 +72,24 @@ impl PartialEq for Library {
 }
 
 impl Library {
+    /// Zeilen eines Erweiterungsabschnitts (KA-0b) in Dateireihenfolge.
+    pub fn ext<'a>(&'a self, section: &'a str) -> impl Iterator<Item = &'a crate::ExtRec> + 'a {
+        self.ext.section(section)
+    }
+
+    /// Wie [`Model::ext_put`], ohne Verlauf (der Firmenkatalog ändert sich
+    /// nur als eigener Schreibvorgang, Bausteingrenze §5).
+    #[doc(hidden)]
+    pub fn ext_put(&mut self, section: &str, id: &str, line: String, before: Option<&str>) {
+        self.ext.put(section, id, line, before);
+    }
+
+    /// Wie [`Model::ext_remove`], ohne Verlauf.
+    #[doc(hidden)]
+    pub fn ext_remove(&mut self, section: &str, id: &str) {
+        self.ext.remove(section, id);
+    }
+
     /// Kurzzeichen der Typen mit ungültigem Deckenauflager (Regel 21, wie
     /// [`Model::bearing_problem`]). Sie werden übernommen und wie „ganze
     /// tragende Schicht“ gebaut.
@@ -245,7 +265,9 @@ pub(crate) fn record_key(r: &Record, count: &mut HashMap<String, usize>) -> Stri
 
 /// Der Katalog als `.szk`-Text.
 pub fn write_szk(lib: &Library) -> String {
-    with_foreign(write_known(lib), &lib.foreign)
+    let mut text = write_known(lib);
+    lib.ext.write(&mut text);
+    with_foreign(text, &lib.foreign)
 }
 
 /// Text `plain`, wie dieser Schreiber ihn kennt, mit dem Fremden aus der
@@ -435,6 +457,12 @@ pub fn save_preset(
 /// Liest einen Firmenkatalog. Bei einem Fehler wird nichts übernommen; der
 /// Fehler nennt die Zeile.
 pub fn read_szk(text: &str) -> Result<Library, LoadError> {
+    read_szk_with(text, &[])
+}
+
+/// Wie [`read_szk`]; die Abschnitte `ext` kommen roh in den
+/// Erweiterungsspeicher (KA-0b) statt ins Fremde.
+pub fn read_szk_with(text: &str, ext: &[&str]) -> Result<Library, LoadError> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     check_header(text.lines().next(), "SZK", VERSION)?;
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
@@ -458,6 +486,7 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
     let lines: Vec<&str> = text.lines().collect();
     // Zeilen, die unverändert stehen bleiben, mit Zeilennummer
     let mut alien: Vec<usize> = Vec::new();
+    let mut ext_lines: Vec<(String, &str)> = Vec::new();
     for (i, l) in lines.iter().enumerate().skip(1) {
         let Some(r) = Record::parse(i + 1, l)? else {
             continue;
@@ -465,6 +494,7 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
         // Unbekannte Abschnitte (neuere Kataloge) bleiben unverändert stehen
         match KNOWN.iter().find(|k| **k == r.section) {
             Some(k) => by.entry(k).or_default().push(r),
+            None if ext.contains(&r.section.as_str()) => ext_lines.push((r.section.clone(), *l)),
             None => {
                 alien.push(i + 1);
                 foreign.unknown += 1;
@@ -640,6 +670,10 @@ pub fn read_szk(text: &str) -> Result<Library, LoadError> {
     alien.sort_unstable();
     foreign.records = alien.iter().map(|&n| lines[n - 1].to_string()).collect();
     lib.foreign = foreign;
+    lib.ext.declare(ext);
+    for (section, l) in ext_lines {
+        lib.ext.push_read(&section, l);
+    }
     Ok(lib)
 }
 
@@ -1630,5 +1664,56 @@ mod tests {
         assert!(e.message.contains("doppelt"), "{e}");
         assert!(read_szk("SZK 2\n").is_err());
         assert!(read_szk("SZO 4\n").is_err());
+    }
+
+    /// KA-0b (paket-ka0.md §6 Nr. 4, 5, 7): Rundlauf der neun
+    /// `sk-cost`-Abschnitte in `.szk` bytegleich, mit und ohne
+    /// Erweiterungsliste; ohne Erweiterung bleibt der Katalog bytegleich.
+    #[test]
+    fn ka0b_szk_erweiterung_rundlauf() {
+        const KA0: [&str; 9] = [
+            "catalog",
+            "article",
+            "service",
+            "svcpart",
+            "svcfollow",
+            "rate",
+            "lot",
+            "origin",
+            "log",
+        ];
+        let plain = write_szk(&Library::standard());
+        assert!(!plain.contains(" svc="));
+        let mut text = plain.clone();
+        text.push_str(
+            "[catalog] key=firma name=\"Muster Bau\" stand=4\n\
+             [article] guid=0Art1 name=\"Ziegel\" unit=Banane\n\
+             [article] guid=0Art1 name=\"doppelt\"\n\
+             [article] name=\"ohne Kennung\"\n\
+             [service] guid=0Svc1 name=\"Mauern\" zukunft=1\n\
+             [svcpart] key=0Svc1/0Art1 qty=0.12\n\
+             [svcfollow] key=0Svc1/0Svc2\n\
+             [rate] key=wage num=60.00\n\
+             [lot] key=300 name=\"Mauerarbeiten\"\n\
+             [origin] key=0Art1 rec=article\n\
+             [log] key=1 op=\"Satz ändern\"\n\
+             [zukunft] guid=0Zuk1\n",
+        );
+        let mit = read_szk_with(&text, &KA0).unwrap();
+        assert_eq!(write_szk(&mit), text);
+        assert_eq!(mit.ext("article").count(), 3);
+        assert_eq!(mit.ext("log").count(), 1);
+        let ohne = read_szk(&text).unwrap();
+        assert_eq!(write_szk(&ohne), text);
+        assert_eq!(ohne.ext("article").count(), 0);
+        let mut lib = mit;
+        lib.ext_put("rate", "wage", "[rate] key=wage num=61.00".into(), None);
+        lib.ext_put("lot", "100", "[lot] key=100".into(), Some("300"));
+        lib.ext_remove("log", "1");
+        let neu = write_szk(&lib);
+        assert!(neu.contains("[rate] key=wage num=61.00\n[lot] key=100\n[lot] key=300"));
+        assert!(!neu.contains("[log]"));
+        assert!(neu.ends_with("[zukunft] guid=0Zuk1\n"));
+        assert_eq!(write_szk(&read_szk(&neu).unwrap()), neu);
     }
 }

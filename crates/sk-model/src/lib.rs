@@ -9,6 +9,7 @@
 pub mod attr;
 pub mod catalog;
 pub mod element;
+pub mod ext;
 pub mod floor;
 pub mod foundation;
 pub mod guid;
@@ -46,6 +47,7 @@ pub use element::{
     LevelKind, LevelRef, PropSet, PropValue, RunId, Soffit, Storey, StoreyId, Terrace, Wall,
     WallRun,
 };
+pub use ext::{ExtRec, ExtStore};
 pub use floor::{FloorError, FloorParams, FloorSlab, SoffitParams, StripParams, TerraceParams};
 pub use foundation::{FootingShape, Foundation, FoundationError, FoundationParams};
 pub use guid::{Guid, GuidGen};

@@ -158,6 +158,9 @@ pub struct MaterialLayer {
     pub trade: Option<TradeId>,
     /// Kostengruppe abweichend von der Tabelle ([`crate::Model::layer_kg`]).
     pub kg: Option<u16>,
+    /// Ausdrücklich gewählte Bauleistung (`svc=`, BIM §3.10). `sk-model`
+    /// deutet sie nicht; ein toter Verweis bleibt stehen (Regel 99).
+    pub svc: Option<Guid>,
 }
 
 impl MaterialLayer {
@@ -171,6 +174,7 @@ impl MaterialLayer {
             core: false,
             trade: None,
             kg: None,
+            svc: None,
         }
     }
 

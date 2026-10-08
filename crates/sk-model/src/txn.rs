@@ -9,7 +9,7 @@
 use crate::attr::{Display, Fill, FillId, LineType, LineTypeId, Pen, PenId, Surface, SurfaceId};
 use crate::element::{Building, BuildingId, Element, ElementId, RunId, Storey, StoreyId, WallRun};
 use crate::library::{LayerSet, LayerSetId, Material, MaterialId};
-use crate::model::Defaults;
+use crate::model::{Defaults, Project};
 use crate::trade::Trade;
 
 /// Ein geänderter Datensatz: `None` heißt „gab es nicht“ (angelegt bzw. gelöscht).
@@ -85,6 +85,21 @@ pub enum Change {
         old: Vec<String>,
         new: Vec<String>,
     },
+    /// Eine Zeile des Erweiterungsspeichers (KA-0b): Abschnitt, Kennung,
+    /// Stelle im Abschnitt, Zeile vorher und nachher. Nicht zusammengefasst:
+    /// Rückgängig läuft rückwärts durch alle Einträge.
+    Ext {
+        section: String,
+        id: String,
+        at: usize,
+        old: Option<String>,
+        new: Option<String>,
+    },
+    /// Projektangaben (Bauvorhaben, Bauherr, Aufsteller; KA-0b).
+    Project {
+        old: Project,
+        new: Project,
+    },
 }
 
 impl Change {
@@ -105,6 +120,8 @@ impl Change {
             Change::Defaults { old, new } => old == new,
             Change::Trades { old, new } => old == new,
             Change::ForeignRecords { old, new } => old == new,
+            Change::Ext { old, new, .. } => old == new,
+            Change::Project { old, new } => old == new,
         }
     }
 }
@@ -158,6 +175,7 @@ pub(crate) enum Key {
     Defaults,
     Trades,
     ForeignRecords,
+    Project,
 }
 
 /// Offener Schritt.

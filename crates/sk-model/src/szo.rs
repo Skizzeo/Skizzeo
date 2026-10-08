@@ -654,8 +654,13 @@ pub(crate) fn write_type(
             Some(t) => line.guid("trade", Some(t.0)),
             None => line,
         };
-        match l.kg {
+        let line = match l.kg {
             Some(k) => line.num("kg", k),
+            None => line,
+        };
+        // Gewählte Bauleistung nur, wenn gesetzt (KA-0b, BIM §3.10)
+        match l.svc {
+            Some(g) => line.guid("svc", Some(g)),
             None => line,
         }
         .finish(out);
@@ -678,7 +683,9 @@ fn write_props(out: &mut String, section: &str, owner: &str, g: Guid, props: &Pr
 
 /// Das Modell als `.szo`-Text.
 pub fn write(m: &Model) -> String {
-    crate::catalog::with_foreign(write_known(m), &m.foreign)
+    let mut text = write_known(m);
+    m.ext.write(&mut text);
+    crate::catalog::with_foreign(text, &m.foreign)
 }
 
 /// Was dieser Schreiber kennt, ohne Fremdes aus der gelesenen Datei.
@@ -754,6 +761,17 @@ fn write_known(m: &Model) -> String {
             m.layer_set(defaults.exterior_wall).map(|s| s.guid),
         )
         .guid("iwset", m.layer_set(defaults.interior_wall).map(|s| s.guid));
+    // Bauvorhaben, Bauherr, Aufsteller nur, wenn gesetzt (BIM §3.12)
+    let mut line = line;
+    for (k, v) in [
+        ("site", &p.site),
+        ("client", &p.client),
+        ("author", &p.author),
+    ] {
+        if !v.is_empty() {
+            line = line.text(k, v);
+        }
+    }
     // Nummernzähler nur, wenn gelöscht wurde (Regel 25): sonst ergibt er
     // sich aus der höchsten Nummer
     let gaps = m.number_gaps();
@@ -1198,7 +1216,14 @@ fn foreign(
 
 /// Liest eine `.szo`-Datei. Neue Laufzeit-Kennungen, Guids aus der Datei; neue
 /// Guids kommen aus `guids`. Bei einem Fehler wird nichts übernommen.
-pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
+pub fn read(text: &str, guids: GuidGen) -> Result<Loaded, LoadError> {
+    read_with(text, guids, &[])
+}
+
+/// Wie [`read`]; die Abschnitte `ext` kommen roh in den Erweiterungsspeicher
+/// ([`crate::ExtStore`], KA-0b) statt ins Fremde und werden in dieser
+/// Reihenfolge hinter den bekannten Abschnitten geschrieben.
+pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded, LoadError> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     check_header(text.lines().next(), "SZO", VERSION)?;
     // SZO 1: vor der Geschossverwaltung (B11), SZO 2: vor den Gebäuden (B12);
@@ -1215,6 +1240,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     let lines: Vec<&str> = text.lines().collect();
     // Sätze unbekannter Art (neuere Fassung, F-17b): roh behalten, ohne Hinweis
     let mut alien: Vec<usize> = Vec::new();
+    let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
     const KNOWN: [&str; 28] = [
         "pen", "linetype", "fill", "surface", "display", "trade", "material", "layerset", "layer",
@@ -1228,6 +1254,7 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         };
         match KNOWN.iter().find(|k| **k == r.section) {
             Some(k) => by.entry(k).or_default().push(r),
+            None if ext.contains(&r.section.as_str()) => ext_lines.push((r.section.clone(), l)),
             None => alien.push(i + 1),
         }
     }
@@ -1426,9 +1453,13 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
         [] => return Err(err(0, "[project] fehlt")),
         [_, r, ..] => return Err(err(r.line, "[project] doppelt")),
     };
+    let text = |k: &str| p.opt(k).unwrap_or("").to_string();
     let project = Project {
         guid: p.guid("guid")?,
         name: p.get("name")?.to_string(),
+        site: text("site"),
+        client: text("client"),
+        author: text("author"),
     };
     // Nummernzähler (Regel 25), z. B. „IW:1,GB:2“; fehlt er, gilt die höchste
     // vorhandene Nummer
@@ -2004,6 +2035,10 @@ pub fn read(text: &str, mut guids: GuidGen) -> Result<Loaded, LoadError> {
     hints.extend(model.check());
     alien.sort_unstable();
     model.foreign = foreign(&model, &by, &lines, &alien);
+    model.ext.declare(ext);
+    for (section, l) in ext_lines {
+        model.ext.push_read(&section, l);
+    }
     Ok(Loaded { model, hints })
 }
 
@@ -2254,6 +2289,15 @@ pub(crate) fn read_types(
                     "Zeile {}: Kostengruppe {kg} ungültig, übergangen",
                     r.line
                 ));
+            }
+        }
+        if let Some(v) = r.opt("svc") {
+            match Guid::from_ifc(v) {
+                Some(g) => layer.svc = Some(g),
+                None => passed.hints.push(format!(
+                    "Zeile {}: Bauleistung „{v}“ ungültig, übergangen",
+                    r.line
+                )),
             }
         }
         set_layers.entry(set).or_default().push(layer);
@@ -3242,5 +3286,190 @@ mod tests {
             "{:?}",
             back.hints
         );
+    }
+
+    use crate::txn::Direction;
+
+    /// Abschnitte von `sk-cost` in `.szo` (Bausteingrenze §4.1).
+    const KA0: [&str; 8] = [
+        "article",
+        "service",
+        "svcpart",
+        "svcfollow",
+        "rate",
+        "lot",
+        "origin",
+        "costproject",
+    ];
+
+    /// Alle acht Abschnitte, mit ungültigem Wert, doppelter Kennung, Zeile
+    /// ohne Kennung und fremdem Schlüssel; dahinter ein fremder Abschnitt.
+    fn mit_erweiterung(m: &Model) -> String {
+        let mut t = write(m);
+        t.push_str(
+            "[article] guid=0Art1 name=\"Ziegel\" unit=Banane price=12.5\n\
+             [article] guid=0Art1 name=\"doppelt\" price=1\n\
+             [article] name=\"ohne Kennung\" price=2\n\
+             [service] guid=0Svc1 name=\"Mauern\" zukunft=\"ja\"\n\
+             [svcpart] key=0Svc1/0Art1 svc=0Svc1 art=0Art1 qty=0.12\n\
+             [svcfollow] key=0Svc1/0Svc2 from=0Svc1 to=0Svc2\n\
+             [rate] key=wage num=60.00\n\
+             [lot] key=300 name=\"Mauerarbeiten\"\n\
+             [origin] key=0Art1 rec=article from=werk\n\
+             [costproject] key=vat num=19\n\
+             [zukunft] guid=0Zuk1 wert=\"neu\"\n",
+        );
+        t
+    }
+
+    /// KA-0b (paket-ka0.md §6 Nr. 4): Rundlauf aller Abschnitte bytegleich,
+    /// mit und ohne Erweiterungsliste.
+    #[test]
+    fn ka0b_erweiterung_rundlauf_bytegleich() {
+        let text = mit_erweiterung(&house());
+        let mit = read_with(&text, GuidGen::with_seed(99), &KA0).unwrap();
+        assert_eq!(write(&mit.model), text);
+        assert_eq!(mit.model.ext("article").count(), 3);
+        assert_eq!(mit.model.ext("costproject").count(), 1);
+        assert_eq!(mit.model.ext("zukunft").count(), 0);
+        let ohne = load(&text).unwrap();
+        assert_eq!(write(&ohne.model), text);
+        assert_eq!(ohne.model.ext("article").count(), 0);
+    }
+
+    /// KA-0b (§6 Nr. 5): Stand vor KA-0 → KA-0 → vorher ohne Verlust; und
+    /// eine Datei mit Erweiterungszeilen mitten zwischen den bekannten
+    /// Sätzen kommt hinter sie, ohne Zeile zu verlieren.
+    #[test]
+    fn ka0b_alt_neu_alt_ohne_verlust() {
+        let text = mit_erweiterung(&house());
+        let neu = read_with(&text, GuidGen::with_seed(99), &KA0).unwrap();
+        let mut m = neu.model;
+        m.begin("Satz");
+        m.ext_put("rate", "wage", "[rate] key=wage num=61.00".into(), None);
+        m.commit().unwrap();
+        let geschrieben = write(&m);
+        let alt = load(&geschrieben).unwrap();
+        assert_eq!(write(&alt.model), geschrieben);
+        let wieder = read_with(&geschrieben, GuidGen::with_seed(99), &KA0).unwrap();
+        assert_eq!(write(&wieder.model), geschrieben);
+        assert_eq!(
+            wieder.model.ext("rate").next().unwrap().line,
+            "[rate] key=wage num=61.00"
+        );
+        // Erweiterungszeile vor den Stiften: gleicher Inhalt, neue Stelle
+        let plain = write(&house());
+        let (kopf, rest) = plain.split_once('\n').unwrap();
+        let vorn = format!("{kopf}\n[lot] key=300 name=\"Mauerarbeiten\"\n{rest}");
+        let back = read_with(&vorn, GuidGen::with_seed(99), &KA0).unwrap();
+        assert_eq!(
+            write(&back.model),
+            format!("{plain}[lot] key=300 name=\"Mauerarbeiten\"\n")
+        );
+    }
+
+    /// KA-0b (§6 Nr. 6): Rückgängig und Wiederholen eines Erweiterungssatzes
+    /// an seine Stelle; Modell- und Erweiterungsänderung sind ein Schritt.
+    #[test]
+    fn ka0b_ein_schritt_rueckgaengig_an_seine_stelle() {
+        let text = mit_erweiterung(&house());
+        let mut m = read_with(&text, GuidGen::with_seed(99), &KA0)
+            .unwrap()
+            .model;
+        m.require_steps();
+        let rev = m.revision();
+        let ext_rev = m.ext_revision();
+        m.begin("Kosten und Projekt");
+        m.ext_put(
+            "article",
+            "0Art2",
+            "[article] guid=0Art2 name=\"Mörtel\"".into(),
+            Some("0Art1"),
+        );
+        m.ext_put(
+            "article",
+            "0Art1",
+            "[article] guid=0Art1 name=\"Ziegel\" price=13".into(),
+            None,
+        );
+        m.ext_remove("lot", "300");
+        m.ext_remove("lot", "999");
+        assert!(m.set_project(Project {
+            site: "Hofweg 3".into(),
+            client: "Familie Muster".into(),
+            author: "J. Architekt".into(),
+            ..m.project().clone()
+        }));
+        let w = m.runs().iter().next().map(|(_, r)| r.segments[0]).unwrap();
+        m.set_number(w, "AW-Süd").unwrap();
+        let t = m.commit().expect("ein Schritt");
+        assert!(m.revision() > rev);
+        assert!(m.ext_revision() > ext_rev);
+        let nachher = write(&m);
+        assert!(nachher.contains(
+            "[article] guid=0Art2 name=\"Mörtel\"\n[article] guid=0Art1 name=\"Ziegel\" price=13\n\
+             [article] guid=0Art1 name=\"doppelt\" price=1\n"
+        ));
+        assert!(!nachher.contains("[lot]"));
+        assert!(nachher.contains(" site=\"Hofweg 3\""));
+        m.apply(&t, Direction::Undo);
+        assert_eq!(write(&m), text);
+        m.apply(&t, Direction::Redo);
+        assert_eq!(write(&m), nachher);
+        m.apply(&t, Direction::Undo);
+        assert_eq!(write(&m), text);
+        // Abbrechen rollt die Erweiterung mit zurück
+        m.begin("verworfen");
+        m.ext_put("rate", "wage", "[rate] key=wage num=1".into(), None);
+        m.rollback();
+        assert_eq!(write(&m), text);
+    }
+
+    /// KA-0b (§6 Nr. 7): `svc=` und `site/client/author` stehen nur, wo
+    /// gesetzt; heutige Dateien bleiben bytegleich.
+    #[test]
+    fn ka0b_bauleistung_und_projektangaben() {
+        let m = house();
+        let plain = write(&m);
+        assert!(!plain.contains(" svc="));
+        assert!(!plain.contains(" site="));
+        assert!(!plain.contains(" client="));
+        assert!(!plain.contains(" author="));
+        let mut m = m;
+        let id = m.layer_sets().ids().next().unwrap();
+        let mut s = m.layer_set(id).unwrap().clone();
+        let svc = m.new_guid();
+        s.layers[0].svc = Some(svc);
+        assert!(m.set_layer_set(id, s));
+        m.set_project(Project {
+            client: "Familie \"Muster\"".into(),
+            ..m.project().clone()
+        });
+        let text = write(&m);
+        assert_eq!(text.matches(" svc=").count(), 1);
+        assert!(text.contains(" client="));
+        assert!(!text.contains(" site="));
+        let back = load(&text).unwrap();
+        assert!(back.hints.is_empty(), "{:?}", back.hints);
+        assert_eq!(write(&back.model), text);
+        assert_eq!(back.model.project().client, "Familie \"Muster\"");
+        let set = m.layer_set(id).unwrap().guid;
+        assert_eq!(
+            back.model
+                .layer_sets()
+                .iter()
+                .find(|(_, s)| s.guid == set)
+                .map(|(_, s)| s.layers[0].svc),
+            Some(Some(svc))
+        );
+        // ungültige Bauleistung: Hinweis, Zeile ohne svc
+        let kaputt = text.replace(&format!(" svc={}", svc.to_ifc()), " svc=nix");
+        let back = load(&kaputt).unwrap();
+        assert!(
+            back.hints.iter().any(|h| h.contains("Bauleistung")),
+            "{:?}",
+            back.hints
+        );
+        assert_eq!(write(&back.model).matches(" svc=").count(), 0);
     }
 }

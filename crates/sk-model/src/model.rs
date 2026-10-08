@@ -43,6 +43,11 @@ pub struct Defaults {
 pub struct Project {
     pub guid: Guid,
     pub name: String,
+    /// Bauvorhaben, Bauherr, Aufsteller (BIM §3.12); leer = nicht
+    /// geschrieben.
+    pub site: String,
+    pub client: String,
+    pub author: String,
 }
 
 /// Fehler beim Umbenennen eines Bauteils.
@@ -117,6 +122,10 @@ pub struct Model {
     /// Was eine neuere Fassung in die Datei geschrieben hat und dieser Leser
     /// nicht kennt (F-17, F-17b): bleibt beim Speichern bytegleich.
     pub(crate) foreign: crate::catalog::Foreign,
+    /// Zeilen der Erweiterungsabschnitte (KA-0b), gedeutet von `sk-cost`.
+    pub(crate) ext: crate::ext::ExtStore,
+    /// Steigt bei jeder Änderung im Erweiterungsspeicher.
+    ext_revision: u64,
 }
 
 /// Merkt den Stand eines Datensatzes vor seiner ersten Änderung im offenen
@@ -284,6 +293,9 @@ impl Model {
         let project = Project {
             guid: guids.next_guid(),
             name: "Projekt".into(),
+            site: String::new(),
+            client: String::new(),
+            author: String::new(),
         };
         // Nach der Projekt-Guid angelegt, damit die älteren Guids gleich bleiben
         let _ = guids.next_guid();
@@ -523,6 +535,8 @@ impl Model {
             visibility: Default::default(),
             lock_order: Vec::new(),
             foreign: Default::default(),
+            ext: Default::default(),
+            ext_revision: 0,
         }
     }
 
@@ -581,6 +595,8 @@ impl Model {
             visibility: Default::default(),
             lock_order: Vec::new(),
             foreign: Default::default(),
+            ext: Default::default(),
+            ext_revision: 0,
         };
         m.joins = m.detect_all();
         m
@@ -588,6 +604,94 @@ impl Model {
 
     pub fn project(&self) -> &Project {
         &self.project
+    }
+
+    /// Projektangaben ändern (Bauvorhaben, Bauherr, Aufsteller; KA-0b). Guid
+    /// und Name bleiben.
+    pub fn set_project(&mut self, p: Project) -> bool {
+        let p = Project {
+            guid: self.project.guid,
+            name: self.project.name.clone(),
+            ..p
+        };
+        if p == self.project {
+            return false;
+        }
+        match self.txn.as_mut() {
+            Some(t) => {
+                if t.noted.insert(Key::Project) {
+                    t.changes.push(Change::Project {
+                        old: self.project.clone(),
+                        new: self.project.clone(),
+                    });
+                }
+            }
+            None => debug_assert!(!self.strict, "Änderung ohne Schritt"),
+        }
+        self.project = p;
+        self.touch();
+        true
+    }
+
+    /// Zeilen eines Erweiterungsabschnitts (KA-0b) in Dateireihenfolge.
+    pub fn ext<'a>(&'a self, section: &'a str) -> impl Iterator<Item = &'a crate::ExtRec> + 'a {
+        self.ext.section(section)
+    }
+
+    /// Steigt bei jeder Änderung im Erweiterungsspeicher (auch Rückgängig).
+    pub fn ext_revision(&self) -> u64 {
+        self.ext_revision
+    }
+
+    /// Reihenfolge der Erweiterungsabschnitte beim Schreiben; fehlende kommen
+    /// dazu, vorhandene bleiben.
+    #[doc(hidden)]
+    pub fn ext_declare(&mut self, sections: &[&str]) {
+        self.ext.declare(sections);
+    }
+
+    /// Ersetzt die erste Zeile mit Kennung `id` an Ort und Stelle; gibt es
+    /// keine, kommt die neue vor die erste Zeile mit Kennung `before`, sonst
+    /// ans Ende des Abschnitts. Nur `sk-cost` ruft das auf (Bausteingrenze
+    /// §4.1), im offenen Schritt.
+    #[doc(hidden)]
+    pub fn ext_put(&mut self, section: &str, id: &str, line: String, before: Option<&str>) {
+        let new = Some(line.clone());
+        let (at, old) = self.ext.put(section, id, line, before);
+        self.note_ext(section, id, at, old, new);
+    }
+
+    /// Entfernt die erste Zeile mit Kennung `id` (nur `sk-cost`).
+    #[doc(hidden)]
+    pub fn ext_remove(&mut self, section: &str, id: &str) {
+        if let Some((at, old)) = self.ext.remove(section, id) {
+            self.note_ext(section, id, at, Some(old), None);
+        }
+    }
+
+    fn note_ext(
+        &mut self,
+        section: &str,
+        id: &str,
+        at: usize,
+        old: Option<String>,
+        new: Option<String>,
+    ) {
+        if old == new {
+            return;
+        }
+        match self.txn.as_mut() {
+            Some(t) => t.changes.push(Change::Ext {
+                section: section.to_string(),
+                id: id.to_string(),
+                at,
+                old,
+                new,
+            }),
+            None => debug_assert!(!self.strict, "Änderung ohne Schritt"),
+        }
+        self.ext_revision += 1;
+        self.touch();
     }
 
     /// Schnitte A und B (Ansichtszustand, siehe [`Cut`]).
@@ -4163,6 +4267,8 @@ impl Model {
                         | Change::Display { .. }
                         | Change::Trades { .. }
                         | Change::ForeignRecords { .. }
+                        | Change::Ext { .. }
+                        | Change::Project { .. }
                 )
             })
             .all(|c| matches!(c, Change::Run { .. } | Change::Element { .. }))
@@ -5514,6 +5620,9 @@ impl Model {
             Change::Defaults { new, .. } => *new = self.defaults,
             Change::Trades { new, .. } => *new = self.trades.clone(),
             Change::ForeignRecords { new, .. } => *new = self.foreign.records.clone(),
+            // schon beim Ändern eingetragen
+            Change::Ext { .. } => {}
+            Change::Project { new, .. } => *new = self.project.clone(),
         }
     }
 
@@ -5591,6 +5700,21 @@ impl Model {
             Change::Defaults { old, new } => m.defaults = pick(dir, old, new),
             Change::Trades { old, new } => m.trades = pick(dir, old, new),
             Change::ForeignRecords { old, new } => m.foreign.records = pick(dir, old, new),
+            Change::Ext {
+                section,
+                at,
+                old,
+                new,
+                ..
+            } => {
+                let (to, from) = match dir {
+                    Direction::Undo => (old, new),
+                    Direction::Redo => (new, old),
+                };
+                m.ext.set(section, *at, to.clone(), from.clone());
+                m.ext_revision += 1;
+            }
+            Change::Project { old, new } => m.project = pick(dir, old, new),
         };
         // Rückwärts in umgekehrter Reihenfolge: ein Platz wird erst frei, dann neu belegt
         match dir {
