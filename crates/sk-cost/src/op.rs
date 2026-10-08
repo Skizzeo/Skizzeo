@@ -653,6 +653,11 @@ impl Arbeit<'_> {
                     .ok_or_else(|| abgelehnt(op, "die Bauleistung gibt es nicht"))?;
                 let mut s = l.satz.clone();
                 leistung_setzen(&mut s, daten);
+                // R73-W: `l.mat` ist übersetzt; ein unveränderter Baustoff
+                // bleibt mit der Guid der Zeile (Werks-Guid)
+                if daten.mat == l.mat {
+                    s.setzen("mat", l.satz.guid("mat").map(Wert::Guid));
+                }
                 let id = self.satz_schreiben(&s, op)?;
                 self.herkunft_setzen("service", &id);
             }
@@ -2162,5 +2167,64 @@ mod tests {
         assert_eq!(szo::write(&m), vorher);
         m.apply(&t, Direction::Redo);
         assert_eq!(m.layer_set(id).unwrap().layers[0].svc, Some(g));
+    }
+
+    /// Review 3ai: Ändert das Preisblatt nur den Aufwandswert einer
+    /// übersetzten Werksleistung (R73-W, Altdatei p5), bleibt `mat=` die
+    /// Werks-Guid der Zeile, nicht die Guid des Baustoffs der Datei.
+    #[test]
+    fn aendern_behaelt_werks_guid() {
+        let m = szo::read_with(
+            include_str!("../../../app/src/abnahme_p5.szo"),
+            GuidGen::with_seed(1),
+            &lesen::ABSCHNITTE_SZO,
+        )
+        .unwrap()
+        .model;
+        let k = lesen::katalog(&m, None);
+        let beton = m
+            .materials()
+            .iter()
+            .find(|(_, x)| x.name == "Stahlbeton")
+            .unwrap()
+            .1
+            .guid;
+        let l = k.leistungen.iter().find(|l| l.mat == Some(beton)).unwrap();
+        let roh = l.satz.guid("mat").unwrap();
+        assert_ne!(roh, beton, "p5 übersetzt Stahlbeton");
+        let mut d = crate::preis::bauleistung(l);
+        d.stunden = Dez(d.stunden.0 + Dez::ganz(1).0);
+        let ops = [Op::BauleistungAendern {
+            bauleistung: l.guid,
+            daten: d,
+        }];
+        let p = vorschau(&m, None, Rolle::Admin, &ops).unwrap();
+        let neu = p
+            .aenderungen
+            .iter()
+            .find(|a| a.satz.kennung == l.guid.to_ifc())
+            .and_then(|a| a.neu.clone())
+            .unwrap();
+        assert!(neu.contains(&format!(" mat={}", roh.to_ifc())), "{neu}");
+        // ein anderer Baustoff wird geschrieben, wie gewählt
+        let mut d = crate::preis::bauleistung(l);
+        d.mat = None;
+        let p = vorschau(
+            &m,
+            None,
+            Rolle::Admin,
+            &[Op::BauleistungAendern {
+                bauleistung: l.guid,
+                daten: d,
+            }],
+        )
+        .unwrap();
+        let neu = p
+            .aenderungen
+            .iter()
+            .find(|a| a.satz.kennung == l.guid.to_ifc())
+            .and_then(|a| a.neu.clone())
+            .unwrap();
+        assert!(!neu.contains(" mat="), "{neu}");
     }
 }
