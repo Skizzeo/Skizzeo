@@ -2412,7 +2412,7 @@ impl App {
                 self.quantity_csv(by)
             }
         };
-        if let Err(e) = std::fs::write(&path, bytes) {
+        if let Err(e) = document::tabelle_schreiben(&path, &bytes) {
             let m = meldung::Meldung::aus_io(
                 "Tabelle nicht gespeichert",
                 "Tabelle speichern",

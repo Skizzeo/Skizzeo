@@ -124,6 +124,26 @@ pub fn save(model: &Model, path: &Path) -> Result<(), Meldung> {
         })
 }
 
+/// Schreibt eine Tabelle (CSV) wie [`save`]: erst `name.tmp`, dann
+/// umbenennen, damit eine vorhandene Datei bei einem Fehler unterwegs
+/// (Platte voll, Netz weg) heil bleibt. Ist sie in einem anderen Programm
+/// offen (Excel), scheitert schon das Öffnen mit dem passenden Fehler
+/// („… in einem anderen Programm geöffnet“), bevor etwas geschrieben ist;
+/// das Umbenennen meldete sonst nur „keine Schreibrechte“.
+pub fn tabelle_schreiben(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if path.exists() {
+        std::fs::OpenOptions::new().write(true).open(path)?;
+    }
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    write_synced(&tmp, bytes)
+        .and_then(|_| std::fs::rename(&tmp, path))
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
+}
+
 /// Schreibt und wartet, bis die Daten auf der Platte sind. Ohne das kann nach
 /// einem Absturz die umbenannte Datei leer sein, obwohl das Umbenennen schon
 /// gespeichert war.
@@ -342,6 +362,31 @@ mod tests {
             Some(crate::ui::ViewKind::Plan)
         );
         assert_eq!(crate::ui::ViewKind::from_arg("oben"), None);
+    }
+}
+
+/// Tabelle: ersetzt die alte Datei ganz, keine Zwischendatei bleibt;
+/// scheitert es, bleibt die alte unverändert (Review 3ap).
+#[cfg(test)]
+mod tabelle {
+    #[test]
+    fn tabelle_ersetzt_ganz_oder_gar_nicht() {
+        let d = std::env::temp_dir().join(format!("skizzeo-tabelle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("haus LV Rohbau.csv");
+        std::fs::write(&p, "alt, viel länger als die neue Fassung").unwrap();
+        super::tabelle_schreiben(&p, b"neu").unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"neu");
+        assert!(!d.join("haus LV Rohbau.csv.tmp").exists());
+        // Ziel ist ein Ordner: scheitert, ohne etwas zu hinterlassen
+        let o = d.join("ordner.csv");
+        std::fs::create_dir_all(&o).unwrap();
+        std::fs::write(o.join("drin"), "x").unwrap();
+        assert!(super::tabelle_schreiben(&o, b"neu").is_err());
+        assert_eq!(std::fs::read(o.join("drin")).unwrap(), b"x");
+        assert!(!d.join("ordner.csv.tmp").exists());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
 
