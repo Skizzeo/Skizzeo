@@ -315,6 +315,20 @@ pub struct LayerSet {
     pub bearing: Bearing,
 }
 
+/// Kerndicke, ab der eine Innenwand trägt (Regel 100), in mm.
+pub const BEARING_CORE_MIN: f64 = 175.0;
+
+/// Regel 100, eine Quelle für tragend (IFC LoadBearing, Deckenauflager) und
+/// die Kostengruppe 341/342: eine tragende Kernschicht und (keine
+/// Innenwand oder Kern ≥ 175 mm). IW-11,5 trägt damit nicht, IW-24 schon.
+pub fn bears(layers: &[MaterialLayer], interior: bool) -> bool {
+    let structure = layers
+        .iter()
+        .any(|l| l.core && l.function == LayerFunction::Structure);
+    let core: f64 = layers.iter().filter(|l| l.core).map(|l| l.thickness).sum();
+    structure && (!interior || core >= BEARING_CORE_MIN - 1e-6)
+}
+
 impl LayerSet {
     pub fn thickness(&self) -> f64 {
         self.layers.iter().map(|l| l.thickness).sum()
@@ -337,11 +351,10 @@ impl LayerSet {
         }
     }
 
-    /// Tragend (IFC LoadBearing): es gibt eine tragende Kernschicht.
+    /// Tragend (IFC LoadBearing, Auflager der Decke) nach Regel 100: siehe
+    /// [`bears`].
     pub fn load_bearing(&self) -> bool {
-        self.layers
-            .iter()
-            .any(|l| l.core && l.function == LayerFunction::Structure)
+        bears(&self.layers, self.category == TypeCategory::InteriorWall)
     }
 
     /// Außenbauteil (IFC IsExternal), aus der Typart.

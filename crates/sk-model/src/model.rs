@@ -4371,8 +4371,8 @@ impl Model {
     }
 
     /// Kostengruppe der Schicht `i` (DIN 276:2018): die an der Schicht,
-    /// sonst nach Bauteilart und Lage zum Kern (paket-1a §4). Innenwände
-    /// tragen ab 175 mm Kern (341), sonst 342.
+    /// sonst nach Bauteilart und Lage zum Kern (paket-1a §4). Tragende
+    /// Innenwände nach Regel 100 ([`crate::library::bears`]) 341, sonst 342.
     pub fn layer_kg(&self, id: ElementId, i: usize) -> Option<u16> {
         let e = self.element(id)?;
         let layers = self.element_layers(id);
@@ -4382,11 +4382,10 @@ impl Model {
         }
         let first = layers.iter().position(|l| l.core);
         let last = layers.iter().rposition(|l| l.core);
-        let core: f64 = layers.iter().filter(|l| l.core).map(|l| l.thickness).sum();
         // (vor bzw. über dem Kern, Kern, hinter bzw. unter dem Kern)
         let (before, at, after) = match e.category {
             Category::ExteriorWall => (335, 331, 336),
-            Category::InteriorWall if core >= 175.0 - 1e-6 => (345, 341, 345),
+            Category::InteriorWall if crate::library::bears(&layers, true) => (345, 341, 345),
             Category::InteriorWall => (345, 342, 345),
             Category::Floor => (353, 351, 354),
             Category::GroundSlab => (324, 322, 325),
@@ -7654,6 +7653,53 @@ mod og_phase2 {
             let f = m.floor(eg).unwrap().unwrap();
             assert!(!f.coping_solid().is_empty());
             assert!(m.chain(eg).unwrap().solid().bounds().unwrap().1.z > 3054.0);
+        }
+    }
+
+    /// KA-0a4, Regel 100: tragend (IFC LoadBearing, Auflager) und KG
+    /// 341/342 aus derselben Regel. IW-11,5 trägt nicht (KG 342), IW-24 und
+    /// IW-17,5 tragen (KG 341), alle Außenwandtypen tragen.
+    #[test]
+    fn tragend_und_kg_nach_regel_100() {
+        let (mut m, eg, _) = gebaeude();
+        for (_, t) in m.layer_sets().iter() {
+            match t.category {
+                TypeCategory::ExteriorWall => assert!(t.load_bearing(), "{}", t.code),
+                TypeCategory::InteriorWall => {
+                    assert_eq!(t.load_bearing(), t.code != "IW-11,5", "{}", t.code)
+                }
+                _ => {}
+            }
+        }
+        let st = m.run(eg).unwrap().storey;
+        m.begin("Innenwände");
+        let mut walls = Vec::new();
+        for (i, g) in [
+            INTERIOR_115_TYPE_GUID,
+            INTERIOR_240_TYPE_GUID,
+            INTERIOR_TYPE_GUID,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let t = m.type_by_guid(g).unwrap();
+            let y = 2000.0 + 1500.0 * i as f64;
+            let r = m.add_wall_run(
+                &[vec3(1000.0, y, 0.0), vec3(4000.0, y, 0.0)],
+                false,
+                RefSide::Left,
+                st,
+                t,
+                Category::InteriorWall,
+            );
+            walls.push((t, r.unwrap()));
+        }
+        m.commit();
+        for (t, r) in walls {
+            let w = m.wall_at(r, 0).unwrap();
+            let core = m.element_layers(w).iter().position(|l| l.core).unwrap();
+            let lb = m.layer_set(t).unwrap().load_bearing();
+            assert_eq!(m.layer_kg(w, core), Some(if lb { 341 } else { 342 }));
         }
     }
 
