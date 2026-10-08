@@ -8,7 +8,7 @@
 //! von Text zu Text.
 
 use crate::befund::{self, satz_ort, Befund, Schwere};
-use crate::geld::Dez;
+use crate::geld::{Cent, Dez};
 use crate::katalog::{self, rate_bereich, Bezug, Einheit, Katalog, Quelle, Umfeld};
 use crate::satz::{self, Abschnitt, Satz, Wert};
 use crate::zeile;
@@ -1081,6 +1081,8 @@ pub struct Plan {
     pub aenderungen: Vec<Aenderung>,
     /// Wirksamer Katalog nach dem Plan.
     pub katalog: Katalog,
+    /// Netto im Umfang vorher und nachher; nur aus [`vorschau_kosten`].
+    pub netto: Option<(Cent, Cent)>,
 }
 
 /// Plant `ops` für das Projekt und prüft sie (Regel 93), ohne etwas zu
@@ -1171,6 +1173,7 @@ pub fn planen(
         kopie,
         aenderungen: a.aend,
         katalog: nachher,
+        netto: None,
     })
 }
 
@@ -1186,6 +1189,54 @@ pub fn vorschau(
 ) -> Result<Plan, Vec<Befund>> {
     let h = Herkunft::neu(HerkunftArt::Manual, "2000-01-01", "00:00");
     planen(m, firma, rolle, &h, ops, GuidGen::with_seed(0))
+}
+
+/// Vorschau mit Kosten (Abnahme 12): wie [`vorschau`], dazu das Netto im
+/// Umfang `u` vorher und nachher, beide mit `lesen::kosten` gerechnet, auf
+/// dem wirksamen Katalog und auf dem des Plans. Eine Zuordnung
+/// (`BauleistungZuordnen`) rechnet auf einer Kopie des Modells; `m` bleibt
+/// unberührt (Regel 94). `sched` ist die Mengenliste des Aufrufers.
+pub fn vorschau_kosten(
+    m: &Model,
+    sched: &sk_model::qto::Schedule,
+    firma: Option<&Library>,
+    rolle: Rolle,
+    ops: &[Op],
+    u: &crate::Umfang,
+) -> Result<Plan, Vec<Befund>> {
+    let mut plan = vorschau(m, firma, rolle, ops)?;
+    let vorher = crate::lesen::kosten(m, sched, &crate::lesen::katalog(m, firma), u).netto;
+    let zuordnungen: Vec<_> = ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::BauleistungZuordnen {
+                typ,
+                schicht,
+                bauleistung,
+            } => Some((*typ, *schicht, *bauleistung)),
+            _ => None,
+        })
+        .collect();
+    let nachher = if zuordnungen.is_empty() {
+        crate::lesen::kosten(m, sched, &plan.katalog, u).netto
+    } else {
+        let mut k = m.clone();
+        k.begin("Vorschau");
+        for (typ, schicht, svc) in zuordnungen {
+            let id = k
+                .layer_sets()
+                .iter()
+                .find(|(_, t)| t.guid == typ)
+                .map(|(id, _)| id);
+            if let Some(id) = id {
+                k.set_layer_svc(id, schicht, svc);
+            }
+        }
+        k.commit();
+        crate::lesen::kosten(&k, sched, &plan.katalog, u).netto
+    };
+    plan.netto = Some((vorher, nachher));
+    Ok(plan)
 }
 
 /// Prüft eine Operation, ohne etwas zu ändern (Regeln 2, 72–92).

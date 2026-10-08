@@ -566,3 +566,78 @@ fn abfangung_ohne_rueckfall() {
     let m = matrixhaus("AW-49", &[], &[(3, -300.0)]);
     assert_eq!(abfangung(&blatt(&m, &Umfang::projekt())), None);
 }
+
+/// Abnahme 12 (Vorschau): Die Vorschau nennt das Netto vorher und nachher
+/// selbst, gleich `kosten` vor und nach der Ausführung; Modell, `revision`,
+/// `ext_revision` bleiben. Lohn 65 €/h auf RH-1: 60.089,83 → 62.501,62
+/// (Einstellungen §3 KA-2 Punkt 8); eine Zuordnung rechnet auf einer Kopie.
+#[test]
+fn vorschau_mit_summe_vorher_nachher() {
+    use sk_cost::{Herkunft, HerkunftArt, Op, Rolle};
+    let mut m = laden(RH1.datei);
+    let sched = qto::schedule(&m);
+    let u = Umfang::projekt();
+    let lohn = Op::FirmenwertSetzen {
+        schluessel: "wage".into(),
+        wert: Dez::ganz(65),
+    };
+    let (rev, ext) = (m.revision(), m.ext_revision());
+    let p = sk_cost::vorschau_kosten(
+        &m,
+        &sched,
+        None,
+        Rolle::Admin,
+        std::slice::from_ref(&lohn),
+        &u,
+    )
+    .expect("Vorschau");
+    assert_eq!(p.netto, Some((Cent(6_008_983), Cent(6_250_162))));
+    assert_eq!((m.revision(), m.ext_revision()), (rev, ext));
+    // gleich der Ausführung
+    let h = Herkunft::neu(HerkunftArt::Manual, "2026-10-08", "10:40");
+    m.begin("Lohn");
+    sk_cost::ausfuehren(&mut m, None, Rolle::Admin, &h, lohn).expect("Lohn");
+    m.commit();
+    assert_eq!(blatt(&m, &u).netto, Cent(6_250_162));
+    // Zuordnung: eine Außenwandschicht auf eine andere Bauleistung, nur in
+    // der Kopie
+    let k = lesen::katalog(&m, None);
+    let (typ, schicht, alt) = m
+        .layer_sets()
+        .iter()
+        .filter(|(id, _)| !m.type_users(*id).is_empty())
+        .find_map(|(_, t)| {
+            let z = lesen::zuordnung(&m, &k, t.guid, 0)?;
+            Some((t.guid, 0usize, z.leistung?))
+        })
+        .expect("Schicht mit Bauleistung");
+    let andere = k
+        .leistungen
+        .iter()
+        .find(|l| l.guid != alt && !l.retired && !l.kategorien.is_empty())
+        .expect("andere Bauleistung")
+        .guid;
+    let op = Op::BauleistungZuordnen {
+        typ,
+        schicht,
+        bauleistung: Some(andere),
+    };
+    let rev = m.revision();
+    let p = sk_cost::vorschau_kosten(
+        &m,
+        &sched,
+        None,
+        Rolle::Admin,
+        std::slice::from_ref(&op),
+        &u,
+    )
+    .expect("Vorschau Zuordnung");
+    assert_eq!(m.revision(), rev);
+    let (vorher, nachher) = p.netto.expect("Summen");
+    assert_eq!(vorher, Cent(6_250_162));
+    m.begin("Zuordnen");
+    sk_cost::ausfuehren(&mut m, None, Rolle::Admin, &h, op).expect("Zuordnen");
+    m.commit();
+    assert_eq!(blatt(&m, &u).netto, nachher);
+    assert_ne!(nachher, vorher);
+}

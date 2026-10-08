@@ -2031,15 +2031,19 @@ impl Scene {
         }
     }
 
-    /// Vorschau der Kostenoperationen: geänderte Sätze alt/neu und der
-    /// wirksame Katalog; Modell, `revision` und Verlauf bleiben (Abnahme 12).
-    #[cfg_attr(not(test), allow(dead_code))] // Kostenreiter (KA-1)
+    /// Vorschau der Kostenoperationen: geänderte Sätze alt/neu, der wirksame
+    /// Katalog und das Netto im Umfang `u` vorher und nachher; Modell,
+    /// `revision` und Verlauf bleiben (Abnahme 12).
+    #[cfg_attr(not(test), allow(dead_code))] // Kostenreiter (KA-2)
     pub fn kosten_vorschau(
-        &self,
+        &mut self,
         firma: Option<&sk_model::Library>,
         ops: &[sk_cost::Op],
+        u: &sk_model::qto::Umfang,
     ) -> Result<sk_cost::Plan, Vec<sk_cost::Befund>> {
-        sk_cost::vorschau(&self.model, firma, sk_cost::Rolle::Admin, ops)
+        self.schedule();
+        let sched = self.schedule.as_ref().expect("gerade berechnet").1.clone();
+        sk_cost::vorschau_kosten(&self.model, &sched, firma, sk_cost::Rolle::Admin, ops, u)
     }
 
     /// Ändert Bauteiltypen in einem Schritt (K3: „OK“ im Bauteilkatalog).
@@ -3713,8 +3717,11 @@ mod tests {
         let leer = sk_model::szo::write(s.model());
         // Vorschau: alles bleibt
         let (rev, ext) = (s.model().revision(), s.model().ext_revision());
-        let p = s.kosten_vorschau(None, &[lohn(65)]).unwrap();
+        let p = s
+            .kosten_vorschau(None, &[lohn(65)], &sk_model::qto::Umfang::projekt())
+            .unwrap();
         assert!(p.aenderungen.iter().any(|a| a.satz.kennung == "wage"));
+        assert_eq!(p.netto, Some((sk_cost::Cent(0), sk_cost::Cent(0))));
         assert_eq!(p.katalog.werte.lohn, Dez::ganz(65));
         assert_eq!((s.model().revision(), s.model().ext_revision()), (rev, ext));
         assert_eq!(s.undo_label(), None);
