@@ -11,6 +11,7 @@ pub mod geld;
 pub mod katalog;
 pub mod lesen;
 pub mod op;
+pub mod preis;
 pub mod rechnung;
 pub mod satz;
 mod schema;

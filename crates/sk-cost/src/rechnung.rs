@@ -100,6 +100,9 @@ pub struct Position {
     /// Gewerk (Bauleistung; Richtpreis: Gewerk der Schicht).
     pub gewerk: Option<Guid>,
     pub ansatz: Vec<Ansatz>,
+    /// Baustoff und Dicke der Schicht, an der die Bauleistung rechnet
+    /// (Artikel der Schicht, geschätzt nach Dicke); Preisblatt, KA-2c.
+    pub schicht: Option<(Guid, Dez)>,
 }
 
 impl Position {
@@ -273,6 +276,24 @@ fn cm_kurz(t: Dez) -> String {
     format!("{}cm", Dez(t.0 / 10).text().replace('.', ","))
 }
 
+/// Ein Stoffanteil im EP einer Bauleistung (Preisblatt, KA-2c): Artikel,
+/// Menge je Einheit der Bauleistung, Preis je Artikeleinheit und Betrag vor
+/// dem Zuschlag in 10⁻¹² € (nach Umrechnung der Einheit).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stoffteil {
+    /// Artikel; `None` beim Richtpreis des Baustoffs.
+    pub artikel: Option<Guid>,
+    pub name: String,
+    pub menge: Dez,
+    pub einheit: Einheit,
+    pub preis: Dez,
+    pub wert: i128,
+    /// Hauptstoff: Artikel der Schicht oder Artikel aus dem Baustoff der
+    /// Bauleistung (Planstein); sonst Nebenstoff (Dünnbettmörtel), den das
+    /// Preisblatt nur als Zeile zeigt.
+    pub haupt: bool,
+}
+
 /// Stoff-EP einer Bauleistung an einer Schicht (Regeln 82, 83): Summe der
 /// Stoffanteile in 10⁻¹² €, mit Zuschlag auf den Cent. `faktor`: Umrechnung
 /// bei „geschätzt nach“ (Schichtdicke, nur m² und Artikel mit Dicke).
@@ -280,14 +301,38 @@ fn cm_kurz(t: Dez) -> String {
 fn stoff_ep(
     k: &Katalog,
     l: &Leistung,
-    schicht: Option<(&MaterialLayer, Option<&Material>)>,
+    schicht: Option<(Dez, Option<&Material>)>,
     geschaetzt: bool,
     ort: &Ort,
     befunde: &mut Vec<Befund>,
 ) -> (Cent, bool) {
-    let mut summe: i128 = 0;
+    let (teile, fehlt) = stoff_teile(k, l, schicht, geschaetzt, ort, befunde);
+    let summe: i128 = teile.iter().map(|t| t.wert).sum();
+    (mit_zuschlag(k, summe), fehlt)
+}
+
+/// Summe der Stoffanteile (10⁻¹² €) mit Zuschlag, auf den Cent.
+pub(crate) fn mit_zuschlag(k: &Katalog, summe: i128) -> Cent {
+    let z = k.werte.zuschlag.0 as i128;
+    Cent(runden(
+        summe * (100 * Dez::SKALA as i128 + z),
+        100 * (Dez::SKALA as i128) * 10_000_000_000,
+    ) as i64)
+}
+
+/// Die Stoffanteile hinter [`stoff_ep`], je Anteil ein [`Stoffteil`];
+/// `true`, wenn ein Preis fehlt.
+pub(crate) fn stoff_teile(
+    k: &Katalog,
+    l: &Leistung,
+    schicht: Option<(Dez, Option<&Material>)>,
+    geschaetzt: bool,
+    ort: &Ort,
+    befunde: &mut Vec<Befund>,
+) -> (Vec<Stoffteil>, bool) {
+    let mut teile = Vec::new();
     let mut fehlt = false;
-    let t = schicht.map(|(s, _)| dicke(s.thickness));
+    let t = schicht.map(|(t, _)| t);
     for a in k.anteile_von(l.guid) {
         let q = a.menge.0 as i128;
         match a.artikel {
@@ -312,20 +357,27 @@ fn stoff_ep(
                         v = runden(v * lt.0 as i128, at.0 as i128);
                     }
                 }
-                summe += v;
+                teile.push(Stoffteil {
+                    artikel: Some(g),
+                    name: art.name.clone(),
+                    menge: a.menge,
+                    einheit: art.einheit,
+                    preis: p,
+                    wert: v,
+                    haupt: art.mat.is_some() && art.mat == l.mat,
+                });
             }
             None => {
                 // Artikel der Schicht (Regel 82)
-                let Some((s, mat)) = schicht else {
+                let Some((t, mat)) = schicht else {
                     fehlt = true;
                     continue;
                 };
-                let t = dicke(s.thickness);
                 let mg = mat.map(|x| x.guid);
                 let gefunden = mg.and_then(|g| zuordnung::artikel_der_schicht(k, g, t));
-                let (preis, einheit) = match gefunden {
+                let (preis, einheit, artikel, name) = match gefunden {
                     Some(art) => match art.preis {
-                        Some(p) => (p, art.einheit),
+                        Some(p) => (p, art.einheit, Some(art.guid), art.name.clone()),
                         None => {
                             fehlt = true;
                             befunde.push(Befund::warnung(
@@ -348,7 +400,7 @@ fn stoff_ep(
                                 ),
                                 ort.clone(),
                             ));
-                            (p, e)
+                            (p, e, None, name.to_string())
                         }
                         None => {
                             fehlt = true;
@@ -390,22 +442,25 @@ fn stoff_ep(
                         0
                     }
                 };
-                summe += v;
+                teile.push(Stoffteil {
+                    artikel,
+                    name,
+                    menge: a.menge,
+                    einheit,
+                    preis,
+                    wert: v,
+                    haupt: true,
+                });
             }
         }
     }
-    let z = k.werte.zuschlag.0 as i128;
-    let stoff = runden(
-        summe * (100 * Dez::SKALA as i128 + z),
-        100 * (Dez::SKALA as i128) * 10_000_000_000,
-    );
     // ohne jeden Anteil, Zeitansatz, Gerät, Sonstiges oder NU: Preis fehlt
     let leer = l.nu.is_none()
         && l.stunden == Dez::NULL
         && l.geraet == Dez::NULL
         && l.sonst == Dez::NULL
         && k.anteile_von(l.guid).next().is_none();
-    (Cent(stoff as i64), fehlt || leer)
+    (teile, fehlt || leer)
 }
 
 /// Ordnet alle Schichten eines Typs zu und rechnet die Stoff-EP.
@@ -459,7 +514,7 @@ fn schichten_rechnen(
                 _ => {}
             }
             let (stoff, preis_fehlt) = match leistung {
-                Some(l) => stoff_ep(k, l, Some((s, mat)), z.geschaetzt(), &ort, &mut befunde),
+                Some(l) => stoff_ep(k, l, Some((t, mat)), z.geschaetzt(), &ort, &mut befunde),
                 None => (Cent::NULL, false),
             };
             if let Some(l) = leistung.filter(|l| l.nu.is_some()) {
@@ -483,7 +538,7 @@ fn schichten_rechnen(
                     k.folgen_von(l.guid)
                         .filter_map(|f| {
                             let fl = k.leistung(f.folge)?;
-                            let (st, pf) = stoff_ep(k, fl, Some((s, mat)), false, &ort, &mut befunde);
+                            let (st, pf) = stoff_ep(k, fl, Some((t, mat)), false, &ort, &mut befunde);
                             Some((f.folge, f.faktor, st, pf))
                         })
                         .collect::<Vec<_>>()
@@ -563,7 +618,8 @@ pub(crate) fn abdeckung(m: &Model, k: &Katalog) -> Vec<Befund> {
             // Preis über Artikel oder NU
             if let Some(l) = l.filter(|_| !z.geschaetzt()) {
                 let mut bf = Vec::new();
-                let (_, fehlt) = stoff_ep(k, l, Some((s, mat)), false, &ort, &mut bf);
+                let (_, fehlt) =
+                    stoff_ep(k, l, Some((dicke(s.thickness), mat)), false, &ort, &mut bf);
                 if fehlt {
                     if bf.is_empty() {
                         bf.push(Befund::warnung(
@@ -590,7 +646,7 @@ pub(crate) fn abdeckung(m: &Model, k: &Katalog) -> Vec<Befund> {
 }
 
 /// Lohn-, Gerät- und Sonstiges-EP und NU einer Bauleistung (Regel 83).
-fn feste_ep(k: &Katalog, l: &Leistung) -> (Cent, Cent, Cent, Option<Cent>) {
+pub(crate) fn feste_ep(k: &Katalog, l: &Leistung) -> (Cent, Cent, Cent, Option<Cent>) {
     let lohn = runden(
         l.stunden.0 as i128 * k.werte.lohn.0 as i128,
         Dez::SKALA as i128 * 10_000,
@@ -615,6 +671,7 @@ struct Sammel {
     gewerk: Option<Guid>,
     dicken: Vec<Dez>,
     ansatz: Vec<Ansatz>,
+    schicht: Option<(Guid, Dez)>,
 }
 
 /// Wie [`kosten`], mit Zwischenspeicher: dasselbe Blatt auf den Cent.
@@ -718,6 +775,8 @@ pub fn kosten_mit(
                     gewerk,
                     dicken: Vec::new(),
                     ansatz: Vec::new(),
+                    schicht: (!matches!(key.0, Quelle::Richtpreis(_)))
+                        .then_some((w.baustoff, w.dicke)),
                 });
                 sammel.len() - 1
             });
@@ -951,6 +1010,7 @@ pub fn kosten_mit(
             preis_fehlt: p.preis_fehlt,
             gewerk: p.gewerk,
             ansatz: p.ansatz,
+            schicht: p.schicht,
         });
     }
     // Reihenfolge: Los, Titel, pos; geschätzt hinter genau; Richtpreis zuletzt

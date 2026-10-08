@@ -108,7 +108,7 @@ fn firma_stand(firma: Option<&Library>) -> Option<u32> {
 
 /// Die Quelle ohne Projektkopie: freigegebene Firma mit Kostensätzen, sonst
 /// Werk. Verweise auf Baustoffe gelten gegen das Projekt `m`.
-pub(crate) fn firma_oder_werk(m: &Model, firma: Option<&Library>) -> Katalog {
+pub fn firma_oder_werk(m: &Model, firma: Option<&Library>) -> Katalog {
     let firma_kopf = firma.and_then(kopf);
     let gilt = firma
         .filter(|f| hat_kosten(|s| f.ext(s).count()) && !firma_kopf.as_ref().is_some_and(|k| k.2));
