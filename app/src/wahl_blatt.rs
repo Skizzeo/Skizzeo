@@ -1,8 +1,8 @@
 //! Blatt „Bauleistung wählen …“ an einer grauen Zeile (KA-2c, paket-ka2 §4,
 //! Einstellungen §3 KA-2 Punkt 4, soll-ka-2e): 500 dip im Stil des
 //! Preisblatts, Titel „Bauleistung für {Zeile}“, Menge leise, Suchfeld, die
-//! Bauleistungen mit EP leise rechts und unten „Klick ordnet zu · Esc
-//! schließt“. Ordnung und EP kommen aus `sk_cost::wahl` (Bedienbarkeit 5.1);
+//! Bauleistungen mit EP leise rechts und unten „Enter oder Klick ordnet zu ·
+//! Esc schließt“; ↑ und ↓ markieren (Bedienbarkeit 8.5). Ordnung und EP kommen aus `sk_cost::wahl` (Bedienbarkeit 5.1);
 //! das Blatt filtert nur nach dem Suchtext.
 
 use crate::preis_blatt::{flaeche, inside, Rect, SPITZE};
@@ -65,6 +65,8 @@ pub struct WahlBlatt {
     /// Erster sichtbarer Eintrag.
     oben: usize,
     hot: Option<Ziel>,
+    /// Markierter Eintrag (Maus oder ↑ ↓); Enter ordnet ihn zu.
+    mark: Option<usize>,
     anker: Rect,
     pub scale: f32,
     pub fenster: (f32, f32),
@@ -87,6 +89,7 @@ impl WahlBlatt {
             weitere: false,
             oben: 0,
             hot: None,
+            mark: None,
             anker: (0.0, 0.0, 0.0, 0.0),
             scale: 1.0,
             fenster: (0.0, 0.0),
@@ -105,7 +108,12 @@ impl WahlBlatt {
         if !q.is_empty() {
             return a
                 .alle()
-                .filter(|w| w.kurz.to_lowercase().contains(&q))
+                .filter(|w| {
+                    w.kurz.to_lowercase().contains(&q)
+                        || w.fremd
+                            .as_ref()
+                            .is_some_and(|f| f.to_lowercase().contains(&q))
+                })
                 .cloned()
                 .map(Eintrag::Wahl)
                 .collect();
@@ -131,12 +139,9 @@ impl WahlBlatt {
         }
     }
 
-    /// Überfahrener Eintrag.
+    /// Markierter Eintrag: zuletzt überfahren oder mit ↑ ↓ gewählt.
     fn markiert(&self) -> Option<usize> {
-        match self.hot {
-            Some(Ziel::Eintrag(i)) => Some(i),
-            _ => None,
-        }
+        self.mark
     }
 
     /// Sichtbare Einträge mit Oberkante relativ zum Listenanfang (dip).
@@ -261,8 +266,12 @@ impl WahlBlatt {
     pub fn mouse_move(&mut self, x: f32, y: f32) -> bool {
         let hot = self.hit(x, y);
         let look = |h: Option<Ziel>| h.filter(|z| *z != Ziel::Innen);
-        let changed = look(hot) != look(self.hot);
+        let mut changed = look(hot) != look(self.hot);
         self.hot = hot;
+        if let Some(Ziel::Eintrag(i)) = hot {
+            changed |= self.mark != Some(i);
+            self.mark = Some(i);
+        }
         changed
     }
 
@@ -302,8 +311,31 @@ impl WahlBlatt {
         changed
     }
 
+    /// Nach dem Tippen steht die Liste oben, der erste Treffer markiert.
     fn suche_neu(&mut self) -> Option<Aus> {
         self.oben = 0;
+        self.mark = self.waehlbar().first().copied();
+        Some(Aus::Repaint)
+    }
+
+    /// ↑ ↓: den vorigen bzw. nächsten wählbaren Eintrag markieren und in
+    /// Sicht rollen.
+    fn schritt(&mut self, runter: bool) -> Option<Aus> {
+        let v = self.waehlbar();
+        let pos = self.mark.and_then(|m| v.iter().position(|i| *i == m));
+        let neu = match (pos, runter) {
+            (None, true) => v.first(),
+            (None, false) => v.last(),
+            (Some(p), true) => v.get(p + 1).or(v.get(p)),
+            (Some(p), false) => v.get(p.saturating_sub(1)),
+        }
+        .copied()?;
+        self.mark = Some(neu);
+        if neu < self.oben {
+            self.oben = neu;
+        } else if neu >= self.oben + SICHTBAR {
+            self.oben = neu + 1 - SICHTBAR;
+        }
         Some(Aus::Repaint)
     }
 
@@ -321,14 +353,18 @@ impl WahlBlatt {
         let sh = mods.shift;
         match key {
             Key::Escape => return Some(Aus::Schliessen),
-            // Enter wählt den einzigen Treffer der Suche
+            // Enter ordnet den markierten Eintrag zu, sonst den einzigen
             Key::Enter => {
                 let v = self.waehlbar();
-                let [i] = v.as_slice() else {
-                    return None;
+                let i = match (self.mark.filter(|m| v.contains(m)), v.as_slice()) {
+                    (Some(m), _) => m,
+                    (None, [i]) => *i,
+                    _ => return None,
                 };
-                return self.waehle(*i);
+                return self.waehle(i);
             }
+            Key::Other(0x26) => return self.schritt(false),
+            Key::Other(0x28) => return self.schritt(true),
             _ => {}
         }
         let e = &mut self.suche;
@@ -442,7 +478,7 @@ impl WahlBlatt {
         let tx = sx + 8.0 * s;
         let text = &self.suche.text;
         if text.is_empty() {
-            f.draw(c, "Suchen", px_e, tx, base, u.sheet_hint);
+            f.draw(c, "Suche …", px_e, tx, base, u.sheet_hint);
         } else {
             let (a, b) = self.suche.selection();
             if a < b {
@@ -522,7 +558,7 @@ impl WahlBlatt {
         c.fill_rect(x0, fy, x1 - x0, s.max(1.0), u.sheet_rule);
         f.draw(
             c,
-            "Klick ordnet zu · Esc schließt",
+            "Enter oder Klick ordnet zu · Esc schließt",
             10.0 * s,
             x0,
             (fy + 19.0 * s).round(),
@@ -594,6 +630,37 @@ mod tests {
         b.key(Key::Backspace, mods);
         assert_eq!(b.eintraege().len(), 4);
         assert_eq!(b.key(Key::Escape, mods), Some(Aus::Schliessen));
+    }
+
+    /// Bedienbarkeit 8.5: Nach dem Tippen ist der erste Treffer markiert, ↑
+    /// und ↓ wandern über die wählbaren Einträge, Enter ordnet den
+    /// markierten zu. Die Suche findet auch das Gewerk.
+    #[test]
+    fn pfeiltasten_und_enter() {
+        let mut b = blatt();
+        let mods = Modifiers::default();
+        let runter = Key::Other(0x28);
+        let hoch = Key::Other(0x26);
+        // ohne Suche: ↓ markiert den ersten wählbaren (die Kopfzeile nicht)
+        assert_eq!(b.key(runter, mods), Some(Aus::Repaint));
+        assert_eq!(b.markiert(), Some(1));
+        b.key(runter, mods);
+        assert_eq!(b.markiert(), Some(2));
+        b.key(hoch, mods);
+        b.key(hoch, mods);
+        assert_eq!(b.markiert(), Some(1), "oben bleibt oben");
+        assert_eq!(
+            b.key(Key::Enter, mods),
+            Some(Aus::Waehlen(wahl(1, true).leistung))
+        );
+        // Tippen markiert den ersten Treffer
+        b.text('u');
+        assert_eq!(b.markiert(), Some(0));
+        let erster = match &b.eintraege()[0] {
+            Eintrag::Wahl(w) => w.leistung,
+            e => panic!("{e:?}"),
+        };
+        assert_eq!(b.key(Key::Enter, mods), Some(Aus::Waehlen(erster)));
     }
 
     /// Überfahren eines fremden Eintrags macht Platz für „kommt dann zu“;
