@@ -912,6 +912,15 @@ impl Scene {
         if let Some((_, lv)) = self.lv.iter().find(|(k, _)| *k == key) {
             return lv.clone();
         }
+        // Beim Ziehen (offener Schritt) steht das Kostenblatt bis zum
+        // Loslassen; Kopf und Geschossnamen ändern sich dabei nicht. Das
+        // letzte LV derselben Wahl gilt weiter, statt jedes Bild alle Lose
+        // neu zu ordnen (Review 3ao)
+        if self.model.in_step() {
+            if let Some((_, lv)) = self.lv.iter().find(|(k, _)| k.0 == key.0 && k.2 == key.2) {
+                return lv.clone();
+            }
+        }
         let lv = Rc::new(sk_cost::lv::lv_aus(&self.model, &blatt, &kat, w));
         // Ein anderes Blatt oder ein anderer Stand macht die alten ungültig
         self.lv.retain(|(k, _)| k.0 == key.0 && k.1 == key.1);
@@ -3405,6 +3414,41 @@ fn mesh_into(m: &mut MeshData, s: &Solid) {
 
 #[cfg(test)]
 mod tests {
+    /// Review 3ao: Beim Ziehen (offener Schritt) gibt `lv` das gemerkte LV
+    /// derselben Wahl zurück, statt jedes Bild neu zu ordnen; nach dem
+    /// Loslassen gilt der neue Stand.
+    #[test]
+    fn lv_beim_ziehen_gemerkt() {
+        let m = sk_model::szo::read_with(
+            include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo"),
+            sk_model::GuidGen::with_seed(1),
+            &sk_cost::lesen::ABSCHNITTE_SZO,
+        )
+        .unwrap()
+        .model;
+        let mut s = Scene::with_model(m);
+        let u = sk_model::qto::Umfang::projekt();
+        let k = s.katalog(None);
+        let los = k.lose.iter().find(|l| l.parent.is_none()).unwrap().guid;
+        let w = sk_cost::lv::LvWahl {
+            los,
+            preise: true,
+            untertitel: false,
+            heute: None,
+        };
+        let vorher = s.lv(None, &u, &w);
+        s.begin("Ziehen");
+        let mut p = s.model.project().clone();
+        p.client = "Familie Muster".into();
+        assert!(s.model.set_project(p));
+        let beim_ziehen = s.lv(None, &u, &w);
+        assert!(Rc::ptr_eq(&vorher, &beim_ziehen), "beim Ziehen gemerkt");
+        s.commit();
+        let danach = s.lv(None, &u, &w);
+        assert!(!Rc::ptr_eq(&vorher, &danach));
+        assert_eq!(danach.kopf.bauherr.as_deref(), Some("Familie Muster"));
+    }
+
     /// Review 3ai: Der gemerkte Katalog hängt auch an den Baustoffen des
     /// Modells (R73-W). Umbenennen von „Stahlbeton“ in einer Altdatei nimmt
     /// die Werkspreise weg; Katalog und Kostenblatt folgen sofort.

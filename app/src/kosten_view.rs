@@ -182,6 +182,10 @@ const TILE_H: f32 = 62.0;
 const TILE_GAP: f32 = 10.0;
 const FOOT_LINE: f32 = 18.0;
 const BOTTOM_PAD: f32 = 12.0;
+/// Überschrift „Summe · Gebäude 1 · EG“ über den Kacheln (Bedienbarkeit
+/// 11.2) und Kacheln als eine Zeile, wenn das Fenster niedrig ist (11.1).
+const SUM_HEAD: f32 = 26.0;
+const KOMPAKT_H: f32 = 28.0;
 /// Einzug je Ebene (dip).
 const INDENT: f32 = 16.0;
 /// Hinweis nach „Bauleistung wählen“ mit einer Bauleistung eines anderen
@@ -793,6 +797,9 @@ impl KostenView {
     /// die Fläche des Verweises (px).
     fn lohnsatz_lage(&self, t: &Theme, fonts: &Fonts) -> Option<(String, String, String, Rect)> {
         let b = self.blatt.as_deref()?;
+        if self.kompakt() {
+            return None;
+        }
         let s = self.scale;
         let (x0, cw) = self.content_x(t);
         let tw = ((cw - 2.0 * TILE_GAP * s) / 3.0).max(0.0);
@@ -963,10 +970,12 @@ impl KostenView {
         let tw = ((cw - 2.0 * TILE_GAP * s) / 3.0).max(0.0);
         let x = x0 + 2.0 * (tw + TILE_GAP * s);
         let y = self.tiles_top();
+        let lb = self.list_bottom();
         let l = self.lohn.as_mut().expect("eben gesehen");
         l.set_anker((x + 12.0 * s, y + 40.0 * s, x + tw * 0.6, y + 58.0 * s));
-        // Die Hinweiskarte bleibt über den Kacheln (B-Befund 11.3)
-        l.ueber = Some(y - 12.0 * s);
+        // Die Hinweiskarte bleibt über den Kacheln und ihrer Überschrift
+        // (B-Befund 11.3, 11.2)
+        l.ueber = Some(lb - 8.0 * s);
     }
 
     /// Preisblatt an die EP-Zelle und die Fenstergröße legen.
@@ -1099,7 +1108,46 @@ impl KostenView {
     fn tiles_top(&self) -> f32 {
         let s = self.scale;
         let fuss = self.fuss_zeilen.get().max(1) as f32 * FOOT_LINE;
-        self.h as f32 - (BOTTOM_PAD + fuss + TILE_GAP + TILE_H) * s
+        self.h as f32 - (BOTTOM_PAD + fuss + TILE_GAP + self.tile_h()) * s
+    }
+
+    /// Ist das Fenster so niedrig, dass Überschrift und Kacheln weniger als
+    /// drei Zeilen der Liste ließen? Dann stehen die Summen in einer Zeile
+    /// (Bedienbarkeit 11.1: die Liste hat Vorrang).
+    fn kompakt(&self) -> bool {
+        let s = self.scale;
+        let fuss = self.fuss_zeilen.get().max(1) as f32 * FOOT_LINE;
+        let unten = self.h as f32 - (BOTTOM_PAD + fuss + TILE_GAP + TILE_H + SUM_HEAD) * s;
+        unten - self.list_top() < 3.0 * ROW_POS * s
+    }
+
+    /// Höhe der Kacheln (dip): drei Kacheln oder eine Zeile.
+    fn tile_h(&self) -> f32 {
+        if self.kompakt() {
+            KOMPAKT_H
+        } else {
+            TILE_H
+        }
+    }
+
+    /// Unterkante der Liste (px): über der Überschrift der Kacheln.
+    fn list_bottom(&self) -> f32 {
+        if self.kompakt() {
+            self.tiles_top() - 4.0 * self.scale
+        } else {
+            self.tiles_top() - SUM_HEAD * self.scale
+        }
+    }
+
+    /// „Summe · Gebäude 1 · EG“: wofür die Summen gelten (Bedienbarkeit
+    /// 11.2), wie „Summe nach Baustoff · Gebäude 1“ im Mengenblatt.
+    fn summe_titel(&self) -> String {
+        let umfang = self.subtitle.split(" · Stand").next().unwrap_or_default();
+        if umfang.is_empty() {
+            "Summe".into()
+        } else {
+            format!("Summe · {umfang}")
+        }
     }
 
     fn row_h(z: &Zeile) -> f32 {
@@ -1116,7 +1164,7 @@ impl KostenView {
     }
 
     fn view_h(&self) -> f32 {
-        ((self.tiles_top() - self.list_top()) / self.scale).max(0.0)
+        ((self.list_bottom() - self.list_top()) / self.scale).max(0.0)
     }
 
     fn clamp(&mut self) {
@@ -1127,7 +1175,7 @@ impl KostenView {
     /// Zeilen mit ihrer Oberkante (px) im sichtbaren Bereich.
     fn sichtbar(&self) -> Vec<(usize, f32, f32)> {
         let s = self.scale;
-        let (top, bottom) = (self.list_top(), self.tiles_top());
+        let (top, bottom) = (self.list_top(), self.list_bottom());
         let mut y = top - self.scroll * s;
         let mut out = Vec::new();
         for (i, z) in self.zeilen.iter().enumerate() {
@@ -1268,7 +1316,7 @@ impl KostenView {
         let px = 10.5 * s;
         let regular = fonts.regular.as_ref();
         let bold = fonts.bold.as_ref().or(regular);
-        let mut y = self.tiles_top() + (TILE_H + TILE_GAP) * s;
+        let mut y = self.tiles_top() + (self.tile_h() + TILE_GAP) * s;
         let mut out = Vec::new();
         for f in self.fuss() {
             if let (Some(z), Some(r), Some(b)) = (f.ziel, regular, bold) {
@@ -1322,7 +1370,7 @@ impl KostenView {
         {
             return Some(h);
         }
-        if y < self.list_top() || y >= self.tiles_top() {
+        if y < self.list_top() || y >= self.list_bottom() {
             return None;
         }
         let (x0, _) = self.content_x(t);
@@ -1718,14 +1766,8 @@ impl KostenView {
             u.sheet_bg,
         );
         self.paint_head(c, t, fonts, now);
-        let tt = self.tiles_top();
-        c.fill_rect(
-            0.0,
-            tt - 4.0 * s,
-            self.w as f32,
-            self.h as f32 - tt + 4.0 * s,
-            u.sheet_bg,
-        );
+        let tt = self.list_bottom();
+        c.fill_rect(0.0, tt, self.w as f32, self.h as f32 - tt, u.sheet_bg);
         self.paint_tiles(c, t, fonts);
         self.paint_fuss(c, t, fonts, &fuss);
         self.paint_scrollbar(c, t);
@@ -1972,6 +2014,17 @@ impl KostenView {
         }
     }
 
+    /// Zeile `i` gehört zur Auswahl. Bei offenem Preisblatt nur die
+    /// bearbeitete Position, nicht jede Zeile derselben Wände (Bedienbarkeit
+    /// 11.4: sonst liest sich ein fremdes Gewerk als „ändert sich mit“).
+    fn markiert(&self, i: usize) -> bool {
+        let z = &self.zeilen[i];
+        match self.preis.as_ref() {
+            Some(pb) => z.key == pb.key && matches!(z.art, Art::Position { .. }),
+            None => !z.elements.is_empty() && z.elements.iter().all(|e| self.selected.contains(e)),
+        }
+    }
+
     fn paint_rows(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts, now: Instant) {
         let s = self.scale;
         let u = &t.ui;
@@ -1982,8 +2035,7 @@ impl KostenView {
         for (i, y, h) in self.sichtbar() {
             let z = &self.zeilen[i];
             // Band: Auswahl, Hover
-            let sel =
-                !z.elements.is_empty() && z.elements.iter().all(|e| self.selected.contains(e));
+            let sel = self.markiert(i);
             let hov = !z.elements.is_empty() && z.elements.iter().all(|e| self.hover.contains(e));
             if sel || self.blitzt(i, now) {
                 c.fill_rect(x0 - 10.0 * s, y, cw + 20.0 * s, h, u.sheet_select);
@@ -2104,6 +2156,32 @@ impl KostenView {
         } else {
             prozent(b.lohn, b.netto).map_or("–".into(), |p| format!("{p} %"))
         };
+        if self.kompakt() {
+            // Bedienbarkeit 11.1: eine Zeile statt drei Kacheln
+            let mut p = Path::new();
+            p.rounded_rect(x0, y, cw, KOMPAKT_H * s, t.size.corner_radius * s);
+            c.fill(&p, u.sheet_tile);
+            let text = format!(
+                "{}: netto {} € · brutto {} € · Lohnanteil {}",
+                self.summe_titel(),
+                euro(netto),
+                euro(netto + mwst),
+                anteil
+            );
+            if let Some(f) = bold {
+                let px = 11.0 * s;
+                let text = sk_ui::widgets::ellipsize(Some(f), &text, px, cw - 24.0 * s);
+                let base = y + (KOMPAKT_H * s + f.cap_height(px)) * 0.5;
+                f.draw(c, &text, px, x0 + 12.0 * s, base, u.sheet_text);
+            }
+            return;
+        }
+        if let Some(f) = bold {
+            // Bedienbarkeit 11.2: wofür die Summen gelten
+            let px = 12.0 * s;
+            let titel = sk_ui::widgets::ellipsize(Some(f), &self.summe_titel(), px, cw);
+            f.draw(c, &titel, px, x0, y - 9.0 * s, u.sheet_text);
+        }
         let kacheln = [
             ("Summe netto", format!("{} €", euro(netto)), String::new()),
             (
@@ -2172,7 +2250,7 @@ impl KostenView {
         };
         let b = fonts.bold.as_ref().unwrap_or(f);
         let px = 10.5 * s;
-        let mut y = self.tiles_top() + (TILE_H + TILE_GAP) * s;
+        let mut y = self.tiles_top() + (self.tile_h() + TILE_GAP) * s;
         for z in fuss {
             let base = y + (FOOT_LINE * s + f.cap_height(px)) * 0.5;
             f.draw(c, &z.text, px, x0, base, u.sheet_text_dim);
@@ -2194,7 +2272,7 @@ impl KostenView {
             self.w as f32 - 9.0 * s,
             self.list_top(),
             5.0 * s,
-            self.tiles_top() - self.list_top() - 6.0 * s,
+            self.list_bottom() - self.list_top() - 6.0 * s,
         );
         sk_ui::widgets::scrollbar(c, r, self.scroll / content, view / content, false, s, t);
     }

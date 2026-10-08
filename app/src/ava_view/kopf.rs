@@ -9,7 +9,7 @@ use sk_platform::{Key, Modifiers};
 use sk_ui::widgets;
 
 /// Höhe des aufgeklappten Kopfs (dip).
-const KOPF_H: f32 = 136.0;
+const KOPF_H: f32 = 164.0;
 const ZEILE: f32 = 28.0;
 const FELD_X: f32 = 110.0;
 const FELD_W: f32 = 300.0;
@@ -127,6 +127,25 @@ impl AvaView {
     /// „Bauherr fehlt“ bzw. „Aufsteller fehlt“.
     pub(super) fn fehlt_text(&self) -> Option<String> {
         self.fehlt().map(|f| format!("{} fehlt", f.label()))
+    }
+
+    /// Zeile „Preise“ im Kopf, wie LV-Art, Währung und Preisquelle in der
+    /// CSV: „mit Preisen · EUR netto zzgl. MwSt. · Referenzpreise 10/2026,
+    /// unverbindlich“.
+    pub(super) fn preise_text(&self) -> String {
+        let Some(lv) = self.lv.as_deref() else {
+            return String::new();
+        };
+        let k = &lv.kopf;
+        let mut t = format!("{} · {}, {}", k.art, k.waehrung, k.netto);
+        if self.preise && !self.preisquelle.is_empty() {
+            t.push_str(" · ");
+            t.push_str(&self.preisquelle);
+            if self.preisquelle.starts_with("Referenzpreise") {
+                t.push_str(", unverbindlich");
+            }
+        }
+        t
     }
 
     /// Ein Feld im Kopf nimmt Tasten und Zeichen.
@@ -433,14 +452,21 @@ impl AvaView {
                 }
             }
         }
-        // Rechts: Los, Umfang, Stand; darunter die Vorbemerkungen
+        // Rechts: Los, Umfang, Stand und Preise wie in der CSV (Kosten B4);
+        // darunter die Vorbemerkungen
         let y0 = self.top_px() + (SWITCH_TOP + SWITCH_H + 12.0) * s;
         let rx = x0 + RECHTS_X * s;
         let (umfang, stand) = &self.kopf_umfang;
         let los = lv.map_or(String::new(), |l| format!("Los {}", l.kopf.los));
-        for (i, (k, v)) in [("Los", los.as_str()), ("Umfang", umfang), ("Stand", stand)]
-            .iter()
-            .enumerate()
+        let preise = self.preise_text();
+        for (i, (k, v)) in [
+            ("Los", los.as_str()),
+            ("Umfang", umfang),
+            ("Stand", stand),
+            ("Preise", preise.as_str()),
+        ]
+        .iter()
+        .enumerate()
         {
             let r = (rx, y0 + i as f32 * ZEILE * s, 0.0, FELD_H * s);
             let base = mitte(r, regular, lpx);
@@ -448,7 +474,7 @@ impl AvaView {
             let v = widgets::ellipsize(Some(regular), v, lpx, x0 + cw - rx - 80.0 * s);
             regular.draw(c, &v, lpx, rx + 80.0 * s, base, u.sheet_text);
         }
-        let y = y0 + 3.0 * ZEILE * s + 4.0 * s;
+        let y = y0 + 4.0 * ZEILE * s + 4.0 * s;
         let r = (x0, y, 0.0, FELD_H * s);
         let base = mitte(r, regular, lpx);
         regular.draw(c, "Vorbemerkungen", lpx, x0, base, u.sheet_text_dim);

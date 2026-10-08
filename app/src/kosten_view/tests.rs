@@ -584,3 +584,76 @@ fn lohnfeld_karte_und_kachel() {
 fn w_erste(w: &WahlBlatt) -> String {
     w.erster_eindeutig().expect("ein eindeutiger Name")
 }
+
+/// Bedienbarkeit 11.1, 11.2, 11.4: Über den Kacheln steht, wofür die
+/// Summen gelten; bei niedrigem Fenster werden die Kacheln eine Zeile und
+/// die Liste behält mindestens drei Zeilen; bei offenem Preisblatt ist nur
+/// die bearbeitete Position markiert, nicht das WDVS derselben Wände.
+#[test]
+fn summen_ueberschrift_niedrig_und_markierung() {
+    let t = Theme::dark();
+    let fonts = Fonts {
+        regular: None,
+        bold: None,
+        italic: None,
+    };
+    let mut s = haus();
+    let mut v = KostenView::new();
+    (v.w, v.h) = (1200, 900);
+    v.sync(&mut s, None);
+    assert!(!v.kompakt());
+    assert!(
+        v.summe_titel().starts_with("Summe · "),
+        "{}",
+        v.summe_titel()
+    );
+    assert!(!v.summe_titel().contains("Stand"));
+    assert!(v.list_bottom() < v.tiles_top());
+    // Niedriges Fenster (angedockt, Laptop): eine Zeile, Liste hat Vorrang;
+    // mit Kacheln bleiben immer mindestens drei Zeilen
+    let mut kompakt = 0;
+    for h in (200..900).rev().step_by(4) {
+        v.h = h;
+        if v.kompakt() {
+            kompakt += 1;
+            assert!(v.lohnsatz_lage(&t, &fonts).is_none());
+            if kompakt == 1 {
+                assert!(v.view_h() >= 3.0 * ROW_POS, "{h}: {}", v.view_h());
+            }
+        } else {
+            assert!(v.view_h() >= 3.0 * ROW_POS, "{h}: {}", v.view_h());
+        }
+    }
+    assert!(kompakt > 0);
+    v.h = 900;
+    // Preisblatt am Planstein: Wände sind gewählt, markiert ist nur M10
+    let i = v
+        .zeilen()
+        .iter()
+        .position(|z| z.text.contains("Porenbeton") && z.text.contains("17,5"))
+        .expect("Mauerwerk");
+    let el = v.zeilen()[i].elements.clone();
+    v.selected = el.clone();
+    let andere: Vec<usize> = (0..v.zeilen().len())
+        .filter(|j| *j != i && v.markiert(*j))
+        .collect();
+    assert!(!andere.is_empty(), "ohne Preisblatt alle Zeilen der Wände");
+    let (_, y, h) = v
+        .sichtbar()
+        .into_iter()
+        .find(|(j, _, _)| *j == i)
+        .expect("sichtbar");
+    let (x0, cw) = v.content_x(&t);
+    let (x, y) = ((col_ep(x0, cw) - 20.0) as f64, (y + h * 0.5) as f64);
+    let mut p = Picking {
+        selected: el,
+        ..Default::default()
+    };
+    let mods = sk_platform::Modifiers::default();
+    v.mouse_down(&t, &fonts, &mut p, (x, y), mods);
+    v.mouse_down(&t, &fonts, &mut p, (x, y), mods);
+    v.sync(&mut s, None);
+    assert!(v.preis_offen());
+    let markiert: Vec<usize> = (0..v.zeilen().len()).filter(|j| v.markiert(*j)).collect();
+    assert_eq!(markiert, [i]);
+}
