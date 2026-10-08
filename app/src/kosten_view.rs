@@ -147,6 +147,8 @@ impl Zeile {
 }
 
 #[cfg(test)]
+mod bild;
+#[cfg(test)]
 mod tests;
 mod zeilen;
 
@@ -786,9 +788,22 @@ impl KostenView {
             0.0
         };
         let lw = w(bold, &link);
-        let x = rechts - w(regular, &nach) - punkt - lw - w(regular, &vor);
+        let breit = w(regular, &vor) + lw + punkt + w(regular, &nach);
+        // Passt die Zeile nicht neben den Betrag, steht sie darunter wie
+        // die zweite Menge der Baustoffkacheln
+        let anteil = if self.modus.nur_material() {
+            "–".to_string()
+        } else {
+            prozent(b.lohn, b.netto).map_or("–".into(), |p| format!("{p} %"))
+        };
+        let links = rechts + 12.0 * s - tw + 12.0 * s;
+        let wert = links + bold.map_or(0.0, |f| f.width(&anteil, 17.0 * s));
+        let (x, y) = if rechts - breit < wert + 12.0 * s {
+            (links, self.tiles_top() + 44.0 * s)
+        } else {
+            (rechts - breit, self.tiles_top() + 28.0 * s)
+        };
         let lx = x + w(regular, &vor);
-        let y = self.tiles_top() + 28.0 * s;
         Some((vor, link.clone(), nach, (lx, y, lw, 14.0 * s)))
     }
 
@@ -2088,8 +2103,9 @@ impl KostenView {
                 let by = y + 38.0 * s;
                 if k == 2 {
                     // „60,00 €/h“ als Verweis aufs Lohnfeld (Bedienbarkeit 4.7)
-                    if let Some((vor, link, nach, (lx, ..))) = self.lohnsatz_lage(t, fonts) {
+                    if let Some((vor, link, nach, (lx, ly, ..))) = self.lohnsatz_lage(t, fonts) {
                         let px = 10.0 * s;
+                        let by = ly + 10.0 * s;
                         let fb = bold.unwrap_or(f);
                         f.draw(c, &vor, px, lx - f.width(&vor, px), by, u.sheet_text_dim);
                         let col = crate::cards::verweis(u, self.hot == Some(Hot::Lohnsatz));

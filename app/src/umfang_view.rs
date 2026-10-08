@@ -487,6 +487,11 @@ impl Leiste {
             c.fill(&p, edge);
             let mut p = Path::new();
             p.rounded_rect(x + line, y + line, w - 2.0 * line, h - 2.0 * line, r - line);
+            // Durchscheinende Flächen (Auswahl, Hover) liegen auf dem Blatt,
+            // nicht auf dem Rand: sonst wird „Akzent hell“ voller Akzent
+            if fill.3 < 255 {
+                c.fill(&p, u.sheet_bg);
+            }
             c.fill(&p, fill);
         };
         if let Some((x, y, w, h)) = l.field {

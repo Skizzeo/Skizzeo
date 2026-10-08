@@ -1037,6 +1037,10 @@ fn mengen_zahl(sched: &Schedule) -> String {
 }
 
 #[cfg(test)]
+#[path = "quantity_istbilder.rs"]
+mod istbilder;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use sk_math::vec3;
