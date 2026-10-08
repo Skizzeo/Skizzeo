@@ -550,18 +550,24 @@ impl Prefs {
         true
     }
 
+    /// Oberfläche weg (etwa nach Rückgängig, Löschen): das Musterfenster
+    /// schließt und wartet auf nichts mehr (A305).
+    pub fn drop_stale_pattern(&mut self, sc: &Scene) {
+        if let Some(pw) = &self.pw {
+            if sc.model().attr().surface(pw.surface).is_none() {
+                self.pw = None;
+                self.full_frame = true;
+            }
+        }
+    }
+
     /// Szene der Vorschau im Fenster „Muster“, `None` ohne Fenster.
     pub fn pattern_preview(&mut self, t: &Theme, w: &Win, sc: &Scene) -> Option<PwPreview> {
         let l = self.pw_layout(t, w);
         let s = w.scale;
+        self.drop_stale_pattern(sc);
         let pw = self.pw.as_mut()?;
-        // Oberfläche weg (etwa nach Rückgängig, Löschen): das Fenster
-        // schließt und wartet auf nichts mehr (A305)
-        let Some(o) = sc.model().attr().surface(pw.surface) else {
-            self.pw = None;
-            self.full_frame = true;
-            return None;
-        };
+        let o = sc.model().attr().surface(pw.surface)?;
         pw.sync(o.pattern.as_ref());
         let after = Look {
             pattern: o.pattern.clone(),
@@ -1147,5 +1153,39 @@ mod tests {
             }
         }
         assert_ne!(variants_of(&p, 1), v, "⟳ zieht neue");
+    }
+
+    /// Oberfläche weg: schon das nächste Bild schließt das Musterfenster,
+    /// ohne dass erst die Vorschau gefragt wird (Review 3y).
+    #[test]
+    fn bild_schliesst_fenster_ohne_oberflaeche() {
+        let mut s = Scene::with_model(sk_model::Model::with_seed(31));
+        let mut th = Theme::dark();
+        th.size.anim_ms = 0.0;
+        let w = Win {
+            w: 1440,
+            h: 900,
+            top: 32,
+            scale: 1.0,
+        };
+        let mut p = Prefs::open(&mut s, &th);
+        let mut id = None;
+        assert!(p.edit(&mut s, |m| {
+            let vorlage = m.attr().surfaces().iter().next().unwrap().1.clone();
+            let guid = m.new_guid();
+            id = Some(m.add_surface(Surface {
+                guid,
+                name: "Weg".into(),
+                pattern: Some(proctex::masonry_default()),
+                ..vorlage
+            }));
+            true
+        }));
+        let id = id.unwrap();
+        assert!(p.open_pattern(&s, &th, id));
+        assert!(p.pw.is_some());
+        assert!(p.edit(&mut s, |m| m.remove_surface(id)));
+        let _ = p.paint_frame(&th, &Fonts::system(), &w, &s);
+        assert!(p.pw.is_none(), "Fenster zu");
     }
 }

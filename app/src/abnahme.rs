@@ -18084,6 +18084,72 @@ mod sichtbarkeit {
             assert_eq!(csv(&mut s), mengen, "{name}: Mengen unverändert");
         }
     }
+
+    /// A303b (Review 3y): wie A303, aber im Grundriss und im Schnitt (schräge
+    /// Ebene durch die Mitte des Hauses), dazu Wiederholen und Typwechsel.
+    /// Jeder Schritt gleicht dem ganz neu gerechneten Netz.
+    #[test]
+    fn a303b_ausblenden_grundriss_schnitt_typwechsel() {
+        let mut s = Scene::with_model(Model::with_seed(303));
+        let (eg, og) = gebaeude(&mut s);
+        let aw6 = nr(&s, "AW-006");
+        let m0 = s.mesh(ViewKind::Persp, None, &[]);
+        let n = m0.faces.len() as f32;
+        let mut c = [0.0f32; 3];
+        for f in &m0.faces {
+            for k in 0..3 {
+                c[k] += f[k] / n;
+            }
+        }
+        let mitte = sk_math::vec3(c[0] as f64, c[1] as f64, c[2] as f64);
+        let ebene = (mitte, sk_math::vec3(1.0, 0.2, 0.0).normalized());
+        let typen: Vec<_> = s.model().layer_sets().iter().map(|(id, _)| id).collect();
+        let ansichten = [
+            (ViewKind::Plan, None),
+            (ViewKind::Section, Some(ebene)),
+            (ViewKind::Persp, None),
+        ];
+        for (view, sec) in ansichten {
+            for cat in [Category::Floor, Category::ExteriorWall] {
+                let pruefe = |s: &mut Scene, schritt: &str, except: &[RunId]| {
+                    let ist = s.mesh(view, sec, except);
+                    let neu = Scene::with_model(s.model().clone()).mesh(view, sec, except);
+                    assert_eq!(
+                        kanonisch(&ist),
+                        kanonisch(&neu),
+                        "{cat:?} {view:?}: {schritt}"
+                    );
+                };
+                sicht(&mut s, |v| {
+                    v.hidden_cat.insert(cat);
+                });
+                pruefe(&mut s, "ausgeblendet", &[]);
+                pruefe(&mut s, "Vorschau", &[og]);
+                assert!(s.edit_model("Wand verschoben", |m| {
+                    m.set_linked(aw6, false) && m.set_offset(aw6, 300.0).is_some()
+                }));
+                pruefe(&mut s, "gezogen", &[]);
+                assert!(s.undo());
+                pruefe(&mut s, "Rückgängig", &[]);
+                assert!(s.redo());
+                pruefe(&mut s, "Wiederholen", &[]);
+                assert!(s.undo());
+                for t in typen.iter().take(4) {
+                    // Derselbe Typ ändert nichts und landet nicht im Verlauf
+                    if !s.edit_model("Wandtyp", |m| m.set_run_type(eg, *t))
+                        || s.undo_label() != Some("Wandtyp")
+                    {
+                        continue;
+                    }
+                    pruefe(&mut s, "Typwechsel", &[]);
+                    assert!(s.undo());
+                    pruefe(&mut s, "Typ zurück", &[]);
+                }
+                sicht(&mut s, |v| *v = Visibility::default());
+                pruefe(&mut s, "eingeblendet", &[]);
+            }
+        }
+    }
 }
 mod baumpanel {
     use super::*;
@@ -24431,6 +24497,120 @@ mod masseingabe {
             let ([a, b], text) = t.label().expect("Live-Länge");
             assert_eq!(text, live_laenge((b - a).length()), "bei {p:?}");
             assert!(text.ends_with(" m"), "{text}");
+        }
+    }
+
+    /// A306 (Review 3v Niedrig 1, Koordinator 01:57): Beim Ziehen getippt
+    /// und ohne Enter losgelassen.
+    /// - Gültiger Wert: genau wie mit Enter. Gleiches Modell, ein Schritt
+    ///   „Wand verschoben“, das Ziehen ist zu, die Eingabe ist zu, die Pille
+    ///   zeigt den Wert wie nach Enter und tippt nicht mehr (blendet also
+    ///   nach 1,5 s aus). Eine Nachkorrektur danach wirkt wie nach Enter.
+    /// - Ungültiger Wert („-“, „250“ über 200 m): die Eingabe bleibt offen
+    ///   mit dem getippten Text und dem Fehlerpunkt. Die Wand steht, wo die
+    ///   Maus losließ (wie ohne Tippen). Berichtigen und Enter setzt den
+    ///   Wert; danach bleibt es ein Schritt. Esc schließt die Eingabe, die
+    ///   Wand bleibt bei der Maus.
+    #[test]
+    fn a306_loslassen_ohne_enter() {
+        let szo = |s: &Scene| sk_model::szo::write(s.model());
+        let getippt = |seed: u64, mit_enter: bool| {
+            let (mut s, aw6) = geloest(seed);
+            let mut e = WallEdit::default();
+            greifen(&mut e, &mut s, og_fuss(8000.0));
+            e_maus(&mut e, &mut s, og_fuss(8270.0));
+            e_zeichen(&mut e, &mut s, "0,30");
+            e_maus(&mut e, &mut s, og_fuss(8500.0));
+            if mit_enter {
+                e_taste(&mut e, &mut s, Key::Enter);
+            }
+            loslassen(&mut e, &mut s, og_fuss(8500.0));
+            (s, e, aw6)
+        };
+        let (mut s1, mut e1, aw6) = getippt(306, true);
+        let (mut s2, mut e2, _) = getippt(306, false);
+        assert_eq!(
+            versatz(&s2, aw6),
+            Some((300.0, false)),
+            "getippt, nicht 500"
+        );
+        assert_eq!(szo(&s2), szo(&s1), "Modell wie mit Enter");
+        assert_eq!(s2.undo_label(), Some("Wand verschoben"));
+        assert!(!e2.is_dragging(), "Loslassen beendet das Ziehen");
+        assert!(eingabe_ziehen(&e2).is_none(), "Eingabe zu wie nach Enter");
+        assert_eq!(e2.pill(&s2), e1.pill(&s1), "Pille wie nach Enter");
+        assert_eq!(
+            e2.pill(&s2),
+            Some(("Versatz +0,30".to_string(), false)),
+            "Wert, nicht mehr tippend"
+        );
+        // Nachkorrektur wie nach Enter
+        for (s, e) in [(&mut s1, &mut e1), (&mut s2, &mut e2)] {
+            e_zeichen(e, s, "0,4");
+            e_taste(e, s, Key::Enter);
+        }
+        assert_eq!(versatz(&s2, aw6), Some((400.0, false)), "Nachkorrektur");
+        assert_eq!(szo(&s2), szo(&s1), "Nachkorrektur wie nach Enter");
+        assert!(s2.undo());
+        assert_eq!(versatz(&s2, aw6), Some((0.0, false)));
+        assert_eq!(
+            s2.undo_label(),
+            Some("Kopplung gelöst"),
+            "genau ein Schritt"
+        );
+
+        for text in ["-", "250"] {
+            let neu = |seed: u64| {
+                let (mut s, aw6) = geloest(seed);
+                let mut e = WallEdit::default();
+                greifen(&mut e, &mut s, og_fuss(8000.0));
+                e_maus(&mut e, &mut s, og_fuss(8270.0));
+                e_zeichen(&mut e, &mut s, text);
+                loslassen(&mut e, &mut s, og_fuss(8270.0));
+                (s, e, aw6)
+            };
+            let (mut s, mut e, aw6) = neu(3061);
+            let i = eingabe_ziehen(&e).unwrap_or_else(|| panic!("„{text}“: Eingabe bleibt offen"));
+            assert_eq!(i.felder[0], text, "getippter Text bleibt");
+            assert!(i.fehler, "„{text}“: Fehlerpunkt");
+            assert_eq!(
+                e.pill(&s).map(|p| p.1),
+                Some(true),
+                "„{text}“: tippt weiter"
+            );
+            assert_eq!(
+                versatz(&s, aw6),
+                Some((270.0, false)),
+                "„{text}“: bei der Maus"
+            );
+            // berichtigen und Enter
+            for _ in 0..text.chars().count() {
+                e_taste(&mut e, &mut s, Key::Backspace);
+            }
+            e_zeichen(&mut e, &mut s, "0,2");
+            e_taste(&mut e, &mut s, Key::Enter);
+            assert_eq!(
+                versatz(&s, aw6),
+                Some((200.0, false)),
+                "„{text}“ berichtigt"
+            );
+            assert!(eingabe_ziehen(&e).is_none());
+            assert_eq!(s.undo_label(), Some("Wand verschoben"));
+            assert!(s.undo());
+            assert_eq!(s.undo_label(), Some("Kopplung gelöst"), "genau ein Schritt");
+            // Esc schließt die Eingabe, die Wand bleibt bei der Maus
+            let (mut s, mut e, aw6) = neu(3062);
+            e_taste(&mut e, &mut s, Key::Escape);
+            assert!(eingabe_ziehen(&e).is_none(), "„{text}“: Esc schließt");
+            assert!(!e.is_dragging());
+            assert_eq!(
+                versatz(&s, aw6),
+                Some((270.0, false)),
+                "„{text}“: bei der Maus"
+            );
+            assert_eq!(s.undo_label(), Some("Wand verschoben"));
+            assert!(s.undo());
+            assert_eq!(s.undo_label(), Some("Kopplung gelöst"), "ein Schritt");
         }
     }
 }

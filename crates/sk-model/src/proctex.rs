@@ -1378,6 +1378,30 @@ pub fn sample(p: &Pattern, base: [u8; 3], u: f64, v: f64) -> [u8; 3] {
 /// Feste Streuung je Naturstein in % (kein Regler).
 const STONE_SPREAD: f32 = 4.0;
 
+/// Kopfanteil des wilden Verbands (Köpfe / alle Steine), solange die
+/// Tabelle des Startwerts nicht vorliegt.
+const WILD_HEADS: f64 = 0.3;
+
+/// Kopfanteil (Köpfe / alle Steine) der Verbandstabelle zum Startwert, wenn
+/// sie schon vorliegt (die mitgelieferte immer); wartet nie und stößt keine
+/// Rechnung an.
+fn head_share(seed: u32) -> Option<f64> {
+    use std::sync::Mutex;
+    static SHARES: Mutex<Vec<(u32, f64)>> = Mutex::new(Vec::new());
+    let mut v = SHARES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(&(_, k)) = v.iter().find(|x| x.0 == seed) {
+        return Some(k);
+    }
+    let t = cached(&mut tables().0, seed)?;
+    // Jedes Viertel trägt den Stein, in dem es liegt: Köpfe sind 2, Läufer
+    // 4 Viertel lang
+    let quarters = |head: bool| t.cells.iter().filter(|&&c| (c & 4 != 0) == head).count();
+    let (heads, runs) = (quarters(true) as f64 / 2.0, quarters(false) as f64 / 4.0);
+    let k = heads / (heads + runs);
+    v.push((seed, k));
+    Some(k)
+}
+
 /// Mittlere Kernbreite geflammter Läufer (Regel 68).
 const FLAME_CORE: f64 = 0.53;
 
@@ -1435,6 +1459,7 @@ fn masonry_mix(p: &Pattern) -> [u8; 3] {
         flame,
         fend,
         relief,
+        seed,
         ..
     } = p
     else {
@@ -1450,7 +1475,8 @@ fn masonry_mix(p: &Pattern) -> [u8; 3] {
             k / (k + len)
         }
         Bond::Wild => {
-            let (lf, kf) = (0.7 * len, 0.3 * (a / 2.0 - j));
+            let k = head_share(*seed).unwrap_or(WILD_HEADS);
+            let (lf, kf) = ((1.0 - k) * len, k * (a / 2.0 - j));
             kf / (lf + kf)
         }
     };
@@ -1939,6 +1965,26 @@ pub(crate) fn read_line(r: &Record, raw: &str) -> Result<Option<Pattern>, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Die Mischfarbe des wilden Verbands nimmt den Kopfanteil der Tabelle
+    /// (Startwert 17: 30,4 %, einstellungen/b7-kennwerte.md); ohne Tabelle
+    /// 30 %, ohne auf sie zu warten.
+    #[test]
+    fn mischfarbe_mit_kopfanteil_der_tabelle() {
+        let k = head_share(17).expect("mitgeliefert");
+        assert!((k - 0.304).abs() < 0.0005, "{k}");
+        assert_eq!(head_share(0x0bad_5eed), None, "nie gerechnet");
+        let p = factory(FACING).unwrap();
+        let fest = |k: f64| {
+            let Pattern::Masonry { len, joint, .. } = &p else {
+                unreachable!()
+            };
+            let (len, j) = (*len as f64, *joint as f64);
+            let kf = k * ((len + j) / 2.0 - j);
+            kf / ((1.0 - k) * len + kf)
+        };
+        assert!(fest(k) > fest(WILD_HEADS));
+    }
 
     /// Die mitgelieferte Werkstabelle ist die gerechnete (Startwert 17).
     #[test]

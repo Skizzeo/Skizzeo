@@ -430,6 +430,9 @@ impl WallEdit {
             InputOutcome::Changed | InputOutcome::Refused => {
                 out.changed = self.apply_typed(scene);
             }
+            // Leer getippt: in der Nachkorrektur darf neu getippt werden
+            // (A306, ungültigen Wert berichtigen)
+            InputOutcome::Emptied if !dragging => self.input = None,
             InputOutcome::Emptied | InputOutcome::Escape | InputOutcome::EnterEmpty => {
                 self.input = None;
                 if dragging {
@@ -778,6 +781,21 @@ impl WallEdit {
                 button: MouseButton::Left,
                 ..
             } => {
+                if self.drag.is_some() {
+                    // Getippt und ohne Enter losgelassen (A306): ein gültiger
+                    // Wert gilt wie mit Enter, die Eingabe schließt; ein
+                    // ungültiger bleibt mit Fehlerpunkt offen für die
+                    // Nachkorrektur, die Wand steht bei der Maus
+                    match self.input.as_ref().and_then(|i| i.value(0)) {
+                        Some(Ok(_)) => self.input = None,
+                        Some(Err(_)) => {
+                            let i = self.input.take();
+                            self.update_drag(scene, cam, w, h);
+                            self.input = i;
+                        }
+                        None => {}
+                    }
+                }
                 if let Some(d) = self.drag.take() {
                     // Ein Verlaufsschritt nur, wenn die Wand wirklich woanders steht
                     if scene
@@ -786,8 +804,6 @@ impl WallEdit {
                     {
                         out.clicked = Some(d.wall);
                     }
-                    // Getippt und noch nicht bestätigt: der Wert gilt wie
-                    // beim Ziehen, die Eingabe bleibt für die Nachkorrektur
                     let serial = scene.step_serial();
                     scene.commit();
                     self.remember(scene, serial, d.target());

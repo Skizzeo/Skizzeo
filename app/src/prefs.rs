@@ -3151,6 +3151,9 @@ impl Prefs {
     /// ganze Bild; sonst, nach Theme- oder Skalierungswechsel und im Fenster
     /// „Muster“ das ganze Fenster.
     pub fn paint_frame(&mut self, t: &Theme, fonts: &Fonts, w: &Win, sc: &Scene) -> Frame {
+        // Oberfläche weg: das Musterfenster schließt schon hier, damit kein
+        // Overlay bis zum nächsten Malen stehen bleibt (Review 3y)
+        self.drop_stale_pattern(sc);
         let f = self.frame(t, w);
         let s = w.scale;
         let m = (t.size.panel_shadow * s).round();

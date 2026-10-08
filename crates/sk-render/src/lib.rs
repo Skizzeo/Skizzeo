@@ -2006,7 +2006,8 @@ impl Renderer {
             return;
         };
         let (w, h) = (width as i32, height as i32);
-        if w <= 0 || h <= 0 || x < 0 || y < 0 || x + w > o.w || y + h > o.h {
+        // Grenzen der Textur, nicht der gezeichneten Größe (Review 3x)
+        if w <= 0 || h <= 0 || x < 0 || y < 0 || x + w > o.tw || y + h > o.th {
             return;
         }
         if rgba_premul.len() < (w * h * 4) as usize {

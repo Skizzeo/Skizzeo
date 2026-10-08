@@ -381,6 +381,19 @@ fn read_preset(r: &Record, raw: &str) -> Result<CompanyPreset, String> {
     }
 }
 
+/// Guid und Name der Firmenvorlagen, die beim Lesen roh stehen blieben
+/// (neuere Fassung, unbrauchbar): Ein neuer Name darf auch sie nicht
+/// treffen, sonst überspringt das nächste Lesen eine der beiden (Regel 65).
+fn raw_presets(lib: &Library) -> Vec<(Option<Guid>, String)> {
+    lib.foreign
+        .records
+        .iter()
+        .filter_map(|l| Record::parse(0, l).ok().flatten())
+        .filter(|r| r.section == "patternpreset")
+        .filter_map(|r| Some((r.guid("guid").ok(), r.opt("name")?.trim().to_string())))
+        .collect()
+}
+
 /// „Als Vorlage speichern …“ (Paket 7 §2.2): legt eine Firmenvorlage mit
 /// neuer Guid an. Abgelehnt werden ein leerer Name, der Name einer
 /// Werksvorlage oder einer vorhandenen Firmenvorlage und ungültige Werte.
@@ -397,7 +410,8 @@ pub fn save_preset(
     if crate::proctex::preset_named(name).is_some() {
         return Err(format!("„{name}“ ist schon eine Werksvorlage."));
     }
-    if lib.presets.iter().any(|v| v.name == name) {
+    let raw = raw_presets(lib);
+    if lib.presets.iter().any(|v| v.name == name) || raw.iter().any(|(_, n)| n == name) {
         return Err(format!("„{name}“ gibt es schon."));
     }
     if matches!(pattern, Pattern::Foreign(_)) {
@@ -406,7 +420,7 @@ pub fn save_preset(
     crate::proctex::validate(pattern)?;
     let mut gen = GuidGen::from_time();
     let mut guid = gen.next_guid();
-    while lib.presets.iter().any(|v| v.guid == guid) {
+    while lib.presets.iter().any(|v| v.guid == guid) || raw.iter().any(|(g, _)| *g == Some(guid)) {
         guid = gen.next_guid();
     }
     lib.presets.push(CompanyPreset {
@@ -1436,6 +1450,33 @@ mod tests {
             assert!(out.lines().any(|o| o == l), "{l} fehlt in\n{out}");
         }
         assert_eq!(write_szk(&read_szk(&out).unwrap()), out);
+    }
+
+    /// Eine Firmenvorlage einer neueren Fassung bleibt roh stehen; „Als
+    /// Vorlage speichern …“ lehnt ihren Namen ab (sonst überspränge das
+    /// nächste Lesen eine der beiden) und nimmt einen anderen an.
+    #[test]
+    fn rohe_vorlage_belegt_ihren_namen() {
+        let text = write_szk(&Library::standard());
+        let roh = "[patternpreset] guid=0bTdQXV2v4F9fBAYaFw6qr name=\"Zukunft\" base=8a3b2a gen=hologramm tiefe=3";
+        let lib = read_szk(&format!("{text}{roh}\n")).expect("öffnet");
+        assert!(lib.presets.is_empty());
+        let p = crate::proctex::factory(crate::proctex::FACING).unwrap();
+        let mut neu = lib.clone();
+        assert_eq!(
+            save_preset(&mut neu, " Zukunft ", &p, [1, 2, 3]),
+            Err("„Zukunft“ gibt es schon.".into())
+        );
+        assert!(save_preset(&mut neu, "Gegenwart", &p, [1, 2, 3]).is_ok());
+        let out = write_szk(&neu);
+        assert!(out.lines().any(|l| l == roh), "roh zurück");
+        let zurueck = read_szk(&out).unwrap();
+        assert_eq!(zurueck.presets.len(), 1);
+        assert_eq!(zurueck.presets[0].name, "Gegenwart");
+        assert_ne!(
+            Some(zurueck.presets[0].guid),
+            Guid::from_ifc("0bTdQXV2v4F9fBAYaFw6qr")
+        );
     }
 
     /// Zwei gleiche Schichten eines Typs mit verschiedenen fremden Angaben:
