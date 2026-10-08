@@ -371,6 +371,63 @@ pub fn ellipsize(font: Option<&Font>, text: &str, px: f32, max_w: f32) -> String
     out
 }
 
+/// Kürzt so, dass der Text ab dem Zeichen `ab` möglichst stehen bleibt:
+/// „AW Porenbeton-P… d=24cm Dünnbettmörtel“. Für Einträge, die sich erst
+/// hinten unterscheiden; `ab` = 0 kürzt wie [`ellipsize`] am Ende.
+pub fn ellipsize_ab(font: Option<&Font>, text: &str, px: f32, max_w: f32, ab: usize) -> String {
+    let Some(f) = font else {
+        return text.into();
+    };
+    if f.width(text, px) <= max_w {
+        return text.into();
+    }
+    let zeichen: Vec<char> = text.chars().collect();
+    if ab == 0 || ab >= zeichen.len() {
+        return ellipsize(font, text, px, max_w);
+    }
+    let platz = max_w - f.width("… ", px);
+    let ende: String = zeichen[ab..].iter().collect();
+    let ende = ellipsize(font, ende.trim_start(), px, platz * 0.7);
+    let rest = platz - f.width(&ende, px);
+    let mut vorn = String::new();
+    for ch in &zeichen[..ab] {
+        let mut probe = vorn.clone();
+        probe.push(*ch);
+        if f.width(&probe, px) > rest {
+            break;
+        }
+        vorn.push(*ch);
+    }
+    // Passt der gemeinsame Anfang ganz, reicht das Kürzen am Ende
+    if vorn.chars().count() == ab {
+        return ellipsize(font, text, px, max_w);
+    }
+    // Nach einem Bindestrich ohne Lücke: „Porenbeton-…Planbauplatte“
+    let luecke = if zeichen[ab - 1] == '-' { "" } else { " " };
+    format!("{}…{luecke}{ende}", vorn.trim_end())
+}
+
+/// Erstes Zeichen des Wort(teil)s, ab dem sich `text` von allen `andere`
+/// unterscheidet; 0, wenn keiner gleich beginnt.
+pub fn eigener_teil<'a>(text: &str, andere: impl IntoIterator<Item = &'a str>) -> usize {
+    let a: Vec<char> = text.chars().collect();
+    let gleich = andere
+        .into_iter()
+        .map(|o| {
+            a.iter()
+                .zip(o.chars())
+                .take_while(|(x, y)| **x == *y)
+                .count()
+        })
+        .max()
+        .unwrap_or(0);
+    // zurück auf den Wortanfang, auch hinter einem Bindestrich
+    a[..gleich.min(a.len())]
+        .iter()
+        .rposition(|c| *c == ' ' || *c == '-')
+        .map_or(0, |i| i + 1)
+}
+
 /// Text in Zeilen von höchstens `max_w` Pixeln, umbrochen an Leerzeichen;
 /// ein einzelnes zu langes Wort wird gekürzt.
 pub fn wrap(font: Option<&Font>, text: &str, px: f32, max_w: f32) -> Vec<String> {
@@ -786,6 +843,40 @@ pub fn separator(c: &mut Canvas, x: f32, y: f32, w: f32, s: f32, t: &Theme) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Bedienbarkeit 14.1: gekürzt wird vor dem Teil, der den Eintrag von
+    /// den Geschwistern unterscheidet; das Ergebnis passt in die Breite.
+    #[test]
+    fn ellipse_vor_dem_eigenen_teil() {
+        let fonts = Fonts::system();
+        let Some(f) = fonts.regular.as_ref() else {
+            return;
+        };
+        let lang = "AW Porenbeton-Planstein PP2-0,35 d=24cm Dünnbettmörtel";
+        let andere = [
+            "AW Porenbeton-Planstein PP2-0,35 d=17,5cm Dünnbettmörtel",
+            "IW Porenbeton-Planstein PP2-0,35 d=24cm Dünnbettmörtel",
+        ];
+        let ab = eigener_teil(lang, andere);
+        assert_eq!(&lang[ab..], "d=24cm Dünnbettmörtel");
+        assert_eq!(eigener_teil("Randdämmstreifen", andere), 0);
+        let platte = "IW Porenbeton-Planbauplatte d=11,5cm Dünnbettmörtel";
+        let ab = eigener_teil(platte, andere);
+        assert_eq!(&platte[ab..], "Planbauplatte d=11,5cm Dünnbettmörtel");
+        // Kurzer gemeinsamer Anfang: kein „…“ direkt dahinter
+        let mw = "MW-Dämmplatte 035 d=120mm Steinwolle";
+        let ab_mw = eigener_teil(mw, ["MW-Lamellenplatte 035 d=120mm"]);
+        let k = ellipsize_ab(Some(f), mw, 13.0, f.width(mw, 13.0) * 0.7, ab_mw);
+        assert!(k.starts_with("MW-Dämm") && k.ends_with('…'), "{k}");
+        let ab = eigener_teil(lang, andere);
+        assert_eq!(ellipsize_ab(Some(f), "kurz", 13.0, 200.0, 2), "kurz");
+        let max = f.width(lang, 13.0) * 0.6;
+        let k = ellipsize_ab(Some(f), lang, 13.0, max, ab);
+        assert!(k.starts_with("AW Poren"), "{k}");
+        // Der eigene Teil steht, gekürzt höchstens an seinem Ende
+        assert!(k.contains("… d=24cm"), "{k}");
+        assert!(f.width(&k, 13.0) <= max, "{k}");
+    }
 
     /// Paneel wie vor der Beschleunigung: sechs Flächen über das ganze Paneel.
     fn panel_reference(c: &mut Canvas, r: Rect, s: f32, t: &Theme) {

@@ -1172,7 +1172,7 @@ impl PreisBlatt {
                 }
                 Gilt::NeueHaeuser => {
                     let text = format!("Neue Häuser rechnen dann mit {neu_ep}.");
-                    fb.draw(c, &text, px_s, x0, fy, u.accent);
+                    fb.draw(c, &text, px_s, x0, fy, crate::cards::verweis(u, false));
                     f.draw(
                         c,
                         "Strg+Z nimmt es nur für dieses Haus zurück.",
@@ -1186,11 +1186,7 @@ impl PreisBlatt {
         }
         if let Some((rx, ry, _, rh)) = self.zurueck_rect(fonts) {
             let px_l = 10.5 * s;
-            let col = if self.hot == Some(Ziel::Zurueck) {
-                u.accent_hover
-            } else {
-                u.accent
-            };
+            let col = crate::cards::verweis(u, self.hot == Some(Ziel::Zurueck));
             fb.draw(
                 c,
                 "Firmenpreis zurückholen",
@@ -1248,11 +1244,7 @@ impl PreisBlatt {
             let text = widgets::ellipsize(Some(f), &text, px, platz);
             f.draw(c, &text, px, x0, base, u.sheet_text_dim);
             if let Some((bx, _, _, _)) = link.then(|| self.bestaetigen_rect(fonts, i)).flatten() {
-                let col = if self.hot == Some(Ziel::Bestaetigen(i)) {
-                    u.accent_hover
-                } else {
-                    u.accent
-                };
+                let col = crate::cards::verweis(u, self.hot == Some(Ziel::Bestaetigen(i)));
                 fb.draw(c, "Bestätigen", px, bx, base, col);
             }
         }

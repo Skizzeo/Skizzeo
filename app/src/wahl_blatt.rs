@@ -569,7 +569,7 @@ impl WahlBlatt {
                     );
                 }
                 Eintrag::Weitere(text) => {
-                    fb.draw(c, text, px_e, x0, zb, u.accent);
+                    fb.draw(c, text, px_e, x0, zb, crate::cards::verweis(u, false));
                 }
                 Eintrag::Wahl(wl) => {
                     let ep = match wl.ep {

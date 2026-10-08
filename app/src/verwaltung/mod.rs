@@ -1451,6 +1451,7 @@ impl Verwaltung {
         let baum_x = f.x;
         c.fill_rect(baum_x, f.y, (LISTE * s).round(), f.h, u.bg);
         let zeilen = self.zeilen();
+        let mut baum_tipp = None;
         for (i, z) in zeilen.iter().enumerate() {
             let r = self.zeile_rect(w, i);
             if r.y + r.h < f.y + BAUM_Y * s || r.y > f.y + (hh - FOOT) * s {
@@ -1482,7 +1483,15 @@ impl Verwaltung {
             };
             let px = t.size.font * s;
             let zahl_w = z.anzahl.map_or(0.0, |_| 34.0 * s);
-            let text = widgets::ellipsize(font, &z.text, px, r.x + r.w - tx - zahl_w - 6.0 * s);
+            // Gekürzt wird vor dem Teil, der den Eintrag von seinen
+            // Geschwistern unterscheidet, etwa der Dicke (Bedienbarkeit
+            // 14.1); der volle Name steht im Tipp
+            let max_w = r.x + r.w - tx - zahl_w - 6.0 * s;
+            let ab = widgets::eigener_teil(&z.text, baum::geschwister(&zeilen, i));
+            let text = widgets::ellipsize_ab(font, &z.text, px, max_w, ab);
+            if text != z.text && self.hover == Some(Ziel::Zeile(i)) {
+                baum_tipp = Some((z.text.clone(), tx, r.y + r.h));
+            }
             // Unlesbares Referenzhaus grau (Regel 106)
             let farbe = if z.grau { u.text_disabled } else { u.text };
             label(c, font, &text, px, tx, base, farbe);
@@ -1620,6 +1629,11 @@ impl Verwaltung {
                 let y = r.y + r.h + 6.0 * s;
                 c.blit(&tt, x.round() as i32, y.round() as i32);
             }
+        }
+        if let Some((name, x, y)) = baum_tipp {
+            let tt = widgets::tooltip(fonts, &name, s, t);
+            let x = x.min(f.x + f.w - tt.width as f32 - 8.0 * s).max(f.x);
+            c.blit(&tt, x.round() as i32, (y + 4.0 * s).round() as i32);
         }
         self.setz_malen(c, t, fonts, w);
         self.vorschau_malen(c, t, fonts, w);

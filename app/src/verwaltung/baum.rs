@@ -45,6 +45,25 @@ pub struct Zeile {
     pub grau: bool,
 }
 
+/// Namen der sichtbaren Geschwister von Zeile `i`: gleiche Tiefe unter
+/// demselben Elternteil.
+pub fn geschwister(zeilen: &[Zeile], i: usize) -> impl Iterator<Item = &str> {
+    let t = zeilen[i].tiefe;
+    let von = zeilen[..i]
+        .iter()
+        .rposition(|z| z.tiefe < t)
+        .map_or(0, |p| p + 1);
+    let bis = zeilen[i + 1..]
+        .iter()
+        .position(|z| z.tiefe < t)
+        .map_or(zeilen.len(), |p| i + 1 + p);
+    zeilen[von..bis]
+        .iter()
+        .enumerate()
+        .filter(move |(j, z)| von + j != i && z.tiefe == t)
+        .map(|(_, z)| z.text.as_str())
+}
+
 /// Ein Eintrag mit seinen Kindern, bevor Suche und Aufklappen greifen.
 struct Eintrag {
     knoten: Knoten,

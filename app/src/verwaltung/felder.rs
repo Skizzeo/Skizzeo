@@ -608,18 +608,30 @@ impl Verwaltung {
                 keys.push(k);
             }
         }
+        let mut bewehrung = false;
         for key in keys {
             let einheit = match key.as_str() {
                 "wage" => "€/h",
                 "surcharge" | "vat" => "%",
                 _ => "kg/m³",
             };
-            let name = match key.as_str() {
+            let mut name = match key.as_str() {
                 "surcharge" => "Zuschlag auf Stoff".to_string(),
                 k => sk_cost::wort::firmenwert(k),
             };
             if firmenwert(&self.jetzt, &key).is_none() {
                 continue;
+            }
+            // Zwischentitel „Bewehrungsgrad“, darunter nur das Bauteil, damit
+            // der Name vor das Feld passt (Bedienbarkeit 14.3)
+            if let Some(teil) = name.strip_prefix("Bewehrungsgrad ") {
+                if !bewehrung {
+                    bewehrung = true;
+                    y += 8.0;
+                    b.text(0.0, y, "Bewehrungsgrad", PX, true, Farbe::Text);
+                    y += ABSTAND - 8.0;
+                }
+                name = teil.to_string();
             }
             self.feld_zeile(b, y, &name, Feld::Wert(key), 130.0, einheit.into());
             y += ABSTAND;
@@ -1301,12 +1313,28 @@ impl Verwaltung {
                 let x = w_satz + w_was;
                 let rest = b.w - x;
                 match (alt.is_empty(), neu.is_empty()) {
+                    (false, false)
+                        if b.breite(&alt, PX, false) + b.breite(&neu, PX, true) + 40.0 > rest =>
+                    {
+                        // Zu lang für eine Zeile: untereinander und umbrochen,
+                        // damit die Änderung sichtbar bleibt (Bedienbarkeit 14.2)
+                        let regular = b.f.regular.as_ref();
+                        let fett = b.f.bold.as_ref().or(regular);
+                        for z in widgets::wrap(regular, &alt, PX, rest) {
+                            b.text_art(x, y, z, PX, false, Farbe::Dim, true, None);
+                            y += TZ;
+                        }
+                        let pw = b.text(x, y, "→", PX, false, Farbe::Dim) + 8.0 - x;
+                        for z in widgets::wrap(fett, &neu, PX, rest - pw) {
+                            b.text(x + pw, y, z, PX, true, Farbe::Text);
+                            y += TZ;
+                        }
+                        y -= TZ;
+                    }
                     (false, false) => {
-                        let at = b.kurz(&alt, PX, false, rest * 0.45);
-                        let x = b.text_art(x, y, at, PX, false, Farbe::Dim, true, None);
+                        let x = b.text_art(x, y, alt, PX, false, Farbe::Dim, true, None);
                         let x = b.text(x + 8.0, y, "→", PX, false, Farbe::Dim);
-                        let nt = b.kurz(&neu, PX, true, b.w - x - 8.0);
-                        b.text(x + 8.0, y, nt, PX, true, Farbe::Text);
+                        b.text(x + 8.0, y, neu, PX, true, Farbe::Text);
                     }
                     (true, false) => {
                         let nt = b.kurz(&neu, PX, true, rest);
