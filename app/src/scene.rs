@@ -488,6 +488,14 @@ pub struct Scene {
     schedule_in: Option<(u64, Umfang, Rc<Schedule>)>,
     /// Wie oft die Liste berechnet wurde (Messung, Abnahme).
     schedule_runs: u64,
+    /// Kosten (KA-2): wirksamer Katalog je (`ext_revision`, Firmenstand),
+    /// die letzten zwei Kostenblätter je (Berechnung der Liste,
+    /// Katalogstempel, Umfang; der Reiter fragt den Umfang und für die
+    /// Chip-Summen alle Geschosse) und der Zwischenspeicher der Zuordnung
+    /// (Bausteingrenze §5).
+    katalog: Option<((u64, u64), Rc<sk_cost::Katalog>)>,
+    kostenblatt: Vec<((u64, u64, Umfang), Rc<sk_cost::Kostenblatt>)>,
+    kostenspeicher: sk_cost::Kostenspeicher,
     /// Offener Schritt „Typ gewechselt“ als Vorschau (K3).
     type_preview: bool,
     /// Uhr der Übergänge (ms seit Start), von der App vor jedem Ereignis gestellt.
@@ -773,6 +781,9 @@ impl Scene {
             schedule: None,
             schedule_in: None,
             schedule_runs: 0,
+            katalog: None,
+            kostenblatt: Vec::new(),
+            kostenspeicher: sk_cost::Kostenspeicher::default(),
             type_preview: false,
             now: 0,
             shown_key: None,
@@ -818,6 +829,49 @@ impl Scene {
         let s = Rc::new(full.restrict(&self.model, u));
         self.schedule_in = Some((runs, u.clone(), s.clone()));
         s
+    }
+
+    /// Wirksamer Kostenkatalog (Projekt, Firma oder Werk), gemerkt je
+    /// `ext_revision` und Firmenstand. `firma`: Firmenkatalog und sein Stand
+    /// ([`crate::catalog::Company::stand`]).
+    pub fn katalog(&mut self, firma: Option<(&sk_model::Library, u64)>) -> Rc<sk_cost::Katalog> {
+        let key = (self.model.ext_revision(), firma.map_or(0, |f| f.1));
+        if let Some((k, kat)) = &self.katalog {
+            if *k == key {
+                return kat.clone();
+            }
+        }
+        let kat = Rc::new(sk_cost::lesen::katalog(&self.model, firma.map(|f| f.0)));
+        self.katalog = Some((key, kat.clone()));
+        kat
+    }
+
+    /// Kostenblatt im Umfang `u` (KA-2, paket-ka2 §3): `lesen::kosten_mit`
+    /// über die Liste aus [`Scene::schedule`] und den Zwischenspeicher,
+    /// gemerkt je Berechnung der Liste, Katalogstempel und Umfang. Während
+    /// eines offenen Schritts bleibt es wie die Liste beim letzten Stand.
+    pub fn kostenblatt(
+        &mut self,
+        firma: Option<(&sk_model::Library, u64)>,
+        u: &Umfang,
+    ) -> Rc<sk_cost::Kostenblatt> {
+        let kat = self.katalog(firma);
+        self.schedule();
+        let key = (self.schedule_runs, kat.stempel, u.clone());
+        if let Some(i) = self.kostenblatt.iter().position(|(k, _)| *k == key) {
+            let e = self.kostenblatt.remove(i);
+            let b = e.1.clone();
+            self.kostenblatt.insert(0, e);
+            return b;
+        }
+        let sched = self.schedule.as_ref().expect("gerade berechnet").1.clone();
+        let sp = std::mem::take(&mut self.kostenspeicher);
+        let (b, sp) = sk_cost::lesen::kosten_mit(sp, &self.model, &sched, &kat, u);
+        self.kostenspeicher = sp;
+        let b = Rc::new(b);
+        self.kostenblatt.insert(0, (key, b.clone()));
+        self.kostenblatt.truncate(2);
+        b
     }
 
     /// Liegt die Liste hinter dem Modell („wird aktualisiert“)?

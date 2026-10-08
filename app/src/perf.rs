@@ -1102,12 +1102,12 @@ fn perf_chip_klick() {
         for _ in 0..3 {
             laeufe.push(time(10, || {
                 let l = q.list.as_mut().unwrap();
-                let chips = umfang_view::umfang_chips(s.model(), l.umfang.gebaeude);
+                let chips = umfang_view::umfang_chips(s.model(), l.leiste.umfang.gebaeude);
                 let eg = chips.iter().position(|c| c.name == "EG").unwrap();
-                if umfang_view::alle_an(&l.umfang, &chips) {
-                    umfang_view::klick(&mut l.umfang, &chips, eg, false);
+                if umfang_view::alle_an(&l.leiste.umfang, &chips) {
+                    umfang_view::klick(&mut l.leiste.umfang, &chips, eg, false);
                 } else {
-                    umfang_view::alle(&mut l.umfang);
+                    umfang_view::alle(&mut l.leiste.umfang);
                 }
                 q.sync(&mut s, &p, false);
                 std::hint::black_box(q.frame(&t, &fonts, now).is_some());
@@ -1156,9 +1156,9 @@ fn ka1_umfang_ohne_neurechnung_und_ohne_datei() {
     // Chip „EG“: nur EG, keine neue Berechnung, nichts am Modell
     {
         let l = q.list.as_mut().unwrap();
-        let chips = umfang_view::umfang_chips(s.model(), l.umfang.gebaeude);
+        let chips = umfang_view::umfang_chips(s.model(), l.leiste.umfang.gebaeude);
         let eg = chips.iter().position(|c| c.name == "EG").unwrap();
-        assert!(umfang_view::klick(&mut l.umfang, &chips, eg, false));
+        assert!(umfang_view::klick(&mut l.leiste.umfang, &chips, eg, false));
     }
     q.sync(&mut s, &p, false);
     assert_eq!(s.schedule_runs(), runs, "Chip-Klick");
@@ -1176,10 +1176,10 @@ fn ka1_umfang_ohne_neurechnung_und_ohne_datei() {
     q.sync(&mut s, &p, false);
     assert_eq!(s.schedule_runs(), runs + 1);
     let l = q.list.as_ref().unwrap();
-    let chips = umfang_view::umfang_chips(s.model(), l.umfang.gebaeude);
+    let chips = umfang_view::umfang_chips(s.model(), l.leiste.umfang.gebaeude);
     let an: Vec<bool> = chips
         .iter()
-        .map(|c| umfang_view::an(&l.umfang, c))
+        .map(|c| umfang_view::an(&l.leiste.umfang, c))
         .collect();
     assert_eq!(an, [false, true, false], "nur EG bleibt gewählt");
 }

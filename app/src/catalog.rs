@@ -31,6 +31,8 @@ pub struct Company {
     stamp: Option<SystemTime>,
     /// Die Datei ließ sich nicht lesen: nie darüber schreiben.
     broken: bool,
+    /// Zählt jede Änderung des Katalogs im Speicher (Laden, Schreiben).
+    gen: u64,
 }
 
 /// Schluss des Hinweises auf Fremdes aus einer neueren Fassung; er gehört
@@ -133,6 +135,7 @@ impl Company {
             lib: Library::standard(),
             stamp: None,
             broken: false,
+            gen: 0,
         };
         let hints = c.reload(standard_place);
         (c, hints)
@@ -142,6 +145,7 @@ impl Company {
     pub fn reload(&mut self, standard_place: bool) -> Vec<String> {
         let shown = self.path.display();
         self.broken = false;
+        self.gen += 1;
         match std::fs::read_to_string(&self.path) {
             Ok(text) => {
                 self.stamp = modified(&self.path);
@@ -240,6 +244,16 @@ impl Company {
         &self.lib
     }
 
+    /// Stand des Katalogs im Speicher als Schlüssel für Zwischenspeicher:
+    /// ändert sich mit jedem Laden und Schreiben und mit dem Ort.
+    pub fn stand(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.path.hash(&mut h);
+        self.gen.hash(&mut h);
+        h.finish()
+    }
+
     /// Speichert einen Projekttyp in den Katalog zurück. Hat sich die Datei
     /// seit dem Laden geändert, wird nichts geschrieben ([`SaveResult::Changed`]);
     /// es gibt keine Sperren.
@@ -303,6 +317,7 @@ impl Company {
         match write_atomic(&self.path, &write_szk(&lib)) {
             Ok(()) => {
                 self.lib = lib;
+                self.gen += 1;
                 self.stamp = modified(&self.path);
                 SaveResult::Saved
             }

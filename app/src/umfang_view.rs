@@ -10,6 +10,22 @@
 use crate::scene::FOUNDATION_NAME;
 use sk_model::qto::Umfang;
 use sk_model::{BuildingId, LevelKind, Model, StoreyId};
+use sk_paint::{Canvas, Path, Rgba};
+use sk_ui::theme::Theme;
+use sk_ui::widgets::Fonts;
+use std::time::Instant;
+
+/// Zeile der Chips über der Liste: Pille 24 dip und Luft darunter.
+pub const ROW: f32 = 34.0;
+const CHIP_H: f32 = 24.0;
+const CHIP_PAD: f32 = 12.0;
+const CHIP_GAP: f32 = 6.0;
+const CHIP_PX: f32 = 11.0;
+/// Gebäudefeld vor den Chips ab zwei Gebäuden (dip) und Zeilen seiner Liste.
+const FIELD_W: f32 = 150.0;
+const FIELD_ROW: f32 = 26.0;
+/// Weite des Wackelns, wenn der letzte Chip abgewählt werden soll (dip).
+const WOBBLE_DIP: f32 = 3.0;
 
 /// Ein Geschoss-Chip: Name und die Geschosse dahinter (bei „Projekt“ alle
 /// gleichnamigen Geschosse der Gebäude und die losen).
@@ -209,6 +225,361 @@ pub fn umfang_text(m: &Model, u: &Umfang, uhr: (u16, u8, u8, u8, u8)) -> String 
         "{} · {geschosse} · Stand {d:02}.{mo:02}.{y}, {h:02}:{mi:02}",
         umfang_name(m, u)
     )
+}
+
+/// Rechteck in Fensterpixeln: x, y, Breite, Höhe.
+pub type Rect = (f32, f32, f32, f32);
+
+/// Teil der Leiste unter der Maus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hot {
+    Chip(usize),
+    /// „Alle“ hinter den Chips.
+    All,
+    /// Gebäudefeld und, wenn offen, ein Eintrag seiner Liste (0 = Projekt).
+    Field,
+    FieldItem(usize),
+}
+
+/// Wo die Leiste im Blatt steht: linker Rand und Oberkante der Pillen (px),
+/// Maßstab.
+#[derive(Clone, Copy, Debug)]
+pub struct Lage {
+    pub x0: f32,
+    pub y: f32,
+    pub s: f32,
+}
+
+/// Lage der Teile (px): Gebäudefeld (ab zwei Gebäuden), Chips und „Alle“
+/// (nur wenn nicht alle gewählt sind).
+pub struct ChipLayout {
+    pub field: Option<Rect>,
+    pub chips: Vec<Rect>,
+    pub all: Option<Rect>,
+}
+
+/// Die Umfangsleiste eines Blatts (Einstellungen §3 KA-1 Punkte 5–6): Zustand,
+/// Lage, Klicks und Zeichnen. Mengen- und Kostenblatt haben je eine; das
+/// Fenster gibt den Umfang beim Kartenwechsel weiter.
+#[derive(Default)]
+pub struct Leiste {
+    pub umfang: Umfang,
+    chips: Vec<Chip>,
+    field: Vec<(Option<BuildingId>, String, String)>,
+    field_open: bool,
+    wobble: Option<(usize, Instant)>,
+    pub hot: Option<Hot>,
+    /// Summe hinter dem Namen je Chip (Reiter Kosten), sonst leer.
+    pub summen: Vec<String>,
+}
+
+impl Leiste {
+    /// An das Modell angleichen. `true`, wenn sich Umfang, Chips oder Feld
+    /// geändert haben.
+    pub fn sync(&mut self, m: &Model) -> bool {
+        let mut changed = bereinigen(m, &mut self.umfang);
+        let chips = umfang_chips(m, self.umfang.gebaeude);
+        let field = feld(m);
+        if chips != self.chips || field != self.field {
+            self.chips = chips;
+            self.field = field;
+            self.field_open &= !self.field.is_empty();
+            changed = true;
+        }
+        changed
+    }
+
+    pub fn chips(&self) -> &[Chip] {
+        &self.chips
+    }
+
+    /// Name des Umfangs im Gebäudefeld.
+    pub fn feld_name(&self) -> String {
+        umfang_name_von(&self.field, &self.umfang)
+    }
+
+    /// Wackelt gerade der Chip `i`?
+    #[cfg(test)]
+    pub fn wobbling(&self) -> Option<usize> {
+        self.wobble.map(|w| w.0)
+    }
+
+    fn text_w(fonts: &Fonts, text: &str, px: f32, bold: bool) -> f32 {
+        let f = if bold { fonts.bold.as_ref() } else { None }.or(fonts.regular.as_ref());
+        f.map_or(text.chars().count() as f32 * px * 0.6, |f| {
+            f.width(text, px)
+        })
+    }
+
+    /// Breite des Chip-Inhalts: Name fett, dahinter leise die Summe.
+    fn chip_text_w(&self, fonts: &Fonts, i: usize, s: f32) -> f32 {
+        let px = CHIP_PX * s;
+        let name = Self::text_w(fonts, &self.chips[i].name, px, true);
+        match self.summen.get(i).filter(|x| !x.is_empty()) {
+            Some(sum) => name + 6.0 * s + Self::text_w(fonts, sum, px, false),
+            None => name,
+        }
+    }
+
+    pub fn layout(&self, fonts: &Fonts, at: Lage) -> ChipLayout {
+        let s = at.s;
+        let h = CHIP_H * s;
+        let mut x = at.x0;
+        let field = (!self.field.is_empty()).then(|| {
+            let r = (x, at.y, FIELD_W * s, h);
+            x += (FIELD_W + 2.0 * CHIP_GAP) * s;
+            r
+        });
+        let chips = (0..self.chips.len())
+            .map(|i| {
+                let w = self.chip_text_w(fonts, i, s) + 2.0 * CHIP_PAD * s;
+                let r = (x, at.y, w, h);
+                x += w + CHIP_GAP * s;
+                r
+            })
+            .collect();
+        let all = (!alle_an(&self.umfang, &self.chips)).then(|| {
+            let w = Self::text_w(fonts, "Alle", CHIP_PX * s, true) + 8.0 * s;
+            (x + 4.0 * s, at.y, w, h)
+        });
+        ChipLayout { field, chips, all }
+    }
+
+    /// Einträge der offenen Liste des Gebäudefelds (px), unter dem Feld.
+    fn field_items(&self, fonts: &Fonts, at: Lage) -> Vec<Rect> {
+        if !self.field_open {
+            return Vec::new();
+        }
+        let Some((fx, fy, _, fh)) = self.layout(fonts, at).field else {
+            return Vec::new();
+        };
+        let s = at.s;
+        let w = self
+            .field
+            .iter()
+            .map(|(_, n, g)| {
+                Self::text_w(fonts, n, CHIP_PX * s, true)
+                    + Self::text_w(fonts, g, 10.0 * s, false)
+                    + 40.0 * s
+            })
+            .fold(FIELD_W * s, f32::max);
+        (0..self.field.len())
+            .map(|i| {
+                (
+                    fx,
+                    fy + fh + 4.0 * s + i as f32 * FIELD_ROW * s,
+                    w,
+                    FIELD_ROW * s,
+                )
+            })
+            .collect()
+    }
+
+    /// Liegt etwas über der Liste (offenes Gebäudefeld) oder wackelt ein
+    /// Chip? Dann zeichnet das Fenster ganz statt nur einzelner Zeilen.
+    pub fn overlay_open(&self) -> bool {
+        self.field_open || self.wobble.is_some()
+    }
+
+    pub fn field_open(&self) -> bool {
+        self.field_open
+    }
+
+    /// Schließt die Liste des Gebäudefelds; `true`, wenn sie offen war.
+    pub fn close_field(&mut self) -> bool {
+        std::mem::take(&mut self.field_open)
+    }
+
+    pub fn hit(&self, fonts: &Fonts, at: Lage, x: f32, y: f32) -> Option<Hot> {
+        let inside = |(rx, ry, rw, rh): Rect| x >= rx && x < rx + rw && y >= ry && y < ry + rh;
+        if let Some(i) = self.field_items(fonts, at).into_iter().position(inside) {
+            return Some(Hot::FieldItem(i));
+        }
+        let l = self.layout(fonts, at);
+        if l.field.is_some_and(inside) {
+            return Some(Hot::Field);
+        }
+        if let Some(i) = l.chips.iter().position(|r| inside(*r)) {
+            return Some(Hot::Chip(i));
+        }
+        l.all.filter(|r| inside(*r)).map(|_| Hot::All)
+    }
+
+    /// Klick auf einen Teil der Leiste (Bedienbarkeit 3.1).
+    pub fn click(&mut self, hot: Hot, ctrl: bool) {
+        match hot {
+            Hot::Chip(i) => {
+                self.field_open = false;
+                if !klick(&mut self.umfang, &self.chips, i, ctrl) {
+                    self.wobble = Some((i, Instant::now()));
+                }
+            }
+            Hot::All => {
+                self.field_open = false;
+                alle(&mut self.umfang);
+            }
+            Hot::Field => self.field_open = !self.field_open,
+            Hot::FieldItem(i) => {
+                self.field_open = false;
+                if let Some(&(g, _, _)) = self.field.get(i) {
+                    if g != self.umfang.gebaeude {
+                        self.umfang.gebaeude = g;
+                        // Chips des Gebäudes bringt das nächste `sync`
+                        self.chips.clear();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Tooltip an einem Chip.
+    pub fn tip(&self, hot: Hot) -> Option<String> {
+        match hot {
+            Hot::Chip(i) => Some(tooltip(&self.umfang, &self.chips, i)),
+            _ => None,
+        }
+    }
+
+    /// Wackeln weiterführen; `true`, solange es läuft.
+    pub fn tick(&mut self, t: &Theme, now: Instant) -> bool {
+        let Some((_, at)) = self.wobble else {
+            return false;
+        };
+        let d = std::time::Duration::from_secs_f32(t.size.anim_ms.max(0.0) / 1000.0);
+        if t.size.anim_ms > 0.0 && now.duration_since(at) < d {
+            true
+        } else {
+            self.wobble = None;
+            false
+        }
+    }
+
+    /// Versatz des wackelnden Chips (px).
+    fn wobble_dx(&self, i: usize, t: &Theme, s: f32, now: Instant) -> f32 {
+        match self.wobble {
+            Some((j, at)) if j == i && t.size.anim_ms > 0.0 => {
+                let ms = now.duration_since(at).as_secs_f32() * 1000.0;
+                let d = t.size.anim_ms.max(1.0);
+                if ms >= d {
+                    return 0.0;
+                }
+                let k = 1.0 - ms / d;
+                (ms / d * std::f32::consts::TAU * 3.0).sin() * k * WOBBLE_DIP * s
+            }
+            _ => 0.0,
+        }
+    }
+
+    /// Gebäudefeld, Chips und „Alle“: an Akzent hell mit Rand Akzent und
+    /// fettem Text, aus `sheet_bg` mit Rand `sheet_rule` und gedämpftem Text,
+    /// Überfahren weiß mit dunklerem Rand.
+    pub fn paint(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts, at: Lage, now: Instant) {
+        let s = at.s;
+        let u = &t.ui;
+        let regular = fonts.regular.as_ref();
+        let bold = fonts.bold.as_ref().or(regular);
+        let px = CHIP_PX * s;
+        let l = self.layout(fonts, at);
+        let line = s.max(1.0);
+        let framed = |c: &mut Canvas, (x, y, w, h): Rect, r: f32, fill: Rgba, edge: Rgba| {
+            let mut p = Path::new();
+            p.rounded_rect(x, y, w, h, r);
+            c.fill(&p, edge);
+            let mut p = Path::new();
+            p.rounded_rect(x + line, y + line, w - 2.0 * line, h - 2.0 * line, r - line);
+            c.fill(&p, fill);
+        };
+        if let Some((x, y, w, h)) = l.field {
+            let hot = self.hot == Some(Hot::Field) || self.field_open;
+            let edge = if hot { u.border } else { u.sheet_rule };
+            framed(c, (x, y, w, h), t.size.corner_radius * s, u.bg, edge);
+            if let Some(f) = regular {
+                let base = y + (h + f.cap_height(px)) * 0.5;
+                f.draw(c, &self.feld_name(), px, x + 10.0 * s, base, u.sheet_text);
+                f.draw(c, "▾", px, x + w - 18.0 * s, base, u.sheet_text_dim);
+            }
+        }
+        for (i, (ch, r)) in self.chips.iter().zip(&l.chips).enumerate() {
+            let on = an(&self.umfang, ch);
+            let hover = self.hot == Some(Hot::Chip(i));
+            let r = (r.0 + self.wobble_dx(i, t, s, now), r.1, r.2, r.3);
+            let (fill, edge, font, col) = if on {
+                (u.sheet_select, u.accent, bold, u.sheet_text)
+            } else if hover {
+                (u.bg, u.border, regular, u.sheet_text)
+            } else {
+                (u.sheet_bg, u.sheet_rule, regular, u.sheet_text_dim)
+            };
+            let fill = if on && hover { u.sheet_hover } else { fill };
+            framed(c, r, r.3 * 0.5, fill, edge);
+            let Some(f) = font else { continue };
+            let base = r.1 + (r.3 + f.cap_height(px)) * 0.5;
+            let sum = self.summen.get(i).filter(|x| !x.is_empty());
+            let name_w = f.width(&ch.name, px);
+            let sum_w = match (sum, regular) {
+                (Some(x), Some(rf)) => 6.0 * s + rf.width(x, px),
+                _ => 0.0,
+            };
+            let x = r.0 + (r.2 - name_w - sum_w) * 0.5;
+            f.draw(c, &ch.name, px, x, base, col);
+            if let (Some(sum), Some(rf)) = (sum, regular) {
+                rf.draw(c, sum, px, x + name_w + 6.0 * s, base, u.sheet_text_dim);
+            }
+        }
+        if let (Some((x, y, _, h)), Some(f)) = (l.all, bold) {
+            let col = if self.hot == Some(Hot::All) {
+                u.accent_hover
+            } else {
+                u.accent
+            };
+            f.draw(
+                c,
+                "Alle",
+                px,
+                x + 4.0 * s,
+                y + (h + f.cap_height(px)) * 0.5,
+                col,
+            );
+        }
+    }
+
+    /// Offene Liste des Gebäudefelds über dem Blatt.
+    pub fn paint_field_list(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts, at: Lage) {
+        let items = self.field_items(fonts, at);
+        let (Some(&(x, y, w, _)), Some(&(_, ly, _, lh))) = (items.first(), items.last()) else {
+            return;
+        };
+        let s = at.s;
+        let u = &t.ui;
+        let h = ly + lh - y;
+        let r = t.size.corner_radius * s;
+        let mut p = Path::new();
+        p.rounded_rect(x - s, y - s + 2.0 * s, w + 2.0 * s, h + 2.0 * s, r);
+        c.fill(&p, u.shadow);
+        let mut p = Path::new();
+        p.rounded_rect(x - s, y - s, w + 2.0 * s, h + 2.0 * s, r);
+        c.fill(&p, u.sheet_rule);
+        let mut p = Path::new();
+        p.rounded_rect(x, y, w, h, r);
+        c.fill(&p, u.bg);
+        let px = CHIP_PX * s;
+        for (i, ((g, name, geschosse), (ix, iy, iw, ih))) in
+            self.field.iter().zip(items).enumerate()
+        {
+            if self.hot == Some(Hot::FieldItem(i)) {
+                c.fill_rect(ix, iy, iw, ih, u.sheet_hover);
+            }
+            let chosen = *g == self.umfang.gebaeude;
+            let font = if chosen { fonts.bold.as_ref() } else { None }.or(fonts.regular.as_ref());
+            let Some(f) = font else { continue };
+            let base = iy + (ih + f.cap_height(px)) * 0.5;
+            f.draw(c, name, px, ix + 10.0 * s, base, u.sheet_text);
+            if let Some(r) = fonts.regular.as_ref() {
+                let nx = ix + 10.0 * s + f.width(name, px) + 10.0 * s;
+                r.draw(c, geschosse, 10.0 * s, nx, base, u.sheet_text_dim);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

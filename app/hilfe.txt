@@ -4,7 +4,7 @@ Umsehen | Mausrad gedrückt dreht, **Umschalt** + Mausrad verschiebt, Mausrad dr
 Ansicht wechseln | Paneel „Ansichten“: 3D, Grundriss, Schnitt, Vorne, Hinten, Links, Rechts
 Bauteil wählen | Klick auf das Bauteil; rechts stehen Maße, Mengen und Felder
 Ändern | am violetten Band ziehen oder im Paneel Werte eintippen
-Mengen | Knopf „Mengenermittlung“ öffnet die Liste aller Bauteile
+Mengen und Kosten | Knopf „Mengen · Kosten“
 Datei | Klick auf das Logo oben links, **F10** oder **Alt**
 Rückgängig | **Strg+Z**, wiederholen **Strg+Y**
 Hilfe | **F1** zeigt die Hilfe zu dem, was du gerade tust
@@ -210,7 +210,7 @@ Eigene Vorlage | „Als Vorlage speichern …“ legt sie im Firmenkatalog ab
 Übernehmen | **OK**; Abbrechen verwirft
 
 [thema] id=mengen titel="Mengenermittlung"
-Öffnen | Knopf „Mengenermittlung“ im Paneel „Ansichten“
+Öffnen | Knopf „Mengen · Kosten“ im Paneel „Ansichten“
 Gliedern | oben rechts „Gliedern nach“ Geschoss oder Gewerk
 Geschosse | Klick auf einen Chip zeigt nur dieses Geschoss, jeder weitere nimmt eines dazu oder weg; „Alle“ holt alle zurück
 Gewerksumme | jede Fläche einmal je Bauteil; in m Abgerechnetes (Attikablech) zählt ohne Volumen
@@ -246,5 +246,5 @@ Vorne | Ansicht von vorne.
 Hinten | Ansicht von hinten.
 Links | Ansicht von links.
 Rechts | Ansicht von rechts.
-Mengenermittlung | Liste aller Bauteile mit Mengen, nach Geschoss oder Gewerk.
+Mengen · Kosten | Mengen und Kosten deines Hauses.
 ? | Hilfe zu dem, was du gerade tust.

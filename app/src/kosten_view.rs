@@ -1,0 +1,2041 @@
+//! Reiter Kosten (KA-2b, paket-ka2 §3 und §5, Einstellungen §3 KA-2,
+//! ka-2-fach §2): Kopf mit Umfang und Preisquelle, Chips mit ihrer Summe,
+//! Schalter „Preise“ und „Gliedern“, die Liste, drei Kacheln und die
+//! Fußzeile.
+//!
+//! Die Ansicht rechnet keine Kosten. Sie zeigt die gerundeten Werte aus dem
+//! Kostenblatt (`Scene::kostenblatt`); Teilzeilen (je Geschoss, je
+//! Kostengruppe) kommen aus `Position::teile` und `Position::gp_von`, und
+//! jede Summe ist die Summe der angezeigten Zeilen darüber (Bedienbarkeit
+//! 2.1, Abnahme 6). Wo Teilzeilen das Netto nicht genau treffen, steht am
+//! Ende die Zeile „Rundungsausgleich“.
+
+use crate::picking::Picking;
+use crate::scene::Scene;
+use crate::schedule_view::ListOut;
+use crate::umfang_view::{self, Leiste};
+use sk_cost::katalog::{Einheit, Katalog};
+use sk_cost::rechnung::{Ansatz, Position, Quelle};
+use sk_cost::{Cent, Dez, Kostenblatt};
+use sk_model::qto::Umfang;
+use sk_model::trade::TradeId;
+use sk_model::{ElementId, Guid, Model, StoreyId};
+use sk_paint::{Canvas, Path, Rgba};
+use sk_ui::theme::Theme;
+use sk_ui::widgets::Fonts;
+use std::cell::Cell;
+use std::collections::HashSet;
+use std::rc::Rc;
+use std::time::Instant;
+
+/// Preise der Liste (ka-2-fach §2.2).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Modus {
+    /// Stoff-EP und Stoff-GP; NU-Positionen zählen nicht.
+    Material,
+    /// EP und GP voll (Standard).
+    #[default]
+    Voll,
+}
+
+impl Modus {
+    const ALLE: [Modus; 2] = [Modus::Material, Modus::Voll];
+
+    fn label(self) -> &'static str {
+        match self {
+            Modus::Material => "Material",
+            Modus::Voll => "Material + Lohn",
+        }
+    }
+
+    fn nur_material(self) -> bool {
+        self == Modus::Material
+    }
+}
+
+/// Gliederung der Liste; Kostengruppe steht zuletzt (Bedienbarkeit 2.3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Gliederung {
+    #[default]
+    Gewerk,
+    Geschoss,
+    Kostengruppe,
+}
+
+impl Gliederung {
+    const ALLE: [Gliederung; 3] = [
+        Gliederung::Gewerk,
+        Gliederung::Geschoss,
+        Gliederung::Kostengruppe,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Gliederung::Gewerk => "Gewerk",
+            Gliederung::Geschoss => "Geschoss",
+            Gliederung::Kostengruppe => "Kostengruppe",
+        }
+    }
+}
+
+/// Art einer Zeile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Art {
+    /// Gewerk, Geschoss oder Kostengruppe mit Summe; `ebene` 0 oder 1.
+    Gruppe,
+    /// Position oder Teil einer Position; `offen` mit Mengenansatz darunter.
+    Position { offen: bool },
+    /// Eine Zeile des Mengenansatzes.
+    Ansatz,
+    /// Mengenzeile ohne Bauleistung, grau, ohne Preis.
+    Ohne,
+    /// „Rundungsausgleich“ am Ende (ka-0-fach §1.7).
+    Ausgleich,
+}
+
+/// Eine Zeile der Liste, fertig zum Zeichnen und für die CSV.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Zeile {
+    pub art: Art,
+    pub ebene: u8,
+    pub text: String,
+    /// Leise hinter dem Text: DIN-Nummer, „geschätzt nach …“, Herkunft.
+    pub leise: String,
+    /// Menge mit Einheit („172,224 m²“).
+    pub menge: String,
+    pub ep: String,
+    pub gp: String,
+    /// Betrag hinter `gp`; `None`, wo nichts zählt (NU im Modus Material,
+    /// Zeilen ohne Bauleistung).
+    pub betrag: Option<Cent>,
+    /// Position im Kostenblatt und angezeigte Menge (für die CSV).
+    pub pos: Option<(usize, Dez)>,
+    pub geschaetzt: bool,
+    pub elements: Vec<ElementId>,
+    /// Schlüssel zum Aufklappen (Positionen).
+    pub key: u64,
+    /// Gliederung, unter der die Zeile steht (CSV-Spalte).
+    pub gruppe: String,
+}
+
+impl Zeile {
+    fn neu(art: Art, ebene: u8, text: String) -> Zeile {
+        Zeile {
+            art,
+            ebene,
+            text,
+            leise: String::new(),
+            menge: String::new(),
+            ep: String::new(),
+            gp: String::new(),
+            betrag: None,
+            pos: None,
+            geschaetzt: false,
+            elements: Vec::new(),
+            key: 0,
+            gruppe: String::new(),
+        }
+    }
+}
+
+// --- Zahlen ------------------------------------------------------------------
+
+/// Tausenderpunkte vor eine Ziffernfolge.
+fn tausender(ziffern: &str) -> String {
+    let mut s = String::new();
+    for (i, c) in ziffern.chars().enumerate() {
+        if i > 0 && (ziffern.len() - i).is_multiple_of(3) {
+            s.push('.');
+        }
+        s.push(c);
+    }
+    s
+}
+
+/// Menge auf 3 Stellen mit Einheit: „1.172,224 m²“.
+pub fn menge_text(d: Dez, e: Einheit) -> String {
+    let milli = d.0 / 1000;
+    let neg = milli < 0;
+    let a = milli.unsigned_abs();
+    format!(
+        "{}{},{:03} {}",
+        if neg { "−" } else { "" },
+        tausender(&(a / 1000).to_string()),
+        a % 1000,
+        e.zeichen()
+    )
+}
+
+/// Betrag mit zwei Stellen: „60.089,83“.
+fn euro(c: Cent) -> String {
+    c.deutsch()
+}
+
+/// Betrag auf ganze Euro mit Zeichen: „60.090 €“ (Karten, Chips).
+pub fn euro_ganz(c: Cent) -> String {
+    let e = (c.0 + if c.0 < 0 { -50 } else { 50 }) / 100;
+    let neg = e < 0;
+    format!(
+        "{}{} €",
+        if neg { "−" } else { "" },
+        tausender(&e.unsigned_abs().to_string())
+    )
+}
+
+/// Prozent ganzzahlig, kaufmännisch: `teil / ganz`.
+fn prozent(teil: Cent, ganz: Cent) -> Option<i64> {
+    (ganz.0 > 0).then(|| (teil.0 * 200 + ganz.0) / (2 * ganz.0))
+}
+
+// --- Zeilen bauen ------------------------------------------------------------
+
+/// Name und DIN-Nummer eines Gewerks; ohne Gewerk „Ohne Gewerk“.
+fn gewerk_name(m: &Model, g: Option<Guid>) -> (String, String, u16) {
+    match g.and_then(|g| m.trade(TradeId(g))) {
+        Some(t) => (t.name.clone(), format!("DIN {}", t.code), t.order),
+        None => ("Ohne Gewerk".into(), String::new(), u16::MAX),
+    }
+}
+
+/// Name eines Geschosses in der Gliederung („Gründung“, „Erdgeschoss“).
+fn geschoss_name(m: &Model, s: StoreyId) -> String {
+    m.storey(s).map_or_else(String::new, |x| x.name.clone())
+}
+
+/// Kostengruppe mit Namen: „322 Flachgründungen und Bodenplatten“.
+fn kg_name(kg: Option<u16>) -> String {
+    match kg {
+        Some(k) => match sk_cost::din276::name(k) {
+            Some(n) => format!("{k} {n}"),
+            None => k.to_string(),
+        },
+        None => "Ohne Kostengruppe".into(),
+    }
+}
+
+/// Kurzname einer Bauleistung für „geschätzt nach …“ (Namen statt
+/// Kennungen, Bedienbarkeit 4.9).
+fn leistung_name(k: &Katalog, g: Guid) -> String {
+    k.leistung(g).map_or_else(String::new, |l| l.kurz.clone())
+}
+
+/// Schlüssel einer Position zum Aufklappen (über Gliederungen gleich).
+fn pos_key(p: &Position, teil: u64) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let quelle = match &p.quelle {
+        Quelle::Leistung(g) => (1u8, g.0),
+        Quelle::Geschaetzt(g) => (2, g.0),
+        Quelle::Richtpreis(g) => (3, g.0),
+    };
+    for b in quelle
+        .0
+        .to_le_bytes()
+        .iter()
+        .chain(&quelle.1.to_le_bytes())
+        .chain(p.kurz.as_bytes())
+        .chain(&teil.to_le_bytes())
+    {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// Alles, was die Zeilen brauchen.
+struct Bau<'a> {
+    m: &'a Model,
+    k: &'a Katalog,
+    b: &'a Kostenblatt,
+    modus: Modus,
+    offen: &'a HashSet<u64>,
+}
+
+impl Bau<'_> {
+    /// Zeile einer Position mit der Menge `menge` (ganz oder Teil) aus den
+    /// Ansatzzeilen `ansatz`; darunter, wenn offen, der Mengenansatz.
+    #[allow(clippy::too_many_arguments)]
+    fn position(
+        &self,
+        out: &mut Vec<Zeile>,
+        i: usize,
+        menge: Dez,
+        ansatz: &[&Ansatz],
+        teil: u64,
+        ebene: u8,
+        gruppe: &str,
+    ) -> Option<Cent> {
+        let p = &self.b.positionen[i];
+        let key = pos_key(p, teil);
+        let offen = self.offen.contains(&key);
+        let mut z = Zeile::neu(Art::Position { offen }, ebene, p.kurz.clone());
+        z.key = key;
+        z.gruppe = gruppe.to_string();
+        z.menge = menge_text(menge, p.einheit);
+        z.pos = Some((i, menge));
+        z.geschaetzt = !matches!(p.quelle, Quelle::Leistung(_));
+        z.leise = match &p.quelle {
+            Quelle::Geschaetzt(g) => format!("geschätzt nach {}", leistung_name(self.k, *g)),
+            Quelle::Richtpreis(_) => "geschätzt, nur Material".into(),
+            Quelle::Leistung(_) => String::new(),
+        };
+        let mut els: Vec<ElementId> = Vec::new();
+        for a in ansatz {
+            if !els.contains(&a.element) {
+                els.push(a.element);
+            }
+        }
+        z.elements = els;
+        let betrag = if self.modus.nur_material() && p.nu.is_some() {
+            z.ep = "NU-Preis".into();
+            None
+        } else {
+            let ep = if self.modus.nur_material() {
+                p.stoff
+            } else {
+                p.ep
+            };
+            let gp = p.gp_von(menge, self.modus.nur_material());
+            z.ep = euro(ep);
+            z.gp = euro(gp);
+            Some(gp)
+        };
+        z.betrag = betrag;
+        out.push(z);
+        if offen {
+            self.ansatz(out, p, ansatz, ebene + 1, gruppe);
+        }
+        betrag
+    }
+
+    /// Mengenansatz: je Geschoss und Herkunft die Bauteilnummern und die
+    /// Menge, Herkunft „aus Modell“ bzw. „aus {Bauleistung}“.
+    fn ansatz(
+        &self,
+        out: &mut Vec<Zeile>,
+        p: &Position,
+        ansatz: &[&Ansatz],
+        ebene: u8,
+        gruppe: &str,
+    ) {
+        let mut teile: Vec<(StoreyId, Option<Guid>, Vec<&Ansatz>)> = Vec::new();
+        for a in ansatz {
+            match teile.iter_mut().find(|t| t.0 == a.geschoss && t.1 == a.aus) {
+                Some(t) => t.2.push(a),
+                None => teile.push((a.geschoss, a.aus, vec![a])),
+            }
+        }
+        for (st, aus, v) in teile {
+            let mut nummern: Vec<&str> = Vec::new();
+            for a in &v {
+                if !nummern.contains(&a.nummer.as_str()) {
+                    nummern.push(&a.nummer);
+                }
+            }
+            let kurz = self.m.storey(st).map_or(String::new(), |s| s.short.clone());
+            let mut z = Zeile::neu(
+                Art::Ansatz,
+                ebene,
+                format!("{kurz} · {}", nummern.join(", ")),
+            );
+            z.gruppe = gruppe.to_string();
+            z.leise = match aus {
+                Some(g) => format!("aus {}", leistung_name(self.k, g)),
+                None => "aus Modell".into(),
+            };
+            let teil = Position {
+                ansatz: v.iter().map(|a| (*a).clone()).collect(),
+                ..p.clone()
+            };
+            let menge = teil.teile(|_| ()).first().map_or(Dez::NULL, |t| t.1);
+            z.menge = menge_text(menge, p.einheit);
+            z.elements = v.iter().map(|a| a.element).collect();
+            out.push(z);
+        }
+    }
+
+    /// Zeilen ohne Bauleistung (grau, Menge, kein Preis).
+    fn ohne(
+        &self,
+        out: &mut Vec<Zeile>,
+        filter: impl Fn(&sk_cost::rechnung::OhneZeile) -> bool,
+        ebene: u8,
+        gruppe: &str,
+    ) -> usize {
+        let mut n = 0;
+        for o in self.b.ohne.iter().filter(|o| filter(o)) {
+            let name = self.m.element(o.element).map_or(String::new(), |e| {
+                sk_model::kinds::spec(e.category).name.to_string()
+            });
+            let baustoff = self
+                .m
+                .materials()
+                .iter()
+                .find(|(_, x)| x.guid == o.baustoff)
+                .map_or(String::new(), |(_, x)| x.name.clone());
+            let mut z = Zeile::neu(
+                Art::Ohne,
+                ebene,
+                format!("{} {}", o.nummer, baustoff).trim().to_string(),
+            );
+            z.gruppe = gruppe.to_string();
+            z.leise = format!("{name} · ohne Bauleistung");
+            z.menge = menge_text(o.menge, o.einheit);
+            z.elements = vec![o.element];
+            out.push(z);
+            n += 1;
+        }
+        n
+    }
+
+    /// Gruppenzeile über `kinder`: Summe der angezeigten Beträge, sonst
+    /// „ohne Bauleistung“.
+    fn gruppe(
+        &self,
+        out: &mut Vec<Zeile>,
+        at: usize,
+        text: String,
+        leise: String,
+        ebene: u8,
+        kinder: Vec<Zeile>,
+    ) -> Option<Cent> {
+        let summe: Option<Cent> = kinder
+            .iter()
+            .filter(|z| z.ebene == ebene + 1 && matches!(z.art, Art::Position { .. } | Art::Gruppe))
+            .filter_map(|z| z.betrag)
+            .fold(None, |acc, c| Some(acc.unwrap_or(Cent(0)) + c));
+        let mut g = Zeile::neu(Art::Gruppe, ebene, text);
+        g.leise = leise;
+        g.betrag = summe;
+        g.gp = match summe {
+            Some(c) => euro(c),
+            None if kinder
+                .iter()
+                .all(|z| z.art == Art::Ohne || z.art == Art::Ansatz) =>
+            {
+                "ohne Bauleistung".into()
+            }
+            None => String::new(),
+        };
+        let mut els: Vec<ElementId> = Vec::new();
+        for z in &kinder {
+            for e in &z.elements {
+                if !els.contains(e) {
+                    els.push(*e);
+                }
+            }
+        }
+        g.elements = els;
+        out.insert(at.min(out.len()), g);
+        out.extend(kinder);
+        summe
+    }
+
+    /// Gesamtbetrag im Modus.
+    fn gesamt(&self) -> Cent {
+        if self.modus.nur_material() {
+            self.b.nur_material
+        } else {
+            self.b.netto
+        }
+    }
+
+    /// Gliederung Gewerk: Gewerk → Position, am Ende des Gewerks die Zeilen
+    /// ohne Bauleistung.
+    fn nach_gewerk(&self) -> Vec<Zeile> {
+        let mut gewerke: Vec<Option<Guid>> = Vec::new();
+        for g in self
+            .b
+            .positionen
+            .iter()
+            .map(|p| p.gewerk)
+            .chain(self.b.ohne.iter().map(|o| o.gewerk))
+        {
+            if !gewerke.contains(&g) {
+                gewerke.push(g);
+            }
+        }
+        gewerke.sort_by_key(|g| gewerk_name(self.m, *g).2);
+        let mut out = Vec::new();
+        for g in gewerke {
+            let (name, din, _) = gewerk_name(self.m, g);
+            let mut kinder = Vec::new();
+            for (i, p) in self.b.positionen.iter().enumerate() {
+                if p.gewerk == g {
+                    let a: Vec<&Ansatz> = p.ansatz.iter().collect();
+                    self.position(&mut kinder, i, p.menge, &a, 0, 1, &name);
+                }
+            }
+            self.ohne(&mut kinder, |o| o.gewerk == g, 1, &name);
+            let at = out.len();
+            self.gruppe(&mut out, at, name, din, 0, kinder);
+        }
+        out
+    }
+
+    /// Gliederung Geschoss: Geschoss → Gewerk → Teil der Position.
+    fn nach_geschoss(&self) -> Vec<Zeile> {
+        let mut geschosse: Vec<StoreyId> = self.b.nach_geschoss.iter().map(|x| x.0).collect();
+        for o in &self.b.ohne {
+            if !geschosse.contains(&o.geschoss) {
+                geschosse.push(o.geschoss);
+            }
+        }
+        let mut out = Vec::new();
+        for st in geschosse {
+            let gname = geschoss_name(self.m, st);
+            let mut gewerke: Vec<Option<Guid>> = Vec::new();
+            for p in &self.b.positionen {
+                if p.ansatz.iter().any(|a| a.geschoss == st) && !gewerke.contains(&p.gewerk) {
+                    gewerke.push(p.gewerk);
+                }
+            }
+            for o in self.b.ohne.iter().filter(|o| o.geschoss == st) {
+                if !gewerke.contains(&o.gewerk) {
+                    gewerke.push(o.gewerk);
+                }
+            }
+            gewerke.sort_by_key(|g| gewerk_name(self.m, *g).2);
+            let mut kinder = Vec::new();
+            for g in gewerke {
+                let (name, din, _) = gewerk_name(self.m, g);
+                let mut enkel = Vec::new();
+                for (i, p) in self.b.positionen.iter().enumerate() {
+                    if p.gewerk != g {
+                        continue;
+                    }
+                    let a: Vec<&Ansatz> = p.ansatz.iter().filter(|a| a.geschoss == st).collect();
+                    if a.is_empty() {
+                        continue;
+                    }
+                    let teil = p.teile(|x| x.geschoss == st);
+                    let menge = teil.iter().find(|t| t.0).map_or(Dez::NULL, |t| t.1);
+                    self.position(&mut enkel, i, menge, &a, st_key(st), 2, &gname);
+                }
+                self.ohne(&mut enkel, |o| o.gewerk == g && o.geschoss == st, 2, &gname);
+                let at = kinder.len();
+                self.gruppe(&mut kinder, at, name, din, 1, enkel);
+            }
+            let at = out.len();
+            self.gruppe(&mut out, at, gname, String::new(), 0, kinder);
+        }
+        self.ausgleich(&mut out);
+        out
+    }
+
+    /// Gliederung Kostengruppe: 2. Ebene → 3. Ebene → Teil der Position.
+    fn nach_kg(&self) -> Vec<Zeile> {
+        let mut kgs: Vec<Option<u16>> = Vec::new();
+        for kg in self
+            .b
+            .positionen
+            .iter()
+            .flat_map(|p| p.ansatz.iter().map(|a| a.kg))
+            .chain(self.b.ohne.iter().map(|o| o.kg))
+        {
+            if !kgs.contains(&kg) {
+                kgs.push(kg);
+            }
+        }
+        kgs.sort_by_key(|k| k.unwrap_or(u16::MAX));
+        let mut ebenen2: Vec<Option<u16>> = Vec::new();
+        for k in &kgs {
+            let e = k.map(sk_cost::din276::ebene2);
+            if !ebenen2.contains(&e) {
+                ebenen2.push(e);
+            }
+        }
+        let mut out = Vec::new();
+        for e2 in ebenen2 {
+            let mut kinder = Vec::new();
+            for &kg in kgs.iter().filter(|k| k.map(sk_cost::din276::ebene2) == e2) {
+                let name = kg_name(kg);
+                let mut enkel = Vec::new();
+                for (i, p) in self.b.positionen.iter().enumerate() {
+                    let a: Vec<&Ansatz> = p.ansatz.iter().filter(|a| a.kg == kg).collect();
+                    if a.is_empty() {
+                        continue;
+                    }
+                    let teil = p.teile(|x| x.kg == kg);
+                    let menge = teil.iter().find(|t| t.0).map_or(Dez::NULL, |t| t.1);
+                    self.position(
+                        &mut enkel,
+                        i,
+                        menge,
+                        &a,
+                        1 << 32 | u64::from(kg.unwrap_or(0)),
+                        2,
+                        &name,
+                    );
+                }
+                self.ohne(&mut enkel, |o| o.kg == kg, 2, &name);
+                let at = kinder.len();
+                self.gruppe(&mut kinder, at, name, String::new(), 1, enkel);
+            }
+            let at = out.len();
+            self.gruppe(&mut out, at, kg_name(e2), String::new(), 0, kinder);
+        }
+        self.ausgleich(&mut out);
+        out
+    }
+
+    /// „Rundungsausgleich“: Gesamtbetrag − Summe der Gruppen; bei 0 keine
+    /// Zeile.
+    fn ausgleich(&self, out: &mut Vec<Zeile>) {
+        let gezeigt: Cent = out
+            .iter()
+            .filter(|z| z.ebene == 0 && z.art == Art::Gruppe)
+            .filter_map(|z| z.betrag)
+            .sum();
+        let d = self.gesamt() - gezeigt;
+        if d != Cent(0) {
+            let mut z = Zeile::neu(Art::Ausgleich, 0, "Rundungsausgleich".into());
+            z.leise = "Teilmengen je auf 3 Stellen gerundet".into();
+            z.gp = euro(d);
+            z.betrag = Some(d);
+            out.push(z);
+        }
+    }
+}
+
+/// Schlüssel eines Geschosses für das Aufklappen von Teilzeilen.
+fn st_key(st: StoreyId) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    st.hash(&mut h);
+    h.finish()
+}
+
+/// Die Zeilen der Liste: rein aus Modell (Namen), Katalog (Namen),
+/// Kostenblatt, Gliederung, Modus und aufgeklappten Positionen.
+pub fn zeilen(
+    m: &Model,
+    k: &Katalog,
+    b: &Kostenblatt,
+    g: Gliederung,
+    modus: Modus,
+    offen: &HashSet<u64>,
+) -> Vec<Zeile> {
+    let bau = Bau {
+        m,
+        k,
+        b,
+        modus,
+        offen,
+    };
+    match g {
+        Gliederung::Gewerk => bau.nach_gewerk(),
+        Gliederung::Geschoss => bau.nach_geschoss(),
+        Gliederung::Kostengruppe => bau.nach_kg(),
+    }
+}
+
+/// Summe je Chip (Reiter Kosten, auch abgewählt): Summe der Geschossteile
+/// aller Positionen im Blatt ohne Abwahl, im Modus.
+pub fn chip_summen(b: &Kostenblatt, chips: &[umfang_view::Chip], modus: Modus) -> Vec<Cent> {
+    chips
+        .iter()
+        .map(|c| {
+            b.positionen
+                .iter()
+                .filter(|p| !(modus.nur_material() && p.nu.is_some()))
+                .flat_map(|p| {
+                    p.teile(|a| a.geschoss)
+                        .into_iter()
+                        .filter(|(s, _)| c.geschosse.contains(s))
+                        .map(move |(_, menge)| p.gp_von(menge, modus.nur_material()))
+                })
+                .sum()
+        })
+        .collect()
+}
+
+// --- Ansicht -----------------------------------------------------------------
+
+/// Kopf (dip ab Unterkante der Kartenleiste): Titel, Unterzeile, Chips,
+/// Schalter, Spaltenköpfe und Linie.
+const TITLE_Y: f32 = 34.0;
+const SUB_Y: f32 = 52.0;
+const CHIP_TOP: f32 = 62.0;
+const SWITCH_TOP: f32 = CHIP_TOP + umfang_view::ROW + 4.0;
+const SWITCH_H: f32 = 24.0;
+const HEAD: f32 = SWITCH_TOP + SWITCH_H + 34.0;
+/// Abstand des Schalters „Gliedern“ vom linken Rand (Einstellungen §3 KA-1
+/// Punkt 9: wie im Mengenblatt bei links + 300 dip).
+const GLIEDERN_X: f32 = 300.0;
+/// Zeilenhöhen (dip).
+const ROW_GROUP0: f32 = 30.0;
+const ROW_GROUP1: f32 = 26.0;
+const ROW_POS: f32 = 22.0;
+const ROW_ANSATZ: f32 = 20.0;
+/// Kacheln und Fußzeile (dip).
+const TILE_H: f32 = 62.0;
+const TILE_GAP: f32 = 10.0;
+const FOOT_LINE: f32 = 18.0;
+const BOTTOM_PAD: f32 = 12.0;
+/// Einzug je Ebene (dip).
+const INDENT: f32 = 16.0;
+/// Knopf „Als Tabelle speichern“.
+const BUTTON_H: f32 = 26.0;
+const BUTTON_PAD: f32 = 12.0;
+
+type Rect = (f32, f32, f32, f32);
+
+fn inside((rx, ry, rw, rh): Rect, x: f32, y: f32) -> bool {
+    x >= rx && x < rx + rw && y >= ry && y < ry + rh
+}
+
+/// Teil des Blatts unter der Maus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Hot {
+    Umfang(umfang_view::Hot),
+    Modus(Modus),
+    Gliederung(Gliederung),
+    Button,
+    /// Zeile; `true` auf dem Dreieck zum Aufklappen.
+    Zeile(usize, bool),
+    /// Verweis in der Fußzeile: geschätzte bzw. graue Zeilen.
+    Geschaetzt,
+    OhnePreis,
+}
+
+/// Fußzeile: Text, Verweistext (Teil nach dem Doppelpunkt) und Ziel.
+struct Fuss {
+    text: String,
+    verweis: String,
+    ziel: Option<Hot>,
+}
+
+pub struct KostenView {
+    pub leiste: Leiste,
+    pub modus: Modus,
+    pub gliederung: Gliederung,
+    pub w: u32,
+    pub h: u32,
+    pub scale: f32,
+    /// Oberkante des Blatts unter Titelleiste und Karten (dip).
+    pub top: f32,
+    blatt: Option<Rc<Kostenblatt>>,
+    katalog: Option<Rc<Katalog>>,
+    /// Kostenblatt aller Geschosse des Umfangs (Chip-Summen).
+    ganz: Option<Rc<Kostenblatt>>,
+    preisquelle: String,
+    lohnsatz: Dez,
+    zeilen: Vec<Zeile>,
+    offen: HashSet<u64>,
+    /// Woraus die Zeilen gebaut sind.
+    gebaut: Option<(*const Kostenblatt, Modus, Gliederung, u64)>,
+    offen_stand: u64,
+    pub subtitle: String,
+    stale: bool,
+    scroll: f32,
+    hot: Option<Hot>,
+    button_down: bool,
+    hover: Vec<ElementId>,
+    selected: Vec<ElementId>,
+    /// Breite des Fußes aus dem letzten Bild (Zeilenzahl der Fußzeile).
+    fuss_zeilen: Cell<usize>,
+}
+
+impl Default for KostenView {
+    fn default() -> Self {
+        KostenView::new()
+    }
+}
+
+impl KostenView {
+    pub fn new() -> KostenView {
+        KostenView {
+            leiste: Leiste::default(),
+            modus: Modus::default(),
+            gliederung: Gliederung::default(),
+            w: 0,
+            h: 0,
+            scale: 1.0,
+            top: 32.0,
+            blatt: None,
+            katalog: None,
+            ganz: None,
+            preisquelle: String::new(),
+            lohnsatz: Dez::NULL,
+            zeilen: Vec::new(),
+            offen: HashSet::new(),
+            gebaut: None,
+            offen_stand: 0,
+            subtitle: String::new(),
+            stale: false,
+            scroll: 0.0,
+            hot: None,
+            button_down: false,
+            hover: Vec::new(),
+            selected: Vec::new(),
+            fuss_zeilen: Cell::new(0),
+        }
+    }
+
+    /// Das angezeigte Kostenblatt (Karten, CSV, Prüfung).
+    pub fn blatt(&self) -> Option<&Kostenblatt> {
+        self.blatt.as_deref()
+    }
+
+    #[cfg(test)]
+    pub fn zeilen(&self) -> &[Zeile] {
+        &self.zeilen
+    }
+
+    /// Gesamtbetrag im Modus (Kachel netto).
+    #[cfg(test)]
+    pub fn netto(&self) -> Option<Cent> {
+        let b = self.blatt.as_deref()?;
+        Some(if self.modus.nur_material() {
+            b.nur_material
+        } else {
+            b.netto
+        })
+    }
+
+    /// An Modell und Katalog angleichen. `true`, wenn neu gezeichnet werden
+    /// muss.
+    pub fn sync(&mut self, s: &mut Scene, firma: Option<(&sk_model::Library, u64)>) -> bool {
+        let mut changed = self.leiste.sync(s.model());
+        let kat = s.katalog(firma);
+        let blatt = s.kostenblatt(firma, &self.leiste.umfang);
+        let alle = Umfang {
+            gebaeude: self.leiste.umfang.gebaeude,
+            ohne: Vec::new(),
+        };
+        let ganz = s.kostenblatt(firma, &alle);
+        let stale = s.schedule_stale();
+        if stale != self.stale {
+            self.stale = stale;
+            changed = true;
+        }
+        let neu_katalog = self.katalog.as_ref().is_none_or(|k| !Rc::ptr_eq(k, &kat));
+        if neu_katalog {
+            self.preisquelle = sk_cost::lesen::preisquelle(&kat);
+            self.lohnsatz = kat.werte.lohn;
+            self.katalog = Some(kat);
+            changed = true;
+        }
+        let key = (
+            Rc::as_ptr(&blatt),
+            self.modus,
+            self.gliederung,
+            self.offen_stand,
+        );
+        if self.gebaut != Some(key) || neu_katalog {
+            let k = self.katalog.as_deref().expect("eben gesetzt");
+            self.zeilen = zeilen(
+                s.model(),
+                k,
+                &blatt,
+                self.gliederung,
+                self.modus,
+                &self.offen,
+            );
+            self.gebaut = Some(key);
+            changed = true;
+        }
+        if self.ganz.as_ref().is_none_or(|g| !Rc::ptr_eq(g, &ganz)) || changed {
+            self.leiste.summen = chip_summen(&ganz, self.leiste.chips(), self.modus)
+                .into_iter()
+                .map(euro_ganz)
+                .collect();
+            self.ganz = Some(ganz);
+            changed = true;
+        }
+        if self.blatt.as_ref().is_none_or(|b| !Rc::ptr_eq(b, &blatt)) {
+            self.blatt = Some(blatt);
+            changed = true;
+        }
+        let text = format!(
+            "{} · {}",
+            umfang_view::umfang_text(
+                s.model(),
+                &self.leiste.umfang,
+                sk_platform::local_date_time()
+            ),
+            self.preisquelle
+        );
+        if changed {
+            self.subtitle = text;
+        }
+        self.clamp();
+        changed
+    }
+
+    /// Auswahl aus dem gemeinsamen Zustand übernehmen; `true`, wenn sich
+    /// das Bild ändert.
+    pub fn follow(&mut self, p: &Picking) -> bool {
+        let hover: Vec<ElementId> = p.hovered().collect();
+        let changed = hover != self.hover || p.selected != self.selected;
+        self.hover = hover;
+        self.selected = p.selected.clone();
+        changed
+    }
+
+    // --- Lage ----------------------------------------------------------------
+
+    fn content_x(&self, t: &Theme) -> (f32, f32) {
+        let s = self.scale;
+        let pad = t.size.sheet_pad * s;
+        let w = (self.w as f32 - 2.0 * pad)
+            .min(t.size.qto_max_w * s)
+            .max(0.0);
+        (pad, w)
+    }
+
+    fn top_px(&self) -> f32 {
+        self.top * self.scale
+    }
+
+    /// Erste Zeile der Liste (px).
+    fn list_top(&self) -> f32 {
+        self.top_px() + HEAD * self.scale
+    }
+
+    /// Oberkante der Kacheln (px).
+    fn tiles_top(&self) -> f32 {
+        let s = self.scale;
+        let fuss = self.fuss_zeilen.get().max(1) as f32 * FOOT_LINE;
+        self.h as f32 - (BOTTOM_PAD + fuss + TILE_GAP + TILE_H) * s
+    }
+
+    fn row_h(z: &Zeile) -> f32 {
+        match z.art {
+            Art::Gruppe if z.ebene == 0 => ROW_GROUP0,
+            Art::Gruppe | Art::Ausgleich => ROW_GROUP1,
+            Art::Ansatz => ROW_ANSATZ,
+            _ => ROW_POS,
+        }
+    }
+
+    fn content_h(&self) -> f32 {
+        self.zeilen.iter().map(Self::row_h).sum::<f32>() + 8.0
+    }
+
+    fn view_h(&self) -> f32 {
+        ((self.tiles_top() - self.list_top()) / self.scale).max(0.0)
+    }
+
+    fn clamp(&mut self) {
+        let max = (self.content_h() - self.view_h()).max(0.0);
+        self.scroll = self.scroll.clamp(0.0, max);
+    }
+
+    /// Zeilen mit ihrer Oberkante (px) im sichtbaren Bereich.
+    fn sichtbar(&self) -> Vec<(usize, f32, f32)> {
+        let s = self.scale;
+        let (top, bottom) = (self.list_top(), self.tiles_top());
+        let mut y = top - self.scroll * s;
+        let mut out = Vec::new();
+        for (i, z) in self.zeilen.iter().enumerate() {
+            let h = Self::row_h(z) * s;
+            if y + h > top && y < bottom {
+                out.push((i, y, h));
+            }
+            y += h;
+            if y >= bottom {
+                break;
+            }
+        }
+        out
+    }
+
+    fn leiste_lage(&self, t: &Theme) -> umfang_view::Lage {
+        umfang_view::Lage {
+            x0: self.content_x(t).0,
+            y: self.top_px() + CHIP_TOP * self.scale,
+            s: self.scale,
+        }
+    }
+
+    fn button_rect(&self, t: &Theme, fonts: &Fonts) -> Rect {
+        let s = self.scale;
+        let (x0, w) = self.content_x(t);
+        let tw = fonts
+            .bold
+            .as_ref()
+            .or(fonts.regular.as_ref())
+            .map_or(130.0 * s, |f| f.width("Als Tabelle speichern", 11.0 * s));
+        let bw = tw + 2.0 * BUTTON_PAD * s;
+        (x0 + w - bw, self.top_px() + 14.0 * s, bw, BUTTON_H * s)
+    }
+
+    /// Segmentschalter: Beschriftung (x, Grundlinie) und Segmente.
+    #[allow(clippy::type_complexity)]
+    fn schalter(
+        &self,
+        t: &Theme,
+        fonts: &Fonts,
+    ) -> ((f32, Vec<(Modus, Rect)>), (f32, Vec<(Gliederung, Rect)>)) {
+        let s = self.scale;
+        let (x0, _) = self.content_x(t);
+        let px = 10.5 * s;
+        let y = self.top_px() + SWITCH_TOP * s;
+        let regular = fonts.regular.as_ref();
+        let bold = fonts.bold.as_ref().or(regular);
+        let w = |text: &str| {
+            bold.map_or(text.chars().count() as f32 * px * 0.6, |f| {
+                f.width(text, px)
+            }) + 20.0 * s
+        };
+        let label_w = |text: &str| {
+            regular.map_or(text.chars().count() as f32 * px * 0.55, |f| {
+                f.width(text, px)
+            }) + 8.0 * s
+        };
+        let inset = 2.0 * s;
+        let mut x = x0 + label_w("Preise") + inset;
+        let mut preise = Vec::new();
+        for m in Modus::ALLE {
+            let sw = w(m.label());
+            preise.push((m, (x, y + inset, sw, SWITCH_H * s - 2.0 * inset)));
+            x += sw;
+        }
+        let gx = (x0 + GLIEDERN_X * s).max(x + 24.0 * s);
+        let mut x = gx + label_w("Gliedern") + inset;
+        let mut gl = Vec::new();
+        for g in Gliederung::ALLE {
+            let sw = w(g.label());
+            gl.push((g, (x, y + inset, sw, SWITCH_H * s - 2.0 * inset)));
+            x += sw;
+        }
+        ((x0, preise), (gx, gl))
+    }
+
+    fn fuss(&self) -> Vec<Fuss> {
+        let Some(b) = self.blatt.as_deref() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        if b.geschaetzt > 0 {
+            out.push(Fuss {
+                text: "davon geschätzt: ".into(),
+                verweis: format!(
+                    "{} {}, {} €",
+                    b.geschaetzt,
+                    if b.geschaetzt == 1 { "Zeile" } else { "Zeilen" },
+                    euro(b.geschaetzt_betrag)
+                ),
+                ziel: Some(Hot::Geschaetzt),
+            });
+        }
+        if !b.ohne.is_empty() {
+            let mut namen: Vec<String> = Vec::new();
+            for z in self.zeilen.iter().filter(|z| z.art == Art::Ohne) {
+                let n = z.leise.split(" · ").next().unwrap_or_default().to_string();
+                if !n.is_empty() && !namen.contains(&n) {
+                    namen.push(n);
+                }
+            }
+            out.push(Fuss {
+                text: "Ohne Preis: ".into(),
+                verweis: format!(
+                    "{} ({} {} ohne Bauleistung)",
+                    namen.join(", "),
+                    b.ohne.len(),
+                    if b.ohne.len() == 1 { "Zeile" } else { "Zeilen" }
+                ),
+                ziel: Some(Hot::OhnePreis),
+            });
+        }
+        if b.unvollstaendig > 0 {
+            out.push(Fuss {
+                text: format!("unvollständig: {} Positionen ohne Preis", b.unvollstaendig),
+                verweis: String::new(),
+                ziel: None,
+            });
+        }
+        if self.modus.nur_material() {
+            let n = b.positionen.iter().filter(|p| p.nu.is_some()).count();
+            if n > 0 {
+                out.push(Fuss {
+                    text: format!("ohne {n} NU-Positionen (Summe {} €)", euro(b.nu)),
+                    verweis: String::new(),
+                    ziel: None,
+                });
+            }
+        }
+        out
+    }
+
+    /// Verweise der Fußzeile (px).
+    fn fuss_rects(&self, t: &Theme, fonts: &Fonts) -> Vec<(Hot, Rect)> {
+        let s = self.scale;
+        let (x0, _) = self.content_x(t);
+        let px = 10.5 * s;
+        let regular = fonts.regular.as_ref();
+        let mut y = self.tiles_top() + (TILE_H + TILE_GAP) * s;
+        let mut out = Vec::new();
+        for f in self.fuss() {
+            if let (Some(z), Some(r)) = (f.ziel, regular) {
+                let x = x0 + r.width(&f.text, px);
+                out.push((z, (x, y, r.width(&f.verweis, px), FOOT_LINE * s)));
+            }
+            y += FOOT_LINE * s;
+        }
+        out
+    }
+
+    fn hit(&self, t: &Theme, fonts: &Fonts, x: f64, y: f64) -> Option<Hot> {
+        let (x, y) = (x as f32, y as f32);
+        if let Some(h) = self.leiste.hit(fonts, self.leiste_lage(t), x, y) {
+            return Some(Hot::Umfang(h));
+        }
+        if self.leiste.field_open() {
+            return None;
+        }
+        if inside(self.button_rect(t, fonts), x, y) {
+            return Some(Hot::Button);
+        }
+        let ((_, preise), (_, gl)) = self.schalter(t, fonts);
+        if let Some((m, _)) = preise.iter().find(|(_, r)| inside(*r, x, y)) {
+            return Some(Hot::Modus(*m));
+        }
+        if let Some((g, _)) = gl.iter().find(|(_, r)| inside(*r, x, y)) {
+            return Some(Hot::Gliederung(*g));
+        }
+        if let Some((h, _)) = self
+            .fuss_rects(t, fonts)
+            .into_iter()
+            .find(|(_, r)| inside(*r, x, y))
+        {
+            return Some(h);
+        }
+        if y < self.list_top() || y >= self.tiles_top() {
+            return None;
+        }
+        let (x0, _) = self.content_x(t);
+        let s = self.scale;
+        self.sichtbar()
+            .into_iter()
+            .find(|(_, ry, rh)| y >= *ry && y < ry + rh)
+            .map(|(i, _, _)| {
+                let z = &self.zeilen[i];
+                let dx = x0 + z.ebene as f32 * INDENT * s;
+                let dreieck =
+                    matches!(z.art, Art::Position { .. }) && x >= dx - 4.0 * s && x < dx + 12.0 * s;
+                Hot::Zeile(i, dreieck)
+            })
+    }
+
+    /// Hover der Bauteile einer Zeile: einzeln oder als Gruppe.
+    fn hover_of(&self, hot: Option<Hot>) -> (Option<ElementId>, Vec<ElementId>) {
+        match hot {
+            Some(Hot::Zeile(i, _)) => {
+                let z = &self.zeilen[i];
+                match z.elements.as_slice() {
+                    [e] => (Some(*e), Vec::new()),
+                    v => (None, v.to_vec()),
+                }
+            }
+            _ => (None, Vec::new()),
+        }
+    }
+
+    // --- Ereignisse ----------------------------------------------------------
+
+    pub fn mouse_move(
+        &mut self,
+        t: &Theme,
+        fonts: &Fonts,
+        p: &mut Picking,
+        x: f64,
+        y: f64,
+    ) -> Option<ListOut> {
+        let hot = self.hit(t, fonts, x, y);
+        let look = |h: Option<Hot>| match h {
+            Some(Hot::Zeile(..)) | None => None,
+            h => h,
+        };
+        let repaint = look(hot) != look(self.hot);
+        self.hot = hot;
+        self.leiste.hot = match hot {
+            Some(Hot::Umfang(h)) => Some(h),
+            _ => None,
+        };
+        let (one, group) = self.hover_of(hot);
+        if p.set_hover(one, group) {
+            self.hover = p.hovered().collect();
+            return Some(ListOut::Picking { selection: false });
+        }
+        repaint.then_some(ListOut::Repaint)
+    }
+
+    pub fn mouse_leave(&mut self, p: &mut Picking) -> Option<ListOut> {
+        let repaint = self.hot.take().is_some() || self.button_down;
+        self.button_down = false;
+        self.leiste.hot = None;
+        if p.set_hover(None, Vec::new()) {
+            self.hover.clear();
+            return Some(ListOut::Picking { selection: false });
+        }
+        repaint.then_some(ListOut::Repaint)
+    }
+
+    pub fn mouse_down(
+        &mut self,
+        t: &Theme,
+        fonts: &Fonts,
+        p: &mut Picking,
+        (x, y): (f64, f64),
+        mods: sk_platform::Modifiers,
+    ) -> Option<ListOut> {
+        let hot = self.hit(t, fonts, x, y);
+        if let Some(Hot::Umfang(h)) = hot {
+            self.leiste.click(h, mods.ctrl);
+            return Some(ListOut::Repaint);
+        }
+        if self.leiste.close_field() {
+            return Some(ListOut::Repaint);
+        }
+        match hot? {
+            Hot::Umfang(_) => None,
+            Hot::Button => {
+                self.button_down = true;
+                Some(ListOut::Repaint)
+            }
+            Hot::Modus(m) => (m != self.modus).then(|| {
+                self.modus = m;
+                self.gebaut = None;
+                ListOut::Repaint
+            }),
+            Hot::Gliederung(g) => (g != self.gliederung).then(|| {
+                self.gliederung = g;
+                self.gebaut = None;
+                self.scroll = 0.0;
+                ListOut::Repaint
+            }),
+            Hot::Zeile(i, dreieck) => {
+                let z = &self.zeilen[i];
+                if dreieck {
+                    let key = z.key;
+                    if !self.offen.remove(&key) {
+                        self.offen.insert(key);
+                    }
+                    self.offen_stand += 1;
+                    return Some(ListOut::Repaint);
+                }
+                let els = z.elements.clone();
+                match els.as_slice() {
+                    [] => None,
+                    [e] => {
+                        p.click(*e, mods.ctrl);
+                        self.selected = p.selected.clone();
+                        Some(ListOut::Picking { selection: true })
+                    }
+                    v => {
+                        p.selected = v.to_vec();
+                        self.selected = p.selected.clone();
+                        Some(ListOut::Picking { selection: true })
+                    }
+                }
+            }
+            Hot::Geschaetzt => self.springe(|z| z.geschaetzt),
+            Hot::OhnePreis => self.springe(|z| z.art == Art::Ohne),
+        }
+    }
+
+    /// Zur ersten Zeile, die `f` erfüllt, rollen.
+    fn springe(&mut self, f: impl Fn(&Zeile) -> bool) -> Option<ListOut> {
+        let mut y = 0.0;
+        for z in &self.zeilen {
+            if f(z) {
+                self.scroll = (y - 2.0 * ROW_POS).max(0.0);
+                self.clamp();
+                return Some(ListOut::Repaint);
+            }
+            y += Self::row_h(z);
+        }
+        None
+    }
+
+    pub fn mouse_up(&mut self, t: &Theme, fonts: &Fonts, x: f64, y: f64) -> Option<ListOut> {
+        if !std::mem::take(&mut self.button_down) {
+            return None;
+        }
+        if self.hit(t, fonts, x, y) == Some(Hot::Button) {
+            Some(ListOut::SaveCsv)
+        } else {
+            Some(ListOut::Repaint)
+        }
+    }
+
+    pub fn wheel(&mut self, delta: f64, t: &Theme) -> Option<ListOut> {
+        self.scroll -= delta as f32 * 3.0 * t.size.qto_row;
+        self.clamp();
+        Some(ListOut::Repaint)
+    }
+
+    pub fn tick(&mut self, t: &Theme, now: Instant) -> bool {
+        self.leiste.tick(t, now)
+    }
+
+    pub fn overlay_open(&self) -> bool {
+        self.leiste.overlay_open()
+    }
+
+    pub fn tip_at(&self, t: &Theme, fonts: &Fonts, x: f64, y: f64) -> Option<String> {
+        match self.hit(t, fonts, x, y)? {
+            Hot::Umfang(h) => self.leiste.tip(h),
+            // Die OZ steht auf dem Bildschirm nur hier (Namen statt
+            // Kennungen, Bedienbarkeit 4.9)
+            Hot::Zeile(i, _) => {
+                let (p, _) = self.zeilen.get(i)?.pos?;
+                let oz = &self.blatt.as_deref()?.positionen.get(p)?.oz;
+                (!oz.is_empty()).then(|| format!("OZ {oz}"))
+            }
+            Hot::Gliederung(Gliederung::Kostengruppe) => Some(
+                "Kostengruppe nach DIN 276, wie sie Architekten und Bauherren verwenden".into(),
+            ),
+            _ => None,
+        }
+    }
+
+    // --- Zeichnen ------------------------------------------------------------
+
+    pub fn paint(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts, now: Instant) {
+        let u = &t.ui;
+        let s = self.scale;
+        let fuss = self.fuss();
+        self.fuss_zeilen.set(fuss.len());
+        c.fill_rect(0.0, self.top_px(), self.w as f32, self.h as f32, u.sheet_bg);
+        self.paint_rows(c, t, fonts);
+        // Kopf deckt weggerollte Zeilen ab
+        c.fill_rect(0.0, self.top_px(), self.w as f32, HEAD * s, u.sheet_bg);
+        self.paint_head(c, t, fonts, now);
+        let tt = self.tiles_top();
+        c.fill_rect(
+            0.0,
+            tt - 4.0 * s,
+            self.w as f32,
+            self.h as f32 - tt + 4.0 * s,
+            u.sheet_bg,
+        );
+        self.paint_tiles(c, t, fonts);
+        self.paint_fuss(c, t, fonts, &fuss);
+        self.paint_scrollbar(c, t);
+        self.leiste
+            .paint_field_list(c, t, fonts, self.leiste_lage(t));
+    }
+
+    fn paint_head(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts, now: Instant) {
+        let s = self.scale;
+        let u = &t.ui;
+        let top = self.top_px();
+        let (x0, cw) = self.content_x(t);
+        let regular = fonts.regular.as_ref();
+        let bold = fonts.bold.as_ref().or(regular);
+        if let Some(f) = bold {
+            f.draw(c, "Kosten", 19.0 * s, x0, top + TITLE_Y * s, u.sheet_text);
+            if self.stale {
+                if let Some(r) = regular {
+                    let x = x0 + f.width("Kosten", 19.0 * s) + 12.0 * s;
+                    r.draw(
+                        c,
+                        "wird aktualisiert",
+                        10.5 * s,
+                        x,
+                        top + TITLE_Y * s,
+                        u.sheet_text_dim,
+                    );
+                }
+            }
+        }
+        if let Some(f) = regular {
+            let text = sk_ui::widgets::ellipsize(Some(f), &self.subtitle, 10.5 * s, cw);
+            f.draw(c, &text, 10.5 * s, x0, top + SUB_Y * s, u.sheet_text_dim);
+        }
+        // Knopf „Als Tabelle speichern“
+        let (bx, by, bw, bh) = self.button_rect(t, fonts);
+        let bg = if self.button_down {
+            u.pressed
+        } else if self.hot == Some(Hot::Button) {
+            u.hover
+        } else {
+            u.bg
+        };
+        let mut p = Path::new();
+        p.rounded_rect(bx, by, bw, bh, t.size.corner_radius * s);
+        c.fill(&p, bg);
+        if let Some(f) = bold {
+            let px = 11.0 * s;
+            f.draw(
+                c,
+                "Als Tabelle speichern",
+                px,
+                bx + BUTTON_PAD * s,
+                by + (bh + f.cap_height(px)) * 0.5,
+                u.text,
+            );
+        }
+        self.leiste.paint(c, t, fonts, self.leiste_lage(t), now);
+        // Schalter
+        let ((px0, preise), (gx, gl)) = self.schalter(t, fonts);
+        self.paint_segmente(
+            c,
+            t,
+            fonts,
+            (px0, "Preise"),
+            &preise,
+            |m| m == self.modus,
+            |m| self.hot == Some(Hot::Modus(m)),
+            Modus::label,
+        );
+        self.paint_segmente(
+            c,
+            t,
+            fonts,
+            (gx, "Gliedern"),
+            &gl,
+            |g| g == self.gliederung,
+            |g| self.hot == Some(Hot::Gliederung(g)),
+            Gliederung::label,
+        );
+        // Spaltenköpfe und Linie
+        if let Some(f) = regular {
+            let px = 10.0 * s;
+            let base = top + (HEAD - 12.0) * s;
+            let (ep, gp) = if self.modus.nur_material() {
+                ("Stoff-EP", "Stoff-GP")
+            } else {
+                ("EP", "GP")
+            };
+            let first = match self.gliederung {
+                Gliederung::Gewerk => "Gewerk · Position",
+                Gliederung::Geschoss => "Geschoss · Gewerk · Position",
+                Gliederung::Kostengruppe => "Kostengruppe · Position",
+            };
+            f.draw(c, first, px, x0, base, u.sheet_text_dim);
+            for (text, right) in [
+                ("Menge", col_menge(x0, cw)),
+                (ep, col_ep(x0, cw)),
+                (gp, x0 + cw),
+            ] {
+                f.draw(
+                    c,
+                    text,
+                    px,
+                    right - f.width(text, px),
+                    base,
+                    u.sheet_text_dim,
+                );
+            }
+        }
+        c.fill_rect(x0, top + (HEAD - 6.0) * s, cw, s.max(1.0), u.sheet_rule);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_segmente<T: Copy>(
+        &self,
+        c: &mut Canvas,
+        t: &Theme,
+        fonts: &Fonts,
+        (lx, label): (f32, &str),
+        segs: &[(T, Rect)],
+        on: impl Fn(T) -> bool,
+        hover: impl Fn(T) -> bool,
+        text: impl Fn(T) -> &'static str,
+    ) {
+        let (Some(&(_, first)), Some(&(_, last))) = (segs.first(), segs.last()) else {
+            return;
+        };
+        let s = self.scale;
+        let u = &t.ui;
+        let px = 10.5 * s;
+        let regular = fonts.regular.as_ref();
+        let bold = fonts.bold.as_ref().or(regular);
+        let inset = 2.0 * s;
+        let (x, y, h) = (first.0 - inset, first.1 - inset, first.3 + 2.0 * inset);
+        let w = last.0 + last.2 + inset - x;
+        let mut p = Path::new();
+        p.rounded_rect(x, y, w, h, h * 0.5);
+        c.fill(&p, u.sheet_tile);
+        if let Some(f) = regular {
+            f.draw(
+                c,
+                label,
+                px,
+                lx,
+                y + (h + f.cap_height(px)) * 0.5,
+                u.sheet_text_dim,
+            );
+        }
+        for &(v, (sx, sy, sw, sh)) in segs {
+            let (font, col) = if on(v) {
+                let mut p = Path::new();
+                p.rounded_rect(sx, sy, sw, sh, sh * 0.5);
+                c.fill(&p, u.bg);
+                (bold, u.text)
+            } else if hover(v) {
+                (regular, u.sheet_text)
+            } else {
+                (regular, u.sheet_text_dim)
+            };
+            let Some(f) = font else { continue };
+            let tw = f.width(text(v), px);
+            f.draw(
+                c,
+                text(v),
+                px,
+                sx + (sw - tw) * 0.5,
+                sy + (sh + f.cap_height(px)) * 0.5,
+                col,
+            );
+        }
+    }
+
+    fn paint_rows(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts) {
+        let s = self.scale;
+        let u = &t.ui;
+        let (x0, cw) = self.content_x(t);
+        let regular = fonts.regular.as_ref();
+        let bold = fonts.bold.as_ref().or(regular);
+        let italic = fonts.italic.as_ref().or(regular);
+        for (i, y, h) in self.sichtbar() {
+            let z = &self.zeilen[i];
+            // Band: Auswahl, Hover
+            let sel =
+                !z.elements.is_empty() && z.elements.iter().all(|e| self.selected.contains(e));
+            let hov = !z.elements.is_empty() && z.elements.iter().all(|e| self.hover.contains(e));
+            if sel {
+                c.fill_rect(x0 - 10.0 * s, y, cw + 20.0 * s, h, u.sheet_select);
+                c.fill_rect(x0 - 10.0 * s, y, 3.0 * s, h, u.accent);
+            } else if hov
+                || self.hot == Some(Hot::Zeile(i, false))
+                || self.hot == Some(Hot::Zeile(i, true))
+            {
+                c.fill_rect(x0 - 10.0 * s, y, cw + 20.0 * s, h, u.sheet_hover);
+            }
+            let dx = x0 + z.ebene as f32 * INDENT * s;
+            let (font, px, col) = match z.art {
+                Art::Gruppe if z.ebene == 0 => (bold, 12.0 * s, u.sheet_text),
+                Art::Gruppe | Art::Ausgleich => (bold, 11.0 * s, u.sheet_text),
+                Art::Position { .. } if z.geschaetzt => (italic, 11.0 * s, u.sheet_text),
+                Art::Position { .. } => (regular, 11.0 * s, u.sheet_text),
+                Art::Ansatz => (regular, 10.5 * s, u.sheet_text_dim),
+                Art::Ohne => (regular, 11.0 * s, u.sheet_hint),
+            };
+            let Some(f) = font else { continue };
+            let base = y + (h + f.cap_height(px)) * 0.5;
+            let tx = match z.art {
+                Art::Position { offen } => {
+                    sk_ui::widgets::disclosure(
+                        c,
+                        dx + 4.0 * s,
+                        y + h * 0.5,
+                        offen,
+                        u.sheet_text_dim,
+                        s,
+                    );
+                    dx + 14.0 * s
+                }
+                _ => dx,
+            };
+            // Text links bis vor die Mengenspalte, leise dahinter
+            let menge_x = col_menge(x0, cw);
+            let room = menge_x - f.width("0.000,000 m²", px) - 12.0 * s - tx;
+            let text = sk_ui::widgets::ellipsize(Some(f), &z.text, px, room.max(0.0));
+            f.draw(c, &text, px, tx, base, col);
+            if let Some(r) = regular {
+                let lx = tx + f.width(&text, px) + 8.0 * s;
+                let rest = (tx + room - lx).max(0.0);
+                if !z.leise.is_empty() && rest > 20.0 * s {
+                    let leise = sk_ui::widgets::ellipsize(Some(r), &z.leise, 10.0 * s, rest);
+                    r.draw(c, &leise, 10.0 * s, lx, base, u.sheet_text_dim);
+                }
+            }
+            let zahl =
+                |c: &mut Canvas, text: &str, right: f32, f: &sk_paint::font::Font, col: Rgba| {
+                    f.draw(c, text, px, right - f.width(text, px), base, col);
+                };
+            if !z.menge.is_empty() {
+                zahl(c, &z.menge, menge_x, f, col);
+            }
+            if !z.ep.is_empty() {
+                zahl(c, &z.ep, col_ep(x0, cw), f, col);
+            }
+            if !z.gp.is_empty() {
+                let gcol = if z.betrag.is_none() {
+                    u.sheet_hint
+                } else {
+                    col
+                };
+                zahl(c, &z.gp, x0 + cw, f, gcol);
+            }
+            if z.art == Art::Gruppe && z.ebene == 0 {
+                c.fill_rect(x0, y + h - s.max(1.0), cw, s.max(1.0), u.sheet_rule);
+            }
+        }
+    }
+
+    fn paint_tiles(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts) {
+        let Some(b) = self.blatt.as_deref() else {
+            return;
+        };
+        let s = self.scale;
+        let u = &t.ui;
+        let (x0, cw) = self.content_x(t);
+        let y = self.tiles_top();
+        let gap = TILE_GAP * s;
+        let tw = ((cw - 2.0 * gap) / 3.0).max(0.0);
+        let regular = fonts.regular.as_ref();
+        let bold = fonts.bold.as_ref().or(regular);
+        let material = self.modus.nur_material();
+        let (netto, mwst) = if material {
+            (b.nur_material, b.mwst_material)
+        } else {
+            (b.netto, b.mwst)
+        };
+        let satz = b.mwst_satz.text().replace('.', ",");
+        let lohn_text = format!(
+            "Lohn {} € ({} €/h) · Material {} €",
+            euro(b.lohn),
+            euro(self.lohnsatz.cent()),
+            euro(b.stoff)
+        );
+        let anteil = if material {
+            "–".to_string()
+        } else {
+            prozent(b.lohn, b.netto).map_or("–".into(), |p| format!("{p} %"))
+        };
+        let kacheln = [
+            ("Summe netto", format!("{} €", euro(netto)), String::new()),
+            (
+                "Summe brutto",
+                format!("{} €", euro(netto + mwst)),
+                format!("MwSt. {satz} % {} €", euro(mwst)),
+            ),
+            ("Lohnanteil", anteil, lohn_text),
+        ];
+        for (k, (titel, wert, klein)) in kacheln.iter().enumerate() {
+            let x = x0 + k as f32 * (tw + gap);
+            let mut p = Path::new();
+            p.rounded_rect(x, y, tw, TILE_H * s, t.size.corner_radius * s);
+            c.fill(&p, u.sheet_tile);
+            if let Some(f) = regular {
+                f.draw(
+                    c,
+                    titel,
+                    10.0 * s,
+                    x + 12.0 * s,
+                    y + 18.0 * s,
+                    u.sheet_text_dim,
+                );
+                if !klein.is_empty() {
+                    let k = sk_ui::widgets::ellipsize(Some(f), klein, 10.0 * s, tw - 24.0 * s);
+                    f.draw(
+                        c,
+                        &k,
+                        10.0 * s,
+                        x + 12.0 * s,
+                        y + 54.0 * s,
+                        u.sheet_text_dim,
+                    );
+                }
+            }
+            if let Some(f) = bold {
+                f.draw(c, wert, 17.0 * s, x + 12.0 * s, y + 38.0 * s, u.sheet_text);
+            }
+        }
+    }
+
+    fn paint_fuss(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts, fuss: &[Fuss]) {
+        let s = self.scale;
+        let u = &t.ui;
+        let (x0, _) = self.content_x(t);
+        let Some(f) = fonts.regular.as_ref() else {
+            return;
+        };
+        let px = 10.5 * s;
+        let mut y = self.tiles_top() + (TILE_H + TILE_GAP) * s;
+        for z in fuss {
+            let base = y + (FOOT_LINE * s + f.cap_height(px)) * 0.5;
+            f.draw(c, &z.text, px, x0, base, u.sheet_text_dim);
+            if !z.verweis.is_empty() {
+                let col = if z.ziel.is_some() && self.hot == z.ziel {
+                    u.accent_hover
+                } else {
+                    u.accent
+                };
+                f.draw(c, &z.verweis, px, x0 + f.width(&z.text, px), base, col);
+            }
+            y += FOOT_LINE * s;
+        }
+    }
+
+    fn paint_scrollbar(&self, c: &mut Canvas, t: &Theme) {
+        let s = self.scale;
+        let (content, view) = (self.content_h(), self.view_h());
+        if content <= view || view <= 0.0 {
+            return;
+        }
+        let r = sk_ui::widgets::Rect::new(
+            self.w as f32 - 9.0 * s,
+            self.list_top(),
+            5.0 * s,
+            self.tiles_top() - self.list_top() - 6.0 * s,
+        );
+        sk_ui::widgets::scrollbar(c, r, self.scroll / content, view / content, false, s, t);
+    }
+
+    // --- CSV -----------------------------------------------------------------
+
+    /// „Als Tabelle speichern“ im Reiter Kosten (ka-2-fach §2.5): UTF-8 mit
+    /// BOM, „;“, Dezimalkomma; Kopfzeilen Projekt, Umfang, Preise, Datum,
+    /// Modus; je Positionszeile die Spalten; Fußzeilen Netto, MwSt., Brutto,
+    /// Lohn, Stoff, NU. Werte wie in der Anzeige.
+    pub fn csv(&self, projekt: &str, datum: &str) -> Vec<u8> {
+        let mut out = String::from("\u{feff}");
+        let mut zeile = |cols: &[&str]| {
+            let v: Vec<String> = cols.iter().map(|c| csv_feld(c)).collect();
+            out.push_str(&v.join(";"));
+            out.push_str("\r\n");
+        };
+        zeile(&["Projekt", projekt]);
+        zeile(&[
+            "Umfang",
+            self.subtitle.split(" · Stand").next().unwrap_or_default(),
+        ]);
+        zeile(&["Preise", &self.preisquelle]);
+        zeile(&["Datum", datum]);
+        zeile(&["Modus", self.modus.label()]);
+        zeile(&[]);
+        zeile(&[
+            "Gliederung",
+            "Kennung",
+            "OZ",
+            "Kurztext",
+            "Menge",
+            "Einheit",
+            "Lohn-EP",
+            "Stoff-EP",
+            "Gerät-EP",
+            "Sonst-EP",
+            "EP",
+            "GP",
+            "Stoff-GP",
+            "Projektabweichung",
+        ]);
+        let Some(b) = self.blatt.as_deref() else {
+            return out.into_bytes();
+        };
+        let zahl = |c: Cent| euro(c).replace('.', "");
+        let menge = |d: Dez, e: Einheit| {
+            menge_text(d, e)
+                .trim_end_matches(e.zeichen())
+                .trim()
+                .replace('.', "")
+        };
+        for z in &self.zeilen {
+            match (z.art, z.pos) {
+                (Art::Position { .. }, Some((i, m))) => {
+                    let p = &b.positionen[i];
+                    let nu_material = self.modus.nur_material() && p.nu.is_some();
+                    let gp = if nu_material {
+                        String::new()
+                    } else {
+                        zahl(p.gp_von(m, false))
+                    };
+                    let kennung = match &p.quelle {
+                        Quelle::Leistung(g) | Quelle::Geschaetzt(g) | Quelle::Richtpreis(g) => {
+                            g.to_ifc()
+                        }
+                    };
+                    zeile(&[
+                        &z.gruppe,
+                        &kennung,
+                        &p.oz,
+                        &p.kurz,
+                        &menge(m, p.einheit),
+                        p.einheit.zeichen(),
+                        &zahl(p.lohn),
+                        &zahl(p.stoff),
+                        &zahl(p.geraet),
+                        &zahl(p.sonst),
+                        &zahl(p.ep),
+                        &gp,
+                        &zahl(p.gp_von(m, true)),
+                        "",
+                    ]);
+                }
+                (Art::Ohne, _) => {
+                    let (zahl_menge, einheit) = z.menge.split_once(' ').unwrap_or((&z.menge, ""));
+                    zeile(&[
+                        &z.gruppe,
+                        "",
+                        "",
+                        &z.text,
+                        &zahl_menge.replace('.', ""),
+                        einheit,
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                    ]);
+                }
+                (Art::Gruppe, _) => {
+                    let summe = z.betrag.map(zahl).unwrap_or_default();
+                    zeile(&[
+                        &z.text, "", "", "Summe", "", "", "", "", "", "", "", &summe, "", "",
+                    ]);
+                }
+                (Art::Ausgleich, _) => {
+                    let summe = z.betrag.map(zahl).unwrap_or_default();
+                    zeile(&[
+                        "", "", "", &z.text, "", "", "", "", "", "", "", &summe, "", "",
+                    ]);
+                }
+                _ => {}
+            }
+        }
+        zeile(&[]);
+        let material = self.modus.nur_material();
+        let (netto, mwst) = if material {
+            (b.nur_material, b.mwst_material)
+        } else {
+            (b.netto, b.mwst)
+        };
+        zeile(&["Netto", &zahl(netto)]);
+        zeile(&["MwSt.", &zahl(mwst)]);
+        zeile(&["Brutto", &zahl(netto + mwst)]);
+        zeile(&["Lohn", &zahl(b.lohn)]);
+        zeile(&["Stoff", &zahl(b.stoff)]);
+        zeile(&["NU", &zahl(b.nu)]);
+        out.into_bytes()
+    }
+}
+
+/// Rechte Kante der Spalte Menge und EP (px).
+fn col_menge(x0: f32, cw: f32) -> f32 {
+    x0 + cw * 0.66
+}
+
+fn col_ep(x0: f32, cw: f32) -> f32 {
+    x0 + cw * 0.82
+}
+
+fn csv_feld(s: &str) -> String {
+    if s.contains([';', '"', '\n']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn haus() -> Scene {
+        let m = sk_model::szo::read_with(
+            include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo"),
+            sk_model::GuidGen::with_seed(1),
+            &sk_cost::lesen::ABSCHNITTE_SZO,
+        )
+        .expect("lädt")
+        .model;
+        Scene::with_model(m)
+    }
+
+    /// Betrag aus einem angezeigten Text „1.234,56“.
+    fn cent(text: &str) -> i64 {
+        let t = text.replace(['.', '−'], "").replace(',', "");
+        let v: i64 = t.parse().unwrap_or_else(|_| panic!("{text}"));
+        if text.starts_with('−') {
+            -v
+        } else {
+            v
+        }
+    }
+
+    /// Menge in Tausendsteln aus „172,224 m²“.
+    fn milli(text: &str) -> i64 {
+        let n = text.split(' ').next().unwrap();
+        n.replace(['.', ','], "").parse().unwrap()
+    }
+
+    /// Abnahme 6 (Anzeige rechnet nach): In jeder Zeile GP = angezeigte
+    /// Menge × angezeigter EP auf den Cent; jede Summe = Summe der
+    /// angezeigten Zeilen; das Netto gleich in jeder Gliederung, mit
+    /// Rundungsausgleich; beide Modi.
+    #[test]
+    fn anzeige_rechnet_nach() {
+        let mut s = haus();
+        let mut v = KostenView::new();
+        v.sync(&mut s, None);
+        let netto_voll = v.netto().unwrap();
+        assert_eq!(netto_voll, Cent(6_008_983));
+        for modus in Modus::ALLE {
+            for g in Gliederung::ALLE {
+                v.modus = modus;
+                v.gliederung = g;
+                v.sync(&mut s, None);
+                let z = v.zeilen();
+                let netto = v.netto().unwrap();
+                // GP = Menge × EP
+                for x in z.iter().filter(|x| matches!(x.art, Art::Position { .. })) {
+                    if x.gp.is_empty() {
+                        continue;
+                    }
+                    let soll =
+                        (milli(&x.menge) as i128 * cent(&x.ep) as i128 + 500).div_euclid(1000);
+                    assert_eq!(cent(&x.gp) as i128, soll, "{modus:?} {g:?} {x:?}");
+                }
+                // Gruppen = Summe der Zeilen darunter
+                for (i, x) in z.iter().enumerate() {
+                    if x.art != Art::Gruppe || x.betrag.is_none() {
+                        continue;
+                    }
+                    let kinder: i64 = z[i + 1..]
+                        .iter()
+                        .take_while(|k| k.ebene > x.ebene || k.art == Art::Ansatz)
+                        .filter(|k| k.ebene == x.ebene + 1)
+                        .filter_map(|k| k.betrag)
+                        .map(|c| c.0)
+                        .sum();
+                    assert_eq!(cent(&x.gp), kinder, "{modus:?} {g:?} {}", x.text);
+                }
+                // Netto = Gruppen der obersten Ebene + Ausgleich
+                let oben: i64 = z
+                    .iter()
+                    .filter(|x| x.ebene == 0)
+                    .filter_map(|x| x.betrag)
+                    .map(|c| c.0)
+                    .sum();
+                assert_eq!(oben, netto.0, "{modus:?} {g:?}");
+            }
+        }
+        // Gliederung Gewerk ohne Ausgleich; Geschoss mit −0,01 / +0,03 je nach Blatt
+        v.modus = Modus::Voll;
+        v.gliederung = Gliederung::Geschoss;
+        v.sync(&mut s, None);
+        let ausgleich = v
+            .zeilen()
+            .iter()
+            .find(|x| x.art == Art::Ausgleich)
+            .map(|x| x.betrag);
+        assert_eq!(
+            ausgleich.flatten(),
+            Some(v.blatt().unwrap().ausgleich_geschoss).filter(|c| c.0 != 0)
+        );
+    }
+
+    /// Abnahme 1 und 2 (Gliederungen): KG mit 322, 331, 335, 351 und den
+    /// Zwischensummen der 2. Ebene; Geschoss von unten; Chip-Summe gleich
+    /// dem Blatt mit nur diesem Geschoss.
+    #[test]
+    fn gliederungen_und_chips() {
+        let mut s = haus();
+        let mut v = KostenView::new();
+        v.gliederung = Gliederung::Kostengruppe;
+        v.sync(&mut s, None);
+        let gruppen: Vec<&str> = v
+            .zeilen()
+            .iter()
+            .filter(|z| z.art == Art::Gruppe)
+            .map(|z| z.text.as_str())
+            .collect();
+        for k in [
+            "320 Gründung",
+            "322 Flachgründungen und Bodenplatten",
+            "331 Tragende Außenwände",
+            "335 Außenwandbekleidungen, außen",
+            "350 Decken",
+            "351 Deckenkonstruktionen",
+        ] {
+            assert!(gruppen.contains(&k), "{k}: {gruppen:?}");
+        }
+        v.gliederung = Gliederung::Geschoss;
+        v.sync(&mut s, None);
+        let oben: Vec<&str> = v
+            .zeilen()
+            .iter()
+            .filter(|z| z.art == Art::Gruppe && z.ebene == 0)
+            .map(|z| z.text.as_str())
+            .collect();
+        assert_eq!(oben, ["Gründung", "Erdgeschoss", "Obergeschoss"]);
+        // Chip EG: Summe gleich der Geschosszeile und dem Blatt nur mit EG
+        let summen = v.leiste.summen.clone();
+        assert_eq!(summen.len(), 3);
+        let eg = v
+            .zeilen()
+            .iter()
+            .find(|z| z.text == "Erdgeschoss")
+            .unwrap()
+            .betrag
+            .unwrap();
+        assert_eq!(summen[1], euro_ganz(eg));
+        let c = v.leiste.chips().to_vec();
+        assert!(umfang_view::klick(&mut v.leiste.umfang, &c, 1, true));
+        v.sync(&mut s, None);
+        assert_eq!(v.netto(), Some(eg));
+        assert!(v.subtitle.contains(" · EG · Stand "), "{}", v.subtitle);
+        assert!(
+            v.subtitle.ends_with(" · Referenzpreise 10/2026"),
+            "{}",
+            v.subtitle
+        );
+        // abgewählte Chips behalten ihre Summe
+        assert_eq!(v.leiste.summen, summen);
+    }
+
+    /// Zeilen ohne Bauleistung stehen grau unter ihrem Gewerk, die
+    /// Gewerkzeile sagt „ohne Bauleistung“; die Fußzeile nennt sie.
+    #[test]
+    fn graue_zeilen_unter_dem_gewerk() {
+        let mut s = haus();
+        let mut v = KostenView::new();
+        v.sync(&mut s, None);
+        let z = v.zeilen();
+        let i = z
+            .iter()
+            .position(|x| x.art == Art::Ohne)
+            .expect("graue Zeile");
+        let g = z[..i].iter().rev().find(|x| x.art == Art::Gruppe).unwrap();
+        assert!(g.text.contains("Dach"), "{}", g.text);
+        assert_eq!(g.gp, "ohne Bauleistung");
+        let f = v.fuss();
+        assert!(
+            f.iter().any(|x| x.text == "Ohne Preis: "
+                && x.verweis == "Dachterrasse, Attikablech (3 Zeilen ohne Bauleistung)"),
+            "{:?}",
+            f.iter().map(|x| &x.verweis).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn zahlen_und_csv() {
+        assert_eq!(menge_text(Dez(172_224_000), Einheit::M2), "172,224 m²");
+        assert_eq!(menge_text(Dez(1_172_224_000), Einheit::M3), "1.172,224 m³");
+        assert_eq!(euro_ganz(Cent(6_008_983)), "60.090 €");
+        assert_eq!(prozent(Cent(2_894_149), Cent(6_008_983)), Some(48));
+        let mut s = haus();
+        let mut v = KostenView::new();
+        v.sync(&mut s, None);
+        let csv = String::from_utf8(v.csv("Standardhaus", "08.10.2026")).unwrap();
+        assert!(csv.starts_with("\u{feff}Projekt;Standardhaus\r\n"), "{csv}");
+        assert!(csv.contains("\r\nNetto;60089,83\r\n"), "{csv}");
+        assert!(csv.contains("\r\nModus;Material + Lohn\r\n"));
+        // OZ mit Los, Frostschürze unter 1.01.0020; Zeilen ohne Bauleistung
+        // ohne OZ, Menge und Einheit getrennt
+        assert!(csv.contains(";1.01.0020;Frostschürze"), "{csv}");
+        let kopf = csv.lines().find(|l| l.starts_with("Gliederung;")).unwrap();
+        let spalten = kopf.split(';').count();
+        assert_eq!(spalten, 14);
+        for l in csv
+            .lines()
+            .filter(|l| l.contains(';'))
+            .skip_while(|l| !l.starts_with("Gliederung;"))
+        {
+            if l.starts_with("Netto;") {
+                break;
+            }
+            assert_eq!(l.split(';').count(), spalten, "{l}");
+        }
+    }
+}

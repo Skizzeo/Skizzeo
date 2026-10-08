@@ -30,19 +30,10 @@ pub type RowBand = (i32, i32, Option<(Rgba, bool)>);
 /// Unterzeile, Geschoss-Chips (KA-1), Spaltenköpfe und Linie; bleibt beim
 /// Rollen stehen.
 const HEAD: f32 = 92.0 + CHIP_ROW;
-/// Zeile der Geschoss-Chips (KA-1): Pille 24 dip und Luft darunter; Oberkante
-/// 62 dip unter der Titelleiste (dazu die Zeile des Umschalters).
-const CHIP_ROW: f32 = 34.0;
+/// Zeile der Geschoss-Chips (KA-1); Oberkante 62 dip unter der Titelleiste
+/// (dazu die Zeile des Umschalters).
+const CHIP_ROW: f32 = umfang_view::ROW;
 const CHIP_TOP: f32 = 62.0;
-const CHIP_H: f32 = 24.0;
-const CHIP_PAD: f32 = 12.0;
-const CHIP_GAP: f32 = 6.0;
-const CHIP_PX: f32 = 11.0;
-/// Gebäudefeld vor den Chips ab zwei Gebäuden (dip) und Zeilen seiner Liste.
-const FIELD_W: f32 = 150.0;
-const FIELD_ROW: f32 = 26.0;
-/// Weite und Dauer des Wackelns, wenn der letzte Chip abgewählt werden soll.
-const WOBBLE_DIP: f32 = 3.0;
 /// Höhe einer Geschosszeile und Luft davor (dip).
 const STOREY_ROW: f32 = 24.0;
 const STOREY_GAP: f32 = 8.0;
@@ -198,20 +189,8 @@ enum Hot {
     Button,
     /// Eine Hälfte des Umschalters „Gliedern nach“.
     Grouping(Grouping),
-    /// Geschoss-Chip (KA-1).
-    Chip(usize),
-    /// „Alle“ hinter den Chips.
-    All,
-    /// Gebäudefeld und, wenn offen, ein Eintrag seiner Liste (0 = Projekt).
-    Field,
-    FieldItem(usize),
-}
-
-/// Lage der Umfangsleiste (px, x, y, b, h).
-struct ChipLayout {
-    field: Option<(f32, f32, f32, f32)>,
-    chips: Vec<(f32, f32, f32, f32)>,
-    all: Option<(f32, f32, f32, f32)>,
+    /// Umfangsleiste: Gebäudefeld, Chips, „Alle“ (KA-1).
+    Umfang(umfang_view::Hot),
 }
 
 /// Was ein Ereignis in der Liste für die App bedeutet.
@@ -247,19 +226,14 @@ type GroupRef = (String, Category, Vec<ElementId>);
 
 pub struct ListView {
     grouping: Grouping,
-    /// Umfang des Blatts (KA-1): Gebäude und abgewählte Geschosse, für die
-    /// Sitzung.
-    pub umfang: Umfang,
+    /// Umfangsleiste des Blatts (KA-1): Gebäude und abgewählte Geschosse,
+    /// für die Sitzung.
+    pub leiste: umfang_view::Leiste,
     /// Umfang, aus dem die Zeilen stammen.
     umfang_shown: Option<Umfang>,
-    /// Chips des Umfangs und die Gebäude des Felds (Projekt zuerst), wie sie
-    /// das letzte `sync` gefunden hat; leer: kein Feld.
-    chips: Vec<umfang_view::Chip>,
-    field: Vec<(Option<sk_model::BuildingId>, String, String)>,
-    /// Liste des Gebäudefelds offen.
-    field_open: bool,
-    /// Der letzte gewählte Chip wackelt (abgelehnte Abwahl).
-    wobble: Option<(usize, Instant)>,
+    /// Oberkante des Blatts (dip): unter der Titelleiste und, im
+    /// Mengenfenster, unter der Kartenleiste (KA-2a).
+    pub top: f32,
     lines: Vec<Line>,
     groups: Vec<GroupRef>,
     /// Alle Bauteilzeilen in Listenreihenfolge (Bereichsauswahl).
@@ -323,12 +297,9 @@ impl ListView {
     pub fn grouped(s: &mut Scene, g: Grouping) -> ListView {
         let mut v = ListView {
             grouping: g,
-            umfang: Umfang::projekt(),
+            leiste: umfang_view::Leiste::default(),
             umfang_shown: None,
-            chips: Vec::new(),
-            field: Vec::new(),
-            field_open: false,
-            wobble: None,
+            top: 32.0,
             lines: Vec::new(),
             groups: Vec::new(),
             order: Vec::new(),
@@ -369,25 +340,19 @@ impl ListView {
     /// An den Modellstand angleichen. `true`, wenn neu gezeichnet werden muss.
     /// `animate`: geänderte Werte leuchten auf.
     pub fn sync(&mut self, s: &mut Scene, animate: bool) -> bool {
-        umfang_view::bereinigen(s.model(), &mut self.umfang);
-        let chips = umfang_view::umfang_chips(s.model(), self.umfang.gebaeude);
-        let field = umfang_view::feld(s.model());
-        if chips != self.chips || field != self.field {
-            self.chips = chips;
-            self.field = field;
-            self.field_open &= !self.field.is_empty();
+        if self.leiste.sync(s.model()) {
             self.umfang_shown = None;
         }
-        let sched = s.schedule_in(&self.umfang);
+        let sched = s.schedule_in(&self.leiste.umfang);
         let runs = s.schedule_runs();
         let mut changed = false;
-        let umfang_neu = self.umfang_shown.as_ref() != Some(&self.umfang);
+        let umfang_neu = self.umfang_shown.as_ref() != Some(&self.leiste.umfang);
         if self.runs != Some(runs) || umfang_neu {
             // Ein anderer Umfang ist kein geänderter Wert: nichts leuchtet
             let animate = animate && self.runs.is_some() && !umfang_neu;
             self.rebuild(s.model(), &sched, animate);
             self.runs = Some(runs);
-            self.umfang_shown = Some(self.umfang.clone());
+            self.umfang_shown = Some(self.leiste.umfang.clone());
             changed = true;
         }
         let hidden = sk_model::tree::hidden_count(s.model());
@@ -459,7 +424,8 @@ impl ListView {
             .iter()
             .filter_map(|&e| Some((e, m.element(e)?.number.clone())))
             .collect();
-        self.subtitle = umfang_view::umfang_text(m, &self.umfang, sk_platform::local_date_time());
+        self.subtitle =
+            umfang_view::umfang_text(m, &self.leiste.umfang, sk_platform::local_date_time());
         // Geänderte Werte merken
         let mut now_cells = HashMap::new();
         for l in &self.lines {
@@ -555,9 +521,9 @@ impl ListView {
         (self.h as f32 / self.scale - self.top_dip() - self.head()).max(0.0)
     }
 
-    /// Unterkante der Titelleiste (dip).
+    /// Oberkante des Blatts (dip).
     fn top_dip(&self) -> f32 {
-        32.0
+        self.top
     }
 
     /// Höhe des Kopfs über der Liste (dip).
@@ -1096,292 +1062,32 @@ impl ListView {
 
     // --- Umfang: Gebäudefeld und Geschoss-Chips (KA-1) ---------------------
 
-    /// Lage der Umfangsleiste (px): Gebäudefeld (ab zwei Gebäuden), die
-    /// Chips und „Alle“ (nur wenn nicht alle gewählt sind).
-    fn chip_layout(&self, t: &Theme, fonts: &Fonts) -> ChipLayout {
+    /// Lage der Umfangsleiste unter der Unterzeile (und dem Umschalter, wenn
+    /// er eine eigene Zeile hat).
+    pub fn leiste_lage(&self, t: &Theme) -> umfang_view::Lage {
         let s = self.scale;
-        let (x0, _) = self.content_x(t);
-        let y = (self.top_dip() + CHIP_TOP + self.head_extra.get()) * s;
-        let h = CHIP_H * s;
-        let bold = fonts.bold.as_ref().or(fonts.regular.as_ref());
-        let px = CHIP_PX * s;
-        let width = |text: &str| {
-            bold.map_or(text.chars().count() as f32 * px * 0.6, |f| {
-                f.width(text, px)
-            })
-        };
-        let mut x = x0;
-        let field = (!self.field.is_empty()).then(|| {
-            let r = (x, y, FIELD_W * s, h);
-            x += (FIELD_W + 2.0 * CHIP_GAP) * s;
-            r
-        });
-        let chips = self
-            .chips
-            .iter()
-            .map(|c| {
-                let w = width(&c.name) + 2.0 * CHIP_PAD * s;
-                let r = (x, y, w, h);
-                x += w + CHIP_GAP * s;
-                r
-            })
-            .collect();
-        let all = (!umfang_view::alle_an(&self.umfang, &self.chips)).then(|| {
-            let w = width("Alle") + 8.0 * s;
-            (x + 4.0 * s, y, w, h)
-        });
-        ChipLayout { field, chips, all }
-    }
-
-    /// Einträge der offenen Liste des Gebäudefelds (px), unter dem Feld.
-    fn field_items(&self, t: &Theme, fonts: &Fonts) -> Vec<(f32, f32, f32, f32)> {
-        let Some((fx, fy, _, fh)) = self.chip_layout(t, fonts).field else {
-            return Vec::new();
-        };
-        if !self.field_open {
-            return Vec::new();
+        umfang_view::Lage {
+            x0: self.content_x(t).0,
+            y: (self.top_dip() + CHIP_TOP + self.head_extra.get()) * s,
+            s,
         }
-        let s = self.scale;
-        let regular = fonts.regular.as_ref();
-        let w = self
-            .field
-            .iter()
-            .map(|(_, n, g)| {
-                regular.map_or(200.0 * s, |f| {
-                    f.width(n, CHIP_PX * s) + f.width(g, 10.0 * s) + 40.0 * s
-                })
-            })
-            .fold(FIELD_W * s, f32::max);
-        (0..self.field.len())
-            .map(|i| {
-                (
-                    fx,
-                    fy + fh + 4.0 * s + i as f32 * FIELD_ROW * s,
-                    w,
-                    FIELD_ROW * s,
-                )
-            })
-            .collect()
     }
 
     /// Liegt etwas über der Liste (offenes Gebäudefeld) oder wackelt ein
     /// Chip? Dann zeichnet das Fenster ganz statt nur einzelner Zeilen.
     pub fn overlay_open(&self) -> bool {
-        self.field_open || self.wobble.is_some()
-    }
-
-    fn hit_umfang(&self, t: &Theme, fonts: &Fonts, x: f32, y: f32) -> Option<Hot> {
-        let inside = |(rx, ry, rw, rh): (f32, f32, f32, f32)| {
-            x >= rx && x < rx + rw && y >= ry && y < ry + rh
-        };
-        if let Some(i) = self.field_items(t, fonts).into_iter().position(inside) {
-            return Some(Hot::FieldItem(i));
-        }
-        let l = self.chip_layout(t, fonts);
-        if l.field.is_some_and(inside) {
-            return Some(Hot::Field);
-        }
-        if let Some(i) = l.chips.iter().position(|r| inside(*r)) {
-            return Some(Hot::Chip(i));
-        }
-        l.all.filter(|r| inside(*r)).map(|_| Hot::All)
-    }
-
-    /// Klick in die Umfangsleiste. `None`: nicht getroffen.
-    fn click_umfang(&mut self, hot: Hot, ctrl: bool) -> Option<ListOut> {
-        match hot {
-            Hot::Chip(i) => {
-                self.field_open = false;
-                if !umfang_view::klick(&mut self.umfang, &self.chips, i, ctrl) {
-                    self.wobble = Some((i, Instant::now()));
-                }
-                Some(ListOut::Repaint)
-            }
-            Hot::All => {
-                self.field_open = false;
-                umfang_view::alle(&mut self.umfang);
-                Some(ListOut::Repaint)
-            }
-            Hot::Field => {
-                self.field_open = !self.field_open;
-                Some(ListOut::Repaint)
-            }
-            Hot::FieldItem(i) => {
-                self.field_open = false;
-                let g = self.field.get(i)?.0;
-                if g != self.umfang.gebaeude {
-                    self.umfang.gebaeude = g;
-                    self.chips.clear();
-                }
-                Some(ListOut::Repaint)
-            }
-            _ => None,
-        }
-    }
-
-    /// Versatz des wackelnden Chips (px).
-    fn wobble_dx(&self, i: usize, t: &Theme, now: Instant) -> f32 {
-        match self.wobble {
-            Some((j, at)) if j == i && t.size.anim_ms > 0.0 => {
-                let ms = now.duration_since(at).as_secs_f32() * 1000.0;
-                let d = t.size.anim_ms.max(1.0);
-                if ms >= d {
-                    return 0.0;
-                }
-                let k = 1.0 - ms / d;
-                (ms / d * std::f32::consts::TAU * 3.0).sin() * k * WOBBLE_DIP * self.scale
-            }
-            _ => 0.0,
-        }
-    }
-
-    /// Gebäudefeld, Chips und „Alle“ (Einstellungen §3 KA-1 Punkte 5–6).
-    fn paint_chips(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts, now: Instant) {
-        let s = self.scale;
-        let u = &t.ui;
-        let regular = fonts.regular.as_ref();
-        let bold = fonts.bold.as_ref().or(regular);
-        let px = CHIP_PX * s;
-        let l = self.chip_layout(t, fonts);
-        let line = s.max(1.0);
-        let pill = |c: &mut Canvas, (x, y, w, h): (f32, f32, f32, f32), fill: Rgba, edge: Rgba| {
-            let mut p = Path::new();
-            p.rounded_rect(x, y, w, h, h * 0.5);
-            c.fill(&p, edge);
-            let mut p = Path::new();
-            p.rounded_rect(
-                x + line,
-                y + line,
-                w - 2.0 * line,
-                h - 2.0 * line,
-                h * 0.5 - line,
-            );
-            c.fill(&p, fill);
-        };
-        if let Some((x, y, w, h)) = l.field {
-            let hot = matches!(self.hot, Some(Hot::Field)) || self.field_open;
-            let mut p = Path::new();
-            p.rounded_rect(x, y, w, h, t.size.corner_radius * s);
-            c.fill(&p, if hot { u.border } else { u.sheet_rule });
-            let mut p = Path::new();
-            p.rounded_rect(
-                x + line,
-                y + line,
-                w - 2.0 * line,
-                h - 2.0 * line,
-                t.size.corner_radius * s - line,
-            );
-            c.fill(&p, u.bg);
-            if let Some(f) = regular {
-                let name = umfang_view::umfang_name_von(&self.field, &self.umfang);
-                let cap = f.cap_height(px);
-                f.draw(
-                    c,
-                    &name,
-                    px,
-                    x + 10.0 * s,
-                    y + (h + cap) * 0.5,
-                    u.sheet_text,
-                );
-                f.draw(
-                    c,
-                    "▾",
-                    px,
-                    x + w - 18.0 * s,
-                    y + (h + cap) * 0.5,
-                    u.sheet_text_dim,
-                );
-            }
-        }
-        for (i, (ch, r)) in self.chips.iter().zip(&l.chips).enumerate() {
-            let on = umfang_view::an(&self.umfang, ch);
-            let hover = self.hot == Some(Hot::Chip(i));
-            let r = (r.0 + self.wobble_dx(i, t, now), r.1, r.2, r.3);
-            let (fill, edge, font, col) = if on {
-                (u.sheet_select, u.accent, bold, u.sheet_text)
-            } else if hover {
-                (u.bg, u.border, regular, u.sheet_text)
-            } else {
-                (u.sheet_bg, u.sheet_rule, regular, u.sheet_text_dim)
-            };
-            let fill = if on && hover { u.sheet_hover } else { fill };
-            pill(c, r, fill, edge);
-            if let Some(f) = font {
-                let tw = f.width(&ch.name, px);
-                f.draw(
-                    c,
-                    &ch.name,
-                    px,
-                    r.0 + (r.2 - tw) * 0.5,
-                    r.1 + (r.3 + f.cap_height(px)) * 0.5,
-                    col,
-                );
-            }
-        }
-        if let (Some((x, y, _, h)), Some(f)) = (l.all, bold) {
-            let col = if self.hot == Some(Hot::All) {
-                u.accent_hover
-            } else {
-                u.accent
-            };
-            f.draw(
-                c,
-                "Alle",
-                px,
-                x + 4.0 * s,
-                y + (h + f.cap_height(px)) * 0.5,
-                col,
-            );
-        }
-    }
-
-    /// Offene Liste des Gebäudefelds über der Liste.
-    fn paint_field_list(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts) {
-        let items = self.field_items(t, fonts);
-        let (Some(&(x, y, w, _)), Some(&(_, ly, _, lh))) = (items.first(), items.last()) else {
-            return;
-        };
-        let s = self.scale;
-        let u = &t.ui;
-        let h = ly + lh - y;
-        let r = t.size.corner_radius * s;
-        let mut p = Path::new();
-        p.rounded_rect(x - s, y - s + 2.0 * s, w + 2.0 * s, h + 2.0 * s, r);
-        c.fill(&p, u.shadow);
-        let mut p = Path::new();
-        p.rounded_rect(x - s, y - s, w + 2.0 * s, h + 2.0 * s, r);
-        c.fill(&p, u.sheet_rule);
-        let mut p = Path::new();
-        p.rounded_rect(x, y, w, h, r);
-        c.fill(&p, u.bg);
-        let px = CHIP_PX * s;
-        for (i, ((g, name, geschosse), (ix, iy, iw, ih))) in
-            self.field.iter().zip(items).enumerate()
-        {
-            if self.hot == Some(Hot::FieldItem(i)) {
-                c.fill_rect(ix, iy, iw, ih, u.sheet_hover);
-            }
-            let chosen = *g == self.umfang.gebaeude;
-            let font = if chosen { fonts.bold.as_ref() } else { None }.or(fonts.regular.as_ref());
-            let Some(f) = font else { continue };
-            let base = iy + (ih + f.cap_height(px)) * 0.5;
-            f.draw(c, name, px, ix + 10.0 * s, base, u.sheet_text);
-            if let Some(r) = fonts.regular.as_ref() {
-                let nx = ix + 10.0 * s + f.width(name, px) + 10.0 * s;
-                r.draw(c, geschosse, 10.0 * s, nx, base, u.sheet_text_dim);
-            }
-        }
+        self.leiste.overlay_open()
     }
 
     fn hit(&self, t: &Theme, fonts: &Fonts, x: f64, y: f64) -> Option<Hot> {
         self.fit_head(t, fonts);
         let (x, y) = (x as f32, y as f32);
         let s = self.scale;
-        if let Some(h) = self.hit_umfang(t, fonts, x, y) {
-            return Some(h);
+        if let Some(h) = self.leiste.hit(fonts, self.leiste_lage(t), x, y) {
+            return Some(Hot::Umfang(h));
         }
         // Über der offenen Liste des Felds liegt nichts anderes
-        if self.field_open {
+        if self.leiste.field_open() {
             return None;
         }
         let (bx, by, bw, bh) = self.button_rect(t, fonts);
@@ -1441,18 +1147,15 @@ impl ListView {
         // Nur Knopf, Umschalter und Umfangsleiste sehen anders aus, wenn die
         // Maus darübersteht
         let button = |h: Option<Hot>| match h {
-            Some(
-                Hot::Button
-                | Hot::Grouping(_)
-                | Hot::Chip(_)
-                | Hot::All
-                | Hot::Field
-                | Hot::FieldItem(_),
-            ) => h,
+            Some(Hot::Button | Hot::Grouping(_) | Hot::Umfang(_)) => h,
             _ => None,
         };
         let repaint = button(hot) != button(self.hot);
         self.hot = hot;
+        self.leiste.hot = match hot {
+            Some(Hot::Umfang(h)) => Some(h),
+            _ => None,
+        };
         let (one, group) = self.hover_of(hot);
         if p.set_hover(one, group) {
             self.hover = p.hovered().collect();
@@ -1464,15 +1167,9 @@ impl ListView {
     pub fn mouse_leave(&mut self, p: &mut Picking) -> Option<ListOut> {
         let button = matches!(
             self.hot.take(),
-            Some(
-                Hot::Button
-                    | Hot::Grouping(_)
-                    | Hot::Chip(_)
-                    | Hot::All
-                    | Hot::Field
-                    | Hot::FieldItem(_)
-            )
+            Some(Hot::Button | Hot::Grouping(_) | Hot::Umfang(_))
         ) || self.button_down;
+        self.leiste.hot = None;
         self.button_down = false;
         if p.set_hover(None, Vec::new()) {
             self.hover.clear();
@@ -1490,15 +1187,16 @@ impl ListView {
         mods: sk_platform::Modifiers,
     ) -> Option<ListOut> {
         let hot = self.hit(t, fonts, x, y);
-        if let Some(h @ (Hot::Chip(_) | Hot::All | Hot::Field | Hot::FieldItem(_))) = hot {
-            return self.click_umfang(h, mods.ctrl);
+        if let Some(Hot::Umfang(h)) = hot {
+            self.leiste.click(h, mods.ctrl);
+            return Some(ListOut::Repaint);
         }
         // Ein Klick daneben schließt die Liste des Gebäudefelds
-        if std::mem::take(&mut self.field_open) {
+        if self.leiste.close_field() {
             return Some(ListOut::Repaint);
         }
         match hot {
-            Some(Hot::Chip(_) | Hot::All | Hot::Field | Hot::FieldItem(_)) => None,
+            Some(Hot::Umfang(_)) => None,
             Some(Hot::Button) => {
                 self.button_down = true;
                 Some(ListOut::Repaint)
@@ -1601,14 +1299,7 @@ impl ListView {
         {
             self.motion = None;
         }
-        if let Some((_, at)) = self.wobble {
-            let d = std::time::Duration::from_secs_f32(t.size.anim_ms.max(0.0) / 1000.0);
-            if anim && now.duration_since(at) < d {
-                busy = true;
-            } else {
-                self.wobble = None;
-            }
-        }
+        busy |= self.leiste.tick(t, now);
         busy |= self.flashing();
         busy
     }
@@ -1826,7 +1517,8 @@ impl ListView {
             self.paint_head(c, t, fonts, now);
         }
         self.paint_scrollbar(c, t);
-        self.paint_field_list(c, t, fonts);
+        self.leiste
+            .paint_field_list(c, t, fonts, self.leiste_lage(t));
     }
 
     /// Laufleiste am rechten Rand der Liste.
@@ -1952,7 +1644,7 @@ impl ListView {
         }
         let rule = top + (86.0 + CHIP_ROW + self.head_extra.get()) * s;
         c.fill_rect(x0, rule, cw, s.max(1.0), u.sheet_rule);
-        self.paint_chips(c, t, fonts, now);
+        self.leiste.paint(c, t, fonts, self.leiste_lage(t), now);
     }
 
     /// Umschalter „Gliedern nach: Geschoss | Gewerk“ (Pille in `sheet_tile`,
@@ -2060,8 +1752,8 @@ impl ListView {
     /// (Hinweis nach der Wartezeit).
     pub fn tip_at(&self, t: &Theme, fonts: &Fonts, x: f64, y: f64) -> Option<String> {
         let hot = self.hit(t, fonts, x, y)?;
-        if let Hot::Chip(i) = hot {
-            return Some(umfang_view::tooltip(&self.umfang, &self.chips, i));
+        if let Hot::Umfang(h) = hot {
+            return self.leiste.tip(h);
         }
         let (Hot::Line(i) | Hot::Toggle(i)) = hot else {
             return None;
@@ -3245,278 +2937,5 @@ fn csv_storeys(m: &Model, sched: &Schedule) -> Vec<u8> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn zahlen_deutsch() {
-        assert_eq!(de(1234.5678, 3), "1.234,568");
-        assert_eq!(de(-1.3159, 3), "−1,316");
-        assert_eq!(de(0.0, 2), "0,00");
-        assert_eq!(de(-0.0001, 2), "0,00");
-        assert_eq!(cm(220.0), "22 cm");
-        assert_eq!(cm(175.0), "17,5 cm");
-        assert_eq!(csv_num(17.6), "17,6000");
-        assert_eq!(csv_num(-1.31593), "-1,3159");
-    }
-
-    #[test]
-    fn gliederung_wird_gemerkt() {
-        use crate::windows::{read_grouping, write_settings_grouped, Windows};
-        let w = Windows::new(520.0);
-        // nach Geschoss: nichts zu merken, wie bisher
-        assert_eq!(write_settings_grouped(&w, Grouping::Storey), "");
-        let text = write_settings_grouped(&w, Grouping::Trade);
-        assert!(text.contains("gliederung=gewerk"), "{text}");
-        assert_eq!(read_grouping(&text), Grouping::Trade);
-        assert_eq!(read_grouping(""), Grouping::Storey);
-        assert_eq!(
-            read_grouping("[mengenfenster] gliederung=quer\n"),
-            Grouping::Storey
-        );
-    }
-
-    /// Eine Wand in zwei Gewerken (§12): Porenbeton bei Mauerarbeiten, WDVS
-    /// beim Fassadensystem, je als „Schicht · Bauteilgruppe“; die Summen
-    /// gleichen denen nach Geschoss.
-    #[test]
-    fn wand_in_zwei_gewerken() {
-        use sk_math::vec3;
-        use sk_model::{RefSide, WallChain};
-        let mut s = Scene::with_model(Model::with_seed(12));
-        let chain = WallChain {
-            base: 0.0,
-            points: vec![
-                vec3(0.0, 0.0, 0.0),
-                vec3(0.0, 8000.0, 0.0),
-                vec3(10000.0, 8000.0, 0.0),
-                vec3(10000.0, 0.0, 0.0),
-            ],
-            closed: true,
-            ref_side: RefSide::Left,
-            layers: Vec::new(),
-            height: 2750.0,
-            joints: Default::default(),
-        };
-        s.add_wall(&chain).unwrap();
-        let v = ListView::grouped(&mut s, Grouping::Trade);
-        let t = v.line_texts();
-        let at = |p: &str| t.iter().position(|l| l.trim_start().starts_with(p));
-        let (Some(maurer), Some(gasbeton), Some(wdvs), Some(daemm)) = (
-            at("Mauerarbeiten [DIN 18330]"),
-            at("Porenbeton 17,5 · Außenwände | AW-001 … 008"),
-            at("Wärmedämm-Verbundsysteme [DIN 18345]"),
-            at("Dämmung (WDVS) 14 · Außenwände | AW-001 … 008"),
-        ) else {
-            panic!("{t:#?}");
-        };
-        assert!(
-            maurer < gasbeton && gasbeton < wdvs && wdvs < daemm,
-            "{t:#?}"
-        );
-        // Unter der Schichtgruppe die Wände mit ihrem Geschoss
-        assert!(
-            t[gasbeton + 1].trim_start().starts_with("AW-001 · EG"),
-            "{t:#?}"
-        );
-        // Summen nach Baustoff wie nach Geschoss
-        let g = ListView::grouped(&mut s, Grouping::Storey);
-        assert_eq!(t.last(), g.line_texts().last());
-        let mut v = v;
-        assert!(v.set_grouping(Grouping::Storey));
-        assert!(!v.set_grouping(Grouping::Storey));
-        v.sync(&mut s, false);
-        assert_eq!(v.line_texts(), g.line_texts());
-    }
-
-    #[test]
-    fn atv_nummer_hinter_gewerk() {
-        assert_eq!(trade_tag("18331"), "DIN 18331");
-        assert_eq!(trade_tag("F1"), "F1");
-    }
-
-    /// Standardhaus RH-1 (Fundament, EG, OG) als Szene.
-    fn standardhaus() -> Scene {
-        let m = sk_model::szo::read_with(
-            include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo"),
-            sk_model::GuidGen::with_seed(1),
-            &sk_cost::lesen::ABSCHNITTE_SZO,
-        )
-        .expect("lädt")
-        .model;
-        Scene::with_model(m)
-    }
-
-    /// Mitte eines Rechtecks (px).
-    fn mitte(r: (f32, f32, f32, f32)) -> (f64, f64) {
-        ((r.0 + r.2 * 0.5) as f64, (r.1 + r.3 * 0.5) as f64)
-    }
-
-    /// KA-1 Abnahme 2, 3, 8 und 11a über die Maus: Klick auf den EG-Chip
-    /// zeigt nur das EG, ohne die Liste neu zu rechnen; „Alle“ holt alle
-    /// zurück; der letzte Chip wackelt; der Umfang bleibt beim
-    /// Gliederungswechsel.
-    #[test]
-    fn chips_mit_der_maus() {
-        let (t, fonts) = (Theme::dark(), Fonts::system());
-        let mut p = Picking::default();
-        let mut s = standardhaus();
-        let mut v = ListView::new(&mut s);
-        v.w = 520;
-        v.h = 600;
-        let alle_zeilen = v.line_texts();
-        let runs = s.schedule_runs();
-        assert!(
-            v.subtitle.contains(" · alle Geschosse · Stand "),
-            "{}",
-            v.subtitle
-        );
-        let l = v.chip_layout(&t, &fonts);
-        assert!(l.field.is_none() && l.all.is_none());
-        assert_eq!(l.chips.len(), 3);
-        let keine = sk_platform::Modifiers::default();
-        let out = v.mouse_down(&t, &fonts, &mut p, mitte(l.chips[1]), keine);
-        assert!(matches!(out, Some(ListOut::Repaint)));
-        v.sync(&mut s, false);
-        assert_eq!(s.schedule_runs(), runs, "Chip-Klick rechnet nicht neu");
-        assert!(v.subtitle.contains(" · EG · Stand "), "{}", v.subtitle);
-        let nur_eg = v.line_texts();
-        assert!(nur_eg.len() < alle_zeilen.len());
-        // Der letzte gewählte Chip lässt sich nicht abwählen, er wackelt
-        let l = v.chip_layout(&t, &fonts);
-        let alle = l.all.expect("„Alle“ erscheint");
-        let _ = v.mouse_down(&t, &fonts, &mut p, mitte(l.chips[1]), keine);
-        assert!(v.wobble.is_some_and(|(i, _)| i == 1));
-        v.sync(&mut s, false);
-        assert_eq!(v.line_texts(), nur_eg);
-        // Gliederungswechsel behält den Umfang
-        assert!(v.set_grouping(Grouping::Trade));
-        v.sync(&mut s, false);
-        assert!(v.subtitle.contains(" · EG · Stand "));
-        assert!(v.set_grouping(Grouping::Storey));
-        v.sync(&mut s, false);
-        assert_eq!(v.line_texts(), nur_eg);
-        // „Alle“ holt alle zurück und verschwindet
-        let _ = v.mouse_down(&t, &fonts, &mut p, mitte(alle), keine);
-        v.sync(&mut s, false);
-        assert_eq!(v.line_texts(), alle_zeilen);
-        assert!(v.chip_layout(&t, &fonts).all.is_none());
-        assert_eq!(s.schedule_runs(), runs);
-    }
-
-    /// KA-1 Abnahme 7: Die CSV beginnt nach dem BOM mit der Kopfzeile; mit
-    /// Umfang nur EG stehen nur EG-Bauteile darin.
-    #[test]
-    fn csv_mit_kopfzeile() {
-        let mut s = standardhaus();
-        let ganz = s.schedule_in(&sk_model::qto::Umfang::projekt());
-        let kopf = "Gebäude 1 · alle Geschosse · Stand 08.10.2026, 11:34";
-        let b = csv_mit_kopf(s.model(), &ganz, Grouping::Storey, kopf);
-        let ohne = csv_grouped(s.model(), &ganz, Grouping::Storey);
-        assert!(b.starts_with(&[0xEF, 0xBB, 0xBF]));
-        let text = String::from_utf8(b[3..].to_vec()).unwrap();
-        assert!(text.starts_with(&format!("{kopf}\r\n")), "{text}");
-        assert_eq!(&b[3 + kopf.len() + 2..], &ohne[3..]);
-        // nur EG
-        let m = s.model().clone();
-        let mut u = sk_model::qto::Umfang::projekt();
-        let c = umfang_view::umfang_chips(&m, None);
-        assert!(umfang_view::klick(&mut u, &c, 1, false));
-        let eg = s.schedule_in(&u);
-        let csv = String::from_utf8(csv_grouped(&m, &eg, Grouping::Storey)).unwrap();
-        let ganz_csv = String::from_utf8(ohne).unwrap();
-        assert!(csv.len() < ganz_csv.len());
-        assert!(
-            !csv.contains("Obergeschoss") && !csv.contains("Gründung"),
-            "{csv}"
-        );
-        assert!(ganz_csv.contains("Obergeschoss"));
-    }
-
-    /// Liste mit einem Haus 10 × 8 m nach Gewerk in Breite `w` (dip).
-    fn gewerk_liste(w: u32) -> ListView {
-        use sk_math::vec3;
-        use sk_model::{RefSide, WallChain};
-        let mut s = Scene::with_model(Model::with_seed(14));
-        let chain = WallChain {
-            base: 0.0,
-            points: vec![
-                vec3(0.0, 0.0, 0.0),
-                vec3(0.0, 8000.0, 0.0),
-                vec3(10000.0, 8000.0, 0.0),
-                vec3(10000.0, 0.0, 0.0),
-            ],
-            closed: true,
-            ref_side: RefSide::Left,
-            layers: Vec::new(),
-            height: 2750.0,
-            joints: Default::default(),
-        };
-        s.add_wall(&chain).unwrap();
-        let mut v = ListView::grouped(&mut s, Grouping::Trade);
-        v.subtitle = "Gebäude 1 (GB-01) · Stand 07.10.2026, 10:56".into();
-        v.w = w;
-        v
-    }
-
-    /// Einstellungen §14 (n): Bei 520 steht der Umschalter rechtsbündig auf
-    /// der Unterzeile, Mitte auf Mitte, der Kopf bleibt so hoch wie bisher;
-    /// reicht der Platz dort nicht, bekommt er eine eigene Zeile darunter
-    /// und die Liste rückt um diese Zeile nach unten.
-    #[test]
-    fn umschalter_auf_der_unterzeile() {
-        let (t, fonts) = (Theme::dark(), Fonts::system());
-        let v = gewerk_liste(520);
-        let (_, halves, own) = v.toggle_layout(&t, &fonts);
-        assert!(!own);
-        let (_, (x, y, w, h)) = halves[1];
-        let (x0, cw) = v.content_x(&t);
-        let inset = TOGGLE_INSET;
-        assert!((x + w + inset - (x0 + cw)).abs() < 1e-3, "rechtsbündig");
-        let cap = fonts.regular.as_ref().map_or(7.5, |f| f.cap_height(10.5));
-        let sub_mid = v.top_dip() + 52.0 - cap * 0.5;
-        assert!((y + h * 0.5 - sub_mid).abs() < 1e-3, "Mitte auf Mitte");
-        v.fit_head(&t, &fonts);
-        assert_eq!(v.head(), HEAD);
-
-        let v = gewerk_liste(320);
-        let (_, halves, own) = v.toggle_layout(&t, &fonts);
-        assert!(own);
-        let (_, (_, y2, _, h2)) = halves[0];
-        assert!((y2 + h2 * 0.5 - (sub_mid + TOGGLE_ROW)).abs() < 1e-3);
-        v.fit_head(&t, &fonts);
-        assert_eq!(v.head(), HEAD + TOGGLE_ROW);
-    }
-
-    /// Einstellungen §14 (o): Ein gekürzter Zeilenname gibt den vollen Namen
-    /// als Hinweis; ein ganz gezeigter nicht.
-    #[test]
-    fn gekuerzter_name_als_hinweis() {
-        let (t, fonts) = (Theme::dark(), Fonts::system());
-        if fonts.regular.is_none() {
-            return;
-        }
-        let v = gewerk_liste(520);
-        v.fit_head(&t, &fonts);
-        let list_top = v.top_dip() + v.head();
-        let lines: Vec<(usize, f32, f32)> = v.layout(Some(&t));
-        let mut cut = None;
-        let mut whole = None;
-        for (i, y, h) in lines {
-            let l = &v.lines[i];
-            let (x, yy) = (
-                v.content_x(&t).0 as f64 + 40.0,
-                (list_top + y + h * 0.5) as f64,
-            );
-            match v.tip_at(&t, &fonts, x, yy) {
-                Some(full) => cut = Some((full, l.cells[0].clone())),
-                None if l.kind == Kind::Row => whole = Some(l.cells[0].clone()),
-                None => {}
-            }
-        }
-        let (full, name) = cut.expect("eine Zeile ist gekürzt");
-        assert_eq!(full, name);
-        assert!(full.starts_with("Dämmung (WDVS) 14 · Außenwände"), "{full}");
-        assert!(whole.is_some());
-    }
-}
+#[path = "schedule_view_tests.rs"]
+mod tests;

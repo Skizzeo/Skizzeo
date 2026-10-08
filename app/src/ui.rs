@@ -57,7 +57,7 @@ pub enum Id {
     Ref(RefSide),
     Ortho,
     View(ViewKind),
-    /// „Mengenermittlung“ (B7): öffnet das Mengenfenster oder holt es nach vorn.
+    /// „Mengen · Kosten“ (B7, KA-2a): öffnet das Mengenfenster oder holt es nach vorn.
     Quantity,
     Field(Field),
     /// Griff einer Ebene im Paneel „Geschosse“.
@@ -641,7 +641,7 @@ pub struct Ui {
     pub hover: Option<Id>,
     pressed: Option<Id>,
     pub view: ViewKind,
-    /// Mengenfenster offen: Knopf „Mengenermittlung“ in `accent`.
+    /// Mengenfenster offen: Knopf „Mengen · Kosten“ in `accent`.
     pub quantity_open: bool,
     pub building: bool,
     /// Das Werkzeug zeichnet Innenwände (sonst Außenwände).
@@ -830,7 +830,7 @@ fn view_rows() -> Vec<Row> {
             (Id::View(ViewKind::Right), "Rechts"),
         ]),
         Row::Separator,
-        Row::Button(Id::Quantity, "Mengenermittlung"),
+        Row::Button(Id::Quantity, crate::cards::KNOPF),
     ]
 }
 

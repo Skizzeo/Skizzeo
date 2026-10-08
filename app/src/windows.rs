@@ -2,6 +2,7 @@
 //! Titel und Merken in `einstellungen.txt` (Abschnitt `[mengenfenster]`,
 //! nie in der `.szo`).
 
+use crate::cards::Blatt;
 use crate::document::Document;
 use crate::schedule_view::Grouping;
 use sk_model::szo::{Line, Record};
@@ -14,6 +15,15 @@ pub fn quantity_caption(doc: &Document, rev: u64) -> String {
     format!("Mengenermittlung – {}", doc.caption_at(rev))
 }
 
+/// Titel nach dem gezeigten Blatt (KA-2a): „Kosten – haus.szo“; das
+/// Mengenblatt behält „Mengenermittlung – …“.
+pub fn blatt_caption(b: Blatt, doc: &Document, rev: u64) -> String {
+    match b {
+        Blatt::Mengen => quantity_caption(doc, rev),
+        Blatt::Kosten => format!("{} – {}", b.name(), doc.caption_at(rev)),
+    }
+}
+
 /// Abschnitt für `einstellungen.txt`; leer, solange das Fenster nie offen war.
 #[cfg(test)]
 pub fn write_settings(w: &Windows) -> String {
@@ -22,10 +32,17 @@ pub fn write_settings(w: &Windows) -> String {
 
 /// Wie [`write_settings`], dazu die Gliederung der Liste (Paket 1b);
 /// `gliederung=` steht nur, wenn sie nicht nach Geschoss ist.
+#[cfg(test)]
 pub fn write_settings_grouped(w: &Windows, g: Grouping) -> String {
+    write_settings_blatt(w, g, Blatt::Mengen)
+}
+
+/// Wie [`write_settings_grouped`], dazu das zuletzt gezeigte Blatt (KA-2a);
+/// `blatt=` steht nur, wenn es nicht das Mengenblatt ist.
+pub fn write_settings_blatt(w: &Windows, g: Grouping, b: Blatt) -> String {
     let mut out = String::new();
     let rect = w.remembered_rect();
-    if !w.quantity_open() && rect.is_none() && g == Grouping::Storey {
+    if !w.quantity_open() && rect.is_none() && g == Grouping::Storey && b == Blatt::Mengen {
         return out;
     }
     let mut l = Line::new("mengenfenster")
@@ -36,6 +53,9 @@ pub fn write_settings_grouped(w: &Windows, g: Grouping) -> String {
     }
     if g != Grouping::Storey {
         l = l.word("gliederung", g.key());
+    }
+    if b != Blatt::Mengen {
+        l = l.word("blatt", b.key());
     }
     l.finish(&mut out);
     out
@@ -48,6 +68,16 @@ pub fn read_grouping(text: &str) -> Grouping {
         .filter_map(|(i, l)| Record::parse(i + 1, l).ok().flatten())
         .filter(|r| r.section == "mengenfenster")
         .find_map(|r| r.opt("gliederung").and_then(Grouping::from_key))
+        .unwrap_or_default()
+}
+
+/// Zuletzt gezeigtes Blatt; ohne Angabe das Mengenblatt.
+pub fn read_blatt(text: &str) -> Blatt {
+    text.lines()
+        .enumerate()
+        .filter_map(|(i, l)| Record::parse(i + 1, l).ok().flatten())
+        .filter(|r| r.section == "mengenfenster")
+        .find_map(|r| r.opt("blatt").and_then(Blatt::from_key))
         .unwrap_or_default()
 }
 

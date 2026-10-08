@@ -2,11 +2,16 @@
 //! wie das Hauptfenster; darunter das Blatt der Mengenermittlung
 //! ([`ListView`]). Hover und Auswahl laufen über den gemeinsamen Zustand.
 //! Entf, Kontextmenü und Hinweis nach dem Löschen wie im Hauptfenster (H119).
+//! Über den Blättern die Kartenleiste (KA-2a): Mengen und Kosten
+//! ([`KostenView`]) mit ihrer lebenden Zahl; ein Klick wechselt das Blatt.
 
+use crate::cards::{self, Blatt, Karten};
 use crate::delete::{Action, ContextMenu, HintCard, Link};
+use crate::kosten_view::{self, KostenView};
 use crate::picking::Picking;
 use crate::scene::Scene;
 use crate::schedule_view::{Grouping, ListOut, ListView, RowBand};
+use sk_model::qto::Schedule;
 use sk_model::{Deleted, ElementId};
 use sk_paint::Canvas;
 use sk_platform::{CaptionArea, Event, Key, MouseButton, WindowCommand};
@@ -56,6 +61,9 @@ pub struct QuantityWindow {
     pub h: u32,
     pub title: TitleBar,
     pub list: Option<ListView>,
+    /// Kartenleiste und das Blatt Kosten (KA-2).
+    pub karten: Karten,
+    pub kosten: Option<KostenView>,
     /// Gliederung der Liste (Paket 1b), aus den Einstellungen.
     pub grouping: Grouping,
     /// Muss neu gezeichnet und gezeigt werden.
@@ -100,6 +108,8 @@ impl QuantityWindow {
             h: 0,
             title,
             list: None,
+            karten: Karten::new(Blatt::Mengen),
+            kosten: None,
             grouping: Grouping::Storey,
             dirty: false,
             docked: true,
@@ -154,7 +164,16 @@ impl QuantityWindow {
 
     /// Entf löscht hier etwas (sonst „Hier ist kein Bauteil gewählt.“).
     pub fn part_selected(&self, p: &Picking) -> bool {
-        self.list.as_ref().is_some_and(|l| l.part_selected(p))
+        match self.blatt() {
+            Blatt::Mengen => self.list.as_ref().is_some_and(|l| l.part_selected(p)),
+            Blatt::Kosten => !p.selected.is_empty(),
+        }
+    }
+
+    /// Karte unter der Maus (Fensterpixel).
+    fn karte_at(&self, t: &Theme, x: f64, y: f64) -> Option<Blatt> {
+        let s = self.title.scale;
+        Karten::hit(self.cards_x0(t), 32.0 * s, s, x, y)
     }
 
     /// Rechtsklick auf eine Zeile: wählt sie und öffnet das Menü. `false`
@@ -242,20 +261,89 @@ impl QuantityWindow {
         }
     }
 
-    /// An Modell und gemeinsamen Zustand angleichen.
+    /// Das gezeigte Blatt.
+    pub fn blatt(&self) -> Blatt {
+        self.karten.aktiv
+    }
+
+    /// Oberkante der Blätter unter Titelleiste und Karten (dip).
+    fn sheet_top() -> f32 {
+        32.0 + cards::HEIGHT
+    }
+
+    /// Linker Rand der Karten (px), wie der Inhalt der Blätter.
+    fn cards_x0(&self, t: &Theme) -> f32 {
+        t.size.sheet_pad * self.title.scale
+    }
+
+    /// An Modell und gemeinsamen Zustand angleichen (ohne Firmenkatalog).
+    #[cfg(test)]
     pub fn sync(&mut self, s: &mut Scene, p: &Picking, animate: bool) {
+        self.sync_mit(s, p, None, animate);
+    }
+
+    /// An Modell, Firmenkatalog und gemeinsamen Zustand angleichen. Beide
+    /// Blätter laufen mit, denn beide Karten zeigen ihre Zahl; den Umfang
+    /// gibt das gezeigte Blatt vor.
+    pub fn sync_mit(
+        &mut self,
+        s: &mut Scene,
+        p: &Picking,
+        firma: Option<(&sk_model::Library, u64)>,
+        animate: bool,
+    ) {
         let g = self.grouping;
+        let aktiv = self.karten.aktiv;
         let list = self.list.get_or_insert_with(|| ListView::grouped(s, g));
+        let kosten = self.kosten.get_or_insert_with(KostenView::new);
+        match aktiv {
+            Blatt::Mengen => kosten.leiste.umfang = list.leiste.umfang.clone(),
+            Blatt::Kosten => list.leiste.umfang = kosten.leiste.umfang.clone(),
+        }
+        list.top = Self::sheet_top();
+        kosten.top = Self::sheet_top();
         list.scale = self.title.scale;
+        kosten.scale = self.title.scale;
         (list.w, list.h) = (self.w, self.h);
-        if list.sync(s, animate) {
+        (kosten.w, kosten.h) = (self.w, self.h);
+        if list.sync(s, animate && aktiv == Blatt::Mengen) && aktiv == Blatt::Mengen {
+            self.dirty = true;
+        }
+        if kosten.sync(s, firma) && aktiv == Blatt::Kosten {
             self.dirty = true;
         }
         // Liegen die Zeilen danach anders (aufgeklappt, gerollt), zeichnet
         // `frame` doch das ganze Bild
-        if list.follow(s, p) {
+        if list.follow(s, p) && aktiv == Blatt::Mengen {
             self.bands_dirty = true;
         }
+        if kosten.follow(p) && aktiv == Blatt::Kosten {
+            self.dirty = true;
+        }
+        // Lebende Zahlen der Karten
+        let now = Instant::now();
+        let mengen = mengen_zahl(&s.schedule_in(&list.leiste.umfang));
+        let netto = kosten.blatt().map_or_else(String::new, |b| {
+            format!("{} netto", kosten_view::euro_ganz(b.netto))
+        });
+        let a = self.karten.set_zahl(Blatt::Mengen, mengen, now);
+        let b = self.karten.set_zahl(Blatt::Kosten, netto, now);
+        if a || b {
+            self.dirty = true;
+        }
+    }
+
+    /// Blatt wechseln; der Inhalt gleitet in `anim_ms`.
+    pub fn waehlen(&mut self, b: Blatt, t: &Theme) -> bool {
+        let anim = t.size.anim_ms > 0.0;
+        if !self.karten.waehlen(b, Instant::now(), anim) {
+            return false;
+        }
+        self.hint = None;
+        self.context = None;
+        self.tip = None;
+        self.dirty = true;
+        true
     }
 
     /// Animationen weiterführen; `true`, solange weitere Bilder nötig sind.
@@ -268,6 +356,13 @@ impl QuantityWindow {
         // Rollen braucht weitere Bilder, aber kein ganzes: `frame` verschiebt
         let scrolling = self.list.as_mut().is_some_and(|l| l.tick(t, now));
         let mut flashing = self.list.as_ref().is_some_and(|l| l.flashing());
+        // Karten (Gleiten, Aufglimmen) und Chips im Reiter Kosten
+        if self.karten.tick(t, now) {
+            flashing = true;
+        }
+        if self.blatt() == Blatt::Kosten && self.kosten.as_mut().is_some_and(|k| k.tick(t, now)) {
+            flashing = true;
+        }
         if let Some(at) = self.seam_flash {
             if now.duration_since(at) < SEAM_FLASH && t.size.anim_ms > 0.0 {
                 flashing = true;
@@ -327,7 +422,10 @@ impl QuantityWindow {
     pub fn handle(&mut self, e: &Event, t: &Theme, fonts: &Fonts, p: &mut Picking) -> Option<Out> {
         match *e {
             Event::MouseMove { x, y, .. } if self.context.is_none() => {
-                let want = self.list.as_ref().and_then(|l| l.tip_at(t, fonts, x, y));
+                let want = match self.blatt() {
+                    Blatt::Mengen => self.list.as_ref().and_then(|l| l.tip_at(t, fonts, x, y)),
+                    Blatt::Kosten => self.kosten.as_ref().and_then(|k| k.tip_at(t, fonts, x, y)),
+                };
                 self.set_tip(want.map(|w| (w, (x, y))));
             }
             Event::MouseMove { .. }
@@ -347,6 +445,9 @@ impl QuantityWindow {
                 if let Some(l) = self.list.as_mut() {
                     (l.w, l.h) = (width, height);
                 }
+                if let Some(k) = self.kosten.as_mut() {
+                    (k.w, k.h) = (width, height);
+                }
                 self.dirty = true;
                 None
             }
@@ -354,6 +455,9 @@ impl QuantityWindow {
                 self.title.scale = s;
                 if let Some(l) = self.list.as_mut() {
                     l.scale = s;
+                }
+                if let Some(k) = self.kosten.as_mut() {
+                    k.scale = s;
                 }
                 self.dirty = true;
                 None
@@ -379,14 +483,27 @@ impl QuantityWindow {
                     self.title.hover = b;
                     self.dirty = true;
                 }
-                let o = self.list.as_mut()?.mouse_move(t, fonts, p, x, y);
+                let karte = self.karte_at(t, x, y);
+                if self.karten.set_hover(karte) {
+                    self.dirty = true;
+                }
+                let o = match self.blatt() {
+                    Blatt::Mengen => self.list.as_mut()?.mouse_move(t, fonts, p, x, y),
+                    Blatt::Kosten => self.kosten.as_mut()?.mouse_move(t, fonts, p, x, y),
+                };
                 self.list_out(o)
             }
             Event::MouseLeave => {
                 if self.title.hover.take().is_some() {
                     self.dirty = true;
                 }
-                let o = self.list.as_mut()?.mouse_leave(p);
+                if self.karten.set_hover(None) {
+                    self.dirty = true;
+                }
+                let o = match self.blatt() {
+                    Blatt::Mengen => self.list.as_mut()?.mouse_leave(p),
+                    Blatt::Kosten => self.kosten.as_mut()?.mouse_leave(p),
+                };
                 self.list_out(o)
             }
             Event::MouseDown {
@@ -400,7 +517,14 @@ impl QuantityWindow {
                     self.dirty = true;
                     return None;
                 }
-                let o = self.list.as_mut()?.mouse_down(t, fonts, p, (x, y), mods);
+                if let Some(b) = self.karte_at(t, x, y) {
+                    self.waehlen(b, t);
+                    return None;
+                }
+                let o = match self.blatt() {
+                    Blatt::Mengen => self.list.as_mut()?.mouse_down(t, fonts, p, (x, y), mods),
+                    Blatt::Kosten => self.kosten.as_mut()?.mouse_down(t, fonts, p, (x, y), mods),
+                };
                 self.list_out(o)
             }
             Event::MouseUp {
@@ -420,21 +544,35 @@ impl QuantityWindow {
                         _ => Out::Close,
                     });
                 }
-                let o = self.list.as_mut()?.mouse_up(t, fonts, x, y);
+                let o = match self.blatt() {
+                    Blatt::Mengen => self.list.as_mut()?.mouse_up(t, fonts, x, y),
+                    Blatt::Kosten => self.kosten.as_mut()?.mouse_up(t, fonts, x, y),
+                };
                 self.list_out(o)
             }
             Event::Wheel { delta, .. } => {
                 // Kein ganzes Bild: `frame` verschiebt um den neuen Rollstand
                 let anim = t.size.anim_ms > 0.0;
-                self.list.as_mut()?.wheel(delta, t, anim);
-                None
+                match self.blatt() {
+                    Blatt::Mengen => {
+                        self.list.as_mut()?.wheel(delta, t, anim);
+                        None
+                    }
+                    Blatt::Kosten => {
+                        let o = self.kosten.as_mut()?.wheel(delta, t);
+                        self.list_out(o)
+                    }
+                }
             }
+            // Das Menü an der Zeile gibt es im Mengenblatt (H119)
             Event::MouseDown {
                 button: MouseButton::Right,
                 x,
                 y,
                 ..
-            } if y >= self.title.height() as f64 => Some(Out::OpenContext { x, y }),
+            } if y >= self.title.height() as f64 && self.blatt() == Blatt::Mengen => {
+                Some(Out::OpenContext { x, y })
+            }
             Event::Key {
                 key: Key::Delete,
                 down: true,
@@ -445,9 +583,14 @@ impl QuantityWindow {
                 down: true,
                 ..
             } => {
-                let l = self.list.as_mut()?;
                 let had = !p.selected.is_empty();
-                l.clear_selection(p);
+                match self.blatt() {
+                    Blatt::Mengen => self.list.as_mut()?.clear_selection(p),
+                    Blatt::Kosten => {
+                        p.selected.clear();
+                        self.kosten.as_mut()?.follow(p);
+                    }
+                }
                 self.bands_dirty = true;
                 had.then_some(Out::Picking { selection: true })
             }
@@ -567,6 +710,24 @@ impl QuantityWindow {
         }
         let (w, h) = (self.w as i32, self.h as i32);
         self.place_hint(t, fonts);
+        // Reiter Kosten und Gleiten: jedes neue Bild ganz (die Teilbilder
+        // kennt nur das Mengenblatt)
+        if self.blatt() == Blatt::Kosten || self.karten.gleiten(t, now).is_some() {
+            let bands = std::mem::take(&mut self.bands_dirty);
+            let overlay = self.kosten.as_ref().is_some_and(|k| k.overlay_open());
+            if !(self.dirty || bands || overlay || self.shown.len() != (w * h * 4) as usize) {
+                return None;
+            }
+            let mut c = std::mem::replace(&mut self.canvas, Canvas::new(0, 0));
+            self.paint_rows_into(&mut c, t, fonts, now, 0, self.h);
+            c.premul_rgba8_into(&mut self.shown);
+            self.canvas = c;
+            self.dirty = false;
+            // Zurück im Mengenblatt zeichnet das erste Bild ganz
+            self.pill_shown = None;
+            self.bands_shown.clear();
+            return Some((&self.shown, None));
+        }
         let key = self.list.as_ref().and_then(|l| l.pill_key(t, now));
         // Neu zu zeichnende Zeilenbereiche und was davon gezeigt werden muss
         let mut paint: Vec<(i32, i32)> = Vec::new();
@@ -681,6 +842,34 @@ impl QuantityWindow {
         (y1 > y0).then_some((&self.shown[..], Some((y0 as u32, y1 as u32))))
     }
 
+    /// Ein Blatt, um `dx` px seitlich verschoben.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_blatt(
+        &self,
+        c: &mut Canvas,
+        t: &Theme,
+        fonts: &Fonts,
+        now: Instant,
+        b: Blatt,
+        dx: f32,
+        y0: u32,
+    ) {
+        c.set_origin(-dx, y0 as f32);
+        match b {
+            Blatt::Mengen => {
+                if let Some(l) = &self.list {
+                    l.paint(c, t, fonts, now);
+                }
+            }
+            Blatt::Kosten => {
+                if let Some(k) = &self.kosten {
+                    k.paint(c, t, fonts, now);
+                }
+            }
+        }
+        c.set_origin(0.0, y0 as f32);
+    }
+
     /// Hinweis unter seine Zeile legen (folgt dem Rollen).
     fn place_hint(&mut self, t: &Theme, fonts: &Fonts) {
         let (Some(h), Some(l)) = (self.hint.as_mut(), self.list.as_ref()) else {
@@ -724,10 +913,21 @@ impl QuantityWindow {
         c.reuse(w, h);
         c.clear(t.ui.sheet_bg);
         c.set_origin(0.0, y0 as f32);
-        if let Some(l) = &self.list {
-            l.paint(c, t, fonts, now);
-        }
         let s = self.title.scale;
+        // Blatt, beim Wechsel beide gleitend; die Karten bleiben stehen
+        let w = self.w as f32;
+        match self.karten.gleiten(t, now) {
+            Some((vorher, k)) => {
+                let dir = Karten::richtung(vorher, self.blatt());
+                self.paint_blatt(c, t, fonts, now, vorher, -dir * k * w, y0);
+                self.paint_blatt(c, t, fonts, now, self.blatt(), dir * (1.0 - k) * w, y0);
+                c.set_origin(0.0, y0 as f32);
+            }
+            None => self.paint_blatt(c, t, fonts, now, self.blatt(), 0.0, y0),
+        }
+        c.fill_rect(0.0, 32.0 * s, w, cards::HEIGHT * s, t.ui.sheet_bg);
+        self.karten
+            .paint(c, t, fonts, (self.cards_x0(t), 32.0 * s, s), now);
         if let Some(hc) = &self.hint {
             if let (Some(r), Some(a)) = (hc.rect, hc.alpha(now, Self::fade_ms(t))) {
                 let img = hc.paint(t, fonts, s);
@@ -766,6 +966,38 @@ impl QuantityWindow {
             c.fill_rect(0.0, 0.0, (SEAM * s).max(1.0), self.h as f32, col);
         }
     }
+}
+
+/// Lebende Zahl der Karte Mengen: „14 Bauteile · 3 Geschosse“ im Umfang
+/// (Geschosse mit Bauteilen, das Gründungsband zählt mit).
+fn mengen_zahl(sched: &Schedule) -> String {
+    let mut bauteile: Vec<sk_model::ElementId> = Vec::new();
+    let mut geschosse = 0;
+    let storeys = sched
+        .buildings
+        .iter()
+        .flat_map(|b| &b.storeys)
+        .chain(&sched.loose);
+    for st in storeys {
+        let mut belegt = false;
+        for r in st.groups.iter().flat_map(|g| &g.rows) {
+            belegt = true;
+            if !bauteile.contains(&r.element) {
+                bauteile.push(r.element);
+            }
+        }
+        geschosse += usize::from(belegt);
+    }
+    let n = bauteile.len();
+    format!(
+        "{n} {} · {geschosse} {}",
+        if n == 1 { "Bauteil" } else { "Bauteile" },
+        if geschosse == 1 {
+            "Geschoss"
+        } else {
+            "Geschosse"
+        }
+    )
 }
 
 #[cfg(test)]
@@ -999,7 +1231,7 @@ mod tests {
             let p = Picking::default();
             let mut q = QuantityWindow::new();
             q.title.scale = scale;
-            (q.w, q.h) = ((520.0 * scale) as u32, (220.0 * scale) as u32);
+            (q.w, q.h) = ((520.0 * scale) as u32, (330.0 * scale) as u32);
             let now = Instant::now();
             q.sync(&mut s, &p, false);
             assert!(matches!(q.frame(&t, &fonts, now), Some((_, None))));
@@ -1037,6 +1269,91 @@ mod tests {
             }
             assert!(shifted >= 4, "{scale}: {shifted} Mal verschoben");
         }
+    }
+
+    /// Standardhaus RH-1 (Fundament, EG, OG) als Szene.
+    fn standardhaus() -> Scene {
+        let m = sk_model::szo::read_with(
+            include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo"),
+            sk_model::GuidGen::with_seed(1),
+            &sk_cost::lesen::ABSCHNITTE_SZO,
+        )
+        .expect("lädt")
+        .model;
+        Scene::with_model(m)
+    }
+
+    fn klick(x: f64, y: f64) -> Event {
+        Event::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            mods: Default::default(),
+        }
+    }
+
+    /// KA-2a (paket-ka2 Abnahme 9): zwei Karten mit lebender Zahl; ein
+    /// Klick wechselt das Blatt, der Inhalt gleitet, der Titel folgt; der
+    /// Umfang gilt für beide Blätter; eine geänderte Zahl glimmt auf.
+    #[test]
+    fn karten_wechseln_das_blatt() {
+        let (t, fonts) = (Theme::dark(), Fonts::system());
+        let mut s = standardhaus();
+        let mut p = Picking::default();
+        let mut q = QuantityWindow::new();
+        (q.w, q.h) = (780, 900);
+        let now = Instant::now();
+        q.sync(&mut s, &p, true);
+        assert_eq!(q.blatt(), Blatt::Mengen);
+        assert!(
+            q.karten
+                .zahl(Blatt::Mengen)
+                .ends_with(" Bauteile · 3 Geschosse"),
+            "{}",
+            q.karten.zahl(Blatt::Mengen)
+        );
+        assert_eq!(q.karten.zahl(Blatt::Kosten), "60.090 € netto");
+        assert!(matches!(q.frame(&t, &fonts, now), Some((_, None))));
+        // Klick auf die Karte Kosten (rechts neben Mengen)
+        let s1 = q.title.scale as f64;
+        let x = q.cards_x0(&t) as f64 + (236.0 + 12.0 + 100.0) * s1;
+        let y = (32.0 + 14.0 + 37.0) * s1;
+        assert_eq!(q.handle(&klick(x, y), &t, &fonts, &mut p), None);
+        assert_eq!(q.blatt(), Blatt::Kosten);
+        let doc = crate::document::Document::new(s.model().revision());
+        let titel = crate::windows::blatt_caption(q.blatt(), &doc, s.model().revision());
+        assert!(titel.starts_with("Kosten – "), "{titel}");
+        let mitten = now + Duration::from_millis(t.size.anim_ms as u64 / 2);
+        assert!(q.karten.gleiten(&t, Instant::now()).is_some(), "gleitet");
+        assert!(q.tick(&t, mitten));
+        assert!(matches!(q.frame(&t, &fonts, mitten), Some((_, None))));
+        // Chip EG im Reiter Kosten: Netto und Mengenkarte folgen
+        let k = q.kosten.as_mut().unwrap();
+        let chips = k.leiste.chips().to_vec();
+        assert!(crate::umfang_view::klick(
+            &mut k.leiste.umfang,
+            &chips,
+            1,
+            true
+        ));
+        q.sync(&mut s, &p, true);
+        let eg = q.kosten.as_ref().unwrap().blatt().unwrap().netto;
+        assert!(eg.0 < 6_008_983);
+        assert_eq!(
+            q.karten.zahl(Blatt::Kosten),
+            format!("{} netto", kosten_view::euro_ganz(eg))
+        );
+        assert!(q.karten.zahl(Blatt::Mengen).ends_with(" · 1 Geschoss"));
+        assert_eq!(
+            q.list.as_ref().unwrap().leiste.umfang,
+            q.kosten.as_ref().unwrap().leiste.umfang
+        );
+        // Zurück: Mengenblatt mit demselben Umfang, Titel wie B7
+        let x0 = q.cards_x0(&t) as f64 + 100.0 * s1;
+        q.handle(&klick(x0, y), &t, &fonts, &mut p);
+        assert_eq!(q.blatt(), Blatt::Mengen);
+        let titel = crate::windows::blatt_caption(q.blatt(), &doc, s.model().revision());
+        assert!(titel.starts_with("Mengenermittlung – "), "{titel}");
     }
 
     /// Gebäude mit einer Außenwand und drei Innenwänden im EG.

@@ -9,6 +9,7 @@ mod attr_pick;
 mod autosave;
 mod backup_card;
 mod camera;
+mod cards;
 mod catalog;
 mod catalog_view;
 mod cli;
@@ -19,6 +20,7 @@ mod flush_pick;
 mod frame_time;
 mod help;
 mod hints;
+mod kosten_view;
 mod link_view;
 mod material_view;
 mod measure_input;
@@ -94,7 +96,7 @@ fn save_settings(
     settings: &mut settings::Settings,
     theme: &Theme,
     recent: &menu::Recent,
-    grouping: schedule_view::Grouping,
+    (grouping, blatt): (schedule_view::Grouping, cards::Blatt),
     panel: String,
     surface: &Surface,
 ) {
@@ -103,7 +105,7 @@ fn save_settings(
         // Baumpanel: Karte, zugeklappt, Grenze; gesehene Hinweise (Paket 4)
         settings.panel = panel;
         // Lage des Mengenfensters (F2) und Gliederung der Liste (Paket 1b)
-        settings.windows = windows::write_settings_grouped(&surface.layout(), grouping);
+        settings.windows = windows::write_settings_blatt(&surface.layout(), grouping, blatt);
     }
     if let Err(e) = settings.save_if_changed(theme) {
         eprintln!("{e}");
@@ -1569,7 +1571,7 @@ impl App {
             &mut self.settings,
             &self.theme,
             &self.recent,
-            self.quantity.grouping,
+            (self.quantity.grouping, self.quantity.blatt()),
             panel,
             surface,
         );
@@ -2077,7 +2079,11 @@ impl App {
     fn open_quantity(&mut self, surface: &Surface) {
         self.quantity.open = true;
         self.quantity.dirty = true;
-        let caption = windows::quantity_caption(&self.doc, self.scene.shown_revision());
+        let caption = windows::blatt_caption(
+            self.quantity.blatt(),
+            &self.doc,
+            self.scene.shown_revision(),
+        );
         self.quantity.title.caption = caption.clone();
         surface.open_quantity(&caption);
         if !self.ui.quantity_open {
@@ -2195,7 +2201,7 @@ impl App {
             .quantity
             .list
             .as_ref()
-            .map_or_else(sk_model::qto::Umfang::projekt, |l| l.umfang.clone());
+            .map_or_else(sk_model::qto::Umfang::projekt, |l| l.leiste.umfang.clone());
         let sched = self.scene.schedule_in(&u);
         let kopf = umfang_view::umfang_text(self.scene.model(), &u, sk_platform::local_date_time());
         schedule_view::csv_mit_kopf(self.scene.model(), &sched, by, &kopf)
@@ -2211,7 +2217,12 @@ impl App {
             .map_or("Unbenannt".to_string(), |s| {
                 s.to_string_lossy().into_owned()
             });
-        let suggested = format!("{stem} Mengenermittlung.csv");
+        let kosten = self.quantity.blatt() == cards::Blatt::Kosten;
+        let suggested = if kosten {
+            format!("{stem} Kosten.csv")
+        } else {
+            format!("{stem} Mengenermittlung.csv")
+        };
         let filters = [
             ("Tabelle für Excel (*.csv)", "*.csv"),
             ("Alle Dateien (*.*)", "*.*"),
@@ -2220,8 +2231,17 @@ impl App {
         else {
             return;
         };
-        let by = self.quantity.grouping;
-        let bytes = self.quantity_csv(by);
+        let bytes = match self.quantity.kosten.as_ref().filter(|_| kosten) {
+            // Reiter Kosten: Kosten-CSV wie die Anzeige (ka-2-fach §2.5)
+            Some(k) => {
+                let (y, mo, d, h, mi) = sk_platform::local_date_time();
+                k.csv(&stem, &format!("{d:02}.{mo:02}.{y}, {h:02}:{mi:02}"))
+            }
+            None => {
+                let by = self.quantity.grouping;
+                self.quantity_csv(by)
+            }
+        };
         if let Err(e) = std::fs::write(&path, bytes) {
             surface.message(
                 &format!("Die Tabelle konnte nicht gespeichert werden:\n{e}"),
@@ -2278,10 +2298,16 @@ impl App {
         }
         let anim = self.theme.size.anim_ms > 0.0;
         self.quantity.set_docked(surface.layout().docked(), anim);
-        self.quantity.sync(&mut self.scene, &self.picking, anim);
+        let firma = self.company.as_ref().map(|c| (c.library(), c.stand()));
+        self.quantity
+            .sync_mit(&mut self.scene, &self.picking, firma, anim);
         let now = Instant::now();
         self.quantity_busy = self.quantity.tick(&self.theme, now);
-        let caption = windows::quantity_caption(&self.doc, self.scene.shown_revision());
+        let caption = windows::blatt_caption(
+            self.quantity.blatt(),
+            &self.doc,
+            self.scene.shown_revision(),
+        );
         if caption != self.quantity.title.caption {
             surface.set_quantity_title(&caption);
             self.quantity.title.caption = caption;
@@ -4780,7 +4806,7 @@ impl App {
             Id::Building => "Gebäude",
             Id::Interior => "Innenwand",
             Id::Ortho => "90°-Sprung",
-            Id::Quantity => "Mengenermittlung",
+            Id::Quantity => cards::KNOPF,
             Id::View(v) => match v {
                 ViewKind::Persp => "3D",
                 ViewKind::Plan => "Grundriss",
@@ -5885,7 +5911,7 @@ impl App {
             &mut self.settings,
             &self.theme,
             &self.recent,
-            self.quantity.grouping,
+            (self.quantity.grouping, self.quantity.blatt()),
             panel,
             surface,
         );
@@ -6603,6 +6629,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     // Mengenfenster (F2, B7): gemerkte Lage, Breite aus dem Schema
     *surface.layout() = windows::read_settings(&a.settings.windows, &surface.monitors());
     a.quantity.grouping = windows::read_grouping(&a.settings.windows);
+    a.quantity.karten.aktiv = windows::read_blatt(&a.settings.windows);
     // Baumpanel: Karte, zugeklappt, Grenze (Paket 4)
     let panel = a.settings.panel.clone();
     a.tree.load_settings(&panel);
