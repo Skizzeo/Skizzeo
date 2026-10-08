@@ -641,21 +641,21 @@ fn stueck_vorschlag_bestaetigen() {
     let t = texte(&v, &fonts);
     assert!(
         t.iter()
-            .any(|x| x == "Steine je m² (aus 1000×625, Fuge 10 mm) ·"),
+            .any(|x| x == "Stück je m² (aus 1000×625, ohne Fuge) ·"),
         "{t:?}"
     );
-    assert_eq!(v.anzeige(&Feld::Conv(kd)), "1,5592");
+    assert_eq!(v.anzeige(&Feld::Conv(kd)), "1,6");
     // Vor dem Bestätigen rechnet die Einheit nicht
     assert!(!v.eingeben(&Feld::Preis(kd), "2"));
     let m = v.meldung.clone().unwrap_or_default();
     assert!(m.contains("hat keine Umrechnung"), "{m}");
     // Zahl änderbar, dann bestätigen
     assert!(!v.eingeben(&Feld::Conv(kd), "0"));
-    assert!(v.eingeben(&Feld::Conv(kd), "1,6"));
+    assert!(v.eingeben(&Feld::Conv(kd), "1,5"));
     v.aktion(Aktion::ConvBestaetigen(kd));
-    assert_eq!(v.jetzt.artikel(kd).unwrap().conv, Some(Dez(1_600_000)));
+    assert_eq!(v.jetzt.artikel(kd).unwrap().conv, Some(Dez(1_500_000)));
     assert!(v.eingeben(&Feld::Preis(kd), "2"));
-    assert_eq!(v.jetzt.artikel(kd).unwrap().preis, Some(Dez(3_200_000)));
+    assert_eq!(v.jetzt.artikel(kd).unwrap().preis, Some(Dez(3_000_000)));
     // `conv` vor dem Preis, sonst verlöre die Herkunft die Eingabe
     assert!(
         matches!(v.ops()[0], Op::UmrechnungSetzen { .. }),
@@ -671,13 +671,13 @@ fn stueck_vorschlag_bestaetigen() {
         .lines()
         .find(|l| l.starts_with("[article]") && l.contains(&kd.to_ifc()))
         .unwrap();
-    assert!(a.contains(" price=3.2 ") && a.contains(" conv=1.6"), "{a}");
+    assert!(a.contains(" price=3 ") && a.contains(" conv=1.5"), "{a}");
     let o = text
         .lines()
         .find(|l| l.starts_with("[origin]") && l.contains(&kd.to_ifc()))
         .unwrap();
     assert!(o.contains(" kind=manual "), "{o}");
-    assert!(o.contains("eingegeben 2,00 €/St × 1,6 St/m²"), "{o}");
+    assert!(o.contains("eingegeben 2,00 €/St × 1,5 St/m²"), "{o}");
 }
 
 /// Bedienbarkeit 13.1: Die Wirkzeile nennt zuerst dieses Haus. Ohne Kopie

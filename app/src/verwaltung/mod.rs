@@ -73,7 +73,7 @@ pub enum Aktion {
     HausOeffnen(usize),
     /// Preis des gewählten Artikels in dieser Einheit eingeben (KA-3a7).
     Je(Einheit),
-    /// Vorgeschlagene Steine je Einheit bestätigen (Regel 108).
+    /// Vorgeschlagene Stück je Einheit bestätigen (Regel 108).
     ConvBestaetigen(Guid),
 }
 
@@ -125,7 +125,7 @@ struct Je {
     einheit: Einheit,
     /// Letzte Eingabe in `einheit`, wie getippt.
     text: String,
-    /// Geänderte Zahl im Vorschlag „Steine je m²“.
+    /// Geänderte Zahl im Vorschlag „Stück je m²“.
     conv: Option<String>,
 }
 
@@ -245,7 +245,7 @@ fn titel(vorher: &Katalog, ohne_firma: bool) -> String {
     }
 }
 
-/// Steine je Einheit aus der Eingabe: > 0, ≤ 10 000, höchstens 4 Stellen
+/// Stück je Einheit aus der Eingabe: > 0, ≤ 10 000, höchstens 4 Stellen
 /// (BIM §3.2 `conv`).
 fn conv_lesen(text: &str) -> Option<Dez> {
     zahl(text, 4)?.filter(|c| *c > Dez::NULL && *c <= Dez::ganz(10_000))

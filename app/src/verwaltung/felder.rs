@@ -21,7 +21,7 @@ pub enum Feld {
     Nu,
     Menge(u32),
     Preis(Guid),
-    /// Vorgeschlagene Steine je Einheit (Regel 108), vor „Bestätigen“.
+    /// Vorgeschlagene Stück je Einheit (Regel 108), vor „Bestätigen“.
     Conv(Guid),
     Wert(String),
 }
@@ -486,7 +486,7 @@ impl Verwaltung {
 
     /// Preis mit Segment „je m² | je m³ | je Stück“ (KA-3a7, Regel 108):
     /// nur was für den Artikel umrechenbar ist; darunter leise die Rechnung
-    /// bzw. der Vorschlag „Steine je m²“ mit „Bestätigen“.
+    /// bzw. der Vorschlag „Stück je m²“ mit „Bestätigen“.
     fn preis_zeile(&self, b: &mut Bau, mut y: f32, a: &Artikel) -> f32 {
         use sk_cost::einheit;
         let angebot = einheit::angebot(a);
@@ -550,13 +550,7 @@ impl Verwaltung {
                 self.anzeige(&feld),
                 String::new(),
             );
-            let t = format!(
-                "Steine je {} (aus {}×{}, Fuge {} mm) ·",
-                a.einheit.zeichen(),
-                v.l,
-                v.h,
-                v.fuge
-            );
+            let t = format!("{} ·", v.wofuer(a.einheit));
             let x = b.text(WERT_X + 102.0, y, t, KLEIN, false, Farbe::Dim);
             b.verweis(x + 6.0, y, "Bestätigen", Aktion::ConvBestaetigen(a.guid));
             y += 34.0;
@@ -993,7 +987,7 @@ impl Verwaltung {
             );
             y += 28.0;
             if let Some(c) = a.conv {
-                b.label(y, "Stück je Einheit");
+                b.label(y, &format!("Stück je {}", a.einheit.zeichen()));
                 b.text(WERT_X, y, komma(c), PX, false, Farbe::Text);
                 y += 28.0;
             }

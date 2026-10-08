@@ -110,6 +110,8 @@ pub struct Artikel {
     pub name: String,
     /// `None`: Hilfsstoff (E2).
     pub mat: Option<Guid>,
+    /// Art des Baustoffs `mat` (Fuge im Vorschlag `conv`, Regel 108).
+    pub kategorie: Option<sk_model::library::MatCategory>,
     /// Dicke in mm; `None`: jede Dicke.
     pub t: Option<Dez>,
     pub einheit: Einheit,
@@ -420,6 +422,8 @@ pub struct Umfeld {
     /// Baustoffe mit Namen (für Verweise und Befundsätze): die der Datei und
     /// die Werksbaustoffe, die sie nicht führt (gelöscht, kein Fehler).
     pub materialien: HashMap<Guid, String>,
+    /// Art der Baustoffe der Datei.
+    pub kategorien: HashMap<Guid, sk_model::library::MatCategory>,
     /// Gewerke der Datei und des Startbestands (`trade::merge`).
     pub gewerke: HashSet<Guid>,
     /// Werksbaustoffe in älteren Dateien (R73-W, Bausteingrenze §6):
@@ -452,6 +456,7 @@ impl Umfeld {
         let mats: Vec<_> = mats.collect();
         let mut materialien: HashMap<Guid, String> =
             mats.iter().map(|x| (x.guid, x.name.clone())).collect();
+        let kategorien = mats.iter().map(|x| (x.guid, x.category)).collect();
         let mut uebersetzung = HashMap::new();
         let start = sk_model::Model::new();
         for (_, w) in start.materials().iter() {
@@ -476,6 +481,7 @@ impl Umfeld {
         }
         Umfeld {
             materialien,
+            kategorien,
             gewerke: g,
             uebersetzung,
         }
@@ -718,6 +724,9 @@ pub fn lesen<'a>(
             guid,
             name,
             mat: u.mat(s.guid("mat")),
+            kategorie: u
+                .mat(s.guid("mat"))
+                .and_then(|g| u.kategorien.get(&g).copied()),
             t: s.zahl("t"),
             einheit,
             preis: s.zahl("price"),

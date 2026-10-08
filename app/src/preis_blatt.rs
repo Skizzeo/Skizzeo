@@ -128,7 +128,7 @@ enum Ziel {
     Segment(Gilt),
     /// Eingabeeinheit am Preis `i` (KA-3a7).
     Je(usize, Einheit),
-    /// Vorschlag „Steine je m²“ am Preis `i` bestätigen.
+    /// Vorschlag „Stück je m²“ am Preis `i` bestätigen.
     Bestaetigen(usize),
     Zurueck,
     Innen,
@@ -379,7 +379,7 @@ impl PreisBlatt {
         self.zeige().stoffe.iter().filter(|t| !t.haupt).count()
     }
 
-    /// Vorschlag „Steine je m²“, solange je Stück gewählt ist und der
+    /// Vorschlag „Stück je m²“, solange je Stück gewählt ist und der
     /// Artikel kein `conv` hat (Regel 108).
     fn vorschlag(&self, i: usize) -> Option<einheit::Vorschlag> {
         let f = &self.felder[i];
@@ -1716,7 +1716,7 @@ mod abnahme_bb7 {
         klick(&mut pb, &fonts, r);
         let (text, link) = pb.je_zeile(i).unwrap();
         assert!(link);
-        assert_eq!(text, "6,6667 Steine je m² (aus 599×249, Fuge 1 mm) ·");
+        assert_eq!(text, "6,6667 Stück je m² (aus 599×249, Fuge 1 mm) ·");
         assert_eq!(pb.hoehe(), h0 + JE_TEXT_H);
         for ch in "0,85".chars() {
             pb.text(ch);

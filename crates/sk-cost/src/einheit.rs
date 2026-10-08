@@ -8,6 +8,7 @@ use crate::befund::{Befund, Ort};
 use crate::geld::{runden, Dez};
 use crate::katalog::{Artikel, Einheit};
 use crate::wort;
+use sk_model::library::MatCategory;
 
 /// Ein `conv`, das Skizzeo aus „L×H“ in `format` vorschlägt. Es gilt erst
 /// nach Bestätigung (Regel 108).
@@ -18,20 +19,28 @@ pub struct Vorschlag {
     /// Länge und Höhe in mm aus `format`.
     pub l: u32,
     pub h: u32,
-    /// Fuge in mm: 1 bei Dünnbettmörtel (Planstein, Planbauplatte), sonst 10.
-    pub fuge: u32,
+    /// Stoß- und Lagerfuge in mm ([`fuge`]).
+    pub fuge: (u32, u32),
 }
 
 impl Vorschlag {
-    /// „6,6667 Steine je m² (aus 599×249, Fuge 1 mm)“
+    /// „6,6667 Stück je m² (aus 599×249, Fuge 1 mm)“
     pub fn text(&self, a: &Artikel) -> String {
+        format!("{} {}", zahl(self.conv, 0), self.wofuer(a.einheit))
+    }
+
+    /// „Stück je m² (aus 1000×625, ohne Fuge)“, „… Fuge 10/12 mm)“.
+    pub fn wofuer(&self, e: Einheit) -> String {
+        let fuge = match self.fuge {
+            (0, 0) => "ohne Fuge".to_string(),
+            (s, l) if s == l => format!("Fuge {s} mm"),
+            (s, l) => format!("Fuge {s}/{l} mm"),
+        };
         format!(
-            "{} Steine je {} (aus {}×{}, Fuge {} mm)",
-            zahl(self.conv, 0),
-            a.einheit.zeichen(),
+            "Stück je {} (aus {}×{}, {fuge})",
+            e.zeichen(),
             self.l,
-            self.h,
-            self.fuge
+            self.h
         )
     }
 }
@@ -72,7 +81,8 @@ pub fn angebot(a: &Artikel) -> Vec<Einheit> {
 }
 
 /// `conv` aus „L×H“ in `format`, wenn der Artikel keines hat:
-/// 1.000.000 ÷ ((L + Fuge) × (H + Fuge)), nur bei einem Artikel in m².
+/// 1.000.000 ÷ ((L + Stoßfuge) × (H + Lagerfuge)), nur bei einem Artikel in
+/// m².
 pub fn vorschlag(a: &Artikel) -> Option<Vorschlag> {
     if a.conv.is_some() || a.einheit != Einheit::M2 {
         return None;
@@ -80,7 +90,7 @@ pub fn vorschlag(a: &Artikel) -> Option<Vorschlag> {
     let format = a.satz.text("format")?;
     let (l, h) = l_mal_h(format)?;
     let fuge = fuge(a, format);
-    let n = ((l + fuge) * (h + fuge)) as i128;
+    let n = ((l + fuge.0) * (h + fuge.1)) as i128;
     // Dez hat 6 Stellen: 10^6 × 10^6 / n, dann auf 4 Stellen
     let conv = Dez((runden(1_000_000_000_000, n * 100) * 100) as i64);
     (conv > Dez::NULL && conv <= Dez::ganz(10_000)).then_some(Vorschlag { conv, l, h, fuge })
@@ -171,18 +181,26 @@ fn mass(s: &str) -> Option<u32> {
     s.parse().ok().filter(|v| (1..=10_000).contains(v))
 }
 
-/// Fuge in mm: Plansteine und Planbauplatten liegen in Dünnbettmörtel.
-fn fuge(a: &Artikel, format: &str) -> u32 {
-    let duenn = [a.name.as_str(), format, a.satz.text("grade").unwrap_or("")]
-        .iter()
-        .any(|t| {
+/// Stoß- und Lagerfuge in mm (Kosten KA-3a7 A4, verwaltung.md §10a):
+/// Plansteine und Planbauplatten liegen in Dünnbettmörtel (1 × 1), übrige
+/// Mauersteine in Normalmörtel nach Maßordnung (10 × 12), Dämm- und
+/// Bauplatten werden gestoßen (0).
+fn fuge(a: &Artikel, format: &str) -> (u32, u32) {
+    let texte = [a.name.as_str(), format, a.satz.text("grade").unwrap_or("")];
+    let hat = |w: &[&str]| {
+        texte.iter().any(|t| {
             let t = t.to_lowercase();
-            t.contains("plan") || t.contains("dünnbett")
-        });
-    if duenn {
-        1
+            w.iter().any(|w| t.contains(w))
+        })
+    };
+    if hat(&["plan", "dünnbett"]) {
+        (1, 1)
+    } else if a.kategorie == Some(MatCategory::Masonry)
+        || hat(&["klinker", "ziegel", "kalksand", "mauerstein", "vormauer"])
+    {
+        (10, 12)
     } else {
-        10
+        (0, 0)
     }
 }
 
@@ -286,8 +304,8 @@ mod tests {
         a.satz
             .setzen("format", Some(crate::satz::Wert::Text("599×249".into())));
         let v = vorschlag(&a).unwrap();
-        assert_eq!((v.conv, v.fuge), (Dez(6_666_700), 1));
-        assert_eq!(v.text(&a), "6,6667 Steine je m² (aus 599×249, Fuge 1 mm)");
+        assert_eq!((v.conv, v.fuge), (Dez(6_666_700), (1, 1)));
+        assert_eq!(v.text(&a), "6,6667 Stück je m² (aus 599×249, Fuge 1 mm)");
         assert!(angebot(&a).contains(&Einheit::St));
         assert!(umrechnen(Dez::EINS, Einheit::St, &a, None).is_err());
         let u = umrechnen(Dez(850_000), Einheit::St, &a, Some(v.conv)).unwrap();
@@ -299,9 +317,29 @@ mod tests {
             Some(crate::satz::Wert::Text("240 x 113 mm".into())),
         );
         let v = vorschlag(&a).unwrap();
-        assert_eq!((v.l, v.h, v.fuge), (240, 113, 10));
-        // 1.000.000 ÷ (250 × 123) = 32,5203…
-        assert_eq!(v.conv, Dez(32_520_300));
+        assert_eq!((v.l, v.h, v.fuge), (240, 113, (10, 12)));
+        // 1.000.000 ÷ (250 × 125) = 32
+        assert_eq!(v.conv, Dez::ganz(32));
+        // Kosten KA-3a7 A4: Klinker NF in Normalmörtel 10 × 12 mm, die
+        // Dämmplatte gestoßen ohne Fuge
+        a.name = "Vormauerziegel".into();
+        a.satz
+            .setzen("format", Some(crate::satz::Wert::Text("240×71".into())));
+        let v = vorschlag(&a).unwrap();
+        // 1.000.000 ÷ (250 × 83) = 48,1927…
+        assert_eq!(v.conv, Dez(48_192_800));
+        assert_eq!(
+            v.text(&a),
+            "48,1928 Stück je m² (aus 240×71, Fuge 10/12 mm)"
+        );
+        let mut kd = artikel(&k, "Kerndämmplatte").clone();
+        assert_eq!(kd.kategorie, Some(MatCategory::Insulation));
+        kd.conv = None;
+        kd.satz
+            .setzen("format", Some(crate::satz::Wert::Text("1000×625".into())));
+        let v = vorschlag(&kd).unwrap();
+        assert_eq!((v.conv, v.fuge), (Dez(1_600_000), (0, 0)));
+        assert_eq!(v.text(&kd), "1,6 Stück je m² (aus 1000×625, ohne Fuge)");
         for f in ["NF, 48 St/m²", "240×115×71", "Sack 25 kg", "", "0×249"] {
             a.satz
                 .setzen("format", Some(crate::satz::Wert::Text(f.into())));
