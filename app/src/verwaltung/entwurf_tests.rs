@@ -101,6 +101,11 @@ fn entwurf_vorschau_freigabe() {
     assert!(v.eingeben(&Feld::Preis(art.guid), "31,50"));
     schreiben(&mut v, &mut c);
     assert_eq!(v.entwurf_anzahl(), 2);
+    assert_eq!(
+        v.beim_schliessen().map(|m| m.to_string()).as_deref(),
+        Some("Entwurf mit 2 Änderungen gespeichert. Gültig wird er mit „Freigeben“ in der Verwaltung.")
+    );
+    assert_eq!(v.knoepfe(&w)[0].2, "Vorschau und Freigeben …");
     assert!(v.entwurf_geaendert(&Knoten::Firmenwerte));
     assert!(v.entwurf_geaendert(&Knoten::ArtikelSatz(art.guid)));
     assert_eq!(v.jetzt.werte.lohn, Dez::ganz(62));
@@ -534,6 +539,10 @@ fn vorschlaege_fuer_die_firma() {
     let mut v = Verwaltung::open(&s, Some(&c), None);
     assert_eq!(v.vorschlaege.len(), 2, "{:?}", v.vorschlaege);
     assert_eq!(v.entwurf_anzahl(), 0);
+    assert!(
+        v.beim_schliessen().is_none(),
+        "Vorschläge sind keine Änderung"
+    );
     let key = |v: &Verwaltung, name: &str| {
         v.vorschlaege
             .iter()

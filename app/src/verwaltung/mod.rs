@@ -126,7 +126,8 @@ enum Ziel {
     Verwerfen,
     /// Text mit Tooltip.
     Tipp(&'static str),
-    /// Pille „Entwurf · n Änderungen“ und Knopf „Vorschau …“ (KA-3b3).
+    /// Pille „Entwurf · n Änderungen“ und Knopf „Vorschau und Freigeben …“
+    /// (KA-3b3, Bedienbarkeit 16.3).
     Vorschau,
 }
 
@@ -1024,8 +1025,8 @@ impl Verwaltung {
                 0 => Vec::new(),
                 _ => vec![(
                     Ziel::Vorschau,
-                    self.r(w, ww - 190.0, hh - 48.0, 170.0, 32.0),
-                    "Vorschau …",
+                    self.r(w, ww - 240.0, hh - 48.0, 220.0, 32.0),
+                    "Vorschau und Freigeben …",
                 )],
             };
         } else {

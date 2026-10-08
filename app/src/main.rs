@@ -1720,7 +1720,9 @@ impl App {
             self.prefs_dirty = true;
         }
         if out.closed {
-            self.verwaltung = None;
+            if let Some(m) = self.verwaltung.take().and_then(|v| v.beim_schliessen()) {
+                self.status(m, NOTICE_TIME);
+            }
             self.overlay_dirty = true;
         }
         if out.moved {

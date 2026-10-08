@@ -172,6 +172,22 @@ impl Verwaltung {
         self.freigabe.as_ref().map_or(0, |f| f.saetze.len())
     }
 
+    /// Schließen mit offenem Entwurf: einmal in die Statuszeile
+    /// (Bedienbarkeit 16.3), sonst hielte man ihn für gültig.
+    pub fn beim_schliessen(&self) -> Option<crate::meldung::Meldung> {
+        use crate::meldung::Meldung;
+        match self.entwurf_anzahl() {
+            0 => None,
+            1 => Some(Meldung::satz(
+                "Entwurf mit 1 Änderung gespeichert. Gültig wird er mit „Freigeben“ in der Verwaltung.",
+            )),
+            n => Some(Meldung::mit(
+                "Entwurf mit {} Änderungen gespeichert. Gültig wird er mit „Freigeben“ in der Verwaltung.",
+                &[&n.to_string()],
+            )),
+        }
+    }
+
     pub(super) fn entwurf_zaehlen(&mut self) {
         if let Some(f) = self.freigabe.as_mut() {
             f.saetze = sk_cost::verwaltung::entwurf_saetze(&f.lib, &self.lib);
