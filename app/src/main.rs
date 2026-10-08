@@ -48,6 +48,7 @@ mod type_look;
 mod type_menu;
 mod ui;
 mod umfang_view;
+mod verwaltung;
 mod visible;
 mod wahl_blatt;
 mod wall_edit;
@@ -613,6 +614,8 @@ struct App {
     /// Fenster „Baustoffe …“ (Paket 5), wie der Bauteilkatalog vorn; ob
     /// „Mehr“ in dieser Sitzung offen war.
     materials: Option<material_view::MaterialView>,
+    /// Fenster „Verwaltung …“ (KA-3a2).
+    verwaltung: Option<verwaltung::Verwaltung>,
     mat_more: bool,
     /// Typ, den das Werkzeug zeichnet, je Typart (K3: Außen-, Innenwand);
     /// `None`: der Standardtyp.
@@ -1311,6 +1314,7 @@ impl App {
             Command::Settings => self.open_prefs(),
             Command::Catalog => self.open_catalog(),
             Command::Materials => self.open_materials(None),
+            Command::Verwaltung => self.open_verwaltung(None),
             Command::Backups => self.open_backups(),
             Command::OpenBackup(_) => self.confirm_then(c, surface),
             Command::Delete => self.delete_selection(),
@@ -1321,7 +1325,10 @@ impl App {
 
     /// Ein Fenster liegt vorn (Einstellungen, Bauteilkatalog, Baustoffe).
     fn modal(&self) -> bool {
-        self.prefs.is_some() || self.catalog.is_some() || self.materials.is_some()
+        self.prefs.is_some()
+            || self.catalog.is_some()
+            || self.materials.is_some()
+            || self.verwaltung.is_some()
     }
 
     /// Bauteilkatalog öffnen (K3); er liegt vorn wie das Einstellungsfenster.
@@ -1460,6 +1467,142 @@ impl App {
         ));
         self.prefs_dirty = true;
         self.overlay_dirty = true;
+    }
+
+    /// Fenster „Verwaltung …“ öffnen (KA-3a2), auf Wunsch mit diesem
+    /// Eintrag gewählt („Bauleistung öffnen ↗“ im AVA).
+    fn open_verwaltung(&mut self, wahl: Option<verwaltung::Knoten>) {
+        if self.modal() {
+            return;
+        }
+        self.close_type_menu(false);
+        if self.ui.dialog {
+            self.close_building_dialog(false);
+        }
+        self.ui.hover = None;
+        self.title.hover = None;
+        self.verwaltung = Some(verwaltung::Verwaltung::open(
+            &self.scene,
+            self.company.as_ref(),
+            wahl,
+        ));
+        self.prefs_dirty = true;
+        self.overlay_dirty = true;
+    }
+
+    /// Offenes Fenster „Verwaltung …“: Maus und Tasten wie „Baustoffe …“;
+    /// OK schreibt über `Scene::fuer_firma` (Bausteingrenze §5).
+    fn handle_verwaltung(&mut self, e: Event, surface: &Surface) -> bool {
+        let th = self.top() as f64;
+        let window_button = |a: &App, x: f64, y: f64| {
+            y < th
+                && matches!(
+                    a.title.button_at(x, y, a.w),
+                    Some(Button::Minimize | Button::Maximize | Button::Close)
+                )
+        };
+        match e {
+            Event::CloseRequested { .. } => {
+                self.verwaltung = None;
+                self.paint_prefs();
+                return false;
+            }
+            Event::Resized { .. }
+            | Event::ScaleChanged(_)
+            | Event::Maximized(_)
+            | Event::Focus(_)
+            | Event::Redraw => {
+                self.prefs_dirty = true;
+                return false;
+            }
+            Event::MouseMove { x, y, .. } => {
+                self.mouse_at = Some((x, y));
+                let over = if window_button(self, x, y) {
+                    self.title.button_at(x, y, self.w)
+                } else {
+                    None
+                };
+                if over != self.title.hover {
+                    self.dirty_title
+                        .extend(self.title.hover.into_iter().chain(over));
+                    self.title.hover = over;
+                }
+            }
+            Event::MouseDown { x, y, .. } | Event::MouseUp { x, y, .. }
+                if window_button(self, x, y) || self.title.pressed.is_some() =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+        let win = self.prefs_win();
+        let Some(v) = self.verwaltung.as_mut() else {
+            return false;
+        };
+        let mut cx = verwaltung::Ctx {
+            fonts: &self.ui.fonts,
+            win,
+        };
+        let out = v.handle(&e, &mut cx);
+        if out.ok {
+            let ops = v.ops().to_vec();
+            let h = sk_cost::Herkunft::jetzt(sk_cost::HerkunftArt::Manual);
+            let r = match self.company.as_mut() {
+                Some(c) => self.scene.fuer_firma(verwaltung::STEP, c, &h, &ops),
+                None => Err(meldung::Meldung::satz("Kein Firmenkatalog geladen.")),
+            };
+            match r {
+                Ok(hinweis) => {
+                    self.verwaltung = None;
+                    self.overlay_dirty = true;
+                    self.upload_model();
+                    self.props_key = None;
+                    if let Some(text) = hinweis {
+                        self.renderer.set_overlay(OVERLAY_NOTICE, 0, 0, 0, 0, &[]);
+                        self.notice = Some(Notice {
+                            text,
+                            since: None,
+                            rect: (0.0, 0.0, 0.0, 0.0),
+                            time: NOTICE_TIME,
+                            catalog: false,
+                            error: false,
+                        });
+                    }
+                    self.quantity.dirty = true;
+                    self.redraw = true;
+                }
+                Err(m) => {
+                    if let Some(v) = self.verwaltung.as_mut() {
+                        v.fehler(m.to_string());
+                    }
+                }
+            }
+            self.prefs_dirty = true;
+        }
+        if out.closed {
+            self.verwaltung = None;
+            self.overlay_dirty = true;
+        }
+        if out.moved {
+            if let Some(v) = &self.verwaltung {
+                let (x, y) = v.origin(&self.theme, &win);
+                self.renderer.move_overlay(OVERLAY_PREFS, x, y);
+                self.redraw = true;
+            }
+        }
+        self.prefs_dirty |= out.repaint || out.closed;
+        if let Some(g) = out.open_type {
+            // Typpflege bleibt im Bauteilkatalog (paket-ka3a §3)
+            self.verwaltung = None;
+            self.overlay_dirty = true;
+            self.prefs_dirty = true;
+            self.open_catalog();
+            if let Some(c) = self.catalog.as_mut() {
+                c.show_guid(g);
+            }
+        }
+        self.sync_caption(surface);
+        true
     }
 
     /// Offenes Fenster „Baustoffe …“: nimmt Maus und Tasten wie der
@@ -1754,6 +1897,15 @@ impl App {
         self.prefs_dirty = false;
         self.paint_prefs_popup();
         let win = self.prefs_win();
+        if let Some(v) = self.verwaltung.as_mut() {
+            if let catalog_view::Frame::Full { x, y, w, h, px } =
+                v.paint_frame(&self.theme, &self.ui.fonts, &win)
+            {
+                self.renderer.set_overlay(OVERLAY_PREFS, x, y, w, h, &px);
+            }
+            self.redraw = true;
+            return;
+        }
         if let Some(v) = self.materials.as_mut() {
             // Nach dem Überfahren nur die Ausschnitte (B6)
             match v.paint_frame(&self.theme, &self.ui.fonts, &win) {
@@ -2209,6 +2361,12 @@ impl App {
             quantity::Out::Action(a, target, ids) => self.context_action(a, target, Some(ids)),
             quantity::Out::Link(l) => self.follow_link(l),
             quantity::Out::Kosten(w) => self.kosten_schreiben(w),
+            quantity::Out::Verwaltung(g) => {
+                self.open_verwaltung(Some(verwaltung::Knoten::Leistung(g)));
+                if self.verwaltung.is_some() {
+                    surface.command(WindowCommand::Activate);
+                }
+            }
         }
         if model {
             self.sync_ui();
@@ -3010,6 +3168,9 @@ impl App {
         if self.materials.is_some() && self.handle_materials(e, surface) {
             return !self.quit;
         }
+        if self.verwaltung.is_some() && self.handle_verwaltung(e, surface) {
+            return !self.quit;
+        }
         if self.menu.is_open() && self.handle_menu(e, surface) {
             return !self.quit;
         }
@@ -3688,6 +3849,8 @@ impl App {
             Some(Window::Catalog)
         } else if self.materials.is_some() {
             Some(Window::Materials)
+        } else if self.verwaltung.is_some() {
+            Some(Window::Verwaltung)
         } else {
             None
         };
@@ -3735,6 +3898,7 @@ impl App {
             || self.prefs.as_ref().is_some_and(|p| p.busy())
             || self.catalog.as_ref().is_some_and(|c| c.busy())
             || self.materials.as_ref().is_some_and(|v| v.busy())
+            || self.verwaltung.as_ref().is_some_and(|v| v.busy())
     }
 
     /// Hilfekarte öffnen bzw. schließen (F1, „?“, Menü „Hilfe“).
@@ -6563,6 +6727,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         company,
         catalog: None,
         materials: None,
+        verwaltung: None,
         mat_more: false,
         tool_type: [None, None],
         type_menu: None,
@@ -7039,6 +7204,10 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             (None, Some(c)) => c.cursor(),
             (None, None) if a.materials.is_some() => a
                 .materials
+                .as_ref()
+                .map_or(sk_platform::Cursor::Arrow, |v| v.cursor()),
+            (None, None) if a.verwaltung.is_some() => a
+                .verwaltung
                 .as_ref()
                 .map_or(sk_platform::Cursor::Arrow, |v| v.cursor()),
             (None, None) if a.wheel_hand() => sk_platform::Cursor::Hand,

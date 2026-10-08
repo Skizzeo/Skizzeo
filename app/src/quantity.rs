@@ -55,6 +55,8 @@ pub enum Out {
     Link(Link),
     /// Preisblatt: Preis oder Firmenpreis schreiben (KA-2c).
     Kosten(kosten_view::Schreiben),
+    /// Verwaltung mit dieser Bauleistung öffnen (KA-3a2).
+    Verwaltung(sk_model::Guid),
 }
 
 pub struct QuantityWindow {
@@ -474,6 +476,7 @@ impl QuantityWindow {
                 self.dirty = true;
                 Some(Out::Kosten(w))
             }
+            ListOut::Verwaltung(g) => Some(Out::Verwaltung(g)),
         }
     }
 

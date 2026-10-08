@@ -34,6 +34,8 @@ pub enum Command {
     Catalog,
     /// Fenster „Baustoffe …“ (Paket 5).
     Materials,
+    /// Fenster „Verwaltung …“ (KA-3a2, Bedienbarkeit 3.5).
+    Verwaltung,
     /// Auswahl löschen (Entf, Paket „Löschen“).
     Delete,
     /// Liste „Sicherungen …“ (F-13).
@@ -211,6 +213,7 @@ impl FileMenu {
             item("Einstellungen …", "Strg+Komma", Command::Settings, true),
             item("Bauteilkatalog …", "", Command::Catalog, true),
             item("Baustoffe …", "", Command::Materials, true),
+            item("Verwaltung …", "", Command::Verwaltung, true),
             separator(),
             item("Hilfe", "F1", Command::Help, true),
             item(

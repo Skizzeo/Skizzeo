@@ -165,6 +165,42 @@ fn klick_oeffnet_den_mengenansatz() {
     assert!(v.detail().is_none());
 }
 
+/// Test B2 (KA-3a2): „Bauleistung öffnen ↗“ unter der Kurzform der
+/// Preisanteile öffnet die Verwaltung mit der Bauleistung der Position.
+#[test]
+fn bauleistung_oeffnen() {
+    let t = Theme::dark();
+    let mut s = haus();
+    let mut v = blatt(&mut s);
+    let i = v
+        .zeilen()
+        .iter()
+        .position(|z| z.art == Art::Position && !z.elemente.is_empty())
+        .expect("Position");
+    let oz = v.zeilen()[i].oz.clone();
+    let mut p = Picking::default();
+    let mods = sk_platform::Modifiers::default();
+    v.mouse_down(&t, &leer(), &mut p, mitte(&v, i), mods);
+    v.sync(&mut s, None);
+    let quelle = v
+        .lv()
+        .unwrap()
+        .titel
+        .iter()
+        .flat_map(|t| &t.positionen)
+        .find(|p| p.oz == oz)
+        .unwrap()
+        .quelle;
+    let ((x, y, w, h), _) = v.oeffnen_lage(&t, &leer()).expect("Verweis");
+    let mitte = ((x + w * 0.5) as f64, (y + h * 0.5) as f64);
+    assert_eq!(v.hit(&t, &leer(), mitte.0, mitte.1), Some(Hot::Oeffnen));
+    let out = v.mouse_down(&t, &leer(), &mut p, mitte, mods);
+    assert_eq!(out, Some(ListOut::Verwaltung(quelle)));
+    // Andere Reiter: kein Verweis
+    v.reiter = Reiter::Eigenschaften;
+    assert!(v.oeffnen_lage(&t, &leer()).is_none());
+}
+
 /// „Für Anfrage (leer)“: keine Preise im LV, Zusammenstellung ohne
 /// Beträge; zurück „Mit Preisen“.
 #[test]

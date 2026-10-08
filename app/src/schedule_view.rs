@@ -211,6 +211,8 @@ pub enum ListOut {
     /// Aus dem Prüfen des AVA: Reiter Kosten, zur grauen Zeile dieses
     /// Bauteils und „Bauleistung wählen …“ (Bedienbarkeit 12.2).
     WaehlenIm(ElementId),
+    /// „Bauleistung öffnen ↗“ im AVA: Verwaltung mit dieser Bauleistung.
+    Verwaltung(sk_model::Guid),
 }
 
 /// Nachrücken nach dem Löschen (H119): weggefallene Zeilen blenden in

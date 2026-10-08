@@ -1620,6 +1620,12 @@ fn command_to(hwnd: HWND, c: WindowCommand) {
             WindowCommand::Close => {
                 PostMessageW(hwnd, WM_SYSCOMMAND, SC_CLOSE, 0);
             }
+            WindowCommand::Activate => {
+                if IsIconic(hwnd) != 0 {
+                    PostMessageW(hwnd, WM_SYSCOMMAND, SC_RESTORE, 0);
+                }
+                PostMessageW(hwnd, WM_APP_RAISE, 0, 0);
+            }
         }
     }
 }

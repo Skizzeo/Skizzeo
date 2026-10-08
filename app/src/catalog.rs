@@ -477,6 +477,12 @@ impl Company {
         &self.lib
     }
 
+    /// Inhalt der Datei beim Laden bzw. letzten Schreiben (Vorschau der
+    /// Verwaltung, KA-3a2): leer, wenn es die Datei noch nicht gibt.
+    pub fn geladen(&self) -> &str {
+        &self.geladen
+    }
+
     /// Stand des Katalogs im Speicher als Schlüssel für Zwischenspeicher:
     /// ändert sich mit jedem Laden und Schreiben und mit dem Ort.
     pub fn stand(&self) -> u64 {

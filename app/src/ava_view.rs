@@ -52,6 +52,9 @@ const EP_R: f32 = 130.0;
 const EINHEIT_L: f32 = 290.0;
 const MENGE_R: f32 = 340.0;
 
+/// Verweis unter der Kurzform der Preisanteile (Pfeil ↗ gezeichnet).
+const OEFFNEN: &str = "Bauleistung öffnen";
+
 pub const HINWEIS: &str =
     "Klick auf eine Position öffnet unten Mengenansatz, Preisanteile und Eigenschaften.";
 
@@ -111,6 +114,8 @@ enum Hot {
     Feld(kopf::Feld),
     /// „LV … als Tabelle speichern“.
     Knopf,
+    /// „Bauleistung öffnen ↗“ in der Spalte „Preis“: Verwaltung (KA-3a2).
+    Oeffnen,
 }
 
 /// Punkt im Baum: grün Preis da, Akzent Preis fehlt, grau leer.
@@ -267,6 +272,8 @@ pub struct Detail {
     pub anteile: Vec<(String, String)>,
     pub eigenschaften: Vec<(String, String)>,
     pub elemente: Vec<ElementId>,
+    /// Die Bauleistung der Position (für „Bauleistung öffnen ↗“).
+    pub leistung: Option<Guid>,
 }
 
 /// Sprung nach dem nächsten Aufbau der Zeilen.
@@ -686,6 +693,31 @@ impl AvaView {
         Some((fl, reiter, zu))
     }
 
+    /// Lage von „Bauleistung öffnen ↗“ unter der Kurzform der Preisanteile
+    /// (Einstellungen §3 KA-4 Punkt 9): Rechteck und Grundlinie.
+    fn oeffnen_lage(&self, t: &Theme, fonts: &Fonts) -> Option<(Rect, f32)> {
+        let d = self.detail.as_ref()?;
+        d.leistung?;
+        if self.reiter != Reiter::Ansatz {
+            return None;
+        }
+        let (fl, ..) = self.detail_lage(t, fonts)?;
+        let s = self.scale;
+        let (fx, fy, fw, fh) = fl;
+        let r = fx + fw - 12.0 * s;
+        let preis_x = r - 300.0 * s;
+        let base = fy + 50.0 * s + 20.0 * s + d.preis.len() as f32 * 18.0 * s + 4.0 * s;
+        if base > fy + fh - 6.0 * s {
+            return None;
+        }
+        let bold = fonts.bold.as_ref().or(fonts.regular.as_ref());
+        let w = bold.map_or(110.0 * s, |f| f.width(OEFFNEN, 10.5 * s)) + 14.0 * s;
+        Some((
+            (preis_x - 2.0 * s, base - 13.0 * s, w + 4.0 * s, 18.0 * s),
+            base,
+        ))
+    }
+
     fn hit(&self, t: &Theme, fonts: &Fonts, x: f64, y: f64) -> Option<Hot> {
         let (x, y) = (x as f32, y as f32);
         if inside(self.knopf_rect(t, fonts), x, y) {
@@ -707,6 +739,12 @@ impl AvaView {
             }
             if let Some((re, _)) = reiter.iter().find(|(_, r)| inside(*r, x, y)) {
                 return Some(Hot::Reiter(*re));
+            }
+            if self
+                .oeffnen_lage(t, fonts)
+                .is_some_and(|(r, _)| inside(r, x, y))
+            {
+                return Some(Hot::Oeffnen);
             }
             if inside(fl, x, y) {
                 return None;
@@ -815,6 +853,7 @@ impl AvaView {
             | Hot::Mehr
             | Hot::Untertitel
             | Hot::Feld(_) => None,
+            Hot::Oeffnen => self.detail.as_ref()?.leistung.map(ListOut::Verwaltung),
             Hot::Knopf => {
                 self.knopf_down = true;
                 Some(ListOut::Repaint)
@@ -1540,6 +1579,29 @@ impl AvaView {
                     regular.draw(c, &l, 10.5 * s, preis_x, py, u.sheet_text);
                     py += 18.0 * s;
                 }
+                if let Some(((ox, _, _, _), base)) = self.oeffnen_lage(t, fonts) {
+                    let hot = self.hot == Some(Hot::Oeffnen);
+                    let col = crate::cards::verweis(u, hot);
+                    let x0 = ox + 2.0 * s;
+                    bold.draw(c, OEFFNEN, 10.5 * s, x0, base, col);
+                    // Pfeil ↗ gezeichnet (nicht jede Schrift hat ihn)
+                    let ax = x0 + bold.width(OEFFNEN, 10.5 * s) + 5.0 * s;
+                    let ay = base - 3.5 * s;
+                    let d = 3.5 * s;
+                    let mut p = Path::new();
+                    p.segment((ax, ay + d), (ax + 2.0 * d, ay - d), 1.2 * s);
+                    p.segment((ax + 0.6 * d, ay - d), (ax + 2.0 * d, ay - d), 1.2 * s);
+                    p.segment(
+                        (ax + 2.0 * d, ay - d),
+                        (ax + 2.0 * d, ay + 0.4 * d),
+                        1.2 * s,
+                    );
+                    c.fill(&p, col);
+                    if hot {
+                        let w = bold.width(OEFFNEN, 10.5 * s);
+                        c.fill_rect(x0, (base + 2.0 * s).round(), w, s.round().max(1.0), col);
+                    }
+                }
             }
             Reiter::Anteile | Reiter::Eigenschaften => {
                 let liste = if self.reiter == Reiter::Anteile {
@@ -1873,6 +1935,7 @@ pub fn detail(m: &Model, kat: &Katalog, lv: &Lv, oz: &str) -> Option<Detail> {
         anteile,
         eigenschaften,
         elemente,
+        leistung: kat.leistung(p.quelle).map(|l| l.guid),
     })
 }
 

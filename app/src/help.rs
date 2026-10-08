@@ -324,6 +324,8 @@ pub enum Window {
     Materials,
     Patterns,
     Backups,
+    /// „Verwaltung …“ (KA-3a2); eigenes Thema mit KA-3a6.
+    Verwaltung,
 }
 
 /// Art des gewählten Bauteils.
@@ -366,6 +368,7 @@ pub fn topic(c: &HelpCtx) -> Topic {
             Window::Materials => Topic::Materials,
             Window::Patterns => Topic::Patterns,
             Window::Backups => Topic::Backups,
+            Window::Verwaltung => Topic::Costs,
         };
     }
     if c.dialog {

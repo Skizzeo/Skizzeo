@@ -119,6 +119,8 @@ pub enum WindowCommand {
     Minimize,
     ToggleMaximize,
     Close,
+    /// Nach vorn holen (z. B. aus dem Mengenfenster ins Hauptfenster).
+    Activate,
 }
 
 /// Mauszeiger über der Zeichenfläche.

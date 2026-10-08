@@ -56,13 +56,24 @@ pub fn aufbau(m: &Model, k: &Katalog, p: &Position) -> Option<Aufbau> {
             .map(|(_, x)| x)
     });
     let schicht = p.schicht.map(|(_, t)| (t, mat));
+    Some(aufbau_an(k, l, schicht, geschaetzt))
+}
+
+/// Aufbau des EP der Bauleistung `l` an der Schicht `schicht` (Dicke,
+/// Baustoff), wie die Rechnung ihn nimmt.
+pub(crate) fn aufbau_an(
+    k: &Katalog,
+    l: &Leistung,
+    schicht: Option<(Dez, Option<&sk_model::Material>)>,
+    geschaetzt: bool,
+) -> Aufbau {
     let mut befunde = Vec::new();
     let (stoffe, _) = stoff_teile(k, l, schicht, geschaetzt, &Ort::Datei, &mut befunde);
     let stoff = mit_zuschlag(k, stoffe.iter().map(|t| t.wert).sum());
     let (lohn, geraet, sonst, nu) = feste_ep(k, l);
     let ep = nu.unwrap_or(lohn + stoff + geraet + sonst);
-    Some(Aufbau {
-        leistung: g,
+    Aufbau {
+        leistung: l.guid,
         kurz: l.kurz.clone(),
         einheit: l.einheit,
         stunden: l.stunden,
@@ -74,7 +85,7 @@ pub fn aufbau(m: &Model, k: &Katalog, p: &Position) -> Option<Aufbau> {
         sonst,
         nu,
         ep,
-    })
+    }
 }
 
 /// Weitere Bauleistungen, deren EP der Artikel `artikel` mitbestimmt (fest

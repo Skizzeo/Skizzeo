@@ -8,9 +8,12 @@
 
 use crate::befund::{self, Befund, Ort};
 use crate::geld::Dez;
+use crate::katalog::Leistung;
 use crate::katalog::{Katalog, RATEN};
+use crate::op::{Herkunft, HerkunftArt, Rolle};
 use crate::op::{Op, SatzId, Stoff};
-use sk_model::Guid;
+use crate::preis::Aufbau;
+use sk_model::{Guid, Library, Model};
 
 /// Eine Zeile des Protokolls (`[log]`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -280,6 +283,179 @@ pub fn umkehr(jetzt: &Katalog, vorher: &Katalog, stand: u32) -> Result<Vec<Op>, 
     Ok(ops)
 }
 
+/// Werks-Referenzhaus „Standardhaus“ (paket-ka3a §2 KA-3a4: dieselbe Datei
+/// wie Prüfstand und Test).
+pub const STANDARDHAUS: &str = include_str!("../referenz/rh1-standardhaus.szo");
+
+/// Höchstlänge eines Kurztexts in Zeichen (Regel 79 Nachtrag, GAEB).
+pub const KURZ_MAX: usize = 70;
+
+/// Der Firmenkatalog `text` mit den gesammelten Operationen der Verwaltung,
+/// rein im Speicher (paket-ka3a §3): derselbe Weg wie beim OK
+/// (`firma_anwenden`), nur wird nichts geschrieben. Ein Fehler sind die
+/// Befunde, die OK sperren.
+pub fn mit_ops(text: &str, ops: &[Op]) -> Result<Library, Vec<Befund>> {
+    // Regel 79 Nachtrag: ein Kurztext über 70 Zeichen gilt beim Lesen,
+    // sperrt aber in der Verwaltung
+    let lang: Vec<Befund> = ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::BauleistungAnlegen(d) | Op::BauleistungAendern { daten: d, .. } => Some(d),
+            _ => None,
+        })
+        .filter(|d| d.kurz.chars().count() > KURZ_MAX)
+        .map(|d| {
+            let n = d.kurz.chars().count();
+            Befund::fehler(
+                79,
+                befund::r79(
+                    &d.kurz,
+                    "short",
+                    &format!("{n} Zeichen, höchstens {KURZ_MAX}"),
+                ),
+                Ort::Datei,
+            )
+        })
+        .collect();
+    if !lang.is_empty() {
+        return Err(lang);
+    }
+    // Mit dem Datum von heute, damit die Herkunft im Fenster stimmt
+    let h = Herkunft::jetzt(HerkunftArt::Manual);
+    let neu = crate::firma_anwenden(text, text, Rolle::Admin, &h, ops)?;
+    sk_model::read_szk_with(&neu.text, &crate::lesen::ABSCHNITTE_SZK).map_err(|_| {
+        vec![Befund::fehler(
+            93,
+            befund::r93("Vorschau", "der geänderte Firmenkatalog ist nicht lesbar"),
+            Ort::Datei,
+        )]
+    })
+}
+
+/// Typische Dicke einer Bauleistung für die Verwaltung: Mitte des Bands der
+/// Regel, sonst die kleinste Artikeldicke des Baustoffs, sonst 0.
+fn typische_dicke(k: &Katalog, l: &Leistung) -> Dez {
+    match (l.tmin, l.tmax) {
+        (Some(a), Some(b)) => Dez((a.0 + b.0) / 2),
+        (Some(a), None) | (None, Some(a)) => a,
+        (None, None) => l
+            .mat
+            .and_then(|g| {
+                k.artikel
+                    .iter()
+                    .filter(|a| a.mat == Some(g) && !a.retired)
+                    .filter_map(|a| a.t)
+                    .min()
+            })
+            .unwrap_or(Dez::NULL),
+    }
+}
+
+/// EP einer Bauleistung in der Verwaltung (paket-ka3a §1 „EP-Balken“): an
+/// einer typischen Schicht aus dem Baustoff der Regel (Baustoff aus `m`),
+/// sonst wie das Preisblatt.
+pub fn aufbau(m: &Model, k: &Katalog, l: &Leistung) -> Aufbau {
+    let mat = l.mat.and_then(|g| {
+        m.materials()
+            .iter()
+            .find(|(_, x)| x.guid == g)
+            .map(|(_, x)| x)
+    });
+    crate::preis::aufbau_an(k, l, Some((typische_dicke(k, l), mat)), false)
+}
+
+/// Wort einer Schichtfunktion der Regel.
+fn funktion_wort(f: &str) -> &str {
+    match f {
+        "loadbearing" => "tragend",
+        "insulation" => "Dämmung",
+        "finish" => "Bekleidung",
+        "membrane" => "Abdichtung",
+        x => x,
+    }
+}
+
+/// Name einer Bauteilart (`kinds.rs`-Wort): „Außenwand“.
+pub fn kategorie_name(wort: &str) -> String {
+    sk_model::element::Category::ALL
+        .into_iter()
+        .map(sk_model::kinds::spec)
+        .find(|s| s.szo == wort)
+        .map_or_else(|| wort.to_string(), |s| s.name.to_string())
+}
+
+/// „Passt auf“ einer Bauleistung (soll-ka-3): „Porenbeton 230–250 mm ·
+/// Außenwand“. `baustoff` ist der Name des Baustoffs der Regel.
+pub fn passt_auf(l: &Leistung, baustoff: Option<&str>) -> String {
+    let mm = |d: Dez| d.text().replace('.', ",");
+    let dicke = match (l.tmin, l.tmax) {
+        (Some(a), Some(b)) if a == b => format!("{} mm", mm(a)),
+        (Some(a), Some(b)) => format!("{}–{} mm", mm(a), mm(b)),
+        (Some(a), None) => format!("ab {} mm", mm(a)),
+        (None, Some(b)) => format!("bis {} mm", mm(b)),
+        (None, None) => String::new(),
+    };
+    let stoff = [baustoff.unwrap_or_default(), dicke.as_str()]
+        .into_iter()
+        .filter(|x| !x.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let arten = l
+        .kategorien
+        .iter()
+        .map(|w| kategorie_name(w))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if l.kategorien.is_empty() {
+        return "nur als Folgeposition".into();
+    }
+    let teile: Vec<String> = [
+        stoff,
+        arten,
+        l.funktion
+            .as_deref()
+            .map(funktion_wort)
+            .unwrap_or_default()
+            .to_string(),
+    ]
+    .into_iter()
+    .filter(|x| !x.is_empty())
+    .collect();
+    teile.join(" · ")
+}
+
+/// Bauteiltypen der Firma, deren Schichten nach Regel 81 die Bauleistung
+/// `g` bekommen (paket-ka3a §3 „Verwendet in“): Guid des Typs und Name,
+/// mit „(Standard)“ am Standardtyp; nach Namen.
+pub fn verwendet_in(lib: &Library, k: &Katalog, g: Guid) -> Vec<(Guid, String)> {
+    use sk_model::element::Category;
+    use sk_model::library::TypeCategory;
+    let mut out = Vec::new();
+    for (id, t) in lib.types.iter() {
+        let Some(kat) = Category::ALL
+            .into_iter()
+            .find(|c| TypeCategory::of(*c) == Some(t.category))
+        else {
+            continue;
+        };
+        let nutzt = t.layers.iter().any(|l| {
+            let mat = lib.materials.get(l.material);
+            crate::zuordnung::zuordnen(k, kat, l, mat).leistung == Some(g)
+        });
+        if nutzt {
+            let std = lib.default_exterior == Some(id) || lib.default_interior == Some(id);
+            let name = if std {
+                format!("{} (Standard)", t.name)
+            } else {
+                t.name.clone()
+            };
+            out.push((t.guid, name));
+        }
+    }
+    out.sort_by(|a, b| a.1.cmp(&b.1));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,5 +594,69 @@ mod tests {
             k2.artikel(neu.guid).unwrap().retired,
             "ausgemustert, nicht gelöscht"
         );
+    }
+
+    /// KA-3a2: EP-Balken an der typischen Schicht (Mitte 230–250 mm, also
+    /// der Planstein d=24), Vorschau mit Aufwandswert 0,50 rein im Speicher,
+    /// „Passt auf“ und „Verwendet in“.
+    #[test]
+    fn aufbau_vorschau_passt_auf() {
+        let leer = sk_model::write_szk(&Library::standard());
+        let m = Model::new();
+        let k = katalog(&leer);
+        let l = k
+            .leistungen
+            .iter()
+            .find(|l| {
+                l.kurz
+                    .starts_with("AW Porenbeton-Planstein PP2-0,35 d=24cm")
+            })
+            .unwrap();
+        let a = aufbau(&m, &k, l);
+        assert!(a.stoffe.iter().any(|t| t.name.contains("d=24cm")), "{a:?}");
+        assert_eq!(a.ep, a.lohn + a.stoff + a.geraet + a.sonst);
+        assert_eq!(a.lohn, crate::Cent(3000), "0,5 h × 60 €/h");
+        let mut d = crate::preis::bauleistung(l);
+        d.stunden = Dez::lesen("0.45", 6).unwrap();
+        let op = Op::BauleistungAendern {
+            bauleistung: l.guid,
+            daten: d,
+        };
+        let lib = mit_ops(&leer, std::slice::from_ref(&op)).unwrap();
+        let k2 = crate::lesen::firma_oder_werk(&m, Some(&lib));
+        let l2 = k2.leistung(l.guid).unwrap();
+        assert_eq!(aufbau(&m, &k2, l2).lohn, crate::Cent(2700));
+        assert_eq!(katalog(&leer), k, "nichts geschrieben");
+        let pa = passt_auf(l, Some("Porenbeton"));
+        assert_eq!(pa, "Porenbeton 230–250 mm · Außenwand · tragend");
+        let ohne = k
+            .leistungen
+            .iter()
+            .find(|l| l.kategorien.is_empty())
+            .unwrap();
+        assert_eq!(passt_auf(ohne, None), "nur als Folgeposition");
+        // Ungültig: Kurztext über 70 Zeichen sperrt
+        let mut d = crate::preis::bauleistung(l);
+        d.kurz = "x".repeat(71);
+        let b = mit_ops(
+            &leer,
+            &[Op::BauleistungAendern {
+                bauleistung: l.guid,
+                daten: d,
+            }],
+        )
+        .unwrap_err();
+        assert!(b[0].satz.contains("71 Zeichen, höchstens 70"), "{b:?}");
+        let preis = mit_ops(
+            &leer,
+            &[Op::PreisSetzen {
+                artikel: a.stoffe[0].artikel.unwrap(),
+                preis: Some(Dez::ganz(-1)),
+                stand: String::new(),
+                quelle: String::new(),
+            }],
+        );
+        assert!(preis.is_err(), "Preis −1");
+        let _ = verwendet_in(&Library::standard(), &k, l.guid);
     }
 }
