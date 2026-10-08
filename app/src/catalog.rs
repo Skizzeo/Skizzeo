@@ -693,17 +693,32 @@ impl Company {
     }
 }
 
-/// Eine vorhandene Ablage `pfad` unter einen freien Namen umbenennen
-/// (`stand-0003.frueher-1.szk`, …); fehlt sie, geschieht nichts.
+/// Eine vorhandene Ablage `pfad` unter einem freien Namen sichern
+/// (`stand-0003.frueher-1.szk`, …); fehlt sie, geschieht nichts. Der
+/// Name wird exklusiv angelegt (`create_new`): `rename` ersetzt unter
+/// Windows und Linux ein Ziel, das ein zweiter Platz (Sperre nach 30 s
+/// übernommen) zwischen Prüfung und Umbenennen angelegt hat (Review 3at).
 fn beiseite(pfad: &Path) -> std::io::Result<()> {
-    if !pfad.exists() {
-        return Ok(());
-    }
+    use std::io::Write;
+    let inhalt = match std::fs::read(pfad) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
     let stamm = pfad.file_stem().and_then(|s| s.to_str()).unwrap_or("stand");
     for i in 1.. {
         let neu = pfad.with_file_name(format!("{stamm}.frueher-{i}.szk"));
-        if !neu.exists() {
-            return std::fs::rename(pfad, neu);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&neu)
+        {
+            Ok(mut f) => {
+                f.write_all(&inhalt)?;
+                return f.sync_all();
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
         }
     }
     Ok(())
@@ -1096,6 +1111,26 @@ mod tests {
         );
         let ops = c.umkehr(&m, 4).unwrap();
         assert_eq!(ops, [lohn(70)]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Review 3at: `beiseite` legt den Namen exklusiv an und ersetzt nie
+    /// eine Ablage, die schon unter `frueher-n` liegt (auch nicht, wenn
+    /// ein zweiter Platz sie gerade angelegt hat).
+    #[test]
+    fn beiseite_ersetzt_nie() {
+        let d = dir("beiseite");
+        let alt = d.join("stand-0003.szk");
+        let f1 = d.join("stand-0003.frueher-1.szk");
+        std::fs::write(&alt, "B").unwrap();
+        std::fs::write(&f1, "A").unwrap();
+        beiseite(&alt).unwrap();
+        assert_eq!(std::fs::read_to_string(&f1).unwrap(), "A");
+        assert_eq!(
+            std::fs::read_to_string(d.join("stand-0003.frueher-2.szk")).unwrap(),
+            "B"
+        );
+        beiseite(&d.join("stand-0009.szk")).unwrap();
         let _ = std::fs::remove_dir_all(&d);
     }
 
