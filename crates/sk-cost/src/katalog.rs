@@ -4,7 +4,7 @@
 
 use crate::befund::{self, satz_ort, Befund, Ort};
 use crate::geld::Dez;
-use crate::satz::{self, Abschnitt, Satz};
+use crate::satz::{self, Abschnitt, Satz, Wert};
 use crate::zeile;
 use sk_model::Guid;
 use std::collections::{HashMap, HashSet};
@@ -115,6 +115,9 @@ pub struct Artikel {
     pub einheit: Einheit,
     /// netto €/Einheit; `None`: Preis fehlt.
     pub preis: Option<Dez>,
+    /// Stück je Einheit (nur Preiseingabe je Stück, Regel 108); `None`
+    /// auch, wenn `conv` ungültig ist (Regel 76).
+    pub conv: Option<Dez>,
     /// Standardartikel (nach Regel 77 bereinigt).
     pub std: bool,
     pub retired: bool,
@@ -587,13 +590,27 @@ pub fn lesen<'a>(
             bf.push(Befund::fehler(76, t, satz_ort("article", guid.to_ifc())));
             continue;
         }
+        let einheit = Einheit::aus(s.text("unit").unwrap_or_default()).unwrap();
+        // Regel 76 (conv): ungültig oder bei st gilt es nicht, der Artikel
+        // schon; der Wert bleibt stehen
+        let conv = match s.wert("conv") {
+            Some(Wert::Zahl(d)) if einheit != Einheit::St => Some(*d),
+            Some(w) => {
+                let roh = w.schreiben(satz::ARTICLE.feld("conv").unwrap().art);
+                let t = befund::r76(&name, "conv", &roh.unwrap_or_default());
+                bf.push(Befund::warnung(76, t, satz_ort("article", guid.to_ifc())));
+                None
+            }
+            None => None,
+        };
         k.artikel.push(Artikel {
             guid,
             name,
             mat: s.guid("mat"),
             t: s.zahl("t"),
-            einheit: Einheit::aus(s.text("unit").unwrap_or_default()).unwrap(),
+            einheit,
             preis: s.zahl("price"),
+            conv,
             std: s.flag("std"),
             retired: s.flag("retired"),
             satz: r.satz,
@@ -1012,7 +1029,7 @@ mod tests {
         assert_eq!(k.anteile.len(), 28);
         assert_eq!(k.folgen.len(), 7);
         assert_eq!(k.werte, Firmenwerte::werk());
-        assert_eq!(k.kopf.as_ref().map(|c| c.stand), Some(5));
+        assert_eq!(k.kopf.as_ref().map(|c| c.stand), Some(7));
         assert!(k.herkunft.iter().all(|h| h.bestaetigt));
         let m10 = k
             .leistungen
@@ -1025,6 +1042,53 @@ mod tests {
         assert_eq!(k.oz(m10), "02.0010");
         assert_eq!(m10.stunden, Dez(450_000));
         assert_eq!(k.anteile_von(m10.guid).count(), 2);
+        // Stand 7: Stück je Einheit an den Steinen
+        let stein = k
+            .artikel(Guid::from_ifc("1S7bUW0010080100000002").unwrap())
+            .unwrap();
+        assert_eq!(stein.conv, Some(Dez(6_670_000)));
+        let nf = k
+            .artikel(Guid::from_ifc("1S7bUW001008010000000B").unwrap())
+            .unwrap();
+        assert_eq!(nf.conv, Some(Dez::ganz(48)));
+    }
+
+    /// Regel 76 (conv, BIM §3.2): Ein ungültiges `conv` macht den Artikel
+    /// nicht ungültig. Es gilt nicht, gibt Befund 76 und bleibt stehen.
+    #[test]
+    fn conv_ungueltig_gilt_nicht() {
+        let g = "0000000000000000000A01";
+        for (unit, roh) in [
+            ("m2", "abc"),
+            ("m2", "0"),
+            ("m2", "-1"),
+            ("m2", "10000.1"),
+            ("m2", "1.23456"),
+            ("m2", "\"\""),
+            ("st", "2"),
+        ] {
+            let l = format!("[article] guid={g} name=\"Probe\" unit={unit} price=2 conv={roh}");
+            let k = mit(&[("article", &l)]);
+            let a = k.artikel(Guid::from_ifc(g).unwrap()).expect(roh);
+            assert_eq!(a.conv, None, "{roh}");
+            let b: Vec<_> = k.befunde.iter().filter(|b| b.regel == 76).collect();
+            assert_eq!(b.len(), 1, "{roh}: {:#?}", k.befunde);
+            assert_eq!(b[0].schwere, crate::Schwere::Warnung);
+            // der Wert wie in der Datei (leer als "")
+            assert_eq!(
+                b[0].satz,
+                format!("Artikel Probe: conv ist ungültig ({roh}).")
+            );
+            // geschrieben wie gelesen
+            assert_eq!(a.satz.zeile(), l, "{roh}");
+        }
+        let l = format!("[article] guid={g} name=\"Probe\" unit=m2 price=2 conv=0.5");
+        let k = mit(&[("article", &l)]);
+        assert_eq!(
+            k.artikel(Guid::from_ifc(g).unwrap()).unwrap().conv,
+            Some(Dez(500_000))
+        );
+        assert!(k.befunde.is_empty(), "{:#?}", k.befunde);
     }
 
     fn mit(zeilen: &[(&str, &str)]) -> Katalog {

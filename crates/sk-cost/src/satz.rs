@@ -96,6 +96,9 @@ pub struct Feld {
     pub art: Art,
     pub pflicht: bool,
     pub bedeutung: &'static str,
+    /// Ein ungültiger Wert macht den Satz nicht ungültig: Er gilt nicht und
+    /// bleibt roh stehen (Ausnahme zu Regel 72, etwa `conv`).
+    pub weich: bool,
 }
 
 /// Womit eine Zeile gekennzeichnet ist (BIM §2).
@@ -166,6 +169,18 @@ const fn f(name: &'static str, art: Art, pflicht: bool, bedeutung: &'static str)
         art,
         pflicht,
         bedeutung,
+        weich: false,
+    }
+}
+
+/// Feld, dessen ungültiger Wert nur nicht gilt (siehe [`Feld::weich`]).
+const fn weich(name: &'static str, art: Art, bedeutung: &'static str) -> Feld {
+    Feld {
+        name,
+        art,
+        pflicht: false,
+        bedeutung,
+        weich: true,
     }
 }
 
@@ -265,6 +280,11 @@ pub const ARTICLE: Abschnitt = Abschnitt {
         f("date", Art::Monat, false, "Preisstand"),
         f("source", TEXT, false, "Quelle"),
         f("supplier", TEXT, false, "Lieferant"),
+        weich(
+            "conv",
+            zahl(0, 10_000, true, 4),
+            "Stück je Einheit (nicht bei st); ungültig: gilt nicht, bleibt stehen",
+        ),
         f(
             "std",
             Art::Flag,
@@ -605,6 +625,8 @@ pub enum Wert {
     Wort(String),
     Woerter(Vec<String>),
     Flag(bool),
+    /// Ungültiger Wert eines weichen Felds, unverändert.
+    Roh(String),
 }
 
 impl Wert {
@@ -622,6 +644,8 @@ impl Wert {
             Wert::Woerter(w) => w.join(","),
             Wert::Flag(true) => "1".into(),
             Wert::Flag(false) => return None,
+            Wert::Roh(t) if zeile::braucht_text(t) => zeile::text(t),
+            Wert::Roh(t) => t.clone(),
         })
     }
 }
@@ -777,7 +801,11 @@ impl Satz {
         for (k, v) in &z.paare {
             match a.feld(k) {
                 Some(f) if !werte.iter().any(|(n, _)| *n == f.name) => {
-                    werte.push((f.name, wert_lesen(f, v)?));
+                    let w = match wert_lesen(f, v) {
+                        Err(_) if f.weich => Wert::Roh(v.clone()),
+                        w => w?,
+                    };
+                    werte.push((f.name, w));
                 }
                 _ => fremd.push((k.clone(), v.clone())),
             }

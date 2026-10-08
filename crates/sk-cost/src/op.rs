@@ -1583,7 +1583,7 @@ mod tests {
         .unwrap();
         let k = lesen::katalog(&m, None);
         assert!(
-            matches!(k.quelle, Quelle::Projekt { stand: Some(5), .. }),
+            matches!(k.quelle, Quelle::Projekt { stand: Some(7), .. }),
             "{:?}",
             k.quelle
         );

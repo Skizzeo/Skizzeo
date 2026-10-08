@@ -1,7 +1,7 @@
 SZK 1
-# Skizzeo-Werksbestand Stammdaten, Stand 5 (10/2026), nur die neuen Abschnitte aus KA-0.
+# Skizzeo-Werksbestand Stammdaten, Stand 7 (10/2026), nur die neuen Abschnitte aus KA-0.
 # Herkunft: Skizzeo-Referenz 10/2026, unverbindlich. Erzeugt von stammdaten/werkzeug/werksbestand.py, nicht von Hand ändern.
-[catalog] guid=1S7bUW0010080600000001 name="Skizzeo-Werksbestand" stand=5 date=2026-10-08 status=released
+[catalog] guid=1S7bUW0010080600000001 name="Skizzeo-Werksbestand" stand=7 date=2026-10-08 status=released
 [rate] key=wage num=60
 [rate] key=surcharge num=0
 [rate] key=vat num=19
@@ -17,17 +17,17 @@ SZK 1
 [lot] guid=1S7bUW0010080300000007 name="Wärmedämm-Verbundsystem" nr="01" parent=1S7bUW0010080300000006
 [lot] guid=1S7bUW0010080300000008 name="Putz" nr="3" pre="Abrechnung nach VOB/C, ATV DIN 18299 ff., in der bei Vertragsschluss gültigen Fassung. Die Mengen sind aus dem Gebäudemodell ermittelt; maßgeblich ist das Aufmaß. Einheitspreise netto in Euro. Baustelleneinrichtung, Gerüste und Erdarbeiten sind nicht Gegenstand dieses Leistungsverzeichnisses."
 [lot] guid=1S7bUW0010080300000009 name="Innenputz" nr="01" parent=1S7bUW0010080300000008
-[article] guid=1S7bUW0010080100000001 name="Porenbeton-Planbauplatte PP2-0,35 d=11,5cm" mat=2wuC33GkTD9Qack6WJ4EsM t=115 grade="PP2-0,35" format="599×249" unit=m2 price=15.8 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
-[article] guid=1S7bUW0010080100000002 name="Porenbeton-Planstein PP2-0,35 d=17,5cm" mat=2wuC33GkTD9Qack6WJ4EsM t=175 grade="PP2-0,35" format="600×249" unit=m2 price=22.16 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
-[article] guid=1S7bUW0010080100000003 name="Porenbeton-Planstein PP2-0,35 d=24cm" mat=2wuC33GkTD9Qack6WJ4EsM t=240 grade="PP2-0,35" format="600×249" unit=m2 price=29.4 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
-[article] guid=1S7bUW0010080100000004 name="Porenbeton-Planstein PP2-0,35 d=36,5cm" mat=2wuC33GkTD9Qack6WJ4EsM t=365 grade="PP2-0,35" format="600×249" unit=m2 price=41.6 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW0010080100000001 name="Porenbeton-Planbauplatte PP2-0,35 d=11,5cm" mat=2wuC33GkTD9Qack6WJ4EsM t=115 grade="PP2-0,35" format="599×249" unit=m2 price=15.8 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" conv=6.67 std=1
+[article] guid=1S7bUW0010080100000002 name="Porenbeton-Planstein PP2-0,35 d=17,5cm" mat=2wuC33GkTD9Qack6WJ4EsM t=175 grade="PP2-0,35" format="599×249" unit=m2 price=22.16 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" conv=6.67 std=1
+[article] guid=1S7bUW0010080100000003 name="Porenbeton-Planstein PP2-0,35 d=24cm" mat=2wuC33GkTD9Qack6WJ4EsM t=240 grade="PP2-0,35" format="599×249" unit=m2 price=29.4 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" conv=6.67 std=1
+[article] guid=1S7bUW0010080100000004 name="Porenbeton-Planstein PP2-0,35 d=36,5cm" mat=2wuC33GkTD9Qack6WJ4EsM t=365 grade="PP2-0,35" format="599×249" unit=m2 price=41.6 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" conv=6.67 std=1
 [article] guid=1S7bUW0010080100000005 name="Dünnbettmörtel für Porenbeton" format="Sack 25 kg" unit=kg price=1.1 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
 [article] guid=1S7bUW0010080100000006 name="Transportbeton C25/30 XC1-XC2 F3" mat=32Ino7hAj08ufHFYBJxPyP grade="C25/30" format="Größtkorn 16/22" unit=m3 price=190 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
 [article] guid=1S7bUW0010080100000007 name="Betonstahl B500, geschnitten und gebogen" grade="B500B" unit=t price=1000 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
 [article] guid=1S7bUW0010080100000008 name="Deckenschalung, Vorhaltung und Verschleiß" unit=m2 price=8 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
 [article] guid=1S7bUW0010080100000009 name="Randschalung, Vorhaltung und Verschleiß" unit=m price=5 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
 [article] guid=1S7bUW001008010000000A name="Kerndämmplatte MW 035 d=140mm" mat=0isiJXaEH68fAGDc36vC$0 t=140 grade="WLS 035" format="1000×625" unit=m2 price=16 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
-[article] guid=1S7bUW001008010000000B name="Klinker NF inkl. Vormauermörtel" mat=203X9w6RHAvxaAnObFB0IP t=115 grade="KMz" format="NF, 48 St/m²" unit=m2 price=55 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW001008010000000B name="Klinker NF inkl. Vormauermörtel" mat=203X9w6RHAvxaAnObFB0IP t=115 grade="KMz" format="NF, 48 St/m²" unit=m2 price=55 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" conv=48 std=1
 [article] guid=1S7bUW001008010000000C name="Konsolanker Edelstahl, Abfangung" grade="A4" unit=m price=35 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
 [article] guid=1S7bUW001008010000000D name="Randdämmstreifen MW" mat=2dv8rsAYH3ovLj1KIg1$Mo grade="WLS 035" format="Höhe bis 25 cm" unit=m price=3 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
 [article] guid=1S7bUW001008010000000E name="WDVS-System EPS 035 d=120mm inkl. Kleber, Dübel, Gewebe, Oberputz" mat=2zPDwmqLPDpAPPFFMa8UFs t=120 grade="WLS 035" unit=m2 price=48.2 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
@@ -98,14 +98,14 @@ SZK 1
 [flow] guid=1S7bUW0010080700000003 name="Verrechnungslohn für das neue Jahr setzen" ask="Gilt für alle neuen Häuser." kind=admin
 [flowstep] guid=1S7bUW0010080800000001 flow=1S7bUW0010080700000001 nr=1 step=ask key=baustoff text="Aus welchem Baustoff?" type=pick:material
 [flowstep] guid=1S7bUW0010080800000002 flow=1S7bUW0010080700000001 nr=2 step=ask key=dicke text="Wie dick ist der Stein (mm)?" type=mm min=50 max=500
-[flowstep] guid=1S7bUW0010080800000003 flow=1S7bUW0010080700000001 nr=3 step=ask key=preis text="Was kostet er netto je m²?" type=money min=0.01 max=1000
-[flowstep] guid=1S7bUW0010080800000004 flow=1S7bUW0010080700000001 nr=4 step=ask key=name text="Wie soll der Stein heißen?" type=text
-[flowstep] guid=1S7bUW0010080800000005 flow=1S7bUW0010080700000001 nr=5 step=ask key=quelle text="Woher stammt der Preis?" type=text optional=1
+[flowstep] guid=1S7bUW0010080800000003 flow=1S7bUW0010080700000001 nr=3 step=ask key=preis text="Was kostet er netto?" type=money min=0.01 max=1000 per="m2 m3:{dicke}"
+[flowstep] guid=1S7bUW0010080800000004 flow=1S7bUW0010080700000001 nr=4 step=ask key=name text="Name" type=text preset="{baustoff}-Stein d={dicke}mm"
+[flowstep] guid=1S7bUW0010080800000005 flow=1S7bUW0010080700000001 nr=5 step=ask key=quelle text="Quelle" type=text optional=1 hint="z. B. Händler Müller 10/2026"
 [flowstep] guid=1S7bUW0010080800000006 flow=1S7bUW0010080700000001 nr=6 step=op op=artikel_anlegen args="baustoff={baustoff} name={name} dicke={dicke} einheit=m2 preis={preis} quelle={quelle}"
 [flowstep] guid=1S7bUW0010080800000007 flow=1S7bUW0010080700000001 nr=7 step=done text="Stein {name} mit {preis} €/m² angelegt."
 [flowstep] guid=1S7bUW0010080800000008 flow=1S7bUW0010080700000002 nr=1 step=ask key=artikel text="Für welchen Artikel?" type=pick:article
-[flowstep] guid=1S7bUW0010080800000009 flow=1S7bUW0010080700000002 nr=2 step=ask key=preis text="Welcher Preis steht im Angebot (netto)?" type=money min=0.01 max=100000
-[flowstep] guid=1S7bUW001008080000000A flow=1S7bUW0010080700000002 nr=3 step=ask key=quelle text="Von welchem Händler, mit Datum?" type=text optional=1
+[flowstep] guid=1S7bUW0010080800000009 flow=1S7bUW0010080700000002 nr=2 step=ask key=preis text="Welcher Preis steht im Angebot (netto)?" type=money min=0.01 max=100000 per="m2 m3:{artikel} st:{artikel}"
+[flowstep] guid=1S7bUW001008080000000A flow=1S7bUW0010080700000002 nr=3 step=ask key=quelle text="Quelle" type=text optional=1 hint="z. B. Angebot Müller vom 08.10.2026"
 [flowstep] guid=1S7bUW001008080000000B flow=1S7bUW0010080700000002 nr=4 step=op op=preis_setzen args="artikel={artikel} preis={preis} quelle={quelle}"
 [flowstep] guid=1S7bUW001008080000000C flow=1S7bUW0010080700000002 nr=5 step=done text="Preis {preis} € für dieses Haus eingetragen."
 [flowstep] guid=1S7bUW001008080000000D flow=1S7bUW0010080700000003 nr=1 step=ask key=lohn text="Wie hoch ist der Verrechnungslohn (€/h netto)?" type=money min=20 max=200
