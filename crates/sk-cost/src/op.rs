@@ -174,6 +174,17 @@ pub enum Stoff {
     Schicht { faktor: Dez },
 }
 
+/// Ein Wert, den ein Projekt der Firma vorschlägt (KA-3b4, BIM §3.16):
+/// Satz, Feld, Wert im Projekt vorher und der Vorschlag, wie in der Datei.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VorschlagWert {
+    pub rec: &'static str,
+    pub of: String,
+    pub feld: &'static str,
+    pub alt: Option<String>,
+    pub neu: String,
+}
+
 /// Eine benannte Änderung an Stammdaten (Bausteingrenze §5).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Op {
@@ -268,6 +279,23 @@ pub enum Op {
     LvGliederungSetzen {
         untertitel: bool,
     },
+    /// „Der Firma vorschlagen“ (KA-3b4, Regel 105): `[proposal]`-Zeilen im
+    /// Entwurf; auch ohne Kennwort erlaubt. Ein neuer Vorschlag desselben
+    /// Projekts für denselben Wert ersetzt den alten.
+    VorschlagFuerFirma {
+        projekt: Guid,
+        name: String,
+        werte: Vec<VorschlagWert>,
+    },
+    /// Schreibt den Wert des Vorschlags `key` über die passende Operation
+    /// (Herkunft „Vorschlag aus {Projekt}“) und streicht ihn.
+    VorschlagUebernehmen {
+        key: u32,
+    },
+    /// Streicht den Vorschlag `key`.
+    VorschlagAblehnen {
+        key: u32,
+    },
 }
 
 /// Alle Operationen mit festem Namen (für Schema, `[log] op`, Abläufe):
@@ -275,7 +303,7 @@ pub enum Op {
 /// Operationen, die es allein für die Firma gibt (Entscheid 19:45,
 /// paket-ka3b §2): Das Kennwort schützt den Firmenkatalog, nicht das Haus;
 /// jede Projektoperation bleibt für alle erlaubt (im Haus mit Marke).
-pub const NAMEN: [(&str, &str, bool); 18] = [
+pub const NAMEN: [(&str, &str, bool); 21] = [
     ("artikel_anlegen", "baustoff name dicke guete format einheit preis stand quelle lieferant standard", false),
     ("preis_setzen", "artikel preis stand quelle", false),
     ("bauleistung_anlegen", "kurz gewerk titel pos einheit bezug stunden geraet sonst nu kg kategorien mat tmin tmax funktion", false),
@@ -294,6 +322,9 @@ pub const NAMEN: [(&str, &str, bool); 18] = [
     ("lv_gliederung_setzen", "untertitel", false),
     ("umrechnung_setzen", "artikel conv (leer = entfernen)", false),
     ("kennwort_setzen", "pw (Prüfwert pbkdf2-sha256$…, leer = Einzelplatz)", true),
+    ("vorschlag_fuer_firma", "projekt name (rec of field old new)…", false),
+    ("vorschlag_uebernehmen", "key", true),
+    ("vorschlag_ablehnen", "key", true),
 ];
 
 /// „65,5“ statt „65.5“.
@@ -323,6 +354,9 @@ impl Op {
             Op::LvGliederungSetzen { .. } => 15,
             Op::UmrechnungSetzen { .. } => 16,
             Op::KennwortSetzen { .. } => 17,
+            Op::VorschlagFuerFirma { .. } => 18,
+            Op::VorschlagUebernehmen { .. } => 19,
+            Op::VorschlagAblehnen { .. } => 20,
         }
     }
 
@@ -380,6 +414,9 @@ impl Op {
             Op::AbgleichLassen { stand } => format!("Firmenstand {stand} so gelassen"),
             Op::LvGliederungSetzen { untertitel: true } => "Geschosse als Untertitel".into(),
             Op::LvGliederungSetzen { untertitel: false } => "Geschosse nicht als Untertitel".into(),
+            Op::VorschlagFuerFirma { .. } => "Der Firma vorgeschlagen".into(),
+            Op::VorschlagUebernehmen { .. } => "Vorschlag übernommen".into(),
+            Op::VorschlagAblehnen { .. } => "Vorschlag abgelehnt".into(),
         }
     }
 
@@ -937,6 +974,72 @@ impl Arbeit<'_> {
                 s.setzen("lvstorey", Some(Wert::Flag(*untertitel)));
                 self.satz_schreiben(&s, op)?;
             }
+            Op::VorschlagFuerFirma {
+                projekt,
+                name,
+                werte,
+            } => {
+                if ziel != Ziel::FirmaEntwurf {
+                    return Err(abgelehnt(op, "Vorschläge stehen nur im Entwurf"));
+                }
+                if werte.is_empty() {
+                    return Err(abgelehnt(op, "es gibt keinen Wert"));
+                }
+                let mut key = self
+                    .zeilen
+                    .section("proposal")
+                    .filter_map(|r| r.id.as_deref().and_then(|k| k.parse::<u32>().ok()))
+                    .max()
+                    .unwrap_or(0);
+                for w in werte {
+                    let gleich = k.vorschlaege.iter().find(|v| {
+                        v.projekt == *projekt && v.rec == w.rec && v.of == w.of && v.feld == w.feld
+                    });
+                    let id = match gleich {
+                        Some(v) => v.key,
+                        None => {
+                            key += 1;
+                            key
+                        }
+                    };
+                    let mut s = Satz::neu(&satz::PROPOSAL);
+                    s.setzen("key", Some(Wert::Ganz(i64::from(id))));
+                    s.setzen("project", Some(Wert::Guid(*projekt)));
+                    s.setzen("name", opt_text(name));
+                    s.setzen("rec", Some(Wert::Wort(w.rec.into())));
+                    s.setzen("of", Some(Wert::Text(w.of.clone())));
+                    s.setzen("field", Some(Wert::Text(w.feld.into())));
+                    s.setzen("old", w.alt.as_deref().and_then(opt_text));
+                    s.setzen("new", Some(Wert::Text(w.neu.clone())));
+                    s.setzen("date", Some(Wert::Text(self.herkunft.datum.clone())));
+                    self.satz_schreiben(&s, op)?;
+                }
+            }
+            Op::VorschlagUebernehmen { key } | Op::VorschlagAblehnen { key } => {
+                if ziel != Ziel::FirmaEntwurf {
+                    return Err(abgelehnt(op, "Vorschläge stehen nur im Entwurf"));
+                }
+                let v = k
+                    .vorschlaege
+                    .iter()
+                    .find(|v| v.key == *key)
+                    .cloned()
+                    .ok_or_else(|| abgelehnt(op, "den Vorschlag gibt es nicht mehr"))?;
+                if matches!(op, Op::VorschlagUebernehmen { .. }) {
+                    let (rec, konkret) = vorschlag_op(&v, &k).ok_or_else(|| {
+                        abgelehnt(op, "diesen Wert kann Skizzeo nicht übernehmen")
+                    })?;
+                    // Gleicher Index: das Protokoll nennt die Übernahme
+                    self.anwenden(&konkret, ziel)?;
+                    let quelle = if v.name.is_empty() {
+                        "Vorschlag aus einem Projekt".to_string()
+                    } else {
+                        format!("Vorschlag aus {}", v.name)
+                    };
+                    self.herkunft_mit(rec, &v.of, &quelle);
+                }
+                self.remove("proposal", &key.to_string());
+            }
         }
         Ok(())
     }
@@ -985,6 +1088,93 @@ fn leistung_setzen(s: &mut Satz, d: &Bauleistung) {
     s.setzen("tmin", d.tmin.map(Wert::Zahl));
     s.setzen("tmax", d.tmax.map(Wert::Zahl));
     s.setzen("fn", d.funktion.clone().map(Wert::Wort));
+}
+
+/// Die Operation, die den Wert des Vorschlags `v` schreibt, mit dem
+/// Abschnitt ihrer Herkunft; `None`, wenn es keine gibt.
+fn vorschlag_op(v: &katalog::Vorschlag, k: &Katalog) -> Option<(&'static str, Op)> {
+    let wert = Dez::lesen(&v.neu, 6)?;
+    match (v.rec.as_str(), v.feld.as_str()) {
+        ("service", "hours") => {
+            let g = Guid::from_ifc(&v.of)?;
+            let mut daten = crate::preis::bauleistung(k.leistung(g)?);
+            daten.stunden = wert;
+            Some((
+                "service",
+                Op::BauleistungAendern {
+                    bauleistung: g,
+                    daten,
+                },
+            ))
+        }
+        ("article", "price") => Some((
+            "article",
+            Op::PreisSetzen {
+                artikel: Guid::from_ifc(&v.of)?,
+                preis: Some(wert),
+                stand: String::new(),
+                quelle: String::new(),
+                eingabe: String::new(),
+            },
+        )),
+        ("rate", "num") => Some((
+            "rate",
+            Op::FirmenwertSetzen {
+                schluessel: v.of.clone(),
+                wert,
+            },
+        )),
+        _ => None,
+    }
+}
+
+/// Was `ops` am Projekt ändern, als Vorschlag für die Firma (KA-3b4):
+/// Preise, Stunden einer Bauleistung und Firmenwerte; `k` ist der
+/// freigegebene Firmenkatalog, `alt` sein Wert. Artikel und Bauleistungen,
+/// die er nicht kennt, und andere Operationen haben keinen Vorschlag.
+pub fn vorschlag_werte(ops: &[Op], k: &Katalog) -> Vec<VorschlagWert> {
+    let mut v = Vec::new();
+    for op in ops {
+        match op {
+            Op::PreisSetzen {
+                artikel,
+                preis: Some(p),
+                ..
+            } => {
+                // Nur was die Firma kennt; ein Hausartikel ist kein Vorschlag
+                if let Some(a) = k.artikel(*artikel) {
+                    v.push(VorschlagWert {
+                        rec: "article",
+                        of: artikel.to_ifc(),
+                        feld: "price",
+                        alt: a.preis.map(Dez::text),
+                        neu: p.text(),
+                    });
+                }
+            }
+            Op::BauleistungAendern { bauleistung, daten } => {
+                let alt = k.leistung(*bauleistung).map(|l| l.stunden);
+                if alt.is_some_and(|a| a != daten.stunden) {
+                    v.push(VorschlagWert {
+                        rec: "service",
+                        of: bauleistung.to_ifc(),
+                        feld: "hours",
+                        alt: alt.map(Dez::text),
+                        neu: daten.stunden.text(),
+                    });
+                }
+            }
+            Op::FirmenwertSetzen { schluessel, wert } => v.push(VorschlagWert {
+                rec: "rate",
+                of: schluessel.clone(),
+                feld: "num",
+                alt: crate::verwaltung::firmenwert(k, schluessel).map(Dez::text),
+                neu: wert.text(),
+            }),
+            _ => {}
+        }
+    }
+    v
 }
 
 /// Wohin eine Operation schreibt.
@@ -1531,9 +1721,10 @@ fn datei_anwenden(
     let mut lib = lies(text).map_err(|_| fehler("der Firmenkatalog ist nicht lesbar"))?;
     let alt = lies(geladen).map_err(|_| fehler("der geladene Stand ist nicht lesbar"))?;
     // Den Firmenkatalog ändert ein Nutzer nie, auch keinen Preis (KA-3b1,
-    // verwaltung.md §3: „nur Projekt“)
+    // verwaltung.md §3: „nur Projekt“); vorschlagen darf er (KA-3b4)
     for op in ops {
-        if rolle == Rolle::Nutzer || (op.nur_admin() && rolle != Rolle::Admin) {
+        let vorschlag = matches!(op, Op::VorschlagFuerFirma { .. });
+        if (rolle == Rolle::Nutzer && !vorschlag) || (op.nur_admin() && rolle != Rolle::Admin) {
             return Err(abgelehnt(op, "nur in der Verwaltung"));
         }
     }
@@ -1575,9 +1766,14 @@ fn datei_anwenden(
         firma: None,
         projekt: false,
     };
+    let ziel = if entwurf {
+        Ziel::FirmaEntwurf
+    } else {
+        Ziel::Firma
+    };
     for (i, op) in ops.iter().enumerate() {
         a.op = i;
-        a.anwenden(op, Ziel::Firma)?;
+        a.anwenden(op, ziel)?;
     }
     let nachher = a.katalog();
     let neu = neue_fehler(&start.befunde, &nachher.befunde);
@@ -1716,7 +1912,8 @@ fn datei_anwenden(
             ),
             None => lib.ext_remove(x.satz.abschnitt, &x.satz.kennung),
         }
-        if x.satz.abschnitt == "origin" {
+        // Herkunft gehört zum Satz; Vorschläge sind kein Stand (Regel 105)
+        if x.satz.abschnitt == "origin" || x.satz.abschnitt == "proposal" {
             continue;
         }
         if !saetze.contains(&x.satz) {
@@ -1731,6 +1928,21 @@ fn datei_anwenden(
             o,
             n,
         );
+    }
+    // Abgelehnte Vorschläge: eine Zeile je Vorschlag (BIM §3.16)
+    for op in ops {
+        if let Op::VorschlagAblehnen { key } = op {
+            if let Some(v) = start.vorschlaege.iter().find(|v| v.key == *key) {
+                log(
+                    &mut lib,
+                    op.name(),
+                    &v.rec,
+                    &v.of,
+                    String::new(),
+                    String::new(),
+                );
+            }
+        }
     }
     // Das Protokoll nennt nur „gesetzt“, nie die Prüfsumme
     let wort = |b: bool| if b { "gesetzt" } else { "" }.to_string();

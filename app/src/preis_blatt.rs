@@ -54,10 +54,22 @@ pub enum Gilt {
 impl Gilt {
     pub(crate) const ALLE: [Gilt; 2] = [Gilt::NurHaus, Gilt::NeueHaeuser];
 
-    pub(crate) fn label(self) -> &'static str {
+    /// `vorschlag`: Kennwort gesetzt und hier nicht eingegeben; dann geht
+    /// ein Wert nur als Vorschlag an die Firma (KA-3b4).
+    pub(crate) fn label(self, vorschlag: bool) -> &'static str {
         match self {
             Gilt::NurHaus => "Nur dieses Haus",
+            Gilt::NeueHaeuser if vorschlag => "Der Firma vorschlagen",
             Gilt::NeueHaeuser => "Auch für neue Häuser",
+        }
+    }
+
+    /// Tooltip am zweiten Segment (Bedienbarkeit 4.6).
+    pub(crate) fn tipp(vorschlag: bool) -> &'static str {
+        if vorschlag {
+            "Der Firma vorschlagen: gilt hier gleich, für neue Häuser erst, wenn die Verwaltung ihn übernimmt"
+        } else {
+            "Auch für neue Häuser: speichert im Firmenkatalog"
         }
     }
 }
@@ -198,6 +210,8 @@ pub struct PreisBlatt {
     auch: Vec<String>,
     abweichend: Vec<SatzId>,
     pub gilt: Gilt,
+    /// Mit Kennwort, nicht eingegeben: „Der Firma vorschlagen“ (KA-3b4).
+    pub vorschlag: bool,
     /// Befundsatz der Vorschau (ungültige Eingabe).
     pub fehler: Option<crate::meldung::Meldung>,
     hot: Option<Ziel>,
@@ -298,6 +312,7 @@ impl PreisBlatt {
             auch,
             abweichend,
             gilt: Gilt::default(),
+            vorschlag: false,
             fehler: None,
             hot: None,
             stand,
@@ -564,7 +579,7 @@ impl PreisBlatt {
         Gilt::ALLE
             .iter()
             .map(|&g| {
-                let w = bold.map_or(120.0 * s, |f| f.width(g.label(), px)) + 28.0 * s;
+                let w = bold.map_or(120.0 * s, |f| f.width(g.label(self.vorschlag), px)) + 28.0 * s;
                 let r = (sx + inset, sy + inset, w, SEG_H * s - 2.0 * inset);
                 sx += w;
                 (g, r)
@@ -927,9 +942,7 @@ impl PreisBlatt {
     /// Tooltip am Segment (Bedienbarkeit 4.6).
     pub fn tip_at(&self, fonts: &Fonts, x: f32, y: f32) -> Option<String> {
         match self.hit(fonts, x, y)? {
-            Ziel::Segment(Gilt::NeueHaeuser) => {
-                Some("Auch für neue Häuser: speichert im Firmenkatalog".into())
-            }
+            Ziel::Segment(Gilt::NeueHaeuser) => Some(Gilt::tipp(self.vorschlag).into()),
             _ => None,
         }
     }
@@ -1147,10 +1160,10 @@ impl PreisBlatt {
                 } else {
                     (f, u.sheet_text_dim)
                 };
-                let tw = font.width(g.label(), px_seg);
+                let tw = font.width(g.label(self.vorschlag), px_seg);
                 font.draw(
                     c,
-                    g.label(),
+                    g.label(self.vorschlag),
                     px_seg,
                     rx + (rw - tw) * 0.5,
                     ry + (rh + font.cap_height(px_seg)) * 0.5,
@@ -1169,6 +1182,18 @@ impl PreisBlatt {
                         self.einheit
                     );
                     f.draw(c, &text, px_s, x0, fy, u.sheet_text_dim);
+                }
+                Gilt::NeueHaeuser if self.vorschlag => {
+                    let text = "Gilt hier gleich; die Verwaltung entscheidet über neue Häuser.";
+                    fb.draw(c, text, px_s, x0, fy, crate::cards::verweis(u, false));
+                    f.draw(
+                        c,
+                        "Strg+Z nimmt es nur für dieses Haus zurück.",
+                        px_s,
+                        x0,
+                        fy + 16.0 * s,
+                        u.sheet_text_dim,
+                    );
                 }
                 Gilt::NeueHaeuser => {
                     let text = format!("Neue Häuser rechnen dann mit {neu_ep}.");

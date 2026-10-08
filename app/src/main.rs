@@ -2523,7 +2523,14 @@ impl App {
     /// sich nichts geändert.
     fn kosten_schreiben(&mut self, w: kosten_view::Schreiben) {
         let h = sk_cost::Herkunft::jetzt(sk_cost::HerkunftArt::Manual);
+        // Mit Kennwort, hier nicht eingegeben: der Firma nur vorschlagen
+        let vorschlag = self.rolle() == sk_cost::Rolle::Nutzer;
         let meldung = match w {
+            kosten_view::Schreiben::Preis {
+                ops,
+                gilt: preis_blatt::Gilt::NeueHaeuser,
+                ..
+            } if vorschlag => self.vorschlagen_melden("Preis der Firma vorgeschlagen", &h, &ops),
             kosten_view::Schreiben::Preis {
                 ops,
                 gilt: preis_blatt::Gilt::NeueHaeuser,
@@ -2556,6 +2563,9 @@ impl App {
                 };
                 match gilt {
                     preis_blatt::Gilt::NurHaus => self.kosten_folge(label, &h, &[op]),
+                    preis_blatt::Gilt::NeueHaeuser if vorschlag => {
+                        self.vorschlagen_melden("Lohn der Firma vorgeschlagen", &h, &[op])
+                    }
                     preis_blatt::Gilt::NeueHaeuser => self.fuer_firma_melden(label, &h, &[op]),
                 }
             }
@@ -2607,6 +2617,26 @@ impl App {
                     self.doc.fuer_neue_merken(c.zuletzt_geaendert(), wert);
                     hinweis.map(|m| (m, false))
                 }
+                Err(e) => Some((e.dazu(NICHTS_GEAENDERT), true)),
+            },
+            None => Some((
+                meldung::Meldung::satz("Kein Firmenkatalog geladen.").dazu(NICHTS_GEAENDERT),
+                true,
+            )),
+        }
+    }
+
+    /// „Der Firma vorschlagen“ über `Scene::der_firma_vorschlagen` (KA-3b4).
+    fn vorschlagen_melden(
+        &mut self,
+        label: &'static str,
+        h: &sk_cost::Herkunft,
+        ops: &[sk_cost::Op],
+    ) -> Option<(meldung::Meldung, bool)> {
+        let name = self.doc.name();
+        match self.company.as_mut() {
+            Some(c) => match self.scene.der_firma_vorschlagen(label, c, h, ops, &name) {
+                Ok(m) => Some((m, false)),
                 Err(e) => Some((e.dazu(NICHTS_GEAENDERT), true)),
             },
             None => Some((
@@ -2778,6 +2808,10 @@ impl App {
                 .kosten
                 .get_or_insert_with(kosten_view::KostenView::new)
                 .lohn_karte();
+        }
+        let vorschlag = self.rolle() == sk_cost::Rolle::Nutzer;
+        if let Some(k) = self.quantity.kosten.as_mut() {
+            k.vorschlag = vorschlag;
         }
         let firma = self.company.as_ref().map(|c| (c.library(), c.stand()));
         self.quantity.datei = self.doc.name();

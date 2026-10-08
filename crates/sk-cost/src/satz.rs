@@ -588,8 +588,61 @@ pub const LOG: Abschnitt = Abschnitt {
     ],
 };
 
+/// `[proposal]`: Vorschlag aus einem Projekt, nur im Entwurf (BIM §3.16,
+/// Regel 105, KA-3b4).
+pub const PROPOSAL: Abschnitt = Abschnitt {
+    name: "proposal",
+    kennung: Kennung::Key,
+    szo: false,
+    szk: true,
+    bedeutung: "Vorschlag aus einem Projekt, nur im Entwurf",
+    felder: &[
+        f(
+            "key",
+            Art::Ganz {
+                min: 1,
+                max: i64::MAX,
+            },
+            true,
+            "Kennung, je Entwurf eindeutig",
+        ),
+        f("project", Art::Guid, true, "Projekt, aus dem er kommt"),
+        f(
+            "name",
+            Art::Text {
+                max: 120,
+                zeile: true,
+            },
+            false,
+            "Projektname zur Anzeige",
+        ),
+        f("rec", Art::Wort(LOG_REC), true, "Abschnitt des Satzes"),
+        f("of", Art::Schluessel, true, "Kennung des Satzes"),
+        f("field", Art::Schluessel, true, "Feldname"),
+        f(
+            "old",
+            Art::Text {
+                max: 120,
+                zeile: true,
+            },
+            false,
+            "Wert im Projekt vorher",
+        ),
+        f(
+            "new",
+            Art::Text {
+                max: 120,
+                zeile: true,
+            },
+            true,
+            "vorgeschlagener Wert",
+        ),
+        f("date", Art::Tag, true, "Datum"),
+    ],
+};
+
 /// Alle Kostenabschnitte in der Schreibordnung (BIM §1).
-pub const ABSCHNITTE: [&Abschnitt; 10] = [
+pub const ABSCHNITTE: [&Abschnitt; 11] = [
     &CATALOG,
     &ARTICLE,
     &SERVICE,
@@ -600,6 +653,7 @@ pub const ABSCHNITTE: [&Abschnitt; 10] = [
     &ORIGIN,
     &COSTPROJECT,
     &LOG,
+    &PROPOSAL,
 ];
 
 /// Abschnittslisten für `szo::read_with` und `catalog::read_szk_with`
@@ -614,7 +668,7 @@ pub const ABSCHNITTE_SZO: [&str; 8] = [
     "origin",
     "costproject",
 ];
-pub const ABSCHNITTE_SZK: [&str; 9] = [
+pub const ABSCHNITTE_SZK: [&str; 10] = [
     "catalog",
     "article",
     "service",
@@ -624,6 +678,7 @@ pub const ABSCHNITTE_SZK: [&str; 9] = [
     "lot",
     "origin",
     "log",
+    "proposal",
 ];
 
 pub fn abschnitt(name: &str) -> Option<&'static Abschnitt> {

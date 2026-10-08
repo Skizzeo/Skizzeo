@@ -215,13 +215,19 @@ impl Verwaltung {
             staende.len(),
             korb.len(),
         );
+        // Vorschläge aus Projekten stehen unter Firmenwerte (KA-3b4)
+        let firmenwerte = match self.vorschlaege.len() {
+            0 => "Firmenwerte".to_string(),
+            1 => "Firmenwerte · 1 Vorschlag".to_string(),
+            n => format!("Firmenwerte · {n} Vorschläge"),
+        };
         vec![
             if self.ohne_firma {
-                blatt(Knoten::Firmenwerte, "Firmenwerte")
+                blatt(Knoten::Firmenwerte, firmenwerte)
             } else {
                 Eintrag {
                     kinder: vec![blatt(Knoten::Kennwort, "Verwaltungskennwort")],
-                    ..blatt(Knoten::Firmenwerte, "Firmenwerte")
+                    ..blatt(Knoten::Firmenwerte, firmenwerte)
                 }
             },
             ast(Knoten::Artikel, "Baustoffe und Preise", artikel, n_artikel),

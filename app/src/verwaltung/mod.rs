@@ -105,6 +105,9 @@ pub enum Aktion {
     ConvBestaetigen(Guid),
     /// Blatt „Verwaltungskennwort setzen“ öffnen (KA-3b1).
     Kennwort,
+    /// Vorschlag aus einem Projekt übernehmen bzw. ablehnen (KA-3b4).
+    VorschlagUebernehmen(u32),
+    VorschlagAblehnen(u32),
 }
 
 /// Ziel unter der Maus.
@@ -196,6 +199,8 @@ pub struct Verwaltung {
     /// Firmenkatalog mit den gesammelten Operationen und sein Katalog.
     lib: Library,
     jetzt: Katalog,
+    /// Offene Vorschläge aus Projekten im Entwurf (KA-3b4).
+    vorschlaege: Vec<sk_cost::katalog::Vorschlag>,
     /// Befunde, die OK sperren, und das Feld, dessen Eingabe sie auslöste.
     befunde: Vec<Befund>,
     fehler_feld: Option<Feld>,
@@ -355,6 +360,7 @@ impl Verwaltung {
             titel,
             m,
             jetzt: vorher.clone(),
+            vorschlaege: Vec::new(),
             vorher,
             ops: Vec::new(),
             befunde: Vec::new(),
@@ -389,6 +395,7 @@ impl Verwaltung {
             versucht: Vec::new(),
             vorschau: None,
         };
+        v.vorschlaege = v.vorschlaege_basis();
         let gibt_es = |k: &Knoten| match k {
             Knoten::Leistung(g) => v.jetzt.leistung(*g).is_some(),
             Knoten::ArtikelSatz(g) => v.jetzt.artikel(*g).is_some(),
@@ -483,6 +490,16 @@ impl Verwaltung {
         self.luecken0 = self.luecken_jetzt();
     }
 
+    /// Vorschläge im Entwurf, wie er beim Öffnen bzw. Speichern war.
+    fn vorschlaege_basis(&self) -> Vec<sk_cost::katalog::Vorschlag> {
+        if self.freigabe.is_none() || !self.basis.contains("[proposal]") {
+            return Vec::new();
+        }
+        sk_model::read_szk_with(&self.basis, &sk_cost::lesen::ABSCHNITTE_SZK)
+            .map(|l| sk_cost::verwaltung::vorschlaege(&l))
+            .unwrap_or_default()
+    }
+
     /// Die gesammelten Operationen (für OK).
     pub fn ops(&self) -> &[Op] {
         &self.ops
@@ -517,6 +534,7 @@ impl Verwaltung {
         if self.ops.is_empty() {
             self.zurueck = None;
             self.umkehr_ops.clear();
+            self.vorschlaege = self.vorschlaege_basis();
             self.lib = self.lib0.clone();
             self.jetzt = self.vorher.clone();
             self.befunde.clear();
@@ -526,6 +544,7 @@ impl Verwaltung {
             match sk_cost::verwaltung::mit_ops_in(&self.basis, &self.ops, entwurf) {
                 Ok((lib, s)) => {
                     saetze = s;
+                    self.vorschlaege = sk_cost::verwaltung::vorschlaege(&lib);
                     // Der Entwurf rechnet hier wie ein Firmenkatalog
                     let lib = if entwurf {
                         sk_cost::verwaltung::wie_freigegeben(&lib)
@@ -922,6 +941,8 @@ impl Verwaltung {
             Aktion::Je(e) => self.je_waehlen(e),
             Aktion::ConvBestaetigen(g) => self.conv_bestaetigen(g),
             Aktion::Kennwort => self.setz = Some(kennwort::Setzen::default()),
+            Aktion::VorschlagUebernehmen(key) => self.setzen(Op::VorschlagUebernehmen { key }),
+            Aktion::VorschlagAblehnen(key) => self.setzen(Op::VorschlagAblehnen { key }),
         }
         None
     }
@@ -1257,6 +1278,8 @@ impl Verwaltung {
                     | Aktion::AlsReferenz
                     | Aktion::ConvBestaetigen(_)
                     | Aktion::Kennwort
+                    | Aktion::VorschlagUebernehmen(_)
+                    | Aktion::VorschlagAblehnen(_)
             )
         };
         match h {

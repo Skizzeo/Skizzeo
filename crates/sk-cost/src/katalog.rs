@@ -238,6 +238,23 @@ pub struct Protokoll {
     pub satz: Satz,
 }
 
+/// `[proposal]`: Vorschlag aus einem Projekt, nur im Entwurf (BIM §3.16,
+/// Regel 105). Werte wie in der Datei (Punkt).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Vorschlag {
+    pub key: u32,
+    pub projekt: Guid,
+    /// Projektname zur Anzeige; leer, wenn keiner.
+    pub name: String,
+    pub rec: String,
+    pub of: String,
+    pub feld: String,
+    pub alt: Option<String>,
+    pub neu: String,
+    pub datum: String,
+    pub satz: Satz,
+}
+
 /// Firmenwerte (`[rate]`) mit den Werkswerten als Rückfall (BIM §3.6).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Firmenwerte {
@@ -347,6 +364,8 @@ pub struct Katalog {
     pub kopf: Option<Kopf>,
     pub kopie: Option<Kopie>,
     pub protokoll: Vec<Protokoll>,
+    /// Offene Vorschläge, nur aus einem Entwurf (Regel 105).
+    pub vorschlaege: Vec<Vorschlag>,
     /// Stand des freigegebenen Firmenkatalogs, wenn einer da ist (Regel 92).
     pub firma_stand: Option<u32>,
     pub befunde: Vec<Befund>,
@@ -635,6 +654,7 @@ pub fn lesen<'a>(
         kopf: None,
         kopie: None,
         protokoll: Vec::new(),
+        vorschlaege: Vec::new(),
         firma_stand: None,
         befunde: Vec::new(),
         stempel: {
@@ -1081,6 +1101,33 @@ pub fn lesen<'a>(
             stand: st,
             satz: r.satz,
         });
+    }
+
+    // Regel 105: Vorschläge nur im Entwurf, sonst übergangen
+    let vorschlaege = take("proposal");
+    if k.kopf.as_ref().is_some_and(|c| c.entwurf) {
+        for r in vorschlaege {
+            let s = r.satz;
+            let text = |f: &str| s.text(f).unwrap_or_default().to_string();
+            k.vorschlaege.push(Vorschlag {
+                key: s.ganz("key").unwrap_or(0) as u32,
+                projekt: s.guid("project").unwrap_or(Guid(0)),
+                name: text("name"),
+                rec: text("rec"),
+                of: text("of"),
+                feld: text("field"),
+                alt: s.text("old").map(str::to_string),
+                neu: text("new"),
+                datum: text("date"),
+                satz: s,
+            });
+        }
+    } else if !vorschlaege.is_empty() {
+        bf.push(Befund::warnung(
+            105,
+            befund::r105(vorschlaege.len()),
+            Ort::Datei,
+        ));
     }
 
     // Regel 86: OZ fest und eindeutig

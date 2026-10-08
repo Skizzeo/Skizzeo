@@ -184,6 +184,14 @@ pub fn r91() -> String {
     "Dieser Firmenkatalog ist ein Entwurf und noch nicht freigegeben.".into()
 }
 
+/// Regel 105: Vorschläge stehen nur im Entwurf.
+pub fn r105(n: usize) -> String {
+    match n {
+        1 => "Ein Vorschlag aus einem Projekt steht im freigegebenen Firmenkatalog; er gilt nur im Entwurf und wird übergangen.".into(),
+        n => format!("{n} Vorschläge aus Projekten stehen im freigegebenen Firmenkatalog; sie gelten nur im Entwurf und werden übergangen."),
+    }
+}
+
 pub fn r92(stand: u32, eigener: &str) -> String {
     format!("Firmenkatalog Stand {stand} ist verfügbar; das Projekt rechnet mit Stand {eigener}.")
 }

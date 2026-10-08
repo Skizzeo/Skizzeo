@@ -531,6 +531,8 @@ fn nutzersaetze_sauber() {
             crate::catalog::MIT_KENNWORT,
             crate::catalog::IM_ENTWURF,
             crate::catalog::NUR_MIT_KENNWORT,
+            crate::catalog::VORGESCHLAGEN,
+            crate::catalog::NICHT_VORGESCHLAGEN,
             crate::catalog::ENTWURF_GEAENDERT,
             crate::flush_pick::CANCELLED,
             crate::NICHTS_GEAENDERT,

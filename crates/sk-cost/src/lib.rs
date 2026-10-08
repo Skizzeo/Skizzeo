@@ -31,8 +31,8 @@ pub use geld::{Cent, Dez};
 pub use katalog::Katalog;
 pub use op::{
     ausfuehren, ausfuehren_folge, entwurf_anwenden, firma_anwenden, neues_projekt, pruefen,
-    vorschau, vorschau_kosten, Aenderung, FirmaNeu, Herkunft, HerkunftArt, Op, Plan, Rolle, SatzId,
-    Sicherheit, Ziel,
+    vorschau, vorschau_kosten, vorschlag_werte, Aenderung, FirmaNeu, Herkunft, HerkunftArt, Op,
+    Plan, Rolle, SatzId, Sicherheit, VorschlagWert, Ziel,
 };
 pub use rechnung::{Kostenblatt, Kostenspeicher, Position};
 pub use schema::schema;

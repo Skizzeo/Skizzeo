@@ -300,6 +300,9 @@ pub struct KostenView {
     pub scale: f32,
     /// Oberkante des Blatts unter Titelleiste und Karten (dip).
     pub top: f32,
+    /// Kennwort gesetzt und hier nicht eingegeben: Preis- und Lohnblatt
+    /// schlagen der Firma vor (KA-3b4); setzt die App.
+    pub vorschlag: bool,
     blatt: Option<Rc<Kostenblatt>>,
     katalog: Option<Rc<Katalog>>,
     /// Kostenblatt aller Geschosse des Umfangs (Chip-Summen).
@@ -382,6 +385,7 @@ impl KostenView {
             h: 0,
             scale: 1.0,
             top: 32.0,
+            vorschlag: false,
             blatt: None,
             katalog: None,
             ganz: None,
@@ -467,6 +471,7 @@ impl KostenView {
                 lohn_blatt::Form::Blatt => "Verrechnungslohn".into(),
             };
             let mut l = LohnBlatt::neu(form, titel, kat.werte.lohn, firma_lohn);
+            l.set_vorschlag(self.vorschlag);
             l.scale = self.scale;
             self.preis_schliessen();
             self.wahl = None;
@@ -728,6 +733,7 @@ impl KostenView {
                 let mut pb =
                     PreisBlatt::neu(kat.clone(), a, f, (pos, key), preis_blatt::stand_jetzt());
                 pb.scale = self.scale;
+                pb.vorschlag = self.vorschlag;
                 self.preis = Some(pb);
                 self.live = None;
                 changed = true;

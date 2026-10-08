@@ -2238,6 +2238,51 @@ impl Scene {
         self.fuer_firma_mit(label, firma, herkunft, ops, None, false)
     }
 
+    /// „Der Firma vorschlagen“ (KA-3b4, Bausteingrenze §5, Regel 105):
+    /// `ops` gelten in diesem Haus mit Marke (ein Rückgängig-Schritt mit
+    /// `label`), und was sie an Preis, Stunden und Lohn ändern, steht als
+    /// Vorschlag im Entwurf des Firmenkatalogs. Erst geprüft, dann der
+    /// Vorschlag, dann das Haus; `Err`: nichts geändert. `name`:
+    /// Projektname für die Verwaltung.
+    pub fn der_firma_vorschlagen(
+        &mut self,
+        label: &'static str,
+        firma: &mut crate::catalog::Company,
+        herkunft: &sk_cost::Herkunft,
+        ops: &[sk_cost::Op],
+        name: &str,
+    ) -> Result<crate::meldung::Meldung, crate::meldung::Meldung> {
+        use crate::meldung::Meldung;
+        let satz = |b: Vec<sk_cost::Befund>| Meldung::aus_befunden(&b, "Nichts geändert.");
+        sk_cost::vorschau(&self.model, Some(firma.library()), self.rolle, ops).map_err(satz)?;
+        let k = sk_cost::lesen::firma_oder_werk(&sk_model::Model::new(), Some(firma.library()));
+        let werte = sk_cost::vorschlag_werte(ops, &k);
+        let vorgeschlagen = !werte.is_empty();
+        if vorgeschlagen {
+            let op = sk_cost::Op::VorschlagFuerFirma {
+                projekt: self.model.project().guid,
+                name: name.to_string(),
+                werte,
+            };
+            firma.vorschlagen(herkunft, &op)?;
+        }
+        // Geprüft war es; scheitert das Haus trotzdem, steht der Vorschlag
+        if let Err(b) = self.kosten_folge(label, Some(firma.library()), herkunft, ops) {
+            if !vorgeschlagen {
+                return Err(satz(b));
+            }
+            return Ok(Meldung::mit(
+                "Der Firma vorgeschlagen, dieses Haus nicht geändert: {}",
+                &[&satz(b)],
+            ));
+        }
+        Ok(Meldung::satz(if vorgeschlagen {
+            crate::catalog::VORGESCHLAGEN
+        } else {
+            crate::catalog::NICHT_VORGESCHLAGEN
+        }))
+    }
+
     /// „Freigeben als Stand n+1“ aus der Vorschau der Verwaltung (KA-3b3,
     /// [`crate::catalog::Company::freigeben`]); dieses Haus zieht nach wie
     /// bei [`Scene::fuer_firma`].

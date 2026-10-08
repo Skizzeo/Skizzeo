@@ -26,7 +26,6 @@ const FELD_H: f32 = 26.0;
 const SEG_H: f32 = 26.0;
 const KARTE_W: f32 = 330.0;
 /// Hauptknopf der Karte.
-const AUCH: &str = "Auch für neue Häuser";
 const BLATT_W: f32 = 360.0;
 
 /// Form des Felds.
@@ -68,6 +67,8 @@ pub struct LohnBlatt {
     edit: TextEdit,
     wert: Option<Dez>,
     pub gilt: Gilt,
+    /// Mit Kennwort, nicht eingegeben: „Der Firma vorschlagen“ (KA-3b4).
+    pub vorschlag: bool,
     /// Tastenfokus auf dem Segment „Gilt für“ (nur das Blatt, Tab).
     segment: bool,
     hot: Option<Ziel>,
@@ -128,6 +129,7 @@ impl LohnBlatt {
                 Form::Karte => Gilt::NeueHaeuser,
                 Form::Blatt => Gilt::NurHaus,
             },
+            vorschlag: false,
             segment: false,
             hot: None,
             anker: (0.0, 0.0, 0.0, 0.0),
@@ -240,7 +242,7 @@ impl LohnBlatt {
         let mut sx = x + PAD * s + label_w;
         let mut out = Vec::new();
         for g in Gilt::ALLE {
-            let w = bold.map_or(110.0 * s, |f| f.width(g.label(), px)) + 20.0 * s;
+            let w = bold.map_or(110.0 * s, |f| f.width(g.label(self.vorschlag), px)) + 20.0 * s;
             out.push((g, (sx, sy + 2.0 * s, w, (SEG_H - 4.0) * s)));
             sx += w;
         }
@@ -257,7 +259,9 @@ impl LohnBlatt {
         let px = 11.0 * s;
         let regular = fonts.regular.as_ref();
         let bold = fonts.bold.as_ref().or(regular);
-        let wu = bold.map_or(80.0 * s, |f| f.width(AUCH, px)) + 24.0 * s;
+        let wu = bold.map_or(80.0 * s, |f| {
+            f.width(Gilt::NeueHaeuser.label(self.vorschlag), px)
+        }) + 24.0 * s;
         let wn = bold.map_or(100.0 * s, |f| f.width("Nur dieses Haus", px)) + 24.0 * s;
         let bh = 26.0 * s;
         let by = y + h - (PAD * s) - bh;
@@ -427,6 +431,16 @@ impl LohnBlatt {
         }
     }
 
+    /// Mit Kennwort, nicht eingegeben (KA-3b4): „Der Firma vorschlagen“
+    /// statt „Auch für neue Häuser“; Enter der Karte ist dann „Nur dieses
+    /// Haus“ (paket-ka3b §1).
+    pub fn set_vorschlag(&mut self, vorschlag: bool) {
+        if vorschlag && !self.vorschlag && self.form == Form::Karte {
+            self.gilt = Gilt::NurHaus;
+        }
+        self.vorschlag = vorschlag;
+    }
+
     pub fn text(&mut self, ch: char) -> Option<Aus> {
         if self.segment || !(ch.is_ascii_digit() || matches!(ch, ',' | '.')) {
             return None;
@@ -438,7 +452,7 @@ impl LohnBlatt {
     pub fn tip_at(&self, fonts: &Fonts, x: f32, y: f32) -> Option<String> {
         match self.hit(fonts, x, y)? {
             Ziel::Segment(Gilt::NeueHaeuser) | Ziel::Auch => {
-                Some("Auch für neue Häuser: speichert im Firmenkatalog".into())
+                Some(Gilt::tipp(self.vorschlag).into())
             }
             _ => None,
         }
@@ -593,7 +607,8 @@ impl LohnBlatt {
                         },
                     );
                     let ub = (by + (bh + fb.cap_height(px_e)) * 0.5).round();
-                    fb.draw(c, AUCH, px_e, bx + 12.0 * s, ub, u.on_accent);
+                    let auch = Gilt::NeueHaeuser.label(self.vorschlag);
+                    fb.draw(c, auch, px_e, bx + 12.0 * s, ub, u.on_accent);
                 }
             }
             Form::Blatt => {
@@ -628,9 +643,16 @@ impl LohnBlatt {
                         } else {
                             (f, dim)
                         };
-                        let tw = font.width(g.label(), px_s);
+                        let tw = font.width(g.label(self.vorschlag), px_s);
                         let gb = (ry + (rh + font.cap_height(px_s)) * 0.5).round();
-                        font.draw(c, g.label(), px_s, rx + (rw - tw) * 0.5, gb, col);
+                        font.draw(
+                            c,
+                            g.label(self.vorschlag),
+                            px_s,
+                            rx + (rw - tw) * 0.5,
+                            gb,
+                            col,
+                        );
                     }
                     let fy2 = (sy + sh + 12.0 * s + f.cap_height(px_s)).round();
                     match self.gilt {
@@ -640,6 +662,19 @@ impl LohnBlatt {
                                 preis_blatt::zahl(self.firma, 2)
                             );
                             f.draw(c, &t2, px_s, x0, fy2, dim);
+                        }
+                        Gilt::NeueHaeuser if self.vorschlag => {
+                            let t2 =
+                                "Gilt hier gleich; die Verwaltung entscheidet über neue Häuser.";
+                            fb.draw(c, t2, px_s, x0, fy2, u.accent);
+                            f.draw(
+                                c,
+                                "Strg+Z nimmt es nur für dieses Haus zurück.",
+                                px_s,
+                                x0,
+                                fy2 + 16.0 * s,
+                                dim,
+                            );
                         }
                         Gilt::NeueHaeuser => {
                             let neu = self.wert.unwrap_or(self.jetzt);

@@ -636,6 +636,95 @@ impl Verwaltung {
             self.feld_zeile(b, y, &name, Feld::Wert(key), 130.0, einheit.into());
             y += ABSTAND;
         }
+        self.vorschlaege_zeigen(b, y);
+    }
+
+    /// „n Vorschläge aus Projekten“ (KA-3b4, paket-ka3b §1): je Vorschlag
+    /// Satz und Feld, alt → neu, Projekt und Datum, „Übernehmen“ und
+    /// „Ablehnen“. Kein Vorschlag verschwindet still.
+    fn vorschlaege_zeigen(&self, b: &mut Bau, mut y: f32) {
+        let n = self.vorschlaege.len();
+        if n == 0 {
+            return;
+        }
+        y += 8.0;
+        b.linie(y - 12.0);
+        let titel = match n {
+            1 => "Ein Vorschlag aus einem Projekt".to_string(),
+            n => format!("{n} Vorschläge aus Projekten"),
+        };
+        b.text(0.0, y, titel, PX, true, Farbe::Text);
+        y += TZ + 4.0;
+        y = b.absatz(
+            0.0,
+            y,
+            "„Übernehmen“ schreibt den Wert in den Entwurf, „Ablehnen“ streicht den Vorschlag. Beides steht im Protokoll.",
+            Farbe::Dim,
+        ) + 12.0;
+        for v in &self.vorschlaege {
+            let satz = sk_cost::verwaltung::satz_name(&self.jetzt, &v.rec, &v.of);
+            let was = match v.rec.as_str() {
+                "rate" => String::new(),
+                rec => format!(" · {}", sk_cost::wort::feld(Some(rec), &v.feld)),
+            };
+            let x = b.text(
+                0.0,
+                y,
+                b.kurz(&satz, PX, true, b.w * 0.6),
+                PX,
+                true,
+                Farbe::Text,
+            );
+            b.text(x, y, was, PX, false, Farbe::Dim);
+            y += TZ;
+            let wert = |t: &str| self.vorschlag_wert(v, t);
+            let mut x = match &v.alt {
+                Some(a) => {
+                    let x = b.text_art(0.0, y, wert(a), PX, false, Farbe::Dim, true, None);
+                    b.text(x + 8.0, y, "→", PX, false, Farbe::Dim) + 8.0
+                }
+                None => 0.0,
+            };
+            x = b.text(x, y, wert(&v.neu), PX, true, Farbe::Text);
+            let woher = match v.name.as_str() {
+                "" => format!(" · {}", zeit_text(&v.datum)),
+                name => format!(" · aus {name}, {}", zeit_text(&v.datum)),
+            };
+            let woher = b.kurz(&woher, PX, false, (b.w - x - 200.0).max(40.0));
+            b.text(x, y, woher, PX, false, Farbe::Dim);
+            let x = b.verweis(
+                b.w - 190.0,
+                y,
+                "Übernehmen",
+                Aktion::VorschlagUebernehmen(v.key),
+            );
+            b.verweis(x + 16.0, y, "Ablehnen", Aktion::VorschlagAblehnen(v.key));
+            y += TZ + 14.0;
+        }
+    }
+
+    /// Wert eines Vorschlags wie im Feld, mit Einheit („65,00 €/h“).
+    fn vorschlag_wert(&self, v: &sk_cost::katalog::Vorschlag, t: &str) -> String {
+        let Some(d) = sk_cost::Dez::lesen(t, 4) else {
+            return t.to_string();
+        };
+        let g = Guid::from_ifc(&v.of);
+        match v.rec.as_str() {
+            "rate" => match v.of.as_str() {
+                "wage" => format!("{} €/h", super::geld(d)),
+                "surcharge" | "vat" => format!("{} %", komma(d)),
+                _ => format!("{} kg/m³", komma(d)),
+            },
+            "article" => match g.and_then(|g| self.jetzt.artikel(g)) {
+                Some(a) => format!("{} €/{}", super::geld(d), a.einheit.zeichen()),
+                None => format!("{} €", super::geld(d)),
+            },
+            "service" => match g.and_then(|g| self.jetzt.leistung(g)) {
+                Some(l) => format!("{} h/{}", komma(d), l.einheit.zeichen()),
+                None => format!("{} h", komma(d)),
+            },
+            _ => komma(d),
+        }
     }
 
     /// „Verwaltungskennwort“ (soll-ka-3c): Satz zum Ist-Zustand und Knopf.

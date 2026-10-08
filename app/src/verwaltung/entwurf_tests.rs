@@ -404,6 +404,31 @@ fn istbilder_ka3b3() {
     v.vorschau_oeffnen();
     let (b, _, _) = v.paint(&t, &fonts, &w);
     std::fs::write(ziel.join("ist-ka-3b3-vorschau.png"), b.to_png()).unwrap();
+    // KA-3b4: zwei Vorschläge aus Projekten unter Firmenwerte
+    let (mut c, mut s, dir2) = mit_kennwort("ist-vorschlag");
+    s.rolle = sk_cost::Rolle::Nutzer;
+    let op = |w: i64| Op::FirmenwertSetzen {
+        schluessel: "wage".into(),
+        wert: Dez::ganz(w),
+    };
+    s.der_firma_vorschlagen("Lohn", &mut c, &h(), &[op(65)], "Haus Becker")
+        .unwrap();
+    if let Some(g) = art {
+        let p = Op::PreisSetzen {
+            artikel: g,
+            preis: Some(Dez::lesen("31.40", 2).unwrap()),
+            stand: "10/2026".into(),
+            quelle: "Preisblatt".into(),
+            eingabe: String::new(),
+        };
+        s.der_firma_vorschlagen("Preis", &mut c, &h(), &[p], "Haus Becker")
+            .unwrap();
+    }
+    s.rolle = sk_cost::Rolle::Admin;
+    let v = Verwaltung::open(&s, Some(&c), Some(Knoten::Firmenwerte));
+    let (b, _, _) = v.paint(&t, &fonts, &w);
+    std::fs::write(ziel.join("ist-ka-3b4-vorschlaege.png"), b.to_png()).unwrap();
+    let _ = std::fs::remove_dir_all(&dir2);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -447,4 +472,110 @@ fn neue_haeuser_mit_kennwort_behaelt_entwurf() {
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(x.stunden, Dez::lesen("0.9", 4).unwrap());
     assert_eq!(x.geraet, Dez::ganz(2), "Gerät aus dem Entwurf bleibt");
+}
+
+/// KA-3b4: Ohne eingegebenes Kennwort setzt der Nutzer den Lohn für dieses
+/// Haus und schlägt ihn der Firma vor, ein zweites Haus ebenso. Die
+/// Firmendatei bleibt bytegleich, der Entwurf hat nur die Vorschläge, die
+/// Pille zählt keine Änderung. Der Admin übernimmt einen in den Entwurf
+/// (Herkunft „Vorschlag aus …“), gibt frei; der offene Vorschlag bleibt als
+/// Rest-Entwurf und lässt sich ablehnen.
+#[test]
+fn vorschlaege_fuer_die_firma() {
+    let (mut c, mut s, dir) = mit_kennwort("vorschlag");
+    let firma = std::fs::read(c.path()).unwrap();
+    let op = |w: i64| Op::FirmenwertSetzen {
+        schluessel: "wage".into(),
+        wert: Dez::ganz(w),
+    };
+    let hier = |s: &Scene, c: &Company| {
+        sk_cost::lesen::katalog(s.model(), Some(c.library()))
+            .werte
+            .lohn
+    };
+    let vorher = hier(&s, &c);
+    c.set_nutzer(true);
+    s.rolle = sk_cost::Rolle::Nutzer;
+    let m = s
+        .der_firma_vorschlagen("Lohn vorgeschlagen", &mut c, &h(), &[op(65)], "Haus Becker")
+        .expect("vorgeschlagen");
+    assert_eq!(m.to_string(), crate::catalog::VORGESCHLAGEN);
+    assert_eq!(hier(&s, &c), Dez::ganz(65), "dieses Haus gleich");
+    // Ein zweites Haus (anderes Projekt) schlägt 70 vor
+    let mut s2 = {
+        let text = sk_cost::verwaltung::STANDARDHAUS.replace(
+            "[project] guid=1CiUefbzfAnP3Cq9sUDxmY",
+            "[project] guid=2CiUefbzfAnP3Cq9sUDxmY",
+        );
+        let m = sk_model::szo::read_with(
+            &text,
+            sk_model::GuidGen::with_seed(2),
+            &sk_cost::lesen::ABSCHNITTE_SZO,
+        )
+        .unwrap()
+        .model;
+        Scene::with_model(m)
+    };
+    assert_ne!(s2.model().project().guid, s.model().project().guid);
+    s2.rolle = sk_cost::Rolle::Nutzer;
+    s2.der_firma_vorschlagen("Lohn vorgeschlagen", &mut c, &h(), &[op(70)], "Haus Arndt")
+        .expect("zweiter Vorschlag");
+    assert_eq!(std::fs::read(c.path()).unwrap(), firma, "Firma bytegleich");
+    assert_eq!(lohn(c.library()), vorher);
+    let e = entwurf_text(&c);
+    assert_eq!(e.matches("[proposal]").count(), 2, "{e}");
+    assert!(e.contains("Haus Becker") && e.contains("Haus Arndt"), "{e}");
+    let lib = sk_model::read_szk_with(&e, &sk_cost::lesen::ABSCHNITTE_SZK).unwrap();
+    let lib = sk_cost::verwaltung::wie_freigegeben(&lib);
+    assert_eq!(lohn(&lib), vorher, "der Entwurf rechnet noch wie die Firma");
+    // Der Admin sieht beide, aber keine Änderung
+    c.set_nutzer(false);
+    s.rolle = sk_cost::Rolle::Admin;
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    assert_eq!(v.vorschlaege.len(), 2, "{:?}", v.vorschlaege);
+    assert_eq!(v.entwurf_anzahl(), 0);
+    let key = |v: &Verwaltung, name: &str| {
+        v.vorschlaege
+            .iter()
+            .find(|x| x.name == name)
+            .map(|x| x.key)
+            .unwrap()
+    };
+    v.aktion(Aktion::VorschlagUebernehmen(key(&v, "Haus Becker")));
+    schreiben(&mut v, &mut c);
+    assert_eq!(v.vorschlaege.len(), 1);
+    let e = entwurf_text(&c);
+    assert!(e.contains("Vorschlag aus Haus Becker"), "{e}");
+    let lib = sk_model::read_szk_with(&e, &sk_cost::lesen::ABSCHNITTE_SZK).unwrap();
+    assert_eq!(
+        lohn(&sk_cost::verwaltung::wie_freigegeben(&lib)),
+        Dez::ganz(65)
+    );
+    assert_eq!(std::fs::read(c.path()).unwrap(), firma, "erst der Entwurf");
+    // Freigeben: Lohn 65 gilt, der offene Vorschlag bleibt im Rest-Entwurf
+    s.freigeben(FREIGEGEBEN, &mut c, &h()).expect("freigegeben");
+    assert_eq!(lohn(c.library()), Dez::ganz(65));
+    let e = entwurf_text(&c);
+    assert!(
+        e.contains("Haus Arndt") && !e.contains("Haus Becker"),
+        "{e}"
+    );
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    assert_eq!(v.vorschlaege.len(), 1);
+    assert_eq!(v.entwurf_anzahl(), 0, "Rest-Entwurf ohne Änderung");
+    v.aktion(Aktion::VorschlagAblehnen(key(&v, "Haus Arndt")));
+    schreiben(&mut v, &mut c);
+    assert!(v.vorschlaege.is_empty());
+    assert_eq!(lohn(c.library()), Dez::ganz(65), "Ablehnen ändert nichts");
+    // „Entwurf verwerfen“ nimmt die Änderungen, nicht die Vorschläge
+    s2.der_firma_vorschlagen("Lohn vorgeschlagen", &mut c, &h(), &[op(71)], "Haus Arndt")
+        .unwrap();
+    c.fuer_entwurf(&h(), &[op(66)]).unwrap();
+    c.entwurf_verwerfen().expect("verworfen");
+    let e = entwurf_text(&c);
+    assert!(e.contains("new=\"71\"") && !e.contains("num=66"), "{e}");
+    let v = Verwaltung::open(&s, Some(&c), None);
+    assert_eq!(v.vorschlaege.len(), 1);
+    assert_eq!(v.entwurf_anzahl(), 0);
+    let _ = std::fs::remove_dir_all(&dir);
 }

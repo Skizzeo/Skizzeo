@@ -73,7 +73,7 @@ pub fn protokoll(k: &Katalog) -> Vec<Stand> {
 }
 
 /// Firmenwert `schluessel` im Katalog (mit dem Werkswert als Rückfall).
-fn firmenwert(k: &Katalog, schluessel: &str) -> Option<Dez> {
+pub(crate) fn firmenwert(k: &Katalog, schluessel: &str) -> Option<Dez> {
     let w = &k.werte;
     match schluessel {
         "wage" => Some(w.lohn),
@@ -439,13 +439,13 @@ pub const KURZ_MAX: usize = 70;
 const STAMM: [&str; 6] = ["article", "service", "svcpart", "svcfollow", "rate", "lot"];
 
 /// Die Kostenzeilen, die `lib` gelten lässt, je (Abschnitt, Kennung): die
-/// eigenen, ohne eigene die des Werks. `[catalog]` und `[log]` zählen
-/// nicht.
+/// eigenen, ohne eigene die des Werks. `[catalog]`, `[log]` und
+/// `[proposal]` zählen nicht.
 fn geltende_zeilen(lib: &Library) -> std::collections::BTreeMap<(String, String), String> {
     let eigen = STAMM.iter().any(|x| lib.ext(x).next().is_some());
     let mut z = std::collections::BTreeMap::new();
     let mut dazu = |sec: &str, line: &str| {
-        if sec == "catalog" || sec == "log" {
+        if matches!(sec, "catalog" | "log" | "proposal") {
             return;
         }
         if let Some(id) = sk_model::ext::rec_id(line) {
@@ -556,6 +556,11 @@ pub fn katalog_von(lib: &Library, stand: u32) -> Katalog {
 /// wird ein Entwurf nirgends als Firmenkatalog gelesen (Regel 91).
 pub fn wie_freigegeben(lib: &Library) -> Library {
     let mut l = lib.clone();
+    // Vorschläge gibt es nur im Entwurf (Regel 105); hier stören sie nicht
+    let vorschlaege: Vec<String> = l.ext("proposal").filter_map(|r| r.id.clone()).collect();
+    for id in vorschlaege {
+        l.ext_remove("proposal", &id);
+    }
     if let Some(mut k) = kopf(lib).filter(|k| k.text("status") == Some("draft")) {
         k.setzen("status", Some(crate::satz::Wert::Wort("released".into())));
         if let Some(id) = k.kennung() {
@@ -563,6 +568,15 @@ pub fn wie_freigegeben(lib: &Library) -> Library {
         }
     }
     l
+}
+
+/// Die offenen Vorschläge des Entwurfs `lib` (KA-3b4); in einer
+/// freigegebenen Datei keine (Regel 105).
+pub fn vorschlaege(lib: &Library) -> Vec<crate::katalog::Vorschlag> {
+    if lib.ext("proposal").next().is_none() {
+        return Vec::new();
+    }
+    katalog_von(lib, 0).vorschlaege
 }
 
 /// Ist `lib` ein Entwurf (`[catalog] status=draft`)?
@@ -623,6 +637,10 @@ pub fn freigeben(
     // Kostenabschnitte ganz aus dem Entwurf
     lib.ext_declare(&crate::satz::ABSCHNITTE_SZK);
     for sec in crate::satz::ABSCHNITTE_SZK {
+        // Vorschläge bleiben im Entwurf (Regel 105, [`rest_entwurf`])
+        if sec == "proposal" {
+            continue;
+        }
         let alt: Vec<String> = lib.ext(sec).filter_map(|r| r.id.clone()).collect();
         for id in alt {
             lib.ext_remove(sec, &id);
@@ -662,6 +680,61 @@ pub fn freigeben(
         stand,
         saetze,
     })
+}
+
+/// Was nach „Freigeben“ oder „Entwurf verwerfen“ vom Entwurf bleibt
+/// (Regel 105): nur `[catalog]` mit `status=draft` (Kopf aus `firma`, der
+/// nun freigegebenen Datei) und die offenen `[proposal]`-Zeilen; ohne
+/// Vorschläge nichts.
+pub fn rest_entwurf(firma: &str, entwurf: &str) -> Option<String> {
+    let lies = |t: &str| sk_model::read_szk_with(t, &crate::satz::ABSCHNITTE_SZK).ok();
+    let e = lies(entwurf)?;
+    let vorschlaege: Vec<&str> = e.ext("proposal").map(|r| r.line.as_str()).collect();
+    if vorschlaege.is_empty() {
+        return None;
+    }
+    let mut k = kopf(&lies(firma)?)?;
+    k.setzen("status", Some(crate::satz::Wert::Wort("draft".into())));
+    let kopfzeile = firma.lines().next().unwrap_or("SZK 1");
+    let mut t = format!("{kopfzeile}\n{}\n", k.zeile());
+    for v in vorschlaege {
+        t.push_str(v);
+        t.push('\n');
+    }
+    Some(t)
+}
+
+/// Der Entwurf zum Bearbeiten: Ein Rest-Entwurf ([`rest_entwurf`]) ohne
+/// eigene Kosten- und Protokollzeilen heißt „wie freigegeben“; dann die
+/// freigegebene Datei `firma` mit `status=draft` und seinen Vorschlägen.
+/// Sonst `entwurf` selbst.
+pub fn entwurf_voll(firma: &str, entwurf: &str) -> String {
+    let lies = |t: &str| sk_model::read_szk_with(t, &crate::satz::ABSCHNITTE_SZK).ok();
+    let Some(e) = lies(entwurf) else {
+        return entwurf.to_string();
+    };
+    let rest = !STAMM
+        .iter()
+        .chain(["origin", "log"].iter())
+        .any(|x| e.ext(x).next().is_some());
+    if !rest {
+        return entwurf.to_string();
+    }
+    let Some(mut lib) = lies(firma) else {
+        return entwurf.to_string();
+    };
+    let Some(mut k) = kopf(&lib) else {
+        return entwurf.to_string();
+    };
+    k.setzen("status", Some(crate::satz::Wert::Wort("draft".into())));
+    lib.ext_declare(&crate::satz::ABSCHNITTE_SZK);
+    lib.ext_put("catalog", &k.kennung().unwrap_or_default(), k.zeile(), None);
+    for r in e.ext("proposal") {
+        if let Some(id) = &r.id {
+            lib.ext_put("proposal", id, r.line.clone(), None);
+        }
+    }
+    sk_model::write_szk(&lib)
 }
 
 /// Wie `satz` im Entwurf vom freigegebenen Stand abweicht (Vorschau,
@@ -1219,6 +1292,176 @@ mod tests {
         // Der Entwurf allein gilt nie als Firmenkatalog (Regel 91)
         let k = crate::lesen::firma_oder_werk(&Model::new(), Some(&lies(&e2)));
         assert!(k.befunde.iter().any(|b| b.regel == 91));
+    }
+
+    /// KA-3b4 (paket-ka3b Abnahme 5, 8, 8a; BIM §3.16, Regel 105): Ein
+    /// Nutzer schlägt Preis und Lohn vor; die Vorschläge stehen nur im
+    /// Entwurf und zählen nicht als Änderung. Derselbe Wert noch einmal
+    /// ersetzt den Vorschlag. Übernehmen schreibt den Wert mit Herkunft
+    /// „Vorschlag aus …“ und einer `[log]`-Zeile, Ablehnen streicht ihn mit
+    /// einer `[log]`-Zeile. Nach „Freigeben“ bleiben offene Vorschläge als
+    /// Rest-Entwurf, der wie der freigegebene Stand gilt.
+    #[test]
+    fn vorschlaege() {
+        let t0 = sk_model::write_szk(&Library::standard());
+        let lies = |t: &str| sk_model::read_szk_with(t, &crate::satz::ABSCHNITTE_SZK).unwrap();
+        let t1 = schreiben(
+            &t0,
+            &[Op::KennwortSetzen {
+                pw: Pruefwert::neu("Mauer", [3; 16]),
+            }],
+        );
+        let k1 = katalog(&t1);
+        let a = k1.artikel.iter().find(|a| a.preis.is_some()).unwrap();
+        let projekt = sk_model::Guid(77);
+        let vorschlag = |preis: i64, lohn: Option<i64>| {
+            let mut ops = vec![Op::PreisSetzen {
+                artikel: a.guid,
+                preis: Some(Dez::ganz(preis)),
+                stand: String::new(),
+                quelle: String::new(),
+                eingabe: String::new(),
+            }];
+            if let Some(l) = lohn {
+                ops.push(Op::FirmenwertSetzen {
+                    schluessel: "wage".into(),
+                    wert: Dez::ganz(l),
+                });
+            }
+            Op::VorschlagFuerFirma {
+                projekt,
+                name: "Haus A".into(),
+                werte: crate::op::vorschlag_werte(&ops, &k1),
+            }
+        };
+        // Nur im Entwurf, nicht in die freigegebene Datei
+        for rolle in [Rolle::Nutzer, Rolle::Admin] {
+            let e = firma_anwenden(&t1, &t1, rolle, &hand(), &[vorschlag(40, None)]);
+            assert!(e.unwrap_err()[0].satz.contains("nur im Entwurf"));
+        }
+        let e1 =
+            crate::entwurf_anwenden(&t1, &t1, Rolle::Nutzer, &hand(), &[vorschlag(40, Some(65))])
+                .unwrap()
+                .text;
+        let e2 = crate::entwurf_anwenden(&e1, &e1, Rolle::Nutzer, &hand(), &[vorschlag(41, None)])
+            .unwrap()
+            .text;
+        assert!(ist_entwurf(&lies(&e2)));
+        assert!(entwurf_saetze(&lies(&t1), &lies(&e2)).is_empty());
+        assert_eq!(
+            e2.lines().filter(|l| l.starts_with("[log]")).count(),
+            t1.lines().filter(|l| l.starts_with("[log]")).count(),
+            "Vorschlagen schreibt kein Protokoll"
+        );
+        let kv = katalog_von(&lies(&e2), 1);
+        assert_eq!(kv.vorschlaege.len(), 2, "{:?}", kv.vorschlaege);
+        let p = kv.vorschlaege.iter().find(|v| v.rec == "article").unwrap();
+        assert_eq!((p.neu.as_str(), p.feld.as_str()), ("41", "price"));
+        assert_eq!(p.alt, a.preis.map(Dez::text));
+        assert_eq!(p.name, "Haus A");
+        let l = kv.vorschlaege.iter().find(|v| v.rec == "rate").unwrap();
+        assert_eq!((l.of.as_str(), l.neu.as_str()), ("wage", "65"));
+        // Nutzer übernimmt nicht
+        let ueber = Op::VorschlagUebernehmen { key: p.key };
+        let e = crate::entwurf_anwenden(
+            &e2,
+            &e2,
+            Rolle::Nutzer,
+            &hand(),
+            std::slice::from_ref(&ueber),
+        );
+        assert!(e.is_err());
+        let log = |t: &str| t.lines().filter(|l| l.starts_with("[log]")).count();
+        let e3 = crate::entwurf_anwenden(&e2, &e2, Rolle::Admin, &hand(), &[ueber])
+            .unwrap()
+            .text;
+        assert_eq!(log(&e3), log(&e2) + 1);
+        assert!(e3.contains("op=vorschlag_uebernehmen"));
+        let k3 = katalog_von(&lies(&e3), 1);
+        assert_eq!(k3.artikel(a.guid).unwrap().preis, Some(Dez::ganz(41)));
+        assert_eq!(k3.vorschlaege.len(), 1);
+        let h = k3.herkunft_von("article", &a.guid.to_ifc()).unwrap();
+        assert_eq!(h.satz.text("source"), Some("Vorschlag aus Haus A"));
+        let e4 = crate::entwurf_anwenden(
+            &e3,
+            &e3,
+            Rolle::Admin,
+            &hand(),
+            &[Op::VorschlagAblehnen { key: l.key }],
+        )
+        .unwrap()
+        .text;
+        assert_eq!(log(&e4), log(&e3) + 1);
+        assert!(e4.contains("op=vorschlag_ablehnen"));
+        assert!(katalog_von(&lies(&e4), 1).vorschlaege.is_empty());
+        assert_eq!(katalog_von(&lies(&e4), 1).werte.lohn, k1.werte.lohn);
+        // Stunden einer Bauleistung (Preisblatt)
+        let l0 = k1.leistungen.iter().find(|l| !l.retired).unwrap();
+        let mut daten = crate::preis::bauleistung(l0);
+        daten.stunden = Dez(l0.stunden.0 + 1_000);
+        let ops = [Op::BauleistungAendern {
+            bauleistung: l0.guid,
+            daten,
+        }];
+        let werte = crate::op::vorschlag_werte(&ops, &k1);
+        assert_eq!(werte.len(), 1);
+        assert_eq!((werte[0].rec, werte[0].feld), ("service", "hours"));
+        let st = crate::entwurf_anwenden(
+            &e4,
+            &e4,
+            Rolle::Nutzer,
+            &hand(),
+            &[Op::VorschlagFuerFirma {
+                projekt,
+                name: "Haus A".into(),
+                werte,
+            }],
+        )
+        .unwrap()
+        .text;
+        let key = katalog_von(&lies(&st), 1).vorschlaege[0].key;
+        let st = crate::entwurf_anwenden(
+            &st,
+            &st,
+            Rolle::Admin,
+            &hand(),
+            &[Op::VorschlagUebernehmen { key }],
+        )
+        .unwrap()
+        .text;
+        let ks = katalog_von(&lies(&st), 1);
+        assert_eq!(
+            ks.leistung(l0.guid).unwrap().stunden,
+            Dez(l0.stunden.0 + 1_000)
+        );
+        assert_eq!(ks.leistung(l0.guid).unwrap().kurz, l0.kurz);
+        // Freigeben: kein Vorschlag in der Firma, offene bleiben als Rest
+        let e5 = crate::entwurf_anwenden(&e4, &e4, Rolle::Nutzer, &hand(), &[vorschlag(50, None)])
+            .unwrap()
+            .text;
+        let f = freigeben(&t1, &e5, &hand()).unwrap();
+        assert!(!f.text.contains("[proposal]"));
+        assert_eq!(
+            katalog(&f.text).artikel(a.guid).unwrap().preis,
+            Some(Dez::ganz(41))
+        );
+        let rest = rest_entwurf(&f.text, &e5).expect("ein Vorschlag offen");
+        assert_eq!(
+            rest.lines().filter(|l| l.starts_with("[proposal]")).count(),
+            1
+        );
+        assert_eq!(rest.lines().count(), 3, "{rest}");
+        assert!(rest.contains("status=draft") && rest.contains("stand=2"));
+        assert_eq!(rest_entwurf(&f.text, &e4), None);
+        let voll = entwurf_voll(&f.text, &rest);
+        assert!(entwurf_saetze(&lies(&f.text), &lies(&voll)).is_empty());
+        assert_eq!(katalog_von(&lies(&voll), 2).vorschlaege.len(), 1);
+        assert_eq!(entwurf_voll(&f.text, &e5), e5, "ein ganzer Entwurf bleibt");
+        // Regel 105: im freigegebenen Stand übergangen, mit Befund
+        let falsch = format!("{}{}", f.text, rest.lines().last().unwrap());
+        let k = katalog(&falsch);
+        assert!(k.vorschlaege.is_empty());
+        assert!(k.befunde.iter().any(|b| b.regel == 105));
     }
 
     /// KA-3a Abnahme 15: zwei Stände, „Diese Änderung zurücknehmen“ am

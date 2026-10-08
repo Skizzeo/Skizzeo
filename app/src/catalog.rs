@@ -42,6 +42,9 @@ pub struct Company {
     /// Entwurf beim letzten Lesen bzw. Schreiben (KA-3b2); `None`: keiner
     /// offen.
     entwurf: Option<String>,
+    /// Der Entwurf zum Bearbeiten: ein Rest-Entwurf mit nur Vorschlägen
+    /// ergänzt um den freigegebenen Stand (`verwaltung::entwurf_voll`).
+    entwurf_voll: Option<String>,
     /// Platz ohne eingegebenes Verwaltungskennwort (KA-3b1): schreibt weder
     /// Firma noch Entwurf; setzt die App ([`Company::set_nutzer`]).
     nutzer: bool,
@@ -187,6 +190,15 @@ const NICHT_GESPEICHERT: (&str, &str) =
 const ENTWURF_NICHT_GESPEICHERT: (&str, &str) = ("Entwurf nicht gespeichert", "Entwurf speichern");
 const NICHT_FREIGEGEBEN: (&str, &str) = ("Nicht freigegeben", "Firmenkatalog freigeben");
 const NICHT_VERWORFEN: (&str, &str) = ("Entwurf nicht verworfen", "Entwurf ablegen");
+const VORSCHLAG_NICHT_GESPEICHERT: (&str, &str) =
+    ("Vorschlag nicht gespeichert", "Vorschlag speichern");
+
+/// „Der Firma vorschlagen“ hat geklappt (KA-3b4).
+pub const VORGESCHLAGEN: &str = "Für dieses Haus gesetzt und der Firma vorgeschlagen; wer verwaltet, sieht den Vorschlag unter Firmenwerte.";
+/// Kein Vorschlag, weil der Firmenkatalog den Eintrag nicht kennt (ein
+/// Artikel nur dieses Hauses) oder der Wert dort schon so steht.
+pub const NICHT_VORGESCHLAGEN: &str =
+    "Für dieses Haus gesetzt. Kein Vorschlag an die Firma: Sie kennt den Eintrag nicht oder hat schon diesen Wert.";
 
 /// Mit Verwaltungskennwort gilt eine Firmenänderung erst nach der Freigabe.
 pub const MIT_KENNWORT: &str = "Mit Verwaltungskennwort ändert die Verwaltung einen Entwurf. Erst „Freigeben“ macht ihn gültig, an allen Plätzen.";
@@ -333,6 +345,7 @@ impl Company {
             gen: 0,
             zuletzt: Vec::new(),
             entwurf: None,
+            entwurf_voll: None,
             nutzer: false,
         };
         let hints = c.reload(standard_place);
@@ -646,8 +659,18 @@ impl Company {
     /// Liest den Entwurf (fehlt er, ist keiner offen) und merkt ihn als den
     /// Stand, den die Verwaltung zeigt.
     pub fn entwurf_laden(&mut self) -> Option<&str> {
-        self.entwurf = std::fs::read_to_string(self.entwurf_pfad()).ok();
-        self.entwurf.as_deref()
+        let roh = std::fs::read_to_string(self.entwurf_pfad()).ok();
+        self.entwurf_merken(roh);
+        self.entwurf_voll.as_deref()
+    }
+
+    /// `roh` wie auf der Platte; zum Bearbeiten gegen den geladenen Stand
+    /// ergänzt (Rest-Entwurf, Regel 105).
+    fn entwurf_merken(&mut self, roh: Option<String>) {
+        self.entwurf_voll = roh
+            .as_deref()
+            .map(|e| sk_cost::verwaltung::entwurf_voll(&self.geladen, e));
+        self.entwurf = roh;
     }
 
     /// Rolle dieses Platzes (KA-3b1): `true`, solange das gesetzte
@@ -656,9 +679,10 @@ impl Company {
         self.nutzer = nutzer;
     }
 
-    /// Der Entwurf beim letzten [`Company::entwurf_laden`] oder Schreiben.
+    /// Der Entwurf beim letzten [`Company::entwurf_laden`] oder Schreiben,
+    /// ein Rest-Entwurf mit dem freigegebenen Stand ergänzt.
     pub fn entwurf(&self) -> Option<&str> {
-        self.entwurf.as_deref()
+        self.entwurf_voll.as_deref()
     }
 
     /// Unter der Sperre: Entwurf und Firmendatei, wie sie jetzt auf der
@@ -695,6 +719,7 @@ impl Company {
             self.entwurf_laden();
             return Err(Meldung::satz(ENTWURF_GEAENDERT));
         }
+        let entwurf = entwurf.map(|e| sk_cost::verwaltung::entwurf_voll(&firma, &e));
         Ok((sperre, firma, entwurf))
     }
 
@@ -739,10 +764,59 @@ impl Company {
         if neue_firma {
             self.reload(false);
         }
-        self.entwurf = Some(neu.text.clone());
+        self.entwurf_merken(Some(neu.text.clone()));
         // Für neue Häuser gilt es erst nach der Freigabe
         self.zuletzt.clear();
         Ok(neu)
+    }
+
+    /// „Der Firma vorschlagen“ (KA-3b4, Regel 105): `op`
+    /// (`Op::VorschlagFuerFirma`) als `[proposal]` in den Entwurf, der bei
+    /// Bedarf als Kopie des freigegebenen Stands entsteht. Das darf jeder
+    /// Platz; ein Vorschlag ändert keinen Wert, darum ohne Abgleich mit dem
+    /// Entwurf, den die Verwaltung zeigt (unter der Sperre frisch gelesen).
+    pub fn vorschlagen(
+        &mut self,
+        herkunft: &sk_cost::Herkunft,
+        op: &sk_cost::Op,
+    ) -> Result<(), Meldung> {
+        if self.broken {
+            return Err(Meldung::satz(
+                "Der Firmenkatalog ist nicht lesbar und wird nicht überschrieben.",
+            ));
+        }
+        let (ergebnis, was) = VORSCHLAG_NICHT_GESPEICHERT;
+        let sperre = sperren(&self.path)?;
+        let firma = std::fs::read_to_string(&self.path)
+            .map_err(|e| Meldung::aus_io(ergebnis, was, &self.path, &e))?;
+        let pfad = self.entwurf_pfad();
+        let roh = match std::fs::read_to_string(&pfad) {
+            Ok(t) => Some(t),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(Meldung::aus_io(ergebnis, was, &pfad, &e)),
+        };
+        let basis = match &roh {
+            Some(e) => sk_cost::verwaltung::entwurf_voll(&firma, e),
+            None => firma,
+        };
+        let neu = sk_cost::entwurf_anwenden(
+            &basis,
+            &basis,
+            sk_cost::Rolle::Nutzer,
+            herkunft,
+            std::slice::from_ref(op),
+        )
+        .map_err(|b| Meldung::aus_befunden(&b, "Nichts vorgeschlagen."))?;
+        if !sperre.gilt() {
+            return Err(Meldung::satz(GESPERRT));
+        }
+        write_atomic(&pfad, &neu.text).map_err(|e| Meldung::aus_io(ergebnis, was, &pfad, &e))?;
+        drop(sperre);
+        // Zeigte dieser Platz den Entwurf von eben, zeigt er jetzt den neuen
+        if self.entwurf == roh {
+            self.entwurf_merken(Some(neu.text));
+        }
+        Ok(())
     }
 
     /// „Änderung verwerfen“ in der Vorschau (KA-3b3): `satz` im Entwurf
@@ -761,7 +835,7 @@ impl Company {
         let pfad = self.entwurf_pfad();
         write_atomic(&pfad, &neu).map_err(|e| Meldung::aus_io(ergebnis, was, &pfad, &e))?;
         drop(sperre);
-        self.entwurf = Some(neu);
+        self.entwurf_merken(Some(neu));
         Ok(())
     }
 
@@ -789,8 +863,12 @@ impl Company {
         let pfad = self.entwurf_pfad();
         // Ohne den Entwurf ist die Freigabe trotzdem gültig; ein liegen
         // gebliebener Entwurf beruht auf dem alten Stand und lässt sich
-        // nicht noch einmal freigeben
-        let weg = std::fs::remove_file(&pfad);
+        // nicht noch einmal freigeben. Offene Vorschläge bleiben als
+        // Rest-Entwurf (Regel 105)
+        let weg = match sk_cost::verwaltung::rest_entwurf(&neu.text, &entwurf) {
+            Some(rest) => write_atomic(&pfad, &rest),
+            None => std::fs::remove_file(&pfad),
+        };
         drop(sperre);
         self.reload(false);
         self.entwurf_laden();
@@ -811,23 +889,30 @@ impl Company {
     /// gelöscht; die Firmendatei bleibt bytegleich. Liefert die Ablage.
     pub fn entwurf_verwerfen(&mut self) -> Result<PathBuf, Meldung> {
         let (ergebnis, was) = NICHT_VERWORFEN;
-        let (sperre, _, entwurf) = self.entwurf_pruefen(NICHT_VERWORFEN)?;
+        let (sperre, firma, entwurf) = self.entwurf_pruefen(NICHT_VERWORFEN)?;
         let Some(entwurf) = entwurf else {
             return Err(Meldung::satz("Es gibt keinen Entwurf zum Verwerfen."));
         };
+        // Abgelegt wird die Datei, wie sie dasteht
+        let roh = self.entwurf.clone().unwrap_or_else(|| entwurf.clone());
         let dir = self.staende();
         let (j, mo, t, h, mi) = sk_platform::local_date_time();
         let name = format!("entwurf-verworfen-{j}-{mo:02}-{t:02}-{h:02}{mi:02}");
         let ziel = std::fs::create_dir_all(&dir)
-            .and_then(|_| neu_anlegen(&dir, &name, entwurf.as_bytes()))
+            .and_then(|_| neu_anlegen(&dir, &name, roh.as_bytes()))
             .map_err(|e| Meldung::aus_io(ergebnis, was, &dir, &e))?;
         if !sperre.gilt() {
             return Err(Meldung::satz(GESPERRT));
         }
         let pfad = self.entwurf_pfad();
-        std::fs::remove_file(&pfad).map_err(|e| Meldung::aus_io(ergebnis, was, &pfad, &e))?;
+        // Offene Vorschläge bleiben (Regel 105, Abnahme 8a)
+        match sk_cost::verwaltung::rest_entwurf(&firma, &entwurf) {
+            Some(rest) => write_atomic(&pfad, &rest),
+            None => std::fs::remove_file(&pfad),
+        }
+        .map_err(|e| Meldung::aus_io(ergebnis, was, &pfad, &e))?;
         drop(sperre);
-        self.entwurf = None;
+        self.entwurf_laden();
         Ok(ziel)
     }
 
