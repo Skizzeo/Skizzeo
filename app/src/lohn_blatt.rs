@@ -95,6 +95,8 @@ fn erklaerung(titel: &str) -> &'static [&'static str] {
 
 /// Zeile unter dem Feld der Karte: was Enter schreibt.
 const GILT_KARTE: &str = "gilt für dieses und alle neuen Häuser";
+/// Letzte Zeile der Karte über den Knöpfen (paket-ka3a §1).
+const WEITERE_KARTE: &str = "Alles Weitere unter Datei › Verwaltung";
 const ZEILE: f32 = 16.0;
 
 /// „Kosten mit Referenzpreisen 10/2026“ aus der Preisquelle
@@ -142,7 +144,9 @@ impl LohnBlatt {
     fn hoehe(&self) -> f32 {
         let fehler = if self.wert.is_none() { 18.0 } else { 0.0 };
         match self.form {
-            Form::Karte => PAD + 24.0 + self.erkl_h() + FELD_H + fehler + ZEILE + 14.0 + 26.0 + PAD,
+            Form::Karte => {
+                PAD + 24.0 + self.erkl_h() + FELD_H + fehler + 2.0 * ZEILE + 14.0 + 26.0 + PAD
+            }
             Form::Blatt => {
                 let folge = if self.gilt == Gilt::NeueHaeuser {
                     32.0
@@ -551,6 +555,14 @@ impl LohnBlatt {
                     10.0 * s,
                     fx + fw - gw,
                     (zy + 14.0 * s).round(),
+                    dim,
+                );
+                f.draw(
+                    c,
+                    WEITERE_KARTE,
+                    10.0 * s,
+                    x0,
+                    (zy + (14.0 + ZEILE) * s).round(),
                     dim,
                 );
                 if let Some(((nx, ny, nw, nh), (bx, by, bw, bh))) = self.knoepfe(fonts) {

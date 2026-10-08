@@ -167,6 +167,7 @@ pub enum Topic {
     SettingsUi,
     Catalog,
     Materials,
+    Verwaltung,
     Patterns,
     Quantities,
     Costs,
@@ -177,7 +178,7 @@ pub enum Topic {
 
 impl Topic {
     /// Alle Themen in der Reihenfolge der Liste „Alle Themen“.
-    pub const ALL: [Topic; 30] = [
+    pub const ALL: [Topic; 31] = [
         Topic::Start,
         Topic::Navigation,
         Topic::Building,
@@ -202,6 +203,7 @@ impl Topic {
         Topic::SettingsUi,
         Topic::Catalog,
         Topic::Materials,
+        Topic::Verwaltung,
         Topic::Patterns,
         Topic::Quantities,
         Topic::Costs,
@@ -253,6 +255,7 @@ impl Topic {
                 Topic::SettingsUi,
                 Topic::Catalog,
                 Topic::Materials,
+                Topic::Verwaltung,
                 Topic::Patterns,
                 Topic::Backups,
             ],
@@ -286,6 +289,7 @@ impl Topic {
             Topic::SettingsUi => "einstellungen-bedienoberflaeche",
             Topic::Catalog => "katalog",
             Topic::Materials => "baustoffe",
+            Topic::Verwaltung => "verwaltung",
             Topic::Patterns => "muster",
             Topic::Quantities => "mengen",
             Topic::Costs => "kosten",
@@ -368,7 +372,7 @@ pub fn topic(c: &HelpCtx) -> Topic {
             Window::Materials => Topic::Materials,
             Window::Patterns => Topic::Patterns,
             Window::Backups => Topic::Backups,
-            Window::Verwaltung => Topic::Costs,
+            Window::Verwaltung => Topic::Verwaltung,
         };
     }
     if c.dialog {

@@ -194,11 +194,21 @@ Einzelne Wand anders | dafür einen neuen Typ anlegen
 [thema] id=baustoffe titel="Baustoffe"
 Öffnen | Dateimenü › „Baustoffe …“, Baustoffname im Paneel oder Rechtsklick auf eine Schicht
 Ansehen | Reiter Projekt und Firma; λ, Rohdichte, Richtpreis und „Verwendet in“
+Preise | nach Dicke und Güte; ändern unter Datei › Verwaltung
 Mehr | „Mehr“ klappt alle Kennwerte auf
 Ändern | Werte tippen; **OK** ist ein Rückgängig-Schritt
 Duplizieren | immer möglich
 Löschen | nur, solange der Baustoff nirgends verwendet wird
 Firmenkatalog | „In den Firmenkatalog …“ und „Ins Projekt übernehmen“ samt Kennwerten
+
+[thema] id=verwaltung titel="Verwaltung"
+Öffnen | Dateimenü › „Verwaltung …“
+Inhalt | Firmenwerte, Baustoffe und Preise, Bauleistungen, Lose, Bauteiltypen, Referenzhäuser
+Ändern | Werte tippen; jede Änderung wirkt sofort, **OK** speichert sie im Firmenkatalog
+Zurück | „Protokoll“ › „Diese Änderung zurücknehmen“; Strg+Z betrifft nur das offene Haus
+Wirkung | die Zeile über **OK** zeigt, wie sich die Referenzhäuser ändern
+Gelöscht | liegt im Papierkorb und lässt sich wiederherstellen
+Projekt oder Firma | in der Verwaltung gilt es für alle neuen Häuser, im Projekt nur für dieses Haus
 
 [thema] id=muster titel="Muster"
 Vorlage | Klick links übernimmt sie in die Regler; ● zeigt die passende
@@ -224,7 +234,8 @@ Fenster | wegziehen löst es, an der Kante rastet es wieder ein
 [thema] id=kosten titel="Kosten"
 Preise | „Material“ oder „Material + Lohn“
 Summe | netto, brutto mit MwSt., Lohnanteil mit Lohn und Material
-Verrechnungslohn | beim ersten Öffnen in der Hinweiskarte; später Klick auf „… €/h“ in der Kachel Lohnanteil
+Verrechnungslohn | beim ersten Öffnen in der Hinweiskarte; später Klick auf „… €/h“ in der Kachel Lohnanteil oder unter Datei › Verwaltung › Firmenwerte
+Verwaltung | alles Weitere unter Datei › Verwaltung; dort gilt es für alle neuen Häuser, im Projekt nur für dieses Haus
 Preis ändern | Doppelklick auf einen EP; „Nur dieses Haus“ oder „Auch für neue Häuser“, dann Enter
 Für neue Häuser | gilt sofort für alle neuen Häuser; Strg+Z nimmt es nur für dieses Haus zurück
 Andere Werte | eine Zeile oben nennt, was für neue Häuser anders ist; „übernehmen“ oder „so lassen“
