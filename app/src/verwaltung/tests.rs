@@ -546,6 +546,140 @@ fn ohne_firma_nur_ansehen() {
     assert!(!mit.titel.contains("nur ansehen"), "{}", mit.titel);
 }
 
+fn artikel_guid(v: &Verwaltung, name: &str) -> Guid {
+    v.jetzt
+        .artikel
+        .iter()
+        .find(|a| a.name.starts_with(name))
+        .unwrap_or_else(|| panic!("{name}"))
+        .guid
+}
+
+fn texte(v: &Verwaltung, fonts: &Fonts) -> Vec<String> {
+    v.seite(fonts, 700.0)
+        .into_iter()
+        .filter_map(|t| match t.art {
+            felder::Art::Text { text, .. } => Some(text),
+            felder::Art::Seg { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Abnahme 15a (verwaltung.md §15 Fall 15, Regel 108): PB240 mit 0,85 €/St
+/// → 5,6695 €/m², die Rechnung leise darunter und die Eingabe in
+/// `[origin] source`; PB175 mit 95,00 €/m³ → 16,625.
+#[test]
+fn preis_je_stueck_und_je_m3() {
+    let (mut c, dir) = firma("je-stueck");
+    let mut s = haus();
+    let fonts = schriften();
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    let pb240 = artikel_guid(&v, "Porenbeton-Planstein PP2-0,35 d=24cm");
+    let pb175 = artikel_guid(&v, "Porenbeton-Planstein PP2-0,35 d=17,5cm");
+    v.waehlen(Knoten::ArtikelSatz(pb240));
+    let t = texte(&v, &fonts);
+    for e in ["je m²", "je m³", "je Stück"] {
+        assert!(t.iter().any(|x| x == e), "{e}: {t:?}");
+    }
+    v.aktion(Aktion::Je(Einheit::St));
+    assert!(v.eingeben(&Feld::Preis(pb240), "0,85"));
+    assert_eq!(v.jetzt.artikel(pb240).unwrap().preis, Some(Dez(5_669_500)));
+    assert_eq!(v.anzeige(&Feld::Preis(pb240)), "0,85");
+    let t = texte(&v, &fonts);
+    assert!(
+        t.iter()
+            .any(|x| x == "0,85 €/St × 6,67 St/m² = 5,6695 €/m²"),
+        "{t:?}"
+    );
+    assert!(t.iter().any(|x| x == "vorher 29,40 €/m²"), "{t:?}");
+    // Zurück auf je m² zeigt den gespeicherten Preis
+    v.aktion(Aktion::Je(Einheit::M2));
+    assert_eq!(v.anzeige(&Feld::Preis(pb240)), "5,6695");
+    v.waehlen(Knoten::ArtikelSatz(pb175));
+    v.aktion(Aktion::Je(Einheit::M3));
+    assert!(v.eingeben(&Feld::Preis(pb175), "95"));
+    assert_eq!(v.jetzt.artikel(pb175).unwrap().preis, Some(Dez(16_625_000)));
+    let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "17:00");
+    let ops = v.ops().to_vec();
+    s.fuer_firma(STEP, &mut c, &h, &ops).expect("schreibt");
+    let text = std::fs::read_to_string(c.path()).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let zeile = |g: Guid, a: &str| {
+        text.lines()
+            .find(|l| l.starts_with(a) && l.contains(&g.to_ifc()))
+            .unwrap_or_else(|| panic!("{a} {}", g.to_ifc()))
+            .to_string()
+    };
+    assert!(zeile(pb240, "[article]").contains(" price=5.6695 "));
+    assert!(zeile(pb175, "[article]").contains(" price=16.625 "));
+    let o = zeile(pb240, "[origin]");
+    assert!(
+        o.contains("source=\"eingegeben 0,85 €/St × 6,67 St/m²\""),
+        "{o}"
+    );
+    let o = zeile(pb175, "[origin]");
+    assert!(
+        o.contains("source=\"eingegeben 95,00 €/m³ × 0,175 m\""),
+        "{o}"
+    );
+}
+
+/// Abnahme 15a, zweiter Teil: ohne `conv` mit „L×H“ erst der Vorschlag,
+/// erst nach „Bestätigen“ rechnet je Stück, `conv` geht ins selbe OK.
+#[test]
+fn stueck_vorschlag_bestaetigen() {
+    let (mut c, dir) = firma("vorschlag");
+    let mut s = haus();
+    let fonts = schriften();
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    let kd = artikel_guid(&v, "Kerndämmplatte");
+    v.waehlen(Knoten::ArtikelSatz(kd));
+    v.aktion(Aktion::Je(Einheit::M3));
+    assert!(v.eingeben(&Feld::Preis(kd), "100"));
+    v.aktion(Aktion::Je(Einheit::St));
+    let t = texte(&v, &fonts);
+    assert!(
+        t.iter()
+            .any(|x| x == "Steine je m² (aus 1000×625, Fuge 10 mm) ·"),
+        "{t:?}"
+    );
+    assert_eq!(v.anzeige(&Feld::Conv(kd)), "1,5592");
+    // Vor dem Bestätigen rechnet die Einheit nicht
+    assert!(!v.eingeben(&Feld::Preis(kd), "2"));
+    let m = v.meldung.clone().unwrap_or_default();
+    assert!(m.contains("hat keine Umrechnung"), "{m}");
+    // Zahl änderbar, dann bestätigen
+    assert!(!v.eingeben(&Feld::Conv(kd), "0"));
+    assert!(v.eingeben(&Feld::Conv(kd), "1,6"));
+    v.aktion(Aktion::ConvBestaetigen(kd));
+    assert_eq!(v.jetzt.artikel(kd).unwrap().conv, Some(Dez(1_600_000)));
+    assert!(v.eingeben(&Feld::Preis(kd), "2"));
+    assert_eq!(v.jetzt.artikel(kd).unwrap().preis, Some(Dez(3_200_000)));
+    // `conv` vor dem Preis, sonst verlöre die Herkunft die Eingabe
+    assert!(
+        matches!(v.ops()[0], Op::UmrechnungSetzen { .. }),
+        "{:?}",
+        v.ops()
+    );
+    let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "17:05");
+    let ops = v.ops().to_vec();
+    s.fuer_firma(STEP, &mut c, &h, &ops).expect("schreibt");
+    let text = std::fs::read_to_string(c.path()).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let a = text
+        .lines()
+        .find(|l| l.starts_with("[article]") && l.contains(&kd.to_ifc()))
+        .unwrap();
+    assert!(a.contains(" price=3.2 ") && a.contains(" conv=1.6"), "{a}");
+    let o = text
+        .lines()
+        .find(|l| l.starts_with("[origin]") && l.contains(&kd.to_ifc()))
+        .unwrap();
+    assert!(o.contains(" kind=manual "), "{o}");
+    assert!(o.contains("eingegeben 2,00 €/St × 1,6 St/m²"), "{o}");
+}
+
 /// Bedienbarkeit 13.1: Die Wirkzeile nennt zuerst dieses Haus. Ohne Kopie
 /// rechnet es mit der Firma; mit Kopie übernimmt es beim OK die geänderten
 /// Sätze, wo es nicht selbst abweicht (Regel 89).
@@ -849,6 +983,16 @@ fn istbilder_ka3() {
     v.waehlen(Knoten::ArtikelSatz(art));
     let (c, _, _) = v.paint(&t, &fonts, &w);
     std::fs::write(dir.join("ist-ka-3-artikel.png"), c.to_png()).unwrap();
+    // KA-3a7: je Stück mit Rechnung; ohne `conv` der Vorschlag
+    v.aktion(Aktion::Je(Einheit::St));
+    v.eingeben(&Feld::Preis(art), "0,85");
+    let (c, _, _) = v.paint(&t, &fonts, &w);
+    std::fs::write(dir.join("ist-ka-3a7-artikel-je-stueck.png"), c.to_png()).unwrap();
+    let kd = artikel_guid(&v, "Kerndämmplatte");
+    v.waehlen(Knoten::ArtikelSatz(kd));
+    v.aktion(Aktion::Je(Einheit::St));
+    let (c, _, _) = v.paint(&t, &fonts, &w);
+    std::fs::write(dir.join("ist-ka-3a7-vorschlag.png"), c.to_png()).unwrap();
     // Protokoll: ein Stand mit zwei Änderungen, davor und nach dem Klick
     let tmp = std::env::temp_dir().join(format!("skizzeo-ist-ka3-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);

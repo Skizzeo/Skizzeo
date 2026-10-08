@@ -137,6 +137,7 @@ fn aendern(m: &mut Model, art: u64, z: &mut Zufall, u: &mut Umfang) -> bool {
                     preis: Some(preis),
                     stand: "10/2026".into(),
                     quelle: "Nr. 29".into(),
+                    eingabe: String::new(),
                 },
             )
             .unwrap();

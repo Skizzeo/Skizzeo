@@ -198,6 +198,7 @@ pub fn umkehr(jetzt: &Katalog, vorher: &Katalog, stand: u32) -> Result<Vec<Op>, 
                                 preis: a.preis,
                                 stand: text("date"),
                                 quelle: text("source"),
+                                eingabe: String::new(),
                             });
                         }
                         ruhestand(&mut ops, "article", of, a.retired, n.retired);
@@ -613,6 +614,7 @@ mod tests {
             preis: Some(Dez(alt.0 + p * 10_000)),
             stand: "10/2026".into(),
             quelle: "Händler".into(),
+            eingabe: String::new(),
         };
         let t1 = schreiben(&t0, &[preis(100)]);
         let lohn = Op::FirmenwertSetzen {
@@ -823,6 +825,7 @@ mod tests {
                 preis: Some(Dez::ganz(-1)),
                 stand: String::new(),
                 quelle: String::new(),
+                eingabe: String::new(),
             }],
         );
         assert!(preis.is_err(), "Preis −1");

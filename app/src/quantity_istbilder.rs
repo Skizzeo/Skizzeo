@@ -150,6 +150,27 @@ fn istbilder_ka1_ka2() {
     q.sync(&mut s, &b.p, false);
     b.ablegen(&mut q, "ist-ka-2c-preis-haus.png");
 
+    // KA-3a7: dasselbe Preisblatt, Planstein je Stück 0,85
+    let mut q = b.fenster(&mut s, 1240, 930, Blatt::Kosten);
+    b.p = Picking::default();
+    let k = q.kosten.as_mut().unwrap();
+    let xy = k
+        .ep_mitte(&b.t, "Porenbeton-Planstein")
+        .expect("EP Mauerwerk");
+    k.mouse_down(&b.t, &b.fonts, &mut b.p, xy, mods);
+    k.mouse_down(&b.t, &b.fonts, &mut b.p, xy, mods);
+    q.sync(&mut s, &b.p, false);
+    let k = q.kosten.as_mut().unwrap();
+    assert!(k.preis_offen());
+    let je = k.je_mitte(&b.t, &b.fonts, 2).expect("Segment je Stück");
+    k.mouse_down(&b.t, &b.fonts, &mut b.p, je, mods);
+    assert!(k.preis_offen(), "Klick aufs Segment lässt das Blatt offen");
+    for ch in "0,85".chars() {
+        k.text(ch);
+    }
+    q.sync(&mut s, &b.p, false);
+    b.ablegen(&mut q, "ist-ka-3a7-preisblatt-je-stueck.png");
+
     // KA-2d: Firma Lohn 65 nach der Projektkopie, Maus auf „übernehmen“
     let d = std::env::temp_dir().join(format!("skizzeo-istbilder-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
@@ -168,6 +189,7 @@ fn istbilder_ka1_ka2() {
         preis: art.preis,
         stand: "10/2026".into(),
         quelle: "Preisblatt".into(),
+        eingabe: String::new(),
     };
     s.kosten_folge("Preis", Some(c.library()), &h, &[preis])
         .unwrap();

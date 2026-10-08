@@ -21,6 +21,8 @@ pub enum Feld {
     Nu,
     Menge(u32),
     Preis(Guid),
+    /// Vorgeschlagene Steine je Einheit (Regel 108), vor „Bestätigen“.
+    Conv(Guid),
     Wert(String),
 }
 
@@ -56,6 +58,11 @@ pub enum Art {
     Lese(String),
     Knopf(String),
     Pille(String),
+    /// Ein Teil eines Segments; `an`: gewählt.
+    Seg {
+        text: String,
+        an: bool,
+    },
     Flaeche(Farbe),
     /// Gezeichneter Pfeil hinter „Mehr“ (nicht jede Schrift hat ▸ und ▾).
     Klapp(bool),
@@ -403,6 +410,7 @@ impl Verwaltung {
                             | Aktion::Wiederherstellen(_)
                             | Aktion::Zuruecknehmen(_)
                             | Aktion::AlsReferenz
+                            | Aktion::ConvBestaetigen(_)
                     ))
                 )
             })
@@ -469,11 +477,104 @@ impl Verwaltung {
     #[allow(clippy::too_many_arguments)]
     fn feld_zeile(&self, b: &mut Bau, y: f32, label: &str, feld: Feld, fw: f32, einheit: String) {
         b.label(y, label);
-        let text = self.feld_text(&self.jetzt, &feld).unwrap_or_default();
+        let text = self.anzeige(&feld);
         b.feld(WERT_X, y, fw, feld.clone(), text, einheit);
         if let Some(v) = self.vorher_text(&feld) {
             b.text(WERT_X + fw + 14.0, y, v, KLEIN, false, Farbe::Leise);
         }
+    }
+
+    /// Preis mit Segment „je m² | je m³ | je Stück“ (KA-3a7, Regel 108):
+    /// nur was für den Artikel umrechenbar ist; darunter leise die Rechnung
+    /// bzw. der Vorschlag „Steine je m²“ mit „Bestätigen“.
+    fn preis_zeile(&self, b: &mut Bau, mut y: f32, a: &Artikel) -> f32 {
+        use sk_cost::einheit;
+        let angebot = einheit::angebot(a);
+        let je = self
+            .je
+            .as_ref()
+            .filter(|j| j.artikel == a.guid && angebot.contains(&j.einheit))
+            .map_or(a.einheit, |j| j.einheit);
+        let fw = 150.0;
+        let feld = Feld::Preis(a.guid);
+        b.label(y, "Preis");
+        b.feld(
+            WERT_X,
+            y,
+            fw,
+            feld.clone(),
+            self.anzeige(&feld),
+            format!("€/{}", je.zeichen()),
+        );
+        let mut x = WERT_X + fw + 12.0;
+        if angebot.len() > 1 {
+            for e in &angebot {
+                let t = einheit::je_text(*e);
+                let w = b.breite(&t, KLEIN, true) + 16.0;
+                b.teile.push(Teil {
+                    r: Rect::new(x, y + 1.0, w, 22.0),
+                    art: Art::Seg {
+                        text: t,
+                        an: *e == je,
+                    },
+                    ziel: Some(Ziel::Aktion(Aktion::Je(*e))),
+                });
+                x += w + 3.0;
+            }
+            x += 12.0;
+        }
+        if let Some(v) = self.vorher_text(&feld) {
+            b.text(x, y, v, KLEIN, false, Farbe::Leise);
+        }
+        y += 34.0;
+        // Rechnung der gesammelten Eingabe, sonst wohin umgerechnet wird
+        let eingabe = self.ops.iter().find_map(|o| match o {
+            sk_cost::Op::PreisSetzen {
+                artikel,
+                preis: Some(p),
+                eingabe,
+                ..
+            } if *artikel == a.guid && !eingabe.is_empty() => Some((eingabe.clone(), *p)),
+            _ => None,
+        });
+        let vorschlag = (je == sk_cost::katalog::Einheit::St)
+            .then(|| einheit::vorschlag(a))
+            .flatten();
+        if let Some(v) = vorschlag {
+            let feld = Feld::Conv(a.guid);
+            b.feld(
+                WERT_X,
+                y,
+                90.0,
+                feld.clone(),
+                self.anzeige(&feld),
+                String::new(),
+            );
+            let t = format!(
+                "Steine je {} (aus {}×{}, Fuge {} mm) ·",
+                a.einheit.zeichen(),
+                v.l,
+                v.h,
+                v.fuge
+            );
+            let x = b.text(WERT_X + 102.0, y, t, KLEIN, false, Farbe::Dim);
+            b.verweis(x + 6.0, y, "Bestätigen", Aktion::ConvBestaetigen(a.guid));
+            y += 34.0;
+        } else if let Some((t, p)) = eingabe {
+            let t = format!(
+                "{} = {} €/{}",
+                t.trim_start_matches("eingegeben "),
+                einheit::zahl(p, 2),
+                a.einheit.zeichen()
+            );
+            b.text(WERT_X, y, t, KLEIN, false, Farbe::Leise);
+            y += 28.0;
+        } else if je != a.einheit {
+            let t = format!("wird in €/{} umgerechnet", a.einheit.zeichen());
+            b.text(WERT_X, y, t, KLEIN, false, Farbe::Leise);
+            y += 28.0;
+        }
+        y + ABSTAND - 34.0
     }
 
     fn mehr_verweis(&self, b: &mut Bau, y: f32) -> f32 {
@@ -853,9 +954,7 @@ impl Verwaltung {
         if a.retired {
             b.text(0.0, 56.0, "liegt im Papierkorb", KLEIN, true, Farbe::Akzent);
         }
-        let e = a.einheit.zeichen();
-        self.feld_zeile(b, y, "Preis", Feld::Preis(a.guid), 150.0, format!("€/{e}"));
-        y += ABSTAND;
+        y = self.preis_zeile(b, y, a);
         let text = |f: &str| a.satz.text(f).unwrap_or_default().to_string();
         b.label(y, "Preisstand");
         b.text(WERT_X, y, text("date"), PX, false, Farbe::Text);
@@ -1415,6 +1514,34 @@ pub fn malen(
                     let x = r.x + (r.w - font.width(text, px)) * 0.5;
                     let base = (r.y + (r.h + font.cap_height(px)) * 0.5).round();
                     font.draw(c, text, px, x.round(), base, a);
+                }
+            }
+            Art::Seg { text, an } => {
+                let font = if *an {
+                    fonts.bold.as_ref().or(fonts.regular.as_ref())
+                } else {
+                    fonts.regular.as_ref()
+                };
+                // Wie ein Feld: Rand, darin Feldgrund; gewählt in Akzent
+                let b = s.max(1.0);
+                let mut p = Path::new();
+                p.rounded_rect(r.x, r.y, r.w, r.h, 5.0 * s);
+                c.fill(&p, if *an { u.accent } else { u.field_border });
+                let mut p = Path::new();
+                p.rounded_rect(r.x + b, r.y + b, r.w - 2.0 * b, r.h - 2.0 * b, 5.0 * s - b);
+                c.fill(&p, if *an { u.accent } else { u.field });
+                if let Some(font) = font {
+                    let px = KLEIN * s;
+                    let x = r.x + (r.w - font.width(text, px)) * 0.5;
+                    let base = (r.y + (r.h + font.cap_height(px)) * 0.5).round();
+                    let col = if *an {
+                        u.on_accent
+                    } else if hover {
+                        u.text
+                    } else {
+                        u.text_dim
+                    };
+                    font.draw(c, text, px, x.round(), base, col);
                 }
             }
             Art::Flaeche(f) => {

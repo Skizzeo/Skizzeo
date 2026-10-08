@@ -162,6 +162,11 @@ pub fn bauleistung(l: &Leistung) -> Bauleistung {
 pub struct Eingabe {
     pub stunden: Option<Dez>,
     pub preise: Vec<(Guid, Dez)>,
+    /// Eingabe in anderer Einheit je Artikel für `[origin] source`
+    /// (Regel 108), z. B. „eingegeben 0,85 €/St × 6,67 St/m²“.
+    pub eingaben: Vec<(Guid, String)>,
+    /// Im Blatt bestätigte Steine je Einheit (Regel 108).
+    pub conv: Vec<(Guid, Dez)>,
 }
 
 /// Operationen zum Preisblatt (paket-ka2 §4): `PreisSetzen` je geändertem
@@ -169,14 +174,30 @@ pub struct Eingabe {
 /// nichts anders ist. `stand`: Monat des Preises („10/2026“).
 pub fn preis_ops(k: &Katalog, a: &Aufbau, e: &Eingabe, stand: &str) -> Vec<Op> {
     let mut ops = Vec::new();
+    // `conv` vor dem Preis, damit die Herkunft des Preises die Eingabe
+    // behält (Regel 108)
+    for (g, c) in &e.conv {
+        if k.artikel(*g).is_some_and(|x| x.conv != Some(*c)) {
+            ops.push(Op::UmrechnungSetzen {
+                artikel: *g,
+                conv: Some(*c),
+            });
+        }
+    }
     for (g, p) in &e.preise {
         let alt = k.artikel(*g).and_then(|x| x.preis);
         if alt != Some(*p) {
+            let eingabe = e
+                .eingaben
+                .iter()
+                .find(|(x, _)| x == g)
+                .map_or(String::new(), |(_, t)| t.clone());
             ops.push(Op::PreisSetzen {
                 artikel: *g,
                 preis: Some(*p),
                 stand: stand.to_string(),
                 quelle: "Preisblatt".into(),
+                eingabe,
             });
         }
     }
@@ -211,6 +232,13 @@ impl Katalog {
                     a.preis = *preis;
                     h = fnv(h, artikel.to_ifc().as_bytes());
                     h = fnv(h, preis.map_or(String::new(), |p| p.text()).as_bytes());
+                }
+                Op::UmrechnungSetzen { artikel, conv } => {
+                    let a = k.artikel.iter_mut().find(|a| a.guid == *artikel)?;
+                    a.conv = *conv;
+                    h = fnv(h, b"conv");
+                    h = fnv(h, artikel.to_ifc().as_bytes());
+                    h = fnv(h, conv.map_or(String::new(), |c| c.text()).as_bytes());
                 }
                 Op::BauleistungAendern { bauleistung, daten } => {
                     let l = k.leistungen.iter_mut().find(|l| l.guid == *bauleistung)?;
@@ -298,6 +326,7 @@ mod tests {
         let e = Eingabe {
             stunden: Some(a.stunden),
             preise: vec![(stein.artikel.unwrap(), Dez::lesen("20.5", 4).unwrap())],
+            ..Eingabe::default()
         };
         let ops = preis_ops(&k, &a, &e, "10/2026");
         assert_eq!(ops.len(), 1, "nur der Preis");
@@ -320,7 +349,7 @@ mod tests {
             &a,
             &Eingabe {
                 stunden: Some(h),
-                preise: vec![],
+                ..Eingabe::default()
             },
             "",
         );

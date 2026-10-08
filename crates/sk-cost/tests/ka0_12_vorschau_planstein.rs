@@ -30,6 +30,7 @@ fn ka0_12_vorschau_planstein_99() {
         preis: Some(Dez::ganz(99)),
         stand: "10/2026".into(),
         quelle: "Abnahme 12".into(),
+        eingabe: String::new(),
     };
     assert_eq!(netto(&[stein]), Some((6_008_983, 7_332_352)));
     let lohn = Op::FirmenwertSetzen {

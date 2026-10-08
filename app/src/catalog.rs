@@ -972,6 +972,7 @@ mod tests {
             preis: Some(sk_cost::Dez(alt.0 + cent * 10_000)),
             stand: "10/2026".into(),
             quelle: "Preisblatt".into(),
+            eingabe: String::new(),
         };
         let herkunft = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "12:00");
         let lock = p.with_extension("szk.lock");
@@ -1149,6 +1150,7 @@ mod abnahme_ka2c2 {
             preis: Some(p),
             stand: "10/2026".into(),
             quelle: "Abnahme".into(),
+            eingabe: String::new(),
         }
     }
 
@@ -1301,6 +1303,7 @@ mod abnahme_ka2c2_haus {
             preis: Some(p),
             stand: "10/2026".into(),
             quelle: "Abnahme".into(),
+            eingabe: String::new(),
         }
     }
 
@@ -1882,6 +1885,7 @@ mod abnahme_bb9 {
                 preis: Some(Dez(p.0 + 10_000)),
                 stand: "10/2026".into(),
                 quelle: "Abnahme".into(),
+                eingabe: String::new(),
             };
             assert_eq!(setze(&mut c, op, format!("{name} neu")), i + 1);
         }
@@ -1902,6 +1906,7 @@ mod abnahme_bb9 {
             preis: Some(Dez(p.0 + 20_000)),
             stand: "10/2026".into(),
             quelle: "Abnahme".into(),
+            eingabe: String::new(),
         };
         assert_eq!(setze(&mut c, op, format!("{name} noch neuer")), 4);
         let (frage, rest) = crate::menu::save_question(&doc, None);

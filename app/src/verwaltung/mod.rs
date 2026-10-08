@@ -26,7 +26,7 @@ use crate::prefs::Win;
 use crate::scene::Scene;
 use crate::window_kit::{label, rounded};
 use felder::{Feld, Teil};
-use sk_cost::katalog::Katalog;
+use sk_cost::katalog::{Einheit, Katalog};
 use sk_cost::{Befund, Dez, Op, SatzId};
 use sk_model::{Guid, Library, Model};
 use sk_paint::{Canvas, Path};
@@ -69,6 +69,10 @@ pub enum Aktion {
     AlsReferenz,
     /// Referenzhaus im Baum wählen.
     HausOeffnen(usize),
+    /// Preis des gewählten Artikels in dieser Einheit eingeben (KA-3a7).
+    Je(Einheit),
+    /// Vorgeschlagene Steine je Einheit bestätigen (Regel 108).
+    ConvBestaetigen(Guid),
 }
 
 /// Ziel unter der Maus.
@@ -109,6 +113,18 @@ pub struct Out {
 pub struct Ctx<'a> {
     pub fonts: &'a Fonts,
     pub win: Win,
+}
+
+/// Preiseingabe in anderer Einheit am gewählten Artikel (KA-3a7, Regel
+/// 108); gilt nur für diesen Artikel.
+#[derive(Clone, Debug, PartialEq)]
+struct Je {
+    artikel: Guid,
+    einheit: Einheit,
+    /// Letzte Eingabe in `einheit`, wie getippt.
+    text: String,
+    /// Geänderte Zahl im Vorschlag „Steine je m²“.
+    conv: Option<String>,
 }
 
 /// Feld in Bearbeitung.
@@ -164,6 +180,7 @@ pub struct Verwaltung {
     luecken0: Vec<String>,
     /// Rückfrage vor dem Verwerfen (Esc, ×) steht im Fuß.
     frage: bool,
+    je: Option<Je>,
 }
 
 /// „0,55“ statt „0.55“.
@@ -220,11 +237,18 @@ fn titel(vorher: &Katalog, ohne_firma: bool) -> String {
     }
 }
 
+/// Steine je Einheit aus der Eingabe: > 0, ≤ 10 000, höchstens 4 Stellen
+/// (BIM §3.2 `conv`).
+fn conv_lesen(text: &str) -> Option<Dez> {
+    zahl(text, 4)?.filter(|c| *c > Dez::NULL && *c <= Dez::ganz(10_000))
+}
+
 /// Kennung einer Operation zum Zusammenfassen: eine spätere Eingabe am
 /// selben Satz ersetzt die frühere.
 fn op_schluessel(op: &Op) -> Option<String> {
     Some(match op {
         Op::PreisSetzen { artikel, .. } => format!("preis {}", artikel.to_ifc()),
+        Op::UmrechnungSetzen { artikel, .. } => format!("conv {}", artikel.to_ifc()),
         Op::BauleistungAendern { bauleistung, .. } => format!("bl {}", bauleistung.to_ifc()),
         Op::StoffanteilSetzen {
             bauleistung, nr, ..
@@ -294,6 +318,7 @@ impl Verwaltung {
             saetze: Vec::new(),
             luecken0: Vec::new(),
             frage: false,
+            je: None,
         };
         let gibt_es = |k: &Knoten| match k {
             Knoten::Leistung(g) => v.jetzt.leistung(*g).is_some(),
@@ -362,6 +387,7 @@ impl Verwaltung {
         self.aufklappen_bis(&k);
         if self.wahl != k {
             self.scroll_seite = 0.0;
+            self.je = None;
         }
         self.wahl = k;
     }
@@ -455,6 +481,9 @@ impl Verwaltung {
             Op::PreisSetzen { artikel, preis, .. } => {
                 v.artikel(*artikel).is_some_and(|a| a.preis == *preis)
             }
+            Op::UmrechnungSetzen { artikel, conv } => {
+                v.artikel(*artikel).is_some_and(|a| a.conv == *conv)
+            }
             Op::BauleistungAendern { bauleistung, daten } => v
                 .leistung(*bauleistung)
                 .is_some_and(|l| sk_cost::preis::bauleistung(l) == *daten),
@@ -491,16 +520,35 @@ impl Verwaltung {
         if !self.wie_vorher(&op) {
             self.ops.push(op);
         }
+        // `conv` vor dem Preis: sonst ersetzt seine Herkunft die Eingabe in
+        // `[origin] source` (Regel 108); stabil, sonst bleibt die Folge
+        self.ops
+            .sort_by_key(|o| !matches!(o, Op::UmrechnungSetzen { .. }));
         self.neu_rechnen();
     }
 
     /// Eingabe in `feld` des gewählten Eintrags übernehmen; `false`, wenn
     /// sie sich nicht lesen lässt (Feld bleibt, nichts geändert).
     pub fn eingeben(&mut self, feld: &Feld, text: &str) -> bool {
+        if let Feld::Conv(_) = feld {
+            // Nur die Zahl des Vorschlags; geschrieben wird mit „Bestätigen“
+            let ok = conv_lesen(text).is_some();
+            match (&mut self.je, ok) {
+                (Some(je), true) => je.conv = Some(text.trim().to_string()),
+                _ => self.fehler_feld = Some(feld.clone()),
+            }
+            return ok;
+        }
+        if let (Feld::Preis(g), Some(je)) = (feld, self.je.as_mut()) {
+            if je.artikel == *g {
+                je.text = text.trim().to_string();
+            }
+        }
         let op = match self.op_fuer(feld, text) {
             Some(op) => op,
             None => {
                 self.fehler_feld = Some(feld.clone());
+                self.meldung = self.je_fehler(feld, text);
                 return false;
             }
         };
@@ -554,13 +602,23 @@ impl Verwaltung {
             }
             Feld::Preis(g) => {
                 let a = k.artikel(*g)?;
+                let eingabe = zahl(text, 4)?;
+                let (preis, eingabe) = match (self.je_von(a), eingabe) {
+                    (Some(je), Some(e)) => {
+                        let u = sk_cost::einheit::umrechnen(e, je, a, None).ok()?;
+                        (Some(u.preis), u.eingabe)
+                    }
+                    (_, e) => (e, String::new()),
+                };
                 Op::PreisSetzen {
                     artikel: a.guid,
-                    preis: zahl(text, 4)?,
+                    preis,
                     stand: crate::preis_blatt::stand_jetzt(),
                     quelle: "Verwaltung".into(),
+                    eingabe,
                 }
             }
+            Feld::Conv(_) => return None,
             Feld::Wert(s) => Op::FirmenwertSetzen {
                 schluessel: s.clone(),
                 wert: zahl(text, 4)??,
@@ -582,22 +640,122 @@ impl Verwaltung {
             Feld::Nu => l?.nu.map(geld).unwrap_or_default(),
             Feld::Menge(nr) => komma(k.anteile_von(l?.guid).find(|a| a.nr == *nr)?.menge),
             Feld::Preis(g) => k.artikel(*g)?.preis.map(geld).unwrap_or_default(),
+            Feld::Conv(g) => {
+                let a = k.artikel(*g)?;
+                let v = sk_cost::einheit::vorschlag(a)?;
+                match self.je.as_ref().and_then(|j| j.conv.clone()) {
+                    Some(t) => t,
+                    None => komma(v.conv),
+                }
+            }
             Feld::Wert(s) if s == "wage" => geld(firmenwert(k, s)?),
             Feld::Wert(s) => komma(firmenwert(k, s)?),
         })
     }
 
-    /// „vorher 0,55“, wenn das Feld anders als beim Öffnen ist.
+    /// „vorher 0,55“, wenn das Feld anders als beim Öffnen ist; bei einer
+    /// Eingabe in anderer Einheit mit der Einheit des Artikels.
     fn vorher_text(&self, feld: &Feld) -> Option<String> {
+        if let Feld::Conv(_) = feld {
+            return None;
+        }
         let alt = self.feld_text(&self.vorher, feld)?;
         let neu = self.feld_text(&self.jetzt, feld)?;
+        let einheit = match feld {
+            Feld::Preis(g) => self
+                .jetzt
+                .artikel(*g)
+                .filter(|a| self.je_von(a).is_some())
+                .map(|a| format!(" €/{}", a.einheit.zeichen())),
+            _ => None,
+        }
+        .unwrap_or_default();
         (alt != neu).then(|| {
             if alt.is_empty() {
                 "vorher leer".into()
             } else {
-                format!("vorher {alt}")
+                format!("vorher {alt}{einheit}")
             }
         })
+    }
+
+    /// Was das Feld zeigt: bei Eingabe in anderer Einheit die letzte
+    /// Eingabe, sonst der gültige Wert.
+    pub(crate) fn anzeige(&self, feld: &Feld) -> String {
+        if let (Feld::Preis(g), Some(je)) = (feld, &self.je) {
+            if je.artikel == *g
+                && self
+                    .jetzt
+                    .artikel(*g)
+                    .is_some_and(|a| a.einheit != je.einheit)
+            {
+                return je.text.clone();
+            }
+        }
+        self.feld_text(&self.jetzt, feld).unwrap_or_default()
+    }
+
+    /// Warum sich ein Preis in anderer Einheit nicht umrechnen lässt
+    /// (Befund 108), für den Fuß.
+    fn je_fehler(&self, feld: &Feld, text: &str) -> Option<String> {
+        let Feld::Preis(g) = feld else {
+            return None;
+        };
+        let a = self.jetzt.artikel(*g)?;
+        let je = self.je_von(a)?;
+        let e = zahl(text, 4)??;
+        sk_cost::einheit::umrechnen(e, je, a, None)
+            .err()
+            .map(|b| b.satz)
+    }
+
+    /// Gewählte Eingabeeinheit am Artikel `a`, wenn sie nicht seine ist.
+    fn je_von(&self, a: &sk_cost::katalog::Artikel) -> Option<Einheit> {
+        self.je
+            .as_ref()
+            .filter(|j| j.artikel == a.guid && j.einheit != a.einheit)
+            .map(|j| j.einheit)
+    }
+
+    /// Segment „je m² | je m³ | je Stück“ (KA-3a7).
+    fn je_waehlen(&mut self, e: Einheit) {
+        let Knoten::ArtikelSatz(g) = self.wahl else {
+            return;
+        };
+        self.ende_edit(true);
+        let conv = self.je.take().and_then(|j| j.conv);
+        self.je = Some(Je {
+            artikel: g,
+            einheit: e,
+            text: String::new(),
+            conv,
+        });
+        self.fehler_feld = None;
+    }
+
+    /// „Bestätigen“ am Vorschlag: `conv` geht mit `kind=manual` ins OK.
+    fn conv_bestaetigen(&mut self, g: Guid) {
+        self.ende_edit(true);
+        let Some(a) = self.jetzt.artikel(g) else {
+            return;
+        };
+        let Some(v) = sk_cost::einheit::vorschlag(a) else {
+            return;
+        };
+        let conv = match self.je.as_ref().and_then(|j| j.conv.as_deref()) {
+            Some(t) => match conv_lesen(t) {
+                Some(c) => c,
+                None => return,
+            },
+            None => v.conv,
+        };
+        self.setzen(Op::UmrechnungSetzen {
+            artikel: g,
+            conv: Some(conv),
+        });
+        if let Some(j) = self.je.as_mut() {
+            j.conv = None;
+        }
     }
 
     /// Die Operationen, die Stand `stand` umkehren (aus `Company::umkehr`),
@@ -633,6 +791,8 @@ impl Verwaltung {
             Aktion::Zuruecknehmen(_) => {}
             Aktion::AlsReferenz => self.als_referenz(),
             Aktion::HausOeffnen(i) => self.waehlen(Knoten::Haus(i)),
+            Aktion::Je(e) => self.je_waehlen(e),
+            Aktion::ConvBestaetigen(g) => self.conv_bestaetigen(g),
         }
         None
     }
@@ -932,6 +1092,7 @@ impl Verwaltung {
                     | Aktion::Wiederherstellen(_)
                     | Aktion::Zuruecknehmen(_)
                     | Aktion::AlsReferenz
+                    | Aktion::ConvBestaetigen(_)
             )
         };
         match h {
@@ -961,7 +1122,7 @@ impl Verwaltung {
             }
             Some(Ziel::Feld(f)) => {
                 if !im_feld {
-                    let text = self.feld_text(&self.jetzt, &f).unwrap_or_default();
+                    let text = self.anzeige(&f);
                     self.edit = Some(Edit {
                         feld: f,
                         te: TextEdit::new(&text),
@@ -997,7 +1158,7 @@ impl Verwaltung {
     /// Feld schließen; `uebernehmen`: Eingabe als Operation.
     fn ende_edit(&mut self, uebernehmen: bool) {
         if let Some(ed) = self.edit.take() {
-            let alt = self.feld_text(&self.jetzt, &ed.feld).unwrap_or_default();
+            let alt = self.anzeige(&ed.feld);
             if uebernehmen && ed.te.text != alt {
                 self.eingeben(&ed.feld, &ed.te.text);
             }

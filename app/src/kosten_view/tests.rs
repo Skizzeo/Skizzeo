@@ -336,6 +336,7 @@ fn auch_fuer_neue_haeuser() {
             &sk_cost::preis::Eingabe {
                 stunden: None,
                 preise: vec![(stein, Dez::lesen(x, 4).unwrap())],
+                ..Default::default()
             },
             "10/2026",
         )
@@ -417,6 +418,7 @@ fn abgleichzeile_fuer_neue_haeuser() {
         preis: Some(Dez::ganz(99)),
         stand: "10/2026".into(),
         quelle: "Preisblatt".into(),
+        eingabe: String::new(),
     };
     s.kosten_folge("Preis", Some(c.library()), &h, &[preis])
         .unwrap();

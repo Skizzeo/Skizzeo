@@ -2778,6 +2778,7 @@ mod abnahme_ka2c {
             preis: Some(Dez::ganz(24)),
             stand: "10/2026".into(),
             quelle: "Abnahme 4".into(),
+            eingabe: String::new(),
         }
     }
 

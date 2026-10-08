@@ -10,7 +10,8 @@
 //! die Operationen `sk_cost::preis::preis_ops`. Geschrieben wird erst mit
 //! Enter oder Klick daneben, Esc verwirft (Regel 94, Bedienbarkeit 4.2).
 
-use sk_cost::katalog::Katalog;
+use sk_cost::einheit;
+use sk_cost::katalog::{Einheit, Katalog};
 use sk_cost::preis::{self, Aufbau, Eingabe};
 use sk_cost::{Dez, Op, SatzId};
 use sk_model::Guid;
@@ -37,6 +38,10 @@ const FELD_W: f32 = 104.0;
 const FELD_H: f32 = 26.0;
 const BALKEN_H: f32 = 12.0;
 const SEG_H: f32 = 26.0;
+/// Zeile mit dem Segment „je m² | je m³ | je Stück“ unter einem Preis
+/// (KA-3a7) und Zeile mit Rechnung oder Vorschlag darunter.
+const JE_H: f32 = 24.0;
+const JE_TEXT_H: f32 = 16.0;
 
 /// Wofür ein geänderter Preis gilt (Segment „Gilt für“).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -72,8 +77,27 @@ struct Feld {
     alt: Dez,
     firma: Option<Dez>,
     edit: TextEdit,
-    /// Gelesener Wert; `None`, wenn der Text keine Zahl ab 0 ist.
+    /// Gelesener Wert in der Einheit des Artikels; `None`, wenn der Text
+    /// keine Zahl ab 0 ist oder sich nicht umrechnen lässt.
     wert: Option<Dez>,
+    /// Preis in anderer Einheit (Regel 108): angebotene Einheiten (leer:
+    /// nur die des Artikels), gewählte, im Blatt bestätigtes `conv`,
+    /// Rechnung und Herkunft der letzten Eingabe, Befund 108.
+    angebot: Vec<Einheit>,
+    je: Option<Einheit>,
+    conv: Option<Dez>,
+    rechnung: Option<(String, String)>,
+    je_fehler: Option<crate::meldung::Meldung>,
+}
+
+impl Feld {
+    /// Einheit im Feld: die gewählte Eingabeeinheit, sonst die eigene.
+    fn einheit_zeige(&self) -> String {
+        match self.je {
+            Some(e) => format!("€/{}", e.zeichen()),
+            None => self.einheit.clone(),
+        }
+    }
 }
 
 /// Ergebnis eines Ereignisses im Blatt.
@@ -102,6 +126,10 @@ enum Ziel {
     Schliessen,
     Feld(usize),
     Segment(Gilt),
+    /// Eingabeeinheit am Preis `i` (KA-3a7).
+    Je(usize, Einheit),
+    /// Vorschlag „Steine je m²“ am Preis `i` bestätigen.
+    Bestaetigen(usize),
     Zurueck,
     Innen,
 }
@@ -204,6 +232,11 @@ impl PreisBlatt {
                 firma: firma_h,
                 edit: TextEdit::new(&zahl(a.stunden, 2)),
                 wert: Some(a.stunden),
+                angebot: Vec::new(),
+                je: None,
+                conv: None,
+                rechnung: None,
+                je_fehler: None,
             });
             for t in a.stoffe.iter().filter(|t| t.haupt) {
                 let Some(g) = t.artikel else { continue };
@@ -221,6 +254,15 @@ impl PreisBlatt {
                     firma: firma_p,
                     edit: TextEdit::new(&zahl(t.preis, 2)),
                     wert: Some(t.preis),
+                    angebot: k
+                        .artikel(g)
+                        .map(einheit::angebot)
+                        .filter(|v| v.len() > 1)
+                        .unwrap_or_default(),
+                    je: None,
+                    conv: None,
+                    rechnung: None,
+                    je_fehler: None,
                 });
             }
         }
@@ -271,8 +313,16 @@ impl PreisBlatt {
         for f in &self.felder {
             match (f.art, f.wert) {
                 (Art::Stunden, Some(h)) => e.stunden = Some(h),
-                (Art::Preis(g), Some(p)) => e.preise.push((g, p)),
+                (Art::Preis(g), Some(p)) => {
+                    e.preise.push((g, p));
+                    if let Some((_, herkunft)) = f.rechnung.as_ref().filter(|_| f.je.is_some()) {
+                        e.eingaben.push((g, herkunft.clone()));
+                    }
+                }
                 _ => {}
+            }
+            if let (Art::Preis(g), Some(c)) = (f.art, f.conv) {
+                e.conv.push((g, c));
             }
         }
         e
@@ -329,11 +379,117 @@ impl PreisBlatt {
         self.zeige().stoffe.iter().filter(|t| !t.haupt).count()
     }
 
+    /// Vorschlag „Steine je m²“, solange je Stück gewählt ist und der
+    /// Artikel kein `conv` hat (Regel 108).
+    fn vorschlag(&self, i: usize) -> Option<einheit::Vorschlag> {
+        let f = &self.felder[i];
+        let Art::Preis(g) = f.art else { return None };
+        if f.je != Some(Einheit::St) || f.conv.is_some() {
+            return None;
+        }
+        einheit::vorschlag(self.katalog.artikel(g)?)
+    }
+
+    /// Leise Zeile unter dem Segment: Vorschlag, Rechnung oder wohin
+    /// umgerechnet wird; `true`: mit „Bestätigen“.
+    fn je_zeile(&self, i: usize) -> Option<(String, bool)> {
+        let f = &self.felder[i];
+        let Art::Preis(g) = f.art else { return None };
+        let a = self.katalog.artikel(g)?;
+        if let Some(v) = self.vorschlag(i) {
+            return Some((format!("{} ·", v.text(a)), true));
+        }
+        f.je?;
+        Some(match &f.rechnung {
+            Some((r, _)) => (r.clone(), false),
+            None => (
+                format!("wird in €/{} umgerechnet", a.einheit.zeichen()),
+                false,
+            ),
+        })
+    }
+
+    /// Zusätzliche Höhe unter Feld `i` (dip).
+    fn unter_h(&self, i: usize) -> f32 {
+        if self.felder[i].angebot.is_empty() {
+            return 0.0;
+        }
+        JE_H + if self.je_zeile(i).is_some() {
+            JE_TEXT_H
+        } else {
+            0.0
+        }
+    }
+
+    /// Oberkante der Zeile von Feld `i` ab dem ersten Feld (dip).
+    fn zeile_y(&self, i: usize) -> f32 {
+        (0..i).map(|j| ZEILE + self.unter_h(j)).sum()
+    }
+
+    fn felder_h(&self) -> f32 {
+        self.zeile_y(self.felder.len())
+    }
+
+    /// Segment „je m² | je m³ | je Stück“ unter Feld `i` (px).
+    fn je_rects(&self, fonts: &Fonts, i: usize) -> Vec<(Einheit, Rect)> {
+        let f = &self.felder[i];
+        if f.angebot.is_empty() {
+            return Vec::new();
+        }
+        let s = self.scale;
+        let (fx, fy, _, fh) = self.feld_rect(i);
+        let px = 10.0 * s;
+        let font = fonts.regular.as_ref();
+        let mut x = fx;
+        let y = fy + fh + ((ZEILE - FELD_H) * 0.5 + 2.0) * s;
+        f.angebot
+            .iter()
+            .map(|&e| {
+                let t = einheit::je_text(e);
+                let w = font.map_or(40.0 * s, |ft| ft.width(&t, px)) + 14.0 * s;
+                let r = (x, y, w, (JE_H - 6.0) * s);
+                x += w;
+                (e, r)
+            })
+            .collect()
+    }
+
+    /// „Bestätigen“ hinter dem Vorschlag (px).
+    fn bestaetigen_rect(&self, fonts: &Fonts, i: usize) -> Option<Rect> {
+        let (text, true) = self.je_zeile(i)? else {
+            return None;
+        };
+        let s = self.scale;
+        let ((x, _, _, _), _) = self.rect();
+        let (_, ry, _, rh) = self.je_rects(fonts, i).first()?.1;
+        let px = 10.0 * s;
+        let f = fonts.regular.as_ref();
+        let fb = fonts.bold.as_ref().or(f);
+        // Ohne Schrift geschätzt, wie beim Segment
+        let breite = |font: Option<&sk_paint::font::Font>, t: &str| {
+            font.map_or(t.chars().count() as f32 * px * 0.55, |ft| ft.width(t, px))
+        };
+        let tx = x + PAD * s + breite(f, &text) + 4.0 * s;
+        Some((
+            tx,
+            ry + rh + 2.0 * s,
+            breite(fb, "Bestätigen"),
+            JE_TEXT_H * s,
+        ))
+    }
+
+    /// Mitte von Teil `nr` des Segments am Preis mit Fokus (Ist-Bilder).
+    #[cfg(test)]
+    pub(crate) fn je_mitte(&self, fonts: &Fonts, nr: usize) -> Option<(f64, f64)> {
+        let (_, (x, y, w, h)) = *self.je_rects(fonts, self.fokus).get(nr)?;
+        Some(((x + w * 0.5) as f64, (y + h * 0.5) as f64))
+    }
+
     /// Höhe des Inhalts (dip).
     fn hoehe(&self) -> f32 {
         let mut h = PAD + 22.0; // Titel
         h += 12.0 + BALKEN_H + 26.0; // Balken und Beschriftung
-        h += ZEILE * (self.felder.len() + self.nebenstoffe()) as f32;
+        h += self.felder_h() + ZEILE * self.nebenstoffe() as f32;
         if self.aufbau.nu.is_some() {
             h += ZEILE;
         }
@@ -377,7 +533,7 @@ impl PreisBlatt {
         let y0 = y + (PAD + 22.0 + 12.0 + BALKEN_H + 26.0) * s;
         (
             x + FELD_X * s,
-            y0 + (i as f32 * ZEILE + (ZEILE - FELD_H) * 0.5) * s,
+            y0 + (self.zeile_y(i) + (ZEILE - FELD_H) * 0.5) * s,
             FELD_W * s,
             FELD_H * s,
         )
@@ -386,7 +542,7 @@ impl PreisBlatt {
     /// Oberkante des Segments (px, relativ zum Blatt in dip gerechnet).
     fn seg_y(&self) -> f32 {
         let mut y = PAD + 22.0 + 12.0 + BALKEN_H + 26.0;
-        y += ZEILE * (self.felder.len() + self.nebenstoffe()) as f32;
+        y += self.felder_h() + ZEILE * self.nebenstoffe() as f32;
         if self.aufbau.nu.is_some() {
             y += ZEILE;
         }
@@ -453,6 +609,21 @@ impl PreisBlatt {
         if let Some(i) = (0..self.felder.len()).find(|&i| inside(self.feld_rect(i), x, y)) {
             return Some(Ziel::Feld(i));
         }
+        for i in 0..self.felder.len() {
+            if let Some((e, _)) = self
+                .je_rects(fonts, i)
+                .into_iter()
+                .find(|(_, r)| inside(*r, x, y))
+            {
+                return Some(Ziel::Je(i, e));
+            }
+            if self
+                .bestaetigen_rect(fonts, i)
+                .is_some_and(|r| inside(r, x, y))
+            {
+                return Some(Ziel::Bestaetigen(i));
+            }
+        }
         if let Some((g, _)) = self
             .segmente(fonts)
             .into_iter()
@@ -512,8 +683,80 @@ impl PreisBlatt {
     /// Feld `i` neu lesen; `Live`, wenn sich die Operationen ändern.
     fn geaendert(&mut self, i: usize) -> Option<Aus> {
         let vorher = self.ops();
+        self.lesen_feld(i);
+        Some(if self.ops() != vorher {
+            Aus::Live
+        } else {
+            Aus::Repaint
+        })
+    }
+
+    /// Text von Feld `i` lesen; in anderer Einheit umgerechnet (Regel 108).
+    fn lesen_feld(&mut self, i: usize) {
+        let k = Rc::clone(&self.katalog);
         let f = &mut self.felder[i];
-        f.wert = lesen(&f.edit.text);
+        let gelesen = lesen(&f.edit.text);
+        f.rechnung = None;
+        f.je_fehler = None;
+        let (Art::Preis(g), Some(je), Some(e)) = (f.art, f.je, gelesen) else {
+            f.wert = gelesen;
+            return;
+        };
+        let Some(a) = k.artikel(g) else {
+            f.wert = None;
+            return;
+        };
+        match einheit::umrechnen(e, je, a, f.conv) {
+            Ok(u) => {
+                f.wert = Some(u.preis);
+                f.rechnung = Some((u.rechnung, u.eingabe));
+            }
+            Err(b) => {
+                f.wert = None;
+                f.je_fehler = Some(crate::meldung::Meldung::vorschau(&[b], ""));
+            }
+        }
+    }
+
+    /// Eingabeeinheit am Preis `i` wählen: die eigene zeigt den Preis, eine
+    /// andere ein leeres Feld; der Preis bleibt, bis etwas getippt ist.
+    fn je_waehlen(&mut self, i: usize, e: Einheit) -> Option<Aus> {
+        let f = &mut self.felder[i];
+        let Art::Preis(g) = f.art else { return None };
+        let eigen = self.katalog.artikel(g).map(|a| a.einheit);
+        let je = (Some(e) != eigen).then_some(e);
+        if je == f.je {
+            return None;
+        }
+        let vorher = self.ops();
+        let f = &mut self.felder[i];
+        f.je = je;
+        f.rechnung = None;
+        f.je_fehler = None;
+        let preis = f.wert.unwrap_or(f.alt);
+        if je.is_none() {
+            f.edit = TextEdit::new(&zahl(preis, 2));
+        } else {
+            f.edit = TextEdit::new("");
+        }
+        f.wert = Some(preis);
+        self.fokus = i;
+        Some(if self.ops() != vorher {
+            Aus::Live
+        } else {
+            Aus::Repaint
+        })
+    }
+
+    /// Vorschlag bestätigen: `conv` geht mit dem Preis in dieselbe Änderung.
+    fn bestaetigen(&mut self, i: usize) -> Option<Aus> {
+        let v = self.vorschlag(i)?;
+        let vorher = self.ops();
+        self.felder[i].conv = Some(v.conv);
+        if !self.felder[i].edit.text.trim().is_empty() {
+            self.lesen_feld(i);
+        }
+        self.fokus = i;
         Some(if self.ops() != vorher {
             Aus::Live
         } else {
@@ -541,7 +784,7 @@ impl PreisBlatt {
                 let r = self.feld_rect(i);
                 let px = 11.0 * s;
                 let font = fonts.regular.as_ref();
-                let unit_w = font.map_or(0.0, |ft| ft.width(&f.einheit, px));
+                let unit_w = font.map_or(0.0, |ft| ft.width(&f.einheit_zeige(), px));
                 let text_w = font.map_or(0.0, |ft| ft.width(&f.edit.text, px));
                 let tx = r.0 + r.2 - 8.0 * s - unit_w - 4.0 * s - text_w;
                 let c = widgets::caret_at(font, &f.edit.text, px, tx, x);
@@ -549,6 +792,8 @@ impl PreisBlatt {
                 self.felder[i].edit.place(c, false);
                 Some(Aus::Repaint)
             }
+            Some(Ziel::Je(i, e)) => self.je_waehlen(i, e),
+            Some(Ziel::Bestaetigen(i)) => self.bestaetigen(i),
             Some(Ziel::Segment(g)) => (g != self.gilt).then(|| {
                 self.gilt = g;
                 Aus::Repaint
@@ -563,6 +808,9 @@ impl PreisBlatt {
                     if let Some(x) = f.firma {
                         f.edit = TextEdit::new(&zahl(x, 2));
                         f.wert = Some(x);
+                        f.je = None;
+                        f.rechnung = None;
+                        f.je_fehler = None;
                     }
                 }
                 Some(if self.ops() != vorher {
@@ -798,14 +1046,17 @@ impl PreisBlatt {
                     }
                     n
                 }
-                Art::Preis(_) => fe
-                    .firma
-                    .map_or(String::new(), |x| format!("Firma {}", zahl(x, 2))),
+                // In anderer Einheit mit der eigenen, sonst stünde €/m² neben €/St
+                Art::Preis(_) => fe.firma.map_or(String::new(), |x| match fe.je {
+                    Some(_) => format!("Firma {} {}", zahl(x, 2), fe.einheit),
+                    None => format!("Firma {}", zahl(x, 2)),
+                }),
             };
             let nx = x + (FELD_X + FELD_W + 12.0) * s;
             let notiz = widgets::ellipsize(Some(f), &notiz, px_s, x1 - nx);
             f.draw(c, &notiz, px_s, nx, base, u.sheet_text_dim);
-            zy += ZEILE * s;
+            self.paint_je(c, t, fonts, i);
+            zy += (ZEILE + self.unter_h(i)) * s;
         }
         // Nebenstoffe als Zeile: „Dünnbettmörtel 4,4 kg   4,84 €/m²   1,10 €/kg“
         for st in a.stoffe.iter().filter(|t| !t.haupt) {
@@ -847,7 +1098,8 @@ impl PreisBlatt {
                 .iter()
                 .find(|f| f.wert.is_none())
                 .map_or_else(|| "20,50".into(), |f| zahl(f.alt, 2));
-            let satz = self.fehler.clone().unwrap_or_else(|| {
+            let je_fehler = self.felder.iter().find_map(|f| f.je_fehler.clone());
+            let satz = self.fehler.clone().or(je_fehler).unwrap_or_else(|| {
                 crate::meldung::Meldung::mit(
                     "Bitte eine Zahl ab 0 eingeben, etwa {}.",
                     &[&beispiel],
@@ -950,6 +1202,62 @@ impl PreisBlatt {
         }
     }
 
+    /// Segment „je m² | je m³ | je Stück“ und die leise Zeile darunter.
+    fn paint_je(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts, i: usize) {
+        let rects = self.je_rects(fonts, i);
+        let (Some(f), Some(&(_, erst))) = (fonts.regular.as_ref(), rects.first()) else {
+            return;
+        };
+        let fb = fonts.bold.as_ref().unwrap_or(f);
+        let s = self.scale;
+        let u = &t.ui;
+        let px = 10.0 * s;
+        let fe = &self.felder[i];
+        let gewaehlt = |e: Einheit| match fe.je {
+            Some(j) => j == e,
+            None => Some(e) == fe.angebot.first().copied(),
+        };
+        let letzt = rects.last().map_or(erst, |r| r.1);
+        let mut p = Path::new();
+        let breite = letzt.0 + letzt.2 - erst.0;
+        p.rounded_rect(erst.0, erst.1, breite, erst.3, 5.0 * s);
+        c.fill(&p, u.sheet_tile);
+        for &(e, (rx, ry, rw, rh)) in &rects {
+            let (font, col) = if gewaehlt(e) {
+                let mut p = Path::new();
+                let b = s.max(1.0);
+                p.rounded_rect(rx + b, ry + b, rw - 2.0 * b, rh - 2.0 * b, 4.0 * s);
+                c.fill(&p, u.sheet_card);
+                (fb, u.sheet_text)
+            } else if self.hot == Some(Ziel::Je(i, e)) {
+                (f, u.sheet_text)
+            } else {
+                (f, u.sheet_text_dim)
+            };
+            let text = einheit::je_text(e);
+            let tw = font.width(&text, px);
+            let base = (ry + (rh + font.cap_height(px)) * 0.5).round();
+            font.draw(c, &text, px, (rx + (rw - tw) * 0.5).round(), base, col);
+        }
+        if let Some((text, link)) = self.je_zeile(i) {
+            let ((x, _, w, _), _) = self.rect();
+            let x0 = x + PAD * s;
+            let base =
+                (erst.1 + erst.3 + 2.0 * s + (JE_TEXT_H * s + f.cap_height(px)) * 0.5).round();
+            let platz = x + w - PAD * s - x0;
+            let text = widgets::ellipsize(Some(f), &text, px, platz);
+            f.draw(c, &text, px, x0, base, u.sheet_text_dim);
+            if let Some((bx, _, _, _)) = link.then(|| self.bestaetigen_rect(fonts, i)).flatten() {
+                let col = if self.hot == Some(Ziel::Bestaetigen(i)) {
+                    u.accent_hover
+                } else {
+                    u.accent
+                };
+                fb.draw(c, "Bestätigen", px, bx, base, col);
+            }
+        }
+    }
+
     fn paint_feld(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts, i: usize) {
         let s = self.scale;
         let u = &t.ui;
@@ -978,9 +1286,10 @@ impl PreisBlatt {
         let px = 11.0 * s;
         let px_u = 10.0 * s;
         let base = (y + (h + f.cap_height(px)) * 0.5).round();
-        let unit_w = f.width(&fe.einheit, px_u);
+        let einheit = fe.einheit_zeige();
+        let unit_w = f.width(&einheit, px_u);
         let ux = x + w - 8.0 * s - unit_w;
-        f.draw(c, &fe.einheit, px_u, ux, base, u.sheet_text_dim);
+        f.draw(c, &einheit, px_u, ux, base, u.sheet_text_dim);
         let text = &fe.edit.text;
         let tx = ux - 4.0 * s - f.width(text, px);
         if fokus {
@@ -1311,5 +1620,123 @@ mod abnahme_bb7 {
             text.contains("Planstein") && text.contains("21,00"),
             "{text}"
         );
+    }
+
+    /// Den Preis im Blatt treffen: Mitte von `r` (px).
+    fn klick(pb: &mut PreisBlatt, fonts: &Fonts, r: Rect) -> Option<Aus> {
+        pb.mouse_down(fonts, r.0 + r.2 * 0.5, r.1 + r.3 * 0.5)
+    }
+
+    fn preis_op(ops: &[Op]) -> (Option<Dez>, String) {
+        ops.iter()
+            .find_map(|o| match o {
+                Op::PreisSetzen { preis, eingabe, .. } => Some((*preis, eingabe.clone())),
+                _ => None,
+            })
+            .expect("PreisSetzen")
+    }
+
+    /// KA-3a7 im Preisblatt (Abnahme 15a, Regel 108): dasselbe Segment am
+    /// Stoffpreis; 95,00 €/m³ → 16,625 €/m², 0,85 €/St → 5,6695 €/m², die
+    /// Eingabe geht in `[origin] source`.
+    #[test]
+    fn preis_je_m3_und_je_stueck() {
+        let mut pb = blatt();
+        let fonts = Fonts::system();
+        let i = pb.fokus;
+        assert_eq!(
+            pb.felder[i].angebot,
+            vec![Einheit::M2, Einheit::M3, Einheit::St]
+        );
+        let segs = pb.je_rects(&fonts, i);
+        assert_eq!(segs.len(), 3);
+        // Das Segment liegt unter dem Feld, nicht darauf und nicht auf dem
+        // nächsten Feld
+        let (_, fy, _, fh) = pb.feld_rect(i);
+        assert!(segs[0].1 .1 >= fy + fh);
+        if i + 1 < pb.felder.len() {
+            assert!(pb.feld_rect(i + 1).1 >= segs[0].1 .1 + segs[0].1 .3);
+        }
+        assert_eq!(
+            pb.hit(&fonts, segs[1].1 .0 + 2.0, segs[1].1 .1 + 2.0),
+            Some(Ziel::Je(i, Einheit::M3))
+        );
+        klick(&mut pb, &fonts, segs[1].1);
+        assert_eq!(pb.felder[i].einheit_zeige(), "€/m³");
+        assert!(pb.ops().is_empty(), "Wählen allein ändert nichts");
+        for ch in "95".chars() {
+            pb.text(ch);
+        }
+        let (p, e) = preis_op(&pb.ops());
+        assert_eq!(p, Some(Dez(16_625_000)));
+        assert_eq!(e, "eingegeben 95,00 €/m³ × 0,175 m");
+        assert_eq!(
+            pb.je_zeile(i),
+            Some(("95,00 €/m³ × 0,175 m = 16,625 €/m²".into(), false))
+        );
+        let r = pb.je_rects(&fonts, i)[2].1;
+        klick(&mut pb, &fonts, r);
+        for ch in "0,85".chars() {
+            pb.text(ch);
+        }
+        let (p, e) = preis_op(&pb.ops());
+        assert_eq!(p, Some(Dez(5_669_500)));
+        assert_eq!(e, "eingegeben 0,85 €/St × 6,67 St/m²");
+        // Zurück auf je m² zeigt den umgerechneten Preis im Feld
+        let r = pb.je_rects(&fonts, i)[0].1;
+        klick(&mut pb, &fonts, r);
+        assert_eq!(pb.felder[i].edit.text, "5,6695");
+        let (_, e) = preis_op(&pb.ops());
+        assert!(e.is_empty(), "{e}");
+    }
+
+    /// Ohne `conv` erst der Vorschlag; vor „Bestätigen“ rechnet je Stück
+    /// nicht, danach geht `conv` vor dem Preis in dieselbe Änderung.
+    #[test]
+    fn vorschlag_im_preisblatt() {
+        let pb0 = blatt();
+        let mut k = (*pb0.katalog).clone();
+        let i = pb0.fokus;
+        let Art::Preis(g) = pb0.felder[i].art else {
+            panic!("Preis")
+        };
+        k.artikel.iter_mut().find(|a| a.guid == g).unwrap().conv = None;
+        let mut pb = PreisBlatt::neu(
+            Rc::new(k),
+            pb0.aufbau.clone(),
+            pb0.firma.clone(),
+            (pb0.pos, pb0.key),
+            "10/2026".into(),
+        );
+        pb.fenster = pb0.fenster;
+        pb.anker = pb0.anker;
+        let fonts = Fonts::system();
+        let h0 = pb.hoehe();
+        let r = pb.je_rects(&fonts, i)[2].1;
+        klick(&mut pb, &fonts, r);
+        let (text, link) = pb.je_zeile(i).unwrap();
+        assert!(link);
+        assert_eq!(text, "6,6667 Steine je m² (aus 599×249, Fuge 1 mm) ·");
+        assert_eq!(pb.hoehe(), h0 + JE_TEXT_H);
+        for ch in "0,85".chars() {
+            pb.text(ch);
+        }
+        assert!(pb.ungueltig(), "ohne conv keine Umrechnung");
+        assert!(pb.felder[i].je_fehler.is_some());
+        let r = pb.bestaetigen_rect(&fonts, i).unwrap();
+        assert_eq!(
+            pb.hit(&fonts, r.0 + 1.0, r.1 + 1.0),
+            Some(Ziel::Bestaetigen(i))
+        );
+        assert_eq!(klick(&mut pb, &fonts, r), Some(Aus::Live));
+        assert!(!pb.ungueltig());
+        let ops = pb.ops();
+        assert!(
+            matches!(ops[0], Op::UmrechnungSetzen { artikel, conv: Some(c) } if artikel == g && c == Dez(6_666_700)),
+            "{ops:?}"
+        );
+        let (p, e) = preis_op(&ops);
+        assert_eq!(p, Some(Dez(5_666_700)));
+        assert_eq!(e, "eingegeben 0,85 €/St × 6,6667 St/m²");
     }
 }

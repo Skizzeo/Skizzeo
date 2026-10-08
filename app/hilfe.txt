@@ -208,6 +208,7 @@ Inhalt | Firmenwerte, Baustoffe und Preise, Bauleistungen, Lose, Bauteiltypen, R
 Zurück | „Protokoll“ › „Diese Änderung zurücknehmen“; Strg+Z betrifft nur das offene Haus
 Wirkung | die Zeile über **OK** zeigt, wie sich die Referenzhäuser ändern
 Gelöscht | liegt im Papierkorb und lässt sich wiederherstellen
+Preis je m³ oder Stück | am Preisfeld „je m³“ oder „je Stück“ wählen; Skizzeo rechnet auf die Einheit des Artikels um
 Projekt oder Firma | in der Verwaltung gilt es für alle neuen Häuser, im Projekt nur für dieses Haus
 
 [thema] id=muster titel="Muster"

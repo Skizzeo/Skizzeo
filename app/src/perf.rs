@@ -1097,6 +1097,7 @@ fn perf_preisblatt_taste() {
                 preis: Some(sk_cost::Dez::ganz(20 + n % 7)),
                 stand: "10/2026".into(),
                 quelle: "Preisblatt".into(),
+                eingabe: String::new(),
             }];
             std::hint::black_box(s.kosten_live(None, &ops, &[&umfang, &umfang]).unwrap());
         }));
@@ -1256,6 +1257,7 @@ fn perf_loslassen_mit_abgleich() {
         preis: Some(sk_cost::Dez::ganz(99)),
         stand: "10/2026".into(),
         quelle: "Messung".into(),
+        eingabe: String::new(),
     };
     s.kosten_folge("Preis", Some(c.library()), &h, &[preis])
         .unwrap();

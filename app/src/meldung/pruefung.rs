@@ -216,12 +216,14 @@ fn alle_ops() -> Vec<Op> {
             preis: Some(Dez::ganz(20)),
             stand: "10/2026".into(),
             quelle: "Preisblatt".into(),
+            eingabe: String::new(),
         },
         Op::PreisSetzen {
             artikel: g,
             preis: None,
             stand: "10/2026".into(),
             quelle: "Preisblatt".into(),
+            eingabe: String::new(),
         },
         Op::BauleistungAnlegen(daten.clone()),
         Op::BauleistungAendern {

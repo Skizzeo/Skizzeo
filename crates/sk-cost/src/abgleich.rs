@@ -265,6 +265,7 @@ mod tests {
             preis: Some(Dez::ganz(99)),
             stand: "10/2026".into(),
             quelle: "Preisblatt".into(),
+            eingabe: String::new(),
         };
         m.begin("Preis");
         crate::ausfuehren_folge(&mut m, Some(&firma), Rolle::Admin, &h, &[preis]).unwrap();

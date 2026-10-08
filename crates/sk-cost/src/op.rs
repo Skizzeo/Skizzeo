@@ -196,6 +196,14 @@ pub enum Op {
         preis: Option<Dez>,
         stand: String,
         quelle: String,
+        /// Eingabe in anderer Einheit für `[origin] source` (Regel 108),
+        /// z. B. „eingegeben 0,85 €/St × 6,67 St/m²“; leer: keine.
+        eingabe: String,
+    },
+    /// `[article] conv`: Stück je Einheit (Regel 108), `None` entfernt.
+    UmrechnungSetzen {
+        artikel: Guid,
+        conv: Option<Dez>,
     },
     BauleistungAnlegen(Bauleistung),
     BauleistungAendern {
@@ -257,7 +265,7 @@ pub enum Op {
 
 /// Alle Operationen mit festem Namen (für Schema, `[log] op`, Abläufe):
 /// Name, Angaben, nur in der Verwaltung.
-pub const NAMEN: [(&str, &str, bool); 16] = [
+pub const NAMEN: [(&str, &str, bool); 17] = [
     ("artikel_anlegen", "baustoff name dicke guete format einheit preis stand quelle lieferant standard", true),
     ("preis_setzen", "artikel preis stand quelle", false),
     ("bauleistung_anlegen", "kurz gewerk titel pos einheit bezug stunden geraet sonst nu kg kategorien mat tmin tmax funktion", true),
@@ -274,6 +282,7 @@ pub const NAMEN: [(&str, &str, bool); 16] = [
     ("stand_uebernehmen", "saetze", false),
     ("abgleich_lassen", "stand", false),
     ("lv_gliederung_setzen", "untertitel", false),
+    ("umrechnung_setzen", "artikel conv (leer = entfernen)", false),
 ];
 
 /// „65,5“ statt „65.5“.
@@ -301,6 +310,7 @@ impl Op {
             Op::StandUebernehmen { .. } => 13,
             Op::AbgleichLassen { .. } => 14,
             Op::LvGliederungSetzen { .. } => 15,
+            Op::UmrechnungSetzen { .. } => 16,
         }
     }
 
@@ -317,6 +327,10 @@ impl Op {
                 format!("Preis gesetzt: {} €", p.cent().deutsch())
             }
             Op::PreisSetzen { preis: None, .. } => "Preis entfernt".into(),
+            Op::UmrechnungSetzen { conv: Some(c), .. } => {
+                format!("Umrechnung gesetzt: {} Stück je Einheit", komma(*c))
+            }
+            Op::UmrechnungSetzen { conv: None, .. } => "Umrechnung entfernt".into(),
             Op::BauleistungAnlegen(d) => format!("Bauleistung angelegt: {}", d.kurz),
             Op::BauleistungAendern { daten, .. } => format!("Bauleistung geändert: {}", daten.kurz),
             Op::StoffanteilSetzen { nr, anteil, .. } => match anteil {
@@ -487,6 +501,12 @@ impl Arbeit<'_> {
     /// `[origin]` zum geänderten Satz (Regel 88): `manual` bestätigt,
     /// `import` und `ai` offen, Werk ohne Zeile.
     fn herkunft_setzen(&mut self, rec: &'static str, id: &str) {
+        self.herkunft_mit(rec, id, "");
+    }
+
+    /// Wie [`Self::herkunft_setzen`]; `quelle` nicht leer ersetzt `source`
+    /// (Eingabe in anderer Einheit, Regel 108).
+    fn herkunft_mit(&mut self, rec: &'static str, id: &str, quelle: &str) {
         let h = self.herkunft;
         if h.art == HerkunftArt::Factory {
             return;
@@ -502,11 +522,12 @@ impl Arbeit<'_> {
         };
         s.setzen("status", Some(Wert::Wort(status.into())));
         s.setzen("date", Some(Wert::Text(h.datum.clone())));
-        for (f, v) in [
-            ("source", &h.quelle),
-            ("url", &h.url),
-            ("region", &h.region),
-        ] {
+        let quelle = if quelle.is_empty() {
+            h.quelle.clone()
+        } else {
+            quelle.to_string()
+        };
+        for (f, v) in [("source", &quelle), ("url", &h.url), ("region", &h.region)] {
             if !v.is_empty() {
                 s.setzen(f, Some(Wert::Text(v.clone())));
             }
@@ -630,6 +651,7 @@ impl Arbeit<'_> {
                 preis,
                 stand,
                 quelle,
+                eingabe,
             } => {
                 let a = k
                     .artikel(*artikel)
@@ -642,6 +664,18 @@ impl Arbeit<'_> {
                 if !quelle.is_empty() {
                     s.setzen("source", Some(Wert::Text(quelle.clone())));
                 }
+                let id = self.satz_schreiben(&s, op)?;
+                self.herkunft_mit("article", &id, eingabe);
+            }
+            Op::UmrechnungSetzen { artikel, conv } => {
+                let a = k
+                    .artikel(*artikel)
+                    .ok_or_else(|| abgelehnt(op, "den Artikel gibt es nicht"))?;
+                if a.einheit == crate::katalog::Einheit::St && conv.is_some() {
+                    return Err(abgelehnt(op, "ein Artikel in Stück hat keine Umrechnung"));
+                }
+                let mut s = a.satz.clone();
+                s.setzen("conv", conv.map(Wert::Zahl));
                 let id = self.satz_schreiben(&s, op)?;
                 self.herkunft_setzen("article", &id);
             }
@@ -1752,6 +1786,7 @@ mod tests {
                 preis: Some(Dez::ganz(2_000_000)),
                 stand: String::new(),
                 quelle: String::new(),
+                eingabe: String::new(),
             },
         )
         .unwrap_err();
@@ -1782,6 +1817,7 @@ mod tests {
                 preis: Some(Dez::lesen("23.5", 4).unwrap()),
                 stand: "10/2026".into(),
                 quelle: "Angebot 4711".into(),
+                eingabe: String::new(),
             }],
         )
         .unwrap();
@@ -1825,6 +1861,7 @@ mod tests {
             preis: None,
             stand: String::new(),
             quelle: String::new(),
+            eingabe: String::new(),
         };
         assert!(schritt(&mut m, None, &hand(), &[lohn.clone(), mwst.clone(), kaputt]).is_err());
         assert_eq!(szo::write(&m), vorher);
@@ -1894,6 +1931,7 @@ mod tests {
                 preis: Some(Dez::ganz(24)),
                 stand: String::new(),
                 quelle: String::new(),
+                eingabe: String::new(),
             }],
         )
         .unwrap();
@@ -2031,6 +2069,50 @@ mod tests {
         let k = lesen::katalog(&Model::from_library(&lib), Some(&lib));
         assert!(k.befunde.is_empty(), "{:#?}", k.befunde);
         assert_eq!(k.werte.lohn, Dez::ganz(65));
+    }
+
+    /// Abnahme 15a (Fall 15, Regel 108): bestätigtes `conv` und der Preis je
+    /// Stück gehen in dasselbe OK; die Eingabe steht in `[origin] source`.
+    #[test]
+    fn firma_anwenden_preis_je_stueck() {
+        let text = firmentext(3);
+        let ops = [
+            Op::UmrechnungSetzen {
+                artikel: g(STEIN175),
+                conv: Some(Dez(6_666_700)),
+            },
+            Op::PreisSetzen {
+                artikel: g(STEIN175),
+                preis: Some(Dez(5_666_700)),
+                stand: "10/2026".into(),
+                quelle: "Verwaltung".into(),
+                eingabe: "eingegeben 0,85 €/St × 6,6667 St/m²".into(),
+            },
+        ];
+        let f = firma_anwenden(&text, &text, Rolle::Admin, &hand(), &ops).unwrap();
+        let zeile = |anfang: &str| {
+            f.text
+                .lines()
+                .find(|l| l.starts_with(anfang))
+                .unwrap_or_else(|| panic!("{anfang}"))
+                .to_string()
+        };
+        let art = zeile(&format!("[article] guid={STEIN175} "));
+        assert!(
+            art.contains(" price=5.6667 ") && art.contains(" conv=6.6667"),
+            "{art}"
+        );
+        let o = zeile(&format!("[origin] key={STEIN175} "));
+        assert!(o.contains(" kind=manual status=confirmed "), "{o}");
+        assert!(
+            o.contains(" source=\"eingegeben 0,85 €/St × 6,6667 St/m²\""),
+            "{o}"
+        );
+        assert!(f.text.contains(" op=umrechnung_setzen "), "{}", f.text);
+        let lib = sk_model::read_szk_with(&f.text, &satz::ABSCHNITTE_SZK).unwrap();
+        let k = lesen::katalog(&Model::from_library(&lib), Some(&lib));
+        assert!(k.befunde.is_empty(), "{:#?}", k.befunde);
+        assert_eq!(k.artikel(g(STEIN175)).unwrap().conv, Some(Dez(6_666_700)));
     }
 
     /// Abnahme 15a: ohne `[catalog]` entsteht die Zeile vollständig (N2);

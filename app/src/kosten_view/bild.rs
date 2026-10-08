@@ -27,4 +27,11 @@ impl KostenView {
         let (_, _, _, _, (x, y, w, h), _) = self.abgleich_lage(t, fonts)?;
         Some(((x + w * 0.5) as f64, (y + h * 0.5) as f64))
     }
+
+    /// Mitte von Teil `nr` des Segments „je m² | je m³ | je Stück“ im
+    /// offenen Preisblatt (KA-3a7).
+    pub(crate) fn je_mitte(&mut self, t: &Theme, fonts: &Fonts, nr: usize) -> Option<(f64, f64)> {
+        self.lege_preis(t);
+        self.preis.as_ref()?.je_mitte(fonts, nr)
+    }
 }
