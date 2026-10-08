@@ -272,7 +272,7 @@ mod tests {
     /// für die Innenwand. Seit B10 liegt die Erdgeschossdecke (OK 1830, 22 cm)
     /// über dem Haus: netto 7,37 × 0,175 × 2,53 = 3,26306 m³; die Außenwand
     /// verliert die Tasche 5,9815 × 0,22 = 1,31593 m³ (30,0935 → 28,7776).
-    /// Gasbeton gesamt 16,449125 − 1,31593 + 3,26306 = 18,396255 m³.
+    /// Porenbeton gesamt 16,449125 − 1,31593 + 3,26306 = 18,396255 m³.
     fn m3(v: f64) -> f64 {
         (v / 1e9 * 1e4).round() / 1e4
     }
@@ -335,7 +335,7 @@ mod tests {
     fn gasbeton(m: &Model) -> MaterialId {
         m.materials()
             .iter()
-            .find(|(_, x)| x.name == "Gasbeton")
+            .find(|(_, x)| x.name == "Porenbeton")
             .unwrap()
             .0
     }

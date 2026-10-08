@@ -1694,7 +1694,7 @@ mod tests {
         // Masse: Volumen × Rohdichte
         let l = &top.layers[1];
         assert!((l.mass - l.volume / M3 * 350.0).abs() < 1e-9);
-        assert_eq!(m.material(l.material).unwrap().name, "Gasbeton");
+        assert_eq!(m.material(l.material).unwrap().name, "Porenbeton");
         assert_eq!(wall_qto(&m, m.wall_at(r, 1).unwrap()).as_ref(), Some(top));
     }
 
@@ -1927,7 +1927,7 @@ mod tests {
         let (_, g) = m
             .materials()
             .iter()
-            .find(|(_, x)| x.name == "Gasbeton")
+            .find(|(_, x)| x.name == "Porenbeton")
             .unwrap();
         m.attr().fill(g.cut_fill).unwrap().guid.to_ifc()
     }

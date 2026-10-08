@@ -203,7 +203,7 @@ fn cm(mm: f64) -> String {
 }
 
 /// Gewerke eines Bauteils mit dem Text seiner Schichten darin
-/// („24 cm Gasbeton“). Ohne Schicht: das Gewerk der Art.
+/// („24 cm Porenbeton“). Ohne Schicht: das Gewerk der Art.
 fn trades_of(m: &Model, id: ElementId) -> Vec<(TradeId, String)> {
     let mut out: Vec<(TradeId, String)> = Vec::new();
     let layers = m.element_layers(id);

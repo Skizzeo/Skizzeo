@@ -855,7 +855,7 @@ mod tests {
     const INSULATION: u16 = 2;
 
     /// Rechteck 10 × 8 m im Uhrzeigersinn, Außenseite auf der Bezugslinie,
-    /// AW 31,5 (14 Dämmung, 17,5 Gasbeton), Wandhöhe 3,50 m.
+    /// AW 31,5 (14 Dämmung, 17,5 Porenbeton), Wandhöhe 3,50 m.
     fn haus() -> WallChain {
         WallChain {
             points: vec![
@@ -983,7 +983,7 @@ mod tests {
         );
         assert!(near(vol_of(INSULATION) / 1e9, 17.3656, 1e-4));
         assert!(near((brutto - volume(&s)) / 1e9, 1.31593, 1e-5));
-        // Decke + Gasbeton netto = Gasbeton brutto + Decke − Tasche
+        // Decke + Porenbeton netto = Porenbeton brutto + Decke − Tasche
         let tasche = (brutto - volume(&s)) / 1e9;
         assert!(near(
             tasche,
@@ -1016,13 +1016,13 @@ mod tests {
         w.joints.slab_band = Some(f.band());
         let (p0, n) = (vec3(0.0, 4000.0, 0.0), vec3(0.0, -1.0, 0.0));
         let caps = w.section_caps(p0, n);
-        // Keine Gasbeton-Kante im Deckenband (2110 < z < 2330)
+        // Keine Porenbeton-Kante im Deckenband (2110 < z < 2330)
         let through = caps.edges.iter().any(|e| {
             let (lo, hi) = (e.a.z.min(e.b.z), e.a.z.max(e.b.z));
             lo < 2329.0 && hi > 2111.0 && e.kind == edge_kind::CUT
         });
         assert!(!through);
-        // Tasche: Gasbeton-Kontur oben und unten waagerecht, kräftig
+        // Tasche: Porenbeton-Kontur oben und unten waagerecht, kräftig
         for z in [2110.0, 2330.0] {
             assert!(caps
                 .edges

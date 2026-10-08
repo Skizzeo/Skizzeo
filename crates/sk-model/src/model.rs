@@ -216,7 +216,7 @@ impl Model {
         };
         use MatCategory as C;
         let aerated = mat(
-            "Gasbeton",
+            "Porenbeton",
             C::Masonry,
             800,
             350.0,
@@ -259,7 +259,7 @@ impl Model {
         let _ = guids.next_guid();
         let exterior_wall = layer_sets.insert(LayerSet {
             guid: EXTERIOR_TYPE_GUID,
-            name: "AW 31,5 Gasbeton + WDVS".into(),
+            name: "AW 31,5 Porenbeton + WDVS".into(),
             code: "AW-31,5".into(),
             category: TypeCategory::ExteriorWall,
             props: PropSet::new(),
@@ -443,8 +443,13 @@ impl Model {
             ],
         ));
         for (guid, name, code, d) in [
-            (INTERIOR_115_TYPE_GUID, "IW 11,5 Gasbeton", "IW-11,5", 115.0),
-            (INTERIOR_240_TYPE_GUID, "IW 24 Gasbeton", "IW-24", 240.0),
+            (
+                INTERIOR_115_TYPE_GUID,
+                "IW 11,5 Porenbeton",
+                "IW-11,5",
+                115.0,
+            ),
+            (INTERIOR_240_TYPE_GUID, "IW 24 Porenbeton", "IW-24", 240.0),
         ] {
             layer_sets.insert(wall_type(
                 guid,
@@ -1012,7 +1017,7 @@ impl Model {
     }
 
     /// Kopie eines Baustoffs mit neuer Guid und dem nächsten freien Namen
-    /// „Gasbeton (2)“, „(3)“ …; Kennwerte und Darstellung wie das Vorbild
+    /// „Porenbeton (2)“, „(3)“ …; Kennwerte und Darstellung wie das Vorbild
     /// (Entscheidung 20: Neues entsteht per Duplizieren). `None`: fehlt.
     pub fn duplicate_material(&mut self, id: MaterialId) -> Option<MaterialId> {
         let x = self.materials.get(id)?.clone();
@@ -6166,7 +6171,7 @@ impl Model {
     }
 }
 
-/// Guids der Werkstypen „AW 31,5 Gasbeton + WDVS“ und „IW 17,5 Gasbeton“:
+/// Guids der Werkstypen „AW 31,5 Porenbeton + WDVS“ und „IW 17,5 Porenbeton“:
 /// in jedem Projekt und Firmenkatalog derselbe Typ (K1, Regel 19).
 pub const EXTERIOR_TYPE_GUID: Guid = Guid(0xbf19d5c9cf9241c9b5a191d5bdac9382);
 pub const INTERIOR_TYPE_GUID: Guid = Guid(0xe3753d4ddf2d435299910b99a65cfba2);
@@ -6417,11 +6422,11 @@ pub(crate) fn free_code(code: &str, taken: impl Fn(&str) -> bool) -> String {
         .unwrap_or_default()
 }
 
-/// Aufbau „IW 17,5 Gasbeton“: eine tragende Schicht aus `material`.
+/// Aufbau „IW 17,5 Porenbeton“: eine tragende Schicht aus `material`.
 pub(crate) fn interior_set(guid: Guid, material: MaterialId) -> LayerSet {
     LayerSet {
         guid,
-        name: "IW 17,5 Gasbeton".into(),
+        name: "IW 17,5 Porenbeton".into(),
         code: "IW-17,5".into(),
         category: TypeCategory::InteriorWall,
         props: PropSet::new(),
@@ -6780,7 +6785,7 @@ mod tests {
         assert!((m.chain(r).unwrap().thickness() - 335.0).abs() < 1e-9);
         // Darstellungsschlüssel führen zurück zum Baustoff
         let key = c.layers[1].material;
-        assert_eq!(m.material_by_key(key).unwrap().name, "Gasbeton");
+        assert_eq!(m.material_by_key(key).unwrap().name, "Porenbeton");
         let fill = m.material_by_key(key | material::CUT).unwrap().cut_fill;
         assert_eq!(m.attr().fill(fill).unwrap().name, "Mauerwerk");
         assert!(m.material_by_key(material::PLAIN).is_none());
@@ -7747,7 +7752,7 @@ mod og_phase2 {
         let qs = crate::qto::run_qto(&m, eg);
         let w = &qs[0];
         let core = w.layers.last().unwrap();
-        // Innenkante des Gasbetons × Höhe ohne Deckenband
+        // Innenkante des Porenbetons × Höhe ohne Deckenband
         assert!(core.inner_area > 0.0);
         let h = w.height - core.pocket / core.area;
         let inner_len = core.inner_area / h;
@@ -7759,7 +7764,7 @@ mod og_phase2 {
     }
 
     /// KA-0a2 Regel 84 (architektur/paket-ka0.md §3.3): Abrechnungsfläche
-    /// je Schicht. Standardhaus 1b (Prüfhaus Nord −1,50): Gasbeton 17,5
+    /// je Schicht. Standardhaus 1b (Prüfhaus Nord −1,50): Porenbeton 17,5
     /// 30,139 m³, Fläche 172,224 m², WDVS nach Außenfläche 199,595 m²
     /// (wie A198); Decke und Sohlplatte mit Fläche, DT mit Abrechnungsfläche,
     /// Frostschürze und Attikablech 0.
@@ -7781,7 +7786,7 @@ mod og_phase2 {
         let sum = |v: &[&crate::qto::LayerRow], f: fn(&crate::qto::LayerRow) -> f64| {
             v.iter().map(|r| f(r)).sum::<f64>()
         };
-        let gb = named("Gasbeton");
+        let gb = named("Porenbeton");
         assert_eq!(gb.len(), 8);
         assert_eq!(r3(sum(&gb, |r| r.volume) / 1e9), 30.139);
         // 30,13913 m³ ÷ 0,175 = 172,2236 m²: je Zeile Volumen ÷ Dicke, nicht

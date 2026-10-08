@@ -40,7 +40,7 @@ fn og(m: &Model, aw: RunId) -> RunId {
     m.runs_above(aw)[0]
 }
 
-/// Dämmung, Gasbeton netto (EG-Außenwand), Innenwand, Decke, Sohlplatte,
+/// Dämmung, Porenbeton netto (EG-Außenwand), Innenwand, Decke, Sohlplatte,
 /// Frostschürze in m³, gerundet auf 4 Stellen wie A39.
 fn mengen(m: &Model, aw: RunId, iw: RunId) -> [f64; 6] {
     let r = |v: f64| (v / 1e9 * 1e4).round() / 1e4;
@@ -58,10 +58,10 @@ fn mengen(m: &Model, aw: RunId, iw: RunId) -> [f64; 6] {
 }
 
 const STANDARD: [f64; 6] = [14.1654, 15.7613, 3.3985, 16.5084, 17.6, 7.0238];
-/// Nach dem Typwechsel auf 12 Dämmung + 24 Gasbeton (BIM, main 1f0763e).
+/// Nach dem Typwechsel auf 12 Dämmung + 24 Porenbeton (BIM, main 1f0763e).
 const AW_36: [f64; 6] = [12.1692, 21.5522, 3.357, 16.6623, 17.6, 7.0238];
 
-/// 12 cm Dämmung + 24 cm Gasbeton aus dem Werkstyp.
+/// 12 cm Dämmung + 24 cm Porenbeton aus dem Werkstyp.
 fn aw_36(m: &Model) -> LayerSet {
     let mut t = m.layer_set(m.defaults().exterior_wall).unwrap().clone();
     t.layers[0].thickness = 120.0;
@@ -189,7 +189,7 @@ fn loeschen_kopieren_standard() {
     let kopie = m.duplicate_type(aw).unwrap();
     let k = m.layer_set(kopie).unwrap();
     assert_eq!(k.code, "AW-31,5-2");
-    assert_eq!(k.name, "AW 31,5 Gasbeton + WDVS (Kopie)");
+    assert_eq!(k.name, "AW 31,5 Porenbeton + WDVS (Kopie)");
     assert_ne!(k.guid, EXTERIOR_TYPE_GUID);
     let k2 = m.duplicate_type(aw).unwrap();
     assert_eq!(m.layer_set(k2).unwrap().code, "AW-31,5-3");

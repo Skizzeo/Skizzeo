@@ -141,6 +141,18 @@ pub fn input(m: &mut Model, id: MaterialId, field: &str, text: &str) -> bool {
 }
 
 /// Wert eines eigenen Kennworts: Zahl, wenn er eine ist, sonst Text.
+/// Suchwörter, die der Baustoffname nicht enthält (KA-0a3): fest im
+/// Programm, kein Dateifeld.
+const SYNONYMS: [(&str, &str); 2] = [("gasbeton", "porenbeton"), ("ytong", "porenbeton")];
+
+/// Name, den ein Suchwort (klein, ab drei Zeichen auch angefangen) meint.
+fn synonym(q: &str) -> Option<&'static str> {
+    SYNONYMS
+        .iter()
+        .find(|(alt, _)| *alt == q || (q.chars().count() >= 3 && alt.starts_with(q)))
+        .map(|(_, neu)| *neu)
+}
+
 fn custom_value(text: &str) -> PropValue {
     match parse_num(text) {
         Some(n) => PropValue::Number(n),
@@ -623,7 +635,11 @@ impl MaterialView {
             Some(PropValue::Text(t)) => t.to_lowercase().contains(&q),
             _ => false,
         };
-        x.name.to_lowercase().contains(&q) || text(matprop::MAKER) || text(matprop::SUBGROUP)
+        let name = x.name.to_lowercase();
+        name.contains(&q)
+            || synonym(&q).is_some_and(|n| name.contains(n))
+            || text(matprop::MAKER)
+            || text(matprop::SUBGROUP)
     }
 
     /// Einträge der Liste: je Art (in [`CATS`]) Kopf und Baustoffe; im
@@ -3249,6 +3265,30 @@ impl MaterialView {
                 disabled: false,
             };
             widgets::button(c, fonts, r, text, st, s, t);
+        }
+    }
+}
+
+#[cfg(test)]
+mod synonym_tests {
+    use super::*;
+
+    /// KA-0a3: „gasbeton“ und „ytong“ finden den Werksbaustoff Porenbeton,
+    /// auch angefangen; andere Wörter nichts.
+    #[test]
+    fn gasbeton_und_ytong_finden_porenbeton() {
+        let m = Model::new();
+        let poren = m
+            .materials()
+            .iter()
+            .find(|(_, x)| x.name == "Porenbeton")
+            .map(|(_, x)| x.name.to_lowercase())
+            .expect("Werksbaustoff Porenbeton");
+        for q in ["gasbeton", "gasb", "ytong", "yto"] {
+            assert!(synonym(q).is_some_and(|n| poren.contains(n)), "{q}");
+        }
+        for q in ["ga", "beton", "putz", ""] {
+            assert_eq!(synonym(q), None, "{q}");
         }
     }
 }

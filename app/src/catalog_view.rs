@@ -412,7 +412,7 @@ fn parse_depth(t: &str, range: Option<(f64, f64)>) -> Result<f64, String> {
 }
 
 /// Steht die alte Dicke als eigenes Wort im Namen, zieht sie mit
-/// („AW mit WDVS 36“ → „… 40“, „AW 31,5 Gasbeton“ → „AW 33,5 Gasbeton“).
+/// („AW mit WDVS 36“ → „… 40“, „AW 31,5 Porenbeton“ → „AW 33,5 Porenbeton“).
 fn follow_name(name: &str, old: f64, new: f64) -> Option<String> {
     let (o, n) = (cm_field(old), cm_field(new));
     let word = |c: Option<char>| c.is_some_and(|c| c.is_ascii_digit() || c == ',');
@@ -4763,8 +4763,8 @@ mod tests {
         assert_eq!(follow_name("AW 136", 36.0, 40.0), None);
         assert_eq!(follow_name("Wand", 360.0, 400.0), None);
         assert_eq!(
-            follow_name("AW 31,5 Gasbeton + WDVS", 315.0, 335.0).as_deref(),
-            Some("AW 33,5 Gasbeton + WDVS")
+            follow_name("AW 31,5 Porenbeton + WDVS", 315.0, 335.0).as_deref(),
+            Some("AW 33,5 Porenbeton + WDVS")
         );
         assert_eq!(parse_thick("16"), Ok(160.0));
         // Kurzzeichen einer Kopie zieht mit
@@ -5207,7 +5207,7 @@ mod tests {
         let mut c = Catalog::open(&s, None);
         assert_eq!(c.apply_value(FieldId::Thick(0), "16"), Ok(()));
         assert_eq!(c.draft.code, "AW-33,5");
-        assert_eq!(c.draft.name, "AW 33,5 Gasbeton + WDVS");
+        assert_eq!(c.draft.name, "AW 33,5 Porenbeton + WDVS");
         let mut cx = Ctx {
             scene: &mut s,
             theme: &theme,
@@ -5268,7 +5268,7 @@ mod tests {
         assert_eq!(m.type_users(old).len(), users, "Wände bleiben");
         let neu = t.iter().find(|x| x.guid != alt.guid).unwrap();
         assert_eq!((neu.thickness(), neu.code.as_str()), (335.0, "AW-33,5"));
-        assert_eq!(neu.name, "AW 33,5 Gasbeton + WDVS");
+        assert_eq!(neu.name, "AW 33,5 Porenbeton + WDVS");
     }
 
     /// Was eine Arbeitskopie vergibt, vergibt die nächste nicht noch einmal

@@ -2091,13 +2091,13 @@ fn trade_tag(code: &str) -> String {
     }
 }
 
-/// Baustoff mit Dicke ohne Einheit: „Gasbeton 17,5“.
+/// Baustoff mit Dicke ohne Einheit: „Porenbeton 17,5“.
 fn layer_name(m: &Model, r: &LayerRow) -> String {
     let name = m.material(r.material).map_or("–", |x| x.name.as_str());
     format!("{name} {}", cm(r.thickness).trim_end_matches(" cm"))
 }
 
-/// Titel einer Schichtgruppe: „Gasbeton 17,5 · Außenwände“, mit
+/// Titel einer Schichtgruppe: „Porenbeton 17,5 · Außenwände“, mit
 /// „, mit Attika“, wenn die Schicht über einen Terrassenrand hochläuft.
 fn layer_group_title(m: &Model, r: &LayerRow, rows: &[LayerRow]) -> String {
     let attika = if rows.iter().any(|x| x.attika) {
@@ -2889,7 +2889,7 @@ mod tests {
         );
     }
 
-    /// Eine Wand in zwei Gewerken (§12): Gasbeton bei Mauerarbeiten, WDVS
+    /// Eine Wand in zwei Gewerken (§12): Porenbeton bei Mauerarbeiten, WDVS
     /// beim Fassadensystem, je als „Schicht · Bauteilgruppe“; die Summen
     /// gleichen denen nach Geschoss.
     #[test]
@@ -2917,7 +2917,7 @@ mod tests {
         let at = |p: &str| t.iter().position(|l| l.trim_start().starts_with(p));
         let (Some(maurer), Some(gasbeton), Some(wdvs), Some(daemm)) = (
             at("Mauerarbeiten [DIN 18330]"),
-            at("Gasbeton 17,5 · Außenwände | AW-001 … 008"),
+            at("Porenbeton 17,5 · Außenwände | AW-001 … 008"),
             at("Wärmedämm-Verbundsysteme [DIN 18345]"),
             at("Dämmung (WDVS) 14 · Außenwände | AW-001 … 008"),
         ) else {

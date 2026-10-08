@@ -520,7 +520,7 @@ fn a08_ziehpunkte_am_wandfuss_in_schnitt_und_ansichten() {
 // ---------------------------------------------------------------------------
 
 /// A09: Die Außenwand ist zweischalig: außen 14 cm Dämmung (WDVS, Zickzack),
-/// innen 17,5 cm Gasbeton (schräg schraffiert), zusammen 31,5 cm.
+/// innen 17,5 cm Porenbeton (schräg schraffiert), zusammen 31,5 cm.
 #[test]
 fn a09_zweischalige_aussenwand() {
     let mut s = Scene::with_model(Model::with_seed(6));
@@ -543,7 +543,7 @@ fn a09_zweischalige_aussenwand() {
         rows,
         [
             ("Dämmung (WDVS)", 140.0, true, false),
-            ("Gasbeton", 175.0, false, true)
+            ("Porenbeton", 175.0, false, true)
         ]
     );
     let q = s.wall_qto(m.wall_at(run, 0).unwrap()).unwrap();
@@ -633,7 +633,7 @@ fn edges_at_x(m: &Shown, x: f32) -> Vec<f32> {
 }
 
 /// A10: Bauzeichnungs-Look in Grundriss und Schnitt: weiße Schnittflächen,
-/// Gasbeton schräg schraffiert und dick umrandet, Dämmung Zickzack und
+/// Porenbeton schräg schraffiert und dick umrandet, Dämmung Zickzack und
 /// mitteldick umrandet. 3D bleibt farbig ohne Schraffur.
 #[test]
 fn a10_bauzeichnung_linienstaerken_und_schraffuren() {
@@ -653,14 +653,17 @@ fn a10_bauzeichnung_linienstaerken_und_schraffuren() {
     let white = [1.0f32, 1.0, 1.0];
     assert!(plan.faces.iter().all(|v| v[6..9] == white), "Flächen weiß");
     let has = |m: &Shown, pat: f32| m.faces.iter().any(|v| v[9] == pat);
-    assert!(has(&plan, pattern::DIAGONAL), "Gasbeton schräg schraffiert");
+    assert!(
+        has(&plan, pattern::DIAGONAL),
+        "Porenbeton schräg schraffiert"
+    );
     assert!(has(&plan, pattern::ZIGZAG), "Dämmung Zickzack");
     // Linke Wand im Grundriss: Außenkante Dämmung (x = 0) mitteldick,
-    // Fuge (x = 140) und Innenkante Gasbeton (x = 315) dick
+    // Fuge (x = 140) und Innenkante Porenbeton (x = 315) dick
     let max = |v: Vec<f32>| v.into_iter().fold(0.0f32, f32::max);
     assert_eq!(max(edges_at_x(&plan, 0.0)), layer_w, "Dämmung außen");
-    assert_eq!(max(edges_at_x(&plan, 140.0)), cut_w, "Gasbeton außen");
-    assert_eq!(max(edges_at_x(&plan, 315.0)), cut_w, "Gasbeton innen");
+    assert_eq!(max(edges_at_x(&plan, 140.0)), cut_w, "Porenbeton außen");
+    assert_eq!(max(edges_at_x(&plan, 315.0)), cut_w, "Porenbeton innen");
     // Geschnitten in 1,00 m Höhe
     assert_eq!(PLAN_CUT, 1000.0);
     assert!(plan.faces.iter().all(|v| v[2] <= PLAN_CUT as f32 + 1e-3));
@@ -1007,10 +1010,10 @@ fn a16_mengen_sollwerte_rechteck_und_gerade_wand() {
     let ins: f64 = q.iter().map(|q| m3(q.layers[0].volume)).sum();
     let gas: f64 = q.iter().map(|q| m3(q.layers[1].volume)).sum();
     // Seit B10 netto ohne die Auflagertasche der Erdgeschossdecke:
-    // 5,9815 m² × 0,22 m = 1,31593 m³ weniger Gasbeton
+    // 5,9815 m² × 0,22 m = 1,31593 m³ weniger Porenbeton
     assert!((vol - 28.7776).abs() < 5e-5, "Volumen {vol}");
     assert!((ins - 13.6444).abs() < 5e-5, "Dämmung {ins}");
-    assert!((gas - 15.1332).abs() < 5e-5, "Gasbeton {gas}");
+    assert!((gas - 15.1332).abs() < 5e-5, "Porenbeton {gas}");
     let len: f64 = q.iter().map(|q| q.length).sum();
     assert!((len - 36000.0).abs() < 1e-6, "Länge {len}");
     assert!(q.iter().all(|q| q.width == 315.0 && q.height == 2750.0));
@@ -1457,7 +1460,7 @@ fn a28_schnitt_stahlbeton_ohne_fuge() {
     assert!(flat_at(-800.0, 0.0, 350.0).iter().all(|w| *w == cut_w));
     assert!(!flat_at(-800.0, 0.0, 350.0).is_empty());
     assert!(flat_at(-220.0, 400.0, 9600.0).contains(&cut_w));
-    // Fuge zur Wand (OK Platte, unter dem Gasbeton) bleibt
+    // Fuge zur Wand (OK Platte, unter dem Porenbeton) bleibt
     assert!(!flat_at(0.0, 140.0, 315.0).is_empty(), "Linie Wand/Platte");
 }
 
@@ -1498,8 +1501,8 @@ fn wall_m3(s: &Scene, run: RunId, seg: usize) -> f64 {
         / 1e9
 }
 
-/// A29: Knopf „Innenwand“ zeichnet eine 17,5-cm-Gasbetonwand, die mit
-/// T-Anschluss an die Außenwand stößt: Volumen netto, Gasbeton ohne Fuge,
+/// A29: Knopf „Innenwand“ zeichnet eine 17,5-cm-Porenbetonwand, die mit
+/// T-Anschluss an die Außenwand stößt: Volumen netto, Porenbeton ohne Fuge,
 /// die Innenwand geht beim Gummiband mit, Rückgängig und Speichern/Öffnen
 /// behalten alles. Seit B10 steht die Innenwand unter der Erdgeschossdecke
 /// (OK 1,83 bei 2,75 m Wandhöhe, 22 cm): netto Höhe 2,53 m, die Außenwand
@@ -1542,7 +1545,7 @@ fn a29_innenwand_mit_t_anschluss() {
             })
             .sum::<f64>()
             + wall_m3(&s, iw, 0);
-        assert!((gas - 18.3962625).abs() < 5e-5, "{ctx}: Gasbeton {gas}");
+        assert!((gas - 18.3962625).abs() < 5e-5, "{ctx}: Porenbeton {gas}");
         assert!(
             s.model().check().is_empty(),
             "{ctx}: {:?}",
@@ -1853,7 +1856,7 @@ fn decke_dicke(s: &mut Scene, id: sk_model::ElementId, t: f64) -> bool {
     s.edit_model("Deckendicke", |m| m.set_floor_thickness(id, t))
 }
 
-/// Summe einer Schicht (0 = Dämmung, 1 = Gasbeton) über die vier Außenwände, m³.
+/// Summe einer Schicht (0 = Dämmung, 1 = Porenbeton) über die vier Außenwände, m³.
 fn aw_schicht(s: &Scene, run: RunId, layer: usize) -> f64 {
     (0..4)
         .map(|i| {
@@ -1935,7 +1938,7 @@ fn a33_dicke_von_oben_nach_unten() {
     let netto = aw_schicht(&s, run, 1);
     assert!(
         (netto - (17.0771825 - 1.495375)).abs() < 5e-5,
-        "Gasbeton {netto}"
+        "Porenbeton {netto}"
     );
     // Rückgängig: wieder 22 cm
     assert!(s.undo());
@@ -1950,13 +1953,13 @@ fn a34_auflagertasche_bis_ans_wdvs() {
     let c = cam3d();
     let mut s = Scene::with_model(Model::with_seed(35));
     let run = zeichne_rechteck(&mut s, &c);
-    // Umriss = Außenseite Gasbeton = WDVS-Innenseite, 140 mm innen
+    // Umriss = Außenseite Porenbeton = WDVS-Innenseite, 140 mm innen
     let (x0, x1, y0, y1) = decke_umriss(&s, run);
     for (ist, soll) in [(x0, 140.0), (x1, 9860.0), (y0, 140.0), (y1, 7860.0)] {
         assert!((ist - soll).abs() < 1e-6, "Umriss {ist} statt {soll}");
     }
     let gas = aw_schicht(&s, run, 1);
-    assert!((gas - 15.761252).abs() < 5e-5, "Gasbeton netto {gas}");
+    assert!((gas - 15.761252).abs() < 5e-5, "Porenbeton netto {gas}");
     let daemmung = aw_schicht(&s, run, 0);
     assert!((daemmung - 14.165368).abs() < 5e-5, "Dämmung {daemmung}");
     // Keine Doppelzählung: netto + Tasche = brutto
@@ -2297,7 +2300,7 @@ fn haus_b11(s: &mut Scene) -> (RunId, RunId) {
     (aw, iw)
 }
 
-/// Alle Mengen des Prüfhauses, gerundet (m³): Dämmung, Gasbeton netto,
+/// Alle Mengen des Prüfhauses, gerundet (m³): Dämmung, Porenbeton netto,
 /// Innenwand, Decke, Sohlplatte, Frostschürze.
 fn mengen_b11(s: &Scene, aw: RunId, iw: RunId) -> [f64; 6] {
     let r = |v: f64| (v * 1e4).round() / 1e4;
@@ -2885,7 +2888,7 @@ fn r4(v: f64) -> f64 {
     (v * 1e4).round() / 1e4
 }
 
-/// Gasbeton netto und Dämmung eines Zugs (m³, gerundet).
+/// Porenbeton netto und Dämmung eines Zugs (m³, gerundet).
 fn schale(s: &Scene, run: RunId) -> (f64, f64) {
     (r4(aw_schicht(s, run, 1)), r4(aw_schicht(s, run, 0)))
 }
@@ -4794,7 +4797,7 @@ fn a77_schraffuren_bearbeiten() {
     assert_eq!(l[0].angle_deg, 135.0);
     l[0].angle_deg = 45.0;
     assert!(eingabe(&mut p, &mut s, move |m| m.set_fill(mw, f)));
-    assert_ne!(tabelle(&s, &th), vor_tab, "Gasbeton sofort „/“");
+    assert_ne!(tabelle(&s, &th), vor_tab, "Porenbeton sofort „/“");
     abbrechen(&mut p, &mut s, &mut th);
     assert_eq!(szo(&s), vor);
     assert_eq!(tabelle(&s, &th), vor_tab);
@@ -4851,7 +4854,7 @@ fn a78_oberflaechen_und_baustoffverweise() {
     let mut th = Theme::dark();
     let vor = szo(&s);
     let vor_tab = tabelle(&s, &th);
-    let (gb, gasbeton) = baustoff(&s, "Gasbeton");
+    let (gb, gasbeton) = baustoff(&s, "Porenbeton");
     let mut o = s.model().attr().surface(gasbeton.surface).unwrap().clone();
     let mut p = oeffnen(&mut s, &th);
     o.color = [200, 120, 90];
@@ -4862,7 +4865,7 @@ fn a78_oberflaechen_und_baustoffverweise() {
     assert_eq!(szo(&s), vor);
     assert!(
         !s.edit_model("Löschen", |m| oberflaeche_loeschen(m, sid)),
-        "Gasbeton nutzt sie"
+        "Porenbeton nutzt sie"
     );
     // Stahlbeton: Stift Schraffur 4 → 3, BIM-Daten bleiben
     let (sb, alt) = baustoff(&s, "Stahlbeton");
@@ -4923,7 +4926,7 @@ fn a79_ok_zuruecksetzen_namen() {
         l[0].angle_deg = 45.0;
     }
     eingabe(&mut p, &mut s, move |m| m.set_fill(mw, f));
-    let (_, gb) = baustoff(&s, "Gasbeton");
+    let (_, gb) = baustoff(&s, "Porenbeton");
     let sid = gb.surface;
     let mut o = s.model().attr().surface(sid).unwrap().clone();
     o.color = [200, 120, 90];
@@ -5490,7 +5493,7 @@ fn a87_fundament_als_ebene() {
     );
     assert!(
         !has(pattern::DIAGONAL) && !has(pattern::ZIGZAG),
-        "keine Wände (Gasbeton, Dämmung)"
+        "keine Wände (Porenbeton, Dämmung)"
     );
     assert!(
         plan.faces.iter().all(|v| v[2] <= -510.0 + 1e-2),
@@ -5509,7 +5512,7 @@ fn a87_fundament_als_ebene() {
     assert!(auf_x(0.0), "Plattenrand als Hintergrundlinie");
     assert!(
         !auf_x(140.0) && !auf_x(315.0),
-        "kein EG-Hintergrund (Fuge, Innenkante Gasbeton)"
+        "kein EG-Hintergrund (Fuge, Innenkante Porenbeton)"
     );
     // Höhenbezug: Plattendicke 30 cm, UK Schürze bleibt −0,80
     let (slab, _) = sohlplatte(&s, eg_zug);
@@ -6438,7 +6441,7 @@ mod b7 {
     }
 
     /// A90 (B7 Fertig, wenn: Außenwände): je Geschoss 4 Stück, 36,00 m;
-    /// Gasbeton 15,7613 m³ (Längswand 4,4014, Querwand 3,4792); Dämmung
+    /// Porenbeton 15,7613 m³ (Längswand 4,4014, Querwand 3,4792); Dämmung
     /// 14,1654 m³ und 102,78 m²; Abzug Deckenauflager 1,3159 m³ (Längswand
     /// 0,3675, Querwand 0,2905); netto 29,9266 m³ (Paket: 29,9267 aus den
     /// gerundeten Schichtsummen; ungerundet 15,761256 + 14,165368). OG gleich EG.
@@ -6454,7 +6457,11 @@ mod b7 {
             let sum = |f: &dyn Fn(&WallQto) -> f64| aw.iter().map(|x| f(wand(x))).sum::<f64>();
             assert_eq!(lfm(sum(&listen_laenge)), 36.0, "{gs}: Länge");
             assert_eq!(lfm(sum(&|w| w.length)), 36.0, "{gs}: Bezugslinie");
-            assert_eq!(m3(sum(&|w| w.layers[1].volume)), 15.7613, "{gs}: Gasbeton");
+            assert_eq!(
+                m3(sum(&|w| w.layers[1].volume)),
+                15.7613,
+                "{gs}: Porenbeton"
+            );
             assert_eq!(m3(sum(&|w| w.layers[0].volume)), 14.1654, "{gs}: Dämmung");
             assert_eq!(
                 m2(sum(&|w| schicht_flaeche(&w.layers[0]))),
@@ -6475,7 +6482,7 @@ mod b7 {
                     8.0 => (3.4792, 0.2905),
                     l => panic!("{}: Länge {l}", x.nummer),
                 };
-                assert_eq!(m3(w.layers[1].volume), gb, "{gs} {}: Gasbeton", x.nummer);
+                assert_eq!(m3(w.layers[1].volume), gb, "{gs} {}: Porenbeton", x.nummer);
                 assert_eq!(m3(tasche(w)), t, "{gs} {}: Tasche", x.nummer);
                 assert_eq!(w.height, 2855.0, "{gs} {}: Wandhöhe", x.nummer);
             }
@@ -6484,8 +6491,8 @@ mod b7 {
 
     /// A91 (B7 „Taschenvolumen als eigene Zeile“): Die Tasche wird genau einmal
     /// gezählt: in der Decke enthalten, in der Wand abgezogen. Je Geschoss gilt
-    /// Auflager der Decke = Summe der Wandtaschen; Gasbeton netto + Tasche =
-    /// Gasbeton brutto (Fläche × 2,855); die Tasche liegt nur im Gasbeton, nicht
+    /// Auflager der Decke = Summe der Wandtaschen; Porenbeton netto + Tasche =
+    /// Porenbeton brutto (Fläche × 2,855); die Tasche liegt nur im Porenbeton, nicht
     /// im WDVS; Stahlbeton = Platte + Schürze + beide Decken (mit Taschen).
     #[test]
     fn a91_tasche_nicht_doppelt() {
@@ -6529,18 +6536,18 @@ mod b7 {
             .sum();
         let b = baustoffe(m, &l);
         assert_eq!(baustoff_summe(&b, "Stahlbeton").0, r4(sb / 1e9));
-        // Gasbeton: Wände netto plus Innenwand netto, Taschen nicht enthalten
+        // Porenbeton: Wände netto plus Innenwand netto, Taschen nicht enthalten
         let gb: f64 = z
             .iter()
             .filter(|x| matches!(x.art, Category::ExteriorWall))
             .map(|x| wand(x).layers[1].volume)
             .sum::<f64>()
             + wand(zeile(&z, "IW-001")).volume;
-        assert_eq!(baustoff_summe(&b, "Gasbeton").0, r4(gb / 1e9));
+        assert_eq!(baustoff_summe(&b, "Porenbeton").0, r4(gb / 1e9));
     }
 
     /// A92 (B7 Summen, „Immer aktuell“): Summe nach Baustoff GB-01: Stahlbeton
-    /// 57,6407 m³, Gasbeton 34,9210 m³, Dämmung (WDVS) 28,3307 m³ / 205,56 m²
+    /// 57,6407 m³, Porenbeton 34,9210 m³, Dämmung (WDVS) 28,3307 m³ / 205,56 m²
     /// (aus ungerundeten Werten). Gummiband EG-Wand y = 8 um +1 m: SP 90,00 m²,
     /// DE-001 und DE-002 je 84,7584 m², ohne Knopfdruck.
     #[test]
@@ -6550,7 +6557,7 @@ mod b7 {
         let l = liste(&mut s);
         let b = baustoffe(s.model(), &l);
         assert_eq!(baustoff_summe(&b, "Stahlbeton"), (57.6407, None));
-        assert_eq!(baustoff_summe(&b, "Gasbeton"), (34.921, None));
+        assert_eq!(baustoff_summe(&b, "Porenbeton"), (34.921, None));
         assert_eq!(
             baustoff_summe(&b, "Dämmung (WDVS)"),
             (28.3307, Some(205.56))
@@ -6789,7 +6796,7 @@ mod katalog {
     const AW1_GUID: &str = "33i8p9bQ580uop$jCXCU6X";
     const IW1_GUID: &str = "2bI2Vt9ej8GAcbFzlgyhUb";
 
-    /// Mengen des Prüfhauses mit AW-31,5 auf 12 Dämmung + 24 Gasbeton (Paket,
+    /// Mengen des Prüfhauses mit AW-31,5 auf 12 Dämmung + 24 Porenbeton (Paket,
     /// nachgerechnet auf main 1f0763e über set_layer_set).
     const K1_36: [f64; 6] = [12.1692, 21.5522, 3.357, 16.6623, 17.6, 7.0238];
 
@@ -7003,7 +7010,7 @@ mod katalog {
             .collect()
     }
 
-    /// Kopie des Typs mit neuen Dicken (Dämmung, Gasbeton) in mm.
+    /// Kopie des Typs mit neuen Dicken (Dämmung, Porenbeton) in mm.
     fn umbau(m: &Model, id: LayerSetId, d0: f64, d1: f64) -> LayerSet {
         let mut t = m.layer_set(id).unwrap().clone();
         t.layers[0].thickness = d0;
@@ -7070,7 +7077,7 @@ mod katalog {
     }
 
     /// A103 (K1, F2 „Typänderung wirkt auf alle Wände“): AW-31,5 über
-    /// set_layer_set auf 12 Dämmung + 24 Gasbeton. Alle acht Außenwände (EG
+    /// set_layer_set auf 12 Dämmung + 24 Porenbeton. Alle acht Außenwände (EG
     /// und OG) folgen, die Decke wird größer (Kernaußenseite 2 cm weiter
     /// außen), Sohlplatte und Frostschürze bleiben (Außenseite steht).
     /// Höhenbezug bleibt (A-09). Stand +1, Guid bleibt. Ein Rückgängig stellt
@@ -7138,7 +7145,7 @@ mod katalog {
                 s.model().layer_set(aw1).unwrap(),
                 s.model().layer_set(dup).unwrap(),
             );
-            assert_eq!(d.name, "AW 31,5 Gasbeton + WDVS (Kopie)");
+            assert_eq!(d.name, "AW 31,5 Porenbeton + WDVS (Kopie)");
             assert_ne!(d.guid, a.guid);
             assert!(!kurz(d).is_empty() && kurz(d) != "AW-31,5", "{}", kurz(d));
             assert!(aussen(d));
@@ -7420,7 +7427,7 @@ mod katalog {
                 .map(|(id, _)| id)
                 .unwrap()
         };
-        let mut ks = b.material(mat(&b, "Gasbeton")).unwrap().clone();
+        let mut ks = b.material(mat(&b, "Porenbeton")).unwrap().clone();
         ks.guid = b.new_guid();
         ks.name = "Kalksandstein".into();
         ks.density = 1800.0;
@@ -7856,7 +7863,7 @@ mod wandtypen {
                 true,
                 vec![
                     (s("Dämmung (WDVS)"), 120.0, false),
-                    (s("Gasbeton"), 240.0, true)
+                    (s("Porenbeton"), 240.0, true)
                 ],
                 360.0
             )
@@ -7874,7 +7881,7 @@ mod wandtypen {
         for (code, d) in [("IW-11,5", 115.0), ("IW-17,5", 175.0), ("IW-24", 240.0)] {
             let a = aufbau(code);
             assert!(!a.1, "{code} Innenwand");
-            assert_eq!(a.2, [(s("Gasbeton"), d, true)], "{code}");
+            assert_eq!(a.2, [(s("Porenbeton"), d, true)], "{code}");
         }
         assert_eq!(aufbau("AW-31,5").3, 315.0, "AW-31,5 bleibt");
         let luft = m.layer_set(typ(&m, "AW-49")).unwrap().layers[1];
@@ -7890,7 +7897,7 @@ mod wandtypen {
         for (name, lambda) in [
             ("Verblender", 0.68),
             ("Kerndämmung", 0.035),
-            ("Gasbeton", 0.09),
+            ("Porenbeton", 0.09),
             ("Dämmung (WDVS)", 0.035),
             ("Stahlbeton", 2.3),
             ("Putz", 0.87),
@@ -7917,7 +7924,7 @@ mod wandtypen {
         assert!(m.check().is_empty(), "{:?}", m.check());
     }
 
-    /// A111 (K4, AW-36): Prüfhaus mit AW-36 je Geschoss: WDVS 12,1692, Gasbeton
+    /// A111 (K4, AW-36): Prüfhaus mit AW-36 je Geschoss: WDVS 12,1692, Porenbeton
     /// netto 21,5522 m³, Decke 75,7376 m² / 16,6623 m³, SP 17,600, FS 7,0238 m³;
     /// Innenwand IW-11,5 2,2060, IW-17,5 3,3570, IW-24 4,6039 m³. EG und OG
     /// gleich, alle gebunden (A-09).
@@ -7929,7 +7936,7 @@ mod wandtypen {
         let og = og_zug(&s, aw);
         for run in [aw, og] {
             assert_eq!(baustoff_m3(&s, run, "Dämmung (WDVS)"), 12.1692);
-            assert_eq!(baustoff_m3(&s, run, "Gasbeton"), 21.5522);
+            assert_eq!(baustoff_m3(&s, run, "Porenbeton"), 21.5522);
             let d = decke_mengen(&s, run);
             assert_eq!((d.0, d.1), (75.7376, 16.6623));
         }
@@ -7947,7 +7954,7 @@ mod wandtypen {
     }
 
     /// A112 (K4, AW-49 mit Luftschicht): Verblender 11,6687, Kerndämmung
-    /// 13,6058, Gasbeton netto 15,1157 m³ je Geschoss. Die Luftschicht zählt zur
+    /// 13,6058, Porenbeton netto 15,1157 m³ je Geschoss. Die Luftschicht zählt zur
     /// Dicke, hat aber kein Volumen und keine Zeile; 5,9681 m³ (Luft als
     /// Körper) taucht nirgends auf, auch nicht in der CSV. Decke an der
     /// Kernaußenseite 69,0569 m² / 15,1925 m³; IW-17,5 3,2371 m³; SP und FS
@@ -7962,7 +7969,7 @@ mod wandtypen {
         for run in [aw, og] {
             assert_eq!(baustoff_m3(&s, run, "Verblender (Vormauerziegel)"), 11.6687);
             assert_eq!(baustoff_m3(&s, run, "Kerndämmung (Mineralwolle)"), 13.6058);
-            assert_eq!(baustoff_m3(&s, run, "Gasbeton"), 15.1157);
+            assert_eq!(baustoff_m3(&s, run, "Porenbeton"), 15.1157);
             assert_eq!(baustoff_m3(&s, run, "Luft"), 0.0, "Luft ohne Volumen");
             // Summe der gerundeten Einzelwerte: ±1 in der vierten Stelle
             assert!(
@@ -8171,8 +8178,8 @@ mod wandtypen {
         (s, aw, iw)
     }
 
-    /// A116 (K5, Mengen): AW-36,5 = Gasbeton 36,5, Auflager 24 cm mit Streifen
-    /// aus „Randdämmung“, U 0,24. Je Geschoss: Gasbeton netto 33,2197 m³ (wie
+    /// A116 (K5, Mengen): AW-36,5 = Porenbeton 36,5, Auflager 24 cm mit Streifen
+    /// aus „Randdämmung“, U 0,24. Je Geschoss: Porenbeton netto 33,2197 m³ (wie
     /// bei voller Tasche, kein doppelter Abzug); Decke 9,75 × 7,75 = 75,5625 m²,
     /// 16,62375 m³; 4 Streifen (EG RD-001…004, OG RD-005…008), Achsen 9,875 /
     /// 7,875 m (zusammen 35,50), Volumen 0,27156 / 0,21656 (zusammen 0,97625);
@@ -8202,7 +8209,7 @@ mod wandtypen {
             ["RD-001", "RD-002", "RD-003", "RD-004", "RD-005", "RD-006", "RD-007", "RD-008"]
         );
         for run in [aw, og] {
-            assert_eq!(baustoff_m3(&s, run, "Gasbeton"), 33.2197);
+            assert_eq!(baustoff_m3(&s, run, "Porenbeton"), 33.2197);
             let (f, v, _) = decke_mengen(&s, run);
             assert_eq!(f, 75.5625);
             assert!((v - 16.62375).abs() < 1e-3, "Decke {v}");
@@ -8236,7 +8243,7 @@ mod wandtypen {
         assert_eq!((sp_m3(&s, aw), fs_m3(&s, aw)), (17.6, 7.0238));
         assert_eq!(r4(wall_m3(&s, iw, 0)), 3.3524);
         assert!(m.check().is_empty(), "{:?}", m.check());
-        // Mengenliste: Gruppe Randdämmstreifen, ohne zusätzlichen Gasbeton-Abzug
+        // Mengenliste: Gruppe Randdämmstreifen, ohne zusätzlichen Porenbeton-Abzug
         let liste = s.schedule().clone();
         let csv = crate::schedule_view::csv(s.model(), &liste);
         let text = String::from_utf8_lossy(&csv);
@@ -8530,11 +8537,11 @@ mod lambda_alt {
         assert_eq!(lambda(s.model(), "Dämmung (WDVS)"), Some(0.035));
         assert_eq!(u2(s.model(), "AW-31,5"), None);
 
-        // Treffer über die Guid: aktuelles Projekt ohne λ, Gasbeton umbenannt
+        // Treffer über die Guid: aktuelles Projekt ohne λ, Porenbeton umbenannt
         let werk = Model::new();
         let neu = baustoff_zeile(
             &ohne_lambda(&sk_model::szo::write(&werk)),
-            "Gasbeton",
+            "Porenbeton",
             None,
             Some("Porenbeton Büro"),
         );
@@ -8702,7 +8709,7 @@ mod uebergaenge {
 
     // ===== Hilfen =====
 
-    /// AW-31,5 mit 12 Dämmung + 24 Gasbeton (36 cm): wächst um 4,5 cm nach innen.
+    /// AW-31,5 mit 12 Dämmung + 24 Porenbeton (36 cm): wächst um 4,5 cm nach innen.
     fn dicker(s: &Scene) -> (sk_model::LayerSetId, sk_model::LayerSet) {
         let id = s.model().defaults().exterior_wall;
         let mut t = s.model().layer_set(id).unwrap().clone();
@@ -8739,7 +8746,7 @@ mod uebergaenge {
         assert_eq!(
             mengen_b11(&s, aw, iw)[1],
             21.5522,
-            "Mengen sofort neu (Gasbeton netto 36 cm)"
+            "Mengen sofort neu (Porenbeton netto 36 cm)"
         );
         for t in [0u64, 35, 70, 140, 210, 279, 280, 400] {
             let (a, i) = westwand(&mut s, t);
@@ -8832,7 +8839,7 @@ mod uebergaenge {
 // als `app/src/abnahme_firmenkatalog_k2.szk` daneben legen. Sie ist mit
 // c23fb08 geschrieben (137fca7 schreibt bytegleich): Library::standard() des
 // alten Stands, AW-31,5 umbenannt in „AW 31,5 Büro“, λ von „Dämmung (WDVS)“
-// von Hand auf 0,12, Gasbeton ohne λ. Nutzt aus abnahme.rs: test_dir.
+// von Hand auf 0,12, Porenbeton ohne λ. Nutzt aus abnahme.rs: test_dir.
 // Keine angenommenen Namen.
 mod szk_rundlauf {
     use super::*;
@@ -9015,12 +9022,12 @@ mod szk_unbekannt {
 
     /// Startbestand mit drei Zukunftsstellen: ein Baustoff „Stampflehm“ mit der
     /// erfundenen Kategorie `lehm`, ein unbekannter Schlüssel `sd=12` an der
-    /// Gasbeton-Zeile und ein unbekannter Satz `[zukunft]`.
+    /// Porenbeton-Zeile und ein unbekannter Satz `[zukunft]`.
     fn zukunft() -> (String, [String; 3]) {
         let text = write_szk(&Library::standard());
         let gas = text
             .lines()
-            .find(|l| l.starts_with("[material]") && l.contains("name=\"Gasbeton\""))
+            .find(|l| l.starts_with("[material]") && l.contains("name=\"Porenbeton\""))
             .unwrap()
             .to_string();
         let alt_guid = gas
@@ -9031,7 +9038,7 @@ mod szk_unbekannt {
         let g = Model::with_seed(126).new_guid().to_string();
         let lehm = gas
             .replacen(&alt_guid, &g, 1)
-            .replacen("name=\"Gasbeton\"", "name=\"Stampflehm\"", 1)
+            .replacen("name=\"Porenbeton\"", "name=\"Stampflehm\"", 1)
             .replacen("cat=masonry", "cat=lehm", 1);
         assert!(lehm.contains("cat=lehm"));
         let gas_sd = format!("{gas} sd=12");
@@ -9088,7 +9095,7 @@ mod szk_unbekannt {
         let gas = lib
             .materials
             .iter()
-            .find(|(_, x)| x.name == "Gasbeton")
+            .find(|(_, x)| x.name == "Porenbeton")
             .unwrap()
             .1;
         assert!(MatCategory::ALL.contains(&lehm.category), "Ersatzkategorie");
@@ -9340,7 +9347,7 @@ mod auflager_bearbeiten {
     // - Decke 9,63 × 7,63 = 73,4769 m², × 0,22 = 16,164918 m³
     // - Streifen 18,5 cm: Achsen 9,815 / 7,815 m, je Geschoss
     //   35,26 × 0,185 × 0,22 = 1,435082 m³; Decke + Streifen = 17,6
-    // - Gasbeton netto 34,30 × 0,425 × 2,635 = 38,4117 m³ (Achse × Dicke ×
+    // - Porenbeton netto 34,30 × 0,425 × 2,635 = 38,4117 m³ (Achse × Dicke ×
     //   lichte Höhe, Tasche voll abgezogen, Streifen nicht doppelt)
     // - IW-17,5: 7,15 × 0,175 × 2,635 = 3,2970 m³
     // - U = 1 / (0,13 + 0,425/0,09 + 0,04) = 0,2044 → 0,20
@@ -9402,7 +9409,7 @@ mod auflager_bearbeiten {
         let mut v = 0.0;
         for i in 0..4 {
             for l in &s.wall_qto(m.wall_at(run, i).unwrap()).unwrap().layers {
-                if m.material(l.material).unwrap().name == "Gasbeton" {
+                if m.material(l.material).unwrap().name == "Porenbeton" {
                     v += l.volume;
                 }
             }
@@ -9419,7 +9426,7 @@ mod auflager_bearbeiten {
         }
     }
 
-    /// Neuer Typ AW-42,5 (Gasbeton 42,5, Auflager 24 mit Randdämmung) über den
+    /// Neuer Typ AW-42,5 (Porenbeton 42,5, Auflager 24 mit Randdämmung) über den
     /// Katalog: Duplizieren von AW-36,5, Dicke, Kürzel, Name, Tiefe, OK.
     fn neuer_typ(s: &mut Scene) -> LayerSetId {
         let mono = typ(s.model(), "AW-36,5");
@@ -9431,7 +9438,7 @@ mod auflager_bearbeiten {
             let mut t = m.layer_set(id).unwrap().clone();
             t.layers[0].thickness = 425.0;
             t.code = "AW-42,5".into();
-            t.name = "AW 42,5 Gasbeton monolithisch".into();
+            t.name = "AW 42,5 Porenbeton monolithisch".into();
             let Bearing::Depth { strip, .. } = t.bearing else {
                 return false;
             };
@@ -9469,10 +9476,10 @@ mod auflager_bearbeiten {
         }
     }
 
-    /// A128: AW-42,5 (Gasbeton 42,5, Auflager 24, Streifen 18,5 aus
+    /// A128: AW-42,5 (Porenbeton 42,5, Auflager 24, Streifen 18,5 aus
     /// Randdämmung) entsteht im Katalog in einem Rückgängig-Schritt, U 0,20.
     /// Am Haus B11: 8 Streifen 18,5 cm breit, Achsen 9,815/7,815, Decke
-    /// 73,4769 m² / 16,1649 m³, Decke + Streifen = 17,6, Gasbeton 38,4117,
+    /// 73,4769 m² / 16,1649 m³, Decke + Streifen = 17,6, Porenbeton 38,4117,
     /// IW 3,2970, SP/FS unverändert, `check()` leer, A-09. Tiefe 24 → 30 in einem
     /// Schritt (Streifen 12,5, gleiche Guids), Rückgängig zurück auf 18,5.
     /// Umschalter aus (ganzer Kern): keine Streifen, Decke 80 m² / 17,6;
@@ -9699,7 +9706,7 @@ mod auflager_regel_21 {
     /// A129: Regel 21 neu. AW-42,5: Tiefe 9,5 und 41 abgelehnt oder gemeldet,
     /// 10 und 40,5 sauber (Bereich innen + 10 cm … Dicke − 2 cm). „Fest“ an AW-36
     /// (WDVS vor dem Kern) und an einer Innenwand (IW-24) nicht sauber.
-    /// Streifenbaustoff Gasbeton (Mauerwerk) nicht sauber, Randdämmung sauber.
+    /// Streifenbaustoff Porenbeton (Mauerwerk) nicht sauber, Randdämmung sauber.
     /// Eine Datei mit Tiefe 40 an AW-36,5 lädt, der Wert bleibt, `check()`
     /// meldet, gezeichnet wie ganze tragende Schicht: keine Streifen, Decke
     /// 80 m². Randdämmung, nur als Streifenbaustoff benutzt, lässt sich nicht
@@ -9718,10 +9725,10 @@ mod auflager_regel_21 {
             assert!(sauber(&m, id, mit_tiefe(&m, id, d, rd)), "Tiefe {d} geht");
         }
         // Streifenbaustoff nur Dämmung
-        let gas = baustoff(&m, "Gasbeton");
+        let gas = baustoff(&m, "Porenbeton");
         assert!(
             !sauber(&m, id, mit_tiefe(&m, id, 240.0, gas)),
-            "Gasbeton als Streifen"
+            "Porenbeton als Streifen"
         );
         // „Fest“ nur ohne Schicht vor dem Kern und nur an Außenwänden
         let aw36 = typ(&m, "AW-36");
@@ -9791,7 +9798,7 @@ mod firmentyp_auflager {
     use super::*;
     // Abnahmetest A130: Firmentyp mit ungültigem Deckenauflager (Review 1p,
     // 3bd97c0). Ein Typ aus dem Firmenkatalog, dessen Auflager gegen Regel 21
-    // verstößt (Tiefe 40 an 36,5 bzw. Gasbeton als Streifen), kommt beim
+    // verstößt (Tiefe 40 an 36,5 bzw. Porenbeton als Streifen), kommt beim
     // Übernehmen ins Projekt mit und wird gebaut wie „ganze tragende Schicht“,
     // genau wie dieselbe Angabe aus einer .szo (A129).
     // Spezifikation: test/abnahme-wandtypen.md (A130).
@@ -9854,7 +9861,7 @@ mod firmentyp_auflager {
     }
 
     /// A130: Firmentyp „AW-F“ mit Auflagertiefe 40 (Bereich 10–34,5) bzw. mit
-    /// Gasbeton als Streifen: Übernehmen gelingt in einem Rückgängig-Schritt,
+    /// Porenbeton als Streifen: Übernehmen gelingt in einem Rückgängig-Schritt,
     /// Tiefe bleibt 40, `check()` meldet, an den Wänden gibt es keine Streifen,
     /// die Decke reicht bis zur Kernaußenseite (80 m², 17,6 m³), beim Speichern
     /// steht bearing=400 in der Datei. Strg+Z nimmt den Typ wieder heraus.
@@ -9863,7 +9870,7 @@ mod firmentyp_auflager {
         let gasbeton = Model::new()
             .materials()
             .iter()
-            .find(|(_, x)| x.name == "Gasbeton")
+            .find(|(_, x)| x.name == "Porenbeton")
             .map(|(_, x)| x.guid.to_string())
             .unwrap();
         for (fall, ersetze, durch) in [
@@ -9873,7 +9880,7 @@ mod firmentyp_auflager {
                 "bearing=400".to_string(),
             ),
             (
-                "Gasbeton als Streifen",
+                "Porenbeton als Streifen",
                 "strip=".to_string(),
                 format!("strip={gasbeton}"),
             ),
@@ -10034,7 +10041,7 @@ mod loeschen {
         s.wall_qto(id).unwrap().volume / 1e9
     }
 
-    /// Mengen des Prüfhauses ohne die Innenwand (Dämmung, Gasbeton, Decke,
+    /// Mengen des Prüfhauses ohne die Innenwand (Dämmung, Porenbeton, Decke,
     /// Sohlplatte, Frostschürze), gerundet wie `mengen_b11`.
     fn mengen_ohne_iw(s: &Scene, aw: RunId) -> [f64; 5] {
         let r = |v: f64| (v * 1e4).round() / 1e4;
@@ -12141,8 +12148,8 @@ mod og_phase2 {
     }
 
     /// A146 (BIM „Fertig, wenn: Rücksprung“, G7 §4): Gelöstes AW-006 um 0,30 m
-    /// nach innen. DE-002 72,1224 m² / 15,8669 m³, OG-Gasbeton netto 15,4846 m³,
-    /// Dämmung OG 13,9255 m³; DE-001 und EG-Gasbeton unverändert; keine UD.
+    /// nach innen. DE-002 72,1224 m² / 15,8669 m³, OG-Porenbeton netto 15,4846 m³,
+    /// Dämmung OG 13,9255 m³; DE-001 und EG-Porenbeton unverändert; keine UD.
     /// Seit der Dachterrasse (Paket 2b, Regel 45) läuft das EG-WDVS am
     /// Rücksprung als Attika bis +3,055: EG-Dämmung 14,4543 statt 14,1654.
     #[test]
@@ -12169,11 +12176,11 @@ mod og_phase2 {
     }
 
     /// A147 (BIM „Fertig, wenn: Vorsprung“, §4, Regeln 32 und 35): Gelöstes
-    /// AW-006 um 0,30 m nach außen. DE-002 77,9544 / 17,1500, OG-Gasbeton
+    /// AW-006 um 0,30 m nach außen. DE-002 77,9544 / 17,1500, OG-Porenbeton
     /// 16,0379 m³, DE-001 kragt mit aus (77,9544 / 17,1500). UD-001 unter dem
     /// ganzen Kragstreifen von Kern EG bis Kern OG (BIM 04:25): 2,9160 m², bei
     /// 12 cm 0,3499 m³, bei 20 cm 0,5832 m³ (ein Schritt). Wandmengen (BIM
-    /// 04:37): EG-Gasbeton 15,7613, EG-Dämmung 13,6960 (endet an UK UD), OG-
+    /// 04:37): EG-Porenbeton 15,7613, EG-Dämmung 13,6960 (endet an UK UD), OG-
     /// Dämmung 14,9031 (reicht bis UK UD). Ohne Verblender keine Abfangung.
     /// Dicke nur 40–300 mm. Direkt löschen wird abgelehnt.
     #[test]
@@ -12581,7 +12588,7 @@ mod og_phase2 {
     }
 
     /// A159 (BIM „Fertig, wenn: AW-49“, §4, Regel 33): Dasselbe Prüfhaus mit
-    /// AW-49 (Verblender, Luftschicht, Kerndämmung, Gasbeton), AW-006 gelöst um
+    /// AW-49 (Verblender, Luftschicht, Kerndämmung, Porenbeton), AW-006 gelöst um
     /// +0,30. EG: Kerndämmung 13,1531, Verblender 11,2822 m³ (enden an UK UD).
     /// OG: Kerndämmung 14,3268, Verblender 12,2756 m³ (bis UK UD). UD 2,8110 m² /
     /// 0,3373 m³ (Kragstreifen 9,37 × 0,30). Abfangung Verblender 10,485 m an
@@ -14262,33 +14269,33 @@ mod bauteilarten {
         r#"Gebäude;Geschoss;Kostengruppe;Bauteil;Nr.;Länge (m);Stück;Fläche (m²);Volumen (m³);Hinweis
 GB-01;Fundament;322;Frostschürze;FS-001;34,6000;1;;7,0238;
 GB-01;Fundament;322;Sohlplatte 22 cm;SP-001;;1;80,0000;17,6000;
-GB-01;Erdgeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS (Summe);AW-001 … 004;36,0000;4;;29,4573;
-GB-01;Erdgeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS AW-001, Höhe 2,855 m;AW-001;8,0000;1;;6,6208;
-GB-01;Erdgeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS AW-002, Höhe 2,855 m;AW-002;10,0000;1;;7,8731;
-GB-01;Erdgeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS AW-003, Höhe 2,855 m;AW-003;8,0000;1;;6,6208;
-GB-01;Erdgeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS AW-004, Höhe 2,855 m;AW-004;10,0000;1;;8,3425;
-GB-01;Erdgeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS: Dämmung (WDVS);;;;99,3800;13,6960;
-GB-01;Erdgeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS: Gasbeton;;;;;15,7613;
-GB-01;Erdgeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS: Abzug Deckenauflager;;;;;-1,3159;in der Decke enthalten
-GB-01;Erdgeschoss;340;Innenwände IW 17,5 Gasbeton (Summe);IW-001;7,3700;1;;3,3985;
-GB-01;Erdgeschoss;340;Innenwände IW 17,5 Gasbeton IW-001, Höhe 2,855 m;IW-001;7,3700;1;;3,3985;
-GB-01;Erdgeschoss;340;Innenwände IW 17,5 Gasbeton: Gasbeton;;;;;3,3985;
-GB-01;Erdgeschoss;340;Innenwände IW 17,5 Gasbeton: Abzug Deckenstreifen;;;;;-0,2837;in der Decke enthalten
+GB-01;Erdgeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS (Summe);AW-001 … 004;36,0000;4;;29,4573;
+GB-01;Erdgeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS AW-001, Höhe 2,855 m;AW-001;8,0000;1;;6,6208;
+GB-01;Erdgeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS AW-002, Höhe 2,855 m;AW-002;10,0000;1;;7,8731;
+GB-01;Erdgeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS AW-003, Höhe 2,855 m;AW-003;8,0000;1;;6,6208;
+GB-01;Erdgeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS AW-004, Höhe 2,855 m;AW-004;10,0000;1;;8,3425;
+GB-01;Erdgeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS: Dämmung (WDVS);;;;99,3800;13,6960;
+GB-01;Erdgeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS: Porenbeton;;;;;15,7613;
+GB-01;Erdgeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS: Abzug Deckenauflager;;;;;-1,3159;in der Decke enthalten
+GB-01;Erdgeschoss;340;Innenwände IW 17,5 Porenbeton (Summe);IW-001;7,3700;1;;3,3985;
+GB-01;Erdgeschoss;340;Innenwände IW 17,5 Porenbeton IW-001, Höhe 2,855 m;IW-001;7,3700;1;;3,3985;
+GB-01;Erdgeschoss;340;Innenwände IW 17,5 Porenbeton: Porenbeton;;;;;3,3985;
+GB-01;Erdgeschoss;340;Innenwände IW 17,5 Porenbeton: Abzug Deckenstreifen;;;;;-0,2837;in der Decke enthalten
 GB-01;Erdgeschoss;350;Decke über EG 22 cm;DE-001;;1;77,9544;17,1500;
 GB-01;Erdgeschoss;350;davon Auflager in den Außenwänden;DE-001;;;;1,3159;in der Decke enthalten
 GB-01;Erdgeschoss;354;Untersichtdämmung 12 cm;UD-001;;1;2,9160;0,3499;
-GB-01;Obergeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS (Summe);AW-005 … 008;36,6000;4;;30,9410;
-GB-01;Obergeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS AW-005, Höhe 2,855 m;AW-005;8,3000;1;;6,8934;
-GB-01;Obergeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS AW-006, Höhe 2,855 m;AW-006;10,0000;1;;8,8118;Versatz +0,30 m
-GB-01;Obergeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS AW-007, Höhe 2,855 m;AW-007;8,3000;1;;6,8934;
-GB-01;Obergeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS AW-008, Höhe 2,855 m;AW-008;10,0000;1;;8,3425;
-GB-01;Obergeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS: Dämmung (WDVS);;;;108,0970;14,9031;
-GB-01;Obergeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS: Gasbeton;;;;;16,0379;
-GB-01;Obergeschoss;330;Außenwände AW 31,5 Gasbeton + WDVS: Abzug Deckenauflager;;;;;-1,3390;in der Decke enthalten
+GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS (Summe);AW-005 … 008;36,6000;4;;30,9410;
+GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS AW-005, Höhe 2,855 m;AW-005;8,3000;1;;6,8934;
+GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS AW-006, Höhe 2,855 m;AW-006;10,0000;1;;8,8118;Versatz +0,30 m
+GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS AW-007, Höhe 2,855 m;AW-007;8,3000;1;;6,8934;
+GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS AW-008, Höhe 2,855 m;AW-008;10,0000;1;;8,3425;
+GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS: Dämmung (WDVS);;;;108,0970;14,9031;
+GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS: Porenbeton;;;;;16,0379;
+GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS: Abzug Deckenauflager;;;;;-1,3390;in der Decke enthalten
 GB-01;Obergeschoss;350;Decke über OG 22 cm;DE-002;;1;77,9544;17,1500;
 GB-01;Obergeschoss;350;davon Auflager in den Außenwänden;DE-002;;;;1,3390;in der Decke enthalten
 GB-01;Summe nach Baustoff;;Stahlbeton;;;;;58,9237;
-GB-01;Summe nach Baustoff;;Gasbeton;;;;;35,1977;
+GB-01;Summe nach Baustoff;;Porenbeton;;;;;35,1977;
 GB-01;Summe nach Baustoff;;Dämmung (WDVS);;;;210,3930;28,9490;
 "#
     );
@@ -14303,16 +14310,16 @@ GB-01;Erdgeschoss;330;Außenwände AW monolithisch 36,5 AW-001, Höhe 2,855 m;AW
 GB-01;Erdgeschoss;330;Außenwände AW monolithisch 36,5 AW-002, Höhe 2,855 m;AW-002;10,0000;1;;9,2667;
 GB-01;Erdgeschoss;330;Außenwände AW monolithisch 36,5 AW-003, Höhe 2,855 m;AW-003;8,0000;1;;7,3432;
 GB-01;Erdgeschoss;330;Außenwände AW monolithisch 36,5 AW-004, Höhe 2,855 m;AW-004;10,0000;1;;9,2667;
-GB-01;Erdgeschoss;330;Außenwände AW monolithisch 36,5: Gasbeton;;;;;33,2197;
+GB-01;Erdgeschoss;330;Außenwände AW monolithisch 36,5: Porenbeton;;;;;33,2197;
 GB-01;Erdgeschoss;330;Außenwände AW monolithisch 36,5: Abzug Deckenauflager;;;;;-2,7736;in der Decke enthalten
 GB-01;Erdgeschoss;330;Randdämmstreifen 12,5 cm × 22 cm;RD-001;8,1750;1;;0,2248;
 GB-01;Erdgeschoss;330;Randdämmstreifen 12,5 cm × 22 cm;RD-002;9,8750;1;;0,2716;
 GB-01;Erdgeschoss;330;Randdämmstreifen 12,5 cm × 22 cm;RD-003;8,1750;1;;0,2248;
 GB-01;Erdgeschoss;330;Randdämmstreifen 12,5 cm × 22 cm;RD-004;9,8750;1;;0,2716;
-GB-01;Erdgeschoss;340;Innenwände IW 17,5 Gasbeton (Summe);IW-001;7,2700;1;;3,3524;
-GB-01;Erdgeschoss;340;Innenwände IW 17,5 Gasbeton IW-001, Höhe 2,855 m;IW-001;7,2700;1;;3,3524;
-GB-01;Erdgeschoss;340;Innenwände IW 17,5 Gasbeton: Gasbeton;;;;;3,3524;
-GB-01;Erdgeschoss;340;Innenwände IW 17,5 Gasbeton: Abzug Deckenstreifen;;;;;-0,2799;in der Decke enthalten
+GB-01;Erdgeschoss;340;Innenwände IW 17,5 Porenbeton (Summe);IW-001;7,2700;1;;3,3524;
+GB-01;Erdgeschoss;340;Innenwände IW 17,5 Porenbeton IW-001, Höhe 2,855 m;IW-001;7,2700;1;;3,3524;
+GB-01;Erdgeschoss;340;Innenwände IW 17,5 Porenbeton: Porenbeton;;;;;3,3524;
+GB-01;Erdgeschoss;340;Innenwände IW 17,5 Porenbeton: Abzug Deckenstreifen;;;;;-0,2799;in der Decke enthalten
 GB-01;Erdgeschoss;350;Decke über EG 22 cm;DE-001;;1;78,4875;17,2672;
 GB-01;Erdgeschoss;350;davon Auflager in den Außenwänden;DE-001;;;;2,7736;in der Decke enthalten
 GB-01;Erdgeschoss;354;Untersichtdämmung 12 cm;UD-001;;1;3,0000;0,3600;
@@ -14321,7 +14328,7 @@ GB-01;Obergeschoss;330;Außenwände AW monolithisch 36,5 AW-005, Höhe 2,855 m;A
 GB-01;Obergeschoss;330;Außenwände AW monolithisch 36,5 AW-006, Höhe 2,855 m;AW-006;10,0000;1;;9,2667;Versatz +0,30 m
 GB-01;Obergeschoss;330;Außenwände AW monolithisch 36,5 AW-007, Höhe 2,855 m;AW-007;8,3000;1;;7,6317;
 GB-01;Obergeschoss;330;Außenwände AW monolithisch 36,5 AW-008, Höhe 2,855 m;AW-008;10,0000;1;;9,2667;
-GB-01;Obergeschoss;330;Außenwände AW monolithisch 36,5: Gasbeton;;;;;33,7968;
+GB-01;Obergeschoss;330;Außenwände AW monolithisch 36,5: Porenbeton;;;;;33,7968;
 GB-01;Obergeschoss;330;Außenwände AW monolithisch 36,5: Abzug Deckenauflager;;;;;-2,8217;in der Decke enthalten
 GB-01;Obergeschoss;330;Randdämmstreifen 12,5 cm × 22 cm;RD-005;8,1750;1;;0,2248;
 GB-01;Obergeschoss;330;Randdämmstreifen 12,5 cm × 22 cm;RD-006;9,8750;1;;0,2716;
@@ -14330,7 +14337,7 @@ GB-01;Obergeschoss;330;Randdämmstreifen 12,5 cm × 22 cm;RD-008;9,8750;1;;0,271
 GB-01;Obergeschoss;350;Decke über OG 22 cm;DE-002;;1;78,4875;17,2672;
 GB-01;Obergeschoss;350;davon Auflager in den Außenwänden;DE-002;;;;2,8217;in der Decke enthalten
 GB-01;Summe nach Baustoff;;Stahlbeton;;;;;59,1583;
-GB-01;Summe nach Baustoff;;Gasbeton;;;;;70,3689;
+GB-01;Summe nach Baustoff;;Porenbeton;;;;;70,3689;
 GB-01;Summe nach Baustoff;;Randdämmung;;;;3,0000;2,3455;
 "#
     );
@@ -14894,7 +14901,7 @@ mod deckenschichten {
         let g = "0Zukunft00000000000001";
         let gasbeton = guid_text(
             s.model()
-                .material(stoff(s.model(), "Gasbeton"))
+                .material(stoff(s.model(), "Porenbeton"))
                 .unwrap()
                 .guid,
         );
@@ -15207,15 +15214,15 @@ mod gewerke {
 
     /// A184 (paket-1a §3, R4 §3): Jeder Startbaustoff schlägt sein Gewerk
     /// vor, und jede Schicht jedes heutigen Bauteils löst es auf:
-    /// AW-31,5 und AW-36 WDVS 18345 + Gasbeton 18330; AW-49 Verblender,
-    /// Kerndämmung und Gasbeton 18330, Luft ohne Gewerk; AW-36,5 18330 mit
+    /// AW-31,5 und AW-36 WDVS 18345 + Porenbeton 18330; AW-49 Verblender,
+    /// Kerndämmung und Porenbeton 18330, Luft ohne Gewerk; AW-36,5 18330 mit
     /// Randdämmstreifen 18330; IW 18330; Decken, Sohlplatte, Frostschürze
     /// 18331; UD über ihre eingebaute Schicht 18345.
     #[test]
     fn a184_gewerk_je_schicht() {
         let m = Model::with_seed(184);
         for (stoff_name, soll) in [
-            ("Gasbeton", g("18330")),
+            ("Porenbeton", g("18330")),
             ("Stahlbeton", g("18331")),
             ("Dämmung (WDVS)", g("18345")),
             ("Kerndämmung (Mineralwolle)", g("18330")),
@@ -15252,7 +15259,7 @@ mod gewerke {
         assert_eq!(
             gewerke_von(s.model(), nr(&s, "AW-001")),
             [g("18330"), None, g("18330"), g("18330")],
-            "Verblender, Luft, Kerndämmung, Gasbeton"
+            "Verblender, Luft, Kerndämmung, Porenbeton"
         );
         let s = pruefhaus_typ(1841, "AW-36,5");
         assert_eq!(gewerke_von(s.model(), nr(&s, "AW-001")), [g("18330")]);
@@ -15313,7 +15320,7 @@ mod gewerke {
     }
 
     /// A186 (R4 §3, paket-1a §1): Auflösung Schicht ∨ Baustoff ∨ Bauteilart.
-    /// Gewerk am Baustoff Gasbeton → 18331: alle Gasbetonschichten folgen
+    /// Gewerk am Baustoff Porenbeton → 18331: alle Porenbetonschichten folgen
     /// (AW-Kern, IW). Abweichung an der WDVS-Schicht von AW-31,5 → 18330:
     /// nur diese Schicht, der Baustoff bleibt 18345, die UD (eigene Schicht)
     /// bleibt 18345. Zurück auf `None`: wieder der Baustoff. Jede Änderung
@@ -15325,7 +15332,7 @@ mod gewerke {
         let aw = nr(&s, "AW-001");
         let iw = nr(&s, "IW-001");
         let ud = nr(&s, "UD-001");
-        let gasbeton = stoff(s.model(), "Gasbeton");
+        let gasbeton = stoff(s.model(), "Porenbeton");
         let wdvs = stoff(s.model(), "Dämmung (WDVS)");
 
         assert!(stoff_gewerk_setzen(&mut s, gasbeton, "18331"));
@@ -15430,7 +15437,7 @@ mod gewerke {
         let geladen = lesen(&alt);
         assert!(geladen.hints.is_empty(), "still: {:?}", geladen.hints);
         let m = &geladen.model;
-        assert_eq!(stoff_gewerk(m, stoff(m, "Gasbeton")), g("18330"));
+        assert_eq!(stoff_gewerk(m, stoff(m, "Porenbeton")), g("18330"));
         assert_eq!(stoff_gewerk(m, stoff(m, "Putz")), g("18350"));
         let neu = sk_model::szo::write(m);
         assert_eq!(neu, text, "nach dem ersten Speichern wie eine neue Datei");
@@ -15439,7 +15446,7 @@ mod gewerke {
         let fremd = {
             let l = text
                 .lines()
-                .find(|l| l.starts_with("[material]") && l.contains("name=\"Gasbeton\""))
+                .find(|l| l.starts_with("[material]") && l.contains("name=\"Porenbeton\""))
                 .unwrap();
             let i = l.find(" trade=").unwrap() + 7;
             let guid = &l[i..i + 22];
@@ -15452,7 +15459,7 @@ mod gewerke {
         let geladen = lesen(&fremd);
         assert!(!geladen.hints.is_empty(), "Hinweis bei unbekanntem Gewerk");
         let m = &geladen.model;
-        assert_eq!(stoff_gewerk(m, stoff(m, "Gasbeton")), None);
+        assert_eq!(stoff_gewerk(m, stoff(m, "Porenbeton")), None);
 
         // Firmenname eines Startgewerks bleibt
         let umbenannt = text.replacen(
@@ -15703,7 +15710,7 @@ mod dachterrasse {
     // app/src/abnahme.rs. Nutzt aus abnahme.rs: gebaeude, decke, r4.
     //
     // Prüfhaus wie paket-og-phase2 §8: Dialog, 10 × 8 m, AW-31,5 (WDVS 140 +
-    // Gasbeton 175), Standardhöhen (OK Rohdecke EG +2,855). OG-Wände AW-005
+    // Porenbeton 175), Standardhöhen (OK Rohdecke EG +2,855). OG-Wände AW-005
     // West, AW-006 Nord, AW-007 Ost, AW-008 Süd über AW-001 … 004.
     //
     // Angenommene Namen stehen nur in den Adaptern: `Model::terrace_of`,
@@ -16282,7 +16289,7 @@ mod attika {
 
     /// A195 (E2, Regel 45, Sollwerte 08:54): Nord −1,50 bei AW-31,5: das
     /// EG-WDVS wächst um die Attika, 1,7808 m² Grundriss × 0,20 m = 0,3562
-    /// m³, EG-Dämmung 14,5215 m³ (ungerundet 14,521528); Gasbeton bleibt 15,7613. Die Attika läuft
+    /// m³, EG-Dämmung 14,5215 m³ (ungerundet 14,521528); Porenbeton bleibt 15,7613. Die Attika läuft
     /// über AW-002 (Nord) und die Stirnstücke an AW-001 und AW-003 bis OK
     /// Attika +3,055; AW-004 (Süd) endet wie bisher bei +2,855. Attika 100
     /// → +3,095 und 1,7808 × 0,24 = 0,4274 m³. AW-49: Verblender, Luft und
@@ -16717,7 +16724,7 @@ mod gewerk_flaeche_laenge {
     /// Blech des AB, 0,0023 m³; auf 0e8e08d 1,8530), dazu 13,2192 m² und
     /// 13,00 m. Abfangung (AW-49, OG-Nord +0,30, wie A159): 18330 hat
     /// 10,485 m Abfangung und als Volumen genau die Summe seiner
-    /// Wandschichten Verblender, Kerndämmung und Gasbeton, 81,5458 m³; die
+    /// Wandschichten Verblender, Kerndämmung und Porenbeton, 81,5458 m³; die
     /// Abfangung bringt kein eigenes Volumen dazu (die Verblenderschicht der
     /// Wände zählt weiter). Die UD-Kerndämmung (0,3373 m³) zählt bei 18345.
     #[test]
@@ -17579,8 +17586,8 @@ mod sichtbarkeit {
     /// Bauteil `(All, Solid)`. Bauteil ausgeblendet → `None`, nur dieses.
     /// Art ausgeblendet → alle Bauteile der Art `None`, die übrigen bleiben.
     /// Gewerk schichtgenau: 18345 aus → AW-31,5 zeigt nur Schicht 1
-    /// (Gasbeton), Innenwand und Decke bleiben `All`. 18330 aus → AW-31,5
-    /// zeigt nur Schicht 0 (WDVS), die Innenwand (nur Gasbeton) ist `None`
+    /// (Porenbeton), Innenwand und Decke bleiben `All`. 18330 aus → AW-31,5
+    /// zeigt nur Schicht 0 (WDVS), die Innenwand (nur Porenbeton) ist `None`
     /// (leere Maske). AW-49 mit 18330 aus: Verblender, Kerndämmung und Kern
     /// gehören zum Maurer (Paket 1a), übrig bleibt nur die Luftschicht
     /// (Schicht 1, ohne Gewerk). Mineralwolle im WDVS gehört dagegen zu 18345:
@@ -17635,7 +17642,7 @@ mod sichtbarkeit {
             v.hidden_cat.clear();
             v.hidden_trade.insert(wdvs);
         });
-        assert_eq!(maske(&zeigt(&s, aw2).0), Some(vec![1]), "nur Gasbeton");
+        assert_eq!(maske(&zeigt(&s, aw2).0), Some(vec![1]), "nur Porenbeton");
         assert_eq!(zeigt(&s, nr(&s, "IW-001")).0, Shown::All);
         assert_eq!(zeigt(&s, nr(&s, "DE-001")).0, Shown::All);
 
@@ -18832,7 +18839,7 @@ mod baumpanel {
         let g = guid(&s, "AW-001");
         let i = finde(n, &NodeKey::TradeElement(gewerk(&s, "18330"), g));
         let h = n[i].layer_hint.clone().expect("Schicht als Hinweis");
-        assert!(h.contains("Gasbeton"), "{h}");
+        assert!(h.contains("Porenbeton"), "{h}");
         assert!(n
             .iter()
             .any(|x| x.key == NodeKey::TradeElement(gewerk(&s, "18345"), g)));
@@ -19876,10 +19883,10 @@ mod materialfenster {
         s
     }
 
-    /// Gasbeton mit Richtpreis 185 €/m³, Stand 10/2026, μ 5, Hersteller und
+    /// Porenbeton mit Richtpreis 185 €/m³, Stand 10/2026, μ 5, Hersteller und
     /// eigenem Kennwert, über das Fenster gesetzt.
     fn mit_kennwerten(s: &mut Scene) -> MaterialId {
-        let g = stoff(s.model(), "Gasbeton");
+        let g = stoff(s.model(), "Porenbeton");
         fenster_ok(s, |m| {
             assert!(eintippen(m, g, "Richtpreis", "185"));
             assert!(eintippen(m, g, "Preisstand", "10/2026"));
@@ -19925,7 +19932,7 @@ mod materialfenster {
         let l = lesen(&text);
         assert!(l.hints.is_empty(), "{:?}", l.hints);
         assert_eq!(sk_model::szo::write(&l.model), text, "Rundlauf");
-        let p = kennwerte(&l.model, stoff(&l.model, "Gasbeton"));
+        let p = kennwerte(&l.model, stoff(&l.model, "Porenbeton"));
         assert_eq!(zahl(&p, "Richtpreis"), Some(185.0));
         assert_eq!(wort(&p, "Hersteller").as_deref(), Some("Muster GmbH"));
         assert_eq!(zahl(&p, "Druckfestigkeit [N/mm²]"), Some(4.0));
@@ -20009,7 +20016,7 @@ mod materialfenster {
     }
 
     /// A233 (§1.2, §4.4, Koordinator 11:26): „Verwendet in“ am Prüfhaus.
-    /// Gasbeton: AW-31,5 mit 8 Wänden, IW-17,5 mit 1 Wand, dazu jeder
+    /// Porenbeton: AW-31,5 mit 8 Wänden, IW-17,5 mit 1 Wand, dazu jeder
     /// weitere Typ, der ihn enthält (Regel 15 zählt Typen, auch unbenutzte).
     /// Stahlbeton: DE-001, DE-002, SP-001, FS-001 (Bauteile ohne Typ).
     /// Dämmung hart und Terrassenbelag: DT-14 mit 1 Bauteil. Titanzink:
@@ -20018,13 +20025,17 @@ mod materialfenster {
     fn a233_verwendet_in() {
         let s = pruefhaus(233);
         let m = s.model();
-        let gas = verwendet(m, stoff(m, "Gasbeton"));
+        let gas = verwendet(m, stoff(m, "Porenbeton"));
         assert!(gas.contains(&Nutzung::Typ("AW-31,5".into(), 8)), "{gas:?}");
         assert!(gas.contains(&Nutzung::Typ("IW-17,5".into(), 1)), "{gas:?}");
         let mut soll_typen: Vec<String> = m
             .layer_sets()
             .iter()
-            .filter(|(_, t)| t.layers.iter().any(|l| l.material == stoff(m, "Gasbeton")))
+            .filter(|(_, t)| {
+                t.layers
+                    .iter()
+                    .any(|l| l.material == stoff(m, "Porenbeton"))
+            })
             .map(|(_, t)| t.code.clone())
             .collect();
         soll_typen.sort();
@@ -20036,7 +20047,7 @@ mod materialfenster {
             })
             .collect();
         ist_typen.sort();
-        assert_eq!(ist_typen, soll_typen, "jeder Typ mit Gasbeton");
+        assert_eq!(ist_typen, soll_typen, "jeder Typ mit Porenbeton");
         let beton = verwendet(m, stoff(m, "Stahlbeton"));
         for n in ["DE-001", "DE-002", "SP-001", "FS-001"] {
             assert!(
@@ -20061,7 +20072,7 @@ mod materialfenster {
 
     /// A234 (§1.4, Entscheidung 20): Duplizieren ist der einzige Weg zu
     /// einem neuen Baustoff. Die Kopie hat eine neue Guid, den Namen
-    /// „Gasbeton (2)“ (eindeutig, ein zweites Mal „(3)“), dieselben
+    /// „Porenbeton (2)“ (eindeutig, ein zweites Mal „(3)“), dieselben
     /// Kennwerte und dieselbe Darstellung, Art, Rohdichte und λ. Sie ist
     /// unbenutzt. Mengen ändern sich nicht.
     #[test]
@@ -20072,7 +20083,7 @@ mod materialfenster {
         let mut neu = None;
         fenster_ok(&mut s, |m| neu = Some(duplizieren(m, g)));
         let m = s.model();
-        let k = stoff(m, "Gasbeton (2)");
+        let k = stoff(m, "Porenbeton (2)");
         assert!(neu.is_some());
         let (a, b) = (m.material(g).unwrap(), m.material(k).unwrap());
         assert_ne!(a.guid, b.guid);
@@ -20086,11 +20097,11 @@ mod materialfenster {
         fenster_ok(&mut s, |m| {
             duplizieren(m, g);
         });
-        stoff(s.model(), "Gasbeton (3)");
+        stoff(s.model(), "Porenbeton (3)");
         assert_eq!(csv(&mut s), mengen);
     }
 
-    /// A235 (§1.4, Regeln 15 und 55): Löschen nur ohne Verwendung. Gasbeton
+    /// A235 (§1.4, Regeln 15 und 55): Löschen nur ohne Verwendung. Porenbeton
     /// (in Typen) und Stahlbeton (Decken) nein; Titanzink nein, solange
     /// AB-001 es nutzt (heute meldet `material_used` es als frei); Luft nie;
     /// Putz ja; eine Kopie mit Kennwerten ja (Kennwerte halten nichts fest).
@@ -20102,13 +20113,13 @@ mod materialfenster {
             duplizieren(m, g);
         });
         let m = s.model();
-        assert!(!loeschbar(m, g), "Gasbeton in Typen");
+        assert!(!loeschbar(m, g), "Porenbeton in Typen");
         assert!(!loeschbar(m, stoff(m, "Stahlbeton")), "Decken");
         assert!(!loeschbar(m, stoff(m, "Titanzink 0,7")), "AB-001");
         assert!(!loeschbar(m, stoff(m, "Luft")), "Luft nie");
         assert!(loeschbar(m, stoff(m, "Putz")));
         assert!(
-            loeschbar(m, stoff(m, "Gasbeton (2)")),
+            loeschbar(m, stoff(m, "Porenbeton (2)")),
             "Kennwerte halten nichts"
         );
     }
@@ -20122,7 +20133,7 @@ mod materialfenster {
         let mut s = pruefhaus(236);
         let vorher = sk_model::szo::write(s.model());
         let schritt = s.undo_label();
-        let g = stoff(s.model(), "Gasbeton");
+        let g = stoff(s.model(), "Porenbeton");
         let b = stoff(s.model(), "Stahlbeton");
         fenster_abbrechen(&mut s, |m| {
             assert!(eintippen(m, g, "Richtpreis", "185"));
@@ -20153,7 +20164,7 @@ mod materialfenster {
     #[test]
     fn a237_feste_schluessel() {
         let mut s = pruefhaus(237);
-        let g = stoff(s.model(), "Gasbeton");
+        let g = stoff(s.model(), "Porenbeton");
         fenster_ok(&mut s, |m| assert!(eintippen(m, g, "\u{b5}", "6")));
         let p = kennwerte(s.model(), g);
         assert_eq!(zahl(&p, "\u{3bc}"), Some(6.0));
@@ -20165,7 +20176,10 @@ mod materialfenster {
         let ohne = sk_model::szo::write(pruefhaus(2370).model());
         let g0 = {
             let l = lesen(&ohne);
-            l.model.material(stoff(&l.model, "Gasbeton")).unwrap().guid
+            l.model
+                .material(stoff(&l.model, "Porenbeton"))
+                .unwrap()
+                .guid
         };
         let datei = format!(
             "{ohne}[matprop] mat={g0} key=\"\u{b5}\" num=7\n\
@@ -20175,7 +20189,7 @@ mod materialfenster {
         );
         let l = lesen(&datei);
         assert_eq!(l.hints.len(), 2, "zwei falsche Arten: {:?}", l.hints);
-        let p = kennwerte(&l.model, stoff(&l.model, "Gasbeton"));
+        let p = kennwerte(&l.model, stoff(&l.model, "Porenbeton"));
         assert_eq!(zahl(&p, "\u{3bc}"), Some(7.0), "µ aus der Datei → μ");
         assert!(!p.contains_key("\u{b5}"));
         assert!(!p.contains_key("Richtpreis") && !p.contains_key("Hersteller"));
@@ -20202,7 +20216,7 @@ mod materialfenster {
         let s = pruefhaus(238);
         let mut m = s.model().clone();
         m.allow_unstepped();
-        let g = stoff(&m, "Gasbeton");
+        let g = stoff(&m, "Porenbeton");
         let luft = stoff(&m, "Luft");
         for (feld, wert) in [
             ("λ", "0"),
@@ -20255,7 +20269,7 @@ mod materialfenster {
         );
         let l = lesen(&datei);
         assert_eq!(l.hints.len(), 5, "{:?}", l.hints);
-        let p = kennwerte(&l.model, stoff(&l.model, "Gasbeton"));
+        let p = kennwerte(&l.model, stoff(&l.model, "Porenbeton"));
         assert_eq!(wort(&p, "Euroklasse").as_deref(), Some("B-s1,d0"));
         assert_eq!(wort(&p, "Hersteller").as_deref(), Some("bleibt"));
         assert!(!p.contains_key("μ") && !p.contains_key("c") && !p.contains_key("Richtpreis"));
@@ -20274,7 +20288,7 @@ mod materialfenster {
         let mut m = s.model().clone();
         m.allow_unstepped();
         for (name, einheit) in [
-            ("Gasbeton", "m3"),
+            ("Porenbeton", "m3"),
             ("Stahlbeton", "m3"),
             ("Dämmung (WDVS)", "m3"),
             ("Putz", "m2"),
@@ -20291,7 +20305,7 @@ mod materialfenster {
             "Luft ohne Preis"
         );
 
-        let g = stoff(&m, "Gasbeton");
+        let g = stoff(&m, "Porenbeton");
         assert!(eintippen(&mut m, g, "Richtpreis", "185"));
         assert!(art_wechseln(&mut m, g, MatCategory::Plaster));
         let p = kennwerte(&m, g);
@@ -20757,7 +20771,7 @@ mod muster {
         let (vb, pu, gb) = (
             flaeche(s.model(), "Verblender (Vormauerziegel)"),
             flaeche(s.model(), "Putz"),
-            flaeche(s.model(), "Gasbeton"),
+            flaeche(s.model(), "Porenbeton"),
         );
         assert!(matches!(
             muster(s.model(), vb),
@@ -20823,7 +20837,7 @@ mod muster {
         // Nach dem Lesen sind die SurfaceIds andere (Guid-Reihenfolge)
         let (vb, gb) = (
             flaeche(&l.model, "Verblender (Vormauerziegel)"),
-            flaeche(&l.model, "Gasbeton"),
+            flaeche(&l.model, "Porenbeton"),
         );
         assert_eq!(muster(&l.model, vb), None, "Abwahl bleibt weg");
         assert!(
@@ -20862,7 +20876,7 @@ mod muster {
     fn a249_firmenkatalog_abgleich() {
         let mut s = Scene::with_model(Model::with_seed(249));
         gebaeude(&mut s);
-        let gb = flaeche(s.model(), "Gasbeton");
+        let gb = flaeche(s.model(), "Porenbeton");
         muster_setzen(&mut s, gb, Some(nf(6.0, 17)));
         let g = sguid(s.model(), gb);
         let mut lib = sk_model::Library::default();
@@ -20928,7 +20942,7 @@ mod muster {
 
         let mut s = Scene::with_model(Model::with_seed(250));
         gebaeude(&mut s);
-        let gb = flaeche(s.model(), "Gasbeton");
+        let gb = flaeche(s.model(), "Porenbeton");
         let g = sguid(s.model(), gb);
         let ohne: String = sk_model::szo::write(s.model());
         let gut = format!(
@@ -20936,7 +20950,7 @@ mod muster {
         );
         let l = lesen(&format!("{ohne}{gut}\n"));
         assert!(l.hints.is_empty(), "{:?}", l.hints);
-        assert!(muster(&l.model, flaeche(&l.model, "Gasbeton")).is_some());
+        assert!(muster(&l.model, flaeche(&l.model, "Porenbeton")).is_some());
         for falsch in [
             gut.replace("len=50", "len=40"),
             gut.replace("h=20", "h=310"),
@@ -20954,7 +20968,7 @@ mod muster {
             let l = lesen(&format!("{ohne}{falsch}\n"));
             assert!(!l.hints.is_empty(), "Hinweis: {falsch}");
             assert_eq!(
-                muster(&l.model, flaeche(&l.model, "Gasbeton")),
+                muster(&l.model, flaeche(&l.model, "Porenbeton")),
                 None,
                 "{falsch}"
             );
@@ -20976,7 +20990,7 @@ mod muster {
         let mut s = Scene::with_model(Model::with_seed(251));
         gebaeude(&mut s);
         let (gb, vb) = (
-            flaeche(s.model(), "Gasbeton"),
+            flaeche(s.model(), "Porenbeton"),
             flaeche(s.model(), "Verblender (Vormauerziegel)"),
         );
         let (g, v) = (sguid(s.model(), gb), sguid(s.model(), vb));
@@ -20986,7 +21000,7 @@ mod muster {
         let l = lesen(&format!("{text}{erste}\n{zweite}\n"));
         assert_eq!(l.hints.len(), 1, "{:?}", l.hints);
         assert!(matches!(
-            muster(&l.model, flaeche(&l.model, "Gasbeton")),
+            muster(&l.model, flaeche(&l.model, "Porenbeton")),
             Some(Pattern::Plaster { grain, .. }) if grain == 2.0
         ));
 
@@ -21017,7 +21031,7 @@ mod muster {
         let ohne_v_tiles = format!("{ohne_v}{tiles_g}\n{tiles_v}\n");
         let mut w = Scene::with_model(lesen(&ohne_v_tiles).model);
         let (gb2, vb2) = (
-            flaeche(w.model(), "Gasbeton"),
+            flaeche(w.model(), "Porenbeton"),
             flaeche(w.model(), "Verblender (Vormauerziegel)"),
         );
         muster_setzen(&mut w, gb2, Some(nf(6.0, 9)));
@@ -21154,7 +21168,7 @@ mod muster {
             (pack(ROT[0].0), pack(ROT[1].0), pack(ROT[2].0))
         );
         assert_eq!(z[3][1], pack(FUGE));
-        let gb = flaeche(s.model(), "Gasbeton");
+        let gb = flaeche(s.model(), "Porenbeton");
         assert_eq!(looks(s.model(), gb)[0][0], 0.0, "ohne Muster: Art 0");
 
         let stift = s
@@ -21426,7 +21440,7 @@ mod muster {
     fn a274_unbekannter_verband_bleibt() {
         let mut s = Scene::with_model(Model::with_seed(274));
         gebaeude(&mut s);
-        let g = sguid(s.model(), flaeche(s.model(), "Gasbeton"));
+        let g = sguid(s.model(), flaeche(s.model(), "Porenbeton"));
         let text = sk_model::szo::write(s.model());
         let zeile = |bond: &str, len: &str, jrgb: &str| {
             format!(
@@ -21437,7 +21451,7 @@ mod muster {
         let l = lesen(&format!("{text}{zukunft}\n"));
         assert!(l.model.check().is_empty());
         assert_eq!(
-            muster(&l.model, flaeche(&l.model, "Gasbeton")),
+            muster(&l.model, flaeche(&l.model, "Porenbeton")),
             None,
             "unbekannter Verband: ohne Muster"
         );
@@ -21457,7 +21471,7 @@ mod muster {
         ] {
             let l = lesen(&format!("{text}{falsch}\n"));
             assert!(!l.hints.is_empty(), "Hinweis fehlt: {falsch}");
-            assert_eq!(muster(&l.model, flaeche(&l.model, "Gasbeton")), None);
+            assert_eq!(muster(&l.model, flaeche(&l.model, "Porenbeton")), None);
             let neu = sk_model::szo::write(&l.model);
             let eigene: Vec<&str> = muster_zeilen(&neu)
                 .into_iter()
@@ -21606,7 +21620,7 @@ mod muster {
     fn a297_ungueltige_musterzeile_bleibt() {
         let m = Model::new();
         let text = sk_model::szo::write(&m);
-        let gb = sguid(&m, flaeche(&m, "Gasbeton"));
+        let gb = sguid(&m, flaeche(&m, "Porenbeton"));
         let vb = sguid(&m, flaeche(&m, "Verblender (Vormauerziegel)"));
         let ziegel = |g: sk_model::Guid, joint: &str| {
             format!(
@@ -21779,11 +21793,11 @@ mod altdatei_werksmuster {
             .replace(&gp.to_string(), &np.to_string());
         pruefe_altdatei(&alt, "selbst gebaut");
 
-        // Gegenprobe: ein [pattern]-Satz für Gasbeton, Werks-Oberflächen mit
+        // Gegenprobe: ein [pattern]-Satz für Porenbeton, Werks-Oberflächen mit
         // fremder Guid bekommen kein Muster
         let g = {
             let l = lesen(&alt);
-            sguid(&l.model, flaeche(&l.model, "Gasbeton"))
+            sguid(&l.model, flaeche(&l.model, "Porenbeton"))
         };
         let mit = format!("{alt}[pattern] surface={g} gen=plaster grain=3 spread=4 seed=5\n");
         let l = lesen(&mit);
@@ -21794,7 +21808,7 @@ mod altdatei_werksmuster {
         );
         assert_eq!(muster(&l.model, flaeche(&l.model, PU)), None);
         assert!(matches!(
-            muster(&l.model, flaeche(&l.model, "Gasbeton")),
+            muster(&l.model, flaeche(&l.model, "Porenbeton")),
             Some(Pattern::Plaster { grain, .. }) if grain == 3.0
         ));
     }
@@ -22625,7 +22639,7 @@ mod texturen {
         );
         let mut s = Scene::with_model(Model::with_seed(261));
         gebaeude(&mut s);
-        let gb = flaeche(s.model(), "Gasbeton");
+        let gb = flaeche(s.model(), "Porenbeton");
         let g = sguid(s.model(), gb);
         let mut faelle: Vec<(Pattern, &str)> = NEU
             .iter()
@@ -22648,7 +22662,7 @@ mod texturen {
             let l = lesen(&text);
             assert!(l.hints.is_empty(), "{wort}: {:?}", l.hints);
             assert_eq!(sk_model::szo::write(&l.model), text, "{wort}: Rundlauf");
-            assert_eq!(muster(&l.model, flaeche(&l.model, "Gasbeton")), Some(p));
+            assert_eq!(muster(&l.model, flaeche(&l.model, "Porenbeton")), Some(p));
 
             if !wort.starts_with("gen=") {
                 continue;
@@ -22669,7 +22683,7 @@ mod texturen {
                 for (wert, gut) in [(lo, true), (hi, true), (lo - d, false), (hi + d, false)] {
                     let zeile = z[0].replace(alt, &format!("{key}={wert}"));
                     let l = lesen(&format!("{ohne}{zeile}\n"));
-                    let m = muster(&l.model, flaeche(&l.model, "Gasbeton"));
+                    let m = muster(&l.model, flaeche(&l.model, "Porenbeton"));
                     if gut {
                         assert!(l.hints.is_empty() && m.is_some(), "{zeile}: {:?}", l.hints);
                     } else {
@@ -22831,7 +22845,7 @@ mod texturen {
 
         let mut s = Scene::with_model(Model::with_seed(263));
         gebaeude(&mut s);
-        let gb = flaeche(s.model(), "Gasbeton");
+        let gb = flaeche(s.model(), "Porenbeton");
         let fl = PatternPreset {
             name: "Klinker Müller".into(),
             pattern: eigen.clone(),
@@ -22927,7 +22941,7 @@ mod texturen {
             ("Terrassenbelag", "Betonplatten 40 × 40", None),
             ("Stahlbeton", "Sichtbeton mit Tafeln", Some(tafeln)),
             ("Verblender (Vormauerziegel)", "Naturstein", None),
-            ("Gasbeton", "Holzschalung Lärche", None),
+            ("Porenbeton", "Holzschalung Lärche", None),
         ] {
             let f = flaeche(s.model(), baustoff);
             let p = p.unwrap_or_else(|| vorlage(v).pattern.clone());
@@ -23097,7 +23111,7 @@ mod texturen {
         }
         let mut s = Scene::with_model(Model::with_seed(270));
         gebaeude(&mut s);
-        let gb = flaeche(s.model(), "Gasbeton");
+        let gb = flaeche(s.model(), "Porenbeton");
         let g = sguid(s.model(), gb);
         muster_setzen(&mut s, gb, Some(fb.clone()));
         let text = sk_model::szo::write(s.model());
@@ -23111,7 +23125,7 @@ mod texturen {
         let l = lesen(&text);
         assert!(l.hints.is_empty(), "{:?}", l.hints);
         assert_eq!(
-            muster(&l.model, flaeche(&l.model, "Gasbeton")).as_ref(),
+            muster(&l.model, flaeche(&l.model, "Porenbeton")).as_ref(),
             Some(fb)
         );
         let ohne: String = text
@@ -23123,7 +23137,7 @@ mod texturen {
             for (wert, gut) in [("0", true), ("100", true), ("101", false), ("-1", false)] {
                 let zeile = z.replace(alt, &format!(" {key}={wert}"));
                 let l = lesen(&format!("{ohne}{zeile}\n"));
-                let m = muster(&l.model, flaeche(&l.model, "Gasbeton"));
+                let m = muster(&l.model, flaeche(&l.model, "Porenbeton"));
                 assert_eq!(
                     l.hints.is_empty() && m.is_some(),
                     gut,

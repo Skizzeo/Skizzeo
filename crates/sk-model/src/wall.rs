@@ -1324,7 +1324,7 @@ mod schichten {
     const AERATED_CONCRETE: u16 = 1;
     const INSULATION: u16 = 2;
 
-    /// Zweischalige Außenwand: 14 cm Dämmung außen, 17,5 cm Gasbeton innen.
+    /// Zweischalige Außenwand: 14 cm Dämmung außen, 17,5 cm Porenbeton innen.
     fn exterior_wall_layers() -> Vec<Layer> {
         vec![
             Layer::new(140.0, INSULATION),
@@ -1373,7 +1373,7 @@ mod schichten {
         ok(&w.section_caps(p0, n), "Schnitt");
         let c = w.solid().clipped(p0, n);
         ok(&c, "geklippt");
-        // Die Dämmung außen ist Schicht 0, der Gasbeton Schicht 1
+        // Die Dämmung außen ist Schicht 0, der Porenbeton Schicht 1
         let top = w.solid_cut_at(1000.0);
         for t in top.triangles.iter().filter(|t| t.mat & material::CUT != 0) {
             let want = if t.mat & !material::CUT == INSULATION {
@@ -1550,7 +1550,7 @@ mod obergeschoss {
         }
         assert_eq!(f1.band(), (5615.0, OK_OG));
         let (s0, s1) = (w0.solid(), w1.solid());
-        // EG: Gasbeton netto 15,761252, Dämmung 14,1654
+        // EG: Porenbeton netto 15,761252, Dämmung 14,1654
         assert!(
             near(volume(&s0, AAC), 15.761252, 1e-6),
             "{}",
@@ -1561,7 +1561,7 @@ mod obergeschoss {
             "{}",
             volume(&s0, INSULATION)
         );
-        // OG: Gasbeton netto 16,50894, Dämmung 14,7856
+        // OG: Porenbeton netto 16,50894, Dämmung 14,7856
         assert!(
             near(volume(&s1, AAC), 16.50894, 1e-5),
             "{}",
@@ -1572,7 +1572,7 @@ mod obergeschoss {
             "{}",
             volume(&s1, INSULATION)
         );
-        // OG-Gasbeton steht auf OK EG-Decke und endet unter DE-002
+        // OG-Porenbeton steht auf OK EG-Decke und endet unter DE-002
         assert_eq!(w1.layer_spans(1), vec![(OK_EG, 5615.0)]);
         assert_eq!(w1.layer_spans(0), vec![(OK_EG, OK_OG)]);
     }
@@ -1585,7 +1585,7 @@ mod obergeschoss {
         assert!(!edges_at(&s0, OK_EG).is_empty() && !edges_at(&s1, OK_EG).is_empty());
         merge_seam(&mut s0, &mut s1, OK_EG);
         // Die Dämmung läuft ohne Kante durch: In +2,855 bleibt im EG nichts,
-        // im OG nur der Fuß des Gasbetons (auf der Decke, anderer Baustoff)
+        // im OG nur der Fuß des Porenbetons (auf der Decke, anderer Baustoff)
         assert!(
             edges_at(&s0, OK_EG).is_empty(),
             "{:?}",
@@ -1593,7 +1593,7 @@ mod obergeschoss {
         );
         let rest = edges_at(&s1, OK_EG);
         for e in &rest {
-            // nur Kanten an der Gasbeton-Innen- oder -Außenseite (≥ 140 mm innen)
+            // nur Kanten an der Porenbeton-Innen- oder -Außenseite (≥ 140 mm innen)
             let inside = |p: Vec3| p.x.min(p.y).min(10000.0 - p.x).min(8000.0 - p.y);
             assert!(inside(e.a) > 139.0 && inside(e.b) > 139.0, "{e:?}");
         }
@@ -1618,7 +1618,7 @@ mod obergeschoss {
         };
         assert!(!edges_at(&c0, OK_EG).iter().any(ins));
         assert!(!edges_at(&c1, OK_EG).iter().any(ins));
-        // Gasbeton OG: Fuß auf der Decke bleibt als Kontur (beide Wände)
+        // Porenbeton OG: Fuß auf der Decke bleibt als Kontur (beide Wände)
         assert_eq!(edges_at(&c1, OK_EG).len(), 2);
     }
 

@@ -2332,10 +2332,16 @@ pub(crate) fn read_types(
 
 /// Ergänzt fehlendes λ an Werksbaustoffen (Nachtrag K5): Treffer über die
 /// Guid, sonst über Name und Kategorie der vier alten Startbaustoffe (Dateien
-/// vor 137fca7 haben zeitbasierte Guids). Vorhandenes λ bleibt; das Modell
-/// gilt danach als unverändert.
+/// vor 137fca7 haben zeitbasierte Guids). Der alte Name zählt unter dem
+/// heutigen Werksnamen („Gasbeton“ heißt seit KA-0a3 „Porenbeton“).
+/// Vorhandenes λ bleibt; das Modell gilt danach als unverändert.
 fn add_lambda(materials: &mut Arena<Material>) {
-    const OLD: [&str; 4] = ["Gasbeton", "Dämmung (WDVS)", "Stahlbeton", "Putz"];
+    const OLD: [(&str, &str); 4] = [
+        ("Gasbeton", "Porenbeton"),
+        ("Dämmung (WDVS)", "Dämmung (WDVS)"),
+        ("Stahlbeton", "Stahlbeton"),
+        ("Putz", "Putz"),
+    ];
     let werk = Model::new();
     let ids: Vec<_> = materials.ids().collect();
     for id in ids {
@@ -2344,9 +2350,10 @@ fn add_lambda(materials: &mut Arena<Material>) {
         };
         let by_guid = werk.materials().iter().find(|(_, w)| w.guid == x.guid);
         let by_name = || {
-            werk.materials().iter().find(|(_, w)| {
-                OLD.contains(&w.name.as_str()) && w.name == x.name && w.category == x.category
-            })
+            let (_, neu) = OLD.iter().find(|(alt, _)| *alt == x.name)?;
+            werk.materials()
+                .iter()
+                .find(|(_, w)| w.name == *neu && w.category == x.category)
         };
         let lambda = by_guid.or_else(by_name).and_then(|(_, w)| w.lambda);
         if let Some(x) = materials.get_mut(id) {
@@ -2593,6 +2600,49 @@ mod tests {
 
     fn load(text: &str) -> Result<Loaded, LoadError> {
         read(text, GuidGen::with_seed(99))
+    }
+
+    /// A310 (Vorankündigung KA-0, Umbenennung Gasbeton → Porenbeton): Eine
+    /// Altdatei mit „Gasbeton“ unter zeitbasierter Guid und ohne λ bekommt
+    /// weiter das λ des Werksbaustoffs; der Name in der Datei bleibt.
+    #[test]
+    fn a310_altdatei_gasbeton_bekommt_lambda() {
+        let m = Model::with_seed(1);
+        let werk = m
+            .materials()
+            .iter()
+            .find(|(_, x)| x.name == "Gasbeton" || x.name == "Porenbeton")
+            .map(|(_, x)| x.clone())
+            .expect("Werksbaustoff Gas- oder Porenbeton");
+        let lambda = werk.lambda.expect("Werks-λ");
+        let neu = write(&m);
+        let g = werk.guid.to_ifc();
+        let other = if g.ends_with('A') { 'B' } else { 'A' };
+        let g2 = format!("{}{other}", &g[..g.len() - 1]);
+        let mut hit = 0;
+        let alt: String = neu
+            .replace(&g, &g2)
+            .lines()
+            .map(|l| {
+                if !(l.starts_with("[material] ") && l.contains(&format!("guid={g2}"))) {
+                    return format!("{l}\n");
+                }
+                hit += 1;
+                let l = l.replacen(&format!("name=\"{}\"", werk.name), "name=\"Gasbeton\"", 1);
+                let i = l.find("lambda=").unwrap();
+                let j = l[i..].find(' ').map_or(l.len(), |j| i + j);
+                format!("{}lambda=-{}\n", &l[..i], &l[j..])
+            })
+            .collect();
+        assert_eq!(hit, 1, "{neu}");
+        assert!(alt.contains("name=\"Gasbeton\""), "{alt}");
+        let got = load(&alt).unwrap().model;
+        let (_, x) = got
+            .materials()
+            .iter()
+            .find(|(_, x)| x.name == "Gasbeton" && x.guid != werk.guid)
+            .expect("Altbaustoff bleibt „Gasbeton“");
+        assert_eq!(x.lambda, Some(lambda));
     }
 
     /// E15/E3b: Schraffuren vor E15 (Winkel im Uhrzeigersinn, Stahlbeton

@@ -1086,10 +1086,10 @@ mod tests {
         assert_eq!(value(&p, "Länge"), "8,00 m");
         assert_eq!(value(&p, "Dicke"), "31,5 cm");
         assert_eq!(value(&p, "Höhe"), "2,75 m");
-        assert_eq!(p.layer_set, "AW 31,5 Gasbeton + WDVS");
+        assert_eq!(p.layer_set, "AW 31,5 Porenbeton + WDVS");
         assert_eq!(p.layers.len(), 2);
         assert_eq!(p.layers[0].1, "14 cm Dämmung (WDVS)");
-        assert_eq!(p.layers[1].1, "17,5 cm Gasbeton");
+        assert_eq!(p.layers[1].1, "17,5 cm Porenbeton");
 
         // Grundriss: von oben auf die Schnittfläche
         let down = vec3(0.0, 0.0, -1.0);

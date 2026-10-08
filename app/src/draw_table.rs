@@ -681,7 +681,7 @@ mod tests {
         assert!(near(t.section_line.0, 1.2) && near(t.section_ends.0, 3.2));
         assert_eq!(t.paper, rgb([245, 244, 239]));
         assert!(t.notes.is_empty(), "{:?}", t.notes);
-        let gas = t.look(key(&m, "Gasbeton") | material::CUT);
+        let gas = t.look(key(&m, "Porenbeton") | material::CUT);
         assert_eq!(gas.kind, fill_kind::LINES);
         assert_eq!(gas.line_count, 1);
         assert!(near(gas.lines[0].spacing_px, 7.0) && near(gas.width_px, 1.0));
@@ -709,7 +709,7 @@ mod tests {
         let t = DrawTable::resolve(&m, &Theme::dark());
         let p = t.pack(1.0);
         assert_eq!(p.len(), t.mats.len() * LOOK_ROWS);
-        let gas = key(&m, "Gasbeton");
+        let gas = key(&m, "Porenbeton");
         let surf = |k| t.look(k);
         // Farben gleich den Oberflächen, Art 2 mit einer Schar unter 135°
         assert_eq!(texel(&t, &p, gas, 0)[..3], surf(gas).face);
