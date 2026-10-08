@@ -833,3 +833,153 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 }
+
+/// Abnahme KA-2c2 durch Test (paket-ka2 §6 Nr. 8a, Koordinator 12:07):
+/// fremder Stand mit anderem Satz, gleiche Änderungszeit, Schreibfehler
+/// mittendrin, `[log]`.
+#[cfg(test)]
+mod abnahme_ka2c2 {
+    use super::*;
+    use std::time::SystemTime;
+
+    fn dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("skizzeo-abnahme-{name}"));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn h() -> sk_cost::Herkunft {
+        sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "12:15")
+    }
+
+    fn lohn(w: i64) -> sk_cost::Op {
+        sk_cost::Op::FirmenwertSetzen {
+            schluessel: "wage".into(),
+            wert: sk_cost::Dez::ganz(w),
+        }
+    }
+
+    /// (Artikel, alter Preis) des ersten Artikels mit Preis.
+    fn artikel(c: &Company) -> (sk_model::Guid, sk_cost::Dez) {
+        let m = Model::from_library(c.library());
+        let k = sk_cost::lesen::firma_oder_werk(&m, Some(c.library()));
+        let a = k.artikel.iter().find(|a| a.preis.is_some()).unwrap();
+        (a.guid, a.preis.unwrap())
+    }
+
+    fn preis(g: sk_model::Guid, p: sk_cost::Dez) -> sk_cost::Op {
+        sk_cost::Op::PreisSetzen {
+            artikel: g,
+            preis: Some(p),
+            stand: "10/2026".into(),
+            quelle: "Abnahme".into(),
+        }
+    }
+
+    fn werte(c: &Company, g: sk_model::Guid) -> (Option<sk_cost::Dez>, Option<sk_cost::Dez>) {
+        let m = Model::from_library(c.library());
+        let k = sk_cost::lesen::firma_oder_werk(&m, Some(c.library()));
+        (k.artikel(g).and_then(|a| a.preis), Some(k.werte.lohn))
+    }
+
+    /// F5/F6: Ein anderer Platz ändert den Lohn, dieser danach (mit altem
+    /// Stand im Speicher) einen Preis: beide Werte stehen in der Datei, Stand
+    /// zweimal + 1, `[log]` lückenlos, beide alten Stände abgelegt. Dasselbe,
+    /// wenn die Änderungszeit der Datei zurückgesetzt wurde.
+    #[test]
+    fn fremder_stand_anderer_satz() {
+        fremd(&[(true, false), (true, true)]);
+    }
+
+    /// Befund (d7472ce): Wie oben, aber die Firma hat noch keine eigenen
+    /// Kostensätze (Startbestand, der erste Stand übernimmt den Werksbestand).
+    /// Der zweite Platz wird mit „inzwischen geändert“ abgelehnt, obwohl ein
+    /// anderer Satz geändert wurde: Die Werkszeilen fehlen in seinem
+    /// geladenen Text und gelten deshalb als fremd geändert.
+    #[test]
+    fn fremder_stand_erster_firmenstand() {
+        fremd(&[(false, false)]);
+    }
+
+    fn fremd(faelle: &[(bool, bool)]) {
+        for &(vorbelegt, gleiche_zeit) in faelle {
+            let d = dir(&format!("fremd-{vorbelegt}-{gleiche_zeit}"));
+            let p = d.join(FILE_NAME);
+            let (mut c, _) = Company::load(&p, true);
+            if vorbelegt {
+                // Die Firma hat schon eigene Kostensätze (erster Stand geschrieben)
+                c.fuer_firma(&h(), &[lohn(61)]).unwrap();
+                c.fuer_firma(&h(), &[lohn(60)]).unwrap();
+            }
+            let (g, alt) = artikel(&c);
+            let mtime = std::fs::metadata(&p).unwrap().modified().unwrap();
+            let (mut c2, _) = Company::load(&p, false);
+            let (n1, _) = c2.fuer_firma(&h(), &[lohn(65)]).unwrap();
+            if gleiche_zeit {
+                std::fs::File::options()
+                    .write(true)
+                    .open(&p)
+                    .unwrap()
+                    .set_modified(mtime)
+                    .unwrap();
+            }
+            let neu_preis = sk_cost::Dez(alt.0 + 1_000_000);
+            let (n2, _) = c
+                .fuer_firma(&h(), &[preis(g, neu_preis)])
+                .unwrap_or_else(|e| {
+                    panic!("vorbelegt={vorbelegt} gleiche_zeit={gleiche_zeit}: {e}")
+                });
+            assert_eq!(n2.stand_vorher, n1.stand, "{gleiche_zeit}");
+            assert_eq!(n2.stand, n1.stand_vorher + 2);
+            let (p_ist, l_ist) = werte(&c, g);
+            assert_eq!(p_ist, Some(neu_preis));
+            assert_eq!(l_ist, Some(sk_cost::Dez::ganz(65)), "fremder Lohn bleibt");
+            let text = std::fs::read_to_string(&p).unwrap();
+            let logs: Vec<&str> = text.lines().filter(|l| l.starts_with("[log]")).collect();
+            assert!(
+                logs.iter()
+                    .any(|l| l.contains(r#"old="60""#) && l.contains(r#"new="65""#)),
+                "{logs:#?}"
+            );
+            assert!(
+                logs.iter()
+                    .any(|l| l.contains(&format!("stand={}", n2.stand))),
+                "{logs:#?}"
+            );
+            for s in [n1.stand_vorher, n2.stand_vorher] {
+                let f = d
+                    .join("firmenkatalog-staende")
+                    .join(format!("stand-{s:04}.szk"));
+                assert!(f.exists(), "{}", f.display());
+            }
+            assert!(!p.with_extension("szk.lock").exists());
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    /// Schreibfehler mittendrin (die temporäre Datei lässt sich nicht
+    /// anlegen): Fehlermeldung, die Firmendatei ist bytegleich, keine Sperre
+    /// und keine temporäre Datei bleiben; danach geht es wieder.
+    #[test]
+    fn schreibfehler_laesst_die_datei_heil() {
+        let d = dir("schreibfehler");
+        let p = d.join(FILE_NAME);
+        let (mut c, _) = Company::load(&p, true);
+        let vorher = std::fs::read(&p).unwrap();
+        let tmp = p.with_extension("szk.tmp");
+        std::fs::create_dir_all(tmp.join("blockiert")).unwrap();
+        let e = c.fuer_firma(&h(), &[lohn(70)]).unwrap_err();
+        assert!(e.contains("nicht gespeichert"), "{e}");
+        assert_eq!(std::fs::read(&p).unwrap(), vorher, "Datei heil");
+        assert!(!p.with_extension("szk.lock").exists(), "Sperre weg");
+        assert_eq!(werte(&c, artikel(&c).0).1, Some(sk_cost::Dez::ganz(60)));
+        std::fs::remove_dir_all(&tmp).unwrap();
+        let (n, _) = c.fuer_firma(&h(), &[lohn(70)]).unwrap();
+        assert_eq!(n.stand, n.stand_vorher + 1);
+        assert!(!tmp.exists());
+        assert_eq!(werte(&c, artikel(&c).0).1, Some(sk_cost::Dez::ganz(70)));
+        let _ = SystemTime::now();
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}

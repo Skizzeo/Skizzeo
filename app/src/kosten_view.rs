@@ -3193,3 +3193,149 @@ mod abnahme_ka2 {
         }
     }
 }
+
+/// Abnahme KA-2c durch Test (paket-ka2 §6 Nr. 4, 11, 13).
+#[cfg(test)]
+mod abnahme_ka2c {
+    use super::*;
+    use sk_cost::{Herkunft, HerkunftArt, Op, SatzId};
+
+    const PB175: &str = "1S7bUW0010080100000002";
+
+    fn rh2() -> Scene {
+        let m = sk_model::szo::read_with(
+            include_str!("../../crates/sk-cost/referenz/rh2-mehrschalig.szo"),
+            sk_model::GuidGen::with_seed(1),
+            &sk_cost::lesen::ABSCHNITTE_SZO,
+        )
+        .unwrap()
+        .model;
+        Scene::with_model(m)
+    }
+
+    fn h() -> Herkunft {
+        Herkunft::neu(HerkunftArt::Manual, "2026-10-08", "12:30")
+    }
+
+    fn pb175_24() -> Op {
+        Op::PreisSetzen {
+            artikel: sk_model::Guid::from_ifc(PB175).unwrap(),
+            preis: Some(Dez::ganz(24)),
+            stand: "10/2026".into(),
+            quelle: "Abnahme 4".into(),
+        }
+    }
+
+    /// EP der Zeilen „AW …17,5“ (M10) und „IW …17,5“ (M50) und ob sie den
+    /// Punkt tragen.
+    fn m10_m50(v: &KostenView) -> Vec<(String, bool)> {
+        v.zeilen()
+            .iter()
+            .filter(|z| matches!(z.art, Art::Position { .. }))
+            .filter(|z| z.text.contains("Planstein") && z.text.contains("17,5"))
+            .map(|z| {
+                (
+                    z.ep.clone(),
+                    z.pos.is_some_and(|p| v.eigen.contains_key(&p.0)),
+                )
+            })
+            .collect()
+    }
+
+    /// Nr. 4 und 11: A-PB175 auf 24,00 im Projekt ändert M10 und M50 (EP
+    /// 27,00 + 24,00 + 4,84 = 55,84), beide tragen den Punkt; ein
+    /// Rückgängig-Schritt „Preis im Projekt geändert“, `[origin]` mit
+    /// `kind=manual` und `proj=1`; Strg+Z nimmt es zurück, Wiederholen
+    /// bringt es; Speichern und Laden behält es.
+    #[test]
+    fn nr4_artikelpreis_im_projekt() {
+        let mut s = rh2();
+        let mut v = KostenView::new();
+        v.sync(&mut s, None);
+        assert_eq!(
+            m10_m50(&v),
+            [("54,00".into(), false), ("54,00".into(), false)]
+        );
+        s.kosten_folge("Preis im Projekt geändert", None, &h(), &[pb175_24()])
+            .unwrap();
+        assert_eq!(s.undo_label(), Some("Preis im Projekt geändert"));
+        v.sync(&mut s, None);
+        assert_eq!(
+            m10_m50(&v),
+            [("55,84".into(), true), ("55,84".into(), true)]
+        );
+        let text = sk_model::szo::write(s.model());
+        let origin = text
+            .lines()
+            .find(|l| l.starts_with("[origin]") && l.contains(PB175))
+            .expect("[origin] zum Artikel");
+        assert!(
+            origin.contains("kind=manual") && origin.contains("proj=1"),
+            "{origin}"
+        );
+        // Strg+Z und Wiederholen
+        assert!(s.undo());
+        v.sync(&mut s, None);
+        assert_eq!(
+            m10_m50(&v),
+            [("54,00".into(), false), ("54,00".into(), false)]
+        );
+        assert!(s.redo());
+        v.sync(&mut s, None);
+        assert_eq!(
+            m10_m50(&v),
+            [("55,84".into(), true), ("55,84".into(), true)]
+        );
+        // Speichern und Laden
+        let m = sk_model::szo::read_with(
+            &sk_model::szo::write(s.model()),
+            sk_model::GuidGen::with_seed(2),
+            &sk_cost::lesen::ABSCHNITTE_SZO,
+        )
+        .unwrap()
+        .model;
+        let mut s2 = Scene::with_model(m);
+        let mut v2 = KostenView::new();
+        v2.sync(&mut s2, None);
+        assert_eq!(
+            m10_m50(&v2),
+            [("55,84".into(), true), ("55,84".into(), true)]
+        );
+        assert_eq!(v2.netto(), v.netto());
+    }
+
+    /// Nr. 13: „Firmenpreis zurückholen“ nimmt die Abweichung zurück: Punkt
+    /// weg, EP wie Werk, ein Rückgängig-Schritt.
+    #[test]
+    fn nr13_firmenpreis_zurueckholen() {
+        let mut s = rh2();
+        let mut v = KostenView::new();
+        v.sync(&mut s, None);
+        let netto = v.netto();
+        s.kosten_folge("Preis im Projekt geändert", None, &h(), &[pb175_24()])
+            .unwrap();
+        v.sync(&mut s, None);
+        assert_ne!(v.netto(), netto);
+        let op = Op::AbweichungZuruecknehmen {
+            saetze: vec![SatzId {
+                abschnitt: "article",
+                kennung: PB175.into(),
+            }],
+        };
+        s.kosten_folge("Firmenpreis zurückgeholt", None, &h(), &[op])
+            .unwrap();
+        assert_eq!(s.undo_label(), Some("Firmenpreis zurückgeholt"));
+        v.sync(&mut s, None);
+        assert_eq!(
+            m10_m50(&v),
+            [("54,00".into(), false), ("54,00".into(), false)]
+        );
+        assert_eq!(v.netto(), netto);
+        assert!(s.undo());
+        v.sync(&mut s, None);
+        assert_eq!(
+            m10_m50(&v),
+            [("55,84".into(), true), ("55,84".into(), true)]
+        );
+    }
+}
