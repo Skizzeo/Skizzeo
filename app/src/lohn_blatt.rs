@@ -73,9 +73,29 @@ pub struct LohnBlatt {
     hot: Option<Ziel>,
     /// Stundenlohn in der Kachel (px), nur für das Blatt.
     anker: Rect,
+    /// Unterkante, über der die Karte bleibt (px): die Kacheln; sonst der
+    /// Fensterrand.
+    pub ueber: Option<f32>,
     pub scale: f32,
     pub fenster: (f32, f32),
 }
+
+/// Erklärung der Karte unter dem Titel (B-Befund Test/Bedienbarkeit 11.3,
+/// Sollbild soll-ka-2): bei Referenzpreisen zwei Zeilen, sonst eine.
+fn erklaerung(titel: &str) -> &'static [&'static str] {
+    if titel.contains("Referenzpreisen") {
+        &[
+            "Alle Preise sind unverbindliche Startwerte. Deinen",
+            "Verrechnungslohn kannst du gleich hier setzen:",
+        ]
+    } else {
+        &["Deinen Verrechnungslohn kannst du gleich hier setzen:"]
+    }
+}
+
+/// Zeile unter dem Feld der Karte: was Enter schreibt.
+const GILT_KARTE: &str = "gilt für dieses und alle neuen Häuser";
+const ZEILE: f32 = 16.0;
 
 /// „Kosten mit Referenzpreisen 10/2026“ aus der Preisquelle
 /// („Referenzpreise 10/2026“, „Preise Firmenkatalog vom …“).
@@ -109,6 +129,7 @@ impl LohnBlatt {
             segment: false,
             hot: None,
             anker: (0.0, 0.0, 0.0, 0.0),
+            ueber: None,
             scale: 1.0,
             fenster: (0.0, 0.0),
         }
@@ -121,7 +142,7 @@ impl LohnBlatt {
     fn hoehe(&self) -> f32 {
         let fehler = if self.wert.is_none() { 18.0 } else { 0.0 };
         match self.form {
-            Form::Karte => PAD + 24.0 + FELD_H + 12.0 + fehler + 34.0 + PAD,
+            Form::Karte => PAD + 24.0 + self.erkl_h() + FELD_H + fehler + ZEILE + 14.0 + 26.0 + PAD,
             Form::Blatt => {
                 let folge = if self.gilt == Gilt::NeueHaeuser {
                     32.0
@@ -133,6 +154,14 @@ impl LohnBlatt {
         }
     }
 
+    /// Höhe der Erklärung der Karte (dip), 0 beim Blatt.
+    fn erkl_h(&self) -> f32 {
+        match self.form {
+            Form::Karte => erklaerung(&self.titel).len() as f32 * ZEILE + 8.0,
+            Form::Blatt => 0.0,
+        }
+    }
+
     fn rect(&self) -> (Rect, bool) {
         let s = self.scale;
         let (fw, fh) = self.fenster;
@@ -140,7 +169,10 @@ impl LohnBlatt {
         match self.form {
             Form::Karte => {
                 let w = KARTE_W * s;
-                ((fw - w - 24.0 * s, fh - h - 24.0 * s, w, h), false)
+                // Über den Kacheln, damit die Lohnkachel frei bleibt
+                let unten = self.ueber.unwrap_or(fh - 24.0 * s).min(fh - 24.0 * s);
+                let y = (unten - h).max(8.0 * s);
+                ((fw - w - 24.0 * s, y, w, h), false)
             }
             Form::Blatt => {
                 let w = BLATT_W * s;
@@ -164,7 +196,7 @@ impl LohnBlatt {
         let ((x, y, w, _), _) = self.rect();
         (
             x + w - (PAD + FELD_W) * s,
-            y + (PAD + 24.0) * s,
+            y + (PAD + 24.0 + self.erkl_h()) * s,
             FELD_W * s,
             FELD_H * s,
         )
@@ -222,7 +254,7 @@ impl LohnBlatt {
         let regular = fonts.regular.as_ref();
         let bold = fonts.bold.as_ref().or(regular);
         let wu = bold.map_or(80.0 * s, |f| f.width(AUCH, px)) + 24.0 * s;
-        let wn = regular.map_or(100.0 * s, |f| f.width("Nur dieses Haus", px)) + 16.0 * s;
+        let wn = bold.map_or(100.0 * s, |f| f.width("Nur dieses Haus", px)) + 24.0 * s;
         let bh = 26.0 * s;
         let by = y + h - (PAD * s) - bh;
         let ux = x + w - PAD * s - wu;
@@ -456,6 +488,14 @@ impl LohnBlatt {
         p.segment((mx - d, my - d), (mx + d, my + d), 1.4 * s);
         p.segment((mx - d, my + d), (mx + d, my - d), 1.4 * s);
         c.fill(&p, col);
+        if karte {
+            let px_k = 10.5 * s;
+            let mut ey = tb + 8.0 * s;
+            for z in erklaerung(&self.titel) {
+                ey += ZEILE * s;
+                f.draw(c, z, px_k, x0, ey.round(), dim);
+            }
+        }
         // Feld mit Beschriftung
         let (fx, fy, fw, fh) = self.feld_rect();
         let px_e = 11.0 * s;
@@ -503,14 +543,33 @@ impl LohnBlatt {
         }
         match self.form {
             Form::Karte => {
+                // Was Enter schreibt, unter dem Feld
+                let gw = f.width(GILT_KARTE, 10.0 * s);
+                f.draw(
+                    c,
+                    GILT_KARTE,
+                    10.0 * s,
+                    fx + fw - gw,
+                    (zy + 14.0 * s).round(),
+                    dim,
+                );
                 if let Some(((nx, ny, nw, nh), (bx, by, bw, bh))) = self.knoepfe(fonts) {
-                    if self.hot == Some(Ziel::NurHaus) {
-                        let mut p = Path::new();
-                        p.rounded_rect(nx, ny, nw, nh, t.size.corner_radius * s);
-                        c.fill(&p, u.hover);
-                    }
-                    let nb = (ny + (nh + f.cap_height(px_e)) * 0.5).round();
-                    f.draw(c, "Nur dieses Haus", px_e, nx + 8.0 * s, nb, dim);
+                    // „Nur dieses Haus“ umrandet
+                    let r = t.size.corner_radius * s;
+                    let mut p = Path::new();
+                    p.rounded_rect(nx, ny, nw, nh, r);
+                    c.fill(&p, u.border);
+                    let b = s.max(1.0);
+                    let mut p = Path::new();
+                    p.rounded_rect(nx + b, ny + b, nw - 2.0 * b, nh - 2.0 * b, r - b);
+                    let innen = if self.hot == Some(Ziel::NurHaus) {
+                        u.hover
+                    } else {
+                        u.menu_bg
+                    };
+                    c.fill(&p, innen);
+                    let nb = (ny + (nh + fb.cap_height(px_e)) * 0.5).round();
+                    fb.draw(c, "Nur dieses Haus", px_e, nx + 12.0 * s, nb, text);
                     let mut p = Path::new();
                     p.rounded_rect(bx, by, bw, bh, t.size.corner_radius * s);
                     c.fill(
@@ -619,6 +678,28 @@ mod tests {
 
     /// Karte: Tippen, Enter schreibt für dieses und neue Häuser, „Nur dieses
     /// Haus“ nur das Projekt; ungültig hält offen; Esc schließt.
+    #[test]
+    fn karte_ueber_den_kacheln_mit_erklaerung() {
+        // B-Befund 11.3: Erklärung bei Referenzpreisen, Karte über den Kacheln
+        let mut k = LohnBlatt::neu(
+            Form::Karte,
+            kartentitel("Referenzpreise 10/2026"),
+            Dez::ganz(60),
+            Dez::ganz(60),
+        );
+        k.fenster = (1200.0, 900.0);
+        k.ueber = Some(780.0);
+        let ((_, y, _, h), _) = k.rect();
+        assert!(y + h <= 780.0, "{} über 780", y + h);
+        assert_eq!(erklaerung(&k.titel).len(), 2);
+        let (_, fy, _, _) = k.feld_rect();
+        assert!(fy >= y + (PAD + 24.0 + 2.0 * ZEILE) * k.scale);
+        assert_eq!(
+            erklaerung("Kosten mit Preisen Firmenkatalog vom 01.10.2026").len(),
+            1
+        );
+    }
+
     #[test]
     fn karte_enter_und_knoepfe() {
         let mut k = LohnBlatt::neu(Form::Karte, "Kosten".into(), Dez::ganz(60), Dez::ganz(60));

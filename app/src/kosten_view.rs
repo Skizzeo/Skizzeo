@@ -939,6 +939,8 @@ impl KostenView {
         let y = self.tiles_top();
         let l = self.lohn.as_mut().expect("eben gesehen");
         l.set_anker((x + 12.0 * s, y + 40.0 * s, x + tw * 0.6, y + 58.0 * s));
+        // Die Hinweiskarte bleibt über den Kacheln (B-Befund 11.3)
+        l.ueber = Some(y - 12.0 * s);
     }
 
     /// Preisblatt an die EP-Zelle und die Fenstergröße legen.
