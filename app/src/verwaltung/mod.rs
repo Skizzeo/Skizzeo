@@ -14,6 +14,8 @@
 mod abnahme_ka3a2;
 #[cfg(test)]
 mod abnahme_ka3a34;
+#[cfg(test)]
+mod abnahme_ka3a7;
 mod baum;
 mod felder;
 #[cfg(test)]
