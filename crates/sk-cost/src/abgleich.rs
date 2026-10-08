@@ -122,7 +122,7 @@ pub fn abgleich(m: &Model, firma: Option<&Library>) -> Option<Abgleich> {
                 continue;
             };
             if markiert.contains(id.as_str()) {
-                let (t, _) = text(a, id, &fk, &pk);
+                let t = eigen_text(a, id, &fk, &pk);
                 if !eigene.contains(&t) {
                     eigene.push(t);
                 }
@@ -144,6 +144,29 @@ pub fn abgleich(m: &Model, firma: Option<&Library>) -> Option<Abgleich> {
         eigene,
         gleich,
     })
+}
+
+/// Satzteil zu einem eigenen Wert dieses Hauses: wie [`text`]; ein Preis,
+/// der dem der Firma gleicht, steht mit „wie Firma“ statt nur dem Namen
+/// (Bedienbarkeit 15). Bei einer Bauleistung kann das Eigene ein anderes
+/// Feld als die Stunden sein, dort bleibt es beim Namen.
+fn eigen_text(abschnitt: &str, id: &str, f: &Katalog, p: &Katalog) -> String {
+    let (t, wert) = text(abschnitt, id, f, p);
+    if wert {
+        return t;
+    }
+    let g = Guid::from_ifc(id);
+    match abschnitt {
+        "article" => match g.and_then(|g| p.artikel(g)) {
+            Some(a) if a.preis.is_some() => format!(
+                "{t} {} €/{} (wie Firma)",
+                zahl(a.preis.unwrap_or_default()),
+                a.einheit.zeichen()
+            ),
+            _ => t,
+        },
+        _ => t,
+    }
 }
 
 /// Satzteil zu einem abweichenden Satz, Firma zuerst, „hier“ das Projekt;
@@ -370,6 +393,33 @@ mod tests {
         let k = lesen::katalog(&m, Some(&firma));
         assert_eq!(k.werte.lohn, Dez::ganz(65));
         assert_eq!(k.artikel(art.guid).unwrap().preis, Some(Dez::ganz(99)));
+    }
+
+    /// Bedienbarkeit 15: ein eigener Preis, der dem der Firma gleicht, steht
+    /// mit Wert und „wie Firma“, ein anderer mit „(hier …)“.
+    #[test]
+    fn eigener_preis_mit_wert() {
+        let m = rh1();
+        let k = lesen::katalog(&m, None);
+        let art = k.artikel.iter().find(|a| a.preis.is_some()).unwrap();
+        let id = art.guid.to_ifc();
+        let t = eigen_text("article", &id, &k, &k);
+        assert_eq!(
+            t,
+            format!(
+                "{} {} €/{} (wie Firma)",
+                art.name,
+                zahl(art.preis.unwrap()),
+                art.einheit.zeichen()
+            )
+        );
+        let mut p = k.clone();
+        p.artikel
+            .iter_mut()
+            .find(|a| a.guid == art.guid)
+            .unwrap()
+            .preis = Some(Dez::ganz(99));
+        assert!(eigen_text("article", &id, &k, &p).ends_with("(hier 99,00)"));
     }
 
     /// Bedienbarkeit 8.1 und 8.2: Satzteile ohne Wert machen „geändert:“,
