@@ -801,8 +801,7 @@ fn referenzhaeuser_im_ordner() {
     let kaputt = &v.wirkung.haeuser[3];
     assert!(
         kaputt.fehler.as_deref().is_some_and(|f| f
-            .starts_with("Referenzhaus kaputt.szo lässt sich nicht lesen (")
-            && f.ends_with("); es wird nicht gerechnet.")),
+            == "Referenzhaus kaputt.szo lässt sich nicht lesen (keine Skizzeo-Datei oder beschädigt); es wird nicht gerechnet."),
         "{:?}",
         kaputt.fehler
     );
@@ -852,7 +851,7 @@ fn referenzhaeuser_im_ordner() {
     let fonts = schriften();
     let w = win();
     v.waehlen(Knoten::Haeuser);
-    v.hover = Some(Ziel::Tipp(wirkung::FLAECHE_TIPP));
+    v.hover = Some(Ziel::Tipp(wirkung::FLAECHE_TIPP.into()));
     v.paint(&Theme::dark(), &fonts, &w);
     for k in (0..v.wirkung.haeuser.len()).map(Knoten::Haus) {
         v.waehlen(k);
@@ -1038,7 +1037,7 @@ fn istbilder_ka3() {
     let (b, _, _) = v.paint(&t, &fonts, &w);
     std::fs::write(dir.join("ist-ka-3a4-referenzhaeuser.png"), b.to_png()).unwrap();
     v.waehlen(Knoten::Haus(0));
-    v.hover = Some(Ziel::Tipp(wirkung::FLAECHE_TIPP));
+    v.hover = Some(Ziel::Tipp(wirkung::FLAECHE_TIPP.into()));
     let (b, _, _) = v.paint(&t, &fonts, &w);
     std::fs::write(dir.join("ist-ka-3a4-standardhaus.png"), b.to_png()).unwrap();
     v.hover = None;

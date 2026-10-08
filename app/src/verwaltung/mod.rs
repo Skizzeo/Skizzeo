@@ -134,7 +134,7 @@ enum Ziel {
     Zurueck,
     Verwerfen,
     /// Text mit Tooltip.
-    Tipp(&'static str),
+    Tipp(String),
     /// Pille „Entwurf · n Änderungen“ und Knopf „Vorschau und Freigeben …“
     /// (KA-3b3, Bedienbarkeit 16.3).
     Vorschau,
@@ -1725,7 +1725,7 @@ impl Verwaltung {
         }
         // Tooltip über allem, unter dem Text, im Fenster gehalten
         if let Some(Ziel::Tipp(tipp)) = &self.hover {
-            let ziel = Some(Ziel::Tipp(tipp));
+            let ziel = Some(Ziel::Tipp(tipp.clone()));
             if let Some((r, _)) = self.teile_px(w, fonts).iter().find(|(_, x)| x.ziel == ziel) {
                 let tt = widgets::tooltip(fonts, tipp, s, t);
                 let x = r.x.min(f.x + f.w - tt.width as f32 - 8.0 * s).max(f.x);
@@ -1802,6 +1802,10 @@ impl Verwaltung {
         let teile = wirkung::zeile(self.wirkung.alle());
         let breite =
             |font: Option<&sk_paint::font::Font>, t: &str| font.map_or(0.0, |f| f.width(t, px));
+        // Geändert, aber kein Haus rechnet anders: das sagen statt nur
+        // „unverändert“ (Bedienbarkeit 14)
+        let ohne_wirkung = !self.ops.is_empty() && teile.iter().all(|t| t.1.is_none());
+        let mut ganz = true;
         for (i, (h, (name, alt, neu))) in self.wirkung.alle().zip(&teile).enumerate() {
             let p = wirkung::prozent(h.vorher, h.nachher).filter(|_| alt.is_some());
             // Passt der Eintrag nicht mehr, steht dort „+ n weitere“
@@ -1816,6 +1820,7 @@ impl Verwaltung {
             if i > 0 && x + gesamt > rand {
                 let rest = format!("+ {} weitere", teile.len() - i);
                 label(c, regular, &rest, px, x, base, u.text_dim);
+                ganz = false;
                 break;
             }
             if i > 0 {
@@ -1846,8 +1851,17 @@ impl Verwaltung {
             }
             x += 8.0 * s;
         }
+        if ohne_wirkung && ganz {
+            let satz = format!("· {OHNE_WIRKUNG}");
+            if x + breite(regular, &satz) <= rand {
+                label(c, regular, &satz, px, x, base, u.text_dim);
+            }
+        }
     }
 }
+
+/// Wirkzeile, wenn das Geänderte in keinem der Häuser vorkommt.
+pub(crate) const OHNE_WIRKUNG: &str = "keines der Häuser verwendet das Geänderte";
 
 /// Firmenwert `schluessel` im Katalog (Werkswert als Rückfall).
 fn firmenwert(k: &Katalog, schluessel: &str) -> Option<Dez> {

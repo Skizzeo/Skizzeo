@@ -368,7 +368,12 @@ impl QuantityWindow {
         if ava.follow(p) && aktiv == Blatt::Ava {
             self.dirty = true;
         }
-        let ava_zahl = ava.karte.clone();
+        // Vor dem ersten Öffnen ohne Zahl, aber nicht leer (Bedienbarkeit 14)
+        let ava_zahl = if ava.karte.is_empty() {
+            AVA_VORHER.to_string()
+        } else {
+            ava.karte.clone()
+        };
         // Lebende Zahlen der Karten
         let now = Instant::now();
         let mengen = mengen_zahl(&s.schedule_in(&list.leiste.umfang));
@@ -377,7 +382,7 @@ impl QuantityWindow {
         });
         let a = self.karten.set_zahl(Blatt::Mengen, mengen, now);
         let b = self.karten.set_zahl(Blatt::Kosten, netto, now);
-        let c = !ava_zahl.is_empty() && self.karten.set_zahl(Blatt::Ava, ava_zahl, now);
+        let c = self.karten.set_zahl(Blatt::Ava, ava_zahl, now);
         if a || b || c {
             self.dirty = true;
         }
@@ -1099,6 +1104,9 @@ impl QuantityWindow {
         }
     }
 }
+
+/// Zweite Zeile der Karte AVA, bevor das LV einmal gerechnet ist.
+const AVA_VORHER: &str = "Leistungsverzeichnis je Los";
 
 /// Lebende Zahl der Karte Mengen: „14 Bauteile · 3 Geschosse“ im Umfang
 /// (Geschosse mit Bauteilen, das Gründungsband zählt mit).

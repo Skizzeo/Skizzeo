@@ -1225,6 +1225,19 @@ impl Verwaltung {
             };
             widgets::button(c, fonts, br, text, st, s, t);
         }
+        // Gekürzter Name der Zeile unter der Maus als Tooltip, über allem
+        // (Bedienbarkeit 16)
+        if let Some(z) = v.hover_zeile.and_then(|i| v.zeilen.get(i).map(|z| (i, z))) {
+            let (i, z) = z;
+            let x = r.x + NAME_X * s;
+            let max = r.x + (ALT_R - 120.0) * s - x;
+            let zy = self.v_zeile_y(w, i);
+            if regular.is_some_and(|f| f.width(&z.name, px) > max) && sichtbar(zy + 20.0 * s) {
+                let tt = widgets::tooltip(fonts, &z.name, s, t);
+                let tx = x.min(r.x + r.w - tt.width as f32 - 8.0 * s).max(r.x);
+                c.blit(&tt, tx.round() as i32, (zy + ZEILE_H * s).round() as i32);
+            }
+        }
     }
 }
 

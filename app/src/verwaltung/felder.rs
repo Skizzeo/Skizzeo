@@ -1172,10 +1172,16 @@ impl Verwaltung {
         } else {
             Farbe::Text
         };
-        let t = b.kurz(&t, PX, false, b.w - WERT_X);
-        b.text(WERT_X, y, t, PX, false, farbe);
-        y += 28.0;
-        self.herkunft_zeile(b, y, "article", a.guid, &text("source"));
+        // Gekürzt mit dem ganzen Text als Tooltip (Bedienbarkeit 14)
+        let kurz = b.kurz(&t, PX, false, b.w - WERT_X);
+        let ziel = (kurz != t).then(|| Ziel::Tipp(t.clone()));
+        b.text_art(WERT_X, y, kurz, PX, false, farbe, false, ziel);
+        // „Herkunft“ nur, wenn sie mehr sagt als „Quelle“ (Bedienbarkeit 14)
+        let (herkunft, offen) = self.herkunft("article", a.guid, &text("source"));
+        if herkunft != text("source") || offen.is_some() {
+            y += 28.0;
+            self.herkunft_zeile(b, y, "article", a.guid, &text("source"));
+        }
         y += ABSTAND;
         y = self.mehr_verweis(b, y);
         if self.mehr {
@@ -1317,7 +1323,7 @@ impl Verwaltung {
             false,
             Farbe::Dim,
             false,
-            Some(Ziel::Tipp(FLAECHE_TIPP)),
+            Some(Ziel::Tipp(FLAECHE_TIPP.into())),
         );
         let m2 = |c| {
             h.je_m2(c)
@@ -1379,7 +1385,7 @@ impl Verwaltung {
             false,
             Farbe::Dim,
             false,
-            Some(Ziel::Tipp(FLAECHE_TIPP)),
+            Some(Ziel::Tipp(FLAECHE_TIPP.into())),
         );
         y += 24.0;
         b.linie(y - 4.0);

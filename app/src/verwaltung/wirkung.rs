@@ -87,8 +87,18 @@ impl Haus {
                 _ => "nicht lesbar".to_string(),
             })
             .and_then(|t| {
-                sk_model::szo::read_with(&t, GuidGen::with_seed(1), &lesen::ABSCHNITTE_SZO)
-                    .map_err(|e| e.message)
+                // Der Lesefehler ist für Entwickler: ins Fehlerprotokoll, der
+                // Satz bleibt allgemein (Bedienbarkeit 14)
+                sk_model::szo::read_with(&t, GuidGen::with_seed(1), &lesen::ABSCHNITTE_SZO).map_err(
+                    |e| {
+                        crate::meldung::protokoll(&format!(
+                            "Referenzhaus {}: {}",
+                            pfad.display(),
+                            e.message
+                        ));
+                        "keine Skizzeo-Datei oder beschädigt".to_string()
+                    },
+                )
             });
         let mut h = match gelesen {
             Ok(l) => Haus::aus(&name, l.model, false),
