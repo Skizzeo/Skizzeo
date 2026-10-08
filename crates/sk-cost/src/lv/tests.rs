@@ -553,3 +553,36 @@ fn lv_ist_schnell() {
     let je = t.elapsed() / 20;
     assert!(je < std::time::Duration::from_millis(5), "{je:?} je LV");
 }
+
+/// Doppelte OZ im Katalog (Regel 86, nur gemeldet): Das LV des Loses
+/// meldet sie im Prüfen, je OZ einmal, mit und ohne Untertitel (Review 3an).
+#[test]
+fn doppelte_oz_im_pruefen() {
+    let m = rh1();
+    let k = werk_mit(
+        &m,
+        &[(
+            "title=1S7bUW0010080300000002 pos=30 ",
+            "title=1S7bUW0010080300000002 pos=60 ",
+        )],
+    );
+    let s = qto::schedule(&m);
+    let u = Umfang::projekt();
+    let b = lesen::kosten(&m, &s, &k, &u);
+    for (ut, oz) in [
+        (false, vec!["01.0060"]),
+        (true, vec!["01.02.0060", "01.03.0060"]),
+    ] {
+        let lv = lv_aus(&m, &b, &k, &wahl(ut, true));
+        let d: Vec<&Befund> = lv.befunde.iter().filter(|b| b.regel == 86).collect();
+        let orte: Vec<Ort> = oz.iter().map(|o| Ort::Position(o.to_string())).collect();
+        assert_eq!(
+            d.iter().map(|b| b.ort.clone()).collect::<Vec<_>>(),
+            orte,
+            "{d:?}"
+        );
+        assert_eq!(d[0].schwere, Schwere::Fehler);
+    }
+    let lv = lv_aus(&m, &b, &lesen::katalog(&m, None), &wahl(true, true));
+    assert!(lv.befunde.iter().all(|b| b.regel != 86));
+}

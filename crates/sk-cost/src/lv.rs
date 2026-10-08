@@ -548,6 +548,28 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
         }
     }
 
+    // Regel 86 im LV: Der Katalog meldet eine doppelte OZ nur und behält
+    // beide Bauleistungen (auch eine ausgemusterte, die noch verwendet
+    // wird); im LV des Loses wäre die OZ dann zweimal da
+    let mut oz_gesehen: Vec<&str> = Vec::new();
+    let mut oz_doppelt: Vec<&str> = Vec::new();
+    for p in titel.iter().flat_map(|t| &t.positionen) {
+        if oz_gesehen.contains(&p.oz.as_str()) {
+            if !oz_doppelt.contains(&p.oz.as_str()) {
+                oz_doppelt.push(&p.oz);
+            }
+        } else {
+            oz_gesehen.push(&p.oz);
+        }
+    }
+    for oz in oz_doppelt {
+        befunde.push(Befund::fehler(
+            86,
+            crate::befund::r86(&oz_mit_los(&los_nr, oz)),
+            Ort::Position(oz.to_string()),
+        ));
+    }
+
     // Befunde je Position: Preis fehlt, Kurztext, Preisstand, eigener Preis
     for t in &titel {
         for p in &t.positionen {
