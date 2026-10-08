@@ -876,7 +876,7 @@ impl HelpCard {
             oy + base(fy, foot),
             t.ui.text_dim,
         );
-        // Verweis im Fuß; `arrow`: Pfeil dahinter (zu bzw. offen)
+        // Verweis im Fuß, fett; `arrow`: Pfeil dahinter (zu bzw. offen)
         let link = |c: &mut Canvas, label: &str, hover: bool, arrow: Option<bool>| -> Rect {
             let aw = if arrow.is_some() {
                 (14.0 * s).round()
@@ -885,12 +885,12 @@ impl HelpCard {
             };
             let x = pad;
             let label = widgets::ellipsize(
-                reg,
+                bold,
                 label,
                 px,
                 w - 2.0 * pad - hint_w - aw - (24.0 * s).round(),
             );
-            let lw = width(reg, &label) + aw;
+            let lw = width(bold, &label) + aw;
             let r = Rect::new(
                 x - (6.0 * s).round(),
                 fy + (6.0 * s).round(),
@@ -902,9 +902,17 @@ impl HelpCard {
                 p.rounded_rect(ox + r.x, oy + r.y, r.w, r.h, 4.0 * s);
                 c.fill(&p, t.ui.hover);
             }
-            widgets::text(c, reg, &label, px, ox + x, oy + base(fy, foot), t.ui.accent);
+            widgets::text(
+                c,
+                bold,
+                &label,
+                px,
+                ox + x,
+                oy + base(fy, foot),
+                t.ui.accent,
+            );
             if let Some(open) = arrow {
-                let ax = ox + x + width(reg, &label) + (8.0 * s).round();
+                let ax = ox + x + width(bold, &label) + (8.0 * s).round();
                 let ay = oy + base(fy, foot) - cap * 0.5;
                 widgets::disclosure(c, ax, ay, open, t.ui.accent, s);
             }

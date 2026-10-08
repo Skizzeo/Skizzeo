@@ -25414,13 +25414,15 @@ mod teilbilder {
             .map(|i| (i % a.w, i / a.w))
     }
 
-    /// Mauspfad: Zeile für Zeile, dann schnelle Sprünge über mehrere
-    /// Zeilen, dann hinaus.
+    /// Mauspfad: im Zickzack über die Zeilen (18 dip, also jede Listenzeile;
+    /// bei 150 und 200 % alle 54 dip, damit der Test im Debug-Bau unter
+    /// einer Minute bleibt), dann schnelle Sprünge über mehrere Zeilen,
+    /// dann hinaus.
     fn pfad(sc: &Schirm, scale: f64) -> Vec<(f64, f64)> {
         let (x0, y0) = (sc.x as f64, sc.y as f64);
         let (w, h) = (sc.w as f64, sc.h as f64);
         let mut v = Vec::new();
-        let schritt_y = 9.0 * scale;
+        let schritt_y = if scale == 1.0 { 18.0 } else { 54.0 } * scale;
         let mut y = 20.0 * scale;
         let mut zeile = 0;
         while y < h - 10.0 * scale {
