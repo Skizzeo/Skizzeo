@@ -169,13 +169,14 @@ pub enum Topic {
     Materials,
     Patterns,
     Quantities,
+    Costs,
     Delete,
     Backups,
 }
 
 impl Topic {
     /// Alle Themen in der Reihenfolge der Liste „Alle Themen“.
-    pub const ALL: [Topic; 28] = [
+    pub const ALL: [Topic; 29] = [
         Topic::Start,
         Topic::Navigation,
         Topic::Building,
@@ -202,6 +203,7 @@ impl Topic {
         Topic::Materials,
         Topic::Patterns,
         Topic::Quantities,
+        Topic::Costs,
         Topic::Delete,
         Topic::Backups,
     ];
@@ -234,6 +236,7 @@ impl Topic {
                 Topic::Section,
                 Topic::Tree,
                 Topic::Quantities,
+                Topic::Costs,
             ],
         ),
         (
@@ -282,6 +285,7 @@ impl Topic {
             Topic::Materials => "baustoffe",
             Topic::Patterns => "muster",
             Topic::Quantities => "mengen",
+            Topic::Costs => "kosten",
             Topic::Delete => "loeschen",
             Topic::Backups => "sicherungen",
         }
@@ -1004,6 +1008,34 @@ fn rich_wrap(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// KA-2d (paket-ka2 §7): Thema „Kosten“ mit Verrechnungslohn, „Auch für
+    /// neue Häuser“ und „Bauleistung wählen …“; „Mengen und Kosten“ mit der
+    /// Zeile „Gebäude“ und ohne die alte Zeile „Preise“.
+    #[test]
+    fn hilfe_kosten_und_mengen() {
+        let h = help();
+        let k = h.section("kosten").expect("Thema Kosten");
+        assert_eq!(k.title, "Kosten");
+        let zeile =
+            |s: &Section, a: &str| s.rows.iter().find(|(x, _)| x == a).map(|(_, b)| b.clone());
+        for a in [
+            "Verrechnungslohn",
+            "Preis ändern",
+            "Für neue Häuser",
+            "Andere Werte",
+            "Grau",
+        ] {
+            assert!(zeile(k, a).is_some(), "{a}");
+        }
+        assert!(zeile(k, "Grau").unwrap().contains("„Bauleistung wählen …“"));
+        let m = h.section("mengen").unwrap();
+        assert_eq!(m.title, "Mengen und Kosten");
+        assert!(zeile(m, "Gebäude").unwrap().contains("ganze Projekt"));
+        assert_eq!(zeile(m, "Preise"), None);
+        assert!(m.rows.len() <= 10);
+        assert_eq!(Topic::from_id("kosten"), Some(Topic::Costs));
+    }
 
     #[test]
     fn text_des_programms_ist_heil() {

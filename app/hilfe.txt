@@ -209,17 +209,28 @@ Regler | rechts je Musterart, Zahlen mit Pfeiltasten
 Eigene Vorlage | „Als Vorlage speichern …“ legt sie im Firmenkatalog ab
 Übernehmen | **OK**; Abbrechen verwirft
 
-[thema] id=mengen titel="Mengenermittlung"
+[thema] id=mengen titel="Mengen und Kosten"
 Öffnen | Knopf „Mengen · Kosten“ im Paneel „Ansichten“
-Gliedern | oben rechts „Gliedern nach“ Geschoss oder Gewerk
+Karten | Mengen und Kosten; jede Karte zeigt ihre Zahl, sie läuft mit dem Modell mit
+Gebäude | ab zwei Gebäuden wählt das Feld vor den Chips ein Gebäude oder das ganze Projekt
 Geschosse | Klick auf einen Chip zeigt nur dieses Geschoss, jeder weitere nimmt eines dazu oder weg; „Alle“ holt alle zurück
+Gliedern | „Gliedern“ nach Geschoss oder Gewerk, bei Kosten auch Kostengruppe
 Gewerksumme | jede Fläche einmal je Bauteil; in m Abgerechnetes (Attikablech) zählt ohne Volumen
-Preise | Richtpreise stehen bei den Baustoffen; Kosten rechnet die Liste noch nicht
-Zeigen | Überfahren einer Zeile lässt das Bauteil leuchten, Klick wählt es
-Ins Bild holen | Doppelklick auf eine Zeile
+Zeigen | Überfahren einer Zeile lässt das Bauteil leuchten, Klick wählt es; Doppelklick holt es ins Bild
 Löschen | **Entf** oder Rechtsklick auf eine Zeile
-Ausgabe | „Als Tabelle speichern“ legt eine CSV für Excel ab
+Ausgabe | „Als Tabelle speichern“ legt eine CSV für Excel ab; die erste Zeile nennt Gebäude und Geschosse
 Fenster | wegziehen löst es, an der Kante rastet es wieder ein
+
+[thema] id=kosten titel="Kosten"
+Preise | „Material“ oder „Material + Lohn“
+Summe | netto, brutto mit MwSt., Lohnanteil mit Lohn und Material
+Verrechnungslohn | beim ersten Öffnen in der Hinweiskarte; später Klick auf den Stundenlohn in der Kachel Lohnanteil
+Preis ändern | Doppelklick auf einen EP; „Nur dieses Haus“ oder „Auch für neue Häuser“, dann Enter
+Für neue Häuser | gilt sofort für alle neuen Häuser; Strg+Z nimmt es nur für dieses Haus zurück
+Andere Werte | eine Zeile oben nennt, was für neue Häuser anders ist; „übernehmen“ oder „so lassen“
+Geschätzt | keine genaue Bauleistung; gerechnet nach der nächsten Dicke oder dem Richtpreis
+Grau | keine passende Bauleistung; „Bauleistung wählen …“
+Referenzpreise | Stand 10/2026, unverbindlich, netto
 
 [thema] id=loeschen titel="Löschen"
 Innenwand | wählen, **Entf** oder Rechtsklick › Löschen

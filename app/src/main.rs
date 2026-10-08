@@ -2139,7 +2139,8 @@ impl App {
         if !self.quantity.open {
             return;
         }
-        // F1 im Mengenfenster: Karte im Hauptfenster mit „Mengenermittlung“
+        // F1 im Mengenfenster: Karte im Hauptfenster mit „Mengen und Kosten“
+        // bzw. „Kosten“
         if let Event::Key {
             key: help::KEY_F1,
             down,
@@ -2148,7 +2149,13 @@ impl App {
         {
             if down && self.save_dlg.is_none() {
                 let was = self.help.is_open();
-                self.help.open_with(help::Topic::Quantities);
+                // im Reiter Kosten das Thema „Kosten“
+                self.help
+                    .open_with(if self.quantity.blatt() == cards::Blatt::Kosten {
+                        help::Topic::Costs
+                    } else {
+                        help::Topic::Quantities
+                    });
                 if !was {
                     self.help_toggled();
                 }
