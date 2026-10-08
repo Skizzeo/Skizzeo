@@ -247,23 +247,17 @@ fn untertitel_von(m: &Model, st: StoreyId) -> (u32, String) {
     (nr as u32, s.name.clone())
 }
 
-/// Mengen in kleinster Einheit → 3 Stellen, deren Summe die gerundete
-/// Gesamtmenge ist (größter Rest).
-fn verteilen(werte: &[i128], e: Einheit) -> Vec<Dez> {
+/// Zeilen des Mengenansatzes je für sich auf 3 Stellen (ka-0-fach §1.9,
+/// Fachprüfung KA-4a P1): Jede Zeile zeigt die Menge, die auch im Mengen-
+/// Reiter steht. Weicht ihre Summe von der Positionsmenge ab, gleicht der
+/// zweite Wert das aus (sonst 0).
+fn einzeln(werte: &[i128], e: Einheit) -> (Vec<Dez>, Dez) {
     let s = skala(e);
     let ziel = runden(werte.iter().sum::<i128>() * 1000, s);
-    let mut milli: Vec<i128> = werte.iter().map(|v| (v * 1000).div_euclid(s)).collect();
-    let mut rest: Vec<(i128, usize)> = werte
-        .iter()
-        .enumerate()
-        .map(|(i, v)| ((v * 1000).rem_euclid(s), i))
-        .collect();
-    rest.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    let fehlt = ziel - milli.iter().sum::<i128>();
-    for (_, i) in rest.iter().take(fehlt.max(0) as usize) {
-        milli[*i] += 1;
-    }
-    milli.into_iter().map(|x| Dez((x * 1000) as i64)).collect()
+    let milli: Vec<i128> = werte.iter().map(|v| runden(v * 1000, s)).collect();
+    let rest = ziel - milli.iter().sum::<i128>();
+    let dez = |x: i128| Dez((x * 1000) as i64);
+    (milli.into_iter().map(dez).collect(), dez(rest))
 }
 
 /// Mengenansatz (ka-4-fach §3.3): je Geschoss und Herkunft die
@@ -315,11 +309,25 @@ fn mengenansatz(
         }
     }
     let werte: Vec<i128> = zeilen.iter().map(|z| z.1).collect();
-    zeilen
+    let (mengen, rest) = einzeln(&werte, einheit);
+    let mut aus: Vec<Ansatzzeile> = zeilen
         .into_iter()
-        .zip(verteilen(&werte, einheit))
+        .zip(mengen)
         .map(|((z, _), menge)| Ansatzzeile { menge, ..z })
-        .collect()
+        .collect();
+    // Sichtbarer Rundungsausgleich ohne Bauteile, am letzten Geschoss
+    if rest != Dez::NULL {
+        if let Some(geschoss) = aus.last().map(|z| z.geschoss) {
+            aus.push(Ansatzzeile {
+                geschoss,
+                nummern: Vec::new(),
+                elemente: Vec::new(),
+                herkunft: "Rundungsausgleich".to_string(),
+                menge: rest,
+            });
+        }
+    }
+    aus
 }
 
 /// OZ im LV eines Loses, mit Untertitel dreistufig.

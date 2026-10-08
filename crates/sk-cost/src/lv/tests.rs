@@ -389,13 +389,17 @@ fn bauvorhaben_aus_dem_dateinamen() {
     assert_eq!(menge_deutsch(Dez(1_234_567_000)), "1.234,567");
 }
 
+/// P1 (Fachprüfung KA-4a): Jede Zeile ist für sich gerundet, der Rest
+/// steht als eigener Wert; Zeilen und Rest ergeben die Positionsmenge.
 #[test]
-fn verteilen_ergibt_die_summe() {
-    // drei Teile je 1/3 m² = 333.333,3… mm²
-    let v = verteilen(&[333_333, 333_333, 333_334], Einheit::M2);
-    assert_eq!(v.iter().map(|d| d.0).sum::<i64>(), 1_000_000);
-    let v = verteilen(&[1_500_000, -500_400], Einheit::M2);
+fn einzeln_gerundet_mit_ausgleich() {
+    // drei Teile je 1/3 m² = 333.333,3… mm²: 3 × 0,333 und Ausgleich 0,001
+    let (v, rest) = einzeln(&[333_333, 333_333, 333_334], Einheit::M2);
+    assert_eq!(v, [Dez(333_000); 3]);
+    assert_eq!(rest, Dez(1_000));
+    let (v, rest) = einzeln(&[1_500_000, -500_400], Einheit::M2);
     assert_eq!(v, [Dez(1_500_000), Dez(-500_000)]);
+    assert_eq!(rest, Dez::NULL);
 }
 
 /// Abnahme 7 (Landkarte P7): Menge und EP jeder LV-Position kommen aus dem
