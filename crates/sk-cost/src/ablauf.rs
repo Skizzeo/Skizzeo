@@ -306,6 +306,21 @@ fn platzhalter(t: &str) -> Result<Vec<&str>, ()> {
     Ok(v)
 }
 
+/// Namen aus `{key.einheit}` in `t` (Klammern wie in [`platzhalter`]).
+fn einheit_namen(t: &str) -> Vec<&str> {
+    let mut v = Vec::new();
+    let mut rest = t;
+    while let Some(i) = rest.find('{') {
+        let r = &rest[i + 1..];
+        let Some(j) = r.find('}') else { break };
+        if let Some(k) = r[..j].strip_suffix(EINHEIT) {
+            v.push(k);
+        }
+        rest = &r[j + 1..];
+    }
+    v
+}
+
 /// `args` als Paare `name=wert` (Wert mit Platzhaltern).
 fn paare(args: &str) -> Option<Vec<(&str, &str)>> {
     args.split_whitespace().map(|p| p.split_once('=')).collect()
@@ -433,6 +448,29 @@ fn pruefen(a: &Ablauf) -> Option<Befund> {
                 .collect(),
         };
         let werte = paare(&s.args).unwrap_or_default();
+        // Nachtrag 23:20: `{key.einheit}` nur in text, preset und hint, und
+        // nur zu einer Antwort mit Einheit (Regel 102)
+        if werte.iter().any(|(_, v)| !einheit_namen(v).is_empty()) {
+            return f102(format!(
+                "Schritt {} setzt eine Einheit in eine Operation ein",
+                s.nr
+            ));
+        }
+        for t in [s.text.as_str(), s.preset.as_str(), s.hint.as_str()] {
+            for k in einheit_namen(t) {
+                let ohne = a
+                    .schritte
+                    .iter()
+                    .find(|x| x.key == k)
+                    .is_some_and(|x| matches!(x.typ, Some(Feldart::Text | Feldart::Wahl(_))));
+                if ohne {
+                    return f102(format!(
+                        "Schritt {} fragt nach der Einheit von {k}, die keine hat",
+                        s.nr
+                    ));
+                }
+            }
+        }
         let felder = [s.text.as_str(), s.preset.as_str(), s.hint.as_str()]
             .into_iter()
             .chain(werte.iter().map(|(_, v)| *v));
@@ -1083,5 +1121,45 @@ mod tests {
         let l = lesen(&[&alt, &neu]);
         assert_eq!(l.len(), 1);
         assert_eq!(l[0].name, "Probe 2");
+    }
+
+    /// Nachtrag 23:20 zu Regel 103: `{key.einheit}` nur in text, preset
+    /// und hint und nur zu einer Antwort mit Einheit; jede andere Endung
+    /// nach dem Punkt ist ungültig (Regel 102).
+    #[test]
+    fn einheit_nur_in_texten() {
+        let kopf = "[flow] guid=1S7bUW0010080700000009 name=\"Probe\" kind=admin\n";
+        let s = |nr: u32, rest: &str| {
+            format!("[flowstep] guid=1S7bUW00100808000000{nr:02} flow=1S7bUW0010080700000009 nr={nr} {rest}\n")
+        };
+        let regel = |t: String| lesen(&[&t])[0].befund.as_ref().map(|b| b.regel);
+        let lohn = s(1, "step=ask key=lohn text=\"Lohn?\" type=money");
+        let op = |wert: &str| {
+            s(
+                2,
+                &format!("step=op op=firmenwert_setzen args=\"schluessel=wage wert={wert}\""),
+            )
+        };
+        let done = |text: &str| s(3, &format!("step=done text=\"{text}\""));
+        // erlaubt: im Schlusssatz zu einer Geldantwort
+        let gut = format!(
+            "{kopf}{lohn}{}{}",
+            op("{lohn}"),
+            done("Lohn {lohn} {lohn.einheit}.")
+        );
+        assert_eq!(regel(gut), None);
+        // nicht in args
+        let args = format!("{kopf}{lohn}{}{}", op("{lohn.einheit}"), done("Fertig."));
+        assert_eq!(regel(args), Some(102));
+        // andere Endung
+        let endung = format!("{kopf}{lohn}{}{}", op("{lohn}"), done("Lohn {lohn.zahl}."));
+        assert_eq!(regel(endung), Some(102));
+        // zu text und pick: gibt es keine Einheit
+        let text = s(1, "step=ask key=lohn text=\"Lohn?\" type=text");
+        let t = format!("{kopf}{text}{}{}", op("{lohn}"), done("{lohn.einheit}"));
+        assert_eq!(regel(t), Some(102));
+        let pick = s(1, "step=ask key=lohn text=\"Lohn?\" type=pick:article");
+        let t = format!("{kopf}{pick}{}{}", op("{lohn}"), done("{lohn.einheit}"));
+        assert_eq!(regel(t), Some(102));
     }
 }
