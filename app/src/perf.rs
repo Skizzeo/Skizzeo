@@ -927,3 +927,61 @@ fn perf_uebergaenge() {
          ({lo:.2}–{hi:.2}), hochgeladen {mb:.2} MB je Bild"
     );
 }
+
+/// Review 3h Befund 2 (nach Paket 9 Schritt 2): ganze Art ausgeblendet
+/// (alle Decken), dann eine Wand ändern; gemessen wird das 3D-Netz danach
+/// und das Live-Netz beim Ziehen.
+#[test]
+#[ignore]
+fn perf_ausblenden() {
+    println!();
+    for (name, houses) in [("Referenz", 1), ("2 Häuser", 2)] {
+        for hide in [false, true] {
+            let mut s = reference_stacked(houses, 4, 2);
+            if hide {
+                let mut v = s.model().visibility().clone();
+                v.hidden_cat.insert(sk_model::Category::Floor);
+                assert!(s.set_visibility(v));
+            }
+            s.mesh(ViewKind::Persp, None, &[]);
+            let run = s
+                .model()
+                .runs()
+                .ids()
+                .find(|r| !s.model().stack_above(*r).is_empty())
+                .unwrap();
+            let orig = s.chain(run).unwrap().clone();
+            let mut v3 = Vec::new();
+            for k in 0..30 {
+                let moved = orig
+                    .with_segment_moved(0, if k % 2 == 0 { -100.0 } else { -200.0 })
+                    .unwrap();
+                s.begin("Wand verschieben");
+                s.set_run_points(run, &moved.points);
+                s.commit();
+                let t = Instant::now();
+                std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
+                v3.push(t.elapsed().as_secs_f64() * 1000.0);
+            }
+            let live_set = s.live_set(run);
+            s.begin("Wand verschieben");
+            let mut live = Vec::new();
+            for k in 0..30 {
+                let moved = orig
+                    .with_segment_moved(0, if k % 2 == 0 { -100.0 } else { -200.0 })
+                    .unwrap();
+                s.set_run_points(run, &moved.points);
+                let t = Instant::now();
+                std::hint::black_box(s.mesh_runs(ViewKind::Persp, None, &live_set));
+                live.push(t.elapsed().as_secs_f64() * 1000.0);
+            }
+            s.commit();
+            let (a, _, a95) = median(&mut v3);
+            let (b, _, b95) = median(&mut live);
+            println!(
+                "{name:<10} {:<16} 3D-Netz nach Änderung {a:6.2} ms (max {a95:.2}), Ziehen {b:6.2} ms (max {b95:.2})",
+                if hide { "Decken aus" } else { "alles sichtbar" }
+            );
+        }
+    }
+}

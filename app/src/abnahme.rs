@@ -17964,6 +17964,126 @@ mod sichtbarkeit {
             .collect();
         assert!(schichten.is_empty() || schichten.is_subset(&[0, 1].into_iter().collect()));
     }
+
+    /// Netz ohne Reihenfolge: Flächen und Kanten sortiert.
+    fn kanonisch(m: &sk_render::MeshData) -> (Vec<[u32; 9]>, Vec<[u32; 7]>) {
+        let mut f: Vec<[u32; 9]> = m.faces.iter().map(|t| t.map(f32::to_bits)).collect();
+        let mut e: Vec<[u32; 7]> = m
+            .edges
+            .iter()
+            .map(|([a, b], k)| {
+                [
+                    a[0].to_bits(),
+                    a[1].to_bits(),
+                    a[2].to_bits(),
+                    b[0].to_bits(),
+                    b[1].to_bits(),
+                    b[2].to_bits(),
+                    k.to_bits(),
+                ]
+            })
+            .collect();
+        f.sort_unstable();
+        e.sort_unstable();
+        (f, e)
+    }
+
+    /// Netz derselben Lage, ganz neu gerechnet (ohne gemerkte Teilergebnisse).
+    fn frisch(s: &Scene, view: ViewKind, except: &[RunId]) -> sk_render::MeshData {
+        Scene::with_model(s.model().clone()).mesh(view, None, except)
+    }
+
+    /// A303 (nach Paket 9 Punkt 3, Review 3h Befund 2; Darstellung §2.4,
+    /// Koordinator 22:13): Ganze Art bzw. ganzes Gewerk ausblenden mit
+    /// gemerktem Teilergebnis je Zug. Das Netz gleicht in jedem Schritt dem
+    /// ganz neu gerechneten: nach dem Ausblenden, beim Ziehen (Vorschau ohne
+    /// den gezogenen Zug), nach dem Ziehen, nach Rückgängig, nach einem
+    /// Musterwechsel, nach geänderter lichter Höhe und nach dem Einblenden.
+    /// In 3D und in der Ansicht von vorne. Mengen bleiben gleich.
+    #[test]
+    fn a303_ganze_art_ausblenden_ohne_alte_geometrie() {
+        type Aus = fn(&mut Visibility, sk_model::TradeId);
+        let faelle: [(&str, Aus); 3] = [
+            ("Decken", |v, _| {
+                v.hidden_cat.insert(Category::Floor);
+            }),
+            ("Außenwände", |v, _| {
+                v.hidden_cat.insert(Category::ExteriorWall);
+            }),
+            ("Mauerarbeiten", |v, t| {
+                v.hidden_trade.insert(t);
+            }),
+        ];
+        for (name, aus) in faelle {
+            let mut s = Scene::with_model(Model::with_seed(303));
+            let (eg, og) = gebaeude(&mut s);
+            let maurer = gewerk(&s, "18330");
+            let aw6 = nr(&s, "AW-006");
+            let mengen = csv(&mut s);
+            for view in [ViewKind::Persp, ViewKind::Front] {
+                let pruefe = |s: &mut Scene, schritt: &str, except: &[RunId]| {
+                    let ist = s.mesh(view, None, except);
+                    assert_eq!(
+                        kanonisch(&ist),
+                        kanonisch(&frisch(s, view, except)),
+                        "{name}, {view:?}: {schritt}"
+                    );
+                };
+                let voll = kanonisch(&s.mesh(view, None, &[]));
+                sicht(&mut s, |v| aus(v, maurer));
+                pruefe(&mut s, "ausgeblendet", &[]);
+                assert_ne!(
+                    kanonisch(&s.mesh(view, None, &[])),
+                    voll,
+                    "{name}: Netz ändert sich"
+                );
+
+                // Ziehen: Vorschau ohne den gezogenen Zug, danach das Ergebnis
+                pruefe(&mut s, "Vorschau beim Ziehen", &[og]);
+                assert!(s.edit_model("Wand verschoben", |m| {
+                    m.set_linked(aw6, false) && m.set_offset(aw6, 300.0).is_some()
+                }));
+                pruefe(&mut s, "nach dem Ziehen", &[]);
+                assert_eq!(s.undo_label(), Some("Wand verschoben"));
+                assert!(s.undo());
+                pruefe(&mut s, "nach Rückgängig", &[]);
+
+                let vb = s
+                    .model()
+                    .materials()
+                    .iter()
+                    .find(|(_, x)| x.name == sk_model::proctex::FACING)
+                    .map(|(_, x)| x.surface)
+                    .expect("Verblender");
+                let muster_vorher = s.model().attr().surface(vb).unwrap().pattern.clone();
+                assert!(s.edit_model("Einstellungen geändert", |m| {
+                    m.set_surface_pattern(vb, Some(sk_model::proctex::masonry_default()))
+                }));
+                pruefe(&mut s, "nach Musterwechsel", &[]);
+
+                let eg_geschoss = s.model().run(eg).map(|r| r.storey).expect("EG");
+                let hoehe_vorher = s.model().clear_height(eg_geschoss);
+                assert!(s.edit_model("lichte Höhe EG", |m| m
+                    .set_clear_height(eg_geschoss, 2750.0)));
+                pruefe(&mut s, "nach lichter Höhe", &[]);
+                assert!(s.edit_model("lichte Höhe EG", |m| m
+                    .set_clear_height(eg_geschoss, hoehe_vorher)));
+                pruefe(&mut s, "Höhe zurück", &[]);
+                assert!(s.edit_model("Einstellungen geändert", |m| m
+                    .set_surface_pattern(vb, muster_vorher.clone())));
+                pruefe(&mut s, "Muster zurück", &[]);
+
+                sicht(&mut s, |v| *v = Visibility::default());
+                pruefe(&mut s, "eingeblendet", &[]);
+                assert_eq!(
+                    kanonisch(&s.mesh(view, None, &[])),
+                    voll,
+                    "{name}: wie vorher"
+                );
+            }
+            assert_eq!(csv(&mut s), mengen, "{name}: Mengen unverändert");
+        }
+    }
 }
 mod baumpanel {
     use super::*;

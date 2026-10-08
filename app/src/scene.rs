@@ -90,8 +90,10 @@ struct RunCache {
     /// Wie oft dieser Zug berechnet wurde (für Tests und Messung).
     builds: u32,
     /// Geteilte Körper (deckend, blass) je Ansicht, gültig für die Masken
-    /// ihrer Teile (Review 3h, G2): eine Änderung teilt nur neu gebaute
-    /// Züge neu, eine neue Revision allein nichts. Zuletzt gefragte zuerst.
+    /// ihrer Teile und die Generation des Körpers (Review 3h G2, Befund 2):
+    /// Ein gleich neu gebauter Zug übernimmt sie, eine Änderung teilt nur
+    /// Züge mit neuem Körper neu, eine neue Revision allein nichts. Je
+    /// Ansicht ein Eintrag, zuletzt gefragte zuerst.
     splits: RefCell<Vec<Split>>,
 }
 
@@ -154,6 +156,16 @@ impl RunCache {
         }
     }
 
+    /// Gleicht der Zug `other` diesem in Eingaben und 3D-Körper (Bit für
+    /// Bit)? Dann ist es dieselbe Generation des Körpers, und Grundriss und
+    /// Schnitt entstehen gleich.
+    fn same_body(&self, other: &RunCache) -> bool {
+        self.chain == other.chain
+            && self.found == other.found
+            && self.floor == other.floor
+            && same_solid(&self.solid, &other.solid)
+    }
+
     /// Schon berechneter Grundrisskörper in Höhe `cut`.
     fn plan_at(&self, cut: f64, mode: PlanMode) -> Option<&Solid> {
         self.plan
@@ -165,6 +177,17 @@ impl RunCache {
     /// `s` (der Körper zu `key`) geteilt nach den Masken seiner Teile;
     /// gleiche Masken wie zuletzt: aus dem Speicher.
     fn split(&self, key: SplitKey, s: &Solid, vis: &Vis) -> Rc<[Solid; 2]> {
+        let mut v = self.splits.borrow_mut();
+        // Je Ansicht höchstens ein Eintrag; seine Teile sind die des Körpers
+        // (gleiche Generation), nur ihre Masken sind zu prüfen
+        if let Some(i) = v.iter().position(|(k, _, _)| *k == key) {
+            let hit = v.remove(i);
+            if hit.1.iter().all(|(p, m)| vis.masks(self.id, *p) == *m) {
+                let out = hit.2.clone();
+                v.insert(0, hit);
+                return out;
+            }
+        }
         let mut parts: Vec<u32> = s
             .triangles
             .iter()
@@ -177,14 +200,12 @@ impl RunCache {
             .into_iter()
             .map(|p| (p, vis.masks(self.id, p)))
             .collect();
-        let mut v = self.splits.borrow_mut();
-        if let Some(i) = v.iter().position(|(k, m, _)| *k == key && *m == masks) {
-            let hit = v.remove(i);
-            let out = hit.2.clone();
-            v.insert(0, hit);
-            return out;
-        }
-        let out = Rc::new(split(s, |p, l| vis.class(self.id, p, l)));
+        // Masken je Teil schon aufgelöst (nach Teil sortiert)
+        let out = Rc::new(split(s, |p, l| {
+            masks
+                .binary_search_by_key(&p, |x| x.0)
+                .map_or(Class::Solid, |i| class_in(masks[i].1, l))
+        }));
         v.truncate(SPLIT_KEEP - 1);
         v.insert(0, (key, masks, out.clone()));
         out
@@ -557,15 +578,19 @@ impl Vis<'_> {
     }
 
     fn class(&self, run: RunId, part: u32, layer: u8) -> Class {
-        let m = self.masks(run, part);
-        let bit = Masks::bit(layer);
-        if m.solid & bit != 0 {
-            Class::Solid
-        } else if m.ghost & bit != 0 {
-            Class::Ghost
-        } else {
-            Class::Hidden
-        }
+        class_in(self.masks(run, part), layer)
+    }
+}
+
+/// Klasse einer Schicht nach den Masken ihres Teils.
+fn class_in(m: Masks, layer: u8) -> Class {
+    let bit = Masks::bit(layer);
+    if m.solid & bit != 0 {
+        Class::Solid
+    } else if m.ghost & bit != 0 {
+        Class::Ghost
+    } else {
+        Class::Hidden
     }
 }
 
@@ -1157,6 +1182,14 @@ impl Scene {
                     rc.found_qto = rc.found.as_ref().map(foundation_qto_of);
                     rc.floor_qto = rc.floor.as_ref().map(floor_qto_of);
                     self.unsettled.retain(|&u| u != id);
+                }
+                // Gleicher Körper (ein Nachbar wurde neu gerechnet, dieser Zug
+                // blieb): er behält seine Generation und damit die geteilten
+                // Körper (Review 3h Befund 2)
+                if let Some(old) = self.cache[slot].as_mut() {
+                    if old.id == id && old.same_body(&rc) {
+                        rc.splits = std::mem::take(&mut old.splits);
+                    }
                 }
                 self.cache[slot] = Some(rc);
             }
@@ -3001,6 +3034,22 @@ pub fn mesh_of(s: &Solid) -> MeshData {
     m
 }
 
+/// Gleichen sich zwei Körper Bit für Bit (Dreiecke und Kanten)?
+fn same_solid(a: &Solid, b: &Solid) -> bool {
+    let v = |p: Vec3| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+    a.triangles.len() == b.triangles.len()
+        && a.edges.len() == b.edges.len()
+        && a.triangles.iter().zip(&b.triangles).all(|(s, t)| {
+            s.p.map(v) == t.p.map(v)
+                && v(s.n) == v(t.n)
+                && (s.mat, s.elem, s.layer) == (t.mat, t.elem, t.layer)
+                && s.uv.map(|q| q.map(f64::to_bits)) == t.uv.map(|q| q.map(f64::to_bits))
+        })
+        && a.edges.iter().zip(&b.edges).all(|(s, t)| {
+            (v(s.a), v(s.b), s.kind, s.elem, s.layer) == (v(t.a), v(t.b), t.kind, t.elem, t.layer)
+        })
+}
+
 /// Hängt das Netz eines Körpers an `m` an.
 fn mesh_into(m: &mut MeshData, s: &Solid) {
     m.faces.reserve(s.triangles.len() * 3);
@@ -3472,9 +3521,11 @@ mod tests {
         assert!(s.pickable(w));
     }
 
-    /// Review 3h G2: Das Teilen in deckend und blass hängt an Körper und
-    /// Masken, nicht an der Revision. Eine Änderung an einem Haus teilt
-    /// nur dessen Züge neu; das andere behält seine geteilten Körper.
+    /// Review 3h G2 und Befund 2: Das Teilen in deckend und blass hängt an
+    /// der Generation des Körpers und den Masken, nicht an der Revision.
+    /// Eine Änderung an einem Haus teilt nur dessen Züge neu; das andere
+    /// behält seine geteilten Körper, ebenso ein Zug, der gleich neu gebaut
+    /// wurde. Je Zug und Ansicht höchstens ein Eintrag.
     #[test]
     fn teilen_nur_neu_gebauter_zuege() {
         let mut s = Scene::with_model(Model::with_seed(5));
@@ -3500,11 +3551,22 @@ mod tests {
         assert!(s.model().revision() > rev);
         s.mesh(ViewKind::Persp, None, &[]);
         assert!(Rc::ptr_eq(&va, &geteilt(&s, a)), "Revision allein");
-        // Ein Zug neu gebaut: nur er wird neu geteilt
+        // Gleich neu gebaut (ein Nachbar hat sich geändert): dieselbe
+        // Generation, nichts neu geteilt
         s.mark(a);
         s.rebuild_dirty(false);
         s.mesh(ViewKind::Persp, None, &[]);
-        assert!(!Rc::ptr_eq(&va, &geteilt(&s, a)), "neu gebaut, neu geteilt");
+        assert!(Rc::ptr_eq(&va, &geteilt(&s, a)), "gleicher Körper");
+        // Körper geändert: nur dieser Zug wird neu geteilt
+        let moved = s.chain(a).unwrap().with_segment_moved(0, -100.0).unwrap();
+        s.begin("Wand verschieben");
+        s.set_run_points(a, &moved.points);
+        s.commit();
+        s.mesh(ViewKind::Persp, None, &[]);
+        assert!(
+            !Rc::ptr_eq(&va, &geteilt(&s, a)),
+            "neuer Körper, neu geteilt"
+        );
         assert!(
             Rc::ptr_eq(&vb, &geteilt(&s, b)),
             "anderer Zug aus dem Speicher"
@@ -3516,6 +3578,7 @@ mod tests {
         assert!(s.set_visibility(v));
         s.mesh(ViewKind::Persp, None, &[]);
         assert!(!Rc::ptr_eq(&vb, &geteilt(&s, b)));
+        assert_eq!(s.cached(b).unwrap().splits.borrow().len(), 1, "ein Eintrag");
     }
 
     #[test]
