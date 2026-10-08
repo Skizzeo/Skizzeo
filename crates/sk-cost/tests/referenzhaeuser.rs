@@ -495,3 +495,74 @@ fn kostenspeicher_gleich_kosten() {
         assert_eq!(sp.neu_zugeordnet(), leer.neu_zugeordnet());
     }
 }
+
+/// Haus 10 × 8 m aus der Werksmatrix des Prüfstands (BIM-Integration):
+/// Außenwandtyp `aw`, je eine Innenwand bei x = 5 m, OG-Segmente gelöst und
+/// versetzt (Segment, mm, + außen; 0 West, 1 Nord, 2 Ost, 3 Süd).
+fn matrixhaus(aw: &str, iw: &[(usize, &str)], versatz: &[(usize, f64)]) -> Model {
+    use sk_math::vec3;
+    use sk_model::{element::Category, RefSide};
+    let mut m = Model::new();
+    m.begin("Gebäude");
+    let b = m.add_building(2);
+    let pts = [
+        vec3(0.0, 0.0, 0.0),
+        vec3(0.0, 8000.0, 0.0),
+        vec3(10000.0, 8000.0, 0.0),
+        vec3(10000.0, 0.0, 0.0),
+    ];
+    let eg = m.build_from_polygon(b, &pts).expect("Gebäude");
+    m.commit();
+    let t = m.type_by_code(aw).expect("Werkstyp");
+    m.begin("Typ");
+    assert!(m.set_run_type(eg, t), "Typwechsel {aw}");
+    m.commit();
+    let og = m.runs_above(eg)[0];
+    for &(seg, off) in versatz {
+        let w = m.wall_at(og, seg).expect("Wand");
+        m.begin("Versatz");
+        assert!(m.set_linked(w, false));
+        assert!(m.set_offset(w, off).is_some(), "Versatz {off}");
+        m.commit();
+    }
+    for &(lvl, code) in iw {
+        let run = if lvl == 0 { eg } else { og };
+        let st = m.run(run).expect("Zug").storey;
+        let t = m.type_by_code(code).expect("IW-Typ");
+        m.begin("Innenwand");
+        m.add_wall_run(
+            &[vec3(5000.0, 0.0, 0.0), vec3(5000.0, 8000.0, 0.0)],
+            false,
+            RefSide::Center,
+            st,
+            t,
+            Category::InteriorWall,
+        )
+        .expect("Innenwand");
+        m.commit();
+    }
+    m
+}
+
+/// Menge der Abfangung V20 (Folge des Verblenders) in Tausendsteln m.
+fn abfangung(b: &Kostenblatt) -> Option<i64> {
+    b.positionen
+        .iter()
+        .find(|p| p.kurz.starts_with("Abfangung Verblendschale"))
+        .map(|p| p.menge.0 / 1000)
+}
+
+/// Abnahme 23a (VK-01, Abfangung ohne Rückfall): RH-2 (AW-49 ohne Versatz)
+/// hat keine Position V20; die Werksmatrix AW-49 mit Vor- und Rücksprung
+/// hat V20 = 10,485 m (Nord +0,30: 9,885 + West und Ost je 0,300).
+#[test]
+fn abfangung_ohne_rueckfall() {
+    let rh2 = laden(RH2.datei);
+    assert_eq!(abfangung(&blatt(&rh2, &Umfang::projekt())), None);
+    let m = matrixhaus("AW-49", &[(0, "IW-11,5")], &[(1, 300.0), (3, -300.0)]);
+    let b = blatt(&m, &Umfang::projekt());
+    assert_eq!(abfangung(&b), Some(10_485), "{:#?}", b.positionen);
+    // Nur der Vorsprung braucht eine Abfangung, der Rücksprung nicht
+    let m = matrixhaus("AW-49", &[], &[(3, -300.0)]);
+    assert_eq!(abfangung(&blatt(&m, &Umfang::projekt())), None);
+}
