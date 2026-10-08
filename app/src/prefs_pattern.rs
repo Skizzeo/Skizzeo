@@ -534,14 +534,32 @@ impl Prefs {
             .map_or(0.0, |f| 1.0 - crate::scene::ease_out(f))
     }
 
+    /// Öffnet das Fenster „Muster“ für die Oberfläche `id` wie der Knopf
+    /// „Muster …“ (für Tests); `false`, wenn es sie nicht gibt.
+    #[cfg(test)]
+    pub fn open_pattern(&mut self, sc: &Scene, t: &Theme, id: SurfaceId) -> bool {
+        let Some(o) = sc.model().attr().surface(id) else {
+            return false;
+        };
+        self.edit = None;
+        self.popup = None;
+        let mut pw = PatWin::new(id, o);
+        pw.anim = t.size.anim_ms;
+        self.pw = Some(pw);
+        self.full_frame = true;
+        true
+    }
+
     /// Szene der Vorschau im Fenster „Muster“, `None` ohne Fenster.
     pub fn pattern_preview(&mut self, t: &Theme, w: &Win, sc: &Scene) -> Option<PwPreview> {
         let l = self.pw_layout(t, w);
         let s = w.scale;
         let pw = self.pw.as_mut()?;
-        // Oberfläche weg (etwa nach Rückgängig): auf nichts mehr warten
+        // Oberfläche weg (etwa nach Rückgängig, Löschen): das Fenster
+        // schließt und wartet auf nichts mehr (A305)
         let Some(o) = sc.model().attr().surface(pw.surface) else {
-            pw.waiting = None;
+            self.pw = None;
+            self.full_frame = true;
             return None;
         };
         pw.sync(o.pattern.as_ref());
