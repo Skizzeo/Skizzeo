@@ -32,6 +32,7 @@ mod pattern_view;
 mod perf;
 mod picking;
 mod prefs;
+mod preis_blatt;
 mod quantity;
 mod scene;
 mod schedule_view;
@@ -2146,7 +2147,10 @@ impl App {
         // Hauptfenster gleicht sich an wie nach eigenen Ereignissen
         let model = matches!(
             out,
-            quantity::Out::Delete | quantity::Out::Action(..) | quantity::Out::Link(_)
+            quantity::Out::Delete
+                | quantity::Out::Action(..)
+                | quantity::Out::Link(_)
+                | quantity::Out::Kosten(_)
         );
         match out {
             quantity::Out::Picking { selection } => self.list_picked(selection),
@@ -2166,6 +2170,7 @@ impl App {
             }
             quantity::Out::Action(a, target, ids) => self.context_action(a, target, Some(ids)),
             quantity::Out::Link(l) => self.follow_link(l),
+            quantity::Out::Kosten(w) => self.kosten_schreiben(w),
         }
         if model {
             self.sync_ui();
@@ -2173,6 +2178,36 @@ impl App {
             self.sync_levels();
             self.sync_caption(surface);
         }
+    }
+
+    /// Preisblatt (KA-2c, paket-ka2 §4): ein Rückgängig-Schritt über
+    /// `Scene::kosten_folge`. Lehnt der Plan ab, sagt die Statuszeile den
+    /// Befundsatz und nichts ändert sich.
+    fn kosten_schreiben(&mut self, w: kosten_view::Schreiben) {
+        let (label, ops) = match w {
+            kosten_view::Schreiben::Preis { ops, gilt: _ } => ("Preis im Projekt geändert", ops),
+            kosten_view::Schreiben::Zurueck(saetze) => (
+                "Firmenpreis zurückgeholt",
+                vec![sk_cost::Op::AbweichungZuruecknehmen { saetze }],
+            ),
+        };
+        let h = sk_cost::Herkunft::jetzt(sk_cost::HerkunftArt::Manual);
+        let firma = self.company.as_ref().map(|c| c.library());
+        if let Err(b) = self.scene.kosten_folge(label, firma, &h, &ops) {
+            if let Some(x) = b.first() {
+                self.renderer.set_overlay(OVERLAY_NOTICE, 0, 0, 0, 0, &[]);
+                self.notice = Some(Notice {
+                    text: x.satz.clone(),
+                    since: None,
+                    rect: (0.0, 0.0, 0.0, 0.0),
+                    time: NOTICE_TIME,
+                    catalog: false,
+                    error: true,
+                });
+            }
+        }
+        self.quantity.dirty = true;
+        self.redraw = true;
     }
 
     /// Hover oder Auswahl kamen aus der Liste: Hauptfenster angleichen.

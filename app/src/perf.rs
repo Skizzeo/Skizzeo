@@ -1072,6 +1072,43 @@ fn perf_kosten() {
     );
 }
 
+/// KA-2c (paket-ka2 §3): eine Taste im Preisblatt am großen Prüfhaus,
+/// also `Katalog::mit` mit `PreisSetzen` und das Kostenblatt darauf
+/// (`Scene::kosten_live`), unter 3 ms (Release, Median aus drei Läufen).
+#[test]
+#[ignore]
+fn perf_preisblatt_taste() {
+    let mut s = reference_stacked(2, 4, 2);
+    let kat = sk_cost::lesen::katalog(s.model(), None);
+    let artikel = kat
+        .artikel
+        .iter()
+        .find(|a| a.preis.is_some())
+        .expect("Artikel mit Preis")
+        .guid;
+    let umfang = sk_cost::Umfang::projekt();
+    let mut zeiten = Vec::new();
+    let mut n = 0;
+    for _ in 0..3 {
+        zeiten.push(time(10, || {
+            n += 1;
+            let ops = [sk_cost::Op::PreisSetzen {
+                artikel,
+                preis: Some(sk_cost::Dez::ganz(20 + n % 7)),
+                stand: "10/2026".into(),
+                quelle: "Preisblatt".into(),
+            }];
+            std::hint::black_box(s.kosten_live(None, &ops, &[&umfang, &umfang]).unwrap());
+        }));
+    }
+    zeiten.sort_by(|a, b| a.total_cmp(b));
+    let t = zeiten[1];
+    println!("Preisblatt, eine Taste (Katalog::mit + Kosten): {t:.3} ms");
+    if cfg!(not(debug_assertions)) {
+        assert!(t < 3.0, "Taste im Preisblatt {t:.3} ms ≥ 3 ms");
+    }
+}
+
 /// KA-1 Abnahme 11: Chip-Klick am größten Prüfhaus bis zum fertigen Bild
 /// des Mengenfensters (520 × 1000) unter 15 ms (Release, Median aus drei
 /// Läufen je zehn Klicks). Der Klick wechselt zwischen „nur EG“ und allen.

@@ -448,6 +448,10 @@ const BACKGROUND_LIFT: f64 = 10.0;
 /// So viele Schritte lassen sich rückgängig machen.
 const HISTORY: usize = 200;
 
+/// Katalog mit den Operationen des Preisblatts und die Kostenblätter darauf
+/// ([`Scene::kosten_live`]).
+pub type KostenLive = (Rc<sk_cost::Katalog>, Vec<Rc<sk_cost::Kostenblatt>>);
+
 pub struct Scene {
     model: Model,
     /// Schritte für „Rückgängig“ (die ältesten fallen nach [`HISTORY`] weg).
@@ -495,6 +499,8 @@ pub struct Scene {
     /// (Bausteingrenze §5).
     katalog: Option<((u64, u64, u64), Rc<sk_cost::Katalog>)>,
     kostenblatt: Vec<((u64, u64, Umfang), Rc<sk_cost::Kostenblatt>)>,
+    /// Firmen- oder Werkskatalog ohne Projekt (Firmenwerte im Preisblatt).
+    firmenkatalog: Option<((u64, u64, u64), Rc<sk_cost::Katalog>)>,
     kostenspeicher: sk_cost::Kostenspeicher,
     /// Offener Schritt „Typ gewechselt“ als Vorschau (K3).
     type_preview: bool,
@@ -783,6 +789,7 @@ impl Scene {
             schedule_runs: 0,
             katalog: None,
             kostenblatt: Vec::new(),
+            firmenkatalog: None,
             kostenspeicher: sk_cost::Kostenspeicher::default(),
             type_preview: false,
             now: 0,
@@ -877,6 +884,64 @@ impl Scene {
         self.kostenblatt.insert(0, (key, b.clone()));
         self.kostenblatt.truncate(2);
         b
+    }
+
+    /// Katalog der Firma oder des Werks ohne die Werte des Projekts
+    /// (`lesen::firma_oder_werk`), gemerkt wie [`Scene::katalog`]: die
+    /// Firmenwerte im Preisblatt und der Punkt „im Projekt geändert“.
+    pub fn firmenkatalog(
+        &mut self,
+        firma: Option<(&sk_model::Library, u64)>,
+    ) -> Rc<sk_cost::Katalog> {
+        let key = (
+            self.model.ext_revision(),
+            firma.map_or(0, |f| f.1),
+            sk_cost::lesen::umfeld_stempel(&self.model),
+        );
+        if let Some((k, kat)) = &self.firmenkatalog {
+            if *k == key {
+                return kat.clone();
+            }
+        }
+        let kat = Rc::new(sk_cost::lesen::firma_oder_werk(
+            &self.model,
+            firma.map(|f| f.0),
+        ));
+        self.firmenkatalog = Some((key, kat.clone()));
+        kat
+    }
+
+    /// Kosten mit noch nicht ausgeführten Operationen (Preisblatt beim
+    /// Tippen, paket-ka2 §4): der Katalog des Plans und je Umfang das
+    /// Kostenblatt darauf. Modell, `revision` und Verlauf bleiben (Regel 94).
+    pub fn kosten_live(
+        &mut self,
+        firma: Option<(&sk_model::Library, u64)>,
+        ops: &[sk_cost::Op],
+        umfaenge: &[&Umfang],
+    ) -> Result<KostenLive, Vec<sk_cost::Befund>> {
+        self.schedule();
+        let sched = self.schedule.as_ref().expect("gerade berechnet").1.clone();
+        // Preise und Aufwandswerte direkt auf dem wirksamen Katalog
+        // (`Katalog::mit`), alles andere über den Plan
+        let k = match self.katalog(firma).mit(ops) {
+            Some(k) => k,
+            None => {
+                sk_cost::vorschau(&self.model, firma.map(|f| f.0), sk_cost::Rolle::Admin, ops)?
+                    .katalog
+            }
+        };
+        let k = Rc::new(k);
+        // Gleiche Umfänge (Blatt und Chips ohne Abwahl) nur einmal rechnen
+        let mut b: Vec<Rc<sk_cost::Kostenblatt>> = Vec::new();
+        for (i, u) in umfaenge.iter().enumerate() {
+            let gleich = umfaenge[..i].iter().position(|x| x == u);
+            b.push(match gleich {
+                Some(j) => b[j].clone(),
+                None => Rc::new(sk_cost::lesen::kosten(&self.model, &sched, &k, u)),
+            });
+        }
+        Ok((k, b))
     }
 
     /// Liegt die Liste hinter dem Modell („wird aktualisiert“)?

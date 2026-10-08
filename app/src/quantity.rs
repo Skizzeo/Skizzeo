@@ -52,6 +52,8 @@ pub enum Out {
     Action(Action, ElementId, Vec<ElementId>),
     /// Verweis im Hinweis.
     Link(Link),
+    /// Preisblatt: Preis oder Firmenpreis schreiben (KA-2c).
+    Kosten(kosten_view::Schreiben),
 }
 
 pub struct QuantityWindow {
@@ -240,6 +242,9 @@ impl QuantityWindow {
         if self.context.take().is_some() || self.hint.take().is_some() {
             self.dirty = true;
         }
+        if self.kosten.as_mut().is_some_and(|k| k.preis_schliessen()) {
+            self.dirty = true;
+        }
     }
 
     pub fn caption_area(&self) -> CaptionArea {
@@ -415,6 +420,10 @@ impl QuantityWindow {
                 self.dirty = true;
                 None
             }
+            ListOut::Kosten(w) => {
+                self.dirty = true;
+                Some(Out::Kosten(w))
+            }
         }
     }
 
@@ -572,6 +581,22 @@ impl QuantityWindow {
                 ..
             } if y >= self.title.height() as f64 && self.blatt() == Blatt::Mengen => {
                 Some(Out::OpenContext { x, y })
+            }
+            // Das Preisblatt nimmt Tasten und Zeichen zuerst
+            Event::Key {
+                key,
+                down: true,
+                mods,
+                ..
+            } if self.blatt() == Blatt::Kosten
+                && self.kosten.as_ref().is_some_and(|k| k.preis_offen()) =>
+            {
+                let o = self.kosten.as_mut()?.key(t, key, mods)?;
+                self.list_out(o)
+            }
+            Event::Text(ch) if self.blatt() == Blatt::Kosten => {
+                let o = self.kosten.as_mut()?.text(ch);
+                self.list_out(o)
             }
             Event::Key {
                 key: Key::Delete,

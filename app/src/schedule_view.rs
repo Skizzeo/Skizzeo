@@ -206,6 +206,8 @@ pub enum ListOut {
     Grouping(Grouping),
     /// Nur das Blatt neu zeichnen.
     Repaint,
+    /// Preisblatt im Reiter Kosten: über `Scene::kosten_folge` schreiben.
+    Kosten(crate::kosten_view::Schreiben),
 }
 
 /// Nachrücken nach dem Löschen (H119): weggefallene Zeilen blenden in
