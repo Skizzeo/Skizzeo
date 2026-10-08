@@ -1792,3 +1792,79 @@ mod abnahme_ka2d1 {
         let _ = std::fs::remove_dir_all(&d);
     }
 }
+
+/// Abnahme Bedienbarkeit 9.2: Die Nachfrage beim Speichern führt die Werte
+/// für neue Häuser nach Satz. Zwei Artikel mit ähnlichem Namen und zwei
+/// Aufwandswerte bleiben getrennt, ein späterer Wert desselben Satzes
+/// ersetzt den früheren.
+#[cfg(test)]
+mod abnahme_bb9 {
+    use super::*;
+    use sk_cost::{Dez, Op};
+
+    #[test]
+    fn nachfrage_nach_satz() {
+        let d = std::env::temp_dir().join("skizzeo-abnahme-bb9");
+        let _ = std::fs::remove_dir_all(&d);
+        let (mut c, _) = Company::laden(&d.join(FILE_NAME), true);
+        let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "14:10");
+        let m = Model::from_library(c.library());
+        let k = sk_cost::lesen::firma_oder_werk(&m, Some(c.library()));
+        let steine: Vec<_> = k
+            .artikel
+            .iter()
+            .filter(|a| a.preis.is_some() && a.name.contains("Planstein"))
+            .take(2)
+            .map(|a| (a.guid, a.name.clone(), a.preis.unwrap()))
+            .collect();
+        assert_eq!(steine.len(), 2, "zwei Plansteine");
+        let leist: Vec<_> = k
+            .leistungen
+            .iter()
+            .filter(|l| l.stunden != Dez::NULL)
+            .take(2)
+            .cloned()
+            .collect();
+        let mut doc = crate::document::Document::new(0);
+        let mut setze = |c: &mut Company, op: Op, text: String| {
+            c.fuer_firma(&h, &[op]).unwrap();
+            doc.fuer_neue_merken(c.zuletzt_geaendert(), &text);
+            doc.fuer_neue.len()
+        };
+        for (i, (g, name, p)) in steine.iter().enumerate() {
+            let op = Op::PreisSetzen {
+                artikel: *g,
+                preis: Some(Dez(p.0 + 10_000)),
+                stand: "10/2026".into(),
+                quelle: "Abnahme".into(),
+            };
+            assert_eq!(setze(&mut c, op, format!("{name} neu")), i + 1);
+        }
+        for (i, l) in leist.iter().enumerate() {
+            let mut b = sk_cost::preis::bauleistung(l);
+            b.stunden = Dez(b.stunden.0 + 100);
+            let op = Op::BauleistungAendern {
+                bauleistung: l.guid,
+                daten: b,
+            };
+            let text = format!("Aufwandswert {}: neu", l.kurz);
+            assert_eq!(setze(&mut c, op, text), 3 + i);
+        }
+        // Derselbe Stein noch einmal: ersetzt, zählt nicht dazu
+        let (g, name, p) = &steine[0];
+        let op = Op::PreisSetzen {
+            artikel: *g,
+            preis: Some(Dez(p.0 + 20_000)),
+            stand: "10/2026".into(),
+            quelle: "Abnahme".into(),
+        };
+        assert_eq!(setze(&mut c, op, format!("{name} noch neuer")), 4);
+        let (frage, rest) = crate::menu::save_question(&doc, None);
+        let frage = format!("{frage}\n{}", rest.unwrap_or_default());
+        assert!(
+            frage.contains("4 Änderungen für neue Häuser sind schon gespeichert und bleiben."),
+            "{frage}"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}

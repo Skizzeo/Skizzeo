@@ -1224,3 +1224,92 @@ mod tests {
         assert_eq!(pb.fokus, 0, "rundum ins Aufwandswert-Feld");
     }
 }
+
+/// Abnahme Bedienbarkeit 7.3 und 7.5 am Preisblatt (Mauerwerk 17,5, RH-1).
+#[cfg(test)]
+mod abnahme_bb7 {
+    use super::*;
+    use sk_model::{qto, szo, GuidGen, Model};
+
+    fn blatt() -> PreisBlatt {
+        let m: Model = szo::read_with(
+            include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo"),
+            GuidGen::with_seed(1),
+            &sk_cost::lesen::ABSCHNITTE_SZO,
+        )
+        .unwrap()
+        .model;
+        let k = Rc::new(sk_cost::lesen::katalog(&m, None));
+        let b = sk_cost::lesen::kosten(&m, &qto::schedule(&m), &k, &sk_cost::Umfang::projekt());
+        let i = b
+            .positionen
+            .iter()
+            .position(|p| p.kurz.contains("Porenbeton") && p.kurz.contains("17,5"))
+            .unwrap();
+        let a = preis::aufbau(&m, &k, &b.positionen[i]).unwrap();
+        let fk = sk_cost::lesen::firma_oder_werk(&m, None);
+        let f = preis::aufbau(&m, &fk, &b.positionen[i]);
+        let mut pb = PreisBlatt::neu(k, a, f, (i, 7), "10/2026".into());
+        pb.fenster = (1200.0, 900.0);
+        pb.set_anker((900.0, 300.0, 980.0, 322.0));
+        pb
+    }
+
+    /// 7.3: Aufwandswert mit Bauleistung im Rückgängig-Text; Strg+Z-Satz
+    /// „Neue Häuser rechnen weiter mit Aufwandswert …: 0,40 h/m².“
+    #[test]
+    fn aufwandswert_nennt_die_bauleistung() {
+        let mut pb = blatt();
+        let kurz = pb.aufbau.kurz.clone();
+        assert!(kurz.contains("17,5"), "{kurz}");
+        let none = Modifiers::default();
+        pb.key(
+            Key::Tab,
+            Modifiers {
+                shift: true,
+                ..none
+            },
+        );
+        assert_eq!(pb.fokus, 0, "Aufwandswert");
+        for ch in "0,40".chars() {
+            pb.text(ch);
+        }
+        pb.gilt = Gilt::NeueHaeuser;
+        let Some(Aus::Anwenden { ops, gilt, text }) = pb.key(Key::Enter, none) else {
+            panic!("Enter schreibt")
+        };
+        assert_eq!(gilt, Gilt::NeueHaeuser);
+        assert_eq!(ops.len(), 1, "{ops:?}");
+        assert_eq!(
+            text,
+            format!("Aufwandswert {kurz}: 0,40 h/m² für dieses und neue Häuser")
+        );
+        assert_eq!(
+            text.strip_suffix(FUER_NEUE),
+            Some(format!("Aufwandswert {kurz}: 0,40 h/m²").as_str())
+        );
+    }
+
+    /// 7.5: Tab zum Segment, → wählt „Auch für neue Häuser“, Enter schreibt
+    /// mit dieser Wahl (ohne Maus).
+    #[test]
+    fn segment_mit_tasten_und_enter() {
+        let mut pb = blatt();
+        let none = Modifiers::default();
+        for ch in "21".chars() {
+            pb.text(ch);
+        }
+        pb.key(Key::Tab, none);
+        assert!(pb.segment_fokus());
+        pb.key(Key::Right, none);
+        let Some(Aus::Anwenden { ops, gilt, text }) = pb.key(Key::Enter, none) else {
+            panic!("Enter im Segment schreibt")
+        };
+        assert_eq!(gilt, Gilt::NeueHaeuser);
+        assert_eq!(ops.len(), 1);
+        assert!(
+            text.contains("Planstein") && text.contains("21,00"),
+            "{text}"
+        );
+    }
+}
