@@ -482,7 +482,9 @@ impl Verwaltung {
                     ),
                     _ => {
                         let wert = |v: Option<String>| {
-                            v.map_or(String::new(), |v| self.vorschau_wert(s, &key, &v))
+                            v.map_or(String::new(), |v| {
+                                self.vorschau_wert(s.abschnitt, &s.kennung, &key, &v)
+                            })
                         };
                         (wort_art(s.abschnitt, &key), wert(alt), wert(neu))
                     }
@@ -542,15 +544,22 @@ impl Verwaltung {
 
     /// Ein Wert der Vorschau mit Einheit: Geld mit zwei Stellen („29,40
     /// €/m²“), Zeit „0,50 h/m²“, sonst wie in der Datei mit Komma.
-    fn vorschau_wert(&self, s: &SatzId, key: &str, v: &str) -> String {
+    /// Auch im Protokoll (Bedienbarkeit 14: „60,00 → 64,50 €/h“).
+    pub(super) fn vorschau_wert(
+        &self,
+        abschnitt: &str,
+        kennung: &str,
+        key: &str,
+        v: &str,
+    ) -> String {
         let v = v.trim_matches('"');
         let Some(d) = Dez::lesen(v, 6) else {
             return v.to_string();
         };
-        let g = Guid::from_ifc(&s.kennung);
+        let g = Guid::from_ifc(kennung);
         let k = &self.jetzt;
         let einheit = |e: Option<Einheit>| e.map_or("", |e| e.zeichen());
-        match (s.abschnitt, key) {
+        match (abschnitt, key) {
             ("article", "price") => {
                 let e = einheit(g.and_then(|g| k.artikel(g)).map(|a| a.einheit));
                 format!("{} €/{e}", geld(d))
@@ -563,7 +572,7 @@ impl Verwaltung {
                 let e = einheit(g.and_then(|g| k.leistung(g)).map(|l| l.einheit));
                 format!("{} €/{e}", geld(d))
             }
-            ("rate", _) => match s.kennung.as_str() {
+            ("rate", _) => match kennung {
                 "wage" => format!("{} €/h", geld(d)),
                 "surcharge" | "vat" => format!("{} %", geld(d)),
                 _ => komma(d),
@@ -1221,7 +1230,7 @@ impl Verwaltung {
 
 /// Art einer Zeile der Vorschau (soll-ka-3b: „Aufwandswert“, „Preis“,
 /// „Firmenwert“).
-fn wort_art(abschnitt: &str, key: &str) -> String {
+pub(super) fn wort_art(abschnitt: &str, key: &str) -> String {
     match (abschnitt, key) {
         ("rate", _) => "Firmenwert".into(),
         ("service", "hours") => "Aufwandswert".into(),

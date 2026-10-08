@@ -1465,7 +1465,7 @@ impl Verwaltung {
             };
             let t = b.kurz(&name, PX, true, w_satz - 12.0);
             b.text(0.0, y, t, PX, true, Farbe::Text);
-            for (was, alt, neu) in aenderungen(e) {
+            for (was, alt, neu) in self.aenderungen(e) {
                 let was = b.kurz(&was, PX, false, w_was - 12.0);
                 b.text(w_satz, y, was, PX, false, Farbe::Dim);
                 let x = w_satz + w_was;
@@ -1577,41 +1577,45 @@ fn paare(rec: &str, v: &str) -> Vec<(String, String)> {
     out
 }
 
-/// Zeilen einer Protokollzeile: Feldwort, alt, neu. Zahlen mit Komma.
-fn aenderungen(e: &sk_cost::verwaltung::Eintrag) -> Vec<(String, String, String)> {
-    let wert = |w: &str| {
-        let w = w.trim_matches('"');
-        if w.parse::<f64>().is_ok() {
-            w.replace('.', ",")
-        } else {
-            w.to_string()
+impl Verwaltung {
+    /// Zeilen einer Protokollzeile: Feldwort, alt, neu; Werte wie in der
+    /// Vorschau mit Einheit und Feldwörter wie dort (Bedienbarkeit 14).
+    fn aenderungen(&self, e: &sk_cost::verwaltung::Eintrag) -> Vec<(String, String, String)> {
+        let (a, n) = (paare(&e.rec, &e.alt), paare(&e.rec, &e.neu));
+        // „Werksbestand · übernommen · Stand 7“
+        if e.op == "werk_uebernommen" {
+            let stand = n.first().map_or(String::new(), |p| {
+                p.1.trim_matches('"')
+                    .trim_start_matches("Werksbestand ")
+                    .to_string()
+            });
+            return vec![(op_wort(&e.op).into(), String::new(), stand)];
         }
-    };
-    let (a, n) = (paare(&e.rec, &e.alt), paare(&e.rec, &e.neu));
-    let mut keys: Vec<&str> = a.iter().map(|p| p.0.as_str()).collect();
-    for (k, _) in &n {
-        if !keys.contains(&k.as_str()) {
-            keys.push(k);
+        let mut keys: Vec<&str> = a.iter().map(|p| p.0.as_str()).collect();
+        for (k, _) in &n {
+            if !keys.contains(&k.as_str()) {
+                keys.push(k);
+            }
         }
+        let von = |v: &[(String, String)], k: &str| {
+            v.iter().find(|p| p.0 == k).map_or(String::new(), |p| {
+                self.vorschau_wert(&e.rec, &e.of, k, p.1.trim_matches('"'))
+            })
+        };
+        if keys.is_empty() {
+            return vec![(op_wort(&e.op).into(), String::new(), String::new())];
+        }
+        keys.iter()
+            .map(|k| {
+                let was = if k.is_empty() {
+                    op_wort(&e.op).to_string()
+                } else {
+                    super::entwurf::wort_art(&e.rec, k)
+                };
+                (was, von(&a, k), von(&n, k))
+            })
+            .collect()
     }
-    let von = |v: &[(String, String)], k: &str| {
-        v.iter()
-            .find(|p| p.0 == k)
-            .map_or(String::new(), |p| wert(&p.1))
-    };
-    if keys.is_empty() {
-        return vec![(op_wort(&e.op).into(), String::new(), String::new())];
-    }
-    keys.iter()
-        .map(|k| {
-            let was = if k.is_empty() {
-                op_wort(&e.op).to_string()
-            } else {
-                sk_cost::wort::feld(Some(&e.rec), k).to_string()
-            };
-            (was, von(&a, k), von(&n, k))
-        })
-        .collect()
 }
 
 /// Farbe einer Rolle.
