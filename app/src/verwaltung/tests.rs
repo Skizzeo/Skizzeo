@@ -728,14 +728,16 @@ fn dieses_haus_in_der_wirkzeile() {
 }
 
 /// Abnahme 13 (KA-3a4): €/m² Geschossfläche (Rohbaumaß) des Standardhauses
-/// = Summe netto ÷ 150,08 m² (2 × 75,0384), auf ganze €.
+/// = Summe netto ÷ 135,50 m², auf ganze €. Je Geschoss der Kernumriss der
+/// eigenen Außenwände (Entscheid 17:20): EG 75,0384, OG mit Rücksprung
+/// 60,4584 (vorher 2 × 75,0384 über die Decke unter dem OG).
 #[test]
 fn standardhaus_je_m2() {
     let s = haus();
     let v = Verwaltung::open(&s, None, None);
     let h = &v.wirkung.haeuser[0];
-    assert!((h.flaeche / 1e6 - 150.0768).abs() < 1e-3, "{}", h.flaeche);
-    let soll = (h.vorher.0 as f64 / 100.0 / 150.0768).round() as i64;
+    assert!((h.flaeche / 1e6 - 135.4968).abs() < 1e-3, "{}", h.flaeche);
+    let soll = (h.vorher.0 as f64 / 100.0 / 135.4968).round() as i64;
     assert_eq!(h.je_m2(h.vorher), Some(soll));
     let leer = Verwaltung::open(&Scene::with_model(sk_model::Model::new()), None, None);
     assert!(leer.wirkung.dieses.is_none());

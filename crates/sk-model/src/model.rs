@@ -3003,6 +3003,27 @@ impl Model {
             .collect()
     }
 
+    /// Fläche des Kernumrisses eines geschlossenen Wandzugs (mm²): Umriss an
+    /// der Außenseite seiner tragenden Schicht, ohne Außendämmung, mit
+    /// derselben Eckberechnung wie die Decke, aber nur aus der eigenen Kette
+    /// (kein Versatz des Geschosses darüber). Rechnet keine Körper.
+    /// Geschossfläche, stammdaten/verwaltung.md §9 (Entscheid 17:20).
+    pub fn core_area(&self, run: RunId) -> Option<f64> {
+        let chain = self.base_chain(run)?;
+        if !chain.closed || chain.clean_points().len() < 3 {
+            return None;
+        }
+        let core = chain.layers.iter().position(|l| l.core)?;
+        let depth: f64 = chain.layers[..core].iter().map(|l| l.thickness).sum();
+        let face = chain.face_corners(chain.outer_offset());
+        let outline = if depth > 0.0 {
+            sk_math::polygon::inset(&face, depth).ok()?.pts
+        } else {
+            face
+        };
+        Some(sk_math::polygon::area(&outline))
+    }
+
     /// Geometrie eines Wandzugs ohne Anschlüsse.
     fn base_chain(&self, id: RunId) -> Option<WallChain> {
         let run = self.run(id)?;
@@ -8182,10 +8203,13 @@ mod og_phase2 {
                 ts.trade
             );
         }
-        // Geschossfläche (verwaltung §9, Entscheid Architektur 07:35): EG
-        // Kernumriss + Decke unter dem OG = 2 × 75,0384, ohne SP 80,00 und
-        // ohne die Terrassendecke DE-002
-        assert_eq!(r4(s.floor_area(&m) / 1e6), 150.0768);
+        // Geschossfläche (verwaltung §9, Entscheid Architektur 17:20): je
+        // Geschoss der Kernumriss seiner eigenen Außenwände. EG 9,72 × 7,72,
+        // OG mit Rücksprung Nord 1,50 nur 9,72 × 6,22: Terrasse und die
+        // OG-Dämmung auf der Decke zählen nicht (vorher 2 × 75,0384)
+        assert_eq!(r4(s.floor_area(&m) / 1e6), r4(75.0384 + 60.4584));
+        assert_eq!(r4(m.core_area(eg).unwrap() / 1e6), 75.0384);
+        assert_eq!(r4(m.core_area(og).unwrap() / 1e6), 60.4584);
         for n in [1u8, 3] {
             let mut mn = Model::with_seed(12);
             let bn = mn.add_building(n);
@@ -8199,6 +8223,33 @@ mod og_phase2 {
             let a = crate::qto::schedule(&mn).floor_area(&mn);
             assert_eq!(r4(a / 1e6), r4(f64::from(n) * 75.0384), "{n}");
         }
+        // RH-3: OG 300 mm nach Norden versetzt. Die Decke über EG trägt die
+        // Auskragung (9,76 × 0,30 = 2,928 m²); jedes Geschoss zählt nur
+        // seinen eigenen Kernumriss 9,76 × 7,76
+        let rh3 = crate::szo::read(
+            include_str!("../../sk-cost/referenz/rh3-versatz-dachterrasse.szo"),
+            GuidGen::with_seed(3),
+        )
+        .unwrap()
+        .model;
+        let zuege: Vec<RunId> = rh3
+            .runs()
+            .ids()
+            .filter(|r| rh3.run(*r).is_some_and(|x| x.closed))
+            .collect();
+        assert_eq!(zuege.len(), 2);
+        for r in &zuege {
+            assert_eq!(r4(rh3.core_area(*r).unwrap() / 1e6), 75.7376);
+        }
+        let unten = zuege
+            .iter()
+            .copied()
+            .find(|r| rh3.run_below(*r).is_none())
+            .unwrap();
+        let decke = rh3.floor(unten).unwrap().unwrap().area();
+        assert_eq!(r4(decke / 1e6), r4(75.7376 + 2.928));
+        let s3 = crate::qto::schedule(&rh3);
+        assert_eq!(r4(s3.floor_area(&rh3) / 1e6), r4(2.0 * 75.7376));
         // Anderes Gebäude: nichts aus diesem
         let mut m2 = m.clone();
         let b2 = m2.add_building(1);

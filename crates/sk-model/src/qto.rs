@@ -1366,29 +1366,26 @@ impl Schedule {
         out
     }
 
-    /// Geschossfläche (Rohbaumaß, mm², stammdaten/verwaltung.md §9): je
-    /// Geschoss der Umriss an der Außenseite der tragenden Schicht, im
-    /// untersten Geschoss der Kernumriss der Wände (= Decke darüber), in
-    /// jedem weiteren die Decke darunter. Die Sohlplatte zählt nicht mit
-    /// ihrem Maß unter der Außendämmung, die oberste Decke nicht. Aus den
-    /// Zeilen dieser Mengenliste, ohne Geometrie.
+    /// Geschossfläche (Rohbaumaß, mm², stammdaten/verwaltung.md §9,
+    /// Entscheid 17:20): je Geschoss der Umriss an der Außenseite der
+    /// tragenden Schicht seiner **eigenen** Außenwände, ohne Außendämmung
+    /// ([`Model::core_area`] je geschlossenem Außenwandzug dieser Liste).
+    /// Gründung und oberste Decke zählen nicht; eine Auskragung darüber und
+    /// eine Dachterrasse fallen damit heraus. Keine Körper.
     pub fn floor_area(&self, model: &Model) -> f64 {
-        self.buildings
+        let mut runs: Vec<RunId> = self
+            .buildings
             .iter()
             .flat_map(|b| &b.storeys)
             .chain(&self.loose)
             .flat_map(|s| &s.groups)
+            .filter(|g| g.category == Category::ExteriorWall)
             .flat_map(|g| &g.rows)
-            .filter_map(|r| match &r.q {
-                Some(ElementQto::Floor(f)) => Some((model.run_of(r.element)?, f.area)),
-                _ => None,
-            })
-            .map(|(run, area)| {
-                let lowest = model.run_below(run).is_none();
-                let above = !model.runs_above(run).is_empty();
-                area * (f64::from(u8::from(lowest)) + f64::from(u8::from(above)))
-            })
-            .sum()
+            .filter_map(|r| model.run_of(r.element))
+            .collect();
+        runs.sort_by_key(|r| r.index());
+        runs.dedup();
+        runs.iter().filter_map(|r| model.core_area(*r)).sum()
     }
 }
 
