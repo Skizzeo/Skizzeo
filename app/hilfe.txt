@@ -77,7 +77,7 @@ Baustoff | Klick auf den Baustoffnamen öffnet „Baustoffe …“
 Löschen | Innenwand: **Entf**; Außenwände gehen nur mit „Gebäude löschen“
 Auswahl aufheben | Klick ins Leere oder **Esc**
 
-[thema] id=gruendung titel="Gründung"
+[thema] id=gruendung titel="Fundament (Gründung)"
 Entstehen | Sohlplatte und Frostschürze kommen mit dem Gebäude
 Wert ändern | ins Zahlenfeld klicken, Wert in cm tippen, **Enter** übernimmt, **Esc** verwirft
 Plattendicke | 10 bis 100 cm
@@ -212,6 +212,7 @@ Eigene Vorlage | „Als Vorlage speichern …“ legt sie im Firmenkatalog ab
 [thema] id=mengen titel="Mengenermittlung"
 Öffnen | Knopf „Mengenermittlung“ im Paneel „Ansichten“
 Gliedern | oben rechts „Gliedern nach“ Geschoss oder Gewerk
+Geschosse | Klick auf einen Chip zeigt nur dieses Geschoss, jeder weitere nimmt eines dazu oder weg; „Alle“ holt alle zurück
 Gewerksumme | jede Fläche einmal je Bauteil; in m Abgerechnetes (Attikablech) zählt ohne Volumen
 Preise | Richtpreise stehen bei den Baustoffen; Kosten rechnet die Liste noch nicht
 Zeigen | Überfahren einer Zeile lässt das Bauteil leuchten, Klick wählt es
