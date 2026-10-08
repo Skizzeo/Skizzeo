@@ -641,3 +641,42 @@ fn vorschau_mit_summe_vorher_nachher() {
     assert_eq!(blatt(&m, &u).netto, nachher);
     assert_ne!(nachher, vorher);
 }
+
+/// Review 3ag: Typen und Baustoffe umbenennen ändert nur Befundsätze. Der
+/// Speicher liefert danach keine Sätze mit alten Namen; `kosten_mit` bleibt
+/// gleich `kosten`.
+#[test]
+fn kostenspeicher_nach_umbenennen() {
+    for s in [&RH1, &RH3] {
+        let mut m = laden(s.datei);
+        let u = Umfang::projekt();
+        let k = lesen::katalog(&m, None);
+        let sched = qto::schedule(&m);
+        let (vorher, sp) = lesen::kosten_mit(Kostenspeicher::default(), &m, &sched, &k, &u);
+        assert!(vorher.befunde.iter().any(|b| b.regel == 81));
+        m.begin("Namen");
+        let mats: Vec<_> = m
+            .materials()
+            .iter()
+            .map(|(id, x)| (id, x.clone()))
+            .collect();
+        for (id, mut x) in mats {
+            x.name = format!("{} neu", x.name);
+            assert!(m.set_material(id, x));
+        }
+        let typen: Vec<_> = m
+            .layer_sets()
+            .iter()
+            .map(|(id, t)| (id, t.clone()))
+            .collect();
+        for (id, mut t) in typen {
+            t.name = format!("{} neu", t.name);
+            m.set_layer_set(id, t);
+        }
+        m.commit();
+        let sched = qto::schedule(&m);
+        let soll = lesen::kosten(&m, &sched, &k, &u);
+        let (ist, _) = lesen::kosten_mit(sp, &m, &sched, &k, &u);
+        assert_eq!(ist, soll);
+    }
+}

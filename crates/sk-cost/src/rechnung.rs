@@ -166,7 +166,8 @@ impl Kostenspeicher {
 }
 
 /// Bauteilart, Typ und Fingerabdruck der Schichten samt der Baustoffwerte,
-/// von denen die Zuordnung abhängt (Art, Rohdichte, Richtpreis).
+/// von denen die Zuordnung abhängt (Art, Rohdichte, Richtpreis), und der
+/// Namen, die in den Befundsätzen stehen (Typ, Baustoffe).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Schluessel {
     kat: Category,
@@ -191,9 +192,9 @@ struct SchichtWert {
 }
 
 /// Fingerabdruck der Schichten (FNV-1a über die Werte, die die Zuordnung
-/// lesen kann).
-fn fingerabdruck(m: &Model, layers: &[MaterialLayer]) -> u64 {
-    let mut h = FNV_START;
+/// lesen kann, und die Namen in ihren Befundsätzen).
+fn fingerabdruck(m: &Model, typname: &str, layers: &[MaterialLayer]) -> u64 {
+    let mut h = fnv(fnv(FNV_START, typname.as_bytes()), b"|");
     for l in layers {
         let mat = m.material(l.material);
         h = fnv(h, &mat.map_or([0; 16], |x| x.guid.0.to_le_bytes()));
@@ -201,6 +202,7 @@ fn fingerabdruck(m: &Model, layers: &[MaterialLayer]) -> u64 {
         h = fnv(h, sk_model::szo::layer_function(l.function).as_bytes());
         h = fnv(h, &l.svc.map_or([0; 16], |g| g.0.to_le_bytes()));
         if let Some(x) = mat {
+            h = fnv(fnv(h, x.name.as_bytes()), b"|");
             h = fnv(h, &[x.category as u8]);
             h = fnv(h, &x.density.to_bits().to_le_bytes());
             if let Some((p, e)) = zuordnung::richtpreis(x) {
@@ -618,12 +620,18 @@ pub fn kosten_mit(
         let Some(e) = m.element(r.element) else {
             continue;
         };
+        let typname = || {
+            e.layer_set.and_then(|t| m.layer_set(t)).map_or_else(
+                || sk_model::kinds::spec(r.category).name.to_string(),
+                |t| t.name.clone(),
+            )
+        };
         let key = *je_element.entry(r.element).or_insert_with(|| {
             let layers = m.element_layers(r.element);
             Schluessel {
                 kat: r.category,
                 typ: e.layer_set.and_then(|t| m.layer_set(t)).map(|t| t.guid),
-                schichten: fingerabdruck(m, &layers),
+                schichten: fingerabdruck(m, &typname(), &layers),
             }
         });
         let werte = typen.entry(key).or_insert_with(|| match alt.remove(&key) {
@@ -631,11 +639,7 @@ pub fn kosten_mit(
             None => {
                 neu += 1;
                 let layers = m.element_layers(r.element);
-                let typname = e.layer_set.and_then(|t| m.layer_set(t)).map_or_else(
-                    || sk_model::kinds::spec(r.category).name.to_string(),
-                    |t| t.name.clone(),
-                );
-                schichten_rechnen(m, k, r.category, key.typ, &typname, &layers)
+                schichten_rechnen(m, k, r.category, key.typ, &typname(), &layers)
             }
         });
         let Some(w) = werte.get(r.layer) else {
