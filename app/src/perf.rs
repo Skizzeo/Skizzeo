@@ -1220,3 +1220,88 @@ fn ka1_umfang_ohne_neurechnung_und_ohne_datei() {
         .collect();
     assert_eq!(an, [false, true, false], "nur EG bleibt gewählt");
 }
+
+/// KA-0 Nr. 30 / KA-2 Nr. 5 mit Abgleichzeile (Koordinator 12:46): Loslassen
+/// einer Wand im großen Prüfhaus mit offener Kostenansicht, Projektkopie und
+/// Firma auf neuerem Stand (die Abgleichzeile steht). Gemessen wird
+/// `KostenView::sync` (Mengen über `Scene::schedule`, Kostenblatt, Punkte,
+/// Abgleich) unter
+/// 8 ms; `abgleich()` allein zum Vergleich (Release, Median aus drei Läufen).
+#[test]
+#[ignore]
+fn perf_loslassen_mit_abgleich() {
+    use crate::catalog::Company;
+    use crate::kosten_view::KostenView;
+    println!();
+    let d = std::env::temp_dir().join(format!("skizzeo-perf-abgleich-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    let (mut c, _) = Company::load(&d.join("firmenkatalog.szk"), true);
+    let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "13:15");
+    let lohn = |w: i64| sk_cost::Op::FirmenwertSetzen {
+        schluessel: "wage".into(),
+        wert: sk_cost::Dez::ganz(w),
+    };
+    c.fuer_firma(&h, &[lohn(60)]).unwrap();
+    let mut s = reference_stacked(2, 4, 2);
+    // Projektkopie über einen eigenen Preis (erste Operation legt sie an)
+    let art = s
+        .katalog(Some((c.library(), c.stand())))
+        .artikel
+        .iter()
+        .find(|a| a.preis.is_some())
+        .unwrap()
+        .guid;
+    let preis = sk_cost::Op::PreisSetzen {
+        artikel: art,
+        preis: Some(sk_cost::Dez::ganz(99)),
+        stand: "10/2026".into(),
+        quelle: "Messung".into(),
+    };
+    s.kosten_folge("Preis", Some(c.library()), &h, &[preis])
+        .unwrap();
+    if std::env::var_os("OHNE_ABGLEICH").is_none() {
+        c.fuer_firma(&h, &[lohn(65)]).unwrap();
+    }
+    let mut v = KostenView::new();
+    (v.w, v.h) = (1200, 900);
+    v.sync(&mut s, Some((c.library(), c.stand())));
+    assert_eq!(
+        v.abgleich_zeile().is_some(),
+        std::env::var_os("OHNE_ABGLEICH").is_none()
+    );
+    let median = |mut x: Vec<f64>| {
+        x.sort_by(|a, b| a.total_cmp(b));
+        x[x.len() / 2]
+    };
+    let run = s.model().runs().ids().next().unwrap();
+    let orig = s.chain(run).unwrap().clone();
+    let (mut los, mut abg) = (vec![], vec![]);
+    for _ in 0..3 {
+        let mut flip = false;
+        let mut l = 0.0;
+        let reps = 10;
+        for _ in 0..reps {
+            flip = !flip;
+            let moved = orig
+                .with_segment_moved(0, if flip { -100.0 } else { -200.0 })
+                .unwrap_or_else(|| orig.clone());
+            s.begin("Wand verschieben");
+            s.set_run_points(run, &moved.points);
+            s.commit();
+            let t = Instant::now();
+            // die Szene rechnet die Mengen selbst (Scene::schedule)
+            v.sync(&mut s, Some((c.library(), c.stand())));
+            l += t.elapsed().as_secs_f64() * 1000.0;
+        }
+        los.push(l / reps as f64);
+        abg.push(time(10, || {
+            std::hint::black_box(sk_cost::abgleich::abgleich(s.model(), Some(c.library())));
+        }));
+    }
+    let (l, a) = (median(los), median(abg));
+    println!("Groß mit Abgleichzeile: Loslassen {l:.3} ms, abgleich() allein {a:.3} ms");
+    let _ = std::fs::remove_dir_all(&d);
+    if cfg!(not(debug_assertions)) {
+        assert!(l < 8.0, "Loslassen mit Abgleichzeile {l:.3} ms ≥ 8 ms");
+    }
+}

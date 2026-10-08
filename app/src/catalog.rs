@@ -1588,3 +1588,207 @@ mod abnahme_ka2c2_haus {
         let _ = std::fs::remove_dir_all(&d);
     }
 }
+
+/// Abnahme KA-2d1 „Sätze für Menschen“ (paket-ka2 §6) am Haus: der ganze
+/// Satz der Statuszeile, wenn „Auch für neue Häuser“ scheitert, Systemtext
+/// nur im Fehlerprotokoll, stille Übernahme der Sperre, Abgleichzeile mit
+/// Unterschied ohne Wert und Bewehrungsgrad.
+#[cfg(test)]
+mod abnahme_ka2d1 {
+    use super::*;
+    use crate::scene::Scene;
+    use sk_cost::abgleich::abgleich;
+    use sk_cost::{Dez, Op};
+
+    fn dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("skizzeo-abnahme-ka2d1-{name}"));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn h() -> sk_cost::Herkunft {
+        sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "13:50")
+    }
+
+    fn wert(k: &str, w: i64) -> Op {
+        Op::FirmenwertSetzen {
+            schluessel: k.into(),
+            wert: Dez::ganz(w),
+        }
+    }
+
+    fn neues_haus(c: &Company) -> Scene {
+        let mut m = Model::from_library(c.library());
+        sk_cost::neues_projekt(&mut m, Some(c.library()));
+        Scene::with_model(m)
+    }
+
+    /// Scheitert „Auch für neue Häuser“, steht in der Statuszeile genau ein
+    /// Satz ohne Pfad und Systemtext, dahinter „Nichts geändert; …“; der
+    /// Systemtext steht im Fehlerprotokoll. Das Haus bleibt unverändert.
+    #[test]
+    fn scheitern_als_ganzer_satz() {
+        let d = dir("scheitern");
+        let p = d.join(FILE_NAME);
+        let (mut c, _) = Company::laden(&p, true);
+        c.fuer_firma(&h(), &[wert("wage", 60)]).unwrap();
+        type Fall = (fn() -> std::io::Error, &'static str);
+        let faelle: [Fall; 3] = [
+            (
+                || std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                "Firmenkatalog nicht gespeichert: Keine Schreibrechte für firmenkatalog.szk. Nichts geändert; „Nur dieses Haus“ geht weiterhin.",
+            ),
+            (
+                || std::io::Error::from_raw_os_error(32),
+                "Firmenkatalog nicht gespeichert: firmenkatalog.szk ist gerade in einem anderen Programm geöffnet. Dort schließen, dann nochmal versuchen. Nichts geändert; „Nur dieses Haus“ geht weiterhin.",
+            ),
+            (
+                || std::io::Error::other("Access is denied. (os error 5)"),
+                "Firmenkatalog speichern hat nicht geklappt. Nichts geändert; „Nur dieses Haus“ geht weiterhin.",
+            ),
+        ];
+        for (art, satz) in faelle {
+            let mut s = neues_haus(&c);
+            let text = sk_model::szo::write(s.model());
+            let vorher = std::fs::read(&p).unwrap();
+            crate::meldung::protokoll_im_test();
+            SCHREIBFEHLER.with(|f| f.set(true));
+            SCHREIBFEHLER_ART.with(|a| a.set(Some(art)));
+            let e = s
+                .fuer_firma(
+                    "Lohn 65,00 €/h für dieses und neue Häuser",
+                    &mut c,
+                    &h(),
+                    &[wert("wage", 65)],
+                )
+                .unwrap_err();
+            SCHREIBFEHLER.with(|f| f.set(false));
+            SCHREIBFEHLER_ART.with(|a| a.set(None));
+            let ganz = e.dazu(crate::NICHTS_GEAENDERT);
+            assert_eq!(ganz, satz);
+            assert!(!ganz.contains(&*d.to_string_lossy()));
+            let log = crate::meldung::protokoll_im_test().join("\n");
+            let system = art().to_string();
+            assert!(
+                log.contains(&system),
+                "Systemtext „{system}“ im Protokoll: {log}"
+            );
+            assert_eq!(std::fs::read(&p).unwrap(), vorher);
+            assert_eq!(sk_model::szo::write(s.model()), text, "Haus unverändert");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Eine liegen gebliebene Sperre wird ohne Meldung übernommen.
+    #[test]
+    fn liegen_gebliebene_sperre_still() {
+        let d = dir("sperre");
+        let p = d.join(FILE_NAME);
+        let (mut c, _) = Company::laden(&p, true);
+        c.fuer_firma(&h(), &[wert("wage", 60)]).unwrap();
+        let lock = p.with_extension("szk.lock");
+        std::fs::write(&lock, "anderer Platz").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&lock)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60))
+            .unwrap();
+        let mut s = neues_haus(&c);
+        assert_eq!(
+            s.fuer_firma(
+                "Lohn 65,00 €/h für dieses und neue Häuser",
+                &mut c,
+                &h(),
+                &[wert("wage", 65)]
+            ),
+            Ok(None),
+            "keine Meldung in der Statuszeile"
+        );
+        assert!(!lock.exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Abgleichzeile über die Firma: ein Stoffanteil geändert ergibt „Für
+    /// neue Häuser geändert: Stoffanteile von …“; mit Lohn und Zuschlag „3
+    /// Änderungen für neue Häuser“, Tooltip-Kopf „Für neue Häuser
+    /// geändert:“. Bewehrungsgrad mit dem Namen der Bauteilart, im Abgleich
+    /// und im Rückgängig-Text.
+    #[test]
+    fn abgleich_ohne_wert_und_bewehrungsgrad() {
+        let d = dir("abgleich");
+        let p = d.join(FILE_NAME);
+        let (mut c, _) = Company::laden(&p, true);
+        c.fuer_firma(&h(), &[wert("wage", 60)]).unwrap();
+        let b = neues_haus(&c);
+        let m = Model::from_library(c.library());
+        let k = sk_cost::lesen::firma_oder_werk(&m, Some(c.library()));
+        let a = k
+            .anteile
+            .iter()
+            .find(|a| {
+                k.leistung(a.leistung)
+                    .is_some_and(|l| l.kurz.contains("Porenbeton") && l.kurz.contains("17,5"))
+            })
+            .or_else(|| k.anteile.first())
+            .expect("ein Stoffanteil");
+        let kurz = k.leistung(a.leistung).unwrap().kurz.clone();
+        let op = Op::StoffanteilSetzen {
+            bauleistung: a.leistung,
+            nr: a.nr,
+            anteil: Some(match a.artikel {
+                Some(g) => sk_cost::op::Stoff::Artikel {
+                    artikel: g,
+                    menge: Dez(a.menge.0 + 1_000),
+                },
+                None => sk_cost::op::Stoff::Schicht {
+                    faktor: Dez(a.menge.0 + 1_000),
+                },
+            }),
+        };
+        c.fuer_firma(&h(), &[op]).unwrap();
+        let ab = abgleich(b.model(), Some(c.library())).expect("Abgleichzeile");
+        assert_eq!(
+            ab.zeile(),
+            format!("Für neue Häuser geändert: Stoffanteile von {kurz}")
+        );
+        c.fuer_firma(&h(), &[wert("wage", 65), wert("surcharge", 12)])
+            .unwrap();
+        let ab = abgleich(b.model(), Some(c.library())).unwrap();
+        assert_eq!(ab.zeile(), "3 Änderungen für neue Häuser", "{:?}", ab.texte);
+        assert!(
+            ab.tooltip().starts_with("Für neue Häuser geändert:\n"),
+            "{}",
+            ab.tooltip()
+        );
+        // Bewehrungsgrad der Sohlplatte (Wort des Fensters, Hilfe „Sohlplatte“)
+        let b2 = neues_haus(&c);
+        let alt = sk_cost::lesen::katalog(b2.model(), Some(c.library()))
+            .werte
+            .stahl
+            .iter()
+            .find(|(w, _)| w == "groundslab")
+            .map(|x| x.1)
+            .expect("Bewehrungsgrad Sohlplatte");
+        assert_eq!(alt, Dez::ganz(80), "Werk");
+        let op = wert("steel.groundslab", 95);
+        let bez = op.bezeichnung();
+        assert!(bez.contains("Bewehrungsgrad Sohlplatte"), "{bez}");
+        assert!(
+            !bez.contains("groundslab") && !bez.contains("steel"),
+            "{bez}"
+        );
+        c.fuer_firma(&h(), &[op]).unwrap();
+        let ab = abgleich(b2.model(), Some(c.library())).unwrap();
+        let hier = |d: Dez| d.text().replace('.', ",");
+        assert_eq!(
+            ab.zeile(),
+            format!(
+                "Für neue Häuser gilt Bewehrungsgrad Sohlplatte 95 kg/m³ (hier {})",
+                hier(alt)
+            )
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}

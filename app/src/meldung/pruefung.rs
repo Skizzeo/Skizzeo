@@ -490,6 +490,9 @@ fn nutzersaetze_sauber() {
         include_str!("../ui.rs"),
         include_str!("../measure_input.rs"),
         include_str!("../meldung.rs"),
+        include_str!("../document.rs"),
+        include_str!("../lohn_blatt.rs"),
+        include_str!("../wahl_blatt.rs"),
     ] {
         aus_quelltext(q, &mut fest);
     }

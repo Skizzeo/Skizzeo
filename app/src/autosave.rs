@@ -428,7 +428,10 @@ pub fn answered(backup: &Path) {
 
 /// „Wiederherstellen“: der Stand der Sicherung als Projekt mit dem
 /// Originalpfad, ungespeichert, mit leerem Rückgängig-Verlauf.
-pub fn restore(backup: &Path, original: Option<&Path>) -> Result<(Scene, Document), String> {
+pub fn restore(
+    backup: &Path,
+    original: Option<&Path>,
+) -> Result<(Scene, Document), crate::meldung::Meldung> {
     let l = crate::document::load(backup)?;
     let s = Scene::with_model(l.model);
     let doc = Document::restored(original.map(Path::to_path_buf));

@@ -112,7 +112,7 @@ pub fn save(model: &Model, path: &Path) -> Result<(), Meldung> {
         .and_then(|_| std::fs::rename(&tmp, path))
         .map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
-            Meldung::aus_io("Projekt nicht gespeichert", "Speichern", path, &e)
+            Meldung::aus_io("Projekt nicht gespeichert", "Projekt speichern", path, &e)
         })
 }
 
@@ -126,14 +126,48 @@ pub fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     f.sync_all()
 }
 
-/// Lädt eine Datei. Fehler als lesbarer Text; Hinweise gehen an den Aufrufer.
-pub fn load(path: &Path) -> Result<szo::Loaded, String> {
+/// Lädt eine Datei. Fehler als ganzer Satz mit dem Dateinamen; Pfad und
+/// Lesefehler gehen ins Fehlerprotokoll. Hinweise gehen an den Aufrufer.
+pub fn load(path: &Path) -> Result<szo::Loaded, Meldung> {
     let bytes = std::fs::read(path)
-        .map_err(|e| Meldung::aus_io("Projekt nicht geöffnet", "Öffnen", path, &e).to_string())?;
-    let text = String::from_utf8(bytes)
-        .map_err(|_| format!("„{}“ ist keine Skizzeo-Datei (kein UTF-8).", path.display()))?;
-    szo::read_with(&text, GuidGen::from_time(), &sk_cost::lesen::ABSCHNITTE_SZO)
-        .map_err(|e| format!("„{}“ konnte nicht geöffnet werden.\n\n{e}", path.display()))
+        .map_err(|e| Meldung::aus_io("Projekt nicht geöffnet", "Projekt öffnen", path, &e))?;
+    let name = path
+        .file_name()
+        .map_or_else(|| "Die Datei".into(), |n| n.to_string_lossy().into_owned());
+    let kaputt = |grund: &str| {
+        crate::meldung::protokoll(&format!("Projekt öffnen: {} – {grund}", path.display()));
+    };
+    let Ok(text) = String::from_utf8(bytes) else {
+        kaputt("kein UTF-8");
+        return Err(Meldung::mit(
+            "Projekt nicht geöffnet: {} ist keine Skizzeo-Datei.",
+            &[&name],
+        ));
+    };
+    szo::read_with(&text, GuidGen::from_time(), &sk_cost::lesen::ABSCHNITTE_SZO).map_err(|e| {
+        kaputt(&e.to_string());
+        if e.line == 1 && e.message.contains("neuerer Skizzeo-Version") {
+            Meldung::mit(
+                "Projekt nicht geöffnet: {} stammt aus einer neueren Skizzeo-Fassung. Bitte Skizzeo aktualisieren.",
+                &[&name],
+            )
+        } else if e.line == 1 {
+            Meldung::mit(
+                "Projekt nicht geöffnet: {} ist keine Skizzeo-Datei.",
+                &[&name],
+            )
+        } else if e.line > 1 {
+            Meldung::mit(
+                "Projekt nicht geöffnet: {} ist ab Zeile {} nicht lesbar.",
+                &[&name, &e.line.to_string()],
+            )
+        } else {
+            Meldung::mit(
+                "Projekt nicht geöffnet: {} ist unvollständig.",
+                &[&name],
+            )
+        }
+    })
 }
 
 /// Hinweise nach dem Öffnen als kurze Meldung (höchstens zwölf Zeilen).
@@ -274,7 +308,7 @@ mod tests {
         assert!(e.contains("gibtsnicht.szo"), "{e}");
         std::fs::write(d.join("alt.szo"), "SZO 5\n").unwrap();
         let e = load(&d.join("alt.szo")).err().unwrap();
-        assert!(e.contains("neuerer Skizzeo-Version"), "{e}");
+        assert!(e.contains("neueren Skizzeo-Fassung"), "{e}");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -299,5 +333,29 @@ mod tests {
             Some(crate::ui::ViewKind::Plan)
         );
         assert_eq!(crate::ui::ViewKind::from_arg("oben"), None);
+    }
+}
+
+/// Abnahme KA-2d1, Frage Koordinator 13:43: Sätze, die zur Laufzeit mit
+/// `format!` gebaut werden und nicht über `Meldung` gehen, prüft
+/// `nutzersaetze_sauber` nicht. Speichern an einen unmöglichen Ort zeigt im
+/// Dialog den ganzen Pfad und den Systemtext.
+#[cfg(test)]
+mod abnahme_ka2d1_dialog {
+    #[test]
+    fn speichern_scheitert_ohne_pfad_und_systemtext() {
+        let d = std::env::temp_dir().join("skizzeo-ka2d1-dialog");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        // Elternordner ist eine Datei: Speichern muss scheitern
+        let datei = d.join("kein-ordner");
+        std::fs::write(&datei, "x").unwrap();
+        let ziel = datei.join("haus.szo");
+        let e = super::save(&sk_model::Model::new(), &ziel).unwrap_err();
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(
+            !e.contains(&*d.to_string_lossy()) && !e.contains("os error"),
+            "Dialog zeigt Pfad oder Systemtext: {e}"
+        );
     }
 }
