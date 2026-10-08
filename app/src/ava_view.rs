@@ -1748,6 +1748,8 @@ pub fn detail(m: &Model, kat: &Katalog, lv: &Lv, oz: &str) -> Option<Detail> {
 }
 
 #[cfg(test)]
+mod abnahme_ka4b;
+#[cfg(test)]
 mod bild;
 mod csv;
 mod kopf;
