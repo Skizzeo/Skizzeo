@@ -1518,7 +1518,7 @@ impl App {
                     v.entwurf_gespeichert(c);
                     v.freigegeben_als(stand);
                     // Mit der Freigabe kann das Kennwort weg sein
-                    self.scene.rolle = self.rolle();
+                    self.rolle_angleichen();
                     self.overlay_dirty = true;
                     self.upload_model();
                     self.props_key = None;
@@ -1545,6 +1545,16 @@ impl App {
                     }
                 }
             }
+        }
+    }
+
+    /// Rolle an Szene und Firmenkatalog angleichen: Beide lehnen Firmen- und
+    /// Entwurfsänderungen eines Nutzers selbst ab (KA-3b1).
+    fn rolle_angleichen(&mut self) {
+        let rolle = self.rolle();
+        self.scene.rolle = rolle;
+        if let Some(c) = self.company.as_mut() {
+            c.set_nutzer(rolle == sk_cost::Rolle::Nutzer);
         }
     }
 
@@ -1642,6 +1652,9 @@ impl App {
         if out.frei {
             self.admin = true;
             self.scene.rolle = sk_cost::Rolle::Admin;
+            if let Some(c) = self.company.as_mut() {
+                c.set_nutzer(false);
+            }
             self.quantity.dirty = true;
         }
         if out.ok {
@@ -1660,7 +1673,7 @@ impl App {
                     {
                         self.admin = true;
                     }
-                    self.scene.rolle = self.rolle();
+                    self.rolle_angleichen();
                     self.verwaltung = None;
                     self.overlay_dirty = true;
                     self.upload_model();
@@ -3268,7 +3281,7 @@ impl App {
     /// Ein Ereignis; `false` beendet die Schleife. Die Nachfrage „Änderungen
     /// speichern?“ und das offene Dateimenü nehmen Maus und Tasten zuerst.
     fn handle(&mut self, e: Event, surface: &Surface) -> bool {
-        self.scene.rolle = self.rolle();
+        self.rolle_angleichen();
         // Ein Klick während der Wände wachsen: sofort Endstand (K3b)
         if matches!(e, Event::MouseDown { .. }) && self.scene.skip_animation() {
             self.upload_model();

@@ -253,6 +253,47 @@ fn zwei_admins() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Ein Platz ohne eingegebenes Kennwort schreibt weder Firma noch Entwurf:
+/// kein Speichern im Entwurf, kein „Änderung verwerfen“, kein „Entwurf
+/// verwerfen“, kein „Freigeben“ (Szene und Firmenkatalog lehnen selbst ab;
+/// Koordinator 20:47). Firmendatei und Entwurf bleiben bytegleich.
+#[test]
+fn nutzer_gibt_nicht_frei() {
+    let (mut c, mut s, dir) = mit_kennwort("nutzer");
+    let op = |w: i64| Op::FirmenwertSetzen {
+        schluessel: "wage".into(),
+        wert: Dez::ganz(w),
+    };
+    c.fuer_entwurf(&h(), &[op(62)]).unwrap();
+    let firma = std::fs::read(c.path()).unwrap();
+    let entwurf = std::fs::read(c.entwurf_pfad()).unwrap();
+    c.set_nutzer(true);
+    s.rolle = sk_cost::Rolle::Nutzer;
+    let nur = crate::catalog::NUR_MIT_KENNWORT;
+    assert_eq!(
+        c.fuer_entwurf(&h(), &[op(63)]).unwrap_err().to_string(),
+        nur
+    );
+    assert_eq!(c.fuer_firma(&h(), &[op(63)]).unwrap_err().to_string(), nur);
+    let satz = SatzId::neu("rate", "wage");
+    assert_eq!(
+        c.entwurf_satz_verwerfen(&satz).unwrap_err().to_string(),
+        nur
+    );
+    assert_eq!(c.entwurf_verwerfen().unwrap_err().to_string(), nur);
+    assert_eq!(c.freigeben(&h()).unwrap_err().to_string(), nur);
+    let e = s.freigeben(FREIGEGEBEN, &mut c, &h()).unwrap_err();
+    assert!(e.to_string().contains("nur in der Verwaltung"), "{e}");
+    assert_eq!(std::fs::read(c.path()).unwrap(), firma);
+    assert_eq!(std::fs::read(c.entwurf_pfad()).unwrap(), entwurf);
+    // Entsperrt geht es wieder
+    c.set_nutzer(false);
+    s.rolle = sk_cost::Rolle::Admin;
+    s.freigeben(FREIGEGEBEN, &mut c, &h())
+        .expect("Admin gibt frei");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Mit Kennwort und entsperrt: „Auch für neue Häuser“ (Lohn) schreibt in
 /// den Entwurf, dieses Haus rechnet gleich damit; nach „Freigeben“ ist es der
 /// Firmenwert, und das Haus hat keinen eigenen Vermerk mehr: eine spätere

@@ -42,6 +42,9 @@ pub struct Company {
     /// Entwurf beim letzten Lesen bzw. Schreiben (KA-3b2); `None`: keiner
     /// offen.
     entwurf: Option<String>,
+    /// Platz ohne eingegebenes Verwaltungskennwort (KA-3b1): schreibt weder
+    /// Firma noch Entwurf; setzt die App ([`Company::set_nutzer`]).
+    nutzer: bool,
 }
 
 /// Schluss des Hinweises auf Fremdes aus einer neueren Fassung; er gehört
@@ -192,6 +195,10 @@ pub const MIT_KENNWORT: &str = "Mit Verwaltungskennwort ändert die Verwaltung e
 pub const IM_ENTWURF: &str =
     "Im Entwurf gespeichert; für neue Häuser gilt es nach „Freigeben“ in der Verwaltung.";
 
+/// Ein Platz, an dem das Verwaltungskennwort nicht eingegeben ist, ändert
+/// den Firmenkatalog nicht, auch nicht den Entwurf (KA-3b1).
+pub const NUR_MIT_KENNWORT: &str = "Den Firmenkatalog ändert nur, wer das Verwaltungskennwort eingegeben hat (Datei › Verwaltung). Für dieses Haus geht es mit „Nur dieses Haus“.";
+
 /// Zwei Administratoren am selben Entwurf (paket-ka3b §3).
 pub const ENTWURF_GEAENDERT: &str =
     "Der Entwurf wurde inzwischen an einem anderen Platz geändert und ist neu geladen.";
@@ -326,6 +333,7 @@ impl Company {
             gen: 0,
             zuletzt: Vec::new(),
             entwurf: None,
+            nutzer: false,
         };
         let hints = c.reload(standard_place);
         c.entwurf_laden();
@@ -568,6 +576,9 @@ impl Company {
         herkunft: &sk_cost::Herkunft,
         ops: &[sk_cost::Op],
     ) -> Result<sk_cost::FirmaNeu, Meldung> {
+        if self.nutzer {
+            return Err(Meldung::satz(NUR_MIT_KENNWORT));
+        }
         if self.broken {
             return Err(Meldung::satz(
                 "Der Firmenkatalog ist nicht lesbar und wird nicht überschrieben.",
@@ -639,6 +650,12 @@ impl Company {
         self.entwurf.as_deref()
     }
 
+    /// Rolle dieses Platzes (KA-3b1): `true`, solange das gesetzte
+    /// Verwaltungskennwort hier nicht eingegeben ist.
+    pub fn set_nutzer(&mut self, nutzer: bool) {
+        self.nutzer = nutzer;
+    }
+
     /// Der Entwurf beim letzten [`Company::entwurf_laden`] oder Schreiben.
     pub fn entwurf(&self) -> Option<&str> {
         self.entwurf.as_deref()
@@ -652,6 +669,9 @@ impl Company {
         &mut self,
         was: (&'static str, &'static str),
     ) -> Result<(Sperre, String, Option<String>), Meldung> {
+        if self.nutzer {
+            return Err(Meldung::satz(NUR_MIT_KENNWORT));
+        }
         if self.broken {
             return Err(Meldung::satz(
                 "Der Firmenkatalog ist nicht lesbar und wird nicht überschrieben.",
