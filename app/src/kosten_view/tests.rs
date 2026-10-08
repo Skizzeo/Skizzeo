@@ -172,8 +172,9 @@ fn graue_zeilen_unter_dem_gewerk() {
     assert_eq!(g.gp, "ohne Bauleistung");
     let f = v.fuss();
     assert!(
-        f.iter().any(|x| x.text == "Ohne Preis: "
-            && x.verweis == "Dachterrasse, Attikablech (3 Zeilen ohne Bauleistung)"),
+        f.iter().any(
+            |x| x.text == "Ohne Preis: " && x.verweis == "Dachterrasse, Attikablech (3 Zeilen)"
+        ),
         "{:?}",
         f.iter().map(|x| &x.verweis).collect::<Vec<_>>()
     );

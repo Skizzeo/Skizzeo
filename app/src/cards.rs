@@ -244,8 +244,9 @@ impl Karten {
                     u.accent,
                 );
             }
+            // Auf der weißen aktiven Karte steht die Zahl in voller Farbe
             let (text, dim) = if aktiv {
-                (u.sheet_text, u.sheet_text_dim)
+                (u.sheet_text, u.sheet_text)
             } else {
                 (u.sheet_text_dim, u.sheet_text_dim)
             };
@@ -267,6 +268,13 @@ impl Karten {
             }
         }
     }
+}
+
+/// Verweis auf dem hellen Blatt (Einstellungen §4): fett in
+/// mix(`accent`, `sheet_text`, 0,2), unter der Maus 0,4. Reines `accent` hat
+/// auf `sheet_bg` nur etwa 1,8:1.
+pub fn verweis(u: &sk_ui::theme::Ui, hot: bool) -> Rgba {
+    mix(u.accent, u.sheet_text, if hot { 0.4 } else { 0.2 })
 }
 
 /// Farbe zwischen `a` und `b` (0 = a).

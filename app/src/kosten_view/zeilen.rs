@@ -231,19 +231,17 @@ impl Bau<'_> {
             let name = self.m.element(o.element).map_or(String::new(), |e| {
                 sk_model::kinds::spec(e.category).name.to_string()
             });
-            let baustoff = self
-                .m
-                .materials()
-                .iter()
-                .find(|(_, x)| x.guid == o.baustoff)
-                .map_or(String::new(), |(_, x)| x.name.clone());
-            let mut z = Zeile::neu(
-                Art::Ohne,
-                ebene,
-                format!("{} {}", o.nummer, baustoff).trim().to_string(),
-            );
+            // „Dachterrasse · Dämmung hart“: Bauteilart und Baustoff, ohne
+            // Bauteilnummer; „ohne Bauleistung“ steht einmal an der Gruppe
+            // (Einstellungen §3 KA-2 Punkt 4)
+            let baustoff = baustoff_name(self.m, o.baustoff);
+            let text = if baustoff.is_empty() {
+                name
+            } else {
+                format!("{name} · {baustoff}")
+            };
+            let mut z = Zeile::neu(Art::Ohne, ebene, text);
             z.gruppe = gruppe.to_string();
-            z.leise = format!("{name} · ohne Bauleistung");
             z.menge = menge_text(o.menge, o.einheit);
             z.elements = vec![o.element];
             z.ohne = Some(j);
@@ -368,4 +366,12 @@ pub fn chip_summen(b: &Kostenblatt, chips: &[umfang_view::Chip], modus: Modus) -
         .iter()
         .map(|c| b.summe_geschosse(&c.geschosse, modus.nur_material()))
         .collect()
+}
+
+/// Name eines Baustoffs im Modell, sonst leer.
+pub(super) fn baustoff_name(m: &sk_model::Model, g: sk_model::Guid) -> String {
+    m.materials()
+        .iter()
+        .find(|(_, x)| x.guid == g)
+        .map_or(String::new(), |(_, x)| x.name.clone())
 }

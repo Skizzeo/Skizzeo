@@ -638,11 +638,16 @@ impl KostenView {
         if let Some((j, el)) = self.wahl_wunsch.take() {
             let z = blatt.ohne.get(j).filter(|z| z.element == el);
             let a = z.and_then(|z| sk_cost::wahl::auswahl(s.model(), kat, z));
-            let titel = self
-                .zeilen
-                .iter()
-                .find(|x| x.ohne == Some(j))
-                .map_or_else(String::new, |x| x.text.clone());
+            // Im Blatt mit Bauteilnummer: „DT-001 PIR-Dämmung“
+            let titel = z.map_or_else(String::new, |z| {
+                format!(
+                    "{} {}",
+                    z.nummer,
+                    zeilen::baustoff_name(s.model(), z.baustoff)
+                )
+                .trim()
+                .to_string()
+            });
             if let (Some(z), Some(a)) = (z, a) {
                 let mut w = WahlBlatt::neu((j, el), &titel, menge_text(z.menge, z.einheit), a);
                 w.scale = self.scale;
@@ -763,20 +768,28 @@ impl KostenView {
         let s = self.scale;
         let (x0, cw) = self.content_x(t);
         let tw = ((cw - 2.0 * TILE_GAP * s) / 3.0).max(0.0);
-        let x = x0 + 2.0 * (tw + TILE_GAP * s) + 12.0 * s;
+        // Klein neben dem Betrag, rechtsbündig auf seiner Grundlinie
+        // (Einstellungen §3 KA-2 Punkt 3)
+        let rechts = x0 + 2.0 * (tw + TILE_GAP * s) + tw - 12.0 * s;
         let vor = format!("Lohn {} € (", euro(b.lohn));
         let link = format!("{} €/h", euro(self.lohnsatz.cent()));
         let nach = format!(") · Material {} €", euro(b.stoff));
         let px = 10.0 * s;
-        let w = |t: &str| {
-            fonts
-                .regular
-                .as_ref()
-                .map_or(t.chars().count() as f32 * px * 0.55, |f| f.width(t, px))
+        let w = |f: Option<&sk_paint::font::Font>, t: &str| {
+            f.map_or(t.chars().count() as f32 * px * 0.55, |f| f.width(t, px))
         };
-        let lx = x + w(&vor);
-        let y = self.tiles_top() + 44.0 * s;
-        Some((vor, link.clone(), nach, (lx, y, w(&link), 14.0 * s)))
+        let regular = fonts.regular.as_ref();
+        let bold = fonts.bold.as_ref().or(regular);
+        let punkt = if self.lohn_firma.is_some() {
+            8.0 * s
+        } else {
+            0.0
+        };
+        let lw = w(bold, &link);
+        let x = rechts - w(regular, &nach) - punkt - lw - w(regular, &vor);
+        let lx = x + w(regular, &vor);
+        let y = self.tiles_top() + 28.0 * s;
+        Some((vor, link.clone(), nach, (lx, y, lw, 14.0 * s)))
     }
 
     /// Beide Blätter schließen, ohne zu schreiben.
@@ -1169,7 +1182,7 @@ impl KostenView {
         if !b.ohne.is_empty() {
             let mut namen: Vec<String> = Vec::new();
             for z in self.zeilen.iter().filter(|z| z.art == Art::Ohne) {
-                let n = z.leise.split(" · ").next().unwrap_or_default().to_string();
+                let n = z.text.split(" · ").next().unwrap_or_default().to_string();
                 if !n.is_empty() && !namen.contains(&n) {
                     namen.push(n);
                 }
@@ -1177,7 +1190,7 @@ impl KostenView {
             out.push(Fuss {
                 text: "Ohne Preis: ".into(),
                 verweis: format!(
-                    "{} ({} {} ohne Bauleistung)",
+                    "{} ({} {})",
                     namen.join(", "),
                     b.ohne.len(),
                     if b.ohne.len() == 1 { "Zeile" } else { "Zeilen" }
@@ -1211,12 +1224,13 @@ impl KostenView {
         let (x0, _) = self.content_x(t);
         let px = 10.5 * s;
         let regular = fonts.regular.as_ref();
+        let bold = fonts.bold.as_ref().or(regular);
         let mut y = self.tiles_top() + (TILE_H + TILE_GAP) * s;
         let mut out = Vec::new();
         for f in self.fuss() {
-            if let (Some(z), Some(r)) = (f.ziel, regular) {
+            if let (Some(z), Some(r), Some(b)) = (f.ziel, regular, bold) {
                 let x = x0 + r.width(&f.text, px);
-                out.push((z, (x, y, r.width(&f.verweis, px), FOOT_LINE * s)));
+                out.push((z, (x, y, b.width(&f.verweis, px), FOOT_LINE * s)));
             }
             y += FOOT_LINE * s;
         }
@@ -1842,7 +1856,7 @@ impl KostenView {
                 px,
                 ux,
                 base,
-                farbe(Hot::Uebernehmen, u.accent),
+                crate::cards::verweis(u, unter(Hot::Uebernehmen)),
             );
             f.draw(
                 c,
@@ -2007,7 +2021,8 @@ impl KostenView {
             if ueber && self.zeigt_waehlen(i) {
                 if let Some(b) = bold {
                     let (lx, ..) = self.waehlen_rect(t, fonts, y, h);
-                    b.draw(c, WAEHLEN, px, lx, base, u.accent);
+                    let hot = self.hot == Some(Hot::Waehlen(i));
+                    b.draw(c, WAEHLEN, px, lx, base, crate::cards::verweis(u, hot));
                 }
             }
             if z.art == Art::Gruppe && z.ebene == 0 {
@@ -2069,19 +2084,17 @@ impl KostenView {
                     y + 18.0 * s,
                     u.sheet_text_dim,
                 );
+                // Klein neben dem Betrag, rechtsbündig auf seiner Grundlinie
+                let by = y + 38.0 * s;
                 if k == 2 {
                     // „60,00 €/h“ als Verweis aufs Lohnfeld (Bedienbarkeit 4.7)
                     if let Some((vor, link, nach, (lx, ..))) = self.lohnsatz_lage(t, fonts) {
                         let px = 10.0 * s;
-                        let by = y + 54.0 * s;
-                        f.draw(c, &vor, px, x + 12.0 * s, by, u.sheet_text_dim);
-                        let col = if self.hot == Some(Hot::Lohnsatz) {
-                            u.accent_hover
-                        } else {
-                            u.accent
-                        };
-                        f.draw(c, &link, px, lx, by, col);
-                        let mut nx = lx + f.width(&link, px);
+                        let fb = bold.unwrap_or(f);
+                        f.draw(c, &vor, px, lx - f.width(&vor, px), by, u.sheet_text_dim);
+                        let col = crate::cards::verweis(u, self.hot == Some(Hot::Lohnsatz));
+                        fb.draw(c, &link, px, lx, by, col);
+                        let mut nx = lx + fb.width(&link, px);
                         // Punkt hinter dem Stundenlohn: eigener Lohn (paket-ka2 §4)
                         if self.lohn_firma.is_some() {
                             let d = 1.5 * s;
@@ -2091,20 +2104,13 @@ impl KostenView {
                             c.fill(&p, u.accent);
                             nx += 8.0 * s;
                         }
-                        let rest = (x + tw - 12.0 * s - nx).max(0.0);
-                        let nach = sk_ui::widgets::ellipsize(Some(f), &nach, px, rest);
                         f.draw(c, &nach, px, nx, by, u.sheet_text_dim);
                     }
                 } else if !klein.is_empty() {
-                    let k = sk_ui::widgets::ellipsize(Some(f), klein, 10.0 * s, tw - 24.0 * s);
-                    f.draw(
-                        c,
-                        &k,
-                        10.0 * s,
-                        x + 12.0 * s,
-                        y + 54.0 * s,
-                        u.sheet_text_dim,
-                    );
+                    let px = 10.0 * s;
+                    let k = sk_ui::widgets::ellipsize(Some(f), klein, px, tw * 0.5);
+                    let kw = f.width(&k, px);
+                    f.draw(c, &k, px, x + tw - 12.0 * s - kw, by, u.sheet_text_dim);
                 }
             }
             if let Some(f) = bold {
@@ -2120,18 +2126,15 @@ impl KostenView {
         let Some(f) = fonts.regular.as_ref() else {
             return;
         };
+        let b = fonts.bold.as_ref().unwrap_or(f);
         let px = 10.5 * s;
         let mut y = self.tiles_top() + (TILE_H + TILE_GAP) * s;
         for z in fuss {
             let base = y + (FOOT_LINE * s + f.cap_height(px)) * 0.5;
             f.draw(c, &z.text, px, x0, base, u.sheet_text_dim);
             if !z.verweis.is_empty() {
-                let col = if z.ziel.is_some() && self.hot == z.ziel {
-                    u.accent_hover
-                } else {
-                    u.accent
-                };
-                f.draw(c, &z.verweis, px, x0 + f.width(&z.text, px), base, col);
+                let col = crate::cards::verweis(u, z.ziel.is_some() && self.hot == z.ziel);
+                b.draw(c, &z.verweis, px, x0 + f.width(&z.text, px), base, col);
             }
             y += FOOT_LINE * s;
         }
@@ -2395,12 +2398,12 @@ mod abnahme_ka2 {
         let z = v.zeilen();
         let grau: Vec<&Zeile> = z.iter().filter(|x| x.art == Art::Ohne).collect();
         assert!(
-            grau.iter().any(|x| x.leise.starts_with("Geschossdecke")),
+            grau.iter().any(|x| x.text.starts_with("Geschossdecke")),
             "{grau:?}"
         );
         let i = z
             .iter()
-            .position(|x| x.art == Art::Ohne && x.leise.starts_with("Geschossdecke"))
+            .position(|x| x.art == Art::Ohne && x.text.starts_with("Geschossdecke"))
             .unwrap();
         let g = z[..i]
             .iter()

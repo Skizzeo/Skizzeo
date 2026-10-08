@@ -491,7 +491,7 @@ impl Leiste {
         };
         if let Some((x, y, w, h)) = l.field {
             let hot = self.hot == Some(Hot::Field) || self.field_open;
-            let edge = if hot { u.border } else { u.sheet_rule };
+            let edge = if hot { u.sheet_hint } else { u.sheet_rule };
             framed(
                 c,
                 (x, y, w, h),
@@ -512,7 +512,7 @@ impl Leiste {
             let (fill, edge, font, col) = if on {
                 (u.sheet_select, u.accent, bold, u.sheet_text)
             } else if hover {
-                (u.sheet_card, u.border, regular, u.sheet_text)
+                (u.sheet_card, u.sheet_hint, regular, u.sheet_text)
             } else {
                 (u.sheet_bg, u.sheet_rule, regular, u.sheet_text_dim)
             };
@@ -533,11 +533,7 @@ impl Leiste {
             }
         }
         if let (Some((x, y, _, h)), Some(f)) = (l.all, bold) {
-            let col = if self.hot == Some(Hot::All) {
-                u.accent_hover
-            } else {
-                u.accent
-            };
+            let col = crate::cards::verweis(u, self.hot == Some(Hot::All));
             f.draw(
                 c,
                 "Alle",
