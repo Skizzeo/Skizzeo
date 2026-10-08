@@ -224,12 +224,12 @@ Fenster | wegziehen löst es, an der Kante rastet es wieder ein
 [thema] id=kosten titel="Kosten"
 Preise | „Material“ oder „Material + Lohn“
 Summe | netto, brutto mit MwSt., Lohnanteil mit Lohn und Material
-Verrechnungslohn | beim ersten Öffnen in der Hinweiskarte; später Klick auf den Stundenlohn in der Kachel Lohnanteil
+Verrechnungslohn | beim ersten Öffnen in der Hinweiskarte; später Klick auf „… €/h“ in der Kachel Lohnanteil
 Preis ändern | Doppelklick auf einen EP; „Nur dieses Haus“ oder „Auch für neue Häuser“, dann Enter
 Für neue Häuser | gilt sofort für alle neuen Häuser; Strg+Z nimmt es nur für dieses Haus zurück
 Andere Werte | eine Zeile oben nennt, was für neue Häuser anders ist; „übernehmen“ oder „so lassen“
 Geschätzt | keine genaue Bauleistung; gerechnet nach der nächsten Dicke oder dem Richtpreis
-Grau | keine passende Bauleistung; „Bauleistung wählen …“
+Grau | keine passende Bauleistung; Zeile überfahren, dann „Bauleistung wählen …“
 Referenzpreise | Stand 10/2026, unverbindlich, netto
 
 [thema] id=loeschen titel="Löschen"

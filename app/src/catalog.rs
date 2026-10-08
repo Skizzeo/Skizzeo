@@ -37,6 +37,8 @@ pub struct Company {
     broken: bool,
     /// Zählt jede Änderung des Katalogs im Speicher (Laden, Schreiben).
     gen: u64,
+    /// Die Sätze, die das letzte „Auch für neue Häuser“ geändert hat.
+    zuletzt: Vec<sk_cost::SatzId>,
 }
 
 /// Schluss des Hinweises auf Fremdes aus einer neueren Fassung; er gehört
@@ -304,6 +306,7 @@ impl Company {
             geladen: String::new(),
             broken: false,
             gen: 0,
+            zuletzt: Vec::new(),
         };
         let hints = c.reload(standard_place);
         (c, hints)
@@ -460,6 +463,12 @@ impl Company {
         hints
     }
 
+    /// Die Sätze, die das letzte [`Company::fuer_firma`] geändert hat
+    /// (Nachfrage beim Speichern, Bedienbarkeit 9.2).
+    pub fn zuletzt_geaendert(&self) -> &[sk_cost::SatzId] {
+        &self.zuletzt
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -582,6 +591,7 @@ impl Company {
             .map_err(|e| Meldung::aus_io(ergebnis, was, &self.path, &e))?;
         drop(sperre);
         self.reload(false);
+        self.zuletzt = neu.saetze.clone();
         Ok(neu)
     }
 

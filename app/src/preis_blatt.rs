@@ -485,7 +485,8 @@ impl PreisBlatt {
     }
 
     /// Bezeichnung mit Wert für „Auch für neue Häuser“ (Bedienbarkeit 4.4):
-    /// „Planstein 20,50 €/m² für dieses und neue Häuser“; bei mehreren
+    /// „Porenbeton-Planstein PP2 20,50 €/m² für dieses und neue Häuser“,
+    /// „Aufwandswert AW Porenbeton 17,5: 0,40 h/m² …“; bei mehreren
     /// Änderungen „Preise AW Porenbeton … für dieses und neue Häuser“.
     pub fn bezeichnung(&self) -> String {
         let geaendert: Vec<&Feld> = self
@@ -494,15 +495,14 @@ impl PreisBlatt {
             .filter(|f| f.wert.is_some_and(|w| w != f.alt))
             .collect();
         let was = match geaendert.as_slice() {
+            // Mit vollem Namen, damit die Nachfrage beim Speichern zwei
+            // Werte unterscheiden kann (Bedienbarkeit 7.3, 9.2)
             [f] => {
-                let name = match f.art {
-                    Art::Stunden => "Aufwandswert",
-                    Art::Preis(_) => {
-                        let wort = f.name.split(' ').next().unwrap_or(&f.name);
-                        wort.rsplit('-').next().unwrap_or(wort)
-                    }
-                };
-                format!("{name} {} {}", zahl(f.wert.unwrap_or(f.alt), 2), f.einheit)
+                let w = zahl(f.wert.unwrap_or(f.alt), 2);
+                match f.art {
+                    Art::Stunden => format!("Aufwandswert {}: {w} {}", self.aufbau.kurz, f.einheit),
+                    Art::Preis(_) => format!("{} {w} {}", f.name, f.einheit),
+                }
             }
             _ => format!("Preise {}", self.aufbau.kurz),
         };
@@ -579,19 +579,28 @@ impl PreisBlatt {
         match key {
             Key::Escape => return Some(Aus::Verwerfen),
             Key::Enter => return self.anwenden().or(Some(Aus::Repaint)),
+            // Tab erreicht nach den Feldern das Segment (Bedienbarkeit 7.5)
             Key::Tab => {
-                let n = self.felder.len();
-                if n > 0 {
-                    self.fokus = if mods.shift {
-                        (self.fokus + n - 1) % n
-                    } else {
-                        (self.fokus + 1) % n
-                    };
-                    self.felder[self.fokus].edit.select_all();
+                let n = self.felder.len() + 1;
+                self.fokus = if mods.shift {
+                    (self.fokus + n - 1) % n
+                } else {
+                    (self.fokus + 1) % n
+                };
+                if let Some(f) = self.felder.get_mut(self.fokus) {
+                    f.edit.select_all();
                 }
                 return Some(Aus::Repaint);
             }
             _ => {}
+        }
+        if self.segment_fokus() {
+            self.gilt = match key {
+                Key::Left | Key::Home => Gilt::NurHaus,
+                Key::Right | Key::End => Gilt::NeueHaeuser,
+                _ => return None,
+            };
+            return Some(Aus::Repaint);
         }
         let i = self.fokus;
         let e = &mut self.felder.get_mut(i)?.edit;
@@ -647,6 +656,11 @@ impl PreisBlatt {
         } else {
             Some(Aus::Repaint)
         }
+    }
+
+    /// Steht der Tastenfokus auf dem Segment „Gilt für“?
+    fn segment_fokus(&self) -> bool {
+        self.fokus == self.felder.len()
     }
 
     /// Getipptes Zeichen: nur Ziffern, Komma und Punkt.
@@ -826,8 +840,18 @@ impl PreisBlatt {
             zy += 18.0 * s;
         }
         if self.fehler.is_some() || self.ungueltig() {
+            // Der alte Wert des ungültigen Felds ist das Beispiel
+            // (Bedienbarkeit 7.6)
+            let beispiel = self
+                .felder
+                .iter()
+                .find(|f| f.wert.is_none())
+                .map_or_else(|| "20,50".into(), |f| zahl(f.alt, 2));
             let satz = self.fehler.clone().unwrap_or_else(|| {
-                crate::meldung::Meldung::satz("Bitte eine Zahl ab 0 eingeben, etwa 20,50.")
+                crate::meldung::Meldung::mit(
+                    "Bitte eine Zahl ab 0 eingeben, etwa {}.",
+                    &[&beispiel],
+                )
             });
             let satz = widgets::ellipsize(Some(f), &satz, px_s, x1 - x0);
             f.draw(c, &satz, px_s, x0, zy + 12.0 * s, u.field_invalid);
@@ -838,6 +862,12 @@ impl PreisBlatt {
             let inset = 2.0 * s;
             let (sx, sy, sh) = (first.0 - inset, first.1 - inset, first.3 + 2.0 * inset);
             let sw = last.0 + last.2 + inset - sx;
+            if self.segment_fokus() {
+                let o = 1.5 * s;
+                let mut p = Path::new();
+                p.rounded_rect(sx - o, sy - o, sw + 2.0 * o, sh + 2.0 * o, 6.0 * s + o);
+                c.fill(&p, u.accent);
+            }
             let mut p = Path::new();
             p.rounded_rect(sx, sy, sw, sh, 6.0 * s);
             c.fill(&p, u.sheet_tile);
@@ -1120,7 +1150,9 @@ mod tests {
             Some(Aus::Anwenden {
                 ops: ops.clone(),
                 gilt: Gilt::NeueHaeuser,
-                text: "Planstein 20,50 €/m² für dieses und neue Häuser".into(),
+                text:
+                    "Porenbeton-Planstein PP2-0,35 d=17,5cm 20,50 €/m² für dieses und neue Häuser"
+                        .into(),
             })
         );
         // Ungültig: Enter geht nicht
@@ -1161,5 +1193,34 @@ mod tests {
         );
         let mut c = Canvas::new(1200, 900);
         pb.paint(&mut c, &Theme::dark(), &fonts);
+    }
+
+    /// Bedienbarkeit 7.5 und 7.6: Tab läuft über beide Felder zum Segment,
+    /// ← und → schalten es um, Ziffern gehen dort nirgends hin; Shift+Tab
+    /// zurück ins Feld.
+    #[test]
+    fn tab_erreicht_das_segment() {
+        let m = rh1();
+        let mut pb = blatt(&m);
+        let none = Modifiers::default();
+        assert_eq!(pb.fokus, 1);
+        pb.key(Key::Tab, none);
+        assert!(pb.segment_fokus());
+        assert_eq!(pb.text('7'), None);
+        assert_eq!(pb.key(Key::Right, none), Some(Aus::Repaint));
+        assert_eq!(pb.gilt, Gilt::NeueHaeuser);
+        assert_eq!(pb.key(Key::Left, none), Some(Aus::Repaint));
+        assert_eq!(pb.gilt, Gilt::NurHaus);
+        pb.key(
+            Key::Tab,
+            Modifiers {
+                shift: true,
+                ..none
+            },
+        );
+        assert_eq!(pb.fokus, 1);
+        pb.key(Key::Tab, none);
+        pb.key(Key::Tab, none);
+        assert_eq!(pb.fokus, 0, "rundum ins Aufwandswert-Feld");
     }
 }

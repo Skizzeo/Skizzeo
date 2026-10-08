@@ -438,7 +438,7 @@ impl KostenView {
                 lohn_blatt::Form::Karte => {
                     lohn_blatt::kartentitel(&sk_cost::lesen::preisquelle(&kat))
                 }
-                lohn_blatt::Form::Blatt => "Stundenlohn".into(),
+                lohn_blatt::Form::Blatt => "Verrechnungslohn".into(),
             };
             let mut l = LohnBlatt::neu(form, titel, kat.werte.lohn, firma_lohn);
             l.scale = self.scale;

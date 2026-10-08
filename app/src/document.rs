@@ -19,7 +19,7 @@ pub struct Document {
     pub saved_at: Option<(u8, u8)>,
     /// Werte, die seit dem letzten Speichern schon für neue Häuser gelten
     /// („Lohn 65,00 €/h“); die Nachfrage nennt sie (paket-ka2 §5, 4.5).
-    pub fuer_neue: Vec<String>,
+    pub fuer_neue: Vec<(Vec<sk_cost::SatzId>, String)>,
 }
 
 impl Document {
@@ -63,18 +63,16 @@ impl Document {
         self.fuer_neue.clear();
     }
 
-    /// Ein Wert gilt jetzt auch für neue Häuser; ein späterer Wert desselben
-    /// Satzes („Lohn …“) ersetzt den früheren.
-    pub fn fuer_neue_merken(&mut self, wert: &str) {
-        let kopf = |t: &str| {
-            t.split(|c: char| c.is_ascii_digit())
-                .next()
-                .unwrap_or("")
-                .to_string()
-        };
-        let k = kopf(wert);
-        self.fuer_neue.retain(|x| kopf(x) != k);
-        self.fuer_neue.push(wert.to_string());
+    /// Ein Wert gilt jetzt auch für neue Häuser. Geführt wird nach den
+    /// geänderten Sätzen (Bedienbarkeit 9.2): ein späterer Wert für einen
+    /// derselben Sätze ersetzt den früheren; `wert` ist nur die Anzeige.
+    pub fn fuer_neue_merken(&mut self, saetze: &[sk_cost::SatzId], wert: &str) {
+        if saetze.is_empty() {
+            return;
+        }
+        self.fuer_neue
+            .retain(|(s, _)| !s.iter().any(|x| saetze.contains(x)));
+        self.fuer_neue.push((saetze.to_vec(), wert.to_string()));
     }
 
     /// Dateiname oder „Unbenannt“.

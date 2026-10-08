@@ -2293,7 +2293,7 @@ impl App {
             Some(c) => match self.scene.fuer_firma(label, c, h, ops) {
                 Ok(hinweis) => {
                     let wert = label.strip_suffix(preis_blatt::FUER_NEUE).unwrap_or(label);
-                    self.doc.fuer_neue_merken(wert);
+                    self.doc.fuer_neue_merken(c.zuletzt_geaendert(), wert);
                     hinweis.map(|m| (m, false))
                 }
                 Err(e) => Some((e.dazu(NICHTS_GEAENDERT), true)),

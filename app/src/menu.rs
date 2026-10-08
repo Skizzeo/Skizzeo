@@ -694,10 +694,10 @@ pub fn save_question(doc: &Document, saved: Option<(u8, u8)>) -> (String, Option
     // Was schon für neue Häuser gilt, bleibt (Bedienbarkeit 4.5)
     match doc.fuer_neue.as_slice() {
         [] => {}
-        [a] => zeilen.push(format!("Für neue Häuser gilt schon {a}.")),
-        [a, b] => zeilen.push(format!("Für neue Häuser gilt schon {a} und {b}.")),
+        [(_, a)] => zeilen.push(format!("Für neue Häuser gilt schon {a}.")),
+        [(_, a), (_, b)] => zeilen.push(format!("Für neue Häuser gilt schon {a} und {b}.")),
         v => zeilen.push(format!(
-            "{} Werte für neue Häuser sind schon gespeichert und bleiben.",
+            "{} Änderungen für neue Häuser sind schon gespeichert und bleiben.",
             v.len()
         )),
     }
@@ -928,12 +928,14 @@ mod tests {
 
     /// Nachfrage nach einer Änderung für neue Häuser (Bedienbarkeit 4.5):
     /// ein Wert mit dem Satz, dass er bleibt; derselbe Satz ersetzt den
-    /// früheren; ab drei Werten die Zahl; Speichern leert die Liste.
+    /// früheren, auch bei gleichem Text verschiedene Sätze nicht (9.2); ab
+    /// drei Werten die Zahl; Speichern leert die Liste.
     #[test]
     fn nachfrage_nennt_werte_fuer_neue_haeuser() {
+        let satz = |a, k: &str| vec![sk_cost::SatzId::neu(a, k)];
         let mut doc = Document::opened(std::path::PathBuf::from("Haus.szo"), 0);
-        doc.fuer_neue_merken("Lohn 62,00 €/h");
-        doc.fuer_neue_merken("Lohn 65,00 €/h");
+        doc.fuer_neue_merken(&satz("rate", "wage"), "Lohn 62,00 €/h");
+        doc.fuer_neue_merken(&satz("rate", "wage"), "Lohn 65,00 €/h");
         let (_, d) = save_question(&doc, Some((10, 12)));
         assert_eq!(
             d.as_deref(),
@@ -945,12 +947,13 @@ mod tests {
         );
         let dlg = SaveDialog::new(String::new(), d);
         assert_eq!(dlg.size(1.0).1, 176.0);
-        doc.fuer_neue_merken("Planstein 20,50 €/m²");
-        doc.fuer_neue_merken("MwSt. 7,00 %");
+        // Zwei Aufwandswerte mit gleichem Text, aber verschiedene Sätze
+        doc.fuer_neue_merken(&satz("service", "a"), "Aufwandswert 0,40 h/m²");
+        doc.fuer_neue_merken(&satz("service", "b"), "Aufwandswert 0,40 h/m²");
         let (_, d) = save_question(&doc, None);
         assert_eq!(
             d.as_deref(),
-            Some("3 Werte für neue Häuser sind schon gespeichert und bleiben.")
+            Some("3 Änderungen für neue Häuser sind schon gespeichert und bleiben.")
         );
         doc.mark_saved(std::path::PathBuf::from("Haus.szo"), 1);
         assert_eq!(save_question(&doc, None).1, None);

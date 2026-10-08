@@ -511,10 +511,10 @@ fn satz_name(s: &Satz) -> String {
     }
 }
 
-/// Kurztext einer Bauleistung, sonst „ein Eintrag“.
+/// Kurztext einer Bauleistung, sonst „einem Eintrag“ (steht hinter „von“).
 fn kurz_von(k: &Katalog, g: Guid) -> String {
     k.leistung(g)
-        .map_or_else(|| crate::wort::EIN_EINTRAG.to_string(), |l| l.kurz.clone())
+        .map_or_else(|| "einem Eintrag".to_string(), |l| l.kurz.clone())
 }
 
 /// Name des Eintrags hinter einer Herkunftsangabe (`rec`, `key`).

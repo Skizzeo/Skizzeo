@@ -2,9 +2,10 @@
 //! Punkt 5, Bedienbarkeit 2.2, 2.5, 4.1, 4.7) in zwei Formen:
 //!
 //! - **Hinweiskarte** beim ersten Öffnen der Kosten: dunkel unten rechts,
-//!   Titel „Kosten mit Referenzpreisen 10/2026“, das Feld, darunter leise
-//!   „gilt für dieses und alle neuen Häuser“, unten rechts „Übernehmen“
-//!   (wie Enter: Projekt und Firma) und leise „Nur dieses Haus“.
+//!   Titel „Kosten mit Referenzpreisen 10/2026“, das Feld, unten rechts
+//!   „Auch für neue Häuser“ (wie Enter: Projekt und Firma) und leise „Nur
+//!   dieses Haus“; dieselben Wörter wie das Segment im Preisblatt
+//!   (Bedienbarkeit 9.1, „übernehmen“ gibt es nur in der Abgleichzeile).
 //! - **Blatt** am Stundenlohn der Kachel Lohnanteil: im Stil des
 //!   Preisblatts mit „Gilt für“ und der Folgezeile.
 //!
@@ -24,6 +25,8 @@ const FELD_W: f32 = 104.0;
 const FELD_H: f32 = 26.0;
 const SEG_H: f32 = 26.0;
 const KARTE_W: f32 = 330.0;
+/// Hauptknopf der Karte.
+const AUCH: &str = "Auch für neue Häuser";
 const BLATT_W: f32 = 360.0;
 
 /// Form des Felds.
@@ -50,7 +53,8 @@ enum Ziel {
     Schliessen,
     Feld,
     Segment(Gilt),
-    Uebernehmen,
+    /// Hauptknopf „Auch für neue Häuser“.
+    Auch,
     NurHaus,
     Innen,
 }
@@ -64,6 +68,8 @@ pub struct LohnBlatt {
     edit: TextEdit,
     wert: Option<Dez>,
     pub gilt: Gilt,
+    /// Tastenfokus auf dem Segment „Gilt für“ (nur das Blatt, Tab).
+    segment: bool,
     hot: Option<Ziel>,
     /// Stundenlohn in der Kachel (px), nur für das Blatt.
     anker: Rect,
@@ -100,6 +106,7 @@ impl LohnBlatt {
                 Form::Karte => Gilt::NeueHaeuser,
                 Form::Blatt => Gilt::NurHaus,
             },
+            segment: false,
             hot: None,
             anker: (0.0, 0.0, 0.0, 0.0),
             scale: 1.0,
@@ -114,7 +121,7 @@ impl LohnBlatt {
     fn hoehe(&self) -> f32 {
         let fehler = if self.wert.is_none() { 18.0 } else { 0.0 };
         match self.form {
-            Form::Karte => PAD + 24.0 + FELD_H + 22.0 + fehler + 34.0 + PAD,
+            Form::Karte => PAD + 24.0 + FELD_H + 12.0 + fehler + 34.0 + PAD,
             Form::Blatt => {
                 let folge = if self.gilt == Gilt::NeueHaeuser {
                     32.0
@@ -204,7 +211,7 @@ impl LohnBlatt {
         out
     }
 
-    /// „Nur dieses Haus“ und „Übernehmen“ (nur die Karte).
+    /// „Nur dieses Haus“ und „Auch für neue Häuser“ (nur die Karte).
     fn knoepfe(&self, fonts: &Fonts) -> Option<(Rect, Rect)> {
         if self.form != Form::Karte {
             return None;
@@ -214,7 +221,7 @@ impl LohnBlatt {
         let px = 11.0 * s;
         let regular = fonts.regular.as_ref();
         let bold = fonts.bold.as_ref().or(regular);
-        let wu = bold.map_or(80.0 * s, |f| f.width("Übernehmen", px)) + 24.0 * s;
+        let wu = bold.map_or(80.0 * s, |f| f.width(AUCH, px)) + 24.0 * s;
         let wn = regular.map_or(100.0 * s, |f| f.width("Nur dieses Haus", px)) + 16.0 * s;
         let bh = 26.0 * s;
         let by = y + h - (PAD * s) - bh;
@@ -241,7 +248,7 @@ impl LohnBlatt {
         }
         if let Some((n, u)) = self.knoepfe(fonts) {
             if inside(u, x, y) {
-                return Some(Ziel::Uebernehmen);
+                return Some(Ziel::Auch);
             }
             if inside(n, x, y) {
                 return Some(Ziel::NurHaus);
@@ -296,13 +303,14 @@ impl LohnBlatt {
                 let tx = fx + fw - 8.0 * s - unit_w - 4.0 * s - text_w;
                 let c = widgets::caret_at(f, &self.edit.text, px, tx, x);
                 self.edit.place(c, false);
+                self.segment = false;
                 Some(Aus::Repaint)
             }
             Some(Ziel::Segment(g)) => (g != self.gilt).then(|| {
                 self.gilt = g;
                 Aus::Repaint
             }),
-            Some(Ziel::Uebernehmen) => self.schreiben(Gilt::NeueHaeuser),
+            Some(Ziel::Auch) => self.schreiben(Gilt::NeueHaeuser),
             Some(Ziel::NurHaus) => self.schreiben(Gilt::NurHaus),
             Some(Ziel::Innen) => None,
         }
@@ -314,6 +322,27 @@ impl LohnBlatt {
     }
 
     pub fn key(&mut self, key: Key, mods: Modifiers) -> Option<Aus> {
+        // Im Blatt wechselt Tab zwischen Feld und Segment, ← und →
+        // schalten es um (Bedienbarkeit 7.5)
+        if self.form == Form::Blatt {
+            if key == Key::Tab {
+                self.segment = !self.segment;
+                if !self.segment {
+                    self.edit.select_all();
+                }
+                return Some(Aus::Repaint);
+            }
+            if self.segment {
+                self.gilt = match key {
+                    Key::Left | Key::Home => Gilt::NurHaus,
+                    Key::Right | Key::End => Gilt::NeueHaeuser,
+                    Key::Escape => return Some(Aus::Schliessen),
+                    Key::Enter => return self.schreiben(self.gilt).or(Some(Aus::Repaint)),
+                    _ => return None,
+                };
+                return Some(Aus::Repaint);
+            }
+        }
         let sh = mods.shift;
         let e = &mut self.edit;
         let changed = match key {
@@ -363,7 +392,7 @@ impl LohnBlatt {
     }
 
     pub fn text(&mut self, ch: char) -> Option<Aus> {
-        if !(ch.is_ascii_digit() || matches!(ch, ',' | '.')) {
+        if self.segment || !(ch.is_ascii_digit() || matches!(ch, ',' | '.')) {
             return None;
         }
         self.edit.insert(ch.encode_utf8(&mut [0; 4]));
@@ -372,7 +401,7 @@ impl LohnBlatt {
 
     pub fn tip_at(&self, fonts: &Fonts, x: f32, y: f32) -> Option<String> {
         match self.hit(fonts, x, y)? {
-            Ziel::Segment(Gilt::NeueHaeuser) | Ziel::Uebernehmen => {
+            Ziel::Segment(Gilt::NeueHaeuser) | Ziel::Auch => {
                 Some("Auch für neue Häuser: speichert im Firmenkatalog".into())
             }
             _ => None,
@@ -455,8 +484,10 @@ impl LohnBlatt {
             c.fill_rect(sx, fy + 5.0 * s, sw, fh - 10.0 * s, u.text_select);
         }
         f.draw(c, &self.edit.text, px_e, tx, base, text);
-        let kx = (tx + f.width(&self.edit.text[..self.edit.caret], px_e)).round();
-        c.fill_rect(kx, fy + 6.0 * s, s.max(1.0), fh - 12.0 * s, text);
+        if !self.segment {
+            let kx = (tx + f.width(&self.edit.text[..self.edit.caret], px_e)).round();
+            c.fill_rect(kx, fy + 6.0 * s, s.max(1.0), fh - 12.0 * s, text);
+        }
         let px_s = 10.5 * s;
         let mut zy = fy + fh;
         if self.wert.is_none() {
@@ -472,15 +503,6 @@ impl LohnBlatt {
         }
         match self.form {
             Form::Karte => {
-                let t2 = "gilt für dieses und alle neuen Häuser";
-                f.draw(
-                    c,
-                    t2,
-                    px_s,
-                    fx + fw - f.width(t2, px_s),
-                    (zy + 16.0 * s).round(),
-                    dim,
-                );
                 if let Some(((nx, ny, nw, nh), (bx, by, bw, bh))) = self.knoepfe(fonts) {
                     if self.hot == Some(Ziel::NurHaus) {
                         let mut p = Path::new();
@@ -493,14 +515,14 @@ impl LohnBlatt {
                     p.rounded_rect(bx, by, bw, bh, t.size.corner_radius * s);
                     c.fill(
                         &p,
-                        if self.hot == Some(Ziel::Uebernehmen) {
+                        if self.hot == Some(Ziel::Auch) {
                             u.accent_hover
                         } else {
                             u.accent
                         },
                     );
                     let ub = (by + (bh + fb.cap_height(px_e)) * 0.5).round();
-                    fb.draw(c, "Übernehmen", px_e, bx + 12.0 * s, ub, u.on_accent);
+                    fb.draw(c, AUCH, px_e, bx + 12.0 * s, ub, u.on_accent);
                 }
             }
             Form::Blatt => {
@@ -509,6 +531,12 @@ impl LohnBlatt {
                     let inset = 2.0 * s;
                     let (sx, sy, sh) = (first.0 - inset, first.1 - inset, first.3 + 2.0 * inset);
                     let sw = last.0 + last.2 + inset - sx;
+                    if self.segment {
+                        let o = 1.5 * s;
+                        let mut p = Path::new();
+                        p.rounded_rect(sx - o, sy - o, sw + 2.0 * o, sh + 2.0 * o, 6.0 * s + o);
+                        c.fill(&p, u.accent);
+                    }
                     let mut p = Path::new();
                     p.rounded_rect(sx, sy, sw, sh, 6.0 * s);
                     c.fill(&p, u.sheet_tile);
@@ -648,6 +676,30 @@ mod tests {
             Some(Aus::Schreiben {
                 wert: Dez::lesen("62.5", 4).unwrap(),
                 gilt: Gilt::NurHaus
+            })
+        );
+    }
+
+    /// Bedienbarkeit 7.5: Tab erreicht das Segment, ← und → schalten es
+    /// um, Ziffern gehen dort nicht ins Feld, Enter schreibt.
+    #[test]
+    fn tab_erreicht_das_segment() {
+        let mut b = LohnBlatt::neu(Form::Blatt, "Lohn".into(), Dez::ganz(60), Dez::ganz(60));
+        let mods = Modifiers::default();
+        let ctrl = Modifiers { ctrl: true, ..mods };
+        b.key(Key::Char('A'), ctrl);
+        for ch in "65".chars() {
+            b.text(ch);
+        }
+        assert_eq!(b.key(Key::Tab, mods), Some(Aus::Repaint));
+        assert_eq!(b.text('9'), None, "nicht ins Feld");
+        assert_eq!(b.key(Key::Right, mods), Some(Aus::Repaint));
+        assert_eq!(b.gilt, Gilt::NeueHaeuser);
+        assert_eq!(
+            b.key(Key::Enter, mods),
+            Some(Aus::Schreiben {
+                wert: Dez::ganz(65),
+                gilt: Gilt::NeueHaeuser
             })
         );
     }
