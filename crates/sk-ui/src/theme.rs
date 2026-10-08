@@ -94,6 +94,9 @@ pub struct Ui {
     pub sheet_hint: Rgba,
     pub sheet_rule: Rgba,
     pub sheet_tile: Rgba,
+    /// Weiße Fläche auf dem Blatt (KA-1/KA-2): aktive Karte, Feld und Chip
+    /// unter der Maus, Preisblatt.
+    pub sheet_card: Rgba,
     pub sheet_hover: Rgba,
     pub sheet_flash: Rgba,
     pub sheet_select: Rgba,
@@ -386,6 +389,7 @@ impl Theme {
                 sheet_hint: rgb(138, 142, 148),
                 sheet_rule: rgb(214, 212, 204),
                 sheet_tile: rgb(234, 232, 224),
+                sheet_card: rgb(255, 255, 255),
                 sheet_hover: Rgba(accent.0, accent.1, accent.2, 36),
                 sheet_flash: Rgba(accent.0, accent.1, accent.2, 120),
                 sheet_select: Rgba(accent.0, accent.1, accent.2, 84),

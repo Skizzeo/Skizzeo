@@ -219,7 +219,11 @@ impl Karten {
                 p.rounded_rect(x, y + line, w, h, r);
                 c.fill(&p, u.shadow);
             }
-            let fill = if aktiv || hover { u.bg } else { u.sheet_tile };
+            let fill = if aktiv || hover {
+                u.sheet_card
+            } else {
+                u.sheet_tile
+            };
             let mut p = Path::new();
             p.rounded_rect(x, y, w, h, r);
             if hover {

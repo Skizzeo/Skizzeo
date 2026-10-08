@@ -1465,8 +1465,8 @@ impl KostenView {
             let (font, col) = if on(v) {
                 let mut p = Path::new();
                 p.rounded_rect(sx, sy, sw, sh, sh * 0.5);
-                c.fill(&p, u.bg);
-                (bold, u.text)
+                c.fill(&p, u.sheet_card);
+                (bold, u.sheet_text)
             } else if hover(v) {
                 (regular, u.sheet_text)
             } else {

@@ -492,7 +492,13 @@ impl Leiste {
         if let Some((x, y, w, h)) = l.field {
             let hot = self.hot == Some(Hot::Field) || self.field_open;
             let edge = if hot { u.border } else { u.sheet_rule };
-            framed(c, (x, y, w, h), t.size.corner_radius * s, u.bg, edge);
+            framed(
+                c,
+                (x, y, w, h),
+                t.size.corner_radius * s,
+                u.sheet_card,
+                edge,
+            );
             if let Some(f) = regular {
                 let base = y + (h + f.cap_height(px)) * 0.5;
                 f.draw(c, &self.feld_name(), px, x + 10.0 * s, base, u.sheet_text);
@@ -506,7 +512,7 @@ impl Leiste {
             let (fill, edge, font, col) = if on {
                 (u.sheet_select, u.accent, bold, u.sheet_text)
             } else if hover {
-                (u.bg, u.border, regular, u.sheet_text)
+                (u.sheet_card, u.border, regular, u.sheet_text)
             } else {
                 (u.sheet_bg, u.sheet_rule, regular, u.sheet_text_dim)
             };
@@ -561,7 +567,7 @@ impl Leiste {
         c.fill(&p, u.sheet_rule);
         let mut p = Path::new();
         p.rounded_rect(x, y, w, h, r);
-        c.fill(&p, u.bg);
+        c.fill(&p, u.sheet_card);
         let px = CHIP_PX * s;
         for (i, ((g, name, geschosse), (ix, iy, iw, ih))) in
             self.field.iter().zip(items).enumerate()

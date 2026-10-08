@@ -20,7 +20,7 @@ pub type RgbaRole = (&'static str, &'static str, fn(&mut Theme) -> &mut Rgba);
 pub type F4Role = (&'static str, &'static str, fn(&mut Theme) -> &mut [f32; 4]);
 pub type SizeRole = (&'static str, &'static str, fn(&mut Theme) -> &mut f32);
 
-pub const RGBA_ROLES: [RgbaRole; 66] = [
+pub const RGBA_ROLES: [RgbaRole; 67] = [
     ("ui.bg", "Fläche", |t| &mut t.ui.bg),
     ("ui.border", "Rahmen", |t| &mut t.ui.border),
     ("ui.field", "Feld", |t| &mut t.ui.field),
@@ -126,6 +126,9 @@ pub const RGBA_ROLES: [RgbaRole; 66] = [
         &mut t.ui.sheet_rule
     }),
     ("ui.sheet_tile", "Kacheln", |t| &mut t.ui.sheet_tile),
+    ("ui.sheet_card", "Karten und Felder auf dem Blatt", |t| {
+        &mut t.ui.sheet_card
+    }),
     ("ui.sheet_hover", "Zeile unter der Maus", |t| {
         &mut t.ui.sheet_hover
     }),

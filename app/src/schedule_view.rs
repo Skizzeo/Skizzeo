@@ -1676,8 +1676,8 @@ impl ListView {
             let (font, col) = if on {
                 let mut p = Path::new();
                 p.rounded_rect(hx, hy, hw, hh, hh * 0.5);
-                c.fill(&p, u.bg);
-                (bold, u.text)
+                c.fill(&p, u.sheet_card);
+                (bold, u.sheet_text)
             } else if self.hot == Some(Hot::Grouping(g)) {
                 (regular, u.sheet_text)
             } else {
