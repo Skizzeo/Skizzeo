@@ -2209,6 +2209,11 @@ impl Scene {
             sk_cost::op::kopie_anlegen(&mut self.model, Some(&alt));
             // ohne eigenen Schritt: der Stand vor der Änderung
             let _ = self.model.try_commit();
+            // Das Modell hat sich außerhalb des Verlaufs geändert: Ein
+            // Wiederholen von vorher passte nicht mehr dazu (es legte z. B.
+            // eine schon zurückgenommene Kopie ein zweites Mal an), auch
+            // wenn der Schritt danach scheitert oder nichts ändert
+            self.redo.clear();
         }
         if sk_cost::op::hat_kopie(&self.model) && !neu.saetze.is_empty() {
             let op = sk_cost::Op::StandUebernehmen { saetze: neu.saetze };

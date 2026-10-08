@@ -1107,3 +1107,370 @@ mod abnahme_ka2c2 {
         let _ = std::fs::remove_dir_all(&d);
     }
 }
+
+/// Abnahme KA-2c2 am Haus (paket-ka2 §6 Nr. 8 Abgleich, 8a F1/F7/F8, 12):
+/// „Auch für neue Häuser“ über `Scene::fuer_firma`, neue und schon angelegte
+/// Projekte, Abgleichzeile mit „übernehmen“ und „so lassen“.
+#[cfg(test)]
+mod abnahme_ka2c2_haus {
+    use super::*;
+    use crate::scene::Scene;
+    use sk_cost::abgleich::abgleich;
+    use sk_cost::{Dez, Op};
+
+    fn dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("skizzeo-abnahme-haus-{name}"));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn h() -> sk_cost::Herkunft {
+        sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "12:40")
+    }
+
+    fn lohn(w: i64) -> Op {
+        Op::FirmenwertSetzen {
+            schluessel: "wage".into(),
+            wert: Dez::ganz(w),
+        }
+    }
+
+    fn preis(g: sk_model::Guid, p: Dez) -> Op {
+        Op::PreisSetzen {
+            artikel: g,
+            preis: Some(p),
+            stand: "10/2026".into(),
+            quelle: "Abnahme".into(),
+        }
+    }
+
+    /// Neues Haus wie `main::new_model`: Typen und Kostenkopie der Firma.
+    fn neues_haus(c: &Company) -> Scene {
+        let mut m = Model::from_library(c.library());
+        sk_cost::neues_projekt(&mut m, Some(c.library()));
+        Scene::with_model(m)
+    }
+
+    /// Die ersten `n` Artikel mit Preis.
+    fn artikel(c: &Company, n: usize) -> Vec<(sk_model::Guid, Dez)> {
+        let m = Model::from_library(c.library());
+        sk_cost::lesen::firma_oder_werk(&m, Some(c.library()))
+            .artikel
+            .iter()
+            .filter_map(|a| Some((a.guid, a.preis?)))
+            .take(n)
+            .collect()
+    }
+
+    fn werte(s: &Scene, c: &Company, g: sk_model::Guid) -> (Option<Dez>, Dez) {
+        let k = sk_cost::lesen::katalog(s.model(), Some(c.library()));
+        (k.artikel(g).and_then(|a| a.preis), k.werte.lohn)
+    }
+
+    /// `stand=` aus der Kopfzeile `[catalog]` der Datei.
+    fn datei_stand(p: &Path) -> u32 {
+        let t = std::fs::read_to_string(p).unwrap();
+        let l = t.lines().find(|l| l.starts_with("[catalog]")).unwrap();
+        l.split_whitespace()
+            .find_map(|w| w.strip_prefix("stand="))
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
+    fn szo_neu(s: &Scene) -> Scene {
+        let m = sk_model::szo::read_with(
+            &sk_model::szo::write(s.model()),
+            sk_model::GuidGen::with_seed(3),
+            &sk_cost::lesen::ABSCHNITTE_SZO,
+        )
+        .unwrap()
+        .model;
+        Scene::with_model(m)
+    }
+
+    /// Nr. 12, Nr. 8 (Abgleich) und F1: Ein schon angelegtes Haus B mit
+    /// eigenem Preis; Haus A setzt den Lohn 65 „für neue Häuser“. Die Firma
+    /// hat einen neuen Stand mit `[log]`, ein neues Haus rechnet mit 65, B
+    /// nicht und zeigt die Abgleichzeile. „übernehmen“ in B ist ein Schritt
+    /// und lässt den eigenen Preis stehen; Strg+Z bringt die Zeile zurück.
+    /// „so lassen“ blendet sie aus (auch nach Speichern und Laden), bis die
+    /// Firma einen neuen Stand hat.
+    #[test]
+    fn nr12_neue_und_angelegte_haeuser() {
+        let d = dir("nr12");
+        let p = d.join(FILE_NAME);
+        let (mut c, _) = Company::load(&p, true);
+        c.fuer_firma(&h(), &[lohn(60)]).unwrap();
+        let [(g, alt)] = artikel(&c, 1)[..] else {
+            panic!("Artikel")
+        };
+        // B: schon angelegt, mit eigenem Preis 99
+        let mut b = neues_haus(&c);
+        assert!(sk_cost::op::hat_kopie(b.model()));
+        b.kosten_folge(
+            "Preis im Projekt geändert",
+            Some(c.library()),
+            &h(),
+            &[preis(g, Dez::ganz(99))],
+        )
+        .unwrap();
+        assert_eq!(
+            abgleich(b.model(), Some(c.library())),
+            None,
+            "gleicher Stand"
+        );
+        // A setzt den Lohn für neue Häuser
+        let mut a = neues_haus(&c);
+        let stand = datei_stand(&p);
+        assert_eq!(
+            a.fuer_firma(
+                "Lohn 65,00 €/h für dieses und neue Häuser",
+                &mut c,
+                &h(),
+                &[lohn(65)]
+            ),
+            Ok(None)
+        );
+        assert_eq!(datei_stand(&p), stand + 1);
+        assert_eq!(
+            a.undo_label(),
+            Some("Lohn 65,00 €/h für dieses und neue Häuser")
+        );
+        assert_eq!(werte(&a, &c, g), (Some(alt), Dez::ganz(65)));
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            text.lines()
+                .any(|l| l.starts_with("[log]") && l.contains(r#"new="65""#)),
+            "{text}"
+        );
+        assert!(d
+            .join("firmenkatalog-staende")
+            .join(format!("stand-{stand:04}.szk"))
+            .exists());
+        // Neues Haus trägt den Lohn (Regel 92)
+        let n = neues_haus(&c);
+        assert_eq!(werte(&n, &c, g), (Some(alt), Dez::ganz(65)));
+        assert_eq!(abgleich(n.model(), Some(c.library())), None);
+        // B nicht, mit Abgleichzeile (F1)
+        assert_eq!(werte(&b, &c, g), (Some(Dez::ganz(99)), Dez::ganz(60)));
+        let ab = abgleich(b.model(), Some(c.library())).expect("Abgleichzeile in B");
+        assert_eq!(
+            ab.zeile(),
+            "Für neue Häuser gilt Lohn 65,00 €/h (hier 60,00)"
+        );
+        assert_eq!(ab.stand, datei_stand(&p));
+        // „übernehmen“: ein Schritt, eigener Preis bleibt
+        let rev = b.model().revision();
+        b.kosten_folge(
+            "Werte für neue Häuser übernommen",
+            Some(c.library()),
+            &h(),
+            &[Op::StandUebernehmen {
+                saetze: ab.saetze.clone(),
+            }],
+        )
+        .unwrap();
+        assert_eq!(b.undo_label(), Some("Werte für neue Häuser übernommen"));
+        assert_ne!(b.model().revision(), rev);
+        assert_eq!(werte(&b, &c, g), (Some(Dez::ganz(99)), Dez::ganz(65)));
+        assert_eq!(abgleich(b.model(), Some(c.library())), None);
+        assert!(b.undo());
+        assert_eq!(b.undo_label(), Some("Preis im Projekt geändert"));
+        assert_eq!(werte(&b, &c, g), (Some(Dez::ganz(99)), Dez::ganz(60)));
+        assert_eq!(abgleich(b.model(), Some(c.library())), Some(ab.clone()));
+        // „so lassen“: weg, auch nach Speichern und Laden
+        b.kosten_folge(
+            "Werte für neue Häuser nicht übernommen",
+            Some(c.library()),
+            &h(),
+            &[Op::AbgleichLassen { stand: ab.stand }],
+        )
+        .unwrap();
+        assert_eq!(abgleich(b.model(), Some(c.library())), None);
+        let mut b = szo_neu(&b);
+        assert_eq!(abgleich(b.model(), Some(c.library())), None, "nach Laden");
+        assert_eq!(werte(&b, &c, g), (Some(Dez::ganz(99)), Dez::ganz(60)));
+        // Neuer Firmenstand: die Zeile kommt wieder, mit beiden Werten
+        let mut x = neues_haus(&c);
+        x.fuer_firma(
+            "Zuschlag",
+            &mut c,
+            &h(),
+            &[Op::FirmenwertSetzen {
+                schluessel: "surcharge".into(),
+                wert: Dez::ganz(12),
+            }],
+        )
+        .unwrap();
+        let ab2 = abgleich(b.model(), Some(c.library())).expect("neuer Stand");
+        assert_eq!(ab2.texte.len(), 2, "{:?}", ab2.texte);
+        assert!(
+            ab2.zeile().contains("Lohn 65,00 €/h (hier 60,00)"),
+            "{}",
+            ab2.zeile()
+        );
+        assert!(
+            ab2.zeile().contains("Zuschlag Stoff 12,00 %"),
+            "{}",
+            ab2.zeile()
+        );
+        // „übernehmen“ nach dem Laden: weiterhin ein Schritt
+        b.kosten_folge(
+            "Werte für neue Häuser übernommen",
+            Some(c.library()),
+            &h(),
+            &[Op::StandUebernehmen { saetze: ab2.saetze }],
+        )
+        .unwrap();
+        assert_eq!(werte(&b, &c, g), (Some(Dez::ganz(99)), Dez::ganz(65)));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Abgleich ab drei Unterschieden: „3 Werte für neue Häuser sind anders“,
+    /// die Liste trägt alle drei.
+    #[test]
+    fn abgleich_ab_drei_werten() {
+        let d = dir("drei");
+        let p = d.join(FILE_NAME);
+        let (mut c, _) = Company::load(&p, true);
+        c.fuer_firma(&h(), &[lohn(60)]).unwrap();
+        let b = neues_haus(&c);
+        let ar = artikel(&c, 2);
+        c.fuer_firma(
+            &h(),
+            &[
+                lohn(65),
+                preis(ar[0].0, Dez(ar[0].1 .0 + 10_000)),
+                preis(ar[1].0, Dez(ar[1].1 .0 + 20_000)),
+            ],
+        )
+        .unwrap();
+        let ab = abgleich(b.model(), Some(c.library())).unwrap();
+        assert_eq!(ab.texte.len(), 3, "{:?}", ab.texte);
+        assert_eq!(ab.zeile(), "3 Werte für neue Häuser sind anders");
+        assert_eq!(ab.saetze.len(), 3);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// F8: Haus B auf älterem Stand (Lohn 60) setzt einen Preis „für neue
+    /// Häuser“, während die Firma schon Lohn 65 hat: Nur der Preis geht in die
+    /// Firma (Lohn bleibt 65), B bekommt den Preis und behält Lohn 60; die
+    /// Abgleichzeile nennt weiterhin den Lohn.
+    #[test]
+    fn f8_aelterer_stand_nur_der_eine_satz() {
+        let d = dir("f8");
+        let p = d.join(FILE_NAME);
+        let (mut c, _) = Company::load(&p, true);
+        c.fuer_firma(&h(), &[lohn(60)]).unwrap();
+        let mut b = neues_haus(&c);
+        c.fuer_firma(&h(), &[lohn(65)]).unwrap();
+        let [(g, alt)] = artikel(&c, 1)[..] else {
+            panic!()
+        };
+        let neu = Dez(alt.0 + 50_000);
+        assert_eq!(
+            b.fuer_firma("Preis für neue Häuser", &mut c, &h(), &[preis(g, neu)]),
+            Ok(None)
+        );
+        assert_eq!(werte(&b, &c, g), (Some(neu), Dez::ganz(60)));
+        let n = neues_haus(&c);
+        assert_eq!(werte(&n, &c, g), (Some(neu), Dez::ganz(65)), "Firma");
+        let ab = abgleich(b.model(), Some(c.library())).expect("Lohn bleibt anders");
+        assert_eq!(
+            ab.zeile(),
+            "Für neue Häuser gilt Lohn 65,00 €/h (hier 60,00)"
+        );
+        // Strg+Z: B wieder alter Preis, Firma behält den neuen
+        assert!(b.undo());
+        assert_eq!(werte(&b, &c, g), (Some(alt), Dez::ganz(60)));
+        assert_eq!(werte(&neues_haus(&c), &c, g), (Some(neu), Dez::ganz(65)));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// F7: Scheitert das Schreiben der Firma, ändert sich nichts: Datei
+    /// bytegleich, Haus ohne Schritt; die Meldung ist der Satz für die
+    /// Statuszeile, „Nur dieses Haus“ geht danach.
+    #[test]
+    fn f7_firma_nicht_schreibbar() {
+        let d = dir("f7");
+        let p = d.join(FILE_NAME);
+        let (mut c, _) = Company::load(&p, true);
+        c.fuer_firma(&h(), &[lohn(60)]).unwrap();
+        for mut s in [neues_haus(&c), {
+            // ohne Kopie (rechnet mit der Firma)
+            Scene::with_model(Model::from_library(c.library()))
+        }] {
+            let kopie = sk_cost::op::hat_kopie(s.model());
+            let vorher = std::fs::read(&p).unwrap();
+            let (rev, label) = (s.model().revision(), s.undo_label());
+            let text = sk_model::szo::write(s.model());
+            SCHREIBFEHLER.with(|f| f.set(true));
+            let e = s
+                .fuer_firma("Lohn für neue Häuser", &mut c, &h(), &[lohn(65)])
+                .unwrap_err();
+            SCHREIBFEHLER.with(|f| f.set(false));
+            assert!(e.contains("nicht gespeichert"), "{e}");
+            assert_eq!(std::fs::read(&p).unwrap(), vorher, "kopie={kopie}");
+            assert_eq!((s.model().revision(), s.undo_label()), (rev, label));
+            assert_eq!(sk_model::szo::write(s.model()), text, "kopie={kopie}");
+            assert_eq!(sk_cost::op::hat_kopie(s.model()), kopie);
+            // „Nur dieses Haus“ geht
+            s.kosten_folge(
+                "Preis im Projekt geändert",
+                Some(c.library()),
+                &h(),
+                &[lohn(63)],
+            )
+            .unwrap();
+            assert_eq!(
+                sk_cost::lesen::katalog(s.model(), Some(c.library()))
+                    .werte
+                    .lohn,
+                Dez::ganz(63)
+            );
+            assert_eq!(std::fs::read(&p).unwrap(), vorher);
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// F1 zuletzt: Nach Firmenänderungen „Typ in den Firmenkatalog“:
+    /// Kostensätze und alle `[log]`-Zeilen bleiben, der Stand auch.
+    #[test]
+    fn f1_typ_in_den_firmenkatalog_behaelt_kosten_und_log() {
+        let d = dir("f1-typ");
+        let p = d.join(FILE_NAME);
+        let (mut c, _) = Company::load(&p, true);
+        c.fuer_firma(&h(), &[lohn(60)]).unwrap();
+        c.fuer_firma(&h(), &[lohn(65)]).unwrap();
+        let logs = |p: &Path| -> Vec<String> {
+            std::fs::read_to_string(p)
+                .unwrap()
+                .lines()
+                .filter(|l| l.starts_with("[log]"))
+                .map(String::from)
+                .collect()
+        };
+        let vorher = logs(&p);
+        assert!(vorher.len() >= 2, "{vorher:?}");
+        let stand = datei_stand(&p);
+        let mut m = Model::from_library(c.library());
+        let id = m.defaults().exterior_wall;
+        let mut t = m.layer_set(id).unwrap().clone();
+        t.layers[0].thickness += 10.0;
+        assert!(m.set_layer_set(id, t));
+        let g = m.layer_set(id).unwrap().guid;
+        assert_eq!(c.save_type(&m, g), SaveResult::Saved);
+        assert_eq!(logs(&p), vorher);
+        assert_eq!(datei_stand(&p), stand);
+        let n = Model::from_library(c.library());
+        assert_eq!(
+            sk_cost::lesen::firma_oder_werk(&n, Some(c.library()))
+                .werte
+                .lohn,
+            Dez::ganz(65)
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
