@@ -107,7 +107,7 @@ SZK 1
 [flowstep] guid=1S7bUW0010080800000009 flow=1S7bUW0010080700000002 nr=2 step=ask key=preis text="Welcher Preis steht im Angebot (netto)?" type=money min=0.01 max=100000 per="m2 m3:{artikel} st:{artikel}"
 [flowstep] guid=1S7bUW001008080000000A flow=1S7bUW0010080700000002 nr=3 step=ask key=quelle text="Quelle" type=text optional=1 hint="z. B. Angebot Müller vom 08.10.2026"
 [flowstep] guid=1S7bUW001008080000000B flow=1S7bUW0010080700000002 nr=4 step=op op=preis_setzen args="artikel={artikel} preis={preis} quelle={quelle}"
-[flowstep] guid=1S7bUW001008080000000C flow=1S7bUW0010080700000002 nr=5 step=done text="Preis {preis} € für dieses Haus eingetragen."
+[flowstep] guid=1S7bUW001008080000000C flow=1S7bUW0010080700000002 nr=5 step=done text="Preis {preis} {preis.einheit} für {artikel} eingetragen (nur dieses Haus)."
 [flowstep] guid=1S7bUW001008080000000D flow=1S7bUW0010080700000003 nr=1 step=ask key=lohn text="Wie hoch ist der Verrechnungslohn (€/h netto)?" type=money min=20 max=200
 [flowstep] guid=1S7bUW001008080000000E flow=1S7bUW0010080700000003 nr=2 step=op op=firmenwert_setzen args="schluessel=wage wert={lohn}"
 [flowstep] guid=1S7bUW001008080000000F flow=1S7bUW0010080700000003 nr=3 step=done text="Verrechnungslohn {lohn} €/h gesetzt."

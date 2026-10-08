@@ -328,7 +328,13 @@ fn haendlerpreis_im_haus() {
     v.ablauf_weiter();
     let h2 = v.fuer_haus.take().expect("an die App");
     assert!(v.assistent.is_some(), "offen, bis die App geschrieben hat");
-    assert_eq!(h2.schluss, "Preis 1,25 € für dieses Haus eingetragen.");
+    assert_eq!(
+        h2.schluss,
+        format!(
+            "Preis 1,25 €/kg für {} eingetragen (nur dieses Haus).",
+            moertel.name
+        )
+    );
     s.kosten_folge(
         "Händlerpreis für dieses Haus eintragen",
         Some(c.library()),

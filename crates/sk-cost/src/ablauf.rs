@@ -102,6 +102,9 @@ pub struct Antwort {
     pub eingabe: String,
     /// Die Rechnung für die Anzeige, sonst leer.
     pub rechnung: String,
+    /// Einheit der Anzeige bei Zahlen („€/kg“, „mm“) für `{key.einheit}`
+    /// in Texten, sonst leer.
+    pub einheit: String,
 }
 
 pub type Antworten = BTreeMap<String, Antwort>;
@@ -282,15 +285,18 @@ fn ist_key(k: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
-/// `{key}`-Namen in `t`; `Err`, wenn eine Klammer nicht zu einem Namen
-/// passt.
+/// Nachsatz eines Platzhalters für die Einheit der Antwort.
+const EINHEIT: &str = ".einheit";
+
+/// `{key}`-Namen in `t` (aus `{key.einheit}` der Name); `Err`, wenn eine
+/// Klammer nicht zu einem Namen passt.
 fn platzhalter(t: &str) -> Result<Vec<&str>, ()> {
     let mut v = Vec::new();
     let mut rest = t;
     while let Some(i) = rest.find('{') {
         let r = &rest[i + 1..];
         let j = r.find('}').ok_or(())?;
-        let k = &r[..j];
+        let k = r[..j].strip_suffix(EINHEIT).unwrap_or(&r[..j]);
         if !ist_key(k) {
             return Err(());
         }
@@ -512,8 +518,17 @@ pub fn einsetzen(t: &str, antworten: &Antworten) -> String {
         let r = &rest[i + 1..];
         match r.find('}') {
             Some(j) => {
-                if let Some(a) = antworten.get(&r[..j]) {
-                    out.push_str(&a.anzeige);
+                match r[..j].strip_suffix(EINHEIT) {
+                    Some(k) => {
+                        if let Some(a) = antworten.get(k) {
+                            out.push_str(&a.einheit);
+                        }
+                    }
+                    None => {
+                        if let Some(a) = antworten.get(&r[..j]) {
+                            out.push_str(&a.anzeige);
+                        }
+                    }
                 }
                 rest = &r[j + 1..];
             }
@@ -612,6 +627,14 @@ pub fn antwort(
             let mut a = Antwort {
                 wert: d.text(),
                 anzeige: zahl_anzeige(d, typ),
+                // Gespeichert wird in der ersten Einheit (Regel 108)
+                einheit: match typ {
+                    Feldart::Geld => match grundeinheit(s, antworten, k) {
+                        Some(e) => format!("€/{}", e.zeichen()),
+                        None => "€".into(),
+                    },
+                    _ => einheit_text.trim().to_string(),
+                },
                 ..Default::default()
             };
             if per > 0 {
@@ -824,6 +847,7 @@ pub(crate) fn schema_text() -> String {
     s +=
         "  type = mm | money | hours | text | pick:<material|layerset|trade|article|service|lot>\n";
     s += "  per = erste Einheit, dann einheit:{key} (m3 aus mm oder pick:article, st aus pick:article)\n";
+    s += "  Platzhalter in Texten: {key} die Antwort, {key.einheit} ihre Einheit (€/kg, mm)\n";
     s += &format!("  op = {}\n", OPS.join(" | "));
     s
 }
@@ -977,6 +1001,13 @@ mod tests {
         ant.insert(
             "quelle".into(),
             antwort(&s[2], "Angebot Müller", "", 0, &ant, &k).unwrap(),
+        );
+        assert_eq!(
+            schluss(&a, &ant),
+            format!(
+                "Preis 1,25 €/kg für {} eingetragen (nur dieses Haus).",
+                kg.name
+            )
         );
         let ops = ops(&a, &ant, "10/2026").unwrap();
         assert!(
