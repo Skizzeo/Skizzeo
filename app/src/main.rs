@@ -1701,6 +1701,18 @@ impl App {
         if let Some(haus) = out.haus.take() {
             let h = sk_cost::Herkunft::jetzt(sk_cost::HerkunftArt::Manual);
             let label = self.scene.bezeichnung(haus.name);
+            // `check`-Schritte sperren wie in der Verwaltung (Review 3ax)
+            let firma = self.company.as_ref().map(|c| c.library());
+            let gesperrt = self
+                .scene
+                .ablauf_pruefen(firma, &h, &haus.ops, &haus.regeln);
+            if let Some(satz) = gesperrt {
+                if let Some(v) = self.verwaltung.as_mut() {
+                    v.ablauf_fehler(format!("Nicht eingetragen: {satz}"));
+                }
+                self.sync_caption(surface);
+                return true;
+            }
             match self.kosten_folge(label, &h, &haus.ops) {
                 Some((m, true)) => {
                     if let Some(v) = self.verwaltung.as_mut() {

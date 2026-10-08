@@ -71,6 +71,9 @@ pub struct FuerHaus {
     pub name: String,
     pub ops: Vec<Op>,
     pub schluss: String,
+    /// Regeln der `check`-Schritte: ihre Befunde sperren auch im Haus
+    /// (BIM §3.15 `rule`, Review 3ax).
+    pub regeln: Vec<u16>,
 }
 
 /// „Baustoff“ aus `baustoff`.
@@ -341,6 +344,7 @@ impl Verwaltung {
                 name: x.a.name.clone(),
                 ops,
                 schluss,
+                regeln,
             });
             return;
         }

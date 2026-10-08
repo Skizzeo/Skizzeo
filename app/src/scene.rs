@@ -2238,6 +2238,31 @@ impl Scene {
         self.fuer_firma_mit(label, firma, herkunft, ops, None, false)
     }
 
+    /// `check`-Schritte eines Ablaufs für dieses Haus (BIM §3.15 `rule`,
+    /// Review 3ax): `ops` auf einer Kopie des Modells, dann der erste
+    /// Befund mit einer der `regeln`, wie in der Verwaltung. `None`: nichts
+    /// sperrt (ohne Regeln ohne Kopie).
+    pub fn ablauf_pruefen(
+        &self,
+        firma: Option<&sk_model::Library>,
+        herkunft: &sk_cost::Herkunft,
+        ops: &[sk_cost::Op],
+        regeln: &[u16],
+    ) -> Option<String> {
+        if regeln.is_empty() {
+            return None;
+        }
+        let mut m = self.model.clone();
+        if let Err(b) = sk_cost::ausfuehren_folge(&mut m, firma, self.rolle, herkunft, ops) {
+            return b.first().map(|b| b.satz.clone());
+        }
+        sk_cost::lesen::katalog(&m, firma)
+            .befunde
+            .into_iter()
+            .find(|b| regeln.contains(&b.regel))
+            .map(|b| b.satz)
+    }
+
     /// „Der Firma vorschlagen“ (KA-3b4, Bausteingrenze §5, Regel 105):
     /// `ops` gelten in diesem Haus mit Marke (ein Rückgängig-Schritt mit
     /// `label`), und was sie an Preis, Stunden und Lohn ändern, steht als

@@ -359,3 +359,48 @@ fn haendlerpreis_im_haus() {
     assert!(out.closed && out.haus.is_none() && v.ops().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Review 3ax: Ein `check`-Schritt sperrt auch im Ablauf für dieses Haus
+/// (BIM §3.15 `rule`). Ein zweiter Standardartikel zu Baustoff und Dicke
+/// gibt Befund 77; mit `rule=77` trägt der Ablauf nichts ein, ohne Regel
+/// oder bei einem Preis sperrt nichts. Das Haus bleibt unverändert.
+#[test]
+fn pruefung_im_haus() {
+    let mut s = haus();
+    s.rolle = sk_cost::Rolle::Nutzer;
+    let k = s.katalog(None);
+    let a = k
+        .artikel
+        .iter()
+        .find(|a| a.std && a.mat.is_some() && a.t.is_some() && !a.retired)
+        .expect("ein Standardartikel")
+        .clone();
+    let zweiter = Op::ArtikelAnlegen {
+        baustoff: a.mat,
+        name: format!("{} Händler", a.name),
+        dicke: a.t,
+        guete: String::new(),
+        format: String::new(),
+        einheit: a.einheit,
+        preis: None,
+        stand: String::new(),
+        quelle: String::new(),
+        lieferant: String::new(),
+        standard: true,
+    };
+    let vorher = sk_model::szo::write(s.model());
+    let satz = s
+        .ablauf_pruefen(None, &h(), std::slice::from_ref(&zweiter), &[77])
+        .expect("Regel 77 sperrt");
+    assert!(satz.contains("mehrere Standardartikel"), "{satz}");
+    assert_eq!(sk_model::szo::write(s.model()), vorher, "Haus unverändert");
+    assert_eq!(s.ablauf_pruefen(None, &h(), &[zweiter], &[]), None);
+    let preis = Op::PreisSetzen {
+        artikel: a.guid,
+        preis: Some(Dez::ganz(30)),
+        stand: "10/2026".into(),
+        quelle: String::new(),
+        eingabe: String::new(),
+    };
+    assert_eq!(s.ablauf_pruefen(None, &h(), &[preis], &[77]), None);
+}
