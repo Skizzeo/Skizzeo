@@ -5,6 +5,7 @@
 //! Über den Blättern die Kartenleiste (KA-2a): Mengen und Kosten
 //! ([`KostenView`]) mit ihrer lebenden Zahl; ein Klick wechselt das Blatt.
 
+use crate::ava_view::AvaView;
 use crate::cards::{self, Blatt, Karten};
 use crate::delete::{Action, ContextMenu, HintCard, Link};
 use crate::kosten_view::{self, KostenView};
@@ -66,6 +67,7 @@ pub struct QuantityWindow {
     /// Kartenleiste und das Blatt Kosten (KA-2).
     pub karten: Karten,
     pub kosten: Option<KostenView>,
+    pub ava: Option<AvaView>,
     /// Gliederung der Liste (Paket 1b), aus den Einstellungen.
     pub grouping: Grouping,
     /// Muss neu gezeichnet und gezeigt werden.
@@ -112,6 +114,7 @@ impl QuantityWindow {
             list: None,
             karten: Karten::new(Blatt::Mengen),
             kosten: None,
+            ava: None,
             grouping: Grouping::Storey,
             dirty: false,
             docked: true,
@@ -168,7 +171,7 @@ impl QuantityWindow {
     pub fn part_selected(&self, p: &Picking) -> bool {
         match self.blatt() {
             Blatt::Mengen => self.list.as_ref().is_some_and(|l| l.part_selected(p)),
-            Blatt::Kosten => !p.selected.is_empty(),
+            Blatt::Kosten | Blatt::Ava => !p.selected.is_empty(),
         }
     }
 
@@ -305,16 +308,25 @@ impl QuantityWindow {
         let aktiv = self.karten.aktiv;
         let list = self.list.get_or_insert_with(|| ListView::grouped(s, g));
         let kosten = self.kosten.get_or_insert_with(KostenView::new);
-        match aktiv {
-            Blatt::Mengen => kosten.leiste.umfang = list.leiste.umfang.clone(),
-            Blatt::Kosten => list.leiste.umfang = kosten.leiste.umfang.clone(),
-        }
+        let ava = self.ava.get_or_insert_with(AvaView::new);
+        // Der Umfang gilt für alle Blätter; das gezeigte gibt ihn vor
+        let umfang = match aktiv {
+            Blatt::Mengen => list.leiste.umfang.clone(),
+            Blatt::Kosten => kosten.leiste.umfang.clone(),
+            Blatt::Ava => ava.leiste.umfang.clone(),
+        };
+        list.leiste.umfang = umfang.clone();
+        kosten.leiste.umfang = umfang.clone();
+        ava.leiste.umfang = umfang;
         list.top = Self::sheet_top();
         kosten.top = Self::sheet_top();
+        ava.top = Self::sheet_top();
         list.scale = self.title.scale;
         kosten.scale = self.title.scale;
+        ava.scale = self.title.scale;
         (list.w, list.h) = (self.w, self.h);
         (kosten.w, kosten.h) = (self.w, self.h);
+        (ava.w, ava.h) = (self.w, self.h);
         if list.sync(s, animate && aktiv == Blatt::Mengen) && aktiv == Blatt::Mengen {
             self.dirty = true;
         }
@@ -336,6 +348,15 @@ impl QuantityWindow {
         if kosten.follow(p) && aktiv == Blatt::Kosten {
             self.dirty = true;
         }
+        // Das LV rechnet nur, solange das Blatt AVA gezeigt wird; die Karte
+        // behält ihre letzte Zahl
+        if aktiv == Blatt::Ava && ava.sync(s, firma) {
+            self.dirty = true;
+        }
+        if ava.follow(p) && aktiv == Blatt::Ava {
+            self.dirty = true;
+        }
+        let ava_zahl = ava.karte.clone();
         // Lebende Zahlen der Karten
         let now = Instant::now();
         let mengen = mengen_zahl(&s.schedule_in(&list.leiste.umfang));
@@ -344,7 +365,8 @@ impl QuantityWindow {
         });
         let a = self.karten.set_zahl(Blatt::Mengen, mengen, now);
         let b = self.karten.set_zahl(Blatt::Kosten, netto, now);
-        if a || b {
+        let c = !ava_zahl.is_empty() && self.karten.set_zahl(Blatt::Ava, ava_zahl, now);
+        if a || b || c {
             self.dirty = true;
         }
     }
@@ -377,6 +399,9 @@ impl QuantityWindow {
             flashing = true;
         }
         if self.blatt() == Blatt::Kosten && self.kosten.as_mut().is_some_and(|k| k.tick(t, now)) {
+            flashing = true;
+        }
+        if self.blatt() == Blatt::Ava && self.ava.as_mut().is_some_and(|a| a.tick(t, now)) {
             flashing = true;
         }
         if let Some(at) = self.seam_flash {
@@ -445,6 +470,7 @@ impl QuantityWindow {
                 let want = match self.blatt() {
                     Blatt::Mengen => self.list.as_ref().and_then(|l| l.tip_at(t, fonts, x, y)),
                     Blatt::Kosten => self.kosten.as_ref().and_then(|k| k.tip_at(t, fonts, x, y)),
+                    Blatt::Ava => self.ava.as_ref().and_then(|a| a.tip_at(t, fonts, x, y)),
                 };
                 self.set_tip(want.map(|w| (w, (x, y))));
             }
@@ -468,6 +494,9 @@ impl QuantityWindow {
                 if let Some(k) = self.kosten.as_mut() {
                     (k.w, k.h) = (width, height);
                 }
+                if let Some(a) = self.ava.as_mut() {
+                    (a.w, a.h) = (width, height);
+                }
                 self.dirty = true;
                 None
             }
@@ -478,6 +507,9 @@ impl QuantityWindow {
                 }
                 if let Some(k) = self.kosten.as_mut() {
                     k.scale = s;
+                }
+                if let Some(a) = self.ava.as_mut() {
+                    a.scale = s;
                 }
                 self.dirty = true;
                 None
@@ -510,6 +542,7 @@ impl QuantityWindow {
                 let o = match self.blatt() {
                     Blatt::Mengen => self.list.as_mut()?.mouse_move(t, fonts, p, x, y),
                     Blatt::Kosten => self.kosten.as_mut()?.mouse_move(t, fonts, p, x, y),
+                    Blatt::Ava => self.ava.as_mut()?.mouse_move(t, fonts, p, x, y),
                 };
                 self.list_out(o)
             }
@@ -523,6 +556,7 @@ impl QuantityWindow {
                 let o = match self.blatt() {
                     Blatt::Mengen => self.list.as_mut()?.mouse_leave(p),
                     Blatt::Kosten => self.kosten.as_mut()?.mouse_leave(p),
+                    Blatt::Ava => self.ava.as_mut()?.mouse_leave(p),
                 };
                 self.list_out(o)
             }
@@ -544,6 +578,7 @@ impl QuantityWindow {
                 let o = match self.blatt() {
                     Blatt::Mengen => self.list.as_mut()?.mouse_down(t, fonts, p, (x, y), mods),
                     Blatt::Kosten => self.kosten.as_mut()?.mouse_down(t, fonts, p, (x, y), mods),
+                    Blatt::Ava => self.ava.as_mut()?.mouse_down(t, fonts, p, (x, y), mods),
                 };
                 self.list_out(o)
             }
@@ -567,6 +602,7 @@ impl QuantityWindow {
                 let o = match self.blatt() {
                     Blatt::Mengen => self.list.as_mut()?.mouse_up(t, fonts, x, y),
                     Blatt::Kosten => self.kosten.as_mut()?.mouse_up(t, fonts, x, y),
+                    Blatt::Ava => None,
                 };
                 self.list_out(o)
             }
@@ -580,6 +616,10 @@ impl QuantityWindow {
                     }
                     Blatt::Kosten => {
                         let o = self.kosten.as_mut()?.wheel(delta, t);
+                        self.list_out(o)
+                    }
+                    Blatt::Ava => {
+                        let o = self.ava.as_mut()?.wheel(delta, t);
                         self.list_out(o)
                     }
                 }
@@ -625,6 +665,13 @@ impl QuantityWindow {
                     Blatt::Kosten => {
                         p.selected.clear();
                         self.kosten.as_mut()?.follow(p);
+                    }
+                    Blatt::Ava => {
+                        p.selected.clear();
+                        let a = self.ava.as_mut()?;
+                        a.schliessen();
+                        a.follow(p);
+                        self.dirty = true;
                     }
                 }
                 self.bands_dirty = true;
@@ -748,9 +795,12 @@ impl QuantityWindow {
         self.place_hint(t, fonts);
         // Reiter Kosten und Gleiten: jedes neue Bild ganz (die Teilbilder
         // kennt nur das Mengenblatt)
-        if self.blatt() == Blatt::Kosten || self.karten.gleiten(t, now).is_some() {
+        if self.blatt() != Blatt::Mengen || self.karten.gleiten(t, now).is_some() {
             let bands = std::mem::take(&mut self.bands_dirty);
-            let overlay = self.kosten.as_ref().is_some_and(|k| k.overlay_open());
+            let overlay = match self.blatt() {
+                Blatt::Ava => self.ava.as_ref().is_some_and(|a| a.overlay_open()),
+                _ => self.kosten.as_ref().is_some_and(|k| k.overlay_open()),
+            };
             if !(self.dirty || bands || overlay || self.shown.len() != (w * h * 4) as usize) {
                 return None;
             }
@@ -900,6 +950,11 @@ impl QuantityWindow {
             Blatt::Kosten => {
                 if let Some(k) = &self.kosten {
                     k.paint(c, t, fonts, now);
+                }
+            }
+            Blatt::Ava => {
+                if let Some(a) = &self.ava {
+                    a.paint(c, t, fonts, now);
                 }
             }
         }

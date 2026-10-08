@@ -4,7 +4,7 @@ Umsehen | Mausrad gedrückt dreht, **Umschalt** + Mausrad verschiebt, Mausrad dr
 Ansicht wechseln | Paneel „Ansichten“: 3D, Grundriss, Schnitt, Vorne, Hinten, Links, Rechts
 Bauteil wählen | Klick auf das Bauteil; rechts stehen Maße, Mengen und Felder
 Ändern | am violetten Band ziehen oder im Paneel Werte eintippen
-Mengen und Kosten | Knopf „Mengen · Kosten“
+Mengen und Kosten | Knopf „Mengen · Kosten · AVA“
 Datei | Klick auf das Logo oben links, **F10** oder **Alt**
 Rückgängig | **Strg+Z**, wiederholen **Strg+Y**
 Hilfe | **F1** zeigt die Hilfe zu dem, was du gerade tust
@@ -210,7 +210,7 @@ Eigene Vorlage | „Als Vorlage speichern …“ legt sie im Firmenkatalog ab
 Übernehmen | **OK**; Abbrechen verwirft
 
 [thema] id=mengen titel="Mengen und Kosten"
-Öffnen | Knopf „Mengen · Kosten“ im Paneel „Ansichten“
+Öffnen | Knopf „Mengen · Kosten · AVA“ im Paneel „Ansichten“
 Karten | Mengen und Kosten; jede Karte zeigt ihre Zahl, sie läuft mit dem Modell mit
 Gebäude | ab zwei Gebäuden wählt das Feld vor den Chips ein Gebäude oder das ganze Projekt
 Geschosse | Klick auf einen Chip zeigt nur dieses Geschoss, jeder weitere nimmt eines dazu oder weg; „Alle“ holt alle zurück
@@ -257,5 +257,5 @@ Vorne | Ansicht von vorne.
 Hinten | Ansicht von hinten.
 Links | Ansicht von links.
 Rechts | Ansicht von rechts.
-Mengen · Kosten | Mengen und Kosten deines Hauses.
+Mengen · Kosten · AVA | Mengen, Kosten und Ausschreibung (LV) deines Hauses.
 ? | Hilfe zu dem, was du gerade tust.

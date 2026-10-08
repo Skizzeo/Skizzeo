@@ -20,7 +20,7 @@ pub fn quantity_caption(doc: &Document, rev: u64) -> String {
 pub fn blatt_caption(b: Blatt, doc: &Document, rev: u64) -> String {
     match b {
         Blatt::Mengen => quantity_caption(doc, rev),
-        Blatt::Kosten => format!("{} – {}", b.name(), doc.caption_at(rev)),
+        Blatt::Kosten | Blatt::Ava => format!("{} – {}", b.name(), doc.caption_at(rev)),
     }
 }
 

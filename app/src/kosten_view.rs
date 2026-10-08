@@ -152,8 +152,8 @@ mod bild;
 mod tests;
 mod zeilen;
 
-use zeilen::*;
 pub use zeilen::{chip_summen, euro_ganz, menge_text, zeilen};
+pub(crate) use zeilen::{euro, geschoss_name, gewerk_name, kg_name, prozent, tausender};
 
 // --- Ansicht -----------------------------------------------------------------
 
@@ -2510,7 +2510,7 @@ mod abnahme_ka2 {
         assert!(text.contains("blatt=kosten"), "{text}");
         assert_eq!(read_blatt(&text), Blatt::Kosten);
         assert_eq!(read_blatt(""), Blatt::Mengen);
-        assert_eq!(crate::cards::KNOPF, "Mengen · Kosten");
+        assert_eq!(crate::cards::KNOPF, "Mengen · Kosten · AVA");
     }
     /// Nr. 5 (Teil): Mit offenem Kostenblatt erhöht ein Loslassen nach Wand
     /// verschieben `schedule_runs` um genau 1, die Kosten folgen im selben

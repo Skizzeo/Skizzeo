@@ -7,6 +7,7 @@
 mod abnahme;
 mod attr_pick;
 mod autosave;
+mod ava_view;
 mod backup_card;
 mod camera;
 mod cards;

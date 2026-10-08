@@ -452,6 +452,9 @@ const HISTORY: usize = 200;
 /// ([`Scene::kosten_live`]).
 pub type KostenLive = (Rc<sk_cost::Katalog>, Vec<Rc<sk_cost::Kostenblatt>>);
 
+/// Schlüssel eines gemerkten LV: Kostenblatt, Modellstand, Wahl.
+type LvSchluessel = ((u64, u64, Umfang), u64, sk_cost::lv::LvWahl);
+
 pub struct Scene {
     model: Model,
     /// Schritte für „Rückgängig“ (die ältesten fallen nach [`HISTORY`] weg).
@@ -499,6 +502,9 @@ pub struct Scene {
     /// (Bausteingrenze §5).
     katalog: Option<((u64, u64, u64), Rc<sk_cost::Katalog>)>,
     kostenblatt: Vec<((u64, u64, Umfang), Rc<sk_cost::Kostenblatt>)>,
+    /// Leistungsverzeichnisse (KA-4) je Kostenblatt, Modellstand (Kopf) und
+    /// Wahl; der Reiter AVA fragt jedes Los für den Baum.
+    lv: Vec<(LvSchluessel, Rc<sk_cost::lv::Lv>)>,
     /// Firmen- oder Werkskatalog ohne Projekt (Firmenwerte im Preisblatt).
     firmenkatalog: Option<((u64, u64, u64), Rc<sk_cost::Katalog>)>,
     /// Bezeichnungen mit Werten, je Wortlaut einmal ([`Scene::bezeichnung`]).
@@ -791,6 +797,7 @@ impl Scene {
             schedule_runs: 0,
             katalog: None,
             kostenblatt: Vec::new(),
+            lv: Vec::new(),
             firmenkatalog: None,
             bezeichnungen: Vec::new(),
             kostenspeicher: sk_cost::Kostenspeicher::default(),
@@ -887,6 +894,30 @@ impl Scene {
         self.kostenblatt.insert(0, (key, b.clone()));
         self.kostenblatt.truncate(2);
         b
+    }
+
+    /// Leistungsverzeichnis des Loses `w.los` im Umfang `u` (KA-4,
+    /// paket-ka4 §2): `lv::lv_aus` auf dem Kostenblatt desselben Umfangs,
+    /// gemerkt je Kostenblatt, Modellstand und Wahl.
+    pub fn lv(
+        &mut self,
+        firma: Option<(&sk_model::Library, u64)>,
+        u: &Umfang,
+        w: &sk_cost::lv::LvWahl,
+    ) -> Rc<sk_cost::lv::Lv> {
+        let kat = self.katalog(firma);
+        let blatt = self.kostenblatt(firma, u);
+        let von = (self.schedule_runs, kat.stempel, u.clone());
+        let key: LvSchluessel = (von, self.model.revision(), w.clone());
+        if let Some((_, lv)) = self.lv.iter().find(|(k, _)| *k == key) {
+            return lv.clone();
+        }
+        let lv = Rc::new(sk_cost::lv::lv_aus(&self.model, &blatt, &kat, w));
+        // Ein anderes Blatt oder ein anderer Stand macht die alten ungültig
+        self.lv.retain(|(k, _)| k.0 == key.0 && k.1 == key.1);
+        self.lv.insert(0, (key, lv.clone()));
+        self.lv.truncate(8);
+        lv
     }
 
     /// Katalog der Firma oder des Werks ohne die Werte des Projekts

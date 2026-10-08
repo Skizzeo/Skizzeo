@@ -15,7 +15,7 @@ use std::collections::HashSet;
 // --- Zahlen ------------------------------------------------------------------
 
 /// Tausenderpunkte vor eine Ziffernfolge.
-pub(super) fn tausender(ziffern: &str) -> String {
+pub(crate) fn tausender(ziffern: &str) -> String {
     let mut s = String::new();
     for (i, c) in ziffern.chars().enumerate() {
         if i > 0 && (ziffern.len() - i).is_multiple_of(3) {
@@ -41,7 +41,7 @@ pub fn menge_text(d: Dez, e: Einheit) -> String {
 }
 
 /// Betrag mit zwei Stellen: „60.089,83“.
-pub(super) fn euro(c: Cent) -> String {
+pub(crate) fn euro(c: Cent) -> String {
     c.deutsch()
 }
 
@@ -57,14 +57,14 @@ pub fn euro_ganz(c: Cent) -> String {
 }
 
 /// Prozent ganzzahlig, kaufmännisch: `teil / ganz`.
-pub(super) fn prozent(teil: Cent, ganz: Cent) -> Option<i64> {
+pub(crate) fn prozent(teil: Cent, ganz: Cent) -> Option<i64> {
     (ganz.0 > 0).then(|| (teil.0 * 200 + ganz.0) / (2 * ganz.0))
 }
 
 // --- Zeilen bauen ------------------------------------------------------------
 
 /// Name und DIN-Nummer eines Gewerks; ohne Gewerk „Ohne Gewerk“.
-pub(super) fn gewerk_name(m: &Model, g: Option<Guid>) -> (String, String, u16) {
+pub(crate) fn gewerk_name(m: &Model, g: Option<Guid>) -> (String, String, u16) {
     match g.and_then(|g| m.trade(TradeId(g))) {
         Some(t) => (t.name.clone(), format!("DIN {}", t.code), t.order),
         None => ("Ohne Gewerk".into(), String::new(), u16::MAX),
@@ -72,12 +72,12 @@ pub(super) fn gewerk_name(m: &Model, g: Option<Guid>) -> (String, String, u16) {
 }
 
 /// Name eines Geschosses in der Gliederung („Gründung“, „Erdgeschoss“).
-pub(super) fn geschoss_name(m: &Model, s: StoreyId) -> String {
+pub(crate) fn geschoss_name(m: &Model, s: StoreyId) -> String {
     m.storey(s).map_or_else(String::new, |x| x.name.clone())
 }
 
 /// Kostengruppe mit Namen: „322 Flachgründungen und Bodenplatten“.
-pub(super) fn kg_name(kg: Option<u16>) -> String {
+pub(crate) fn kg_name(kg: Option<u16>) -> String {
     match kg {
         Some(k) => match sk_cost::din276::name(k) {
             Some(n) => format!("{k} {n}"),

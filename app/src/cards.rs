@@ -11,23 +11,26 @@ use sk_ui::theme::Theme;
 use sk_ui::widgets::Fonts;
 use std::time::Instant;
 
-/// Ein Blatt des Fensters (KA-4: AVA).
+/// Ein Blatt des Fensters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Blatt {
     #[default]
     Mengen,
     Kosten,
+    /// Leistungsverzeichnis (KA-4).
+    Ava,
 }
 
 impl Blatt {
     /// Die vorhandenen Blätter in der Reihenfolge der Karten.
-    pub const ALLE: [Blatt; 2] = [Blatt::Mengen, Blatt::Kosten];
+    pub const ALLE: [Blatt; 3] = [Blatt::Mengen, Blatt::Kosten, Blatt::Ava];
 
     /// Name auf der Karte und im Fenstertitel.
     pub fn name(self) -> &'static str {
         match self {
             Blatt::Mengen => "Mengen",
             Blatt::Kosten => "Kosten",
+            Blatt::Ava => "AVA",
         }
     }
 
@@ -36,6 +39,7 @@ impl Blatt {
         match self {
             Blatt::Mengen => "mengen",
             Blatt::Kosten => "kosten",
+            Blatt::Ava => "ava",
         }
     }
 
@@ -48,9 +52,11 @@ impl Blatt {
     }
 }
 
-/// Knopf im Paneel „Ansichten“ (KA-2: einzeilig); sein Tooltip steht in
-/// `hilfe.txt` unter `[knopf]`.
-pub const KNOPF: &str = "Mengen · Kosten";
+/// Knopf im Paneel „Ansichten“ (Name in Titel und Tooltip); sein Tooltip
+/// steht in `hilfe.txt` unter `[knopf]`.
+pub const KNOPF: &str = "Mengen · Kosten · AVA";
+/// Der Knopf ist ab KA-4 zweizeilig (Einstellungen §3 KA-4 Punkt 8).
+pub const KNOPF_ZEILEN: (&str, &str) = ("Mengen", "Kosten · AVA");
 
 /// Karte 236 × 74 dip, Radius 8, Abstand zwischen den Karten.
 const CARD_W: f32 = 236.0;
@@ -69,9 +75,9 @@ type Rect = (f32, f32, f32, f32);
 pub struct Karten {
     pub aktiv: Blatt,
     hover: Option<Blatt>,
-    zahlen: [String; 2],
+    zahlen: [String; 3],
     /// Seit wann die geänderte Zahl einer Karte aufglimmt.
-    glimm: [Option<Instant>; 2],
+    glimm: [Option<Instant>; 3],
     /// Laufender Wechsel: voriges Blatt und Beginn.
     wechsel: Option<(Blatt, Instant)>,
 }
@@ -82,14 +88,14 @@ impl Karten {
             aktiv,
             hover: None,
             zahlen: Default::default(),
-            glimm: [None; 2],
+            glimm: [None; 3],
             wechsel: None,
         }
     }
 
     /// Lage der Karten (px); `x0` linker Rand des Inhalts, `top` Unterkante
     /// der Titelleiste.
-    fn rects(x0: f32, top: f32, s: f32) -> [Rect; 2] {
+    fn rects(x0: f32, top: f32, s: f32) -> [Rect; 3] {
         let y = top + PAD_TOP * s;
         let r = |i: usize| {
             (
@@ -99,7 +105,7 @@ impl Karten {
                 CARD_H * s,
             )
         };
-        [r(0), r(1)]
+        [r(0), r(1), r(2)]
     }
 
     pub fn hit(x0: f32, top: f32, s: f32, x: f64, y: f64) -> Option<Blatt> {
@@ -283,7 +289,7 @@ fn mix(a: Rgba, b: Rgba, k: f32) -> Rgba {
     Rgba::from_f32(std::array::from_fn(|i| a[i] + (b[i] - a[i]) * k))
 }
 
-/// Gezeichnetes Symbol 16 dip, Strich 1 dip: Raster (Mengen), € (Kosten).
+/// Gezeichnetes Symbol 16 dip, Strich 1 dip: Raster (Mengen), € (Kosten), Liste (AVA).
 fn symbol(c: &mut Canvas, b: Blatt, (x, y): (f32, f32), s: f32, col: Rgba) {
     let w = s.max(1.0);
     let d = 16.0 * s;
@@ -312,6 +318,14 @@ fn symbol(c: &mut Canvas, b: Blatt, (x, y): (f32, f32), s: f32, col: Rgba) {
             p.segment((x1, cy - d * 0.12), (x2, cy - d * 0.12), w);
             p.segment((x1, cy + d * 0.12), (x2, cy + d * 0.12), w);
         }
+        Blatt::Ava => {
+            // Liste: drei Zeilen mit Punkt davor
+            for k in 0..3 {
+                let yy = y + d * (0.2 + 0.3 * k as f32);
+                p.segment((x, yy), (x + d * 0.12, yy), w);
+                p.segment((x + d * 0.3, yy), (x + d, yy), w);
+            }
+        }
     }
     c.fill(&p, col);
 }
@@ -323,7 +337,7 @@ mod tests {
     #[test]
     fn blaetter_und_zahlen() {
         assert_eq!(Blatt::from_key("kosten"), Some(Blatt::Kosten));
-        assert_eq!(Blatt::from_key("ava"), None);
+        assert_eq!(Blatt::from_key("ava"), Some(Blatt::Ava));
         let now = Instant::now();
         let mut k = Karten::new(Blatt::Mengen);
         // erstes Setzen glimmt nicht, eine Änderung schon, gleiche Zahl nicht

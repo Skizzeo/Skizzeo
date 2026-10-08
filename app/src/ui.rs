@@ -58,7 +58,7 @@ pub enum Id {
     Ref(RefSide),
     Ortho,
     View(ViewKind),
-    /// „Mengen · Kosten“ (B7, KA-2a): öffnet das Mengenfenster oder holt es nach vorn.
+    /// „Mengen · Kosten · AVA“ (B7, KA-2a, KA-4): öffnet das Mengenfenster oder holt es nach vorn.
     Quantity,
     Field(Field),
     /// Griff einer Ebene im Paneel „Geschosse“.
@@ -642,7 +642,7 @@ pub struct Ui {
     pub hover: Option<Id>,
     pressed: Option<Id>,
     pub view: ViewKind,
-    /// Mengenfenster offen: Knopf „Mengen · Kosten“ in `accent`.
+    /// Mengenfenster offen: Knopf „Mengen · Kosten · AVA“ in `accent`.
     pub quantity_open: bool,
     pub building: bool,
     /// Das Werkzeug zeichnet Innenwände (sonst Außenwände).
@@ -915,6 +915,7 @@ fn notes_rows(rows: &mut Vec<Row>, p: &Props) {
 fn row_height(r: &Row) -> (f32, f32) {
     match r {
         Row::Title(_) => (22.0, 12.0),
+        Row::Button(Id::Quantity, _) => (46.0, 8.0),
         Row::Button(..) | Row::Segments(_) | Row::Pair(_) => (34.0, 8.0),
         Row::Label(_) => (18.0, 6.0),
         Row::Layer(..) => (18.0, 4.0),
@@ -1933,6 +1934,28 @@ impl Ui {
                 c.blit_scaled(&img, b.x.round(), y.trunc(), 1.0, 0.4);
             } else {
                 c.blit(&img, b.x.round() as i32, y as i32);
+            }
+            return;
+        }
+        if id == Id::Quantity {
+            // Zweizeilig ab KA-4 (Einstellungen §3 KA-4 Punkt 8): „Mengen“ /
+            // „Kosten · AVA“, 12 fett, Zeilenabstand 16
+            widgets::button(c, &self.fonts, b, "", st, s, t);
+            let (oben, unten) = crate::cards::KNOPF_ZEILEN;
+            if let Some(f) = self.fonts.bold.as_ref().or(self.fonts.regular.as_ref()) {
+                let px = 12.0 * s;
+                let col = if st.disabled {
+                    t.ui.text_disabled
+                } else if st.active {
+                    t.ui.on_accent
+                } else {
+                    t.ui.text
+                };
+                let mitte = b.y + b.h * 0.5 + f.cap_height(px) * 0.5;
+                for (text, y) in [(oben, mitte - 8.0 * s), (unten, mitte + 8.0 * s)] {
+                    let x = b.x + (b.w - f.width(text, px)) * 0.5;
+                    f.draw(c, text, px, x.round(), y.round(), col);
+                }
             }
             return;
         }
