@@ -11,7 +11,7 @@ use crate::ui::Field;
 use crate::ui::ViewKind;
 use crate::visible::{split, Class};
 use sk_math::{polygon, vec3, Vec3};
-use sk_model::qto::Schedule;
+use sk_model::qto::{Schedule, Umfang};
 use sk_model::view::{Isolate, Masks, Visibility};
 use sk_model::{
     edge_kind, floor_qto_of, foundation_qto_of, merge_seam, run_qto, BuildingId, Category, Deleted,
@@ -482,7 +482,10 @@ pub struct Scene {
     /// Modellstand vor dem offenen Schritt „Gebäude erstellt“.
     pending_rev: u64,
     /// Mengenliste (B7) mit dem Modellstand, aus dem sie stammt.
-    schedule: Option<(u64, Schedule)>,
+    schedule: Option<(u64, Rc<Schedule>)>,
+    /// Liste im zuletzt gefragten Umfang (KA-1) mit der Berechnung
+    /// (`schedule_runs`), aus der sie gefiltert ist.
+    schedule_in: Option<(u64, Umfang, Rc<Schedule>)>,
     /// Wie oft die Liste berechnet wurde (Messung, Abnahme).
     schedule_runs: u64,
     /// Offener Schritt „Typ gewechselt“ als Vorschau (K3).
@@ -768,6 +771,7 @@ impl Scene {
             draft: BuildingDraft::default(),
             pending_rev: 0,
             schedule: None,
+            schedule_in: None,
             schedule_runs: 0,
             type_preview: false,
             now: 0,
@@ -790,10 +794,30 @@ impl Scene {
         let rev = self.model.revision();
         let fresh = matches!(&self.schedule, Some((r, _)) if *r == rev);
         if !fresh && (self.schedule.is_none() || !self.model.in_step()) {
-            self.schedule = Some((rev, sk_model::qto::schedule(&self.model)));
+            self.schedule = Some((rev, Rc::new(sk_model::qto::schedule(&self.model))));
             self.schedule_runs += 1;
         }
         &self.schedule.as_ref().expect("gerade berechnet").1
+    }
+
+    /// Mengenliste im Umfang `u` (KA-1): gefiltert aus [`Scene::schedule`]
+    /// über `Schedule::restrict`, gemerkt je Berechnung und Umfang. Rechnet
+    /// keine Geometrie; ein Chip-Klick rechnet die Liste nicht neu.
+    pub fn schedule_in(&mut self, u: &Umfang) -> Rc<Schedule> {
+        self.schedule();
+        let runs = self.schedule_runs;
+        let full = self.schedule.as_ref().expect("gerade berechnet").1.clone();
+        if u.alles() {
+            return full;
+        }
+        if let Some((r, w, s)) = &self.schedule_in {
+            if *r == runs && w == u {
+                return s.clone();
+            }
+        }
+        let s = Rc::new(full.restrict(&self.model, u));
+        self.schedule_in = Some((runs, u.clone(), s.clone()));
+        s
     }
 
     /// Liegt die Liste hinter dem Modell („wird aktualisiert“)?

@@ -41,6 +41,7 @@ mod tree_panel;
 mod type_look;
 mod type_menu;
 mod ui;
+mod umfang_view;
 mod visible;
 mod wall_edit;
 mod wall_tool;
@@ -2187,6 +2188,19 @@ impl App {
         }
     }
 
+    /// Tabelle des Mengenblatts im Umfang des Blatts, die Kopfzeile zuerst
+    /// (KA-1).
+    fn quantity_csv(&mut self, by: schedule_view::Grouping) -> Vec<u8> {
+        let u = self
+            .quantity
+            .list
+            .as_ref()
+            .map_or_else(sk_model::qto::Umfang::projekt, |l| l.umfang.clone());
+        let sched = self.scene.schedule_in(&u);
+        let kopf = umfang_view::umfang_text(self.scene.model(), &u, sk_platform::local_date_time());
+        schedule_view::csv_mit_kopf(self.scene.model(), &sched, by, &kopf)
+    }
+
     /// „Als Tabelle speichern“: Windows-Dialog, .csv für Excel.
     fn save_csv(&mut self, surface: &Surface) {
         let stem = self
@@ -2206,9 +2220,8 @@ impl App {
         else {
             return;
         };
-        let sched = self.scene.schedule().clone();
         let by = self.quantity.grouping;
-        let bytes = schedule_view::csv_grouped(self.scene.model(), &sched, by);
+        let bytes = self.quantity_csv(by);
         if let Err(e) = std::fs::write(&path, bytes) {
             surface.message(
                 &format!("Die Tabelle konnte nicht gespeichert werden:\n{e}"),

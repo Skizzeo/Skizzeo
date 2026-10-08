@@ -574,7 +574,10 @@ impl QuantityWindow {
         let mut show = |a: i32, b: i32| {
             shown = Some(shown.map_or((a, b), |(x, y)| (x.min(a), y.max(b))));
         };
-        let mut full = self.dirty || self.shown.len() != (w * h * 4) as usize;
+        // Über der Liste liegt etwas (Gebäudefeld, wackelnder Chip): ganz
+        let mut full = self.dirty
+            || self.shown.len() != (w * h * 4) as usize
+            || self.list.as_ref().is_some_and(|l| l.overlay_open());
         let scroll = self.list.as_ref().map_or(0, |l| l.scroll_px());
         let scrolled = scroll != self.scroll_shown;
         let bands_dirty = std::mem::take(&mut self.bands_dirty);
