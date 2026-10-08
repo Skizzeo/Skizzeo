@@ -56,9 +56,11 @@ pub struct Library {
 #[derive(Clone, Debug, Default)]
 pub struct Foreign {
     /// Zeilen mit unbekannten Angaben: so, wie dieser Leser den Eintrag
-    /// schreibt, und wie er in der Datei stand. Solange der Eintrag
-    /// unverändert ist, wird die Zeile der Datei geschrieben.
-    pub lines: Vec<(String, String)>,
+    /// schreibt, die wievielte gleiche eigene Zeile das ist (ab 0), und wie
+    /// er in der Datei stand. Solange der Eintrag unverändert ist, wird die
+    /// Zeile der Datei geschrieben, bei gleichen eigenen Zeilen (zwei gleiche
+    /// Schichten) an derselben Stelle.
+    pub lines: Vec<(String, usize, String)>,
     /// Sätze unbekannter Art, unverändert in Dateireihenfolge.
     pub records: Vec<String>,
     /// Zahl der unbekannten Angaben beim Lesen (Wert, Schlüssel, Satz).
@@ -263,6 +265,23 @@ pub(crate) fn record_key(r: &Record, count: &mut HashMap<String, usize>) -> Stri
     format!("{base} #{n}")
 }
 
+/// Eigene Zeilen nach [`record_key`]: die Zeile und die wievielte gleiche
+/// Zeile im Text sie ist (ab 0), wie [`with_foreign`] zählt.
+pub(crate) fn own_lines(mine: &str) -> HashMap<String, (&str, usize)> {
+    let mut count = HashMap::new();
+    let mut same: HashMap<&str, usize> = HashMap::new();
+    let mut own = HashMap::new();
+    for (i, l) in mine.lines().enumerate() {
+        let n = same.entry(l).or_insert(0);
+        let nth = *n;
+        *n += 1;
+        if let Ok(Some(r)) = Record::parse(i + 1, l) {
+            own.insert(record_key(&r, &mut count), (l, nth));
+        }
+    }
+    own
+}
+
 /// Der Katalog als `.szk`-Text.
 pub fn write_szk(lib: &Library) -> String {
     let mut text = write_known(lib);
@@ -278,22 +297,18 @@ pub(crate) fn with_foreign(plain: String, f: &Foreign) -> String {
         return plain;
     }
     let mut out = String::with_capacity(plain.len() + 256);
-    // Jede gemerkte Zeile einmal: gleiche eigene Zeilen (zwei gleiche
-    // Schichten) bekommen ihre fremden Zeilen der Reihe nach
-    let mut used = vec![false; f.lines.len()];
+    // Gleiche eigene Zeilen (zwei gleiche Schichten): die fremde Zeile an
+    // die wievielte gleiche, an der sie stand, nicht an die erste
+    let mut seen: HashMap<&str, usize> = HashMap::new();
     for l in plain.lines() {
-        let hit = f
+        let n = seen.entry(l).or_insert(0);
+        let nth = *n;
+        *n += 1;
+        let l = f
             .lines
             .iter()
-            .enumerate()
-            .find(|(i, (mine, _))| !used[*i] && mine == l);
-        let l = match hit {
-            Some((i, (_, theirs))) => {
-                used[i] = true;
-                theirs.as_str()
-            }
-            None => l,
-        };
+            .find(|(mine, k, _)| *k == nth && mine == l)
+            .map_or(l, |(_, _, theirs)| theirs.as_str());
         out.push_str(l);
         out.push('\n');
     }
@@ -654,16 +669,12 @@ pub fn read_szk_with(text: &str, ext: &[&str]) -> Result<Library, LoadError> {
     }
     if !odd.is_empty() {
         let mine = write_known(&lib);
-        let mut count = HashMap::new();
-        let mut own = HashMap::new();
-        for (i, l) in mine.lines().enumerate() {
-            if let Ok(Some(r)) = Record::parse(i + 1, l) {
-                own.insert(record_key(&r, &mut count), l);
-            }
-        }
+        let own = own_lines(&mine);
         for (key, theirs) in odd {
-            if let Some(l) = own.get(&key) {
-                foreign.lines.push((l.to_string(), theirs.to_string()));
+            if let Some((l, nth)) = own.get(&key) {
+                foreign
+                    .lines
+                    .push((l.to_string(), *nth, theirs.to_string()));
             }
         }
     }

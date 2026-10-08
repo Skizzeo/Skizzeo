@@ -1195,17 +1195,11 @@ fn foreign(
     }
     if !odd.is_empty() {
         let mine = write_known(model);
-        let mut count = HashMap::new();
-        let mut own = HashMap::new();
-        for (i, l) in mine.lines().enumerate() {
-            if let Ok(Some(r)) = Record::parse(i + 1, l) {
-                own.insert(record_key(&r, &mut count), l.to_string());
-            }
-        }
+        let own = crate::catalog::own_lines(&mine);
         odd.sort();
         for (key, theirs) in odd {
-            if let Some(l) = own.get(&key) {
-                f.lines.push((l.clone(), theirs.to_string()));
+            if let Some((l, nth)) = own.get(&key) {
+                f.lines.push((l.to_string(), *nth, theirs.to_string()));
             }
         }
     }
@@ -3474,6 +3468,26 @@ mod tests {
     /// Bauleistung), mit Befund „Bauleistung“ gemeldet und beim Speichern
     /// unverändert zurückgeschrieben; die Datei bleibt bytegleich, auch nach
     /// einer Änderung an anderer Stelle.
+    /// Review 3ac: Zwei gleiche Schichten, nur die zweite mit ungültigem
+    /// `svc=`. Der rohe Wert bleibt an der zweiten; vorher wanderte er an
+    /// die erste gleiche Zeile.
+    #[test]
+    fn a311_gleiche_schichten_behalten_ihre_zeile() {
+        let mut m = house();
+        let id = m.layer_sets().ids().next().unwrap();
+        let mut s = m.layer_set(id).unwrap().clone();
+        let l0 = s.layers[0];
+        s.layers.insert(0, l0);
+        let svc = m.new_guid();
+        s.layers[1].svc = Some(svc);
+        assert!(m.set_layer_set(id, s));
+        let text = write(&m);
+        let kaputt = text.replace(&format!(" svc={}", svc.to_ifc()), " svc=nix");
+        assert_ne!(kaputt, text);
+        let back = load(&kaputt).unwrap();
+        assert_eq!(write(&back.model), kaputt, "bytegleich");
+    }
+
     #[test]
     fn a311_ungueltige_bauleistung_bleibt_erhalten() {
         let mut m = house();
