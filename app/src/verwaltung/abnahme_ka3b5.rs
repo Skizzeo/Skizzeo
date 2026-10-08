@@ -7,6 +7,8 @@
 //! - Der Preis steht im Haus mit Marke `proj=1`, die Firmendatei bleibt
 //!   bytegleich; ein Rückgängig-Schritt nimmt ihn ganz zurück,
 //!   Wiederholen bringt ihn wieder.
+//! - Review 3ax: Ein gesperrter `check`-Schritt lässt das Haus bytegleich
+//!   und den Rückgängig-Stapel wie vorher.
 
 use super::*;
 use std::path::PathBuf;
@@ -232,6 +234,118 @@ fn abnahme_ka3b5_haendlerpreis_im_haus() {
                 nachher as f64 / 100.0
             );
         }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+/// Review 3ax an RH-1 bis RH-3: Ein `check`-Schritt (Regel 77, zweiter
+/// Standardartikel zu Baustoff und Dicke) sperrt den Ablauf für dieses
+/// Haus. Danach ist das Haus bytegleich, die Kosten gleich, kein Schritt
+/// offen und der Rückgängig-Stapel wie vorher: der letzte Schritt ist der
+/// eigene Preis von vorher, Rückgängig nimmt ihn, Wiederholen bringt ihn.
+/// Ohne Sperre schreibt derselbe Weg genau einen Rückgängig-Schritt.
+#[test]
+fn abnahme_ka3b5_gesperrte_pruefung_laesst_haus() {
+    for (name, text) in haeuser() {
+        let d = ordner(&format!("3ax-{name}"));
+        let firma = d.join("firmenkatalog.szk");
+        let (mut c, _) = Company::laden(&firma, true);
+        let mut s = szene(text);
+        let k = Op::KennwortSetzen {
+            pw: sk_cost::verwaltung::Pruefwert::neu("Polier7", [5; 16]),
+        };
+        s.fuer_firma(STEP, &mut c, &h(), &[k]).unwrap();
+        let (c, _) = Company::laden(&firma, false);
+        let mut s = szene(text);
+        s.rolle = sk_cost::Rolle::Nutzer;
+        let kat = s.katalog(Some((c.library(), c.stand())));
+        let a = kat
+            .artikel
+            .iter()
+            .find(|a| a.std && a.mat.is_some() && a.t.is_some() && !a.retired && a.preis.is_some())
+            .unwrap_or_else(|| panic!("{name}: kein Standardartikel"))
+            .clone();
+        // Vorher: eigener Preis als letzter Rückgängig-Schritt
+        let preis = |p: i64| Op::PreisSetzen {
+            artikel: a.guid,
+            preis: Some(Dez::ganz(p)),
+            stand: "10/2026".into(),
+            quelle: "Angebot Müller".into(),
+            eingabe: String::new(),
+        };
+        s.kosten_folge("Preis vorher", Some(c.library()), &h(), &[preis(41)])
+            .unwrap();
+        let bild = sk_model::szo::write(s.model());
+        let kosten = netto(&mut s, &c);
+        let zweiter = Op::ArtikelAnlegen {
+            baustoff: a.mat,
+            name: format!("{} Händler", a.name),
+            dicke: a.t,
+            guete: String::new(),
+            format: String::new(),
+            einheit: a.einheit,
+            preis: Some(Dez::ganz(1)),
+            stand: "10/2026".into(),
+            quelle: String::new(),
+            lieferant: String::new(),
+            standard: true,
+        };
+        // Wie die App: erst prüfen, gesperrt heißt nichts eintragen
+        let satz = s
+            .ablauf_pruefen(
+                Some(c.library()),
+                &h(),
+                std::slice::from_ref(&zweiter),
+                &[77],
+            )
+            .unwrap_or_else(|| panic!("{name}: Regel 77 sperrt nicht"));
+        assert!(satz.contains("mehrere Standardartikel"), "{name}: {satz}");
+        assert_eq!(
+            sk_model::szo::write(s.model()),
+            bild,
+            "{name}: Haus bytegleich"
+        );
+        assert_eq!(netto(&mut s, &c), kosten, "{name}: Kosten gleich");
+        assert!(!s.model().in_step(), "{name}: kein Schritt offen");
+        assert_eq!(s.undo_label(), Some("Preis vorher"), "{name}: Stapel");
+        assert!(s.undo());
+        assert_eq!(
+            s.katalog(Some((c.library(), c.stand())))
+                .artikel(a.guid)
+                .unwrap()
+                .preis,
+            a.preis,
+            "{name}: Rückgängig nimmt den Preis von vorher"
+        );
+        assert!(s.redo());
+        assert_eq!(sk_model::szo::write(s.model()), bild, "{name}: Wiederholen");
+        // Ohne Sperre: ein Schritt, ganz rückgängig zu machen
+        assert_eq!(
+            s.ablauf_pruefen(Some(c.library()), &h(), &[preis(43)], &[77]),
+            None,
+            "{name}"
+        );
+        assert_eq!(
+            sk_model::szo::write(s.model()),
+            bild,
+            "{name}: Prüfen allein"
+        );
+        s.kosten_folge(
+            "Händlerpreis für dieses Haus eintragen",
+            Some(c.library()),
+            &h(),
+            &[preis(43)],
+        )
+        .unwrap();
+        assert_eq!(
+            s.undo_label(),
+            Some("Händlerpreis für dieses Haus eintragen"),
+            "{name}"
+        );
+        assert!(s.undo());
+        assert_eq!(sk_model::szo::write(s.model()), bild, "{name}: ein Schritt");
+        assert_eq!(s.undo_label(), Some("Preis vorher"), "{name}");
+        eprintln!("KA3B5-3ax {name}: {} gesperrt: {satz}", a.name);
         let _ = std::fs::remove_dir_all(&d);
     }
 }
