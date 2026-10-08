@@ -3,15 +3,10 @@
 //! daraus, was es gibt.
 
 use crate::satz::{Kennung, ABSCHNITTE};
-use std::sync::OnceLock;
 
-/// Das Schema als Text, einmal aus der Feldtabelle gebaut.
-pub fn schema() -> &'static str {
-    static S: OnceLock<String> = OnceLock::new();
-    S.get_or_init(bauen)
-}
-
-fn bauen() -> String {
+/// Das Schema als Text, aus der Feldtabelle gebaut. Jeder Aufruf baut neu:
+/// `sk-cost` hält keinen Zustand (Bausteingrenze §8, kein `OnceLock`).
+pub fn schema() -> String {
     let mut s = String::from("Skizzeo-Kostenschema\n\n");
     for a in ABSCHNITTE {
         let datei = match (a.szo, a.szk) {

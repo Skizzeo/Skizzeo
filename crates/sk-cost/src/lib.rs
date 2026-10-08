@@ -10,9 +10,11 @@ pub mod geld;
 pub mod katalog;
 pub mod lesen;
 pub mod op;
+pub mod rechnung;
 pub mod satz;
 mod schema;
 mod zeile;
+pub mod zuordnung;
 
 pub use befund::{Befund, Ort, Schwere};
 pub use geld::{Cent, Dez};
@@ -21,7 +23,9 @@ pub use op::{
     ausfuehren, ausfuehren_folge, firma_anwenden, neues_projekt, pruefen, vorschau, Aenderung,
     FirmaNeu, Herkunft, HerkunftArt, Op, Plan, Rolle, SatzId, Sicherheit, Ziel,
 };
+pub use rechnung::{Kostenblatt, Kostenspeicher, Position};
 pub use schema::schema;
+pub use sk_model::qto::Umfang;
 
 /// Werksbestand von „Stammdaten und BIM-Administration“, bytegleiche Kopie
 /// von stammdaten/werk.szk (Regel 75, Bausteingrenze §6).

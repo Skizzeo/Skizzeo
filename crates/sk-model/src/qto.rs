@@ -1293,7 +1293,47 @@ pub struct Umfang {
     pub ohne: Vec<StoreyId>,
 }
 
+impl Umfang {
+    /// Das ganze Projekt: alle Gebäude, alle Geschosse, lose Bauteile.
+    pub fn projekt() -> Umfang {
+        Umfang::default()
+    }
+
+    /// Ein Gebäude mit allen Geschossen.
+    pub fn gebaeude(b: BuildingId) -> Umfang {
+        Umfang {
+            gebaeude: Some(b),
+            ohne: Vec::new(),
+        }
+    }
+
+    /// Nichts abgewählt und kein Gebäude gewählt: der `Schedule` gilt so.
+    pub fn alles(&self) -> bool {
+        self.gebaeude.is_none() && self.ohne.is_empty()
+    }
+}
+
 impl Schedule {
+    /// Alle Mengenzeilen nach Schicht (Paket 1b), auch ohne Gewerk und
+    /// Kostengruppe, mit ihrem Gebäude; Bauteile ohne Gebäude (`loose`)
+    /// zuletzt mit `None`. Für die Kosten (KA-0e); rechnet keine Geometrie.
+    pub fn layer_rows(&self, model: &Model) -> Vec<(Option<BuildingId>, LayerRow)> {
+        let mut out = Vec::new();
+        for b in &self.buildings {
+            out.extend(
+                layer_rows(model, &b.storeys)
+                    .into_iter()
+                    .map(|r| (Some(b.id), r)),
+            );
+        }
+        out.extend(
+            layer_rows(model, &self.loose)
+                .into_iter()
+                .map(|r| (None, r)),
+        );
+        out
+    }
+
     /// Mengenliste im Umfang `u`: filtert die Geschosse und bildet die
     /// Summen nach Baustoff, Gewerk und Kostengruppe und die Schalung neu.
     /// Rechnet keine Geometrie. Geschosse ohne Gebäude zählen nur im Umfang

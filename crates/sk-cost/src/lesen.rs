@@ -114,11 +114,56 @@ pub(crate) fn firma_oder_werk(m: &Model, firma: Option<&Library>) -> Katalog {
     k
 }
 
+/// Das Kostenblatt im Umfang `u` aus der fertigen Mengenliste (Regeln 81–85,
+/// 95, 96; ruft nie `qto::schedule`).
+pub fn kosten(
+    m: &Model,
+    sched: &sk_model::qto::Schedule,
+    k: &Katalog,
+    u: &crate::Umfang,
+) -> crate::Kostenblatt {
+    crate::rechnung::kosten(m, sched, k, u)
+}
+
+/// Wie [`kosten`], mit dem Zwischenspeicher des Aufrufers (Bausteingrenze
+/// §5): dasselbe Blatt auf den Cent.
+pub fn kosten_mit(
+    sp: crate::Kostenspeicher,
+    m: &Model,
+    sched: &sk_model::qto::Schedule,
+    k: &Katalog,
+    u: &crate::Umfang,
+) -> (crate::Kostenblatt, crate::Kostenspeicher) {
+    crate::rechnung::kosten_mit(sp, m, sched, k, u)
+}
+
+/// Bauleistung der Schicht `schicht` im Typ `typ` mit Grund (Regel 81).
+pub fn zuordnung(
+    m: &Model,
+    k: &Katalog,
+    typ: sk_model::Guid,
+    schicht: usize,
+) -> Option<crate::zuordnung::Zuordnung> {
+    let (_, t) = m.layer_sets().iter().find(|(_, t)| t.guid == typ)?;
+    let l = t.layers.get(schicht)?;
+    let kat = sk_model::element::Category::ALL
+        .into_iter()
+        .find(|c| sk_model::library::TypeCategory::of(*c) == Some(t.category))?;
+    Some(crate::zuordnung::zuordnen(
+        k,
+        kat,
+        l,
+        m.material(l.material),
+    ))
+}
+
 /// Alle Befunde zu Stammdaten und Zuordnung an den Typen (Regeln 71–92,
-/// 99). Die Zuordnungs- und Rechenregeln (81–85, 95–97) kommen mit der
-/// Rechnung (KA-0e) dazu.
+/// 97, 99). Die Befunde der Rechnung (81–85, 95, 96) stehen im
+/// [`crate::Kostenblatt`].
 pub fn befunde(m: &Model, k: &Katalog) -> Vec<Befund> {
     let mut out = k.befunde.clone();
+    // 97: Abdeckung der Werksschichten
+    out.extend(crate::rechnung::abdeckung(m, k));
     // 99: svc= an einer Schicht zeigt ins Leere oder auf Ausgemustertes
     for (_, t) in m.layer_sets().iter() {
         for (i, l) in t.layers.iter().enumerate() {

@@ -378,7 +378,9 @@ fn mat_category(c: MatCategory) -> &'static str {
 
 const MAT_CATEGORIES: [MatCategory; 7] = MatCategory::ALL;
 
-fn layer_function(f: LayerFunction) -> &'static str {
+/// Wort der Schichtfunktion in `[layer] fn=` (auch die Regel `fn=` einer
+/// Bauleistung, KA-0).
+pub fn layer_function(f: LayerFunction) -> &'static str {
     match f {
         LayerFunction::Structure => "loadbearing",
         LayerFunction::Insulation => "insulation",

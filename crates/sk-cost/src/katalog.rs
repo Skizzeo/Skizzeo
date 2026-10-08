@@ -348,7 +348,23 @@ pub struct Katalog {
     /// Stand des freigegebenen Firmenkatalogs, wenn einer da ist (Regel 92).
     pub firma_stand: Option<u32>,
     pub befunde: Vec<Befund>,
+    /// FNV-1a über die gelesenen Satzzeilen (Bausteingrenze §5): ändert sich
+    /// ein Satz, ordnet der Kostenspeicher alles neu zu.
+    pub stempel: u64,
 }
+
+/// FNV-1a, 64 Bit, eigene Umsetzung.
+pub(crate) fn fnv(h: u64, bytes: &[u8]) -> u64 {
+    let mut h = h;
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// Startwert von FNV-1a.
+pub(crate) const FNV_START: u64 = 0xcbf2_9ce4_8422_2325;
 
 impl Katalog {
     pub fn artikel(&self, g: Guid) -> Option<&Artikel> {
@@ -490,10 +506,12 @@ pub fn lesen<'a>(
     let mut roh: HashMap<&'static str, Vec<Roh>> = HashMap::new();
     let mut zaehler: HashMap<&'static str, usize> = HashMap::new();
     let mut fremd = false;
+    let mut stempel = FNV_START;
     for (sec, line) in zeilen {
         let Some(a) = satz::abschnitt(sec) else {
             continue;
         };
+        stempel = fnv(fnv(stempel, line.as_bytes()), b"\n");
         let n = {
             let c = zaehler.entry(a.name).or_default();
             *c += 1;
@@ -562,6 +580,15 @@ pub fn lesen<'a>(
         protokoll: Vec::new(),
         firma_stand: None,
         befunde: Vec::new(),
+        stempel: {
+            // R73-W: die Übersetzung gehört zum Stempel (Bausteingrenze §6)
+            let mut paare: Vec<(Guid, Guid)> =
+                u.uebersetzung.iter().map(|(w, x)| (*w, x.0)).collect();
+            paare.sort();
+            paare.iter().fold(stempel, |h, (w, x)| {
+                fnv(fnv(h, w.to_ifc().as_bytes()), x.to_ifc().as_bytes())
+            })
+        },
     };
     let skip = |bf: &mut Vec<Befund>, a: &Abschnitt, r: &Roh, grund: String| {
         let id = r.satz.kennung().unwrap_or_default();
