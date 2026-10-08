@@ -538,6 +538,13 @@ fn vorschlaege_fuer_die_firma() {
     s.rolle = sk_cost::Rolle::Admin;
     let mut v = Verwaltung::open(&s, Some(&c), None);
     assert_eq!(v.vorschlaege.len(), 2, "{:?}", v.vorschlaege);
+    assert_eq!(c.vorschlaege_zahl(), 2, "Dateimenü (Bedienbarkeit 17.2)");
+    let mut menu = crate::menu::FileMenu::default();
+    menu.open();
+    menu.vorschlaege = c.vorschlaege_zahl();
+    let z = menu.items(true, &crate::menu::Recent::default());
+    let zeile = z.iter().find(|i| i.label == "Verwaltung …").unwrap();
+    assert_eq!(zeile.shortcut, "2 Vorschläge");
     assert_eq!(v.entwurf_anzahl(), 0);
     assert!(
         v.beim_schliessen().is_none(),
@@ -572,9 +579,11 @@ fn vorschlaege_fuer_die_firma() {
     let mut v = Verwaltung::open(&s, Some(&c), None);
     assert_eq!(v.vorschlaege.len(), 1);
     assert_eq!(v.entwurf_anzahl(), 0, "Rest-Entwurf ohne Änderung");
+    assert_eq!(c.vorschlaege_zahl(), 1);
     v.aktion(Aktion::VorschlagAblehnen(key(&v, "Haus Arndt")));
     schreiben(&mut v, &mut c);
     assert!(v.vorschlaege.is_empty());
+    assert_eq!(c.vorschlaege_zahl(), 0);
     assert_eq!(lohn(c.library()), Dez::ganz(65), "Ablehnen ändert nichts");
     // „Entwurf verwerfen“ nimmt die Änderungen, nicht die Vorschläge
     s2.der_firma_vorschlagen("Lohn vorgeschlagen", &mut c, &h(), &[op(71)], "Haus Arndt")

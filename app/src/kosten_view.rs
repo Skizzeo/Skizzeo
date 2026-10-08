@@ -301,8 +301,9 @@ pub struct KostenView {
     /// Oberkante des Blatts unter Titelleiste und Karten (dip).
     pub top: f32,
     /// Kennwort gesetzt und hier nicht eingegeben: Preis- und Lohnblatt
-    /// schlagen der Firma vor (KA-3b4); setzt die App.
-    pub vorschlag: bool,
+    /// schlagen der Firma vor (KA-3b4); setzt die App über
+    /// [`KostenView::set_vorschlag`].
+    vorschlag: bool,
     blatt: Option<Rc<Kostenblatt>>,
     katalog: Option<Rc<Katalog>>,
     /// Kostenblatt aller Geschosse des Umfangs (Chip-Summen).
@@ -787,6 +788,23 @@ impl KostenView {
         self.preis.is_some() || self.wahl.is_some() || self.lohn.is_some()
     }
 
+    /// Rolle der Sitzung (KA-3b4): auch offene Blätter folgen, etwa nach
+    /// „Kennwort eingeben …“ (Bedienbarkeit 16.1). `true`, wenn sich etwas
+    /// geändert hat.
+    pub fn set_vorschlag(&mut self, vorschlag: bool) -> bool {
+        if vorschlag == self.vorschlag {
+            return false;
+        }
+        self.vorschlag = vorschlag;
+        if let Some(pb) = self.preis.as_mut() {
+            pb.vorschlag = vorschlag;
+        }
+        if let Some(l) = self.lohn.as_mut() {
+            l.set_vorschlag(vorschlag);
+        }
+        true
+    }
+
     /// Hinweiskarte mit dem Lohnfeld beim ersten Öffnen der Kosten.
     pub fn lohn_karte(&mut self) {
         self.lohn_wunsch = Some(lohn_blatt::Form::Karte);
@@ -805,6 +823,7 @@ impl KostenView {
                 self.lohn = None;
                 ListOut::Kosten(Schreiben::Lohn { wert, gilt })
             }
+            Aus::Kennwort => ListOut::Kennwort,
         })
     }
 
@@ -935,6 +954,7 @@ impl KostenView {
                 self.preis_schliessen();
                 ListOut::Kosten(Schreiben::Zurueck(saetze))
             }
+            Aus::Kennwort => ListOut::Kennwort,
         })
     }
 

@@ -57,6 +57,8 @@ pub enum Out {
     Kosten(kosten_view::Schreiben),
     /// Verwaltung mit dieser Bauleistung öffnen (KA-3a2).
     Verwaltung(sk_model::Guid),
+    /// Nur die Abfrage des Verwaltungskennworts (Bedienbarkeit 16.1).
+    Kennwort,
 }
 
 pub struct QuantityWindow {
@@ -477,6 +479,7 @@ impl QuantityWindow {
                 Some(Out::Kosten(w))
             }
             ListOut::Verwaltung(g) => Some(Out::Verwaltung(g)),
+            ListOut::Kennwort => Some(Out::Kennwort),
         }
     }
 

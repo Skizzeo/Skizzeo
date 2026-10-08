@@ -249,6 +249,7 @@ impl Verwaltung {
         self.ohne_firma |= kaputt;
         self.basis_setzen(basis, lib0, false);
         self.neu_rechnen();
+        self.neu_angelegt_waehlen();
         if self.vorschau.is_some() {
             if self.entwurf_anzahl() == 0 {
                 self.vorschau = None;

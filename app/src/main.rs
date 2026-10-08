@@ -780,6 +780,9 @@ fn meldungen(m: &[meldung::Meldung]) -> String {
         .join("\n\n")
 }
 
+/// Nach „Kennwort eingeben …“ im Kostenreiter (Bedienbarkeit 16.1).
+const KENNWORT_STIMMT: &str = "Kennwort stimmt. „Auch für neue Häuser“ schreibt jetzt in den Entwurf; gültig wird er mit „Freigeben“.";
+
 /// Schluss, wenn „Auch für neue Häuser“ scheitert (Bedienbarkeit 7.2).
 const NICHTS_GEAENDERT: &str = "Nichts geändert; „Nur dieses Haus“ geht weiterhin.";
 
@@ -1310,6 +1313,7 @@ impl App {
             Command::Undo | Command::Redo => self.history(c == Command::Redo),
             Command::OpenMenu => {
                 self.menu.open();
+                self.menu.vorschlaege = self.company.as_ref().map_or(0, |c| c.vorschlaege_zahl());
                 self.tip = None;
                 self.renderer.set_overlay(OVERLAY_TIP, 0, 0, 0, 0, &[]);
             }
@@ -1595,6 +1599,19 @@ impl App {
         self.overlay_dirty = true;
     }
 
+    /// „Kennwort eingeben …“ im Preis- oder Lohnblatt (Bedienbarkeit 16.1):
+    /// nur die Abfrage „Verwaltung öffnen“; stimmt das Kennwort, schließt
+    /// sie, und das offene Blatt schreibt wieder „Auch für neue Häuser“.
+    fn kennwort_abfragen(&mut self) {
+        if self.rolle() != sk_cost::Rolle::Nutzer {
+            return;
+        }
+        self.open_verwaltung(None);
+        if let Some(v) = self.verwaltung.as_mut() {
+            v.nur_kennwort();
+        }
+    }
+
     /// Offenes Fenster „Verwaltung …“: Maus und Tasten wie „Baustoffe …“;
     /// OK schreibt über `Scene::fuer_firma` (Bausteingrenze §5).
     fn handle_verwaltung(&mut self, e: Event, surface: &Surface) -> bool {
@@ -1654,6 +1671,9 @@ impl App {
             self.scene.rolle = sk_cost::Rolle::Admin;
             if let Some(c) = self.company.as_mut() {
                 c.set_nutzer(false);
+            }
+            if let Some(k) = self.quantity.kosten.as_mut() {
+                k.set_vorschlag(false);
             }
             self.quantity.dirty = true;
         }
@@ -1722,6 +1742,8 @@ impl App {
         if out.closed {
             if let Some(m) = self.verwaltung.take().and_then(|v| v.beim_schliessen()) {
                 self.status(m, NOTICE_TIME);
+            } else if out.frei {
+                self.status(meldung::Meldung::satz(KENNWORT_STIMMT), NOTICE_TIME);
             }
             self.overlay_dirty = true;
         }
@@ -2509,6 +2531,12 @@ impl App {
                     surface.command(WindowCommand::Activate);
                 }
             }
+            quantity::Out::Kennwort => {
+                self.kennwort_abfragen();
+                if self.verwaltung.is_some() {
+                    surface.command(WindowCommand::Activate);
+                }
+            }
         }
         if model {
             self.sync_ui();
@@ -2813,7 +2841,7 @@ impl App {
         }
         let vorschlag = self.rolle() == sk_cost::Rolle::Nutzer;
         if let Some(k) = self.quantity.kosten.as_mut() {
-            k.vorschlag = vorschlag;
+            k.set_vorschlag(vorschlag);
         }
         let firma = self.company.as_ref().map(|c| (c.library(), c.stand()));
         self.quantity.datei = self.doc.name();

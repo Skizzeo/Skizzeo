@@ -26,6 +26,9 @@ pub enum Knoten {
     Typ(Guid),
     Haeuser,
     Haus(usize),
+    /// Ast „Abläufe“ und ein geführter Ablauf darin (KA-3b5).
+    Ablaeufe,
+    Ablauf(Guid),
     Protokoll,
     Stand(u32),
     Papierkorb,
@@ -208,6 +211,16 @@ impl Verwaltung {
                 format!("{} {}", l.nr, l.name),
             ));
         }
+        // Abläufe für dieses Haus stehen im Reiter Kosten (paket-ka3b §3);
+        // ungültige grau, der Befund im Tooltip (soll-ka-3d)
+        let ablaeufe: Vec<Eintrag> = self
+            .verwaltungs_ablaeufe()
+            .map(|a| Eintrag {
+                grau: a.befund.is_some(),
+                ..blatt(Knoten::Ablauf(a.guid), a.name.clone())
+            })
+            .collect();
+        let n_ablaeufe = ablaeufe.len();
         let (n_artikel, n_typen, n_haeuser, n_staende, n_korb) = (
             artikel.len(),
             typen.len(),
@@ -240,6 +253,7 @@ impl Verwaltung {
             ast(Knoten::Lose, "Lose und Titel", lose_titel, n_lose),
             ast(Knoten::Typen, "Bauteiltypen", typen, n_typen),
             ast(Knoten::Haeuser, "Referenzhäuser", haeuser, n_haeuser),
+            ast(Knoten::Ablaeufe, "Abläufe", ablaeufe, n_ablaeufe),
             ast(Knoten::Protokoll, "Protokoll", staende, n_staende),
             ast(Knoten::Papierkorb, "Papierkorb", korb, n_korb),
         ]
@@ -335,6 +349,7 @@ impl Verwaltung {
             },
             Knoten::Typ(_) => auf(Knoten::Typen),
             Knoten::Haus(_) => auf(Knoten::Haeuser),
+            Knoten::Ablauf(_) => auf(Knoten::Ablaeufe),
             Knoten::Stand(_) => auf(Knoten::Protokoll),
             Knoten::Kennwort => auf(Knoten::Firmenwerte),
             _ => {}

@@ -85,6 +85,7 @@ fn baum_und_wahl() {
             "Lose und Titel",
             "Bauteiltypen",
             "Referenzhäuser",
+            "Abläufe",
             "Protokoll",
             "Papierkorb"
         ]

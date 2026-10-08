@@ -119,6 +119,15 @@ fn item(label: &str, shortcut: &str, command: Command, enabled: bool) -> MenuIte
     }
 }
 
+/// „2 Vorschläge“ rechts an „Verwaltung …“, leer ohne.
+fn vorschlaege_text(n: usize) -> String {
+    match n {
+        0 => String::new(),
+        1 => "1 Vorschlag".into(),
+        n => format!("{n} Vorschläge"),
+    }
+}
+
 pub(crate) fn separator() -> MenuItem {
     MenuItem {
         separator: true,
@@ -158,6 +167,9 @@ pub struct FileMenu {
     sub_sel: Option<usize>,
     /// Gedrückt im Menü (der Befehl folgt beim Loslassen).
     pressed: bool,
+    /// Offene Vorschläge an die Firma, rechts an „Verwaltung …“
+    /// (Bedienbarkeit 17.2); setzt die App beim Öffnen.
+    pub vorschlaege: usize,
 }
 
 impl FileMenu {
@@ -213,7 +225,12 @@ impl FileMenu {
             item("Einstellungen …", "Strg+Komma", Command::Settings, true),
             item("Bauteilkatalog …", "", Command::Catalog, true),
             item("Baustoffe …", "", Command::Materials, true),
-            item("Verwaltung …", "", Command::Verwaltung, true),
+            item(
+                "Verwaltung …",
+                &vorschlaege_text(self.vorschlaege),
+                Command::Verwaltung,
+                true,
+            ),
             separator(),
             item("Hilfe", "F1", Command::Help, true),
             item(

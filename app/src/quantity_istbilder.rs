@@ -175,7 +175,7 @@ fn istbilder_ka1_ka2() {
     let mut q = b.fenster(&mut s, 1240, 930, Blatt::Kosten);
     b.p = Picking::default();
     let k = q.kosten.as_mut().unwrap();
-    k.vorschlag = true;
+    k.set_vorschlag(true);
     let xy = k
         .ep_mitte(&b.t, "Porenbeton-Planstein")
         .expect("EP Mauerwerk");

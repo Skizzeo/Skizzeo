@@ -117,6 +117,14 @@ impl Verwaltung {
         self.abfrage = Some(Abfrage::default());
     }
 
+    /// „Kennwort eingeben …“ aus dem Kostenreiter (Bedienbarkeit 16.1):
+    /// dieselbe Abfrage; stimmt das Kennwort, schließt sie mit `frei`,
+    /// statt die Verwaltung zu zeigen.
+    pub fn nur_kennwort(&mut self) {
+        self.sperren();
+        self.nur_kennwort = true;
+    }
+
     // --- Abfrage --------------------------------------------------------------
 
     fn abf_feld(&self, w: &Win) -> Rect {
@@ -139,6 +147,7 @@ impl Verwaltung {
             self.pos = None;
             out.frei = true;
             out.moved = true;
+            out.closed = self.nur_kennwort;
         } else {
             a.falsch = true;
             a.te = TextEdit::new("");

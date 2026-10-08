@@ -37,6 +37,8 @@ pub fn schema() -> String {
     for (name, angaben, admin) in crate::op::NAMEN {
         s += &format!("  {name}{} ({angaben})\n", if admin { " *" } else { "" });
     }
+    s.push('\n');
+    s += &crate::ablauf::schema_text();
     s
 }
 

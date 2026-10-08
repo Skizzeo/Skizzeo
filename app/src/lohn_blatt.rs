@@ -45,6 +45,8 @@ pub enum Aus {
         wert: Dez,
         gilt: Gilt,
     },
+    /// „Kennwort eingeben …“: nur die Abfrage, das Blatt bleibt offen.
+    Kennwort,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +57,7 @@ enum Ziel {
     /// Hauptknopf „Auch für neue Häuser“.
     Auch,
     NurHaus,
+    Kennwort,
     Innen,
 }
 
@@ -96,6 +99,8 @@ fn erklaerung(titel: &str) -> &'static [&'static str] {
 
 /// Zeile unter dem Feld der Karte: was Enter schreibt.
 const GILT_KARTE: &str = "gilt für dieses und alle neuen Häuser";
+/// Mit Kennwort, nicht eingegeben: Enter schreibt nur dieses Haus.
+const GILT_KARTE_HAUS: &str = "gilt nur für dieses Haus";
 /// Letzte Zeile der Karte über den Knöpfen (paket-ka3a §1).
 const WEITERE_KARTE: &str = "Alles Weitere unter Datei › Verwaltung";
 const ZEILE: f32 = 16.0;
@@ -145,19 +150,52 @@ impl LohnBlatt {
 
     fn hoehe(&self) -> f32 {
         let fehler = if self.wert.is_none() { 18.0 } else { 0.0 };
-        match self.form {
-            Form::Karte => {
-                PAD + 24.0 + self.erkl_h() + FELD_H + fehler + 2.0 * ZEILE + 14.0 + 26.0 + PAD
+        self.link_h()
+            + match self.form {
+                Form::Karte => {
+                    PAD + 24.0 + self.erkl_h() + FELD_H + fehler + 2.0 * ZEILE + 14.0 + 26.0 + PAD
+                }
+                Form::Blatt => {
+                    let folge = if self.gilt == Gilt::NeueHaeuser {
+                        32.0
+                    } else {
+                        16.0
+                    };
+                    PAD + 24.0 + FELD_H + 14.0 + fehler + SEG_H + 12.0 + folge + PAD
+                }
             }
-            Form::Blatt => {
-                let folge = if self.gilt == Gilt::NeueHaeuser {
-                    32.0
-                } else {
-                    16.0
-                };
-                PAD + 24.0 + FELD_H + 14.0 + fehler + SEG_H + 12.0 + folge + PAD
-            }
+    }
+
+    /// Zeile mit „Kennwort eingeben …“ (dip), 0 ohne Vorschlag.
+    fn link_h(&self) -> f32 {
+        if self.vorschlag {
+            preis_blatt::KENNWORT_H
+        } else {
+            0.0
         }
+    }
+
+    /// „Kennwort eingeben …“ mittig unter „Der Firma vorschlagen“, im
+    /// Blatt unter dem Segment, auf der Karte unter dem Knopf (px).
+    fn kennwort_rect(&self, fonts: &Fonts) -> Option<Rect> {
+        if !self.vorschlag {
+            return None;
+        }
+        let s = self.scale;
+        let (rx, ry, rw, rh) = match self.knoepfe(fonts) {
+            Some((_, auch)) => auch,
+            None => self.segmente(fonts).last()?.1,
+        };
+        let tw = fonts
+            .regular
+            .as_ref()
+            .map_or(110.0 * s, |f| f.width(preis_blatt::KENNWORT_LINK, 10.5 * s));
+        Some((
+            rx + (rw - tw) * 0.5,
+            ry + rh + 2.0 * s,
+            tw,
+            preis_blatt::KENNWORT_H * s,
+        ))
     }
 
     /// Höhe der Erklärung der Karte (dip), 0 beim Blatt.
@@ -264,7 +302,7 @@ impl LohnBlatt {
         }) + 24.0 * s;
         let wn = bold.map_or(100.0 * s, |f| f.width("Nur dieses Haus", px)) + 24.0 * s;
         let bh = 26.0 * s;
-        let by = y + h - (PAD * s) - bh;
+        let by = y + h - (PAD + self.link_h()) * s - bh;
         let ux = x + w - PAD * s - wu;
         Some(((ux - 8.0 * s - wn, by, wn, bh), (ux, by, wu, bh)))
     }
@@ -293,6 +331,9 @@ impl LohnBlatt {
             if inside(n, x, y) {
                 return Some(Ziel::NurHaus);
             }
+        }
+        if self.kennwort_rect(fonts).is_some_and(|r| inside(r, x, y)) {
+            return Some(Ziel::Kennwort);
         }
         Some(Ziel::Innen)
     }
@@ -352,6 +393,7 @@ impl LohnBlatt {
             }),
             Some(Ziel::Auch) => self.schreiben(Gilt::NeueHaeuser),
             Some(Ziel::NurHaus) => self.schreiben(Gilt::NurHaus),
+            Some(Ziel::Kennwort) => Some(Aus::Kennwort),
             Some(Ziel::Innen) => None,
         }
     }
@@ -434,9 +476,15 @@ impl LohnBlatt {
     /// Mit Kennwort, nicht eingegeben (KA-3b4): „Der Firma vorschlagen“
     /// statt „Auch für neue Häuser“; Enter der Karte ist dann „Nur dieses
     /// Haus“ (paket-ka3b §1).
+    /// Nach „Kennwort eingeben …“ heißt der Knopf wieder „Auch für neue
+    /// Häuser“, und die Karte schreibt mit Enter wieder beides.
     pub fn set_vorschlag(&mut self, vorschlag: bool) {
-        if vorschlag && !self.vorschlag && self.form == Form::Karte {
-            self.gilt = Gilt::NurHaus;
+        if vorschlag != self.vorschlag && self.form == Form::Karte {
+            self.gilt = if vorschlag {
+                Gilt::NurHaus
+            } else {
+                Gilt::NeueHaeuser
+            };
         }
         self.vorschlag = vorschlag;
     }
@@ -454,6 +502,7 @@ impl LohnBlatt {
             Ziel::Segment(Gilt::NeueHaeuser) | Ziel::Auch => {
                 Some(Gilt::tipp(self.vorschlag).into())
             }
+            Ziel::Kennwort => Some(preis_blatt::KENNWORT_TIPP.into()),
             _ => None,
         }
     }
@@ -559,13 +608,22 @@ impl LohnBlatt {
                 u.field_invalid,
             );
         }
+        if let Some((kx, ky, _, kh)) = self.kennwort_rect(fonts) {
+            let col = crate::cards::verweis(u, self.hot == Some(Ziel::Kennwort));
+            let kb = (ky + (kh + f.cap_height(px_s)) * 0.5).round();
+            f.draw(c, preis_blatt::KENNWORT_LINK, px_s, kx, kb, col);
+        }
         match self.form {
             Form::Karte => {
                 // Was Enter schreibt, unter dem Feld
-                let gw = f.width(GILT_KARTE, 10.0 * s);
+                let gilt = match self.gilt {
+                    Gilt::NeueHaeuser => GILT_KARTE,
+                    Gilt::NurHaus => GILT_KARTE_HAUS,
+                };
+                let gw = f.width(gilt, 10.0 * s);
                 f.draw(
                     c,
-                    GILT_KARTE,
+                    gilt,
                     10.0 * s,
                     fx + fw - gw,
                     (zy + 14.0 * s).round(),
@@ -654,7 +712,8 @@ impl LohnBlatt {
                             col,
                         );
                     }
-                    let fy2 = (sy + sh + 12.0 * s + f.cap_height(px_s)).round();
+                    let link = self.link_h() * s;
+                    let fy2 = (sy + sh + link + 12.0 * s + f.cap_height(px_s)).round();
                     match self.gilt {
                         Gilt::NurHaus => {
                             let t2 = format!(
@@ -830,5 +889,40 @@ mod tests {
                 gilt: Gilt::NeueHaeuser
             })
         );
+    }
+
+    /// Bedienbarkeit 16.1: Karte und Blatt zeigen mit Vorschlag leise
+    /// „Kennwort eingeben …“ unter „Der Firma vorschlagen“; der Klick fragt
+    /// nur nach dem Kennwort. Danach schreibt die Karte mit Enter wieder
+    /// für dieses und neue Häuser.
+    #[test]
+    fn kennwort_link() {
+        let fonts = leer();
+        for form in [Form::Karte, Form::Blatt] {
+            let mut b = LohnBlatt::neu(form, "Lohn".into(), Dez::ganz(60), Dez::ganz(60));
+            b.fenster = (1200.0, 900.0);
+            b.anker = (600.0, 700.0, 680.0, 720.0);
+            let h0 = b.hoehe();
+            assert!(b.kennwort_rect(&fonts).is_none());
+            b.set_vorschlag(true);
+            assert_eq!(b.hoehe(), h0 + preis_blatt::KENNWORT_H);
+            let r = b.kennwort_rect(&fonts).unwrap();
+            let unter = match b.knoepfe(&fonts) {
+                Some((_, auch)) => auch,
+                None => b.segmente(&fonts)[1].1,
+            };
+            assert!(r.1 >= unter.1 + unter.3, "{form:?} unter dem Knopf");
+            let ((_, y, _, h), _) = b.rect();
+            assert!(r.1 + r.3 <= y + h, "{form:?} im Blatt");
+            assert_eq!(
+                b.mouse_down(&fonts, r.0 + r.2 * 0.5, r.1 + r.3 * 0.5),
+                Some(Aus::Kennwort)
+            );
+            b.set_vorschlag(false);
+            assert_eq!(b.hoehe(), h0);
+            if form == Form::Karte {
+                assert_eq!(b.gilt, Gilt::NeueHaeuser, "Enter wieder für beide");
+            }
+        }
     }
 }

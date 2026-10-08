@@ -267,3 +267,41 @@ fn istbilder_ka3b1() {
     std::fs::write(ziel.join("ist-ka-3b1-abfrage-falsch.png"), b.to_png()).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Bedienbarkeit 16.1: „Kennwort eingeben …“ aus dem Kostenreiter zeigt nur
+/// die Abfrage. Falsch hält sie offen, Esc schließt ohne Freigabe, das
+/// richtige Kennwort gibt frei und schließt sie gleich.
+#[test]
+fn nur_kennwort_schliesst() {
+    let fonts = super::tests::schriften();
+    let mut cx = Ctx {
+        fonts: &fonts,
+        win: win(),
+    };
+    let (mut c, dir) = firma("nur");
+    let mut s = haus();
+    let k = Op::KennwortSetzen {
+        pw: sk_cost::verwaltung::Pruefwert::neu("Polier7", [5; 16]),
+    };
+    s.fuer_firma(STEP, &mut c, &h(), &[k]).unwrap();
+    s.rolle = sk_cost::Rolle::Nutzer;
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    v.nur_kennwort();
+    let out = v.handle(&taste(Key::Escape), &mut cx);
+    assert!(out.closed && !out.frei, "Esc: zu, Rolle bleibt");
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    v.nur_kennwort();
+    tippen(&mut v, &mut cx, "Polier8");
+    let out = v.handle(&taste(Key::Enter), &mut cx);
+    assert!(!out.frei && !out.closed);
+    tippen(&mut v, &mut cx, "Polier7");
+    let out = v.handle(&taste(Key::Enter), &mut cx);
+    assert!(out.frei && out.closed, "frei und zu");
+    // Aus dem Menü bleibt die Verwaltung nach der Abfrage offen
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    v.sperren();
+    tippen(&mut v, &mut cx, "Polier7");
+    let out = v.handle(&taste(Key::Enter), &mut cx);
+    assert!(out.frei && !out.closed);
+    let _ = std::fs::remove_dir_all(&dir);
+}

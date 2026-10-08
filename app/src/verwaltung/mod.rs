@@ -15,6 +15,8 @@
 //! Vorschau gibt ihn frei ([`entwurf`]).
 
 #[cfg(test)]
+mod ablauf_tests;
+#[cfg(test)]
 mod abnahme_ka3a2;
 #[cfg(test)]
 mod abnahme_ka3a34;
@@ -22,6 +24,7 @@ mod abnahme_ka3a34;
 mod abnahme_ka3a7;
 #[cfg(test)]
 mod abnahme_ka3b;
+mod assistent;
 mod baum;
 mod entwurf;
 #[cfg(test)]
@@ -108,6 +111,8 @@ pub enum Aktion {
     /// Vorschlag aus einem Projekt übernehmen bzw. ablehnen (KA-3b4).
     VorschlagUebernehmen(u32),
     VorschlagAblehnen(u32),
+    /// Geführten Ablauf starten (KA-3b5).
+    AblaufStarten(Guid),
 }
 
 /// Ziel unter der Maus.
@@ -244,6 +249,8 @@ pub struct Verwaltung {
     /// Abfrage „Verwaltung öffnen“ (Kennwort gesetzt, an diesem Platz noch
     /// nicht eingegeben).
     abfrage: Option<kennwort::Abfrage>,
+    /// Nur die Abfrage, aus „Kennwort eingeben …“ (Bedienbarkeit 16.1).
+    nur_kennwort: bool,
     /// Blatt „Verwaltungskennwort setzen“.
     setz: Option<kennwort::Setzen>,
     /// Mit Verwaltungskennwort: der freigegebene Stand neben dem Entwurf
@@ -254,6 +261,15 @@ pub struct Verwaltung {
     versucht: Vec<Op>,
     /// Blatt „Vorschau · Entwurf → Stand n+1“ (KA-3b3).
     vorschau: Option<entwurf::Vorschau>,
+    /// Geführte Abläufe aus Werksbestand und Firmenkatalog (KA-3b5).
+    ablaeufe: Vec<sk_cost::ablauf::Ablauf>,
+    /// Der laufende Ablauf als Blatt über der Verwaltung.
+    assistent: Option<assistent::Assistent>,
+    /// Schlussmeldung des letzten Ablaufs im Fuß, bis zur nächsten Eingabe.
+    schluss: Option<String>,
+    /// Name des Artikels, den ein Ablauf angelegt hat: Nach dem Schreiben
+    /// hat er eine neue Guid und wird darüber wieder gewählt.
+    neu_angelegt: Option<String>,
 }
 
 /// „0,55“ statt „0.55“.
@@ -391,11 +407,17 @@ impl Verwaltung {
             frage: false,
             je: None,
             abfrage: None,
+            nur_kennwort: false,
             setz: None,
             freigabe,
             versucht: Vec::new(),
             vorschau: None,
+            ablaeufe: Vec::new(),
+            assistent: None,
+            schluss: None,
+            neu_angelegt: None,
         };
+        v.ablaeufe = sk_cost::ablauf::lesen(&[sk_cost::WERK, &v.basis]);
         v.vorschlaege = v.vorschlaege_basis();
         let gibt_es = |k: &Knoten| match k {
             Knoten::Leistung(g) => v.jetzt.leistung(*g).is_some(),
@@ -477,6 +499,7 @@ impl Verwaltung {
     /// lesen, sonst nur neu rechnen.
     fn basis_setzen(&mut self, basis: String, lib0: Library, ganz: bool) {
         self.basis = basis;
+        self.ablaeufe = sk_cost::ablauf::lesen(&[sk_cost::WERK, &self.basis]);
         self.vorher = sk_cost::lesen::firma_oder_werk(&self.m, Some(&lib0));
         self.titel = titel(
             self.freigabe.as_ref().map_or(&self.vorher, |f| &f.kat),
@@ -530,7 +553,8 @@ impl Verwaltung {
 
     /// Nach jeder Änderung der Operationen: Vorschau, Befunde, Wirkzeile.
     fn neu_rechnen(&mut self) {
-        self.meldung = None;
+        // Die Schlussmeldung eines Ablaufs bleibt bis zur nächsten Eingabe
+        self.meldung = self.schluss.clone();
         let mut saetze = Vec::new();
         if self.ops.is_empty() {
             self.zurueck = None;
@@ -677,6 +701,7 @@ impl Verwaltung {
     /// Eingabe in `feld` des gewählten Eintrags übernehmen; `false`, wenn
     /// sie sich nicht lesen lässt (Feld bleibt, nichts geändert).
     pub fn eingeben(&mut self, feld: &Feld, text: &str) -> bool {
+        self.schluss = None;
         if let Feld::Conv(_) = feld {
             // Nur die Zahl des Vorschlags; geschrieben wird mit „Bestätigen“
             let ok = conv_lesen(text).is_some();
@@ -928,6 +953,7 @@ impl Verwaltung {
     }
 
     pub fn aktion(&mut self, a: Aktion) -> Option<Guid> {
+        self.schluss = None;
         match a {
             Aktion::Mehr => self.mehr = !self.mehr,
             Aktion::Anteil => self.anteil = true,
@@ -944,6 +970,7 @@ impl Verwaltung {
             Aktion::Kennwort => self.setz = Some(kennwort::Setzen::default()),
             Aktion::VorschlagUebernehmen(key) => self.setzen(Op::VorschlagUebernehmen { key }),
             Aktion::VorschlagAblehnen(key) => self.setzen(Op::VorschlagAblehnen { key }),
+            Aktion::AblaufStarten(g) => self.ablauf_starten(g),
         }
         None
     }
@@ -1147,6 +1174,9 @@ impl Verwaltung {
         if self.vorschau.is_some() {
             return self.vorschau_handle(e, cx);
         }
+        if self.assistent.is_some() {
+            return self.assistent_handle(e, cx);
+        }
         let mut out = Out::default();
         match *e {
             Event::MouseMove { x, y, .. } => {
@@ -1305,6 +1335,10 @@ impl Verwaltung {
                             self.offen.insert(z.knoten.clone());
                         }
                     }
+                    // Ein Klick auf einen Ablauf startet ihn (soll-ka-3d)
+                    if let Knoten::Ablauf(g) = z.knoten {
+                        self.ablauf_starten(g);
+                    }
                     self.waehlen(z.knoten);
                 }
             }
@@ -1410,7 +1444,10 @@ impl Verwaltung {
     }
 
     pub fn busy(&self) -> bool {
-        self.edit.is_some() || self.such_edit.is_some() || self.drag.is_some()
+        self.edit.is_some()
+            || self.such_edit.is_some()
+            || self.drag.is_some()
+            || self.assistent.is_some()
     }
 
     pub fn cursor(&self) -> Cursor {
@@ -1515,8 +1552,17 @@ impl Verwaltung {
             let max_w = r.x + r.w - tx - zahl_w - 6.0 * s;
             let ab = widgets::eigener_teil(&z.text, baum::geschwister(&zeilen, i));
             let text = widgets::ellipsize_ab(font, &z.text, px, max_w, ab);
-            if text != z.text && self.hover == Some(Ziel::Zeile(i)) {
-                baum_tipp = Some((z.text.clone(), tx, r.y + r.h));
+            if self.hover == Some(Ziel::Zeile(i)) {
+                // Ungültiger Ablauf: der Befund im Tooltip (soll-ka-3d)
+                let befund = match &z.knoten {
+                    Knoten::Ablauf(g) => self.ablauf(*g).and_then(|a| a.befund.as_ref()),
+                    _ => None,
+                };
+                if let Some(b) = befund {
+                    baum_tipp = Some((b.satz.clone(), tx, r.y + r.h));
+                } else if text != z.text {
+                    baum_tipp = Some((z.text.clone(), tx, r.y + r.h));
+                }
             }
             // Unlesbares Referenzhaus grau (Regel 106)
             let farbe = if z.grau { u.text_disabled } else { u.text };
@@ -1663,6 +1709,7 @@ impl Verwaltung {
         }
         self.setz_malen(c, t, fonts, w);
         self.vorschau_malen(c, t, fonts, w);
+        self.assistent_malen(c, t, fonts, w);
     }
 
     /// Fuß links: Wirkzeile, sonst der sperrende Befund oder die Meldung.

@@ -213,6 +213,9 @@ pub enum ListOut {
     WaehlenIm(ElementId),
     /// „Bauleistung öffnen ↗“ im AVA: Verwaltung mit dieser Bauleistung.
     Verwaltung(sk_model::Guid),
+    /// „Kennwort eingeben …“ im Preis- oder Lohnblatt: nur die Abfrage
+    /// (Bedienbarkeit 16.1).
+    Kennwort,
 }
 
 /// Nachrücken nach dem Löschen (H119): weggefallene Zeilen blenden in

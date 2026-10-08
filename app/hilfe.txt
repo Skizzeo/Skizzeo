@@ -210,7 +210,7 @@ Wirkung | die Zeile über **OK** zeigt, wie sich die Referenzhäuser ändern
 Gelöscht | liegt im Papierkorb und lässt sich wiederherstellen
 Preis je m³ oder Stück | am Preisfeld „je m³“ oder „je Stück“ wählen; Skizzeo rechnet auf die Einheit des Artikels um
 Projekt oder Firma | in der Verwaltung gilt es für alle neuen Häuser, im Projekt nur für dieses Haus
-Mehrere Plätze | mit Verwaltungskennwort sammelt **OK** die Änderungen in einem Entwurf; die anderen Plätze rechnen damit erst nach „Freigeben“. Vorschläge aus Projekten stehen unter Firmenwerte
+Mehrere Plätze | mit Verwaltungskennwort kommt jede Änderung in einen Entwurf; gültig wird er an allen Plätzen erst mit „Vorschau und Freigeben …“. Vorschläge aus Projekten stehen unter Firmenwerte
 Kennwort vergessen | wer den Firmenkatalog-Ordner ändern darf, öffnet firmenkatalog.szk und löscht die Zeile pw=; danach ist wieder Einzelplatz
 
 [thema] id=muster titel="Muster"
@@ -239,7 +239,7 @@ Preise | „Material“ oder „Material + Lohn“
 Summe | netto, brutto mit MwSt., Lohnanteil mit Lohn und Material
 Verrechnungslohn | beim ersten Öffnen in der Hinweiskarte; später Klick auf „… €/h“ in der Kachel Lohnanteil oder unter Datei › Verwaltung › Firmenwerte
 Verwaltung | alles Weitere unter Datei › Verwaltung; dort gilt es für alle neuen Häuser, im Projekt nur für dieses Haus
-Preis ändern | Doppelklick auf einen EP; „Nur dieses Haus“ oder „Auch für neue Häuser“, dann Enter. Mit Verwaltungskennwort heißt es „Der Firma vorschlagen“
+Preis ändern | Doppelklick auf einen EP; „Nur dieses Haus“ oder „Auch für neue Häuser“, dann Enter. Ist ein Verwaltungskennwort gesetzt und hier nicht eingegeben, heißt es „Der Firma vorschlagen“; „Kennwort eingeben …“ darunter ändert das
 Für neue Häuser | gilt sofort für alle neuen Häuser; Strg+Z nimmt es nur für dieses Haus zurück
 Andere Werte | eine Zeile oben nennt, was für neue Häuser anders ist; „übernehmen“ oder „so lassen“
 Geschätzt | keine genaue Bauleistung; gerechnet nach der nächsten Dicke oder dem Richtpreis

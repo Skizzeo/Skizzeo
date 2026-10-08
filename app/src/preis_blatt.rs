@@ -42,6 +42,13 @@ const SEG_H: f32 = 26.0;
 /// (KA-3a7) und Zeile mit Rechnung oder Vorschlag darunter.
 const JE_H: f32 = 24.0;
 const JE_TEXT_H: f32 = 16.0;
+/// Zeile mit dem leisen Link „Kennwort eingeben …“ (Bedienbarkeit 16.1).
+pub(crate) const KENNWORT_H: f32 = 16.0;
+/// Leiser Link unter „Der Firma vorschlagen“: öffnet nur die Abfrage
+/// „Verwaltung öffnen“ (Bedienbarkeit 16.1).
+pub const KENNWORT_LINK: &str = "Kennwort eingeben …";
+pub const KENNWORT_TIPP: &str =
+    "Wer das Verwaltungskennwort kennt, ändert hier gleich für neue Häuser (im Entwurf)";
 
 /// Wofür ein geänderter Preis gilt (Segment „Gilt für“).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -130,6 +137,8 @@ pub enum Aus {
     Verwerfen,
     /// „Firmenpreis zurückholen“ für die geänderten Sätze.
     Zuruecknehmen(Vec<SatzId>),
+    /// „Kennwort eingeben …“: nur die Abfrage, das Blatt bleibt offen.
+    Kennwort,
 }
 
 /// Teil des Blatts unter der Maus.
@@ -143,6 +152,7 @@ enum Ziel {
     /// Vorschlag „Stück je m²“ am Preis `i` bestätigen.
     Bestaetigen(usize),
     Zurueck,
+    Kennwort,
     Innen,
 }
 
@@ -513,6 +523,9 @@ impl PreisBlatt {
             h += 18.0;
         }
         h += 14.0 + SEG_H; // Segment
+        if self.vorschlag {
+            h += KENNWORT_H;
+        }
         h += 12.0 + 16.0; // Folgezeile
         if self.gilt == Gilt::NeueHaeuser {
             h += 16.0;
@@ -602,6 +615,21 @@ impl PreisBlatt {
         Some((x + w - PAD * s - tw, y + h - (PAD + 18.0) * s, tw, 18.0 * s))
     }
 
+    /// „Kennwort eingeben …“ mittig unter „Der Firma vorschlagen“ (px).
+    fn kennwort_rect(&self, fonts: &Fonts) -> Option<Rect> {
+        if !self.vorschlag {
+            return None;
+        }
+        let s = self.scale;
+        let (_, (rx, ry, rw, rh)) = *self.segmente(fonts).last()?;
+        let px = 10.5 * s;
+        let tw = fonts
+            .regular
+            .as_ref()
+            .map_or(110.0 * s, |f| f.width(KENNWORT_LINK, px));
+        Some((rx + (rw - tw) * 0.5, ry + rh + 2.0 * s, tw, KENNWORT_H * s))
+    }
+
     fn schliessen_rect(&self) -> Rect {
         let s = self.scale;
         let ((x, y, w, _), _) = self.rect();
@@ -648,6 +676,9 @@ impl PreisBlatt {
         }
         if self.zurueck_rect(fonts).is_some_and(|r| inside(r, x, y)) {
             return Some(Ziel::Zurueck);
+        }
+        if self.kennwort_rect(fonts).is_some_and(|r| inside(r, x, y)) {
+            return Some(Ziel::Kennwort);
         }
         Some(Ziel::Innen)
     }
@@ -834,6 +865,7 @@ impl PreisBlatt {
                     Aus::Repaint
                 })
             }
+            Some(Ziel::Kennwort) => Some(Aus::Kennwort),
             Some(Ziel::Innen) => None,
         }
     }
@@ -943,6 +975,7 @@ impl PreisBlatt {
     pub fn tip_at(&self, fonts: &Fonts, x: f32, y: f32) -> Option<String> {
         match self.hit(fonts, x, y)? {
             Ziel::Segment(Gilt::NeueHaeuser) => Some(Gilt::tipp(self.vorschlag).into()),
+            Ziel::Kennwort => Some(KENNWORT_TIPP.into()),
             _ => None,
         }
     }
@@ -1170,8 +1203,20 @@ impl PreisBlatt {
                     col,
                 );
             }
+            if let Some((kx, ky, _, kh)) = self.kennwort_rect(fonts) {
+                let col = crate::cards::verweis(u, self.hot == Some(Ziel::Kennwort));
+                f.draw(
+                    c,
+                    KENNWORT_LINK,
+                    px_seg,
+                    kx,
+                    ky + (kh + f.cap_height(px_seg)) * 0.5,
+                    col,
+                );
+            }
             // Folgezeile in eigener Zeile (Bedienbarkeit 4.10)
-            let fy = sy + sh + 12.0 * s + f.cap_height(px_s);
+            let link = if self.vorschlag { KENNWORT_H * s } else { 0.0 };
+            let fy = sy + sh + link + 12.0 * s + f.cap_height(px_s);
             let neu_ep = format!("{} €/{}", a.ep.deutsch(), self.einheit);
             match self.gilt {
                 Gilt::NurHaus => {
@@ -1548,6 +1593,51 @@ mod tests {
         pb.key(Key::Tab, none);
         pb.key(Key::Tab, none);
         assert_eq!(pb.fokus, 0, "rundum ins Aufwandswert-Feld");
+    }
+
+    /// Bedienbarkeit 16.1: unter „Der Firma vorschlagen“ steht leise
+    /// „Kennwort eingeben …“; der Klick fragt nur nach dem Kennwort, das
+    /// Blatt bleibt mit der Eingabe offen. Danach heißt es wieder „Auch für
+    /// neue Häuser“, und die Zeile ist weg.
+    #[test]
+    fn kennwort_link() {
+        let m = rh1();
+        let mut pb = blatt(&m);
+        pb.fenster = (1400.0, 900.0);
+        pb.anker = (600.0, 200.0, 680.0, 220.0);
+        let fonts = Fonts::system();
+        pb.text('1');
+        let h0 = pb.hoehe();
+        assert!(
+            pb.kennwort_rect(&fonts).is_none(),
+            "ohne Vorschlag kein Link"
+        );
+        pb.vorschlag = true;
+        assert_eq!(pb.hoehe(), h0 + KENNWORT_H);
+        let (_, seg) = *pb.segmente(&fonts).last().unwrap();
+        let r = pb.kennwort_rect(&fonts).unwrap();
+        assert!(r.1 >= seg.1 + seg.3, "unter dem Segment");
+        assert!(
+            r.0 >= seg.0 && r.0 + r.2 <= seg.0 + seg.2 + 1.0,
+            "unter „Der Firma vorschlagen“"
+        );
+        let ops = pb.ops();
+        assert!(!ops.is_empty());
+        assert_eq!(
+            pb.mouse_down(&fonts, r.0 + r.2 * 0.5, r.1 + r.3 * 0.5),
+            Some(Aus::Kennwort)
+        );
+        assert_eq!(pb.ops(), ops, "Eingabe bleibt");
+        assert_eq!(
+            pb.tip_at(&fonts, r.0 + 1.0, r.1 + 1.0).as_deref(),
+            Some(KENNWORT_TIPP)
+        );
+        pb.vorschlag = false;
+        assert_eq!(
+            Gilt::NeueHaeuser.label(pb.vorschlag),
+            "Auch für neue Häuser"
+        );
+        assert_eq!(pb.hoehe(), h0);
     }
 }
 

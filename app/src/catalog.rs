@@ -673,6 +673,21 @@ impl Company {
         self.entwurf = roh;
     }
 
+    /// Offene Vorschläge im Entwurf, wie er jetzt auf der Platte steht
+    /// (Bedienbarkeit 17.2: „Verwaltung … · 2 Vorschläge“ im Dateimenü);
+    /// der geladene Entwurf bleibt, wie er ist.
+    pub fn vorschlaege_zahl(&self) -> usize {
+        let Ok(roh) = std::fs::read_to_string(self.entwurf_pfad()) else {
+            return 0;
+        };
+        if !roh.contains("[proposal]") {
+            return 0;
+        }
+        let voll = sk_cost::verwaltung::entwurf_voll(&self.geladen, &roh);
+        sk_model::read_szk_with(&voll, &sk_cost::lesen::ABSCHNITTE_SZK)
+            .map_or(0, |l| sk_cost::verwaltung::vorschlaege(&l).len())
+    }
+
     /// Rolle dieses Platzes (KA-3b1): `true`, solange das gesetzte
     /// Verwaltungskennwort hier nicht eingegeben ist.
     pub fn set_nutzer(&mut self, nutzer: bool) {

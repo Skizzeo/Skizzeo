@@ -362,6 +362,8 @@ impl Verwaltung {
                 );
             }
             Knoten::Haeuser => self.haeuser(&mut b),
+            Knoten::Ablaeufe => self.ablaeufe_seite(&mut b),
+            Knoten::Ablauf(g) => self.ablauf_seite(&mut b, g),
             Knoten::Protokoll => {
                 let n = sk_cost::verwaltung::protokoll(self.freigegeben()).len();
                 let unter = match n {
@@ -724,6 +726,73 @@ impl Verwaltung {
                 None => format!("{} h", komma(d)),
             },
             _ => komma(d),
+        }
+    }
+
+    /// „Abläufe“ (KA-3b5): je Ablauf Name, Einleitung bzw. Befund und
+    /// „Starten …“.
+    fn ablaeufe_seite(&self, b: &mut Bau) {
+        let n = self.verwaltungs_ablaeufe().count();
+        let unter = match n {
+            1 => "Ein geführter Ablauf".to_string(),
+            n => format!("{n} geführte Abläufe"),
+        };
+        let y = b.kopf("Abläufe", &unter);
+        let mut y = b.absatz(
+            0.0,
+            y,
+            "Ein Ablauf fragt Schritt für Schritt und schreibt erst am Ende, als eine Änderung. Abläufe für ein einzelnes Haus stehen im Reiter Kosten.",
+            Farbe::Dim,
+        ) + 20.0;
+        for a in self.verwaltungs_ablaeufe() {
+            let grau = a.befund.is_some();
+            let farbe = if grau { Farbe::Leise } else { Farbe::Text };
+            let name = b.kurz(&a.name, PX, true, b.w - 130.0);
+            b.text(0.0, y, name, PX, true, farbe);
+            if !grau {
+                b.verweis(b.w - 110.0, y, "Starten …", Aktion::AblaufStarten(a.guid));
+            }
+            y += TZ;
+            let (unter, farbe) = match &a.befund {
+                Some(bf) => (bf.satz.as_str(), Farbe::Fehler),
+                None => (a.ask.as_str(), Farbe::Dim),
+            };
+            y = b.absatz(0.0, y, unter, farbe) + 14.0;
+        }
+    }
+
+    /// Ein Ablauf: Einleitung, Schritte, „Starten …“ oder der Befund.
+    fn ablauf_seite(&self, b: &mut Bau, g: Guid) {
+        let Some(a) = self.ablauf(g) else {
+            return self.fehlt(b);
+        };
+        let seiten = sk_cost::ablauf::seiten(a);
+        let unter = match seiten.len() {
+            1 => "Eine Seite".to_string(),
+            n => format!("{n} Seiten"),
+        };
+        let mut y = b.kopf(&a.name, &unter);
+        if !a.ask.is_empty() {
+            y = b.absatz(0.0, y, &a.ask, Farbe::Dim) + 12.0;
+        }
+        for (i, _) in seiten.iter().enumerate() {
+            let label = self.seiten_name(a, &seiten, i);
+            b.text(
+                0.0,
+                y,
+                format!("{}  {label}", i + 1),
+                PX,
+                false,
+                Farbe::Text,
+            );
+            y += TZ + 4.0;
+        }
+        y += 12.0;
+        match &a.befund {
+            Some(bf) => {
+                b.absatz(0.0, y, &bf.satz, Farbe::Fehler);
+            }
+            None => b.knopf(0.0, y, "Starten …", Aktion::AblaufStarten(a.guid)),
         }
     }
 
