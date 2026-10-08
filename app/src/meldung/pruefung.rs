@@ -423,6 +423,7 @@ fn nutzersaetze_sauber() {
         r::r73w("Porenbeton"),
         r::r75("Verrechnungslohn"),
         r::r77("Porenbeton", "17,5 cm", "Planstein PP2"),
+        r::r79_laenge("1.01.0010", 71),
         r::r80("Mauerwerk 17,5", "m³", "Fläche"),
         r::r85_kette("Mauerwerk 17,5", "Putz"),
         r::r86("01.0010"),

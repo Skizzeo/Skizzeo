@@ -493,8 +493,10 @@ fn kurztext_mit_71_zeichen() {
         .find(|f| f.regel == 79)
         .expect("Befund 79 im LV-Prüfen");
     assert_eq!(f.schwere, Schwere::Fehler);
-    assert!(f.satz.contains("71 Zeichen"), "{}", f.satz);
-    assert!(f.satz.contains(".01.0010"), "OZ mit Los: {}", f.satz);
+    assert_eq!(
+        f.satz,
+        "Der Kurztext von Position 1.01.0010 hat 71 Zeichen; erlaubt sind höchstens 70."
+    );
 }
 
 /// Leere Titel (Bedienbarkeit 2.10) bleiben in der Liste mit 0 Positionen,

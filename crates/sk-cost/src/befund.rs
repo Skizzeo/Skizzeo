@@ -141,6 +141,11 @@ pub fn r79(kurztext: &str, feld: &str, wert: &str) -> String {
     format!("Bauleistung {kurztext}: {f} ist ungültig ({wert}).")
 }
 
+/// Regel 79, Überlänge: `oz` mit Los („1.01.0010“), `n` Zeichen.
+pub fn r79_laenge(oz: &str, n: usize) -> String {
+    format!("Der Kurztext von Position {oz} hat {n} Zeichen; erlaubt sind höchstens 70.")
+}
+
 pub fn r80(kurztext: &str, einheit: &str, bezug: &str) -> String {
     format!("Bauleistung {kurztext}: Einheit {einheit} passt nicht zur Menge {bezug}.")
 }

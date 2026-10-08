@@ -622,10 +622,7 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
             if zeichen > 70 {
                 befunde.push(Befund::fehler(
                     79,
-                    format!(
-                        "Kurztext zu lang ({zeichen} Zeichen): {voll} {}",
-                        p.kurztext
-                    ),
+                    crate::befund::r79_laenge(&voll, zeichen),
                     ort.clone(),
                 ));
             }
