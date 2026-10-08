@@ -18,6 +18,7 @@ pub mod preis;
 pub mod rechnung;
 pub mod satz;
 mod schema;
+pub mod verwaltung;
 pub mod wahl;
 pub mod wort;
 mod zeile;
