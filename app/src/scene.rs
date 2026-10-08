@@ -1961,6 +1961,63 @@ impl Scene {
         ok
     }
 
+    /// Kosten (KA-0d, Bausteingrenze §5): der eine Eingang der App für
+    /// Stammdaten im Projekt. Eine Operation ist genau ein Rückgängig-Schritt
+    /// mit `op.bezeichnung()`; ein Fehler ändert nichts und liefert die
+    /// Befunde. Bis KA-3 immer als Administrator.
+    #[cfg_attr(not(test), allow(dead_code))] // Kostenreiter (KA-1)
+    pub fn kosten(
+        &mut self,
+        firma: Option<&sk_model::Library>,
+        herkunft: &sk_cost::Herkunft,
+        op: sk_cost::Op,
+    ) -> Result<(), Vec<sk_cost::Befund>> {
+        let label = sk_model::step_label(op.bezeichnung());
+        self.kosten_folge(label, firma, herkunft, std::slice::from_ref(&op))
+    }
+
+    /// Mehrere Kostenoperationen als **ein** Schritt `label`; scheitert eine,
+    /// bleibt nichts (Abnahme 13).
+    #[cfg_attr(not(test), allow(dead_code))] // Kostenreiter (KA-1)
+    pub fn kosten_folge(
+        &mut self,
+        label: &'static str,
+        firma: Option<&sk_model::Library>,
+        herkunft: &sk_cost::Herkunft,
+        ops: &[sk_cost::Op],
+    ) -> Result<(), Vec<sk_cost::Befund>> {
+        // Erst prüfen: ein abgelehnter Plan öffnet keinen Schritt
+        sk_cost::vorschau(&self.model, firma, sk_cost::Rolle::Admin, ops)?;
+        self.begin(label);
+        match sk_cost::ausfuehren_folge(
+            &mut self.model,
+            firma,
+            sk_cost::Rolle::Admin,
+            herkunft,
+            ops,
+        ) {
+            Ok(()) => {
+                self.commit();
+                Ok(())
+            }
+            Err(b) => {
+                self.rollback();
+                Err(b)
+            }
+        }
+    }
+
+    /// Vorschau der Kostenoperationen: geänderte Sätze alt/neu und der
+    /// wirksame Katalog; Modell, `revision` und Verlauf bleiben (Abnahme 12).
+    #[cfg_attr(not(test), allow(dead_code))] // Kostenreiter (KA-1)
+    pub fn kosten_vorschau(
+        &self,
+        firma: Option<&sk_model::Library>,
+        ops: &[sk_cost::Op],
+    ) -> Result<sk_cost::Plan, Vec<sk_cost::Befund>> {
+        sk_cost::vorschau(&self.model, firma, sk_cost::Rolle::Admin, ops)
+    }
+
     /// Ändert Bauteiltypen in einem Schritt (K3: „OK“ im Bauteilkatalog).
     /// Neu berechnet werden nur die Züge, deren Typ sich geändert hat, und die,
     /// die an ihnen hängen; ändern sich Baustoffe, alles. `true`, wenn sich
@@ -3616,5 +3673,58 @@ mod tests {
         theme.rev += 1;
         assert!(s.set_theme(&theme), "Strichbreiten ändern sich");
         assert!(s.table().edge_width(true, sk_model::edge_kind::CUT) > width);
+    }
+
+    /// KA-0d, Abnahme 11–13: `kosten` ist ein Schritt mit Bezeichnung,
+    /// `kosten_folge` einer oder nichts, `kosten_vorschau` ändert nichts.
+    #[test]
+    fn kosten_ein_schritt_vorschau_ohne_aenderung() {
+        use sk_cost::{Dez, Herkunft, HerkunftArt, Op};
+        let lohn = |w: i64| Op::FirmenwertSetzen {
+            schluessel: "wage".into(),
+            wert: Dez::ganz(w),
+        };
+        let h = Herkunft::neu(HerkunftArt::Manual, "2026-10-08", "09:00");
+        let mut s = Scene::new();
+        let leer = sk_model::szo::write(s.model());
+        // Vorschau: alles bleibt
+        let (rev, ext) = (s.model().revision(), s.model().ext_revision());
+        let p = s.kosten_vorschau(None, &[lohn(65)]).unwrap();
+        assert!(p.aenderungen.iter().any(|a| a.satz.kennung == "wage"));
+        assert_eq!(p.katalog.werte.lohn, Dez::ganz(65));
+        assert_eq!((s.model().revision(), s.model().ext_revision()), (rev, ext));
+        assert_eq!(s.undo_label(), None);
+        // ein Schritt mit Bezeichnung; Rückgängig gibt die leere Datei zurück
+        s.kosten(None, &h, lohn(65)).unwrap();
+        assert_eq!(s.undo_label(), Some("Lohn 65,00 €/h"));
+        assert_eq!(
+            sk_cost::lesen::katalog(s.model(), None).werte.lohn,
+            Dez::ganz(65)
+        );
+        assert!(s.undo());
+        assert_eq!(s.undo_label(), None);
+        assert_eq!(sk_model::szo::write(s.model()), leer);
+        // Fehler: nichts, kein Schritt
+        let rev = s.model().revision();
+        let b = s.kosten(None, &h, lohn(1_000_000)).unwrap_err();
+        assert!(b.iter().any(|b| b.regel == 93), "{b:?}");
+        assert_eq!(s.model().revision(), rev);
+        assert_eq!(s.undo_label(), None);
+        // Folge: drei sind ein Schritt; scheitert die dritte, bleibt nichts
+        let b = s
+            .kosten_folge("Löhne", None, &h, &[lohn(61), lohn(62), lohn(1_000_000)])
+            .unwrap_err();
+        assert!(!b.is_empty());
+        assert_eq!(s.undo_label(), None);
+        assert_eq!(sk_model::szo::write(s.model()), leer);
+        s.kosten_folge("Löhne", None, &h, &[lohn(61), lohn(62), lohn(63)])
+            .unwrap();
+        assert_eq!(s.undo_label(), Some("Löhne"));
+        assert_eq!(
+            sk_cost::lesen::katalog(s.model(), None).werte.lohn,
+            Dez::ganz(63)
+        );
+        assert!(s.undo());
+        assert_eq!(sk_model::szo::write(s.model()), leer);
     }
 }

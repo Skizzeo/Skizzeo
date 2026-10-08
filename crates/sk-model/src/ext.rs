@@ -17,7 +17,9 @@ pub struct ExtRec {
     pub line: String,
 }
 
-/// Zeilen aller Erweiterungsabschnitte in Dateireihenfolge.
+/// Zeilen aller Erweiterungsabschnitte in Dateireihenfolge. Ein eigener
+/// Speicher ist frei änderbar (Arbeitskopie in `sk-cost`); der des Modells
+/// ändert sich nur über [`crate::Model::ext_put`] im Schritt.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExtStore {
     recs: Vec<ExtRec>,
@@ -66,7 +68,7 @@ impl ExtStore {
     }
 
     /// Eine gelesene Zeile anhängen.
-    pub(crate) fn push_read(&mut self, section: &str, line: &str) {
+    pub fn push_read(&mut self, section: &str, line: &str) {
         self.declare(&[section]);
         self.recs.push(ExtRec {
             section: section.to_string(),
@@ -77,6 +79,11 @@ impl ExtStore {
 
     pub fn is_empty(&self) -> bool {
         self.recs.is_empty()
+    }
+
+    /// Alle Zeilen in Dateireihenfolge.
+    pub fn recs(&self) -> &[ExtRec] {
+        &self.recs
     }
 
     /// Zeilen eines Abschnitts in Dateireihenfolge.
@@ -110,7 +117,7 @@ impl ExtStore {
     /// Ersetzt die erste Zeile mit Kennung `id` oder fügt sie ein: vor die
     /// erste Zeile mit Kennung `before`, sonst ans Ende des Abschnitts.
     /// Gibt die Stelle im Abschnitt und die alte Zeile zurück.
-    pub(crate) fn put(
+    pub fn put(
         &mut self,
         section: &str,
         id: &str,
@@ -131,7 +138,7 @@ impl ExtStore {
     }
 
     /// Entfernt die erste Zeile mit Kennung `id`; Stelle und alte Zeile.
-    pub(crate) fn remove(&mut self, section: &str, id: &str) -> Option<(usize, String)> {
+    pub fn remove(&mut self, section: &str, id: &str) -> Option<(usize, String)> {
         let at = self.find(section, id)?;
         let i = self.slot(section, at);
         Some((at, self.recs.remove(i).line))

@@ -149,6 +149,17 @@ pub const KATEGORIEN: &[&str] = &[
 pub const FUNKTIONEN: &[&str] = &["loadbearing", "insulation", "finish", "membrane"];
 pub const REC: &[&str] = &["article", "service", "svcpart", "svcfollow", "rate", "lot"];
 
+/// `[log] rec`: dazu der Kopf, für `op=werk_uebernommen` (Bausteingrenze §6).
+pub const LOG_REC: &[&str] = &[
+    "article",
+    "service",
+    "svcpart",
+    "svcfollow",
+    "rate",
+    "lot",
+    "catalog",
+];
+
 const fn f(name: &'static str, art: Art, pflicht: bool, bedeutung: &'static str) -> Feld {
     Feld {
         name,
@@ -519,7 +530,7 @@ pub const LOG: Abschnitt = Abschnitt {
         f("time", Art::Zeit, true, "Zeitpunkt"),
         f("role", Art::Wort(&["admin", "user", "ai"]), true, "Rolle"),
         f("op", Art::Schluessel, true, "Name der Operation"),
-        f("rec", Art::Wort(REC), true, "Abschnitt des Satzes"),
+        f("rec", Art::Wort(LOG_REC), true, "Abschnitt des Satzes"),
         f("of", Art::Schluessel, true, "Kennung des Satzes"),
         f(
             "old",

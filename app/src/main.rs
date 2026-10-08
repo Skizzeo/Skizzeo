@@ -6211,7 +6211,12 @@ fn layer_rows(model: &sk_model::Model, set: sk_model::LayerSetId) -> Vec<(Rgba, 
 /// Neues Projekt mit den Typen des Firmenkatalogs (ohne ihn: Startbestand).
 fn new_model(company: Option<&catalog::Company>) -> sk_model::Model {
     match company {
-        Some(c) => sk_model::Model::from_library(c.library()),
+        Some(c) => {
+            let mut m = sk_model::Model::from_library(c.library());
+            // Kopie der Firmen-Kostensätze (Regel 92, E3; KA-0d)
+            sk_cost::neues_projekt(&mut m, Some(c.library()));
+            m
+        }
         None => sk_model::Model::new(),
     }
 }

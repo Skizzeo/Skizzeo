@@ -53,47 +53,64 @@ pub fn werk(m: &Model) -> Katalog {
 /// Ein Projekt gilt als Kopie, wenn es `[costproject]` oder einen
 /// Stammdatensatz enthält (nie still übergangene Projektzeilen).
 pub fn katalog(m: &Model, firma: Option<&Library>) -> Katalog {
-    let firma_kopf = firma.and_then(kopf);
-    let firma_stand = firma_kopf.as_ref().filter(|k| !k.2).map(|k| k.1);
     let projekt = m.ext("costproject").next().is_some() || hat_kosten(|s| m.ext(s).count());
-    let mut k = if projekt {
-        let z = ABSCHNITTE_SZO
-            .iter()
-            .flat_map(|s| m.ext(s).map(move |r| (*s, r.line.as_str())));
-        let mut k = katalog::lesen(
-            z,
-            &Umfeld::aus_modell(m),
-            Quelle::Projekt {
-                katalog: None,
-                stand: None,
-            },
-        );
-        if let Some(c) = &k.kopie {
-            k.quelle = Quelle::Projekt {
-                katalog: c.katalog,
-                stand: c.stand,
-            };
+    if !projekt {
+        return firma_oder_werk(m, firma);
+    }
+    let z = ABSCHNITTE_SZO
+        .iter()
+        .flat_map(|s| m.ext(s).map(move |r| (*s, r.line.as_str())));
+    let mut k = katalog::lesen(
+        z,
+        &Umfeld::aus_modell(m),
+        Quelle::Projekt {
+            katalog: None,
+            stand: None,
+        },
+    );
+    if let Some(c) = &k.kopie {
+        k.quelle = Quelle::Projekt {
+            katalog: c.katalog,
+            stand: c.stand,
+        };
+    }
+    k.firma_stand = firma_stand(firma);
+    k
+}
+
+/// Stand des freigegebenen Firmenkatalogs.
+fn firma_stand(firma: Option<&Library>) -> Option<u32> {
+    firma.and_then(kopf).filter(|k| !k.2).map(|k| k.1)
+}
+
+/// Die Quelle ohne Projektkopie: freigegebene Firma mit Kostensätzen, sonst
+/// Werk. Verweise auf Baustoffe gelten gegen das Projekt `m`.
+pub(crate) fn firma_oder_werk(m: &Model, firma: Option<&Library>) -> Katalog {
+    let firma_kopf = firma.and_then(kopf);
+    let gilt = firma
+        .filter(|f| hat_kosten(|s| f.ext(s).count()) && !firma_kopf.as_ref().is_some_and(|k| k.2));
+    let mut k = match gilt {
+        Some(f) => {
+            let z = ABSCHNITTE_SZK
+                .iter()
+                .flat_map(|s| f.ext(s).map(move |r| (*s, r.line.as_str())));
+            let (name, stand) = firma_kopf
+                .clone()
+                .map_or(("Firmenkatalog".to_string(), 0), |k| (k.0, k.1));
+            katalog::lesen(z, &Umfeld::aus_modell(m), Quelle::Firma { name, stand })
         }
-        k
-    } else {
-        match firma.filter(|f| {
-            hat_kosten(|s| f.ext(s).count()) && !firma_kopf.as_ref().is_some_and(|k| k.2)
-        }) {
-            Some(f) => {
-                let z = ABSCHNITTE_SZK
-                    .iter()
-                    .flat_map(|s| f.ext(s).map(move |r| (*s, r.line.as_str())));
-                let (name, stand) = firma_kopf
-                    .clone()
-                    .map_or(("Firmenkatalog".to_string(), 0), |k| (k.0, k.1));
-                // Verweise auf Baustoffe gelten gegen das Projekt, in dem
-                // gerechnet wird
-                katalog::lesen(z, &Umfeld::aus_modell(m), Quelle::Firma { name, stand })
-            }
-            None => werk(m),
-        }
+        None => werk(m),
     };
-    k.firma_stand = firma_stand;
+    // Firmenkatalog mit Kostenzeilen, der nicht gilt: nicht still übergehen
+    // (Bausteingrenze §6, Bestätigung 08:58)
+    if gilt.is_none()
+        && firma.is_some_and(|f| hat_kosten(|s| f.ext(s).count()))
+        && firma_kopf.as_ref().is_some_and(|k| k.2)
+    {
+        k.befunde
+            .push(Befund::hinweis(91, befund::r91(), Ort::Datei));
+    }
+    k.firma_stand = firma_stand(firma);
     k
 }
 
@@ -120,6 +137,8 @@ pub fn befunde(m: &Model, k: &Katalog) -> Vec<Befund> {
             ));
         }
     }
+    // 99 auch für ein ungültiges `svc=`, das roh in der Datei steht (A311)
+    roh_svc(m, &mut out);
     if let Quelle::Projekt { stand, .. } = &k.quelle {
         // 92: neuerer Firmenstand, solange nicht „so lassen“
         let eigen = stand.unwrap_or(0);
@@ -182,6 +201,65 @@ pub fn befunde(m: &Model, k: &Katalog) -> Vec<Befund> {
     out
 }
 
+/// Befund 99 je Schicht, deren `svc=` in der Datei keine Guid ist: Die Zeile
+/// steht roh im Modell (`foreign_lines`) und wird geschrieben, solange die
+/// Schicht unverändert ist; die Schicht ist ihre Stelle unter den
+/// Schichtzeilen ihres Typs.
+fn roh_svc(m: &Model, out: &mut Vec<Befund>) {
+    let kaputt: Vec<&str> = m
+        .foreign_lines()
+        .iter()
+        .filter(|(_, _, roh)| {
+            crate::zeile::zerlegen(roh).is_some_and(|z| {
+                z.abschnitt == "layer"
+                    && z.paare
+                        .iter()
+                        .any(|(k, v)| k == "svc" && sk_model::Guid::from_ifc(v).is_none())
+            })
+        })
+        .map(|(_, _, roh)| roh.as_str())
+        .collect();
+    if kaputt.is_empty() {
+        return;
+    }
+    let text = sk_model::szo::write(m);
+    let mut nr: std::collections::HashMap<String, usize> = Default::default();
+    let mut gesehen: Vec<&str> = Vec::new();
+    for l in text.lines() {
+        let Some(z) = crate::zeile::zerlegen(l).filter(|z| z.abschnitt == "layer") else {
+            continue;
+        };
+        let Some(set) = z.paare.iter().find(|p| p.0 == "set").map(|p| p.1.clone()) else {
+            continue;
+        };
+        let n = nr.entry(set.clone()).or_default();
+        let i = *n;
+        *n += 1;
+        // gleiche Zeilen (gleiche Schichten) nur so oft wie gemeldet
+        let mal = kaputt.iter().filter(|k| **k == l).count();
+        if mal <= gesehen.iter().filter(|g| **g == l).count() {
+            continue;
+        }
+        gesehen.push(l);
+        let Some(g) = sk_model::Guid::from_ifc(&set) else {
+            continue;
+        };
+        let Some((_, t)) = m.layer_sets().iter().find(|(_, t)| t.guid == g) else {
+            continue;
+        };
+        let b = t
+            .layers
+            .get(i)
+            .and_then(|x| m.material(x.material))
+            .map_or("?", |x| x.name.as_str());
+        out.push(Befund::warnung(
+            99,
+            befund::r99(&t.name, b),
+            Ort::Schicht { typ: g, schicht: i },
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +317,8 @@ mod tests {
         // Firmenentwurf zählt nie
         let k = katalog(&neu, Some(&firma(3, "draft", 70)));
         assert!(matches!(k.quelle, Quelle::Werk { .. }));
+        // … aber nicht still (Hinweis 91)
+        assert!(befunde(&neu, &k).iter().any(|b| b.regel == 91));
         // Projekt mit Kopie rechnet nur mit der Kopie, auch bei neuerem
         // Firmenstand (Befund 92)
         let m = projekt(2, 65);
@@ -297,5 +377,35 @@ mod tests {
         let k = katalog(&m, None);
         assert_eq!(k.quelle.text(), "Projektstand");
         assert_eq!(k.werte.lohn, Dez::ganz(61));
+    }
+
+    /// KA-0 Nr. 25a: Ein ungültiges `svc=` gilt nicht und ergibt Befund 99
+    /// an seiner Schicht; die Zeile bleibt roh (A311).
+    #[test]
+    fn ungueltige_bauleistung_ergibt_99() {
+        use sk_model::{szo, GuidGen};
+        let mut m = Model::from_library(&Library::standard());
+        let id = m.layer_sets().ids().nth(1).unwrap();
+        let mut s = m.layer_set(id).unwrap().clone();
+        let svc = m.new_guid();
+        let i = s.layers.len() - 1;
+        s.layers[i].svc = Some(svc);
+        assert!(m.set_layer_set(id, s));
+        let typ = m.layer_set(id).unwrap().guid;
+        let text = szo::write(&m);
+        let kaputt = text.replace(&format!(" svc={}", svc.to_ifc()), " svc=nix");
+        assert_ne!(kaputt, text);
+        let m = szo::read(&kaputt, GuidGen::with_seed(1)).unwrap().model;
+        let k = katalog(&m, None);
+        let b: Vec<_> = befunde(&m, &k)
+            .into_iter()
+            .filter(|b| b.regel == 99)
+            .collect();
+        assert_eq!(b.len(), 1, "{b:#?}");
+        assert_eq!(b[0].ort, Ort::Schicht { typ, schicht: i });
+        assert!(b[0]
+            .satz
+            .ends_with("Die gewählte Bauleistung gibt es nicht (mehr); es gilt die Regel."));
+        assert_eq!(szo::write(&m), kaputt);
     }
 }

@@ -638,6 +638,18 @@ impl Model {
         self.ext.section(section)
     }
 
+    /// Der ganze Erweiterungsspeicher (zum Lesen und als Arbeitskopie).
+    pub fn ext_store(&self) -> &crate::ExtStore {
+        &self.ext
+    }
+
+    /// Zeilen mit unbekannten Angaben aus der Datei: so, wie dieser Leser
+    /// den Eintrag schreibt, die wievielte gleiche eigene Zeile, und wie er
+    /// in der Datei stand (A311, Review 3ac).
+    pub fn foreign_lines(&self) -> &[(String, usize, String)] {
+        &self.foreign.lines
+    }
+
     /// Steigt bei jeder Änderung im Erweiterungsspeicher (auch Rückgängig).
     pub fn ext_revision(&self) -> u64 {
         self.ext_revision

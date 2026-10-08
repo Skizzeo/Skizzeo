@@ -3463,11 +3463,6 @@ mod tests {
         );
     }
 
-    /// A311 (Nachtrag KA-0c/d zu §6 Nr. 4/7, R7): Ein ungültiges `svc=` an
-    /// einer Schicht bleibt roh erhalten. Es wird nicht benutzt (Schicht ohne
-    /// Bauleistung), mit Befund „Bauleistung“ gemeldet und beim Speichern
-    /// unverändert zurückgeschrieben; die Datei bleibt bytegleich, auch nach
-    /// einer Änderung an anderer Stelle.
     /// Review 3ac: Zwei gleiche Schichten, nur die zweite mit ungültigem
     /// `svc=`. Der rohe Wert bleibt an der zweiten; vorher wanderte er an
     /// die erste gleiche Zeile.
@@ -3488,6 +3483,11 @@ mod tests {
         assert_eq!(write(&back.model), kaputt, "bytegleich");
     }
 
+    /// A311 (Nachtrag KA-0c/d zu §6 Nr. 4/7, R7): Ein ungültiges `svc=` an
+    /// einer Schicht bleibt roh erhalten. Es wird nicht benutzt (Schicht ohne
+    /// Bauleistung), mit Befund „Bauleistung“ gemeldet und beim Speichern
+    /// unverändert zurückgeschrieben; die Datei bleibt bytegleich, auch nach
+    /// einer Änderung an anderer Stelle.
     #[test]
     fn a311_ungueltige_bauleistung_bleibt_erhalten() {
         let mut m = house();

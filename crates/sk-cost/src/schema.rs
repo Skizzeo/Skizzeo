@@ -38,6 +38,10 @@ fn bauen() -> String {
         }
         s.push('\n');
     }
+    s += "Operationen · Projekt über Scene::kosten, Firma über firma_anwenden · * nur in der Verwaltung\n";
+    for (name, angaben, admin) in crate::op::NAMEN {
+        s += &format!("  {name}{} ({angaben})\n", if admin { " *" } else { "" });
+    }
     s
 }
 
@@ -62,6 +66,17 @@ mod tests {
                     f.name
                 );
             }
+        }
+    }
+
+    /// Abnahme 14 (Teil Operationen): Jede Operation steht im Schema.
+    #[test]
+    fn schema_nennt_jede_operation() {
+        let s = schema();
+        let i = s.find("\nOperationen ").expect("Operationen");
+        for (name, _, admin) in crate::op::NAMEN {
+            let zeile = format!("\n  {name}{} (", if admin { " *" } else { "" });
+            assert!(s[i..].contains(&zeile), "{name}");
         }
     }
 }

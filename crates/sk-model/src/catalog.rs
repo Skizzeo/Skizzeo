@@ -86,6 +86,12 @@ impl Library {
         self.ext.put(section, id, line, before);
     }
 
+    /// Wie [`Model::ext_declare`].
+    #[doc(hidden)]
+    pub fn ext_declare(&mut self, sections: &[&str]) {
+        self.ext.declare(sections);
+    }
+
     /// Wie [`Model::ext_remove`], ohne Verlauf.
     #[doc(hidden)]
     pub fn ext_remove(&mut self, section: &str, id: &str) {
