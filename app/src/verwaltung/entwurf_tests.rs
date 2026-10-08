@@ -129,7 +129,7 @@ fn entwurf_vorschau_freigabe() {
         l.alt.ends_with(" €/h") && l.neu.starts_with("62") && l.neu.ends_with(" €/h"),
         "{l:?}"
     );
-    assert_eq!(l.herkunft, "manuell");
+    assert_eq!(l.herkunft, "von Hand");
     let p = vs
         .zeilen
         .iter()

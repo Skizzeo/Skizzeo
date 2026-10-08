@@ -19,7 +19,7 @@ use sk_cost::Cent;
 pub(super) const KAPUTT: &str =
     "Der Entwurf ist nicht lesbar; die Verwaltung zeigt den freigegebenen Stand und speichert nichts.";
 /// Hinweis unter der Vorschau.
-const FREIGEBEN_SATZ: &str = "Projekte bleiben auf ihrem Stand, bis sie übernehmen.";
+const FREIGEBEN_SATZ: &str = "Projekte bleiben auf ihrem Stand, bis man dort „Übernehmen“ wählt.";
 
 #[cfg(test)]
 pub(super) const SAETZE: [&str; 2] = [KAPUTT, FREIGEBEN_SATZ];
@@ -518,6 +518,13 @@ impl Verwaltung {
                 .map(|v| v.trim_matches('"').to_string())
         };
         if let Some(q) = feld("source") {
+            // Die Verwaltung schreibt „Verwaltung“ als Quelle; in der
+            // Vorschau heißt das wie überall „von Hand“ (Bedienbarkeit 16)
+            let q = if q == "Verwaltung" {
+                "von Hand".to_string()
+            } else {
+                q
+            };
             return match feld("date")
                 .and_then(|d| d.split_once('-').map(|(j, m)| format!("{m}/{j}")))
             {
@@ -529,7 +536,7 @@ impl Verwaltung {
         match u.map(|u| u.kind.as_str()) {
             Some("import") => "importiert".into(),
             Some("ai") => "Vorschlag".into(),
-            _ => "manuell".into(),
+            _ => "von Hand".into(),
         }
     }
 

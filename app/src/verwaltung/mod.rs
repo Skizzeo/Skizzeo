@@ -325,9 +325,15 @@ fn titel(vorher: &Katalog, ohne_firma: bool) -> String {
         Some(k) => {
             let datum = baum::zeit_text(k.satz.text("date").unwrap_or_default());
             // Kopfzeilen nennen den Stand (Bedienbarkeit 2.6)
+            // Ohne eigenen Namen nicht „Firmenkatalog „Firmenkatalog““
+            // (Bedienbarkeit 14, 16)
+            let name = match k.name.trim() {
+                "" | "Firmenkatalog" => String::new(),
+                n => format!(" „{n}“"),
+            };
             match k.stand {
-                0 => format!("Firmenkatalog „{}“ · vom {datum}", k.name),
-                n => format!("Firmenkatalog „{}“ · Stand {n} vom {datum}", k.name),
+                0 => format!("Firmenkatalog{name} · vom {datum}"),
+                n => format!("Firmenkatalog{name} · Stand {n} vom {datum}"),
             }
         }
         None => format!(

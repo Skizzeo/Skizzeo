@@ -20,7 +20,7 @@ const PAD: f32 = 22.0;
 
 pub(super) const FALSCH: &str = "Kennwort stimmt nicht.";
 pub(super) const VERGESSEN_NUTZER: &str = "Vergessen? Frag deinen BIM-Administrator.";
-const WIRKUNG: &str = "Mit Kennwort ändert nur, wer es kennt, den Firmenkatalog. Änderungen sammeln sich in einem Entwurf. Erst „Freigeben“ macht sie gültig, an allen Plätzen. Projekte bleiben auf ihrem Stand, bis sie übernehmen.";
+const WIRKUNG: &str = "Mit Kennwort ändert den Firmenkatalog nur, wer das Kennwort kennt. Änderungen sammeln sich in einem Entwurf. Erst „Freigeben“ macht sie gültig, an allen Plätzen. Projekte bleiben auf ihrem Stand, bis man dort „Übernehmen“ wählt.";
 const LEISE: &str = "Schutz vor Versehen, keine Sicherheit. Vergessen? Die Hilfe sagt, wie man es zurücksetzt. Leeres Kennwort heißt: zurück zum Einzelplatz. Setzen und Entfernen stehen im Protokoll.";
 pub(super) const VERSCHIEDEN: &str = "Die beiden Eingaben sind verschieden.";
 #[cfg(test)]
@@ -237,10 +237,6 @@ impl Verwaltung {
             );
         }
         if let Some(r) = regular {
-            let stand = self.titel_stand();
-            let px = 12.0 * s;
-            let x = f.x + (ww - PAD) * s - r.width(&stand, px);
-            r.draw(c, &stand, px, x, f.y + 32.0 * s, u.text_dim);
             let fy = f.y + 52.0 * s;
             let base = fy + (32.0 * s + r.cap_height(13.0 * s)) * 0.5;
             r.draw(
@@ -286,14 +282,6 @@ impl Verwaltung {
             if let Some(r) = regular {
                 r.draw(c, VERGESSEN_NUTZER, 12.0 * s, x, y, u.text_dim);
             }
-        }
-    }
-
-    /// „Stand 3“ für die Abfrage.
-    fn titel_stand(&self) -> String {
-        match self.vorher.kopf.as_ref() {
-            Some(k) if k.stand > 0 => format!("Stand {}", k.stand),
-            _ => String::new(),
         }
     }
 
@@ -553,7 +541,8 @@ impl Verwaltung {
         }
         for (z, text, active) in [
             (SZiel::Abbrechen, "Abbrechen", false),
-            (SZiel::Setzen, "Kennwort setzen", true),
+            // Verschiedene Eingaben: grau statt Akzent (Bedienbarkeit 16)
+            (SZiel::Setzen, "Kennwort setzen", !sb.verschieden),
         ] {
             let st = ButtonState {
                 hover: sb.hover == Some(z),
