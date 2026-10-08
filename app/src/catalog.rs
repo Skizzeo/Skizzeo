@@ -1868,3 +1868,67 @@ mod abnahme_bb9 {
         let _ = std::fs::remove_dir_all(&d);
     }
 }
+
+/// Abnahme KA-2 Nr. 14 (Schluss): „Bauleistung wählen …“ an der grauen
+/// Zeile der Dachterrasse setzt `svc=` an der Schicht des Typs, die Zeile
+/// wird eine Position; Strg+Z nimmt es zurück (Datei bytegleich).
+#[cfg(test)]
+mod abnahme_ka2_nr14 {
+    use crate::scene::Scene;
+    use sk_cost::Op;
+
+    #[test]
+    fn bauleistung_waehlen_setzt_svc() {
+        let m = sk_model::szo::read_with(
+            include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo"),
+            sk_model::GuidGen::with_seed(1),
+            &sk_cost::lesen::ABSCHNITTE_SZO,
+        )
+        .unwrap()
+        .model;
+        let mut s = Scene::with_model(m);
+        let u = sk_cost::Umfang::projekt();
+        let b = s.kostenblatt(None, &u);
+        let k = s.katalog(None);
+        let vorher = sk_model::szo::write(s.model());
+        let (z, wahl) = b
+            .ohne
+            .iter()
+            .find_map(|z| {
+                let a = sk_cost::wahl::auswahl(s.model(), &k, z)?;
+                let w = a
+                    .eigene
+                    .first()
+                    .or(a.aehnlich.first())
+                    .or(a.weitere.first())?
+                    .clone();
+                Some((z.clone(), w))
+            })
+            .expect("graue Zeile mit Wahl");
+        let typ = z.typ.unwrap();
+        let op = Op::BauleistungZuordnen {
+            typ,
+            schicht: z.schicht,
+            bauleistung: Some(wahl.leistung),
+        };
+        s.kosten_folge(
+            "Bauleistung gewählt",
+            None,
+            &sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "14:20"),
+            &[op],
+        )
+        .unwrap();
+        assert_eq!(s.undo_label(), Some("Bauleistung gewählt"));
+        let text = sk_model::szo::write(s.model());
+        let svc = format!("svc={}", wahl.leistung.to_ifc());
+        assert!(text.contains(&svc), "svc= an der Schicht fehlt");
+        let b2 = s.kostenblatt(None, &u);
+        assert!(b2
+            .ohne
+            .iter()
+            .all(|x| x.element != z.element || x.schicht != z.schicht));
+        assert!(b2.positionen.len() > b.positionen.len());
+        assert!(s.undo());
+        assert_eq!(sk_model::szo::write(s.model()), vorher, "Strg+Z bytegleich");
+    }
+}
