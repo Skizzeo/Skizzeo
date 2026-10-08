@@ -1,0 +1,1130 @@
+//! Wirksame Stammdaten: Kostenzeilen lesen, nach den Regeln 72–80 und
+//! 85–91 prüfen und als Datensätze bereitstellen (Bausteingrenze §6).
+//! Projekt, Firmenkatalog und Werksbestand gehen durch denselben Leser.
+
+use crate::befund::{self, satz_ort, Befund, Ort};
+use crate::geld::Dez;
+use crate::satz::{self, Abschnitt, Satz};
+use crate::zeile;
+use sk_model::Guid;
+use std::collections::{HashMap, HashSet};
+
+/// Einheit eines Artikels oder einer Bauleistung.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Einheit {
+    M2,
+    M3,
+    M,
+    T,
+    Kg,
+    St,
+}
+
+impl Einheit {
+    pub fn aus(w: &str) -> Option<Einheit> {
+        Some(match w {
+            "m2" => Einheit::M2,
+            "m3" => Einheit::M3,
+            "m" => Einheit::M,
+            "t" => Einheit::T,
+            "kg" => Einheit::Kg,
+            "st" => Einheit::St,
+            _ => return None,
+        })
+    }
+
+    pub fn wort(self) -> &'static str {
+        match self {
+            Einheit::M2 => "m2",
+            Einheit::M3 => "m3",
+            Einheit::M => "m",
+            Einheit::T => "t",
+            Einheit::Kg => "kg",
+            Einheit::St => "st",
+        }
+    }
+
+    /// Anzeige: „m²“.
+    pub fn zeichen(self) -> &'static str {
+        match self {
+            Einheit::M2 => "m²",
+            Einheit::M3 => "m³",
+            Einheit::M => "m",
+            Einheit::T => "t",
+            Einheit::Kg => "kg",
+            Einheit::St => "St",
+        }
+    }
+}
+
+/// Mengenbezug einer Bauleistung (BIM §3.9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Bezug {
+    Flaeche,
+    Volumen,
+    Laenge,
+    Umfang,
+    Schalung,
+    Stahl,
+}
+
+impl Bezug {
+    pub fn aus(w: &str) -> Option<Bezug> {
+        Some(match w {
+            "area" => Bezug::Flaeche,
+            "volume" => Bezug::Volumen,
+            "length" => Bezug::Laenge,
+            "perimeter" => Bezug::Umfang,
+            "formwork" => Bezug::Schalung,
+            "steel" => Bezug::Stahl,
+            _ => return None,
+        })
+    }
+
+    pub fn wort(self) -> &'static str {
+        match self {
+            Bezug::Flaeche => "area",
+            Bezug::Volumen => "volume",
+            Bezug::Laenge => "length",
+            Bezug::Umfang => "perimeter",
+            Bezug::Schalung => "formwork",
+            Bezug::Stahl => "steel",
+        }
+    }
+
+    /// Regel 80: Einheit passt zum Mengenbezug (Ausnahme `steel` mit `kg`).
+    pub fn passt(self, e: Einheit) -> bool {
+        match self {
+            Bezug::Flaeche | Bezug::Schalung => e == Einheit::M2,
+            Bezug::Volumen => e == Einheit::M3,
+            Bezug::Laenge | Bezug::Umfang => e == Einheit::M,
+            Bezug::Stahl => matches!(e, Einheit::T | Einheit::Kg),
+        }
+    }
+}
+
+/// `[article]`
+#[derive(Clone, Debug, PartialEq)]
+pub struct Artikel {
+    pub guid: Guid,
+    pub name: String,
+    /// `None`: Hilfsstoff (E2).
+    pub mat: Option<Guid>,
+    /// Dicke in mm; `None`: jede Dicke.
+    pub t: Option<Dez>,
+    pub einheit: Einheit,
+    /// netto €/Einheit; `None`: Preis fehlt.
+    pub preis: Option<Dez>,
+    /// Standardartikel (nach Regel 77 bereinigt).
+    pub std: bool,
+    pub retired: bool,
+    pub satz: Satz,
+}
+
+/// `[service]`
+#[derive(Clone, Debug, PartialEq)]
+pub struct Leistung {
+    pub guid: Guid,
+    pub kurz: String,
+    pub gewerk: Guid,
+    pub titel: Guid,
+    pub pos: u16,
+    pub einheit: Einheit,
+    pub bezug: Bezug,
+    pub stunden: Dez,
+    pub geraet: Dez,
+    pub sonst: Dez,
+    pub nu: Option<Dez>,
+    pub kg: Option<u16>,
+    /// Regel: Bauteilarten (`kinds.rs`-Wörter); leer = nur als Folge.
+    pub kategorien: Vec<String>,
+    pub mat: Option<Guid>,
+    pub tmin: Option<Dez>,
+    pub tmax: Option<Dez>,
+    pub funktion: Option<String>,
+    pub retired: bool,
+    pub satz: Satz,
+}
+
+impl Leistung {
+    /// Zahl der gesetzten Regelfelder (Regel 81 Stufe 2: spezifischer).
+    pub fn regelfelder(&self) -> usize {
+        usize::from(!self.kategorien.is_empty())
+            + usize::from(self.mat.is_some())
+            + usize::from(self.tmin.is_some())
+            + usize::from(self.tmax.is_some())
+            + usize::from(self.funktion.is_some())
+    }
+}
+
+/// `[svcpart]`
+#[derive(Clone, Debug, PartialEq)]
+pub struct Anteil {
+    pub guid: Guid,
+    pub leistung: Guid,
+    pub nr: u32,
+    /// Fester Artikel; `None`: Artikel der Schicht (Regel 82).
+    pub artikel: Option<Guid>,
+    pub menge: Dez,
+    pub satz: Satz,
+}
+
+/// `[svcfollow]`
+#[derive(Clone, Debug, PartialEq)]
+pub struct Folge {
+    pub guid: Guid,
+    pub leistung: Guid,
+    pub nr: u32,
+    pub folge: Guid,
+    pub faktor: Dez,
+    pub satz: Satz,
+}
+
+/// `[lot]`: Los oder (mit `parent`) Titel.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Los {
+    pub guid: Guid,
+    pub name: String,
+    pub nr: String,
+    pub parent: Option<Guid>,
+    pub pre: Option<String>,
+    pub retired: bool,
+    pub satz: Satz,
+}
+
+/// `[origin]`
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ursprung {
+    pub key: String,
+    pub rec: String,
+    pub kind: String,
+    /// `confirmed` nach Regel 88 auch bei `manual` + `open`.
+    pub bestaetigt: bool,
+    pub satz: Satz,
+}
+
+/// `[catalog]`
+#[derive(Clone, Debug, PartialEq)]
+pub struct Kopf {
+    pub guid: Guid,
+    pub name: String,
+    pub stand: u32,
+    pub entwurf: bool,
+    pub satz: Satz,
+}
+
+/// `[costproject]`
+#[derive(Clone, Debug, PartialEq)]
+pub struct Kopie {
+    pub katalog: Option<Guid>,
+    pub stand: Option<u32>,
+    pub lvstorey: bool,
+    pub keep: Option<u32>,
+    pub satz: Satz,
+}
+
+/// `[log]`
+#[derive(Clone, Debug, PartialEq)]
+pub struct Protokoll {
+    pub key: u32,
+    pub stand: u32,
+    pub satz: Satz,
+}
+
+/// Firmenwerte (`[rate]`) mit den Werkswerten als Rückfall (BIM §3.6).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Firmenwerte {
+    /// Verrechnungslohn €/h.
+    pub lohn: Dez,
+    /// Zuschlag auf Stoff in %.
+    pub zuschlag: Dez,
+    /// MwSt. in %.
+    pub mwst: Dez,
+    /// Bewehrungsgrad kg/m³ je Bauteilart (`kinds.rs`-Wort).
+    pub stahl: Vec<(String, Dez)>,
+}
+
+/// Bekannte Firmenwerte: Schlüssel, Bereich, Werkswert.
+pub const RATEN: [(&str, i64, i64, i64); 6] = [
+    ("wage", 0, 500, 60),
+    ("surcharge", 0, 100, 0),
+    ("vat", 0, 100, 19),
+    ("steel.floor", 0, 400, 100),
+    ("steel.groundslab", 0, 400, 80),
+    ("steel.stripfooting", 0, 400, 40),
+];
+
+impl Firmenwerte {
+    pub fn werk() -> Firmenwerte {
+        let mut w = Firmenwerte {
+            lohn: Dez::NULL,
+            zuschlag: Dez::NULL,
+            mwst: Dez::NULL,
+            stahl: Vec::new(),
+        };
+        for (k, _, _, v) in RATEN {
+            w.setzen(k, Dez::ganz(v));
+        }
+        w
+    }
+
+    fn setzen(&mut self, key: &str, v: Dez) {
+        match key {
+            "wage" => self.lohn = v,
+            "surcharge" => self.zuschlag = v,
+            "vat" => self.mwst = v,
+            k => {
+                if let Some(cat) = k.strip_prefix("steel.") {
+                    match self.stahl.iter_mut().find(|(c, _)| c == cat) {
+                        Some(s) => s.1 = v,
+                        None => self.stahl.push((cat.to_string(), v)),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Bewehrungsgrad kg/m³ der Bauteilart, wenn es einen gibt.
+    pub fn stahl(&self, cat: &str) -> Option<Dez> {
+        self.stahl.iter().find(|(c, _)| c == cat).map(|(_, v)| *v)
+    }
+}
+
+/// Bereich eines Firmenwerts; `None`: unbekannter Schlüssel (neuere
+/// Fassung, bleibt roh).
+pub fn rate_bereich(key: &str) -> Option<(i64, i64)> {
+    if let Some((_, lo, hi, _)) = RATEN.iter().find(|r| r.0 == key) {
+        return Some((*lo, *hi));
+    }
+    let cat = key.strip_prefix("steel.")?;
+    satz::KATEGORIEN.contains(&cat).then_some((0, 400))
+}
+
+/// Woher die wirksamen Stammdaten kommen (Bausteingrenze §6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Quelle {
+    /// Projektkopie (`[costproject]` oder Kostenzeilen im Projekt).
+    Projekt {
+        katalog: Option<Guid>,
+        stand: Option<u32>,
+    },
+    /// Freigegebener Firmenkatalog.
+    Firma { name: String, stand: u32 },
+    /// Werksbestand des Programms; `stand` „MM/JJJJ“.
+    Werk { stand: String },
+}
+
+impl Quelle {
+    /// Kopf des Kostenreiters (E3): „Werkspreise 10/2026“.
+    pub fn text(&self) -> String {
+        match self {
+            Quelle::Projekt { stand: Some(s), .. } => format!("Projektstand {s}"),
+            Quelle::Projekt { stand: None, .. } => "Projektstand".into(),
+            Quelle::Firma { name, stand } => format!("{name}, Stand {stand}"),
+            Quelle::Werk { stand } => format!("Werkspreise {stand}"),
+        }
+    }
+}
+
+/// Wirksame Stammdaten mit den Befunden beim Lesen.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Katalog {
+    pub quelle: Quelle,
+    pub artikel: Vec<Artikel>,
+    pub leistungen: Vec<Leistung>,
+    pub anteile: Vec<Anteil>,
+    pub folgen: Vec<Folge>,
+    pub lose: Vec<Los>,
+    pub werte: Firmenwerte,
+    pub herkunft: Vec<Ursprung>,
+    pub kopf: Option<Kopf>,
+    pub kopie: Option<Kopie>,
+    pub protokoll: Vec<Protokoll>,
+    /// Stand des freigegebenen Firmenkatalogs, wenn einer da ist (Regel 92).
+    pub firma_stand: Option<u32>,
+    pub befunde: Vec<Befund>,
+}
+
+impl Katalog {
+    pub fn artikel(&self, g: Guid) -> Option<&Artikel> {
+        self.artikel.iter().find(|a| a.guid == g)
+    }
+
+    pub fn leistung(&self, g: Guid) -> Option<&Leistung> {
+        self.leistungen.iter().find(|l| l.guid == g)
+    }
+
+    pub fn los(&self, g: Guid) -> Option<&Los> {
+        self.lose.iter().find(|l| l.guid == g)
+    }
+
+    /// Stoffanteile einer Bauleistung nach `nr`.
+    pub fn anteile_von(&self, g: Guid) -> impl Iterator<Item = &Anteil> {
+        self.anteile.iter().filter(move |a| a.leistung == g)
+    }
+
+    /// Folgepositionen einer Bauleistung nach `nr`.
+    pub fn folgen_von(&self, g: Guid) -> impl Iterator<Item = &Folge> {
+        self.folgen.iter().filter(move |f| f.leistung == g)
+    }
+
+    /// Herkunft eines Satzes, wenn eine Zeile sie nennt.
+    pub fn herkunft_von(&self, rec: &str, key: &str) -> Option<&Ursprung> {
+        self.herkunft.iter().find(|u| u.rec == rec && u.key == key)
+    }
+
+    /// OZ einer Bauleistung: Titel-`nr` + „.“ + `pos` vierstellig (Regel 86).
+    pub fn oz(&self, l: &Leistung) -> String {
+        let t = self.los(l.titel).map_or("?", |t| t.nr.as_str());
+        format!("{t}.{:04}", l.pos)
+    }
+}
+
+/// Was der Leser außerhalb der Kostenzeilen kennen muss (Regel 73).
+pub struct Umfeld {
+    /// Baustoffe mit Namen (für Verweise und Befundsätze).
+    pub materialien: HashMap<Guid, String>,
+    /// Gewerke der Datei und des Startbestands (`trade::merge`).
+    pub gewerke: HashSet<Guid>,
+}
+
+impl Umfeld {
+    pub fn aus_modell(m: &sk_model::Model) -> Umfeld {
+        Umfeld::neu(
+            m.materials().iter().map(|(_, x)| (x.guid, x.name.clone())),
+            m.trades().iter().map(|t| t.guid),
+        )
+    }
+
+    pub fn aus_bibliothek(lib: &sk_model::Library) -> Umfeld {
+        Umfeld::neu(
+            lib.materials.iter().map(|(_, x)| (x.guid, x.name.clone())),
+            lib.trades.iter().map(|t| t.guid),
+        )
+    }
+
+    fn neu(
+        mats: impl Iterator<Item = (Guid, String)>,
+        gewerke: impl Iterator<Item = Guid>,
+    ) -> Umfeld {
+        let mut g: HashSet<Guid> = gewerke.collect();
+        g.extend(sk_model::trade::start_trades().iter().map(|t| t.guid));
+        Umfeld {
+            materialien: mats.collect(),
+            gewerke: g,
+        }
+    }
+
+    fn baustoff(&self, g: Guid) -> String {
+        self.materialien
+            .get(&g)
+            .cloned()
+            .unwrap_or_else(|| g.to_ifc())
+    }
+}
+
+/// Gelesene, für sich gültige Zeile mit ihrer Stelle im Abschnitt.
+struct Roh {
+    n: usize,
+    satz: Satz,
+}
+
+fn mm(d: Dez) -> String {
+    format!("{} mm", d.text())
+}
+
+/// Liest Kostenzeilen `(abschnitt, zeile)` (Regeln 72–80, 85–91). Fremde
+/// Abschnitte übergeht der Leser; `quelle` setzt der Aufrufer.
+pub fn lesen<'a>(
+    zeilen: impl IntoIterator<Item = (&'a str, &'a str)>,
+    u: &Umfeld,
+    quelle: Quelle,
+) -> Katalog {
+    let mut bf: Vec<Befund> = Vec::new();
+    let mut roh: HashMap<&'static str, Vec<Roh>> = HashMap::new();
+    let mut zaehler: HashMap<&'static str, usize> = HashMap::new();
+    let mut fremd = false;
+    for (sec, line) in zeilen {
+        let Some(a) = satz::abschnitt(sec) else {
+            continue;
+        };
+        let n = {
+            let c = zaehler.entry(a.name).or_default();
+            *c += 1;
+            *c
+        };
+        let ort = || {
+            satz_ort(
+                a.name,
+                sk_model::ext::rec_id(line).unwrap_or(format!("Zeile {n}")),
+            )
+        };
+        let Some(z) = zeile::zerlegen(line) else {
+            bf.push(Befund::fehler(
+                72,
+                befund::r72(n, a.name, "nicht lesbar"),
+                ort(),
+            ));
+            continue;
+        };
+        match Satz::lesen(a, &z) {
+            Ok(s) => {
+                fremd |= !s.fremd.is_empty();
+                roh.entry(a.name).or_default().push(Roh { n, satz: s });
+            }
+            Err(e) => bf.push(Befund::fehler(72, befund::r72(n, a.name, &e.grund), ort())),
+        }
+    }
+    if fremd {
+        bf.push(Befund::hinweis(71, befund::r71(), Ort::Datei));
+    }
+    // Regel 74: erste Zeile je Kennung; [catalog] und [costproject] einmal
+    for (name, liste) in roh.iter_mut() {
+        let einmal = matches!(*name, "catalog" | "costproject");
+        let mut seen = HashSet::new();
+        liste.retain(|r| {
+            let k = r.satz.kennung().unwrap_or_default();
+            let neu = if einmal {
+                seen.is_empty()
+            } else {
+                !seen.contains(&k)
+            };
+            if neu {
+                seen.insert(k);
+            } else {
+                bf.push(Befund::fehler(
+                    74,
+                    befund::r74(name, &k),
+                    satz_ort(name, k.clone()),
+                ));
+            }
+            neu
+        });
+    }
+    let mut take = |name: &str| roh.remove(name).unwrap_or_default();
+    let mut k = Katalog {
+        quelle,
+        artikel: Vec::new(),
+        leistungen: Vec::new(),
+        anteile: Vec::new(),
+        folgen: Vec::new(),
+        lose: Vec::new(),
+        werte: Firmenwerte::werk(),
+        herkunft: Vec::new(),
+        kopf: None,
+        kopie: None,
+        protokoll: Vec::new(),
+        firma_stand: None,
+        befunde: Vec::new(),
+    };
+    let skip = |bf: &mut Vec<Befund>, a: &Abschnitt, r: &Roh, grund: String| {
+        let id = r.satz.kennung().unwrap_or_default();
+        bf.push(Befund::fehler(
+            72,
+            befund::r72(r.n, a.name, &grund),
+            satz_ort(a.name, id),
+        ));
+    };
+
+    // Lose und Titel: parent zeigt auf ein Los (nicht auf einen Titel)
+    let lose = take("lot");
+    let parents: HashMap<Guid, bool> = lose
+        .iter()
+        .filter_map(|r| Some((r.satz.guid("guid")?, r.satz.guid("parent").is_some())))
+        .collect();
+    for r in lose {
+        let s = &r.satz;
+        let guid = s.guid("guid").unwrap();
+        let name = s.text("name").unwrap_or_default().to_string();
+        if let Some(p) = s.guid("parent") {
+            match parents.get(&p) {
+                None => {
+                    let t = befund::r73(&format!("Titel {name}"), "das Los", &p.to_ifc());
+                    bf.push(Befund::fehler(73, t, satz_ort("lot", guid.to_ifc())));
+                    skip(
+                        &mut bf,
+                        &satz::LOT,
+                        &r,
+                        format!("parent {} fehlt", p.to_ifc()),
+                    );
+                    continue;
+                }
+                Some(true) => {
+                    skip(
+                        &mut bf,
+                        &satz::LOT,
+                        &r,
+                        "parent zeigt auf einen Titel".into(),
+                    );
+                    continue;
+                }
+                Some(false) => {}
+            }
+        }
+        k.lose.push(Los {
+            guid,
+            name,
+            nr: s.text("nr").unwrap_or_default().to_string(),
+            parent: s.guid("parent"),
+            pre: s.text("pre").map(str::to_string),
+            retired: s.flag("retired"),
+            satz: r.satz,
+        });
+    }
+
+    // Artikel
+    for r in take("article") {
+        let s = &r.satz;
+        let guid = s.guid("guid").unwrap();
+        let name = s.text("name").unwrap_or_default().to_string();
+        if let Some(m) = s.guid("mat").filter(|m| !u.materialien.contains_key(m)) {
+            let t = befund::r73(&format!("Artikel {name}"), "den Baustoff", &m.to_ifc());
+            bf.push(Befund::fehler(73, t, satz_ort("article", guid.to_ifc())));
+            continue;
+        }
+        if name.trim().is_empty() {
+            let t = befund::r76(&name, "name", "leer");
+            bf.push(Befund::fehler(76, t, satz_ort("article", guid.to_ifc())));
+            continue;
+        }
+        k.artikel.push(Artikel {
+            guid,
+            name,
+            mat: s.guid("mat"),
+            t: s.zahl("t"),
+            einheit: Einheit::aus(s.text("unit").unwrap_or_default()).unwrap(),
+            preis: s.zahl("price"),
+            std: s.flag("std"),
+            retired: s.flag("retired"),
+            satz: r.satz,
+        });
+    }
+    // Regel 76: Name eindeutig unter den nicht ausgemusterten
+    let mut namen: HashMap<String, Guid> = HashMap::new();
+    for a in k.artikel.iter().filter(|a| !a.retired) {
+        if namen.insert(a.name.clone(), a.guid).is_some() {
+            let t = befund::r76(&a.name, "name", "doppelt");
+            bf.push(Befund::warnung(76, t, satz_ort("article", a.guid.to_ifc())));
+        }
+    }
+    // Regel 77: ein Standardartikel je (Baustoff, Dicke), die kleinere Guid
+    let mut std: HashMap<(Option<Guid>, Option<Dez>), Guid> = HashMap::new();
+    for a in k.artikel.iter().filter(|a| a.std) {
+        let e = std.entry((a.mat, a.t)).or_insert(a.guid);
+        if a.guid < *e {
+            *e = a.guid;
+        }
+    }
+    for a in k.artikel.iter_mut().filter(|a| a.std) {
+        let gilt = std[&(a.mat, a.t)];
+        if gilt != a.guid {
+            a.std = false;
+            let b = a.mat.map_or("Hilfsstoff".to_string(), |m| u.baustoff(m));
+            let d = a.t.map_or("ohne Dicke".to_string(), mm);
+            let t = befund::r77(&b, &d, &gilt.to_ifc());
+            bf.push(Befund::warnung(77, t, satz_ort("article", a.guid.to_ifc())));
+        }
+    }
+    let artikel: HashMap<Guid, bool> = k.artikel.iter().map(|a| (a.guid, a.retired)).collect();
+
+    // Bauleistungen
+    for r in take("service") {
+        let s = &r.satz;
+        let guid = s.guid("guid").unwrap();
+        let kurz = s.text("short").unwrap_or_default().to_string();
+        let ort = || satz_ort("service", guid.to_ifc());
+        let wer = format!("Bauleistung {kurz}");
+        let trade = s.guid("trade").unwrap();
+        if !u.gewerke.contains(&trade) {
+            bf.push(Befund::fehler(
+                73,
+                befund::r73(&wer, "das Gewerk", &trade.to_ifc()),
+                ort(),
+            ));
+            continue;
+        }
+        let title = s.guid("title").unwrap();
+        match k.lose.iter().find(|l| l.guid == title) {
+            None => {
+                bf.push(Befund::fehler(
+                    73,
+                    befund::r73(&wer, "den Titel", &title.to_ifc()),
+                    ort(),
+                ));
+                continue;
+            }
+            Some(l) if l.parent.is_none() => {
+                let t = befund::r79(&kurz, "title", "Los statt Titel");
+                bf.push(Befund::fehler(79, t, ort()));
+                continue;
+            }
+            Some(_) => {}
+        }
+        if let Some(m) = s.guid("mat").filter(|m| !u.materialien.contains_key(m)) {
+            bf.push(Befund::fehler(
+                73,
+                befund::r73(&wer, "den Baustoff", &m.to_ifc()),
+                ort(),
+            ));
+            continue;
+        }
+        if kurz.trim().is_empty() {
+            bf.push(Befund::fehler(
+                79,
+                befund::r79(&kurz, "short", "leer"),
+                ort(),
+            ));
+            continue;
+        }
+        let einheit = Einheit::aus(s.text("unit").unwrap_or_default()).unwrap();
+        let bezug = Bezug::aus(s.text("basis").unwrap_or_default()).unwrap();
+        if !bezug.passt(einheit) {
+            let t = befund::r80(&kurz, einheit.zeichen(), bezug.wort());
+            bf.push(Befund::fehler(80, t, ort()));
+            continue;
+        }
+        let (tmin, tmax) = (s.zahl("tmin"), s.zahl("tmax"));
+        if let (Some(a), Some(b)) = (tmin, tmax) {
+            if a > b {
+                let t = befund::r79(&kurz, "tmin", &format!("{} > {}", a.text(), b.text()));
+                bf.push(Befund::fehler(79, t, ort()));
+                continue;
+            }
+        }
+        let kg = s.ganz("kg").map(|v| v as u16);
+        if let Some(v) = kg.filter(|v| !sk_model::trade::valid_kg(*v)) {
+            bf.push(Befund::fehler(
+                79,
+                befund::r79(&kurz, "kg", &v.to_string()),
+                ort(),
+            ));
+            continue;
+        }
+        k.leistungen.push(Leistung {
+            guid,
+            kurz,
+            gewerk: trade,
+            titel: title,
+            pos: s.ganz("pos").unwrap_or(1) as u16,
+            einheit,
+            bezug,
+            stunden: s.zahl("hours").unwrap_or_default(),
+            geraet: s.zahl("equip").unwrap_or_default(),
+            sonst: s.zahl("other").unwrap_or_default(),
+            nu: s.zahl("nu"),
+            kg,
+            kategorien: s.woerter("cats").to_vec(),
+            mat: s.guid("mat"),
+            tmin,
+            tmax,
+            funktion: s.text("fn").map(str::to_string),
+            retired: s.flag("retired"),
+            satz: r.satz,
+        });
+    }
+    let leistungen: HashMap<Guid, bool> =
+        k.leistungen.iter().map(|l| (l.guid, l.retired)).collect();
+
+    // Stoffanteile und Folgepositionen: (service, nr) eindeutig
+    let mut nrs: HashSet<(&str, Guid, i64)> = HashSet::new();
+    for r in take("svcpart") {
+        let s = &r.satz;
+        let guid = s.guid("guid").unwrap();
+        let svc = s.guid("service").unwrap();
+        let ort = || satz_ort("svcpart", guid.to_ifc());
+        let wer = format!("Stoffanteil {}", guid.to_ifc());
+        if !leistungen.contains_key(&svc) {
+            bf.push(Befund::fehler(
+                73,
+                befund::r73(&wer, "die Bauleistung", &svc.to_ifc()),
+                ort(),
+            ));
+            continue;
+        }
+        let (art, layer) = (s.guid("art"), s.flag("layer"));
+        match (art, layer) {
+            (Some(_), true) => {
+                skip(
+                    &mut bf,
+                    &satz::SVCPART,
+                    &r,
+                    "art und layer=1 zugleich".into(),
+                );
+                continue;
+            }
+            (None, false) => {
+                skip(&mut bf, &satz::SVCPART, &r, "art oder layer=1 fehlt".into());
+                continue;
+            }
+            (Some(a), false) if !artikel.contains_key(&a) => {
+                bf.push(Befund::fehler(
+                    73,
+                    befund::r73(&wer, "den Artikel", &a.to_ifc()),
+                    ort(),
+                ));
+                continue;
+            }
+            _ => {}
+        }
+        let nr = s.ganz("nr").unwrap();
+        if !nrs.insert(("svcpart", svc, nr)) {
+            let id = format!("{}/{nr}", svc.to_ifc());
+            bf.push(Befund::fehler(74, befund::r74("svcpart", &id), ort()));
+            continue;
+        }
+        k.anteile.push(Anteil {
+            guid,
+            leistung: svc,
+            nr: nr as u32,
+            artikel: art,
+            menge: s.zahl("qty").unwrap(),
+            satz: r.satz,
+        });
+    }
+    k.anteile.sort_by_key(|a| (a.leistung, a.nr));
+    for r in take("svcfollow") {
+        let s = &r.satz;
+        let guid = s.guid("guid").unwrap();
+        let svc = s.guid("service").unwrap();
+        let fol = s.guid("follow").unwrap();
+        let ort = || satz_ort("svcfollow", guid.to_ifc());
+        let wer = format!("Folgeposition {}", guid.to_ifc());
+        let tot = [svc, fol].into_iter().find(|g| !leistungen.contains_key(g));
+        if let Some(g) = tot {
+            bf.push(Befund::fehler(
+                73,
+                befund::r73(&wer, "die Bauleistung", &g.to_ifc()),
+                ort(),
+            ));
+            continue;
+        }
+        let nr = s.ganz("nr").unwrap();
+        if !nrs.insert(("svcfollow", svc, nr)) {
+            let id = format!("{}/{nr}", svc.to_ifc());
+            bf.push(Befund::fehler(74, befund::r74("svcfollow", &id), ort()));
+            continue;
+        }
+        k.folgen.push(Folge {
+            guid,
+            leistung: svc,
+            nr: nr as u32,
+            folge: fol,
+            faktor: s.zahl("factor").unwrap_or(Dez::EINS),
+            satz: r.satz,
+        });
+    }
+    k.folgen.sort_by_key(|f| (f.leistung, f.nr));
+    // Regel 85: eine Ebene, keine Kette, kein Zyklus
+    let ausloeser: HashSet<Guid> = k.folgen.iter().map(|f| f.leistung).collect();
+    for f in &k.folgen {
+        if ausloeser.contains(&f.folge) || f.folge == f.leistung {
+            let kurz = k.leistung(f.leistung).map_or("", |l| l.kurz.as_str());
+            let folge = k.leistung(f.folge).map_or("", |l| l.kurz.as_str());
+            let t = befund::r85_kette(kurz, folge);
+            bf.push(Befund::fehler(
+                85,
+                t,
+                satz_ort("svcfollow", f.guid.to_ifc()),
+            ));
+        }
+    }
+
+    // Firmenwerte
+    let mut raten: HashSet<String> = HashSet::new();
+    for r in take("rate") {
+        let key = r.satz.text("key").unwrap_or_default().to_string();
+        let num = r.satz.zahl("num").unwrap();
+        match rate_bereich(&key) {
+            Some((lo, hi)) if num < Dez::ganz(lo) || num > Dez::ganz(hi) => {
+                skip(
+                    &mut bf,
+                    &satz::RATE,
+                    &r,
+                    format!("num {} außerhalb {lo}–{hi}", num.text()),
+                );
+                continue;
+            }
+            Some(_) => k.werte.setzen(&key, num),
+            None => {}
+        }
+        raten.insert(key);
+    }
+
+    // Herkunft (Regel 88)
+    for r in take("origin") {
+        let s = &r.satz;
+        let key = s.text("key").unwrap_or_default().to_string();
+        let rec = s.text("rec").unwrap_or_default().to_string();
+        let da = match rec.as_str() {
+            "rate" => raten.contains(&key),
+            _ => Guid::from_ifc(&key).is_some_and(|g| match rec.as_str() {
+                "article" => artikel.contains_key(&g),
+                "service" => leistungen.contains_key(&g),
+                "svcpart" => k.anteile.iter().any(|a| a.guid == g),
+                "svcfollow" => k.folgen.iter().any(|f| f.guid == g),
+                "lot" => k.lose.iter().any(|l| l.guid == g),
+                _ => false,
+            }),
+        };
+        if !da {
+            bf.push(Befund::fehler(
+                88,
+                befund::r88(&key),
+                satz_ort("origin", key),
+            ));
+            continue;
+        }
+        let kind = s.text("kind").unwrap_or_default().to_string();
+        let offen = s.text("status") == Some("open");
+        if offen && kind == "manual" {
+            bf.push(Befund::hinweis(
+                88,
+                befund::r88_hand(&key),
+                satz_ort("origin", key.clone()),
+            ));
+        }
+        k.herkunft.push(Ursprung {
+            key,
+            rec,
+            bestaetigt: !offen || kind == "manual" || kind == "factory",
+            kind,
+            satz: r.satz,
+        });
+    }
+
+    // Kopf, Kopie, Protokoll
+    if let Some(r) = take("catalog").into_iter().next() {
+        let s = &r.satz;
+        let kopf = Kopf {
+            guid: s.guid("guid").unwrap(),
+            name: s.text("name").unwrap_or_default().to_string(),
+            stand: s.ganz("stand").unwrap_or(0) as u32,
+            entwurf: s.text("status") == Some("draft"),
+            satz: r.satz,
+        };
+        if kopf.entwurf {
+            bf.push(Befund::warnung(91, befund::r91(), Ort::Datei));
+        }
+        k.kopf = Some(kopf);
+    }
+    if let Some(r) = take("costproject").into_iter().next() {
+        let s = &r.satz;
+        k.kopie = Some(Kopie {
+            katalog: s.guid("catalog"),
+            stand: s.ganz("stand").map(|v| v as u32),
+            lvstorey: s.flag("lvstorey"),
+            keep: s.ganz("keep").map(|v| v as u32),
+            satz: r.satz,
+        });
+    }
+    let stand = k.kopf.as_ref().map_or(0, |c| c.stand);
+    for (i, r) in take("log").into_iter().enumerate() {
+        let key = r.satz.ganz("key").unwrap() as u32;
+        let st = r.satz.ganz("stand").unwrap() as u32;
+        if key as usize != i + 1 || st > stand {
+            let t = befund::r90(&key.to_string());
+            bf.push(Befund::fehler(90, t, satz_ort("log", key.to_string())));
+        }
+        k.protokoll.push(Protokoll {
+            key,
+            stand: st,
+            satz: r.satz,
+        });
+    }
+
+    // Regel 86: OZ fest und eindeutig
+    let mut los_nr: HashSet<(Option<Guid>, &str)> = HashSet::new();
+    for l in k.lose.iter().filter(|l| !l.retired) {
+        if !los_nr.insert((l.parent, l.nr.as_str())) {
+            let oz = match l.parent.and_then(|p| k.los(p)) {
+                Some(p) => format!("{}.{}", p.nr, l.nr),
+                None => l.nr.clone(),
+            };
+            bf.push(Befund::fehler(
+                86,
+                befund::r86(&oz),
+                satz_ort("lot", l.guid.to_ifc()),
+            ));
+        }
+    }
+    let mut oz: HashSet<(Guid, u16)> = HashSet::new();
+    for l in k.leistungen.iter().filter(|l| !l.retired) {
+        if !oz.insert((l.titel, l.pos)) {
+            let t = befund::r86(&k.oz(l));
+            bf.push(Befund::fehler(86, t, satz_ort("service", l.guid.to_ifc())));
+        }
+    }
+    // Regel 87: Ausgemustertes, auf das Gültiges verweist
+    let mut alt: Vec<(String, &'static str, Guid)> = Vec::new();
+    for l in k.leistungen.iter().filter(|l| !l.retired) {
+        if k.los(l.titel).is_some_and(|t| t.retired) {
+            alt.push((k.los(l.titel).unwrap().name.clone(), "lot", l.titel));
+        }
+        for a in k.anteile_von(l.guid) {
+            if let Some(x) = a.artikel.and_then(|g| k.artikel(g)).filter(|x| x.retired) {
+                alt.push((x.name.clone(), "article", x.guid));
+            }
+        }
+        for f in k.folgen_von(l.guid) {
+            if let Some(x) = k.leistung(f.folge).filter(|x| x.retired) {
+                alt.push((x.kurz.clone(), "service", x.guid));
+            }
+        }
+    }
+    alt.sort_by_key(|a| a.2);
+    alt.dedup_by_key(|a| a.2);
+    for (name, rec, g) in alt {
+        bf.push(Befund::hinweis(
+            87,
+            befund::r87(&name),
+            satz_ort(rec, g.to_ifc()),
+        ));
+    }
+    k.befunde = bf;
+    k
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sk_model::Model;
+
+    fn werk() -> Katalog {
+        let m = Model::new();
+        let z = crate::werk_zeilen();
+        lesen(
+            z.iter().map(|(a, l)| (*a, *l)),
+            &Umfeld::aus_modell(&m),
+            Quelle::Werk {
+                stand: "10/2026".into(),
+            },
+        )
+    }
+
+    /// Abnahme 8 (Teil Lesen): Der Werksbestand liest sich ohne Befund.
+    #[test]
+    fn werk_ohne_befund() {
+        let k = werk();
+        assert!(k.befunde.is_empty(), "{:#?}", k.befunde);
+        assert_eq!(k.leistungen.len(), 22);
+        assert_eq!(k.artikel.len(), 19);
+        assert_eq!(k.lose.len(), 9);
+        assert_eq!(k.anteile.len(), 28);
+        assert_eq!(k.folgen.len(), 7);
+        assert_eq!(k.werte, Firmenwerte::werk());
+        assert_eq!(k.kopf.as_ref().map(|c| c.stand), Some(5));
+        assert!(k.herkunft.iter().all(|h| h.bestaetigt));
+        let m10 = k
+            .leistungen
+            .iter()
+            .find(|l| {
+                l.kurz
+                    .starts_with("AW Porenbeton-Planstein PP2-0,35 d=17,5cm")
+            })
+            .unwrap();
+        assert_eq!(k.oz(m10), "02.0010");
+        assert_eq!(m10.stunden, Dez(450_000));
+        assert_eq!(k.anteile_von(m10.guid).count(), 2);
+    }
+
+    fn mit(zeilen: &[(&str, &str)]) -> Katalog {
+        let m = Model::new();
+        let mut z = crate::werk_zeilen();
+        z.extend(zeilen.iter().copied());
+        lesen(
+            z.iter().map(|(a, l)| (*a, *l)),
+            &Umfeld::aus_modell(&m),
+            Quelle::Werk {
+                stand: "10/2026".into(),
+            },
+        )
+    }
+
+    fn regeln(k: &Katalog) -> Vec<u16> {
+        k.befunde.iter().map(|b| b.regel).collect()
+    }
+
+    #[test]
+    fn regeln_beim_lesen() {
+        // 72 ungültig, 74 doppelt, 73 tot, 80 Einheit, 88 ohne Satz
+        let k = mit(&[
+            ("article", "[article] guid=0000000000000000000001 name=\"x\" unit=Banane"),
+            ("rate", "[rate] key=wage num=65"),
+            ("rate", "[rate] key=wage num=70"),
+            ("rate", "[rate] key=zukunft num=1"),
+            ("rate", "[rate] key=vat num=101"),
+            ("article", "[article] guid=0000000000000000000002 name=\"y\" mat=0000000000000000000009 unit=m2"),
+            ("service", "[service] guid=0000000000000000000003 short=\"s\" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=99 unit=m2 basis=volume"),
+            ("origin", "[origin] key=0000000000000000000002 rec=article kind=manual status=open date=2026-10-08"),
+            ("svcpart", "[svcpart] guid=0000000000000000000004 service=1S7bUW0010080200000001 nr=1 layer=1 qty=1"),
+        ]);
+        let r = regeln(&k);
+        for n in [72, 73, 74, 80, 88] {
+            assert!(r.contains(&n), "{n}: {:#?}", k.befunde);
+        }
+        // der erste Lohn (Werk) gilt, unbekannter Schlüssel ohne Befund
+        assert_eq!(k.werte.lohn, Dez::ganz(60));
+        assert_eq!(k.werte.mwst, Dez::ganz(19));
+        // 74 für den doppelten Stoffanteil (service, nr)
+        assert!(k
+            .befunde
+            .iter()
+            .any(|b| b.regel == 74 && b.satz.starts_with("svcpart 1S7bUW0010080200000001/1")));
+        // Sätze tragen die Wörter aus BIM §4
+        assert!(k
+            .befunde
+            .iter()
+            .any(|b| b.satz == "rate wage kommt doppelt vor; es gilt die erste Zeile."));
+    }
+
+    #[test]
+    fn standardartikel_und_oz() {
+        let k = mit(&[
+            ("article", "[article] guid=0000000000000000000001 name=\"zweiter\" mat=2wuC33GkTD9Qack6WJ4EsM t=175 unit=m2 price=1 std=1"),
+            ("service", "[service] guid=0000000000000000000003 short=\"s\" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=10 unit=m3 basis=volume"),
+            ("lot", "[lot] guid=0000000000000000000005 name=\"x\" nr=\"01\" parent=1S7bUW0010080300000001"),
+        ]);
+        let r = regeln(&k);
+        assert_eq!(
+            r.iter().filter(|n| **n == 77).count(),
+            1,
+            "{:#?}",
+            k.befunde
+        );
+        // die kleinere Guid gilt
+        assert!(
+            k.artikel(Guid::from_ifc("0000000000000000000001").unwrap())
+                .unwrap()
+                .std
+        );
+        assert!(
+            !k.artikel(Guid::from_ifc("1S7bUW0010080100000002").unwrap())
+                .unwrap()
+                .std
+        );
+        assert_eq!(
+            r.iter().filter(|n| **n == 86).count(),
+            2,
+            "{:#?}",
+            k.befunde
+        );
+    }
+
+    #[test]
+    fn protokoll_und_entwurf() {
+        let k = mit(&[
+            ("log", "[log] key=1 stand=1 time=2026-10-08T07:00 role=admin op=preis_setzen rec=rate of=wage"),
+            ("log", "[log] key=3 stand=9 time=2026-10-08T07:00 role=admin op=preis_setzen rec=rate of=wage"),
+        ]);
+        assert_eq!(regeln(&k), vec![90]);
+        let z = "[catalog] guid=0000000000000000000001 name=\"F\" stand=0 status=draft";
+        let k = lesen(
+            [("catalog", z)],
+            &Umfeld::aus_modell(&Model::new()),
+            Quelle::Werk {
+                stand: String::new(),
+            },
+        );
+        assert_eq!(regeln(&k), vec![91]);
+    }
+}

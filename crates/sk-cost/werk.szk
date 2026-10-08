@@ -1,0 +1,137 @@
+SZK 1
+# Skizzeo-Werksbestand Stammdaten, Stand 5 (10/2026), nur die neuen Abschnitte aus KA-0.
+# Herkunft: Skizzeo-Referenz 10/2026, unverbindlich. Erzeugt von stammdaten/werkzeug/werksbestand.py, nicht von Hand ändern.
+[catalog] guid=1S7bUW0010080600000001 name="Skizzeo-Werksbestand" stand=5 date=2026-10-08 status=released
+[rate] key=wage num=60
+[rate] key=surcharge num=0
+[rate] key=vat num=19
+[rate] key=steel.floor num=100
+[rate] key=steel.groundslab num=80
+[rate] key=steel.stripfooting num=40
+[lot] guid=1S7bUW0010080300000001 name="Rohbau" nr="1" pre="Abrechnung nach VOB/C, ATV DIN 18299 ff., in der bei Vertragsschluss gültigen Fassung. Die Mengen sind aus dem Gebäudemodell ermittelt; maßgeblich ist das Aufmaß. Einheitspreise netto in Euro. Baustelleneinrichtung, Gerüste und Erdarbeiten sind nicht Gegenstand dieses Leistungsverzeichnisses."
+[lot] guid=1S7bUW0010080300000002 name="Betonarbeiten" nr="01" parent=1S7bUW0010080300000001
+[lot] guid=1S7bUW0010080300000003 name="Mauerarbeiten" nr="02" parent=1S7bUW0010080300000001
+[lot] guid=1S7bUW0010080300000004 name="Kerndämmung" nr="03" parent=1S7bUW0010080300000001
+[lot] guid=1S7bUW0010080300000005 name="Verblendmauerwerk" nr="04" parent=1S7bUW0010080300000001
+[lot] guid=1S7bUW0010080300000006 name="WDVS" nr="2" pre="Abrechnung nach VOB/C, ATV DIN 18299 ff., in der bei Vertragsschluss gültigen Fassung. Die Mengen sind aus dem Gebäudemodell ermittelt; maßgeblich ist das Aufmaß. Einheitspreise netto in Euro. Baustelleneinrichtung, Gerüste und Erdarbeiten sind nicht Gegenstand dieses Leistungsverzeichnisses."
+[lot] guid=1S7bUW0010080300000007 name="Wärmedämm-Verbundsystem" nr="01" parent=1S7bUW0010080300000006
+[lot] guid=1S7bUW0010080300000008 name="Putz" nr="3" pre="Abrechnung nach VOB/C, ATV DIN 18299 ff., in der bei Vertragsschluss gültigen Fassung. Die Mengen sind aus dem Gebäudemodell ermittelt; maßgeblich ist das Aufmaß. Einheitspreise netto in Euro. Baustelleneinrichtung, Gerüste und Erdarbeiten sind nicht Gegenstand dieses Leistungsverzeichnisses."
+[lot] guid=1S7bUW0010080300000009 name="Innenputz" nr="01" parent=1S7bUW0010080300000008
+[article] guid=1S7bUW0010080100000001 name="Porenbeton-Planbauplatte PP2-0,35 d=11,5cm" mat=2wuC33GkTD9Qack6WJ4EsM t=115 grade="PP2-0,35" format="599×249" unit=m2 price=15.8 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW0010080100000002 name="Porenbeton-Planstein PP2-0,35 d=17,5cm" mat=2wuC33GkTD9Qack6WJ4EsM t=175 grade="PP2-0,35" format="600×249" unit=m2 price=22.16 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW0010080100000003 name="Porenbeton-Planstein PP2-0,35 d=24cm" mat=2wuC33GkTD9Qack6WJ4EsM t=240 grade="PP2-0,35" format="600×249" unit=m2 price=29.4 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW0010080100000004 name="Porenbeton-Planstein PP2-0,35 d=36,5cm" mat=2wuC33GkTD9Qack6WJ4EsM t=365 grade="PP2-0,35" format="600×249" unit=m2 price=41.6 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW0010080100000005 name="Dünnbettmörtel für Porenbeton" format="Sack 25 kg" unit=kg price=1.1 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW0010080100000006 name="Transportbeton C25/30 XC1-XC2 F3" mat=32Ino7hAj08ufHFYBJxPyP grade="C25/30" format="Größtkorn 16/22" unit=m3 price=190 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW0010080100000007 name="Betonstahl B500, geschnitten und gebogen" grade="B500B" unit=t price=1000 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW0010080100000008 name="Deckenschalung, Vorhaltung und Verschleiß" unit=m2 price=8 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW0010080100000009 name="Randschalung, Vorhaltung und Verschleiß" unit=m price=5 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW001008010000000A name="Kerndämmplatte MW 035 d=140mm" mat=0isiJXaEH68fAGDc36vC$0 t=140 grade="WLS 035" format="1000×625" unit=m2 price=16 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW001008010000000B name="Klinker NF inkl. Vormauermörtel" mat=203X9w6RHAvxaAnObFB0IP t=115 grade="KMz" format="NF, 48 St/m²" unit=m2 price=55 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW001008010000000C name="Konsolanker Edelstahl, Abfangung" grade="A4" unit=m price=35 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW001008010000000D name="Randdämmstreifen MW" mat=2dv8rsAYH3ovLj1KIg1$Mo grade="WLS 035" format="Höhe bis 25 cm" unit=m price=3 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW001008010000000E name="WDVS-System EPS 035 d=120mm inkl. Kleber, Dübel, Gewebe, Oberputz" mat=2zPDwmqLPDpAPPFFMa8UFs t=120 grade="WLS 035" unit=m2 price=48.2 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW001008010000000F name="WDVS-System EPS 035 d=140mm inkl. Kleber, Dübel, Gewebe, Oberputz" mat=2zPDwmqLPDpAPPFFMa8UFs t=140 grade="WLS 035" unit=m2 price=50 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW001008010000000G name="EPS-Dämmplatte 035 d=120mm geklebt, inkl. Armierung und Putz" mat=2zPDwmqLPDpAPPFFMa8UFs t=120 grade="WLS 035" unit=m2 price=35 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW001008010000000H name="Gipsputz maschinell 15 mm" mat=3wpDPQ9rX51Re1tUzckf7X unit=m2 price=5 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW001008010000000I name="MW-Lamellenplatte 035 d=120mm geklebt, inkl. Armierung und Putz" mat=0isiJXaEH68fAGDc36vC$0 t=120 grade="WLS 035" unit=m2 price=40 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW001008010000000J name="MW-Dämmplatte 035 d=120mm gedübelt, inkl. Armierung und Putz" mat=2dv8rsAYH3ovLj1KIg1$Mo t=120 grade="WLS 035" unit=m2 price=40 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[service] guid=1S7bUW0010080200000001 short="Bodenplatte Stb C25/30 XC2 d=18-25cm" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=10 unit=m3 basis=volume hours=0.6 cats=groundslab mat=32Ino7hAj08ufHFYBJxPyP tmin=180 tmax=250
+[service] guid=1S7bUW0010080200000002 short="Frostschürze Stb C25/30 b=30-45cm erdgeschalt" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=20 unit=m3 basis=volume hours=1 cats=stripfooting mat=32Ino7hAj08ufHFYBJxPyP
+[service] guid=1S7bUW0010080200000003 short="Stb-Decke Ortbeton C25/30 XC1 d=18-25cm" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=30 unit=m3 basis=volume hours=0.6 cats=floor mat=32Ino7hAj08ufHFYBJxPyP tmin=180 tmax=250
+[service] guid=1S7bUW0010080200000004 short="Deckenschalung glatt, kein Sichtbeton, Stützhöhe bis 3,0m" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=40 unit=m2 basis=formwork hours=0.5
+[service] guid=1S7bUW0010080200000005 short="Randschalung Decke/Bodenplatte h bis 25cm" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=50 unit=m basis=perimeter hours=0.4
+[service] guid=1S7bUW0010080200000006 short="Betonstahl B500 liefern, schneiden, biegen, verlegen" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=60 unit=t basis=steel hours=10
+[service] guid=1S7bUW0010080200000007 short="AW Porenbeton-Planstein PP2-0,35 d=17,5cm Dünnbettmörtel" trade=1S7Wf_00100800000004UQ title=1S7bUW0010080300000003 pos=10 unit=m2 basis=area hours=0.45 cats=exterior mat=2wuC33GkTD9Qack6WJ4EsM tmin=170 tmax=180 fn=loadbearing
+[service] guid=1S7bUW0010080200000008 short="AW Porenbeton-Planstein PP2-0,35 d=24cm Dünnbettmörtel" trade=1S7Wf_00100800000004UQ title=1S7bUW0010080300000003 pos=20 unit=m2 basis=area hours=0.5 cats=exterior mat=2wuC33GkTD9Qack6WJ4EsM tmin=230 tmax=250 fn=loadbearing
+[service] guid=1S7bUW0010080200000009 short="AW Porenbeton-Planstein PP2-0,35 d=36,5cm Dünnbettmörtel" trade=1S7Wf_00100800000004UQ title=1S7bUW0010080300000003 pos=30 unit=m2 basis=area hours=0.6 cats=exterior mat=2wuC33GkTD9Qack6WJ4EsM tmin=355 tmax=375 fn=loadbearing
+[service] guid=1S7bUW001008020000000A short="IW Porenbeton-Planstein PP2-0,35 d=24cm Dünnbettmörtel" trade=1S7Wf_00100800000004UQ title=1S7bUW0010080300000003 pos=40 unit=m2 basis=area hours=0.5 cats=interior mat=2wuC33GkTD9Qack6WJ4EsM tmin=230 tmax=250
+[service] guid=1S7bUW001008020000000B short="IW Porenbeton-Planstein PP2-0,35 d=17,5cm Dünnbettmörtel" trade=1S7Wf_00100800000004UQ title=1S7bUW0010080300000003 pos=50 unit=m2 basis=area hours=0.45 cats=interior mat=2wuC33GkTD9Qack6WJ4EsM tmin=170 tmax=180
+[service] guid=1S7bUW001008020000000C short="IW Porenbeton-Planbauplatte d=11,5cm Dünnbettmörtel" trade=1S7Wf_00100800000004UQ title=1S7bUW0010080300000003 pos=60 unit=m2 basis=area hours=0.4 cats=interior mat=2wuC33GkTD9Qack6WJ4EsM tmin=110 tmax=120
+[service] guid=1S7bUW001008020000000D short="Randdämmstreifen an Deckenrand, MW d=6cm" trade=1S7Wf_00100800000004UQ title=1S7bUW0010080300000003 pos=70 unit=m basis=length hours=0.05 cats=edgeinsulation mat=2dv8rsAYH3ovLj1KIg1$Mo
+[service] guid=1S7bUW001008020000000E short="Kerndämmung MW-Platte WLS 035 d=140mm 2-schal. Mauerwerk" trade=1S7Wf_00100800000004UQ title=1S7bUW0010080300000004 pos=10 unit=m2 basis=area hours=0.15 cats=exterior mat=0isiJXaEH68fAGDc36vC$0 tmin=130 tmax=150
+[service] guid=1S7bUW001008020000000F short="Verblendschale Klinker NF d=11,5cm Läuferverband verfugt" trade=1S7Wf_00100800000004UQ title=1S7bUW0010080300000005 pos=10 unit=m2 basis=area hours=1.2 cats=exterior mat=203X9w6RHAvxaAnObFB0IP tmin=105 tmax=125
+[service] guid=1S7bUW001008020000000G short="Abfangung Verblendschale, Konsolanker Edelstahl" trade=1S7Wf_00100800000004UQ title=1S7bUW0010080300000005 pos=20 unit=m basis=length hours=0.3
+[service] guid=1S7bUW001008020000000H short="WDVS EPS 035 d=120mm, Kleber, Dübel, Armierung, Oberputz" trade=1S7Wf_00100800000004Uf title=1S7bUW0010080300000007 pos=10 unit=m2 basis=area hours=1.1 cats=exterior mat=2zPDwmqLPDpAPPFFMa8UFs tmin=100 tmax=130
+[service] guid=1S7bUW001008020000000I short="WDVS EPS 035 d=140mm, Kleber, Dübel, Armierung, Oberputz" trade=1S7Wf_00100800000004Uf title=1S7bUW0010080300000007 pos=20 unit=m2 basis=area hours=1.1 cats=exterior mat=2zPDwmqLPDpAPPFFMa8UFs tmin=131 tmax=160
+[service] guid=1S7bUW001008020000000J short="Untersichtdämmung Decke EPS d=120mm geklebt, verputzt" trade=1S7Wf_00100800000004Uf title=1S7bUW0010080300000007 pos=30 unit=m2 basis=area hours=0.9 cats=soffitinsulation mat=2zPDwmqLPDpAPPFFMa8UFs
+[service] guid=1S7bUW001008020000000K short="Innenputz Gips maschinell d=15mm Q2" trade=1S7Wf_00100800000004Uk title=1S7bUW0010080300000009 pos=10 unit=m2 basis=area hours=0.25 cats=exterior,interior mat=3wpDPQ9rX51Re1tUzckf7X
+[service] guid=1S7bUW001008020000000L short="Untersichtdämmung Decke MW-Lamelle d=120mm geklebt, verputzt" trade=1S7Wf_00100800000004Uf title=1S7bUW0010080300000007 pos=40 unit=m2 basis=area hours=0.9 cats=soffitinsulation mat=0isiJXaEH68fAGDc36vC$0
+[service] guid=1S7bUW001008020000000M short="Untersichtdämmung Decke MW-Platte d=120mm gedübelt, verputzt" trade=1S7Wf_00100800000004Uf title=1S7bUW0010080300000007 pos=50 unit=m2 basis=area hours=1 cats=soffitinsulation mat=2dv8rsAYH3ovLj1KIg1$Mo
+[svcpart] guid=1S7bUW0010080400000001 service=1S7bUW0010080200000001 nr=1 art=1S7bUW0010080100000006 qty=1
+[svcpart] guid=1S7bUW0010080400000002 service=1S7bUW0010080200000002 nr=1 art=1S7bUW0010080100000006 qty=1
+[svcpart] guid=1S7bUW0010080400000003 service=1S7bUW0010080200000003 nr=1 art=1S7bUW0010080100000006 qty=1
+[svcpart] guid=1S7bUW0010080400000004 service=1S7bUW0010080200000004 nr=1 art=1S7bUW0010080100000008 qty=1
+[svcpart] guid=1S7bUW0010080400000005 service=1S7bUW0010080200000005 nr=1 art=1S7bUW0010080100000009 qty=1
+[svcpart] guid=1S7bUW0010080400000006 service=1S7bUW0010080200000006 nr=1 art=1S7bUW0010080100000007 qty=1
+[svcpart] guid=1S7bUW0010080400000007 service=1S7bUW0010080200000007 nr=1 art=1S7bUW0010080100000002 qty=1
+[svcpart] guid=1S7bUW0010080400000008 service=1S7bUW0010080200000007 nr=2 art=1S7bUW0010080100000005 qty=4.4
+[svcpart] guid=1S7bUW0010080400000009 service=1S7bUW0010080200000008 nr=1 art=1S7bUW0010080100000003 qty=1
+[svcpart] guid=1S7bUW001008040000000A service=1S7bUW0010080200000008 nr=2 art=1S7bUW0010080100000005 qty=6
+[svcpart] guid=1S7bUW001008040000000B service=1S7bUW0010080200000009 nr=1 art=1S7bUW0010080100000004 qty=1
+[svcpart] guid=1S7bUW001008040000000C service=1S7bUW0010080200000009 nr=2 art=1S7bUW0010080100000005 qty=9.1
+[svcpart] guid=1S7bUW001008040000000D service=1S7bUW001008020000000A nr=1 art=1S7bUW0010080100000003 qty=1
+[svcpart] guid=1S7bUW001008040000000E service=1S7bUW001008020000000A nr=2 art=1S7bUW0010080100000005 qty=6
+[svcpart] guid=1S7bUW001008040000000F service=1S7bUW001008020000000B nr=1 art=1S7bUW0010080100000002 qty=1
+[svcpart] guid=1S7bUW001008040000000G service=1S7bUW001008020000000B nr=2 art=1S7bUW0010080100000005 qty=4.4
+[svcpart] guid=1S7bUW001008040000000H service=1S7bUW001008020000000C nr=1 art=1S7bUW0010080100000001 qty=1
+[svcpart] guid=1S7bUW001008040000000I service=1S7bUW001008020000000C nr=2 art=1S7bUW0010080100000005 qty=2.9
+[svcpart] guid=1S7bUW001008040000000J service=1S7bUW001008020000000D nr=1 art=1S7bUW001008010000000D qty=1
+[svcpart] guid=1S7bUW001008040000000K service=1S7bUW001008020000000E nr=1 art=1S7bUW001008010000000A qty=1
+[svcpart] guid=1S7bUW001008040000000L service=1S7bUW001008020000000F nr=1 art=1S7bUW001008010000000B qty=1
+[svcpart] guid=1S7bUW001008040000000M service=1S7bUW001008020000000G nr=1 art=1S7bUW001008010000000C qty=1
+[svcpart] guid=1S7bUW001008040000000N service=1S7bUW001008020000000H nr=1 art=1S7bUW001008010000000E qty=1
+[svcpart] guid=1S7bUW001008040000000O service=1S7bUW001008020000000I nr=1 art=1S7bUW001008010000000F qty=1
+[svcpart] guid=1S7bUW001008040000000P service=1S7bUW001008020000000J nr=1 art=1S7bUW001008010000000G qty=1
+[svcpart] guid=1S7bUW001008040000000Q service=1S7bUW001008020000000K nr=1 art=1S7bUW001008010000000H qty=1
+[svcpart] guid=1S7bUW001008040000000R service=1S7bUW001008020000000L nr=1 art=1S7bUW001008010000000I qty=1
+[svcpart] guid=1S7bUW001008040000000S service=1S7bUW001008020000000M nr=1 art=1S7bUW001008010000000J qty=1
+[svcfollow] guid=1S7bUW0010080500000001 service=1S7bUW0010080200000001 nr=1 follow=1S7bUW0010080200000005
+[svcfollow] guid=1S7bUW0010080500000002 service=1S7bUW0010080200000001 nr=2 follow=1S7bUW0010080200000006
+[svcfollow] guid=1S7bUW0010080500000003 service=1S7bUW0010080200000002 nr=1 follow=1S7bUW0010080200000006
+[svcfollow] guid=1S7bUW0010080500000004 service=1S7bUW0010080200000003 nr=1 follow=1S7bUW0010080200000004
+[svcfollow] guid=1S7bUW0010080500000005 service=1S7bUW0010080200000003 nr=2 follow=1S7bUW0010080200000005
+[svcfollow] guid=1S7bUW0010080500000006 service=1S7bUW0010080200000003 nr=3 follow=1S7bUW0010080200000006
+[svcfollow] guid=1S7bUW0010080500000007 service=1S7bUW001008020000000F nr=1 follow=1S7bUW001008020000000G
+[flow] guid=1S7bUW0010080700000001 name="Neuen Stein mit Preis anlegen" ask="Ein Stein für Mauerwerk, mit Preis je m²." kind=admin
+[flow] guid=1S7bUW0010080700000002 name="Händlerpreis für dieses Haus eintragen" ask="Der Preis gilt nur für dieses Haus." kind=user
+[flow] guid=1S7bUW0010080700000003 name="Verrechnungslohn für das neue Jahr setzen" ask="Gilt für alle neuen Häuser." kind=admin
+[flowstep] guid=1S7bUW0010080800000001 flow=1S7bUW0010080700000001 nr=1 step=ask key=baustoff text="Aus welchem Baustoff?" type=pick:material
+[flowstep] guid=1S7bUW0010080800000002 flow=1S7bUW0010080700000001 nr=2 step=ask key=dicke text="Wie dick ist der Stein (mm)?" type=mm min=50 max=500
+[flowstep] guid=1S7bUW0010080800000003 flow=1S7bUW0010080700000001 nr=3 step=ask key=preis text="Was kostet er netto je m²?" type=money min=0.01 max=1000
+[flowstep] guid=1S7bUW0010080800000004 flow=1S7bUW0010080700000001 nr=4 step=ask key=name text="Wie soll der Stein heißen?" type=text
+[flowstep] guid=1S7bUW0010080800000005 flow=1S7bUW0010080700000001 nr=5 step=ask key=quelle text="Woher stammt der Preis?" type=text optional=1
+[flowstep] guid=1S7bUW0010080800000006 flow=1S7bUW0010080700000001 nr=6 step=op op=artikel_anlegen args="baustoff={baustoff} name={name} dicke={dicke} einheit=m2 preis={preis} quelle={quelle}"
+[flowstep] guid=1S7bUW0010080800000007 flow=1S7bUW0010080700000001 nr=7 step=done text="Stein {name} mit {preis} €/m² angelegt."
+[flowstep] guid=1S7bUW0010080800000008 flow=1S7bUW0010080700000002 nr=1 step=ask key=artikel text="Für welchen Artikel?" type=pick:article
+[flowstep] guid=1S7bUW0010080800000009 flow=1S7bUW0010080700000002 nr=2 step=ask key=preis text="Welcher Preis steht im Angebot (netto)?" type=money min=0.01 max=100000
+[flowstep] guid=1S7bUW001008080000000A flow=1S7bUW0010080700000002 nr=3 step=ask key=quelle text="Von welchem Händler, mit Datum?" type=text optional=1
+[flowstep] guid=1S7bUW001008080000000B flow=1S7bUW0010080700000002 nr=4 step=op op=preis_setzen args="artikel={artikel} preis={preis} quelle={quelle}"
+[flowstep] guid=1S7bUW001008080000000C flow=1S7bUW0010080700000002 nr=5 step=done text="Preis {preis} € für dieses Haus eingetragen."
+[flowstep] guid=1S7bUW001008080000000D flow=1S7bUW0010080700000003 nr=1 step=ask key=lohn text="Wie hoch ist der Verrechnungslohn (€/h netto)?" type=money min=20 max=200
+[flowstep] guid=1S7bUW001008080000000E flow=1S7bUW0010080700000003 nr=2 step=op op=firmenwert_setzen args="schluessel=wage wert={lohn}"
+[flowstep] guid=1S7bUW001008080000000F flow=1S7bUW0010080700000003 nr=3 step=done text="Verrechnungslohn {lohn} €/h gesetzt."
+[origin] key=1S7bUW0010080100000001 rec=article kind=factory status=confirmed date=2026-10-08 source="keine Quelle für 11,5 cm, nach Dicke abgeleitet" conf=rough
+[origin] key=1S7bUW0010080100000008 rec=article kind=factory status=confirmed date=2026-10-08 source="geschätzt, keine Quelle" conf=rough
+[origin] key=1S7bUW0010080100000009 rec=article kind=factory status=confirmed date=2026-10-08 source="geschätzt, keine Quelle" conf=rough
+[origin] key=1S7bUW001008010000000A rec=article kind=factory status=confirmed date=2026-10-08 source="Knauf KD-035 40 mm 7,09 €/m² brutto, auf 140 mm hochgerechnet" conf=rough
+[origin] key=1S7bUW001008010000000B rec=article kind=factory status=confirmed date=2026-10-08 source="Terca NF 2,11–2,78 €/St brutto (Premium); Ratgeber 42–68 €/m²" conf=rough
+[origin] key=1S7bUW001008010000000C rec=article kind=factory status=confirmed date=2026-10-08 source="geschätzt, keine Quelle" conf=rough
+[origin] key=1S7bUW001008010000000D rec=article kind=factory status=confirmed date=2026-10-08 source="aus MW-Plattenpreis geschätzt" conf=rough
+[origin] key=1S7bUW001008010000000E rec=article kind=factory status=confirmed date=2026-10-08 source="EPS 140 10–15 €/m², Kleber und Armierung 6–9 €/m²; Systemanbieter nicht frei einsehbar" conf=rough
+[origin] key=1S7bUW001008010000000F rec=article kind=factory status=confirmed date=2026-10-08 source="EPS 140 10–15 €/m², Kleber und Armierung 6–9 €/m²; Systemanbieter nicht frei einsehbar" conf=rough
+[origin] key=1S7bUW001008010000000G rec=article kind=factory status=confirmed date=2026-10-08 source="aus WDVS-System abgeleitet" conf=rough
+[origin] key=1S7bUW001008010000000I rec=article kind=factory status=confirmed date=2026-10-08 source="aus WDVS-Untersicht abgeleitet, MW-Lamelle teurer als EPS" conf=rough
+[origin] key=1S7bUW001008010000000J rec=article kind=factory status=confirmed date=2026-10-08 source="wie A-UDMW" conf=rough
+[origin] key=1S7bUW0010080200000002 rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: geschätzt, Einbau in den Graben" conf=rough
+[origin] key=1S7bUW0010080200000004 rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: Baubetrieb 0,8–1,0 h/m², Systemschalung 0,4–0,6" conf=rough
+[origin] key=1S7bUW0010080200000005 rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: geschätzt" conf=rough
+[origin] key=1S7bUW0010080200000006 rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: Baubetrieb 15–20 h/t, Akkordverleger 3–5 h/t" conf=rough
+[origin] key=1S7bUW001008020000000C rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: Erfahrungswert" conf=rough
+[origin] key=1S7bUW001008020000000D rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: geschätzt" conf=rough
+[origin] key=1S7bUW001008020000000E rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: Schätzung 0,15–0,25 h/m²" conf=rough
+[origin] key=1S7bUW001008020000000F rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: Lohnanteil Klinker 45–65 %" conf=rough
+[origin] key=1S7bUW001008020000000G rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: geschätzt" conf=rough
+[origin] key=1S7bUW001008020000000J rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: Überkopfarbeit, geschätzt" conf=rough
+[origin] key=1S7bUW001008020000000L rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: wie W30" conf=rough
+[origin] key=1S7bUW001008020000000M rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: wie W30, Dübeln überkopf +0,1 h/m²" conf=rough

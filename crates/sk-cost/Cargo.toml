@@ -1,0 +1,9 @@
+[package]
+name = "sk-cost"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+sk-math = { path = "../sk-math" }
+sk-model = { path = "../sk-model" }

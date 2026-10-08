@@ -112,7 +112,7 @@ pub fn load(path: &Path) -> Result<szo::Loaded, String> {
         .map_err(|e| format!("„{}“ konnte nicht geöffnet werden: {e}", path.display()))?;
     let text = String::from_utf8(bytes)
         .map_err(|_| format!("„{}“ ist keine Skizzeo-Datei (kein UTF-8).", path.display()))?;
-    szo::read(&text, GuidGen::from_time())
+    szo::read_with(&text, GuidGen::from_time(), &sk_cost::lesen::ABSCHNITTE_SZO)
         .map_err(|e| format!("„{}“ konnte nicht geöffnet werden.\n\n{e}", path.display()))
 }
 
@@ -187,6 +187,26 @@ mod tests {
         let l = load(&path).unwrap();
         assert!(l.hints.is_empty(), "{:?}", l.hints);
         assert_eq!(szo::write(&l.model), szo::write(s.model()));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// KA-0c: Öffnen übergibt die Kostenabschnitte an den
+    /// Erweiterungsspeicher; Speichern schreibt sie bytegleich zurück.
+    #[test]
+    fn kostenzeilen_bleiben_beim_oeffnen_und_speichern() {
+        let d = dir("kosten");
+        let mut s = Scene::new();
+        house(&mut s);
+        let mut text = szo::write(s.model());
+        text += "[rate] key=wage num=65 zukunft=1\n[costproject] key=project stand=5\n";
+        let path = d.join("Haus.szo");
+        std::fs::write(&path, &text).unwrap();
+        let l = load(&path).unwrap();
+        assert!(l.hints.is_empty(), "{:?}", l.hints);
+        assert_eq!(l.model.ext("rate").count(), 1);
+        assert_eq!(l.model.ext("costproject").count(), 1);
+        save(&l.model, &path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
         let _ = std::fs::remove_dir_all(&d);
     }
 

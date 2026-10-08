@@ -5,7 +5,7 @@
 //! dann mit dem eingebauten Startbestand weiter und blockiert nie.
 
 use sk_model::{export_material, export_type, Guid, MaterialId, Model};
-use sk_model::{read_szk, write_szk, Library};
+use sk_model::{read_szk_with, write_szk, Library};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
@@ -145,7 +145,7 @@ impl Company {
         match std::fs::read_to_string(&self.path) {
             Ok(text) => {
                 self.stamp = modified(&self.path);
-                match read_szk(&text) {
+                match read_szk_with(&text, &sk_cost::lesen::ABSCHNITTE_SZK) {
                     Ok(lib) => {
                         let unknown = lib.foreign.unknown;
                         let bearings = lib.invalid_bearings();
@@ -405,7 +405,7 @@ mod tests {
             h,
             ["Firmenkatalog: neue Werkstypen ergänzt (AW-36,5).".to_string()]
         );
-        let vorher = read_szk(alt).unwrap();
+        let vorher = sk_model::read_szk(alt).unwrap();
         let lib = c.library();
         for (_, t) in vorher.types.iter() {
             let n = lib.types.iter().find(|(_, x)| x.guid == t.guid).unwrap().1;
@@ -540,13 +540,41 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&p).unwrap(), fremd);
         assert!(c.reload(true).is_empty());
         assert_eq!(c.save_type(&m, g), SaveResult::Saved);
-        let lib = read_szk(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        let lib = sk_model::read_szk(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert!(compare(&m, &lib).iter().all(|x| x.1 == TypeState::Same));
         let names: Vec<String> = std::fs::read_dir(&d)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, [FILE_NAME]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// KA-0c: Kostenzeilen im Firmenkatalog gehen in den
+    /// Erweiterungsspeicher (kein Hinweis „unbekannte Angaben“) und bleiben
+    /// beim Speichern eines Typs bytegleich stehen.
+    #[test]
+    fn kostenzeilen_im_firmenkatalog_bleiben() {
+        let d = dir("kosten");
+        let p = d.join(FILE_NAME);
+        let kosten =
+            "[catalog] guid=0000000000000000000F01 name=\"Muster Bau\" stand=1 status=released\n\
+                      [rate] key=wage num=70\n";
+        let text = write_szk(&Library::standard()) + kosten;
+        std::fs::write(&p, &text).unwrap();
+        let (mut c, h) = Company::load(&p, false);
+        assert!(h.is_empty(), "{h:?}");
+        assert_eq!(c.library().ext("rate").count(), 1);
+        let mut m = Model::from_library(c.library());
+        let id = m.defaults().exterior_wall;
+        let mut t = m.layer_set(id).unwrap().clone();
+        t.layers[0].thickness = 130.0;
+        assert!(m.set_layer_set(id, t));
+        let g = m.layer_set(id).unwrap().guid;
+        assert_eq!(c.save_type(&m, g), SaveResult::Saved);
+        let neu = std::fs::read_to_string(&p).unwrap();
+        assert!(neu != text, "Typ nicht gespeichert");
+        assert!(neu.ends_with(kosten), "{neu}");
         let _ = std::fs::remove_dir_all(&d);
     }
 }
