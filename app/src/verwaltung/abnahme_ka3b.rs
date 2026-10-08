@@ -584,3 +584,123 @@ fn abnahme_ka3b_stunden_neue_haeuser_behaelt_entwurf() {
         let _ = std::fs::remove_dir_all(&d);
     }
 }
+
+/// Review 3av an RH-1 bis RH-3: Das Haus hat an einer Bauleistung ein
+/// eigenes Gerät 5,00 („Nur dieses Haus“, Regel 89), der Entwurf Gerät
+/// 2,00. „Stunden für dieses und neue Häuser“ mit Kennwort: das Haus
+/// bekommt die Stunden und behält sein Gerät samt Marke, der Entwurf die
+/// Stunden mit seinem Gerät; nach „Freigeben“ hat die Firma Stunden und
+/// Gerät 2,00, das Haus weiter Gerät 5,00.
+#[test]
+fn abnahme_ka3b_auch_hier_behaelt_eigene_werte() {
+    for (name, text) in haeuser() {
+        let d = ordner(&format!("3av-{name}"));
+        let mut s = szene(text);
+        let mut c = mit_kennwort(&d, &mut s);
+        let blatt = s.kostenblatt(Some((c.library(), c.stand())), &sk_cost::Umfang::projekt());
+        let k = s.katalog(Some((c.library(), c.stand())));
+        let l = blatt
+            .positionen
+            .iter()
+            .filter_map(|z| match z.quelle {
+                sk_cost::rechnung::Quelle::Leistung(g) => k.leistung(g),
+                _ => None,
+            })
+            .find(|l| {
+                l.stunden != Dez::NULL && l.geraet != Dez::ganz(2) && l.geraet != Dez::ganz(5)
+            })
+            .unwrap_or_else(|| panic!("{name}: keine Bauleistung mit Stunden"))
+            .clone();
+        let g = l.guid;
+        let stunden = Dez(l.stunden.0 * 2);
+        // Haus: eigenes Gerät 5,00
+        let mut daten = sk_cost::preis::bauleistung(&l);
+        daten.geraet = Dez::ganz(5);
+        s.kosten_folge(
+            "Gerät nur hier",
+            Some(c.library()),
+            &h(),
+            &[Op::BauleistungAendern {
+                bauleistung: g,
+                daten,
+            }],
+        )
+        .unwrap();
+        // Entwurf: Gerät 2,00
+        let mut v = Verwaltung::open(&s, Some(&c), None);
+        v.waehlen(Knoten::Leistung(g));
+        assert!(v.eingeben(&Feld::Geraet, "2"), "{name}");
+        assert!(v.entwurf_faellig(), "{name}: {:?}", v.befunde);
+        c.fuer_entwurf(&h(), v.ops()).expect("Entwurf geschrieben");
+        v.entwurf_gespeichert(&c);
+        // Stunden für dieses und neue Häuser, aus der Zeile des Hauses
+        let hier = |s: &mut Scene, c: &Company| {
+            s.katalog(Some((c.library(), c.stand())))
+                .leistung(g)
+                .unwrap()
+                .clone()
+        };
+        let lh = hier(&mut s, &c);
+        assert_eq!(lh.geraet, Dez::ganz(5), "{name}");
+        let mut daten = sk_cost::preis::bauleistung(&lh);
+        daten.stunden = stunden;
+        s.fuer_firma_auch_hier(
+            "Stunden für neue Häuser",
+            &mut c,
+            &h(),
+            &[Op::BauleistungAendern {
+                bauleistung: g,
+                daten,
+            }],
+        )
+        .unwrap_or_else(|b| panic!("{name}: {b:?}"));
+        let marke = |s: &Scene| {
+            s.model()
+                .ext("origin")
+                .any(|r| r.id.as_deref() == Some(&g.to_ifc()) && r.line.contains("proj=1"))
+        };
+        let lh = hier(&mut s, &c);
+        assert_eq!(
+            (lh.stunden, lh.geraet),
+            (stunden, Dez::ganz(5)),
+            "{name}: Haus behält eigenes Gerät (Regel 89)"
+        );
+        assert!(marke(&s), "{name}: Marke bleibt");
+        let e = sk_model::read_szk_with(
+            &std::fs::read_to_string(c.entwurf_pfad()).unwrap(),
+            &sk_cost::lesen::ABSCHNITTE_SZK,
+        )
+        .unwrap();
+        let e = sk_cost::verwaltung::wie_freigegeben(&e);
+        let le = sk_cost::lesen::firma_oder_werk(&sk_model::Model::new(), Some(&e))
+            .leistung(g)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            (le.stunden, le.geraet),
+            (stunden, Dez::ganz(2)),
+            "{name}: Entwurf"
+        );
+        // Freigeben: Firma Gerät 2,00, das Haus weiter 5,00 mit Marke
+        s.freigeben(FREIGEGEBEN, &mut c, &h()).expect("freigegeben");
+        let lf = sk_cost::lesen::firma_oder_werk(&sk_model::Model::new(), Some(c.library()))
+            .leistung(g)
+            .unwrap()
+            .clone();
+        assert_eq!((lf.stunden, lf.geraet), (stunden, Dez::ganz(2)), "{name}");
+        let lh = hier(&mut s, &c);
+        assert_eq!(
+            (lh.stunden, lh.geraet),
+            (stunden, Dez::ganz(5)),
+            "{name}: Haus nach Freigeben"
+        );
+        assert!(marke(&s), "{name}: Marke nach Freigeben");
+        eprintln!(
+            "KA3B-3av {name}: {} Stunden {} → {}, Haus Gerät 5,00, Firma 2,00",
+            l.kurz,
+            l.stunden.text(),
+            stunden.text()
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}

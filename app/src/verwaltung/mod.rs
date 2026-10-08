@@ -24,6 +24,8 @@ mod abnahme_ka3a34;
 mod abnahme_ka3a7;
 #[cfg(test)]
 mod abnahme_ka3b;
+#[cfg(test)]
+mod abnahme_ka3b4;
 mod assistent;
 mod baum;
 mod entwurf;
