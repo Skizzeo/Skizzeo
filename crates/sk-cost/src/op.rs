@@ -1052,7 +1052,7 @@ fn quelle_zeilen(firma: Option<&Library>, quelle: &Quelle) -> (ExtStore, Option<
 }
 
 /// Hat das Projekt eine Kopie (Bausteingrenze §6)?
-fn hat_kopie(m: &Model) -> bool {
+pub fn hat_kopie(m: &Model) -> bool {
     [
         "costproject",
         "article",

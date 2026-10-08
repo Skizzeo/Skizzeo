@@ -8,7 +8,7 @@ use sk_model::{export_material, export_type, Guid, MaterialId, Model};
 use sk_model::{read_szk_with, write_szk, Library};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 /// Name der Datei am Vorgabeort.
 pub const FILE_NAME: &str = "firmenkatalog.szk";
@@ -27,8 +27,11 @@ pub enum SaveResult {
 pub struct Company {
     path: PathBuf,
     lib: Library,
-    /// Änderungszeitpunkt der Datei beim Laden bzw. letzten Schreiben.
-    stamp: Option<SystemTime>,
+    /// Stempel der Datei beim Laden bzw. letzten Schreiben.
+    stamp: Option<Stempel>,
+    /// Inhalt der Datei beim Laden bzw. letzten Schreiben: der Stand, den
+    /// der Nutzer gesehen hat (`firma_anwenden`, Bausteingrenze §5).
+    geladen: String,
     /// Die Datei ließ sich nicht lesen: nie darüber schreiben.
     broken: bool,
     /// Zählt jede Änderung des Katalogs im Speicher (Laden, Schreiben).
@@ -111,6 +114,92 @@ fn modified(p: &Path) -> Option<SystemTime> {
     std::fs::metadata(p).and_then(|m| m.modified()).ok()
 }
 
+/// Stempel einer Datei: Änderungszeit, Länge und FNV-1a des Inhalts
+/// (KA-2c2). Erkennt auch eine fremde Änderung in derselben Sekunde.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Stempel {
+    zeit: Option<SystemTime>,
+    laenge: u64,
+    inhalt: u64,
+}
+
+fn stempel(p: &Path) -> Option<Stempel> {
+    let bytes = std::fs::read(p).ok()?;
+    Some(Stempel {
+        zeit: modified(p),
+        laenge: bytes.len() as u64,
+        inhalt: fingerprint(&bytes),
+    })
+}
+
+/// Ab diesem Alter gilt eine Sperrdatei als liegen geblieben.
+const SPERRE_ALT: Duration = Duration::from_secs(30);
+
+/// Meldung, wenn ein anderer Platz gerade schreibt.
+pub const GESPERRT: &str =
+    "Firmenkatalog wird gerade an einem anderen Platz gespeichert · nochmal versuchen";
+
+/// Sperrdatei `firmenkatalog.szk.lock` neben dem Katalog (Bausteingrenze
+/// §5): mit `create_new` angelegt, Inhalt Platz und Uhrzeit; gelöscht, wenn
+/// sie fallen gelassen wird.
+struct Sperre {
+    path: PathBuf,
+}
+
+impl Drop for Sperre {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Sperrt den Katalog `path`. Eine Sperre älter als 30 s wird übernommen;
+/// dann kommt der Hinweis dazu.
+fn sperren(path: &Path) -> Result<(Sperre, Option<String>), String> {
+    use std::io::Write;
+    let lock = path.with_extension("szk.lock");
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let platz = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "unbekannter Platz".into());
+    let (j, mo, t, h, mi) = sk_platform::local_date_time();
+    let inhalt = format!("{platz} {t:02}.{mo:02}.{j} {h:02}:{mi:02}\n");
+    let anlegen = || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock)
+    };
+    let mut hinweis = None;
+    let mut f = match anlegen() {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let alt = modified(&lock)
+                .and_then(|m| m.elapsed().ok())
+                .is_some_and(|d| d > SPERRE_ALT);
+            if !alt {
+                return Err(GESPERRT.into());
+            }
+            let wer = std::fs::read_to_string(&lock).unwrap_or_default();
+            let _ = std::fs::remove_file(&lock);
+            hinweis = Some(format!(
+                "Liegen gebliebene Sperre des Firmenkatalogs übernommen ({}).",
+                wer.trim()
+            ));
+            anlegen().map_err(|_| GESPERRT.to_string())?
+        }
+        Err(e) => {
+            return Err(format!(
+                "Firmenkatalog {} nicht gesperrt: {e}",
+                path.display()
+            ))
+        }
+    };
+    let _ = f.write_all(inhalt.as_bytes());
+    Ok((Sperre { path: lock }, hinweis))
+}
+
 /// Schreibt atomar: erst eine temporäre Datei daneben, dann umbenennen.
 fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
@@ -134,6 +223,7 @@ impl Company {
             path: path.to_path_buf(),
             lib: Library::standard(),
             stamp: None,
+            geladen: String::new(),
             broken: false,
             gen: 0,
         };
@@ -148,9 +238,10 @@ impl Company {
         self.gen += 1;
         match std::fs::read_to_string(&self.path) {
             Ok(text) => {
-                self.stamp = modified(&self.path);
+                self.stamp = stempel(&self.path);
                 match read_szk_with(&text, &sk_cost::lesen::ABSCHNITTE_SZK) {
                     Ok(lib) => {
+                        self.geladen = text.clone();
                         let unknown = lib.foreign.unknown;
                         let bearings = lib.invalid_bearings();
                         self.lib = lib;
@@ -183,9 +274,11 @@ impl Company {
             }
             Err(_) if standard_place => {
                 self.lib = Library::standard();
-                match write_atomic(&self.path, &write_szk(&self.lib)) {
+                let text = write_szk(&self.lib);
+                match write_atomic(&self.path, &text) {
                     Ok(()) => {
-                        self.stamp = modified(&self.path);
+                        self.stamp = stempel(&self.path);
+                        self.geladen = text;
                         Vec::new()
                     }
                     Err(e) => vec![format!(
@@ -196,6 +289,7 @@ impl Company {
             Err(_) => {
                 self.lib = Library::standard();
                 self.stamp = None;
+                self.geladen = String::new();
                 vec![format!(
                     "Firmenkatalog {shown} nicht gefunden. Skizzeo arbeitet mit dem eingebauten Startbestand."
                 )]
@@ -226,7 +320,10 @@ impl Company {
         let text = write_szk(&self.lib);
         if text != before {
             match write_atomic(&self.path, &text) {
-                Ok(()) => self.stamp = modified(&self.path),
+                Ok(()) => {
+                    self.stamp = stempel(&self.path);
+                    self.geladen = text;
+                }
                 Err(e) => hints.push(format!(
                     "Firmenkatalog {} nicht ergänzt: {e}",
                     self.path.display()
@@ -296,6 +393,60 @@ impl Company {
         }
     }
 
+    /// Kostensätze für neue Häuser schreiben (Bausteingrenze §5, KA-2c2):
+    /// unter Sperre die Datei neu lesen, `firma_anwenden` gegen den
+    /// gesehenen Stand, den Stand davor unverändert nach
+    /// `firmenkatalog-staende/stand-000n.szk` legen, atomar schreiben und
+    /// neu laden. Scheitert etwas, ist nichts geschrieben; der Fehler ist
+    /// der Satz für die Meldung. Liefert den neuen Stand und einen Hinweis
+    /// (übernommene Sperre).
+    pub fn fuer_firma(
+        &mut self,
+        herkunft: &sk_cost::Herkunft,
+        ops: &[sk_cost::Op],
+    ) -> Result<(sk_cost::FirmaNeu, Option<String>), String> {
+        if self.broken {
+            return Err(format!(
+                "Firmenkatalog {} ist nicht lesbar und wird nicht überschrieben",
+                self.path.display()
+            ));
+        }
+        let (sperre, hinweis) = sperren(&self.path)?;
+        let text = match std::fs::read_to_string(&self.path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(format!("Firmenkatalog nicht lesbar: {e}")),
+        };
+        let neu =
+            sk_cost::firma_anwenden(&text, &self.geladen, sk_cost::Rolle::Admin, herkunft, ops)
+                .map_err(|b| {
+                    b.first()
+                        .map_or_else(|| "Firmenkatalog nicht geändert".into(), |x| x.satz.clone())
+                })?;
+        if !text.is_empty() {
+            let dir = self
+                .path
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join("firmenkatalog-staende");
+            let alt = dir.join(format!("stand-{:04}.szk", neu.stand_vorher));
+            if !alt.exists() {
+                std::fs::create_dir_all(&dir)
+                    .and_then(|_| crate::document::write_synced(&alt, text.as_bytes()))
+                    .map_err(|e| format!("Voriger Stand nicht abgelegt: {e}"))?;
+            }
+        }
+        write_atomic(&self.path, &neu.text).map_err(|e| {
+            format!(
+                "Firmenkatalog {} nicht gespeichert: {e}",
+                self.path.display()
+            )
+        })?;
+        drop(sperre);
+        self.reload(false);
+        Ok((neu, hinweis))
+    }
+
     fn save_with(
         &mut self,
         export: impl FnOnce(&mut Library) -> bool,
@@ -307,18 +458,26 @@ impl Company {
                 self.path.display()
             ));
         }
-        if modified(&self.path) != self.stamp {
+        // Unter derselben Sperre wie die Kostensätze (KA-2c2): sonst
+        // schriebe es veraltete Sätze aus dem Speicher zurück
+        let _sperre = match sperren(&self.path) {
+            Ok((s, _)) => s,
+            Err(e) => return SaveResult::Failed(e),
+        };
+        if stempel(&self.path) != self.stamp {
             return SaveResult::Changed;
         }
         let mut lib = self.lib.clone();
         if !export(&mut lib) {
             return SaveResult::Failed(missing.into());
         }
-        match write_atomic(&self.path, &write_szk(&lib)) {
+        let text = write_szk(&lib);
+        match write_atomic(&self.path, &text) {
             Ok(()) => {
                 self.lib = lib;
                 self.gen += 1;
-                self.stamp = modified(&self.path);
+                self.stamp = stempel(&self.path);
+                self.geladen = text;
                 SaveResult::Saved
             }
             Err(e) => SaveResult::Failed(format!(
@@ -590,6 +749,87 @@ mod tests {
         let neu = std::fs::read_to_string(&p).unwrap();
         assert!(neu != text, "Typ nicht gespeichert");
         assert!(neu.ends_with(kosten), "{neu}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// KA-2c2 (Bausteingrenze §5): „Auch für neue Häuser“ schreibt unter
+    /// Sperre einen neuen Stand mit `[log]`, legt den Stand davor ab und
+    /// lädt neu. Eine frische Sperre hält es auf, eine liegen gebliebene
+    /// wird übernommen; eine fremde Änderung desselben Satzes lehnt es ab.
+    /// Danach schreibt auch `save_type` unter derselben Sperre.
+    #[test]
+    fn fuer_firma_neuer_stand_unter_sperre() {
+        let d = dir("fuer-firma");
+        let p = d.join(FILE_NAME);
+        let (mut c, h) = Company::load(&p, true);
+        assert!(h.is_empty(), "{h:?}");
+        let m = Model::from_library(c.library());
+        let k = sk_cost::lesen::firma_oder_werk(&m, Some(c.library()));
+        let a = k.artikel.iter().find(|a| a.preis.is_some()).unwrap();
+        let alt = a.preis.unwrap();
+        let preis = |c: &Company| {
+            sk_cost::lesen::firma_oder_werk(&m, Some(c.library()))
+                .artikel(a.guid)
+                .and_then(|x| x.preis)
+        };
+        let op = |cent: i64| sk_cost::Op::PreisSetzen {
+            artikel: a.guid,
+            preis: Some(sk_cost::Dez(alt.0 + cent * 10_000)),
+            stand: "10/2026".into(),
+            quelle: "Preisblatt".into(),
+        };
+        let herkunft = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "12:00");
+        let lock = p.with_extension("szk.lock");
+        // Frische Sperre eines anderen Platzes: nichts geschieht
+        std::fs::write(&lock, "anderer Platz").unwrap();
+        let vorher = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(c.fuer_firma(&herkunft, &[op(100)]).unwrap_err(), GESPERRT);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), vorher);
+        // Liegen geblieben (älter als 30 s): übernommen, mit Hinweis
+        std::fs::File::options()
+            .write(true)
+            .open(&lock)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(60))
+            .unwrap();
+        let (neu, hinweis) = c.fuer_firma(&herkunft, &[op(100)]).unwrap();
+        assert!(hinweis.unwrap().contains("anderer Platz"));
+        assert!(!lock.exists(), "Sperre gelöscht");
+        assert_eq!(neu.stand, neu.stand_vorher + 1);
+        assert_eq!(neu.saetze.len(), 1);
+        assert_eq!(preis(&c), Some(sk_cost::Dez(alt.0 + 1_000_000)));
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.contains("[log]"), "{text}");
+        let abgelegt = d
+            .join("firmenkatalog-staende")
+            .join(format!("stand-{:04}.szk", neu.stand_vorher));
+        assert_eq!(std::fs::read_to_string(abgelegt).unwrap(), vorher);
+        // Ein anderer Platz ändert denselben Preis: abgelehnt, Datei bleibt
+        let (mut c2, _) = Company::load(&p, false);
+        c2.fuer_firma(&herkunft, &[op(200)]).unwrap();
+        let fremd = std::fs::read_to_string(&p).unwrap();
+        let e = c.fuer_firma(&herkunft, &[op(300)]).unwrap_err();
+        assert!(e.contains("geändert"), "{e}");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), fremd);
+        // Nach dem Neuladen geht es, und save_type schreibt unter der Sperre
+        c.reload(false);
+        c.fuer_firma(&herkunft, &[op(300)]).unwrap();
+        assert_eq!(preis(&c), Some(sk_cost::Dez(alt.0 + 3_000_000)));
+        std::fs::write(&lock, "anderer Platz").unwrap();
+        let mut m2 = Model::from_library(c.library());
+        let id = m2.defaults().exterior_wall;
+        let mut t = m2.layer_set(id).unwrap().clone();
+        t.layers[0].thickness = 130.0;
+        assert!(m2.set_layer_set(id, t));
+        let g = m2.layer_set(id).unwrap().guid;
+        assert_eq!(c.save_type(&m2, g), SaveResult::Failed(GESPERRT.into()));
+        std::fs::remove_file(&lock).unwrap();
+        assert_eq!(c.save_type(&m2, g), SaveResult::Saved);
+        assert_eq!(
+            preis(&c),
+            Some(sk_cost::Dez(alt.0 + 3_000_000)),
+            "Kostensätze bleiben"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 }

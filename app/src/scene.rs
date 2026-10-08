@@ -501,6 +501,8 @@ pub struct Scene {
     kostenblatt: Vec<((u64, u64, Umfang), Rc<sk_cost::Kostenblatt>)>,
     /// Firmen- oder Werkskatalog ohne Projekt (Firmenwerte im Preisblatt).
     firmenkatalog: Option<((u64, u64, u64), Rc<sk_cost::Katalog>)>,
+    /// Bezeichnungen mit Werten, je Wortlaut einmal ([`Scene::bezeichnung`]).
+    bezeichnungen: Vec<&'static str>,
     kostenspeicher: sk_cost::Kostenspeicher,
     /// Offener Schritt „Typ gewechselt“ als Vorschau (K3).
     type_preview: bool,
@@ -790,6 +792,7 @@ impl Scene {
             katalog: None,
             kostenblatt: Vec::new(),
             firmenkatalog: None,
+            bezeichnungen: Vec::new(),
             kostenspeicher: sk_cost::Kostenspeicher::default(),
             type_preview: false,
             now: 0,
@@ -1587,6 +1590,20 @@ impl Scene {
         self.model.begin(label);
     }
 
+    /// Bezeichnung mit Werten für „Rückgängig: …“ („Lohn 65,00 €/h für
+    /// dieses und neue Häuser“, Bedienbarkeit 4.4). Der Verlauf hält
+    /// `&'static str`; jeder Wortlaut wird einmal angelegt und danach
+    /// wiederverwendet, so bleibt der Speicher durch die Zahl verschiedener
+    /// ausdrücklicher Firmenänderungen begrenzt.
+    pub fn bezeichnung(&mut self, text: String) -> &'static str {
+        if let Some(l) = self.bezeichnungen.iter().find(|l| **l == text) {
+            return l;
+        }
+        let l: &'static str = Box::leak(text.into_boxed_str());
+        self.bezeichnungen.push(l);
+        l
+    }
+
     /// Schließt den offenen Schritt und legt ihn in den Verlauf, falls er etwas
     /// geändert hat. Berechnet ausstehende Mengen und Wandzüge.
     pub fn commit(&mut self) {
@@ -2153,6 +2170,49 @@ impl Scene {
                 Err(b)
             }
         }
+    }
+
+    /// Ausdrücklich „Auch für neue Häuser“ (Bausteingrenze §5, KA-2c2):
+    /// prüfen, dann die Firma als neuer Stand mit `[log]`
+    /// ([`crate::catalog::Company::fuer_firma`]), dann, nur mit
+    /// Projektkopie, ein Projektschritt `StandUebernehmen` mit `label`. Die
+    /// Firma ist nie Teil des Rückgängig-Schritts; Strg+Z nimmt nur das
+    /// Projekt zurück. `Err`: nichts geschrieben, der Satz für die Meldung.
+    /// `Ok`: ein Hinweis für die Statuszeile, wenn es einen gibt.
+    pub fn fuer_firma(
+        &mut self,
+        label: &'static str,
+        firma: &mut crate::catalog::Company,
+        herkunft: &sk_cost::Herkunft,
+        ops: &[sk_cost::Op],
+    ) -> Result<Option<String>, String> {
+        let satz = |b: Vec<sk_cost::Befund>| {
+            b.first()
+                .map_or_else(|| "Nicht möglich".into(), |x| x.satz.clone())
+        };
+        sk_cost::vorschau(
+            &self.model,
+            Some(firma.library()),
+            sk_cost::Rolle::Admin,
+            ops,
+        )
+        .map_err(satz)?;
+        let (neu, mut hinweis) = firma.fuer_firma(herkunft, ops)?;
+        if sk_cost::op::hat_kopie(&self.model) && !neu.saetze.is_empty() {
+            let op = sk_cost::Op::StandUebernehmen { saetze: neu.saetze };
+            if let Err(b) = self.kosten_folge(
+                label,
+                Some(firma.library()),
+                herkunft,
+                std::slice::from_ref(&op),
+            ) {
+                hinweis = Some(format!(
+                    "Für neue Häuser gespeichert, dieses Haus nicht geändert: {}",
+                    satz(b)
+                ));
+            }
+        }
+        Ok(hinweis)
     }
 
     /// Vorschau der Kostenoperationen: geänderte Sätze alt/neu, der wirksame

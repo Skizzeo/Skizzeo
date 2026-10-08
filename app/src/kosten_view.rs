@@ -552,7 +552,13 @@ enum Hot {
 /// `Scene::kosten_folge` aus, paket-ka2 §4).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Schreiben {
-    Preis { ops: Vec<Op>, gilt: Gilt },
+    /// `text`: Bezeichnung mit Wert für „Auch für neue Häuser“
+    /// („Planstein 20,50 €/m² für dieses und neue Häuser“).
+    Preis {
+        ops: Vec<Op>,
+        gilt: Gilt,
+        text: String,
+    },
     Zurueck(Vec<SatzId>),
 }
 
@@ -877,12 +883,12 @@ impl KostenView {
                 self.preis_schliessen();
                 ListOut::Repaint
             }
-            Aus::Anwenden { ops, gilt } => {
+            Aus::Anwenden { ops, gilt, text } => {
                 self.preis_schliessen();
                 if ops.is_empty() {
                     ListOut::Repaint
                 } else {
-                    ListOut::Kosten(Schreiben::Preis { ops, gilt })
+                    ListOut::Kosten(Schreiben::Preis { ops, gilt, text })
                 }
             }
             Aus::Zuruecknehmen(saetze) => {
@@ -2242,7 +2248,7 @@ mod tests {
         assert_eq!(v.zeilen()[i].gp, "9.014,20");
         assert_eq!(s.model().revision(), rev, "Vorschau schreibt nichts");
         let out = v.key(&t, sk_platform::Key::Enter, mods);
-        let Some(Some(ListOut::Kosten(Schreiben::Preis { ops, gilt }))) = out else {
+        let Some(Some(ListOut::Kosten(Schreiben::Preis { ops, gilt, .. }))) = out else {
             panic!("{out:?}");
         };
         assert_eq!(gilt, Gilt::NurHaus);
@@ -2277,5 +2283,75 @@ mod tests {
         );
         v.sync(&mut s, None);
         assert_eq!(v.zeilen()[i].ep, "52,34");
+    }
+
+    /// KA-2c2 (Abnahme 12): „Auch für neue Häuser“ schreibt die Firma als
+    /// neuen Stand. Ohne Projektkopie gibt es keinen Projektschritt; mit
+    /// Kopie einen, mit Wert im Namen, und Strg+Z nimmt nur ihn zurück.
+    #[test]
+    fn auch_fuer_neue_haeuser() {
+        let d = std::env::temp_dir().join(format!("skizzeo-kv-firma-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (mut c, _) = crate::catalog::Company::load(&d.join("firmenkatalog.szk"), true);
+        let mut s = haus();
+        let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "12:00");
+        let ep = |s: &mut Scene, c: &crate::catalog::Company, firma_allein: bool| {
+            let f = Some((c.library(), c.stand()));
+            let k = if firma_allein {
+                s.firmenkatalog(f)
+            } else {
+                s.katalog(f)
+            };
+            let b = s.kostenblatt(f, &Umfang::projekt());
+            let p = b
+                .positionen
+                .iter()
+                .find(|p| p.kurz.contains("Porenbeton") && p.kurz.contains("17,5"))
+                .unwrap();
+            sk_cost::preis::aufbau(s.model(), &k, p).unwrap()
+        };
+        let a = ep(&mut s, &c, false);
+        let stein = a.stoffe.iter().find(|t| t.haupt).unwrap().artikel.unwrap();
+        let k = s.katalog(Some((c.library(), c.stand())));
+        let setze = |x: &str| {
+            sk_cost::preis::preis_ops(
+                &k,
+                &a,
+                &sk_cost::preis::Eingabe {
+                    stunden: None,
+                    preise: vec![(stein, Dez::lesen(x, 4).unwrap())],
+                },
+                "10/2026",
+            )
+        };
+        // Ohne Projektkopie: nur die Firma, kein Rückgängig-Schritt
+        let undo = s.undo_label();
+        let label = s.bezeichnung("Planstein 20,50 €/m² für dieses und neue Häuser".into());
+        assert_eq!(s.fuer_firma(label, &mut c, &h, &setze("20.5")), Ok(None));
+        assert_eq!(s.undo_label(), undo);
+        assert_eq!(ep(&mut s, &c, false).ep, Cent(5_234));
+        assert_eq!(ep(&mut s, &c, true).ep, Cent(5_234));
+        // Nur dieses Haus: 21,00 im Projekt, die Firma bleibt bei 20,50
+        let f = Some(c.library());
+        s.kosten_folge("Preis im Projekt geändert", f, &h, &setze("21"))
+            .unwrap();
+        assert_eq!(ep(&mut s, &c, false).ep, Cent(5_284));
+        assert_eq!(ep(&mut s, &c, true).ep, Cent(5_234));
+        // Auch für neue Häuser mit Kopie: Firma und Projekt 19,00, ein Schritt
+        let label = s.bezeichnung("Planstein 19,00 €/m² für dieses und neue Häuser".into());
+        assert_eq!(s.fuer_firma(label, &mut c, &h, &setze("19")), Ok(None));
+        assert_eq!(s.undo_label(), Some(label));
+        assert_eq!(ep(&mut s, &c, false).ep, Cent(5_084));
+        assert_eq!(ep(&mut s, &c, true).ep, Cent(5_084));
+        // Strg+Z: nur das Projekt zurück, die Firma behält 19,00
+        assert!(s.undo());
+        assert_eq!(ep(&mut s, &c, false).ep, Cent(5_284));
+        assert_eq!(ep(&mut s, &c, true).ep, Cent(5_084));
+        // Gleicher Wortlaut, gleiche Bezeichnung
+        assert!(std::ptr::eq(
+            s.bezeichnung("Planstein 19,00 €/m² für dieses und neue Häuser".into()),
+            label
+        ));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

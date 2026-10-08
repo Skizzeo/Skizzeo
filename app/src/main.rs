@@ -1999,6 +1999,22 @@ impl App {
             self.sync_levels();
             self.refresh_cursor();
         }
+        // Firmenänderung: Strg+Z nimmt nur dieses Haus zurück, die
+        // Statuszeile sagt einmal, was für neue Häuser bleibt (paket-ka2 §4)
+        let was = label.and_then(|l| l.strip_suffix(preis_blatt::FUER_NEUE));
+        if let (true, false, Some(was)) = (changed, redo, was) {
+            self.renderer.set_overlay(OVERLAY_NOTICE, 0, 0, 0, 0, &[]);
+            self.notice = Some(Notice {
+                text: format!(
+                    "Zurückgenommen für dieses Haus. Neue Häuser rechnen weiter mit {was}."
+                ),
+                since: None,
+                rect: (0.0, 0.0, 0.0, 0.0),
+                time: NOTICE_TIME,
+                catalog: false,
+                error: false,
+            });
+        }
     }
 
     /// Eine Datei kommt in „Zuletzt geöffnet“ (nur mit Einstellungsdatei).
@@ -2180,34 +2196,69 @@ impl App {
         }
     }
 
-    /// Preisblatt (KA-2c, paket-ka2 §4): ein Rückgängig-Schritt über
-    /// `Scene::kosten_folge`. Lehnt der Plan ab, sagt die Statuszeile den
-    /// Befundsatz und nichts ändert sich.
+    /// Preisblatt (KA-2c, paket-ka2 §4): „Nur dieses Haus“ und „Firmenpreis
+    /// zurückholen“ als ein Rückgängig-Schritt über `Scene::kosten_folge`;
+    /// „Auch für neue Häuser“ über `Scene::fuer_firma` (Firma zuerst, dann
+    /// der Projektschritt). Was nicht geht, sagt die Statuszeile; dann hat
+    /// sich nichts geändert.
     fn kosten_schreiben(&mut self, w: kosten_view::Schreiben) {
-        let (label, ops) = match w {
-            kosten_view::Schreiben::Preis { ops, gilt: _ } => ("Preis im Projekt geändert", ops),
-            kosten_view::Schreiben::Zurueck(saetze) => (
-                "Firmenpreis zurückgeholt",
-                vec![sk_cost::Op::AbweichungZuruecknehmen { saetze }],
-            ),
-        };
         let h = sk_cost::Herkunft::jetzt(sk_cost::HerkunftArt::Manual);
-        let firma = self.company.as_ref().map(|c| c.library());
-        if let Err(b) = self.scene.kosten_folge(label, firma, &h, &ops) {
-            if let Some(x) = b.first() {
-                self.renderer.set_overlay(OVERLAY_NOTICE, 0, 0, 0, 0, &[]);
-                self.notice = Some(Notice {
-                    text: x.satz.clone(),
-                    since: None,
-                    rect: (0.0, 0.0, 0.0, 0.0),
-                    time: NOTICE_TIME,
-                    catalog: false,
-                    error: true,
-                });
+        let meldung = match w {
+            kosten_view::Schreiben::Preis {
+                ops,
+                gilt: preis_blatt::Gilt::NeueHaeuser,
+                text,
+            } => {
+                let label = self.scene.bezeichnung(text);
+                match self.company.as_mut() {
+                    Some(c) => match self.scene.fuer_firma(label, c, &h, &ops) {
+                        Ok(hinweis) => hinweis.map(|t| (t, false)),
+                        Err(e) => Some((
+                            format!("{e}. Nichts geändert; „Nur dieses Haus“ geht weiterhin."),
+                            true,
+                        )),
+                    },
+                    None => Some((
+                        "Kein Firmenkatalog geladen. Nichts geändert; „Nur dieses Haus“ geht weiterhin."
+                            .into(),
+                        true,
+                    )),
+                }
             }
+            kosten_view::Schreiben::Preis { ops, .. } => {
+                self.kosten_folge("Preis im Projekt geändert", &h, &ops)
+            }
+            kosten_view::Schreiben::Zurueck(saetze) => {
+                let op = sk_cost::Op::AbweichungZuruecknehmen { saetze };
+                self.kosten_folge("Firmenpreis zurückgeholt", &h, &[op])
+            }
+        };
+        if let Some((text, error)) = meldung {
+            self.renderer.set_overlay(OVERLAY_NOTICE, 0, 0, 0, 0, &[]);
+            self.notice = Some(Notice {
+                text,
+                since: None,
+                rect: (0.0, 0.0, 0.0, 0.0),
+                time: NOTICE_TIME,
+                catalog: false,
+                error,
+            });
         }
         self.quantity.dirty = true;
         self.redraw = true;
+    }
+
+    /// Projektschritt über `Scene::kosten_folge`; der Befundsatz, wenn der
+    /// Plan ablehnt.
+    fn kosten_folge(
+        &mut self,
+        label: &'static str,
+        h: &sk_cost::Herkunft,
+        ops: &[sk_cost::Op],
+    ) -> Option<(String, bool)> {
+        let firma = self.company.as_ref().map(|c| c.library());
+        let b = self.scene.kosten_folge(label, firma, h, ops).err()?;
+        Some((b.first()?.satz.clone(), true))
     }
 
     /// Hover oder Auswahl kamen aus der Liste: Hauptfenster angleichen.

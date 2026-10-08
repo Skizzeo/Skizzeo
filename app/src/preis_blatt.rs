@@ -21,6 +21,10 @@ use sk_ui::theme::Theme;
 use sk_ui::widgets::{self, Fonts};
 use std::rc::Rc;
 
+/// Schluss der Bezeichnung einer Firmenänderung; Strg+Z erkennt daran den
+/// Projektschritt und sagt, was für neue Häuser bleibt.
+pub const FUER_NEUE: &str = " für dieses und neue Häuser";
+
 /// Breite des Blatts (dip).
 const W: f32 = 420.0;
 const PAD: f32 = 16.0;
@@ -81,7 +85,11 @@ pub enum Aus {
     Live,
     /// Enter oder Klick daneben: ausführen und schließen. Leer, wenn sich
     /// nichts geändert hat.
-    Anwenden { ops: Vec<Op>, gilt: Gilt },
+    Anwenden {
+        ops: Vec<Op>,
+        gilt: Gilt,
+        text: String,
+    },
     /// Esc oder ×: nichts schreiben.
     Verwerfen,
     /// „Firmenpreis zurückholen“ für die geänderten Sätze.
@@ -472,7 +480,33 @@ impl PreisBlatt {
         Some(Aus::Anwenden {
             ops: self.ops(),
             gilt: self.gilt,
+            text: self.bezeichnung(),
         })
+    }
+
+    /// Bezeichnung mit Wert für „Auch für neue Häuser“ (Bedienbarkeit 4.4):
+    /// „Planstein 20,50 €/m² für dieses und neue Häuser“; bei mehreren
+    /// Änderungen „Preise AW Porenbeton … für dieses und neue Häuser“.
+    pub fn bezeichnung(&self) -> String {
+        let geaendert: Vec<&Feld> = self
+            .felder
+            .iter()
+            .filter(|f| f.wert.is_some_and(|w| w != f.alt))
+            .collect();
+        let was = match geaendert.as_slice() {
+            [f] => {
+                let name = match f.art {
+                    Art::Stunden => "Aufwandswert",
+                    Art::Preis(_) => {
+                        let wort = f.name.split(' ').next().unwrap_or(&f.name);
+                        wort.rsplit('-').next().unwrap_or(wort)
+                    }
+                };
+                format!("{name} {} {}", zahl(f.wert.unwrap_or(f.alt), 2), f.einheit)
+            }
+            _ => format!("Preise {}", self.aufbau.kurz),
+        };
+        format!("{was}{FUER_NEUE}")
     }
 
     /// Feld `i` neu lesen; `Live`, wenn sich die Operationen ändern.
@@ -1079,7 +1113,8 @@ mod tests {
             pb.key(Key::Enter, none),
             Some(Aus::Anwenden {
                 ops: ops.clone(),
-                gilt: Gilt::NeueHaeuser
+                gilt: Gilt::NeueHaeuser,
+                text: "Planstein 20,50 €/m² für dieses und neue Häuser".into(),
             })
         );
         // Ungültig: Enter geht nicht
@@ -1109,13 +1144,10 @@ mod tests {
         pb.set_anker((900.0, 820.0, 980.0, 842.0));
         let ((_, y2, _, h2), unten) = pb.rect();
         assert!(!unten && y2 + h2 < 820.0);
-        assert_eq!(
+        assert!(matches!(
             pb.mouse_down(&fonts, 5.0, 5.0),
-            Some(Aus::Anwenden {
-                ops: Vec::new(),
-                gilt: Gilt::NurHaus
-            })
-        );
+            Some(Aus::Anwenden { ops, gilt: Gilt::NurHaus, .. }) if ops.is_empty()
+        ));
         let (cx, cy, _, _) = pb.schliessen_rect();
         assert_eq!(
             pb.mouse_down(&fonts, cx + 5.0, cy + 5.0),
