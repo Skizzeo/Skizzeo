@@ -200,6 +200,19 @@ fn abnahme_ka3a3_zuruecknehmen_zwei_plaetze() {
             Dez::ganz(2),
             "{name}: B behält 2,0 h"
         );
+        // Befund E: Nach dem abgelehnten OK setzt das Fenster auf dem neuen
+        // Stand auf (Review 3ar, wie main.rs). Ein zweites OK darf Stand 4
+        // von Platz B nicht überschreiben: Regel 93, nur der Befund, weil
+        // der Satz nach Stand 3 wieder geändert wurde.
+        v.neu_grundlage(&a);
+        if !v.ops().is_empty() {
+            let _ = s.fuer_firma(STEP, &mut a, &herkunft("17:25"), v.ops());
+        }
+        assert_eq!(
+            stunden(&p, s.model(), g),
+            Dez::ganz(2),
+            "{name}: zweites OK nimmt Stand 4 von B zurück"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 }
