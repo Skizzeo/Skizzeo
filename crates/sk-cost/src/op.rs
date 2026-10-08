@@ -271,19 +271,22 @@ pub enum Op {
 }
 
 /// Alle Operationen mit festem Namen (für Schema, `[log] op`, Abläufe):
-/// Name, Angaben, nur in der Verwaltung.
+/// Name, Angaben, nur in der Verwaltung. „Nur in der Verwaltung“ sind nur
+/// Operationen, die es allein für die Firma gibt (Entscheid 19:45,
+/// paket-ka3b §2): Das Kennwort schützt den Firmenkatalog, nicht das Haus;
+/// jede Projektoperation bleibt für alle erlaubt (im Haus mit Marke).
 pub const NAMEN: [(&str, &str, bool); 18] = [
-    ("artikel_anlegen", "baustoff name dicke guete format einheit preis stand quelle lieferant standard", true),
+    ("artikel_anlegen", "baustoff name dicke guete format einheit preis stand quelle lieferant standard", false),
     ("preis_setzen", "artikel preis stand quelle", false),
-    ("bauleistung_anlegen", "kurz gewerk titel pos einheit bezug stunden geraet sonst nu kg kategorien mat tmin tmax funktion", true),
-    ("bauleistung_aendern", "bauleistung + Felder wie bauleistung_anlegen", true),
-    ("stoffanteil_setzen", "bauleistung nr anteil (artikel menge | schicht faktor | leer = entfernen)", true),
-    ("folge_setzen", "bauleistung nr folge faktor (leer = entfernen)", true),
+    ("bauleistung_anlegen", "kurz gewerk titel pos einheit bezug stunden geraet sonst nu kg kategorien mat tmin tmax funktion", false),
+    ("bauleistung_aendern", "bauleistung + Felder wie bauleistung_anlegen", false),
+    ("stoffanteil_setzen", "bauleistung nr anteil (artikel menge | schicht faktor | leer = entfernen)", false),
+    ("folge_setzen", "bauleistung nr folge faktor (leer = entfernen)", false),
     ("bauleistung_zuordnen", "typ schicht bauleistung (leer = nach Regel)", false),
     ("firmenwert_setzen", "schluessel wert", false),
-    ("los_anlegen", "name nr los (gesetzt = Titel)", true),
-    ("ausmustern", "satz", true),
-    ("wiederherstellen", "satz", true),
+    ("los_anlegen", "name nr los (gesetzt = Titel)", false),
+    ("ausmustern", "satz", false),
+    ("wiederherstellen", "satz", false),
     ("herkunft_bestaetigen", "satz", false),
     ("abweichung_zuruecknehmen", "saetze", false),
     ("stand_uebernehmen", "saetze", false),
@@ -1869,8 +1872,19 @@ mod tests {
         .unwrap_err();
         assert_eq!(e[0].regel, 76, "{e:?}");
         assert!(e[0].satz.contains("Preis ist ungültig"), "{e:?}");
-        // Nutzer darf keine Bauleistung anlegen
+        // Nutzer setzt kein Verwaltungskennwort; im Haus darf er sonst alles
+        // (Entscheid 19:45)
         let e = pruefen(
+            &m,
+            None,
+            Rolle::Nutzer,
+            &Op::KennwortSetzen {
+                pw: crate::verwaltung::Pruefwert::neu("x", [1; 16]),
+            },
+        )
+        .unwrap_err();
+        assert!(e[0].satz.contains("nur in der Verwaltung"));
+        assert!(pruefen(
             &m,
             None,
             Rolle::Nutzer,
@@ -1878,8 +1892,7 @@ mod tests {
                 satz: SatzId::neu("service", M10),
             },
         )
-        .unwrap_err();
-        assert!(e[0].satz.contains("nur in der Verwaltung"));
+        .is_ok());
         // Import: offen
         let mut h = hand();
         h.art = HerkunftArt::Import;

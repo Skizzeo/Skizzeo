@@ -655,7 +655,7 @@ impl Verwaltung {
             (None, false) if im_entwurf => "Im Entwurf entfernt: Nach „Freigeben“ arbeitet Skizzeo wieder als Einzelplatz.",
             (Some(true), _) => "Wird mit OK entfernt: Danach arbeitet Skizzeo wieder als Einzelplatz.",
             (Some(false), _) => "Wird mit OK gesetzt.",
-            (None, true) => "Gesetzt: Änderungen sammeln sich in einem Entwurf; die anderen Plätze sehen sie erst nach „Freigeben“.",
+            (None, true) => "Gesetzt: Änderungen sammeln sich in einem Entwurf. Erst „Freigeben“ macht sie gültig, an allen Plätzen.",
             (None, false) => "Nicht gesetzt: Skizzeo arbeitet als Einzelplatz, jede Änderung gilt mit OK.",
         };
         let y = b.kopf("Verwaltungskennwort", "");

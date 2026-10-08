@@ -120,7 +120,8 @@ fn kennwort_setzen_und_abfragen() {
     assert!(a.falsch, "{FALSCH}");
     assert!(a.te.text.is_empty());
     let _ = v.paint(&t, &fonts, &w);
-    // Nutzer: Firma nicht, nur_admin auch im Projekt nicht
+    // Nutzer: Firma nicht; im Projekt alles außer dem Kennwort (Entscheid
+    // 19:45: das Kennwort schützt den Firmenkatalog, nicht das Haus)
     let lohn = Op::FirmenwertSetzen {
         schluessel: "wage".into(),
         wert: Dez::ganz(70),
@@ -144,14 +145,18 @@ fn kennwort_setzen_und_abfragen() {
     let mut va = Verwaltung::open(&s, Some(&c), None);
     va.waehlen(Knoten::Leistung(g));
     assert!(va.eingeben(&Feld::Stunden, "0,45"));
-    assert!(va.ops().iter().any(|o| o.nur_admin()), "{:?}", va.ops());
-    let befunde = s2
-        .kosten_folge("Stunden", Some(c.library()), &h(), va.ops())
-        .expect_err("nur_admin");
-    assert!(befunde.iter().any(|b| b.regel == 93), "{befunde:?}");
-    // Projektwert ohne nur_admin geht weiter
+    assert!(!va.ops().iter().any(|o| o.nur_admin()), "{:?}", va.ops());
+    s2.kosten_folge("Stunden", Some(c.library()), &h(), va.ops())
+        .expect("Stunden nur für dieses Haus");
     s2.kosten_folge("Lohn", Some(c.library()), &h(), &[lohn])
         .expect("Nutzer im Projekt");
+    let pw = Op::KennwortSetzen {
+        pw: sk_cost::verwaltung::Pruefwert::neu("x", [1; 16]),
+    };
+    let befunde = s2
+        .kosten_folge("Kennwort", Some(c.library()), &h(), &[pw])
+        .expect_err("nur_admin");
+    assert!(befunde.iter().any(|b| b.regel == 93), "{befunde:?}");
     // Richtiges Kennwort: frei, das Fenster wird groß
     tippen(&mut v, &mut cx, "Polier7");
     let out = v.handle(&taste(Key::Enter), &mut cx);

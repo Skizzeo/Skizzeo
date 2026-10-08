@@ -186,10 +186,11 @@ const NICHT_FREIGEGEBEN: (&str, &str) = ("Nicht freigegeben", "Firmenkatalog fre
 const NICHT_VERWORFEN: (&str, &str) = ("Entwurf nicht verworfen", "Entwurf ablegen");
 
 /// Mit Verwaltungskennwort gilt eine Firmenänderung erst nach der Freigabe.
-pub const MIT_KENNWORT: &str = "Mit Verwaltungskennwort ändert die Verwaltung einen Entwurf; die anderen Plätze sehen ihn erst nach „Freigeben“.";
+pub const MIT_KENNWORT: &str = "Mit Verwaltungskennwort ändert die Verwaltung einen Entwurf. Erst „Freigeben“ macht ihn gültig, an allen Plätzen.";
 
 /// „Auch für neue Häuser“ mit Verwaltungskennwort (KA-3b2).
-pub const IM_ENTWURF: &str = "Für neue Häuser im Entwurf gespeichert; die anderen Plätze sehen es nach „Freigeben“ in der Verwaltung.";
+pub const IM_ENTWURF: &str =
+    "Im Entwurf gespeichert; für neue Häuser gilt es nach „Freigeben“ in der Verwaltung.";
 
 /// Zwei Administratoren am selben Entwurf (paket-ka3b §3).
 pub const ENTWURF_GEAENDERT: &str =

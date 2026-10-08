@@ -4,8 +4,9 @@
 //! Der Administrator ändert einen Entwurf (`firmenkatalog.entwurf.szk`).
 //! Jede Eingabe wird gleich dorthin geschrieben (`Out::entwurf`); OK und
 //! Abbrechen gibt es dann nicht. Oben rechts steht die Pille „Entwurf · n
-//! Änderungen“, unten die Leiste „Entwurf: n Änderungen seit Stand 3 · die
-//! anderen Plätze sehen weiter Stand 3“, im Baum ein Punkt an geänderten
+//! Änderungen“, unten die Leiste „Entwurf: n Änderungen seit Stand 3 · alle
+//! Häuser rechnen weiter mit Stand 3, bis du freigibst“ (Bedienbarkeit
+//! 16.2), im Baum ein Punkt an geänderten
 //! Einträgen. Die Vorschau ist ein Blatt über der Verwaltung: Änderungen alt
 //! → neu mit Herkunft, je Zeile „Änderung verwerfen“, die Referenzhäuser
 //! mit Stand, Entwurf, Änderung und €/m² Grundfläche, und „Freigeben als
@@ -307,8 +308,8 @@ impl Verwaltung {
         );
     }
 
-    /// Fuß im Entwurf: Punkt, „Entwurf: n Änderungen seit Stand 3“ und „die
-    /// anderen Plätze sehen weiter Stand 3“. Mit Meldung, Befund oder
+    /// Fuß im Entwurf: Punkt, „Entwurf: n Änderungen seit Stand 3“ und „alle
+    /// Häuser rechnen weiter mit Stand 3, bis du freigibst“. Mit Meldung, Befund oder
     /// Rückfrage steht die Leiste darunter und `false` kommt zurück.
     pub(super) fn entwurf_fuss(
         &self,
@@ -337,11 +338,11 @@ impl Verwaltung {
             (0, Some(h)) => (String::new(), h.clone()),
             (0, None) => (
                 String::new(),
-                "Jede Änderung kommt in einen Entwurf; die anderen Plätze sehen sie erst nach „Freigeben“.".to_string(),
+                "Jede Änderung kommt in einen Entwurf. Erst „Freigeben“ macht sie gültig, an allen Plätzen.".to_string(),
             ),
             (n, _) => (
                 format!("Entwurf: {} seit Stand {}", aenderungen_text(n), fg.stand),
-                format!(" · die anderen Plätze sehen weiter Stand {}", fg.stand),
+                format!(" · alle Häuser rechnen weiter mit Stand {}, bis du freigibst", fg.stand),
             ),
         };
         if !vorn.is_empty() {

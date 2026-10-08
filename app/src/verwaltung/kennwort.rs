@@ -20,7 +20,7 @@ const PAD: f32 = 22.0;
 
 pub(super) const FALSCH: &str = "Kennwort stimmt nicht.";
 pub(super) const VERGESSEN_NUTZER: &str = "Vergessen? Frag deinen BIM-Administrator.";
-const WIRKUNG: &str = "Mit Kennwort ändert nur, wer es kennt, den Firmenkatalog. Änderungen sammeln sich in einem Entwurf; die anderen Plätze sehen sie erst nach „Freigeben“. Projekte bleiben auf ihrem Stand, bis sie übernehmen.";
+const WIRKUNG: &str = "Mit Kennwort ändert nur, wer es kennt, den Firmenkatalog. Änderungen sammeln sich in einem Entwurf. Erst „Freigeben“ macht sie gültig, an allen Plätzen. Projekte bleiben auf ihrem Stand, bis sie übernehmen.";
 const LEISE: &str = "Schutz vor Versehen, keine Sicherheit. Vergessen? Die Hilfe sagt, wie man es zurücksetzt. Leeres Kennwort heißt: zurück zum Einzelplatz. Setzen und Entfernen stehen im Protokoll.";
 pub(super) const VERSCHIEDEN: &str = "Die beiden Eingaben sind verschieden.";
 #[cfg(test)]
