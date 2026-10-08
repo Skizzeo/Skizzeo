@@ -17,6 +17,7 @@ use crate::preis_blatt::{self, Gilt, PreisBlatt};
 use crate::scene::Scene;
 use crate::schedule_view::ListOut;
 use crate::umfang_view::{self, Leiste};
+use sk_cost::abgleich::Abgleich;
 use sk_cost::gliederung::{Gruppe, Schluessel, Teilung};
 use sk_cost::katalog::{Einheit, Katalog};
 use sk_cost::rechnung::{Ansatz, Position, Quelle};
@@ -509,6 +510,10 @@ const CHIP_TOP: f32 = 62.0;
 const SWITCH_TOP: f32 = CHIP_TOP + umfang_view::ROW + 4.0;
 const SWITCH_H: f32 = 24.0;
 const HEAD: f32 = SWITCH_TOP + SWITCH_H + 34.0;
+/// Abgleichzeile unter der Unterzeile (Grundlinie) und was sie Chips,
+/// Schalter und Liste nach unten schiebt.
+const ABGLEICH_Y: f32 = 72.0;
+const ABGLEICH_H: f32 = 20.0;
 /// Abstand des Schalters „Gliedern“ vom linken Rand (Einstellungen §3 KA-1
 /// Punkt 9: wie im Mengenblatt bei links + 300 dip).
 const GLIEDERN_X: f32 = 300.0;
@@ -546,6 +551,10 @@ enum Hot {
     /// Verweis in der Fußzeile: geschätzte bzw. graue Zeilen.
     Geschaetzt,
     OhnePreis,
+    /// Abgleichzeile: Text (Liste im Tooltip), „übernehmen“, „so lassen“.
+    Abgleich,
+    Uebernehmen,
+    Lassen,
 }
 
 /// Was das Preisblatt schreiben lässt (die App führt es über
@@ -560,6 +569,9 @@ pub enum Schreiben {
         text: String,
     },
     Zurueck(Vec<SatzId>),
+    /// Abgleichzeile: Werte für neue Häuser übernehmen bzw. so lassen.
+    Uebernehmen(Vec<SatzId>),
+    Lassen(u32),
 }
 
 /// Kosten beim Tippen im Preisblatt: Operationen und die Blätter darauf.
@@ -620,6 +632,10 @@ pub struct KostenView {
     /// CSV-Spalte Projektabweichung) und woraus sie bestimmt sind.
     eigen: HashMap<usize, Cent>,
     eigen_von: Option<(*const Kostenblatt, *const Katalog)>,
+    /// Abgleich mit dem Firmenkatalog (Regel 92) mit netto vorher und
+    /// nachher für den Tooltip an „übernehmen“, und woraus er bestimmt ist.
+    abgleich: Option<(Abgleich, Option<(Cent, Cent)>)>,
+    abgleich_von: Option<(*const Kostenblatt, *const Katalog)>,
 }
 
 impl Default for KostenView {
@@ -662,6 +678,8 @@ impl KostenView {
             klick: None,
             eigen: HashMap::new(),
             eigen_von: None,
+            abgleich: None,
+            abgleich_von: None,
         }
     }
 
@@ -699,6 +717,7 @@ impl KostenView {
         let ganz = s.kostenblatt(firma, &alle);
         changed |= self.sync_eigen(s, firma, &kat, &blatt);
         changed |= self.sync_preis(s, firma, &kat, &blatt, &alle);
+        changed |= self.sync_abgleich(s, firma, &kat, &blatt);
         // Beim Tippen im Preisblatt zeigen Zeilen, Summen und Chips die
         // Vorschau; Namen, Preisquelle und Lohn bleiben aus dem Katalog
         let (blatt, ganz) = match &self.live {
@@ -795,6 +814,44 @@ impl KostenView {
         let changed = neu != self.eigen;
         self.eigen = neu;
         changed
+    }
+
+    /// Abgleichzeile: Unterschiede zur Firma und was „übernehmen“ am
+    /// Netto ändert (`Scene::kosten_live`).
+    fn sync_abgleich(
+        &mut self,
+        s: &mut Scene,
+        firma: Option<(&sk_model::Library, u64)>,
+        kat: &Rc<Katalog>,
+        blatt: &Rc<Kostenblatt>,
+    ) -> bool {
+        let von = (Rc::as_ptr(blatt), Rc::as_ptr(kat));
+        if self.abgleich_von == Some(von) {
+            return false;
+        }
+        self.abgleich_von = Some(von);
+        let neu = sk_cost::abgleich::abgleich(s.model(), firma.map(|f| f.0)).map(|a| {
+            let op = Op::StandUebernehmen {
+                saetze: a.saetze.clone(),
+            };
+            let netto = s
+                .kosten_live(firma, &[op], &[&self.leiste.umfang])
+                .ok()
+                .and_then(|(_, b)| Some((blatt.netto, b.first()?.netto)));
+            (a, netto)
+        });
+        let changed = neu != self.abgleich;
+        self.abgleich = neu;
+        if changed {
+            self.clamp();
+        }
+        changed
+    }
+
+    /// Text der Abgleichzeile, wenn sie steht.
+    #[cfg(test)]
+    pub fn abgleich_zeile(&self) -> Option<String> {
+        self.abgleich.as_ref().map(|(a, _)| a.zeile())
     }
 
     /// Preisblatt öffnen (Doppelklick auf den EP) und beim Tippen die
@@ -970,9 +1027,54 @@ impl KostenView {
         self.top * self.scale
     }
 
+    /// Versatz unter der Abgleichzeile (dip).
+    fn ab(&self) -> f32 {
+        if self.abgleich.is_some() {
+            ABGLEICH_H
+        } else {
+            0.0
+        }
+    }
+
+    /// Höhe des Kopfs (dip).
+    fn head(&self) -> f32 {
+        HEAD + self.ab()
+    }
+
     /// Erste Zeile der Liste (px).
     fn list_top(&self) -> f32 {
-        self.top_px() + HEAD * self.scale
+        self.top_px() + self.head() * self.scale
+    }
+
+    /// Abgleichzeile: x des Texts, Grundlinie, Text (gekürzt), Textfläche,
+    /// „übernehmen“ und „so lassen“ (px).
+    fn abgleich_lage(
+        &self,
+        t: &Theme,
+        fonts: &Fonts,
+    ) -> Option<(f32, f32, String, Rect, Rect, Rect)> {
+        let (a, _) = self.abgleich.as_ref()?;
+        let s = self.scale;
+        let (x0, cw) = self.content_x(t);
+        let px = 11.0 * s;
+        let regular = fonts.regular.as_ref();
+        let bold = fonts.bold.as_ref().or(regular);
+        let breite = |f: Option<&sk_paint::font::Font>, text: &str| {
+            f.map_or(text.chars().count() as f32 * px * 0.55, |f| {
+                f.width(text, px)
+            })
+        };
+        let base = self.top_px() + ABGLEICH_Y * s;
+        let x = x0 + 12.0 * s;
+        let sep = breite(regular, " · ");
+        let (wu, wl) = (breite(bold, "übernehmen"), breite(bold, "so lassen"));
+        let platz = (x0 + cw - x - 2.0 * sep - wu - wl).max(0.0);
+        let text = sk_ui::widgets::ellipsize(regular, &a.zeile(), px, platz);
+        let wt = breite(regular, &text);
+        let (y, h) = (base - 14.0 * s, ABGLEICH_H * s);
+        let u = x + wt + sep;
+        let l = u + wu + sep;
+        Some((x, base, text, (x, y, wt, h), (u, y, wu, h), (l, y, wl, h)))
     }
 
     /// Oberkante der Kacheln (px).
@@ -1026,7 +1128,7 @@ impl KostenView {
     fn leiste_lage(&self, t: &Theme) -> umfang_view::Lage {
         umfang_view::Lage {
             x0: self.content_x(t).0,
-            y: self.top_px() + CHIP_TOP * self.scale,
+            y: self.top_px() + (CHIP_TOP + self.ab()) * self.scale,
             s: self.scale,
         }
     }
@@ -1053,7 +1155,7 @@ impl KostenView {
         let s = self.scale;
         let (x0, _) = self.content_x(t);
         let px = 10.5 * s;
-        let y = self.top_px() + SWITCH_TOP * s;
+        let y = self.top_px() + (SWITCH_TOP + self.ab()) * s;
         let regular = fonts.regular.as_ref();
         let bold = fonts.bold.as_ref().or(regular);
         let w = |text: &str| {
@@ -1169,6 +1271,17 @@ impl KostenView {
         }
         if inside(self.button_rect(t, fonts), x, y) {
             return Some(Hot::Button);
+        }
+        if let Some((_, _, _, text, u, l)) = self.abgleich_lage(t, fonts) {
+            for (r, h) in [
+                (u, Hot::Uebernehmen),
+                (l, Hot::Lassen),
+                (text, Hot::Abgleich),
+            ] {
+                if inside(r, x, y) {
+                    return Some(h);
+                }
+            }
         }
         let ((_, preise), (_, gl)) = self.schalter(t, fonts);
         if let Some((m, _)) = preise.iter().find(|(_, r)| inside(*r, x, y)) {
@@ -1359,6 +1472,15 @@ impl KostenView {
             }
             Hot::Geschaetzt => self.springe(|z| z.geschaetzt),
             Hot::OhnePreis => self.springe(|z| z.art == Art::Ohne),
+            Hot::Abgleich => None,
+            Hot::Uebernehmen => {
+                let (a, _) = self.abgleich.as_ref()?;
+                Some(ListOut::Kosten(Schreiben::Uebernehmen(a.saetze.clone())))
+            }
+            Hot::Lassen => {
+                let (a, _) = self.abgleich.as_ref()?;
+                Some(ListOut::Kosten(Schreiben::Lassen(a.stand)))
+            }
         }
     }
 
@@ -1429,6 +1551,20 @@ impl KostenView {
                 let oz = &self.blatt.as_deref()?.positionen.get(p)?.oz;
                 (!oz.is_empty()).then(|| format!("OZ {oz}"))
             }
+            Hot::Abgleich => {
+                let (a, _) = self.abgleich.as_ref()?;
+                (a.texte.len() > 2)
+                    .then(|| format!("Für neue Häuser gilt:\n{}", a.texte.join("\n")))
+            }
+            Hot::Uebernehmen => {
+                let (_, netto) = self.abgleich.as_ref()?;
+                let (v, n) = (*netto)?;
+                Some(format!(
+                    "Mit den Werten für neue Häuser: {} € → {} € netto · Eigene Werte dieses Hauses bleiben stehen.",
+                    euro(v),
+                    euro(n)
+                ))
+            }
             Hot::Gliederung(Gliederung::Kostengruppe) => Some(
                 "Kostengruppe nach DIN 276, wie sie Architekten und Bauherren verwenden".into(),
             ),
@@ -1446,7 +1582,13 @@ impl KostenView {
         c.fill_rect(0.0, self.top_px(), self.w as f32, self.h as f32, u.sheet_bg);
         self.paint_rows(c, t, fonts);
         // Kopf deckt weggerollte Zeilen ab
-        c.fill_rect(0.0, self.top_px(), self.w as f32, HEAD * s, u.sheet_bg);
+        c.fill_rect(
+            0.0,
+            self.top_px(),
+            self.w as f32,
+            self.head() * s,
+            u.sheet_bg,
+        );
         self.paint_head(c, t, fonts, now);
         let tt = self.tiles_top();
         c.fill_rect(
@@ -1493,6 +1635,7 @@ impl KostenView {
             let text = sk_ui::widgets::ellipsize(Some(f), &self.subtitle, 10.5 * s, cw);
             f.draw(c, &text, 10.5 * s, x0, top + SUB_Y * s, u.sheet_text_dim);
         }
+        self.paint_abgleich(c, t, fonts);
         // Knopf „Als Tabelle speichern“
         let (bx, by, bw, bh) = self.button_rect(t, fonts);
         let bg = if self.button_down {
@@ -1542,7 +1685,7 @@ impl KostenView {
         // Spaltenköpfe und Linie
         if let Some(f) = regular {
             let px = 10.0 * s;
-            let base = top + (HEAD - 12.0) * s;
+            let base = top + (self.head() - 12.0) * s;
             let (ep, gp) = if self.modus.nur_material() {
                 ("Stoff-EP", "Stoff-GP")
             } else {
@@ -1569,7 +1712,70 @@ impl KostenView {
                 );
             }
         }
-        c.fill_rect(x0, top + (HEAD - 6.0) * s, cw, s.max(1.0), u.sheet_rule);
+        c.fill_rect(
+            x0,
+            top + (self.head() - 6.0) * s,
+            cw,
+            s.max(1.0),
+            u.sheet_rule,
+        );
+    }
+
+    /// „● Für neue Häuser gilt … · übernehmen · so lassen“.
+    fn paint_abgleich(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts) {
+        let Some((x, base, text, _, (ux, _, _, _), (lx, _, _, _))) = self.abgleich_lage(t, fonts)
+        else {
+            return;
+        };
+        let (s, u) = (self.scale, &t.ui);
+        let px = 11.0 * s;
+        let regular = fonts.regular.as_ref();
+        let bold = fonts.bold.as_ref().or(regular);
+        let (x0, _) = self.content_x(t);
+        let cap = regular.map_or(8.0 * s, |f| f.cap_height(px));
+        let mut p = Path::new();
+        let d = 3.0 * s;
+        p.rounded_rect(x0, base - cap * 0.5 - d, 2.0 * d, 2.0 * d, d);
+        c.fill(&p, u.accent);
+        if let Some(f) = regular {
+            f.draw(c, &text, px, x, base, u.sheet_text);
+            f.draw(
+                c,
+                " · ",
+                px,
+                ux - f.width(" · ", px),
+                base,
+                u.sheet_text_dim,
+            );
+            f.draw(
+                c,
+                " · ",
+                px,
+                lx - f.width(" · ", px),
+                base,
+                u.sheet_text_dim,
+            );
+        }
+        if let Some(f) = bold {
+            let unter = |h| self.hot == Some(h);
+            let farbe = |h, c| if unter(h) { u.text } else { c };
+            f.draw(
+                c,
+                "übernehmen",
+                px,
+                ux,
+                base,
+                farbe(Hot::Uebernehmen, u.accent),
+            );
+            f.draw(
+                c,
+                "so lassen",
+                px,
+                lx,
+                base,
+                farbe(Hot::Lassen, u.sheet_text_dim),
+            );
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2352,6 +2558,75 @@ mod tests {
             s.bezeichnung("Planstein 19,00 €/m² für dieses und neue Häuser".into()),
             label
         ));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Abgleichzeile: Firma auf Lohn 65 nach der Projektkopie; „übernehmen“
+    /// mit Netto im Tooltip, die Liste schiebt sich unter die Zeile.
+    #[test]
+    fn abgleichzeile_fuer_neue_haeuser() {
+        let t = Theme::dark();
+        let fonts = Fonts {
+            regular: None,
+            bold: None,
+            italic: None,
+        };
+        let d = std::env::temp_dir().join(format!("skizzeo-kv-abgleich-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (mut c, _) = crate::catalog::Company::load(&d.join("firmenkatalog.szk"), true);
+        let mut s = haus();
+        let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "12:00");
+        let lohn = |v: i64| sk_cost::Op::FirmenwertSetzen {
+            schluessel: "wage".into(),
+            wert: Dez::ganz(v),
+        };
+        c.fuer_firma(&h, &[lohn(60)]).unwrap();
+        let mut v = KostenView::new();
+        (v.w, v.h) = (1200, 900);
+        v.sync(&mut s, Some((c.library(), c.stand())));
+        assert_eq!(v.abgleich_zeile(), None, "ohne Kopie");
+        let oben = v.list_top();
+        // Projektkopie über einen eigenen Preis, dann Lohn 65 in der Firma
+        let k = s.katalog(Some((c.library(), c.stand())));
+        let art = k.artikel.iter().find(|a| a.preis.is_some()).unwrap().guid;
+        let preis = Op::PreisSetzen {
+            artikel: art,
+            preis: Some(Dez::ganz(99)),
+            stand: "10/2026".into(),
+            quelle: "Preisblatt".into(),
+        };
+        s.kosten_folge("Preis", Some(c.library()), &h, &[preis])
+            .unwrap();
+        c.fuer_firma(&h, &[lohn(65)]).unwrap();
+        v.sync(&mut s, Some((c.library(), c.stand())));
+        assert_eq!(
+            v.abgleich_zeile().as_deref(),
+            Some("Für neue Häuser gilt Lohn 65,00 €/h (hier 60,00)")
+        );
+        assert_eq!(v.list_top(), oben + ABGLEICH_H * v.scale);
+        let (_, _, _, _, (ux, uy, uw, uh), (lx, ..)) = v.abgleich_lage(&t, &fonts).unwrap();
+        let (x, y) = ((ux + uw * 0.5) as f64, (uy + uh * 0.5) as f64);
+        let tip = v.tip_at(&t, &fonts, x, y).unwrap();
+        assert!(tip.starts_with("Mit den Werten für neue Häuser: "), "{tip}");
+        assert!(tip.ends_with("netto · Eigene Werte dieses Hauses bleiben stehen."));
+        let mut p = Picking::default();
+        let mods = sk_platform::Modifiers::default();
+        let lassen = v.mouse_down(&t, &fonts, &mut p, ((lx + 2.0) as f64, y), mods);
+        assert!(matches!(
+            lassen,
+            Some(ListOut::Kosten(Schreiben::Lassen(_)))
+        ));
+        let Some(ListOut::Kosten(Schreiben::Uebernehmen(saetze))) =
+            v.mouse_down(&t, &fonts, &mut p, (x, y), mods)
+        else {
+            panic!("übernehmen");
+        };
+        let op = Op::StandUebernehmen { saetze };
+        s.kosten_folge("Übernommen", Some(c.library()), &h, &[op])
+            .unwrap();
+        v.sync(&mut s, Some((c.library(), c.stand())));
+        assert_eq!(v.abgleich_zeile(), None);
+        assert_eq!(v.list_top(), oben);
         let _ = std::fs::remove_dir_all(&d);
     }
 }

@@ -2232,6 +2232,14 @@ impl App {
                 let op = sk_cost::Op::AbweichungZuruecknehmen { saetze };
                 self.kosten_folge("Firmenpreis zurückgeholt", &h, &[op])
             }
+            kosten_view::Schreiben::Uebernehmen(saetze) => {
+                let op = sk_cost::Op::StandUebernehmen { saetze };
+                self.kosten_folge("Werte für neue Häuser übernommen", &h, &[op])
+            }
+            kosten_view::Schreiben::Lassen(stand) => {
+                let op = sk_cost::Op::AbgleichLassen { stand };
+                self.kosten_folge("Werte für neue Häuser nicht übernommen", &h, &[op])
+            }
         };
         if let Some((text, error)) = meldung {
             self.renderer.set_overlay(OVERLAY_NOTICE, 0, 0, 0, 0, &[]);

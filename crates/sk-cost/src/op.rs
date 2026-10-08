@@ -1022,7 +1022,7 @@ fn kopie(m: &Model, firma: Option<&Library>) -> ExtStore {
 }
 
 /// Entstand die `[origin]`-Zeile im Projekt (`proj=1`, Regel 89)?
-fn projektherkunft(zeile: &str) -> bool {
+pub(crate) fn projektherkunft(zeile: &str) -> bool {
     crate::zeile::zerlegen(zeile)
         .is_some_and(|z| z.paare.iter().any(|(k, v)| k == "proj" && v == "1"))
 }
@@ -1067,7 +1067,10 @@ pub fn hat_kopie(m: &Model) -> bool {
 }
 
 /// Firma, die als Bezug gilt: freigegeben und mit Kostensätzen.
-fn firma_bezug(m: &Model, firma: Option<&Library>) -> Option<(Katalog, ExtStore, Guid, u32)> {
+pub(crate) fn firma_bezug(
+    m: &Model,
+    firma: Option<&Library>,
+) -> Option<(Katalog, ExtStore, Guid, u32)> {
     let f = firma?;
     let k = crate::lesen::firma_oder_werk(m, Some(f));
     if !matches!(k.quelle, Quelle::Firma { .. }) {

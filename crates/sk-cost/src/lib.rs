@@ -5,6 +5,7 @@
 //! Erweiterungsspeicher von `sk-model`; gedeutet werden sie nur hier, aus
 //! einer Feldtabelle ([`satz`]).
 
+pub mod abgleich;
 pub mod befund;
 pub mod din276;
 pub mod geld;
