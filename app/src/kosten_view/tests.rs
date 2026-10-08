@@ -475,7 +475,7 @@ fn abgleichzeile_fuer_neue_haeuser() {
                     })
                 )
             ),
-            unterschiede::Zeile::Kopf("Abweichend", "„übernehmen“ setzt den Wert für neue Häuser"),
+            unterschiede::Zeile::Kopf("Abweichend", "„übernehmen“ holt diese Werte in dieses Haus"),
             unterschiede::Zeile::Eintrag("Lohn 65,00 €/h (hier 60,00)".into()),
         ]
     );

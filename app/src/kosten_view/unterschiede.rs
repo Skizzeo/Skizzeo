@@ -146,7 +146,7 @@ impl KostenView {
         )];
         z.push(Zeile::Kopf(
             "Abweichend",
-            "„übernehmen“ setzt den Wert für neue Häuser",
+            "„übernehmen“ holt diese Werte in dieses Haus",
         ));
         z.extend(a.texte.iter().cloned().map(Zeile::Eintrag));
         if !a.eigene.is_empty() {
