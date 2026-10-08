@@ -24612,6 +24612,30 @@ mod masseingabe {
             assert!(s.undo());
             assert_eq!(s.undo_label(), Some("Kopplung gelöst"), "ein Schritt");
         }
+
+        // Ungültig getippt und ohne Bewegung losgelassen (Review 3z): kein
+        // Verlaufsschritt, also keine Nachkorrektur; die Eingabe schließt
+        // und bleibt nicht unsichtbar offen
+        let (mut s, aw6) = geloest(3063);
+        let mut e = WallEdit::default();
+        greifen(&mut e, &mut s, og_fuss(8000.0));
+        e_zeichen(&mut e, &mut s, "-");
+        loslassen(&mut e, &mut s, og_fuss(8000.0));
+        assert_eq!(versatz(&s, aw6), Some((0.0, false)), "Wand blieb");
+        assert_eq!(s.undo_label(), Some("Kopplung gelöst"), "kein Schritt");
+        assert_eq!(e.pill(&s), None);
+        assert!(eingabe_ziehen(&e).is_none(), "Eingabe zu");
+
+        // Gültig getippt und ohne Bewegung losgelassen: wie Enter
+        let (mut s, aw6) = geloest(3064);
+        let mut e = WallEdit::default();
+        greifen(&mut e, &mut s, og_fuss(8000.0));
+        e_zeichen(&mut e, &mut s, "0,2");
+        loslassen(&mut e, &mut s, og_fuss(8000.0));
+        assert_eq!(versatz(&s, aw6), Some((200.0, false)), "Wert gilt");
+        assert_eq!(s.undo_label(), Some("Wand verschoben"));
+        assert_eq!(e.pill(&s), Some(("Versatz +0,20".to_string(), false)));
+        assert!(eingabe_ziehen(&e).is_none(), "Eingabe zu");
     }
 }
 

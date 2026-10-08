@@ -807,6 +807,12 @@ impl WallEdit {
                     let serial = scene.step_serial();
                     scene.commit();
                     self.remember(scene, serial, d.target());
+                    // Ohne Verlaufsschritt gibt es keine Nachkorrektur: eine
+                    // offene (ungültige) Eingabe schließt, sonst bliebe sie
+                    // unsichtbar und nähme Tasten (Review 3z)
+                    if self.last.is_none() {
+                        self.input = None;
+                    }
                     out.consumed = true;
                     out.redraw = true;
                     self.refresh(scene, cam, w, h, scale, enabled);

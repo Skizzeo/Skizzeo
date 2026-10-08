@@ -1406,7 +1406,8 @@ fn head_share(seed: u32) -> Option<f64> {
 const FLAME_CORE: f64 = 0.53;
 
 /// Mischfarbe aus der Ferne. Mauerwerk aus den Flächenanteilen der Farben
-/// (ohne Verbandstabelle, darum auch, solange sie noch rechnet); die
+/// (der wilde Verband mit dem Kopfanteil seiner Tabelle, solange sie noch
+/// rechnet mit 30 %; wartet nie); die
 /// übrigen Arten als Mittel von [`sample`] über 64 × 64 Punkte
 /// (paket-7 §8.6), je Muster einmal gerechnet.
 pub fn mix(p: &Pattern, base: [u8; 3]) -> [u8; 3] {
