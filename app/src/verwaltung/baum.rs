@@ -157,9 +157,14 @@ impl Verwaltung {
             .enumerate()
             .map(|(i, h)| blatt(Knoten::Haus(i), h.name.clone()))
             .collect();
-        let staende: Vec<Eintrag> = sk_cost::verwaltung::protokoll(k)
+        let staende: Vec<Eintrag> = sk_cost::verwaltung::protokoll(&self.vorher)
             .into_iter()
-            .map(|s| blatt(Knoten::Stand(s.stand), zeit_text(&s.zeit)))
+            .map(|s| {
+                blatt(
+                    Knoten::Stand(s.stand),
+                    format!("Stand {} · {}", s.stand, zeit_text(&s.zeit)),
+                )
+            })
             .collect();
         let mut korb = Vec::new();
         for a in k.artikel.iter().filter(|a| a.retired) {

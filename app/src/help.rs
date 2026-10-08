@@ -1045,7 +1045,7 @@ mod tests {
     }
 
     /// KA-4d (paket-ka4 §7): Thema „AVA · Leistungsverzeichnis“ mit den
-    /// sieben Zeilen; F1 im Blatt AVA.
+    /// sieben Zeilen und der Zeile zur OZ in der Tabelle (Kosten-Nachprüfung 16:05); F1 im Blatt AVA.
     #[test]
     fn hilfe_ava() {
         let h = help();
@@ -1061,7 +1061,8 @@ mod tests {
                 "Kopf",
                 "Prüfen",
                 "Geschosse getrennt",
-                "Ausgabe"
+                "Ausgabe",
+                "OZ in der Tabelle"
             ]
         );
         assert_eq!(Topic::from_id("ava"), Some(Topic::Ava));

@@ -459,9 +459,9 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
                 Ort::Position(oz_basis.clone()),
             ));
         }
-        // Kostengruppe wie im Kostenblatt: die gemeinsame der Bauteile
-        // (`nach_kg` bucht nach `Ansatz.kg`); verschiedene ergeben keine.
-        // Die der Bauleistung nur, wenn kein Bauteil eine hat
+        // Kostengruppe wie im Kostenblatt: die gemeinsame `Ansatz.kg` der
+        // Zeilen (dort schon die der Bauleistung, sonst die der Schicht);
+        // verschiedene ergeben keine
         let kg = {
             let mut kgs = ansatz.iter().map(|a| a.kg);
             let erste = kgs.next().flatten();

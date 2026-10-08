@@ -240,6 +240,7 @@ Kopf | „Kopf und Vorbemerkungen“; Bauvorhaben, Aufsteller und Datum setzt Sk
 Prüfen | im Baum unten; ein Klick führt zur Stelle
 Geschosse getrennt | „Mehr“ › „Geschosse als Untertitel“
 Ausgabe | „LV … als Tabelle speichern“ schreibt das gewählte Los als CSV
+OZ in der Tabelle | Die OZ steht in der Tabelle als Text, damit Excel kein Datum daraus macht. Andere Programme lesen sie als ="01.02.0030"; dort die Spalte als Text einlesen und ="" entfernen.
 
 [thema] id=loeschen titel="Löschen"
 Innenwand | wählen, **Entf** oder Rechtsklick › Löschen

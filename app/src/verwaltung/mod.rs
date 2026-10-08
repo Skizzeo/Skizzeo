@@ -61,6 +61,8 @@ pub enum Aktion {
     Wiederherstellen(SatzId),
     /// Bauteilkatalog mit diesem Typ öffnen.
     TypOeffnen(Guid),
+    /// „Diese Änderung zurücknehmen“ für einen Stand (KA-3a3).
+    Zuruecknehmen(u32),
 }
 
 /// Ziel unter der Maus.
@@ -88,6 +90,9 @@ pub struct Out {
     pub ok: bool,
     /// Bauteilkatalog mit diesem Typ öffnen.
     pub open_type: Option<Guid>,
+    /// Stand zurücknehmen: die App holt die Operationen über
+    /// `Company::umkehr` und gibt sie an [`Verwaltung::zuruecknehmen`].
+    pub zurueck: Option<u32>,
 }
 
 pub struct Ctx<'a> {
@@ -136,6 +141,10 @@ pub struct Verwaltung {
     wirkung: wirkung::Wirkung,
     /// Meldung im Fuß (z. B. OK gescheitert).
     meldung: Option<String>,
+    /// Stand, dessen Rücknahme in den gesammelten Änderungen steckt.
+    zurueck: Option<u32>,
+    /// Lücken nach Regel 97 beim Öffnen; sperren nur neue.
+    luecken0: Vec<String>,
 }
 
 /// „0,55“ statt „0.55“.
@@ -183,6 +192,9 @@ fn op_schluessel(op: &Op) -> Option<String> {
             format!("ruhe {} {}", satz.abschnitt, satz.kennung)
         }
         Op::HerkunftBestaetigen { satz } => format!("herkunft {} {}", satz.abschnitt, satz.kennung),
+        Op::FolgeSetzen {
+            bauleistung, nr, ..
+        } => format!("folge {} {nr}", bauleistung.to_ifc()),
         _ => return None,
     })
 }
@@ -250,6 +262,8 @@ impl Verwaltung {
             drag: None,
             wirkung,
             meldung: None,
+            zurueck: None,
+            luecken0: Vec::new(),
         };
         let gibt_es = |k: &Knoten| match k {
             Knoten::Leistung(g) => v.jetzt.leistung(*g).is_some(),
@@ -264,6 +278,12 @@ impl Verwaltung {
                 .map_or(Knoten::Firmenwerte, |l| Knoten::Leistung(l.guid))
         });
         v.waehlen(w);
+        v.luecken0 = v
+            .wirkung
+            .luecken(&v.vorher)
+            .into_iter()
+            .map(|b| b.satz)
+            .collect();
         v
     }
 
@@ -294,6 +314,7 @@ impl Verwaltung {
     fn neu_rechnen(&mut self) {
         self.meldung = None;
         if self.ops.is_empty() {
+            self.zurueck = None;
             self.lib = self.lib0.clone();
             self.jetzt = self.vorher.clone();
             self.befunde.clear();
@@ -303,8 +324,15 @@ impl Verwaltung {
                 Ok(lib) => {
                     self.jetzt = sk_cost::lesen::firma_oder_werk(&self.m, Some(&lib));
                     self.lib = lib;
-                    self.befunde.clear();
                     self.fehler_feld = None;
+                    // Regel 97: was beim Öffnen gedeckt war, muss gedeckt bleiben
+                    let alt = &self.luecken0;
+                    self.befunde = self
+                        .wirkung
+                        .luecken(&self.jetzt)
+                        .into_iter()
+                        .filter(|b| !alt.contains(&b.satz))
+                        .collect();
                 }
                 Err(b) => {
                     // Anzeigen, was eingegeben wurde, auch wenn es sperrt
@@ -470,6 +498,27 @@ impl Verwaltung {
         })
     }
 
+    /// Die Operationen, die Stand `stand` umkehren (aus `Company::umkehr`),
+    /// kommen zu den gesammelten; OK schreibt sie als neuen Stand. Ein
+    /// Befund steht im Fuß, nichts ändert sich.
+    pub fn zuruecknehmen(&mut self, stand: u32, r: Result<Vec<Op>, String>) {
+        match r {
+            Ok(ops) => {
+                for op in ops {
+                    if let Some(s) = op_schluessel(&op) {
+                        self.ops.retain(|o| op_schluessel(o).as_deref() != Some(&s));
+                    }
+                    if !self.wie_vorher(&op) && !self.ops.contains(&op) {
+                        self.ops.push(op);
+                    }
+                }
+                self.neu_rechnen();
+                self.zurueck = Some(stand);
+            }
+            Err(m) => self.meldung = Some(m),
+        }
+    }
+
     pub fn aktion(&mut self, a: Aktion) -> Option<Guid> {
         match a {
             Aktion::Mehr => self.mehr = !self.mehr,
@@ -478,6 +527,8 @@ impl Verwaltung {
             Aktion::Ausmustern(satz) => self.setzen(Op::Ausmustern { satz }),
             Aktion::Wiederherstellen(satz) => self.setzen(Op::Wiederherstellen { satz }),
             Aktion::TypOeffnen(g) => return Some(g),
+            // Geht über die App (Archiv der Stände)
+            Aktion::Zuruecknehmen(_) => {}
         }
         None
     }
@@ -777,6 +828,11 @@ impl Verwaltung {
                         feld: f,
                         te: TextEdit::new(&text),
                     });
+                }
+            }
+            Some(Ziel::Aktion(Aktion::Zuruecknehmen(n))) => {
+                if self.zurueck != Some(n) {
+                    out.zurueck = Some(n);
                 }
             }
             Some(Ziel::Aktion(a)) => {

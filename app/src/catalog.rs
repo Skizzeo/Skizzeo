@@ -601,6 +601,45 @@ impl Company {
         Ok(neu)
     }
 
+    /// Ordner der früheren Stände neben dem Firmenkatalog.
+    fn staende(&self) -> PathBuf {
+        self.path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("firmenkatalog-staende")
+    }
+
+    /// „Diese Änderung zurücknehmen“ (KA-3a1): die Operationen, die Stand
+    /// `stand` umkehren, gegen den abgelegten Stand davor. Vor Stand 1 ohne
+    /// Ablage galt der Werksbestand. Geschrieben wird wie jede
+    /// Firmenänderung über `Scene::fuer_firma`, also als neuer Stand.
+    pub fn umkehr(&self, m: &Model, stand: u32) -> Result<Vec<sk_cost::Op>, Meldung> {
+        let nicht = "Nichts zurückgenommen.";
+        let vor = stand.saturating_sub(1);
+        let pfad = self.staende().join(format!("stand-{vor:04}.szk"));
+        let vorher = match std::fs::read_to_string(&pfad) {
+            Ok(t) => Some(
+                sk_model::read_szk_with(&t, &sk_cost::lesen::ABSCHNITTE_SZK).map_err(|_| {
+                    Meldung::mit("Stand {} im Archiv ist nicht lesbar.", &[&vor.to_string()])
+                        .dazu(nicht)
+                })?,
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && vor == 0 => None,
+            Err(e) => {
+                return Err(Meldung::aus_io(
+                    "Stand nicht zurückgenommen",
+                    "früheren Stand lesen",
+                    &pfad,
+                    &e,
+                ))
+            }
+        };
+        let jetzt = sk_cost::lesen::firma_oder_werk(m, Some(&self.lib));
+        let davor = sk_cost::lesen::firma_oder_werk(m, vorher.as_ref());
+        sk_cost::verwaltung::umkehr(&jetzt, &davor, stand)
+            .map_err(|b| Meldung::aus_befunden(&b, nicht))
+    }
+
     fn save_with(
         &mut self,
         export: impl FnOnce(&mut Library) -> bool,

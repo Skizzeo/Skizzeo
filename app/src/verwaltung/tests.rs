@@ -291,6 +291,142 @@ fn ok_schreibt_firma() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Abnahme 15b (paket-ka3a §5): Stahlbetondecke in den Papierkorb ohne
+/// Ersatz sperrt OK mit Regel 97; Wiederherstellen gibt OK wieder frei.
+#[test]
+fn regel_97_ohne_typ() {
+    let s = haus();
+    let mut v = Verwaltung::open(&s, None, None);
+    assert!(!v.gesperrt());
+    let g = leistung(&v, "Stb-Decke Ortbeton");
+    let satz = SatzId::neu("service", g.to_ifc());
+    v.aktion(Aktion::Ausmustern(satz.clone()));
+    assert!(v.gesperrt());
+    assert_eq!(
+        v.befunde[0].satz,
+        "Werksbauteil Decke (Stahlbeton 220 mm) hat keine genaue Bauleistung."
+    );
+    v.aktion(Aktion::Wiederherstellen(satz));
+    assert!(!v.gesperrt() && v.ops().is_empty());
+}
+
+/// Abnahme 15 (paket-ka3a §5): nach zwei OK zwei Stände; „Diese Änderung
+/// zurücknehmen“ am ersten setzt die alten Werte als dritten Stand. Hat ein
+/// späterer Stand denselben Satz wieder geändert, Befund und nichts geschieht.
+#[test]
+fn protokoll_zuruecknehmen() {
+    let dir =
+        std::env::temp_dir().join(format!("skizzeo-verwaltung-zurueck-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let pfad: PathBuf = dir.join("firmenkatalog.szk");
+    let (mut c, _) = Company::laden(&pfad, true);
+    let mut s = haus();
+    let fonts = schriften();
+    let w = win();
+    let schreiben = |s: &mut Scene, c: &mut Company, v: &Verwaltung, uhr: &str| {
+        let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", uhr);
+        s.fuer_firma(STEP, c, &h, v.ops()).expect("schreibt");
+    };
+    // Erstes OK: Stunden, zweites OK: Verrechnungslohn
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    let g = leistung(&v, AW24);
+    let stunden = v.jetzt.leistung(g).unwrap().stunden;
+    v.waehlen(Knoten::Leistung(g));
+    v.eingeben(&Feld::Stunden, "0,45");
+    schreiben(&mut s, &mut c, &v, "16:00");
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    let lohn = v.jetzt.werte.lohn;
+    v.waehlen(Knoten::Firmenwerte);
+    v.eingeben(&Feld::Wert("wage".into()), "70");
+    schreiben(&mut s, &mut c, &v, "16:05");
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    let st = sk_cost::verwaltung::protokoll(&v.vorher);
+    assert_eq!(st.len(), 2, "{st:#?}");
+    let erster = st[1].stand;
+    // Baum: Stände neu zuerst
+    let zeilen = {
+        v.waehlen(Knoten::Stand(erster));
+        v.zeilen()
+    };
+    let i = zeilen
+        .iter()
+        .position(|z| z.knoten == Knoten::Stand(st[0].stand))
+        .unwrap();
+    assert_eq!(zeilen[i + 1].knoten, Knoten::Stand(erster));
+    assert!(zeilen[i + 1]
+        .text
+        .starts_with(&format!("Stand {erster} · 08.10.2026 16:00")));
+    // Der Knopf meldet den Stand an die App
+    let (r, _) = v
+        .teile_px(&w, &fonts)
+        .into_iter()
+        .find(|(_, t)| t.ziel == Some(Ziel::Aktion(Aktion::Zuruecknehmen(erster))))
+        .expect("Knopf");
+    let mut cx = Ctx {
+        fonts: &fonts,
+        win: w,
+    };
+    let out = v.handle(
+        &Event::MouseDown {
+            button: MouseButton::Left,
+            x: (r.x + 5.0) as f64,
+            y: (r.y + 5.0) as f64,
+            mods: Modifiers::default(),
+        },
+        &mut cx,
+    );
+    assert_eq!(out.zurueck, Some(erster));
+    let r = c.umkehr(s.model(), erster).map_err(|m| m.to_string());
+    v.zuruecknehmen(erster, r);
+    assert!(!v.ops().is_empty() && !v.gesperrt());
+    assert_eq!(v.jetzt.leistung(g).unwrap().stunden, stunden);
+    assert_eq!(v.jetzt.werte.lohn, Dez::ganz(70), "Stand 2 bleibt");
+    // Der Knopf ist jetzt eine Lesezeile
+    assert!(!v
+        .teile_px(&w, &fonts)
+        .iter()
+        .any(|(_, t)| t.ziel == Some(Ziel::Aktion(Aktion::Zuruecknehmen(erster)))));
+    schreiben(&mut s, &mut c, &v, "16:10");
+    let text = std::fs::read_to_string(&pfad).unwrap();
+    let st = sk_cost::verwaltung::protokoll(&sk_cost::lesen::firma_oder_werk(
+        s.model(),
+        Some(c.library()),
+    ));
+    assert_eq!(st.len(), 3, "{text}");
+    assert!(
+        st[0]
+            .eintraege
+            .iter()
+            .any(|e| e.op == "bauleistung_aendern"),
+        "{:#?}",
+        st[0]
+    );
+    // Lohn zweimal geändert: Stand 2 zurück, dann der neue Wert 75 in
+    // Stand 4; Stand 2 zurücknehmen geht nicht mehr
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    v.waehlen(Knoten::Firmenwerte);
+    v.eingeben(&Feld::Wert("wage".into()), "75");
+    schreiben(&mut s, &mut c, &v, "16:15");
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    let zweiter = sk_cost::verwaltung::protokoll(&v.vorher)[2].stand;
+    v.waehlen(Knoten::Stand(zweiter));
+    let r = c.umkehr(s.model(), zweiter).map_err(|m| m.to_string());
+    assert!(r.is_err());
+    v.zuruecknehmen(zweiter, r);
+    assert!(v.ops().is_empty());
+    v.paint(&Theme::dark(), &fonts, &w);
+    assert!(
+        v.meldung
+            .as_deref()
+            .is_some_and(|m| m.contains("Verrechnungslohn")),
+        "{:?}",
+        v.meldung
+    );
+    assert_ne!(lohn, Dez::ganz(75));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Klick in den Baum wählt und klappt; Klick in ein Feld öffnet es, Enter
 /// übernimmt. Malen geht in jeder Seite.
 #[test]
@@ -407,4 +543,32 @@ fn istbilder_ka3() {
     v.waehlen(Knoten::ArtikelSatz(art));
     let (c, _, _) = v.paint(&t, &fonts, &w);
     std::fs::write(dir.join("ist-ka-3-artikel.png"), c.to_png()).unwrap();
+    // Protokoll: ein Stand mit zwei Änderungen, davor und nach dem Klick
+    let tmp = std::env::temp_dir().join(format!("skizzeo-ist-ka3-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    let pfad = tmp.join("firmenkatalog.szk");
+    let (mut c, _) = Company::laden(&pfad, true);
+    let mut s = haus();
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    v.waehlen(Knoten::Leistung(g));
+    v.eingeben(&Feld::Stunden, "0,45");
+    v.eingeben(
+        &Feld::Kurz,
+        "AW Porenbeton-Planstein PP2-0,35 d=24cm, Dünnbett",
+    );
+    v.waehlen(Knoten::Firmenwerte);
+    v.eingeben(&Feld::Wert("wage".into()), "64,50");
+    let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "16:00");
+    s.fuer_firma(STEP, &mut c, &h, v.ops()).expect("schreibt");
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    let n = sk_cost::verwaltung::protokoll(&v.vorher)[0].stand;
+    v.waehlen(Knoten::Stand(n));
+    let (b, _, _) = v.paint(&t, &fonts, &w);
+    std::fs::write(dir.join("ist-ka-3-protokoll.png"), b.to_png()).unwrap();
+    let r = c.umkehr(s.model(), n).map_err(|m| m.to_string());
+    v.zuruecknehmen(n, r);
+    let (b, _, _) = v.paint(&t, &fonts, &w);
+    std::fs::write(dir.join("ist-ka-3-protokoll-zurueck.png"), b.to_png()).unwrap();
+    let _ = std::fs::remove_dir_all(&tmp);
 }

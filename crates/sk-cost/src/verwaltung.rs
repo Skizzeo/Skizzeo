@@ -332,6 +332,120 @@ pub fn mit_ops(text: &str, ops: &[Op]) -> Result<Library, Vec<Befund>> {
     })
 }
 
+/// Regel 97 als Sperre der Verwaltung (paket-ka3a §3, BIM 10:40): die
+/// Werksschichten der Werkstypen und die typlosen Werksbauteile des Hauses
+/// `haus` (Decke, Sohlplatte, Frostschürze, Randdämmstreifen, je Decke die
+/// Untersichtdämmung mit Startdicke), die mit `k` nur geschätzt, mit
+/// Richtpreis oder gar nicht gerechnet würden. Nur Stufe 1 oder 2 zählt.
+/// Die Befunde sind Fehler; die Verwaltung sperrt mit denen, die beim
+/// Öffnen noch nicht da waren.
+pub fn luecken(k: &Katalog, haus: &Model, sched: &sk_model::qto::Schedule) -> Vec<Befund> {
+    use crate::rechnung::{baustoff_name, mm_text};
+    use crate::zuordnung::{dicke, zuordnen, Grund};
+    use sk_model::element::{Category, ElementKind};
+    use sk_model::library::{MatCategory, TypeCategory};
+    use sk_model::MaterialLayer;
+    let fehlt = |m: &Model, kat: Category, s: &MaterialLayer| {
+        let mat = m.material(s.material);
+        if mat.is_none_or(|x| x.category == MatCategory::Air) {
+            return false;
+        }
+        matches!(
+            zuordnen(k, kat, s, mat).grund,
+            Grund::Geschaetzt { .. } | Grund::Richtpreis | Grund::Ohne
+        )
+    };
+    let mut out = Vec::new();
+    let werk = Model::new();
+    for (_, t) in werk.layer_sets().iter() {
+        if t.category == TypeCategory::RoofTerrace {
+            continue;
+        }
+        let Some(kat) = Category::ALL
+            .into_iter()
+            .find(|c| TypeCategory::of(*c) == Some(t.category))
+        else {
+            continue;
+        };
+        for (i, s) in t.layers.iter().enumerate() {
+            if fehlt(&werk, kat, s) {
+                out.push(Befund::fehler(
+                    97,
+                    format!(
+                        "Werksschicht {} {} in {} hat keine genaue Bauleistung.",
+                        baustoff_name(&werk, s),
+                        mm_text(dicke(s.thickness)),
+                        t.name
+                    ),
+                    Ort::Schicht {
+                        typ: t.guid,
+                        schicht: i,
+                    },
+                ));
+            }
+        }
+    }
+    // Typlose Bauteile, je Bauteilart, Baustoff und Dicke einmal
+    let mut gesehen: Vec<(Category, sk_model::MaterialId, i64)> = Vec::new();
+    let mut pruefen = |kat: Category, s: &MaterialLayer, out: &mut Vec<Befund>| {
+        let key = (kat, s.material, (s.thickness * 1000.0).round() as i64);
+        if gesehen.contains(&key) {
+            return;
+        }
+        gesehen.push(key);
+        if fehlt(haus, kat, s) {
+            out.push(Befund::fehler(
+                97,
+                format!(
+                    "Werksbauteil {} ({} {}) hat keine genaue Bauleistung.",
+                    match kat {
+                        Category::Floor => "Decke",
+                        k => sk_model::kinds::spec(k).name,
+                    },
+                    baustoff_name(haus, s),
+                    mm_text(dicke(s.thickness))
+                ),
+                Ort::Datei,
+            ));
+        }
+    };
+    let mut decken = Vec::new();
+    for (_, r) in sched.layer_rows(haus) {
+        let Some(e) = haus.element(r.element) else {
+            continue;
+        };
+        let typlos = [
+            Category::Floor,
+            Category::GroundSlab,
+            Category::StripFooting,
+            Category::EdgeInsulation,
+            Category::SoffitInsulation,
+        ];
+        if e.layer_set.is_some() || !typlos.contains(&r.category) {
+            continue;
+        }
+        if let ElementKind::Floor(_) = e.kind {
+            if !decken.contains(&r.element) {
+                decken.push(r.element);
+            }
+        }
+        if let Some(s) = haus.element_layers(r.element).get(r.layer) {
+            pruefen(r.category, s, &mut out);
+        }
+    }
+    for d in decken {
+        if let Some(mat) = haus.soffit_material_of(d) {
+            let s = MaterialLayer::new(
+                mat,
+                sk_model::SOFFIT_THICKNESS,
+                sk_model::LayerFunction::Insulation,
+            );
+            pruefen(Category::SoffitInsulation, &s, &mut out);
+        }
+    }
+    out
+}
+
 /// Typische Dicke einer Bauleistung für die Verwaltung: Mitte des Bands der
 /// Regel, sonst die kleinste Artikeldicke des Baustoffs, sonst 0.
 fn typische_dicke(k: &Katalog, l: &Leistung) -> Dez {
@@ -599,6 +713,54 @@ mod tests {
     /// KA-3a2: EP-Balken an der typischen Schicht (Mitte 230–250 mm, also
     /// der Planstein d=24), Vorschau mit Aufwandswert 0,50 rein im Speicher,
     /// „Passt auf“ und „Verwendet in“.
+    #[test]
+    fn luecken_regel_97() {
+        let leer = sk_model::write_szk(&Library::standard());
+        let haus = sk_model::szo::read_with(
+            STANDARDHAUS,
+            sk_model::GuidGen::with_seed(1),
+            &crate::lesen::ABSCHNITTE_SZO,
+        )
+        .unwrap()
+        .model;
+        let sched = sk_model::qto::schedule(&haus);
+        let k = katalog(&leer);
+        assert_eq!(
+            luecken(&k, &haus, &sched),
+            vec![],
+            "Werksbestand ohne Lücke"
+        );
+        // 15b: Stahlbetondecke in den Papierkorb ohne Ersatz
+        let mit = |kurz: &str| {
+            let l = k
+                .leistungen
+                .iter()
+                .find(|l| l.kurz.starts_with(kurz))
+                .unwrap();
+            let lib = mit_ops(
+                &leer,
+                &[Op::Ausmustern {
+                    satz: SatzId::neu("service", l.guid.to_ifc()),
+                }],
+            )
+            .unwrap();
+            let k2 = crate::lesen::firma_oder_werk(&Model::new(), Some(&lib));
+            luecken(&k2, &haus, &sched)
+                .into_iter()
+                .map(|b| b.satz)
+                .collect::<Vec<_>>()
+        };
+        let b = mit("Stb-Decke Ortbeton");
+        assert!(
+            b.iter().any(
+                |s| s == "Werksbauteil Decke (Stahlbeton 220 mm) hat keine genaue Bauleistung."
+            ),
+            "{b:#?}"
+        );
+        let b = mit("AW Porenbeton-Planstein PP2-0,35 d=24cm");
+        assert!(b.iter().any(|s| s.starts_with("Werksschicht ")), "{b:#?}");
+    }
+
     #[test]
     fn aufbau_vorschau_passt_auf() {
         let leer = sk_model::write_szk(&Library::standard());

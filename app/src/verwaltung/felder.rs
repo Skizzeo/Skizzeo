@@ -366,7 +366,7 @@ impl Verwaltung {
                 );
             }
             Knoten::Protokoll => {
-                let n = sk_cost::verwaltung::protokoll(k).len();
+                let n = sk_cost::verwaltung::protokoll(&self.vorher).len();
                 let unter = match n {
                     0 => "Noch keine Änderung".to_string(),
                     1 => "Eine Änderung".to_string(),
@@ -376,7 +376,7 @@ impl Verwaltung {
                 b.absatz(
                     0.0,
                     y,
-                    "Jedes OK schreibt einen neuen Stand des Firmenkatalogs. Häuser, die schon eine Kopie haben, rechnen weiter mit ihr.",
+                    "Jedes OK schreibt einen neuen Stand des Firmenkatalogs. Um eine Änderung zurückzunehmen, wähle ihren Stand und klicke „Diese Änderung zurücknehmen“. Häuser, die schon eine Kopie haben, rechnen weiter mit ihr.",
                     Farbe::Dim,
                 );
             }
@@ -1005,27 +1005,167 @@ impl Verwaltung {
     }
 
     fn stand(&self, b: &mut Bau, n: u32) {
-        let st = sk_cost::verwaltung::protokoll(&self.jetzt);
+        // Das Protokoll beim Öffnen: gesammelte Änderungen sind noch kein Stand
+        let k = &self.vorher;
+        let st = sk_cost::verwaltung::protokoll(k);
         let Some(s) = st.iter().find(|s| s.stand == n) else {
             self.fehlt(b);
             return;
         };
-        let mut y = b.kopf(&zeit_text(&s.zeit), "Änderung am Firmenkatalog");
+        let wer = if s.rolle == "ai" {
+            "Vorschlag der KI"
+        } else {
+            "von Hand"
+        };
+        let anzahl = match s.eintraege.len() {
+            1 => "eine Zeile".to_string(),
+            z => format!("{z} Zeilen"),
+        };
+        let mut y = b.kopf(
+            &format!("Stand {n} · {}", zeit_text(&s.zeit)),
+            &format!("Änderung am Firmenkatalog · {wer} · {anzahl}"),
+        );
+        let w_satz = (b.w * 0.42).min(300.0);
+        let w_was = 130.0;
         for e in &s.eintraege {
-            let name = sk_cost::verwaltung::satz_name(&self.jetzt, &e.rec, &e.of);
-            let t = b.kurz(&name, PX, true, b.w * 0.5);
-            let x = b.text(0.0, y, t, PX, true, Farbe::Text);
-            let wert = match (e.alt.is_empty(), e.neu.is_empty()) {
-                (false, false) => format!("{} → {}", e.alt, e.neu),
-                (true, false) => format!("neu {}", e.neu),
-                (false, true) => format!("vorher {}", e.alt),
-                (true, true) => String::new(),
+            let name = if e.op == "werk_uebernommen" {
+                "Werksbestand".to_string()
+            } else {
+                sk_cost::verwaltung::satz_name(k, &e.rec, &e.of)
             };
-            let wt = b.kurz(&wert, PX, false, b.w - x - 16.0);
-            b.text(x + 16.0, y, wt, PX, false, Farbe::Dim);
-            y += 28.0;
+            let t = b.kurz(&name, PX, true, w_satz - 12.0);
+            b.text(0.0, y, t, PX, true, Farbe::Text);
+            for (was, alt, neu) in aenderungen(e) {
+                let was = b.kurz(&was, PX, false, w_was - 12.0);
+                b.text(w_satz, y, was, PX, false, Farbe::Dim);
+                let x = w_satz + w_was;
+                let rest = b.w - x;
+                match (alt.is_empty(), neu.is_empty()) {
+                    (false, false) => {
+                        let at = b.kurz(&alt, PX, false, rest * 0.45);
+                        let x = b.text_art(x, y, at, PX, false, Farbe::Dim, true, None);
+                        let x = b.text(x + 8.0, y, "→", PX, false, Farbe::Dim);
+                        let nt = b.kurz(&neu, PX, true, b.w - x - 8.0);
+                        b.text(x + 8.0, y, nt, PX, true, Farbe::Text);
+                    }
+                    (true, false) => {
+                        let nt = b.kurz(&neu, PX, true, rest);
+                        b.text(x, y, nt, PX, true, Farbe::Text);
+                    }
+                    (false, true) => {
+                        let at = b.kurz(&format!("vorher {alt}"), PX, false, rest);
+                        b.text(x, y, at, PX, false, Farbe::Dim);
+                    }
+                    (true, true) => {}
+                }
+                y += 28.0;
+            }
+        }
+        b.linie(y - 8.0);
+        y += 20.0;
+        if self.zurueck == Some(n) {
+            b.text(0.0, y, "Wird mit OK zurückgenommen", PX, true, Farbe::Text);
+            y += ABSTAND + 8.0;
+            b.absatz(
+                0.0,
+                y,
+                "Die alten Werte stehen in den gesammelten Änderungen; die Summen unten zeigen die Wirkung. OK schreibt sie als neuen Stand, Abbrechen verwirft sie.",
+                Farbe::Dim,
+            );
+        } else {
+            b.knopf(
+                0.0,
+                y,
+                "Diese Änderung zurücknehmen",
+                Aktion::Zuruecknehmen(n),
+            );
+            y += ABSTAND + 8.0;
+            b.absatz(
+                0.0,
+                y,
+                "Setzt die alten Werte dieses Stands wieder ein. Mit OK entsteht daraus ein neuer Stand; dieser hier bleibt im Protokoll.",
+                Farbe::Dim,
+            );
         }
     }
+}
+
+/// Wort einer Protokollzeile (`[log] op`).
+fn op_wort(op: &str) -> &'static str {
+    match op {
+        "artikel_anlegen" | "bauleistung_anlegen" | "los_anlegen" => "angelegt",
+        "preis_setzen" => "Preis",
+        "bauleistung_aendern" => "geändert",
+        "stoffanteil_setzen" => "Stoffanteil",
+        "folge_setzen" => "Folgeposition",
+        "firmenwert_setzen" => "Firmenwert",
+        "ausmustern" => "in den Papierkorb",
+        "wiederherstellen" => "wiederhergestellt",
+        "herkunft_bestaetigen" => "Herkunft bestätigt",
+        "stand_uebernehmen" => "übernommen",
+        "werk_uebernommen" => "übernommen",
+        _ => "geändert",
+    }
+}
+
+/// Felder aus `[log] old`/`new` (`kurz=AW Porenbeton d=24cm hours=0.45`,
+/// Werte ohne Anführungszeichen): ein Paar beginnt bei einem bekannten
+/// Feldnamen, alles andere gehört zum Wert davor. Ein einzelner Wert ohne
+/// Feldnamen hat den Schlüssel „“.
+fn paare(rec: &str, v: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for wort in v.split(' ') {
+        let neu = wort
+            .split_once('=')
+            .filter(|(k, _)| sk_cost::wort::feld(Some(rec), k) != "Angabe");
+        match (neu, out.last_mut()) {
+            (Some((k, w)), _) => out.push((k.to_string(), w.to_string())),
+            (None, Some(p)) => {
+                p.1.push(' ');
+                p.1.push_str(wort);
+            }
+            (None, None) => out.push((String::new(), wort.to_string())),
+        }
+    }
+    out.retain(|p| !(p.0.is_empty() && p.1.is_empty()));
+    out
+}
+
+/// Zeilen einer Protokollzeile: Feldwort, alt, neu. Zahlen mit Komma.
+fn aenderungen(e: &sk_cost::verwaltung::Eintrag) -> Vec<(String, String, String)> {
+    let wert = |w: &str| {
+        let w = w.trim_matches('"');
+        if w.parse::<f64>().is_ok() {
+            w.replace('.', ",")
+        } else {
+            w.to_string()
+        }
+    };
+    let (a, n) = (paare(&e.rec, &e.alt), paare(&e.rec, &e.neu));
+    let mut keys: Vec<&str> = a.iter().map(|p| p.0.as_str()).collect();
+    for (k, _) in &n {
+        if !keys.contains(&k.as_str()) {
+            keys.push(k);
+        }
+    }
+    let von = |v: &[(String, String)], k: &str| {
+        v.iter()
+            .find(|p| p.0 == k)
+            .map_or(String::new(), |p| wert(&p.1))
+    };
+    if keys.is_empty() {
+        return vec![(op_wort(&e.op).into(), String::new(), String::new())];
+    }
+    keys.iter()
+        .map(|k| {
+            let was = if k.is_empty() {
+                op_wort(&e.op).to_string()
+            } else {
+                sk_cost::wort::feld(Some(&e.rec), k).to_string()
+            };
+            (was, von(&a, k), von(&n, k))
+        })
+        .collect()
 }
 
 /// Farbe einer Rolle.

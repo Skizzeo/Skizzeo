@@ -1579,6 +1579,16 @@ impl App {
             }
             self.prefs_dirty = true;
         }
+        if let Some(stand) = out.zurueck {
+            let r = match self.company.as_ref() {
+                Some(c) => c.umkehr(self.scene.model(), stand),
+                None => Err(meldung::Meldung::satz("Kein Firmenkatalog geladen.")),
+            };
+            if let Some(v) = self.verwaltung.as_mut() {
+                v.zuruecknehmen(stand, r.map_err(|m| m.to_string()));
+            }
+            self.prefs_dirty = true;
+        }
         if out.closed {
             self.verwaltung = None;
             self.overlay_dirty = true;

@@ -263,13 +263,13 @@ fn fingerabdruck(m: &Model, typname: &str, layers: &[MaterialLayer]) -> u64 {
 }
 
 /// Name des Baustoffs.
-fn baustoff_name(m: &Model, l: &MaterialLayer) -> String {
+pub(crate) fn baustoff_name(m: &Model, l: &MaterialLayer) -> String {
     m.material(l.material)
         .map_or(crate::wort::EIN_EINTRAG.into(), |x| x.name.clone())
 }
 
 /// Dicke für Befundsätze: „17,5 mm“.
-fn mm_text(t: Dez) -> String {
+pub(crate) fn mm_text(t: Dez) -> String {
     format!("{} mm", t.text().replace('.', ","))
 }
 

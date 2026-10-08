@@ -74,6 +74,13 @@ impl Wirkung {
         Wirkung { haeuser }
     }
 
+    /// Regel 97 als Sperre (paket-ka3a §3) gegen das Standardhaus.
+    pub fn luecken(&self, k: &sk_cost::katalog::Katalog) -> Vec<sk_cost::Befund> {
+        self.haeuser.first().map_or(Vec::new(), |h| {
+            sk_cost::verwaltung::luecken(k, &h.m, &h.sched)
+        })
+    }
+
     /// Nach jeder Änderung: Summen mit dem Katalog samt Änderungen.
     pub fn rechnen(&mut self, firma: &Library) {
         for h in &mut self.haeuser {
