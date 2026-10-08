@@ -6,6 +6,7 @@
 //! einer Feldtabelle ([`satz`]).
 
 pub mod befund;
+pub mod din276;
 pub mod geld;
 pub mod katalog;
 pub mod lesen;

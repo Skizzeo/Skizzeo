@@ -35,17 +35,40 @@ fn monat(tag: &str) -> String {
     }
 }
 
-/// Werksbestand gegen die Baustoffe von `m`.
-pub fn werk(m: &Model) -> Katalog {
-    let z = crate::werk_zeilen();
-    let stand = z
+/// Stand des Werksbestands, „10/2026“.
+pub fn werksstand() -> String {
+    crate::werk_zeilen()
         .iter()
         .find(|(a, _)| *a == "catalog")
         .and_then(|(_, l)| crate::zeile::zerlegen(l))
         .and_then(|z| z.paare.into_iter().find(|(k, _)| k == "date"))
         .map(|(_, d)| monat(&d))
-        .unwrap_or_default();
-    katalog::lesen(z, &Umfeld::aus_modell(m), Quelle::Werk { stand })
+        .unwrap_or_default()
+}
+
+/// Werksbestand gegen die Baustoffe von `m`.
+pub fn werk(m: &Model) -> Katalog {
+    let stand = werksstand();
+    katalog::lesen(
+        crate::werk_zeilen(),
+        &Umfeld::aus_modell(m),
+        Quelle::Werk { stand },
+    )
+}
+
+/// Preisquelle in der Kopfzeile des Reiters Kosten (paket-ka2 §5):
+/// „Referenzpreise 10/2026“, solange Werkspreise gelten, „Preise
+/// Firmenkatalog“, sobald ein Firmenkatalog Preise trägt (auch in der Kopie
+/// des Projekts). Eine Standnummer erscheint erst mit Kennwort (KA-3).
+pub fn preisquelle(k: &Katalog) -> String {
+    match &k.quelle {
+        Quelle::Werk { stand } => format!("Referenzpreise {stand}"),
+        Quelle::Firma { .. }
+        | Quelle::Projekt {
+            katalog: Some(_), ..
+        } => "Preise Firmenkatalog".into(),
+        Quelle::Projekt { katalog: None, .. } => format!("Referenzpreise {}", werksstand()),
+    }
 }
 
 /// Wirksame Stammdaten nach Bausteingrenze §6: Projektkopie, sonst der

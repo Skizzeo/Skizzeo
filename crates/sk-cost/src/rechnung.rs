@@ -59,6 +59,8 @@ pub struct Ansatz {
     pub kg: Option<u16>,
     /// Menge in der kleinsten Einheit (mm, mm², mm³, g), ganzzahlig.
     pub menge: i128,
+    /// Folgeposition: die auslösende Bauleistung („aus B30 Decke“).
+    pub aus: Option<Guid>,
 }
 
 /// Was eine Position rechnet.
@@ -100,6 +102,31 @@ pub struct Position {
     pub ansatz: Vec<Ansatz>,
 }
 
+impl Position {
+    /// Teilmengen auf 3 Stellen je Schlüssel (Regel 96, etwa je Geschoss oder
+    /// Kostengruppe), in der Reihenfolge des ersten Vorkommens im Ansatz.
+    pub fn teile<K: PartialEq + Copy>(&self, schluessel: impl Fn(&Ansatz) -> K) -> Vec<(K, Dez)> {
+        let mut t: Vec<(K, i128)> = Vec::new();
+        for a in &self.ansatz {
+            let k = schluessel(a);
+            match t.iter_mut().find(|(x, _)| *x == k) {
+                Some((_, v)) => *v += a.menge,
+                None => t.push((k, a.menge)),
+            }
+        }
+        t.into_iter()
+            .map(|(k, v)| (k, drei(v, self.einheit)))
+            .collect()
+    }
+
+    /// GP einer (Teil-)Menge auf 3 Stellen: Menge × EP, mit `nur_material`
+    /// × Stoff-EP, auf den Cent. Für die ganze Menge gleich `gp` bzw.
+    /// `stoff_gp`.
+    pub fn gp_von(&self, menge: Dez, nur_material: bool) -> Cent {
+        gp(menge, if nur_material { self.stoff } else { self.ep })
+    }
+}
+
 /// Eine Mengenzeile ohne Bauleistung, grau und nie still weggelassen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OhneZeile {
@@ -107,6 +134,12 @@ pub struct OhneZeile {
     pub nummer: String,
     pub geschoss: StoreyId,
     pub gebaeude: Option<BuildingId>,
+    /// Gewerk und Kostengruppe der Schicht (die Zeile steht am Ende ihres
+    /// Gewerks bzw. ihrer KG, ka-2-fach §2.1).
+    pub gewerk: Option<Guid>,
+    pub kg: Option<u16>,
+    /// Typ des Bauteils (für „Bauleistung wählen“ an der Schicht).
+    pub typ: Option<Guid>,
     pub schicht: usize,
     pub baustoff: Guid,
     pub dicke: Dez,
@@ -125,6 +158,10 @@ pub struct Kostenblatt {
     pub netto: Cent,
     pub mwst: Cent,
     pub brutto: Cent,
+    /// MwSt.-Satz in Prozent (Firmenwert `vat`).
+    pub mwst_satz: Dez,
+    /// MwSt. auf „nur Material“ (Modus Material, ka-2-fach §2.3).
+    pub mwst_material: Cent,
     pub lohn: Cent,
     pub stoff: Cent,
     pub geraet: Cent,
@@ -663,6 +700,7 @@ pub fn kosten_mit(
             gebaeude: *gebaeude,
             kg: r.kg,
             menge,
+            aus: None,
         };
         let gewerk_schicht = r.trade.and_then(|t| m.trade(t)).map(|t| t.guid);
         let mut legen = |key: PosKey,
@@ -781,7 +819,10 @@ pub fn kosten_mit(
                         fl.einheit,
                         Some(fl.gewerk),
                         *pf,
-                        ansatz(menge),
+                        Ansatz {
+                            aus: Some(l.guid),
+                            ..ansatz(menge)
+                        },
                         Dez::NULL,
                     );
                 }
@@ -802,6 +843,9 @@ pub fn kosten_mit(
                     nummer: r.number.clone(),
                     geschoss: r.storey,
                     gebaeude: *gebaeude,
+                    gewerk: gewerk_schicht,
+                    kg: r.kg,
+                    typ: key.typ,
                     schicht: r.layer,
                     baustoff: w.baustoff,
                     dicke: w.dicke,
@@ -935,10 +979,13 @@ pub fn kosten_mit(
 
     let summe = |f: &dyn Fn(&Position) -> Cent| positionen.iter().map(f).sum::<Cent>();
     let netto = summe(&|p| p.gp);
-    let mwst = Cent(runden(
-        netto.0 as i128 * k.werte.mwst.0 as i128,
-        100 * Dez::SKALA as i128,
-    ) as i64);
+    let mwst_von = |c: Cent| {
+        Cent(runden(
+            c.0 as i128 * k.werte.mwst.0 as i128,
+            100 * Dez::SKALA as i128,
+        ) as i64)
+    };
+    let mwst = mwst_von(netto);
     let teil = |p: &Position, f: Cent| gp(p.menge, f);
     let lohn = summe(&|p| teil(p, p.lohn));
     let stoff = summe(&|p| teil(p, p.stoff));
@@ -970,39 +1017,26 @@ pub fn kosten_mit(
     let mut nach_geschoss: Vec<(StoreyId, Cent)> = Vec::new();
     let mut nach_kg: Vec<(Option<u16>, Cent)> = Vec::new();
     for p in &positionen {
-        let teile = |schluessel: &dyn Fn(&Ansatz) -> u64| {
-            let mut t: Vec<(u64, i128)> = Vec::new();
-            for a in &p.ansatz {
-                let s = schluessel(a);
-                match t.iter_mut().find(|(x, _)| *x == s) {
-                    Some((_, v)) => *v += a.menge,
-                    None => t.push((s, a.menge)),
-                }
-            }
-            t.into_iter()
-                .map(|(s, v)| (s, gp(drei(v, p.einheit), p.ep)))
-                .collect::<Vec<_>>()
-        };
-        let je_geschoss = teile(&|a| {
-            geschoss_folge
-                .iter()
-                .position(|s| *s == a.geschoss)
-                .unwrap_or(0) as u64
-        });
-        let je_kg = teile(&|a| a.kg.map_or(0, u64::from));
+        let je_geschoss: Vec<(StoreyId, Cent)> = p
+            .teile(|a| a.geschoss)
+            .into_iter()
+            .map(|(st, menge)| (st, p.gp_von(menge, false)))
+            .collect();
+        let je_kg: Vec<(Option<u16>, Cent)> = p
+            .teile(|a| a.kg)
+            .into_iter()
+            .map(|(kg, menge)| (kg, p.gp_von(menge, false)))
+            .collect();
         // Schranke je Position und Teilung: Teile × (0,0005 × EP + 0,005) €
-        for (art, t) in [("Geschosse", &je_geschoss), ("Kostengruppen", &je_kg)] {
-            befunde.extend(summenprobe(art, &p.kurz, t, p.ep, p.gp));
-        }
-        for (i, c) in je_geschoss {
-            let st = geschoss_folge[i as usize];
+        befunde.extend(summenprobe("Geschosse", &p.kurz, &je_geschoss, p.ep, p.gp));
+        befunde.extend(summenprobe("Kostengruppen", &p.kurz, &je_kg, p.ep, p.gp));
+        for (st, c) in je_geschoss {
             match nach_geschoss.iter_mut().find(|(s, _)| *s == st) {
                 Some((_, v)) => *v += c,
                 None => nach_geschoss.push((st, c)),
             }
         }
         for (kg, c) in je_kg {
-            let kg = (kg > 0).then_some(kg as u16);
             match nach_kg.iter_mut().find(|(x, _)| *x == kg) {
                 Some((_, v)) => *v += c,
                 None => nach_kg.push((kg, c)),
@@ -1028,6 +1062,8 @@ pub fn kosten_mit(
         netto,
         mwst,
         brutto: netto + mwst,
+        mwst_satz: k.werte.mwst,
+        mwst_material: mwst_von(nur_material),
         lohn,
         stoff,
         geraet,
@@ -1058,7 +1094,13 @@ pub fn kosten(m: &Model, sched: &Schedule, k: &Katalog, u: &Umfang) -> Kostenbla
 
 /// Regel 96 je Position und Teilung: |Σ Teil-GP − GP| ≤ Teile × (0,0005 ×
 /// EP + 0,005) €. `teile` sind (Schlüssel, Teil-GP).
-fn summenprobe(art: &str, kurz: &str, teile: &[(u64, Cent)], ep: Cent, gp: Cent) -> Option<Befund> {
+fn summenprobe<K>(
+    art: &str,
+    kurz: &str,
+    teile: &[(K, Cent)],
+    ep: Cent,
+    gp: Cent,
+) -> Option<Befund> {
     let summe: Cent = teile.iter().map(|t| t.1).sum();
     let schranke = teile.len() as i128 * (ep.0 as i128 * 5 + 5_000);
     (((summe - gp).0 as i128).abs() * 10_000 > schranke).then(|| {
