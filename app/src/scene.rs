@@ -2252,7 +2252,11 @@ impl Scene {
         if regeln.is_empty() {
             return None;
         }
+        // Auf einer Kopie mit offenem Schritt; die Kopie wird verworfen
         let mut m = self.model.clone();
+        if !m.in_step() {
+            m.begin("Ablauf prüfen");
+        }
         if let Err(b) = sk_cost::ausfuehren_folge(&mut m, firma, self.rolle, herkunft, ops) {
             return b.first().map(|b| b.satz.clone());
         }

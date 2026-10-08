@@ -162,6 +162,11 @@ impl Verwaltung {
         }
         self.projekt = true;
         self.abfrage = None;
+        // Auswahl, Einheiten und Vergleich aus dem Katalog dieses Hauses:
+        // mit seinen eigenen Artikeln und Preisen, auf dem freigegebenen
+        // Firmenstand (Review 3ax)
+        let firma = self.freigabe.as_ref().map_or(&self.lib0, |f| &f.lib);
+        self.jetzt = sk_cost::lesen::katalog(&self.m, Some(firma));
         self.ablauf_starten(g);
         self.assistent.is_some()
     }
@@ -1214,7 +1219,11 @@ impl Verwaltung {
         label(
             c,
             bold,
-            "Zum Vergleich im Firmenkatalog",
+            if self.projekt {
+                "Zum Vergleich in diesem Haus"
+            } else {
+                "Zum Vergleich im Firmenkatalog"
+            },
             12.0 * s,
             fr.x,
             y,

@@ -294,7 +294,27 @@ fn haendlerpreis_im_haus() {
     assert_eq!(c.haus_ablaeufe(), &haus[..], "dieselben wie in der App");
     assert!(v.verwaltungs_ablaeufe().all(|a| a.guid != haus[0].0));
     assert!(!v.ablauf_im_haus(stein(&v)), "kein Ablauf der Verwaltung");
+    // Vorher im Haus: Mörtel 1,40 €/kg; der Ablauf rechnet mit dem
+    // Katalog des Hauses (Review 3ax)
+    let k0 = s.katalog(Some((c.library(), c.stand())));
+    let m0 = k0
+        .artikel
+        .iter()
+        .find(|a| a.einheit == sk_cost::katalog::Einheit::Kg && !a.retired)
+        .unwrap()
+        .guid;
+    let vorher = Op::PreisSetzen {
+        artikel: m0,
+        preis: Some(Dez(1_400_000)),
+        stand: "10/2026".into(),
+        quelle: String::new(),
+        eingabe: String::new(),
+    };
+    s.kosten_folge("Mörtel", Some(c.library()), &h(), &[vorher])
+        .expect("im Haus");
+    let mut v = Verwaltung::open(&s, Some(&c), None);
     assert!(v.ablauf_im_haus(haus[0].0));
+    assert_eq!(v.jetzt.artikel(m0).unwrap().preis, Some(Dez(1_400_000)));
     assert!(v.abfrage.is_none());
     assert_eq!(v.assistent.as_ref().unwrap().seiten.len(), 3);
     let fonts = super::tests::schriften();
