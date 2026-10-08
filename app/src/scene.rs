@@ -2185,11 +2185,9 @@ impl Scene {
         firma: &mut crate::catalog::Company,
         herkunft: &sk_cost::Herkunft,
         ops: &[sk_cost::Op],
-    ) -> Result<Option<String>, String> {
-        let satz = |b: Vec<sk_cost::Befund>| {
-            b.first()
-                .map_or_else(|| "Nicht möglich".into(), |x| x.satz.clone())
-        };
+    ) -> Result<Option<crate::meldung::Meldung>, crate::meldung::Meldung> {
+        use crate::meldung::Meldung;
+        let satz = |b: Vec<sk_cost::Befund>| Meldung::aus_befunden(&b, "Nichts geändert.");
         sk_cost::vorschau(
             &self.model,
             Some(firma.library()),
@@ -2203,7 +2201,8 @@ impl Scene {
         // Schritt danach bringt die neuen. Rückgängig: dieses Haus wieder
         // mit den bisherigen Werten, neue Häuser mit den neuen.
         let vorher = (!sk_cost::op::hat_kopie(&self.model)).then(|| firma.library().clone());
-        let (neu, mut hinweis) = firma.fuer_firma(herkunft, ops)?;
+        let neu = firma.fuer_firma(herkunft, ops)?;
+        let mut hinweis = None;
         if let Some(alt) = vorher.filter(|_| !neu.saetze.is_empty()) {
             self.begin(label);
             sk_cost::op::kopie_anlegen(&mut self.model, Some(&alt));
@@ -2223,9 +2222,9 @@ impl Scene {
                 herkunft,
                 std::slice::from_ref(&op),
             ) {
-                hinweis = Some(format!(
+                hinweis = Some(Meldung::mit(
                     "Für neue Häuser gespeichert, dieses Haus nicht geändert: {}",
-                    satz(b)
+                    &[&satz(b)],
                 ));
             }
         }

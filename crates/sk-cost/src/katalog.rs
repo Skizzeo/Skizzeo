@@ -495,8 +495,45 @@ impl Umfeld {
         self.materialien
             .get(&g)
             .cloned()
-            .unwrap_or_else(|| g.to_ifc())
+            .unwrap_or_else(|| crate::wort::EIN_EINTRAG.to_string())
     }
+}
+
+/// Name eines Satzes für Befundsätze: Name, Kurztext, Firmenwert oder „ein
+/// Eintrag“, nie die Kennung.
+fn satz_name(s: &Satz) -> String {
+    if let Some(n) = s.text("name").or(s.text("short")).filter(|n| !n.is_empty()) {
+        return n.to_string();
+    }
+    match (s.abschnitt.name, s.text("key")) {
+        ("rate", Some(k)) => crate::wort::firmenwert(k),
+        _ => crate::wort::EIN_EINTRAG.to_string(),
+    }
+}
+
+/// Kurztext einer Bauleistung, sonst „ein Eintrag“.
+fn kurz_von(k: &Katalog, g: Guid) -> String {
+    k.leistung(g)
+        .map_or_else(|| crate::wort::EIN_EINTRAG.to_string(), |l| l.kurz.clone())
+}
+
+/// Name des Eintrags hinter einer Herkunftsangabe (`rec`, `key`).
+fn eintrag_name(k: &Katalog, rec: &str, key: &str) -> String {
+    let g = Guid::from_ifc(key);
+    let name = match rec {
+        "rate" => Some(crate::wort::firmenwert(key)),
+        "article" => g.and_then(|g| k.artikel(g)).map(|a| a.name.clone()),
+        "service" => g.and_then(|g| k.leistung(g)).map(|l| l.kurz.clone()),
+        "lot" => g.and_then(|g| k.los(g)).map(|l| l.name.clone()),
+        "svcpart" => g
+            .and_then(|g| k.anteile.iter().find(|a| a.guid == g))
+            .map(|a| format!("Stoffanteil von {}", kurz_von(k, a.leistung))),
+        "svcfollow" => g
+            .and_then(|g| k.folgen.iter().find(|f| f.guid == g))
+            .map(|f| format!("Folgeposition von {}", kurz_von(k, f.leistung))),
+        _ => None,
+    };
+    name.unwrap_or_else(|| crate::wort::EIN_EINTRAG.to_string())
 }
 
 /// Gelesene, für sich gültige Zeile mit ihrer Stelle im Abschnitt.
@@ -572,7 +609,7 @@ pub fn lesen<'a>(
             } else {
                 bf.push(Befund::fehler(
                     74,
-                    befund::r74(name, &k),
+                    befund::r74(name, &satz_name(&r.satz)),
                     satz_ort(name, k.clone()),
                 ));
             }
@@ -626,23 +663,13 @@ pub fn lesen<'a>(
         if let Some(p) = s.guid("parent") {
             match parents.get(&p) {
                 None => {
-                    let t = befund::r73(&format!("Titel {name}"), "das Los", &p.to_ifc());
+                    let t = befund::r73(&format!("Titel {name}"), "ein Los, das");
                     bf.push(Befund::fehler(73, t, satz_ort("lot", guid.to_ifc())));
-                    skip(
-                        &mut bf,
-                        &satz::LOT,
-                        &r,
-                        format!("parent {} fehlt", p.to_ifc()),
-                    );
+                    skip(&mut bf, &satz::LOT, &r, "das Los fehlt".into());
                     continue;
                 }
                 Some(true) => {
-                    skip(
-                        &mut bf,
-                        &satz::LOT,
-                        &r,
-                        "parent zeigt auf einen Titel".into(),
-                    );
+                    skip(&mut bf, &satz::LOT, &r, "das Los ist ein Titel".into());
                     continue;
                 }
                 Some(false) => {}
@@ -664,8 +691,8 @@ pub fn lesen<'a>(
         let s = &r.satz;
         let guid = s.guid("guid").unwrap();
         let name = s.text("name").unwrap_or_default().to_string();
-        if let Some(m) = s.guid("mat").filter(|m| !u.kennt(*m)) {
-            let t = befund::r73(&format!("Artikel {name}"), "den Baustoff", &m.to_ifc());
+        if s.guid("mat").is_some_and(|m| !u.kennt(m)) {
+            let t = befund::r73(&format!("Artikel {name}"), "einen Baustoff, den");
             bf.push(Befund::fehler(73, t, satz_ort("article", guid.to_ifc())));
             continue;
         }
@@ -716,13 +743,18 @@ pub fn lesen<'a>(
             *e = a.guid;
         }
     }
+    let namen: HashMap<Guid, String> = k.artikel.iter().map(|a| (a.guid, a.name.clone())).collect();
     for a in k.artikel.iter_mut().filter(|a| a.std) {
         let gilt = std[&(a.mat, a.t)];
         if gilt != a.guid {
             a.std = false;
             let b = a.mat.map_or("Hilfsstoff".to_string(), |m| u.baustoff(m));
             let d = a.t.map_or("ohne Dicke".to_string(), mm);
-            let t = befund::r77(&b, &d, &gilt.to_ifc());
+            let name = namen
+                .get(&gilt)
+                .cloned()
+                .unwrap_or_else(|| crate::wort::EIN_EINTRAG.to_string());
+            let t = befund::r77(&b, &d, &name);
             bf.push(Befund::warnung(77, t, satz_ort("article", a.guid.to_ifc())));
         }
     }
@@ -739,7 +771,7 @@ pub fn lesen<'a>(
         if !u.gewerke.contains(&trade) {
             bf.push(Befund::fehler(
                 73,
-                befund::r73(&wer, "das Gewerk", &trade.to_ifc()),
+                befund::r73(&wer, "ein Gewerk, das"),
                 ort(),
             ));
             continue;
@@ -749,7 +781,7 @@ pub fn lesen<'a>(
             None => {
                 bf.push(Befund::fehler(
                     73,
-                    befund::r73(&wer, "den Titel", &title.to_ifc()),
+                    befund::r73(&wer, "einen Titel, den"),
                     ort(),
                 ));
                 continue;
@@ -761,10 +793,10 @@ pub fn lesen<'a>(
             }
             Some(_) => {}
         }
-        if let Some(m) = s.guid("mat").filter(|m| !u.kennt(*m)) {
+        if s.guid("mat").is_some_and(|m| !u.kennt(m)) {
             bf.push(Befund::fehler(
                 73,
-                befund::r73(&wer, "den Baustoff", &m.to_ifc()),
+                befund::r73(&wer, "einen Baustoff, den"),
                 ort(),
             ));
             continue;
@@ -780,7 +812,7 @@ pub fn lesen<'a>(
         let einheit = Einheit::aus(s.text("unit").unwrap_or_default()).unwrap();
         let bezug = Bezug::aus(s.text("basis").unwrap_or_default()).unwrap();
         if !bezug.passt(einheit) {
-            let t = befund::r80(&kurz, einheit.zeichen(), bezug.wort());
+            let t = befund::r80(&kurz, einheit.zeichen(), crate::wort::bezug(bezug));
             bf.push(Befund::fehler(80, t, ort()));
             continue;
         }
@@ -833,11 +865,15 @@ pub fn lesen<'a>(
         let guid = s.guid("guid").unwrap();
         let svc = s.guid("service").unwrap();
         let ort = || satz_ort("svcpart", guid.to_ifc());
-        let wer = format!("Stoffanteil {}", guid.to_ifc());
+        let wer = format!(
+            "Stoffanteil {} von {}",
+            s.ganz("nr").unwrap_or(0),
+            kurz_von(&k, svc)
+        );
         if !leistungen.contains_key(&svc) {
             bf.push(Befund::fehler(
                 73,
-                befund::r73(&wer, "die Bauleistung", &svc.to_ifc()),
+                befund::r73(&wer, "eine Bauleistung, die"),
                 ort(),
             ));
             continue;
@@ -849,18 +885,23 @@ pub fn lesen<'a>(
                     &mut bf,
                     &satz::SVCPART,
                     &r,
-                    "art und layer=1 zugleich".into(),
+                    "Artikel und Stoff aus der Schicht zugleich".into(),
                 );
                 continue;
             }
             (None, false) => {
-                skip(&mut bf, &satz::SVCPART, &r, "art oder layer=1 fehlt".into());
+                skip(
+                    &mut bf,
+                    &satz::SVCPART,
+                    &r,
+                    "Artikel oder Stoff aus der Schicht fehlt".into(),
+                );
                 continue;
             }
             (Some(a), false) if !artikel.contains_key(&a) => {
                 bf.push(Befund::fehler(
                     73,
-                    befund::r73(&wer, "den Artikel", &a.to_ifc()),
+                    befund::r73(&wer, "einen Artikel, den"),
                     ort(),
                 ));
                 continue;
@@ -869,7 +910,7 @@ pub fn lesen<'a>(
         }
         let nr = s.ganz("nr").unwrap();
         if !nrs.insert(("svcpart", svc, nr)) {
-            let id = format!("{}/{nr}", svc.to_ifc());
+            let id = format!("{nr} von {}", kurz_von(&k, svc));
             bf.push(Befund::fehler(74, befund::r74("svcpart", &id), ort()));
             continue;
         }
@@ -889,19 +930,18 @@ pub fn lesen<'a>(
         let svc = s.guid("service").unwrap();
         let fol = s.guid("follow").unwrap();
         let ort = || satz_ort("svcfollow", guid.to_ifc());
-        let wer = format!("Folgeposition {}", guid.to_ifc());
-        let tot = [svc, fol].into_iter().find(|g| !leistungen.contains_key(g));
-        if let Some(g) = tot {
+        let wer = format!("Folgeposition von {}", kurz_von(&k, svc));
+        if [svc, fol].iter().any(|g| !leistungen.contains_key(g)) {
             bf.push(Befund::fehler(
                 73,
-                befund::r73(&wer, "die Bauleistung", &g.to_ifc()),
+                befund::r73(&wer, "eine Bauleistung, die"),
                 ort(),
             ));
             continue;
         }
         let nr = s.ganz("nr").unwrap();
         if !nrs.insert(("svcfollow", svc, nr)) {
-            let id = format!("{}/{nr}", svc.to_ifc());
+            let id = format!("{nr} von {}", kurz_von(&k, svc));
             bf.push(Befund::fehler(74, befund::r74("svcfollow", &id), ort()));
             continue;
         }
@@ -941,7 +981,11 @@ pub fn lesen<'a>(
                     &mut bf,
                     &satz::RATE,
                     &r,
-                    format!("num {} außerhalb {lo}–{hi}", num.text()),
+                    format!(
+                        "{} {} liegt nicht zwischen {lo} und {hi}",
+                        crate::wort::firmenwert(&key),
+                        num.text().replace('.', ",")
+                    ),
                 );
                 continue;
             }
@@ -968,11 +1012,7 @@ pub fn lesen<'a>(
             }),
         };
         if !da {
-            bf.push(Befund::fehler(
-                88,
-                befund::r88(&key),
-                satz_ort("origin", key),
-            ));
+            bf.push(Befund::fehler(88, befund::r88(), satz_ort("origin", key)));
             continue;
         }
         let kind = s.text("kind").unwrap_or_default().to_string();
@@ -980,7 +1020,7 @@ pub fn lesen<'a>(
         if offen && kind == "manual" {
             bf.push(Befund::hinweis(
                 88,
-                befund::r88_hand(&key),
+                befund::r88_hand(&eintrag_name(&k, &rec, &key)),
                 satz_ort("origin", key.clone()),
             ));
         }
@@ -1176,7 +1216,7 @@ mod tests {
             // der Wert wie in der Datei (leer als "")
             assert_eq!(
                 b[0].satz,
-                format!("Artikel Probe: conv ist ungültig ({roh}).")
+                format!("Artikel Probe: Umrechnung ist ungültig ({roh}).")
             );
             // geschrieben wie gelesen
             assert_eq!(a.satz.zeile(), l, "{roh}");
@@ -1232,12 +1272,10 @@ mod tests {
         assert!(k
             .befunde
             .iter()
-            .any(|b| b.regel == 74 && b.satz.starts_with("svcpart 1S7bUW0010080200000001/1")));
+            .any(|b| b.regel == 74 && b.satz.starts_with("Stoffanteil 1 von ")));
         // Sätze tragen die Wörter aus BIM §4
-        assert!(k
-            .befunde
-            .iter()
-            .any(|b| b.satz == "rate wage kommt doppelt vor; es gilt die erste Zeile."));
+        assert!(k.befunde.iter().any(|b| b.satz
+            == "Firmenwert Verrechnungslohn kommt doppelt vor; es gilt der erste Eintrag."));
     }
 
     #[test]

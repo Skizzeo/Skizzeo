@@ -4,6 +4,7 @@
 //! Entscheidungen stehen hier ohne Fenster, die Verdrahtung in `main.rs`.
 
 use crate::camera::Camera;
+use crate::meldung::Meldung;
 use crate::scene::Scene;
 use crate::selection;
 use crate::ui::ViewKind;
@@ -50,17 +51,23 @@ pub enum Target {
 
 /// Statuszeile, wenn `wall` an `target` rückt (E20 §3); abgelehnt der
 /// Grund aus [`FlushError::message`].
+#[cfg(test)]
 pub fn status_text(m: &Model, wall: ElementId, target: ElementId) -> String {
+    status_meldung(m, wall, target).to_string()
+}
+
+/// [`status_text`] als Satz für die Statuszeile.
+pub fn status_meldung(m: &Model, wall: ElementId, target: ElementId) -> Meldung {
     match preview(m, wall, target) {
         Ok(p) => {
             let d = crate::selection::de(p.distance / 1000.0, 2);
             if m.wall_below(wall) == Some(target) {
-                format!("Die OG-Wand rückt {d} m an die EG-Wand.")
+                Meldung::mit("Die OG-Wand rückt {} m an die EG-Wand.", &[&d])
             } else {
-                format!("Die EG-Wand rückt {d} m an die OG-Wand.")
+                Meldung::mit("Die EG-Wand rückt {} m an die OG-Wand.", &[&d])
             }
         }
-        Err(e) => e.message().to_string(),
+        Err(e) => Meldung::satz(e.message()),
     }
 }
 
@@ -132,7 +139,7 @@ pub struct FlushPick {
     /// Ergebnis je Ziel: [unten, oben].
     checks: [Result<Preview, FlushError>; 2],
     /// Statuszeile je Ziel.
-    texts: [String; 2],
+    texts: [Meldung; 2],
     /// Stand des Modells, für den `checks` gilt.
     rev: u64,
 }
@@ -158,7 +165,10 @@ impl FlushPick {
             below,
             hover: None,
             checks: [preview(m, wall, below), preview(m, below, wall)],
-            texts: [status_text(m, wall, below), status_text(m, below, wall)],
+            texts: [
+                status_meldung(m, wall, below),
+                status_meldung(m, below, wall),
+            ],
             rev: m.revision(),
         })
     }
@@ -245,7 +255,7 @@ impl FlushPick {
     }
 
     /// Statuszeile über einem Kandidaten (E20 §3).
-    pub fn status(&self) -> Option<String> {
+    pub fn status(&self) -> Option<Meldung> {
         self.hover.map(|t| self.texts[slot(t)].clone())
     }
 

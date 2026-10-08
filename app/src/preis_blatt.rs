@@ -171,7 +171,7 @@ pub struct PreisBlatt {
     abweichend: Vec<SatzId>,
     pub gilt: Gilt,
     /// Befundsatz der Vorschau (ungültige Eingabe).
-    pub fehler: Option<String>,
+    pub fehler: Option<crate::meldung::Meldung>,
     hot: Option<Ziel>,
     /// Monat der Preise („10/2026“) für `PreisSetzen`.
     stand: String,
@@ -290,7 +290,7 @@ impl PreisBlatt {
 
     /// Vorschau übernehmen: Aufbau auf dem Katalog des Plans, oder der
     /// Befundsatz, wenn der Plan nicht geht.
-    pub fn set_live(&mut self, live: Result<Option<Aufbau>, String>) {
+    pub fn set_live(&mut self, live: Result<Option<Aufbau>, crate::meldung::Meldung>) {
         match live {
             Ok(a) => {
                 self.live = a;
@@ -826,10 +826,9 @@ impl PreisBlatt {
             zy += 18.0 * s;
         }
         if self.fehler.is_some() || self.ungueltig() {
-            let satz = self
-                .fehler
-                .clone()
-                .unwrap_or_else(|| "Bitte eine Zahl ab 0 eingeben, etwa 20,50.".into());
+            let satz = self.fehler.clone().unwrap_or_else(|| {
+                crate::meldung::Meldung::satz("Bitte eine Zahl ab 0 eingeben, etwa 20,50.")
+            });
             let satz = widgets::ellipsize(Some(f), &satz, px_s, x1 - x0);
             f.draw(c, &satz, px_s, x0, zy + 12.0 * s, u.field_invalid);
         }

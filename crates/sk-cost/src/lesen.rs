@@ -211,7 +211,9 @@ pub fn befunde(m: &Model, k: &Katalog) -> Vec<Befund> {
             if k.leistung(g).is_some_and(|s| !s.retired) {
                 continue;
             }
-            let b = m.material(l.material).map_or("?", |x| x.name.as_str());
+            let b = m
+                .material(l.material)
+                .map_or(crate::wort::EIN_EINTRAG, |x| x.name.as_str());
             out.push(Befund::warnung(
                 99,
                 befund::r99(&t.name, b),
@@ -231,7 +233,7 @@ pub fn befunde(m: &Model, k: &Katalog) -> Vec<Befund> {
             .layers
             .get(r.layer)
             .and_then(|l| m.material(l.material))
-            .map_or("?", |x| x.name.as_str());
+            .map_or(crate::wort::EIN_EINTRAG, |x| x.name.as_str());
         out.push(Befund::warnung(
             99,
             befund::r99(&t.name, b),
@@ -250,7 +252,7 @@ pub fn befunde(m: &Model, k: &Katalog) -> Vec<Befund> {
             out.push(Befund::hinweis(92, befund::r92(f, &e), Ort::Datei));
         }
         // 89: Projektabweichung ist markiert
-        let st = stand.map_or("?".to_string(), |s| s.to_string());
+        let st = stand.map_or("ohne Stand".to_string(), |s| s.to_string());
         for u in k.herkunft.iter().filter(|u| u.proj) {
             let name = match u.rec.as_str() {
                 "article" => sk_model::Guid::from_ifc(&u.key)
@@ -261,7 +263,10 @@ pub fn befunde(m: &Model, k: &Katalog) -> Vec<Befund> {
                     .map(|l| l.kurz.clone()),
                 _ => None,
             }
-            .unwrap_or_else(|| u.key.clone());
+            .unwrap_or_else(|| match u.rec.as_str() {
+                "rate" => crate::wort::firmenwert(&u.key),
+                _ => crate::wort::EIN_EINTRAG.to_string(),
+            });
             out.push(Befund::hinweis(
                 89,
                 befund::r89(&name, &st),
@@ -448,7 +453,7 @@ mod tests {
         assert_eq!(b[0].ort, Ort::Schicht { typ, schicht: i });
         assert!(b[0]
             .satz
-            .ends_with("Die gewählte Bauleistung gibt es nicht (mehr); es gilt die Regel."));
+            .ends_with("Die gewählte Bauleistung gibt es nicht (mehr); es gilt die Zuordnung nach Baustoff und Dicke."));
         assert_eq!(szo::write(&m), kaputt);
     }
 

@@ -25,6 +25,7 @@ mod link_view;
 mod lohn_blatt;
 mod material_view;
 mod measure_input;
+mod meldung;
 mod menu;
 mod musterprobe;
 mod nav;
@@ -693,7 +694,7 @@ struct App {
     input_px: Option<(Vec<u8>, u32, u32)>,
     input_swap: Option<Instant>,
     /// Zuletzt in der Statuszeile genannter Fehler der Maßeingabe.
-    input_error: Option<String>,
+    input_error: Option<meldung::Meldung>,
     /// Fehlschläge des Sicherns in Folge (F-13 §8) und ein Befehl aus einem
     /// Verweis, der das Fenster braucht („Jetzt speichern“).
     save_fail: autosave::FailNotice,
@@ -754,7 +755,7 @@ struct Tip {
 
 /// Hinweis in der Statuszeile: Text, seit wann er steht, wo (Fenster).
 struct Notice {
-    text: String,
+    text: meldung::Meldung,
     since: Option<Instant>,
     rect: (f64, f64, f64, f64),
     /// So lange steht er; ein Klick öffnet den Bauteilkatalog (`catalog`).
@@ -763,6 +764,17 @@ struct Notice {
     /// Fehler (Maßeingabe): Punkt in `field_invalid` statt im Akzent.
     error: bool,
 }
+
+/// Mehrere Meldungen als Absätze eines Dialogs.
+fn meldungen(m: &[meldung::Meldung]) -> String {
+    m.iter()
+        .map(|x| x.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Schluss, wenn „Auch für neue Häuser“ scheitert (Bedienbarkeit 7.2).
+const NICHTS_GEAENDERT: &str = "Nichts geändert; „Nur dieses Haus“ geht weiterhin.";
 
 /// So lange steht ein Hinweis in der Statuszeile.
 const NOTICE_TIME: std::time::Duration = std::time::Duration::from_secs(8);
@@ -1566,7 +1578,7 @@ impl App {
         let Some(p) = surface.open_dialog("Firmenkatalog", &filters) else {
             return;
         };
-        let (c, hints) = catalog::Company::load(&p, false);
+        let (c, hints) = catalog::Company::laden(&p, false);
         self.show_hints(hints, surface);
         self.settings.set_company_path(p);
         let panel = self.panel_settings();
@@ -2007,8 +2019,9 @@ impl App {
         if let (true, false, Some(was)) = (changed, redo, was) {
             self.renderer.set_overlay(OVERLAY_NOTICE, 0, 0, 0, 0, &[]);
             self.notice = Some(Notice {
-                text: format!(
-                    "Zurückgenommen für dieses Haus. Neue Häuser rechnen weiter mit {was}."
+                text: meldung::Meldung::mit(
+                    "Zurückgenommen für dieses Haus. Neue Häuser rechnen weiter mit {}.",
+                    &[was],
                 ),
                 since: None,
                 rect: (0.0, 0.0, 0.0, 0.0),
@@ -2234,7 +2247,7 @@ impl App {
             }
             kosten_view::Schreiben::Bauleistung { op, hinweis } => self
                 .kosten_folge("Bauleistung gewählt", &h, &[*op])
-                .or(hinweis.map(|t| (t, false))),
+                .or(hinweis.map(|m| (m, false))),
             kosten_view::Schreiben::Lohn { wert, gilt } => {
                 let label = self
                     .scene
@@ -2275,22 +2288,18 @@ impl App {
         label: &'static str,
         h: &sk_cost::Herkunft,
         ops: &[sk_cost::Op],
-    ) -> Option<(String, bool)> {
+    ) -> Option<(meldung::Meldung, bool)> {
         match self.company.as_mut() {
             Some(c) => match self.scene.fuer_firma(label, c, h, ops) {
                 Ok(hinweis) => {
                     let wert = label.strip_suffix(preis_blatt::FUER_NEUE).unwrap_or(label);
                     self.doc.fuer_neue_merken(wert);
-                    hinweis.map(|t| (t, false))
+                    hinweis.map(|m| (m, false))
                 }
-                Err(e) => Some((
-                    format!("{e}. Nichts geändert; „Nur dieses Haus“ geht weiterhin."),
-                    true,
-                )),
+                Err(e) => Some((e.dazu(NICHTS_GEAENDERT), true)),
             },
             None => Some((
-                "Kein Firmenkatalog geladen. Nichts geändert; „Nur dieses Haus“ geht weiterhin."
-                    .into(),
+                meldung::Meldung::satz("Kein Firmenkatalog geladen.").dazu(NICHTS_GEAENDERT),
                 true,
             )),
         }
@@ -2303,10 +2312,10 @@ impl App {
         label: &'static str,
         h: &sk_cost::Herkunft,
         ops: &[sk_cost::Op],
-    ) -> Option<(String, bool)> {
+    ) -> Option<(meldung::Meldung, bool)> {
         let firma = self.company.as_ref().map(|c| c.library());
         let b = self.scene.kosten_folge(label, firma, h, ops).err()?;
-        Some((b.first()?.satz.clone(), true))
+        Some((meldung::Meldung::aus_befunden(&b, "Nichts geändert."), true))
     }
 
     /// Hover oder Auswahl kamen aus der Liste: Hauptfenster angleichen.
@@ -3937,7 +3946,7 @@ impl App {
     fn start_frame_measure(&mut self) {
         self.frame_measure = Some(frame_time::Measure::new());
         self.status(
-            "Bildzeit wird 10 s gemessen. Jetzt das Modell langsam drehen.".into(),
+            meldung::Meldung::satz("Bildzeit wird 10 s gemessen. Jetzt das Modell langsam drehen."),
             frame_time::SPAN,
         );
     }
@@ -3950,7 +3959,7 @@ impl App {
         let Some(m) = self.frame_measure.take() else {
             return;
         };
-        let mut line = frame_time::status_line(&m.total, &m.work);
+        let mut line = frame_time::status_meldung(&m.total, &m.work);
         let (j, mo, t, h, mi) = sk_platform::local_date_time();
         let name = frame_time::file_name(j as u32, mo as u32, t as u32, h as u32, mi as u32);
         let dir = self
@@ -3966,13 +3975,16 @@ impl App {
             .unwrap_or_default();
         let path = dir.join(&name);
         if std::fs::write(&path, &m.table).is_err() {
-            line.push_str(&format!(" – Tabelle „{name}“ ließ sich nicht schreiben"));
+            line = meldung::Meldung::mit(
+                "{} · Tabelle „{}“ ließ sich nicht schreiben.",
+                &[&line, &name],
+            );
         }
         self.status(line, std::time::Duration::from_secs(30));
     }
 
     /// Text in der Statuszeile für `time`.
-    fn status(&mut self, text: String, time: std::time::Duration) {
+    fn status(&mut self, text: meldung::Meldung, time: std::time::Duration) {
         self.renderer.set_overlay(OVERLAY_NOTICE, 0, 0, 0, 0, &[]);
         self.notice = Some(Notice {
             text,
@@ -4546,7 +4558,10 @@ impl App {
                     .unwrap_or(now);
                 let (.., h, m) = autosave::local_at(at, now, sk_platform::local_date_time());
                 self.notice = Some(Notice {
-                    text: format!("Sicherung von {h:02}:{m:02} wiederhergestellt."),
+                    text: meldung::Meldung::mit(
+                        "Sicherung von {} wiederhergestellt.",
+                        &[&format!("{h:02}:{m:02}")],
+                    ),
                     since: None,
                     rect: (0.0, 0.0, 0.0, 0.0),
                     time: std::time::Duration::from_secs(5),
@@ -5097,7 +5112,7 @@ impl App {
         if notice {
             self.drag_notice = false;
             self.notice = Some(Notice {
-                text: flush_pick::CANCELLED.into(),
+                text: meldung::Meldung::satz(flush_pick::CANCELLED),
                 since: None,
                 rect: (0.0, 0.0, 0.0, 0.0),
                 time: std::time::Duration::from_secs(3),
@@ -5259,7 +5274,11 @@ impl App {
             self.sync_props();
             self.drag_notice = false;
             self.notice = Some(Notice {
-                text: flush_pick::done_text(self.scene.model(), wall, target).into(),
+                text: meldung::Meldung::satz(flush_pick::done_text(
+                    self.scene.model(),
+                    wall,
+                    target,
+                )),
                 since: None,
                 rect: (0.0, 0.0, 0.0, 0.0),
                 time: std::time::Duration::from_secs(5),
@@ -5493,7 +5512,7 @@ impl App {
         self.hints_seen.insert(id.to_string());
         self.renderer.set_overlay(OVERLAY_NOTICE, 0, 0, 0, 0, &[]);
         self.notice = Some(Notice {
-            text: text.into(),
+            text: meldung::Meldung::satz(text),
             since: None,
             rect: (0.0, 0.0, 0.0, 0.0),
             time: NOTICE_TIME,
@@ -5831,11 +5850,10 @@ impl App {
     }
 
     /// Hinweise aus dem Laden: leise in die Statuszeile, der Rest als Meldung.
-    fn show_hints(&mut self, hints: Vec<String>, surface: &Surface) {
-        let (quiet, loud): (Vec<String>, Vec<String>) =
-            hints.into_iter().partition(|h| catalog::quiet(h));
+    fn show_hints(&mut self, hints: Vec<meldung::Meldung>, surface: &Surface) {
+        let (quiet, loud): (Vec<_>, Vec<_>) = hints.into_iter().partition(|h| catalog::quiet(h));
         if !loud.is_empty() {
-            surface.message(&loud.join("\n\n"), false);
+            surface.message(&meldungen(&loud), false);
         }
         if let Some(text) = quiet.into_iter().next() {
             self.notice = Some(Notice {
@@ -5856,11 +5874,11 @@ impl App {
             .edit
             .stack_drag(&self.scene)
             .map(|d| match d {
-                wall_edit::StackDrag::Free => {
-                    "Kette gelöst: nur die OG-Wand bewegt sich, das EG bleibt stehen.".to_string()
-                }
+                wall_edit::StackDrag::Free => meldung::Meldung::satz(
+                    "Kette gelöst: nur die OG-Wand bewegt sich, das EG bleibt stehen.",
+                ),
                 wall_edit::StackDrag::Ctrl => {
-                    "Strg: nur diese Wand, die Kette bleibt geschlossen.".to_string()
+                    meldung::Meldung::satz("Strg: nur diese Wand, die Kette bleibt geschlossen.")
                 }
             })
             // Zielwahl beim „Bündig setzen“: was über dem Kandidaten geschieht
@@ -6430,15 +6448,14 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     }
     let (company, hints) = match settings.company_place() {
         Some((p, standard)) => {
-            let (c, h) = catalog::Company::load(&p, standard);
+            let (c, h) = catalog::Company::laden(&p, standard);
             (Some(c), h)
         }
         None => (None, Vec::new()),
     };
-    let (quiet, hints): (Vec<String>, Vec<String>) =
-        hints.into_iter().partition(|h| catalog::quiet(h));
+    let (quiet, hints): (Vec<_>, Vec<_>) = hints.into_iter().partition(|h| catalog::quiet(h));
     if !hints.is_empty() && screenshot.is_none() {
-        surface.message(&hints.join("\n\n"), false);
+        surface.message(&meldungen(&hints), false);
     }
     let mut scene = Scene::with_model(new_model(company.as_ref()));
     scene.set_theme(&theme);
@@ -6618,7 +6635,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         if a.notice.is_none() && a.renderer.pattern_error().is_some() {
             // Review 3q: Flächen ohne Muster, das Programm läuft weiter
             a.notice = Some(Notice {
-                text: "Muster in 3D aus: Der Grafiktreiber übersetzt die Muster nicht.".into(),
+                text: meldung::Meldung::satz(
+                    "Muster in 3D aus: Der Grafiktreiber übersetzt die Muster nicht.",
+                ),
                 since: None,
                 rect: (0.0, 0.0, 0.0, 0.0),
                 time: NOTICE_TIME,
@@ -6714,7 +6733,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         .skip_while(|a| a != "--firmenkatalog")
         .nth(1)
     {
-        a.company = Some(catalog::Company::load(std::path::Path::new(&p), false).0);
+        a.company = Some(catalog::Company::laden(std::path::Path::new(&p), false).0);
     }
     if let Some(v) = arg("--baustoffe") {
         let name = v.join(",");

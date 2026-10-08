@@ -37,17 +37,27 @@ fn de(v: f64) -> String {
 
 /// Zeile für die Statuszeile: Gesamtzeit je Bild (mit dem Warten auf
 /// VSync) und die Arbeit (Ereignisse, Netz, Zeichnen; ohne Tauschen).
+#[cfg(test)]
 pub fn status_line(total: &[f64], work: &[f64]) -> String {
+    status_meldung(total, work).to_string()
+}
+
+/// [`status_line`] als Satz für die Statuszeile.
+pub fn status_meldung(total: &[f64], work: &[f64]) -> crate::meldung::Meldung {
+    use crate::meldung::Meldung;
     match (stats(total), stats(work)) {
-        (Some((m, p, n)), Some((wm, wp, _))) => format!(
-            "Bildzeit: Median {} ms, 95 % {} ms · Arbeit: Median {} ms, 95 % {} ms ({n} {})",
-            de(m),
-            de(p),
-            de(wm),
-            de(wp),
-            if n == 1 { "Bild" } else { "Bilder" }
+        (Some((m, p, n)), Some((wm, wp, _))) => Meldung::mit(
+            "Bildzeit: Median {} ms, 95 % {} ms · Arbeit: Median {} ms, 95 % {} ms ({} {})",
+            &[
+                &de(m),
+                &de(p),
+                &de(wm),
+                &de(wp),
+                &n.to_string(),
+                if n == 1 { "Bild" } else { "Bilder" },
+            ],
         ),
-        _ => "Bildzeit: keine Bilder gemessen".into(),
+        _ => Meldung::satz("Bildzeit: keine Bilder gemessen"),
     }
 }
 

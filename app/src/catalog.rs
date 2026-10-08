@@ -4,6 +4,7 @@
 //! Startbestand. Was nicht lesbar ist, wird zum Hinweis; Skizzeo arbeitet
 //! dann mit dem eingebauten Startbestand weiter und blockiert nie.
 
+use crate::meldung::Meldung;
 use sk_model::{export_material, export_type, Guid, MaterialId, Model};
 use sk_model::{read_szk_with, write_szk, Library};
 use std::path::{Path, PathBuf};
@@ -169,7 +170,14 @@ const SPERRE_ALT: Duration = Duration::from_secs(30);
 
 /// Meldung, wenn ein anderer Platz gerade schreibt.
 pub const GESPERRT: &str =
-    "Firmenkatalog wird gerade an einem anderen Platz gespeichert · nochmal versuchen";
+    "Firmenkatalog wird gerade an einem anderen Platz gespeichert. Nochmal versuchen.";
+
+/// Vorsatz und Handlung, wenn das Speichern scheitert ([`Meldung::aus_io`]).
+const NICHT_GESPEICHERT: (&str, &str) =
+    ("Firmenkatalog nicht gespeichert", "Firmenkatalog speichern");
+
+/// Schluss der Hinweise, wenn der Katalog nicht geladen ist.
+const STARTBESTAND: &str = "Skizzeo arbeitet mit dem eingebauten Startbestand.";
 
 /// Sperrdatei `firmenkatalog.szk.lock` neben dem Katalog (Bausteingrenze
 /// §5): mit `create_new` angelegt, Inhalt Platz, Uhrzeit und eine Kennung;
@@ -196,9 +204,9 @@ impl Drop for Sperre {
     }
 }
 
-/// Sperrt den Katalog `path`. Eine Sperre älter als 30 s wird übernommen;
-/// dann kommt der Hinweis dazu.
-fn sperren(path: &Path) -> Result<(Sperre, Option<String>), String> {
+/// Sperrt den Katalog `path`. Eine Sperre älter als 30 s wird still
+/// übernommen; das steht nur im Fehlerprotokoll (Bausteingrenze §5).
+fn sperren(path: &Path) -> Result<Sperre, Meldung> {
     use std::io::Write;
     let lock = path.with_extension("szk.lock");
     if let Some(dir) = path.parent() {
@@ -215,33 +223,29 @@ fn sperren(path: &Path) -> Result<(Sperre, Option<String>), String> {
             .create_new(true)
             .open(&lock)
     };
-    let mut hinweis = None;
+    let (ergebnis, was) = NICHT_GESPEICHERT;
     let mut f = match anlegen() {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             let alt = alter(&lock).is_some_and(|d| d > SPERRE_ALT);
             if !alt {
-                return Err(GESPERRT.into());
+                return Err(Meldung::satz(GESPERRT));
             }
             let wer = std::fs::read_to_string(&lock).unwrap_or_default();
             let _ = std::fs::remove_file(&lock);
-            hinweis = Some(format!(
-                "Liegen gebliebene Sperre des Firmenkatalogs übernommen ({}).",
+            crate::meldung::protokoll(&format!(
+                "Liegen gebliebene Sperre {} übernommen ({})",
+                lock.display(),
                 wer.trim()
             ));
-            anlegen().map_err(|_| GESPERRT.to_string())?
+            anlegen().map_err(|_| Meldung::satz(GESPERRT))?
         }
-        Err(e) => {
-            return Err(format!(
-                "Firmenkatalog {} nicht gesperrt: {e}",
-                path.display()
-            ))
-        }
+        Err(e) => return Err(Meldung::aus_io(ergebnis, was, path, &e)),
     };
     f.write_all(inhalt.as_bytes())
         .and_then(|_| f.sync_all())
-        .map_err(|e| format!("Firmenkatalog {} nicht gesperrt: {e}", path.display()))?;
-    Ok((Sperre { path: lock, inhalt }, hinweis))
+        .map_err(|e| Meldung::aus_io(ergebnis, was, path, &e))?;
+    Ok(Sperre { path: lock, inhalt })
 }
 
 #[cfg(test)]
@@ -249,12 +253,18 @@ thread_local! {
     /// Test: Schreiben scheitert nach der temporären Datei, vor dem
     /// Umbenennen (die Abnahme prüft, dass die Firmendatei heil bleibt).
     static SCHREIBFEHLER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Test: welcher Fehler beim Schreiben (sonst `ErrorKind::Other`),
+    /// etwa schreibgeschützt oder von einem anderen Programm geöffnet.
+    static SCHREIBFEHLER_ART: std::cell::Cell<Option<fn() -> std::io::Error>> =
+        const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]
 fn schreibfehler_im_test() -> std::io::Result<()> {
     if SCHREIBFEHLER.with(|f| f.get()) {
-        return Err(std::io::Error::other("Schreibfehler (Test)"));
+        return Err(SCHREIBFEHLER_ART
+            .with(|a| a.get())
+            .map_or_else(|| std::io::Error::other("Schreibfehler (Test)"), |f| f()));
     }
     Ok(())
 }
@@ -286,7 +296,7 @@ impl Company {
     /// Lädt den Katalog. `standard_place`: `path` ist der Vorgabeort; fehlt
     /// die Datei dort, wird sie mit dem Startbestand angelegt. Liefert die
     /// Hinweise für den Nutzer (leer, wenn alles geklappt hat).
-    pub fn load(path: &Path, standard_place: bool) -> (Company, Vec<String>) {
+    pub fn laden(path: &Path, standard_place: bool) -> (Company, Vec<Meldung>) {
         let mut c = Company {
             path: path.to_path_buf(),
             lib: Library::standard(),
@@ -299,9 +309,15 @@ impl Company {
         (c, hints)
     }
 
+    /// [`Company::laden`] mit den Hinweisen als Text (für die Abnahme).
+    #[cfg(test)]
+    pub fn load(path: &Path, standard_place: bool) -> (Company, Vec<String>) {
+        let (c, h) = Company::laden(path, standard_place);
+        (c, h.into_iter().map(|m| m.to_string()).collect())
+    }
+
     /// Liest die Datei neu (z. B. nach [`SaveResult::Changed`]).
-    pub fn reload(&mut self, standard_place: bool) -> Vec<String> {
-        let shown = self.path.display();
+    pub fn reload(&mut self, standard_place: bool) -> Vec<Meldung> {
         self.broken = false;
         self.gen += 1;
         let gelesen = lesen_mit_stempel(&self.path).and_then(|(b, s)| {
@@ -322,26 +338,44 @@ impl Company {
                         // Fremdes aus einer neueren Fassung und ungültige
                         // Auflager: ein Hinweis, einmal je Fassung der Datei
                         if (unknown > 0 || !bearings.is_empty()) && first_time(&self.path) {
-                            let mut text = String::from("Firmenkatalog:");
-                            if !bearings.is_empty() {
-                                text += &format!(
-                                    " Deckenauflager von {} ungültig, {BEARING_TAIL}",
-                                    bearings.join(", ")
-                                );
-                            }
-                            if unknown > 0 {
-                                text += &format!(" {unknown} {UNKNOWN_TAIL}");
-                            }
-                            hints.push(text);
+                            let auflager = (!bearings.is_empty()).then(|| {
+                                Meldung::mit(
+                                    " Deckenauflager von {} ungültig, gebaut wie „ganze tragende Schicht“.",
+                                    &[&bearings.join(", ")],
+                                )
+                            });
+                            let fremd = (unknown > 0).then(|| {
+                                Meldung::mit(
+                                    " {} unbekannte Angaben übersprungen, alles andere ist geladen.",
+                                    &[&unknown.to_string()],
+                                )
+                            });
+                            hints.push(Meldung::mit(
+                                "Firmenkatalog:{}{}",
+                                &[
+                                    auflager.as_deref().unwrap_or(""),
+                                    fremd.as_deref().unwrap_or(""),
+                                ],
+                            ));
                         }
                         hints
                     }
                     Err(e) => {
                         self.lib = Library::standard();
                         self.broken = true;
-                        vec![format!(
-                            "Firmenkatalog {shown} nicht lesbar ({e}). Skizzeo arbeitet mit dem eingebauten Startbestand."
-                        )]
+                        crate::meldung::protokoll(&format!(
+                            "Firmenkatalog {} nicht lesbar: {e}",
+                            self.path.display()
+                        ));
+                        let m = if e.line > 0 {
+                            Meldung::mit(
+                                "Der Firmenkatalog ist ab Zeile {} nicht lesbar.",
+                                &[&e.line.to_string()],
+                            )
+                        } else {
+                            Meldung::satz("Der Firmenkatalog ist nicht lesbar.")
+                        };
+                        vec![m.dazu(STARTBESTAND)]
                     }
                 }
             }
@@ -354,25 +388,33 @@ impl Company {
                         self.geladen = text;
                         Vec::new()
                     }
-                    Err(e) => vec![format!(
-                        "Firmenkatalog {shown} nicht angelegt: {e}. Skizzeo arbeitet mit dem eingebauten Startbestand."
-                    )],
+                    Err(e) => vec![Meldung::aus_io(
+                        "Firmenkatalog nicht angelegt",
+                        "Firmenkatalog anlegen",
+                        &self.path,
+                        &e,
+                    )
+                    .dazu(STARTBESTAND)],
                 }
             }
-            Err(_) => {
+            Err(e) => {
                 self.lib = Library::standard();
                 self.stamp = None;
                 self.geladen = String::new();
-                vec![format!(
-                    "Firmenkatalog {shown} nicht gefunden. Skizzeo arbeitet mit dem eingebauten Startbestand."
-                )]
+                vec![Meldung::aus_io(
+                    "Firmenkatalog nicht geladen",
+                    "Firmenkatalog laden",
+                    &self.path,
+                    &e,
+                )
+                .dazu(STARTBESTAND)]
             }
         }
     }
 
     /// Ergänzt neue Werkstypen (K4) und schreibt den Katalog zurück, damit
     /// der Hinweis nur einmal kommt.
-    fn add_stock(&mut self) -> Vec<String> {
+    fn add_stock(&mut self) -> Vec<Meldung> {
         let before = write_szk(&self.lib);
         let (added, switched) = self.lib.add_stock();
         if self.lib.stock.is_empty() {
@@ -380,13 +422,15 @@ impl Company {
         }
         let mut hints = Vec::new();
         if !added.is_empty() {
-            hints.push(format!(
+            hints.push(Meldung::mit(
                 "Firmenkatalog: neue Werkstypen ergänzt ({}).",
-                added.join(", ")
+                &[&added.join(", ")],
             ));
         }
         if switched {
-            hints.push("Firmenkatalog: Standard-Außenwand ist jetzt AW-36.".into());
+            hints.push(Meldung::satz(
+                "Firmenkatalog: Standard-Außenwand ist jetzt AW-36.",
+            ));
         }
         // Nur bei echter Ergänzung schreiben: die Datei einer anderen Fassung
         // bleibt sonst bytegleich (Reihenfolge, fremde Zeilen)
@@ -394,7 +438,7 @@ impl Company {
         if text != before {
             // Unter der Sperre und nur über den gelesenen Stand; sonst bleibt
             // die Ergänzung im Speicher und kommt beim nächsten Laden wieder
-            let Ok((sperre, _)) = sperren(&self.path) else {
+            let Ok(sperre) = sperren(&self.path) else {
                 return hints;
             };
             if stempel(&self.path) != self.stamp || !sperre.gilt() {
@@ -405,9 +449,11 @@ impl Company {
                     self.stamp = stempel(&self.path);
                     self.geladen = text;
                 }
-                Err(e) => hints.push(format!(
-                    "Firmenkatalog {} nicht ergänzt: {e}",
-                    self.path.display()
+                Err(e) => hints.push(Meldung::aus_io(
+                    "Firmenkatalog nicht ergänzt",
+                    "Firmenkatalog ergänzen",
+                    &self.path,
+                    &e,
                 )),
             }
         }
@@ -479,31 +525,43 @@ impl Company {
     /// gesehenen Stand, den Stand davor unverändert nach
     /// `firmenkatalog-staende/stand-000n.szk` legen, atomar schreiben und
     /// neu laden. Scheitert etwas, ist nichts geschrieben; der Fehler ist
-    /// der Satz für die Meldung. Liefert den neuen Stand und einen Hinweis
-    /// (übernommene Sperre).
+    /// der Satz für die Meldung. Hat ein anderer Platz die Datei
+    /// inzwischen geändert, wird sie neu geladen, damit der nächste Versuch
+    /// auf ihrem Stand aufsetzt.
     pub fn fuer_firma(
         &mut self,
         herkunft: &sk_cost::Herkunft,
         ops: &[sk_cost::Op],
-    ) -> Result<(sk_cost::FirmaNeu, Option<String>), String> {
+    ) -> Result<sk_cost::FirmaNeu, Meldung> {
         if self.broken {
-            return Err(format!(
-                "Firmenkatalog {} ist nicht lesbar und wird nicht überschrieben",
-                self.path.display()
+            return Err(Meldung::satz(
+                "Der Firmenkatalog ist nicht lesbar und wird nicht überschrieben.",
             ));
         }
-        let (sperre, hinweis) = sperren(&self.path)?;
+        let (ergebnis, was) = NICHT_GESPEICHERT;
+        let sperre = sperren(&self.path)?;
         let text = match std::fs::read_to_string(&self.path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(e) => return Err(format!("Firmenkatalog nicht lesbar: {e}")),
+            Err(e) => return Err(Meldung::aus_io(ergebnis, was, &self.path, &e)),
         };
-        let neu =
-            sk_cost::firma_anwenden(&text, &self.geladen, sk_cost::Rolle::Admin, herkunft, ops)
-                .map_err(|b| {
-                    b.first()
-                        .map_or_else(|| "Firmenkatalog nicht geändert".into(), |x| x.satz.clone())
-                })?;
+        let neu = match sk_cost::firma_anwenden(
+            &text,
+            &self.geladen,
+            sk_cost::Rolle::Admin,
+            herkunft,
+            ops,
+        ) {
+            Ok(n) => n,
+            Err(b) => {
+                let m = Meldung::aus_befunden(&b, "Firmenkatalog nicht geändert.");
+                if text != self.geladen {
+                    drop(sperre);
+                    self.reload(false);
+                }
+                return Err(m);
+            }
+        };
         if !text.is_empty() {
             let dir = self
                 .path
@@ -514,21 +572,17 @@ impl Company {
             if !alt.exists() {
                 std::fs::create_dir_all(&dir)
                     .and_then(|_| crate::document::write_synced(&alt, text.as_bytes()))
-                    .map_err(|e| format!("Voriger Stand nicht abgelegt: {e}"))?;
+                    .map_err(|e| Meldung::aus_io(ergebnis, was, &dir, &e))?;
             }
         }
         if !sperre.gilt() {
-            return Err(GESPERRT.into());
+            return Err(Meldung::satz(GESPERRT));
         }
-        write_atomic(&self.path, &neu.text).map_err(|e| {
-            format!(
-                "Firmenkatalog {} nicht gespeichert: {e}",
-                self.path.display()
-            )
-        })?;
+        write_atomic(&self.path, &neu.text)
+            .map_err(|e| Meldung::aus_io(ergebnis, was, &self.path, &e))?;
         drop(sperre);
         self.reload(false);
-        Ok((neu, hinweis))
+        Ok(neu)
     }
 
     fn save_with(
@@ -537,16 +591,15 @@ impl Company {
         missing: &str,
     ) -> SaveResult {
         if self.broken {
-            return SaveResult::Failed(format!(
-                "Firmenkatalog {} ist nicht lesbar und wird nicht überschrieben",
-                self.path.display()
-            ));
+            return SaveResult::Failed(
+                "Der Firmenkatalog ist nicht lesbar und wird nicht überschrieben.".into(),
+            );
         }
         // Unter derselben Sperre wie die Kostensätze (KA-2c2): sonst
         // schriebe es veraltete Sätze aus dem Speicher zurück
         let sperre = match sperren(&self.path) {
-            Ok((s, _)) => s,
-            Err(e) => return SaveResult::Failed(e),
+            Ok(s) => s,
+            Err(e) => return SaveResult::Failed(e.to_string()),
         };
         if stempel(&self.path) != self.stamp {
             return SaveResult::Changed;
@@ -567,10 +620,10 @@ impl Company {
                 self.geladen = text;
                 SaveResult::Saved
             }
-            Err(e) => SaveResult::Failed(format!(
-                "Firmenkatalog {} nicht gespeichert: {e}",
-                self.path.display()
-            )),
+            Err(e) => {
+                let (ergebnis, was) = NICHT_GESPEICHERT;
+                SaveResult::Failed(Meldung::aus_io(ergebnis, was, &self.path, &e).to_string())
+            }
         }
     }
 }
@@ -872,15 +925,18 @@ mod tests {
         let vorher = std::fs::read_to_string(&p).unwrap();
         assert_eq!(c.fuer_firma(&herkunft, &[op(100)]).unwrap_err(), GESPERRT);
         assert_eq!(std::fs::read_to_string(&p).unwrap(), vorher);
-        // Liegen geblieben (älter als 30 s): übernommen, mit Hinweis
+        // Liegen geblieben (älter als 30 s): still übernommen
         std::fs::File::options()
             .write(true)
             .open(&lock)
             .unwrap()
             .set_modified(SystemTime::now() - Duration::from_secs(60))
             .unwrap();
-        let (neu, hinweis) = c.fuer_firma(&herkunft, &[op(100)]).unwrap();
-        assert!(hinweis.unwrap().contains("anderer Platz"));
+        crate::meldung::protokoll_im_test();
+        let neu = c.fuer_firma(&herkunft, &[op(100)]).unwrap();
+        // still übernommen: nur im Fehlerprotokoll (Bausteingrenze §5)
+        let log = crate::meldung::protokoll_im_test();
+        assert!(log.iter().any(|l| l.contains("anderer Platz")), "{log:?}");
         assert!(!lock.exists(), "Sperre gelöscht");
         assert_eq!(neu.stand, neu.stand_vorher + 1);
         assert_eq!(neu.saetze.len(), 1);
@@ -928,8 +984,8 @@ mod tests {
         let d = dir("sperre-eigen");
         let p = d.join(FILE_NAME);
         let lock = p.with_extension("szk.lock");
-        let (s, h) = sperren(&p).unwrap();
-        assert!(h.is_none() && s.gilt());
+        let s = sperren(&p).unwrap();
+        assert!(s.gilt());
         std::fs::write(&lock, "anderer Platz").unwrap();
         assert!(!s.gilt());
         drop(s);
@@ -947,6 +1003,53 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
             .count();
         assert_eq!(reste, 1, "nur die fremde");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// KA-2d1 (paket-ka2 §6 „Sätze für Menschen“): schreibgeschützt bzw.
+    /// in einem anderen Programm geöffnet ergibt den Satz ohne Pfad und
+    /// Systemtext; der steht im Fehlerprotokoll. Ein anderer Fehler nur
+    /// „Firmenkatalog speichern hat nicht geklappt.“.
+    #[test]
+    fn schreibfehler_als_satz() {
+        let d = dir("schreibfehler-satz");
+        let p = d.join(FILE_NAME);
+        let (mut c, _) = Company::laden(&p, true);
+        let lohn = |w| sk_cost::Op::FirmenwertSetzen {
+            schluessel: "wage".into(),
+            wert: sk_cost::Dez::ganz(w),
+        };
+        let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "15:30");
+        type Fall = (fn() -> std::io::Error, &'static str);
+        let faelle: [Fall; 3] = [
+            (
+                || std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                "Firmenkatalog nicht gespeichert: Keine Schreibrechte für firmenkatalog.szk.",
+            ),
+            (
+                || std::io::Error::from_raw_os_error(32),
+                "Firmenkatalog nicht gespeichert: firmenkatalog.szk ist gerade in einem anderen Programm geöffnet. Dort schließen, dann nochmal versuchen.",
+            ),
+            (
+                || std::io::Error::other("Access is denied. (os error 5)"),
+                "Firmenkatalog speichern hat nicht geklappt.",
+            ),
+        ];
+        for (art, satz) in faelle {
+            crate::meldung::protokoll_im_test();
+            SCHREIBFEHLER.with(|f| f.set(true));
+            SCHREIBFEHLER_ART.with(|a| a.set(Some(art)));
+            let e = c.fuer_firma(&h, &[lohn(70)]).unwrap_err();
+            SCHREIBFEHLER.with(|f| f.set(false));
+            SCHREIBFEHLER_ART.with(|a| a.set(None));
+            assert_eq!(e, satz);
+            let log = crate::meldung::protokoll_im_test();
+            assert!(
+                log.iter().any(|l| l.contains(&d.display().to_string())),
+                "Pfad im Protokoll: {log:?}"
+            );
+        }
+        c.fuer_firma(&h, &[lohn(70)]).unwrap();
         let _ = std::fs::remove_dir_all(&d);
     }
 }
@@ -1032,7 +1135,7 @@ mod abnahme_ka2c2 {
             let (g, alt) = artikel(&c);
             let mtime = std::fs::metadata(&p).unwrap().modified().unwrap();
             let (mut c2, _) = Company::load(&p, false);
-            let (n1, _) = c2.fuer_firma(&h(), &[lohn(65)]).unwrap();
+            let n1 = c2.fuer_firma(&h(), &[lohn(65)]).unwrap();
             if gleiche_zeit {
                 std::fs::File::options()
                     .write(true)
@@ -1042,7 +1145,7 @@ mod abnahme_ka2c2 {
                     .unwrap();
             }
             let neu_preis = sk_cost::Dez(alt.0 + 1_000_000);
-            let (n2, _) = c
+            let n2 = c
                 .fuer_firma(&h(), &[preis(g, neu_preis)])
                 .unwrap_or_else(|e| {
                     panic!("vorbelegt={vorbelegt} gleiche_zeit={gleiche_zeit}: {e}")
@@ -1095,11 +1198,12 @@ mod abnahme_ka2c2 {
         let e = c.fuer_firma(&h(), &[lohn(70)]).unwrap_err();
         SCHREIBFEHLER.with(|f| f.set(false));
         assert!(!tmp_da(), "keine temporäre Datei");
-        assert!(e.contains("nicht gespeichert"), "{e}");
+        // KA-2d1: ein anderer Fehler nur als Handlung, ohne Vorsatz
+        assert_eq!(e, "Firmenkatalog speichern hat nicht geklappt.");
         assert_eq!(std::fs::read(&p).unwrap(), vorher, "Datei heil");
         assert!(!p.with_extension("szk.lock").exists(), "Sperre weg");
         assert_eq!(werte(&c, artikel(&c).0).1, Some(sk_cost::Dez::ganz(60)));
-        let (n, _) = c.fuer_firma(&h(), &[lohn(70)]).unwrap();
+        let n = c.fuer_firma(&h(), &[lohn(70)]).unwrap();
         assert_eq!(n.stand, n.stand_vorher + 1);
         assert!(!tmp_da());
         assert_eq!(werte(&c, artikel(&c).0).1, Some(sk_cost::Dez::ganz(70)));
@@ -1411,7 +1515,7 @@ mod abnahme_ka2c2_haus {
                 .fuer_firma("Lohn für neue Häuser", &mut c, &h(), &[lohn(65)])
                 .unwrap_err();
             SCHREIBFEHLER.with(|f| f.set(false));
-            assert!(e.contains("nicht gespeichert"), "{e}");
+            assert_eq!(e, "Firmenkatalog speichern hat nicht geklappt.");
             assert_eq!(std::fs::read(&p).unwrap(), vorher, "kopie={kopie}");
             assert_eq!((s.model().revision(), s.undo_label()), (rev, label));
             assert_eq!(sk_model::szo::write(s.model()), text, "kopie={kopie}");

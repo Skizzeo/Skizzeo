@@ -182,6 +182,12 @@ const FOOT_LINE: f32 = 18.0;
 const BOTTOM_PAD: f32 = 12.0;
 /// Einzug je Ebene (dip).
 const INDENT: f32 = 16.0;
+/// Hinweis nach „Bauleistung wählen“ mit einer Bauleistung eines anderen
+/// Gewerks (Bedienbarkeit 8.6, 9.3): stimmt in jeder Gliederung.
+pub fn gewerk_hinweis(zeile: &str, gewerk: &str) -> crate::meldung::Meldung {
+    crate::meldung::Meldung::mit("{} gehört jetzt zum Gewerk {}.", &[zeile, gewerk])
+}
+
 /// Knopf „Als Tabelle speichern“.
 const BUTTON_H: f32 = 26.0;
 const BUTTON_PAD: f32 = 12.0;
@@ -234,7 +240,7 @@ pub enum Schreiben {
         op: Box<Op>,
         /// „DT-001 PIR-Dämmung steht jetzt unter WDV-Systeme (DIN 18345).“,
         /// wenn die Zeile zu einem anderen Gewerk kommt.
-        hinweis: Option<String>,
+        hinweis: Option<crate::meldung::Meldung>,
     },
     /// Verrechnungslohn für dieses Haus oder auch für neue Häuser.
     Lohn {
@@ -310,6 +316,9 @@ pub struct KostenView {
     /// Im Projekt geänderte Positionen mit dem EP der Firma (Punkt am EP,
     /// CSV-Spalte Projektabweichung) und woraus sie bestimmt sind.
     eigen: HashMap<usize, Cent>,
+    /// Marke „eigener Lohn“ (paket-ka2 §4): der Lohn der Firma, wenn das
+    /// Projekt einen eigenen hat, der davon abweicht.
+    lohn_firma: Option<Dez>,
     eigen_von: Option<(*const Kostenblatt, *const Katalog)>,
     /// Abgleich mit dem Firmenkatalog (Regel 92) mit netto vorher und
     /// nachher für den Tooltip an „übernehmen“, und woraus er bestimmt ist.
@@ -373,6 +382,7 @@ impl KostenView {
             klick: None,
             blitz: None,
             eigen: HashMap::new(),
+            lohn_firma: None,
             eigen_von: None,
             abgleich: None,
             abgleich_von: None,
@@ -531,8 +541,12 @@ impl KostenView {
                 Some((i, sk_cost::preis::aufbau(m, &fk, p).map_or(a.ep, |f| f.ep)))
             })
             .collect();
-        let changed = neu != self.eigen;
+        let lohn = (kat.herkunft_von("rate", "wage").is_some_and(|u| u.proj)
+            && fk.werte.lohn != kat.werte.lohn)
+            .then_some(fk.werte.lohn);
+        let changed = neu != self.eigen || lohn != self.lohn_firma;
         self.eigen = neu;
+        self.lohn_firma = lohn;
         changed
     }
 
@@ -700,7 +714,10 @@ impl KostenView {
                 self.live = Some(Live { ops, blatt, ganz });
             }
             Err(b) => {
-                pb.set_live(Err(b.first().map_or_else(String::new, |x| x.satz.clone())));
+                pb.set_live(Err(crate::meldung::Meldung::aus_befunden(
+                    &b,
+                    "Dieser Wert geht nicht.",
+                )));
                 self.live = None;
             }
         }
@@ -783,7 +800,7 @@ impl KostenView {
                 let hinweis = w
                     .gewaehlt(g)
                     .and_then(|x| x.fremd.as_ref())
-                    .map(|gewerk| format!("{} steht jetzt unter {gewerk}.", w.zeile()));
+                    .map(|gewerk| gewerk_hinweis(w.zeile(), gewerk));
                 self.blitz = Some((w.element, g, None));
                 ListOut::Kosten(Schreiben::Bauleistung { op, hinweis })
             }
@@ -1608,6 +1625,13 @@ impl KostenView {
                 let (a, _) = self.abgleich.as_ref()?;
                 Some(a.tooltip())
             }
+            Hot::Lohnsatz => Some(match self.lohn_firma {
+                Some(f) => format!(
+                    "eigener Lohn für dieses Haus, Firma {} €/h · Klick ändert ihn",
+                    euro(f.cent())
+                ),
+                None => "Stundenlohn ändern".into(),
+            }),
             Hot::Uebernehmen => self.tip_uebernehmen(),
             Hot::Lassen => Some(
                 "Dieses Haus rechnet weiter mit seinen Werten. Die Zeile kommt wieder, wenn sich für neue Häuser erneut etwas ändert.".into(),
@@ -2057,7 +2081,16 @@ impl KostenView {
                             u.accent
                         };
                         f.draw(c, &link, px, lx, by, col);
-                        let nx = lx + f.width(&link, px);
+                        let mut nx = lx + f.width(&link, px);
+                        // Punkt hinter dem Stundenlohn: eigener Lohn (paket-ka2 §4)
+                        if self.lohn_firma.is_some() {
+                            let d = 1.5 * s;
+                            let cx = nx + 4.0 * s;
+                            let mut p = Path::new();
+                            p.rounded_rect(cx - d, by - 3.5 * s - d, 2.0 * d, 2.0 * d, d);
+                            c.fill(&p, u.accent);
+                            nx += 8.0 * s;
+                        }
                         let rest = (x + tw - 12.0 * s - nx).max(0.0);
                         let nach = sk_ui::widgets::ellipsize(Some(f), &nach, px, rest);
                         f.draw(c, &nach, px, nx, by, u.sheet_text_dim);
@@ -2724,3 +2757,8 @@ mod abnahme_ka2c {
         );
     }
 }
+
+/// Abnahme KA-2c2 Nr. 8 (paket-ka2 §6): Lohnfeld für dieses und neue Häuser,
+/// Strg+Z nur für dieses Haus, Abgleichzeile, „Nur dieses Haus“ mit Marke.
+#[cfg(test)]
+mod abnahme_ka2c2_lohn;

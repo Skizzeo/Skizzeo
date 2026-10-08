@@ -1,8 +1,8 @@
 //! Befunde: Regelnummer, Satz für Menschen und Ort (BIM §4, K6). Die Sätze
 //! stehen wörtlich wie in der Satztabelle, `{…}` eingesetzt.
 
+use crate::wort;
 use sk_model::Guid;
-use std::fmt;
 
 /// Wie schwer ein Befund wiegt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -63,9 +63,18 @@ impl Befund {
     }
 }
 
-impl fmt::Display for Befund {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Regel {}: {}", self.regel, self.satz)
+impl Befund {
+    /// Für Fehlerprotokoll, Testausgaben und KI (Bausteingrenze §5): mit
+    /// Regel und Ort, „Regel 76 · article 1S7…: Artikel …“. Im Fenster steht
+    /// nur `satz`; ein `Display` gibt es absichtlich nicht.
+    pub fn protokoll(&self) -> String {
+        let ort = match &self.ort {
+            Ort::Datei => "Datei".to_string(),
+            Ort::Satz { abschnitt, kennung } => format!("{abschnitt} {kennung}"),
+            Ort::Schicht { typ, schicht } => format!("Typ {} Schicht {schicht}", typ.to_ifc()),
+            Ort::Bauteil(g) => format!("Bauteil {}", g.to_ifc()),
+        };
+        format!("Regel {} · {ort}: {}", self.regel, self.satz)
     }
 }
 
@@ -84,14 +93,15 @@ pub fn r71() -> String {
         .into()
 }
 
+/// `abschnitt`: Schlüssel des Abschnitts, im Satz als Wort.
 pub fn r72(n: usize, abschnitt: &str, grund: &str) -> String {
-    format!(
-        "Zeile {n} ({abschnitt}) wurde übersprungen: {grund}. Sie bleibt unverändert in der Datei."
-    )
+    let a = wort::abschnitt(abschnitt);
+    format!("Zeile {n} ({a}) wurde übersprungen: {grund}. Sie bleibt unverändert in der Datei.")
 }
 
-pub fn r73(satz: &str, art: &str, kennung: &str) -> String {
-    format!("{satz} verweist auf {art} {kennung}, die es in dieser Datei nicht gibt.")
+/// `verweis` mit Artikel und Relativpronomen: „einen Artikel, den“.
+pub fn r73(satz: &str, verweis: &str) -> String {
+    format!("{satz} verweist auf {verweis} es in dieser Datei nicht gibt.")
 }
 
 /// R73-W (Bausteingrenze §6): Werksbaustoff einer älteren Datei.
@@ -99,24 +109,30 @@ pub fn r73w(name: &str) -> String {
     format!("Baustoff {name}: Werkspreise über den Namen zugeordnet (ältere Datei).")
 }
 
-pub fn r74(abschnitt: &str, kennung: &str) -> String {
-    format!("{abschnitt} {kennung} kommt doppelt vor; es gilt die erste Zeile.")
+/// `abschnitt`: Schlüssel, im Satz als Wort; `name` des Eintrags.
+pub fn r74(abschnitt: &str, name: &str) -> String {
+    let a = wort::abschnitt(abschnitt);
+    format!("{a} {name} kommt doppelt vor; es gilt der erste Eintrag.")
 }
 
 pub fn r75(name: &str) -> String {
-    format!("Werkswert {name} hat eine andere Kennung als im Werksbestand.")
+    format!("Werkswert {name} passt nicht zu seinem Eintrag im Werksbestand.")
 }
 
+/// `feld`: Schlüssel, im Satz als Wort.
 pub fn r76(name: &str, feld: &str, wert: &str) -> String {
-    format!("Artikel {name}: {feld} ist ungültig ({wert}).")
+    let f = wort::feld(Some("article"), feld);
+    format!("Artikel {name}: {f} ist ungültig ({wert}).")
 }
 
 pub fn r77(baustoff: &str, dicke: &str, name: &str) -> String {
     format!("Für {baustoff} {dicke} sind mehrere Standardartikel gesetzt; es gilt {name}.")
 }
 
+/// `feld`: Schlüssel, im Satz als Wort.
 pub fn r79(kurztext: &str, feld: &str, wert: &str) -> String {
-    format!("Bauleistung {kurztext}: {feld} ist ungültig ({wert}).")
+    let f = wort::feld(Some("service"), feld);
+    format!("Bauleistung {kurztext}: {f} ist ungültig ({wert}).")
 }
 
 pub fn r80(kurztext: &str, einheit: &str, bezug: &str) -> String {
@@ -134,15 +150,15 @@ pub fn r86(oz: &str) -> String {
 }
 
 pub fn r87(name: &str) -> String {
-    format!("{name} ist ausgemustert, wird aber noch verwendet.")
+    format!("{name} liegt im Papierkorb, wird aber noch verwendet.")
 }
 
-pub fn r88(kennung: &str) -> String {
-    format!("Herkunftsangabe zu {kennung}: Den Datensatz gibt es nicht.")
+pub fn r88() -> String {
+    "Eine Herkunftsangabe gehört zu keinem Eintrag mehr.".into()
 }
 
-pub fn r88_hand(kennung: &str) -> String {
-    format!("Herkunftsangabe zu {kennung}: Handeingaben sind immer bestätigt.")
+pub fn r88_hand(name: &str) -> String {
+    format!("Herkunft von {name}: Handeingaben sind immer bestätigt.")
 }
 
 pub fn r89(name: &str, stand: &str) -> String {
@@ -161,10 +177,11 @@ pub fn r92(stand: u32, eigener: &str) -> String {
     format!("Firmenkatalog Stand {stand} ist verfügbar; das Projekt rechnet mit Stand {eigener}.")
 }
 
-pub fn r93(operation: &str, grund: &str) -> String {
-    format!("Änderung {operation} abgelehnt: {grund}.")
+/// `vorgang`: Anzeigename (`Op::bezeichnung`), nie der Operationsname.
+pub fn r93(vorgang: &str, grund: &str) -> String {
+    format!("Änderung „{vorgang}“ abgelehnt: {grund}.")
 }
 
 pub fn r99(typ: &str, baustoff: &str) -> String {
-    format!("{typ}, Schicht {baustoff}: Die gewählte Bauleistung gibt es nicht (mehr); es gilt die Regel.")
+    format!("{typ}, Schicht {baustoff}: Die gewählte Bauleistung gibt es nicht (mehr); es gilt die Zuordnung nach Baustoff und Dicke.")
 }

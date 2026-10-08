@@ -2,6 +2,7 @@
 //! darunter „Geschosse“ (E14), rechts „Ansichten“ (3D, Grundriss, Schnitt und vier Ansichten) und darunter,
 //! solange ein Bauteil gewählt ist, „Eigenschaften“.
 
+use crate::meldung::Meldung;
 use crate::type_look::TypeLook;
 use sk_model::{RefSide, StoreyId};
 use sk_paint::{Canvas, Path, Rgba};
@@ -248,14 +249,14 @@ pub struct FieldRow {
 impl FieldRow {
     /// Prüft eine Eingabe in cm (Paneel „Geschosse“: in m); `Ok` mit dem Wert
     /// in mm (auf 1 mm gerundet).
-    pub fn parse(&self, text: &str) -> Result<f64, String> {
+    pub fn parse(&self, text: &str) -> Result<f64, Meldung> {
         let t = text.trim().replace(',', ".");
         if t.is_empty() {
-            return Err("Zahl fehlt".into());
+            return Err(Meldung::satz("Zahl fehlt"));
         }
-        let n: f64 = t.parse().map_err(|_| "keine Zahl".to_string())?;
+        let n: f64 = t.parse().map_err(|_| Meldung::satz("keine Zahl"))?;
         if !n.is_finite() {
-            return Err("keine Zahl".into());
+            return Err(Meldung::satz("keine Zahl"));
         }
         let per = if self.field.in_metres() { 1000.0 } else { 10.0 };
         let mm = (n * per).round() + 0.0;
@@ -265,13 +266,13 @@ impl FieldRow {
         let f = self.field;
         if mm < self.min - 1e-6 {
             return Err(if self.zero {
-                format!("0 oder mindestens {}", f.show(self.min))
+                Meldung::mit("0 oder mindestens {}", &[&f.show(self.min)])
             } else {
-                format!("mindestens {}", f.show(self.min))
+                Meldung::mit("mindestens {}", &[&f.show(self.min)])
             });
         }
         if mm > self.max + 1e-6 {
-            return Err(format!("höchstens {}", f.show(self.max)));
+            return Err(Meldung::mit("höchstens {}", &[&f.show(self.max)]));
         }
         Ok(mm)
     }
@@ -397,7 +398,7 @@ pub struct Edit {
     caret: usize,
     anchor: usize,
     /// Grund, warum die Eingabe nicht gilt (unter dem Feld).
-    pub error: Option<String>,
+    pub error: Option<Meldung>,
     /// Wert beim Beginn; Esc stellt ihn im Dialog wieder her (dort gilt jede
     /// gültige Taste sofort).
     orig: f64,
@@ -760,7 +761,7 @@ enum Row {
     /// Bezeichnung links, Zahlenfeld rechts.
     Field(Field, &'static str),
     /// Grund einer ungültigen Eingabe, in `field_invalid`.
-    Error(String),
+    Error(Meldung),
     Separator,
     Hint(&'static str),
     /// Schloss und „Gesperrt · Entsperren im Baum“ (Paket 4).

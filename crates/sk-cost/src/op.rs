@@ -387,7 +387,7 @@ const KOPIE: [&str; 7] = [
 fn abgelehnt(op: &Op, grund: &str) -> Vec<Befund> {
     vec![Befund::fehler(
         93,
-        befund::r93(op.name(), grund),
+        befund::r93(&op.bezeichnung(), grund),
         befund::Ort::Datei,
     )]
 }
@@ -546,19 +546,29 @@ impl Arbeit<'_> {
             let b = match s.abschnitt.name {
                 "article" => Befund::fehler(
                     76,
-                    befund::r76(s.text("name").unwrap_or(""), feld, &wert),
+                    befund::r76(
+                        s.text("name").unwrap_or(crate::wort::EIN_EINTRAG),
+                        feld,
+                        &wert,
+                    ),
                     ort,
                 ),
                 "service" => Befund::fehler(
                     79,
-                    befund::r79(s.text("short").unwrap_or(""), feld, &wert),
+                    befund::r79(
+                        s.text("short").unwrap_or(crate::wort::EIN_EINTRAG),
+                        feld,
+                        &wert,
+                    ),
                     ort,
                 ),
                 a => Befund::fehler(72, befund::r72(0, a, &e.grund), ort),
             };
             return Err(vec![b]);
         }
-        let id = s.kennung().ok_or_else(|| abgelehnt(op, "Kennung fehlt"))?;
+        let id = s
+            .kennung()
+            .ok_or_else(|| abgelehnt(op, "der Eintrag ist unvollständig"))?;
         self.put(s.abschnitt.name, &id, line);
         Ok(id)
     }
@@ -764,13 +774,10 @@ impl Arbeit<'_> {
             }
             Op::FirmenwertSetzen { schluessel, wert } => {
                 let Some((lo, hi)) = rate_bereich(schluessel) else {
-                    return Err(abgelehnt(
-                        op,
-                        &format!("unbekannter Firmenwert {schluessel}"),
-                    ));
+                    return Err(abgelehnt(op, "diesen Firmenwert gibt es nicht"));
                 };
                 if *wert < Dez::ganz(lo) || *wert > Dez::ganz(hi) {
-                    let g = format!("{} liegt nicht in {lo}–{hi}", komma(*wert));
+                    let g = format!("{} liegt nicht zwischen {lo} und {hi}", komma(*wert));
                     return Err(abgelehnt(op, &g));
                 }
                 let alt = self
@@ -806,7 +813,7 @@ impl Arbeit<'_> {
                     "lot" => g.and_then(|g| k.los(g)).map(|l| l.satz.clone()),
                     _ => return Err(abgelehnt(op, "nur Artikel, Bauleistung oder Los")),
                 };
-                let mut s = s.ok_or_else(|| abgelehnt(op, "den Satz gibt es nicht"))?;
+                let mut s = s.ok_or_else(|| abgelehnt(op, "den Eintrag gibt es nicht"))?;
                 s.setzen("retired", Some(Wert::Flag(aus)));
                 let rec = s.abschnitt.name;
                 let id = self.satz_schreiben(&s, op)?;
@@ -836,7 +843,7 @@ impl Arbeit<'_> {
                         .map(|r| r.line.clone());
                     let sec = satz::abschnitt(id.abschnitt)
                         .map(|a| a.name)
-                        .ok_or_else(|| abgelehnt(op, "unbekannter Abschnitt"))?;
+                        .ok_or_else(|| abgelehnt(op, "diese Art von Eintrag gibt es nicht"))?;
                     match neu {
                         Some(l) => self.put(sec, &id.kennung, l),
                         None => self.remove(sec, &id.kennung),
@@ -1164,10 +1171,10 @@ pub fn planen(
     let nachher = a.katalog();
     let neu = neue_fehler(&start.befunde, &nachher.befunde);
     if !neu.is_empty() {
-        let name = ops.first().map_or("", |o| o.name());
+        let name = ops.first().map_or_else(String::new, Op::bezeichnung);
         let mut b = vec![Befund::fehler(
             93,
-            befund::r93(name, &neu[0].satz),
+            befund::r93(&name, &neu[0].satz),
             befund::Ort::Datei,
         )];
         b.extend(neu);
@@ -1419,12 +1426,12 @@ pub fn firma_anwenden(
     let fehler = |g: &str| {
         vec![Befund::fehler(
             93,
-            befund::r93(ops.first().map_or("", |o| o.name()), g),
+            befund::r93(&ops.first().map_or_else(String::new, Op::bezeichnung), g),
             befund::Ort::Datei,
         )]
     };
-    let mut lib = lies(text).map_err(|e| fehler(&format!("Firmenkatalog nicht lesbar ({e})")))?;
-    let alt = lies(geladen).map_err(|e| fehler(&format!("geladener Stand nicht lesbar ({e})")))?;
+    let mut lib = lies(text).map_err(|_| fehler("der Firmenkatalog ist nicht lesbar"))?;
+    let alt = lies(geladen).map_err(|_| fehler("der geladene Stand ist nicht lesbar"))?;
     for op in ops {
         if op.nur_admin() && rolle != Rolle::Admin {
             return Err(abgelehnt(op, "nur in der Verwaltung"));
@@ -1506,7 +1513,7 @@ pub fn firma_anwenden(
     for x in &a.aend {
         if zeile_in(&lib, &x.satz) != zeile_in(&alt, &x.satz) {
             return Err(fehler(
-                "Firmenkatalog wurde inzwischen geändert · neu laden",
+                "der Firmenkatalog wurde inzwischen an einem anderen Platz geändert",
             ));
         }
     }
@@ -1716,7 +1723,7 @@ mod tests {
         assert_eq!(e[0].regel, 93);
         assert!(
             e[0].satz
-                .starts_with("Änderung firmenwert_setzen abgelehnt:"),
+                .starts_with("Änderung „Lohn 900,00 €/h“ abgelehnt:"),
             "{e:?}"
         );
         assert_eq!(vorher.0, szo::write(&m));
@@ -1734,7 +1741,7 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(e[0].regel, 76, "{e:?}");
-        assert!(e[0].satz.contains("price ist ungültig"), "{e:?}");
+        assert!(e[0].satz.contains("Preis ist ungültig"), "{e:?}");
         // Nutzer darf keine Bauleistung anlegen
         let e = pruefen(
             &m,
@@ -2040,7 +2047,7 @@ mod tests {
         let e = firma_anwenden(&datei, &geladen, Rolle::Admin, &hand(), &[lohn(65)]).unwrap_err();
         assert!(
             e[0].satz
-                .contains("Firmenkatalog wurde inzwischen geändert"),
+                .contains("Firmenkatalog wurde inzwischen an einem anderen Platz geändert"),
             "{e:?}"
         );
         // Fremdes [log] und höherer Stand nur in der Datei
@@ -2072,7 +2079,11 @@ mod tests {
         assert!(f.text.contains("[rate] key=vat num=7\n"));
         assert_eq!((f.stand_vorher, f.stand), (1, 2));
         let e = firma_anwenden(&datei, &leer, Rolle::Admin, &hand(), &[lohn(70)]).unwrap_err();
-        assert!(e[0].satz.contains("inzwischen geändert"), "{e:?}");
+        assert!(
+            e[0].satz
+                .contains("inzwischen an einem anderen Platz geändert"),
+            "{e:?}"
+        );
     }
 
     /// Regel 92: Übernehmen bringt die Firmenzeile ins Projekt; sind danach

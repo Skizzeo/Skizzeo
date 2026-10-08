@@ -24,6 +24,12 @@ const LEER: f32 = 38.0;
 const FUSS: f32 = 30.0;
 /// Höchstens so viele Einträge auf einmal; mehr rollen.
 const SICHTBAR: usize = 10;
+/// Platzhalter im Suchfeld.
+const SUCHE: &str = "Suche …";
+/// Wenn die Suche nichts findet.
+const KEINE: &str = "Keine Bauleistung passt zur Suche.";
+/// Fußzeile des Blatts.
+const FUSS_TEXT: &str = "Enter oder Klick ordnet zu · Esc schließt";
 
 /// Ergebnis an die Kostenansicht.
 #[derive(Clone, Debug, PartialEq)]
@@ -101,6 +107,29 @@ impl WahlBlatt {
         self.titel
             .strip_prefix("Bauleistung für ")
             .unwrap_or(&self.titel)
+    }
+
+    /// Alle Sätze des Blatts, auch aufgeklappt und mit „kommt dann zu“
+    /// (für `nutzersaetze_sauber`).
+    #[cfg(test)]
+    pub fn saetze(&self) -> Vec<String> {
+        let mut out = vec![
+            self.titel.clone(),
+            SUCHE.into(),
+            KEINE.into(),
+            FUSS_TEXT.into(),
+        ];
+        if let Some((fett, leise)) = self.auswahl.leer_text() {
+            out.extend([fett, leise]);
+        }
+        out.extend(self.auswahl.weitere_text());
+        for w in self.auswahl.alle() {
+            out.push(w.kurz.clone());
+            if let Some(g) = &w.fremd {
+                out.push(format!("kommt dann zu {g}"));
+            }
+        }
+        out
     }
 
     /// Der Eintrag zur Bauleistung `g`.
@@ -490,7 +519,7 @@ impl WahlBlatt {
         let tx = sx + 8.0 * s;
         let text = &self.suche.text;
         if text.is_empty() {
-            f.draw(c, "Suche …", px_e, tx, base, u.sheet_hint);
+            f.draw(c, SUCHE, px_e, tx, base, u.sheet_hint);
         } else {
             let (a, b) = self.suche.selection();
             if a < b {
@@ -514,7 +543,7 @@ impl WahlBlatt {
         if sichtbar.is_empty() {
             f.draw(
                 c,
-                "Keine Bauleistung passt zur Suche.",
+                KEINE,
                 px_e,
                 x0,
                 (ly + (EINTRAG * s + f.cap_height(px_e)) * 0.5).round(),
@@ -570,7 +599,7 @@ impl WahlBlatt {
         c.fill_rect(x0, fy, x1 - x0, s.max(1.0), u.sheet_rule);
         f.draw(
             c,
-            "Enter oder Klick ordnet zu · Esc schließt",
+            FUSS_TEXT,
             10.0 * s,
             x0,
             (fy + 19.0 * s).round(),

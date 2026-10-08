@@ -501,7 +501,7 @@ fn bauleistung_waehlen() {
     // Bedienbarkeit 8.6: Hinweis nur beim Wechsel des Gewerks
     if let Some(t) = &hinweis {
         assert!(
-            t.contains(" steht jetzt unter ") && t.ends_with(")."),
+            t.contains(" gehört jetzt zum Gewerk ") && t.ends_with(")."),
             "{t}"
         );
     }
@@ -558,7 +558,10 @@ fn lohnfeld_karte_und_kachel() {
     let (x, y) = ((x + w * 0.5) as f64, (y + h * 0.5) as f64);
     let mut p = Picking::default();
     v.mouse_move(&t, &fonts, &mut p, x, y);
-    assert_eq!(v.tip_at(&t, &fonts, x, y), None);
+    assert_eq!(
+        v.tip_at(&t, &fonts, x, y).as_deref(),
+        Some("Stundenlohn ändern")
+    );
     assert_eq!(
         v.mouse_down(&t, &fonts, &mut p, (x, y), mods),
         Some(ListOut::Repaint)

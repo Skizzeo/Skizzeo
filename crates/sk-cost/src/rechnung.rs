@@ -260,7 +260,7 @@ fn fingerabdruck(m: &Model, typname: &str, layers: &[MaterialLayer]) -> u64 {
 /// Name des Baustoffs.
 fn baustoff_name(m: &Model, l: &MaterialLayer) -> String {
     m.material(l.material)
-        .map_or("?".into(), |x| x.name.clone())
+        .map_or(crate::wort::EIN_EINTRAG.into(), |x| x.name.clone())
 }
 
 /// Dicke für Befundsätze: „17,5 mm“.
@@ -392,7 +392,7 @@ pub(crate) fn stoff_teile(
                     },
                     None => match mat.and_then(zuordnung::richtpreis) {
                         Some((p, e)) => {
-                            let name = mat.map_or("?", |x| x.name.as_str());
+                            let name = mat.map_or(crate::wort::EIN_EINTRAG, |x| x.name.as_str());
                             befunde.push(Befund::hinweis(
                                 78,
                                 format!(
@@ -406,7 +406,7 @@ pub(crate) fn stoff_teile(
                         }
                         None => {
                             fehlt = true;
-                            let name = mat.map_or("?", |x| x.name.as_str());
+                            let name = mat.map_or(crate::wort::EIN_EINTRAG, |x| x.name.as_str());
                             befunde.push(Befund::warnung(
                                 82,
                                 format!(
@@ -977,7 +977,9 @@ pub fn kosten_mit(
                     .materials()
                     .iter()
                     .find(|(_, x)| x.guid == *b)
-                    .map_or("?".to_string(), |(_, x)| x.name.clone());
+                    .map_or(crate::wort::EIN_EINTRAG.to_string(), |(_, x)| {
+                        x.name.clone()
+                    });
                 (
                     format!("{name} · geschätzt, nur Material"),
                     String::new(),

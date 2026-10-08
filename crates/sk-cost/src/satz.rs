@@ -696,16 +696,23 @@ fn tag_gueltig(s: &str) -> bool {
 
 /// Liest einen Wert nach seiner Art.
 pub fn wert_lesen(feld: &'static Feld, v: &str) -> Result<Wert, Ungueltig> {
+    wert_lesen_in(None, feld, v)
+}
+
+/// Wie [`wert_lesen`]; der Grund nennt das Feld mit seinem Wort im
+/// Abschnitt `abschnitt` (Sätze für Menschen, nie der Dateischlüssel).
+fn wert_lesen_in(abschnitt: Option<&str>, feld: &'static Feld, v: &str) -> Result<Wert, Ungueltig> {
     let n = feld.name;
-    let bad = |was: &str| ungueltig(n, format!("{n} ist ungültig ({v}; erwartet {was})"));
+    let w = crate::wort::feld(abschnitt, n);
+    let bad = |was: &str| ungueltig(n, format!("{w} ist ungültig ({v}; erwartet {was})"));
     Ok(match feld.art {
         Art::Guid => Wert::Guid(Guid::from_ifc(v).ok_or_else(|| bad("Guid"))?),
         Art::Text { max, zeile } => {
             if v.chars().count() > max {
-                return Err(ungueltig(n, format!("{n} ist länger als {max} Zeichen")));
+                return Err(ungueltig(n, format!("{w} ist länger als {max} Zeichen")));
             }
             if zeile && v.contains('\n') {
-                return Err(ungueltig(n, format!("{n} hat einen Zeilenumbruch")));
+                return Err(ungueltig(n, format!("{w} hat einen Zeilenumbruch")));
             }
             Wert::Text(v.to_string())
         }
@@ -736,14 +743,14 @@ pub fn wert_lesen(feld: &'static Feld, v: &str) -> Result<Wert, Ungueltig> {
         }
         Art::Wort(w) => {
             if !w.contains(&v) {
-                return Err(bad(&w.join(" | ")));
+                return Err(bad("ein bekanntes Wort"));
             }
             Wert::Wort(v.to_string())
         }
         Art::Woerter(w) => {
             let l: Vec<String> = v.split(',').map(str::to_string).collect();
             if l.iter().any(|x| !w.contains(&x.as_str())) {
-                return Err(bad(&w.join(" | ")));
+                return Err(bad("bekannte Wörter"));
             }
             Wert::Woerter(l)
         }
@@ -784,13 +791,13 @@ pub fn wert_lesen(feld: &'static Feld, v: &str) -> Result<Wert, Ungueltig> {
         }
         Art::Hex64 => {
             if v.len() != 64 || !v.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return Err(bad("64 Hexziffern"));
+                return Err(bad("einen Prüfwert"));
             }
             Wert::Text(v.to_string())
         }
         Art::Schluessel => {
             if v.is_empty() || zeile::braucht_text(v) {
-                return Err(bad("Kennung ohne Leerzeichen"));
+                return Err(bad("ein Wort ohne Leerzeichen"));
             }
             Wert::Text(v.to_string())
         }
@@ -807,7 +814,7 @@ impl Satz {
         for (k, v) in &z.paare {
             match a.feld(k) {
                 Some(f) if !werte.iter().any(|(n, _)| *n == f.name) => {
-                    let w = match wert_lesen(f, v) {
+                    let w = match wert_lesen_in(Some(a.name), f, v) {
                         Err(_) if f.weich => Wert::Roh(v.clone()),
                         w => w?,
                     };
@@ -818,7 +825,8 @@ impl Satz {
         }
         for f in a.felder.iter().filter(|f| f.pflicht) {
             if !werte.iter().any(|(n, _)| *n == f.name) {
-                return Err(ungueltig(f.name, format!("Pflichtfeld {} fehlt", f.name)));
+                let w = crate::wort::feld(Some(a.name), f.name);
+                return Err(ungueltig(f.name, format!("{w} fehlt")));
             }
         }
         werte.sort_by_key(|(n, _)| a.felder.iter().position(|f| f.name == *n));
@@ -972,7 +980,7 @@ mod tests {
         let e = lies("[article] guid=1S7bUW0010080100000001 name=\"x\" unit=Banane").unwrap_err();
         assert_eq!(e.feld, Some("unit"));
         let e = lies("[article] guid=1S7bUW0010080100000001 unit=m2").unwrap_err();
-        assert!(e.grund.contains("Pflichtfeld name"), "{e:?}");
+        assert_eq!(e.grund, "Name fehlt", "{e:?}");
         let e = lies("[article] guid=1S7bUW0010080100000001 name=\"x\" unit=m2 price=1.23456")
             .unwrap_err();
         assert_eq!(e.feld, Some("price"));

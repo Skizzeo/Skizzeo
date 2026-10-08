@@ -17,7 +17,7 @@ pub struct MeasureInput {
     pub fields: [String; 2],
     pub active: usize,
     /// Grund, warum der Wert nicht gilt (für die Statuszeile); Rand rot.
-    pub error: Option<String>,
+    pub error: Option<crate::meldung::Meldung>,
     kinds: [Option<MeasureKind>; 2],
 }
 
@@ -66,10 +66,11 @@ impl MeasureInput {
     }
 
     /// Wert eines Felds; `None` bei leerem Feld, `Err` bei falschem Inhalt.
-    pub fn value(&self, i: usize) -> Option<Result<f64, String>> {
+    pub fn value(&self, i: usize) -> Option<Result<f64, crate::meldung::Meldung>> {
         let k = self.kinds[i]?;
         let t = &self.fields[i];
-        (!t.trim().is_empty()).then(|| parse_measure(t, k).map_err(|e| e.message().to_string()))
+        (!t.trim().is_empty())
+            .then(|| parse_measure(t, k).map_err(|e| crate::meldung::Meldung::satz(e.message())))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -83,7 +84,9 @@ impl MeasureInput {
         // Ein Winkel ohne Länge gilt nicht
         if self.error.is_none() && self.fields[0].trim().is_empty() && !self.is_empty() {
             if let Some(k) = self.kinds[0] {
-                self.error = Some(crate::ui::MeasureError(k).message().into());
+                self.error = Some(crate::meldung::Meldung::satz(
+                    crate::ui::MeasureError(k).message(),
+                ));
             }
         }
     }
