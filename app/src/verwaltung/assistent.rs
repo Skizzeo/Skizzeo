@@ -1195,40 +1195,46 @@ impl Verwaltung {
                 label(c, regular, &a.rechnung, 12.0 * s, fr.x, y, u.text_dim);
             }
         }
-        // Zum Vergleich: Artikel desselben Baustoffs mit Preis
-        let mat =
+        // Zum Vergleich: der gewählte Artikel mit seinem bisherigen Preis,
+        // sonst Artikel desselben Baustoffs mit Preis
+        let wahl = |art: &str| {
             x.a.schritte
                 .iter()
-                .filter(|q| matches!(&q.typ, Some(Feldart::Wahl(a)) if a == "material"))
+                .filter(|q| matches!(&q.typ, Some(Feldart::Wahl(a)) if a == art))
                 .find_map(|q| x.antworten.get(&q.key))
-                .and_then(|a| Guid::from_ifc(&a.wert));
-        let Some(mat) = mat else {
+                .and_then(|a| Guid::from_ifc(&a.wert))
+        };
+        let (mut v, kopf): (Vec<_>, _) = if let Some(g) = wahl("article") {
+            let v = self.jetzt.artikel.iter().filter(|a| a.guid == g).collect();
+            let kopf = if self.projekt {
+                "Bisher in diesem Haus"
+            } else {
+                "Bisher im Firmenkatalog"
+            };
+            (v, kopf)
+        } else if let Some(mat) = wahl("material") {
+            let v = self
+                .jetzt
+                .artikel
+                .iter()
+                .filter(|a| a.mat == Some(mat))
+                .collect();
+            let kopf = if self.projekt {
+                "Zum Vergleich in diesem Haus"
+            } else {
+                "Zum Vergleich im Firmenkatalog"
+            };
+            (v, kopf)
+        } else {
             return;
         };
-        let mut v: Vec<_> = self
-            .jetzt
-            .artikel
-            .iter()
-            .filter(|a| a.mat == Some(mat) && !a.retired && a.preis.is_some())
-            .collect();
+        v.retain(|a| !a.retired && a.preis.is_some());
         v.sort_by_key(|a| a.t);
         if v.is_empty() {
             return;
         }
         y += 40.0 * s;
-        label(
-            c,
-            bold,
-            if self.projekt {
-                "Zum Vergleich in diesem Haus"
-            } else {
-                "Zum Vergleich im Firmenkatalog"
-            },
-            12.0 * s,
-            fr.x,
-            y,
-            u.text_dim,
-        );
+        label(c, bold, kopf, 12.0 * s, fr.x, y, u.text_dim);
         let r = self.a_rect(w);
         let rechts = r.x + r.w - 28.0 * s;
         for a in v.iter().take(4) {
