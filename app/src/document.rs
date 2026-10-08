@@ -71,8 +71,16 @@ impl Document {
         if saetze.is_empty() {
             return;
         }
-        self.fuer_neue
-            .retain(|(s, _)| !s.iter().any(|x| saetze.contains(x)));
+        // Ein früherer Eintrag behält die übrigen Sätze (Bedienbarkeit
+        // 10.2); sein Text nennt dann alte Werte und entfällt (leer)
+        for (s, text) in &mut self.fuer_neue {
+            let vorher = s.len();
+            s.retain(|x| !saetze.contains(x));
+            if s.len() != vorher {
+                text.clear();
+            }
+        }
+        self.fuer_neue.retain(|(s, _)| !s.is_empty());
         self.fuer_neue.push((saetze.to_vec(), wert.to_string()));
     }
 
@@ -131,9 +139,10 @@ pub fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 pub fn load(path: &Path) -> Result<szo::Loaded, Meldung> {
     let bytes = std::fs::read(path)
         .map_err(|e| Meldung::aus_io("Projekt nicht geöffnet", "Projekt öffnen", path, &e))?;
-    let name = path
-        .file_name()
-        .map_or_else(|| "Die Datei".into(), |n| n.to_string_lossy().into_owned());
+    let name = path.file_name().map_or_else(
+        || "Diese Datei".into(),
+        |n| n.to_string_lossy().into_owned(),
+    );
     let kaputt = |grund: &str| {
         crate::meldung::protokoll(&format!("Projekt öffnen: {} – {grund}", path.display()));
     };

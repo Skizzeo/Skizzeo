@@ -69,16 +69,18 @@ impl Meldung {
             datei.display(),
             e.kind()
         ));
-        let name = datei
-            .file_name()
-            .map_or_else(|| "Die Datei".into(), |n| n.to_string_lossy().into_owned());
+        // Ohne Namen „Diese Datei“ am Satzanfang, sonst „diese Datei“
+        // (Bedienbarkeit 10.1)
+        let name = datei.file_name().map(|n| n.to_string_lossy().into_owned());
+        let vorn = name.clone().unwrap_or_else(|| "Diese Datei".into());
+        let mitte = name.unwrap_or_else(|| "diese Datei".into());
         let grund = match io_art(e) {
             IoArt::Belegt => Meldung::mit(
                 "{} ist gerade in einem anderen Programm geöffnet. Dort schließen, dann nochmal versuchen.",
-                &[&name],
+                &[&vorn],
             ),
-            IoArt::Rechte => Meldung::mit("Keine Schreibrechte für {}.", &[&name]),
-            IoArt::Fehlt => Meldung::mit("{} wurde nicht gefunden.", &[&name]),
+            IoArt::Rechte => Meldung::mit("Keine Schreibrechte für {}.", &[&mitte]),
+            IoArt::Fehlt => Meldung::mit("{} wurde nicht gefunden.", &[&vorn]),
             IoArt::Voll => Meldung::satz("Auf dem Laufwerk ist kein Platz mehr."),
             IoArt::Netz => {
                 Meldung::satz("Das Netzlaufwerk ist gerade nicht erreichbar. Nochmal versuchen.")
@@ -293,8 +295,25 @@ mod tests {
             m(io::Error::from_raw_os_error(53)),
             "Firmenkatalog nicht gespeichert: Das Netzlaufwerk ist gerade nicht erreichbar. Nochmal versuchen."
         );
+        // Ohne Dateinamen (Bedienbarkeit 10.1)
+        let ohne = |e: io::Error| {
+            Meldung::aus_io(
+                "Projekt nicht gespeichert",
+                "Projekt speichern",
+                Path::new("/"),
+                &e,
+            )
+        };
+        assert_eq!(
+            ohne(io::Error::from(io::ErrorKind::PermissionDenied)),
+            "Projekt nicht gespeichert: Keine Schreibrechte für diese Datei."
+        );
+        assert_eq!(
+            ohne(io::Error::from(io::ErrorKind::NotFound)),
+            "Projekt nicht gespeichert: Diese Datei wurde nicht gefunden."
+        );
         let log = protokoll_im_test();
-        assert_eq!(log.len(), 4);
+        assert_eq!(log.len(), 6);
         assert!(
             log[0].contains("/irgendwo/tief") && log[0].contains("kaputt"),
             "{log:?}"

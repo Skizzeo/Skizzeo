@@ -692,17 +692,25 @@ pub fn save_question(doc: &Document, saved: Option<(u8, u8)>) -> (String, Option
         .into_iter()
         .collect();
     // Was schon für neue Häuser gilt, bleibt (Bedienbarkeit 4.5)
+    // Gezählt werden verschiedene Sätze; ein Eintrag ohne Text (Teil eines
+    // früheren Sammeleintrags) wird nur gezählt (Bedienbarkeit 10.2)
+    let mut saetze: Vec<&sk_cost::SatzId> = doc.fuer_neue.iter().flat_map(|(s, _)| s).collect();
+    saetze.sort_by(|a, b| (a.abschnitt, &a.kennung).cmp(&(b.abschnitt, &b.kennung)));
+    saetze.dedup();
+    let mit_text = doc.fuer_neue.iter().all(|(_, t)| !t.is_empty());
     match doc.fuer_neue.as_slice() {
         [] => {}
-        [(_, a)] => zeilen.push(format!("Für neue Häuser gilt schon {a}.")),
-        [(_, a), (_, b)] => zeilen.push(format!("Für neue Häuser gilt schon {a} und {b}.")),
-        v => zeilen.push(format!(
+        [(_, a)] if mit_text => zeilen.push(format!("Für neue Häuser gilt schon {a}.")),
+        [(_, a), (_, b)] if mit_text => {
+            zeilen.push(format!("Für neue Häuser gilt schon {a} und {b}."))
+        }
+        _ => zeilen.push(format!(
             "{} Änderungen für neue Häuser sind schon gespeichert und bleiben.",
-            v.len()
+            saetze.len()
         )),
     }
-    if matches!(doc.fuer_neue.len(), 1 | 2) {
-        zeilen.push("Das bleibt, auch wenn du dieses Haus nicht speicherst.".into());
+    if mit_text && matches!(doc.fuer_neue.len(), 1 | 2) {
+        zeilen.push("Das bleibt, auch wenn dieses Haus nicht gespeichert wird.".into());
     }
     let detail = (!zeilen.is_empty()).then(|| zeilen.join("\n"));
     (q, detail)
@@ -942,7 +950,7 @@ mod tests {
             Some(
                 "Ohne Speichern gehen die Änderungen seit 10:12 verloren.\n\
                  Für neue Häuser gilt schon Lohn 65,00 €/h.\n\
-                 Das bleibt, auch wenn du dieses Haus nicht speicherst."
+                 Das bleibt, auch wenn dieses Haus nicht gespeichert wird."
             )
         );
         let dlg = SaveDialog::new(String::new(), d);
@@ -957,6 +965,20 @@ mod tests {
         );
         doc.mark_saved(std::path::PathBuf::from("Haus.szo"), 1);
         assert_eq!(save_question(&doc, None).1, None);
+        // Erst Planstein und Mörtel zusammen, dann nur der Planstein: der
+        // Mörtel bleibt gezählt, der alte Sammeltext entfällt (10.2)
+        let zwei = vec![
+            sk_cost::SatzId::neu("article", "planstein"),
+            sk_cost::SatzId::neu("article", "moertel"),
+        ];
+        doc.fuer_neue_merken(&zwei, "Planstein 20,50 €/m² und Mörtel 0,90 €/kg");
+        doc.fuer_neue_merken(&satz("article", "planstein"), "Planstein 21,00 €/m²");
+        assert_eq!(doc.fuer_neue.len(), 2);
+        let (_, d) = save_question(&doc, None);
+        assert_eq!(
+            d.as_deref(),
+            Some("2 Änderungen für neue Häuser sind schon gespeichert und bleiben.")
+        );
     }
 
     #[test]
