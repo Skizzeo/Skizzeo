@@ -21,7 +21,7 @@ pub const ORDNER: &str = "referenzhaeuser";
 pub const IN_DER_ZEILE: usize = 5;
 
 /// Tooltip an „€/m² Grundfläche“ (verwaltung.md §9, Kosten A3).
-pub const FLAECHE_TIPP: &str = "Grundfläche\nSumme der Grundflächen aller Geschosse, gemessen außen an der tragenden Wand,\nohne Dämmung und Verblender. Je Geschoss zählen seine eigenen Außenwände,\neine Dachterrasse also nicht.\nNicht die BGF nach DIN 277, also nicht mit BKI-Kennwerten vergleichen.\nWohnfläche folgt, sobald es Räume gibt.";
+pub const FLAECHE_TIPP: &str = "Grundfläche\nSumme der Grundflächen aller Geschosse, gemessen außen an der tragenden Wand, ohne Dämmung und Verblender.\nJe Geschoss zählen seine eigenen Außenwände, eine Dachterrasse also nicht.\nNicht die BGF nach DIN 277, also nicht mit BKI-Kennwerten vergleichen.\nWohnfläche folgt, sobald es Räume gibt.";
 
 /// Ein Referenzhaus mit seiner Mengenliste.
 pub struct Haus {
