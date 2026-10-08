@@ -985,3 +985,89 @@ fn perf_ausblenden() {
         }
     }
 }
+
+/// KA-0 Nr. 30: Kosten live am großen Prüfhaus aus `perf_mengenliste`.
+/// Misst je dreimal und nimmt den Median; der Test schlägt fehl, wenn ein
+/// Budget nicht gehalten wird (nur im Release-Lauf aussagekräftig).
+#[test]
+#[ignore]
+fn perf_kosten() {
+    use sk_cost::lesen;
+    println!();
+    println!(
+        "{:<34} {:>9} {:>9} {:>9} {:>9}",
+        "Modell (gestapelt)", "Mengen", "Kosten", "kosten_mit", "Loslassen"
+    );
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(|a, b| a.total_cmp(b));
+        v[v.len() / 2]
+    };
+    for (name, houses, storeys, annexes, budget) in [
+        ("Referenz: 4 Geschosse + 2 Nebengeb.", 1, 4u8, 2, false),
+        ("Groß: 2 Häuser à 4 G. + 2 Nebengeb.", 2, 4, 2, true),
+    ] {
+        let mut s = reference_stacked(houses, storeys, annexes);
+        let kat = lesen::katalog(s.model(), None);
+        let umfang = sk_cost::Umfang::projekt();
+        let (mut mengen, mut kalt, mut warm, mut los) = (vec![], vec![], vec![], vec![]);
+        for _ in 0..3 {
+            mengen.push(time(10, || {
+                std::hint::black_box(sk_model::qto::schedule(s.model()));
+            }));
+            let sched = sk_model::qto::schedule(s.model());
+            kalt.push(time(10, || {
+                std::hint::black_box(lesen::kosten(s.model(), &sched, &kat, &umfang));
+            }));
+            // Speicher füllen, dann eine Wand verschieben und loslassen
+            let (_, mut sp) = lesen::kosten_mit(
+                sk_cost::Kostenspeicher::default(),
+                s.model(),
+                &sched,
+                &kat,
+                &umfang,
+            );
+            let run = s.model().runs().ids().next().unwrap();
+            let orig = s.chain(run).unwrap().clone();
+            let mut flip = false;
+            let mut w = 0.0;
+            let mut l = 0.0;
+            let reps = 10;
+            for _ in 0..reps {
+                flip = !flip;
+                let moved = orig
+                    .with_segment_moved(0, if flip { -100.0 } else { -200.0 })
+                    .unwrap_or_else(|| orig.clone());
+                s.begin("Wand verschieben");
+                s.set_run_points(run, &moved.points);
+                s.commit();
+                let t = Instant::now();
+                let sched = sk_model::qto::schedule(s.model());
+                let t2 = Instant::now();
+                let (blatt, neu) = lesen::kosten_mit(sp, s.model(), &sched, &kat, &umfang);
+                w += t2.elapsed().as_secs_f64() * 1000.0;
+                l += t.elapsed().as_secs_f64() * 1000.0;
+                sp = neu;
+                std::hint::black_box(blatt);
+            }
+            warm.push(w / reps as f64);
+            los.push(l / reps as f64);
+        }
+        let (m, k, w, l) = (median(mengen), median(kalt), median(warm), median(los));
+        println!("{name:<34} {m:>9.3} {k:>9.3} {w:>9.3} {l:>9.3}");
+        if budget && cfg!(not(debug_assertions)) {
+            assert!(
+                k < 3.0,
+                "{name}: kosten mit leerem Speicher {k:.3} ms ≥ 3 ms"
+            );
+            assert!(
+                w < 1.0,
+                "{name}: kosten_mit nach verschobener Wand {w:.3} ms ≥ 1 ms"
+            );
+        }
+    }
+    println!(
+        "Zeiten in ms, Median aus drei Läufen. Mengen = schedule(), Kosten = lesen::kosten mit \
+         leerem Speicher, kosten_mit = nach verschobener Wand mit gefülltem Speicher, Loslassen \
+         = schedule() + kosten_mit."
+    );
+}
