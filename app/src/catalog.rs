@@ -244,6 +244,26 @@ fn sperren(path: &Path) -> Result<(Sperre, Option<String>), String> {
     Ok((Sperre { path: lock, inhalt }, hinweis))
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test: Schreiben scheitert nach der temporären Datei, vor dem
+    /// Umbenennen (die Abnahme prüft, dass die Firmendatei heil bleibt).
+    static SCHREIBFEHLER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn schreibfehler_im_test() -> std::io::Result<()> {
+    if SCHREIBFEHLER.with(|f| f.get()) {
+        return Err(std::io::Error::other("Schreibfehler (Test)"));
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn schreibfehler_im_test() -> std::io::Result<()> {
+    Ok(())
+}
+
 /// Schreibt atomar: erst eine temporäre Datei daneben, dann umbenennen
 /// (unter Windows `MoveFileExW` mit Ersetzen). Die temporäre Datei ist je
 /// Aufruf eine eigene: Schreiben zwei Plätze zugleich, benennt keiner die
@@ -254,6 +274,7 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     }
     let tmp = path.with_extension(format!("szk.{}.tmp", kennung()));
     let res = crate::document::write_synced(&tmp, text.as_bytes())
+        .and_then(|_| schreibfehler_im_test())
         .and_then(|_| std::fs::rename(&tmp, path));
     if res.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -1054,26 +1075,33 @@ mod abnahme_ka2c2 {
         }
     }
 
-    /// Schreibfehler mittendrin (die temporäre Datei lässt sich nicht
-    /// anlegen): Fehlermeldung, die Firmendatei ist bytegleich, keine Sperre
-    /// und keine temporäre Datei bleiben; danach geht es wieder.
+    /// Schreibfehler mittendrin (nach der temporären Datei, vor dem
+    /// Umbenennen; die temporäre Datei ist seit Review 3aj je Aufruf eine
+    /// eigene und lässt sich nicht mehr von außen blockieren): Fehlermeldung,
+    /// die Firmendatei ist bytegleich, keine Sperre und keine temporäre
+    /// Datei bleiben; danach geht es wieder.
     #[test]
     fn schreibfehler_laesst_die_datei_heil() {
         let d = dir("schreibfehler");
         let p = d.join(FILE_NAME);
         let (mut c, _) = Company::load(&p, true);
         let vorher = std::fs::read(&p).unwrap();
-        let tmp = p.with_extension("szk.tmp");
-        std::fs::create_dir_all(tmp.join("blockiert")).unwrap();
+        let tmp_da = || {
+            std::fs::read_dir(&d)
+                .unwrap()
+                .any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".tmp"))
+        };
+        SCHREIBFEHLER.with(|f| f.set(true));
         let e = c.fuer_firma(&h(), &[lohn(70)]).unwrap_err();
+        SCHREIBFEHLER.with(|f| f.set(false));
+        assert!(!tmp_da(), "keine temporäre Datei");
         assert!(e.contains("nicht gespeichert"), "{e}");
         assert_eq!(std::fs::read(&p).unwrap(), vorher, "Datei heil");
         assert!(!p.with_extension("szk.lock").exists(), "Sperre weg");
         assert_eq!(werte(&c, artikel(&c).0).1, Some(sk_cost::Dez::ganz(60)));
-        std::fs::remove_dir_all(&tmp).unwrap();
         let (n, _) = c.fuer_firma(&h(), &[lohn(70)]).unwrap();
         assert_eq!(n.stand, n.stand_vorher + 1);
-        assert!(!tmp.exists());
+        assert!(!tmp_da());
         assert_eq!(werte(&c, artikel(&c).0).1, Some(sk_cost::Dez::ganz(70)));
         let _ = SystemTime::now();
         let _ = std::fs::remove_dir_all(&d);
