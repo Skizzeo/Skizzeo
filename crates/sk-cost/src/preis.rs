@@ -215,6 +215,33 @@ pub fn preis_ops(k: &Katalog, a: &Aufbau, e: &Eingabe, stand: &str) -> Vec<Op> {
     ops
 }
 
+/// Operationen des Preisblatts für den Firmenkatalog `firma` (Regel 89):
+/// `preis_ops` füllt `BauleistungAendern` mit den Feldern der Bauleistung
+/// des Hauses. Für die Firma zählen nur die Stunden, die das Blatt ändert;
+/// alles andere bleibt, wie es in der Firma steht. Sonst nähme „für dieses
+/// und neue Häuser“ die eigenen Werte des Hauses (Gerät, Sonstiges, …)
+/// ungefragt in die Firma mit.
+pub fn auf_firma(ops: &[Op], firma: &Katalog) -> Vec<Op> {
+    ops.iter()
+        .map(|op| match op {
+            Op::BauleistungAendern {
+                bauleistung: g,
+                daten,
+            } => match firma.leistung(*g) {
+                Some(l) => Op::BauleistungAendern {
+                    bauleistung: *g,
+                    daten: Bauleistung {
+                        stunden: daten.stunden,
+                        ..bauleistung(l)
+                    },
+                },
+                None => op.clone(),
+            },
+            _ => op.clone(),
+        })
+        .collect()
+}
+
 impl Katalog {
     /// Katalog mit noch nicht ausgeführten Operationen des Preisblatts
     /// (paket-ka2 §3, „Katalog::mit“): `PreisSetzen` und

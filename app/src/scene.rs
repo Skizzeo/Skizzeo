@@ -2239,13 +2239,16 @@ impl Scene {
         herkunft: &sk_cost::Herkunft,
         ops: &[sk_cost::Op],
     ) -> Result<Option<crate::meldung::Meldung>, crate::meldung::Meldung> {
-        self.fuer_firma_mit(label, firma, herkunft, ops, true)
+        self.fuer_firma_mit(label, firma, herkunft, ops, None)
     }
 
-    /// Wie [`Scene::fuer_firma`], aber dieses Haus übernimmt die geänderten
-    /// Sätze auch dort, wo es abweicht: Preisblatt und Lohnkarte, an denen
+    /// Wie [`Scene::fuer_firma`], aber dieses Haus übernimmt den gewählten
+    /// Wert auch dort, wo es abweicht: Preisblatt und Lohnkarte, an denen
     /// der Nutzer genau diesen Wert für dieses und neue Häuser setzt (Regel
-    /// 89, „außer der Nutzer wählt sie ausdrücklich“).
+    /// 89, „außer der Nutzer wählt sie ausdrücklich“). `ops` sind die
+    /// Operationen am Haus; die Firma bekommt nur den gewählten Wert
+    /// ([`sk_cost::preis::auf_firma`]), und wo das Haus abweicht, behält es
+    /// seine übrigen eigenen Werte.
     pub fn fuer_firma_auch_hier(
         &mut self,
         label: &'static str,
@@ -2253,16 +2256,20 @@ impl Scene {
         herkunft: &sk_cost::Herkunft,
         ops: &[sk_cost::Op],
     ) -> Result<Option<crate::meldung::Meldung>, crate::meldung::Meldung> {
-        self.fuer_firma_mit(label, firma, herkunft, ops, false)
+        let fk = sk_cost::lesen::firma_oder_werk(&self.model, Some(firma.library()));
+        let fuer_firma = sk_cost::preis::auf_firma(ops, &fk);
+        self.fuer_firma_mit(label, firma, herkunft, &fuer_firma, Some(ops))
     }
 
+    /// `hier`: die Operationen am Haus, wenn es den gewählten Wert auch
+    /// dort übernimmt, wo es abweicht; `None`: es behält seine Abweichungen.
     fn fuer_firma_mit(
         &mut self,
         label: &'static str,
         firma: &mut crate::catalog::Company,
         herkunft: &sk_cost::Herkunft,
         ops: &[sk_cost::Op],
-        eigene_behalten: bool,
+        hier: Option<&[sk_cost::Op]>,
     ) -> Result<Option<crate::meldung::Meldung>, crate::meldung::Meldung> {
         use crate::meldung::Meldung;
         let satz = |b: Vec<sk_cost::Befund>| Meldung::aus_befunden(&b, "Nichts geändert.");
@@ -2292,19 +2299,20 @@ impl Scene {
             // wenn der Schritt danach scheitert oder nichts ändert
             self.redo.clear();
         }
-        let saetze = if eigene_behalten {
-            sk_cost::op::ohne_abweichung(&self.model, neu.saetze)
-        } else {
-            neu.saetze
-        };
-        if sk_cost::op::hat_kopie(&self.model) && !saetze.is_empty() {
-            let op = sk_cost::Op::StandUebernehmen { saetze };
-            if let Err(b) = self.kosten_folge(
-                label,
-                Some(firma.library()),
-                herkunft,
-                std::slice::from_ref(&op),
-            ) {
+        // Wo das Haus abweicht, bleibt der Satz des Hauses; ausdrücklich
+        // gewählt, kommt die Operation am Haus dazu (nur der gewählte Wert)
+        let saetze = sk_cost::op::ohne_abweichung(&self.model, neu.saetze.clone());
+        let mut folge: Vec<sk_cost::Op> = hier
+            .unwrap_or_default()
+            .iter()
+            .filter(|op| ziel(op).is_some_and(|z| neu.saetze.contains(&z) && !saetze.contains(&z)))
+            .cloned()
+            .collect();
+        if !saetze.is_empty() {
+            folge.insert(0, sk_cost::Op::StandUebernehmen { saetze });
+        }
+        if sk_cost::op::hat_kopie(&self.model) && !folge.is_empty() {
+            if let Err(b) = self.kosten_folge(label, Some(firma.library()), herkunft, &folge) {
                 hinweis = Some(Meldung::mit(
                     "Für neue Häuser gespeichert, dieses Haus nicht geändert: {}",
                     &[&satz(b)],
@@ -3444,6 +3452,22 @@ fn mesh_into(m: &mut MeshData, s: &Solid) {
             .iter()
             .map(|e| ([e.a.to_f32(), e.b.to_f32()], e.kind as f32)),
     );
+}
+
+/// Der Stammsatz, den eine Operation des Preisblatts oder der Lohnkarte
+/// setzt.
+fn ziel(op: &sk_cost::Op) -> Option<sk_cost::SatzId> {
+    use sk_cost::{Op, SatzId};
+    match op {
+        Op::PreisSetzen { artikel, .. } | Op::UmrechnungSetzen { artikel, .. } => {
+            Some(SatzId::neu("article", artikel.to_ifc()))
+        }
+        Op::BauleistungAendern { bauleistung, .. } => {
+            Some(SatzId::neu("service", bauleistung.to_ifc()))
+        }
+        Op::FirmenwertSetzen { schluessel, .. } => Some(SatzId::neu("rate", schluessel.clone())),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

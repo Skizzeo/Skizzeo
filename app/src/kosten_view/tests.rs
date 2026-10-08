@@ -665,3 +665,60 @@ fn summen_ueberschrift_niedrig_und_markierung() {
     let markiert: Vec<usize> = (0..v.zeilen().len()).filter(|j| v.markiert(*j)).collect();
     assert_eq!(markiert, [i]);
 }
+
+/// Review 3as (Regel 89): Stunden „für dieses und neue Häuser“ an einer
+/// Bauleistung, die das Haus mit eigenem Gerät hält. Die Firma bekommt nur
+/// die Stunden, nicht das Gerät des Hauses; das Haus behält sein Gerät und
+/// bekommt die Stunden.
+#[test]
+fn fuer_neue_haeuser_nur_der_gewaehlte_wert() {
+    let d = std::env::temp_dir().join(format!("skizzeo-kv-r89-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    let (mut c, _) = crate::catalog::Company::load(&d.join("firmenkatalog.szk"), true);
+    let mut s = haus();
+    let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "12:00");
+    let f = Some((c.library(), c.stand()));
+    let b = s.kostenblatt(f, &Umfang::projekt());
+    let p = b
+        .positionen
+        .iter()
+        .find(|p| p.kurz.contains("Porenbeton") && p.kurz.contains("17,5"))
+        .unwrap()
+        .clone();
+    let k = s.katalog(f);
+    let a = sk_cost::preis::aufbau(s.model(), &k, &p).unwrap();
+    let l = k.leistung(a.leistung).unwrap().clone();
+    let drei = Dez::lesen("3", 4).unwrap();
+    let op = sk_cost::Op::BauleistungAendern {
+        bauleistung: l.guid,
+        daten: sk_cost::op::Bauleistung {
+            geraet: drei,
+            ..sk_cost::preis::bauleistung(&l)
+        },
+    };
+    s.kosten_folge("Gerät im Projekt", Some(c.library()), &h, &[op])
+        .unwrap();
+    let k = s.katalog(Some((c.library(), c.stand())));
+    let ops = sk_cost::preis::preis_ops(
+        &k,
+        &a,
+        &sk_cost::preis::Eingabe {
+            stunden: Some(Dez::lesen("0.9", 4).unwrap()),
+            preise: vec![],
+            eingaben: vec![],
+            conv: vec![],
+        },
+        "10/2026",
+    );
+    let label = s.bezeichnung("Stunden 0,90 für dieses und neue Häuser".into());
+    s.fuer_firma_auch_hier(label, &mut c, &h, &ops).unwrap();
+    let f = Some((c.library(), c.stand()));
+    let x = s.firmenkatalog(f).leistung(l.guid).unwrap().clone();
+    assert_eq!(
+        (x.stunden, x.geraet),
+        (Dez::lesen("0.9", 4).unwrap(), l.geraet)
+    );
+    let y = s.katalog(f).leistung(l.guid).unwrap().clone();
+    assert_eq!((y.stunden, y.geraet), (Dez::lesen("0.9", 4).unwrap(), drei));
+    let _ = std::fs::remove_dir_all(&d);
+}
