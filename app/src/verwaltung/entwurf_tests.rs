@@ -406,3 +406,45 @@ fn istbilder_ka3b3() {
     std::fs::write(ziel.join("ist-ka-3b3-vorschau.png"), b.to_png()).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Review 3au: Im Entwurf steht an AW24 Gerät 2,00 (Verwaltung). Danach
+/// setzt derselbe Admin im Preisblatt die Stunden für dieses und neue
+/// Häuser. Der Entwurf behält das Gerät und bekommt die Stunden.
+#[test]
+fn neue_haeuser_mit_kennwort_behaelt_entwurf() {
+    let (mut c, mut s, dir) = mit_kennwort("entwurf-geraet");
+    let mut v = Verwaltung::open(&s, Some(&c), None);
+    let g = v
+        .jetzt
+        .leistungen
+        .iter()
+        .find(|l| {
+            l.kurz
+                .starts_with("AW Porenbeton-Planstein PP2-0,35 d=24cm")
+        })
+        .unwrap()
+        .guid;
+    v.waehlen(Knoten::Leistung(g));
+    assert!(v.eingeben(&Feld::Geraet, "2"));
+    schreiben(&mut v, &mut c);
+    let k = s.katalog(Some((c.library(), c.stand())));
+    let l = k.leistung(g).unwrap().clone();
+    let op = Op::BauleistungAendern {
+        bauleistung: g,
+        daten: sk_cost::op::Bauleistung {
+            stunden: Dez::lesen("0.9", 4).unwrap(),
+            ..sk_cost::preis::bauleistung(&l)
+        },
+    };
+    s.fuer_firma_auch_hier("Stunden für neue Häuser", &mut c, &h(), &[op])
+        .expect("in den Entwurf");
+    let e = sk_model::read_szk_with(&entwurf_text(&c), &sk_cost::lesen::ABSCHNITTE_SZK).unwrap();
+    let e = sk_cost::verwaltung::wie_freigegeben(&e);
+    let x = sk_cost::lesen::firma_oder_werk(&Model::new(), Some(&e))
+        .leistung(g)
+        .unwrap()
+        .clone();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(x.stunden, Dez::lesen("0.9", 4).unwrap());
+    assert_eq!(x.geraet, Dez::ganz(2), "Gerät aus dem Entwurf bleibt");
+}

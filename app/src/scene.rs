@@ -2264,7 +2264,19 @@ impl Scene {
         herkunft: &sk_cost::Herkunft,
         ops: &[sk_cost::Op],
     ) -> Result<Option<crate::meldung::Meldung>, crate::meldung::Meldung> {
-        let fk = sk_cost::lesen::firma_oder_werk(&self.model, Some(firma.library()));
+        // Mit Verwaltungskennwort geht es in den Entwurf: dann gelten dessen
+        // Werte als Grundlage, sonst nähme die Bauleistung die übrigen Felder
+        // des freigegebenen Stands mit und überschriebe den Entwurf (Review
+        // 3au)
+        let entwurf = firma
+            .entwurf()
+            .filter(|_| sk_cost::verwaltung::hat_kennwort(firma.library()))
+            .and_then(|t| sk_model::read_szk_with(t, &sk_cost::lesen::ABSCHNITTE_SZK).ok())
+            .map(|l| sk_cost::verwaltung::wie_freigegeben(&l));
+        let fk = sk_cost::lesen::firma_oder_werk(
+            &self.model,
+            Some(entwurf.as_ref().unwrap_or(firma.library())),
+        );
         let fuer_firma = sk_cost::preis::auf_firma(ops, &fk);
         self.fuer_firma_mit(label, firma, herkunft, &fuer_firma, Some(ops), false)
     }
