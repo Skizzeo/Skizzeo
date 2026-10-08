@@ -1117,3 +1117,54 @@ fn zuruecknehmen_liest_die_datei_neu() {
     assert!(m.contains("wieder geändert"), "{m}");
     assert_eq!(nachher, datei);
 }
+
+/// Befund E: Platz A nimmt Stand n zurück (die Ops stehen im Fenster),
+/// dann ändert Platz B denselben Satz wieder. Das OK von A scheitert, das
+/// Fenster setzt auf dem neuen Stand auf und rechnet die Rücknahme neu:
+/// nur der Befund, keine Ops, ein zweites OK überschreibt B nicht.
+#[test]
+fn ruecknahme_nach_fremder_aenderung_neu_gerechnet() {
+    let (mut a, dir) = firma("umkehr-e");
+    let pfad = a.path().to_path_buf();
+    let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-08", "18:20");
+    let mut s = haus();
+    let mut v = Verwaltung::open(&s, Some(&a), None);
+    v.waehlen(Knoten::Firmenwerte);
+    assert!(v.eingeben(&Feld::Wert("wage".into()), "65"));
+    s.fuer_firma(STEP, &mut a, &h, v.ops()).expect("Stand A");
+    let stand_a = a
+        .library()
+        .ext("catalog")
+        .next()
+        .and_then(|r| r.line.split(' ').find_map(|w| w.strip_prefix("stand=")))
+        .and_then(|n| n.parse::<u32>().ok())
+        .expect("Stand im Kopf");
+    let mut v = Verwaltung::open(&s, Some(&a), None);
+    v.zuruecknehmen(
+        stand_a,
+        a.umkehr(s.model(), stand_a).map_err(|m| m.to_string()),
+    );
+    assert!(!v.ops().is_empty());
+    // Platz B ändert den Lohn wieder, bevor A OK drückt
+    let (mut b, _) = Company::laden(&pfad, true);
+    let mut s2 = haus();
+    let mut vb = Verwaltung::open(&s2, Some(&b), None);
+    vb.waehlen(Knoten::Firmenwerte);
+    assert!(vb.eingeben(&Feld::Wert("wage".into()), "70"));
+    s2.fuer_firma(STEP, &mut b, &h, vb.ops()).expect("Stand B");
+    let datei = std::fs::read(&pfad).unwrap();
+    assert!(s.fuer_firma(STEP, &mut a, &h, v.ops()).is_err());
+    v.neu_grundlage(&a);
+    v.fehler("geändert.".into());
+    let ops = v.ops().to_vec();
+    if !ops.is_empty() {
+        let _ = s.fuer_firma(STEP, &mut a, &h, &ops);
+    }
+    let nachher = std::fs::read(&pfad).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ops.is_empty(), "{ops:?}");
+    let m = v.meldung.clone().unwrap_or_default();
+    assert!(m.starts_with("geändert. "), "{m}");
+    assert!(m.contains("wieder geändert"), "{m}");
+    assert_eq!(nachher, datei, "Stand von B bleibt");
+}

@@ -172,6 +172,12 @@ pub struct Verwaltung {
     meldung: Option<String>,
     /// Stand, dessen Rücknahme in den gesammelten Änderungen steckt.
     zurueck: Option<u32>,
+    /// Die Operationen dieser Rücknahme (gegen den Stand, auf dem sie
+    /// berechnet wurde; Befund E).
+    umkehr_ops: Vec<Op>,
+    /// Befund aus [`Verwaltung::neu_grundlage`], der zur Meldung des
+    /// gescheiterten OK dazukommt.
+    nach_grundlage: Option<String>,
     /// Ordner der eigenen Referenzhäuser (ohne Firmenkatalog keiner).
     ordner: Option<std::path::PathBuf>,
     /// Name des offenen Hauses für „Aktuelles Haus als Referenzhaus“.
@@ -315,6 +321,8 @@ impl Verwaltung {
             wirkung,
             meldung: None,
             zurueck: None,
+            umkehr_ops: Vec::new(),
+            nach_grundlage: None,
             ordner,
             haus_name: "Haus".into(),
             saetze: Vec::new(),
@@ -367,6 +375,20 @@ impl Verwaltung {
         self.wirkung = wirkung::Wirkung::laden(&lib0, &self.m, self.ordner.as_deref());
         self.lib0 = lib0;
         self.luecken0 = self.luecken_jetzt();
+        // Eine Rücknahme ist gegen den alten Stand gerechnet: gegen den
+        // neuen neu rechnen, sonst schriebe das nächste OK die alten Werte
+        // über die Änderung des anderen Platzes (Befund E)
+        if let Some(n) = self.zurueck.take() {
+            let alt = std::mem::take(&mut self.umkehr_ops);
+            self.ops.retain(|o| !alt.contains(o));
+            match company.umkehr(&self.m, n) {
+                Ok(ops) => {
+                    self.zuruecknehmen(n, Ok(ops));
+                    return;
+                }
+                Err(m) => self.nach_grundlage = Some(m.to_string()),
+            }
+        }
         self.neu_rechnen();
     }
 
@@ -382,7 +404,10 @@ impl Verwaltung {
 
     /// OK ist gescheitert: Meldung im Fuß, alle Eingaben bleiben.
     pub fn fehler(&mut self, text: String) {
-        self.meldung = Some(text);
+        self.meldung = Some(match self.nach_grundlage.take() {
+            Some(m) => format!("{text} {m}"),
+            None => text,
+        });
     }
 
     pub fn waehlen(&mut self, k: Knoten) {
@@ -400,6 +425,7 @@ impl Verwaltung {
         let mut saetze = Vec::new();
         if self.ops.is_empty() {
             self.zurueck = None;
+            self.umkehr_ops.clear();
             self.lib = self.lib0.clone();
             self.jetzt = self.vorher.clone();
             self.befunde.clear();
@@ -771,6 +797,7 @@ impl Verwaltung {
                         self.ops.retain(|o| op_schluessel(o).as_deref() != Some(&s));
                     }
                     if !self.wie_vorher(&op) && !self.ops.contains(&op) {
+                        self.umkehr_ops.push(op.clone());
                         self.ops.push(op);
                     }
                 }
