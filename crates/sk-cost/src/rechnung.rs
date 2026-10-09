@@ -1333,9 +1333,8 @@ fn ext_ansaetze(
         let (Some(e), Some(d)) = (m.element(row.element), m.ext_def(&q.key)) else {
             continue;
         };
-        if !elemente.contains(&row.element) {
-            elemente.push(row.element);
-        }
+        // je Exemplar eine Zeile (Schedule::ext_rows)
+        elemente.push(row.element);
         if !out.geschosse.contains(&geschoss) {
             out.geschosse.push(geschoss);
         }
