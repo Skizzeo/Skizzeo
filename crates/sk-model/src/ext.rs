@@ -137,6 +137,21 @@ impl ExtStore {
         (at, None)
     }
 
+    /// Hängt `line` ans Ende des Abschnitts, auch wenn ihre Kennung dort
+    /// schon steht (doppelte Kennung, Regel 74: die erste gilt) oder sie
+    /// keine hat. Gibt die Stelle im Abschnitt zurück.
+    pub fn append(&mut self, section: &str, line: String) -> usize {
+        self.declare(&[section]);
+        let at = self.section(section).count();
+        self.set(section, at, Some(line), None);
+        at
+    }
+
+    /// Entfernt alle Zeilen des Abschnitts, auch die ohne Kennung.
+    pub fn clear(&mut self, section: &str) {
+        self.recs.retain(|r| r.section != section);
+    }
+
     /// Entfernt die erste Zeile mit Kennung `id`; Stelle und alte Zeile.
     pub fn remove(&mut self, section: &str, id: &str) -> Option<(usize, String)> {
         let at = self.find(section, id)?;
@@ -246,6 +261,18 @@ mod tests {
         let mut out = String::new();
         s.write(&mut out);
         assert!(out.ends_with("[b] key=1\n[c] key=q\n"), "{out}");
+        // doppelte Kennung und Zeile ohne Kennung: angehängt, nichts ersetzt
+        assert_eq!(s.append("a", "[a] guid=x n=3".into()), 3);
+        assert_eq!(s.append("a", "[a] n=4".into()), 4);
+        let mut out = String::new();
+        s.write(&mut out);
+        assert!(
+            out.starts_with("[a] guid=x n=1\n[a] n=0\n[a] guid=z n=1\n[a] guid=x n=3\n[a] n=4\n"),
+            "{out}"
+        );
+        s.clear("a");
+        assert_eq!(s.section("a").count(), 0);
+        assert_eq!(s.section("b").count(), 1);
         // Lücke in der Liste: vor den Nachfolger
         s.declare(&["z", "b"]);
         s.declare(&["a", "y"]);

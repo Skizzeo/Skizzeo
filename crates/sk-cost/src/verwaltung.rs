@@ -634,25 +634,35 @@ pub fn freigeben(
         .filter_map(|r| r.id.as_deref().and_then(|k| k.parse::<u32>().ok()))
         .max()
         .unwrap_or(0);
-    // Kostenabschnitte ganz aus dem Entwurf
+    kopf_e.setzen("stand", Some(crate::satz::Wert::Ganz(i64::from(stand))));
+    kopf_e.setzen(
+        "date",
+        Some(crate::satz::Wert::Text(herkunft.datum.clone())),
+    );
+    kopf_e.setzen("status", Some(crate::satz::Wert::Wort("released".into())));
+    // Kostenabschnitte ganz aus dem Entwurf, Zeile für Zeile: auch doppelte
+    // Kennungen (Regel 74, die erste gilt weiter), fremde und kaputte Zeilen
     lib.ext_declare(&crate::satz::ABSCHNITTE_SZK);
     for sec in crate::satz::ABSCHNITTE_SZK {
         // Vorschläge bleiben im Entwurf (Regel 105, [`rest_entwurf`])
         if sec == "proposal" {
             continue;
         }
-        let alt: Vec<String> = lib.ext(sec).filter_map(|r| r.id.clone()).collect();
-        for id in alt {
-            lib.ext_remove(sec, &id);
-        }
+        lib.ext_clear(sec);
         if sec == "catalog" {
+            // der Kopf vorn, weitere Zeilen des Abschnitts wie im Entwurf
+            lib.ext_append(sec, kopf_e.zeile());
+            for r in e.ext(sec).skip(1) {
+                lib.ext_append(sec, r.line.clone());
+            }
             continue;
         }
         for r in e.ext(sec) {
-            let Some(id) = &r.id else {
-                continue;
-            };
-            let neu = sec == "log" && id.parse::<u32>().is_ok_and(|k| k > bis);
+            let neu = sec == "log"
+                && r.id
+                    .as_deref()
+                    .and_then(|k| k.parse::<u32>().ok())
+                    .is_some_and(|k| k > bis);
             let zeile = crate::zeile::zerlegen(&r.line)
                 .filter(|_| neu)
                 .and_then(|z| crate::satz::Satz::lesen(&crate::satz::LOG, &z).ok())
@@ -663,17 +673,9 @@ pub fn freigeben(
                         s.zeile()
                     },
                 );
-            lib.ext_put(sec, id, zeile, None);
+            lib.ext_append(sec, zeile);
         }
     }
-    kopf_e.setzen("stand", Some(crate::satz::Wert::Ganz(i64::from(stand))));
-    kopf_e.setzen(
-        "date",
-        Some(crate::satz::Wert::Text(herkunft.datum.clone())),
-    );
-    kopf_e.setzen("status", Some(crate::satz::Wert::Wort("released".into())));
-    let id = kopf_e.kennung().unwrap_or_default();
-    lib.ext_put("catalog", &id, kopf_e.zeile(), None);
     Ok(crate::op::FirmaNeu {
         text: sk_model::write_szk(&lib),
         stand_vorher: stand_f,

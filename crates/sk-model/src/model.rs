@@ -674,6 +674,17 @@ impl Model {
         self.note_ext(section, id, at, old, new);
     }
 
+    /// Hängt `line` ans Ende des Abschnitts, ohne eine Zeile mit derselben
+    /// Kennung zu ersetzen (doppelte Kennung bleibt, Regel 74). Nur
+    /// `sk-cost`, im offenen Schritt.
+    #[doc(hidden)]
+    pub fn ext_append(&mut self, section: &str, line: String) {
+        let id = crate::ext::rec_id(&line).unwrap_or_default();
+        let new = Some(line.clone());
+        let at = self.ext.append(section, line);
+        self.note_ext(section, &id, at, None, new);
+    }
+
     /// Entfernt die erste Zeile mit Kennung `id` (nur `sk-cost`).
     #[doc(hidden)]
     pub fn ext_remove(&mut self, section: &str, id: &str) {

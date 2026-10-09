@@ -98,6 +98,19 @@ impl Library {
         self.ext.declare(sections);
     }
 
+    /// Hängt `line` ans Ende des Abschnitts, ohne eine Zeile mit derselben
+    /// Kennung zu ersetzen (doppelte Kennung bleibt, Regel 74).
+    #[doc(hidden)]
+    pub fn ext_append(&mut self, section: &str, line: String) {
+        self.ext.append(section, line);
+    }
+
+    /// Entfernt alle Zeilen des Abschnitts, auch die ohne Kennung.
+    #[doc(hidden)]
+    pub fn ext_clear(&mut self, section: &str) {
+        self.ext.clear(section);
+    }
+
     /// Wie [`Model::ext_remove`], ohne Verlauf.
     #[doc(hidden)]
     pub fn ext_remove(&mut self, section: &str, id: &str) {

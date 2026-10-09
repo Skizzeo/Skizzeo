@@ -1546,10 +1546,10 @@ pub fn ausfuehren_folge(
     let plan = planen(m, firma, rolle, herkunft, ops, GuidGen::with_seed(seed))?;
     m.ext_declare(&satz::ABSCHNITTE_SZO);
     if let Some(k) = plan.kopie {
+        // angehängt, nicht nach Kennung ersetzt: Bei doppelter Kennung
+        // bleiben beide Zeilen, die erste gilt (Regel 74)
         for r in k.recs() {
-            if let Some(id) = &r.id {
-                m.ext_put(&r.section, id, r.line.clone(), None);
-            }
+            m.ext_append(&r.section, r.line.clone());
         }
     }
     for a in plan.aenderungen {
@@ -1612,9 +1612,7 @@ pub fn kopie_anlegen(m: &mut Model, firma: Option<&Library>) {
     let k = kopie(m, firma);
     m.ext_declare(&satz::ABSCHNITTE_SZO);
     for r in k.recs() {
-        if let Some(id) = &r.id {
-            m.ext_put(&r.section, id, r.line.clone(), None);
-        }
+        m.ext_append(&r.section, r.line.clone());
     }
 }
 
@@ -2371,6 +2369,28 @@ mod tests {
         let k = lesen::katalog(&Model::from_library(&lib), Some(&lib));
         assert!(k.befunde.is_empty(), "{:#?}", k.befunde);
         assert_eq!(k.werte.lohn, Dez::ganz(65));
+    }
+
+    /// Regel 74 in der Kopie: Hat der Firmenkatalog eine Kennung doppelt,
+    /// kommen beide Zeilen ins Projekt und die erste gilt weiter; der Lohn
+    /// springt nicht auf den späteren Wert. Rückgängig nimmt beide zurück.
+    #[test]
+    fn kopie_doppelte_kennung_erster_gilt() {
+        let text = format!("{}[rate] key=wage num=65\n", firmentext(3));
+        let lib = sk_model::read_szk_with(&text, &satz::ABSCHNITTE_SZK).unwrap();
+        let mut m = projekt();
+        m.begin("Kopie");
+        kopie_anlegen(&mut m, Some(&lib));
+        let t = m.commit().expect("ein Schritt");
+        let lohn: Vec<&str> = m
+            .ext("rate")
+            .filter(|r| r.id.as_deref() == Some("wage"))
+            .map(|r| r.line.as_str())
+            .collect();
+        assert_eq!(lohn, ["[rate] key=wage num=60", "[rate] key=wage num=65"]);
+        assert_eq!(lesen::katalog(&m, Some(&lib)).werte.lohn, Dez::ganz(60));
+        m.apply(&t, Direction::Undo);
+        assert!(!hat_kopie(&m));
     }
 
     /// Abnahme 15a (Fall 15, Regel 108): bestätigtes `conv` und der Preis je
