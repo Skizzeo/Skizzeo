@@ -3695,11 +3695,16 @@ mod levels_tests {
     /// Seit dem kürzeren Werkzeug-Hinweis (Paket 8, §2.7) reichte der Platz
     /// bis knapp unter 400 px Höhe, seit dem Knopf „Projektdaten“ über den
     /// Werkzeugen (Paket PD-2) bis knapp unter 470 px; die Liste reicht
-    /// bis 440 px (vorher 380).
+    /// bis 400 px (vorher 380), die Untergrenze hält der letzte Fall fest.
     #[test]
     fn kleines_fenster_diagramm_oder_liste() {
         let (mut ui, _) = ui_mit_geschossen();
-        for (w, h, list) in [(900u32, 600u32, false), (900, 500, false), (900, 440, true)] {
+        for (w, h, list) in [
+            (900u32, 600u32, false),
+            (900, 500, false),
+            (900, 440, true),
+            (900, 400, true),
+        ] {
             ui.fit(1.0, w, h);
             let r = ui.rect(Panel::Levels, w, 32);
             let t = ui.rect(Panel::Tools, w, 32);

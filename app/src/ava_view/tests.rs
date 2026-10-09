@@ -959,4 +959,54 @@ fn baum_als_leiste_im_schmalen_fenster() {
     klick_auf(&mut v, &fonts, &mut p, Hot::BaumLeiste);
     assert!(v.baum_blatt_schliessen() && !v.baum_blatt);
     assert!(!v.baum_blatt_schliessen());
+    // Wahl eines Titels: die Leiste nennt ihn
+    klick_auf(&mut v, &fonts, &mut p, Hot::BaumLeiste);
+    let xy = v
+        .knoten_mitte(&t, |k| matches!(k, Knoten::Titel { .. }))
+        .expect("Titel im Blatt");
+    v.mouse_down(&t, &fonts, &mut p, xy, mods);
+    v.sync(&mut s, None);
+    let text = v.leiste_rect(&t, fonts.bold.as_ref()).1;
+    assert!(text.starts_with("LV ") && text.contains(" › "), "{text}");
+    // Der Prüfzähler steht neben der zugeklappten Leiste und zeigt „Prüfen“
+    assert!(!v.baum_blatt && v.befunde() > 0);
+    let (lx, _, lw, _) = v.leiste_rect(&t, fonts.bold.as_ref()).0;
+    let (zx, _, zw, _) = v.pruef_rect(&t, fonts.bold.as_ref()).expect("Zähler");
+    let (x0, cw) = v.content_x(&t);
+    assert!(zx >= lx + lw && zx + zw <= x0 + cw);
+    klick_auf(&mut v, &fonts, &mut p, Hot::BaumPruefen);
+    assert!(v.ansicht == Ansicht::Pruefen && !v.baum_blatt);
+    assert_eq!(v.leiste_rect(&t, fonts.bold.as_ref()).1, "Prüfen");
+}
+
+/// Wechsel zwischen breitem und schmalem Fenster behält Lage und Wahl.
+#[test]
+fn breit_und_schmal_behalten_die_lage() {
+    let t = Theme::dark();
+    let mut s = haus();
+    let mut v = AvaView::new();
+    (v.w, v.h) = (1000, 520);
+    v.sync(&mut s, None);
+    // Nur neun Zeilen: mit dem Detail darunter lässt sich trotzdem rollen
+    let oz = v
+        .zeilen
+        .iter()
+        .find(|z| z.art == Art::Position)
+        .map(|z| z.oz.clone());
+    v.gewaehlt = oz.clone();
+    v.sync(&mut s, None);
+    assert!(v.detail.is_some());
+    v.scroll = 40.0;
+    v.clamp();
+    let vorher = v.scroll;
+    assert_eq!(vorher, 40.0, "{:?}, {}", v.liste_y(), v.inhalt_h());
+    for w in [640, 1000] {
+        v.w = w;
+        v.sync(&mut s, None);
+        v.clamp();
+        assert_eq!(v.baum_als_leiste(), w < 800);
+        assert_eq!(v.scroll, vorher, "Lage bei {w}");
+        assert_eq!(v.gewaehlt, oz, "Wahl bei {w}");
+        assert!(!v.baum_lage(&t).is_empty() || v.baum_als_leiste());
+    }
 }

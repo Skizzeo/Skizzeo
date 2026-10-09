@@ -199,6 +199,8 @@ enum Hot {
     Baum(usize),
     /// Leiste „LV ▾“ im schmalen Fenster: klappt den Baum als Blatt auf.
     BaumLeiste,
+    /// Zähler „△ 3“ neben der Leiste: zeigt „Prüfen“.
+    BaumPruefen,
     Zeile(usize),
     Reiter(Reiter),
     Schliessen,
@@ -427,6 +429,8 @@ pub struct AvaView {
     mehr_offen: bool,
     /// Im schmalen Fenster: der Baum ist als Blatt unter „LV ▾“ offen.
     baum_blatt: bool,
+    /// Im Baum gewählter Titel; die Leiste nennt ihn.
+    titel_wahl: Option<Guid>,
     /// Umfang und Stand für den aufgeklappten Kopf.
     kopf_umfang: (String, String),
     /// „Referenzpreise 10/2026“ bzw. „Preise Firmenkatalog“; leer ohne
@@ -478,6 +482,7 @@ impl AvaView {
             kopf_offen: false,
             mehr_offen: false,
             baum_blatt: false,
+            titel_wahl: None,
             kopf_umfang: (String::new(), String::new()),
             preisquelle: String::new(),
             knopf_down: false,
@@ -728,25 +733,74 @@ impl AvaView {
         self.body_top() + leiste * self.scale
     }
 
-    /// Leiste „LV ▾“ (px) mit ihrem Text.
+    /// Leiste „LV ▾“ (px) mit ihrem Text: „LV Rohbau › 02 Mauerarbeiten“,
+    /// gekürzt, damit der Prüfzähler daneben Platz hat.
     fn leiste_rect(&self, t: &Theme, bold: Option<&Font>) -> (Rect, String) {
         let s = self.scale;
-        let (x0, _) = self.content_x(t);
+        let (x0, cw) = self.content_x(t);
         let text = match self.ansicht {
             // Wie die Unterzeile: „LV Rohbau“
-            Ansicht::Lv => self
-                .lv
-                .as_deref()
-                .map_or_else(|| "LV".into(), |l| format!("LV {}", l.kopf.los)),
+            Ansicht::Lv => self.lv.as_deref().map_or_else(
+                || "LV".into(),
+                |l| {
+                    let titel = self
+                        .titel_wahl
+                        .and_then(|g| l.titel.iter().find(|t| t.guid == g));
+                    match titel {
+                        Some(t) => format!("LV {} › {} {}", l.kopf.los, t.nr, t.name),
+                        None => format!("LV {}", l.kopf.los),
+                    }
+                },
+            ),
             Ansicht::Zusammenstellung => "Zusammenstellung".into(),
             Ansicht::Pruefen => "Prüfen".into(),
         };
         let px = 11.0 * s;
-        let tw = bold.map_or(text.chars().count() as f32 * px * 0.6, |f| {
-            f.width(&text, px)
-        });
-        let r = (x0, self.body_top(), tw + 40.0 * s, 26.0 * s);
+        let breite = |text: &str| {
+            bold.map_or(text.chars().count() as f32 * px * 0.6, |f| {
+                f.width(text, px)
+            })
+        };
+        let zaehler = self.pruef_breite(bold).map_or(0.0, |w| w + 8.0 * s);
+        let platz = (cw - zaehler - 40.0 * s).max(40.0 * s);
+        let text = sk_ui::widgets::ellipsize(bold, &text, px, platz);
+        let r = (
+            x0,
+            self.body_top(),
+            breite(&text).min(platz) + 40.0 * s,
+            26.0 * s,
+        );
         (r, text)
+    }
+
+    /// Befunde im Prüfen, wie der Baum sie zählt.
+    fn befunde(&self) -> usize {
+        self.baum
+            .iter()
+            .find_map(|k| match k {
+                Knoten::Pruefen(n) => Some(*n),
+                _ => None,
+            })
+            .unwrap_or(0)
+    }
+
+    /// Breite der Pille „△ 3“ (px); `None` ohne Befunde.
+    fn pruef_breite(&self, bold: Option<&Font>) -> Option<f32> {
+        let n = self.befunde();
+        let s = self.scale;
+        (n > 0).then(|| {
+            let z = n.to_string();
+            let zpx = 10.0 * s;
+            bold.map_or(z.len() as f32 * zpx * 0.6, |f| f.width(&z, zpx)) + 26.0 * s
+        })
+    }
+
+    /// Zähler „△ 3“ rechts neben der Leiste (px); ein Klick zeigt „Prüfen“.
+    fn pruef_rect(&self, t: &Theme, bold: Option<&Font>) -> Option<Rect> {
+        let w = self.pruef_breite(bold)?;
+        let s = self.scale;
+        let ((x, y, lw, h), _) = self.leiste_rect(t, bold);
+        Some((x + lw + 8.0 * s, y, w, h))
     }
 
     /// Das aufgeklappte Blatt mit dem Baum (px).
@@ -949,6 +1003,13 @@ impl AvaView {
         if self.baum_als_leiste() && inside(self.leiste_rect(t, fonts.bold.as_ref()).0, x, y) {
             return Some(Hot::BaumLeiste);
         }
+        if self.baum_als_leiste()
+            && self
+                .pruef_rect(t, fonts.bold.as_ref())
+                .is_some_and(|r| inside(r, x, y))
+        {
+            return Some(Hot::BaumPruefen);
+        }
         if inside(self.knopf_rect(t, fonts), x, y) {
             return Some(Hot::Knopf);
         }
@@ -1087,6 +1148,10 @@ impl AvaView {
                 self.baum_blatt = !self.baum_blatt;
                 Some(ListOut::Repaint)
             }
+            Hot::BaumPruefen => {
+                self.zeige(Ansicht::Pruefen);
+                Some(ListOut::Repaint)
+            }
             Hot::Knopf => {
                 self.knopf_down = true;
                 Some(ListOut::Repaint)
@@ -1117,12 +1182,14 @@ impl AvaView {
                             return Some(ListOut::Repaint);
                         }
                         self.waehle_los(guid);
+                        self.titel_wahl = None;
                         if !self.offen.contains(&guid) {
                             self.offen.push(guid);
                         }
                     }
                     Knoten::Titel { los, guid, .. } => {
                         self.waehle_los(los);
+                        self.titel_wahl = Some(guid);
                         self.sprung = Some(Sprung::Titel(guid));
                     }
                     Knoten::Zusammenstellung => self.zeige(Ansicht::Zusammenstellung),
@@ -1174,6 +1241,7 @@ impl AvaView {
         if self.los != Some(los) {
             self.los = Some(los);
             self.gewaehlt = None;
+            self.titel_wahl = None;
             self.scroll = 0.0;
         }
         self.zeige(Ansicht::Lv);
@@ -1499,32 +1567,17 @@ impl AvaView {
                     };
                     f.draw(c, "Zusammenstellung", px, x + 14.0 * s, mitte(y, h, f), col);
                 }
-                Knoten::Pruefen(n) => {
+                Knoten::Pruefen(_) => {
                     let (f, col) = if self.ansicht == Ansicht::Pruefen {
                         (bold, u.sheet_text)
                     } else {
                         (regular, u.sheet_text)
                     };
                     f.draw(c, "Prüfen", px, x + 14.0 * s, mitte(y, h, f), col);
-                    if *n > 0 {
-                        // Pille „⚠ n“: Dreieck gezeichnet, nicht aus der Schrift
-                        let z = n.to_string();
-                        let zpx = 10.0 * s;
-                        let pw = bold.width(&z, zpx) + 26.0 * s;
+                    if let Some(pw) = self.pruef_breite(Some(bold)) {
                         let ph = 18.0 * s;
-                        let (pxx, py) = (rechts - pw, y + (h - ph) * 0.5);
-                        let mut p = Path::new();
-                        p.rounded_rect(pxx, py, pw, ph, ph * 0.5);
-                        c.fill(&p, Rgba(u.accent.0, u.accent.1, u.accent.2, 60));
-                        let (dx, dy, d) = (pxx + 8.0 * s, py + 4.5 * s, 9.0 * s);
-                        let col = crate::cards::verweis(u, false);
-                        let mut tri = Path::new();
-                        let st = s.max(1.0);
-                        tri.segment((dx + d * 0.5, dy), (dx, dy + d), st);
-                        tri.segment((dx, dy + d), (dx + d, dy + d), st);
-                        tri.segment((dx + d, dy + d), (dx + d * 0.5, dy), st);
-                        c.fill(&tri, col);
-                        bold.draw(c, &z, zpx, pxx + 20.0 * s, mitte(py, ph, bold), col);
+                        let r = (rechts - pw, y + (h - ph) * 0.5, pw, ph);
+                        self.paint_pille(c, t, bold, r, 60);
                     }
                 }
             }
@@ -1589,6 +1642,36 @@ impl AvaView {
             u.sheet_text_dim,
             s,
         );
+        if let Some(r) = self.pruef_rect(t, Some(bold)) {
+            let alpha = if self.hot == Some(Hot::BaumPruefen) {
+                110
+            } else {
+                60
+            };
+            self.paint_pille(c, t, bold, r, alpha);
+        }
+    }
+
+    /// Pille „⚠ n“ mit der Zahl der Befunde: Dreieck gezeichnet, nicht aus
+    /// der Schrift.
+    fn paint_pille(&self, c: &mut Canvas, t: &Theme, bold: &Font, r: Rect, alpha: u8) {
+        let s = self.scale;
+        let u = &t.ui;
+        let (pxx, py, pw, ph) = r;
+        let z = self.befunde().to_string();
+        let mut p = Path::new();
+        p.rounded_rect(pxx, py, pw, ph, 9.0 * s);
+        c.fill(&p, Rgba(u.accent.0, u.accent.1, u.accent.2, alpha));
+        let (dx, dy, d) = (pxx + 8.0 * s, py + (ph - 9.0 * s) * 0.5, 9.0 * s);
+        let col = crate::cards::verweis(u, false);
+        let mut tri = Path::new();
+        let st = s.max(1.0);
+        tri.segment((dx + d * 0.5, dy), (dx, dy + d), st);
+        tri.segment((dx, dy + d), (dx + d, dy + d), st);
+        tri.segment((dx + d, dy + d), (dx + d * 0.5, dy), st);
+        c.fill(&tri, col);
+        let zy = py + (ph + bold.cap_height(10.0 * s)) * 0.5;
+        bold.draw(c, &z, 10.0 * s, pxx + 20.0 * s, zy, col);
     }
 
     /// Aufgeklapptes Baumblatt unter der Leiste, über Tabelle und Detail.
