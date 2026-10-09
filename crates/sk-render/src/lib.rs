@@ -411,6 +411,21 @@ pub struct SunLight {
     pub ambient: f32,
 }
 
+/// Schatten in den Ansichten (Sonnenstand S7), im Papiermodus: Richtung
+/// zum Licht (Modell) und Darstellung. Abgewandte Flächen und Flächen im
+/// Schlagschatten werden grau getönt oder schraffiert.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaperShade {
+    pub zum_licht: [f64; 3],
+    /// Schraffur statt grauer Fläche.
+    pub hatch: bool,
+    /// Graue Fläche: Tinte (RGB) und ihr Anteil.
+    pub tone: [f32; 4],
+    /// Schraffur unter 45° steigend: Abstand und Strichbreite (px), Tinte.
+    pub hatch_px: [f32; 2],
+    pub hatch_ink: [f32; 3],
+}
+
 /// Schattenkarte auf der GPU: Tiefentextur mit Vergleich in eigenem
 /// Zeichenpuffer.
 struct ShadowMap {
@@ -468,6 +483,10 @@ pub struct Renderer {
     /// ein Netz neu kommt.
     shadow_karte: Option<schatten::Karte>,
     shadow_dirty: bool,
+    /// Schatten der Ansichten (S7) und ob das Bild auf Papier entsteht
+    /// (dann gilt deren Licht statt der Sonne).
+    paper_shade: Option<PaperShade>,
+    shadow_paper: bool,
     /// Konnte der Treiber die Karte nicht anlegen: Meldung (einmal
     /// abzuholen), danach ohne Schatten.
     shadow_failed: bool,
@@ -627,6 +646,14 @@ uniform float u_ambient;
 uniform vec3 u_shadow_c;
 // Deckkraft: 1 deckend, darunter blass (Isolieren) und ohne Schraffur
 uniform float u_alpha;
+// Schatten in den Ansichten (S7): 0 aus, 1 graue Fläche, 2 Schraffur;
+// Richtung zum Licht, Ton (Tinte, Anteil), Schraffur (Abstand, Breite px)
+// und ihre Tinte
+uniform int u_paper_shade;
+uniform vec3 u_paper_light;
+uniform vec4 u_shade_tone;
+uniform vec2 u_hatch;
+uniform vec3 u_hatch_ink;
 vec4 look(int row) {
     return texelFetch(u_looks, ivec2(v_key & 0x7FFF, row), 0);
 }
@@ -670,6 +697,22 @@ void main() {
     }
     vec4 bg = look(2);
     vec3 c = bg.rgb;
+    if (!cut && u_alpha >= 1.0 && u_paper_shade != 0) {
+        // Eigenschatten (abgewandt) und Schlagschatten aus der Karte
+        vec3 n = normalize(v_normal);
+        float lit = dot(n, u_paper_light) > 0.0 ? sun_share(v_model - u_shadow_c, n) : 0.0;
+        float s = 1.0 - lit;
+        if (u_paper_shade == 1) {
+            c = mix(c, u_shade_tone.rgb, u_shade_tone.a * s);
+        } else {
+            // 45° steigend: Abstand senkrecht zu den Linien u_hatch.x
+            float p = u_hatch.x * 1.41421356;
+            float m = mod(gl_FragCoord.x - gl_FragCoord.y, p);
+            float dist = min(m, p - m) * 0.70710678;
+            float ink = clamp(u_hatch.y * 0.5 + 0.5 - dist, 0.0, 1.0);
+            c = mix(c, u_hatch_ink, ink * s);
+        }
+    }
     if (!cut && u_alpha >= 1.0 && u_patterns == 1 && int(look(8).x + 0.5) != 0) {
         // Ansicht: Fugen als Mittellinien in Tinte, keine Steinfarben
         float ink = pattern_lines(v_model, v_normal, look(8), look(9), u_pattern_ink.a) * look(12).w;
@@ -1496,6 +1539,8 @@ impl Renderer {
                 sun: None,
                 shadow_karte: None,
                 shadow_dirty: false,
+                paper_shade: None,
+                shadow_paper: false,
                 shadow_failed: shadow_error.is_some(),
                 shadow_error: shadow_error.map(|e| format!("Schatten aus: {e}")),
                 shadow_query: 0,
@@ -1568,10 +1613,28 @@ impl Renderer {
         }
     }
 
-    /// Karte für das nächste Bild: aus der Sonne und dem Hüllquader der
+    /// Schatten der Ansicht im Papiermodus (S7); `None`: ohne.
+    pub fn set_paper_shade(&mut self, s: Option<PaperShade>) {
+        if s != self.paper_shade {
+            self.paper_shade = s;
+            self.shadow_dirty = true;
+        }
+    }
+
+    /// Richtung zum Licht für die Karte dieses Bildes: auf Papier das
+    /// Licht der Ansicht, sonst die Sonne.
+    fn shadow_licht(&self) -> Option<[f64; 3]> {
+        if self.shadow_paper {
+            self.paper_shade.map(|p| p.zum_licht)
+        } else {
+            self.sun.map(|s| s.zur_sonne)
+        }
+    }
+
+    /// Karte für das nächste Bild: aus dem Licht und dem Hüllquader der
     /// deckenden Netze (ohne das blasse).
     fn shadow_karte(&self) -> Option<schatten::Karte> {
-        let d = self.sun.filter(|_| !self.shadow_failed)?.zur_sonne;
+        let d = self.shadow_licht().filter(|_| !self.shadow_failed)?;
         let ghost = self.ghost.map(|g| g.0);
         let q = self
             .mesh_bounds
@@ -1661,8 +1724,8 @@ impl Renderer {
         let neu = karte != self.shadow_karte || self.shadow_dirty;
         self.shadow_karte = karte;
         self.shadow_dirty = false;
-        // Ohne Sonne keine Karte im Speicher (§8 10:50)
-        if self.sun.is_none() {
+        // Ohne Licht keine Karte im Speicher (§8 10:50, Nachtrag 11:17)
+        if self.shadow_licht().is_none() {
             self.free_shadow_map();
         }
         let gl = &self.gl;
@@ -2139,6 +2202,7 @@ impl Renderer {
                 gl.glUniform1f(loc(gl, q, c"u_px_fix"), exact);
                 let drawing = view.paper.is_some();
                 gl.glUniform1i(loc(gl, q, c"u_drawing"), drawing as GLint);
+                gl.glUniform1i(loc(gl, q, c"u_paper_shade"), 0);
                 gl.glUniform1i(loc(gl, q, c"u_patterns"), view.patterns as GLint);
                 let ink = looks.pattern_ink;
                 gl.glUniform4f(loc(gl, q, c"u_pattern_ink"), ink[0], ink[1], ink[2], ink[3]);
@@ -2435,18 +2499,10 @@ impl Renderer {
             self.preview_dirty = false;
             self.render_preview()?;
         }
-        // Schatten nur mit Himmel und Boden (3D), nicht auf Papier
-        if view.paper.is_none() {
-            unsafe { self.render_shadow() };
-        } else {
-            if self.shadow_karte.take().is_some() {
-                self.shadow_dirty = true;
-            }
-            // Ohne Sonne keine Karte im Speicher, auch auf Papier
-            if self.sun.is_none() {
-                unsafe { self.free_shadow_map() };
-            }
-        }
+        // Schatten in 3D von der Sonne, auf Papier vom Licht der Ansicht
+        // (S7)
+        self.shadow_paper = view.paper.is_some();
+        unsafe { self.render_shadow() };
         self.ensure_target(w, h)?;
         // Mitte der Karte relativ zum Auge (Boden) und Umgebungsanteil
         let sky_c = self.shadow_karte.map_or([0.0; 3], |k| {
@@ -2523,6 +2579,28 @@ impl Renderer {
             self.shadow_uniforms(p, face_c);
             let drawing = view.paper.is_some();
             gl.glUniform1i(loc(gl, p, c"u_drawing"), drawing as GLint);
+            // Schatten der Ansicht (S7) nur auf Papier mit Karte
+            let ps = self
+                .paper_shade
+                .filter(|_| drawing && self.shadow_karte.is_some() && self.shadow_map.is_some());
+            gl.glUniform1i(
+                loc(gl, p, c"u_paper_shade"),
+                ps.map_or(0, |s| if s.hatch { 2 } else { 1 }),
+            );
+            if let Some(s) = ps {
+                let l = s.zum_licht;
+                gl.glUniform3f(
+                    loc(gl, p, c"u_paper_light"),
+                    l[0] as f32,
+                    l[1] as f32,
+                    l[2] as f32,
+                );
+                let t = s.tone;
+                gl.glUniform4f(loc(gl, p, c"u_shade_tone"), t[0], t[1], t[2], t[3]);
+                gl.glUniform2f(loc(gl, p, c"u_hatch"), s.hatch_px[0], s.hatch_px[1]);
+                let k = s.hatch_ink;
+                gl.glUniform3f(loc(gl, p, c"u_hatch_ink"), k[0], k[1], k[2]);
+            }
             gl.glUniform1i(loc(gl, p, c"u_patterns"), view.patterns as GLint);
             let ink = self.looks.pattern_ink;
             gl.glUniform4f(loc(gl, p, c"u_pattern_ink"), ink[0], ink[1], ink[2], ink[3]);

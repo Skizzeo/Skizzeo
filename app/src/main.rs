@@ -15,6 +15,7 @@ mod abnahme_s1;
 mod abnahme_s2;
 #[cfg(test)]
 mod abnahme_s4;
+mod ansicht_schatten;
 mod attr_pick;
 mod autosave;
 mod ava_view;
@@ -193,8 +194,10 @@ const OVERLAY_NORD: usize = OVERLAY_MARKS + MARKS;
 /// Leiste des Sonnenstands-Systems in 3D (Datum, Uhrzeit, Schnellwahl;
 /// Sonnenstand S4), unter den Paneelen.
 const OVERLAY_SONNE: usize = OVERLAY_NORD + 1;
+/// Zahnrad und Feld „Schatten“ der Ansichten (S7).
+const OVERLAY_ANSICHT: usize = OVERLAY_SONNE + 1;
 /// Name und Fläche der Dachterrassen im Grundriss (wie eine Raumangabe).
-const OVERLAY_ROOMS: usize = OVERLAY_SONNE + 1;
+const OVERLAY_ROOMS: usize = OVERLAY_ANSICHT + 1;
 const ROOMS: usize = 4;
 /// Kettensymbole an gestapelten Wänden (OG Phase 2), unter den Paneelen.
 const OVERLAY_CHIPS: usize = OVERLAY_ROOMS + ROOMS;
@@ -614,6 +617,10 @@ struct App {
     /// Zuletzt hochgeladene Leiste des Sonnenstands, der Würfel ist
     /// hochgeladen, Lichtrichtung von der Sonne (`None`: die feste).
     sonne_bild: Option<sonne_view::LeistenBild>,
+    /// Schatten der Ansichten (S7): Zahnrad und Feld, zuletzt hochgeladenes
+    /// Bild.
+    ansicht_schatten: ansicht_schatten::Schalter,
+    schatten_bild: Option<ansicht_schatten::Bild>,
     /// Ecken des Gebäudes über dem Boden bei eingeschaltetem Sonnenstand:
     /// aus ihnen kommt die Schattenspitze (S6).
     ecken: Vec<Vec3>,
@@ -1232,6 +1239,67 @@ impl App {
         self.redraw = true;
     }
 
+    /// Wahl des Schattens der aktuellen Ansicht (S7) mit ihrem Platz;
+    /// `None` außerhalb der vier Ansichten.
+    fn ansicht_wahl(&self) -> Option<(usize, sk_model::ViewShade)> {
+        let i = ansicht_schatten::platz(self.ui.view)?;
+        Some((
+            i,
+            self.scene.model().view_shade(i, sk_model::ViewShade::WERK),
+        ))
+    }
+
+    /// Stand der Sonne für die Ansichten (S7).
+    fn ansicht_sonne(&self) -> sk_model::Sun {
+        ansicht_schatten::sonne_der_ansichten(self.scene.model().sun())
+    }
+
+    /// Lage von Zahnrad und Feld in der Ansicht.
+    fn ansicht_lage(&self, sc: f64) -> ansicht_schatten::Lage {
+        let l = self.scene.model().location();
+        let (_, vs) = self
+            .ansicht_wahl()
+            .unwrap_or((0, sk_model::ViewShade::WERK));
+        let tief = vs.light == sk_model::ShadeLight::Sun
+            && ansicht_schatten::sonne_waehlbar(l)
+            && ansicht_schatten::sonne_zu_tief(l, self.ansicht_sonne());
+        let rechts = self.ui.rect(Panel::Views, self.w, self.top()).x;
+        ansicht_schatten::lage(rechts, tief, sc as f32, &self.theme)
+    }
+
+    /// Ereignis an Zahnrad und Feld „Schatten“ (S7, nur in den vier
+    /// Ansichten); `true`, wenn sie es genommen haben.
+    fn ansicht_handle(&mut self, ev: &Event, sc: f64) -> bool {
+        let Some((i, vs)) = self.ansicht_wahl() else {
+            if self.ansicht_schatten.offen || self.ansicht_schatten.hover.is_some() {
+                self.ansicht_schatten.reset();
+                self.redraw = true;
+            }
+            return false;
+        };
+        let lage = self.ansicht_lage(sc);
+        let ok = ansicht_schatten::sonne_waehlbar(self.scene.model().location());
+        let out = self.ansicht_schatten.handle(ev, &lage, vs, ok);
+        self.redraw |= out.redraw;
+        let neu = out.wahl.or(out.alle.then_some(vs));
+        if let Some(s) =
+            neu.and_then(|w| ansicht_schatten::festschreiben(self.scene.model().sun(), w))
+        {
+            self.scene.set_sun(s);
+        }
+        if let Some(w) = out.wahl {
+            self.scene.set_view_shade(i, w, sk_model::ViewShade::WERK);
+            self.redraw = true;
+        }
+        if out.alle {
+            for k in 0..sk_model::SHADE_VIEWS.len() {
+                self.scene.set_view_shade(k, vs, sk_model::ViewShade::WERK);
+            }
+            self.redraw = true;
+        }
+        out.consumed
+    }
+
     /// Ereignis an Sonne und Leiste (3D, Sonnenstand an); `true`, wenn sie
     /// es genommen haben.
     fn sonne_handle(&mut self, ev: &Event, vw: f64, vh: f64, sc: f64) -> bool {
@@ -1376,6 +1444,7 @@ impl App {
         if !self.tool_allowed() {
             self.nord.set_aktiv(false);
         }
+        self.ansicht_schatten.reset();
         if !self.tool_allowed() && self.tool.enabled {
             self.tool.set_enabled(false);
             self.ui.building = false;
@@ -4273,7 +4342,10 @@ impl App {
                         let ev = in_view(e);
                         camera_moved |=
                             self.nav.handle(&ev, &mut self.cam, &self.scene, vw, vh, sc);
-                        if self.sonne_handle(&ev, vw, vh, sc) || self.nord_handle(&ev, vw, vh, sc) {
+                        if self.ansicht_handle(&ev, sc)
+                            || self.sonne_handle(&ev, vw, vh, sc)
+                            || self.nord_handle(&ev, vw, vh, sc)
+                        {
                             self.sync_ui();
                             self.sync_caption(surface);
                             return true;
@@ -4337,7 +4409,10 @@ impl App {
                 }
                 let ev = in_view(e);
                 camera_moved |= self.nav.handle(&ev, &mut self.cam, &self.scene, vw, vh, sc);
-                if self.sonne_handle(&ev, vw, vh, sc) || self.nord_handle(&ev, vw, vh, sc) {
+                if self.ansicht_handle(&ev, sc)
+                    || self.sonne_handle(&ev, vw, vh, sc)
+                    || self.nord_handle(&ev, vw, vh, sc)
+                {
                     self.sync_ui();
                     self.sync_caption(surface);
                     return true;
@@ -4411,6 +4486,15 @@ impl App {
                         self.nav
                             .handle(&in_view(e), &mut self.cam, &self.scene, vw, vh, sc);
                 }
+            }
+            // Esc schließt das Feld „Schatten“ der Ansicht (S7)
+            Event::Key {
+                key: Key::Escape,
+                down: true,
+                ..
+            } if self.ansicht_schatten.offen => {
+                self.ansicht_schatten.offen = false;
+                self.redraw = true;
             }
             // Ein Feld der Sonnenstands-Leiste in Eingabe nimmt jede Taste (S4)
             Event::Key {
@@ -5870,6 +5954,23 @@ impl App {
         // Sonnenstand: ohne Schatten auf diesem Treiber sagt es die Leiste
         if self.renderer.shadow_failed() && (self.sonne.hover.is_some() || self.sonne.ueber_sonne) {
             return Some(SCHATTEN_FEHLT.into());
+        }
+        // Zahnrad „Schatten“ der Ansicht (S7)
+        match self.ansicht_schatten.unter {
+            Some(ansicht_schatten::Teil::Zahnrad) => {
+                let t = if self.renderer.shadow_failed() {
+                    SCHATTEN_FEHLT
+                } else {
+                    ansicht_schatten::TIP
+                };
+                return Some(t.into());
+            }
+            Some(ansicht_schatten::Teil::Licht(sk_model::ShadeLight::Sun))
+                if !ansicht_schatten::sonne_waehlbar(self.scene.model().location()) =>
+            {
+                return Some(ansicht_schatten::OHNE_NORD.into());
+            }
+            _ => {}
         }
         if let Some(t) = self.button_tip() {
             return Some(t);
@@ -7512,6 +7613,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         nord_bild: None,
         sonne_bild: None,
         ecken: Vec::new(),
+        ansicht_schatten: Default::default(),
+        schatten_bild: None,
         wuerfel: false,
         licht: None,
         room_keys: Default::default(),
@@ -7992,6 +8095,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 sk_platform::Cursor::Hand
             }
             (None, None) if a.sonne.hover.is_some() => sk_platform::Cursor::Hand,
+            (None, None) if a.ansicht_schatten.hover.is_some() => sk_platform::Cursor::Hand,
             (None, None) => a.ui.cursor(),
         };
         surface.set_cursor(cursor);
@@ -8336,6 +8440,44 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             // Beim Ziehen an Sonne oder Schatten je Bild eine neue Karte,
             // kleiner, wenn die volle zu lange braucht (S6)
             a.renderer.set_shadow_draft(a.sonne.is_busy());
+            // Schatten der Ansichten (S7): Licht der Ansicht, Zahnrad und Feld
+            let wahl = a.ansicht_wahl();
+            let papier = wahl.and_then(|(_, vs)| {
+                let d = ansicht_schatten::licht(a.ui.view, vs, loc, a.ansicht_sonne())?;
+                let (_, tinte) = a.scene.table().pattern;
+                Some(ansicht_schatten::papier(
+                    vs,
+                    d,
+                    [tinte[0], tinte[1], tinte[2]],
+                    a.theme.px_per_mm,
+                    scale,
+                ))
+            });
+            a.renderer.set_paper_shade(papier);
+            let bild = wahl.map(|(_, vs)| ansicht_schatten::Bild {
+                vs,
+                offen: a.ansicht_schatten.offen,
+                hover: a.ansicht_schatten.hover,
+                sonne_ok: ansicht_schatten::sonne_waehlbar(loc),
+                zu_tief: vs.light == sk_model::ShadeLight::Sun
+                    && ansicht_schatten::sonne_waehlbar(loc)
+                    && ansicht_schatten::sonne_zu_tief(loc, a.ansicht_sonne()),
+                rechts: a.ui.rect(Panel::Views, a.w, th).x.to_bits(),
+                scale: scale.to_bits(),
+            });
+            if bild != a.schatten_bild {
+                match &bild {
+                    Some(b) => {
+                        let (c, x, y) = ansicht_schatten::malen(b, &a.ui.fonts, &a.theme);
+                        let px = c.to_premul_rgba8();
+                        let (w, h) = (c.width as u32, c.height as u32);
+                        a.renderer
+                            .set_overlay(OVERLAY_ANSICHT, x, y + th as i32, w, h, &px);
+                    }
+                    None => a.renderer.set_overlay(OVERLAY_ANSICHT, 0, 0, 0, 0, &[]),
+                }
+                a.schatten_bild = bild;
+            }
 
             // „Dachterrasse 13,22 m²“ auf der Terrasse, gedimmt wie eine
             // Raumangabe, nach der Platzregel (Review 3f K1): nie über Wand,

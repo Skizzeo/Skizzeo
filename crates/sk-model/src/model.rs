@@ -151,6 +151,10 @@ pub struct Model {
     sun: Option<location::Sun>,
     /// `[sun]`-Zeile der Datei, die nicht zählt, roh.
     sun_raw: Option<String>,
+    /// Schatten der vier Ansichten (S7), eigene Wahl des Projekts;
+    /// Ansichtszustand wie `cuts`. Dazu unlesbare Zeilen roh.
+    view_shade: [Option<location::ViewShade>; 4],
+    view_shade_raw: Vec<String>,
     /// Schnitte A und B.
     cuts: [Cut; 2],
     /// Zuletzt gezeigter Schnitt (Kennung, A = 0); Ansichtszustand wie `cuts`.
@@ -228,7 +232,7 @@ pub use lock::{edit_blocked, Locked};
 
 #[path = "location.rs"]
 mod location;
-pub use location::{Foot, Location, Sun, FOOT_MAX};
+pub use location::{Foot, Location, ShadeLight, Sun, ViewShade, FOOT_MAX, SHADE_VIEWS};
 
 impl Default for Model {
     fn default() -> Model {
@@ -579,6 +583,8 @@ impl Model {
             north_foot: None,
             sun: None,
             sun_raw: None,
+            view_shade: [None; 4],
+            view_shade_raw: Vec::new(),
             attr,
             materials,
             layer_sets,
@@ -648,6 +654,8 @@ impl Model {
             north_foot: None,
             sun: None,
             sun_raw: None,
+            view_shade: [None; 4],
+            view_shade_raw: Vec::new(),
             attr,
             materials,
             layer_sets,

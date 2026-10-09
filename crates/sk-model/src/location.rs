@@ -289,3 +289,111 @@ mod tests {
         );
     }
 }
+
+/// Licht der Schatten in einer Ansicht (S7, Analyse §3.4): klassisch
+/// parallel zur Raumdiagonale von vorne links bzw. vorne rechts, 45° von
+/// vorne oben, oder die Sonne des Sonnenstands-Systems.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShadeLight {
+    FrontLeft,
+    FrontRight,
+    Top,
+    Sun,
+}
+
+/// Schatten einer der vier Ansichten (S7): an oder aus, als graue Fläche
+/// oder Schraffur, mit welchem Licht. `[viewshade] view=front on=1
+/// fill=area light=front-left`; geschrieben nur für Ansichten mit eigener
+/// Wahl, die übrigen folgen der Vorgabe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewShade {
+    pub on: bool,
+    pub hatch: bool,
+    pub light: ShadeLight,
+}
+
+/// Ansichten in der Reihenfolge der Datei- und Speicherplätze: Vorne,
+/// Hinten, Links, Rechts (nach Modellachsen, nicht nach Himmelsrichtung).
+pub const SHADE_VIEWS: [&str; 4] = ["front", "back", "left", "right"];
+
+impl ViewShade {
+    /// Werkvorgabe (§6, Frage 2): an, graue Fläche, klassisch vorne links.
+    pub const WERK: ViewShade = ViewShade {
+        on: true,
+        hatch: false,
+        light: ShadeLight::FrontLeft,
+    };
+
+    /// `fill=` der Datei.
+    pub fn fill_text(&self) -> &'static str {
+        if self.hatch {
+            "hatch"
+        } else {
+            "area"
+        }
+    }
+
+    /// `light=` der Datei.
+    pub fn light_text(&self) -> &'static str {
+        match self.light {
+            ShadeLight::FrontLeft => "front-left",
+            ShadeLight::FrontRight => "front-right",
+            ShadeLight::Top => "top",
+            ShadeLight::Sun => "sun",
+        }
+    }
+
+    pub fn parse_fill(t: &str) -> Option<bool> {
+        match t {
+            "area" => Some(false),
+            "hatch" => Some(true),
+            _ => None,
+        }
+    }
+
+    pub fn parse_light(t: &str) -> Option<ShadeLight> {
+        match t {
+            "front-left" => Some(ShadeLight::FrontLeft),
+            "front-right" => Some(ShadeLight::FrontRight),
+            "top" => Some(ShadeLight::Top),
+            "sun" => Some(ShadeLight::Sun),
+            _ => None,
+        }
+    }
+}
+
+impl Model {
+    /// Schatten der Ansicht `i` (Reihenfolge [`SHADE_VIEWS`]): die eigene
+    /// Wahl des Projekts oder die Vorgabe `vorgabe`.
+    pub fn view_shade(&self, i: usize, vorgabe: ViewShade) -> ViewShade {
+        self.view_shade.get(i).copied().flatten().unwrap_or(vorgabe)
+    }
+
+    /// Die eigene Wahl des Projekts für Ansicht `i`, falls es eine gibt.
+    pub fn view_shade_own(&self, i: usize) -> Option<ViewShade> {
+        self.view_shade.get(i).copied().flatten()
+    }
+
+    /// Schatten einer Ansicht wählen: Ansichtszustand ohne Schritt und ohne
+    /// neue Revision, wie [`Model::set_sun`]. Gleicht die Wahl der Vorgabe
+    /// `vorgabe`, entfällt die eigene Wahl (und ihre Zeile). Eine unlesbare
+    /// Zeile dieser Ansicht entfällt damit.
+    pub fn set_view_shade(&mut self, i: usize, s: ViewShade, vorgabe: ViewShade) {
+        if let Some(v) = self.view_shade.get_mut(i) {
+            *v = (s != vorgabe).then_some(s);
+            let name = format!("view={}", SHADE_VIEWS[i]);
+            self.view_shade_raw
+                .retain(|l| !l.split_whitespace().any(|w| w == name));
+        }
+    }
+
+    /// `[viewshade]`-Zeilen der Datei, die nicht zählen, roh.
+    pub(crate) fn view_shade_raw(&self) -> &[String] {
+        &self.view_shade_raw
+    }
+
+    pub(crate) fn load_view_shade(&mut self, s: [Option<ViewShade>; 4], raw: Vec<String>) {
+        self.view_shade = s;
+        self.view_shade_raw = raw;
+    }
+}

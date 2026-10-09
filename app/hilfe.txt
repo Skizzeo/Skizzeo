@@ -15,6 +15,7 @@ Verschieben | **Umschalt** + Mausrad gedrückt
 Zoomen | Mausrad drehen, zoomt zum Mauszeiger
 Ansicht wechseln | Paneel „Ansichten“: 3D, Grundriss, Schnitt, Vorne, Hinten, Links, Rechts
 Bauteil ins Bild holen | Doppelklick auf eine Zeile im Baum oder im Mengenfenster
+Schatten der Ansicht | in Vorne, Hinten, Links und Rechts das Zahnrad links neben dem Paneel „Ansichten“: Schatten an oder aus, graue Fläche oder Schraffur, Licht vorne links, vorne rechts, vorne oben oder von der Sonne (braucht die Nordrichtung); „Auf alle Ansichten übertragen“ gilt für alle vier
 
 [thema] id=gebaeude titel="Gebäude erstellen"
 Höhen | Dicke OG-Decke, lichte Höhe OG, Dicke EG-Decke, lichte Höhe EG, Dicke Sohlplatte

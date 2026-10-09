@@ -1221,6 +1221,17 @@ impl Scene {
         self.model.set_cut(i, c);
     }
 
+    /// Schatten einer Ansicht wählen (ohne Schritt, wie die Schnitte;
+    /// Sonnenstand S7).
+    pub fn set_view_shade(
+        &mut self,
+        i: usize,
+        v: sk_model::ViewShade,
+        vorgabe: sk_model::ViewShade,
+    ) {
+        self.model.set_view_shade(i, v, vorgabe);
+    }
+
     /// Datum, Uhrzeit und Schalter des Sonnenstands-Systems merken (ohne
     /// Schritt, wie die Schnitte; Sonnenstand S4).
     pub fn set_sun(&mut self, s: sk_model::Sun) {

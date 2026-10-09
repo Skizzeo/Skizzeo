@@ -25,6 +25,16 @@ mod tests {
         Scene::with_model(m)
     }
 
+    /// RH-3 mit Versatz und Dachterrasse: Vor- und Rücksprünge für
+    /// Schatten in den Ansichten.
+    fn haus3() -> Scene {
+        let text = include_str!("../../crates/sk-cost/referenz/rh3-versatz-dachterrasse.szo");
+        let m = szo::read_with(text, GuidGen::with_seed(1), &sk_cost::lesen::ABSCHNITTE_SZO)
+            .unwrap()
+            .model;
+        Scene::with_model(m)
+    }
+
     fn sonne(m: u32, d: u32, minuten: u32) -> Sun {
         Sun {
             date: Datum::new(2026, m, d).unwrap(),
@@ -257,5 +267,182 @@ mod tests {
         eprintln!("{bericht}");
         std::fs::write(ziel.join("s6-tiefendurchgang.txt"), bericht).unwrap();
         assert_eq!(r.take_shadow_error(), None);
+    }
+
+    /// Eine Ansicht auf Papier wie in der App, mit dem Schatten der Wahl
+    /// `vs` (S7); `dazu`: zusätzliches Netz (Probestück).
+    fn ansicht(
+        r: &mut Renderer,
+        s: &mut Scene,
+        v: ViewKind,
+        vs: sk_model::ViewShade,
+        sun: Sun,
+        dazu: sk_render::MeshData,
+    ) -> (Vec<u8>, Camera) {
+        use crate::ansicht_schatten as asch;
+        let theme = Theme::dark();
+        s.set_theme(&theme);
+        r.set_style(crate::style(&theme.env));
+        r.set_looks(&s.table().looks_with(1.0, |_| 1.0));
+        r.set_mesh(crate::MESH_MODEL, &s.mesh(v, None, &[]));
+        let q = huelle(&dazu.faces);
+        r.set_mesh(crate::MESH_WUERFEL, &dazu);
+        r.set_sun(None);
+        let ort = *s.model().location();
+        let papier = asch::licht(v, vs, &ort, sun).map(|d| {
+            let (_, t) = s.table().pattern;
+            asch::papier(vs, d, [t[0], t[1], t[2]], theme.px_per_mm, 1.0)
+        });
+        assert!(papier.is_some() || !vs.on, "Licht");
+        r.set_paper_shade(papier);
+        let b = s.bounds().or(q);
+        let cam = crate::fit_parallel(v, b, W as f64, H as f64);
+        let mut view = cam.view(W, H);
+        view.paper = Some(s.table().paper);
+        view.patterns = crate::draw_table::pattern_mode(v, theme.env.patterns_3d);
+        r.draw(W, H, 0, &view).unwrap();
+        let px = r.read_pixels(W, H);
+        r.set_paper_shade(None);
+        r.set_mesh(crate::MESH_WUERFEL, &Default::default());
+        (px, cam)
+    }
+
+    fn huelle(faces: &[[f32; 9]]) -> Option<(Vec3, Vec3)> {
+        let mut it = faces
+            .iter()
+            .map(|f| vec3(f[0] as f64, f[1] as f64, f[2] as f64));
+        let a = it.next()?;
+        Some(it.fold((a, a), |(lo, hi), p| {
+            (
+                vec3(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z)),
+                vec3(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z)),
+            )
+        }))
+    }
+
+    /// Prüfbilder S7: RH-3 in den vier Ansichten (Fläche, vorne links),
+    /// Vorne mit Schraffur und mit der Sonne vom 21.06. 15:00; dazu das
+    /// Band unter 50 cm Überstand im Bild gemessen.
+    #[test]
+    #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
+    fn gpu_istbilder_s7() {
+        use sk_model::{ShadeLight, ViewShade};
+        let Some(ziel) = std::env::var_os("SKIZZEO_ISTBILDER").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let k = sk_render::glx::kontext(W as i32, H as i32).expect("GLX-Kontext (DISPLAY?)");
+        let theme = Theme::dark();
+        let mut r = Renderer::new(k.gl, crate::style(&theme.env)).unwrap();
+        let ab = |px: &[u8], n: &str| {
+            std::fs::write(ziel.join(n), sk_paint::encode_png(W, H, px)).unwrap()
+        };
+        let mut h = haus3();
+        let leer = sk_render::MeshData::default;
+        let sun = sonne(6, 21, 15 * 60);
+        for (v, n) in [
+            (ViewKind::Front, "vorne"),
+            (ViewKind::Back, "hinten"),
+            (ViewKind::Left, "links"),
+            (ViewKind::Right, "rechts"),
+        ] {
+            let (px, _) = ansicht(&mut r, &mut h, v, ViewShade::WERK, sun, leer());
+            ab(&px, &format!("ist-s7-{n}-flaeche.png"));
+        }
+        let schraffur = ViewShade {
+            hatch: true,
+            ..ViewShade::WERK
+        };
+        let (px, _) = ansicht(&mut r, &mut h, ViewKind::Back, schraffur, sun, leer());
+        ab(&px, "ist-s7-hinten-schraffur.png");
+        let mut m = h.model().clone();
+        let mut l = *m.location();
+        l.north = Some(180.0);
+        m.begin("Lage");
+        m.set_location(l);
+        m.commit();
+        let mut hn = Scene::with_model(m);
+        let mit_sonne = ViewShade {
+            light: ShadeLight::Sun,
+            ..ViewShade::WERK
+        };
+        let (px, _) = ansicht(&mut r, &mut hn, ViewKind::Back, mit_sonne, sun, leer());
+        ab(&px, "ist-s7-hinten-sonne-0621-1500.png");
+
+        // Wand mit 50 cm Überstand: Band bis 2,50 m, im Bild gemessen
+        let q = |a: [f64; 3], b: [f64; 3]| {
+            sv::quader_netz((vec3(a[0], a[1], a[2]), vec3(b[0], b[1], b[2])))
+        };
+        let mut stueck = q([0.0, 0.0, 0.0], [6000.0, 365.0, 3000.0]);
+        let platte = q([1000.0, -500.0, 3000.0], [5000.0, 365.0, 3200.0]);
+        stueck.faces.extend(platte.faces);
+        stueck.edges.extend(platte.edges);
+        let mut w = Scene::with_model(Model::with_seed(1));
+        let (px, cam) = ansicht(
+            &mut r,
+            &mut w,
+            ViewKind::Front,
+            ViewShade::WERK,
+            sun,
+            stueck,
+        );
+        ab(&px, "ist-s7-ueberstand.png");
+        let hell = |p: Vec3| {
+            let (x, y) = cam.project(p, W as f64, H as f64).unwrap();
+            let i = (y as usize * W as usize + x as usize) * 4;
+            px[i] as f64 + px[i + 1] as f64 + px[i + 2] as f64
+        };
+        let papier = hell(vec3(3000.0, 0.0, 1500.0));
+        let schatten = hell(vec3(3000.0, 0.0, 2750.0));
+        assert!((schatten - papier).abs() > 30.0, "{papier} {schatten}");
+        // Übergang von oben nach unten in 5-mm-Schritten
+        let mut z = 2900.0;
+        while (hell(vec3(3000.0, 0.0, z)) - schatten).abs() < (papier - schatten).abs() * 0.5 {
+            z -= 5.0;
+        }
+        let mm_px = {
+            let a = cam
+                .project(vec3(0.0, 0.0, 0.0), W as f64, H as f64)
+                .unwrap();
+            let b = cam
+                .project(vec3(0.0, 0.0, 1000.0), W as f64, H as f64)
+                .unwrap();
+            1000.0 / (a.1 - b.1).abs()
+        };
+        assert!(
+            (z - 2500.0).abs() <= 2.0 * mm_px + 5.0,
+            "Band bis {z} mm, {mm_px:.1} mm je Pixel"
+        );
+        std::fs::write(
+            ziel.join("s7-band.txt"),
+            format!(
+                "Band unter 50 cm Überstand endet bei {z} mm (Soll 2500, {mm_px:.1} mm je Pixel)\n"
+            ),
+        )
+        .unwrap();
+        assert_eq!(r.take_shadow_error(), None);
+
+        // Das offene Feld mit „vorne oben“ gewählt, Maus über „Sonne“
+        let b = crate::ansicht_schatten::Bild {
+            vs: ViewShade {
+                light: ShadeLight::Top,
+                ..ViewShade::WERK
+            },
+            offen: true,
+            hover: Some(crate::ansicht_schatten::Teil::Licht(ShadeLight::Sun)),
+            sonne_ok: true,
+            zu_tief: true,
+            rechts: 1300f32.to_bits(),
+            scale: 1.5f32.to_bits(),
+        };
+        // Unter Linux ohne Windows-Schriften: Schrift aus SKIZZEO_SCHRIFT
+        let mut fonts = sk_ui::widgets::Fonts::system();
+        if let Some(f) = std::env::var_os("SKIZZEO_SCHRIFT")
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(sk_paint::font::Font::parse)
+        {
+            fonts.regular = Some(f);
+        }
+        let (c, _, _) = crate::ansicht_schatten::malen(&b, &fonts, &theme);
+        std::fs::write(ziel.join("ist-s7-feld.png"), c.to_png()).unwrap();
     }
 }

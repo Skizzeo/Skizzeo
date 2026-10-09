@@ -1073,6 +1073,22 @@ fn write_known(m: &Model) -> String {
         out.push_str(raw);
         out.push('\n');
     }
+    // Schatten der Ansichten (S7) nur mit eigener Wahl; unlesbare Zeilen
+    // bleiben roh
+    for (i, name) in crate::SHADE_VIEWS.iter().enumerate() {
+        if let Some(v) = m.view_shade_own(i) {
+            Line::new("viewshade")
+                .word("view", name)
+                .flag("on", v.on)
+                .word("fill", v.fill_text())
+                .word("light", v.light_text())
+                .finish(&mut out);
+        }
+    }
+    for raw in m.view_shade_raw() {
+        out.push_str(raw);
+        out.push('\n');
+    }
     // Ausgeblendetes (Paket 3 §3.6) nur, wenn es etwas gibt; Isolieren nie
     let v = m.visibility();
     for g in &v.hidden {
@@ -1294,7 +1310,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 31] = [
+    const KNOWN: [&str; 32] = [
         "pen",
         "linetype",
         "fill",
@@ -1322,6 +1338,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         "prop",
         "cut",
         "sun",
+        "viewshade",
         "hide",
         "lock",
         "matprop",
@@ -2133,6 +2150,47 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         }
         [_, r, ..] => return Err(err(r.line, "[sun] doppelt")),
     }
+    // Schatten der Ansichten (S7): Ansichtszustand; eine Zeile, die nicht
+    // zählt, gibt einen Hinweis und bleibt roh (Regel 72)
+    let mut shade: [Option<crate::ViewShade>; 4] = [None; 4];
+    let mut shade_raw = Vec::new();
+    for r in recs("viewshade") {
+        let view = r
+            .opt("view")
+            .and_then(|v| crate::SHADE_VIEWS.iter().position(|n| *n == v));
+        let on = r.opt("on").and_then(|_| r.flag("on").ok());
+        let fill = r.opt("fill").and_then(crate::ViewShade::parse_fill);
+        let light = r.opt("light").and_then(crate::ViewShade::parse_light);
+        let doppelt = view.is_some_and(|i| shade[i].is_some());
+        match (view, on, fill, light) {
+            (Some(i), Some(on), Some(hatch), Some(light)) if !doppelt => {
+                shade[i] = Some(crate::ViewShade { on, hatch, light });
+            }
+            _ => {
+                r.skip();
+                shade_raw.push(lines[r.line - 1].to_string());
+                let mut falsch = Vec::new();
+                for (k, ok) in [
+                    ("view", view.is_some()),
+                    ("on", on.is_some()),
+                    ("fill", fill.is_some()),
+                    ("light", light.is_some()),
+                ] {
+                    if !ok {
+                        falsch.push(format!("„{k}“ fehlt oder gilt nicht"));
+                    }
+                }
+                if doppelt {
+                    falsch.push("Ansicht doppelt".to_string());
+                }
+                hints.push(format!(
+                    "Zeile {}: [viewshade] {}; die Ansicht folgt der Vorgabe, die Zeile bleibt",
+                    r.line,
+                    falsch.join(", ")
+                ));
+            }
+        }
+    }
     // Gesperrtes (Paket 4 §2.3): Modell, darum Unbekanntes mit Hinweis
     let locks: Vec<(usize, Option<Guid>)> = recs("lock")
         .iter()
@@ -2173,6 +2231,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     );
     model.load_location(location, foot, location_raw);
     model.load_sun(sun, sun_raw);
+    model.load_view_shade(shade, shade_raw);
     for (k, n) in counters {
         if !model.raise_counter(&k, n) {
             hints.push(format!(
@@ -4017,6 +4076,114 @@ mod tests {
         }
         let doppelt = an.replacen("[sun]", "[sun] date=2026-01-01 time=08:00\n[sun]", 1);
         assert!(load(&doppelt).is_err());
+    }
+
+    /// Sonnenstand S7: Ohne eigene Wahl kein `[viewshade]`, alte Dateien
+    /// bleiben bytegleich; je gewählter Ansicht eine Zeile, Rundlauf
+    /// bytegleich, keine neue Revision. Unlesbares bleibt roh mit Hinweis,
+    /// bis eine Wahl für diese Ansicht es ersetzt.
+    #[test]
+    fn s7_schatten_der_ansichten_in_der_datei() {
+        use crate::{ShadeLight, ViewShade};
+        let mut m = house();
+        let alt = write(&m);
+        assert!(!alt.contains("[viewshade]"));
+        assert_eq!(m.view_shade(2, ViewShade::WERK), ViewShade::WERK);
+        let rev = m.revision();
+        let a = ViewShade {
+            on: true,
+            hatch: true,
+            light: ShadeLight::Sun,
+        };
+        let b = ViewShade {
+            on: false,
+            hatch: false,
+            light: ShadeLight::FrontRight,
+        };
+        m.set_view_shade(3, b, ViewShade::WERK);
+        m.set_view_shade(0, a, ViewShade::WERK);
+        assert_eq!(m.revision(), rev, "Ansichtszustand");
+        let neu = write(&m);
+        let zeilen: Vec<&str> = neu
+            .lines()
+            .filter(|z| z.starts_with("[viewshade]"))
+            .collect();
+        assert_eq!(
+            zeilen,
+            [
+                "[viewshade] view=front on=1 fill=hatch light=sun",
+                "[viewshade] view=right on=0 fill=area light=front-right",
+            ]
+        );
+        let back = load(&neu).unwrap();
+        assert!(back.hints.is_empty(), "{:?}", back.hints);
+        assert_eq!(back.model.view_shade_own(0), Some(a));
+        assert_eq!(back.model.view_shade_own(1), None);
+        assert_eq!(back.model.view_shade(3, ViewShade::WERK), b);
+        assert_eq!(write(&back.model), neu);
+        let ohne: String = neu
+            .lines()
+            .filter(|z| !z.starts_with("[viewshade]"))
+            .map(|z| format!("{z}\n"))
+            .collect();
+        assert_eq!(ohne, alt);
+
+        // Unlesbar: Hinweis, die Zeile bleibt, bis die Ansicht gewählt wird
+        for roh in [
+            "[viewshade] view=oben on=1 fill=area light=sun",
+            "[viewshade] view=back on=ja fill=area light=sun",
+            "[viewshade] view=back on=1 fill=grau light=sun",
+            "[viewshade] view=back on=1 fill=area light=hinten",
+            "[viewshade] view=back on=1 fill=area",
+        ] {
+            let text = alt.replacen("[storey]", &format!("{roh}\n[storey]"), 1);
+            let l = load(&text).unwrap();
+            assert_eq!(l.hints.len(), 1, "{roh}: {:?}", l.hints);
+            assert!(l.hints[0].contains("[viewshade]"), "{:?}", l.hints);
+            assert_eq!(l.model.view_shade_own(1), None, "{roh}");
+            let w = write(&l.model);
+            assert!(w.lines().any(|z| z == roh), "{roh}: roh");
+            let mut m2 = l.model;
+            m2.set_view_shade(1, a, ViewShade::WERK);
+            let w2 = write(&m2);
+            let ersetzt = roh.contains("view=back");
+            assert_eq!(!w2.lines().any(|z| z == roh), ersetzt, "{roh}");
+        }
+        // Dieselbe Ansicht doppelt: die zweite Zeile zählt nicht
+        let doppelt = neu.replacen(
+            "[viewshade] view=front",
+            "[viewshade] view=front on=0 fill=area light=front-left\n[viewshade] view=front",
+            1,
+        );
+        let l = load(&doppelt).unwrap();
+        assert_eq!(l.hints.len(), 1, "{:?}", l.hints);
+        assert!(!l.model.view_shade_own(0).unwrap().on);
+
+        // „vorne oben“ (§8 11:55, Rückfrage a) im Rundlauf
+        let oben = ViewShade {
+            light: ShadeLight::Top,
+            ..ViewShade::WERK
+        };
+        let mut m3 = back.model;
+        m3.set_view_shade(1, oben, ViewShade::WERK);
+        let w3 = write(&m3);
+        assert!(w3
+            .lines()
+            .any(|z| z == "[viewshade] view=back on=1 fill=area light=top"));
+        assert_eq!(load(&w3).unwrap().model.view_shade_own(1), Some(oben));
+        // Gleicht eine Ansicht wieder der Vorgabe, entfällt ihre Zeile
+        for i in 0..4 {
+            m3.set_view_shade(i, ViewShade::WERK, ViewShade::WERK);
+        }
+        assert_eq!(m3.view_shade_own(0), None);
+        assert_eq!(write(&m3), alt);
+        // Eine andere Vorgabe (S8): dieselbe Wahl ist dann eigene Wahl
+        let vorgabe = ViewShade {
+            on: false,
+            ..ViewShade::WERK
+        };
+        m3.set_view_shade(2, ViewShade::WERK, vorgabe);
+        assert_eq!(m3.view_shade_own(2), Some(ViewShade::WERK));
     }
 
     /// Sonnenstand S1: Ohne Lage keine Zeile, die alte Datei bleibt
