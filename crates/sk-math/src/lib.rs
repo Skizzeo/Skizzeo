@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod polygon;
+pub mod sonne;
 
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
 
