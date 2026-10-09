@@ -114,6 +114,8 @@ impl Measure {
 /// Netz, Zeichnen, Tauschen) und der Zeit des Tiefen-Durchgangs auf der
 /// Grafikkarte (S5/S6, 0 ohne neue Karte): Der Schatten geht vom Zeichnen
 /// ab, ein Rest vom Tauschen, so bleibt die Summe die Dauer des Bildes.
+/// Die Grafikkarte misst das Bild davor: Ist ihre Zeit länger als
+/// Zeichnen und Tauschen zusammen, zählt nur so viel (Test, S6).
 pub fn spalten(
     ereignisse: f64,
     netz: f64,
@@ -121,6 +123,7 @@ pub fn spalten(
     zeichnen: f64,
     tauschen: f64,
 ) -> [f64; 5] {
+    let schatten = schatten.clamp(0.0, zeichnen + tauschen);
     let z = (zeichnen - schatten).max(0.0);
     let t = (tauschen - (schatten - zeichnen).max(0.0)).max(0.0);
     [ereignisse, netz, schatten, z, t]
@@ -159,5 +162,9 @@ mod tests {
             spalten(0.5, 0.25, 3.5, 3.0, 1.0),
             [0.5, 0.25, 3.5, 0.0, 0.5]
         );
+        // Länger als Zeichnen und Tauschen: die Summe bleibt
+        let v = spalten(0.5, 0.25, 9.0, 3.0, 1.0);
+        assert_eq!(v, [0.5, 0.25, 4.0, 0.0, 0.0]);
+        assert_eq!(v.iter().sum::<f64>(), 0.5 + 0.25 + 3.0 + 1.0);
     }
 }

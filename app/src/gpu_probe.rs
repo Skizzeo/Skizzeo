@@ -233,12 +233,14 @@ mod tests {
                 }
             }
             r.set_shadow_draft(false);
+            // Der Renderer wählt nach der zuletzt gelesenen Messung (Test S6)
+            let letzte = v.last().map_or(0.0, |m| m.1);
             v.sort_by(|a, b| a.1.total_cmp(&b.1));
-            v
+            (v, letzte)
         };
         let mut bericht = String::new();
         for (n, s) in [("Würfel", &mut w), ("Haus RH-1", &mut h)] {
-            let v = zeiten(&mut r, s, false);
+            let (v, letzte) = zeiten(&mut r, s, false);
             assert!(!v.is_empty(), "keine Messung");
             assert!(
                 v.iter().all(|m| m.0 == sk_render::schatten::GROESSE),
@@ -246,9 +248,10 @@ mod tests {
             );
             let median = v[v.len() / 2].1;
             bericht += &format!("{n}: {} mal 4096², Median {median:.1} ms\n", v.len());
-            // Beim Ziehen: über 8 ms kleiner, sonst volle Größe
-            let e = zeiten(&mut r, s, true);
-            let gross = if median > sk_render::schatten::ENTWURF_AB_MS {
+            // Beim Ziehen: letzte volle Messung über 8 ms kleiner, sonst
+            // volle Größe
+            let (e, _) = zeiten(&mut r, s, true);
+            let gross = if letzte > sk_render::schatten::ENTWURF_AB_MS {
                 sk_render::schatten::ENTWURF
             } else {
                 sk_render::schatten::GROESSE
