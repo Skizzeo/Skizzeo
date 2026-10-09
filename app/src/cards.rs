@@ -302,14 +302,20 @@ fn symbol(c: &mut Canvas, b: Blatt, (x, y): (f32, f32), s: f32, col: Rgba) {
     let mut p = Path::new();
     match b {
         Blatt::Mengen => {
-            for k in 0..4 {
-                let o = k as f32 * d / 3.0;
-                p.segment((x, y + o), (x + d, y + o), w);
-                p.segment((x + o, y), (x + o, y + d), w);
+            // Vier Kacheln 2 × 2 wie im Soll (spaeter-darstellung 4)
+            let k = d * 0.4;
+            for (ox, oy) in [(0.0, 0.0), (0.6, 0.0), (0.0, 0.6), (0.6, 0.6)] {
+                let (x0, y0) = (x + ox * d, y + oy * d);
+                p.segment((x0, y0), (x0 + k, y0), w);
+                p.segment((x0 + k, y0), (x0 + k, y0 + k), w);
+                p.segment((x0 + k, y0 + k), (x0, y0 + k), w);
+                p.segment((x0, y0 + k), (x0, y0), w);
             }
         }
         Blatt::Kosten => {
-            // Bogen von 45° bis 315° um die Mitte, dazu zwei Querstriche
+            // Bogen von 45° bis 315° um die Mitte, dazu zwei Querstriche;
+            // kräftiger Strich wie im Soll
+            let w = 1.8 * s.max(1.0);
             let (cx, cy, r) = (x + d * 0.58, y + d * 0.5, d * 0.42);
             let n = 16;
             let at = |i: usize| {

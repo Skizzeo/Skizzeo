@@ -2201,9 +2201,6 @@ impl KostenView {
                     b.draw(c, WAEHLEN, px, lx, base, crate::cards::verweis(u, hot));
                 }
             }
-            if z.art == Art::Gruppe && z.ebene == 0 {
-                c.fill_rect(x0, y + h - s.max(1.0), cw, s.max(1.0), u.sheet_rule);
-            }
         }
     }
 
@@ -2257,6 +2254,8 @@ impl KostenView {
             }
             return;
         }
+        // Linie über der Summe statt unter jeder Gewerkzeile (spaeter 5)
+        c.fill_rect(x0, y - SUM_HEAD * s, cw, s.max(1.0), u.sheet_hint);
         if let Some(f) = bold {
             // Bedienbarkeit 11.2: wofür die Summen gelten
             let px = 12.0 * s;

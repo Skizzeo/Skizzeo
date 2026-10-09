@@ -1505,9 +1505,8 @@ impl AvaView {
         let s = self.scale;
         let u = &t.ui;
         let (fx, fy, fw, fh) = fl;
-        let mut p = Path::new();
-        p.rounded_rect(fx, fy, fw, fh, t.size.corner_radius * s);
-        c.fill(&p, u.sheet_tile);
+        // Bündig unter der Tabelle mit Linie statt Karte (spaeter-darstellung 15)
+        c.fill_rect(fx, fy, fw, s.max(1.0), u.sheet_rule);
         let px = 11.0 * s;
         let x = fx + 12.0 * s;
         let kopf = fy + 24.0 * s;
@@ -1521,7 +1520,7 @@ impl AvaView {
             let rw = b.1 .0 + b.1 .2 + 2.0 * s - rx;
             let mut p = Path::new();
             p.rounded_rect(rx, ry, rw, rh, rh * 0.5);
-            c.fill(&p, u.sheet_bg);
+            c.fill(&p, u.sheet_tile);
         }
         for (re, (sx, sy, sw, sh)) in &reiter {
             let on = *re == self.reiter;
@@ -1985,6 +1984,8 @@ pub fn detail(m: &Model, kat: &Katalog, lv: &Lv, oz: &str) -> Option<Detail> {
     })
 }
 
+#[cfg(test)]
+mod abnahme_befunde;
 #[cfg(test)]
 mod abnahme_ka4b;
 #[cfg(test)]
