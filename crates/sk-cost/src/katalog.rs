@@ -255,6 +255,26 @@ pub struct Vorschlag {
     pub satz: Satz,
 }
 
+impl Vorschlag {
+    /// `field=*`: ein ganzer neuer Satz aus einer Erweiterung (E8c,
+    /// BIM §3.16 „Zweiter Fall“).
+    pub fn ganzer_satz(&self) -> bool {
+        self.feld == "*"
+    }
+
+    /// Ein `field=*`-Vorschlag passt, wenn er kein `old` hat und sein Satz
+    /// (Bauleistung oder Artikel) im Entwurf steht.
+    pub fn passt(&self, k: &Katalog) -> bool {
+        let g = Guid::from_ifc(&self.of);
+        self.alt.is_none()
+            && match self.rec.as_str() {
+                "service" => g.and_then(|g| k.leistung(g)).is_some(),
+                "article" => g.and_then(|g| k.artikel(g)).is_some(),
+                _ => false,
+            }
+    }
+}
+
 /// Firmenwerte (`[rate]`) mit den Werkswerten als Rückfall (BIM §3.6).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Firmenwerte {
@@ -1241,6 +1261,21 @@ pub fn lesen<'a>(
                 datum: text("date"),
                 satz: s,
             });
+        }
+        // `field=*` mit `old`, anderem `rec` oder ohne den Satz: grau, nur
+        // Ablehnen (BIM §3.16 „Zweiter Fall“)
+        let ungueltig: Vec<(u32, String)> = k
+            .vorschlaege
+            .iter()
+            .filter(|v| v.ganzer_satz() && !v.passt(&k))
+            .map(|v| (v.key, v.neu.clone()))
+            .collect();
+        for (key, neu) in ungueltig {
+            bf.push(Befund::warnung(
+                105,
+                format!("Vorschlag {neu} passt zu keinem neuen Satz im Entwurf."),
+                satz_ort("proposal", key.to_string()),
+            ));
         }
     } else if !vorschlaege.is_empty() {
         bf.push(Befund::warnung(

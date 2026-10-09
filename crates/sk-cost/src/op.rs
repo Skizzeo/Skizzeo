@@ -185,6 +185,17 @@ pub struct VorschlagWert {
     pub neu: String,
 }
 
+/// Ein neuer Satz aus einer Erweiterung (E8c, verwaltung.md §8a): `rec` und
+/// Kennung `of` des Satzes, sein Kurztext und die Zeilen, die ihn anlegen
+/// (Abschnitt, Zeile; aus [`crate::neue_saetze`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SatzNeu {
+    pub rec: &'static str,
+    pub of: Guid,
+    pub kurz: String,
+    pub zeilen: Vec<(&'static str, String)>,
+}
+
 /// Eine benannte Änderung an Stammdaten (Bausteingrenze §5).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Op {
@@ -296,6 +307,17 @@ pub enum Op {
     VorschlagAblehnen {
         key: u32,
     },
+    /// Neue Sätze aus einer Erweiterung (E8c, verwaltung.md §8a, BIM §3.16
+    /// „Zweiter Fall“): die Zeilen mit `[origin] kind=import status=open
+    /// source=quelle`; aus einem Projekt im Entwurf dazu je Satz eine
+    /// `[proposal] field=*`. Nur im Firmenkatalog.
+    SaetzeAusErweiterung {
+        /// Projekt und Name; `None`: in der Verwaltung eingelesen.
+        projekt: Option<(Guid, String)>,
+        /// „Erweiterung werk.stuetze v1“.
+        quelle: String,
+        saetze: Vec<SatzNeu>,
+    },
 }
 
 /// Alle Operationen mit festem Namen (für Schema, `[log] op`, Abläufe):
@@ -303,7 +325,7 @@ pub enum Op {
 /// Operationen, die es allein für die Firma gibt (Entscheid 19:45,
 /// paket-ka3b §2): Das Kennwort schützt den Firmenkatalog, nicht das Haus;
 /// jede Projektoperation bleibt für alle erlaubt (im Haus mit Marke).
-pub const NAMEN: [(&str, &str, bool); 21] = [
+pub const NAMEN: [(&str, &str, bool); 22] = [
     ("artikel_anlegen", "baustoff name dicke guete format einheit preis stand quelle lieferant standard", false),
     ("preis_setzen", "artikel preis stand quelle", false),
     ("bauleistung_anlegen", "kurz gewerk titel pos einheit bezug stunden geraet sonst nu kg kategorien mat tmin tmax funktion", false),
@@ -325,6 +347,7 @@ pub const NAMEN: [(&str, &str, bool); 21] = [
     ("vorschlag_fuer_firma", "projekt name (rec of field old new)…", false),
     ("vorschlag_uebernehmen", "key", true),
     ("vorschlag_ablehnen", "key", true),
+    ("saetze_aus_erweiterung", "projekt name quelle (rec of kurz zeilen)…", false),
 ];
 
 /// „65,5“ statt „65.5“.
@@ -357,6 +380,7 @@ impl Op {
             Op::VorschlagFuerFirma { .. } => 18,
             Op::VorschlagUebernehmen { .. } => 19,
             Op::VorschlagAblehnen { .. } => 20,
+            Op::SaetzeAusErweiterung { .. } => 21,
         }
     }
 
@@ -417,6 +441,9 @@ impl Op {
             Op::VorschlagFuerFirma { .. } => "Der Firma vorgeschlagen".into(),
             Op::VorschlagUebernehmen { .. } => "Vorschlag übernommen".into(),
             Op::VorschlagAblehnen { .. } => "Vorschlag abgelehnt".into(),
+            Op::SaetzeAusErweiterung { quelle, saetze, .. } => {
+                format!("Neue Sätze aus {quelle} ({})", saetze.len())
+            }
         }
     }
 
@@ -558,15 +585,22 @@ impl Arbeit<'_> {
     /// Wie [`Self::herkunft_setzen`]; `quelle` nicht leer ersetzt `source`
     /// (Eingabe in anderer Einheit, Regel 108).
     fn herkunft_mit(&mut self, rec: &'static str, id: &str, quelle: &str) {
+        self.herkunft_als(self.herkunft.art, rec, id, quelle);
+    }
+
+    /// Wie [`Self::herkunft_mit`], mit der Art `art` (neue Sätze aus einer
+    /// Erweiterung sind ein Import, E8c); die Sicherheit gilt nur mit der
+    /// eigenen Art.
+    fn herkunft_als(&mut self, art: HerkunftArt, rec: &'static str, id: &str, quelle: &str) {
         let h = self.herkunft;
-        if h.art == HerkunftArt::Factory {
+        if art == HerkunftArt::Factory {
             return;
         }
         let mut s = Satz::neu(&satz::ORIGIN);
         s.setzen("key", Some(Wert::Text(id.into())));
         s.setzen("rec", Some(Wert::Wort(rec.into())));
-        s.setzen("kind", Some(Wert::Wort(h.art.wort().into())));
-        let status = if h.art == HerkunftArt::Manual {
+        s.setzen("kind", Some(Wert::Wort(art.wort().into())));
+        let status = if art == HerkunftArt::Manual {
             "confirmed"
         } else {
             "open"
@@ -583,7 +617,7 @@ impl Arbeit<'_> {
                 s.setzen(f, Some(Wert::Text(v.clone())));
             }
         }
-        if let Some(c) = h.sicher {
+        if let Some(c) = h.sicher.filter(|_| art == h.art) {
             s.setzen("conf", Some(Wert::Wort(c.wort().into())));
         }
         if self.projekt {
@@ -1025,7 +1059,21 @@ impl Arbeit<'_> {
                     .find(|v| v.key == *key)
                     .cloned()
                     .ok_or_else(|| abgelehnt(op, "den Vorschlag gibt es nicht mehr"))?;
-                if matches!(op, Op::VorschlagUebernehmen { .. }) {
+                if v.ganzer_satz() {
+                    // Neuer Satz aus einer Erweiterung (verwaltung.md §8a)
+                    let ids = self.neuer_satz(&v);
+                    match op {
+                        Op::VorschlagUebernehmen { .. } if ids.is_empty() || v.alt.is_some() => {
+                            return Err(abgelehnt(op, "der Vorschlag passt zu keinem neuen Satz"));
+                        }
+                        Op::VorschlagUebernehmen { .. } => {
+                            for id in &ids {
+                                self.herkunft_bestaetigen(&id.kennung);
+                            }
+                        }
+                        _ => self.neuen_satz_entfernen(&ids),
+                    }
+                } else if matches!(op, Op::VorschlagUebernehmen { .. }) {
                     let (rec, konkret) = vorschlag_op(&v, &k).ok_or_else(|| {
                         abgelehnt(op, "diesen Wert kann Skizzeo nicht übernehmen")
                     })?;
@@ -1040,8 +1088,183 @@ impl Arbeit<'_> {
                 }
                 self.remove("proposal", &key.to_string());
             }
+            Op::SaetzeAusErweiterung {
+                projekt,
+                quelle,
+                saetze,
+            } => {
+                if ziel == Ziel::Projekt {
+                    return Err(abgelehnt(op, "neue Sätze gehen nur in den Firmenkatalog"));
+                }
+                // aus einem Projekt nur als Vorschlag (am Einzelplatz ohne)
+                if projekt.is_some() && ziel != Ziel::FirmaEntwurf {
+                    return Err(abgelehnt(op, "Vorschläge stehen nur im Entwurf"));
+                }
+                let mut key = self
+                    .zeilen
+                    .section("proposal")
+                    .filter_map(|r| r.id.as_deref().and_then(|k| k.parse::<u32>().ok()))
+                    .max()
+                    .unwrap_or(0);
+                for neu in saetze {
+                    for (sec, line) in &neu.zeilen {
+                        let a =
+                            abschnitt(sec).ok_or_else(|| abgelehnt(op, "unbekannter Abschnitt"))?;
+                        let z = zeile::zerlegen(line)
+                            .ok_or_else(|| abgelehnt(op, "Zeile nicht lesbar"))?;
+                        let satz = Satz::lesen(a, &z).map_err(|e| abgelehnt(op, &e.grund))?;
+                        let id = satz.kennung().unwrap_or_default();
+                        // vorhandene Firmenzeilen gehen vor (§8a)
+                        let da = self
+                            .zeilen
+                            .section(a.name)
+                            .any(|r| r.id.as_deref() == Some(&id));
+                        if da && !self.offen_aus(&id, quelle) {
+                            continue;
+                        }
+                        let id = self.satz_schreiben(&satz, op)?;
+                        self.herkunft_als(HerkunftArt::Import, a.name, &id, quelle);
+                    }
+                    let Some((projekt, name)) = projekt else {
+                        continue;
+                    };
+                    let of = neu.of.to_ifc();
+                    let gleich = k.vorschlaege.iter().find(|v| {
+                        v.projekt == *projekt && v.rec == neu.rec && v.of == of && v.ganzer_satz()
+                    });
+                    let id = match gleich {
+                        Some(v) => v.key,
+                        None => {
+                            key += 1;
+                            key
+                        }
+                    };
+                    let kurz: String = neu.kurz.chars().take(120).collect();
+                    let mut s = Satz::neu(&satz::PROPOSAL);
+                    s.setzen("key", Some(Wert::Ganz(i64::from(id))));
+                    s.setzen("project", Some(Wert::Guid(*projekt)));
+                    s.setzen("name", opt_text(name));
+                    s.setzen("rec", Some(Wert::Wort(neu.rec.into())));
+                    s.setzen("of", Some(Wert::Text(of)));
+                    s.setzen("field", Some(Wert::Text("*".into())));
+                    s.setzen("new", Some(Wert::Text(kurz)));
+                    s.setzen("date", Some(Wert::Text(self.herkunft.datum.clone())));
+                    self.satz_schreiben(&s, op)?;
+                }
+            }
         }
         Ok(())
+    }
+
+    /// `[origin]` des Satzes `id`, gelesen.
+    fn herkunft_von(&self, id: &str) -> Option<Satz> {
+        self.zeilen
+            .section("origin")
+            .find(|r| r.id.as_deref() == Some(id))
+            .and_then(|r| zeile::zerlegen(&r.line))
+            .and_then(|z| Satz::lesen(&satz::ORIGIN, &z).ok())
+    }
+
+    /// Steht `id` als `kind=import status=open` mit `source=quelle` da?
+    fn offen_aus(&self, id: &str, quelle: &str) -> bool {
+        self.herkunft_von(id).is_some_and(|o| {
+            o.text("kind") == Some("import")
+                && o.text("status") == Some("open")
+                && o.text("source") == Some(quelle)
+        })
+    }
+
+    /// Zeilen des neuen Satzes eines `field=*`-Vorschlags (verwaltung.md
+    /// §8a): der Satz `of` und, worauf er verweist (Stoffanteile, Folgen,
+    /// Artikel, Titel), soweit es `kind=import status=open` mit derselben
+    /// `source` trägt. Leer, wenn `of` kein solcher Satz ist.
+    fn neuer_satz(&self, v: &katalog::Vorschlag) -> Vec<SatzId> {
+        let rec: &'static str = match v.rec.as_str() {
+            "service" => "service",
+            "article" => "article",
+            _ => return Vec::new(),
+        };
+        let quelle = match self.herkunft_von(&v.of) {
+            Some(o) if self.offen_aus(&v.of, o.text("source").unwrap_or("")) => {
+                o.text("source").unwrap_or("").to_string()
+            }
+            _ => return Vec::new(),
+        };
+        if !self
+            .zeilen
+            .section(rec)
+            .any(|r| r.id.as_deref() == Some(&v.of))
+        {
+            return Vec::new();
+        }
+        let mut ids = vec![SatzId::neu(rec, v.of.clone())];
+        if rec == "service" {
+            let wert = |line: &str, f: &str| {
+                zeile::zerlegen(line)
+                    .and_then(|z| z.paare.into_iter().find(|(k, _)| k == f).map(|(_, x)| x))
+            };
+            let mut dazu: Vec<(&'static str, String)> = Vec::new();
+            for sec in ["svcpart", "svcfollow"] {
+                for r in self.zeilen.section(sec) {
+                    if wert(&r.line, "service").as_deref() == Some(&v.of) {
+                        if let Some(id) = &r.id {
+                            dazu.push((sec, id.clone()));
+                        }
+                        if let Some(a) = wert(&r.line, "art") {
+                            dazu.push(("article", a));
+                        }
+                    }
+                }
+            }
+            if let Some(r) = self
+                .zeilen
+                .section("service")
+                .find(|r| r.id.as_deref() == Some(&v.of))
+            {
+                if let Some(t) = wert(&r.line, "title") {
+                    dazu.push(("lot", t));
+                }
+            }
+            for (sec, id) in dazu {
+                let neu = SatzId::neu(sec, id);
+                if self.offen_aus(&neu.kennung, &quelle) && !ids.contains(&neu) {
+                    ids.push(neu);
+                }
+            }
+        }
+        ids
+    }
+
+    /// Setzt `status=confirmed` an der Herkunft von `id` (Regel 88).
+    fn herkunft_bestaetigen(&mut self, id: &str) {
+        if let Some(mut o) = self.herkunft_von(id) {
+            o.setzen("status", Some(Wert::Wort("confirmed".into())));
+            self.put("origin", id, o.zeile());
+        }
+    }
+
+    /// Ablehnen eines neuen Satzes: löscht seine Zeilen samt Herkunft, außer
+    /// eine Zeile wird von außerhalb des Satzes verwiesen (§8a).
+    fn neuen_satz_entfernen(&mut self, ids: &[SatzId]) {
+        let drin: HashSet<&str> = ids.iter().map(|i| i.kennung.as_str()).collect();
+        let verwiesen = |me: &Self, id: &str| {
+            ["service", "svcpart", "svcfollow"].iter().any(|sec| {
+                me.zeilen.section(sec).any(|r| {
+                    !r.id.as_deref().is_some_and(|i| drin.contains(i))
+                        && zeile::zerlegen(&r.line)
+                            .is_some_and(|z| z.paare.iter().any(|(k, x)| k != "guid" && x == id))
+                })
+            })
+        };
+        let weg: Vec<SatzId> = ids
+            .iter()
+            .filter(|i| !verwiesen(self, &i.kennung))
+            .cloned()
+            .collect();
+        for i in weg {
+            self.remove(i.abschnitt, &i.kennung);
+            self.remove("origin", &i.kennung);
+        }
     }
 
     /// Stimmen alle Stammsätze ohne Projektmarke mit der Firma überein?
@@ -1721,7 +1944,14 @@ fn datei_anwenden(
     // Den Firmenkatalog ändert ein Nutzer nie, auch keinen Preis (KA-3b1,
     // verwaltung.md §3: „nur Projekt“); vorschlagen darf er (KA-3b4)
     for op in ops {
-        let vorschlag = matches!(op, Op::VorschlagFuerFirma { .. });
+        let vorschlag = matches!(
+            op,
+            Op::VorschlagFuerFirma { .. }
+                | Op::SaetzeAusErweiterung {
+                    projekt: Some(_),
+                    ..
+                }
+        );
         if (rolle == Rolle::Nutzer && !vorschlag) || (op.nur_admin() && rolle != Rolle::Admin) {
             return Err(abgelehnt(op, "nur in der Verwaltung"));
         }

@@ -203,70 +203,70 @@ pub fn eigene_baustoffe(m: &Model) -> Vec<(Guid, String, Option<sk_model::librar
 
 /// Die Definitionen des Projekts in der Reihenfolge des Einlesens.
 pub fn quellen(m: &Model) -> Vec<ExtQuelle> {
-    m.ext_defs()
+    m.ext_defs().iter().map(|d| quelle(m, d)).collect()
+}
+
+/// Artikel und Bauleistungen der Definition `d`, vorverdaut; `d` muss nicht
+/// im Projekt stehen (Rückfrage beim Einlesen, E8c).
+pub fn quelle(m: &Model, d: &sk_model::ExtDef) -> ExtQuelle {
+    let text = |s: &sk_szb::Satz, k: &str| s.get(k).filter(|v| !v.is_empty()).map(str::to_string);
+    let sicher = |s: &sk_szb::Satz| s.get("sicherheit").unwrap_or("").to_string();
+    let artikel = d
+        .def
+        .artikel
         .iter()
-        .map(|d| {
-            let text =
-                |s: &sk_szb::Satz, k: &str| s.get(k).filter(|v| !v.is_empty()).map(str::to_string);
-            let sicher = |s: &sk_szb::Satz| s.get("sicherheit").unwrap_or("").to_string();
-            let artikel = d
-                .def
-                .artikel
-                .iter()
-                .map(|a| ExtArtikel {
-                    key: a.key().to_string(),
-                    name: a.get("name").unwrap_or("").to_string(),
-                    einheit: einheit_wort(a.get("einheit").unwrap_or("")).to_string(),
-                    preis: text(a, "preis"),
-                    mat: a.get("baustoff").and_then(|b| baustoff(m, d, b)),
-                    stand: text(a, "stand"),
-                    quelle: text(a, "quelle"),
-                    sicherheit: sicher(a),
-                })
-                .collect();
-            let leistungen = d
-                .def
-                .leistung
-                .iter()
-                .map(|l| {
-                    let nr = l
-                        .get("gewerk")
-                        .filter(|v| !v.is_empty())
-                        .or(d.def.bauteil_feld("gewerk"))
-                        .unwrap_or("")
-                        .to_string();
-                    ExtLeistung {
-                        key: l.key().to_string(),
-                        kurz: l.get("kurztext").unwrap_or("").to_string(),
-                        gewerk: gewerk(m, &nr),
-                        gewerk_nr: nr,
-                        einheit: einheit_wort(l.get("einheit").unwrap_or("")).to_string(),
-                        bezug: l.get("bezug").unwrap_or("").to_string(),
-                        stunden: text(l, "stunden"),
-                        geraet: text(l, "geraet"),
-                        sonst: text(l, "sonstiges"),
-                        kg: text(l, "kg"),
-                        dmin: text(l, "dmin"),
-                        dmax: text(l, "dmax"),
-                        stoffe: l
-                            .get("stoffe")
-                            .and_then(|s| sk_szb::pruefen::stoffe(s).ok())
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|(a, q)| (a, zahl(q)))
-                            .collect(),
-                        sicherheit: sicher(l),
-                    }
-                })
-                .collect();
-            ExtQuelle {
-                key: d.key.clone(),
-                version: d.version,
-                artikel,
-                leistungen,
+        .map(|a| ExtArtikel {
+            key: a.key().to_string(),
+            name: a.get("name").unwrap_or("").to_string(),
+            einheit: einheit_wort(a.get("einheit").unwrap_or("")).to_string(),
+            preis: text(a, "preis"),
+            mat: a.get("baustoff").and_then(|b| baustoff(m, d, b)),
+            stand: text(a, "stand"),
+            quelle: text(a, "quelle"),
+            sicherheit: sicher(a),
+        })
+        .collect();
+    let leistungen = d
+        .def
+        .leistung
+        .iter()
+        .map(|l| {
+            let nr = l
+                .get("gewerk")
+                .filter(|v| !v.is_empty())
+                .or(d.def.bauteil_feld("gewerk"))
+                .unwrap_or("")
+                .to_string();
+            ExtLeistung {
+                key: l.key().to_string(),
+                kurz: l.get("kurztext").unwrap_or("").to_string(),
+                gewerk: gewerk(m, &nr),
+                gewerk_nr: nr,
+                einheit: einheit_wort(l.get("einheit").unwrap_or("")).to_string(),
+                bezug: l.get("bezug").unwrap_or("").to_string(),
+                stunden: text(l, "stunden"),
+                geraet: text(l, "geraet"),
+                sonst: text(l, "sonstiges"),
+                kg: text(l, "kg"),
+                dmin: text(l, "dmin"),
+                dmax: text(l, "dmax"),
+                stoffe: l
+                    .get("stoffe")
+                    .and_then(|s| sk_szb::pruefen::stoffe(s).ok())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(a, q)| (a, zahl(q)))
+                    .collect(),
+                sicherheit: sicher(l),
             }
         })
-        .collect()
+        .collect();
+    ExtQuelle {
+        key: d.key.clone(),
+        version: d.version,
+        artikel,
+        leistungen,
+    }
 }
 
 /// Zahl mit Punkt, höchstens 6 Stellen, ohne Nullen am Ende.

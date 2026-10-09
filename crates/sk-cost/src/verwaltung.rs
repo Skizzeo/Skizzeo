@@ -616,6 +616,11 @@ pub fn freigeben(
     }
     let k_f = katalog_von(&lib, stand_f);
     let k_e = katalog_von(&e, stand_e);
+    // Offene neue Sätze aus Erweiterungen stehen schon als Zeilen im
+    // Entwurf und gingen sonst unbestätigt mit (Regel 105, §8a)
+    if k_e.vorschlaege.iter().any(|v| v.ganzer_satz()) {
+        return Err(vec![neue_saetze_offen()]);
+    }
     let neu: Vec<Befund> = k_e
         .befunde
         .iter()
@@ -684,14 +689,33 @@ pub fn freigeben(
     })
 }
 
+/// Befund, der „Freigeben“ sperrt, solange ein `field=*`-Vorschlag offen
+/// ist (Regel 105, verwaltung.md §5.4).
+pub fn neue_saetze_offen() -> Befund {
+    Befund::fehler(
+        105,
+        "Neue Sätze aus Erweiterungen sind noch nicht übernommen oder abgelehnt.",
+        Ort::Datei,
+    )
+}
+
 /// Was nach „Freigeben“ oder „Entwurf verwerfen“ vom Entwurf bleibt
 /// (Regel 105): nur `[catalog]` mit `status=draft` (Kopf aus `firma`, der
 /// nun freigegebenen Datei) und die offenen `[proposal]`-Zeilen; ohne
-/// Vorschläge nichts.
+/// Vorschläge nichts. Neue Sätze aus Erweiterungen (`field=*`) gehen mit
+/// dem Entwurf weg (§8a).
 pub fn rest_entwurf(firma: &str, entwurf: &str) -> Option<String> {
     let lies = |t: &str| sk_model::read_szk_with(t, &crate::satz::ABSCHNITTE_SZK).ok();
     let e = lies(entwurf)?;
-    let vorschlaege: Vec<&str> = e.ext("proposal").map(|r| r.line.as_str()).collect();
+    let ganzer_satz = |l: &str| {
+        crate::zeile::zerlegen(l)
+            .is_some_and(|z| z.paare.iter().any(|(k, v)| k == "field" && v == "*"))
+    };
+    let vorschlaege: Vec<&str> = e
+        .ext("proposal")
+        .map(|r| r.line.as_str())
+        .filter(|l| !ganzer_satz(l))
+        .collect();
     if vorschlaege.is_empty() {
         return None;
     }

@@ -16,6 +16,7 @@ pub mod gliederung;
 pub mod katalog;
 pub mod lesen;
 pub mod lv;
+pub mod neue_saetze;
 pub mod op;
 pub mod preis;
 pub mod rechnung;
@@ -34,7 +35,7 @@ pub use katalog::Katalog;
 pub use op::{
     ausfuehren, ausfuehren_folge, entwurf_anwenden, firma_anwenden, neues_projekt, pruefen,
     vorschau, vorschau_kosten, vorschlag_werte, Aenderung, FirmaNeu, Herkunft, HerkunftArt, Op,
-    Plan, Rolle, SatzId, Sicherheit, VorschlagWert, Ziel,
+    Plan, Rolle, SatzId, SatzNeu, Sicherheit, VorschlagWert, Ziel,
 };
 pub use rechnung::{Kostenblatt, Kostenspeicher, Position};
 pub use schema::schema;
