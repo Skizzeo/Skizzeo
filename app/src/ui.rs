@@ -150,6 +150,11 @@ pub enum Id {
     PropsMore,
     /// Baustoffname einer Schicht (Paket 5): öffnet „Baustoffe …“ mit ihm.
     PropsMaterial(sk_model::Guid),
+    /// „Erweiterungen“ unter den Wandknöpfen (E6): öffnet die Liste; beim
+    /// Setzen trägt er den Namen des Bauteils.
+    Ext,
+    /// Typ-Chip des Werkzeugs „Erweiterungen“.
+    ExtTyp,
 }
 
 /// Ziehbare Ebene im Paneel „Geschosse“. ±0,00 liegt fest.
@@ -187,6 +192,9 @@ pub enum Field {
     ClearHeight(StoreyId),
     /// Dialog „Gebäude erstellen“ (E16, Jörn 10:13).
     Draft(Draft),
+    /// Feld `i` des Werkzeugs „Erweiterungen“ (E6), in der Einheit des
+    /// Parameters.
+    ExtTool(u8),
 }
 
 /// Vorgaben im Dialog „Gebäude erstellen“, von oben nach unten.
@@ -309,11 +317,59 @@ pub struct FieldRow {
     pub max: f64,
     /// 0 ist zusätzlich erlaubt (Sockelrücksprung: bündig).
     pub zero: bool,
+    /// Feld eines Erweiterungsbauteils (E6): Wert in dieser Einheit, ohne
+    /// Umrechnung; außerhalb min/max gilt er, rot mit „zulässig X bis Y“.
+    pub einheit: Option<&'static str>,
+}
+
+/// Zahl wie im Feld eines Erweiterungsbauteils: höchstens drei Stellen
+/// nach dem Komma, ohne Nullen am Ende.
+pub fn zahl_text(v: f64) -> String {
+    let t = format!("{:.3}", v);
+    let t = t.trim_end_matches('0').trim_end_matches('.');
+    let t = if t == "-0" { "0" } else { t };
+    t.replace('.', ",")
 }
 
 impl FieldRow {
+    /// Wert zum Bearbeiten.
+    fn text(&self, v: f64) -> String {
+        match self.einheit {
+            Some(_) => zahl_text(v),
+            None => self.field.text(v),
+        }
+    }
+
+    /// Wert, wie er im Feld steht.
+    fn display(&self, v: f64) -> String {
+        match self.einheit {
+            Some(_) => zahl_text(v).replacen('-', "\u{2212}", 1),
+            None => self.field.display(v),
+        }
+    }
+
+    fn unit(&self) -> &'static str {
+        self.einheit.unwrap_or_else(|| self.field.unit())
+    }
+
+    /// Außerhalb von min/max (nur Felder von Erweiterungen): „zulässig X
+    /// bis Y“.
+    pub fn ausserhalb(&self) -> Option<Meldung> {
+        let e = self.einheit?;
+        if self.value >= self.min - 1e-9 && self.value <= self.max + 1e-9 {
+            return None;
+        }
+        let z = |v: f64| format!("{} {e}", zahl_text(v)).trim_end().to_string();
+        Some(match (self.min.is_finite(), self.max.is_finite()) {
+            (true, true) => Meldung::mit("zulässig {} bis {}", &[&z(self.min), &z(self.max)]),
+            (true, false) => Meldung::mit("zulässig ab {}", &[&z(self.min)]),
+            _ => Meldung::mit("zulässig bis {}", &[&z(self.max)]),
+        })
+    }
+
     /// Prüft eine Eingabe in cm (Paneel „Geschosse“: in m); `Ok` mit dem Wert
-    /// in mm (auf 1 mm gerundet).
+    /// in mm (auf 1 mm gerundet). Felder von Erweiterungen: in ihrer
+    /// Einheit, auch außerhalb von min/max.
     pub fn parse(&self, text: &str) -> Result<f64, Meldung> {
         let t = text.trim().replace(',', ".");
         if t.is_empty() {
@@ -322,6 +378,9 @@ impl FieldRow {
         let n: f64 = t.parse().map_err(|_| Meldung::satz("keine Zahl"))?;
         if !n.is_finite() {
             return Err(Meldung::satz("keine Zahl"));
+        }
+        if self.einheit.is_some() {
+            return Ok(n);
         }
         let per = if self.field.in_metres() { 1000.0 } else { 10.0 };
         let mm = (n * per).round() + 0.0;
@@ -471,7 +530,7 @@ pub struct Edit {
 
 impl Edit {
     fn new(row: &FieldRow) -> Edit {
-        let text = row.field.text(row.value);
+        let text = row.text(row.value);
         Edit {
             field: row.field,
             orig: row.value,
@@ -673,15 +732,33 @@ pub struct Section {
 pub struct Chip {
     pub name: String,
     pub detail: String,
-    pub look: TypeLook,
+    /// Schnittbild des Typs; Erweiterungen haben keins (E6).
+    pub look: Option<TypeLook>,
     /// Die Typ-Liste dazu ist offen: Rand in Akzent, Pfeil nach oben.
     pub open: bool,
     /// Das Bauteil überschreibt Merkmale des Typs: Punkt in Akzent.
     pub marked: bool,
 }
 
+/// Paneel „Werkzeuge“ beim Setzen einer Erweiterung (E6, Vertrag §14).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExtPanel {
+    /// Name des Bauteils auf seinem Knopf.
+    pub name: &'static str,
+    /// Typ-Auswahl, wenn die Definition Typen hat.
+    pub chip: Option<Chip>,
+    /// Felder mit `zeichnen=ja`, höchstens vier.
+    pub felder: Vec<FieldRow>,
+    /// „Länge aus der Eingabe“.
+    /// Zeilen, langes zweizeilig ohne Abstand.
+    pub aus_eingabe: Vec<&'static str>,
+    pub hinweise: [&'static str; 3],
+}
+
 /// Breite eines Zahlenfelds (dip).
 const FIELD_W: f32 = 60.0;
+/// Feld eines Erweiterungsbauteils, Platz für „4200 mm“ (dip).
+const EXT_FIELD_W: f32 = 82.0;
 /// Zeile „Kopplung“: Breite von Kettensymbol und Partner, Abstand des Texts
 /// vom linken Rand dieses Bereichs (dip).
 const LINK_W: f32 = 82.0;
@@ -725,6 +802,11 @@ pub struct Ui {
     pub wall_layers: Vec<(Rgba, String)>,
     /// Typ, den das Werkzeug zeichnet (K3); ersetzt die Schichtzeilen.
     pub tool_chip: Option<Chip>,
+    /// Werkzeug „Erweiterungen“ läuft (E6): sein Paneel statt der Wand.
+    pub ext_tool: Option<ExtPanel>,
+    /// Knopf „Erweiterungen“ unter „Innenwand“: nur, wenn welche da sind,
+    /// sonst wäre das Paneel ohne Nutzen eine Zeile höher.
+    pub ext_knopf: bool,
     /// Ein Obergeschoss ist aktiv: Außenwände entstehen aus dem EG, der Knopf
     /// „Gebäude“ ist gesperrt (E16).
     pub upper_active: bool,
@@ -876,6 +958,7 @@ enum Row {
     Locked,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tool_rows(
     projekt: &[String],
     nord: bool,
@@ -884,6 +967,8 @@ fn tool_rows(
     layers: &[(Rgba, String)],
     upper_active: bool,
     foundation_active: bool,
+    ext: Option<(&ExtPanel, Option<&Edit>)>,
+    ext_knopf: bool,
 ) -> Vec<Row> {
     // Projektdaten als eigener Abschnitt über den Werkzeugen (Paket PD-2)
     let mut rows = vec![Row::Button(Id::Projektdaten, "Projektdaten")];
@@ -900,6 +985,31 @@ fn tool_rows(
         Row::Button(Id::Building, "Gebäude"),
         Row::Button(Id::Interior, "Innenwand"),
     ]);
+    // Werkzeug „Erweiterungen“ (E6, Vertrag §14): Knopf des Bauteils, Typ,
+    // Felder, woher die Maße kommen, drei feste Hinweise
+    if let Some((x, edit)) = ext {
+        rows.push(Row::Button(Id::Ext, x.name));
+        if x.chip.is_some() {
+            rows.push(Row::TypeChip(Id::ExtTyp));
+        }
+        for f in &x.felder {
+            rows.push(Row::Field(f.field, f.label));
+            match edit.filter(|e| e.field == f.field) {
+                Some(e) => rows.extend(e.error.clone().map(Row::Error)),
+                None => rows.extend(f.ausserhalb().map(Row::Error)),
+            }
+        }
+        if let Some((last, first)) = x.aus_eingabe.split_last() {
+            rows.extend(first.iter().map(|t| Row::Hint(t)));
+            rows.push(Row::Text(last.to_string()));
+        }
+        rows.push(Row::Separator);
+        rows.extend(x.hinweise.map(Row::Hint));
+        return rows;
+    }
+    if ext_knopf {
+        rows.push(Row::Button(Id::Ext, "Erweiterungen"));
+    }
     // Zweizeilig ohne Abstand dazwischen, damit nichts am Rand abbricht
     if foundation_active {
         rows.push(Row::Hint("Im Fundament gibt es noch"));
@@ -1078,6 +1188,8 @@ impl Ui {
             ortho: true,
             wall_layers: Vec::new(),
             tool_chip: None,
+            ext_tool: None,
+            ext_knopf: false,
             upper_active: false,
             foundation_active: false,
             projekt_zeilen: vec![PROJEKT_LEER.into()],
@@ -1129,6 +1241,8 @@ impl Ui {
                 &self.wall_layers,
                 self.upper_active,
                 self.foundation_active,
+                self.ext_tool.as_ref().map(|x| (x, self.edit.as_ref())),
+                self.ext_knopf,
             ),
             Panel::Views => view_rows(self.nord),
             Panel::Props => self.props.as_ref().map_or(Vec::new(), |p| {
@@ -1203,6 +1317,9 @@ impl Ui {
         if let Field::Draft(_) = f {
             return self.dialog_fields.iter().find(|r| r.field == f);
         }
+        if let Field::ExtTool(_) = f {
+            return self.ext_tool.as_ref()?.felder.iter().find(|r| r.field == f);
+        }
         if f.is_level() {
             return self.levels.fields.iter().find(|r| r.field == f);
         }
@@ -1216,6 +1333,8 @@ impl Ui {
     fn field_panel(f: Field) -> Panel {
         if let Field::Draft(_) = f {
             Panel::Dialog
+        } else if let Field::ExtTool(_) = f {
+            Panel::Tools
         } else if f.is_level() {
             Panel::Levels
         } else {
@@ -1434,7 +1553,8 @@ impl Ui {
         let font = self.fonts.regular.as_ref()?;
         let s = self.scale;
         let px = self.size.font_small * s;
-        let unit_x = r.x + r.w - self.size.field_pad * s - font.width(f.unit(), px);
+        let unit = self.field_row(f).map_or(f.unit(), |r| r.unit());
+        let unit_x = r.x + r.w - self.size.field_pad * s - font.width(unit, px);
         let num_x = unit_x - 4.0 * s - font.width(&e.text, px);
         let x = x as f32 - num_x;
         (0..=e.text.len()).min_by(|&a, &b| {
@@ -1561,6 +1681,7 @@ impl Ui {
     fn chip(&self, id: Id) -> Option<&Chip> {
         match id {
             Id::ToolType => self.tool_chip.as_ref(),
+            Id::ExtTyp => self.ext_tool.as_ref()?.chip.as_ref(),
             Id::PropsType => self.props.as_ref()?.chip.as_ref(),
             _ => None,
         }
@@ -1677,7 +1798,10 @@ impl Ui {
                     }
                 }
                 Row::Field(f, _) => {
-                    let fw = FIELD_W * s;
+                    let fw = match f {
+                        Field::ExtTool(_) => EXT_FIELD_W,
+                        _ => FIELD_W,
+                    } * s;
                     out.push((Id::Field(f), Rect::new(x + inner_w - fw, y, fw, h), ""));
                 }
                 Row::TypeChip(id) => out.push((id, Rect::new(x, y, inner_w, h), "")),
@@ -1712,6 +1836,7 @@ impl Ui {
             Id::View(v) => self.view == v,
             Id::Quantity => self.quantity_open,
             Id::Nord => self.nord_aktiv || self.sonne_an,
+            Id::Ext => self.ext_tool.is_some(),
             // Standardknopf des Dialogs
             Id::DialogStart => true,
             Id::Projektdaten
@@ -1723,6 +1848,7 @@ impl Ui {
             | Id::DialogPlus
             | Id::DialogCancel
             | Id::ToolType
+            | Id::ExtTyp
             | Id::PropsType
             | Id::PropsLink
             | Id::PropsFlush
@@ -1993,15 +2119,16 @@ impl Ui {
                 self.paint_dim_text(t, c, f, b);
                 return;
             }
-            let value = self
-                .field_row(f)
-                .map_or(String::new(), |r| f.display(r.value));
+            let row = self.field_row(f);
+            let value = row.map_or(String::new(), |r| r.display(r.value));
             let st = FieldState {
                 text: edit.map_or(&value, |e| &e.text),
-                unit: f.unit(),
+                unit: row.map_or(f.unit(), |r| r.unit()),
                 hover: self.hover == Some(id),
                 focus: edit.is_some(),
-                invalid: edit.is_some_and(|e| e.error.is_some()),
+                invalid: edit.map_or(row.is_some_and(|r| r.ausserhalb().is_some()), |e| {
+                    e.error.is_some()
+                }),
                 caret: edit.map(|e| e.caret),
                 select: edit.map(|e| e.selection()),
                 disabled: self.is_disabled(id),
@@ -2248,15 +2375,14 @@ impl Ui {
                         col.text_dim,
                     )
                 }
-                Row::Hint(t) => widgets::text(
-                    &mut c,
-                    regular,
-                    t,
-                    size.font_small * s,
-                    x,
-                    y + 13.0 * s,
-                    col.text_dim,
-                ),
+                Row::Hint(t) => {
+                    // Feste Sätze (Vertrag §14) werden nie gekürzt; was
+                    // nicht passt, steht etwas kleiner
+                    let px = size.font_small * s;
+                    let tw = regular.map_or(0.0, |f| f.width(t, px));
+                    let px = if tw > inner_w { px * inner_w / tw } else { px };
+                    widgets::text(&mut c, regular, t, px, x, y + 13.0 * s, col.text_dim)
+                }
                 _ => {}
             }
             y += h + g;
@@ -3077,8 +3203,13 @@ fn paint_chip(
     );
     let tx = (r.x + 6.0 * s).round();
     let ty = (r.y + (r.h - th) * 0.5).round();
-    crate::type_look::paint_thumb(c, Rect::new(tx, ty, tw, th), &chip.look, s);
-    let x = tx + tw + 8.0 * s;
+    let x = match &chip.look {
+        Some(look) => {
+            crate::type_look::paint_thumb(c, Rect::new(tx, ty, tw, th), look, s);
+            tx + tw + 8.0 * s
+        }
+        None => tx + 4.0 * s,
+    };
     let caret_w = 14.0 * s;
     let max_w = r.x + r.w - caret_w - 4.0 * s - x;
     let bold = fonts.bold.as_ref().or(fonts.regular.as_ref());
@@ -3244,6 +3375,7 @@ mod tests {
             min,
             max,
             zero: false,
+            einheit: None,
         };
         ui.set_dialog_fields(vec![
             row(Draft::FloorOg, 220.0, 100.0, 600.0),
@@ -3611,6 +3743,7 @@ mod tests {
                     min: 100.0,
                     max: 1000.0,
                     zero: false,
+                    einheit: None,
                 },
                 FieldRow {
                     field: Field::Recess,
@@ -3619,6 +3752,7 @@ mod tests {
                     min: 20.0,
                     max: 500.0,
                     zero: true,
+                    einheit: None,
                 },
             ],
             ..Default::default()

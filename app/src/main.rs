@@ -17,6 +17,7 @@ mod abnahme_s2;
 mod abnahme_s4;
 mod ansicht_schatten;
 mod attr_pick;
+mod auswahl;
 mod autosave;
 mod ava_view;
 mod backup_card;
@@ -29,7 +30,9 @@ mod delete;
 mod document;
 mod draw_table;
 mod erweiterung;
+mod ext_app;
 mod ext_cache;
+mod ext_werkzeug;
 mod flush_pick;
 mod frame_time;
 #[cfg(all(test, target_os = "linux"))]
@@ -686,6 +689,9 @@ struct App {
     /// Typ-Liste am Chip (K3) und ob ihr Bild neu zu zeichnen ist.
     type_menu: Option<type_menu::TypeMenu>,
     type_menu_dirty: bool,
+    /// Eingelesene Erweiterungen (E6) und ihre offene Liste.
+    ext_bib: ext_werkzeug::Bibliothek,
+    ext_liste: Option<auswahl::Auswahl>,
     /// Stand (Revision, Farbschema), für den der Chip im Werkzeug gilt.
     tool_chip_key: Option<(u64, u64)>,
     /// Geschossbogen im Grundriss (E18), seine Bilder, die Uhr seiner
@@ -1099,6 +1105,7 @@ impl App {
                     min,
                     max,
                     zero: false,
+                    einheit: None,
                 }
             })
             .collect();
@@ -1727,6 +1734,7 @@ impl App {
         self.title.hover = None;
         let mut c = catalog_view::Catalog::open(&self.scene, self.company.as_ref());
         c.set_nutzer(self.rolle() == sk_cost::Rolle::Nutzer);
+        c.set_ext(&self.ext_bib.defs);
         self.catalog = Some(c);
         self.prefs_dirty = true;
         self.overlay_dirty = true;
@@ -1824,6 +1832,9 @@ impl App {
         }
         if let Some(g) = out.open_material {
             self.open_materials(Some(g));
+        }
+        if let Some(k) = out.ext_einfuegen {
+            self.ext_start_key(&k);
         }
         self.sync_caption(surface);
         true
@@ -3374,7 +3385,8 @@ impl App {
                     _ => Category::ExteriorWall,
                 };
                 // Derselbe Knopf schaltet aus, der andere wechselt die Wandart
-                let on = !(self.tool.enabled && self.tool.category == cat);
+                let on =
+                    !(self.tool.enabled && self.tool.ext.is_none() && self.tool.category == cat);
                 if on && id == Id::Building && self.ui.upper_active {
                     return;
                 }
@@ -3394,6 +3406,7 @@ impl App {
                     self.nord.set_aktiv(false);
                 }
                 self.tool.set_enabled(on);
+                self.tool.ext = None;
             }
             Id::Ref(r) => self.tool.ref_side = r,
             Id::Ortho => self.tool.ortho = !self.tool.ortho,
@@ -3430,6 +3443,7 @@ impl App {
                 }
             }
             Id::ToolType | Id::PropsType => self.open_type_menu(id),
+            Id::Ext | Id::ExtTyp => self.ext_klick(id),
             Id::PropsLink => {
                 if let Some(w) = self.sel.id.and_then(|id| self.scene.stack_wall(id)) {
                     self.toggle_link(w);
@@ -3462,7 +3476,9 @@ impl App {
         if out.relayout {
             self.overlay_dirty = true;
         }
-        if let Some((Field::Draft(d), mm)) = out.submit {
+        if let Some((Field::ExtTool(i), v)) = out.submit {
+            self.ext_feld(i, v);
+        } else if let Some((Field::Draft(d), mm)) = out.submit {
             if self.scene.set_building_dialog_value(d.key(), mm) {
                 self.sync_levels();
                 self.sync_dialog_fields();
@@ -3823,13 +3839,23 @@ impl App {
                     &px,
                 );
             }
-            None => self
-                .renderer
-                .set_overlay(OVERLAY_TYPE_MENU, 0, 0, 0, 0, &[]),
+            // Die Liste der Erweiterungen steht im selben Platz (E6)
+            None => match self.ext_liste_bild() {
+                Some((c, x, y)) => {
+                    let px = c.to_premul_rgba8();
+                    let (w, h) = (c.width as u32, c.height as u32);
+                    self.renderer
+                        .set_overlay(OVERLAY_TYPE_MENU, x, y, w, h, &px);
+                }
+                None => self
+                    .renderer
+                    .set_overlay(OVERLAY_TYPE_MENU, 0, 0, 0, 0, &[]),
+            },
         }
     }
 
     fn commit_wall(&mut self, wall: Option<sk_model::WallChain>) {
+        self.ext_einsetzen();
         if let Some(wall) = wall {
             // Erstes geschlossenes Gebäude: Hinweis auf F1 (9b), als
             // Hinweiskarte (Darstellung p9 §3.4)
@@ -3859,11 +3885,13 @@ impl App {
             self.sync_levels();
             self.upload_model();
         }
-        let (b, r, o) = (self.tool.enabled, self.tool.ref_side, self.tool.ortho);
+        let b = self.tool.enabled && self.tool.ext.is_none();
+        let (r, o) = (self.tool.ref_side, self.tool.ortho);
         if (self.ui.building, self.ui.ref_side, self.ui.ortho) != (b, r, o) {
             (self.ui.building, self.ui.ref_side, self.ui.ortho) = (b, r, o);
             self.overlay_dirty = true;
         }
+        self.ext_sync();
     }
 
     /// Ein Ereignis; `false` beendet die Schleife. Die Nachfrage „Änderungen
@@ -3939,6 +3967,9 @@ impl App {
             }
         }
         if self.type_menu.is_some() && self.handle_type_menu(e, surface) {
+            return !self.quit;
+        }
+        if self.ext_liste.is_some() && self.handle_ext_liste(e) {
             return !self.quit;
         }
         // Baumpanel (Paket 4) nimmt Maus und Rad über sich
@@ -4922,7 +4953,13 @@ impl App {
             || self.nord.zieht()
             || self.sonne.is_busy()
             || self.sonne.eingabe.is_some();
-        self.help.follow(help::topic_mit_nord(&ctx, nord), t);
+        let topic = match help::topic_mit_nord(&ctx, nord) {
+            help::Topic::Draw | help::Topic::InnerWall if self.tool.ext.is_some() => {
+                help::Topic::Ext
+            }
+            x => x,
+        };
+        self.help.follow(topic, t);
         self.help.tick(t);
         // Auch das letzte Bild eines Blendens muss noch gezeichnet werden
         let blending = self.help_fade.is_some() || self.help_swap.is_some();
@@ -6131,6 +6168,7 @@ impl App {
             Id::Building => "Gebäude",
             Id::Interior => "Innenwand",
             Id::Ortho => "90°-Sprung",
+            Id::Ext if self.tool.ext.is_none() => "Erweiterungen",
             Id::Quantity => cards::KNOPF,
             Id::Projektdaten => "Projektdaten",
             Id::Nord => nord.as_str(),
@@ -6549,7 +6587,7 @@ impl App {
                     None => flush_pick::paint_label(&self.ui.fonts, &key.0, scale, &self.theme),
                 },
                 (true, Some(i), _) => {
-                    i.paint(&self.ui.fonts, wall_tool::LABELS, scale, &self.theme)
+                    i.paint(&self.ui.fonts, self.tool.labels(), scale, &self.theme)
                 }
                 (false, _, Some(i)) => i.paint(
                     &self.ui.fonts,
@@ -7667,7 +7705,14 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         }
         None => (None, Vec::new()),
     };
-    let (quiet, hints): (Vec<_>, Vec<_>) = hints.into_iter().partition(|h| catalog::quiet(h));
+    let (quiet, mut hints): (Vec<_>, Vec<_>) = hints.into_iter().partition(|h| catalog::quiet(h));
+    // Erweiterungen aus dem Ordner neben den Einstellungen (E6)
+    let (ext_bib, ext_hinweise) = ext_app::bibliothek(settings.path.as_deref());
+    hints.extend(
+        ext_hinweise
+            .iter()
+            .map(|h| meldung::Meldung::mit("Erweiterung {}", &[h])),
+    );
     if !hints.is_empty() && screenshot.is_none() {
         surface.message(&meldungen(&hints), false);
     }
@@ -7745,6 +7790,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         tool_type: [None, None],
         type_menu: None,
         type_menu_dirty: false,
+        ext_bib,
+        ext_liste: None,
         tool_chip_key: None,
         w,
         h,
@@ -8289,7 +8336,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                     Some(scene::mesh_of(&c.solid_cut_at(a.scene.plan_cut())))
                 }
                 (Some(c), _) => Some(scene::mesh_of(&c.solid())),
-                (None, _) => None,
+                (None, _) => a.ext_vorschau(),
             };
             // Leere Vorschau nur einmal hochladen
             if preview.is_some() || a.preview_shown {

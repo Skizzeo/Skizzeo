@@ -25000,11 +25000,12 @@ mod hilfe {
     };
 
     /// Knöpfe mit Tooltip (§1.3); „90°-Sprung“ steht im Paneel Werkzeuge
-    /// (Koordinator 21:45).
-    const KNOEPFE: [&str; 12] = [
+    /// (Koordinator 21:45), „Erweiterungen“ dort ab E6 (Schrittplan .szb).
+    const KNOEPFE: [&str; 13] = [
         "Gebäude",
         "Innenwand",
         "90°-Sprung",
+        "Erweiterungen",
         "3D",
         "Grundriss",
         "Schnitt",

@@ -31,6 +31,8 @@ use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
 /// Kopf, Fuß, Rand (dip).
+mod ext;
+
 const HEAD: f32 = 64.0;
 const FOOT: f32 = 56.0;
 const PAD: f32 = 16.0;
@@ -39,6 +41,8 @@ const MIN_W: f32 = 900.0;
 const MIN_H: f32 = 600.0;
 /// Inhalt rechts: linke Kante (ab Fenster) und rechte Spalte.
 const CONTENT_X: f32 = 302.0;
+/// Ort des Firmenkatalogs im Kopf, rechts der drei Reiter.
+const PATH_X: f32 = 568.0;
 const RIGHT_X: f32 = 752.0;
 const PROPS_X: f32 = 880.0;
 /// Schichtzeilen.
@@ -72,6 +76,8 @@ fn function_name(f: LayerFunction) -> &'static str {
 pub enum Tab {
     Project,
     Company,
+    /// Eingelesene Bauteile (E6).
+    Ext,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,6 +138,8 @@ enum Btn {
     AskNew,
     AskChange,
     AskClose,
+    /// Reiter „Erweiterungen“: Bauteil setzen.
+    Einfuegen,
 }
 
 /// Eintrag der Liste links.
@@ -141,6 +149,8 @@ enum Item {
     /// Neuer, noch unvollständiger Typ.
     Draft,
     Company(Guid),
+    /// Bauteil `i` im Reiter „Erweiterungen“.
+    Ext(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -243,6 +253,9 @@ pub struct Out {
     /// Fenster „Baustoffe …“ mit diesem Baustoff öffnen (der Katalog ist
     /// ohne Änderungen geschlossen).
     pub open_material: Option<Guid>,
+    /// „Einfügen“ im Reiter „Erweiterungen“: Werkzeug mit dem Bauteil
+    /// dieses Schlüssels (der Katalog ist ohne Änderungen geschlossen).
+    pub ext_einfuegen: Option<String>,
 }
 
 impl Out {
@@ -338,6 +351,9 @@ pub struct Catalog {
     /// Zeitpunkt des Bildes, das gerade entsteht: alle Teilbilder zeigen
     /// denselben Stand der Übergänge.
     paint_now: Option<Instant>,
+    /// Reiter „Erweiterungen“: Bauteile und das gewählte.
+    ext: Vec<ext::Eintrag>,
+    ext_sel: Option<usize>,
     /// Feste Uhr für Tests: alle Bilder zeigen denselben Stand.
     #[cfg(test)]
     test_clock: Option<Instant>,
@@ -479,6 +495,8 @@ impl Catalog {
             edit_material: None,
             fade: None,
             paint_now: None,
+            ext: Vec::new(),
+            ext_sel: None,
             #[cfg(test)]
             test_clock: None,
         };
@@ -561,8 +579,20 @@ impl Catalog {
     }
 
     fn tab_rect(&self, t: &Theme, w: &Win, tab: Tab) -> Rect {
-        let i = if tab == Tab::Project { 0.0 } else { 1.0 };
-        self.r(t, w, 204.0 + i * 108.0, 18.0, 106.0, 28.0)
+        // „Erweiterungen“ braucht mehr Platz als „Projekt“ und „Firma“
+        let (i, ww) = match tab {
+            Tab::Project => (0.0, 106.0),
+            Tab::Company => (1.0, 106.0),
+            Tab::Ext => (2.0, 130.0),
+        };
+        self.r(t, w, 204.0 + i * 108.0, 18.0, ww, 28.0)
+    }
+
+    /// Platz für den Ort des Firmenkatalogs bis vor „ändern …“ und das
+    /// Schließen, höchstens 360 dip.
+    fn path_room(&self, t: &Theme, w: &Win) -> f32 {
+        let fw = self.frame(t, w).w / w.scale;
+        (fw - PATH_X - 46.0 - 90.0).clamp(80.0, 360.0) * w.scale
     }
 
     fn path_link(&self, t: &Theme, w: &Win, fonts: &Fonts) -> Option<Rect> {
@@ -573,12 +603,12 @@ impl Catalog {
         let s = w.scale;
         let px = t.size.font_small * s;
         let pw = fonts.regular.as_ref().map_or(0.0, |f| f.width(path, px));
-        let pw = pw.min(360.0 * s);
+        let pw = pw.min(self.path_room(t, w));
         let lw = fonts
             .regular
             .as_ref()
             .map_or(60.0, |f| f.width("ändern …", px));
-        let base = self.r(t, w, 436.0, 18.0, 0.0, 28.0);
+        let base = self.r(t, w, PATH_X, 18.0, 0.0, 28.0);
         Some(Rect::new(
             base.x + pw + 14.0 * s,
             base.y,
@@ -598,6 +628,9 @@ impl Catalog {
     /// Kacheln der Liste mit Gruppenköpfen (Fensterkoordinaten, ohne
     /// Bildlauf).
     fn list_layout(&self, t: &Theme, w: &Win) -> ListLayout {
+        if self.tab == Tab::Ext {
+            return self.ext_layout(t, w);
+        }
         let s = w.scale;
         let body = self.list_body(t, w);
         let tile_h = t.size.catalog_tile_h * s;
@@ -644,6 +677,7 @@ impl Catalog {
                 }
                 v
             }
+            Tab::Ext => Vec::new(),
             Tab::Company => self
                 .company_items()
                 .into_iter()
@@ -691,6 +725,7 @@ impl Catalog {
         let action = match self.tab {
             Tab::Project => "In Firmenkatalog speichern",
             Tab::Company => "Ins Projekt übernehmen",
+            Tab::Ext => "Bauteil einlesen …",
         };
         [
             (Btn::Action, self.r(t, w, PAD, y, 230.0, 30.0), action),
@@ -1011,7 +1046,7 @@ impl Catalog {
         if self.close_rect(t, w).contains(x, y) {
             return Some(Target::Close);
         }
-        for tab in [Tab::Project, Tab::Company] {
+        for tab in [Tab::Project, Tab::Company, Tab::Ext] {
             if self.tab_rect(t, w, tab).contains(x, y) {
                 return Some(Target::Tab(tab));
             }
@@ -1042,6 +1077,9 @@ impl Catalog {
                 }
             }
             return self.project_hit(t, w, x, y);
+        }
+        if self.tab == Tab::Ext {
+            return self.ext_hit(t, w, x, y);
         }
         None
     }
@@ -1429,7 +1467,10 @@ impl Catalog {
                     self.popup = Some(Popup::Export(self.draft.guid, false));
                 }
                 Tab::Company => self.import_selected(),
+                // Kommt mit „Datei › Bauteil einlesen …“ (E5)
+                Tab::Ext => {}
             },
+            Target::Btn(Btn::Einfuegen) => self.ext_einfuegen(out),
             Target::Combo(id) => self.open_combo(id, cx),
             Target::Choice(i) => self.choose(i, cx),
             Target::Remove(i) => {
@@ -1991,6 +2032,7 @@ impl Catalog {
                 self.csel = Some(g);
             }
             Item::Draft => {}
+            Item::Ext(i) => self.ext_sel = Some(i),
             Item::Type(id) => {
                 if self.sel == Some(id) && !self.draft_new {
                     return;
@@ -2907,6 +2949,7 @@ impl Catalog {
                 (lib.is_some_and(|l| l.type_by_guid(g).is_none())).then_some(Mark::OnlyProject)
             }
             Item::Draft => Some(Mark::OnlyProject),
+            Item::Ext(_) => None,
             Item::Company(g) => {
                 let lib = lib?;
                 let ct = lib.types.get(lib.type_by_guid(g)?)?;
@@ -2962,6 +3005,7 @@ impl Catalog {
                 0,
                 type_look(&self.work, t, &self.draft),
             )),
+            Item::Ext(_) => None,
             Item::Company(g) => {
                 let lib = self.company_lib()?;
                 let ct = lib.types.get(lib.type_by_guid(g)?)?;
@@ -2980,6 +3024,7 @@ impl Catalog {
             Item::Type(id) => self.tab == Tab::Project && !self.draft_new && self.sel == Some(id),
             Item::Draft => self.draft_new,
             Item::Company(g) => self.tab == Tab::Company && self.csel == Some(g),
+            Item::Ext(i) => self.tab == Tab::Ext && self.ext_sel == Some(i),
         }
     }
 
@@ -3132,6 +3177,9 @@ impl Catalog {
                     Target::Btn(b) => {
                         let mut all = self.foot_buttons(t, w).to_vec();
                         all.extend(self.list_buttons(t, w));
+                        if let Some(r) = self.ext_button(t, w) {
+                            all.push((Btn::Einfuegen, r, ""));
+                        }
                         vec![all.into_iter().find(|(x, ..)| *x == b)?.1]
                     }
                     // Eine Schichtzeile hebt die ganze Zeile hervor
@@ -3184,11 +3232,11 @@ impl Catalog {
         let seg = Rect::new(
             self.tab_rect(t, w, Tab::Project).x - 2.0 * s,
             self.tab_rect(t, w, Tab::Project).y - 2.0 * s,
-            218.0 * s,
+            350.0 * s,
             32.0 * s,
         );
         rounded(c, seg, 7.0 * s, u.field);
-        for tab in [Tab::Project, Tab::Company] {
+        for tab in [Tab::Project, Tab::Company, Tab::Ext] {
             let r = self.tab_rect(t, w, tab);
             let on = self.tab == tab;
             let hov = self.hover == Some(Target::Tab(tab));
@@ -3206,10 +3254,10 @@ impl Catalog {
             if let Some(p) = pulse {
                 outline(c, r, 6.0 * s, 2.0 * line, with_alpha(u.accent, 1.0 - p));
             }
-            let text = if tab == Tab::Project {
-                "Projekt"
-            } else {
-                "Firma"
+            let text = match tab {
+                Tab::Project => "Projekt",
+                Tab::Company => "Firma",
+                Tab::Ext => "Erweiterungen",
             };
             let font = if on { bold } else { regular };
             let px = t.size.font * s;
@@ -3225,9 +3273,9 @@ impl Catalog {
             );
         }
         if let (Tab::Company, Some((_, path))) = (self.tab, &self.company) {
-            let base = self.r(t, w, 436.0, 18.0, 0.0, 28.0);
+            let base = self.r(t, w, PATH_X, 18.0, 0.0, 28.0);
             let px = t.size.font_small * s;
-            let p = widgets::ellipsize(regular, path, px, 360.0 * s);
+            let p = widgets::ellipsize(regular, path, px, self.path_room(t, w));
             label(c, regular, &p, px, base.x, base.y + 19.0 * s, u.text_dim);
             if let Some(l) = self.path_link(t, w, fonts) {
                 let col = if self.hover == Some(Target::PathLink) {
@@ -3272,6 +3320,8 @@ impl Catalog {
                 widgets::button(c, fonts, r, text, self.btn_state(b, false, disabled), s, t);
             }
             self.paint_project(c, t, fonts, w);
+        } else if self.tab == Tab::Ext {
+            self.paint_ext(c, t, fonts, w);
         } else {
             self.paint_company(c, t, fonts, w);
         }
@@ -3280,6 +3330,7 @@ impl Catalog {
         for (b, r, text) in self.foot_buttons(t, w) {
             let disabled = b == Btn::Action
                 && (no_company
+                    || self.tab == Tab::Ext
                     || (self.tab == Tab::Project && (self.draft_new || self.nutzer))
                     || (self.tab == Tab::Company && self.csel.is_none()));
             widgets::button(
@@ -3432,6 +3483,9 @@ impl Catalog {
             fonts.regular.as_ref(),
             fonts.bold.as_ref().or(fonts.regular.as_ref()),
         );
+        if let Item::Ext(i) = it {
+            return self.paint_ext_tile(c, i, r, t, fonts, w, sel, hover);
+        }
         let Some((name, detail, uses, look)) = self.tile_info(it, t) else {
             return;
         };

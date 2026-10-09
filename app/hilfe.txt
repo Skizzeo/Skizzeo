@@ -45,6 +45,17 @@ Beenden | **Enter** oder Doppelklick
 Typ | Chip im Werkzeug: Klick öffnet die Typ-Liste
 Löschen | wählen, dann **Entf** oder Rechtsklick › Löschen
 
+[thema] id=erweiterungen titel="Erweiterungen"
+Was | Bauteile aus der Bauteil-Werkbank (.szb), etwa Stütze, Treppe oder Geländer
+Ablage | Ordner „Erweiterungen“ neben den Einstellungen; Skizzeo liest ihn beim Start
+Starten | Bauteilkatalog › Reiter „Erweiterungen“ › „Einfügen“ oder Knopf „Erweiterungen“ unter „Innenwand“
+Punkt | Klick setzt das Bauteil, **Tab** dreht es, wenn es drehbar ist
+Linie | Klick setzt Anfang und Ende, Zahl + **Enter** die Länge, **R** den 90°-Sprung
+Rechteck | Klick setzt zwei Ecken, Zahl + **Enter** die Breite, **Tab** die Tiefe
+Typ und Maße | Typ-Chip und Felder im Paneel gelten für die nächsten Bauteile
+Beenden | **Esc** oder Klick auf den Knopf des Bauteils
+Im Projekt | Die Datei trägt das Bauteil mit und öffnet auch ohne den Ordner
+
 [thema] id=ziehen titel="Wand verschieben"
 Greifen | über den Wandfuß fahren, violettes Band greifen und ziehen (10-mm-Raster)
 Wert tippen | beim Ziehen eine Zahl tippen, **Enter** übernimmt genau auf den Millimeter
@@ -298,6 +309,7 @@ Scheitert es | Karte „Automatisches Sichern klappt gerade nicht.“ mit „Jet
 Gebäude | Außenwand als Polygon zeichnen; beim Schließen entsteht das ganze Haus.
 Innenwand | Innenwand im aktiven Geschoss zeichnen.
 90°-Sprung | Beim Zeichnen springt die Richtung in 90°-Schritten; **R** schaltet um.
+Erweiterungen | Eingelesene Bauteile wie Stütze oder Treppe setzen, nach Gruppe geordnet.
 3D | Haus räumlich ansehen.
 Grundriss | Waagerechter Schnitt durch das aktive Geschoss.
 Schnitt | Senkrechter Schnitt A–A oder B–B.

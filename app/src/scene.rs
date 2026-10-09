@@ -1999,6 +1999,7 @@ impl Scene {
             min,
             max,
             zero: false,
+            einheit: None,
         };
         for id in self.level_ids() {
             let Some(st) = m.storey(id) else {

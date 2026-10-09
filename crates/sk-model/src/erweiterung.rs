@@ -24,12 +24,62 @@ pub fn normal(text: &str) -> String {
     text.trim_start_matches('\u{feff}').replace("\r\n", "\n")
 }
 
+/// Höchstzahl Zeichen eines Textes aus einer .szb in der Anzeige.
+pub const ANZEIGE_MAX: usize = 200;
+
+/// Text aus einer .szb für die Anzeige (Robustheit Nr. 16): ohne Steuer-
+/// und Richtungszeichen, Leerraumfolgen als ein Leerzeichen, höchstens
+/// `max` Zeichen, gekürzt mit „…“.
+pub fn anzeige(text: &str, max: usize) -> String {
+    let richtung = |c: char| matches!(c, '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}');
+    let woerter: Vec<String> = text
+        .split(|c: char| c.is_whitespace() || c.is_control())
+        .map(|w| w.chars().filter(|&c| !richtung(c)).collect::<String>())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let s = woerter.join(" ");
+    if s.chars().count() <= max {
+        return s;
+    }
+    let mut k: String = s.chars().take(max.saturating_sub(1)).collect();
+    k.truncate(k.trim_end().len());
+    k.push('…');
+    k
+}
+
+#[cfg(test)]
+mod anzeige_tests {
+    #[test]
+    fn steuerzeichen_richtung_laenge() {
+        use super::anzeige;
+        assert_eq!(anzeige("Stütze\u{202e} 24/24", 50), "Stütze 24/24");
+        assert_eq!(anzeige("a\n\tb\u{0007}c  d", 50), "a b c d");
+        assert_eq!(anzeige("abcdef ghij", 8), "abcdef…");
+        assert_eq!(anzeige("abcdefgh", 8), "abcdefgh");
+        assert_eq!(anzeige("\u{200f}", 8), "");
+    }
+}
+
 impl ExtDef {
     /// Liest eine Definition aus dem Text einer .szb, ohne Grenzprüfung
     /// (sie läuft nur beim Einlesen). `Err`: der erste Fehler mit Zeile.
     pub fn lesen(text: &str) -> Result<ExtDef, String> {
+        ExtDef::mit(text, false)
+    }
+
+    /// Wie [`ExtDef::lesen`], mit Grenzprüfung: zum Einlesen einer .szb.
+    pub fn einlesen(text: &str) -> Result<ExtDef, String> {
+        ExtDef::mit(text, true)
+    }
+
+    fn mit(text: &str, grenzen: bool) -> Result<ExtDef, String> {
         let text = normal(text);
-        let p = sk_szb::pruefen_beim_oeffnen(&text, &Bestand::werk(), &Geschoss::PROBE);
+        let (best, g) = (Bestand::werk(), Geschoss::PROBE);
+        let p = if grenzen {
+            sk_szb::pruefen(&text, &best, &g)
+        } else {
+            sk_szb::pruefen_beim_oeffnen(&text, &best, &g)
+        };
         if let Some(b) = p.befunde.iter().find(|b| b.ist_fehler()) {
             return Err(if b.zeile > 0 {
                 format!("Zeile {}: {}", b.zeile, b.text)
@@ -88,6 +138,29 @@ impl ExtDef {
         self.def.bedienung_feld("einfuegen").unwrap_or("punkt")
     }
 
+    /// Gruppe aus `[bedienung]` als Anzeigename („Tragwerk“), sonst
+    /// „Sonstiges“.
+    pub fn gruppe(&self) -> &'static str {
+        sk_szb::pruefen::GRUPPEN[self.gruppe_rang()].1
+    }
+
+    /// Stelle der Gruppe in der Reihenfolge des Bauteilkatalogs.
+    pub fn gruppe_rang(&self) -> usize {
+        let k = self.def.bedienung_feld("gruppe").unwrap_or("");
+        let g = &sk_szb::pruefen::GRUPPEN;
+        g.iter().position(|g| g.0 == k).unwrap_or(g.len() - 1)
+    }
+
+    /// Feld aus `[bedienung]`, z. B. `laenge` → `l`.
+    pub fn bedienung(&self, k: &str) -> Option<&str> {
+        self.def.bedienung_feld(k).filter(|v| !v.is_empty())
+    }
+
+    /// Darf das Werkzeug drehen (`drehen=ja`)?
+    pub fn drehen(&self) -> bool {
+        self.bedienung("drehen") == Some("ja")
+    }
+
     /// Typ `key`.
     pub fn typ(&self, key: &str) -> Option<&sk_szb::Satz> {
         self.def.typ.iter().find(|t| t.key() == key)
@@ -129,6 +202,82 @@ impl ExtDef {
             pv.insert(k.to_string(), v);
         }
         pv
+    }
+}
+
+/// Körper und Mengen des Exemplars `part` von `d` im Geschoss `g`.
+pub fn rechnen(d: &ExtDef, part: &ExtPart, g: &Geschoss) -> Ergebnis {
+    sk_szb::rechnen(&d.def, &d.werte(part, g), g)
+}
+
+/// Ein `[param]` im Paneel (Vertrag §14): Wert des Exemplars, Grenzen und
+/// Bedienangaben.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExtFeld {
+    pub key: String,
+    pub name: String,
+    /// `mm`, `stk`, `grad`, … oder leer.
+    pub einheit: String,
+    pub wert: f64,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub ganz: bool,
+    /// Im Werkzeug-Paneel (`zeichnen=ja`).
+    pub zeichnen: bool,
+    /// `sichtbar` ergibt nicht 0 (ohne Angabe sichtbar).
+    pub sichtbar: bool,
+    pub gruppe: String,
+    pub hilfe: String,
+    /// `wahl="0:a|1:b"`: Wert und Text.
+    pub wahl: Vec<(f64, String)>,
+    pub janein: bool,
+}
+
+impl ExtFeld {
+    /// Der Wert liegt außerhalb von min/max.
+    pub fn ausserhalb(&self) -> bool {
+        self.min.is_some_and(|m| self.wert < m - 1e-9)
+            || self.max.is_some_and(|m| self.wert > m + 1e-9)
+    }
+}
+
+impl ExtDef {
+    /// Alle Parameter mit den Werten des Exemplars `part` im Geschoss `g`,
+    /// in Satzreihenfolge.
+    pub fn felder(&self, part: &ExtPart, g: &Geschoss) -> Vec<ExtFeld> {
+        let pv = self.werte(part, g);
+        let mut u = g.umfeld();
+        u.extend(pv.iter().map(|(k, v)| (k.clone(), *v)));
+        let f = |s: Option<&str>| s.and_then(|s| formel::rechnen(s, &u, None).ok());
+        self.def
+            .param
+            .iter()
+            .map(|r| ExtFeld {
+                key: r.key().to_string(),
+                name: r.get("name").unwrap_or(r.key()).to_string(),
+                einheit: r.get("einheit").unwrap_or("").to_string(),
+                wert: pv.get(r.key()).copied().unwrap_or(0.0),
+                min: f(r.get("min")),
+                max: f(r.get("max")),
+                ganz: r.ja("ganz"),
+                zeichnen: r.ja("zeichnen"),
+                sichtbar: f(r.get("sichtbar")).is_none_or(|v| v != 0.0),
+                gruppe: r.get("gruppe").unwrap_or("").to_string(),
+                hilfe: r.get("hilfe").unwrap_or("").to_string(),
+                wahl: r
+                    .get("wahl")
+                    .map(|w| {
+                        w.split('|')
+                            .filter_map(|x| {
+                                let (a, b) = x.split_once(':')?;
+                                Some((a.trim().parse().ok()?, b.trim().to_string()))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                janein: r.ja("janein"),
+            })
+            .collect()
     }
 }
 

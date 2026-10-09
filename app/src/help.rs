@@ -148,6 +148,8 @@ pub enum Topic {
     Building,
     Draw,
     InnerWall,
+    /// Werkzeug für Erweiterungsbauteile (E6).
+    Ext,
     Drag,
     Upper,
     Flush,
@@ -182,12 +184,13 @@ pub enum Topic {
 
 impl Topic {
     /// Alle Themen in der Reihenfolge der Liste „Alle Themen“.
-    pub const ALL: [Topic; 33] = [
+    pub const ALL: [Topic; 34] = [
         Topic::Start,
         Topic::Navigation,
         Topic::Building,
         Topic::Draw,
         Topic::InnerWall,
+        Topic::Ext,
         Topic::Drag,
         Topic::Upper,
         Topic::Flush,
@@ -230,6 +233,7 @@ impl Topic {
                 Topic::Building,
                 Topic::Draw,
                 Topic::InnerWall,
+                Topic::Ext,
                 Topic::Drag,
                 Topic::Upper,
                 Topic::Flush,
@@ -278,6 +282,7 @@ impl Topic {
             Topic::Building => "gebaeude",
             Topic::Draw => "zeichnen",
             Topic::InnerWall => "innenwand",
+            Topic::Ext => "erweiterungen",
             Topic::Drag => "ziehen",
             Topic::Upper => "og",
             Topic::Flush => "buendig",

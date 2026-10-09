@@ -11,11 +11,15 @@
 //! - Paket 8: Am Gummiband steht seine Länge (Bezugslinie). Eine Ziffer öffnet
 //!   die Eingabe „Länge“, Tab das Feld „Winkel“ (gegen die vorige Wand, plus
 //!   nach links); Enter setzt den Punkt genau, Esc schließt erst die Eingabe.
+//! - E6: Mit [`WallTool::ext`] setzt dieselbe Eingabe Erweiterungsbauteile
+//!   (Punkt, Linie, Rechteck, siehe [`crate::ext_werkzeug`]).
 
 use crate::camera::Camera;
+use crate::ext_werkzeug::{Art, ExtModus};
 use crate::measure_input::{opens, InputOutcome, MeasureInput};
 use crate::ui::MeasureKind;
 use sk_math::{vec3, Vec3};
+use sk_model::erweiterung::ExtPart;
 use sk_model::{Category, Layer, RefSide, WallChain};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_render::Helper;
@@ -80,6 +84,10 @@ pub struct WallTool {
     input: Option<MeasureInput>,
     /// Länge des Gummibands auf dem Bildschirm (dip), für die Pille.
     rubber_dip: f64,
+    /// Werkzeug „Erweiterungen“ statt Wand (E6).
+    pub ext: Option<ExtModus>,
+    /// Gesetzte Erweiterungsbauteile, die die App abholt.
+    pub ext_fertig: Vec<ExtPart>,
 }
 
 /// Felder der Pille beim Zeichnen.
@@ -128,7 +136,25 @@ impl WallTool {
             snaps: Vec::new(),
             input: None,
             rubber_dip: 0.0,
+            ext: None,
+            ext_fertig: Vec::new(),
         }
+    }
+
+    /// Beginnt das Werkzeug „Erweiterungen“ mit `m` (statt Wand).
+    pub fn start_ext(&mut self, m: ExtModus) {
+        self.set_enabled(true);
+        self.ext = Some(m);
+    }
+
+    /// Art des laufenden Werkzeugs „Erweiterungen“.
+    fn ext_art(&self) -> Option<Art> {
+        self.ext.as_ref().map(|m| m.art)
+    }
+
+    /// Felder der Pille.
+    pub fn labels(&self) -> [&'static str; 2] {
+        self.ext.as_ref().map_or(LABELS, |m| m.art.labels())
     }
 
     /// Wechselt zwischen Außen- und Innenwand. Eine angefangene Eingabe geht weg;
@@ -184,7 +210,21 @@ impl WallTool {
             return None;
         }
         let len = i.value(0)?.ok()?;
-        let last = *self.points.last()?;
+        let last = match self.ext.as_ref() {
+            Some(m) if m.art == Art::Punkt => m.zuletzt?,
+            _ => *self.points.last()?,
+        };
+        if self.ext_art() == Some(Art::Rechteck) {
+            // Breite in x, Tiefe in y, Vorzeichen wie die Maus
+            let m = self.cursor.as_ref().map_or(Vec3::ZERO, |c| c.pos - last);
+            let sx = if m.x < 0.0 { -1.0 } else { 1.0 };
+            let sy = if m.y < 0.0 { -1.0 } else { 1.0 };
+            let t = match i.value(1) {
+                Some(Ok(t)) => t,
+                _ => m.y.abs(),
+            };
+            return Some(last + vec3(sx * len, sy * t, 0.0));
+        }
         let dir = match i.value(1) {
             Some(Ok(a)) => {
                 let (s, c) = a.to_radians().sin_cos();
@@ -206,7 +246,7 @@ impl WallTool {
 
     /// Schließt der Punkt `p` den Zug (unter 1 mm am Start, ab drei Punkten)?
     fn closes(&self, p: Vec3) -> bool {
-        self.points.len() >= 3 && (p - self.points[0]).length() < 1.0
+        self.ext.is_none() && self.points.len() >= 3 && (p - self.points[0]).length() < 1.0
     }
 
     /// Ende des Gummibands: getippter Punkt oder Cursor.
@@ -222,18 +262,28 @@ impl WallTool {
         if !self.enabled {
             return None;
         }
-        let last = *self.points.last()?;
+        let last = match self.ext.as_ref() {
+            Some(m) if m.art == Art::Punkt && self.input.is_some() => m.zuletzt?,
+            _ => *self.points.last()?,
+        };
         let end = self.rubber_end()?;
         if let Some(i) = &self.input {
-            return Some(([last, end], i.text(LABELS)));
+            return Some(([last, end], i.text(self.labels())));
         }
         if self.rubber_dip < 1.0 {
             return None;
         }
-        Some((
-            [last, end],
-            crate::ui::live_length_text((end - last).length()),
-        ))
+        let text = if self.ext_art() == Some(Art::Rechteck) {
+            let t = crate::ui::live_length_text;
+            format!(
+                "{} × {}",
+                t((end.x - last.x).abs()),
+                t((end.y - last.y).abs())
+            )
+        } else {
+            crate::ui::live_length_text((end - last).length())
+        };
+        Some(([last, end], text))
     }
 
     fn chain(&self, points: Vec<Vec3>, closed: bool) -> WallChain {
@@ -250,7 +300,7 @@ impl WallTool {
 
     /// Wand, wie sie gerade am Cursor entsteht.
     pub fn preview(&self) -> Option<WallChain> {
-        if !self.enabled {
+        if !self.enabled || self.ext.is_some() {
             return None;
         }
         let c = self.cursor.as_ref()?;
@@ -266,6 +316,15 @@ impl WallTool {
             pts.push(end);
         }
         Some(self.chain(pts, closed))
+    }
+
+    /// Erweiterungsbauteil, wie es gerade am Cursor entsteht (E6).
+    pub fn ext_vorschau(&self) -> Option<ExtPart> {
+        let m = self.ext.as_ref().filter(|_| self.enabled)?;
+        let end = self.rubber_end()?;
+        let mut p = self.points.clone();
+        p.push(end);
+        m.teil(&p)
     }
 
     /// Spurlinien vom Startpunkt aus.
@@ -294,6 +353,10 @@ impl WallTool {
         let Some(&last) = self.points.last() else {
             return Vec::new();
         };
+        // Zwei Ecken eines Rechtecks liegen nie auf einer Achse
+        if self.ext_art() == Some(Art::Rechteck) {
+            return Vec::new();
+        }
         let mut dirs = Vec::new();
         if self.points.len() >= 2 {
             let d = last - self.points[self.points.len() - 2];
@@ -349,6 +412,26 @@ impl WallTool {
         self.points.clear();
         self.cursor = None;
         self.input = None;
+        if !on {
+            self.ext = None;
+        }
+    }
+
+    /// Setzt einen Punkt im Werkzeug „Erweiterungen“; mit dem letzten
+    /// Punkt der Art ist das Bauteil fertig (in [`WallTool::ext_fertig`]).
+    fn ext_punkt(&mut self, p: Vec3) {
+        let Some(m) = self.ext.as_mut() else {
+            return;
+        };
+        self.points.push(p);
+        if self.points.len() < m.art.klicks() {
+            return;
+        }
+        let pts = std::mem::take(&mut self.points);
+        if let Some(t) = m.teil(&pts) {
+            self.ext_fertig.push(t);
+            m.zuletzt = Some(p);
+        }
     }
 
     fn snap(&self, cam: &Camera, mx: f64, my: f64, w: f64, h: f64, scale: f64) -> Option<Cursor> {
@@ -545,6 +628,11 @@ impl WallTool {
                 let Some(c) = self.cursor.clone() else {
                     return out;
                 };
+                if self.ext.is_some() {
+                    self.ext_punkt(c.pos);
+                    self.refresh(cam, w, h, scale);
+                    return out;
+                }
                 if c.kind == SnapKind::Start {
                     let pts = std::mem::take(&mut self.points);
                     out.commit = Some(self.chain(pts, true));
@@ -579,6 +667,18 @@ impl WallTool {
                     return out;
                 }
                 match key {
+                    Key::Tab if self.ext.is_some() => {
+                        // Punkt mit drehen=ja: um 90° weiter
+                        if let Some(m) = self
+                            .ext
+                            .as_mut()
+                            .filter(|m| m.art == Art::Punkt && m.def.drehen())
+                        {
+                            m.rot = (m.rot + 90.0) % 360.0;
+                            out.redraw = true;
+                        }
+                    }
+                    Key::Enter if self.ext.is_some() => {}
                     Key::Tab => {
                         self.ref_side = self.ref_side.next();
                         out.redraw = true;
@@ -621,10 +721,19 @@ impl WallTool {
             let Key::Char(ch) = key else {
                 return false;
             };
-            if self.points.is_empty() || !opens(ch, MeasureKind::Length, mods) {
+            let bezug = match self.ext.as_ref() {
+                Some(m) if m.art == Art::Punkt => m.zuletzt.is_some(),
+                _ => !self.points.is_empty(),
+            };
+            if !bezug || !opens(ch, MeasureKind::Length, mods) {
                 return false;
             }
-            let mut i = MeasureInput::new(MeasureKind::Length, Some(MeasureKind::Angle));
+            let zweites = if self.ext_art() == Some(Art::Rechteck) {
+                MeasureKind::Length
+            } else {
+                MeasureKind::Angle
+            };
+            let mut i = MeasureInput::new(MeasureKind::Length, Some(zweites));
             i.push(ch);
             self.input = Some(i);
             out.redraw = true;
@@ -636,12 +745,16 @@ impl WallTool {
             InputOutcome::Emptied | InputOutcome::Escape => self.input = None,
             InputOutcome::EnterEmpty => {
                 self.input = None;
-                out.commit = self.finish_open();
+                if self.ext.is_none() {
+                    out.commit = self.finish_open();
+                }
             }
             InputOutcome::Enter => {
                 if let Some(p) = self.typed_point() {
                     self.input = None;
-                    if self.closes(p) {
+                    if self.ext.is_some() {
+                        self.ext_punkt(p);
+                    } else if self.closes(p) {
                         let pts = std::mem::take(&mut self.points);
                         out.commit = Some(self.chain(pts, true));
                     } else {
@@ -854,5 +967,86 @@ mod tests {
         assert_eq!(t.ref_side, RefSide::Center);
         t.handle(&tab, &c, 1200.0, 800.0, 1.0);
         assert_eq!(t.ref_side, RefSide::Left);
+    }
+    fn taste(t: &mut WallTool, c: &Camera, key: Key) -> Outcome {
+        t.handle(
+            &Event::Key {
+                key,
+                down: true,
+                mods: Modifiers::default(),
+                repeat: false,
+            },
+            c,
+            1200.0,
+            800.0,
+            1.0,
+        )
+    }
+
+    fn ext(i: usize) -> ExtModus {
+        const B: [&str; 3] = [
+            include_str!("../../crates/sk-szb/beispiele/werk.stuetze.szb"),
+            include_str!("../../crates/sk-szb/beispiele/werk.stabgelaender.szb"),
+            include_str!("../../crates/sk-szb/beispiele/werk.bodenplatte.szb"),
+        ];
+        ExtModus::new(sk_model::erweiterung::ExtDef::einlesen(B[i]).unwrap())
+    }
+
+    /// E6: Punkt, Linie und Rechteck setzen Erweiterungsbauteile; Wände
+    /// entstehen dabei keine.
+    #[test]
+    fn erweiterungen_setzen() {
+        let c = cam();
+        let mut t = WallTool::new();
+        // Punkt: Tab dreht, jeder Klick ein Bauteil, Zahl + Enter im Abstand
+        t.start_ext(ext(0));
+        taste(&mut t, &c, Key::Tab);
+        let out = click_at(&mut t, &c, vec3(1000.0, 1000.0, 0.0));
+        assert!(out.commit.is_none() && t.preview().is_none());
+        let p = t.ext_fertig.pop().unwrap();
+        assert!((p.at[0] - 1000.0).abs() < 1.0 && (p.at[1] - 1000.0).abs() < 1.0);
+        assert_eq!(p.rot, 90.0);
+        assert!(!t.is_active());
+        t.mouse = c.project(vec3(3000.0, 1000.0, 0.0), 1200.0, 800.0);
+        t.refresh(&c, 1200.0, 800.0, 1.0);
+        for ch in "2,5".chars() {
+            taste(&mut t, &c, Key::Char(ch));
+        }
+        assert_eq!(t.labels(), ["Abstand", "Winkel"]);
+        taste(&mut t, &c, Key::Enter);
+        let q = t.ext_fertig.pop().unwrap();
+        assert!((q.at[0] - p.at[0] - 2500.0).abs() < 1e-6, "{:?}", q.at);
+        // Linie: zwei Klicks, Länge aus der Eingabe
+        t.start_ext(ext(1));
+        click_at(&mut t, &c, vec3(0.0, 0.0, 0.0));
+        assert!(t.is_active() && t.ext_fertig.is_empty());
+        t.mouse = c.project(vec3(0.0, 1800.0, 0.0), 1200.0, 800.0);
+        t.refresh(&c, 1200.0, 800.0, 1.0);
+        assert!(t.ext_vorschau().is_some());
+        for ch in "3".chars() {
+            taste(&mut t, &c, Key::Char(ch));
+        }
+        taste(&mut t, &c, Key::Enter);
+        let l = t.ext_fertig.pop().unwrap();
+        assert!((l.rot - 90.0).abs() < 1e-6);
+        assert_eq!(l.werte, [("l".to_string(), 3000.0)]);
+        // Rechteck: zwei Ecken, Breite und Tiefe getippt
+        t.start_ext(ext(2));
+        click_at(&mut t, &c, vec3(0.0, 0.0, 0.0));
+        t.mouse = c.project(vec3(1000.0, 1000.0, 0.0), 1200.0, 800.0);
+        t.refresh(&c, 1200.0, 800.0, 1.0);
+        for k in [Key::Char('6'), Key::Tab, Key::Char('4'), Key::Enter] {
+            taste(&mut t, &c, k);
+        }
+        let r = t.ext_fertig.pop().unwrap();
+        assert_eq!(
+            r.werte,
+            [("b".to_string(), 6000.0), ("t".to_string(), 4000.0)]
+        );
+        // Esc ohne Punkte bleibt im Werkzeug; Ausschalten beendet es
+        taste(&mut t, &c, Key::Escape);
+        assert!(t.ext.is_some());
+        t.set_enabled(false);
+        assert!(t.ext.is_none());
     }
 }

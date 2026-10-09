@@ -189,6 +189,7 @@ fn recess_field(m: &Model, id: ElementId) -> Option<FieldRow> {
         min: sk_model::MIN_RECESS,
         max: 500.0,
         zero: true,
+        einheit: None,
     })
 }
 
@@ -201,6 +202,7 @@ fn field(field: Field, label: &'static str, value: f64, min: f64, max: f64) -> F
         min,
         max,
         zero: false,
+        einheit: None,
     }
 }
 
@@ -519,6 +521,7 @@ fn offset_field(m: &Model, wall: ElementId) -> FieldRow {
         min: -5000.0,
         max: 5000.0,
         zero: false,
+        einheit: None,
     }
 }
 
@@ -654,6 +657,7 @@ fn terrace_section(m: &Model, floor: ElementId) -> Option<crate::ui::Section> {
             ),
             FieldRow {
                 zero: true,
+                einheit: None,
                 ..field(
                     Field::Upstand,
                     "Attika über Belag",
@@ -691,7 +695,7 @@ pub fn type_chip(m: &Model, theme: &Theme, s: &sk_model::LayerSet) -> Chip {
     Chip {
         name: s.name.clone(),
         detail: format!("{} · {}", s.code, crate::type_look::cm_text(s.thickness())),
-        look: crate::type_look::type_look(m, theme, s),
+        look: Some(crate::type_look::type_look(m, theme, s)),
         open: false,
         marked: false,
     }
