@@ -318,8 +318,7 @@ impl App {
         let m = self.tool.ext.as_ref()?;
         let t = self.tool.ext_vorschau()?;
         let g = self.ext_geschoss();
-        let e = sk_model::erweiterung::rechnen(&m.def, &t, &g);
-        let (e, _) = sk_model::erweiterung_koerper::begrenzt(e);
+        let (e, _) = sk_model::erweiterung_koerper::begrenzt(m.rechnen(&t, &g));
         let st = self.scene.active_storey();
         let z = self.scene.model().storey(st).map_or(0.0, |s| s.elevation) + e.z0;
         let lage = sk_model::erweiterung_koerper::Lage {

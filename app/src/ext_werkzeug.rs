@@ -12,7 +12,7 @@
 //!   Tiefe (`[bedienung] breite`, `tiefe`).
 
 use sk_math::Vec3;
-use sk_model::erweiterung::{ExtDef, ExtFeld, ExtPart, Geschoss};
+use sk_model::erweiterung::{Ergebnis, ExtDef, ExtFeld, ExtPart, Geschoss};
 
 /// Wie ein Bauteil gesetzt wird (`[bedienung] einfuegen`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +81,27 @@ pub struct ExtModus {
     pub rot: f64,
     /// Zuletzt gesetzter Punkt (Bezug für Zahl + Enter bei `punkt`).
     pub zuletzt: Option<Vec3>,
+    /// Letzte Rechnung der Vorschau.
+    vorschau: Vorschau,
+}
+
+/// Rechnung der Vorschau nach Typ, Werten und Geschoss (Review 3ci
+/// Hinweis a): Lage und Drehung gehen nicht in die Rechnung ein, beim
+/// Kameradrehen und beim Ziehen eines Punkts bleibt sie gleich. Zählt beim
+/// Vergleich der Werkzeuge nicht mit, eine Kopie beginnt leer.
+#[derive(Debug, Default)]
+struct Vorschau(std::cell::RefCell<Option<(ExtPart, Geschoss, Ergebnis)>>);
+
+impl Clone for Vorschau {
+    fn clone(&self) -> Vorschau {
+        Vorschau::default()
+    }
+}
+
+impl PartialEq for Vorschau {
+    fn eq(&self, _: &Vorschau) -> bool {
+        true
+    }
 }
 
 /// Höchstens so viele Felder im Werkzeug-Paneel (Vertrag §14).
@@ -95,7 +116,24 @@ impl ExtModus {
             def,
             rot: 0.0,
             zuletzt: None,
+            vorschau: Vorschau::default(),
         }
+    }
+
+    /// Körper und Mengen von `t` im Geschoss `g`, für die Vorschau gemerkt.
+    pub fn rechnen(&self, t: &ExtPart, g: &Geschoss) -> Ergebnis {
+        let mut schluessel = t.clone();
+        schluessel.at = [0.0, 0.0];
+        schluessel.rot = 0.0;
+        let mut c = self.vorschau.0.borrow_mut();
+        if let Some((k, kg, e)) = c.as_ref() {
+            if *k == schluessel && kg == g {
+                return e.clone();
+            }
+        }
+        let e = sk_model::erweiterung::rechnen(&self.def, t, g);
+        *c = Some((schluessel, *g, e.clone()));
+        e
     }
 
     /// Der Parameter, den die Eingabe setzt (`laenge`, `breite`, `tiefe`).
@@ -238,6 +276,33 @@ mod tests {
 
     fn modus(i: usize) -> ExtModus {
         ExtModus::new(ExtDef::einlesen(BEISPIELE[i]).unwrap())
+    }
+
+    /// Die Vorschau rechnet nur neu, wenn Typ, Werte oder Geschoss sich
+    /// ändern; Lage und Drehung nicht (Review 3ci Hinweis a).
+    #[test]
+    fn vorschau_gemerkt() {
+        let g = Geschoss::PROBE;
+        let m = modus(3);
+        let mut t = m.vorlage.clone();
+        let e = m.rechnen(&t, &g);
+        assert_eq!(e, sk_model::erweiterung::rechnen(&m.def, &t, &g));
+        t.at = [500.0, 700.0];
+        t.rot = 90.0;
+        assert_eq!(m.rechnen(&t, &g), e);
+        assert!(m.vorschau.0.borrow().as_ref().unwrap().0.at == [0.0, 0.0]);
+        t.set("b", 300.0);
+        let breit = m.rechnen(&t, &g);
+        assert_ne!(breit, e);
+        assert_eq!(breit, sk_model::erweiterung::rechnen(&m.def, &t, &g));
+        let og = Geschoss { gh: 3000.0, ..g };
+        assert_eq!(
+            m.rechnen(&t, &og),
+            sk_model::erweiterung::rechnen(&m.def, &t, &og)
+        );
+        // Kopie und Vergleich ohne die Rechnung
+        assert_eq!(m.clone(), m);
+        assert!(m.clone().vorschau.0.borrow().is_none());
     }
 
     #[test]
