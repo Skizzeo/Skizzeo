@@ -457,10 +457,9 @@ impl Pruefer<'_> {
         }
         let mut gesehen = BTreeSet::new();
         for r in def.param.iter().chain(&def.wert) {
-            let k = r.key();
-            if k.is_empty() {
+            let Some(k) = r.get("key") else {
                 continue;
-            }
+            };
             if !ist_key(k) {
                 self.f(r.zeile, format!("key „{k}“: Kleinbuchstaben, Ziffern, _"));
             }
@@ -1494,6 +1493,22 @@ mod tests {
         );
         assert!(einheit_im_namen("Fußm"));
         assert!(!einheit_im_namen("Länge"));
+    }
+
+    /// Leerer key in [param] und [wert] ist ein Fehler wie in der Werkbank.
+    #[test]
+    fn leerer_key() {
+        for z in [
+            "[param] key=\"\" name=\"Zusatz\" einheit=mm wert=1 min=0 max=2",
+            "[wert] key=\"\" formel=1",
+        ] {
+            let p = mit(z);
+            assert!(
+                texte(&p).contains(&"key „“: Kleinbuchstaben, Ziffern, _".to_string()),
+                "{z}: {:?}",
+                texte(&p)
+            );
+        }
     }
 
     #[test]
