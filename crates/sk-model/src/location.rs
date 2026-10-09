@@ -2,7 +2,9 @@
 //! `[location]` der `.szo`, höchstens eine Zeile. Ein eigener Abschnitt
 //! statt Schlüssel an `[projectinfo]`, denn ein älterer Stand behält einen
 //! ganzen fremden Abschnitt bytegleich (F-17b). Ohne Angaben wird nichts
-//! geschrieben.
+//! geschrieben. Eine Zeile, die sich nicht lesen lässt (keine Zahl, außerhalb
+//! des Bereichs), zählt nicht und bleibt bytegleich, bis eine gesetzte Lage
+//! sie ersetzt (Befund A der Abnahme S1).
 
 use super::*;
 use sk_math::sonne::Lage;
@@ -63,8 +65,16 @@ impl Model {
         &self.location
     }
 
+    /// Die unlesbare `[location]`-Zeile der Datei, solange keine Lage
+    /// gesetzt wurde.
+    pub(crate) fn location_raw(&self) -> Option<&str> {
+        self.location_raw.as_deref()
+    }
+
     /// Lage und Nordrichtung ändern (im offenen Schritt, z. B. „Nordrichtung
     /// geändert“ oder mit den Projektdaten). Gleiche Werte ändern nichts.
+    /// Eine unlesbare Zeile aus der Datei entfällt damit (Rückgängig holt sie
+    /// zurück).
     pub fn set_location(&mut self, l: Location) -> bool {
         let l = l.normalized();
         if l == self.location {
@@ -76,19 +86,23 @@ impl Model {
                     t.changes.push(Change::Location {
                         old: self.location,
                         new: self.location,
+                        raw: self.location_raw.clone(),
                     });
                 }
             }
             None => debug_assert!(!self.strict, "Änderung ohne Schritt"),
         }
         self.location = l;
+        self.location_raw = None;
         self.touch();
         true
     }
 
-    /// Lage aus der Datei, ohne die Revision zu ändern.
-    pub(crate) fn load_location(&mut self, l: Location) {
+    /// Lage aus der Datei, ohne die Revision zu ändern; `raw`: die Zeile,
+    /// wenn sie nicht zählt.
+    pub(crate) fn load_location(&mut self, l: Location, raw: Option<String>) {
         self.location = l;
+        self.location_raw = raw;
     }
 
     /// Lage eines neuen Projekts (Maske bei „Neu“): ohne Rückgängig-Schritt

@@ -361,6 +361,22 @@ impl Maske {
         })
     }
 
+    /// Leiser Satz im Fuß, wenn nur Breite oder nur Länge gesetzt ist: die
+    /// andere kommt vom Standardort (Abnahme S1, Punkt 1).
+    pub fn hinweis(&self) -> Option<String> {
+        let g = |i: usize| grad(&self.felder[i].text, GRAD_MAX[i - 8]);
+        let fehlt = match (g(8), g(9)) {
+            (Ok(Some(_)), Ok(None)) => 9,
+            (Ok(None), Ok(Some(_))) => 8,
+            _ => return None,
+        };
+        let f = &FELDER[fehlt];
+        Some(format!(
+            "{} fehlt: Standardort {}{}.",
+            f.name, f.beispiel, f.einheit
+        ))
+    }
+
     /// Vorschläge zur Projektart, nach dem Getippten gefiltert (leer: alle).
     pub fn vorschlaege(&self) -> Vec<&'static str> {
         let t = self.felder[0].text.trim().to_lowercase();
@@ -762,9 +778,10 @@ impl Maske {
         c.fill_rect(m, fuss_y, w, s.max(1.0), u.border);
         let k0 = at(l.knoepfe[0]);
         let satz_y = k0.y + (k0.h + cap(fpx)) * 0.5;
-        let (satz, col) = match self.meldung() {
-            Some(m) => (m, u.accent),
-            None => (LEER_SATZ.to_string(), u.text_dim),
+        let (satz, col) = match (self.meldung(), self.hinweis()) {
+            (Some(m), _) => (m, u.accent),
+            (None, Some(h)) => (h, u.text_dim),
+            (None, None) => (LEER_SATZ.to_string(), u.text_dim),
         };
         let satz = widgets::ellipsize(regular, &satz, 11.5 * s, k0.x - x0 - 12.0 * s);
         widgets::text(&mut c, regular, &satz, 11.5 * s, x0, satz_y, col);
@@ -1050,6 +1067,42 @@ mod tests {
         assert_eq!(grad_text(Some(-0.5)), "-0,5");
     }
 
+    /// Abnahme S1, Punkt 1: Nur Breite oder nur Länge gesetzt sagt der Fuß
+    /// leise, welcher Wert vom Standardort kommt; der Satz passt ungekürzt.
+    #[test]
+    fn hinweis_auf_den_standardort() {
+        let mut m = Maske::new(&ohne(), false, None);
+        assert_eq!(m.hinweis(), None);
+        m.fokus_auf(8);
+        tippen(&mut m, "52,52");
+        assert_eq!(
+            m.hinweis().as_deref(),
+            Some("Länge fehlt: Standardort 8,591° O.")
+        );
+        m.fokus_auf(9);
+        tippen(&mut m, "13,4");
+        assert_eq!(m.hinweis(), None);
+        m.fokus_auf(8);
+        m.key(Key::Delete, Modifiers::default());
+        let h = m.hinweis().unwrap();
+        assert_eq!(h, "Breite fehlt: Standardort 53,0589° N.");
+        assert_eq!(m.ort().lat, None);
+        // Unbrauchbares: die Meldung gilt, kein Hinweis
+        tippen(&mut m, "x");
+        assert!(m.meldung().is_some());
+        assert_eq!(m.hinweis(), None);
+        let lib = std::path::Path::new("/usr/share/fonts/truetype/liberation");
+        let Some(f) = std::fs::read(lib.join("LiberationSans-Regular.ttf"))
+            .ok()
+            .and_then(sk_paint::font::Font::parse)
+        else {
+            return;
+        };
+        let l = m.lage(1.0);
+        let platz = l.knoepfe[0].x - PAD - 12.0;
+        assert!(f.width(&h, 11.5) < platz, "{} ≥ {platz}", f.width(&h, 11.5));
+    }
+
     /// Abnahme 2: Esc verwirft; über den Knopf kein „vom letzten Projekt“;
     /// Überlänge wird gemeldet, nicht gesperrt.
     #[test]
@@ -1188,6 +1241,11 @@ mod tests {
         m.key(Key::Other(0x28), Modifiers::default());
         ab(m.paint(&t, &fonts, 1.0), "ist-projektdaten-b-knopf.png");
         ab(m.paint(&t, &fonts, 1.5), "ist-projektdaten-b-knopf-150.png");
+        // c) nur die Breite gesetzt: leiser Hinweis auf den Standardort
+        let mut m = Maske::new(&ohne(), false, None);
+        m.fokus_auf(8);
+        tippen(&mut m, "52,52");
+        ab(m.paint(&t, &fonts, 1.0), "ist-projektdaten-c-breite.png");
         // Knopf im linken Paneel: gesetzt und leer
         for (n, p) in [("gesetzt", true), ("leer", false)] {
             let mut ui = crate::ui::Ui::new(1.0, &t);

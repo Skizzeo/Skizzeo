@@ -141,6 +141,8 @@ pub struct Model {
     project: Project,
     /// Lage und Nordrichtung (`[location]`, Sonnenstand S1).
     location: Location,
+    /// Unlesbare `[location]`-Zeile der Datei, roh (Befund A der Abnahme S1).
+    location_raw: Option<String>,
     /// Schnitte A und B.
     cuts: [Cut; 2],
     /// Zuletzt gezeigter Schnitt (Kennung, A = 0); Ansichtszustand wie `cuts`.
@@ -565,6 +567,7 @@ impl Model {
         Model {
             project,
             location: Location::default(),
+            location_raw: None,
             attr,
             materials,
             layer_sets,
@@ -630,6 +633,7 @@ impl Model {
         let mut m = Model {
             project,
             location: Location::default(),
+            location_raw: None,
             attr,
             materials,
             layer_sets,
@@ -5860,7 +5864,13 @@ impl Model {
                 m.ext_revision += 1;
             }
             Change::Project { old, new } => m.project = *pick(dir, old, new),
-            Change::Location { old, new } => m.location = pick(dir, old, new),
+            Change::Location { old, new, raw } => {
+                m.location = pick(dir, old, new);
+                m.location_raw = match dir {
+                    Direction::Undo => raw.clone(),
+                    Direction::Redo => None,
+                };
+            }
         };
         // Rückwärts in umgekehrter Reihenfolge: ein Platz wird erst frei, dann neu belegt
         match dir {

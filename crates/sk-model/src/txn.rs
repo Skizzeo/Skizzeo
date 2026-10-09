@@ -101,10 +101,12 @@ pub enum Change {
         old: Box<Project>,
         new: Box<Project>,
     },
-    /// Lage und Nordrichtung (Sonnenstand S1).
+    /// Lage und Nordrichtung (Sonnenstand S1); `raw`: die unlesbare Zeile
+    /// der Datei davor, die der Schritt ersetzt.
     Location {
         old: crate::Location,
         new: crate::Location,
+        raw: Option<String>,
     },
 }
 
@@ -128,7 +130,7 @@ impl Change {
             Change::ForeignRecords { old, new } => old == new,
             Change::Ext { old, new, .. } => old == new,
             Change::Project { old, new } => old == new,
-            Change::Location { old, new } => old == new,
+            Change::Location { old, new, raw } => old == new && raw.is_none(),
         }
     }
 }
