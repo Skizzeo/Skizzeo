@@ -49,6 +49,13 @@ pub fn umschalten(an: bool, haus: bool) -> Result<bool, &'static str> {
     }
 }
 
+/// Erstes Setzen der Nordrichtung (§8 09:25, S9): an, auch wenn die Datei
+/// schon `on=1` hat (Strg+Z der Nordrichtung lässt ihn stehen, Befund D);
+/// ohne Gebäude der Hinweis.
+pub fn erstes_setzen(haus: bool) -> Result<bool, &'static str> {
+    umschalten(false, haus)
+}
+
 /// Statt der Leiste in 3D, wenn die Sonne an ist, das Gebäude aber fehlt
 /// (S9).
 pub const KEIN_HAUS: &str = "Kein Gebäude – Sonne erscheint mit dem Gebäude";

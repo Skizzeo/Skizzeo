@@ -1103,7 +1103,7 @@ mod tests {
     #[test]
     fn s9_nordrichtung_nach_dem_umriss() {
         use crate::scene::Scene;
-        use crate::sonne_view::{umschalten, OHNE_HAUS};
+        use crate::sonne_view::{erstes_setzen, umschalten, OHNE_HAUS};
         use sk_model::{szo, Model, RefSide, WallChain};
         const W: f64 = 1000.0;
         const H: f64 = 800.0;
@@ -1192,9 +1192,9 @@ mod tests {
             if let Some((label, nord, fuss)) = out.commit {
                 s.nordpfeil_setzen(label, nord, fuss);
                 // wie App::nord_commit
-                let an = s.model().sun().is_some_and(|x| x.on);
-                if let (true, Ok(on)) = (neu, umschalten(an, s.bounds().is_some())) {
-                    s.set_sun(sk_model::Sun { on, ..mittag });
+                if let (true, Ok(on)) = (neu, erstes_setzen(s.bounds().is_some())) {
+                    let alt = s.model().sun().unwrap_or(mittag);
+                    s.set_sun(sk_model::Sun { on, ..alt });
                 }
             }
         };
@@ -1204,6 +1204,17 @@ mod tests {
         assert!(!n.aktiv && f.ende(n.aktiv));
         assert_eq!(s.model().location().north, Some(0.0));
         assert!(s.model().sun().is_some_and(|x| x.on), "Sonne an");
+        // Befund D: Strg+Z nimmt die Nordrichtung, on=1 bleibt; neu gesetzt
+        // bleibt die Sonne an
+        assert!(s.undo());
+        assert_eq!(s.model().location().north, None);
+        assert!(s.model().sun().is_some_and(|x| x.on));
+        n.set_aktiv(true);
+        setzen(&mut n, &mut s, maus([-2000.0, -2000.0], true));
+        setzen(&mut n, &mut s, maus([-2000.0, -2000.0], false));
+        setzen(&mut n, &mut s, maus([-2000.0, 1000.0], true));
+        assert_eq!(s.model().location().north, Some(0.0));
+        assert!(s.model().sun().is_some_and(|x| x.on), "bleibt an");
 
         // Nordrichtung vor dem Gebäude: kein geführter Schritt, Sonne aus
         let mut s = Scene::with_model(Model::with_seed(1));

@@ -1180,7 +1180,16 @@ impl App {
     /// [`App::sonne_schalten`].
     fn sonne_umschalten(&mut self, zu_3d: bool) {
         let an = self.sonne_an().is_some();
-        match sonne_view::umschalten(an, self.scene.bounds().is_some()) {
+        self.sonne_wahl(
+            sonne_view::umschalten(an, self.scene.bounds().is_some()),
+            zu_3d,
+        );
+    }
+
+    /// Ergebnis von [`sonne_view::umschalten`] bzw.
+    /// [`sonne_view::erstes_setzen`]: schalten oder den Hinweis zeigen.
+    fn sonne_wahl(&mut self, w: Result<bool, &'static str>, zu_3d: bool) {
+        match w {
             Ok(on) => self.sonne_schalten(on, zu_3d),
             Err(h) => self.status(meldung::Meldung::satz(h), NOTICE_TIME),
         }
@@ -1236,9 +1245,11 @@ impl App {
             let neu = self.scene.model().location().north.is_none();
             if self.scene.nordpfeil_setzen(label, n, f) {
                 self.overlay_dirty = true;
-                // Geführt aus dem Grundriss: nach 3D wie bei der Kachel
+                // An, nicht um (Befund D); geführt aus dem Grundriss nach 3D
+                // wie bei der Kachel
                 if neu {
-                    self.sonne_umschalten(self.nord_fuehrung.laeuft);
+                    let w = sonne_view::erstes_setzen(self.scene.bounds().is_some());
+                    self.sonne_wahl(w, self.nord_fuehrung.laeuft);
                 }
             }
             self.redraw = true;
