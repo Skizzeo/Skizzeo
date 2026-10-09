@@ -963,7 +963,10 @@ mod tests {
         s.recent.push(PathBuf::from("a.szo"));
         s.save_if_changed(&t).unwrap();
         let neu = std::fs::read_to_string(&path).unwrap();
-        assert!(!neu.contains("[ansichtsschatten]") && !neu.contains("[standardort]"), "{neu}");
+        assert!(
+            !neu.contains("[ansichtsschatten]") && !neu.contains("[standardort]"),
+            "{neu}"
+        );
         // Ohne Datei: nichts geschrieben
         let d2 = dir("abn-s8-ohne");
         let mut s2 = Settings::new(args(&["skizzeo.exe"]), Some(d2.clone()));

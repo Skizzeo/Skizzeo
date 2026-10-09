@@ -8798,7 +8798,7 @@ mod tests {
     #[test]
     fn test_abnahme_s8_vorgaben() {
         use settings::vorgaben::Vorgaben;
-        use sk_model::{ShadeLight, ViewShade, GuidGen};
+        use sk_model::{GuidGen, ShadeLight, ViewShade};
         let text = include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo");
         let lade = |t: &str| {
             sk_model::szo::read_with(t, GuidGen::with_seed(1), &sk_cost::lesen::ABSCHNITTE_SZO)
@@ -8809,7 +8809,11 @@ mod tests {
         let ohne = lade(text);
         let ohne_datei = sk_model::szo::write(&ohne);
         // Vorhandenes Projekt mit eigener Wahl (Hinten), gespeichert und neu geladen
-        let eigen = ViewShade { on: true, hatch: true, light: ShadeLight::FrontRight };
+        let eigen = ViewShade {
+            on: true,
+            hatch: true,
+            light: ShadeLight::FrontRight,
+        };
         let mut m = lade(text);
         m.set_view_shade(1, eigen, ViewShade::WERK);
         let mit_datei = sk_model::szo::write(&m);
@@ -8817,11 +8821,26 @@ mod tests {
         let mit = lade(&mit_datei);
         let (rev_ohne, rev_mit) = (ohne.revision(), mit.revision());
         for firma in [
-            ViewShade { on: false, hatch: false, light: ShadeLight::FrontLeft },
-            ViewShade { on: true, hatch: true, light: ShadeLight::Top },
-            ViewShade { on: true, hatch: false, light: ShadeLight::FrontRight },
+            ViewShade {
+                on: false,
+                hatch: false,
+                light: ShadeLight::FrontLeft,
+            },
+            ViewShade {
+                on: true,
+                hatch: true,
+                light: ShadeLight::Top,
+            },
+            ViewShade {
+                on: true,
+                hatch: false,
+                light: ShadeLight::FrontRight,
+            },
         ] {
-            let v = Vorgaben { schatten: firma, ..Vorgaben::WERK };
+            let v = Vorgaben {
+                schatten: firma,
+                ..Vorgaben::WERK
+            };
             // Neues Projekt zeigt die Vorgabe in allen vier Ansichten
             let neu = new_model(None, v);
             for i in 0..4 {
@@ -8844,7 +8863,10 @@ mod tests {
             assert_eq!((ohne.revision(), mit.revision()), (rev_ohne, rev_mit));
         }
         // Eigene Wahl, die später der Vorgabe gleicht, bleibt eigene Wahl
-        let gleich = Vorgaben { schatten: eigen, ..Vorgaben::WERK };
+        let gleich = Vorgaben {
+            schatten: eigen,
+            ..Vorgaben::WERK
+        };
         assert_eq!(mit.view_shade_own(1), Some(eigen));
         assert_eq!(mit.view_shade(1, gleich.schatten), eigen);
         assert_eq!(sk_model::szo::write(&mit), mit_datei);
