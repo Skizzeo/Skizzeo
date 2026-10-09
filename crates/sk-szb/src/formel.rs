@@ -71,8 +71,21 @@ impl Fx {
     fn rechnen(self, a: &[f64]) -> f64 {
         let grad = std::f64::consts::PI / 180.0;
         match self {
-            Fx::Min => a.iter().copied().fold(f64::INFINITY, f64::min),
-            Fx::Max => a.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+            // Wie Math.min/Math.max: ein NaN macht das Ergebnis NaN
+            Fx::Min => a.iter().copied().fold(f64::INFINITY, |m, x| {
+                if m.is_nan() || x.is_nan() {
+                    f64::NAN
+                } else {
+                    m.min(x)
+                }
+            }),
+            Fx::Max => a.iter().copied().fold(f64::NEG_INFINITY, |m, x| {
+                if m.is_nan() || x.is_nan() {
+                    f64::NAN
+                } else {
+                    m.max(x)
+                }
+            }),
             Fx::Abs => a[0].abs(),
             Fx::Wurzel => a[0].sqrt(),
             Fx::Sin => (a[0] * grad).sin(),
@@ -80,8 +93,16 @@ impl Fx {
             Fx::Tan => (a[0] * grad).tan(),
             Fx::Atan => a[0].atan() / grad,
             Fx::Atan2 => a[0].atan2(a[1]) / grad,
-            // Wie JavaScript: .5 rundet nach oben
-            Fx::Rund => (a[0] + 0.5).floor(),
+            // Wie Math.round: .5 rundet nach oben; ohne `x + 0.5`, das bei
+            // 0,49999999999999994 und ab 2^52 falsch aufrundet
+            Fx::Rund => {
+                let f = a[0].floor();
+                if a[0] - f >= 0.5 {
+                    f + 1.0
+                } else {
+                    f
+                }
+            }
             Fx::Ab => a[0].floor(),
             Fx::Auf => a[0].ceil(),
             Fx::Wenn => {

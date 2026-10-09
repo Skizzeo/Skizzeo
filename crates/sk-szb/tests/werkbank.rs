@@ -238,6 +238,44 @@ fn formeln_wie_die_werkbank() {
     assert_eq!(n, 47);
 }
 
+/// Zufallsformeln aus dem Rechenteil der Werkbank (Test-Thread,
+/// `pruefdateien/formeln-zufall.tsv`, Ergebnis als Bits oder `E` mit Text):
+/// Fehler und Fehlertext gleich, Werte bis auf wenige Einheiten der letzten
+/// Stelle (sin, cos, atan, pow rechnet die Rust-Bibliothek nicht bitgleich
+/// wie V8).
+#[test]
+fn zufallsformeln_wie_die_werkbank() {
+    let mut u = Umfeld::new();
+    for (k, v) in [
+        ("GH", 2855.0),
+        ("DECKE", 220.0),
+        ("LICHT", 2635.0),
+        ("a", 3.0),
+        ("b", 0.0),
+        ("l", 3000.0),
+    ] {
+        u.insert(k.into(), v);
+    }
+    let mut n = 0;
+    for z in include_str!("../pruefdateien/formeln-zufall.tsv").lines() {
+        let (f, soll) = z.split_once('\t').expect("Tab");
+        let ist = formel::rechnen(f, &u, None);
+        match (ist, soll.strip_prefix('=')) {
+            (Ok(v), Some(h)) => {
+                let s = f64::from_bits(u64::from_str_radix(h, 16).expect("Bits"));
+                let ulp = (v.to_bits() as i64)
+                    .wrapping_sub(s.to_bits() as i64)
+                    .unsigned_abs();
+                assert!(v == s || ulp <= 4, "Formel {f}: {v} statt {s}");
+            }
+            (Err(e), None) => assert_eq!(e, soll[1..], "Formel {f}"),
+            (ist, _) => panic!("Formel {f}: {ist:?} statt {soll}"),
+        }
+        n += 1;
+    }
+    assert_eq!(n, 4012);
+}
+
 /// Zahl wie JavaScript `String(v)` für die Werte der Tabelle.
 fn js(v: f64) -> String {
     if v == 0.0 {
