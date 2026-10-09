@@ -1,0 +1,845 @@
+{
+ "werk.bodenplatte.szb": {
+  "EG": {
+   "befunde": [],
+   "mengen": [
+    [
+     "beton",
+     "m3",
+     4.8
+    ],
+    [
+     "rand",
+     "m",
+     20
+    ],
+    [
+     "stahl",
+     "t",
+     0.384
+    ]
+   ],
+   "vol": {
+    "stahlbeton": 4.8
+   },
+   "z0": -200,
+   "koerper": 1,
+   "werte": [],
+   "pv": {
+    "b": 6000,
+    "t": 4000,
+    "d": 200
+   }
+  },
+  "typen": {
+   "bp20": {
+    "pv": {
+     "b": 6000,
+     "t": 4000,
+     "d": 200
+    },
+    "mengen": [
+     [
+      "beton",
+      "m3",
+      4.8
+     ],
+     [
+      "rand",
+      "m",
+      20
+     ],
+     [
+      "stahl",
+      "t",
+      0.384
+     ]
+    ],
+    "vol": {
+     "stahlbeton": 4.8
+    },
+    "koerper": 1,
+    "fehler": []
+   },
+   "bp25": {
+    "pv": {
+     "b": 6000,
+     "t": 4000,
+     "d": 250
+    },
+    "mengen": [
+     [
+      "beton",
+      "m3",
+      6
+     ],
+     [
+      "rand",
+      "m",
+      20
+     ],
+     [
+      "stahl",
+      "t",
+      0.48
+     ]
+    ],
+    "vol": {
+     "stahlbeton": 6
+    },
+    "koerper": 1,
+    "fehler": []
+   }
+  },
+  "OG": {
+   "befunde": [],
+   "mengen": [
+    [
+     "beton",
+     "m3",
+     4.8
+    ],
+    [
+     "rand",
+     "m",
+     20
+    ],
+    [
+     "stahl",
+     "t",
+     0.384
+    ]
+   ],
+   "vol": {
+    "stahlbeton": 4.8
+   },
+   "z0": 2655,
+   "koerper": 1,
+   "werte": [],
+   "pv": {
+    "b": 6000,
+    "t": 4000,
+    "d": 200
+   }
+  }
+ },
+ "werk.stabgelaender.szb": {
+  "EG": {
+   "befunde": [
+    "H 3 Gewerk 18360 nicht im Werksbestand, Skizzeo fragt beim Einlesen"
+   ],
+   "mengen": [
+    [
+     "lg",
+     "m",
+     3
+    ],
+    [
+     "st",
+     "stk",
+     4
+    ]
+   ],
+   "vol": {
+    "stahl_s235": 0.018695178452725218
+   },
+   "z0": 0,
+   "koerper": 27,
+   "werte": [
+    [
+     "np",
+     4
+    ],
+    [
+     "ns",
+     21
+    ]
+   ],
+   "pv": {
+    "l": 3000,
+    "hg": 1000,
+    "fe": 1200,
+    "fu": 1,
+    "fl": 1,
+    "fh": 100
+   }
+  },
+  "typen": {
+   "g100": {
+    "pv": {
+     "l": 3000,
+     "hg": 1000,
+     "fe": 1200,
+     "fu": 1,
+     "fl": 1,
+     "fh": 100
+    },
+    "mengen": [
+     [
+      "lg",
+      "m",
+      3
+     ],
+     [
+      "st",
+      "stk",
+      4
+     ]
+    ],
+    "vol": {
+     "stahl_s235": 0.018695178452725218
+    },
+    "koerper": 27,
+    "fehler": []
+   },
+   "g110": {
+    "pv": {
+     "l": 3000,
+     "hg": 1100,
+     "fe": 1200,
+     "fu": 1,
+     "fl": 1,
+     "fh": 100
+    },
+    "mengen": [
+     [
+      "lg",
+      "m",
+      3
+     ],
+     [
+      "st",
+      "stk",
+      4
+     ]
+    ],
+    "vol": {
+     "stahl_s235": 0.019757408505367696
+    },
+    "koerper": 27,
+    "fehler": []
+   },
+   "g100o": {
+    "pv": {
+     "l": 3000,
+     "hg": 1000,
+     "fe": 1200,
+     "fu": 0,
+     "fl": 0,
+     "fh": 100
+    },
+    "mengen": [
+     [
+      "lg",
+      "m",
+      3
+     ],
+     [
+      "st",
+      "stk",
+      4
+     ]
+    ],
+    "vol": {
+     "stahl_s235": 0.012144
+    },
+    "koerper": 5,
+    "fehler": []
+   }
+  },
+  "OG": {
+   "befunde": [
+    "H 3 Gewerk 18360 nicht im Werksbestand, Skizzeo fragt beim Einlesen"
+   ],
+   "mengen": [
+    [
+     "lg",
+     "m",
+     3
+    ],
+    [
+     "st",
+     "stk",
+     4
+    ]
+   ],
+   "vol": {
+    "stahl_s235": 0.018695178452725218
+   },
+   "z0": 2855,
+   "koerper": 27,
+   "werte": [
+    [
+     "np",
+     4
+    ],
+    [
+     "ns",
+     21
+    ]
+   ],
+   "pv": {
+    "l": 3000,
+    "hg": 1000,
+    "fe": 1200,
+    "fu": 1,
+    "fl": 1,
+    "fh": 100
+   }
+  }
+ },
+ "werk.streifenfundament.szb": {
+  "EG": {
+   "befunde": [],
+   "mengen": [
+    [
+     "beton",
+     "m3",
+     2
+    ],
+    [
+     "stahl",
+     "t",
+     0.08
+    ]
+   ],
+   "vol": {
+    "stahlbeton": 2
+   },
+   "z0": -800,
+   "koerper": 1,
+   "werte": [],
+   "pv": {
+    "l": 5000,
+    "b": 500,
+    "h": 800
+   }
+  },
+  "typen": {
+   "sf5080": {
+    "pv": {
+     "l": 5000,
+     "b": 500,
+     "h": 800
+    },
+    "mengen": [
+     [
+      "beton",
+      "m3",
+      2
+     ],
+     [
+      "stahl",
+      "t",
+      0.08
+     ]
+    ],
+    "vol": {
+     "stahlbeton": 2
+    },
+    "koerper": 1,
+    "fehler": []
+   },
+   "sf6080": {
+    "pv": {
+     "l": 5000,
+     "b": 600,
+     "h": 800
+    },
+    "mengen": [
+     [
+      "beton",
+      "m3",
+      2.4
+     ],
+     [
+      "stahl",
+      "t",
+      0.096
+     ]
+    ],
+    "vol": {
+     "stahlbeton": 2.4
+    },
+    "koerper": 1,
+    "fehler": []
+   },
+   "sf40100": {
+    "pv": {
+     "l": 5000,
+     "b": 400,
+     "h": 1000
+    },
+    "mengen": [
+     [
+      "beton",
+      "m3",
+      2
+     ],
+     [
+      "stahl",
+      "t",
+      0.08
+     ]
+    ],
+    "vol": {
+     "stahlbeton": 2
+    },
+    "koerper": 1,
+    "fehler": []
+   }
+  },
+  "OG": {
+   "befunde": [],
+   "mengen": [
+    [
+     "beton",
+     "m3",
+     2
+    ],
+    [
+     "stahl",
+     "t",
+     0.08
+    ]
+   ],
+   "vol": {
+    "stahlbeton": 2
+   },
+   "z0": 2055,
+   "koerper": 1,
+   "werte": [],
+   "pv": {
+    "l": 5000,
+    "b": 500,
+    "h": 800
+   }
+  }
+ },
+ "werk.stuetze.szb": {
+  "EG": {
+   "befunde": [],
+   "mengen": [
+    [
+     "beton",
+     "m3",
+     0.151776
+    ],
+    [
+     "schalung",
+     "m2",
+     2.5296
+    ],
+    [
+     "stahl",
+     "t",
+     0.0227664
+    ],
+    [
+     "stueck",
+     "stk",
+     1
+    ]
+   ],
+   "vol": {
+    "stahlbeton": 0.151776
+   },
+   "z0": 0,
+   "koerper": 1,
+   "werte": [
+    [
+     "h",
+     2635
+    ]
+   ],
+   "pv": {
+    "b": 240,
+    "d": 240
+   }
+  },
+  "typen": {
+   "st24": {
+    "pv": {
+     "b": 240,
+     "d": 240
+    },
+    "mengen": [
+     [
+      "beton",
+      "m3",
+      0.151776
+     ],
+     [
+      "schalung",
+      "m2",
+      2.5296
+     ],
+     [
+      "stahl",
+      "t",
+      0.0227664
+     ],
+     [
+      "stueck",
+      "stk",
+      1
+     ]
+    ],
+    "vol": {
+     "stahlbeton": 0.151776
+    },
+    "koerper": 1,
+    "fehler": []
+   },
+   "st30": {
+    "pv": {
+     "b": 300,
+     "d": 300
+    },
+    "mengen": [
+     [
+      "beton",
+      "m3",
+      0.23715
+     ],
+     [
+      "schalung",
+      "m2",
+      3.162
+     ],
+     [
+      "stahl",
+      "t",
+      0.0355725
+     ],
+     [
+      "stueck",
+      "stk",
+      1
+     ]
+    ],
+    "vol": {
+     "stahlbeton": 0.23715
+    },
+    "koerper": 1,
+    "fehler": []
+   },
+   "st2440": {
+    "pv": {
+     "b": 240,
+     "d": 400
+    },
+    "mengen": [
+     [
+      "beton",
+      "m3",
+      0.25296
+     ],
+     [
+      "schalung",
+      "m2",
+      3.3728
+     ],
+     [
+      "stahl",
+      "t",
+      0.037944
+     ],
+     [
+      "stueck",
+      "stk",
+      1
+     ]
+    ],
+    "vol": {
+     "stahlbeton": 0.25296
+    },
+    "koerper": 1,
+    "fehler": []
+   }
+  },
+  "OG": {
+   "befunde": [],
+   "mengen": [
+    [
+     "beton",
+     "m3",
+     0.151776
+    ],
+    [
+     "schalung",
+     "m2",
+     2.5296
+    ],
+    [
+     "stahl",
+     "t",
+     0.0227664
+    ],
+    [
+     "stueck",
+     "stk",
+     1
+    ]
+   ],
+   "vol": {
+    "stahlbeton": 0.151776
+   },
+   "z0": 2855,
+   "koerper": 1,
+   "werte": [
+    [
+     "h",
+     2635
+    ]
+   ],
+   "pv": {
+    "b": 240,
+    "d": 240
+   }
+  }
+ },
+ "werk.treppe.szb": {
+  "EG": {
+   "befunde": [],
+   "mengen": [
+    [
+     "beton",
+     "m3",
+     1.5462951174574724
+    ],
+    [
+     "schalung",
+     "m2",
+     21.24163784402415
+    ],
+    [
+     "stahl",
+     "t",
+     0.15462951174574724
+    ],
+    [
+     "stueck",
+     "stk",
+     1
+    ]
+   ],
+   "vol": {
+    "stahlbeton": 1.5462951174574724
+   },
+   "z0": 0,
+   "koerper": 16,
+   "werte": [
+    [
+     "s",
+     178.4375
+    ],
+    [
+     "a",
+     280
+    ],
+    [
+     "sm",
+     636.875
+    ],
+    [
+     "w",
+     32.50841613716821
+    ]
+   ],
+   "pv": {
+    "lauf": 4200,
+    "breite": 1000,
+    "stufen": 16,
+    "pd": 160
+   }
+  },
+  "typen": {
+   "t16": {
+    "pv": {
+     "lauf": 4200,
+     "breite": 1000,
+     "stufen": 16,
+     "pd": 160
+    },
+    "mengen": [
+     [
+      "beton",
+      "m3",
+      1.5462951174574724
+     ],
+     [
+      "schalung",
+      "m2",
+      21.24163784402415
+     ],
+     [
+      "stahl",
+      "t",
+      0.15462951174574724
+     ],
+     [
+      "stueck",
+      "stk",
+      1
+     ]
+    ],
+    "vol": {
+     "stahlbeton": 1.5462951174574724
+    },
+    "koerper": 16,
+    "fehler": []
+   },
+   "t17": {
+    "pv": {
+     "lauf": 4480,
+     "breite": 1000,
+     "stufen": 17,
+     "pd": 160
+    },
+    "mengen": [
+     [
+      "beton",
+      "m3",
+      1.5882242671997626
+     ],
+     [
+      "schalung",
+      "m2",
+      22.373203145574518
+     ],
+     [
+      "stahl",
+      "t",
+      0.15882242671997626
+     ],
+     [
+      "stueck",
+      "stk",
+      1
+     ]
+    ],
+    "vol": {
+     "stahlbeton": 1.5882242671997626
+    },
+    "koerper": 17,
+    "fehler": []
+   }
+  },
+  "OG": {
+   "befunde": [],
+   "mengen": [
+    [
+     "beton",
+     "m3",
+     1.5462951174574724
+    ],
+    [
+     "schalung",
+     "m2",
+     21.24163784402415
+    ],
+    [
+     "stahl",
+     "t",
+     0.15462951174574724
+    ],
+    [
+     "stueck",
+     "stk",
+     1
+    ]
+   ],
+   "vol": {
+    "stahlbeton": 1.5462951174574724
+   },
+   "z0": 2855,
+   "koerper": 16,
+   "werte": [
+    [
+     "s",
+     178.4375
+    ],
+    [
+     "a",
+     280
+    ],
+    [
+     "sm",
+     636.875
+    ],
+    [
+     "w",
+     32.50841613716821
+    ]
+   ],
+   "pv": {
+    "lauf": 4200,
+    "breite": 1000,
+    "stufen": 16,
+    "pd": 160
+   }
+  }
+ },
+ "fehler.szb": {
+  "EG": {
+   "befunde": [
+    "F 7 unbekannter Abschnitt [kaese]",
+    "F 0 [hoehe] fehlt",
+    "F 2 [bauteil]: Pflichtfeld „mehrzahl“ fehlt",
+    "F 2 key „Test“: Form herkunft.name, Kleinbuchstaben, genau ein Punkt",
+    "F 2 praefix „AW“ ist in Skizzeo belegt",
+    "F 2 kg: dreistellige Kostengruppe 300-499",
+    "F 4 Baustoff „gold“ unbekannt (Abschnitt 9 oder eigener [baustoff])",
+    "F 4 [koerper] t: unbekannter Name „q“",
+    "F 3 [param] b: Vorgabe 900,00 außerhalb min/max",
+    "F 4 [koerper] quader: unbekannter Name „q“",
+    "F 5 [koerper] prisma: Umriss hat keine Fläche"
+   ],
+   "mengen": [
+    [
+     "x",
+     "m3",
+     0
+    ]
+   ],
+   "vol": {},
+   "z0": 0,
+   "koerper": 0,
+   "werte": [],
+   "pv": {
+    "b": 900
+   }
+  },
+  "typen": {},
+  "OG": {
+   "befunde": [
+    "F 7 unbekannter Abschnitt [kaese]",
+    "F 0 [hoehe] fehlt",
+    "F 2 [bauteil]: Pflichtfeld „mehrzahl“ fehlt",
+    "F 2 key „Test“: Form herkunft.name, Kleinbuchstaben, genau ein Punkt",
+    "F 2 praefix „AW“ ist in Skizzeo belegt",
+    "F 2 kg: dreistellige Kostengruppe 300-499",
+    "F 4 Baustoff „gold“ unbekannt (Abschnitt 9 oder eigener [baustoff])",
+    "F 4 [koerper] t: unbekannter Name „q“",
+    "F 3 [param] b: Vorgabe 900,00 außerhalb min/max",
+    "F 4 [koerper] quader: unbekannter Name „q“",
+    "F 5 [koerper] prisma: Umriss hat keine Fläche"
+   ],
+   "mengen": [
+    [
+     "x",
+     "m3",
+     0
+    ]
+   ],
+   "vol": {},
+   "z0": 2855,
+   "koerper": 0,
+   "werte": [],
+   "pv": {
+    "b": 900
+   }
+  }
+ }
+}

@@ -1,0 +1,7 @@
+SZB 0
+[bauteil] key=Test name="X" praefix=AW kg=12
+[param] key=b name="B" wert=900 min=100 max=500
+[koerper] form=quader baustoff=gold b=b t="q+1" h=0
+[koerper] form=prisma ebene=xy baustoff=stahlbeton punkte="0,0; 100,100; 100,0; 0,100" von=0 bis=10
+[menge] key=x name="x" einheit=m3 formel="volumen(stahlbeton)" baustoff=stahlbeton
+[kaese] a=1

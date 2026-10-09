@@ -1,0 +1,47 @@
+-2^2	= -4
+2^-1	= 0.5
+2^3^2	= 512
+(-8)^(1/3)	Fehler: Ergebnis ist keine Zahl
+-2.5+0	= -2.5
+rund(2.5)	= 3
+rund(-2.5)	= -2
+rund(-0.5)	= 0
+ab(-1.5)	= -2
+auf(-1.5)	= -1
+auf(3000/1200)	= 3
+auf((3000-80)/136)	= 22
+1/0	Fehler: Teilung durch 0
+wenn(b,1/b,0)	Fehler: Teilung durch 0
+wenn(a,1,q)	Fehler: unbekannter Name „q“
+wenn(0.0000000001,1,2)	= 1
+0.1+0.2==0.3	= 1
+1<2<3	Fehler: „<“ unerwartet
+a<b	= 0
+a>=3	= 1
+3!=3.0000000001	= 0
+min(1)	= 1
+max(1,2,3,4,5,6,7,8,9)	= 9
+max(1,2,3,4,5,6,7,8,9,10)	Fehler: max() mit falscher Anzahl Werte
+sin(30)	= 0.49999999999999994
+atan2(1,1)	= 45
+atan(1)	= 45
+wurzel(-1)	Fehler: Ergebnis ist keine Zahl
+wurzel(2)^2	= 2.0000000000000004
+pi	= 3.141592653589793
+PI	Fehler: unbekannter Name „PI“
+1e3	= 1000
+1.	= 1
+.5	= 0.5
+1.2.3	Fehler: Zahl „1.2.3“ ungültig
+2*-3	= -6
++3	= 3
+--3	= 3
+3 4	Fehler: „4“ unerwartet
+volumen(stahlbeton)	Fehler: volumen() nur in [menge]
+abs(-0)	= 0
+LICHT/2	= 1317.5
+GH-DECKE	= 2635
+wenn(1,2)	Fehler: wenn() mit falscher Anzahl Werte
+x_1	Fehler: unbekannter Name „x_1“
+a*(b+1	Fehler: „)“ erwartet
+1,5	Fehler: „,“ unerwartet

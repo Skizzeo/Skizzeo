@@ -1,0 +1,18 @@
+SZB 0
+# Beispiel der Skizzeo-Bauteil-Werkbank 0.5
+[bauteil] key=werk.streifenfundament name="Streifenfundament" mehrzahl="Streifenfundamente" genus=n praefix=SF art=stripfooting aussen=ja ifc=IfcFooting.STRIP_FOOTING kg=322 gewerk=18331 version=1 autor="Skizzeo" beschreibung="Streifenfundament unter Wänden, Oberkante auf UK Geschoss, erdgeschalt"
+[bedienung] gruppe=tragwerk einfuegen=linie laenge=l drehen=nein
+[hoehe] ab=uk versatz="-h"
+[param] key=l name="Länge" einheit=mm wert=5000 min=500 max=30000 zeichnen=ja hilfe="Länge entlang der gezeichneten Linie."
+[param] key=b name="Breite" einheit=mm wert=500 min=300 max=1200 gruppe="Maße" zeichnen=ja hilfe="Breite quer zur Linie, mittig unter der Linie."
+[param] key=h name="Höhe" einheit=mm wert=800 min=400 max=1500 gruppe="Maße" hilfe="Höhe von der Sohle bis UK Geschoss, frostfrei mindestens 800 mm."
+[typ] key=sf5080 name="Fundament 50/80" werte="b=500; h=800" standard=ja
+[typ] key=sf6080 name="Fundament 60/80" werte="b=600; h=800"
+[typ] key=sf40100 name="Fundament 40/100" werte="b=400; h=1000"
+[koerper] form=quader baustoff=stahlbeton teil="Fundament" funktion=loadbearing x=0 y="-b/2" z=0 b=l t=b h=h
+[artikel] key=beton_c25 name="Transportbeton C25/30 XC1-XC2 F3" baustoff=stahlbeton einheit=m3 preis=190 stand=10/2026 quelle="Skizzeo-Werksbestand Stand 7 (Händlerlisten 2026)" sicherheit=mittel
+[leistung] key=fundament_beton kurztext="Streifenfundament Stb C25/30 XC2, erdgeschalt, b bis 60 cm" langtext="Streifenfundament aus Ortbeton C25/30, Expositionsklasse XC2, Breite bis 60 cm, Höhe bis 1,0 m, gegen Erdreich betoniert, einschließlich Verdichten und Nachbehandeln. Aushub, Sauberkeitsschicht und Bewehrung in gesonderten Positionen." gewerk=18331 einheit=m3 bezug=volume stunden=0.9 stoffe="beton_c25:1.03" funktion=loadbearing quelle="Beispielwert der Werkbank, nicht recherchiert" sicherheit=grob
+[menge] key=beton name="Beton C25/30" einheit=m3 formel="volumen(stahlbeton)" baustoff=stahlbeton bezug=volume leistung=fundament_beton anzeigen=ja
+[menge] key=stahl name="Betonstahl B500" einheit=t formel="volumen(stahlbeton)*0.04" bezug=steel leistung=1S7bUW0010080200000006
+[notiz] art=stand text="Beispiel der Werkbank: Streifenfundament als Linie mit Typen"
+[notiz] art=offen text="Aufwandswert und Bewehrungsgrad 40 kg/m³ prüfen"

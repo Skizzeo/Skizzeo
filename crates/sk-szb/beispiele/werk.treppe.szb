@@ -1,0 +1,27 @@
+SZB 0
+# Beispiel der Skizzeo-Bauteil-Werkbank 0.5
+[bauteil] key=werk.treppe name="Gerade Treppe" mehrzahl="Gerade Treppen" genus=f praefix=TR art=stair aussen=nein ifc=IfcStair.STRAIGHT_RUN_STAIR kg=351 gewerk=18331 version=1 autor="Skizzeo" beschreibung="Einläufige gerade Stahlbetontreppe über ein Geschoss, Ortbeton, Laufplatte mit Stufen"
+[bedienung] gruppe=treppen_gelaender einfuegen=linie laenge=lauf drehen=nein
+[hoehe] ab=uk versatz=0
+[param] key=lauf name="Lauflänge" einheit=mm wert=4200 min=2500 max=6000 zeichnen=ja hilfe="Länge im Grundriss von der ersten bis zur letzten Stufenkante."
+[param] key=breite name="Laufbreite" einheit=mm wert=1000 min=800 max=1500 gruppe="Lauf" zeichnen=ja hilfe="Nutzbare Breite des Laufs, links von der gezeichneten Linie."
+[param] key=stufen name="Steigungen" einheit=stk wert=16 min=12 max=20 ganz=ja gruppe="Lauf" hilfe="Anzahl der Steigungen über die Geschosshöhe."
+[param] key=pd name="Dicke" einheit=mm wert=160 min=120 max=250 gruppe="Laufplatte" hilfe="Dicke der Laufplatte senkrecht zur Unterseite."
+[typ] key=t16 name="16 Steigungen" werte="stufen=16; lauf=4200" standard=ja
+[typ] key=t17 name="17 Steigungen" werte="stufen=17; lauf=4480"
+[wert] key=s name="Steigung" einheit=mm formel="GH/stufen" anzeigen=ja
+[wert] key=a name="Auftritt" einheit=mm formel="lauf/(stufen-1)" anzeigen=ja
+[wert] key=sm name="Schrittmaß" einheit=mm formel="2*s+a" anzeigen=ja
+[wert] key=w formel="atan(s/a)"
+[koerper] form=prisma ebene=xz baustoff=stahlbeton teil="Stufen" funktion=loadbearing anzahl="stufen-1" punkte="i*a,i*s; (i+1)*a,i*s; (i+1)*a,(i+1)*s; i*a,(i+1)*s" von=0 bis=breite
+[koerper] form=prisma ebene=xz baustoff=stahlbeton teil="Laufplatte" funktion=loadbearing punkte="0,0; lauf,GH-s; lauf,GH-s-pd/cos(w); 0,-pd/cos(w)" von=0 bis=breite
+[artikel] key=beton_c25 name="Transportbeton C25/30 XC1-XC2 F3" baustoff=stahlbeton einheit=m3 preis=190 stand=10/2026 quelle="Skizzeo-Werksbestand Stand 7 (Händlerlisten 2026)" sicherheit=mittel
+[artikel] key=treppenschalung name="Treppenschalung, Vorhaltung und Verschleiß" einheit=m2 preis=14 stand=10/2026 quelle="Beispielwert der Werkbank, nicht recherchiert" sicherheit=grob
+[leistung] key=treppe_beton kurztext="Treppenlauf Stb C25/30 XC1 betonieren, gerade, mit Stufen" langtext="Gerader Treppenlauf aus Ortbeton C25/30, Expositionsklasse XC1, Laufplatte mit aufbetonierten Stufen, Laufbreite bis 1,5 m, einschließlich Verdichten und Nachbehandeln. Schalung und Bewehrung in gesonderten Positionen." gewerk=18331 einheit=m3 bezug=volume stunden=3.5 stoffe="beton_c25:1" funktion=loadbearing quelle="Beispielwert der Werkbank, nicht recherchiert" sicherheit=grob
+[leistung] key=treppe_schalung kurztext="Schalung Treppenlauf mit Stufen, glatt, kein Sichtbeton" gewerk=18331 einheit=m2 bezug=formwork stunden=1.6 stoffe="treppenschalung:1" quelle="Beispielwert der Werkbank, nicht recherchiert" sicherheit=grob
+[menge] key=beton name="Beton C25/30" einheit=m3 formel="volumen(stahlbeton)" baustoff=stahlbeton bezug=volume leistung=treppe_beton anzeigen=ja
+[menge] key=schalung name="Schalung Treppe" einheit=m2 formel="(lauf/cos(w)*breite+(stufen-1)*s*breite+2*(lauf*GH/2+lauf/cos(w)*pd))/1000000" bezug=formwork leistung=treppe_schalung
+[menge] key=stahl name="Betonstahl B500" einheit=t formel="volumen(stahlbeton)*0.1" bezug=steel leistung=1S7bUW0010080200000006
+[menge] key=stueck name="Treppe" einheit=stk formel=1
+[notiz] art=stand text="Beispiel der Werkbank: gerade Treppe als Linie mit Lauf-Gruppe, Typen und Schrittmaß"
+[notiz] art=offen text="Schalungsmenge vereinfacht, Aufwandswerte recherchieren, Podeste fehlen"
