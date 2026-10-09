@@ -782,7 +782,15 @@ fn lv_spalten_ueberdecken_sich_nie() {
             v.scale = scale;
             (v.w, v.h) = ((dip as f32 * scale) as u32, (900.0 * scale) as u32);
             v.top = 120.0;
+            v.tick(&t, Instant::now());
             v.sync(&mut s, None);
+            // Review 3bo: ein langer Kurztext bricht auch im breiten
+            // Fenster um, dessen Tabelle `qto_max_w` begrenzt
+            let i = v.zeilen.iter().position(|z| z.art == Art::Position);
+            v.zeilen[i.unwrap()].text =
+                "Mauerwerk aus Kalksandstein-Plansteinen KS 20-2,0, d = 17,5 cm, Dünnbettmörtel"
+                    .into();
+            v.breiten.borrow_mut().clear();
             let (tx, r) = v.tabelle_x(&t);
             let wo = format!("{dip} dip bei {scale}");
             // Unter 800 dip ist der Baum eine Leiste, die Tabelle hat die
