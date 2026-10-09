@@ -94,8 +94,10 @@ impl Font {
             if !behalten.contains(&g) {
                 continue;
             }
-            if let Some((a, b)) = self.glyph_range(g) {
-                glyf.extend(&d[a..b]);
+            // Zeigt `loca` hinter das Dateiende, bleibt die Glyphe leer statt
+            // einer Panik (Review 3bo); die Leinwand zeichnet sie ebenso nicht
+            if let Some(umriss) = self.glyph_range(g).and_then(|(a, b)| d.get(a..b)) {
+                glyf.extend(umriss);
                 glyf.resize(glyf.len().next_multiple_of(4), 0);
             }
         }
@@ -244,5 +246,28 @@ mod tests {
         assert_eq!(i16_at(&t, head + 50), Some(1));
         let (maxp, _) = tabelle(&t, b"maxp").unwrap();
         assert_eq!(u16_at(&t, maxp + 4), Some(f.num_glyphs));
+    }
+
+    /// Review 3bo: Eine Schrift, deren `loca` hinter das Dateiende zeigt,
+    /// gibt eine Teilmenge mit leerer Glyphe statt einer Panik.
+    #[test]
+    fn teilmenge_ohne_panik_bei_kaputter_loca() {
+        let Some(f) = schrift() else {
+            return;
+        };
+        let g = f.glyph('A');
+        let mut d = f.data().to_vec();
+        let (loca, _) = tabelle(&d, b"loca").unwrap();
+        let (head, _) = tabelle(&d, b"head").unwrap();
+        let i = g as usize + 1;
+        if i16_at(&d, head + 50) == Some(1) {
+            d[loca + 4 * i..loca + 4 * i + 4].copy_from_slice(&0x00F0_0000u32.to_be_bytes());
+        } else {
+            d[loca + 2 * i..loca + 2 * i + 2].copy_from_slice(&0xFFF0u16.to_be_bytes());
+        }
+        let kaputt = Font::parse(d).expect("Kopf ist heil");
+        let t = kaputt.teilmenge(&[g].into_iter().collect());
+        assert!(glyphe(&t, g).is_empty());
+        assert_eq!(pruefsumme(&t), 0xB1B0_AFBA);
     }
 }
