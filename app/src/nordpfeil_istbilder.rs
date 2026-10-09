@@ -300,11 +300,24 @@ fn istbilder_s2() {
 /// Gebäude, Bahnen und Scheibe, Pfeil und Leiste wie in der App. Die
 /// Kamera fasst die ganze Himmelskuppel.
 fn s4_bild(s: &mut Scene, sun: sk_model::Sun, theme: &Theme, blick: Vec3) -> Canvas {
+    let q = s.bounds().unwrap_or_else(crate::sonne_view::wuerfel_quader);
+    kuppel_bild(s, sun, theme, blick, q, q)
+}
+
+/// Wie [`s4_bild`], aber die Kuppel aus dem Quader `q` und die Kamera aus
+/// dem Quader `rahmen`, damit zwei Bilder denselben Ausschnitt haben.
+fn kuppel_bild(
+    s: &mut Scene,
+    sun: sk_model::Sun,
+    theme: &Theme,
+    blick: Vec3,
+    q: (Vec3, Vec3),
+    rahmen: (Vec3, Vec3),
+) -> Canvas {
     use crate::sonne_view as sv;
-    let q = s.bounds().unwrap_or_else(sv::wuerfel_quader);
     let ort = *s.model().location();
     let himmel = sv::himmel(&ort, &sun, q);
-    let (m, r) = sv::kuppel(q);
+    let (m, r) = sv::kuppel(rahmen);
     let ziel = m + vec3(0.0, 0.0, 0.3 * r);
     let cam = Camera::looking_at(ziel + blick.normalized() * (3.0 * r), ziel, 45.0);
     let licht = sv::licht(&ort, &sun).map_or(vec3(-0.35, -0.55, 0.75).normalized(), |l| {
@@ -407,4 +420,69 @@ fn istbilder_s9() {
     let (leiste, x, y) = sv::leiste_malen(&b, &schriften(), &theme);
     c.blit(&leiste, x, y);
     std::fs::write(ziel.join("ist-s9-ohne-gebaeude.png"), c.to_png()).unwrap();
+}
+
+/// Ist-Bilder Sonnenstand S12 (Jörn 09.10. 14:10): Die Kuppel folgt der
+/// Gebäudegröße, auch unter 15 m. Ein kleines Gebäude 3 × 6 m mit der
+/// Kuppel von vorher (mindestens 15 m) und von jetzt, beide im selben
+/// Ausschnitt; dazu RH-1.
+/// `SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo istbilder_s12 -- --ignored`
+#[test]
+#[ignore = "legt Ist-Bilder ab, nur mit SKIZZEO_ISTBILDER"]
+fn istbilder_s12() {
+    use crate::sonne_view as sv;
+    use sk_math::sonne::Datum;
+    use sk_model::{RefSide, WallChain};
+    let Some(ziel) = std::env::var_os("SKIZZEO_ISTBILDER").map(PathBuf::from) else {
+        return;
+    };
+    let theme = Theme::dark();
+    let ab = |c: &Canvas, n: &str| std::fs::write(ziel.join(n), c.to_png()).unwrap();
+    let sun = sk_model::Sun {
+        date: Datum::new(2026, 6, 21).unwrap(),
+        minutes: 15 * 60,
+        on: true,
+    };
+    let blick = vec3(0.75, -1.0, 0.62);
+    let mut s = Scene::with_model(Model::with_seed(1));
+    let klein = WallChain {
+        base: 0.0,
+        points: vec![
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 6000.0, 0.0),
+            vec3(3000.0, 6000.0, 0.0),
+            vec3(3000.0, 0.0, 0.0),
+        ],
+        closed: true,
+        ref_side: RefSide::Left,
+        layers: Vec::new(),
+        height: 2500.0,
+        joints: Default::default(),
+    };
+    s.add_wall(&klein).unwrap();
+    assert!(s.nordpfeil_setzen(LABEL_DREHEN, 0.0, Some([5000.0, -3000.0])));
+    s.set_sun(sun);
+    let q = s.bounds().unwrap();
+    let r = sv::kuppel(q).1;
+    // Quader mit derselben Mitte, dessen Kuppel genau 15 m misst: so stand
+    // sie vorher bei jedem kleinen Gebäude.
+    let m = (q.0 + q.1) * 0.5;
+    let h = 15_000.0 / 1.5 / 3f64.sqrt();
+    let vorher = (vec3(m.x - h, m.y - h, -h), vec3(m.x + h, m.y + h, h));
+    assert!((sv::kuppel(vorher).1 - 15_000.0).abs() < 1.0);
+    println!("Klein: Kuppel {r:.0} mm, vorher 15000 mm");
+    ab(
+        &kuppel_bild(&mut s, sun, &theme, blick, vorher, vorher),
+        "ist-s12-klein-vorher-15m.png",
+    );
+    ab(
+        &kuppel_bild(&mut s, sun, &theme, blick, q, vorher),
+        "ist-s12-klein-jetzt.png",
+    );
+    let mut s = haus();
+    let (lo, hi) = s.bounds().unwrap();
+    assert!(s.nordpfeil_setzen(LABEL_DREHEN, 30.0, Some([hi.x + 2500.0, lo.y - 1500.0])));
+    s.set_sun(sun);
+    println!("RH-1: Kuppel {:.0} mm", sv::kuppel((lo, hi)).1);
+    ab(&s4_bild(&mut s, sun, &theme, blick), "ist-s12-rh1.png");
 }

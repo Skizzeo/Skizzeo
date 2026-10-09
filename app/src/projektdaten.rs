@@ -1269,6 +1269,10 @@ mod tests {
         m.fokus_auf(8);
         tippen(&mut m, "52,52");
         ab(m.paint(&t, &fonts, 1.0), "ist-projektdaten-c-breite.png");
+        // d) S10: neues Projekt, Breite und Länge mit dem geltenden Ort
+        // vorbelegt (ohne Standardort Ganderkesee)
+        let m = Maske::new(&ohne(), true, None).mit_ort(&Location::default());
+        ab(m.paint(&t, &fonts, 1.0), "ist-s10-lage-vorbelegt.png");
         // Knopf im linken Paneel: gesetzt und leer, rechts daneben die
         // Kachel des Nordpfeils (gesetzt: Nord 12°, Sonnenstand S2)
         // (aktiv: beim Aufziehen, Hinweise unten für den Nordpfeil)
