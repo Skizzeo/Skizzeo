@@ -162,6 +162,10 @@ pub struct Zusammenstellung {
     /// „nicht ausgeschrieben (geschätzt): x €“; nur mit Preisen, zählt
     /// nicht in die Summe.
     pub geschaetzt: Option<Cent>,
+    /// „ohne Los, nicht in der Summe: x €“: Positionen aus Erweiterungen,
+    /// deren Gewerk in keinem Titel steht (A8); nur mit Preisen. Mit den
+    /// Losen ergibt sie das Netto des Kostenblatts.
+    pub ohne_los: Option<Cent>,
     pub unvollstaendig: bool,
 }
 
@@ -875,6 +879,18 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
         mwst,
         brutto: netto.zip(mwst).map(|(n, s)| n + s),
         geschaetzt: (w.preise && geschaetzt != Cent::NULL).then_some(geschaetzt),
+        ohne_los: {
+            let c: Cent = b
+                .positionen
+                .iter()
+                .filter(|p| match p.quelle {
+                    Quelle::Leistung(g) => k.leistung(g).is_some_and(|l| k.los(l.titel).is_none()),
+                    _ => false,
+                })
+                .map(|p| p.gp)
+                .sum();
+            (w.preise && c != Cent::NULL).then_some(c)
+        },
         unvollstaendig: mit.iter().any(|t| t.unvollstaendig),
     };
     Lv {

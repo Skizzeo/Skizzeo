@@ -2368,6 +2368,11 @@ pub fn zusammenstellung(lv: &Lv) -> Vec<Zeile> {
         x.gp = format!("{} €", euro(g));
         v.push(x);
     }
+    if let Some(g) = z.ohne_los {
+        let mut x = Zeile::neu(Art::Leise, "", "ohne Los, nicht in der Summe");
+        x.gp = format!("{} €", euro(g));
+        v.push(x);
+    }
     if z.unvollstaendig {
         v.push(Zeile::neu(Art::Leise, "", UNVOLLSTAENDIG));
     }
@@ -2549,6 +2554,7 @@ pub fn detail(m: &Model, kat: &Katalog, lv: &Lv, oz: &str) -> Option<Detail> {
     if p.kg.is_some() {
         preis.push(format!("Kostengruppe {}", kg_name(p.kg)));
     }
+    preis.extend(erweiterung::herkunft(m, kat, p, &elemente));
     let bauleistung = kat
         .leistung(p.quelle)
         .map_or_else(String::new, |l| l.kurz.clone());
@@ -2586,6 +2592,7 @@ mod abnahme_lv_zeile;
 mod bild;
 mod blatt;
 mod csv;
+mod erweiterung;
 mod kopf;
 #[cfg(test)]
 mod tests;

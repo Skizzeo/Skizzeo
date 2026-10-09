@@ -7,7 +7,7 @@
 //! Katalogartikel derselben Einheit nimmt diesen (E8-6).
 
 use crate::befund::{satz_ort, Befund};
-use crate::katalog::Umfeld;
+use crate::katalog::{Katalog, Umfeld};
 use crate::satz::{self, Abschnitt};
 use crate::zeile::Zeile;
 use sk_model::{Guid, Model};
@@ -32,6 +32,39 @@ pub fn leistung_von(def: &str, leistung: &str) -> Guid {
         }
     }
     kennung(def, "leistung", leistung)
+}
+
+/// Hinweise beim Einlesen (Prüfung E8, Frage 2): Eine genutzte Bauleistung
+/// hat Folgen, deren Bauleistung die Definition nicht nennt. Folgen gelten
+/// für Erweiterungen nicht; ohne den Hinweis fehlten sie still.
+pub fn fehlende_folgen(k: &Katalog, d: &sk_model::erweiterung::ExtDef) -> Vec<String> {
+    let mut genutzt: Vec<Guid> = Vec::new();
+    for l in d.def.menge.iter().filter_map(|r| r.get("leistung")) {
+        let g = leistung_von(&d.key, l);
+        if !l.is_empty() && !genutzt.contains(&g) {
+            genutzt.push(g);
+        }
+    }
+    let mut out = Vec::new();
+    for g in &genutzt {
+        let Some(l) = k.leistung(*g) else {
+            continue;
+        };
+        for f in k.folgen_von(*g).filter(|f| !genutzt.contains(&f.folge)) {
+            let folge = k
+                .leistung(f.folge)
+                .map_or_else(|| f.folge.to_ifc(), |x| x.kurz.clone());
+            let t = format!(
+                "{} nutzt „{}“; deren Folge „{folge}“ kommt in der Definition nicht vor",
+                d.name(),
+                l.kurz
+            );
+            if !out.contains(&t) {
+                out.push(t);
+            }
+        }
+    }
+    out
 }
 
 /// Ein Satz des wirksamen Katalogs, der aus einer Erweiterung stammt

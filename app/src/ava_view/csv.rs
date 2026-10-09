@@ -297,6 +297,16 @@ impl AvaView {
             let text = "nicht ausgeschrieben (geschätzt), nicht in der Summe";
             zeile(&["", text, "", "", "", &zahl(Some(g))]);
         }
+        if let Some(g) = z.ohne_los {
+            zeile(&[
+                "",
+                "ohne Los, nicht in der Summe",
+                "",
+                "",
+                "",
+                &zahl(Some(g)),
+            ]);
+        }
         zeile(&["", &format!("MwSt. {satz} %"), "", "", "", &zahl(z.mwst)]);
         zeile(&["", "Summe brutto", "", "", "", &zahl(z.brutto)]);
         if z.unvollstaendig {

@@ -802,6 +802,11 @@ impl<'a> Fluss<'a> {
                 self.st.text(KURZ_X, y, TEXT, false, LEISE, &t);
                 y += ZEILE;
             }
+            if let Some(g) = z.ohne_los {
+                let t = format!("Ohne Los: {} €, nicht in der Summe", g.deutsch());
+                self.st.text(KURZ_X, y, TEXT, false, LEISE, &t);
+                y += ZEILE;
+            }
             if z.unvollstaendig {
                 let t = "Unvollständig: Nicht jede Position hat einen Preis.";
                 self.st.text(KURZ_X, y, TEXT, false, 0, t);

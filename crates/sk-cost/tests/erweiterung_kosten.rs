@@ -185,6 +185,10 @@ fn stuetze_und_bodenplatte_im_lv() {
     // Σ LV = Netto ohne das Geländer
     let summe: sk_cost::Cent = pos.iter().filter_map(|p| p.gp).sum();
     assert_eq!(summe + g.gp, b.netto);
+    // die Zusammenstellung nennt das Geländer als „ohne Los“
+    assert_eq!(lv.zusammenstellung.ohne_los, Some(g.gp));
+    let ohne_preise = lv_aus(&m, &b, &k, &LvWahl { preise: false, ..w });
+    assert_eq!(ohne_preise.zusammenstellung.ohne_los, None);
 }
 
 /// Werkszeilen, `f` ändert jede Zeile (auch zu mehreren).
@@ -470,5 +474,37 @@ fn artikel_der_schicht_nach_dicke() {
         r[0].contains("je Dicke und Erweiterung (Bodenplatte BP-001 und Bodenplatte BP-002)"),
         "{}",
         r[0]
+    );
+}
+
+/// Prüfung E8, Frage 2: Hinweis beim Einlesen, wenn eine Folge der genutzten
+/// Werks-Leistung in der Definition fehlt.
+#[test]
+fn fehlende_folge_beim_einlesen() {
+    let m = projekt();
+    let k = lesen::katalog(&m, None);
+    let bp = include_str!("../../sk-szb/beispiele/werk.bodenplatte.szb");
+    let d = ExtDef::lesen(bp).unwrap();
+    assert_eq!(
+        sk_cost::erweiterung::fehlende_folgen(&k, &d),
+        Vec::<String>::new()
+    );
+    let ohne_stahl: String = bp
+        .lines()
+        .filter(|l| !l.starts_with("[menge] key=stahl "))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let d = ExtDef::lesen(&ohne_stahl).unwrap();
+    let h = sk_cost::erweiterung::fehlende_folgen(&k, &d);
+    let bpl = k.leistung(werk_g(BODENPLATTE)).unwrap();
+    let stahl = k.leistung(werk_g(BETONSTAHL)).unwrap();
+    assert_eq!(
+        h,
+        [format!(
+            "{} nutzt „{}“; deren Folge „{}“ kommt in der Definition nicht vor",
+            d.name(),
+            bpl.kurz,
+            stahl.kurz
+        )]
     );
 }

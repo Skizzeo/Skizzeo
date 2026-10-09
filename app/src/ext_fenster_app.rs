@@ -42,7 +42,15 @@ impl App {
     pub(crate) fn ext_frage_zur_datei(&self, datei: &str, text: Result<String, String>) -> Frage {
         let v = text
             .map_err(|e| vec![e])
-            .and_then(|t| ext_ablage::pruefen(&t, &self.ext_ablage, self.scene.model()));
+            .and_then(|t| ext_ablage::pruefen(&t, &self.ext_ablage, self.scene.model()))
+            .map(|mut v| {
+                // Folgen der genutzten Bauleistungen im wirksamen Katalog
+                let firma = self.company.as_ref().map(|c| c.library());
+                let k = sk_cost::lesen::katalog(self.scene.model(), firma);
+                v.hinweise
+                    .extend(sk_cost::erweiterung::fehlende_folgen(&k, &v.def));
+                v
+            });
         match v {
             Ok(v) => Frage::einlesen(v),
             Err(e) => Frage::fehler(datei, e),
