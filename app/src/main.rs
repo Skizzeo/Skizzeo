@@ -178,6 +178,9 @@ const MESH_LIVE: usize = 2;
 const MESH_GHOST: usize = 3;
 /// Würfel 10 m ohne Gebäude bei eingeschaltetem Sonnenstand (nur Anzeige).
 const MESH_WUERFEL: usize = 4;
+/// Wofür der Griff an der Schattenspitze gilt: Sonne, Lage, Stand der
+/// Ecken, mit Gebäude (sonst am Würfel).
+type GriffSchluessel = (sk_model::Sun, sk_model::Location, u64, bool);
 /// Tooltip an Leiste und Sonne, wenn der Treiber keine Schatten kann (S5).
 const SCHATTEN_FEHLT: &str = "Schatten auf diesem Rechner nicht verfügbar.";
 /// Bildabstand für Animationen im Mengenfenster (das Hauptfenster läuft mit vsync).
@@ -624,6 +627,11 @@ struct App {
     /// Ecken des Gebäudes über dem Boden bei eingeschaltetem Sonnenstand:
     /// aus ihnen kommt die Schattenspitze (S6).
     ecken: Vec<Vec3>,
+    /// Der zuletzt gesuchte Griff an der Schattenspitze und wofür (Sonne,
+    /// Lage, Stand der Ecken): Hover und Bild suchen nur neu, wenn sich
+    /// davon etwas ändert, nicht je Mausbewegung über alle Ecken (Review 3cb).
+    griff_cache: Option<(GriffSchluessel, Option<sonne_view::Griff>)>,
+    ecken_stand: u64,
     wuerfel: bool,
     licht: Option<[f32; 3]>,
     /// Zuletzt hochgeladene Terrassenangaben (Text, Skalierung,
@@ -956,6 +964,7 @@ impl App {
             } else {
                 Vec::new()
             };
+            self.ecken_stand += 1;
             let ghost = self.scene.ghost_mesh(self.ui.view, plane, &self.live_runs);
             self.renderer.set_mesh(MESH_GHOST, &ghost);
         }
@@ -1205,18 +1214,28 @@ impl App {
 
     /// Griff an der Schattenspitze (S6): in 3D, solange die Sonne Schatten
     /// wirft und der Rechner ihn zeichnen kann; ohne Gebäude am Würfel.
-    fn griff(&self) -> Option<sonne_view::Griff> {
+    fn griff(&mut self) -> Option<sonne_view::Griff> {
         let s = self
             .sonne_an()
             .filter(|_| self.ui.view == ViewKind::Persp && !self.renderer.shadow_failed())?;
+        let haus = self.scene.bounds().is_some();
+        let ort = *self.scene.model().location();
+        let schluessel = (s, ort, self.ecken_stand, haus);
+        if let Some((k, g)) = &self.griff_cache {
+            if *k == schluessel {
+                return g.clone();
+            }
+        }
         let wuerfel;
-        let punkte = if self.scene.bounds().is_some() {
+        let punkte = if haus {
             &self.ecken[..]
         } else {
             wuerfel = sonne_view::ecken(&sonne_view::wuerfel_netz().faces);
             &wuerfel[..]
         };
-        sonne_view::griff(self.scene.model().location(), &s, punkte)
+        let g = sonne_view::griff(&ort, &s, punkte);
+        self.griff_cache = Some((schluessel, g.clone()));
+        g
     }
 
     /// Sonnenstand an- oder ausschalten (Kachel, Klick auf den Pfeil). Beim
@@ -7615,6 +7634,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         ecken: Vec::new(),
         ansicht_schatten: Default::default(),
         schatten_bild: None,
+        griff_cache: None,
+        ecken_stand: 0,
         wuerfel: false,
         licht: None,
         room_keys: Default::default(),
