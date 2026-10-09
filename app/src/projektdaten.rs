@@ -194,6 +194,17 @@ fn grad(text: &str, max: f64) -> Result<Option<f64>, ()> {
 }
 
 /// Gradzahl für ein Feld, mit Komma.
+/// Breite (Feld 8) bzw. Länge (Feld 9) von Ganderkesee: gilt, solange die
+/// Datei keine Lage hat.
+fn ganderkesee(i: usize) -> f64 {
+    let g = sk_math::sonne::Lage::GANDERKESEE;
+    if i == 8 {
+        g.breite
+    } else {
+        g.laenge
+    }
+}
+
 fn grad_text(v: Option<f64>) -> String {
     v.map_or_else(String::new, |v| v.to_string().replace('.', ","))
 }
@@ -291,10 +302,12 @@ impl Maske {
         }
     }
 
-    /// Breite und Länge aus der Lage des Projekts (Sonnenstand S1).
+    /// Breite und Länge aus der Lage des Projekts (Sonnenstand S1). Fehlt
+    /// ein Wert, steht der geltende von Ganderkesee als echter Wert im Feld
+    /// (Jörn 09.10. 14:10, S10).
     pub fn mit_ort(mut self, l: &Location) -> Maske {
         for (i, v) in [(8, l.lat), (9, l.lon)] {
-            self.felder[i] = TextEdit::new(&grad_text(v));
+            self.felder[i] = TextEdit::new(&grad_text(v.or(Some(ganderkesee(i)))));
             self.felder[i].end(false);
         }
         self.ort = *l;
@@ -302,9 +315,17 @@ impl Maske {
     }
 
     /// Die Lage aus Breite und Länge; ein Wert, der keine Zahl im Bereich
-    /// ist, lässt den alten stehen (die Maske meldet ihn).
+    /// ist, lässt den alten stehen (die Maske meldet ihn). Der unveränderte
+    /// vorbelegte Wert bleibt ungesetzt, so ändert bloßes Übernehmen die
+    /// Datei nicht.
     pub fn ort(&self) -> Location {
-        let w = |i: usize, alt| grad(&self.felder[i].text, GRAD_MAX[i - 8]).unwrap_or(alt);
+        let w = |i: usize, alt: Option<f64>| {
+            let t = &self.felder[i].text;
+            if alt.is_none() && *t == grad_text(Some(ganderkesee(i))) {
+                return None;
+            }
+            grad(t, GRAD_MAX[i - 8]).unwrap_or(alt)
+        };
         Location {
             lat: w(8, self.ort.lat),
             lon: w(9, self.ort.lon),
@@ -1276,5 +1297,37 @@ mod tests {
             let (c, _, _) = ui.paint(&t, crate::ui::Panel::Tools, 1280, 32);
             ab(c.clone(), &format!("ist-projektdaten-knopf-{n}.png"));
         }
+    }
+
+    /// S10 (Jörn 09.10. 14:10): Ohne Lage stehen Breite und Länge von
+    /// Ganderkesee als echte Werte in den Feldern. Unverändert übernommen
+    /// bleibt die Lage ungesetzt; ein geänderter Wert setzt beide.
+    #[test]
+    fn lage_vorbelegt() {
+        let leer = Location::default();
+        let m = Maske::new(&ohne(), true, None).mit_ort(&leer);
+        assert_eq!((m.wert(8), m.wert(9)), ("53,0589", "8,591"));
+        assert_eq!(m.ort(), leer, "unverändert: keine Lage");
+        assert_eq!(m.hinweis(), None);
+        let mut m = Maske::new(&ohne(), false, None).mit_ort(&leer);
+        m.felder[8] = TextEdit::new("48,137");
+        assert_eq!(
+            m.ort(),
+            Location {
+                lat: Some(48.137),
+                lon: None,
+                north: None
+            },
+            "die unveränderte Länge bleibt ungesetzt, es gilt Ganderkesee"
+        );
+        // Eine gesetzte Lage steht wie bisher
+        let muenchen = Location {
+            lat: Some(48.137),
+            lon: Some(11.575),
+            north: Some(30.0),
+        };
+        let m = Maske::new(&ohne(), false, None).mit_ort(&muenchen);
+        assert_eq!((m.wert(8), m.wert(9)), ("48,137", "11,575"));
+        assert_eq!(m.ort(), muenchen);
     }
 }
