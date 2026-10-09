@@ -79,6 +79,9 @@ pub struct WahlBlatt {
     anker: Rect,
     pub scale: f32,
     pub fenster: (f32, f32),
+    /// Linke Grenze (px), wenn Platz ist: rechts der Mengenspalte, damit die
+    /// Menge der Zeilen darunter lesbar bleibt (Bedienbarkeit 11).
+    pub links: f32,
 }
 
 impl WahlBlatt {
@@ -113,6 +116,7 @@ impl WahlBlatt {
             anker: (0.0, 0.0, 0.0, 0.0),
             scale: 1.0,
             fenster: (0.0, 0.0),
+            links: 0.0,
         }
     }
 
@@ -231,7 +235,11 @@ impl WahlBlatt {
         let (fw, fh) = self.fenster;
         let rand = 8.0 * s;
         let cx = (ax0 + ax1) * 0.5;
-        let x = (cx - w * 0.8).min(fw - w - rand).max(rand);
+        // Spitze bleibt mindestens 24 dip im Blatt
+        let x = (cx - w * 0.8)
+            .max(self.links.min(cx - 24.0 * s))
+            .min(fw - w - rand)
+            .max(rand);
         let unten = ay1 + SPITZE * s + h + rand <= fh || ay0 - SPITZE * s - h < rand;
         let y = if unten {
             ay1 + SPITZE * s

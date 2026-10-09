@@ -1056,6 +1056,7 @@ impl KostenView {
         }
         wb.fenster = (w, h);
         wb.scale = s;
+        wb.links = col_menge(x0, cw) + 8.0 * s;
     }
 
     /// Lohnfeld an den Stundenlohn der Kachel bzw. unten rechts legen.
