@@ -245,3 +245,42 @@ fn feste_grenzfaelle() {
     let p = pruefen(&"#".repeat(2 << 20), &best, &g);
     assert!(p.befunde.iter().any(|b| b.text.contains("Datei größer")));
 }
+
+/// Review 3cg: Eine gültige, kleine Datei (37 KB) mit vier Körpern zu je
+/// `anzahl=500`, Formeln von 1900 Zeichen und 52 Parametern mit min/max
+/// braucht in der Prüfung 169 s (release): Jede Formel wird je Exemplar
+/// neu übersetzt, und die Grenzprüfung rechnet alles 2·P-mal. Die Zeit
+/// muss begrenzt sein, mit Fehler „zu aufwendig“ statt Rechnen.
+#[test]
+#[ignore = "zeigt Befund 3cg-1, bis ein Rechenbudget greift"]
+fn aufwand_begrenzt() {
+    let basis = include_str!("../beispiele/werk.stuetze.szb");
+    let mut f = String::from("b");
+    while f.len() < 1900 {
+        f.push_str("+0*1");
+    }
+    let mut text = String::new();
+    for l in basis.lines() {
+        if l.starts_with("[koerper]") {
+            for _ in 0..4 {
+                text.push_str(&format!(
+                    "[koerper] form=quader baustoff=stahlbeton teil=\"S\" funktion=loadbearing anzahl=500 x=\"{f}\" y=\"{f}\" z=0 b=\"{f}\" t=\"{f}\" h=h\n"
+                ));
+            }
+            continue;
+        }
+        text.push_str(l);
+        text.push('\n');
+        if l.starts_with("[param] key=d") {
+            for i in 0..50 {
+                text.push_str(&format!(
+                    "[param] key=p{i} name=\"P{i}\" einheit=mm wert=1 min=0 max=2 hilfe=\"x\"\n"
+                ));
+            }
+        }
+    }
+    assert!(text.len() < 40_000);
+    let t = Instant::now();
+    let _ = pruefen(&text, &Bestand::werk(), &Geschoss::PROBE);
+    assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+}
