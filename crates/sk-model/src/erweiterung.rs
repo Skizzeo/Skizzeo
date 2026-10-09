@@ -5,7 +5,8 @@
 //! `sk-szb` aus Definition, Werten des Exemplars und Geschoss.
 
 use sk_szb::formel::{self, Umfeld};
-use sk_szb::{Bestand, Def, Geschoss};
+use sk_szb::{Bestand, Def};
+pub use sk_szb::{Ergebnis, Geschoss};
 
 /// Eine Definition im Projekt. Die Datei trägt sie vollständig mit, damit
 /// das Projekt auch ohne eingelesene Erweiterung öffnet.

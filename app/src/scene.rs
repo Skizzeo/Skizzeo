@@ -535,6 +535,8 @@ pub struct Scene {
     locked_hit: Option<ElementId>,
     /// Blasses Netz zum zuletzt zusammengesetzten Modellnetz.
     ghost: Option<(MeshKey, VisStamp, MeshData)>,
+    /// Körper der Erweiterungsbauteile je Exemplar (E4).
+    ext: crate::ext_cache::ExtCache,
 }
 
 /// Übergang der Sichtbarkeit (§2): ändert nur die Deckkraft des blassen
@@ -587,23 +589,28 @@ impl Vis<'_> {
             let Some(id) = self.model.part_of(run, part) else {
                 return Masks::ALL;
             };
-            let m = self.model;
-            match self.anim {
-                None => m.masks(id),
-                Some(a) => match a.kind {
-                    VisFade::IsolateOn => m.masks(id),
-                    VisFade::IsolateOff => m.masks_in(&a.old, id),
-                    // Was sich ändert, liegt für den Übergang im blassen Netz
-                    VisFade::Out | VisFade::In => {
-                        let (o, n) = (m.masks_in(&a.old, id), m.masks(id));
-                        Masks {
-                            solid: o.solid & n.solid,
-                            ghost: o.solid ^ n.solid,
-                        }
-                    }
-                },
-            }
+            self.element_masks(id)
         })
+    }
+
+    /// Masken eines Bauteils im laufenden Übergang.
+    fn element_masks(&self, id: ElementId) -> Masks {
+        let m = self.model;
+        match self.anim {
+            None => m.masks(id),
+            Some(a) => match a.kind {
+                VisFade::IsolateOn => m.masks(id),
+                VisFade::IsolateOff => m.masks_in(&a.old, id),
+                // Was sich ändert, liegt für den Übergang im blassen Netz
+                VisFade::Out | VisFade::In => {
+                    let (o, n) = (m.masks_in(&a.old, id), m.masks(id));
+                    Masks {
+                        solid: o.solid & n.solid,
+                        ghost: o.solid ^ n.solid,
+                    }
+                }
+            },
+        }
     }
 
     fn class(&self, run: RunId, part: u32, layer: u8) -> Class {
@@ -816,6 +823,7 @@ impl Scene {
             vis_table: RefCell::default(),
             locked_hit: None,
             ghost: None,
+            ext: Default::default(),
         };
         s.rebuild_dirty(false);
         s
@@ -1426,11 +1434,12 @@ impl Scene {
                 self.store(id, b, live);
             }
         }
+        self.ext.sync(&self.model);
         self.bounds = self
             .cache
             .iter()
             .flatten()
-            .fold(None, |acc, c| union(acc, c.bounds));
+            .fold(self.ext.bounds(), |acc, c| union(acc, c.bounds));
     }
 
     /// Berechnet einen Wandzug neu (oder entfernt ihn, wenn es ihn nicht mehr gibt).
@@ -3240,6 +3249,7 @@ impl Scene {
                     }
                 }
             }
+            self.ext_into(&mut m, view, section);
             return m;
         }
         // Gestapelte Züge: die Schale läuft ohne waagerechte Naht durch (G6,
@@ -3342,7 +3352,56 @@ impl Scene {
                 mesh_into(mk, &x);
             }
         }
+        self.ext_into(&mut m, view, section);
         m
+    }
+
+    /// Wie oft ein Erweiterungsbauteil gerechnet wurde (Tests).
+    #[cfg(test)]
+    pub fn ext_builds(&self) -> u64 {
+        self.ext.builds
+    }
+
+    /// Erweiterungsbauteile ins Netz, deckend oder blass (E4). Grundriss:
+    /// die des aktiven Geschosses in seiner Schnitthöhe.
+    fn ext_into(&mut self, m: &mut [MeshData; 2], view: ViewKind, section: Option<Plane>) {
+        let Some((plan, section)) = self.ext_view(view, section) else {
+            return;
+        };
+        let filter = self.filtering();
+        let vis = Vis {
+            model: &self.model,
+            anim: self.vis_anim.as_ref(),
+            table: &self.vis_table,
+            stamp: self.vis_stamp(),
+        };
+        for (id, s) in self.ext.shown(plan, section) {
+            let k = if filter {
+                match class_in(vis.element_masks(id), sk_model::NO_LAYER) {
+                    Class::Solid => 0,
+                    Class::Ghost => 1,
+                    Class::Hidden => continue,
+                }
+            } else {
+                0
+            };
+            mesh_into(&mut m[k], s);
+        }
+    }
+
+    /// Was die Erweiterungen in einer Ansicht zeigen: Grundriss (Geschoss,
+    /// Schnitthöhe) oder Schnittebene; `None`: Schnitt ohne Ebene.
+    #[allow(clippy::type_complexity)]
+    fn ext_view(
+        &self,
+        view: ViewKind,
+        section: Option<Plane>,
+    ) -> Option<(Option<(StoreyId, f64)>, Option<Plane>)> {
+        match view {
+            ViewKind::Plan => Some((Some((self.active_storey(), self.plan_cut())), None)),
+            ViewKind::Section => section.map(|p| (None, Some(p))),
+            _ => Some((None, None)),
+        }
     }
 
     /// Blasses Netz (Isolieren, Übergänge) zur Ansicht wie [`Scene::mesh`];
@@ -3613,8 +3672,26 @@ impl Scene {
                 }
             }
         }
-        let (_, run, seg) = best?;
-        self.model.part_of(run, seg)
+        // Erweiterungsbauteile (E4): Treffer vor dem Wandzug, wenn näher
+        let ext = self.ext_view(view, section).and_then(|(plan, sec)| {
+            let vis = Vis {
+                model: &self.model,
+                anim: self.vis_anim.as_ref(),
+                table: &self.vis_table,
+                stamp: self.vis_stamp(),
+            };
+            let keep =
+                |id| !filter || class_in(vis.element_masks(id), sk_model::NO_LAYER) == Class::Solid;
+            self.ext.pick(plan, sec, origin, dir, keep, |b| {
+                ray_hits_box(origin, dir, b)
+            })
+        });
+        match (best, ext) {
+            (Some(b), Some(e)) if e.0 < b.0 => Some(e.1),
+            (None, Some(e)) => Some(e.1),
+            (Some((_, run, seg)), _) => self.model.part_of(run, seg),
+            (None, None) => None,
+        }
     }
 
     /// Mitte des umschließenden Quaders aller Flächen.

@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::erweiterung::{ExtDef, ExtPart};
+use crate::erweiterung_koerper::Lage;
 use sk_szb::{Ergebnis, Geschoss};
 
 /// Warum eine Definition oder ein Exemplar nicht aufgenommen wurde.
@@ -194,6 +195,55 @@ impl Model {
         let d = self.ext_def(&p.key)?;
         let g = self.ext_geschoss(e.storey);
         Some(sk_szb::rechnen(&d.def, &d.werte(p, &g), &g))
+    }
+
+    /// Lage und Rechnung eines Exemplars für die Darstellung.
+    pub fn ext_lage(&self, id: ElementId) -> Option<(Lage, Ergebnis)> {
+        let e = self.element(id)?;
+        let ElementKind::Ext(p) = &e.kind else {
+            return None;
+        };
+        let erg = self.ext_ergebnis(id)?;
+        let lage = Lage {
+            at: p.at,
+            rot: p.rot,
+            z: self.storey(e.storey)?.elevation + erg.z0,
+        };
+        Some((lage, erg))
+    }
+
+    /// Baustoff des Projekts für den Baustoffschlüssel `key` einer
+    /// Definition: ein Werksbaustoff über seinen Namen (Vertrag §9), sonst
+    /// der erste Baustoff derselben Kategorie. Eigene Baustoffe legt erst
+    /// das Einlesen an (E5); bis dahin zeigen sie sich so.
+    pub fn ext_material(&self, d: &ExtDef, key: &str) -> Option<MaterialId> {
+        let best = sk_szb::Bestand::werk();
+        let werk = best.baustoff(key);
+        if let Some(w) = werk {
+            if let Some((id, _)) = self.materials.iter().find(|(_, m)| m.name == w.name) {
+                return Some(id);
+            }
+        }
+        let kat = werk.map(|w| w.kategorie).or_else(|| {
+            d.def
+                .baustoff
+                .iter()
+                .find(|b| b.key() == key)
+                .and_then(|b| b.get("kategorie"))
+        })?;
+        let kat = match kat {
+            "masonry" => MatCategory::Masonry,
+            "concrete" => MatCategory::Concrete,
+            "insulation" => MatCategory::Insulation,
+            "plaster" => MatCategory::Plaster,
+            "timber" => MatCategory::Timber,
+            "metal" => MatCategory::Metal,
+            _ => return None,
+        };
+        self.materials
+            .iter()
+            .find(|(_, m)| m.category == kat)
+            .map(|(id, _)| id)
     }
 
     /// Höchste vorhandene Nummer je Präfix.

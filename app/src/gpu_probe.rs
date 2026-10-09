@@ -498,4 +498,72 @@ mod tests {
         }
         r.set_below_ground(None);
     }
+    /// Ist-Bilder E4: die fünf Beispiel-Erweiterungen vor RH-1 in 3D, im
+    /// Grundriss des EG und in „Vorne“; dazu die Treppe allein in „Vorne“
+    /// (schaut in +Y) zum Vergleich mit der Werkbank.
+    /// `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_e4 -- --ignored`
+    #[test]
+    #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
+    fn gpu_istbilder_e4() {
+        use sk_model::erweiterung::{ExtDef, ExtPart};
+        use sk_model::ViewShade;
+        let Some(ziel) = std::env::var_os("SKIZZEO_ISTBILDER").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let k = sk_render::glx::kontext(W as i32, H as i32).expect("GLX-Kontext (DISPLAY?)");
+        let theme = Theme::dark();
+        let mut r = Renderer::new(k.gl, crate::style(&theme.env)).unwrap();
+        let ab = |px: &[u8], n: &str| {
+            std::fs::write(ziel.join(n), sk_paint::encode_png(W, H, px)).unwrap()
+        };
+        let beispiele = [
+            include_str!("../../crates/sk-szb/beispiele/werk.bodenplatte.szb"),
+            include_str!("../../crates/sk-szb/beispiele/werk.stabgelaender.szb"),
+            include_str!("../../crates/sk-szb/beispiele/werk.streifenfundament.szb"),
+            include_str!("../../crates/sk-szb/beispiele/werk.stuetze.szb"),
+            include_str!("../../crates/sk-szb/beispiele/werk.treppe.szb"),
+        ];
+        let setzen = |s: &mut Scene, texte: &[&str], lo: Vec3| {
+            let eg = s.active_storey();
+            for (i, t) in texte.iter().enumerate() {
+                let d = ExtDef::lesen(t).unwrap();
+                let p = ExtPart::new(&d, [lo.x + 6000.0 * i as f64, lo.y - 5000.0]);
+                assert!(s.edit_model("Einsetzen", |m| {
+                    m.put_ext_def(d).is_ok() && m.add_ext(eg, p).is_ok()
+                }));
+            }
+        };
+        let sun = sonne(6, 21, 15 * 60);
+        let leer = sk_render::MeshData::default;
+        let mut h = haus();
+        let lo = h.bounds().unwrap().0;
+        setzen(&mut h, &beispiele, lo);
+        let cam = blick(&h, vec3(-1.0, -1.6, 0.9), 32_000.0);
+        let px = bild(&mut r, &mut h, sun, &cam);
+        ab(&px, "ist-e4-3d.png");
+        let ohne = ViewShade {
+            on: false,
+            ..ViewShade::WERK
+        };
+        for (v, vs, n) in [
+            (ViewKind::Plan, ohne, "grundriss"),
+            (ViewKind::Front, ViewShade::WERK, "vorne"),
+        ] {
+            let (px, _) = ansicht(&mut r, &mut h, v, vs, sun, leer());
+            ab(&px, &format!("ist-e4-{n}.png"));
+        }
+        let mut m = Model::new();
+        m.add_building(1);
+        let mut t = Scene::with_model(m);
+        setzen(&mut t, &beispiele[4..], vec3(0.0, 5000.0, 0.0));
+        let (px, _) = ansicht(
+            &mut r,
+            &mut t,
+            ViewKind::Front,
+            ViewShade::WERK,
+            sun,
+            leer(),
+        );
+        ab(&px, "ist-e4-treppe-vorne.png");
+    }
 }

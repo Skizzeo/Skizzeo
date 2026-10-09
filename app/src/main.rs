@@ -29,6 +29,7 @@ mod delete;
 mod document;
 mod draw_table;
 mod erweiterung;
+mod ext_cache;
 mod flush_pick;
 mod frame_time;
 #[cfg(all(test, target_os = "linux"))]
