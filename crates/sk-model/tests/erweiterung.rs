@@ -392,3 +392,56 @@ fn beschaedigte_projektdateien() {
     }
     assert!(geoeffnet > 100, "{geoeffnet}");
 }
+
+/// Test-Thread (Abnahme E3): Sperre und Ausblenden eines Bauteils, dessen
+/// Erweiterung nicht lesbar ist, bleiben wie das Bauteil in der Datei.
+#[test]
+fn sperre_und_ausblenden_ohne_lesbare_definition() {
+    let mut m = projekt();
+    let id = setzen(&mut m, "werk.stuetze", "EG", [0.0, 0.0]);
+    let g = m.element(id).unwrap().guid;
+    m.set_locked(&[id], true);
+    let mut v = m.visibility().clone();
+    v.hidden.insert(g);
+    m.set_visibility(v);
+    let gut = szo::write(&m);
+    assert!(gut.contains("[lock] elem=") && gut.contains("[hide] elem="));
+    let kaputt: String = gut
+        .lines()
+        .map(|l| match l.starts_with("[extdef] key=werk.stuetze ") {
+            true => l.replace("[koerper] form=", "[koerper] form=kugel"),
+            false => l.to_string(),
+        })
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let l = lesen(&kaputt);
+    assert!(
+        !l.hints.iter().any(|h| h.contains("Sperre auf unbekanntes")),
+        "{:?}",
+        l.hints
+    );
+    let neu = szo::write(&l.model);
+    let zeilen = |t: &str| {
+        let mut v: Vec<String> = t.lines().map(str::to_string).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(zeilen(&neu), zeilen(&kaputt), "alles bleibt");
+    let wieder: String = neu
+        .lines()
+        .map(|z| match z.starts_with("[extdef] key=werk.stuetze ") {
+            true => z.replace("form=kugelquader", "form=quader"),
+            false => z.to_string(),
+        })
+        .map(|z| format!("{z}\n"))
+        .collect();
+    let l = lesen(&wieder);
+    let (id, _) = l
+        .model
+        .elements()
+        .iter()
+        .find(|(_, e)| e.guid == g)
+        .expect("Bauteil wieder da");
+    assert!(l.model.element(id).unwrap().locked, "gesperrt");
+    assert!(l.model.visibility().hidden.contains(&g), "ausgeblendet");
+}

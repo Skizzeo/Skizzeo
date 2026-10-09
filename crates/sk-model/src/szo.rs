@@ -2351,16 +2351,28 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             }
         }
     }
+    // Sperre und Ausblenden eines Bauteils ohne lesbare Erweiterung: bleiben
+    // roh wie das Bauteil selbst
+    let roh = |r: &Record| {
+        r.opt("elem")
+            .and_then(Guid::from_ifc)
+            .is_some_and(|g| ext_raw_guids.contains(&g))
+    };
+    for r in recs("lock").iter().chain(recs("hide")).filter(|r| roh(r)) {
+        r.all_used();
+        ext_raw.push(lines[r.line - 1].to_string());
+    }
     // Gesperrtes (Paket 4 §2.3): Modell, darum Unbekanntes mit Hinweis
     let locks: Vec<(usize, Option<Guid>)> = recs("lock")
         .iter()
+        .filter(|r| !roh(r))
         .map(|r| (r.line, r.opt("elem").and_then(Guid::from_ifc)))
         .collect();
     // Ausgeblendetes (Paket 3 §3.6): nur Ansicht, Unbekanntes still verworfen
     // je Zeile: Bauteil, Art, Gewerk, Gelände
     type Hide = (Option<Guid>, Option<crate::Category>, Option<Guid>, bool);
     let mut hide: Vec<Hide> = Vec::new();
-    for r in recs("hide") {
+    for r in recs("hide").iter().filter(|r| !roh(r)) {
         let g = |k: &str| r.opt(k).and_then(Guid::from_ifc);
         let cat = r.opt("cat").and_then(|w| {
             crate::Category::ALL
