@@ -391,6 +391,54 @@ fn istbilder_ka4() {
     q.sync(&mut sp, &b.p, false);
     b.ablegen(&mut q, "ist-ka-4c-kopf.png");
 
+    // PD-4: Druckvorschau des LV-Blatts mit Jörns Projektdaten und Planung;
+    // breit Seite 1, mit Titelblatt und Verzeichnis die Verzeichnisseite,
+    // schmal die Leiste über dem Blatt
+    let mut pr = sp.model().project().clone();
+    pr.author = "Dipl.-Ing. (FH) Jörn Horstmann".into();
+    pr.author_addr = "Denkmalsweg 18b\n27777 Ganderkesee".into();
+    assert!(sp.projekt_setzen("Projektdaten geändert", pr));
+    for (name, w, h, scale, wahl, seite) in [
+        (
+            "ist-lv-druckvorschau.png",
+            1440,
+            960,
+            1.0,
+            (false, false),
+            0,
+        ),
+        (
+            "ist-lv-druckvorschau-verzeichnis.png",
+            1440,
+            960,
+            1.0,
+            (true, true),
+            1,
+        ),
+        (
+            "ist-lv-druckvorschau-schmal-150.png",
+            720,
+            1100,
+            1.5,
+            (false, false),
+            1,
+        ),
+    ] {
+        b.p = Picking::default();
+        let mut q = QuantityWindow::new();
+        q.datei = "haus.szo".into();
+        q.title.scale = scale;
+        q.blatt_wahl = wahl;
+        (q.w, q.h) = (w, h);
+        q.sync(&mut sp, &b.p, false);
+        q.waehlen(Blatt::Ava, &b.t);
+        q.sync(&mut sp, &b.p, false);
+        let a = q.ava.as_mut().unwrap();
+        a.zeige_druckvorschau(seite);
+        q.sync(&mut sp, &b.p, false);
+        b.ablegen(&mut q, name);
+    }
+
     // KA-4d: Zusammenstellung und Prüfen
     for (name, zusammen) in [
         ("ist-ka-4d-zusammenstellung.png", true),

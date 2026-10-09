@@ -40,6 +40,10 @@ pub enum Out {
     /// Doppelklick: die aktive Ansicht holt die Bauteile ins Bild.
     Zoom(Vec<ElementId>),
     SaveCsv,
+    /// AVA-Druckvorschau: „Als PDF speichern“.
+    SavePdf,
+    /// AVA-Druckvorschau: Titelblatt und Inhaltsverzeichnis geändert.
+    BlattWahl((bool, bool)),
     Command(WindowCommand),
     Close,
     /// Entf: die gemeinsame Auswahl löschen.
@@ -80,6 +84,9 @@ pub struct QuantityWindow {
     pub datei: String,
     /// Gliederung der Liste (Paket 1b), aus den Einstellungen.
     pub grouping: Grouping,
+    /// Druckvorschau: Titelblatt und Inhaltsverzeichnis, aus den
+    /// Einstellungen.
+    pub blatt_wahl: (bool, bool),
     /// Muss neu gezeichnet und gezeigt werden.
     pub dirty: bool,
     /// Angedockt (für die Fuge) und seit wann die Fuge aufblinkt.
@@ -127,6 +134,7 @@ impl QuantityWindow {
             ava: None,
             datei: String::new(),
             grouping: Grouping::Storey,
+            blatt_wahl: (false, false),
             dirty: false,
             docked: true,
             seam_flash: None,
@@ -320,6 +328,7 @@ impl QuantityWindow {
         let list = self.list.get_or_insert_with(|| ListView::grouped(s, g));
         let kosten = self.kosten.get_or_insert_with(KostenView::new);
         let ava = self.ava.get_or_insert_with(AvaView::new);
+        ava.blatt_wahl = self.blatt_wahl;
         // Der Umfang gilt für alle Blätter; das gezeigte gibt ihn vor
         let umfang = match aktiv {
             Blatt::Mengen => list.leiste.umfang.clone(),
@@ -476,6 +485,15 @@ impl QuantityWindow {
             ListOut::SaveCsv => {
                 self.dirty = true;
                 Some(Out::SaveCsv)
+            }
+            ListOut::SavePdf => {
+                self.dirty = true;
+                Some(Out::SavePdf)
+            }
+            ListOut::BlattWahl(w) => {
+                self.blatt_wahl = w;
+                self.dirty = true;
+                Some(Out::BlattWahl(w))
             }
             // Die Zeilen baut das nächste `sync` neu
             ListOut::Grouping(g) => {

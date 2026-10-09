@@ -26,6 +26,7 @@ mod hints;
 mod kosten_view;
 mod link_view;
 mod lohn_blatt;
+mod lv_blatt;
 mod material_view;
 mod measure_input;
 mod meldung;
@@ -2577,6 +2578,8 @@ impl App {
             quantity::Out::Picking { selection } => self.list_picked(selection),
             quantity::Out::Zoom(ids) => self.zoom_to(&ids),
             quantity::Out::SaveCsv => self.save_csv(surface),
+            quantity::Out::SavePdf => self.save_pdf(surface),
+            quantity::Out::BlattWahl(w) => self.settings.set_lv_blatt(w),
             quantity::Out::Command(c) => surface.quantity_command(c),
             quantity::Out::Close => self.close_quantity(surface),
             quantity::Out::Delete => self.erase(true),
@@ -2854,6 +2857,30 @@ impl App {
                 &path,
                 &e,
             );
+            surface.message(&m, true);
+        }
+    }
+
+    /// „LV Rohbau als PDF speichern“ aus der AVA-Druckvorschau: genau die
+    /// gezeigten Seiten (kosten/lv-blatt-a4.md §9).
+    fn save_pdf(&mut self, surface: &Surface) {
+        let Some((name, bytes)) = self
+            .quantity
+            .ava
+            .as_ref()
+            .and_then(|a| a.pdf(&self.ui.fonts))
+        else {
+            return;
+        };
+        let filters = [
+            ("PDF-Dokument (*.pdf)", "*.pdf"),
+            ("Alle Dateien (*.*)", "*.*"),
+        ];
+        let Some(path) = surface.save_dialog("Als PDF speichern", &filters, "pdf", &name) else {
+            return;
+        };
+        if let Err(e) = document::tabelle_schreiben(&path, &bytes) {
+            let m = meldung::Meldung::aus_io("PDF nicht gespeichert", "PDF speichern", &path, &e);
             surface.message(&m, true);
         }
     }
@@ -7426,6 +7453,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     // Mengenfenster (F2, B7): gemerkte Lage, Breite aus dem Schema
     *surface.layout() = windows::read_settings(&a.settings.windows, &surface.monitors());
     a.quantity.grouping = windows::read_grouping(&a.settings.windows);
+    a.quantity.blatt_wahl = a.settings.lv_blatt();
     a.quantity.karten.aktiv = windows::read_blatt(&a.settings.windows);
     // Baumpanel: Karte, zugeklappt, Grenze (Paket 4)
     let panel = a.settings.panel.clone();

@@ -53,6 +53,12 @@ impl AvaView {
         None
     }
 
+    /// Druckvorschau auf Seite `seite` (ab 0).
+    pub(crate) fn zeige_druckvorschau(&mut self, seite: usize) {
+        self.zeige(Ansicht::Blatt);
+        self.seite = seite;
+    }
+
     /// Mitte der Leiste „LV ▾“ im schmalen Fenster.
     pub(crate) fn leiste_mitte(&self, t: &Theme, fonts: &Fonts) -> Option<(f64, f64)> {
         self.baum_als_leiste().then_some(())?;

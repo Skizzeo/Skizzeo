@@ -8,6 +8,7 @@
 //! Kostenblatt desselben Umfangs.
 
 use crate::kosten_view::{euro, gewerk_name, kg_name, prozent, tausender};
+use crate::lv_blatt;
 use crate::picking::Picking;
 use crate::scene::Scene;
 use crate::schedule_view::ListOut;
@@ -74,6 +75,8 @@ const ROW_KURZ: f32 = 16.0;
 /// Bleibt neben den engen Zahlen weniger, steht der Kurztext ganz in der
 /// zweiten Zeile über die Breite der Tabelle (Bedienbarkeit 23).
 const KURZ_MIN: f32 = 120.0;
+/// Schriftgröße des Kurztexts (dip).
+const KURZ_PX: f32 = 11.0;
 
 /// Lage der Spalten einer Positionszeile von links nach rechts: OZ breit
 /// `oz_w`, Kurztext bis `kurz_ende` vor dem rechten Rand, dann Menge
@@ -89,7 +92,6 @@ struct Spalten {
     einheit_l: f32,
     ep_r: f32,
     kurz_ende: f32,
-    zwei: bool,
     unter: bool,
 }
 
@@ -102,7 +104,6 @@ impl Spalten {
             einheit_l: EINHEIT_L,
             ep_r: EP_R,
             kurz_ende: MENGE_R + 90.0,
-            zwei: false,
             unter: false,
         };
         if tw - OZ_W - breit.kurz_ende >= KURZ_BREIT {
@@ -114,7 +115,6 @@ impl Spalten {
             einheit_l: 192.0,
             ep_r: 88.0,
             kurz_ende: ZAHLEN_ENG,
-            zwei: tw - OZ_ENG - ZAHLEN_ENG < KURZ_BREIT,
             unter: tw - OZ_ENG - ZAHLEN_ENG < KURZ_MIN,
         }
     }
@@ -168,6 +168,8 @@ pub enum Ansicht {
     Lv,
     Zusammenstellung,
     Pruefen,
+    /// Druckvorschau des LV-Blatts (A4).
+    Blatt,
 }
 
 /// Reiter des Detailbereichs.
@@ -215,6 +217,11 @@ enum Hot {
     Feld(kopf::Feld),
     /// „Projektdaten …“ in der Kopfzeile.
     Projektdaten,
+    /// Druckvorschau: „‹“ (`false`) bzw. „›“ (`true`).
+    Seite(bool),
+    /// Druckvorschau: Häkchen „Titelblatt“ (`false`) bzw.
+    /// „Inhaltsverzeichnis“ (`true`).
+    BlattWahl(bool),
     /// „LV … als Tabelle speichern“.
     Knopf,
     /// „Bauleistung öffnen ↗“ in der Spalte „Preis“: Verwaltung (KA-3a2).
@@ -265,6 +272,8 @@ pub enum Knoten {
     Trenner,
     Zusammenstellung,
     Pruefen(usize),
+    /// „Druckvorschau“ des LV-Blatts.
+    Blatt,
 }
 
 impl Knoten {
@@ -351,7 +360,7 @@ impl Zeile {
         }
     }
 
-    /// Höhe (dip); `zwei`: Positionen mit dem Kurztext in zweiter Zeile.
+    /// Höhe (dip); `zwei`: Position mit einer zweiten Kurztextzeile.
     fn hoehe(&self, zwei: bool) -> f32 {
         match self.art {
             Art::Titel => ROW_TITEL,
@@ -431,6 +440,16 @@ pub struct AvaView {
     baum_blatt: bool,
     /// Im Baum gewählter Titel; die Leiste nennt ihn.
     titel_wahl: Option<Guid>,
+    /// Druckvorschau: gezeigte Seite (ab 0).
+    seite: usize,
+    /// Druckvorschau: Titelblatt und Inhaltsverzeichnis (Arbeitsplatz,
+    /// `einstellungen.txt`).
+    pub blatt_wahl: (bool, bool),
+    /// Breite des Kurztexts je Zeile (dip bei `KURZ_PX`), aus `messen`;
+    /// leer nach jedem Aufbau der Zeilen.
+    breiten: std::cell::RefCell<Vec<f32>>,
+    /// Das zuletzt gebaute Blatt der Druckvorschau.
+    blatt_cache: std::cell::RefCell<Option<(blatt::Schluessel, Rc<lv_blatt::Blatt>)>>,
     /// Umfang und Stand für den aufgeklappten Kopf.
     kopf_umfang: (String, String),
     /// „Referenzpreise 10/2026“ bzw. „Preise Firmenkatalog“; leer ohne
@@ -483,6 +502,10 @@ impl AvaView {
             mehr_offen: false,
             baum_blatt: false,
             titel_wahl: None,
+            seite: 0,
+            blatt_wahl: (false, false),
+            blatt_cache: std::cell::RefCell::new(None),
+            breiten: std::cell::RefCell::new(Vec::new()),
             kopf_umfang: (String::new(), String::new()),
             preisquelle: String::new(),
             knopf_down: false,
@@ -547,12 +570,14 @@ impl AvaView {
         let Some(lv) = gezeigt else {
             changed |= self.lv.take().is_some() || !self.zeilen.is_empty();
             self.zeilen.clear();
+            self.breiten.get_mut().clear();
             self.baum = baum;
             return changed;
         };
         baum.push(Knoten::Trenner);
         baum.push(Knoten::Zusammenstellung);
         baum.push(Knoten::Pruefen(lv.zaehlen().0));
+        baum.push(Knoten::Blatt);
         if baum != self.baum {
             self.baum = baum;
             changed = true;
@@ -564,10 +589,12 @@ impl AvaView {
         }
         let key = (Rc::as_ptr(&lv), self.ansicht);
         if self.gebaut != Some(key) {
+            self.breiten.get_mut().clear();
             self.zeilen = match self.ansicht {
                 Ansicht::Lv => lv_zeilen(&lv),
                 Ansicht::Zusammenstellung => zusammenstellung(&lv),
                 Ansicht::Pruefen => pruefen(s.model(), &lv),
+                Ansicht::Blatt => Vec::new(),
             };
             self.gebaut = Some(key);
             changed = true;
@@ -646,7 +673,7 @@ impl AvaView {
 
     fn springe(&mut self, sp: &Sprung) -> bool {
         let mut y = 0.0;
-        for z in &self.zeilen {
+        for (i, z) in self.zeilen.iter().enumerate() {
             let passt = match sp {
                 Sprung::Titel(g) => z.art == Art::Titel && z.titel == Some(*g),
                 Sprung::Oz(oz) => z.art == Art::Position && z.oz == *oz,
@@ -660,7 +687,7 @@ impl AvaView {
                 self.clamp();
                 return true;
             }
-            y += z.hoehe(self.zwei());
+            y += z.hoehe(self.zwei_bei(i));
         }
         false
     }
@@ -754,6 +781,7 @@ impl AvaView {
             ),
             Ansicht::Zusammenstellung => "Zusammenstellung".into(),
             Ansicht::Pruefen => "Prüfen".into(),
+            Ansicht::Blatt => "Druckvorschau".into(),
         };
         let px = 11.0 * s;
         let breite = |text: &str| {
@@ -814,12 +842,9 @@ impl AvaView {
         (x0, y, w, (h * s).min((self.bottom() - y).max(0.0)))
     }
 
-    /// Spalten der Positionszeilen; die zweite Zeile wie die Zeilenhöhen.
+    /// Spalten der Positionszeilen.
     fn spalten(&self, t: &Theme) -> Spalten {
-        Spalten {
-            zwei: self.zwei(),
-            ..self.spalten_bei(self.content_x(t).1)
-        }
+        self.spalten_bei(self.content_x(t).1)
     }
 
     /// Oberkante und Unterkante der Tabellenzeilen (px).
@@ -835,8 +860,8 @@ impl AvaView {
     }
 
     fn inhalt_h(&self) -> f32 {
-        let zwei = self.zwei();
-        self.zeilen.iter().map(|z| z.hoehe(zwei)).sum()
+        let zeilen = self.zeilen.iter().enumerate();
+        zeilen.map(|(i, z)| z.hoehe(self.zwei_bei(i))).sum()
     }
 
     /// Breite des Baums (dip): im schmalen Blatt weniger, bis `TREE_MIN`,
@@ -859,10 +884,44 @@ impl AvaView {
         (kx, r - ende * self.scale - kx)
     }
 
-    /// Steht der Kurztext in einer zweiten Zeile? Mit dem Rand aus `tick`.
-    fn zwei(&self) -> bool {
+    /// Misst den Kurztext jeder Zeile (dip), einmal je Aufbau der Zeilen;
+    /// danach weiß [`AvaView::zwei_bei`], welche Zeile umbricht.
+    fn messen(&self, fonts: &Fonts) {
+        let Some(f) = fonts.regular.as_ref() else {
+            return;
+        };
+        let mut b = self.breiten.borrow_mut();
+        if b.len() != self.zeilen.len() {
+            *b = self
+                .zeilen
+                .iter()
+                .map(|z| f.width(&z.text, KURZ_PX))
+                .collect();
+        }
+    }
+
+    /// Hat Zeile `i` eine zweite Kurztextzeile? Eine Position im LV, deren
+    /// Kurztext nicht in eine Zeile passt oder ganz in der zweiten steht
+    /// (Befund M: umbrechen, sobald er nicht passt, in jeder Breite). Mit
+    /// dem Rand aus `tick`, ungemessen einzeilig.
+    fn zwei_bei(&self, i: usize) -> bool {
+        let Some(z) = self.zeilen.get(i) else {
+            return false;
+        };
+        if z.art != Art::Position || self.ansicht != Ansicht::Lv {
+            return false;
+        }
         let cw = (self.w as f32 - 2.0 * self.rand * self.scale).max(0.0);
-        self.spalten_bei(cw).zwei
+        let tw = cw / self.scale - self.baum_platz(cw);
+        let sp = Spalten::fuer(tw);
+        let platz = tw - sp.oz_w - sp.kurz_ende;
+        // Ein halber dip Luft gegen Rundung: was knapp passt, bricht um
+        sp.unter
+            || self
+                .breiten
+                .borrow()
+                .get(i)
+                .is_some_and(|b| *b > platz - 0.5)
     }
 
     fn clamp(&mut self) {
@@ -878,9 +937,8 @@ impl AvaView {
         let (oben, unten) = self.liste_y();
         let mut y = oben - self.scroll * s;
         let mut v = Vec::new();
-        let zwei = self.zwei();
         for (i, z) in self.zeilen.iter().enumerate() {
-            let h = z.hoehe(zwei) * s;
+            let h = z.hoehe(self.zwei_bei(i)) * s;
             if y + h > oben && y < unten {
                 v.push((i, y, h));
             }
@@ -991,6 +1049,7 @@ impl AvaView {
     }
 
     fn hit(&self, t: &Theme, fonts: &Fonts, x: f64, y: f64) -> Option<Hot> {
+        self.messen(fonts);
         let (x, y) = (x as f32, y as f32);
         // Das offene Baumblatt liegt über allem darunter
         if self.baum_als_leiste() && self.baum_blatt && inside(self.baum_blatt_rect(t), x, y) {
@@ -1046,6 +1105,9 @@ impl AvaView {
             .find(|(i, r)| inside(*r, x, y) && self.baum[*i] != Knoten::Trenner)
         {
             return Some(Hot::Baum(i));
+        }
+        if self.ansicht == Ansicht::Blatt {
+            return self.vorschau_hit(t, fonts, x, y);
         }
         let (tx, r) = self.tabelle_x(t);
         if x >= tx - 8.0 * self.scale && x < r + 8.0 * self.scale {
@@ -1152,6 +1214,15 @@ impl AvaView {
                 self.zeige(Ansicht::Pruefen);
                 Some(ListOut::Repaint)
             }
+            Hot::Seite(vor) => self.blaettern(fonts, vor).then_some(ListOut::Repaint),
+            Hot::BlattWahl(v) => {
+                if v {
+                    self.blatt_wahl.1 = !self.blatt_wahl.1;
+                } else {
+                    self.blatt_wahl.0 = !self.blatt_wahl.0;
+                }
+                Some(ListOut::BlattWahl(self.blatt_wahl))
+            }
             Hot::Knopf => {
                 self.knopf_down = true;
                 Some(ListOut::Repaint)
@@ -1194,6 +1265,7 @@ impl AvaView {
                     }
                     Knoten::Zusammenstellung => self.zeige(Ansicht::Zusammenstellung),
                     Knoten::Pruefen(_) => self.zeige(Ansicht::Pruefen),
+                    Knoten::Blatt => self.zeige(Ansicht::Blatt),
                     Knoten::Trenner => return None,
                 }
                 // Gewählt: das Blatt geht zu und zeigt die Tabelle
@@ -1242,6 +1314,7 @@ impl AvaView {
             self.los = Some(los);
             self.gewaehlt = None;
             self.titel_wahl = None;
+            self.seite = 0;
             self.scroll = 0.0;
         }
         self.zeige(Ansicht::Lv);
@@ -1251,6 +1324,7 @@ impl AvaView {
         if self.ansicht != a {
             self.ansicht = a;
             self.scroll = 0.0;
+            self.seite = 0;
             if a != Ansicht::Lv {
                 self.schliessen();
             }
@@ -1258,6 +1332,22 @@ impl AvaView {
     }
 
     pub fn wheel(&mut self, delta: f64, t: &Theme) -> Option<ListOut> {
+        if self.ansicht == Ansicht::Blatt {
+            // Das Rad blättert in der Druckvorschau
+            let n = self
+                .blatt_cache
+                .borrow()
+                .as_ref()
+                .map_or(1, |(_, b)| b.seiten.len().max(1));
+            let jetzt = self.seite.min(n - 1);
+            let neu = if delta < 0.0 {
+                (jetzt + 1).min(n - 1)
+            } else {
+                jetzt.saturating_sub(1)
+            };
+            self.seite = neu;
+            return (neu != jetzt).then_some(ListOut::Repaint);
+        }
         let vorher = self.scroll;
         self.scroll -= delta as f32 * 3.0 * t.size.qto_row;
         self.clamp();
@@ -1289,7 +1379,7 @@ impl AvaView {
                     .regular
                     .as_ref()
                     .map_or(z.text.chars().count() > 60, |f| {
-                        let zellen = self.position_zellen(t, f, 11.0 * self.scale, z);
+                        let zellen = self.position_zellen(t, f, 11.0 * self.scale, i);
                         zellen[1].0.ends_with('…') || zellen[2].0.ends_with('…')
                     });
                 gekuerzt.then(|| z.text.clone())
@@ -1305,6 +1395,7 @@ impl AvaView {
     // --- Zeichnen ------------------------------------------------------------
 
     pub fn paint(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts, now: Instant) {
+        self.messen(fonts);
         let s = self.scale;
         let u = &t.ui;
         let top = self.top_px();
@@ -1354,7 +1445,11 @@ impl AvaView {
         } else {
             self.paint_baum(c, t, regular, bold);
         }
-        self.paint_tabelle(c, t, regular, bold);
+        if self.ansicht == Ansicht::Blatt {
+            self.paint_vorschau(c, t, fonts);
+        } else {
+            self.paint_tabelle(c, t, regular, bold);
+        }
         self.paint_detail(c, t, fonts, regular, bold);
         if self.baum_als_leiste() && self.baum_blatt {
             self.paint_baum_blatt(c, t, regular, bold);
@@ -1567,6 +1662,21 @@ impl AvaView {
                     };
                     f.draw(c, "Zusammenstellung", px, x + 14.0 * s, mitte(y, h, f), col);
                 }
+                Knoten::Blatt => {
+                    let f = if self.ansicht == Ansicht::Blatt {
+                        bold
+                    } else {
+                        regular
+                    };
+                    f.draw(
+                        c,
+                        "Druckvorschau",
+                        px,
+                        x + 14.0 * s,
+                        mitte(y, h, f),
+                        u.sheet_text,
+                    );
+                }
                 Knoten::Pruefen(_) => {
                     let (f, col) = if self.ansicht == Ansicht::Pruefen {
                         (bold, u.sheet_text)
@@ -1716,6 +1826,8 @@ impl AvaView {
             Ansicht::Pruefen => {
                 bold.draw(c, "Prüfen", px, tx, kopf, u.sheet_text);
             }
+            // Zeichnet `paint_vorschau`
+            Ansicht::Blatt => {}
         }
         let linie = self.tabelle_top() + HEAD_ROW * s;
         c.fill_rect(tx, linie, r - tx, s.max(1.0), u.sheet_rule);
@@ -1757,8 +1869,9 @@ impl AvaView {
         t: &Theme,
         f: &Font,
         px: f32,
-        z: &Zeile,
+        i: usize,
     ) -> [(String, f32, f32, u8); 7] {
+        let z = &self.zeilen[i];
         let s = self.scale;
         let (tx, r) = self.tabelle_x(t);
         let sp = self.spalten(t);
@@ -1772,7 +1885,7 @@ impl AvaView {
             // Ganz in der zweiten Zeile über die Breite der Tabelle
             let k = sk_ui::widgets::ellipsize(Some(f), &z.text, px, platz);
             (String::new(), k)
-        } else if sp.zwei {
+        } else if self.zwei_bei(i) {
             umbrechen(f, &z.text, px, platz)
         } else {
             let k = sk_ui::widgets::ellipsize(Some(f), &z.text, px, platz);
@@ -1877,7 +1990,7 @@ impl AvaView {
                     }
                 }
                 Art::Position => {
-                    let zellen = self.position_zellen(t, regular, px, z);
+                    let zellen = self.position_zellen(t, regular, px, i);
                     let base = y + (ROW_POS * s + regular.cap_height(px)) * 0.5;
                     for (k, (text, x, w, zeile)) in zellen.iter().enumerate() {
                         let b = base + f32::from(*zeile) * ROW_KURZ * s;
@@ -2434,6 +2547,7 @@ mod abnahme_ka4cd;
 mod abnahme_lv_zeile;
 #[cfg(test)]
 mod bild;
+mod blatt;
 mod csv;
 mod kopf;
 #[cfg(test)]

@@ -202,6 +202,11 @@ pub enum ListOut {
     Zoom(Vec<ElementId>),
     /// „Als Tabelle speichern“.
     SaveCsv,
+    /// AVA-Druckvorschau: „Als PDF speichern“.
+    SavePdf,
+    /// AVA-Druckvorschau: Titelblatt und Inhaltsverzeichnis (in den
+    /// Einstellungen merken).
+    BlattWahl((bool, bool)),
     /// Gliederung umgeschaltet (in den Einstellungen merken).
     Grouping(Grouping),
     /// Nur das Blatt neu zeichnen.

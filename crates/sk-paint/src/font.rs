@@ -75,8 +75,16 @@ fn u32_at(d: &[u8], o: usize) -> Option<u32> {
 
 impl Font {
     /// Liest eine TrueType-Datei (Umrisse mit quadratischen Kurven).
+    ///
+    /// Nur eine einzelne Schrift mit `glyf`-Umrissen: eine Sammlung
+    /// (`.ttc`, Kennung `ttcf`) und eine CFF-OpenType (`OTTO`) lehnt sie ab.
+    /// Darauf verlassen sich [`Font::metrik_milli`] (Tabellenverzeichnis ab
+    /// Byte 4) und das PDF, das [`Font::data`] ganz als `FontFile2` einbettet.
     pub fn parse(data: Vec<u8>) -> Option<Font> {
         let d = &data;
+        if !matches!(d.get(..4)?, [0, 1, 0, 0] | b"true") {
+            return None;
+        }
         let num_tables = u16_at(d, 4)? as usize;
         let table = |tag: &[u8; 4]| -> Option<usize> {
             (0..num_tables).find_map(|i| {
@@ -563,6 +571,26 @@ mod tests {
             .iter()
             .find_map(|p| std::fs::read(p).ok().and_then(Font::parse))
         })
+    }
+
+    /// Review 3bk, Hinweis 5: Sammlung und CFF-OpenType sind keine Schrift
+    /// für Leinwand und PDF; eine einfache TrueType schon.
+    #[test]
+    fn nur_einfache_truetype() {
+        let Some(f) = some_font() else {
+            return;
+        };
+        let ttf = f.data().to_vec();
+        assert!(Font::parse(ttf.clone()).is_some());
+        for kennung in [*b"ttcf", *b"OTTO", [0, 2, 0, 0]] {
+            let mut d = ttf.clone();
+            d[..4].copy_from_slice(&kennung);
+            assert!(Font::parse(d).is_none(), "{kennung:?}");
+        }
+        // Eine echte Sammlung: Kopf „ttcf“ mit Verweis auf die Schrift
+        let mut ttc = b"ttcf\0\x01\0\0\0\0\0\x01\0\0\0\x10".to_vec();
+        ttc.extend(&ttf);
+        assert!(Font::parse(ttc).is_none());
     }
 
     fn worst(a: &Canvas, b: &Canvas) -> u8 {

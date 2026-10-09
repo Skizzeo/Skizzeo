@@ -628,7 +628,7 @@ pub fn read_all(text: &str) -> (Theme, Recent, Vec<String>) {
             // Lage des Mengenfensters (F2): liest die App mit den Bildschirmen;
             // Ort des Firmenkatalogs (K2): liest [`Settings::load`]
             // Planung des letzten Projekts (Paket PD): liest [`Settings::load`]
-            "mengenfenster" | "firmenkatalog" | "planung" => continue,
+            "mengenfenster" | "firmenkatalog" | "planung" | "lvblatt" => continue,
             s => {
                 skip(&mut hints, &format!("unbekannter Abschnitt [{s}]"));
                 continue;
@@ -675,6 +675,10 @@ pub struct Settings {
     /// zuletzt gesetzten Projekts, für die Maske bei „Neu“; Stand beim Laden.
     planung: String,
     loaded_planung: String,
+    /// Abschnitt `[lvblatt] titelblatt verzeichnis` (paket-projektdaten
+    /// §5): Häkchen der AVA-Druckvorschau; leer, wenn beide aus sind.
+    lvblatt: String,
+    loaded_lvblatt: String,
     /// Ort des Firmenkatalogs aus der Datei; ohne ihn gilt der Vorgabeort.
     company: Option<PathBuf>,
 }
@@ -701,6 +705,8 @@ impl Settings {
             company: None,
             planung: String::new(),
             loaded_planung: String::new(),
+            lvblatt: String::new(),
+            loaded_lvblatt: String::new(),
         }
     }
 
@@ -724,6 +730,29 @@ impl Settings {
             .text("anschrift", anschrift)
             .finish(&mut line);
         self.planung = line;
+    }
+
+    /// Druckvorschau: Titelblatt und Inhaltsverzeichnis.
+    pub fn lv_blatt(&self) -> (bool, bool) {
+        Record::parse(1, self.lvblatt.trim_end())
+            .ok()
+            .flatten()
+            .map_or((false, false), |r| {
+                let an = |k: &str| r.flag(k).unwrap_or(false);
+                (an("titelblatt"), an("verzeichnis"))
+            })
+    }
+
+    /// Merkt sich die Häkchen der Druckvorschau; ab dem nächsten Speichern
+    /// in der Datei.
+    pub fn set_lv_blatt(&mut self, (titelblatt, verzeichnis): (bool, bool)) {
+        self.lvblatt.clear();
+        if titelblatt || verzeichnis {
+            Line::new("lvblatt")
+                .flag("titelblatt", titelblatt)
+                .flag("verzeichnis", verzeichnis)
+                .finish(&mut self.lvblatt);
+        }
     }
 
     /// Ort des Firmenkatalogs und ob es der Vorgabeort neben den
@@ -784,6 +813,12 @@ impl Settings {
                     .take(1)
                     .map(|l| format!("{l}\n"))
                     .collect();
+                self.lvblatt = text
+                    .lines()
+                    .filter(|l| l.starts_with("[lvblatt]"))
+                    .take(1)
+                    .map(|l| format!("{l}\n"))
+                    .collect();
                 self.company = text
                     .lines()
                     .enumerate()
@@ -799,6 +834,7 @@ impl Settings {
         self.loaded_windows = self.windows.clone();
         self.loaded_panel = self.panel.clone();
         self.loaded_planung = self.planung.clone();
+        self.loaded_lvblatt = self.lvblatt.clone();
         theme
     }
 
@@ -813,6 +849,7 @@ impl Settings {
             && self.windows == self.loaded_windows
             && self.panel == self.loaded_panel
             && self.planung == self.loaded_planung
+            && self.lvblatt == self.loaded_lvblatt
         {
             return Ok(());
         }
@@ -825,7 +862,8 @@ impl Settings {
                     + &self.windows
                     + &self.panel
                     + &self.company_line
-                    + &self.planung;
+                    + &self.planung
+                    + &self.lvblatt;
                 crate::document::write_synced(&tmp, text.as_bytes())
             })
             .and_then(|_| std::fs::rename(&tmp, path));
@@ -836,6 +874,7 @@ impl Settings {
                 self.loaded_windows = self.windows.clone();
                 self.loaded_panel = self.panel.clone();
                 self.loaded_planung = self.planung.clone();
+                self.loaded_lvblatt = self.lvblatt.clone();
                 Ok(())
             }
             Err(e) => {
@@ -1063,6 +1102,34 @@ mod tests {
         assert_eq!(geladen.ui.sheet_success, Theme::dark().ui.sheet_success);
         s.save_if_changed(&geladen).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), alt);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Häkchen der AVA-Druckvorschau (paket-projektdaten §5): Arbeitsplatz,
+    /// über das Speichern und Laden; beide aus schreibt keine Zeile.
+    #[test]
+    fn lv_blatt_haekchen() {
+        let d = dir("lvblatt");
+        let mut s = Settings::new(args(&["skizzeo.exe"]), Some(d.clone()));
+        let t = s.load();
+        assert_eq!(s.lv_blatt(), (false, false));
+        s.set_lv_blatt((true, false));
+        assert_eq!(s.lv_blatt(), (true, false));
+        s.save_if_changed(&t).unwrap();
+        let path = d.join("Skizzeo").join("einstellungen.txt");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("[lvblatt] titelblatt=1 verzeichnis=0"),
+            "{text}"
+        );
+        let mut neu = Settings::new(args(&["skizzeo.exe"]), Some(d.clone()));
+        let t = neu.load();
+        assert!(neu.hints.is_empty(), "{:?}", neu.hints);
+        assert_eq!(neu.lv_blatt(), (true, false));
+        neu.set_lv_blatt((false, false));
+        neu.save_if_changed(&t).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("lvblatt"), "{text}");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

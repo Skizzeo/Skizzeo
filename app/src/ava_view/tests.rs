@@ -92,7 +92,10 @@ fn oeffnen_zeigt_das_erste_los() {
         .filter(|k| matches!(k, Knoten::Titel { .. }))
         .count();
     assert!(titel_im_baum >= lv.titel.len());
-    assert!(matches!(v.baum().last(), Some(Knoten::Pruefen(_))));
+    // Unten Prüfen und die Druckvorschau
+    let n = v.baum().len();
+    assert!(matches!(v.baum()[n - 2], Knoten::Pruefen(_)));
+    assert_eq!(v.baum().last(), Some(&Knoten::Blatt));
     // Tabelle: Titel mit Positionen, Summe = Σ GP der Positionen
     let z = v.zeilen();
     let titel: Vec<&Zeile> = z.iter().filter(|x| x.art == Art::Titel).collect();
@@ -757,11 +760,14 @@ fn csv_oz_bleibt_text() {
     assert!(text.contains("\"=\"\"01.02\"\"\";Erdgeschoss"), "{text}");
 }
 
-/// Jörn 09.10.: In jeder Fensterbreite ab 480 dip (100, 125, 150 %) zeigt
-/// jede Positionszeile ihren Kurztext, mindestens 20 Zeichen, sonst ganz,
-/// in mindestens 120 dip, und keine Spalte überdeckt eine andere, auch
-/// nicht über die zweite Zeile hinweg (außer der Kurztext steht ganz in
-/// der zweiten Zeile); im Spaltenkopf ebenso; mit und ohne Preise.
+/// Jörn 09.10.: In jeder Fensterbreite von 480 bis 1920 dip (100, 125,
+/// 150 %) zeigt jede Positionszeile ihren Kurztext, mindestens 20 Zeichen,
+/// sonst ganz, in mindestens 120 dip, und keine Spalte überdeckt eine
+/// andere, auch nicht über die zweite Zeile hinweg (außer der Kurztext
+/// steht ganz in der zweiten Zeile); im Spaltenkopf ebenso; mit und ohne
+/// Preise. Befund M (Test): die erste Zeile endet nie mit „…“, solange die
+/// zweite Platz hat, und eine zweite Zeile gibt es nur, wenn der Text
+/// nicht in eine passt.
 #[test]
 fn lv_spalten_ueberdecken_sich_nie() {
     let Some(fonts) = schrift() else {
@@ -771,7 +777,7 @@ fn lv_spalten_ueberdecken_sich_nie() {
     let t = Theme::dark();
     let mut s = haus();
     for scale in [1.0_f32, 1.25, 1.5] {
-        for dip in (480..=1400).step_by(20) {
+        for dip in (480..=1920).step_by(20) {
             let mut v = AvaView::new();
             v.scale = scale;
             (v.w, v.h) = ((dip as f32 * scale) as u32, (900.0 * scale) as u32);
@@ -816,8 +822,24 @@ fn lv_spalten_ueberdecken_sich_nie() {
             let mut n = 0;
             for preise in [true, false] {
                 v.preise = preise;
-                for z in v.zeilen().iter().filter(|z| z.art == Art::Position) {
-                    let zellen = v.position_zellen(&t, f, 11.0 * scale, z);
+                v.messen(&fonts);
+                let positionen = v.zeilen().iter().enumerate();
+                let positionen: Vec<usize> = positionen
+                    .filter(|(_, z)| z.art == Art::Position)
+                    .map(|(i, _)| i)
+                    .collect();
+                for i in positionen {
+                    let z = &v.zeilen()[i];
+                    let zellen = v.position_zellen(&t, f, 11.0 * scale, i);
+                    assert!(
+                        !zellen[1].0.ends_with('…'),
+                        "{wo}: Zeile 1 von {} endet mit „…“: {}",
+                        z.oz,
+                        zellen[1].0
+                    );
+                    // Zweizeilig genau dann, wenn der Text nicht passt
+                    let passt = f.width(&z.text, 11.0 * scale) <= v.kurz_platz(&t).1 - 0.5 * scale;
+                    assert_eq!(v.zwei_bei(i), unter || !passt, "{wo}: Höhe von {}", z.oz);
                     let kurz = format!("{} {}", zellen[1].0, zellen[2].0);
                     let kurz = kurz.trim();
                     let gekuerzt = kurz.strip_suffix('…').map(str::trim_end);
@@ -1008,5 +1030,75 @@ fn breit_und_schmal_behalten_die_lage() {
         assert_eq!(v.scroll, vorher, "Lage bei {w}");
         assert_eq!(v.gewaehlt, oz, "Wahl bei {w}");
         assert!(!v.baum_lage(&t).is_empty() || v.baum_als_leiste());
+    }
+}
+
+/// Druckvorschau (kosten/lv-blatt-a4.md §9): im Baum unter „Prüfen“, Seite
+/// für Seite mit „Seite x von y“, Häkchen Titelblatt und Verzeichnis, der
+/// Knopf oben speichert genau diese Seiten als PDF.
+#[test]
+fn druckvorschau_blaettern_und_pdf() {
+    let Some(fonts) = schrift() else {
+        return;
+    };
+    let t = Theme::dark();
+    let mut s = haus();
+    let mut v = blatt(&mut s);
+    let mut p = Picking::default();
+    let mods = sk_platform::Modifiers::default();
+    let xy = v
+        .knoten_mitte(&t, |k| *k == Knoten::Blatt)
+        .expect("Druckvorschau im Baum");
+    v.mouse_down(&t, &fonts, &mut p, xy, mods);
+    assert_eq!(v.ansicht, Ansicht::Blatt);
+    assert!(
+        v.knopf_text().ends_with(" als PDF speichern"),
+        "{}",
+        v.knopf_text()
+    );
+    let n = v.blatt(&fonts).expect("Blatt").seiten.len();
+    assert!(n >= 2, "{n} Seiten");
+    // Blättern mit „›“ und „‹“, nie über das Ende
+    assert_eq!(v.seite_jetzt(&fonts), 0);
+    assert_eq!(klick_auf(&mut v, &fonts, &mut p, Hot::Seite(false)), None);
+    for _ in 0..n + 2 {
+        klick_auf(&mut v, &fonts, &mut p, Hot::Seite(true));
+    }
+    assert_eq!(v.seite_jetzt(&fonts), n - 1);
+    assert_eq!(v.wheel(1.0, &t), Some(ListOut::Repaint));
+    assert_eq!(v.seite_jetzt(&fonts), n - 2);
+    // Titelblatt und Verzeichnis: zwei Seiten mehr, die Wahl geht in die
+    // Einstellungen
+    let out = klick_auf(&mut v, &fonts, &mut p, Hot::BlattWahl(false));
+    assert_eq!(out, Some(ListOut::BlattWahl((true, false))));
+    let out = klick_auf(&mut v, &fonts, &mut p, Hot::BlattWahl(true));
+    assert_eq!(out, Some(ListOut::BlattWahl((true, true))));
+    assert_eq!(v.blatt(&fonts).unwrap().seiten.len(), n + 2);
+    // Der Knopf speichert das PDF
+    let (x, y, w, h) = v.knopf_rect(&t, &fonts);
+    let k = ((x + w * 0.5) as f64, (y + h * 0.5) as f64);
+    v.mouse_down(&t, &fonts, &mut p, k, mods);
+    assert_eq!(v.mouse_up(&t, &fonts, k.0, k.1), Some(ListOut::SavePdf));
+    let (name, bytes) = v.pdf(&fonts).expect("PDF");
+    assert!(
+        name.starts_with("LV-Rohbau-") && name.ends_with(".pdf"),
+        "{name}"
+    );
+    let datum = name.trim_end_matches(".pdf");
+    assert!(datum.contains("-20"), "Datum im Namen: {name}");
+    assert!(bytes.starts_with(b"%PDF-"));
+    let seiten = String::from_utf8_lossy(&bytes)
+        .matches("/Type /Page ")
+        .count();
+    assert_eq!(seiten, n + 2, "PDF wie die Vorschau");
+    // Ein anderes Los fängt wieder auf Seite 1 an
+    v.seite = 2;
+    let los = v.baum.iter().find_map(|k| match k {
+        Knoten::Los { guid, .. } if Some(*guid) != v.los => Some(*guid),
+        _ => None,
+    });
+    if let Some(g) = los {
+        v.waehle_los(g);
+        assert_eq!((v.seite, v.ansicht), (0, Ansicht::Lv));
     }
 }

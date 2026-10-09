@@ -190,6 +190,9 @@ impl Schreiber {
 
 /// Das PDF der Seiten `seiten` im Format `groesse` (Punkt) mit den
 /// Schriften `regular` und `fett`; `titel` steht in den Eigenschaften.
+/// Die Schriften gehen ganz als `FontFile2` hinein; das ist richtig, weil
+/// [`Font::parse`] nur einfache TrueType-Dateien annimmt (keine `.ttc`,
+/// kein CFF).
 pub fn schreiben(
     seiten: &[Seite],
     groesse: (f32, f32),

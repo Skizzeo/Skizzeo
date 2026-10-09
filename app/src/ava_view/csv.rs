@@ -32,9 +32,14 @@ fn zahl(c: Option<Cent>) -> String {
 impl AvaView {
     /// Beschriftung des Knopfs: „LV Rohbau als Tabelle speichern“.
     pub fn knopf_text(&self) -> String {
+        let was = if self.ansicht == Ansicht::Blatt {
+            "PDF"
+        } else {
+            "Tabelle"
+        };
         match self.lv.as_deref() {
-            Some(lv) => format!("LV {} als Tabelle speichern", lv.kopf.los),
-            None => "Als Tabelle speichern".into(),
+            Some(lv) => format!("LV {} als {was} speichern", lv.kopf.los),
+            None => format!("Als {was} speichern"),
         }
     }
 
@@ -60,10 +65,12 @@ impl AvaView {
         if !std::mem::take(&mut self.knopf_down) {
             return None;
         }
-        if self.hit(t, fonts, x, y) == Some(Hot::Knopf) {
-            Some(ListOut::SaveCsv)
-        } else {
+        if self.hit(t, fonts, x, y) != Some(Hot::Knopf) {
             Some(ListOut::Repaint)
+        } else if self.ansicht == Ansicht::Blatt {
+            Some(ListOut::SavePdf)
+        } else {
+            Some(ListOut::SaveCsv)
         }
     }
 
