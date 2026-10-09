@@ -230,9 +230,12 @@ pub(crate) fn props(scene: &mut Scene, id: ElementId) -> Option<Props> {
             zeigen.push((name, v.map_or("–".into(), |v| wert_text(v, einheit, true))));
         }
     }
-    let notes = erg.as_ref().map_or(Vec::new(), |r| {
+    let mut notes: Vec<String> = erg.as_ref().map_or(Vec::new(), |r| {
         r.befunde.iter().map(|b| anzeige(&b.text, 200)).collect()
     });
+    // E8-10: kein Ersatzbaustoff, sondern der Hinweis
+    let keys = sk_model::Model::ext_baustoff_keys(&d);
+    notes.extend(keys.into_iter().filter_map(|k| m.ext_baustoff_fehlt(&d, k)));
     let locked = m.is_locked(id);
     let felder = d.felder(&p, &g);
     values.extend(zeigen.into_iter().map(|(k, v)| (scene.bezeichnung(k), v)));
@@ -417,6 +420,32 @@ mod tests {
             true
         }));
         (s, id.unwrap())
+    }
+
+    /// E8-10: Werksbaustoff gelöscht, im Paneel der Hinweis, keine
+    /// Ersatzfarbe in der Darstellung.
+    #[test]
+    fn werksbaustoff_fehlt() {
+        let stuetze = include_str!("../../crates/sk-szb/beispiele/werk.stuetze.szb");
+        let (mut s, id) = szene(stuetze, None);
+        let p = props(&mut s, id).unwrap();
+        assert!(
+            p.notes.iter().all(|n| !n.contains("fehlt")),
+            "{:?}",
+            p.notes
+        );
+        let d = s.model().ext_def("werk.stuetze").unwrap().clone();
+        let sb = s.model().ext_material(&d, "stahlbeton").unwrap();
+        assert!(s.edit_model("Löschen", |m| m.remove_material(sb)));
+        assert_eq!(s.model().ext_material(&d, "stahlbeton"), None);
+        let p = props(&mut s, id).unwrap();
+        assert!(
+            p.notes
+                .iter()
+                .any(|n| n == "Werksbaustoff Stahlbeton fehlt"),
+            "{:?}",
+            p.notes
+        );
     }
 
     fn wert<'a>(p: &'a Props, k: &str) -> &'a str {

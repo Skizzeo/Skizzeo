@@ -1328,10 +1328,14 @@ fn ext_ansaetze(
     };
     let mut stoffe: HashMap<(Guid, Option<Guid>, Dez), (Cent, bool)> = HashMap::new();
     let mut baustoffe: HashMap<(&str, &str), Option<&sk_model::library::Material>> = HashMap::new();
+    let mut elemente = Vec::new();
     for (gebaeude, geschoss, row, q) in s.ext_rows() {
         let (Some(e), Some(d)) = (m.element(row.element), m.ext_def(&q.key)) else {
             continue;
         };
+        if !elemente.contains(&row.element) {
+            elemente.push(row.element);
+        }
         if !out.geschosse.contains(&geschoss) {
             out.geschosse.push(geschoss);
         }
@@ -1485,6 +1489,9 @@ fn ext_ansaetze(
             );
         }
     }
+    // E8-10: fehlender Baustoff sichtbar, kein Ersatz
+    out.befunde
+        .extend(crate::erweiterung::fehlende_baustoffe(m, &elemente));
     out
 }
 

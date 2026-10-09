@@ -552,3 +552,51 @@ fn probe_3cm() {
         );
     }
 }
+
+/// E8-10: Ist der Werksbaustoff Stahlbeton gelöscht, nimmt keine
+/// Erweiterung einen Ersatz; eine Warnung nennt Baustoff und Bauteile, die
+/// Mengen der Positionen bleiben.
+#[test]
+fn werksbaustoff_fehlt() {
+    let (mut m, _) = haus();
+    let k = lesen::katalog(&m, None);
+    let vorher = blatt(&m, &k, &Umfang::projekt());
+    let fehlt = |b: &Kostenblatt| -> Vec<String> {
+        b.befunde
+            .iter()
+            .filter(|b| b.regel == 73 && b.satz.contains(" fehlt: "))
+            .map(|b| b.satz.clone())
+            .collect()
+    };
+    assert!(fehlt(&vorher).is_empty(), "{:?}", fehlt(&vorher));
+    let sb = m
+        .materials()
+        .iter()
+        .find(|(_, x)| x.name == "Stahlbeton")
+        .map(|(id, _)| id)
+        .unwrap();
+    m.begin("Löschen");
+    assert!(m.remove_material(sb));
+    m.commit().unwrap();
+    let k = lesen::katalog(&m, None);
+    let nachher = blatt(&m, &k, &Umfang::projekt());
+    assert_eq!(
+        fehlt(&nachher),
+        [
+            "Werksbaustoff Stahlbeton fehlt: Bodenplatte BP-001 ohne Baustoff, die Mengen zählen weiter.",
+            "Werksbaustoff Stahlbeton fehlt: Stahlbetonstütze ST-001 ohne Baustoff, die Mengen zählen weiter.",
+        ]
+    );
+    assert!(nachher
+        .befunde
+        .iter()
+        .filter(|b| b.satz.contains(" fehlt: "))
+        .all(|b| b.schwere == Schwere::Warnung));
+    for g in [BODENPLATTE, RANDSCHALUNG, BETONSTAHL] {
+        assert_eq!(
+            position(&nachher, werk_g(g)).menge,
+            position(&vorher, werk_g(g)).menge,
+            "{g}"
+        );
+    }
+}

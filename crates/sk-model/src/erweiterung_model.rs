@@ -260,35 +260,50 @@ impl Model {
     }
 
     /// Baustoff des Projekts für den Baustoffschlüssel `key` einer
-    /// Definition: ein Werksbaustoff über seinen Namen (Vertrag §9), ein
-    /// eigener über seine abgeleitete Kennung (E8c, angelegt mit
-    /// [`Model::put_ext_def`]), sonst der erste Baustoff derselben
-    /// Kategorie (ältere Projekte).
+    /// Definition: ein Werksbaustoff über seinen Namen oder den Altnamen
+    /// einer älteren Datei (Vertrag §9, R73-W), ein eigener über seine
+    /// abgeleitete Kennung (E8c, angelegt mit [`Model::put_ext_def`]).
+    /// Ohne Treffer keiner, kein Ersatz aus derselben Kategorie (E8-10);
+    /// [`Model::ext_baustoff_fehlt`] nennt ihn dann.
     pub fn ext_material(&self, d: &ExtDef, key: &str) -> Option<MaterialId> {
         let best = sk_szb::Bestand::werk();
-        let werk = best.baustoff(key);
-        if let Some(w) = werk {
-            if let Some((id, _)) = self.materials.iter().find(|(_, m)| m.name == w.name) {
-                return Some(id);
-            }
-        } else {
-            let g = crate::erweiterung::kennung(&d.key, "baustoff", key);
-            if let Some((id, _)) = self.materials.iter().find(|(_, m)| m.guid == g) {
-                return Some(id);
+        let treffer = |f: &dyn Fn(&crate::Material) -> bool| {
+            self.materials.iter().find(|(_, m)| f(m)).map(|(id, _)| id)
+        };
+        match best.baustoff(key) {
+            Some(w) => treffer(&|m| m.name == w.name)
+                .or_else(|| treffer(&|m| crate::szo::werksname(&m.name, w.name))),
+            None => {
+                let g = crate::erweiterung::kennung(&d.key, "baustoff", key);
+                treffer(&|m| m.guid == g)
             }
         }
-        let kat = werk.map(|w| w.kategorie).or_else(|| {
-            d.def
-                .baustoff
-                .iter()
-                .find(|b| b.key() == key)
-                .and_then(|b| b.get("kategorie"))
-        })?;
-        let kat = kategorie(kat)?;
-        self.materials
-            .iter()
-            .find(|(_, m)| m.category == kat)
-            .map(|(id, _)| id)
+    }
+
+    /// „Werksbaustoff Stahlbeton fehlt“, wenn `key` der Definition keinen
+    /// Baustoff im Projekt trifft (E8-10); `None`, wenn er ihn trifft oder
+    /// die Definition ihn nicht kennt.
+    pub fn ext_baustoff_fehlt(&self, d: &ExtDef, key: &str) -> Option<String> {
+        if self.ext_material(d, key).is_some() {
+            return None;
+        }
+        if let Some(w) = sk_szb::Bestand::werk().baustoff(key) {
+            return Some(format!("Werksbaustoff {} fehlt", w.name));
+        }
+        let b = d.def.baustoff.iter().find(|b| b.key() == key)?;
+        Some(format!("Baustoff {} fehlt", b.get("name").unwrap_or(key)))
+    }
+
+    /// Baustoffschlüssel der Körper und Mengen von `d`, jeder einmal.
+    pub fn ext_baustoff_keys(d: &ExtDef) -> Vec<&str> {
+        let mut v: Vec<&str> = Vec::new();
+        let z = d.def.koerper.iter().chain(d.def.menge.iter());
+        for b in z.filter_map(|r| r.get("baustoff")) {
+            if !v.contains(&b) {
+                v.push(b);
+            }
+        }
+        v
     }
 
     /// Höchste vorhandene Nummer je Präfix.

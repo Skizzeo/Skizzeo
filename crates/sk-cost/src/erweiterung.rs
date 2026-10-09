@@ -26,6 +26,54 @@ pub fn leistung_von(def: &str, leistung: &str) -> Guid {
     kennung(def, "leistung", leistung)
 }
 
+/// E8-10: Je Definition und Baustoffschlüssel ohne Baustoff im Projekt
+/// eine Warnung mit den Bauteilen aus `elemente`; sie bleiben ohne
+/// Baustoff, die Mengen zählen weiter.
+pub fn fehlende_baustoffe(m: &Model, elemente: &[sk_model::ElementId]) -> Vec<Befund> {
+    let mut je: Vec<(String, Vec<(String, Guid)>)> = Vec::new();
+    for &id in elemente {
+        let Some(e) = m.element(id) else {
+            continue;
+        };
+        let sk_model::ElementKind::Ext(p) = &e.kind else {
+            continue;
+        };
+        let Some(d) = m.ext_def(&p.key) else {
+            continue;
+        };
+        for key in Model::ext_baustoff_keys(d) {
+            let Some(t) = m.ext_baustoff_fehlt(d, key) else {
+                continue;
+            };
+            let t = format!("{t}: {}", sk_model::erweiterung::anzeige(d.name(), 60));
+            let i = match je.iter().position(|(x, _)| *x == t) {
+                Some(i) => i,
+                None => {
+                    je.push((t, Vec::new()));
+                    je.len() - 1
+                }
+            };
+            if !je[i].1.iter().any(|(_, g)| *g == e.guid) {
+                je[i].1.push((e.number.clone(), e.guid));
+            }
+        }
+    }
+    je.into_iter()
+        .map(|(t, mut v)| {
+            v.sort();
+            let nummern: Vec<&str> = v.iter().map(|(n, _)| n.as_str()).collect();
+            Befund::warnung(
+                73,
+                format!(
+                    "{t} {} ohne Baustoff, die Mengen zählen weiter.",
+                    nummern.join(", ")
+                ),
+                crate::befund::Ort::Bauteil(v[0].1),
+            )
+        })
+        .collect()
+}
+
 /// Hinweise beim Einlesen (Prüfung E8, Frage 2): Eine genutzte Bauleistung
 /// hat Folgen, deren Bauleistung die Definition nicht nennt. Folgen gelten
 /// für Erweiterungen nicht; ohne den Hinweis fehlten sie still.
