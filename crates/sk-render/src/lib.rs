@@ -1246,11 +1246,19 @@ flat out vec4 v_p1;
 flat out vec2 v_len_w;
 // Höhe im Modell (mm) für „unter dem Gelände“ (S11)
 noperspective out float v_z;
+// Farbe gestrichelt unter dem Gelände: die feine Linie (Stift „Fein“)
+flat out vec3 v_color_below;
+uniform int u_below;
 void main() {
     int k = clamp(int(a_kind + 0.5), 0, 7);
-    v_color = u_edge_color[k];
-    v_p0 = u_edge_dash[2 * k];
-    v_p1 = u_edge_dash[2 * k + 1];
+    // Ganz unter dem Gelände und gestrichelt: Breite und Farbe der feinen
+    // Linie, nur der Strich unter dem Gelände (S11, §8 14:25)
+    bool unter = u_below == 2 && a_a.z < -0.5 && a_b.z < -0.5;
+    int kl = unter ? 2 : k;
+    v_color = u_edge_color[kl];
+    v_color_below = u_edge_color[2];
+    v_p0 = unter ? vec4(0.0) : u_edge_dash[2 * k];
+    v_p1 = unter ? vec4(0.0) : u_edge_dash[2 * k + 1];
     vec4 ca = u_vp * vec4(a_a + u_origin, 1.0);
     vec4 cb = u_vp * vec4(a_b + u_origin, 1.0);
     if (ca.w < u_near && cb.w < u_near) {
@@ -1269,7 +1277,7 @@ void main() {
     vec2 a_corner = CORNERS[gl_VertexID];
     bool at_b = a_corner.x > 0.5;
     vec4 c = at_b ? cb : ca;
-    float w = u_edge_width[k];
+    float w = u_edge_width[kl];
     vec2 off = (n * a_corner.y + d * (at_b ? 1.0 : -1.0)) * (w * 0.5);
     v_dist = at_b ? len + w * 0.5 : -w * 0.5;
     v_len_w = vec2(len, w);
@@ -1286,6 +1294,7 @@ flat in vec4 v_p0;
 flat in vec4 v_p1;
 flat in vec2 v_len_w;
 noperspective in float v_z;
+flat in vec3 v_color_below;
 out vec4 o_color;
 uniform float u_alpha;
 // Ansichten (S11): unter dem Gelände 1 ausgeblendet, 2 gestrichelt (Strich,
@@ -1297,15 +1306,17 @@ uniform vec2 u_below_dash;
 uniform vec4 u_premix;
 void main() {
     if (v_p0.x + v_p0.y > 0.0 && !dash_ink(v_dist, v_len_w.x, v_p0, v_p1, v_len_w.y)) discard;
+    vec3 color = v_color;
     if (u_below != 0 && v_z < -0.5) {
         if (u_below == 1) discard;
         float per = u_below_dash.x + u_below_dash.y;
         if (per > 0.0 && mod(max(v_dist, 0.0), per) >= u_below_dash.x) discard;
+        color = v_color_below;
     }
     if (u_premix.a > 0.5) {
-        o_color = vec4(mix(u_premix.rgb, v_color, u_alpha), 1.0);
+        o_color = vec4(mix(u_premix.rgb, color, u_alpha), 1.0);
     } else {
-        o_color = vec4(v_color, u_alpha);
+        o_color = vec4(color, u_alpha);
     }
 }
 "#;

@@ -26,8 +26,8 @@ pub const TON: f32 = 0.25;
 /// 1,27 mm (Jörn 09.10. 14:10, S13). Der Strich ist die H-Linie aus den
 /// Vorgaben.
 pub const SCHRAFFUR_MM: f32 = 1.0;
-/// Tooltip am Zahnrad.
-pub const TIP: &str = "Schatten dieser Ansicht";
+/// Tooltip am Zahnrad (§8 14:25).
+pub const TIP: &str = "Einstellungen dieser Ansicht";
 /// Tooltip an „Sonne“ ohne Nordrichtung.
 pub const OHNE_NORD: &str = "Nordrichtung fehlt";
 /// Hinweis im Feld, wenn die Sonne zu tief steht.
