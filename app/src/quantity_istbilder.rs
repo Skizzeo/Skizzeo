@@ -287,6 +287,23 @@ fn istbilder_ka4() {
     q.sync(&mut s, &b.p, false);
     b.ablegen(&mut q, "ist-ka-4-lv.png");
 
+    // Jörn 09.10.: LV in schmaleren Fenstern bei 125 %; jede Position
+    // zeigt ihren Kurztext, Menge und Kurztext überdecken sich nicht
+    for (name, w, h, scale) in [
+        ("ist-lv-schmal-150.png", 1160, 1170, 1.5),
+        ("ist-lv-schmal-125.png", 1000, 900, 1.25),
+        ("ist-lv-breit-100.png", 1440, 900, 1.0),
+    ] {
+        b.p = Picking::default();
+        let mut q = QuantityWindow::new();
+        q.title.scale = scale;
+        (q.w, q.h) = (w, h);
+        q.sync(&mut s, &b.p, false);
+        q.waehlen(Blatt::Ava, &b.t);
+        q.sync(&mut s, &b.p, false);
+        b.ablegen(&mut q, name);
+    }
+
     // KA-4b: Position Planstein gewählt, Detail mit Mengenansatz
     b.p = Picking::default();
     let mut q = b.fenster(&mut s, 1440, 960, Blatt::Ava);

@@ -750,3 +750,99 @@ fn csv_oz_bleibt_text() {
     // Untertitel „01.02“ steht als Text da
     assert!(text.contains("\"=\"\"01.02\"\"\";Erdgeschoss"), "{text}");
 }
+
+/// Jörn 09.10.: In jeder Fensterbreite ab 740 dip (100, 125, 150 %) zeigt
+/// jede Positionszeile ihren Kurztext, mindestens 20 Zeichen, sonst ganz,
+/// und keine Spalte überdeckt eine andere, auch nicht über die zweite
+/// Zeile hinweg; im Spaltenkopf ebenso; mit und ohne Preise.
+#[test]
+fn lv_spalten_ueberdecken_sich_nie() {
+    let Some(fonts) = schrift() else {
+        return;
+    };
+    let f = fonts.regular.as_ref().unwrap();
+    let t = Theme::dark();
+    let mut s = haus();
+    for scale in [1.0_f32, 1.25, 1.5] {
+        for dip in (740..=1400).step_by(20) {
+            let mut v = AvaView::new();
+            v.scale = scale;
+            (v.w, v.h) = ((dip as f32 * scale) as u32, (900.0 * scale) as u32);
+            v.top = 120.0;
+            v.sync(&mut s, None);
+            let (tx, r) = v.tabelle_x(&t);
+            let wo = format!("{dip} dip bei {scale}");
+            let luft = 4.0 * scale;
+            let pruefe = |zellen: &[(String, f32, f32, u8)], was: &str| {
+                for z in zellen {
+                    assert!(
+                        z.1 >= tx - 0.5 && z.1 + z.2 <= r + 0.5,
+                        "{wo}, {was}: {z:?} außerhalb {tx}..{r}"
+                    );
+                }
+                for a in zellen {
+                    for b in zellen {
+                        if a.1 < b.1 && a.2 > 0.0 && b.2 > 0.0 {
+                            assert!(
+                                a.1 + a.2 + luft <= b.1,
+                                "{wo}, {was}: {a:?} überdeckt {b:?}"
+                            );
+                        }
+                    }
+                }
+            };
+            let kopf = v
+                .kopf_zellen(&t, f, 10.0 * scale)
+                .map(|(text, x, w)| (text.to_string(), x, w, 0));
+            pruefe(&kopf, "Spaltenkopf");
+            let mut n = 0;
+            for preise in [true, false] {
+                v.preise = preise;
+                for z in v.zeilen().iter().filter(|z| z.art == Art::Position) {
+                    let zellen = v.position_zellen(&t, f, 11.0 * scale, z);
+                    let kurz = format!("{} {}", zellen[1].0, zellen[2].0);
+                    let kurz = kurz.trim_end();
+                    let gekuerzt = kurz.strip_suffix('…').map(str::trim_end);
+                    assert!(
+                        kurz == z.text
+                            || gekuerzt.is_some_and(|g| {
+                                g.chars().count() >= 20 && z.text.starts_with(g)
+                            }),
+                        "{wo}: Kurztext von {} ist „{kurz}“ statt „{}“",
+                        z.oz,
+                        z.text
+                    );
+                    // beide Kurztextzeilen stehen in derselben Spalte
+                    let mut ohne_zweite = zellen.to_vec();
+                    ohne_zweite.remove(2);
+                    pruefe(&ohne_zweite, &z.oz);
+                    let mut ohne_erste = zellen.to_vec();
+                    ohne_erste.remove(1);
+                    pruefe(&ohne_erste, &z.oz);
+                    n += 1;
+                }
+            }
+            assert!(n > 0, "{wo}: keine Positionen");
+        }
+    }
+}
+
+/// Umbruch in zwei Zeilen: am Leerzeichen, ein zu langes Wort hart, der
+/// Rest mit „…“; was passt, bleibt in einer Zeile.
+#[test]
+fn kurztext_umbrechen() {
+    let Some(fonts) = schrift() else {
+        return;
+    };
+    let f = fonts.regular.as_ref().unwrap();
+    let text = "Stahlbetondecke C25/30, d = 20 cm, Ortbeton, einschließlich Bewehrung";
+    let w = f.width("Stahlbetondecke C25/30,", 11.0) + 1.0;
+    let (a, b) = umbrechen(f, text, 11.0, w);
+    assert_eq!(a, "Stahlbetondecke C25/30,");
+    assert!(b.starts_with("d = 20 cm") && b.ends_with('…'), "{b}");
+    assert!(f.width(&b, 11.0) <= w);
+    let (a, b) = umbrechen(f, "Wand", 11.0, w);
+    assert_eq!((a.as_str(), b.as_str()), ("Wand", ""));
+    let (a, _) = umbrechen(f, "Stahlbetondecke", 11.0, f.width("Stahl", 11.0) + 0.5);
+    assert_eq!(a, "Stahl");
+}

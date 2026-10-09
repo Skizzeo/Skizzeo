@@ -34,6 +34,8 @@ const SWITCH_H: f32 = 24.0;
 const BODY: f32 = SWITCH_TOP + SWITCH_H + 16.0;
 /// LV-Baum: Breite und Zeilenhöhe; Luft bis zur Tabelle.
 const TREE_W: f32 = 268.0;
+/// Schmales Blatt: Der Baum gibt der Tabelle Platz bis auf diese Breite.
+const TREE_MIN: f32 = 180.0;
 const TREE_ROW: f32 = 26.0;
 const TREE_GAP: f32 = 40.0;
 /// Tabelle: Spaltenkopf und Zeilen.
@@ -51,6 +53,86 @@ const OZ_W: f32 = 86.0;
 const EP_R: f32 = 130.0;
 const EINHEIT_L: f32 = 290.0;
 const MENGE_R: f32 = 340.0;
+/// Kurztextspalte (Jörn 09.10., kosten/lv-blatt-a4.md §0): mindestens so
+/// breit. Reicht das Blatt mit den Spalten wie oben nicht, rücken die
+/// Zahlenspalten zusammen und der Baum wird schmaler; reicht es dann noch
+/// nicht, bricht der Kurztext in seiner Spalte auf zwei Zeilen um.
+const KURZ_BREIT: f32 = 220.0;
+/// Enge Spalten: OZ; Menge, Einheit, EP und GP zusammen (Menge 80, Einheit
+/// 28, EP 64, GP 76 breit, dazwischen Luft).
+const OZ_ENG: f32 = 64.0;
+const ZAHLEN_ENG: f32 = 296.0;
+/// Zweite Zeile einer Position, wenn der Kurztext umbricht.
+const ROW_KURZ: f32 = 16.0;
+
+/// Lage der Spalten einer Positionszeile von links nach rechts: OZ breit
+/// `oz_w`, Kurztext bis `kurz_ende` vor dem rechten Rand, dann Menge
+/// (rechtsbündig `menge_r` vor dem Rand), Einheit (linksbündig
+/// `einheit_l` davor), EP (rechtsbündig `ep_r` davor) und GP am Rand, alles
+/// in dip. `zwei`: Positionen haben zwei Zeilen für den Kurztext.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Spalten {
+    oz_w: f32,
+    menge_r: f32,
+    einheit_l: f32,
+    ep_r: f32,
+    kurz_ende: f32,
+    zwei: bool,
+}
+
+impl Spalten {
+    /// Nach der Breite `tw` der Tabelle (dip).
+    fn fuer(tw: f32) -> Spalten {
+        let breit = Spalten {
+            oz_w: OZ_W,
+            menge_r: MENGE_R,
+            einheit_l: EINHEIT_L,
+            ep_r: EP_R,
+            kurz_ende: MENGE_R + 90.0,
+            zwei: false,
+        };
+        if tw - OZ_W - breit.kurz_ende >= KURZ_BREIT {
+            return breit;
+        }
+        Spalten {
+            oz_w: OZ_ENG,
+            menge_r: 202.0,
+            einheit_l: 192.0,
+            ep_r: 88.0,
+            kurz_ende: ZAHLEN_ENG,
+            zwei: tw - OZ_ENG - ZAHLEN_ENG < KURZ_BREIT,
+        }
+    }
+}
+
+/// Kurztext in höchstens zwei Zeilen der Breite `platz` (px), umbrochen am
+/// Leerzeichen, ein zu langes Wort hart; was danach nicht passt, endet mit
+/// „…“. Passt er in eine Zeile, ist die zweite leer.
+fn umbrechen(f: &Font, text: &str, px: f32, platz: f32) -> (String, String) {
+    if f.width(text, px) <= platz {
+        return (text.to_string(), String::new());
+    }
+    let passt = |i: usize| f.width(&text[..i], px) <= platz;
+    let am_leerzeichen = text
+        .char_indices()
+        .filter(|&(i, ch)| ch == ' ' && i > 0 && passt(i))
+        .map(|(i, _)| i)
+        .next_back();
+    let (erste, rest) = match am_leerzeichen {
+        Some(i) => (&text[..i], &text[i + 1..]),
+        None => {
+            let k = text
+                .char_indices()
+                .map(|(i, _)| i)
+                .take_while(|&i| passt(i))
+                .last()
+                .unwrap_or(0);
+            text.split_at(k)
+        }
+    };
+    let zweite = sk_ui::widgets::ellipsize(Some(f), rest.trim_start(), px, platz);
+    (erste.to_string(), zweite)
+}
 
 /// Verweis unter der Kurzform der Preisanteile (Pfeil ↗ gezeichnet).
 const OEFFNEN: &str = "Bauleistung öffnen";
@@ -248,12 +330,14 @@ impl Zeile {
         }
     }
 
-    fn hoehe(&self) -> f32 {
+    /// Höhe (dip); `zwei`: Positionen mit dem Kurztext in zweiter Zeile.
+    fn hoehe(&self, zwei: bool) -> f32 {
         match self.art {
             Art::Titel => ROW_TITEL,
             Art::Untertitel => ROW_UNTER,
             Art::Summe => 26.0,
             Art::Befund(_) | Art::Erfuellt => 26.0,
+            Art::Position if zwei => ROW_POS + ROW_KURZ,
             Art::Position | Art::Leise => ROW_POS,
         }
     }
@@ -290,6 +374,9 @@ pub struct AvaView {
     pub scale: f32,
     /// Oberkante des Blatts unter Titelleiste und Karten (dip).
     pub top: f32,
+    /// Seitenrand des Blatts (dip, `sheet_pad`), aus `tick`: Für die
+    /// Zeilenhöhen ohne Theme.
+    rand: f32,
     /// „Mit Preisen“; sonst „Für Anfrage (leer)“.
     pub preise: bool,
     los: Option<Guid>,
@@ -346,6 +433,7 @@ impl AvaView {
             h: 0,
             scale: 1.0,
             top: 0.0,
+            rand: 28.0,
             preise: true,
             los: None,
             offen: Vec::new(),
@@ -548,7 +636,7 @@ impl AvaView {
                 self.clamp();
                 return true;
             }
-            y += z.hoehe();
+            y += z.hoehe(self.zwei());
         }
         false
     }
@@ -584,7 +672,15 @@ impl AvaView {
     /// Linker Rand der Tabelle und rechter Rand (px).
     fn tabelle_x(&self, t: &Theme) -> (f32, f32) {
         let (x0, cw) = self.content_x(t);
-        (x0 + (TREE_W + TREE_GAP) * self.scale, x0 + cw)
+        (x0 + (self.baum_w(cw) + TREE_GAP) * self.scale, x0 + cw)
+    }
+
+    /// Spalten der Positionszeilen; die zweite Zeile wie die Zeilenhöhen.
+    fn spalten(&self, t: &Theme) -> Spalten {
+        Spalten {
+            zwei: self.zwei(),
+            ..self.spalten_bei(self.content_x(t).1)
+        }
     }
 
     /// Oberkante und Unterkante der Tabellenzeilen (px).
@@ -600,7 +696,25 @@ impl AvaView {
     }
 
     fn inhalt_h(&self) -> f32 {
-        self.zeilen.iter().map(Zeile::hoehe).sum()
+        let zwei = self.zwei();
+        self.zeilen.iter().map(|z| z.hoehe(zwei)).sum()
+    }
+
+    /// Breite des Baums (dip): im schmalen Blatt weniger, bis `TREE_MIN`,
+    /// damit der Kurztext neben den engen Zahlenspalten Platz hat.
+    fn baum_w(&self, cw: f32) -> f32 {
+        (cw / self.scale - TREE_GAP - (OZ_ENG + ZAHLEN_ENG + KURZ_BREIT)).clamp(TREE_MIN, TREE_W)
+    }
+
+    /// Spalten der Positionszeilen bei Breite `cw` des Inhalts (px).
+    fn spalten_bei(&self, cw: f32) -> Spalten {
+        Spalten::fuer(cw / self.scale - self.baum_w(cw) - TREE_GAP)
+    }
+
+    /// Steht der Kurztext in einer zweiten Zeile? Mit dem Rand aus `tick`.
+    fn zwei(&self) -> bool {
+        let cw = (self.w as f32 - 2.0 * self.rand * self.scale).max(0.0);
+        self.spalten_bei(cw).zwei
     }
 
     fn clamp(&mut self) {
@@ -616,8 +730,9 @@ impl AvaView {
         let (oben, unten) = self.liste_y();
         let mut y = oben - self.scroll * s;
         let mut v = Vec::new();
+        let zwei = self.zwei();
         for (i, z) in self.zeilen.iter().enumerate() {
-            let h = z.hoehe() * s;
+            let h = z.hoehe(zwei) * s;
             if y + h > oben && y < unten {
                 v.push((i, y, h));
             }
@@ -629,14 +744,15 @@ impl AvaView {
     /// Baumzeilen: Index, Oberkante und Höhe (px).
     fn baum_lage(&self, t: &Theme) -> Vec<(usize, Rect)> {
         let s = self.scale;
-        let (x0, _) = self.content_x(t);
+        let (x0, cw) = self.content_x(t);
+        let bw = self.baum_w(cw) * s;
         let mut y = self.body_top() + TREE_ROW * s;
         self.baum
             .iter()
             .enumerate()
             .map(|(i, k)| {
                 let h = k.hoehe() * s;
-                let r = (x0, y, TREE_W * s, h);
+                let r = (x0, y, bw, h);
                 y += h;
                 (i, r)
             })
@@ -960,6 +1076,10 @@ impl AvaView {
     }
 
     pub fn tick(&mut self, t: &Theme, now: Instant) -> bool {
+        if self.rand != t.size.sheet_pad {
+            self.rand = t.size.sheet_pad;
+            self.clamp();
+        }
         self.leiste.tick(t, now)
     }
 
@@ -971,8 +1091,19 @@ impl AvaView {
         match self.hit(t, fonts, x, y)? {
             Hot::Umfang(h) => self.leiste.tip(h),
             Hot::Zeile(i) => {
+                // Der ganze Kurztext, wenn die Zeile ihn kürzt
                 let z = &self.zeilen[i];
-                (z.art == Art::Position && z.text.chars().count() > 60).then(|| z.text.clone())
+                if z.art != Art::Position || self.ansicht != Ansicht::Lv {
+                    return None;
+                }
+                let gekuerzt = fonts
+                    .regular
+                    .as_ref()
+                    .map_or(z.text.chars().count() > 60, |f| {
+                        let zellen = self.position_zellen(t, f, 11.0 * self.scale, z);
+                        zellen[1].0.ends_with('…') || zellen[2].0.ends_with('…')
+                    });
+                gekuerzt.then(|| z.text.clone())
             }
             Hot::Baum(i) => match self.baum.get(i)? {
                 Knoten::Pruefen(n) if *n > 0 => Some(format!("{n} offene Punkte im LV")),
@@ -1136,7 +1267,7 @@ impl AvaView {
             self.body_top() + 16.0 * s,
             u.sheet_text_dim,
         );
-        let rechts = x0 + TREE_W * s;
+        let rechts = x0 + self.baum_w(self.content_x(t).1) * s;
         // Titel der gewählten Position fett (spaeter-darstellung 14)
         let titel_gewaehlt = self
             .gewaehlt
@@ -1287,7 +1418,7 @@ impl AvaView {
         }
         // Senkrechte Linie zwischen Baum und Tabelle
         c.fill_rect(
-            x0 + (TREE_W + TREE_GAP * 0.5) * s,
+            self.tabelle_x(t).0 - TREE_GAP * 0.5 * s,
             self.body_top(),
             s.max(1.0),
             self.bottom() - self.body_top(),
@@ -1307,20 +1438,9 @@ impl AvaView {
         };
         match self.ansicht {
             Ansicht::Lv => {
-                regular.draw(c, "OZ", hpx, tx, kopf, u.sheet_text_dim);
-                regular.draw(c, "Kurztext", hpx, tx + OZ_W * s, kopf, u.sheet_text_dim);
-                rechts(
-                    c,
-                    regular,
-                    "Menge",
-                    hpx,
-                    r - MENGE_R * s,
-                    kopf,
-                    u.sheet_text_dim,
-                );
-                regular.draw(c, "Einheit", hpx, r - EINHEIT_L * s, kopf, u.sheet_text_dim);
-                rechts(c, regular, "EP", hpx, r - EP_R * s, kopf, u.sheet_text_dim);
-                rechts(c, regular, "GP", hpx, r, kopf, u.sheet_text_dim);
+                for (text, x, _) in self.kopf_zellen(t, regular, hpx) {
+                    regular.draw(c, text, hpx, x, kopf, u.sheet_text_dim);
+                }
             }
             Ansicht::Zusammenstellung => {
                 // Mit dem Umfang: „Zusammenstellung · Los Rohbau“ (Bedienbarkeit 12)
@@ -1349,10 +1469,73 @@ impl AvaView {
         }
     }
 
+    /// Spaltenköpfe der Ansicht LV: Text, linke Kante und Breite (px).
+    fn kopf_zellen(&self, t: &Theme, f: &Font, px: f32) -> [(&'static str, f32, f32); 6] {
+        let s = self.scale;
+        let (tx, r) = self.tabelle_x(t);
+        let sp = self.spalten(t);
+        let links = |text: &'static str, x: f32| (text, x, f.width(text, px));
+        let rechts = |text: &'static str, x: f32| (text, x - f.width(text, px), f.width(text, px));
+        [
+            links("OZ", tx),
+            links("Kurztext", tx + sp.oz_w * s),
+            rechts("Menge", r - sp.menge_r * s),
+            links("Einheit", r - sp.einheit_l * s),
+            rechts("EP", r - sp.ep_r * s),
+            rechts("GP", r),
+        ]
+    }
+
+    /// Texte einer Positionszeile: OZ, Kurztext in erster und zweiter
+    /// Zeile (die zweite oft leer), Menge, Einheit, EP und GP mit linker
+    /// Kante, Breite (px) und Zeile (0 oder 1). Ohne Preise sind EP und GP
+    /// leer, Breite und Lage dann die der Linie für den Bieter.
+    fn position_zellen(
+        &self,
+        t: &Theme,
+        f: &Font,
+        px: f32,
+        z: &Zeile,
+    ) -> [(String, f32, f32, u8); 7] {
+        let s = self.scale;
+        let (tx, r) = self.tabelle_x(t);
+        let sp = self.spalten(t);
+        let links = |text: &str, x: f32, zeile: u8| (text.to_string(), x, f.width(text, px), zeile);
+        let rechts = |text: &str, x: f32| {
+            let w = f.width(text, px);
+            (text.to_string(), x - w, w, 0)
+        };
+        let kx = tx + sp.oz_w * s;
+        let platz = r - sp.kurz_ende * s - kx;
+        let (kurz, kurz2) = if sp.zwei {
+            umbrechen(f, &z.text, px, platz)
+        } else {
+            let k = sk_ui::widgets::ellipsize(Some(f), &z.text, px, platz);
+            (k, String::new())
+        };
+        let preis = |text: &str, x: f32| {
+            if self.preise {
+                rechts(text, x)
+            } else {
+                (String::new(), x - 56.0 * s, 56.0 * s, 0)
+            }
+        };
+        [
+            links(&z.oz, tx, 0),
+            links(&kurz, kx, 0),
+            links(&kurz2, kx, 1),
+            rechts(&z.menge, r - sp.menge_r * s),
+            links(&z.einheit, r - sp.einheit_l * s, 0),
+            preis(&z.ep, r - sp.ep_r * s),
+            preis(&z.gp, r),
+        ]
+    }
+
     fn paint_zeilen(&self, c: &mut Canvas, t: &Theme, regular: &Font, bold: &Font) {
         let s = self.scale;
         let u = &t.ui;
         let (tx, r) = self.tabelle_x(t);
+        let kx = tx + self.spalten(t).oz_w * s;
         let px = 11.0 * s;
         let rechts = |c: &mut Canvas, f: &Font, text: &str, px: f32, x: f32, y: f32, col: Rgba| {
             f.draw(c, text, px, x - f.width(text, px), y, col);
@@ -1393,7 +1576,10 @@ impl AvaView {
                 Art::Titel => {
                     let base = y + h - 9.0 * s;
                     bold.draw(c, &z.oz, 12.0 * s, tx, base, u.sheet_text);
-                    bold.draw(c, &z.text, 12.0 * s, tx + OZ_W * s, base, u.sheet_text);
+                    // Name gekürzt vor der Summe, nie über sie
+                    let name =
+                        sk_ui::widgets::ellipsize(Some(bold), &z.text, 12.0 * s, r - 96.0 * s - kx);
+                    bold.draw(c, &name, 12.0 * s, kx, base, u.sheet_text);
                     if self.preise {
                         rechts(c, bold, &z.gp, 12.0 * s, r, base, u.sheet_text);
                     } else {
@@ -1406,7 +1592,9 @@ impl AvaView {
                 }
                 Art::Untertitel => {
                     bold.draw(c, &z.oz, px, tx, base, u.sheet_text_dim);
-                    bold.draw(c, &z.text, px, tx + OZ_W * s, base, u.sheet_text_dim);
+                    let name =
+                        sk_ui::widgets::ellipsize(Some(bold), &z.text, px, r - 96.0 * s - kx);
+                    bold.draw(c, &name, px, kx, base, u.sheet_text_dim);
                     if self.preise {
                         rechts(c, bold, &z.gp, px, r, base, u.sheet_text_dim);
                     } else {
@@ -1416,7 +1604,7 @@ impl AvaView {
                 // Titelsumme in der Zusammenstellung: nur der Betrag
                 Art::Position if self.ansicht == Ansicht::Zusammenstellung => {
                     regular.draw(c, &z.oz, px, tx, base, u.sheet_text);
-                    regular.draw(c, &z.text, px, tx + OZ_W * s, base, u.sheet_text);
+                    regular.draw(c, &z.text, px, kx, base, u.sheet_text);
                     if self.preise {
                         rechts(c, regular, &z.gp, px, r, base, u.sheet_text);
                     } else {
@@ -1424,42 +1612,29 @@ impl AvaView {
                     }
                 }
                 Art::Position => {
-                    regular.draw(c, &z.oz, px, tx, base, u.sheet_text);
-                    let kx = tx + OZ_W * s;
-                    let platz = r - MENGE_R * s - 90.0 * s - kx;
-                    let text = sk_ui::widgets::ellipsize(Some(regular), &z.text, px, platz);
-                    regular.draw(c, &text, px, kx, base, u.sheet_text);
-                    rechts(
-                        c,
-                        regular,
-                        &z.menge,
-                        px,
-                        r - MENGE_R * s,
-                        base,
-                        u.sheet_text,
-                    );
-                    regular.draw(c, &z.einheit, px, r - EINHEIT_L * s, base, u.sheet_text_dim);
-                    if self.preise {
-                        rechts(c, regular, &z.ep, px, r - EP_R * s, base, u.sheet_text);
-                        rechts(c, regular, &z.gp, px, r, base, u.sheet_text);
-                    } else {
-                        // Anfrage: leere Felder für den Bieter
-                        leer_strich(c, r - EP_R * s, base);
-                        leer_strich(c, r, base);
+                    let zellen = self.position_zellen(t, regular, px, z);
+                    let base = y + (ROW_POS * s + regular.cap_height(px)) * 0.5;
+                    for (k, (text, x, w, zeile)) in zellen.iter().enumerate() {
+                        let b = base + f32::from(*zeile) * ROW_KURZ * s;
+                        if text.is_empty() && k >= 5 {
+                            // Anfrage: leere Felder für den Bieter
+                            leer_strich(c, x + w, b);
+                        } else {
+                            let col = if k == 4 {
+                                u.sheet_text_dim
+                            } else {
+                                u.sheet_text
+                            };
+                            regular.draw(c, text, px, *x, b, col);
+                        }
                     }
                 }
                 Art::Summe => {
                     // Linie über „Summe netto“, MwSt. nicht fett (spaeter 12)
                     if z.text == SUMME_NETTO {
-                        c.fill_rect(
-                            tx + OZ_W * s,
-                            y,
-                            r - tx - OZ_W * s,
-                            s.max(1.0),
-                            u.sheet_rule,
-                        );
+                        c.fill_rect(kx, y, r - kx, s.max(1.0), u.sheet_rule);
                     }
-                    regular.draw(c, &z.text, px, tx + OZ_W * s, base, u.sheet_text);
+                    regular.draw(c, &z.text, px, kx, base, u.sheet_text);
                     let f = if z.text.starts_with("MwSt.") {
                         regular
                     } else {
@@ -1472,7 +1647,7 @@ impl AvaView {
                     }
                 }
                 Art::Leise => {
-                    regular.draw(c, &z.text, 10.5 * s, tx + OZ_W * s, base, u.sheet_text_dim);
+                    regular.draw(c, &z.text, 10.5 * s, kx, base, u.sheet_text_dim);
                     rechts(c, regular, &z.gp, 10.5 * s, r, base, u.sheet_text_dim);
                 }
                 Art::Befund(schwere) => {
@@ -1990,6 +2165,8 @@ mod abnahme_befunde;
 mod abnahme_ka4b;
 #[cfg(test)]
 mod abnahme_ka4cd;
+#[cfg(test)]
+mod abnahme_lv_zeile;
 #[cfg(test)]
 mod bild;
 mod csv;
