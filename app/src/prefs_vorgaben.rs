@@ -140,15 +140,18 @@ impl Prefs {
         y += 16.0 * s;
         texts.push(UiText::heading(lx, c.y + y + 18.0 * s, "Standardort"));
         y += 34.0 * s;
-        let fw = (120.0 * s).min(c.w - VALUE_X * s - PAD * s);
-        for (name, f) in [
-            ("Breite", FieldId::OrtBreite),
-            ("Länge", FieldId::OrtLaenge),
-        ] {
-            texts.push(UiText::label(lx, c.y + y + 18.0 * s, name));
-            items.push((Rect::new(vx, c.y + y, fw, fh), Target::Field(f)));
-            y += fh + 8.0 * s;
+        // Eine Zeile „Lage … ° N … ° O“ wie in den Projektdaten
+        // (Bedienbarkeit 30.4; „Breite“ und „Länge“ heißen sonst Maße)
+        let fw = (96.0 * s).min((c.w - VALUE_X * s - PAD * s) / 2.0 - 40.0 * s);
+        texts.push(UiText::label(lx, c.y + y + 18.0 * s, "Lage"));
+        let mut x = vx;
+        // Das Feld zeigt „°“ selbst
+        for (einheit, f) in [("N", FieldId::OrtBreite), ("O", FieldId::OrtLaenge)] {
+            items.push((Rect::new(x, c.y + y, fw, fh), Target::Field(f)));
+            texts.push(UiText::dim(x + fw + 6.0 * s, c.y + y + 18.0 * s, einheit));
+            x += fw + 44.0 * s;
         }
+        y += fh + 8.0 * s;
         texts.push(UiText::dim(lx, c.y + y + 14.0 * s, NEUE));
         Layout { items, texts }
     }

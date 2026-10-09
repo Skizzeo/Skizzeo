@@ -385,13 +385,20 @@ impl Maske {
     }
 
     /// Leiser Satz im Fuß, wenn nur Breite oder nur Länge gesetzt ist: die
-    /// andere kommt vom Standardort (Abnahme S1, Punkt 1).
+    /// andere kommt vom Standardort (Abnahme S1, Punkt 1). Steht ein
+    /// anderer Bauort, die Lage aber noch auf Ganderkesee, erinnert er
+    /// daran (Bedienbarkeit 30.4).
     pub fn hinweis(&self) -> Option<String> {
         let g = |i: usize| grad(&self.felder[i].text, GRAD_MAX[i - 8]);
         let fehlt = match (g(8), g(9)) {
             (Ok(Some(_)), Ok(None)) => 9,
             (Ok(None), Ok(Some(_))) => 8,
-            _ => return None,
+            _ => {
+                let werk = (8..10).all(|i| self.felder[i].text == grad_text(Some(ganderkesee(i))));
+                let ort = self.felder[2].text.trim();
+                return (werk && !ort.is_empty() && !ort.contains("Ganderkesee"))
+                    .then(|| "Lage gilt noch für Ganderkesee.".into());
+            }
         };
         // Der Wert von Ganderkesee steht als Beispiel im leeren Feld
         Some(format!("{} fehlt, es gilt Ganderkesee.", WORT[fehlt]))
@@ -1313,6 +1320,24 @@ mod tests {
         assert_eq!((m.wert(8), m.wert(9)), ("53,0589", "8,591"));
         assert_eq!(m.ort(), leer, "unverändert: keine Lage");
         assert_eq!(m.hinweis(), None);
+        // Bauort gefüllt, Lage noch Ganderkesee: leiser Hinweis (30.4)
+        let mut b = Maske::new(&ohne(), false, None).mit_ort(&leer);
+        b.felder[2] = TextEdit::new("Marienplatz 1\n80331 München");
+        let h = "Lage gilt noch für Ganderkesee.";
+        assert_eq!(b.hinweis().as_deref(), Some(h));
+        let lib = std::path::Path::new("/usr/share/fonts/truetype/liberation");
+        if let Some(f) = std::fs::read(lib.join("LiberationSans-Regular.ttf"))
+            .ok()
+            .and_then(sk_paint::font::Font::parse)
+        {
+            let platz = b.lage(1.0).knoepfe[0].x - PAD - 12.0;
+            assert!(f.width(h, 11.5) < platz, "{} ≥ {platz}", f.width(h, 11.5));
+        }
+        b.felder[8] = TextEdit::new("48,137");
+        assert_eq!(b.hinweis(), None);
+        b.felder[8] = TextEdit::new("53,0589");
+        b.felder[2] = TextEdit::new("Musterweg 1\n27777 Ganderkesee");
+        assert_eq!(b.hinweis(), None);
         let mut m = Maske::new(&ohne(), false, None).mit_ort(&leer);
         m.felder[8] = TextEdit::new("48,137");
         assert_eq!(
