@@ -43,6 +43,13 @@ impl App {
             return;
         };
         let (titel, zeilen, aktuell, fuss) = match knopf {
+            // Paneel „Eigenschaften“ (E7)
+            Id::PropsType | Id::ExtListe(_) => {
+                let Some((t, z, cur)) = self.ext_prop_liste(knopf) else {
+                    return;
+                };
+                (t, z, cur, String::new())
+            }
             Id::ExtTyp => {
                 let Some(m) = self.tool.ext.as_ref() else {
                     return;
@@ -84,7 +91,11 @@ impl App {
                 ("Erweiterungen".to_string(), zeilen, None, fuss)
             }
         };
-        let panel = self.ui.rect(Panel::Tools, self.w, top);
+        let panel = match knopf {
+            Id::PropsType | Id::ExtListe(_) => Panel::Props,
+            _ => Panel::Tools,
+        };
+        let panel = self.ui.rect(panel, self.w, top);
         self.ext_liste = Some(Auswahl::new(
             knopf,
             titel,
@@ -96,7 +107,7 @@ impl App {
             self.ui.scale,
             (self.w as f32, self.h as f32),
         ));
-        if knopf == Id::ExtTyp && self.ui.set_chip_open(knopf, true) {
+        if matches!(knopf, Id::ExtTyp | Id::PropsType) && self.ui.set_chip_open(knopf, true) {
             self.dirty_buttons.push(knopf);
         }
         self.type_menu_dirty = true;
@@ -119,6 +130,8 @@ impl App {
         };
         self.ext_liste_zu();
         match knopf {
+            Id::PropsType => self.ext_prop_typ(i),
+            Id::ExtListe(j) => self.ext_prop_wert(j, Some(i as u8)),
             Id::ExtTyp => {
                 if let Some(m) = self.tool.ext.as_mut() {
                     if let Some(k) = m.def.def.typ.get(i).map(|t| t.key().to_string()) {
@@ -373,7 +386,7 @@ pub(crate) fn panel(m: &ExtModus, g: &Geschoss, offen: bool, scene: &mut Scene) 
             detail: "Typ".to_string(),
             look: None,
             open: offen,
-            marked: !m.vorlage.werte.is_empty(),
+            marked: m.def.ueberschreibt(&m.vorlage),
         }
     });
     ExtPanel {

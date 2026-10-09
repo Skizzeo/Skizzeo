@@ -54,6 +54,7 @@ Linie | Klick setzt Anfang und Ende, Zahl + **Enter** die Länge, **R** den 90°
 Rechteck | Klick setzt zwei Ecken, Zahl + **Enter** die Breite, **Tab** die Tiefe
 Typ und Maße | Typ-Chip und Felder im Paneel gelten für die nächsten Bauteile
 Beenden | **Esc** oder Klick auf den Knopf des Bauteils
+Ändern | Bauteil wählen: Typ, Felder und Knöpfe im Paneel „Eigenschaften“, jede Änderung ein Schritt
 Im Projekt | Die Datei trägt das Bauteil mit und öffnet auch ohne den Ordner
 
 [thema] id=ziehen titel="Wand verschieben"

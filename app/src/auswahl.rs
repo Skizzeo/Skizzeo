@@ -77,7 +77,13 @@ impl Auswahl {
         };
         let (w, h) = a.size();
         let s = scale;
-        let (x, y) = (panel.x + panel.w + ABSTAND * s, anchor.y - (PAD + KOPF) * s);
+        // Neben dem Paneel, beim Paneel rechts im Fenster links davon
+        let x = if panel.x + panel.w * 0.5 > win.0 * 0.5 {
+            panel.x - w - ABSTAND * s
+        } else {
+            panel.x + panel.w + ABSTAND * s
+        };
+        let y = anchor.y - (PAD + KOPF) * s;
         a.x = x.clamp(0.0, (win.0 - w).max(0.0)).round();
         a.y = y.clamp(0.0, (win.1 - h).max(0.0)).round();
         a

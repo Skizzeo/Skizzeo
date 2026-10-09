@@ -166,6 +166,24 @@ impl ExtDef {
         self.def.typ.iter().find(|t| t.key() == key)
     }
 
+    /// Werte, die der Typ `key` setzt; leer ohne ihn oder bei Fehler.
+    pub fn typ_werte(&self, key: &str) -> Vec<(String, f64)> {
+        self.typ(key)
+            .and_then(|t| sk_szb::pruefen::typ_werte(t.get("werte").unwrap_or("")).ok())
+            .unwrap_or_default()
+    }
+
+    /// Überschreibt `part` einen Wert seines Typs (Punkt am Typ-Chip)?
+    pub fn ueberschreibt(&self, part: &ExtPart) -> bool {
+        let t = part
+            .typ
+            .as_deref()
+            .map_or(Vec::new(), |k| self.typ_werte(k));
+        part.werte
+            .iter()
+            .any(|(k, _)| t.iter().any(|(n, _)| n == k))
+    }
+
     /// Der vorgewählte Typ (`standard=ja`), sonst keiner.
     pub fn standard_typ(&self) -> Option<&str> {
         self.def
@@ -180,12 +198,10 @@ impl ExtDef {
     /// früheren Parametern). Eine fehlerhafte Vorgabe gilt als 0 wie in
     /// [`sk_szb::rechnen::vorgaben`].
     pub fn werte(&self, part: &ExtPart, g: &Geschoss) -> Umfeld {
-        let typ: Vec<(String, f64)> = part
+        let typ = part
             .typ
             .as_deref()
-            .and_then(|k| self.typ(k))
-            .and_then(|t| sk_szb::pruefen::typ_werte(t.get("werte").unwrap_or("")).ok())
-            .unwrap_or_default();
+            .map_or(Vec::new(), |k| self.typ_werte(k));
         let mut pv = Umfeld::new();
         for r in &self.def.param {
             let k = r.key();

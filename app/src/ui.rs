@@ -2,6 +2,7 @@
 //! darunter „Geschosse“ (E14), rechts „Ansichten“ (3D, Grundriss, Schnitt und vier Ansichten) und darunter,
 //! solange ein Bauteil gewählt ist, „Eigenschaften“.
 
+use crate::ext_props::ExtZeile;
 use crate::meldung::Meldung;
 use crate::type_look::TypeLook;
 use sk_model::{RefSide, StoreyId};
@@ -155,6 +156,11 @@ pub enum Id {
     Ext,
     /// Typ-Chip des Werkzeugs „Erweiterungen“.
     ExtTyp,
+    /// Eigenschaften einer Erweiterung (E7): Knopf `k` der Wahl des
+    /// Parameters `i`, Schalter `janein`, Knopf zur Liste einer Wahl ab vier.
+    ExtWahl(u8, u8),
+    ExtJa(u8),
+    ExtListe(u8),
 }
 
 /// Ziehbare Ebene im Paneel „Geschosse“. ±0,00 liegt fest.
@@ -195,6 +201,9 @@ pub enum Field {
     /// Feld `i` des Werkzeugs „Erweiterungen“ (E6), in der Einheit des
     /// Parameters.
     ExtTool(u8),
+    /// Parameter `i` einer gewählten Erweiterung im Paneel „Eigenschaften“
+    /// (E7).
+    ExtProp(u8),
 }
 
 /// Vorgaben im Dialog „Gebäude erstellen“, von oben nach unten.
@@ -361,7 +370,10 @@ impl FieldRow {
         }
         let z = |v: f64| format!("{} {e}", zahl_text(v)).trim_end().to_string();
         Some(match (self.min.is_finite(), self.max.is_finite()) {
-            (true, true) => Meldung::mit("zulässig {} bis {}", &[&z(self.min), &z(self.max)]),
+            // Wie die Werkbank: die Einheit einmal am Ende
+            (true, true) => {
+                Meldung::mit("zulässig {} bis {}", &[&zahl_text(self.min), &z(self.max)])
+            }
             (true, false) => Meldung::mit("zulässig ab {}", &[&z(self.min)]),
             _ => Meldung::mit("zulässig bis {}", &[&z(self.max)]),
         })
@@ -707,6 +719,8 @@ pub struct Props {
     pub more: bool,
     /// Gesperrt (Paket 4): Felder blass, darunter der Satz zum Entsperren.
     pub locked: bool,
+    /// Erweiterung (E7): Typ-Chip und Parameter je Gruppe statt Aufbau.
+    pub ext: Option<Vec<ExtZeile>>,
 }
 
 /// Kopplung einer gestapelten Wand im Paneel „Eigenschaften“.
@@ -1074,6 +1088,10 @@ fn view_rows(nord: Option<f64>) -> Vec<Row> {
 fn props_rows(p: &Props, edit: Option<&Edit>, more_open: bool) -> Vec<Row> {
     let mut rows = vec![Row::Title("Eigenschaften")];
     rows.extend(p.values.iter().map(|(k, v)| Row::Value(k, v.clone())));
+    if let Some(z) = &p.ext {
+        ext_rows(&mut rows, p, z, edit);
+        return rows;
+    }
     if !p.fields.is_empty() || p.stack.is_some() {
         rows.push(Row::Separator);
     }
@@ -1125,6 +1143,48 @@ fn props_rows(p: &Props, edit: Option<&Edit>, more_open: bool) -> Vec<Row> {
     layer_rows(&mut rows, p);
     notes_rows(&mut rows, p);
     rows
+}
+
+/// Erweiterung (Vertrag §14): Trennlinie, Typ-Chip, je Gruppe ihre
+/// Parameter; Wahl als Knöpfe (bis drei) oder Liste, `janein` als Schalter.
+fn ext_rows(rows: &mut Vec<Row>, p: &Props, zeilen: &[ExtZeile], edit: Option<&Edit>) {
+    if p.chip.is_some() || !zeilen.is_empty() {
+        rows.push(Row::Separator);
+    }
+    if p.chip.is_some() {
+        rows.push(Row::TypeChip(Id::PropsType));
+    }
+    for z in zeilen {
+        match z {
+            ExtZeile::Gruppe(g) => rows.push(Row::Label(g)),
+            ExtZeile::Feld(f, _) => {
+                rows.push(Row::Field(f.field, f.label));
+                match edit.filter(|e| e.field == f.field) {
+                    Some(e) => rows.extend(e.error.clone().map(Row::Error)),
+                    None => rows.extend(f.ausserhalb().map(Row::Error)),
+                }
+            }
+            ExtZeile::Wahl {
+                i, name, knoepfe, ..
+            } => {
+                rows.push(Row::Label(name));
+                let k = |n: usize| (Id::ExtWahl(*i, n as u8), knoepfe[n]);
+                rows.push(match knoepfe.len() {
+                    2 => Row::Pair([k(0), k(1)]),
+                    _ => Row::Segments([k(0), k(1), k(2)]),
+                });
+            }
+            ExtZeile::Liste { i, name, text, .. } => {
+                rows.push(Row::Label(name));
+                rows.push(Row::Button(Id::ExtListe(*i), text));
+            }
+            ExtZeile::Janein { i, name, .. } => rows.push(Row::Button(Id::ExtJa(*i), name)),
+        }
+    }
+    if p.locked {
+        rows.push(Row::Locked);
+    }
+    notes_rows(rows, p);
 }
 
 /// Satz unter einem gesperrten Bauteil (p4-5).
@@ -1319,6 +1379,12 @@ impl Ui {
         }
         if let Field::ExtTool(_) = f {
             return self.ext_tool.as_ref()?.felder.iter().find(|r| r.field == f);
+        }
+        if let Field::ExtProp(_) = f {
+            return self.ext_zeilen().find_map(|z| match z {
+                ExtZeile::Feld(r, _) if r.field == f => Some(r),
+                _ => None,
+            });
         }
         if f.is_level() {
             return self.levels.fields.iter().find(|r| r.field == f);
@@ -1678,6 +1744,18 @@ impl Ui {
         Rect::new(x, y, w, self.panel_height(p))
     }
 
+    /// Zeilen der gewählten Erweiterung (E7).
+    fn ext_zeilen(&self) -> impl Iterator<Item = &ExtZeile> {
+        self.props.iter().flat_map(|p| p.ext.iter().flatten())
+    }
+
+    /// `hilfe` des Parameters unter `id` (Tooltip, E7).
+    pub fn ext_hilfe(&self, id: Id) -> Option<String> {
+        self.ext_zeilen()
+            .find_map(|z| z.hilfe(id))
+            .map(str::to_string)
+    }
+
     fn chip(&self, id: Id) -> Option<&Chip> {
         match id {
             Id::ToolType => self.tool_chip.as_ref(),
@@ -1799,7 +1877,7 @@ impl Ui {
                 }
                 Row::Field(f, _) => {
                     let fw = match f {
-                        Field::ExtTool(_) => EXT_FIELD_W,
+                        Field::ExtTool(_) | Field::ExtProp(_) => EXT_FIELD_W,
                         _ => FIELD_W,
                     } * s;
                     out.push((Id::Field(f), Rect::new(x + inner_w - fw, y, fw, h), ""));
@@ -1837,6 +1915,11 @@ impl Ui {
             Id::Quantity => self.quantity_open,
             Id::Nord => self.nord_aktiv || self.sonne_an,
             Id::Ext => self.ext_tool.is_some(),
+            Id::ExtWahl(..) | Id::ExtJa(_) => self.ext_zeilen().any(|z| match (z, id) {
+                (ExtZeile::Wahl { i, an, .. }, Id::ExtWahl(j, k)) => *i == j && *an == Some(k),
+                (ExtZeile::Janein { i, an, .. }, Id::ExtJa(j)) => *i == j && *an,
+                _ => false,
+            }),
             // Standardknopf des Dialogs
             Id::DialogStart => true,
             Id::Projektdaten
@@ -1853,7 +1936,8 @@ impl Ui {
             | Id::PropsLink
             | Id::PropsFlush
             | Id::PropsMore
-            | Id::PropsMaterial(_) => false,
+            | Id::PropsMaterial(_)
+            | Id::ExtListe(_) => false,
         }
     }
 

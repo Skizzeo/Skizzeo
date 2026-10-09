@@ -32,6 +32,7 @@ mod draw_table;
 mod erweiterung;
 mod ext_app;
 mod ext_cache;
+mod ext_props;
 mod ext_werkzeug;
 mod flush_pick;
 mod frame_time;
@@ -1008,8 +1009,8 @@ impl App {
             self.ui.reset_props_scroll();
         }
         self.props_key = key;
-        self.ui
-            .set_props(self.sel.id.and_then(|id| selection::props(&self.scene, id)));
+        let p = self.sel.id.and_then(|id| self.props_von(id));
+        self.ui.set_props(p);
         self.props_dirty = true;
     }
 
@@ -3442,8 +3443,11 @@ impl App {
                     self.sync_levels();
                 }
             }
+            Id::PropsType if self.ext_gewaehlt_ist() => self.ext_klick(id),
             Id::ToolType | Id::PropsType => self.open_type_menu(id),
-            Id::Ext | Id::ExtTyp => self.ext_klick(id),
+            Id::Ext | Id::ExtTyp | Id::ExtListe(_) => self.ext_klick(id),
+            Id::ExtWahl(i, k) => self.ext_prop_wert(i, Some(k)),
+            Id::ExtJa(i) => self.ext_prop_wert(i, None),
             Id::PropsLink => {
                 if let Some(w) = self.sel.id.and_then(|id| self.scene.stack_wall(id)) {
                     self.toggle_link(w);
@@ -3478,6 +3482,8 @@ impl App {
         }
         if let Some((Field::ExtTool(i), v)) = out.submit {
             self.ext_feld(i, v);
+        } else if let Some((Field::ExtProp(i), v)) = out.submit {
+            self.ext_prop_feld(i, v);
         } else if let Some((Field::Draft(d), mm)) = out.submit {
             if self.scene.set_building_dialog_value(d.key(), mm) {
                 self.sync_levels();
@@ -4798,7 +4804,7 @@ impl App {
                 K::GroundSlab(_) | K::StripFooting(_) => SelKind::Foundation,
                 K::Floor(_) | K::EdgeStrip { .. } | K::SoffitInsulation { .. } => SelKind::Floor,
                 K::RoofTerrace { .. } | K::Coping { .. } => SelKind::Terrace,
-                // Hilfe zu Erweiterungen kommt mit ihrem Paneel (E7)
+                // Thema „Erweiterungen“, siehe `sync_help`
                 K::Ext(_) => return None,
             })
         });
@@ -4955,6 +4961,16 @@ impl App {
             || self.sonne.eingabe.is_some();
         let topic = match help::topic_mit_nord(&ctx, nord) {
             help::Topic::Draw | help::Topic::InnerWall if self.tool.ext.is_some() => {
+                help::Topic::Ext
+            }
+            // Gewählte Erweiterung (E7), solange kein Fenster, Dialog oder
+            // Werkzeug das Thema bestimmt
+            _ if ctx.window.is_none()
+                && !ctx.dialog
+                && ctx.tool.is_none()
+                && !nord
+                && self.ext_gewaehlt_ist() =>
+            {
                 help::Topic::Ext
             }
             x => x,
@@ -6163,6 +6179,10 @@ impl App {
     /// den Grund.
     fn button_tip(&self) -> Option<String> {
         let id = self.ui.hover?;
+        // Parameter einer Erweiterung: ihre `hilfe` (E7)
+        if let Some(h) = self.ui.ext_hilfe(id) {
+            return Some(tip_text(vec![h]));
+        }
         let nord = nordpfeil::tip(self.ui.nord, self.ui.sonne_an);
         let name = match id {
             Id::Building => "Gebäude",
