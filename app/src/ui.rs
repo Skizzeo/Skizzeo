@@ -3399,7 +3399,8 @@ mod tests {
     }
 
     /// Ist-Bilder der Kachel (Sonnenstand S4): Nord 30°, Sonnenstand an
-    /// (hervorgehoben) und aus.
+    /// (hervorgehoben) und aus, und mit langer Bezeichnung und
+    /// Projektnummer (§8 10:25).
     /// `SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo istbild_kachel_sonne -- --ignored`
     #[test]
     #[ignore = "legt Ist-Bilder ab, nur mit SKIZZEO_ISTBILDER"]
@@ -3415,10 +3416,16 @@ mod tests {
                 .ok()
                 .and_then(sk_paint::font::Font::parse)
         };
-        for (n, an) in [("an", true), ("aus", false)] {
+        for (n, an) in [("an", true), ("aus", false), ("projektdaten", false)] {
             let mut ui = Ui::new(2.0, &t);
             ui.nord = Some(30.0);
             ui.sonne_an = an;
+            if n == "projektdaten" {
+                ui.projekt_zeilen = vec![
+                    "Neubau Einfamilienhaus Mustermann, Am Lindenhof 12".into(),
+                    "Projekt-Nr. 2026/0147-B".into(),
+                ];
+            }
             ui.fonts = Fonts {
                 regular: lade("LiberationSans-Regular.ttf"),
                 bold: lade("LiberationSans-Bold.ttf"),
