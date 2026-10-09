@@ -791,8 +791,11 @@ fn write_known(m: &Model) -> String {
         line.word("next", &v.join(","))
     };
     line.finish(&mut out);
-    // Projektdaten (BIM §3.12a): nur gesetzte Felder, ohne Daten keine Zeile
-    if p.info && !p.is_blank() {
+    // Projektdaten (BIM §3.12a): nur gesetzte Felder, ohne Daten keine
+    // Zeile; leer aber doch, solange alte Werte an `[project]` stehen, denn
+    // sonst gälten diese beim nächsten Laden wieder (BIM-Routine 09.10.)
+    let alte = p.legacy.iter().any(|v| !v.is_empty());
+    if p.info && (!p.is_blank() || alte) {
         let mut line = Line::new("projectinfo").word("key", "project");
         for (k, v) in p.fields() {
             if !v.is_empty() {
@@ -3616,6 +3619,17 @@ mod tests {
         assert_eq!(o.model.project().number, lang);
         assert_eq!(o.model.project().client, "A\nB");
         assert_eq!(write(&o.model), odd);
+        // Leere [projectinfo] neben alten Werten an [project]: die Anzeige
+        // bleibt über Speichern und Laden leer, die Datei bytegleich
+        let leer = beides.replace(
+            "[projectinfo] key=project site=\"Haus Neu\"\n",
+            "[projectinfo] key=project\n",
+        );
+        let l = load(&leer).unwrap();
+        assert!(l.model.project().is_blank(), "{:?}", l.model.project());
+        assert_eq!(write(&l.model), leer);
+        let l = load(&write(&l.model)).unwrap();
+        assert!(l.model.project().is_blank());
         // doppelt: Fehler mit der Zeile
         let doppelt = odd.replace("[projectinfo]", "[projectinfo] key=project\n[projectinfo]");
         assert!(load(&doppelt).is_err());
