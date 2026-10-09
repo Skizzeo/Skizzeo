@@ -848,11 +848,65 @@ pub struct ExtQto {
 /// Höchstzahl Zeichen eines Mengennamens in der Liste.
 const EXT_NAME_MAX: usize = 60;
 
-/// Mengen des Exemplars `id`; `None` mit Grund, wenn die Rechnung einen
-/// Fehler meldet (z. B. zu aufwendig).
-fn ext_qto(model: &Model, id: ElementId, key: &str) -> (Option<ElementQto>, Option<String>) {
+/// Rechnungen der Erweiterungen in einer Mengenliste (Review 3cl): je
+/// Geschoss einmal [`Model::ext_geschoss`] (sucht alle Bauteile ab), je
+/// Bauteil, Typ, Werten und Geschoss einmal die Rechnung. Gleiche Exemplare
+/// (2000 gleiche Stützen) rechnen so nur einmal.
+#[derive(Default)]
+struct ExtRechnungen {
+    geschosse: HashMap<StoreyId, crate::erweiterung::Geschoss>,
+    #[allow(clippy::type_complexity)]
+    stelle: HashMap<(String, Option<String>, Vec<(String, u64)>, [u64; 2]), usize>,
+    ergebnisse: Vec<crate::erweiterung::Ergebnis>,
+}
+
+impl ExtRechnungen {
+    /// Rechnung des Exemplars `p` im Geschoss `st`, wie
+    /// [`Model::ext_ergebnis`].
+    fn ergebnis(
+        &mut self,
+        model: &Model,
+        st: StoreyId,
+        p: &crate::erweiterung::ExtPart,
+    ) -> Option<&crate::erweiterung::Ergebnis> {
+        let d = model.ext_def(&p.key)?;
+        let g = *self
+            .geschosse
+            .entry(st)
+            .or_insert_with(|| model.ext_geschoss(st));
+        let k = (
+            p.key.clone(),
+            p.typ.clone(),
+            p.werte
+                .iter()
+                .map(|(k, v)| (k.clone(), v.to_bits()))
+                .collect(),
+            [g.gh.to_bits(), g.decke.to_bits()],
+        );
+        let i = match self.stelle.get(&k) {
+            Some(&i) => i,
+            None => {
+                self.ergebnisse
+                    .push(sk_szb::rechnen(&d.def, &d.werte(p, &g), &g));
+                self.stelle.insert(k, self.ergebnisse.len() - 1);
+                self.ergebnisse.len() - 1
+            }
+        };
+        self.ergebnisse.get(i)
+    }
+}
+
+/// Mengen des Exemplars `p` im Geschoss `st`; `None` mit Grund, wenn die
+/// Rechnung einen Fehler meldet (z. B. zu aufwendig).
+fn ext_qto(
+    model: &Model,
+    st: StoreyId,
+    p: &crate::erweiterung::ExtPart,
+    rechnungen: &mut ExtRechnungen,
+) -> (Option<ElementQto>, Option<String>) {
     use crate::erweiterung::anzeige;
-    let (Some(d), Some(erg)) = (model.ext_def(key), model.ext_ergebnis(id)) else {
+    let key = p.key.as_str();
+    let (Some(d), Some(erg)) = (model.ext_def(key), rechnungen.ergebnis(model, st, p)) else {
         let k = anzeige(key, EXT_NAME_MAX);
         return (None, Some(format!("Kein Körper: Erweiterung „{k}“ fehlt")));
     };
@@ -1140,9 +1194,10 @@ pub fn schedule(model: &Model) -> Schedule {
     type Key = (StoreyId, u8, Option<LayerSetId>, usize);
     let mut groups: HashMap<Key, (Category, Vec<RowQto>)> = HashMap::new();
     let defs = model.ext_defs();
+    let mut rechnungen = ExtRechnungen::default();
     for (id, e) in model.elements().iter() {
         if let ElementKind::Ext(p) = &e.kind {
-            let (q, note) = ext_qto(model, id, &p.key);
+            let (q, note) = ext_qto(model, e.storey, p, &mut rechnungen);
             let i = defs
                 .iter()
                 .position(|d| d.key == p.key)

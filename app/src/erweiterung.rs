@@ -210,4 +210,48 @@ mod probe_3ch {
             );
         }
     }
+
+    /// Review 3cl: Mengenliste mit Erweiterungen (Messung).
+    #[test]
+    #[ignore]
+    fn probe_3cl() {
+        let t = include_str!("../../crates/sk-szb/beispiele/werk.stuetze.szb");
+        for (n, anders) in [(0usize, false), (500, false), (2000, false), (2000, true)] {
+            let mut m = Model::new();
+            m.add_building(1);
+            let eg = m
+                .storeys()
+                .iter()
+                .find(|(_, s)| s.short == "EG" && s.building.is_some())
+                .map(|(id, _)| id)
+                .unwrap();
+            let d = ExtDef::lesen(t).unwrap();
+            m.put_ext_def(d.clone()).unwrap();
+            for i in 0..n {
+                let mut p = ExtPart::new(
+                    &d,
+                    [(i % 50) as f64 * 1000.0, (i / 50) as f64 * 1000.0 + 20000.0],
+                );
+                // jede Stütze mit eigener Breite: keine Rechnung doppelt
+                if anders {
+                    p.set("b", 200.0 + i as f64 * 0.1);
+                }
+                m.add_ext(eg, p).unwrap();
+            }
+            let k = 5;
+            let t0 = Instant::now();
+            for _ in 0..k {
+                std::hint::black_box(sk_model::qto::schedule(&m));
+            }
+            let ms = t0.elapsed().as_secs_f64() * 1000.0 / k as f64;
+            let t1 = Instant::now();
+            for _ in 0..k {
+                for (id, _) in m.elements().iter() {
+                    std::hint::black_box(m.ext_ergebnis(id));
+                }
+            }
+            let rech = t1.elapsed().as_secs_f64() * 1000.0 / k as f64;
+            println!("E={n} verschieden={anders} schedule={ms:.2} ms davon_rechnen~{rech:.2} ms");
+        }
+    }
 }

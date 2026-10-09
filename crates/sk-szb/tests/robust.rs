@@ -283,3 +283,49 @@ fn aufwand_begrenzt() {
     let _ = pruefen(&text, &Bestand::werk(), &Geschoss::PROBE);
     assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
 }
+
+/// Review 3cl: `dicke` zählt im Rechenbudget mit (Messung, Datei bis 1 MB).
+#[test]
+#[ignore]
+fn probe_3cl_dicke() {
+    let basis = include_str!("../beispiele/werk.stuetze.szb");
+    let mut f = String::from("b");
+    while f.len() < 1900 {
+        f.push_str("+0*1");
+    }
+    for n in [0usize, 10, 100, 250] {
+        let mut text = String::new();
+        for l in basis.lines() {
+            text.push_str(l);
+            text.push('\n');
+            if l.starts_with("[param] key=d") {
+                for i in 0..50 {
+                    text.push_str(&format!(
+                        "[param] key=p{i} name=\"P{i}\" einheit=mm wert=1 min=0 max=2 hilfe=\"x\"\n"
+                    ));
+                }
+            }
+            if l.starts_with("[menge] key=stueck") {
+                for i in 0..n {
+                    text.push_str(&format!(
+                        "[menge] key=m{i} name=\"M{i}\" einheit=m3 formel=\"{f}\" dicke=\"{f}\" leistung=1S7bUW0010080200000001\n"
+                    ));
+                }
+            }
+        }
+        let t = Instant::now();
+        let b = pruefen(&text, &Bestand::werk(), &Geschoss::PROBE);
+        let el = t.elapsed();
+        let n_auf = b
+            .befunde
+            .iter()
+            .filter(|x| x.text.contains("aufwendig"))
+            .count();
+        println!(
+            "mengen={n} bytes={} pruefen={el:?} aufwendig={n_auf} dicken={} befunde={}",
+            text.len(),
+            b.ergebnis.dicken.len(),
+            b.befunde.len()
+        );
+    }
+}

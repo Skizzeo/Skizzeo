@@ -167,3 +167,73 @@ fn zweite_stuetze_und_obergeschoss() {
     // Kein Anteil an Gewerk, Kostengruppe oder Baustoffsumme der Wände
     assert!(s.layer_rows(&m).is_empty());
 }
+
+/// Gleiche Exemplare rechnen in der Mengenliste nur einmal (Review 3cl):
+/// jede Zeile bleibt wie die Rechnung des einzelnen Exemplars, auch mit
+/// eigenem Wert, anderem Typ oder in einem anderen Geschoss.
+#[test]
+fn gleiche_exemplare_wie_einzeln() {
+    let mut m = projekt();
+    let mut ids = Vec::new();
+    for i in 0..4 {
+        ids.push(setzen(
+            &mut m,
+            "werk.stuetze",
+            "EG",
+            [1000.0 * i as f64, 0.0],
+        ));
+    }
+    ids.push(setzen(&mut m, "werk.stuetze", "OG", [0.0, 0.0]));
+    ids.push(setzen(&mut m, "werk.treppe", "EG", [0.0, 5000.0]));
+    let anders = |m: &mut Model, id: ElementId, f: &dyn Fn(&mut ExtPart)| {
+        let mut p = match &m.element(id).unwrap().kind {
+            sk_model::ElementKind::Ext(p) => p.clone(),
+            _ => unreachable!(),
+        };
+        f(&mut p);
+        assert!(m.set_ext(id, p));
+    };
+    anders(&mut m, ids[1], &|p| p.set("b", 400.0));
+    let typen: Vec<String> = m
+        .ext_def("werk.stuetze")
+        .unwrap()
+        .def
+        .typ
+        .iter()
+        .map(|t| t.key().to_string())
+        .collect();
+    if let Some(t) = typen.get(1) {
+        anders(&mut m, ids[2], &|p| p.typ = Some(t.clone()));
+    }
+    let s = schedule(&m);
+    let mut n = 0;
+    for r in s
+        .buildings
+        .iter()
+        .flat_map(|b| &b.storeys)
+        .flat_map(|s| &s.groups)
+        .flat_map(|g| &g.rows)
+    {
+        let Some(ElementQto::Ext(x)) = &r.q else {
+            continue;
+        };
+        let e = m.ext_ergebnis(r.element).unwrap();
+        assert_eq!(
+            x.volume,
+            e.vol.values().sum::<f64>() * 1e9,
+            "{:?}",
+            r.element
+        );
+        let soll: Vec<(usize, Option<f64>)> = e
+            .mengen
+            .iter()
+            .map(|&(i, v)| (i, v.filter(|v| v.is_finite())))
+            .collect();
+        let ist: Vec<(usize, Option<f64>)> = x.mengen.iter().map(|q| (q.satz, q.wert)).collect();
+        assert_eq!(ist, soll, "{:?}", r.element);
+        n += 1;
+    }
+    assert_eq!(n, ids.len());
+    let vol = |id: ElementId| m.ext_ergebnis(id).unwrap().vol.values().sum::<f64>();
+    assert_ne!(vol(ids[0]), vol(ids[1]), "eigener Wert rechnet neu");
+}
