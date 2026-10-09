@@ -174,6 +174,18 @@ impl Rechner {
         r
     }
 
+    /// Zieht `n` Schritte für Geometrie ab (Review 3ch-2); reicht es nicht,
+    /// ist der Fehler [`formel::ZU_AUFWENDIG`] und `rest` 0.
+    fn verbrauchen(&mut self, n: u64) -> Result<(), String> {
+        if n > self.rest {
+            self.rest = 0;
+            self.erschoepft = true;
+            return Err(formel::ZU_AUFWENDIG.into());
+        }
+        self.rest -= n;
+        Ok(())
+    }
+
     /// Befund eines Satzes; nach dem Erschöpfen nur noch der eine am Ende.
     fn befund(&self, e: &mut Ergebnis, b: Befund) {
         if !self.erschoepft {
@@ -343,6 +355,8 @@ fn koerper(
                 if p.len() < 3 {
                     return Err("punkte: mindestens 3".into());
                 }
+                // die Umrissprüfung vergleicht jede Kante mit jeder
+                rc.verbrauchen((p.len() * p.len()) as u64)?;
                 umriss_pruefen(&p)?;
                 if flaeche2(&p) < 0.0 {
                     p.reverse();
@@ -593,5 +607,47 @@ mod tests {
         let t: Vec<&str> = e.befunde.iter().map(|b| b.text.as_str()).collect();
         assert_eq!(t, ["Bauteil zu aufwendig: mehr als 1.000 Rechenschritte"]);
         assert!(e.anzahl < 100);
+    }
+
+    /// Review 3ch-2: Die Umrissprüfung eines Prismas kostet Punktzahl²
+    /// Schritte; 500 Prismen mit je 256 Punkten sprengen das Budget.
+    #[test]
+    fn prisma_zaehlt_die_umrisspruefung() {
+        let (d, _) = lesen::lesen(
+            "SZB 0\n[koerper] form=prisma baustoff=s punkte=\"0,0; 10,0; 0,10\" von=0 bis=1\n",
+        );
+        let g = Geschoss::PROBE;
+        let pv = vorgaben(&d, &g);
+        let mut rc = Rechner::neu(1000);
+        let e = rechnen_mit(&mut rc, &d, &pv, &g);
+        assert!(e.befunde.is_empty(), "{:?}", e.befunde);
+        // 6 Punktformeln, Umriss 3², von, bis, x, y, z, drehung fehlen
+        assert_eq!(1000 - rc.rest, 6 + 9 + 2);
+
+        let mut pk = String::new();
+        for k in 0..256 {
+            let a = std::f64::consts::TAU * k as f64 / 256.0;
+            pk.push_str(&format!(
+                "{:.3},{:.3}; ",
+                1000.0 * a.cos(),
+                1000.0 * a.sin()
+            ));
+        }
+        let (d, _) = lesen::lesen(&format!(
+            "SZB 0\n[koerper] form=prisma baustoff=s anzahl=500 punkte=\"{pk}\" von=0 bis=1\n"
+        ));
+        let pv = vorgaben(&d, &g);
+        let t = std::time::Instant::now();
+        let mut rc = Rechner::neu(MAX_SCHRITTE_PRUEFUNG);
+        let e = rechnen_mit(&mut rc, &d, &pv, &g);
+        assert!(rc.erschoepft);
+        let t2: Vec<&str> = e.befunde.iter().map(|b| b.text.as_str()).collect();
+        assert_eq!(
+            t2,
+            ["Bauteil zu aufwendig: mehr als 2.000.000 Rechenschritte"]
+        );
+        // 2 000 000 / (512 + 65 536 + 2) Schritte je Exemplar
+        assert_eq!(e.anzahl, 30);
+        assert!(t.elapsed() < std::time::Duration::from_secs(2));
     }
 }
