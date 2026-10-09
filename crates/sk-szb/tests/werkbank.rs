@@ -296,6 +296,30 @@ fn zufallsformeln_wie_die_werkbank() {
     assert_eq!(n, 4012);
 }
 
+/// Test-Thread (Abnahme 2f0f492): `^` wie Math.pow, Werte aus der Werkbank.
+/// powf rechnet 1 hoch ∞ oder NaN als 1, Math.pow als NaN.
+#[test]
+fn hoch_wie_math_pow() {
+    let u = Umfeld::new();
+    for (f, soll) in [
+        ("1^(1e3^400)", None),
+        ("(0-1)^(1e3^400)", None),
+        ("1^wurzel(-1)", None),
+        ("1^(0-1e3^400)", None),
+        ("wurzel(-1)^0", Some(1.0)),
+        ("2^(1e3^400)", None),
+        ("0.5^(1e3^400)", Some(0.0)),
+        ("1^2", Some(1.0)),
+        ("(0-1)^0.5", None),
+    ] {
+        let ist = formel::rechnen(f, &u, None);
+        match soll {
+            Some(v) => assert_eq!(ist, Ok(v), "{f}"),
+            None => assert_eq!(ist, Err("Ergebnis ist keine Zahl".into()), "{f}"),
+        }
+    }
+}
+
 /// Zahl wie JavaScript `String(v)` für die Werte der Tabelle.
 fn js(v: f64) -> String {
     if v == 0.0 {

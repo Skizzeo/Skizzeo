@@ -515,6 +515,8 @@ fn rechne(k: &Knoten, u: &Umfeld, vol: Option<&Volumen>, rest: &mut u64) -> Resu
                     }
                     a / b
                 }
+                // Wie Math.pow: 1 und -1 hoch ±∞ oder NaN ist NaN (powf: 1)
+                Op::Hoch if a.abs() == 1.0 && !b.is_finite() => f64::NAN,
                 Op::Hoch => a.powf(b),
                 Op::Kleiner => ja(a < b),
                 Op::Groesser => ja(a > b),
