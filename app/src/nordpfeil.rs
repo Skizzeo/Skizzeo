@@ -2,10 +2,11 @@
 //! „Projektdaten“ wird der Pfeil im 3D-Fenster oder im Grundriss aufgezogen,
 //! erst der Fußpunkt, dann die Richtung (Einrasten 5°, mit Umschalt 15°;
 //! Zahl + Enter setzt genau). Danach steht er in 3D und im Grundriss, ist
-//! anklickbar, an der Spitze drehbar („Nordrichtung geändert“) und an der
-//! Nadel oder am Kreis verschiebbar („Nordpfeil verschoben“), je ein
-//! Schritt beim Loslassen. Gestalt A (§8 08:20): Kompassnadel im Kreis, das
-//! „N“ aufrecht zum Bildschirm, gemalt als Bild über der Ansicht.
+//! anklickbar, an der Spitze drehbar („Nordrichtung geändert“) und am
+//! Pfeilkörper verschiebbar („Nordpfeil verschoben“), je ein Schritt beim
+//! Loslassen. Gestalt nach Jörns Skizze (§8 08:42): schlanker
+//! Pfeil, längs geteilt, links weiß, rechts gefüllt, mit eingezogenem Fuß;
+//! das „N“ aufrecht zum Bildschirm; gemalt als Bild über der Ansicht.
 //!
 //! Liegt der Fußpunkt im Hüllquader des Gebäudes oder fehlt er, steht der
 //! Pfeil vorne links daneben; geschrieben wird dabei nichts (§8, 07:10).
@@ -25,8 +26,9 @@ pub const LABEL_DREHEN: &str = "Nordrichtung geändert";
 pub const LABEL_SCHIEBEN: &str = "Nordpfeil verschoben";
 
 /// Länge des Pfeils im Grundriss (dip) und in 3D (mm).
-const LAENGE_PX: f64 = 64.0;
-const LAENGE_3D: f64 = 3000.0;
+/// Dreimal so groß wie zuerst (Jörn 08:42: „visuell kaum zu erkennen“).
+const LAENGE_PX: f64 = 192.0;
+const LAENGE_3D: f64 = 9000.0;
 /// Abstand des Platzes vorne links vom Gebäude (mm).
 const ABSTAND: f64 = 2000.0;
 /// Greifabstand (dip) am Schaft und um die Spitze.
@@ -76,7 +78,9 @@ pub fn anzeige_fuss(fuss: Option<Foot>, bounds: Option<(Vec3, Vec3)>) -> Foot {
 /// Fußpunkt beim Verschieben (§8 08:05): Liegt `p` im Hüllquader des
 /// Gebäudes, rastet er auf den nächsten Punkt außerhalb, [`LUFT`] vor der
 /// nächsten Kante; sonst bleibt er. Gezeigt und geschrieben wird derselbe
-/// Punkt, ohne Sprung.
+/// Punkt, ohne Sprung. Die eingerastete Koordinate ist auf [`STEP`] nach
+/// außen gerundet, vom Gebäude weg (§8 08:50): die Luft bleibt mindestens
+/// [`LUFT`], die Datei hat Rasterwerte.
 pub fn vor_der_kante(p: Foot, bounds: Option<(Vec3, Vec3)>) -> Foot {
     let Some((lo, hi)) = bounds else {
         return p;
@@ -84,11 +88,13 @@ pub fn vor_der_kante(p: Foot, bounds: Option<(Vec3, Vec3)>) -> Foot {
     if !((lo.x..=hi.x).contains(&p[0]) && (lo.y..=hi.y).contains(&p[1])) {
         return p;
     }
+    let ab = |v: f64| (v / STEP).floor() * STEP + 0.0;
+    let auf = |v: f64| (v / STEP).ceil() * STEP + 0.0;
     let kanten = [
-        (p[0] - lo.x, [lo.x - LUFT, p[1]]),
-        (hi.x - p[0], [hi.x + LUFT, p[1]]),
-        (p[1] - lo.y, [p[0], lo.y - LUFT]),
-        (hi.y - p[1], [p[0], hi.y + LUFT]),
+        (p[0] - lo.x, [ab(lo.x - LUFT), p[1]]),
+        (hi.x - p[0], [auf(hi.x + LUFT), p[1]]),
+        (p[1] - lo.y, [p[0], ab(lo.y - LUFT)]),
+        (hi.y - p[1], [p[0], auf(hi.y + LUFT)]),
     ];
     kanten
         .into_iter()
@@ -116,52 +122,36 @@ pub fn tip(nord: Option<f64>) -> String {
     )
 }
 
-/// Kompassnadel im Kreis (Gestalt A, §8 08:20), in Vielfachen der Länge
-/// vom Fußpunkt (Mitte des Kreises) bis zur Spitze: Radius des Kreises,
-/// halbe Breite der Raute, Länge der Südhälfte.
-const KREIS: f64 = 34.0 / 46.0;
-const BREIT: f64 = 9.0 / 46.0;
-const SUED: f64 = 28.0 / 46.0;
-/// Teile des Kreises als Linienzug.
-const KREIS_TEILE: usize = 72;
+/// Halb gefüllter Pfeil (Jörns Skizze, §8 08:42), in Vielfachen der Länge
+/// vom Fußpunkt (Mitte der Grundlinie) bis zur Spitze: halbe Breite der
+/// Grundlinie, wie weit der Fuß in der Mitte nach vorn eingezogen ist.
+const BREIT: f64 = 0.18;
+const KERBE: f64 = 0.15;
 /// „N“ vor der Spitze: Luft zur Spitze, Höhe, Breite.
-const N_LUFT: f64 = 0.15;
-const N_HOCH: f64 = 0.28;
-const N_BREIT: f64 = 0.2;
+const N_LUFT: f64 = 0.06;
+const N_HOCH: f64 = 0.12;
+const N_BREIT: f64 = 0.09;
 
-/// Das Zeichen in Modellkoordinaten (mm), Gestalt A: Kreis um den
-/// Fußpunkt, darin die Raute; ihre Nordspitze ragt über den Kreis hinaus
-/// und ist längs geteilt, links gefüllt, rechts umrissen; die Südhälfte
-/// ist umrissen.
+/// Das Zeichen in Modellkoordinaten (mm): schlanker Pfeil, längs geteilt,
+/// mit eingezogenem Fuß; die linke Hälfte weiß, die rechte gefüllt.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Gestalt {
-    /// Geschlossener Linienzug (der letzte Punkt schließt an den ersten).
-    pub kreis: Vec<Foot>,
-    /// Spitze, linke und rechte Ecke der Raute, Mitte, Südspitze.
     pub spitze: Foot,
+    /// Linke und rechte Ecke des Fußes.
     pub links: Foot,
     pub rechts: Foot,
-    pub mitte: Foot,
-    pub sued: Foot,
+    /// Eingezogene Mitte des Fußes, Ende der Teilungslinie.
+    pub kerbe: Foot,
 }
 
 pub fn gestalt(fuss: Foot, nord: f64, laenge: f64) -> Gestalt {
     let at = achse(fuss, nord);
     let l = laenge;
-    let r = KREIS * l;
-    let kreis = (0..KREIS_TEILE)
-        .map(|i| {
-            let a = i as f64 * std::f64::consts::TAU / KREIS_TEILE as f64;
-            [fuss[0] + r * a.cos(), fuss[1] + r * a.sin()]
-        })
-        .collect();
     Gestalt {
-        kreis,
         spitze: at(l, 0.0),
         links: at(0.0, -BREIT * l),
         rechts: at(0.0, BREIT * l),
-        mitte: fuss,
-        sued: at(-SUED * l, 0.0),
+        kerbe: at(KERBE * l, 0.0),
     }
 }
 
@@ -175,6 +165,14 @@ pub fn n_striche(mitte: (f32, f32), hoch: f32) -> [((f32, f32), (f32, f32)); 3] 
         ((cx - b, cy - h), (cx + b, cy + h)),
         ((cx + b, cy + h), (cx + b, cy - h)),
     ]
+}
+
+/// Liegt `m` im Dreieck `a`, `b`, `c` (beliebiger Umlaufsinn)?
+fn im_dreieck(m: (f64, f64), a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> bool {
+    let kreuz =
+        |p: (f64, f64), q: (f64, f64)| (q.0 - p.0) * (m.1 - p.1) - (q.1 - p.1) * (m.0 - p.0);
+    let (x, y, z) = (kreuz(a, b), kreuz(b, c), kreuz(c, a));
+    (x >= 0.0 && y >= 0.0 && z >= 0.0) || (x <= 0.0 && y <= 0.0 && z <= 0.0)
 }
 
 /// Punkt `v` längs der Nordrichtung und `u` quer nach rechts davon.
@@ -331,17 +329,15 @@ impl Nordpfeil {
         let a = p(fuss)?;
         let b = p([fuss[0] + dx * l, fuss[1] + dy * l])?;
         let d = |q: (f64, f64)| (q.0 - m.0).hypot(q.1 - m.1);
-        // Der Kreis greift wie der Schaft
-        let kreis: Vec<(f64, f64)> = gestalt(fuss, nord, l)
-            .kreis
-            .iter()
-            .filter_map(|&q| p(q))
-            .collect();
-        let am_kreis = (0..kreis.len())
-            .any(|i| dist_to_segment(m, kreis[i], kreis[(i + 1) % kreis.len()]) < PICK_PX * s);
+        // Der ganze Pfeilkörper greift zum Verschieben
+        let g = gestalt(fuss, nord, l);
+        let im_pfeil = match (p(g.spitze), p(g.links), p(g.rechts)) {
+            (Some(t), Some(li), Some(re)) => im_dreieck(m, t, li, re),
+            _ => false,
+        };
         if d(b) < SPITZE_PX * s {
             Some(Griff::Spitze)
-        } else if dist_to_segment(m, a, b) < PICK_PX * s || am_kreis {
+        } else if dist_to_segment(m, a, b) < PICK_PX * s || im_pfeil {
             Some(Griff::Schaft)
         } else {
             None
@@ -540,7 +536,7 @@ impl Nordpfeil {
         }
         let (n, f) = self.vorschau?;
         // Hinter dem „N“
-        let l = laenge(cam, h, scale) * 1.9;
+        let l = laenge(cam, h, scale) * (1.0 + N_LUFT + N_HOCH + 0.14);
         let [dx, dy] = richtung(n);
         let text = match &self.eingabe {
             Some(i) => i.text(["Nord", ""]),
@@ -571,13 +567,12 @@ impl Nordpfeil {
             cam.project(vec3(q[0], q[1], 0.0), w, h)
                 .map(|(x, y)| (x as f32, y as f32))
         };
-        let kreis: Option<Vec<(f32, f32)>> = g.kreis.iter().map(|&q| p(q)).collect();
-        let raute = [g.spitze, g.links, g.rechts, g.mitte, g.sued].map(p);
-        let raute = [raute[0]?, raute[1]?, raute[2]?, raute[3]?, raute[4]?];
-        let [t, _, _, m, _] = raute;
+        let pfeil = [g.spitze, g.links, g.kerbe, g.rechts, f].map(p);
+        let pfeil = [pfeil[0]?, pfeil[1]?, pfeil[2]?, pfeil[3]?, pfeil[4]?];
+        let [t, _, _, _, m] = pfeil;
         // Größe des „N“ wie auf dem Boden an der Spitze, aber aufrecht zum
-        // Bildschirm; es steht in Richtung der Nadel vor der Spitze, mit
-        // Luft auch dann, wenn die Nadel in 3D verkürzt erscheint
+        // Bildschirm; es steht in Richtung des Pfeils vor der Spitze, mit
+        // Luft auch dann, wenn der Pfeil in 3D verkürzt erscheint
         let r = cam.right();
         let quer = p([g.spitze[0] + r.x * l, g.spitze[1] + r.y * l])?;
         let lp = (quer.0 - t.0).hypot(quer.1 - t.1);
@@ -591,8 +586,7 @@ impl Nordpfeil {
         };
         let ab = N_LUFT as f32 * lp + ux.abs() * hb + uy.abs() * hh;
         Some(Bild {
-            kreis: kreis?,
-            raute,
+            pfeil,
             n: ((t.0 + ux * ab, t.1 + uy * ab), 2.0 * hh),
             farbe: Rgba::from_f32(if heiss { hot } else { ink }),
             breite: (width * scale).max(1.0),
@@ -608,9 +602,8 @@ type Strich = ((f32, f32), (f32, f32), f32);
 /// wird; gleich, solange sich das Bild nicht ändert.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bild {
-    kreis: Vec<(f32, f32)>,
-    /// Spitze, links, rechts, Mitte, Süd.
-    raute: [(f32, f32); 5],
+    /// Spitze, linke Ecke, Kerbe, rechte Ecke, Fußpunkt.
+    pfeil: [(f32, f32); 5],
     /// Mitte und Höhe des „N“.
     n: ((f32, f32), f32),
     farbe: Rgba,
@@ -618,16 +611,19 @@ pub struct Bild {
     ansicht: (f32, f32),
 }
 
+/// Die linke Hälfte des Pfeils: weiß, auch über dunklem Grund.
+const WEISS: Rgba = Rgba(255, 255, 255, 255);
+
 impl Bild {
     /// Gemalt: das Bild und seine linke obere Ecke in der Ansicht; `None`,
     /// wenn nichts davon in der Ansicht liegt.
     pub fn malen(&self) -> Option<(Canvas, i32, i32)> {
-        let [t, li, re, m, su] = self.raute;
+        let [t, li, ke, re, _] = self.pfeil;
         let ((nx, ny), nh) = self.n;
         let rand = self.breite * 2.0 + 2.0;
         let mut lo = (nx - nh, ny - nh);
         let mut hi = (nx + nh, ny + nh);
-        for &(x, y) in self.kreis.iter().chain(&self.raute) {
+        for &(x, y) in &self.pfeil {
             (lo, hi) = ((lo.0.min(x), lo.1.min(y)), (hi.0.max(x), hi.1.max(y)));
         }
         // Nur der sichtbare Teil
@@ -640,22 +636,22 @@ impl Bild {
         }
         let mut c = Canvas::new((x1 - x0) as usize, (y1 - y0) as usize);
         let v = |p: (f32, f32)| (p.0 - x0, p.1 - y0);
+        let dreieck = |c: &mut Canvas, a: (f32, f32), b: (f32, f32), col: Rgba| {
+            let (a, b, d) = (v(t), v(a), v(b));
+            let mut p = Path::new();
+            p.move_to(a.0, a.1)
+                .line_to(b.0, b.1)
+                .line_to(d.0, d.1)
+                .close();
+            c.fill(&p, col);
+        };
+        // Links weiß, rechts gefüllt (Jörns Skizze)
+        dreieck(&mut c, li, ke, WEISS);
+        dreieck(&mut c, ke, re, self.farbe);
         let k = self.breite;
-        // Linke Hälfte der Nordspitze gefüllt
-        let mut p = Path::new();
-        let (a, b, d) = (v(t), v(li), v(m));
-        p.move_to(a.0, a.1)
-            .line_to(b.0, b.1)
-            .line_to(d.0, d.1)
-            .close();
-        c.fill(&p, self.farbe);
-        let n = self.kreis.len();
-        let mut striche: Vec<Strich> = (0..n)
-            .map(|i| (v(self.kreis[i]), v(self.kreis[(i + 1) % n]), k))
-            .collect();
-        for (a, b) in [(t, li), (t, re), (t, m), (li, re), (li, su), (re, su)] {
-            striche.push((v(a), v(b), k));
-        }
+        let mut striche: Vec<Strich> = [(t, li), (li, ke), (ke, re), (re, t), (t, ke)]
+            .map(|(a, b)| (v(a), v(b), k))
+            .to_vec();
         for (a, b) in n_striche(v((nx, ny)), nh) {
             striche.push((a, b, k * 1.4));
         }
@@ -714,9 +710,9 @@ mod tests {
         assert_eq!(anzeige_fuss(Some([12000.0, 0.0]), b), [12000.0, 0.0]);
     }
 
-    /// Gestalt A zeigt in die Nordrichtung: bei Nord 90° liegt die Spitze
-    /// rechts vom Fußpunkt, außerhalb des Kreises, die linke Ecke der Raute
-    /// nördlich der Achse, das „N“ vor der Spitze.
+    /// Der Pfeil zeigt in die Nordrichtung: bei Nord 90° liegt die Spitze
+    /// rechts vom Fußpunkt, die linke Ecke nördlich der Achse, die Kerbe
+    /// auf der Achse vor der Grundlinie.
     #[test]
     fn gestalt_zeigt_nach_norden() {
         let f = [100.0, 200.0];
@@ -725,16 +721,7 @@ mod tests {
         assert!(nah(g.spitze, [1100.0, 200.0]));
         assert!(nah(g.links, [100.0, 200.0 + BREIT * 1000.0]));
         assert!(nah(g.rechts, [100.0, 200.0 - BREIT * 1000.0]));
-        assert!(nah(g.sued, [100.0 - SUED * 1000.0, 200.0]));
-        assert_eq!(g.mitte, f);
-        let r = KREIS * 1000.0;
-        assert!(g
-            .kreis
-            .iter()
-            .all(|p| ((p[0] - f[0]).hypot(p[1] - f[1]) - r).abs() < 1e-6));
-        // Die Spitze ragt aus dem Kreis, der Süden nicht
-        let ragt = |a: Foot| (a[0] - f[0]).hypot(a[1] - f[1]) > r;
-        assert!(ragt(g.spitze) && !ragt(g.sued));
+        assert!(nah(g.kerbe, [100.0 + KERBE * 1000.0, 200.0]));
     }
 
     fn bild_bei(nord: f64, cam: &Camera) -> Bild {
@@ -761,8 +748,8 @@ mod tests {
     /// groß, und frei vor der Spitze.
     #[test]
     fn n_bleibt_aufrecht() {
-        let plan = Camera::parallel(vec3(0.0, 0.0, 0.0), FRAC_PI_2, -FRAC_PI_2, 10000.0);
-        let raum = Camera::looking_at(vec3(-6000.0, -9000.0, 6000.0), vec3(0.0, 0.0, 0.0), 45.0);
+        let plan = Camera::parallel(vec3(0.0, 0.0, 0.0), FRAC_PI_2, -FRAC_PI_2, 20000.0);
+        let raum = Camera::looking_at(vec3(-15000.0, -22000.0, 15000.0), vec3(0.0, 0.0, 0.0), 45.0);
         for (cam, name) in [(&plan, "Grundriss"), (&raum, "3D")] {
             for nord in [0.0, 90.0, 180.0, 270.0, 33.0] {
                 let b = bild_bei(nord, cam);
@@ -774,13 +761,13 @@ mod tests {
                 if cam.ortho.is_some() {
                     assert!((hoch - (N_HOCH * LAENGE_PX) as f32).abs() < 1e-3, "{nord}");
                 }
-                // Kein Punkt des N näher an der Mitte als die Spitze
-                let [t, _, _, m, _] = b.raute;
+                // Kein Punkt des N näher am Fußpunkt als die Spitze
+                let [t, _, _, _, m] = b.pfeil;
                 let spitze = (t.0 - m.0).hypot(t.1 - m.1);
                 for (p, q) in n_striche((nx, ny), hoch) {
                     for r in [p, q] {
                         assert!(
-                            (r.0 - m.0).hypot(r.1 - m.1) > spitze * 1.05,
+                            (r.0 - m.0).hypot(r.1 - m.1) > spitze * 1.03,
                             "{name} {nord}"
                         );
                     }
@@ -789,25 +776,38 @@ mod tests {
         }
     }
 
-    /// Die Nordspitze ist links der Achse gefüllt, rechts nur umrissen.
+    /// Jörns Skizze (§8 08:42): links der Teilung weiß, rechts gefüllt;
+    /// dreimal so groß wie zuerst (192 dip im Grundriss, 9 m in 3D).
     #[test]
-    fn spitze_links_gefuellt() {
-        let plan = Camera::parallel(vec3(0.0, 0.0, 0.0), FRAC_PI_2, -FRAC_PI_2, 10000.0);
+    fn links_weiss_rechts_gefuellt() {
+        assert_eq!((LAENGE_PX, LAENGE_3D), (192.0, 9000.0));
+        let plan = Camera::parallel(vec3(0.0, 0.0, 0.0), FRAC_PI_2, -FRAC_PI_2, 20000.0);
         let b = bild_bei(0.0, &plan);
         let (c, x0, y0) = b.malen().unwrap();
         let px = c.to_rgba8();
-        let deckung = |x: f32, y: f32| {
+        let farbe = |x: f32, y: f32| {
             let (i, j) = ((x - x0 as f32) as usize, (y - y0 as f32) as usize);
-            px[(j * c.width + i) * 4 + 3]
+            let k = (j * c.width + i) * 4;
+            [px[k], px[k + 1], px[k + 2], px[k + 3]]
         };
-        let [t, _, _, m, _] = b.raute;
+        let [t, _, _, _, m] = b.pfeil;
         let l = m.1 - t.1;
+        assert!((l - 192.0).abs() < 0.01);
         // Nord 0: Spitze oben, links ist kleineres x
         let y = m.1 - 0.4 * l;
-        assert_eq!(deckung(m.0 - 0.05 * l, y), 255);
-        assert_eq!(deckung(m.0 + 0.05 * l, y), 0);
-        // Südhälfte innen leer
-        assert_eq!(deckung(m.0 + 0.05 * l, m.1 + 0.2 * l), 0);
+        assert_eq!(farbe(m.0 - 0.05 * l, y), [255, 255, 255, 255]);
+        assert_eq!(farbe(m.0 + 0.05 * l, y), [0, 0, 0, 255]);
+        // Hinter der Kerbe, zwischen den Ecken: frei
+        assert_eq!(farbe(m.0, m.1 - 0.05 * l)[3], 0);
+    }
+
+    /// Greifen: die Spitze dreht, der ganze Pfeilkörper verschiebt.
+    #[test]
+    fn pfeilkoerper_greift() {
+        let (a, b, c) = ((0.0, 0.0), (10.0, 0.0), (0.0, 10.0));
+        assert!(im_dreieck((2.0, 2.0), a, b, c));
+        assert!(im_dreieck((2.0, 2.0), a, c, b));
+        assert!(!im_dreieck((8.0, 8.0), a, b, c));
     }
 
     #[test]
@@ -821,6 +821,10 @@ mod tests {
         assert_eq!(vor_der_kante([5000.0, 7900.0], b), [5000.0, 8000.0 + LUFT]);
         // Auf der Kante zählt als innen
         assert_eq!(vor_der_kante([0.0, 4000.0], b), [-LUFT, 4000.0]);
+        // Nach außen auf 10 mm gerundet, nur auf der eingerasteten Achse
+        let krumm = Some((vec3(-2617.5, 0.0, 0.0), vec3(10003.0, 8000.0, 0.0)));
+        assert_eq!(vor_der_kante([-2000.0, 4000.0], krumm), [-3120.0, 4000.0]);
+        assert_eq!(vor_der_kante([9900.0, 4000.5], krumm), [10510.0, 4000.5]);
     }
 }
 
