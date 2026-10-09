@@ -5,7 +5,7 @@
 
 use super::{label, FieldId, Prefs, Target, TextKind, UiText, Win, PAD, VALUE_X};
 use crate::ansicht_schatten::{gewaehlt, text, waehlen, Teil};
-use crate::settings::vorgaben::Vorgaben;
+use crate::settings::vorgaben::{Vorgaben, H_LINIEN};
 use sk_math::sonne::Lage;
 use sk_model::ShadeLight;
 use sk_paint::Canvas;
@@ -19,6 +19,12 @@ pub const GILT: &str = "Gilt für jede Ansicht ohne eigene Wahl (Zahnrad in der 
 pub const OHNE_NORD: &str = "Projekte ohne Nordrichtung zeigen dann keinen Schatten.";
 pub const HEUTE: &str = "Projekte ohne gespeicherten Sonnenstand rechnen mit dem heutigen Tag.";
 pub const NEUE: &str = "Neue Projekte bekommen diesen Bauort. Ab Werk Ganderkesee.";
+pub const H_LINIE: &str = "Strich der Schattenschraffur in den Ansichten. Ab Werk 0,08 mm.";
+
+/// Knopftext einer H-Linie.
+pub fn h_text(mm: f32) -> String {
+    format!("{mm:.2} mm").replace('.', ",")
+}
 
 /// Knöpfe der Schattenwahl in drei Zeilen.
 const ZEILEN: [(&str, &[Teil]); 3] = [
@@ -115,7 +121,15 @@ impl Prefs {
             }
             y += fh + 8.0 * s;
         }
+        texts.push(UiText::label(lx, c.y + y + 18.0 * s, "H-Linie"));
+        for (i, _) in H_LINIEN.iter().enumerate() {
+            let x = vx + i as f32 * (bw + gap);
+            items.push((Rect::new(x, c.y + y, bw, fh), Target::HLinie(i)));
+        }
+        y += fh + 8.0 * s;
         texts.push(UiText::dim(lx, c.y + y + 14.0 * s, GILT));
+        y += 22.0 * s;
+        texts.push(UiText::dim(lx, c.y + y + 14.0 * s, H_LINIE));
         y += 22.0 * s;
         if self.vorgaben_jetzt().schatten.light == ShadeLight::Sun {
             texts.push(UiText::dim(lx, c.y + y + 14.0 * s, OHNE_NORD));
@@ -188,6 +202,14 @@ impl Prefs {
                     };
                     widgets::button(c, fonts, rr, text(teil), st, s, t);
                 }
+                Target::HLinie(i) => {
+                    let st = ButtonState {
+                        hover,
+                        active: v.h_linie == H_LINIEN[i],
+                        ..Default::default()
+                    };
+                    widgets::button(c, fonts, rr, &h_text(H_LINIEN[i]), st, s, t);
+                }
                 Target::Field(f) => {
                     let val = self.vorgaben_feld(f);
                     let st = self.field_state(f, &val, "°", rr);
@@ -239,6 +261,8 @@ mod tests {
         assert!(grad_setzen(o, false, "91").is_err());
         assert!(grad_setzen(o, true, "").is_err());
         assert!(grad_setzen(o, true, "-180").is_ok());
+        assert_eq!(h_text(H_LINIEN[0]), "0,05 mm");
+        assert_eq!(h_text(Vorgaben::WERK.h_linie), "0,08 mm");
     }
 
     /// „OK“ schreibt die Vorgaben in die Einstellungen, „Abbrechen“ nicht;

@@ -273,6 +273,9 @@ enum Target {
     Patterns3d,
     /// Knopf der Schattenvorgabe (Reiter „Vorgaben“).
     Vorgabe(crate::ansicht_schatten::Teil),
+    /// Dicke der H-Linie (Reiter „Vorgaben“, S13): Stelle in
+    /// [`crate::settings::vorgaben::H_LINIEN`].
+    HLinie(usize),
     /// Aufklapper: Zeile der Auswahlliste, Farbwähler.
     Item(usize),
     PickSv,
@@ -350,7 +353,8 @@ enum Popup {
 }
 
 /// Breiten der ISO-128-Reihe (mm).
-const ISO_WIDTHS: [f32; 7] = [0.13, 0.18, 0.25, 0.35, 0.50, 0.70, 1.00];
+/// Wählbare Stiftbreiten (mm); 0,05 und 0,08 als H-Linie (S13).
+const ISO_WIDTHS: [f32; 9] = [0.05, 0.08, 0.13, 0.18, 0.25, 0.35, 0.50, 0.70, 1.00];
 /// Neuer Stift: Breite.
 const NEW_PEN_WIDTH: f32 = 0.25;
 /// Kürzestes Fenster (dip); darunter wird nicht weiter geschrumpft.
@@ -2004,6 +2008,14 @@ impl Prefs {
             Target::Vorgabe(teil) => {
                 let v = vorgaben_tab::klick(self.vorgaben_jetzt(), teil);
                 self.vorgaben = Some(v);
+                out.repaint = true;
+            }
+            Target::HLinie(i) => {
+                let v = self.vorgaben_jetzt();
+                self.vorgaben = Some(crate::settings::vorgaben::Vorgaben {
+                    h_linie: crate::settings::vorgaben::H_LINIEN[i],
+                    ..v
+                });
                 out.repaint = true;
             }
             Target::Patterns3d if self.pattern_error.is_some() => {}

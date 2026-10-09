@@ -22,9 +22,10 @@ use sk_ui::widgets::{self, ButtonState, Fonts, Rect};
 
 /// Anteil der Tinte in der grauen Schattenfläche.
 pub const TON: f32 = 0.25;
-/// Schraffur: Abstand und Strich auf dem Blatt (mm).
-pub const SCHRAFFUR_MM: f32 = 1.5;
-pub const STRICH_MM: f32 = 0.18;
+/// Schraffur: Abstand auf dem Blatt (mm), enger als das Mauerwerk mit
+/// 1,27 mm (Jörn 09.10. 14:10, S13). Der Strich ist die H-Linie aus den
+/// Vorgaben.
+pub const SCHRAFFUR_MM: f32 = 1.0;
 /// Tooltip am Zahnrad.
 pub const TIP: &str = "Schatten dieser Ansicht";
 /// Tooltip an „Sonne“ ohne Nordrichtung.
@@ -126,16 +127,22 @@ pub fn sonne_zu_tief(l: &Location, sun: Sun) -> bool {
 }
 
 /// Schatten für den Renderer: Richtung `d` zum Licht, Darstellung aus
-/// `vs`, Tinte des Stifts „Ansichtsmuster“, Pixel je mm und Skalierung.
-pub fn papier(vs: ViewShade, d: Vec3, tinte: [f32; 3], px_per_mm: f32, s: f32) -> PaperShade {
+/// `vs`, Tinte des Stifts „Ansichtsmuster“, Pixel je mm, Skalierung und
+/// Strich der H-Linie (mm). Wie bei der Schnittschraffur ohne Untergrenze:
+/// ein Strich unter einem Bildpunkt zeichnet blasser.
+pub fn papier(
+    vs: ViewShade,
+    d: Vec3,
+    tinte: [f32; 3],
+    px_per_mm: f32,
+    s: f32,
+    strich_mm: f32,
+) -> PaperShade {
     PaperShade {
         zum_licht: [d.x, d.y, d.z],
         hatch: vs.hatch,
         tone: [tinte[0], tinte[1], tinte[2], TON],
-        hatch_px: [
-            SCHRAFFUR_MM * px_per_mm * s,
-            (STRICH_MM * px_per_mm * s).max(1.0),
-        ],
+        hatch_px: [SCHRAFFUR_MM * px_per_mm * s, strich_mm * px_per_mm * s],
         hatch_ink: tinte,
     }
 }

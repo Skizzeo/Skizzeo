@@ -654,9 +654,6 @@ uniform vec3 u_paper_light;
 uniform vec4 u_shade_tone;
 uniform vec2 u_hatch;
 uniform vec3 u_hatch_ink;
-// Bildpunkt des Netzursprungs: die Schraffur hängt am Gebäude, nicht am
-// Bildschirm (Review 3cc)
-uniform vec2 u_hatch_anchor;
 vec4 look(int row) {
     return texelFetch(u_looks, ivec2(v_key & 0x7FFF, row), 0);
 }
@@ -708,13 +705,15 @@ void main() {
         if (u_paper_shade == 1) {
             c = mix(c, u_shade_tone.rgb, u_shade_tone.a * s);
         } else {
-            // 45° steigend: Abstand senkrecht zu den Linien u_hatch.x
+            // 45° steigend: Abstand senkrecht zu den Linien u_hatch.x. Wie
+            // die Schnittschraffur am Fenster verankert und mit voller Tinte
+            // ab halbem Schatten (Jörn 09.10. 14:10, S13)
             float p = u_hatch.x * 1.41421356;
-            vec2 q = gl_FragCoord.xy - u_hatch_anchor;
+            vec2 q = gl_FragCoord.xy;
             float m = mod(q.x - q.y, p);
             float dist = min(m, p - m) * 0.70710678;
             float ink = clamp(u_hatch.y * 0.5 + 0.5 - dist, 0.0, 1.0);
-            c = mix(c, u_hatch_ink, ink * s);
+            c = mix(c, u_hatch_ink, ink * step(0.5, s));
         }
     }
     if (!cut && u_alpha >= 1.0 && u_patterns == 1 && int(look(8).x + 0.5) != 0) {
@@ -2604,8 +2603,6 @@ impl Renderer {
                 let t = s.tone;
                 gl.glUniform4f(loc(gl, p, c"u_shade_tone"), t[0], t[1], t[2], t[3]);
                 gl.glUniform2f(loc(gl, p, c"u_hatch"), s.hatch_px[0], s.hatch_px[1]);
-                let a = anker(&view.view_proj, view.origin_rel, w, h);
-                gl.glUniform2f(loc(gl, p, c"u_hatch_anchor"), a[0], a[1]);
                 let k = s.hatch_ink;
                 gl.glUniform3f(loc(gl, p, c"u_hatch_ink"), k[0], k[1], k[2]);
             }
@@ -3084,18 +3081,6 @@ unsafe fn loc(gl: &Gl, p: GLuint, name: &'static std::ffi::CStr) -> GLint {
     l
 }
 
-/// Bildpunkt (Fensterpixel, unten links 0) des Punkts `o` unter der
-/// spaltenweisen Matrix `m` bei einem Bild `w` × `h`.
-fn anker(m: &[f32; 16], o: [f32; 3], w: i32, h: i32) -> [f32; 2] {
-    let c = |i: usize| m[i] * o[0] + m[i + 4] * o[1] + m[i + 8] * o[2] + m[i + 12];
-    let cw = c(3);
-    if cw.abs() < 1e-12 {
-        return [0.0; 2];
-    }
-    let px = |n: f32, size: i32| (n / cw * 0.5 + 0.5) * size as f32;
-    [px(c(0), w), px(c(1), h)]
-}
-
 unsafe fn mat(gl: &Gl, p: GLuint, name: &'static std::ffi::CStr, m: &[f32; 16]) {
     gl.glUniformMatrix4fv(loc(gl, p, name), 1, FALSE, m.as_ptr());
 }
@@ -3175,20 +3160,6 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Anker der Schraffur: Einheitsmatrix bildet den Ursprung auf die
-    /// Bildmitte ab, eine Verschiebung im Bild verschiebt den Anker mit.
-    #[test]
-    fn anker_der_schraffur() {
-        let mut m = [0.0f32; 16];
-        for i in 0..4 {
-            m[i * 5] = 1.0;
-        }
-        assert_eq!(anker(&m, [0.0; 3], 800, 600), [400.0, 300.0]);
-        assert_eq!(anker(&m, [0.5, -0.5, 0.0], 800, 600), [600.0, 150.0]);
-        m[12] = 0.25;
-        assert_eq!(anker(&m, [0.0; 3], 800, 600), [500.0, 300.0]);
-    }
 
     /// Kopf jeder Funktion in `glsl` (`typ name(…) {`), nach Name.
     fn heads(glsl: &str) -> Vec<(&str, &str)> {

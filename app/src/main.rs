@@ -8566,6 +8566,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                     [tinte[0], tinte[1], tinte[2]],
                     a.theme.px_per_mm,
                     scale,
+                    a.settings.vorgaben.h_linie,
                 ))
             });
             a.renderer.set_paper_shade(papier);

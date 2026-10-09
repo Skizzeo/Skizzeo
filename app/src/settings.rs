@@ -633,7 +633,7 @@ pub fn read_all(text: &str) -> (Theme, Recent, Vec<String>) {
             // Planung des letzten Projekts (Paket PD): liest [`Settings::load`]
             // Firmenvorgaben (Sonnenstand S8): liest [`Settings::load`]
             "mengenfenster" | "firmenkatalog" | "planung" | "lvblatt" | "ansichtsschatten"
-            | "standardort" => continue,
+            | "standardort" | "hlinie" => continue,
             s => {
                 // Bleibt beim Speichern erhalten ([`fremd`])
                 skip(&mut hints, &format!("unbekannter Abschnitt [{s}]"));
@@ -671,7 +671,7 @@ fn satz_bekannt(abschnitt: &str, zeile: &str) -> bool {
             RGBA_ROLES.iter().any(|x| x.0 == role) || F4_ROLES.iter().any(|x| x.0 == role)
         }
         "size" => SIZE_ROLES.iter().any(|x| x.0 == r.opt("key").unwrap_or("")),
-        "ansichtsschatten" | "standardort" => vorgaben::Vorgaben::satz_lesbar(zeile),
+        "ansichtsschatten" | "standardort" | "hlinie" => vorgaben::Vorgaben::satz_lesbar(zeile),
         _ => true,
     }
 }

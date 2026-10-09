@@ -298,7 +298,8 @@ mod tests {
         let ort = *s.model().location();
         let papier = asch::licht(v, vs, &ort, sun).map(|d| {
             let (_, t) = s.table().pattern;
-            asch::papier(vs, d, [t[0], t[1], t[2]], theme.px_per_mm, 1.0)
+            let h = crate::settings::vorgaben::Vorgaben::WERK.h_linie;
+            asch::papier(vs, d, [t[0], t[1], t[2]], theme.px_per_mm, 1.0, h)
         });
         assert!(papier.is_some() || !vs.on, "Licht");
         r.set_paper_shade(papier);
