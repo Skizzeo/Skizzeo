@@ -32,6 +32,8 @@ const PICK_PX: f64 = 8.0;
 const SPITZE_PX: f64 = 12.0;
 /// Raster beim Verschieben (mm).
 const STEP: f64 = 10.0;
+/// Luft zur Kante, wenn der Pfeil ins Gebäude geschoben wird (mm, §8 08:05).
+pub const LUFT: f64 = 500.0;
 
 // ===== Reine Funktionen =====
 
@@ -69,6 +71,29 @@ pub fn anzeige_fuss(fuss: Option<Foot>, bounds: Option<(Vec3, Vec3)>) -> Foot {
     }
 }
 
+/// Fußpunkt beim Verschieben (§8 08:05): Liegt `p` im Hüllquader des
+/// Gebäudes, rastet er auf den nächsten Punkt außerhalb, [`LUFT`] vor der
+/// nächsten Kante; sonst bleibt er. Gezeigt und geschrieben wird derselbe
+/// Punkt, ohne Sprung.
+pub fn vor_der_kante(p: Foot, bounds: Option<(Vec3, Vec3)>) -> Foot {
+    let Some((lo, hi)) = bounds else {
+        return p;
+    };
+    if !((lo.x..=hi.x).contains(&p[0]) && (lo.y..=hi.y).contains(&p[1])) {
+        return p;
+    }
+    let kanten = [
+        (p[0] - lo.x, [lo.x - LUFT, p[1]]),
+        (hi.x - p[0], [hi.x + LUFT, p[1]]),
+        (p[1] - lo.y, [p[0], lo.y - LUFT]),
+        (hi.y - p[1], [p[0], hi.y + LUFT]),
+    ];
+    kanten
+        .into_iter()
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map_or(p, |k| k.1)
+}
+
 /// Text der Kachel und der Pille: „N 12°“.
 pub fn grad_text(nord: f64) -> String {
     format!("N {}°", grad(nord))
@@ -89,26 +114,49 @@ pub fn tip(nord: Option<f64>) -> String {
     )
 }
 
-/// Linien des Pfeils im Grundriss (mm): Schaft, Spitze und ein „N“ hinter
-/// der Spitze, aufrecht in Pfeilrichtung.
+/// Spitze des Pfeils, in Vielfachen der Länge: Länge und halbe Breite.
+const KOPF: f64 = 0.3;
+const BREIT: f64 = 0.14;
+/// „N“ vor der Spitze: Abstand seiner Mitte vom Fußpunkt, Höhe, Breite.
+const N_AB: f64 = 1.3;
+const N_HOCH: f64 = 0.22;
+const N_BREIT: f64 = 0.16;
+
+/// Umriss des Pfeils (mm): Schaft bis zur Spitze, die Spitze als offenes
+/// Dreieck, davor das „N“.
 pub fn linien(fuss: Foot, nord: f64, laenge: f64) -> Vec<(Foot, Foot)> {
+    let at = achse(fuss, nord);
+    let l = laenge;
+    let (k, b) = (l - KOPF * l, BREIT * l);
+    let mut v = vec![
+        (at(0.0, 0.0), at(l, 0.0)),
+        (at(l, 0.0), at(k, -b)),
+        (at(l, 0.0), at(k, b)),
+        (at(k, -b), at(k, b)),
+    ];
+    v.extend(n_linien(fuss, nord, l));
+    v
+}
+
+/// Das „N“ vor der Spitze, in Pfeilrichtung versetzt, aber aufrecht zur
+/// Modellachse +y: im Grundriss immer lesbar (Befund B, §8 07:55).
+pub fn n_linien(fuss: Foot, nord: f64, laenge: f64) -> [(Foot, Foot); 3] {
+    let [dx, dy] = richtung(nord);
+    let (cx, cy) = (fuss[0] + dx * N_AB * laenge, fuss[1] + dy * N_AB * laenge);
+    let (h, b) = (N_HOCH * laenge * 0.5, N_BREIT * laenge * 0.5);
+    [
+        ([cx - b, cy - h], [cx - b, cy + h]),
+        ([cx - b, cy + h], [cx + b, cy - h]),
+        ([cx + b, cy - h], [cx + b, cy + h]),
+    ]
+}
+
+/// Punkt `v` längs der Nordrichtung und `u` quer nach rechts davon.
+fn achse(fuss: Foot, nord: f64) -> impl Fn(f64, f64) -> Foot {
     let [dx, dy] = richtung(nord);
     // Quer nach rechts
     let (qx, qy) = (dy, -dx);
-    let at = |v: f64, u: f64| [fuss[0] + dx * v + qx * u, fuss[1] + dy * v + qy * u];
-    let l = laenge;
-    let (kopf, breit) = (0.3 * l, 0.14 * l);
-    let (n0, nh, nb) = (1.12 * l, 0.22 * l, 0.08 * l);
-    vec![
-        (at(0.0, 0.0), at(l, 0.0)),
-        (at(l, 0.0), at(l - kopf, -breit)),
-        (at(l, 0.0), at(l - kopf, breit)),
-        (at(l - kopf, -breit), at(l - kopf, breit)),
-        // N
-        (at(n0, -nb), at(n0 + nh, -nb)),
-        (at(n0 + nh, -nb), at(n0, nb)),
-        (at(n0, nb), at(n0 + nh, nb)),
-    ]
+    move |v: f64, u: f64| [fuss[0] + dx * v + qx * u, fuss[1] + dy * v + qy * u]
 }
 
 /// Länge des Pfeils (mm): im Grundriss gleich groß auf dem Bildschirm, in
@@ -171,6 +219,9 @@ pub struct Nordpfeil {
     eingabe: Option<MeasureInput>,
     hover: Option<Griff>,
     zug: Option<Zug>,
+    /// Hüllquader des Gebäudes (die App setzt ihn vor jedem Ereignis):
+    /// Verschieben hinein rastet davor ein ([`vor_der_kante`]).
+    pub gebaeude: Option<(Vec3, Vec3)>,
     /// Wo die Taste beim Setzen des Fußpunkts gedrückt wurde (Bildpunkt):
     /// Loslassen weit genug davon setzt die Richtung (Aufziehen in einem
     /// Zug).
@@ -301,7 +352,10 @@ impl Nordpfeil {
                     let (n, f) = self.gezeigt(st).unwrap_or((0.0, st.fuss));
                     let neu = match z {
                         Zug::Drehen => winkel(f, g).map(|w| (einrasten(w, mods.shift), f)),
-                        Zug::Schieben(off) => Some((n, [r(g[0] - off[0]), r(g[1] - off[1])])),
+                        Zug::Schieben(off) => {
+                            let p = [r(g[0] - off[0]), r(g[1] - off[1])];
+                            Some((n, vor_der_kante(p, self.gebaeude)))
+                        }
                     };
                     if neu.is_some() && neu != self.vorschau {
                         self.vorschau = neu;
@@ -451,7 +505,8 @@ impl Nordpfeil {
             return None;
         }
         let (n, f) = self.vorschau?;
-        let l = laenge(cam, h, scale) * 1.6;
+        // Hinter dem „N“
+        let l = laenge(cam, h, scale) * 1.9;
         let [dx, dy] = richtung(n);
         let text = match &self.eingabe {
             Some(i) => i.text(["Nord", ""]),
@@ -535,16 +590,68 @@ mod tests {
     }
 
     /// Der Pfeil zeigt in die Nordrichtung: die Spitze liegt bei Nord 90°
-    /// rechts vom Fußpunkt, das „N“ dahinter.
+    /// rechts vom Fußpunkt, das „N“ davor.
     #[test]
     fn linien_zeigen_nach_norden() {
         let l = linien([100.0, 200.0], 90.0, 1000.0);
         let (a, b) = l[0];
         assert_eq!(a, [100.0, 200.0]);
         assert!((b[0] - 1100.0).abs() < 1e-9 && (b[1] - 200.0).abs() < 1e-9);
+        assert_eq!(l.len(), 7);
         assert!(l[4..].iter().all(|(p, q)| p[0] > 1100.0 && q[0] > 1100.0));
     }
 
+    /// Befund B (§8 07:55): Das „N“ steht aufrecht zu +y, bei jeder
+    /// Nordrichtung dieselben Linien, nur verschoben, und frei vor der
+    /// Spitze.
+    #[test]
+    fn n_bleibt_aufrecht() {
+        let f = [100.0, 200.0];
+        let n0 = n_linien(f, 0.0, 1000.0);
+        for nord in [90.0, 180.0, 270.0, 33.0] {
+            let n = n_linien(f, nord, 1000.0);
+            let [dx, dy] = richtung(nord);
+            let d = [(dx - 0.0) * N_AB * 1000.0, (dy - 1.0) * N_AB * 1000.0];
+            for (a, b) in n.iter().zip(&n0) {
+                for (p, q) in [(a.0, b.0), (a.1, b.1)] {
+                    assert!((p[0] - q[0] - d[0]).abs() < 1e-9, "{nord}");
+                    assert!((p[1] - q[1] - d[1]).abs() < 1e-9, "{nord}");
+                }
+            }
+            // Senkrechte Striche des N laufen längs y
+            assert_eq!(n[0].0[0], n[0].1[0]);
+            assert!(n[0].1[1] > n[0].0[1]);
+            // Ganz vor der Spitze: kein Punkt des N näher am Fußpunkt als die Spitze
+            let spitze = 1000.0;
+            for (p, q) in n {
+                for r in [p, q] {
+                    assert!((r[0] - f[0]).hypot(r[1] - f[1]) > spitze * 1.05, "{nord}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vor_der_kante_rastet() {
+        let b = Some((vec3(0.0, 0.0, 0.0), vec3(10000.0, 8000.0, 3000.0)));
+        assert_eq!(vor_der_kante([-1.0, 5.0], b), [-1.0, 5.0]);
+        assert_eq!(vor_der_kante([5.0, 5.0], None), [5.0, 5.0]);
+        assert_eq!(vor_der_kante([1000.0, 4000.0], b), [-LUFT, 4000.0]);
+        assert_eq!(vor_der_kante([9000.0, 4000.0], b), [10000.0 + LUFT, 4000.0]);
+        assert_eq!(vor_der_kante([5000.0, 700.0], b), [5000.0, -LUFT]);
+        assert_eq!(vor_der_kante([5000.0, 7900.0], b), [5000.0, 8000.0 + LUFT]);
+        // Auf der Kante zählt als innen
+        assert_eq!(vor_der_kante([0.0, 4000.0], b), [-LUFT, 4000.0]);
+    }
+}
+
+#[cfg(test)]
+#[path = "nordpfeil_istbilder.rs"]
+mod istbilder;
+
+#[cfg(test)]
+mod abnahme_tests {
+    use super::*;
     use crate::scene::Scene;
     use sk_model::{szo, GuidGen, Model, RefSide, WallChain};
     use std::f64::consts::FRAC_PI_2;
@@ -576,6 +683,7 @@ mod tests {
 
     /// Ein Ereignis an den Pfeil und, wie in der App, ein Schritt daraus.
     fn ereignis(n: &mut Nordpfeil, s: &mut Scene, cam: &Camera, e: Event) -> Ausgang {
+        n.gebaeude = s.bounds();
         let out = n.handle(&e, stand(s), cam, W, H, 1.0, true);
         if let Some((label, nord, fuss)) = out.commit {
             s.nordpfeil_setzen(label, nord, fuss);
@@ -670,7 +778,8 @@ mod tests {
         let (lo, _) = s.bounds().unwrap();
         let st = stand(&s);
         assert_eq!(st.fuss, [lo.x - ABSTAND, lo.y - ABSTAND]);
-        assert!(n.helpers(st, &cam, H, 1.0, [1.0; 4], [1.0; 4], 1.5).len() == 7);
+        let h = n.helpers(st, &cam, H, 1.0, [1.0; 4], [1.0; 4], 1.5);
+        assert_eq!(h.len(), 7, "Umriss und N");
         let mit_haus = szo::write(s.model());
         assert!(mit_haus.contains("[location] north=40 x=0 y=0\n"));
         assert_eq!(szo::write(&laden(&mit_haus)), mit_haus);
@@ -757,6 +866,37 @@ mod tests {
         assert!(n.escape() && !n.zieht() && n.aktiv);
         assert!(n.escape() && !n.aktiv);
         assert!(!n.escape());
+    }
+
+    /// §8 08:05: In die Gebäudemitte geschoben rastet der Fußpunkt schon
+    /// beim Ziehen 500 mm vor der nächsten Kante ein; geschrieben wird
+    /// genau der gezeigte Punkt.
+    #[test]
+    fn verschieben_ins_gebaeude_rastet_vor_der_kante() {
+        let cam = grundriss();
+        let mut s = Scene::with_model(Model::with_seed(1));
+        s.add_wall(&rechteck(-2500.0)).unwrap();
+        let (lo, hi) = s.bounds().unwrap();
+        assert!(s.nordpfeil_setzen(LABEL_DREHEN, 0.0, Some([lo.x - 3000.0, 0.0])));
+        let mut n = Nordpfeil::default();
+        let st = stand(&s);
+        let l = laenge(&cam, H, 1.0);
+        let mitte_schaft = [st.fuss[0], st.fuss[1] + l * 0.5];
+        ereignis(&mut n, &mut s, &cam, zu(&cam, mitte_schaft, false));
+        assert_eq!(n.over(), Some(Griff::Schaft));
+        ereignis(&mut n, &mut s, &cam, unten(&cam, mitte_schaft));
+        // Fußpunkt in die Mitte, näher an der linken als an den anderen Kanten
+        let ziel = [lo.x + 1200.0, (lo.y + hi.y) * 0.5];
+        let griff = [ziel[0], ziel[1] + l * 0.5];
+        ereignis(&mut n, &mut s, &cam, zu(&cam, griff, false));
+        let (_, vorschau) = n.gezeigt(stand(&s)).unwrap();
+        assert_eq!(vorschau[0], lo.x - LUFT, "schon beim Ziehen");
+        let out = ereignis(&mut n, &mut s, &cam, oben(&cam, griff));
+        let (label, _, fuss) = out.commit.unwrap();
+        assert_eq!(label, LABEL_SCHIEBEN);
+        assert_eq!(fuss, Some(vorschau));
+        assert_eq!(s.model().north_foot(), Some(vorschau));
+        assert_eq!(stand(&s).fuss, vorschau, "gezeigt = geschrieben");
     }
 
     /// Ein S1-Stand ohne Fußpunkt: der Pfeil steht vorne links, Drehen

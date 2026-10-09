@@ -1118,6 +1118,7 @@ impl App {
     fn nord_handle(&mut self, ev: &Event, vw: f64, vh: f64, sc: f64) -> bool {
         let en = self.tool_allowed() && !self.tool.enabled && !self.sect.is_busy();
         let st = self.nord_stand();
+        self.nord.gebaeude = self.scene.bounds();
         let out = self.nord.handle(ev, st, &self.cam, vw, vh, sc, en);
         self.redraw |= out.redraw;
         self.nord_commit(out.commit);
@@ -4526,7 +4527,8 @@ impl App {
     fn sync_help(&mut self) {
         let t = self.now();
         let ctx = self.help_ctx();
-        self.help.follow(help::topic(&ctx), t);
+        let nord = self.nord.aktiv || self.nord.zieht();
+        self.help.follow(help::topic_mit_nord(&ctx, nord), t);
         self.help.tick(t);
         // Auch das letzte Bild eines Blendens muss noch gezeichnet werden
         let blending = self.help_fade.is_some() || self.help_swap.is_some();

@@ -157,6 +157,8 @@ pub enum Topic {
     Terrace,
     Levels,
     Section,
+    /// Nordpfeil aufziehen, drehen, verschieben (Sonnenstand S2).
+    North,
     Tree,
     File,
     Settings,
@@ -178,7 +180,7 @@ pub enum Topic {
 
 impl Topic {
     /// Alle Themen in der Reihenfolge der Liste „Alle Themen“.
-    pub const ALL: [Topic; 31] = [
+    pub const ALL: [Topic; 32] = [
         Topic::Start,
         Topic::Navigation,
         Topic::Building,
@@ -193,6 +195,7 @@ impl Topic {
         Topic::Terrace,
         Topic::Levels,
         Topic::Section,
+        Topic::North,
         Topic::Tree,
         Topic::File,
         Topic::Settings,
@@ -238,6 +241,7 @@ impl Topic {
             &[
                 Topic::Levels,
                 Topic::Section,
+                Topic::North,
                 Topic::Tree,
                 Topic::Quantities,
                 Topic::Costs,
@@ -279,6 +283,7 @@ impl Topic {
             Topic::Terrace => "dachterrasse",
             Topic::Levels => "geschosse",
             Topic::Section => "schnitt",
+            Topic::North => "nordpfeil",
             Topic::Tree => "baum",
             Topic::File => "datei",
             Topic::Settings => "einstellungen",
@@ -403,6 +408,16 @@ pub fn topic(c: &HelpCtx) -> Topic {
         ViewKind::Section => Topic::Section,
         ViewKind::Plan => Topic::Levels,
         _ => Topic::Start,
+    }
+}
+
+/// Wie [`topic`]; beim Aufziehen, Drehen oder Verschieben des Nordpfeils
+/// (`nord`) gilt „Nordpfeil“, außer ein Fenster oder der Dialog ist offen.
+pub fn topic_mit_nord(c: &HelpCtx, nord: bool) -> Topic {
+    if nord && c.window.is_none() && !c.dialog {
+        Topic::North
+    } else {
+        topic(c)
     }
 }
 
@@ -1019,6 +1034,37 @@ fn rich_wrap(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Hinweis W (S2): Beim Nordpfeil zeigt F1 „Nordpfeil“, mit offenem
+    /// Fenster oder Dialog weiter deren Thema.
+    #[test]
+    fn thema_nordpfeil() {
+        let mut c = HelpCtx {
+            window: None,
+            dialog: false,
+            flush_pick: false,
+            dragging: false,
+            tool: None,
+            isolating: false,
+            selection: None,
+            view: ViewKind::Plan,
+        };
+        assert_eq!(topic_mit_nord(&c, true), Topic::North);
+        assert_eq!(topic_mit_nord(&c, false), Topic::Levels);
+        c.window = Some(Window::Catalog);
+        assert_eq!(topic_mit_nord(&c, true), Topic::Catalog);
+        let s = help().section("nordpfeil").expect("Thema Nordpfeil");
+        for a in [
+            "Setzen",
+            "Genau",
+            "Drehen",
+            "Verschieben",
+            "Platz",
+            "Abbrechen",
+        ] {
+            assert!(s.rows.iter().any(|(x, _)| x == a), "{a}");
+        }
+    }
 
     /// KA-2d (paket-ka2 §7): Thema „Kosten“ mit Verrechnungslohn, „Auch für
     /// neue Häuser“ und „Bauleistung wählen …“; „Mengen und Kosten“ mit der

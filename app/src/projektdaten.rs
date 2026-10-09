@@ -1248,14 +1248,18 @@ mod tests {
         ab(m.paint(&t, &fonts, 1.0), "ist-projektdaten-c-breite.png");
         // Knopf im linken Paneel: gesetzt und leer, rechts daneben die
         // Kachel des Nordpfeils (gesetzt: Nord 12°, Sonnenstand S2)
-        for (n, p, sc) in [
-            ("gesetzt", true, 1.0),
-            ("leer", false, 1.0),
-            ("gesetzt-200", true, 2.0),
-            ("leer-200", false, 2.0),
+        // (aktiv: beim Aufziehen, Hinweise unten für den Nordpfeil)
+        for (n, p, sc, aktiv) in [
+            ("gesetzt", true, 1.0, false),
+            ("leer", false, 1.0, false),
+            ("gesetzt-200", true, 2.0, false),
+            ("leer-200", false, 2.0, false),
+            ("aufziehen", false, 1.0, true),
+            ("aufziehen-200", false, 2.0, true),
         ] {
             let mut ui = crate::ui::Ui::new(sc, &t);
             ui.nord = p.then_some(12.0);
+            ui.nord_aktiv = aktiv;
             ui.fonts = Fonts {
                 regular: lade("LiberationSans-Regular.ttf"),
                 bold: lade("LiberationSans-Bold.ttf"),

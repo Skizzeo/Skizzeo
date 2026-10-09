@@ -815,6 +815,7 @@ enum Row {
 
 fn tool_rows(
     projekt: &[String],
+    nord: bool,
     interior: bool,
     chip: bool,
     layers: &[(Rgba, String)],
@@ -861,11 +862,22 @@ fn tool_rows(
         ]),
         Row::Button(Id::Ortho, "90°-Sprung"),
         Row::Separator,
-        // Drei kurze Zeilen (Paket 8, Darstellung §2.7); mehr in der Hilfe (F1)
-        Row::Hint("Klick setzt Punkte."),
-        Row::Hint("Zahl + Enter setzt genau."),
-        Row::Hint("Tab: Winkel, Esc: zu"),
     ]);
+    // Drei kurze Zeilen (Paket 8, Darstellung §2.7); mehr in der Hilfe (F1).
+    // Beim Aufziehen des Nordpfeils gilt Tab nicht (Hinweis W, S2).
+    rows.extend(if nord {
+        [
+            Row::Hint("Fußpunkt, dann Richtung."),
+            Row::Hint("Zahl + Enter setzt genau."),
+            Row::Hint("Umschalt: 15°, Esc: zu"),
+        ]
+    } else {
+        [
+            Row::Hint("Klick setzt Punkte."),
+            Row::Hint("Zahl + Enter setzt genau."),
+            Row::Hint("Tab: Winkel, Esc: zu"),
+        ]
+    });
     rows
 }
 
@@ -1050,6 +1062,7 @@ impl Ui {
         match p {
             Panel::Tools => tool_rows(
                 &self.projekt_zeilen,
+                self.nord_aktiv,
                 self.interior,
                 self.tool_chip.is_some(),
                 &self.wall_layers,
