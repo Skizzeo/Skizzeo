@@ -656,6 +656,10 @@ impl Verwaltung {
             Farbe::Dim,
         ) + 12.0;
         for v in &self.vorschlaege {
+            if v.ganzer_satz() {
+                y = self.neuer_satz_zeigen(b, y, v);
+                continue;
+            }
             let satz = sk_cost::verwaltung::satz_name(&self.jetzt, &v.rec, &v.of);
             let was = match v.rec.as_str() {
                 "rate" => String::new(),
@@ -697,6 +701,49 @@ impl Verwaltung {
             b.verweis(x + 16.0, y, "Ablehnen", Aktion::VorschlagAblehnen(v.key));
             y += TZ + 14.0;
         }
+    }
+
+    /// Neuer Satz aus einer Erweiterung (`field=*`, verwaltung.md §8a):
+    /// Kurztext, Art und Herkunft; der Satz steht schon im Entwurf mit Pille
+    /// „unbestätigt“. Passt er zu keinem Satz, grau und nur „Ablehnen“.
+    fn neuer_satz_zeigen(&self, b: &mut Bau, mut y: f32, v: &sk_cost::katalog::Vorschlag) -> f32 {
+        let art = match v.rec.as_str() {
+            "article" => " · neuer Artikel",
+            _ => " · neue Bauleistung",
+        };
+        let passt = v.passt(&self.jetzt);
+        let farbe = if passt { Farbe::Text } else { Farbe::Dim };
+        let x = b.text(0.0, y, b.kurz(&v.neu, PX, true, b.w * 0.6), PX, true, farbe);
+        b.text(x, y, art, PX, false, Farbe::Dim);
+        y += TZ;
+        let quelle = Guid::from_ifc(&v.of)
+            .and_then(|_| self.jetzt.herkunft_von(&v.rec, &v.of))
+            .and_then(|u| u.satz.text("source").map(str::to_string))
+            .unwrap_or_default();
+        let mut woher = match v.name.as_str() {
+            "" => zeit_text(&v.datum),
+            name => format!("aus {name}, {}", zeit_text(&v.datum)),
+        };
+        if !quelle.is_empty() {
+            woher = format!("{quelle} · {woher}");
+        }
+        if !passt {
+            woher = "Passt zu keinem neuen Satz im Entwurf.".into();
+        }
+        let woher = b.kurz(&woher, PX, false, (b.w - 200.0).max(40.0));
+        b.text(0.0, y, woher, PX, false, Farbe::Dim);
+        let x = if passt {
+            b.verweis(
+                b.w - 190.0,
+                y,
+                "In den Entwurf",
+                Aktion::VorschlagUebernehmen(v.key),
+            )
+        } else {
+            b.w - 190.0
+        };
+        b.verweis(x + 16.0, y, "Ablehnen", Aktion::VorschlagAblehnen(v.key));
+        y + TZ + 14.0
     }
 
     /// Wert eines Vorschlags wie im Feld, mit Einheit („65,00 €/h“).

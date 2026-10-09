@@ -293,6 +293,9 @@ pub struct Vorschlag {
     pub projekt: Option<u32>,
     /// Was sich an gesetzten Exemplaren ändert, je Zeile.
     pub aenderungen: Vec<String>,
+    /// Sätze der Definition für den Firmenkatalog (E8c); setzt die App,
+    /// die den Firmenkatalog kennt. Nach „Ja“ nur die angehakten.
+    pub saetze: Vec<sk_cost::neue_saetze::NeuerSatz>,
 }
 
 /// Prüft den Text einer .szb wie beim Einlesen (mit Grenzprüfung):
@@ -361,6 +364,7 @@ pub fn pruefen(text: &str, ablage: &Ablage, model: &Model) -> Result<Vorschlag, 
         fall,
         projekt,
         aenderungen,
+        saetze: Vec::new(),
     })
 }
 

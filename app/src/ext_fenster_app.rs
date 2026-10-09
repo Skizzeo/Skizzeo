@@ -49,6 +49,10 @@ impl App {
                 let k = sk_cost::lesen::katalog(self.scene.model(), firma);
                 v.hinweise
                     .extend(sk_cost::erweiterung::fehlende_folgen(&k, &v.def));
+                // Neue Sätze für den Firmenkatalog (E8c)
+                if let Some(f) = firma {
+                    v.saetze = sk_cost::neue_saetze::neue_saetze(self.scene.model(), f, &v.def);
+                }
                 v
             });
         match v {
@@ -152,6 +156,54 @@ impl App {
         }
     }
 
+    /// Die angehakten neuen Sätze an die Firma (E8c, verwaltung.md §8a):
+    /// mit Verwaltungskennwort als Vorschlag in den Entwurf, am Einzelplatz
+    /// direkt mit Pille „unbestätigt“. Der Satz für die Meldung.
+    fn ext_saetze_fuer_firma(&mut self, v: &crate::ext_ablage::Vorschlag) -> Option<String> {
+        use sk_cost::neue_saetze::{quelle_text, Stand};
+        let saetze: Vec<sk_cost::SatzNeu> = v
+            .saetze
+            .iter()
+            .filter(|n| n.stand == Stand::Neu)
+            .map(|n| sk_cost::SatzNeu {
+                rec: n.rec,
+                of: n.guid,
+                kurz: n.name.clone(),
+                zeilen: n.zeilen.clone(),
+            })
+            .collect();
+        if saetze.is_empty() {
+            return None;
+        }
+        let n = saetze.len();
+        let c = self.company.as_mut()?;
+        let mut h = sk_cost::Herkunft::jetzt(sk_cost::HerkunftArt::Import);
+        h.quelle = quelle_text(&v.def);
+        let mit_kennwort = sk_cost::verwaltung::hat_kennwort(c.library());
+        let projekt = mit_kennwort.then(|| (self.scene.model().project().guid, self.doc.name()));
+        let op = sk_cost::Op::SaetzeAusErweiterung {
+            projekt,
+            quelle: quelle_text(&v.def),
+            saetze,
+        };
+        let anzahl = if n == 1 {
+            "Ein neuer Satz".to_string()
+        } else {
+            format!("{n} neue Sätze")
+        };
+        Some(if mit_kennwort {
+            match c.vorschlagen(&h, &op) {
+                Ok(()) => format!("{anzahl} der Verwaltung vorgeschlagen."),
+                Err(e) => format!("Nichts vorgeschlagen: {e}"),
+            }
+        } else {
+            match c.fuer_firma(&h, std::slice::from_ref(&op)) {
+                Ok(_) => format!("{anzahl} im Firmenkatalog, unbestätigt."),
+                Err(e) => format!("Firmenkatalog nicht geändert: {e}"),
+            }
+        })
+    }
+
     fn ext_name(&self, key: &str) -> String {
         let d = self
             .ext_ablage
@@ -172,6 +224,10 @@ impl App {
                     return;
                 }
                 let mut satz = format!("„{name}“ Version {} eingelesen.", v.def.version);
+                if let Some(s) = self.ext_saetze_fuer_firma(&v) {
+                    satz.push(' ');
+                    satz.push_str(&s);
+                }
                 if v.projekt.is_some() {
                     match self.ext_ins_projekt(v.def) {
                         Ok(()) => satz.push_str(" Das Projekt folgt."),

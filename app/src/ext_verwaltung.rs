@@ -7,6 +7,7 @@
 //! App ([`crate::ext_app`]) führt sie aus und gibt neue Zeilen.
 
 use crate::ext_ablage::{Ablage, Fall, Vorschlag};
+use sk_cost::neue_saetze::Stand;
 use sk_model::erweiterung::{anzeige, ExtDef};
 use sk_model::{Category, Model};
 use sk_paint::{Canvas, Path};
@@ -24,6 +25,8 @@ const GRUPPE_H: f32 = 30.0;
 const ZEILE_H: f32 = 44.0;
 /// Textzeile in „Für Entwickler“ und in den Rückfragen.
 const TEXT_H: f32 = 18.0;
+/// Zeile mit Haken (neue Sätze für den Firmenkatalog, E8c).
+const HAKEN_H: f32 = 24.0;
 const KNOPF_H: f32 = 30.0;
 /// Höchste Höhe des Inhalts (dip); darüber rollt die Liste.
 const INHALT_MAX: f32 = 470.0;
@@ -185,6 +188,14 @@ pub enum Tat {
     Entfernen(String),
 }
 
+/// Ein Satz der Erweiterung für den Firmenkatalog mit Haken (E8c).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Haken {
+    pub text: String,
+    pub an: bool,
+    pub waehlbar: bool,
+}
+
 /// Eine Rückfrage oder ein Befund auf dem Blatt.
 #[derive(Clone, Debug)]
 pub struct Frage {
@@ -199,6 +210,9 @@ pub struct Frage {
     /// Beschriftung von „Ja“; `None`: nur „Schließen“.
     pub ja: Option<&'static str>,
     pub tat: Option<Tat>,
+    /// Neue Sätze für den Firmenkatalog, unten über dem Fuß (E8c); die
+    /// angehakten gehen mit „Ja“ an die Firma.
+    pub haken: Vec<Haken>,
 }
 
 impl Frage {
@@ -258,6 +272,27 @@ impl Frage {
             v.def.version
         );
         let ja = (!ja.is_empty()).then_some(ja);
+        // Neue Sätze für den Firmenkatalog (E8c), je einer mit Haken
+        let haken = match ja {
+            Some(_) => v
+                .saetze
+                .iter()
+                .map(|n| {
+                    let art = if n.rec == "service" {
+                        "Bauleistung"
+                    } else {
+                        "Artikel"
+                    };
+                    let neu = n.stand == Stand::Neu;
+                    Haken {
+                        text: format!("{art} {} · {}", anzeige(&n.name, 80), n.stand.text()),
+                        an: neu,
+                        waehlbar: neu,
+                    }
+                })
+                .collect(),
+            None => Vec::new(),
+        };
         Frage {
             titel: "Bauteil einlesen".into(),
             name,
@@ -266,6 +301,7 @@ impl Frage {
             abschnitte,
             ja,
             tat: ja.map(|_| Tat::Einlesen(Box::new(v))),
+            haken,
         }
     }
 
@@ -279,6 +315,7 @@ impl Frage {
             abschnitte: vec![(format!("Fehler ({})", fehler.len()), fehler)],
             ja: None,
             tat: None,
+            haken: Vec::new(),
         }
     }
 
@@ -295,6 +332,7 @@ impl Frage {
             abschnitte: vec![("Gesetzte Bauteile ändern sich".into(), aenderungen)],
             ja: Some("Aktualisieren"),
             tat: Some(Tat::Aktualisieren(Box::new(d))),
+            haken: Vec::new(),
         }
     }
 
@@ -312,6 +350,7 @@ impl Frage {
             abschnitte: Vec::new(),
             ja: Some("Entfernen"),
             tat: Some(Tat::Entfernen(z.key.clone())),
+            haken: Vec::new(),
         }
     }
 }
@@ -345,6 +384,7 @@ enum Knopf {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Ziel {
     Zeile(usize),
+    Haken(usize),
     Entwickler(usize),
     Knopf(Knopf),
     Schliessen,
@@ -500,7 +540,23 @@ impl Fenster {
         for (_, z) in &f.abschnitte {
             h += GRUPPE_H + z.len() as f32 * TEXT_H * 1.6;
         }
+        if !f.haken.is_empty() {
+            h += GRUPPE_H + f.haken.len() as f32 * HAKEN_H + 8.0;
+        }
         h
+    }
+
+    /// Zeilen mit Haken unten im Inhalt (Lage-Koordinaten); davor ihre
+    /// Überschrift.
+    fn haken_rects(&self, l: &Lage, s: f32) -> Vec<Rect> {
+        let n = self.frage.as_ref().map_or(0, |f| f.haken.len());
+        let unten = l.inhalt.y + l.inhalt.h - 8.0 * s;
+        (0..n)
+            .map(|i| {
+                let y = unten - (n - i) as f32 * HAKEN_H * s;
+                rect(PAD * s, y, (W - 2.0 * PAD) * s, HAKEN_H * s)
+            })
+            .collect()
     }
 
     fn inhalt_h(&self) -> f32 {
@@ -582,6 +638,10 @@ impl Fenster {
         if let Some((k, _, _)) = l.knoepfe.iter().find(|(_, b, _)| b.contains(lx, ly)) {
             return Some(Ziel::Knopf(*k));
         }
+        let haken = self.haken_rects(&l, s);
+        if let Some(i) = haken.iter().position(|b| b.contains(lx, ly)) {
+            return Some(Ziel::Haken(i));
+        }
         if self.frage.is_some() || !l.inhalt.contains(lx, ly) {
             return None;
         }
@@ -639,6 +699,12 @@ impl Fenster {
         match p {
             Ziel::Schliessen => self.nein(),
             Ziel::Knopf(k) => self.knopf(k),
+            Ziel::Haken(i) => {
+                if let Some(h) = self.frage.as_mut().and_then(|f| f.haken.get_mut(i)) {
+                    h.an = h.waehlbar && !h.an;
+                }
+                None
+            }
             _ => None,
         }
     }
@@ -658,8 +724,13 @@ impl Fenster {
         match k {
             Knopf::Zu => self.nein(),
             Knopf::Ja => {
-                let f = self.frage.take()?;
+                let mut f = self.frage.take()?;
                 self.nur_frage = false;
+                // nur die angehakten neuen Sätze gehen an die Firma
+                if let Some(Tat::Einlesen(v)) = f.tat.as_mut() {
+                    let mut an = f.haken.iter().map(|h| h.an);
+                    v.saetze.retain(|_| an.next().unwrap_or(false));
+                }
                 f.tat.map(Antwort::Tat)
             }
             Knopf::Einlesen => Some(Antwort::Einlesen),
@@ -777,13 +848,20 @@ impl Fenster {
                     zeile(&mut c, regular, &z, fpx, y, col);
                     y += TEXT_H * s;
                 }
+                let haken = self.haken_rects(&l, s);
+                let grenze = haken
+                    .first()
+                    .map_or(inh.y + inh.h, |r| m + r.y - GRUPPE_H * s);
                 for (kopf, zeilen) in &f.abschnitte {
                     y += 12.0 * s;
+                    if y + TEXT_H * s > grenze {
+                        break;
+                    }
                     zeile(&mut c, bold, &kopf.to_uppercase(), gpx, y, u.text_dim);
                     y += TEXT_H * 1.2 * s;
                     for z in zeilen {
                         for w in widgets::wrap(regular, z, fpx, breit - 12.0 * s) {
-                            if y + TEXT_H * s > inh.y + inh.h {
+                            if y + TEXT_H * s > grenze {
                                 break;
                             }
                             widgets::text(
@@ -798,6 +876,24 @@ impl Fenster {
                             y += TEXT_H * s;
                         }
                     }
+                }
+                if let Some(r0) = haken.first() {
+                    let ky = m + r0.y - GRUPPE_H * s + 12.0 * s;
+                    zeile(&mut c, bold, "FÜR DEN FIRMENKATALOG", gpx, ky, u.text_dim);
+                }
+                for (i, (h, r)) in f.haken.iter().zip(&haken).enumerate() {
+                    let r = at(*r);
+                    let b = 14.0 * s;
+                    let kr = Rect::new(r.x, r.y + (r.h - b) * 0.5, b, b);
+                    if h.waehlbar {
+                        let hover = self.hover == Some(Ziel::Haken(i));
+                        widgets::checkbox(&mut c, kr, h.an, hover, s, t);
+                    }
+                    let tx = r.x + b + 8.0 * s;
+                    let col = if h.waehlbar { u.text } else { u.text_dim };
+                    let text = widgets::ellipsize(regular, &h.text, fpx, r.w - b - 8.0 * s);
+                    let ty = r.y + (r.h + cap(fpx)) * 0.5;
+                    widgets::text(&mut c, regular, &text, fpx, tx, ty, col);
                 }
             }
             None => self.paint_liste(&mut c, t, fonts, s, inh, x0, breit),
@@ -1249,6 +1345,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// E8c: neue Sätze der Stütze mit Haken; abgehakt geht nur der Rest
+    /// mit „Einlesen“ an die Firma, Vorhandenes ist nicht wählbar.
+    #[test]
+    fn haken_beim_einlesen() {
+        let a = Ablage::default();
+        let m = Model::new();
+        let mut v = ext_ablage::pruefen(STUETZE, &a, &m).unwrap();
+        v.saetze = sk_cost::neue_saetze::neue_saetze(&m, &sk_model::Library::standard(), &v.def);
+        let f = Frage::einlesen(v);
+        let texte: Vec<&str> = f.haken.iter().map(|h| h.text.as_str()).collect();
+        assert_eq!(
+            texte,
+            [
+                "Bauleistung Stahlbetonstütze C25/30 XC1 betonieren, Querschnitt bis 0,36 m² · neu",
+                "Bauleistung Stützenschalung glatt, kein Sichtbeton, Höhe bis 3,0 m · neu",
+            ]
+        );
+        assert!(f.haken.iter().all(|h| h.an && h.waehlbar));
+        let mut w = Fenster::mit_frage(Vec::new(), f);
+        let r = w.rect(1.0, 1280, 800, 32);
+        let l = w.lage(1.0, r.h - KOPF_H - FUSS_H);
+        let hr = w.haken_rects(&l, 1.0);
+        assert_eq!(hr.len(), 2);
+        assert!(hr[0].y >= l.inhalt.y && hr[1].y + hr[1].h <= l.inhalt.y + l.inhalt.h);
+        let p = (r.x as f64 + mitte(hr[0]).0, r.y as f64 + mitte(hr[0]).1);
+        klick(&mut w, r, p);
+        assert!(!w.frage.as_ref().unwrap().haken[0].an);
+        let _ = w.paint(&Theme::dark(), &schriften(), 1.0, r);
+        match drueck(&mut w, r, Knopf::Ja) {
+            Some(Antwort::Tat(Tat::Einlesen(v))) => {
+                let keys: Vec<&str> = v.saetze.iter().map(|n| n.key.as_str()).collect();
+                assert_eq!(keys, ["stuetze_schalung"]);
+            }
+            x => panic!("{x:?}"),
+        }
+        // Vorhandenes (gleiche Kennung im Katalog) ohne Haken
+        let mut v = ext_ablage::pruefen(STUETZE, &a, &m).unwrap();
+        v.saetze = sk_cost::neue_saetze::neue_saetze(&m, &sk_model::Library::standard(), &v.def);
+        v.saetze[0].stand = sk_cost::neue_saetze::Stand::Vorhanden;
+        let f = Frage::einlesen(v);
+        assert!(!f.haken[0].an && !f.haken[0].waehlbar);
+        assert!(f.haken[0].text.ends_with("vorhanden, Firmenpreis gilt"));
+    }
+
     fn schriften() -> Fonts {
         let f = Fonts::system();
         if f.regular.is_some() {
@@ -1291,10 +1431,13 @@ mod tests {
             w.paint(&t, &fonts, 1.0, r).to_png(),
         )
         .unwrap();
-        let breiter = v2(STUETZE).replace(
-            "werte=\"b=240; d=240\" standard=ja",
-            "werte=\"b=300; d=300\" standard=ja",
-        );
+        // Standardtyp und Vorgaben zusammen (Werkbank f044de00)
+        let breiter = v2(STUETZE)
+            .replace(
+                "werte=\"b=240; d=240\" standard=ja",
+                "werte=\"b=300; d=300\" standard=ja",
+            )
+            .replace("wert=240 min=200", "wert=300 min=200");
         let v = ext_ablage::pruefen(&breiter, &a, &m).unwrap();
         w.frage(Frage::einlesen(v));
         let r = w.rect(1.0, 1280, 800, 32);
@@ -1316,6 +1459,17 @@ mod tests {
         let r = w.rect(1.0, 1280, 800, 32);
         std::fs::write(
             ziel.join("ist-e5-leer.png"),
+            w.paint(&t, &fonts, 1.0, r).to_png(),
+        )
+        .unwrap();
+        // E8c: neue Sätze mit Haken, einer schon im Katalog
+        let mut v = ext_ablage::pruefen(TREPPE, &Ablage::default(), &m).unwrap();
+        v.saetze = sk_cost::neue_saetze::neue_saetze(&m, &sk_model::Library::standard(), &v.def);
+        v.saetze[1].stand = sk_cost::neue_saetze::Stand::Vorhanden;
+        let w = Fenster::mit_frage(Vec::new(), Frage::einlesen(v));
+        let r = w.rect(1.0, 1280, 800, 32);
+        std::fs::write(
+            ziel.join("ist-e8c-einlesen.png"),
             w.paint(&t, &fonts, 1.0, r).to_png(),
         )
         .unwrap();
