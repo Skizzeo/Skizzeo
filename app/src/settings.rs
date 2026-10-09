@@ -658,8 +658,9 @@ pub fn read_all(text: &str) -> (Theme, Recent, Vec<String>) {
     (t, recent, hints)
 }
 
-/// Ob ein Satz eines bekannten Abschnitts gelesen wird: eine Farbrolle
-/// oder Größe aus einer neueren Fassung nicht, sie bleibt als Fremdes.
+/// Ob ein Satz eines bekannten Abschnitts gelesen wird: eine Farbrolle,
+/// Größe oder Vorgabe aus einer neueren Fassung nicht, sie bleibt als
+/// Fremdes.
 fn satz_bekannt(abschnitt: &str, zeile: &str) -> bool {
     let Ok(Some(r)) = Record::parse(1, zeile) else {
         return true;
@@ -670,6 +671,7 @@ fn satz_bekannt(abschnitt: &str, zeile: &str) -> bool {
             RGBA_ROLES.iter().any(|x| x.0 == role) || F4_ROLES.iter().any(|x| x.0 == role)
         }
         "size" => SIZE_ROLES.iter().any(|x| x.0 == r.opt("key").unwrap_or("")),
+        "ansichtsschatten" | "standardort" => vorgaben::Vorgaben::satz_lesbar(zeile),
         _ => true,
     }
 }
@@ -1024,6 +1026,43 @@ mod tests {
         s2.save_if_changed(&t2).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(!text.contains("[ansichtsschatten]") && !text.contains("[standardort]"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Review 3cd: Eine Vorgabe einer späteren Fassung (Licht „west“)
+    /// gilt als Werk, bleibt aber beim Speichern stehen, hinter der eigenen.
+    #[test]
+    fn unlesbare_vorgabe_bleibt_stehen() {
+        let d = dir("vorgabe-fremd");
+        let path = d.join("Skizzeo").join("einstellungen.txt");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let fremd = "[ansichtsschatten] on=1 fill=area light=west";
+        std::fs::write(
+            &path,
+            format!("SKIZZEO-EINSTELLUNGEN 1\n[theme] base=\"Dunkel\"\n{fremd}\n"),
+        )
+        .unwrap();
+        let mut s = Settings::new(args(&["skizzeo.exe"]), Some(d.clone()));
+        let t = s.load();
+        assert_eq!(s.vorgaben, vorgaben::Vorgaben::WERK);
+        assert_eq!(s.hints.len(), 1, "{:?}", s.hints);
+        s.vorgaben.schatten.hatch = true;
+        s.save_if_changed(&t).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            text,
+            format!(
+                "SKIZZEO-EINSTELLUNGEN 1\n[theme] base=\"Dunkel\"\n\
+                 [ansichtsschatten] on=1 fill=hatch light=front-left\n{fremd}\n"
+            )
+        );
+        let mut s2 = Settings::new(args(&["skizzeo.exe"]), Some(d.clone()));
+        s2.load();
+        assert_eq!(s2.vorgaben, s.vorgaben);
+        assert_eq!(
+            s2.hints,
+            ["Zeile 4: [ansichtsschatten] unlesbar, es gilt Zeile 3"]
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

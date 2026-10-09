@@ -50,26 +50,28 @@ impl Vorgaben {
         out
     }
 
-    /// Liest die Vorgaben aus der Einstellungsdatei; Unlesbares gilt als
-    /// Werk und gibt einen Hinweis, eine zweite Zeile zählt nicht.
+    /// Liest die Vorgaben aus der Einstellungsdatei; es gilt die erste
+    /// lesbare Zeile je Abschnitt, eine zweite lesbare zählt nicht.
+    /// Unlesbares (etwa ein Licht einer späteren Fassung) gibt einen
+    /// Hinweis und bleibt beim Speichern stehen (Review 3cd).
     pub fn lesen(text: &str) -> (Vorgaben, Vec<String>) {
         let mut v = Vorgaben::WERK;
         let mut hints = Vec::new();
-        let (mut schatten, mut ort) = (false, false);
+        // Zeile der geltenden Vorgabe je Abschnitt
+        let (mut schatten, mut ort) = (None, None);
+        let mut unlesbar = Vec::new();
         for (i, l) in text.lines().enumerate() {
             let Ok(Some(r)) = Record::parse(i + 1, l) else {
                 continue;
             };
-            let mut skip = |was: &str| {
-                hints.push(format!(
-                    "Zeile {}: [{}] {was}, es gilt Werk",
+            let doppelt = |gilt: usize| {
+                format!(
+                    "Zeile {}: [{}] doppelt, es gilt Zeile {gilt}",
                     r.line, r.section
-                ));
+                )
             };
             match r.section.as_str() {
-                "ansichtsschatten" if schatten => skip("doppelt"),
                 "ansichtsschatten" => {
-                    schatten = true;
                     let on = r.opt("on").and_then(|t| match t {
                         "1" => Some(true),
                         "0" => Some(false),
@@ -78,15 +80,17 @@ impl Vorgaben {
                     let hatch = r.opt("fill").and_then(ViewShade::parse_fill);
                     let light = r.opt("light").and_then(ViewShade::parse_light);
                     match (on, hatch, light) {
-                        (Some(on), Some(hatch), Some(light)) => {
-                            v.schatten = ViewShade { on, hatch, light }
+                        (Some(_), Some(_), Some(_)) if schatten.is_some() => {
+                            hints.extend(schatten.map(doppelt))
                         }
-                        _ => skip("unlesbar"),
+                        (Some(on), Some(hatch), Some(light)) => {
+                            v.schatten = ViewShade { on, hatch, light };
+                            schatten = Some(r.line);
+                        }
+                        _ => unlesbar.push((r.line, "ansichtsschatten")),
                     }
                 }
-                "standardort" if ort => skip("doppelt"),
                 "standardort" => {
-                    ort = true;
                     let grad = |k: &str, max: f64| {
                         r.opt(k)?
                             .parse::<f64>()
@@ -94,14 +98,35 @@ impl Vorgaben {
                             .filter(|x| x.is_finite() && x.abs() <= max)
                     };
                     match (grad("lat", 90.0), grad("lon", 180.0)) {
-                        (Some(breite), Some(laenge)) => v.ort = Lage { breite, laenge },
-                        _ => skip("unlesbar"),
+                        (Some(_), Some(_)) if ort.is_some() => hints.extend(ort.map(doppelt)),
+                        (Some(breite), Some(laenge)) => {
+                            v.ort = Lage { breite, laenge };
+                            ort = Some(r.line);
+                        }
+                        _ => unlesbar.push((r.line, "standardort")),
                     }
                 }
                 _ => {}
             }
         }
+        for (zeile, abschnitt) in unlesbar {
+            let gilt = if abschnitt == "standardort" {
+                ort
+            } else {
+                schatten
+            };
+            hints.push(match gilt {
+                Some(g) => format!("Zeile {zeile}: [{abschnitt}] unlesbar, es gilt Zeile {g}"),
+                None => format!("Zeile {zeile}: [{abschnitt}] unlesbar, es gilt Werk"),
+            });
+        }
         (v, hints)
+    }
+
+    /// Ob ein Satz `[ansichtsschatten]` oder `[standardort]` gelesen wird;
+    /// ein unlesbarer bleibt als fremde Zeile in der Datei (Review 3cd).
+    pub fn satz_lesbar(zeile: &str) -> bool {
+        Vorgaben::lesen(zeile).1.is_empty()
     }
 }
 
@@ -153,6 +178,14 @@ mod tests {
         }
         let (w, h) = Vorgaben::lesen(&format!("{t}[ansichtsschatten] on=0 fill=area light=sun\n"));
         assert_eq!(w, v);
-        assert_eq!(h.len(), 1, "{h:?}");
+        assert_eq!(h, ["Zeile 3: [ansichtsschatten] doppelt, es gilt Zeile 1"]);
+        // Unlesbar vor der lesbaren: die lesbare gilt, gleich wo sie steht
+        let (w, h) = Vorgaben::lesen(&format!("[standardort] lat=x lon=8\n{t}"));
+        assert_eq!(w, v);
+        assert_eq!(h, ["Zeile 1: [standardort] unlesbar, es gilt Zeile 3"]);
+        assert!(Vorgaben::satz_lesbar("[standardort] lat=53 lon=8"));
+        assert!(!Vorgaben::satz_lesbar(
+            "[ansichtsschatten] on=1 fill=area light=west"
+        ));
     }
 }
