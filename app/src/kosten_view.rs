@@ -1071,11 +1071,18 @@ impl KostenView {
         let x = x0 + 2.0 * (tw + TILE_GAP * s);
         let y = self.tiles_top();
         let lb = self.list_bottom();
+        // Die Hinweiskarte steht unter Kacheln und Fuß, wenn dort Platz ist
+        // (Soll KA-2), sonst über den Kacheln und ihrer Überschrift
+        // (B-Befund 11.3, 11.2)
+        let fuss = self.fuss_zeilen.get().max(1) as f32 * FOOT_LINE;
+        let frei = y + (self.tile_h() + TILE_GAP + fuss + 8.0) * s;
         let l = self.lohn.as_mut().expect("eben gesehen");
         l.set_anker((x + 12.0 * s, y + 40.0 * s, x + tw * 0.6, y + 58.0 * s));
-        // Die Hinweiskarte bleibt über den Kacheln und ihrer Überschrift
-        // (B-Befund 11.3, 11.2)
-        l.ueber = Some(lb - 8.0 * s);
+        l.ueber = if self.h as f32 - 24.0 * s - l.hoehe() * s >= frei {
+            None
+        } else {
+            Some(lb - 8.0 * s)
+        };
     }
 
     /// Preisblatt an die EP-Zelle und die Fenstergröße legen.
@@ -1177,11 +1184,15 @@ impl KostenView {
         self.top_px() + self.head() * self.scale
     }
 
-    /// Oberkante der Kacheln (px).
+    /// Oberkante der Kacheln (px): direkt unter der Liste, höchstens bis
+    /// zum Fensterboden (spaeter-darstellung 6).
     fn tiles_top(&self) -> f32 {
         let s = self.scale;
         let fuss = self.fuss_zeilen.get().max(1) as f32 * FOOT_LINE;
-        self.h as f32 - (BOTTOM_PAD + fuss + TILE_GAP + self.tile_h()) * s
+        let unten = self.h as f32 - (BOTTOM_PAD + fuss + TILE_GAP + self.tile_h()) * s;
+        let kopf = if self.kompakt() { 4.0 } else { SUM_HEAD };
+        let direkt = self.list_top() + (self.content_h() + kopf) * s;
+        unten.min(direkt)
     }
 
     /// Ist das Fenster so niedrig, dass Überschrift und Kacheln weniger als

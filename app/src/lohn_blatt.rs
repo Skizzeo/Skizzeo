@@ -151,7 +151,8 @@ impl LohnBlatt {
         self.anker = r;
     }
 
-    fn hoehe(&self) -> f32 {
+    /// Höhe (dip), für die Lage der Hinweiskarte im Reiter Kosten.
+    pub fn hoehe(&self) -> f32 {
         let fehler = if self.wert.is_none() { 18.0 } else { 0.0 };
         self.link_h()
             + match self.form {
