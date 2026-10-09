@@ -5,15 +5,15 @@
 //! [`crate::ext_werkzeug`].
 
 use crate::auswahl::{Auswahl, Hit, Zeile};
-use crate::ext_werkzeug::{Bibliothek, ExtModus};
+use crate::ext_werkzeug::ExtModus;
 use crate::scene::Scene;
 use crate::ui::{self, ExtPanel, Field, FieldRow, Id, Panel};
 use crate::{meldung, App, ViewKind, NOTICE_TIME};
 use sk_model::erweiterung::{anzeige, ExtDef, Geschoss};
 use sk_platform::{Event, Key, MouseButton};
 
-/// Ordner der Erweiterungen neben den Einstellungen (bis „Bauteil
-/// einlesen …“ in E5 der Weg hinein): `<Einstellungen>/Erweiterungen`.
+/// Ordner der Erweiterungen neben den Einstellungen:
+/// `<Einstellungen>/Erweiterungen` ([`crate::ext_ablage`]).
 pub const ORDNER: &str = "Erweiterungen";
 
 /// Längster Text aus einer .szb im Werkzeug.
@@ -351,15 +351,6 @@ impl App {
     }
 }
 
-/// Liest die Bibliothek aus dem Ordner neben den Einstellungen; ohne
-/// Einstellungen (Tests, Bildschirmfotos) bleibt sie leer.
-pub fn bibliothek(einstellungen: Option<&std::path::Path>) -> (Bibliothek, Vec<String>) {
-    match einstellungen.and_then(|p| p.parent()) {
-        Some(dir) => Bibliothek::lesen(&dir.join(ORDNER)),
-        None => (Bibliothek::default(), Vec::new()),
-    }
-}
-
 /// Paneel „Werkzeuge“ des Werkzeugs `m` (Vertrag §14); `offen`: die
 /// Typ-Liste ist offen.
 pub(crate) fn panel(m: &ExtModus, g: &Geschoss, offen: bool, scene: &mut Scene) -> ExtPanel {
@@ -411,6 +402,7 @@ mod tests {
     use super::*;
     use crate::auswahl::Zeile;
     use crate::catalog_view::{Catalog, Tab};
+    use crate::ext_werkzeug::Bibliothek;
     use crate::prefs::Win;
     use sk_paint::Canvas;
     use sk_ui::theme::Theme;

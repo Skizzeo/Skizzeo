@@ -256,6 +256,9 @@ pub struct Out {
     /// „Einfügen“ im Reiter „Erweiterungen“: Werkzeug mit dem Bauteil
     /// dieses Schlüssels (der Katalog ist ohne Änderungen geschlossen).
     pub ext_einfuegen: Option<String>,
+    /// „Bauteil einlesen …“ im Reiter „Erweiterungen“ (E5): Datei wählen,
+    /// das Fenster „Erweiterungen“ liegt dann über dem Katalog.
+    pub ext_einlesen: bool,
 }
 
 impl Out {
@@ -1467,8 +1470,7 @@ impl Catalog {
                     self.popup = Some(Popup::Export(self.draft.guid, false));
                 }
                 Tab::Company => self.import_selected(),
-                // Kommt mit „Datei › Bauteil einlesen …“ (E5)
-                Tab::Ext => {}
+                Tab::Ext => out.ext_einlesen = true,
             },
             Target::Btn(Btn::Einfuegen) => self.ext_einfuegen(out),
             Target::Combo(id) => self.open_combo(id, cx),
@@ -3329,8 +3331,7 @@ impl Catalog {
         let no_company = self.company.is_none();
         for (b, r, text) in self.foot_buttons(t, w) {
             let disabled = b == Btn::Action
-                && (no_company
-                    || self.tab == Tab::Ext
+                && ((no_company && self.tab != Tab::Ext)
                     || (self.tab == Tab::Project && (self.draft_new || self.nutzer))
                     || (self.tab == Tab::Company && self.csel.is_none()));
             widgets::button(

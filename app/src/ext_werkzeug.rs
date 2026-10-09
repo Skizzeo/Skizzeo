@@ -13,7 +13,6 @@
 
 use sk_math::Vec3;
 use sk_model::erweiterung::{ExtDef, ExtFeld, ExtPart, Geschoss};
-use std::path::Path;
 
 /// Wie ein Bauteil gesetzt wird (`[bedienung] einfuegen`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -197,40 +196,6 @@ pub struct Bibliothek {
 }
 
 impl Bibliothek {
-    /// Liest alle `.szb` eines Ordners (geprüft wie beim Einlesen); nur
-    /// fehlerfreie kommen hinein. Dazu je abgewiesener Datei ein Hinweis
-    /// mit dem ersten Fehler. Ein fehlender Ordner ist leer.
-    pub fn lesen(dir: &Path) -> (Bibliothek, Vec<String>) {
-        let mut b = Bibliothek::default();
-        let mut hinweise = Vec::new();
-        let Ok(rd) = std::fs::read_dir(dir) else {
-            return (b, hinweise);
-        };
-        let mut pfade: Vec<_> = rd
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("szb")))
-            .collect();
-        pfade.sort();
-        for p in pfade {
-            let name = p
-                .file_name()
-                .map_or(String::new(), |n| n.to_string_lossy().into_owned());
-            let text = match std::fs::read(&p) {
-                Ok(b) => String::from_utf8_lossy(&b).into_owned(),
-                Err(e) => {
-                    hinweise.push(format!("{name}: nicht lesbar ({e})"));
-                    continue;
-                }
-            };
-            match ExtDef::einlesen(&text) {
-                Ok(d) => b.dazu(d),
-                Err(e) => hinweise.push(format!("{name}: {e}")),
-            }
-        }
-        (b, hinweise)
-    }
-
     /// Nimmt `d` auf; eine Definition mit gleichem `key` weicht der höheren
     /// Version.
     pub fn dazu(&mut self, d: ExtDef) {
@@ -346,7 +311,8 @@ mod tests {
         }
         std::fs::write(dir.join("kaputt.szb"), "SZB 0\n[bauteil] key=x\n").unwrap();
         std::fs::write(dir.join("notiz.txt"), "kein Bauteil").unwrap();
-        let (b, h) = Bibliothek::lesen(&dir);
+        let a = crate::ext_ablage::Ablage::lesen(&dir);
+        let (b, h) = (a.bibliothek(), a.hinweise);
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(b.defs.len(), 5);
         assert_eq!(h.len(), 1);
@@ -370,7 +336,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            Bibliothek::lesen(Path::new("/gibt/es/nicht")).0,
+            crate::ext_ablage::Ablage::lesen(std::path::Path::new("/gibt/es/nicht")).bibliothek(),
             Bibliothek::default()
         );
     }

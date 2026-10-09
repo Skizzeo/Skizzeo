@@ -30,9 +30,12 @@ mod delete;
 mod document;
 mod draw_table;
 mod erweiterung;
+mod ext_ablage;
 mod ext_app;
 mod ext_cache;
+mod ext_fenster_app;
 mod ext_props;
+mod ext_verwaltung;
 mod ext_werkzeug;
 mod flush_pick;
 mod frame_time;
@@ -260,6 +263,9 @@ const OVERLAY_INPUT_OLD: usize = OVERLAY_HINT + 10;
 /// Maske „Projektdaten“ (Paket PD-2) mit Abdunkeln, über den Paneelen.
 const OVERLAY_PD_SCRIM: usize = OVERLAY_HINT + 11;
 const OVERLAY_PD: usize = OVERLAY_HINT + 12;
+/// Fenster „Erweiterungen“ (E5) mit Abdunkeln, auch über dem Bauteilkatalog.
+const OVERLAY_EXT_SCRIM: usize = OVERLAY_HINT + 13;
+const OVERLAY_EXT: usize = OVERLAY_HINT + 14;
 
 /// So lange steht die Pille nach dem Loslassen (Nachkorrektur, Paket 8b).
 const POST_PILL: std::time::Duration = std::time::Duration::from_millis(1500);
@@ -690,8 +696,11 @@ struct App {
     /// Typ-Liste am Chip (K3) und ob ihr Bild neu zu zeichnen ist.
     type_menu: Option<type_menu::TypeMenu>,
     type_menu_dirty: bool,
-    /// Eingelesene Erweiterungen (E6) und ihre offene Liste.
+    /// Eingelesene Erweiterungen (E6) und ihre offene Liste; der Ordner
+    /// und das Fenster „Erweiterungen“ (E5).
     ext_bib: ext_werkzeug::Bibliothek,
+    ext_ablage: ext_ablage::Ablage,
+    ext_fenster: Option<ext_verwaltung::Fenster>,
     ext_liste: Option<auswahl::Auswahl>,
     /// Stand (Revision, Farbschema), für den der Chip im Werkzeug gilt.
     tool_chip_key: Option<(u64, u64)>,
@@ -1705,6 +1714,8 @@ impl App {
             Command::Catalog => self.open_catalog(),
             Command::Materials => self.open_materials(None),
             Command::Verwaltung => self.open_verwaltung(None),
+            Command::Erweiterungen => self.ext_fenster_auf(),
+            Command::BauteilEinlesen => self.ext_einlesen(surface),
             Command::Backups => self.open_backups(),
             Command::OpenBackup(_) => self.confirm_then(c, surface),
             Command::Delete => self.delete_selection(),
@@ -1720,6 +1731,7 @@ impl App {
             || self.materials.is_some()
             || self.verwaltung.is_some()
             || self.projektdaten.is_some()
+            || self.ext_fenster.is_some()
     }
 
     /// Bauteilkatalog öffnen (K3); er liegt vorn wie das Einstellungsfenster.
@@ -1823,6 +1835,9 @@ impl App {
         }
         if out.pick_company {
             self.pick_company(surface);
+        }
+        if out.ext_einlesen {
+            self.ext_einlesen(surface);
         }
         if out.applied {
             self.upload_model();
@@ -3925,6 +3940,9 @@ impl App {
         if self.projektdaten.is_some() && self.handle_projektdaten(e) {
             return !self.quit;
         }
+        if self.ext_fenster.is_some() && self.handle_ext_fenster(e, surface) {
+            return !self.quit;
+        }
         if self.prefs.is_some() && self.handle_prefs(e, surface) {
             return !self.quit;
         }
@@ -5994,6 +6012,7 @@ impl App {
         self.paint_menu();
         self.paint_save_dialog();
         self.paint_projektdaten();
+        self.paint_ext_fenster();
         self.paint_prefs();
         self.paint_type_menu();
         self.overlay_dirty = false;
@@ -7727,9 +7746,11 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     };
     let (quiet, mut hints): (Vec<_>, Vec<_>) = hints.into_iter().partition(|h| catalog::quiet(h));
     // Erweiterungen aus dem Ordner neben den Einstellungen (E6)
-    let (ext_bib, ext_hinweise) = ext_app::bibliothek(settings.path.as_deref());
+    let ext_ablage = ext_fenster_app::ablage(settings.path.as_deref());
+    let ext_bib = ext_ablage.bibliothek();
     hints.extend(
-        ext_hinweise
+        ext_ablage
+            .hinweise
             .iter()
             .map(|h| meldung::Meldung::mit("Erweiterung {}", &[h])),
     );
@@ -7811,6 +7832,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         type_menu: None,
         type_menu_dirty: false,
         ext_bib,
+        ext_ablage,
+        ext_fenster: None,
         ext_liste: None,
         tool_chip_key: None,
         w,

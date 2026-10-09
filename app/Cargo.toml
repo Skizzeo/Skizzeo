@@ -11,4 +11,5 @@ sk-cost = { path = "../crates/sk-cost" }
 sk-platform = { path = "../crates/sk-platform" }
 sk-render = { path = "../crates/sk-render" }
 sk-paint = { path = "../crates/sk-paint" }
+sk-szb = { path = "../crates/sk-szb" }
 sk-ui = { path = "../crates/sk-ui" }

@@ -3349,6 +3349,8 @@ fn befehl(c: Option<Command>) -> Option<String> {
         Command::Catalog => "Bauteilkatalog".into(),
         Command::Materials => "Baustoffe".into(),
         Command::Verwaltung => "Verwaltung".into(),
+        Command::Erweiterungen => "Erweiterungen".into(),
+        Command::BauteilEinlesen => "Bauteil einlesen".into(),
         Command::Delete => "Löschen".into(),
         Command::Backups => "Sicherungen".into(),
         Command::OpenBackup(i) => format!("Sicherung {i}"),
@@ -3586,6 +3588,8 @@ fn a60_dateimenue_eintraege_und_ausgrauen() {
         ("Einstellungen …", "Strg+Komma", true),
         ("Bauteilkatalog …", "", true),
         ("Baustoffe …", "", true),
+        ("Erweiterungen …", "", true),
+        ("Bauteil einlesen …", "", true),
         ("Verwaltung …", "", true),
         ("—", "", false),
         ("Hilfe", "F1", true),
@@ -4128,14 +4132,17 @@ fn a66_einstellungen_aufrufen() {
     // „Baustoffe …“ direkt darunter
     assert_eq!(z[i + 1].0, "Bauteilkatalog …");
     assert_eq!(z[i + 2].0, "Baustoffe …");
-    assert_eq!(z[i + 3].0, "Verwaltung …");
-    assert_eq!(z[i + 4].0, "—");
+    // E5: Erweiterungen und Bauteil einlesen unter den Baustoffen
+    assert_eq!(z[i + 3].0, "Erweiterungen …");
+    assert_eq!(z[i + 4].0, "Bauteil einlesen …");
+    assert_eq!(z[i + 5].0, "Verwaltung …");
+    assert_eq!(z[i + 6].0, "—");
     // Paket 9 (Koordinator 20:04): „Hilfe“ und „Bildzeit messen (10 s)“
     // vor „Schließen“, als eigene Gruppe (Darstellung p9 §3.3, (au))
-    assert_eq!(z[i + 5].0, "Hilfe");
-    assert_eq!(z[i + 6].0, "Bildzeit messen (10 s)");
-    assert_eq!(z[i + 7].0, "—", "eigene Gruppe");
-    assert_eq!(z[i + 8].0, "Schließen");
+    assert_eq!(z[i + 7].0, "Hilfe");
+    assert_eq!(z[i + 8].0, "Bildzeit messen (10 s)");
+    assert_eq!(z[i + 9].0, "—", "eigene Gruppe");
+    assert_eq!(z[i + 10].0, "Schließen");
     let komma = Key::Other(0xBC);
     let mut k = Shortcuts::default();
     assert_eq!(

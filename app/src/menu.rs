@@ -36,6 +36,10 @@ pub enum Command {
     Materials,
     /// Fenster „Verwaltung …“ (KA-3a2, Bedienbarkeit 3.5).
     Verwaltung,
+    /// Fenster „Erweiterungen …“ (E5).
+    Erweiterungen,
+    /// „Bauteil einlesen …“: .szb wählen und prüfen (E5).
+    BauteilEinlesen,
     /// Auswahl löschen (Entf, Paket „Löschen“).
     Delete,
     /// Liste „Sicherungen …“ (F-13).
@@ -225,6 +229,8 @@ impl FileMenu {
             item("Einstellungen …", "Strg+Komma", Command::Settings, true),
             item("Bauteilkatalog …", "", Command::Catalog, true),
             item("Baustoffe …", "", Command::Materials, true),
+            item("Erweiterungen …", "", Command::Erweiterungen, true),
+            item("Bauteil einlesen …", "", Command::BauteilEinlesen, true),
             item(
                 "Verwaltung …",
                 &vorschlaege_text(self.vorschlaege),

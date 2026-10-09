@@ -58,5 +58,6 @@ dependencies = [
  "sk-paint",
  "sk-platform",
  "sk-render",
+ "sk-szb",
  "sk-ui",
 ]

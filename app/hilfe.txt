@@ -47,7 +47,7 @@ Löschen | wählen, dann **Entf** oder Rechtsklick › Löschen
 
 [thema] id=erweiterungen titel="Erweiterungen"
 Was | Bauteile aus der Bauteil-Werkbank (.szb), etwa Stütze, Treppe oder Geländer
-Ablage | Ordner „Erweiterungen“ neben den Einstellungen; Skizzeo liest ihn beim Start
+Einlesen | Datei › „Bauteil einlesen …“ prüft eine .szb und legt sie im Ordner „Erweiterungen“ ab
 Starten | Bauteilkatalog › Reiter „Erweiterungen“ › „Einfügen“ oder Knopf „Erweiterungen“ unter „Innenwand“
 Punkt | Klick setzt das Bauteil, **Tab** dreht es, wenn es drehbar ist
 Linie | Klick setzt Anfang und Ende, Zahl + **Enter** die Länge, **R** den 90°-Sprung
@@ -55,7 +55,7 @@ Rechteck | Klick setzt zwei Ecken, Zahl + **Enter** die Breite, **Tab** die Tief
 Typ und Maße | Typ-Chip und Felder im Paneel gelten für die nächsten Bauteile
 Beenden | **Esc** oder Klick auf den Knopf des Bauteils
 Ändern | Bauteil wählen: Typ, Felder und Knöpfe im Paneel „Eigenschaften“, jede Änderung ein Schritt
-Im Projekt | Die Datei trägt das Bauteil mit und öffnet auch ohne den Ordner
+Verwalten | Datei › „Erweiterungen …“: Ein/Aus, Aktualisieren, Entfernen; die Projektdatei trägt jedes Bauteil mit
 
 [thema] id=ziehen titel="Wand verschieben"
 Greifen | über den Wandfuß fahren, violettes Band greifen und ziehen (10-mm-Raster)
