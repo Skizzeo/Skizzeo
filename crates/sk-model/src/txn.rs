@@ -95,10 +95,11 @@ pub enum Change {
         old: Option<String>,
         new: Option<String>,
     },
-    /// Projektangaben (Bauvorhaben, Bauherr, Aufsteller; KA-0b).
+    /// Projektangaben (Bauvorhaben, Bauherr, Aufsteller; KA-0b; Paket PD).
+    /// Geschachtelt, damit jede Änderung im Verlauf klein bleibt.
     Project {
-        old: Project,
-        new: Project,
+        old: Box<Project>,
+        new: Box<Project>,
     },
 }
 

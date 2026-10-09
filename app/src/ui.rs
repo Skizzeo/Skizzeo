@@ -60,6 +60,8 @@ pub enum Id {
     View(ViewKind),
     /// „Mengen · Kosten · AVA“ (B7, KA-2a, KA-4): öffnet das Mengenfenster oder holt es nach vorn.
     Quantity,
+    /// „Projektdaten“ über „Werkzeuge“ (Paket PD-2): öffnet die Maske.
+    Projektdaten,
     Field(Field),
     /// Griff einer Ebene im Paneel „Geschosse“.
     Grip(Grip),
@@ -659,6 +661,9 @@ pub struct Ui {
     /// Das Fundament ist aktiv: dort gibt es noch nichts zu zeichnen, beide
     /// Wandknöpfe sind gesperrt (E18).
     pub foundation_active: bool,
+    /// Unter dem Knopf „Projektdaten“: Bezeichnung (sonst Projektart) und
+    /// „Projekt-Nr. …“, ohne Daten „noch leer“ (Paket PD-2).
+    pub projekt_zeilen: Vec<String>,
     /// Dialog „Gebäude erstellen“ offen (modal, E16).
     pub dialog: bool,
     /// Zahlenfelder des Dialogs (Vorgaben des Gebäudes).
@@ -737,6 +742,28 @@ pub struct UiOut {
     pub level: Option<LevelEvent>,
 }
 
+/// Unter dem Knopf „Projektdaten“, solange nichts gesetzt ist.
+pub const PROJEKT_LEER: &str = "noch leer";
+
+/// Die Zeilen unter dem Knopf „Projektdaten“: Bezeichnung, sonst Projektart,
+/// und „Projekt-Nr. …“; fehlt alles, „noch leer“ (soll-projektdaten-knopf).
+pub fn projekt_zeilen(p: &sk_model::Project) -> Vec<String> {
+    let erste = |t: &str| t.lines().next().unwrap_or("").to_string();
+    let mut v = Vec::new();
+    if !p.site.is_empty() {
+        v.push(erste(&p.site));
+    } else if !p.kind.is_empty() {
+        v.push(erste(&p.kind));
+    }
+    if !p.number.is_empty() {
+        v.push(format!("Projekt-Nr. {}", erste(&p.number)));
+    }
+    if v.is_empty() {
+        v.push(PROJEKT_LEER.into());
+    }
+    v
+}
+
 /// Zeilen des Werkzeug-Paneels (für Zeichnen und Treffertest gleich).
 enum Row {
     Title(&'static str),
@@ -754,6 +781,9 @@ enum Row {
     Detail(String),
     /// Blasser Text über die ganze Breite.
     Text(String),
+    /// Blasser Text, gekürzt, ohne Abstand danach, nur die letzte Zeile
+    /// mit Luft (Projektdaten unter dem Knopf).
+    Caption(String, bool),
     /// Verweis in Akzent („Mehr …“), klappt auf bzw. zu.
     More(Id),
     Segments([(Id, &'static str); 3]),
@@ -769,17 +799,28 @@ enum Row {
 }
 
 fn tool_rows(
+    projekt: &[String],
     interior: bool,
     chip: bool,
     layers: &[(Rgba, String)],
     upper_active: bool,
     foundation_active: bool,
 ) -> Vec<Row> {
-    let mut rows = vec![
+    // Projektdaten als eigener Abschnitt über den Werkzeugen (Paket PD-2)
+    let mut rows = vec![Row::Button(Id::Projektdaten, "Projektdaten")];
+    let n = projekt.len();
+    rows.extend(
+        projekt
+            .iter()
+            .enumerate()
+            .map(|(i, z)| Row::Caption(z.clone(), i + 1 == n)),
+    );
+    rows.extend([
+        Row::Separator,
         Row::Title("Werkzeuge"),
         Row::Button(Id::Building, "Gebäude"),
         Row::Button(Id::Interior, "Innenwand"),
-    ];
+    ]);
     // Zweizeilig ohne Abstand dazwischen, damit nichts am Rand abbricht
     if foundation_active {
         rows.push(Row::Hint("Im Fundament gibt es noch"));
@@ -926,6 +967,7 @@ fn row_height(r: &Row) -> (f32, f32) {
         Row::Error(_) => (15.0, 6.0),
         Row::Detail(_) => (17.0, 6.0),
         Row::Text(_) => (17.0, 6.0),
+        Row::Caption(_, letzte) => (17.0, if *letzte { 8.0 } else { 0.0 }),
         Row::More(..) => (17.0, 6.0),
         Row::Separator => (1.0, 10.0),
         Row::Hint(_) => (17.0, 0.0),
@@ -953,6 +995,7 @@ impl Ui {
             tool_chip: None,
             upper_active: false,
             foundation_active: false,
+            projekt_zeilen: vec![PROJEKT_LEER.into()],
             dialog: false,
             dialog_fields: Vec::new(),
             props: None,
@@ -991,6 +1034,7 @@ impl Ui {
     fn rows(&self, p: Panel) -> Vec<Row> {
         match p {
             Panel::Tools => tool_rows(
+                &self.projekt_zeilen,
                 self.interior,
                 self.tool_chip.is_some(),
                 &self.wall_layers,
@@ -1572,7 +1616,8 @@ impl Ui {
             Id::Quantity => self.quantity_open,
             // Standardknopf des Dialogs
             Id::DialogStart => true,
-            Id::Field(_)
+            Id::Projektdaten
+            | Id::Field(_)
             | Id::Grip(_)
             | Id::Storey(_)
             | Id::DialogClose
@@ -2063,6 +2108,11 @@ impl Ui {
                     y + 13.0 * s,
                     col.text_dim,
                 ),
+                Row::Caption(t, _) => {
+                    let px = size.font_small * s;
+                    let t = widgets::ellipsize(regular, &t, px, inner_w);
+                    widgets::text(&mut c, regular, &t, px, x, y + 13.0 * s, col.text_dim)
+                }
                 Row::Separator => widgets::separator(&mut c, x, y, inner_w, s, t),
                 Row::Locked => {
                     let px = size.font_detail * s;
@@ -2993,7 +3043,7 @@ mod tests {
         assert_eq!(click(&mut ui, x, y), Some(Id::DialogClose));
         // Modal: der Knopf „Gebäude“ darunter ist nicht erreichbar
         let r = ui.rect(Panel::Tools, 1280, 32);
-        let (_, b, _) = ui.buttons(Panel::Tools)[0];
+        let (_, b, _) = ui.buttons(Panel::Tools)[1];
         let (x, y) = ((r.x + b.x + 5.0) as f64, (r.y + b.y + 5.0) as f64);
         assert_eq!(click(&mut ui, x, y), None);
         let m = Modifiers::default();
@@ -3119,7 +3169,9 @@ mod tests {
     fn knoepfe_werden_getroffen() {
         let mut ui = Ui::new(1.0, &Theme::dark());
         let r = ui.rect(Panel::Tools, 1280, 32);
-        let (id, b, _) = ui.buttons(Panel::Tools)[0];
+        // Ganz oben „Projektdaten“, eigener Abschnitt (Paket PD-2)
+        assert_eq!(ui.buttons(Panel::Tools)[0].0, Id::Projektdaten);
+        let (id, b, _) = ui.buttons(Panel::Tools)[1];
         assert_eq!(id, Id::Building);
         let hit = click(&mut ui, (r.x + b.x + 5.0) as f64, (r.y + b.y + 5.0) as f64);
         assert_eq!(hit, Some(Id::Building));
@@ -3640,12 +3692,14 @@ mod levels_tests {
 
     /// A47 und Test 5 aus E14: auch im kleinen Fenster nichts abgeschnitten;
     /// reicht der Platz nicht, wird es eine Liste mit denselben Zahlen.
-    /// Seit dem kürzeren Werkzeug-Hinweis (Paket 8, §2.7) reicht der Platz
-    /// bis knapp unter 400 px Höhe.
+    /// Seit dem kürzeren Werkzeug-Hinweis (Paket 8, §2.7) reichte der Platz
+    /// bis knapp unter 400 px Höhe, seit dem Knopf „Projektdaten“ über den
+    /// Werkzeugen (Paket PD-2) bis knapp unter 470 px; die Liste reicht
+    /// bis 440 px (vorher 380).
     #[test]
     fn kleines_fenster_diagramm_oder_liste() {
         let (mut ui, _) = ui_mit_geschossen();
-        for (w, h, list) in [(900u32, 600u32, false), (900, 440, false), (900, 380, true)] {
+        for (w, h, list) in [(900u32, 600u32, false), (900, 500, false), (900, 440, true)] {
             ui.fit(1.0, w, h);
             let r = ui.rect(Panel::Levels, w, 32);
             let t = ui.rect(Panel::Tools, w, 32);

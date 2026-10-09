@@ -355,6 +355,39 @@ impl Font {
         Some(())
     }
 
+    /// Glyphe zu einem Zeichen (0: fehlt in der Schrift); für das PDF.
+    pub fn glyph(&self, c: char) -> u16 {
+        self.glyph_index(c)
+    }
+
+    /// Vorschub einer Glyphe in Tausendstel des Gevierts (PDF `/W`).
+    pub fn advance_milli(&self, gid: u16) -> f32 {
+        self.advance(gid) * 1000.0 / self.units_per_em
+    }
+
+    /// Ober- und Unterlänge und Umgrenzung (x0, y0, x1, y1) aller Glyphen
+    /// in Tausendstel des Gevierts (PDF `/FontDescriptor`).
+    pub fn metrik_milli(&self) -> (f32, f32, [f32; 4]) {
+        let k = 1000.0 / self.units_per_em;
+        let d = &self.data;
+        let n = u16_at(d, 4).unwrap_or(0) as usize;
+        let head = (0..n).find_map(|i| {
+            let rec = 12 + i * 16;
+            (d.get(rec..rec + 4)? == b"head").then(|| u32_at(d, rec + 8))?
+        });
+        let bbox = head.map_or([0.0, self.descender, 1000.0, self.ascender], |h| {
+            let h = h as usize;
+            let v = |o: usize| f32::from(i16_at(d, h + o).unwrap_or(0));
+            [v(36), v(38), v(40), v(42)]
+        });
+        (self.ascender * k, self.descender * k, bbox.map(|v| v * k))
+    }
+
+    /// Die ganze Schriftdatei (zum Einbetten ins PDF).
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
     /// Breite eines Textes in Pixeln bei Schriftgröße `px` (Höhe des Gevierts).
     pub fn width(&self, text: &str, px: f32) -> f32 {
         let s = px / self.units_per_em;

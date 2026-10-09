@@ -846,3 +846,56 @@ fn kurztext_umbrechen() {
     let (a, _) = umbrechen(f, "Stahlbetondecke", 11.0, f.width("Stahl", 11.0) + 0.5);
     assert_eq!(a, "Stahl");
 }
+
+/// Paket PD-3, Abnahme 4: Kopf und CSV lesen die Projektdaten aus einer
+/// Quelle; nach einer Änderung über die Maske stehen sie sofort da,
+/// mehrzeilige Felder in der CSV mit „, “.
+#[test]
+fn projektdaten_in_kopf_und_csv() {
+    let mut s = haus();
+    let mut v = AvaView::new();
+    (v.w, v.h) = (1400, 900);
+    v.datei = "haus.szo".into();
+    v.sync(&mut s, None);
+    let k = &v.lv().unwrap().kopf;
+    assert_eq!(
+        (k.projektnummer.as_deref(), k.bauort.as_deref()),
+        (None, None)
+    );
+    let mut p = s.model().project().clone();
+    p.kind = "Neubau Einfamilienhaus".into();
+    p.place = "Musterweg 1\n27777 Ganderkesee".into();
+    p.number = "01/26".into();
+    p.client = "Max Mustermann".into();
+    p.client_addr = "Phantasiestraße 7\n27777 Ganderkesee".into();
+    assert!(s.projekt_setzen("Projektdaten geändert", p.clone()));
+    v.sync(&mut s, None);
+    let k = &v.lv().unwrap().kopf;
+    assert_eq!(k.projektnummer.as_deref(), Some("01/26"));
+    assert_eq!(k.projektart.as_deref(), Some("Neubau Einfamilienhaus"));
+    assert_eq!(k.bauherr_anschrift.as_deref(), Some(p.client_addr.as_str()));
+    assert_eq!(
+        k.aufsteller_anschrift, None,
+        "ohne Verfasser keine Anschrift"
+    );
+    let z = csv_zeilen(&v);
+    let wert = |k: &str| z.iter().find(|r| r[0] == k).map(|r| r[1].clone());
+    assert_eq!(wert("Projekt-Nr.").as_deref(), Some("01/26"));
+    assert_eq!(
+        wert("Bauort").as_deref(),
+        Some("Musterweg 1, 27777 Ganderkesee")
+    );
+    assert_eq!(wert("Bauherr").as_deref(), Some("Max Mustermann"));
+    assert_eq!(
+        wert("Anschrift Bauherr").as_deref(),
+        Some("Phantasiestraße 7, 27777 Ganderkesee")
+    );
+    // Abnahme 3/4: 02/26 steht nach dem Schritt sofort im Kopf
+    p.number = "02/26".into();
+    assert!(s.projekt_setzen("Projektdaten geändert", p));
+    v.sync(&mut s, None);
+    assert_eq!(v.lv().unwrap().kopf.projektnummer.as_deref(), Some("02/26"));
+    assert!(s.undo());
+    v.sync(&mut s, None);
+    assert_eq!(v.lv().unwrap().kopf.projektnummer.as_deref(), Some("01/26"));
+}

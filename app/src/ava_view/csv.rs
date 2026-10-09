@@ -112,9 +112,25 @@ impl AvaView {
         let k = &lv.kopf;
         let p = self.projekt.as_ref();
         zeile(&["Leistungsverzeichnis", &format!("LV {}", k.los)]);
+        // Mehrzeilige Projektdaten (Bauort, Anschriften) in einer Zelle mit
+        // „, “ (Paket PD-3)
+        let einzeilig = |v: &Option<String>| {
+            v.as_deref()
+                .unwrap_or("")
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         zeile(&["Bauvorhaben", &self.bauvorhaben(lv)]);
+        zeile(&["Projektart", &einzeilig(&k.projektart)]);
+        zeile(&["Bauort", &einzeilig(&k.bauort)]);
+        zeile(&["Projekt-Nr.", &einzeilig(&k.projektnummer)]);
         zeile(&["Bauherr", p.map_or("", |p| p.client.as_str())]);
+        zeile(&["Anschrift Bauherr", &einzeilig(&k.bauherr_anschrift)]);
         zeile(&["Aufsteller", k.aufsteller.as_deref().unwrap_or("")]);
+        zeile(&["Anschrift Aufsteller", &einzeilig(&k.aufsteller_anschrift)]);
         zeile(&["Los", &k.los]);
         zeile(&["Umfang", &self.kopf_umfang.0]);
         zeile(&["Datum", &self.kopf_umfang.1]);

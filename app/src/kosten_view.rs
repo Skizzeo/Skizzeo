@@ -263,7 +263,7 @@ pub enum Schreiben {
     /// AVA-Kopf: Bauvorhaben, Bauherr oder Aufsteller (`Model::set_project`,
     /// ein Schritt „Bauherr gesetzt“ usw.).
     Projekt {
-        projekt: sk_model::Project,
+        projekt: Box<sk_model::Project>,
         label: &'static str,
     },
     /// AVA „Mehr“ › „Geschosse als Untertitel“ (`LvGliederungSetzen`).

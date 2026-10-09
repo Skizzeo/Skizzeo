@@ -38,16 +38,70 @@ pub struct Defaults {
     pub interior_wall: LayerSetId,
 }
 
-/// Das Projekt (IFC: IfcProject).
+/// Das Projekt (IFC: IfcProject) mit seinen Projektdaten (BIM §3.12a,
+/// Regel 110); ein leeres Feld ist nicht gesetzt.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Project {
     pub guid: Guid,
     pub name: String,
-    /// Bauvorhaben, Bauherr, Aufsteller (BIM §3.12); leer = nicht
-    /// geschrieben.
+    /// Bauvorhaben (Bezeichnung), Bauherr, Planung bzw. Aufsteller.
     pub site: String,
     pub client: String,
     pub author: String,
+    /// Projektart, Bauort, Projektnummer, Anschriften; mehrzeilige Felder
+    /// mit `\n`.
+    pub kind: String,
+    pub place: String,
+    pub number: String,
+    pub client_addr: String,
+    pub author_addr: String,
+    /// Die Projektdaten stehen in `[projectinfo]`; sonst stehen `site`,
+    /// `client` und `author` an `[project]` wie vor Regel 110.
+    pub info: bool,
+    /// `site`, `client`, `author` an `[project]` einer Datei, die auch
+    /// `[projectinfo]` hat: gelten nicht und bleiben bytegleich, bis die
+    /// erste Änderung sie entfernt (Regel 110).
+    pub legacy: [String; 3],
+}
+
+impl Project {
+    /// Ein Projekt ohne Projektdaten.
+    pub fn new(guid: Guid, name: &str) -> Project {
+        Project {
+            guid,
+            name: name.to_string(),
+            site: String::new(),
+            client: String::new(),
+            author: String::new(),
+            kind: String::new(),
+            place: String::new(),
+            number: String::new(),
+            client_addr: String::new(),
+            author_addr: String::new(),
+            info: false,
+            legacy: Default::default(),
+        }
+    }
+
+    /// Die acht Projektdaten in der Reihenfolge von `[projectinfo]`:
+    /// Schlüssel und Wert.
+    pub fn fields(&self) -> [(&'static str, &str); 8] {
+        [
+            ("kind", &self.kind),
+            ("projno", &self.number),
+            ("site", &self.site),
+            ("place", &self.place),
+            ("client", &self.client),
+            ("clientaddr", &self.client_addr),
+            ("author", &self.author),
+            ("authoraddr", &self.author_addr),
+        ]
+    }
+
+    /// Sind alle Projektdaten leer?
+    pub fn is_blank(&self) -> bool {
+        self.fields().iter().all(|(_, v)| v.is_empty())
+    }
 }
 
 /// Fehler beim Umbenennen eines Bauteils.
@@ -290,13 +344,7 @@ impl Model {
             elevation: 0.0,
             height: STOREY_HEIGHT,
         });
-        let project = Project {
-            guid: guids.next_guid(),
-            name: "Projekt".into(),
-            site: String::new(),
-            client: String::new(),
-            author: String::new(),
-        };
+        let project = Project::new(guids.next_guid(), "Projekt");
         // Nach der Projekt-Guid angelegt, damit die älteren Guids gleich bleiben
         let _ = guids.next_guid();
         let interior_wall = layer_sets.insert(interior_set(INTERIOR_TYPE_GUID, aerated));
@@ -606,23 +654,27 @@ impl Model {
         &self.project
     }
 
-    /// Projektangaben ändern (Bauvorhaben, Bauherr, Aufsteller; KA-0b). Guid
-    /// und Name bleiben.
+    /// Projektdaten ändern; Guid und Name bleiben. Die erste Änderung zieht
+    /// die Daten nach `[projectinfo]` um und nimmt `site`, `client`,
+    /// `author` von `[project]` (Regel 110), im selben Schritt. Gleiche
+    /// Daten ändern nichts.
     pub fn set_project(&mut self, p: Project) -> bool {
+        if p.fields() == self.project.fields() {
+            return false;
+        }
         let p = Project {
             guid: self.project.guid,
             name: self.project.name.clone(),
+            info: true,
+            legacy: Default::default(),
             ..p
         };
-        if p == self.project {
-            return false;
-        }
         match self.txn.as_mut() {
             Some(t) => {
                 if t.noted.insert(Key::Project) {
                     t.changes.push(Change::Project {
-                        old: self.project.clone(),
-                        new: self.project.clone(),
+                        old: Box::new(self.project.clone()),
+                        new: Box::new(self.project.clone()),
                     });
                 }
             }
@@ -631,6 +683,24 @@ impl Model {
         self.project = p;
         self.touch();
         true
+    }
+
+    /// Projektdaten eines neuen Projekts (Maske bei „Neu“): ohne
+    /// Rückgängig-Schritt, es gibt davor nichts, wohin man zurück könnte.
+    /// Nur außerhalb eines Schritts.
+    pub fn init_project(&mut self, p: Project) {
+        debug_assert!(self.txn.is_none(), "Anfangswerte im Schritt");
+        if p.fields() == self.project.fields() {
+            return;
+        }
+        self.project = Project {
+            guid: self.project.guid,
+            name: self.project.name.clone(),
+            info: true,
+            legacy: Default::default(),
+            ..p
+        };
+        self.touch();
     }
 
     /// Zeilen eines Erweiterungsabschnitts (KA-0b) in Dateireihenfolge.
@@ -5687,7 +5757,7 @@ impl Model {
             Change::ForeignRecords { new, .. } => *new = self.foreign.records.clone(),
             // schon beim Ändern eingetragen
             Change::Ext { .. } => {}
-            Change::Project { new, .. } => *new = self.project.clone(),
+            Change::Project { new, .. } => **new = self.project.clone(),
         }
     }
 
@@ -5779,7 +5849,7 @@ impl Model {
                 m.ext.set(section, *at, to.clone(), from.clone());
                 m.ext_revision += 1;
             }
-            Change::Project { old, new } => m.project = pick(dir, old, new),
+            Change::Project { old, new } => m.project = *pick(dir, old, new),
         };
         // Rückwärts in umgekehrter Reihenfolge: ein Platz wird erst frei, dann neu belegt
         match dir {

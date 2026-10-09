@@ -44,10 +44,20 @@ impl Positionsart {
 pub struct LvKopf {
     /// `Project.site`.
     pub bauvorhaben: Option<String>,
+    /// `Project.kind` („Neubau Einfamilienhaus“, Paket PD-3).
+    pub projektart: Option<String>,
+    /// `Project.place`, Zeilen mit `\n` (Paket PD-3).
+    pub bauort: Option<String>,
+    /// `Project.number` („01/26“, Paket PD-3).
+    pub projektnummer: Option<String>,
     /// `Project.client`.
     pub bauherr: Option<String>,
+    /// `Project.client_addr`, Zeilen mit `\n` (Paket PD-3).
+    pub bauherr_anschrift: Option<String>,
     /// `Project.author`, sonst der Name des Firmenkatalogs.
     pub aufsteller: Option<String>,
+    /// `Project.author_addr`, nur zum Verfasser im Projekt (Paket PD-3).
+    pub aufsteller_anschrift: Option<String>,
     pub los: String,
     pub los_nr: String,
     /// „Anfrage ohne Preise“ oder „mit Preisen“.
@@ -766,7 +776,12 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
     };
     let kopf = LvKopf {
         bauvorhaben: text(&pr.site),
+        projektart: text(&pr.kind),
+        bauort: text(&pr.place),
+        projektnummer: text(&pr.number),
         bauherr: text(&pr.client),
+        bauherr_anschrift: text(&pr.client_addr),
+        aufsteller_anschrift: text(&pr.author).and_then(|_| text(&pr.author_addr)),
         aufsteller: text(&pr.author).or(firma),
         los: los.map_or(String::new(), |l| l.name.clone()),
         los_nr: los_nr.clone(),

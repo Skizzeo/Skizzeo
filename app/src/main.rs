@@ -36,6 +36,7 @@ mod perf;
 mod picking;
 mod prefs;
 mod preis_blatt;
+mod projektdaten;
 mod quantity;
 mod scene;
 mod schedule_view;
@@ -222,6 +223,9 @@ const OVERLAY_PICK: usize = OVERLAY_HINT + 8;
 const OVERLAY_INPUT: usize = OVERLAY_HINT + 9;
 /// Live-Pille, die beim ersten Tippen in die Eingabe überblendet.
 const OVERLAY_INPUT_OLD: usize = OVERLAY_HINT + 10;
+/// Maske „Projektdaten“ (Paket PD-2) mit Abdunkeln, über den Paneelen.
+const OVERLAY_PD_SCRIM: usize = OVERLAY_HINT + 11;
+const OVERLAY_PD: usize = OVERLAY_HINT + 12;
 
 /// So lange steht die Pille nach dem Loslassen (Nachkorrektur, Paket 8b).
 const POST_PILL: std::time::Duration = std::time::Duration::from_millis(1500);
@@ -592,6 +596,8 @@ struct App {
     shortcuts: menu::Shortcuts,
     save_dlg: Option<menu::SaveDialog>,
     after_save: Option<Command>,
+    /// Maske „Projektdaten“ (Paket PD-2): bei Datei › Neu und am Knopf.
+    projektdaten: Option<projektdaten::Maske>,
     /// Liste „Zuletzt geöffnet“; ohne Einstellungsdatei bleibt sie leer.
     recent: menu::Recent,
     recent_on: bool,
@@ -1336,6 +1342,7 @@ impl App {
             || self.catalog.is_some()
             || self.materials.is_some()
             || self.verwaltung.is_some()
+            || self.projektdaten.is_some()
     }
 
     /// Bauteilkatalog öffnen (K3); er liegt vorn wie das Einstellungsfenster.
@@ -2331,6 +2338,10 @@ impl App {
             Command::New | Command::Close => {
                 self.replace_scene(new_model(self.company.as_ref()));
                 self.doc = Document::new(self.scene.model().revision());
+                // Bei „Neu“ zuerst die Projektdaten (Paket PD-2)
+                if c == Command::New {
+                    self.open_projektdaten(true);
+                }
             }
             Command::Open => {
                 if let Some(path) = surface.open_dialog("Öffnen", &document::FILTERS) {
@@ -2984,6 +2995,7 @@ impl App {
             Id::Ortho => self.tool.ortho = !self.tool.ortho,
             Id::View(v) => self.set_view(v),
             Id::Quantity => self.quantity_wanted = true,
+            Id::Projektdaten => self.open_projektdaten(false),
             // Im Grundriss derselbe Wechsel wie am Geschossbogen (E18)
             Id::Storey(st) if self.ui.view == ViewKind::Plan => {
                 let t = self.now();
@@ -3097,6 +3109,11 @@ impl App {
     /// sich ändert (Katalog, Rückgängig), ändert auch die Vorschau beim
     /// Zeichnen.
     fn sync_tool_chip(&mut self) {
+        let zeilen = ui::projekt_zeilen(self.scene.model().project());
+        if zeilen != self.ui.projekt_zeilen {
+            self.ui.projekt_zeilen = zeilen;
+            self.overlay_dirty = true;
+        }
         let key = (self.scene.model().revision(), self.theme.rev);
         if self.tool_chip_key == Some(key) {
             return;
@@ -3432,6 +3449,9 @@ impl App {
         if self.save_dlg.is_some() && self.handle_save_dialog(e, surface) {
             return !self.quit;
         }
+        if self.projektdaten.is_some() && self.handle_projektdaten(e) {
+            return !self.quit;
+        }
         if self.prefs.is_some() && self.handle_prefs(e, surface) {
             return !self.quit;
         }
@@ -3552,6 +3572,103 @@ impl App {
         };
         if let Some(a) = answer {
             self.answer_save(a, surface);
+        }
+        true
+    }
+
+    /// Maske „Projektdaten“ öffnen (Paket PD-2): bei Datei › Neu mit der
+    /// Planung vom letzten Projekt, sonst mit den aktuellen Werten.
+    fn open_projektdaten(&mut self, neu: bool) {
+        if self.projektdaten.is_some() {
+            return;
+        }
+        let planung = if neu { self.settings.planung() } else { None };
+        self.projektdaten = Some(projektdaten::Maske::new(
+            self.scene.model().project(),
+            neu,
+            planung,
+        ));
+        self.tip = None;
+        self.renderer.set_overlay(OVERLAY_TIP, 0, 0, 0, 0, &[]);
+        self.overlay_dirty = true;
+    }
+
+    /// Antwort der Maske: bei „Neu“ Anfangswerte ohne Schritt, sonst ein
+    /// Schritt „Projektdaten geändert“, nur wenn sich etwas geändert hat.
+    fn answer_projektdaten(&mut self, a: projektdaten::Antwort) {
+        let Some(m) = self.projektdaten.take() else {
+            return;
+        };
+        self.overlay_dirty = true;
+        let projektdaten::Antwort::Uebernehmen(p) = a else {
+            return;
+        };
+        let planung = (p.author.clone(), p.author_addr.clone());
+        if m.neu {
+            self.scene.projekt_anfang(*p);
+        } else {
+            self.scene.projekt_setzen("Projektdaten geändert", p);
+        }
+        // Die Planung belegt die Maske beim nächsten „Neu“ vor
+        self.settings.set_planung(&planung.0, &planung.1);
+        self.sync_tool_chip();
+    }
+
+    /// Modale Maske „Projektdaten“: `true`, wenn sie das Ereignis genommen hat.
+    fn handle_projektdaten(&mut self, e: Event) -> bool {
+        let (s, th) = (self.title.scale, self.title.height());
+        let Some(d) = self.projektdaten.as_mut() else {
+            return false;
+        };
+        let r = d.rect(s, self.w, self.h, th);
+        let answer = match e {
+            Event::MouseMove { x, y, .. } => {
+                self.mouse_at = Some((x, y));
+                self.overlay_dirty |= d.mouse_move(r, s, x, y);
+                None
+            }
+            // Die Titelleiste bleibt bedienbar (Fensterknöpfe, Ziehen)
+            Event::MouseDown { y, .. } | Event::MouseUp { y, .. } if y < th as f64 => {
+                return false;
+            }
+            Event::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
+                d.press(r, s, &self.ui.fonts, &self.theme, x, y);
+                self.overlay_dirty = true;
+                None
+            }
+            Event::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
+                self.overlay_dirty = true;
+                d.release(r, s, x, y)
+            }
+            Event::Key {
+                key, down, mods, ..
+            } => {
+                if !down {
+                    return true;
+                }
+                self.overlay_dirty = true;
+                d.key(key, mods)
+            }
+            Event::Text(ch) => {
+                d.text(ch);
+                self.overlay_dirty = true;
+                None
+            }
+            Event::MouseDown { .. } | Event::MouseUp { .. } | Event::Wheel { .. } => None,
+            _ => return false,
+        };
+        if let Some(a) = answer {
+            self.answer_projektdaten(a);
         }
         true
     }
@@ -4164,6 +4281,7 @@ impl App {
             || self.pick.is_some()
             || self.ui.edit.is_some()
             || self.save_dlg.is_some()
+            || self.projektdaten.is_some()
             || self.menu.is_open()
             || self.confirm.is_some()
             || self.context.is_some()
@@ -5302,6 +5420,7 @@ impl App {
         self.paint_dialog();
         self.paint_menu();
         self.paint_save_dialog();
+        self.paint_projektdaten();
         self.paint_prefs();
         self.paint_type_menu();
         self.overlay_dirty = false;
@@ -5354,6 +5473,32 @@ impl App {
             .set_overlay_fill(OVERLAY_SAVE_SCRIM, 0, th as i32, self.w, h, scrim);
     }
 
+    /// Maske „Projektdaten“ samt Abdunkeln zeichnen oder ausblenden.
+    fn paint_projektdaten(&mut self) {
+        let Some(d) = &self.projektdaten else {
+            self.renderer.set_overlay(OVERLAY_PD, 0, 0, 0, 0, &[]);
+            self.renderer.set_overlay(OVERLAY_PD_SCRIM, 0, 0, 0, 0, &[]);
+            return;
+        };
+        let (s, th) = (self.title.scale, self.title.height());
+        let r = d.rect(s, self.w, self.h, th);
+        let c = d.paint(&self.theme, &self.ui.fonts, s);
+        let m = (self.theme.size.panel_shadow * s).round();
+        let px = c.to_premul_rgba8();
+        self.renderer.set_overlay(
+            OVERLAY_PD,
+            (r.x - m) as i32,
+            (r.y - m) as i32,
+            c.width as u32,
+            c.height as u32,
+            &px,
+        );
+        let scrim = menu::scrim_premul(self.theme.env.scrim);
+        let h = self.h.saturating_sub(th);
+        self.renderer
+            .set_overlay_fill(OVERLAY_PD_SCRIM, 0, th as i32, self.w, h, scrim);
+    }
+
     /// Knöpfe der Titelleiste an Verlauf und Menü angleichen.
     fn sync_title_state(&mut self) {
         // Bei offenem Einstellungsfenster gesperrt (E5)
@@ -5395,6 +5540,7 @@ impl App {
             || self.ui.level_dragging().is_some()
             || self.menu.is_open()
             || self.save_dlg.is_some()
+            || self.projektdaten.is_some()
             || self.confirm.is_some()
         {
             return None;
@@ -5444,6 +5590,7 @@ impl App {
             Id::Interior => "Innenwand",
             Id::Ortho => "90°-Sprung",
             Id::Quantity => cards::KNOPF,
+            Id::Projektdaten => "Projektdaten",
             Id::View(v) => match v {
                 ViewKind::Persp => "3D",
                 ViewKind::Plan => "Grundriss",
@@ -6988,6 +7135,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         shortcuts: menu::Shortcuts::default(),
         save_dlg: None,
         after_save: None,
+        projektdaten: None,
         recent: settings.recent.clone(),
         recent_on: settings.path.is_some(),
         quit: false,
@@ -7474,6 +7622,10 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             a.paint_buttons(&surface);
         }
         let cursor = match (&a.prefs, &a.catalog) {
+            _ if a.projektdaten.as_ref().is_some_and(|d| d.ueber_feld()) => {
+                sk_platform::Cursor::IBeam
+            }
+            _ if a.projektdaten.is_some() => sk_platform::Cursor::Arrow,
             (Some(p), _) => p.cursor(),
             (None, Some(c)) => c.cursor(),
             (None, None) if a.materials.is_some() => a

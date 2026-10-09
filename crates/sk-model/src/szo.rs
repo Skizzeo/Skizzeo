@@ -768,13 +768,15 @@ fn write_known(m: &Model) -> String {
             m.layer_set(defaults.exterior_wall).map(|s| s.guid),
         )
         .guid("iwset", m.layer_set(defaults.interior_wall).map(|s| s.guid));
-    // Bauvorhaben, Bauherr, Aufsteller nur, wenn gesetzt (BIM §3.12)
+    // Bauvorhaben, Bauherr, Aufsteller nur, wenn gesetzt (BIM §3.12); seit
+    // `[projectinfo]` nur die alten, bis zur ersten Änderung (Regel 110)
     let mut line = line;
-    for (k, v) in [
-        ("site", &p.site),
-        ("client", &p.client),
-        ("author", &p.author),
-    ] {
+    let alt = if p.info {
+        [&p.legacy[0], &p.legacy[1], &p.legacy[2]]
+    } else {
+        [&p.site, &p.client, &p.author]
+    };
+    for (k, v) in ["site", "client", "author"].into_iter().zip(alt) {
         if !v.is_empty() {
             line = line.text(k, v);
         }
@@ -789,6 +791,16 @@ fn write_known(m: &Model) -> String {
         line.word("next", &v.join(","))
     };
     line.finish(&mut out);
+    // Projektdaten (BIM §3.12a): nur gesetzte Felder, ohne Daten keine Zeile
+    if p.info && !p.is_blank() {
+        let mut line = Line::new("projectinfo").word("key", "project");
+        for (k, v) in p.fields() {
+            if !v.is_empty() {
+                line = line.text(k, v);
+            }
+        }
+        line.finish(&mut out);
+    }
     for b in sorted(m.buildings().iter(), |b| b.guid) {
         Line::new("building")
             .guid("guid", Some(b.guid))
@@ -1243,10 +1255,35 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 28] = [
-        "pen", "linetype", "fill", "surface", "display", "trade", "material", "layerset", "layer",
-        "typeprop", "project", "building", "storey", "run", "wall", "slab", "footing", "floor",
-        "strip", "soffit", "terrace", "coping", "prop", "cut", "hide", "lock", "matprop",
+    const KNOWN: [&str; 29] = [
+        "pen",
+        "linetype",
+        "fill",
+        "surface",
+        "display",
+        "trade",
+        "material",
+        "layerset",
+        "layer",
+        "typeprop",
+        "project",
+        "projectinfo",
+        "building",
+        "storey",
+        "run",
+        "wall",
+        "slab",
+        "footing",
+        "floor",
+        "strip",
+        "soffit",
+        "terrace",
+        "coping",
+        "prop",
+        "cut",
+        "hide",
+        "lock",
+        "matprop",
         "pattern",
     ];
     for (i, l) in text.lines().enumerate().skip(1) {
@@ -1455,13 +1492,28 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         [_, r, ..] => return Err(err(r.line, "[project] doppelt")),
     };
     let text = |k: &str| p.opt(k).unwrap_or("").to_string();
-    let project = Project {
-        guid: p.guid("guid")?,
-        name: p.get("name")?.to_string(),
-        site: text("site"),
-        client: text("client"),
-        author: text("author"),
-    };
+    let mut project = Project::new(p.guid("guid")?, p.get("name")?);
+    // Regel 110: `[projectinfo]` gilt; sonst die Schlüssel an `[project]`
+    let alt = [text("site"), text("client"), text("author")];
+    match recs("projectinfo").as_slice() {
+        [] => [project.site, project.client, project.author] = alt,
+        [i] => {
+            // Kennung `key=project`; gelesen, damit sie nicht als fremd gilt
+            let _ = i.opt("key");
+            let t = |k: &str| i.opt(k).unwrap_or("").to_string();
+            project.kind = t("kind");
+            project.number = t("projno");
+            project.site = t("site");
+            project.place = t("place");
+            project.client = t("client");
+            project.client_addr = t("clientaddr");
+            project.author = t("author");
+            project.author_addr = t("authoraddr");
+            project.info = true;
+            project.legacy = alt;
+        }
+        [_, r, ..] => return Err(err(r.line, "[projectinfo] doppelt")),
+    }
     // Nummernzähler (Regel 25), z. B. „IW:1,GB:2“; fehlt er, gilt die höchste
     // vorhandene Nummer
     let mut counters = Vec::new();
@@ -3441,6 +3493,137 @@ mod tests {
         m.ext_put("rate", "wage", "[rate] key=wage num=1".into(), None);
         m.rollback();
         assert_eq!(write(&m), text);
+    }
+
+    fn projektdaten() -> Project {
+        Project {
+            kind: "Neubau Einfamilienhaus".into(),
+            site: "Haus Mustermann".into(),
+            place: "Musterweg 1\n27777 Ganderkesee".into(),
+            number: "01/26".into(),
+            client: "Max Mustermann".into(),
+            client_addr: "Phantasiestraße 7\n12345 Irgendwo".into(),
+            author: "Dipl.-Ing. (FH) Jörn Horstmann".into(),
+            author_addr: "Denkmalsweg 18b\n27777 Ganderkesee".into(),
+            ..Project::new(Guid(0), "")
+        }
+    }
+
+    /// Paket PD Abnahme 1 und 2: „Neu“ mit Daten schreibt eine
+    /// `[projectinfo]`-Zeile mit acht Feldern, `[project]` bleibt; ohne
+    /// Daten bleibt die Datei bytegleich. Zeilenumbrüche überstehen den
+    /// Rundlauf.
+    #[test]
+    fn projektdaten_neu_mit_und_ohne() {
+        let m = Model::with_seed(1);
+        let leer = write(&m);
+        let mut ohne = Model::with_seed(1);
+        ohne.init_project(Project::new(Guid(0), ""));
+        assert_eq!(write(&ohne), leer);
+        let mut m = Model::with_seed(1);
+        m.init_project(projektdaten());
+        let text = write(&m);
+        let projekt = |t: &str| {
+            t.lines()
+                .find(|l| l.starts_with("[project] "))
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(projekt(&text), projekt(&leer));
+        let info: Vec<&str> = text
+            .lines()
+            .filter(|l| l.starts_with("[projectinfo]"))
+            .collect();
+        assert_eq!(
+            info,
+            [
+                "[projectinfo] key=project kind=\"Neubau Einfamilienhaus\" projno=\"01/26\" \
+              site=\"Haus Mustermann\" place=\"Musterweg 1\\n27777 Ganderkesee\" \
+              client=\"Max Mustermann\" clientaddr=\"Phantasiestraße 7\\n12345 Irgendwo\" \
+              author=\"Dipl.-Ing. (FH) Jörn Horstmann\" \
+              authoraddr=\"Denkmalsweg 18b\\n27777 Ganderkesee\""
+            ]
+        );
+        let back = load(&text).unwrap();
+        assert!(back.hints.is_empty(), "{:?}", back.hints);
+        assert_eq!(back.model.project().fields(), projektdaten().fields());
+        assert_eq!(back.model.project().place, "Musterweg 1\n27777 Ganderkesee");
+        assert_eq!(write(&back.model), text);
+    }
+
+    /// Paket PD Abnahme 3 und 5 (Regel 110): Eine alte Datei mit `site` und
+    /// `client` an `[project]` liest sich wie bisher und bleibt bytegleich.
+    /// Die erste Änderung zieht alles nach `[projectinfo]` um, ein Schritt;
+    /// Rückgängig stellt die alte Datei bytegleich her. Unverändert
+    /// übernehmen ist kein Schritt.
+    #[test]
+    fn projektdaten_alte_datei_zieht_um() {
+        // vor Regel 110 geschrieben: Schlüssel an [project]
+        let heute = write(&house());
+        let zeile = heute
+            .lines()
+            .find(|l| l.starts_with("[project] "))
+            .unwrap()
+            .to_string();
+        assert!(!zeile.contains(" next="), "{zeile}");
+        let alt = heute.replace(
+            &zeile,
+            &format!("{zeile} site=\"Haus Meier\" client=\"Meier\""),
+        );
+        let mut m = load(&alt).unwrap().model;
+        assert_eq!(
+            (m.project().site.as_str(), m.project().client.as_str()),
+            ("Haus Meier", "Meier")
+        );
+        assert!(!m.project().info);
+        assert_eq!(write(&m), alt);
+        m.begin("Projektdaten geändert");
+        assert!(!m.set_project(m.project().clone()), "unverändert");
+        assert!(m.set_project(Project {
+            number: "01/26".into(),
+            ..m.project().clone()
+        }));
+        let t = m.commit().expect("ein Schritt");
+        let neu = write(&m);
+        assert!(neu.contains(&format!("{zeile}\n")), "{neu}");
+        assert!(neu.contains(
+            "\n[projectinfo] key=project projno=\"01/26\" site=\"Haus Meier\" client=\"Meier\"\n"
+        ));
+        assert!(!neu.contains("[project] guid") || !projekt_hat_site(&neu));
+        m.apply(&t, Direction::Undo);
+        assert_eq!(write(&m), alt);
+        m.apply(&t, Direction::Redo);
+        assert_eq!(write(&m), neu);
+        // Beides in einer Datei: [projectinfo] gilt, [project] bleibt bytegleich
+        let beides = alt.replace(
+            &format!("{zeile} site=\"Haus Meier\" client=\"Meier\"\n"),
+            &format!(
+                "{zeile} site=\"Haus Meier\" client=\"Meier\"\n[projectinfo] key=project site=\"Haus Neu\"\n"
+            ),
+        );
+        let b = load(&beides).unwrap();
+        assert!(b.hints.is_empty(), "{:?}", b.hints);
+        assert_eq!(b.model.project().site, "Haus Neu");
+        assert_eq!(b.model.project().client, "");
+        assert_eq!(write(&b.model), beides);
+        // Ein zu langer Wert und ein Umbruch im einzeiligen Feld bleiben
+        let lang = "x".repeat(300);
+        let odd = alt.replace(
+            &format!("{zeile} site=\"Haus Meier\" client=\"Meier\"\n"),
+            &format!("{zeile}\n[projectinfo] key=project projno=\"{lang}\" client=\"A\\nB\"\n"),
+        );
+        let o = load(&odd).unwrap();
+        assert_eq!(o.model.project().number, lang);
+        assert_eq!(o.model.project().client, "A\nB");
+        assert_eq!(write(&o.model), odd);
+        // doppelt: Fehler mit der Zeile
+        let doppelt = odd.replace("[projectinfo]", "[projectinfo] key=project\n[projectinfo]");
+        assert!(load(&doppelt).is_err());
+    }
+
+    fn projekt_hat_site(text: &str) -> bool {
+        text.lines()
+            .any(|l| l.starts_with("[project] ") && l.contains(" site="))
     }
 
     /// KA-0b (§6 Nr. 7): `svc=` und `site/client/author` stehen nur, wo

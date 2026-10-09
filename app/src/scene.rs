@@ -1296,11 +1296,21 @@ impl Scene {
 
     /// Projektangaben (Bauvorhaben, Bauherr, Aufsteller; KA-4c) als ein
     /// Schritt. `false`, wenn sich nichts geändert hat.
-    pub fn projekt_setzen(&mut self, label: &'static str, p: sk_model::Project) -> bool {
+    pub fn projekt_setzen(
+        &mut self,
+        label: &'static str,
+        p: impl std::borrow::Borrow<sk_model::Project>,
+    ) -> bool {
         self.begin(label);
-        let ok = self.model.set_project(p);
+        let ok = self.model.set_project(p.borrow().clone());
         self.commit();
         ok
+    }
+
+    /// Projektdaten eines neuen Projekts (Maske bei „Neu“, Paket PD-2):
+    /// Anfangszustand ohne Rückgängig-Schritt.
+    pub fn projekt_anfang(&mut self, p: sk_model::Project) {
+        self.model.init_project(p);
     }
 
     /// Öffnet den Schritt des Einstellungsfensters (E5, auch nach
@@ -3634,6 +3644,35 @@ fn ziel(op: &sk_cost::Op) -> Option<sk_cost::SatzId> {
 
 #[cfg(test)]
 mod tests {
+    /// Paket PD Abnahme 1–3: Anfangswerte bei „Neu“ ohne Schritt, eine
+    /// Änderung ist ein Schritt „Projektdaten geändert“, Strg+Z stellt die
+    /// vorige Nummer her, Unverändertes gibt keinen Schritt.
+    #[test]
+    fn projektdaten_neu_und_aendern() {
+        let mut s = Scene::with_model(sk_model::Model::new());
+        let leer = sk_model::szo::write(s.model());
+        assert!(!leer.contains("[projectinfo]"));
+        let mut p = s.model.project().clone();
+        p.kind = "Neubau Einfamilienhaus".into();
+        p.site = "Haus Mustermann".into();
+        p.place = "Musterweg 1\n27777 Ganderkesee".into();
+        p.number = "01/26".into();
+        s.projekt_anfang(p.clone());
+        assert_eq!(s.undo_label(), None, "kein Schritt bei „Neu“");
+        let text = sk_model::szo::write(s.model());
+        assert_eq!(text.matches("[projectinfo]").count(), 1);
+        assert!(text.contains("01/26"));
+        // Ändern über den Knopf
+        let mut q = p.clone();
+        q.number = "02/26".into();
+        assert!(s.projekt_setzen("Projektdaten geändert", q.clone()));
+        assert_eq!(s.undo_label(), Some("Projektdaten geändert"));
+        assert!(!s.projekt_setzen("Projektdaten geändert", q));
+        assert!(s.undo());
+        assert_eq!(s.model.project().number, "01/26");
+        assert_eq!(s.undo_label(), None);
+    }
+
     /// Review 3ao: Beim Ziehen (offener Schritt) gibt `lv` das gemerkte LV
     /// derselben Wahl zurück, statt jedes Bild neu zu ordnen; nach dem
     /// Loslassen gilt der neue Stand.

@@ -293,7 +293,7 @@ impl AvaView {
         // Gleich zeigen, auch bevor das Modell zurückkommt
         self.projekt = Some(p.clone());
         Some(ListOut::Kosten(Schreiben::Projekt {
-            projekt: p,
+            projekt: Box::new(p),
             label: f.schritt(),
         }))
     }

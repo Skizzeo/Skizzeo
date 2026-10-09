@@ -627,7 +627,8 @@ pub fn read_all(text: &str) -> (Theme, Recent, Vec<String>) {
             }
             // Lage des Mengenfensters (F2): liest die App mit den Bildschirmen;
             // Ort des Firmenkatalogs (K2): liest [`Settings::load`]
-            "mengenfenster" | "firmenkatalog" => continue,
+            // Planung des letzten Projekts (Paket PD): liest [`Settings::load`]
+            "mengenfenster" | "firmenkatalog" | "planung" => continue,
             s => {
                 skip(&mut hints, &format!("unbekannter Abschnitt [{s}]"));
                 continue;
@@ -670,6 +671,10 @@ pub struct Settings {
     loaded_panel: String,
     /// Abschnitt `[firmenkatalog] datei=…` (K2), unverändert weitergeschrieben.
     company_line: String,
+    /// Abschnitt `[planung] name=… anschrift=…` (Paket PD §2): Planung des
+    /// zuletzt gesetzten Projekts, für die Maske bei „Neu“; Stand beim Laden.
+    planung: String,
+    loaded_planung: String,
     /// Ort des Firmenkatalogs aus der Datei; ohne ihn gilt der Vorgabeort.
     company: Option<PathBuf>,
 }
@@ -694,7 +699,31 @@ impl Settings {
             loaded_panel: String::new(),
             company_line: String::new(),
             company: None,
+            planung: String::new(),
+            loaded_planung: String::new(),
         }
+    }
+
+    /// Planung (Name, Anschrift) des zuletzt gesetzten Projekts.
+    pub fn planung(&self) -> Option<(String, String)> {
+        let r = Record::parse(1, self.planung.trim_end()).ok().flatten()?;
+        let name = r.opt("name").unwrap_or("").to_string();
+        let anschrift = r.opt("anschrift").unwrap_or("").to_string();
+        (!name.is_empty()).then_some((name, anschrift))
+    }
+
+    /// Merkt sich die Planung eines gesetzten Projekts; ohne Namen bleibt
+    /// die vorige. Steht ab dem nächsten Speichern in der Datei.
+    pub fn set_planung(&mut self, name: &str, anschrift: &str) {
+        if name.is_empty() {
+            return;
+        }
+        let mut line = String::new();
+        Line::new("planung")
+            .text("name", name)
+            .text("anschrift", anschrift)
+            .finish(&mut line);
+        self.planung = line;
     }
 
     /// Ort des Firmenkatalogs und ob es der Vorgabeort neben den
@@ -749,6 +778,12 @@ impl Settings {
                     .filter(|l| l.starts_with("[firmenkatalog]"))
                     .map(|l| format!("{l}\n"))
                     .collect();
+                self.planung = text
+                    .lines()
+                    .filter(|l| l.starts_with("[planung]"))
+                    .take(1)
+                    .map(|l| format!("{l}\n"))
+                    .collect();
                 self.company = text
                     .lines()
                     .enumerate()
@@ -763,6 +798,7 @@ impl Settings {
         self.loaded_recent = self.recent.clone();
         self.loaded_windows = self.windows.clone();
         self.loaded_panel = self.panel.clone();
+        self.loaded_planung = self.planung.clone();
         theme
     }
 
@@ -776,6 +812,7 @@ impl Settings {
             && self.recent == self.loaded_recent
             && self.windows == self.loaded_windows
             && self.panel == self.loaded_panel
+            && self.planung == self.loaded_planung
         {
             return Ok(());
         }
@@ -787,7 +824,8 @@ impl Settings {
                 let text = write_all(theme, &self.recent)
                     + &self.windows
                     + &self.panel
-                    + &self.company_line;
+                    + &self.company_line
+                    + &self.planung;
                 crate::document::write_synced(&tmp, text.as_bytes())
             })
             .and_then(|_| std::fs::rename(&tmp, path));
@@ -797,6 +835,7 @@ impl Settings {
                 self.loaded_recent = self.recent.clone();
                 self.loaded_windows = self.windows.clone();
                 self.loaded_panel = self.panel.clone();
+                self.loaded_planung = self.planung.clone();
                 Ok(())
             }
             Err(e) => {
