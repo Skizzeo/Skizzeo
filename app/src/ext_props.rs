@@ -125,10 +125,11 @@ fn zeilen(felder: &[ExtFeld], scene: &mut Scene) -> Vec<ExtZeile> {
             } else if !f.wahl.is_empty() {
                 // Ein Wert außerhalb der Wahl zeigt einen festen Text: jede
                 // Zahl als eigene Bezeichnung bliebe für immer im Speicher
-                // (Review 3ci Hinweis b)
-                let text = match f.wahl.iter().find(|w| w.0 == f.wert) {
-                    Some(w) => scene.bezeichnung(anzeige(&w.1, MAX)),
-                    None => EIGENER_WERT,
+                // (Review 3ci Hinweis b); die Zahl steht in der Hilfe
+                // der Zeile (Review 3ck Hinweis b)
+                let (text, hilfe) = match f.wahl.iter().find(|w| w.0 == f.wert) {
+                    Some(w) => (scene.bezeichnung(anzeige(&w.1, MAX)), hilfe),
+                    None => (EIGENER_WERT, eigener_wert_hilfe(f, &hilfe)),
                 };
                 out.push(ExtZeile::Liste {
                     i,
@@ -155,6 +156,16 @@ fn zeilen(felder: &[ExtFeld], scene: &mut Scene) -> Vec<ExtZeile> {
 
 /// Knopf einer Wahl-Liste, deren Wert keiner Wahl entspricht.
 pub const EIGENER_WERT: &str = "eigener Wert";
+
+/// Hilfe einer Wahl-Liste mit eigenem Wert: die Zahl vorn, dann `hilfe`.
+fn eigener_wert_hilfe(f: &ExtFeld, hilfe: &str) -> String {
+    let zahl = format!("Eigener Wert: {}", wert_text(f.wert, &f.einheit, false));
+    if hilfe.is_empty() {
+        zahl
+    } else {
+        format!("{zahl}. {hilfe}")
+    }
+}
 
 /// Neuer Wert aus Knopf `k` einer Wahl, ohne `k` der umgeschaltete
 /// Schalter.
@@ -565,6 +576,20 @@ mod tests {
                 assert_eq!(t, "Glas");
             } else {
                 assert_eq!(t, EIGENER_WERT, "{v}");
+                // Die Zahl steht in der Hilfe (Review 3ck Hinweis b)
+                let z = props(&mut s, id).unwrap().ext.unwrap();
+                let h = z
+                    .iter()
+                    .find_map(|z| match z {
+                        ExtZeile::Liste {
+                            i, name: "Füllung",
+                        ..
+                        } => z.hilfe(Id::ExtListe(*i)),
+                        _ => None,
+                    })
+                    .expect("Hilfe Füllung");
+                let zahl = format!("Eigener Wert: {}. ", wert_text(v, "-", false));
+                assert!(h.starts_with(&zahl), "{h}");
             }
         }
     }
