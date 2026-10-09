@@ -94,6 +94,13 @@ pub fn jetzt(t: Zeitpunkt, on: bool) -> Sun {
     }
 }
 
+/// Datum und Uhrzeit so, wie gerechnet wird: eine Uhrzeit in der beim
+/// Umstellen auf MESZ übersprungenen Stunde (29.03., 02:00 bis 02:59)
+/// steht danach eine Stunde später da (Hinweis Y).
+pub fn gueltig(s: Sun) -> Sun {
+    jetzt(zeitpunkt(&s), s.on)
+}
+
 /// Stand beim ersten Einschalten in einer Datei: heute um 12:00.
 pub fn anfang(t: Zeitpunkt) -> Sun {
     Sun {
@@ -810,7 +817,7 @@ impl Sonnensystem {
                 };
                 match neu {
                     Some(s) => {
-                        out.sun = Some(s);
+                        out.sun = Some(gueltig(s));
                         self.eingabe = None;
                     }
                     None => e.falsch = true,
@@ -857,6 +864,17 @@ mod tests {
         assert_eq!(zeit_lesen("24"), None);
         assert_eq!(zeit_lesen("12.60"), None);
         assert_eq!(zeit_lesen("x"), None);
+        // Hinweis Y: die übersprungene Stunde am Umstelltag
+        let s = |t, m, mi| Sun {
+            date: d(2026, t, m).unwrap(),
+            minutes: mi,
+            on: true,
+        };
+        assert_eq!(gueltig(s(3, 29, 150)), s(3, 29, 210));
+        assert_eq!(zone(&gueltig(s(3, 29, 150))), "MESZ");
+        for x in [s(3, 29, 90), s(3, 29, 180), s(6, 21, 150), s(10, 25, 150)] {
+            assert_eq!(gueltig(x), x);
+        }
         assert_eq!(datum_text(d(2026, 6, 1).unwrap()), "01.06.2026");
         assert_eq!(zeit_text(545), "09:05");
     }
