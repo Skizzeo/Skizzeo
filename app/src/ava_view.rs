@@ -691,10 +691,13 @@ impl AvaView {
 
     // --- Lage ----------------------------------------------------------------
 
+    /// Linker Rand und Breite (px): Baum, Trennraum und rechts höchstens
+    /// `qto_max_w` wie Mengen und Kosten (Notiz Kopf §1).
     fn content_x(&self, t: &Theme) -> (f32, f32) {
         let s = self.scale;
         let pad = t.size.sheet_pad * s;
-        (pad, (self.w as f32 - 2.0 * pad).max(0.0))
+        let max = (TREE_W + TREE_GAP + t.size.qto_max_w) * s;
+        (pad, (self.w as f32 - 2.0 * pad).min(max).max(0.0))
     }
 
     fn top_px(&self) -> f32 {

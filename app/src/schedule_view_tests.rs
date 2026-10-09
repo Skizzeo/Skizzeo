@@ -222,36 +222,31 @@ fn gewerk_liste(w: u32) -> ListView {
     v
 }
 
-/// Einstellungen §14 (n): Bei 520 steht der Umschalter rechtsbündig auf
-/// der Unterzeile, Mitte auf Mitte, der Kopf bleibt so hoch wie bisher;
-/// reicht der Platz dort nicht, bekommt er eine eigene Zeile darunter
-/// und die Liste rückt um diese Zeile nach unten.
+/// Notiz Kopf §3: „Gliedern“ steht in eigener Zeile unter den Chips bei
+/// x0 + 300 wie im Reiter Kosten, im schmalen Fenster links bei x0; der
+/// Kopf ist immer gleich hoch.
 #[test]
-fn umschalter_auf_der_unterzeile() {
+fn gliedern_unter_den_chips() {
     let (t, fonts) = (Theme::dark(), Fonts::system());
-    let v = gewerk_liste(520);
-    let (_, halves, own) = v.toggle_layout(&t, &fonts);
-    assert!(!own);
-    let (_, (x, y, w, h)) = halves[1];
-    let (x0, cw) = v.content_x(&t);
-    let inset = TOGGLE_INSET;
-    assert!((x + w + inset - (x0 + cw)).abs() < 1e-3, "rechtsbündig");
-    let cap = fonts.regular.as_ref().map_or(7.5, |f| f.cap_height(10.5));
-    let sub_mid = v.top_dip() + 52.0 - cap * 0.5;
-    // Mitte auf Mitte, aber nie unter den Knopf (Jörn 08.10.)
-    let (_, by, _, bh) = v.button_rect(&t, &fonts);
-    let soll = (sub_mid - h * 0.5 - TOGGLE_INSET).max(by + bh + 4.0) + TOGGLE_INSET;
-    assert!((y - soll).abs() < 1e-3, "{y} statt {soll}");
-    v.fit_head(&t, &fonts);
-    assert_eq!(v.head(), HEAD);
-
-    let v = gewerk_liste(320);
-    let (_, halves, own) = v.toggle_layout(&t, &fonts);
-    assert!(own);
-    let (_, (_, y2, _, h2)) = halves[0];
-    assert!((y2 + h2 * 0.5 - (sub_mid + TOGGLE_ROW)).abs() < 1e-3);
-    v.fit_head(&t, &fonts);
-    assert_eq!(v.head(), HEAD + TOGGLE_ROW);
+    for (w, links) in [(1240, false), (320, true)] {
+        let v = gewerk_liste(w);
+        let ((lx, _), halves) = v.toggle_layout(&t, &fonts);
+        let (x0, cw) = v.content_x(&t);
+        if links {
+            assert!((lx - x0).abs() < 1e-3, "{w}: links");
+        } else {
+            assert!(
+                (lx - (x0 + crate::kosten_view::GLIEDERN_X)).abs() < 1e-3,
+                "{w}"
+            );
+        }
+        let (_, (x, y, hw, _)) = halves[1];
+        assert!(x + hw <= x0 + cw + 1e-3 || links, "{w}: im Inhalt");
+        let lage = v.leiste_lage(&t);
+        assert!(y >= lage.y + umfang_view::ROW, "{w}: unter den Chips");
+        v.fit_head(&t, &fonts);
+        assert_eq!(v.head(), HEAD);
+    }
 }
 
 /// Einstellungen §14 (o): Ein gekürzter Zeilenname gibt den vollen Namen
@@ -309,18 +304,29 @@ fn knopf_und_umschalter_ueberlappen_nie() {
                 let mut v = gewerk_liste(w);
                 v.scale = scale;
                 let (bx, by, bw, bh) = v.button_rect(&t, &fonts);
-                let (label, halves, _) = v.toggle_layout(&t, &fonts);
+                let ((lx, _), halves) = v.toggle_layout(&t, &fonts);
                 let i = TOGGLE_INSET * scale;
                 let (_, (x, y, _, h)) = halves[0];
                 let (_, (x2, _, w2, _)) = halves[1];
                 let (px, py, pw, ph) = (x - i, y - i, x2 + w2 + i - (x - i), h + 2.0 * i);
-                let frei = px + pw <= bx || bx + bw <= px || py + ph <= by || by + bh <= py;
+                let frei = |(ax, ay, aw, ah): (f32, f32, f32, f32)| {
+                    ax + aw <= bx || bx + bw <= ax || ay + ah <= by || by + bh <= ay
+                };
                 assert!(
-                    frei,
+                    frei((px, py, pw, ph)),
                     "Breite {w}, Skala {scale}: Knopf und Umschalter überlappen"
                 );
-                if let Some((lx, _)) = label {
-                    assert!(lx >= 0.0);
+                assert!(lx >= 0.0);
+                // Notiz Kopf §2: in der Kartenzeile nie über den Karten
+                let (x0, _) = v.content_x(&t);
+                let breit = w as f32 - 2.0 * x0;
+                let karten_y = (v.top_dip() - crate::cards::HEIGHT) * scale;
+                if by < v.top_dip() * scale {
+                    assert!(by >= karten_y, "Breite {w}, Skala {scale}");
+                    assert!(
+                        crate::cards::Karten::ende(x0, scale, breit) + 16.0 * scale <= bx + 1e-3,
+                        "Breite {w}, Skala {scale}: Knopf über den Karten"
+                    );
                 }
             }
         }

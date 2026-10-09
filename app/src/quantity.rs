@@ -197,7 +197,7 @@ impl QuantityWindow {
     /// Karte unter der Maus (Fensterpixel).
     fn karte_at(&self, t: &Theme, x: f64, y: f64) -> Option<Blatt> {
         let s = self.title.scale;
-        Karten::hit(self.cards_x0(t), 32.0 * s, s, x, y)
+        Karten::hit(self.cards_x0(t), 32.0 * s, s, self.cards_breit(t), x, y)
     }
 
     /// Rechtsklick auf eine Zeile: wählt sie und öffnet das Menü. `false`
@@ -305,6 +305,11 @@ impl QuantityWindow {
     /// Linker Rand der Karten (px), wie der Inhalt der Blätter.
     fn cards_x0(&self, t: &Theme) -> f32 {
         t.size.sheet_pad * self.title.scale
+    }
+
+    /// Breite für die Karten (px): das Fenster ohne die Ränder.
+    fn cards_breit(&self, t: &Theme) -> f32 {
+        (self.w as f32 - 2.0 * self.cards_x0(t)).max(0.0)
     }
 
     /// An Modell und gemeinsamen Zustand angleichen (ohne Firmenkatalog).
@@ -1072,9 +1077,17 @@ impl QuantityWindow {
             }
             None => self.paint_blatt(c, t, fonts, now, self.blatt(), 0.0, y0),
         }
-        c.fill_rect(0.0, 32.0 * s, w, cards::HEIGHT * s, t.ui.sheet_bg);
-        self.karten
-            .paint(c, t, fonts, (self.cards_x0(t), 32.0 * s, s), now);
+        // Die Kartenzeile deckt das gleitende Blatt nur unter den Karten zu;
+        // rechts davon zeichnet das Blatt seinen Knopf (Notiz Kopf §2)
+        let ende = Karten::ende(self.cards_x0(t), s, self.cards_breit(t)) + 8.0 * s;
+        c.fill_rect(0.0, 32.0 * s, ende, cards::HEIGHT * s, t.ui.sheet_bg);
+        self.karten.paint(
+            c,
+            t,
+            fonts,
+            (self.cards_x0(t), 32.0 * s, s, self.cards_breit(t)),
+            now,
+        );
         if let Some(hc) = &self.hint {
             if let (Some(r), Some(a)) = (hc.rect, hc.alpha(now, Self::fade_ms(t))) {
                 let img = hc.paint(t, fonts, s);

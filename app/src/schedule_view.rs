@@ -27,13 +27,17 @@ use std::time::Instant;
 pub type RowBand = (i32, i32, Option<(Rgba, bool)>);
 
 /// Kopf über der Liste (dip ab Unterkante der Titelleiste): Titelzeile,
-/// Unterzeile, Geschoss-Chips (KA-1), Spaltenköpfe und Linie; bleibt beim
-/// Rollen stehen.
-const HEAD: f32 = 92.0 + CHIP_ROW;
-/// Zeile der Geschoss-Chips (KA-1); Oberkante 62 dip unter der Titelleiste
-/// (dazu die Zeile des Umschalters).
+/// Unterzeile, Geschoss-Chips (KA-1), Zeile „Gliedern“, Spaltenköpfe und
+/// Linie; bleibt beim Rollen stehen.
+const HEAD: f32 = 92.0 + CHIP_ROW + GLIEDERN_ROW;
+/// Zeile der Geschoss-Chips (KA-1); Oberkante 62 dip unter der Titelleiste.
 const CHIP_ROW: f32 = umfang_view::ROW;
 const CHIP_TOP: f32 = 62.0;
+/// Zeile „Gliedern“ unter den Chips wie im Reiter Kosten (Notiz Kopf §3):
+/// Oberkante, Höhe des Schalters und was sie den Kopf höher macht (dip).
+const GLIEDERN_TOP: f32 = CHIP_TOP + CHIP_ROW + 4.0;
+const GLIEDERN_H: f32 = 24.0;
+const GLIEDERN_ROW: f32 = 32.0;
 /// Höhe einer Geschosszeile und Luft davor (dip).
 const STOREY_ROW: f32 = 24.0;
 const STOREY_GAP: f32 = 8.0;
@@ -90,12 +94,9 @@ impl Grouping {
     }
 }
 
-/// Umschalter „Gliedern nach“: Abstände (dip).
-const TOGGLE_PAD: f32 = 12.0;
-const TOGGLE_INSET: f32 = 3.0;
-/// Eigene Zeile des Umschalters unter der Unterzeile (dip): der Abstand
-/// Unterzeile–Spaltenkopf.
-const TOGGLE_ROW: f32 = 27.0;
+/// Umschalter „Gliedern“: Abstände (dip).
+const TOGGLE_PAD: f32 = 10.0;
+const TOGGLE_INSET: f32 = 2.0;
 
 /// Schlüssel einer Zeile: zum Auf- und Zuklappen und zum Wiedererkennen nach
 /// einer Neuberechnung (Aufleuchten).
@@ -298,9 +299,6 @@ pub struct ListView {
     /// Zeilen, unter der der Hinweis nach Entf steht: die erste, die es noch
     /// gibt.
     hint_at: Vec<Key>,
-    /// Zusätzliche Kopfhöhe (dip), wenn der Umschalter eine eigene Zeile
-    /// braucht (schmales Fenster, lange Unterzeile); beim Zeichnen bestimmt.
-    head_extra: Cell<f32>,
     /// Maße des zuletzt gezeichneten Farbschemas: Lage und Rollgrenze ohne
     /// Schema rechnen damit (Review K3).
     sizes: Cell<Option<sk_ui::theme::Sizes>>,
@@ -350,7 +348,6 @@ impl ListView {
             row_flash: HashMap::new(),
             motion: None,
             hint_at: Vec::new(),
-            head_extra: Cell::new(0.0),
             sizes: Cell::new(None),
         };
         v.sync(s, false);
@@ -548,14 +545,12 @@ impl ListView {
 
     /// Höhe des Kopfs über der Liste (dip).
     fn head(&self) -> f32 {
-        HEAD + self.head_extra.get()
+        HEAD
     }
 
-    /// Bestimmt die Kopfhöhe nach der Lage des Umschalters.
-    fn fit_head(&self, t: &Theme, fonts: &Fonts) {
+    /// Merkt die Größen des Themas für Rechnungen ohne Thema.
+    fn fit_head(&self, t: &Theme, _fonts: &Fonts) {
         self.sizes.set(Some(t.size));
-        let own = self.toggle_layout(t, fonts).2;
-        self.head_extra.set(if own { TOGGLE_ROW } else { 0.0 });
     }
 
     fn clamp(&mut self) {
@@ -998,32 +993,26 @@ impl ListView {
             .or(fonts.regular.as_ref())
             .map_or(130.0 * s, |f| f.width("Als Tabelle speichern", 11.0 * s));
         let bw = tw + 2.0 * BUTTON_PAD * s;
-        (x0 + w - bw, (self.top_dip() + 14.0) * s, bw, BUTTON_H * s)
+        // In der Kartenzeile, wenn Platz ist, sonst in der Titelzeile
+        let x = x0 + w - bw;
+        let breit = (self.w as f32 - 2.0 * x0).max(0.0);
+        let y = crate::cards::Karten::knopf_y(x0, s, breit, x, self.top_dip() * s)
+            .unwrap_or((self.top_dip() + 14.0) * s);
+        (x, y, bw, BUTTON_H * s)
     }
 
-    /// Umschalter „Gliedern nach“ (px): Lage der Beschriftung (x, Grundlinie)
-    /// oder `None`, wenn sie keinen Platz hat, und die beiden Hälften. Steht
-    /// rechts neben dem Titel vor „Als Tabelle speichern“, wenn Platz ist
-    /// (auch für die Pille „wird aktualisiert“), sonst darunter rechtsbündig.
-    #[allow(clippy::type_complexity)]
-    /// Lage des Umschalters: Beschriftung, Hälften und ob er eine eigene
-    /// Zeile braucht. Breit in der Titelzeile vor dem Knopf; sonst
-    /// rechtsbündig auf der Unterzeile, Mitte auf Mitte; reicht auch dort
-    /// der Platz nicht, darunter mit dem Abstand Unterzeile–Spaltenkopf.
+    /// Umschalter „Gliedern“ (px) in eigener Zeile unter den Chips, bei
+    /// `x0 + GLIEDERN_X` wie im Reiter Kosten; reicht die Breite dafür nicht,
+    /// links bei `x0` (Notiz Kopf §3). Beschriftung (x, Grundlinie) und die
+    /// beiden Hälften.
     #[allow(clippy::type_complexity)]
     fn toggle_layout(
         &self,
         t: &Theme,
         fonts: &Fonts,
-    ) -> (
-        Option<(f32, f32)>,
-        [(Grouping, (f32, f32, f32, f32)); 2],
-        bool,
-    ) {
+    ) -> ((f32, f32), [(Grouping, (f32, f32, f32, f32)); 2]) {
         let s = self.scale;
         let (x0, cw) = self.content_x(t);
-        let (bx, by, _, bh) = self.button_rect(t, fonts);
-        let top = self.top_dip() * s;
         let regular = fonts.regular.as_ref();
         let bold = fonts.bold.as_ref().or(regular);
         let px = 10.5 * s;
@@ -1034,53 +1023,23 @@ impl ListView {
         };
         let half = |g: Grouping| width(bold, g.label(), px) + 2.0 * TOGGLE_PAD * s;
         let inset = TOGGLE_INSET * s;
-        let pw = half(Grouping::Storey) + half(Grouping::Trade) + 2.0 * inset;
-        let label_w = width(regular, "Gliedern nach", px) + 10.0 * s;
-        let title_end = x0
-            + width(bold, "Mengenermittlung", 19.0 * s)
-            + 12.0 * s
-            + width(regular, "wird aktualisiert", 10.0 * s)
-            + 40.0 * s
-            + 16.0 * s;
-        let right = bx - 12.0 * s;
+        let label_w = width(regular, "Gliedern", px) + 8.0 * s;
+        let ganz = label_w + half(Grouping::Storey) + half(Grouping::Trade) + 2.0 * inset;
+        let gx = x0 + crate::kosten_view::GLIEDERN_X * s;
+        let gx = if gx + ganz <= x0 + cw { gx } else { x0 };
+        let y = (self.top_dip() + GLIEDERN_TOP) * s;
+        let h = GLIEDERN_H * s;
         let cap = regular.map_or(7.5 * s, |f| f.cap_height(px));
-        let (pill_x, pill_y, ph, label, own) = if right - pw >= title_end {
-            let label = right - pw - label_w >= title_end;
-            (right - pw, by, bh, label, false)
-        } else {
-            let ph = 20.0 * s;
-            let sub_end = x0 + width(regular, &self.subtitle_text(), px) + 16.0 * s;
-            let x = x0 + cw - pw;
-            // Mitte der Unterzeile (Grundlinie top + 52)
-            let mid = top + 52.0 * s - cap * 0.5;
-            if x >= sub_end {
-                // Nie unter den Knopf darüber (Jörn 08.10.: der Knopf lag
-                // bei schmalem Fenster hinter dem Umschalter)
-                let y = (mid - ph * 0.5).max(by + bh + 4.0 * s);
-                (x, y, ph, x - label_w >= sub_end, false)
-            } else {
-                let y = mid + TOGGLE_ROW * s - ph * 0.5;
-                (x, y, ph, x - label_w >= x0, true)
-            }
-        };
-        let label = label.then_some((pill_x - label_w, pill_y + (ph + cap) * 0.5));
+        let x = gx + label_w + inset;
         let w0 = half(Grouping::Storey);
         let halves = [
-            (
-                Grouping::Storey,
-                (pill_x + inset, pill_y + inset, w0, ph - 2.0 * inset),
-            ),
+            (Grouping::Storey, (x, y + inset, w0, h - 2.0 * inset)),
             (
                 Grouping::Trade,
-                (
-                    pill_x + inset + w0,
-                    pill_y + inset,
-                    half(Grouping::Trade),
-                    ph - 2.0 * inset,
-                ),
+                (x + w0, y + inset, half(Grouping::Trade), h - 2.0 * inset),
             ),
         ];
-        (label, halves, own)
+        ((gx, y + (h + cap) * 0.5), halves)
     }
 
     // --- Umfang: Gebäudefeld und Geschoss-Chips (KA-1) ---------------------
@@ -1091,7 +1050,7 @@ impl ListView {
         let s = self.scale;
         umfang_view::Lage {
             x0: self.content_x(t).0,
-            y: (self.top_dip() + CHIP_TOP + self.head_extra.get()) * s,
+            y: (self.top_dip() + CHIP_TOP) * s,
             s,
         }
     }
@@ -1649,7 +1608,7 @@ impl ListView {
         // Spaltenköpfe und Linie
         if let Some(f) = regular {
             let px = 10.0 * s;
-            let base = top + (79.0 + CHIP_ROW + self.head_extra.get()) * s;
+            let base = top + (79.0 + CHIP_ROW + GLIEDERN_ROW) * s;
             let first = match self.grouping {
                 Grouping::Storey => "Bauteil",
                 Grouping::Trade => "Leistung · Bauteil",
@@ -1665,7 +1624,7 @@ impl ListView {
                 f.draw(c, text, px, x0 + cw * right - tw, base, u.sheet_text_dim);
             }
         }
-        let rule = top + (86.0 + CHIP_ROW + self.head_extra.get()) * s;
+        let rule = top + (86.0 + CHIP_ROW + GLIEDERN_ROW) * s;
         c.fill_rect(x0, rule, cw, s.max(1.0), u.sheet_rule);
         self.leiste.paint(c, t, fonts, self.leiste_lage(t), now);
     }
@@ -1678,7 +1637,7 @@ impl ListView {
         let regular = fonts.regular.as_ref();
         let bold = fonts.bold.as_ref().or(regular);
         let px = 10.5 * s;
-        let (label, halves, _) = self.toggle_layout(t, fonts);
+        let ((lx, ly), halves) = self.toggle_layout(t, fonts);
         let inset = TOGGLE_INSET * s;
         let (_, (x, y, _, h)) = halves[0];
         let (_, (x1, _, w1, _)) = halves[1];
@@ -1691,8 +1650,8 @@ impl ListView {
         let mut p = Path::new();
         p.rounded_rect(px0, py0, pw, ph, ph * 0.5);
         c.fill(&p, u.sheet_tile);
-        if let (Some((lx, ly)), Some(f)) = (label, regular) {
-            f.draw(c, "Gliedern nach", px, lx, ly, u.sheet_text_dim);
+        if let Some(f) = regular {
+            f.draw(c, "Gliedern", px, lx, ly, u.sheet_text_dim);
         }
         for (g, (hx, hy, hw, hh)) in halves {
             let on = g == self.grouping;

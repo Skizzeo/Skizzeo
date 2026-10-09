@@ -58,7 +58,12 @@ impl AvaView {
             .or(fonts.regular.as_ref())
             .map_or(200.0 * s, |f| f.width(&text, 11.0 * s));
         let bw = tw + 2.0 * BUTTON_PAD * s;
-        (x0 + w - bw, self.top_px() + BUTTON_Y * s, bw, BUTTON_H * s)
+        // In der Kartenzeile, wenn Platz ist, sonst in der Titelzeile
+        let x = x0 + w - bw;
+        let breit = (self.w as f32 - 2.0 * x0).max(0.0);
+        let y = crate::cards::Karten::knopf_y(x0, s, breit, x, self.top_px())
+            .unwrap_or(self.top_px() + BUTTON_Y * s);
+        (x, y, bw, BUTTON_H * s)
     }
 
     pub fn mouse_up(&mut self, t: &Theme, fonts: &Fonts, x: f64, y: f64) -> Option<ListOut> {

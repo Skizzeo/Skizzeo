@@ -8,7 +8,7 @@
 
 use sk_paint::{Canvas, Path, Rgba};
 use sk_ui::theme::Theme;
-use sk_ui::widgets::Fonts;
+use sk_ui::widgets::{self, Fonts};
 use std::time::Instant;
 
 /// Ein Blatt des Fensters.
@@ -62,6 +62,11 @@ pub const KNOPF_ZEILEN: (&str, &str) = ("Mengen", "Kosten · AVA");
 const CARD_W: f32 = 236.0;
 const CARD_H: f32 = 74.0;
 const CARD_GAP: f32 = 12.0;
+/// Kleinste Kartenbreite (dip), wenn sich die Karten die Breite teilen;
+/// so passen sie ab 300 dip Fensterbreite ins Bild (Hinweis L von Test).
+const CARD_MIN_W: f32 = 64.0;
+/// Ab dieser Kartenbreite (dip) steht das Symbol vor dem Namen.
+const CARD_SYMBOL_W: f32 = 120.0;
 const RADIUS: f32 = 8.0;
 /// Luft über und unter den Karten (dip).
 const PAD_TOP: f32 = 14.0;
@@ -93,26 +98,40 @@ impl Karten {
         }
     }
 
+    /// Breite einer Karte (dip): 236, im schmalen Fenster teilen sich die
+    /// drei Karten die Breite `breit` (px), aber nicht unter 64.
+    fn card_w(s: f32, breit: f32) -> f32 {
+        ((breit / s - 2.0 * CARD_GAP) / 3.0).clamp(CARD_MIN_W, CARD_W)
+    }
+
     /// Lage der Karten (px); `x0` linker Rand des Inhalts, `top` Unterkante
-    /// der Titelleiste.
-    fn rects(x0: f32, top: f32, s: f32) -> [Rect; 3] {
+    /// der Titelleiste, `breit` verfügbare Breite.
+    fn rects(x0: f32, top: f32, s: f32, breit: f32) -> [Rect; 3] {
         let y = top + PAD_TOP * s;
-        let r = |i: usize| {
-            (
-                x0 + i as f32 * (CARD_W + CARD_GAP) * s,
-                y,
-                CARD_W * s,
-                CARD_H * s,
-            )
-        };
+        let cw = Self::card_w(s, breit);
+        let r = |i: usize| (x0 + i as f32 * (cw + CARD_GAP) * s, y, cw * s, CARD_H * s);
         [r(0), r(1), r(2)]
     }
 
-    pub fn hit(x0: f32, top: f32, s: f32, x: f64, y: f64) -> Option<Blatt> {
+    /// Rechtes Ende der dritten Karte (px).
+    pub fn ende(x0: f32, s: f32, breit: f32) -> f32 {
+        x0 + (3.0 * Self::card_w(s, breit) + 2.0 * CARD_GAP) * s
+    }
+
+    /// „Als Tabelle speichern“ rechtsbündig in der Kartenzeile, wenn er mit
+    /// 16 dip Abstand rechts neben die Karten passt (Einstellungen, Notiz
+    /// Kopf §2): Oberkante (px) relativ zur Unterkante der Karten-Leiste
+    /// `blatt_top`, sonst `None`.
+    pub fn knopf_y(x0: f32, s: f32, breit: f32, knopf_x: f32, blatt_top: f32) -> Option<f32> {
+        (Self::ende(x0, s, breit) + 16.0 * s <= knopf_x)
+            .then_some(blatt_top - (HEIGHT - PAD_TOP - 6.0) * s)
+    }
+
+    pub fn hit(x0: f32, top: f32, s: f32, breit: f32, x: f64, y: f64) -> Option<Blatt> {
         let (x, y) = (x as f32, y as f32);
         Blatt::ALLE
             .into_iter()
-            .zip(Self::rects(x0, top, s))
+            .zip(Self::rects(x0, top, s, breit))
             .find(|(_, (rx, ry, rw, rh))| x >= *rx && x < rx + rw && y >= *ry && y < ry + rh)
             .map(|(b, _)| b)
     }
@@ -208,14 +227,14 @@ impl Karten {
         c: &mut Canvas,
         t: &Theme,
         fonts: &Fonts,
-        (x0, top, s): (f32, f32, f32),
+        (x0, top, s, breit): (f32, f32, f32, f32),
         now: Instant,
     ) {
         let u = &t.ui;
         let regular = fonts.regular.as_ref();
         let bold = fonts.bold.as_ref().or(regular);
         let line = s.max(1.0);
-        for (b, (x, y, w, h)) in Blatt::ALLE.into_iter().zip(Self::rects(x0, top, s)) {
+        for (b, (x, y, w, h)) in Blatt::ALLE.into_iter().zip(Self::rects(x0, top, s, breit)) {
             let aktiv = b == self.aktiv;
             let hover = self.hover == Some(b) && !aktiv;
             let r = RADIUS * s;
@@ -256,10 +275,17 @@ impl Karten {
             } else {
                 (u.sheet_text_dim, u.sheet_text_dim)
             };
-            let icon = if aktiv { u.accent } else { u.sheet_text_dim };
-            symbol(c, b, (x + 16.0 * s, y + 14.0 * s), s, icon);
+            // Schmale Karte: ohne Symbol, der Name rückt nach links
+            let name_x = if w >= CARD_SYMBOL_W * s {
+                let icon = if aktiv { u.accent } else { u.sheet_text_dim };
+                symbol(c, b, (x + 16.0 * s, y + 14.0 * s), s, icon);
+                42.0 * s
+            } else {
+                16.0 * s
+            };
             if let Some(f) = bold {
-                f.draw(c, b.name(), 14.0 * s, x + 42.0 * s, y + 28.0 * s, text);
+                let name = widgets::ellipsize(Some(f), b.name(), 14.0 * s, w - name_x - 16.0 * s);
+                f.draw(c, &name, 14.0 * s, x + name_x, y + 28.0 * s, text);
             }
             // Aktive Karte Kosten: Betrag fett wie im Soll KA-2; Mengen und
             // AVA bleiben regulär wie in KA-1 und KA-4 (spaeter-darstellung 4)
@@ -269,9 +295,10 @@ impl Karten {
                 regular
             } {
                 let g = self.glimm_von(b, t, now);
+                let zahl = widgets::ellipsize(Some(f), self.zahl(b), 12.5 * s, w - 32.0 * s);
                 f.draw(
                     c,
-                    self.zahl(b),
+                    &zahl,
                     12.5 * s,
                     x + 16.0 * s,
                     y + 54.0 * s,
@@ -363,13 +390,33 @@ mod tests {
         assert!(!k.waehlen(Blatt::Kosten, now, true));
         assert_eq!(Karten::richtung(Blatt::Mengen, Blatt::Kosten), 1.0);
         // Treffer: zweite Karte rechts neben der ersten
-        let (x0, top, s) = (24.0, 32.0, 1.0);
+        let (x0, top, s, breit) = (24.0, 32.0, 1.0, 1200.0);
         let y = (top + PAD_TOP + 10.0) as f64;
-        assert_eq!(Karten::hit(x0, top, s, 30.0, y), Some(Blatt::Mengen));
+        assert_eq!(Karten::hit(x0, top, s, breit, 30.0, y), Some(Blatt::Mengen));
         assert_eq!(
-            Karten::hit(x0, top, s, (x0 + CARD_W + CARD_GAP + 5.0) as f64, y),
+            Karten::hit(x0, top, s, breit, (x0 + CARD_W + CARD_GAP + 5.0) as f64, y),
             Some(Blatt::Kosten)
         );
-        assert_eq!(Karten::hit(x0, top, s, (x0 + CARD_W + 4.0) as f64, y), None);
+        assert_eq!(
+            Karten::hit(x0, top, s, breit, (x0 + CARD_W + 4.0) as f64, y),
+            None
+        );
+        // Schmal (Notiz Kopf, ist-mengen-schmal, Hinweis L: 960 und 720 px
+        // bei 150 %): die Karten teilen sich die Breite und bleiben im
+        // Fenster, nicht unter 64 dip
+        for (breit, s) in [
+            (780.0, 1.0),
+            (656.0, 1.25),
+            (500.0, 1.0),
+            (1356.0, 1.5),
+            (636.0, 1.5),
+            (244.0, 1.0),
+        ] {
+            let r = Karten::rects(x0, top, s, breit);
+            assert!(r[2].2 >= CARD_MIN_W * s - 0.01);
+            if breit / s >= 3.0 * CARD_MIN_W + 2.0 * CARD_GAP {
+                assert!(r[2].0 + r[2].2 <= x0 + breit + 0.01, "{breit} {s}");
+            }
+        }
     }
 }

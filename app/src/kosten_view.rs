@@ -174,7 +174,7 @@ const ABGLEICH_Y: f32 = 72.0;
 const ABGLEICH_H: f32 = 20.0;
 /// Abstand des Schalters „Gliedern“ vom linken Rand (Einstellungen §3 KA-1
 /// Punkt 9: wie im Mengenblatt bei links + 300 dip).
-const GLIEDERN_X: f32 = 300.0;
+pub(crate) const GLIEDERN_X: f32 = 300.0;
 /// Zeilenhöhen (dip).
 const ROW_GROUP0: f32 = 30.0;
 const ROW_GROUP1: f32 = 26.0;
@@ -1293,7 +1293,12 @@ impl KostenView {
             .or(fonts.regular.as_ref())
             .map_or(130.0 * s, |f| f.width("Als Tabelle speichern", 11.0 * s));
         let bw = tw + 2.0 * BUTTON_PAD * s;
-        (x0 + w - bw, self.top_px() + 14.0 * s, bw, BUTTON_H * s)
+        // In der Kartenzeile, wenn Platz ist, sonst in der Titelzeile
+        let x = x0 + w - bw;
+        let breit = (self.w as f32 - 2.0 * x0).max(0.0);
+        let y = crate::cards::Karten::knopf_y(x0, s, breit, x, self.top_px())
+            .unwrap_or(self.top_px() + 14.0 * s);
+        (x, y, bw, BUTTON_H * s)
     }
 
     /// Segmentschalter: Beschriftung (x, Grundlinie) und Segmente.
