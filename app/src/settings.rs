@@ -943,6 +943,36 @@ mod tests {
             .into_iter()
     }
 
+    /// Abnahme S8: einstellungen.txt ab Werk bytegleich; eine vorhandene
+    /// Datei ohne Vorgaben bleibt beim Speichern ohne Änderung, nach einer
+    /// anderen Änderung kommen keine Vorgabezeilen dazu.
+    #[test]
+    fn test_abnahme_s8_einstellungen_bytegleich() {
+        let d = dir("abn-s8");
+        let p = d.join("Skizzeo");
+        std::fs::create_dir_all(&p).unwrap();
+        let path = p.join("einstellungen.txt");
+        let alt = "SKIZZEO-EINSTELLUNGEN 1\n[theme] base=\"Dunkel\"\n[zuletzt] datei=\"b.szo\"\n";
+        std::fs::write(&path, alt).unwrap();
+        let mut s = Settings::new(args(&["skizzeo.exe"]), Some(d.clone()));
+        let t = s.load();
+        assert!(s.hints.is_empty(), "{:?}", s.hints);
+        assert_eq!(s.vorgaben, vorgaben::Vorgaben::WERK);
+        s.save_if_changed(&t).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), alt);
+        s.recent.push(PathBuf::from("a.szo"));
+        s.save_if_changed(&t).unwrap();
+        let neu = std::fs::read_to_string(&path).unwrap();
+        assert!(!neu.contains("[ansichtsschatten]") && !neu.contains("[standardort]"), "{neu}");
+        // Ohne Datei: nichts geschrieben
+        let d2 = dir("abn-s8-ohne");
+        let mut s2 = Settings::new(args(&["skizzeo.exe"]), Some(d2.clone()));
+        let t2 = s2.load();
+        s2.save_if_changed(&t2).unwrap();
+        assert!(!d2.exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn standard_ohne_datei() {
         let d = dir("ohne");

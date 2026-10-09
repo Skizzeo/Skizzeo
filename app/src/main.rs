@@ -8792,6 +8792,67 @@ mod tests {
         assert_eq!(p.revision(), rev);
     }
 
+    /// Abnahme S8 (§5, Test): Vorgabe ändern; neues Projekt zeigt sie,
+    /// vorhandenes mit eigener Wahl bleibt, vorhandenes ohne eigene Wahl
+    /// folgt; .szo bytegleich, keine neue Revision.
+    #[test]
+    fn test_abnahme_s8_vorgaben() {
+        use settings::vorgaben::Vorgaben;
+        use sk_model::{ShadeLight, ViewShade, GuidGen};
+        let text = include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo");
+        let lade = |t: &str| {
+            sk_model::szo::read_with(t, GuidGen::with_seed(1), &sk_cost::lesen::ABSCHNITTE_SZO)
+                .unwrap()
+                .model
+        };
+        // Vorhandenes Projekt ohne eigene Wahl: rh1 so, wie es ist
+        let ohne = lade(text);
+        let ohne_datei = sk_model::szo::write(&ohne);
+        // Vorhandenes Projekt mit eigener Wahl (Hinten), gespeichert und neu geladen
+        let eigen = ViewShade { on: true, hatch: true, light: ShadeLight::FrontRight };
+        let mut m = lade(text);
+        m.set_view_shade(1, eigen, ViewShade::WERK);
+        let mit_datei = sk_model::szo::write(&m);
+        assert!(mit_datei.contains("[viewshade] view=back on=1 fill=hatch light=front-right\n"));
+        let mit = lade(&mit_datei);
+        let (rev_ohne, rev_mit) = (ohne.revision(), mit.revision());
+        for firma in [
+            ViewShade { on: false, hatch: false, light: ShadeLight::FrontLeft },
+            ViewShade { on: true, hatch: true, light: ShadeLight::Top },
+            ViewShade { on: true, hatch: false, light: ShadeLight::FrontRight },
+        ] {
+            let v = Vorgaben { schatten: firma, ..Vorgaben::WERK };
+            // Neues Projekt zeigt die Vorgabe in allen vier Ansichten
+            let neu = new_model(None, v);
+            for i in 0..4 {
+                assert_eq!(neu.view_shade(i, v.schatten), firma, "neu {i}");
+                assert_eq!(neu.view_shade_own(i), None);
+            }
+            assert!(!sk_model::szo::write(&neu).contains("[viewshade]"));
+            // Ohne eigene Wahl folgt alles der Vorgabe
+            for i in 0..4 {
+                assert_eq!(ohne.view_shade(i, v.schatten), firma);
+            }
+            // Mit eigener Wahl: Hinten bleibt, die anderen folgen
+            assert_eq!(mit.view_shade(1, v.schatten), eigen);
+            for i in [0, 2, 3] {
+                assert_eq!(mit.view_shade(i, v.schatten), firma);
+            }
+            // Dateien bytegleich, keine Revision
+            assert_eq!(sk_model::szo::write(&ohne), ohne_datei);
+            assert_eq!(sk_model::szo::write(&mit), mit_datei);
+            assert_eq!((ohne.revision(), mit.revision()), (rev_ohne, rev_mit));
+        }
+        // Eigene Wahl, die später der Vorgabe gleicht, bleibt eigene Wahl
+        let gleich = Vorgaben { schatten: eigen, ..Vorgaben::WERK };
+        assert_eq!(mit.view_shade_own(1), Some(eigen));
+        assert_eq!(mit.view_shade(1, gleich.schatten), eigen);
+        assert_eq!(sk_model::szo::write(&mit), mit_datei);
+        // Ab Werk: neues Projekt wie vor S8 (kein [location], kein [sun], kein [viewshade])
+        let w = sk_model::szo::write(&new_model(None, Vorgaben::WERK));
+        assert!(!w.contains("[location]") && !w.contains("[sun]") && !w.contains("[viewshade]"));
+    }
+
     #[test]
     fn mausbewegungen_werden_gebuendelt() {
         let down = Event::MouseDown {
