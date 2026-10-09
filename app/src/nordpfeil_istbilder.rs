@@ -129,21 +129,30 @@ fn szene(s: &mut Scene, cam: &Camera, view: ViewKind) -> Canvas {
 
 /// Pfeil und Pille auf das Bild der Szene.
 fn mit_pfeil(c: &mut Canvas, n: &Nordpfeil, s: &Scene, cam: &Camera, theme: &Theme) {
+    mit_pfeil_bei(c, n, s, cam, theme, S);
+}
+
+/// Wie [`mit_pfeil`] mit der Skalierung `sk`.
+fn mit_pfeil_bei(c: &mut Canvas, n: &Nordpfeil, s: &Scene, cam: &Camera, theme: &Theme, sk: f32) {
     let st = Stand {
         nord: s.model().location().north,
-        fuss: anzeige_fuss(s.model().north_foot(), s.bounds()),
+        fuss: anzeige_fuss(
+            s.model().north_foot(),
+            s.bounds(),
+            laenge(cam, H as f64, sk as f64),
+        ),
         gesetzt: s.model().north_foot(),
     };
     let (w, h) = (W as f64, H as f64);
     // Dasselbe Bild wie in der App
     if let Some((bild, x, y)) = n
-        .bild(st, cam, (w, h), S, TINTE, HEISS, 1.5)
+        .bild(st, cam, (w, h), sk, TINTE, HEISS, 1.5)
         .and_then(|b| b.malen())
     {
         c.blit(&bild, x, y);
     }
-    if let Some((p, text)) = n.label(cam, (w, h), S as f64) {
-        let pille = crate::flush_pick::paint_label(&schriften(), &text, S, theme);
+    if let Some((p, text)) = n.label(cam, (w, h), sk as f64) {
+        let pille = crate::flush_pick::paint_label(&schriften(), &text, sk, theme);
         if let Some((x, y)) = cam.project(p, w, h) {
             let x = (x - pille.width as f64 * 0.5).round() as i32;
             let y = (y - pille.height as f64 * 0.5).round() as i32;
@@ -257,8 +266,23 @@ fn istbilder_s2() {
     assert!(szo::write(mit.model()).contains("[location] north=40 x=0 y=0\n"));
     let (lo, _) = mit.bounds().unwrap();
     assert!(lo.x <= 0.0 && lo.y <= 0.0, "Haus über dem Ursprung: {lo:?}");
-    let cam = grundriss(&mit);
+    // Wie in einem Fenster von 1600 × 1000 dip (Skalierung 1); der
+    // Ausschnitt fasst Haus und Platz, der Platz wächst mit dem Ausschnitt
+    let (lo, hi) = mit.bounds().unwrap();
+    let mut cam = grundriss(&mit);
+    for _ in 0..8 {
+        let l = laenge(&cam, H as f64, 1.0);
+        let f = anzeige_fuss(mit.model().north_foot(), mit.bounds(), l);
+        let r = n_reichweite(l) + 500.0;
+        let (a, b) = (vec3(f[0] - r, f[1] - r, 0.0), hi + vec3(500.0, 500.0, 0.0));
+        let mitte = (a + b) * 0.5;
+        let half = ((b.y - a.y) * 0.5).max((b.x - a.x) * 0.5 * H as f64 / W as f64);
+        cam = Camera::parallel(vec3(mitte.x, mitte.y, 0.0), FRAC_PI_2, -FRAC_PI_2, half);
+    }
+    let l = laenge(&cam, H as f64, 1.0);
+    let f = anzeige_fuss(mit.model().north_foot(), mit.bounds(), l);
+    assert!(f[0] < lo.x - 1000.0 && f[1] < lo.y - 1000.0);
     let mut c = szene(&mut mit, &cam, ViewKind::Plan);
-    mit_pfeil(&mut c, &ruhig, &mit, &cam, &theme);
+    mit_pfeil_bei(&mut c, &ruhig, &mit, &cam, &theme, 1.0);
     ab(&c, "ist-s2-ersatzplatz.png");
 }

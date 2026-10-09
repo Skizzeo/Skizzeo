@@ -5,10 +5,11 @@
 
 use crate::camera::Camera;
 use crate::nordpfeil::{
-    anzeige_fuss, laenge, richtung, Ausgang, Griff, Nordpfeil, Stand, LABEL_DREHEN, LABEL_SCHIEBEN,
+    anzeige_fuss, ersatz_abstand, gestalt, laenge, n_reichweite, richtung, vor_der_kante, Ausgang,
+    Griff, Nordpfeil, Stand, LABEL_DREHEN, LABEL_SCHIEBEN,
 };
 use crate::scene::Scene;
-use sk_math::vec3;
+use sk_math::{vec3, Vec3};
 use sk_model::{szo, Foot, GuidGen, Location, Model};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
 use std::f64::consts::FRAC_PI_2;
@@ -57,11 +58,13 @@ fn grundriss(s: &Scene) -> Camera {
     Camera::parallel(mitte, FRAC_PI_2, -FRAC_PI_2, half)
 }
 
-fn stand(s: &Scene) -> Stand {
+/// Stand wie in der App; der Ersatzplatz hängt über die Länge des Zeichens
+/// vom Zoom ab.
+fn stand(s: &Scene, cam: &Camera) -> Stand {
     let m = s.model();
     Stand {
         nord: m.location().north,
-        fuss: anzeige_fuss(m.north_foot(), s.bounds()),
+        fuss: anzeige_fuss(m.north_foot(), s.bounds(), laenge(cam, H, 1.0)),
         gesetzt: m.north_foot(),
     }
 }
@@ -88,11 +91,41 @@ fn maus(cam: &Camera, p: Foot, art: u8, shift: bool) -> Event {
 
 /// Ein Ereignis an den Pfeil und, wie in der App, ein Schritt daraus.
 fn ereignis(n: &mut Nordpfeil, s: &mut Scene, cam: &Camera, e: Event) -> Ausgang {
-    let out = n.handle(&e, stand(s), cam, W, H, 1.0, true);
+    n.gebaeude = s.bounds();
+    let out = n.handle(&e, stand(s, cam), cam, W, H, 1.0, true);
     if let Some((label, nord, fuss)) = out.commit {
         s.nordpfeil_setzen(label, nord, fuss);
     }
     out
+}
+
+/// Abstand (mm) eines Punkts vom Hüllquader im Grundriss; 0 innen.
+fn abstand(p: Foot, (lo, hi): (Vec3, Vec3)) -> f64 {
+    let dx = (lo.x - p[0]).max(p[0] - hi.x).max(0.0);
+    let dy = (lo.y - p[1]).max(p[1] - hi.y).max(0.0);
+    dx.hypot(dy)
+}
+
+/// Ersatzplatz (§8 08:45): vorne links neben dem Gebäude; das ganze
+/// Zeichen samt „N“ bleibt bei Nord 0°, 40°, 90° und 225° mindestens 1 m
+/// vom Hüllquader frei, aber nicht weiter weg als nötig.
+fn frei_daneben(fuss: Foot, b: (Vec3, Vec3), l: f64) {
+    let (lo, _) = b;
+    assert!(fuss[0] < lo.x && fuss[1] < lo.y, "vorne links: {fuss:?}");
+    // Kreis um den Fußpunkt, der jeden Punkt des „N“ enthält
+    let n = n_reichweite(l);
+    assert!(n > l, "das N steht vor der Spitze: {n} ≤ {l}");
+    assert!(abstand(fuss, b) - n >= 1000.0 - 1e-6, "N: {fuss:?}");
+    for nord in [0.0, 40.0, 90.0, 225.0] {
+        let g = gestalt(fuss, nord, l);
+        for p in [fuss, g.spitze, g.links, g.rechts, g.kerbe] {
+            assert!(abstand(p, b) >= 1000.0 - 1e-6, "{nord}°: {p:?}");
+            assert!((p[0] - fuss[0]).hypot(p[1] - fuss[1]) <= n + 1e-6);
+        }
+    }
+    let e = ersatz_abstand(l);
+    assert!(e >= 1000.0 + n - 1e-6, "{e}");
+    assert!(abstand(fuss, b) <= 2.0 * e, "nicht zu weit: {fuss:?}");
 }
 
 fn zeilen(text: &str) -> Vec<(usize, &str)> {
@@ -121,7 +154,7 @@ fn abnahme_s2_referenzhaeuser() {
         let mut stufen = vec![alt.clone()];
 
         // Ohne Nordrichtung kein Pfeil, kein Griff
-        assert_eq!(n.gezeigt(stand(&s)), None, "{name}");
+        assert_eq!(n.gezeigt(stand(&s, &cam)), None, "{name}");
 
         // Aufziehen rechts neben dem Haus, Taste gehalten, 15° eingerastet
         n.set_aktiv(true);
@@ -143,7 +176,7 @@ fn abnahme_s2_referenzhaeuser() {
         assert_eq!(z[0].0, nr(&t, "[project]") + 1, "{name}: hinter [project]");
         assert_eq!(z[0].1, format!("[location] north=30 x={} y={}", f[0], f[1]));
         assert_eq!(
-            stand(&s).fuss,
+            stand(&s, &cam).fuss,
             f,
             "{name}: neben dem Haus steht er, wo er ist"
         );
@@ -242,18 +275,53 @@ fn abnahme_s2_fusspunkt_im_haus_und_ohne() {
     assert!(n.zieht(), "Klick setzt nur den Fußpunkt");
     let ost = [innen[0] + 4000.0, innen[1]];
     ereignis(&mut n, &mut s, &cam, maus(&cam, ost, 1, false));
+    // Aufziehen im Haus rastet wie Verschieben vor der Kante ein (§8 08:50)
+    let davor = vor_der_kante(innen, s.bounds());
+    assert!(abstand(davor, (lo, hi)) >= 500.0, "{davor:?}");
+    assert!(davor.iter().all(|v| v % 10.0 == 0.0), "{davor:?}");
     let out = ereignis(&mut n, &mut s, &cam, maus(&cam, ost, 0, false));
-    assert_eq!(out.commit, Some((LABEL_DREHEN, 90.0, Some(innen))));
+    assert_eq!(out.commit, Some((LABEL_DREHEN, 90.0, Some(davor))));
     ereignis(&mut n, &mut s, &cam, maus(&cam, ost, 2, false));
-    let st = stand(&s);
-    assert_eq!(st.fuss, [lo.x - 2000.0, lo.y - 2000.0], "daneben gezeigt");
-    assert_eq!(st.gesetzt, Some(innen));
+    let st = stand(&s, &cam);
+    assert_eq!(st.fuss, davor, "gezeigt, wo geschrieben");
+    assert_eq!(st.gesetzt, Some(davor));
     let t = szo::write(s.model());
     assert!(t.contains(&format!(
         "[location] north=90 x={} y={}\n",
-        innen[0], innen[1]
+        davor[0], davor[1]
     )));
     rundlauf(&t, "innen");
+    let innen_davor = davor;
+
+    // Zahl + Enter im Haus rastet ebenso ein
+    let vorher = szo::write(s.model());
+    n.set_aktiv(true);
+    ereignis(&mut n, &mut s, &cam, maus(&cam, innen, 0, false));
+    let mut out = Ausgang::default();
+    n.gebaeude = s.bounds();
+    for ch in "45".chars() {
+        assert!(n.key(Key::Char(ch), OHNE, &mut out));
+    }
+    assert!(n.key(Key::Enter, OHNE, &mut out));
+    assert_eq!(out.commit, Some((LABEL_DREHEN, 45.0, Some(davor))));
+    assert!(s.undo_label() == Some(LABEL_DREHEN) && szo::write(s.model()) == vorher);
+
+    // Eine Datei mit Fußpunkt im Haus (aus einem älteren Stand): Der Pfeil
+    // steht am Ersatzplatz frei daneben, die Datei behält den Punkt
+    let alt_innen = alt.replacen(
+        "\n[storey]",
+        &format!(
+            "\n[location] north=90 x={} y={}\n[storey]",
+            innen[0], innen[1]
+        ),
+        1,
+    );
+    let mut s2 = Scene::with_model(laden(&alt_innen).model);
+    let st2 = stand(&s2, &cam);
+    assert_eq!(st2.gesetzt, Some(innen));
+    frei_daneben(st2.fuss, (lo, hi), laenge(&cam, H, 1.0));
+    assert!(!s2.undo());
+    assert!(szo::write(s2.model()).contains(&format!("north=90 x={} y={}\n", innen[0], innen[1])));
 
     // Drehen am gezeigten Platz: der Fußpunkt der Datei bleibt
     let l = laenge(&cam, H, 1.0);
@@ -263,13 +331,14 @@ fn abnahme_s2_fusspunkt_im_haus_und_ohne() {
     let sued = [st.fuss[0], st.fuss[1] - 5000.0];
     ereignis(&mut n, &mut s, &cam, maus(&cam, sued, 1, false));
     let out = ereignis(&mut n, &mut s, &cam, maus(&cam, sued, 2, false));
-    assert_eq!(out.commit, Some((LABEL_DREHEN, 180.0, Some(innen))));
+    assert_eq!(out.commit, Some((LABEL_DREHEN, 180.0, Some(innen_davor))));
 
     // Ohne Fußpunkt: Drehen schreibt keinen, x/y fehlen
     let mut s = Scene::with_model(laden(&alt).model);
     assert!(s.nordpfeil_setzen(LABEL_DREHEN, 45.0, None));
-    let st = stand(&s);
+    let st = stand(&s, &cam);
     assert_eq!(st.gesetzt, None);
+    frei_daneben(st.fuss, (lo, hi), l);
     let spitze = {
         let [dx, dy] = richtung(45.0);
         [st.fuss[0] + dx * l, st.fuss[1] + dy * l]
@@ -311,12 +380,12 @@ fn abnahme_s2_kein_schritt_und_zahlen() {
         let weg = [p[0] - 4000.0, p[1] - 1500.0];
         ereignis(&mut n, &mut s, &cam, maus(&cam, weg, 1, false));
         assert!(
-            n.gezeigt(stand(&s)).unwrap() != (20.0, [3000.0, 3000.0]),
+            n.gezeigt(stand(&s, &cam)).unwrap() != (20.0, [3000.0, 3000.0]),
             "Vorschau"
         );
         assert!(n.escape());
         assert_eq!(
-            n.gezeigt(stand(&s)),
+            n.gezeigt(stand(&s, &cam)),
             Some((20.0, [3000.0, 3000.0])),
             "Esc verwirft"
         );
@@ -463,4 +532,61 @@ fn abnahme_s2_zufallsfolgen() {
     }
     while s.undo() {}
     assert_eq!(szo::write(s.model()), alt, "Strg+Z bis zum Anfang");
+}
+
+/// Einrasten vor der Kante (§8 08:05, 08:50): nur die eingerastete Achse,
+/// auf 10 mm vom Gebäude weg gerundet, auch wenn die Kante nicht auf dem
+/// Raster liegt; außerhalb bleibt der Punkt. Über die Ansicht: ins Haus
+/// geschoben wird genau der gezeigte Punkt geschrieben.
+#[test]
+fn abnahme_s2_einrasten_vor_der_kante() {
+    let b = Some((vec3(-2617.5, -1234.5, 0.0), vec3(8001.5, 6403.5, 5000.0)));
+    // Nächste Kante links: −2617,5 − 500 = −3117,5 → −3120
+    assert_eq!(vor_der_kante([-2500.0, 1000.0], b), [-3120.0, 1000.0]);
+    // rechts: 8001,5 + 500 → 8510
+    assert_eq!(vor_der_kante([7900.0, 2000.0], b), [8510.0, 2000.0]);
+    // vorne: −1234,5 − 500 → −1740
+    assert_eq!(vor_der_kante([3000.0, -1200.0], b), [3000.0, -1740.0]);
+    // hinten: 6403,5 + 500 → 6910
+    assert_eq!(vor_der_kante([3000.0, 6400.0], b), [3000.0, 6910.0]);
+    // außerhalb, ohne Gebäude: unverändert
+    assert_eq!(vor_der_kante([-2700.0, 0.0], b), [-2700.0, 0.0]);
+    assert_eq!(vor_der_kante([5.0, 5.0], None), [5.0, 5.0]);
+
+    let alt = szo::write(&laden(HAEUSER[2].1).model);
+    let mut s = Scene::with_model(laden(&alt).model);
+    let cam = grundriss(&s);
+    let (lo, hi) = s.bounds().unwrap();
+    let f0 = [
+        ((hi.x + 8000.0) / 10.0).round() * 10.0,
+        ((lo.y + hi.y) * 0.5 / 10.0).round() * 10.0,
+    ];
+    assert!(s.nordpfeil_setzen(LABEL_DREHEN, 0.0, Some(f0)));
+    let l = laenge(&cam, H, 1.0);
+    let mut n = Nordpfeil::default();
+    for ziel in [
+        [hi.x - 300.0, f0[1]],
+        [lo.x + 100.0, lo.y + 50.0],
+        [(lo.x + hi.x) * 0.5, hi.y - 1.0],
+    ] {
+        let st = stand(&s, &cam);
+        let griff = [st.fuss[0], st.fuss[1] + l * 0.5];
+        ereignis(&mut n, &mut s, &cam, maus(&cam, griff, 1, false));
+        assert_eq!(n.over(), Some(Griff::Schaft), "{ziel:?}");
+        ereignis(&mut n, &mut s, &cam, maus(&cam, griff, 0, false));
+        let hin = [ziel[0], ziel[1] + l * 0.5];
+        ereignis(&mut n, &mut s, &cam, maus(&cam, hin, 1, false));
+        let gezeigt = n.gezeigt(stand(&s, &cam)).unwrap().1;
+        let out = ereignis(&mut n, &mut s, &cam, maus(&cam, hin, 2, false));
+        let (label, _, f) = out.commit.expect("verschoben");
+        let f = f.unwrap();
+        assert_eq!(label, LABEL_SCHIEBEN);
+        assert_eq!(f, gezeigt, "{ziel:?}: geschrieben, wie gezeigt");
+        assert_eq!(stand(&s, &cam).fuss, f, "{ziel:?}: kein Ersatzplatz");
+        assert!(abstand(f, (lo, hi)) >= 500.0, "{ziel:?}: {f:?}");
+        assert!(f.iter().all(|v| v % 10.0 == 0.0), "{ziel:?}: {f:?}");
+        let t = szo::write(s.model());
+        assert_eq!(zeilen(&t).len(), 1);
+        rundlauf(&t, "einrasten");
+    }
 }

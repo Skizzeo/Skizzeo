@@ -31,8 +31,8 @@ const LAENGE_PX: f64 = 192.0;
 const LAENGE_3D: f64 = 9000.0;
 /// Höchstlänge in 3D auf dem Bildschirm (dip), nah am Pfeil.
 const KAPPE_PX: f64 = 2.0 * LAENGE_PX;
-/// Abstand des Platzes vorne links vom Gebäude (mm).
-const ABSTAND: f64 = 2000.0;
+/// Freiraum um das ganze Zeichen am Platz neben dem Gebäude (mm, §8 08:45).
+const FREI: f64 = 1000.0;
 /// Greifabstand (dip) am Schaft und um die Spitze.
 const PICK_PX: f64 = 8.0;
 const SPITZE_PX: f64 = 12.0;
@@ -62,17 +62,34 @@ pub fn richtung(nord: f64) -> [f64; 2] {
     [r.sin(), r.cos()]
 }
 
+/// Wie weit das Zeichen bei der Länge `laenge` (mm) höchstens vom
+/// Fußpunkt reicht: Pfeil, „N“ davor, Ecken des Fußes (obere Schranke).
+pub fn n_reichweite(laenge: f64) -> f64 {
+    (1.0 + N_LUFT + N_HOCH + N_BREIT) * laenge
+}
+
+/// Versatz des Platzes vorne links vom Gebäude in x und y (mm): das ganze
+/// Zeichen bleibt mindestens [`FREI`] vom Hüllquader entfernt, bei jeder
+/// Nordrichtung (§8 08:45). Wächst im Grundriss mit dem Zoom mit; der
+/// Platz wird nie geschrieben.
+pub fn ersatz_abstand(laenge: f64) -> f64 {
+    FREI + n_reichweite(laenge)
+}
+
 /// Wo der Pfeil steht: am Fußpunkt, außer er fehlt oder liegt im
-/// Hüllquader des Gebäudes (Grundriss); dann vorne links daneben, ohne
-/// Gebäude am Ursprung.
-pub fn anzeige_fuss(fuss: Option<Foot>, bounds: Option<(Vec3, Vec3)>) -> Foot {
+/// Hüllquader des Gebäudes (Grundriss, eine ältere Datei); dann vorne
+/// links daneben ([`ersatz_abstand`]), ohne Gebäude am Ursprung.
+pub fn anzeige_fuss(fuss: Option<Foot>, bounds: Option<(Vec3, Vec3)>, laenge: f64) -> Foot {
     let innen = |p: Foot, (lo, hi): (Vec3, Vec3)| {
         (lo.x..=hi.x).contains(&p[0]) && (lo.y..=hi.y).contains(&p[1])
     };
     match (fuss, bounds) {
         (Some(p), Some(b)) if !innen(p, b) => p,
         (Some(p), None) => p,
-        (_, Some((lo, _))) => [lo.x - ABSTAND, lo.y - ABSTAND],
+        (_, Some((lo, _))) => {
+            let a = ersatz_abstand(laenge);
+            [lo.x - a, lo.y - a]
+        }
         (None, None) => [0.0, 0.0],
     }
 }
@@ -398,7 +415,7 @@ impl Nordpfeil {
                 if let Some(a) = self.anfang {
                     if self.eingabe.is_none() {
                         if let Some(n) = boden(x, y).and_then(|g| winkel(a, g)) {
-                            self.vorschau = Some((einrasten(n, mods.shift), a));
+                            self.vorschau = Some((einrasten(n, mods.shift), self.fuss_aus(a)));
                             out.redraw = true;
                         }
                     }
@@ -444,7 +461,7 @@ impl Nordpfeil {
                         None => {
                             self.anfang = Some(g);
                             self.unten = Some((x, y));
-                            self.vorschau = Some((st.nord.unwrap_or(0.0), g));
+                            self.vorschau = Some((st.nord.unwrap_or(0.0), self.fuss_aus(g)));
                         }
                         Some(a) => self.aufgezogen(a, g, &mut out),
                     }
@@ -505,7 +522,7 @@ impl Nordpfeil {
     /// ist eingerastet), solange er nicht auf dem Fußpunkt liegt.
     fn aufgezogen(&mut self, a: Foot, g: Foot, out: &mut Ausgang) {
         if let Some((n, _)) = self.vorschau.filter(|_| winkel(a, g).is_some()) {
-            out.commit = Some((LABEL_DREHEN, n, Some(a)));
+            out.commit = Some((LABEL_DREHEN, n, Some(self.fuss_aus(a))));
             self.set_aktiv(false);
             self.vorschau = None;
         }
@@ -538,7 +555,9 @@ impl Nordpfeil {
             InputOutcome::EnterEmpty => self.eingabe = None,
             InputOutcome::Enter => {
                 if let Some(Ok(n)) = i.value(0) {
-                    out.commit = Some((LABEL_DREHEN, n.rem_euclid(360.0), Some(a)));
+                    // Zahl + Enter im Haus rastet ein wie das Aufziehen
+                    let f = self.fuss_aus(a);
+                    out.commit = Some((LABEL_DREHEN, n.rem_euclid(360.0), Some(f)));
                     self.set_aktiv(false);
                     self.vorschau = None;
                 }
@@ -553,8 +572,15 @@ impl Nordpfeil {
 
     fn vorschau_aus_eingabe(&mut self, a: Foot) {
         if let Some(Ok(n)) = self.eingabe.as_ref().and_then(|i| i.value(0)) {
-            self.vorschau = Some((n.rem_euclid(360.0), a));
+            self.vorschau = Some((n.rem_euclid(360.0), self.fuss_aus(a)));
         }
+    }
+
+    /// Fußpunkt zum Klickpunkt `a` beim Aufziehen: im Haus gleich vor der
+    /// Kante eingerastet, gezeigt wie geschrieben (§8 08:50). Die Richtung
+    /// zählt weiter ab dem Klickpunkt.
+    fn fuss_aus(&self, a: Foot) -> Foot {
+        vor_der_kante(a, self.gebaeude)
     }
 
     /// Pille beim Aufziehen und Drehen: Spitze des Pfeils und Text.
@@ -725,16 +751,27 @@ mod tests {
     }
 
     /// §8: Fehlt der Fußpunkt oder liegt er im Gebäude, steht der Pfeil
-    /// vorne links daneben; ohne Gebäude am Ursprung.
+    /// vorne links daneben, das ganze Zeichen 1 m frei (08:45); ohne
+    /// Gebäude am Ursprung.
     #[test]
     fn anzeige_neben_dem_gebaeude() {
         let b = Some((vec3(0.0, 0.0, 0.0), vec3(10000.0, 8000.0, 6000.0)));
-        assert_eq!(anzeige_fuss(None, None), [0.0, 0.0]);
-        assert_eq!(anzeige_fuss(Some([5.0, 6.0]), None), [5.0, 6.0]);
-        assert_eq!(anzeige_fuss(None, b), [-2000.0, -2000.0]);
-        assert_eq!(anzeige_fuss(Some([0.0, 0.0]), b), [-2000.0, -2000.0]);
-        assert_eq!(anzeige_fuss(Some([5000.0, 4000.0]), b), [-2000.0, -2000.0]);
-        assert_eq!(anzeige_fuss(Some([12000.0, 0.0]), b), [12000.0, 0.0]);
+        let l = 2000.0;
+        let a = ersatz_abstand(l);
+        assert_eq!(a, 1000.0 + (1.0 + N_LUFT + N_HOCH + N_BREIT) * l);
+        assert_eq!(anzeige_fuss(None, None, l), [0.0, 0.0]);
+        assert_eq!(anzeige_fuss(Some([5.0, 6.0]), None, l), [5.0, 6.0]);
+        assert_eq!(anzeige_fuss(None, b, l), [-a, -a]);
+        assert_eq!(anzeige_fuss(Some([0.0, 0.0]), b, l), [-a, -a]);
+        assert_eq!(anzeige_fuss(Some([5000.0, 4000.0]), b, l), [-a, -a]);
+        assert_eq!(anzeige_fuss(Some([12000.0, 0.0]), b, l), [12000.0, 0.0]);
+        // Jeder Punkt des Zeichens liegt in n_reichweite um den Fußpunkt
+        for nord in [0.0, 40.0, 90.0, 225.0, 333.0] {
+            let g = gestalt([0.0, 0.0], nord, l);
+            for p in [g.spitze, g.links, g.rechts, g.kerbe] {
+                assert!(p[0].hypot(p[1]) <= n_reichweite(l));
+            }
+        }
     }
 
     /// Der Pfeil zeigt in die Nordrichtung: bei Nord 90° liegt die Spitze
@@ -954,7 +991,7 @@ mod abnahme_tests {
         let m = s.model();
         Stand {
             nord: m.location().north,
-            fuss: anzeige_fuss(m.north_foot(), s.bounds()),
+            fuss: anzeige_fuss(m.north_foot(), s.bounds(), laenge(&grundriss(), H, 1.0)),
             gesetzt: m.north_foot(),
         }
     }
@@ -1055,7 +1092,8 @@ mod abnahme_tests {
         s.add_wall(&rechteck(-2500.0)).unwrap();
         let (lo, _) = s.bounds().unwrap();
         let st = stand(&s);
-        assert_eq!(st.fuss, [lo.x - ABSTAND, lo.y - ABSTAND]);
+        let a = ersatz_abstand(laenge(&cam, H, 1.0));
+        assert_eq!(st.fuss, [lo.x - a, lo.y - a]);
         let bild = n.bild(st, &cam, (W, H), 1.0, [1.0; 4], [1.0; 4], 1.5);
         assert!(bild.and_then(|b| b.malen()).is_some(), "Zeichen sichtbar");
         let mit_haus = szo::write(s.model());
@@ -1189,7 +1227,8 @@ mod abnahme_tests {
         assert_eq!(szo::write(s.model()), alt);
         assert!(s.nordpfeil_setzen(LABEL_DREHEN, 15.0, None));
         let (lo, _) = s.bounds().unwrap();
-        assert_eq!(stand(&s).fuss, [lo.x - ABSTAND, lo.y - ABSTAND]);
+        let a = ersatz_abstand(laenge(&grundriss(), H, 1.0));
+        assert_eq!(stand(&s).fuss, [lo.x - a, lo.y - a]);
         let neu = szo::write(s.model());
         assert!(neu.contains("[location] north=15\n"), "{neu}");
         assert!(s.undo());

@@ -1108,11 +1108,12 @@ impl App {
     }
 
     /// Stand des Nordpfeils im Modell (Sonnenstand S2).
-    fn nord_stand(&self) -> nordpfeil::Stand {
+    fn nord_stand(&self, vh: f64, sc: f64) -> nordpfeil::Stand {
         let m = self.scene.model();
+        let l = nordpfeil::laenge(&self.cam, vh, sc);
         nordpfeil::Stand {
             nord: m.location().north,
-            fuss: nordpfeil::anzeige_fuss(m.north_foot(), self.scene.bounds()),
+            fuss: nordpfeil::anzeige_fuss(m.north_foot(), self.scene.bounds(), l),
             gesetzt: m.north_foot(),
         }
     }
@@ -1121,7 +1122,7 @@ impl App {
     /// ohne gegriffene Schnittlinie); `true`, wenn er es genommen hat.
     fn nord_handle(&mut self, ev: &Event, vw: f64, vh: f64, sc: f64) -> bool {
         let en = self.tool_allowed() && !self.tool.enabled && !self.sect.is_busy();
-        let st = self.nord_stand();
+        let st = self.nord_stand(vh, sc);
         self.nord.gebaeude = self.scene.bounds();
         let out = self.nord.handle(ev, st, &self.cam, vw, vh, sc, en);
         self.redraw |= out.redraw;
@@ -7986,7 +7987,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             helpers.extend(a.tool.helpers(&a.cam, scale, &a.theme));
             if a.tool_allowed() {
                 let (width, ink) = a.scene.table().section_line;
-                let st = a.nord_stand();
+                let st = a.nord_stand(vh, scale as f64);
                 let hot = a.theme.interact.drag;
                 nord_bild = a
                     .nord
