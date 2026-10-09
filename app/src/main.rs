@@ -9,6 +9,8 @@ mod abnahme;
 mod abnahme_einstellungen;
 #[cfg(test)]
 mod abnahme_pd;
+#[cfg(test)]
+mod abnahme_s1;
 mod attr_pick;
 mod autosave;
 mod ava_view;
