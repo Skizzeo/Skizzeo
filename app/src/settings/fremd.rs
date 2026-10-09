@@ -113,7 +113,8 @@ fn kennung(abschnitt: &str, teile: &[(&str, &str)]) -> Option<String> {
 #[derive(Default, Debug)]
 pub struct Fremd {
     /// Zeilen unbekannter Abschnitte und unbekannter Sätze bekannter
-    /// Abschnitte (eine Farbrolle aus einer neueren Fassung), im Wortlaut.
+    /// Abschnitte (eine Farbrolle aus einer neueren Fassung, ein Satz nur
+    /// mit unbekannten Schlüsseln), im Wortlaut.
     zeilen: Vec<String>,
     /// Zeilen mit unbekannten Schlüsseln: Wortlaut, ihr bekannter Teil,
     /// ihre Kennung und die unbekannten Schlüssel.
@@ -130,11 +131,17 @@ impl Fremd {
             let Some((abschnitt, teile)) = zerlegen(zeile) else {
                 continue;
             };
-            let Some((_, bekannt, _)) = BEKANNT.iter().find(|b| b.0 == abschnitt) else {
+            let Some((_, bekannt, id)) = BEKANNT.iter().find(|b| b.0 == abschnitt) else {
                 f.zeilen.push(zeile.to_string());
                 continue;
             };
-            if !satz_bekannt(abschnitt, zeile) {
+            // Ein Satz ohne einen bekannten Schlüssel in einem Abschnitt, der
+            // mehrfach steht ([env] einer neueren Fassung), ist ganz fremd;
+            // ein einmaliger behält seine Stelle wie jeder andere
+            let ohne_bekannte = id.is_some()
+                && !teile.is_empty()
+                && teile.iter().all(|(k, _)| !bekannt.contains(k));
+            if ohne_bekannte || !satz_bekannt(abschnitt, zeile) {
                 f.zeilen.push(zeile.to_string());
                 continue;
             }

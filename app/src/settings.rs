@@ -1233,9 +1233,15 @@ mod tests {
         for f in fremd {
             assert_eq!(text.matches(f).count(), 1, "{f}:\n{text}");
         }
+        // Nur der fremde Schlüssel: bleibt einmal, auch nach dem nächsten Speichern
         let mut s = Settings::new(args(&["skizzeo.exe"]), Some(d.clone()));
-        s.load();
+        let t = s.load();
         assert_eq!(s.lv_blatt(), (false, false));
+        s.recent.push(PathBuf::from("C:\\b.szo"));
+        s.save_if_changed(&t).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("[lvblatt]").count(), 1, "{text}");
+        assert!(text.contains("[lvblatt] farbe=blau\n"), "{text}");
         let _ = std::fs::remove_dir_all(&d);
     }
 }
