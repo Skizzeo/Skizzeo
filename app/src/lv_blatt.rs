@@ -713,8 +713,11 @@ impl<'a> Fluss<'a> {
                         self.eintrag(format!("{oz} {}", z.join(" ")), true);
                     }
                     Stueck::Position(p, _) => {
+                        // Unvollständig wie die Titelsumme: auch ein GP mit
+                        // fehlendem Artikelpreis (Review 3bo)
+                        let fehlt = lauf.1 || p.preis_fehlt || p.mehrere_preise;
                         lauf = match p.gp {
-                            Some(b) => (Cent(lauf.0 .0 + b.0), lauf.1),
+                            Some(b) => (Cent(lauf.0 .0 + b.0), fehlt),
                             None => (lauf.0, true),
                         };
                     }

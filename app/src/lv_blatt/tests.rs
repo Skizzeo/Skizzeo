@@ -546,3 +546,44 @@ fn projekt_bricht_nach_dem_komma() {
     let lv = lv(&mut s, true, false);
     assert_eq!(los_text(&lv), "LV 1 Rohbau");
 }
+
+/// Review 3bo: Fehlt einem Artikel der Preis, hat die Position zwar EP und
+/// GP, die Titelsumme heißt aber „(unvollständig)“; der Übertrag ebenso,
+/// sonst stünde eine unvollständige Summe als vollständig da.
+#[test]
+fn uebertrag_unvollstaendig_bei_fehlendem_artikelpreis() {
+    let Some((r, fe)) = schriften() else {
+        return;
+    };
+    let f = Schriften {
+        regular: &r,
+        fett: &fe,
+    };
+    let mut s = haus();
+    let mut lv = lv(&mut s, true, false);
+    let t = &mut lv.titel[0];
+    let einmal = t.positionen.clone();
+    for k in 1..15 {
+        for p in &einmal {
+            let mut q = p.clone();
+            q.oz = format!("{}-{k}", p.oz);
+            t.positionen.push(q);
+        }
+    }
+    t.positionen[1].preis_fehlt = true;
+    t.unvollstaendig = true;
+    let w = Wahl {
+        preise: true,
+        ..Wahl::default()
+    };
+    let b = blatt(&lv, &angaben(true), w, f);
+    let a = alle(&b);
+    let ue: Vec<&String> = a.iter().filter(|x| x.starts_with("Übertrag")).collect();
+    assert!(ue.len() >= 2, "{ue:?}");
+    for x in ue {
+        assert!(x.ends_with("(unvollständig)"), "{x}");
+    }
+    assert!(a
+        .iter()
+        .any(|x| x == "Summe 01 Betonarbeiten (unvollständig)"));
+}
