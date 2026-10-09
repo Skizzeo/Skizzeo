@@ -1060,10 +1060,16 @@ impl Arbeit<'_> {
                     .cloned()
                     .ok_or_else(|| abgelehnt(op, "den Vorschlag gibt es nicht mehr"))?;
                 if v.ganzer_satz() {
-                    // Neuer Satz aus einer Erweiterung (verwaltung.md §8a)
-                    let ids = self.neuer_satz(&v);
+                    // Neuer Satz aus einer Erweiterung (verwaltung.md §8a);
+                    // ein ungültiger (mit `old`) hat keinen, Ablehnen löscht
+                    // dann nur ihn (Review 3cn)
+                    let ids = if v.alt.is_some() {
+                        Vec::new()
+                    } else {
+                        self.neuer_satz(&v)
+                    };
                     match op {
-                        Op::VorschlagUebernehmen { .. } if ids.is_empty() || v.alt.is_some() => {
+                        Op::VorschlagUebernehmen { .. } if ids.is_empty() => {
                             return Err(abgelehnt(op, "der Vorschlag passt zu keinem neuen Satz"));
                         }
                         Op::VorschlagUebernehmen { .. } => {
@@ -1244,21 +1250,41 @@ impl Arbeit<'_> {
     }
 
     /// Ablehnen eines neuen Satzes: löscht seine Zeilen samt Herkunft, außer
-    /// eine Zeile wird von außerhalb des Satzes verwiesen (§8a).
+    /// eine Zeile wird von außerhalb des Satzes verwiesen (§8a). Was eine
+    /// bleibende Zeile des Satzes verweist (Titel einer bleibenden
+    /// Bauleistung), bleibt auch (Review 3cn).
     fn neuen_satz_entfernen(&mut self, ids: &[SatzId]) {
-        let drin: HashSet<&str> = ids.iter().map(|i| i.kennung.as_str()).collect();
-        let verwiesen = |me: &Self, id: &str| {
-            ["service", "svcpart", "svcfollow"].iter().any(|sec| {
-                me.zeilen.section(sec).any(|r| {
-                    !r.id.as_deref().is_some_and(|i| drin.contains(i))
-                        && zeile::zerlegen(&r.line)
-                            .is_some_and(|z| z.paare.iter().any(|(k, x)| k != "guid" && x == id))
+        let mut bleibt: HashSet<&str> = HashSet::new();
+        let verwiesen = |me: &Self, id: &str, bleibt: &HashSet<&str>| {
+            ["service", "svcpart", "svcfollow", "lot"]
+                .iter()
+                .any(|sec| {
+                    me.zeilen.section(sec).any(|r| {
+                        let von = r.id.as_deref().unwrap_or("");
+                        let aussen = !ids.iter().any(|i| i.kennung == von) || bleibt.contains(von);
+                        von != id
+                            && aussen
+                            && zeile::zerlegen(&r.line).is_some_and(|z| {
+                                z.paare.iter().any(|(k, x)| k != "guid" && x == id)
+                            })
+                    })
                 })
-            })
         };
+        // bis nichts mehr dazukommt: höchstens einmal je Zeile des Satzes
+        loop {
+            let neu: Vec<&str> = ids
+                .iter()
+                .map(|i| i.kennung.as_str())
+                .filter(|i| !bleibt.contains(i) && verwiesen(self, i, &bleibt))
+                .collect();
+            if neu.is_empty() {
+                break;
+            }
+            bleibt.extend(neu);
+        }
         let weg: Vec<SatzId> = ids
             .iter()
-            .filter(|i| !verwiesen(self, &i.kennung))
+            .filter(|i| !bleibt.contains(i.kennung.as_str()))
             .cloned()
             .collect();
         for i in weg {

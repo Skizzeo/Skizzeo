@@ -393,3 +393,112 @@ fn geteilter_artikel_bleibt_offen() {
     assert_eq!(status(&e6, art).as_deref(), Some("confirmed"));
     assert!(verwaltung::freigeben(&t0, &e6, &hand()).is_ok());
 }
+
+/// Review 3cn: Ablehnen löscht nie eine Zeile, auf die eine bleibende Zeile
+/// verweist. Die Schalung bleibt (eine Firmen-Folge zeigt auf sie), also
+/// bleibt auch ihr neuer Titel; ein ungültiger `field=*` (mit `old`) löscht
+/// nur sich selbst, auch wenn sein `of` ein offener neuer Satz ist.
+#[test]
+fn ablehnen_laesst_keine_verweise_offen() {
+    let m = projekt();
+    let d = ExtDef::lesen(STUETZE).unwrap();
+    let t0 = sk_model::write_szk(&Library::standard());
+    let ns = neue_saetze(&m, &lies(&t0), &d);
+    let schal = kennung("werk.stuetze", "leistung", "stuetze_schalung");
+    let haus = Some((Guid(77), "Haus A".to_string()));
+    let e1 = entwurf_anwenden(&t0, &t0, Rolle::Nutzer, &hand(), &[op(&ns, &d, haus)])
+        .unwrap()
+        .text;
+    let k1 = verwaltung::katalog_von(&lies(&e1), 0);
+    let key = k1
+        .vorschlaege
+        .iter()
+        .find(|v| v.of == schal.to_ifc())
+        .unwrap()
+        .key;
+    // 1. ungültiger Vorschlag (mit old) auf die offene Schalung
+    let fremd = format!(
+        "[proposal] key=9 project={} rec=service of={} field=* old=x new=Weg date=2026-10-09",
+        Guid(77).to_ifc(),
+        schal.to_ifc()
+    );
+    let e2 = format!("{e1}{fremd}\n");
+    let e3 = entwurf_anwenden(
+        &e2,
+        &e2,
+        Rolle::Admin,
+        &hand(),
+        &[Op::VorschlagAblehnen { key: 9 }],
+    )
+    .unwrap()
+    .text;
+    assert!(!e3.contains(&fremd));
+    assert_eq!(zeilen(&e3, "[service]"), zeilen(&e1, "[service]"));
+    assert_eq!(zeilen(&e3, "[svcpart]"), zeilen(&e1, "[svcpart]"));
+    // 2. die Schalung bekommt einen neuen Titel aus derselben Quelle, eine
+    // Firmen-Bauleistung eine Folge auf sie
+    let titel = Guid(4242).to_ifc();
+    let herkunft = zeilen(&e1, "[origin]")
+        .into_iter()
+        .find(|l| l.contains(&format!("key={}", schal.to_ifc())))
+        .unwrap()
+        .to_string();
+    let rohbau = "1S7bUW0010080300000001";
+    let betonarbeiten = "1S7bUW0010080300000002";
+    let mut e4 = String::new();
+    for l in e1.lines() {
+        if l.starts_with("[service]") && l.contains(&format!("guid={}", schal.to_ifc())) {
+            e4.push_str(&l.replace(&format!("title={betonarbeiten}"), &format!("title={titel}")));
+        } else {
+            e4.push_str(l);
+        }
+        e4.push('\n');
+    }
+    assert!(e4.contains(&format!("title={titel}")));
+    e4.push_str(&format!(
+        "[lot] guid={titel} name=\"Stützen\" nr=\"09\" parent={rohbau}\n"
+    ));
+    e4.push_str(
+        &herkunft
+            .replace(&schal.to_ifc(), &titel)
+            .replace("rec=service", "rec=lot"),
+    );
+    e4.push('\n');
+    e4.push_str(&format!(
+        "[svcfollow] guid={} service=1S7bUW0010080200000001 nr=9 follow={}\n",
+        Guid(4343).to_ifc(),
+        schal.to_ifc()
+    ));
+    let e5 = entwurf_anwenden(
+        &e4,
+        &e4,
+        Rolle::Admin,
+        &hand(),
+        &[Op::VorschlagAblehnen { key }],
+    )
+    .unwrap()
+    .text;
+    assert!(zeilen(&e5, "[service]")
+        .iter()
+        .any(|l| l.contains(&format!("guid={}", schal.to_ifc()))));
+    assert!(
+        zeilen(&e5, "[lot]")
+            .iter()
+            .any(|l| l.contains(&format!("guid={titel}"))),
+        "Titel der bleibenden Schalung gelöscht"
+    );
+    // kein neuer Fehler (Verweis ins Leere, Regel 73) durch das Ablehnen
+    let fehler = |t: &str| -> Vec<sk_cost::Befund> {
+        verwaltung::katalog_von(&lies(t), 0)
+            .befunde
+            .into_iter()
+            .filter(|b| b.schwere == sk_cost::Schwere::Fehler)
+            .collect()
+    };
+    let vorher = fehler(&e4);
+    let neu: Vec<_> = fehler(&e5)
+        .into_iter()
+        .filter(|b| !vorher.contains(b))
+        .collect();
+    assert!(neu.is_empty(), "{neu:#?}");
+}
