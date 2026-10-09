@@ -12,8 +12,8 @@ use sk_szb::rechnen::{rechnen_mit, Rechner, MAX_SCHRITTE_PRUEFUNG};
 use sk_szb::{zahl, Koerper};
 use std::path::{Path, PathBuf};
 
-/// Größte .szb (Vertrag §11).
-pub const MAX_DATEI: u64 = 1 << 20;
+/// Größte .szb (Vertrag §11), wie in der Prüfung.
+pub const MAX_DATEI: u64 = sk_szb::lesen::MAX_DATEI as u64;
 /// Unterordner der abgeschalteten Erweiterungen.
 pub const AUS: &str = "Aus";
 /// Höchstens so viele Zeilen nennt die Rückfrage, dann „und N weitere“.
@@ -39,16 +39,17 @@ pub struct Ablage {
     pub hinweise: Vec<String>,
 }
 
-/// Text einer .szb: höchstens [`MAX_DATEI`], gültiges UTF-8 (Robustheit
-/// Nr. 2), Zeilenenden `\n`.
+/// Text einer .szb: höchstens [`MAX_DATEI`], vor dem Lesen geprüft (Review
+/// 3ci), gültiges UTF-8 (Robustheit Nr. 2), Zeilenenden `\n`.
 pub fn datei_text(p: &Path) -> Result<String, String> {
+    let gross = || format!("Datei größer als {} KB", MAX_DATEI / 1024);
     let m = std::fs::metadata(p).map_err(|e| format!("nicht lesbar ({e})"))?;
     if m.len() > MAX_DATEI {
-        return Err("Datei größer als 1 MB".into());
+        return Err(gross());
     }
     let b = std::fs::read(p).map_err(|e| format!("nicht lesbar ({e})"))?;
     if b.len() as u64 > MAX_DATEI {
-        return Err("Datei größer als 1 MB".into());
+        return Err(gross());
     }
     match String::from_utf8(b) {
         Ok(t) => Ok(normal(&t)),
@@ -559,9 +560,14 @@ mod tests {
         .unwrap();
         std::fs::write(dir.join("roh.szb"), b"SZB 0\n\xff\xfe").unwrap();
         std::fs::write(dir.join("leer.szb"), "").unwrap();
+        // Zu groß: abgewiesen, ohne sie zu lesen (Review 3ci)
+        std::fs::write(dir.join("riesig.szb"), vec![b'#'; MAX_DATEI as usize + 1]).unwrap();
         let b = Ablage::lesen(&dir);
         assert_eq!(b.eintraege.len(), 2);
-        assert_eq!(b.hinweise.len(), 4, "{:?}", b.hinweise);
+        assert_eq!(b.hinweise.len(), 5, "{:?}", b.hinweise);
+        assert!(b
+            .hinweise
+            .contains(&"riesig.szb: Datei größer als 1024 KB".to_string()));
         assert!(b
             .hinweise
             .iter()
