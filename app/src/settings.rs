@@ -11,6 +11,8 @@ use sk_paint::Rgba;
 use sk_ui::theme::Theme;
 use std::path::PathBuf;
 
+mod fremd;
+
 const HEAD: &str = "SKIZZEO-EINSTELLUNGEN";
 const VERSION: u32 = 1;
 
@@ -630,6 +632,7 @@ pub fn read_all(text: &str) -> (Theme, Recent, Vec<String>) {
             // Planung des letzten Projekts (Paket PD): liest [`Settings::load`]
             "mengenfenster" | "firmenkatalog" | "planung" | "lvblatt" => continue,
             s => {
+                // Bleibt beim Speichern erhalten ([`fremd`])
                 skip(&mut hints, &format!("unbekannter Abschnitt [{s}]"));
                 continue;
             }
@@ -650,6 +653,22 @@ pub fn read_all(text: &str) -> (Theme, Recent, Vec<String>) {
         recent.push(f);
     }
     (t, recent, hints)
+}
+
+/// Ob ein Satz eines bekannten Abschnitts gelesen wird: eine Farbrolle
+/// oder Größe aus einer neueren Fassung nicht, sie bleibt als Fremdes.
+fn satz_bekannt(abschnitt: &str, zeile: &str) -> bool {
+    let Ok(Some(r)) = Record::parse(1, zeile) else {
+        return true;
+    };
+    match abschnitt {
+        "color" => {
+            let role = r.opt("role").unwrap_or("");
+            RGBA_ROLES.iter().any(|x| x.0 == role) || F4_ROLES.iter().any(|x| x.0 == role)
+        }
+        "size" => SIZE_ROLES.iter().any(|x| x.0 == r.opt("key").unwrap_or("")),
+        _ => true,
+    }
 }
 
 /// Ort der Einstellungsdatei und Stand beim Laden.
@@ -681,6 +700,9 @@ pub struct Settings {
     loaded_lvblatt: String,
     /// Ort des Firmenkatalogs aus der Datei; ohne ihn gilt der Vorgabeort.
     company: Option<PathBuf>,
+    /// Abschnitte und Schlüssel einer neueren Fassung, beim Speichern
+    /// unverändert weitergeschrieben ([`fremd`]).
+    fremd: fremd::Fremd,
 }
 
 impl Settings {
@@ -707,6 +729,7 @@ impl Settings {
             loaded_planung: String::new(),
             lvblatt: String::new(),
             loaded_lvblatt: String::new(),
+            fremd: fremd::Fremd::default(),
         }
     }
 
@@ -791,6 +814,7 @@ impl Settings {
             Some(text) => {
                 let (t, recent, hints) = read_all(&text);
                 self.hints = hints;
+                self.fremd = fremd::Fremd::sammeln(&text, satz_bekannt);
                 self.recent = recent;
                 self.windows = text
                     .lines()
@@ -858,12 +882,14 @@ impl Settings {
             .parent()
             .map_or(Ok(()), std::fs::create_dir_all)
             .and_then(|_| {
-                let text = write_all(theme, &self.recent)
-                    + &self.windows
-                    + &self.panel
-                    + &self.company_line
-                    + &self.planung
-                    + &self.lvblatt;
+                let text = self.fremd.einsetzen(
+                    &(write_all(theme, &self.recent)
+                        + &self.windows
+                        + &self.panel
+                        + &self.company_line
+                        + &self.planung
+                        + &self.lvblatt),
+                );
                 crate::document::write_synced(&tmp, text.as_bytes())
             })
             .and_then(|_| std::fs::rename(&tmp, path));
@@ -1130,6 +1156,86 @@ mod tests {
         neu.save_if_changed(&t).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(!text.contains("lvblatt"), "{text}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Datenverlust-Verdacht (Koordinator 09.10.): Eine neuere Fassung
+    /// schreibt Abschnitte und Schlüssel, die diese nicht kennt. Nach dem
+    /// Laden, einer Änderung und dem Speichern stehen sie im Wortlaut und
+    /// in ihrer Reihenfolge da; ändert die App die Zeile selbst, bleiben
+    /// die unbekannten Schlüssel an ihr.
+    #[test]
+    fn fremdes_bleibt_beim_speichern() {
+        let d = dir("fremd");
+        let path = d.join("Skizzeo").join("einstellungen.txt");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let fremd = [
+            "[zukunft] vorgabe=\"Firma \\\"Muster\\\" GmbH\" stufe=3",
+            "[color] role=ui.zukunft value=ff0000",
+            "[zukunft] zweite=1",
+        ];
+        let alt = format!(
+            "{HEAD} {VERSION}\n[theme] base=dark\n{}\n[env] ground_opacity=0.3 nebel=0.5\n\
+             [zuletzt] datei=\"C:\\\\a.szo\" stern=1\n\
+             [lvblatt] titelblatt=1 verzeichnis=0 farbe=blau\n{}\n{}\n",
+            fremd[0], fremd[1], fremd[2]
+        );
+        std::fs::write(&path, &alt).unwrap();
+        let mut s = Settings::new(args(&["skizzeo.exe"]), Some(d.clone()));
+        let t = s.load();
+        assert_eq!(s.lv_blatt(), (true, false));
+        assert_eq!(t.env.ground_opacity, 0.3);
+        // Eine andere Einstellung ändern: Planung merken
+        s.set_planung("Planer", "Weg 1");
+        s.save_if_changed(&t).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let zeilen: Vec<&str> = text.lines().collect();
+        let lage: Vec<usize> = fremd
+            .iter()
+            .map(|f| {
+                zeilen
+                    .iter()
+                    .position(|z| z == f)
+                    .unwrap_or_else(|| panic!("{f} fehlt:\n{text}"))
+            })
+            .collect();
+        assert!(lage.windows(2).all(|w| w[0] < w[1]), "Reihenfolge: {text}");
+        for z in [
+            "[env] ground_opacity=0.3 nebel=0.5",
+            "[zuletzt] datei=\"C:\\\\a.szo\" stern=1",
+            "[lvblatt] titelblatt=1 verzeichnis=0 farbe=blau",
+        ] {
+            assert_eq!(
+                zeilen.iter().filter(|x| **x == z).count(),
+                1,
+                "{z}:\n{text}"
+            );
+        }
+        assert!(text.contains("[planung] name=\"Planer\""), "{text}");
+        // Die App ändert die Zeile selbst: die unbekannten Schlüssel bleiben
+        let mut s = Settings::new(args(&["skizzeo.exe"]), Some(d.clone()));
+        let t = s.load();
+        s.set_lv_blatt((false, true));
+        s.save_if_changed(&t).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("[lvblatt] titelblatt=0 verzeichnis=1 farbe=blau\n"),
+            "{text}"
+        );
+        // Beide aus: keine Häkchen, der fremde Schlüssel bleibt
+        let mut s = Settings::new(args(&["skizzeo.exe"]), Some(d.clone()));
+        let t = s.load();
+        assert_eq!(s.lv_blatt(), (false, true));
+        s.set_lv_blatt((false, false));
+        s.save_if_changed(&t).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[lvblatt] farbe=blau\n"), "{text}");
+        for f in fremd {
+            assert_eq!(text.matches(f).count(), 1, "{f}:\n{text}");
+        }
+        let mut s = Settings::new(args(&["skizzeo.exe"]), Some(d.clone()));
+        s.load();
+        assert_eq!(s.lv_blatt(), (false, false));
         let _ = std::fs::remove_dir_all(&d);
     }
 }
