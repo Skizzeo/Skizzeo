@@ -396,4 +396,31 @@ impl Model {
         self.view_shade = s;
         self.view_shade_raw = raw;
     }
+
+    /// Ansicht `i`: Teile unter dem Gelände (z < 0) gestrichelt (`true`)
+    /// oder ausgeblendet (Jörn 09.10. 14:10, S11).
+    pub fn view_below(&self, i: usize) -> bool {
+        self.view_below.get(i).copied().unwrap_or(false)
+    }
+
+    /// Wie [`Model::set_view_shade`]: Ansichtszustand ohne Schritt; eine
+    /// unlesbare Zeile dieser Ansicht entfällt.
+    pub fn set_view_below(&mut self, i: usize, gestrichelt: bool) {
+        if let Some(v) = self.view_below.get_mut(i) {
+            *v = gestrichelt;
+            let name = format!("view={}", SHADE_VIEWS[i]);
+            self.view_below_raw
+                .retain(|l| !l.split_whitespace().any(|w| w == name));
+        }
+    }
+
+    /// `[viewbelow]`-Zeilen der Datei, die nicht zählen, roh.
+    pub(crate) fn view_below_raw(&self) -> &[String] {
+        &self.view_below_raw
+    }
+
+    pub(crate) fn load_view_below(&mut self, b: [bool; 4], raw: Vec<String>) {
+        self.view_below = b;
+        self.view_below_raw = raw;
+    }
 }

@@ -1089,6 +1089,19 @@ fn write_known(m: &Model) -> String {
         out.push_str(raw);
         out.push('\n');
     }
+    // Unter Gelände gestrichelt (S11) nur, wo gewählt
+    for (i, name) in crate::SHADE_VIEWS.iter().enumerate() {
+        if m.view_below(i) {
+            Line::new("viewbelow")
+                .word("view", name)
+                .flag("dashed", true)
+                .finish(&mut out);
+        }
+    }
+    for raw in m.view_below_raw() {
+        out.push_str(raw);
+        out.push('\n');
+    }
     // Ausgeblendetes (Paket 3 §3.6) nur, wenn es etwas gibt; Isolieren nie
     let v = m.visibility();
     for g in &v.hidden {
@@ -1310,7 +1323,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 32] = [
+    const KNOWN: [&str; 33] = [
         "pen",
         "linetype",
         "fill",
@@ -1339,6 +1352,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         "cut",
         "sun",
         "viewshade",
+        "viewbelow",
         "hide",
         "lock",
         "matprop",
@@ -2209,6 +2223,30 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         });
         hide.push((g("elem"), cat, g("trade"), r.opt("terrain") == Some("1")));
     }
+    // Unter Gelände gestrichelt (S11): wie [viewshade]
+    let mut below = [false; 4];
+    let mut below_raw = Vec::new();
+    let mut gesehen = [false; 4];
+    for r in recs("viewbelow") {
+        let view = r
+            .opt("view")
+            .and_then(|v| crate::SHADE_VIEWS.iter().position(|n| *n == v));
+        let dashed = r.opt("dashed").and_then(|_| r.flag("dashed").ok());
+        match (view, dashed) {
+            (Some(i), Some(d)) if !gesehen[i] => {
+                gesehen[i] = true;
+                below[i] = d;
+            }
+            _ => {
+                r.skip();
+                below_raw.push(lines[r.line - 1].to_string());
+                hints.push(format!(
+                    "Zeile {}: [viewbelow] unlesbar oder doppelt; die Ansicht blendet aus, die Zeile bleibt",
+                    r.line
+                ));
+            }
+        }
+    }
     for recs in by.values() {
         for r in recs {
             r.unused(&mut hints);
@@ -2232,6 +2270,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     model.load_location(location, foot, location_raw);
     model.load_sun(sun, sun_raw);
     model.load_view_shade(shade, shade_raw);
+    model.load_view_below(below, below_raw);
     for (k, n) in counters {
         if !model.raise_counter(&k, n) {
             hints.push(format!(
@@ -4076,6 +4115,42 @@ mod tests {
         }
         let doppelt = an.replacen("[sun]", "[sun] date=2026-01-01 time=08:00\n[sun]", 1);
         assert!(load(&doppelt).is_err());
+    }
+
+    /// S11 (Jörn 09.10. 14:10): Unter Gelände gestrichelt je Ansicht, nur
+    /// gewählt eine Zeile; alte Dateien bytegleich, keine neue Revision;
+    /// Unlesbares bleibt roh mit Hinweis.
+    #[test]
+    fn s11_unter_gelaende_in_der_datei() {
+        let mut m = house();
+        let alt = write(&m);
+        assert!(!alt.contains("[viewbelow]"));
+        assert!(!m.view_below(1));
+        let rev = m.revision();
+        m.set_view_below(1, true);
+        assert_eq!(m.revision(), rev, "Ansichtszustand");
+        let neu = write(&m);
+        assert!(
+            neu.lines().any(|z| z == "[viewbelow] view=back dashed=1"),
+            "{neu}"
+        );
+        let back = load(&neu).unwrap();
+        assert!(back.hints.is_empty(), "{:?}", back.hints);
+        assert!(back.model.view_below(1) && !back.model.view_below(0));
+        assert_eq!(write(&back.model), neu);
+        let mut m2 = back.model;
+        m2.set_view_below(1, false);
+        assert_eq!(write(&m2), alt);
+        for roh in [
+            "[viewbelow] view=oben dashed=1",
+            "[viewbelow] view=back dashed=ja",
+        ] {
+            let text = alt.replacen("[storey]", &format!("{roh}\n[storey]"), 1);
+            let l = load(&text).unwrap();
+            assert_eq!(l.hints.len(), 1, "{roh}: {:?}", l.hints);
+            assert!(!l.model.view_below(1));
+            assert!(write(&l.model).lines().any(|z| z == roh), "{roh}: roh");
+        }
     }
 
     /// Sonnenstand S7: Ohne eigene Wahl kein `[viewshade]`, alte Dateien

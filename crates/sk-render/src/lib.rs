@@ -487,6 +487,9 @@ pub struct Renderer {
     /// (dann gilt deren Licht statt der Sonne).
     paper_shade: Option<PaperShade>,
     shadow_paper: bool,
+    /// Ansichten (S11): unter dem Gelände 0 wie alles, 1 ausgeblendet, 2
+    /// gestrichelt mit Strich und Lücke (px); nur auf Papier.
+    below: (i32, [f32; 2]),
     /// Konnte der Treiber die Karte nicht anlegen: Meldung (einmal
     /// abzuholen), danach ohne Schatten.
     shadow_failed: bool,
@@ -654,6 +657,10 @@ uniform vec3 u_paper_light;
 uniform vec4 u_shade_tone;
 uniform vec2 u_hatch;
 uniform vec3 u_hatch_ink;
+// Ansichten (S11): unter dem Gelände (z < 0) 0 wie alles, 1 ausgeblendet,
+// 2 gestrichelt; Flächen dort in Papierfarbe, sie verdecken weiter
+uniform int u_below;
+uniform vec3 u_paper_rgb;
 vec4 look(int row) {
     return texelFetch(u_looks, ivec2(v_key & 0x7FFF, row), 0);
 }
@@ -697,6 +704,10 @@ void main() {
     }
     vec4 bg = look(2);
     vec3 c = bg.rgb;
+    if (u_below != 0 && !cut && v_model.z < -0.5) {
+        o_color = vec4(u_paper_rgb, u_alpha);
+        return;
+    }
     if (!cut && u_alpha >= 1.0 && u_paper_shade != 0) {
         // Eigenschatten (abgewandt) und Schlagschatten aus der Karte
         vec3 n = normalize(v_normal);
@@ -1233,6 +1244,8 @@ noperspective out float v_dist;
 flat out vec4 v_p0;
 flat out vec4 v_p1;
 flat out vec2 v_len_w;
+// Höhe im Modell (mm) für „unter dem Gelände“ (S11)
+noperspective out float v_z;
 void main() {
     int k = clamp(int(a_kind + 0.5), 0, 7);
     v_color = u_edge_color[k];
@@ -1260,6 +1273,7 @@ void main() {
     vec2 off = (n * a_corner.y + d * (at_b ? 1.0 : -1.0)) * (w * 0.5);
     v_dist = at_b ? len + w * 0.5 : -w * 0.5;
     v_len_w = vec2(len, w);
+    v_z = at_b ? a_b.z : a_a.z;
     c.xy += off / half_vp * c.w;
     gl_Position = c;
 }
@@ -1271,13 +1285,23 @@ noperspective in float v_dist;
 flat in vec4 v_p0;
 flat in vec4 v_p1;
 flat in vec2 v_len_w;
+noperspective in float v_z;
 out vec4 o_color;
 uniform float u_alpha;
+// Ansichten (S11): unter dem Gelände 1 ausgeblendet, 2 gestrichelt (Strich,
+// Lücke px)
+uniform int u_below;
+uniform vec2 u_below_dash;
 // Blasse Kanten im Zeichenmodus: mit dem Papier (rgb) vorgemischt und
 // deckend (a = 1), damit sich deckungsgleiche Kanten nicht stapeln
 uniform vec4 u_premix;
 void main() {
     if (v_p0.x + v_p0.y > 0.0 && !dash_ink(v_dist, v_len_w.x, v_p0, v_p1, v_len_w.y)) discard;
+    if (u_below != 0 && v_z < -0.5) {
+        if (u_below == 1) discard;
+        float per = u_below_dash.x + u_below_dash.y;
+        if (per > 0.0 && mod(max(v_dist, 0.0), per) >= u_below_dash.x) discard;
+    }
     if (u_premix.a > 0.5) {
         o_color = vec4(mix(u_premix.rgb, v_color, u_alpha), 1.0);
     } else {
@@ -1544,6 +1568,7 @@ impl Renderer {
                 shadow_dirty: false,
                 paper_shade: None,
                 shadow_paper: false,
+                below: (0, [0.0; 2]),
                 shadow_failed: shadow_error.is_some(),
                 shadow_error: shadow_error.map(|e| format!("Schatten aus: {e}")),
                 shadow_query: 0,
@@ -2607,6 +2632,11 @@ impl Renderer {
                 gl.glUniform3f(loc(gl, p, c"u_hatch_ink"), k[0], k[1], k[2]);
             }
             gl.glUniform1i(loc(gl, p, c"u_patterns"), view.patterns as GLint);
+            let below = if drawing { self.below.0 } else { 0 };
+            gl.glUniform1i(loc(gl, p, c"u_below"), below);
+            if let Some(pc) = view.paper {
+                gl.glUniform3f(loc(gl, p, c"u_paper_rgb"), pc[0], pc[1], pc[2]);
+            }
             let ink = self.looks.pattern_ink;
             gl.glUniform4f(loc(gl, p, c"u_pattern_ink"), ink[0], ink[1], ink[2], ink[3]);
             gl.glActiveTexture(TEXTURE0 + 1);
@@ -2637,6 +2667,9 @@ impl Renderer {
                 &self.looks.model
             };
             gl.glUniform2f(loc(gl, p, c"u_viewport"), w as f32, h as f32);
+            gl.glUniform1i(loc(gl, p, c"u_below"), below);
+            let d = self.below.1;
+            gl.glUniform2f(loc(gl, p, c"u_below_dash"), d[0], d[1]);
             let n = EDGE_KINDS as i32;
             gl.glUniform1fv(loc(gl, p, c"u_edge_width"), n, edges.width.as_ptr());
             let colors = edges.color.as_flattened();
@@ -3154,6 +3187,17 @@ impl Renderer {
     /// Deckkraft des Bodens (0: Gelände ausgeblendet, Paket 3).
     pub fn set_ground_opacity(&mut self, v: f32) {
         self.style.ground_opacity = v;
+    }
+
+    /// Ansichten auf Papier (S11): Teile unter dem Gelände (z < 0) wie
+    /// alles (`None`), ausgeblendet (`Some(None)`) oder gestrichelt mit
+    /// Strich und Lücke in Bildpunkten.
+    pub fn set_below_ground(&mut self, m: Option<Option<[f32; 2]>>) {
+        self.below = match m {
+            None => (0, [0.0; 2]),
+            Some(None) => (1, [0.0; 2]),
+            Some(Some(d)) => (2, d),
+        };
     }
 }
 

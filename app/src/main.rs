@@ -1374,9 +1374,20 @@ impl App {
             self.redraw = true;
         }
         if out.alle {
+            let unter = self.scene.model().view_below(i);
             for k in 0..sk_model::SHADE_VIEWS.len() {
                 self.scene
                     .set_view_shade(k, vs, self.settings.vorgaben.schatten);
+                self.scene.set_view_below(k, unter);
+            }
+            self.redraw = true;
+        }
+        // Unter Gelände (S11): ausgeblendet passt der Ausschnitt bis zum
+        // Gelände, solange nicht verschoben oder gezoomt wurde
+        if let Some(g) = out.unter {
+            self.scene.set_view_below(i, g);
+            if self.fitted.as_ref() == Some(&self.cam) {
+                self.fit_camera();
             }
             self.redraw = true;
         }
@@ -1588,8 +1599,21 @@ impl App {
                     section::view_dir(i, flip),
                 )
             }
-            _ => fit_parallel(v, self.scene.bounds(), free_w, vh),
+            _ => fit_parallel(v, self.ansicht_huelle(v), free_w, vh),
         }
+    }
+
+    /// Hüllquader einer Ansicht: ohne Teile unter dem Gelände, wenn sie
+    /// dort ausblendet (S11).
+    fn ansicht_huelle(&self, v: ViewKind) -> Option<(Vec3, Vec3)> {
+        let (lo, hi) = self.scene.bounds()?;
+        let m = self.scene.model();
+        let ganz = ansicht_schatten::platz(v).is_none_or(|i| m.view_below(i));
+        Some(if ganz || hi.z <= 0.0 {
+            (lo, hi)
+        } else {
+            (vec3(lo.x, lo.y, lo.z.max(0.0)), hi)
+        })
     }
 
     /// Ersetzt das Modell (Neu, Öffnen). Verlauf, Auswahl und angefangene
@@ -8570,8 +8594,15 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 ))
             });
             a.renderer.set_paper_shade(papier);
+            // Unter dem Gelände (S11): ausgeblendet oder gestrichelt, Strich
+            // 2 mm, Lücke 1 mm auf dem Blatt
+            let mm = a.theme.px_per_mm * scale;
+            let unten = ansicht_schatten::platz(a.ui.view)
+                .map(|i| a.scene.model().view_below(i).then_some([2.0 * mm, mm]));
+            a.renderer.set_below_ground(unten);
             let bild = wahl.map(|(i, vs)| ansicht_schatten::Bild {
                 vs,
+                gestrichelt: a.scene.model().view_below(i),
                 eigen: a.scene.model().view_shade_own(i).is_some(),
                 offen: a.ansicht_schatten.offen,
                 hover: a.ansicht_schatten.hover,

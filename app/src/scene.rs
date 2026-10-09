@@ -1232,6 +1232,12 @@ impl Scene {
         self.model.set_view_shade(i, v, vorgabe);
     }
 
+    /// Ansicht `i`: unter dem Gelände gestrichelt oder ausgeblendet (S11),
+    /// Ansichtszustand ohne Schritt.
+    pub fn set_view_below(&mut self, i: usize, gestrichelt: bool) {
+        self.model.set_view_below(i, gestrichelt);
+    }
+
     /// Datum, Uhrzeit und Schalter des Sonnenstands-Systems merken (ohne
     /// Schritt, wie die Schnitte; Sonnenstand S4).
     pub fn set_sun(&mut self, s: sk_model::Sun) {

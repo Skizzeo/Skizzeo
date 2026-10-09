@@ -431,6 +431,7 @@ mod tests {
 
         // Das offene Feld mit „vorne oben“ gewählt, Maus über „Sonne“
         let b = crate::ansicht_schatten::Bild {
+            gestrichelt: false,
             vs: ViewShade {
                 light: ShadeLight::Top,
                 ..ViewShade::WERK
@@ -453,5 +454,48 @@ mod tests {
         }
         let (c, _, _) = crate::ansicht_schatten::malen(&b, &fonts, &theme);
         std::fs::write(ziel.join("ist-s7-feld.png"), c.to_png()).unwrap();
+    }
+
+    /// Ist-Bilder S11 (Jörn 09.10. 14:10): RH-1 vorne, Teile unter dem
+    /// Gelände ausgeblendet (ab Werk) und gestrichelt (2 mm / 1 mm).
+    /// `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_s11 -- --ignored`
+    #[test]
+    #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
+    fn gpu_istbilder_s11() {
+        use sk_model::ViewShade;
+        let Some(ziel) = std::env::var_os("SKIZZEO_ISTBILDER").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let k = sk_render::glx::kontext(W as i32, H as i32).expect("GLX-Kontext (DISPLAY?)");
+        let theme = Theme::dark();
+        let mut r = Renderer::new(k.gl, crate::style(&theme.env)).unwrap();
+        let ab = |px: &[u8], n: &str| {
+            std::fs::write(ziel.join(n), sk_paint::encode_png(W, H, px)).unwrap()
+        };
+        let mut h = haus();
+        assert!(
+            h.bounds().unwrap().0.z < -500.0,
+            "Fundament unter dem Gelände"
+        );
+        let sun = sonne(6, 21, 15 * 60);
+        let leer = sk_render::MeshData::default;
+        let mm = theme.px_per_mm;
+        for (modus, n) in [
+            (None, "alles"),
+            (Some(None), "ausgeblendet"),
+            (Some(Some([2.0 * mm, mm])), "gestrichelt"),
+        ] {
+            r.set_below_ground(modus);
+            let (px, _) = ansicht(
+                &mut r,
+                &mut h,
+                ViewKind::Front,
+                ViewShade::WERK,
+                sun,
+                leer(),
+            );
+            ab(&px, &format!("ist-s11-vorne-{n}.png"));
+        }
+        r.set_below_ground(None);
     }
 }

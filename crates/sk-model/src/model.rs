@@ -155,6 +155,10 @@ pub struct Model {
     /// Ansichtszustand wie `cuts`. Dazu unlesbare Zeilen roh.
     view_shade: [Option<location::ViewShade>; 4],
     view_shade_raw: Vec<String>,
+    /// Ansichten: Teile unter dem Gelände gestrichelt statt ausgeblendet
+    /// (S11), Ansichtszustand wie `view_shade`, dazu unlesbare Zeilen roh.
+    view_below: [bool; 4],
+    view_below_raw: Vec<String>,
     /// Schnitte A und B.
     cuts: [Cut; 2],
     /// Zuletzt gezeigter Schnitt (Kennung, A = 0); Ansichtszustand wie `cuts`.
@@ -585,6 +589,8 @@ impl Model {
             sun_raw: None,
             view_shade: [None; 4],
             view_shade_raw: Vec::new(),
+            view_below: [false; 4],
+            view_below_raw: Vec::new(),
             attr,
             materials,
             layer_sets,
@@ -656,6 +662,8 @@ impl Model {
             sun_raw: None,
             view_shade: [None; 4],
             view_shade_raw: Vec::new(),
+            view_below: [false; 4],
+            view_below_raw: Vec::new(),
             attr,
             materials,
             layer_sets,

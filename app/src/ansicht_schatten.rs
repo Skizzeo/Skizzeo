@@ -159,13 +159,15 @@ pub enum Teil {
     Alle,
     /// „Vorgabe übernehmen“: die eigene Wahl dieser Ansicht entfällt (S8).
     Vorgabe,
+    /// Teile unter dem Gelände gestrichelt (`true`) oder ausgeblendet (S11).
+    Unter(bool),
 }
 
 /// Maße (dip).
 const RAD: f32 = 28.0;
 const PAD: f32 = 8.0;
 const GAP: f32 = 6.0;
-const NAME_W: f32 = 84.0;
+const NAME_W: f32 = 100.0;
 const KNOPF_W: f32 = 92.0;
 /// Breite einer Knopfreihe: vier Lichter.
 const REIHE: f32 = 4.0 * KNOPF_W + 3.0 * GAP;
@@ -173,7 +175,7 @@ const REIHE: f32 = 4.0 * KNOPF_W + 3.0 * GAP;
 const VORGABE_W: f32 = 2.0 * KNOPF_W + GAP;
 
 /// Zeilennamen im Feld.
-const NAMEN: [&str; 3] = ["Schatten", "Darstellung", "Licht"];
+const NAMEN: [&str; 4] = ["Schatten", "Darstellung", "Licht", "Unter Gelände"];
 
 /// Lage von Zahnrad und Feld in der Ansicht (Pixel).
 #[derive(Clone, Debug, PartialEq)]
@@ -224,14 +226,16 @@ pub fn lage(rechts: f32, mit_hinweis: bool, s: f32, t: &Theme) -> Lage {
         (Teil::Licht(ShadeLight::FrontRight), k(1.0, 2.0)),
         (Teil::Licht(ShadeLight::Top), k(2.0, 2.0)),
         (Teil::Licht(ShadeLight::Sun), k(3.0, 2.0)),
-        (Teil::Alle, r(kx, zeile(3.0), REIHE, h)),
+        (Teil::Unter(true), k(0.0, 3.0)),
+        (Teil::Unter(false), k(1.0, 3.0)),
+        (Teil::Alle, r(kx, zeile(4.0), REIHE, h)),
         (
             Teil::Vorgabe,
-            r(kx + REIHE - VORGABE_W, zeile(4.0), VORGABE_W, h),
+            r(kx + REIHE - VORGABE_W, zeile(5.0), VORGABE_W, h),
         ),
     ]);
-    let stand = r(kx, zeile(4.0), REIHE - VORGABE_W - GAP, h);
-    let mut unten = zeile(5.0);
+    let stand = r(kx, zeile(5.0), REIHE - VORGABE_W - GAP, h);
+    let mut unten = zeile(6.0);
     let hinweis = mit_hinweis.then(|| {
         let q = r(kx, unten - GAP * 0.5, REIHE, h * 0.8);
         unten += h * 0.8;
@@ -262,6 +266,8 @@ pub fn text(t: Teil) -> &'static str {
         Teil::Licht(ShadeLight::Sun) => "Sonne",
         Teil::Alle => "Auf alle Ansichten übertragen",
         Teil::Vorgabe => "Vorgabe übernehmen",
+        Teil::Unter(true) => "Gestrichelt",
+        Teil::Unter(false) => "Ausblenden",
     }
 }
 
@@ -295,6 +301,8 @@ pub struct Bild {
     pub zu_tief: bool,
     /// Die Ansicht hat eine eigene Wahl (sonst folgt sie der Vorgabe).
     pub eigen: bool,
+    /// Unter dem Gelände gestrichelt (S11).
+    pub gestrichelt: bool,
     /// Linker Rand des Paneels „Ansichten“ (Bits) und Skalierung (Bits).
     pub rechts: u32,
     pub scale: u32,
@@ -382,7 +390,10 @@ pub fn malen(b: &Bild, fonts: &Fonts, t: &Theme) -> (Canvas, i32, i32) {
         let gesperrt = *teil == Teil::Licht(ShadeLight::Sun) && !b.sonne_ok;
         let st = ButtonState {
             hover: b.hover == Some(*teil) && !gesperrt,
-            active: gewaehlt(*teil, b.vs),
+            active: match *teil {
+                Teil::Unter(g) => g == b.gestrichelt,
+                t => gewaehlt(t, b.vs),
+            },
             disabled: gesperrt,
             ..Default::default()
         };
@@ -417,6 +428,8 @@ pub struct Ausgang {
     pub alle: bool,
     /// Die eigene Wahl dieser Ansicht entfällt.
     pub vorgabe: bool,
+    /// Unter Gelände: gestrichelt (`true`) oder ausgeblendet (S11).
+    pub unter: Option<bool>,
 }
 
 impl Schalter {
@@ -476,6 +489,11 @@ impl Schalter {
                 }
                 Some(Teil::Vorgabe) => {
                     out.vorgabe = true;
+                    out.consumed = true;
+                    out.redraw = true;
+                }
+                Some(Teil::Unter(g)) => {
+                    out.unter = Some(g);
                     out.consumed = true;
                     out.redraw = true;
                 }
@@ -630,6 +648,13 @@ mod tests {
         assert_eq!(o.wahl, Some(ViewShade { hatch: true, ..vs }));
         let o = sch.handle(&klick(mitte(Teil::An(true))), &l, vs, false, false);
         assert!(o.consumed && o.wahl.is_none(), "schon an");
+        // S11: Unter Gelände ist eine eigene Wahl, kein Schatten
+        let o = sch.handle(&klick(mitte(Teil::Unter(true))), &l, vs, false, false);
+        assert!(o.consumed && o.wahl.is_none());
+        assert_eq!(o.unter, Some(true));
+        let o = sch.handle(&klick(mitte(Teil::Unter(false))), &l, vs, false, false);
+        assert_eq!(o.unter, Some(false));
+        assert_eq!(text(Teil::Unter(true)), "Gestrichelt");
         let o = sch.handle(
             &klick(mitte(Teil::Licht(ShadeLight::Sun))),
             &l,
@@ -677,6 +702,7 @@ mod tests {
         };
         let mut b = Bild {
             vs,
+            gestrichelt: false,
             offen: false,
             hover: None,
             sonne_ok: true,
