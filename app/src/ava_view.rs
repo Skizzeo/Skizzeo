@@ -438,8 +438,6 @@ pub struct AvaView {
     mehr_offen: bool,
     /// Im schmalen Fenster: der Baum ist als Blatt unter „LV ▾“ offen.
     baum_blatt: bool,
-    /// Im Baum gewählter Titel; die Leiste nennt ihn.
-    titel_wahl: Option<Guid>,
     /// Druckvorschau: gezeigte Seite (ab 0).
     seite: usize,
     /// Druckvorschau: Titelblatt und Inhaltsverzeichnis (Arbeitsplatz,
@@ -501,7 +499,6 @@ impl AvaView {
             kopf_offen: false,
             mehr_offen: false,
             baum_blatt: false,
-            titel_wahl: None,
             seite: 0,
             blatt_wahl: (false, false),
             blatt_cache: std::cell::RefCell::new(None),
@@ -771,7 +768,7 @@ impl AvaView {
                 || "LV".into(),
                 |l| {
                     let titel = self
-                        .titel_wahl
+                        .titel_jetzt()
                         .and_then(|g| l.titel.iter().find(|t| t.guid == g));
                     match titel {
                         Some(t) => format!("LV {} › {} {}", l.kopf.los, t.nr, t.name),
@@ -799,6 +796,25 @@ impl AvaView {
             26.0 * s,
         );
         (r, text)
+    }
+
+    /// Titel der gewählten Position (wie der Baum ihn hervorhebt).
+    fn titel_gewaehlt(&self) -> Option<Guid> {
+        let oz = self.gewaehlt.as_deref()?;
+        self.zeilen
+            .iter()
+            .find(|z| z.art == Art::Position && z.oz == oz)
+            .and_then(|z| z.titel)
+    }
+
+    /// Titel, den die Leiste nennt (Bedienbarkeit 25.1): der der gewählten
+    /// Position wie im Baum, ohne Wahl der der obersten sichtbaren Zeile.
+    fn titel_jetzt(&self) -> Option<Guid> {
+        self.titel_gewaehlt().or_else(|| {
+            self.sichtbar()
+                .into_iter()
+                .find_map(|(i, ..)| self.zeilen[i].titel)
+        })
     }
 
     /// Befunde im Prüfen, wie der Baum sie zählt.
@@ -1180,7 +1196,7 @@ impl AvaView {
         }
         // Klick neben das Baumblatt schließt es und bewirkt sonst nichts
         let blatt_offen = self.baum_blatt && self.baum_als_leiste();
-        if blatt_offen && !matches!(hot, Some(Hot::Baum(_) | Hot::BaumLeiste)) {
+        if blatt_offen && !matches!(hot, Some(Hot::Baum(_) | Hot::BaumLeiste | Hot::BaumPruefen)) {
             self.baum_blatt = false;
             return out.or(Some(ListOut::Repaint));
         }
@@ -1211,6 +1227,8 @@ impl AvaView {
                 Some(ListOut::Repaint)
             }
             Hot::BaumPruefen => {
+                // Auch bei offenem Blatt ein Klick: zu und „Prüfen“
+                self.baum_blatt = false;
                 self.zeige(Ansicht::Pruefen);
                 Some(ListOut::Repaint)
             }
@@ -1253,14 +1271,12 @@ impl AvaView {
                             return Some(ListOut::Repaint);
                         }
                         self.waehle_los(guid);
-                        self.titel_wahl = None;
                         if !self.offen.contains(&guid) {
                             self.offen.push(guid);
                         }
                     }
                     Knoten::Titel { los, guid, .. } => {
                         self.waehle_los(los);
-                        self.titel_wahl = Some(guid);
                         self.sprung = Some(Sprung::Titel(guid));
                     }
                     Knoten::Zusammenstellung => self.zeige(Ansicht::Zusammenstellung),
@@ -1313,7 +1329,6 @@ impl AvaView {
         if self.los != Some(los) {
             self.los = Some(los);
             self.gewaehlt = None;
-            self.titel_wahl = None;
             self.seite = 0;
             self.scroll = 0.0;
         }
@@ -1388,6 +1403,7 @@ impl AvaView {
                 Knoten::Pruefen(n) if *n > 0 => Some(format!("{n} offene Punkte im LV")),
                 _ => None,
             },
+            Hot::BaumPruefen => Some(format!("{} offene Punkte im LV", self.befunde())),
             _ => None,
         }
     }
@@ -1561,15 +1577,7 @@ impl AvaView {
             );
         }
         // Titel der gewählten Position fett (spaeter-darstellung 14)
-        let titel_gewaehlt = self
-            .gewaehlt
-            .as_deref()
-            .and_then(|oz| {
-                self.zeilen
-                    .iter()
-                    .find(|z| z.art == Art::Position && z.oz == oz)
-            })
-            .and_then(|z| z.titel);
+        let titel_gewaehlt = self.titel_gewaehlt();
         for (i, (x, y, w, h)) in self.baum_lage(t) {
             let k = &self.baum[i];
             let rechts = x + w;

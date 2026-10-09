@@ -990,6 +990,28 @@ fn baum_als_leiste_im_schmalen_fenster() {
     v.sync(&mut s, None);
     let text = v.leiste_rect(&t, fonts.bold.as_ref()).1;
     assert!(text.starts_with("LV ") && text.contains(" › "), "{text}");
+    // Bedienbarkeit 25.1: mit gewählter Position nennt sie deren Titel
+    // wie der Baum, nicht den zuletzt angeklickten
+    let lv = v.lv().unwrap().clone();
+    for t0 in lv.titel.iter().filter(|t| !t.positionen.is_empty()) {
+        v.gewaehlt = Some(t0.positionen[0].oz.clone());
+        let text = v.leiste_rect(&t, fonts.bold.as_ref()).1;
+        assert!(
+            text.ends_with(&format!("› {} {}", t0.nr, t0.name)),
+            "{text}"
+        );
+    }
+    v.gewaehlt = None;
+    // Pille: Tooltip, und bei offenem Blatt genügt ein Klick
+    let (zx, zy, zw, zh) = v.pruef_rect(&t, fonts.bold.as_ref()).expect("Zähler");
+    let mitte = ((zx + zw * 0.5) as f64, (zy + zh * 0.5) as f64);
+    let tip = v.tip_at(&t, &fonts, mitte.0, mitte.1).unwrap_or_default();
+    assert!(tip.ends_with("offene Punkte im LV"), "{tip}");
+    klick_auf(&mut v, &fonts, &mut p, Hot::BaumLeiste);
+    assert!(v.baum_blatt);
+    v.mouse_down(&t, &fonts, &mut p, mitte, mods);
+    assert!(v.ansicht == Ansicht::Pruefen && !v.baum_blatt);
+    v.zeige(Ansicht::Lv);
     // Der Prüfzähler steht neben der zugeklappten Leiste und zeigt „Prüfen“
     assert!(!v.baum_blatt && v.befunde() > 0);
     let (lx, _, lw, _) = v.leiste_rect(&t, fonts.bold.as_ref()).0;
