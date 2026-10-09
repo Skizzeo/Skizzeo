@@ -1,7 +1,8 @@
 //! SHA-256 nach FIPS 180-4, HMAC (RFC 2104) und PBKDF2 (RFC 8018), eigene
 //! Umsetzung (paket-ka3b KA-3b1, Review 3at): Prüfwert des
 //! Verwaltungskennworts. Schutz vor Versehen, keine Sicherheit
-//! (Bausteingrenze Fassung 2 §6.2).
+//! (Bausteingrenze Fassung 2 §6.2). Liegt in sk-model, weil auch die
+//! abgeleiteten Kennungen der Erweiterungen sie brauchen (E8c).
 
 const K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,

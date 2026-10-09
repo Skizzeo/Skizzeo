@@ -445,3 +445,42 @@ fn sperre_und_ausblenden_ohne_lesbare_definition() {
     assert!(l.model.element(id).unwrap().locked, "gesperrt");
     assert!(l.model.visibility().hidden.contains(&g), "ausgeblendet");
 }
+
+/// Eigener Baustoff einer Definition wird ein Baustoff des Projekts mit
+/// abgeleiteter Kennung (E8c): einmal, auch beim erneuten Einlesen, weg
+/// mit Rückgängig, und nach Speichern und Öffnen derselbe.
+#[test]
+fn eigener_baustoff_im_projekt() {
+    let mut m = Model::new();
+    m.add_building(1);
+    let vorher = m.materials().len();
+    let g = sk_model::erweiterung::kennung("werk.stabgelaender", "baustoff", "stahl_s235");
+    m.begin("Einlesen");
+    m.put_ext_def(def(BEISPIELE[1].1)).unwrap();
+    let t = m.commit().unwrap();
+    assert_eq!(m.materials().len(), vorher + 1);
+    let (id, b) = m.materials().iter().find(|(_, b)| b.guid == g).unwrap();
+    assert_eq!(b.name, "Baustahl S235, verzinkt");
+    assert_eq!(b.category, sk_model::MatCategory::Metal);
+    assert_eq!(b.density, 7850.0);
+    let d = m.ext_def("werk.stabgelaender").unwrap().clone();
+    assert_eq!(m.ext_material(&d, "stahl_s235"), Some(id));
+    // Erneut einlesen: kein zweiter Baustoff
+    m.begin("Einlesen");
+    m.put_ext_def(def(BEISPIELE[1].1)).unwrap();
+    m.commit();
+    assert_eq!(m.materials().len(), vorher + 1);
+    // Speichern und Öffnen
+    let l = lesen(&szo::write(&m));
+    let (id2, _) = l
+        .model
+        .materials()
+        .iter()
+        .find(|(_, b)| b.guid == g)
+        .unwrap();
+    assert_eq!(l.model.ext_material(&d, "stahl_s235"), Some(id2));
+    // Rückgängig
+    m.apply(&t, Direction::Undo);
+    assert_eq!(m.materials().len(), vorher);
+    assert!(m.ext_defs().is_empty());
+}

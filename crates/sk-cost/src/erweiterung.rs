@@ -13,15 +13,7 @@ use crate::zeile::Zeile;
 use sk_model::{Guid, Model};
 use std::collections::{HashMap, HashSet};
 
-/// Kennung eines Satzes aus einer Erweiterung: fest aus dem key der
-/// Definition, dem Abschnitt (`artikel`, `leistung`, `baustoff`,
-/// `stoff.<leistung>`) und dem key des Satzes.
-pub fn kennung(def: &str, rec: &str, key: &str) -> Guid {
-    let h = crate::sha256::sha256(format!("skizzeo.erweiterung\n{def}\n{rec}\n{key}").as_bytes());
-    let mut b = [0u8; 16];
-    b.copy_from_slice(&h[..16]);
-    Guid(u128::from_be_bytes(b))
-}
+pub use sk_model::erweiterung::kennung;
 
 /// Kennung der Bauleistung hinter `leistung=` einer `[menge]`: eine
 /// Werks-Kennung wie sie steht, sonst die abgeleitete.

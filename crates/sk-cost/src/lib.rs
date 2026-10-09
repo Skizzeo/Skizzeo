@@ -22,7 +22,7 @@ pub mod preis;
 pub mod rechnung;
 pub mod satz;
 mod schema;
-pub mod sha256;
+pub use sk_model::sha256;
 pub mod verwaltung;
 pub mod wahl;
 pub mod wort;

@@ -23,6 +23,7 @@ pub mod matprop;
 pub mod model;
 pub mod proctex;
 pub mod qto;
+pub mod sha256;
 pub mod solid;
 pub mod szo;
 pub mod terrace;

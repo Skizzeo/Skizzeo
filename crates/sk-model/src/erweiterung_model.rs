@@ -95,6 +95,7 @@ impl Model {
             return Ok(());
         }
         self.note_ext_defs();
+        self.ext_baustoffe_anlegen(&d);
         match self.ext_defs.iter_mut().find(|o| o.key == d.key) {
             Some(o) => *o = d,
             None => {
@@ -104,6 +105,44 @@ impl Model {
         }
         self.touch();
         Ok(())
+    }
+
+    /// Eigene `[baustoff]` der Definition als Baustoffe des Projekts (E8c):
+    /// Kennung abgeleitet, Name, Kategorie und Rohdichte aus der Definition,
+    /// Darstellung vom ersten Baustoff derselben Kategorie. Schon angelegte
+    /// bleiben, wie sie sind (der Nutzer darf sie ändern).
+    fn ext_baustoffe_anlegen(&mut self, d: &ExtDef) {
+        let best = sk_szb::Bestand::werk();
+        for b in &d.def.baustoff {
+            if best.baustoff(b.key()).is_some() {
+                continue;
+            }
+            let g = crate::erweiterung::kennung(&d.key, "baustoff", b.key());
+            if self.materials.iter().any(|(_, m)| m.guid == g) {
+                continue;
+            }
+            let Some(kat) = kategorie(b.get("kategorie").unwrap_or("")) else {
+                continue;
+            };
+            let vorlage = self
+                .materials
+                .iter()
+                .find(|(_, m)| m.category == kat)
+                .or_else(|| self.materials.iter().next())
+                .map(|(_, m)| m.clone());
+            let Some(mut m) = vorlage else {
+                continue;
+            };
+            m.guid = g;
+            m.name = b.get("name").unwrap_or(b.key()).to_string();
+            m.category = kat;
+            if let Some(r) = b.get("rohdichte").and_then(|v| v.parse::<f64>().ok()) {
+                m.density = r;
+            }
+            m.lambda = b.get("lambda").and_then(|v| v.parse::<f64>().ok());
+            m.props = Default::default();
+            self.add_material(m);
+        }
     }
 
     /// Entfernt eine Definition ohne Exemplare. `false`: es gibt noch welche
@@ -221,14 +260,20 @@ impl Model {
     }
 
     /// Baustoff des Projekts für den Baustoffschlüssel `key` einer
-    /// Definition: ein Werksbaustoff über seinen Namen (Vertrag §9), sonst
-    /// der erste Baustoff derselben Kategorie. Eigene Baustoffe legt erst
-    /// das Einlesen an (E5); bis dahin zeigen sie sich so.
+    /// Definition: ein Werksbaustoff über seinen Namen (Vertrag §9), ein
+    /// eigener über seine abgeleitete Kennung (E8c, angelegt mit
+    /// [`Model::put_ext_def`]), sonst der erste Baustoff derselben
+    /// Kategorie (ältere Projekte).
     pub fn ext_material(&self, d: &ExtDef, key: &str) -> Option<MaterialId> {
         let best = sk_szb::Bestand::werk();
         let werk = best.baustoff(key);
         if let Some(w) = werk {
             if let Some((id, _)) = self.materials.iter().find(|(_, m)| m.name == w.name) {
+                return Some(id);
+            }
+        } else {
+            let g = crate::erweiterung::kennung(&d.key, "baustoff", key);
+            if let Some((id, _)) = self.materials.iter().find(|(_, m)| m.guid == g) {
                 return Some(id);
             }
         }
@@ -239,15 +284,7 @@ impl Model {
                 .find(|b| b.key() == key)
                 .and_then(|b| b.get("kategorie"))
         })?;
-        let kat = match kat {
-            "masonry" => MatCategory::Masonry,
-            "concrete" => MatCategory::Concrete,
-            "insulation" => MatCategory::Insulation,
-            "plaster" => MatCategory::Plaster,
-            "timber" => MatCategory::Timber,
-            "metal" => MatCategory::Metal,
-            _ => return None,
-        };
+        let kat = kategorie(kat)?;
         self.materials
             .iter()
             .find(|(_, m)| m.category == kat)
@@ -303,3 +340,16 @@ impl Model {
 
 /// Bauabschnitt der Erweiterungen: nach den Wänden (3).
 pub const EXT_SEQ: u16 = 4;
+
+/// Kategorie eines Baustoffs nach dem Wort im Vertrag (§9).
+fn kategorie(wort: &str) -> Option<MatCategory> {
+    Some(match wort {
+        "masonry" => MatCategory::Masonry,
+        "concrete" => MatCategory::Concrete,
+        "insulation" => MatCategory::Insulation,
+        "plaster" => MatCategory::Plaster,
+        "timber" => MatCategory::Timber,
+        "metal" => MatCategory::Metal,
+        _ => return None,
+    })
+}

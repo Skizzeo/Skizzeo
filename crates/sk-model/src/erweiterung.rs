@@ -19,6 +19,16 @@ pub struct ExtDef {
     pub def: Def,
 }
 
+/// Kennung eines Satzes aus einer Erweiterung: fest aus dem key der
+/// Definition, dem Abschnitt (`artikel`, `leistung`, `baustoff`,
+/// `stoff.<leistung>`) und dem key des Satzes (E8b, E8c).
+pub fn kennung(def: &str, rec: &str, key: &str) -> crate::Guid {
+    let h = crate::sha256::sha256(format!("skizzeo.erweiterung\n{def}\n{rec}\n{key}").as_bytes());
+    let mut b = [0u8; 16];
+    b.copy_from_slice(&h[..16]);
+    crate::Guid(u128::from_be_bytes(b))
+}
+
 /// Zeilenenden `\n`, ohne Byte-Order-Mark.
 pub fn normal(text: &str) -> String {
     text.trim_start_matches('\u{feff}').replace("\r\n", "\n")
