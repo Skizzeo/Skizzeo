@@ -30,9 +30,10 @@ pub(super) fn herkunft(
         };
         if s.statt {
             let name = kat.artikel(g).map_or(s.name.as_str(), |a| a.name.as_str());
+            // Wortlaut der Prüfung E8 (Nachtrag 19:00, E8-6)
             v.push(format!(
-                "Stoff {name}: Katalog, statt Erweiterungsartikel {} ({})",
-                s.key, s.def
+                "Stoff {name} (Katalog, statt Erweiterungsartikel {})",
+                s.key
             ));
         } else {
             v.push(format!("Stoff {} {}", s.name, s.herkunft()));
@@ -59,9 +60,16 @@ mod tests {
     fn herkunft_im_detail() {
         let mut m = Model::with_seed(1);
         m.add_building(1);
+        // Stütze mit eigenem Beton, Name wie der Werks-Artikel (E8-6)
+        let stuetze = include_str!("../../../crates/sk-szb/beispiele/werk.stuetze.szb")
+            .replace(
+                "[leistung] key=stuetze_beton",
+                "[artikel] key=beton_c25 name=\"Transportbeton  C25/30 XC1-XC2 F3\" einheit=m3 preis=190\n[leistung] key=stuetze_beton",
+            )
+            .replace("stoffe=\"1S7bUW0010080100000006:1\"", "stoffe=\"beton_c25:1\"");
         for t in [
             include_str!("../../../crates/sk-szb/beispiele/werk.bodenplatte.szb"),
-            include_str!("../../../crates/sk-szb/beispiele/werk.stuetze.szb"),
+            &stuetze,
         ] {
             m.put_ext_def(ExtDef::lesen(t).unwrap()).unwrap();
         }
@@ -111,6 +119,14 @@ mod tests {
         ] {
             assert!(d.preis.iter().any(|l| l == z), "{z}: {:#?}", d.preis);
         }
+        let beton = sk_cost::erweiterung::kennung("werk.stuetze", "leistung", "stuetze_beton");
+        let werk = Guid::from_ifc("1S7bUW0010080100000006").unwrap();
+        let z = format!(
+            "Stoff {} (Katalog, statt Erweiterungsartikel beton_c25)",
+            k.artikel(werk).unwrap().name
+        );
+        let d = detail(&m, &k, &lv, &oz(beton)).unwrap();
+        assert!(d.preis.contains(&z), "{z}: {:#?}", d.preis);
         // Werks-Leistung der Bodenplatte: Katalogpreis, aber keine Folgen
         let d = detail(&m, &k, &lv, &oz(bp)).unwrap();
         assert!(d.preis.iter().all(|l| !l.contains("aus Erweiterung")));
