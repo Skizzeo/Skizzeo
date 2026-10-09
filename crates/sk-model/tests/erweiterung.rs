@@ -44,7 +44,7 @@ fn geschoss(m: &Model, kurz: &str) -> StoreyId {
 
 /// Projekt mit einem Gebäude (GR, EG, OG) und allen fünf Beispielen.
 fn projekt() -> Model {
-    let mut m = Model::new();
+    let mut m = Model::with_seed(1);
     m.add_building(2);
     for (_, t) in BEISPIELE {
         m.put_ext_def(def(t)).unwrap();
