@@ -1484,4 +1484,108 @@ mod tests {
         .unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Mengen der Stützen im EG als Text der Abnahmetabelle.
+    fn mengen(m: &Model) -> Vec<String> {
+        use crate::schedule_view::{Grouping, ListView};
+        let mut s = crate::scene::Scene::with_model(m.clone());
+        ListView::grouped(&mut s, Grouping::Storey).line_texts()
+    }
+
+    /// E9, ganzer Weg: einlesen, einsetzen, Mengen, speichern, öffnen; neue
+    /// Version mit breiterer Stütze ändert das Projekt erst nach der
+    /// Rückfrage, und danach wie frisch gesetzt.
+    #[test]
+    fn ganzer_weg() {
+        let dir = ordner("ganzer-weg");
+        let mut a = Ablage::lesen(&dir);
+        let mut m = Model::with_seed(5);
+        m.add_building(1);
+        // Einlesen: Rückfrage, „Einlesen“, Datei im Ordner
+        let v = ext_ablage::pruefen(STUETZE, &a, &m).unwrap();
+        let mut w = Fenster::mit_frage(Vec::new(), Frage::einlesen(v));
+        assert!(w.beim_einlesen());
+        let r = w.rect(1.0, 1280, 800, 32);
+        let Some(Antwort::Tat(Tat::Einlesen(v))) = drueck(&mut w, r, Knopf::Ja) else {
+            panic!("Einlesen")
+        };
+        a.schreiben(&v.def, v.hinweise.clone()).unwrap();
+        let a = Ablage::lesen(&dir);
+        let d = a
+            .bibliothek()
+            .defs
+            .into_iter()
+            .find(|d| d.key == "werk.stuetze");
+        let d = d.expect("im Ordner");
+        // Einsetzen: zwei Stützen, ein Schritt je Stütze
+        let eg = m
+            .storeys()
+            .iter()
+            .find(|(_, s)| s.short == "EG" && s.building.is_some())
+            .map(|(id, _)| id)
+            .unwrap();
+        for x in [0.0, 3000.0] {
+            m.begin("Stütze setzen");
+            if m.ext_def(&d.key).is_none() {
+                m.put_ext_def(d.clone()).unwrap();
+            }
+            m.add_ext(eg, ExtPart::new(&d, [x, 0.0])).unwrap();
+            m.commit().unwrap();
+        }
+        // Mengen, Speichern und Öffnen: dieselben Zeilen
+        let t = mengen(&m);
+        assert!(
+            t.iter().any(|l| l
+                .trim_start()
+                .starts_with("Stahlbetonstützen | ST-001 … 002 | 2")),
+            "{t:#?}"
+        );
+        let mut m = sk_model::szo::read(&sk_model::szo::write(&m), sk_model::GuidGen::with_seed(9))
+            .unwrap()
+            .model;
+        assert_eq!(mengen(&m), t);
+        // Neue Version, breiter: Rückfrage nennt beide Stützen, Projekt bleibt
+        let breiter = v2(STUETZE)
+            .replace(
+                "st24 name=\"Stütze 24/24\" werte=\"b=240; d=240\" standard=ja",
+                "st24 name=\"Stütze 24/24\" werte=\"b=300; d=300\" standard=ja",
+            )
+            .replace("wert=240 min=200", "wert=300 min=200");
+        let v = ext_ablage::pruefen(&breiter, &a, &m).unwrap();
+        let f = Frage::einlesen(v);
+        assert_eq!(f.ja, Some("Aktualisieren"));
+        let (titel, zeilen) = &f.abschnitte[0];
+        assert_eq!(titel, "Im Projekt (Version 1)");
+        assert!(
+            zeilen[0].starts_with("ST-001: Form ändert sich") && zeilen[1].starts_with("ST-002: ")
+        );
+        let mut w = Fenster::mit_frage(Vec::new(), f);
+        assert_eq!(mengen(&m), t, "vor der Antwort unverändert");
+        let r = w.rect(1.0, 1280, 800, 32);
+        let Some(Antwort::Tat(Tat::Einlesen(v))) = drueck(&mut w, r, Knopf::Ja) else {
+            panic!("Aktualisieren")
+        };
+        assert_eq!(v.projekt, Some(1));
+        m.begin("Erweiterung aktualisiert");
+        m.put_ext_def(v.def.clone()).unwrap();
+        m.commit().unwrap();
+        assert_eq!(m.ext_def("werk.stuetze").unwrap().version, 2);
+        let neu = mengen(&m);
+        assert_ne!(neu, t);
+        // wie frisch gesetzt
+        let mut f = Model::with_seed(5);
+        f.add_building(1);
+        f.put_ext_def(v.def.clone()).unwrap();
+        let eg = f
+            .storeys()
+            .iter()
+            .find(|(_, s)| s.short == "EG" && s.building.is_some())
+            .map(|(id, _)| id)
+            .unwrap();
+        for x in [0.0, 3000.0] {
+            f.add_ext(eg, ExtPart::new(&v.def, [x, 0.0])).unwrap();
+        }
+        assert_eq!(neu, mengen(&f));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
