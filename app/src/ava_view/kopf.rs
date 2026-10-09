@@ -372,24 +372,29 @@ impl AvaView {
             let y = mitte(z.kopf, bold, px) + 2.0 * s;
             c.fill_rect(z.kopf.0 + 14.0 * s, y, w, s.max(1.0), u.sheet_text_dim);
         }
+        // Verweise auf dem hellen Blatt im lesbaren Akzent (reiner Akzent
+        // hat dort 1,7 : 1, Einstellungen 09.10.)
         if let (Some(r), Some(f)) = (z.fehlt, self.fehlt_text()) {
-            bold.draw(c, &f, 10.0 * s, r.0, mitte(r, bold, 10.0 * s), u.accent);
-            if self.hot == Some(Hot::BauherrFehlt) {
+            let hot = self.hot == Some(Hot::BauherrFehlt);
+            let col = crate::cards::verweis(u, hot);
+            bold.draw(c, &f, 10.0 * s, r.0, mitte(r, bold, 10.0 * s), col);
+            if hot {
                 let w = bold.width(&f, 10.0 * s);
                 let y = mitte(r, bold, 10.0 * s) + 2.0 * s;
-                c.fill_rect(r.0, y, w, s.max(1.0), u.accent);
+                c.fill_rect(r.0, y, w, s.max(1.0), col);
             }
         }
         // „Mehr ▸“ bzw. offen „Mehr ▾“
         let (mx, _, _, _) = z.mehr;
-        bold.draw(c, MEHR, px, mx, mitte(z.mehr, bold, px), u.accent);
+        let col = crate::cards::verweis(u, self.hot == Some(Hot::Mehr));
+        bold.draw(c, MEHR, px, mx, mitte(z.mehr, bold, px), col);
         let w = bold.width(MEHR, px);
         widgets::disclosure(
             c,
             mx + w + 7.0 * s,
             z.mehr.1 + z.mehr.3 * 0.5,
             self.mehr_offen,
-            u.accent,
+            col,
             s,
         );
         if !self.kopf_offen {
@@ -439,9 +444,11 @@ impl AvaView {
                             (Feld::Bauvorhaben, Some(lv)) => (self.bauvorhaben(lv), u.sheet_hint),
                             (Feld::Aufsteller, Some(lv)) => match lv.kopf.aufsteller.clone() {
                                 Some(a) => (a, u.sheet_hint),
-                                None => ("fehlt".to_string(), u.accent),
+                                None => ("fehlt".to_string(), crate::cards::verweis(u, false)),
                             },
-                            (Feld::Bauherr, _) => ("fehlt".to_string(), u.accent),
+                            (Feld::Bauherr, _) => {
+                                ("fehlt".to_string(), crate::cards::verweis(u, false))
+                            }
                             _ => (String::new(), u.sheet_hint),
                         }
                     } else {

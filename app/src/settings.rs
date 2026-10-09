@@ -990,4 +990,40 @@ mod tests {
         .is_none());
         let _ = std::fs::remove_dir_all(&d);
     }
+
+    /// Abnahme 79e7123 (Test, Koordinator 00:28): Eine Einstellungsdatei
+    /// von vor der Rolle `ui.sheet_success` lädt ohne Hinweis, die neue
+    /// Rolle hat ihren Grundwert, alle gespeicherten Abweichungen bleiben,
+    /// und Speichern schreibt die Datei bytegleich zurück.
+    #[test]
+    fn abnahme_alte_datei_ohne_sheet_success() {
+        let alt = "SKIZZEO-EINSTELLUNGEN 1\n\
+            [theme] base=\"Dunkel\"\n\
+            [color] role=ui.accent value=2878dc\n\
+            [color] role=ui.border value=102030\n\
+            [color] role=ui.sheet_card value=fafafa\n\
+            [color] role=ui.text_same value=00aa00\n\
+            [size] key=font value=15\n\
+            [zuletzt] datei=\"C:\\\\Haus.szo\"\n";
+        let (t, recent, hints) = read_all(alt);
+        assert!(hints.is_empty(), "{hints:?}");
+        assert_eq!(t.ui.sheet_success, Theme::dark().ui.sheet_success);
+        assert_eq!(t.ui.border, Rgba::rgb(16, 32, 48));
+        assert_eq!(t.ui.text_same, Rgba::rgb(0, 170, 0));
+        assert_eq!(t.ui.sheet_card, Rgba::rgb(250, 250, 250));
+        assert_eq!(t.size.font, 15.0);
+        assert_eq!(write_all(&t, &recent), alt, "bytegleich zurück");
+        // Auch über die Datei wie beim Start
+        let d = dir("alt-sheet-success");
+        let path = d.join("Skizzeo").join("einstellungen.txt");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, alt).unwrap();
+        let mut s = Settings::new(args(&["skizzeo.exe"]), Some(d.clone()));
+        let geladen = s.load();
+        assert!(s.hints.is_empty(), "{:?}", s.hints);
+        assert_eq!(geladen.ui.sheet_success, Theme::dark().ui.sheet_success);
+        s.save_if_changed(&geladen).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), alt);
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

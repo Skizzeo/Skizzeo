@@ -1329,7 +1329,7 @@ impl AvaView {
                     |lv| format!("Zusammenstellung · Los {}", lv.kopf.los),
                 );
                 bold.draw(c, &titel, px, tx, kopf, u.sheet_text);
-                rechts(c, regular, "Betrag", hpx, r, kopf, u.sheet_text_dim);
+                rechts(c, regular, "Summe", hpx, r, kopf, u.sheet_text_dim);
             }
             Ansicht::Pruefen => {
                 bold.draw(c, "Prüfen", px, tx, kopf, u.sheet_text);
@@ -1749,12 +1749,14 @@ const SUMME_NETTO: &str = "Summe netto";
 /// bleiben die Beträge leer.
 pub fn zusammenstellung(lv: &Lv) -> Vec<Zeile> {
     let z = &lv.zusammenstellung;
+    // Beträge mit „€“ wie im Soll (spaeter-darstellung 12); leer bleibt leer
+    let mit_euro = |c: Option<Cent>| c.map_or_else(String::new, |c| format!("{} €", euro(c)));
     let mut v: Vec<Zeile> = z
         .zeilen
         .iter()
         .map(|(nr, name, summe)| {
             let mut x = Zeile::neu(Art::Position, nr.clone(), name.clone());
-            x.gp = betrag(*summe);
+            x.gp = mit_euro(*summe);
             x
         })
         .collect();
@@ -1765,7 +1767,7 @@ pub fn zusammenstellung(lv: &Lv) -> Vec<Zeile> {
         ("Summe brutto".to_string(), z.brutto),
     ] {
         let mut x = Zeile::neu(Art::Summe, "", text);
-        x.gp = betrag(wert);
+        x.gp = mit_euro(wert);
         v.push(x);
     }
     if let Some(g) = z.geschaetzt {
@@ -1774,14 +1776,18 @@ pub fn zusammenstellung(lv: &Lv) -> Vec<Zeile> {
             "",
             "nicht ausgeschrieben (geschätzt), nicht in der Summe",
         );
-        x.gp = euro(g);
+        x.gp = format!("{} €", euro(g));
         v.push(x);
     }
     if z.unvollstaendig {
         v.push(Zeile::neu(Art::Leise, "", UNVOLLSTAENDIG));
     }
+    v.push(Zeile::neu(Art::Leise, "", ANFRAGE_LEER));
     v
 }
+
+/// Leiser Satz unter der Zusammenstellung (spaeter-darstellung 12).
+pub const ANFRAGE_LEER: &str = "Bei „Für Anfrage (leer)“ bleiben alle Summen leere Linien.";
 
 /// Prüfen: offene Punkte zuerst, dann Hinweise; ein Punkt mit Position
 /// führt dorthin.
