@@ -18,7 +18,6 @@ use sk_cost::{Cent, Dez, Katalog};
 use sk_model::{ElementId, Guid, Model};
 use sk_paint::font::Font;
 use sk_paint::{Canvas, Path, Rgba};
-use sk_ui::text_edit::TextEdit;
 use sk_ui::theme::Theme;
 use sk_ui::widgets::Fonts;
 use std::rc::Rc;
@@ -32,12 +31,20 @@ const SWITCH_TOP: f32 = CHIP_TOP + umfang_view::ROW + 4.0;
 const SWITCH_H: f32 = 24.0;
 /// Oberkante von Baum und Tabelle, darüber die Linie.
 const BODY: f32 = SWITCH_TOP + SWITCH_H + 16.0;
+/// Ab dieser Inhaltsbreite (dip) passen Kopfzeile und Schalter „Preise“
+/// nebeneinander.
+const KOPFZEILE_EIN: f32 = 780.0;
 /// LV-Baum: Breite und Zeilenhöhe; Luft bis zur Tabelle.
 const TREE_W: f32 = 268.0;
 /// Schmales Blatt: Der Baum gibt der Tabelle Platz bis auf diese Breite.
 const TREE_MIN: f32 = 180.0;
 const TREE_ROW: f32 = 26.0;
 const TREE_GAP: f32 = 40.0;
+/// Unter dieser Fensterbreite (dip) wird der Baum zur Leiste „LV ▾“ über
+/// der Tabelle, die ihn als Blatt aufklappt; die Tabelle hat dann die ganze
+/// Breite (Bedienbarkeit 23).
+const BAUM_LEISTE_AB: f32 = 800.0;
+const LEISTE_H: f32 = 32.0;
 /// Tabelle: Spaltenkopf und Zeilen.
 const HEAD_ROW: f32 = 26.0;
 const ROW_TITEL: f32 = 32.0;
@@ -64,12 +71,17 @@ const OZ_ENG: f32 = 64.0;
 const ZAHLEN_ENG: f32 = 296.0;
 /// Zweite Zeile einer Position, wenn der Kurztext umbricht.
 const ROW_KURZ: f32 = 16.0;
+/// Bleibt neben den engen Zahlen weniger, steht der Kurztext ganz in der
+/// zweiten Zeile über die Breite der Tabelle (Bedienbarkeit 23).
+const KURZ_MIN: f32 = 120.0;
 
 /// Lage der Spalten einer Positionszeile von links nach rechts: OZ breit
 /// `oz_w`, Kurztext bis `kurz_ende` vor dem rechten Rand, dann Menge
 /// (rechtsbündig `menge_r` vor dem Rand), Einheit (linksbündig
 /// `einheit_l` davor), EP (rechtsbündig `ep_r` davor) und GP am Rand, alles
-/// in dip. `zwei`: Positionen haben zwei Zeilen für den Kurztext.
+/// in dip. `zwei`: Positionen haben zwei Zeilen für den Kurztext;
+/// `unter`: der Kurztext steht ganz in der zweiten Zeile, von der
+/// Kurztextspalte bis zum rechten Rand.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Spalten {
     oz_w: f32,
@@ -78,6 +90,7 @@ struct Spalten {
     ep_r: f32,
     kurz_ende: f32,
     zwei: bool,
+    unter: bool,
 }
 
 impl Spalten {
@@ -90,6 +103,7 @@ impl Spalten {
             ep_r: EP_R,
             kurz_ende: MENGE_R + 90.0,
             zwei: false,
+            unter: false,
         };
         if tw - OZ_W - breit.kurz_ende >= KURZ_BREIT {
             return breit;
@@ -101,6 +115,7 @@ impl Spalten {
             ep_r: 88.0,
             kurz_ende: ZAHLEN_ENG,
             zwei: tw - OZ_ENG - ZAHLEN_ENG < KURZ_BREIT,
+            unter: tw - OZ_ENG - ZAHLEN_ENG < KURZ_MIN,
         }
     }
 }
@@ -182,6 +197,8 @@ enum Hot {
     /// Schalter „Für Anfrage (leer) | Mit Preisen“.
     Preise(bool),
     Baum(usize),
+    /// Leiste „LV ▾“ im schmalen Fenster: klappt den Baum als Blatt auf.
+    BaumLeiste,
     Zeile(usize),
     Reiter(Reiter),
     Schliessen,
@@ -194,6 +211,8 @@ enum Hot {
     Mehr,
     Untertitel,
     Feld(kopf::Feld),
+    /// „Projektdaten …“ in der Kopfzeile.
+    Projektdaten,
     /// „LV … als Tabelle speichern“.
     Knopf,
     /// „Bauleistung öffnen ↗“ in der Spalte „Preis“: Verwaltung (KA-3a2).
@@ -406,8 +425,8 @@ pub struct AvaView {
     untertitel: bool,
     kopf_offen: bool,
     mehr_offen: bool,
-    /// Feld im Kopf in Bearbeitung.
-    feld: Option<(kopf::Feld, TextEdit)>,
+    /// Im schmalen Fenster: der Baum ist als Blatt unter „LV ▾“ offen.
+    baum_blatt: bool,
     /// Umfang und Stand für den aufgeklappten Kopf.
     kopf_umfang: (String, String),
     /// „Referenzpreise 10/2026“ bzw. „Preise Firmenkatalog“; leer ohne
@@ -458,7 +477,7 @@ impl AvaView {
             untertitel: false,
             kopf_offen: false,
             mehr_offen: false,
-            feld: None,
+            baum_blatt: false,
             kopf_umfang: (String::new(), String::new()),
             preisquelle: String::new(),
             knopf_down: false,
@@ -662,7 +681,17 @@ impl AvaView {
     }
 
     fn body_top(&self) -> f32 {
-        self.top_px() + (BODY + self.kopf_h()) * self.scale
+        self.top_px() + (BODY + self.kopfzeile_dy() + self.kopf_h()) * self.scale
+    }
+
+    /// Schmales Blatt: Kopfzeile („Kopf und Vorbemerkungen“, Verweise,
+    /// „Mehr“) unter dem Schalter „Preise“ statt daneben (dip).
+    fn kopfzeile_dy(&self) -> f32 {
+        if self.w as f32 / self.scale - 2.0 * self.rand < KOPFZEILE_EIN {
+            SWITCH_H + 10.0
+        } else {
+            0.0
+        }
     }
 
     fn bottom(&self) -> f32 {
@@ -672,7 +701,63 @@ impl AvaView {
     /// Linker Rand der Tabelle und rechter Rand (px).
     fn tabelle_x(&self, t: &Theme) -> (f32, f32) {
         let (x0, cw) = self.content_x(t);
-        (x0 + (self.baum_w(cw) + TREE_GAP) * self.scale, x0 + cw)
+        (x0 + self.baum_platz(cw) * self.scale, x0 + cw)
+    }
+
+    /// Schmales Fenster: Baum als Leiste „LV ▾“ über der Tabelle.
+    fn baum_als_leiste(&self) -> bool {
+        (self.w as f32) < BAUM_LEISTE_AB * self.scale
+    }
+
+    /// Breite von Baum und Luft links der Tabelle (dip); als Leiste keine.
+    fn baum_platz(&self, cw: f32) -> f32 {
+        if self.baum_als_leiste() {
+            0.0
+        } else {
+            self.baum_w(cw) + TREE_GAP
+        }
+    }
+
+    /// Oberkante des Spaltenkopfs (px): unter der Leiste, wenn es eine gibt.
+    fn tabelle_top(&self) -> f32 {
+        let leiste = if self.baum_als_leiste() {
+            LEISTE_H
+        } else {
+            0.0
+        };
+        self.body_top() + leiste * self.scale
+    }
+
+    /// Leiste „LV ▾“ (px) mit ihrem Text.
+    fn leiste_rect(&self, t: &Theme, bold: Option<&Font>) -> (Rect, String) {
+        let s = self.scale;
+        let (x0, _) = self.content_x(t);
+        let text = match self.ansicht {
+            // Wie die Unterzeile: „LV Rohbau“
+            Ansicht::Lv => self
+                .lv
+                .as_deref()
+                .map_or_else(|| "LV".into(), |l| format!("LV {}", l.kopf.los)),
+            Ansicht::Zusammenstellung => "Zusammenstellung".into(),
+            Ansicht::Pruefen => "Prüfen".into(),
+        };
+        let px = 11.0 * s;
+        let tw = bold.map_or(text.chars().count() as f32 * px * 0.6, |f| {
+            f.width(&text, px)
+        });
+        let r = (x0, self.body_top(), tw + 40.0 * s, 26.0 * s);
+        (r, text)
+    }
+
+    /// Das aufgeklappte Blatt mit dem Baum (px).
+    fn baum_blatt_rect(&self, t: &Theme) -> Rect {
+        let s = self.scale;
+        let (x0, cw) = self.content_x(t);
+        // Zeilen, Luft und die Legende
+        let h: f32 = self.baum.iter().map(Knoten::hoehe).sum::<f32>() + 16.0 + 26.0;
+        let w = (TREE_W * s + 24.0 * s).min(cw);
+        let y = self.body_top() + 30.0 * s;
+        (x0, y, w, (h * s).min((self.bottom() - y).max(0.0)))
     }
 
     /// Spalten der Positionszeilen; die zweite Zeile wie die Zeilenhöhen.
@@ -686,7 +771,7 @@ impl AvaView {
     /// Oberkante und Unterkante der Tabellenzeilen (px).
     fn liste_y(&self) -> (f32, f32) {
         let s = self.scale;
-        let oben = self.body_top() + (HEAD_ROW + 6.0) * s;
+        let oben = self.tabelle_top() + (HEAD_ROW + 6.0) * s;
         let unten = if self.detail.is_some() {
             self.bottom() - DETAIL_H * s
         } else {
@@ -708,7 +793,16 @@ impl AvaView {
 
     /// Spalten der Positionszeilen bei Breite `cw` des Inhalts (px).
     fn spalten_bei(&self, cw: f32) -> Spalten {
-        Spalten::fuer(cw / self.scale - self.baum_w(cw) - TREE_GAP)
+        Spalten::fuer(cw / self.scale - self.baum_platz(cw))
+    }
+
+    /// Platz des Kurztexts in einer Zeile (px) und seine linke Kante.
+    fn kurz_platz(&self, t: &Theme) -> (f32, f32) {
+        let (tx, r) = self.tabelle_x(t);
+        let sp = self.spalten(t);
+        let kx = tx + sp.oz_w * self.scale;
+        let ende = if sp.unter { 0.0 } else { sp.kurz_ende };
+        (kx, r - ende * self.scale - kx)
     }
 
     /// Steht der Kurztext in einer zweiten Zeile? Mit dem Rand aus `tick`.
@@ -741,12 +835,20 @@ impl AvaView {
         v
     }
 
-    /// Baumzeilen: Index, Oberkante und Höhe (px).
+    /// Baumzeilen: Index, Oberkante und Höhe (px). Als Leiste nur im
+    /// offenen Blatt.
     fn baum_lage(&self, t: &Theme) -> Vec<(usize, Rect)> {
         let s = self.scale;
-        let (x0, cw) = self.content_x(t);
-        let bw = self.baum_w(cw) * s;
-        let mut y = self.body_top() + TREE_ROW * s;
+        let (x0, mut y, bw) = if self.baum_als_leiste() {
+            if !self.baum_blatt {
+                return Vec::new();
+            }
+            let (bx, by, bw, _) = self.baum_blatt_rect(t);
+            (bx + 14.0 * s, by + 8.0 * s, bw - 28.0 * s)
+        } else {
+            let (x0, cw) = self.content_x(t);
+            (x0, self.body_top() + TREE_ROW * s, self.baum_w(cw) * s)
+        };
         self.baum
             .iter()
             .enumerate()
@@ -836,6 +938,17 @@ impl AvaView {
 
     fn hit(&self, t: &Theme, fonts: &Fonts, x: f64, y: f64) -> Option<Hot> {
         let (x, y) = (x as f32, y as f32);
+        // Das offene Baumblatt liegt über allem darunter
+        if self.baum_als_leiste() && self.baum_blatt && inside(self.baum_blatt_rect(t), x, y) {
+            return self
+                .baum_lage(t)
+                .into_iter()
+                .find(|(i, r)| inside(*r, x, y) && self.baum[*i] != Knoten::Trenner)
+                .map(|(i, _)| Hot::Baum(i));
+        }
+        if self.baum_als_leiste() && inside(self.leiste_rect(t, fonts.bold.as_ref()).0, x, y) {
+            return Some(Hot::BaumLeiste);
+        }
         if inside(self.knopf_rect(t, fonts), x, y) {
             return Some(Hot::Knopf);
         }
@@ -936,21 +1049,20 @@ impl AvaView {
         mods: sk_platform::Modifiers,
     ) -> Option<ListOut> {
         let hot = self.hit(t, fonts, x, y);
-        // Klick neben das Feld schreibt es; neben „Mehr“ schließt es
+        // Klick neben „Mehr“ schließt es
         let mut out = None;
-        let im_feld = matches!((&self.feld, hot), (Some((f, _)), Some(Hot::Feld(g))) if *f == g);
-        if self.feld.is_some() && !im_feld {
-            out = self.feld_schliessen(true);
-        }
         if self.mehr_offen && !matches!(hot, Some(Hot::Mehr | Hot::Untertitel)) {
             self.mehr_offen = false;
             out = out.or(Some(ListOut::Repaint));
         }
-        if let Some(o) = self.kopf_klick(t, fonts, hot, x) {
-            return Some(match out {
-                Some(ListOut::Kosten(w)) => ListOut::Kosten(w),
-                _ => o,
-            });
+        // Klick neben das Baumblatt schließt es und bewirkt sonst nichts
+        let blatt_offen = self.baum_blatt && self.baum_als_leiste();
+        if blatt_offen && !matches!(hot, Some(Hot::Baum(_) | Hot::BaumLeiste)) {
+            self.baum_blatt = false;
+            return out.or(Some(ListOut::Repaint));
+        }
+        if let Some(o) = self.kopf_klick(hot) {
+            return Some(o);
         }
         if out.is_some() {
             return out;
@@ -966,10 +1078,15 @@ impl AvaView {
             Hot::Umfang(_)
             | Hot::Kopf
             | Hot::BauherrFehlt
+            | Hot::Projektdaten
             | Hot::Mehr
             | Hot::Untertitel
             | Hot::Feld(_) => None,
             Hot::Oeffnen => self.detail.as_ref()?.leistung.map(ListOut::Verwaltung),
+            Hot::BaumLeiste => {
+                self.baum_blatt = !self.baum_blatt;
+                Some(ListOut::Repaint)
+            }
             Hot::Knopf => {
                 self.knopf_down = true;
                 Some(ListOut::Repaint)
@@ -991,17 +1108,17 @@ impl AvaView {
                 match self.baum.get(i)?.clone() {
                     Knoten::Los { guid, .. } => {
                         if self.los == Some(guid) && self.ansicht == Ansicht::Lv {
-                            // Auf- und zuklappen
+                            // Auf- und zuklappen; das Baumblatt bleibt offen
                             if let Some(j) = self.offen.iter().position(|g| *g == guid) {
                                 self.offen.remove(j);
                             } else {
                                 self.offen.push(guid);
                             }
-                        } else {
-                            self.waehle_los(guid);
-                            if !self.offen.contains(&guid) {
-                                self.offen.push(guid);
-                            }
+                            return Some(ListOut::Repaint);
+                        }
+                        self.waehle_los(guid);
+                        if !self.offen.contains(&guid) {
+                            self.offen.push(guid);
                         }
                     }
                     Knoten::Titel { los, guid, .. } => {
@@ -1012,6 +1129,8 @@ impl AvaView {
                     Knoten::Pruefen(_) => self.zeige(Ansicht::Pruefen),
                     Knoten::Trenner => return None,
                 }
+                // Gewählt: das Blatt geht zu und zeigt die Tabelle
+                self.baum_blatt = false;
                 Some(ListOut::Repaint)
             }
             Hot::Zeile(i) => {
@@ -1036,17 +1155,19 @@ impl AvaView {
                             self.selected = p.selected.clone();
                             Some(ListOut::Picking { selection: true })
                         }
-                        Ziel::Kopf(f) => {
-                            self.kopf_offen = true;
-                            self.feld_oeffnen(f);
-                            self.clamp();
-                            Some(ListOut::Repaint)
-                        }
+                        Ziel::Kopf(f) => Some(ListOut::Projektdaten(f.maske_feld())),
                     },
                     _ => None,
                 }
             }
         }
+    }
+
+    /// Esc: schließt das Baumblatt; `true`, wenn es offen war.
+    pub fn baum_blatt_schliessen(&mut self) -> bool {
+        let offen = self.baum_blatt && self.baum_als_leiste();
+        self.baum_blatt = false;
+        offen
     }
 
     fn waehle_los(&mut self, los: Guid) {
@@ -1160,9 +1281,16 @@ impl AvaView {
         self.paint_knopf(c, t, fonts);
         let linie = self.body_top() - 8.0 * s;
         c.fill_rect(x0, linie, cw, s.max(1.0), u.sheet_rule);
-        self.paint_baum(c, t, regular, bold);
+        if self.baum_als_leiste() {
+            self.paint_baum_leiste(c, t, bold);
+        } else {
+            self.paint_baum(c, t, regular, bold);
+        }
         self.paint_tabelle(c, t, regular, bold);
         self.paint_detail(c, t, fonts, regular, bold);
+        if self.baum_als_leiste() && self.baum_blatt {
+            self.paint_baum_blatt(c, t, regular, bold);
+        }
         self.leiste
             .paint_field_list(c, t, fonts, self.leiste_lage(t));
         self.paint_mehr(c, t, fonts);
@@ -1259,15 +1387,16 @@ impl AvaView {
         let (x0, _) = self.content_x(t);
         let px = 11.0 * s;
         let mitte = |y: f32, h: f32, f: &Font| y + (h + f.cap_height(px)) * 0.5;
-        regular.draw(
-            c,
-            "LV",
-            10.0 * s,
-            x0,
-            self.body_top() + 16.0 * s,
-            u.sheet_text_dim,
-        );
-        let rechts = x0 + self.baum_w(self.content_x(t).1) * s;
+        if !self.baum_als_leiste() {
+            regular.draw(
+                c,
+                "LV",
+                10.0 * s,
+                x0,
+                self.body_top() + 16.0 * s,
+                u.sheet_text_dim,
+            );
+        }
         // Titel der gewählten Position fett (spaeter-darstellung 14)
         let titel_gewaehlt = self
             .gewaehlt
@@ -1280,6 +1409,7 @@ impl AvaView {
             .and_then(|z| z.titel);
         for (i, (x, y, w, h)) in self.baum_lage(t) {
             let k = &self.baum[i];
+            let rechts = x + w;
             if self.hot == Some(Hot::Baum(i)) {
                 c.fill_rect(x - 6.0 * s, y, w + 12.0 * s, h, u.sheet_hover);
             }
@@ -1399,9 +1529,13 @@ impl AvaView {
                 }
             }
         }
-        // Legende unten im Baum
-        let ly = self.bottom() - 6.0 * s;
-        let mut lx = x0;
+        // Legende unten im Baum bzw. im Baumblatt
+        let (mut lx, ly) = if self.baum_als_leiste() {
+            let (bx, by, _, bh) = self.baum_blatt_rect(t);
+            (bx + 14.0 * s, by + bh - 12.0 * s)
+        } else {
+            (x0, self.bottom() - 6.0 * s)
+        };
         for (p, text) in [
             (Punkt::Da, "Preis da"),
             (Punkt::Fehlt, "Preis fehlt"),
@@ -1417,6 +1551,9 @@ impl AvaView {
             lx += regular.width(text, 10.0 * s) + 30.0 * s;
         }
         // Senkrechte Linie zwischen Baum und Tabelle
+        if self.baum_als_leiste() {
+            return;
+        }
         c.fill_rect(
             self.tabelle_x(t).0 - TREE_GAP * 0.5 * s,
             self.body_top(),
@@ -1426,12 +1563,54 @@ impl AvaView {
         );
     }
 
+    /// Leiste „LV Rohbau ▾“ im schmalen Fenster.
+    fn paint_baum_leiste(&self, c: &mut Canvas, t: &Theme, bold: &Font) {
+        let s = self.scale;
+        let u = &t.ui;
+        let ((x, y, w, h), text) = self.leiste_rect(t, Some(bold));
+        let hot = self.hot == Some(Hot::BaumLeiste) || self.baum_blatt;
+        let mut p = Path::new();
+        p.rounded_rect(x, y, w, h, 6.0 * s);
+        c.fill(&p, if hot { u.sheet_hover } else { u.sheet_tile });
+        let px = 11.0 * s;
+        bold.draw(
+            c,
+            &text,
+            px,
+            x + 12.0 * s,
+            y + (h + bold.cap_height(px)) * 0.5,
+            u.sheet_text,
+        );
+        sk_ui::widgets::disclosure(
+            c,
+            x + w - 16.0 * s,
+            y + h * 0.5,
+            self.baum_blatt,
+            u.sheet_text_dim,
+            s,
+        );
+    }
+
+    /// Aufgeklapptes Baumblatt unter der Leiste, über Tabelle und Detail.
+    fn paint_baum_blatt(&self, c: &mut Canvas, t: &Theme, regular: &Font, bold: &Font) {
+        let s = self.scale;
+        let u = &t.ui;
+        let (x, y, w, h) = self.baum_blatt_rect(t);
+        let mut p = Path::new();
+        p.rounded_rect(x - s, y - s, w + 2.0 * s, h + 2.0 * s, 9.0 * s);
+        c.fill(&p, u.sheet_rule);
+        let mut p = Path::new();
+        p.rounded_rect(x, y, w, h, 8.0 * s);
+        c.fill(&p, u.sheet_card);
+        self.paint_baum(c, t, regular, bold);
+    }
+
     fn paint_tabelle(&self, c: &mut Canvas, t: &Theme, regular: &Font, bold: &Font) {
         let s = self.scale;
         let u = &t.ui;
         let (tx, r) = self.tabelle_x(t);
         let px = 11.0 * s;
-        let kopf = self.body_top() + 16.0 * s;
+        let kopf = self.tabelle_top() + 16.0 * s;
         let hpx = 10.0 * s;
         let rechts = |c: &mut Canvas, f: &Font, text: &str, px: f32, x: f32, y: f32, col: Rgba| {
             f.draw(c, text, px, x - f.width(text, px), y, col);
@@ -1455,7 +1634,7 @@ impl AvaView {
                 bold.draw(c, "Prüfen", px, tx, kopf, u.sheet_text);
             }
         }
-        let linie = self.body_top() + HEAD_ROW * s;
+        let linie = self.tabelle_top() + HEAD_ROW * s;
         c.fill_rect(tx, linie, r - tx, s.max(1.0), u.sheet_rule);
         if self.detail.is_none() && self.ansicht == Ansicht::Lv {
             regular.draw(
@@ -1505,9 +1684,12 @@ impl AvaView {
             let w = f.width(text, px);
             (text.to_string(), x - w, w, 0)
         };
-        let kx = tx + sp.oz_w * s;
-        let platz = r - sp.kurz_ende * s - kx;
-        let (kurz, kurz2) = if sp.zwei {
+        let (kx, platz) = self.kurz_platz(t);
+        let (kurz, kurz2) = if sp.unter {
+            // Ganz in der zweiten Zeile über die Breite der Tabelle
+            let k = sk_ui::widgets::ellipsize(Some(f), &z.text, px, platz);
+            (String::new(), k)
+        } else if sp.zwei {
             umbrechen(f, &z.text, px, platz)
         } else {
             let k = sk_ui::widgets::ellipsize(Some(f), &z.text, px, platz);

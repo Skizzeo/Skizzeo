@@ -42,7 +42,7 @@ impl AvaView {
             _ => Hot::Kopf,
         };
         let (x0, cw) = self.content_x(t);
-        let y = self.top_px() + (SWITCH_TOP + SWITCH_H * 0.5) * self.scale;
+        let y = self.top_px() + (SWITCH_TOP + self.kopfzeile_dy() + SWITCH_H * 0.5) * self.scale;
         let mut x = x0;
         while x < x0 + cw {
             if self.hit(t, fonts, x as f64, y as f64) == Some(ziel) {
@@ -51,5 +51,12 @@ impl AvaView {
             x += 2.0;
         }
         None
+    }
+
+    /// Mitte der Leiste „LV ▾“ im schmalen Fenster.
+    pub(crate) fn leiste_mitte(&self, t: &Theme, fonts: &Fonts) -> Option<(f64, f64)> {
+        self.baum_als_leiste().then_some(())?;
+        let ((x, y, w, h), _) = self.leiste_rect(t, fonts.bold.as_ref());
+        Some(((x + w * 0.5) as f64, (y + h * 0.5) as f64))
     }
 }

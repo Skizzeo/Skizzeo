@@ -304,6 +304,29 @@ fn istbilder_ka4() {
         b.ablegen(&mut q, name);
     }
 
+    // Bedienbarkeit 23: unter 800 dip wird der Baum zur Leiste „LV ▾“;
+    // 480 dip: Kurztext ganz in der zweiten Zeile; aufgeklappt als Blatt
+    for (name, w, h, scale, auf) in [
+        ("ist-lv-leiste-150.png", 960, 1100, 1.5, false),
+        ("ist-lv-leiste-100.png", 480, 900, 1.0, false),
+        ("ist-lv-leiste-offen-150.png", 960, 1100, 1.5, true),
+    ] {
+        b.p = Picking::default();
+        let mut q = QuantityWindow::new();
+        q.title.scale = scale;
+        (q.w, q.h) = (w, h);
+        q.sync(&mut s, &b.p, false);
+        q.waehlen(Blatt::Ava, &b.t);
+        q.sync(&mut s, &b.p, false);
+        if auf {
+            let a = q.ava.as_mut().unwrap();
+            let xy = a.leiste_mitte(&b.t, &b.fonts).expect("Leiste");
+            a.mouse_down(&b.t, &b.fonts, &mut b.p, xy, mods);
+            q.sync(&mut s, &b.p, false);
+        }
+        b.ablegen(&mut q, name);
+    }
+
     // KA-4b: Position Planstein gewählt, Detail mit Mengenansatz
     b.p = Picking::default();
     let mut q = b.fenster(&mut s, 1440, 960, Blatt::Ava);
@@ -344,23 +367,28 @@ fn istbilder_ka4() {
     q.sync(&mut s4, &b.p, false);
     b.ablegen(&mut q, "ist-ka-4c-untertitel.png");
 
-    // KA-4c: Kopf aufgeklappt über „Bauherr fehlt“, Bauherr wird getippt
+    // KA-4c, Paket PD-3: Kopf aufgeklappt, nur anzeigend, mit Jörns
+    // Projektdaten (Aufsteller ohne Verfasser: „fehlt“)
     b.p = Picking::default();
+    let mut sp = standardhaus();
+    let mut pr = sp.model().project().clone();
+    pr.kind = "Neubau Einfamilienhaus".into();
+    pr.site = "Haus Mustermann".into();
+    pr.place = "Musterweg 1\n27777 Ganderkesee".into();
+    pr.number = "01/26".into();
+    pr.client = "Max Mustermann".into();
+    pr.client_addr = "Phantasiestraße 7\n27777 Ganderkesee".into();
+    assert!(sp.projekt_setzen("Projektdaten geändert", pr));
     let mut q = QuantityWindow::new();
     q.datei = "haus.szo".into();
     (q.w, q.h) = (1440, 860);
-    q.sync(&mut s, &b.p, false);
+    q.sync(&mut sp, &b.p, false);
     q.waehlen(Blatt::Ava, &b.t);
-    q.sync(&mut s, &b.p, false);
+    q.sync(&mut sp, &b.p, false);
     let a = q.ava.as_mut().unwrap();
-    let xy = a
-        .kopf_mitte(&b.t, &b.fonts, "Bauherr fehlt")
-        .expect("fehlt");
+    let xy = a.kopf_mitte(&b.t, &b.fonts, "Kopf").expect("Kopf");
     a.mouse_down(&b.t, &b.fonts, &mut b.p, xy, mods);
-    for ch in "Familie Muster".chars() {
-        a.text(ch);
-    }
-    q.sync(&mut s, &b.p, false);
+    q.sync(&mut sp, &b.p, false);
     b.ablegen(&mut q, "ist-ka-4c-kopf.png");
 
     // KA-4d: Zusammenstellung und Prüfen

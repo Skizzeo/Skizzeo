@@ -1,5 +1,4 @@
 use super::*;
-use sk_platform::Key;
 use sk_ui::theme::Theme;
 
 impl AvaView {
@@ -407,11 +406,12 @@ fn klick_auf(v: &mut AvaView, fonts: &Fonts, p: &mut Picking, hot: Hot) -> Optio
     panic!("{hot:?} nicht gefunden");
 }
 
-/// KA-4c: „Bauherr fehlt“ öffnet den Kopf mit dem Feld Bauherr; Eingabe
-/// und Enter schreiben `Project.client` als ein Schritt „Bauherr gesetzt“;
-/// danach ist der Hinweis weg. Esc verwirft.
+/// KA-4c, Paket PD-3: „Bauherr fehlt“, „Projektdaten …“ und jede Zeile
+/// des aufgeklappten Kopfs öffnen die Maske „Projektdaten“ im passenden
+/// Feld; der Kopf selbst schreibt nichts. Nach einem Schritt über die Maske
+/// ist der Hinweis weg.
 #[test]
-fn bauherr_fehlt_oeffnet_das_feld() {
+fn bauherr_fehlt_oeffnet_die_maske() {
     let Some(fonts) = schrift() else {
         return;
     };
@@ -420,33 +420,40 @@ fn bauherr_fehlt_oeffnet_das_feld() {
     let mut p = Picking::default();
     assert!(s.model().project().client.is_empty());
     assert!(v.bauherr_fehlt());
-    let vorher = v.body_top();
     assert_eq!(
         klick_auf(&mut v, &fonts, &mut p, Hot::BauherrFehlt),
+        Some(ListOut::Projektdaten(4))
+    );
+    assert_eq!(
+        klick_auf(&mut v, &fonts, &mut p, Hot::Projektdaten),
+        Some(ListOut::Projektdaten(0))
+    );
+    let vorher = v.body_top();
+    assert_eq!(
+        klick_auf(&mut v, &fonts, &mut p, Hot::Kopf),
         Some(ListOut::Repaint)
     );
-    assert!(v.kopf_offen && v.feld_offen());
-    assert!(v.body_top() > vorher, "Kopf schiebt Baum und Tabelle");
-    // Esc verwirft
-    for ch in "Fam".chars() {
-        v.text(ch);
+    assert!(
+        v.kopf_offen && v.body_top() > vorher,
+        "Kopf schiebt Baum und Tabelle"
+    );
+    for (f, i) in [
+        (kopf::Feld::Bauvorhaben, 1),
+        (kopf::Feld::Projekt, 0),
+        (kopf::Feld::Projektnummer, 3),
+        (kopf::Feld::Bauherr, 4),
+        (kopf::Feld::Aufsteller, 6),
+    ] {
+        assert_eq!(
+            klick_auf(&mut v, &fonts, &mut p, Hot::Feld(f)),
+            Some(ListOut::Projektdaten(i)),
+            "{f:?}"
+        );
     }
-    let mods = sk_platform::Modifiers::default();
-    assert_eq!(v.key(Key::Escape, mods), Some(ListOut::Repaint));
-    assert!(!v.feld_offen());
-    klick_auf(&mut v, &fonts, &mut p, Hot::Feld(kopf::Feld::Bauherr));
-    for ch in "Familie Muster".chars() {
-        v.text(ch);
-    }
-    let Some(ListOut::Kosten(crate::kosten_view::Schreiben::Projekt { projekt, label })) =
-        v.key(Key::Enter, mods)
-    else {
-        panic!("kein Schritt");
-    };
-    assert_eq!(label, "Bauherr gesetzt");
-    assert_eq!(projekt.client, "Familie Muster");
-    assert!(s.projekt_setzen(label, projekt));
-    assert_eq!(s.undo_label(), Some("Bauherr gesetzt"));
+    assert!(s.undo_label().is_none(), "der Kopf schreibt nichts");
+    let mut pr = s.model().project().clone();
+    pr.client = "Familie Muster".into();
+    assert!(s.projekt_setzen("Projektdaten geändert", pr));
     v.sync(&mut s, None);
     assert!(!v.bauherr_fehlt());
     assert_eq!(
@@ -699,9 +706,8 @@ fn pruefen_fuehrt_zur_stelle() {
     let (x, y) = mitte(&v, i);
     assert_eq!(
         v.mouse_down(&t, &leer(), &mut p, (x, y), mods),
-        Some(ListOut::Repaint)
+        Some(ListOut::Projektdaten(4))
     );
-    assert!(v.kopf_offen && v.feld_offen());
 }
 
 /// Jörns Excel-Handtest: OZ wie „01.02“ (Untertitel) oder „01.0010“ würde
@@ -751,10 +757,11 @@ fn csv_oz_bleibt_text() {
     assert!(text.contains("\"=\"\"01.02\"\"\";Erdgeschoss"), "{text}");
 }
 
-/// Jörn 09.10.: In jeder Fensterbreite ab 740 dip (100, 125, 150 %) zeigt
+/// Jörn 09.10.: In jeder Fensterbreite ab 480 dip (100, 125, 150 %) zeigt
 /// jede Positionszeile ihren Kurztext, mindestens 20 Zeichen, sonst ganz,
-/// und keine Spalte überdeckt eine andere, auch nicht über die zweite
-/// Zeile hinweg; im Spaltenkopf ebenso; mit und ohne Preise.
+/// in mindestens 120 dip, und keine Spalte überdeckt eine andere, auch
+/// nicht über die zweite Zeile hinweg (außer der Kurztext steht ganz in
+/// der zweiten Zeile); im Spaltenkopf ebenso; mit und ohne Preise.
 #[test]
 fn lv_spalten_ueberdecken_sich_nie() {
     let Some(fonts) = schrift() else {
@@ -764,7 +771,7 @@ fn lv_spalten_ueberdecken_sich_nie() {
     let t = Theme::dark();
     let mut s = haus();
     for scale in [1.0_f32, 1.25, 1.5] {
-        for dip in (740..=1400).step_by(20) {
+        for dip in (480..=1400).step_by(20) {
             let mut v = AvaView::new();
             v.scale = scale;
             (v.w, v.h) = ((dip as f32 * scale) as u32, (900.0 * scale) as u32);
@@ -772,6 +779,17 @@ fn lv_spalten_ueberdecken_sich_nie() {
             v.sync(&mut s, None);
             let (tx, r) = v.tabelle_x(&t);
             let wo = format!("{dip} dip bei {scale}");
+            // Unter 800 dip ist der Baum eine Leiste, die Tabelle hat die
+            // ganze Breite; der Kurztext hat immer mindestens 120 dip
+            // (Bedienbarkeit 23)
+            assert_eq!(dip < 800, tx == v.content_x(&t).0, "{wo}: Baum");
+            assert!(
+                v.kurz_platz(&t).1 >= 120.0 * scale - 0.5,
+                "{wo}: Kurztext nur {} px",
+                v.kurz_platz(&t).1
+            );
+            // Steht der Kurztext ganz in der zweiten Zeile, zählt die Zeile
+            let unter = v.spalten(&t).unter;
             let luft = 4.0 * scale;
             let pruefe = |zellen: &[(String, f32, f32, u8)], was: &str| {
                 for z in zellen {
@@ -782,7 +800,7 @@ fn lv_spalten_ueberdecken_sich_nie() {
                 }
                 for a in zellen {
                     for b in zellen {
-                        if a.1 < b.1 && a.2 > 0.0 && b.2 > 0.0 {
+                        if a.1 < b.1 && a.2 > 0.0 && b.2 > 0.0 && (!unter || a.3 == b.3) {
                             assert!(
                                 a.1 + a.2 + luft <= b.1,
                                 "{wo}, {was}: {a:?} überdeckt {b:?}"
@@ -801,7 +819,7 @@ fn lv_spalten_ueberdecken_sich_nie() {
                 for z in v.zeilen().iter().filter(|z| z.art == Art::Position) {
                     let zellen = v.position_zellen(&t, f, 11.0 * scale, z);
                     let kurz = format!("{} {}", zellen[1].0, zellen[2].0);
-                    let kurz = kurz.trim_end();
+                    let kurz = kurz.trim();
                     let gekuerzt = kurz.strip_suffix('…').map(str::trim_end);
                     assert!(
                         kurz == z.text
@@ -898,4 +916,47 @@ fn projektdaten_in_kopf_und_csv() {
     assert!(s.undo());
     v.sync(&mut s, None);
     assert_eq!(v.lv().unwrap().kopf.projektnummer.as_deref(), Some("01/26"));
+}
+
+/// Bedienbarkeit 23: Unter 800 dip ist der Baum eine Leiste „LV …“; ein
+/// Klick klappt ihn als Blatt auf, eine Wahl darin zeigt die Ansicht und
+/// schließt das Blatt, ein Klick daneben oder Esc schließt es ohne Folgen.
+#[test]
+fn baum_als_leiste_im_schmalen_fenster() {
+    let Some(fonts) = schrift() else {
+        return;
+    };
+    let t = Theme::dark();
+    let mut s = haus();
+    let mut p = Picking::default();
+    let mut v = AvaView::new();
+    (v.w, v.h) = (1000, 900);
+    v.sync(&mut s, None);
+    assert!(!v.baum_als_leiste() && !v.baum_lage(&t).is_empty());
+    v.w = 640;
+    v.sync(&mut s, None);
+    assert!(v.baum_als_leiste());
+    assert!(v.baum_lage(&t).is_empty(), "zu: kein Baum");
+    assert!(v.leiste_rect(&t, fonts.bold.as_ref()).1.starts_with("LV "));
+    klick_auf(&mut v, &fonts, &mut p, Hot::BaumLeiste);
+    assert!(v.baum_blatt && !v.baum_lage(&t).is_empty());
+    // Klick in die Tabelle schließt nur das Blatt
+    let (tx, r) = v.tabelle_x(&t);
+    let (_, unten) = v.liste_y();
+    let mods = sk_platform::Modifiers::default();
+    let xy = (((tx + r) * 0.5) as f64, (unten - 4.0) as f64);
+    v.mouse_down(&t, &fonts, &mut p, xy, mods);
+    assert!(!v.baum_blatt && v.ansicht == Ansicht::Lv);
+    // Wahl im Blatt: Zusammenstellung
+    klick_auf(&mut v, &fonts, &mut p, Hot::BaumLeiste);
+    let xy = v
+        .knoten_mitte(&t, |k| *k == Knoten::Zusammenstellung)
+        .expect("im Blatt");
+    v.mouse_down(&t, &fonts, &mut p, xy, mods);
+    assert!(!v.baum_blatt && v.ansicht == Ansicht::Zusammenstellung);
+    assert_eq!(v.leiste_rect(&t, fonts.bold.as_ref()).1, "Zusammenstellung");
+    // Esc schließt das offene Blatt
+    klick_auf(&mut v, &fonts, &mut p, Hot::BaumLeiste);
+    assert!(v.baum_blatt_schliessen() && !v.baum_blatt);
+    assert!(!v.baum_blatt_schliessen());
 }

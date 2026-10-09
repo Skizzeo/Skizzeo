@@ -290,7 +290,8 @@ impl Maske {
         self.liste = None;
     }
 
-    fn fokus_auf(&mut self, i: usize) {
+    /// Cursor ins Feld `i` (Reihenfolge wie [`FELDER`]), Inhalt markiert.
+    pub fn fokus_auf(&mut self, i: usize) {
         if i != self.fokus {
             self.fokus = i;
             self.felder[i].select_all();

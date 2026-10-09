@@ -1,98 +1,114 @@
-//! Kopfzeile des Blatts AVA (KA-4c, paket-ka4 §4): „Kopf und
-//! Vorbemerkungen“ zum Aufklappen mit den Feldern Bauvorhaben, Bauherr und
-//! Aufsteller, „Bauherr fehlt“ bzw. „Aufsteller fehlt“ und „Mehr“ ›
-//! „Geschosse als Untertitel“.
+//! Kopfzeile des Blatts AVA (KA-4c, paket-ka4 §4; Paket PD-3): „Kopf und
+//! Vorbemerkungen“ zum Aufklappen. Der Kopf zeigt die Projektdaten nur an;
+//! ein Klick auf eine Zeile, „Projektdaten …“ oder „Bauherr fehlt“ öffnet
+//! die Maske „Projektdaten“ im passenden Feld. Dazu „Mehr“ › „Geschosse als
+//! Untertitel“.
 
 use super::*;
-use crate::kosten_view::Schreiben;
-use sk_platform::{Key, Modifiers};
 use sk_ui::widgets;
 
-/// Höhe des aufgeklappten Kopfs (dip).
-const KOPF_H: f32 = 164.0;
+/// Höhe des aufgeklappten Kopfs (dip): zwei Spalten, im schmalen Blatt
+/// untereinander.
 const ZEILE: f32 = 28.0;
 const FELD_X: f32 = 110.0;
 const FELD_W: f32 = 300.0;
 const FELD_H: f32 = 22.0;
-/// Innenabstand des Texts im Feld.
-const FELD_PAD: f32 = 8.0;
 const RECHTS_X: f32 = 460.0;
-/// Längster Text in einem Kopffeld.
-const MAX_ZEICHEN: usize = 200;
+/// Ab dieser Inhaltsbreite (dip) stehen Los, Umfang, Stand und Preise
+/// rechts neben den Projektdaten.
+const ZWEI_SPALTEN: f32 = RECHTS_X + 260.0;
+/// Vorbemerkungen: zwei Zeilen und Luft.
+const VOR_H: f32 = 52.0;
 
 pub const KOPF: &str = "Kopf und Vorbemerkungen";
 pub const MEHR: &str = "Mehr";
 pub const UNTERTITEL: &str = "Geschosse als Untertitel";
+pub const PROJEKTDATEN: &str = "Projektdaten …";
 
-/// Feld im Kopf; schreibt `Project.site/client/author`.
+/// Zeile im Kopf; ein Klick öffnet die Maske in [`Feld::maske_feld`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Feld {
     Bauvorhaben,
+    /// Projektart · Bauort.
+    Projekt,
+    Projektnummer,
     Bauherr,
     Aufsteller,
 }
 
 impl Feld {
-    pub const ALLE: [Feld; 3] = [Feld::Bauvorhaben, Feld::Bauherr, Feld::Aufsteller];
+    pub const ALLE: [Feld; 5] = [
+        Feld::Bauvorhaben,
+        Feld::Projekt,
+        Feld::Projektnummer,
+        Feld::Bauherr,
+        Feld::Aufsteller,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Feld::Bauvorhaben => "Bauvorhaben",
+            Feld::Projekt => "Projekt",
+            Feld::Projektnummer => "Projekt-Nr.",
             Feld::Bauherr => "Bauherr",
             Feld::Aufsteller => "Aufsteller",
         }
     }
 
-    /// Bezeichnung des Rückgängig-Schritts.
-    fn schritt(self) -> &'static str {
+    /// Feld der Maske „Projektdaten“ (kind, site, place, projno, client,
+    /// clientaddr, author, authoraddr).
+    pub fn maske_feld(self) -> usize {
         match self {
-            Feld::Bauvorhaben => "Bauvorhaben gesetzt",
-            Feld::Bauherr => "Bauherr gesetzt",
-            Feld::Aufsteller => "Aufsteller gesetzt",
-        }
-    }
-
-    fn wert(self, p: &sk_model::Project) -> &str {
-        match self {
-            Feld::Bauvorhaben => &p.site,
-            Feld::Bauherr => &p.client,
-            Feld::Aufsteller => &p.author,
-        }
-    }
-
-    fn setzen(self, p: &mut sk_model::Project, v: String) {
-        match self {
-            Feld::Bauvorhaben => p.site = v,
-            Feld::Bauherr => p.client = v,
-            Feld::Aufsteller => p.author = v,
-        }
-    }
-
-    fn naechstes(self) -> Feld {
-        match self {
-            Feld::Bauvorhaben => Feld::Bauherr,
-            Feld::Bauherr => Feld::Aufsteller,
-            Feld::Aufsteller => Feld::Bauvorhaben,
+            Feld::Bauvorhaben => 1,
+            Feld::Projekt => 0,
+            Feld::Projektnummer => 3,
+            Feld::Bauherr => 4,
+            Feld::Aufsteller => 6,
         }
     }
 }
 
-/// Lage der Kopfzeile: Klappknopf, „Bauherr fehlt“ (wenn er fehlt) und
-/// „Mehr“.
+/// Mehrzeiliges in einer Zeile mit „, “.
+fn einzeilig(t: &str) -> String {
+    t.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Lage der Kopfzeile: Klappknopf, „Bauherr fehlt“ (wenn er fehlt),
+/// „Projektdaten …“ und „Mehr“.
 struct Zeile {
     kopf: Rect,
     fehlt: Option<Rect>,
+    projektdaten: Option<Rect>,
     mehr: Rect,
 }
 
 impl AvaView {
+    /// Inhaltsbreite (dip) mit dem Rand aus `tick`.
+    fn kopf_breite(&self) -> f32 {
+        self.w as f32 / self.scale - 2.0 * self.rand
+    }
+
+    /// Los, Umfang, Stand und Preise rechts neben den Projektdaten?
+    fn kopf_zwei_spalten(&self) -> bool {
+        self.kopf_breite() >= ZWEI_SPALTEN
+    }
+
     /// Zusätzliche Höhe des aufgeklappten Kopfs (dip).
     pub(super) fn kopf_h(&self) -> f32 {
-        if self.kopf_offen {
-            KOPF_H
-        } else {
-            0.0
+        if !self.kopf_offen {
+            return 0.0;
         }
+        let links = Feld::ALLE.len() as f32;
+        let zeilen = if self.kopf_zwei_spalten() {
+            links
+        } else {
+            links + 4.0
+        };
+        12.0 + zeilen * ZEILE + VOR_H
     }
 
     /// Bauvorhaben wie im Kopf: `Project.site`, sonst aus dem Dateinamen.
@@ -114,7 +130,7 @@ impl AvaView {
             .is_some_and(|p| p.client.trim().is_empty())
     }
 
-    /// Das Kopffeld hinter dem Verweis „… fehlt“: zuerst der Bauherr, dann
+    /// Die Zeile hinter dem Verweis „… fehlt“: zuerst der Bauherr, dann
     /// der Aufsteller (weder Verfasser noch Firmenkatalog, Kosten A1).
     pub(super) fn fehlt(&self) -> Option<Feld> {
         if self.bauherr_fehlt() {
@@ -148,27 +164,83 @@ impl AvaView {
         t
     }
 
-    /// Ein Feld im Kopf nimmt Tasten und Zeichen.
-    pub fn feld_offen(&self) -> bool {
-        self.feld.is_some()
+    /// Text einer Zeile im Kopf und ob er fehlt bzw. nur vorbelegt ist:
+    /// `(text, Ton)` mit Ton 0 = Wert, 1 = blass, 2 = „fehlt“.
+    fn kopf_wert(&self, f: Feld) -> (String, u8) {
+        let Some(p) = self.projekt.as_ref() else {
+            return (String::new(), 1);
+        };
+        let lv = self.lv.as_deref();
+        let mit = |name: &str, anschrift: &str| {
+            let a = einzeilig(anschrift);
+            if a.is_empty() {
+                name.to_string()
+            } else {
+                format!("{name}, {a}")
+            }
+        };
+        match f {
+            Feld::Bauvorhaben if !p.site.trim().is_empty() => (einzeilig(&p.site), 0),
+            Feld::Bauvorhaben => (lv.map_or(String::new(), |l| self.bauvorhaben(l)), 1),
+            Feld::Projekt => {
+                let teile: Vec<String> = [einzeilig(&p.kind), einzeilig(&p.place)]
+                    .into_iter()
+                    .filter(|t| !t.is_empty())
+                    .collect();
+                if teile.is_empty() {
+                    ("nicht angegeben".into(), 1)
+                } else {
+                    (teile.join(" · "), 0)
+                }
+            }
+            Feld::Projektnummer if p.number.trim().is_empty() => ("nicht angegeben".into(), 1),
+            Feld::Projektnummer => (einzeilig(&p.number), 0),
+            Feld::Bauherr if p.client.trim().is_empty() => ("fehlt".into(), 2),
+            Feld::Bauherr => (mit(p.client.trim(), &p.client_addr), 0),
+            Feld::Aufsteller if !p.author.trim().is_empty() => {
+                (mit(p.author.trim(), &p.author_addr), 0)
+            }
+            // Ohne Verfasser der Name eines echten Firmenkatalogs, blass
+            Feld::Aufsteller => match lv.and_then(|l| l.kopf.aufsteller.clone()) {
+                Some(a) => (a, 1),
+                None => ("fehlt".into(), 2),
+            },
+        }
     }
 
     fn zeile(&self, t: &Theme, regular: &Font, bold: &Font) -> Zeile {
         let s = self.scale;
         let (x0, _) = self.content_x(t);
-        let y = self.top_px() + SWITCH_TOP * s;
+        let y = self.top_px() + (SWITCH_TOP + self.kopfzeile_dy()) * s;
         let h = SWITCH_H * s;
         let px = 10.5 * s;
         let kw = 14.0 * s + bold.width(KOPF, px) + 4.0 * s;
         let kopf = (x0, y, kw, h);
+        let mut x = x0 + kw + 20.0 * s;
         let fehlt = self.fehlt_text().map(|f| {
             let fw = bold.width(&f, 10.0 * s) + 8.0 * s;
-            (x0 + kw + 20.0 * s, y, fw, h)
+            let r = (x, y, fw, h);
+            x += fw + 12.0 * s;
+            r
         });
-        let (lx, _) = self.schalter_mit(t, regular, bold);
+        let pw = bold.width(PROJEKTDATEN, 10.0 * s) + 8.0 * s;
+        // „Mehr“ vor dem Schalter, im schmalen Blatt am rechten Rand
         let mw = bold.width(MEHR, px) + 14.0 * s;
-        let mehr = (lx - 28.0 * s - mw, y, mw, h);
-        Zeile { kopf, fehlt, mehr }
+        let mehr_x = if self.kopfzeile_dy() > 0.0 {
+            self.tabelle_x(t).1 - mw
+        } else {
+            self.schalter_mit(t, regular, bold).0 - 28.0 * s - mw
+        };
+        let mehr = (mehr_x, y, mw, h);
+        // Reicht der Platz nicht, entfällt „Projektdaten …“ (der Knopf im
+        // Hauptfenster und die Zeilen des Kopfs führen ebenso hin)
+        let projektdaten = (x + pw + 12.0 * s <= mehr_x).then_some((x, y, pw, h));
+        Zeile {
+            kopf,
+            fehlt,
+            projektdaten,
+            mehr,
+        }
     }
 
     /// Karte unter „Mehr“ mit der Zeile „Geschosse als Untertitel“.
@@ -179,20 +251,30 @@ impl AvaView {
         (mx + mw - w, my + mh + 6.0 * s, w, 36.0 * s)
     }
 
-    /// Felder des aufgeklappten Kopfs (px).
+    /// Oberkante der ersten Kopfzeile (px).
+    fn kopf_y0(&self) -> f32 {
+        self.top_px() + (SWITCH_TOP + self.kopfzeile_dy() + SWITCH_H + 12.0) * self.scale
+    }
+
+    /// Zeilen des aufgeklappten Kopfs (px), über Bezeichnung und Wert.
     fn felder(&self, t: &Theme) -> Vec<(Feld, Rect)> {
         if !self.kopf_offen {
             return Vec::new();
         }
         let s = self.scale;
-        let (x0, _) = self.content_x(t);
-        let y0 = self.top_px() + (SWITCH_TOP + SWITCH_H + 12.0) * s;
+        let (x0, cw) = self.content_x(t);
+        let w = if self.kopf_zwei_spalten() {
+            (FELD_X + FELD_W) * s
+        } else {
+            cw
+        };
+        let y0 = self.kopf_y0();
         Feld::ALLE
             .iter()
             .enumerate()
             .map(|(i, f)| {
                 let y = y0 + i as f32 * ZEILE * s;
-                (*f, (x0 + FELD_X * s, y, FELD_W * s, FELD_H * s))
+                (*f, (x0 - 6.0 * s, y, w + 6.0 * s, FELD_H * s))
             })
             .collect()
     }
@@ -215,6 +297,9 @@ impl AvaView {
         if z.fehlt.is_some_and(|r| inside(r, x, y)) {
             return Some(Some(Hot::BauherrFehlt));
         }
+        if z.projektdaten.is_some_and(|r| inside(r, x, y)) {
+            return Some(Some(Hot::Projektdaten));
+        }
         if inside(z.mehr, x, y) {
             return Some(Some(Hot::Mehr));
         }
@@ -225,123 +310,45 @@ impl AvaView {
     }
 
     /// Klick auf den Kopf; `None`, wenn `hot` nicht zum Kopf gehört.
-    pub(super) fn kopf_klick(
-        &mut self,
-        t: &Theme,
-        fonts: &Fonts,
-        hot: Option<Hot>,
-        x: f64,
-    ) -> Option<ListOut> {
+    pub(super) fn kopf_klick(&mut self, hot: Option<Hot>) -> Option<ListOut> {
         match hot? {
             Hot::Kopf => {
                 self.kopf_offen = !self.kopf_offen;
-                if !self.kopf_offen {
-                    self.feld = None;
-                }
                 self.clamp();
                 Some(ListOut::Repaint)
             }
-            Hot::BauherrFehlt => {
-                self.kopf_offen = true;
-                self.feld_oeffnen(self.fehlt().unwrap_or(Feld::Bauherr));
-                self.clamp();
-                Some(ListOut::Repaint)
-            }
+            // Die Maske „Projektdaten“ im passenden Feld (Paket PD-3)
+            Hot::BauherrFehlt => Some(ListOut::Projektdaten(
+                self.fehlt().unwrap_or(Feld::Bauherr).maske_feld(),
+            )),
+            Hot::Projektdaten => Some(ListOut::Projektdaten(0)),
+            Hot::Feld(f) => Some(ListOut::Projektdaten(f.maske_feld())),
             Hot::Mehr => {
                 self.mehr_offen = !self.mehr_offen;
                 Some(ListOut::Repaint)
             }
             Hot::Untertitel => {
                 self.mehr_offen = false;
-                Some(ListOut::Kosten(Schreiben::Gliederung(!self.untertitel)))
-            }
-            Hot::Feld(f) => {
-                if self.feld.as_ref().is_none_or(|(g, _)| *g != f) {
-                    self.feld_oeffnen(f);
-                } else if let Some(r) = fonts.regular.as_ref() {
-                    // Schreibmarke an die Klickstelle
-                    let (_, rect) = self.felder(t).into_iter().find(|(g, _)| *g == f)?;
-                    let tx = rect.0 + FELD_PAD * self.scale;
-                    let px = 10.5 * self.scale;
-                    let (_, e) = self.feld.as_mut()?;
-                    let i = widgets::caret_at(Some(r), &e.text, px, tx, x as f32);
-                    e.place(i, false);
-                }
-                Some(ListOut::Repaint)
+                Some(ListOut::Kosten(crate::kosten_view::Schreiben::Gliederung(
+                    !self.untertitel,
+                )))
             }
             _ => None,
         }
     }
 
-    pub(super) fn feld_oeffnen(&mut self, f: Feld) {
-        let wert = self.projekt.as_ref().map_or("", |p| f.wert(p));
-        self.feld = Some((f, TextEdit::new(wert)));
-    }
-
-    /// Schließt das Feld; mit `schreiben` und geändertem Text der Schritt.
-    pub(super) fn feld_schliessen(&mut self, schreiben: bool) -> Option<ListOut> {
-        let (f, e) = self.feld.take()?;
-        if !schreiben {
-            return Some(ListOut::Repaint);
+    /// Ein Verweis in der Kopfzeile: fett im lesbaren Akzent, unter der
+    /// Maus unterstrichen.
+    fn verweis(&self, c: &mut Canvas, t: &Theme, bold: &Font, text: &str, r: Rect, hot: bool) {
+        let s = self.scale;
+        let col = crate::cards::verweis(&t.ui, hot);
+        let px = 10.0 * s;
+        let base = r.1 + (r.3 + bold.cap_height(px)) * 0.5;
+        bold.draw(c, text, px, r.0, base, col);
+        if hot {
+            let w = bold.width(text, px);
+            c.fill_rect(r.0, base + 2.0 * s, w, s.max(1.0), col);
         }
-        let mut p = self.projekt.clone()?;
-        let neu: String = e.text.trim().chars().take(MAX_ZEICHEN).collect();
-        if neu == f.wert(&p) {
-            return Some(ListOut::Repaint);
-        }
-        f.setzen(&mut p, neu);
-        // Gleich zeigen, auch bevor das Modell zurückkommt
-        self.projekt = Some(p.clone());
-        Some(ListOut::Kosten(Schreiben::Projekt {
-            projekt: Box::new(p),
-            label: f.schritt(),
-        }))
-    }
-
-    /// Tasten im Kopffeld: Enter schreibt, Esc verwirft, Tab schreibt und
-    /// geht zum nächsten Feld.
-    pub fn key(&mut self, key: Key, mods: Modifiers) -> Option<ListOut> {
-        let (f, _) = self.feld.as_ref()?;
-        let f = *f;
-        let sh = mods.shift;
-        match key {
-            Key::Enter => return self.feld_schliessen(true),
-            Key::Escape => return self.feld_schliessen(false),
-            Key::Tab => {
-                let out = self.feld_schliessen(true);
-                self.feld_oeffnen(f.naechstes());
-                return out;
-            }
-            _ => {}
-        }
-        let (_, e) = self.feld.as_mut()?;
-        match key {
-            Key::Backspace => e.backspace(),
-            Key::Delete => e.delete(),
-            Key::Left => e.left(sh),
-            Key::Right => e.right(sh),
-            Key::Home => e.home(sh),
-            Key::End => e.end(sh),
-            Key::Char('A') if mods.ctrl => e.select_all(),
-            Key::Char('V') if mods.ctrl => {
-                let paste = sk_platform::clipboard_text().unwrap_or_default();
-                e.insert(paste.lines().next().unwrap_or("").trim());
-            }
-            Key::Char('Z') if mods.ctrl => {
-                e.undo();
-            }
-            _ => return None,
-        }
-        Some(ListOut::Repaint)
-    }
-
-    pub fn text(&mut self, ch: char) -> Option<ListOut> {
-        let (_, e) = self.feld.as_mut()?;
-        if ch.is_control() || e.text.chars().count() >= MAX_ZEICHEN {
-            return None;
-        }
-        e.insert(ch.encode_utf8(&mut [0; 4]));
-        Some(ListOut::Repaint)
     }
 
     pub(super) fn paint_kopf(&self, c: &mut Canvas, t: &Theme, regular: &Font, bold: &Font) {
@@ -375,14 +382,11 @@ impl AvaView {
         // Verweise auf dem hellen Blatt im lesbaren Akzent (reiner Akzent
         // hat dort 1,7 : 1, Einstellungen 09.10.)
         if let (Some(r), Some(f)) = (z.fehlt, self.fehlt_text()) {
-            let hot = self.hot == Some(Hot::BauherrFehlt);
-            let col = crate::cards::verweis(u, hot);
-            bold.draw(c, &f, 10.0 * s, r.0, mitte(r, bold, 10.0 * s), col);
-            if hot {
-                let w = bold.width(&f, 10.0 * s);
-                let y = mitte(r, bold, 10.0 * s) + 2.0 * s;
-                c.fill_rect(r.0, y, w, s.max(1.0), col);
-            }
+            self.verweis(c, t, bold, &f, r, self.hot == Some(Hot::BauherrFehlt));
+        }
+        if let Some(r) = z.projektdaten {
+            let hot = self.hot == Some(Hot::Projektdaten);
+            self.verweis(c, t, bold, PROJEKTDATEN, r, hot);
         }
         // „Mehr ▸“ bzw. offen „Mehr ▾“
         let (mx, _, _, _) = z.mehr;
@@ -403,66 +407,38 @@ impl AvaView {
         let lv = self.lv.as_deref();
         let (x0, cw) = self.content_x(t);
         let lpx = 10.5 * s;
+        // Links die Projektdaten, nur zum Lesen; ein Klick öffnet die Maske
         for (f, r) in self.felder(t) {
             let base = mitte(r, regular, lpx);
-            regular.draw(c, f.label(), lpx, x0, base, u.sheet_text_dim);
-            let edit = self.feld.as_ref().filter(|(g, _)| *g == f).map(|(_, e)| e);
-            // Feld im Blatt: weiß mit Rand, im Eingabemodus Rand im Akzent
-            let rand = if edit.is_some() {
-                u.accent
-            } else if self.hot == Some(Hot::Feld(f)) {
-                u.sheet_text_dim
-            } else {
-                u.sheet_rule
-            };
-            let mut p = Path::new();
-            p.rounded_rect(r.0, r.1, r.2, r.3, 4.0 * s);
-            c.fill(&p, rand);
-            let b = if edit.is_some() { 1.5 * s } else { s.max(1.0) };
-            let mut p = Path::new();
-            p.rounded_rect(r.0 + b, r.1 + b, r.2 - 2.0 * b, r.3 - 2.0 * b, 4.0 * s - b);
-            c.fill(&p, u.sheet_card);
-            let tx = r.0 + FELD_PAD * s;
-            let breit = r.2 - 2.0 * FELD_PAD * s;
-            match edit {
-                Some(e) => {
-                    let (a, bis) = e.selection();
-                    if a != bis {
-                        let sx = tx + regular.width(&e.text[..a], lpx);
-                        let sw = regular.width(&e.text[a..bis], lpx);
-                        c.fill_rect(sx, r.1 + 4.0 * s, sw, r.3 - 8.0 * s, u.sheet_select);
-                    }
-                    regular.draw(c, &e.text, lpx, tx, base, u.sheet_text);
-                    let kx = (tx + regular.width(&e.text[..e.caret], lpx)).round();
-                    c.fill_rect(kx, r.1 + 4.0 * s, s.max(1.0), r.3 - 8.0 * s, u.sheet_text);
-                }
-                None => {
-                    let wert = self.projekt.as_ref().map_or("", |p| f.wert(p));
-                    // Vorbelegung blass im leeren Feld
-                    let (text, col) = if wert.is_empty() {
-                        match (f, lv) {
-                            (Feld::Bauvorhaben, Some(lv)) => (self.bauvorhaben(lv), u.sheet_hint),
-                            (Feld::Aufsteller, Some(lv)) => match lv.kopf.aufsteller.clone() {
-                                Some(a) => (a, u.sheet_hint),
-                                None => ("fehlt".to_string(), crate::cards::verweis(u, false)),
-                            },
-                            (Feld::Bauherr, _) => {
-                                ("fehlt".to_string(), crate::cards::verweis(u, false))
-                            }
-                            _ => (String::new(), u.sheet_hint),
-                        }
-                    } else {
-                        (wert.to_string(), u.sheet_text)
-                    };
-                    let text = widgets::ellipsize(Some(regular), &text, lpx, breit);
-                    regular.draw(c, &text, lpx, tx, base, col);
-                }
+            if self.hot == Some(Hot::Feld(f)) {
+                let mut p = Path::new();
+                p.rounded_rect(r.0, r.1, r.2, r.3, 4.0 * s);
+                c.fill(&p, u.sheet_hover);
             }
+            regular.draw(c, f.label(), lpx, x0, base, u.sheet_text_dim);
+            let (text, ton) = self.kopf_wert(f);
+            let col = match ton {
+                0 => u.sheet_text,
+                1 => u.sheet_hint,
+                _ => crate::cards::verweis(u, false),
+            };
+            let breit = r.0 + r.2 - (x0 + FELD_X * s) - 6.0 * s;
+            let text = widgets::ellipsize(Some(regular), &text, lpx, breit);
+            regular.draw(c, &text, lpx, x0 + FELD_X * s, base, col);
         }
-        // Rechts: Los, Umfang, Stand und Preise wie in der CSV (Kosten B4);
-        // darunter die Vorbemerkungen
-        let y0 = self.top_px() + (SWITCH_TOP + SWITCH_H + 12.0) * s;
-        let rx = x0 + RECHTS_X * s;
+        // Rechts (im schmalen Blatt darunter): Los, Umfang, Stand und
+        // Preise wie in der CSV (Kosten B4); darunter die Vorbemerkungen
+        let y0 = self.kopf_y0();
+        let (rx, ry) = if self.kopf_zwei_spalten() {
+            (x0 + RECHTS_X * s, y0)
+        } else {
+            (x0, y0 + Feld::ALLE.len() as f32 * ZEILE * s)
+        };
+        let wert_x = if self.kopf_zwei_spalten() {
+            80.0 * s
+        } else {
+            FELD_X * s
+        };
         let (umfang, stand) = &self.kopf_umfang;
         let los = lv.map_or(String::new(), |l| format!("Los {}", l.kopf.los));
         let preise = self.preise_text();
@@ -475,13 +451,18 @@ impl AvaView {
         .iter()
         .enumerate()
         {
-            let r = (rx, y0 + i as f32 * ZEILE * s, 0.0, FELD_H * s);
+            let r = (rx, ry + i as f32 * ZEILE * s, 0.0, FELD_H * s);
             let base = mitte(r, regular, lpx);
             regular.draw(c, k, lpx, rx, base, u.sheet_text_dim);
-            let v = widgets::ellipsize(Some(regular), v, lpx, x0 + cw - rx - 80.0 * s);
-            regular.draw(c, &v, lpx, rx + 80.0 * s, base, u.sheet_text);
+            let v = widgets::ellipsize(Some(regular), v, lpx, x0 + cw - rx - wert_x);
+            regular.draw(c, &v, lpx, rx + wert_x, base, u.sheet_text);
         }
-        let y = y0 + 4.0 * ZEILE * s + 4.0 * s;
+        let zeilen_davor = if self.kopf_zwei_spalten() {
+            Feld::ALLE.len()
+        } else {
+            Feld::ALLE.len() + 4
+        };
+        let y = y0 + zeilen_davor as f32 * ZEILE * s + 4.0 * s;
         let r = (x0, y, 0.0, FELD_H * s);
         let base = mitte(r, regular, lpx);
         regular.draw(c, "Vorbemerkungen", lpx, x0, base, u.sheet_text_dim);

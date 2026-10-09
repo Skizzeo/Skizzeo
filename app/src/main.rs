@@ -2608,6 +2608,14 @@ impl App {
                     surface.command(WindowCommand::Activate);
                 }
             }
+            // AVA-Kopf (Paket PD-3): die Maske im Hauptfenster
+            quantity::Out::Projektdaten(feld) => {
+                self.open_projektdaten(false);
+                if let Some(m) = self.projektdaten.as_mut() {
+                    m.fokus_auf(feld);
+                    surface.command(WindowCommand::Activate);
+                }
+            }
         }
         if model {
             self.sync_ui();
@@ -2669,10 +2677,6 @@ impl App {
                     }
                     preis_blatt::Gilt::NeueHaeuser => self.fuer_firma_melden(label, &h, &[op]),
                 }
-            }
-            kosten_view::Schreiben::Projekt { projekt, label } => {
-                self.scene.projekt_setzen(label, projekt);
-                None
             }
             kosten_view::Schreiben::Gliederung(untertitel) => {
                 let label = if untertitel {
@@ -3579,7 +3583,7 @@ impl App {
     /// Maske „Projektdaten“ öffnen (Paket PD-2): bei Datei › Neu mit der
     /// Planung vom letzten Projekt, sonst mit den aktuellen Werten.
     fn open_projektdaten(&mut self, neu: bool) {
-        if self.projektdaten.is_some() {
+        if self.modal() {
             return;
         }
         let planung = if neu { self.settings.planung() } else { None };

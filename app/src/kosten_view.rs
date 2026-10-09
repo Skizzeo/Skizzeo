@@ -260,12 +260,6 @@ pub enum Schreiben {
         wert: Dez,
         gilt: Gilt,
     },
-    /// AVA-Kopf: Bauvorhaben, Bauherr oder Aufsteller (`Model::set_project`,
-    /// ein Schritt „Bauherr gesetzt“ usw.).
-    Projekt {
-        projekt: Box<sk_model::Project>,
-        label: &'static str,
-    },
     /// AVA „Mehr“ › „Geschosse als Untertitel“ (`LvGliederungSetzen`).
     Gliederung(bool),
 }

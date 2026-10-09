@@ -218,6 +218,9 @@ pub enum ListOut {
     Kennwort,
     /// Ablauf `kind=user` für dieses Haus starten (paket-ka3b §3).
     Ablauf(sk_model::Guid),
+    /// AVA-Kopf: Maske „Projektdaten“ mit dem Cursor in diesem Feld
+    /// (Paket PD-3).
+    Projektdaten(usize),
 }
 
 /// Nachrücken nach dem Löschen (H119): weggefallene Zeilen blenden in

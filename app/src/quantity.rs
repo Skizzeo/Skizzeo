@@ -61,6 +61,8 @@ pub enum Out {
     Kennwort,
     /// Ablauf `kind=user` für dieses Haus (paket-ka3b §3).
     Ablauf(sk_model::Guid),
+    /// Maske „Projektdaten“ im Hauptfenster, Cursor in diesem Feld.
+    Projektdaten(usize),
 }
 
 pub struct QuantityWindow {
@@ -488,6 +490,7 @@ impl QuantityWindow {
             ListOut::Verwaltung(g) => Some(Out::Verwaltung(g)),
             ListOut::Kennwort => Some(Out::Kennwort),
             ListOut::Ablauf(g) => Some(Out::Ablauf(g)),
+            ListOut::Projektdaten(i) => Some(Out::Projektdaten(i)),
         }
     }
 
@@ -679,22 +682,6 @@ impl QuantityWindow {
                 let o = self.kosten.as_mut()?.text(ch);
                 self.list_out(o, t)
             }
-            // Das Kopffeld im Blatt AVA ebenso
-            Event::Key {
-                key,
-                down: true,
-                mods,
-                ..
-            } if self.blatt() == Blatt::Ava
-                && self.ava.as_ref().is_some_and(|a| a.feld_offen()) =>
-            {
-                let o = self.ava.as_mut()?.key(key, mods);
-                self.list_out(o, t)
-            }
-            Event::Text(ch) if self.blatt() == Blatt::Ava => {
-                let o = self.ava.as_mut()?.text(ch);
-                self.list_out(o, t)
-            }
             Event::Key {
                 key: Key::Delete,
                 down: true,
@@ -711,6 +698,11 @@ impl QuantityWindow {
                     Blatt::Kosten => {
                         p.selected.clear();
                         self.kosten.as_mut()?.follow(p);
+                    }
+                    // Zuerst das offene Baumblatt (schmales Fenster)
+                    Blatt::Ava if self.ava.as_mut()?.baum_blatt_schliessen() => {
+                        self.dirty = true;
+                        return None;
                     }
                     Blatt::Ava => {
                         p.selected.clear();
