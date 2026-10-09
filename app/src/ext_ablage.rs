@@ -487,8 +487,11 @@ mod tests {
         d
     }
 
+    /// Setzt die Version in `[bauteil]`, welche dort auch steht.
     fn mit_version(t: &str, v: u32) -> String {
-        t.replace("version=1 ", &format!("version={v} "))
+        let i = t.find(" version=").unwrap() + " version=".len();
+        let j = i + t[i..].find(' ').unwrap();
+        format!("{}{v}{}", &t[..i], &t[j..])
     }
 
     fn projekt(text: &str, n: usize) -> Model {

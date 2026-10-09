@@ -558,7 +558,7 @@ fn probe_3cm() {
 /// Mengen der Positionen bleiben.
 #[test]
 fn werksbaustoff_fehlt() {
-    let (mut m, _) = haus();
+    let (m, _) = haus();
     let k = lesen::katalog(&m, None);
     let vorher = blatt(&m, &k, &Umfang::projekt());
     let fehlt = |b: &Kostenblatt| -> Vec<String> {
@@ -569,15 +569,22 @@ fn werksbaustoff_fehlt() {
             .collect()
     };
     assert!(fehlt(&vorher).is_empty(), "{:?}", fehlt(&vorher));
-    let sb = m
-        .materials()
-        .iter()
-        .find(|(_, x)| x.name == "Stahlbeton")
-        .map(|(id, _)| id)
-        .unwrap();
-    m.begin("Löschen");
-    assert!(m.remove_material(sb));
-    m.commit().unwrap();
+    // Genutzt ist er nicht löschbar (E8c-a); also ohne Bauteile löschen
+    // und dieselben Bauteile danach setzen, wie in einer älteren Datei
+    let sb = |m: &Model| {
+        m.materials()
+            .iter()
+            .find(|(_, x)| x.name == "Stahlbeton")
+            .map(|(id, _)| id)
+            .unwrap()
+    };
+    assert!(!m.can_remove_material(sb(&m)));
+    let mut m = projekt();
+    let id = sb(&m);
+    assert!(m.remove_material(id));
+    setzen(&mut m, "werk.bodenplatte", "EG", [0.0, 0.0]);
+    setzen(&mut m, "werk.stuetze", "EG", [1000.0, 1000.0]);
+    setzen(&mut m, "werk.stabgelaender", "OG", [0.0, 0.0]);
     let k = lesen::katalog(&m, None);
     let nachher = blatt(&m, &k, &Umfang::projekt());
     assert_eq!(

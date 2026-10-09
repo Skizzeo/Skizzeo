@@ -111,7 +111,8 @@ impl Model {
     /// Kennung abgeleitet, Name, Kategorie und Rohdichte aus der Definition,
     /// Darstellung vom ersten Baustoff derselben Kategorie. Schon angelegte
     /// bleiben, wie sie sind (der Nutzer darf sie ändern).
-    fn ext_baustoffe_anlegen(&mut self, d: &ExtDef) {
+    fn ext_baustoffe_anlegen(&mut self, d: &ExtDef) -> usize {
+        let mut n = 0;
         let best = sk_szb::Bestand::werk();
         for b in &d.def.baustoff {
             if best.baustoff(b.key()).is_some() {
@@ -142,6 +143,34 @@ impl Model {
             m.lambda = b.get("lambda").and_then(|v| v.parse::<f64>().ok());
             m.props = Default::default();
             self.add_material(m);
+            n += 1;
+        }
+        n
+    }
+
+    /// Namen der eigenen `[baustoff]` der Projektdefinition `key`, die als
+    /// Baustoff im Projekt fehlen (gelöscht, oder Projekt von vor E8c).
+    pub fn ext_baustoffe_fehlen(&self, key: &str) -> Vec<String> {
+        let Some(d) = self.ext_def(key) else {
+            return Vec::new();
+        };
+        let best = sk_szb::Bestand::werk();
+        d.def
+            .baustoff
+            .iter()
+            .filter(|b| best.baustoff(b.key()).is_none())
+            .filter(|b| self.ext_material(d, b.key()).is_none())
+            .map(|b| b.get("name").unwrap_or(b.key()).to_string())
+            .collect()
+    }
+
+    /// „Baustoffe anlegen“ im Fenster Erweiterungen (E8c-a): legt die
+    /// fehlenden eigenen Baustoffe der Projektdefinition `key` an, auch bei
+    /// gleicher Fassung. Zahl der angelegten.
+    pub fn ext_baustoffe_nachlegen(&mut self, key: &str) -> usize {
+        match self.ext_def(key).cloned() {
+            Some(d) => self.ext_baustoffe_anlegen(&d),
+            None => 0,
         }
     }
 
@@ -292,6 +321,30 @@ impl Model {
         }
         let b = d.def.baustoff.iter().find(|b| b.key() == key)?;
         Some(format!("Baustoff {} fehlt", b.get("name").unwrap_or(key)))
+    }
+
+    /// Keys der Definitionen, deren Körper oder Mengen den Baustoff `id`
+    /// über [`Model::ext_material`] treffen (E8c-a: dann nicht löschbar).
+    pub(crate) fn ext_nutzer(&self, id: MaterialId) -> Vec<&str> {
+        self.ext_defs
+            .iter()
+            .filter(|d| {
+                Model::ext_baustoff_keys(d)
+                    .into_iter()
+                    .any(|b| self.ext_material(d, b) == Some(id))
+            })
+            .map(|d| d.key.as_str())
+            .collect()
+    }
+
+    /// [`Model::ext_baustoff_fehlt`] mit dem Weg, wo ein eigener Baustoff
+    /// sich anlegen lässt (E8c-a); für Paneel und Befund.
+    pub fn ext_baustoff_hinweis(&self, d: &ExtDef, key: &str) -> Option<String> {
+        let t = self.ext_baustoff_fehlt(d, key)?;
+        Some(match sk_szb::Bestand::werk().baustoff(key) {
+            Some(_) => t,
+            None => format!("{t}; Datei › Erweiterungen … › „Baustoffe anlegen“"),
+        })
     }
 
     /// Baustoffschlüssel der Körper und Mengen von `d`, jeder einmal.

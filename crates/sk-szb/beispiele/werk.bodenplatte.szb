@@ -1,6 +1,6 @@
 SZB 0
 # Beispiel der Skizzeo-Bauteil-Werkbank 0.5
-[bauteil] key=werk.bodenplatte name="Bodenplatte" mehrzahl="Bodenplatten" genus=f praefix=BP art=groundslab aussen=ja ifc=IfcSlab.BASESLAB kg=322 gewerk=18331 version=1 autor="Skizzeo" beschreibung="Rechteckige Stahlbeton-Bodenplatte, Oberkante auf UK Geschoss (KG zu prüfen: 322 oder 324)"
+[bauteil] key=werk.bodenplatte name="Bodenplatte" mehrzahl="Bodenplatten" genus=f praefix=BP art=groundslab aussen=ja ifc=IfcSlab.BASESLAB kg=322 gewerk=18331 version=1 autor="Skizzeo" beschreibung="Rechteckige Stahlbeton-Bodenplatte, Oberkante auf UK Geschoss"
 [bedienung] gruppe=tragwerk einfuegen=rechteck breite=b tiefe=t drehen=ja
 [hoehe] ab=uk versatz="-d"
 [param] key=b name="Breite" einheit=mm wert=6000 min=1000 max=30000 zeichnen=ja hilfe="Seite in Richtung X, aus der ersten gezogenen Seite."

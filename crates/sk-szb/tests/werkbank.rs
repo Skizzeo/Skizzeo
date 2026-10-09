@@ -509,9 +509,9 @@ fn abnahme_auftrag() {
         (
             "werk.treppe.szb",
             &[
-                ("beton", "1,546"),
+                ("beton", "1,172"),
                 ("schalung", "21,24"),
-                ("stahl", "0,155"),
+                ("stahl", "0,117"),
                 ("stueck", "1"),
             ],
         ),

@@ -235,7 +235,10 @@ pub(crate) fn props(scene: &mut Scene, id: ElementId) -> Option<Props> {
     });
     // E8-10: kein Ersatzbaustoff, sondern der Hinweis
     let keys = sk_model::Model::ext_baustoff_keys(&d);
-    notes.extend(keys.into_iter().filter_map(|k| m.ext_baustoff_fehlt(&d, k)));
+    notes.extend(
+        keys.into_iter()
+            .filter_map(|k| m.ext_baustoff_hinweis(&d, k)),
+    );
     let locked = m.is_locked(id);
     let felder = d.felder(&p, &g);
     values.extend(zeigen.into_iter().map(|(k, v)| (scene.bezeichnung(k), v)));

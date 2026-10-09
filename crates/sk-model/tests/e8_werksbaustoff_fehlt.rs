@@ -1,7 +1,8 @@
 //! E8-10, zweiter Teil (Vorgabe Koordination 09.10. 20:55): Fehlt ein
 //! Werksbaustoff im Projekt (gelöscht), bekommt das Exemplar keinen Ersatz,
 //! weder einen Baustoff derselben Kategorie noch den Terrassenbelag. Die
-//! Mengen bleiben.
+//! Mengen bleiben. Gelöscht wird vor dem Setzen, denn ein genutzter Baustoff
+//! ist nicht löschbar (E8c-a).
 use sk_model::erweiterung::{ExtDef, ExtPart};
 use sk_model::qto::{schedule, ElementQto};
 use sk_model::{szo, GuidGen, Model};
@@ -47,20 +48,28 @@ fn geloeschter_werksbaustoff_ohne_ersatz() {
         .unwrap();
     let d = ExtDef::lesen(STUETZE).unwrap();
     m.put_ext_def(d.clone()).unwrap();
-    m.add_ext(eg, ExtPart::new(&d, [0.0, 0.0])).unwrap();
-    let vorher = mengen(&m);
+    // Mengen mit Stahlbeton als Vergleich
+    let mut mit = m.clone();
+    mit.add_ext(eg, ExtPart::new(&d, [0.0, 0.0])).unwrap();
+    let vorher = mengen(&mit);
     assert!(!vorher.is_empty());
     let sb = m
         .ext_material(&d, "stahlbeton")
         .expect("Stahlbeton im Werk");
     assert_eq!(m.material(sb).unwrap().name, "Stahlbeton");
 
+    // Ohne gesetzte Stütze löschbar (E8c-a: mit Stütze nicht), dann setzen
     assert!(m.remove_material(sb), "Stahlbeton löschbar");
     assert!(m.materials().iter().all(|(_, x)| x.name != "Stahlbeton"));
+    m.add_ext(eg, ExtPart::new(&d, [0.0, 0.0])).unwrap();
     let ersatz = m
         .ext_material(&d, "stahlbeton")
         .and_then(|id| m.material(id))
         .map(|x| x.name.clone());
     assert_eq!(ersatz, None, "kein Ersatz für den fehlenden Werksbaustoff");
+    assert_eq!(
+        m.ext_baustoff_fehlt(&d, "stahlbeton").as_deref(),
+        Some("Werksbaustoff Stahlbeton fehlt")
+    );
     assert_eq!(mengen(&m), vorher, "Mengen bleiben");
 }

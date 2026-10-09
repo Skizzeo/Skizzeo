@@ -164,6 +164,19 @@ impl App {
                 let f = self.ext_frage_zur_datei(&key, Ok(d.text));
                 self.ext_frage_zeigen(f);
             }
+            Antwort::Baustoffe(key) => {
+                let mut n = 0;
+                self.scene.edit_model("Baustoffe angelegt", |m| {
+                    n = m.ext_baustoffe_nachlegen(&key);
+                    n > 0
+                });
+                let satz = match n {
+                    0 => "Keine Baustoffe angelegt.".to_string(),
+                    1 => "1 Baustoff angelegt.".to_string(),
+                    n => format!("{n} Baustoffe angelegt."),
+                };
+                self.ext_nach_tat(Some(&key), satz);
+            }
             Antwort::Tat(t) => self.ext_tat(t),
         }
     }

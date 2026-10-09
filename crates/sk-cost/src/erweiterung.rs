@@ -42,7 +42,7 @@ pub fn fehlende_baustoffe(m: &Model, elemente: &[sk_model::ElementId]) -> Vec<Be
             continue;
         };
         for key in Model::ext_baustoff_keys(d) {
-            let Some(t) = m.ext_baustoff_fehlt(d, key) else {
+            let Some(t) = m.ext_baustoff_hinweis(d, key) else {
                 continue;
             };
             let t = format!("{t}: {}", sk_model::erweiterung::anzeige(d.name(), 60));

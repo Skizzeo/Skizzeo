@@ -1204,6 +1204,8 @@ impl Model {
     /// Vorgabe ohne eigene Wahl (A235).
     pub fn material_uses(&self, id: MaterialId) -> Vec<Use> {
         let mut out = Vec::new();
+        // Definitionen, deren Körper oder Mengen den Baustoff treffen (E8c-a)
+        let ext: Vec<&str> = self.ext_nutzer(id);
         for (t, s) in self.layer_sets.iter() {
             if s.layers.iter().any(|l| l.material == id) || s.strip_material() == Some(id) {
                 let n = self
@@ -1238,11 +1240,11 @@ impl Model {
                 ElementKind::GroundSlab(g) => g.material == id,
                 ElementKind::StripFooting(f) => f.material == id,
                 ElementKind::Coping { floor } => self.coping_material(*floor) == Some(id),
+                ElementKind::Ext(p) => ext.contains(&p.key.as_str()),
                 ElementKind::Wall(_)
                 | ElementKind::EdgeStrip { .. }
                 | ElementKind::SoffitInsulation { .. }
-                | ElementKind::RoofTerrace { .. }
-                | ElementKind::Ext(_) => false,
+                | ElementKind::RoofTerrace { .. } => false,
             };
             if hit {
                 out.push(Use::Element(e));

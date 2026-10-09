@@ -484,3 +484,63 @@ fn eigener_baustoff_im_projekt() {
     assert_eq!(m.materials().len(), vorher);
     assert!(m.ext_defs().is_empty());
 }
+
+/// E8c-a: Ein Baustoff, den gesetzte Erweiterungen nutzen (eigener oder
+/// Werksbaustoff), ist nicht löschbar; fehlt ein eigener (älteres
+/// Projekt), legt „Baustoffe anlegen“ ihn in einem Schritt an.
+#[test]
+fn genutzte_baustoffe_und_nachlegen() {
+    let mut m = Model::new();
+    m.add_building(1);
+    let d = def(BEISPIELE[1].1);
+    let g = sk_model::erweiterung::kennung("werk.stabgelaender", "baustoff", "stahl_s235");
+    m.begin("Einlesen");
+    m.put_ext_def(d.clone()).unwrap();
+    m.commit().unwrap();
+    let stahl = |m: &Model| {
+        m.materials()
+            .iter()
+            .find(|(_, b)| b.guid == g)
+            .map(|(id, _)| id)
+    };
+    let id = stahl(&m).unwrap();
+    // ohne Geländer löschbar: wie ein Projekt von vor E8c
+    m.begin("Löschen");
+    assert!(m.remove_material(id));
+    m.commit().unwrap();
+    let gl = setzen(&mut m, "werk.stabgelaender", "EG", [0.0, 0.0]);
+    assert_eq!(
+        m.ext_baustoffe_fehlen("werk.stabgelaender"),
+        ["Baustahl S235, verzinkt"]
+    );
+    let d = m.ext_def("werk.stabgelaender").unwrap().clone();
+    assert_eq!(
+        m.ext_baustoff_hinweis(&d, "stahl_s235").as_deref(),
+        Some(
+            "Baustoff Baustahl S235, verzinkt fehlt; Datei › Erweiterungen … › „Baustoffe anlegen“"
+        )
+    );
+    // gleiche Fassung erneut: nichts; „Baustoffe anlegen“: ein Schritt
+    m.begin("Einlesen");
+    m.put_ext_def(d.clone()).unwrap();
+    m.commit();
+    assert!(stahl(&m).is_none());
+    m.begin("Baustoffe angelegt");
+    assert_eq!(m.ext_baustoffe_nachlegen("werk.stabgelaender"), 1);
+    let t = m.commit().unwrap();
+    let id = stahl(&m).unwrap();
+    assert!(m.ext_baustoffe_fehlen("werk.stabgelaender").is_empty());
+    assert_eq!(m.ext_material(&d, "stahl_s235"), Some(id));
+    // genutzt: nicht löschbar, „Verwendet in“ nennt das Geländer
+    assert!(!m.can_remove_material(id));
+    assert_eq!(m.material_uses(id), [sk_model::Use::Element(gl)]);
+    m.apply(&t, Direction::Undo);
+    assert!(stahl(&m).is_none());
+    // Werksbaustoff der Stütze ebenso
+    m.put_ext_def(def(BEISPIELE[3].1)).unwrap();
+    let st = setzen(&mut m, "werk.stuetze", "EG", [3000.0, 0.0]);
+    let sd = m.ext_def("werk.stuetze").unwrap().clone();
+    let sb = m.ext_material(&sd, "stahlbeton").unwrap();
+    assert!(m.material_uses(sb).contains(&sk_model::Use::Element(st)));
+    assert!(!m.can_remove_material(sb));
+}

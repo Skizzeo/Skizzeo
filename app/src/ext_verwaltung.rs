@@ -77,6 +77,9 @@ pub struct Zeile {
     pub aktualisieren: bool,
     /// Exemplare im Projekt.
     pub im_projekt: usize,
+    /// Eigene Baustoffe der Projektdefinition fehlen: „Baustoffe anlegen“
+    /// (E8c-a).
+    pub baustoffe: bool,
     /// Zeilen unter „Für Entwickler“: Notizen, Hinweise, Quelle.
     pub entwickler: Vec<String>,
 }
@@ -139,6 +142,7 @@ pub fn zeilen(a: &Ablage, m: &Model) -> Vec<Zeile> {
             stand,
             aktualisieren: projekt.is_some(),
             im_projekt: n,
+            baustoffe: !m.ext_baustoffe_fehlen(&d.key).is_empty(),
             entwickler: entw,
         });
     }
@@ -157,6 +161,7 @@ pub fn zeilen(a: &Ablage, m: &Model) -> Vec<Zeile> {
             stand: anzahl(n),
             aktualisieren: false,
             im_projekt: n,
+            baustoffe: !m.ext_baustoffe_fehlen(&d.key).is_empty(),
             entwickler: entw,
         });
     }
@@ -170,6 +175,7 @@ pub fn zeilen(a: &Ablage, m: &Model) -> Vec<Zeile> {
             stand: anzahl(n),
             aktualisieren: false,
             im_projekt: n,
+            baustoffe: false,
             entwickler: Vec::new(),
         });
     }
@@ -389,6 +395,8 @@ pub enum Antwort {
     /// Rückfrage zum Aktualisieren rechnen.
     Aktualisieren(String),
     Uebernehmen(String),
+    /// Fehlende eigene Baustoffe der Projektdefinition anlegen (E8c-a).
+    Baustoffe(String),
     /// „Ja“ einer Rückfrage.
     Tat(Tat),
 }
@@ -404,6 +412,7 @@ enum Knopf {
     Ja,
     /// Abschnitte der Rückfrage auf- und zuklappen.
     Entwickler,
+    Baustoffe,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -520,12 +529,19 @@ impl Fenster {
                         "Einschalten"
                     },
                 )];
+                // Aktualisieren legt fehlende Baustoffe mit an
                 if z.aktualisieren && z.art == Art::An {
                     v.push((Knopf::Aktualisieren, "Aktualisieren"));
+                } else if z.baustoffe {
+                    v.push((Knopf::Baustoffe, "Baustoffe anlegen"));
                 }
                 v.push((Knopf::Entfernen, "Entfernen"));
                 v
             }
+            Art::NurProjekt if z.baustoffe => vec![
+                (Knopf::Uebernehmen, "In Erweiterungen übernehmen"),
+                (Knopf::Baustoffe, "Baustoffe anlegen"),
+            ],
             Art::NurProjekt => vec![(Knopf::Uebernehmen, "In Erweiterungen übernehmen")],
             Art::Lieferumfang => Vec::new(),
         }
@@ -630,10 +646,10 @@ impl Fenster {
             None => {
                 rechts(Knopf::Zu, "Schließen", 100.0, &mut knoepfe);
                 for (k, label) in self.knoepfe_zeile().into_iter().rev() {
-                    let bw = if k == Knopf::Uebernehmen {
-                        210.0
-                    } else {
-                        110.0
+                    let bw = match k {
+                        Knopf::Uebernehmen => 210.0,
+                        Knopf::Baustoffe => 120.0,
+                        _ => 110.0,
                     };
                     rechts(k, label, bw, &mut knoepfe);
                 }
@@ -782,6 +798,7 @@ impl Fenster {
             Knopf::Schalten => z.map(|z| Antwort::Schalten(z.key, z.art != Art::An)),
             Knopf::Aktualisieren => z.map(|z| Antwort::Aktualisieren(z.key)),
             Knopf::Uebernehmen => z.map(|z| Antwort::Uebernehmen(z.key)),
+            Knopf::Baustoffe => z.map(|z| Antwort::Baustoffe(z.key)),
             Knopf::Entfernen => {
                 let f = Frage::entfernen(&z?);
                 self.frage(f);
@@ -1363,6 +1380,41 @@ mod tests {
         assert_eq!(w.frage.as_ref().unwrap().zu, Some(false));
         assert!(w.inhalt_h() >= h);
         assert!(matches!(drueck(&mut w, r, Knopf::Zu), Some(Antwort::Zu)));
+    }
+
+    /// E8c-a: Fehlt ein eigener Baustoff der Projektdefinition, bietet die
+    /// Zeile „Baustoffe anlegen“ an, auch ohne neue Fassung.
+    #[test]
+    fn baustoffe_anlegen_knopf() {
+        let gelaender = include_str!("../../crates/sk-szb/beispiele/werk.stabgelaender.szb");
+        let mut m = Model::new();
+        m.add_building(1);
+        let d = ExtDef::lesen(gelaender).unwrap();
+        m.put_ext_def(d.clone()).unwrap();
+        let z = zeilen(&Ablage::default(), &m);
+        assert!(!z[0].baustoffe);
+        let id = m.ext_material(&d, "stahl_s235").unwrap();
+        assert!(m.remove_material(id));
+        let z = zeilen(&Ablage::default(), &m);
+        assert_eq!((z[0].art, z[0].baustoffe), (Art::NurProjekt, true));
+        let mut w = Fenster::new(z);
+        w.key(RUNTER);
+        let r = w.rect(1.0, 1280, 800, 32);
+        let l = w.lage(1.0, r.h - KOPF_H - FUSS_H);
+        let ein = l.knoepfe.iter().find(|b| b.0 == Knopf::Einlesen).unwrap().1;
+        let bs = l
+            .knoepfe
+            .iter()
+            .find(|b| b.0 == Knopf::Baustoffe)
+            .unwrap()
+            .1;
+        assert!(ein.x + ein.w < bs.x, "Knöpfe überdecken sich nicht");
+        match drueck(&mut w, r, Knopf::Baustoffe) {
+            Some(Antwort::Baustoffe(k)) => assert_eq!(k, "werk.stabgelaender"),
+            x => panic!("{x:?}"),
+        }
+        assert_eq!(m.ext_baustoffe_nachlegen("werk.stabgelaender"), 1);
+        assert!(!zeilen(&Ablage::default(), &m)[0].baustoffe);
     }
 
     /// Satz und Knopf der Rückfrage je Fall (tests/LIESMICH.md).
