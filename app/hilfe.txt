@@ -62,6 +62,7 @@ Verwalten | Datei › „Erweiterungen …“: Ein/Aus, Aktualisieren, Entfernen
 Prüfen | Skizzeo prüft die Datei; Fehler stehen mit Zeile und Grund, die Datei bleibt dann draußen
 Neu | „Einlesen“ legt sie im Ordner „Erweiterungen“ ab; setzen im Bauteilkatalog oder mit dem Knopf „Erweiterungen“
 Neue Version | die Rückfrage nennt je gesetztem Bauteil, was sich ändert; erst „Aktualisieren“ ändert das Projekt
+Neues Gewerk | neue Bauteilart oder Gewerk ohne Titel: eigene Rückfrage mit der Folge; „Trotzdem einlesen“ legt keinen Titel an
 Firmenkatalog | unter „Für den Firmenkatalog“ je neuer Bauleistung und neuem Artikel ein Haken; ohne Haken gilt der Satz nur im Projekt
 Einzelplatz | angehakte Sätze kommen gleich in den Firmenkatalog, als unbestätigt markiert
 Mit Kennwort | angehakte Sätze gehen als Vorschlag in den Entwurf; unter „Verwaltung …“ übernehmen oder ablehnen, freigeben erst danach

@@ -298,6 +298,9 @@ pub struct Vorschlag {
     /// Sätze der Definition für den Firmenkatalog (E8c); setzt die App,
     /// die den Firmenkatalog kennt. Nach „Ja“ nur die angehakten.
     pub saetze: Vec<sk_cost::neue_saetze::NeuerSatz>,
+    /// Neue Bauteilart und Gewerke ohne Titel, je ein Satz mit der Folge:
+    /// eigene Rückfrage vor dem Speichern (§2 Nr. 7).
+    pub neu: Vec<String>,
 }
 
 /// Prüft den Text einer .szb wie beim Einlesen (mit Grenzprüfung):
@@ -366,12 +369,56 @@ pub fn pruefen(text: &str, ablage: &Ablage, model: &Model) -> Result<Vorschlag, 
     };
     Ok(Vorschlag {
         hinweise,
-        def,
         fall,
         projekt,
         aenderungen,
         gesetzt,
         saetze: Vec::new(),
+        neu: neue_art(&def, ablage, model).into_iter().collect(),
+        def,
+    })
+}
+
+/// Gewerke ohne Titel im wirksamen Katalog (Firma `firma`), die die
+/// eingelesene oder im Projekt genutzte Fassung noch nicht nannte, als
+/// Sätze in `v.neu` (§2 Nr. 7).
+pub fn gewerke_ohne_titel(
+    v: &mut Vorschlag,
+    ablage: &Ablage,
+    model: &Model,
+    firma: Option<&sk_model::Library>,
+) {
+    let alt = ablage
+        .eintrag(&v.def.key)
+        .map(|e| &e.def)
+        .or_else(|| model.ext_def(&v.def.key));
+    let genannt = |nr: &str| {
+        alt.is_some_and(|d| {
+            d.def
+                .leistung
+                .iter()
+                .any(|l| sk_cost::erweiterung::gewerk_nr(d, l) == nr)
+        })
+    };
+    let g = sk_cost::neue_saetze::gewerke_ohne_titel(model, firma, &v.def);
+    v.neu
+        .extend(g.into_iter().filter(|g| !genannt(&g.0)).map(|g| g.1));
+}
+
+/// Satz zur Bauteilart von `d`, wenn Skizzeo sie weder selbst noch aus
+/// einer eingelesenen oder im Projekt genutzten Erweiterung kennt.
+fn neue_art(d: &ExtDef, ablage: &Ablage, model: &Model) -> Option<String> {
+    let art = |d: &ExtDef| d.def.bauteil_feld("art").unwrap_or("").to_string();
+    let a = art(d);
+    let bekannt = a.is_empty()
+        || sk_szb::bestand::ARTEN.contains(&a.as_str())
+        || ablage.eintraege.iter().any(|e| art(&e.def) == a)
+        || model.ext_defs().iter().any(|o| art(o) == a);
+    (!bekannt).then(|| {
+        format!(
+            "Bauteilart „{}“ ist neu. Die Bauteile stehen nur unter ihrer Erweiterung, nicht bei den Bauteilarten.",
+            anzeige(&a, 40)
+        )
     })
 }
 

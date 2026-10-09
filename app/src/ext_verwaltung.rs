@@ -182,6 +182,16 @@ pub fn zeilen(a: &Ablage, m: &Model) -> Vec<Zeile> {
     out
 }
 
+/// „Stahlbetonstütze · werk.stuetze · Version 1“.
+fn kopf(d: &ExtDef) -> String {
+    format!(
+        "{} · {} · Version {}",
+        anzeige(d.name(), MAX),
+        d.key,
+        d.version
+    )
+}
+
 /// Was nach „Ja“ einer Rückfrage geschieht.
 #[derive(Clone, Debug)]
 pub enum Tat {
@@ -289,12 +299,7 @@ impl Frage {
                 v.hinweise.clone(),
             ));
         }
-        let name = format!(
-            "{} · {} · Version {}",
-            anzeige(v.def.name(), MAX),
-            v.def.key,
-            v.def.version
-        );
+        let name = kopf(&v.def);
         let ja = (!ja.is_empty()).then_some(ja);
         // Neue Sätze für den Firmenkatalog (E8c), je einer mit Haken
         let haken = match ja {
@@ -326,6 +331,23 @@ impl Frage {
             ja,
             tat: ja.map(|_| Tat::Einlesen(Box::new(v))),
             haken,
+            zu: None,
+        }
+    }
+
+    /// Eigene Rückfrage vor dem Speichern: neue Bauteilart oder Gewerk ohne
+    /// Titel mit der Folge (§2 Nr. 7). Ein Titel entsteht dabei nicht.
+    pub fn trotzdem(mut v: Box<Vorschlag>) -> Frage {
+        let neu = std::mem::take(&mut v.neu);
+        Frage {
+            titel: "Bauteil einlesen".into(),
+            name: kopf(&v.def),
+            satz: neu.join(" "),
+            warnung: false,
+            abschnitte: Vec::new(),
+            ja: Some("Trotzdem einlesen"),
+            tat: Some(Tat::Einlesen(v)),
+            haken: Vec::new(),
             zu: None,
         }
     }
@@ -630,7 +652,12 @@ impl Fenster {
         match &self.frage {
             Some(f) => {
                 if let Some(ja) = f.ja {
-                    rechts(Knopf::Ja, ja, 130.0, &mut knoepfe);
+                    let bw = if ja.chars().count() > 13 {
+                        160.0
+                    } else {
+                        130.0
+                    };
+                    rechts(Knopf::Ja, ja, bw, &mut knoepfe);
                     rechts(Knopf::Zu, "Abbrechen", 100.0, &mut knoepfe);
                 } else {
                     rechts(Knopf::Zu, "Schließen", 100.0, &mut knoepfe);
@@ -788,12 +815,20 @@ impl Fenster {
             }
             Knopf::Ja => {
                 let mut f = self.frage.take()?;
-                self.nur_frage = false;
-                // nur die angehakten neuen Sätze gehen an die Firma
                 if let Some(Tat::Einlesen(v)) = f.tat.as_mut() {
-                    let mut an = f.haken.iter().map(|h| h.an);
-                    v.saetze.retain(|_| an.next().unwrap_or(false));
+                    // nur die angehakten neuen Sätze gehen an die Firma
+                    if !f.haken.is_empty() {
+                        let mut an = f.haken.iter().map(|h| h.an);
+                        v.saetze.retain(|_| an.next().unwrap_or(false));
+                    }
+                    if !v.neu.is_empty() {
+                        if let Some(Tat::Einlesen(v)) = f.tat {
+                            self.frage = Some(Frage::trotzdem(v));
+                        }
+                        return None;
+                    }
                 }
+                self.nur_frage = false;
                 f.tat.map(Antwort::Tat)
             }
             Knopf::Einlesen => Some(Antwort::Einlesen),
@@ -1551,6 +1586,8 @@ mod tests {
         klick(&mut w, r, p);
         assert!(!w.frage.as_ref().unwrap().haken[0].an);
         let _ = w.paint(&Theme::dark(), &schriften(), 1.0, r);
+        // „column“ ist neu: erst die eigene Rückfrage, die Haken bleiben
+        assert!(drueck(&mut w, r, Knopf::Ja).is_none());
         match drueck(&mut w, r, Knopf::Ja) {
             Some(Antwort::Tat(Tat::Einlesen(v))) => {
                 let keys: Vec<&str> = v.saetze.iter().map(|n| n.key.as_str()).collect();
@@ -1565,6 +1602,67 @@ mod tests {
         let f = Frage::einlesen(v);
         assert!(!f.haken[0].an && !f.haken[0].waehlbar);
         assert!(f.haken[0].text.ends_with("vorhanden, Firmenpreis gilt"));
+    }
+
+    /// §2 Nr. 7: Neue Bauteilart und Gewerk ohne Titel nur nach eigener
+    /// Rückfrage; „Abbrechen“ liest nichts ein, „Trotzdem einlesen“ schon.
+    /// Bekannt ist danach, was die eingelesene Fassung schon nannte.
+    #[test]
+    fn rueckfrage_neues_gewerk_und_art() {
+        let gelaender = include_str!("../../crates/sk-szb/beispiele/werk.stabgelaender.szb");
+        let dir = ordner("neues-gewerk");
+        let mut a = Ablage::lesen(&dir);
+        let mut m = Model::new();
+        m.add_building(1);
+        let frage = |a: &Ablage, t: &str| {
+            let mut v = ext_ablage::pruefen(t, a, &m).unwrap();
+            ext_ablage::gewerke_ohne_titel(&mut v, a, &m, None);
+            v
+        };
+        let v = frage(&a, gelaender);
+        assert_eq!(
+            v.neu,
+            [
+                "Bauteilart „railing“ ist neu. Die Bauteile stehen nur unter ihrer Erweiterung, nicht bei den Bauteilarten.",
+                "Metallbauarbeiten 18360 hat noch keinen Titel. Positionen stehen bis dahin in keinem Los.",
+            ]
+        );
+        let mut w = Fenster::mit_frage(Vec::new(), Frage::einlesen(v));
+        let r = w.rect(1.0, 1280, 800, 32);
+        assert!(drueck(&mut w, r, Knopf::Ja).is_none());
+        let f = w.frage.as_ref().unwrap();
+        assert!(w.beim_einlesen(), "Hilfe-Thema bleibt „Bauteil einlesen“");
+        assert_eq!(f.ja, Some("Trotzdem einlesen"));
+        assert!(f.satz.ends_with("in keinem Los."), "{}", f.satz);
+        // Beschriftungen passen in ihre Knöpfe
+        let fonts = schriften();
+        let bold = fonts.bold.as_ref().unwrap();
+        let l = w.lage(1.0, r.h - KOPF_H - FUSS_H);
+        for (_, b, label) in &l.knoepfe {
+            let tw = bold.width(label, Theme::dark().size.font);
+            assert!(tw + 8.0 <= b.w, "„{label}“ {tw:.1} in {}", b.w);
+        }
+        let _ = w.paint(&Theme::dark(), &fonts, 1.0, r);
+        // Abbrechen: nichts eingelesen, Fenster zu
+        assert!(matches!(drueck(&mut w, r, Knopf::Zu), Some(Antwort::Zu)));
+        assert!(a.eintrag("werk.stabgelaender").is_none());
+        // Trotzdem einlesen
+        let mut w = Fenster::mit_frage(Vec::new(), Frage::einlesen(frage(&a, gelaender)));
+        assert!(drueck(&mut w, r, Knopf::Ja).is_none());
+        let Some(Antwort::Tat(Tat::Einlesen(v))) = w.key(Key::Enter) else {
+            panic!("Trotzdem einlesen")
+        };
+        assert!(v.neu.is_empty());
+        a.schreiben(&v.def, v.hinweise.clone()).unwrap();
+        // neue Version: Art und Gewerk nannte schon die eingelesene
+        let v = frage(&a, &v2(gelaender));
+        assert!(v.neu.is_empty(), "{:?}", v.neu);
+        let mut w = Fenster::mit_frage(Vec::new(), Frage::einlesen(v));
+        assert!(matches!(
+            drueck(&mut w, r, Knopf::Ja),
+            Some(Antwort::Tat(Tat::Einlesen(_)))
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn schriften() -> Fonts {
@@ -1675,6 +1773,14 @@ mod tests {
         let mut w = Fenster::mit_frage(Vec::new(), Frage::einlesen(v));
         assert!(w.beim_einlesen());
         let r = w.rect(1.0, 1280, 800, 32);
+        // neue Bauteilart „column“: eigene Rückfrage vor dem Speichern
+        assert!(drueck(&mut w, r, Knopf::Ja).is_none());
+        assert!(w
+            .frage
+            .as_ref()
+            .unwrap()
+            .satz
+            .starts_with("Bauteilart „column“ ist neu."));
         let Some(Antwort::Tat(Tat::Einlesen(v))) = drueck(&mut w, r, Knopf::Ja) else {
             panic!("Einlesen")
         };
@@ -1721,6 +1827,7 @@ mod tests {
             )
             .replace("wert=240 min=200", "wert=300 min=200");
         let v = ext_ablage::pruefen(&breiter, &a, &m).unwrap();
+        assert!(v.neu.is_empty(), "„column“ kennt Skizzeo jetzt");
         let f = Frage::einlesen(v);
         assert_eq!(f.ja, Some("Aktualisieren"));
         let (titel, zeilen) = &f.abschnitte[0];

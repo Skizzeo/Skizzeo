@@ -61,6 +61,7 @@ impl App {
                 let k = sk_cost::lesen::katalog(self.scene.model(), firma);
                 v.hinweise
                     .extend(sk_cost::erweiterung::fehlende_folgen(&k, &v.def));
+                ext_ablage::gewerke_ohne_titel(&mut v, &self.ext_ablage, self.scene.model(), firma);
                 // Neue Sätze für den Firmenkatalog (E8c)
                 if let Some(f) = firma {
                     v.saetze = sk_cost::neue_saetze::neue_saetze(self.scene.model(), f, &v.def);

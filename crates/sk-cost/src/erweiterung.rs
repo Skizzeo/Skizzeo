@@ -203,6 +203,15 @@ pub fn gewerk(m: &Model, nr: &str) -> Option<Guid> {
     }
 }
 
+/// ATV-Nummer der Bauleistung `l` von `d`: ihr `gewerk`, sonst das des
+/// Bauteils.
+pub fn gewerk_nr<'a>(d: &'a sk_model::ExtDef, l: &'a sk_szb::Satz) -> &'a str {
+    l.get("gewerk")
+        .filter(|v| !v.is_empty())
+        .or(d.def.bauteil_feld("gewerk"))
+        .unwrap_or("")
+}
+
 /// Baustoff des Projekts zum Schlüssel `key` der Definition `d`: ein
 /// Werksbaustoff des Projekts, sonst ein eigener `[baustoff]` mit
 /// abgeleiteter Kennung (E8-7).
@@ -274,12 +283,7 @@ pub fn quelle(m: &Model, d: &sk_model::ExtDef) -> ExtQuelle {
         .leistung
         .iter()
         .map(|l| {
-            let nr = l
-                .get("gewerk")
-                .filter(|v| !v.is_empty())
-                .or(d.def.bauteil_feld("gewerk"))
-                .unwrap_or("")
-                .to_string();
+            let nr = gewerk_nr(d, l).to_string();
             ExtLeistung {
                 key: l.key().to_string(),
                 kurz: l.get("kurztext").unwrap_or("").to_string(),

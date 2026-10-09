@@ -165,3 +165,36 @@ fn artikel_zeile(s: &Satz, ziel: &Umfeld) -> String {
     }
     s.zeile()
 }
+
+/// Gewerke der Bauleistungen von `d`, die im wirksamen Katalog des
+/// Projekts (Firma `firma`) keinen Titel haben, je ATV-Nummer und Satz für
+/// die Rückfrage beim Einlesen (§2 Nr. 7). Ein Titel entsteht dabei nicht.
+pub fn gewerke_ohne_titel(m: &Model, firma: Option<&Library>, d: &ExtDef) -> Vec<(String, String)> {
+    let mut mit = m.clone();
+    if mit.put_ext_def(d.clone()).is_err() {
+        return Vec::new();
+    }
+    let k = crate::lesen::katalog(&mit, firma);
+    let mut out: Vec<(String, String)> = Vec::new();
+    for l in &d.def.leistung {
+        let nr = crate::erweiterung::gewerk_nr(d, l);
+        if nr.is_empty() || out.iter().any(|(n, _)| n == nr) {
+            continue;
+        }
+        let satz = match k.leistung(kennung(&d.key, "leistung", l.key())) {
+            Some(x) if x.titel != OHNE_TITEL => continue,
+            Some(_) => {
+                let name = m.trades().iter().find(|t| t.code == nr).map(|t| &t.name);
+                format!(
+                    "{} {nr} hat noch keinen Titel. Positionen stehen bis dahin in keinem Los.",
+                    name.map_or("Gewerk", |n| n.as_str())
+                )
+            }
+            None => {
+                format!("Gewerk {nr} gibt es im Projekt nicht. Die Mengen stehen ohne Bauleistung.")
+            }
+        };
+        out.push((nr.to_string(), satz));
+    }
+    out
+}

@@ -607,3 +607,37 @@ fn werksbaustoff_fehlt() {
         );
     }
 }
+
+/// §2 Nr. 7: Rückfrage beim Einlesen für ein Gewerk ohne Titel im
+/// wirksamen Katalog; ein Titel entsteht dabei nicht.
+#[test]
+fn gewerk_ohne_titel_beim_einlesen() {
+    use sk_cost::neue_saetze::gewerke_ohne_titel;
+    let mut m = Model::with_seed(1);
+    m.add_building(2);
+    let mut alle = Vec::new();
+    for t in BEISPIELE {
+        let d = ExtDef::lesen(t).unwrap();
+        alle.push((d.key.clone(), gewerke_ohne_titel(&m, None, &d)));
+    }
+    let nur: Vec<_> = alle.iter().filter(|(_, g)| !g.is_empty()).collect();
+    assert_eq!(nur.len(), 1, "{alle:?}");
+    assert_eq!(nur[0].0, "werk.stabgelaender");
+    assert_eq!(
+        nur[0].1,
+        [(
+            "18360".to_string(),
+            "Metallbauarbeiten 18360 hat noch keinen Titel. Positionen stehen bis dahin in keinem Los."
+                .to_string()
+        )]
+    );
+    assert_eq!(m.ext_defs().len(), 0, "Projekt bleibt unverändert");
+    // ein Gewerk, das es im Projekt nicht gibt
+    let fremd = BEISPIELE[3].replace("gewerk=18331", "gewerk=18999");
+    let d = ExtDef::lesen(&fremd).unwrap();
+    let g = gewerke_ohne_titel(&m, None, &d);
+    assert_eq!(
+        g[0].1,
+        "Gewerk 18999 gibt es im Projekt nicht. Die Mengen stehen ohne Bauleistung."
+    );
+}
