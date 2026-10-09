@@ -177,6 +177,8 @@ const MESH_LIVE: usize = 2;
 const MESH_GHOST: usize = 3;
 /// Würfel 10 m ohne Gebäude bei eingeschaltetem Sonnenstand (nur Anzeige).
 const MESH_WUERFEL: usize = 4;
+/// Tooltip an Leiste und Sonne, wenn der Treiber keine Schatten kann (S5).
+const SCHATTEN_FEHLT: &str = "Schatten auf diesem Rechner nicht verfügbar.";
 /// Bildabstand für Animationen im Mengenfenster (das Hauptfenster läuft mit vsync).
 const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 
@@ -5835,6 +5837,10 @@ impl App {
         }
         if let Some((_, o)) = self.edit.dragged_offset(&self.scene) {
             return Some(offset_label(o));
+        }
+        // Sonnenstand: ohne Schatten auf diesem Treiber sagt es die Leiste
+        if self.renderer.shadow_failed() && (self.sonne.hover.is_some() || self.sonne.ueber_sonne) {
+            return Some(SCHATTEN_FEHLT.into());
         }
         if let Some(t) = self.button_tip() {
             return Some(t);

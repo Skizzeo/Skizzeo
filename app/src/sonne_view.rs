@@ -591,18 +591,21 @@ pub fn leiste_malen(b: &LeistenBild, fonts: &Fonts, t: &Theme) -> (Canvas, i32, 
     let (dx, dy) = (r.x - sh, r.y - sh);
     let ab = |q: Rect| Rect::new(q.x - dx, q.y - dy, q.w, q.h);
     widgets::panel(&mut c, ab(r), s, t);
-    let zone = zone(&b.sun);
+    // So, wie gerechnet wird: auch eine Datei mit 29.03. 02:30 zeigt
+    // 03:30 MESZ (Hinweis zu Y, Test und Review 3by)
+    let sun = gueltig(b.sun);
+    let zone = zone(&sun);
     for (teil, q) in teile {
         let q = ab(q);
         let hover = b.hover == Some(teil);
         let ein = b.eingabe.as_ref().filter(|e| e.teil == teil);
         let (text, unit) = match teil {
-            Teil::Datum => (datum_text(b.sun.date), ""),
-            Teil::Uhrzeit => (zeit_text(b.sun.minutes), zone),
+            Teil::Datum => (datum_text(sun.date), ""),
+            Teil::Uhrzeit => (zeit_text(sun.minutes), zone),
             Teil::Schnell(i) => {
                 let aktiv = SCHNELL
                     .get(i)
-                    .is_some_and(|&(m, d)| (b.sun.date.monat, b.sun.date.tag) == (m, d));
+                    .is_some_and(|&(m, d)| (sun.date.monat, sun.date.tag) == (m, d));
                 let st = ButtonState {
                     hover,
                     active: aktiv,

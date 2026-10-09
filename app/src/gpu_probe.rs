@@ -120,6 +120,20 @@ mod tests {
         ab(&px, "ist-s5-haus-0621-1500.png");
         let px = bild(&mut r, &mut h, sonne(6, 21, 10 * 60), &cam);
         ab(&px, "ist-s5-haus-0621-1000.png");
+        // Tiefe Sonne (§8 10:50): 21.12. 15:30 MEZ, 3,5°, Schatten bis
+        // weit über den Ausschnitt; ohne Akne, nicht abgelöst
+        let tief = sonne(12, 21, 15 * 60 + 30);
+        let hoehe = sv::zur_sonne(h.model().location(), &tief).unwrap().z.asin();
+        assert!(
+            (hoehe.to_degrees() - 3.5).abs() < 0.5,
+            "{}",
+            hoehe.to_degrees()
+        );
+        let px = bild(&mut r, &mut h, tief, &cam);
+        ab(&px, "ist-s5-haus-1221-1530.png");
+        let von_sueden = blick(&w, vec3(0.2, -1.0, 0.5), 45000.0);
+        let px = bild(&mut r, &mut w, tief, &von_sueden);
+        ab(&px, "ist-s5-wuerfel-1221-1530.png");
         // Wandstück 36,5 cm mit Fenster 1,00 × 1,40 m, Glas 15 cm hinter
         // der Außenseite (Süden); Sonne am Vormittag aus Südosten
         let q = |a: [f64; 3], b: [f64; 3]| {

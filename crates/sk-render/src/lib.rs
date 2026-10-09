@@ -12,7 +12,7 @@ pub mod glx;
 pub mod schatten;
 
 use gl::*;
-use schatten::SCHATTEN_GLSL;
+use schatten::{SCHATTEN_AUS_GLSL, SCHATTEN_GLSL};
 use std::ffi::c_void;
 
 /// Farben und Maße der 3D-Ansicht (Farbwerte 0..1, sRGB).
@@ -1396,20 +1396,44 @@ impl Renderer {
 
     pub fn new(gl: Gl, style: Style) -> Result<Renderer, String> {
         unsafe {
-            let sky_fs = format!("#version 330 core\n{SCHATTEN_GLSL}{SKY_FS}");
-            let sky = program(&gl, FULLSCREEN_VS, &sky_fs)?;
-            // Muster im Flächen-Shader; scheitert der Treiber daran, zeichnet
-            // das Programm ohne Muster weiter statt nicht zu starten (3q)
-            let face_fs = format!("#version 330 core\n{PATTERN_GLSL}{SCHATTEN_GLSL}{FACE_FS}");
-            let (faces, pattern_error) = match program(&gl, FACE_VS, &face_fs) {
-                Ok(p) => (p, None),
-                Err(e) => {
-                    let plain = format!(
-                        "#version 330 core\n{PATTERN_FALLBACK_GLSL}{SCHATTEN_GLSL}{FACE_FS}"
-                    );
-                    (program(&gl, FACE_VS, &plain)?, Some(e))
+            // Schatten in Himmel und Flächen (S5); übersetzt der Treiber sie
+            // nicht, geht es ohne Schatten weiter
+            let mut shadow_error = None;
+            let mit_schatten = |fs: &dyn Fn(&str) -> String,
+                                vs: &str,
+                                fehler: &mut Option<String>|
+             -> Result<Program, String> {
+                match program(&gl, vs, &fs(SCHATTEN_GLSL)) {
+                    Ok(p) => Ok(p),
+                    Err(e) => {
+                        let p = program(&gl, vs, &fs(SCHATTEN_AUS_GLSL))?;
+                        fehler.get_or_insert(e);
+                        Ok(p)
+                    }
                 }
             };
+            let sky = mit_schatten(
+                &|sh| format!("#version 330 core\n{sh}{SKY_FS}"),
+                FULLSCREEN_VS,
+                &mut shadow_error,
+            )?;
+            // Muster im Flächen-Shader; scheitert der Treiber daran, zeichnet
+            // das Programm ohne Muster weiter statt nicht zu starten (3q)
+            let face_fs = |muster: &'static str| {
+                move |sh: &str| format!("#version 330 core\n{muster}{sh}{FACE_FS}")
+            };
+            let mut ohne = None;
+            let (faces, pattern_error) =
+                match mit_schatten(&face_fs(PATTERN_GLSL), FACE_VS, &mut ohne) {
+                    Ok(p) => (p, None),
+                    Err(e) => (
+                        mit_schatten(&face_fs(PATTERN_FALLBACK_GLSL), FACE_VS, &mut shadow_error)?,
+                        Some(e),
+                    ),
+                };
+            if let Some(e) = ohne {
+                shadow_error.get_or_insert(e);
+            }
             let edges = program(&gl, EDGE_VS, &with_dash(EDGE_FS))?;
             let overlay = program(&gl, FULLSCREEN_VS, OVERLAY_FS)?;
             let helpers = program(&gl, HELPER_VS, &with_dash(HELPER_FS))?;
@@ -1462,8 +1486,8 @@ impl Renderer {
                 sun: None,
                 shadow_karte: None,
                 shadow_dirty: false,
-                shadow_failed: false,
-                shadow_error: None,
+                shadow_failed: shadow_error.is_some(),
+                shadow_error: shadow_error.map(|e| format!("Schatten aus: {e}")),
                 mesh_bounds: Vec::new(),
             })
         }
@@ -1550,6 +1574,11 @@ impl Renderer {
         schatten::karte(sk_math::vec3(d[0], d[1], d[2]), q, n)
     }
 
+    /// Kann dieser Treiber keine Schatten (S5)?
+    pub fn shadow_failed(&self) -> bool {
+        self.shadow_failed
+    }
+
     /// Meldung, wenn die Schattenkarte nicht angelegt werden konnte (einmal).
     pub fn take_shadow_error(&mut self) -> Option<String> {
         self.shadow_error.take()
@@ -1563,6 +1592,13 @@ impl Renderer {
         self.shadow_karte = karte;
         self.shadow_dirty = false;
         let gl = &self.gl;
+        // Ohne Sonne keine Karte im Speicher (§8 10:50)
+        if self.sun.is_none() {
+            if let Some(m) = self.shadow_map.take() {
+                gl.glDeleteFramebuffers(1, &m.fbo);
+                gl.glDeleteTextures(1, &m.tex);
+            }
+        }
         let Some(k) = karte else {
             gl.glActiveTexture(TEXTURE0 + SHADOW_UNIT);
             gl.glBindTexture(TEXTURE_2D, self.shadow_dummy);

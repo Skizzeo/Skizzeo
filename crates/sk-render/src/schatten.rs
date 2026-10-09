@@ -244,6 +244,14 @@ float sun_share(vec3 rel, vec3 n) {
 }
 "#;
 
+/// Ersatz für [`SCHATTEN_GLSL`], wenn der Treiber die Schatten nicht
+/// übersetzt: überall Sonne.
+pub const SCHATTEN_AUS_GLSL: &str = r#"
+float sun_share(vec3 rel, vec3 n) {
+    return 1.0;
+}
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
