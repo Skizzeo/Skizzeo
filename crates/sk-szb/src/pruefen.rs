@@ -653,7 +653,7 @@ impl Pruefer<'_> {
             let ok = k
                 .split_once('.')
                 .is_some_and(|(a, b)| ist_key(a) && ist_key(b));
-            if !k.is_empty() && !ok {
+            if !ok {
                 self.f(
                     l,
                     format!("key „{k}“: Form herkunft.name, Kleinbuchstaben, genau ein Punkt"),
@@ -1514,6 +1514,15 @@ mod tests {
                 texte(&p)
             );
         }
+        // Ebenso in [bauteil] (Werkbank tests/grenzen/g_leer.szb)
+        let p = pruefen(
+            &STUETZE.replace("key=werk.stuetze", "key=\"\""),
+            &Bestand::werk(),
+            &Geschoss::PROBE,
+        );
+        assert!(texte(&p)
+            .contains(&"key „“: Form herkunft.name, Kleinbuchstaben, genau ein Punkt".to_string()));
+        assert!(!p.einlesbar());
     }
 
     #[test]
