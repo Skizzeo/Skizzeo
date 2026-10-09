@@ -158,7 +158,8 @@ impl Ablage {
     }
 
     /// Schreibt `d` an die Stelle des Eintrags mit gleichem `key` (an oder
-    /// aus bleibt), sonst als `<key>.szb` in den Ordner: erst eine
+    /// aus bleibt), sonst als `<key>.szb` in den Ordner, und ist der Name
+    /// schon belegt, als `<key>-2.szb` usw.: erst eine
     /// Temp-Datei, dann Umbenennen, damit nie eine halbe Datei liegt.
     pub fn schreiben(&mut self, d: &ExtDef, hinweise: Vec<String>) -> Result<(), String> {
         if self.dir.as_os_str().is_empty() {
@@ -166,7 +167,17 @@ impl Ablage {
         }
         let (pfad, an) = match self.eintrag(&d.key) {
             Some(e) => (e.pfad.clone(), e.an),
-            None => (self.dir.join(format!("{}.szb", d.key)), true),
+            // Eine fremde oder abgewiesene Datei gleichen Namens bleibt
+            // (Robustheit Nr. 3, Test E5-a): dann `<key>-2.szb` usw.
+            None => {
+                let mut p = self.dir.join(format!("{}.szb", d.key));
+                let mut n = 2;
+                while p.exists() {
+                    p = self.dir.join(format!("{}-{n}.szb", d.key));
+                    n += 1;
+                }
+                (p, true)
+            }
         };
         let dir = pfad.parent().unwrap_or(&self.dir).to_path_buf();
         std::fs::create_dir_all(&dir).map_err(|e| format!("Ordner nicht anlegbar ({e})"))?;
@@ -612,5 +623,23 @@ mod tests {
         let v = pruefen(&breiter, &a, &m).unwrap();
         assert_eq!(v.aenderungen.len(), MAX_ZEILEN);
         assert_eq!(v.aenderungen[7], "und 5 weitere");
+    }
+
+    /// Robustheit Nr. 3: Liegt unter `<key>.szb` schon eine andere
+    /// Erweiterung (Dateiname passt nicht zum key), überschreibt das
+    /// Einlesen sie nie still.
+    #[test]
+    fn einlesen_ueberschreibt_keine_fremde_datei() {
+        let dir = ordner("fremd");
+        std::fs::write(dir.join("werk.stuetze.szb"), TREPPE).unwrap();
+        let mut a = Ablage::lesen(&dir);
+        assert!(a.eintrag("werk.treppe").is_some());
+        let v = pruefen(STUETZE, &a, &Model::new()).unwrap();
+        assert_eq!(v.fall, Fall::Neu);
+        let r = a.schreiben(&v.def, Vec::new());
+        let neu = Ablage::lesen(&dir);
+        assert!(neu.eintrag("werk.treppe").is_some(), "Treppe überschrieben");
+        assert_eq!(r.is_ok(), neu.eintrag("werk.stuetze").is_some(), "{r:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
