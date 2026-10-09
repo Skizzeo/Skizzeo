@@ -123,15 +123,17 @@ fn zeilen(felder: &[ExtFeld], scene: &mut Scene) -> Vec<ExtZeile> {
                     hilfe,
                 });
             } else if !f.wahl.is_empty() {
-                let text = f
-                    .wahl
-                    .iter()
-                    .find(|w| w.0 == f.wert)
-                    .map_or_else(|| ui_zahl(f), |w| anzeige(&w.1, MAX));
+                // Ein Wert außerhalb der Wahl zeigt einen festen Text: jede
+                // Zahl als eigene Bezeichnung bliebe für immer im Speicher
+                // (Review 3ci Hinweis b)
+                let text = match f.wahl.iter().find(|w| w.0 == f.wert) {
+                    Some(w) => scene.bezeichnung(anzeige(&w.1, MAX)),
+                    None => EIGENER_WERT,
+                };
                 out.push(ExtZeile::Liste {
                     i,
                     name,
-                    text: scene.bezeichnung(text),
+                    text,
                     hilfe,
                 });
             } else {
@@ -151,9 +153,8 @@ fn zeilen(felder: &[ExtFeld], scene: &mut Scene) -> Vec<ExtZeile> {
     out
 }
 
-fn ui_zahl(f: &ExtFeld) -> String {
-    crate::ui::zahl_text(f.wert)
-}
+/// Knopf einer Wahl-Liste, deren Wert keiner Wahl entspricht.
+pub const EIGENER_WERT: &str = "eigener Wert";
 
 /// Neuer Wert aus Knopf `k` einer Wahl, ohne `k` der umgeschaltete
 /// Schalter.
@@ -526,6 +527,48 @@ mod tests {
     }
 
     /// Treppe: Werte mit anzeigen=ja wie in der Werkbank, Steigungen ganz.
+    /// Wahl ab vier als Liste; ein Wert außerhalb der Wahl zeigt „eigener
+    /// Wert“ statt einer Zahl (Review 3ci Hinweis b).
+    #[test]
+    fn liste_mit_eigenem_wert() {
+        let vier = GELAENDER.replace(
+            "wahl=\"0:ohne|1:Stäbe\"",
+            "wahl=\"0:ohne|1:Stäbe|2:Glas|3:Blech\"",
+        );
+        let (mut s, id) = szene(&vier, Some(3000.0));
+        let liste = |s: &mut Scene| {
+            props(s, id)
+                .unwrap()
+                .ext
+                .unwrap()
+                .into_iter()
+                .find_map(|z| match z {
+                    ExtZeile::Liste {
+                        name: "Füllung",
+                        text,
+                        ..
+                    } => Some(text),
+                    _ => None,
+                })
+                .expect("Liste Füllung")
+        };
+        assert_eq!(liste(&mut s), "Stäbe");
+        for v in [2.0, 7.0, 8.5] {
+            let mut p = match &s.model().element(id).unwrap().kind {
+                ElementKind::Ext(p) => p.clone(),
+                _ => unreachable!(),
+            };
+            p.set("fu", v);
+            assert!(s.edit_model("Wert", |m| m.set_ext(id, p)));
+            let t = liste(&mut s);
+            if v == 2.0 {
+                assert_eq!(t, "Glas");
+            } else {
+                assert_eq!(t, EIGENER_WERT, "{v}");
+            }
+        }
+    }
+
     #[test]
     fn treppe_werte() {
         let (mut s, id) = szene(TREPPE, None);
