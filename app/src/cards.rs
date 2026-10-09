@@ -261,8 +261,13 @@ impl Karten {
             if let Some(f) = bold {
                 f.draw(c, b.name(), 14.0 * s, x + 42.0 * s, y + 28.0 * s, text);
             }
-            // Aktive Karte: Zahl fett wie im Soll (spaeter-darstellung 4)
-            if let Some(f) = if aktiv { bold } else { regular } {
+            // Aktive Karte Kosten: Betrag fett wie im Soll KA-2; Mengen und
+            // AVA bleiben regulär wie in KA-1 und KA-4 (spaeter-darstellung 4)
+            if let Some(f) = if aktiv && b == Blatt::Kosten {
+                bold
+            } else {
+                regular
+            } {
                 let g = self.glimm_von(b, t, now);
                 f.draw(
                     c,

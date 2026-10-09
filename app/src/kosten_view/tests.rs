@@ -814,3 +814,25 @@ fn ablauf_verweis() {
     (v.w, v.h) = (420, 900);
     assert!(v.ablauf_rects(&t, &fonts).is_empty(), "zu schmal");
 }
+
+/// Review 3bf: Die Höhe der Liste wird mit den Zeilen gebaut, nicht bei
+/// jedem Treffertest summiert; sie stimmt in jeder Gliederung und nach
+/// dem Aufklappen aller Positionen.
+#[test]
+fn inhalt_h_mit_den_zeilen() {
+    let mut s = haus();
+    let mut v = KostenView::new();
+    let summe = |v: &KostenView| v.zeilen.iter().map(KostenView::row_h).sum::<f32>() + 8.0;
+    for g in Gliederung::ALLE {
+        v.gliederung = g;
+        v.sync(&mut s, None);
+        assert_eq!(v.content_h(), summe(&v), "{g:?}");
+    }
+    let vorher = v.zeilen.len();
+    let keys: Vec<u64> = v.zeilen.iter().map(|z| z.key).collect();
+    v.offen.extend(keys);
+    v.offen_stand += 1;
+    v.sync(&mut s, None);
+    assert!(v.zeilen.len() > vorher, "aufgeklappt");
+    assert_eq!(v.content_h(), summe(&v));
+}

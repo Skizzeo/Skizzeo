@@ -315,6 +315,10 @@ pub struct KostenView {
     preisquelle: String,
     lohnsatz: Dez,
     zeilen: Vec<Zeile>,
+    /// Höhe aller Zeilen (dip), mit den Zeilen gebaut: `tiles_top` und
+    /// damit jeder Treffertest brauchen sie, ohne die Liste zu summieren
+    /// (Review 3bf).
+    inhalt_h: f32,
     offen: HashSet<u64>,
     /// Woraus die Zeilen gebaut sind.
     gebaut: Option<(*const Kostenblatt, Modus, Gliederung, u64)>,
@@ -401,6 +405,7 @@ impl KostenView {
             preisquelle: String::new(),
             lohnsatz: Dez::NULL,
             zeilen: Vec::new(),
+            inhalt_h: 8.0,
             offen: HashSet::new(),
             gebaut: None,
             offen_stand: 0,
@@ -523,6 +528,7 @@ impl KostenView {
                 self.modus,
                 &self.offen,
             );
+            self.inhalt_h = self.zeilen.iter().map(Self::row_h).sum::<f32>() + 8.0;
             self.gebaut = Some(key);
             changed = true;
             self.blitz_suchen(&blatt);
@@ -1245,7 +1251,7 @@ impl KostenView {
     }
 
     fn content_h(&self) -> f32 {
-        self.zeilen.iter().map(Self::row_h).sum::<f32>() + 8.0
+        self.inhalt_h
     }
 
     fn view_h(&self) -> f32 {
