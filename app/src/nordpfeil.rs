@@ -29,6 +29,8 @@ pub const LABEL_SCHIEBEN: &str = "Nordpfeil verschoben";
 /// Dreimal so groß wie zuerst (Jörn 08:42: „visuell kaum zu erkennen“).
 const LAENGE_PX: f64 = 192.0;
 const LAENGE_3D: f64 = 9000.0;
+/// Höchstlänge in 3D auf dem Bildschirm (dip), nah am Pfeil.
+const KAPPE_PX: f64 = 2.0 * LAENGE_PX;
 /// Abstand des Platzes vorne links vom Gebäude (mm).
 const ABSTAND: f64 = 2000.0;
 /// Greifabstand (dip) am Schaft und um die Spitze.
@@ -191,6 +193,32 @@ pub fn laenge(cam: &Camera, h: f64, scale: f64) -> f64 {
     })
 }
 
+/// Länge des Pfeils am Fußpunkt `fuss` (mm): wie [`laenge`], in 3D aber
+/// auf dem Bildschirm höchstens [`KAPPE_PX`] lang, damit das Bild nah am
+/// Pfeil klein bleibt und schnell gemalt ist (Review 3bu-1). Greifen,
+/// Pille und Bild nehmen dieselbe Länge.
+pub fn laenge_bei(cam: &Camera, (w, h): (f64, f64), scale: f64, fuss: Foot) -> f64 {
+    let l = laenge(cam, h, scale);
+    if cam.ortho.is_some() {
+        return l;
+    }
+    let r = cam.right();
+    let a = cam.project(vec3(fuss[0], fuss[1], 0.0), w, h);
+    let b = cam.project(vec3(fuss[0] + r.x * l, fuss[1] + r.y * l, r.z * l), w, h);
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            let px = (b.0 - a.0).hypot(b.1 - a.1);
+            let max = KAPPE_PX * scale;
+            if px > max {
+                l * max / px
+            } else {
+                l
+            }
+        }
+        _ => l,
+    }
+}
+
 // ===== Zustand =====
 
 /// Was die Maus am gesetzten Pfeil trifft.
@@ -323,7 +351,7 @@ impl Nordpfeil {
         s: f64,
     ) -> Option<Griff> {
         let (nord, fuss) = self.gezeigt(st)?;
-        let l = laenge(cam, h, s);
+        let l = laenge_bei(cam, (w, h), s, fuss);
         let [dx, dy] = richtung(nord);
         let p = |q: Foot| cam.project(vec3(q[0], q[1], 0.0), w, h);
         let a = p(fuss)?;
@@ -530,13 +558,13 @@ impl Nordpfeil {
     }
 
     /// Pille beim Aufziehen und Drehen: Spitze des Pfeils und Text.
-    pub fn label(&self, cam: &Camera, h: f64, scale: f64) -> Option<(Vec3, String)> {
+    pub fn label(&self, cam: &Camera, wh: (f64, f64), scale: f64) -> Option<(Vec3, String)> {
         if self.anfang.is_none() && self.zug != Some(Zug::Drehen) {
             return None;
         }
         let (n, f) = self.vorschau?;
         // Hinter dem „N“
-        let l = laenge(cam, h, scale) * (1.0 + N_LUFT + N_HOCH + 0.14);
+        let l = laenge_bei(cam, wh, scale, f) * (1.0 + N_LUFT + N_HOCH + 0.14);
         let [dx, dy] = richtung(n);
         let text = match &self.eingabe {
             Some(i) => i.text(["Nord", ""]),
@@ -561,7 +589,7 @@ impl Nordpfeil {
     ) -> Option<Bild> {
         let (n, f) = self.gezeigt(st)?;
         let heiss = self.zug.is_some() || self.anfang.is_some() || self.hover.is_some();
-        let l = laenge(cam, h, scale as f64);
+        let l = laenge_bei(cam, (w, h), scale as f64, f);
         let g = gestalt(f, n, l);
         let p = |q: Foot| {
             cam.project(vec3(q[0], q[1], 0.0), w, h)
@@ -655,19 +683,18 @@ impl Bild {
         for (a, b) in n_striche(v((nx, ny)), nh) {
             striche.push((a, b, k * 1.4));
         }
-        // Jeder Strich für sich mit runden Enden: überlappende Teilpfade
-        // mit verschiedener Laufrichtung höben sich sonst auf
+        // Striche und runde Enden je in einem Pfad: alle Striche laufen im
+        // selben Sinn um, alle Enden auch, nur beide zusammen höben sich auf
+        let (mut p, mut q) = (Path::new(), Path::new());
         for (a, b, k) in striche {
-            let mut p = Path::new();
             p.segment(a, b, k);
-            c.fill(&p, self.farbe);
             let r = k * 0.5;
             for e in [a, b] {
-                let mut p = Path::new();
-                p.rounded_rect(e.0 - r, e.1 - r, k, k, r);
-                c.fill(&p, self.farbe);
+                q.rounded_rect(e.0 - r, e.1 - r, k, k, r);
             }
         }
+        c.fill(&p, self.farbe);
+        c.fill(&q, self.farbe);
         Some((c, x0 as i32, y0 as i32))
     }
 }
@@ -799,6 +826,74 @@ mod tests {
         assert_eq!(farbe(m.0 + 0.05 * l, y), [0, 0, 0, 255]);
         // Hinter der Kerbe, zwischen den Ecken: frei
         assert_eq!(farbe(m.0, m.1 - 0.05 * l)[3], 0);
+    }
+
+    /// Review 3bu-1: Nah am Pfeil in 3D bleibt er auf dem Bildschirm höchstens
+    /// [`KAPPE_PX`] lang; das Bild bleibt klein, Greifen und Pille folgen.
+    #[test]
+    fn nah_in_3d_gedeckelt() {
+        let (w, h) = (2560.0, 1400.0);
+        let nah = Camera::looking_at(vec3(-1500.0, -2500.0, 1800.0), vec3(0.0, 0.0, 0.0), 45.0);
+        let fern = Camera::looking_at(vec3(-25000.0, -40000.0, 25000.0), vec3(0.0, 0.0, 0.0), 45.0);
+        assert_eq!(laenge_bei(&fern, (w, h), 2.0, [0.0, 0.0]), LAENGE_3D);
+        let l = laenge_bei(&nah, (w, h), 2.0, [0.0, 0.0]);
+        assert!(l < LAENGE_3D * 0.5, "{l}");
+        let st = Stand {
+            nord: Some(30.0),
+            fuss: [0.0, 0.0],
+            gesetzt: None,
+        };
+        let b = Nordpfeil::default()
+            .bild(st, &nah, (w, h), 2.0, [0.0, 0.0, 0.0, 1.0], [1.0; 4], 1.5)
+            .unwrap();
+        let (c, _, _) = b.malen().unwrap();
+        let groesste = (KAPPE_PX * 2.0 * 1.6) as usize;
+        assert!(
+            c.width < groesste && c.height < groesste,
+            "{} × {}",
+            c.width,
+            c.height
+        );
+    }
+
+    /// Bildzeit nah am Pfeil (Review 3bu-1), nur zum Messen:
+    /// `cargo test --release -p skizzeo bildzeit -- --ignored --nocapture`
+    #[test]
+    #[ignore = "misst nur"]
+    fn bildzeit_nah_am_pfeil() {
+        let (w, h) = (2560.0, 1400.0);
+        let st = Stand {
+            nord: Some(30.0),
+            fuss: [0.0, 0.0],
+            gesetzt: None,
+        };
+        for (name, eye) in [
+            ("wie im Test", vec3(-15000.0, -22000.0, 15000.0)),
+            ("nah", vec3(-1500.0, -2500.0, 1800.0)),
+        ] {
+            let mut zeit = std::time::Duration::ZERO;
+            let mut groesse = (0, 0);
+            for i in 0..40 {
+                // Jedes Bild mit etwas anderer Kamera, wie beim Drehen
+                let e = eye + vec3(i as f64 * 7.0, 0.0, 0.0);
+                let cam = Camera::looking_at(e, vec3(0.0, 0.0, 0.0), 45.0);
+                let t = std::time::Instant::now();
+                let b = Nordpfeil::default()
+                    .bild(st, &cam, (w, h), 2.0, [0.0, 0.0, 0.0, 1.0], [1.0; 4], 1.5)
+                    .unwrap();
+                let (c, _, _) = b.malen().unwrap();
+                let px = c.to_premul_rgba8();
+                zeit += t.elapsed();
+                groesse = (c.width, c.height);
+                assert!(!px.is_empty());
+            }
+            println!(
+                "{name}: {} × {} Pixel, {:.2} ms je Bild",
+                groesse.0,
+                groesse.1,
+                zeit.as_secs_f64() * 1000.0 / 40.0
+            );
+        }
     }
 
     /// Greifen: die Spitze dreht, der ganze Pfeilkörper verschiebt.
@@ -942,7 +1037,7 @@ mod abnahme_tests {
         ereignis(&mut n, &mut s, &cam, oben(&cam, [3.0, -2.0]));
         assert!(n.zieht(), "Klick ohne Ziehen setzt nur den Fußpunkt");
         ereignis(&mut n, &mut s, &cam, zu(&cam, [1000.0, 1100.0], false));
-        let (text, pille) = n.label(&cam, H, 1.0).map(|(p, t)| (t, p)).unwrap();
+        let (text, pille) = n.label(&cam, (W, H), 1.0).map(|(p, t)| (t, p)).unwrap();
         assert_eq!(text, "N 40°");
         assert!(pille.x > 1000.0 && pille.y > 1000.0, "hinter der Spitze");
         let out = ereignis(&mut n, &mut s, &cam, unten(&cam, [1000.0, 1100.0]));
@@ -1037,7 +1132,7 @@ mod abnahme_tests {
             assert!(n.key(k, M, &mut out));
         }
         assert!(n.input().is_some());
-        assert!(n.label(&cam, H, 1.0).unwrap().1.starts_with("Nord"));
+        assert!(n.label(&cam, (W, H), 1.0).unwrap().1.starts_with("Nord"));
         assert!(n.key(Key::Enter, M, &mut out));
         assert_eq!(out.commit, Some((LABEL_DREHEN, 33.5, Some([0.0, 0.0]))));
 

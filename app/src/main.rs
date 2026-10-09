@@ -6088,7 +6088,7 @@ impl App {
             })
         };
         // Nordpfeil beim Aufziehen und Drehen: Pille hinter der Spitze
-        let nord = self.nord.label(&self.cam, vh, s);
+        let nord = self.nord.label(&self.cam, (vw, vh), s);
         let nord_key = || {
             nord.as_ref().map(|(_, text)| {
                 let i = self.nord.input();

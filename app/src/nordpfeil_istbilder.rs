@@ -142,7 +142,7 @@ fn mit_pfeil(c: &mut Canvas, n: &Nordpfeil, s: &Scene, cam: &Camera, theme: &The
     {
         c.blit(&bild, x, y);
     }
-    if let Some((p, text)) = n.label(cam, h, S as f64) {
+    if let Some((p, text)) = n.label(cam, (w, h), S as f64) {
         let pille = crate::flush_pick::paint_label(&schriften(), &text, S, theme);
         if let Some((x, y)) = cam.project(p, w, h) {
             let x = (x - pille.width as f64 * 0.5).round() as i32;
@@ -242,7 +242,7 @@ fn istbilder_s2() {
         S as f64,
         true,
     );
-    assert_eq!(n.label(&cam, h, S as f64).unwrap().1, "N 40°");
+    assert_eq!(n.label(&cam, (w, h), S as f64).unwrap().1, "N 40°");
     let mut c = szene(&mut s, &cam, ViewKind::Plan);
     mit_pfeil(&mut c, &n, &s, &cam, &theme);
     ab(&c, "ist-s2-aufziehen.png");
