@@ -62,6 +62,9 @@ pub enum Id {
     Quantity,
     /// „Projektdaten“ über „Werkzeuge“ (Paket PD-2): öffnet die Maske.
     Projektdaten,
+    /// Symbolkachel unter den Projektdaten (Sonnenstand S2): Nordpfeil
+    /// aufziehen.
+    Nord,
     Field(Field),
     /// Griff einer Ebene im Paneel „Geschosse“.
     Grip(Grip),
@@ -624,6 +627,11 @@ const FIELD_W: f32 = 60.0;
 const LINK_W: f32 = 82.0;
 /// Klickfläche von „Mehr …“ (dip).
 const MORE_W: f32 = 80.0;
+/// Kachel des Nordpfeils (Sonnenstand S2, §8 07:30): quadratisch,
+/// rechtsbündig neben der Beschriftung unter „Projektdaten“, und ihr
+/// Abstand zur Beschriftung (dip).
+const TILE: f32 = 24.0;
+const TILE_GAP: f32 = 8.0;
 /// Farbfeld einer Schichtzeile und Abstand zum Text (dip).
 const LAYER_SWATCH: f32 = 12.0;
 const LAYER_GAP: f32 = 8.0;
@@ -664,6 +672,11 @@ pub struct Ui {
     /// Unter dem Knopf „Projektdaten“: Bezeichnung (sonst Projektart) und
     /// „Projekt-Nr. …“, ohne Daten „noch leer“ (Paket PD-2).
     pub projekt_zeilen: Vec<String>,
+    /// Nordpfeil wird aufgezogen: Kachel in `accent` (Sonnenstand S2).
+    pub nord_aktiv: bool,
+    /// Gesetzte Nordrichtung (Grad im Uhrzeigersinn von +y): dreht das
+    /// Symbol der Kachel; ohne nur umrissen.
+    pub nord: Option<f64>,
     /// Dialog „Gebäude erstellen“ offen (modal, E16).
     pub dialog: bool,
     /// Zahlenfelder des Dialogs (Vorgaben des Gebäudes).
@@ -782,8 +795,10 @@ enum Row {
     /// Blasser Text über die ganze Breite.
     Text(String),
     /// Blasser Text, gekürzt, ohne Abstand danach, nur die letzte Zeile
-    /// mit Luft (Projektdaten unter dem Knopf).
-    Caption(String, bool),
+    /// mit Luft (Projektdaten unter dem Knopf). Rechts daneben, senkrecht
+    /// mittig über alle `n` Zeilen, die Kachel `Id` (an der ersten Zeile:
+    /// `Some((id, n))`).
+    Caption(String, Option<(Id, usize)>, bool),
     /// Verweis in Akzent („Mehr …“), klappt auf bzw. zu.
     More(Id),
     Segments([(Id, &'static str); 3]),
@@ -809,12 +824,10 @@ fn tool_rows(
     // Projektdaten als eigener Abschnitt über den Werkzeugen (Paket PD-2)
     let mut rows = vec![Row::Button(Id::Projektdaten, "Projektdaten")];
     let n = projekt.len();
-    rows.extend(
-        projekt
-            .iter()
-            .enumerate()
-            .map(|(i, z)| Row::Caption(z.clone(), i + 1 == n)),
-    );
+    rows.extend(projekt.iter().enumerate().map(|(i, z)| {
+        // Rechts daneben die Kachel des Nordpfeils (Sonnenstand S2)
+        Row::Caption(z.clone(), (i == 0).then_some((Id::Nord, n)), i + 1 == n)
+    }));
     rows.extend([
         Row::Separator,
         Row::Title("Werkzeuge"),
@@ -967,7 +980,7 @@ fn row_height(r: &Row) -> (f32, f32) {
         Row::Error(_) => (15.0, 6.0),
         Row::Detail(_) => (17.0, 6.0),
         Row::Text(_) => (17.0, 6.0),
-        Row::Caption(_, letzte) => (17.0, if *letzte { 8.0 } else { 0.0 }),
+        Row::Caption(_, _, letzte) => (17.0, if *letzte { 8.0 } else { 0.0 }),
         Row::More(..) => (17.0, 6.0),
         Row::Separator => (1.0, 10.0),
         Row::Hint(_) => (17.0, 0.0),
@@ -996,6 +1009,8 @@ impl Ui {
             upper_active: false,
             foundation_active: false,
             projekt_zeilen: vec![PROJEKT_LEER.into()],
+            nord_aktiv: false,
+            nord: None,
             dialog: false,
             dialog_fields: Vec::new(),
             props: None,
@@ -1564,6 +1579,14 @@ impl Ui {
             let (h, g) = row_height(&r);
             let (h, g) = (h * s, g * s);
             match r {
+                // Mittig neben den Zeilen, über die Luft davor und danach
+                // hinaus: keine eigene Zeile, das kleine Fenster behält
+                // seine Grenze (A47)
+                Row::Caption(_, Some((id, n)), _) => {
+                    let k = TILE * s;
+                    let ty = y + (n as f32 * h - k) * 0.5;
+                    out.push((id, Rect::new(x + inner_w - k, ty, k, k), ""));
+                }
                 Row::Button(id, label) => out.push((id, Rect::new(x, y, inner_w, h), label)),
                 Row::Segments(items) => {
                     let gap = 4.0 * s;
@@ -1614,6 +1637,7 @@ impl Ui {
             Id::Ortho => self.ortho,
             Id::View(v) => self.view == v,
             Id::Quantity => self.quantity_open,
+            Id::Nord => self.nord_aktiv,
             // Standardknopf des Dialogs
             Id::DialogStart => true,
             Id::Projektdaten
@@ -1982,6 +2006,19 @@ impl Ui {
             }
             return;
         }
+        if id == Id::Nord {
+            widgets::button(c, &self.fonts, b, "", st, s, t);
+            // Ohne Nordrichtung nur umrissen und gedämpft
+            let ink = if st.active {
+                t.ui.on_accent
+            } else if st.disabled || self.nord.is_none() {
+                t.ui.text_dim
+            } else {
+                t.ui.text
+            };
+            nord_symbol(c, b, self.nord, ink, s);
+            return;
+        }
         if id == Id::Quantity {
             // Zweizeilig ab KA-4 (Einstellungen §3 KA-4 Punkt 8): „Mengen“ /
             // „Kosten · AVA“, 12 fett, Zeilenabstand 16
@@ -2108,9 +2145,11 @@ impl Ui {
                     y + 13.0 * s,
                     col.text_dim,
                 ),
-                Row::Caption(t, _) => {
+                Row::Caption(t, ..) => {
                     let px = size.font_small * s;
-                    let t = widgets::ellipsize(regular, &t, px, inner_w);
+                    // Rechts steht die Kachel des Nordpfeils
+                    let frei = inner_w - (TILE + TILE_GAP) * s;
+                    let t = widgets::ellipsize(regular, &t, px, frei);
                     widgets::text(&mut c, regular, &t, px, x, y + 13.0 * s, col.text_dim)
                 }
                 Row::Separator => widgets::separator(&mut c, x, y, inner_w, s, t),
@@ -2165,6 +2204,42 @@ impl Ui {
         }
         c
     }
+}
+
+/// Nordpfeil in der Kachel `b`: Schaft und Spitze, um die Nordrichtung im
+/// Uhrzeigersinn gedreht (0: nach oben, wie +y im Grundriss); ohne
+/// Nordrichtung nach oben und nur umrissen.
+fn nord_symbol(c: &mut Canvas, b: Rect, nord: Option<f64>, ink: Rgba, s: f32) {
+    let (sin, cos) = (nord.unwrap_or(0.0) as f32).to_radians().sin_cos();
+    let (cx, cy) = (b.x + b.w * 0.5, b.y + b.h * 0.5);
+    // Richtung im Bild (y nach unten) und quer dazu
+    let (dx, dy) = (sin, -cos);
+    let at = |l: f32, q: f32| (cx + (dx * l - dy * q) * s, cy + (dy * l + dx * q) * s);
+    let k = (1.4 * s).max(1.0);
+    let mut p = Path::new();
+    p.segment(at(-8.0, 0.0), at(1.5, 0.0), k);
+    c.fill(&p, ink);
+    let kopf = [at(8.5, 0.0), at(0.5, -4.5), at(0.5, 4.5)];
+    let mut p = Path::new();
+    p.move_to(kopf[0].0, kopf[0].1)
+        .line_to(kopf[1].0, kopf[1].1)
+        .line_to(kopf[2].0, kopf[2].1)
+        .close();
+    if nord.is_none() {
+        // Umriss: dieselbe Spitze, innen ausgespart
+        let (gx, gy) = at(3.2, 0.0);
+        let f = 0.5;
+        let innen: Vec<(f32, f32)> = kopf
+            .iter()
+            .rev()
+            .map(|&(x, y)| (gx + (x - gx) * f, gy + (y - gy) * f))
+            .collect();
+        p.move_to(innen[0].0, innen[0].1)
+            .line_to(innen[1].0, innen[1].1)
+            .line_to(innen[2].0, innen[2].1)
+            .close();
+    }
+    c.fill(&p, ink);
 }
 
 /// Dialog „Gebäude erstellen“ (E16): „Geschosse: 2 (EG + OG)“, derzeit
@@ -3043,7 +3118,7 @@ mod tests {
         assert_eq!(click(&mut ui, x, y), Some(Id::DialogClose));
         // Modal: der Knopf „Gebäude“ darunter ist nicht erreichbar
         let r = ui.rect(Panel::Tools, 1280, 32);
-        let (_, b, _) = ui.buttons(Panel::Tools)[1];
+        let (_, b, _) = ui.buttons(Panel::Tools)[2];
         let (x, y) = ((r.x + b.x + 5.0) as f64, (r.y + b.y + 5.0) as f64);
         assert_eq!(click(&mut ui, x, y), None);
         let m = Modifiers::default();
@@ -3171,7 +3246,27 @@ mod tests {
         let r = ui.rect(Panel::Tools, 1280, 32);
         // Ganz oben „Projektdaten“, eigener Abschnitt (Paket PD-2)
         assert_eq!(ui.buttons(Panel::Tools)[0].0, Id::Projektdaten);
-        let (id, b, _) = ui.buttons(Panel::Tools)[1];
+        // Darunter die Kachel des Nordpfeils, quadratisch (Sonnenstand S2)
+        // rechtsbündig neben „noch leer“, 24 dip, ohne eigene Zeile (§8 07:30)
+        let p = ui.buttons(Panel::Tools)[0].1;
+        let (id, k, _) = ui.buttons(Panel::Tools)[1];
+        assert_eq!((id, k.w, k.h), (Id::Nord, TILE, TILE));
+        assert_eq!(k.x + k.w, p.x + p.w);
+        assert!(k.y > p.y + p.h, "unter dem Knopf");
+        let zeile = p.y + p.h + 8.0;
+        assert_eq!(
+            k.y + k.h * 0.5,
+            zeile + 17.0 * 0.5,
+            "mittig neben „noch leer“"
+        );
+        // Mit Bezeichnung und Projekt-Nr. mittig neben beiden Zeilen
+        ui.projekt_zeilen = vec!["Haus Mustermann".into(), "Projekt-Nr. 01/26".into()];
+        let k2 = ui.buttons(Panel::Tools)[1].1;
+        assert_eq!(k2.y + k2.h * 0.5, zeile + 17.0);
+        ui.projekt_zeilen = vec![PROJEKT_LEER.into()];
+        let hit = click(&mut ui, (r.x + k.x + 5.0) as f64, (r.y + k.y + 5.0) as f64);
+        assert_eq!(hit, Some(Id::Nord));
+        let (id, b, _) = ui.buttons(Panel::Tools)[2];
         assert_eq!(id, Id::Building);
         let hit = click(&mut ui, (r.x + b.x + 5.0) as f64, (r.y + b.y + 5.0) as f64);
         assert_eq!(hit, Some(Id::Building));

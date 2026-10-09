@@ -37,6 +37,7 @@ mod meldung;
 mod menu;
 mod musterprobe;
 mod nav;
+mod nordpfeil;
 mod pattern_view;
 #[cfg(test)]
 mod perf;
@@ -544,6 +545,8 @@ struct App {
     /// Schnittlinien A und B (im Grundriss verschiebbar, Pfeil spiegelt)
     /// für die Ansicht „Schnitt“.
     sect: Sections,
+    /// Nordpfeil: Aufziehen, Drehen, Verschieben (Sonnenstand S2).
+    nord: nordpfeil::Nordpfeil,
     /// Gewähltes Bauteil.
     sel: Selection,
     /// Stand, für den das Paneel „Eigenschaften“ zuletzt gefüllt wurde
@@ -1087,12 +1090,46 @@ impl App {
     /// Das Band lässt sich in allen Ansichten ziehen, nur nicht während einer
     /// Wandeingabe oder an der Schnittlinie.
     fn edit_enabled(&self) -> bool {
-        !self.tool.is_active() && !self.sect.is_busy() && self.pick.is_none()
+        !self.tool.is_active()
+            && !self.sect.is_busy()
+            && self.pick.is_none()
+            && !self.nord.is_busy()
     }
 
     /// Schnittlinie greifen nur im Grundriss und ohne angefangenen Wandzug.
     fn sect_enabled(&self) -> bool {
-        self.ui.view == ViewKind::Plan && !self.tool.is_active()
+        self.ui.view == ViewKind::Plan && !self.tool.is_active() && !self.nord.aktiv
+    }
+
+    /// Stand des Nordpfeils im Modell (Sonnenstand S2).
+    fn nord_stand(&self) -> nordpfeil::Stand {
+        let m = self.scene.model();
+        nordpfeil::Stand {
+            nord: m.location().north,
+            fuss: nordpfeil::anzeige_fuss(m.north_foot(), self.scene.bounds()),
+            gesetzt: m.north_foot(),
+        }
+    }
+
+    /// Ereignis an den Nordpfeil (3D und Grundriss, ohne Wandeingabe und
+    /// ohne gegriffene Schnittlinie); `true`, wenn er es genommen hat.
+    fn nord_handle(&mut self, ev: &Event, vw: f64, vh: f64, sc: f64) -> bool {
+        let en = self.tool_allowed() && !self.tool.enabled && !self.sect.is_busy();
+        let st = self.nord_stand();
+        let out = self.nord.handle(ev, st, &self.cam, vw, vh, sc, en);
+        self.redraw |= out.redraw;
+        self.nord_commit(out.commit);
+        out.consumed
+    }
+
+    /// Ein Schritt „Nordrichtung geändert“ bzw. „Nordpfeil verschoben“.
+    fn nord_commit(&mut self, c: Option<nordpfeil::Setzen>) {
+        if let Some((label, n, f)) = c {
+            if self.scene.nordpfeil_setzen(label, n, f) {
+                self.overlay_dirty = true;
+            }
+            self.redraw = true;
+        }
     }
 
     /// Grundriss: Höhe der Wandfüße des aktiven Geschosses (mm); nur sie
@@ -1198,6 +1235,9 @@ impl App {
         self.fit_camera();
         if matches!(v, ViewKind::Plan | ViewKind::Section) {
             self.sect.ensure(&self.scene);
+        }
+        if !self.tool_allowed() {
+            self.nord.set_aktiv(false);
         }
         if !self.tool_allowed() && self.tool.enabled {
             self.tool.set_enabled(false);
@@ -3025,6 +3065,7 @@ impl App {
                 }
                 if on {
                     self.set_wall_kind(cat);
+                    self.nord.set_aktiv(false);
                 }
                 self.tool.set_enabled(on);
             }
@@ -3033,6 +3074,17 @@ impl App {
             Id::View(v) => self.set_view(v),
             Id::Quantity => self.quantity_wanted = true,
             Id::Projektdaten => self.open_projektdaten(false),
+            Id::Nord => {
+                let on = !self.nord.aktiv;
+                if on {
+                    self.tool.set_enabled(false);
+                    if !self.tool_allowed() {
+                        self.set_view(ViewKind::Persp);
+                    }
+                }
+                self.nord.set_aktiv(on);
+                self.redraw = true;
+            }
             // Im Grundriss derselbe Wechsel wie am Geschossbogen (E18)
             Id::Storey(st) if self.ui.view == ViewKind::Plan => {
                 let t = self.now();
@@ -3149,6 +3201,12 @@ impl App {
         let zeilen = ui::projekt_zeilen(self.scene.model().project());
         if zeilen != self.ui.projekt_zeilen {
             self.ui.projekt_zeilen = zeilen;
+            self.overlay_dirty = true;
+        }
+        // Kachel des Nordpfeils (Sonnenstand S2), auch nach Strg+Z
+        let nord = (self.nord.aktiv, self.scene.model().location().north);
+        if (self.ui.nord_aktiv, self.ui.nord) != nord {
+            (self.ui.nord_aktiv, self.ui.nord) = nord;
             self.overlay_dirty = true;
         }
         let key = (self.scene.model().revision(), self.theme.rev);
@@ -3938,7 +3996,13 @@ impl App {
                     self.edit.link_hover = chip;
                     self.redraw = true;
                 }
-                let sect_ev = if outside || chip.is_some() {
+                let nord_ev = if outside || chip.is_some() {
+                    Event::MouseLeave
+                } else {
+                    ev
+                };
+                self.nord_handle(&nord_ev, vw, vh, sc);
+                let sect_ev = if outside || chip.is_some() || self.nord.is_busy() {
                     Event::MouseLeave
                 } else {
                     ev
@@ -3948,11 +4012,12 @@ impl App {
                     .handle(&sect_ev, &self.scene, &self.cam, vw, vh, sc, sen);
                 self.redraw |= so.redraw;
                 self.cut_changed(&so);
-                let edit_ev = if outside || self.sect.is_busy() || chip.is_some() {
-                    Event::MouseLeave
-                } else {
-                    ev
-                };
+                let edit_ev =
+                    if outside || self.sect.is_busy() || chip.is_some() || self.nord.is_busy() {
+                        Event::MouseLeave
+                    } else {
+                        ev
+                    };
                 let en = self.edit_enabled();
                 let out = self
                     .edit
@@ -3964,11 +4029,13 @@ impl App {
                     self.upload_model();
                 }
                 // Über Band oder Schnittlinie zeigt das Wandwerkzeug keinen Fangpunkt
-                let tool_ev = if outside || self.edit.is_busy() || self.sect.is_busy() {
-                    Event::MouseLeave
-                } else {
-                    ev
-                };
+                let tool_ev =
+                    if outside || self.edit.is_busy() || self.sect.is_busy() || self.nord.is_busy()
+                    {
+                        Event::MouseLeave
+                    } else {
+                        ev
+                    };
                 self.redraw |= self.tool.handle(&tool_ev, &self.cam, vw, vh, sc).redraw;
                 // Bauteil unter der Maus: Mengenliste und Baum zeigen seine
                 // Zeile (B7, Paket 4)
@@ -4042,6 +4109,11 @@ impl App {
                         let ev = in_view(e);
                         camera_moved |=
                             self.nav.handle(&ev, &mut self.cam, &self.scene, vw, vh, sc);
+                        if self.nord_handle(&ev, vw, vh, sc) {
+                            self.sync_ui();
+                            self.sync_caption(surface);
+                            return true;
+                        }
                         let so = self
                             .sect
                             .handle(&ev, &self.scene, &self.cam, vw, vh, sc, sen);
@@ -4101,6 +4173,11 @@ impl App {
                 }
                 let ev = in_view(e);
                 camera_moved |= self.nav.handle(&ev, &mut self.cam, &self.scene, vw, vh, sc);
+                if self.nord_handle(&ev, vw, vh, sc) {
+                    self.sync_ui();
+                    self.sync_caption(surface);
+                    return true;
+                }
                 let so = self
                     .sect
                     .handle(&ev, &self.scene, &self.cam, vw, vh, sc, sen);
@@ -4203,7 +4280,7 @@ impl App {
             Event::Key {
                 key, down, mods, ..
             } => {
-                let free = !self.tool.is_active() && !self.edit.is_dragging();
+                let free = !self.tool.is_active() && !self.edit.is_dragging() && !self.nord.zieht();
                 let command = self.shortcuts.key(key, down, mods, free);
                 let en = self.edit_enabled();
                 let eo = self
@@ -4213,8 +4290,15 @@ impl App {
                     self.upload_model();
                 }
                 self.redraw |= eo.redraw;
+                let mut no = nordpfeil::Ausgang::default();
                 if eo.consumed {
                     // Esc hat das Ziehen abgebrochen bzw. die Eingabe am Band
+                } else if down && self.nord.key(key, mods, &mut no) {
+                    // Zahl + Enter beim Aufziehen des Nordpfeils
+                    self.redraw = true;
+                    self.nord_commit(no.commit);
+                } else if down && key == Key::Escape && self.nord.escape() {
+                    self.redraw = true;
                 } else if self.tool.input().is_some() {
                     // Offene Maßeingabe vor jeder Esc-Kaskade (Paket 8, K2)
                     let out = self.tool.handle(&e, &self.cam, vw, vh, sc);
@@ -5623,12 +5707,14 @@ impl App {
     /// den Grund.
     fn button_tip(&self) -> Option<String> {
         let id = self.ui.hover?;
+        let nord = nordpfeil::tip(self.ui.nord);
         let name = match id {
             Id::Building => "Gebäude",
             Id::Interior => "Innenwand",
             Id::Ortho => "90°-Sprung",
             Id::Quantity => cards::KNOPF,
             Id::Projektdaten => "Projektdaten",
+            Id::Nord => nord.as_str(),
             Id::View(v) => match v {
                 ViewKind::Persp => "3D",
                 ViewKind::Plan => "Grundriss",
@@ -5996,7 +6082,24 @@ impl App {
                 (key, None)
             })
         };
-        let Some((key, ends)) = tool.or_else(edit) else {
+        // Nordpfeil beim Aufziehen und Drehen: Pille hinter der Spitze
+        let nord = self.nord.label(&self.cam, vh, s);
+        let nord_key = || {
+            nord.as_ref().map(|(_, text)| {
+                let i = self.nord.input();
+                let key = (
+                    text.clone(),
+                    i.is_some(),
+                    i.is_some_and(|i| i.error.is_some()),
+                    i.map_or(0, |i| i.active),
+                    scale.to_bits(),
+                    rev,
+                );
+                (key, None)
+            })
+        };
+        let from_nord = tool.is_none() && self.edit.pill(&self.scene).is_none() && nord.is_some();
+        let Some((key, ends)) = tool.or_else(edit).or_else(nord_key) else {
             self.post_at = None;
             if self.input_pill.take().is_some() {
                 self.renderer.set_overlay(OVERLAY_INPUT, 0, 0, 0, 0, &[]);
@@ -6019,6 +6122,10 @@ impl App {
                 }
             }
             let c = match (ends.is_some(), self.tool.input(), self.edit.input()) {
+                _ if from_nord => match self.nord.input() {
+                    Some(i) => i.paint(&self.ui.fonts, ["Nord", ""], scale, &self.theme),
+                    None => flush_pick::paint_label(&self.ui.fonts, &key.0, scale, &self.theme),
+                },
                 (true, Some(i), _) => {
                     i.paint(&self.ui.fonts, wall_tool::LABELS, scale, &self.theme)
                 }
@@ -6067,6 +6174,9 @@ impl App {
                     (a.0 + dir.0 * reach, a.1 + dir.1 * reach + th as f64)
                 })
             }
+            None if from_nord => nord
+                .and_then(|(p, _)| self.cam.project(p, vw, vh))
+                .map(|(x, y)| (x, y + th as f64)),
             None => self
                 .mouse_at
                 .map(|(x, y)| (x + 14.0 * s + pw * 0.5, y + 20.0 * s + ph * 0.5)),
@@ -6076,7 +6186,7 @@ impl App {
             return;
         };
         // Nachkorrektur: stehen lassen, dann ausblenden
-        let post = ends.is_none() && !key.1 && !self.edit.is_dragging();
+        let post = ends.is_none() && !key.1 && !self.edit.is_dragging() && !from_nord;
         let alpha = if post {
             let t0 = *self.post_at.get_or_insert_with(Instant::now);
             let anim = self.theme.size.anim_ms.max(0.0) as f64;
@@ -7162,6 +7272,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         tool,
         edit: WallEdit::default(),
         sect: Sections::default(),
+        nord: Default::default(),
         sel: Selection::default(),
         props_key: None,
         snaps_key: None,
@@ -7684,6 +7795,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 sk_platform::Cursor::Hand
             }
             (None, None) if a.sect.over_mark() => sk_platform::Cursor::Hand,
+            (None, None) if a.nord.over().is_some() => sk_platform::Cursor::Hand,
             (None, None) => a.ui.cursor(),
         };
         surface.set_cursor(cursor);
@@ -7865,6 +7977,15 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 helpers.extend(p.helpers(&a.scene, a.ui.view, plane, scale, &a.theme));
             }
             helpers.extend(a.tool.helpers(&a.cam, scale, &a.theme));
+            if a.tool_allowed() {
+                let (width, ink) = a.scene.table().section_line;
+                let st = a.nord_stand();
+                let hot = a.theme.interact.drag;
+                helpers.extend(
+                    a.nord
+                        .helpers(st, &a.cam, vh, scale, ink, hot, width.max(1.5)),
+                );
+            }
             a.renderer.set_helpers(&helpers);
 
             // Kettensymbole an den gestapelten Wänden (Grundriss und 3D)

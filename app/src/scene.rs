@@ -1330,6 +1330,20 @@ impl Scene {
         a || b
     }
 
+    /// Nordpfeil setzen, drehen oder verschieben (Sonnenstand S2): ein
+    /// Schritt `label`. `false`, wenn sich nichts geändert hat.
+    pub fn nordpfeil_setzen(
+        &mut self,
+        label: &'static str,
+        nord: f64,
+        fuss: Option<sk_model::Foot>,
+    ) -> bool {
+        self.begin(label);
+        let ok = self.model.set_north_arrow(nord, fuss);
+        self.commit();
+        ok
+    }
+
     /// Breite und Länge eines neuen Projekts: ohne Rückgängig-Schritt wie
     /// [`Scene::projekt_anfang`].
     pub fn lage_anfang(&mut self, ort: sk_model::Location) {
