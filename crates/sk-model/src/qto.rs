@@ -1178,6 +1178,8 @@ pub fn schedule(model: &Model) -> Schedule {
                     ),
                 }
             }
+            // ohne Wandzug, oben übersprungen; Mengen in E8
+            ElementKind::Ext(_) => continue,
         };
         let storey = schedule_storey(model, e);
         let set = match e.kind {
@@ -1706,7 +1708,7 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
                 })
             }
             ElementKind::Coping { floor } => model.coping_material(floor),
-            ElementKind::Wall(_) | ElementKind::RoofTerrace { .. } => None,
+            ElementKind::Wall(_) | ElementKind::RoofTerrace { .. } | ElementKind::Ext(_) => None,
         });
         match (q, mat) {
             (ElementQto::Terrace(t), _) => {

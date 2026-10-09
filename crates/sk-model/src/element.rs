@@ -50,9 +50,14 @@ pub enum Category {
     RoofTerrace,
     /// Attikablech am Rand der Dachterrasse (BIM Regel 46).
     Coping,
+    /// Erweiterungsbauteil aus einer .szb (Vertrag 0.5). Name, Präfix,
+    /// IFC-Klasse und Kostengruppe kommen aus seiner Definition; deshalb
+    /// nicht in [`Category::ALL`], das die Arten des Lieferumfangs nennt.
+    Extension,
 }
 
 impl Category {
+    /// Die Arten des Lieferumfangs (ohne [`Category::Extension`]).
     pub const ALL: [Category; 14] = [
         Category::ExteriorWall,
         Category::InteriorWall,
@@ -162,6 +167,9 @@ pub enum ElementKind {
     Coping {
         floor: ElementId,
     },
+    /// Erweiterungsbauteil: Verweis auf die Definition und die Werte dieses
+    /// Exemplars ([`crate::erweiterung`]).
+    Ext(crate::erweiterung::ExtPart),
 }
 
 /// Dachterrasse einer Decke (BIM §3). Jede Decke trägt die Werte, auch ohne

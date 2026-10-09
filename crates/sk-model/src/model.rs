@@ -29,6 +29,7 @@ use crate::wall::{
     clean_points, cross2, segment_count, Attika, EndCut, Layer, Overhang, RefSide, WallChain,
 };
 use sk_math::{vec3, Vec3};
+use std::collections::BTreeMap;
 
 /// Voreinstellungen für neue Bauteile.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -200,6 +201,12 @@ pub struct Model {
     pub(crate) ext: crate::ext::ExtStore,
     /// Steigt bei jeder Änderung im Erweiterungsspeicher.
     ext_revision: u64,
+    /// Definitionen der Erweiterungsbauteile, nach `key` (E3).
+    ext_defs: Vec<crate::erweiterung::ExtDef>,
+    /// Zuletzt vergebene Nummer je Präfix einer Erweiterung.
+    ext_numbers: BTreeMap<String, u32>,
+    /// Unlesbare `[extdef]`- und `[extpart]`-Zeilen der Datei, roh.
+    pub(crate) ext_raw: Vec<String>,
 }
 
 /// Merkt den Stand eines Datensatzes vor seiner ersten Änderung im offenen
@@ -232,6 +239,10 @@ pub use delete::{refusal_lines, refusal_text, Deleted, Refusal};
 
 #[path = "lock.rs"]
 mod lock;
+
+#[path = "erweiterung_model.rs"]
+mod erweiterung_model;
+pub use erweiterung_model::{ExtError, EXT_SEQ};
 pub use lock::{edit_blocked, Locked};
 
 #[path = "location.rs"]
@@ -618,6 +629,9 @@ impl Model {
             foreign: Default::default(),
             ext: Default::default(),
             ext_revision: 0,
+            ext_defs: Vec::new(),
+            ext_numbers: BTreeMap::new(),
+            ext_raw: Vec::new(),
         }
     }
 
@@ -638,6 +652,9 @@ impl Model {
     ) -> Model {
         let mut numbers = [0; Category::ALL.len()];
         for (_, e) in elements.iter() {
+            if e.category == Category::Extension {
+                continue;
+            }
             let n = e
                 .number
                 .strip_prefix(e.category.prefix())
@@ -687,6 +704,9 @@ impl Model {
             foreign: Default::default(),
             ext: Default::default(),
             ext_revision: 0,
+            ext_defs: Vec::new(),
+            ext_numbers: BTreeMap::new(),
+            ext_raw: Vec::new(),
         };
         m.joins = m.detect_all();
         m
@@ -1221,7 +1241,8 @@ impl Model {
                 ElementKind::Wall(_)
                 | ElementKind::EdgeStrip { .. }
                 | ElementKind::SoffitInsulation { .. }
-                | ElementKind::RoofTerrace { .. } => false,
+                | ElementKind::RoofTerrace { .. }
+                | ElementKind::Ext(_) => false,
             };
             if hit {
                 out.push(Use::Element(e));
@@ -3232,6 +3253,7 @@ impl Model {
             ElementKind::SoffitInsulation { floor }
             | ElementKind::RoofTerrace { floor }
             | ElementKind::Coping { floor } => self.run_of(floor),
+            ElementKind::Ext(_) => None,
         }
     }
 
@@ -5331,7 +5353,8 @@ impl Model {
                 | ElementKind::EdgeStrip { .. }
                 | ElementKind::SoffitInsulation { .. }
                 | ElementKind::RoofTerrace { .. }
-                | ElementKind::Coping { .. } => {}
+                | ElementKind::Coping { .. }
+                | ElementKind::Ext(_) => {}
             }
         }
         if refs.iter().any(|r| !self.storeys.contains(r.storey)) {
@@ -5746,6 +5769,7 @@ impl Model {
                             ElementKind::SoffitInsulation { floor }
                             | ElementKind::RoofTerrace { floor }
                             | ElementKind::Coping { floor } => strips.push(floor),
+                            ElementKind::Ext(_) => {}
                         }
                     }
                 }
@@ -5798,6 +5822,7 @@ impl Model {
             Change::Defaults { new, .. } => *new = self.defaults,
             Change::Trades { new, .. } => *new = self.trades.clone(),
             Change::ForeignRecords { new, .. } => *new = self.foreign.records.clone(),
+            Change::ExtDefs { new, .. } => *new = self.ext_defs.clone(),
             // schon beim Ändern eingetragen
             Change::Ext { .. } => {}
             Change::Project { new, .. } => **new = self.project.clone(),
@@ -5835,6 +5860,7 @@ impl Model {
                             touched.run(f.run);
                             floors.push(f.run);
                         }
+                        ElementKind::Ext(_) => {}
                     }
                 }
                 m.elements.set(*id, pick(dir, old, new));
@@ -5882,6 +5908,7 @@ impl Model {
             Change::Defaults { old, new } => m.defaults = pick(dir, old, new),
             Change::Trades { old, new } => m.trades = pick(dir, old, new),
             Change::ForeignRecords { old, new } => m.foreign.records = pick(dir, old, new),
+            Change::ExtDefs { old, new } => m.ext_defs = pick(dir, old, new),
             Change::Ext {
                 section,
                 at,
@@ -6208,6 +6235,22 @@ impl Model {
                             "{}: Wand und Decke brauchen keinen Randdämmstreifen",
                             e.number
                         ));
+                    }
+                }
+                ElementKind::Ext(ref p) => {
+                    match self.ext_def(&p.key) {
+                        None => out.push(format!("{}: Erweiterung „{}“ fehlt", e.number, p.key)),
+                        Some(d) if !e.number.starts_with(&format!("{}-", d.prefix())) => {
+                            out.push(format!("{}: Nummer passt nicht zum Präfix", e.number))
+                        }
+                        Some(_) => {}
+                    }
+                    let zahlen = p.at.iter().chain([&p.rot]);
+                    if !zahlen
+                        .chain(p.werte.iter().map(|(_, v)| v))
+                        .all(|v| v.is_finite())
+                    {
+                        out.push(format!("{}: Lage oder Werte ungültig", e.number));
                     }
                 }
             }

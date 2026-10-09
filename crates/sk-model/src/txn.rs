@@ -95,6 +95,11 @@ pub enum Change {
         old: Option<String>,
         new: Option<String>,
     },
+    /// Definitionen der Erweiterungsbauteile (E3), als Ganzes.
+    ExtDefs {
+        old: Vec<crate::erweiterung::ExtDef>,
+        new: Vec<crate::erweiterung::ExtDef>,
+    },
     /// Projektangaben (Bauvorhaben, Bauherr, Aufsteller; KA-0b; Paket PD).
     /// Geschachtelt, damit jede Änderung im Verlauf klein bleibt.
     Project {
@@ -131,6 +136,7 @@ impl Change {
             Change::Trades { old, new } => old == new,
             Change::ForeignRecords { old, new } => old == new,
             Change::Ext { old, new, .. } => old == new,
+            Change::ExtDefs { old, new } => old == new,
             Change::Project { old, new } => old == new,
             Change::Location {
                 old,
@@ -191,6 +197,7 @@ pub(crate) enum Key {
     Defaults,
     Trades,
     ForeignRecords,
+    ExtDefs,
     Project,
     Location,
 }

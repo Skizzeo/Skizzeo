@@ -139,6 +139,8 @@ impl Model {
             ElementKind::SoffitInsulation { floor }
             | ElementKind::RoofTerrace { floor }
             | ElementKind::Coping { floor } => Err(Refusal::Derived { from: floor }),
+            ElementKind::Ext(_) if e.locked => Err(Refusal::Locked(id)),
+            ElementKind::Ext(_) => Ok(()),
         }
     }
 
@@ -155,6 +157,16 @@ impl Model {
                 continue;
             }
             match self.can_delete(id) {
+                // Erweiterungsbauteil (E3): steht für sich
+                Ok(())
+                    if matches!(self.element(id).map(|e| &e.kind), Some(ElementKind::Ext(_))) =>
+                {
+                    note!(self, Element, self.elements, id);
+                    self.elements.remove(id);
+                    self.touch();
+                    out.removed.push(id);
+                    out.kinds.push(Category::Extension);
+                }
                 Ok(()) => {
                     let (Some((run, seg)), Some(cat)) =
                         (self.segment_of(id), self.element(id).map(|e| e.category))
@@ -335,13 +347,15 @@ impl Model {
     /// Nummernzähler, die über der höchsten vorhandenen Nummer stehen (es
     /// wurde gelöscht): Präfix und Zähler für die Datei, z. B. ("IW", 1),
     /// Gebäude als „GB“. Ohne Löschen leer.
-    pub(crate) fn number_gaps(&self) -> Vec<(&'static str, u32)> {
+    pub(crate) fn number_gaps(&self) -> Vec<(String, u32)> {
         let highest = self.highest_numbers();
-        let mut out: Vec<(&'static str, u32)> = Category::ALL
+        let mut out: Vec<(String, u32)> = Category::ALL
             .iter()
             .filter(|c| self.numbers[c.index()] > highest[c.index()])
-            .map(|c| (c.prefix(), self.numbers[c.index()]))
+            .map(|c| (c.prefix().to_string(), self.numbers[c.index()]))
             .collect();
+        // Erweiterungen je Präfix (E3)
+        out.extend(self.ext_number_gaps());
         let gb = self
             .buildings
             .iter()
@@ -349,7 +363,7 @@ impl Model {
             .max()
             .unwrap_or(0);
         if self.building_number > gb {
-            out.push(("GB", self.building_number));
+            out.push(("GB".to_string(), self.building_number));
         }
         out
     }
@@ -367,7 +381,7 @@ impl Model {
                 *k = (*k).max(n);
                 true
             }
-            None => false,
+            None => self.raise_ext_counter(prefix, n),
         }
     }
 
@@ -375,6 +389,10 @@ impl Model {
     fn highest_numbers(&self) -> [u32; Category::ALL.len()] {
         let mut out = [0; Category::ALL.len()];
         for (_, e) in self.elements.iter() {
+            // Erweiterungen zählen je Präfix ([`Model::ext_number_gaps`])
+            if e.category == Category::Extension {
+                continue;
+            }
             let n = e
                 .number
                 .strip_prefix(e.category.prefix())

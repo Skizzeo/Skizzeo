@@ -28,6 +28,7 @@ mod cli;
 mod delete;
 mod document;
 mod draw_table;
+mod erweiterung;
 mod flush_pick;
 mod frame_time;
 #[cfg(all(test, target_os = "linux"))]
@@ -4765,6 +4766,8 @@ impl App {
                 K::GroundSlab(_) | K::StripFooting(_) => SelKind::Foundation,
                 K::Floor(_) | K::EdgeStrip { .. } | K::SoffitInsulation { .. } => SelKind::Floor,
                 K::RoofTerrace { .. } | K::Coping { .. } => SelKind::Terrace,
+                // Hilfe zu Erweiterungen kommt mit ihrem Paneel (E7)
+                K::Ext(_) => return None,
             })
         });
         help::HelpCtx {

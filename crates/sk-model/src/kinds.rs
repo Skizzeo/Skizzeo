@@ -94,6 +94,7 @@ pub fn spec(c: Category) -> &'static KindSpec {
         Category::SoffitInsulation => &SOFFIT_INSULATION,
         Category::RoofTerrace => &ROOF_TERRACE,
         Category::Coping => &COPING,
+        Category::Extension => &EXTENSION,
     }
 }
 
@@ -357,6 +358,27 @@ const COPING: KindSpec = KindSpec {
     needs_type: false,
     once: false,
     default_trade: Some("18338"),
+};
+
+/// Erweiterungsbauteile (.szb): Name, Präfix, IFC-Klasse und Kostengruppe
+/// stehen je Bauteil in seiner Definition ([`crate::erweiterung`]); hier
+/// nur, was für alle gilt. Nicht in [`Category::ALL`].
+const EXTENSION: KindSpec = KindSpec {
+    category: Category::Extension,
+    name: "Erweiterung",
+    short: "Erweiterung",
+    plural: "Erweiterungen",
+    genus: Genus::Feminine,
+    prefix: "",
+    ifc: "IfcBuildingElementProxy",
+    kg: None,
+    qto_rank: LAST,
+    szo: "extension",
+    external: false,
+    type_category: None,
+    needs_type: false,
+    once: false,
+    default_trade: None,
 };
 
 #[cfg(test)]

@@ -20,7 +20,7 @@ pub mod rechnen;
 
 pub use bestand::Bestand;
 pub use lesen::{lesen, Def, Satz};
-pub use pruefen::{pruefen, Pruefung};
+pub use pruefen::{pruefen, pruefen_beim_oeffnen, Pruefung};
 pub use rechnen::{rechnen, Ergebnis, Geschoss, Koerper};
 
 /// Stufe eines Befunds: Fehler verhindern das Einlesen, Hinweise nicht.

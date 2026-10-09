@@ -18,6 +18,7 @@ use crate::element::{
     Building, Category, Coupling, Element, ElementKind, Floor, GroundSlab, LevelEdge, LevelKind,
     LevelRef, PropSet, PropValue, Soffit, Storey, StripFooting, Terrace, Wall, WallRun,
 };
+use crate::erweiterung::{ExtDef, ExtPart};
 use crate::guid::{Guid, GuidGen};
 use crate::id::{Arena, Id};
 use crate::library::{
@@ -30,7 +31,7 @@ use crate::trade::{self, Trade, TradeId};
 use crate::wall::{segment_count, RefSide};
 use sk_math::vec3;
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Write as _};
 
 /// Hauptversion des Formats. Eine Datei mit höherer Version wird nicht geöffnet.
@@ -214,6 +215,12 @@ impl Record {
             fields,
             replaced: Cell::new(0),
         }))
+    }
+
+    /// Alle Schlüssel gelten als gelesen: der Satz bleibt als Ganzes roh
+    /// (Erweiterungsbauteile ohne lesbare Definition).
+    pub(crate) fn all_used(&self) {
+        self.fields.iter().for_each(|f| f.2.set(true));
     }
 
     /// Unbekannte Angaben nach dem Lesen: Schlüssel, die kein Leser abgefragt
@@ -1042,6 +1049,42 @@ fn write_known(m: &Model) -> String {
             .guid("storey", storey_guid(e.storey))
             .finish(&mut out);
     }
+    // Erweiterungsbauteile (E3): Definition vollständig, je Exemplar seine
+    // Lage und eigenen Werte; unlesbare Zeilen der gelesenen Datei bleiben
+    for d in m.ext_defs() {
+        Line::new("extdef")
+            .word("key", &d.key)
+            .num("version", d.version)
+            .text("text", &d.text)
+            .finish(&mut out);
+    }
+    for e in &walls {
+        let ElementKind::Ext(p) = &e.kind else {
+            continue;
+        };
+        let mut l = Line::new("extpart")
+            .guid("guid", Some(e.guid))
+            .word("key", &p.key)
+            .text("number", &e.number)
+            .num("x", p.at[0])
+            .num("y", p.at[1]);
+        if p.rot != 0.0 {
+            l = l.num("rot", p.rot);
+        }
+        if let Some(t) = &p.typ {
+            l = l.text("typ", t);
+        }
+        if !p.werte.is_empty() {
+            l = l.text("werte", &p.werte_text());
+        }
+        l.num("seq", e.seq)
+            .guid("storey", storey_guid(e.storey))
+            .finish(&mut out);
+    }
+    for raw in m.ext_raw() {
+        out.push_str(raw);
+        out.push('\n');
+    }
     for e in &walls {
         write_props(&mut out, "prop", "elem", e.guid, &e.props);
     }
@@ -1258,6 +1301,28 @@ pub(crate) fn register<T>(
     Ok(())
 }
 
+/// Lage, Typ und eigene Werte eines `[extpart]`.
+fn read_ext_part(r: &Record) -> Result<ExtPart, LoadError> {
+    let werte = match r.opt("werte") {
+        None => Vec::new(),
+        Some(t) => sk_szb::pruefen::typ_werte(t)
+            .map_err(|e| err(r.line, format!("[extpart]: „werte“ ungültig ({e})")))?,
+    };
+    if werte.iter().any(|(_, v)| !v.is_finite()) {
+        return Err(r.bad("werte", "Zahl"));
+    }
+    Ok(ExtPart {
+        key: r.get("key")?.to_string(),
+        at: [r.f64("x")?, r.f64("y")?],
+        rot: match r.opt("rot") {
+            Some(_) => r.f64("rot")?,
+            None => 0.0,
+        },
+        typ: r.opt("typ").map(str::to_string),
+        werte,
+    })
+}
+
 /// Fremdes einer gelesenen Datei (F-17, F-17b, wie im Firmenkatalog):
 /// Zeilen bekannter Sätze mit unbekannten Schlüsseln oder Werten, gepaart
 /// mit der Zeile, die dieser Schreiber für denselben Satz schreibt, und die
@@ -1323,7 +1388,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 33] = [
+    const KNOWN: [&str; 35] = [
         "pen",
         "linetype",
         "fill",
@@ -1348,6 +1413,8 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         "soffit",
         "terrace",
         "coping",
+        "extdef",
+        "extpart",
         "prop",
         "cut",
         "sun",
@@ -2059,6 +2126,76 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             register(&mut elem_ids, &mut seen, r, g, id)?;
         }
     }
+    // Erweiterungsbauteile (E3): die Definition aus der Datei, geprüft wie
+    // beim Einlesen, aber ohne Grenzprüfung. Unlesbares bleibt roh mit
+    // Hinweis, samt seiner Exemplare; das Projekt öffnet trotzdem.
+    let mut ext_defs: Vec<ExtDef> = Vec::new();
+    let mut ext_raw: Vec<String> = Vec::new();
+    let mut gemeldet: HashSet<String> = HashSet::new();
+    for r in recs("extdef") {
+        let key = r.opt("key").unwrap_or("");
+        let _ = r.opt("version");
+        let d = r
+            .opt("text")
+            .ok_or_else(|| "„text“ fehlt".to_string())
+            .and_then(ExtDef::lesen)
+            .and_then(|d| match d {
+                d if d.key != key => Err(format!("key „{}“ im Text", d.key)),
+                d if ext_defs.iter().any(|o| o.key == d.key) => Err("doppelt".into()),
+                d if ext_defs.iter().any(|o| o.prefix() == d.prefix()) => {
+                    Err(format!("Präfix {} doppelt", d.prefix()))
+                }
+                d => Ok(d),
+            });
+        match d {
+            Ok(d) => ext_defs.push(d),
+            Err(e) => {
+                hints.push(format!(
+                    "Zeile {}: Erweiterung „{key}“ nicht lesbar ({e}); sie und ihre Bauteile bleiben unverändert in der Datei",
+                    r.line
+                ));
+                gemeldet.insert(key.to_string());
+                r.all_used();
+                ext_raw.push(lines[r.line - 1].to_string());
+            }
+        }
+    }
+    let mut ext_raw_guids: HashSet<Guid> = HashSet::new();
+    for r in recs("extpart") {
+        let key = r.opt("key").unwrap_or("");
+        if !ext_defs.iter().any(|d| d.key == key) {
+            if gemeldet.insert(key.to_string()) {
+                hints.push(format!(
+                    "Zeile {}: Erweiterung „{key}“ fehlt in der Datei; ihre Bauteile bleiben unverändert in der Datei",
+                    r.line
+                ));
+            }
+            if let Some(g) = r.opt("guid").and_then(Guid::from_ifc) {
+                ext_raw_guids.insert(g);
+            }
+            r.all_used();
+            ext_raw.push(lines[r.line - 1].to_string());
+            continue;
+        }
+        let part = read_ext_part(r)?;
+        let e = Element {
+            guid: r.guid("guid")?,
+            number: number(r)?,
+            category: Category::Extension,
+            storey: r.link("storey", &storey_ids)?,
+            layer_set: None,
+            seq: match r.opt("seq") {
+                Some(_) => r.int("seq")?,
+                None => crate::EXT_SEQ,
+            },
+            kind: ElementKind::Ext(part),
+            props: Default::default(),
+            locked: false,
+        };
+        let g = e.guid;
+        let id = elements.insert(e);
+        register(&mut elem_ids, &mut seen, r, g, id)?;
+    }
     for r in recs("run") {
         let id = run_ids[&r.guid("guid")?];
         let run = runs.get_mut(id).expect("eben angelegt");
@@ -2078,6 +2215,15 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         run.segments = walls.into_iter().map(|w| w.1).collect();
     }
     for r in recs("prop") {
+        // Eigenschaft eines Bauteils ohne lesbare Erweiterung: bleibt roh
+        if r.opt("elem")
+            .and_then(Guid::from_ifc)
+            .is_some_and(|g| ext_raw_guids.contains(&g))
+        {
+            r.all_used();
+            ext_raw.push(lines[r.line - 1].to_string());
+            continue;
+        }
         let id = r.link("elem", &elem_ids)?;
         let key = r.get("key")?.to_string();
         let value = read_prop_value(r)?;
@@ -2219,6 +2365,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         let cat = r.opt("cat").and_then(|w| {
             crate::Category::ALL
                 .into_iter()
+                .chain([Category::Extension])
                 .find(|c| crate::kinds::spec(*c).szo == w)
         });
         hide.push((g("elem"), cat, g("trade"), r.opt("terrain") == Some("1")));
@@ -2271,6 +2418,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     model.load_sun(sun, sun_raw);
     model.load_view_shade(shade, shade_raw);
     model.load_view_below(below, below_raw);
+    model.load_ext(ext_defs, ext_raw);
     for (k, n) in counters {
         if !model.raise_counter(&k, n) {
             hints.push(format!(

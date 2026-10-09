@@ -1151,6 +1151,18 @@ fn grenzen_von(r: &Satz, pv: &Umfeld, g: &Geschoss) -> Grenzen {
 /// Prüft den Text eines Bauteils wie die Werkbank, mit den Vorgaben im
 /// Geschoss `g`.
 pub fn pruefen(text: &str, best: &Bestand, g: &Geschoss) -> Pruefung {
+    pruefen_mit(text, best, g, true)
+}
+
+/// Wie [`pruefen`], aber ohne Grenzprüfung: für die Definition in einer
+/// Projektdatei, die beim Öffnen nur gelesen und gerechnet wird (Review,
+/// Durchsicht Schrittplan Nr. 12). Dieselben Grenzen für Datei, Zeilen,
+/// Sätze und Formeln gelten.
+pub fn pruefen_beim_oeffnen(text: &str, best: &Bestand, g: &Geschoss) -> Pruefung {
+    pruefen_mit(text, best, g, false)
+}
+
+fn pruefen_mit(text: &str, best: &Bestand, g: &Geschoss, grenzpruefung: bool) -> Pruefung {
     let (def, lese) = lesen::lesen(text);
     let mut p = Pruefer {
         def: &def,
@@ -1224,7 +1236,7 @@ pub fn pruefen(text: &str, best: &Bestand, g: &Geschoss) -> Pruefung {
         rechnen::rechnen(&def, &pv, g)
     };
     b.extend(ergebnis.befunde.iter().cloned());
-    if !hart {
+    if grenzpruefung && !hart {
         let mut gesehen: BTreeSet<String> = b.iter().map(|x| x.text.clone()).collect();
         for r in &def.param {
             let k = r.key();

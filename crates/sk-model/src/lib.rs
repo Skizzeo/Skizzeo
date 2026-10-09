@@ -9,6 +9,7 @@
 pub mod attr;
 pub mod catalog;
 pub mod element;
+pub mod erweiterung;
 pub mod ext;
 pub mod floor;
 pub mod foundation;
@@ -47,6 +48,7 @@ pub use element::{
     LevelKind, LevelRef, PropSet, PropValue, RunId, Soffit, Storey, StoreyId, Terrace, Wall,
     WallRun,
 };
+pub use erweiterung::{ExtDef, ExtPart};
 pub use ext::{ExtRec, ExtStore};
 pub use floor::{FloorError, FloorParams, FloorSlab, SoffitParams, StripParams, TerraceParams};
 pub use foundation::{FootingShape, Foundation, FoundationError, FoundationParams};
@@ -60,13 +62,14 @@ pub use library::{
 };
 pub use matprop::{MatProp, MatPropKind, MAT_PROPS};
 pub use model::{
-    building_index, edit_blocked, refusal_lines, refusal_text, Cut, Defaults, Deleted, FlushError,
-    Foot, Location, Locked, Model, NumberError, Project, Refusal, ShadeLight, Sun, Use, ViewShade,
-    CAVITY_TYPE_GUID, COPING_PART, CUT_NAMES, ETICS_TYPE_GUID, EXTERIOR_TYPE_GUID, FLOOR_PART,
-    FLOOR_THICKNESS, FOOTING_PART, FOOTING_WIDTH, INTERIOR_115_TYPE_GUID, INTERIOR_240_TYPE_GUID,
-    INTERIOR_TYPE_GUID, MAX_FOUNDATION, MAX_SOFFIT, MAX_UPSTAND, MIN_CLEAR, MIN_FOOTING,
-    MIN_RECESS, MIN_SOFFIT, MONO_TYPE_GUID, SHADE_VIEWS, SLAB_PART, SLAB_THICKNESS, SOFFIT_PART,
-    SOFFIT_THICKNESS, STRIP_PART, TERRACE_PART, TERRACE_TYPE_GUID, TERRACE_UPSTAND, WALKABLE_DEPTH,
+    building_index, edit_blocked, refusal_lines, refusal_text, Cut, Defaults, Deleted, ExtError,
+    FlushError, Foot, Location, Locked, Model, NumberError, Project, Refusal, ShadeLight, Sun, Use,
+    ViewShade, CAVITY_TYPE_GUID, COPING_PART, CUT_NAMES, ETICS_TYPE_GUID, EXTERIOR_TYPE_GUID,
+    EXT_SEQ, FLOOR_PART, FLOOR_THICKNESS, FOOTING_PART, FOOTING_WIDTH, INTERIOR_115_TYPE_GUID,
+    INTERIOR_240_TYPE_GUID, INTERIOR_TYPE_GUID, MAX_FOUNDATION, MAX_SOFFIT, MAX_UPSTAND, MIN_CLEAR,
+    MIN_FOOTING, MIN_RECESS, MIN_SOFFIT, MONO_TYPE_GUID, SHADE_VIEWS, SLAB_PART, SLAB_THICKNESS,
+    SOFFIT_PART, SOFFIT_THICKNESS, STRIP_PART, TERRACE_PART, TERRACE_TYPE_GUID, TERRACE_UPSTAND,
+    WALKABLE_DEPTH,
 };
 pub use qto::{
     coping_qto, coping_qto_of, edge_strip_qto, edge_strip_qto_of, floor_formwork_of, floor_qto,

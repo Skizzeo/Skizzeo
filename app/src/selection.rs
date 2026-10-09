@@ -367,7 +367,8 @@ fn foundation_props(
         | ElementKind::EdgeStrip { .. }
         | ElementKind::SoffitInsulation { .. }
         | ElementKind::RoofTerrace { .. }
-        | ElementKind::Coping { .. } => return None,
+        | ElementKind::Coping { .. }
+        | ElementKind::Ext(_) => return None,
     };
     values.push(("Bauabschnitt", e.seq.to_string()));
     let mut notes = m.warnings(id);
