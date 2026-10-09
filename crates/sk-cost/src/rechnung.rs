@@ -1327,6 +1327,7 @@ fn ext_ansaetze(
         geschosse: Vec::new(),
     };
     let mut stoffe: HashMap<(Guid, Option<Guid>, Dez), (Cent, bool)> = HashMap::new();
+    let mut baustoffe: HashMap<(&str, &str), Option<&sk_model::library::Material>> = HashMap::new();
     for (gebaeude, geschoss, row, q) in s.ext_rows() {
         let (Some(e), Some(d)) = (m.element(row.element), m.ext_def(&q.key)) else {
             continue;
@@ -1439,10 +1440,13 @@ fn ext_ansaetze(
                 continue;
             }
             let t = t.unwrap_or(Dez::NULL);
-            let mat = r
-                .get("baustoff")
-                .and_then(|b| m.ext_material(d, b))
-                .and_then(|id| m.material(id));
+            // je Definition und Baustoff einmal: `ext_material` baut den
+            // Werksbestand jedes Mal neu (Review 3cm)
+            let mat = r.get("baustoff").and_then(|b| {
+                *baustoffe
+                    .entry((d.key.as_str(), b))
+                    .or_insert_with(|| m.ext_material(d, b).and_then(|id| m.material(id)))
+            });
             let ort = Ort::Bauteil(e.guid);
             let (stoff, pf) = *stoffe
                 .entry((g, mat.map(|x| x.guid), t))

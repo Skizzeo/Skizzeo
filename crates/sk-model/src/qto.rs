@@ -1484,9 +1484,6 @@ impl Umfang {
 }
 
 impl Schedule {
-    /// Alle Mengenzeilen nach Schicht (Paket 1b), auch ohne Gewerk und
-    /// Kostengruppe, mit ihrem Gebäude; Bauteile ohne Gebäude (`loose`)
-    /// zuletzt mit `None`. Für die Kosten (KA-0e); rechnet keine Geometrie.
     /// Erweiterungsbauteile mit Mengen (E8b): Gebäude, Geschoss der Zeile,
     /// Bauteil, Nummer und Mengen, in der Reihenfolge der Liste.
     pub fn ext_rows(&self) -> Vec<(Option<BuildingId>, StoreyId, &RowQto, &ExtQto)> {
@@ -1508,6 +1505,9 @@ impl Schedule {
         out
     }
 
+    /// Alle Mengenzeilen nach Schicht (Paket 1b), auch ohne Gewerk und
+    /// Kostengruppe, mit ihrem Gebäude; Bauteile ohne Gebäude (`loose`)
+    /// zuletzt mit `None`. Für die Kosten (KA-0e); rechnet keine Geometrie.
     pub fn layer_rows(&self, model: &Model) -> Vec<(Option<BuildingId>, LayerRow)> {
         let mut out = Vec::new();
         for b in &self.buildings {

@@ -508,3 +508,47 @@ fn fehlende_folge_beim_einlesen() {
         )]
     );
 }
+
+/// Review 3cm: Kostenblatt und LV mit vielen Erweiterungen (Messung).
+#[test]
+#[ignore]
+fn probe_3cm() {
+    use std::time::Instant;
+    for (n, gl) in [(0usize, 0usize), (500, 0), (2000, 0), (2000, 500)] {
+        let mut m = projekt();
+        for i in 0..n {
+            setzen(
+                &mut m,
+                "werk.stuetze",
+                "EG",
+                [(i % 50) as f64 * 1000.0, (i / 50) as f64 * 1000.0],
+            );
+        }
+        // Geländer: steht in keinem Los, je Bauteil ein Befund
+        for i in 0..gl {
+            setzen(
+                &mut m,
+                "werk.stabgelaender",
+                "OG",
+                [(i % 50) as f64 * 1000.0, (i / 50) as f64 * 1000.0],
+            );
+        }
+        let t0 = Instant::now();
+        let k = lesen::katalog(&m, None);
+        let kat = t0.elapsed();
+        let s = schedule(&m);
+        let u = Umfang::projekt();
+        let t1 = Instant::now();
+        let (b, sp) = sk_cost::rechnung::kosten_mit(Default::default(), &m, &s, &k, &u);
+        let kalt = t1.elapsed();
+        let t2 = Instant::now();
+        let (b2, _) = sk_cost::rechnung::kosten_mit(sp, &m, &s, &k, &u);
+        let warm = t2.elapsed();
+        assert_eq!(b.netto, b2.netto);
+        println!(
+            "E={n} gl={gl} katalog={kat:?} kalt={kalt:?} warm={warm:?} befunde={} pos={}",
+            b.befunde.len(),
+            b.positionen.len()
+        );
+    }
+}
