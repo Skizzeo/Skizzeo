@@ -1123,10 +1123,9 @@ impl App {
     /// Stand des Nordpfeils im Modell (Sonnenstand S2).
     fn nord_stand(&self, vh: f64, sc: f64) -> nordpfeil::Stand {
         let m = self.scene.model();
-        let l = nordpfeil::laenge(&self.cam, vh, sc);
         nordpfeil::Stand {
             nord: m.location().north,
-            fuss: nordpfeil::anzeige_fuss(m.north_foot(), self.scene.bounds(), l),
+            fuss: nordpfeil::platz(&self.cam, vh, sc, m.north_foot(), self.scene.bounds()),
             gesetzt: m.north_foot(),
         }
     }

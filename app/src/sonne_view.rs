@@ -191,11 +191,14 @@ pub fn wuerfel_quader() -> (Vec3, Vec3) {
 }
 
 /// Himmelskuppel um das Gebäude (bzw. den Würfel): Mitte am Boden und
-/// Halbmesser (mm).
+/// Halbmesser (mm), das 1,5-fache des Abstands zur fernsten Ecke, die
+/// ganze Höhe über (oder unter) dem Boden gerechnet (Befund C, §8 10:20).
 pub fn kuppel((lo, hi): (Vec3, Vec3)) -> (Vec3, f64) {
     let mitte = vec3((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5, 0.0);
-    let halb = (hi - lo).length() * 0.5;
-    (mitte, (KUPPEL_K * halb).max(KUPPEL_MIN))
+    let (dx, dy) = ((hi.x - lo.x) * 0.5, (hi.y - lo.y) * 0.5);
+    let dz = hi.z.abs().max(lo.z.abs());
+    let ecke = (dx * dx + dy * dy + dz * dz).sqrt();
+    (mitte, (KUPPEL_K * ecke).max(KUPPEL_MIN))
 }
 
 /// Punkt der Kuppel in Richtung des Sonnenstands; knapp unter dem
@@ -892,13 +895,39 @@ mod tests {
         assert!(a[0] < -0.4 && a[1].abs() < 0.05, "{a:?}");
     }
 
+    /// Befund C (§8 10:20): Die Kuppel fasst auch einen Turm; jede Ecke
+    /// liegt innerhalb, mit Luft, und die Bahn läuft nicht durchs Gebäude.
+    #[test]
+    fn kuppel_um_einen_turm() {
+        let q = (vec3(0.0, 0.0, 0.0), vec3(10000.0, 10000.0, 40000.0));
+        let (m, r) = kuppel(q);
+        assert_eq!(m, vec3(5000.0, 5000.0, 0.0));
+        let fernste = vec3(10000.0, 10000.0, 40000.0) - m;
+        assert!((r - 1.5 * fernste.length()).abs() < 1e-6, "{r}");
+        assert!(r > 60000.0);
+        let h = himmel(&Location::default(), &sun(2026, 6, 21, 13, 27), q);
+        let innen = |p: Vec3| {
+            (q.0.x..=q.1.x).contains(&p.x)
+                && (q.0.y..=q.1.y).contains(&p.y)
+                && (q.0.z..=q.1.z).contains(&p.z)
+        };
+        assert!(h.tag.iter().all(|p| !innen(p.1)));
+        // Klein bleibt es bei 15 m
+        assert_eq!(
+            kuppel((vec3(0.0, 0.0, 0.0), vec3(3000.0, 3000.0, 3000.0))).1,
+            KUPPEL_MIN
+        );
+    }
+
     /// Die Bahnen stehen über dem Horizont; die Sonne liegt auf der
     /// Tagesbahn, mittags im Süden, 21.06. höher als 21.12.
     #[test]
     fn himmel_um_den_wuerfel() {
         let q = wuerfel_quader();
         let (m, r) = kuppel(q);
-        assert_eq!(r, KUPPEL_MIN);
+        // 1,5 · √(5² + 5² + 10²) m
+        assert!((r - 1.5 * 150.0e6_f64.sqrt()).abs() < 1e-6, "{r}");
+        assert!((18370.0..18380.0).contains(&r));
         let h = himmel(&Location::default(), &sun(2026, 6, 21, 13, 27), q);
         for p in h.tag.iter().map(|p| p.1).chain(h.sommer.iter().copied()) {
             assert!(p.z >= 0.0 && ((p - m).length() - r).abs() < 1e-6);

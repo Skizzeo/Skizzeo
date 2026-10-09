@@ -25,12 +25,16 @@ pub const LABEL_DREHEN: &str = "Nordrichtung geändert";
 /// Schritt beim Verschieben.
 pub const LABEL_SCHIEBEN: &str = "Nordpfeil verschoben";
 
-/// Länge des Pfeils im Grundriss (dip) und in 3D (mm).
-/// Dreimal so groß wie zuerst (Jörn 08:42: „visuell kaum zu erkennen“).
+/// Länge des Pfeils im Grundriss (dip) und in 3D (mm). Im Grundriss
+/// dreimal so groß wie zuerst (Jörn 08:42); in 3D ein Fünftel davon, ohne
+/// „N“ (Jörn 10:06: „mindestens um Faktor 5 verkleinert“).
 const LAENGE_PX: f64 = 192.0;
-const LAENGE_3D: f64 = 9000.0;
+const LAENGE_3D: f64 = 1800.0;
 /// Höchstlänge in 3D auf dem Bildschirm (dip), nah am Pfeil.
 const KAPPE_PX: f64 = 2.0 * LAENGE_PX;
+/// Kleinste Länge in 3D auf dem Bildschirm (dip): weit weg bleibt der
+/// Pfeil klickbar, ein Klick schaltet die Sonne (§8 10:07).
+const KLEINST_PX: f64 = 24.0;
 /// Freiraum um das ganze Zeichen am Platz neben dem Gebäude (mm, §8 08:45).
 const FREI: f64 = 1000.0;
 /// Greifabstand (dip) am Schaft und um die Spitze.
@@ -83,16 +87,36 @@ pub fn ersatz_abstand(laenge: f64) -> f64 {
 /// Hüllquader des Gebäudes (Grundriss, eine ältere Datei); dann vorne
 /// links daneben ([`ersatz_abstand`]), ohne Gebäude am Ursprung.
 pub fn anzeige_fuss(fuss: Option<Foot>, bounds: Option<(Vec3, Vec3)>, laenge: f64) -> Foot {
+    neben(fuss, bounds, ersatz_abstand(laenge))
+}
+
+/// Wie [`anzeige_fuss`] für die Kamera `cam`: im Grundriss mit dem „N“,
+/// in 3D nur der Pfeil (ohne „N“, §8 10:07) mit seiner festen Länge, also
+/// [`FREI`] plus 1,8 m; die Kappe und die kleinste Größe auf dem
+/// Bildschirm ändern den Platz nicht.
+pub fn platz(
+    cam: &Camera,
+    h: f64,
+    scale: f64,
+    fuss: Option<Foot>,
+    bounds: Option<(Vec3, Vec3)>,
+) -> Foot {
+    let l = laenge(cam, h, scale);
+    match cam.ortho {
+        Some(_) => anzeige_fuss(fuss, bounds, l),
+        // Ohne „N“ reicht das Zeichen nur bis zur Spitze
+        None => neben(fuss, bounds, FREI + l),
+    }
+}
+
+fn neben(fuss: Option<Foot>, bounds: Option<(Vec3, Vec3)>, abstand: f64) -> Foot {
     let innen = |p: Foot, (lo, hi): (Vec3, Vec3)| {
         (lo.x..=hi.x).contains(&p[0]) && (lo.y..=hi.y).contains(&p[1])
     };
     match (fuss, bounds) {
         (Some(p), Some(b)) if !innen(p, b) => p,
         (Some(p), None) => p,
-        (_, Some((lo, _))) => {
-            let a = ersatz_abstand(laenge);
-            [lo.x - a, lo.y - a]
-        }
+        (_, Some((lo, _))) => [lo.x - abstand, lo.y - abstand],
         (None, None) => [0.0, 0.0],
     }
 }
@@ -215,9 +239,10 @@ pub fn laenge(cam: &Camera, h: f64, scale: f64) -> f64 {
 }
 
 /// Länge des Pfeils am Fußpunkt `fuss` (mm): wie [`laenge`], in 3D aber
-/// auf dem Bildschirm höchstens [`KAPPE_PX`] lang, damit das Bild nah am
-/// Pfeil klein bleibt und schnell gemalt ist (Review 3bu-1). Greifen,
-/// Pille und Bild nehmen dieselbe Länge.
+/// auf dem Bildschirm mindestens [`KLEINST_PX`] und höchstens
+/// [`KAPPE_PX`] lang: nah am Pfeil bleibt das Bild klein und schnell
+/// gemalt (Review 3bu-1), weit weg bleibt er klickbar. Greifen, Pille und
+/// Bild nehmen dieselbe Länge.
 pub fn laenge_bei(cam: &Camera, (w, h): (f64, f64), scale: f64, fuss: Foot) -> f64 {
     let l = laenge(cam, h, scale);
     if cam.ortho.is_some() {
@@ -229,9 +254,11 @@ pub fn laenge_bei(cam: &Camera, (w, h): (f64, f64), scale: f64, fuss: Foot) -> f
     match (a, b) {
         (Some(a), Some(b)) => {
             let px = (b.0 - a.0).hypot(b.1 - a.1);
-            let max = KAPPE_PX * scale;
+            let (min, max) = (KLEINST_PX * scale, KAPPE_PX * scale);
             if px > max {
                 l * max / px
+            } else if px < min && px > 1e-9 {
+                l * min / px
             } else {
                 l
             }
@@ -662,9 +689,13 @@ impl Nordpfeil {
             (0.0, -1.0)
         };
         let ab = N_LUFT as f32 * lp + ux.abs() * hb + uy.abs() * hh;
+        // In 3D reicht die Spitze als Richtung (Jörn 10:06)
+        let n = cam
+            .ortho
+            .map(|_| ((t.0 + ux * ab, t.1 + uy * ab), 2.0 * hh));
         Some(Bild {
             pfeil,
-            n: ((t.0 + ux * ab, t.1 + uy * ab), 2.0 * hh),
+            n,
             farbe: Rgba::from_f32(if heiss { hot } else { ink }),
             breite: (width * scale).max(1.0),
             ansicht: (w as f32, h as f32),
@@ -681,8 +712,8 @@ type Strich = ((f32, f32), (f32, f32), f32);
 pub struct Bild {
     /// Spitze, linke Ecke, Kerbe, rechte Ecke, Fußpunkt.
     pfeil: [(f32, f32); 5],
-    /// Mitte und Höhe des „N“.
-    n: ((f32, f32), f32),
+    /// Mitte und Höhe des „N“; nur im Grundriss.
+    n: Option<((f32, f32), f32)>,
     farbe: Rgba,
     breite: f32,
     ansicht: (f32, f32),
@@ -696,10 +727,11 @@ impl Bild {
     /// wenn nichts davon in der Ansicht liegt.
     pub fn malen(&self) -> Option<(Canvas, i32, i32)> {
         let [t, li, ke, re, _] = self.pfeil;
-        let ((nx, ny), nh) = self.n;
         let rand = self.breite * 2.0 + 2.0;
-        let mut lo = (nx - nh, ny - nh);
-        let mut hi = (nx + nh, ny + nh);
+        let (mut lo, mut hi) = (t, t);
+        if let Some(((nx, ny), nh)) = self.n {
+            (lo, hi) = ((nx - nh, ny - nh), (nx + nh, ny + nh));
+        }
         for &(x, y) in &self.pfeil {
             (lo, hi) = ((lo.0.min(x), lo.1.min(y)), (hi.0.max(x), hi.1.max(y)));
         }
@@ -729,8 +761,10 @@ impl Bild {
         let mut striche: Vec<Strich> = [(t, li), (li, ke), (ke, re), (re, t), (t, ke)]
             .map(|(a, b)| (v(a), v(b), k))
             .to_vec();
-        for (a, b) in n_striche(v((nx, ny)), nh) {
-            striche.push((a, b, k * 1.4));
+        if let Some(((nx, ny), nh)) = self.n {
+            for (a, b) in n_striche(v((nx, ny)), nh) {
+                striche.push((a, b, k * 1.4));
+            }
         }
         // Striche und runde Enden je in einem Pfad: alle Striche laufen im
         // selben Sinn um, alle Enden auch, nur beide zusammen höben sich auf
@@ -832,17 +866,20 @@ mod tests {
             .unwrap()
     }
 
-    /// Befund B (§8 07:55, 08:20): Das „N“ steht im Grundriss und in 3D
-    /// aufrecht zum Bildschirm, im Grundriss bei jeder Nordrichtung gleich
-    /// groß, und frei vor der Spitze.
+    /// Befund B (§8 07:55, 08:20): Das „N“ steht im Grundriss aufrecht
+    /// zum Bildschirm, bei jeder Nordrichtung gleich groß, und frei vor der
+    /// Spitze. In 3D gibt es kein „N“ (Jörn 10:06).
     #[test]
     fn n_bleibt_aufrecht() {
         let plan = Camera::parallel(vec3(0.0, 0.0, 0.0), FRAC_PI_2, -FRAC_PI_2, 20000.0);
         let raum = Camera::looking_at(vec3(-15000.0, -22000.0, 15000.0), vec3(0.0, 0.0, 0.0), 45.0);
-        for (cam, name) in [(&plan, "Grundriss"), (&raum, "3D")] {
+        for nord in [0.0, 90.0, 180.0, 270.0, 33.0] {
+            assert_eq!(bild_bei(nord, &raum).n, None, "3D {nord}");
+        }
+        for (cam, name) in [(&plan, "Grundriss")] {
             for nord in [0.0, 90.0, 180.0, 270.0, 33.0] {
                 let b = bild_bei(nord, cam);
-                let ((nx, ny), hoch) = b.n;
+                let ((nx, ny), hoch) = b.n.unwrap();
                 let [a, _, c] = n_striche((nx, ny), hoch);
                 // Senkrechte Striche: oben kleineres y
                 assert_eq!(a.0 .0, a.1 .0, "{name} {nord}");
@@ -866,10 +903,11 @@ mod tests {
     }
 
     /// Jörns Skizze (§8 08:42): links der Teilung weiß, rechts gefüllt;
-    /// dreimal so groß wie zuerst (192 dip im Grundriss, 9 m in 3D).
+    /// im Grundriss dreimal so groß wie zuerst (192 dip), in 3D 1,8 m
+    /// (Jörn 10:06).
     #[test]
     fn links_weiss_rechts_gefuellt() {
-        assert_eq!((LAENGE_PX, LAENGE_3D), (192.0, 9000.0));
+        assert_eq!((LAENGE_PX, LAENGE_3D), (192.0, 1800.0));
         let plan = Camera::parallel(vec3(0.0, 0.0, 0.0), FRAC_PI_2, -FRAC_PI_2, 20000.0);
         let b = bild_bei(0.0, &plan);
         let (c, x0, y0) = b.malen().unwrap();
@@ -895,7 +933,7 @@ mod tests {
     #[test]
     fn nah_in_3d_gedeckelt() {
         let (w, h) = (2560.0, 1400.0);
-        let nah = Camera::looking_at(vec3(-1500.0, -2500.0, 1800.0), vec3(0.0, 0.0, 0.0), 45.0);
+        let nah = Camera::looking_at(vec3(-500.0, -800.0, 600.0), vec3(0.0, 0.0, 0.0), 45.0);
         let fern = Camera::looking_at(vec3(-25000.0, -40000.0, 25000.0), vec3(0.0, 0.0, 0.0), 45.0);
         assert_eq!(laenge_bei(&fern, (w, h), 2.0, [0.0, 0.0]), LAENGE_3D);
         let l = laenge_bei(&nah, (w, h), 2.0, [0.0, 0.0]);
@@ -916,6 +954,40 @@ mod tests {
             c.width,
             c.height
         );
+    }
+
+    /// §8 10:07: Weit weg bleibt der Pfeil in 3D mindestens [`KLEINST_PX`]
+    /// lang und damit klickbar.
+    #[test]
+    fn weit_weg_in_3d_klickbar() {
+        let (w, h) = (2560.0, 1400.0);
+        let weit = Camera::looking_at(
+            vec3(-250000.0, -400000.0, 250000.0),
+            vec3(0.0, 0.0, 0.0),
+            45.0,
+        );
+        let l = laenge_bei(&weit, (w, h), 2.0, [0.0, 0.0]);
+        assert!(l > LAENGE_3D * 2.0, "{l}");
+        let r = weit.right();
+        let a = weit.project(vec3(0.0, 0.0, 0.0), w, h).unwrap();
+        let b = weit.project(vec3(r.x * l, r.y * l, r.z * l), w, h).unwrap();
+        assert!(((b.0 - a.0).hypot(b.1 - a.1) - KLEINST_PX * 2.0).abs() < 0.01);
+    }
+
+    /// §8 10:07: In 3D liegt der Platz neben dem Gebäude nur um den Pfeil
+    /// (ohne „N“) und 1 m weiter; im Grundriss wie bisher mit „N“.
+    #[test]
+    fn platz_in_3d_ohne_n() {
+        let b = Some((vec3(0.0, 0.0, 0.0), vec3(10000.0, 8000.0, 6000.0)));
+        let p3 = Camera::looking_at(vec3(-25000.0, -40000.0, 25000.0), vec3(0.0, 0.0, 0.0), 45.0);
+        assert_eq!(platz(&p3, 800.0, 1.0, None, b), [-2800.0, -2800.0]);
+        assert_eq!(
+            platz(&p3, 800.0, 1.0, Some([12000.0, 0.0]), b),
+            [12000.0, 0.0]
+        );
+        let g = Camera::parallel(vec3(0.0, 0.0, 0.0), FRAC_PI_2, -FRAC_PI_2, 10000.0);
+        let l = laenge(&g, 800.0, 1.0);
+        assert_eq!(platz(&g, 800.0, 1.0, None, b), anzeige_fuss(None, b, l));
     }
 
     /// Bildzeit nah am Pfeil (Review 3bu-1), nur zum Messen:

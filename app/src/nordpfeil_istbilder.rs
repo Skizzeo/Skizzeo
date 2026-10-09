@@ -149,11 +149,7 @@ fn mit_pfeil(c: &mut Canvas, n: &Nordpfeil, s: &Scene, cam: &Camera, theme: &The
 fn mit_pfeil_bei(c: &mut Canvas, n: &Nordpfeil, s: &Scene, cam: &Camera, theme: &Theme, sk: f32) {
     let st = Stand {
         nord: s.model().location().north,
-        fuss: anzeige_fuss(
-            s.model().north_foot(),
-            s.bounds(),
-            laenge(cam, H as f64, sk as f64),
-        ),
+        fuss: platz(cam, H as f64, sk as f64, s.model().north_foot(), s.bounds()),
         gesetzt: s.model().north_foot(),
     };
     let (w, h) = (W as f64, H as f64);
