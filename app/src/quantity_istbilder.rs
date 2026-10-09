@@ -119,6 +119,15 @@ fn istbilder_ka1_ka2() {
     q.sync(&mut s, &b.p, false);
     b.ablegen(&mut q, "ist-ka-2-kosten.png");
 
+    // Befund Q: schmal bei 150 % rutscht „Gliedern“ unter „Preise“
+    let mut q = QuantityWindow::new();
+    q.title.scale = 1.5;
+    (q.w, q.h) = (720, 1000);
+    q.sync(&mut s, &b.p, false);
+    q.waehlen(Blatt::Kosten, &b.t);
+    q.sync(&mut s, &b.p, false);
+    b.ablegen(&mut q, "ist-kosten-schmal-150.png");
+
     // KA-2b: nur EG
     let mut q = b.fenster(&mut s, 1240, 880, Blatt::Kosten);
     let k = q.kosten.as_mut().unwrap();

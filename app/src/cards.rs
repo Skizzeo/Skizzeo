@@ -73,6 +73,11 @@ const PAD_TOP: f32 = 14.0;
 const PAD_BOTTOM: f32 = 4.0;
 /// Höhe der Leiste unter der Titelleiste (dip).
 pub const HEIGHT: f32 = PAD_TOP + CARD_H + PAD_BOTTOM;
+/// Speichern-Knopf rechts in der Kartenzeile, in Mengen, Kosten und AVA
+/// gleich groß, damit er beim Reiterwechsel nicht springt: Höhe und
+/// Innenabstand (dip).
+pub const KNOPF_H: f32 = 26.0;
+pub const KNOPF_PAD: f32 = 12.0;
 
 /// Rechteck in Fensterpixeln: x, y, Breite, Höhe.
 type Rect = (f32, f32, f32, f32);

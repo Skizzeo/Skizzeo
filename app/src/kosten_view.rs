@@ -150,6 +150,7 @@ impl Zeile {
 mod abnahme_ka3a5;
 #[cfg(test)]
 mod bild;
+mod schalter;
 #[cfg(test)]
 mod tests;
 mod unterschiede;
@@ -198,8 +199,8 @@ pub fn gewerk_hinweis(zeile: &str, gewerk: &str) -> crate::meldung::Meldung {
 }
 
 /// Knopf „Als Tabelle speichern“.
-const BUTTON_H: f32 = 26.0;
-const BUTTON_PAD: f32 = 12.0;
+const BUTTON_H: f32 = crate::cards::KNOPF_H;
+const BUTTON_PAD: f32 = crate::cards::KNOPF_PAD;
 
 type Rect = (f32, f32, f32, f32);
 
@@ -326,6 +327,8 @@ pub struct KostenView {
     selected: Vec<ElementId>,
     /// Breite des Fußes aus dem letzten Bild (Zeilenzahl der Fußzeile).
     fuss_zeilen: Cell<usize>,
+    /// „Gliedern“ im letzten Bild unter „Preise“ ([`schalter`]).
+    gliedern_unten: Cell<bool>,
     /// Preisblatt am EP (KA-2c), sein Öffnen beim nächsten `sync` und die
     /// Kosten beim Tippen.
     preis: Option<PreisBlatt>,
@@ -411,6 +414,7 @@ impl KostenView {
             hover: Vec::new(),
             selected: Vec::new(),
             fuss_zeilen: Cell::new(0),
+            gliedern_unten: Cell::new(false),
             preis: None,
             preis_wunsch: None,
             live: None,
@@ -905,9 +909,14 @@ impl KostenView {
         // Klein neben dem Betrag, rechtsbündig auf seiner Grundlinie
         // (Einstellungen §3 KA-2 Punkt 3)
         let rechts = x0 + 2.0 * (tw + TILE_GAP * s) + tw - 12.0 * s;
-        let vor = format!("Lohn {} € (", euro(b.lohn));
         let link = format!("{} €/h", euro(self.lohnsatz.cent()));
-        let nach = format!(") · Material {} €", euro(b.stoff));
+        let lohn = format!("Lohn {} € (", euro(b.lohn));
+        // Lang, ohne Material, nur der Stundenlohn (schmale Kachel)
+        let varianten = [
+            (lohn.clone(), format!(") · Material {} €", euro(b.stoff))),
+            (lohn, ")".to_string()),
+            (String::new(), String::new()),
+        ];
         let px = 10.0 * s;
         let w = |f: Option<&sk_paint::font::Font>, t: &str| {
             f.map_or(t.chars().count() as f32 * px * 0.55, |f| f.width(t, px))
@@ -920,9 +929,10 @@ impl KostenView {
             0.0
         };
         let lw = w(bold, &link);
-        let breit = w(regular, &vor) + lw + punkt + w(regular, &nach);
+        let breite = |(v, n): &(String, String)| w(regular, v) + lw + punkt + w(regular, n);
         // Passt die Zeile nicht neben den Betrag, steht sie darunter wie
-        // die zweite Menge der Baustoffkacheln
+        // die zweite Menge der Baustoffkacheln, so lang, wie die Kachel
+        // breit ist
         let anteil = if self.modus.nur_material() {
             "–".to_string()
         } else {
@@ -930,10 +940,19 @@ impl KostenView {
         };
         let links = rechts + 12.0 * s - tw + 12.0 * s;
         let wert = links + bold.map_or(0.0, |f| f.width(&anteil, 17.0 * s));
-        let (x, y) = if rechts - breit < wert + 12.0 * s {
-            (links, self.tiles_top() + 44.0 * s)
+        let voll = &varianten[0];
+        let (x, y, (vor, nach)) = if rechts - breite(voll) < wert + 12.0 * s {
+            let i = varianten
+                .iter()
+                .position(|v| breite(v) <= tw - 24.0 * s)
+                .unwrap_or(2);
+            (links, self.tiles_top() + 44.0 * s, varianten[i].clone())
         } else {
-            (rechts - breit, self.tiles_top() + 28.0 * s)
+            (
+                rechts - breite(voll),
+                self.tiles_top() + 28.0 * s,
+                voll.clone(),
+            )
         };
         let lx = x + w(regular, &vor);
         Some((vor, link.clone(), nach, (lx, y, lw, 14.0 * s)))
@@ -1177,7 +1196,7 @@ impl KostenView {
 
     /// Höhe des Kopfs (dip).
     fn head(&self) -> f32 {
-        HEAD + self.ab()
+        HEAD + self.ab() + self.zeile2()
     }
 
     /// Erste Zeile der Liste (px).
@@ -1299,48 +1318,6 @@ impl KostenView {
         let y = crate::cards::Karten::knopf_y(x0, s, breit, x, self.top_px())
             .unwrap_or(self.top_px() + 14.0 * s);
         (x, y, bw, BUTTON_H * s)
-    }
-
-    /// Segmentschalter: Beschriftung (x, Grundlinie) und Segmente.
-    #[allow(clippy::type_complexity)]
-    fn schalter(
-        &self,
-        t: &Theme,
-        fonts: &Fonts,
-    ) -> ((f32, Vec<(Modus, Rect)>), (f32, Vec<(Gliederung, Rect)>)) {
-        let s = self.scale;
-        let (x0, _) = self.content_x(t);
-        let px = 10.5 * s;
-        let y = self.top_px() + (SWITCH_TOP + self.ab()) * s;
-        let regular = fonts.regular.as_ref();
-        let bold = fonts.bold.as_ref().or(regular);
-        let w = |text: &str| {
-            bold.map_or(text.chars().count() as f32 * px * 0.6, |f| {
-                f.width(text, px)
-            }) + 20.0 * s
-        };
-        let label_w = |text: &str| {
-            regular.map_or(text.chars().count() as f32 * px * 0.55, |f| {
-                f.width(text, px)
-            }) + 8.0 * s
-        };
-        let inset = 2.0 * s;
-        let mut x = x0 + label_w("Preise") + inset;
-        let mut preise = Vec::new();
-        for m in Modus::ALLE {
-            let sw = w(m.label());
-            preise.push((m, (x, y + inset, sw, SWITCH_H * s - 2.0 * inset)));
-            x += sw;
-        }
-        let gx = (x0 + GLIEDERN_X * s).max(x + 24.0 * s);
-        let mut x = gx + label_w("Gliedern") + inset;
-        let mut gl = Vec::new();
-        for g in Gliederung::ALLE {
-            let sw = w(g.label());
-            gl.push((g, (x, y + inset, sw, SWITCH_H * s - 2.0 * inset)));
-            x += sw;
-        }
-        ((x0, preise), (gx, gl))
     }
 
     fn fuss(&self) -> Vec<Fuss> {
@@ -1877,6 +1854,8 @@ impl KostenView {
         let s = self.scale;
         let fuss = self.fuss();
         self.fuss_zeilen.set(fuss.len());
+        // Legt fest, ob „Gliedern“ unter „Preise“ steht (Kopfhöhe)
+        self.schalter(t, fonts);
         c.fill_rect(0.0, self.top_px(), self.w as f32, self.h as f32, u.sheet_bg);
         self.paint_rows(c, t, fonts, now);
         // Kopf deckt weggerollte Zeilen ab
@@ -2308,10 +2287,16 @@ impl KostenView {
                         f.draw(c, &nach, px, nx, by, u.sheet_text_dim);
                     }
                 } else if !klein.is_empty() {
+                    // Neben dem Betrag, sonst darunter (schmale Kachel)
                     let px = 10.0 * s;
-                    let k = sk_ui::widgets::ellipsize(Some(f), klein, px, tw * 0.5);
-                    let kw = f.width(&k, px);
-                    f.draw(c, &k, px, x + tw - 12.0 * s - kw, by, u.sheet_text_dim);
+                    let ww = bold.map_or(0.0, |b| b.width(wert, 17.0 * s));
+                    let kw = f.width(klein, px);
+                    if kw + ww + 36.0 * s <= tw {
+                        f.draw(c, klein, px, x + tw - 12.0 * s - kw, by, u.sheet_text_dim);
+                    } else {
+                        let k = sk_ui::widgets::ellipsize(Some(f), klein, px, tw - 24.0 * s);
+                        f.draw(c, &k, px, x + 12.0 * s, by + 16.0 * s, u.sheet_text_dim);
+                    }
                 }
             }
             if let Some(f) = bold {

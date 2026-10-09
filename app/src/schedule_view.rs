@@ -50,8 +50,8 @@ const TILE_PAD: f32 = 10.0;
 const TILE_NAME_PX: f32 = 10.0;
 const TILE_AFTER: f32 = 8.0;
 /// Knopf „Als Tabelle speichern“ (dip).
-const BUTTON_H: f32 = 28.0;
-const BUTTON_PAD: f32 = 16.0;
+const BUTTON_H: f32 = crate::cards::KNOPF_H;
+const BUTTON_PAD: f32 = crate::cards::KNOPF_PAD;
 /// Doppelklick: höchstens so lange zwischen zwei Klicks.
 const DOUBLE_MS: u128 = 450;
 /// Zeitkonstante des weichen Rollens (s).

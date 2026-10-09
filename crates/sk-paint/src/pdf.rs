@@ -1,5 +1,5 @@
 //! Eigene PDF-Ausgabe (PDF 1.4) für Blätter aus Text und Linien: Seiten in
-//! Punkt, die Schriften der App ganz eingebettet (TrueType als
+//! Punkt, die Schriften der App als Teilmenge eingebettet (TrueType als
 //! `CIDFontType2`, Glyphen über `Identity-H`, `ToUnicode` zum Suchen und
 //! Kopieren), Ströme mit eigenem Deflate. Dieselben Seiten zeichnet die
 //! Vorschau auf die Leinwand ([`zeichnen`]), so zeigt sie genau das PDF.
@@ -188,11 +188,27 @@ impl Schreiber {
     }
 }
 
+/// Kennung einer eingebetteten Teilmenge: sechs Großbuchstaben vor dem
+/// Namen („ABCDEF+Skizzeo-Regular“, PDF 1.7, 9.6.4), aus dem Inhalt
+/// berechnet, damit dasselbe Blatt dieselbe Datei gibt.
+fn kennung(datei: &[u8]) -> String {
+    let mut h = datei.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
+    });
+    (0..6)
+        .map(|_| {
+            let c = char::from(b'A' + (h % 26) as u8);
+            h /= 26;
+            c
+        })
+        .collect()
+}
+
 /// Das PDF der Seiten `seiten` im Format `groesse` (Punkt) mit den
 /// Schriften `regular` und `fett`; `titel` steht in den Eigenschaften.
-/// Die Schriften gehen ganz als `FontFile2` hinein; das ist richtig, weil
-/// [`Font::parse`] nur einfache TrueType-Dateien annimmt (keine `.ttc`,
-/// kein CFF).
+/// Von den Schriften geht nur die Teilmenge der benutzten Glyphen als
+/// `FontFile2` hinein ([`Font::teilmenge`]); das geht, weil [`Font::parse`]
+/// nur einfache TrueType-Dateien annimmt (keine `.ttc`, kein CFF).
 pub fn schreiben(
     seiten: &[Seite],
     groesse: (f32, f32),
@@ -244,11 +260,12 @@ pub fn schreiben(
     );
     for (k, f) in schriften.iter().enumerate() {
         let id = schrift_id(k);
-        let name = if k == 0 {
-            "Skizzeo-Regular"
-        } else {
-            "Skizzeo-Bold"
-        };
+        let datei = f.teilmenge(&benutzt[k].keys().copied().collect());
+        let name = format!(
+            "{}+Skizzeo-{}",
+            kennung(&datei),
+            if k == 0 { "Regular" } else { "Bold" }
+        );
         let mut breiten = String::new();
         for g in benutzt[k].keys() {
             let _ = write!(breiten, "{g} [{}] ", n(f.advance_milli(*g)));
@@ -289,7 +306,7 @@ pub fn schreiben(
                 id + 3
             ),
         );
-        p.strom(id + 3, &format!(" /Length1 {}", f.data().len()), f.data());
+        p.strom(id + 3, &format!(" /Length1 {}", datei.len()), &datei);
         p.strom(id + 4, "", to_unicode(&benutzt[k]).as_bytes());
     }
     for (i, s) in seiten.iter().enumerate() {
@@ -464,5 +481,111 @@ mod tests {
             assert_ne!(r.glyph(c), 0, "{c} fehlt in der Schrift");
             assert!(tu.contains(&format!("<{:04X}> <{u}>", r.glyph(c))), "{c}");
         }
+    }
+
+    /// Hinweis P: die Schriften gehen nur als Teilmenge hinein (Kennung vor
+    /// dem Namen, ein Bruchteil der Datei), und der Rundlauf über Poppler
+    /// gibt den Text zurück und zeichnet ihn. Ohne Poppler prüft der Test
+    /// nur die Größe.
+    #[test]
+    fn teilmenge_im_rundlauf() {
+        let (Some(r), Some(b)) = (
+            schrift("LiberationSans-Regular.ttf"),
+            schrift("LiberationSans-Bold.ttf"),
+        ) else {
+            return;
+        };
+        let zeilen = [
+            (false, "Mauerwerk Planstein 17,5 cm, 172,224 m² · Größe"),
+            (true, "01 Betonarbeiten 23,906 m³ Übertrag"),
+            (false, "Äußere Wände, Öffnungen ÄÖÜ äöü ß € 1.234,56"),
+        ];
+        let seite = Seite {
+            ops: zeilen
+                .iter()
+                .enumerate()
+                .map(|(i, (fett, text))| Op::Text {
+                    x: 56.7,
+                    y: 60.0 + 20.0 * i as f32,
+                    pt: 10.0,
+                    fett: *fett,
+                    grau: 0,
+                    text: (*text).into(),
+                })
+                .collect(),
+        };
+        let pdf = schreiben(&[seite], A4, &r, &b, "Rundlauf");
+        let ganz = r.data().len() + b.data().len();
+        assert!(pdf.len() * 10 < ganz, "{} Bytes", pdf.len());
+        let text = String::from_utf8_lossy(&pdf);
+        for name in ["+Skizzeo-Regular", "+Skizzeo-Bold"] {
+            let k = text.find(name).expect(name);
+            let kennung = &text[k - 7..k];
+            assert!(kennung.starts_with('/'), "{name}: {kennung:?}");
+            assert!(
+                kennung[1..].bytes().all(|c| c.is_ascii_uppercase()),
+                "{name}: {kennung:?}"
+            );
+        }
+
+        let dir = std::env::temp_dir().join(format!("sk-pdf-rundlauf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let datei = dir.join("rundlauf.pdf");
+        std::fs::write(&datei, &pdf).unwrap();
+        let lauf = |prog: &str, args: &[&std::ffi::OsStr]| {
+            std::process::Command::new(prog).args(args).output().ok()
+        };
+        let Some(aus) = lauf("pdftotext", &[datei.as_os_str(), "-".as_ref()]) else {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        };
+        assert!(aus.status.success());
+        assert!(
+            aus.stderr.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&aus.stderr)
+        );
+        let gelesen = String::from_utf8(aus.stdout).unwrap();
+        for (_, z) in zeilen {
+            assert!(gelesen.contains(z), "{z:?} fehlt in {gelesen:?}");
+        }
+        // pdffonts: beide eingebettet und als Teilmenge erkannt
+        if let Some(aus) = lauf("pdffonts", &[datei.as_os_str()]) {
+            let liste = String::from_utf8_lossy(&aus.stdout);
+            let zeilen: Vec<&str> = liste.lines().filter(|z| z.contains("Skizzeo")).collect();
+            assert_eq!(zeilen.len(), 2, "{liste}");
+            for z in zeilen {
+                assert!(z.contains("CID TrueType"), "{z}");
+                assert!(z.contains(" yes yes yes "), "{z}");
+            }
+        }
+        // pdftoppm zeichnet die Glyphen: ohne Fehler und mit Tinte
+        let bild = dir.join("seite");
+        if let Some(aus) = lauf(
+            "pdftoppm",
+            &[
+                "-r".as_ref(),
+                "72".as_ref(),
+                "-gray".as_ref(),
+                datei.as_os_str(),
+                bild.as_os_str(),
+            ],
+        ) {
+            assert!(
+                aus.stderr.is_empty(),
+                "{}",
+                String::from_utf8_lossy(&aus.stderr)
+            );
+            let pgm = std::fs::read(dir.join("seite-1.pgm")).unwrap();
+            // P5-Kopf: Kennung, Breite Höhe, Maximum
+            let kopf = pgm
+                .split(|c| *c == b'\n')
+                .take(3)
+                .map(|z| z.len() + 1)
+                .sum::<usize>();
+            let dunkel = pgm[kopf..].iter().filter(|p| **p < 128).count();
+            assert!(dunkel > 1000, "nur {dunkel} dunkle Pixel");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -4,8 +4,8 @@
 use super::*;
 use crate::kosten_view::csv_text;
 
-const BUTTON_H: f32 = 26.0;
-const BUTTON_PAD: f32 = 12.0;
+const BUTTON_H: f32 = crate::cards::KNOPF_H;
+const BUTTON_PAD: f32 = crate::cards::KNOPF_PAD;
 const BUTTON_Y: f32 = 14.0;
 /// Knopf „Druckvorschau“ und sein Abstand zum Speichern-Knopf (dip).
 const VORSCHAU: &str = "Druckvorschau";

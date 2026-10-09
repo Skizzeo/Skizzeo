@@ -836,3 +836,100 @@ fn inhalt_h_mit_den_zeilen() {
     assert!(v.zeilen.len() > vorher, "aufgeklappt");
     assert_eq!(v.content_h(), summe(&v));
 }
+
+/// Befund Q (Notiz Kopf §3): Bei 480 dip lief „Gliedern“ über den rechten
+/// Rand. Von 480 bis 1920 dip (100, 125, 150 %) bleiben Titel, Knopf,
+/// Chips, „Preise“ und „Gliedern“ im Inhalt und überdecken sich nicht;
+/// rutscht „Gliedern“ unter „Preise“, rückt die Liste mit nach unten. Die
+/// Lohnzeile bleibt in ihrer Kachel.
+#[test]
+fn kopf_ueberdeckt_sich_nie() {
+    let lib = std::path::Path::new("/usr/share/fonts/truetype/liberation");
+    let lade = |n: &str| {
+        std::fs::read(lib.join(n))
+            .ok()
+            .and_then(sk_paint::font::Font::parse)
+    };
+    let fonts = Fonts {
+        regular: lade("LiberationSans-Regular.ttf"),
+        bold: lade("LiberationSans-Bold.ttf"),
+        italic: None,
+    };
+    let Some(bold) = fonts.bold.as_ref() else {
+        return;
+    };
+    let t = Theme::dark();
+    let mut s = haus();
+    let frei = |a: Rect, b: Rect| {
+        a.0 + a.2 <= b.0 + 0.5
+            || b.0 + b.2 <= a.0 + 0.5
+            || a.1 + a.3 <= b.1 + 0.5
+            || b.1 + b.3 <= a.1 + 0.5
+    };
+    let mut beide = [false, false];
+    for scale in [1.0_f32, 1.25, 1.5] {
+        for dip in (480..=1920).step_by(40) {
+            let mut v = KostenView::new();
+            v.scale = scale;
+            (v.w, v.h) = ((dip as f32 * scale) as u32, (900.0 * scale) as u32);
+            v.top = 120.0;
+            v.sync(&mut s, None);
+            let wo = format!("{dip} dip bei {scale}");
+            let (x0, cw) = v.content_x(&t);
+            let ((px, preise), (gx, gl)) = v.schalter(&t, &fonts);
+            let pille = |lx: f32, r: Rect| (lx, r.1, r.0 + r.2 - lx, r.3);
+            let (p_end, g_end) = (preise[preise.len() - 1].1, gl[gl.len() - 1].1);
+            let mut teile = vec![
+                (
+                    "Titel",
+                    (
+                        x0,
+                        v.top_px() + (TITLE_Y - 19.0) * scale,
+                        bold.width("Kosten", 19.0 * scale),
+                        22.0 * scale,
+                    ),
+                ),
+                ("Knopf", v.button_rect(&t, &fonts)),
+                ("Preise", pille(px, p_end)),
+                ("Gliedern", pille(gx, g_end)),
+            ];
+            let chips = v.leiste.layout(&fonts, v.leiste_lage(&t));
+            teile.extend(chips.chips.iter().map(|c| ("Chip", *c)));
+            teile.extend(chips.field.map(|c| ("Gebäude", c)));
+            teile.extend(chips.all.map(|c| ("Alle", c)));
+            for (i, (na, a)) in teile.iter().enumerate() {
+                assert!(
+                    a.0 >= x0 - 0.5 && a.0 + a.2 <= x0 + cw + 0.5,
+                    "{wo}: {na} {a:?} außerhalb {x0}..{}",
+                    x0 + cw
+                );
+                for (nb, b) in &teile[i + 1..] {
+                    assert!(frei(*a, *b), "{wo}: {na} {a:?} über {nb} {b:?}");
+                }
+            }
+            let unten = g_end.1 > p_end.1;
+            beide[usize::from(unten)] = true;
+            assert_eq!(unten, v.zeile2() > 0.0, "{wo}");
+            // Die Spaltenköpfe stehen unter den Schaltern
+            let kopf = v.top_px() + (v.head() - 12.0 - 10.0) * scale;
+            assert!(
+                g_end.1 + g_end.3 <= kopf,
+                "{wo}: Gliedern über den Spaltenköpfen"
+            );
+            assert!(v.list_top() > g_end.1 + g_end.3, "{wo}");
+            // Kachel Lohnanteil: die Lohnzeile bleibt in ihrer Kachel
+            let (vor, _, nach, (lx, _, lw, _)) = v.lohnsatz_lage(&t, &fonts).expect("Lohnzeile");
+            let r = fonts.regular.as_ref().unwrap();
+            let px = 10.0 * scale;
+            let tw = (cw - 2.0 * TILE_GAP * scale) / 3.0;
+            let kx = x0 + 2.0 * (tw + TILE_GAP * scale);
+            let (a, e) = (lx - r.width(&vor, px), lx + lw + r.width(&nach, px));
+            assert!(
+                a >= kx + 12.0 * scale - 0.5 && e <= kx + tw - 12.0 * scale + 0.5,
+                "{wo}: Lohnzeile {a}..{e} außerhalb der Kachel {kx}..{}",
+                kx + tw
+            );
+        }
+    }
+    assert_eq!(beide, [true, true], "beide Lagen kommen vor");
+}

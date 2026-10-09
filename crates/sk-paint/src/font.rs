@@ -56,6 +56,8 @@ enum Cmap {
     Groups(usize),
 }
 
+mod teilmenge;
+
 fn u16_at(d: &[u8], o: usize) -> Option<u16> {
     Some(u16::from_be_bytes([*d.get(o)?, *d.get(o + 1)?]))
 }
@@ -79,7 +81,7 @@ impl Font {
     /// Nur eine einzelne Schrift mit `glyf`-Umrissen: eine Sammlung
     /// (`.ttc`, Kennung `ttcf`) und eine CFF-OpenType (`OTTO`) lehnt sie ab.
     /// Darauf verlassen sich [`Font::metrik_milli`] (Tabellenverzeichnis ab
-    /// Byte 4) und das PDF, das [`Font::data`] ganz als `FontFile2` einbettet.
+    /// Byte 4) und das PDF, das daraus eine Teilmenge als `FontFile2` einbettet.
     pub fn parse(data: Vec<u8>) -> Option<Font> {
         let d = &data;
         if !matches!(d.get(..4)?, [0, 1, 0, 0] | b"true") {

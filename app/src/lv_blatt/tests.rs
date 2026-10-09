@@ -479,7 +479,7 @@ fn titelblatt_und_verzeichnis() {
     assert!(!alle(&b).iter().any(|x| x.contains("Projekt-Nr.")));
 }
 
-/// Das PDF: Kopf, Seiten, eingebettete Schrift; Dateiname.
+/// Das PDF: Kopf, Seiten, eingebettete Teilmenge der Schrift; Dateiname.
 #[test]
 fn pdf_und_dateiname() {
     let Some((r, fe)) = schriften() else {
@@ -495,6 +495,8 @@ fn pdf_und_dateiname() {
     let pdf = sk_paint::pdf::schreiben(&b.seiten, A4, &r, &fe, "LV Rohbau");
     assert!(pdf.starts_with(b"%PDF-1.4"));
     assert!(pdf.ends_with(b"%%EOF\n"));
+    // Hinweis P: die Schriften nur als Teilmenge, das LV bleibt klein
+    assert!(pdf.len() < 120_000, "{} Bytes", pdf.len());
     if let Some(d) = std::env::var_os("SKIZZEO_LV_PDF") {
         std::fs::write(d, &pdf).unwrap();
     }
