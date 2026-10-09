@@ -2167,7 +2167,12 @@ impl KostenView {
                 } else {
                     col
                 };
-                zahl(c, &z.gp, x0 + cw, f, gcol);
+                // Betrag mit „€“ wie im Soll (spaeter-darstellung 5)
+                let gp = match z.betrag {
+                    Some(_) => format!("{} €", z.gp),
+                    None => z.gp.clone(),
+                };
+                zahl(c, &gp, x0 + cw, f, gcol);
             }
             let ueber =
                 matches!(self.hot, Some(Hot::Zeile(j, _)) | Some(Hot::Waehlen(j)) if j == i);

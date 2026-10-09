@@ -261,7 +261,8 @@ impl Karten {
             if let Some(f) = bold {
                 f.draw(c, b.name(), 14.0 * s, x + 42.0 * s, y + 28.0 * s, text);
             }
-            if let Some(f) = regular {
+            // Aktive Karte: Zahl fett wie im Soll (spaeter-darstellung 4)
+            if let Some(f) = if aktiv { bold } else { regular } {
                 let g = self.glimm_von(b, t, now);
                 f.draw(
                     c,
