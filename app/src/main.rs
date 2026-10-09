@@ -1206,7 +1206,13 @@ impl App {
     /// es genommen haben.
     fn sonne_handle(&mut self, ev: &Event, vw: f64, vh: f64, sc: f64) -> bool {
         let (Some(sun), Some(h)) = (self.sonne_an(), self.himmel()) else {
-            if self.sonne.hover.is_some() || self.sonne.ueber_sonne || self.sonne.is_busy() {
+            // Auch ein offenes Feld der Leiste: sonst nähme es unsichtbar
+            // jede Taste (Review 3bx)
+            if self.sonne.hover.is_some()
+                || self.sonne.ueber_sonne
+                || self.sonne.is_busy()
+                || self.sonne.eingabe.is_some()
+            {
                 self.sonne.reset();
                 self.redraw = true;
             }
@@ -4224,6 +4230,12 @@ impl App {
                 } else {
                     let out = self.ui.handle(&e, self.w, self.top());
                     self.apply_ui(&out);
+                    // Ein Klick in die Paneele schließt das Feld der
+                    // Sonnenstands-Leiste, sonst nähme es weiter jede Taste
+                    // (Review 3bx)
+                    if out.consumed && self.sonne.eingabe.take().is_some() {
+                        self.redraw = true;
+                    }
                     if !out.consumed && !self.press_chip(button, x, y, sc) {
                         let ev = in_view(e);
                         camera_moved |=
