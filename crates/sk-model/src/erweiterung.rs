@@ -72,6 +72,20 @@ impl ExtDef {
         ExtDef::mit(text, true)
     }
 
+    /// Wie [`ExtDef::lesen`], beim Öffnen eines Projekts: dazu der Hinweis,
+    /// wenn der Standardtyp von den Vorgaben abweicht (beim Einlesen ein
+    /// Fehler; die gespeicherte Definition bleibt erhalten, Vertrag §11).
+    pub fn oeffnen(text: &str) -> Result<(ExtDef, Option<String>), String> {
+        let d = ExtDef::mit(text, false)?;
+        let p = sk_szb::pruefen_beim_oeffnen(&d.text, &Bestand::werk(), &Geschoss::PROBE);
+        let h = p
+            .befunde
+            .iter()
+            .find(|b| !b.ist_fehler() && b.text.contains("Standardtyp weicht von den Vorgaben ab"))
+            .map(|b| b.text.clone());
+        Ok((d, h))
+    }
+
     fn mit(text: &str, grenzen: bool) -> Result<ExtDef, String> {
         let text = normal(text);
         let (best, g) = (Bestand::werk(), Geschoss::PROBE);

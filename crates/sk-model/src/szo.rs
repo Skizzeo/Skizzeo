@@ -2138,7 +2138,17 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         let d = r
             .opt("text")
             .ok_or_else(|| "„text“ fehlt".to_string())
-            .and_then(ExtDef::lesen)
+            .and_then(ExtDef::oeffnen)
+            .map(|(d, h)| {
+                // ältere Definition: Standardtyp nur als Hinweis (§11)
+                if let Some(h) = h {
+                    hints.push(format!(
+                        "Zeile {}: Erweiterung „{key}“: {h}; die Definition bleibt erhalten",
+                        r.line
+                    ));
+                }
+                d
+            })
             .and_then(|d| match d {
                 d if d.key != key => Err(format!("key „{}“ im Text", d.key)),
                 d if ext_defs.iter().any(|o| o.key == d.key) => Err("doppelt".into()),

@@ -1340,14 +1340,18 @@ fn pruefen_mit(text: &str, best: &Bestand, g: &Geschoss, grenzpruefung: bool) ->
             })
             .collect();
         if !ab.is_empty() {
-            b.push(Befund::fehler(
-                t.zeile,
-                format!(
-                    "[typ] {}: Standardtyp weicht von den Vorgaben ab ({})",
-                    t.key(),
-                    ab.join(", ")
-                ),
-            ));
+            let text = format!(
+                "[typ] {}: Standardtyp weicht von den Vorgaben ab ({})",
+                t.key(),
+                ab.join(", ")
+            );
+            // Beim Öffnen eines Projekts bleibt eine ältere Definition
+            // erhalten: Hinweis statt Fehler (Vertrag §11, Review 3cm)
+            b.push(if grenzpruefung {
+                Befund::fehler(t.zeile, text)
+            } else {
+                Befund::hinweis(t.zeile, text)
+            });
         }
     }
     let hart = b.iter().any(Befund::ist_fehler);
