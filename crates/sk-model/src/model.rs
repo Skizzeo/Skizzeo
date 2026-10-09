@@ -141,7 +141,8 @@ pub struct Model {
     project: Project,
     /// Lage und Nordrichtung (`[location]`, Sonnenstand S1).
     location: Location,
-    /// Unlesbare `[location]`-Zeile der Datei, roh (Befund A der Abnahme S1).
+    /// `[location]`-Zeile der Datei, die nicht als Lage zählt, roh (Befund A
+    /// der Abnahme S1, Review 3br).
     location_raw: Option<String>,
     /// Schnitte A und B.
     cuts: [Cut; 2],

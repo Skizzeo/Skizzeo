@@ -1533,9 +1533,10 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         }
         [_, r, ..] => return Err(err(r.line, "[projectinfo] doppelt")),
     }
-    // Lage und Nordrichtung (Sonnenstand S1). Ein Wert, der keine Zahl im
-    // Bereich ist, öffnet das Projekt trotzdem: die Zeile zählt nicht und
-    // bleibt bytegleich (Befund A der Abnahme S1)
+    // Lage und Nordrichtung (Sonnenstand S1). Was nicht als Lage zählt (ein
+    // Wert, der keine Zahl im Bereich ist, oder keine bekannte Angabe),
+    // öffnet das Projekt trotzdem und bleibt bytegleich stehen (Befund A der
+    // Abnahme S1, Review 3br)
     let mut location = Location::default();
     let mut location_raw = None;
     match recs("location").as_slice() {
@@ -1558,8 +1559,13 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                 lon: num("lon", 180.0),
                 north: num("north", f64::MAX),
             };
-            if falsch.is_empty() {
+            if falsch.is_empty() && !read.is_unset() {
                 location = read.normalized();
+            } else if falsch.is_empty() {
+                // Keine bekannte Angabe (`elev=` einer neueren Fassung): zählt
+                // nicht als Lage, bleibt im Wortlaut (Review 3br); Unbekanntes
+                // meldet der Hinweis zu fremden Schlüsseln
+                location_raw = Some(lines[r.line - 1].to_string());
             } else {
                 r.skip();
                 location_raw = Some(lines[r.line - 1].to_string());
@@ -3978,6 +3984,40 @@ mod tests {
             assert!(m.commit().is_none());
             assert_eq!(write(&m), kaputt);
         }
+        // Nur Fremdes oder leer (Review 3br): zählt nicht als Lage, bleibt
+        // beim Speichern ohne Änderung im Wortlaut; eine gesetzte Lage
+        // ersetzt die Zeile, Rückgängig holt sie zurück
+        for z in [
+            "[location] elev=34",
+            "[location] lat=95 elev=34",
+            "[location]",
+        ] {
+            let f = mit(z);
+            let l = load(&f).unwrap();
+            assert!(l.model.location().is_unset(), "{z}");
+            let text = write(&l.model);
+            assert_eq!(text, f, "{z}");
+            assert_eq!(write(&load(&text).unwrap().model), text, "{z}");
+            let mut m = l.model;
+            m.begin("Nordrichtung geändert");
+            assert!(m.set_location(Location {
+                north: Some(5.0),
+                ..Default::default()
+            }));
+            let t = m.commit().unwrap();
+            let neu = write(&m);
+            let zeilen: Vec<&str> = neu
+                .lines()
+                .filter(|z| z.starts_with("[location]"))
+                .collect();
+            assert_eq!(zeilen, ["[location] north=5"], "{z}");
+            m.apply(&t, crate::txn::Direction::Undo);
+            assert_eq!(write(&m), f, "{z}: Rückgängig");
+        }
+        let l = load(&mit("[location] elev=34")).unwrap();
+        assert_eq!(l.hints.len(), 1, "{:?}", l.hints);
+        assert!(l.hints[0].contains("„elev“"), "{:?}", l.hints);
+
         // Gesetzt und im selben Schritt wieder leer: kein leerer Schritt,
         // der die Zeile stillschweigend verliert
         let kaputt = mit("[location] lat=abc");

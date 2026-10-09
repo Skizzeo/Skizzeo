@@ -2,9 +2,10 @@
 //! `[location]` der `.szo`, höchstens eine Zeile. Ein eigener Abschnitt
 //! statt Schlüssel an `[projectinfo]`, denn ein älterer Stand behält einen
 //! ganzen fremden Abschnitt bytegleich (F-17b). Ohne Angaben wird nichts
-//! geschrieben. Eine Zeile, die sich nicht lesen lässt (keine Zahl, außerhalb
-//! des Bereichs), zählt nicht und bleibt bytegleich, bis eine gesetzte Lage
-//! sie ersetzt (Befund A der Abnahme S1).
+//! geschrieben. Eine Zeile, die nicht als Lage zählt (keine Zahl, außerhalb
+//! des Bereichs, keine bekannte Angabe), bleibt bytegleich stehen, bis eine
+//! gesetzte Lage sie ersetzt; nie entstehen zwei Zeilen (Befund A der
+//! Abnahme S1, Review 3br).
 
 use super::*;
 use sk_math::sonne::Lage;
@@ -65,8 +66,8 @@ impl Model {
         &self.location
     }
 
-    /// Die unlesbare `[location]`-Zeile der Datei, solange keine Lage
-    /// gesetzt wurde.
+    /// Die `[location]`-Zeile der Datei, die nicht als Lage zählt, solange
+    /// keine Lage gesetzt wurde.
     pub(crate) fn location_raw(&self) -> Option<&str> {
         self.location_raw.as_deref()
     }
