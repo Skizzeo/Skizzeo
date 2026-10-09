@@ -380,7 +380,9 @@ fn csv_menge(einheit: &str, wert: Option<f64>) -> [String; 5] {
 
 /// CSV nach Gewerk: die Mengen der Erweiterungen im Gewerk `t` mit den
 /// Spalten Gebäude, Gewerk, Kostengruppe, Bauteil, Nr., Geschoss, Länge,
-/// Fläche, Volumen, Hinweis; Stück, t und kg als Text im Hinweis.
+/// Fläche, Volumen, Hinweis; Stück, t und kg als Text im Hinweis. Ein
+/// Zwischentitel davor sagt, dass sie nicht in der Summe des Gewerks stehen
+/// (Review 3cl b).
 pub(super) fn csv_gewerk(
     m: &Model,
     b: &BuildingQto,
@@ -389,6 +391,7 @@ pub(super) fn csv_gewerk(
     t: Option<TradeId>,
     row: &mut dyn FnMut([&str; 10]),
 ) {
+    let mut titel = true;
     for st in &b.storeys {
         let sname = storey_name(m, st.id).0;
         for g in &st.groups {
@@ -398,6 +401,10 @@ pub(super) fn csv_gewerk(
             let name = name(m, key);
             for r in &g.rows {
                 for q in mengen(r).iter().filter(|q| q.gewerk == t) {
+                    if std::mem::take(&mut titel) {
+                        let t = "Erweiterungen, nicht in der Summe";
+                        row([gb, gewerk, "", t, "", "", "", "", "", ""]);
+                    }
                     let kg = q.kg.map_or(String::new(), |k| k.to_string());
                     let z = csv_menge(&q.einheit, q.wert);
                     let hinweis = match (q.einheit.as_str(), q.wert) {
@@ -531,6 +538,13 @@ mod tests {
         assert!(c.contains("Stabgeländer: Pfosten;GL-001;;4,0000;;;"), "{c}");
         assert!(c.contains(";322;Bodenplatte 20 cm;BP-001;;1;;;"), "{c}");
         let c = String::from_utf8(csv_grouped(&m, &sched, Grouping::Trade)).unwrap();
+        // Zwischentitel je Gewerk vor den Erweiterungszeilen (Review 3cl b)
+        let titel = |g: &str| format!(";{g};;Erweiterungen, nicht in der Summe;;;;;;\r\n");
+        assert_eq!(c.matches(&titel("18331 Betonarbeiten")).count(), 1, "{c}");
+        let i = c
+            .find(&titel("18360 Metallbauarbeiten"))
+            .expect("Titel Metallbau");
+        assert!(i < c.find("Stabgeländer: Geländer").unwrap(), "{c}");
         assert!(
             c.contains(
                 "18360 Metallbauarbeiten;359;Stabgeländer: Geländer;GL-001;Erdgeschoss;3,0000;;;"
