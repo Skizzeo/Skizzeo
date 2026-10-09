@@ -118,6 +118,14 @@ impl Model {
         true
     }
 
+    /// Ein roh gebliebenes Exemplar trägt die Nummer `s`.
+    fn raw_number(&self, s: &str) -> bool {
+        let (a, b) = (format!("number={s}"), format!("number=\"{s}\""));
+        self.ext_raw
+            .iter()
+            .any(|l| l.starts_with("[extpart]") && l.split(' ').any(|w| w == a || w == b))
+    }
+
     /// Nächste Nummer zum Präfix, z. B. „ST-004“. Nie wiederverwendet, auch
     /// nicht nach Löschen oder Rückgängig.
     fn next_ext_number(&mut self, prefix: &str) -> String {
@@ -125,7 +133,7 @@ impl Model {
             let n = self.ext_numbers.entry(prefix.to_string()).or_insert(0);
             *n += 1;
             let s = format!("{prefix}-{:03}", n);
-            if self.element_by_number(&s).is_none() {
+            if self.element_by_number(&s).is_none() && !self.raw_number(&s) {
                 return s;
             }
         }

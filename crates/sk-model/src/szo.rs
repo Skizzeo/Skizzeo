@@ -2177,7 +2177,25 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             ext_raw.push(lines[r.line - 1].to_string());
             continue;
         }
-        let part = read_ext_part(r)?;
+        // Ein unlesbares Exemplar bleibt roh wie eine unlesbare Definition
+        // (BIM-Routine 09.10.): das Projekt öffnet trotzdem
+        let part = match read_ext_part(r) {
+            Ok(p) => p,
+            Err(e) => {
+                hints.push(format!(
+                    "Zeile {}: Bauteil {} der Erweiterung „{key}“ nicht lesbar ({}); es bleibt unverändert in der Datei",
+                    r.line,
+                    r.opt("number").unwrap_or("ohne Nummer"),
+                    e.message
+                ));
+                if let Some(g) = r.opt("guid").and_then(Guid::from_ifc) {
+                    ext_raw_guids.insert(g);
+                }
+                r.all_used();
+                ext_raw.push(lines[r.line - 1].to_string());
+                continue;
+            }
+        };
         let e = Element {
             guid: r.guid("guid")?,
             number: number(r)?,
