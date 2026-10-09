@@ -2470,10 +2470,10 @@ mod abnahme_ka2_nr14 {
                 Some((z.clone(), w))
             })
             .expect("graue Zeile mit Wahl");
-        let typ = z.typ.unwrap();
+        let schicht = z.schicht().unwrap().schicht;
         let op = Op::BauleistungZuordnen {
-            typ,
-            schicht: z.schicht,
+            typ: z.schicht().unwrap().typ.unwrap(),
+            schicht,
             bauleistung: Some(wahl.leistung),
         };
         s.kosten_folge(
@@ -2491,7 +2491,7 @@ mod abnahme_ka2_nr14 {
         assert!(b2
             .ohne
             .iter()
-            .all(|x| x.element != z.element || x.schicht != z.schicht));
+            .all(|x| x.element != z.element || x.schicht().map(|x| x.schicht) != Some(schicht)));
         assert!(b2.positionen.len() > b.positionen.len());
         assert!(s.undo());
         assert_eq!(sk_model::szo::write(s.model()), vorher, "Strg+Z bytegleich");

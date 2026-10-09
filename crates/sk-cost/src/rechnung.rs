@@ -67,6 +67,9 @@ pub struct Ansatz {
     /// nur bei Positionen nach Volumen, sonst 0 (Zeile „− Auflager“ im
     /// Mengenansatz des LV, `LayerRow.pocket`).
     pub auflager: i128,
+    /// Erweiterung, Menge in t oder kg: kg je m³ Bauteil aus der Formel
+    /// der Definition („80 kg/m³ aus der Definition“, B16).
+    pub grad: Option<u32>,
 }
 
 /// Was eine Position rechnet.
@@ -143,19 +146,73 @@ pub struct OhneZeile {
     pub nummer: String,
     pub geschoss: StoreyId,
     pub gebaeude: Option<BuildingId>,
-    /// Gewerk und Kostengruppe der Schicht (die Zeile steht am Ende ihres
-    /// Gewerks bzw. ihrer KG, ka-2-fach §2.1).
+    /// Gewerk und Kostengruppe der Schicht bzw. Menge (die Zeile steht am
+    /// Ende ihres Gewerks bzw. ihrer KG, ka-2-fach §2.1).
     pub gewerk: Option<Guid>,
     pub kg: Option<u16>,
-    /// Typ des Bauteils (für „Bauleistung wählen“ an der Schicht).
+    pub einheit: Einheit,
+    pub menge: Dez,
+    /// Schicht eines Bauteils oder Menge einer Erweiterung.
+    pub herkunft: OhneHerkunft,
+}
+
+/// Woher eine Zeile ohne Bauleistung kommt (Vorprüfung E8 Frage 4: eine
+/// Liste, der Compiler sichert beide Fälle).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OhneHerkunft {
+    /// Schicht `schicht` eines Bauteils.
+    Schicht {
+        /// Typ des Bauteils (für „Bauleistung wählen“ an der Schicht).
+        typ: Option<Guid>,
+        schicht: usize,
+        baustoff: Guid,
+        dicke: Dez,
+        /// Mengenbezüge, die das Bauteil hat (Regel 80, „Bauleistung
+        /// wählen“).
+        bezuege: Vec<Bezug>,
+    },
+    /// `[menge]` Nr. `satz` eines Erweiterungsbauteils (E8b).
+    Erweiterung {
+        key: String,
+        satz: usize,
+        /// Name der Menge („Schalung Stütze“).
+        name: String,
+        /// Warum keine Position entsteht („Einheit m² passt nicht zur
+        /// Bauleistung in m“).
+        grund: String,
+    },
+}
+
+/// Schicht einer Zeile ohne Bauleistung (siehe [`OhneZeile::schicht`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OhneSchicht<'a> {
     pub typ: Option<Guid>,
     pub schicht: usize,
     pub baustoff: Guid,
     pub dicke: Dez,
-    pub einheit: Einheit,
-    pub menge: Dez,
-    /// Mengenbezüge, die das Bauteil hat (Regel 80, „Bauleistung wählen“).
-    pub bezuege: Vec<Bezug>,
+    pub bezuege: &'a [Bezug],
+}
+
+impl OhneZeile {
+    /// Die Schicht, wenn die Zeile von einer kommt.
+    pub fn schicht(&self) -> Option<OhneSchicht<'_>> {
+        match &self.herkunft {
+            OhneHerkunft::Schicht {
+                typ,
+                schicht,
+                baustoff,
+                dicke,
+                bezuege,
+            } => Some(OhneSchicht {
+                typ: *typ,
+                schicht: *schicht,
+                baustoff: *baustoff,
+                dicke: *dicke,
+                bezuege,
+            }),
+            OhneHerkunft::Erweiterung { .. } => None,
+        }
+    }
 }
 
 /// Das Kostenblatt eines Umfangs (Bausteingrenze §5, ka-0-fach §1.6).
@@ -682,6 +739,41 @@ struct Sammel {
     schicht: Option<(Guid, Dez)>,
 }
 
+/// Legt den Ansatz `a` an die Position `key` (neu, wenn es sie noch nicht
+/// gibt).
+#[allow(clippy::too_many_arguments)]
+fn legen_in(
+    sammel: &mut Vec<Sammel>,
+    index: &mut HashMap<PosKey, usize>,
+    key: PosKey,
+    einheit: Einheit,
+    gewerk: Option<Guid>,
+    preis_fehlt: bool,
+    a: Ansatz,
+    dicke: Dez,
+    schicht: Option<(Guid, Dez)>,
+) {
+    let i = *index.entry(key.clone()).or_insert_with(|| {
+        sammel.push(Sammel {
+            quelle: key.0.clone(),
+            stoff: key.1,
+            preis_fehlt: false,
+            einheit,
+            gewerk,
+            dicken: Vec::new(),
+            ansatz: Vec::new(),
+            schicht,
+        });
+        sammel.len() - 1
+    });
+    let p = &mut sammel[i];
+    p.preis_fehlt |= preis_fehlt;
+    if !p.dicken.contains(&dicke) {
+        p.dicken.push(dicke);
+    }
+    p.ansatz.push(a);
+}
+
 /// Wie [`kosten`], mit Zwischenspeicher: dasselbe Blatt auf den Cent.
 pub fn kosten_mit(
     sp: Kostenspeicher,
@@ -767,6 +859,7 @@ pub fn kosten_mit(
             menge,
             aus: None,
             auflager: 0,
+            grad: None,
         };
         let gewerk_schicht = r.trade.and_then(|t| m.trade(t)).map(|t| t.guid);
         let mut legen = |key: PosKey,
@@ -775,26 +868,20 @@ pub fn kosten_mit(
                          preis_fehlt: bool,
                          a: Ansatz,
                          dicke: Dez| {
-            let i = *index.entry(key.clone()).or_insert_with(|| {
-                sammel.push(Sammel {
-                    quelle: key.0.clone(),
-                    stoff: key.1,
-                    preis_fehlt: false,
-                    einheit,
-                    gewerk,
-                    dicken: Vec::new(),
-                    ansatz: Vec::new(),
-                    schicht: (!matches!(key.0, Quelle::Richtpreis(_)))
-                        .then_some((w.baustoff, w.dicke)),
-                });
-                sammel.len() - 1
-            });
-            let p = &mut sammel[i];
-            p.preis_fehlt |= preis_fehlt;
-            if !p.dicken.contains(&dicke) {
-                p.dicken.push(dicke);
-            }
-            p.ansatz.push(a);
+            let schicht =
+                (!matches!(key.0, Quelle::Richtpreis(_))).then_some((w.baustoff, w.dicke));
+            let s = &mut sammel;
+            legen_in(
+                s,
+                &mut index,
+                key,
+                einheit,
+                gewerk,
+                preis_fehlt,
+                a,
+                dicke,
+                schicht,
+            );
         };
         // Menge der Schicht in kleinster Einheit
         let menge_von = |b: Bezug, folge: bool| -> Option<i128> {
@@ -925,25 +1012,30 @@ pub fn kosten_mit(
                     gebaeude: *gebaeude,
                     gewerk: gewerk_schicht,
                     kg: r.kg,
-                    typ: key.typ,
-                    schicht: r.layer,
-                    baustoff: w.baustoff,
-                    dicke: w.dicke,
                     einheit,
                     menge: drei(menge, einheit),
-                    bezuege: [
-                        (Bezug::Flaeche, r.face),
-                        (Bezug::Volumen, r.volume),
-                        (Bezug::Laenge, r.length.max(r.bill_length)),
-                    ]
-                    .into_iter()
-                    .filter(|(_, v)| ganz(*v) > 0)
-                    .map(|(b, _)| b)
-                    .collect(),
+                    herkunft: OhneHerkunft::Schicht {
+                        typ: key.typ,
+                        schicht: r.layer,
+                        baustoff: w.baustoff,
+                        dicke: w.dicke,
+                        bezuege: [
+                            (Bezug::Flaeche, r.face),
+                            (Bezug::Volumen, r.volume),
+                            (Bezug::Laenge, r.length.max(r.bill_length)),
+                        ]
+                        .into_iter()
+                        .filter(|(_, v)| ganz(*v) > 0)
+                        .map(|(b, _)| b)
+                        .collect(),
+                    },
                 });
             }
         }
     }
+    // Erweiterungsbauteile (E8b), nach den Schichten (E8-9)
+    let ext = ext_ansaetze(m, s, k, &mut sammel, &mut index, &mut lose_gemeldet);
+    ohne.extend(ext.ohne);
     // Befunde der benutzten Typen, je einmal
     let mut schluessel: Vec<&Schluessel> = typen.keys().collect();
     schluessel.sort_by_key(|s| (s.typ, s.kat as u8, s.schichten));
@@ -954,6 +1046,12 @@ pub fn kosten_mit(
                     befunde.push(b.clone());
                 }
             }
+        }
+    }
+
+    for b in ext.befunde {
+        if !befunde.contains(&b) {
+            befunde.push(b);
         }
     }
 
@@ -1068,6 +1166,29 @@ pub fn kosten_mit(
         (los, titel, pos, g, p.stoff, p.kurz.clone())
     };
     positionen.sort_by_cached_key(rang);
+    befunde.extend(ohne_los(m, k, &positionen));
+    // B15: Preise aus Erweiterungen, die nicht im Firmenkatalog stehen
+    let aus_ext = positionen
+        .iter()
+        .filter_map(|p| match p.quelle {
+            Quelle::Leistung(g) => k.aus_erweiterung("service", g),
+            _ => None,
+        })
+        .count();
+    if aus_ext > 0 {
+        befunde.push(Befund::hinweis(
+            88,
+            format!(
+                "Preise aus Erweiterung, nicht im Firmenkatalog: {aus_ext} {}",
+                if aus_ext == 1 {
+                    "Leistung"
+                } else {
+                    "Leistungen"
+                }
+            ),
+            Ort::Datei,
+        ));
+    }
 
     let summe = |f: &dyn Fn(&Position) -> Cent| positionen.iter().map(f).sum::<Cent>();
     let netto = summe(&|p| p.gp);
@@ -1099,9 +1220,9 @@ pub fn kosten_mit(
     // Teilungen (Regel 96): Teilmenge auf 3 Stellen × EP, Ausgleich am Ende
     let geschoss_folge: Vec<StoreyId> = {
         let mut v: Vec<StoreyId> = Vec::new();
-        for (_, r) in &rows {
-            if !v.contains(&r.storey) {
-                v.push(r.storey);
+        for st in rows.iter().map(|(_, r)| r.storey).chain(ext.geschosse) {
+            if !v.contains(&st) {
+                v.push(st);
             }
         }
         v
@@ -1177,6 +1298,258 @@ pub fn kosten_mit(
             neu,
         },
     )
+}
+
+/// Was die Erweiterungsbauteile beitragen, außer den Ansätzen selbst.
+struct ExtBeitrag {
+    ohne: Vec<OhneZeile>,
+    befunde: Vec<Befund>,
+    geschosse: Vec<StoreyId>,
+}
+
+/// Erweiterungsbauteile (E8b): je `[menge]` mit `leistung=` ein Ansatz an
+/// der Position dieser Bauleistung, Menge = Wert × kleinste Einheit. Keine
+/// Zuordnung nach Regel 81 und keine Folgepositionen (Regel 85): Die
+/// Definition nennt jede Menge selbst. Passt etwas nicht, steht die Menge
+/// „ohne Bauleistung“ mit Grund.
+fn ext_ansaetze(
+    m: &Model,
+    s: &Schedule,
+    k: &Katalog,
+    sammel: &mut Vec<Sammel>,
+    index: &mut HashMap<PosKey, usize>,
+    lose_gemeldet: &mut Vec<ElementId>,
+) -> ExtBeitrag {
+    use crate::erweiterung::{einheit_wort, leistung_von};
+    let mut out = ExtBeitrag {
+        ohne: Vec::new(),
+        befunde: Vec::new(),
+        geschosse: Vec::new(),
+    };
+    let mut stoffe: HashMap<(Guid, Option<Guid>, Dez), (Cent, bool)> = HashMap::new();
+    for (gebaeude, geschoss, row, q) in s.ext_rows() {
+        let (Some(e), Some(d)) = (m.element(row.element), m.ext_def(&q.key)) else {
+            continue;
+        };
+        if !out.geschosse.contains(&geschoss) {
+            out.geschosse.push(geschoss);
+        }
+        if gebaeude.is_none() && !lose_gemeldet.contains(&row.element) {
+            lose_gemeldet.push(row.element);
+            out.befunde.push(Befund::hinweis(
+                95,
+                format!(
+                    "{} gehört zu keinem Gebäude und zählt nur im Umfang Projekt.",
+                    row.number
+                ),
+                Ort::Bauteil(e.guid),
+            ));
+        }
+        for mg in &q.mengen {
+            let Some(r) = d.def.menge.get(mg.satz) else {
+                continue;
+            };
+            // Zählmengen ohne Leistung sind keine Kostenzeile
+            let Some(lw) = r.get("leistung").filter(|v| !v.is_empty()) else {
+                continue;
+            };
+            let g = leistung_von(&d.key, lw);
+            let l = k.leistung(g).filter(|l| !l.retired);
+            let kg_menge = r.get("kg").and_then(|v| v.parse::<u16>().ok());
+            let kg = kg_menge.or(l.and_then(|l| l.kg)).or(d.kg());
+            let einheit = Einheit::aus(einheit_wort(&mg.einheit));
+            let mut ohne = |grund: String, einheit: Option<Einheit>, wert: Option<f64>| {
+                let e2 = einheit.unwrap_or(Einheit::St);
+                let menge = wert.map_or(0, |v| (v * skala(e2) as f64).round() as i128);
+                let z = OhneZeile {
+                    element: row.element,
+                    nummer: row.number.clone(),
+                    geschoss,
+                    gebaeude,
+                    gewerk: mg.gewerk.and_then(|t| m.trade(t)).map(|t| t.guid),
+                    kg,
+                    einheit: e2,
+                    menge: drei(menge, e2),
+                    herkunft: OhneHerkunft::Erweiterung {
+                        key: d.key.clone(),
+                        satz: mg.satz,
+                        name: mg.name.clone(),
+                        grund,
+                    },
+                };
+                out.befunde.push(Befund::warnung(
+                    81,
+                    ohne_ext_text(m, &z),
+                    Ort::Bauteil(e.guid),
+                ));
+                out.ohne.push(z);
+            };
+            let Some(l) = l else {
+                ohne(
+                    format!("Bauleistung {lw} gibt es im Katalog nicht"),
+                    einheit,
+                    mg.wert,
+                );
+                continue;
+            };
+            let Some(wert) = mg.wert else {
+                ohne("die Formel rechnet nicht".into(), einheit, None);
+                continue;
+            };
+            // gleiche Größe: kg und t beide in g (E8-4)
+            let masse = |e: Einheit| matches!(e, Einheit::T | Einheit::Kg);
+            let em = match einheit {
+                Some(em) if em == l.einheit || (masse(em) && masse(l.einheit)) => em,
+                _ => {
+                    let z: &str = match einheit {
+                        Some(e) => e.zeichen(),
+                        None => &mg.einheit,
+                    };
+                    ohne(
+                        format!(
+                            "Einheit {z} passt nicht zur Bauleistung in {}",
+                            l.einheit.zeichen()
+                        ),
+                        einheit,
+                        Some(wert),
+                    );
+                    continue;
+                }
+            };
+            // Dickenband der Bauleistung (A7): ohne dicke ungeprüft
+            let t = mg.dicke.map(dicke);
+            if let Some(t) = t {
+                let aus = l.tmin.is_some_and(|a| t < a) || l.tmax.is_some_and(|b| t > b);
+                if aus {
+                    ohne(
+                        format!(
+                            "Dicke {} liegt außerhalb von {} ({})",
+                            mm_text(t),
+                            l.kurz,
+                            band_text(l.tmin, l.tmax)
+                        ),
+                        einheit,
+                        Some(wert),
+                    );
+                    continue;
+                }
+            }
+            let menge = (wert * skala(em) as f64).round() as i128;
+            if menge == 0 {
+                continue;
+            }
+            let t = t.unwrap_or(Dez::NULL);
+            let mat = r
+                .get("baustoff")
+                .and_then(|b| m.ext_material(d, b))
+                .and_then(|id| m.material(id));
+            let ort = Ort::Bauteil(e.guid);
+            let (stoff, pf) = *stoffe
+                .entry((g, mat.map(|x| x.guid), t))
+                .or_insert_with(|| {
+                    let mut bf = Vec::new();
+                    let x = stoff_ep(k, l, Some((t, mat)), false, &ort, &mut bf);
+                    for b in bf {
+                        if !out.befunde.contains(&b) {
+                            out.befunde.push(b);
+                        }
+                    }
+                    x
+                });
+            legen_in(
+                sammel,
+                index,
+                (Quelle::Leistung(g), stoff, None),
+                l.einheit,
+                Some(l.gewerk),
+                pf,
+                Ansatz {
+                    element: row.element,
+                    nummer: row.number.clone(),
+                    geschoss,
+                    gebaeude,
+                    kg,
+                    menge,
+                    aus: None,
+                    auflager: 0,
+                    // Masse je m³ aller Körper (B16)
+                    grad: (masse(em) && q.volume > 0.0)
+                        .then(|| (menge as f64 / (q.volume / 1e6)).round() as u32),
+                },
+                t,
+                mat.map(|x| (x.guid, t)),
+            );
+        }
+    }
+    out
+}
+
+/// „Ohne Bauleistung: Stahlbetonstütze ST-001 · Schalung Stütze (Einheit
+/// m² passt nicht zur Bauleistung in m)“ (Kosten, Prüfung E8 Frage 4).
+pub fn ohne_ext_text(m: &Model, o: &OhneZeile) -> String {
+    let OhneHerkunft::Erweiterung {
+        key, name, grund, ..
+    } = &o.herkunft
+    else {
+        return String::new();
+    };
+    let bauteil = m.ext_def(key).map_or(key.clone(), |d| {
+        sk_model::erweiterung::anzeige(d.name(), 60)
+    });
+    format!(
+        "Ohne Bauleistung: {bauteil} {} · {name} ({grund})",
+        o.nummer
+    )
+}
+
+/// „180–250 mm“, „bis 600 mm“, „ab 100 mm“ (wie in der Werkbank).
+fn band_text(lo: Option<Dez>, hi: Option<Dez>) -> String {
+    let z = |d: Dez| d.text().replace('.', ",");
+    match (lo, hi) {
+        (Some(a), Some(b)) => format!("{}–{} mm", z(a), z(b)),
+        (None, Some(b)) => format!("bis {} mm", z(b)),
+        (Some(a), None) => format!("ab {} mm", z(a)),
+        (None, None) => String::new(),
+    }
+}
+
+/// A8: Positionen einer Bauleistung ohne Titel stehen in keinem Los; je
+/// Bauteil ein Fehler mit Sprung zum Bauteil, damit Σ LV + „ohne Los“ =
+/// Netto nachvollziehbar bleibt.
+fn ohne_los(m: &Model, k: &Katalog, positionen: &[Position]) -> Vec<Befund> {
+    let mut out = Vec::new();
+    for p in positionen {
+        let Quelle::Leistung(g) = p.quelle else {
+            continue;
+        };
+        let Some(l) = k.leistung(g).filter(|l| k.los(l.titel).is_none()) else {
+            continue;
+        };
+        let gewerk = m
+            .trades()
+            .iter()
+            .find(|t| t.guid == l.gewerk)
+            .map_or(String::new(), |t| format!(" · {} (DIN {})", t.name, t.code));
+        let mut gesehen: Vec<ElementId> = Vec::new();
+        for a in &p.ansatz {
+            if gesehen.contains(&a.element) {
+                continue;
+            }
+            gesehen.push(a.element);
+            let Some(e) = m.element(a.element) else {
+                continue;
+            };
+            let name = m.ext_def_of(a.element).map_or(String::new(), |d| {
+                sk_model::erweiterung::anzeige(d.name(), 60) + " "
+            });
+            out.push(Befund::fehler(
+                86,
+                format!("Steht in keinem Los: {name}{}{gewerk}", a.nummer),
+                Ort::Bauteil(e.guid),
+            ));
+        }
+    }
+    out
 }
 
 /// Das Kostenblatt im Umfang `u` (Regel 98: liest nur).

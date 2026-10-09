@@ -95,6 +95,16 @@ pub fn umfeld_stempel(m: &Model) -> u64 {
     }
     for t in m.trades() {
         h = katalog::fnv(h, &t.guid.0.to_le_bytes());
+        h = katalog::fnv(h, t.code.as_bytes());
+        h = katalog::fnv(h, b"|");
+    }
+    // Definitionen der Erweiterungen: ihre Artikel und Bauleistungen ergänzt
+    // der Leser (E8b, Vorprüfung E8 Frage 3 b)
+    for d in m.ext_defs() {
+        h = katalog::fnv(h, d.key.as_bytes());
+        h = katalog::fnv(h, &d.version.to_le_bytes());
+        h = katalog::fnv(h, d.text.as_bytes());
+        h = katalog::fnv(h, b"|");
     }
     h
 }

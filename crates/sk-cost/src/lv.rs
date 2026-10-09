@@ -7,6 +7,7 @@
 use crate::befund::{Befund, Ort, Schwere};
 use crate::geld::{runden, Cent, Dez};
 use crate::katalog::{Einheit, Katalog, Leistung};
+use crate::rechnung::OhneHerkunft;
 use crate::rechnung::{drei, gp, skala, Ansatz, Kostenblatt, Position, Quelle};
 use sk_model::{ElementId, Guid, Model, StoreyId};
 
@@ -288,18 +289,20 @@ fn mengenansatz(
     einheit: Einheit,
     uu: Option<u32>,
 ) -> Vec<Ansatzzeile> {
-    let mut gruppen: Vec<(StoreyId, Option<Guid>, Vec<&Ansatz>)> = Vec::new();
+    // je Geschoss, Folge-Quelle und Bewehrungsgrad (B16)
+    type Gruppe<'a> = (StoreyId, Option<Guid>, Option<u32>, Vec<&'a Ansatz>);
+    let mut gruppen: Vec<Gruppe> = Vec::new();
     for a in ansatz {
         match gruppen
             .iter_mut()
-            .find(|g| g.0 == a.geschoss && g.1 == a.aus)
+            .find(|g| g.0 == a.geschoss && g.1 == a.aus && g.2 == a.grad)
         {
-            Some(g) => g.2.push(a),
-            None => gruppen.push((a.geschoss, a.aus, vec![a])),
+            Some(g) => g.3.push(a),
+            None => gruppen.push((a.geschoss, a.aus, a.grad, vec![a])),
         }
     }
     let mut zeilen: Vec<(Ansatzzeile, i128)> = Vec::new();
-    for (st, aus, v) in gruppen {
+    for (st, aus, grad, v) in gruppen {
         let mut nummern: Vec<String> = Vec::new();
         let mut elemente: Vec<ElementId> = Vec::new();
         for a in &v {
@@ -312,9 +315,11 @@ fn mengenansatz(
         }
         let menge: i128 = v.iter().map(|a| a.menge).sum();
         let auflager: i128 = v.iter().map(|a| a.auflager).sum();
-        let herkunft = match aus.and_then(|g| k.leistung(g)) {
-            Some(l) => format!("aus {} {}", oz_im_los(k, l, uu), l.kurz),
-            None => "aus Modell".to_string(),
+        let herkunft = match (aus.and_then(|g| k.leistung(g)), grad) {
+            (Some(l), _) => format!("aus {} {}", oz_im_los(k, l, uu), l.kurz),
+            // Bewehrungsgrad der Erweiterung, nicht der Firmenwerte (B16)
+            (None, Some(g)) => format!("aus Modell ({g} kg/m³ aus der Definition)"),
+            (None, None) => "aus Modell".to_string(),
         };
         let zeile = |herkunft: String| Ansatzzeile {
             geschoss: st,
@@ -450,18 +455,39 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
         };
         let oz_basis = k.oz(l);
         if mehrere {
+            // Zeilen aus Erweiterungen nennen das Bauteil statt der Dicke
+            // (Vorprüfung E8-3)
+            let ext = |p: &Position| {
+                p.ansatz.iter().find_map(|a| {
+                    let d = m.ext_def_of(a.element)?;
+                    Some(format!(
+                        "{} {}",
+                        sk_model::erweiterung::anzeige(d.name(), 60),
+                        a.nummer
+                    ))
+                })
+            };
             let mut dicken: Vec<Dez> = ps
                 .iter()
+                .filter(|p| ext(p).is_none())
                 .filter_map(|p| p.schicht.map(|s| s.1))
                 .filter(|d| d.0 > 0)
                 .collect();
             dicken.sort();
             dicken.dedup();
-            let d: Vec<String> = dicken.iter().map(|d| format!("{} mm", mm(*d))).collect();
+            let mut d: Vec<String> = dicken.iter().map(|d| format!("{} mm", mm(*d))).collect();
+            let mut bauteile: Vec<String> = ps.iter().filter_map(|p| ext(p)).collect();
+            bauteile.dedup();
+            let je = if bauteile.is_empty() {
+                "je Dicke"
+            } else {
+                "je Dicke und Erweiterung"
+            };
+            d.extend(bauteile);
             befunde.push(Befund::fehler(
                 101,
                 format!(
-                    "{} {} hat verschiedene Stoffpreise je Dicke ({}); bitte die Bauleistung je Dicke anlegen.",
+                    "{} {} hat verschiedene Stoffpreise {je} ({}); bitte die Bauleistung je Dicke anlegen.",
                     oz_mit_los(&los_nr, &oz_basis),
                     l.kurz,
                     d.join(" und ")
@@ -750,16 +776,22 @@ pub fn lv_aus(m: &Model, b: &Kostenblatt, k: &Katalog, w: &LvWahl) -> Lv {
             Some(x) if x != w.los => continue,
             _ => {}
         }
-        let art = m.element(o.element).map_or(String::new(), |e| {
-            sk_model::kinds::spec(e.category).name.to_string()
-        });
+        let satz = match &o.herkunft {
+            OhneHerkunft::Schicht { baustoff, .. } => {
+                let art = m.element(o.element).map_or(String::new(), |e| {
+                    sk_model::kinds::spec(e.category).name.to_string()
+                });
+                format!(
+                    "Ohne Bauleistung: {art} · {} ({})",
+                    baustoff_name(m, *baustoff),
+                    o.nummer
+                )
+            }
+            OhneHerkunft::Erweiterung { .. } => crate::rechnung::ohne_ext_text(m, o),
+        };
         befunde.push(Befund::fehler(
             81,
-            format!(
-                "Ohne Bauleistung: {art} · {} ({})",
-                baustoff_name(m, o.baustoff),
-                o.nummer
-            ),
+            satz,
             element_guid(m, o.element).map_or(Ort::Datei, Ort::Bauteil),
         ));
     }

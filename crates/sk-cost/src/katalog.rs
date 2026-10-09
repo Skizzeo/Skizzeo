@@ -369,6 +369,9 @@ pub struct Katalog {
     /// Stand des freigegebenen Firmenkatalogs, wenn einer da ist (Regel 92).
     pub firma_stand: Option<u32>,
     pub befunde: Vec<Befund>,
+    /// Artikel und Bauleistungen aus Erweiterungen des Projekts, nur im
+    /// Speicher (E8b, B15).
+    pub erweiterung: Vec<crate::erweiterung::ExtSatz>,
     /// FNV-1a über die gelesenen Satzzeilen (Bausteingrenze §5): ändert sich
     /// ein Satz, ordnet der Kostenspeicher alles neu zu.
     pub stempel: u64,
@@ -400,6 +403,13 @@ impl Katalog {
         self.lose.iter().find(|l| l.guid == g)
     }
 
+    /// Herkunft eines Satzes aus einer Erweiterung (`article`, `service`).
+    pub fn aus_erweiterung(&self, rec: &str, g: Guid) -> Option<&crate::erweiterung::ExtSatz> {
+        self.erweiterung
+            .iter()
+            .find(|e| e.rec == rec && e.guid == g)
+    }
+
     /// Stoffanteile einer Bauleistung nach `nr`.
     pub fn anteile_von(&self, g: Guid) -> impl Iterator<Item = &Anteil> {
         self.anteile.iter().filter(move |a| a.leistung == g)
@@ -416,9 +426,12 @@ impl Katalog {
     }
 
     /// OZ einer Bauleistung: Titel-`nr` + „.“ + `pos` vierstellig (Regel 86).
+    /// Leer für eine Bauleistung aus einer Erweiterung ohne Titel (E8-2).
     pub fn oz(&self, l: &Leistung) -> String {
-        let t = self.los(l.titel).map_or("?", |t| t.nr.as_str());
-        format!("{t}.{:04}", l.pos)
+        match self.los(l.titel) {
+            Some(t) => format!("{}.{:04}", t.nr, l.pos),
+            None => String::new(),
+        }
     }
 
     /// OZ mit Los davor („1.01.0020“): eindeutig über alle Lose. Für alles,
@@ -449,14 +462,26 @@ pub struct Umfeld {
     /// Werks-Guid → Guid und Name des einen Baustoffs der Datei mit gleicher
     /// Kategorie und gleichem oder altem Namen.
     pub uebersetzung: HashMap<Guid, (Guid, String)>,
+    /// Definitionen des Projekts, deren Artikel und Bauleistungen der Leser
+    /// im Speicher ergänzt (E8b).
+    pub erweiterungen: Vec<crate::erweiterung::ExtQuelle>,
 }
 
 impl Umfeld {
     pub fn aus_modell(m: &sk_model::Model) -> Umfeld {
-        Umfeld::neu(
+        let mut u = Umfeld::neu(
             m.materials().iter().map(|(_, x)| x),
             m.trades().iter().map(|t| t.guid),
-        )
+        );
+        // eigene Baustoffe der Definitionen (E8-7)
+        for (g, name, kat) in crate::erweiterung::eigene_baustoffe(m) {
+            u.materialien.entry(g).or_insert(name);
+            if let Some(k) = kat {
+                u.kategorien.entry(g).or_insert(k);
+            }
+        }
+        u.erweiterungen = crate::erweiterung::quellen(m);
+        u
     }
 
     pub fn aus_bibliothek(lib: &sk_model::Library) -> Umfeld {
@@ -503,6 +528,7 @@ impl Umfeld {
             kategorien,
             gewerke: g,
             uebersetzung,
+            erweiterungen: Vec::new(),
         }
     }
 
@@ -641,6 +667,97 @@ pub fn lesen<'a>(
             neu
         });
     }
+    // Erweiterungen des Projekts (E8b): Artikel, Bauleistungen und
+    // Stoffanteile als Zeilen im Speicher; ein Katalogsatz geht vor
+    let erzeugt = {
+        let kennungen = |sec: &str| {
+            roh.get(sec)
+                .into_iter()
+                .flatten()
+                .filter_map(|r| r.satz.guid("guid"))
+                .collect::<Vec<_>>()
+        };
+        let lose = roh.get("lot").map_or(&[][..], |v| v.as_slice());
+        let los_nr = |g: Guid| {
+            lose.iter()
+                .find(|r| r.satz.guid("guid") == Some(g))
+                .map_or(String::new(), |r| {
+                    r.satz.text("nr").unwrap_or("").to_string()
+                })
+        };
+        let v = crate::erweiterung::Vorhanden {
+            guids: ["article", "service", "svcpart"]
+                .iter()
+                .flat_map(|s| kennungen(s))
+                .collect(),
+            artikel: roh
+                .get("article")
+                .into_iter()
+                .flatten()
+                .filter(|r| !r.satz.flag("retired"))
+                .filter_map(|r| {
+                    Some((
+                        r.satz.guid("guid")?,
+                        r.satz.text("name")?,
+                        r.satz.text("unit")?,
+                    ))
+                })
+                .collect(),
+            leistungen: roh
+                .get("service")
+                .into_iter()
+                .flatten()
+                .filter_map(|r| {
+                    Some((
+                        r.satz.guid("trade")?,
+                        r.satz.guid("title")?,
+                        r.satz.ganz("pos")?,
+                    ))
+                })
+                .collect(),
+            titel: lose
+                .iter()
+                .filter(|r| !r.satz.flag("retired"))
+                .filter_map(|r| {
+                    let p = r.satz.guid("parent")?;
+                    Some((
+                        r.satz.guid("guid")?,
+                        los_nr(p),
+                        r.satz.text("nr").unwrap_or("").to_string(),
+                    ))
+                })
+                .collect(),
+        };
+        crate::erweiterung::erzeugen(u, &v)
+    };
+    bf.extend(erzeugt.befunde);
+    for (a, z) in erzeugt.zeilen {
+        match Satz::lesen(a, &z) {
+            Ok(s) => {
+                stempel = fnv(fnv(stempel, s.zeile().as_bytes()), b"\n");
+                let liste = roh.entry(a.name).or_default();
+                let n = liste.len() + 1;
+                liste.push(Roh { n, satz: s });
+            }
+            Err(e) => {
+                let id = z
+                    .paare
+                    .iter()
+                    .find(|(k, _)| k == "guid")
+                    .map_or(String::new(), |(_, v)| v.clone());
+                bf.push(Befund::fehler(
+                    72,
+                    format!(
+                        "{} aus einer Erweiterung wurde übersprungen: {}.",
+                        crate::wort::abschnitt(a.name),
+                        e.grund
+                    ),
+                    satz_ort(a.name, id),
+                ));
+            }
+        }
+    }
+    let ohne_titel = erzeugt.ohne_titel;
     let mut take = |name: &str| roh.remove(name).unwrap_or_default();
     let mut k = Katalog {
         quelle,
@@ -657,6 +774,7 @@ pub fn lesen<'a>(
         vorschlaege: Vec::new(),
         firma_stand: None,
         befunde: Vec::new(),
+        erweiterung: erzeugt.saetze,
         stempel: {
             // R73-W: die Übersetzung gehört zum Stempel (Bausteingrenze §6)
             let mut paare: Vec<(Guid, Guid)> =
@@ -807,6 +925,8 @@ pub fn lesen<'a>(
         }
         let title = s.guid("title").unwrap();
         match k.lose.iter().find(|l| l.guid == title) {
+            // Erweiterung, deren Gewerk in keinem Titel steht (E8-2)
+            None if ohne_titel.contains(&guid) => {}
             None => {
                 bf.push(Befund::fehler(
                     73,

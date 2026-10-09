@@ -6,7 +6,7 @@ use super::{Art, Gliederung, Modus, Zeile};
 use crate::umfang_view;
 use sk_cost::gliederung::{Gruppe, Schluessel, Teilung};
 use sk_cost::katalog::{Einheit, Katalog};
-use sk_cost::rechnung::{Ansatz, Position, Quelle};
+use sk_cost::rechnung::{Ansatz, OhneHerkunft, Position, Quelle};
 use sk_cost::{Cent, Dez, Kostenblatt};
 use sk_model::trade::TradeId;
 use sk_model::{ElementId, Guid, Model, StoreyId};
@@ -228,17 +228,31 @@ impl Bau<'_> {
     /// Zeilen ohne Bauleistung (grau, Menge, kein Preis).
     fn ohne(&self, out: &mut Vec<Zeile>, welche: &[usize], ebene: u8, gruppe: &str) {
         for (&j, o) in welche.iter().map(|j| (j, &self.b.ohne[*j])) {
-            let name = self.m.element(o.element).map_or(String::new(), |e| {
-                sk_model::kinds::spec(e.category).name.to_string()
-            });
-            // „Dachterrasse · Dämmung hart“: Bauteilart und Baustoff, ohne
-            // Bauteilnummer; „ohne Bauleistung“ steht einmal an der Gruppe
-            // (Einstellungen §3 KA-2 Punkt 4)
-            let baustoff = baustoff_name(self.m, o.baustoff);
-            let text = if baustoff.is_empty() {
-                name
-            } else {
-                format!("{name} · {baustoff}")
+            let text = match &o.herkunft {
+                OhneHerkunft::Schicht { baustoff, .. } => {
+                    let name = self.m.element(o.element).map_or(String::new(), |e| {
+                        sk_model::kinds::spec(e.category).name.to_string()
+                    });
+                    // „Dachterrasse · Dämmung hart“: Bauteilart und Baustoff,
+                    // ohne Bauteilnummer; „ohne Bauleistung“ steht einmal an
+                    // der Gruppe (Einstellungen §3 KA-2 Punkt 4)
+                    let baustoff = baustoff_name(self.m, *baustoff);
+                    if baustoff.is_empty() {
+                        name
+                    } else {
+                        format!("{name} · {baustoff}")
+                    }
+                }
+                // „Stahlbetonstütze · Schalung Stütze (Einheit m² passt
+                // nicht zur Bauleistung in m)“ (E8b)
+                OhneHerkunft::Erweiterung {
+                    key, name, grund, ..
+                } => {
+                    let bauteil = self.m.ext_def(key).map_or(key.clone(), |d| {
+                        sk_model::erweiterung::anzeige(d.name(), 60)
+                    });
+                    format!("{bauteil} · {name} ({grund})")
+                }
             };
             let mut z = Zeile::neu(Art::Ohne, ebene, text);
             z.gruppe = gruppe.to_string();

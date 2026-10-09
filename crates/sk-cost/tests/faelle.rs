@@ -282,7 +282,10 @@ fn fall_18_genaueste_regel_und_richtpreis() {
         .positionen
         .iter()
         .all(|p| !p.kurz.starts_with("AW Porenbeton")));
-    assert!(b.ohne.iter().any(|o| o.baustoff == pb2.guid));
+    assert!(b
+        .ohne
+        .iter()
+        .any(|o| o.schicht().is_some_and(|s| s.baustoff == pb2.guid)));
     // mit Richtpreis 400 €/m³
     let mut x = m.material(id2).unwrap().clone();
     x.props.insert(

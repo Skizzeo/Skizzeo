@@ -4,7 +4,7 @@
 //! an dieser Schicht. Rein; geschrieben wird über `BauleistungZuordnen`.
 
 use crate::befund::Ort;
-use crate::geld::Cent;
+use crate::geld::{Cent, Dez};
 use crate::katalog::{Einheit, Katalog, Leistung};
 use crate::op::Op;
 use crate::rechnung::{feste_ep, stoff_ep, OhneZeile};
@@ -84,9 +84,10 @@ impl Auswahl {
 
 /// Operation „Bauleistung gewählt“ an der Schicht des Typs der Zeile.
 pub fn zuordnen(z: &OhneZeile, leistung: Guid) -> Option<Op> {
+    let s = z.schicht()?;
     Some(Op::BauleistungZuordnen {
-        typ: z.typ?,
-        schicht: z.schicht,
+        typ: s.typ?,
+        schicht: s.schicht,
         bauleistung: Some(leistung),
     })
 }
@@ -115,7 +116,7 @@ fn ep(k: &Katalog, l: &Leistung, z: &OhneZeile, mat: Option<&Material>) -> Optio
     let (stoff, fehlt) = stoff_ep(
         k,
         l,
-        Some((z.dicke, mat)),
+        Some((z.schicht().map_or(Dez::NULL, |s| s.dicke), mat)),
         false,
         &Ort::Datei,
         &mut Vec::new(),
@@ -124,21 +125,24 @@ fn ep(k: &Katalog, l: &Leistung, z: &OhneZeile, mat: Option<&Material>) -> Optio
 }
 
 fn passt(l: &Leistung, z: &OhneZeile) -> bool {
-    !l.retired && !l.kategorien.is_empty() && z.bezuege.contains(&l.bezug)
+    !l.retired
+        && !l.kategorien.is_empty()
+        && z.schicht().is_some_and(|s| s.bezuege.contains(&l.bezug))
 }
 
 /// Gibt es für die graue Zeile etwas zu wählen (Verweis „Bauleistung
 /// wählen …“ beim Überfahren)?
 pub fn waehlbar(k: &Katalog, z: &OhneZeile) -> bool {
-    z.typ.is_some() && k.leistungen.iter().any(|l| passt(l, z))
+    z.schicht().is_some_and(|s| s.typ.is_some()) && k.leistungen.iter().any(|l| passt(l, z))
 }
 
 /// Die Liste für eine graue Zeile; `None`, wenn keine Bauleistung zu einem
 /// Mengenbezug des Bauteils passt (die Zeile bleibt ohne Verweis) oder die
 /// Schicht keinen Typ hat.
 pub fn auswahl(m: &Model, k: &Katalog, z: &OhneZeile) -> Option<Auswahl> {
-    z.typ?;
-    let mat = baustoff(m, z.baustoff);
+    let s = z.schicht()?;
+    s.typ?;
+    let mat = baustoff(m, s.baustoff);
     let art: Option<MatCategory> = mat.map(|x| x.category);
     let order = |g: Guid| m.trade(TradeId(g)).map_or(u16::MAX, |t| t.order);
     let mut treffer: Vec<&Leistung> = k.leistungen.iter().filter(|l| passt(l, z)).collect();
@@ -204,7 +208,9 @@ mod tests {
             .ohne
             .iter()
             .find(|z| {
-                baustoff(&m, z.baustoff).is_some_and(|x| x.category == MatCategory::Insulation)
+                z.schicht()
+                    .and_then(|s| baustoff(&m, s.baustoff))
+                    .is_some_and(|x| x.category == MatCategory::Insulation)
             })
             .expect("graue Dämmschicht");
         let a = auswahl(&m, &k, z).expect("passende Einheit");

@@ -831,6 +831,8 @@ pub struct ExtMenge {
     pub gewerk: Option<crate::trade::TradeId>,
     /// Kostengruppe der Menge, sonst des Bauteils.
     pub kg: Option<u16>,
+    /// `dicke=` der Menge in mm, wenn sie eine hat und sie rechnet.
+    pub dicke: Option<f64>,
 }
 
 /// Mengen eines Erweiterungsbauteils (E8): die `[menge]`-Zeilen der
@@ -871,6 +873,12 @@ fn ext_qto(model: &Model, id: ElementId, key: &str) -> (Option<ElementQto>, Opti
                 wert: wert.filter(|v| v.is_finite()),
                 gewerk: feld("gewerk").and_then(|c| model.trade_by_code(c)),
                 kg: feld("kg").and_then(|k| k.parse().ok()),
+                dicke: erg
+                    .dicken
+                    .iter()
+                    .find(|x| x.0 == i)
+                    .map(|x| x.1)
+                    .filter(|v| v.is_finite()),
             })
         })
         .collect();
@@ -1424,6 +1432,27 @@ impl Schedule {
     /// Alle Mengenzeilen nach Schicht (Paket 1b), auch ohne Gewerk und
     /// Kostengruppe, mit ihrem Gebäude; Bauteile ohne Gebäude (`loose`)
     /// zuletzt mit `None`. Für die Kosten (KA-0e); rechnet keine Geometrie.
+    /// Erweiterungsbauteile mit Mengen (E8b): Gebäude, Geschoss der Zeile,
+    /// Bauteil, Nummer und Mengen, in der Reihenfolge der Liste.
+    pub fn ext_rows(&self) -> Vec<(Option<BuildingId>, StoreyId, &RowQto, &ExtQto)> {
+        let mut out = Vec::new();
+        let storeys = self
+            .buildings
+            .iter()
+            .flat_map(|b| b.storeys.iter().map(move |s| (Some(b.id), s)))
+            .chain(self.loose.iter().map(|s| (None, s)));
+        for (b, s) in storeys {
+            for g in s.groups.iter().filter(|g| g.ext.is_some()) {
+                for r in &g.rows {
+                    if let Some(ElementQto::Ext(q)) = &r.q {
+                        out.push((b, s.id, r, q));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     pub fn layer_rows(&self, model: &Model) -> Vec<(Option<BuildingId>, LayerRow)> {
         let mut out = Vec::new();
         for b in &self.buildings {

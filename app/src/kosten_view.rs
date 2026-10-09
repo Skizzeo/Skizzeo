@@ -695,8 +695,11 @@ impl KostenView {
             // Titel wie die Zeile „Dachterrasse · Dämmung hart“
             // (spaeter-darstellung 9), Meldungen mit Bauteilnummer
             // „DT-001 PIR-Dämmung“
-            let baustoff =
-                |z: &sk_cost::rechnung::OhneZeile| zeilen::baustoff_name(s.model(), z.baustoff);
+            let baustoff = |z: &sk_cost::rechnung::OhneZeile| {
+                z.schicht().map_or(String::new(), |x| {
+                    zeilen::baustoff_name(s.model(), x.baustoff)
+                })
+            };
             let kennung = z.map_or_else(String::new, |z| {
                 format!("{} {}", z.nummer, baustoff(z)).trim().to_string()
             });
