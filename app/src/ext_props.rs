@@ -439,7 +439,20 @@ mod tests {
         );
         let d = s.model().ext_def("werk.stuetze").unwrap().clone();
         let sb = s.model().ext_material(&d, "stahlbeton").unwrap();
-        assert!(s.edit_model("Löschen", |m| m.remove_material(sb)));
+        // Genutzt nicht löschbar (E8c-a): wie in einer älteren Datei ohne
+        // Stahlbeton, die Stütze danach setzen
+        assert!(!s.edit_model("Löschen", |m| m.remove_material(sb)));
+        let eg = s.active_storey();
+        assert!(s.edit_model("Weg", |m| {
+            m.delete_elements(&[id]);
+            m.remove_material(sb)
+        }));
+        let mut id = None;
+        assert!(s.edit_model("Setzen", |m| {
+            id = m.add_ext(eg, ExtPart::new(&d, [0.0, 0.0])).ok();
+            true
+        }));
+        let id = id.unwrap();
         assert_eq!(s.model().ext_material(&d, "stahlbeton"), None);
         let p = props(&mut s, id).unwrap();
         assert!(
