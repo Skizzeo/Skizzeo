@@ -103,7 +103,13 @@ fn kennung(abschnitt: &str, teile: &[(&str, &str)]) -> Option<String> {
             Some(id) => key == id,
         };
         if nimm {
-            k.push_str(if *id == Some("") { key } else { roh });
+            // Ohne die Leerzeichen davor: `[color]  role=x` (von Hand
+            // bearbeitet) ist derselbe Satz wie `[color] role=x` (Review 3bp)
+            k.push_str(if *id == Some("") {
+                key
+            } else {
+                roh.trim_start()
+            });
         }
     }
     Some(k)
@@ -223,5 +229,15 @@ mod tests {
         );
         assert!(zerlegen("# Kommentar").is_none());
         assert!(zerlegen("[x] kaputt").is_none());
+    }
+
+    /// Review 3bp: Ein Satz mit mehr Leerzeichen vor dem Kennschlüssel
+    /// behält seine unbekannten Schlüssel, wenn die App den Wert ändert.
+    #[test]
+    fn kennung_ohne_leerzeichen() {
+        let alt = "K 1\n[color]  role=ui.accent value=2878dc glanz=1\n";
+        let f = Fremd::sammeln(alt, |_, _| true);
+        let neu = f.einsetzen("K 1\n[color] role=ui.accent value=0a78c8\n");
+        assert_eq!(neu, "K 1\n[color] role=ui.accent value=0a78c8 glanz=1\n");
     }
 }
