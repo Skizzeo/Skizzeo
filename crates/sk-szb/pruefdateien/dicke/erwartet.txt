@@ -1,0 +1,29 @@
+=== d_artikel_fehlt.szb
+F 13 [leistung] fundament_beton: Artikel „beton_xy“ fehlt als [artikel] und ist keine Werks-Kennung
+=== d_dmax_kaputt.szb
+F 13 [leistung] fundament_beton dmax: Zahl ≥ 0 (Dezimalpunkt)
+=== d_dmin_groesser.szb
+F 13 [leistung] fundament_beton: dmin größer als dmax
+H 14 [menge] beton: Dicke 500 mm liegt außerhalb von fundament_beton (700–600 mm), Skizzeo setzt dafür keine Position
+=== d_doppel.szb
+H 13 [menge] beton2: Dicke 300 mm liegt außerhalb von 1S7bUW0010080200000001 (180–250 mm), Skizzeo setzt dafür keine Position
+H 12 Grenzprüfung d=min (150,00): [menge] beton: Dicke 150 mm liegt außerhalb von 1S7bUW0010080200000001 (180–250 mm), Skizzeo setzt dafür keine Position
+H 12 Grenzprüfung d=max (400,00): [menge] beton: Dicke 400 mm liegt außerhalb von 1S7bUW0010080200000001 (180–250 mm), Skizzeo setzt dafür keine Position
+=== d_formel_fehler.szb
+F 12 [menge] beton dicke: unbekannter Name „q“
+F 12 [menge] beton dicke: unbekannter Name „q“
+=== d_im_band.szb
+=== d_konstant_aussen.szb
+H 12 [menge] beton: Dicke 300 mm liegt außerhalb von 1S7bUW0010080200000001 (180–250 mm), Skizzeo setzt dafür keine Position
+=== d_nur_dmin.szb
+H 14 Grenzprüfung b=min (300,00): [menge] beton: Dicke 300 mm liegt außerhalb von fundament_beton (ab 400 mm), Skizzeo setzt dafür keine Position
+=== d_ohne_band.szb
+H 12 Grenzprüfung d=min (150,00): [menge] beton: Dicke 150 mm liegt außerhalb von 1S7bUW0010080200000001 (180–250 mm), Skizzeo setzt dafür keine Position
+H 12 Grenzprüfung d=max (400,00): [menge] beton: Dicke 400 mm liegt außerhalb von 1S7bUW0010080200000001 (180–250 mm), Skizzeo setzt dafür keine Position
+=== d_ohne_dicke.szb
+H 12 [menge] beton: Leistung 1S7bUW0010080200000001 gilt für 180–250 mm, ohne dicke prüft Skizzeo das nicht
+=== d_vorgabe_aussen.szb
+H 12 [menge] beton: Dicke 300 mm liegt außerhalb von 1S7bUW0010080200000001 (180–250 mm), Skizzeo setzt dafür keine Position
+=== d_werks_kennung_fremd.szb
+H 13 [leistung] fundament_beton: Artikel „1S7bUW00100801000000ZZ“ nicht im Werksbestand, Skizzeo fragt beim Einlesen nach
+H 14 Grenzprüfung b=max (1.200,00): [menge] beton: Dicke 1.200 mm liegt außerhalb von fundament_beton (bis 600 mm), Skizzeo setzt dafür keine Position

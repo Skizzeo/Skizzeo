@@ -125,7 +125,7 @@ fn abnahmetabelle_in_der_mengenliste() {
     assert!(x
         .mengen
         .iter()
-        .all(|q| q.gewerk == beton && q.kg == Some(333)));
+        .all(|q| q.gewerk == beton && q.kg == Some(343)));
     let gl = ext(&gs[2], 0);
     assert_eq!(gl.mengen[0].gewerk, m.trade_by_code("18360"));
     assert_eq!(gl.mengen[0].kg, Some(359));

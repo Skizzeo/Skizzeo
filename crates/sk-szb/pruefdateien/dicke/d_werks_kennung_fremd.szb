@@ -10,7 +10,7 @@ SZB 0
 [typ] key=sf6080 name="Fundament 60/80" werte="b=600; h=800"
 [typ] key=sf40100 name="Fundament 40/100" werte="b=400; h=1000"
 [koerper] form=quader baustoff=stahlbeton teil="Fundament" funktion=loadbearing x=0 y="-b/2" z=0 b=l t=b h=h
-[leistung] key=fundament_beton dmax=600 kurztext="Streifenfundament Stb C25/30 XC2, erdgeschalt, b bis 60 cm" langtext="Streifenfundament aus Ortbeton C25/30, Expositionsklasse XC2, Breite bis 60 cm, Höhe bis 1,0 m, gegen Erdreich betoniert, einschließlich Verdichten und Nachbehandeln. Aushub, Sauberkeitsschicht und Bewehrung in gesonderten Positionen." gewerk=18331 einheit=m3 bezug=volume stunden=0.9 stoffe="1S7bUW0010080100000006:1.03" funktion=loadbearing quelle="Beispielwert der Werkbank, nicht recherchiert" sicherheit=grob
+[leistung] key=fundament_beton dmax=600 kurztext="Streifenfundament Stb C25/30 XC2, erdgeschalt, b bis 60 cm" langtext="Streifenfundament aus Ortbeton C25/30, Expositionsklasse XC2, Breite bis 60 cm, Höhe bis 1,0 m, gegen Erdreich betoniert, einschließlich Verdichten und Nachbehandeln. Aushub, Sauberkeitsschicht und Bewehrung in gesonderten Positionen." gewerk=18331 einheit=m3 bezug=volume stunden=0.9 stoffe="1S7bUW00100801000000ZZ:1.03" funktion=loadbearing quelle="Beispielwert der Werkbank, nicht recherchiert" sicherheit=grob
 [menge] key=beton name="Beton C25/30" einheit=m3 formel="volumen(stahlbeton)" baustoff=stahlbeton bezug=volume leistung=fundament_beton dicke=b anzeigen=ja
 [menge] key=stahl name="Betonstahl B500" einheit=t formel="volumen(stahlbeton)*0.04" bezug=steel leistung=1S7bUW0010080200000006
 [notiz] art=stand text="Beispiel der Werkbank: Streifenfundament als Linie mit Typen"

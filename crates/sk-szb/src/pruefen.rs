@@ -184,12 +184,16 @@ const SPEC: [(&str, &[&str], &[&str]); 12] = [
             "quelle",
             "sicherheit",
             "stand",
+            "dmin",
+            "dmax",
         ],
     ),
     (
         "menge",
         &["key", "name", "einheit", "formel"],
-        &["baustoff", "kg", "gewerk", "leistung", "bezug", "anzeigen"],
+        &[
+            "baustoff", "kg", "gewerk", "leistung", "bezug", "anzeigen", "dicke",
+        ],
     ),
     ("notiz", &["text"], &["art"]),
 ];
@@ -306,12 +310,19 @@ pub fn stoffe(t: &str) -> Result<Vec<(String, f64)>, String> {
         let m = einfache_zahl(m)
             .filter(|_| !m.starts_with('-'))
             .ok_or_else(fehler)?;
-        if !ist_key(a) {
+        if !ist_key(a) && !ist_kennung(a) {
             return Err(fehler());
         }
         out.push((a.to_string(), m));
     }
     Ok(out)
+}
+
+/// Werks-Kennung: 22 Zeichen aus `0-9A-Za-z_$` (IFC-Guid).
+pub fn ist_kennung(s: &str) -> bool {
+    s.len() == 22
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
 /// `wert:Text|wert:Text`
@@ -619,8 +630,11 @@ impl Pruefer<'_> {
                     self.f(r.zeile, format!("einheit: {}", EINH_M.join(", ")));
                 }
             }
-            if let Some(src) = r.get("formel") {
-                self.formel(src, r.zeile, &format!("[menge] {}", r.key()), &[]);
+            for (feld, was) in [("formel", String::new()), ("dicke", " dicke".to_string())] {
+                let Some(src) = r.get(feld) else {
+                    continue;
+                };
+                self.formel(src, r.zeile, &format!("[menge] {}{was}", r.key()), &[]);
                 if let Ok(f) = Formel::neu(src) {
                     for b in f.volumen_baustoffe() {
                         if !mat(&b) {
@@ -819,16 +833,29 @@ impl Pruefer<'_> {
             if r.get("funktion").is_some_and(|f| !FUNKTION.contains(&f)) {
                 self.f(r.zeile, format!("{w} funktion: {}", FUNKTION.join(", ")));
             }
-            for k in ["stunden", "geraet", "sonstiges"] {
+            for k in ["stunden", "geraet", "sonstiges", "dmin", "dmax"] {
                 self.num(r, k, 0.0, &w);
+            }
+            let zahl_von = |k: &str| r.get(k).and_then(einfache_zahl);
+            if let (Some(lo), Some(hi)) = (zahl_von("dmin"), zahl_von("dmax")) {
+                if lo > hi {
+                    self.f(r.zeile, format!("{w}: dmin größer als dmax"));
+                }
             }
             if let Some(s) = r.get("stoffe") {
                 match stoffe(s) {
                     Err(e) => self.f(r.zeile, format!("{w}: {e}")),
                     Ok(v) => {
                         for (a, _) in v {
-                            if !def.artikel.iter().any(|x| x.key() == a) {
-                                self.f(r.zeile, format!("{w}: Artikel „{a}“ fehlt als [artikel]"));
+                            if def.artikel.iter().any(|x| x.key() == a)
+                                || self.best.artikel(&a).is_some()
+                            {
+                                continue;
+                            }
+                            if ist_kennung(&a) {
+                                self.h(r.zeile, format!("{w}: Artikel „{a}“ nicht im Werksbestand, Skizzeo fragt beim Einlesen nach"));
+                            } else {
+                                self.f(r.zeile, format!("{w}: Artikel „{a}“ fehlt als [artikel] und ist keine Werks-Kennung"));
                             }
                         }
                     }
@@ -847,10 +874,7 @@ impl Pruefer<'_> {
                 continue;
             };
             let Some((einheit, bezug)) = leistung_info(def, self.best, g) else {
-                let kennung = g.chars().count() == 22
-                    && g.chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$');
-                if kennung {
+                if ist_kennung(g) {
                     self.h(r.zeile, format!("{w}: Leistung „{g}“ nicht im Werksbestand, Skizzeo fragt beim Einlesen nach"));
                 } else {
                     self.f(
@@ -1135,6 +1159,80 @@ fn einheit_im_namen(n: &str) -> bool {
         .any(|w| matches!(w, "mm" | "cm" | "m" | "grad"))
 }
 
+/// Dickenband (mm) der Leistung `g` einer Menge: eigene `[leistung]` mit
+/// `dmin`/`dmax`, sonst Werks-Leistung mit ihrem Band (Vertrag §5, §10);
+/// `None` ohne Band.
+pub fn leistung_band(def: &Def, best: &Bestand, g: &str) -> Option<(Option<f64>, Option<f64>)> {
+    let band = match def.leistung.iter().find(|r| r.key() == g) {
+        Some(r) => {
+            let z = |k: &str| r.get(k).and_then(einfache_zahl);
+            (z("dmin"), z("dmax"))
+        }
+        None => {
+            let (lo, hi) = best.leistung(g)?.band?;
+            (Some(f64::from(lo)), Some(f64::from(hi)))
+        }
+    };
+    (band.0.is_some() || band.1.is_some()).then_some(band)
+}
+
+/// „180–250 mm“, „bis 600 mm“, „ab 100 mm“.
+pub fn band_text(b: (Option<f64>, Option<f64>)) -> String {
+    match b {
+        (Some(lo), Some(hi)) => format!("{}–{} mm", zahl(lo, 0), zahl(hi, 0)),
+        (None, Some(hi)) => format!("bis {} mm", zahl(hi, 0)),
+        (Some(lo), _) => format!("ab {} mm", zahl(lo, 0)),
+        (None, None) => String::new(),
+    }
+}
+
+/// Liegt die Dicke `d` außerhalb des Bands?
+pub fn band_aus(b: (Option<f64>, Option<f64>), d: f64) -> bool {
+    b.0.is_some_and(|m| d < m - 1e-9) || b.1.is_some_and(|m| d > m + 1e-9)
+}
+
+/// Hinweise zum Dickenband je Menge mit Leistung: `dicke` fehlt (nur mit
+/// `fehlt`) oder liegt außerhalb.
+fn band_hinweise(def: &Def, best: &Bestand, e: &Ergebnis, fehlt: bool) -> Vec<Befund> {
+    let mut out = Vec::new();
+    for (i, _) in &e.mengen {
+        let r = &def.menge[*i];
+        let Some(g) = r.get("leistung").filter(|g| !g.is_empty()) else {
+            continue;
+        };
+        let Some(band) = leistung_band(def, best, g) else {
+            continue;
+        };
+        let w = format!("[menge] {}: ", r.key());
+        if !r.hat("dicke") {
+            if fehlt {
+                out.push(Befund::hinweis(
+                    r.zeile,
+                    format!(
+                        "{w}Leistung {g} gilt für {}, ohne dicke prüft Skizzeo das nicht",
+                        band_text(band)
+                    ),
+                ));
+            }
+            continue;
+        }
+        let Some(&(_, d)) = e.dicken.iter().find(|(j, _)| j == i) else {
+            continue;
+        };
+        if band_aus(band, d) {
+            out.push(Befund::hinweis(
+                r.zeile,
+                format!(
+                    "{w}Dicke {} mm liegt außerhalb von {g} ({}), Skizzeo setzt dafür keine Position",
+                    zahl(d, 0),
+                    band_text(band)
+                ),
+            ));
+        }
+    }
+    out
+}
+
 /// Die Grenzen eines Parameters mit den Werten `pv`.
 fn grenzen_von(r: &Satz, pv: &Umfeld, g: &Geschoss) -> Grenzen {
     let mut u = g.umfeld();
@@ -1237,6 +1335,9 @@ fn pruefen_mit(text: &str, best: &Bestand, g: &Geschoss, grenzpruefung: bool) ->
         rechnen::rechnen_mit(&mut rc, &def, &pv, g)
     };
     b.extend(ergebnis.befunde.iter().cloned());
+    let haupt = band_hinweise(&def, best, &ergebnis, true);
+    let band_zeilen: BTreeSet<usize> = haupt.iter().map(|h| h.zeile).collect();
+    b.extend(haupt);
     if grenzpruefung && !hart && !rc.erschoepft {
         let mut gesehen: BTreeSet<String> = b.iter().map(|x| x.text.clone()).collect();
         for r in &def.param {
@@ -1256,6 +1357,15 @@ fn pruefen_mit(text: &str, best: &Bestand, g: &Geschoss, grenzpruefung: bool) ->
                     let t = format!("Grenzprüfung {k}={seite} ({}): {}", zahl(x, 2), f.text);
                     if gesehen.insert(t.clone()) {
                         b.push(Befund::fehler(f.zeile, t));
+                    }
+                }
+                for h in band_hinweise(&def, best, &e, false) {
+                    if band_zeilen.contains(&h.zeile) {
+                        continue;
+                    }
+                    let t = format!("Grenzprüfung {k}={seite} ({}): {}", zahl(x, 2), h.text);
+                    if gesehen.insert(t.clone()) {
+                        b.push(Befund::hinweis(h.zeile, t));
                     }
                 }
             }
@@ -1560,5 +1670,64 @@ mod tests {
             texte(&p),
             ["Grenzprüfung b=min (200,00): [koerper] Stütze: b, t und h müssen > 0 sein (b=0 t=240 h=2.635)"]
         );
+    }
+
+    /// Dickenband (aenderung-dicke.md): `dicke` fehlt, außerhalb mit den
+    /// eingestellten Werten oder an einer Grenze, eigene Leistung mit
+    /// `dmax`, `dmin` > `dmax`, Werks-Artikel in `stoffe`.
+    #[test]
+    fn dickenband() {
+        const PLATTE: &str = include_str!("../beispiele/werk.bodenplatte.szb");
+        const FUND: &str = include_str!("../beispiele/werk.streifenfundament.szb");
+        let best = Bestand::werk();
+        let p = |t: &str| pruefen(t, &best, &Geschoss::PROBE);
+        let l = "1S7bUW0010080200000001";
+        let aus = |d: &str| {
+            format!("[menge] beton: Dicke {d} mm liegt außerhalb von {l} (180–250 mm), Skizzeo setzt dafür keine Position")
+        };
+        assert_eq!(
+            texte(&p(PLATTE)),
+            [
+                format!("Grenzprüfung d=min (150,00): {}", aus("150")),
+                format!("Grenzprüfung d=max (400,00): {}", aus("400")),
+            ]
+        );
+        // ohne dicke: ein Hinweis, nicht je Grenze
+        assert_eq!(
+            texte(&p(&PLATTE.replace(" dicke=d", ""))),
+            [format!("[menge] beton: Leistung {l} gilt für 180–250 mm, ohne dicke prüft Skizzeo das nicht")]
+        );
+        // eingestellt außerhalb: die Grenzen derselben Zeile entfallen
+        let t = PLATTE.replace("wert=200 min=150", "wert=300 min=150");
+        assert_eq!(texte(&p(&t)), [aus("300")]);
+        assert!(p(&t).einlesbar());
+        // eigene Leistung mit dmax
+        assert_eq!(
+            texte(&p(FUND)),
+            ["Grenzprüfung b=max (1.200,00): [menge] beton: Dicke 1.200 mm liegt außerhalb von fundament_beton (bis 600 mm), Skizzeo setzt dafür keine Position"]
+        );
+        let t = FUND.replace("dmax=600", "dmin=700 dmax=600");
+        assert!(
+            texte(&p(&t)).contains(&"[leistung] fundament_beton: dmin größer als dmax".to_string())
+        );
+        let t = FUND.replace("dmax=600", "dmin=x");
+        assert!(texte(&p(&t))
+            .contains(&"[leistung] fundament_beton dmin: Zahl ≥ 0 (Dezimalpunkt)".to_string()));
+        // dicke wie eine Formel geprüft
+        let t = FUND.replace("dicke=b", "dicke=q");
+        assert!(
+            texte(&p(&t)).contains(&"[menge] beton dicke: unbekannter Name „q“".to_string()),
+            "{:?}",
+            texte(&p(&t))
+        );
+        // stoffe: Werks-Artikel, unbekannte Kennung, unbekannter key
+        let t = FUND.replace(
+            "stoffe=\"1S7bUW0010080100000006:1.03\"",
+            "stoffe=\"1S7bUW0010080100000006:1.03; 1S7bUW00100801000000ZZ:1; kies:2\"",
+        );
+        let x = texte(&p(&t));
+        assert!(x.contains(&"[leistung] fundament_beton: Artikel „1S7bUW00100801000000ZZ“ nicht im Werksbestand, Skizzeo fragt beim Einlesen nach".to_string()), "{x:?}");
+        assert!(x.contains(&"[leistung] fundament_beton: Artikel „kies“ fehlt als [artikel] und ist keine Werks-Kennung".to_string()), "{x:?}");
+        assert_eq!(p(&t).fehler(), 1);
     }
 }

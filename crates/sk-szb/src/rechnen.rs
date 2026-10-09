@@ -111,6 +111,8 @@ pub struct Ergebnis {
     pub werte: Vec<(usize, f64)>,
     /// Je `[menge]`: Index und Wert, `None` bei Fehler.
     pub mengen: Vec<(usize, Option<f64>)>,
+    /// Je `[menge]` mit `dicke`: Index und Dicke (mm), wenn sie rechnet.
+    pub dicken: Vec<(usize, f64)>,
     pub befunde: Vec<Befund>,
     /// Einfügehöhe über UK Geschoss (mm).
     pub z0: f64,
@@ -284,6 +286,15 @@ fn rechnen_innen(rc: &mut Rechner, def: &Def, pv: &Umfeld, g: &Geschoss) -> Erge
             }
         };
         e.mengen.push((i, v));
+        if let Some(src) = r.get("dicke") {
+            match rc.wert(src, &sc, Some(&e.vol)) {
+                Ok(d) => e.dicken.push((i, d)),
+                Err(x) => {
+                    let b = Befund::fehler(r.zeile, format!("[menge] {k} dicke: {x}"));
+                    rc.befund(&mut e, b);
+                }
+            }
+        }
     }
     e
 }

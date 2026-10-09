@@ -13,13 +13,23 @@ pub struct WerkBaustoff {
     pub gewerk: u32,
 }
 
-/// Eine Werks-Leistung: Kennung, Einheit, Mengenbezug, Kurztext.
+/// Eine Werks-Leistung: Kennung, Einheit, Mengenbezug, Kurztext und
+/// Dickenband in mm (werk.szk `tmin`/`tmax`), wenn sie eines hat.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WerkLeistung {
     pub id: &'static str,
     pub einheit: &'static str,
     pub bezug: &'static str,
     pub kurz: &'static str,
+    pub band: Option<(u32, u32)>,
+}
+
+/// Ein Werks-Artikel für `stoffe=` (§10): Kennung, Einheit, Name.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WerkArtikel {
+    pub id: &'static str,
+    pub einheit: &'static str,
+    pub name: &'static str,
 }
 
 /// Bestand, gegen den geprüft wird.
@@ -30,6 +40,7 @@ pub struct Bestand {
     pub gewerke: Vec<(u32, &'static str)>,
     pub kgs: Vec<u32>,
     pub leistungen: Vec<WerkLeistung>,
+    pub artikel: Vec<WerkArtikel>,
     /// Belegte Präfixe; dazu kommen die anderer installierter Bauteile.
     pub praefixe: Vec<String>,
     /// Bauteilarten, die Skizzeo kennt (Wort für `art=`).
@@ -63,8 +74,120 @@ const fn l(
         einheit,
         bezug,
         kurz,
+        band: None,
     }
 }
+
+const fn a(id: &'static str, einheit: &'static str, name: &'static str) -> WerkArtikel {
+    WerkArtikel { id, einheit, name }
+}
+
+/// Dickenbänder der Werks-Leistungen in mm (§10, werk.szk `tmin`/`tmax`).
+pub const BAENDER: [(&str, u32, u32); 12] = [
+    ("1S7bUW0010080200000001", 180, 250),
+    ("1S7bUW0010080200000003", 180, 250),
+    ("1S7bUW0010080200000007", 170, 180),
+    ("1S7bUW0010080200000008", 230, 250),
+    ("1S7bUW0010080200000009", 355, 375),
+    ("1S7bUW001008020000000A", 230, 250),
+    ("1S7bUW001008020000000B", 170, 180),
+    ("1S7bUW001008020000000C", 110, 120),
+    ("1S7bUW001008020000000E", 130, 150),
+    ("1S7bUW001008020000000F", 105, 125),
+    ("1S7bUW001008020000000H", 100, 130),
+    ("1S7bUW001008020000000I", 131, 160),
+];
+
+/// Werks-Artikel (§10, aus werk.szk).
+pub const ARTIKEL: [WerkArtikel; 19] = [
+    a(
+        "1S7bUW0010080100000001",
+        "m2",
+        "Porenbeton-Planbauplatte PP2-0,35 d=11,5cm",
+    ),
+    a(
+        "1S7bUW0010080100000002",
+        "m2",
+        "Porenbeton-Planstein PP2-0,35 d=17,5cm",
+    ),
+    a(
+        "1S7bUW0010080100000003",
+        "m2",
+        "Porenbeton-Planstein PP2-0,35 d=24cm",
+    ),
+    a(
+        "1S7bUW0010080100000004",
+        "m2",
+        "Porenbeton-Planstein PP2-0,35 d=36,5cm",
+    ),
+    a(
+        "1S7bUW0010080100000005",
+        "kg",
+        "Dünnbettmörtel für Porenbeton",
+    ),
+    a(
+        "1S7bUW0010080100000006",
+        "m3",
+        "Transportbeton C25/30 XC1-XC2 F3",
+    ),
+    a(
+        "1S7bUW0010080100000007",
+        "t",
+        "Betonstahl B500, geschnitten und gebogen",
+    ),
+    a(
+        "1S7bUW0010080100000008",
+        "m2",
+        "Deckenschalung, Vorhaltung und Verschleiß",
+    ),
+    a(
+        "1S7bUW0010080100000009",
+        "m",
+        "Randschalung, Vorhaltung und Verschleiß",
+    ),
+    a(
+        "1S7bUW001008010000000A",
+        "m2",
+        "Kerndämmplatte MW 035 d=140mm",
+    ),
+    a(
+        "1S7bUW001008010000000B",
+        "m2",
+        "Klinker NF inkl. Vormauermörtel",
+    ),
+    a(
+        "1S7bUW001008010000000C",
+        "m",
+        "Konsolanker Edelstahl, Abfangung",
+    ),
+    a("1S7bUW001008010000000D", "m", "Randdämmstreifen MW"),
+    a(
+        "1S7bUW001008010000000E",
+        "m2",
+        "WDVS-System EPS 035 d=120mm inkl. Kleber, Dübel, Gewebe, Oberputz",
+    ),
+    a(
+        "1S7bUW001008010000000F",
+        "m2",
+        "WDVS-System EPS 035 d=140mm inkl. Kleber, Dübel, Gewebe, Oberputz",
+    ),
+    a(
+        "1S7bUW001008010000000G",
+        "m2",
+        "EPS-Dämmplatte 035 d=120mm geklebt, inkl. Armierung und Putz",
+    ),
+    a("1S7bUW001008010000000H", "m2", "Gipsputz maschinell 15 mm"),
+    a(
+        "1S7bUW001008010000000I",
+        "m2",
+        "MW-Lamellenplatte 035 d=120mm geklebt, inkl. Armierung und Putz",
+    ),
+    a(
+        "1S7bUW001008010000000J",
+        "m2",
+        "MW-Dämmplatte 035 d=120mm gedübelt, inkl. Armierung und Putz",
+    ),
+];
 
 /// Werks-Baustoffe nach Vertrag 0.5 §9.
 pub const BAUSTOFFE: [WerkBaustoff; 10] = [
@@ -284,7 +407,14 @@ impl Bestand {
             baustoffe: BAUSTOFFE.to_vec(),
             gewerke: GEWERKE.to_vec(),
             kgs: KGS.to_vec(),
-            leistungen: LEISTUNGEN.to_vec(),
+            leistungen: LEISTUNGEN
+                .iter()
+                .map(|l| WerkLeistung {
+                    band: BAENDER.iter().find(|b| b.0 == l.id).map(|b| (b.1, b.2)),
+                    ..*l
+                })
+                .collect(),
+            artikel: ARTIKEL.to_vec(),
             praefixe: BELEGT.iter().map(|s| s.to_string()).collect(),
             arten: ARTEN.to_vec(),
         }
@@ -296,6 +426,10 @@ impl Bestand {
 
     pub fn leistung(&self, id: &str) -> Option<&WerkLeistung> {
         self.leistungen.iter().find(|l| l.id == id)
+    }
+
+    pub fn artikel(&self, id: &str) -> Option<&WerkArtikel> {
+        self.artikel.iter().find(|a| a.id == id)
     }
 
     pub fn hat_gewerk(&self, nr: u32) -> bool {

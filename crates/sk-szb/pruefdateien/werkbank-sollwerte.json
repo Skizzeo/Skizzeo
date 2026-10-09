@@ -1,7 +1,10 @@
 {
  "werk.bodenplatte.szb": {
   "EG": {
-   "befunde": [],
+   "befunde": [
+    "H 12 Grenzprüfung d=min (150,00): [menge] beton: Dicke 150 mm liegt außerhalb von 1S7bUW0010080200000001 (180–250 mm), Skizzeo setzt dafür keine Position",
+    "H 12 Grenzprüfung d=max (400,00): [menge] beton: Dicke 400 mm liegt außerhalb von 1S7bUW0010080200000001 (180–250 mm), Skizzeo setzt dafür keine Position"
+   ],
    "mengen": [
     [
      "beton",
@@ -92,7 +95,10 @@
    }
   },
   "OG": {
-   "befunde": [],
+   "befunde": [
+    "H 12 Grenzprüfung d=min (150,00): [menge] beton: Dicke 150 mm liegt außerhalb von 1S7bUW0010080200000001 (180–250 mm), Skizzeo setzt dafür keine Position",
+    "H 12 Grenzprüfung d=max (400,00): [menge] beton: Dicke 400 mm liegt außerhalb von 1S7bUW0010080200000001 (180–250 mm), Skizzeo setzt dafür keine Position"
+   ],
    "mengen": [
     [
      "beton",
@@ -290,7 +296,9 @@
  },
  "werk.streifenfundament.szb": {
   "EG": {
-   "befunde": [],
+   "befunde": [
+    "H 14 Grenzprüfung b=max (1.200,00): [menge] beton: Dicke 1.200 mm liegt außerhalb von fundament_beton (bis 600 mm), Skizzeo setzt dafür keine Position"
+   ],
    "mengen": [
     [
      "beton",
@@ -390,7 +398,9 @@
    }
   },
   "OG": {
-   "befunde": [],
+   "befunde": [
+    "H 14 Grenzprüfung b=max (1.200,00): [menge] beton: Dicke 1.200 mm liegt außerhalb von fundament_beton (bis 600 mm), Skizzeo setzt dafür keine Position"
+   ],
    "mengen": [
     [
      "beton",

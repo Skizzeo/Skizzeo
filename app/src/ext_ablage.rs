@@ -642,4 +642,49 @@ mod tests {
         assert_eq!(r.is_ok(), neu.eintrag("werk.stuetze").is_some(), "{r:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Der Werksbestand von sk-szb (Vertrag §10) gleicht werk.szk:
+    /// Leistungen mit Einheit, Bezug, Kurztext und Dickenband, Artikel mit
+    /// Einheit und Name.
+    #[test]
+    fn bestand_wie_werk_szk() {
+        use sk_cost::geld::Dez;
+        let k = sk_cost::lesen::werk(&Model::new());
+        let best = sk_szb::Bestand::werk();
+        let mm = |d: Option<Dez>| d.map(|d| (d.0 / Dez::SKALA) as u32);
+        let werk: Vec<_> = k
+            .leistungen
+            .iter()
+            .map(|l| {
+                let band = match (mm(l.tmin), mm(l.tmax)) {
+                    (Some(a), Some(b)) => Some((a, b)),
+                    _ => None,
+                };
+                (
+                    l.guid.to_ifc(),
+                    l.einheit.wort(),
+                    l.bezug.wort(),
+                    l.kurz.as_str(),
+                    band,
+                )
+            })
+            .collect();
+        let szb: Vec<_> = best
+            .leistungen
+            .iter()
+            .map(|l| (l.id.to_string(), l.einheit, l.bezug, l.kurz, l.band))
+            .collect();
+        assert_eq!(szb, werk);
+        let werk: Vec<_> = k
+            .artikel
+            .iter()
+            .map(|a| (a.guid.to_ifc(), a.einheit.wort(), a.name.as_str()))
+            .collect();
+        let szb: Vec<_> = best
+            .artikel
+            .iter()
+            .map(|a| (a.id.to_string(), a.einheit, a.name))
+            .collect();
+        assert_eq!(szb, werk);
+    }
 }

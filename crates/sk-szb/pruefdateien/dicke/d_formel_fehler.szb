@@ -9,7 +9,7 @@ SZB 0
 [typ] key=bp20 name="Bodenplatte 20 cm" werte="d=200" standard=ja
 [typ] key=bp25 name="Bodenplatte 25 cm" werte="d=250"
 [koerper] form=quader baustoff=stahlbeton teil="Platte" funktion=loadbearing x=0 y=0 z=0 b=b t=t h=d
-[menge] key=beton name="Beton C25/30" einheit=m3 formel="volumen(stahlbeton)" baustoff=stahlbeton bezug=volume leistung=1S7bUW0010080200000001 dicke=d anzeigen=ja
+[menge] key=beton name="Beton C25/30" einheit=m3 formel="volumen(stahlbeton)" baustoff=stahlbeton bezug=volume leistung=1S7bUW0010080200000001 dicke=q anzeigen=ja
 [menge] key=rand name="Randschalung" einheit=m formel="2*(b+t)/1000" bezug=perimeter leistung=1S7bUW0010080200000005
 [menge] key=stahl name="Betonstahl B500" einheit=t formel="volumen(stahlbeton)*0.08" bezug=steel leistung=1S7bUW0010080200000006
 [notiz] art=stand text="Beispiel der Werkbank: Bodenplatte als Rechteck mit Werks-Leistungen"
