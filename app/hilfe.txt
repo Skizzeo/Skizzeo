@@ -198,8 +198,8 @@ Mengenliste | Gruppe „Blatt (Mengenliste)“
 [thema] id=einstellungen-vorgaben titel="Einstellungen · Vorgaben"
 Öffnen | Einstellungen, Reiter „Vorgaben“ unter „Programm“; gilt für diesen Arbeitsplatz
 Schatten in den Ansichten | An oder Aus, graue Fläche oder Schraffur, Licht vorne links, vorne rechts, vorne oben oder Sonne
-Wirkung | jede Ansicht ohne eigene Wahl folgt der Vorgabe, auch in vorhandenen Projekten; eine eigene Wahl über das Zahnrad in der Ansicht bleibt
-Sonne | Projekte ohne Nordrichtung zeigen dann keinen Schatten
+Wirkung | jede Ansicht ohne eigene Wahl folgt der Vorgabe, auch in vorhandenen Projekten; eine eigene Wahl über das Zahnrad in der Ansicht bleibt, bis „Vorgabe übernehmen“ sie löscht
+Sonne | Projekte ohne Nordrichtung zeigen dann keinen Schatten; ein neues Projekt bekommt den Sonnenstand vom Tag des Anlegens, 12:00; Projekte ohne gespeicherten Sonnenstand rechnen mit dem heutigen Tag
 Standardort | Breite und Länge in Grad; neue Projekte bekommen ihn als Bauort, vorhandene behalten ihren
 Zurücksetzen | „Auf Standard zurücksetzen“ stellt Werk her: Schatten an, Fläche, vorne links, Ganderkesee
 

@@ -431,6 +431,7 @@ mod tests {
             hover: Some(crate::ansicht_schatten::Teil::Licht(ShadeLight::Sun)),
             sonne_ok: true,
             zu_tief: true,
+            eigen: true,
             rechts: 1300f32.to_bits(),
             scale: 1.5f32.to_bits(),
         };

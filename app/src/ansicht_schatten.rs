@@ -31,6 +31,9 @@ pub const TIP: &str = "Schatten dieser Ansicht";
 pub const OHNE_NORD: &str = "Nordrichtung fehlt";
 /// Hinweis im Feld, wenn die Sonne zu tief steht.
 pub const UNTER: &str = "Sonne unter 2°: kein Schatten";
+/// Stand der Ansicht gegenüber der Firmenvorgabe (S8, §8 13:00 e).
+pub const FOLGT: &str = "Folgt der Vorgabe";
+pub const EIGEN: &str = "Eigene Wahl dieser Ansicht";
 
 // ===== Reine Funktionen =====
 
@@ -147,6 +150,8 @@ pub enum Teil {
     Schraffur(bool),
     Licht(ShadeLight),
     Alle,
+    /// „Vorgabe übernehmen“: die eigene Wahl dieser Ansicht entfällt (S8).
+    Vorgabe,
 }
 
 /// Maße (dip).
@@ -157,6 +162,8 @@ const NAME_W: f32 = 84.0;
 const KNOPF_W: f32 = 92.0;
 /// Breite einer Knopfreihe: vier Lichter.
 const REIHE: f32 = 4.0 * KNOPF_W + 3.0 * GAP;
+/// Breite von „Vorgabe übernehmen“.
+const VORGABE_W: f32 = 2.0 * KNOPF_W + GAP;
 
 /// Zeilennamen im Feld.
 const NAMEN: [&str; 3] = ["Schatten", "Darstellung", "Licht"];
@@ -170,6 +177,8 @@ pub struct Lage {
     pub teile: Vec<(Teil, Rect)>,
     /// Zeilen (Name, Grundlinie y) und die Zeile für den Hinweis.
     pub namen: Vec<(&'static str, Rect)>,
+    /// Zeile „Folgt der Vorgabe“ bzw. „Eigene Wahl dieser Ansicht“.
+    pub stand: Rect,
     pub hinweis: Option<Rect>,
 }
 
@@ -209,8 +218,13 @@ pub fn lage(rechts: f32, mit_hinweis: bool, s: f32, t: &Theme) -> Lage {
         (Teil::Licht(ShadeLight::Top), k(2.0, 2.0)),
         (Teil::Licht(ShadeLight::Sun), k(3.0, 2.0)),
         (Teil::Alle, r(kx, zeile(3.0), REIHE, h)),
+        (
+            Teil::Vorgabe,
+            r(kx + REIHE - VORGABE_W, zeile(4.0), VORGABE_W, h),
+        ),
     ]);
-    let mut unten = zeile(4.0);
+    let stand = r(kx, zeile(4.0), REIHE - VORGABE_W - GAP, h);
+    let mut unten = zeile(5.0);
     let hinweis = mit_hinweis.then(|| {
         let q = r(kx, unten - GAP * 0.5, REIHE, h * 0.8);
         unten += h * 0.8;
@@ -222,6 +236,7 @@ pub fn lage(rechts: f32, mit_hinweis: bool, s: f32, t: &Theme) -> Lage {
         feld,
         teile,
         namen,
+        stand,
         hinweis,
     }
 }
@@ -239,6 +254,7 @@ pub fn text(t: Teil) -> &'static str {
         Teil::Licht(ShadeLight::Top) => "Vorne oben",
         Teil::Licht(ShadeLight::Sun) => "Sonne",
         Teil::Alle => "Auf alle Ansichten übertragen",
+        Teil::Vorgabe => "Vorgabe übernehmen",
     }
 }
 
@@ -270,6 +286,8 @@ pub struct Bild {
     pub hover: Option<Teil>,
     pub sonne_ok: bool,
     pub zu_tief: bool,
+    /// Die Ansicht hat eine eigene Wahl (sonst folgt sie der Vorgabe).
+    pub eigen: bool,
     /// Linker Rand des Paneels „Ansichten“ (Bits) und Skalierung (Bits).
     pub rechts: u32,
     pub scale: u32,
@@ -346,7 +364,14 @@ pub fn malen(b: &Bild, fonts: &Fonts, t: &Theme) -> (Canvas, i32, i32) {
             f.draw(&mut c, name, px, q.x.round(), y.round(), t.ui.text);
         }
     }
-    for (teil, q) in l.teile.iter().filter(|p| p.0 != Teil::Zahnrad) {
+    if let Some(f) = f {
+        let q = ab(l.stand);
+        let y = q.y + (q.h + f.cap_height(px)) * 0.5;
+        let st = if b.eigen { EIGEN } else { FOLGT };
+        f.draw(&mut c, st, px, q.x.round(), y.round(), t.ui.text_dim);
+    }
+    let zeigen = |p: &&(Teil, Rect)| p.0 != Teil::Zahnrad && (b.eigen || p.0 != Teil::Vorgabe);
+    for (teil, q) in l.teile.iter().filter(zeigen) {
         let gesperrt = *teil == Teil::Licht(ShadeLight::Sun) && !b.sonne_ok;
         let st = ButtonState {
             hover: b.hover == Some(*teil) && !gesperrt,
@@ -383,6 +408,8 @@ pub struct Ausgang {
     pub wahl: Option<ViewShade>,
     /// Die Wahl dieser Ansicht in alle vier übertragen.
     pub alle: bool,
+    /// Die eigene Wahl dieser Ansicht entfällt.
+    pub vorgabe: bool,
 }
 
 impl Schalter {
@@ -390,21 +417,30 @@ impl Schalter {
         *self = Schalter::default();
     }
 
-    fn treffer(&self, l: &Lage, m: (f64, f64)) -> Option<Teil> {
+    fn treffer(&self, l: &Lage, m: (f64, f64), eigen: bool) -> Option<Teil> {
         l.teiles(self.offen)
+            .filter(|p| eigen || p.0 != Teil::Vorgabe)
             .find(|(_, q)| q.contains(m.0, m.1))
             .map(|p| p.0)
     }
 
     /// Mausereignis in der Ansicht (ohne Titelleiste); `vs`: die Wahl
-    /// dieser Ansicht, `sonne_ok`: Sonne wählbar.
-    pub fn handle(&mut self, e: &Event, l: &Lage, vs: ViewShade, sonne_ok: bool) -> Ausgang {
+    /// dieser Ansicht, `sonne_ok`: Sonne wählbar, `eigen`: die Ansicht hat
+    /// eine eigene Wahl („Vorgabe übernehmen“ da).
+    pub fn handle(
+        &mut self,
+        e: &Event,
+        l: &Lage,
+        vs: ViewShade,
+        sonne_ok: bool,
+        eigen: bool,
+    ) -> Ausgang {
         let mut out = Ausgang::default();
         let gesperrt = |t: Teil| t == Teil::Licht(ShadeLight::Sun) && !sonne_ok;
         let im_feld = |m: (f64, f64)| self.offen && l.feld.contains(m.0, m.1);
         match *e {
             Event::MouseMove { x, y, .. } => {
-                self.unter = self.treffer(l, (x, y));
+                self.unter = self.treffer(l, (x, y), eigen);
                 let t = self.unter.filter(|t| !gesperrt(*t));
                 out.redraw = t != self.hover;
                 self.hover = t;
@@ -419,7 +455,7 @@ impl Schalter {
                 x,
                 y,
                 ..
-            } => match self.treffer(l, (x, y)) {
+            } => match self.treffer(l, (x, y), eigen) {
                 Some(Teil::Zahnrad) => {
                     self.offen = !self.offen;
                     out.consumed = true;
@@ -428,6 +464,11 @@ impl Schalter {
                 Some(t) if gesperrt(t) => out.consumed = true,
                 Some(Teil::Alle) => {
                     out.alle = true;
+                    out.consumed = true;
+                    out.redraw = true;
+                }
+                Some(Teil::Vorgabe) => {
+                    out.vorgabe = true;
                     out.consumed = true;
                     out.redraw = true;
                 }
@@ -574,19 +615,31 @@ mod tests {
         let mut sch = Schalter::default();
         let vs = ViewShade::WERK;
         // Geschlossen trifft nur das Zahnrad
-        let o = sch.handle(&klick(mitte(Teil::An(false))), &l, vs, false);
+        let o = sch.handle(&klick(mitte(Teil::An(false))), &l, vs, false, false);
         assert!(!o.consumed && o.wahl.is_none());
-        let o = sch.handle(&klick(mitte(Teil::Zahnrad)), &l, vs, false);
+        let o = sch.handle(&klick(mitte(Teil::Zahnrad)), &l, vs, false, false);
         assert!(o.consumed && sch.offen);
-        let o = sch.handle(&klick(mitte(Teil::Schraffur(true))), &l, vs, false);
+        let o = sch.handle(&klick(mitte(Teil::Schraffur(true))), &l, vs, false, false);
         assert_eq!(o.wahl, Some(ViewShade { hatch: true, ..vs }));
-        let o = sch.handle(&klick(mitte(Teil::An(true))), &l, vs, false);
+        let o = sch.handle(&klick(mitte(Teil::An(true))), &l, vs, false, false);
         assert!(o.consumed && o.wahl.is_none(), "schon an");
-        let o = sch.handle(&klick(mitte(Teil::Licht(ShadeLight::Sun))), &l, vs, false);
+        let o = sch.handle(
+            &klick(mitte(Teil::Licht(ShadeLight::Sun))),
+            &l,
+            vs,
+            false,
+            false,
+        );
         assert!(o.consumed && o.wahl.is_none(), "ohne Nord gesperrt");
-        let o = sch.handle(&klick(mitte(Teil::Licht(ShadeLight::Sun))), &l, vs, true);
+        let o = sch.handle(
+            &klick(mitte(Teil::Licht(ShadeLight::Sun))),
+            &l,
+            vs,
+            true,
+            false,
+        );
         assert_eq!(o.wahl.map(|w| w.light), Some(ShadeLight::Sun));
-        let o = sch.handle(&klick(mitte(Teil::Alle)), &l, vs, true);
+        let o = sch.handle(&klick(mitte(Teil::Alle)), &l, vs, true, false);
         assert!(o.alle && o.consumed);
         // Im Feld zwischen den Knöpfen: verbraucht, bleibt offen
         let n = l.namen[0].1;
@@ -595,9 +648,19 @@ mod tests {
             &l,
             vs,
             true,
+            false,
         );
         assert!(o.consumed && sch.offen);
-        let o = sch.handle(&klick((10.0, 500.0)), &l, vs, true);
+        // „Vorgabe übernehmen“ nur mit eigener Wahl
+        let o = sch.handle(&klick(mitte(Teil::Vorgabe)), &l, vs, true, false);
+        assert!(
+            !o.vorgabe && o.consumed,
+            "ohne eigene Wahl kein Knopf, aber im Feld"
+        );
+        let o = sch.handle(&klick(mitte(Teil::Vorgabe)), &l, vs, true, true);
+        assert!(o.vorgabe && o.consumed && o.wahl.is_none());
+        assert!(l.stand.y == l.teile.iter().find(|p| p.0 == Teil::Vorgabe).unwrap().1.y);
+        let o = sch.handle(&klick((10.0, 500.0)), &l, vs, true, false);
         assert!(!o.consumed && o.redraw && !sch.offen);
         // Bild: offen größer als zu
         let fonts = Fonts {
@@ -611,6 +674,7 @@ mod tests {
             hover: None,
             sonne_ok: true,
             zu_tief: false,
+            eigen: false,
             rechts: 900f32.to_bits(),
             scale: 1f32.to_bits(),
         };

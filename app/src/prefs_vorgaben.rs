@@ -17,6 +17,7 @@ pub const UEBER: &str = "Firmenvorgaben für diesen Arbeitsplatz";
 /// Leise Zeilen.
 pub const GILT: &str = "Gilt für jede Ansicht ohne eigene Wahl (Zahnrad in der Ansicht).";
 pub const OHNE_NORD: &str = "Projekte ohne Nordrichtung zeigen dann keinen Schatten.";
+pub const HEUTE: &str = "Projekte ohne gespeicherten Sonnenstand rechnen mit dem heutigen Tag.";
 pub const NEUE: &str = "Neue Projekte bekommen diesen Bauort. Ab Werk Ganderkesee.";
 
 /// Knöpfe der Schattenwahl in drei Zeilen.
@@ -118,6 +119,8 @@ impl Prefs {
         y += 22.0 * s;
         if self.vorgaben_jetzt().schatten.light == ShadeLight::Sun {
             texts.push(UiText::dim(lx, c.y + y + 14.0 * s, OHNE_NORD));
+            y += 22.0 * s;
+            texts.push(UiText::dim(lx, c.y + y + 14.0 * s, HEUTE));
             y += 22.0 * s;
         }
         y += 16.0 * s;
