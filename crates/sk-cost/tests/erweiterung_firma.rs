@@ -277,3 +277,119 @@ fn vorschlag_ohne_satz() {
     assert_eq!(zeilen(&e3, "[proposal]").len(), 2);
     assert_eq!(zeilen(&e3, "[service]"), zeilen(&e1, "[service]"));
 }
+
+/// §8a: Ablehnen lässt eine Zeile stehen, auf die ein anderer offener Satz
+/// verweist; sie bleibt `status=open`, bis auch dieser Satz übernommen
+/// (dann bestätigt) oder abgelehnt (dann gelöscht) ist. Test zu 61761a6.
+#[test]
+fn geteilter_artikel_bleibt_offen() {
+    let text = STUETZE.replace(
+        "stoffe=\"1S7bUW0010080100000006:1\"",
+        "stoffe=\"1S7bUW0010080100000006:1; stuetzenschalung:0.1\"",
+    );
+    assert_ne!(text, STUETZE);
+    let d = ExtDef::lesen(&text).unwrap();
+    let m = projekt();
+    let t0 = sk_model::write_szk(&Library::standard());
+    let ns = neue_saetze(&m, &lies(&t0), &d);
+    let beton = kennung("werk.stuetze", "leistung", "stuetze_beton");
+    let schal = kennung("werk.stuetze", "leistung", "stuetze_schalung");
+    let art = kennung("werk.stuetze", "artikel", "stuetzenschalung");
+    let haus = Some((Guid(77), "Haus A".to_string()));
+    let e1 = entwurf_anwenden(&t0, &t0, Rolle::Nutzer, &hand(), &[op(&ns, &d, haus)])
+        .unwrap()
+        .text;
+    let key = |t: &str, g: Guid| {
+        verwaltung::katalog_von(&lies(t), 0)
+            .vorschlaege
+            .iter()
+            .find(|v| v.of == g.to_ifc())
+            .unwrap()
+            .key
+    };
+    let anwenden = |t: &str, o: Op| {
+        entwurf_anwenden(t, t, Rolle::Admin, &hand(), &[o])
+            .unwrap()
+            .text
+    };
+    let status = |t: &str, g: Guid| -> Option<String> {
+        zeilen(t, "[origin]")
+            .iter()
+            .find(|l| l.contains(&format!("key={}", g.to_ifc())))
+            .map(|l| {
+                ["open", "confirmed"]
+                    .into_iter()
+                    .find(|s| l.contains(&format!("status={s}")))
+                    .unwrap_or("?")
+                    .to_string()
+            })
+    };
+    let artikel_da = |t: &str| {
+        zeilen(t, "[article]")
+            .iter()
+            .any(|l| l.contains(&art.to_ifc()))
+    };
+    assert!(artikel_da(&e1));
+    assert_eq!(status(&e1, art).as_deref(), Some("open"));
+
+    // Schalung ablehnen: der Artikel bleibt offen, Beton zeigt auf ihn
+    let e2 = anwenden(
+        &e1,
+        Op::VorschlagAblehnen {
+            key: key(&e1, schal),
+        },
+    );
+    assert!(!e2
+        .lines()
+        .filter(|l| !l.starts_with("[log]"))
+        .any(|l| l.starts_with("[service]") && l.contains(&schal.to_ifc())));
+    assert!(
+        artikel_da(&e2),
+        "Artikel gelöscht, obwohl Beton auf ihn zeigt"
+    );
+    assert_eq!(status(&e2, art).as_deref(), Some("open"));
+    assert_eq!(
+        verwaltung::freigeben(&t0, &e2, &hand()).unwrap_err()[0].regel,
+        105
+    );
+
+    // a) Beton übernehmen: der Artikel wird mit bestätigt
+    let e3 = anwenden(
+        &e2,
+        Op::VorschlagUebernehmen {
+            key: key(&e2, beton),
+        },
+    );
+    assert_eq!(status(&e3, beton).as_deref(), Some("confirmed"));
+    assert_eq!(status(&e3, art).as_deref(), Some("confirmed"));
+    assert!(verwaltung::freigeben(&t0, &e3, &hand()).is_ok());
+
+    // b) Beton ablehnen: jetzt geht auch der Artikel
+    let e4 = anwenden(
+        &e2,
+        Op::VorschlagAblehnen {
+            key: key(&e2, beton),
+        },
+    );
+    assert!(!artikel_da(&e4));
+    assert_eq!(status(&e4, art), None);
+    assert!(zeilen(&e4, "[proposal]").is_empty());
+    assert!(verwaltung::freigeben(&t0, &e4, &hand()).is_ok());
+
+    // c) andere Reihenfolge: Beton zuerst übernommen, Schalung abgelehnt
+    let e5 = anwenden(
+        &e1,
+        Op::VorschlagUebernehmen {
+            key: key(&e1, beton),
+        },
+    );
+    let e6 = anwenden(
+        &e5,
+        Op::VorschlagAblehnen {
+            key: key(&e5, schal),
+        },
+    );
+    assert!(artikel_da(&e6));
+    assert_eq!(status(&e6, art).as_deref(), Some("confirmed"));
+    assert!(verwaltung::freigeben(&t0, &e6, &hand()).is_ok());
+}
