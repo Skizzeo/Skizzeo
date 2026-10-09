@@ -593,12 +593,27 @@ pub fn helpers(h: &Himmel, heiss: bool, s: f32) -> Vec<Helper> {
 
 /// Griff und Kurve am Schatten als Striche: der Griff an der Spitze, die
 /// Kurve beim Darüberfahren und Ziehen. Beim Ziehen gilt der gegriffene
-/// Punkt; seine Spitze fehlt, solange er keinen Schatten wirft.
+/// Punkt; wirft er keinen Schatten, steht der Griff am Ende der Kurve.
 fn schatten_striche(sys: &Sonnensystem, g: Option<&Griff>, d: Option<Vec3>) -> Vec<Strich> {
     let (kurve, spitze, heiss) = match sys.am_schatten() {
         Some(z) => {
-            let d = d.filter(|d| d.z >= schatten::min_sinus());
-            (Some(&z.kurve), d.map(|d| am_boden(z.punkt, d)), true)
+            // Unter 2° bleibt der Griff am Ende der Kurve auf der Seite der
+            // Sonne (§8 11:30)
+            let fuss = vec3(z.punkt.x, z.punkt.y, 0.0);
+            let ende = |d: Vec3| {
+                let weg = vec3(-d.x, -d.y, 0.0);
+                let zu = |p: &(Zeitpunkt, Vec3)| (p.1 - fuss).normalized().dot(weg);
+                let (a, b) = (z.kurve.first()?, z.kurve.last()?);
+                Some(if zu(a) >= zu(b) { a.1 } else { b.1 })
+            };
+            let spitze = d.and_then(|d| {
+                if d.z >= schatten::min_sinus() {
+                    Some(am_boden(z.punkt, d))
+                } else {
+                    ende(d)
+                }
+            });
+            (Some(&z.kurve), spitze, true)
         }
         None => (
             g.filter(|_| sys.ueber_schatten).map(|g| &g.kurve),
@@ -908,14 +923,18 @@ impl Sonnensystem {
     }
 
     /// Ziehen am Schatten: Stelle `k` auf der Kurve von `g` zur Maus `m`,
-    /// über die Enden hinaus Auf- bzw. Untergang.
+    /// über die Enden hinaus Auf- bzw. Untergang. Gezogen wird nur auf dem
+    /// Teil im Fenster (§8 11:30): Punkte hinter der Kamera oder außerhalb
+    /// zählen nicht, dort bleibt der Zug am letzten sichtbaren Punkt stehen.
     fn schatten_ziehen(g: &Griff, lb: &Lagebild, m: (f64, f64), k: f64) -> (f64, Option<u32>) {
+        let (w, h) = lb.wh;
         let pts: Vec<(f64, f64)> = g
             .kurve
             .iter()
             .map(|p| {
                 lb.cam
-                    .project(p.1, lb.wh.0, lb.wh.1)
+                    .project(p.1, w, h)
+                    .filter(|q| (0.0..=w).contains(&q.0) && (0.0..=h).contains(&q.1))
                     .unwrap_or((f64::NAN, f64::NAN))
             })
             .collect();
@@ -1574,6 +1593,10 @@ mod tests {
         let raus = (b.0 + r.0 / n * 60.0, b.1 + r.1 / n * 60.0);
         ev(&mut sys, &mut sun, mv(raus.0, raus.1));
         assert_eq!(sun.minutes, unter);
+        // Der Griff bleibt dabei am Abendende der Kurve
+        let st = schatten_striche(&sys, None, zur_sonne(&l, &sun));
+        let griff_bei = st.iter().rev().find(|s| s.0 == s.1).map(|s| s.0);
+        assert_eq!(griff_bei, Some(k[k.len() - 1].1));
         ev(&mut sys, &mut sun, mv(b.0, b.1));
         assert_eq!(sun.minutes, hin[hin.len() - 1]);
         let mut zurueck = Vec::new();
@@ -1608,5 +1631,99 @@ mod tests {
         };
         ev(&mut sys, &mut sun, up);
         assert!(!sys.is_busy() && sys.am_schatten().is_none());
+    }
+
+    /// S6: Liegt das Ende der Kurve außerhalb des Fensters, bleibt der Zug
+    /// am letzten sichtbaren Punkt stehen (§8 11:30).
+    #[test]
+    fn schatten_ende_ausserhalb() {
+        let (fonts, theme) = (ohne_schrift(), Theme::dark());
+        let (w, h) = (1200.0, 800.0);
+        let q = wuerfel_quader();
+        let ziel = vec3(5000.0, 5000.0, 0.0);
+        let cam = Camera::looking_at(ziel + vec3(-20000.0, -45000.0, 40000.0), ziel, 45.0);
+        let l = Location::default();
+        let ecken = ecken(&wuerfel_netz().faces);
+        let mut sun = sun(2026, 6, 21, 10, 0);
+        let mut sys = Sonnensystem::default();
+        let m = Modifiers::default();
+        let ev = |sys: &mut Sonnensystem, sun: &mut Sun, e: Event| {
+            let hi = himmel(&l, sun, q);
+            let g = griff(&l, sun, &ecken);
+            let lb = Lagebild {
+                sun: *sun,
+                himmel: &hi,
+                griff: g.as_ref(),
+                cam: &cam,
+                wh: (w, h),
+                scale: 1.0,
+                fonts: &fonts,
+                theme: &theme,
+            };
+            let out = sys.handle(&e, &lb);
+            if let Some(s) = out.sun {
+                *sun = s;
+            }
+        };
+        let g = griff(&l, &sun, &ecken).unwrap();
+        let im_bild = |p: Vec3| {
+            cam.project(p, w, h)
+                .filter(|q| (0.0..=w).contains(&q.0) && (0.0..=h).contains(&q.1))
+        };
+        let k = &g.kurve;
+        let ab = stelle_bei(k, zeitpunkt(&sun)) as usize + 1;
+        // Das Abendende liegt außerhalb, der letzte sichtbare Punkt davor
+        assert!(im_bild(k[k.len() - 1].1).is_none());
+        let letzt = (ab..k.len())
+            .take_while(|i| im_bild(k[*i].1).is_some())
+            .last()
+            .unwrap();
+        assert!(letzt + 1 < k.len());
+        let (x, y) = im_bild(g.boden).unwrap();
+        ev(
+            &mut sys,
+            &mut sun,
+            Event::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                mods: m,
+            },
+        );
+        for p in &k[ab..=letzt] {
+            let (px, py) = im_bild(p.1).unwrap();
+            ev(
+                &mut sys,
+                &mut sun,
+                Event::MouseMove {
+                    x: px,
+                    y: py,
+                    mods: m,
+                },
+            );
+        }
+        let soll = minuten_bei(k, k[letzt].0).unwrap();
+        assert_eq!(sun.minutes, soll);
+        // Weiter in Richtung des Endes, auch aus dem Fenster heraus: es
+        // bleibt beim letzten sichtbaren Punkt, kein Untergang
+        let (a, b) = (
+            im_bild(k[letzt - 1].1).unwrap(),
+            im_bild(k[letzt].1).unwrap(),
+        );
+        let r = (b.0 - a.0, b.1 - a.1);
+        let n = r.0.hypot(r.1);
+        for d in [30.0, 300.0, 3000.0] {
+            let (px, py) = (b.0 + r.0 / n * d, b.1 + r.1 / n * d);
+            ev(
+                &mut sys,
+                &mut sun,
+                Event::MouseMove {
+                    x: px,
+                    y: py,
+                    mods: m,
+                },
+            );
+            assert_eq!(sun.minutes, soll, "{d}");
+        }
     }
 }

@@ -214,16 +214,13 @@ mod tests {
         let zeiten = |r: &mut Renderer, s: &mut Scene, entwurf: bool| {
             let mut v = Vec::new();
             r.set_shadow_draft(entwurf);
-            let mut vorige = r.shadow_pass_ms();
             for i in 0..40 {
                 bild(r, s, sonne(6, 21, 9 * 60 + 5 * i), &cam);
-                // Nur neue Messungen, ab dem dritten Bild (die erste stammt
-                // noch vom Lauf davor)
-                let m = r.shadow_pass_ms();
-                if i >= 2 && m != vorige {
+                // Die Messung des ersten Bildes stammt noch vom Lauf davor
+                let m = r.take_shadow_pass_ms();
+                if i >= 1 {
                     v.extend(m);
                 }
-                vorige = m;
             }
             r.set_shadow_draft(false);
             v.sort_by(|a, b| a.1.total_cmp(&b.1));
@@ -246,12 +243,15 @@ mod tests {
             } else {
                 sk_render::schatten::GROESSE
             };
-            let teil: Vec<_> = e.iter().filter(|m| m.0 == gross).collect();
-            assert!(teil.len() * 2 > e.len(), "{n}: {e:?}");
-            let m = teil[teil.len() / 2].1;
+            // Beim Greifen gewählt, ohne Wechsel mitten im Zug
+            assert!(
+                !e.is_empty() && e.iter().all(|m| m.0 == gross),
+                "{n}: {e:?}"
+            );
+            let m = e[e.len() / 2].1;
             bericht += &format!(
                 "{n} beim Ziehen: {} mal {gross}², Median {m:.1} ms\n",
-                teil.len()
+                e.len()
             );
         }
         eprintln!("{bericht}");

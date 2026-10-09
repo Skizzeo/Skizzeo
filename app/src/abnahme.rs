@@ -25606,9 +25606,9 @@ mod bildzeit {
         crate::frame_time::status_line(gesamt, arbeit)
     }
 
-    /// Messung mit diesen Bildern (Ereignisse, Netz, Zeichnen, Tauschen):
-    /// (Gesamt je Bild, Arbeit je Bild, Tabelle).
-    fn messen(bilder: &[[f64; 4]]) -> (Vec<f64>, Vec<f64>, String) {
+    /// Messung mit diesen Bildern (Ereignisse, Netz, Schatten, Zeichnen,
+    /// Tauschen): (Gesamt je Bild, Arbeit je Bild, Tabelle).
+    fn messen(bilder: &[[f64; 5]]) -> (Vec<f64>, Vec<f64>, String) {
         let mut m = crate::frame_time::Measure::new();
         for b in bilder {
             m.push(*b);
@@ -25666,14 +25666,16 @@ mod bildzeit {
         );
 
         // Mit VSync: Gesamt immer ≈ 16,7 ms, die Arbeit zeigt die Reserve.
-        // Arbeit = Ereignisse + Netz + Zeichnen, ohne Tauschen; die Tabelle
+        // Arbeit = Ereignisse + Netz + Schatten + Zeichnen, ohne Tauschen
+        // (Schatten seit S5, §3.6 der Sonnen-Analyse); die Tabelle
         // bleibt wie bisher.
-        let bilder: Vec<[f64; 4]> = (0..20)
+        let bilder: Vec<[f64; 5]> = (0..20)
             .map(|i| {
                 [
                     0.5,
                     0.25,
-                    3.0 + f64::from(i % 4),
+                    1.0,
+                    2.0 + f64::from(i % 4),
                     16.7 - 3.75 - f64::from(i % 4),
                 ]
             })
@@ -25684,7 +25686,7 @@ mod bildzeit {
         for (b, (g, a)) in bilder.iter().zip(gesamt.iter().zip(&arbeit)) {
             assert!((g - b.iter().sum::<f64>()).abs() < 1e-9, "Gesamt");
             assert!(
-                (a - (b[0] + b[1] + b[2])).abs() < 1e-9,
+                (a - (b[0] + b[1] + b[2] + b[3])).abs() < 1e-9,
                 "Arbeit ohne Tauschen"
             );
         }
@@ -25692,8 +25694,13 @@ mod bildzeit {
             zeile(&gesamt, &arbeit),
             "Bildzeit: Median 16,70 ms, 95 % 16,70 ms · Arbeit: Median 5,25 ms, 95 % 6,75 ms (20 Bilder)"
         );
-        assert!(tabelle.starts_with("ereignisse;netz;zeichnen;tauschen;gesamt\n"));
+        assert!(tabelle.starts_with("ereignisse;netz;schatten;zeichnen;tauschen;gesamt\n"));
         assert_eq!(tabelle.lines().count(), 21, "Kopf und 20 Bilder");
+        assert_eq!(
+            tabelle.lines().nth(1),
+            Some("0,500;0,250;1,000;2,000;12,950;16,700"),
+            "Spalten in dieser Reihenfolge, Dezimalkomma"
+        );
 
         assert_eq!(dateiname(2026, 10, 7, 9, 5), "bildzeit-20261007-0905.csv");
         assert_eq!(dateiname(2026, 1, 31, 23, 59), "bildzeit-20260131-2359.csv");

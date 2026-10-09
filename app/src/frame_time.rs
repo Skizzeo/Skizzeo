@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 pub const SPAN: Duration = Duration::from_secs(10);
 
 /// Kopfzeile der Tabelle (wie bei `--zeiten`).
-pub const HEADER: &str = "ereignisse;netz;zeichnen;tauschen;gesamt\n";
+pub const HEADER: &str = "ereignisse;netz;schatten;zeichnen;tauschen;gesamt\n";
 
 /// (Median, 95 %, Anzahl) in ms; `None` ohne Werte. Median bei gerader
 /// Anzahl: Mittel der beiden mittleren; 95 %: Wert mit dem Rang
@@ -36,7 +36,8 @@ fn de(v: f64) -> String {
 }
 
 /// Zeile für die Statuszeile: Gesamtzeit je Bild (mit dem Warten auf
-/// VSync) und die Arbeit (Ereignisse, Netz, Zeichnen; ohne Tauschen).
+/// VSync) und die Arbeit (Ereignisse, Netz, Schatten, Zeichnen; ohne
+/// Tauschen).
 #[cfg(test)]
 pub fn status_line(total: &[f64], work: &[f64]) -> String {
     status_meldung(total, work).to_string()
@@ -85,11 +86,11 @@ impl Measure {
         }
     }
 
-    /// Ein Bild: Ereignisse, Netz, Zeichnen, Tauschen (ms).
-    pub fn push(&mut self, parts: [f64; 4]) {
+    /// Ein Bild: Ereignisse, Netz, Schatten, Zeichnen, Tauschen (ms).
+    pub fn push(&mut self, parts: [f64; 5]) {
         let sum: f64 = parts.iter().sum();
         self.total.push(sum);
-        self.work.push(parts[..3].iter().sum());
+        self.work.push(parts[..4].iter().sum());
         let cols: Vec<String> = parts
             .iter()
             .chain([sum].iter())
@@ -109,6 +110,22 @@ impl Measure {
     }
 }
 
+/// Die Spalten eines Bildes aus den Uhrzeiten des Rechners (Ereignisse,
+/// Netz, Zeichnen, Tauschen) und der Zeit des Tiefen-Durchgangs auf der
+/// Grafikkarte (S5/S6, 0 ohne neue Karte): Der Schatten geht vom Zeichnen
+/// ab, ein Rest vom Tauschen, so bleibt die Summe die Dauer des Bildes.
+pub fn spalten(
+    ereignisse: f64,
+    netz: f64,
+    schatten: f64,
+    zeichnen: f64,
+    tauschen: f64,
+) -> [f64; 5] {
+    let z = (zeichnen - schatten).max(0.0);
+    let t = (tauschen - (schatten - zeichnen).max(0.0)).max(0.0);
+    [ereignisse, netz, schatten, z, t]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,10 +133,31 @@ mod tests {
     #[test]
     fn tabelle_mit_dezimalkomma() {
         let mut m = Measure::new();
-        m.push([0.5, 0.25, 3.0, 1.0]);
+        m.push([0.5, 0.25, 0.0, 3.0, 1.0]);
         assert_eq!(m.total, [4.75]);
         assert_eq!(m.work, [3.75]);
-        assert_eq!(m.table, format!("{HEADER}0,500;0,250;3,000;1,000;4,750\n"));
+        assert_eq!(
+            m.table,
+            format!("{HEADER}0,500;0,250;0,000;3,000;1,000;4,750\n")
+        );
         assert!(!m.done());
+    }
+
+    /// Der Schatten geht vom Zeichnen ab, ein Rest vom Tauschen; die Summe
+    /// bleibt.
+    #[test]
+    fn schatten_aus_zeichnen() {
+        assert_eq!(
+            spalten(0.5, 0.25, 0.0, 3.0, 1.0),
+            [0.5, 0.25, 0.0, 3.0, 1.0]
+        );
+        assert_eq!(
+            spalten(0.5, 0.25, 2.0, 3.0, 1.0),
+            [0.5, 0.25, 2.0, 1.0, 1.0]
+        );
+        assert_eq!(
+            spalten(0.5, 0.25, 3.5, 3.0, 1.0),
+            [0.5, 0.25, 3.5, 0.0, 0.5]
+        );
     }
 }

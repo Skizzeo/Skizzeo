@@ -7774,7 +7774,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     // `--zeiten datei.csv`: Dauer jedes Bildes in Millisekunden mitschreiben
     let timing_path = std::env::args().skip_while(|a| a != "--zeiten").nth(1);
     let mut timing = timing_path.as_ref().map(|p| {
-        let _ = std::fs::write(p, "ereignisse;netz;zeichnen;tauschen;gesamt\n");
+        let _ = std::fs::write(p, frame_time::HEADER);
         String::new()
     });
     let mut last_tick: Option<std::time::Instant> = None;
@@ -8473,6 +8473,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             if let Some(e) = a.renderer.take_shadow_error() {
                 eprintln!("{e}");
             }
+            // Tiefen-Durchgang auf der Grafikkarte, aus dem Bild davor
+            let schatten_ms = a.renderer.take_shadow_pass_ms().map_or(0.0, |m| m.1);
             let shown_at = a.now();
             a.wheel.shown(shown_at);
             let t_draw = Instant::now();
@@ -8487,13 +8489,21 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             if let Some(log) = timing.as_mut() {
                 let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1000.0;
                 let now = Instant::now();
-                log.push_str(&format!(
-                    "{:.3};{:.3};{:.3};{:.3};{:.3}\n",
+                let t = frame_time::spalten(
                     ms(t_events, t_handled),
                     ms(t_handled, t_mesh),
+                    schatten_ms,
                     ms(t_mesh, t_draw),
                     ms(t_draw, now),
-                    ms(t_events, now),
+                );
+                log.push_str(&format!(
+                    "{:.3};{:.3};{:.3};{:.3};{:.3};{:.3}\n",
+                    t[0],
+                    t[1],
+                    t[2],
+                    t[3],
+                    t[4],
+                    t.iter().sum::<f64>(),
                 ));
                 if log.len() > 4096 {
                     write_timing(&timing_path, log);
@@ -8502,12 +8512,13 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             if let Some(m) = a.frame_measure.as_mut() {
                 let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1000.0;
                 let now = Instant::now();
-                m.push([
+                m.push(frame_time::spalten(
                     ms(t_events, t_handled),
                     ms(t_handled, t_mesh),
+                    schatten_ms,
                     ms(t_mesh, t_draw),
                     ms(t_draw, now),
-                ]);
+                ));
             }
         }
     }

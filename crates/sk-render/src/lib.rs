@@ -473,15 +473,15 @@ pub struct Renderer {
     shadow_failed: bool,
     shadow_error: Option<String>,
     /// Zeitabfrage des Tiefen-Durchgangs (S6): die Abfrage, die
-    /// Kartengröße, solange ihr Ergebnis aussteht, die letzte Messung
-    /// (Größe, ms) und die letzte in voller Größe.
+    /// Kartengröße, solange ihr Ergebnis aussteht, die neue Messung (Größe,
+    /// ms; einmal abzuholen) und die letzte in voller Größe.
     shadow_query: GLuint,
     shadow_query_open: Option<u32>,
     shadow_ms: Option<(u32, f64)>,
     shadow_ms_voll: Option<f64>,
-    /// Beim Ziehen an Sonne oder Schatten: kleinere Karte, wenn die volle
-    /// zu lange braucht.
-    shadow_entwurf: bool,
+    /// Beim Ziehen an Sonne oder Schatten: die beim Greifen gewählte
+    /// Kartengröße, bis zum Loslassen.
+    shadow_entwurf: Option<u32>,
     /// Hüllquader je Netz (Modell, mm).
     mesh_bounds: Vec<Option<(sk_math::Vec3, sk_math::Vec3)>>,
 }
@@ -1502,7 +1502,7 @@ impl Renderer {
                 shadow_query_open: None,
                 shadow_ms: None,
                 shadow_ms_voll: None,
-                shadow_entwurf: false,
+                shadow_entwurf: None,
                 mesh_bounds: Vec::new(),
             })
         }
@@ -1585,15 +1585,7 @@ impl Renderer {
                     sk_math::vec3(b.x.max(d.x), b.y.max(d.y), b.z.max(d.z)),
                 )
             })?;
-        let voll = self.shadow_voll();
-        let lang = self
-            .shadow_ms_voll
-            .is_some_and(|ms| ms > schatten::ENTWURF_AB_MS);
-        let n = if self.shadow_entwurf && lang {
-            voll.min(schatten::ENTWURF)
-        } else {
-            voll
-        };
+        let n = self.shadow_entwurf.unwrap_or(self.shadow_voll());
         schatten::karte(sk_math::vec3(d[0], d[1], d[2]), q, n)
     }
 
@@ -1602,18 +1594,31 @@ impl Renderer {
         (schatten::GROESSE as i32).min(self.shadow_max.max(1024)) as u32
     }
 
-    /// Beim Ziehen an Sonne oder Schatten (S6): Braucht der
-    /// Tiefen-Durchgang in voller Größe mehr als
-    /// [`schatten::ENTWURF_AB_MS`], gilt bis zum Loslassen
-    /// [`schatten::ENTWURF`].
+    /// Beim Ziehen an Sonne oder Schatten (S6): Hat der Tiefen-Durchgang
+    /// in voller Größe zuletzt mehr als [`schatten::ENTWURF_AB_MS`]
+    /// gebraucht, gilt beim Greifen [`schatten::ENTWURF`], und zwar bis
+    /// zum Loslassen, ohne Wechsel mitten im Zug.
     pub fn set_shadow_draft(&mut self, on: bool) {
-        self.shadow_entwurf = on;
+        if !on {
+            self.shadow_entwurf = None;
+        } else if self.shadow_entwurf.is_none() {
+            let voll = self.shadow_voll();
+            let lang = self
+                .shadow_ms_voll
+                .is_some_and(|ms| ms > schatten::ENTWURF_AB_MS);
+            self.shadow_entwurf = Some(if lang {
+                voll.min(schatten::ENTWURF)
+            } else {
+                voll
+            });
+        }
     }
 
-    /// Letzte Messung des Tiefen-Durchgangs auf der Grafikkarte:
-    /// Kartengröße und Zeit (ms).
-    pub fn shadow_pass_ms(&self) -> Option<(u32, f64)> {
-        self.shadow_ms
+    /// Neue Messung des Tiefen-Durchgangs auf der Grafikkarte, einmal:
+    /// Kartengröße und Zeit (ms). Sie stammt aus einem früheren Bild und
+    /// wird gelesen, sobald die Grafikkarte sie meldet.
+    pub fn take_shadow_pass_ms(&mut self) -> Option<(u32, f64)> {
+        self.shadow_ms.take()
     }
 
     /// Kann dieser Treiber keine Schatten (S5)?
@@ -1628,6 +1633,13 @@ impl Renderer {
 
     /// Schattenkarte zeichnen, wenn sie sich geändert hat; danach liegt
     /// sie (oder die leere) auf [`SHADOW_UNIT`].
+    unsafe fn free_shadow_map(&mut self) {
+        if let Some(m) = self.shadow_map.take() {
+            self.gl.glDeleteFramebuffers(1, &m.fbo);
+            self.gl.glDeleteTextures(1, &m.tex);
+        }
+    }
+
     unsafe fn render_shadow(&mut self) {
         // Ergebnis der letzten Zeitabfrage, sobald es da ist (ohne Warten)
         if let Some(n) = self.shadow_query_open {
@@ -1649,14 +1661,11 @@ impl Renderer {
         let neu = karte != self.shadow_karte || self.shadow_dirty;
         self.shadow_karte = karte;
         self.shadow_dirty = false;
-        let gl = &self.gl;
         // Ohne Sonne keine Karte im Speicher (§8 10:50)
         if self.sun.is_none() {
-            if let Some(m) = self.shadow_map.take() {
-                gl.glDeleteFramebuffers(1, &m.fbo);
-                gl.glDeleteTextures(1, &m.tex);
-            }
+            self.free_shadow_map();
         }
+        let gl = &self.gl;
         let Some(k) = karte else {
             gl.glActiveTexture(TEXTURE0 + SHADOW_UNIT);
             gl.glBindTexture(TEXTURE_2D, self.shadow_dummy);
@@ -2429,8 +2438,14 @@ impl Renderer {
         // Schatten nur mit Himmel und Boden (3D), nicht auf Papier
         if view.paper.is_none() {
             unsafe { self.render_shadow() };
-        } else if self.shadow_karte.take().is_some() {
-            self.shadow_dirty = true;
+        } else {
+            if self.shadow_karte.take().is_some() {
+                self.shadow_dirty = true;
+            }
+            // Ohne Sonne keine Karte im Speicher, auch auf Papier
+            if self.sun.is_none() {
+                unsafe { self.free_shadow_map() };
+            }
         }
         self.ensure_target(w, h)?;
         // Mitte der Karte relativ zum Auge (Boden) und Umgebungsanteil
