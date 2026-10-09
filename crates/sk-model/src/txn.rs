@@ -103,10 +103,12 @@ pub enum Change {
     },
     /// Lage und Nordrichtung (Sonnenstand S1); `raw`: die unlesbare Zeile
     /// der Datei davor, die der Schritt ersetzt.
+    /// `foot`: Fußpunkt des Nordpfeils vorher und nachher (S2).
     Location {
         old: crate::Location,
         new: crate::Location,
         raw: Option<String>,
+        foot: [Option<crate::Foot>; 2],
     },
 }
 
@@ -130,7 +132,12 @@ impl Change {
             Change::ForeignRecords { old, new } => old == new,
             Change::Ext { old, new, .. } => old == new,
             Change::Project { old, new } => old == new,
-            Change::Location { old, new, raw } => old == new && raw.is_none(),
+            Change::Location {
+                old,
+                new,
+                raw,
+                foot,
+            } => old == new && raw.is_none() && foot[0] == foot[1],
         }
     }
 }

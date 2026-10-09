@@ -24,7 +24,7 @@ use crate::library::{
     type_code, Bearing, LayerFunction, LayerSet, LayerSetId, MatCategory, Material,
     MaterialDisplay, MaterialLayer, TypeCategory,
 };
-use crate::model::{Defaults, Location, Model, Project};
+use crate::model::{Defaults, Location, Model, Project, FOOT_MAX};
 use crate::solid::edge_kind;
 use crate::trade::{self, Trade, TradeId};
 use crate::wall::{segment_count, RefSide};
@@ -812,7 +812,14 @@ fn write_known(m: &Model) -> String {
         out.push('\n');
     } else if !l.is_unset() {
         let mut line = Line::new("location");
-        for (k, v) in [("lat", l.lat), ("lon", l.lon), ("north", l.north)] {
+        let [x, y] = m.north_foot().map_or([None; 2], |p| p.map(Some));
+        for (k, v) in [
+            ("lat", l.lat),
+            ("lon", l.lon),
+            ("north", l.north),
+            ("x", x),
+            ("y", y),
+        ] {
             if let Some(v) = v {
                 line = line.num(k, v);
             }
@@ -1539,6 +1546,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     // Abnahme S1, Review 3br)
     let mut location = Location::default();
     let mut location_raw = None;
+    let mut foot = None;
     match recs("location").as_slice() {
         [] => {}
         [r] => {
@@ -1550,7 +1558,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                     .ok()
                     .filter(|x| x.is_finite() && x.abs() <= max);
                 if x.is_none() {
-                    falsch.push(k);
+                    falsch.push(format!("„{k}“ ist keine Zahl im Bereich"));
                 }
                 x
             };
@@ -1559,8 +1567,21 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                 lon: num("lon", 180.0),
                 north: num("north", f64::MAX),
             };
+            // Fußpunkt des Nordpfeils (S2): x und y zusammen, nur mit north
+            let (x, y) = (num("x", FOOT_MAX), num("y", FOOT_MAX));
+            let fehlt = |k: &str| falsch.iter().all(|f| !f.starts_with(&format!("„{k}“")));
+            let luecke = match (x, y, read.north) {
+                (Some(_), None, _) if fehlt("y") => Some("y"),
+                (None, Some(_), _) if fehlt("x") => Some("x"),
+                (Some(_), Some(_), None) if fehlt("north") => Some("north"),
+                _ => None,
+            };
+            if let Some(k) = luecke {
+                falsch.push(format!("„{k}“ fehlt"));
+            }
             if falsch.is_empty() && !read.is_unset() {
                 location = read.normalized();
+                foot = x.zip(y).map(|(x, y)| [x, y]);
             } else if falsch.is_empty() {
                 // Keine bekannte Angabe (`elev=` einer neueren Fassung): zählt
                 // nicht als Lage, bleibt im Wortlaut (Review 3br); Unbekanntes
@@ -1570,10 +1591,9 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                 r.skip();
                 location_raw = Some(lines[r.line - 1].to_string());
                 hints.push(format!(
-                    "Zeile {}: [location] „{}“ ist keine Zahl im Bereich; die Lage gilt als \
-                     nicht gesetzt, die Zeile bleibt",
+                    "Zeile {}: [location] {}; die Lage gilt als nicht gesetzt, die Zeile bleibt",
                     r.line,
-                    falsch.join("“, „")
+                    falsch.join(", ")
                 ));
             }
         }
@@ -2096,7 +2116,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut model = Model::from_parts(
         project, attr, materials, layer_sets, buildings, storeys, elements, runs, defaults, guids,
     );
-    model.load_location(location, location_raw);
+    model.load_location(location, foot, location_raw);
     for (k, n) in counters {
         if !model.raise_counter(&k, n) {
             hints.push(format!(
@@ -4033,5 +4053,68 @@ mod tests {
         assert_eq!(write(&m), kaputt);
 
         assert!(load(&mit("[location] north=1\n[location] north=2")).is_err());
+    }
+
+    /// Sonnenstand S2: Der Fußpunkt des Nordpfeils steht als `x=`/`y=` an
+    /// `[location]`, nur zusammen und nur mit `north`; ein Schritt mit der
+    /// Richtung, Rundlauf und Rückgängig bytegleich. Eine Lücke oder
+    /// Unbrauchbares lässt die Zeile roh stehen (Befund A).
+    #[test]
+    fn s2_fusspunkt() {
+        let mut m = house();
+        let alt = write(&m);
+        m.begin("Nordrichtung geändert");
+        assert!(m.set_north_arrow(372.0, Some([12500.0, -3000.5])));
+        assert!(!m.set_north_arrow(12.0, Some([12500.0, -3000.5])));
+        let t = m.commit().unwrap();
+        assert_eq!(t.changes.len(), 1);
+        let neu = write(&m);
+        let zeilen: Vec<&str> = neu
+            .lines()
+            .filter(|z| z.starts_with("[location]"))
+            .collect();
+        assert_eq!(zeilen, ["[location] north=12 x=12500 y=-3000.5"]);
+        let back = load(&neu).unwrap();
+        assert!(back.hints.is_empty(), "{:?}", back.hints);
+        assert_eq!(back.model.north_foot(), Some([12500.0, -3000.5]));
+        assert_eq!(write(&back.model), neu);
+        // Verschieben: ein eigener Schritt, Richtung bleibt
+        m.begin("Nordpfeil verschoben");
+        assert!(m.set_north_arrow(12.0, Some([0.0, 0.0])));
+        let t2 = m.commit().unwrap();
+        assert!(write(&m).contains("\n[location] north=12 x=0 y=0\n"));
+        // Breite über die Maske: der Fußpunkt bleibt
+        m.begin("Projektdaten geändert");
+        let l = Location {
+            lat: Some(52.5),
+            ..*m.location()
+        };
+        assert!(m.set_location(l));
+        let t3 = m.commit().unwrap();
+        assert!(write(&m).contains("\n[location] lat=52.5 north=12 x=0 y=0\n"));
+        for t in [&t3, &t2] {
+            m.apply(t, crate::txn::Direction::Undo);
+        }
+        assert_eq!(write(&m), neu);
+        m.apply(&t, crate::txn::Direction::Undo);
+        assert_eq!(write(&m), alt);
+
+        let mit = |z: &str| alt.replacen("[building]", &format!("{z}\n[building]"), 1);
+        for (z, k) in [
+            ("[location] north=12 x=1", "„y“ fehlt"),
+            ("[location] north=12 y=1", "„x“ fehlt"),
+            ("[location] x=1 y=2", "„north“ fehlt"),
+            ("[location] north=12 x=1 y=abc", "„y“ ist keine Zahl"),
+            ("[location] north=12 x=1e12 y=0", "„x“ ist keine Zahl"),
+        ] {
+            let f = mit(z);
+            let l = load(&f).unwrap();
+            assert_eq!(l.hints.len(), 1, "{z}: {:?}", l.hints);
+            assert!(l.hints[0].contains(k), "{z}: {:?}", l.hints);
+            assert_eq!(l.hints[0].matches("„").count(), 1, "{:?}", l.hints);
+            assert!(l.model.location().is_unset(), "{z}");
+            assert_eq!(l.model.north_foot(), None);
+            assert_eq!(write(&l.model), f, "{z}");
+        }
     }
 }

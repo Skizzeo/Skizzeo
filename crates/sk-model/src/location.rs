@@ -10,6 +10,12 @@
 use super::*;
 use sk_math::sonne::Lage;
 
+/// Größter Betrag einer Koordinate des Fußpunkts (mm, 1000 km).
+pub const FOOT_MAX: f64 = 1e9;
+
+/// Fußpunkt des Nordpfeils (x, y in mm, Modellkoordinaten).
+pub type Foot = [f64; 2];
+
 /// Lage und Nordrichtung des Projekts; `None` heißt nicht gesetzt.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Location {
@@ -72,15 +78,15 @@ impl Model {
         self.location_raw.as_deref()
     }
 
-    /// Lage und Nordrichtung ändern (im offenen Schritt, z. B. „Nordrichtung
-    /// geändert“ oder mit den Projektdaten). Gleiche Werte ändern nichts.
-    /// Eine unlesbare Zeile aus der Datei entfällt damit (Rückgängig holt sie
-    /// zurück).
-    pub fn set_location(&mut self, l: Location) -> bool {
-        let l = l.normalized();
-        if l == self.location {
-            return false;
-        }
+    /// Fußpunkt des Nordpfeils (`x=`/`y=` an `[location]`, Sonnenstand S2),
+    /// wo der Planer ihn aufgezogen oder hingeschoben hat; gilt nur bei
+    /// gesetzter Nordrichtung. Fehlt er, steht der Pfeil neben dem Gebäude.
+    pub fn north_foot(&self) -> Option<Foot> {
+        self.north_foot.filter(|_| self.location.north.is_some())
+    }
+
+    /// Merkt den Stand vor der ersten Änderung im offenen Schritt.
+    fn note_location(&mut self) {
         match self.txn.as_mut() {
             Some(t) => {
                 if t.noted.insert(Key::Location) {
@@ -88,12 +94,47 @@ impl Model {
                         old: self.location,
                         new: self.location,
                         raw: self.location_raw.clone(),
+                        foot: [self.north_foot; 2],
                     });
                 }
             }
             None => debug_assert!(!self.strict, "Änderung ohne Schritt"),
         }
+    }
+
+    /// Lage und Nordrichtung ändern (im offenen Schritt, z. B. mit den
+    /// Projektdaten); der Fußpunkt bleibt. Gleiche Werte ändern nichts.
+    /// Eine unlesbare Zeile aus der Datei entfällt damit (Rückgängig holt sie
+    /// zurück).
+    pub fn set_location(&mut self, l: Location) -> bool {
+        let l = l.normalized();
+        if l == self.location {
+            return false;
+        }
+        self.note_location();
         self.location = l;
+        self.location_raw = None;
+        self.touch();
+        true
+    }
+
+    /// Nordpfeil setzen, drehen oder verschieben (im offenen Schritt,
+    /// „Nordrichtung geändert“ bzw. „Nordpfeil verschoben“): Richtung in
+    /// Grad im Uhrzeigersinn von +y und Fußpunkt zusammen; Breite und
+    /// Länge bleiben. Unbrauchbares ändert nichts.
+    pub fn set_north_arrow(&mut self, north: f64, foot: Option<Foot>) -> bool {
+        let l = Location {
+            north: Some(north),
+            ..self.location
+        }
+        .normalized();
+        let foot = foot.filter(|p| p.iter().all(|v| v.is_finite() && v.abs() <= FOOT_MAX));
+        if l.north.is_none() || (l == self.location && foot == self.north_foot()) {
+            return false;
+        }
+        self.note_location();
+        self.location = l;
+        self.north_foot = foot;
         self.location_raw = None;
         self.touch();
         true
@@ -101,8 +142,9 @@ impl Model {
 
     /// Lage aus der Datei, ohne die Revision zu ändern; `raw`: die Zeile,
     /// wenn sie nicht zählt.
-    pub(crate) fn load_location(&mut self, l: Location, raw: Option<String>) {
+    pub(crate) fn load_location(&mut self, l: Location, foot: Option<Foot>, raw: Option<String>) {
         self.location = l;
+        self.north_foot = foot;
         self.location_raw = raw;
     }
 

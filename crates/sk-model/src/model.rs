@@ -144,6 +144,8 @@ pub struct Model {
     /// `[location]`-Zeile der Datei, die nicht als Lage zählt, roh (Befund A
     /// der Abnahme S1, Review 3br).
     location_raw: Option<String>,
+    /// Fußpunkt des Nordpfeils (Sonnenstand S2).
+    north_foot: Option<location::Foot>,
     /// Schnitte A und B.
     cuts: [Cut; 2],
     /// Zuletzt gezeigter Schnitt (Kennung, A = 0); Ansichtszustand wie `cuts`.
@@ -221,7 +223,7 @@ pub use lock::{edit_blocked, Locked};
 
 #[path = "location.rs"]
 mod location;
-pub use location::Location;
+pub use location::{Foot, Location, FOOT_MAX};
 
 impl Default for Model {
     fn default() -> Model {
@@ -569,6 +571,7 @@ impl Model {
             project,
             location: Location::default(),
             location_raw: None,
+            north_foot: None,
             attr,
             materials,
             layer_sets,
@@ -635,6 +638,7 @@ impl Model {
             project,
             location: Location::default(),
             location_raw: None,
+            north_foot: None,
             attr,
             materials,
             layer_sets,
@@ -5772,7 +5776,10 @@ impl Model {
             // schon beim Ändern eingetragen
             Change::Ext { .. } => {}
             Change::Project { new, .. } => **new = self.project.clone(),
-            Change::Location { new, .. } => *new = self.location,
+            Change::Location { new, foot, .. } => {
+                *new = self.location;
+                foot[1] = self.north_foot;
+            }
         }
     }
 
@@ -5865,8 +5872,14 @@ impl Model {
                 m.ext_revision += 1;
             }
             Change::Project { old, new } => m.project = *pick(dir, old, new),
-            Change::Location { old, new, raw } => {
+            Change::Location {
+                old,
+                new,
+                raw,
+                foot,
+            } => {
                 m.location = pick(dir, old, new);
+                m.north_foot = pick(dir, &foot[0], &foot[1]);
                 m.location_raw = match dir {
                     Direction::Undo => raw.clone(),
                     Direction::Redo => None,
