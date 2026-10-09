@@ -614,6 +614,9 @@ struct App {
     /// Zuletzt hochgeladene Leiste des Sonnenstands, der Würfel ist
     /// hochgeladen, Lichtrichtung von der Sonne (`None`: die feste).
     sonne_bild: Option<sonne_view::LeistenBild>,
+    /// Ecken des Gebäudes über dem Boden bei eingeschaltetem Sonnenstand:
+    /// aus ihnen kommt die Schattenspitze (S6).
+    ecken: Vec<Vec3>,
     wuerfel: bool,
     licht: Option<[f32; 3]>,
     /// Zuletzt hochgeladene Terrassenangaben (Text, Skalierung,
@@ -941,6 +944,11 @@ impl App {
             self.mesh_dirty = false;
             let mesh = self.scene.mesh(self.ui.view, plane, &self.live_runs);
             self.renderer.set_mesh(MESH_MODEL, &mesh);
+            self.ecken = if self.sonne_an().is_some() {
+                sonne_view::ecken(&mesh.faces)
+            } else {
+                Vec::new()
+            };
             let ghost = self.scene.ghost_mesh(self.ui.view, plane, &self.live_runs);
             self.renderer.set_mesh(MESH_GHOST, &ghost);
         }
@@ -1188,6 +1196,22 @@ impl App {
         Some(sonne_view::himmel(self.scene.model().location(), &s, q))
     }
 
+    /// Griff an der Schattenspitze (S6): in 3D, solange die Sonne Schatten
+    /// wirft und der Rechner ihn zeichnen kann; ohne Gebäude am Würfel.
+    fn griff(&self) -> Option<sonne_view::Griff> {
+        let s = self
+            .sonne_an()
+            .filter(|_| self.ui.view == ViewKind::Persp && !self.renderer.shadow_failed())?;
+        let wuerfel;
+        let punkte = if self.scene.bounds().is_some() {
+            &self.ecken[..]
+        } else {
+            wuerfel = sonne_view::ecken(&sonne_view::wuerfel_netz().faces);
+            &wuerfel[..]
+        };
+        sonne_view::griff(self.scene.model().location(), &s, punkte)
+    }
+
     /// Sonnenstand an- oder ausschalten (Kachel, Klick auf den Pfeil). Beim
     /// ersten Mal in einer Datei gilt heute 12:00. `zu_3d`: beim Einschalten
     /// in die 3D-Ansicht wechseln, wo das System zu sehen ist.
@@ -1199,6 +1223,8 @@ impl App {
         };
         self.scene.set_sun(s);
         self.sonne.reset();
+        // Die Ecken für die Schattenspitze kommen mit dem Netz
+        self.mesh_dirty |= on;
         if on && zu_3d && self.ui.view != ViewKind::Persp {
             self.set_view(ViewKind::Persp);
         }
@@ -1214,6 +1240,7 @@ impl App {
             // jede Taste (Review 3bx)
             if self.sonne.hover.is_some()
                 || self.sonne.ueber_sonne
+                || self.sonne.ueber_schatten
                 || self.sonne.is_busy()
                 || self.sonne.eingabe.is_some()
             {
@@ -1222,9 +1249,11 @@ impl App {
             }
             return false;
         };
+        let griff = self.griff();
         let lb = sonne_view::Lagebild {
             sun,
             himmel: &h,
+            griff: griff.as_ref(),
             cam: &self.cam,
             wh: (vw, vh),
             scale: sc,
@@ -7482,6 +7511,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         mark_keys: [None; MARKS],
         nord_bild: None,
         sonne_bild: None,
+        ecken: Vec::new(),
         wuerfel: false,
         licht: None,
         room_keys: Default::default(),
@@ -7958,7 +7988,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             }
             (None, None) if a.sect.over_mark() => sk_platform::Cursor::Hand,
             (None, None) if a.nord.over().is_some() => sk_platform::Cursor::Hand,
-            (None, None) if a.sonne.ueber_sonne || a.sonne.is_busy() => sk_platform::Cursor::Hand,
+            (None, None) if a.sonne.ueber_sonne || a.sonne.ueber_schatten || a.sonne.is_busy() => {
+                sk_platform::Cursor::Hand
+            }
             (None, None) if a.sonne.hover.is_some() => sk_platform::Cursor::Hand,
             (None, None) => a.ui.cursor(),
         };
@@ -8153,8 +8185,20 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             // Sonnenstand (S4): Bahnen und Scheibe am Himmel, in 3D
             let himmel = a.himmel();
             if let Some(h) = &himmel {
-                let heiss = a.sonne.ueber_sonne || a.sonne.is_busy();
+                let heiss =
+                    a.sonne.ueber_sonne || (a.sonne.is_busy() && a.sonne.am_schatten().is_none());
                 helpers.extend(sonne_view::helpers(h, heiss, scale));
+                // Griff an der Schattenspitze (S6)
+                let griff = a.griff();
+                let d = a
+                    .sonne_an()
+                    .and_then(|s| sonne_view::zur_sonne(a.scene.model().location(), &s));
+                helpers.extend(sonne_view::schatten_helpers(
+                    &a.sonne,
+                    griff.as_ref(),
+                    d,
+                    scale,
+                ));
             }
             a.renderer.set_helpers(&helpers);
 
@@ -8289,6 +8333,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 .and(sun)
                 .and_then(|s| sonne_view::sonnenlicht(loc, &s));
             a.renderer.set_sun(sonnenlicht);
+            // Beim Ziehen an Sonne oder Schatten je Bild eine neue Karte,
+            // kleiner, wenn die volle zu lange braucht (S6)
+            a.renderer.set_shadow_draft(a.sonne.is_busy());
 
             // „Dachterrasse 13,22 m²“ auf der Terrasse, gedimmt wie eine
             // Raumangabe, nach der Platzregel (Review 3f K1): nie über Wand,

@@ -7,6 +7,8 @@
 //! Untergang. Oben in der Ansicht steht eine kleine Leiste mit Datum,
 //! Uhrzeit (MEZ bzw. MESZ) und Schnellwahl. Ohne Wand zeigt ein Würfel von
 //! 10 m die Sonne (nur Anzeige). Das Licht in 3D kommt von der Sonne.
+//! Am Boden sitzt ein Griff an der Schattenspitze (S6): Ziehen an ihm
+//! führt ihn entlang der Tageskurve der Spitze, die Sonne folgt.
 //!
 //! Datum, Uhrzeit und Schalter stehen im Modell als Ansichtszustand
 //! ([`Sun`], `[sun]`), ohne Rückgängig-Schritt. Die Entscheidungen stehen
@@ -50,11 +52,18 @@ const GREIF_PX: f64 = 6.0;
 /// Erst ab dieser Strecke (dip) gilt ein Druck auf die Scheibe als Ziehen
 /// (wie ein Klick in der Auswahl).
 const ZUG_PX: f64 = 4.0;
+/// Griff an der Schattenspitze und die Kurve der Spitze (dip).
+const GRIFF_PX: f32 = 14.0;
+const KURVE_PX: f32 = 1.5;
+/// So weit (dip) über ein Ende der Schattenkurve hinaus gezogen gilt
+/// Sonnenauf- bzw. -untergang.
+const ENDE_PX: f64 = 24.0;
 
 const GELB: [f32; 4] = [1.0, 0.80, 0.16, 1.0];
 const RAND: [f32; 4] = [0.70, 0.43, 0.0, 1.0];
 const BAHN: [f32; 4] = [0.90, 0.58, 0.08, 0.95];
 const GRENZ: [f32; 4] = [0.90, 0.58, 0.08, 0.5];
+const GRIFF: [f32; 4] = [0.20, 0.20, 0.22, 1.0];
 
 // ===== Reine Funktionen =====
 
@@ -377,6 +386,130 @@ pub fn minuten_bei(tag: &[(Zeitpunkt, Vec3)], t: Zeitpunkt) -> Option<u32> {
     Some(m(r))
 }
 
+// ===== Am Schatten ziehen (S6) =====
+
+/// Ob `m` mehr als `weit` über ein Ende des Bildschirmzugs `pts` hinaus
+/// liegt, an dem die Stelle `k` steht: `Some(false)` über den Anfang,
+/// `Some(true)` über das Ende.
+pub fn ueber_ende(pts: &[(f64, f64)], m: (f64, f64), k: f64, weit: f64) -> Option<bool> {
+    let n = pts.len();
+    if n < 2 {
+        return None;
+    }
+    let (e, v, hinten) = if k <= 0.0 {
+        (pts[0], pts[1], false)
+    } else if k >= (n - 1) as f64 {
+        (pts[n - 1], pts[n - 2], true)
+    } else {
+        return None;
+    };
+    let (dx, dy) = (e.0 - v.0, e.1 - v.1);
+    let l = dx.hypot(dy);
+    let raus = ((m.0 - e.0) * dx + (m.1 - e.1) * dy) / l;
+    (l > 1e-9 && raus > weit).then_some(hinten)
+}
+
+/// Schatten des Punkts `p` am Boden (z = 0) bei der Richtung `d` zur Sonne
+/// (`d.z > 0`).
+pub fn am_boden(p: Vec3, d: Vec3) -> Vec3 {
+    let q = p - d * (p.z / d.z);
+    vec3(q.x, q.y, 0.0)
+}
+
+/// Eckpunkte der Flächen über dem Boden, je Millimeter einmal: aus ihnen
+/// wird die Schattenspitze gewählt.
+pub fn ecken(faces: &[[f32; 9]]) -> Vec<Vec3> {
+    let mut v: Vec<[i64; 3]> = faces
+        .iter()
+        .filter(|f| f[2] > 1.0)
+        .map(|f| [0, 1, 2].map(|i| f[i].round() as i64))
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v.into_iter()
+        .map(|p| vec3(p[0] as f64, p[1] as f64, p[2] as f64))
+        .collect()
+}
+
+/// Der Punkt aus `punkte`, dessen Schatten am weitesten in Schattenrichtung
+/// fällt (die Spitze); `None` unter [`schatten::MIN_HOEHE`].
+pub fn spitze(punkte: &[Vec3], d: Vec3) -> Option<Vec3> {
+    if d.z.is_nan() || d.z < schatten::min_sinus() {
+        return None;
+    }
+    let weg = vec3(-d.x, -d.y, 0.0);
+    let weit = |p: &Vec3| am_boden(*p, d).dot(weg);
+    punkte
+        .iter()
+        .filter(|p| p.z > 1.0)
+        .max_by(|a, b| weit(a).total_cmp(&weit(b)))
+        .copied()
+}
+
+/// Tageskurve des Schattens von `p` am Tag von `s`: Zeitpunkt und
+/// Bodenpunkt alle fünf Minuten, von [`schatten::MIN_HOEHE`] morgens bis
+/// abends, die Enden auf die Sekunde genau dort.
+pub fn schattenkurve(l: &Location, s: &Sun, p: Vec3) -> Vec<(Zeitpunkt, Vec3)> {
+    let (lage, nord) = (bauort(l), l.north_deg());
+    let min = schatten::min_sinus();
+    let d = |t: Zeitpunkt| sonne::sonnenstand(lage, t).richtung_modell(nord);
+    let bahn: Vec<Zeitpunkt> = sonne::tagesbahn(lage, s.date, SCHRITT)
+        .into_iter()
+        .map(|b| b.0)
+        .collect();
+    let hoch = |t: &Zeitpunkt| d(*t).z >= min;
+    let (Some(a), Some(b)) = (bahn.iter().position(hoch), bahn.iter().rposition(hoch)) else {
+        return Vec::new();
+    };
+    // Grenze zwischen einem Zeitpunkt darüber und einem darunter
+    let grenze = |mut drin: i64, mut drauss: i64| {
+        while (drin - drauss).abs() > 1 {
+            let m = (drin + drauss) / 2;
+            if hoch(&Zeitpunkt(m)) {
+                drin = m;
+            } else {
+                drauss = m;
+            }
+        }
+        Zeitpunkt(drin)
+    };
+    let mut ts: Vec<Zeitpunkt> = Vec::new();
+    let mut dazu = |t: Zeitpunkt| {
+        if ts.last().is_none_or(|l| *l < t) {
+            ts.push(t);
+        }
+    };
+    if a > 0 {
+        dazu(grenze(bahn[a].0, bahn[a - 1].0));
+    }
+    bahn[a..=b].iter().for_each(|t| dazu(*t));
+    if let Some(n) = bahn.get(b + 1) {
+        dazu(grenze(bahn[b].0, n.0));
+    }
+    ts.into_iter().map(|t| (t, am_boden(p, d(t)))).collect()
+}
+
+/// Griff an der Schattenspitze: der Netzpunkt, sein Schatten und dessen
+/// Tageskurve.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Griff {
+    pub punkt: Vec3,
+    pub boden: Vec3,
+    pub kurve: Vec<(Zeitpunkt, Vec3)>,
+}
+
+/// Der Griff zu Lage, Datum und Uhrzeit unter den Punkten `punkte` (Ecken
+/// des Gebäudes bzw. des Würfels); `None` ohne Schatten.
+pub fn griff(l: &Location, s: &Sun, punkte: &[Vec3]) -> Option<Griff> {
+    let d = zur_sonne(l, s)?;
+    let punkt = spitze(punkte, d)?;
+    Some(Griff {
+        punkt,
+        boden: am_boden(punkt, d),
+        kurve: schattenkurve(l, s, punkt),
+    })
+}
+
 /// Netz des Würfels (Darstellung ohne Baustoff, Kanten wie die Ansicht).
 pub fn wuerfel_netz() -> MeshData {
     quader_netz(wuerfel_quader())
@@ -455,8 +588,49 @@ fn striche(h: &Himmel, heiss: bool) -> Vec<Strich> {
 /// Hilfslinien für den Renderer (Pixel bei Skalierung `s`); hinter dem
 /// Gebäude blass.
 pub fn helpers(h: &Himmel, heiss: bool, s: f32) -> Vec<Helper> {
-    striche(h, heiss)
+    als_helper(striche(h, heiss), s)
+}
+
+/// Griff und Kurve am Schatten als Striche: der Griff an der Spitze, die
+/// Kurve beim Darüberfahren und Ziehen. Beim Ziehen gilt der gegriffene
+/// Punkt; seine Spitze fehlt, solange er keinen Schatten wirft.
+fn schatten_striche(sys: &Sonnensystem, g: Option<&Griff>, d: Option<Vec3>) -> Vec<Strich> {
+    let (kurve, spitze, heiss) = match sys.am_schatten() {
+        Some(z) => {
+            let d = d.filter(|d| d.z >= schatten::min_sinus());
+            (Some(&z.kurve), d.map(|d| am_boden(z.punkt, d)), true)
+        }
+        None => (
+            g.filter(|_| sys.ueber_schatten).map(|g| &g.kurve),
+            g.map(|g| g.boden),
+            sys.ueber_schatten,
+        ),
+    };
+    let mut out: Vec<Strich> = kurve
         .into_iter()
+        .flat_map(|k| k.windows(2).map(|w| (w[0].1, w[1].1, KURVE_PX, BAHN)))
+        .collect();
+    if let Some(p) = spitze {
+        let d = if heiss { 4.0 } else { 0.0 };
+        out.push((p, p, GRIFF_PX + d, BAHN));
+        out.push((p, p, GRIFF_PX + d - 2.0 * RAND_PX, GRIFF));
+    }
+    out
+}
+
+/// Griff und Kurve am Schatten für den Renderer (Pixel bei Skalierung
+/// `s`); `d`: Richtung zur Sonne.
+pub fn schatten_helpers(
+    sys: &Sonnensystem,
+    g: Option<&Griff>,
+    d: Option<Vec3>,
+    s: f32,
+) -> Vec<Helper> {
+    als_helper(schatten_striche(sys, g, d), s)
+}
+
+fn als_helper(st: Vec<Strich>, s: f32) -> Vec<Helper> {
+    st.into_iter()
         .map(|(a, b, w, c)| Helper {
             a: a.to_f32(),
             b: b.to_f32(),
@@ -658,13 +832,19 @@ pub fn leiste_malen(b: &LeistenBild, fonts: &Fonts, t: &Theme) -> (Canvas, i32, 
 /// Modell).
 #[derive(Clone, Debug, Default)]
 pub struct Sonnensystem {
-    /// Maus über der Scheibe bzw. über einem Teil der Leiste.
+    /// Maus über der Scheibe, dem Griff am Schatten bzw. über einem Teil
+    /// der Leiste.
     pub ueber_sonne: bool,
+    pub ueber_schatten: bool,
     pub hover: Option<Teil>,
-    /// Gedrückt auf der Scheibe: Ort; ab [`ZUG_PX`] wird gezogen.
+    /// Gedrückt auf der Scheibe oder dem Griff: Ort; ab [`ZUG_PX`] wird
+    /// gezogen.
     unten: Option<(f64, f64)>,
-    /// Beim Ziehen: Stelle auf der Tagesbahn.
+    /// Beim Ziehen: Stelle auf der Tagesbahn bzw. der Schattenkurve.
     zug: Option<f64>,
+    /// Gegriffen am Schatten: der Griff von da an, mit fester Kurve bis zum
+    /// Loslassen.
+    am_schatten: Option<Griff>,
     pub eingabe: Option<Eingabe>,
 }
 
@@ -681,6 +861,8 @@ pub struct Ausgang {
 pub struct Lagebild<'a> {
     pub sun: Sun,
     pub himmel: &'a Himmel,
+    /// Griff an der Schattenspitze, solange es Schatten gibt.
+    pub griff: Option<&'a Griff>,
     pub cam: &'a Camera,
     pub wh: (f64, f64),
     pub scale: f64,
@@ -710,6 +892,45 @@ impl Sonnensystem {
         (p.0 - m.0).hypot(p.1 - m.1) <= (SCHEIBE_PX as f64 * 0.5 + GREIF_PX) * lb.scale
     }
 
+    fn am_griff(&self, lb: &Lagebild, m: (f64, f64)) -> bool {
+        let Some(p) = lb
+            .griff
+            .and_then(|g| lb.cam.project(g.boden, lb.wh.0, lb.wh.1))
+        else {
+            return false;
+        };
+        (p.0 - m.0).hypot(p.1 - m.1) <= (GRIFF_PX as f64 * 0.5 + GREIF_PX) * lb.scale
+    }
+
+    /// Der feste Griff beim Ziehen am Schatten.
+    pub fn am_schatten(&self) -> Option<&Griff> {
+        self.am_schatten.as_ref()
+    }
+
+    /// Ziehen am Schatten: Stelle `k` auf der Kurve von `g` zur Maus `m`,
+    /// über die Enden hinaus Auf- bzw. Untergang.
+    fn schatten_ziehen(g: &Griff, lb: &Lagebild, m: (f64, f64), k: f64) -> (f64, Option<u32>) {
+        let pts: Vec<(f64, f64)> = g
+            .kurve
+            .iter()
+            .map(|p| {
+                lb.cam
+                    .project(p.1, lb.wh.0, lb.wh.1)
+                    .unwrap_or((f64::NAN, f64::NAN))
+            })
+            .collect();
+        let k = naechste_stelle(&pts, m, k);
+        let tag = &lb.himmel.tag;
+        let min = match ueber_ende(&pts, m, k, ENDE_PX * lb.scale) {
+            Some(hinten) => {
+                let t = if hinten { tag.last() } else { tag.first() };
+                t.and_then(|t| minuten_bei(tag, t.0))
+            }
+            None => zeit_bei(&g.kurve, k).and_then(|t| minuten_bei(&g.kurve, t)),
+        };
+        (k, min)
+    }
+
     fn teil(&self, lb: &Lagebild, m: (f64, f64)) -> (bool, Option<Teil>) {
         let unter = lb.himmel.sonne.is_none();
         let (r, teile) = leiste(lb.fonts, lb.wh.0, unter, lb.scale as f32, lb.theme);
@@ -729,9 +950,23 @@ impl Sonnensystem {
                     let weit = (x - u.0).hypot(y - u.1) >= ZUG_PX * lb.scale;
                     if self.zug.is_none() && weit {
                         let t = zeitpunkt(&lb.sun);
-                        self.zug = Some(stelle_bei(&lb.himmel.tag, t));
+                        let weg = self
+                            .am_schatten
+                            .as_ref()
+                            .map_or(&lb.himmel.tag, |g| &g.kurve);
+                        self.zug = Some(stelle_bei(weg, t));
                     }
-                    if let Some(k) = self.zug {
+                    if let (Some(k), Some(g)) = (self.zug, &self.am_schatten) {
+                        let (k, m) = Self::schatten_ziehen(g, lb, (x, y), k);
+                        self.zug = Some(k);
+                        if let Some(m) = m.filter(|m| *m != lb.sun.minutes) {
+                            out.sun = Some(Sun {
+                                minutes: m,
+                                ..lb.sun
+                            });
+                        }
+                        out.redraw = true;
+                    } else if let Some(k) = self.zug {
                         let pts: Vec<(f64, f64)> = lb
                             .himmel
                             .tag
@@ -759,12 +994,17 @@ impl Sonnensystem {
                 }
                 let (ueber_leiste, teil) = self.teil(lb, (x, y));
                 let sonne = !ueber_leiste && self.scheibe(lb, (x, y));
-                out.redraw = teil != self.hover || sonne != self.ueber_sonne;
-                (self.hover, self.ueber_sonne) = (teil, sonne);
+                let schatten = !ueber_leiste && !sonne && self.am_griff(lb, (x, y));
+                out.redraw = teil != self.hover
+                    || sonne != self.ueber_sonne
+                    || schatten != self.ueber_schatten;
+                (self.hover, self.ueber_sonne, self.ueber_schatten) = (teil, sonne, schatten);
                 out.consumed = ueber_leiste;
             }
             Event::MouseLeave => {
-                out.redraw = self.hover.take().is_some() || std::mem::take(&mut self.ueber_sonne);
+                out.redraw = self.hover.take().is_some()
+                    | std::mem::take(&mut self.ueber_sonne)
+                    | std::mem::take(&mut self.ueber_schatten);
             }
             Event::MouseDown {
                 button: MouseButton::Left,
@@ -809,6 +1049,11 @@ impl Sonnensystem {
                     self.unten = Some((x, y));
                     out.consumed = true;
                     out.redraw = true;
+                } else if self.am_griff(lb, (x, y)) {
+                    self.unten = Some((x, y));
+                    self.am_schatten = lb.griff.cloned();
+                    out.consumed = true;
+                    out.redraw = true;
                 }
             }
             Event::MouseUp {
@@ -816,6 +1061,7 @@ impl Sonnensystem {
                 ..
             } if self.unten.take().is_some() => {
                 self.zug = None;
+                self.am_schatten = None;
                 out.consumed = true;
                 out.redraw = true;
             }
@@ -1075,6 +1321,7 @@ mod tests {
             let lb = Lagebild {
                 sun: *sun,
                 himmel: &hi,
+                griff: None,
                 cam: &cam,
                 wh: (w, h),
                 scale: 1.0,
@@ -1171,5 +1418,195 @@ mod tests {
         sys.key(Key::Enter, m, sun, &mut out);
         assert!(out.sun.is_none() && sys.eingabe.as_ref().is_some_and(|e| e.falsch));
         assert!(sys.key(Key::Escape, m, sun, &mut out) && sys.eingabe.is_none());
+    }
+
+    /// S6: Die Spitze sitzt an der oberen Ecke gegenüber der Sonne, ihr
+    /// Schatten hat die Länge aus S5.
+    #[test]
+    fn schattenspitze_am_wuerfel() {
+        let l = Location::default();
+        let ecken = ecken(&wuerfel_netz().faces);
+        assert_eq!(ecken.len(), 4, "{ecken:?}");
+        let ecke = |h, m| {
+            let s = sun(2026, 6, 21, h, m);
+            griff(&l, &s, &ecken).unwrap().punkt
+        };
+        // Vormittag: Sonne im Südosten, Schatten nach Nordwesten
+        assert_eq!(ecke(10, 0), vec3(0.0, WUERFEL, WUERFEL));
+        // Nachmittag: Sonne im Südwesten, Schatten nach Nordosten
+        assert_eq!(ecke(16, 0), vec3(WUERFEL, WUERFEL, WUERFEL));
+        // Wahrer Mittag: 5,7 m nach Norden (±2 %)
+        let s = sun(2026, 6, 21, 13, 0);
+        let lage = bauort(&l);
+        let t = sonne::hoechststand(lage, s.date);
+        let mittag = Sun {
+            minutes: t.in_ortszeit().minuten,
+            ..s
+        };
+        let g = griff(&l, &mittag, &ecken).unwrap();
+        let weit = g.boden.y - g.punkt.y;
+        assert!((weit - 5700.0).abs() < 114.0, "{weit}");
+        assert!((g.boden.x - g.punkt.x).abs() < 0.03 * weit);
+        // Unter 2° kein Griff
+        assert_eq!(griff(&l, &sun(2026, 12, 21, 16, 30), &ecken), None);
+    }
+
+    /// S6: Die Kurve beginnt und endet bei 2° Sonnenhöhe, die Zeit steigt.
+    #[test]
+    fn schattenkurve_von_2_bis_2_grad() {
+        let l = Location::default();
+        let p = vec3(0.0, WUERFEL, WUERFEL);
+        for (m, d) in [(3, 21), (6, 21), (12, 21)] {
+            let s = sun(2026, m, d, 12, 0);
+            let k = schattenkurve(&l, &s, p);
+            assert!(k.len() > 50, "{m}: {}", k.len());
+            assert!(k.windows(2).all(|w| w[0].0 < w[1].0));
+            for e in [k[0], k[k.len() - 1]] {
+                let h = sonne::sonnenstand(bauort(&l), e.0)
+                    .richtung_modell(0.0)
+                    .z
+                    .asin();
+                assert!(
+                    (h.to_degrees() - 2.0).abs() < 0.01,
+                    "{m}: {}",
+                    h.to_degrees()
+                );
+                // 10 m Höhe bei 2°: 286 m Schatten
+                let lang = (e.1 - vec3(p.x, p.y, 0.0)).length();
+                assert!((lang - 286_363.0).abs() < 600.0, "{m}: {lang}");
+                assert_eq!(e.1.z, 0.0);
+            }
+        }
+        // Ohne Tag über 2° keine Kurve
+        let tromsoe = Location {
+            lat: Some(69.65),
+            lon: Some(18.96),
+            ..Location::default()
+        };
+        assert!(schattenkurve(&tromsoe, &sun(2026, 12, 21, 12, 0), p).is_empty());
+    }
+
+    #[test]
+    fn ueber_das_ende() {
+        let pts = [(0.0, 0.0), (10.0, 0.0), (20.0, 0.0)];
+        assert_eq!(ueber_ende(&pts, (50.0, 3.0), 2.0, 24.0), Some(true));
+        assert_eq!(ueber_ende(&pts, (40.0, 3.0), 2.0, 24.0), None);
+        assert_eq!(ueber_ende(&pts, (-30.0, 0.0), 0.0, 24.0), Some(false));
+        assert_eq!(ueber_ende(&pts, (-30.0, 0.0), 1.0, 24.0), None);
+    }
+
+    /// S6, Bedienung: Griff an der Spitze greifen, entlang der Kurve ziehen
+    /// (die Uhrzeit folgt, hin und zurück dieselbe Minute), über die Enden
+    /// hinaus Auf- und Untergang.
+    #[test]
+    fn ziehen_am_schatten() {
+        let (fonts, theme) = (ohne_schrift(), Theme::dark());
+        let (w, h) = (1600.0, 1000.0);
+        let q = wuerfel_quader();
+        let ziel = vec3(5000.0, 5000.0, 0.0);
+        let cam = Camera::looking_at(ziel + vec3(0.0, -350_000.0, 900_000.0), ziel, 45.0);
+        let l = Location::default();
+        let ecken = ecken(&wuerfel_netz().faces);
+        let mut sun = sun(2026, 6, 21, 10, 0);
+        let mut sys = Sonnensystem::default();
+        let m = Modifiers::default();
+        let ev = |sys: &mut Sonnensystem, sun: &mut Sun, e: Event| {
+            let hi = himmel(&l, sun, q);
+            let g = griff(&l, sun, &ecken);
+            let lb = Lagebild {
+                sun: *sun,
+                himmel: &hi,
+                griff: g.as_ref(),
+                cam: &cam,
+                wh: (w, h),
+                scale: 1.0,
+                fonts: &fonts,
+                theme: &theme,
+            };
+            let out = sys.handle(&e, &lb);
+            if let Some(s) = out.sun {
+                *sun = s;
+            }
+            out
+        };
+        let mv = |x: f64, y: f64| Event::MouseMove { x, y, mods: m };
+        let px = |p: Vec3| cam.project(p, w, h).unwrap();
+        let g = griff(&l, &sun, &ecken).unwrap();
+        let (x, y) = px(g.boden);
+        assert!(ev(&mut sys, &mut sun, mv(x, y)).redraw && sys.ueber_schatten);
+        assert!(!sys.ueber_sonne);
+        let down = Event::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            mods: m,
+        };
+        assert!(ev(&mut sys, &mut sun, down).consumed);
+        assert!(sys.am_schatten().is_some_and(|z| z.punkt == g.punkt));
+        // Entlang der Kurve zum Abend: die Zeit steigt; zurück dieselben
+        // Minuten an denselben Punkten
+        let k = &g.kurve;
+        // Ab dem ersten Punkt jenseits der Ziehschwelle
+        let ab = (stelle_bei(k, zeitpunkt(&sun)) as usize + 1..k.len())
+            .find(|i| {
+                let q = px(k[*i].1);
+                (q.0 - x).hypot(q.1 - y) > 2.0 * ZUG_PX
+            })
+            .unwrap();
+        let mut hin = Vec::new();
+        for p in &k[ab..] {
+            let (px, py) = px(p.1);
+            ev(&mut sys, &mut sun, mv(px + 0.5, py + 0.5));
+            assert!(
+                hin.last().is_none_or(|v| sun.minutes >= *v),
+                "{hin:?} {}",
+                sun.minutes
+            );
+            hin.push(sun.minutes);
+        }
+        assert_eq!(sun.minutes, minuten_bei(k, k[k.len() - 1].0).unwrap());
+        // Über das Ende hinaus: Untergang
+        let hi = himmel(&l, &sun, q);
+        let unter = minuten_bei(&hi.tag, hi.tag[hi.tag.len() - 1].0).unwrap();
+        let (a, b) = (px(k[k.len() - 2].1), px(k[k.len() - 1].1));
+        let r = ((b.0 - a.0), (b.1 - a.1));
+        let n = r.0.hypot(r.1);
+        let raus = (b.0 + r.0 / n * 60.0, b.1 + r.1 / n * 60.0);
+        ev(&mut sys, &mut sun, mv(raus.0, raus.1));
+        assert_eq!(sun.minutes, unter);
+        ev(&mut sys, &mut sun, mv(b.0, b.1));
+        assert_eq!(sun.minutes, hin[hin.len() - 1]);
+        let mut zurueck = Vec::new();
+        for p in k[ab..].iter().rev() {
+            let (px, py) = px(p.1);
+            ev(&mut sys, &mut sun, mv(px + 0.5, py + 0.5));
+            zurueck.push(sun.minutes);
+        }
+        zurueck.reverse();
+        assert_eq!(hin, zurueck);
+        // Bis zum Morgen und darüber hinaus: Aufgang
+        for p in k[..ab].iter().rev() {
+            let (px, py) = px(p.1);
+            ev(&mut sys, &mut sun, mv(px, py));
+        }
+        assert_eq!(sun.minutes, minuten_bei(k, k[0].0).unwrap());
+        let (a, b) = (px(k[1].1), px(k[0].1));
+        let r = ((b.0 - a.0), (b.1 - a.1));
+        let n = r.0.hypot(r.1);
+        ev(
+            &mut sys,
+            &mut sun,
+            mv(b.0 + r.0 / n * 60.0, b.1 + r.1 / n * 60.0),
+        );
+        assert_eq!(sun.minutes, minuten_bei(&hi.tag, hi.tag[0].0).unwrap());
+        assert_eq!(sun.date, Datum::new(2026, 6, 21).unwrap());
+        let up = Event::MouseUp {
+            button: MouseButton::Left,
+            x: 0.0,
+            y: 0.0,
+            mods: m,
+        };
+        ev(&mut sys, &mut sun, up);
+        assert!(!sys.is_busy() && sys.am_schatten().is_none());
     }
 }

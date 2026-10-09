@@ -127,7 +127,7 @@ Platz | fehlt der Fußpunkt oder liegt er im Gebäude, steht der Pfeil vorne lin
 Lage | Breiten- und Längengrad stehen in „Projektdaten“ unter Bauort, für Nordpfeil und Sonnenstand; leer gilt Ganderkesee
 Abbrechen | **Esc** schließt erst die Zahl, dann den Fußpunkt, dann das Werkzeug
 Sonnenstand | mit Nordrichtung schalten die Kachel und ein Klick auf den Pfeil ihn an und aus; in 3D stehen Sonne und Tagesbahn über dem Gebäude, fein die Bahnen vom 21.06. und 21.12.; ohne Wand zeigt ein Würfel von 10 m die Sonne (nur Anzeige); ab 2° Sonnenhöhe werfen Gebäude und Würfel Schatten auf sich und den Boden
-Sonne ziehen | an der Sonne ziehen ändert die Uhrzeit; sie bleibt auf der Tagesbahn und hält bei Auf- und Untergang
+Sonne ziehen | an der Sonne oder am Punkt an der Schattenspitze ziehen ändert die Uhrzeit; die Sonne bleibt auf der Tagesbahn und hält bei Auf- und Untergang; der Punkt folgt der Kurve der Schattenspitze, über ihr Ende hinaus gilt Auf- bzw. Untergang
 Datum, Uhrzeit | Leiste oben im 3D-Fenster: Feld anklicken, Zahl + **Enter**; Knöpfe für 21.03., 21.06., 23.09., 21.12. und „Jetzt“; Zeit in MEZ bzw. MESZ
 
 [thema] id=baum titel="Baum, Ausblenden, Isolieren"

@@ -15,6 +15,11 @@ use sk_math::{vec3, Mat4, Vec3};
 
 /// Kantenlänge der Karte in Texeln.
 pub const GROESSE: u32 = 4096;
+/// Kantenlänge beim Ziehen an Sonne oder Schatten, wenn der
+/// Tiefen-Durchgang in voller Größe länger als [`ENTWURF_AB_MS`] dauert
+/// (S6, §8 11:20).
+pub const ENTWURF: u32 = 2048;
+pub const ENTWURF_AB_MS: f64 = 8.0;
 
 /// Unter dieser Sonnenhöhe (Grad) wirft nichts mehr Schatten.
 pub const MIN_HOEHE: f64 = 2.0;

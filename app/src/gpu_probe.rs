@@ -157,4 +157,105 @@ mod tests {
         ab(&px, "ist-s5-laibung-0621-1000.png");
         assert_eq!(r.take_shadow_error(), None);
     }
+
+    /// Wie [`bild`] mit dem Griff an der Schattenspitze und seiner Kurve
+    /// (wie beim Darüberfahren) über Bahnen und Sonne (S6).
+    fn bild_s6(r: &mut Renderer, s: &mut Scene, sun: Sun, cam: &Camera) -> Vec<u8> {
+        let ort = *s.model().location();
+        let ecken = match s.bounds() {
+            Some(_) => sv::ecken(&s.mesh(ViewKind::Persp, None, &[]).faces),
+            None => sv::ecken(&sv::wuerfel_netz().faces),
+        };
+        let q = s.bounds().unwrap_or_else(sv::wuerfel_quader);
+        let h = sv::himmel(&ort, &sun, q);
+        let g = sv::griff(&ort, &sun, &ecken);
+        assert!(g.is_some(), "Griff");
+        let mut sys = sv::Sonnensystem::default();
+        sys.ueber_schatten = true;
+        let mut helpers = sv::helpers(&h, false, 1.0);
+        helpers.extend(sv::schatten_helpers(
+            &sys,
+            g.as_ref(),
+            sv::zur_sonne(&ort, &sun),
+            1.0,
+        ));
+        r.set_helpers(&helpers);
+        let px = bild(r, s, sun, cam);
+        r.set_helpers(&[]);
+        px
+    }
+
+    /// Prüfbilder S6 (Griff und Kurve) und die Zeit des Tiefen-Durchgangs
+    /// beim Ziehen: je Bild eine neue Sonne, wie beim Ziehen über den Tag.
+    #[test]
+    #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
+    fn gpu_istbilder_s6() {
+        let Some(ziel) = std::env::var_os("SKIZZEO_ISTBILDER").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let k = sk_render::glx::kontext(W as i32, H as i32).expect("GLX-Kontext (DISPLAY?)");
+        let theme = Theme::dark();
+        let mut r = Renderer::new(k.gl, crate::style(&theme.env)).unwrap();
+        let ab = |px: &[u8], n: &str| {
+            std::fs::write(ziel.join(n), sk_paint::encode_png(W, H, px)).unwrap()
+        };
+        let mut w = Scene::with_model(Model::with_seed(1));
+        let mitte = vec3(5000.0, 5000.0, 0.0);
+        let cam = Camera::looking_at(mitte + vec3(-30000.0, -95000.0, 110000.0), mitte, 45.0);
+        let px = bild_s6(&mut r, &mut w, sonne(6, 21, 10 * 60), &cam);
+        ab(&px, "ist-s6-wuerfel-0621-1000.png");
+        let mut h = haus();
+        let cam = blick(&h, vec3(0.3, -1.0, 0.9), 70000.0);
+        let px = bild_s6(&mut r, &mut h, sonne(12, 21, 14 * 60), &cam);
+        ab(&px, "ist-s6-haus-1221-1400.png");
+
+        // Ziehen: 40 Bilder, je fünf Minuten weiter; die Messung kommt ein
+        // Bild später
+        let zeiten = |r: &mut Renderer, s: &mut Scene, entwurf: bool| {
+            let mut v = Vec::new();
+            r.set_shadow_draft(entwurf);
+            let mut vorige = r.shadow_pass_ms();
+            for i in 0..40 {
+                bild(r, s, sonne(6, 21, 9 * 60 + 5 * i), &cam);
+                // Nur neue Messungen, ab dem dritten Bild (die erste stammt
+                // noch vom Lauf davor)
+                let m = r.shadow_pass_ms();
+                if i >= 2 && m != vorige {
+                    v.extend(m);
+                }
+                vorige = m;
+            }
+            r.set_shadow_draft(false);
+            v.sort_by(|a, b| a.1.total_cmp(&b.1));
+            v
+        };
+        let mut bericht = String::new();
+        for (n, s) in [("Würfel", &mut w), ("Haus RH-1", &mut h)] {
+            let v = zeiten(&mut r, s, false);
+            assert!(!v.is_empty(), "keine Messung");
+            assert!(
+                v.iter().all(|m| m.0 == sk_render::schatten::GROESSE),
+                "{v:?}"
+            );
+            let median = v[v.len() / 2].1;
+            bericht += &format!("{n}: {} mal 4096², Median {median:.1} ms\n", v.len());
+            // Beim Ziehen: über 8 ms kleiner, sonst volle Größe
+            let e = zeiten(&mut r, s, true);
+            let gross = if median > sk_render::schatten::ENTWURF_AB_MS {
+                sk_render::schatten::ENTWURF
+            } else {
+                sk_render::schatten::GROESSE
+            };
+            let teil: Vec<_> = e.iter().filter(|m| m.0 == gross).collect();
+            assert!(teil.len() * 2 > e.len(), "{n}: {e:?}");
+            let m = teil[teil.len() / 2].1;
+            bericht += &format!(
+                "{n} beim Ziehen: {} mal {gross}², Median {m:.1} ms\n",
+                teil.len()
+            );
+        }
+        eprintln!("{bericht}");
+        std::fs::write(ziel.join("s6-tiefendurchgang.txt"), bericht).unwrap();
+        assert_eq!(r.take_shadow_error(), None);
+    }
 }

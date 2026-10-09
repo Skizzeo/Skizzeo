@@ -472,6 +472,16 @@ pub struct Renderer {
     /// abzuholen), danach ohne Schatten.
     shadow_failed: bool,
     shadow_error: Option<String>,
+    /// Zeitabfrage des Tiefen-Durchgangs (S6): die Abfrage, die
+    /// Kartengröße, solange ihr Ergebnis aussteht, die letzte Messung
+    /// (Größe, ms) und die letzte in voller Größe.
+    shadow_query: GLuint,
+    shadow_query_open: Option<u32>,
+    shadow_ms: Option<(u32, f64)>,
+    shadow_ms_voll: Option<f64>,
+    /// Beim Ziehen an Sonne oder Schatten: kleinere Karte, wenn die volle
+    /// zu lange braucht.
+    shadow_entwurf: bool,
     /// Hüllquader je Netz (Modell, mm).
     mesh_bounds: Vec<Option<(sk_math::Vec3, sk_math::Vec3)>>,
 }
@@ -1488,6 +1498,11 @@ impl Renderer {
                 shadow_dirty: false,
                 shadow_failed: shadow_error.is_some(),
                 shadow_error: shadow_error.map(|e| format!("Schatten aus: {e}")),
+                shadow_query: 0,
+                shadow_query_open: None,
+                shadow_ms: None,
+                shadow_ms_voll: None,
+                shadow_entwurf: false,
                 mesh_bounds: Vec::new(),
             })
         }
@@ -1570,8 +1585,35 @@ impl Renderer {
                     sk_math::vec3(b.x.max(d.x), b.y.max(d.y), b.z.max(d.z)),
                 )
             })?;
-        let n = (schatten::GROESSE as i32).min(self.shadow_max.max(1024)) as u32;
+        let voll = self.shadow_voll();
+        let lang = self
+            .shadow_ms_voll
+            .is_some_and(|ms| ms > schatten::ENTWURF_AB_MS);
+        let n = if self.shadow_entwurf && lang {
+            voll.min(schatten::ENTWURF)
+        } else {
+            voll
+        };
         schatten::karte(sk_math::vec3(d[0], d[1], d[2]), q, n)
+    }
+
+    /// Volle Kartengröße auf diesem Treiber.
+    fn shadow_voll(&self) -> u32 {
+        (schatten::GROESSE as i32).min(self.shadow_max.max(1024)) as u32
+    }
+
+    /// Beim Ziehen an Sonne oder Schatten (S6): Braucht der
+    /// Tiefen-Durchgang in voller Größe mehr als
+    /// [`schatten::ENTWURF_AB_MS`], gilt bis zum Loslassen
+    /// [`schatten::ENTWURF`].
+    pub fn set_shadow_draft(&mut self, on: bool) {
+        self.shadow_entwurf = on;
+    }
+
+    /// Letzte Messung des Tiefen-Durchgangs auf der Grafikkarte:
+    /// Kartengröße und Zeit (ms).
+    pub fn shadow_pass_ms(&self) -> Option<(u32, f64)> {
+        self.shadow_ms
     }
 
     /// Kann dieser Treiber keine Schatten (S5)?
@@ -1587,6 +1629,22 @@ impl Renderer {
     /// Schattenkarte zeichnen, wenn sie sich geändert hat; danach liegt
     /// sie (oder die leere) auf [`SHADOW_UNIT`].
     unsafe fn render_shadow(&mut self) {
+        // Ergebnis der letzten Zeitabfrage, sobald es da ist (ohne Warten)
+        if let Some(n) = self.shadow_query_open {
+            let gl = &self.gl;
+            let mut da = 0u64;
+            gl.glGetQueryObjectui64v(self.shadow_query, QUERY_RESULT_AVAILABLE, &mut da);
+            if da != 0 {
+                let mut ns = 0u64;
+                gl.glGetQueryObjectui64v(self.shadow_query, QUERY_RESULT, &mut ns);
+                let ms = ns as f64 * 1e-6;
+                self.shadow_ms = Some((n, ms));
+                if n == self.shadow_voll() {
+                    self.shadow_ms_voll = Some(ms);
+                }
+                self.shadow_query_open = None;
+            }
+        }
         let karte = self.shadow_karte();
         let neu = karte != self.shadow_karte || self.shadow_dirty;
         self.shadow_karte = karte;
@@ -1638,6 +1696,14 @@ impl Renderer {
         }
         let m = self.shadow_map.as_ref().unwrap();
         if neu {
+            let messen = self.shadow_query_open.is_none();
+            if messen {
+                if self.shadow_query == 0 {
+                    gl.glGenQueries(1, &mut self.shadow_query);
+                }
+                gl.glBeginQuery(TIME_ELAPSED, self.shadow_query);
+                self.shadow_query_open = Some(n as u32);
+            }
             gl.glBindFramebuffer(FRAMEBUFFER, m.fbo);
             gl.glViewport(0, 0, n, n);
             gl.glDisable(SCISSOR_TEST);
@@ -1664,6 +1730,9 @@ impl Renderer {
             }
             gl.glDisable(POLYGON_OFFSET_FILL);
             gl.glBindFramebuffer(FRAMEBUFFER, 0);
+            if messen {
+                gl.glEndQuery(TIME_ELAPSED);
+            }
         }
         gl.glActiveTexture(TEXTURE0 + SHADOW_UNIT);
         gl.glBindTexture(TEXTURE_2D, m.tex);

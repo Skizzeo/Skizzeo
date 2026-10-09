@@ -78,6 +78,9 @@ pub const TEXTURE_COMPARE_MODE: GLenum = 0x884C;
 pub const TEXTURE_COMPARE_FUNC: GLenum = 0x884D;
 pub const COMPARE_REF_TO_TEXTURE: GLint = 0x884E;
 pub const MAX_TEXTURE_SIZE: GLenum = 0x0D33;
+pub const TIME_ELAPSED: GLenum = 0x88BF;
+pub const QUERY_RESULT: GLenum = 0x8866;
+pub const QUERY_RESULT_AVAILABLE: GLenum = 0x8867;
 
 macro_rules! gl_api {
     ($( fn $name:ident ( $($arg:ident : $ty:ty),* ) $(-> $ret:ty)? ; )*) => {
@@ -135,6 +138,11 @@ gl_api! {
     fn glPixelStorei(p: GLenum, v: GLint);
     fn glReadBuffer(m: GLenum);
     fn glDrawBuffer(m: GLenum);
+    fn glGenQueries(n: GLsizei, out: *mut GLuint);
+    fn glDeleteQueries(n: GLsizei, ids: *const GLuint);
+    fn glBeginQuery(target: GLenum, id: GLuint);
+    fn glEndQuery(target: GLenum);
+    fn glGetQueryObjectui64v(id: GLuint, name: GLenum, out: *mut u64);
     fn glReadPixels(x: GLint, y: GLint, w: GLsizei, h: GLsizei, f: GLenum, t: GLenum, d: *mut c_void);
     fn glDrawArrays(mode: GLenum, first: GLint, count: GLsizei);
     fn glDrawArraysInstanced(mode: GLenum, first: GLint, count: GLsizei, instances: GLsizei);
