@@ -1168,6 +1168,10 @@ fn mengen_zahl(sched: &Schedule) -> String {
 mod istbilder;
 
 #[cfg(test)]
+#[path = "quantity_muster_pdf.rs"]
+mod muster_pdf;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use sk_math::vec3;

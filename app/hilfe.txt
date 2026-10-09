@@ -250,10 +250,11 @@ Referenzpreise | Stand 10/2026, unverbindlich, netto
 Los wählen | im Baum links; der Baum zeigt Lose und Titel
 Anfrage | „Für Anfrage (leer)“ lässt EP und GP frei, „Mit Preisen“ füllt sie
 Position | Klick öffnet unten Mengenansatz je Geschoss, Preisanteile und Eigenschaften
-Kopf | „Kopf und Vorbemerkungen“; Bauvorhaben, Aufsteller und Datum setzt Skizzeo selbst
+Kopf | „Kopf und Vorbemerkungen“ zeigt die Projektdaten; ändern über „Projektdaten …“
 Prüfen | im Baum unten; ein Klick führt zur Stelle
 Geschosse getrennt | „Mehr“ › „Geschosse als Untertitel“
 Ausgabe | „LV … als Tabelle speichern“ schreibt das gewählte Los als CSV
+Drucken | „Druckvorschau“ zeigt das LV Seite für Seite; „… als PDF speichern“ schreibt genau diese Seiten, als Anfrage ohne Preise oder mit Preisen
 OZ in der Tabelle | Die OZ steht in der Tabelle als Text, damit Excel kein Datum daraus macht. Andere Programme lesen sie als ="01.02.0030"; dort die Spalte als Text einlesen und ="" entfernen.
 
 [thema] id=loeschen titel="Löschen"

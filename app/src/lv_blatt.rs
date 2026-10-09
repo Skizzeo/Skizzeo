@@ -102,6 +102,52 @@ pub fn dateiname(lv: &Lv, bauvorhaben: &str, datum: &str, preise: bool) -> Strin
     )
 }
 
+/// „LV 1 Rohbau“: so heißt das Los auf dem Blatt und am Bildschirm.
+pub fn los_text(lv: &Lv) -> String {
+    format!("LV {} {}", lv.kopf.los_nr, lv.kopf.los)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Teilt `text` in Zeilen der Breite `breite` wie [`umbrechen`], aber
+/// bevorzugt nach „, “ und nach „ · “: „Musterweg 1,“ | „27777
+/// Ganderkesee“ statt zwischen Postleitzahl und Ort (Test Hinweis N).
+fn umbrechen_glieder(f: &Font, text: &str, pt: f32, breite: f32) -> Vec<String> {
+    let mut glieder: Vec<String> = Vec::new();
+    let mut rest = text;
+    while let Some(i) = rest.find([',', '·']) {
+        let ende = i + rest[i..].chars().next().map_or(1, char::len_utf8);
+        glieder.push(rest[..ende].trim().to_string());
+        rest = &rest[ende..];
+    }
+    glieder.push(rest.trim().to_string());
+    let mut zeilen: Vec<String> = Vec::new();
+    let mut zeile = String::new();
+    for g in glieder.into_iter().filter(|g| !g.is_empty()) {
+        let probe = if zeile.is_empty() {
+            g.clone()
+        } else {
+            format!("{zeile} {g}")
+        };
+        if f.width(&probe, pt) <= breite {
+            zeile = probe;
+            continue;
+        }
+        if !zeile.is_empty() {
+            zeilen.push(std::mem::take(&mut zeile));
+        }
+        // Ein Glied breiter als die Zeile: am Leerzeichen wie sonst
+        let mut teil = umbrechen(f, &g, pt, breite);
+        zeile = teil.pop().unwrap_or_default();
+        zeilen.extend(teil);
+    }
+    if !zeile.is_empty() || zeilen.is_empty() {
+        zeilen.push(zeile);
+    }
+    zeilen
+}
+
 /// Menge ohne Einheit: „172,224“.
 fn menge(p: &LvPosition) -> String {
     menge_text(p.menge, p.einheit)
@@ -304,6 +350,9 @@ struct Fluss<'a> {
     seiten: Vec<Seite>,
     y: f32,
     inhalt: Vec<Eintrag>,
+    /// Seiten vor dem LV (Titelblatt, Verzeichnis): für „Übertrag von
+    /// Seite n“ wie in der Fußzeile.
+    versatz: usize,
 }
 
 /// Unterkante des Inhalts (pt): über der Fußzeile.
@@ -321,10 +370,7 @@ impl<'a> Fluss<'a> {
     }
 
     fn los_text(&self) -> String {
-        format!("LV {} {}", self.lv.kopf.los_nr, self.lv.kopf.los)
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
+        los_text(self.lv)
     }
 
     fn eintrag(&mut self, text: String, tief: bool) {
@@ -366,7 +412,7 @@ impl<'a> Fluss<'a> {
             // Der Bauort ist vertragswichtig: Umbruch, nie gekürzt
             links.push((
                 "Projekt",
-                umbrechen(s.regular, &projekt.join(" · "), TEXT, wert_w),
+                umbrechen_glieder(s.regular, &projekt.join(" · "), TEXT, wert_w),
                 false,
             ));
         }
@@ -435,9 +481,9 @@ impl<'a> Fluss<'a> {
             }
         }
         y = y.max(ry) + 8.0;
-        // Vorbemerkungen im Wortlaut
-        self.eintrag("Vorbemerkungen".into(), false);
+        // Vorbemerkungen im Wortlaut; im Verzeichnis nur, wenn es welche gibt
         if let Some(v) = k.vorbemerkungen.clone() {
+            self.eintrag("Vorbemerkungen".into(), false);
             self.st.text(0.0, y, TEXT, true, 0, "Vorbemerkungen");
             y += ZEILE + 1.0;
             for t in umbrechen(s.regular, &v, TEXT, mm(BREITE)) {
@@ -485,21 +531,30 @@ impl<'a> Fluss<'a> {
         self.kurzkopf();
     }
 
-    /// Übertrag unten: „Übertrag 01 Betonarbeiten“ mit der laufenden Summe.
-    fn uebertrag_unten(&mut self, titel: &LvTitel, summe: Option<Cent>) {
+    /// Übertrag unten: „Übertrag 01 Betonarbeiten“ mit der laufenden Summe;
+    /// fehlt ein Preis, die bekannten GP und „(unvollständig)“ wie die
+    /// Titelsumme.
+    fn uebertrag_unten(&mut self, titel: &LvTitel, (summe, fehlt): (Cent, bool)) {
         let y = unten() - 2.0;
         self.st.linie(EP_R + 2.0, GP_R, y - ZEILE + 2.5, 0.5);
-        let text = format!("Übertrag {} {}", titel.nr, titel.name);
+        let mut text = format!("Übertrag {} {}", titel.nr, titel.name);
+        if fehlt && self.w.preise {
+            text.push_str(" (unvollständig)");
+        }
         self.st.text(KURZ_X, y, TEXT, false, 0, &text);
-        self.betrag(GP_R, y, false, summe, LINIE_GP);
+        self.betrag(GP_R, y, false, Some(summe), LINIE_GP);
     }
 
-    /// Übertrag oben auf der nächsten Seite, unter den Spaltenköpfen.
-    fn uebertrag_oben(&mut self, von: usize, summe: Option<Cent>) {
+    /// Übertrag oben auf der nächsten Seite, unter den Spaltenköpfen; `von`
+    /// zählt wie die Fußzeile.
+    fn uebertrag_oben(&mut self, von: usize, (summe, fehlt): (Cent, bool)) {
         let y = self.y;
-        let text = format!("Übertrag von Seite {von}");
+        let mut text = format!("Übertrag von Seite {von}");
+        if fehlt && self.w.preise {
+            text.push_str(" (unvollständig)");
+        }
         self.st.text(KURZ_X, y, TEXT, false, 0, &text);
-        self.betrag(GP_R, y, false, summe, LINIE_GP);
+        self.betrag(GP_R, y, false, Some(summe), LINIE_GP);
         self.y = y + ZEILE + 4.0;
     }
 
@@ -626,7 +681,8 @@ impl<'a> Fluss<'a> {
         let reserve = ZEILE + 6.0;
         // Offener Titel und seine laufende Summe
         let mut offen: Option<&LvTitel> = None;
-        let mut lauf: Option<Cent> = None;
+        // Bekannte GP und ob einer fehlt (K12)
+        let mut lauf = (Cent(0), false);
         for g in gruppen {
             let h: f32 = g.iter().map(|x| x.hoehe()).sum();
             let schliesst = g.iter().any(|x| matches!(x, Stueck::TitelSumme(..)));
@@ -634,7 +690,7 @@ impl<'a> Fluss<'a> {
             let bleibt_offen = (offen.is_some() || oeffnet) && !schliesst;
             let platz = unten() - if bleibt_offen { reserve } else { 0.0 };
             if self.y + h > platz && self.y > mm(RAND) + 60.0 {
-                let von = self.seiten.len() + 1;
+                let von = self.versatz + self.seiten.len() + 1;
                 if let Some(t) = offen {
                     self.uebertrag_unten(t, lauf);
                 }
@@ -648,16 +704,16 @@ impl<'a> Fluss<'a> {
                 match x {
                     Stueck::Titel(t, _) => {
                         offen = Some(t);
-                        lauf = Some(Cent(0));
+                        lauf = (Cent(0), false);
                         self.eintrag(format!("{} {}", t.nr, t.name), false);
                     }
                     Stueck::Untertitel(oz, z) => {
                         self.eintrag(format!("{oz} {}", z.join(" ")), true);
                     }
                     Stueck::Position(p, _) => {
-                        lauf = match (lauf, p.gp) {
-                            (Some(a), Some(b)) => Some(Cent(a.0 + b.0)),
-                            _ => None,
+                        lauf = match p.gp {
+                            Some(b) => (Cent(lauf.0 .0 + b.0), lauf.1),
+                            None => (lauf.0, true),
                         };
                     }
                     Stueck::TitelSumme(..) => offen = None,
@@ -681,10 +737,18 @@ impl<'a> Fluss<'a> {
         self.st.linie(0.0, BREITE, y, 0.5);
         y += 6.0 + TEXT;
         let zeilen: Vec<(String, String, Option<Cent>)> = z.zeilen.clone();
+        let fortsetzung = |f: &mut Self| {
+            f.neue_seite();
+            let mut y = f.y + 10.0 + TITEL;
+            let kopf = format!("Zusammenstellung · {} (Fortsetzung)", f.los_text());
+            f.st.text(0.0, y, TITEL, true, 0, &kopf);
+            y += 10.0;
+            f.st.linie(0.0, BREITE, y, 0.5);
+            y + 6.0 + TEXT
+        };
         for (nr, name, summe) in zeilen {
             if y > unten() - ZEILE {
-                self.neue_seite();
-                y = self.y + TEXT;
+                y = fortsetzung(self);
             }
             self.st.text(0.0, y, TEXT, false, 0, &nr);
             self.st.text(KURZ_X, y, TEXT, false, 0, &name);
@@ -706,8 +770,7 @@ impl<'a> Fluss<'a> {
             }
         }
         if y > unten() - 5.0 * ZEILE {
-            self.neue_seite();
-            y = self.y + TEXT;
+            y = fortsetzung(self);
         }
         // netto mit Linie, MwSt., brutto mit Doppellinie
         y += 4.0;
@@ -862,29 +925,36 @@ fn je_verzeichnisseite() -> usize {
 /// LV-Seiten, Zusammenstellung, Bieterblock; Fußzeile auf jeder Seite außer
 /// dem Titelblatt.
 pub fn blatt(lv: &Lv, a: &Angaben, w: Wahl, s: Schriften) -> Blatt {
-    let mut f = Fluss {
-        lv,
-        a,
-        w,
-        st: Stift { s, ops: Vec::new() },
-        seiten: Vec::new(),
-        y: 0.0,
-        inhalt: Vec::new(),
+    let fluss = |versatz: usize| {
+        let mut f = Fluss {
+            lv,
+            a,
+            w,
+            st: Stift { s, ops: Vec::new() },
+            seiten: Vec::new(),
+            y: 0.0,
+            inhalt: Vec::new(),
+            versatz,
+        };
+        f.kopf_seite1();
+        f.spaltenkopf();
+        f.positionen();
+        f.zusammenstellung();
+        let letzte = f.st.seite();
+        f.seiten.push(letzte);
+        f
     };
-    f.kopf_seite1();
-    f.spaltenkopf();
-    f.positionen();
-    f.zusammenstellung();
-    let letzte = f.st.seite();
-    f.seiten.push(letzte);
-    // Erst ohne Verzeichnis umbrechen, dann dessen Seiten davorrechnen
+    // Erst ohne Verzeichnis umbrechen, dann dessen Seiten davorrechnen;
+    // der zweite Lauf bricht gleich um und zählt die Überträge wie die
+    // Fußzeile (Kosten A6)
     let je = je_verzeichnisseite();
     let n_verz = if w.verzeichnis {
-        f.inhalt.len().div_ceil(je)
+        fluss(0).inhalt.len().div_ceil(je)
     } else {
         0
     };
     let davor = usize::from(w.titelblatt) + n_verz;
+    let f = fluss(davor);
     let mut inhalt = f.inhalt;
     for e in &mut inhalt {
         e.seite += davor + 1;

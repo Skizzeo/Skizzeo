@@ -15,6 +15,8 @@ const LUFT: f32 = 10.0;
 const PFEIL: f32 = 24.0;
 /// Kästchen der Häkchen (dip).
 const KASTEN: f32 = 14.0;
+/// Fassung in der Leiste.
+const FASSUNG: [(bool, &str); 2] = [(false, "Anfrage"), (true, "Mit Preisen")];
 
 /// Woraus das Blatt gebaut ist; gleich, dann gilt das gemerkte. Das LV
 /// hält der Schlüssel fest, damit seine Adresse nicht neu vergeben wird.
@@ -127,14 +129,15 @@ impl AvaView {
 
     /// Teile der Leiste (px): „‹“, „Seite x von y“ (Lage der Grundlinie),
     /// „›“, die Häkchen mit Kästchen und Text-x.
-    fn vorschau_leiste(&self, t: &Theme, fonts: &Fonts) -> VorschauLeiste {
+    pub(super) fn vorschau_leiste(&self, t: &Theme, fonts: &Fonts) -> VorschauLeiste {
         let s = self.scale;
-        let (tx, _) = self.tabelle_x(t);
+        let (tx, r) = self.tabelle_x(t);
         let y = self.tabelle_top();
         let px = 11.0 * s;
         let f = fonts.regular.as_ref();
-        let breite = |text: &str| {
-            f.map_or(text.chars().count() as f32 * px * 0.55, |f| {
+        let fett = fonts.bold.as_ref().or(f);
+        let breite = |f: Option<&Font>, text: &str| {
+            f.map_or(text.chars().count() as f32 * px * 0.6, |f| {
                 f.width(text, px)
             })
         };
@@ -146,15 +149,34 @@ impl AvaView {
             self.seiten(fonts)
         );
         // Breite für „Seite 88 von 88“, damit „›“ beim Blättern still steht
-        let tw = breite("Seite 88 von 88");
+        let tw = breite(f, "Seite 88 von 88");
         let text_x = tx + (PFEIL + 8.0) * s;
         let vor = (text_x + tw + 8.0 * s, zurueck.1, PFEIL * s, PFEIL * s);
-        let mut x = vor.0 + vor.2 + 24.0 * s;
+        // Fassung wie oben „Preise“, hier neben der Seite (Bedienbarkeit
+        // 26.2): was gespeichert wird, steht im Blick
+        let mut x = vor.0 + vor.2 + 20.0 * s;
+        let mut fassung = [(false, (0.0, 0.0, 0.0, 0.0)); 2];
+        for (i, (b, label)) in FASSUNG.into_iter().enumerate() {
+            let w = breite(fett, label) + 20.0 * s;
+            fassung[i] = (b, (x, mitte - 11.0 * s, w, 22.0 * s));
+            x += w;
+        }
+        // Die Häkchen daneben, sonst in einer zweiten Zeile
+        let w_haken: f32 = ["Titelblatt", "Inhaltsverzeichnis"]
+            .iter()
+            .map(|l| (KASTEN + 6.0 + 18.0) * s + breite(f, l))
+            .sum();
+        let zweite = x + 20.0 * s + w_haken > r;
+        let (mut hx, hm) = if zweite {
+            (tx, mitte + LEISTE * s)
+        } else {
+            (x + 20.0 * s, mitte)
+        };
         let mut haken = Vec::new();
         for (i, label) in ["Titelblatt", "Inhaltsverzeichnis"].into_iter().enumerate() {
-            let w = KASTEN * s + 6.0 * s + breite(label);
-            haken.push(((x, mitte - 10.0 * s, w, 20.0 * s), label, i == 1));
-            x += w + 18.0 * s;
+            let w = KASTEN * s + 6.0 * s + breite(f, label);
+            haken.push(((hx, hm - 10.0 * s, w, 20.0 * s), label, i == 1));
+            hx += w + 18.0 * s;
         }
         VorschauLeiste {
             zurueck,
@@ -162,15 +184,19 @@ impl AvaView {
             text,
             text_x,
             mitte,
+            fassung,
+            haken_mitte: hm,
+            zeilen: if zweite { 2.0 } else { 1.0 },
             haken,
         }
     }
 
     /// Lage des Blatts (px): linke obere Ecke und Pixel je Punkt.
-    fn blatt_lage(&self, t: &Theme) -> (f32, f32, f32) {
+    pub(super) fn blatt_lage(&self, t: &Theme, fonts: &Fonts) -> (f32, f32, f32) {
         let s = self.scale;
         let (tx, r) = self.tabelle_x(t);
-        let oben = self.tabelle_top() + (LEISTE + LUFT) * s;
+        let zeilen = self.vorschau_leiste(t, fonts).zeilen;
+        let oben = self.tabelle_top() + (zeilen * LEISTE + LUFT) * s;
         let unten = self.bottom() - LUFT * s;
         let k = ((r - tx) / A4.0)
             .min((unten - oben).max(0.0) / A4.1)
@@ -186,6 +212,9 @@ impl AvaView {
         }
         if inside(l.vor, x, y) {
             return Some(Hot::Seite(true));
+        }
+        if let Some((b, _)) = l.fassung.iter().find(|(_, r)| inside(*r, x, y)) {
+            return Some(Hot::Preise(*b));
         }
         l.haken
             .iter()
@@ -225,6 +254,33 @@ impl AvaView {
         let px = 11.0 * s;
         let base = l.mitte + regular.cap_height(px) * 0.5;
         regular.draw(c, &l.text, px, l.text_x, base, u.sheet_text);
+        // Fassung: Pille mit zwei Hälften wie der Schalter oben
+        let (ax, ay, _, ah) = l.fassung[0].1;
+        let (bx, _, bw, _) = l.fassung[1].1;
+        let mut p = Path::new();
+        p.rounded_rect(
+            ax - 2.0 * s,
+            ay - 2.0 * s,
+            bx + bw - ax + 4.0 * s,
+            ah + 4.0 * s,
+            (ah + 4.0 * s) * 0.5,
+        );
+        c.fill(&p, u.sheet_tile);
+        for ((b, label), (_, (x, y, w, h))) in FASSUNG.into_iter().zip(l.fassung) {
+            let (f, col) = if b == self.preise {
+                let mut p = Path::new();
+                p.rounded_rect(x, y, w, h, h * 0.5);
+                c.fill(&p, u.sheet_card);
+                (fett, u.sheet_text)
+            } else if self.hot == Some(Hot::Preise(b)) {
+                (regular, u.sheet_text)
+            } else {
+                (regular, u.sheet_text_dim)
+            };
+            let tw = f.width(label, px);
+            f.draw(c, label, px, x + (w - tw) * 0.5, base, col);
+        }
+        let base = l.haken_mitte + regular.cap_height(px) * 0.5;
         for ((x, _, _, _), label, v) in &l.haken {
             let an = if *v {
                 self.blatt_wahl.1
@@ -234,7 +290,7 @@ impl AvaView {
             let hot = self.hot == Some(Hot::BlattWahl(*v));
             // Kästchen in den Farben des Blatts (das Dunkle der Felder
             // passt nicht auf das helle Blatt)
-            let (kx, ky, d) = (*x, l.mitte - KASTEN * s * 0.5, KASTEN * s);
+            let (kx, ky, d) = (*x, l.haken_mitte - KASTEN * s * 0.5, KASTEN * s);
             let b = s.round().max(1.0);
             let rand = if an {
                 u.accent
@@ -273,7 +329,7 @@ impl AvaView {
         let Some(seite) = b.seiten.get(jetzt) else {
             return;
         };
-        let (x, y, k) = self.blatt_lage(t);
+        let (x, y, k) = self.blatt_lage(t, fonts);
         let (w, h) = (A4.0 * k, A4.1 * k);
         c.fill_rect(x + 2.0 * s, y + 3.0 * s, w, h, Rgba(0, 0, 0, 40));
         c.fill_rect(x, y, w, h, Rgba(255, 255, 255, 255));
@@ -282,13 +338,19 @@ impl AvaView {
 }
 
 /// Lage der Leiste über dem Blatt.
-struct VorschauLeiste {
-    zurueck: Rect,
-    vor: Rect,
-    text: String,
-    text_x: f32,
+pub(super) struct VorschauLeiste {
+    pub(super) zurueck: Rect,
+    pub(super) vor: Rect,
+    pub(super) text: String,
+    pub(super) text_x: f32,
     /// Senkrechte Mitte der Leiste.
-    mitte: f32,
+    pub(super) mitte: f32,
+    /// „Anfrage“ (`false`) und „Mit Preisen“ (`true`).
+    pub(super) fassung: [(bool, Rect); 2],
+    /// Mitte der Häkchen: in der Leiste oder in ihrer zweiten Zeile.
+    pub(super) haken_mitte: f32,
+    /// Zeilen der Leiste (1 oder 2).
+    pub(super) zeilen: f32,
     /// Häkchen: Fläche, Text und `true` für „Inhaltsverzeichnis“.
-    haken: Vec<(Rect, &'static str, bool)>,
+    pub(super) haken: Vec<(Rect, &'static str, bool)>,
 }

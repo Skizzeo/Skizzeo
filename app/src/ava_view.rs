@@ -203,6 +203,8 @@ enum Hot {
     BaumLeiste,
     /// Zähler „△ 3“ neben der Leiste: zeigt „Prüfen“.
     BaumPruefen,
+    /// Knopf „Druckvorschau“ in der Ansicht LV.
+    Vorschau,
     Zeile(usize),
     Reiter(Reiter),
     Schliessen,
@@ -790,7 +792,9 @@ impl AvaView {
             })
         };
         let zaehler = self.pruef_breite(bold).map_or(0.0, |w| w + 8.0 * s);
-        let platz = (cw - zaehler - 40.0 * s).max(40.0 * s);
+        // Rechts in derselben Zeile der Knopf „Druckvorschau“
+        let knopf = self.vorschau_breite(bold).map_or(0.0, |w| w + 16.0 * s);
+        let platz = (cw - zaehler - knopf - 40.0 * s).max(40.0 * s);
         let text = sk_ui::widgets::ellipsize(bold, &text, px, platz);
         let r = (
             x0,
@@ -1091,6 +1095,12 @@ impl AvaView {
         if inside(self.knopf_rect(t, fonts), x, y) {
             return Some(Hot::Knopf);
         }
+        if self
+            .vorschau_rect(t, fonts)
+            .is_some_and(|r| inside(r, x, y))
+        {
+            return Some(Hot::Vorschau);
+        }
         if let Some(h) = self.kopf_hit(t, fonts, x, y) {
             return h;
         }
@@ -1227,6 +1237,10 @@ impl AvaView {
             Hot::Oeffnen => self.detail.as_ref()?.leistung.map(ListOut::Verwaltung),
             Hot::BaumLeiste => {
                 self.baum_blatt = !self.baum_blatt;
+                Some(ListOut::Repaint)
+            }
+            Hot::Vorschau => {
+                self.zeige(Ansicht::Blatt);
                 Some(ListOut::Repaint)
             }
             Hot::BaumPruefen => {
@@ -1457,6 +1471,7 @@ impl AvaView {
         self.paint_schalter(c, t, regular, bold);
         self.paint_kopf(c, t, regular, bold);
         self.paint_knopf(c, t, fonts);
+        self.paint_vorschau_knopf(c, t, fonts);
         let linie = self.body_top() - 8.0 * s;
         c.fill_rect(x0, linie, cw, s.max(1.0), u.sheet_rule);
         if self.baum_als_leiste() {
@@ -1826,10 +1841,11 @@ impl AvaView {
                 }
             }
             Ansicht::Zusammenstellung => {
-                // Mit dem Umfang: „Zusammenstellung · Los Rohbau“ (Bedienbarkeit 12)
+                // Mit dem Los wie auf dem Blatt: „Zusammenstellung · LV 1
+                // Rohbau“ (Bedienbarkeit 12, Test Hinweis O)
                 let titel = self.lv.as_ref().map_or_else(
                     || "Zusammenstellung".to_string(),
-                    |lv| format!("Zusammenstellung · Los {}", lv.kopf.los),
+                    |lv| format!("Zusammenstellung · {}", lv_blatt::los_text(lv)),
                 );
                 bold.draw(c, &titel, px, tx, kopf, u.sheet_text);
                 rechts(c, regular, "Summe", hpx, r, kopf, u.sheet_text_dim);

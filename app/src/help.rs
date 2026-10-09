@@ -1049,7 +1049,7 @@ mod tests {
     }
 
     /// KA-4d (paket-ka4 §7): Thema „AVA · Leistungsverzeichnis“ mit den
-    /// sieben Zeilen und der Zeile zur OZ in der Tabelle (Kosten-Nachprüfung 16:05); F1 im Blatt AVA.
+    /// Zeilen und der Zeile zur OZ in der Tabelle (Kosten-Nachprüfung 16:05); F1 im Blatt AVA.
     #[test]
     fn hilfe_ava() {
         let h = help();
@@ -1066,9 +1066,13 @@ mod tests {
                 "Prüfen",
                 "Geschosse getrennt",
                 "Ausgabe",
+                "Drucken",
                 "OZ in der Tabelle"
             ]
         );
+        // Bedienbarkeit 26.3: Druckvorschau und PDF stehen in der Hilfe
+        let d = &a.rows.iter().find(|(x, _)| x == "Drucken").unwrap().1;
+        assert!(d.contains("„Druckvorschau“") && d.contains("als PDF speichern"));
         assert_eq!(Topic::from_id("ava"), Some(Topic::Ava));
     }
 

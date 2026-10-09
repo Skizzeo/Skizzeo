@@ -1073,11 +1073,33 @@ fn druckvorschau_blaettern_und_pdf() {
         .expect("Druckvorschau im Baum");
     v.mouse_down(&t, &fonts, &mut p, xy, mods);
     assert_eq!(v.ansicht, Ansicht::Blatt);
+    // Bedienbarkeit 26.1: auch der Knopf „Druckvorschau“ neben dem
+    // Tabellen-Knopf führt hin
+    v.zeige(Ansicht::Lv);
+    let (x, y, w, h) = v.vorschau_rect(&t, &fonts).expect("Knopf");
+    let k = ((x + w * 0.5) as f64, (y + h * 0.5) as f64);
+    assert_eq!(v.hit(&t, &fonts, k.0, k.1), Some(Hot::Vorschau));
+    v.mouse_down(&t, &fonts, &mut p, k, mods);
+    assert_eq!(v.ansicht, Ansicht::Blatt);
     assert!(
-        v.knopf_text().ends_with(" als PDF speichern"),
-        "{}",
-        v.knopf_text()
+        v.vorschau_rect(&t, &fonts).is_none(),
+        "nur in der Ansicht LV"
     );
+    // 26.2: der Knopf nennt die Fassung, der Schalter steht auch in der
+    // Leiste über dem Blatt
+    assert_eq!(v.knopf_text(), "LV Rohbau mit Preisen als PDF speichern");
+    let l = v.vorschau_leiste(&t, &fonts);
+    let (x, y, w, h) = l.fassung[0].1;
+    let mitte = ((x + w * 0.5) as f64, (y + h * 0.5) as f64);
+    assert_eq!(
+        v.hit(&t, &fonts, mitte.0, mitte.1),
+        Some(Hot::Preise(false))
+    );
+    v.mouse_down(&t, &fonts, &mut p, mitte, mods);
+    assert!(!v.preise);
+    assert_eq!(v.knopf_text(), "Anfrage LV Rohbau als PDF speichern");
+    v.preise = true;
+    v.sync(&mut s, None);
     let n = v.blatt(&fonts).expect("Blatt").seiten.len();
     assert!(n >= 2, "{n} Seiten");
     // Blättern mit „›“ und „‹“, nie über das Ende
@@ -1122,5 +1144,105 @@ fn druckvorschau_blaettern_und_pdf() {
     if let Some(g) = los {
         v.waehle_los(g);
         assert_eq!((v.seite, v.ansicht), (0, Ansicht::Lv));
+    }
+}
+
+/// Bedienbarkeit 26.1/26.2: „Druckvorschau“, Speichern-Knopf, Titel, Karten,
+/// Leiste mit Zähler und die Teile der Vorschauleiste überdecken sich in
+/// keiner Breite von 480 bis 1920 dip (100, 125, 150 %).
+#[test]
+fn knoepfe_und_vorschauleiste_ueberdecken_sich_nie() {
+    let Some(fonts) = schrift() else {
+        return;
+    };
+    let t = Theme::dark();
+    let mut s = haus();
+    let frei = |a: Rect, b: Rect| {
+        a.0 + a.2 <= b.0 + 0.5
+            || b.0 + b.2 <= a.0 + 0.5
+            || a.1 + a.3 <= b.1 + 0.5
+            || b.1 + b.3 <= a.1 + 0.5
+    };
+    for scale in [1.0_f32, 1.25, 1.5] {
+        for dip in (480..=1920).step_by(40) {
+            let mut v = AvaView::new();
+            v.scale = scale;
+            (v.w, v.h) = ((dip as f32 * scale) as u32, (900.0 * scale) as u32);
+            v.top = 120.0;
+            v.sync(&mut s, None);
+            let wo = format!("{dip} dip bei {scale}");
+            let (x0, cw) = v.content_x(&t);
+            let bold = fonts.bold.as_ref().unwrap();
+            let knopf = v.knopf_rect(&t, &fonts);
+            let vorschau = v.vorschau_rect(&t, &fonts).expect("Druckvorschau");
+            let titel = (
+                x0,
+                v.top_px() + (TITLE_Y - 19.0) * scale,
+                bold.width("Leistungsverzeichnis", 19.0 * scale),
+                22.0 * scale,
+            );
+            let karten = (
+                x0,
+                v.top_px() - crate::cards::HEIGHT * scale,
+                crate::cards::Karten::ende(x0, scale, v.w as f32 - 2.0 * x0) - x0,
+                crate::cards::HEIGHT * scale,
+            );
+            let mut teile = vec![("Knopf", knopf), ("Vorschau", vorschau), ("Titel", titel)];
+            if knopf.1 < v.top_px() {
+                teile.push(("Karten", karten));
+            }
+            if v.baum_als_leiste() {
+                teile.push(("Leiste", v.leiste_rect(&t, Some(bold)).0));
+                if let Some(z) = v.pruef_rect(&t, Some(bold)) {
+                    teile.push(("Zähler", z));
+                }
+            }
+            for (i, (na, a)) in teile.iter().enumerate() {
+                assert!(
+                    a.0 >= x0 - 0.5 && a.0 + a.2 <= x0 + cw + 0.5,
+                    "{wo}: {na} außerhalb"
+                );
+                for (nb, b) in &teile[i + 1..] {
+                    assert!(frei(*a, *b), "{wo}: {na} {a:?} über {nb} {b:?}");
+                }
+            }
+            // In der Druckvorschau ist der Knopf länger („… als PDF
+            // speichern“) und überdeckt trotzdem weder Titel noch Karten
+            v.zeige(Ansicht::Blatt);
+            for preise in [true, false] {
+                v.preise = preise;
+                let knopf = v.knopf_rect(&t, &fonts);
+                let mut teile = vec![("Titel", titel)];
+                if knopf.1 < v.top_px() {
+                    teile.push(("Karten", karten));
+                }
+                if v.baum_als_leiste() {
+                    teile.push(("Leiste", v.leiste_rect(&t, Some(bold)).0));
+                }
+                assert!(knopf.0 >= x0 - 0.5, "{wo}: PDF-Knopf außerhalb");
+                for (nb, b) in &teile {
+                    assert!(frei(knopf, *b), "{wo}: PDF-Knopf {knopf:?} über {nb} {b:?}");
+                }
+            }
+            // Die Vorschauleiste bleibt in der Tabelle, nichts überdeckt sich
+            let l = v.vorschau_leiste(&t, &fonts);
+            let (tx, r) = v.tabelle_x(&t);
+            let mut teile = vec![l.zurueck, l.vor, l.fassung[0].1, l.fassung[1].1];
+            teile.extend(l.haken.iter().map(|h| h.0));
+            for (i, a) in teile.iter().enumerate() {
+                assert!(
+                    a.0 >= tx - 0.5 && a.0 + a.2 <= r + 0.5,
+                    "{wo}: {a:?} außerhalb {tx}..{r}"
+                );
+                for b in &teile[i + 1..] {
+                    assert!(frei(*a, *b), "{wo}: {a:?} über {b:?}");
+                }
+            }
+            let (_, oben, _) = v.blatt_lage(&t, &fonts);
+            assert!(
+                teile.iter().all(|a| a.1 + a.3 <= oben),
+                "{wo}: Blatt unter der Leiste"
+            );
+        }
     }
 }

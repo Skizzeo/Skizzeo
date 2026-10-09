@@ -7,6 +7,9 @@ use crate::kosten_view::csv_text;
 const BUTTON_H: f32 = 26.0;
 const BUTTON_PAD: f32 = 12.0;
 const BUTTON_Y: f32 = 14.0;
+/// Knopf „Druckvorschau“ und sein Abstand zum Speichern-Knopf (dip).
+const VORSCHAU: &str = "Druckvorschau";
+const VORSCHAU_GAP: f32 = 8.0;
 
 /// Einheit als GAEB-Wort (m2, m3, m, t, St).
 fn gaeb(e: sk_cost::katalog::Einheit) -> &'static str {
@@ -32,14 +35,15 @@ fn zahl(c: Option<Cent>) -> String {
 impl AvaView {
     /// Beschriftung des Knopfs: „LV Rohbau als Tabelle speichern“.
     pub fn knopf_text(&self) -> String {
-        let was = if self.ansicht == Ansicht::Blatt {
-            "PDF"
-        } else {
-            "Tabelle"
+        let Some(lv) = self.lv.as_deref() else {
+            return "Als Tabelle speichern".into();
         };
-        match self.lv.as_deref() {
-            Some(lv) => format!("LV {} als {was} speichern", lv.kopf.los),
-            None => format!("Als {was} speichern"),
+        let los = &lv.kopf.los;
+        match self.ansicht {
+            // Die Fassung im Knopf (Bedienbarkeit 26.2)
+            Ansicht::Blatt if self.preise => format!("LV {los} mit Preisen als PDF speichern"),
+            Ansicht::Blatt => format!("Anfrage LV {los} als PDF speichern"),
+            _ => format!("LV {los} als Tabelle speichern"),
         }
     }
 
@@ -49,21 +53,97 @@ impl AvaView {
     }
 
     pub(super) fn knopf_rect(&self, t: &Theme, fonts: &Fonts) -> Rect {
+        self.knopf_lage(t, fonts).0
+    }
+
+    /// Lage und Beschriftung des Speichern-Knopfs. In der Kartenzeile, wenn
+    /// Platz ist (auch für „Druckvorschau“ links daneben), sonst in der
+    /// Titelzeile; dort wird die Beschriftung kürzer, bis sie neben
+    /// „Leistungsverzeichnis“ passt.
+    pub(super) fn knopf_lage(&self, t: &Theme, fonts: &Fonts) -> (Rect, String) {
         let s = self.scale;
         let (x0, w) = self.content_x(t);
-        let text = self.knopf_text();
-        let tw = fonts
+        let f = fonts.bold.as_ref().or(fonts.regular.as_ref());
+        let breite =
+            |text: &str| f.map_or(200.0 * s, |f| f.width(text, 11.0 * s)) + 2.0 * BUTTON_PAD * s;
+        let voll = self.knopf_text();
+        let bw = breite(&voll);
+        let x = x0 + w - bw;
+        let links = match self.vorschau_breite(fonts.bold.as_ref()) {
+            Some(vw) if !self.baum_als_leiste() => x - VORSCHAU_GAP * s - vw,
+            _ => x,
+        };
+        let breit = (self.w as f32 - 2.0 * x0).max(0.0);
+        if let Some(y) = crate::cards::Karten::knopf_y(x0, s, breit, links, self.top_px()) {
+            return ((x, y, bw, BUTTON_H * s), voll);
+        }
+        let y = self.top_px() + BUTTON_Y * s;
+        let titel = fonts
             .bold
             .as_ref()
-            .or(fonts.regular.as_ref())
-            .map_or(200.0 * s, |f| f.width(&text, 11.0 * s));
-        let bw = tw + 2.0 * BUTTON_PAD * s;
-        // In der Kartenzeile, wenn Platz ist, sonst in der Titelzeile
-        let x = x0 + w - bw;
-        let breit = (self.w as f32 - 2.0 * x0).max(0.0);
-        let y = crate::cards::Karten::knopf_y(x0, s, breit, x, self.top_px())
-            .unwrap_or(self.top_px() + BUTTON_Y * s);
-        (x, y, bw, BUTTON_H * s)
+            .map_or(190.0 * s, |f| f.width("Leistungsverzeichnis", 19.0 * s));
+        let frei = x0 + titel + 16.0 * s;
+        let mut texte = vec![voll];
+        if self.ansicht == Ansicht::Blatt {
+            let kurz = if self.preise {
+                "Mit Preisen als PDF speichern"
+            } else {
+                "Anfrage als PDF speichern"
+            };
+            texte.extend([kurz.to_string(), "Als PDF speichern".to_string()]);
+        }
+        let i = texte
+            .iter()
+            .position(|t| x0 + w - breite(t) >= frei)
+            .unwrap_or(texte.len() - 1);
+        let text = texte.swap_remove(i);
+        let bw = breite(&text);
+        ((x0 + w - bw, y, bw, BUTTON_H * s), text)
+    }
+
+    /// Breite des Knopfs „Druckvorschau“ (px); nur in der Ansicht LV.
+    pub(super) fn vorschau_breite(&self, f: Option<&Font>) -> Option<f32> {
+        if self.ansicht != Ansicht::Lv || self.lv.is_none() {
+            return None;
+        }
+        let s = self.scale;
+        let tw = f.map_or(80.0 * s, |f| f.width(VORSCHAU, 11.0 * s));
+        Some(tw + 2.0 * BUTTON_PAD * s)
+    }
+
+    /// Knopf „Druckvorschau“ (Bedienbarkeit 26.1): links neben „als
+    /// Tabelle speichern“; im schmalen Fenster rechts in der Zeile der
+    /// Leiste.
+    pub(super) fn vorschau_rect(&self, t: &Theme, fonts: &Fonts) -> Option<Rect> {
+        let vw = self.vorschau_breite(fonts.bold.as_ref())?;
+        let s = self.scale;
+        if self.baum_als_leiste() {
+            let (x0, cw) = self.content_x(t);
+            return Some((x0 + cw - vw, self.body_top(), vw, 26.0 * s));
+        }
+        let (kx, ky, _, kh) = self.knopf_rect(t, fonts);
+        Some((kx - VORSCHAU_GAP * s - vw, ky, vw, kh))
+    }
+
+    pub(super) fn paint_vorschau_knopf(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts) {
+        let Some((x, y, w, h)) = self.vorschau_rect(t, fonts) else {
+            return;
+        };
+        let s = self.scale;
+        let u = &t.ui;
+        let bg = if self.hot == Some(Hot::Vorschau) {
+            u.sheet_hover
+        } else {
+            u.sheet_tile
+        };
+        let mut p = Path::new();
+        p.rounded_rect(x, y, w, h, t.size.corner_radius * s);
+        c.fill(&p, bg);
+        if let Some(f) = fonts.bold.as_ref() {
+            let px = 11.0 * s;
+            let base = y + (h + f.cap_height(px)) * 0.5;
+            f.draw(c, VORSCHAU, px, x + BUTTON_PAD * s, base, u.sheet_text);
+        }
     }
 
     pub fn mouse_up(&mut self, t: &Theme, fonts: &Fonts, x: f64, y: f64) -> Option<ListOut> {
@@ -82,7 +162,7 @@ impl AvaView {
     pub(super) fn paint_knopf(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts) {
         let s = self.scale;
         let u = &t.ui;
-        let (bx, by, bw, bh) = self.knopf_rect(t, fonts);
+        let ((bx, by, bw, bh), text) = self.knopf_lage(t, fonts);
         let bg = if self.knopf_down {
             u.pressed
         } else if self.hot == Some(Hot::Knopf) {
@@ -97,7 +177,7 @@ impl AvaView {
             let px = 11.0 * s;
             f.draw(
                 c,
-                &self.knopf_text(),
+                &text,
                 px,
                 bx + BUTTON_PAD * s,
                 by + (bh + f.cap_height(px)) * 0.5,

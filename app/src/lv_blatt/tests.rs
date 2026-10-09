@@ -268,21 +268,97 @@ fn uebertrag_ueber_seiten() {
     assert!(b.seiten.len() >= 3, "{} Seiten", b.seiten.len());
     seite_x_von_y(&b, 0);
     ueberdeckt_nichts(&b, f);
+    assert!(uebertraege(&b, "") >= 2);
+    assert!(alle(&b).contains(&Cent(summe).deutsch()));
+    // Kosten A6: mit Titelblatt und Verzeichnis zählt „Übertrag von Seite
+    // n“ wie die Fußzeile
+    let w = Wahl {
+        preise: true,
+        titelblatt: true,
+        verzeichnis: true,
+    };
+    let mit = blatt(&lv, &angaben(true), w, f);
+    assert_eq!(mit.seiten.len(), b.seiten.len() + 2);
+    assert!(uebertraege(&mit, "") >= 2);
+    // Kosten B11: fehlt ein Preis, trägt der Übertrag die bekannten GP und
+    // „(unvollständig)“ wie die Titelsumme
+    lv.titel[0].positionen[1].gp = None;
+    lv.titel[0].unvollstaendig = true;
+    let b = blatt(
+        &lv,
+        &angaben(true),
+        Wahl {
+            preise: true,
+            ..Wahl::default()
+        },
+        f,
+    );
+    assert!(uebertraege(&b, " (unvollständig)") >= 2);
+}
+
+/// Prüft jeden Übertrag: unten „Übertrag 01 …{zusatz}“, oben auf der
+/// nächsten Seite „Übertrag von Seite n{zusatz}“ mit der Nummer aus der
+/// Fußzeile der Seite davor und demselben Betrag. Gibt die Anzahl.
+fn uebertraege(b: &Blatt, zusatz: &str) -> usize {
     let mut n = 0;
     for i in 0..b.seiten.len() - 1 {
         let tx = texte(&b.seiten[i]);
         let Some(k) = tx.iter().position(|x| x.starts_with("Übertrag 01")) else {
             continue;
         };
+        assert!(tx[k].ends_with(zusatz), "{}", tx[k]);
         let unten = tx[k + 1];
+        assert!(tx
+            .iter()
+            .any(|x| x.starts_with(&format!("Seite {} von", i + 1))));
         let nx = texte(&b.seiten[i + 1]);
-        let von = format!("Übertrag von Seite {}", i + 1);
-        let j = nx.iter().position(|x| *x == von).expect("Übertrag oben");
+        let von = format!("Übertrag von Seite {}{zusatz}", i + 1);
+        let j = nx
+            .iter()
+            .position(|x| *x == von)
+            .unwrap_or_else(|| panic!("{von} fehlt auf Seite {}", i + 2));
         assert_eq!(nx[j + 1], unten, "Seite {}", i + 1);
         n += 1;
     }
-    assert!(n >= 2, "{n} Überträge");
-    assert!(alle(&b).contains(&Cent(summe).deutsch()));
+    n
+}
+
+/// Kosten B12 und B13: ohne Vorbemerkungen kein Eintrag im Verzeichnis;
+/// läuft die Zusammenstellung über eine Seite, steht dort die Überschrift
+/// mit „(Fortsetzung)“.
+#[test]
+fn ohne_vorbemerkungen_und_lange_zusammenstellung() {
+    let Some((r, fe)) = schriften() else {
+        return;
+    };
+    let f = Schriften {
+        regular: &r,
+        fett: &fe,
+    };
+    let mut s = haus();
+    let mut lv = lv(&mut s, true, false);
+    lv.kopf.vorbemerkungen = None;
+    let z = lv.zusammenstellung.zeilen[0].clone();
+    for k in 0..90 {
+        let mut zeile = z.clone();
+        zeile.0 = format!("{}", 10 + k);
+        lv.zusammenstellung.zeilen.push(zeile);
+    }
+    let w = Wahl {
+        preise: true,
+        titelblatt: false,
+        verzeichnis: true,
+    };
+    let b = blatt(&lv, &angaben(true), w, f);
+    assert!(!b.inhalt.iter().any(|e| e.text == "Vorbemerkungen"));
+    assert!(!alle(&b).iter().any(|t| t == "Vorbemerkungen"));
+    let fort = alle(&b)
+        .iter()
+        .filter(|t| t.starts_with("Zusammenstellung · ") && t.ends_with("(Fortsetzung)"))
+        .count();
+    assert!(fort >= 1, "keine Fortsetzung");
+    ueberdeckt_nichts(&b, f);
+    seite_x_von_y(&b, 1);
 }
 
 /// §11.5: Ein Kurztext mit genau 70 Zeichen bricht um und wird nie gekürzt.
@@ -433,4 +509,28 @@ fn pdf_und_dateiname() {
             lv.kopf.los
         )
     );
+}
+
+/// Test Hinweis N: Der Projekt-Eintrag bricht nach dem Komma um, nie
+/// zwischen Postleitzahl und Ort; zu lange Glieder wie sonst am Wort.
+/// Hinweis O: Bildschirm und Blatt nennen das Los gleich.
+#[test]
+fn projekt_bricht_nach_dem_komma() {
+    let Some((r, _)) = schriften() else {
+        return;
+    };
+    let text = "Neubau Einfamilienhaus · Musterweg 1, 27777 Ganderkesee";
+    let z = umbrechen_glieder(&r, text, TEXT, mm(72.0));
+    assert_eq!(
+        z,
+        ["Neubau Einfamilienhaus · Musterweg 1,", "27777 Ganderkesee"]
+    );
+    assert_eq!(umbrechen_glieder(&r, "Haus", TEXT, mm(72.0)), ["Haus"]);
+    let lang = "Sehr langer Bauort mit vielen Wörtern ohne jedes Komma dazwischen bis ans Ende";
+    let z = umbrechen_glieder(&r, lang, TEXT, mm(40.0));
+    assert!(z.len() >= 2 && z.join(" ") == lang, "{z:?}");
+    assert!(z.iter().all(|l| r.width(l, TEXT) <= mm(40.0)));
+    let mut s = haus();
+    let lv = lv(&mut s, true, false);
+    assert_eq!(los_text(&lv), "LV 1 Rohbau");
 }
