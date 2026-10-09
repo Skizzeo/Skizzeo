@@ -2,8 +2,10 @@
 //! „Projektdaten“ wird der Pfeil im 3D-Fenster oder im Grundriss aufgezogen,
 //! erst der Fußpunkt, dann die Richtung (Einrasten 5°, mit Umschalt 15°;
 //! Zahl + Enter setzt genau). Danach steht er in 3D und im Grundriss, ist
-//! anklickbar, an der Spitze drehbar („Nordrichtung geändert“) und am Schaft
-//! verschiebbar („Nordpfeil verschoben“), je ein Schritt beim Loslassen.
+//! anklickbar, an der Spitze drehbar („Nordrichtung geändert“) und an der
+//! Nadel oder am Kreis verschiebbar („Nordpfeil verschoben“), je ein
+//! Schritt beim Loslassen. Gestalt A (§8 08:20): Kompassnadel im Kreis, das
+//! „N“ aufrecht zum Bildschirm, gemalt als Bild über der Ansicht.
 //!
 //! Liegt der Fußpunkt im Hüllquader des Gebäudes oder fehlt er, steht der
 //! Pfeil vorne links daneben; geschrieben wird dabei nichts (§8, 07:10).
@@ -14,8 +16,8 @@ use crate::measure_input::{opens, InputOutcome, MeasureInput};
 use crate::ui::MeasureKind;
 use sk_math::{dist_to_segment, vec3, Vec3};
 use sk_model::Foot;
+use sk_paint::{Canvas, Path, Rgba};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
-use sk_render::{Helper, SOLID};
 
 /// Schritt beim Aufziehen und Drehen.
 pub const LABEL_DREHEN: &str = "Nordrichtung geändert";
@@ -114,40 +116,64 @@ pub fn tip(nord: Option<f64>) -> String {
     )
 }
 
-/// Spitze des Pfeils, in Vielfachen der Länge: Länge und halbe Breite.
-const KOPF: f64 = 0.3;
-const BREIT: f64 = 0.14;
-/// „N“ vor der Spitze: Abstand seiner Mitte vom Fußpunkt, Höhe, Breite.
-const N_AB: f64 = 1.3;
-const N_HOCH: f64 = 0.22;
-const N_BREIT: f64 = 0.16;
+/// Kompassnadel im Kreis (Gestalt A, §8 08:20), in Vielfachen der Länge
+/// vom Fußpunkt (Mitte des Kreises) bis zur Spitze: Radius des Kreises,
+/// halbe Breite der Raute, Länge der Südhälfte.
+const KREIS: f64 = 34.0 / 46.0;
+const BREIT: f64 = 9.0 / 46.0;
+const SUED: f64 = 28.0 / 46.0;
+/// Teile des Kreises als Linienzug.
+const KREIS_TEILE: usize = 72;
+/// „N“ vor der Spitze: Luft zur Spitze, Höhe, Breite.
+const N_LUFT: f64 = 0.15;
+const N_HOCH: f64 = 0.28;
+const N_BREIT: f64 = 0.2;
 
-/// Umriss des Pfeils (mm): Schaft bis zur Spitze, die Spitze als offenes
-/// Dreieck, davor das „N“.
-pub fn linien(fuss: Foot, nord: f64, laenge: f64) -> Vec<(Foot, Foot)> {
-    let at = achse(fuss, nord);
-    let l = laenge;
-    let (k, b) = (l - KOPF * l, BREIT * l);
-    let mut v = vec![
-        (at(0.0, 0.0), at(l, 0.0)),
-        (at(l, 0.0), at(k, -b)),
-        (at(l, 0.0), at(k, b)),
-        (at(k, -b), at(k, b)),
-    ];
-    v.extend(n_linien(fuss, nord, l));
-    v
+/// Das Zeichen in Modellkoordinaten (mm), Gestalt A: Kreis um den
+/// Fußpunkt, darin die Raute; ihre Nordspitze ragt über den Kreis hinaus
+/// und ist längs geteilt, links gefüllt, rechts umrissen; die Südhälfte
+/// ist umrissen.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Gestalt {
+    /// Geschlossener Linienzug (der letzte Punkt schließt an den ersten).
+    pub kreis: Vec<Foot>,
+    /// Spitze, linke und rechte Ecke der Raute, Mitte, Südspitze.
+    pub spitze: Foot,
+    pub links: Foot,
+    pub rechts: Foot,
+    pub mitte: Foot,
+    pub sued: Foot,
 }
 
-/// Das „N“ vor der Spitze, in Pfeilrichtung versetzt, aber aufrecht zur
-/// Modellachse +y: im Grundriss immer lesbar (Befund B, §8 07:55).
-pub fn n_linien(fuss: Foot, nord: f64, laenge: f64) -> [(Foot, Foot); 3] {
-    let [dx, dy] = richtung(nord);
-    let (cx, cy) = (fuss[0] + dx * N_AB * laenge, fuss[1] + dy * N_AB * laenge);
-    let (h, b) = (N_HOCH * laenge * 0.5, N_BREIT * laenge * 0.5);
+pub fn gestalt(fuss: Foot, nord: f64, laenge: f64) -> Gestalt {
+    let at = achse(fuss, nord);
+    let l = laenge;
+    let r = KREIS * l;
+    let kreis = (0..KREIS_TEILE)
+        .map(|i| {
+            let a = i as f64 * std::f64::consts::TAU / KREIS_TEILE as f64;
+            [fuss[0] + r * a.cos(), fuss[1] + r * a.sin()]
+        })
+        .collect();
+    Gestalt {
+        kreis,
+        spitze: at(l, 0.0),
+        links: at(0.0, -BREIT * l),
+        rechts: at(0.0, BREIT * l),
+        mitte: fuss,
+        sued: at(-SUED * l, 0.0),
+    }
+}
+
+/// Die Striche des „N“ im Bild (Pixel, y nach unten) um `mitte`, aufrecht
+/// zum Bildschirm (Befund B, §8 07:55 und 08:20), `hoch` hoch.
+pub fn n_striche(mitte: (f32, f32), hoch: f32) -> [((f32, f32), (f32, f32)); 3] {
+    let (cx, cy) = mitte;
+    let (h, b) = (hoch * 0.5, hoch * 0.5 * (N_BREIT / N_HOCH) as f32);
     [
-        ([cx - b, cy - h], [cx - b, cy + h]),
-        ([cx - b, cy + h], [cx + b, cy - h]),
-        ([cx + b, cy - h], [cx + b, cy + h]),
+        ((cx - b, cy + h), (cx - b, cy - h)),
+        ((cx - b, cy - h), (cx + b, cy + h)),
+        ((cx + b, cy + h), (cx + b, cy - h)),
     ]
 }
 
@@ -305,9 +331,17 @@ impl Nordpfeil {
         let a = p(fuss)?;
         let b = p([fuss[0] + dx * l, fuss[1] + dy * l])?;
         let d = |q: (f64, f64)| (q.0 - m.0).hypot(q.1 - m.1);
+        // Der Kreis greift wie der Schaft
+        let kreis: Vec<(f64, f64)> = gestalt(fuss, nord, l)
+            .kreis
+            .iter()
+            .filter_map(|&q| p(q))
+            .collect();
+        let am_kreis = (0..kreis.len())
+            .any(|i| dist_to_segment(m, kreis[i], kreis[(i + 1) % kreis.len()]) < PICK_PX * s);
         if d(b) < SPITZE_PX * s {
             Some(Griff::Spitze)
-        } else if dist_to_segment(m, a, b) < PICK_PX * s {
+        } else if dist_to_segment(m, a, b) < PICK_PX * s || am_kreis {
             Some(Griff::Schaft)
         } else {
             None
@@ -515,46 +549,137 @@ impl Nordpfeil {
         Some((vec3(f[0] + dx * l, f[1] + dy * l, 0.0), text))
     }
 
-    /// Linien für den Renderer (Grundriss und 3D).
+    /// Das Zeichen im Bild der Ansicht (`w` × `h` Pixel) mit Strichbreite
+    /// `width` (dip); `None` ohne Pfeil oder wenn ein Teil hinter der Kamera
+    /// läge. In `hot` beim Aufziehen, Ziehen und Darüberfahren.
     #[allow(clippy::too_many_arguments)]
-    pub fn helpers(
+    pub fn bild(
         &self,
         st: Stand,
         cam: &Camera,
-        h: f64,
+        (w, h): (f64, f64),
         scale: f32,
         ink: [f32; 4],
         hot: [f32; 4],
         width: f32,
-    ) -> Vec<Helper> {
-        let Some((n, f)) = self.gezeigt(st) else {
-            return Vec::new();
-        };
-        let color = if self.zug.is_some() || self.anfang.is_some() || self.hover.is_some() {
-            hot
-        } else {
-            ink
-        };
+    ) -> Option<Bild> {
+        let (n, f) = self.gezeigt(st)?;
+        let heiss = self.zug.is_some() || self.anfang.is_some() || self.hover.is_some();
         let l = laenge(cam, h, scale as f64);
-        linien(f, n, l)
-            .into_iter()
-            .map(|(a, b)| Helper {
-                a: [a[0] as f32, a[1] as f32, 2.0],
-                b: [b[0] as f32, b[1] as f32, 2.0],
-                color,
-                width: width * scale,
-                dash: 0.0,
-                pattern: SOLID,
-                occlude: false,
-                round: true,
-            })
-            .collect()
+        let g = gestalt(f, n, l);
+        let p = |q: Foot| {
+            cam.project(vec3(q[0], q[1], 0.0), w, h)
+                .map(|(x, y)| (x as f32, y as f32))
+        };
+        let kreis: Option<Vec<(f32, f32)>> = g.kreis.iter().map(|&q| p(q)).collect();
+        let raute = [g.spitze, g.links, g.rechts, g.mitte, g.sued].map(p);
+        let raute = [raute[0]?, raute[1]?, raute[2]?, raute[3]?, raute[4]?];
+        let [t, _, _, m, _] = raute;
+        // Größe des „N“ wie auf dem Boden an der Spitze, aber aufrecht zum
+        // Bildschirm; es steht in Richtung der Nadel vor der Spitze, mit
+        // Luft auch dann, wenn die Nadel in 3D verkürzt erscheint
+        let r = cam.right();
+        let quer = p([g.spitze[0] + r.x * l, g.spitze[1] + r.y * l])?;
+        let lp = (quer.0 - t.0).hypot(quer.1 - t.1);
+        let (hh, hb) = ((N_HOCH * 0.5) as f32 * lp, (N_BREIT * 0.5) as f32 * lp);
+        let (ux, uy) = (t.0 - m.0, t.1 - m.1);
+        let len = ux.hypot(uy);
+        let (ux, uy) = if len > 1e-3 {
+            (ux / len, uy / len)
+        } else {
+            (0.0, -1.0)
+        };
+        let ab = N_LUFT as f32 * lp + ux.abs() * hb + uy.abs() * hh;
+        Some(Bild {
+            kreis: kreis?,
+            raute,
+            n: ((t.0 + ux * ab, t.1 + uy * ab), 2.0 * hh),
+            farbe: Rgba::from_f32(if heiss { hot } else { ink }),
+            breite: (width * scale).max(1.0),
+            ansicht: (w as f32, h as f32),
+        })
+    }
+}
+
+/// Strich im Bild: Anfang, Ende, Breite (Pixel).
+type Strich = ((f32, f32), (f32, f32), f32);
+
+/// Das Zeichen im Bild der Ansicht (Pixel, y nach unten), wie es gemalt
+/// wird; gleich, solange sich das Bild nicht ändert.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bild {
+    kreis: Vec<(f32, f32)>,
+    /// Spitze, links, rechts, Mitte, Süd.
+    raute: [(f32, f32); 5],
+    /// Mitte und Höhe des „N“.
+    n: ((f32, f32), f32),
+    farbe: Rgba,
+    breite: f32,
+    ansicht: (f32, f32),
+}
+
+impl Bild {
+    /// Gemalt: das Bild und seine linke obere Ecke in der Ansicht; `None`,
+    /// wenn nichts davon in der Ansicht liegt.
+    pub fn malen(&self) -> Option<(Canvas, i32, i32)> {
+        let [t, li, re, m, su] = self.raute;
+        let ((nx, ny), nh) = self.n;
+        let rand = self.breite * 2.0 + 2.0;
+        let mut lo = (nx - nh, ny - nh);
+        let mut hi = (nx + nh, ny + nh);
+        for &(x, y) in self.kreis.iter().chain(&self.raute) {
+            (lo, hi) = ((lo.0.min(x), lo.1.min(y)), (hi.0.max(x), hi.1.max(y)));
+        }
+        // Nur der sichtbare Teil
+        let x0 = (lo.0 - rand).max(-rand).floor();
+        let y0 = (lo.1 - rand).max(-rand).floor();
+        let x1 = (hi.0 + rand).min(self.ansicht.0 + rand).ceil();
+        let y1 = (hi.1 + rand).min(self.ansicht.1 + rand).ceil();
+        if x1 <= x0 || y1 <= y0 {
+            return None;
+        }
+        let mut c = Canvas::new((x1 - x0) as usize, (y1 - y0) as usize);
+        let v = |p: (f32, f32)| (p.0 - x0, p.1 - y0);
+        let k = self.breite;
+        // Linke Hälfte der Nordspitze gefüllt
+        let mut p = Path::new();
+        let (a, b, d) = (v(t), v(li), v(m));
+        p.move_to(a.0, a.1)
+            .line_to(b.0, b.1)
+            .line_to(d.0, d.1)
+            .close();
+        c.fill(&p, self.farbe);
+        let n = self.kreis.len();
+        let mut striche: Vec<Strich> = (0..n)
+            .map(|i| (v(self.kreis[i]), v(self.kreis[(i + 1) % n]), k))
+            .collect();
+        for (a, b) in [(t, li), (t, re), (t, m), (li, re), (li, su), (re, su)] {
+            striche.push((v(a), v(b), k));
+        }
+        for (a, b) in n_striche(v((nx, ny)), nh) {
+            striche.push((a, b, k * 1.4));
+        }
+        // Jeder Strich für sich mit runden Enden: überlappende Teilpfade
+        // mit verschiedener Laufrichtung höben sich sonst auf
+        for (a, b, k) in striche {
+            let mut p = Path::new();
+            p.segment(a, b, k);
+            c.fill(&p, self.farbe);
+            let r = k * 0.5;
+            for e in [a, b] {
+                let mut p = Path::new();
+                p.rounded_rect(e.0 - r, e.1 - r, k, k, r);
+                c.fill(&p, self.farbe);
+            }
+        }
+        Some((c, x0 as i32, y0 as i32))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f64::consts::FRAC_PI_2;
 
     #[test]
     fn winkel_und_einrasten() {
@@ -589,46 +714,100 @@ mod tests {
         assert_eq!(anzeige_fuss(Some([12000.0, 0.0]), b), [12000.0, 0.0]);
     }
 
-    /// Der Pfeil zeigt in die Nordrichtung: die Spitze liegt bei Nord 90°
-    /// rechts vom Fußpunkt, das „N“ davor.
+    /// Gestalt A zeigt in die Nordrichtung: bei Nord 90° liegt die Spitze
+    /// rechts vom Fußpunkt, außerhalb des Kreises, die linke Ecke der Raute
+    /// nördlich der Achse, das „N“ vor der Spitze.
     #[test]
-    fn linien_zeigen_nach_norden() {
-        let l = linien([100.0, 200.0], 90.0, 1000.0);
-        let (a, b) = l[0];
-        assert_eq!(a, [100.0, 200.0]);
-        assert!((b[0] - 1100.0).abs() < 1e-9 && (b[1] - 200.0).abs() < 1e-9);
-        assert_eq!(l.len(), 7);
-        assert!(l[4..].iter().all(|(p, q)| p[0] > 1100.0 && q[0] > 1100.0));
+    fn gestalt_zeigt_nach_norden() {
+        let f = [100.0, 200.0];
+        let g = gestalt(f, 90.0, 1000.0);
+        let nah = |a: Foot, b: Foot| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9;
+        assert!(nah(g.spitze, [1100.0, 200.0]));
+        assert!(nah(g.links, [100.0, 200.0 + BREIT * 1000.0]));
+        assert!(nah(g.rechts, [100.0, 200.0 - BREIT * 1000.0]));
+        assert!(nah(g.sued, [100.0 - SUED * 1000.0, 200.0]));
+        assert_eq!(g.mitte, f);
+        let r = KREIS * 1000.0;
+        assert!(g
+            .kreis
+            .iter()
+            .all(|p| ((p[0] - f[0]).hypot(p[1] - f[1]) - r).abs() < 1e-6));
+        // Die Spitze ragt aus dem Kreis, der Süden nicht
+        let ragt = |a: Foot| (a[0] - f[0]).hypot(a[1] - f[1]) > r;
+        assert!(ragt(g.spitze) && !ragt(g.sued));
     }
 
-    /// Befund B (§8 07:55): Das „N“ steht aufrecht zu +y, bei jeder
-    /// Nordrichtung dieselben Linien, nur verschoben, und frei vor der
-    /// Spitze.
+    fn bild_bei(nord: f64, cam: &Camera) -> Bild {
+        let st = Stand {
+            nord: Some(nord),
+            fuss: [0.0, 0.0],
+            gesetzt: None,
+        };
+        Nordpfeil::default()
+            .bild(
+                st,
+                cam,
+                (1000.0, 800.0),
+                1.0,
+                [0.0, 0.0, 0.0, 1.0],
+                [1.0; 4],
+                1.5,
+            )
+            .unwrap()
+    }
+
+    /// Befund B (§8 07:55, 08:20): Das „N“ steht im Grundriss und in 3D
+    /// aufrecht zum Bildschirm, im Grundriss bei jeder Nordrichtung gleich
+    /// groß, und frei vor der Spitze.
     #[test]
     fn n_bleibt_aufrecht() {
-        let f = [100.0, 200.0];
-        let n0 = n_linien(f, 0.0, 1000.0);
-        for nord in [90.0, 180.0, 270.0, 33.0] {
-            let n = n_linien(f, nord, 1000.0);
-            let [dx, dy] = richtung(nord);
-            let d = [(dx - 0.0) * N_AB * 1000.0, (dy - 1.0) * N_AB * 1000.0];
-            for (a, b) in n.iter().zip(&n0) {
-                for (p, q) in [(a.0, b.0), (a.1, b.1)] {
-                    assert!((p[0] - q[0] - d[0]).abs() < 1e-9, "{nord}");
-                    assert!((p[1] - q[1] - d[1]).abs() < 1e-9, "{nord}");
+        let plan = Camera::parallel(vec3(0.0, 0.0, 0.0), FRAC_PI_2, -FRAC_PI_2, 10000.0);
+        let raum = Camera::looking_at(vec3(-6000.0, -9000.0, 6000.0), vec3(0.0, 0.0, 0.0), 45.0);
+        for (cam, name) in [(&plan, "Grundriss"), (&raum, "3D")] {
+            for nord in [0.0, 90.0, 180.0, 270.0, 33.0] {
+                let b = bild_bei(nord, cam);
+                let ((nx, ny), hoch) = b.n;
+                let [a, _, c] = n_striche((nx, ny), hoch);
+                // Senkrechte Striche: oben kleineres y
+                assert_eq!(a.0 .0, a.1 .0, "{name} {nord}");
+                assert!(a.1 .1 < a.0 .1 && c.1 .1 < c.0 .1, "{name} {nord}");
+                if cam.ortho.is_some() {
+                    assert!((hoch - (N_HOCH * LAENGE_PX) as f32).abs() < 1e-3, "{nord}");
                 }
-            }
-            // Senkrechte Striche des N laufen längs y
-            assert_eq!(n[0].0[0], n[0].1[0]);
-            assert!(n[0].1[1] > n[0].0[1]);
-            // Ganz vor der Spitze: kein Punkt des N näher am Fußpunkt als die Spitze
-            let spitze = 1000.0;
-            for (p, q) in n {
-                for r in [p, q] {
-                    assert!((r[0] - f[0]).hypot(r[1] - f[1]) > spitze * 1.05, "{nord}");
+                // Kein Punkt des N näher an der Mitte als die Spitze
+                let [t, _, _, m, _] = b.raute;
+                let spitze = (t.0 - m.0).hypot(t.1 - m.1);
+                for (p, q) in n_striche((nx, ny), hoch) {
+                    for r in [p, q] {
+                        assert!(
+                            (r.0 - m.0).hypot(r.1 - m.1) > spitze * 1.05,
+                            "{name} {nord}"
+                        );
+                    }
                 }
             }
         }
+    }
+
+    /// Die Nordspitze ist links der Achse gefüllt, rechts nur umrissen.
+    #[test]
+    fn spitze_links_gefuellt() {
+        let plan = Camera::parallel(vec3(0.0, 0.0, 0.0), FRAC_PI_2, -FRAC_PI_2, 10000.0);
+        let b = bild_bei(0.0, &plan);
+        let (c, x0, y0) = b.malen().unwrap();
+        let px = c.to_rgba8();
+        let deckung = |x: f32, y: f32| {
+            let (i, j) = ((x - x0 as f32) as usize, (y - y0 as f32) as usize);
+            px[(j * c.width + i) * 4 + 3]
+        };
+        let [t, _, _, m, _] = b.raute;
+        let l = m.1 - t.1;
+        // Nord 0: Spitze oben, links ist kleineres x
+        let y = m.1 - 0.4 * l;
+        assert_eq!(deckung(m.0 - 0.05 * l, y), 255);
+        assert_eq!(deckung(m.0 + 0.05 * l, y), 0);
+        // Südhälfte innen leer
+        assert_eq!(deckung(m.0 + 0.05 * l, m.1 + 0.2 * l), 0);
     }
 
     #[test]
@@ -778,8 +957,8 @@ mod abnahme_tests {
         let (lo, _) = s.bounds().unwrap();
         let st = stand(&s);
         assert_eq!(st.fuss, [lo.x - ABSTAND, lo.y - ABSTAND]);
-        let h = n.helpers(st, &cam, H, 1.0, [1.0; 4], [1.0; 4], 1.5);
-        assert_eq!(h.len(), 7, "Umriss und N");
+        let bild = n.bild(st, &cam, (W, H), 1.0, [1.0; 4], [1.0; 4], 1.5);
+        assert!(bild.and_then(|b| b.malen()).is_some(), "Zeichen sichtbar");
         let mit_haus = szo::write(s.model());
         assert!(mit_haus.contains("[location] north=40 x=0 y=0\n"));
         assert_eq!(szo::write(&laden(&mit_haus)), mit_haus);

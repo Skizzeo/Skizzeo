@@ -179,8 +179,10 @@ const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 /// Endsymbole der Schnittlinien A und B im Grundriss (je zwei Plätze).
 const OVERLAY_MARKS: usize = 0;
 const MARKS: usize = 2 * section::CUTS;
+/// Nordpfeil (Sonnenstand S2, Gestalt A), unter den Paneelen.
+const OVERLAY_NORD: usize = OVERLAY_MARKS + MARKS;
 /// Name und Fläche der Dachterrassen im Grundriss (wie eine Raumangabe).
-const OVERLAY_ROOMS: usize = OVERLAY_MARKS + MARKS;
+const OVERLAY_ROOMS: usize = OVERLAY_NORD + 1;
 const ROOMS: usize = 4;
 /// Kettensymbole an gestapelten Wänden (OG Phase 2), unter den Paneelen.
 const OVERLAY_CHIPS: usize = OVERLAY_ROOMS + ROOMS;
@@ -593,6 +595,8 @@ struct App {
     /// Zuletzt hochgeladene Endsymbole der Schnittlinien (Linie, Anfang,
     /// gespiegelt, hervorgehoben, Skalierung).
     mark_keys: [Option<MarkKey>; MARKS],
+    /// Zuletzt hochgeladenes Bild des Nordpfeils.
+    nord_bild: Option<nordpfeil::Bild>,
     /// Zuletzt hochgeladene Terrassenangaben (Text, Skalierung,
     /// Farbschema) und ihre Bildgröße.
     room_keys: [Option<(RoomKey, u32, u32)>; ROOMS],
@@ -7326,6 +7330,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         bond_wait: Vec::new(),
         bond_fades: Vec::new(),
         mark_keys: [None; MARKS],
+        nord_bild: None,
         room_keys: Default::default(),
         panel_px: Vec::new(),
         wheel,
@@ -7848,6 +7853,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             let (vw, vh) = (a.w as f64, (a.h - th) as f64);
             let scale = a.title.scale;
             let mut helpers = Vec::new();
+            let mut nord_bild = None;
             match a.ui.view {
                 ViewKind::Plan => {
                     helpers.extend(a.sect.helpers(&a.scene, &a.cam, vh, scale, &a.theme))
@@ -7985,10 +7991,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 let (width, ink) = a.scene.table().section_line;
                 let st = a.nord_stand();
                 let hot = a.theme.interact.drag;
-                helpers.extend(
-                    a.nord
-                        .helpers(st, &a.cam, vh, scale, ink, hot, width.max(1.5)),
-                );
+                nord_bild = a
+                    .nord
+                    .bild(st, &a.cam, (vw, vh), scale, ink, hot, width.max(1.5));
             }
             a.renderer.set_helpers(&helpers);
 
@@ -8058,6 +8063,20 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                         }
                     }
                 }
+            }
+
+            // Nordpfeil als Bild: nur neu malen, wenn es sich ändert
+            if nord_bild != a.nord_bild {
+                match nord_bild.as_ref().and_then(|b| b.malen()) {
+                    Some((c, x, y)) => {
+                        let px = c.to_premul_rgba8();
+                        let (w, h) = (c.width as u32, c.height as u32);
+                        a.renderer
+                            .set_overlay(OVERLAY_NORD, x, y + th as i32, w, h, &px);
+                    }
+                    None => a.renderer.set_overlay(OVERLAY_NORD, 0, 0, 0, 0, &[]),
+                }
+                a.nord_bild = nord_bild;
             }
 
             // „Dachterrasse 13,22 m²“ auf der Terrasse, gedimmt wie eine

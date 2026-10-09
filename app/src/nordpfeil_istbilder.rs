@@ -1,7 +1,6 @@
 //! Ist-Bilder zum Nordpfeil (Sonnenstand S2) ohne Grafikkarte: Die Szene
 //! wird mit dem Pinsel der Oberfläche gezeichnet, Flächen von hinten nach
-//! vorn mit fester Beleuchtung, darüber die Hilfslinien des Pfeils wie in
-//! der App. Das Bild zeigt Lage, Größe und Gestalt, nicht die Schattierung
+//! vorn mit fester Beleuchtung, darüber das Bild des Pfeils wie in der App. Das Bild zeigt Lage, Größe und Gestalt, nicht die Schattierung
 //! der App.
 //!
 //! `SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo istbilder_s2 -- --ignored`
@@ -37,11 +36,6 @@ fn schriften() -> Fonts {
         bold: lade("LiberationSans-Bold.ttf"),
         italic: None,
     }
-}
-
-fn farbe(c: [f32; 4]) -> Rgba {
-    let k = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-    Rgba(k(c[0]), k(c[1]), k(c[2]), k(c[3]))
 }
 
 /// Linie im Bild, `None` hinter der Kamera.
@@ -141,9 +135,12 @@ fn mit_pfeil(c: &mut Canvas, n: &Nordpfeil, s: &Scene, cam: &Camera, theme: &The
         gesetzt: s.model().north_foot(),
     };
     let (w, h) = (W as f64, H as f64);
-    for l in n.helpers(st, cam, h, S, TINTE, HEISS, 1.5) {
-        let p = |v: [f32; 3]| vec3(v[0] as f64, v[1] as f64, v[2] as f64);
-        strich(c, cam, p(l.a), p(l.b), l.width, farbe(l.color));
+    // Dasselbe Bild wie in der App
+    if let Some((bild, x, y)) = n
+        .bild(st, cam, (w, h), S, TINTE, HEISS, 1.5)
+        .and_then(|b| b.malen())
+    {
+        c.blit(&bild, x, y);
     }
     if let Some((p, text)) = n.label(cam, h, S as f64) {
         let pille = crate::flush_pick::paint_label(&schriften(), &text, S, theme);

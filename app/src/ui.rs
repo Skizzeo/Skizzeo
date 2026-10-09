@@ -2219,40 +2219,67 @@ impl Ui {
     }
 }
 
-/// Nordpfeil in der Kachel `b`: Schaft und Spitze, um die Nordrichtung im
-/// Uhrzeigersinn gedreht (0: nach oben, wie +y im Grundriss); ohne
-/// Nordrichtung nach oben und nur umrissen.
+/// Nordpfeil in der Kachel `b`, dasselbe Zeichen wie in der Szene ohne „N“
+/// (Gestalt A, §8 08:20): Kreis mit Raute, die Nordspitze links gefüllt,
+/// um die Nordrichtung im Uhrzeigersinn gedreht (0: nach oben, wie +y im
+/// Grundriss); ohne Nordrichtung nach oben, gedämpft über `ink`.
 fn nord_symbol(c: &mut Canvas, b: Rect, nord: Option<f64>, ink: Rgba, s: f32) {
     let (sin, cos) = (nord.unwrap_or(0.0) as f32).to_radians().sin_cos();
-    let (cx, cy) = (b.x + b.w * 0.5, b.y + b.h * 0.5);
-    // Richtung im Bild (y nach unten) und quer dazu
+    // Richtung im Bild (y nach unten); die Mitte liegt etwas hinter der
+    // Kachelmitte, damit Spitze und Kreis zusammen mittig stehen
     let (dx, dy) = (sin, -cos);
+    let (cx, cy) = (
+        b.x + b.w * 0.5 - dx * 1.2 * s,
+        b.y + b.h * 0.5 - dy * 1.2 * s,
+    );
     let at = |l: f32, q: f32| (cx + (dx * l - dy * q) * s, cy + (dy * l + dx * q) * s);
-    let k = (1.4 * s).max(1.0);
+    // Maße wie in der Szene (Spitze 46, Kreis 34, Süden 28); die Raute
+    // etwas breiter, damit die gefüllte Hälfte in 24 dip zu sehen ist
+    let e = 9.5 / 46.0;
+    let (spitze, links, rechts, mitte, sued) = (
+        at(46.0 * e, 0.0),
+        at(0.0, -13.0 * e),
+        at(0.0, 13.0 * e),
+        at(0.0, 0.0),
+        at(-28.0 * e, 0.0),
+    );
+    let k = (1.1 * s).max(1.0);
     let mut p = Path::new();
-    p.segment(at(-8.0, 0.0), at(1.5, 0.0), k);
-    c.fill(&p, ink);
-    let kopf = [at(8.5, 0.0), at(0.5, -4.5), at(0.5, 4.5)];
-    let mut p = Path::new();
-    p.move_to(kopf[0].0, kopf[0].1)
-        .line_to(kopf[1].0, kopf[1].1)
-        .line_to(kopf[2].0, kopf[2].1)
+    p.move_to(spitze.0, spitze.1)
+        .line_to(links.0, links.1)
+        .line_to(mitte.0, mitte.1)
         .close();
-    if nord.is_none() {
-        // Umriss: dieselbe Spitze, innen ausgespart
-        let (gx, gy) = at(3.2, 0.0);
-        let f = 0.5;
-        let innen: Vec<(f32, f32)> = kopf
-            .iter()
-            .rev()
-            .map(|&(x, y)| (gx + (x - gx) * f, gy + (y - gy) * f))
-            .collect();
-        p.move_to(innen[0].0, innen[0].1)
-            .line_to(innen[1].0, innen[1].1)
-            .line_to(innen[2].0, innen[2].1)
-            .close();
-    }
     c.fill(&p, ink);
+    let r = 34.0 * e;
+    let teile = 40;
+    let kreis: Vec<(f32, f32)> = (0..teile)
+        .map(|i| {
+            let a = i as f32 * std::f32::consts::TAU / teile as f32;
+            at(r * a.cos(), r * a.sin())
+        })
+        .collect();
+    let mut striche: Vec<((f32, f32), (f32, f32))> = (0..teile)
+        .map(|i| (kreis[i], kreis[(i + 1) % teile]))
+        .collect();
+    striche.extend([
+        (spitze, links),
+        (spitze, rechts),
+        (spitze, mitte),
+        (links, rechts),
+        (links, sued),
+        (rechts, sued),
+    ]);
+    // Jeder Strich für sich: überlappende Teilpfade mit verschiedener
+    // Laufrichtung höben sich sonst auf
+    for (a, z) in striche {
+        let mut p = Path::new();
+        p.segment(a, z, k);
+        c.fill(&p, ink);
+        let h = k * 0.5;
+        let mut p = Path::new();
+        p.rounded_rect(z.0 - h, z.1 - h, k, k, h);
+        c.fill(&p, ink);
+    }
 }
 
 /// Dialog „Gebäude erstellen“ (E16): „Geschosse: 2 (EG + OG)“, derzeit

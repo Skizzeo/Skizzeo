@@ -119,10 +119,10 @@ Längs oder quer | steht automatisch unter dem Buchstaben
 Wand ändern | an der violetten Kugel ziehen
 
 [thema] id=nordpfeil titel="Nordpfeil"
-Setzen | Kachel rechts unter „Projektdaten“, dann im 3D-Fenster oder Grundriss den Fußpunkt klicken und die Richtung zeigen
+Setzen | Kachel rechts unter „Projektdaten“, dann im 3D-Fenster oder Grundriss den Fußpunkt (Mitte des Kreises) klicken und die Richtung zeigen
 Genau | Zahl + **Enter** setzt die Richtung in Grad; sie rastet in 5°, mit **Umschalt** in 15°
 Drehen | an der Spitze ziehen
-Verschieben | am Schaft ziehen; ins Gebäude geschoben rastet er 50 cm vor der Kante ein
+Verschieben | an der Nadel oder am Kreis ziehen; ins Gebäude geschoben rastet er 50 cm vor der Kante ein
 Platz | fehlt der Fußpunkt oder liegt er im Gebäude, steht der Pfeil vorne links daneben
 Abbrechen | **Esc** schließt erst die Zahl, dann den Fußpunkt, dann das Werkzeug
 
