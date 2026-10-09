@@ -71,6 +71,13 @@ pub const MAX_SAMPLES: GLenum = 0x8D57;
 pub const VERSION: GLenum = 0x1F02;
 pub const RENDERER: GLenum = 0x1F01;
 pub const BACK: GLenum = 0x0405;
+pub const NONE: GLenum = 0;
+pub const UNSIGNED_INT: GLenum = 0x1405;
+pub const DEPTH_COMPONENT: GLenum = 0x1902;
+pub const TEXTURE_COMPARE_MODE: GLenum = 0x884C;
+pub const TEXTURE_COMPARE_FUNC: GLenum = 0x884D;
+pub const COMPARE_REF_TO_TEXTURE: GLint = 0x884E;
+pub const MAX_TEXTURE_SIZE: GLenum = 0x0D33;
 
 macro_rules! gl_api {
     ($( fn $name:ident ( $($arg:ident : $ty:ty),* ) $(-> $ret:ty)? ; )*) => {
@@ -127,6 +134,7 @@ gl_api! {
     fn glPolygonOffset(factor: GLfloat, units: GLfloat);
     fn glPixelStorei(p: GLenum, v: GLint);
     fn glReadBuffer(m: GLenum);
+    fn glDrawBuffer(m: GLenum);
     fn glReadPixels(x: GLint, y: GLint, w: GLsizei, h: GLsizei, f: GLenum, t: GLenum, d: *mut c_void);
     fn glDrawArrays(mode: GLenum, first: GLint, count: GLsizei);
     fn glDrawArraysInstanced(mode: GLenum, first: GLint, count: GLsizei, instances: GLsizei);

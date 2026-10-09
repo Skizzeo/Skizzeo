@@ -29,6 +29,8 @@ mod document;
 mod draw_table;
 mod flush_pick;
 mod frame_time;
+#[cfg(all(test, target_os = "linux"))]
+mod gpu_probe;
 mod help;
 mod hints;
 mod kosten_view;
@@ -8274,6 +8276,13 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 a.renderer.set_light(licht.unwrap_or(fest));
                 a.licht = licht;
             }
+            // Schatten (S5) nur in 3D mit Himmel, ab 2° Sonnenhöhe
+            let loc = a.scene.model().location();
+            let sonnenlicht = himmel
+                .as_ref()
+                .and(sun)
+                .and_then(|s| sonne_view::sonnenlicht(loc, &s));
+            a.renderer.set_sun(sonnenlicht);
 
             // „Dachterrasse 13,22 m²“ auf der Terrasse, gedimmt wie eine
             // Raumangabe, nach der Platzregel (Review 3f K1): nie über Wand,
@@ -8408,6 +8417,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             let alpha = a.scene.ghost_alpha(drawing);
             a.renderer.set_ghost(Some((MESH_GHOST, alpha)));
             a.renderer.draw(a.w, a.h, th, &view)?;
+            if let Some(e) = a.renderer.take_shadow_error() {
+                eprintln!("{e}");
+            }
             let shown_at = a.now();
             a.wheel.shown(shown_at);
             let t_draw = Instant::now();

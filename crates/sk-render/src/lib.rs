@@ -7,8 +7,12 @@
 //! Darüber kommt die selbst gezeichnete Oberfläche (Titelleiste) als Textur.
 
 pub mod gl;
+#[cfg(target_os = "linux")]
+pub mod glx;
+pub mod schatten;
 
 use gl::*;
+use schatten::SCHATTEN_GLSL;
 use std::ffi::c_void;
 
 /// Farben und Maße der 3D-Ansicht (Farbwerte 0..1, sRGB).
@@ -398,6 +402,23 @@ struct PreviewTarget {
     h: i32,
 }
 
+/// Sonne in der 3D-Ansicht (Sonnenstand S5): Richtung zur Sonne
+/// (Modell) und Umgebungsanteil der Flächen, solange sie scheint. Ab
+/// [`schatten::MIN_HOEHE`] werfen die Netze Schatten auf sich und den Boden.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SunLight {
+    pub zur_sonne: [f64; 3],
+    pub ambient: f32,
+}
+
+/// Schattenkarte auf der GPU: Tiefentextur mit Vergleich in eigenem
+/// Zeichenpuffer.
+struct ShadowMap {
+    fbo: GLuint,
+    tex: GLuint,
+    size: i32,
+}
+
 pub struct Renderer {
     gl: Gl,
     sky: Program,
@@ -435,7 +456,41 @@ pub struct Renderer {
     preview_fade: f32,
     /// Probe `--musterprobe`: Muster in voller Nähe, ohne Kantenglättung.
     preview_exact: bool,
+    /// Schatten der Sonne (S5): Tiefen-Programm, Karte (bei Bedarf
+    /// angelegt), leere Tiefentextur für die Zeit ohne Karte, größte
+    /// Texturgröße des Treibers.
+    shadow_prog: Program,
+    shadow_map: Option<ShadowMap>,
+    shadow_dummy: GLuint,
+    shadow_max: i32,
+    sun: Option<SunLight>,
+    /// Karte des letzten Bildes; neu gezeichnet, wenn sie sich ändert oder
+    /// ein Netz neu kommt.
+    shadow_karte: Option<schatten::Karte>,
+    shadow_dirty: bool,
+    /// Konnte der Treiber die Karte nicht anlegen: Meldung (einmal
+    /// abzuholen), danach ohne Schatten.
+    shadow_failed: bool,
+    shadow_error: Option<String>,
+    /// Hüllquader je Netz (Modell, mm).
+    mesh_bounds: Vec<Option<(sk_math::Vec3, sk_math::Vec3)>>,
 }
+
+/// Einheit der Schattenkarte im Flächen- und Himmels-Shader.
+const SHADOW_UNIT: GLenum = 3;
+
+const SHADOW_VS: &str = r#"#version 330 core
+layout(location = 0) in vec3 a_pos;
+uniform mat4 u_m;
+uniform vec3 u_c;
+void main() {
+    gl_Position = u_m * vec4(a_pos - u_c, 1.0);
+}
+"#;
+
+const SHADOW_FS: &str = r#"#version 330 core
+void main() {}
+"#;
 
 const SKY_MAX: usize = 16;
 
@@ -448,7 +503,8 @@ void main() {
 }
 "#;
 
-const SKY_FS: &str = r#"#version 330 core
+/// Himmel und Boden; davor gehören `#version` und [`schatten::SCHATTEN_GLSL`].
+const SKY_FS: &str = r#"
 in vec2 v_ndc;
 out vec4 o_color;
 uniform mat4 u_inv_vp;
@@ -466,6 +522,9 @@ uniform int u_overlay;
 uniform float u_opacity;
 // Absenkung der Bodenschicht (mm)
 const float GROUND_SINK = 1.0;
+// Mitte der Schattenkarte relativ zum Auge; Boden im Schatten mal u_shade
+uniform vec3 u_shadow_c;
+uniform float u_shade;
 
 vec3 sky(float d) {
     for (int i = 1; i < u_sky_n; i++) {
@@ -490,9 +549,12 @@ void main() {
     float t = abs(dir.z) > 1e-6 ? -z0 / dir.z : -1.0;
     float g = 1.0 - exp(-u_softness * abs(above));
     if (t > 0.0) {
-        vec4 c = u_vp * vec4(o + dir * t, 1.0);
+        vec3 hit = o + dir * t;
+        vec4 c = u_vp * vec4(hit, 1.0);
         depth = clamp(c.z / c.w * 0.5 + 0.5, 0.0, 1.0);
-        col = mix(col, u_ground, g);
+        // Schatten der Sonne auf dem Boden (S5)
+        float share = sun_share(hit - u_shadow_c, vec3(0.0, 0.0, 1.0));
+        col = mix(col, u_ground * mix(u_shade, 1.0, share), g);
     } else if (abs(dir.z) <= 1e-6 && z0 < 0.0) {
         // Waagerechte Parallelansicht unterhalb des Bodens
         col = mix(col, u_ground, g);
@@ -551,6 +613,8 @@ uniform int u_patterns;
 uniform vec4 u_pattern_ink;
 uniform vec3 u_light;
 uniform float u_ambient;
+// Mitte der Schattenkarte (Modell, mm)
+uniform vec3 u_shadow_c;
 // Deckkraft: 1 deckend, darunter blass (Isolieren) und ohne Schraffur
 uniform float u_alpha;
 vec4 look(int row) {
@@ -587,7 +651,10 @@ void main() {
             vec3 far = kind == 2 ? unpack_rgb(look(11).w) : c;
             c = mix(c, pattern_rgb(v_model, v_normal, far, surf, look(8), look(9), look(10), look(11), look(12), look(13), look(14)), look(12).w);
         }
-        float d = max(dot(normalize(v_normal), u_light), 0.0);
+        vec3 n = normalize(v_normal);
+        float d = max(dot(n, u_light), 0.0);
+        // Schatten der Sonne (S5): nur besonnte Seiten lesen die Karte
+        if (d > 0.0) d *= sun_share(v_model - u_shadow_c, n);
         o_color = vec4(c * (u_ambient + (1.0 - u_ambient) * d), u_alpha);
         return;
     }
@@ -1329,14 +1396,17 @@ impl Renderer {
 
     pub fn new(gl: Gl, style: Style) -> Result<Renderer, String> {
         unsafe {
-            let sky = program(&gl, FULLSCREEN_VS, SKY_FS)?;
+            let sky_fs = format!("#version 330 core\n{SCHATTEN_GLSL}{SKY_FS}");
+            let sky = program(&gl, FULLSCREEN_VS, &sky_fs)?;
             // Muster im Flächen-Shader; scheitert der Treiber daran, zeichnet
             // das Programm ohne Muster weiter statt nicht zu starten (3q)
-            let face_fs = format!("#version 330 core\n{PATTERN_GLSL}{FACE_FS}");
+            let face_fs = format!("#version 330 core\n{PATTERN_GLSL}{SCHATTEN_GLSL}{FACE_FS}");
             let (faces, pattern_error) = match program(&gl, FACE_VS, &face_fs) {
                 Ok(p) => (p, None),
                 Err(e) => {
-                    let plain = format!("#version 330 core\n{PATTERN_FALLBACK_GLSL}{FACE_FS}");
+                    let plain = format!(
+                        "#version 330 core\n{PATTERN_FALLBACK_GLSL}{SCHATTEN_GLSL}{FACE_FS}"
+                    );
                     (program(&gl, FACE_VS, &plain)?, Some(e))
                 }
             };
@@ -1344,6 +1414,13 @@ impl Renderer {
             let overlay = program(&gl, FULLSCREEN_VS, OVERLAY_FS)?;
             let helpers = program(&gl, HELPER_VS, &with_dash(HELPER_FS))?;
             let snap_prog = program(&gl, FULLSCREEN_VS, SNAPSHOT_FS)?;
+            let shadow_prog = program(&gl, SHADOW_VS, SHADOW_FS)?;
+            let shadow_dummy = depth_texture(&gl, 1, &[u32::MAX]);
+            gl.glActiveTexture(TEXTURE0 + SHADOW_UNIT);
+            gl.glBindTexture(TEXTURE_2D, shadow_dummy);
+            gl.glActiveTexture(TEXTURE0);
+            let mut shadow_max = 0;
+            gl.glGetIntegerv(MAX_TEXTURE_SIZE, &mut shadow_max);
             let mut vao = 0u32;
             gl.glGenVertexArrays(1, &mut vao);
             let mut max_samples = 0;
@@ -1378,6 +1455,16 @@ impl Renderer {
                 preview_target: None,
                 preview_fade: 0.0,
                 preview_exact: false,
+                shadow_prog,
+                shadow_map: None,
+                shadow_dummy,
+                shadow_max,
+                sun: None,
+                shadow_karte: None,
+                shadow_dirty: false,
+                shadow_failed: false,
+                shadow_error: None,
+                mesh_bounds: Vec::new(),
             })
         }
     }
@@ -1426,8 +1513,146 @@ impl Renderer {
     pub fn set_mesh(&mut self, slot: usize, mesh: &MeshData) {
         while self.meshes.len() <= slot {
             self.meshes.push(GpuMesh::default());
+            self.mesh_bounds.push(None);
         }
         unsafe { upload_mesh(&self.gl, &mut self.meshes[slot], mesh) };
+        self.mesh_bounds[slot] = huelle(&mesh.faces);
+        self.shadow_dirty = true;
+    }
+
+    /// Sonne in der 3D-Ansicht (S5); `None` ohne Sonne (festes Licht aus
+    /// dem Stil, ohne Schatten).
+    pub fn set_sun(&mut self, sun: Option<SunLight>) {
+        if sun != self.sun {
+            self.sun = sun;
+            self.shadow_dirty = true;
+        }
+    }
+
+    /// Karte für das nächste Bild: aus der Sonne und dem Hüllquader der
+    /// deckenden Netze (ohne das blasse).
+    fn shadow_karte(&self) -> Option<schatten::Karte> {
+        let d = self.sun.filter(|_| !self.shadow_failed)?.zur_sonne;
+        let ghost = self.ghost.map(|g| g.0);
+        let q = self
+            .mesh_bounds
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| Some(*i) != ghost)
+            .filter_map(|(_, b)| *b)
+            .reduce(|(a, b), (c, d)| {
+                (
+                    sk_math::vec3(a.x.min(c.x), a.y.min(c.y), a.z.min(c.z)),
+                    sk_math::vec3(b.x.max(d.x), b.y.max(d.y), b.z.max(d.z)),
+                )
+            })?;
+        let n = (schatten::GROESSE as i32).min(self.shadow_max.max(1024)) as u32;
+        schatten::karte(sk_math::vec3(d[0], d[1], d[2]), q, n)
+    }
+
+    /// Meldung, wenn die Schattenkarte nicht angelegt werden konnte (einmal).
+    pub fn take_shadow_error(&mut self) -> Option<String> {
+        self.shadow_error.take()
+    }
+
+    /// Schattenkarte zeichnen, wenn sie sich geändert hat; danach liegt
+    /// sie (oder die leere) auf [`SHADOW_UNIT`].
+    unsafe fn render_shadow(&mut self) {
+        let karte = self.shadow_karte();
+        let neu = karte != self.shadow_karte || self.shadow_dirty;
+        self.shadow_karte = karte;
+        self.shadow_dirty = false;
+        let gl = &self.gl;
+        let Some(k) = karte else {
+            gl.glActiveTexture(TEXTURE0 + SHADOW_UNIT);
+            gl.glBindTexture(TEXTURE_2D, self.shadow_dummy);
+            gl.glActiveTexture(TEXTURE0);
+            return;
+        };
+        let n = k.groesse as i32;
+        if self.shadow_map.as_ref().is_none_or(|m| m.size != n) {
+            if let Some(m) = self.shadow_map.take() {
+                gl.glDeleteFramebuffers(1, &m.fbo);
+                gl.glDeleteTextures(1, &m.tex);
+            }
+            let tex = depth_texture(gl, n, &[]);
+            let mut fbo = 0;
+            gl.glGenFramebuffers(1, &mut fbo);
+            gl.glBindFramebuffer(FRAMEBUFFER, fbo);
+            gl.glFramebufferTexture2D(FRAMEBUFFER, DEPTH_ATTACHMENT, TEXTURE_2D, tex, 0);
+            gl.glDrawBuffer(NONE);
+            gl.glReadBuffer(NONE);
+            let status = gl.glCheckFramebufferStatus(FRAMEBUFFER);
+            if status != FRAMEBUFFER_COMPLETE {
+                gl.glDeleteFramebuffers(1, &fbo);
+                gl.glDeleteTextures(1, &tex);
+                gl.glBindFramebuffer(FRAMEBUFFER, 0);
+                // Ohne Karte bleibt es hell; nicht jedes Bild erneut versuchen
+                self.shadow_failed = true;
+                self.shadow_karte = None;
+                self.shadow_error = Some(format!(
+                    "Schatten aus: Schattenkarte unvollständig (Status {status:#x})."
+                ));
+                gl.glActiveTexture(TEXTURE0 + SHADOW_UNIT);
+                gl.glBindTexture(TEXTURE_2D, self.shadow_dummy);
+                gl.glActiveTexture(TEXTURE0);
+                return;
+            }
+            self.shadow_map = Some(ShadowMap { fbo, tex, size: n });
+        }
+        let m = self.shadow_map.as_ref().unwrap();
+        if neu {
+            gl.glBindFramebuffer(FRAMEBUFFER, m.fbo);
+            gl.glViewport(0, 0, n, n);
+            gl.glDisable(SCISSOR_TEST);
+            gl.glDisable(BLEND);
+            gl.glDisable(CULL_FACE);
+            gl.glDisable(MULTISAMPLE);
+            gl.glEnable(DEPTH_TEST);
+            gl.glDepthFunc(LESS);
+            gl.glDepthMask(TRUE);
+            gl.glClearDepth(1.0);
+            gl.glClear(DEPTH_BUFFER_BIT);
+            gl.glEnable(POLYGON_OFFSET_FILL);
+            gl.glPolygonOffset(1.0, 2.0);
+            let p = self.shadow_prog.id;
+            gl.glUseProgram(p);
+            mat(gl, p, c"u_m", &k.matrix.to_f32());
+            vec3(gl, p, c"u_c", k.mitte.to_f32());
+            let ghost = self.ghost.map(|g| g.0);
+            for (i, gm) in self.meshes.iter().enumerate() {
+                if Some(i) != ghost && gm.faces.count > 0 {
+                    gl.glBindVertexArray(gm.faces.vao);
+                    gl.glDrawArrays(TRIANGLES, 0, gm.faces.count);
+                }
+            }
+            gl.glDisable(POLYGON_OFFSET_FILL);
+            gl.glBindFramebuffer(FRAMEBUFFER, 0);
+        }
+        gl.glActiveTexture(TEXTURE0 + SHADOW_UNIT);
+        gl.glBindTexture(TEXTURE_2D, m.tex);
+        gl.glActiveTexture(TEXTURE0);
+    }
+
+    /// Schatten-Uniforms für Himmel (`c` relativ zum Auge) oder Flächen
+    /// (`c` im Modell); ohne Karte aus.
+    unsafe fn shadow_uniforms(&self, p: GLuint, c: [f32; 3]) {
+        let gl = &self.gl;
+        gl.glUniform1i(loc(gl, p, c"u_shadow"), SHADOW_UNIT as GLint);
+        let Some(k) = self.shadow_karte.filter(|_| self.shadow_map.is_some()) else {
+            gl.glUniform1i(loc(gl, p, c"u_shadow_on"), 0);
+            return;
+        };
+        gl.glUniform1i(loc(gl, p, c"u_shadow_on"), 1);
+        mat(gl, p, c"u_shadow_m", &k.matrix.to_f32());
+        gl.glUniform1f(loc(gl, p, c"u_shadow_size"), k.groesse as f32);
+        vec3(gl, p, c"u_shadow_sun", k.zur_sonne.to_f32());
+        gl.glUniform2f(
+            loc(gl, p, c"u_shadow_offset"),
+            (schatten::VERSATZ_NORMALE * k.texel) as f32,
+            (schatten::VERSATZ_SONNE * k.texel) as f32,
+        );
+        vec3(gl, p, c"u_shadow_c", c);
     }
 
     /// Hilfslinien und Markierungen für das nächste Bild.
@@ -1778,6 +2003,9 @@ impl Renderer {
                     gl.glUniform1fv(loc(gl, q, c"u_sky_pos"), n as i32, pos.as_ptr());
                     gl.glUniform3fv(loc(gl, q, c"u_sky_col"), n as i32, col.as_ptr());
                     gl.glUniform1i(loc(gl, q, c"u_overlay"), 0);
+                    // Vorschau ohne Schatten
+                    gl.glUniform1i(loc(gl, q, c"u_shadow_on"), 0);
+                    gl.glUniform1f(loc(gl, q, c"u_shade"), 1.0);
                     gl.glBindVertexArray(self.empty_vao);
                     gl.glDrawArrays(TRIANGLES, 0, 3);
                 }
@@ -1792,6 +2020,7 @@ impl Renderer {
                 vec3(gl, q, c"u_light", st.light);
                 let ambient = if it.lit { st.ambient } else { 1.0 };
                 gl.glUniform1f(loc(gl, q, c"u_ambient"), ambient);
+                gl.glUniform1i(loc(gl, q, c"u_shadow_on"), 0);
                 let exact = if self.preview_exact { 1e-3 } else { 0.0 };
                 gl.glUniform1f(loc(gl, q, c"u_px_fix"), exact);
                 let drawing = view.paper.is_some();
@@ -2092,7 +2321,24 @@ impl Renderer {
             self.preview_dirty = false;
             self.render_preview()?;
         }
+        // Schatten nur mit Himmel und Boden (3D), nicht auf Papier
+        if view.paper.is_none() {
+            unsafe { self.render_shadow() };
+        } else if self.shadow_karte.take().is_some() {
+            self.shadow_dirty = true;
+        }
         self.ensure_target(w, h)?;
+        // Mitte der Karte relativ zum Auge (Boden) und Umgebungsanteil
+        let sky_c = self.shadow_karte.map_or([0.0; 3], |k| {
+            let o = view.origin_rel;
+            [
+                (o[0] as f64 + k.mitte.x) as f32,
+                (o[1] as f64 + k.mitte.y) as f32,
+                (o[2] as f64 + k.mitte.z) as f32,
+            ]
+        });
+        let face_c = self.shadow_karte.map_or([0.0; 3], |k| k.mitte.to_f32());
+        let ambient = self.sun.map_or(self.style.ambient, |s| s.ambient);
         let target_fbo = self.target.as_ref().map_or(0, |t| t.fbo);
         let gl = &self.gl;
         let st = &self.style;
@@ -2137,6 +2383,8 @@ impl Renderer {
             gl.glUniform3fv(loc(gl, p, c"u_sky_col"), n as i32, col.as_ptr());
             gl.glUniform1i(loc(gl, p, c"u_overlay"), 0);
             gl.glUniform1f(loc(gl, p, c"u_opacity"), st.ground_opacity.clamp(0.0, 1.0));
+            self.shadow_uniforms(p, sky_c);
+            gl.glUniform1f(loc(gl, p, c"u_shade"), ambient);
             gl.glBindVertexArray(self.empty_vao);
             if view.paper.is_none() {
                 gl.glDrawArrays(TRIANGLES, 0, 3);
@@ -2151,7 +2399,8 @@ impl Renderer {
             mat(gl, p, c"u_vp", &view.view_proj);
             vec3(gl, p, c"u_origin", view.origin_rel);
             vec3(gl, p, c"u_light", st.light);
-            gl.glUniform1f(loc(gl, p, c"u_ambient"), st.ambient);
+            gl.glUniform1f(loc(gl, p, c"u_ambient"), ambient);
+            self.shadow_uniforms(p, face_c);
             let drawing = view.paper.is_some();
             gl.glUniform1i(loc(gl, p, c"u_drawing"), drawing as GLint);
             gl.glUniform1i(loc(gl, p, c"u_patterns"), view.patterns as GLint);
@@ -2431,6 +2680,57 @@ const CORNERS: [[f32; 2]; 6] = [
 
 /// Lädt Vertexdaten in `b` und legt die Attribute (Anzahl, Byte-Versatz) fest.
 /// Flächen und Kanten eines Netzes in seine Puffer.
+/// Tiefentextur `n` × `n` mit Vergleich „≤“ für `sampler2DShadow`, Texel
+/// für Texel (wie [`schatten::Tiefenbild::sonne`]); `data` leer oder
+/// `n` · `n` Werte (`u32::MAX` = frei).
+unsafe fn depth_texture(gl: &Gl, n: i32, data: &[u32]) -> GLuint {
+    let mut tex = 0;
+    gl.glGenTextures(1, &mut tex);
+    gl.glBindTexture(TEXTURE_2D, tex);
+    let ptr = if data.is_empty() {
+        std::ptr::null()
+    } else {
+        data.as_ptr() as *const c_void
+    };
+    gl.glPixelStorei(UNPACK_ALIGNMENT, 4);
+    gl.glTexImage2D(
+        TEXTURE_2D,
+        0,
+        DEPTH_COMPONENT24 as GLint,
+        n,
+        n,
+        0,
+        DEPTH_COMPONENT,
+        UNSIGNED_INT,
+        ptr,
+    );
+    for (p, v) in [
+        (TEXTURE_MIN_FILTER, NEAREST),
+        (TEXTURE_MAG_FILTER, NEAREST),
+        (TEXTURE_WRAP_S, CLAMP_TO_EDGE),
+        (TEXTURE_WRAP_T, CLAMP_TO_EDGE),
+        (TEXTURE_COMPARE_MODE, COMPARE_REF_TO_TEXTURE),
+        (TEXTURE_COMPARE_FUNC, LEQUAL as GLint),
+    ] {
+        gl.glTexParameteri(TEXTURE_2D, p, v);
+    }
+    tex
+}
+
+/// Hüllquader der Flächen eines Netzes (Modell, mm).
+fn huelle(faces: &[[f32; 9]]) -> Option<(sk_math::Vec3, sk_math::Vec3)> {
+    let mut it = faces
+        .iter()
+        .map(|v| sk_math::vec3(v[0] as f64, v[1] as f64, v[2] as f64));
+    let p = it.next()?;
+    Some(it.fold((p, p), |(a, b), p| {
+        (
+            sk_math::vec3(a.x.min(p.x), a.y.min(p.y), a.z.min(p.z)),
+            sk_math::vec3(b.x.max(p.x), b.y.max(p.y), b.z.max(p.z)),
+        )
+    }))
+}
+
 unsafe fn upload_mesh(gl: &Gl, gm: &mut GpuMesh, mesh: &MeshData) {
     fill(
         gl,

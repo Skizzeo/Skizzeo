@@ -21,7 +21,8 @@ use sk_paint::Canvas;
 #[cfg(test)]
 use sk_paint::{Path, Rgba};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
-use sk_render::{Helper, MeshData, SOLID};
+use sk_render::schatten;
+use sk_render::{Helper, MeshData, SunLight, SOLID};
 use sk_ui::text_edit::TextEdit;
 use sk_ui::theme::Theme;
 use sk_ui::widgets::{self, ButtonState, FieldState, Fonts, Rect};
@@ -183,13 +184,39 @@ pub fn ueber(st: &Sonnenstand) -> bool {
 }
 
 /// Lichtrichtung in 3D (zur Sonne, Modellkoordinaten): `None`, wenn sie
-/// nicht über dem Horizont steht; dann gilt die feste Richtung.
+/// nicht über dem Horizont steht; dann gilt die feste Richtung. Unter
+/// [`schatten::MIN_HOEHE`] streift das Licht mit dieser Höhe, darüber geht
+/// es genau zur Sonne, wie der Schatten (S5).
 pub fn licht(l: &Location, s: &Sun) -> Option<[f32; 3]> {
+    let d = zur_sonne(l, s)?;
+    let min = schatten::min_sinus();
+    if d.z >= min {
+        return Some(d.to_f32());
+    }
+    // Am Horizont etwas angehoben bleiben die Dächer hell
+    let waag = vec3(d.x, d.y, 0.0).normalized() * (1.0 - min * min).sqrt();
+    Some((waag + vec3(0.0, 0.0, min)).to_f32())
+}
+
+/// Richtung zur Sonne (Modell, Einheitsvektor), solange sie über dem
+/// Horizont steht.
+pub fn zur_sonne(l: &Location, s: &Sun) -> Option<Vec3> {
     let st = sonne::sonnenstand(bauort(l), zeitpunkt(s));
-    let mut d = st.richtung_modell(l.north_deg());
-    // Am Horizont streift das Licht; etwas angehoben bleiben die Dächer hell
-    d.z = d.z.max(0.05);
-    ueber(&st).then(|| d.normalized().to_f32())
+    ueber(&st).then(|| st.richtung_modell(l.north_deg()))
+}
+
+/// Umgebungsanteil der Flächen bei Sonne (S5): die Schattenseite und der
+/// Schatten liegen 40 % unter der Sonnenseite.
+pub const UMGEBUNG: f32 = 0.6;
+
+/// Sonne für den Renderer: Richtung und Umgebungsanteil, solange sie über
+/// dem Horizont steht; Schatten wirft sie ab [`schatten::MIN_HOEHE`].
+pub fn sonnenlicht(l: &Location, s: &Sun) -> Option<SunLight> {
+    let d = zur_sonne(l, s)?;
+    Some(SunLight {
+        zur_sonne: [d.x, d.y, d.z],
+        ambient: UMGEBUNG,
+    })
 }
 
 /// Hüllquader des Würfels: Ecke im Ursprung, nach +x, +y und oben.
@@ -352,8 +379,12 @@ pub fn minuten_bei(tag: &[(Zeitpunkt, Vec3)], t: Zeitpunkt) -> Option<u32> {
 
 /// Netz des Würfels (Darstellung ohne Baustoff, Kanten wie die Ansicht).
 pub fn wuerfel_netz() -> MeshData {
+    quader_netz(wuerfel_quader())
+}
+
+/// Quader als Anzeige-Netz: sechs Seiten, Schlüssel 0, zwölf Kanten.
+pub fn quader_netz((lo, hi): (Vec3, Vec3)) -> MeshData {
     let mut m = MeshData::default();
-    let (lo, hi) = wuerfel_quader();
     let c = |i: usize| {
         vec3(
             if i & 1 == 0 { lo.x } else { hi.x },
