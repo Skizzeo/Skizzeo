@@ -199,14 +199,6 @@ impl Bau<'_> {
         });
     }
 
-    fn lese(&mut self, x: f32, y: f32, w: f32, text: String) {
-        self.teile.push(Teil {
-            r: Rect::new(x, y - 6.0, w, 32.0),
-            art: Art::Lese(text),
-            ziel: None,
-        });
-    }
-
     fn knopf(&mut self, x: f32, y: f32, text: &str, a: Aktion) {
         let w = self.breite(text, PX, true) + 32.0;
         self.teile.push(Teil {
@@ -878,7 +870,9 @@ impl Verwaltung {
         }
         let mut y = 100.0;
         b.label(y, "Einheit");
-        b.lese(WERT_X, y, 80.0, e.into());
+        // Als Text, nicht als Lesefeld: „m²“ rechts in leerem Feld wirkte
+        // leer (Bedienbarkeit 14)
+        b.text(WERT_X, y, e, PX, false, Farbe::Text);
         y += ABSTAND;
         self.feld_zeile(b, y, "Aufwandswert", Feld::Stunden, 130.0, format!("h/{e}"));
         y += ABSTAND;

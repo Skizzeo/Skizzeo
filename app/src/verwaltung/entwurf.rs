@@ -19,7 +19,7 @@ use sk_cost::Cent;
 pub(super) const KAPUTT: &str =
     "Der Entwurf ist nicht lesbar; die Verwaltung zeigt den freigegebenen Stand und speichert nichts.";
 /// Hinweis unter der Vorschau.
-const FREIGEBEN_SATZ: &str = "Projekte bleiben auf ihrem Stand, bis man dort „Übernehmen“ wählt.";
+const FREIGEBEN_SATZ: &str = "Projekte bleiben auf ihrem Stand, bis man dort „übernehmen“ wählt.";
 
 #[cfg(test)]
 pub(super) const SAETZE: [&str; 2] = [KAPUTT, FREIGEBEN_SATZ];

@@ -20,7 +20,7 @@ const PAD: f32 = 22.0;
 
 pub(super) const FALSCH: &str = "Kennwort stimmt nicht.";
 pub(super) const VERGESSEN_NUTZER: &str = "Vergessen? Frag deinen BIM-Administrator.";
-const WIRKUNG: &str = "Mit Kennwort ändert den Firmenkatalog nur, wer das Kennwort kennt. Änderungen sammeln sich in einem Entwurf. Erst „Freigeben“ macht sie gültig, an allen Plätzen. Projekte bleiben auf ihrem Stand, bis man dort „Übernehmen“ wählt.";
+const WIRKUNG: &str = "Mit Kennwort ändert den Firmenkatalog nur, wer das Kennwort kennt. Änderungen sammeln sich in einem Entwurf. Erst „Freigeben“ macht sie gültig, an allen Plätzen. Projekte bleiben auf ihrem Stand, bis man dort „übernehmen“ wählt.";
 const LEISE: &str = "Schutz vor Versehen, keine Sicherheit. Vergessen? Die Hilfe sagt, wie man es zurücksetzt. Leeres Kennwort heißt: zurück zum Einzelplatz. Setzen und Entfernen stehen im Protokoll.";
 pub(super) const VERSCHIEDEN: &str = "Die beiden Eingaben sind verschieden.";
 #[cfg(test)]
@@ -555,14 +555,15 @@ impl Verwaltung {
         }
         for (z, text, active) in [
             (SZiel::Abbrechen, "Abbrechen", false),
-            // Verschiedene Eingaben: grau statt Akzent (Bedienbarkeit 16)
+            // Verschiedene Eingaben: gedimmt, „geht noch nicht“ (Bedienbarkeit 16)
             (SZiel::Setzen, "Kennwort setzen", !sb.verschieden),
         ] {
+            let aus = z == SZiel::Setzen && sb.verschieden;
             let st = ButtonState {
-                hover: sb.hover == Some(z),
-                pressed: sb.pressed == Some(z),
+                hover: sb.hover == Some(z) && !aus,
+                pressed: sb.pressed == Some(z) && !aus,
                 active,
-                disabled: false,
+                disabled: aus,
             };
             widgets::button(c, fonts, rect(z), text, st, s, t);
         }

@@ -1400,6 +1400,10 @@ impl AvaView {
                         leer_strich(c, r, base);
                     }
                 }
+                // Prüfen: „Offen (3)“ bündig mit den Punkten (spaeter 13)
+                Art::Untertitel if self.ansicht == Ansicht::Pruefen => {
+                    bold.draw(c, &z.text, px, tx, base, u.sheet_text_dim);
+                }
                 Art::Untertitel => {
                     bold.draw(c, &z.oz, px, tx, base, u.sheet_text_dim);
                     bold.draw(c, &z.text, px, tx + OZ_W * s, base, u.sheet_text_dim);
@@ -1738,11 +1742,11 @@ pub fn lv_zeilen(lv: &Lv) -> Vec<Zeile> {
     v
 }
 
-/// Zusammenstellung: Titelsummen, netto, MwSt. und brutto; ohne Preise
-/// bleiben die Beträge leer.
 /// Erste Summenzeile der Zusammenstellung.
 const SUMME_NETTO: &str = "Summe netto";
 
+/// Zusammenstellung: Titelsummen, netto, MwSt. und brutto; ohne Preise
+/// bleiben die Beträge leer.
 pub fn zusammenstellung(lv: &Lv) -> Vec<Zeile> {
     let z = &lv.zusammenstellung;
     let mut v: Vec<Zeile> = z

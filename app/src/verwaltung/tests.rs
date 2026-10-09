@@ -812,6 +812,13 @@ fn referenzhaeuser_im_ordner() {
     assert!(v.wirkung.haeuser[1].vorher.0 > 0 && v.wirkung.haeuser[2].vorher.0 > 0);
     // Im Baum grau, in der Wirkzeile nicht; nichts davon sperrt OK
     v.waehlen(Knoten::Haus(3));
+    // Der Lesefehler steht nur im Fehlerprotokoll, mit Datei (Review 3bb)
+    let prot = crate::meldung::protokoll_im_test();
+    assert!(
+        prot.iter()
+            .any(|z| z.starts_with("Referenzhaus ") && z.contains("kaputt.szo: ")),
+        "{prot:?}"
+    );
     let z = v.zeilen();
     assert!(z.iter().any(|z| z.knoten == Knoten::Haus(3) && z.grau));
     let zeile: Vec<String> = wirkung::zeile(v.wirkung.alle())
@@ -847,6 +854,11 @@ fn referenzhaeuser_im_ordner() {
     assert!(neu.nachher > neu.vorher);
     v.aktion(Aktion::AlsReferenz);
     assert!(ordner.join("Muster Meier (2).szo").exists());
+    assert_eq!(
+        std::fs::read_to_string(ordner.join("kaputt.szo")).unwrap(),
+        "kein Haus",
+        "das kaputte Haus bleibt bytegleich (Regel 106)"
+    );
     // Malen samt Tooltip
     let fonts = schriften();
     let w = win();
