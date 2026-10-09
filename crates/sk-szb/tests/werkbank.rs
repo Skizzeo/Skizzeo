@@ -207,6 +207,24 @@ fn soll() -> J {
 
 // ---------- Formeln ----------
 
+/// Außerhalb von Linux (mingw-libm unter Windows): Winkelfunktionen und
+/// Potenzen dürfen um höchstens 4 ulp abweichen wie im Zufallstest; unter
+/// Linux gilt die Tabelle bitgenau (Hinweis des Test-Threads zu E1).
+fn nah_ausser_linux(f: &str, ist: &str, soll: &str) -> bool {
+    if cfg!(target_os = "linux")
+        || !["sin", "cos", "tan", "atan", "^"]
+            .iter()
+            .any(|x| f.contains(x))
+    {
+        return false;
+    }
+    let zahl = |t: &str| t.strip_prefix("= ")?.parse::<f64>().ok();
+    match (zahl(ist), zahl(soll)) {
+        (Some(a), Some(b)) => (a.to_bits() as i64 - b.to_bits() as i64).abs() <= 4,
+        _ => false,
+    }
+}
+
 /// Jede Zeile der Tabelle: gleiches Ergebnis bis aufs Bit oder gleicher
 /// Fehlertext.
 #[test]
@@ -232,7 +250,9 @@ fn formeln_wie_die_werkbank() {
             Ok(v) => format!("= {}", js(v)),
             Err(e) => format!("Fehler: {e}"),
         };
-        assert_eq!(ist, soll, "Formel {f}");
+        if ist != soll && !nah_ausser_linux(&f, &ist, soll) {
+            panic!("Formel {f}: {ist} statt {soll}");
+        }
         n += 1;
     }
     assert_eq!(n, 47);
