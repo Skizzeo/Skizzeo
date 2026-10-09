@@ -37,7 +37,9 @@ use sk_ui::widgets::{self, ButtonState, FieldState, Fonts, Rect};
 /// zeigt ohne Gebäude keine Sonne.
 #[cfg(test)]
 pub const WUERFEL: f64 = 10_000.0;
-/// Hinweis an Kachel und Pfeil, wenn die Sonne ohne Gebäude an soll (S9).
+/// Hinweis an Kachel und Pfeil, wenn die Sonne ohne Gebäude an soll, und
+/// statt der Leiste, wenn sie an ist und das Gebäude fehlt (S9, ein Text
+/// für beides, Test).
 pub const OHNE_HAUS: &str = "Sonne und Schatten erscheinen, sobald das Gebäude gezeichnet ist.";
 /// Kachel oder Klick auf den Pfeil (S9): der neue Schalter; ohne Gebäude
 /// geht die Sonne nicht an, sondern es kommt der Hinweis [`OHNE_HAUS`].
@@ -56,9 +58,6 @@ pub fn erstes_setzen(haus: bool) -> Result<bool, &'static str> {
     umschalten(false, haus)
 }
 
-/// Statt der Leiste in 3D, wenn die Sonne an ist, das Gebäude aber fehlt
-/// (S9).
-pub const KEIN_HAUS: &str = "Kein Gebäude – Sonne erscheint mit dem Gebäude";
 /// Schnellwahl der Leiste: Monat und Tag.
 pub const SCHNELL: [(u32, u32); 4] = [(3, 21), (6, 21), (9, 23), (12, 21)];
 /// Hinweis der Leiste, wenn die Sonne nicht über dem Horizont steht.
@@ -795,7 +794,7 @@ pub struct Eingabe {
 pub struct LeistenBild {
     pub sun: Sun,
     pub unter: bool,
-    /// Ohne Gebäude: nur [`KEIN_HAUS`] (S9).
+    /// Ohne Gebäude: nur [`OHNE_HAUS`] (S9).
     pub ohne_haus: bool,
     pub eingabe: Option<Eingabe>,
     pub hover: Option<Teil>,
@@ -878,12 +877,12 @@ pub fn leiste_malen(b: &LeistenBild, fonts: &Fonts, t: &Theme) -> (Canvas, i32, 
     (c, dx as i32, dy as i32)
 }
 
-/// Statt der Leiste: [`KEIN_HAUS`] in einem Feld oben in der Mitte, so
+/// Statt der Leiste: [`OHNE_HAUS`] in einem Feld oben in der Mitte, so
 /// hoch wie die Leiste (S9).
 fn kein_haus_malen(vw: f64, fonts: &Fonts, s: f32, t: &Theme) -> (Canvas, i32, i32) {
     let px = t.size.font_small * s;
     let f = fonts.regular.as_ref();
-    let tw = f.map_or(300.0 * s, |f| f.width(KEIN_HAUS, px));
+    let tw = f.map_or(300.0 * s, |f| f.width(OHNE_HAUS, px));
     let w = (tw + 2.0 * (PAD + 4.0) * s).round();
     let h = ((t.size.field_height + 2.0 * PAD) * s).round();
     let r = Rect::new(
@@ -899,7 +898,7 @@ fn kein_haus_malen(vw: f64, fonts: &Fonts, s: f32, t: &Theme) -> (Canvas, i32, i
     if let Some(f) = f {
         let y = sh + (r.h + f.cap_height(px)) * 0.5;
         let x = sh + (r.w - tw) * 0.5;
-        f.draw(&mut c, KEIN_HAUS, px, x.round(), y.round(), t.ui.text_dim);
+        f.draw(&mut c, OHNE_HAUS, px, x.round(), y.round(), t.ui.text_dim);
     }
     (c, dx as i32, dy as i32)
 }
