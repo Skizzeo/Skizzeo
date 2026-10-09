@@ -26,6 +26,18 @@ impl App {
         self.overlay_dirty = true;
     }
 
+    /// Thema der Hilfe bei offenem Fenster (E9): beim Einlesen eigenes.
+    pub(crate) fn ext_thema(&self) -> crate::help::Topic {
+        match self
+            .ext_fenster
+            .as_ref()
+            .is_some_and(Fenster::beim_einlesen)
+        {
+            true => crate::help::Topic::Einlesen,
+            false => crate::help::Topic::Ext,
+        }
+    }
+
     /// „Bauteil einlesen …“: Datei wählen, prüfen, Rückfrage zeigen.
     pub(crate) fn ext_einlesen(&mut self, surface: &Surface) {
         let Some(p) = surface.open_dialog("Bauteil einlesen", &FILTER) else {

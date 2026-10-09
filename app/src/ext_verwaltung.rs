@@ -428,6 +428,13 @@ fn platz(s: f32, h: f32) -> f32 {
 }
 
 impl Fenster {
+    /// Rückfrage „Bauteil einlesen“ offen (Thema der Hilfe, E9).
+    pub fn beim_einlesen(&self) -> bool {
+        self.frage
+            .as_ref()
+            .is_some_and(|f| f.titel == "Bauteil einlesen")
+    }
+
     pub fn new(zeilen: Vec<Zeile>) -> Fenster {
         Fenster {
             zeilen,
@@ -1363,7 +1370,9 @@ mod tests {
             ]
         );
         assert!(f.haken.iter().all(|h| h.an && h.waehlbar));
+        assert!(!Fenster::new(Vec::new()).beim_einlesen());
         let mut w = Fenster::mit_frage(Vec::new(), f);
+        assert!(w.beim_einlesen(), "Hilfe-Thema „Bauteil einlesen“");
         let r = w.rect(1.0, 1280, 800, 32);
         let l = w.lage(1.0, r.h - KOPF_H - FUSS_H);
         let hr = w.haken_rects(&l, 1.0);

@@ -57,6 +57,17 @@ Beenden | **Esc** oder Klick auf den Knopf des Bauteils
 Ändern | Bauteil wählen: Typ, Felder und Knöpfe im Paneel „Eigenschaften“, jede Änderung ein Schritt
 Verwalten | Datei › „Erweiterungen …“: Ein/Aus, Aktualisieren, Entfernen; die Projektdatei trägt jedes Bauteil mit
 
+[thema] id=einlesen titel="Bauteil einlesen"
+Öffnen | Datei › „Bauteil einlesen …“ und eine .szb aus der Bauteil-Werkbank wählen
+Prüfen | Skizzeo prüft die Datei; Fehler stehen mit Zeile und Grund, die Datei bleibt dann draußen
+Neu | „Einlesen“ legt sie im Ordner „Erweiterungen“ ab; setzen im Bauteilkatalog oder mit dem Knopf „Erweiterungen“
+Neue Version | die Rückfrage nennt je gesetztem Bauteil, was sich ändert; erst „Aktualisieren“ ändert das Projekt
+Firmenkatalog | unter „Für den Firmenkatalog“ je neuer Bauleistung und neuem Artikel ein Haken; ohne Haken gilt der Satz nur im Projekt
+Einzelplatz | angehakte Sätze kommen gleich in den Firmenkatalog, als unbestätigt markiert
+Mit Kennwort | angehakte Sätze gehen als Vorschlag in den Entwurf; unter „Verwaltung …“ übernehmen oder ablehnen, freigeben erst danach
+Eigener Baustoff | wird mit dem ersten gesetzten Bauteil ein Baustoff des Projekts; Rückgängig nimmt ihn mit heraus
+Preise | Preise aus der Datei gelten, bis der Firmenkatalog eigene hat; das LV nennt die Herkunft im Detail der Position
+
 [thema] id=ziehen titel="Wand verschieben"
 Greifen | über den Wandfuß fahren, violettes Band greifen und ziehen (10-mm-Raster)
 Wert tippen | beim Ziehen eine Zahl tippen, **Enter** übernimmt genau auf den Millimeter

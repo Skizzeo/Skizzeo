@@ -4981,6 +4981,7 @@ impl App {
             help::Topic::Draw | help::Topic::InnerWall if self.tool.ext.is_some() => {
                 help::Topic::Ext
             }
+            _ if ctx.window.is_none() && self.ext_fenster.is_some() => self.ext_thema(),
             // Gewählte Erweiterung (E7), solange kein Fenster, Dialog oder
             // Werkzeug das Thema bestimmt
             _ if ctx.window.is_none()

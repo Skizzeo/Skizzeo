@@ -150,6 +150,8 @@ pub enum Topic {
     InnerWall,
     /// Werkzeug für Erweiterungsbauteile (E6).
     Ext,
+    /// Rückfrage „Bauteil einlesen“ (E9).
+    Einlesen,
     Drag,
     Upper,
     Flush,
@@ -184,13 +186,14 @@ pub enum Topic {
 
 impl Topic {
     /// Alle Themen in der Reihenfolge der Liste „Alle Themen“.
-    pub const ALL: [Topic; 34] = [
+    pub const ALL: [Topic; 35] = [
         Topic::Start,
         Topic::Navigation,
         Topic::Building,
         Topic::Draw,
         Topic::InnerWall,
         Topic::Ext,
+        Topic::Einlesen,
         Topic::Drag,
         Topic::Upper,
         Topic::Flush,
@@ -234,6 +237,7 @@ impl Topic {
                 Topic::Draw,
                 Topic::InnerWall,
                 Topic::Ext,
+                Topic::Einlesen,
                 Topic::Drag,
                 Topic::Upper,
                 Topic::Flush,
@@ -283,6 +287,7 @@ impl Topic {
             Topic::Draw => "zeichnen",
             Topic::InnerWall => "innenwand",
             Topic::Ext => "erweiterungen",
+            Topic::Einlesen => "einlesen",
             Topic::Drag => "ziehen",
             Topic::Upper => "og",
             Topic::Flush => "buendig",
