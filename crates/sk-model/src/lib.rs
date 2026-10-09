@@ -61,7 +61,7 @@ pub use library::{
 pub use matprop::{MatProp, MatPropKind, MAT_PROPS};
 pub use model::{
     building_index, edit_blocked, refusal_lines, refusal_text, Cut, Defaults, Deleted, FlushError,
-    Foot, Location, Locked, Model, NumberError, Project, Refusal, Use, CAVITY_TYPE_GUID,
+    Foot, Location, Locked, Model, NumberError, Project, Refusal, Sun, Use, CAVITY_TYPE_GUID,
     COPING_PART, CUT_NAMES, ETICS_TYPE_GUID, EXTERIOR_TYPE_GUID, FLOOR_PART, FLOOR_THICKNESS,
     FOOTING_PART, FOOTING_WIDTH, INTERIOR_115_TYPE_GUID, INTERIOR_240_TYPE_GUID,
     INTERIOR_TYPE_GUID, MAX_FOUNDATION, MAX_SOFFIT, MAX_UPSTAND, MIN_CLEAR, MIN_FOOTING,

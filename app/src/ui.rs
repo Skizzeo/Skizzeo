@@ -734,6 +734,8 @@ pub struct Ui {
     pub projekt_zeilen: Vec<String>,
     /// Nordpfeil wird aufgezogen: Kachel in `accent` (Sonnenstand S2).
     pub nord_aktiv: bool,
+    /// Sonnenstand eingeschaltet (S4): Kachel hervorgehoben.
+    pub sonne_an: bool,
     /// Gesetzte Nordrichtung (Grad im Uhrzeigersinn von +y): dreht das
     /// Symbol der Kachel; ohne nur umrissen.
     pub nord: Option<f64>,
@@ -1077,6 +1079,7 @@ impl Ui {
             foundation_active: false,
             projekt_zeilen: vec![PROJEKT_LEER.into()],
             nord_aktiv: false,
+            sonne_an: false,
             nord: None,
             dialog: false,
             dialog_fields: Vec::new(),
@@ -1705,7 +1708,7 @@ impl Ui {
             Id::Ortho => self.ortho,
             Id::View(v) => self.view == v,
             Id::Quantity => self.quantity_open,
-            Id::Nord => self.nord_aktiv,
+            Id::Nord => self.nord_aktiv || self.sonne_an,
             // Standardknopf des Dialogs
             Id::DialogStart => true,
             Id::Projektdaten
@@ -3387,6 +3390,37 @@ mod tests {
             };
             let (c, _, _) = ui.paint(&t, Panel::Views, 1280, 32);
             std::fs::write(dir.join(format!("ist-s3-ansichten-{n}.png")), c.to_png()).unwrap();
+        }
+    }
+
+    /// Ist-Bilder der Kachel (Sonnenstand S4): Nord 30°, Sonnenstand an
+    /// (hervorgehoben) und aus.
+    /// `SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo istbild_kachel_sonne -- --ignored`
+    #[test]
+    #[ignore = "legt Ist-Bilder ab, nur mit SKIZZEO_ISTBILDER"]
+    fn istbild_kachel_sonne() {
+        let Some(dir) = std::env::var_os("SKIZZEO_ISTBILDER") else {
+            return;
+        };
+        let dir = std::path::PathBuf::from(dir);
+        let t = Theme::dark();
+        let lib = std::path::Path::new("/usr/share/fonts/truetype/liberation");
+        let lade = |n: &str| {
+            std::fs::read(lib.join(n))
+                .ok()
+                .and_then(sk_paint::font::Font::parse)
+        };
+        for (n, an) in [("an", true), ("aus", false)] {
+            let mut ui = Ui::new(2.0, &t);
+            ui.nord = Some(30.0);
+            ui.sonne_an = an;
+            ui.fonts = Fonts {
+                regular: lade("LiberationSans-Regular.ttf"),
+                bold: lade("LiberationSans-Bold.ttf"),
+                italic: None,
+            };
+            let (c, _, _) = ui.paint(&t, Panel::Tools, 1280, 32);
+            std::fs::write(dir.join(format!("ist-s4-kachel-{n}.png")), c.to_png()).unwrap();
         }
     }
 

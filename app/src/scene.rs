@@ -1221,6 +1221,12 @@ impl Scene {
         self.model.set_cut(i, c);
     }
 
+    /// Datum, Uhrzeit und Schalter des Sonnenstands-Systems merken (ohne
+    /// Schritt, wie die Schnitte; Sonnenstand S4).
+    pub fn set_sun(&mut self, s: sk_model::Sun) {
+        self.model.set_sun(s);
+    }
+
     /// Arbeitsebene des Wandwerkzeugs: (UK, Geschosshöhe) des aktiven
     /// Geschosses in mm.
     pub fn work_plane(&self) -> (f64, f64) {

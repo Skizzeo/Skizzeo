@@ -36,6 +36,9 @@ const FREI: f64 = 1000.0;
 /// Greifabstand (dip) am Schaft und um die Spitze.
 const PICK_PX: f64 = 8.0;
 const SPITZE_PX: f64 = 12.0;
+/// Erst ab dieser Strecke (dip) gilt ein Druck auf den Pfeil als Ziehen
+/// (wie ein Klick in der Auswahl).
+const ZUG_PX: f64 = 4.0;
 /// Raster beim Verschieben (mm).
 const STEP: f64 = 10.0;
 /// Luft zur Kante, wenn der Pfeil ins Gebäude geschoben wird (mm, §8 08:05).
@@ -132,13 +135,14 @@ fn grad(nord: f64) -> String {
     g.to_string().replace('.', ",")
 }
 
-/// Tooltip der Kachel (§8 07:30): „Nordrichtung 12° · Sonnenstand“, ohne
-/// Nordrichtung „Nordrichtung festlegen“.
-pub fn tip(nord: Option<f64>) -> String {
-    nord.map_or_else(
-        || "Nordrichtung festlegen".into(),
-        |n| format!("Nordrichtung {}° · Sonnenstand", grad(n)),
-    )
+/// Tooltip der Kachel: ohne Nordrichtung „Nordrichtung festlegen“, sonst
+/// der Schalter des Sonnenstands (§8 09:25).
+pub fn tip(nord: Option<f64>, sonne: bool) -> String {
+    match (nord, sonne) {
+        (None, _) => "Nordrichtung festlegen".into(),
+        (Some(_), true) => "Sonnenstand an".into(),
+        (Some(_), false) => "Sonnenstand aus".into(),
+    }
 }
 
 /// Halb gefüllter Pfeil (Jörns Skizze, §8 08:42), in Vielfachen der Länge
@@ -273,6 +277,8 @@ pub struct Ausgang {
     pub redraw: bool,
     pub consumed: bool,
     pub commit: Option<Setzen>,
+    /// Klick auf den Pfeil ohne Ziehen: schaltet den Sonnenstand (S4).
+    pub klick: bool,
 }
 
 #[derive(Default)]
@@ -295,6 +301,9 @@ pub struct Nordpfeil {
     /// Loslassen weit genug davon setzt die Richtung (Aufziehen in einem
     /// Zug).
     unten: Option<(f64, f64)>,
+    /// Am Pfeil gedrückt (Bildpunkt), noch nicht weiter als [`ZUG_PX`]
+    /// bewegt: Loslassen ist dann ein Klick ohne Schritt (§8 09:25).
+    druck: Option<(f64, f64)>,
 }
 
 impl Nordpfeil {
@@ -344,6 +353,7 @@ impl Nordpfeil {
         }
         if self.zug.take().is_some() {
             self.vorschau = None;
+            self.druck = None;
             return true;
         }
         if self.anfang.take().is_some() {
@@ -421,6 +431,14 @@ impl Nordpfeil {
                     }
                     out.consumed = true;
                 } else if let Some(z) = self.zug {
+                    // Bis zur Zug-Schwelle bleibt der Pfeil stehen
+                    if let Some((a, b)) = self.druck {
+                        if (x - a).hypot(y - b) < ZUG_PX * scale {
+                            out.consumed = true;
+                            return out;
+                        }
+                        self.druck = None;
+                    }
                     let Some(g) = boden(x, y) else {
                         return out;
                     };
@@ -480,6 +498,7 @@ impl Nordpfeil {
                     }
                 });
                 self.vorschau = Some((n, f));
+                self.druck = Some((x, y));
                 self.hover = Some(griff);
                 out.consumed = true;
                 out.redraw = true;
@@ -491,7 +510,11 @@ impl Nordpfeil {
                 ..
             } => {
                 if let Some(z) = self.zug.take() {
-                    if let (Some((n, f)), Some(alt)) = (self.vorschau.take(), st.nord) {
+                    if self.druck.take().is_some() {
+                        // Klick ohne Ziehen: kein Schritt
+                        self.vorschau = None;
+                        out.klick = true;
+                    } else if let (Some((n, f)), Some(alt)) = (self.vorschau.take(), st.nord) {
                         // Drehen schreibt keinen Fußpunkt, der nur gezeigt ist (§8)
                         out.commit = match z {
                             Zug::Drehen if n != alt => Some((LABEL_DREHEN, n, st.gesetzt)),
@@ -746,8 +769,10 @@ mod tests {
         assert_eq!(grad_text(12.0), "N 12°");
         assert_eq!(grad_text(347.5), "N 347,5°");
         assert_eq!(grad_text(359.96), "N 0°");
-        assert_eq!(tip(None), "Nordrichtung festlegen");
-        assert_eq!(tip(Some(12.0)), "Nordrichtung 12° · Sonnenstand");
+        assert_eq!(tip(None, false), "Nordrichtung festlegen");
+        assert_eq!(tip(None, true), "Nordrichtung festlegen");
+        assert_eq!(tip(Some(12.0), true), "Sonnenstand an");
+        assert_eq!(tip(Some(12.0), false), "Sonnenstand aus");
     }
 
     /// §8: Fehlt der Fußpunkt oder liegt er im Gebäude, steht der Pfeil
@@ -1233,5 +1258,37 @@ mod abnahme_tests {
         assert!(neu.contains("[location] north=15\n"), "{neu}");
         assert!(s.undo());
         assert_eq!(szo::write(s.model()), alt);
+    }
+
+    /// S4 (§8 09:25): Ein Klick auf den Pfeil ohne Ziehen meldet `klick`
+    /// und schreibt keinen Schritt, auch mit kleinem Zittern unter der
+    /// Zug-Schwelle; erst darüber wird verschoben.
+    #[test]
+    fn klick_ohne_ziehen_ohne_schritt() {
+        let cam = grundriss();
+        let mut s = Scene::with_model(Model::with_seed(1));
+        assert!(s.nordpfeil_setzen(LABEL_DREHEN, 0.0, Some([0.0, 0.0])));
+        let vorher = szo::write(s.model());
+        let mut n = Nordpfeil::default();
+        let p = [0.0, 1500.0];
+        let (x, y) = bild(&cam, p);
+        assert!(ereignis(&mut n, &mut s, &cam, unten(&cam, p)).consumed);
+        let zittern = Event::MouseMove {
+            x: x + 2.5,
+            y: y - 1.0,
+            mods: M,
+        };
+        ereignis(&mut n, &mut s, &cam, zittern);
+        let out = ereignis(&mut n, &mut s, &cam, oben(&cam, p));
+        assert!(out.klick && out.commit.is_none() && out.consumed);
+        assert_eq!(szo::write(s.model()), vorher, "kein Schritt");
+        assert!(!n.zieht());
+        // Weiter als die Schwelle: verschoben, kein Klick
+        ereignis(&mut n, &mut s, &cam, unten(&cam, p));
+        ereignis(&mut n, &mut s, &cam, zu(&cam, [-2000.0, 1500.0], false));
+        let out = ereignis(&mut n, &mut s, &cam, oben(&cam, [-2000.0, 1500.0]));
+        assert!(!out.klick);
+        assert_eq!(out.commit.map(|c| c.0), Some(LABEL_SCHIEBEN));
+        assert_eq!(s.model().north_foot(), Some([-2000.0, 0.0]));
     }
 }

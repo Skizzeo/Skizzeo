@@ -2642,6 +2642,12 @@ impl Renderer {
         self.style = style;
     }
 
+    /// Richtung zum Licht (Modellkoordinaten, Länge 1), etwa zur Sonne
+    /// (Sonnenstand S4).
+    pub fn set_light(&mut self, l: [f32; 3]) {
+        self.style.light = l;
+    }
+
     /// Deckkraft des Bodens (0: Gelände ausgeblendet, Paket 3).
     pub fn set_ground_opacity(&mut self, v: f32) {
         self.style.ground_opacity = v;

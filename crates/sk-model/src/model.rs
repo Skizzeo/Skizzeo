@@ -146,6 +146,11 @@ pub struct Model {
     location_raw: Option<String>,
     /// Fußpunkt des Nordpfeils (Sonnenstand S2).
     north_foot: Option<location::Foot>,
+    /// Datum und Uhrzeit des Sonnenstands-Systems (S4); Ansichtszustand
+    /// wie `cuts`.
+    sun: Option<location::Sun>,
+    /// `[sun]`-Zeile der Datei, die nicht zählt, roh.
+    sun_raw: Option<String>,
     /// Schnitte A und B.
     cuts: [Cut; 2],
     /// Zuletzt gezeigter Schnitt (Kennung, A = 0); Ansichtszustand wie `cuts`.
@@ -223,7 +228,7 @@ pub use lock::{edit_blocked, Locked};
 
 #[path = "location.rs"]
 mod location;
-pub use location::{Foot, Location, FOOT_MAX};
+pub use location::{Foot, Location, Sun, FOOT_MAX};
 
 impl Default for Model {
     fn default() -> Model {
@@ -572,6 +577,8 @@ impl Model {
             location: Location::default(),
             location_raw: None,
             north_foot: None,
+            sun: None,
+            sun_raw: None,
             attr,
             materials,
             layer_sets,
@@ -639,6 +646,8 @@ impl Model {
             location: Location::default(),
             location_raw: None,
             north_foot: None,
+            sun: None,
+            sun_raw: None,
             attr,
             materials,
             layer_sets,

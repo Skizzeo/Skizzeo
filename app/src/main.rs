@@ -53,6 +53,7 @@ mod schedule_view;
 mod section;
 mod selection;
 mod settings;
+mod sonne_view;
 mod terrace_label;
 mod tree_panel;
 mod type_look;
@@ -170,6 +171,8 @@ const MESH_MODEL: usize = 0;
 const MESH_PREVIEW: usize = 1;
 const MESH_LIVE: usize = 2;
 const MESH_GHOST: usize = 3;
+/// Würfel 10 m ohne Gebäude bei eingeschaltetem Sonnenstand (nur Anzeige).
+const MESH_WUERFEL: usize = 4;
 /// Bildabstand für Animationen im Mengenfenster (das Hauptfenster läuft mit vsync).
 const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 
@@ -181,8 +184,11 @@ const OVERLAY_MARKS: usize = 0;
 const MARKS: usize = 2 * section::CUTS;
 /// Nordpfeil (Sonnenstand S2, Gestalt A), unter den Paneelen.
 const OVERLAY_NORD: usize = OVERLAY_MARKS + MARKS;
+/// Leiste des Sonnenstands-Systems in 3D (Datum, Uhrzeit, Schnellwahl;
+/// Sonnenstand S4), unter den Paneelen.
+const OVERLAY_SONNE: usize = OVERLAY_NORD + 1;
 /// Name und Fläche der Dachterrassen im Grundriss (wie eine Raumangabe).
-const OVERLAY_ROOMS: usize = OVERLAY_NORD + 1;
+const OVERLAY_ROOMS: usize = OVERLAY_SONNE + 1;
 const ROOMS: usize = 4;
 /// Kettensymbole an gestapelten Wänden (OG Phase 2), unter den Paneelen.
 const OVERLAY_CHIPS: usize = OVERLAY_ROOMS + ROOMS;
@@ -551,6 +557,8 @@ struct App {
     sect: Sections,
     /// Nordpfeil: Aufziehen, Drehen, Verschieben (Sonnenstand S2).
     nord: nordpfeil::Nordpfeil,
+    /// Sonnenstands-System: Sonne ziehen, Leiste (Sonnenstand S4).
+    sonne: sonne_view::Sonnensystem,
     /// Gewähltes Bauteil.
     sel: Selection,
     /// Stand, für den das Paneel „Eigenschaften“ zuletzt gefüllt wurde
@@ -597,6 +605,11 @@ struct App {
     mark_keys: [Option<MarkKey>; MARKS],
     /// Zuletzt hochgeladenes Bild des Nordpfeils.
     nord_bild: Option<nordpfeil::Bild>,
+    /// Zuletzt hochgeladene Leiste des Sonnenstands, der Würfel ist
+    /// hochgeladen, Lichtrichtung von der Sonne (`None`: die feste).
+    sonne_bild: Option<sonne_view::LeistenBild>,
+    wuerfel: bool,
+    licht: Option<[f32; 3]>,
     /// Zuletzt hochgeladene Terrassenangaben (Text, Skalierung,
     /// Farbschema) und ihre Bildgröße.
     room_keys: [Option<(RoomKey, u32, u32)>; ROOMS],
@@ -1127,17 +1140,93 @@ impl App {
         let out = self.nord.handle(ev, st, &self.cam, vw, vh, sc, en);
         self.redraw |= out.redraw;
         self.nord_commit(out.commit);
+        // Klick auf den Pfeil schaltet den Sonnenstand (§8 09:25)
+        if out.klick {
+            let on = self.sonne_an().is_none();
+            self.sonne_schalten(on, true);
+        }
         out.consumed
     }
 
     /// Ein Schritt „Nordrichtung geändert“ bzw. „Nordpfeil verschoben“.
+    /// Nach dem ersten Aufziehen ist der Sonnenstand an (§8 09:25).
     fn nord_commit(&mut self, c: Option<nordpfeil::Setzen>) {
         if let Some((label, n, f)) = c {
+            let neu = self.scene.model().location().north.is_none();
             if self.scene.nordpfeil_setzen(label, n, f) {
                 self.overlay_dirty = true;
+                if neu {
+                    self.sonne_schalten(true, false);
+                }
             }
             self.redraw = true;
         }
+    }
+
+    /// Sonnenstand eingeschaltet (Sonnenstand S4): Datum und Uhrzeit. Ohne
+    /// Nordrichtung (etwa nach Strg+Z des ersten Aufziehens) ruht er.
+    fn sonne_an(&self) -> Option<sk_model::Sun> {
+        let m = self.scene.model();
+        m.sun().filter(|s| s.on && m.location().north.is_some())
+    }
+
+    /// Der Himmel bei eingeschaltetem Sonnenstand in 3D: um das Gebäude,
+    /// ohne Gebäude um den Würfel.
+    fn himmel(&self) -> Option<sonne_view::Himmel> {
+        let s = self
+            .sonne_an()
+            .filter(|_| self.ui.view == ViewKind::Persp)?;
+        let q = self
+            .scene
+            .bounds()
+            .unwrap_or_else(sonne_view::wuerfel_quader);
+        Some(sonne_view::himmel(self.scene.model().location(), &s, q))
+    }
+
+    /// Sonnenstand an- oder ausschalten (Kachel, Klick auf den Pfeil). Beim
+    /// ersten Mal in einer Datei gilt heute 12:00. `zu_3d`: beim Einschalten
+    /// in die 3D-Ansicht wechseln, wo das System zu sehen ist.
+    fn sonne_schalten(&mut self, on: bool, zu_3d: bool) {
+        let s = match self.scene.model().sun() {
+            Some(s) => sk_model::Sun { on, ..s },
+            None if on => sonne_view::anfang(sonne_view::uhr()),
+            None => return,
+        };
+        self.scene.set_sun(s);
+        self.sonne.reset();
+        if on && zu_3d && self.ui.view != ViewKind::Persp {
+            self.set_view(ViewKind::Persp);
+        }
+        self.overlay_dirty = true;
+        self.redraw = true;
+    }
+
+    /// Ereignis an Sonne und Leiste (3D, Sonnenstand an); `true`, wenn sie
+    /// es genommen haben.
+    fn sonne_handle(&mut self, ev: &Event, vw: f64, vh: f64, sc: f64) -> bool {
+        let (Some(sun), Some(h)) = (self.sonne_an(), self.himmel()) else {
+            if self.sonne.hover.is_some() || self.sonne.ueber_sonne || self.sonne.is_busy() {
+                self.sonne.reset();
+                self.redraw = true;
+            }
+            return false;
+        };
+        let lb = sonne_view::Lagebild {
+            sun,
+            himmel: &h,
+            cam: &self.cam,
+            wh: (vw, vh),
+            scale: sc,
+            fonts: &self.ui.fonts,
+            theme: &self.theme,
+        };
+        let out = self.sonne.handle(ev, &lb);
+        self.redraw |= out.redraw;
+        if let Some(s) = out.sun {
+            self.scene.set_sun(s);
+            self.redraw = true;
+        }
+        out.consumed
     }
 
     /// Grundriss: Höhe der Wandfüße des aktiven Geschosses (mm); nur sie
@@ -2064,6 +2153,9 @@ impl App {
         self.wheel.set_theme(&self.theme);
         self.wheel_view.forget();
         self.renderer.set_style(style(&self.theme.env));
+        // Die Sonne setzt ihr Licht beim nächsten Bild wieder (S4)
+        self.licht = None;
+        self.sonne_bild = None;
         self.ui.forget_theme();
         self.ui.use_theme(&self.theme);
         self.ui.fit(self.title.scale, self.w, self.h);
@@ -3082,6 +3174,11 @@ impl App {
             Id::View(v) => self.set_view(v),
             Id::Quantity => self.quantity_wanted = true,
             Id::Projektdaten => self.open_projektdaten(false),
+            // Mit Nordrichtung schaltet die Kachel den Sonnenstand (§8 09:25)
+            Id::Nord if !self.nord.aktiv && self.scene.model().location().north.is_some() => {
+                let on = self.sonne_an().is_none();
+                self.sonne_schalten(on, true);
+            }
             Id::Nord => {
                 let on = !self.nord.aktiv;
                 if on {
@@ -3212,9 +3309,13 @@ impl App {
             self.overlay_dirty = true;
         }
         // Kachel des Nordpfeils (Sonnenstand S2), auch nach Strg+Z
-        let nord = (self.nord.aktiv, self.scene.model().location().north);
-        if (self.ui.nord_aktiv, self.ui.nord) != nord {
-            (self.ui.nord_aktiv, self.ui.nord) = nord;
+        let nord = (
+            self.nord.aktiv,
+            self.scene.model().location().north,
+            self.sonne_an().is_some(),
+        );
+        if (self.ui.nord_aktiv, self.ui.nord, self.ui.sonne_an) != nord {
+            (self.ui.nord_aktiv, self.ui.nord, self.ui.sonne_an) = nord;
             self.overlay_dirty = true;
         }
         let key = (self.scene.model().revision(), self.theme.rev);
@@ -3956,6 +4057,7 @@ impl App {
                     .sect
                     .handle(&e, &self.scene, &self.cam, vw, vh, sc, sen);
                 self.redraw |= so.redraw;
+                self.sonne_handle(&e, vw, vh, sc);
             }
             Event::MouseMove { x, y, .. } => {
                 self.mouse_at = Some((x, y));
@@ -4004,6 +4106,14 @@ impl App {
                     self.edit.link_hover = chip;
                     self.redraw = true;
                 }
+                // Sonne und Leiste (S4) vor dem Pfeil: über der Leiste und
+                // beim Ziehen der Sonne greift sonst nichts
+                let sonne_ev = if outside || chip.is_some() {
+                    Event::MouseLeave
+                } else {
+                    ev
+                };
+                let outside = self.sonne_handle(&sonne_ev, vw, vh, sc) || outside;
                 let nord_ev = if outside || chip.is_some() {
                     Event::MouseLeave
                 } else {
@@ -4117,7 +4227,7 @@ impl App {
                         let ev = in_view(e);
                         camera_moved |=
                             self.nav.handle(&ev, &mut self.cam, &self.scene, vw, vh, sc);
-                        if self.nord_handle(&ev, vw, vh, sc) {
+                        if self.sonne_handle(&ev, vw, vh, sc) || self.nord_handle(&ev, vw, vh, sc) {
                             self.sync_ui();
                             self.sync_caption(surface);
                             return true;
@@ -4181,7 +4291,7 @@ impl App {
                 }
                 let ev = in_view(e);
                 camera_moved |= self.nav.handle(&ev, &mut self.cam, &self.scene, vw, vh, sc);
-                if self.nord_handle(&ev, vw, vh, sc) {
+                if self.sonne_handle(&ev, vw, vh, sc) || self.nord_handle(&ev, vw, vh, sc) {
                     self.sync_ui();
                     self.sync_caption(surface);
                     return true;
@@ -4255,6 +4365,23 @@ impl App {
                         self.nav
                             .handle(&in_view(e), &mut self.cam, &self.scene, vw, vh, sc);
                 }
+            }
+            // Ein Feld der Sonnenstands-Leiste in Eingabe nimmt jede Taste (S4)
+            Event::Key {
+                key, down, mods, ..
+            } if self.sonne.eingabe.is_some() => {
+                let mut out = sonne_view::Ausgang::default();
+                match self.sonne_an() {
+                    Some(sun) if down => {
+                        self.sonne.key(key, mods, sun, &mut out);
+                    }
+                    Some(_) => {}
+                    None => self.sonne.reset(),
+                }
+                if let Some(s) = out.sun {
+                    self.scene.set_sun(s);
+                }
+                self.redraw = true;
             }
             // Ein Zahlenfeld in Eingabe nimmt jede Taste
             Event::Key {
@@ -4532,7 +4659,10 @@ impl App {
     fn sync_help(&mut self) {
         let t = self.now();
         let ctx = self.help_ctx();
-        let nord = self.nord.aktiv || self.nord.zieht();
+        let nord = self.nord.aktiv
+            || self.nord.zieht()
+            || self.sonne.is_busy()
+            || self.sonne.eingabe.is_some();
         self.help.follow(help::topic_mit_nord(&ctx, nord), t);
         self.help.tick(t);
         // Auch das letzte Bild eines Blendens muss noch gezeichnet werden
@@ -5716,7 +5846,7 @@ impl App {
     /// den Grund.
     fn button_tip(&self) -> Option<String> {
         let id = self.ui.hover?;
-        let nord = nordpfeil::tip(self.ui.nord);
+        let nord = nordpfeil::tip(self.ui.nord, self.ui.sonne_an);
         let name = match id {
             Id::Building => "Gebäude",
             Id::Interior => "Innenwand",
@@ -7279,6 +7409,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         edit: WallEdit::default(),
         sect: Sections::default(),
         nord: Default::default(),
+        sonne: Default::default(),
         sel: Selection::default(),
         props_key: None,
         snaps_key: None,
@@ -7329,6 +7460,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         bond_fades: Vec::new(),
         mark_keys: [None; MARKS],
         nord_bild: None,
+        sonne_bild: None,
+        wuerfel: false,
+        licht: None,
         room_keys: Default::default(),
         panel_px: Vec::new(),
         wheel,
@@ -7803,6 +7937,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             }
             (None, None) if a.sect.over_mark() => sk_platform::Cursor::Hand,
             (None, None) if a.nord.over().is_some() => sk_platform::Cursor::Hand,
+            (None, None) if a.sonne.ueber_sonne || a.sonne.is_busy() => sk_platform::Cursor::Hand,
+            (None, None) if a.sonne.hover.is_some() => sk_platform::Cursor::Hand,
             (None, None) => a.ui.cursor(),
         };
         surface.set_cursor(cursor);
@@ -7993,6 +8129,12 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                     .nord
                     .bild(st, &a.cam, (vw, vh), scale, ink, hot, width.max(1.5));
             }
+            // Sonnenstand (S4): Bahnen und Scheibe am Himmel, in 3D
+            let himmel = a.himmel();
+            if let Some(h) = &himmel {
+                let heiss = a.sonne.ueber_sonne || a.sonne.is_busy();
+                helpers.extend(sonne_view::helpers(h, heiss, scale));
+            }
             a.renderer.set_helpers(&helpers);
 
             // Kettensymbole an den gestapelten Wänden (Grundriss und 3D)
@@ -8075,6 +8217,49 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                     None => a.renderer.set_overlay(OVERLAY_NORD, 0, 0, 0, 0, &[]),
                 }
                 a.nord_bild = nord_bild;
+            }
+
+            // Sonnenstand (S4): Leiste, Würfel ohne Gebäude, Licht der Sonne
+            let sun = a.sonne_an();
+            let leiste = himmel
+                .as_ref()
+                .zip(sun)
+                .map(|(h, sun)| sonne_view::LeistenBild {
+                    sun,
+                    unter: h.sonne.is_none(),
+                    eingabe: a.sonne.eingabe.clone(),
+                    hover: a.sonne.hover,
+                    vw: vw as u32,
+                    scale: scale.to_bits(),
+                });
+            if leiste != a.sonne_bild {
+                match &leiste {
+                    Some(b) => {
+                        let (c, x, y) = sonne_view::leiste_malen(b, &a.ui.fonts, &a.theme);
+                        let px = c.to_premul_rgba8();
+                        let (w, h) = (c.width as u32, c.height as u32);
+                        a.renderer
+                            .set_overlay(OVERLAY_SONNE, x, y + th as i32, w, h, &px);
+                    }
+                    None => a.renderer.set_overlay(OVERLAY_SONNE, 0, 0, 0, 0, &[]),
+                }
+                a.sonne_bild = leiste;
+            }
+            let wuerfel = himmel.is_some() && a.scene.bounds().is_none();
+            if wuerfel != a.wuerfel {
+                let netz = if wuerfel {
+                    sonne_view::wuerfel_netz()
+                } else {
+                    Default::default()
+                };
+                a.renderer.set_mesh(MESH_WUERFEL, &netz);
+                a.wuerfel = wuerfel;
+            }
+            let licht = sun.and_then(|s| sonne_view::licht(a.scene.model().location(), &s));
+            if licht != a.licht {
+                let fest = style(&a.theme.env).light;
+                a.renderer.set_light(licht.unwrap_or(fest));
+                a.licht = licht;
             }
 
             // „Dachterrasse 13,22 m²“ auf der Terrasse, gedimmt wie eine

@@ -1059,6 +1059,20 @@ fn write_known(m: &Model) -> String {
             l.finish(&mut out);
         }
     }
+    // Sonnenstand (S4) erst, wenn das System in der Datei einmal an war;
+    // eine unlesbare Zeile bleibt roh, bis ein Stand sie ersetzt
+    if let Some(s) = m.sun() {
+        let mut l = Line::new("sun")
+            .word("date", &s.date_text())
+            .word("time", &s.time_text());
+        if s.on {
+            l = l.flag("on", true);
+        }
+        l.finish(&mut out);
+    } else if let Some(raw) = m.sun_raw() {
+        out.push_str(raw);
+        out.push('\n');
+    }
     // Ausgeblendetes (Paket 3 §3.6) nur, wenn es etwas gibt; Isolieren nie
     let v = m.visibility();
     for g in &v.hidden {
@@ -1280,7 +1294,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 30] = [
+    const KNOWN: [&str; 31] = [
         "pen",
         "linetype",
         "fill",
@@ -1307,6 +1321,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         "coping",
         "prop",
         "cut",
+        "sun",
         "hide",
         "lock",
         "matprop",
@@ -2078,6 +2093,46 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             }
         }
     }
+    // Sonnenstand (S4): Ansichtszustand; eine Zeile, die nicht zählt, gibt
+    // einen Hinweis und bleibt roh stehen (Regel 72), wie `[location]`
+    let mut sun = None;
+    let mut sun_raw = None;
+    match recs("sun").as_slice() {
+        [] => {}
+        [r] => {
+            let date = r.opt("date").map(crate::Sun::parse_date);
+            let time = r.opt("time").map(crate::Sun::parse_time);
+            let on = match r.opt("on") {
+                None => Some(false),
+                Some(_) => r.flag("on").ok(),
+            };
+            let mut falsch = Vec::new();
+            for (k, ok) in [
+                ("date", date.is_some_and(|d| d.is_some())),
+                ("time", time.is_some_and(|t| t.is_some())),
+                ("on", on.is_some()),
+            ] {
+                if !ok {
+                    falsch.push(format!("„{k}“ fehlt oder gilt nicht"));
+                }
+            }
+            match (date.flatten(), time.flatten(), on) {
+                (Some(date), Some(minutes), Some(on)) => {
+                    sun = Some(crate::Sun { date, minutes, on })
+                }
+                _ => {
+                    r.skip();
+                    sun_raw = Some(lines[r.line - 1].to_string());
+                    hints.push(format!(
+                        "Zeile {}: [sun] {}; der Sonnenstand gilt als nicht gesetzt, die Zeile bleibt",
+                        r.line,
+                        falsch.join(", ")
+                    ));
+                }
+            }
+        }
+        [_, r, ..] => return Err(err(r.line, "[sun] doppelt")),
+    }
     // Gesperrtes (Paket 4 §2.3): Modell, darum Unbekanntes mit Hinweis
     let locks: Vec<(usize, Option<Guid>)> = recs("lock")
         .iter()
@@ -2117,6 +2172,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         project, attr, materials, layer_sets, buildings, storeys, elements, runs, defaults, guids,
     );
     model.load_location(location, foot, location_raw);
+    model.load_sun(sun, sun_raw);
     for (k, n) in counters {
         if !model.raise_counter(&k, n) {
             hints.push(format!(
@@ -3890,6 +3946,77 @@ mod tests {
             let neu = write(&b);
             assert!(neu.contains(&format!(" svc={roh}")), "{roh}: nach Änderung");
         }
+    }
+
+    /// Sonnenstand S4 (§8 09:25): Ohne eingeschaltetes System kein
+    /// `[sun]`, alte Dateien bleiben bytegleich; danach `date` und `time`,
+    /// `on=1` nur, solange es an ist. Ansichtszustand: kein Schritt, keine
+    /// neue Revision. Unlesbares bleibt roh mit Hinweis, bis ein Stand es
+    /// ersetzt.
+    #[test]
+    fn s4_sonnenstand_in_der_datei() {
+        use sk_math::sonne::Datum;
+        let mut m = house();
+        let alt = write(&m);
+        assert!(!alt.contains("[sun]"));
+        let rev = m.revision();
+        let mut s = crate::Sun {
+            date: Datum::new(2026, 6, 21).unwrap(),
+            minutes: 12 * 60,
+            on: true,
+        };
+        m.set_sun(s);
+        assert_eq!(
+            m.revision(),
+            rev,
+            "Ansichtszustand ändert die Revision nicht"
+        );
+        let an = write(&m);
+        let zeilen: Vec<&str> = an.lines().filter(|z| z.starts_with("[sun]")).collect();
+        assert_eq!(zeilen, ["[sun] date=2026-06-21 time=12:00 on=1"]);
+        let back = load(&an).unwrap();
+        assert!(back.hints.is_empty(), "{:?}", back.hints);
+        assert_eq!(back.model.sun(), Some(s));
+        assert_eq!(write(&back.model), an);
+        s.on = false;
+        s.minutes = 9 * 60 + 5;
+        m.set_sun(s);
+        let aus = write(&m);
+        assert!(
+            aus.contains("\n[sun] date=2026-06-21 time=09:05\n"),
+            "{aus}"
+        );
+        assert_eq!(load(&aus).unwrap().model.sun(), Some(s));
+        assert_eq!(aus.replace("[sun] date=2026-06-21 time=09:05\n", ""), alt);
+
+        // Unlesbar: Hinweis, die Zeile bleibt bytegleich, bis ein Stand sie ersetzt
+        for roh in [
+            "[sun] date=2026-02-30 time=12:00",
+            "[sun] date=21.06.2026 time=12:00 on=1",
+            "[sun] date=2026-06-21 time=24:00",
+            "[sun] date=2026-06-21",
+            "[sun] date=2026-06-21 time=12:00 on=ja",
+        ] {
+            let text = alt.replacen("[storey]", &format!("{roh}\n[storey]"), 1);
+            let l = load(&text).unwrap();
+            assert_eq!(l.model.sun(), None, "{roh}");
+            assert_eq!(l.hints.len(), 1, "{roh}: {:?}", l.hints);
+            assert!(l.hints[0].contains("[sun]"), "{:?}", l.hints);
+            let w = write(&l.model);
+            assert_eq!(
+                w.lines()
+                    .filter(|z| z.starts_with("[sun]"))
+                    .collect::<Vec<_>>(),
+                [roh]
+            );
+            let mut b = l.model;
+            b.set_sun(s);
+            let neu = write(&b);
+            assert!(!neu.lines().any(|z| z == roh), "{roh}: ersetzt");
+            assert_eq!(neu.matches("[sun]").count(), 1);
+        }
+        let doppelt = an.replacen("[sun]", "[sun] date=2026-01-01 time=08:00\n[sun]", 1);
+        assert!(load(&doppelt).is_err());
     }
 
     /// Sonnenstand S1: Ohne Lage keine Zeile, die alte Datei bleibt

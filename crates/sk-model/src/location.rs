@@ -8,7 +8,7 @@
 //! Abnahme S1, Review 3br).
 
 use super::*;
-use sk_math::sonne::Lage;
+use sk_math::sonne::{Datum, Lage};
 
 /// Größter Betrag einer Koordinate des Fußpunkts (mm, 1000 km).
 pub const FOOT_MAX: f64 = 1e9;
@@ -67,7 +67,84 @@ impl Location {
     }
 }
 
+/// Datum und Uhrzeit des Sonnenstands-Systems (S4, Analyse §8 09:25):
+/// Ansichtszustand wie die Schnitte, ohne Rückgängig-Schritt und ohne neue
+/// Revision. `[sun] date=2026-06-21 time=12:00 on=1`; geschrieben, sobald
+/// das System in der Datei einmal an war, `on=1` nur, solange es an ist.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sun {
+    pub date: Datum,
+    /// Gesetzliche Uhrzeit am Bauort (MEZ bzw. MESZ) in Minuten seit
+    /// Mitternacht, 0 … 1439.
+    pub minutes: u32,
+    pub on: bool,
+}
+
+impl Sun {
+    /// `date=` der Datei: `JJJJ-MM-TT`.
+    pub fn date_text(&self) -> String {
+        let d = self.date;
+        format!("{:04}-{:02}-{:02}", d.jahr, d.monat, d.tag)
+    }
+
+    /// `time=` der Datei: `HH:MM`.
+    pub fn time_text(&self) -> String {
+        format!("{:02}:{:02}", self.minutes / 60, self.minutes % 60)
+    }
+
+    /// Liest `JJJJ-MM-TT` (Jahr 1 … 9999, gültiger Kalendertag).
+    pub fn parse_date(t: &str) -> Option<Datum> {
+        let mut it = t.split('-');
+        let mut teil = |n: usize| {
+            it.next()
+                .filter(|s| s.len() == n && s.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|s| s.parse::<u32>().ok())
+        };
+        let (j, m, d) = (teil(4)?, teil(2)?, teil(2)?);
+        if it.next().is_some() || j == 0 {
+            return None;
+        }
+        Datum::new(j as i32, m, d)
+    }
+
+    /// Liest `HH:MM` (00:00 … 23:59) als Minuten.
+    pub fn parse_time(t: &str) -> Option<u32> {
+        let (h, m) = t.split_once(':')?;
+        let zahl = |s: &str| {
+            (s.len() == 2 && s.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| s.parse::<u32>().ok())
+                .flatten()
+        };
+        let (h, m) = (zahl(h)?, zahl(m)?);
+        (h < 24 && m < 60).then_some(h * 60 + m)
+    }
+}
+
 impl Model {
+    /// Datum, Uhrzeit und Schalter des Sonnenstands-Systems; `None`, solange
+    /// es in dieser Datei nie an war.
+    pub fn sun(&self) -> Option<Sun> {
+        self.sun
+    }
+
+    /// Sonnenstand ändern: ohne Schritt und ohne neue Revision, wie
+    /// [`Model::set_cut`]. Eine unlesbare `[sun]`-Zeile entfällt damit.
+    pub fn set_sun(&mut self, s: Sun) {
+        self.sun = Some(s);
+        self.sun_raw = None;
+    }
+
+    /// Die `[sun]`-Zeile der Datei, die nicht zählt, solange keine gesetzt
+    /// wurde.
+    pub(crate) fn sun_raw(&self) -> Option<&str> {
+        self.sun_raw.as_deref()
+    }
+
+    pub(crate) fn load_sun(&mut self, s: Option<Sun>, raw: Option<String>) {
+        self.sun = s;
+        self.sun_raw = raw;
+    }
+
     pub fn location(&self) -> &Location {
         &self.location
     }
