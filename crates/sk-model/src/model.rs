@@ -139,6 +139,8 @@ pub const CUT_NAMES: [&str; 2] = ["A", "B"];
 #[derive(Clone, Debug)]
 pub struct Model {
     project: Project,
+    /// Lage und Nordrichtung (`[location]`, Sonnenstand S1).
+    location: Location,
     /// Schnitte A und B.
     cuts: [Cut; 2],
     /// Zuletzt gezeigter Schnitt (Kennung, A = 0); Ansichtszustand wie `cuts`.
@@ -213,6 +215,10 @@ pub use delete::{refusal_lines, refusal_text, Deleted, Refusal};
 #[path = "lock.rs"]
 mod lock;
 pub use lock::{edit_blocked, Locked};
+
+#[path = "location.rs"]
+mod location;
+pub use location::Location;
 
 impl Default for Model {
     fn default() -> Model {
@@ -558,6 +564,7 @@ impl Model {
         }
         Model {
             project,
+            location: Location::default(),
             attr,
             materials,
             layer_sets,
@@ -622,6 +629,7 @@ impl Model {
             .unwrap_or(0);
         let mut m = Model {
             project,
+            location: Location::default(),
             attr,
             materials,
             layer_sets,
@@ -4404,6 +4412,7 @@ impl Model {
                         | Change::ForeignRecords { .. }
                         | Change::Ext { .. }
                         | Change::Project { .. }
+                        | Change::Location { .. }
                 )
             })
             .all(|c| matches!(c, Change::Run { .. } | Change::Element { .. }))
@@ -5758,6 +5767,7 @@ impl Model {
             // schon beim Ändern eingetragen
             Change::Ext { .. } => {}
             Change::Project { new, .. } => **new = self.project.clone(),
+            Change::Location { new, .. } => *new = self.location,
         }
     }
 
@@ -5850,6 +5860,7 @@ impl Model {
                 m.ext_revision += 1;
             }
             Change::Project { old, new } => m.project = *pick(dir, old, new),
+            Change::Location { old, new } => m.location = pick(dir, old, new),
         };
         // Rückwärts in umgekehrter Reihenfolge: ein Platz wird erst frei, dann neu belegt
         match dir {

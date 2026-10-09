@@ -187,9 +187,14 @@ pub struct Sonnenstand {
 
 impl Sonnenstand {
     /// Einheitsvektor zur Sonne: x nach Osten, y nach Norden, z nach oben.
-    /// Die Nordrichtung im Modell kommt mit Schritt S1 dazu.
     pub fn richtung(&self) -> Vec3 {
-        let (a, h) = (self.azimut.to_radians(), self.hoehe.to_radians());
+        self.richtung_modell(0.0)
+    }
+
+    /// Einheitsvektor zur Sonne im Modell, dessen Nordrichtung `nord` Grad
+    /// im Uhrzeigersinn von +y liegt; z nach oben.
+    pub fn richtung_modell(&self, nord: f64) -> Vec3 {
+        let (a, h) = ((self.azimut + nord).to_radians(), self.hoehe.to_radians());
         vec3(a.sin() * h.cos(), a.cos() * h.cos(), h.sin())
     }
 }
@@ -254,6 +259,12 @@ pub fn sonnenstand(lage: Lage, t: Zeitpunkt) -> Sonnenstand {
         hoehe: hoehe_geometrisch + brechung(hoehe_geometrisch),
         hoehe_geometrisch,
     }
+}
+
+/// Richtung zur Sonne im Modell (Schnittstelle für die Solar-Erweiterung,
+/// Analyse §7): [`sonnenstand`], um die Nordrichtung `nord` gedreht.
+pub fn sonnenvektor_modell(lage: Lage, nord: f64, t: Zeitpunkt) -> Vec3 {
+    sonnenstand(lage, t).richtung_modell(nord)
 }
 
 /// Geometrische Höhe des Sonnenmittelpunkts bei Auf- und Untergang:

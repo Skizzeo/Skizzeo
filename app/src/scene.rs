@@ -1295,7 +1295,9 @@ impl Scene {
     }
 
     /// Projektangaben (Bauvorhaben, Bauherr, Aufsteller; KA-4c) als ein
-    /// Schritt. `false`, wenn sich nichts geändert hat.
+    /// Schritt. `false`, wenn sich nichts geändert hat. Die App setzt sie
+    /// samt Lage ([`Scene::projektdaten_setzen`]).
+    #[cfg(test)]
     pub fn projekt_setzen(
         &mut self,
         label: &'static str,
@@ -1311,6 +1313,27 @@ impl Scene {
     /// Anfangszustand ohne Rückgängig-Schritt.
     pub fn projekt_anfang(&mut self, p: sk_model::Project) {
         self.model.init_project(p);
+    }
+
+    /// Projektdaten samt Breite und Länge aus der Maske (Sonnenstand S1)
+    /// als ein Schritt. `false`, wenn sich nichts geändert hat.
+    pub fn projektdaten_setzen(
+        &mut self,
+        label: &'static str,
+        p: sk_model::Project,
+        ort: sk_model::Location,
+    ) -> bool {
+        self.begin(label);
+        let a = self.model.set_project(p);
+        let b = self.model.set_location(ort);
+        self.commit();
+        a || b
+    }
+
+    /// Breite und Länge eines neuen Projekts: ohne Rückgängig-Schritt wie
+    /// [`Scene::projekt_anfang`].
+    pub fn lage_anfang(&mut self, ort: sk_model::Location) {
+        self.model.init_location(ort);
     }
 
     /// Öffnet den Schritt des Einstellungsfensters (E5, auch nach
@@ -3671,6 +3694,46 @@ mod tests {
         assert!(s.undo());
         assert_eq!(s.model.project().number, "01/26");
         assert_eq!(s.undo_label(), None);
+    }
+
+    /// Sonnenstand S1 über die Maske: Breite und Länge bei „Neu“ ohne
+    /// Schritt; geändert mit den Projektdaten ein Schritt „Projektdaten
+    /// geändert“; Strg+Z stellt die Datei bytegleich her, Strg+Y die neue.
+    #[test]
+    fn projektdaten_mit_lage() {
+        use crate::projektdaten::{Antwort, Maske};
+        use sk_platform::{Key, Modifiers};
+        let mut s = Scene::with_model(sk_model::Model::new());
+        let leer = sk_model::szo::write(s.model());
+        // „Neu“, Maske leer übernommen: nichts gesetzt, nichts geschrieben
+        let mut m = Maske::new(s.model().project(), true, None).mit_ort(s.model().location());
+        let Some(Antwort::Uebernehmen(p)) = m.key(Key::Enter, Modifiers::default()) else {
+            panic!("Enter übernimmt");
+        };
+        s.projekt_anfang(*p);
+        s.lage_anfang(m.ort());
+        assert_eq!(s.undo_label(), None);
+        assert_eq!(sk_model::szo::write(s.model()), leer);
+        // Nur die Breite geändert: ein Schritt
+        let mut m = Maske::new(s.model().project(), false, None).mit_ort(s.model().location());
+        m.fokus_auf(8);
+        for ch in "52,52".chars() {
+            m.text(ch);
+        }
+        let Some(Antwort::Uebernehmen(p)) = m.key(Key::Enter, Modifiers::default()) else {
+            panic!("Enter übernimmt");
+        };
+        assert!(s.projektdaten_setzen("Projektdaten geändert", *p.clone(), m.ort()));
+        assert_eq!(s.undo_label(), Some("Projektdaten geändert"));
+        let neu = sk_model::szo::write(s.model());
+        assert!(neu.contains("\n[location] lat=52.52\n"), "{neu}");
+        assert!(!neu.contains("[projectinfo]"));
+        assert!(!s.projektdaten_setzen("Projektdaten geändert", *p, m.ort()));
+        assert!(s.undo());
+        assert_eq!(s.undo_label(), None, "ein Schritt");
+        assert_eq!(sk_model::szo::write(s.model()), leer);
+        assert!(s.redo());
+        assert_eq!(sk_model::szo::write(s.model()), neu);
     }
 
     /// Review 3ao: Beim Ziehen (offener Schritt) gibt `lv` das gemerkte LV

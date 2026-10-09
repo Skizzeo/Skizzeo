@@ -3618,11 +3618,10 @@ impl App {
             return;
         }
         let planung = if neu { self.settings.planung() } else { None };
-        self.projektdaten = Some(projektdaten::Maske::new(
-            self.scene.model().project(),
-            neu,
-            planung,
-        ));
+        self.projektdaten = Some(
+            projektdaten::Maske::new(self.scene.model().project(), neu, planung)
+                .mit_ort(self.scene.model().location()),
+        );
         self.tip = None;
         self.renderer.set_overlay(OVERLAY_TIP, 0, 0, 0, 0, &[]);
         self.overlay_dirty = true;
@@ -3641,8 +3640,10 @@ impl App {
         let planung = (p.author.clone(), p.author_addr.clone());
         if m.neu {
             self.scene.projekt_anfang(*p);
+            self.scene.lage_anfang(m.ort());
         } else {
-            self.scene.projekt_setzen("Projektdaten geändert", p);
+            self.scene
+                .projektdaten_setzen("Projektdaten geändert", *p, m.ort());
         }
         // Die Planung belegt die Maske beim nächsten „Neu“ vor
         self.settings.set_planung(&planung.0, &planung.1);

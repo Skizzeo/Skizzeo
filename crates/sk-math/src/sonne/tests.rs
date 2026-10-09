@@ -187,3 +187,25 @@ fn richtung() {
     let ost = Sonnenstand { azimut: 90.0, ..s }.richtung();
     assert!(ost.x > 0.8 && ost.y.abs() < 1e-12);
 }
+
+/// S1: Mit Nord 90° (Norden zeigt nach +x) steht die Mittagssonne bei −x,
+/// die Morgensonne (Osten) bei −y; die Höhe bleibt.
+#[test]
+fn richtung_im_modell() {
+    let s = Sonnenstand {
+        azimut: 180.0,
+        hoehe: 30.0,
+        hoehe_geometrisch: 30.0,
+    };
+    let r = s.richtung_modell(90.0);
+    assert!(r.x < -0.86 && r.y.abs() < 1e-12 && (r.z - 0.5).abs() < 1e-12);
+    let ost = Sonnenstand { azimut: 90.0, ..s }.richtung_modell(90.0);
+    assert!(ost.y < -0.86 && ost.x.abs() < 1e-12);
+    assert_eq!(s.richtung_modell(0.0), s.richtung());
+    let t = Zeitpunkt::ortszeit(Datum::new(2026, 6, 21).unwrap(), 13, 27);
+    let g = Lage::GANDERKESEE;
+    let v = sonnenvektor_modell(g, 30.0, t);
+    let w = sonnenstand(g, t).richtung_modell(30.0);
+    assert_eq!(v, w);
+    assert!((v.dot(v) - 1.0).abs() < 1e-12);
+}

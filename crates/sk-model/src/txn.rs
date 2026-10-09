@@ -101,6 +101,11 @@ pub enum Change {
         old: Box<Project>,
         new: Box<Project>,
     },
+    /// Lage und Nordrichtung (Sonnenstand S1).
+    Location {
+        old: crate::Location,
+        new: crate::Location,
+    },
 }
 
 impl Change {
@@ -123,6 +128,7 @@ impl Change {
             Change::ForeignRecords { old, new } => old == new,
             Change::Ext { old, new, .. } => old == new,
             Change::Project { old, new } => old == new,
+            Change::Location { old, new } => old == new,
         }
     }
 }
@@ -177,6 +183,7 @@ pub(crate) enum Key {
     Trades,
     ForeignRecords,
     Project,
+    Location,
 }
 
 /// Offener Schritt.

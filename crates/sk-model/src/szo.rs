@@ -24,7 +24,7 @@ use crate::library::{
     type_code, Bearing, LayerFunction, LayerSet, LayerSetId, MatCategory, Material,
     MaterialDisplay, MaterialLayer, TypeCategory,
 };
-use crate::model::{Defaults, Model, Project};
+use crate::model::{Defaults, Location, Model, Project};
 use crate::solid::edge_kind;
 use crate::trade::{self, Trade, TradeId};
 use crate::wall::{segment_count, RefSide};
@@ -804,6 +804,18 @@ fn write_known(m: &Model) -> String {
         }
         line.finish(&mut out);
     }
+    // Lage und Nordrichtung (Sonnenstand S1): ohne Angaben keine Zeile, so
+    // bleibt eine Datei ohne sie bytegleich
+    let l = m.location();
+    if !l.is_unset() {
+        let mut line = Line::new("location");
+        for (k, v) in [("lat", l.lat), ("lon", l.lon), ("north", l.north)] {
+            if let Some(v) = v {
+                line = line.num(k, v);
+            }
+        }
+        line.finish(&mut out);
+    }
     for b in sorted(m.buildings().iter(), |b| b.guid) {
         Line::new("building")
             .guid("guid", Some(b.guid))
@@ -1258,7 +1270,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 29] = [
+    const KNOWN: [&str; 30] = [
         "pen",
         "linetype",
         "fill",
@@ -1271,6 +1283,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         "typeprop",
         "project",
         "projectinfo",
+        "location",
         "building",
         "storey",
         "run",
@@ -1516,6 +1529,33 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             project.legacy = alt;
         }
         [_, r, ..] => return Err(err(r.line, "[projectinfo] doppelt")),
+    }
+    // Lage und Nordrichtung (Sonnenstand S1); Unbrauchbares entfällt mit
+    // Hinweis
+    let mut location = Location::default();
+    match recs("location").as_slice() {
+        [] => {}
+        [r] => {
+            let num = |k: &str| r.opt(k).map(|_| r.f64(k)).transpose();
+            let read = Location {
+                lat: num("lat")?,
+                lon: num("lon")?,
+                north: num("north")?,
+            };
+            location = read.normalized();
+            for (k, a, b) in [
+                ("lat", read.lat, location.lat),
+                ("lon", read.lon, location.lon),
+            ] {
+                if a != b {
+                    hints.push(format!(
+                        "Zeile {}: [location] „{k}“ außerhalb des Bereichs, übergangen",
+                        r.line
+                    ));
+                }
+            }
+        }
+        [_, r, ..] => return Err(err(r.line, "[location] doppelt")),
     }
     // Nummernzähler (Regel 25), z. B. „IW:1,GB:2“; fehlt er, gilt die höchste
     // vorhandene Nummer
@@ -2034,6 +2074,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut model = Model::from_parts(
         project, attr, materials, layer_sets, buildings, storeys, elements, runs, defaults, guids,
     );
+    model.load_location(location);
     for (k, n) in counters {
         if !model.raise_counter(&k, n) {
             hints.push(format!(
@@ -3593,9 +3634,9 @@ mod tests {
             "\n[projectinfo] key=project projno=\"01/26\" site=\"Haus Meier\" client=\"Meier\"\n"
         ));
         assert!(!neu.contains("[project] guid") || !projekt_hat_site(&neu));
-        m.apply(&t, Direction::Undo);
+        m.apply(&t, crate::txn::Direction::Undo);
         assert_eq!(write(&m), alt);
-        m.apply(&t, Direction::Redo);
+        m.apply(&t, crate::txn::Direction::Redo);
         assert_eq!(write(&m), neu);
         // Beides in einer Datei: [projectinfo] gilt, [project] bleibt bytegleich
         let beides = alt.replace(
@@ -3807,5 +3848,84 @@ mod tests {
             let neu = write(&b);
             assert!(neu.contains(&format!(" svc={roh}")), "{roh}: nach Änderung");
         }
+    }
+
+    /// Sonnenstand S1: Ohne Lage keine Zeile, die alte Datei bleibt
+    /// bytegleich; mit Lage eine Zeile `[location]` hinter den
+    /// Projektdaten, Rundlauf bytegleich; ein Schritt „Nordrichtung
+    /// geändert“ und Strg+Z stellt die alte Datei her.
+    #[test]
+    fn s1_lage_und_nordrichtung() {
+        let mut m = house();
+        let alt = write(&m);
+        assert!(!alt.contains("[location]"));
+        assert_eq!(write(&load(&alt).unwrap().model), alt);
+        assert!(load(&alt).unwrap().model.location().is_unset());
+
+        m.begin("Nordrichtung geändert");
+        let l = Location {
+            lat: Some(53.0589),
+            lon: Some(8.591),
+            north: Some(-12.5),
+        };
+        assert!(m.set_location(l));
+        assert!(!m.set_location(l), "gleiche Werte ändern nichts");
+        let t = m.commit().expect("ein Schritt");
+        assert_eq!(t.label, "Nordrichtung geändert");
+        assert_eq!(t.changes.len(), 1);
+        let neu = write(&m);
+        let zeilen: Vec<&str> = neu
+            .lines()
+            .filter(|z| z.starts_with("[location]"))
+            .collect();
+        assert_eq!(zeilen, ["[location] lat=53.0589 lon=8.591 north=347.5"]);
+        let vor = neu.find("[location]").unwrap();
+        assert!(neu.find("[project]").unwrap() < vor);
+        assert!(vor < neu.find("[building]").unwrap_or(neu.len()));
+        assert!(vor < neu.find("[storey]").unwrap());
+
+        let back = load(&neu).unwrap();
+        assert!(back.hints.is_empty(), "{:?}", back.hints);
+        assert_eq!(back.model.location().north, Some(347.5));
+        assert_eq!(back.model.revision(), 0, "Laden ist keine Änderung");
+        assert_eq!(write(&back.model), neu);
+
+        m.apply(&t, Direction::Undo);
+        assert_eq!(write(&m), alt);
+        m.apply(&t, Direction::Redo);
+        assert_eq!(write(&m), neu);
+
+        // Nur die Nordrichtung: Breite und Länge bleiben ungeschrieben
+        let nur = alt.replacen("[storey]", "[location] north=90\n[storey]", 1);
+        let l = load(&nur).unwrap();
+        assert_eq!(l.model.location().lat, None);
+        assert_eq!(l.model.location().north, Some(90.0));
+        assert!(write(&l.model).contains("\n[location] north=90\n"));
+    }
+
+    /// Sonnenstand S1: Unbekanntes an `[location]` (neuere Fassung) bleibt,
+    /// Werte außerhalb des Bereichs entfallen mit Hinweis, Kaputtes und
+    /// eine zweite Zeile sind Fehler mit der Zeile.
+    #[test]
+    fn s1_lage_fremd_und_kaputt() {
+        let alt = write(&house());
+        let mit = |z: &str| alt.replacen("[storey]", &format!("{z}\n[storey]"), 1);
+        let fremd = mit("[location] lat=52.5 lon=13.4 north=0 elev=34");
+        let l = load(&fremd).unwrap();
+        assert_eq!(l.hints.len(), 1, "{:?}", l.hints);
+        assert!(l.hints[0].contains("„elev“"));
+        assert_eq!(l.model.location().north, Some(0.0));
+        let text = write(&l.model);
+        assert!(text.contains("\n[location] lat=52.5 lon=13.4 north=0 elev=34\n"));
+
+        let weit = mit("[location] lat=95 lon=13.4");
+        let l = load(&weit).unwrap();
+        assert_eq!(l.hints.len(), 1, "{:?}", l.hints);
+        assert!(l.hints[0].contains("„lat“ außerhalb"), "{:?}", l.hints);
+        assert_eq!(l.model.location().lat, None);
+        assert_eq!(l.model.location().lon, Some(13.4));
+
+        assert!(load(&mit("[location] lat=Nord")).is_err());
+        assert!(load(&mit("[location] north=1\n[location] north=2")).is_err());
     }
 }

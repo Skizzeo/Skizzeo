@@ -5,7 +5,7 @@
 //! setzt sie (bei „Neu“ ohne Rückgängig-Schritt, sonst als ein Schritt).
 //! Die Maske zeigt keinen Befund und sperrt nichts.
 
-use sk_model::Project;
+use sk_model::{Location, Project};
 use sk_paint::{Canvas, Path};
 use sk_platform::{Key, Modifiers};
 use sk_ui::text_edit::TextEdit;
@@ -43,23 +43,33 @@ pub const VORSCHLAEGE: [&str; 6] = [
 ];
 
 /// Ein Feld: Bezeichnung, leises Beispiel, Zeilen, höchstens so viele
-/// Zeichen, Breite (dip; 0 = bis zum Rand).
+/// Zeichen, Breite (dip; 0 = bis zum Rand), linker Rand (dip; 0 = unter
+/// den anderen, sonst neben dem vorigen Feld der [`REIHE`] mit der
+/// Bezeichnung davor) und Einheit dahinter.
 struct Feld {
     name: &'static str,
     beispiel: &'static str,
     zeilen: usize,
     max: usize,
     breite: f32,
+    x: f32,
+    einheit: &'static str,
 }
 
-/// In Lesereihenfolge; Gruppen ab 0 (Bauvorhaben), 4 (Bauherr), 6 (Planung).
-const FELDER: [Feld; 8] = [
+/// Gruppen ab 0 (Bauvorhaben), 4 (Bauherr), 6 (Planung). Breite und Länge
+/// (Sonnenstand S1) stehen hinten, damit die Nummern 0–7 bleiben (der
+/// AVA-Kopf öffnet die Maske an einem Feld); gezeigt und mit Tab erreicht
+/// werden sie unter dem Bauort ([`REIHE`]). Leise vorbelegt ist der
+/// Standardort Ganderkesee.
+const FELDER: [Feld; 10] = [
     Feld {
         name: "Projektart",
         beispiel: "z. B. Neubau Einfamilienhaus",
         zeilen: 1,
         max: 70,
         breite: 0.0,
+        x: 0.0,
+        einheit: "",
     },
     Feld {
         name: "Bezeichnung",
@@ -67,6 +77,8 @@ const FELDER: [Feld; 8] = [
         zeilen: 1,
         max: 120,
         breite: 0.0,
+        x: 0.0,
+        einheit: "",
     },
     Feld {
         name: "Bauort",
@@ -74,6 +86,8 @@ const FELDER: [Feld; 8] = [
         zeilen: 2,
         max: 200,
         breite: 0.0,
+        x: 0.0,
+        einheit: "",
     },
     Feld {
         name: "Projektnummer",
@@ -81,6 +95,8 @@ const FELDER: [Feld; 8] = [
         zeilen: 1,
         max: 20,
         breite: 110.0,
+        x: 0.0,
+        einheit: "",
     },
     Feld {
         name: "Name",
@@ -88,6 +104,8 @@ const FELDER: [Feld; 8] = [
         zeilen: 1,
         max: 120,
         breite: 0.0,
+        x: 0.0,
+        einheit: "",
     },
     Feld {
         name: "Anschrift",
@@ -95,6 +113,8 @@ const FELDER: [Feld; 8] = [
         zeilen: 3,
         max: 200,
         breite: 0.0,
+        x: 0.0,
+        einheit: "",
     },
     Feld {
         name: "Name",
@@ -102,6 +122,8 @@ const FELDER: [Feld; 8] = [
         zeilen: 1,
         max: 120,
         breite: 0.0,
+        x: 0.0,
+        einheit: "",
     },
     Feld {
         name: "Anschrift",
@@ -109,11 +131,33 @@ const FELDER: [Feld; 8] = [
         zeilen: 3,
         max: 200,
         breite: 0.0,
+        x: 0.0,
+        einheit: "",
+    },
+    Feld {
+        name: "Breite",
+        beispiel: "53,0589",
+        zeilen: 1,
+        max: 12,
+        breite: 96.0,
+        x: 0.0,
+        einheit: "° N",
+    },
+    Feld {
+        name: "Länge",
+        beispiel: "8,591",
+        zeilen: 1,
+        max: 12,
+        breite: 96.0,
+        x: 330.0,
+        einheit: "° O",
     },
 ];
+/// Felder in Lese- und Tab-Reihenfolge.
+const REIHE: [usize; 10] = [0, 1, 2, 8, 9, 3, 4, 5, 6, 7];
 const GRUPPEN: [(usize, &str); 3] = [(0, "BAUVORHABEN"), (4, "BAUHERR"), (6, "PLANUNG")];
 /// Wort des Felds für Meldungen (Bezeichnung mit Gruppe, wo doppelt).
-const WORT: [&str; 8] = [
+const WORT: [&str; 10] = [
     "Projektart",
     "Bezeichnung",
     "Bauort",
@@ -122,7 +166,35 @@ const WORT: [&str; 8] = [
     "Anschrift Bauherr",
     "Planung",
     "Anschrift Planung",
+    "Breite",
+    "Länge",
 ];
+
+/// Breite (Feld 8) und Länge (Feld 9): Grenze in Grad.
+const GRAD_MAX: [f64; 2] = [90.0, 180.0];
+
+/// Gradzahl aus einem Feld: Komma oder Punkt, Minus, ein `°` dahinter
+/// erlaubt. `Ok(None)` für leer, `Err` für keine Zahl im Bereich.
+fn grad(text: &str, max: f64) -> Result<Option<f64>, ()> {
+    let t = text.trim();
+    let t = t.strip_suffix('°').unwrap_or(t).trim_end();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    let v: f64 = t
+        .replace(',', ".")
+        .replace('−', "-")
+        .parse()
+        .map_err(|_| ())?;
+    (v.is_finite() && v.abs() <= max)
+        .then_some(Some(v))
+        .ok_or(())
+}
+
+/// Gradzahl für ein Feld, mit Komma.
+fn grad_text(v: Option<f64>) -> String {
+    v.map_or_else(String::new, |v| v.to_string().replace('.', ","))
+}
 
 /// Was die Maus treffen kann.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,7 +220,7 @@ pub enum Antwort {
 
 /// Lage der Teile, relativ zum Blatt (Pixel).
 struct Lage {
-    felder: [Rect; 8],
+    felder: [Rect; 10],
     gruppen: [f32; 3],
     knoepfe: [Rect; 2],
     schliessen: Rect,
@@ -158,13 +230,15 @@ struct Lage {
 pub struct Maske {
     /// Bei Datei › Neu: „Später“ statt „Abbrechen“.
     pub neu: bool,
-    felder: [TextEdit; 8],
+    felder: [TextEdit; 10],
     fokus: usize,
     /// Vorschlagsliste offen: markierte Zeile der gefilterten Vorschläge.
     liste: Option<Option<usize>>,
     /// Planung vom letzten Projekt vorbelegt.
     vom_letzten: bool,
     basis: Project,
+    /// Lage beim Öffnen; die Nordrichtung setzt die Maske nicht.
+    ort: Location,
     hover: Option<Ziel>,
     pressed: Option<Ziel>,
 }
@@ -187,7 +261,7 @@ impl Maske {
             &p.author,
             &p.author_addr,
         ];
-        let mut felder: [TextEdit; 8] = Default::default();
+        let mut felder: [TextEdit; 10] = Default::default();
         for (f, w) in felder.iter_mut().zip(werte) {
             *f = TextEdit::new(w);
             f.end(false);
@@ -209,8 +283,30 @@ impl Maske {
             liste: None,
             vom_letzten,
             basis: p.clone(),
+            ort: Location::default(),
             hover: None,
             pressed: None,
+        }
+    }
+
+    /// Breite und Länge aus der Lage des Projekts (Sonnenstand S1).
+    pub fn mit_ort(mut self, l: &Location) -> Maske {
+        for (i, v) in [(8, l.lat), (9, l.lon)] {
+            self.felder[i] = TextEdit::new(&grad_text(v));
+            self.felder[i].end(false);
+        }
+        self.ort = *l;
+        self
+    }
+
+    /// Die Lage aus Breite und Länge; ein Wert, der keine Zahl im Bereich
+    /// ist, lässt den alten stehen (die Maske meldet ihn).
+    pub fn ort(&self) -> Location {
+        let w = |i: usize, alt| grad(&self.felder[i].text, GRAD_MAX[i - 8]).unwrap_or(alt);
+        Location {
+            lat: w(8, self.ort.lat),
+            lon: w(9, self.ort.lon),
+            ..self.ort
         }
     }
 
@@ -249,20 +345,20 @@ impl Maske {
     /// Meldung zu einem Wert, der nicht passt (zu lang, Umbruch in einem
     /// einzeiligen Feld); er bleibt trotzdem erhalten (Regel 110).
     pub fn meldung(&self) -> Option<String> {
-        self.felder
-            .iter()
-            .zip(&FELDER)
-            .zip(WORT)
-            .find_map(|((e, f), wort)| {
-                let n = e.text.chars().count();
-                if n > f.max {
-                    Some(format!("{wort}: höchstens {} Zeichen.", f.max))
-                } else if f.zeilen == 1 && e.text.contains('\n') {
-                    Some(format!("{wort}: nur eine Zeile."))
-                } else {
-                    None
-                }
-            })
+        REIHE.iter().find_map(|&i| {
+            let (e, f, wort) = (&self.felder[i], &FELDER[i], WORT[i]);
+            let n = e.text.chars().count();
+            if n > f.max {
+                Some(format!("{wort}: höchstens {} Zeichen.", f.max))
+            } else if f.zeilen == 1 && e.text.contains('\n') {
+                Some(format!("{wort}: nur eine Zeile."))
+            } else if i >= 8 && grad(&e.text, GRAD_MAX[i - 8]).is_err() {
+                let g = GRAD_MAX[i - 8];
+                Some(format!("{wort}: Zahl von −{g} bis {g}."))
+            } else {
+                None
+            }
+        })
     }
 
     /// Vorschläge zur Projektart, nach dem Getippten gefiltert (leer: alle).
@@ -303,9 +399,10 @@ impl Maske {
 
     fn lage(&self, s: f32) -> Lage {
         let mut y = KOPF_H + 12.0;
-        let mut felder = [Rect::new(0.0, 0.0, 0.0, 0.0); 8];
+        let mut felder = [Rect::new(0.0, 0.0, 0.0, 0.0); 10];
         let mut gruppen = [0.0; 3];
-        for (i, f) in FELDER.iter().enumerate() {
+        for i in REIHE {
+            let f = &FELDER[i];
             if let Some(g) = GRUPPEN.iter().position(|(a, _)| *a == i) {
                 gruppen[g] = y * s;
                 y += GRUPPE_H;
@@ -320,7 +417,12 @@ impl Maske {
             } else {
                 W - PAD - FELD_X
             };
-            felder[i] = rect(FELD_X * s, y * s, w * s, h * s);
+            if f.x > 0.0 {
+                // in der Zeile des vorigen Felds
+                y -= h + LUFT;
+            }
+            let x = if f.x > 0.0 { f.x } else { FELD_X };
+            felder[i] = rect(x * s, y * s, w * s, h * s);
             y += h + LUFT;
         }
         let fuss = y + 4.0;
@@ -511,8 +613,9 @@ impl Maske {
                 }
             }
             Key::Tab => {
-                let j = if sh { (i + 7) % 8 } else { (i + 1) % 8 };
-                self.fokus_auf(j);
+                let n = REIHE.len();
+                let k = REIHE.iter().position(|&j| j == i).unwrap_or(0);
+                self.fokus_auf(REIHE[(k + if sh { n - 1 } else { 1 }) % n]);
             }
             RUNTER if i == 0 => {
                 self.liste = Some(match self.liste {
@@ -625,7 +728,14 @@ impl Maske {
             let r = at(l.felder[i]);
             let fokus = i == self.fokus;
             let lbl_y = r.y + (ZEILE_H * s + cap(fpx)) * 0.5;
-            widgets::text(&mut c, regular, f.name, fpx, x0, lbl_y, u.text_dim);
+            let lbl_x = if f.x > 0.0 {
+                r.x - 8.0 * s - regular.map_or(0.0, |ft| ft.width(f.name, fpx))
+            } else {
+                x0
+            };
+            widgets::text(&mut c, regular, f.name, fpx, lbl_x, lbl_y, u.text_dim);
+            let ex = r.x + r.w + 6.0 * s;
+            widgets::text(&mut c, regular, f.einheit, fpx, ex, lbl_y, u.text_dim);
             if i == 0 {
                 widgets::combo(
                     &mut c,
@@ -851,7 +961,13 @@ mod tests {
         tippen(&mut m, "Haus Mustermann");
         tab(&mut m);
         tippen(&mut m, "Musterweg 1\n27777 Ganderkesee");
+        // Breite und Länge unter dem Bauort; leer bleibt der Standardort
         tab(&mut m);
+        assert_eq!(m.fokus(), 8);
+        tab(&mut m);
+        assert_eq!(m.fokus(), 9);
+        tab(&mut m);
+        assert_eq!(m.fokus(), 3);
         tippen(&mut m, "01/26");
         tab(&mut m);
         tippen(&mut m, "Max Mustermann");
@@ -874,6 +990,64 @@ mod tests {
         assert_eq!(p.author_addr, "Denkmalsweg 18b\n27777 Ganderkesee");
         assert_eq!(p.guid, sk_model::Guid(7));
         assert!(m.meldung().is_none());
+        assert!(m.ort().is_unset());
+    }
+
+    /// Sonnenstand S1: Breite und Länge mit Komma oder Punkt, Grad und
+    /// Minus; leer heißt nicht gesetzt. Unbrauchbares wird gemeldet und
+    /// lässt den alten Wert stehen. Die Nordrichtung bleibt, wie sie war.
+    #[test]
+    fn breite_und_laenge() {
+        let alt = Location {
+            lat: Some(53.0589),
+            lon: Some(8.591),
+            north: Some(12.0),
+        };
+        let mut m = Maske::new(&ohne(), false, None).mit_ort(&alt);
+        assert_eq!((m.wert(8), m.wert(9)), ("53,0589", "8,591"));
+        assert_eq!(m.ort(), alt);
+        // Umschalt+Tab läuft rückwärts: von der Projektnummer zur Länge
+        m.fokus_auf(3);
+        let sh = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        m.key(Key::Tab, sh);
+        assert_eq!(m.fokus(), 9);
+        m.fokus_auf(8);
+        tippen(&mut m, "−33,87°");
+        m.fokus_auf(9);
+        tippen(&mut m, "151.21");
+        assert!(m.meldung().is_none(), "{:?}", m.meldung());
+        let l = m.ort();
+        assert_eq!(
+            (l.lat, l.lon, l.north),
+            (Some(-33.87), Some(151.21), Some(12.0))
+        );
+        m.fokus_auf(8);
+        tippen(&mut m, "95");
+        assert_eq!(m.meldung().as_deref(), Some("Breite: Zahl von −90 bis 90."));
+        assert_eq!(m.ort().lat, Some(53.0589), "alter Wert bleibt");
+        m.fokus_auf(9);
+        tippen(&mut m, "Ost");
+        m.fokus_auf(8);
+        m.key(Key::Delete, Modifiers::default());
+        assert_eq!(
+            m.meldung().as_deref(),
+            Some("Länge: Zahl von −180 bis 180.")
+        );
+        assert_eq!(m.ort().lat, None, "leer: nicht gesetzt");
+        for (t, v) in [
+            ("", Ok(None)),
+            (" 8,5 ° ", Ok(Some(8.5))),
+            ("-180", Ok(Some(-180.0))),
+            ("180,01", Err(())),
+            ("1e400", Err(())),
+            ("NaN", Err(())),
+        ] {
+            assert_eq!(grad(t, 180.0), v, "{t}");
+        }
+        assert_eq!(grad_text(Some(-0.5)), "-0,5");
     }
 
     /// Abnahme 2: Esc verwirft; über den Knopf kein „vom letzten Projekt“;
@@ -889,7 +1063,7 @@ mod tests {
         p.number = "01/26".into();
         let mut m = Maske::new(&p, false, Some(("X".into(), String::new())));
         assert!(!m.vom_letzten());
-        for _ in 0..3 {
+        for _ in 0..5 {
             tab(&mut m);
         }
         m.key(Key::End, Modifiers::default());
@@ -942,6 +1116,20 @@ mod tests {
             let l = m.lage(s);
             let unten = m.liste_rects(s).last().map_or(0.0, |r| r.y + r.h);
             assert!(unten < l.h, "Liste im Blatt");
+            // Breite und Länge in einer Zeile zwischen Bauort und
+            // Projektnummer; Einheit, Bezeichnung und Rand überdecken sich nicht
+            let [b, la] = [l.felder[8], l.felder[9]];
+            assert_eq!(b.y, la.y);
+            assert!(l.felder[2].y + l.felder[2].h < b.y);
+            assert!(b.y + b.h < l.felder[3].y);
+            assert_eq!(b.x, l.felder[2].x);
+            if let Some(f) = fonts.regular.as_ref() {
+                let px = t.size.font_small * s;
+                let einheit = b.x + b.w + 6.0 * s + f.width("° N", px);
+                let name = la.x - 8.0 * s - f.width("Länge", px);
+                assert!(einheit + 8.0 * s < name, "{einheit} {name}");
+                assert!(la.x + la.w + 6.0 * s + f.width("° O", px) < (W - PAD / 2.0) * s);
+            }
         }
     }
 
@@ -988,6 +1176,11 @@ mod tests {
             tab(&mut m);
             tippen(&mut m, w);
             assert_eq!(m.fokus(), k + 1);
+            if k == 1 {
+                // Breite und Länge leer
+                tab(&mut m);
+                tab(&mut m);
+            }
         }
         ab(m.paint(&t, &fonts, 1.0), "ist-projektdaten-a-neu.png");
         // b) über den Knopf, leer, Liste der Projektart offen
