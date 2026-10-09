@@ -7,7 +7,7 @@
 //! Das Blatt rechnet nichts: Das LV kommt aus [`Scene::lv`] auf dem
 //! Kostenblatt desselben Umfangs.
 
-use crate::kosten_view::{euro, geschoss_name, gewerk_name, kg_name, prozent, tausender};
+use crate::kosten_view::{euro, gewerk_name, kg_name, prozent, tausender};
 use crate::picking::Picking;
 use crate::scene::Scene;
 use crate::schedule_view::ListOut;
@@ -1137,6 +1137,16 @@ impl AvaView {
             u.sheet_text_dim,
         );
         let rechts = x0 + TREE_W * s;
+        // Titel der gewählten Position fett (spaeter-darstellung 14)
+        let titel_gewaehlt = self
+            .gewaehlt
+            .as_deref()
+            .and_then(|oz| {
+                self.zeilen
+                    .iter()
+                    .find(|z| z.art == Art::Position && z.oz == oz)
+            })
+            .and_then(|z| z.titel);
         for (i, (x, y, w, h)) in self.baum_lage(t) {
             let k = &self.baum[i];
             if self.hot == Some(Hot::Baum(i)) {
@@ -1186,12 +1196,18 @@ impl AvaView {
                     );
                 }
                 Knoten::Titel {
+                    guid,
                     nr,
                     name,
                     anzahl,
                     punkt,
                     ..
                 } => {
+                    let f = if titel_gewaehlt == Some(*guid) {
+                        bold
+                    } else {
+                        regular
+                    };
                     let col = if *anzahl == 0 {
                         u.sheet_hint
                     } else {
@@ -1200,13 +1216,9 @@ impl AvaView {
                     let tx = x + 30.0 * s;
                     regular.draw(c, nr, px, tx, mitte(y, h, regular), u.sheet_text_dim);
                     let nw = 26.0 * s;
-                    let name = sk_ui::widgets::ellipsize(
-                        Some(regular),
-                        name,
-                        px,
-                        rechts - 40.0 * s - (tx + nw),
-                    );
-                    regular.draw(c, &name, px, tx + nw, mitte(y, h, regular), col);
+                    let name =
+                        sk_ui::widgets::ellipsize(Some(f), name, px, rechts - 40.0 * s - (tx + nw));
+                    f.draw(c, &name, px, tx + nw, mitte(y, h, f), col);
                     zahl(c, *anzahl, u.sheet_text_dim);
                     Self::paint_punkt(
                         c,
@@ -1311,7 +1323,12 @@ impl AvaView {
                 rechts(c, regular, "GP", hpx, r, kopf, u.sheet_text_dim);
             }
             Ansicht::Zusammenstellung => {
-                bold.draw(c, "Zusammenstellung", px, tx, kopf, u.sheet_text);
+                // Mit dem Umfang: „Zusammenstellung · Los Rohbau“ (Bedienbarkeit 12)
+                let titel = self.lv.as_ref().map_or_else(
+                    || "Zusammenstellung".to_string(),
+                    |lv| format!("Zusammenstellung · Los {}", lv.kopf.los),
+                );
+                bold.draw(c, &titel, px, tx, kopf, u.sheet_text);
                 rechts(c, regular, "Betrag", hpx, r, kopf, u.sheet_text_dim);
             }
             Ansicht::Pruefen => {
@@ -1428,9 +1445,24 @@ impl AvaView {
                     }
                 }
                 Art::Summe => {
+                    // Linie über „Summe netto“, MwSt. nicht fett (spaeter 12)
+                    if z.text == SUMME_NETTO {
+                        c.fill_rect(
+                            tx + OZ_W * s,
+                            y,
+                            r - tx - OZ_W * s,
+                            s.max(1.0),
+                            u.sheet_rule,
+                        );
+                    }
                     regular.draw(c, &z.text, px, tx + OZ_W * s, base, u.sheet_text);
+                    let f = if z.text.starts_with("MwSt.") {
+                        regular
+                    } else {
+                        bold
+                    };
                     if self.preise {
-                        rechts(c, bold, &z.gp, px, r, base, u.sheet_text);
+                        rechts(c, f, &z.gp, px, r, base, u.sheet_text);
                     } else {
                         leer_strich(c, r, base);
                     }
@@ -1708,6 +1740,9 @@ pub fn lv_zeilen(lv: &Lv) -> Vec<Zeile> {
 
 /// Zusammenstellung: Titelsummen, netto, MwSt. und brutto; ohne Preise
 /// bleiben die Beträge leer.
+/// Erste Summenzeile der Zusammenstellung.
+const SUMME_NETTO: &str = "Summe netto";
+
 pub fn zusammenstellung(lv: &Lv) -> Vec<Zeile> {
     let z = &lv.zusammenstellung;
     let mut v: Vec<Zeile> = z
@@ -1721,7 +1756,7 @@ pub fn zusammenstellung(lv: &Lv) -> Vec<Zeile> {
         .collect();
     let satz = z.mwst_satz.text().replace('.', ",");
     for (text, wert) in [
-        ("Summe netto".to_string(), z.netto),
+        (SUMME_NETTO.to_string(), z.netto),
         (format!("MwSt. {satz} %"), z.mwst),
         ("Summe brutto".to_string(), z.brutto),
     ] {
@@ -1843,7 +1878,8 @@ pub fn detail(m: &Model, kat: &Katalog, lv: &Lv, oz: &str) -> Option<Detail> {
                 return [String::new(), a.herkunft.clone(), menge, String::new()];
             }
             [
-                geschoss_name(m, a.geschoss),
+                // Kurz wie die Chips: „EG“ (spaeter-darstellung 15)
+                crate::umfang_view::kurzname(m, a.geschoss),
                 nummern_kurz(&a.nummern),
                 menge,
                 a.herkunft.clone(),

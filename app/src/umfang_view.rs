@@ -36,7 +36,7 @@ pub struct Chip {
 }
 
 /// Kurzname eines Geschosses wie im Bogen: „Fundament“, „EG“, „OG“.
-fn kurzname(m: &Model, id: StoreyId) -> String {
+pub(crate) fn kurzname(m: &Model, id: StoreyId) -> String {
     match m.storey(id) {
         Some(s) if s.kind == LevelKind::Foundation => FOUNDATION_NAME.into(),
         Some(s) => s.short.clone(),

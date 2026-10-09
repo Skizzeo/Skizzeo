@@ -156,7 +156,7 @@ mod unterschiede;
 mod zeilen;
 
 pub use zeilen::{chip_summen, euro_ganz, menge_text, zeilen};
-pub(crate) use zeilen::{euro, geschoss_name, gewerk_name, kg_name, prozent, tausender};
+pub(crate) use zeilen::{euro, gewerk_name, kg_name, prozent, tausender};
 
 // --- Ansicht -----------------------------------------------------------------
 
