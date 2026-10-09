@@ -1625,7 +1625,13 @@ impl App {
     /// Wie [`App::replace_scene`] mit fertiger Szene.
     fn install_scene(&mut self, scene: Scene) {
         self.scene = scene;
+        // Neu, Öffnen, Sicherung: der Nordpfeil und seine geführte Zeile
+        // enden mit dem alten Projekt (Review 3ce)
+        if self.nord_fuehrung.laeuft {
+            self.nord_gefuehrt_ende();
+        }
         self.nord_fuehrung = Default::default();
+        self.nord.set_aktiv(false);
         self.ui.dialog = false;
         self.snaps_key = None;
         self.scene.set_theme(&self.theme);
@@ -4619,7 +4625,8 @@ impl App {
                 key, down, mods, ..
             } if self.sonne.eingabe.is_some() => {
                 let mut out = sonne_view::Ausgang::default();
-                match self.sonne_an() {
+                // Ohne Gebäude steht statt der Leiste der Hinweis (S9, Review 3ce)
+                match self.sonne_an().filter(|_| self.scene.bounds().is_some()) {
                     Some(sun) if down => {
                         self.sonne.key(key, mods, sun, &mut out);
                     }

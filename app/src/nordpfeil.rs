@@ -159,8 +159,6 @@ fn grad(nord: f64) -> String {
     g.to_string().replace('.', ",")
 }
 
-/// Tooltip der Kachel: ohne Nordrichtung „Nordrichtung festlegen“, sonst
-/// der Schalter des Sonnenstands (§8 09:25).
 /// Zeile beim geführten Nordpfeil nach dem ersten Umriss (S9).
 pub const GEFUEHRT: &str = "Nordrichtung festlegen: Fußpunkt neben dem Gebäude klicken, dann zur Nordrichtung ziehen oder die Gradzahl tippen. Esc = später.";
 
@@ -202,6 +200,8 @@ impl Fuehrung {
     }
 }
 
+/// Tooltip der Kachel: ohne Nordrichtung „Nordrichtung festlegen“, sonst
+/// der Schalter des Sonnenstands (§8 09:25).
 pub fn tip(nord: Option<f64>, sonne: bool) -> String {
     match (nord, sonne) {
         (None, _) => "Nordrichtung festlegen".into(),
