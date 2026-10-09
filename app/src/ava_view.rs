@@ -409,6 +409,10 @@ pub struct AvaView {
     /// Seitenrand des Blatts (dip, `sheet_pad`), aus `tick`: Für die
     /// Zeilenhöhen ohne Theme.
     rand: f32,
+    /// Größte Breite rechts vom Baum (dip, `qto_max_w`), aus `tick` wie
+    /// `rand`: [`AvaView::zwei_bei`] rechnet mit derselben Breite wie
+    /// `content_x` (Review 3bo).
+    max_w: f32,
     /// „Mit Preisen“; sonst „Für Anfrage (leer)“.
     pub preise: bool,
     los: Option<Guid>,
@@ -476,6 +480,7 @@ impl AvaView {
             scale: 1.0,
             top: 0.0,
             rand: 28.0,
+            max_w: 900.0,
             preise: true,
             los: None,
             offen: Vec::new(),
@@ -934,7 +939,11 @@ impl AvaView {
         if z.art != Art::Position || self.ansicht != Ansicht::Lv {
             return false;
         }
-        let cw = (self.w as f32 - 2.0 * self.rand * self.scale).max(0.0);
+        // Wie `content_x`: rechts höchstens `qto_max_w`
+        let max = (TREE_W + TREE_GAP + self.max_w) * self.scale;
+        let cw = (self.w as f32 - 2.0 * self.rand * self.scale)
+            .min(max)
+            .max(0.0);
         let tw = cw / self.scale - self.baum_platz(cw);
         let sp = Spalten::fuer(tw);
         let platz = tw - sp.oz_w - sp.kurz_ende;
@@ -1387,8 +1396,9 @@ impl AvaView {
     }
 
     pub fn tick(&mut self, t: &Theme, now: Instant) -> bool {
-        if self.rand != t.size.sheet_pad {
+        if self.rand != t.size.sheet_pad || self.max_w != t.size.qto_max_w {
             self.rand = t.size.sheet_pad;
+            self.max_w = t.size.qto_max_w;
             self.clamp();
         }
         self.leiste.tick(t, now)

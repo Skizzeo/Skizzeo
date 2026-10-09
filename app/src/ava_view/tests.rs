@@ -1257,3 +1257,40 @@ fn knoepfe_und_vorschauleiste_ueberdecken_sich_nie() {
         }
     }
 }
+
+/// Review 3bo: Im breiten Fenster begrenzt `qto_max_w` die Tabelle; der
+/// Kurztext bricht dann um, statt in der ersten Zeile mit „…“ zu enden
+/// (Befund M), und die Zeilenhöhe zählt die zweite Zeile mit.
+#[test]
+fn kurztext_bricht_auch_im_breiten_fenster_um() {
+    let Some(fonts) = schrift() else {
+        return;
+    };
+    let f = fonts.regular.as_ref().unwrap();
+    let t = Theme::dark();
+    let mut s = haus();
+    for dip in [1000u32, 1400, 1920] {
+        let mut v = AvaView::new();
+        (v.w, v.h) = (dip, 900);
+        v.top = 120.0;
+        v.tick(&t, Instant::now());
+        v.sync(&mut s, None);
+        let i = v
+            .zeilen
+            .iter()
+            .position(|z| z.art == Art::Position)
+            .unwrap();
+        v.zeilen[i].text =
+            "Mauerwerk aus Kalksandstein-Plansteinen KS 20-2,0, d = 17,5 cm, Dünnbettmörtel".into();
+        v.breiten.borrow_mut().clear();
+        v.messen(&fonts);
+        let z = v.position_zellen(&t, f, 11.0, i);
+        assert!(!z[1].0.ends_with('…'), "{dip} dip: {}", z[1].0);
+        assert!(v.zwei_bei(i), "{dip} dip: zweite Zeile");
+        assert_eq!(
+            format!("{} {}", z[1].0, z[2].0),
+            v.zeilen[i].text,
+            "{dip} dip"
+        );
+    }
+}
