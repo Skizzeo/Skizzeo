@@ -176,11 +176,9 @@ const MESH_MODEL: usize = 0;
 const MESH_PREVIEW: usize = 1;
 const MESH_LIVE: usize = 2;
 const MESH_GHOST: usize = 3;
-/// Würfel 10 m ohne Gebäude bei eingeschaltetem Sonnenstand (nur Anzeige).
-const MESH_WUERFEL: usize = 4;
 /// Wofür der Griff an der Schattenspitze gilt: Sonne, Lage, Stand der
-/// Ecken, mit Gebäude (sonst am Würfel).
-type GriffSchluessel = (sk_model::Sun, sk_model::Location, u64, bool);
+/// Ecken.
+type GriffSchluessel = (sk_model::Sun, sk_model::Location, u64);
 /// Tooltip an Leiste und Sonne, wenn der Treiber keine Schatten kann (S5).
 const SCHATTEN_FEHLT: &str = "Schatten auf diesem Rechner nicht verfügbar.";
 /// Bildabstand für Animationen im Mengenfenster (das Hauptfenster läuft mit vsync).
@@ -632,7 +630,8 @@ struct App {
     /// davon etwas ändert, nicht je Mausbewegung über alle Ecken (Review 3cb).
     griff_cache: Option<(GriffSchluessel, Option<sonne_view::Griff>)>,
     ecken_stand: u64,
-    wuerfel: bool,
+    /// Der geführte Nordpfeil nach dem ersten Umriss (S9).
+    nord_fuehrung: nordpfeil::Fuehrung,
     licht: Option<[f32; 3]>,
     /// Zuletzt hochgeladene Terrassenangaben (Text, Skalierung,
     /// Farbschema) und ihre Bildgröße.
@@ -1171,21 +1170,75 @@ impl App {
         self.nord_commit(out.commit);
         // Klick auf den Pfeil schaltet den Sonnenstand (§8 09:25)
         if out.klick {
-            let on = self.sonne_an().is_none();
-            self.sonne_schalten(on, true);
+            self.sonne_umschalten(true);
         }
         out.consumed
     }
 
+    /// Kachel oder Klick auf den Pfeil: Sonnenstand um; ohne Gebäude geht
+    /// er nicht an, ein Hinweis sagt warum (S9). `zu_3d` wie bei
+    /// [`App::sonne_schalten`].
+    fn sonne_umschalten(&mut self, zu_3d: bool) {
+        let an = self.sonne_an().is_some();
+        match sonne_view::umschalten(an, self.scene.bounds().is_some()) {
+            Ok(on) => self.sonne_schalten(on, zu_3d),
+            Err(h) => self.status(meldung::Meldung::satz(h), NOTICE_TIME),
+        }
+    }
+
+    /// Nach dem ersten geschlossenen Umriss ohne Nordrichtung startet der
+    /// Nordpfeil einmal je Projekt von selbst (S9); Esc heißt „später“.
+    fn nord_fuehren(&mut self, umriss: bool, erster: bool) {
+        let haus = self.scene.bounds().is_some();
+        let nord = self.scene.model().location().north;
+        let erlaubt = self.tool_allowed();
+        if !self
+            .nord_fuehrung
+            .nach_wandzug(umriss, erster, haus, nord, erlaubt)
+        {
+            return;
+        }
+        self.tool.set_enabled(false);
+        self.nord.set_aktiv(true);
+        self.nord_zeile();
+        self.overlay_dirty = true;
+        self.redraw = true;
+    }
+
+    /// Zeile des geführten Nordpfeils in der Statuszeile; sie steht, solange
+    /// das Werkzeug an ist (§8 13:50), auch nach einem anderen Hinweis.
+    fn nord_zeile(&mut self) {
+        self.status(
+            meldung::Meldung::satz(nordpfeil::GEFUEHRT),
+            std::time::Duration::from_secs(3600),
+        );
+    }
+
+    /// Der geführte Nordpfeil ist zu Ende (gesetzt oder Esc): seine Zeile
+    /// geht aus der Statuszeile.
+    fn nord_gefuehrt_ende(&mut self) {
+        if self
+            .notice
+            .as_ref()
+            .is_some_and(|n| n.text == nordpfeil::GEFUEHRT)
+        {
+            self.notice = None;
+            self.renderer.set_overlay(OVERLAY_NOTICE, 0, 0, 0, 0, &[]);
+            self.redraw = true;
+        }
+    }
+
     /// Ein Schritt „Nordrichtung geändert“ bzw. „Nordpfeil verschoben“.
-    /// Nach dem ersten Aufziehen ist der Sonnenstand an (§8 09:25).
+    /// Nach dem ersten Aufziehen ist der Sonnenstand an (§8 09:25), ohne
+    /// Gebäude noch nicht (S9).
     fn nord_commit(&mut self, c: Option<nordpfeil::Setzen>) {
         if let Some((label, n, f)) = c {
             let neu = self.scene.model().location().north.is_none();
             if self.scene.nordpfeil_setzen(label, n, f) {
                 self.overlay_dirty = true;
+                // Geführt aus dem Grundriss: nach 3D wie bei der Kachel
                 if neu {
-                    self.sonne_schalten(true, false);
+                    self.sonne_umschalten(self.nord_fuehrung.laeuft);
                 }
             }
             self.redraw = true;
@@ -1199,41 +1252,31 @@ impl App {
         m.sun().filter(|s| s.on && m.location().north.is_some())
     }
 
-    /// Der Himmel bei eingeschaltetem Sonnenstand in 3D: um das Gebäude,
-    /// ohne Gebäude um den Würfel.
+    /// Der Himmel bei eingeschaltetem Sonnenstand in 3D um das Gebäude;
+    /// ohne Gebäude keiner, also keine Sonne (S9).
     fn himmel(&self) -> Option<sonne_view::Himmel> {
         let s = self
             .sonne_an()
             .filter(|_| self.ui.view == ViewKind::Persp)?;
-        let q = self
-            .scene
-            .bounds()
-            .unwrap_or_else(sonne_view::wuerfel_quader);
+        let q = self.scene.bounds()?;
         Some(sonne_view::himmel(self.scene.model().location(), &s, q))
     }
 
     /// Griff an der Schattenspitze (S6): in 3D, solange die Sonne Schatten
-    /// wirft und der Rechner ihn zeichnen kann; ohne Gebäude am Würfel.
+    /// wirft und der Rechner ihn zeichnen kann; ohne Gebäude keiner (S9).
     fn griff(&mut self) -> Option<sonne_view::Griff> {
         let s = self
             .sonne_an()
             .filter(|_| self.ui.view == ViewKind::Persp && !self.renderer.shadow_failed())?;
-        let haus = self.scene.bounds().is_some();
+        self.scene.bounds()?;
         let ort = *self.scene.model().location();
-        let schluessel = (s, ort, self.ecken_stand, haus);
+        let schluessel = (s, ort, self.ecken_stand);
         if let Some((k, g)) = &self.griff_cache {
             if *k == schluessel {
                 return g.clone();
             }
         }
-        let wuerfel;
-        let punkte = if haus {
-            &self.ecken[..]
-        } else {
-            wuerfel = sonne_view::ecken(&sonne_view::wuerfel_netz().faces);
-            &wuerfel[..]
-        };
-        let g = sonne_view::griff(&ort, &s, punkte);
+        let g = sonne_view::griff(&ort, &s, &self.ecken);
         self.griff_cache = Some((schluessel, g.clone()));
         g
     }
@@ -1547,6 +1590,7 @@ impl App {
     /// Wie [`App::replace_scene`] mit fertiger Szene.
     fn install_scene(&mut self, scene: Scene) {
         self.scene = scene;
+        self.nord_fuehrung = Default::default();
         self.ui.dialog = false;
         self.snaps_key = None;
         self.scene.set_theme(&self.theme);
@@ -3315,8 +3359,7 @@ impl App {
             Id::Projektdaten => self.open_projektdaten(false),
             // Mit Nordrichtung schaltet die Kachel den Sonnenstand (§8 09:25)
             Id::Nord if !self.nord.aktiv && self.scene.model().location().north.is_some() => {
-                let on = self.sonne_an().is_none();
-                self.sonne_schalten(on, true);
+                self.sonne_umschalten(true);
             }
             Id::Nord => {
                 let on = !self.nord.aktiv;
@@ -3446,6 +3489,12 @@ impl App {
         if zeilen != self.ui.projekt_zeilen {
             self.ui.projekt_zeilen = zeilen;
             self.overlay_dirty = true;
+        }
+        // Geführter Nordpfeil (S9) zu Ende: gesetzt, Esc, andere Ansicht
+        if self.nord_fuehrung.ende(self.nord.aktiv) {
+            self.nord_gefuehrt_ende();
+        } else if self.nord_fuehrung.laeuft && self.notice.is_none() {
+            self.nord_zeile();
         }
         // Kachel des Nordpfeils (Sonnenstand S2), auch nach Strg+Z
         let nord = (
@@ -3744,11 +3793,15 @@ impl App {
             if self.tool.category == Category::ExteriorWall && wall.closed {
                 self.discover_card("help", "Hilfe", ("Hilfe öffnen", delete::Link::Help));
             }
+            let erster = self.scene.building_pending() || self.scene.bounds().is_none();
             let set = self.tool_type_of(self.tool.category);
             self.scene
                 .add_wall_typed(&wall, self.tool.category, Some(set));
             self.sect.ensure(&self.scene);
             self.upload_model();
+            // Erster Umriss geschlossen: gleich die Nordrichtung (S9)
+            let umriss = self.tool.category == Category::ExteriorWall && wall.closed;
+            self.nord_fuehren(umriss, erster);
             self.refresh_cursor();
         }
     }
@@ -6054,6 +6107,12 @@ impl App {
         if let Id::View(v) = id {
             lines[0] = v.titel(self.ui.nord);
         }
+        // Ohne Gebäude geht die Sonne nicht an (S9)
+        let ohne_haus =
+            self.ui.nord.is_some() && !self.ui.sonne_an && self.scene.bounds().is_none();
+        if id == Id::Nord && ohne_haus {
+            lines.insert(1, sonne_view::OHNE_HAUS.into());
+        }
         Some(tip_text(lines))
     }
 
@@ -7666,7 +7725,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         schatten_bild: None,
         griff_cache: None,
         ecken_stand: 0,
-        wuerfel: false,
+        nord_fuehrung: Default::default(),
         licht: None,
         room_keys: Default::default(),
         panel_px: Vec::new(),
@@ -8439,19 +8498,21 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 a.nord_bild = nord_bild;
             }
 
-            // Sonnenstand (S4): Leiste, Würfel ohne Gebäude, Licht der Sonne
+            // Sonnenstand (S4): Leiste und Licht der Sonne; ohne Gebäude
+            // statt der Leiste nur der Hinweis (S9)
             let sun = a.sonne_an();
-            let leiste = himmel
-                .as_ref()
-                .zip(sun)
-                .map(|(h, sun)| sonne_view::LeistenBild {
-                    sun,
-                    unter: h.sonne.is_none(),
-                    eingabe: a.sonne.eingabe.clone(),
-                    hover: a.sonne.hover,
-                    vw: vw as u32,
-                    scale: scale.to_bits(),
-                });
+            let ohne_haus = a.ui.view == ViewKind::Persp && a.scene.bounds().is_none();
+            let leiste =
+                sun.filter(|_| himmel.is_some() || ohne_haus)
+                    .map(|sun| sonne_view::LeistenBild {
+                        sun,
+                        unter: himmel.as_ref().is_some_and(|h| h.sonne.is_none()),
+                        ohne_haus: himmel.is_none(),
+                        eingabe: a.sonne.eingabe.clone(),
+                        hover: a.sonne.hover,
+                        vw: vw as u32,
+                        scale: scale.to_bits(),
+                    });
             if leiste != a.sonne_bild {
                 match &leiste {
                     Some(b) => {
@@ -8465,17 +8526,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 }
                 a.sonne_bild = leiste;
             }
-            let wuerfel = himmel.is_some() && a.scene.bounds().is_none();
-            if wuerfel != a.wuerfel {
-                let netz = if wuerfel {
-                    sonne_view::wuerfel_netz()
-                } else {
-                    Default::default()
-                };
-                a.renderer.set_mesh(MESH_WUERFEL, &netz);
-                a.wuerfel = wuerfel;
-            }
-            let licht = sun.and_then(|s| sonne_view::licht(a.scene.model().location(), &s));
+            let licht = sun
+                .filter(|_| a.scene.bounds().is_some())
+                .and_then(|s| sonne_view::licht(a.scene.model().location(), &s));
             if licht != a.licht {
                 let fest = style(&a.theme.env).light;
                 a.renderer.set_light(licht.unwrap_or(fest));

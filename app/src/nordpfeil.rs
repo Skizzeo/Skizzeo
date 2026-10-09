@@ -161,6 +161,47 @@ fn grad(nord: f64) -> String {
 
 /// Tooltip der Kachel: ohne Nordrichtung „Nordrichtung festlegen“, sonst
 /// der Schalter des Sonnenstands (§8 09:25).
+/// Zeile beim geführten Nordpfeil nach dem ersten Umriss (S9).
+pub const GEFUEHRT: &str = "Nordrichtung festlegen: Fußpunkt neben dem Gebäude klicken, dann zur Nordrichtung ziehen oder die Gradzahl tippen. Esc = später.";
+
+/// Der geführte Nordpfeil nach dem ersten Umriss (S9): einmal je Projekt.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Fuehrung {
+    /// Kam in diesem Projekt schon.
+    pub gefragt: bool,
+    /// Läuft gerade (das Werkzeug ist an).
+    pub laeuft: bool,
+}
+
+impl Fuehrung {
+    /// Nach einem Wandzug: `umriss` eine geschlossene Außenwand, `erster`
+    /// das erste Gebäude des Projekts, `haus` jetzt eins da, `erlaubt` die
+    /// Ansicht kann den Pfeil. `true`: das Werkzeug jetzt starten.
+    pub fn nach_wandzug(
+        &mut self,
+        umriss: bool,
+        erster: bool,
+        haus: bool,
+        nord: Option<f64>,
+        erlaubt: bool,
+    ) -> bool {
+        if !(umriss && erster && haus) || nord.is_some() || self.gefragt {
+            return false;
+        }
+        self.gefragt = true;
+        self.laeuft = erlaubt;
+        erlaubt
+    }
+
+    /// Das Werkzeug ist `aktiv` oder nicht mehr (gesetzt, Esc, andere
+    /// Ansicht); `true`, wenn der geführte Schritt eben endet.
+    pub fn ende(&mut self, aktiv: bool) -> bool {
+        let e = self.laeuft && !aktiv;
+        self.laeuft &= aktiv;
+        e
+    }
+}
+
 pub fn tip(nord: Option<f64>, sonne: bool) -> String {
     match (nord, sonne) {
         (None, _) => "Nordrichtung festlegen".into(),
@@ -1054,6 +1095,138 @@ mod tests {
         let krumm = Some((vec3(-2617.5, 0.0, 0.0), vec3(10003.0, 8000.0, 0.0)));
         assert_eq!(vor_der_kante([-2000.0, 4000.0], krumm), [-3120.0, 4000.0]);
         assert_eq!(vor_der_kante([9900.0, 4000.5], krumm), [10510.0, 4000.5]);
+    }
+
+    /// S9: Erst das Gebäude, dann die Nordrichtung. Der erste geschlossene
+    /// Umriss startet den Pfeil einmal je Projekt, Esc lässt die Datei, wie
+    /// sie ist; gesetzt schaltet er die Sonne an, ohne Gebäude nicht.
+    #[test]
+    fn s9_nordrichtung_nach_dem_umriss() {
+        use crate::scene::Scene;
+        use crate::sonne_view::{umschalten, OHNE_HAUS};
+        use sk_model::{szo, Model, RefSide, WallChain};
+        const W: f64 = 1000.0;
+        const H: f64 = 800.0;
+        let cam = Camera::parallel(vec3(0.0, 0.0, 0.0), FRAC_PI_2, -FRAC_PI_2, 10000.0);
+        let m = Modifiers::default();
+        let px = |p: Foot| cam.project(vec3(p[0], p[1], 0.0), W, H).unwrap();
+        let maus = |p: Foot, unten: bool| {
+            let (x, y) = px(p);
+            let button = MouseButton::Left;
+            match unten {
+                true => Event::MouseDown {
+                    button,
+                    x,
+                    y,
+                    mods: m,
+                },
+                false => Event::MouseUp {
+                    button,
+                    x,
+                    y,
+                    mods: m,
+                },
+            }
+        };
+        let umriss = WallChain {
+            base: 0.0,
+            points: vec![
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ],
+            closed: true,
+            ref_side: RefSide::Left,
+            layers: Vec::new(),
+            height: 3000.0,
+            joints: Default::default(),
+        };
+        let mittag = sk_model::Sun {
+            date: sk_math::sonne::Datum::new(2026, 6, 21).unwrap(),
+            minutes: 720,
+            on: true,
+        };
+
+        // Ohne Gebäude geht die Sonne nicht an, mit Hinweis
+        assert_eq!(umschalten(false, false), Err(OHNE_HAUS));
+        assert_eq!(umschalten(true, false), Ok(false), "aus geht immer");
+
+        let mut s = Scene::with_model(Model::with_seed(1));
+        let mut f = Fuehrung::default();
+        let erster = s.bounds().is_none();
+        s.add_wall(&umriss).unwrap();
+        let haus = s.bounds().is_some();
+        // Ein offener Zug oder eine Innenwand fragt nicht
+        assert!(!f.clone().nach_wandzug(false, erster, haus, None, true));
+        assert!(f.nach_wandzug(true, erster, haus, s.model().location().north, true));
+        let mut n = Nordpfeil::default();
+        n.set_aktiv(true);
+        assert!(!f.ende(n.aktiv), "läuft");
+        // Esc = später: kein Schritt, die Datei bleibt
+        let (vorher, schritt) = (szo::write(s.model()), s.undo_label());
+        assert!(n.escape() && !n.aktiv);
+        assert!(f.ende(n.aktiv));
+        assert!(!f.ende(n.aktiv), "nur einmal zu Ende");
+        assert_eq!(szo::write(s.model()), vorher);
+        assert_eq!(s.undo_label(), schritt);
+        // Je Projekt nur einmal
+        assert!(!f.nach_wandzug(true, true, true, None, true));
+
+        // Neues Projekt: geführt gesetzt schaltet die Sonne an
+        let mut s = Scene::with_model(Model::with_seed(1));
+        let mut f = Fuehrung::default();
+        s.add_wall(&umriss).unwrap();
+        assert!(f.nach_wandzug(true, true, true, None, true));
+        let mut n = Nordpfeil::default();
+        n.set_aktiv(true);
+        let setzen = |n: &mut Nordpfeil, s: &mut Scene, e: Event| {
+            let st = Stand {
+                nord: s.model().location().north,
+                fuss: anzeige_fuss(s.model().north_foot(), s.bounds(), laenge(&cam, H, 1.0)),
+                gesetzt: s.model().north_foot(),
+            };
+            n.gebaeude = s.bounds();
+            let out = n.handle(&e, st, &cam, W, H, 1.0, true);
+            let neu = s.model().location().north.is_none();
+            if let Some((label, nord, fuss)) = out.commit {
+                s.nordpfeil_setzen(label, nord, fuss);
+                // wie App::nord_commit
+                let an = s.model().sun().is_some_and(|x| x.on);
+                if let (true, Ok(on)) = (neu, umschalten(an, s.bounds().is_some())) {
+                    s.set_sun(sk_model::Sun { on, ..mittag });
+                }
+            }
+        };
+        setzen(&mut n, &mut s, maus([-2000.0, -2000.0], true));
+        setzen(&mut n, &mut s, maus([-2000.0, -2000.0], false));
+        setzen(&mut n, &mut s, maus([-2000.0, 1000.0], true));
+        assert!(!n.aktiv && f.ende(n.aktiv));
+        assert_eq!(s.model().location().north, Some(0.0));
+        assert!(s.model().sun().is_some_and(|x| x.on), "Sonne an");
+
+        // Nordrichtung vor dem Gebäude: kein geführter Schritt, Sonne aus
+        let mut s = Scene::with_model(Model::with_seed(1));
+        let mut n = Nordpfeil::default();
+        n.set_aktiv(true);
+        setzen(&mut n, &mut s, maus([0.0, 0.0], true));
+        setzen(&mut n, &mut s, maus([0.0, 0.0], false));
+        setzen(&mut n, &mut s, maus([0.0, 3000.0], true));
+        assert_eq!(s.model().location().north, Some(0.0));
+        assert_eq!(s.model().sun(), None, "ohne Gebäude keine Sonne");
+        let mut f = Fuehrung::default();
+        s.add_wall(&umriss).unwrap();
+        assert!(!f.nach_wandzug(true, true, true, s.model().location().north, true));
+        // Eine Ansicht ohne Pfeil (Schnitt, Ansicht) gilt als gefragt
+        let mut f = Fuehrung::default();
+        assert!(!f.nach_wandzug(true, true, true, None, false));
+        assert_eq!(
+            f,
+            Fuehrung {
+                gefragt: true,
+                laeuft: false
+            }
+        );
     }
 }
 

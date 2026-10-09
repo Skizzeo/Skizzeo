@@ -16,6 +16,9 @@ mod tests {
 
     const W: u32 = 1600;
     const H: u32 = 1000;
+    /// Ablage für ein Netz dazu (Würfel als Testkörper, Probestück); die
+    /// App lässt sie seit S9 leer.
+    const MESH_DAZU: usize = 4;
 
     fn haus() -> Scene {
         let text = include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo");
@@ -44,7 +47,8 @@ mod tests {
     }
 
     /// Ein Bild wie in der App: Flächen und Kanten, Himmel und Boden, Licht
-    /// und Schatten der Sonne; ohne Gebäude der Würfel.
+    /// und Schatten der Sonne; ohne Gebäude der Würfel als Testkörper (die
+    /// App zeigt seit S9 ohne Gebäude keine Sonne).
     fn bild(r: &mut Renderer, s: &mut Scene, sun: Sun, cam: &Camera) -> Vec<u8> {
         let wuerfel = s.bounds().is_none().then(sv::wuerfel_netz);
         bild_mit(r, s, sun, cam, wuerfel.unwrap_or_default())
@@ -63,7 +67,7 @@ mod tests {
         r.set_style(crate::style(&theme.env));
         r.set_looks(&s.table().looks_with(1.0, |_| 1.0));
         r.set_mesh(crate::MESH_MODEL, &s.mesh(ViewKind::Persp, None, &[]));
-        r.set_mesh(crate::MESH_WUERFEL, &dazu);
+        r.set_mesh(MESH_DAZU, &dazu);
         let ort = *s.model().location();
         if let Some(l) = sv::licht(&ort, &sun) {
             r.set_light(l);
@@ -289,7 +293,7 @@ mod tests {
         r.set_looks(&s.table().looks_with(1.0, |_| 1.0));
         r.set_mesh(crate::MESH_MODEL, &s.mesh(v, None, &[]));
         let q = huelle(&dazu.faces);
-        r.set_mesh(crate::MESH_WUERFEL, &dazu);
+        r.set_mesh(MESH_DAZU, &dazu);
         r.set_sun(None);
         let ort = *s.model().location();
         let papier = asch::licht(v, vs, &ort, sun).map(|d| {
@@ -306,7 +310,7 @@ mod tests {
         r.draw(W, H, 0, &view).unwrap();
         let px = r.read_pixels(W, H);
         r.set_paper_shade(None);
-        r.set_mesh(crate::MESH_WUERFEL, &Default::default());
+        r.set_mesh(MESH_DAZU, &Default::default());
         (px, cam)
     }
 

@@ -317,6 +317,7 @@ fn s4_bild(s: &mut Scene, sun: sk_model::Sun, theme: &Theme, blick: Vec3) -> Can
     let b = sv::LeistenBild {
         sun,
         unter: himmel.sonne.is_none(),
+        ohne_haus: false,
         eingabe: None,
         hover: None,
         vw: W as u32,
@@ -362,4 +363,48 @@ fn istbilder_s4() {
         &s4_bild(&mut s, sun(6, 21), &theme, blick),
         "ist-s4-wuerfel-0621-1200.png",
     );
+}
+
+/// Ist-Bild Sonnenstand S9: Sonne an und Nordrichtung gesetzt, aber kein
+/// Gebäude. 3D zeigt keinen Würfel und keine Sonne, oben steht statt der
+/// Leiste nur der Hinweis.
+/// `SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo istbilder_s9 -- --ignored`
+#[test]
+#[ignore = "legt Ist-Bilder ab, nur mit SKIZZEO_ISTBILDER"]
+fn istbilder_s9() {
+    use crate::sonne_view as sv;
+    use sk_math::sonne::Datum;
+    let Some(ziel) = std::env::var_os("SKIZZEO_ISTBILDER").map(PathBuf::from) else {
+        return;
+    };
+    let theme = Theme::dark();
+    let sun = sk_model::Sun {
+        date: Datum::new(2026, 6, 21).unwrap(),
+        minutes: 12 * 60,
+        on: true,
+    };
+    let mut s = Scene::with_model(Model::with_seed(1));
+    assert!(s.nordpfeil_setzen(LABEL_DREHEN, 0.0, Some([-4000.0, -4000.0])));
+    s.set_sun(sun);
+    let ziel_3d = vec3(0.0, 0.0, 2000.0);
+    let cam = Camera::looking_at(
+        ziel_3d + vec3(0.75, -1.0, 0.62).normalized() * 30000.0,
+        ziel_3d,
+        45.0,
+    );
+    let licht = vec3(-0.35, -0.55, 0.75).normalized();
+    let mut c = szene_mit(&mut s, &cam, ViewKind::Persp, licht, None);
+    mit_pfeil(&mut c, &Nordpfeil::default(), &s, &cam, &theme);
+    let b = sv::LeistenBild {
+        sun,
+        unter: false,
+        ohne_haus: true,
+        eingabe: None,
+        hover: None,
+        vw: W as u32,
+        scale: S.to_bits(),
+    };
+    let (leiste, x, y) = sv::leiste_malen(&b, &schriften(), &theme);
+    c.blit(&leiste, x, y);
+    std::fs::write(ziel.join("ist-s9-ohne-gebaeude.png"), c.to_png()).unwrap();
 }

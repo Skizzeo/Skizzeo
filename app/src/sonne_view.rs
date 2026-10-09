@@ -18,19 +18,40 @@
 use crate::camera::Camera;
 use sk_math::sonne::{self, Datum, Lage, Sonnenstand, Zeitpunkt};
 use sk_math::{vec3, Vec3};
-use sk_model::{edge_kind, Location, Sun};
+#[cfg(test)]
+use sk_model::edge_kind;
+use sk_model::{Location, Sun};
 use sk_paint::Canvas;
 #[cfg(test)]
 use sk_paint::{Path, Rgba};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_render::schatten;
-use sk_render::{Helper, MeshData, SunLight, SOLID};
+#[cfg(test)]
+use sk_render::MeshData;
+use sk_render::{Helper, SunLight, SOLID};
 use sk_ui::text_edit::TextEdit;
 use sk_ui::theme::Theme;
 use sk_ui::widgets::{self, ButtonState, FieldState, Fonts, Rect};
 
-/// Kantenlänge des Würfels ohne Gebäude (mm).
+/// Kantenlänge des Würfels (mm): seit S9 nur noch Testkörper, die App
+/// zeigt ohne Gebäude keine Sonne.
+#[cfg(test)]
 pub const WUERFEL: f64 = 10_000.0;
+/// Hinweis an Kachel und Pfeil, wenn die Sonne ohne Gebäude an soll (S9).
+pub const OHNE_HAUS: &str = "Sonne und Schatten erscheinen, sobald das Gebäude gezeichnet ist.";
+/// Kachel oder Klick auf den Pfeil (S9): der neue Schalter; ohne Gebäude
+/// geht die Sonne nicht an, sondern es kommt der Hinweis [`OHNE_HAUS`].
+pub fn umschalten(an: bool, haus: bool) -> Result<bool, &'static str> {
+    if !an && !haus {
+        Err(OHNE_HAUS)
+    } else {
+        Ok(!an)
+    }
+}
+
+/// Statt der Leiste in 3D, wenn die Sonne an ist, das Gebäude aber fehlt
+/// (S9).
+pub const KEIN_HAUS: &str = "Kein Gebäude – Sonne erscheint mit dem Gebäude";
 /// Schnellwahl der Leiste: Monat und Tag.
 pub const SCHNELL: [(u32, u32); 4] = [(3, 21), (6, 21), (9, 23), (12, 21)];
 /// Hinweis der Leiste, wenn die Sonne nicht über dem Horizont steht.
@@ -229,6 +250,7 @@ pub fn sonnenlicht(l: &Location, s: &Sun) -> Option<SunLight> {
 }
 
 /// Hüllquader des Würfels: Ecke im Ursprung, nach +x, +y und oben.
+#[cfg(test)]
 pub fn wuerfel_quader() -> (Vec3, Vec3) {
     (vec3(0.0, 0.0, 0.0), vec3(WUERFEL, WUERFEL, WUERFEL))
 }
@@ -511,11 +533,13 @@ pub fn griff(l: &Location, s: &Sun, punkte: &[Vec3]) -> Option<Griff> {
 }
 
 /// Netz des Würfels (Darstellung ohne Baustoff, Kanten wie die Ansicht).
+#[cfg(test)]
 pub fn wuerfel_netz() -> MeshData {
     quader_netz(wuerfel_quader())
 }
 
-/// Quader als Anzeige-Netz: sechs Seiten, Schlüssel 0, zwölf Kanten.
+/// Quader als Testkörper-Netz: sechs Seiten, Schlüssel 0, zwölf Kanten.
+#[cfg(test)]
 pub fn quader_netz((lo, hi): (Vec3, Vec3)) -> MeshData {
     let mut m = MeshData::default();
     let c = |i: usize| {
@@ -763,6 +787,8 @@ pub struct Eingabe {
 pub struct LeistenBild {
     pub sun: Sun,
     pub unter: bool,
+    /// Ohne Gebäude: nur [`KEIN_HAUS`] (S9).
+    pub ohne_haus: bool,
     pub eingabe: Option<Eingabe>,
     pub hover: Option<Teil>,
     pub vw: u32,
@@ -773,6 +799,9 @@ pub struct LeistenBild {
 /// Schatten.
 pub fn leiste_malen(b: &LeistenBild, fonts: &Fonts, t: &Theme) -> (Canvas, i32, i32) {
     let s = f32::from_bits(b.scale);
+    if b.ohne_haus {
+        return kein_haus_malen(b.vw as f64, fonts, s, t);
+    }
     let (r, teile) = leiste(fonts, b.vw as f64, b.unter, s, t);
     let sh = (t.size.panel_shadow * s).ceil();
     let (w, h) = ((r.w + 2.0 * sh) as usize, (r.h + 2.0 * sh) as usize);
@@ -837,6 +866,32 @@ pub fn leiste_malen(b: &LeistenBild, fonts: &Fonts, t: &Theme) -> (Canvas, i32, 
                 t.ui.text_dim,
             );
         }
+    }
+    (c, dx as i32, dy as i32)
+}
+
+/// Statt der Leiste: [`KEIN_HAUS`] in einem Feld oben in der Mitte, so
+/// hoch wie die Leiste (S9).
+fn kein_haus_malen(vw: f64, fonts: &Fonts, s: f32, t: &Theme) -> (Canvas, i32, i32) {
+    let px = t.size.font_small * s;
+    let f = fonts.regular.as_ref();
+    let tw = f.map_or(300.0 * s, |f| f.width(KEIN_HAUS, px));
+    let w = (tw + 2.0 * (PAD + 4.0) * s).round();
+    let h = ((t.size.field_height + 2.0 * PAD) * s).round();
+    let r = Rect::new(
+        ((vw as f32 - w) * 0.5).max(0.0).round(),
+        (t.size.panel_margin * s).round(),
+        w,
+        h,
+    );
+    let sh = (t.size.panel_shadow * s).ceil();
+    let mut c = Canvas::new((r.w + 2.0 * sh) as usize, (r.h + 2.0 * sh) as usize);
+    let (dx, dy) = (r.x - sh, r.y - sh);
+    widgets::panel(&mut c, Rect::new(sh, sh, r.w, r.h), s, t);
+    if let Some(f) = f {
+        let y = sh + (r.h + f.cap_height(px)) * 0.5;
+        let x = sh + (r.w - tw) * 0.5;
+        f.draw(&mut c, KEIN_HAUS, px, x.round(), y.round(), t.ui.text_dim);
     }
     (c, dx as i32, dy as i32)
 }
@@ -1725,5 +1780,38 @@ mod tests {
             );
             assert_eq!(sun.minutes, soll, "{d}");
         }
+    }
+
+    /// S9: Ohne Gebäude steht statt der Leiste nur der Hinweis, schmaler
+    /// und mittig; Kachel und Pfeil schalten dann nicht an.
+    #[test]
+    fn ohne_gebaeude_nur_der_hinweis() {
+        let (fonts, theme) = (ohne_schrift(), Theme::dark());
+        let b = LeistenBild {
+            sun: Sun {
+                date: Datum::new(2026, 6, 21).unwrap(),
+                minutes: 720,
+                on: true,
+            },
+            unter: false,
+            ohne_haus: true,
+            eingabe: None,
+            hover: None,
+            vw: 1600,
+            scale: 1f32.to_bits(),
+        };
+        let (c, x, y) = leiste_malen(&b, &fonts, &theme);
+        let voll = LeistenBild {
+            ohne_haus: false,
+            ..b.clone()
+        };
+        let (v, vx, vy) = leiste_malen(&voll, &fonts, &theme);
+        assert!(c.width < v.width, "{} {}", c.width, v.width);
+        assert_eq!((c.height, y), (v.height, vy), "so hoch wie die Leiste");
+        assert!((x * 2 + c.width as i32 - 1600).abs() <= 2, "mittig: {x}");
+        assert!((vx * 2 + v.width as i32 - 1600).abs() <= 2);
+        assert_eq!(umschalten(false, false), Err(OHNE_HAUS));
+        assert_eq!(umschalten(false, true), Ok(true));
+        assert_eq!(umschalten(true, true), Ok(false));
     }
 }

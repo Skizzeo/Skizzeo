@@ -120,14 +120,14 @@ Längs oder quer | steht automatisch unter dem Buchstaben
 Wand ändern | an der violetten Kugel ziehen
 
 [thema] id=nordpfeil titel="Nordpfeil"
-Setzen | Kachel rechts neben „Projektdaten“, dann im 3D-Fenster oder Grundriss den Fußpunkt (Mitte des Pfeilfußes) klicken und die Richtung zeigen; danach ist der Sonnenstand an
+Setzen | startet nach dem ersten geschlossenen Umriss einmal von selbst (**Esc** = später), sonst Kachel rechts neben „Projektdaten“; dann im 3D-Fenster oder Grundriss den Fußpunkt (Mitte des Pfeilfußes) klicken und die Richtung zeigen; danach ist der Sonnenstand an
 Genau | Zahl + **Enter** setzt die Richtung in Grad; sie rastet in 5°, mit **Umschalt** in 15°
 Drehen | an der Spitze ziehen
 Verschieben | am Pfeil ziehen; ins Gebäude geschoben rastet er 50 cm vor der Kante ein
 Platz | fehlt der Fußpunkt oder liegt er im Gebäude, steht der Pfeil vorne links daneben
 Lage | Breiten- und Längengrad stehen in „Projektdaten“ unter Bauort, für Nordpfeil und Sonnenstand; leer gilt Ganderkesee
 Abbrechen | **Esc** schließt erst die Zahl, dann den Fußpunkt, dann das Werkzeug
-Sonnenstand | mit Nordrichtung schalten die Kachel und ein Klick auf den Pfeil ihn an und aus; in 3D stehen Sonne und Tagesbahn über dem Gebäude, fein die Bahnen vom 21.06. und 21.12.; ohne Wand zeigt ein Würfel von 10 m die Sonne (nur Anzeige); ab 2° Sonnenhöhe werfen Gebäude und Würfel Schatten auf sich und den Boden
+Sonnenstand | mit Nordrichtung schalten die Kachel und ein Klick auf den Pfeil ihn an und aus; in 3D stehen Sonne und Tagesbahn über dem Gebäude, fein die Bahnen vom 21.06. und 21.12.; ab 2° Sonnenhöhe wirft das Gebäude Schatten auf sich und den Boden; Sonne und Schatten erscheinen mit dem Gebäude, die Nordrichtung geht auch vorher
 Sonne ziehen | an der Sonne oder am Punkt an der Schattenspitze ziehen ändert die Uhrzeit; die Sonne bleibt auf der Tagesbahn und hält bei Auf- und Untergang; der Punkt folgt der Kurve der Schattenspitze, über ihr Ende hinaus gilt Auf- bzw. Untergang
 Datum, Uhrzeit | Leiste oben im 3D-Fenster: Feld anklicken, Zahl + **Enter**; Knöpfe für 21.03., 21.06., 23.09., 21.12. und „Jetzt“; Zeit in MEZ bzw. MESZ
 

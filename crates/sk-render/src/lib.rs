@@ -3174,6 +3174,7 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     /// Anker der Schraffur: Einheitsmatrix bildet den Ursprung auf die
     /// Bildmitte ab, eine Verschiebung im Bild verschiebt den Anker mit.
@@ -3188,7 +3189,6 @@ mod tests {
         m[12] = 0.25;
         assert_eq!(anker(&m, [0.0; 3], 800, 600), [500.0, 300.0]);
     }
-    use super::*;
 
     /// Kopf jeder Funktion in `glsl` (`typ name(…) {`), nach Name.
     fn heads(glsl: &str) -> Vec<(&str, &str)> {
