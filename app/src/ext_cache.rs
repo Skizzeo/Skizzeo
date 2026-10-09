@@ -8,6 +8,7 @@ use sk_math::{vec3, Vec3};
 use sk_model::erweiterung::{Ergebnis, ExtPart};
 use sk_model::erweiterung_koerper::{self as koerper, Lage};
 use sk_model::{ElementId, ElementKind, Model, Solid, StoreyId};
+use std::collections::HashMap;
 
 type Aabb = (Vec3, Vec3);
 type Plane = (Vec3, Vec3);
@@ -71,7 +72,14 @@ impl ExtCache {
             .iter()
             .map(|d| (d.key.as_str(), hash(&d.text)))
             .collect();
-        let mut alt = std::mem::take(&mut self.items);
+        // Je Exemplar nachschlagen statt suchen: sonst wächst jeder Abgleich,
+        // auch der beim Ziehen einer Wand, quadratisch (Review 3ch)
+        let mut alt: HashMap<ElementId, Eintrag> = std::mem::take(&mut self.items)
+            .into_iter()
+            .map(|x| (x.id, x))
+            .collect();
+        let mut geschosse: HashMap<StoreyId, sk_model::erweiterung::Geschoss> = HashMap::new();
+        let mut mats: HashMap<&str, Vec<(String, u16)>> = HashMap::new();
         for (id, e) in m.elements().iter() {
             let ElementKind::Ext(p) = &e.kind else {
                 continue;
@@ -79,17 +87,26 @@ impl ExtCache {
             let Some(d) = m.ext_def(&p.key) else {
                 continue;
             };
-            let g = m.ext_geschoss(e.storey);
-            let mat_of: Vec<(String, u16)> = d
-                .def
-                .koerper
-                .iter()
-                .filter_map(|k| k.get("baustoff"))
-                .map(|b| {
-                    let key = m.ext_material(d, b).map_or(0, sk_model::material_key);
-                    (b.to_string(), key)
+            // Je Geschoss und je Definition einmal: `ext_geschoss` sucht die
+            // Decke über alle Bauteile, `ext_material` legt den Werksbestand
+            // an (Review 3ch)
+            let g = *geschosse
+                .entry(e.storey)
+                .or_insert_with(|| m.ext_geschoss(e.storey));
+            let mat_of = mats
+                .entry(d.key.as_str())
+                .or_insert_with(|| {
+                    d.def
+                        .koerper
+                        .iter()
+                        .filter_map(|k| k.get("baustoff"))
+                        .map(|b| {
+                            let key = m.ext_material(d, b).map_or(0, sk_model::material_key);
+                            (b.to_string(), key)
+                        })
+                        .collect::<Vec<(String, u16)>>()
                 })
-                .collect();
+                .clone();
             let s = Schluessel {
                 part: p.clone(),
                 version: d.version,
@@ -99,12 +116,11 @@ impl ExtCache {
                 uk: m.storey(e.storey).map_or(0.0, |s| s.elevation),
                 mats: mat_of.iter().map(|x| x.1).collect(),
             };
-            if let Some(i) = alt
-                .iter()
-                .position(|x| x.id == id && x.schluessel == s && x.storey == e.storey)
-            {
-                self.items.push(alt.swap_remove(i));
-                continue;
+            if let Some(x) = alt.remove(&id) {
+                if x.schluessel == s && x.storey == e.storey {
+                    self.items.push(x);
+                    continue;
+                }
             }
             let Some((lage, erg)) = m.ext_lage(id) else {
                 continue;
@@ -202,11 +218,11 @@ impl ExtCache {
         keep: impl Fn(ElementId) -> bool,
         hits_box: impl Fn(Aabb) -> bool,
     ) -> Option<(f64, ElementId)> {
-        let boxes: Vec<(ElementId, Option<Aabb>)> =
+        let boxes: HashMap<ElementId, Option<Aabb>> =
             self.items.iter().map(|x| (x.id, x.bounds)).collect();
         let mut best: Option<(f64, ElementId)> = None;
         for (id, s) in self.shown(plan, section) {
-            let b = boxes.iter().find(|x| x.0 == id).and_then(|x| x.1);
+            let b = boxes.get(&id).copied().flatten();
             if !b.is_some_and(&hits_box) || !keep(id) {
                 continue;
             }

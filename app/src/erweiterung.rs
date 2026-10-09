@@ -137,3 +137,77 @@ mod tests {
         assert_eq!(von_oben(&mut s, ViewKind::Persp), Some(stuetze));
     }
 }
+
+#[cfg(test)]
+mod probe_3ch {
+    use crate::scene::Scene;
+    use crate::ui::ViewKind;
+    use sk_math::vec3;
+    use sk_model::erweiterung::{ExtDef, ExtPart};
+    use sk_model::{Model, RefSide, WallChain};
+    use std::time::Instant;
+
+    #[test]
+    #[ignore]
+    /// Review 3ch: Ziehen einer Wand und Picken mit 0 bis 2000 Exemplaren
+    /// (`--ignored --nocapture`); vor dem Patch wuchs beides quadratisch.
+    fn probe_3ch() {
+        let t = include_str!("../../crates/sk-szb/beispiele/werk.stuetze.szb");
+        for n in [0usize, 100, 1000, 2000] {
+            let mut m = Model::new();
+            m.add_building(1);
+            let eg = m
+                .storeys()
+                .iter()
+                .find(|(_, s)| s.short == "EG" && s.building.is_some())
+                .map(|(id, _)| id)
+                .unwrap();
+            let d = ExtDef::lesen(t).unwrap();
+            m.put_ext_def(d.clone()).unwrap();
+            for i in 0..n {
+                let p = ExtPart::new(
+                    &d,
+                    [(i % 50) as f64 * 1000.0, (i / 50) as f64 * 1000.0 + 20000.0],
+                );
+                m.add_ext(eg, p).unwrap();
+            }
+            let mut s = Scene::with_model(m);
+            let w = WallChain {
+                base: 0.0,
+                points: vec![vec3(0.0, 0.0, 0.0), vec3(5000.0, 0.0, 0.0)],
+                closed: false,
+                ref_side: RefSide::Left,
+                layers: Vec::new(),
+                height: 3000.0,
+                joints: Default::default(),
+            };
+            s.add_wall(&w).unwrap();
+            let run = s.model().runs().ids().next().unwrap();
+            let b0 = s.ext_builds();
+            s.begin("x");
+            let k = 20;
+            let t0 = Instant::now();
+            for j in 0..k {
+                let x = 5000.0 + (j % 2) as f64;
+                s.set_run_points(run, &[vec3(0.0, 0.0, 0.0), vec3(x, 0.0, 0.0)]);
+            }
+            let drag = t0.elapsed().as_secs_f64() * 1000.0 / k as f64;
+            s.commit();
+            let _ = s.mesh(ViewKind::Persp, None, &[]);
+            let t1 = Instant::now();
+            for _ in 0..k {
+                std::hint::black_box(s.pick(
+                    ViewKind::Persp,
+                    None,
+                    vec3(2500.0, -10000.0, 1000.0),
+                    vec3(0.0, 1.0, 0.0),
+                ));
+            }
+            let pick = t1.elapsed().as_secs_f64() * 1000.0 / k as f64;
+            println!(
+                "E={n} ziehen={drag:.3} ms pick={pick:.3} ms neu_gerechnet={}",
+                s.ext_builds() - b0
+            );
+        }
+    }
+}
