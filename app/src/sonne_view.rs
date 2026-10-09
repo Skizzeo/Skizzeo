@@ -58,8 +58,9 @@ pub const SCHNELL: [(u32, u32); 4] = [(3, 21), (6, 21), (9, 23), (12, 21)];
 pub const UNTER: &str = "Sonne unter dem Horizont";
 /// Bahnpunkte alle fünf Minuten (s).
 const SCHRITT: i64 = 300;
-/// Kleinster Halbmesser der Himmelskuppel (mm).
-const KUPPEL_MIN: f64 = 15_000.0;
+/// Kleinster Halbmesser der Himmelskuppel (mm), nur für Kleinstfälle: Die
+/// Kuppel wächst und schrumpft mit dem Gebäude (Jörn 09.10. 14:10, S12).
+const KUPPEL_MIN: f64 = 3_000.0;
 /// Halbmesser der Kuppel in Vielfachen des halben Hüllquaders.
 const KUPPEL_K: f64 = 1.5;
 /// Sonnenscheibe, ihr dunklerer Rand, Bahnen und Stundenmarken (dip).
@@ -1284,11 +1285,24 @@ mod tests {
                 && (q.0.z..=q.1.z).contains(&p.z)
         };
         assert!(h.tag.iter().all(|p| !innen(p.1)));
-        // Klein bleibt es bei 15 m
+        // Nur ein Kleinstfall bleibt bei 3 m
         assert_eq!(
-            kuppel((vec3(0.0, 0.0, 0.0), vec3(3000.0, 3000.0, 3000.0))).1,
+            kuppel((vec3(0.0, 0.0, 0.0), vec3(500.0, 500.0, 500.0))).1,
             KUPPEL_MIN
         );
+    }
+
+    /// S12: Die Kuppel folgt der Gebäudegröße, auch bei kleinen Häusern:
+    /// 8 × 8 m kleiner als 20 × 10 m, beide 7 m hoch, keine feste 15 m.
+    #[test]
+    fn kuppel_waechst_mit_dem_gebaeude() {
+        let r = |x: f64, y: f64| kuppel((vec3(0.0, 0.0, 0.0), vec3(x, y, 7000.0))).1;
+        let (klein, gross) = (r(8000.0, 8000.0), r(20000.0, 10000.0));
+        // 1,5 · √(4² + 4² + 7²) m = 13,5 m; 1,5 · √(10² + 5² + 7²) m ≈ 19,8 m
+        assert!((klein - 13_500.0).abs() < 1e-6, "{klein}");
+        assert!((gross - 1500.0 * 174f64.sqrt()).abs() < 1e-6, "{gross}");
+        assert!(klein < 15_000.0 && gross > klein * 1.4, "{klein} {gross}");
+        assert!(r(6000.0, 6000.0) < klein);
     }
 
     /// Die Bahnen stehen über dem Horizont; die Sonne liegt auf der
