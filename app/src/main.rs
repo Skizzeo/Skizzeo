@@ -5723,15 +5723,7 @@ impl App {
             Id::Quantity => cards::KNOPF,
             Id::Projektdaten => "Projektdaten",
             Id::Nord => nord.as_str(),
-            Id::View(v) => match v {
-                ViewKind::Persp => "3D",
-                ViewKind::Plan => "Grundriss",
-                ViewKind::Section => "Schnitt",
-                ViewKind::Front => "Vorne",
-                ViewKind::Back => "Hinten",
-                ViewKind::Left => "Links",
-                ViewKind::Right => "Rechts",
-            },
+            Id::View(v) => v.knopf(None),
             _ => return None,
         };
         let reason = match id {
@@ -5744,6 +5736,11 @@ impl App {
         let mut lines = help::tooltip_lines(name);
         if let (Some(r), true) = (reason, lines.len() == 3) {
             lines[1] = r.into();
+        }
+        // Mit Nordrichtung heißt die Ansicht nach der Himmelsrichtung, der
+        // Satz („Ansicht von vorne.“) bleibt (Sonnenstand S3)
+        if let Id::View(v) = id {
+            lines[0] = v.titel(self.ui.nord);
         }
         Some(tip_text(lines))
     }

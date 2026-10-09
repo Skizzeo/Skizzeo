@@ -49,7 +49,67 @@ impl ViewKind {
         let s = s.to_lowercase();
         ViewKind::ALL.into_iter().find(|v| v.arg() == s)
     }
+
+    /// Name auf dem Knopf: „Vorne“ … ohne Nordrichtung, sonst die
+    /// Himmelsrichtung der gezeigten Fassade (Sonnenstand S3).
+    pub fn knopf(self, nord: Option<f64>) -> &'static str {
+        match (self.himmel(nord), self) {
+            (Some(i), _) => HIMMEL[i],
+            (None, ViewKind::Front) => "Vorne",
+            (None, ViewKind::Back) => "Hinten",
+            (None, ViewKind::Left) => "Links",
+            (None, ViewKind::Right) => "Rechts",
+            (None, ViewKind::Persp) => "3D",
+            (None, ViewKind::Plan) => "Grundriss",
+            (None, ViewKind::Section) => "Schnitt",
+        }
+    }
+
+    /// Voller Name für den Tooltip: „Südansicht“, ohne Nordrichtung wie der
+    /// Knopf.
+    pub fn titel(self, nord: Option<f64>) -> String {
+        match self.himmel(nord) {
+            Some(i) => format!("{}ansicht", HIMMEL[i]),
+            None => self.knopf(None).to_string(),
+        }
+    }
+
+    /// Himmelsrichtung der Fassade, die die Ansicht zeigt (Sonnenstand S3,
+    /// Analyse §3.2): Index in [`HIMMEL`]; nur für die vier Ansichten und
+    /// mit gesetzter Nordrichtung. Die Ansicht heißt nach der Fassade wie im
+    /// Bauantrag: „Vorne“ blickt nach +y und zeigt die Fassade nach −y, bei
+    /// Nord 0° die Südansicht. Zwischenrichtungen von 22,5° bis 67,5° usw.;
+    /// genau auf der Grenze gilt die Hauptrichtung.
+    pub fn himmel(self, nord: Option<f64>) -> Option<usize> {
+        // Richtung der Fassade in Grad im Uhrzeigersinn von +y
+        let fassade = match self {
+            ViewKind::Front => 180.0,
+            ViewKind::Back => 0.0,
+            ViewKind::Left => 270.0,
+            ViewKind::Right => 90.0,
+            ViewKind::Persp | ViewKind::Plan | ViewKind::Section => return None,
+        };
+        let nord = nord.filter(|n| n.is_finite())?;
+        let x = (fassade - nord).rem_euclid(360.0) / 45.0;
+        let i = if ((x - x.floor()) - 0.5).abs() < 1e-9 {
+            // Auf der Grenze: die Hauptrichtung (gerader Index)
+            let f = x.floor() as usize;
+            if f.is_multiple_of(2) {
+                f
+            } else {
+                f + 1
+            }
+        } else {
+            x.round() as usize
+        };
+        Some(i % 8)
+    }
 }
+
+/// Himmelsrichtungen im Uhrzeigersinn ab Nord (Sonnenstand S3).
+pub const HIMMEL: [&str; 8] = [
+    "Nord", "Nordost", "Ost", "Südost", "Süd", "Südwest", "West", "Nordwest",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Id {
@@ -881,21 +941,16 @@ fn tool_rows(
     rows
 }
 
-fn view_rows() -> Vec<Row> {
+fn view_rows(nord: Option<f64>) -> Vec<Row> {
+    let v = |k: ViewKind| (Id::View(k), k.knopf(nord));
     vec![
         Row::Title("Ansichten"),
         Row::Button(Id::View(ViewKind::Persp), "3D"),
         Row::Button(Id::View(ViewKind::Plan), "Grundriss"),
         Row::Button(Id::View(ViewKind::Section), "Schnitt"),
         Row::Separator,
-        Row::Pair([
-            (Id::View(ViewKind::Front), "Vorne"),
-            (Id::View(ViewKind::Back), "Hinten"),
-        ]),
-        Row::Pair([
-            (Id::View(ViewKind::Left), "Links"),
-            (Id::View(ViewKind::Right), "Rechts"),
-        ]),
+        Row::Pair([v(ViewKind::Front), v(ViewKind::Back)]),
+        Row::Pair([v(ViewKind::Left), v(ViewKind::Right)]),
         Row::Separator,
         Row::Button(Id::Quantity, crate::cards::KNOPF),
     ]
@@ -1069,7 +1124,7 @@ impl Ui {
                 self.upper_active,
                 self.foundation_active,
             ),
-            Panel::Views => view_rows(),
+            Panel::Views => view_rows(self.nord),
             Panel::Props => self.props.as_ref().map_or(Vec::new(), |p| {
                 props_rows(p, self.edit.as_ref(), self.more_open)
             }),
@@ -3278,6 +3333,82 @@ mod tests {
         ui.focus_field(Field::Draft(Draft::Slab));
         key(&mut ui, Key::Enter);
         assert!(ui.edit.is_none());
+    }
+
+    /// Sonnenstand S3: Mit Nordrichtung heißen die Ansichten nach der
+    /// Himmelsrichtung der gezeigten Fassade, ohne bleiben sie „Vorne“ …
+    #[test]
+    fn ansichten_nach_himmelsrichtung() {
+        use ViewKind::*;
+        let namen = |nord| [Front, Back, Left, Right].map(|v| v.knopf(nord));
+        assert_eq!(namen(None), ["Vorne", "Hinten", "Links", "Rechts"]);
+        assert_eq!(namen(Some(0.0)), ["Süd", "Nord", "West", "Ost"]);
+        assert_eq!(namen(Some(90.0)), ["Ost", "West", "Süd", "Nord"]);
+        assert_eq!(namen(Some(180.0)), ["Nord", "Süd", "Ost", "West"]);
+        assert_eq!(
+            namen(Some(45.0)),
+            ["Südost", "Nordwest", "Südwest", "Nordost"]
+        );
+        // Grenze 22,5°: die Hauptrichtung; knapp darüber die Zwischenrichtung
+        assert_eq!(Front.knopf(Some(22.5)), "Süd");
+        assert_eq!(Front.knopf(Some(337.5)), "Süd");
+        assert_eq!(Front.knopf(Some(23.0)), "Südost");
+        assert_eq!(Front.knopf(Some(350.0)), "Süd");
+        assert_eq!(Front.titel(Some(0.0)), "Südansicht");
+        assert_eq!(Left.titel(Some(45.0)), "Südwestansicht");
+        assert_eq!(Front.titel(None), "Vorne");
+        for v in [Persp, Plan, Section] {
+            assert_eq!(v.himmel(Some(30.0)), None);
+        }
+        assert_eq!(Front.himmel(Some(f64::NAN)), None);
+        // Im Paneel, und jeder Name passt auf seinen Knopf
+        let mut ui = Ui::new(1.0, &Theme::dark());
+        ui.fit(1.0, 1440, 900);
+        ui.nord = Some(45.0);
+        let b = ui.buttons(Panel::Views);
+        let name = |v| b.iter().find(|k| k.0 == Id::View(v)).unwrap().2;
+        assert_eq!(name(Front), "Südost");
+        assert_eq!(name(Persp), "3D");
+        let breite = b.iter().find(|k| k.0 == Id::View(Front)).unwrap().1.w;
+        if let Some(f) = ui.fonts.bold.as_ref() {
+            for n in HIMMEL {
+                assert!(f.width(n, ui.size.font) + 16.0 < breite, "{n} in {breite}");
+            }
+        }
+    }
+
+    /// Ist-Bilder der Ansichtsknöpfe (Sonnenstand S3): ohne Nordrichtung und
+    /// bei Nord 30° (Südost, Nordwest, Südwest, Nordost), 100 % und 200 %.
+    /// `SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo istbild_ansichten -- --ignored`
+    #[test]
+    #[ignore = "legt Ist-Bilder ab, nur mit SKIZZEO_ISTBILDER"]
+    fn istbild_ansichten() {
+        let Some(dir) = std::env::var_os("SKIZZEO_ISTBILDER") else {
+            return;
+        };
+        let dir = std::path::PathBuf::from(dir);
+        let t = Theme::dark();
+        let lib = std::path::Path::new("/usr/share/fonts/truetype/liberation");
+        let lade = |n: &str| {
+            std::fs::read(lib.join(n))
+                .ok()
+                .and_then(sk_paint::font::Font::parse)
+        };
+        for (n, nord, sc) in [
+            ("ohne", None, 1.0),
+            ("nord-30", Some(30.0), 1.0),
+            ("nord-30-200", Some(30.0), 2.0),
+        ] {
+            let mut ui = Ui::new(sc, &t);
+            ui.nord = nord;
+            ui.fonts = Fonts {
+                regular: lade("LiberationSans-Regular.ttf"),
+                bold: lade("LiberationSans-Bold.ttf"),
+                italic: None,
+            };
+            let (c, _, _) = ui.paint(&t, Panel::Views, 1280, 32);
+            std::fs::write(dir.join(format!("ist-s3-ansichten-{n}.png")), c.to_png()).unwrap();
+        }
     }
 
     #[test]
