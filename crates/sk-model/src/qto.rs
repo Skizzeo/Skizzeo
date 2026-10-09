@@ -812,6 +812,74 @@ pub enum ElementQto {
     Soffit(SoffitQto),
     Terrace(TerraceQto),
     Coping(CopingQto),
+    Ext(ExtQto),
+}
+
+/// Eine `[menge]` eines Erweiterungsbauteils (E8), in ihrer Einheit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExtMenge {
+    /// Index des `[menge]`-Satzes der Definition.
+    pub satz: usize,
+    /// Name für die Anzeige (bereinigt, Robustheit Nr. 16).
+    pub name: String,
+    /// `stk`, `m`, `m2`, `m3`, `kg` oder `t` (Vertrag §5).
+    pub einheit: String,
+    /// `None`, wenn die Formel nicht rechnet.
+    pub wert: Option<f64>,
+    /// Gewerk: `gewerk` der Menge, sonst des Bauteils, als ATV-Nummer gegen
+    /// die Gewerke des Projekts; `None` ohne passendes.
+    pub gewerk: Option<crate::trade::TradeId>,
+    /// Kostengruppe der Menge, sonst des Bauteils.
+    pub kg: Option<u16>,
+}
+
+/// Mengen eines Erweiterungsbauteils (E8): die `[menge]`-Zeilen der
+/// Definition, gerechnet mit den Werten des Exemplars im eigenen Geschoss.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExtQto {
+    pub key: String,
+    /// Volumen aller Körper (mm³), Überlappungen doppelt wie die Werkbank.
+    pub volume: f64,
+    pub mengen: Vec<ExtMenge>,
+}
+
+/// Höchstzahl Zeichen eines Mengennamens in der Liste.
+const EXT_NAME_MAX: usize = 60;
+
+/// Mengen des Exemplars `id`; `None` mit Grund, wenn die Rechnung einen
+/// Fehler meldet (z. B. zu aufwendig).
+fn ext_qto(model: &Model, id: ElementId, key: &str) -> (Option<ElementQto>, Option<String>) {
+    use crate::erweiterung::anzeige;
+    let (Some(d), Some(erg)) = (model.ext_def(key), model.ext_ergebnis(id)) else {
+        let k = anzeige(key, EXT_NAME_MAX);
+        return (None, Some(format!("Kein Körper: Erweiterung „{k}“ fehlt")));
+    };
+    if let Some(b) = erg.befunde.iter().find(|b| b.ist_fehler()) {
+        let t = anzeige(&b.text, EXT_NAME_MAX * 2);
+        return (None, Some(format!("Kein Körper: {t}")));
+    }
+    let mengen = erg
+        .mengen
+        .iter()
+        .filter_map(|&(i, wert)| {
+            let r = d.def.menge.get(i)?;
+            let feld = |k: &str| r.get(k).filter(|v| !v.is_empty()).or(d.def.bauteil_feld(k));
+            Some(ExtMenge {
+                satz: i,
+                name: anzeige(r.get("name").unwrap_or(r.key()), EXT_NAME_MAX),
+                einheit: r.get("einheit").unwrap_or("").to_string(),
+                wert: wert.filter(|v| v.is_finite()),
+                gewerk: feld("gewerk").and_then(|c| model.trade_by_code(c)),
+                kg: feld("kg").and_then(|k| k.parse().ok()),
+            })
+        })
+        .collect();
+    let q = ExtQto {
+        key: key.to_string(),
+        volume: erg.vol.values().sum::<f64>() * 1e9,
+        mengen,
+    };
+    (Some(ElementQto::Ext(q)), None)
 }
 
 impl ElementQto {
@@ -826,6 +894,7 @@ impl ElementQto {
             ElementQto::Soffit(f) => f.volume,
             ElementQto::Terrace(t) => t.volume,
             ElementQto::Coping(c) => c.volume,
+            ElementQto::Ext(x) => x.volume,
         }
     }
 }
@@ -861,6 +930,8 @@ pub struct Totals {
 pub struct GroupQto {
     pub category: Category,
     pub layer_set: Option<LayerSetId>,
+    /// Erweiterungen: `key` der Definition, eine Gruppe je Bauteil (E8).
+    pub ext: Option<String>,
     pub rows: Vec<RowQto>,
     pub total: Totals,
 }
@@ -1056,10 +1127,30 @@ pub fn schedule(model: &Model) -> Schedule {
     let mut walls: HashMap<RunId, Vec<WallQto>> = HashMap::new();
     let mut found: HashMap<RunId, Result<Foundation, FoundationError>> = HashMap::new();
     let mut floors: HashMap<RunId, Result<FloorSlab, FloorError>> = HashMap::new();
-    // (Geschoss der Gruppe, Rang, Aufbau) → Zeilen mit Baustoffanteilen
-    type Key = (StoreyId, u8, Option<LayerSetId>);
+    // (Geschoss der Gruppe, Rang, Aufbau, Erweiterung) → Zeilen mit
+    // Baustoffanteilen; die Erweiterung als Stelle in `ext_defs`, sonst 0
+    type Key = (StoreyId, u8, Option<LayerSetId>, usize);
     let mut groups: HashMap<Key, (Category, Vec<RowQto>)> = HashMap::new();
+    let defs = model.ext_defs();
     for (id, e) in model.elements().iter() {
+        if let ElementKind::Ext(p) = &e.kind {
+            let (q, note) = ext_qto(model, id, &p.key);
+            let i = defs
+                .iter()
+                .position(|d| d.key == p.key)
+                .map_or(0, |i| i + 1);
+            groups
+                .entry((e.storey, group_rank(e.category), None, i))
+                .or_insert_with(|| (e.category, Vec::new()))
+                .1
+                .push(RowQto {
+                    element: id,
+                    number: e.number.clone(),
+                    q,
+                    note,
+                });
+            continue;
+        }
         let Some(run) = model.run_of(id) else {
             continue;
         };
@@ -1178,7 +1269,7 @@ pub fn schedule(model: &Model) -> Schedule {
                     ),
                 }
             }
-            // ohne Wandzug, oben übersprungen; Mengen in E8
+            // ohne Wandzug, oben gerechnet
             ElementKind::Ext(_) => continue,
         };
         let storey = schedule_storey(model, e);
@@ -1187,7 +1278,7 @@ pub fn schedule(model: &Model) -> Schedule {
             _ => None,
         };
         groups
-            .entry((storey, group_rank(e.category), set))
+            .entry((storey, group_rank(e.category), set, 0))
             .or_insert_with(|| (e.category, Vec::new()))
             .1
             .push(RowQto {
@@ -1204,11 +1295,20 @@ pub fn schedule(model: &Model) -> Schedule {
         s.and_then(|s| model.layer_set(s))
             .map_or(String::new(), |x| x.name.clone())
     };
+    // Erweiterungen nach Name in der Mehrzahl, dann `key`
+    let ext_name = |i: usize| {
+        i.checked_sub(1)
+            .and_then(|i| defs.get(i))
+            .map_or((String::new(), ""), |d| {
+                (d.plural().to_lowercase(), d.key.as_str())
+            })
+    };
     keys.sort_by(|a, b| {
-        (a.1, set_name(a.2), a.2.map(|s| s.index())).cmp(&(
+        (a.1, set_name(a.2), a.2.map(|s| s.index()), ext_name(a.3)).cmp(&(
             b.1,
             set_name(b.2),
             b.2.map(|s| s.index()),
+            ext_name(b.3),
         ))
     });
     let storey_qto = |sid: StoreyId, groups: &mut HashMap<Key, (Category, Vec<RowQto>)>| {
@@ -1220,6 +1320,11 @@ pub fn schedule(model: &Model) -> Schedule {
             out.push(GroupQto {
                 category,
                 layer_set: k.2,
+                ext: k
+                    .3
+                    .checked_sub(1)
+                    .and_then(|i| defs.get(i))
+                    .map(|d| d.key.clone()),
                 rows,
                 total,
             });
@@ -1420,6 +1525,7 @@ fn totals(rows: &[RowQto]) -> Totals {
                 t.area += f.area;
                 t.pocket += f.bearing;
             }
+            ElementQto::Ext(_) => {}
         }
     }
     t
@@ -1558,7 +1664,7 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                     ElementQto::Strip(f) => (f.length, 0.0),
                     ElementQto::Terrace(t) => (0.0, t.area),
                     ElementQto::Coping(c) => (c.length, 0.0),
-                    ElementQto::Wall(_) => (0.0, 0.0),
+                    ElementQto::Wall(_) | ElementQto::Ext(_) => (0.0, 0.0),
                 };
                 let whole = layers.len() == 1;
                 for (i, l) in layers.iter().enumerate() {

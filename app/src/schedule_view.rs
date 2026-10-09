@@ -12,7 +12,9 @@ use crate::delete::{self, Link};
 use crate::picking::Picking;
 use crate::scene::Scene;
 use crate::umfang_view;
-use sk_model::qto::{BuildingQto, ElementQto, GroupQto, LayerRow, Schedule, StoreyQto, Umfang};
+use sk_model::qto::{
+    BuildingQto, ElementQto, GroupQto, LayerRow, Schedule, StoreyQto, TradeSum, Umfang,
+};
 use sk_model::{Category, Deleted, ElementId, LevelKind, Model};
 use sk_paint::font::Font;
 use sk_paint::{Canvas, Path, Rgba};
@@ -120,6 +122,13 @@ enum Key {
     Layer(u32, u8, u32, u32),
     /// Bauteil mit Schicht.
     LayerRow(u32, u32, u8),
+    /// Menge eines Erweiterungsbauteils: Bauteil (Index, Generation), Satz.
+    ExtMenge(u32, u32, u16),
+    /// Summe einer Menge in einer Erweiterungsgruppe: Geschoss bzw.
+    /// Gebäude und Gewerk, Gruppe, Satz.
+    ExtSumme(u32, u32, u16),
+    /// Erweiterungsgruppe nach Gewerk: Gebäude und Gewerk, Gruppe.
+    ExtGewerk(u32, u32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2205,19 +2214,51 @@ fn per_element(rows: &[LayerRow]) -> Vec<LayerRow> {
 /// Bauteile mit Geschoss) bzw. einzelne Bauteile.
 fn trade_lines(m: &Model, b: &BuildingQto, lines: &mut Vec<Line>) {
     let bi = b.id.index();
-    for t in &b.by_trade {
-        let Some(tr) = m.trade(t.trade) else { continue };
+    // Gewerke der Schichten und der Erweiterungen (E8a) nach Bauablauf
+    let ext_t = ext::gewerke(m, b);
+    let mut ids: Vec<sk_model::trade::TradeId> = b.by_trade.iter().map(|t| t.trade).collect();
+    for t in ext_t.iter().flatten() {
+        if !ids.contains(t) {
+            ids.push(*t);
+        }
+    }
+    ids.sort_by_key(|t| m.trade(*t).map_or(u16::MAX, |x| x.order));
+    for id in ids {
+        let Some(tr) = m.trade(id) else { continue };
         let order = tr.order as u32;
         let tkey = Key::Trade(bi, order);
         let mut head = Line::new(Kind::Storey, 0, tkey);
         head.cells[0] = tr.name.clone();
         head.tag = Some(trade_tag(&tr.code));
+        let leer = TradeSum {
+            trade: id,
+            volume: 0.0,
+            area: None,
+            length: None,
+            rows: Vec::new(),
+        };
+        let t = b.by_trade.iter().find(|t| t.trade == id).unwrap_or(&leer);
         for r in &t.rows {
             if !head.elements.contains(&r.element) {
                 head.elements.push(r.element);
             }
         }
         lines.push(head);
+        trade_rows(m, bi, order, tkey, t, lines);
+        ext::gewerk_zeilen(m, b, Some(id), tkey, lines);
+    }
+    if ext_t.contains(&None) {
+        let tkey = Key::Trade(bi, 0xffff);
+        let mut head = Line::new(Kind::Storey, 0, tkey);
+        head.cells[0] = "ohne Gewerk".into();
+        lines.push(head);
+        ext::gewerk_zeilen(m, b, None, tkey, lines);
+    }
+}
+
+/// Schichtzeilen eines Gewerks (Paket 1b).
+fn trade_rows(m: &Model, bi: u32, order: u32, tkey: Key, t: &TradeSum, lines: &mut Vec<Line>) {
+    {
         let mut i = 0;
         while i < t.rows.len() {
             let r = &t.rows[i];
@@ -2319,6 +2360,10 @@ fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut V
             g.category,
             g.rows.iter().map(|r| r.element).collect(),
         ));
+        if g.ext.is_some() {
+            ext::gruppe(m, st.id, skey, g, lines);
+            continue;
+        }
         if is_wall(g.category) {
             let (a, b, c) = group_id(st.id, g);
             let gkey = Key::Group(a, b, c);
@@ -2434,7 +2479,8 @@ fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut V
                     rl.cells[0] = "Attikablech".into();
                     rl.cells[2] = m_len(c.length);
                 }
-                None => {
+                // Erweiterungen stehen in ihrer Gruppe (oben)
+                Some(ElementQto::Ext(_)) | None => {
                     rl.cells[0] = g.category.name().into();
                     rl.cells[4] = "–".into();
                     rl.note = r.note.clone();
@@ -2539,9 +2585,22 @@ fn csv_trades(m: &Model, sched: &Schedule) -> Vec<u8> {
     let opt = |v: f64, f: &dyn Fn(f64) -> String| if v > 0.0 { f(v) } else { String::new() };
     for b in &sched.buildings {
         let gb = m.building(b.id).map_or(String::new(), |x| x.number.clone());
-        for t in &b.by_trade {
-            let Some(tr) = m.trade(t.trade) else { continue };
+        // Gewerke der Schichten und der Erweiterungen (E8a) nach Bauablauf
+        let ext_t = ext::gewerke(m, b);
+        let mut ids: Vec<sk_model::trade::TradeId> = b.by_trade.iter().map(|t| t.trade).collect();
+        for t in ext_t.iter().flatten() {
+            if !ids.contains(t) {
+                ids.push(*t);
+            }
+        }
+        ids.sort_by_key(|t| m.trade(*t).map_or(u16::MAX, |x| x.order));
+        for id in ids {
+            let Some(tr) = m.trade(id) else { continue };
             let trade = format!("{} {}", tr.code, tr.name);
+            let Some(t) = b.by_trade.iter().find(|t| t.trade == id) else {
+                ext::csv_gewerk(m, b, &gb, &trade, Some(id), &mut row);
+                continue;
+            };
             let mut i = 0;
             while i < t.rows.len() {
                 let r = &t.rows[i];
@@ -2633,6 +2692,10 @@ fn csv_trades(m: &Model, sched: &Schedule) -> Vec<u8> {
                 &vol(t.volume),
                 "",
             ]);
+            ext::csv_gewerk(m, b, &gb, &trade, Some(id), &mut row);
+        }
+        if ext_t.contains(&None) {
+            ext::csv_gewerk(m, b, &gb, "ohne Gewerk", None, &mut row);
         }
         for x in &b.by_material {
             let name = m
@@ -2697,6 +2760,10 @@ fn csv_storeys(m: &Model, sched: &Schedule) -> Vec<u8> {
     for (gb, st) in storeys {
         let (sname, short) = storey_name(m, st.id);
         for g in &st.groups {
+            if g.ext.is_some() {
+                ext::csv_geschoss(m, &gb, &sname, g, &mut row);
+                continue;
+            }
             let kg = g.category.din276().map_or(String::new(), |k| k.to_string());
             let title = if is_wall(g.category) {
                 group_title(m, g, false)
@@ -2789,7 +2856,8 @@ fn csv_storeys(m: &Model, sched: &Schedule) -> Vec<u8> {
                         String::new(),
                         format!("Abwicklung {} mm", c.girth.round()),
                     ),
-                    None => (
+                    // Erweiterungen stehen in ihrer Gruppe (oben)
+                    Some(ElementQto::Ext(_)) | None => (
                         g.category.name().to_string(),
                         String::new(),
                         String::new(),
@@ -2917,6 +2985,9 @@ fn csv_storeys(m: &Model, sched: &Schedule) -> Vec<u8> {
     bytes.extend_from_slice(out.as_bytes());
     bytes
 }
+
+#[path = "schedule_ext.rs"]
+mod ext;
 
 #[cfg(test)]
 #[path = "schedule_view_tests.rs"]
