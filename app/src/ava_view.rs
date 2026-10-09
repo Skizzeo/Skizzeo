@@ -1110,7 +1110,7 @@ impl AvaView {
 
     fn punkt_farbe(t: &Theme, p: Punkt) -> Rgba {
         match p {
-            Punkt::Da => t.ui.text_same,
+            Punkt::Da => t.ui.sheet_success,
             Punkt::Fehlt => t.ui.accent,
             Punkt::Leer => t.ui.sheet_hint,
         }
@@ -1487,7 +1487,7 @@ impl AvaView {
                     }
                 }
                 Art::Erfuellt => {
-                    Self::paint_punkt(c, (tx + 4.0 * s, y + h * 0.5), 3.5 * s, u.text_same);
+                    Self::paint_punkt(c, (tx + 4.0 * s, y + h * 0.5), 3.5 * s, u.sheet_success);
                     regular.draw(c, &z.text, px, tx + 16.0 * s, base, u.sheet_text);
                 }
             }

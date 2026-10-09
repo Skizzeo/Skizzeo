@@ -34,7 +34,7 @@ pub struct Ui {
     /// Schrift auf Akzentflächen.
     pub on_accent: Rgba,
     /// Kennzeichen „wie im Projekt“ (Bauteilkatalog, Baustoffe, Reiter
-    /// Firma).
+    /// Firma) und erledigt auf dunklem Grund (Haken im Assistenten).
     pub text_same: Rgba,
     pub accent: Rgba,
     pub accent_hover: Rgba,
@@ -97,6 +97,10 @@ pub struct Ui {
     /// Weiße Fläche auf dem Blatt (KA-1/KA-2): aktive Karte, Feld und Chip
     /// unter der Maus, Preisblatt.
     pub sheet_card: Rgba,
+    /// Erledigt, erfüllt auf dem hellen Blatt (AVA Prüfen, Punkt im Baum);
+    /// das Grün von `text_same`, dunkler für 4,5 : 1 auf `sheet_bg`. Hängt
+    /// nicht am Akzent.
+    pub sheet_success: Rgba,
     pub sheet_hover: Rgba,
     pub sheet_flash: Rgba,
     pub sheet_select: Rgba,
@@ -390,6 +394,7 @@ impl Theme {
                 sheet_rule: rgb(214, 212, 204),
                 sheet_tile: rgb(234, 232, 224),
                 sheet_card: rgb(255, 255, 255),
+                sheet_success: rgb(46, 125, 70),
                 sheet_hover: Rgba(accent.0, accent.1, accent.2, 36),
                 sheet_flash: Rgba(accent.0, accent.1, accent.2, 120),
                 sheet_select: Rgba(accent.0, accent.1, accent.2, 84),

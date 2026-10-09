@@ -461,6 +461,7 @@ const GROUPS: [(&str, &[&str]); 8] = [
             "ui.sheet_rule",
             "ui.sheet_tile",
             "ui.sheet_card",
+            "ui.sheet_success",
             "ui.sheet_hover",
             "interact.hover_element",
             "ui.sheet_flash",

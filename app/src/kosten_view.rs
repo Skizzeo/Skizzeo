@@ -688,18 +688,26 @@ impl KostenView {
         if let Some((j, el)) = self.wahl_wunsch.take() {
             let z = blatt.ohne.get(j).filter(|z| z.element == el);
             let a = z.and_then(|z| sk_cost::wahl::auswahl(s.model(), kat, z));
-            // Im Blatt mit Bauteilnummer: „DT-001 PIR-Dämmung“
+            // Titel wie die Zeile „Dachterrasse · Dämmung hart“
+            // (spaeter-darstellung 9), Meldungen mit Bauteilnummer
+            // „DT-001 PIR-Dämmung“
+            let baustoff =
+                |z: &sk_cost::rechnung::OhneZeile| zeilen::baustoff_name(s.model(), z.baustoff);
+            let kennung = z.map_or_else(String::new, |z| {
+                format!("{} {}", z.nummer, baustoff(z)).trim().to_string()
+            });
             let titel = z.map_or_else(String::new, |z| {
-                format!(
-                    "{} {}",
-                    z.nummer,
-                    zeilen::baustoff_name(s.model(), z.baustoff)
-                )
-                .trim()
-                .to_string()
+                let art = s.model().element(z.element).map_or(String::new(), |e| {
+                    sk_model::kinds::spec(e.category).name.to_string()
+                });
+                match baustoff(z) {
+                    b if b.is_empty() => art,
+                    b => format!("{art} · {b}"),
+                }
             });
             if let (Some(z), Some(a)) = (z, a) {
                 let mut w = WahlBlatt::neu((j, el), &titel, menge_text(z.menge, z.einheit), a);
+                w.kennung = kennung;
                 w.scale = self.scale;
                 self.wahl = Some(w);
                 changed = true;

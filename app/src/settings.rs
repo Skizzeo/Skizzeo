@@ -20,7 +20,7 @@ pub type RgbaRole = (&'static str, &'static str, fn(&mut Theme) -> &mut Rgba);
 pub type F4Role = (&'static str, &'static str, fn(&mut Theme) -> &mut [f32; 4]);
 pub type SizeRole = (&'static str, &'static str, fn(&mut Theme) -> &mut f32);
 
-pub const RGBA_ROLES: [RgbaRole; 67] = [
+pub const RGBA_ROLES: [RgbaRole; 68] = [
     ("ui.bg", "Fläche", |t| &mut t.ui.bg),
     ("ui.border", "Rahmen", |t| &mut t.ui.border),
     ("ui.field", "Feld", |t| &mut t.ui.field),
@@ -129,6 +129,9 @@ pub const RGBA_ROLES: [RgbaRole; 67] = [
     ("ui.sheet_card", "Karten und Felder auf dem Blatt", |t| {
         &mut t.ui.sheet_card
     }),
+    ("ui.sheet_success", "Grün auf dem Blatt: erfüllt", |t| {
+        &mut t.ui.sheet_success
+    }),
     ("ui.sheet_hover", "Zeile unter der Maus", |t| {
         &mut t.ui.sheet_hover
     }),
@@ -138,7 +141,9 @@ pub const RGBA_ROLES: [RgbaRole; 67] = [
     ("ui.sheet_select", "Gewählte Zeile", |t| {
         &mut t.ui.sheet_select
     }),
-    ("ui.text_same", "Wie im Projekt", |t| &mut t.ui.text_same),
+    ("ui.text_same", "Grün: wie im Projekt, erledigt", |t| {
+        &mut t.ui.text_same
+    }),
     ("ui.sheet_select_group", "Gruppe der Auswahl", |t| {
         &mut t.ui.sheet_select_group
     }),

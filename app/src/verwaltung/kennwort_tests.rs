@@ -118,7 +118,9 @@ fn kennwort_setzen_und_abfragen() {
     assert!(!out.frei && !out.closed);
     let a = v.abfrage.as_ref().expect("bleibt zu");
     assert!(a.falsch, "{FALSCH}");
-    assert!(a.te.text.is_empty());
+    // Die Punkte bleiben markiert stehen; Tippen ersetzt sie
+    assert_eq!(a.te.text, "polier7");
+    assert_eq!(a.te.selection(), (0, 7));
     let _ = v.paint(&t, &fonts, &w);
     // Nutzer: Firma nicht; im Projekt alles außer dem Kennwort (Entscheid
     // 19:45: das Kennwort schützt den Firmenkatalog, nicht das Haus)

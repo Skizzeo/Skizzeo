@@ -862,7 +862,8 @@ impl Verwaltung {
             if jetzt {
                 rounded(c, kreis, rad, u.accent);
             } else if fertig {
-                rounded(c, kreis, rad, u.text_dim);
+                // Erledigt: grüner Kreis (spaeter-darstellung 17)
+                rounded(c, kreis, rad, u.text_same);
             } else {
                 widgets::ring(c, cx0, cy0, rad, line, u.border);
             }

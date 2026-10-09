@@ -56,12 +56,24 @@ pub(super) enum SZiel {
     Schliessen,
 }
 
-/// Punkte statt Zeichen; Schreibmarke hinter dem letzten Punkt.
-fn punkte(c: &mut Canvas, r: Rect, n: usize, fokus: bool, s: f32, t: &Theme) {
+/// Punkte statt Zeichen; Schreibmarke hinter dem letzten Punkt. Ist alles
+/// markiert (nach falschem Kennwort), liegt die Markierung hinter den Punkten.
+fn punkte(c: &mut Canvas, r: Rect, te: &TextEdit, fokus: bool, s: f32, t: &Theme) {
     let u = &t.ui;
+    let n = te.text.chars().count();
     let d = 7.0 * s;
     let x0 = r.x + t.size.field_pad * s;
     let cy = r.y + r.h * 0.5;
+    if fokus && n > 0 && te.selection() == (0, te.text.len()) {
+        let w = (n as f32 * (d + 4.0 * s)).min(r.x + r.w - 6.0 * s - x0);
+        c.fill_rect(
+            x0 - 2.0 * s,
+            r.y + 6.0 * s,
+            w,
+            r.h - 12.0 * s,
+            u.text_select,
+        );
+    }
     for i in 0..n {
         let x = x0 + i as f32 * (d + 4.0 * s);
         if x + d > r.x + r.w - 6.0 * s {
@@ -149,8 +161,10 @@ impl Verwaltung {
             out.moved = true;
             out.closed = self.nur_kennwort;
         } else {
+            // Punkte bleiben stehen, markiert: Tippen ersetzt sie
+            // (spaeter-darstellung 21)
             a.falsch = true;
-            a.te = TextEdit::new("");
+            a.te.select_all();
         }
         out.repaint = true;
     }
@@ -250,7 +264,7 @@ impl Verwaltung {
         }
         let fr = self.abf_feld(w);
         feld_rahmen(c, fonts, fr, true, a.falsch, s, t);
-        punkte(c, fr, a.te.text.chars().count(), true, s, t);
+        punkte(c, fr, &a.te, true, s, t);
         let st = ButtonState {
             hover: a.hover,
             pressed: a.pressed,
@@ -537,7 +551,7 @@ impl Verwaltung {
                 s,
                 t,
             );
-            punkte(c, fr, te.text.chars().count(), fokus, s, t);
+            punkte(c, fr, te, fokus, s, t);
         }
         for (z, text, active) in [
             (SZiel::Abbrechen, "Abbrechen", false),

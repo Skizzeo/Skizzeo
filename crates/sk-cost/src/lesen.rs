@@ -58,7 +58,7 @@ pub fn werk(m: &Model) -> Katalog {
 
 /// Preisquelle in der Kopfzeile des Reiters Kosten (paket-ka2 §5):
 /// „Referenzpreise 10/2026“, solange Werkspreise gelten, „Preise
-/// Firmenkatalog“, sobald ein Firmenkatalog Preise trägt (auch in der Kopie
+/// Firmenkatalog vom 08.10.2026“, sobald ein Firmenkatalog Preise trägt (auch in der Kopie
 /// des Projekts). Eine Standnummer erscheint erst mit Kennwort (KA-3).
 pub fn preisquelle(k: &Katalog) -> String {
     match &k.quelle {
@@ -66,7 +66,18 @@ pub fn preisquelle(k: &Katalog) -> String {
         Quelle::Firma { .. }
         | Quelle::Projekt {
             katalog: Some(_), ..
-        } => "Preise Firmenkatalog".into(),
+        } => {
+            // „vom 08.10.2026“ aus `[catalog] date=` (spaeter-darstellung 10)
+            let datum = k
+                .kopf
+                .as_ref()
+                .and_then(|x| x.satz.text("date"))
+                .and_then(|d| {
+                    let mut t = d.get(..10)?.split('-');
+                    Some(format!(" vom {2}.{1}.{0}", t.next()?, t.next()?, t.next()?))
+                });
+            format!("Preise Firmenkatalog{}", datum.unwrap_or_default())
+        }
         Quelle::Projekt { katalog: None, .. } => format!("Referenzpreise {}", werksstand()),
     }
 }
@@ -579,6 +590,26 @@ mod tests {
         // Datei bleibt bytegleich
         let _ = katalog(&m, None);
         assert_eq!(sk_model::szo::write(&m), vorher);
+    }
+
+    /// spaeter-darstellung 10: Die Kopfzeile nennt das Freigabedatum aus
+    /// `[catalog] date=`, ohne Datum bleibt es bei „Preise Firmenkatalog“.
+    #[test]
+    fn preisquelle_mit_datum() {
+        let m = p5();
+        let mut lib = Library::standard();
+        for (a, l) in crate::werk_zeilen() {
+            let id = sk_model::ext::rec_id(l).unwrap_or_default();
+            lib.ext_put(a, &id, l.to_string(), None);
+        }
+        let mut k = katalog(&m, Some(&lib));
+        assert_eq!(preisquelle(&k), "Preise Firmenkatalog vom 08.10.2026");
+        k.kopf = None;
+        assert_eq!(preisquelle(&k), "Preise Firmenkatalog");
+        assert_eq!(
+            preisquelle(&werk(&m)),
+            format!("Referenzpreise {}", werksstand())
+        );
     }
 
     /// Abnahme 28a: zwei Baustoffe „Putz“ gleicher Kategorie, keine

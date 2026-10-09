@@ -63,6 +63,9 @@ pub struct WahlBlatt {
     pub ohne: usize,
     pub element: ElementId,
     titel: String,
+    /// Die Zeile mit Bauteilnummer für Meldungen („DT-001 PIR-Dämmung“);
+    /// ohne eigene wie im Titel.
+    pub kennung: String,
     menge: String,
     auswahl: Auswahl,
     suche: TextEdit,
@@ -85,10 +88,21 @@ impl WahlBlatt {
         menge: String,
         auswahl: Auswahl,
     ) -> WahlBlatt {
+        // „· passend sind Bauleistungen in m²“, wenn alle Vorschläge eine
+        // Einheit haben (spaeter-darstellung 9)
+        let einheit = {
+            let mut e = auswahl.alle().map(|w| w.einheit);
+            e.next().filter(|a| e.all(|b| b == *a))
+        };
+        let menge = match einheit {
+            Some(a) => format!("{menge} · passend sind Bauleistungen in {}", a.zeichen()),
+            None => menge,
+        };
         WahlBlatt {
             ohne,
             element,
             titel: format!("Bauleistung für {zeile}"),
+            kennung: zeile.to_string(),
             menge,
             auswahl,
             suche: TextEdit::new(""),
@@ -104,9 +118,7 @@ impl WahlBlatt {
 
     /// Die Zeile, für die gewählt wird („DT-001 PIR-Dämmung“).
     pub fn zeile(&self) -> &str {
-        self.titel
-            .strip_prefix("Bauleistung für ")
-            .unwrap_or(&self.titel)
+        &self.kennung
     }
 
     /// Alle Sätze des Blatts, auch aufgeklappt und mit „kommt dann zu“
