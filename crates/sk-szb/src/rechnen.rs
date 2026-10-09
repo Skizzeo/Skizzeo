@@ -5,9 +5,10 @@
 //! Koordinaten in mm, Ursprung ist der Einfügepunkt auf UK Geschoss; die
 //! Höhe des Einfügepunkts über UK ist [`Ergebnis::z0`] (`[hoehe] versatz`).
 
-use crate::formel::{self, Umfeld, Volumen};
+use crate::formel::{self, Formel, Umfeld, Volumen};
 use crate::lesen::{Def, Satz};
 use crate::{zahl, Befund};
+use std::collections::HashMap;
 
 /// Das Bezugsgeschoss: Geschosshöhe und Decke darüber (mm).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -133,9 +134,83 @@ pub fn vorgaben(def: &Def, g: &Geschoss) -> Umfeld {
     pv
 }
 
+/// Höchstzahl der Rechenschritte (Formelknoten) einer Rechnung (Review
+/// 3cg): darüber „Bauteil zu aufwendig“ statt Rechnen.
+pub const MAX_SCHRITTE: u64 = 2_000_000;
+/// Höchstzahl der Rechenschritte aller Rechnungen einer Prüfung.
+pub const MAX_SCHRITTE_PRUEFUNG: u64 = 20_000_000;
+
+/// Rechnet Formeln: jede einmal übersetzt, alle zusammen mit höchstens
+/// `rest` Schritten.
+pub struct Rechner {
+    formeln: HashMap<String, Result<Formel, String>>,
+    /// Übrige Rechenschritte.
+    pub rest: u64,
+    /// Die Schritte reichten nicht.
+    pub erschoepft: bool,
+}
+
+impl Rechner {
+    pub fn neu(schritte: u64) -> Rechner {
+        Rechner {
+            formeln: HashMap::new(),
+            rest: schritte,
+            erschoepft: false,
+        }
+    }
+
+    /// Rechnet `src` im Umfeld `u`; `vol` nur in `[menge]`.
+    pub fn wert(&mut self, src: &str, u: &Umfeld, vol: Option<&Volumen>) -> Result<f64, String> {
+        if !self.formeln.contains_key(src) {
+            self.formeln.insert(src.to_string(), Formel::neu(src));
+        }
+        let r = match &self.formeln[src] {
+            Ok(f) => f.wert_im(u, vol, &mut self.rest),
+            Err(x) => Err(x.clone()),
+        };
+        if self.rest == 0 && r.is_err() {
+            self.erschoepft = true;
+        }
+        r
+    }
+
+    /// Befund eines Satzes; nach dem Erschöpfen nur noch der eine am Ende.
+    fn befund(&self, e: &mut Ergebnis, b: Befund) {
+        if !self.erschoepft {
+            e.befunde.push(b);
+        }
+    }
+}
+
 /// Rechnet Werte, Körper und Mengen mit den Parametern `pv` im Geschoss
 /// `g`. Fehler einzelner Sätze werden Befunde, die Rechnung geht weiter.
 pub fn rechnen(def: &Def, pv: &Umfeld, g: &Geschoss) -> Ergebnis {
+    rechnen_mit(&mut Rechner::neu(MAX_SCHRITTE), def, pv, g)
+}
+
+/// Wie [`rechnen`] mit dem Rechner `rc`: höchstens [`MAX_SCHRITTE`] und
+/// höchstens `rc.rest` Schritte; `rc.rest` nimmt um die verbrauchten ab.
+pub fn rechnen_mit(rc: &mut Rechner, def: &Def, pv: &Umfeld, g: &Geschoss) -> Ergebnis {
+    let gesamt = rc.rest;
+    let erlaubt = gesamt.min(MAX_SCHRITTE);
+    rc.rest = erlaubt;
+    rc.erschoepft = false;
+    let mut e = rechnen_innen(rc, def, pv, g);
+    if rc.erschoepft {
+        e.befunde.push(Befund::fehler(
+            0,
+            format!(
+                "{}: mehr als {} Rechenschritte",
+                formel::ZU_AUFWENDIG,
+                zahl(erlaubt as f64, 0)
+            ),
+        ));
+    }
+    rc.rest = gesamt - (erlaubt - rc.rest);
+    e
+}
+
+fn rechnen_innen(rc: &mut Rechner, def: &Def, pv: &Umfeld, g: &Geschoss) -> Ergebnis {
     let mut e = Ergebnis::default();
     let mut sc = g.umfeld();
     for r in &def.param {
@@ -144,25 +219,25 @@ pub fn rechnen(def: &Def, pv: &Umfeld, g: &Geschoss) -> Ergebnis {
     }
     for (i, r) in def.wert.iter().enumerate() {
         let k = r.key().to_string();
-        match formel::rechnen(r.get("formel").unwrap_or(""), &sc, None) {
+        match rc.wert(r.get("formel").unwrap_or(""), &sc, None) {
             Ok(v) => {
                 sc.insert(k, v);
                 e.werte.push((i, v));
             }
             Err(x) => {
-                e.befunde
-                    .push(Befund::fehler(r.zeile, format!("[wert] {k}: {x}")));
+                rc.befund(&mut e, Befund::fehler(r.zeile, format!("[wert] {k}: {x}")));
                 sc.insert(k, 0.0);
             }
         }
     }
     if let Some(h) = def.hoehe.first() {
         if let Some(v) = h.get("versatz") {
-            match formel::rechnen(v, &sc, None) {
+            match rc.wert(v, &sc, None) {
                 Ok(z) => e.z0 = z,
-                Err(x) => e
-                    .befunde
-                    .push(Befund::fehler(h.zeile, format!("[hoehe] versatz: {x}"))),
+                Err(x) => rc.befund(
+                    &mut e,
+                    Befund::fehler(h.zeile, format!("[hoehe] versatz: {x}")),
+                ),
             }
         }
     }
@@ -171,15 +246,17 @@ pub fn rechnen(def: &Def, pv: &Umfeld, g: &Geschoss) -> Ergebnis {
         if !matches!(form, "quader" | "prisma" | "zylinder") {
             continue;
         }
-        if let Err(x) = koerper(&mut e, ix, r, &sc) {
+        if let Err(x) = koerper(rc, &mut e, ix, r, &sc) {
             let wer = r.get("teil").unwrap_or(form);
-            e.befunde
-                .push(Befund::fehler(r.zeile, format!("[koerper] {wer}: {x}")));
+            rc.befund(
+                &mut e,
+                Befund::fehler(r.zeile, format!("[koerper] {wer}: {x}")),
+            );
         }
     }
     for (i, r) in def.menge.iter().enumerate() {
         let k = r.key();
-        let v = match formel::rechnen(r.get("formel").unwrap_or(""), &sc, Some(&e.vol)) {
+        let v = match rc.wert(r.get("formel").unwrap_or(""), &sc, Some(&e.vol)) {
             Ok(v) => {
                 if r.get("einheit") == Some("stk") && (v - v.round()).abs() > 1e-9 {
                     e.befunde.push(Befund::hinweis(
@@ -190,8 +267,7 @@ pub fn rechnen(def: &Def, pv: &Umfeld, g: &Geschoss) -> Ergebnis {
                 Some(v)
             }
             Err(x) => {
-                e.befunde
-                    .push(Befund::fehler(r.zeile, format!("[menge] {k}: {x}")));
+                rc.befund(&mut e, Befund::fehler(r.zeile, format!("[menge] {k}: {x}")));
                 None
             }
         };
@@ -201,10 +277,16 @@ pub fn rechnen(def: &Def, pv: &Umfeld, g: &Geschoss) -> Ergebnis {
 }
 
 /// Alle Exemplare eines `[koerper]`-Satzes.
-fn koerper(e: &mut Ergebnis, ix: usize, r: &Satz, sc: &Umfeld) -> Result<(), String> {
+fn koerper(
+    rc: &mut Rechner,
+    e: &mut Ergebnis,
+    ix: usize,
+    r: &Satz,
+    sc: &Umfeld,
+) -> Result<(), String> {
     let mut n = 1;
     if let Some(a) = r.get("anzahl") {
-        let v = formel::rechnen(a, sc, None)?;
+        let v = rc.wert(a, sc, None)?;
         if (v - v.round()).abs() > 1e-9 {
             return Err("anzahl muss ganz sein".into());
         }
@@ -216,28 +298,29 @@ fn koerper(e: &mut Ergebnis, ix: usize, r: &Satz, sc: &Umfeld) -> Result<(), Str
     }
     let form = r.get("form").unwrap_or("");
     let baustoff = r.get("baustoff").unwrap_or("").to_string();
+    // einmal je Satz: Umfeld mit i und n, die Punkte des Prismas
+    let mut s2 = sc.clone();
+    s2.insert("n".into(), n as f64);
+    let mut pk: Option<Vec<(String, String)>> = None;
     for i in 0..n {
         if e.anzahl >= MAX_KOERPER {
             return Err(format!("mehr als {MAX_KOERPER} Körper im Bauteil"));
         }
-        let mut s2 = sc.clone();
         s2.insert("i".into(), i as f64);
-        s2.insert("n".into(), n as f64);
-        let g = |k: &str| -> Result<f64, String> {
+        let s2 = &s2;
+        let g = |rc: &mut Rechner, k: &str| -> Result<f64, String> {
             match r.get(k) {
-                Some(f) => formel::rechnen(f, &s2, None),
+                Some(f) => rc.wert(f, s2, None),
                 None => Ok(0.0),
             }
         };
-        if let Some(w) = r.get("wenn") {
-            if formel::rechnen(w, &s2, None)? == 0.0 {
-                continue;
-            }
+        if r.get("wenn").is_some() && g(rc, "wenn")? == 0.0 {
+            continue;
         }
-        let drehung = g("drehung")?;
+        let drehung = g(rc, "drehung")?;
         let (umriss, von, bis, ebene, glatt, volumen) = match form {
             "quader" => {
-                let (b, t, h) = (g("b")?, g("t")?, g("h")?);
+                let (b, t, h) = (g(rc, "b")?, g(rc, "t")?, g(rc, "h")?);
                 if !(b > 0.0 && t > 0.0 && h > 0.0) {
                     return Err(format!(
                         "b, t und h müssen > 0 sein (b={} t={} h={})",
@@ -250,12 +333,12 @@ fn koerper(e: &mut Ergebnis, ix: usize, r: &Satz, sc: &Umfeld) -> Result<(), Str
                 (p, 0.0, h, Ebene::Xy, false, b * t * h)
             }
             "prisma" => {
+                if pk.is_none() {
+                    pk = Some(punkte(r.get("punkte").unwrap_or(""))?);
+                }
                 let mut p = Vec::new();
-                for (a, b) in punkte(r.get("punkte").unwrap_or(""))? {
-                    p.push([
-                        formel::rechnen(&a, &s2, None)?,
-                        formel::rechnen(&b, &s2, None)?,
-                    ]);
+                for (a, b) in pk.iter().flatten() {
+                    p.push([rc.wert(a, s2, None)?, rc.wert(b, s2, None)?]);
                 }
                 if p.len() < 3 {
                     return Err("punkte: mindestens 3".into());
@@ -264,7 +347,7 @@ fn koerper(e: &mut Ergebnis, ix: usize, r: &Satz, sc: &Umfeld) -> Result<(), Str
                 if flaeche2(&p) < 0.0 {
                     p.reverse();
                 }
-                let (w0, w1) = (g("von")?, g("bis")?);
+                let (w0, w1) = (g(rc, "von")?, g(rc, "bis")?);
                 if (w1 - w0).abs() < 1e-6 {
                     return Err("von und bis gleich: Prisma ohne Dicke".into());
                 }
@@ -273,13 +356,13 @@ fn koerper(e: &mut Ergebnis, ix: usize, r: &Satz, sc: &Umfeld) -> Result<(), Str
                 (p, w0.min(w1), w0.max(w1), ebene, false, v)
             }
             _ => {
-                let (r0, h) = (g("r")?, g("h")?);
+                let (r0, h) = (g(rc, "r")?, g(rc, "h")?);
                 if !(r0 > 0.0 && h > 0.0) {
                     return Err("r und h müssen > 0 sein".into());
                 }
                 let sd = match r.get("seiten") {
                     None => 24.0,
-                    Some(_) => (g("seiten")? + 0.5).floor(),
+                    Some(_) => (g(rc, "seiten")? + 0.5).floor(),
                 };
                 if !(6.0..=96.0).contains(&sd) {
                     return Err("seiten 6 bis 96".into());
@@ -314,7 +397,7 @@ fn koerper(e: &mut Ergebnis, ix: usize, r: &Satz, sc: &Umfeld) -> Result<(), Str
             von,
             bis,
             ebene,
-            ursprung: [g("x")?, g("y")?, g("z")?],
+            ursprung: [g(rc, "x")?, g(rc, "y")?, g(rc, "z")?],
             drehung,
             glatt,
             volumen,
@@ -485,5 +568,30 @@ mod tests {
             (p[0] - 100.0).abs() < 1e-9 && (p[1] - 200.0).abs() < 1e-9,
             "{p:?}"
         );
+    }
+    /// Review 3cg: jede Formel einmal übersetzt, Schritte gezählt; reichen
+    /// sie nicht, ein Befund statt vieler, und die übrigen Schritte des
+    /// Rechners nehmen nur um die verbrauchten ab.
+    #[test]
+    fn rechenschritte() {
+        let (d, _) = lesen::lesen(
+            "SZB 0\n[param] key=l wert=3000\n[koerper] form=quader baustoff=s anzahl=500 x=\"i*l+1+1+1+1\" b=1 t=1 h=1\n[menge] key=m formel=1\n",
+        );
+        let g = Geschoss::PROBE;
+        let pv = vorgaben(&d, &g);
+        let mut rc = Rechner::neu(10_000_000);
+        let e = rechnen_mit(&mut rc, &d, &pv, &g);
+        assert!(e.befunde.is_empty(), "{:?}", e.befunde);
+        let verbraucht = 10_000_000 - rc.rest;
+        // anzahl 1, je Exemplar x 11, b/t/h je 1 (y, z, drehung fehlen), Menge 1
+        assert_eq!(verbraucht, 1 + 500 * 14 + 1);
+        assert_eq!(rc.formeln.len(), 3, "500, x und 1");
+        let mut knapp = Rechner::neu(1000);
+        let e = rechnen_mit(&mut knapp, &d, &pv, &g);
+        assert_eq!(knapp.rest, 0);
+        assert!(knapp.erschoepft);
+        let t: Vec<&str> = e.befunde.iter().map(|b| b.text.as_str()).collect();
+        assert_eq!(t, ["Bauteil zu aufwendig: mehr als 1.000 Rechenschritte"]);
+        assert!(e.anzahl < 100);
     }
 }

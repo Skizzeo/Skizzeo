@@ -1229,13 +1229,15 @@ fn pruefen_mit(text: &str, best: &Bestand, g: &Geschoss, grenzpruefung: bool) ->
         }
     }
     let hart = b.iter().any(Befund::ist_fehler);
+    // Rechenschritte für Rechnung und Grenzprüfung zusammen (Review 3cg)
+    let mut rc = rechnen::Rechner::neu(rechnen::MAX_SCHRITTE_PRUEFUNG);
     let ergebnis = if def.bauteil.is_empty() && def.koerper.is_empty() {
         Ergebnis::default()
     } else {
-        rechnen::rechnen(&def, &pv, g)
+        rechnen::rechnen_mit(&mut rc, &def, &pv, g)
     };
     b.extend(ergebnis.befunde.iter().cloned());
-    if grenzpruefung && !hart {
+    if grenzpruefung && !hart && !rc.erschoepft {
         let mut gesehen: BTreeSet<String> = b.iter().map(|x| x.text.clone()).collect();
         for r in &def.param {
             let k = r.key();
@@ -1244,9 +1246,12 @@ fn pruefen_mit(text: &str, best: &Bestand, g: &Geschoss, grenzpruefung: bool) ->
                 let Some(x) = x else {
                     continue;
                 };
+                if rc.rest == 0 {
+                    break;
+                }
                 let mut pv2 = pv.clone();
                 pv2.insert(k.to_string(), x);
-                let e = rechnen::rechnen(&def, &pv2, g);
+                let e = rechnen::rechnen_mit(&mut rc, &def, &pv2, g);
                 for f in e.befunde.iter().filter(|f| f.ist_fehler()) {
                     let t = format!("Grenzprüfung {k}={seite} ({}): {}", zahl(x, 2), f.text);
                     if gesehen.insert(t.clone()) {

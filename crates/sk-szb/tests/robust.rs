@@ -252,7 +252,6 @@ fn feste_grenzfaelle() {
 /// neu übersetzt, und die Grenzprüfung rechnet alles 2·P-mal. Die Zeit
 /// muss begrenzt sein, mit Fehler „zu aufwendig“ statt Rechnen.
 #[test]
-#[ignore = "zeigt Befund 3cg-1, bis ein Rechenbudget greift"]
 fn aufwand_begrenzt() {
     let basis = include_str!("../beispiele/werk.stuetze.szb");
     let mut f = String::from("b");

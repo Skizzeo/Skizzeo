@@ -454,7 +454,20 @@ impl Formel {
 
     /// Rechnet die Formel; `vol` nur in `[menge]`.
     pub fn wert(&self, u: &Umfeld, vol: Option<&Volumen>) -> Result<f64, String> {
-        let v = rechne(&self.wurzel, u, vol)?;
+        let mut rest = u64::MAX;
+        self.wert_im(u, vol, &mut rest)
+    }
+
+    /// Wie [`Formel::wert`] mit höchstens `rest` Rechenschritten (ein
+    /// Schritt je Knoten); `rest` nimmt ab. Reicht es nicht, ist der Fehler
+    /// [`ZU_AUFWENDIG`] und `rest` 0.
+    pub fn wert_im(
+        &self,
+        u: &Umfeld,
+        vol: Option<&Volumen>,
+        rest: &mut u64,
+    ) -> Result<f64, String> {
+        let v = rechne(&self.wurzel, u, vol, rest)?;
         if !v.is_finite() {
             return Err("Ergebnis ist keine Zahl".into());
         }
@@ -462,14 +475,22 @@ impl Formel {
     }
 }
 
-fn rechne(k: &Knoten, u: &Umfeld, vol: Option<&Volumen>) -> Result<f64, String> {
+/// Fehler, wenn die Rechenschritte nicht reichen (Review 3cg).
+pub const ZU_AUFWENDIG: &str = "Bauteil zu aufwendig";
+
+fn rechne(k: &Knoten, u: &Umfeld, vol: Option<&Volumen>, rest: &mut u64) -> Result<f64, String> {
+    if *rest == 0 {
+        return Err(ZU_AUFWENDIG.into());
+    }
+    *rest -= 1;
+    let mut rechne = |k: &Knoten| rechne(k, u, vol, rest);
     Ok(match k {
         Knoten::Zahl(v) => *v,
         Knoten::Name(n) => match u.get(n) {
             Some(v) => *v,
             None => return Err(format!("unbekannter Name „{n}“")),
         },
-        Knoten::Minus(a) => -rechne(a, u, vol)?,
+        Knoten::Minus(a) => -rechne(a)?,
         Knoten::Volumen(b) => match vol {
             Some(v) => v.get(b).copied().unwrap_or(0.0),
             None => return Err("volumen() nur in [menge]".into()),
@@ -477,12 +498,12 @@ fn rechne(k: &Knoten, u: &Umfeld, vol: Option<&Volumen>) -> Result<f64, String> 
         Knoten::Funktion(fx, args) => {
             let a = args
                 .iter()
-                .map(|a| rechne(a, u, vol))
+                .map(&mut rechne)
                 .collect::<Result<Vec<_>, _>>()?;
             fx.rechnen(&a)
         }
         Knoten::Zwei(op, a, b) => {
-            let (a, b) = (rechne(a, u, vol)?, rechne(b, u, vol)?);
+            let (a, b) = (rechne(a)?, rechne(b)?);
             let ja = |x: bool| if x { 1.0 } else { 0.0 };
             match op {
                 Op::Plus => a + b,
