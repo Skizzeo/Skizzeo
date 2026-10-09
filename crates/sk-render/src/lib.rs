@@ -31,6 +31,9 @@ pub struct Style {
 
 /// Höchstzahl der Kantenarten (Größe der Uniform-Felder).
 pub const EDGE_KINDS: usize = 8;
+/// Kantenart der feinen Linie; muss `sk_model::edge_kind::FINE` und der
+/// Konstante `FINE` in `EDGE_VS` gleichen (Strich unter dem Gelände, S11).
+pub const EDGE_FINE: u8 = 2;
 
 /// Zeilen der Aussehens-Tabelle je Darstellungsschlüssel.
 pub const LOOK_ROWS: usize = 15;
@@ -1238,6 +1241,8 @@ uniform float u_edge_width[8];
 uniform vec3 u_edge_color[8];
 uniform vec4 u_edge_dash[16];
 uniform float u_near;
+// Kantenart der feinen Linie (sk_model::edge_kind::FINE)
+const int FINE = 2;
 flat out vec3 v_color;
 // Strichmuster: Lage längs der Kante (px ab Anfang), Länge, Breite
 noperspective out float v_dist;
@@ -1251,12 +1256,13 @@ flat out vec3 v_color_below;
 uniform int u_below;
 void main() {
     int k = clamp(int(a_kind + 0.5), 0, 7);
-    // Ganz unter dem Gelände und gestrichelt: Breite und Farbe der feinen
-    // Linie, nur der Strich unter dem Gelände (S11, §8 14:25)
-    bool unter = u_below == 2 && a_a.z < -0.5 && a_b.z < -0.5;
-    int kl = unter ? 2 : k;
+    // Unter dem Gelände und gestrichelt: Breite und Farbe der feinen Linie
+    // (Kantenart FINE), nur der Strich unter dem Gelände (S11, §8 14:25).
+    // Kanten, die das Gelände kreuzen, teilt der Netzbau an z = 0.
+    bool unter = u_below == 2 && max(a_a.z, a_b.z) < 0.5 && min(a_a.z, a_b.z) < -0.5;
+    int kl = unter ? FINE : k;
     v_color = u_edge_color[kl];
-    v_color_below = u_edge_color[2];
+    v_color_below = u_edge_color[FINE];
     v_p0 = unter ? vec4(0.0) : u_edge_dash[2 * k];
     v_p1 = unter ? vec4(0.0) : u_edge_dash[2 * k + 1];
     vec4 ca = u_vp * vec4(a_a + u_origin, 1.0);
@@ -3215,6 +3221,11 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feine_kante_im_shader() {
+        assert!(EDGE_VS.contains(&format!("const int FINE = {EDGE_FINE};")));
+    }
 
     /// Kopf jeder Funktion in `glsl` (`typ name(…) {`), nach Name.
     fn heads(glsl: &str) -> Vec<(&str, &str)> {

@@ -2241,7 +2241,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                 r.skip();
                 below_raw.push(lines[r.line - 1].to_string());
                 hints.push(format!(
-                    "Zeile {}: [viewbelow] unlesbar oder doppelt; die Ansicht blendet aus, die Zeile bleibt",
+                    "Zeile {}: [viewbelow] unlesbar oder doppelt; es gilt die erste lesbare Zeile der Ansicht, sonst Ausblenden; die Zeile bleibt",
                     r.line
                 ));
             }

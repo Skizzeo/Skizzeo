@@ -3679,11 +3679,23 @@ fn mesh_into(m: &mut MeshData, s: &Solid) {
             ]);
         }
     }
-    m.edges.extend(
-        s.edges
-            .iter()
-            .map(|e| ([e.a.to_f32(), e.b.to_f32()], e.kind as f32)),
-    );
+    // Kanten, die das Gelände kreuzen, an z = 0 teilen: In den Ansichten
+    // zeichnet der untere Teil dann gestrichelt in der Breite der feinen
+    // Linie (S11, Review 3cf a); die Breite gilt je Kante.
+    m.edges.reserve(s.edges.len());
+    for e in &s.edges {
+        let k = e.kind as f32;
+        let (a, b) = (e.a, e.b);
+        if (a.z < 0.0) != (b.z < 0.0) && (a.z - b.z).abs() > 1.0 {
+            let t = a.z / (a.z - b.z);
+            let mut g = a + (b - a) * t;
+            g.z = 0.0;
+            m.edges.push(([a.to_f32(), g.to_f32()], k));
+            m.edges.push(([g.to_f32(), b.to_f32()], k));
+        } else {
+            m.edges.push(([a.to_f32(), b.to_f32()], k));
+        }
+    }
 }
 
 /// Der Stammsatz, den eine Operation des Preisblatts oder der Lohnkarte
@@ -4066,6 +4078,23 @@ mod tests {
             "{a:?} {b:?} {n:?}"
         );
         assert!(!blocked.is_empty());
+    }
+
+    /// S11: Kanten, die das Gelände kreuzen, teilt der Netzbau an z = 0;
+    /// die feine Kantenart des Shaders ist die des Modells.
+    #[test]
+    fn kanten_an_gelaende_geteilt() {
+        assert_eq!(sk_model::edge_kind::FINE, sk_render::EDGE_FINE);
+        let mut s = Solid::default();
+        s.edge(vec3(0.0, 0.0, -800.0), vec3(0.0, 0.0, 2000.0));
+        s.edge(vec3(0.0, 0.0, 0.0), vec3(1000.0, 0.0, 0.0));
+        s.edge(vec3(0.0, 0.0, -800.0), vec3(1000.0, 0.0, -800.0));
+        let m = mesh_of(&s);
+        let z: Vec<[f32; 2]> = m.edges.iter().map(|(p, _)| [p[0][2], p[1][2]]).collect();
+        assert_eq!(
+            z,
+            [[-800.0, 0.0], [0.0, 2000.0], [0.0, 0.0], [-800.0, -800.0]]
+        );
     }
 
     fn rechteck(x: f64) -> WallChain {

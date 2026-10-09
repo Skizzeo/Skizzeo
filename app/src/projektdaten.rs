@@ -193,7 +193,6 @@ fn grad(text: &str, max: f64) -> Result<Option<f64>, ()> {
         .ok_or(())
 }
 
-/// Gradzahl für ein Feld, mit Komma.
 /// Breite (Feld 8) bzw. Länge (Feld 9) von Ganderkesee: gilt, solange die
 /// Datei keine Lage hat.
 fn ganderkesee(i: usize) -> f64 {
@@ -205,6 +204,7 @@ fn ganderkesee(i: usize) -> f64 {
     }
 }
 
+/// Gradzahl für ein Feld, mit Komma.
 fn grad_text(v: Option<f64>) -> String {
     v.map_or_else(String::new, |v| v.to_string().replace('.', ","))
 }
