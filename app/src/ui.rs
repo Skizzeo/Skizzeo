@@ -1222,7 +1222,9 @@ fn row_height(r: &Row) -> (f32, f32) {
         Row::Error(_) => (15.0, 6.0),
         Row::Detail(_) => (17.0, 6.0),
         Row::Text(_) => (17.0, 6.0),
-        Row::Caption(_, letzte) => (17.0, if *letzte { 8.0 } else { 0.0 }),
+        // Die zweite Zeile beginnt unter der Nordpfeil-Kachel (Knopf 34 + 8,
+        // Zeile 17 + 5 = 64) und hat die volle Breite (Bedienbarkeit 30.1)
+        Row::Caption(_, letzte) => (17.0, if *letzte { 8.0 } else { 5.0 }),
         Row::More(..) => (17.0, 6.0),
         Row::Separator => (1.0, 10.0),
         Row::Hint(_) => (17.0, 0.0),
@@ -2361,9 +2363,14 @@ impl Ui {
         let rolls = self.natural_height(p) > r.h;
         let frame = rolls.then(|| c.clone());
         let mut y = m + size.panel_pad * s - scroll;
+        // Unterkante der Nordpfeil-Kachel neben den Projektdaten
+        let mut kachel_unten = f32::INFINITY;
         for row in self.rows(p) {
             let (h, g) = row_height(&row);
             let (h, g) = (h * s, g * s);
+            if matches!(row, Row::Button(Id::Projektdaten, _)) {
+                kachel_unten = y + TILE * s;
+            }
             match row {
                 Row::Title(t) => widgets::text(
                     &mut c,
@@ -2432,8 +2439,13 @@ impl Ui {
                 ),
                 Row::Caption(t, ..) => {
                     let px = size.font_small * s;
-                    // Rechts steht die Kachel des Nordpfeils
-                    let frei = inner_w - (TILE + TILE_GAP) * s;
+                    // Rechts steht die Kachel des Nordpfeils; unter ihr die
+                    // volle Breite (Bedienbarkeit 30.1)
+                    let frei = if y + 0.5 * s >= kachel_unten {
+                        inner_w
+                    } else {
+                        inner_w - (TILE + TILE_GAP) * s
+                    };
                     let t = widgets::ellipsize(regular, &t, px, frei);
                     widgets::text(&mut c, regular, &t, px, x, y + 13.0 * s, col.text_dim)
                 }
