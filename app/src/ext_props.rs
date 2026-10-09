@@ -268,9 +268,15 @@ impl App {
         Some((id, p.clone(), d.clone(), f))
     }
 
-    /// Ist das gewählte Bauteil eine Erweiterung?
+    /// Ist das gewählte Bauteil eine Erweiterung? Läuft je Durchgang der
+    /// Schleife (`sync_help`), daher ohne Felder, Klon der Definition und
+    /// Geschoss (Review 3ci).
     pub(crate) fn ext_gewaehlt_ist(&self) -> bool {
-        self.ext_gewaehlt().is_some()
+        let m = self.scene.model();
+        self.sel
+            .id
+            .and_then(|id| m.element(id))
+            .is_some_and(|e| matches!(&e.kind, ElementKind::Ext(p) if m.ext_def(&p.key).is_some()))
     }
 
     /// Ändert das gewählte Exemplar in einem Schritt; ein gesperrtes nicht.
