@@ -521,7 +521,7 @@ mod tests {
         // höher, anders, kleiner
         let v2 = pruefen(&mit_version(STUETZE, 2), &a, &leer).unwrap();
         assert_eq!(v2.fall, Fall::Hoeher(1));
-        let anders = STUETZE.replace("wert=240 min=200", "wert=250 min=200");
+        let anders = STUETZE.replace("min=200 max=600", "min=200 max=650");
         assert_eq!(pruefen(&anders, &a, &leer).unwrap().fall, Fall::Anders);
         a.schreiben(&v2.def, Vec::new()).unwrap();
         let v1 = pruefen(STUETZE, &a, &leer).unwrap();
@@ -604,11 +604,14 @@ mod tests {
         let v = pruefen(&mit_version(STUETZE, 2), &a, &m).unwrap();
         assert_eq!(v.projekt, Some(1));
         assert!(v.aenderungen.is_empty(), "{:?}", v.aenderungen);
-        // Standardtyp 30/30 statt 24/24: Form und Mengen
-        let breiter = mit_version(STUETZE, 2).replace(
-            "st24 name=\"Stütze 24/24\" werte=\"b=240; d=240\" standard=ja",
-            "st24 name=\"Stütze 24/24\" werte=\"b=300; d=300\" standard=ja",
-        );
+        // Standardtyp 30/30 statt 24/24 samt Vorgaben (Standardtyp gleich
+        // Vorgaben, Werkbank 19:40): Form und Mengen
+        let breiter = mit_version(STUETZE, 2)
+            .replace(
+                "st24 name=\"Stütze 24/24\" werte=\"b=240; d=240\" standard=ja",
+                "st24 name=\"Stütze 24/24\" werte=\"b=300; d=300\" standard=ja",
+            )
+            .replace("wert=240 min=200", "wert=300 min=200");
         let v = pruefen(&breiter, &a, &m).unwrap();
         assert_eq!(v.aenderungen.len(), 2, "{:?}", v.aenderungen);
         let z = &v.aenderungen[0];

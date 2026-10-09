@@ -1,0 +1,27 @@
+SZB 0
+# Beispiel der Skizzeo-Bauteil-Werkbank 0.5
+[bauteil] key=werk.stabgelaender name="Stabgeländer" mehrzahl="Stabgeländer" genus=n praefix=GL art=railing aussen=ja ifc=IfcRailing.GUARDRAIL kg=359 gewerk=18360 version=1 autor="Skizzeo" beschreibung="Stahlgeländer mit Pfosten, Handlauf, senkrechten Füllstäben und Fußleiste, auf Fußboden befestigt"
+[bedienung] gruppe=treppen_gelaender einfuegen=linie laenge=l drehen=nein
+[hoehe] ab=uk versatz=0
+[param] key=l name="Länge" einheit=mm wert=3000 min=500 max=12000 zeichnen=ja hilfe="Länge des Geländers entlang der gezeichneten Linie."
+[param] key=hg name="Höhe" einheit=mm wert=-1 min=900 max=1200 zeichnen=ja hilfe="Oberkante Handlauf über Fußboden."
+[param] key=fe name="Feldbreite" einheit=mm wert=1200 min=600 max=2000 gruppe="Maße" hilfe="Größter Abstand zwischen zwei Pfosten."
+[param] key=fu name="Füllung" einheit=- wert=1 wahl="0:ohne|1:Stäbe" gruppe="Ausführung" hilfe="Senkrechte Füllstäbe mit höchstens 12 cm Lichtmaß."
+[param] key=fl name="Fußleiste" einheit=- wert=1 janein=ja gruppe="Ausführung" hilfe="Flachstahl am unteren Rand."
+[param] key=fh name="Fußleistenhöhe" einheit=mm wert=100 min=50 max=200 gruppe="Ausführung" sichtbar=fl hilfe="Höhe der Fußleiste."
+[typ] key=g100 name="Geländer 1,00 m" werte="hg=1000; fu=1; fl=1" standard=ja
+[typ] key=g110 name="Geländer 1,10 m" werte="hg=1100; fu=1; fl=1"
+[typ] key=g100o name="Geländer 1,00 m ohne Stäbe" werte="hg=1000; fu=0; fl=0"
+[baustoff] key=stahl_s235 name="Baustahl S235, verzinkt" kategorie=metal rohdichte=7850 farbe=7d8288 gewerk=18360 euroklasse=A1 c=450 quelle="DIN EN 10025-2 und DIN EN ISO 10456, Tabellenwerte" stand=10/2026 sicherheit=belegt
+[wert] key=np formel="auf(l/fe)+1"
+[wert] key=ns formel="wenn(fu,auf((l-80)/136)-1,0)"
+[koerper] form=quader baustoff=stahl_s235 teil="Pfosten" funktion=loadbearing anzahl=np x="i*(l-40)/(n-1)" y=-20 z=0 b=40 t=40 h="hg-40"
+[koerper] form=quader baustoff=stahl_s235 teil="Handlauf" funktion=loadbearing x=0 y=-25 z="hg-40" b=l t=50 h=40
+[koerper] form=zylinder baustoff=stahl_s235 teil="Füllstäbe" funktion=finish wenn=ns anzahl=ns x="40+(i+1)*(l-80)/(n+1)" y=-30 z="wenn(fl,fh,100)" r=8 h="hg-40-wenn(fl,fh,100)"
+[koerper] form=quader baustoff=stahl_s235 teil="Fußleiste" funktion=finish wenn=fl x=40 y=-5 z=0 b="l-80" t=10 h=fh
+[artikel] key=stahl_gelaender name="Geländerstahl S235 feuerverzinkt, Rohr und Flachstahl" baustoff=stahl_s235 einheit=kg preis=3.2 stand=10/2026 quelle="Beispielwert der Werkbank, nicht recherchiert" sicherheit=grob
+[leistung] key=gelaender kurztext="Stabgeländer Stahl verzinkt, H 1,0 m, Füllstäbe, auf Beton gedübelt" langtext="Stabgeländer aus Baustahl S235, feuerverzinkt, Pfosten 40/40 mm, Handlauf 50/40 mm, senkrechte Füllstäbe d=16 mm mit höchstens 12 cm Lichtmaß, Fußleiste Flachstahl, Pfosten auf Beton gedübelt, einschließlich Werkstattzeichnung, Lieferung und Montage." gewerk=18360 einheit=m bezug=length stunden=1.5 stoffe="stahl_gelaender:22" funktion=loadbearing quelle="Beispielwert der Werkbank, nicht recherchiert" sicherheit=grob
+[menge] key=lg name="Geländer" einheit=m formel="l/1000" bezug=length leistung=gelaender anzeigen=ja
+[menge] key=st name="Pfosten" einheit=stk formel=np
+[notiz] art=stand text="Beispiel der Werkbank: Geländer als Linie mit Wahl, Schalter und Typen"
+[notiz] art=offen text="Stahlpreis und Aufwand recherchieren, Gewicht je m aus dem Modell statt 22 kg/m"

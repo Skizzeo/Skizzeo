@@ -1,0 +1,25 @@
+=== s_eine.szb
+F 8 [typ] st24: Standardtyp weicht von den Vorgaben ab (b=300 statt 240)
+=== s_ok.szb
+=== s_param_fremd.szb
+F 8 [typ] st24: „x“ ist kein [param]
+=== s_standard_nein.szb
+=== s_teilweise.szb
+=== s_toleranz_gross.szb
+F 8 [typ] st24: Standardtyp weicht von den Vorgaben ab (b=240.00000001 statt 240)
+=== s_toleranz_klein.szb
+=== s_vorgabe_dezimal.szb
+F 8 [typ] st24: Standardtyp weicht von den Vorgaben ab (b=240 statt 240.5)
+=== s_vorgabe_formel.szb
+F 8 [typ] st24: Standardtyp weicht von den Vorgaben ab (d=240 statt 300)
+=== s_vorgabe_unbekannt.szb
+F 7 [param] d wert: unbekannter Name „q“
+H 7 Eingestellter Wert d=0,00 liegt außerhalb min/max
+F 12 [koerper] Stütze: b, t und h müssen > 0 sein (b=240 t=0 h=2.635)
+=== s_werte_kaputt.szb
+F 8 [typ] st24 werte: Form „key=zahl; key=zahl“
+=== s_zwei.szb
+F 8 [typ] st24: Standardtyp weicht von den Vorgaben ab (d=300 statt 240, b=250 statt 240)
+=== s_zwei_standard.szb
+H 0 [typ]: mehr als ein Typ mit standard=ja
+F 9 [typ] st30: Standardtyp weicht von den Vorgaben ab (b=300 statt 240, d=300 statt 240)

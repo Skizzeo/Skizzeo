@@ -1,0 +1,21 @@
+SZB 0
+# Beispiel der Skizzeo-Bauteil-Werkbank 0.5
+[bauteil] key=werk.stuetze name="Stahlbetonstütze" mehrzahl="Stahlbetonstützen" genus=f praefix=ST art=column aussen=nein ifc=IfcColumn.COLUMN kg=343 gewerk=18331 version=1 autor="Skizzeo" beschreibung="Innenstütze, Rechteckquerschnitt, Fuß auf OK Rohdecke, Kopf unter Decke (als Außenstütze aussen=ja und kg=333)"
+[bedienung] gruppe=tragwerk einfuegen=punkt drehen=ja
+[hoehe] ab=uk versatz=0
+[param] key=b name="Breite" einheit=mm wert=240 min=200 max=600 gruppe="Maße" zeichnen=ja hilfe="Breite der Stütze in Richtung X, vor dem Drehen."
+[param] key=d name="Tiefe" einheit=mm wert=240 min=200 max=600 gruppe="Maße" zeichnen=ja hilfe="Tiefe der Stütze in Richtung Y, vor dem Drehen."
+[typ] key=st24 name="Stütze 24/24" werte="b=240; d=240" standard=ja
+[typ] key=st30 name="Stütze 30/30" werte="b=300; d=300" standard=ja
+[typ] key=st2440 name="Stütze 24/40" werte="b=240; d=400"
+[wert] key=h name="Höhe" einheit=mm formel=LICHT anzeigen=ja
+[koerper] form=quader baustoff=stahlbeton teil="Stütze" funktion=loadbearing x=0 y=0 z=0 b=b t=d h=h
+[artikel] key=stuetzenschalung name="Stützenschalung, Vorhaltung und Verschleiß" einheit=m2 preis=10 stand=10/2026 quelle="Beispielwert der Werkbank, nicht recherchiert" sicherheit=grob
+[leistung] key=stuetze_beton kurztext="Stahlbetonstütze C25/30 XC1 betonieren, Querschnitt bis 0,36 m²" langtext="Stahlbetonstütze aus Ortbeton C25/30, Expositionsklasse XC1, Rechteckquerschnitt bis 0,36 m², Höhe bis 3,0 m, einschließlich Verdichten und Nachbehandeln. Bewehrung und Schalung in gesonderten Positionen." gewerk=18331 einheit=m3 bezug=volume stunden=1.5 stoffe="1S7bUW0010080100000006:1" funktion=loadbearing quelle="Beispielwert der Werkbank, nicht recherchiert" sicherheit=grob
+[leistung] key=stuetze_schalung kurztext="Stützenschalung glatt, kein Sichtbeton, Höhe bis 3,0 m" gewerk=18331 einheit=m2 bezug=formwork stunden=0.8 stoffe="stuetzenschalung:1" quelle="Beispielwert der Werkbank, nicht recherchiert" sicherheit=grob
+[menge] key=beton name="Beton C25/30" einheit=m3 formel="volumen(stahlbeton)" baustoff=stahlbeton bezug=volume leistung=stuetze_beton anzeigen=ja
+[menge] key=schalung name="Schalung Stütze" einheit=m2 formel="2*(b+d)*h/1000000" bezug=formwork leistung=stuetze_schalung
+[menge] key=stahl name="Betonstahl B500" einheit=t formel="volumen(stahlbeton)*0.15" bezug=steel leistung=1S7bUW0010080200000006
+[menge] key=stueck name="Stütze" einheit=stk formel=1
+[notiz] art=stand text="Startbeispiel der Werkbank: Stütze mit Bedienung, Typen, Funktion, Artikeln, Leistungen und Richtpreis"
+[notiz] art=offen text="Aufwandswerte und Schalungspreis recherchieren, Bewehrungsgrad 150 kg/m³ mit Statik abstimmen"

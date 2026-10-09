@@ -1326,6 +1326,30 @@ fn pruefen_mit(text: &str, best: &Bestand, g: &Geschoss, grenzpruefung: bool) ->
             }
         }
     }
+    // Standardtyp = Vorgaben: Skizzeo beginnt mit dem Standardtyp, die
+    // Werkbank mit den Vorgaben (aenderung-dicke.md, Nachtrag 19:40)
+    for t in def.typ.iter().filter(|t| t.ja("standard")) {
+        let Ok(werte) = typ_werte(t.get("werte").unwrap_or("")) else {
+            continue;
+        };
+        let ab: Vec<String> = werte
+            .iter()
+            .filter_map(|(k, v)| {
+                let w = grenzen.get(k)?.wert?;
+                ((v - w).abs() > 1e-9).then(|| format!("{k}={} statt {}", js_zahl(*v), js_zahl(w)))
+            })
+            .collect();
+        if !ab.is_empty() {
+            b.push(Befund::fehler(
+                t.zeile,
+                format!(
+                    "[typ] {}: Standardtyp weicht von den Vorgaben ab ({})",
+                    t.key(),
+                    ab.join(", ")
+                ),
+            ));
+        }
+    }
     let hart = b.iter().any(Befund::ist_fehler);
     // Rechenschritte für Rechnung und Grenzprüfung zusammen (Review 3cg)
     let mut rc = rechnen::Rechner::neu(rechnen::MAX_SCHRITTE_PRUEFUNG);
@@ -1697,8 +1721,14 @@ mod tests {
             texte(&p(&PLATTE.replace(" dicke=d", ""))),
             [format!("[menge] beton: Leistung {l} gilt für 180–250 mm, ohne dicke prüft Skizzeo das nicht")]
         );
-        // eingestellt außerhalb: die Grenzen derselben Zeile entfallen
+        // eingestellt außerhalb: die Grenzen derselben Zeile entfallen; der
+        // Standardtyp folgt der Vorgabe (Nachtrag 19:40)
         let t = PLATTE.replace("wert=200 min=150", "wert=300 min=150");
+        assert_eq!(
+            texte(&p(&t))[0],
+            "[typ] bp20: Standardtyp weicht von den Vorgaben ab (d=200 statt 300)"
+        );
+        let t = t.replace("werte=\"d=200\" standard=ja", "werte=\"d=300\" standard=ja");
         assert_eq!(texte(&p(&t)), [aus("300")]);
         assert!(p(&t).einlesbar());
         // eigene Leistung mit dmax

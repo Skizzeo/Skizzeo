@@ -1235,7 +1235,7 @@ mod tests {
         a.schreiben(&d, h).unwrap();
         let f = frage(&a, &v2(STUETZE));
         assert_eq!(f.ja, None, "{}", f.satz);
-        let anders = v2(STUETZE).replace("wert=240 min=200", "wert=250 min=200");
+        let anders = v2(STUETZE).replace("min=200 max=600", "min=200 max=650");
         assert_eq!(frage(&a, &anders).ja, Some("Ersetzen"));
         let f = frage(&a, STUETZE);
         assert_eq!(f.ja, Some("Zurücksetzen"));

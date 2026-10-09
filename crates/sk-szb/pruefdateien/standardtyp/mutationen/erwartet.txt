@@ -1,0 +1,53 @@
+=== m1485.szb
+F 8 [param] h: Vorgabe 0,00 außerhalb min/max
+F 9 [typ] sf5080: Standardtyp weicht von den Vorgaben ab (h=800 statt 0.004935834155972359)
+=== m1487.szb
+F 8 [typ] st24: Standardtyp weicht von den Vorgaben ab (b=240 statt 330)
+=== m1711.szb
+F 9 [typ] bp20: Standardtyp weicht von den Vorgaben ab (d=200 statt 330)
+H 12 [menge] beton: Dicke 330 mm liegt außerhalb von 1S7bUW0010080200000001 (180–250 mm), Skizzeo setzt dafür keine Position
+=== m2060.szb
+F 6 [param] lauf: Vorgabe 0,00 außerhalb min/max
+F 10 [typ] t16: Standardtyp weicht von den Vorgaben ab (lauf=4200 statt 0)
+F 15 [wert] w: Teilung durch 0
+F 16 [koerper] Stufen: doppelter Punkt im Umriss
+F 17 [koerper] Laufplatte: Umriss hat keine Fläche
+=== m2343.szb
+H 3 Gewerk 18360 nicht im Werksbestand, Skizzeo fragt beim Einlesen
+F 12 [typ] g100: Standardtyp weicht von den Vorgaben ab (fu=1 statt 0.004935834155972359)
+=== m2406.szb
+H 3 Gewerk 18360 nicht im Werksbestand, Skizzeo fragt beim Einlesen
+F 9 [param] fu: Vorgabe 330 ist keine der Wahlen
+F 12 [typ] g100: Standardtyp weicht von den Vorgaben ab (fu=1 statt 330)
+=== m2430.szb
+H 3 Gewerk 18360 nicht im Werksbestand, Skizzeo fragt beim Einlesen
+F 7 [param] hg: Vorgabe -1,00 außerhalb min/max
+F 12 [typ] g100: Standardtyp weicht von den Vorgaben ab (hg=1000 statt -1)
+F 18 [koerper] Pfosten: b, t und h müssen > 0 sein (b=40 t=40 h=-41)
+F 20 [koerper] Füllstäbe: r und h müssen > 0 sein
+=== m2626.szb
+F 8 [typ] st24: Standardtyp weicht von den Vorgaben ab (d=240 statt 330)
+=== m2650.szb
+F 8 [param] stufen: Vorgabe 2,50 außerhalb min/max
+F 8 [param] stufen: Vorgabe nicht ganz
+F 10 [typ] t16: Standardtyp weicht von den Vorgaben ab (stufen=16 statt 2.5)
+F 16 [koerper] Stufen: anzahl muss ganz sein
+=== m2721.szb
+F 8 [typ] st24: Standardtyp weicht von den Vorgaben ab (d=240 statt 330)
+=== m2958.szb
+F 8 [param] d: Vorgabe 999,00 außerhalb min/max
+F 9 [typ] bp20: Standardtyp weicht von den Vorgaben ab (d=200 statt 999)
+H 12 [menge] beton: Dicke 999 mm liegt außerhalb von 1S7bUW0010080200000001 (180–250 mm), Skizzeo setzt dafür keine Position
+=== m2993.szb
+F 7 [param] b: Vorgabe 0,01 außerhalb min/max
+F 9 [typ] sf5080: Standardtyp weicht von den Vorgaben ab (b=500 statt 0.006416584402764067)
+=== m860.szb
+F 8 [param] stufen: Vorgabe 2,50 außerhalb min/max
+F 8 [param] stufen: Vorgabe nicht ganz
+F 10 [typ] t16: Standardtyp weicht von den Vorgaben ab (stufen=16 statt 2.5)
+F 16 [koerper] Stufen: anzahl muss ganz sein
+=== m983.szb
+F 8 [param] stufen: Vorgabe 0,00 außerhalb min/max
+F 10 [typ] t16: Standardtyp weicht von den Vorgaben ab (stufen=16 statt 0)
+F 12 [wert] s: Teilung durch 0
+F 16 [koerper] Stufen: anzahl 0 bis 500
