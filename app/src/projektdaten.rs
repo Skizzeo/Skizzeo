@@ -135,7 +135,9 @@ const FELDER: [Feld; 10] = [
         einheit: "",
     },
     Feld {
-        name: "Breite",
+        // Breiten- und Längengrad in einer Zeile „Lage“ (Bedienbarkeit
+        // 28.1: „Breite“ und „Länge“ heißen sonst Bauteilmaße)
+        name: "Lage",
         beispiel: "53,0589",
         zeilen: 1,
         max: 12,
@@ -144,12 +146,12 @@ const FELDER: [Feld; 10] = [
         einheit: "° N",
     },
     Feld {
-        name: "Länge",
+        name: "",
         beispiel: "8,591",
         zeilen: 1,
         max: 12,
         breite: 96.0,
-        x: 330.0,
+        x: 276.0,
         einheit: "° O",
     },
 ];
@@ -166,8 +168,8 @@ const WORT: [&str; 10] = [
     "Anschrift Bauherr",
     "Planung",
     "Anschrift Planung",
-    "Breite",
-    "Länge",
+    "Breitengrad",
+    "Längengrad",
 ];
 
 /// Breite (Feld 8) und Länge (Feld 9): Grenze in Grad.
@@ -370,11 +372,8 @@ impl Maske {
             (Ok(None), Ok(Some(_))) => 8,
             _ => return None,
         };
-        let f = &FELDER[fehlt];
-        Some(format!(
-            "{} fehlt: Standardort {}{}.",
-            f.name, f.beispiel, f.einheit
-        ))
+        // Der Wert von Ganderkesee steht als Beispiel im leeren Feld
+        Some(format!("{} fehlt, es gilt Ganderkesee.", WORT[fehlt]))
     }
 
     /// Vorschläge zur Projektart, nach dem Getippten gefiltert (leer: alle).
@@ -1043,7 +1042,10 @@ mod tests {
         );
         m.fokus_auf(8);
         tippen(&mut m, "95");
-        assert_eq!(m.meldung().as_deref(), Some("Breite: Zahl von −90 bis 90."));
+        assert_eq!(
+            m.meldung().as_deref(),
+            Some("Breitengrad: Zahl von −90 bis 90.")
+        );
         assert_eq!(m.ort().lat, Some(53.0589), "alter Wert bleibt");
         m.fokus_auf(9);
         tippen(&mut m, "Ost");
@@ -1051,7 +1053,7 @@ mod tests {
         m.key(Key::Delete, Modifiers::default());
         assert_eq!(
             m.meldung().as_deref(),
-            Some("Länge: Zahl von −180 bis 180.")
+            Some("Längengrad: Zahl von −180 bis 180.")
         );
         assert_eq!(m.ort().lat, None, "leer: nicht gesetzt");
         for (t, v) in [
@@ -1077,7 +1079,7 @@ mod tests {
         tippen(&mut m, "52,52");
         assert_eq!(
             m.hinweis().as_deref(),
-            Some("Länge fehlt: Standardort 8,591° O.")
+            Some("Längengrad fehlt, es gilt Ganderkesee.")
         );
         m.fokus_auf(9);
         tippen(&mut m, "13,4");
@@ -1085,7 +1087,7 @@ mod tests {
         m.fokus_auf(8);
         m.key(Key::Delete, Modifiers::default());
         let h = m.hinweis().unwrap();
-        assert_eq!(h, "Breite fehlt: Standardort 53,0589° N.");
+        assert_eq!(h, "Breitengrad fehlt, es gilt Ganderkesee.");
         assert_eq!(m.ort().lat, None);
         // Unbrauchbares: die Meldung gilt, kein Hinweis
         tippen(&mut m, "x");
@@ -1179,8 +1181,8 @@ mod tests {
             if let Some(f) = fonts.regular.as_ref() {
                 let px = t.size.font_small * s;
                 let einheit = b.x + b.w + 6.0 * s + f.width("° N", px);
-                let name = la.x - 8.0 * s - f.width("Länge", px);
-                assert!(einheit + 8.0 * s < name, "{einheit} {name}");
+                // Die zweite Zahl hat keine eigene Bezeichnung
+                assert!(einheit + 8.0 * s < la.x, "{einheit} {}", la.x);
                 assert!(la.x + la.w + 6.0 * s + f.width("° O", px) < (W - PAD / 2.0) * s);
             }
         }

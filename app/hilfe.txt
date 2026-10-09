@@ -124,6 +124,7 @@ Genau | Zahl + **Enter** setzt die Richtung in Grad; sie rastet in 5°, mit **Um
 Drehen | an der Spitze ziehen
 Verschieben | am Pfeil ziehen; ins Gebäude geschoben rastet er 50 cm vor der Kante ein
 Platz | fehlt der Fußpunkt oder liegt er im Gebäude, steht der Pfeil vorne links daneben
+Lage | Breiten- und Längengrad stehen in „Projektdaten“ unter Bauort, für Nordpfeil und Sonnenstand; leer gilt Ganderkesee
 Abbrechen | **Esc** schließt erst die Zahl, dann den Fußpunkt, dann das Werkzeug
 
 [thema] id=baum titel="Baum, Ausblenden, Isolieren"
