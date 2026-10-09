@@ -477,6 +477,8 @@ impl<'a> Fluss<'a> {
         zeile(&mut self.st, "", &netto, false, &mut ry);
         if self.w.preise {
             if let Some(q) = a.preisquelle.as_deref() {
+                // „Preise  Firmenkatalog …“, nicht „Preise  Preise …“ (Hinweis S)
+                let q = q.strip_prefix("Preise ").unwrap_or(q);
                 zeile(&mut self.st, "Preise", q, false, &mut ry);
             }
         }

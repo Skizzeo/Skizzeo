@@ -1164,7 +1164,8 @@ fn knoepfe_und_vorschauleiste_ueberdecken_sich_nie() {
             || b.1 + b.3 <= a.1 + 0.5
     };
     for scale in [1.0_f32, 1.25, 1.5] {
-        for dip in (480..=1920).step_by(40) {
+        // 400 dip nur für die kürzeste Stufe des PDF-Knopfs (27.1)
+        for dip in (480..=1920).step_by(40).chain([400]) {
             let mut v = AvaView::new();
             v.scale = scale;
             (v.w, v.h) = ((dip as f32 * scale) as u32, (900.0 * scale) as u32);
@@ -1211,7 +1212,17 @@ fn knoepfe_und_vorschauleiste_ueberdecken_sich_nie() {
             v.zeige(Ansicht::Blatt);
             for preise in [true, false] {
                 v.preise = preise;
-                let knopf = v.knopf_rect(&t, &fonts);
+                let (knopf, text) = v.knopf_lage(&t, &fonts);
+                // Jede Stufe nennt die Fassung (Bedienbarkeit 27.1)
+                let text = text.to_lowercase();
+                assert!(
+                    if preise {
+                        text.contains("mit preisen")
+                    } else {
+                        text.contains("anfrage") || text.contains("ohne preise")
+                    },
+                    "{wo}: {text}"
+                );
                 let mut teile = vec![("Titel", titel)];
                 if knopf.1 < v.top_px() {
                     teile.push(("Karten", karten));

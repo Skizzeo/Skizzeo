@@ -159,6 +159,16 @@ fn mit_preisen() {
     assert!(!t.iter().any(|x| x == "Angaben des Bieters"));
     ueberdeckt_nichts(&b, f);
     seite_x_von_y(&b, 0);
+    // Hinweis S: Firmenkatalog ohne doppeltes „Preise“
+    let mut a = angaben(true);
+    a.preisquelle = Some("Preise Firmenkatalog vom 08.10.2026".into());
+    let mit = Wahl {
+        preise: true,
+        ..Wahl::default()
+    };
+    let t = alle(&blatt(&lv, &a, mit, f));
+    assert!(t.iter().any(|x| x == "Firmenkatalog vom 08.10.2026"));
+    assert!(!t.iter().any(|x| x.contains("Preise Firmenkatalog")));
 }
 
 /// §11.2 Für Anfrage: keine Zahl in EP, GP und Summen, Mengen wie mit

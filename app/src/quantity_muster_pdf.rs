@@ -41,16 +41,7 @@ fn muster_pdf() {
     .expect("lädt")
     .model;
     let mut s = Scene::with_model(m);
-    let mut pr = s.model().project().clone();
-    pr.kind = "Neubau Einfamilienhaus".into();
-    pr.site = "Haus Mustermann".into();
-    pr.place = "Musterweg 1\n27777 Ganderkesee".into();
-    pr.number = "01/26".into();
-    pr.client = "Max Mustermann".into();
-    pr.client_addr = "Phantasiestraße 7\n27777 Ganderkesee".into();
-    pr.author = "Dipl.-Ing. (FH) Jörn Horstmann".into();
-    pr.author_addr = "Denkmalsweg 18b\n27777 Ganderkesee".into();
-    assert!(s.projekt_setzen("Projektdaten geändert", pr));
+    joerns_projektdaten(&mut s);
     for preise in [false, true] {
         for wahl in [(false, false), (true, true)] {
             let p = Picking::default();
@@ -84,4 +75,49 @@ fn muster_pdf() {
             println!("{name} {}", bytes.len());
         }
     }
+    // Fünftes Muster: RH-2 mit Untertiteln je Geschoss, mit Preisen, mit
+    // Titelblatt und Verzeichnis; das LV läuft über mehrere Seiten
+    let m = sk_model::szo::read_with(
+        include_str!("../../crates/sk-cost/referenz/rh2-mehrschalig.szo"),
+        sk_model::GuidGen::with_seed(1),
+        &sk_cost::lesen::ABSCHNITTE_SZO,
+    )
+    .expect("lädt")
+    .model;
+    let mut s = Scene::with_model(m);
+    joerns_projektdaten(&mut s);
+    let h = sk_cost::Herkunft::neu(sk_cost::HerkunftArt::Manual, "2026-10-09", "04:10");
+    let op = sk_cost::Op::LvGliederungSetzen { untertitel: true };
+    s.kosten_folge("LV nach Geschossen gegliedert", None, &h, &[op])
+        .unwrap();
+    let p = Picking::default();
+    let mut q = QuantityWindow::new();
+    q.datei = "haus.szo".into();
+    q.blatt_wahl = (true, true);
+    (q.w, q.h) = (1440, 960);
+    q.sync(&mut s, &p, false);
+    q.waehlen(Blatt::Ava, &t);
+    q.sync(&mut s, &p, false);
+    let a = q.ava.as_mut().unwrap();
+    assert!(a.preise);
+    a.zeige_druckvorschau(0);
+    q.sync(&mut s, &p, false);
+    let (name, bytes) = q.ava.as_ref().unwrap().pdf(&fonts).expect("PDF");
+    let name = name.replace(".pdf", "-titelblatt-verzeichnis-mehrseitig-RH2.pdf");
+    crate::document::tabelle_schreiben(&dir.join(&name), &bytes).unwrap();
+    println!("{name} {}", bytes.len());
+}
+
+/// Jörns Beispiel aus paket-projektdaten §6.1, als ein Schritt.
+fn joerns_projektdaten(s: &mut Scene) {
+    let mut pr = s.model().project().clone();
+    pr.kind = "Neubau Einfamilienhaus".into();
+    pr.site = "Haus Mustermann".into();
+    pr.place = "Musterweg 1\n27777 Ganderkesee".into();
+    pr.number = "01/26".into();
+    pr.client = "Max Mustermann".into();
+    pr.client_addr = "Phantasiestraße 7\n27777 Ganderkesee".into();
+    pr.author = "Dipl.-Ing. (FH) Jörn Horstmann".into();
+    pr.author_addr = "Denkmalsweg 18b\n27777 Ganderkesee".into();
+    assert!(s.projekt_setzen("Projektdaten geändert", pr));
 }

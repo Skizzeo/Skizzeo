@@ -58,8 +58,8 @@ impl AvaView {
 
     /// Lage und Beschriftung des Speichern-Knopfs. In der Kartenzeile, wenn
     /// Platz ist (auch für „Druckvorschau“ links daneben), sonst in der
-    /// Titelzeile; dort wird die Beschriftung kürzer, bis sie neben
-    /// „Leistungsverzeichnis“ passt.
+    /// Titelzeile; dort wird die Beschriftung kürzer, bis sie (mit
+    /// „Druckvorschau“) neben „Leistungsverzeichnis“ passt.
     pub(super) fn knopf_lage(&self, t: &Theme, fonts: &Fonts) -> (Rect, String) {
         let s = self.scale;
         let (x0, w) = self.content_x(t);
@@ -82,15 +82,19 @@ impl AvaView {
             .bold
             .as_ref()
             .map_or(190.0 * s, |f| f.width("Leistungsverzeichnis", 19.0 * s));
-        let frei = x0 + titel + 16.0 * s;
+        // „Druckvorschau“ steht in der Titelzeile links neben dem Knopf
+        let frei = x0 + titel + 16.0 * s + (x - links);
         let mut texte = vec![voll];
-        if self.ansicht == Ansicht::Blatt {
+        if self.ansicht != Ansicht::Blatt {
+            texte.push("Als Tabelle speichern".into());
+        } else {
+            // Die Fassung bleibt bis zur kürzesten Stufe (Bedienbarkeit 27.1)
             let kurz = if self.preise {
-                "Mit Preisen als PDF speichern"
+                ["Mit Preisen als PDF speichern", "PDF mit Preisen"]
             } else {
-                "Anfrage als PDF speichern"
+                ["Anfrage als PDF speichern", "PDF ohne Preise"]
             };
-            texte.extend([kurz.to_string(), "Als PDF speichern".to_string()]);
+            texte.extend(kurz.map(String::from));
         }
         let i = texte
             .iter()
