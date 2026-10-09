@@ -337,13 +337,14 @@ impl Model {
             .collect()
     }
 
-    /// [`Model::ext_baustoff_fehlt`] mit dem Weg, wo ein eigener Baustoff
-    /// sich anlegen lässt (E8c-a); für Paneel und Befund.
+    /// [`Model::ext_baustoff_fehlt`] mit dem Fenster, in dem ein eigener
+    /// Baustoff sich anlegen lässt (E8c-a); für Paneel und Befund.
     pub fn ext_baustoff_hinweis(&self, d: &ExtDef, key: &str) -> Option<String> {
         let t = self.ext_baustoff_fehlt(d, key)?;
         Some(match sk_szb::Bestand::werk().baustoff(key) {
             Some(_) => t,
-            None => format!("{t}; Datei › Erweiterungen … › „Baustoffe anlegen“"),
+            // je nach Zeile „Baustoffe anlegen“ oder „Aktualisieren“ (E8c-b)
+            None => format!("{t}; anlegen unter Datei › Erweiterungen …"),
         })
     }
 

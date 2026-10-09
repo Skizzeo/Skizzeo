@@ -647,9 +647,11 @@ impl Fenster {
                 rechts(Knopf::Zu, "Schließen", 100.0, &mut knoepfe);
                 for (k, label) in self.knoepfe_zeile().into_iter().rev() {
                     let bw = match k {
+                        // Beschriftung + 8 dip Rand, 8 dip Lücke neben
+                        // „Bauteil einlesen …“ (E8c-b)
                         Knopf::Uebernehmen => 210.0,
-                        Knopf::Baustoffe => 120.0,
-                        _ => 110.0,
+                        Knopf::Baustoffe => 130.0,
+                        _ => 100.0,
                     };
                     rechts(k, label, bw, &mut knoepfe);
                 }
@@ -1415,6 +1417,50 @@ mod tests {
         }
         assert_eq!(m.ext_baustoffe_nachlegen("werk.stabgelaender"), 1);
         assert!(!zeilen(&Ablage::default(), &m)[0].baustoffe);
+    }
+
+    /// E8c-b: Jede Knopfzeile mit „Baustoffe anlegen“: die Beschriftung
+    /// passt mit 4 dip Rand in ihren Knopf, zwischen den Knöpfen bleiben
+    /// 8 dip. Liberation Sans Bold misst wie Arial Bold (Windows).
+    #[test]
+    fn knopfzeilen_mit_baustoffe_anlegen() {
+        let gelaender = include_str!("../../crates/sk-szb/beispiele/werk.stabgelaender.szb");
+        let d = ExtDef::lesen(gelaender).unwrap();
+        let mut m = Model::new();
+        m.add_building(1);
+        m.put_ext_def(d.clone()).unwrap();
+        let id = m.ext_material(&d, "stahl_s235").unwrap();
+        assert!(m.remove_material(id));
+        let dir = ordner("knopfzeilen");
+        let mut gleich = Ablage::lesen(&dir);
+        let (dg, h) = ext_ablage::text_pruefen(gelaender).unwrap();
+        gleich.schreiben(&dg, h).unwrap();
+        let mut aus = Ablage::lesen(&dir);
+        aus.schalten("werk.stabgelaender", false).unwrap();
+        let fonts = schriften();
+        let bold = fonts.bold.as_ref().unwrap();
+        let px = Theme::dark().size.font;
+        for (fall, a) in [
+            ("nur im Projekt", Ablage::default()),
+            ("an, gleiche Fassung", gleich),
+            ("aus", aus),
+        ] {
+            let mut w = Fenster::new(zeilen(&a, &m));
+            w.key(RUNTER);
+            let r = w.rect(1.0, 1280, 800, 32);
+            let l = w.lage(1.0, r.h - KOPF_H - FUSS_H);
+            assert!(l.knoepfe.iter().any(|b| b.0 == Knopf::Baustoffe), "{fall}");
+            let mut v: Vec<_> = l.knoepfe.iter().map(|b| (b.1, b.2)).collect();
+            v.sort_by(|a, b| a.0.x.total_cmp(&b.0.x));
+            for (b, label) in &v {
+                let tw = bold.width(label, px);
+                assert!(tw + 8.0 <= b.w, "{fall}: „{label}“ {tw:.1} in {}", b.w);
+            }
+            for p in v.windows(2) {
+                let luecke = p[1].0.x - (p[0].0.x + p[0].0.w);
+                assert!(luecke >= 8.0, "{fall}: {} | {}: {luecke}", p[0].1, p[1].1);
+            }
+        }
     }
 
     /// Satz und Knopf der Rückfrage je Fall (tests/LIESMICH.md).
