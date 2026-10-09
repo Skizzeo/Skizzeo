@@ -243,7 +243,7 @@ pub fn text(t: Teil) -> &'static str {
 }
 
 /// Ob der Knopf die Wahl `vs` zeigt.
-fn gewaehlt(t: Teil, vs: ViewShade) -> bool {
+pub fn gewaehlt(t: Teil, vs: ViewShade) -> bool {
     match t {
         Teil::An(on) => vs.on == on,
         Teil::Schraffur(h) => vs.hatch == h,

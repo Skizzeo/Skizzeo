@@ -167,7 +167,7 @@ fn names(m: &Model, tab: Tab) -> Vec<String> {
         Tab::LineTypes => a.line_types().iter().map(|(_, l)| l.name.clone()).collect(),
         Tab::Fills => a.fills().iter().map(|(_, f)| f.name.clone()).collect(),
         Tab::Surfaces => a.surfaces().iter().map(|(_, o)| o.name.clone()).collect(),
-        Tab::Ui => Vec::new(),
+        Tab::Ui | Tab::Vorgaben => Vec::new(),
     }
 }
 
@@ -289,7 +289,7 @@ pub(super) fn reset_attr_tab(s: &mut Scene, tab: Tab) {
                     }
                 }
             }
-            Tab::Pens | Tab::Ui => {}
+            Tab::Pens | Tab::Ui | Tab::Vorgaben => {}
         }
         true
     });

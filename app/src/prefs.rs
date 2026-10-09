@@ -27,6 +27,8 @@ use std::time::{Duration, Instant};
 mod attr_tabs;
 #[path = "prefs_pattern.rs"]
 mod pattern_win;
+#[path = "prefs_vorgaben.rs"]
+mod vorgaben_tab;
 #[cfg(test)]
 pub use attr_tabs::name_free;
 #[cfg(test)]
@@ -43,17 +45,20 @@ pub enum Tab {
     Fills,
     Surfaces,
     Ui,
+    /// Firmenvorgaben des Arbeitsplatzes (Sonnenstand S8).
+    Vorgaben,
 }
 
 impl Tab {
-    /// Reihenfolge in der Reiterleiste: vier Projekt-, ein Programmreiter
+    /// Reihenfolge in der Reiterleiste: vier Projekt-, zwei Programmreiter
     /// (die Baustoffe haben seit Paket 5 ihr eigenes Fenster).
-    const ALL: [Tab; 5] = [
+    const ALL: [Tab; 6] = [
         Tab::Pens,
         Tab::LineTypes,
         Tab::Fills,
         Tab::Surfaces,
         Tab::Ui,
+        Tab::Vorgaben,
     ];
 
     fn label(self) -> &'static str {
@@ -63,6 +68,7 @@ impl Tab {
             Tab::Fills => "Schraffuren",
             Tab::Surfaces => "Oberflächen",
             Tab::Ui => "Bedienoberfläche",
+            Tab::Vorgaben => "Vorgaben",
         }
     }
 
@@ -178,6 +184,9 @@ enum FieldId {
     PatNum(&'static str),
     /// Name der neuen Firmenvorlage („Als Vorlage speichern …“).
     PresetName,
+    /// Standardort (Reiter „Vorgaben“): Breite und Länge in Grad.
+    OrtBreite,
+    OrtLaenge,
 }
 
 /// Auswahllisten.
@@ -262,6 +271,8 @@ enum Target {
     Advanced,
     /// Schalter „Muster in 3D“ (Bedienoberfläche).
     Patterns3d,
+    /// Knopf der Schattenvorgabe (Reiter „Vorgaben“).
+    Vorgabe(crate::ansicht_schatten::Teil),
     /// Aufklapper: Zeile der Auswahlliste, Farbwähler.
     Item(usize),
     PickSv,
@@ -629,7 +640,9 @@ fn field_range(f: FieldId) -> Option<(f32, f32, usize, &'static str)> {
         | FieldId::PatFlame
         | FieldId::PatRelief
         | FieldId::PatNum(_)
-        | FieldId::PresetName => None,
+        | FieldId::PresetName
+        | FieldId::OrtBreite
+        | FieldId::OrtLaenge => None,
     }
 }
 
@@ -658,6 +671,8 @@ fn field_label(f: FieldId) -> &'static str {
         | FieldId::PatRelief
         | FieldId::PatNum(_) => "",
         FieldId::PresetName => "Name",
+        FieldId::OrtBreite => "Breite",
+        FieldId::OrtLaenge => "Länge",
     }
 }
 
@@ -767,6 +782,9 @@ pub struct Prefs {
     company_presets: Vec<sk_model::proctex::CompanyPreset>,
     /// Wartende „Als Vorlage speichern …“: Name, Muster, Grundfarbe.
     save_preset: Option<(String, sk_model::proctex::Pattern, [u8; 3])>,
+    /// Firmenvorgaben in Arbeit (Reiter „Vorgaben“); `None`: nicht
+    /// geladen, „OK“ lässt die Einstellungen dann, wie sie sind.
+    vorgaben: Option<crate::settings::vorgaben::Vorgaben>,
 }
 
 impl Prefs {
@@ -816,6 +834,7 @@ impl Prefs {
             pw: None,
             company_presets: Vec::new(),
             save_preset: None,
+            vorgaben: None,
         }
     }
 
@@ -824,6 +843,12 @@ impl Prefs {
     /// ([`sk_render::Renderer::pattern_error`]).
     pub fn with_pattern_error(mut self, e: Option<&str>) -> Prefs {
         self.pattern_error = e.map(str::to_string);
+        self
+    }
+
+    /// Firmenvorgaben des Arbeitsplatzes für den Reiter „Vorgaben“.
+    pub fn with_vorgaben(mut self, v: crate::settings::vorgaben::Vorgaben) -> Prefs {
+        self.vorgaben = Some(v);
         self
     }
 
@@ -847,12 +872,18 @@ impl Prefs {
         s.commit();
         self.start_rev = s.begin_settings();
         self.saved = th.clone();
+        if let Some(v) = self.vorgaben {
+            st.vorgaben = v;
+        }
         self.error = st.save_if_changed(th).err();
     }
 
     /// OK: wie Übernehmen, dann schließen.
     pub fn ok(&mut self, s: &mut Scene, th: &Theme, st: &mut Settings) {
         s.commit();
+        if let Some(v) = self.vorgaben {
+            st.vorgaben = v;
+        }
         self.error = st.save_if_changed(th).err();
         self.close_now();
     }
@@ -901,6 +932,7 @@ impl Prefs {
                 *th = Theme::dark();
                 th.rev = rev + 1;
             }
+            Tab::Vorgaben => self.vorgaben = Some(crate::settings::vorgaben::Vorgaben::WERK),
             tab => reset_attr_tab(s, tab),
         }
         self.edit = None;
@@ -1007,7 +1039,8 @@ impl Prefs {
         let s = w.scale;
         let i = Tab::ALL.iter().position(|&x| x == tab).unwrap_or(0) as f32;
         // Zwischen den Gruppen Platz für „PROGRAMM“
-        let extra = if tab == Tab::Ui { 32.0 } else { 0.0 };
+        let ui = Tab::ALL.iter().position(|&x| x == Tab::Ui).unwrap_or(0) as f32;
+        let extra = if i >= ui { 32.0 } else { 0.0 };
         Rect::new(
             f.x + 8.0 * s,
             f.y + (HEAD + 32.0 + i * TAB_ROW + extra) * s,
@@ -1448,6 +1481,12 @@ impl Prefs {
                         _ => true,
                     })
             }
+            Tab::Vorgaben => self
+                .vorgaben_layout(t, w)
+                .items
+                .iter()
+                .find(|(r, _)| r.contains(x, y))
+                .map(|(_, tg)| *tg),
             _ => self.attr_hit(t, w, s, x, y),
         }
     }
@@ -1962,6 +2001,11 @@ impl Prefs {
             }
             Target::Group(g) => self.groups_open[g] = !self.groups_open[g],
             Target::Advanced => self.advanced = !self.advanced,
+            Target::Vorgabe(teil) => {
+                let v = vorgaben_tab::klick(self.vorgaben_jetzt(), teil);
+                self.vorgaben = Some(v);
+                out.repaint = true;
+            }
             Target::Patterns3d if self.pattern_error.is_some() => {}
             Target::Patterns3d => {
                 let t = &mut *cx.theme;
@@ -2357,6 +2401,7 @@ impl Prefs {
             | FieldId::PatRelief
             | FieldId::PatNum(_) => self.attr_field_value(f, s),
             FieldId::PresetName => self.pw.as_ref().map_or(String::new(), |p| p.name.clone()),
+            FieldId::OrtBreite | FieldId::OrtLaenge => self.vorgaben_feld(f),
         }
     }
 
@@ -2411,6 +2456,9 @@ impl Prefs {
     ) -> Result<(), String> {
         if is_attr_field(f) {
             return self.apply_attr_value(f, text, cx, out);
+        }
+        if matches!(f, FieldId::OrtBreite | FieldId::OrtLaenge) {
+            return self.vorgaben_wert(f, text);
         }
         if f == FieldId::PresetName {
             if let Some(p) = self.pw.as_mut() {
@@ -2569,6 +2617,12 @@ impl Prefs {
                 })
             }
             FieldId::PresetName => Some(self.save_as_layout(t, &w).1),
+            FieldId::OrtBreite | FieldId::OrtLaenge => self
+                .vorgaben_layout(t, &w)
+                .items
+                .iter()
+                .find(|(_, tg)| *tg == Target::Field(f))
+                .map(|(r, _)| *r),
             _ if is_attr_field(f) => self
                 .attr_layout(t, &w, cx.scene)
                 .items
@@ -3009,7 +3063,7 @@ impl Prefs {
         self.full_frame = true;
     }
 
-    /// Aktiver Reiter als Zahl (0 Stifte … 4 Bedienoberfläche).
+    /// Aktiver Reiter als Zahl (0 Stifte … 4 Bedienoberfläche, 5 Vorgaben).
     pub fn tab_index(&self) -> u8 {
         match self.tab {
             Tab::Pens => 0,
@@ -3017,6 +3071,7 @@ impl Prefs {
             Tab::Fills => 2,
             Tab::Surfaces => 3,
             Tab::Ui => 4,
+            Tab::Vorgaben => 5,
         }
     }
 
@@ -3345,6 +3400,7 @@ impl Prefs {
         match self.tab {
             Tab::Pens => self.paint_pens(c, t, fonts, w, sc, &at),
             Tab::Ui => self.paint_ui(c, t, fonts, w, &at),
+            Tab::Vorgaben => self.paint_vorgaben(c, t, fonts, w, &at),
             _ => self.paint_attr(c, t, fonts, w, sc, &at),
         }
         // Fuß
@@ -4119,6 +4175,7 @@ impl Prefs {
                     Tab::Fills => "Alle Schraffuren auf Standard zurücksetzen?",
                     Tab::Surfaces => "Alle Oberflächen auf Standard zurücksetzen?",
                     Tab::Ui => "Bedienoberfläche auf Standard zurücksetzen?",
+                    Tab::Vorgaben => "Vorgaben auf Werk zurücksetzen?",
                 };
                 label(
                     &mut c,

@@ -167,6 +167,8 @@ pub enum Topic {
     SettingsFills,
     SettingsSurfaces,
     SettingsUi,
+    /// Firmenvorgaben des Arbeitsplatzes (Sonnenstand S8).
+    SettingsVorgaben,
     Catalog,
     Materials,
     Verwaltung,
@@ -180,7 +182,7 @@ pub enum Topic {
 
 impl Topic {
     /// Alle Themen in der Reihenfolge der Liste „Alle Themen“.
-    pub const ALL: [Topic; 32] = [
+    pub const ALL: [Topic; 33] = [
         Topic::Start,
         Topic::Navigation,
         Topic::Building,
@@ -204,6 +206,7 @@ impl Topic {
         Topic::SettingsFills,
         Topic::SettingsSurfaces,
         Topic::SettingsUi,
+        Topic::SettingsVorgaben,
         Topic::Catalog,
         Topic::Materials,
         Topic::Verwaltung,
@@ -257,6 +260,7 @@ impl Topic {
                 Topic::SettingsFills,
                 Topic::SettingsSurfaces,
                 Topic::SettingsUi,
+                Topic::SettingsVorgaben,
                 Topic::Catalog,
                 Topic::Materials,
                 Topic::Verwaltung,
@@ -292,6 +296,7 @@ impl Topic {
             Topic::SettingsFills => "einstellungen-schraffuren",
             Topic::SettingsSurfaces => "einstellungen-oberflaechen",
             Topic::SettingsUi => "einstellungen-bedienoberflaeche",
+            Topic::SettingsVorgaben => "einstellungen-vorgaben",
             Topic::Catalog => "katalog",
             Topic::Materials => "baustoffe",
             Topic::Verwaltung => "verwaltung",
@@ -372,6 +377,7 @@ pub fn topic(c: &HelpCtx) -> Topic {
             Window::Settings(1) => Topic::SettingsLineTypes,
             Window::Settings(2) => Topic::SettingsFills,
             Window::Settings(3) => Topic::SettingsSurfaces,
+            Window::Settings(5) => Topic::SettingsVorgaben,
             Window::Settings(_) => Topic::SettingsUi,
             Window::Catalog => Topic::Catalog,
             Window::Materials => Topic::Materials,

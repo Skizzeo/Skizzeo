@@ -1264,7 +1264,9 @@ impl App {
         let i = ansicht_schatten::platz(self.ui.view)?;
         Some((
             i,
-            self.scene.model().view_shade(i, sk_model::ViewShade::WERK),
+            self.scene
+                .model()
+                .view_shade(i, self.settings.vorgaben.schatten),
         ))
     }
 
@@ -1278,7 +1280,7 @@ impl App {
         let l = self.scene.model().location();
         let (_, vs) = self
             .ansicht_wahl()
-            .unwrap_or((0, sk_model::ViewShade::WERK));
+            .unwrap_or((0, self.settings.vorgaben.schatten));
         let tief = vs.light == sk_model::ShadeLight::Sun
             && ansicht_schatten::sonne_waehlbar(l)
             && ansicht_schatten::sonne_zu_tief(l, self.ansicht_sonne());
@@ -1307,12 +1309,14 @@ impl App {
             self.scene.set_sun(s);
         }
         if let Some(w) = out.wahl {
-            self.scene.set_view_shade(i, w, sk_model::ViewShade::WERK);
+            self.scene
+                .set_view_shade(i, w, self.settings.vorgaben.schatten);
             self.redraw = true;
         }
         if out.alle {
             for k in 0..sk_model::SHADE_VIEWS.len() {
-                self.scene.set_view_shade(k, vs, sk_model::ViewShade::WERK);
+                self.scene
+                    .set_view_shade(k, vs, self.settings.vorgaben.schatten);
             }
             self.redraw = true;
         }
@@ -2255,6 +2259,7 @@ impl App {
         self.title.hover = None;
         let p = prefs::Prefs::open(&mut self.scene, &self.theme)
             .with_memory(&self.prefs_mem)
+            .with_vorgaben(self.settings.vorgaben)
             .with_pattern_error(self.renderer.pattern_error());
         self.prefs = Some(p);
         if let (Some(p), Some(c)) = (self.prefs.as_mut(), &self.company) {
@@ -2611,7 +2616,7 @@ impl App {
     fn perform(&mut self, c: Command, surface: &Surface) {
         match c {
             Command::New | Command::Close => {
-                self.replace_scene(new_model(self.company.as_ref()));
+                self.replace_scene(new_model(self.company.as_ref(), self.settings.vorgaben.ort));
                 self.doc = Document::new(self.scene.model().revision());
                 // Bei „Neu“ zuerst die Projektdaten (Paket PD-2)
                 if c == Command::New {
@@ -7488,9 +7493,11 @@ fn layer_rows(model: &sk_model::Model, set: sk_model::LayerSetId) -> Vec<(Rgba, 
         .collect()
 }
 
-/// Neues Projekt mit den Typen des Firmenkatalogs (ohne ihn: Startbestand).
-fn new_model(company: Option<&catalog::Company>) -> sk_model::Model {
-    match company {
+/// Neues Projekt mit den Typen des Firmenkatalogs (ohne ihn: Startbestand)
+/// und dem Standardort `ort` als Bauort, wenn er von Ganderkesee abweicht
+/// (Sonnenstand S8).
+fn new_model(company: Option<&catalog::Company>, ort: sk_math::sonne::Lage) -> sk_model::Model {
+    let mut m = match company {
         Some(c) => {
             let mut m = sk_model::Model::from_library(c.library());
             // Kopie der Firmen-Kostensätze (Regel 92, E3; KA-0d)
@@ -7498,7 +7505,15 @@ fn new_model(company: Option<&catalog::Company>) -> sk_model::Model {
             m
         }
         None => sk_model::Model::new(),
+    };
+    if ort != sk_math::sonne::Lage::GANDERKESEE {
+        m.init_location(sk_model::Location {
+            lat: Some(ort.breite),
+            lon: Some(ort.laenge),
+            north: None,
+        });
     }
+    m
 }
 
 fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
@@ -7536,7 +7551,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     if !hints.is_empty() && screenshot.is_none() {
         surface.message(&meldungen(&hints), false);
     }
-    let mut scene = Scene::with_model(new_model(company.as_ref()));
+    let mut scene = Scene::with_model(new_model(company.as_ref(), settings.vorgaben.ort));
     scene.set_theme(&theme);
     let mut renderer = match Renderer::new(gl, style(&theme.env)) {
         Err(e) if probe.is_some() => {
@@ -8698,6 +8713,47 @@ mod tests {
             y: 0.0,
             mods: Modifiers::default(),
         }
+    }
+
+    /// Sonnenstand S8: Ein neues Projekt bekommt den Standardort als
+    /// Bauort, ab Werk (Ganderkesee) keinen, die Datei bleibt dann ohne
+    /// `[location]`. Die Schattenvorgabe gilt lebend für Ansichten ohne
+    /// eigene Wahl; eine eigene Wahl bleibt, die Datei ändert sich nicht.
+    #[test]
+    fn s8_vorgaben_fuer_neue_projekte_und_ansichten() {
+        use sk_math::sonne::Lage;
+        use sk_model::{ShadeLight, ViewShade};
+        let werk = new_model(None, Lage::GANDERKESEE);
+        assert!(werk.location().is_unset());
+        assert!(!sk_model::szo::write(&werk).contains("[location]"));
+        let muenchen = Lage {
+            breite: 48.137,
+            laenge: 11.575,
+        };
+        let m = new_model(None, muenchen);
+        assert_eq!(m.location().lat, Some(48.137));
+        assert_eq!(m.location().lon, Some(11.575));
+        assert_eq!(m.location().north, None);
+        assert!(sk_model::szo::write(&m).contains("[location] lat=48.137 lon=11.575\n"));
+        assert_eq!(Scene::with_model(m).undo_label(), None, "ohne Schritt");
+
+        // Schatten: Vorgabe ändern, Projekt ohne eigene Wahl folgt
+        let mut p = new_model(None, Lage::GANDERKESEE);
+        let eigen = ViewShade {
+            light: ShadeLight::FrontRight,
+            ..ViewShade::WERK
+        };
+        p.set_view_shade(1, eigen, ViewShade::WERK);
+        let datei = sk_model::szo::write(&p);
+        let rev = p.revision();
+        let firma = ViewShade {
+            hatch: true,
+            ..ViewShade::WERK
+        };
+        assert_eq!(p.view_shade(0, firma), firma);
+        assert_eq!(p.view_shade(1, firma), eigen);
+        assert_eq!(sk_model::szo::write(&p), datei);
+        assert_eq!(p.revision(), rev);
     }
 
     #[test]

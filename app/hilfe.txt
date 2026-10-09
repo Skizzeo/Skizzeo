@@ -195,6 +195,14 @@ Animationen | Dauer der Übergänge; 0 schaltet sie aus
 Muster in 3D | Schalter in der Gruppe 3D-Umgebung, für schwache Grafik; die Ansichten behalten ihre Fugen
 Mengenliste | Gruppe „Blatt (Mengenliste)“
 
+[thema] id=einstellungen-vorgaben titel="Einstellungen · Vorgaben"
+Öffnen | Einstellungen, Reiter „Vorgaben“ unter „Programm“; gilt für diesen Arbeitsplatz
+Schatten in den Ansichten | An oder Aus, graue Fläche oder Schraffur, Licht vorne links, vorne rechts, vorne oben oder Sonne
+Wirkung | jede Ansicht ohne eigene Wahl folgt der Vorgabe, auch in vorhandenen Projekten; eine eigene Wahl über das Zahnrad in der Ansicht bleibt
+Sonne | Projekte ohne Nordrichtung zeigen dann keinen Schatten
+Standardort | Breite und Länge in Grad; neue Projekte bekommen ihn als Bauort, vorhandene behalten ihren
+Zurücksetzen | „Auf Standard zurücksetzen“ stellt Werk her: Schatten an, Fläche, vorne links, Ganderkesee
+
 [thema] id=katalog titel="Bauteilkatalog"
 Öffnen | Dateimenü › „Bauteilkatalog …“ oder über den Typ-Chip
 Projekt | Schichten von außen nach innen; Name und Kurzzeichen folgen der Dicke

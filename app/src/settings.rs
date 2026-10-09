@@ -12,6 +12,7 @@ use sk_ui::theme::Theme;
 use std::path::PathBuf;
 
 mod fremd;
+pub mod vorgaben;
 
 const HEAD: &str = "SKIZZEO-EINSTELLUNGEN";
 const VERSION: u32 = 1;
@@ -630,7 +631,9 @@ pub fn read_all(text: &str) -> (Theme, Recent, Vec<String>) {
             // Lage des Mengenfensters (F2): liest die App mit den Bildschirmen;
             // Ort des Firmenkatalogs (K2): liest [`Settings::load`]
             // Planung des letzten Projekts (Paket PD): liest [`Settings::load`]
-            "mengenfenster" | "firmenkatalog" | "planung" | "lvblatt" => continue,
+            // Firmenvorgaben (Sonnenstand S8): liest [`Settings::load`]
+            "mengenfenster" | "firmenkatalog" | "planung" | "lvblatt" | "ansichtsschatten"
+            | "standardort" => continue,
             s => {
                 // Bleibt beim Speichern erhalten ([`fremd`])
                 skip(&mut hints, &format!("unbekannter Abschnitt [{s}]"));
@@ -700,6 +703,9 @@ pub struct Settings {
     loaded_lvblatt: String,
     /// Ort des Firmenkatalogs aus der Datei; ohne ihn gilt der Vorgabeort.
     company: Option<PathBuf>,
+    /// Firmenvorgaben (Sonnenstand S8) und ihr Stand beim Laden.
+    pub vorgaben: vorgaben::Vorgaben,
+    loaded_vorgaben: vorgaben::Vorgaben,
     /// Abschnitte und Schlüssel einer neueren Fassung, beim Speichern
     /// unverändert weitergeschrieben ([`fremd`]).
     fremd: fremd::Fremd,
@@ -725,6 +731,8 @@ impl Settings {
             loaded_panel: String::new(),
             company_line: String::new(),
             company: None,
+            vorgaben: vorgaben::Vorgaben::WERK,
+            loaded_vorgaben: vorgaben::Vorgaben::WERK,
             planung: String::new(),
             loaded_planung: String::new(),
             lvblatt: String::new(),
@@ -812,8 +820,11 @@ impl Settings {
             .and_then(|p| std::fs::read_to_string(p).ok());
         let theme = match text {
             Some(text) => {
-                let (t, recent, hints) = read_all(&text);
+                let (t, recent, mut hints) = read_all(&text);
+                let (v, h) = vorgaben::Vorgaben::lesen(&text);
+                hints.extend(h);
                 self.hints = hints;
+                self.vorgaben = v;
                 self.fremd = fremd::Fremd::sammeln(&text, satz_bekannt);
                 self.recent = recent;
                 self.windows = text
@@ -859,6 +870,7 @@ impl Settings {
         self.loaded_panel = self.panel.clone();
         self.loaded_planung = self.planung.clone();
         self.loaded_lvblatt = self.lvblatt.clone();
+        self.loaded_vorgaben = self.vorgaben;
         theme
     }
 
@@ -874,6 +886,7 @@ impl Settings {
             && self.panel == self.loaded_panel
             && self.planung == self.loaded_planung
             && self.lvblatt == self.loaded_lvblatt
+            && self.vorgaben == self.loaded_vorgaben
         {
             return Ok(());
         }
@@ -888,7 +901,8 @@ impl Settings {
                         + &self.panel
                         + &self.company_line
                         + &self.planung
-                        + &self.lvblatt),
+                        + &self.lvblatt
+                        + &self.vorgaben.schreiben()),
                 );
                 crate::document::write_synced(&tmp, text.as_bytes())
             })
@@ -901,6 +915,7 @@ impl Settings {
                 self.loaded_panel = self.panel.clone();
                 self.loaded_planung = self.planung.clone();
                 self.loaded_lvblatt = self.lvblatt.clone();
+                self.loaded_vorgaben = self.vorgaben;
                 Ok(())
             }
             Err(e) => {
@@ -941,6 +956,42 @@ mod tests {
             write(&Theme::dark()),
             "SKIZZEO-EINSTELLUNGEN 1\n[theme] base=\"Dunkel\"\n"
         );
+    }
+
+    /// Sonnenstand S8: Firmenvorgaben im Rundlauf, einmal geschrieben,
+    /// ab Werk keine Zeile.
+    #[test]
+    fn firmenvorgaben_im_rundlauf() {
+        let d = dir("vorgaben");
+        let mut s = Settings::new(args(&["skizzeo.exe"]), Some(d.clone()));
+        let t = s.load();
+        s.vorgaben.schatten.hatch = true;
+        s.vorgaben.ort.breite = 48.137;
+        s.save_if_changed(&t).unwrap();
+        let path = d.join("Skizzeo").join("einstellungen.txt");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            text,
+            "SKIZZEO-EINSTELLUNGEN 1\n[theme] base=\"Dunkel\"\n\
+             [ansichtsschatten] on=1 fill=hatch light=front-left\n\
+             [standardort] lat=48.137 lon=8.591\n"
+        );
+        let mut s2 = Settings::new(args(&["skizzeo.exe"]), Some(d.clone()));
+        let t2 = s2.load();
+        assert!(s2.hints.is_empty(), "{:?}", s2.hints);
+        assert_eq!(s2.vorgaben, s.vorgaben);
+        // Unverändert: nichts geschrieben; geändert: kein Abschnitt doppelt
+        s2.recent.push(PathBuf::from("a.szo"));
+        s2.save_if_changed(&t2).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("[ansichtsschatten]").count(), 1, "{text}");
+        assert_eq!(text.matches("[standardort]").count(), 1, "{text}");
+        // Zurück auf Werk: die Zeilen entfallen
+        s2.vorgaben = vorgaben::Vorgaben::WERK;
+        s2.save_if_changed(&t2).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("[ansichtsschatten]") && !text.contains("[standardort]"));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
