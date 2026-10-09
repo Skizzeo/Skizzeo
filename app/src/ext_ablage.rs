@@ -293,6 +293,8 @@ pub struct Vorschlag {
     pub projekt: Option<u32>,
     /// Was sich an gesetzten Exemplaren ändert, je Zeile.
     pub aenderungen: Vec<String>,
+    /// Gesetzte Exemplare, die der Fassung folgen (nur mit `projekt`).
+    pub gesetzt: usize,
     /// Sätze der Definition für den Firmenkatalog (E8c); setzt die App,
     /// die den Firmenkatalog kennt. Nach „Ja“ nur die angehakten.
     pub saetze: Vec<sk_cost::neue_saetze::NeuerSatz>,
@@ -358,12 +360,17 @@ pub fn pruefen(text: &str, ablage: &Ablage, model: &Model) -> Result<Vorschlag, 
         Some(_) => aenderungen(model, &def).map_err(|e| vec![e])?,
         None => Vec::new(),
     };
+    let gesetzt = match projekt {
+        Some(_) => model.ext_uses(&def.key).len(),
+        None => 0,
+    };
     Ok(Vorschlag {
         hinweise,
         def,
         fall,
         projekt,
         aenderungen,
+        gesetzt,
         saetze: Vec::new(),
     })
 }

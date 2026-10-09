@@ -213,6 +213,9 @@ pub struct Frage {
     /// Neue Sätze für den Firmenkatalog, unten über dem Fuß (E8c); die
     /// angehakten gehen mit „Ja“ an die Firma.
     pub haken: Vec<Haken>,
+    /// Abschnitte nur für Entwickler: `Some(true)` zugeklappt hinter dem
+    /// Knopf „Für Entwickler“ (Bedienbarkeit 30.5).
+    pub zu: Option<bool>,
 }
 
 impl Frage {
@@ -234,11 +237,26 @@ impl Frage {
                 "Aktualisieren",
                 false,
             ),
-            Fall::Anders => (
-                "Gleiche Version mit anderem Inhalt: ersetzt die eingelesene Fassung.".to_string(),
-                "Ersetzen",
-                false,
-            ),
+            // Bedienbarkeit 30.6: auch sagen, dass das Projekt folgt
+            Fall::Anders => {
+                let folgt = match (v.projekt, v.gesetzt) {
+                    (None, _) => "Ersetzen tauscht die eingelesene Fassung aus.".to_string(),
+                    (Some(_), 0) => "Ersetzen ändert auch die Fassung im Projekt.".to_string(),
+                    (Some(_), 1) => {
+                        "Ersetzen ändert auch 1 gesetztes Bauteil im Projekt:".to_string()
+                    }
+                    (Some(_), n) => {
+                        format!("Ersetzen ändert auch {n} gesetzte Bauteile im Projekt:")
+                    }
+                };
+                (
+                    format!(
+                        "Diese Datei hat dieselbe Versionsnummer wie die eingelesene, aber anderen Inhalt. {folgt}"
+                    ),
+                    "Ersetzen",
+                    false,
+                )
+            }
             Fall::Kleiner(a) => (
                 format!(
                     "{} Version {} ist älter: Zurücksetzen nur, wenn gewollt.",
@@ -302,6 +320,7 @@ impl Frage {
             ja,
             tat: ja.map(|_| Tat::Einlesen(Box::new(v))),
             haken,
+            zu: None,
         }
     }
 
@@ -310,12 +329,14 @@ impl Frage {
         Frage {
             titel: "Bauteil einlesen".into(),
             name: anzeige(datei, 80),
-            satz: "Nicht eingelesen: die Datei hat Fehler.".into(),
+            satz: "Die Datei ist fehlerhaft und wurde nicht eingelesen. Bitte an den Absender zurückgeben."
+                .into(),
             warnung: true,
             abschnitte: vec![(format!("Fehler ({})", fehler.len()), fehler)],
             ja: None,
             tat: None,
             haken: Vec::new(),
+            zu: Some(true),
         }
     }
 
@@ -333,6 +354,7 @@ impl Frage {
             ja: Some("Aktualisieren"),
             tat: Some(Tat::Aktualisieren(Box::new(d))),
             haken: Vec::new(),
+            zu: None,
         }
     }
 
@@ -351,6 +373,7 @@ impl Frage {
             ja: Some("Entfernen"),
             tat: Some(Tat::Entfernen(z.key.clone())),
             haken: Vec::new(),
+            zu: None,
         }
     }
 }
@@ -379,6 +402,8 @@ enum Knopf {
     Uebernehmen,
     Zu,
     Ja,
+    /// Abschnitte der Rückfrage auf- und zuklappen.
+    Entwickler,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -544,7 +569,7 @@ impl Fenster {
     /// Zeilen der Rückfrage (dip-Höhe grob, umbrochen wird beim Zeichnen).
     fn frage_hoehe(f: &Frage) -> f32 {
         let mut h = 3.0 * TEXT_H + 12.0;
-        for (_, z) in &f.abschnitte {
+        for (_, z) in f.abschnitte.iter().filter(|_| f.zu != Some(true)) {
             h += GRUPPE_H + z.len() as f32 * TEXT_H * 1.6;
         }
         if !f.haken.is_empty() {
@@ -593,6 +618,13 @@ impl Fenster {
                     rechts(Knopf::Zu, "Abbrechen", 100.0, &mut knoepfe);
                 } else {
                     rechts(Knopf::Zu, "Schließen", 100.0, &mut knoepfe);
+                }
+                if f.zu.is_some() {
+                    knoepfe.push((
+                        Knopf::Entwickler,
+                        rect(PAD * s, ky, 150.0 * s, KNOPF_H * s),
+                        "Für Entwickler",
+                    ));
                 }
             }
             None => {
@@ -730,6 +762,12 @@ impl Fenster {
         let z = self.gewaehlt().cloned();
         match k {
             Knopf::Zu => self.nein(),
+            Knopf::Entwickler => {
+                if let Some(zu) = self.frage.as_mut().and_then(|f| f.zu.as_mut()) {
+                    *zu = !*zu;
+                }
+                None
+            }
             Knopf::Ja => {
                 let mut f = self.frage.take()?;
                 self.nur_frage = false;
@@ -859,7 +897,7 @@ impl Fenster {
                 let grenze = haken
                     .first()
                     .map_or(inh.y + inh.h, |r| m + r.y - GRUPPE_H * s);
-                for (kopf, zeilen) in &f.abschnitte {
+                for (kopf, zeilen) in f.abschnitte.iter().filter(|_| f.zu != Some(true)) {
                     y += 12.0 * s;
                     if y + TEXT_H * s > grenze {
                         break;
@@ -1318,6 +1356,12 @@ mod tests {
         let f = Frage::fehler("x.szb", vec!["Zeile 2: kaputt".into()]);
         let mut w = Fenster::mit_frage(Vec::new(), f);
         let r = w.rect(1.0, 1280, 800, 32);
+        // Fehlerliste zugeklappt unter „Für Entwickler“ (Bedienbarkeit 30.5)
+        let h = w.inhalt_h();
+        assert_eq!(w.frage.as_ref().unwrap().zu, Some(true));
+        assert!(drueck(&mut w, r, Knopf::Entwickler).is_none());
+        assert_eq!(w.frage.as_ref().unwrap().zu, Some(false));
+        assert!(w.inhalt_h() >= h);
         assert!(matches!(drueck(&mut w, r, Knopf::Zu), Some(Antwort::Zu)));
     }
 
@@ -1339,7 +1383,34 @@ mod tests {
         let f = frage(&a, &v2(STUETZE));
         assert_eq!(f.ja, None, "{}", f.satz);
         let anders = v2(STUETZE).replace("min=200 max=600", "min=200 max=650");
-        assert_eq!(frage(&a, &anders).ja, Some("Ersetzen"));
+        let f = frage(&a, &anders);
+        assert_eq!(f.ja, Some("Ersetzen"));
+        assert_eq!(
+            f.satz,
+            "Diese Datei hat dieselbe Versionsnummer wie die eingelesene, aber anderen Inhalt. Ersetzen tauscht die eingelesene Fassung aus."
+        );
+        // Bedienbarkeit 30.6: mit gesetzten Bauteilen sagt sie, dass das
+        // Projekt folgt
+        let mut mp = Model::new();
+        mp.add_building(1);
+        let eg = mp
+            .storeys()
+            .iter()
+            .find(|(_, s)| s.short == "EG" && s.building.is_some())
+            .map(|(id, _)| id)
+            .unwrap();
+        let d2 = ExtDef::lesen(&v2(STUETZE)).unwrap();
+        mp.put_ext_def(d2.clone()).unwrap();
+        for x in [0.0, 3000.0] {
+            mp.add_ext(eg, ExtPart::new(&d2, [x, 0.0])).unwrap();
+        }
+        let f = Frage::einlesen(ext_ablage::pruefen(&anders, &a, &mp).unwrap());
+        assert!(
+            f.satz
+                .ends_with("Ersetzen ändert auch 2 gesetzte Bauteile im Projekt:"),
+            "{}",
+            f.satz
+        );
         let f = frage(&a, STUETZE);
         assert_eq!(f.ja, Some("Zurücksetzen"));
         assert!(f.warnung);
