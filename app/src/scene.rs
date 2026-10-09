@@ -3763,9 +3763,9 @@ fn mesh_into(m: &mut MeshData, s: &Solid) {
     for e in &s.edges {
         let k = e.kind as f32;
         let (a, b) = (e.a, e.b);
-        // echt gekreuzt: eine Kante, die bei 0 endet, bleibt ganz (sonst
-        // entstünde eine Kante der Länge 0; Hinweis Test zu c7404b4)
-        if a.z * b.z < 0.0 && (a.z - b.z).abs() > 1.0 {
+        // Nur echt kreuzende: endet eine Kante auf ±0,00, entstünde ein
+        // Stück der Länge 0 (Toleranz wie im Shader, Review 3cg)
+        if a.z.min(b.z) < -0.5 && a.z.max(b.z) > 0.5 {
             let t = a.z / (a.z - b.z);
             let mut g = a + (b - a) * t;
             g.z = 0.0;
@@ -4168,8 +4168,10 @@ mod tests {
         s.edge(vec3(0.0, 0.0, -800.0), vec3(0.0, 0.0, 2000.0));
         s.edge(vec3(0.0, 0.0, 0.0), vec3(1000.0, 0.0, 0.0));
         s.edge(vec3(0.0, 0.0, -800.0), vec3(1000.0, 0.0, -800.0));
-        // endet genau bei 0: bleibt ganz, keine Kante der Länge 0
+        // Endet eine Kante auf ±0,00, bleibt sie ganz (Review 3cg)
         s.edge(vec3(0.0, 0.0, -800.0), vec3(0.0, 0.0, 0.0));
+        s.edge(vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, -800.0));
+        s.edge(vec3(0.0, 0.0, -0.2), vec3(0.0, 0.0, 3000.0));
         let m = mesh_of(&s);
         let z: Vec<[f32; 2]> = m.edges.iter().map(|(p, _)| [p[0][2], p[1][2]]).collect();
         assert_eq!(
@@ -4179,7 +4181,9 @@ mod tests {
                 [0.0, 2000.0],
                 [0.0, 0.0],
                 [-800.0, -800.0],
-                [-800.0, 0.0]
+                [-800.0, 0.0],
+                [0.0, -800.0],
+                [-0.2, 3000.0]
             ]
         );
     }
