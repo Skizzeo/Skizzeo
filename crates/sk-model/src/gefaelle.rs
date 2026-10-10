@@ -334,7 +334,7 @@ impl Mesh {
                 }
             }
         }
-        out
+        join_convex(out)
     }
 
     fn funnel(&self, s: Vec3, t: usize, from: usize, w: Wedge, out: &mut Vec<Vec<Vec3>>) {
@@ -358,6 +358,61 @@ impl Mesh {
             }
         }
     }
+}
+
+/// Fasst konvexe Stücke mit gemeinsamer Kante zusammen, solange die
+/// Vereinigung konvex bleibt (weniger Stücke für den Gefälleplan).
+fn join_convex(mut ps: Vec<Vec<Vec3>>) -> Vec<Vec<Vec3>> {
+    'again: loop {
+        for i in 0..ps.len() {
+            for j in i + 1..ps.len() {
+                if let Some(u) = union_convex(&ps[i], &ps[j]) {
+                    ps[i] = u;
+                    ps.swap_remove(j);
+                    continue 'again;
+                }
+            }
+        }
+        return ps;
+    }
+}
+
+/// Vereinigung zweier konvexer Polygone (gegen den Uhrzeigersinn) über eine
+/// gemeinsame Kante, wenn sie konvex ist.
+fn union_convex(p: &[Vec3], q: &[Vec3]) -> Option<Vec<Vec3>> {
+    let (n, m) = (p.len(), q.len());
+    let near = |a: Vec3, b: Vec3| (a - b).length() < 1e-3;
+    for i in 0..n {
+        let (a, b) = (p[i], p[(i + 1) % n]);
+        if near(a, b) {
+            continue;
+        }
+        let Some(j) = (0..m).find(|&j| near(q[j], b) && near(q[(j + 1) % m], a)) else {
+            continue;
+        };
+        // p von b bis a, dann q hinter a bis vor b
+        let mut u: Vec<Vec3> = (0..n).map(|k| p[(i + 1 + k) % n]).collect();
+        u.extend((2..m).map(|k| q[(j + k) % m]));
+        u.dedup_by(|x, y| near(*x, *y));
+        while u.len() > 1 && near(u[0], u[u.len() - 1]) {
+            u.pop();
+        }
+        let k = u.len();
+        if k < 3 {
+            return None;
+        }
+        let turn = |i: usize| {
+            let (a, b, c) = (u[(i + k - 1) % k], u[i], u[(i + 1) % k]);
+            let (d, e) = (b - a, c - b);
+            cross2(d, e) / (d.length() * e.length()).max(1e-12)
+        };
+        if (0..k).any(|i| turn(i) < -1e-9) {
+            return None;
+        }
+        let keep: Vec<Vec3> = (0..k).filter(|&i| turn(i) > 1e-9).map(|i| u[i]).collect();
+        return Some(keep);
+    }
+    None
 }
 
 /// Sichtkegel von einem Punkt: von Richtung `a` gegen den Uhrzeigersinn bis
