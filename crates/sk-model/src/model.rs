@@ -1833,7 +1833,7 @@ impl Model {
                         p.insert("begehbar".into(), PropValue::Bool(walk));
                     }
                     _ => {
-                        let g = crate::terrace::coping_girth(f.terraces.width);
+                        let g = f.coping_girth();
                         p.insert("Abwicklung".into(), PropValue::Number(g));
                         let w = crate::terrace::coping_cut_width(g);
                         p.insert("Zuschnitt".into(), PropValue::Number(w));
@@ -4011,6 +4011,7 @@ impl Model {
                             e.number, f.terrace.upstand
                         ));
                     }
+                    out.extend(self.crown_problem(&e.number, &f.terrace));
                     if f.terrace.build_up.is_some_and(|t| {
                         self.layer_set(t)
                             .is_none_or(|x| x.category != TypeCategory::RoofTerrace)
@@ -4496,6 +4497,21 @@ pub const ROOF_COPING_PART: u32 = STRIP_PART - 11;
 /// Attika über OK Belag (Jörn 08:35, BIM §3): 6 cm, einstellbar 0 bis 30 cm.
 pub const TERRACE_UPSTAND: f64 = 60.0;
 pub const MAX_UPSTAND: f64 = 300.0;
+/// Dämmstreifen auf der Attikakrone unter dem Blech (Jörn 10.10. 16:07,
+/// konzept-attikadaemmung.md): 4 cm, einstellbar 2 bis 10 cm oder 0.
+pub const TERRACE_CROWN: f64 = 40.0;
+pub const MIN_CROWN: f64 = 20.0;
+pub const MAX_CROWN: f64 = 100.0;
+
+/// Gültige Dicke des Dämmstreifens auf der Krone (mm): ungültige Werte
+/// (nur aus fremden Dateien) zählen als keiner.
+pub(crate) fn crown_of(t: &Terrace) -> f64 {
+    if (MIN_CROWN..=MAX_CROWN).contains(&t.crown) {
+        t.crown
+    } else {
+        0.0
+    }
+}
 /// Werkstyp „Dachterrasse 14“ (R4 §1.4) und die eingebauten Baustoffe von
 /// Dachterrasse und Attikablech: feste Guids, angelegt, sobald das erste
 /// Bauteil sie braucht (ältere Dateien bleiben bytegleich).

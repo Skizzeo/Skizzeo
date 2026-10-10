@@ -200,6 +200,8 @@ pub enum Field {
     TerraceInsulation,
     TerraceFinish,
     Upstand,
+    /// Dämmstreifen auf der Attikakrone unter dem Blech (0 = keiner).
+    Crown,
     /// Dämmdicke im Typ des Flachdachs (D3).
     RoofInsulation,
     /// Gefälle des Flachdachs in % (0 = waagerecht; Gefälledämmung G2).

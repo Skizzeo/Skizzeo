@@ -209,6 +209,10 @@ impl Model {
                         coping_mat: self
                             .coping_material_of(&f.terrace)
                             .map_or(material::PLAIN, material_key),
+                        crown: crown_of(&f.terrace),
+                        crown_mat: self
+                            .terrace_crown_material(id)
+                            .map_or(material::PLAIN, material_key),
                     });
                     fs.terraces = plan;
                 }

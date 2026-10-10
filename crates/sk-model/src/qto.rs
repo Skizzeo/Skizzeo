@@ -683,6 +683,20 @@ pub struct CopingQto {
     /// Ecken und Endabschlüsse aller Blechstränge (Zulagen im LV).
     pub corners: u32,
     pub ends: u32,
+    /// Dämmstreifen auf der Krone unter dem Blech (Jörn 10.10. 16:07).
+    pub crown: Option<CrownQto>,
+}
+
+/// Mengen des Dämmstreifens auf der Attikakrone; abgerechnet nach seiner
+/// Grundfläche (A70, m²), als Schicht 1 des Blechs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CrownQto {
+    pub material: MaterialId,
+    /// Dicke (mm) und Grundfläche (mm²).
+    pub thickness: f64,
+    pub area: f64,
+    /// Fläche × Dicke (mm³).
+    pub volume: f64,
 }
 
 /// Wahre Dicke des Attikablechs (mm), Merkmal (BIM E4).
@@ -734,7 +748,7 @@ pub fn coping_qto_of(model: &Model, floor: ElementId, f: &FloorSlab) -> Option<C
         return None;
     }
     let length = f.coping_length();
-    let girth = crate::terrace::coping_girth(f.terraces.width);
+    let girth = f.coping_girth();
     let pfade = &f.terraces.coping;
     Some(CopingQto {
         length,
@@ -744,6 +758,20 @@ pub fn coping_qto_of(model: &Model, floor: ElementId, f: &FloorSlab) -> Option<C
         cut: crate::qto_dach::zuschnitt(girth),
         corners: pfade.iter().map(crate::qto_dach::ecken).sum(),
         ends: pfade.iter().map(crate::qto_dach::enden).sum(),
+        crown: f
+            .terrace
+            .as_ref()
+            .filter(|t| t.crown > 0.0)
+            .zip(model.terrace_crown_material(floor))
+            .map(|(t, material)| {
+                let area = f.crown_area();
+                CrownQto {
+                    material,
+                    thickness: t.crown,
+                    area,
+                    volume: area * t.crown,
+                }
+            }),
     })
 }
 
@@ -833,6 +861,7 @@ pub fn roof_coping_qto_of(model: &Model, floor: ElementId, r: &FlatRoof) -> Copi
         cut: crate::qto_dach::zuschnitt(girth),
         corners: crate::qto_dach::ecken(&ring),
         ends: 0,
+        crown: None,
     }
 }
 
@@ -2123,7 +2152,8 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
             ElementQto::Terrace(t) => Some((t.area, 0.0)),
             ElementQto::Soffit(f) => Some((f.layer_area(i), 0.0)),
             ElementQto::Perimeter(f) => Some((f.area, 0.0)),
-            ElementQto::Coping(c) => Some((0.0, c.length)),
+            // Blech in m; der Dämmstreifen darunter (Schicht 1) mit Fläche
+            ElementQto::Coping(c) if i == 0 => Some((0.0, c.length)),
             _ => None,
         };
         // Schicht, an der die Abfangung des Verblenders abgerechnet wird
@@ -2174,6 +2204,8 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                 ElementQto::Soffit(_) | ElementQto::Terrace(_) | ElementQto::Perimeter(_) => {
                     bill_area
                 }
+                // Dämmstreifen auf der Krone: Grundfläche
+                ElementQto::Coping(_) if i > 0 => area,
                 _ => 0.0,
             };
             out.push(LayerRow {
@@ -2246,15 +2278,24 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                     if air {
                         continue;
                     }
+                    // Attikablech: Schicht 0 das Blech, Schicht 1 der
+                    // Dämmstreifen auf der Krone
+                    let crown = match q {
+                        ElementQto::Coping(c) if i > 0 => c.crown.as_ref(),
+                        _ => None,
+                    };
                     let area = match q {
                         ElementQto::Soffit(f) => f.layer_area(i),
-                        _ => area,
+                        _ => crown.map_or(area, |k| k.area),
                     };
-                    let v = if l.core || whole {
+                    let v = if let Some(k) = crown {
+                        k.volume
+                    } else if l.core || whole || matches!(q, ElementQto::Coping(_)) {
                         q.volume()
                     } else {
                         area * l.thickness
                     };
+                    let whole = whole || (matches!(q, ElementQto::Coping(_)) && i == 0);
                     let pocket = match q {
                         ElementQto::Floor(f) if l.core || whole => f.bearing,
                         _ => 0.0,
@@ -2430,7 +2471,12 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
                 }
             }
             (ElementQto::Perimeter(f), Some(m)) => add(m, f.volume, f.area, None),
-            (ElementQto::Coping(c), Some(m)) => add(m, c.volume, 0.0, Some(c.length)),
+            (ElementQto::Coping(c), Some(m)) => {
+                add(m, c.volume, 0.0, Some(c.length));
+                if let Some(k) = &c.crown {
+                    add(k.material, k.volume, k.area, None);
+                }
+            }
             (q, Some(m)) => add(m, q.volume(), 0.0, None),
             _ => {}
         }
