@@ -3483,7 +3483,7 @@ impl Model {
             ElementKind::SoffitInsulation { floor }
             | ElementKind::RoofTerrace { floor }
             | ElementKind::Coping { floor }
-            | ElementKind::Roof { floor } => self.run_of(floor),
+            | ElementKind::Roof { floor, .. } => self.run_of(floor),
             ElementKind::PerimeterInsulation { slab } => self.run_of(slab),
             ElementKind::Ext(_) => None,
         }
@@ -5853,8 +5853,9 @@ impl Model {
         {
             out.push("Deckenauflager des Typs ungültig".into());
         }
-        if let Some(&ElementKind::Roof { floor }) = self.element(e).map(|x| &x.kind) {
+        if let Some(&ElementKind::Roof { floor, .. }) = self.element(e).map(|x| &x.kind) {
             out.extend(self.flat_roof_hint(floor));
+            out.extend(self.flat_roof_slope_hints(floor));
             return out;
         }
         let Some(run) = self.run_of(e) else {
@@ -6740,7 +6741,7 @@ impl Model {
                             ElementKind::SoffitInsulation { floor }
                             | ElementKind::RoofTerrace { floor }
                             | ElementKind::Coping { floor }
-                            | ElementKind::Roof { floor } => strips.push(floor),
+                            | ElementKind::Roof { floor, .. } => strips.push(floor),
                             ElementKind::Ext(_) => {}
                         }
                     }
@@ -6829,7 +6830,7 @@ impl Model {
                         ElementKind::SoffitInsulation { floor }
                         | ElementKind::RoofTerrace { floor }
                         | ElementKind::Coping { floor }
-                        | ElementKind::Roof { floor } => footings.push(floor),
+                        | ElementKind::Roof { floor, .. } => footings.push(floor),
                         ElementKind::Floor(f) => {
                             touched.run(f.run);
                             floors.push(f.run);
@@ -7209,7 +7210,7 @@ impl Model {
                         out.push(format!("{}: Baustoff des Attikablechs fehlt", e.number));
                     }
                 }
-                ElementKind::Roof { floor } => out.extend(self.check_flat_roof(id, floor)),
+                ElementKind::Roof { floor, .. } => out.extend(self.check_flat_roof(id, floor)),
                 ElementKind::Coping { floor } if self.flat_roof_coping(id, floor) => {
                     out.extend(self.check_flat_roof(id, floor))
                 }
