@@ -341,6 +341,7 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                             side_area: 0.0,
                             attika: 0.0,
                             inner_area: 0.0,
+                            foot: 0.0,
                         };
                     }
                     let quad = [fa[k], fa[j], fb[j], fb[k]];
