@@ -63,9 +63,32 @@ impl FlatRoof {
         polygon::perimeter(&self.outline)
     }
 
-    /// Ecken des Dachrands (Stück).
+    /// Innenecken des Anschlusses an der Aufkantung (Stück): Knicke der
+    /// Innenfläche ab 5°, an denen die Dachfläche konvex ist. Einspringende
+    /// Ecken (Außenecken des Anschlusses) und gerade Zwischenpunkte zählen
+    /// nicht (Review fe0e1ed).
     pub fn corners(&self) -> usize {
-        self.outline.len()
+        let p = &self.outline;
+        let n = p.len();
+        if n < 3 {
+            return 0;
+        }
+        // Umlaufsinn aus der vorzeichenbehafteten Fläche
+        let sinn: f64 = (0..n)
+            .map(|k| {
+                let (a, b) = (p[k], p[(k + 1) % n]);
+                a.x * b.y - b.x * a.y
+            })
+            .sum();
+        let grenze = 5.0f64.to_radians().cos();
+        (0..n)
+            .filter(|&k| {
+                let (a, b, c) = (p[(k + n - 1) % n], p[k], p[(k + 1) % n]);
+                let (u, v) = ((b - a).normalized(), (c - b).normalized());
+                let kreuz = u.x * v.y - u.y * v.x;
+                u.dot(v) < grenze && kreuz * sinn > 0.0
+            })
+            .count()
     }
 
     /// Schichten mit Höhen (UK, OK, Baustoff, Dämmung, Schicht von oben
@@ -255,7 +278,7 @@ pub const SCHLUESSEL: [(&str, &str, &str); 4] = [
     (
         CORNERS,
         "st",
-        "Ecken des Dachrands (Zulagen für Anschluss und Blech)",
+        "Innenecken des Anschlusses an der Aufkantung (Knick ab 5°, ohne einspringende Ecken)",
     ),
     (
         DRAINS,
@@ -296,7 +319,7 @@ pub fn roof_mengen(vorlage: &crate::qto::AutoMenge, r: &FlatRoof) -> Vec<crate::
             r.edge_length(),
             format!("Innenfläche der Aufkantung {}", m(r.edge_length())),
         ),
-        menge(CORNERS, "st", corners, format!("{corners} Ecken")),
+        menge(CORNERS, "st", corners, format!("{corners} Innenecken")),
         menge(
             DRAINS,
             "st",
@@ -305,4 +328,37 @@ pub fn roof_mengen(vorlage: &crate::qto::AutoMenge, r: &FlatRoof) -> Vec<crate::
         ),
         menge(OVERFLOWS, "st", drains, "so viele wie Dachabläufe".into()),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// L-förmige Innenfläche mit einem geraden Zwischenpunkt: 6 Knicke,
+    /// davon einer einspringend, also 5 Innenecken; in beiden Umlaufrichtungen.
+    #[test]
+    fn innenecken_ohne_einspringende() {
+        let mut outline = vec![
+            vec3(0.0, 0.0, 0.0),
+            vec3(5000.0, 0.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+            vec3(10000.0, 4000.0, 0.0),
+            vec3(4000.0, 4000.0, 0.0),
+            vec3(4000.0, 8000.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+        ];
+        let mut r = FlatRoof {
+            outline: outline.clone(),
+            base: 0.0,
+            layers: Vec::new(),
+            ring: Vec::new(),
+            width: 0.0,
+            crown: 0.0,
+            coping_mat: 0,
+        };
+        assert_eq!(r.corners(), 5);
+        outline.reverse();
+        r.outline = outline;
+        assert_eq!(r.corners(), 5);
+    }
 }
