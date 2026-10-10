@@ -358,6 +358,14 @@ impl QuantityWindow {
         if list.sync(s, animate && aktiv == Blatt::Mengen) && aktiv == Blatt::Mengen {
             self.dirty = true;
         }
+        // Kosten und AVA folgen der Auswahl vor dem Aufbau: Eine Auswahl
+        // von außen isoliert sie im selben Bild (Jörn 10.10.)
+        if kosten.follow(p) && aktiv == Blatt::Kosten {
+            self.dirty = true;
+        }
+        if ava.follow(p) && aktiv == Blatt::Ava {
+            self.dirty = true;
+        }
         if kosten.sync(s, firma) && aktiv == Blatt::Kosten {
             self.dirty = true;
             // Die Netto-Vorschau an „übernehmen“ entsteht erst beim
@@ -373,15 +381,9 @@ impl QuantityWindow {
         if list.follow(s, p) && aktiv == Blatt::Mengen {
             self.bands_dirty = true;
         }
-        if kosten.follow(p) && aktiv == Blatt::Kosten {
-            self.dirty = true;
-        }
         // Das LV rechnet nur, solange das Blatt AVA gezeigt wird; die Karte
         // behält ihre letzte Zahl
         if aktiv == Blatt::Ava && ava.sync(s, firma) {
-            self.dirty = true;
-        }
-        if ava.follow(p) && aktiv == Blatt::Ava {
             self.dirty = true;
         }
         // Vor dem ersten Öffnen ohne Zahl, aber nicht leer (Bedienbarkeit 14)

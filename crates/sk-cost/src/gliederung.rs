@@ -6,7 +6,7 @@
 //! sk-cost.
 
 use crate::geld::{Cent, Dez};
-use crate::rechnung::Kostenblatt;
+use crate::rechnung::{Ansatz, Kostenblatt, OhneZeile};
 use sk_model::trade::TradeId;
 use sk_model::{Guid, Model, StoreyId};
 
@@ -67,6 +67,16 @@ impl Gruppe {
         }
     }
 
+    /// Die Gruppe ohne leere Untergruppen; `None`, wenn nichts bleibt.
+    fn ohne_leere(mut self) -> Option<Gruppe> {
+        self.gruppen = std::mem::take(&mut self.gruppen)
+            .into_iter()
+            .filter_map(Gruppe::ohne_leere)
+            .collect();
+        (!(self.gruppen.is_empty() && self.zeilen.is_empty() && self.ohne.is_empty()))
+            .then_some(self)
+    }
+
     /// Summe aus Zeilen und Untergruppen setzen.
     fn summieren(mut self) -> Gruppe {
         self.summe = self
@@ -77,6 +87,25 @@ impl Gruppe {
             .flatten()
             .fold(None, |acc, c| Some(acc.unwrap_or(Cent(0)) + c));
         self
+    }
+}
+
+/// Welche Ansatzzeilen und Zeilen ohne Bauleistung eine Aufteilung zeigt;
+/// `alle`: keine Auswahl, Positionen ohne Teilung stehen mit ihrer ganzen
+/// Menge.
+struct Filter<'a> {
+    ansatz: &'a dyn Fn(&Ansatz) -> bool,
+    ohne: &'a dyn Fn(&OhneZeile) -> bool,
+    alle: bool,
+}
+
+impl Filter<'_> {
+    fn alle() -> Filter<'static> {
+        Filter {
+            ansatz: &|_| true,
+            ohne: &|_| true,
+            alle: true,
+        }
     }
 }
 
@@ -149,11 +178,7 @@ impl Kostenblatt {
     /// Das Blatt gegliedert nach `t` im Modus (`nur_material`). Namen und
     /// Reihenfolge der Gewerke kommen aus dem Modell.
     pub fn aufteilung(&self, m: &Model, t: Teilung, nur_material: bool) -> Aufteilung {
-        let gruppen = match t {
-            Teilung::Gewerk => self.nach_gewerk(m, nur_material),
-            Teilung::Geschoss => self.nach_geschoss_gruppen(m, nur_material),
-            Teilung::Kostengruppe => self.nach_kg_gruppen(nur_material),
-        };
+        let gruppen = self.gruppen(m, t, nur_material, &Filter::alle());
         let gesamt = self.gesamt(nur_material);
         let ausgleich = gesamt - gruppen.iter().filter_map(|g| g.summe).sum::<Cent>();
         Aufteilung {
@@ -163,7 +188,47 @@ impl Kostenblatt {
         }
     }
 
-    fn nach_gewerk(&self, m: &Model, nur_material: bool) -> Vec<Gruppe> {
+    /// Nur der Teil des Blatts, der an bestimmten Bauteilen hängt (Kosten
+    /// zu einer Auswahl im Modell, Jörn 10.10.): je Position die
+    /// Ansatzzeilen, für die `ansatz` gilt, mit ihrer Teilmenge und deren
+    /// Betrag; Zeilen ohne Bauleistung, für die `ohne` gilt. Gruppen ohne
+    /// Zeile entfallen. Das Gesamt ist die Summe der Gruppen, einen
+    /// Rundungsausgleich gibt es hier nicht.
+    pub fn aufteilung_fuer(
+        &self,
+        m: &Model,
+        t: Teilung,
+        nur_material: bool,
+        ansatz: &dyn Fn(&Ansatz) -> bool,
+        ohne: &dyn Fn(&OhneZeile) -> bool,
+    ) -> Aufteilung {
+        let f = Filter {
+            ansatz,
+            ohne,
+            alle: false,
+        };
+        let gruppen: Vec<Gruppe> = self
+            .gruppen(m, t, nur_material, &f)
+            .into_iter()
+            .filter_map(Gruppe::ohne_leere)
+            .collect();
+        let gesamt = gruppen.iter().filter_map(|g| g.summe).sum::<Cent>();
+        Aufteilung {
+            gruppen,
+            gesamt,
+            ausgleich: Cent(0),
+        }
+    }
+
+    fn gruppen(&self, m: &Model, t: Teilung, nur_material: bool, f: &Filter) -> Vec<Gruppe> {
+        match t {
+            Teilung::Gewerk => self.nach_gewerk(m, nur_material, f),
+            Teilung::Geschoss => self.nach_geschoss_gruppen(m, nur_material, f),
+            Teilung::Kostengruppe => self.nach_kg_gruppen(nur_material, f),
+        }
+    }
+
+    fn nach_gewerk(&self, m: &Model, nur_material: bool, f: &Filter) -> Vec<Gruppe> {
         let mut gewerke: Vec<Option<Guid>> = Vec::new();
         for g in self
             .positionen
@@ -180,17 +245,17 @@ impl Kostenblatt {
                 let mut gr = Gruppe::neu(Schluessel::Gewerk(g));
                 gr.zeilen = (0..self.positionen.len())
                     .filter(|&i| self.positionen[i].gewerk == g)
-                    .filter_map(|i| self.teilzeile(i, |_| true, true, nur_material))
+                    .filter_map(|i| self.teilzeile(i, |a| (f.ansatz)(a), f.alle, nur_material))
                     .collect();
                 gr.ohne = (0..self.ohne.len())
-                    .filter(|&j| self.ohne[j].gewerk == g)
+                    .filter(|&j| self.ohne[j].gewerk == g && (f.ohne)(&self.ohne[j]))
                     .collect();
                 gr.summieren()
             })
             .collect()
     }
 
-    fn nach_geschoss_gruppen(&self, m: &Model, nur_material: bool) -> Vec<Gruppe> {
+    fn nach_geschoss_gruppen(&self, m: &Model, nur_material: bool, f: &Filter) -> Vec<Gruppe> {
         let mut geschosse: Vec<StoreyId> = self.nach_geschoss.iter().map(|x| x.0).collect();
         for o in &self.ohne {
             einmal(&mut geschosse, o.geschoss);
@@ -216,11 +281,19 @@ impl Kostenblatt {
                         sub.zeilen = (0..self.positionen.len())
                             .filter(|&i| self.positionen[i].gewerk == g)
                             .filter_map(|i| {
-                                self.teilzeile(i, |a| a.geschoss == st, false, nur_material)
+                                self.teilzeile(
+                                    i,
+                                    |a| a.geschoss == st && (f.ansatz)(a),
+                                    false,
+                                    nur_material,
+                                )
                             })
                             .collect();
                         sub.ohne = (0..self.ohne.len())
-                            .filter(|&j| self.ohne[j].gewerk == g && self.ohne[j].geschoss == st)
+                            .filter(|&j| {
+                                let o = &self.ohne[j];
+                                o.gewerk == g && o.geschoss == st && (f.ohne)(o)
+                            })
                             .collect();
                         sub.summieren()
                     })
@@ -230,7 +303,7 @@ impl Kostenblatt {
             .collect()
     }
 
-    fn nach_kg_gruppen(&self, nur_material: bool) -> Vec<Gruppe> {
+    fn nach_kg_gruppen(&self, nur_material: bool, f: &Filter) -> Vec<Gruppe> {
         let mut kgs: Vec<Option<u16>> = Vec::new();
         for kg in self
             .positionen
@@ -255,10 +328,17 @@ impl Kostenblatt {
                     .map(|&kg| {
                         let mut sub = Gruppe::neu(Schluessel::Kg(kg));
                         sub.zeilen = (0..self.positionen.len())
-                            .filter_map(|i| self.teilzeile(i, |a| a.kg == kg, false, nur_material))
+                            .filter_map(|i| {
+                                self.teilzeile(
+                                    i,
+                                    |a| a.kg == kg && (f.ansatz)(a),
+                                    false,
+                                    nur_material,
+                                )
+                            })
                             .collect();
                         sub.ohne = (0..self.ohne.len())
-                            .filter(|&j| self.ohne[j].kg == kg)
+                            .filter(|&j| self.ohne[j].kg == kg && (f.ohne)(&self.ohne[j]))
                             .collect();
                         sub.summieren()
                     })
@@ -296,6 +376,69 @@ mod tests {
         let k = lesen::katalog(&m, None);
         let b = lesen::kosten(&m, &qto::schedule(&m), &k, &crate::Umfang::projekt());
         (m, b)
+    }
+
+    /// Kosten zu einer Auswahl (Jörn 10.10.): Ohne Einschränkung dieselben
+    /// Gruppen und Beträge wie die ganze Aufteilung; an einem Bauteil nur
+    /// dessen Ansatzzeilen mit ihrer Teilmenge, jede Summe die Summe der
+    /// Zeilen, keine leere Gruppe, kein Ausgleich. Die Gründung eines
+    /// Fundaments sind Platte, Schürze und Dämmung desselben Zuges.
+    #[test]
+    fn aufteilung_fuer_eine_auswahl() {
+        let (m, b) = haus(include_str!("../referenz/rh1-standardhaus.szo"));
+        let alle = |_: &Ansatz| true;
+        let ohne = |_: &OhneZeile| true;
+        for t in [Teilung::Gewerk, Teilung::Geschoss, Teilung::Kostengruppe] {
+            let a = b.aufteilung(&m, t, false);
+            let f = b.aufteilung_fuer(&m, t, false, &alle, &ohne);
+            let summen = |x: &Aufteilung| x.gruppen.iter().map(|g| g.summe).collect::<Vec<_>>();
+            assert_eq!(summen(&a), summen(&f), "{t:?}");
+            assert_eq!(f.ausgleich, Cent(0));
+        }
+        let wand = m
+            .elements()
+            .iter()
+            .find(|(_, e)| e.category == sk_model::element::Category::ExteriorWall)
+            .map(|(id, _)| id)
+            .unwrap();
+        for t in [Teilung::Gewerk, Teilung::Geschoss, Teilung::Kostengruppe] {
+            let nur = |a: &Ansatz| a.element == wand;
+            let keine = |o: &OhneZeile| o.element == wand;
+            let f = b.aufteilung_fuer(&m, t, false, &nur, &keine);
+            assert!(!f.gruppen.is_empty());
+            fn pruefe(b: &Kostenblatt, g: &Gruppe, wand: sk_model::ElementId) {
+                assert!(!g.gruppen.is_empty() || !g.zeilen.is_empty() || !g.ohne.is_empty());
+                for u in &g.gruppen {
+                    pruefe(b, u, wand);
+                }
+                for z in &g.zeilen {
+                    let p = &b.positionen[z.pos];
+                    assert!(z.ansatz.iter().all(|&j| p.ansatz[j].element == wand));
+                    assert!(z.menge <= p.menge);
+                }
+            }
+            for g in &f.gruppen {
+                pruefe(&b, g, wand);
+            }
+            assert_eq!(
+                f.gesamt,
+                f.gruppen.iter().filter_map(|g| g.summe).sum::<Cent>()
+            );
+            assert!(f.gesamt < b.netto && f.gesamt > Cent(0));
+        }
+        let finde = |c: sk_model::element::Category| {
+            m.elements()
+                .iter()
+                .find(|(_, e)| e.category == c)
+                .map(|(id, _)| id)
+                .unwrap()
+        };
+        let fs = finde(sk_model::element::Category::StripFooting);
+        let platte = finde(sk_model::element::Category::GroundSlab);
+        let g = qto::gruendung_von(&m, fs);
+        assert!(g.contains(&fs) && g.contains(&platte), "{g:?}");
+        assert_eq!(qto::gruendung_von(&m, platte), g);
+        assert!(qto::gruendung_von(&m, wand).is_empty());
     }
 
     /// Jede Summe ist die Summe der Zeilen darunter; Gruppen und Ausgleich

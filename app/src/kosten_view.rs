@@ -12,6 +12,7 @@
 //! (`preis_blatt.rs`) zeigt beim Tippen das Blatt auf dem Katalog mit den
 //! getippten Werten.
 
+use crate::fokus::Fokus;
 use crate::lohn_blatt::{self, LohnBlatt};
 use crate::picking::Picking;
 use crate::preis_blatt::{self, Gilt, PreisBlatt};
@@ -147,9 +148,12 @@ impl Zeile {
 }
 
 #[cfg(test)]
+mod abnahme_fokus;
+#[cfg(test)]
 mod abnahme_ka3a5;
 #[cfg(test)]
 mod bild;
+mod fokus_leiste;
 mod schalter;
 #[cfg(test)]
 mod tests;
@@ -232,6 +236,8 @@ enum Hot {
     Lohnsatz,
     /// Verweis auf Ablauf n („Händlerpreis für dieses Haus eintragen …“).
     Ablauf(usize),
+    /// „Alle Positionen“ in der Leiste der isolierten Liste.
+    Alle,
 }
 
 /// Was das Preisblatt schreiben lässt (die App führt es über
@@ -315,8 +321,9 @@ pub struct KostenView {
     /// (Review 3bf).
     inhalt_h: f32,
     offen: HashSet<u64>,
-    /// Woraus die Zeilen gebaut sind.
-    gebaut: Option<(*const Kostenblatt, Modus, Gliederung, u64)>,
+    /// Woraus die Zeilen gebaut sind (Blatt, Modus, Gliederung, Aufklappen,
+    /// Fokus).
+    gebaut: Option<(*const Kostenblatt, Modus, Gliederung, u64, u64)>,
     offen_stand: u64,
     pub subtitle: String,
     stale: bool,
@@ -376,6 +383,18 @@ pub struct KostenView {
     /// Abläufe `kind=user` (paket-ka3b §3) als leise Verweise links vom
     /// Knopf; setzt die App.
     ablaeufe: Vec<(sk_model::Guid, String)>,
+    /// Auswahl von außen (Modell, Mengen, AVA), auf die die Liste isoliert
+    /// ist (Jörn 10.10.), daraus beim `sync` der Fokus; sein Stand für den
+    /// Aufbau der Zeilen und woraus er bestimmt ist (Wunsch, Modellstand).
+    fokus_auswahl: Option<Vec<ElementId>>,
+    fokus: Option<Fokus>,
+    fokus_stand: u64,
+    fokus_von: Option<(u64, u64)>,
+    fokus_wunsch: u64,
+    /// Text der Leiste über der Liste.
+    fokus_text: String,
+    /// Rollstand der ganzen Liste vor dem Isolieren.
+    scroll_vorher: Option<f32>,
 }
 
 impl Default for KostenView {
@@ -436,6 +455,13 @@ impl KostenView {
             lohn: None,
             lohn_wunsch: None,
             ablaeufe: Vec::new(),
+            fokus_auswahl: None,
+            fokus: None,
+            fokus_stand: 0,
+            fokus_von: None,
+            fokus_wunsch: 0,
+            fokus_text: String::new(),
+            scroll_vorher: None,
         }
     }
 
@@ -510,11 +536,13 @@ impl KostenView {
             self.katalog = Some(kat);
             changed = true;
         }
+        changed |= self.fokus_sync(s.model());
         let key = (
             Rc::as_ptr(&blatt),
             self.modus,
             self.gliederung,
             self.offen_stand,
+            self.fokus_stand,
         );
         if self.gebaut != Some(key) || neu_katalog {
             let k = self.katalog.as_deref().expect("eben gesetzt");
@@ -522,12 +550,13 @@ impl KostenView {
                 s.model(),
                 k,
                 &blatt,
-                self.gliederung,
-                self.modus,
+                (self.gliederung, self.modus),
                 &self.offen,
+                self.fokus.as_ref(),
             );
             self.inhalt_h = self.zeilen.iter().map(Self::row_h).sum::<f32>() + 8.0;
             self.gebaut = Some(key);
+            self.fokus_text = self.fokus_leiste_text();
             changed = true;
             self.blitz_suchen(&blatt);
         }
@@ -728,6 +757,8 @@ impl KostenView {
     /// `sync`.
     pub fn waehlen_fuer(&mut self, el: ElementId) {
         self.wahl_nach = Some(el);
+        // Die graue Zeile steht vielleicht nicht in der isolierten Liste
+        self.fokus_setzen(None);
     }
 
     /// Text der Abgleichzeile, wenn sie steht.
@@ -1165,9 +1196,15 @@ impl KostenView {
 
     /// Auswahl aus dem gemeinsamen Zustand übernehmen; `true`, wenn sich
     /// das Bild ändert.
+    /// Eine Auswahl von außen (Modell, Mengen, AVA) isoliert die Liste auf
+    /// ihre Positionen, eine leere zeigt wieder alle; ein Klick im Blatt
+    /// selbst setzt `selected` vorher und isoliert nicht.
     pub fn follow(&mut self, p: &Picking) -> bool {
         let hover: Vec<ElementId> = p.hovered().collect();
         let changed = hover != self.hover || p.selected != self.selected;
+        if p.selected != self.selected {
+            self.fokus_setzen((!p.selected.is_empty()).then(|| p.selected.clone()));
+        }
         self.hover = hover;
         self.selected = p.selected.clone();
         changed
@@ -1199,7 +1236,7 @@ impl KostenView {
 
     /// Höhe des Kopfs (dip).
     fn head(&self) -> f32 {
-        HEAD + self.ab() + self.zeile2()
+        HEAD + self.ab() + self.zeile2() + self.fokus_h()
     }
 
     /// Erste Zeile der Liste (px).
@@ -1418,6 +1455,12 @@ impl KostenView {
             .find(|(_, r)| inside(*r, x, y))
         {
             return Some(Hot::Ablauf(i));
+        }
+        if self
+            .fokus_verweis(t, fonts)
+            .is_some_and(|r| inside(r, x, y))
+        {
+            return Some(Hot::Alle);
         }
         if let Some(a) = self.abgleich_lage(t, fonts) {
             for (r, h) in [
@@ -1675,6 +1718,10 @@ impl KostenView {
                     }
                 }
             }
+            Hot::Alle => {
+                self.fokus_setzen(None);
+                Some(ListOut::Repaint)
+            }
             Hot::Geschaetzt => self.springe(|z| z.geschaetzt),
             Hot::OhnePreis => self.springe(|z| z.art == Art::Ohne),
             Hot::Abgleich => None,
@@ -1917,6 +1964,7 @@ impl KostenView {
             f.draw(c, &text, 10.5 * s, x0, top + SUB_Y * s, u.sheet_text_dim);
         }
         self.paint_abgleich(c, t, fonts);
+        self.paint_fokus(c, t, fonts);
         // Leise Verweise auf die Abläufe für dieses Haus
         if let Some(f) = regular {
             let px = 11.0 * s;

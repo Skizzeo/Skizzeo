@@ -42,6 +42,7 @@ mod ext_props;
 mod ext_verwaltung;
 mod ext_werkzeug;
 mod flush_pick;
+mod fokus;
 mod frame_time;
 #[cfg(all(test, target_os = "linux"))]
 mod gpu_probe;
@@ -6137,6 +6138,9 @@ impl App {
                 self.change_type_of(wall);
             }
             delete::Action::Properties => self.select(Some(target)),
+            // Schnellzugriff wie der Knopf unter „Ansichten“; das Fenster
+            // öffnet nach den Ereignissen dieses Bildes
+            delete::Action::Quantity => self.quantity_wanted = true,
             delete::Action::ShowInModel => {
                 if let Some(ids) = list {
                     self.zoom_to(&ids);

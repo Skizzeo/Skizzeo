@@ -228,6 +228,8 @@ enum Hot {
     Knopf,
     /// „Bauleistung öffnen ↗“ in der Spalte „Preis“: Verwaltung (KA-3a2).
     Oeffnen,
+    /// „Alle Positionen“ in der Leiste der isolierten Tabelle.
+    Alle,
 }
 
 /// Punkt im Baum: grün Preis da, Akzent Preis fehlt, grau leer.
@@ -421,7 +423,7 @@ pub struct AvaView {
     baum: Vec<Knoten>,
     lv: Option<Rc<Lv>>,
     zeilen: Vec<Zeile>,
-    gebaut: Option<(*const Lv, Ansicht)>,
+    gebaut: Option<(*const Lv, Ansicht, u64)>,
     sprung: Option<Sprung>,
     scroll: f32,
     /// Position im Detailbereich (OZ ohne Los).
@@ -460,6 +462,16 @@ pub struct AvaView {
     /// Preise.
     preisquelle: String,
     knopf_down: bool,
+    /// Auswahl von außen, auf die die Tabelle isoliert ist (Jörn 10.10.,
+    /// [`crate::fokus`]), daraus beim `sync` der Fokus, sein Stand und die
+    /// Leiste; Rollstand der ganzen Tabelle davor.
+    fokus_auswahl: Option<Vec<ElementId>>,
+    fokus: Option<crate::fokus::Fokus>,
+    fokus_wunsch: u64,
+    fokus_von: Option<(u64, u64)>,
+    fokus_stand: u64,
+    fokus_text: String,
+    scroll_vorher: Option<f32>,
 }
 
 impl Default for AvaView {
@@ -513,6 +525,13 @@ impl AvaView {
             kopf_umfang: (String::new(), String::new()),
             preisquelle: String::new(),
             knopf_down: false,
+            fokus_auswahl: None,
+            fokus: None,
+            fokus_wunsch: 0,
+            fokus_von: None,
+            fokus_stand: 0,
+            fokus_text: String::new(),
+            scroll_vorher: None,
         }
     }
 
@@ -537,16 +556,18 @@ impl AvaView {
         }
         let (j, mo, ..) = sk_platform::local_date_time();
         let untertitel = kat.kopie.as_ref().is_some_and(|k| k.lvstorey);
+        let preise = self.preise;
+        let wahl = |g: Guid| LvWahl {
+            los: g,
+            untertitel,
+            preise,
+            heute: Some((j, mo)),
+        };
+        changed |= self.fokus_sync(s, firma, &lose, &wahl);
         let mut baum = Vec::new();
         let mut gezeigt = None;
         for (g, _, name) in &lose {
-            let w = LvWahl {
-                los: *g,
-                untertitel,
-                preise: self.preise,
-                heute: Some((j, mo)),
-            };
-            let lv = s.lv(firma, &self.leiste.umfang, &w);
+            let lv = s.lv(firma, &self.leiste.umfang, &wahl(*g));
             let offen = self.offen.contains(g);
             baum.push(Knoten::Los {
                 guid: *g,
@@ -591,16 +612,20 @@ impl AvaView {
             self.karte = karte;
             changed = true;
         }
-        let key = (Rc::as_ptr(&lv), self.ansicht);
+        let key = (Rc::as_ptr(&lv), self.ansicht, self.fokus_stand);
         if self.gebaut != Some(key) {
             self.breiten.get_mut().clear();
             self.zeilen = match self.ansicht {
-                Ansicht::Lv => lv_zeilen(&lv),
+                Ansicht::Lv => {
+                    let b = s.kostenblatt(firma, &self.leiste.umfang);
+                    lv_zeilen_mit(&lv, s.model(), &b, self.fokus.as_ref())
+                }
                 Ansicht::Zusammenstellung => zusammenstellung(&lv),
                 Ansicht::Pruefen => pruefen(s.model(), &lv),
                 Ansicht::Blatt => Vec::new(),
             };
             self.gebaut = Some(key);
+            self.fokus_text = self.fokus_leiste_text(s, firma, &lose, &wahl, &lv);
             changed = true;
         }
         if let Some(oz) = &self.gewaehlt {
@@ -660,9 +685,14 @@ impl AvaView {
 
     /// Hover und Auswahl aus dem Modell übernehmen; `true`, wenn sich das
     /// Bild ändert.
+    /// Eine Auswahl von außen isoliert die Tabelle auf ihre Positionen,
+    /// eine leere zeigt wieder alle; ein Klick im Blatt isoliert nicht.
     pub fn follow(&mut self, p: &Picking) -> bool {
         let hover: Vec<ElementId> = p.hovered().collect();
         let changed = hover != self.hover || p.selected != self.selected;
+        if p.selected != self.selected {
+            self.fokus_setzen((!p.selected.is_empty()).then(|| p.selected.clone()));
+        }
         self.hover = hover;
         self.selected = p.selected.clone();
         changed
@@ -720,7 +750,8 @@ impl AvaView {
     }
 
     fn body_top(&self) -> f32 {
-        self.top_px() + (BODY + self.kopfzeile_dy() + self.kopf_h()) * self.scale
+        let dy = self.kopfzeile_dy() + self.kopf_h() + self.fokus_h();
+        self.top_px() + (BODY + dy) * self.scale
     }
 
     /// Schmales Blatt: Kopfzeile („Kopf und Vorbemerkungen“, Verweise,
@@ -1105,6 +1136,12 @@ impl AvaView {
             return Some(Hot::Knopf);
         }
         if self
+            .fokus_verweis(t, fonts)
+            .is_some_and(|r| inside(r, x, y))
+        {
+            return Some(Hot::Alle);
+        }
+        if self
             .vorschau_rect(t, fonts)
             .is_some_and(|r| inside(r, x, y))
         {
@@ -1244,6 +1281,10 @@ impl AvaView {
             | Hot::Untertitel
             | Hot::Feld(_) => None,
             Hot::Oeffnen => self.detail.as_ref()?.leistung.map(ListOut::Verwaltung),
+            Hot::Alle => {
+                self.fokus_setzen(None);
+                Some(ListOut::Repaint)
+            }
             Hot::BaumLeiste => {
                 self.baum_blatt = !self.baum_blatt;
                 Some(ListOut::Repaint)
@@ -1484,6 +1525,7 @@ impl AvaView {
         self.paint_vorschau_knopf(c, t, fonts);
         let linie = self.body_top() - 8.0 * s;
         c.fill_rect(x0, linie, cw, s.max(1.0), u.sheet_rule);
+        self.paint_fokus(c, t, fonts);
         if self.baum_als_leiste() {
             self.paint_baum_leiste(c, t, bold);
         } else {
@@ -1967,8 +2009,14 @@ impl AvaView {
         for (i, y, h) in self.sichtbar() {
             let z = &self.zeilen[i];
             let base = y + (h + regular.cap_height(px)) * 0.5;
-            let auswahl =
-                !z.elemente.is_empty() && z.elemente.iter().any(|e| self.selected.contains(e));
+            // Isoliert hängt jede Zeile an der Auswahl: markiert nur, was
+            // ganz gewählt ist (wie im Reiter Kosten)
+            let auswahl = !z.elemente.is_empty()
+                && if self.fokus.is_some() {
+                    z.elemente.iter().all(|e| self.selected.contains(e))
+                } else {
+                    z.elemente.iter().any(|e| self.selected.contains(e))
+                };
             // Schwebt die Maus über einer Zeile, nur diese; sonst die
             // Zeilen der Bauteile unter der Maus im Modell
             let schwebt = !matches!(self.hot, Some(Hot::Zeile(_)))
@@ -2294,20 +2342,93 @@ pub const UNVOLLSTAENDIG: &str =
 
 /// Tabelle des LV: Titel mit Summe, Untertitel, Positionen. Leere Titel
 /// stehen nur im Baum.
+#[cfg(test)]
 pub fn lv_zeilen(lv: &Lv) -> Vec<Zeile> {
+    let bauteile = |p: &LvPosition| {
+        let mut v: Vec<ElementId> = Vec::new();
+        for e in p.ansatz.iter().flat_map(|a| &a.elemente) {
+            if !v.contains(e) {
+                v.push(*e);
+            }
+        }
+        v
+    };
+    lv_zeilen_wie(lv, |_| true, bauteile, true)
+}
+
+/// Wie [`lv_zeilen`], die Bauteile einer Automatikmenge mit der ganzen
+/// Gründung (ein Klick auf „Baugrube ausheben“ zeigt Platte und
+/// Frostschürze) und, auf eine Auswahl isoliert, nur die Positionen, die an
+/// ihr hängen, ohne die Summen der Titel (Jörn 10.10.).
+pub fn lv_zeilen_mit(
+    lv: &Lv,
+    m: &Model,
+    b: &sk_cost::Kostenblatt,
+    fokus: Option<&crate::fokus::Fokus>,
+) -> Vec<Zeile> {
+    let ansatz = |p: &LvPosition| {
+        p.blatt
+            .iter()
+            .filter_map(|&i| b.positionen.get(i))
+            .flat_map(|x| &x.ansatz)
+            .filter(|a| {
+                p.ansatz
+                    .iter()
+                    .any(|z| z.geschoss == a.geschoss && z.elemente.contains(&a.element))
+            })
+            .collect::<Vec<_>>()
+    };
+    let bauteile = |p: &LvPosition| {
+        let mut v: Vec<ElementId> = Vec::new();
+        for e in ansatz(p)
+            .into_iter()
+            .flat_map(|a| crate::fokus::bauteile(m, a))
+            .chain(p.ansatz.iter().flat_map(|a| a.elemente.iter().copied()))
+        {
+            if !v.contains(&e) {
+                v.push(e);
+            }
+        }
+        v
+    };
+    match fokus {
+        None => lv_zeilen_wie(lv, |_| true, bauteile, true),
+        Some(f) => lv_zeilen_wie(
+            lv,
+            |p| ansatz(p).into_iter().any(|a| f.trifft(a)),
+            bauteile,
+            false,
+        ),
+    }
+}
+
+/// Tabelle aus den Positionen, für die `behalten` gilt, mit ihren
+/// `bauteile`; Titel und Untertitel nur über behaltenen Positionen, ihre
+/// Summen nur mit `summen`.
+fn lv_zeilen_wie(
+    lv: &Lv,
+    behalten: impl Fn(&LvPosition) -> bool,
+    bauteile: impl Fn(&LvPosition) -> Vec<ElementId>,
+    summen: bool,
+) -> Vec<Zeile> {
+    let summe = |c: Option<Cent>| if summen { betrag(c) } else { String::new() };
     let mut v = Vec::new();
     for t in lv.titel.iter().filter(|t| !t.positionen.is_empty()) {
+        let ps: Vec<&LvPosition> = t.positionen.iter().filter(|p| behalten(p)).collect();
+        if ps.is_empty() {
+            continue;
+        }
         let mut z = Zeile::neu(Art::Titel, t.nr.clone(), t.name.clone());
-        z.gp = betrag(t.summe);
+        z.gp = summe(t.summe);
         z.titel = Some(t.guid);
         v.push(z);
         let mut uu = None;
-        for p in &t.positionen {
+        for p in ps {
             if p.untertitel.is_some() && p.untertitel != uu {
                 uu = p.untertitel;
                 if let Some(u) = t.untertitel.iter().find(|u| Some(u.nr) == uu) {
                     let mut z = Zeile::neu(Art::Untertitel, u.oz.clone(), u.name.clone());
-                    z.gp = betrag(u.summe);
+                    z.gp = summe(u.summe);
                     z.titel = Some(t.guid);
                     v.push(z);
                 }
@@ -2318,13 +2439,7 @@ pub fn lv_zeilen(lv: &Lv) -> Vec<Zeile> {
             z.ep = p.ep.map_or_else(|| "–".to_string(), euro);
             z.gp = p.gp.map_or_else(|| "–".to_string(), euro);
             z.titel = Some(t.guid);
-            for a in &p.ansatz {
-                for e in &a.elemente {
-                    if !z.elemente.contains(e) {
-                        z.elemente.push(*e);
-                    }
-                }
-            }
+            z.elemente = bauteile(p);
             v.push(z);
         }
     }
@@ -2583,6 +2698,8 @@ pub fn detail(m: &Model, kat: &Katalog, lv: &Lv, oz: &str) -> Option<Detail> {
 #[cfg(test)]
 mod abnahme_befunde;
 #[cfg(test)]
+mod abnahme_fokus;
+#[cfg(test)]
 mod abnahme_ka4b;
 #[cfg(test)]
 mod abnahme_ka4cd;
@@ -2593,6 +2710,7 @@ mod bild;
 mod blatt;
 mod csv;
 mod erweiterung;
+mod fokus_leiste;
 mod kopf;
 #[cfg(test)]
 mod tests;

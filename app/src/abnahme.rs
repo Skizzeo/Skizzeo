@@ -10611,6 +10611,7 @@ mod loeschen_oberflaeche {
             [
                 "Wandtyp ändern …",
                 "Eigenschaften",
+                "Mengen · Kosten · AVA",
                 "",
                 "Löschen",
                 "",
@@ -10631,9 +10632,9 @@ mod loeschen_oberflaeche {
             "passt ins Fenster"
         );
         let a = c.actions();
-        assert_eq!(a[3], ("Löschen".into(), false, Some(Action::Delete)));
+        assert_eq!(a[4], ("Löschen".into(), false, Some(Action::Delete)));
         assert_eq!(
-            a[5],
+            a[6],
             (
                 "Gebäude löschen …".into(),
                 true,
@@ -10667,6 +10668,47 @@ mod loeschen_oberflaeche {
         assert_eq!(c.release(&t, 1.0, (r.x + 20.0) as f64, y - 2.0), None);
         let png = c.paint(&t, &fonts(), 1.0).0;
         assert!(png.width as f32 > r.w);
+    }
+
+    /// A342 Schnellzugriff (Jörn 10.10.): Rechtsklick auf ein Bauteil im
+    /// Hauptfenster bietet „Mengen · Kosten · AVA“ (Name wie der Knopf unter
+    /// „Ansichten“), auch an der Sohlplatte und am Fundament; er öffnet das
+    /// Mengenfenster. Das Menü an einer Zeile des Mengenfensters hat ihn
+    /// nicht, das Fenster ist dort schon offen.
+    #[test]
+    fn a342_kontextmenue_oeffnet_mengen_kosten_ava() {
+        let mut s = Scene::with_model(Model::with_seed(112));
+        haus_b11(&mut s);
+        let (t, m) = (Theme::dark(), s.model());
+        for c in [
+            Category::ExteriorWall,
+            Category::InteriorWall,
+            Category::GroundSlab,
+            Category::StripFooting,
+        ] {
+            let Some(id) = m
+                .elements()
+                .iter()
+                .find(|(_, e)| e.category == c)
+                .map(|(id, _)| id)
+            else {
+                continue;
+            };
+            let menu = ContextMenu::new(m, id, &[id], 300.0, 300.0, (1280, 800, 32), &t, 1.0);
+            let a = menu.actions();
+            assert!(
+                a.contains(&(crate::cards::KNOPF.into(), true, Some(Action::Quantity))),
+                "{c:?}: {a:?}"
+            );
+            // Gleich nach „Eigenschaften“
+            let i = a.iter().position(|x| x.0 == "Eigenschaften").unwrap();
+            assert_eq!(a[i + 1].2, Some(Action::Quantity), "{c:?}");
+            let liste = ContextMenu::for_list(m, id, &[id], 300.0, 300.0, (1280, 800, 32), &t, 1.0);
+            assert!(liste
+                .actions()
+                .iter()
+                .all(|x| x.2 != Some(Action::Quantity)));
+        }
     }
 
     /// A307 „Wandtyp ändern …“ (Sichtprüfung 08.10.): Die Typ-Liste hängt am Chip
