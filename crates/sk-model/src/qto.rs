@@ -1506,8 +1506,24 @@ pub fn schedule(model: &Model) -> Schedule {
 fn auto_rows(model: &Model, platten: &[(RunId, ElementId)]) -> Vec<AutoMenge> {
     let mut out = Vec::new();
     let boden = model.project().soil;
-    // Gebäude, deren erste Platte schon die Mengen je Gebäude trägt
-    let mut gebaeude: Vec<Option<BuildingId>> = Vec::new();
+    // Träger der Mengen je Gebäude: die Platte mit der kleinsten Nummer
+    // (Guid bei gleicher Nummer), unabhängig von der Speicherreihenfolge
+    let rang = |e: &Element| (e.number.len(), e.number.clone(), e.guid);
+    let mut traeger: Vec<(BuildingId, (usize, String, crate::Guid), ElementId)> = Vec::new();
+    for &(run, slab) in platten {
+        let (Some(_), Some(e)) = (model.ground_basis(run), model.element(slab)) else {
+            continue;
+        };
+        let Some(b) = model.run(run).and_then(|r| model.building_of(r.storey)) else {
+            continue;
+        };
+        let r = rang(e);
+        match traeger.iter_mut().find(|t| t.0 == b) {
+            Some(t) if r < t.1 => *t = (b, r, slab),
+            Some(_) => {}
+            None => traeger.push((b, r, slab)),
+        }
+    }
     for &(run, slab) in platten {
         let (Some(g), Some(e)) = (model.ground_basis(run), model.element(slab)) else {
             continue;
@@ -1528,10 +1544,7 @@ fn auto_rows(model: &Model, platten: &[(RunId, ElementId)]) -> Vec<AutoMenge> {
         out.extend(crate::qto_earth::auto_mengen(&vorlage, &basis, &boden));
         let b = model.run(run).and_then(|r| model.building_of(r.storey));
         // ohne Gebäude zählt jede Platte für sich
-        let erste = b.is_none() || !gebaeude.contains(&b);
-        if erste {
-            gebaeude.push(b);
-        }
+        let erste = b.is_none_or(|b| traeger.iter().any(|t| t.0 == b && t.2 == slab));
         out.extend(crate::qto_site::site_mengen(
             model,
             run,

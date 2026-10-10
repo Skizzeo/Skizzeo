@@ -336,6 +336,41 @@ mod tests {
         );
     }
 
+    /// Zwei Sohlplatten in einem Gebäude, gespeichert und neu geladen
+    /// (Prüfung 10.10.): Pauschale, Monate und Bauzaun bleiben an derselben
+    /// Platte, die Zeilen ändern sich durch Speichern nicht.
+    #[test]
+    fn zwei_platten_traeger_nach_datei_gleich() {
+        let mut m = Model::with_seed(12);
+        let b = m.add_building(2);
+        let r = |ox: f64, w: f64, d: f64| {
+            vec![
+                vec3(ox, 0.0, 0.0),
+                vec3(ox + w, 0.0, 0.0),
+                vec3(ox + w, d, 0.0),
+                vec3(ox, d, 0.0),
+            ]
+        };
+        m.build_from_polygon(b, &r(0.0, 10_000.0, 8_000.0)).unwrap();
+        m.build_from_polygon(b, &r(20_000.0, 6_000.0, 5_000.0))
+            .unwrap();
+        let zeilen = |m: &Model| {
+            let mut v: Vec<(String, &str, i64)> = crate::qto::schedule(m)
+                .auto
+                .iter()
+                .filter(|a| a.key.starts_with("site."))
+                .map(|a| (a.number.clone(), a.key, a.value.round() as i64))
+                .collect();
+            v.sort();
+            v
+        };
+        let text = crate::szo::write(&m);
+        let back = crate::szo::read(&text, crate::GuidGen::with_seed(5))
+            .unwrap()
+            .model;
+        assert_eq!(zeilen(&back), zeilen(&m));
+    }
+
     /// Thema 1: Sitzt ein Gebäude 0,40 m über seinem Gelände, steht sein
     /// Gerüst 0,40 m tiefer auf; Zaun und Pauschalen bleiben, das
     /// Nachbargebäude rechnet mit seinem eigenen Gelände weiter.
