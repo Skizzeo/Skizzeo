@@ -175,22 +175,25 @@ const GROUND_SLAB: KindSpec = KindSpec {
     default_trade: None,
 };
 
+/// Dachaufbau des Flachdachs (Jörn 10.10., Plan Flachdach P10): Dachbelag
+/// über beheiztem Raum (DIN 276:2018 363) wie die Dachterrasse; im
+/// Mengenfenster mit ihr nach der Decke, vor dem Attikablech.
 const ROOF: KindSpec = KindSpec {
     category: Category::Roof,
-    name: "Dach",
-    short: "Dach",
-    plural: "Dächer",
+    name: "Flachdach",
+    short: "Flachdach",
+    plural: "Flachdächer",
     genus: Genus::Neuter,
     prefix: "DA",
     ifc: "IfcRoof",
-    kg: Some(360),
-    qto_rank: LAST,
+    kg: Some(363),
+    qto_rank: 8,
     szo: "roof",
-    external: false,
-    type_category: None,
+    external: true,
+    type_category: Some(TypeCategory::FlatRoof),
     needs_type: false,
     once: false,
-    default_trade: None,
+    default_trade: Some("18338"),
 };
 
 const WINDOW: KindSpec = KindSpec {

@@ -286,6 +286,9 @@ mod location;
 
 #[path = "flachdach.rs"]
 mod flachdach;
+pub use flachdach::{
+    MIN_ROOF_EDGE, ROOF_INSULATION_GUID, ROOF_SEAL_GUID, ROOF_TYPE_GUID, ROOF_VAPOUR_GUID,
+};
 pub use location::{Foot, Location, ShadeLight, Sun, ViewShade, FOOT_MAX, SHADE_VIEWS};
 
 impl Default for Model {
@@ -1296,7 +1299,8 @@ impl Model {
                 ElementKind::Wall(_)
                 | ElementKind::EdgeStrip { .. }
                 | ElementKind::SoffitInsulation { .. }
-                | ElementKind::RoofTerrace { .. } => false,
+                | ElementKind::RoofTerrace { .. }
+                | ElementKind::Roof { .. } => false,
             };
             if hit {
                 out.push(Use::Element(e));
@@ -1307,7 +1311,7 @@ impl Model {
 
     /// Darf der Baustoff gelöscht werden (§1.4, Regeln 15 und 55)? Nicht,
     /// wenn etwas auf ihn verweist; Luft und die eingebauten Baustoffe von
-    /// Dachterrasse und Attikablech nie. Kennwerte halten nichts fest.
+    /// Dachterrasse, Flachdach und Attikablech nie. Kennwerte halten nichts fest.
     pub fn can_remove_material(&self, id: MaterialId) -> bool {
         self.materials.get(id).is_some_and(|m| {
             m.category != MatCategory::Air
@@ -1315,6 +1319,9 @@ impl Model {
                     TERRACE_FINISH_GUID,
                     TERRACE_INSULATION_GUID,
                     COPING_MAT_GUID,
+                    flachdach::ROOF_SEAL_GUID,
+                    flachdach::ROOF_INSULATION_GUID,
+                    flachdach::ROOF_VAPOUR_GUID,
                 ]
                 .contains(&m.guid)
         }) && !self.material_used(id)
@@ -1790,10 +1797,14 @@ impl Model {
                     _ => {
                         let g = crate::terrace::coping_girth(f.terraces.width);
                         p.insert("Abwicklung".into(), PropValue::Number(g));
+                        let w = crate::terrace::coping_cut_width(g);
+                        p.insert("Zuschnitt".into(), PropValue::Number(w));
                     }
                 }
             }
         }
+        // ... und des Flachdachs (D3, D4)
+        p.extend(self.flat_roof_props(el));
         p
     }
 
@@ -3353,7 +3364,8 @@ impl Model {
             ElementKind::EdgeStrip { wall, .. } => self.run_of(wall),
             ElementKind::SoffitInsulation { floor }
             | ElementKind::RoofTerrace { floor }
-            | ElementKind::Coping { floor } => self.run_of(floor),
+            | ElementKind::Coping { floor }
+            | ElementKind::Roof { floor } => self.run_of(floor),
             ElementKind::PerimeterInsulation { slab } => self.run_of(slab),
             ElementKind::Ext(_) => None,
         }
@@ -3498,6 +3510,8 @@ impl Model {
             SOFFIT_PART => self.soffit_of(self.floor_of(run)?),
             TERRACE_PART => self.terrace_of(self.floor_of(run)?),
             COPING_PART => self.coping_of(self.floor_of(run)?),
+            ROOF_PART => self.flat_roof_of(self.floor_of(self.run_below(run)?)?),
+            ROOF_COPING_PART => self.coping_of(self.floor_of(self.run_below(run)?)?),
             p if (STRIP_PART..STRIP_PART + MAX_STRIPS).contains(&p) => {
                 let wall = self.wall_at(run, (p - STRIP_PART) as usize)?;
                 self.edge_strip_of(wall, self.floor_of(run)?)
@@ -4886,6 +4900,8 @@ impl Model {
                 _ => None,
             })
             .filter(|&(_, floor, _)| self.floor_in_scope(floor, scope))
+            // das Blech des Flachdachs gleicht [`Model::sync_flat_roofs_in`] ab
+            .filter(|&(id, floor, dt)| dt || !self.flat_roof_coping(id, floor))
             .collect();
         let (mut added, mut removed) = (0, 0);
         // Terrasse je gewünschter Decke (für den Typ unten)
@@ -5140,6 +5156,7 @@ impl Model {
                     .unwrap_or_default();
             }
             ElementKind::RoofTerrace { floor } => return self.terrace_layers(floor),
+            ElementKind::Roof { .. } => return self.flat_roof_layers(id),
             // Eingebauter Ein-Schicht-Aufbau: XPS in der Dicke an der Platte
             ElementKind::PerimeterInsulation { slab } => {
                 let t = self.slab_insulation(slab);
@@ -5461,6 +5478,10 @@ impl Model {
             .is_some_and(|t| self.bearing_problem(t).is_some())
         {
             out.push("Deckenauflager des Typs ungültig".into());
+        }
+        if let Some(&ElementKind::Roof { floor }) = self.element(e).map(|x| &x.kind) {
+            out.extend(self.flat_roof_hint(floor));
+            return out;
         }
         let Some(run) = self.run_of(e) else {
             return out;
@@ -5927,6 +5948,7 @@ impl Model {
                 | ElementKind::SoffitInsulation { .. }
                 | ElementKind::RoofTerrace { .. }
                 | ElementKind::Coping { .. }
+                | ElementKind::Roof { .. }
                 | ElementKind::Ext(_) => {}
             }
         }
@@ -6283,6 +6305,7 @@ impl Model {
             self.sync_edge_strips(scope);
             self.sync_soffits_in(scope);
             self.sync_terraces_in(scope);
+            self.sync_flat_roofs_in(scope);
         }
         if let Some(id) = self.locked_change() {
             self.rollback();
@@ -6342,7 +6365,8 @@ impl Model {
                             ElementKind::EdgeStrip { wall, .. } => strips.push(wall),
                             ElementKind::SoffitInsulation { floor }
                             | ElementKind::RoofTerrace { floor }
-                            | ElementKind::Coping { floor } => strips.push(floor),
+                            | ElementKind::Coping { floor }
+                            | ElementKind::Roof { floor } => strips.push(floor),
                             ElementKind::Ext(_) => {}
                         }
                     }
@@ -6430,7 +6454,8 @@ impl Model {
                         ElementKind::EdgeStrip { wall, .. } => footings.push(wall),
                         ElementKind::SoffitInsulation { floor }
                         | ElementKind::RoofTerrace { floor }
-                        | ElementKind::Coping { floor } => footings.push(floor),
+                        | ElementKind::Coping { floor }
+                        | ElementKind::Roof { floor } => footings.push(floor),
                         ElementKind::Floor(f) => {
                             touched.run(f.run);
                             floors.push(f.run);
@@ -6784,6 +6809,10 @@ impl Model {
                     {
                         out.push(format!("{}: Baustoff des Attikablechs fehlt", e.number));
                     }
+                }
+                ElementKind::Roof { floor } => out.extend(self.check_flat_roof(id, floor)),
+                ElementKind::Coping { floor } if self.flat_roof_coping(id, floor) => {
+                    out.extend(self.check_flat_roof(id, floor))
                 }
                 ElementKind::RoofTerrace { floor } | ElementKind::Coping { floor } => {
                     // Regeln 41/46: genau dann, wenn darüber ein Rücksprung ist
@@ -7231,6 +7260,11 @@ pub const COPING_PART: u32 = STRIP_PART - 3;
 /// Teil des Körpers eines Wandzugs: Perimeterdämmung unter seiner
 /// Sohlplatte (Gelände Thema 4).
 pub const PERIMETER_PART: u32 = STRIP_PART - 4;
+/// Teil des Körpers einer Aufkantung: Dachaufbau und Attikablech des
+/// Flachdachs (D3, D4); Abstand zu den Teilen oben, damit weitere dazwischen
+/// passen.
+pub const ROOF_PART: u32 = STRIP_PART - 10;
+pub const ROOF_COPING_PART: u32 = STRIP_PART - 11;
 /// Attika über OK Belag (Jörn 08:35, BIM §3): 6 cm, einstellbar 0 bis 30 cm.
 pub const TERRACE_UPSTAND: f64 = 60.0;
 pub const MAX_UPSTAND: f64 = 300.0;
@@ -8535,11 +8569,16 @@ mod og_phase2 {
         );
         let c = crate::qto::coping_qto(&m, ab).unwrap();
         assert!(near(c.length, 13000.0), "{}", c.length);
-        assert_eq!(c.girth, 250.0);
+        // Tropfkante 40 statt 20 (Jörn 10.10., Plan Flachdach P12)
+        assert_eq!(c.girth, 270.0);
         assert_eq!(m.props_of(dt).get("begehbar"), Some(&PropValue::Bool(true)));
         assert_eq!(
             m.props_of(ab).get("Abwicklung"),
-            Some(&PropValue::Number(250.0))
+            Some(&PropValue::Number(270.0))
+        );
+        assert_eq!(
+            m.props_of(ab).get("Zuschnitt"),
+            Some(&PropValue::Number(333.0))
         );
         let f = m.floor(eg).unwrap().unwrap();
         assert_eq!(f.terrace_band(), Some((2855.0, 2995.0)));

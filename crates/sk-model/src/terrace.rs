@@ -327,13 +327,19 @@ fn plan(slab: &WallChain, up: &WallChain, depth: f64, strip: Option<u16>) -> Opt
 
 /// Querschnitt des Attikablechs (quer nach außen ab Außenfläche der Attika,
 /// hoch über OK Attika; mm) für die Attikabreite `w` (BIM E4): 3° Gefälle
-/// zur Terrasse, Tropfkante 20 vor der Fassade, Außenschenkel 50,
-/// Innenschenkel 40, gezeichnet mit symbolischer Dicke 3.
+/// nach innen, Tropfkante 40 vor der Fassade (Jörn 10.10., vorher 20),
+/// Außenschenkel 50, Innenschenkel 40, gezeichnet mit symbolischer Dicke 3.
 pub fn coping_profile(w: f64) -> Vec<(f64, f64)> {
+    coping_profile_with(w, COPING_INNER)
+}
+
+/// [`coping_profile`] mit dem Innenschenkel `inner` (Flachdach: 50, er
+/// deckt den Hochzug der Abdichtung).
+pub fn coping_profile_with(w: f64, inner: f64) -> Vec<(f64, f64)> {
     let (o, t, tan) = (COPING_DRIP, COPING_DRAWN, COPING_SLOPE.to_radians().tan());
     vec![
-        (-w - t, -COPING_INNER),
-        (-w, -COPING_INNER),
+        (-w - t, -inner),
+        (-w, -inner),
         (-w, 0.0),
         (o - t, (o - t + w) * tan),
         (o - t, -COPING_OUTER),
@@ -345,13 +351,34 @@ pub fn coping_profile(w: f64) -> Vec<(f64, f64)> {
 
 /// Abwicklung des Blechs (Zuschnitt) bei Attikabreite `w`, mm (BIM §6).
 pub fn coping_girth(w: f64) -> f64 {
-    w + COPING_DRIP + COPING_OUTER + COPING_INNER
+    coping_girth_with(w, COPING_INNER)
 }
 
-/// Maße des Attikablechs (mm, Grad; BIM E4).
-pub const COPING_DRIP: f64 = 20.0;
+/// [`coping_girth`] mit dem Innenschenkel `inner`.
+pub fn coping_girth_with(w: f64, inner: f64) -> f64 {
+    w + COPING_DRIP + COPING_OUTER + inner
+}
+
+/// Zuschnitt des Blechs: die Abwicklung `girth` aufgerundet auf die
+/// nächste handelsübliche Breite (mm; Plan Flachdach D4). Breiter als die
+/// größte: die Abwicklung.
+pub fn coping_cut_width(girth: f64) -> f64 {
+    COPING_WIDTHS
+        .into_iter()
+        .find(|w| girth <= *w + 1e-6)
+        .unwrap_or(girth)
+}
+
+/// Handelsübliche Zuschnittbreiten (mm).
+pub const COPING_WIDTHS: [f64; 6] = [333.0, 400.0, 500.0, 625.0, 667.0, 750.0];
+
+/// Maße des Attikablechs (mm, Grad; BIM E4). Tropfkante 40 mm vor der
+/// Fassade (Jörn 10.10., Flachdachrichtlinie mindestens 40; vorher 20).
+pub const COPING_DRIP: f64 = 40.0;
 pub const COPING_OUTER: f64 = 50.0;
 pub const COPING_INNER: f64 = 40.0;
+/// Innenschenkel am Flachdach: deckt den Hochzug der Abdichtung.
+pub const ROOF_COPING_INNER: f64 = 50.0;
 pub const COPING_SLOPE: f64 = 3.0;
 /// Gezeichnete Dicke; die wahre (0,7 mm) ist Merkmal.
 const COPING_DRAWN: f64 = 3.0;

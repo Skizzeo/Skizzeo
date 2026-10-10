@@ -8,6 +8,8 @@ mod abnahme;
 #[cfg(test)]
 mod abnahme_einstellungen;
 #[cfg(test)]
+mod abnahme_flachdach;
+#[cfg(test)]
 mod abnahme_pd;
 #[cfg(test)]
 mod abnahme_s1;
@@ -5007,7 +5009,7 @@ impl App {
                     SelKind::Foundation
                 }
                 K::Floor(_) | K::EdgeStrip { .. } | K::SoffitInsulation { .. } => SelKind::Floor,
-                K::RoofTerrace { .. } | K::Coping { .. } => SelKind::Terrace,
+                K::RoofTerrace { .. } | K::Coping { .. } | K::Roof { .. } => SelKind::Terrace,
                 // Thema „Erweiterungen“, siehe `sync_help`
                 K::Ext(_) => return None,
             })

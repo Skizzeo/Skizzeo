@@ -4,6 +4,25 @@
 //! das Attikablech auf der Krone der Aufkantung.
 
 use super::*;
+use crate::roof::FlatRoof;
+
+/// Werkstyp „Flachdach 21,5“ (DA-21,5) und seine eingebauten Baustoffe:
+/// feste Guids, angelegt, sobald das erste Flachdach sie braucht (ältere
+/// Dateien bleiben bytegleich).
+pub const ROOF_TYPE_GUID: Guid = Guid(0x23a600a96432444383537a73429b10b9);
+pub const ROOF_SEAL_GUID: Guid = Guid(0x98ba84e68f884dc8a9afb9e5d7d744d6);
+pub const ROOF_INSULATION_GUID: Guid = Guid(0x58eea8c1e6de400c8a943c7bae55718c);
+pub const ROOF_VAPOUR_GUID: Guid = Guid(0x22943253428c444fbbaa503ccbaa312e);
+/// Aufbau des Werkstyps von oben nach unten (Plan Flachdach P10):
+/// Abdichtung Bitumen 2-lagig, Dämmung EPS 035 DAA dh, Dampfsperre.
+const ROOF_BUILD_UP: [(f64, LayerFunction); 3] = [
+    (10.0, LayerFunction::Membrane),
+    (200.0, LayerFunction::Insulation),
+    (5.0, LayerFunction::Membrane),
+];
+/// Mindestens so hoch steht die Aufkantung über der Dachhaut (mm,
+/// Flachdachrichtlinie: Anschlusshöhe am Dachrand 10 cm).
+pub const MIN_ROOF_EDGE: f64 = 100.0;
 
 impl Model {
     /// Ebene Flachdach des Gebäudes `b` (`None`: der Vorlage), falls es eine
@@ -90,12 +109,434 @@ impl Model {
                 for r in runs {
                     self.remove_run(r);
                 }
+                // Dachaufbau und Blech gehören zur Ebene
+                let derived: Vec<ElementId> = self
+                    .elements
+                    .iter()
+                    .filter(|(_, e)| e.storey == fd)
+                    .map(|(id, _)| id)
+                    .collect();
+                for id in derived {
+                    note!(self, Element, self.elements, id);
+                    self.elements.remove(id);
+                }
                 note!(self, Storey, self.storeys, fd);
                 self.storeys.remove(fd);
                 self.touch();
                 true
             }
         }
+    }
+}
+
+impl Model {
+    // --- Dachaufbau und Attikablech (D3, D4) ------------------------------
+
+    /// Zug der Aufkantung auf dem Zug `run`, falls es einen gibt.
+    pub fn parapet_above(&self, run: RunId) -> Option<RunId> {
+        self.runs_above(run)
+            .into_iter()
+            .find(|r| self.category_of(*r) == Some(Category::Parapet))
+    }
+
+    /// Decken unter einem Flachdach: über ihrem Zug steht eine Aufkantung.
+    /// Nach Nummer.
+    pub fn roof_floors(&self) -> Vec<ElementId> {
+        self.roof_floors_in(None)
+    }
+
+    fn roof_floors_in(&self, scope: Option<&[RunId]>) -> Vec<ElementId> {
+        let mut out: Vec<(String, ElementId)> = self
+            .elements
+            .iter()
+            .filter_map(|(id, e)| match e.kind {
+                ElementKind::Floor(f)
+                    if in_scope(scope, f.run) && self.parapet_above(f.run).is_some() =>
+                {
+                    Some((e.number.clone(), id))
+                }
+                _ => None,
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out.into_iter().map(|x| x.1).collect()
+    }
+
+    /// Liegt auf der Decke `floor` ein Flachdach? Dann gehört ihr
+    /// Attikablech dem Flachdach, nicht einer Dachterrasse.
+    pub fn is_roof_floor(&self, floor: ElementId) -> bool {
+        matches!(self.element(floor).map(|e| &e.kind),
+            Some(ElementKind::Floor(f)) if self.parapet_above(f.run).is_some())
+    }
+
+    /// Gehört das Blech `coping` auf der Decke `floor` dem Flachdach? Ja,
+    /// solange über der Decke eine Aufkantung steht oder es auf der Ebene
+    /// Flachdach liegt.
+    pub fn flat_roof_coping(&self, coping: ElementId, floor: ElementId) -> bool {
+        self.is_roof_floor(floor)
+            || self
+                .element(coping)
+                .and_then(|e| self.storey(e.storey))
+                .is_some_and(|s| s.kind == LevelKind::Roof)
+    }
+
+    /// Dachaufbau auf der Decke `floor`.
+    pub fn flat_roof_of(&self, floor: ElementId) -> Option<ElementId> {
+        self.elements
+            .iter()
+            .find(|(_, e)| e.kind == ElementKind::Roof { floor })
+            .map(|(id, _)| id)
+    }
+
+    /// Typ des Dachaufbaus `roof`: der am Bauteil oder der Werkstyp
+    /// „Flachdach 21,5“, sobald es ihn im Projekt gibt.
+    pub fn flat_roof_type(&self, roof: ElementId) -> Option<LayerSetId> {
+        self.roof_type_or_default(self.element(roof)?.layer_set)
+    }
+
+    fn roof_type_or_default(&self, chosen: Option<LayerSetId>) -> Option<LayerSetId> {
+        chosen
+            .filter(|id| {
+                self.layer_set(*id)
+                    .is_some_and(|x| x.category == TypeCategory::FlatRoof)
+            })
+            .or_else(|| self.type_by_guid(ROOF_TYPE_GUID))
+    }
+
+    /// Schichten des Dachaufbaus `roof`, von oben nach unten.
+    pub fn flat_roof_layers(&self, roof: ElementId) -> Vec<MaterialLayer> {
+        self.flat_roof_type(roof)
+            .and_then(|t| self.layer_set(t))
+            .map_or_else(Vec::new, |t| t.layers.clone())
+    }
+
+    /// Werkstyp „Flachdach 21,5“ (DA-21,5); fehlt er, wird er samt
+    /// Baustoffen angelegt. Alle Schichten legt der Dachdecker.
+    fn ensure_roof_type(&mut self) -> Option<LayerSetId> {
+        if let Some(id) = self.type_by_guid(ROOF_TYPE_GUID) {
+            return Some(id);
+        }
+        let seal = self.builtin_material(
+            ROOF_SEAL_GUID,
+            "Abdichtung Bitumen 2-lagig",
+            MatCategory::Membrane,
+            200,
+            1100.0,
+            Some(0.17),
+            [70, 72, 76],
+            [40, 42, 46],
+            trade::roofing(),
+        )?;
+        let insulation = self.builtin_material(
+            ROOF_INSULATION_GUID,
+            "Dämmung EPS 035 DAA dh",
+            MatCategory::Insulation,
+            300,
+            20.0,
+            Some(0.035),
+            [236, 232, 214],
+            [214, 208, 184],
+            trade::roofing(),
+        )?;
+        let vapour = self.builtin_material(
+            ROOF_VAPOUR_GUID,
+            "Dampfsperre Bitumen-Alu",
+            MatCategory::Membrane,
+            200,
+            1100.0,
+            Some(0.17),
+            [120, 124, 130],
+            [90, 94, 100],
+            trade::roofing(),
+        )?;
+        let mats = [seal, insulation, vapour];
+        let layers = ROOF_BUILD_UP
+            .iter()
+            .zip(mats)
+            .map(|(&(d, f), m)| MaterialLayer::new(m, d, f).trade(trade::roofing()))
+            .collect();
+        let code = self.free_code("DA-21,5");
+        self.add_layer_set(LayerSet {
+            guid: ROOF_TYPE_GUID,
+            name: "Flachdach 21,5".into(),
+            code,
+            category: TypeCategory::FlatRoof,
+            layers,
+            props: PropSet::new(),
+            note: String::new(),
+            changed: 1,
+            bearing: Bearing::Core,
+        })
+    }
+
+    /// Setzt den Typ des Dachaufbaus `roof` (`None`: Werkstyp); er muss die
+    /// Typart Flachdach haben.
+    pub fn set_flat_roof_type(&mut self, roof: ElementId, t: Option<LayerSetId>) -> bool {
+        if t.is_some_and(|t| {
+            self.layer_set(t)
+                .is_none_or(|x| x.category != TypeCategory::FlatRoof)
+        }) {
+            return false;
+        }
+        let Some(e) = self.element(roof) else {
+            return false;
+        };
+        if !matches!(e.kind, ElementKind::Roof { .. }) {
+            return false;
+        }
+        let t = t.or_else(|| self.type_by_guid(ROOF_TYPE_GUID));
+        if e.layer_set == t {
+            return true;
+        }
+        note!(self, Element, self.elements, roof);
+        if let Some(e) = self.elements.get_mut(roof) {
+            e.layer_set = t;
+        }
+        self.touch();
+        true
+    }
+
+    /// Geometrie von Dachaufbau und Attikablech über dem Zug der
+    /// Aufkantung `ak`; `None`, wenn `ak` keine Aufkantung auf einer Decke
+    /// ist.
+    pub fn flat_roof(&self, ak: RunId) -> Option<FlatRoof> {
+        self.flat_roof_on(ak, &self.base_chain(ak)?)
+    }
+
+    /// [`Model::flat_roof`] zum schon gebauten Zug `chain` der Aufkantung.
+    pub fn flat_roof_on(&self, ak: RunId, chain: &WallChain) -> Option<FlatRoof> {
+        if self.category_of(ak) != Some(Category::Parapet) || !chain.closed {
+            return None;
+        }
+        let floor = self.floor_of(self.run_below(ak)?)?;
+        let ElementKind::Floor(f) = self.element(floor)?.kind else {
+            return None;
+        };
+        let ins = |m: MaterialId| {
+            self.material(m)
+                .is_some_and(|x| x.category == MatCategory::Insulation)
+        };
+        let chosen = self
+            .flat_roof_of(floor)
+            .and_then(|r| self.element(r)?.layer_set);
+        let layers = match self
+            .roof_type_or_default(chosen)
+            .and_then(|t| self.layer_set(t))
+        {
+            Some(set) => set
+                .layers
+                .iter()
+                .filter(|l| l.function != LayerFunction::AirGap)
+                .map(|l| (l.thickness, material_key(l.material), ins(l.material)))
+                .collect(),
+            // im offenen Schritt, bis der Abgleich den Werkstyp anlegt
+            None => ROOF_BUILD_UP
+                .iter()
+                .map(|&(d, f)| (d, material::PLAIN, f == LayerFunction::Insulation))
+                .collect(),
+        };
+        Some(FlatRoof {
+            outline: sk_math::polygon::to_ccw(&chain.face_corners(chain.inner_offset())),
+            base: self.level_z(f.top)?,
+            layers,
+            ring: sk_math::polygon::to_ccw(&chain.face_corners(chain.outer_offset())),
+            width: chain.thickness(),
+            crown: chain.top(),
+            coping_mat: self
+                .coping_material_of(&f.terrace)
+                .map_or(material::PLAIN, material_key),
+        })
+    }
+
+    /// Geometrie des Flachdachs auf der Decke `floor`.
+    pub fn flat_roof_over(&self, floor: ElementId) -> Option<FlatRoof> {
+        self.flat_roof(self.parapet_above(self.run_of(floor)?)?)
+    }
+
+    /// Legt fehlende Dachaufbauten und Attikableche des Flachdachs an und
+    /// entfernt überzählige (wie [`Model::sync_terraces`]): je Decke unter
+    /// einer Aufkantung genau eins von jeder Art, auf der Ebene Flachdach.
+    /// Bleibt die Aufkantung, bleiben Guid und Nummer. Beim ersten Mal
+    /// kommen Werkstyp und Baustoffe dazu. Liefert die Zahl der angelegten
+    /// und entfernten Bauteile.
+    fn sync_flat_roofs(&mut self) -> (usize, usize) {
+        self.sync_flat_roofs_in(None)
+    }
+
+    pub(super) fn sync_flat_roofs_in(&mut self, scope: Option<&[RunId]>) -> (usize, usize) {
+        let want: Vec<(ElementId, StoreyId, u16)> = self
+            .roof_floors_in(scope)
+            .into_iter()
+            .filter_map(|floor| {
+                let ElementKind::Floor(f) = self.element(floor)?.kind else {
+                    return None;
+                };
+                let ak = self.run(self.parapet_above(f.run)?)?.storey;
+                Some((floor, ak, self.element(floor)?.seq))
+            })
+            .collect();
+        if !want.is_empty() {
+            self.ensure_roof_type();
+            if want.iter().any(|w| {
+                matches!(self.element(w.0).map(|e| &e.kind),
+                    Some(ElementKind::Floor(x)) if x.terrace.coping_mat.is_none())
+            }) {
+                self.ensure_coping_material();
+            }
+        }
+        // Dachaufbauten (alle) und Bleche auf Decken unter einer Aufkantung
+        // oder auf der Ebene Flachdach; die übrigen Bleche gehören der
+        // Dachterrasse
+        let have: Vec<(ElementId, ElementId, bool)> = self
+            .elements
+            .iter()
+            .filter_map(|(id, e)| match e.kind {
+                ElementKind::Roof { floor } => Some((id, floor, true)),
+                ElementKind::Coping { floor } if self.flat_roof_coping(id, floor) => {
+                    Some((id, floor, false))
+                }
+                _ => None,
+            })
+            .filter(|&(_, floor, _)| self.floor_in_scope(floor, scope))
+            .collect();
+        let (mut added, mut removed) = (0, 0);
+        let mut roofs: Vec<(ElementId, ElementId)> = Vec::new();
+        let mut copings: Vec<ElementId> = Vec::new();
+        for (id, floor, da) in have {
+            let storey = want.iter().find(|w| w.0 == floor).map(|w| w.1);
+            let kept = if da {
+                roofs.iter().any(|x| x.0 == floor)
+            } else {
+                copings.contains(&floor)
+            };
+            let right = storey.is_some_and(|s| self.element(id).is_some_and(|e| e.storey == s));
+            if right && !kept {
+                if da {
+                    roofs.push((floor, id));
+                } else {
+                    copings.push(floor);
+                }
+            } else {
+                note!(self, Element, self.elements, id);
+                self.elements.remove(id);
+                self.touch();
+                removed += 1;
+            }
+        }
+        for &(floor, storey, seq) in &want {
+            if !roofs.iter().any(|x| x.0 == floor) {
+                let id = self.new_element(Category::Roof, storey, seq, ElementKind::Roof { floor });
+                roofs.push((floor, id));
+                self.touch();
+                added += 1;
+            }
+            if !copings.contains(&floor) {
+                self.new_element(Category::Coping, storey, seq, ElementKind::Coping { floor });
+                self.touch();
+                added += 1;
+            }
+        }
+        // Ohne gültige Wahl gilt der Werkstyp, und er steht am Bauteil
+        for (_, roof) in roofs {
+            let t = self.flat_roof_type(roof);
+            if self.element(roof).is_some_and(|e| e.layer_set != t) {
+                note!(self, Element, self.elements, roof);
+                if let Some(e) = self.elements.get_mut(roof) {
+                    e.layer_set = t;
+                }
+                self.touch();
+            }
+        }
+        (added, removed)
+    }
+
+    /// Abgeleitete Merkmale von Dachaufbau und Blech des Flachdachs:
+    /// Anschlusshöhe über der Dachhaut; Abwicklung und Zuschnitt des Blechs
+    /// (auf die nächste Handelsbreite aufgerundet, fürs LV).
+    pub(super) fn flat_roof_props(&self, id: ElementId) -> Vec<(String, PropValue)> {
+        let Some(e) = self.element(id) else {
+            return Vec::new();
+        };
+        match e.kind {
+            ElementKind::Roof { floor } => self
+                .flat_roof_over(floor)
+                .map(|r| vec![("Anschlusshöhe".into(), PropValue::Number(r.upstand()))])
+                .unwrap_or_default(),
+            ElementKind::Coping { floor } if self.flat_roof_coping(id, floor) => self
+                .flat_roof_over(floor)
+                .map(|r| {
+                    let g = r.coping_girth();
+                    vec![
+                        ("Abwicklung".into(), PropValue::Number(g)),
+                        (
+                            "Zuschnitt".into(),
+                            PropValue::Number(crate::terrace::coping_cut_width(g)),
+                        ),
+                    ]
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Hinweis zum Flachdach auf der Decke `floor` (Plan Flachdach P13):
+    /// Die Aufkantung steht weniger als [`MIN_ROOF_EDGE`] über der Dachhaut.
+    pub fn flat_roof_hint(&self, floor: ElementId) -> Option<String> {
+        let r = self.flat_roof_over(floor)?;
+        (r.upstand() < MIN_ROOF_EDGE - 1e-6).then(|| {
+            format!(
+                "Anschlusshöhe {} cm über der Dachhaut, Flachdachrichtlinie mindestens {} cm",
+                crate::library::cm_de(r.upstand().max(0.0)),
+                crate::library::cm_de(MIN_ROOF_EDGE)
+            )
+        })
+    }
+
+    /// Regel 48 für Dachaufbau oder Blech `id` des Flachdachs auf der Decke
+    /// `floor`: genau dann, wenn darüber eine Aufkantung steht, auf deren
+    /// Ebene; der Dachaufbau mit einem Typ der Art Flachdach.
+    pub(super) fn check_flat_roof(&self, id: ElementId, floor: ElementId) -> Vec<String> {
+        let Some(e) = self.element(id) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let ak = match self.element(floor).map(|f| &f.kind) {
+            Some(ElementKind::Floor(f)) => self.parapet_above(f.run),
+            _ => {
+                out.push(format!("{}: Decke fehlt", e.number));
+                return out;
+            }
+        };
+        match ak.and_then(|r| self.run(r)) {
+            None => out.push(format!("{}: keine Aufkantung über der Decke", e.number)),
+            Some(r) if r.storey != e.storey => {
+                out.push(format!("{}: nicht auf der Ebene Flachdach", e.number))
+            }
+            Some(_) => {}
+        }
+        if matches!(e.kind, ElementKind::Roof { .. })
+            && (e.layer_set.is_none() || e.layer_set != self.flat_roof_type(id))
+        {
+            out.push(format!("{}: Typ des Flachdachs ungültig", e.number));
+        }
+        out
+    }
+
+    /// Nach dem Laden: Dachaufbauten und Bleche passend zu den
+    /// Aufkantungen; liefert Hinweise, wenn welche ergänzt oder entfernt
+    /// wurden.
+    pub(crate) fn complete_flat_roofs(&mut self) -> Vec<String> {
+        let strict = std::mem::replace(&mut self.strict, false);
+        let (added, removed) = self.sync_flat_roofs();
+        self.strict = strict;
+        let mut out = Vec::new();
+        if added > 0 {
+            out.push("Flachdach bzw. Attikablech ergänzt".to_string());
+        }
+        if removed > 0 {
+            out.push("Flachdach bzw. Attikablech ohne Aufkantung entfernt".to_string());
+        }
+        out
     }
 }
 
@@ -199,7 +640,7 @@ mod tests {
         // die Nummern der Aufkantung bleiben vergeben
         m.apply(&t, Direction::Undo);
         let nachher = crate::szo::write(&m);
-        let soll = vorher.replacen("\n[building]", " next=AK:4\n[building]", 1);
+        let soll = vorher.replacen("\n[building]", " next=DA:1,AB:1,AK:4\n[building]", 1);
         assert!(nachher == soll, "Datei nach Rückgängig anders");
     }
 
@@ -215,10 +656,139 @@ mod tests {
         let text = crate::szo::write(&m);
         assert!(text.contains("kind=roof"), "{text}");
         assert!(text.contains("cat=parapet"), "{text}");
+        assert!(text.contains("\n[roof] "), "{text}");
+        assert!(text.contains("cat=roof"), "{text}");
         let back = crate::szo::read(&text, GuidGen::with_seed(5)).unwrap();
         assert!(back.hints.is_empty(), "{:?}", back.hints);
         assert_eq!(crate::szo::write(&back.model), text);
         assert!(back.model.check().is_empty());
+    }
+
+    /// Dachaufbau und Blech des Flachdachs auf der OG-Decke unter `og`.
+    fn da_ab(m: &Model, og: RunId) -> (ElementId, ElementId) {
+        let floor = m.floor_of(og).unwrap();
+        (m.flat_roof_of(floor).unwrap(), m.coping_of(floor).unwrap())
+    }
+
+    /// D3, D4: Mit der Ebene entstehen Dachaufbau DA (Werkstyp „Flachdach
+    /// 21,5“) und Attikablech AB auf der Ebene FD; Richtwerte des Plans für
+    /// AW-31,5 im Prüfhaus 10 × 8 m.
+    #[test]
+    fn dachaufbau_und_blech() {
+        let (mut m, og) = haus(EXTERIOR_TYPE_GUID);
+        let og_storey = m.run(og).unwrap().storey;
+        let vorher = crate::szo::write(&m);
+        assert!(m.flat_roof_of(m.floor_of(og).unwrap()).is_none());
+        let tx = schritt(&mut m, |m| m.set_flat_roof(og_storey, true));
+        let fd = m.roof_level(og_storey).unwrap();
+        let (da, ab) = da_ab(&m, og);
+        let (e, b) = (m.element(da).unwrap(), m.element(ab).unwrap());
+        assert_eq!((e.category, e.storey), (Category::Roof, fd));
+        assert_eq!((b.category, b.storey), (Category::Coping, fd));
+        assert!(e.number.starts_with("DA-"), "{}", e.number);
+        let t = m.layer_set(m.flat_roof_type(da).unwrap()).unwrap();
+        assert_eq!(
+            (t.name.as_str(), t.code.as_str(), t.category),
+            ("Flachdach 21,5", "DA-21,5", TypeCategory::FlatRoof)
+        );
+        let d: Vec<f64> = t.layers.iter().map(|l| l.thickness).collect();
+        assert_eq!(d, [10.0, 200.0, 5.0]);
+        assert!(t.problems().is_empty(), "{:?}", t.problems());
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        // Mengen: Fläche innen, Dämmung, Anschluss, Blech
+        let q = crate::qto::flat_roof_qto(&m, da).unwrap();
+        assert!((q.area / 1e6 - 69.0569).abs() < 1e-4, "{}", q.area / 1e6);
+        assert!((q.insulation_volume / 1e9 - 13.81138).abs() < 1e-4);
+        let r = m.flat_roof_over(m.floor_of(og).unwrap()).unwrap();
+        assert!((r.edge_length() - 33_480.0).abs() < 1e-6);
+        assert_eq!(r.corners(), 4);
+        assert!((r.upstand() - 285.0).abs() < 1e-6, "{}", r.upstand());
+        assert!(m.warnings(da).is_empty());
+        let c = crate::qto::coping_qto(&m, ab).unwrap();
+        assert!((c.length - 36_000.0).abs() < 1e-6, "{}", c.length);
+        assert!((c.girth - 455.0).abs() < 1e-9);
+        let p = m.props_of(ab);
+        assert_eq!(p.get("Zuschnitt"), Some(&PropValue::Number(500.0)));
+        assert_eq!(p.get("Abwicklung"), Some(&PropValue::Number(455.0)));
+        // Automatikmengen am Dachaufbau
+        let s = crate::qto::schedule(&m);
+        let auto = |k: &str| {
+            s.auto
+                .iter()
+                .find(|a| a.key == k && a.element == da)
+                .map(|a| a.value)
+        };
+        assert_eq!(auto("roof.edge"), Some(r.edge_length()));
+        assert_eq!(auto("roof.corners"), Some(4.0));
+        assert_eq!(auto("roof.drains"), Some(1.0));
+        assert_eq!(auto("roof.overflows"), Some(1.0));
+        // Abschalten nimmt beide mit, Rückgängig bringt sie mit Nummer zurück
+        let num = e.number.clone();
+        let aus = schritt(&mut m, |m| m.set_flat_roof(og_storey, false));
+        assert!(m.flat_roof_of(m.floor_of(og).unwrap()).is_none());
+        assert!(m.coping_of(m.floor_of(og).unwrap()).is_none());
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        m.apply(&aus, Direction::Undo);
+        assert_eq!(m.element(da_ab(&m, og).0).unwrap().number, num);
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        // Vor dem Einschalten: auch Werkstyp und Baustoffe wieder weg
+        m.apply(&tx, Direction::Undo);
+        assert!(m.type_by_guid(ROOF_TYPE_GUID).is_none());
+        let nachher = crate::szo::write(&m);
+        assert_eq!(nachher.replace(" next=DA:1,AB:1,AK:4", ""), vorher);
+    }
+
+    /// D3: Die Dämmdicke ändert den Typ (Paneel „Aufbau“), Grenzen 4–40 cm;
+    /// unter 10 cm Anschlusshöhe gibt es einen Hinweis (P13).
+    #[test]
+    fn daemmdicke_und_hinweis() {
+        let (mut m, og) = haus(EXTERIOR_TYPE_GUID);
+        let og_storey = m.run(og).unwrap().storey;
+        schritt(&mut m, |m| m.set_flat_roof(og_storey, true));
+        let (da, _) = da_ab(&m, og);
+        let t = m.flat_roof_type(da).unwrap();
+        let mut set = m.layer_set(t).unwrap().clone();
+        set.layers[1].thickness = 400.0;
+        schritt(&mut m, |m| m.set_layer_set(t, set.clone()));
+        let r = m.flat_roof_over(m.floor_of(og).unwrap()).unwrap();
+        assert!((r.upstand() - 85.0).abs() < 1e-6);
+        assert_eq!(m.warnings(da).len(), 1, "{:?}", m.warnings(da));
+        set.layers[1].thickness = 410.0;
+        assert_eq!(set.problems(), ["Typ DA-21,5: Dämmung 4 bis 40 cm"]);
+    }
+
+    /// D1–D4: Wird das OG höher, rückt die Ebene mit; Dachaufbau und Blech
+    /// folgen über die Höhenbezüge, die Aufkantungshöhe bleibt.
+    #[test]
+    fn og_hoeher_flachdach_folgt() {
+        let (mut m, og) = haus(EXTERIOR_TYPE_GUID);
+        let og_storey = m.run(og).unwrap().storey;
+        schritt(&mut m, |m| m.set_flat_roof(og_storey, true));
+        schritt(&mut m, |m| m.set_storey_height(og_storey, 3000.0));
+        let fd = m.roof_level(og_storey).unwrap();
+        assert_eq!(m.storey(fd).unwrap().elevation, 5855.0);
+        let r = m.flat_roof_over(m.floor_of(og).unwrap()).unwrap();
+        assert_eq!((r.base, r.crown), (5855.0, 6355.0));
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    /// D4: Abwicklung = Wanddicke + 40 + 50 + 50, Zuschnitt aufgerundet:
+    /// AW-49 630 → 667, AW-36,5 505 → 625.
+    #[test]
+    fn blech_zuschnitt() {
+        for (typ, g, w) in [
+            (CAVITY_TYPE_GUID, 630.0, 667.0),
+            (MONO_TYPE_GUID, 505.0, 625.0),
+        ] {
+            let (mut m, og) = haus(typ);
+            let og_storey = m.run(og).unwrap().storey;
+            schritt(&mut m, |m| m.set_flat_roof(og_storey, true));
+            let (_, ab) = da_ab(&m, og);
+            let c = crate::qto::coping_qto(&m, ab).unwrap();
+            assert!((c.girth - g).abs() < 1e-9, "{}", c.girth);
+            assert_eq!(m.props_of(ab).get("Zuschnitt"), Some(&PropValue::Number(w)));
+            assert!(m.check().is_empty(), "{:?}", m.check());
+        }
     }
 
     /// D2: Ein Gebäude, das nach dem Einschalten in der Vorlage entsteht,

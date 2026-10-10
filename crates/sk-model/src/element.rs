@@ -193,6 +193,13 @@ pub enum ElementKind {
     PerimeterInsulation {
         slab: ElementId,
     },
+    /// Dachaufbau des Flachdachs (Jörn 10.10.): nur der Verweis auf die
+    /// oberste Decke unter der Aufkantung; Umriss aus der Innenfläche der
+    /// Aufkantung, Aufbau aus dem Typ des Bauteils
+    /// ([`crate::Model::flat_roof_type`]).
+    Roof {
+        floor: ElementId,
+    },
 }
 
 /// Dachterrasse einer Decke (BIM §3). Jede Decke trägt die Werte, auch ohne

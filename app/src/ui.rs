@@ -195,6 +195,8 @@ pub enum Field {
     TerraceInsulation,
     TerraceFinish,
     Upstand,
+    /// Dämmdicke im Typ des Flachdachs (D3).
+    RoofInsulation,
     /// Paneel „Geschosse“ (in m): Kote der Gründungsunterkante, Kote der
     /// Oberkante eines Geschosses, Geschosshöhe (bei der Gründung die
     /// Gründungstiefe) und lichte Höhe.

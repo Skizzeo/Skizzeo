@@ -25,6 +25,7 @@ pub mod proctex;
 pub mod qto;
 pub mod qto_earth;
 pub mod qto_site;
+pub mod roof;
 pub mod sha256;
 pub mod solid;
 pub mod szo;
@@ -61,8 +62,8 @@ pub use id::{Arena, Id};
 pub use join::{Join, JoinEnd, JoinKind};
 pub use library::{
     material_key, type_code, Bearing, LayerFunction, LayerSet, LayerSetId, MatCategory, Material,
-    MaterialDisplay, MaterialId, MaterialLayer, TypeCategory, TERRACE_FINISH, TERRACE_INSULATION,
-    TYPE_PROPS,
+    MaterialDisplay, MaterialId, MaterialLayer, TypeCategory, ROOF_INSULATION, TERRACE_FINISH,
+    TERRACE_INSULATION, TYPE_PROPS,
 };
 pub use matprop::{MatProp, MatPropKind, MAT_PROPS};
 pub use model::{
@@ -72,18 +73,19 @@ pub use model::{
     EXTERIOR_TYPE_GUID, EXT_SEQ, FLOOR_PART, FLOOR_THICKNESS, FOOTING_PART, FOOTING_WIDTH,
     FROST_DEPTH, INTERIOR_115_TYPE_GUID, INTERIOR_240_TYPE_GUID, INTERIOR_TYPE_GUID,
     MAX_FOUNDATION, MAX_PERIMETER, MAX_ROOF_UPSTAND, MAX_SOFFIT, MAX_TERRAIN_OFFSET, MAX_UPSTAND,
-    MIN_CLEAR, MIN_FOOTING, MIN_PERIMETER, MIN_RECESS, MIN_ROOF_UPSTAND, MIN_SOFFIT,
-    MONO_TYPE_GUID, PERIMETER_MAT_GUID, PERIMETER_PART, PERIMETER_THICKNESS, ROOF_UPSTAND,
-    SHADE_VIEWS, SLAB_PART, SLAB_THICKNESS, SOFFIT_PART, SOFFIT_THICKNESS, STRIP_PART,
-    TERRACE_PART, TERRACE_TYPE_GUID, TERRACE_UPSTAND, WALKABLE_DEPTH,
+    MIN_CLEAR, MIN_FOOTING, MIN_PERIMETER, MIN_RECESS, MIN_ROOF_EDGE, MIN_ROOF_UPSTAND, MIN_SOFFIT,
+    MONO_TYPE_GUID, PERIMETER_MAT_GUID, PERIMETER_PART, PERIMETER_THICKNESS, ROOF_COPING_PART,
+    ROOF_PART, ROOF_TYPE_GUID, ROOF_UPSTAND, SHADE_VIEWS, SLAB_PART, SLAB_THICKNESS, SOFFIT_PART,
+    SOFFIT_THICKNESS, STRIP_PART, TERRACE_PART, TERRACE_TYPE_GUID, TERRACE_UPSTAND, WALKABLE_DEPTH,
 };
 pub use qto::{
-    coping_qto, coping_qto_of, edge_strip_qto, edge_strip_qto_of, floor_formwork_of, floor_qto,
-    floor_qto_of, formwork_qto, foundation_qto, foundation_qto_of, perimeter_qto_of, run_qto,
-    soffit_qto, soffit_qto_of, terrace_qto, terrace_qto_of, wall_qto, CopingQto, EdgeStripQto,
-    FloorQto, FootingQto, FormworkQto, LayerQto, PerimeterQto, SlabQto, SoffitQto, SupportQto,
-    TerraceQto, Umfang, WallQto,
+    coping_qto, coping_qto_of, edge_strip_qto, edge_strip_qto_of, flat_roof_qto, flat_roof_qto_of,
+    floor_formwork_of, floor_qto, floor_qto_of, formwork_qto, foundation_qto, foundation_qto_of,
+    perimeter_qto_of, roof_coping_qto_of, run_qto, soffit_qto, soffit_qto_of, terrace_qto,
+    terrace_qto_of, wall_qto, CopingQto, EdgeStripQto, FloorQto, FootingQto, FormworkQto, LayerQto,
+    PerimeterQto, SlabQto, SoffitQto, SupportQto, TerraceQto, Umfang, WallQto,
 };
+pub use roof::FlatRoof;
 pub use solid::Solid;
 pub use solid::{edge_kind, material, merge_seam, Edge, SweepEnd, Tri, NO_LAYER};
 pub use terrace::{AttikaPiece, CopingPath, TerraceOutline, TerracePlan, COPING_DRIP};

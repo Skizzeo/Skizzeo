@@ -234,6 +234,7 @@ fn count_text(c: TypeCategory, n: usize) -> String {
         TypeCategory::GroundSlab => ("Sohlplatte", "Sohlplatten"),
         TypeCategory::StripFooting => ("Frostschürze", "Frostschürzen"),
         TypeCategory::RoofTerrace => ("Dachterrasse", "Dachterrassen"),
+        TypeCategory::FlatRoof => ("Flachdach", "Flachdächer"),
     };
     match n {
         0 => "nicht verbaut".into(),

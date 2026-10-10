@@ -63,6 +63,16 @@ pub fn refusal_lines(m: &Model, id: ElementId, r: &Refusal) -> Vec<&'static str>
         Some(Category::RoofTerrace) => {
             vec!["Die Dachterrasse folgt dem Rücksprung des OG. Ihren Aufbau stellst du im Paneel ein."]
         }
+        Some(Category::Coping)
+            if m.element(id)
+                .and_then(|e| m.storey(e.storey))
+                .is_some_and(|s| s.kind == LevelKind::Roof) =>
+        {
+            vec!["Das Attikablech folgt dem Flachdach. Seinen Baustoff stellst du im Paneel ein."]
+        }
+        Some(Category::Roof) => {
+            vec!["Das Flachdach folgt der Aufkantung. Seinen Aufbau stellst du im Paneel ein."]
+        }
         Some(Category::Coping) => {
             vec![
                 "Das Attikablech folgt der Dachterrasse. Seinen Baustoff stellst du im Paneel ein.",
@@ -150,7 +160,8 @@ impl Model {
             ElementKind::EdgeStrip { wall, .. } => Err(Refusal::Derived { from: wall }),
             ElementKind::SoffitInsulation { floor }
             | ElementKind::RoofTerrace { floor }
-            | ElementKind::Coping { floor } => Err(Refusal::Derived { from: floor }),
+            | ElementKind::Coping { floor }
+            | ElementKind::Roof { floor } => Err(Refusal::Derived { from: floor }),
             ElementKind::Ext(_) if e.locked => Err(Refusal::Locked(id)),
             ElementKind::Ext(_) => Ok(()),
         }
