@@ -416,6 +416,7 @@ impl Model {
             kind: LevelKind::Storey,
             elevation: 0.0,
             height: STOREY_HEIGHT,
+            embed: None,
         });
         let project = Project::new(guids.next_guid(), "Projekt");
         // Nach der Projekt-Guid angelegt, damit die älteren Guids gleich bleiben
@@ -441,6 +442,7 @@ impl Model {
             kind: LevelKind::Foundation,
             elevation: -FOUNDATION_DEPTH,
             height: FOUNDATION_DEPTH,
+            embed: None,
         });
         storeys.insert(Storey {
             guid: guids.next_guid(),
@@ -450,6 +452,7 @@ impl Model {
             kind: LevelKind::Storey,
             elevation: STOREY_HEIGHT,
             height: UPPER_HEIGHT,
+            embed: None,
         });
         // Linientypen des Startsatzes (E4), zuletzt angelegt, damit die
         // älteren Guids gleich bleiben; die Schnittlinie A–A wird Strichpunkt
@@ -1900,6 +1903,7 @@ impl Model {
                 kind: LevelKind::Foundation,
                 elevation: -FOUNDATION_DEPTH,
                 height: FOUNDATION_DEPTH,
+                embed: None,
             });
             let eg = self.insert_storey(Storey {
                 guid: Guid(0),
@@ -1909,6 +1913,7 @@ impl Model {
                 kind: LevelKind::Storey,
                 elevation: 0.0,
                 height: STOREY_HEIGHT,
+                embed: None,
             });
             vec![gr, eg]
         } else {
@@ -1940,6 +1945,7 @@ impl Model {
                 kind: LevelKind::Storey,
                 elevation: z,
                 height: UPPER_HEIGHT,
+                embed: None,
             });
             levels.push(id);
         }
@@ -3769,8 +3775,11 @@ impl Model {
     }
 
     /// Alle Gründungen folgen einem um `delta` gesunkenen Gelände (Versatz
-    /// um `delta` gewachsen): UK Gründung um `delta` tiefer, geklemmt auf
-    /// den erlaubten Bereich.
+    /// um `delta` gewachsen): UK Gründung liegt wieder um die gewollte
+    /// Einbindetiefe unter OK Gelände, geklemmt auf den erlaubten Bereich
+    /// (Schürze mindestens 10 cm, nie flacher als die Frosttiefe). Stößt
+    /// sie an eine Grenze, merkt sich das Geschoss die gewollte Tiefe;
+    /// Hin und zurück ergibt so dieselbe Gründung.
     fn follow_terrain(&mut self, delta: f64) {
         let grs: Vec<StoreyId> = self
             .storeys
@@ -3778,13 +3787,31 @@ impl Model {
             .filter(|(_, s)| s.kind == LevelKind::Foundation)
             .map(|(id, _)| id)
             .collect();
+        let (new, old) = (self.terrain_z(), self.terrain_z() + delta);
         for gr in grs {
-            let Some(z) = self.storey(gr).map(|s| s.elevation) else {
+            let Some(s) = self.storey(gr) else {
                 continue;
             };
+            let want = s.embed.unwrap_or(old - s.elevation);
             let (lo, hi) = self.foundation_bottom_range_of(gr);
-            self.move_foundation_bottom(gr, (z - delta).min(hi).max(lo));
+            let z = (new - want).min(hi).max(lo);
+            self.move_foundation_bottom(gr, z);
+            let embed = ((new - z) - want).abs() > 1e-6;
+            self.set_embed(gr, embed.then_some(want));
         }
+    }
+
+    /// Setzt die gewollte Einbindetiefe einer Gründung (siehe
+    /// [`Storey::embed`]).
+    fn set_embed(&mut self, gr: StoreyId, embed: Option<f64>) {
+        if self.storey(gr).is_none_or(|s| s.embed == embed) {
+            return;
+        }
+        note!(self, Storey, self.storeys, gr);
+        if let Some(s) = self.storeys.get_mut(gr) {
+            s.embed = embed;
+        }
+        self.touch();
     }
 
     /// Merkt das Projekt im offenen Schritt.
@@ -5595,6 +5622,7 @@ impl Model {
             return false;
         }
         self.move_foundation_bottom(gr, z);
+        self.set_embed(gr, None);
         true
     }
 
@@ -5611,6 +5639,7 @@ impl Model {
         }
         let (lo, hi) = self.foundation_bottom_range_of(gr);
         self.move_foundation_bottom(gr, z.min(hi).max(lo));
+        self.set_embed(gr, None);
         true
     }
 
@@ -9597,6 +9626,18 @@ mod gelaende_tests {
         assert_eq!(back.terrain_offset(), -250.0);
         assert_eq!(back.slab_insulation(slab), 100.0);
         assert_eq!(back.ground_basis(eg), m.ground_basis(eg));
+        assert!(!text.contains(" embed="));
+        // Tief ins Gelände: die Schürze stößt an 10 cm, die gewollte
+        // Einbindetiefe steht in der Datei und kommt zurück
+        schritt(&mut m, |m| m.set_terrain_offset(-1000.0));
+        let deep = crate::szo::write(&m);
+        assert!(deep.contains(" embed=800"), "{deep}");
+        let back = crate::szo::read(&deep, GuidGen::with_seed(5))
+            .unwrap()
+            .model;
+        assert_eq!(crate::szo::write(&back), deep);
+        schritt(&mut m, |m| m.set_terrain_offset(-250.0));
+        assert_eq!(crate::szo::write(&m), text);
         let bad = text.replace("terrain=-250", "terrain=9000");
         assert!(crate::szo::read(&bad, GuidGen::with_seed(5)).is_err());
     }
