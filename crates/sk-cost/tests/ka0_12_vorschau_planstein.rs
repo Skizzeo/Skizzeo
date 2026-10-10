@@ -1,7 +1,9 @@
 //! KA-0 Abnahme Nr. 12 (Fall aus dem Prüfprotokoll): Planstein 17,5
 //! (A-PB175) auf 99,00 € im RH-1. Die Vorschau nennt Netto vorher und
 //! nachher, ohne das Modell zu ändern: 60.089,83 → 73.323,52 €. Zum Vergleich
-//! Lohn 65 €/h: 60.089,83 → 62.501,62 €.
+//! Lohn 65 €/h: 60.089,83 → 62.501,62 €. Mit Erdarbeiten und
+//! Baustelleneinrichtung (Werksbestand Stand 8): 73.035,98 → 86.269,67 €,
+//! Lohn 65 €/h → 75.844,69 €.
 
 use sk_cost::{lesen, vorschau_kosten, Dez, Op, Rolle, Umfang};
 use sk_model::{qto, szo, Guid, GuidGen};
@@ -32,11 +34,11 @@ fn ka0_12_vorschau_planstein_99() {
         quelle: "Abnahme 12".into(),
         eingabe: String::new(),
     };
-    assert_eq!(netto(&[stein]), Some((6_195_388, 7_518_757)));
+    assert_eq!(netto(&[stein]), Some((7_303_598, 8_626_967)));
     let lohn = Op::FirmenwertSetzen {
         schluessel: "wage".into(),
         wert: Dez::ganz(65),
     };
-    assert_eq!(netto(&[lohn]), Some((6_195_388, 6_442_692)));
+    assert_eq!(netto(&[lohn]), Some((7_303_598, 7_584_469)));
     assert_eq!((m.revision(), m.ext_revision()), rev, "Modell unverändert");
 }

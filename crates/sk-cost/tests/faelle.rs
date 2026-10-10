@@ -113,7 +113,12 @@ fn fall_22_lohn() {
     assert_eq!(position(&b, "AW Porenbeton").lohn, Cent(2_925));
     for (a, n) in alt.positionen.iter().zip(&b.positionen) {
         assert_eq!(a.stoff, n.stoff, "{}", a.kurz);
-        assert!(n.lohn > a.lohn, "{}", a.kurz);
+        // Vorhaltungen ohne Zeitansatz (Bauvorbereitung) bleiben gleich
+        if a.lohn == Cent::NULL {
+            assert_eq!(n.lohn, a.lohn, "{}", a.kurz);
+        } else {
+            assert!(n.lohn > a.lohn, "{}", a.kurz);
+        }
     }
     assert_eq!(b.nur_material, alt.nur_material);
 }

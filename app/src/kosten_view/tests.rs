@@ -41,7 +41,7 @@ fn anzeige_rechnet_nach() {
     let mut v = KostenView::new();
     v.sync(&mut s, None);
     let netto_voll = v.netto().unwrap();
-    assert_eq!(netto_voll, Cent(6_195_388));
+    assert_eq!(netto_voll, Cent(7_303_598));
     for modus in Modus::ALLE {
         for g in Gliederung::ALLE {
             v.modus = modus;
@@ -191,7 +191,7 @@ fn zahlen_und_csv() {
     v.sync(&mut s, None);
     let csv = String::from_utf8(v.csv("Standardhaus", "08.10.2026")).unwrap();
     assert!(csv.starts_with("\u{feff}Projekt;Standardhaus\r\n"), "{csv}");
-    assert!(csv.contains("\r\nNetto;61953,88\r\n"), "{csv}");
+    assert!(csv.contains("\r\nNetto;73035,98\r\n"), "{csv}");
     assert!(csv.contains("\r\nModus;Material + Lohn\r\n"));
     // OZ mit Los, Frostschürze unter 1.03.0020; Zeilen ohne Bauleistung
     // ohne OZ, Menge und Einheit getrennt
@@ -230,7 +230,7 @@ fn preisblatt_live_und_punkt() {
     };
     let mut s = haus();
     let mut v = KostenView::new();
-    (v.w, v.h) = (1200, 900);
+    (v.w, v.h) = (1200, 1400);
     v.sync(&mut s, None);
     let rev = s.model().revision();
     let i = v
@@ -689,7 +689,7 @@ fn summen_ueberschrift_niedrig_und_markierung() {
         }
     }
     assert!(kompakt > 0);
-    v.h = 900;
+    v.h = 1400;
     // Preisblatt am Planstein: Wände sind gewählt, markiert ist nur M10
     let i = v
         .zeilen()

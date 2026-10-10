@@ -578,7 +578,7 @@ fn csv_rechnet_nach() {
             let gp = cent(&r[5]);
             assert_eq!(gp, (menge * ep as f64).round() as i64, "{r:?}");
             assert!(
-                ["m2", "m3", "m", "t", "St"].contains(&r[3].as_str()),
+                ["m2", "m3", "m", "t", "St", "psch", "Mon"].contains(&r[3].as_str()),
                 "{r:?}"
             );
             let p = lv

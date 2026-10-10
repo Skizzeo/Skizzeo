@@ -7,7 +7,6 @@
 //! Bauleistung daraus macht (Einheit, Preis), steht im Katalog.
 
 use crate::element::Category;
-use crate::foundation::Foundation;
 use crate::model::Model;
 use crate::qto::AutoMenge;
 use crate::RunId;
@@ -115,14 +114,14 @@ pub fn vorhaltemonate(geschosse: usize) -> u32 {
     2 + geschosse.div_ceil(2) as u32
 }
 
-/// Automatikmengen `site.*` des Gebäudes über der Gründung `f` des
+/// Automatikmengen `site.*` des Gebäudes mit dem Plattenumriss `platte` am
 /// Wandzugs `run` (der Zug, unter dem die Sohlplatte liegt), mit Sohlplatte,
 /// Geschoss und Gebäude aus `vorlage`. `gelaende`: OK Gelände relativ zu
 /// ±0,00 (mm, nach oben positiv), Aufstandsfläche des Gerüsts.
 pub fn site_mengen(
     model: &Model,
     run: RunId,
-    f: &Foundation,
+    platte: &[Vec3],
     vorlage: &AutoMenge,
     gelaende: f64,
 ) -> Vec<AutoMenge> {
@@ -141,7 +140,7 @@ pub fn site_mengen(
         })
         .map(|(id, _)| id)
         .collect();
-    let mut punkte: Vec<Vec3> = f.outline.clone();
+    let mut punkte: Vec<Vec3> = platte.to_vec();
     let mut krone = 0.0f64;
     let mut geschosse = Vec::new();
     let mut fassade: Option<Vec<Vec3>> = None;
@@ -162,7 +161,7 @@ pub fn site_mengen(
             fassade = Some(aussen);
         }
     }
-    let fassade = fassade.unwrap_or_else(|| f.outline.clone());
+    let fassade = fassade.unwrap_or_else(|| platte.to_vec());
     let monate = vorhaltemonate(geschosse.len());
     let huelle = convex_hull(&punkte);
     let zaun = offset_perimeter(&huelle, ZAUN_ABSTAND);
@@ -300,5 +299,30 @@ mod tests {
             "{} {soll}",
             w("site.scaffold")
         );
+    }
+
+    /// Thema 1: Sitzt das Gebäude 0,40 m über Gelände, steht das Gerüst
+    /// 0,40 m tiefer auf; Zaun und Pauschalen bleiben.
+    #[test]
+    fn geruest_ab_gelaende() {
+        let mut m = Model::with_seed(12);
+        let b = m.add_building(2);
+        m.build_from_polygon(b, &rechteck(10_000.0, 8_000.0))
+            .unwrap();
+        let wert = |m: &Model, k: &str| {
+            crate::qto::schedule(m)
+                .auto
+                .iter()
+                .find(|a| a.key == k)
+                .unwrap()
+                .value
+        };
+        let (g0, z0) = (wert(&m, SCAFFOLD), wert(&m, FENCE));
+        assert!(m.set_terrain_offset(400.0));
+        let (g1, z1) = (wert(&m, SCAFFOLD), wert(&m, FENCE));
+        assert_eq!(z0, z1);
+        let c = m.chain(m.runs().ids().next().unwrap()).unwrap();
+        let laenge = offset_perimeter(&c.face_corners(c.outer_offset()), GERUEST_ABSTAND);
+        assert!((g1 - g0 - laenge * 400.0).abs() < 1.0, "{g0} {g1}");
     }
 }

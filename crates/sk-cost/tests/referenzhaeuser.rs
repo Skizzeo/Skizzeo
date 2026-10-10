@@ -67,12 +67,71 @@ const ERDE: &[Zeile] = &[
     ),
 ];
 
+/// Baustelleneinrichtung (Titel 1.01, Werksbestand Stand 8) ohne Bauzaun,
+/// in allen drei Häusern gleich: zwei Geschosse, 3 Monate Vorhaltung, Gerüst
+/// 46,40 m × 6,71 m an der Erdgeschossfassade. Der Bauzaun hängt an der
+/// Hülle aller Geschosse und steht je Haus in `zeilen`.
+const BE: &[Zeile] = &[
+    (
+        "Baustelleneinrichtung einrichten und räumen",
+        1000,
+        250000,
+        250000,
+        0,
+    ),
+    ("Baustelleneinrichtung vorhalten", 3000, 40000, 120000, 0),
+    (
+        "Bauschild liefern, aufstellen, vorhalten, räumen",
+        1000,
+        60000,
+        60000,
+        0,
+    ),
+    (
+        "Baustromanschluss und Verteiler einrichten und räumen",
+        1000,
+        100000,
+        100000,
+        0,
+    ),
+    ("Baustromverteiler vorhalten", 3000, 7000, 21000, 0),
+    (
+        "Bauwasseranschluss Standrohr einrichten und räumen",
+        1000,
+        45000,
+        45000,
+        0,
+    ),
+    ("Bauwasser-Standrohr vorhalten", 3000, 10000, 30000, 0),
+    (
+        "Toilettenkabine mobil vorhalten, inkl. Reinigung",
+        3000,
+        13000,
+        39000,
+        0,
+    ),
+    (
+        "Schnurgerüst herstellen, vorhalten, beseitigen",
+        1000,
+        40000,
+        40000,
+        0,
+    ),
+    (
+        "Fassadengerüst LK3 W09, 4 Wochen Standzeit, auf-/abbauen",
+        311344,
+        900,
+        280210,
+        0,
+    ),
+];
+
 const RH1: Soll = Soll {
     datei: include_str!("../referenz/rh1-standardhaus.szo"),
-    netto: 6195388,
+    netto: 7303598,
     material: 3147423,
     geschosse: [
-        ("Gründung", 1134405),
+        ("Gründung", 2242615),
         ("Erdgeschoss", 2709564),
         ("Obergeschoss", 2351416),
     ],
@@ -134,16 +193,23 @@ const RH1: Soll = Soll {
             2315302,
             997975,
         ),
+        (
+            "Bauzaun Mobilzaun h=2,0m aufstellen, vorhalten, räumen",
+            60000,
+            2050,
+            123000,
+            0,
+        ),
     ],
     ohne: &[("DT-001", 13219), ("DT-001", 13219), ("AB-001", 13000)],
 };
 
 const RH2: Soll = Soll {
     datei: include_str!("../referenz/rh2-mehrschalig.szo"),
-    netto: 7183668,
+    netto: 8291878,
     material: 3694694,
     geschosse: [
-        ("Gründung", 1134405),
+        ("Gründung", 2242615),
         ("Erdgeschoss", 3034024),
         ("Obergeschoss", 3015257),
     ],
@@ -226,16 +292,23 @@ const RH2: Soll = Soll {
             2610612,
             1130580,
         ),
+        (
+            "Bauzaun Mobilzaun h=2,0m aufstellen, vorhalten, räumen",
+            60000,
+            2050,
+            123000,
+            0,
+        ),
     ],
     ohne: &[],
 };
 
 const RH3: Soll = Soll {
     datei: include_str!("../referenz/rh3-versatz-dachterrasse.szo"),
-    netto: 6880603,
+    netto: 7990043,
     material: 3544709,
     geschosse: [
-        ("Gründung", 1134405),
+        ("Gründung", 2243845),
         ("Erdgeschoss", 2937124),
         ("Obergeschoss", 2809049),
     ],
@@ -311,6 +384,13 @@ const RH3: Soll = Soll {
             26059,
             10248,
         ),
+        (
+            "Bauzaun Mobilzaun h=2,0m aufstellen, vorhalten, räumen",
+            60600,
+            2050,
+            124230,
+            0,
+        ),
     ],
     ohne: &[("DT-001", 1757), ("DT-001", 1757), ("AB-001", 10600)],
 };
@@ -344,13 +424,17 @@ fn pruefen(s: &Soll) {
             )
         })
         .collect();
-    for z in s.zeilen.iter().chain(ERDE) {
+    for z in s.zeilen.iter().chain(ERDE).chain(BE) {
         assert!(
             ist.iter().any(|i| (i.0.as_str(), i.1, i.2, i.3, i.4) == *z),
             "fehlt {z:?}\nist {ist:#?}"
         );
     }
-    assert_eq!(ist.len(), s.zeilen.len() + ERDE.len(), "{ist:#?}");
+    assert_eq!(
+        ist.len(),
+        s.zeilen.len() + ERDE.len() + BE.len(),
+        "{ist:#?}"
+    );
     assert_eq!(b.netto, Cent(s.netto));
     assert_eq!(b.nur_material, Cent(s.material));
     assert_eq!(b.mwst, Cent((s.netto * 19 + 50) / 100));
@@ -635,14 +719,14 @@ fn vorschau_mit_summe_vorher_nachher() {
         &u,
     )
     .expect("Vorschau");
-    assert_eq!(p.netto, Some((Cent(6_195_388), Cent(6_442_692))));
+    assert_eq!(p.netto, Some((Cent(7_303_598), Cent(7_584_469))));
     assert_eq!((m.revision(), m.ext_revision()), (rev, ext));
     // gleich der Ausführung
     let h = Herkunft::neu(HerkunftArt::Manual, "2026-10-08", "10:40");
     m.begin("Lohn");
     sk_cost::ausfuehren(&mut m, None, Rolle::Admin, &h, lohn).expect("Lohn");
     m.commit();
-    assert_eq!(blatt(&m, &u).netto, Cent(6_442_692));
+    assert_eq!(blatt(&m, &u).netto, Cent(7_584_469));
     // Zuordnung: eine Außenwandschicht auf eine andere Bauleistung, nur in
     // der Kopie
     let k = lesen::katalog(&m, None);
@@ -678,7 +762,7 @@ fn vorschau_mit_summe_vorher_nachher() {
     .expect("Vorschau Zuordnung");
     assert_eq!(m.revision(), rev);
     let (vorher, nachher) = p.netto.expect("Summen");
-    assert_eq!(vorher, Cent(6_442_692));
+    assert_eq!(vorher, Cent(7_584_469));
     m.begin("Zuordnen");
     sk_cost::ausfuehren(&mut m, None, Rolle::Admin, &h, op).expect("Zuordnen");
     m.commit();
