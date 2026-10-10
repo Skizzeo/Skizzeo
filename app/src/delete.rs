@@ -528,6 +528,9 @@ pub enum Action {
     ShowInModel,
     ChangeType,
     Properties,
+    /// Nur im Hauptfenster: das Mengenfenster öffnen oder nach vorn holen;
+    /// Kosten und AVA zeigen dort die Positionen der Auswahl (Jörn 10.10.).
+    Quantity,
     Delete,
     DeleteBuilding,
 }
@@ -535,7 +538,8 @@ pub enum Action {
 /// Breite des Kontextmenüs (dip).
 const CONTEXT_W: f32 = 240.0;
 
-/// Rechtsklick auf ein Bauteil: „Wandtyp ändern …“, „Eigenschaften“,
+/// Rechtsklick auf ein Bauteil: „Wandtyp ändern …“, „Eigenschaften“, „Mengen ·
+/// Kosten · AVA“ (Schnellzugriff aufs Mengenfenster, Jörn 10.10.),
 /// „Löschen   Entf“ (gedimmt, wenn nichts Löschbares gewählt ist) und
 /// abgesetzt in `ui.danger` „Gebäude löschen …“.
 #[derive(Clone, Debug)]
@@ -617,6 +621,10 @@ impl ContextMenu {
             items.push((
                 row("Eigenschaften", "", true, false),
                 Some(Action::Properties),
+            ));
+            items.push((
+                row(crate::cards::KNOPF, "", true, false),
+                Some(Action::Quantity),
             ));
         }
         items.push((menu::separator(), None));

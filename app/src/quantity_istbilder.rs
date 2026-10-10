@@ -468,3 +468,50 @@ fn istbilder_ka4() {
         b.ablegen(&mut q, name);
     }
 }
+
+/// Bauteil ↔ Kosten und AVA (Jörn 10.10., A338–A341): Fundament gewählt,
+/// Kosten und AVA isoliert mit Leiste; eine Außenwand bei 150 % im
+/// schmalen Fenster; „Alle Positionen“ unter der Maus.
+#[test]
+#[ignore = "legt Ist-Bilder ab, nur mit SKIZZEO_ISTBILDER"]
+fn istbilder_fokus() {
+    let Some(dir) = std::env::var_os("SKIZZEO_ISTBILDER").map(PathBuf::from) else {
+        return;
+    };
+    let Some(fonts) = schriften() else {
+        return;
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut b = Bilder {
+        t: Theme::dark(),
+        fonts,
+        dir,
+        p: Picking::default(),
+    };
+    let mut s = standardhaus();
+    let erstes = |s: &Scene, c: sk_model::element::Category| {
+        s.model()
+            .elements()
+            .iter()
+            .find(|(_, e)| e.category == c)
+            .map(|(id, _)| id)
+            .unwrap()
+    };
+    let fs = erstes(&s, sk_model::element::Category::StripFooting);
+    let aw = erstes(&s, sk_model::element::Category::ExteriorWall);
+    b.p.selected = vec![fs];
+    let mut q = b.fenster(&mut s, 1240, 900, Blatt::Kosten);
+    b.ablegen(&mut q, "ist-fokus-1-kosten-fundament.png");
+    let mut q = b.fenster(&mut s, 1240, 900, Blatt::Ava);
+    b.ablegen(&mut q, "ist-fokus-2-ava-fundament.png");
+    b.p.selected = vec![aw];
+    let mut q = QuantityWindow::new();
+    q.title.scale = 1.5;
+    (q.w, q.h) = (900, 1100);
+    q.sync(&mut s, &b.p, false);
+    q.waehlen(Blatt::Kosten, &b.t);
+    q.sync(&mut s, &b.p, false);
+    b.ablegen(&mut q, "ist-fokus-3-kosten-wand-150.png");
+    let mut q = b.fenster(&mut s, 1240, 900, Blatt::Ava);
+    b.ablegen(&mut q, "ist-fokus-4-ava-wand.png");
+}

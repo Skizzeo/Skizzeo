@@ -3,6 +3,7 @@
 //! Geld (Review 3ai).
 
 use super::{Art, Gliederung, Modus, Zeile};
+use crate::fokus::{self, Fokus};
 use crate::umfang_view;
 use sk_cost::gliederung::{Gruppe, Schluessel, Teilung};
 use sk_cost::katalog::{Einheit, Katalog};
@@ -122,6 +123,8 @@ pub(super) struct Bau<'a> {
     b: &'a Kostenblatt,
     modus: Modus,
     offen: &'a HashSet<u64>,
+    /// Nur was an der Auswahl hängt (Jörn 10.10.).
+    fokus: Option<&'a Fokus>,
 }
 
 impl Bau<'_> {
@@ -151,13 +154,7 @@ impl Bau<'_> {
             Quelle::Richtpreis(_) => "geschätzt, nur Material".into(),
             Quelle::Leistung(_) => String::new(),
         };
-        let mut els: Vec<ElementId> = Vec::new();
-        for a in ansatz {
-            if !els.contains(&a.element) {
-                els.push(a.element);
-            }
-        }
-        z.elements = els;
+        z.elements = self.bauteile(ansatz);
         // Betrag aus dem Kostenblatt; ohne Betrag (NU bei „nur Material“)
         // steht „NU-Preis“
         match t.betrag {
@@ -177,6 +174,20 @@ impl Bau<'_> {
         if offen {
             self.ansatz(out, p, ansatz, ebene + 1, gruppe);
         }
+    }
+
+    /// Bauteile der Ansatzzeilen, jedes einmal; eine Automatikmenge der
+    /// Gründung mit der ganzen Gründung ([`fokus::bauteile`]).
+    fn bauteile(&self, ansatz: &[&Ansatz]) -> Vec<ElementId> {
+        let mut els: Vec<ElementId> = Vec::new();
+        for a in ansatz {
+            for e in fokus::bauteile(self.m, a) {
+                if !els.contains(&e) {
+                    els.push(e);
+                }
+            }
+        }
+        els
     }
 
     /// Mengenansatz: je Geschoss und Herkunft die Bauteilnummern und die
@@ -220,7 +231,7 @@ impl Bau<'_> {
             };
             let menge = teil.teile(|_| ()).first().map_or(Dez::NULL, |t| t.1);
             z.menge = menge_text(menge, p.einheit);
-            z.elements = v.iter().map(|a| a.element).collect();
+            z.elements = self.bauteile(&v);
             out.push(z);
         }
     }
@@ -325,7 +336,13 @@ impl Bau<'_> {
     /// Alle Zeilen der Gliederung, am Ende der „Rundungsausgleich“, wenn
     /// das Kostenblatt einen hat.
     fn alle(&self, t: Teilung) -> Vec<Zeile> {
-        let a = self.b.aufteilung(self.m, t, self.modus.nur_material());
+        let nur = self.modus.nur_material();
+        let a = match self.fokus {
+            Some(f) => self
+                .b
+                .aufteilung_fuer(self.m, t, nur, &|a| f.trifft(a), &|o| f.trifft_ohne(o)),
+            None => self.b.aufteilung(self.m, t, nur),
+        };
         let mut out = Vec::new();
         for g in &a.gruppen {
             self.gruppe(&mut out, g, 0, 0, None);
@@ -350,14 +367,15 @@ pub(super) fn st_key(st: StoreyId) -> u64 {
 }
 
 /// Die Zeilen der Liste: rein aus Modell (Namen), Katalog (Namen),
-/// Kostenblatt, Gliederung, Modus und aufgeklappten Positionen.
+/// Kostenblatt, Gliederung, Modus, aufgeklappten Positionen und, wenn die
+/// Liste auf eine Auswahl isoliert ist, deren Fokus.
 pub fn zeilen(
     m: &Model,
     k: &Katalog,
     b: &Kostenblatt,
-    g: Gliederung,
-    modus: Modus,
+    (g, modus): (Gliederung, Modus),
     offen: &HashSet<u64>,
+    fokus: Option<&Fokus>,
 ) -> Vec<Zeile> {
     let bau = Bau {
         m,
@@ -365,6 +383,7 @@ pub fn zeilen(
         b,
         modus,
         offen,
+        fokus,
     };
     bau.alle(match g {
         Gliederung::Gewerk => Teilung::Gewerk,

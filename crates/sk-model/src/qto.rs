@@ -1453,6 +1453,35 @@ pub fn auto_schluessel() -> impl Iterator<Item = (&'static str, &'static str, &'
         .chain(crate::qto_fassade::SCHLUESSEL)
 }
 
+/// Gründung, aus deren Geometrie die Automatikmengen ihrer Sohlplatte folgen
+/// (Erdarbeiten `earth.*`, Bauvorbereitung `site.*`): Sohlplatte,
+/// Frostschürze und Perimeterdämmung unter demselben Wandzug, in der
+/// Reihenfolge des Modells. Leer für jedes andere Bauteil. Kosten und AVA
+/// zeigen damit am Fundament die Erdarbeiten, die an der Platte hängen.
+pub fn gruendung_von(model: &Model, e: ElementId) -> Vec<ElementId> {
+    let teil = |k: &ElementKind| {
+        matches!(
+            k,
+            ElementKind::GroundSlab(_)
+                | ElementKind::StripFooting(_)
+                | ElementKind::PerimeterInsulation { .. }
+        )
+    };
+    let Some(run) = model
+        .element(e)
+        .filter(|x| teil(&x.kind))
+        .and_then(|_| model.run_of(e))
+    else {
+        return Vec::new();
+    };
+    model
+        .elements()
+        .iter()
+        .filter(|(id, x)| teil(&x.kind) && model.run_of(*id) == Some(run))
+        .map(|(id, _)| id)
+        .collect()
+}
+
 /// Geschoss, unter dem ein Bauteil in Mengen und Baum steht: sein eigenes,
 /// Sohlplatte und Frostschürze unter dem Gründungsband (Kostengruppe 322).
 pub fn schedule_storey(model: &Model, e: &Element) -> StoreyId {
