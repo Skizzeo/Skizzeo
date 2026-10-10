@@ -23,6 +23,11 @@ pub struct Building {
     pub name: String,
     /// „GB-01“, im Modell eindeutig.
     pub number: String,
+    /// Versatz OK Sohlplatte (±0,00) über OK Gelände an diesem Gebäude, mm;
+    /// positiv sitzt das Gebäude höher (Gelände Thema 1). Ändert sich nur
+    /// über [`crate::Model::set_terrain_offset_of`]; die Geländehöhe fragt
+    /// man mit [`crate::Model::terrain_z_at`] ab.
+    pub terrain: f64,
 }
 
 /// Bauteilkategorie: bestimmt Nummernpräfix, IFC-Klasse und DIN-276-Kostengruppe

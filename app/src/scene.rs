@@ -1102,9 +1102,14 @@ impl Scene {
         let b = self.model.add_building(2);
         self.pending = Some((b, self.active));
         self.active = self.model.ground_of(Some(b));
-        // Das Gelände gilt im ganzen Projekt: der heutige Versatz vorbelegt
+        // Versatz je Gebäude (Entscheidung B): der des bisher aktiven
+        // Gebäudes vorbelegt, Nachbarn stehen meist ähnlich
+        let before = self.pending.and_then(|(_, a)| a);
+        let terrain = before.map_or(0.0, |a| {
+            self.model.terrain_offset_of(self.model.building_of(a))
+        });
         self.draft = BuildingDraft {
-            terrain: self.model.terrain_offset(),
+            terrain,
             ..BuildingDraft::default()
         };
         self.apply_draft();
@@ -1155,8 +1160,8 @@ impl Scene {
         let d = self.draft;
         // Gelände sofort (Paneel „Geschosse“ zeigt es), die Dämmung erst mit
         // der Platte
-        if d.terrain != self.model.terrain_offset() {
-            self.model.set_terrain_offset(d.terrain);
+        if let Some((b, _)) = self.pending {
+            self.model.set_terrain_offset_of(b, d.terrain);
         }
         if let Some((eg, og)) = self.draft_storeys() {
             self.model.plan_storey_height(eg, d.clear_eg + d.floor_eg);
@@ -1187,7 +1192,9 @@ impl Scene {
             // gewollte Endstand, also danach wieder darauf
             if d.insulation > 0.0 {
                 self.model.set_slab_insulation(slab, d.insulation);
-                self.model.set_terrain_offset(d.terrain);
+                if let Some(b) = self.model.building_of_element(slab) {
+                    self.model.set_terrain_offset_of(b, d.terrain);
+                }
             }
         }
     }
@@ -2059,14 +2066,11 @@ impl Scene {
             if foundation {
                 // OK Gelände und Einbindetiefe im Fuß (Gelände Thema 1)
                 let max = sk_model::MAX_TERRAIN_OFFSET;
-                l.terrain = Some(m.terrain_z());
+                let tz = m.terrain_z_of(m.building_of(id));
+                l.terrain = Some(tz);
                 l.embedment = m.embedment_of(id);
-                l.fields.push(row(
-                    Field::Terrain,
-                    "OK Gelände",
-                    m.terrain_z(),
-                    (-max, max),
-                ));
+                l.fields
+                    .push(row(Field::Terrain, "OK Gelände", tz, (-max, max)));
                 let (lo, hi) = m.foundation_bottom_range_of(id);
                 l.fields.push(row(
                     Field::LevelBottom,
@@ -2123,7 +2127,10 @@ impl Scene {
                 self.edit_model("lichte Höhe", |m| m.set_clear_height(id, mm))
             }
             // Kote OK Gelände: der Versatz ist ihr Gegenwert
-            Field::Terrain => self.edit_model("Gelände", |m| m.set_terrain_offset(-mm)),
+            Field::Terrain => match self.active_building() {
+                Some(b) => self.edit_model("Gelände", |m| m.set_terrain_offset_of(b, -mm)),
+                None => false,
+            },
             _ => false,
         }
     }
@@ -2705,11 +2712,14 @@ impl Scene {
         }
     }
 
-    /// OK Gelände beim Ziehen (Kote `z`, Gelände Thema 1), geklemmt; alle
-    /// Gründungen folgen, also alle Züge neu.
+    /// OK Gelände des aktiven Gebäudes beim Ziehen (Kote `z`, Gelände
+    /// Thema 1), geklemmt; seine Gründung folgt, also seine Züge neu.
     pub fn drag_terrain(&mut self, z: f64) {
         let max = sk_model::MAX_TERRAIN_OFFSET;
-        if z.is_finite() && self.model.set_terrain_offset((-z).clamp(-max, max)) {
+        let Some(b) = self.active_building() else {
+            return;
+        };
+        if z.is_finite() && self.model.set_terrain_offset_of(b, (-z).clamp(-max, max)) {
             self.mark_all();
             self.rebuild_dirty(true);
         }
@@ -3259,7 +3269,13 @@ impl Scene {
         let cut = self.plan_cut();
         let filter = self.filtering();
         let stamp = self.vis_stamp();
-        let ground = self.model.terrain_z();
+        // OK Gelände je Zug: das seines Gebäudes (Entscheidung B)
+        let model = &self.model;
+        let ground = |r: RunId| {
+            let b = model.run(r).and_then(|x| model.building_of(x.storey));
+            model.terrain_z_of(b)
+        };
+        let grounds: Vec<f64> = runs.iter().map(|r| ground(*r)).collect();
         let mut m = [MeshData::default(), MeshData::default()];
         if view == ViewKind::Plan {
             let active = self.active_storey();
@@ -3284,10 +3300,10 @@ impl Scene {
                                 let key = SplitKey::Plan(cut, modes[i]);
                                 let parts = c.split(key, s, &vis);
                                 for (k, x) in parts.iter().enumerate() {
-                                    mesh_into(&mut m[k], x, ground);
+                                    mesh_into(&mut m[k], x, grounds[i]);
                                 }
                             } else {
-                                mesh_into(&mut m[0], s, ground);
+                                mesh_into(&mut m[0], s, grounds[i]);
                             }
                         }
                         if let Some(bcut) = under[i] {
@@ -3365,7 +3381,7 @@ impl Scene {
             }
         }
         let classes = if filter { 2 } else { 1 };
-        for &run in runs {
+        for (&run, &ground) in runs.iter().zip(&grounds) {
             let Some(c) = self.cached(run) else {
                 continue;
             };
@@ -3430,7 +3446,8 @@ impl Scene {
             return;
         };
         let filter = self.filtering();
-        let ground = self.model.terrain_z();
+        let model = &self.model;
+        let ground = |id: ElementId| model.terrain_z_of(model.building_of_element(id));
         let vis = Vis {
             model: &self.model,
             anim: self.vis_anim.as_ref(),
@@ -3447,7 +3464,7 @@ impl Scene {
             } else {
                 0
             };
-            mesh_into(&mut m[k], s, ground);
+            mesh_into(&mut m[k], s, ground(id));
         }
     }
 

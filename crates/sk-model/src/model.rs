@@ -63,11 +63,6 @@ pub struct Project {
     /// `[projectinfo]` hat: gelten nicht und bleiben bytegleich, bis die
     /// erste Änderung sie entfernt (Regel 110).
     pub legacy: [String; 3],
-    /// Versatz OK Sohlplatte (±0,00) über OK Gelände, mm; + = das Gebäude
-    /// sitzt höher (Gelände Thema 1). Eine Geländeebene für das ganze
-    /// Projekt, wie ±0,00 für alle Gebäude gilt. Kein Projektdatum: ändert
-    /// sich nur über [`Model::set_terrain_offset`].
-    pub terrain: f64,
 }
 
 impl Project {
@@ -86,7 +81,6 @@ impl Project {
             author_addr: String::new(),
             info: false,
             legacy: Default::default(),
-            terrain: 0.0,
         }
     }
 
@@ -770,7 +764,6 @@ impl Model {
             name: self.project.name.clone(),
             info: true,
             legacy: Default::default(),
-            terrain: self.project.terrain,
             ..p
         };
         match self.txn.as_mut() {
@@ -802,7 +795,6 @@ impl Model {
             name: self.project.name.clone(),
             info: true,
             legacy: Default::default(),
-            terrain: self.project.terrain,
             ..p
         };
         self.touch();
@@ -1892,6 +1884,7 @@ impl Model {
             guid,
             name: format!("Gebäude {k}"),
             number,
+            terrain: 0.0,
         });
         note!(self, Building, new b);
         let mut levels = if template.is_empty() {
@@ -3738,56 +3731,141 @@ impl Model {
 
     // --- Gelände und Perimeterdämmung (Gelände Themen 1 und 4) -------------
 
-    /// Versatz OK Sohlplatte (±0,00) über OK Gelände (mm); + = das Gebäude
-    /// sitzt höher. Alte Projekte: 0.
+    /// Versatz OK Sohlplatte (±0,00) über OK Gelände des aktiven Gebäudes
+    /// (mm); + = das Gebäude sitzt höher. Alte Projekte: 0.
     pub fn terrain_offset(&self) -> f64 {
-        self.project.terrain
+        self.terrain_offset_of(self.building_of(self.defaults.storey))
     }
 
-    /// Höhe von OK Gelände (mm, relativ zu ±0,00).
+    /// Versatz OK Sohle über Gelände eines Gebäudes (mm); ohne Gebäude 0.
+    pub fn terrain_offset_of(&self, b: Option<BuildingId>) -> f64 {
+        b.and_then(|b| self.building(b)).map_or(0.0, |b| b.terrain)
+    }
+
+    /// OK Gelände am aktiven Gebäude (mm, relativ zu ±0,00).
     pub fn terrain_z(&self) -> f64 {
-        -self.project.terrain
+        self.terrain_z_of(self.building_of(self.defaults.storey))
+    }
+
+    /// OK Gelände an einem Gebäude (mm, relativ zu ±0,00).
+    pub fn terrain_z_of(&self, b: Option<BuildingId>) -> f64 {
+        -self.terrain_offset_of(b)
+    }
+
+    /// OK Gelände an der Stelle `(x, y)` (mm, relativ zu ±0,00), wie sie
+    /// Gebäude `b` sieht. Heute eine Ebene je Gebäude; ein späteres
+    /// Geländemodell (Höhenlinien) ersetzt nur diese Abfrage.
+    pub fn terrain_z_at(&self, b: Option<BuildingId>, x: f64, y: f64) -> f64 {
+        let _ = (x, y);
+        self.terrain_z_of(b)
+    }
+
+    /// Geländeflächen für die Darstellung: je Gebäude mit Wänden das
+    /// Rechteck um seine Wandzüge im Grundriss, um `margin` vergrößert
+    /// (`[x0, y0, x1, y1]`, mm), mit seiner Höhe von OK Gelände. Nach Guid
+    /// geordnet; wo sich Rechtecke überlappen, gilt das erste.
+    pub fn terrain_patches(&self, margin: f64) -> Vec<([f64; 4], f64)> {
+        let mut boxes: Vec<(Guid, BuildingId, [f64; 4])> = Vec::new();
+        for (_, r) in self.runs.iter() {
+            let Some(b) = self.building_of(r.storey) else {
+                continue;
+            };
+            let Some(guid) = self.building(b).map(|x| x.guid) else {
+                continue;
+            };
+            let i = match boxes.iter().position(|x| x.1 == b) {
+                Some(i) => i,
+                None => {
+                    let e = f64::INFINITY;
+                    boxes.push((guid, b, [e, e, -e, -e]));
+                    boxes.len() - 1
+                }
+            };
+            let bx = &mut boxes[i].2;
+            for p in &r.points {
+                bx[0] = bx[0].min(p.x);
+                bx[1] = bx[1].min(p.y);
+                bx[2] = bx[2].max(p.x);
+                bx[3] = bx[3].max(p.y);
+            }
+        }
+        boxes.retain(|x| x.2[0] <= x.2[2]);
+        boxes.sort_by_key(|x| x.0);
+        boxes
+            .into_iter()
+            .map(|(_, b, x)| {
+                let m = margin;
+                (
+                    [x[0] - m, x[1] - m, x[2] + m, x[3] + m],
+                    self.terrain_z_of(Some(b)),
+                )
+            })
+            .collect()
+    }
+
+    /// OK Gelände an der Gründung `gr` (ihr Gebäude).
+    fn terrain_z_of_level(&self, gr: StoreyId) -> f64 {
+        self.terrain_z_of(self.building_of(gr))
     }
 
     /// Einbindetiefe der Gründung `gr`: OK Gelände bis UK Gründung (mm).
     pub fn embedment_of(&self, gr: StoreyId) -> Option<f64> {
-        Some(self.terrain_z() - self.storey(gr)?.elevation)
+        Some(self.terrain_z_of_level(gr) - self.storey(gr)?.elevation)
     }
 
-    /// Setzt den Versatz OK Sohlplatte über OK Gelände (mm). Jede Gründung
-    /// behält ihre Einbindetiefe, wandert also mit dem Gelände; wird die
-    /// Schürze dabei kürzer als 10 cm, bleibt sie 10 cm (die Einbindung
-    /// wächst). Nie flacher als [`FROST_DEPTH`]: Fehlt Tiefe, wächst die
-    /// Schürze. Außerhalb ±[`MAX_TERRAIN_OFFSET`] abgelehnt.
+    /// Setzt den Versatz OK Sohlplatte über OK Gelände des aktiven
+    /// Gebäudes (mm), siehe [`Model::set_terrain_offset_of`].
     pub fn set_terrain_offset(&mut self, offset: f64) -> bool {
+        self.building_of(self.defaults.storey)
+            .is_some_and(|b| self.set_terrain_offset_of(b, offset))
+    }
+
+    /// Setzt den Versatz OK Sohlplatte über OK Gelände eines Gebäudes (mm).
+    /// Seine Gründung behält ihre Einbindetiefe, wandert also mit dem
+    /// Gelände; wird die Schürze dabei kürzer als 10 cm, bleibt sie 10 cm
+    /// (die Einbindung wächst). Nie flacher als [`FROST_DEPTH`]: Fehlt
+    /// Tiefe, wächst die Schürze. Außerhalb ±[`MAX_TERRAIN_OFFSET`]
+    /// abgelehnt. Andere Gebäude bleiben, wie sie sind.
+    pub fn set_terrain_offset_of(&mut self, b: BuildingId, offset: f64) -> bool {
         if !(offset.is_finite() && offset.abs() <= MAX_TERRAIN_OFFSET + 1e-9) {
             return false;
         }
-        let delta = offset - self.project.terrain;
+        let Some(old) = self.building(b).map(|x| x.terrain) else {
+            return false;
+        };
+        let delta = offset - old;
         if delta == 0.0 {
             return false;
         }
-        self.note_project();
-        self.project.terrain = offset;
-        self.follow_terrain(delta);
-        self.touch();
+        self.put_terrain(b, offset);
+        self.follow_terrain(b, delta);
         true
     }
 
-    /// Alle Gründungen folgen einem um `delta` gesunkenen Gelände (Versatz
-    /// um `delta` gewachsen): UK Gründung liegt wieder um die gewollte
-    /// Einbindetiefe unter OK Gelände, geklemmt auf den erlaubten Bereich
-    /// (Schürze mindestens 10 cm, nie flacher als die Frosttiefe). Stößt
-    /// sie an eine Grenze, merkt sich das Geschoss die gewollte Tiefe;
-    /// Hin und zurück ergibt so dieselbe Gründung.
-    fn follow_terrain(&mut self, delta: f64) {
+    /// Schreibt den Versatz eines Gebäudes (mit Rückgängig).
+    fn put_terrain(&mut self, b: BuildingId, offset: f64) {
+        note!(self, Building, self.buildings, b);
+        if let Some(x) = self.buildings.get_mut(b) {
+            x.terrain = offset;
+        }
+        self.touch();
+    }
+
+    /// Die Gründungen von Gebäude `b` folgen seinem um `delta` gesunkenen
+    /// Gelände (Versatz um `delta` gewachsen): UK Gründung liegt wieder um
+    /// die gewollte Einbindetiefe unter OK Gelände, geklemmt auf den
+    /// erlaubten Bereich (Schürze mindestens 10 cm, nie flacher als die
+    /// Frosttiefe). Stößt sie an eine Grenze, merkt sich das Geschoss die
+    /// gewollte Tiefe; Hin und zurück ergibt so dieselbe Gründung.
+    fn follow_terrain(&mut self, b: BuildingId, delta: f64) {
         let grs: Vec<StoreyId> = self
             .storeys
             .iter()
-            .filter(|(_, s)| s.kind == LevelKind::Foundation)
+            .filter(|(_, s)| s.kind == LevelKind::Foundation && s.building == Some(b))
             .map(|(id, _)| id)
             .collect();
-        let (new, old) = (self.terrain_z(), self.terrain_z() + delta);
+        let new = self.terrain_z_of(Some(b));
+        let old = new + delta;
         for gr in grs {
             let Some(s) = self.storey(gr) else {
                 continue;
@@ -3812,21 +3890,6 @@ impl Model {
             s.embed = embed;
         }
         self.touch();
-    }
-
-    /// Merkt das Projekt im offenen Schritt.
-    fn note_project(&mut self) {
-        match self.txn.as_mut() {
-            Some(t) => {
-                if t.noted.insert(Key::Project) {
-                    t.changes.push(Change::Project {
-                        old: Box::new(self.project.clone()),
-                        new: Box::new(self.project.clone()),
-                    });
-                }
-            }
-            None => debug_assert!(!self.strict, "Änderung ohne Schritt"),
-        }
     }
 
     /// Ist die Gründung `gr` frostfrei (Einbindetiefe ≥ 80 cm)? Alte Dateien
@@ -3861,7 +3924,9 @@ impl Model {
             return false;
         }
         let delta = t - old;
-        let offset = self.project.terrain + delta;
+        // Die Dämmung hebt nur ihr eigenes Gebäude (Entscheidung B)
+        let b = self.building_of_element(slab);
+        let offset = self.terrain_offset_of(b) + delta;
         if offset.abs() > MAX_TERRAIN_OFFSET + 1e-9 {
             return false;
         }
@@ -3869,10 +3934,11 @@ impl Model {
             return false;
         }
         self.edit_slab(slab, |s| s.insulation = t);
-        self.note_project();
-        self.project.terrain = offset;
         // Erst die Dämmung, dann das Gelände: Die Schürze behält ihre Tiefe
-        self.follow_terrain(delta);
+        if let Some(b) = b {
+            self.put_terrain(b, offset);
+            self.follow_terrain(b, delta);
+        }
         self.sync_perimeter(slab);
         self.touch();
         true
@@ -3991,12 +4057,13 @@ impl Model {
         let slab_bottom_z = slab_top_z - s.thickness;
         let insulation = s.insulation.max(0.0);
         let footing_bottom_z = self.level_z(sf.base)?;
-        let terrain_z = self.terrain_z();
+        let building = self.element(slab).and_then(|e| self.building_of(e.storey));
+        let terrain_z = self.terrain_z_of(building);
         Some(GroundBasis {
             run,
             slab,
             footing,
-            building: self.element(slab).and_then(|e| self.building_of(e.storey)),
+            building,
             terrain_z,
             slab_top_z,
             slab_bottom_z,
@@ -4115,6 +4182,7 @@ impl Model {
             guid,
             name: "Gebäude 1".into(),
             number: "GB-01".into(),
+            terrain: 0.0,
         });
         self.building_number = self.building_number.max(1);
         let levels = self.levels_in(None);
@@ -5494,7 +5562,8 @@ impl Model {
             .map_or(0.0, |s| s.elevation);
         (
             eg - MAX_FOUNDATION,
-            (eg - self.max_slab_depth(gr) - MIN_FOOTING).min(self.terrain_z() - FROST_DEPTH),
+            (eg - self.max_slab_depth(gr) - MIN_FOOTING)
+                .min(self.terrain_z_of_level(gr) - FROST_DEPTH),
         )
     }
 
@@ -9601,6 +9670,59 @@ mod gelaende_tests {
         schritt(&mut m, |m| m.set_slab_insulation(slab, 0.0));
         assert!(m.perimeter_of(slab).is_none());
         assert_eq!(m.terrain_offset(), 0.0);
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    /// Entscheidung B: Versatz und Dämmung gelten je Gebäude. Das zweite
+    /// Gebäude behält Gelände und Gründung, wenn das erste gedämmt oder
+    /// verschoben wird; die Abfrage nach Lage liefert die Ebene des
+    /// gefragten Gebäudes.
+    #[test]
+    fn versatz_und_daemmung_je_gebaeude() {
+        let (mut m, eg1, gr1, slab1) = haus();
+        let b1 = m.building_of(gr1).unwrap();
+        m.begin("Haus 2");
+        let b2 = m.add_building(1);
+        let pts = [
+            vec3(20000.0, 0.0, 0.0),
+            vec3(20000.0, 8000.0, 0.0),
+            vec3(30000.0, 8000.0, 0.0),
+            vec3(30000.0, 0.0, 0.0),
+        ];
+        let eg2 = m.build_from_polygon(b2, &pts).unwrap();
+        m.commit();
+        let gr2 = m
+            .storeys()
+            .iter()
+            .find(|(_, s)| s.kind == LevelKind::Foundation && s.building == Some(b2))
+            .map(|(id, _)| id)
+            .unwrap();
+        let g2 = m.ground_basis(eg2).unwrap();
+        schritt(&mut m, |m| m.set_slab_insulation(slab1, 120.0));
+        schritt(&mut m, |m| m.set_terrain_offset_of(b1, 500.0));
+        assert_eq!(m.terrain_offset_of(Some(b1)), 500.0);
+        assert_eq!(m.terrain_offset_of(Some(b2)), 0.0);
+        assert_eq!(m.terrain_z_at(Some(b1), 5000.0, 4000.0), -500.0);
+        assert_eq!(m.terrain_z_at(Some(b2), 25000.0, 4000.0), 0.0);
+        assert_eq!(m.ground_basis(eg2).unwrap(), g2);
+        assert_eq!(m.ground_basis(eg1).unwrap().terrain_z, -500.0);
+        assert!(m.frost_safe(gr1) && m.frost_safe(gr2));
+        schritt(&mut m, |m| m.set_terrain_offset_of(b2, -200.0));
+        assert_eq!(m.terrain_offset_of(Some(b1)), 500.0);
+        assert_eq!(m.embedment_of(gr2), Some(g2.embedment));
+        let text = crate::szo::write(&m);
+        let back = crate::szo::read(&text, GuidGen::with_seed(5))
+            .unwrap()
+            .model;
+        assert_eq!(crate::szo::write(&back), text);
+        let versatz = |guid: Guid| {
+            back.buildings()
+                .iter()
+                .find(|(_, b)| b.guid == guid)
+                .map(|(_, b)| b.terrain)
+        };
+        assert_eq!(versatz(m.building(b1).unwrap().guid), Some(500.0));
+        assert_eq!(versatz(m.building(b2).unwrap().guid), Some(-200.0));
         assert!(m.check().is_empty(), "{:?}", m.check());
     }
 
