@@ -26,12 +26,53 @@ struct Soll {
     ohne: &'static [(&'static str, i64)],
 }
 
+/// Erdarbeiten aus der Gründung (Werksbestand Stand 8, Gelände = OK Platte,
+/// Bodenkennwerte ab Werk), in allen drei Häusern gleich: 1.689,81 €.
+const ERDE: &[Zeile] = &[
+    (
+        "Oberboden bis 30cm abtragen, seitlich lagern",
+        29700,
+        1320,
+        39204,
+        0,
+    ),
+    (
+        "Baugrube ausheben Homogenbereich B1, seitlich lagern",
+        4752,
+        1280,
+        6083,
+        0,
+    ),
+    (
+        "Graben Frostschürze ausheben, Wände senkrecht, Sohle eben",
+        6055,
+        3000,
+        18165,
+        0,
+    ),
+    ("Planum herstellen, ±2cm, verdichten", 67890, 300, 20367, 0),
+    (
+        "Kapillarbrechende Schicht Kies 16/32 einbauen, verdichten",
+        10184,
+        5200,
+        52957,
+        32589,
+    ),
+    (
+        "Aushub laden, abfahren, entsorgen BM-0 (früher Z0)",
+        10807,
+        2980,
+        32205,
+        0,
+    ),
+];
+
 const RH1: Soll = Soll {
     datei: include_str!("../referenz/rh1-standardhaus.szo"),
-    netto: 6008983,
-    material: 3114834,
+    netto: 6177964,
+    material: 3147423,
     geschosse: [
-        ("Gründung", 948000),
+        ("Gründung", 1116981),
         ("Erdgeschoss", 2709564),
         ("Obergeschoss", 2351416),
     ],
@@ -99,10 +140,10 @@ const RH1: Soll = Soll {
 
 const RH2: Soll = Soll {
     datei: include_str!("../referenz/rh2-mehrschalig.szo"),
-    netto: 6997263,
-    material: 3662105,
+    netto: 7166244,
+    material: 3694694,
     geschosse: [
-        ("Gründung", 948000),
+        ("Gründung", 1116981),
         ("Erdgeschoss", 3034024),
         ("Obergeschoss", 3015257),
     ],
@@ -191,10 +232,10 @@ const RH2: Soll = Soll {
 
 const RH3: Soll = Soll {
     datei: include_str!("../referenz/rh3-versatz-dachterrasse.szo"),
-    netto: 6694198,
-    material: 3512120,
+    netto: 6863179,
+    material: 3544709,
     geschosse: [
-        ("Gründung", 948000),
+        ("Gründung", 1116981),
         ("Erdgeschoss", 2937124),
         ("Obergeschoss", 2809049),
     ],
@@ -303,13 +344,13 @@ fn pruefen(s: &Soll) {
             )
         })
         .collect();
-    for z in s.zeilen {
+    for z in s.zeilen.iter().chain(ERDE) {
         assert!(
             ist.iter().any(|i| (i.0.as_str(), i.1, i.2, i.3, i.4) == *z),
             "fehlt {z:?}\nist {ist:#?}"
         );
     }
-    assert_eq!(ist.len(), s.zeilen.len(), "{ist:#?}");
+    assert_eq!(ist.len(), s.zeilen.len() + ERDE.len(), "{ist:#?}");
     assert_eq!(b.netto, Cent(s.netto));
     assert_eq!(b.nur_material, Cent(s.material));
     assert_eq!(b.mwst, Cent((s.netto * 19 + 50) / 100));
@@ -378,8 +419,9 @@ fn rh3_versatz_dachterrasse() {
     pruefen(&RH3);
 }
 
-/// Die Sollbilder zeigen RH-1 ohne Deckenschalung und Randschalung:
-/// 52.395,55 € / 29.642,07 €.
+/// Die Sollbilder zeigen RH-1 ohne Deckenschalung und Randschalung und
+/// ohne die Automatikpositionen (älter als Stand 8): 52.395,55 € /
+/// 29.642,07 €.
 #[test]
 fn rh1_ohne_schalung() {
     let m = laden(RH1.datei);
@@ -388,7 +430,9 @@ fn rh1_ohne_schalung() {
         b.positionen
             .iter()
             .filter(|p| {
-                !p.kurz.starts_with("Deckenschalung") && !p.kurz.starts_with("Randschalung")
+                !p.kurz.starts_with("Deckenschalung")
+                    && !p.kurz.starts_with("Randschalung")
+                    && p.ansatz.iter().all(|a| a.formel.is_none())
             })
             .map(f)
             .sum()
@@ -591,14 +635,14 @@ fn vorschau_mit_summe_vorher_nachher() {
         &u,
     )
     .expect("Vorschau");
-    assert_eq!(p.netto, Some((Cent(6_008_983), Cent(6_250_162))));
+    assert_eq!(p.netto, Some((Cent(6_177_964), Cent(6_424_476))));
     assert_eq!((m.revision(), m.ext_revision()), (rev, ext));
     // gleich der Ausführung
     let h = Herkunft::neu(HerkunftArt::Manual, "2026-10-08", "10:40");
     m.begin("Lohn");
     sk_cost::ausfuehren(&mut m, None, Rolle::Admin, &h, lohn).expect("Lohn");
     m.commit();
-    assert_eq!(blatt(&m, &u).netto, Cent(6_250_162));
+    assert_eq!(blatt(&m, &u).netto, Cent(6_424_476));
     // Zuordnung: eine Außenwandschicht auf eine andere Bauleistung, nur in
     // der Kopie
     let k = lesen::katalog(&m, None);
@@ -634,7 +678,7 @@ fn vorschau_mit_summe_vorher_nachher() {
     .expect("Vorschau Zuordnung");
     assert_eq!(m.revision(), rev);
     let (vorher, nachher) = p.netto.expect("Summen");
-    assert_eq!(vorher, Cent(6_250_162));
+    assert_eq!(vorher, Cent(6_424_476));
     m.begin("Zuordnen");
     sk_cost::ausfuehren(&mut m, None, Rolle::Admin, &h, op).expect("Zuordnen");
     m.commit();

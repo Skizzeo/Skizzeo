@@ -41,7 +41,7 @@ fn anzeige_rechnet_nach() {
     let mut v = KostenView::new();
     v.sync(&mut s, None);
     let netto_voll = v.netto().unwrap();
-    assert_eq!(netto_voll, Cent(6_008_983));
+    assert_eq!(netto_voll, Cent(6_177_964));
     for modus in Modus::ALLE {
         for g in Gliederung::ALLE {
             v.modus = modus;
@@ -191,13 +191,13 @@ fn zahlen_und_csv() {
     v.sync(&mut s, None);
     let csv = String::from_utf8(v.csv("Standardhaus", "08.10.2026")).unwrap();
     assert!(csv.starts_with("\u{feff}Projekt;Standardhaus\r\n"), "{csv}");
-    assert!(csv.contains("\r\nNetto;60089,83\r\n"), "{csv}");
+    assert!(csv.contains("\r\nNetto;61779,64\r\n"), "{csv}");
     assert!(csv.contains("\r\nModus;Material + Lohn\r\n"));
-    // OZ mit Los, Frostschürze unter 1.01.0020; Zeilen ohne Bauleistung
+    // OZ mit Los, Frostschürze unter 1.03.0020; Zeilen ohne Bauleistung
     // ohne OZ, Menge und Einheit getrennt
-    // OZ als Text für Excel: ="1.01.0020"
+    // OZ als Text für Excel: ="1.03.0020"
     assert!(
-        csv.contains(";\"=\"\"1.01.0020\"\"\";Frostschürze"),
+        csv.contains(";\"=\"\"1.03.0020\"\"\";Frostschürze"),
         "{csv}"
     );
     let kopf = csv.lines().find(|l| l.starts_with("Gliederung;")).unwrap();

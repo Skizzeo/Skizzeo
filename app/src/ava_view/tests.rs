@@ -756,8 +756,8 @@ fn csv_oz_bleibt_text() {
         }
     }
     assert!(gesehen > 10, "{gesehen}");
-    // Untertitel „01.02“ steht als Text da
-    assert!(text.contains("\"=\"\"01.02\"\"\";Erdgeschoss"), "{text}");
+    // Untertitel „03.02“ steht als Text da
+    assert!(text.contains("\"=\"\"03.02\"\"\";Erdgeschoss"), "{text}");
 }
 
 /// Jörn 09.10.: In jeder Fensterbreite von 480 bis 1920 dip (100, 125,

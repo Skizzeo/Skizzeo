@@ -1401,13 +1401,15 @@ mod tests {
     fn werk_ohne_befund() {
         let k = werk();
         assert!(k.befunde.is_empty(), "{:#?}", k.befunde);
-        assert_eq!(k.leistungen.len(), 22);
-        assert_eq!(k.artikel.len(), 19);
-        assert_eq!(k.lose.len(), 9);
-        assert_eq!(k.anteile.len(), 28);
+        assert_eq!(k.leistungen.len(), 42);
+        assert_eq!(k.artikel.len(), 21);
+        assert_eq!(k.lose.len(), 11);
+        assert_eq!(k.anteile.len(), 30);
         assert_eq!(k.folgen.len(), 7);
         assert_eq!(k.werte, Firmenwerte::werk());
-        assert_eq!(k.kopf.as_ref().map(|c| c.stand), Some(7));
+        assert_eq!(k.kopf.as_ref().map(|c| c.stand), Some(8));
+        // Stand 8: 20 Automatikpositionen (Erdarbeiten, Baustelleneinrichtung)
+        assert_eq!(k.leistungen.iter().filter(|l| l.auto.is_some()).count(), 20);
         assert!(k.herkunft.iter().all(|h| h.bestaetigt));
         let m10 = k
             .leistungen
@@ -1417,8 +1419,8 @@ mod tests {
                     .starts_with("AW Porenbeton-Planstein PP2-0,35 d=17,5cm")
             })
             .unwrap();
-        assert_eq!(k.oz(m10), "02.0010");
-        assert_eq!(k.oz_voll(m10), "1.02.0010");
+        assert_eq!(k.oz(m10), "04.0010");
+        assert_eq!(k.oz_voll(m10), "1.04.0010");
         assert_eq!(m10.stunden, Dez(450_000));
         assert_eq!(k.anteile_von(m10.guid).count(), 2);
         // Stand 7: Stück je Einheit an den Steinen

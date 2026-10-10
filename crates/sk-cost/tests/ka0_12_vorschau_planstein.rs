@@ -32,11 +32,11 @@ fn ka0_12_vorschau_planstein_99() {
         quelle: "Abnahme 12".into(),
         eingabe: String::new(),
     };
-    assert_eq!(netto(&[stein]), Some((6_008_983, 7_332_352)));
+    assert_eq!(netto(&[stein]), Some((6_177_964, 7_501_333)));
     let lohn = Op::FirmenwertSetzen {
         schluessel: "wage".into(),
         wert: Dez::ganz(65),
     };
-    assert_eq!(netto(&[lohn]), Some((6_008_983, 6_250_162)));
+    assert_eq!(netto(&[lohn]), Some((6_177_964, 6_424_476)));
     assert_eq!((m.revision(), m.ext_revision()), rev, "Modell unverändert");
 }

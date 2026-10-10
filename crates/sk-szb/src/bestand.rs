@@ -99,7 +99,7 @@ pub const BAENDER: [(&str, u32, u32); 12] = [
 ];
 
 /// Werks-Artikel (§10, aus werk.szk).
-pub const ARTIKEL: [WerkArtikel; 19] = [
+pub const ARTIKEL: [WerkArtikel; 21] = [
     a(
         "1S7bUW0010080100000001",
         "m2",
@@ -187,6 +187,16 @@ pub const ARTIKEL: [WerkArtikel; 19] = [
         "m2",
         "MW-Dämmplatte 035 d=120mm gedübelt, inkl. Armierung und Putz",
     ),
+    a(
+        "1S7bUW001008010000000K",
+        "m3",
+        "Kies 16/32 kapillarbrechend, frei Baustelle",
+    ),
+    a(
+        "1S7bUW001008010000000L",
+        "m3",
+        "Schotter 0/32 Füllmaterial, frei Baustelle",
+    ),
 ];
 
 /// Werks-Baustoffe nach Vertrag 0.5 §9.
@@ -234,17 +244,21 @@ pub const BAUSTOFFE: [WerkBaustoff; 10] = [
 ];
 
 /// Gewerke im Werksbestand (§10).
-pub const GEWERKE: [(u32, &str); 6] = [
+pub const GEWERKE: [(u32, &str); 8] = [
+    (18300, "Erdarbeiten"),
     (18330, "Mauerarbeiten"),
     (18331, "Betonarbeiten"),
     (18338, "Dachdeckungs- und Dachabdichtungsarbeiten"),
     (18339, "Klempnerarbeiten"),
     (18345, "Wärmedämm-Verbundsysteme"),
     (18350, "Putz- und Stuckarbeiten"),
+    (18451, "Gerüstarbeiten"),
 ];
 
 /// Kostengruppen, die der Werksbestand kennt.
-pub const KGS: [u32; 12] = [322, 330, 331, 333, 340, 343, 350, 351, 354, 359, 360, 363];
+pub const KGS: [u32; 16] = [
+    311, 322, 325, 330, 331, 333, 340, 343, 350, 351, 354, 359, 360, 363, 391, 392,
+];
 
 /// In Skizzeo belegte Präfixe (§5).
 pub const BELEGT: [&str; 15] = [
@@ -265,7 +279,7 @@ pub const ARTEN: [&str; 9] = [
 ];
 
 /// Werks-Leistungen (§10, aus werk.szk).
-pub const LEISTUNGEN: [WerkLeistung; 22] = [
+pub const LEISTUNGEN: [WerkLeistung; 42] = [
     l(
         "1S7bUW0010080200000001",
         "m3",
@@ -397,6 +411,126 @@ pub const LEISTUNGEN: [WerkLeistung; 22] = [
         "m2",
         "area",
         "Untersichtdämmung Decke MW-Platte d=120mm gedübelt, verputzt",
+    ),
+    l(
+        "1S7bUW001008020000000N",
+        "m3",
+        "auto",
+        "Oberboden bis 30cm abtragen, seitlich lagern",
+    ),
+    l(
+        "1S7bUW001008020000000O",
+        "m3",
+        "auto",
+        "Baugrube ausheben Homogenbereich B1, seitlich lagern",
+    ),
+    l(
+        "1S7bUW001008020000000P",
+        "m3",
+        "auto",
+        "Graben Frostschürze ausheben, Wände senkrecht, Sohle eben",
+    ),
+    l(
+        "1S7bUW001008020000000Q",
+        "m2",
+        "auto",
+        "Planum herstellen, ±2cm, verdichten",
+    ),
+    l(
+        "1S7bUW001008020000000R",
+        "m3",
+        "auto",
+        "Kapillarbrechende Schicht Kies 16/32 einbauen, verdichten",
+    ),
+    l(
+        "1S7bUW001008020000000S",
+        "m3",
+        "auto",
+        "Auffüllung Schotter 0/32 lagenweise einbauen, verdichten",
+    ),
+    l(
+        "1S7bUW001008020000000T",
+        "m3",
+        "auto",
+        "Arbeitsraum mit gelagertem Aushub verfüllen, verdichten",
+    ),
+    l(
+        "1S7bUW001008020000000U",
+        "m3",
+        "auto",
+        "Aushub laden, abfahren, entsorgen BM-0 (früher Z0)",
+    ),
+    l(
+        "1S7bUW001008020000000V",
+        "m2",
+        "auto",
+        "Böschung mit Folie abdecken, vorhalten, räumen",
+    ),
+    l(
+        "1S7bUW001008020000000W",
+        "psch",
+        "auto",
+        "Baustelleneinrichtung einrichten und räumen",
+    ),
+    l(
+        "1S7bUW001008020000000X",
+        "mon",
+        "auto",
+        "Baustelleneinrichtung vorhalten",
+    ),
+    l(
+        "1S7bUW001008020000000Y",
+        "m",
+        "auto",
+        "Bauzaun Mobilzaun h=2,0m aufstellen, vorhalten, räumen",
+    ),
+    l(
+        "1S7bUW001008020000000Z",
+        "st",
+        "auto",
+        "Bauschild liefern, aufstellen, vorhalten, räumen",
+    ),
+    l(
+        "1S7bUW001008020000000a",
+        "psch",
+        "auto",
+        "Baustromanschluss und Verteiler einrichten und räumen",
+    ),
+    l(
+        "1S7bUW001008020000000b",
+        "mon",
+        "auto",
+        "Baustromverteiler vorhalten",
+    ),
+    l(
+        "1S7bUW001008020000000c",
+        "psch",
+        "auto",
+        "Bauwasseranschluss Standrohr einrichten und räumen",
+    ),
+    l(
+        "1S7bUW001008020000000d",
+        "mon",
+        "auto",
+        "Bauwasser-Standrohr vorhalten",
+    ),
+    l(
+        "1S7bUW001008020000000e",
+        "mon",
+        "auto",
+        "Toilettenkabine mobil vorhalten, inkl. Reinigung",
+    ),
+    l(
+        "1S7bUW001008020000000f",
+        "psch",
+        "auto",
+        "Schnurgerüst herstellen, vorhalten, beseitigen",
+    ),
+    l(
+        "1S7bUW001008020000000g",
+        "m2",
+        "auto",
+        "Fassadengerüst LK3 W09, 4 Wochen Standzeit, auf-/abbauen",
     ),
 ];
 

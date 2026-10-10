@@ -56,18 +56,28 @@ fn fall_1_rohbau_mit_preisen() {
     let b = lesen::kosten(&m, &s, &k, &u);
     let lv = lesen::lv(&m, &s, &k, &u, &wahl(false, true));
     let o = ozs(&lv);
-    assert_eq!(o[0].0, "01");
+    let nrs: Vec<&str> = o.iter().map(|x| x.0.as_str()).collect();
+    assert_eq!(nrs, ["01", "02", "03", "04", "05", "06"]);
+    let titel = |nr: &str| o.iter().find(|x| x.0 == nr).unwrap().1.clone();
+    // Erdarbeiten aus der Gründung (Gelände = OK Platte: keine Baugrube
+    // mit Arbeitsraum, keine Verfüllung)
     assert_eq!(
-        o[0].1,
-        ["01.0010", "01.0020", "01.0030", "01.0040", "01.0050", "01.0060"]
+        titel("02"),
+        ["02.0010", "02.0020", "02.0030", "02.0040", "02.0050", "02.0080"]
     );
-    assert_eq!(o[1], ("02".to_string(), vec!["02.0010".to_string()]));
-    assert!(o[2..].iter().all(|(_, p)| p.is_empty()), "{o:?}");
-    assert_eq!(lv.anzahl(), 7);
+    assert_eq!(
+        titel("03"),
+        ["03.0010", "03.0020", "03.0030", "03.0040", "03.0050", "03.0060"]
+    );
+    assert_eq!(titel("04"), ["04.0010"]);
+    assert!(titel("05").is_empty() && titel("06").is_empty(), "{o:?}");
+    assert_eq!(lv.anzahl(), o.iter().map(|x| x.1.len()).sum::<usize>());
+    // alle Gewerke des Loses: Baustelleneinrichtung, Gerüst, Erdbau, Beton, Mauer
+    let gewerke = ["18330", "18331", "18300", "18451"].map(|c| Some(gewerk(&m, c)));
     let beton_mauer: Cent = b
         .nach_gewerk
         .iter()
-        .filter(|(g, _)| *g == Some(gewerk(&m, "18331")) || *g == Some(gewerk(&m, "18330")))
+        .filter(|(g, _)| gewerke.contains(g))
         .map(|x| x.1)
         .sum();
     let z = &lv.zusammenstellung;
@@ -77,7 +87,7 @@ fn fall_1_rohbau_mit_preisen() {
     );
     assert_eq!(
         z.zeilen.len(),
-        2,
+        o.iter().filter(|x| !x.1.is_empty()).count(),
         "leere Titel nicht in der Zusammenstellung"
     );
     // Abnahme 7: Menge, EP und GP wie im Kostenblatt
@@ -107,7 +117,7 @@ fn fall_1_rohbau_mit_preisen() {
         .any(|f| f.ort == Ort::Kopf && f.satz == "Bauherr fehlt" && f.schwere == Schwere::Hinweis));
 }
 
-/// Fall 2: nur EG. B10 und B20 entfallen, B30 bleibt 01.0030.
+/// Fall 2: nur EG. B10 und B20 entfallen, B30 bleibt 03.0030.
 #[test]
 fn fall_2_nur_eg() {
     let m = rh1();
@@ -121,9 +131,15 @@ fn fall_2_nur_eg() {
         .collect();
     let lv = lesen::lv(&m, &qto::schedule(&m), &k, &u, &wahl(false, true));
     let o = ozs(&lv);
-    assert!(!o[0].1.contains(&"01.0010".to_string()), "{o:?}");
-    assert!(!o[0].1.contains(&"01.0020".to_string()), "{o:?}");
-    assert!(o[0].1.contains(&"01.0030".to_string()), "{o:?}");
+    let beton = &o.iter().find(|x| x.0 == "03").unwrap().1;
+    assert!(!beton.contains(&"03.0010".to_string()), "{o:?}");
+    assert!(!beton.contains(&"03.0020".to_string()), "{o:?}");
+    assert!(beton.contains(&"03.0030".to_string()), "{o:?}");
+    // Erdarbeiten hängen an der Gründung und entfallen mit ihr
+    assert!(
+        o.iter().find(|x| x.0 == "02").unwrap().1.is_empty(),
+        "{o:?}"
+    );
 }
 
 /// Fall 3 und 3a: Geschosse als Untertitel. B60 dreimal mit eigener OZ und
@@ -139,25 +155,26 @@ fn fall_3_geschosse_als_untertitel() {
     let b = lesen::kosten(&m, &s, &k, &u);
     let ohne = lesen::lv(&m, &s, &k, &u, &wahl(false, true));
     let lv = crate::lv::lv_aus(&m, &b, &k, &wahl(true, true));
-    let b60: Vec<&LvPosition> = lv.titel[0]
+    let beton = |lv: &Lv| lv.titel.iter().position(|t| t.nr == "03").unwrap();
+    let b60: Vec<&LvPosition> = lv.titel[beton(&lv)]
         .positionen
         .iter()
         .filter(|p| p.oz.ends_with(".0060"))
         .collect();
     let oz: Vec<&str> = b60.iter().map(|p| p.oz.as_str()).collect();
-    assert_eq!(oz, ["01.01.0060", "01.02.0060", "01.03.0060"]);
+    assert_eq!(oz, ["03.01.0060", "03.02.0060", "03.03.0060"]);
     assert!(b60.iter().all(|p| p.ep == Some(Cent(160_000))), "{b60:?}");
-    let u_namen: Vec<&str> = lv.titel[0]
+    let u_namen: Vec<&str> = lv.titel[beton(&lv)]
         .untertitel
         .iter()
         .map(|u| u.name.as_str())
         .collect();
     assert_eq!(u_namen, ["Fundament", "Erdgeschoss", "Obergeschoss"]);
     // ungerundet gleich: Ansatz des Kostenblatts
-    let ganz = ohne.titel[0]
+    let ganz = ohne.titel[beton(&ohne)]
         .positionen
         .iter()
-        .find(|p| p.oz == "01.0060")
+        .find(|p| p.oz == "03.0060")
         .unwrap();
     let roh: i128 = b.positionen[ganz.blatt[0]]
         .ansatz
@@ -298,11 +315,11 @@ fn fall_5_geschaetzt_und_preisstand() {
     assert_eq!(f.schwere, Schwere::Fehler);
     assert!(
         f.satz
-            .contains("in den Kosten geschätzt nach 1.02.0010 AW Porenbeton-Planstein"),
+            .contains("in den Kosten geschätzt nach 1.04.0010 AW Porenbeton-Planstein"),
         "{}",
         f.satz
     );
-    assert!(lv.titel[1].positionen.iter().all(|p| p.oz != "02.0010"));
+    assert!(lv.titel[3].positionen.iter().all(|p| p.oz != "04.0010"));
     assert_eq!(lv.zusammenstellung.geschaetzt, Some(b.geschaetzt_betrag));
 }
 
@@ -353,27 +370,27 @@ fn k12_eine_position_mehrere_preise() {
     let s = qto::schedule(&m);
     let u = Umfang::projekt();
     let mit = lesen::lv(&m, &s, &k, &u, &wahl(false, true));
-    let p = mit.titel[1]
+    let p = mit.titel[3]
         .positionen
         .iter()
-        .find(|p| p.oz == "02.0050")
-        .expect("02.0050");
+        .find(|p| p.oz == "04.0050")
+        .expect("04.0050");
     assert!(p.mehrere_preise);
     assert_eq!((p.ep, p.gp), (None, None));
     // ganze Menge aus dem Ansatz, nicht die Summe der gerundeten Zeilen
     assert_eq!(p.menge, Dez(36_995_000), "2 × 18,4975…");
-    assert!(mit.titel[1].unvollstaendig && mit.zusammenstellung.unvollstaendig);
+    assert!(mit.titel[3].unvollstaendig && mit.zusammenstellung.unvollstaendig);
     let f = mit.befunde.iter().find(|f| f.regel == 101).expect("101");
     assert_eq!(
         f.satz,
-        "1.02.0050 IW Porenbeton-Planstein PP2-0,35 d=17,5cm Dünnbettmörtel hat verschiedene Stoffpreise je Dicke (115 mm und 175 mm); bitte die Bauleistung je Dicke anlegen."
+        "1.04.0050 IW Porenbeton-Planstein PP2-0,35 d=17,5cm Dünnbettmörtel hat verschiedene Stoffpreise je Dicke (115 mm und 175 mm); bitte die Bauleistung je Dicke anlegen."
     );
     assert_eq!(f.schwere, Schwere::Fehler);
     let leer = lesen::lv(&m, &s, &k, &u, &wahl(false, false));
-    let p = leer.titel[1]
+    let p = leer.titel[3]
         .positionen
         .iter()
-        .find(|p| p.oz == "02.0050")
+        .find(|p| p.oz == "04.0050")
         .unwrap();
     assert_eq!(p.menge, Dez(36_995_000));
 }
@@ -483,7 +500,7 @@ fn kurztext_mit_71_zeichen() {
         &wahl(false, true),
     );
     assert!(
-        ozs(&lv)[0].1.iter().any(|oz| oz == "01.0010"),
+        ozs(&lv)[2].1.iter().any(|oz| oz == "03.0010"),
         "{:?}",
         ozs(&lv)
     );
@@ -495,7 +512,7 @@ fn kurztext_mit_71_zeichen() {
     assert_eq!(f.schwere, Schwere::Fehler);
     assert_eq!(
         f.satz,
-        "Der Kurztext von Position 1.01.0010 hat 71 Zeichen; erlaubt sind höchstens 70."
+        "Der Kurztext von Position 1.03.0010 hat 71 Zeichen; erlaubt sind höchstens 70."
     );
 }
 
@@ -572,8 +589,8 @@ fn doppelte_oz_im_pruefen() {
     let u = Umfang::projekt();
     let b = lesen::kosten(&m, &s, &k, &u);
     for (ut, oz) in [
-        (false, vec!["01.0060"]),
-        (true, vec!["01.02.0060", "01.03.0060"]),
+        (false, vec!["03.0060"]),
+        (true, vec!["03.02.0060", "03.03.0060"]),
     ] {
         let lv = lv_aus(&m, &b, &k, &wahl(ut, true));
         let d: Vec<&Befund> = lv.befunde.iter().filter(|b| b.regel == 86).collect();

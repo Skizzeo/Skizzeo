@@ -38,6 +38,11 @@ fn lv(s: &mut Scene, preise: bool, untertitel: bool) -> Lv {
     (*s.lv(None, &Umfang::projekt(), &w)).clone()
 }
 
+/// Titel 03 Betonarbeiten (vor ihm stehen die Automatiktitel 01 und 02).
+fn beton(lv: &mut Lv) -> &mut sk_cost::lv::LvTitel {
+    lv.titel.iter_mut().find(|t| t.nr == "03").unwrap()
+}
+
 fn angaben(preise: bool) -> Angaben {
     Angaben {
         bauvorhaben: "Haus".into(),
@@ -139,18 +144,18 @@ fn mit_preisen() {
         .titel
         .iter()
         .flat_map(|t| &t.positionen)
-        .find(|p| p.oz == "02.0010")
+        .find(|p| p.oz == "04.0010")
         .unwrap();
     let kurz = t.join(" ");
-    assert!(kurz.contains(&p.kurztext), "voller Kurztext von 02.0010");
+    assert!(kurz.contains(&p.kurztext), "voller Kurztext von 04.0010");
     for z in [
         "172,224",
         "54,00",
         "9.300,10",
         "27.636,71",
-        "36.936,81",
-        "7.017,99",
-        "43.954,80",
+        "38.626,62",
+        "7.339,06",
+        "45.965,68",
         "Referenzpreise 10/2026, unverbindlich",
         "mit Preisen",
     ] {
@@ -206,7 +211,7 @@ fn fuer_anfrage() {
     seite_x_von_y(&b, 0);
 }
 
-/// §11.3 Mit Untertiteln: 01.02.0030 mit 16,508, Summenzeile je
+/// §11.3 Mit Untertiteln: 03.02.0030 mit 16,508, Summenzeile je
 /// Untertitel.
 #[test]
 fn mit_untertiteln() {
@@ -229,13 +234,13 @@ fn mit_untertiteln() {
         f,
     );
     let t = alle(&b);
-    assert!(t.iter().any(|x| x == "01.02.0030"));
+    assert!(t.iter().any(|x| x == "03.02.0030"));
     assert!(t.iter().any(|x| x == "16,508"));
     let n_ut: usize = lv.titel.iter().map(|t| t.untertitel.len()).sum();
     assert!(n_ut > 0);
     let summen = t
         .iter()
-        .filter(|x| x.starts_with("Summe 01.") || x.starts_with("Summe 02."))
+        .filter(|x| x.len() > 9 && x.starts_with("Summe 0") && x.as_bytes()[8] == b'.')
         .count();
     assert_eq!(summen, n_ut, "eine Summe je Untertitel");
     ueberdeckt_nichts(&b, f);
@@ -254,8 +259,8 @@ fn uebertrag_ueber_seiten() {
     };
     let mut s = haus();
     let mut lv = lv(&mut s, true, false);
-    // Titel 01 mit 15facher Positionszahl
-    let t = &mut lv.titel[0];
+    // Titel 03 (Beton) mit 15facher Positionszahl
+    let t = beton(&mut lv);
     let einmal = t.positionen.clone();
     for k in 1..15 {
         for p in &einmal {
@@ -292,8 +297,8 @@ fn uebertrag_ueber_seiten() {
     assert!(uebertraege(&mit, "") >= 2);
     // Kosten B11: fehlt ein Preis, trägt der Übertrag die bekannten GP und
     // „(unvollständig)“ wie die Titelsumme
-    lv.titel[0].positionen[1].gp = None;
-    lv.titel[0].unvollstaendig = true;
+    beton(&mut lv).positionen[1].gp = None;
+    beton(&mut lv).unvollstaendig = true;
     let b = blatt(
         &lv,
         &angaben(true),
@@ -313,7 +318,7 @@ fn uebertraege(b: &Blatt, zusatz: &str) -> usize {
     let mut n = 0;
     for i in 0..b.seiten.len() - 1 {
         let tx = texte(&b.seiten[i]);
-        let Some(k) = tx.iter().position(|x| x.starts_with("Übertrag 01")) else {
+        let Some(k) = tx.iter().position(|x| x.starts_with("Übertrag 03")) else {
             continue;
         };
         assert!(tx[k].ends_with(zusatz), "{}", tx[k]);
@@ -411,7 +416,7 @@ fn titelblatt_und_verzeichnis() {
     assert!(s.projekt_setzen("Projektdaten geändert", p));
     let mut lv = lv(&mut s, true, true);
     // Lang genug für Folgeseiten
-    let t = &mut lv.titel[0];
+    let t = beton(&mut lv);
     let einmal = t.positionen.clone();
     for k in 1..8 {
         for p in &einmal {
@@ -561,7 +566,7 @@ fn uebertrag_unvollstaendig_bei_fehlendem_artikelpreis() {
     };
     let mut s = haus();
     let mut lv = lv(&mut s, true, false);
-    let t = &mut lv.titel[0];
+    let t = beton(&mut lv);
     let einmal = t.positionen.clone();
     for k in 1..15 {
         for p in &einmal {
@@ -585,5 +590,5 @@ fn uebertrag_unvollstaendig_bei_fehlendem_artikelpreis() {
     }
     assert!(a
         .iter()
-        .any(|x| x == "Summe 01 Betonarbeiten (unvollständig)"));
+        .any(|x| x == "Summe 03 Betonarbeiten (unvollständig)"));
 }

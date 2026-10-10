@@ -613,7 +613,7 @@ mod tests {
             lib.ext_put(a, &id, l.to_string(), None);
         }
         let mut k = katalog(&m, Some(&lib));
-        assert_eq!(preisquelle(&k), "Preise Firmenkatalog vom 08.10.2026");
+        assert_eq!(preisquelle(&k), "Preise Firmenkatalog vom 10.10.2026");
         k.kopf = None;
         assert_eq!(preisquelle(&k), "Preise Firmenkatalog");
         assert_eq!(

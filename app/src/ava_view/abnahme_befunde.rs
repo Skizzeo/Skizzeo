@@ -95,9 +95,9 @@ fn abnahme_befunde_regeln_und_zaehlung() {
         "blatt 81 H Dachterrasse 14, Schicht Terrassenbelag 60 mm: keine Bauleistung gefunden.",
     ];
     for (name, text, netto_soll) in [
-        (haeuser()[0].0, haeuser()[0].1, 6_008_983),
-        (haeuser()[1].0, haeuser()[1].1, 6_997_263),
-        (haeuser()[2].0, haeuser()[2].1, 6_694_198),
+        (haeuser()[0].0, haeuser()[0].1, 6_177_964),
+        (haeuser()[1].0, haeuser()[1].1, 7_166_244),
+        (haeuser()[2].0, haeuser()[2].1, 6_863_179),
     ] {
         let (netto, ist) = stand(text);
         assert_eq!(netto, netto_soll, "{name}: Netto");

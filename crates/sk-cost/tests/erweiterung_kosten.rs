@@ -82,7 +82,7 @@ fn stuetze_und_bodenplatte_im_lv() {
     );
     let b = blatt(&m, &k, &Umfang::projekt());
     let bp = position(&b, werk_g(BODENPLATTE));
-    assert_eq!((bp.menge, bp.oz.as_str()), (Dez(4_800_000), "1.01.0010"));
+    assert_eq!((bp.menge, bp.oz.as_str()), (Dez(4_800_000), "1.03.0010"));
     assert_eq!(bp.ansatz[0].kg, Some(322));
     let rand = position(&b, werk_g(RANDSCHALUNG));
     assert_eq!(rand.menge, Dez(20_000_000), "Randschalung 20,000 m");
@@ -95,7 +95,7 @@ fn stuetze_und_bodenplatte_im_lv() {
     // eingelesene Leistungen der Stütze im selben Titel, hinter dem Katalog
     let beton = position(&b, kennung("werk.stuetze", "leistung", "stuetze_beton"));
     let schal = position(&b, kennung("werk.stuetze", "leistung", "stuetze_schalung"));
-    assert!(beton.oz.starts_with("1.01.") && schal.oz.starts_with("1.01."));
+    assert!(beton.oz.starts_with("1.03.") && schal.oz.starts_with("1.03."));
     let hoechste = k
         .leistungen
         .iter()
@@ -109,7 +109,7 @@ fn stuetze_und_bodenplatte_im_lv() {
     let pos = |d: &str, l: &str| k.leistung(kennung(d, "leistung", l)).unwrap().pos;
     let erste = (hoechste / 10 + 1) * 10;
     assert_eq!(pos("werk.streifenfundament", "fundament_beton"), erste);
-    assert_eq!(beton.oz, format!("1.01.{:04}", erste + 10), "B14");
+    assert_eq!(beton.oz, format!("1.03.{:04}", erste + 10), "B14");
     assert_eq!(pos("werk.treppe", "treppe_schalung"), erste + 40);
     assert!(schal.oz > beton.oz);
     assert_eq!(beton.menge, Dez(152_000));
@@ -364,7 +364,7 @@ fn katalogsatz_geht_vor() {
     assert!(k.aus_erweiterung("service", g).is_none());
     assert_eq!(k.leistung(g).unwrap().kurz, "Stütze aus der Firma");
     let b = blatt(&m, &k, &Umfang::projekt());
-    assert_eq!(position(&b, g).oz, "1.01.0900");
+    assert_eq!(position(&b, g).oz, "1.03.0900");
 }
 
 /// E8-8: Umfang ohne OG nimmt das Geländer heraus; Geschosse und Ausgleich
