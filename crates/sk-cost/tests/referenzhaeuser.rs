@@ -370,11 +370,11 @@ const RH2: Soll = Soll {
 
 const RH3: Soll = Soll {
     datei: include_str!("../referenz/rh3-versatz-dachterrasse.szo"),
-    netto: 8109886,
-    material: 3590972,
+    netto: 8135874,
+    material: 3584238,
     geschosse: [
         ("Gründung", 2243845),
-        ("Erdgeschoss", 3056967),
+        ("Erdgeschoss", 3082955),
         ("Obergeschoss", 2809049),
     ],
     ausgleich: 25,
@@ -442,12 +442,35 @@ const RH3: Soll = Soll {
             2374035,
             1002001,
         ),
+        // Stand 9, K2: Untersicht zwischen Lattung, Lattung und Randprofil als
+        // Automatik (2,928 m² / 0,80 m bzw. 0,40 m + 20,12 m Umfang)
         (
-            "Untersichtdämmung Decke EPS d=120mm geklebt, verputzt",
+            "Untersichtdämmung EPS 035 d=120mm zwischen Lattung, über Kopf",
             2928,
-            8900,
-            26059,
-            10248,
+            2400,
+            7027,
+            3514,
+        ),
+        (
+            "Grundlattung KVH 60/80 über Kopf, a=80cm, mit Schraubankern",
+            23780,
+            975,
+            23186,
+            0,
+        ),
+        (
+            "Traglattung 30/50 quer, a=40cm, Hinterlüftung",
+            27440,
+            440,
+            12074,
+            0,
+        ),
+        (
+            "Lüftungsprofil Alu gelocht mit Insektenschutz, Untersichtrand",
+            9760,
+            1000,
+            9760,
+            0,
         ),
         (
             "Bauzaun Mobilzaun h=2,0m aufstellen, vorhalten, räumen",

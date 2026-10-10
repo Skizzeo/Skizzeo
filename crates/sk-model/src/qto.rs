@@ -447,16 +447,24 @@ pub struct SoffitQto {
     pub area: f64,
     pub volume: f64,
     pub thickness: f64,
+    /// Umfang ohne Stöße zwischen vorspringenden Segmenten (mm), für die
+    /// Randlatten ([`crate::qto_fassade`]).
+    pub perimeter: f64,
+    /// Freie Außenkante in der Kernflucht darüber (mm), Lüftungsprofil.
+    pub edge: f64,
 }
 
 /// Mengen der Untersichtdämmung einer schon berechneten Decke; `None` ohne
 /// Vorsprung.
 pub fn soffit_qto_of(f: &FloorSlab) -> Option<SoffitQto> {
     let sp = f.soffit?;
+    let (perimeter, edge) = crate::qto_fassade::umfang_und_kante(&f.soffits);
     Some(SoffitQto {
         area: f.soffit_area(),
         volume: f.soffit_volume(),
         thickness: sp.thickness,
+        perimeter,
+        edge,
     })
 }
 
@@ -1217,12 +1225,13 @@ pub struct AutoMenge {
 }
 
 /// Alle Schlüssel der Automatikmengen (`[service] auto=`) mit Einheit und
-/// Bedeutung: Erdarbeiten, Bauvorbereitung, Dach.
+/// Bedeutung: Erdarbeiten, Bauvorbereitung, Dach, Untersicht.
 pub fn auto_schluessel() -> impl Iterator<Item = (&'static str, &'static str, &'static str)> {
     crate::qto_earth::SCHLUESSEL
         .into_iter()
         .chain(crate::qto_site::SCHLUESSEL)
         .chain(crate::qto_dach::SCHLUESSEL)
+        .chain(crate::qto_fassade::SCHLUESSEL)
 }
 
 /// Geschoss, unter dem ein Bauteil in Mengen und Baum steht: sein eigenes,
@@ -1522,6 +1531,9 @@ pub fn schedule(model: &Model) -> Schedule {
     // Zulagen am Attikablech, nach den Mengen der Gründung
     let dach = crate::qto_dach::bauteil_mengen(model, &sched);
     sched.auto.extend(dach);
+    // Lattung und Randprofil der Untersichten
+    let untersicht = crate::qto_fassade::bauteil_mengen(model, &sched);
+    sched.auto.extend(untersicht);
     sched
 }
 

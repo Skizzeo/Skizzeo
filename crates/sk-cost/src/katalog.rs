@@ -1413,15 +1413,16 @@ mod tests {
     fn werk_ohne_befund() {
         let k = werk();
         assert!(k.befunde.is_empty(), "{:#?}", k.befunde);
-        assert_eq!(k.leistungen.len(), 54);
+        assert_eq!(k.leistungen.len(), 57);
         assert_eq!(k.artikel.len(), 28);
-        assert_eq!(k.lose.len(), 14);
+        assert_eq!(k.lose.len(), 16);
         assert_eq!(k.anteile.len(), 38);
         assert_eq!(k.folgen.len(), 10);
         assert_eq!(k.werte, Firmenwerte::werk());
         assert_eq!(k.kopf.as_ref().map(|c| c.stand), Some(9));
-        // Stand 9: 25 Automatikpositionen (Erde, Baustelle, Zulagen Attikaabdeckung)
-        assert_eq!(k.leistungen.iter().filter(|l| l.auto.is_some()).count(), 25);
+        // Stand 9: 28 Automatikpositionen (Erde, Baustelle, Zulagen Attikaabdeckung,
+        // Lattung und Randprofil der Untersicht)
+        assert_eq!(k.leistungen.iter().filter(|l| l.auto.is_some()).count(), 28);
         assert!(k.herkunft.iter().all(|h| h.bestaetigt));
         let m10 = k
             .leistungen

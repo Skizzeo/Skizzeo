@@ -234,7 +234,7 @@ fn abnahme_ka3a4_je_m2_rh() {
     let soll = [
         ("RH-1", 7_595_363, 7_888_933),
         ("RH-2", 8_291_878, 8_609_501),
-        ("RH-3", 8_109_886, 8_420_448),
+        ("RH-3", 8_135_874, 8_447_911),
     ];
     for ((name, text), (n, n60, n65)) in haeuser().into_iter().zip(soll) {
         assert_eq!(name, n);

@@ -174,18 +174,18 @@ pub const ARTIKEL: [WerkArtikel; 28] = [
     a(
         "1S7bUW001008010000000G",
         "m2",
-        "EPS-Dämmplatte 035 d=120mm geklebt, inkl. Armierung und Putz",
+        "EPS-Dämmplatte 035 d=120mm, zwischen Lattung",
     ),
     a("1S7bUW001008010000000H", "m2", "Gipsputz maschinell 15 mm"),
     a(
         "1S7bUW001008010000000I",
         "m2",
-        "MW-Lamellenplatte 035 d=120mm geklebt, inkl. Armierung und Putz",
+        "MW-Klemmplatte 035 d=120mm A1, zwischen Lattung",
     ),
     a(
         "1S7bUW001008010000000J",
         "m2",
-        "MW-Dämmplatte 035 d=120mm gedübelt, inkl. Armierung und Putz",
+        "MW-Dämmplatte 035 d=120mm A1, zwischen Lattung",
     ),
     a(
         "1S7bUW001008010000000K",
@@ -311,7 +311,7 @@ pub const ARTEN: [&str; 10] = [
 ];
 
 /// Werks-Leistungen (§10, aus werk.szk).
-pub const LEISTUNGEN: [WerkLeistung; 54] = [
+pub const LEISTUNGEN: [WerkLeistung; 57] = [
     l(
         "1S7bUW0010080200000001",
         "m3",
@@ -424,7 +424,7 @@ pub const LEISTUNGEN: [WerkLeistung; 54] = [
         "1S7bUW001008020000000J",
         "m2",
         "area",
-        "Untersichtdämmung Decke EPS d=120mm geklebt, verputzt",
+        "Untersichtdämmung EPS 035 d=120mm zwischen Lattung, über Kopf",
     ),
     l(
         "1S7bUW001008020000000K",
@@ -436,13 +436,13 @@ pub const LEISTUNGEN: [WerkLeistung; 54] = [
         "1S7bUW001008020000000L",
         "m2",
         "area",
-        "Untersichtdämmung Decke MW-Lamelle d=120mm geklebt, verputzt",
+        "Untersichtdämmung MW 035 d=120mm A1 zwischen Lattung, über Kopf",
     ),
     l(
         "1S7bUW001008020000000M",
         "m2",
         "area",
-        "Untersichtdämmung Decke MW-Platte d=120mm gedübelt, verputzt",
+        "Untersichtdämmung MW-Platte 035 d=120mm zwischen Lattung, über Kopf",
     ),
     l(
         "1S7bUW001008020000000N",
@@ -635,6 +635,24 @@ pub const LEISTUNGEN: [WerkLeistung; 54] = [
         "st",
         "auto",
         "Zulage Attikaabdeckung Endabschluss mit Stirnblech",
+    ),
+    l(
+        "1S7bUW001008020000000t",
+        "m",
+        "auto",
+        "Grundlattung KVH 60/80 über Kopf, a=80cm, mit Schraubankern",
+    ),
+    l(
+        "1S7bUW001008020000000u",
+        "m",
+        "auto",
+        "Traglattung 30/50 quer, a=40cm, Hinterlüftung",
+    ),
+    l(
+        "1S7bUW001008020000000v",
+        "m",
+        "auto",
+        "Lüftungsprofil Alu gelocht mit Insektenschutz, Untersichtrand",
     ),
 ];
 

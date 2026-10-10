@@ -22,6 +22,8 @@ SZK 1
 [lot] guid=1S7bUW001008030000000C name="Dach" nr="4" pre="Abrechnung nach VOB/C, ATV DIN 18299 ff., in der bei Vertragsschluss gültigen Fassung. Die Mengen sind aus dem Gebäudemodell ermittelt; maßgeblich ist das Aufmaß. Einheitspreise netto in Euro. Abdichtung nach DIN 18531 und der Fachregel für Abdichtungen (Flachdachrichtlinie, Ausgabe 2026-01), Anschlusshöhe an aufgehenden Bauteilen mindestens 15 cm, am Dachrand mindestens 10 cm über Oberfläche Belag. Bitumenbahnen mit mindestens 8 cm Naht- und 12 cm Querstoßüberdeckung. Dachrandabschluss nach DIN 18339 und den Fachregeln des Klempnerhandwerks: Gefälle mindestens 3° zur Dachseite, Tropfkante außen mindestens 4 cm vor der Fassade, Halter höchstens 1,0 m, Einzellängen bis 3,0 m mit Dehnungsausgleich. Zuschnitt aus der Abwicklung, auf Handelsmaß aufgerundet; Zulagen für größere Zuschnitte, Ecken und Endabschlüsse aus dem Modell."
 [lot] guid=1S7bUW001008030000000D name="Dachabdichtung" nr="01" parent=1S7bUW001008030000000C
 [lot] guid=1S7bUW001008030000000E name="Dachrandabschluss" nr="02" parent=1S7bUW001008030000000C
+[lot] guid=1S7bUW001008030000000F name="Ausbau außen" nr="5" pre="Abrechnung nach VOB/C, ATV DIN 18299 ff., in der bei Vertragsschluss gültigen Fassung. Die Mengen sind aus dem Gebäudemodell ermittelt; maßgeblich ist das Aufmaß. Einheitspreise netto in Euro. Untersicht unter Decken über Außenluft, hinterlüftet: Grundlattung mit Dämmung dazwischen, Traglattung quer, Bekleidung, Lüftungsprofil am Rand. Befestigung über Kopf nur mit bauaufsichtlich zugelassenen Dübeln. Die Lattung ist nicht modelliert; ihre Länge ist Fläche durch Achsabstand (Grundlattung 80 cm, Traglattung 40 cm) plus Umfang, Verschnitt im Einheitspreis."
+[lot] guid=1S7bUW001008030000000G name="Untersicht" nr="01" parent=1S7bUW001008030000000F
 [article] guid=1S7bUW0010080100000001 name="Porenbeton-Planbauplatte PP2-0,35 d=11,5cm" mat=2wuC33GkTD9Qack6WJ4EsM t=115 grade="PP2-0,35" format="599×249" unit=m2 price=15.8 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" conv=6.67 std=1
 [article] guid=1S7bUW0010080100000002 name="Porenbeton-Planstein PP2-0,35 d=17,5cm" mat=2wuC33GkTD9Qack6WJ4EsM t=175 grade="PP2-0,35" format="599×249" unit=m2 price=22.16 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" conv=6.67 std=1
 [article] guid=1S7bUW0010080100000003 name="Porenbeton-Planstein PP2-0,35 d=24cm" mat=2wuC33GkTD9Qack6WJ4EsM t=240 grade="PP2-0,35" format="599×249" unit=m2 price=29.4 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" conv=6.67 std=1
@@ -37,10 +39,10 @@ SZK 1
 [article] guid=1S7bUW001008010000000D name="Randdämmstreifen MW" mat=2dv8rsAYH3ovLj1KIg1$Mo grade="WLS 035" format="Höhe bis 25 cm" unit=m price=3 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
 [article] guid=1S7bUW001008010000000E name="WDVS-System EPS 035 d=120mm inkl. Kleber, Dübel, Gewebe, Oberputz" mat=2zPDwmqLPDpAPPFFMa8UFs t=120 grade="WLS 035" unit=m2 price=48.2 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
 [article] guid=1S7bUW001008010000000F name="WDVS-System EPS 035 d=140mm inkl. Kleber, Dübel, Gewebe, Oberputz" mat=2zPDwmqLPDpAPPFFMa8UFs t=140 grade="WLS 035" unit=m2 price=50 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
-[article] guid=1S7bUW001008010000000G name="EPS-Dämmplatte 035 d=120mm geklebt, inkl. Armierung und Putz" mat=2zPDwmqLPDpAPPFFMa8UFs t=120 grade="WLS 035" unit=m2 price=35 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW001008010000000G name="EPS-Dämmplatte 035 d=120mm, zwischen Lattung" mat=2zPDwmqLPDpAPPFFMa8UFs t=120 grade="WLS 035" unit=m2 price=12 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
 [article] guid=1S7bUW001008010000000H name="Gipsputz maschinell 15 mm" mat=3wpDPQ9rX51Re1tUzckf7X unit=m2 price=5 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
-[article] guid=1S7bUW001008010000000I name="MW-Lamellenplatte 035 d=120mm geklebt, inkl. Armierung und Putz" mat=0isiJXaEH68fAGDc36vC$0 t=120 grade="WLS 035" unit=m2 price=40 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
-[article] guid=1S7bUW001008010000000J name="MW-Dämmplatte 035 d=120mm gedübelt, inkl. Armierung und Putz" mat=2dv8rsAYH3ovLj1KIg1$Mo t=120 grade="WLS 035" unit=m2 price=40 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW001008010000000I name="MW-Klemmplatte 035 d=120mm A1, zwischen Lattung" mat=0isiJXaEH68fAGDc36vC$0 t=120 grade="WLS 035" unit=m2 price=14 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
+[article] guid=1S7bUW001008010000000J name="MW-Dämmplatte 035 d=120mm A1, zwischen Lattung" mat=2dv8rsAYH3ovLj1KIg1$Mo t=120 grade="WLS 035" unit=m2 price=14 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
 [article] guid=1S7bUW001008010000000K name="Kies 16/32 kapillarbrechend, frei Baustelle" grade="16/32" unit=m3 price=32 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
 [article] guid=1S7bUW001008010000000L name="Schotter 0/32 Füllmaterial, frei Baustelle" grade="0/32" unit=m3 price=28 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich"
 [article] guid=1S7bUW001008010000000M name="XPS-Perimeterdämmplatte 035 CS 300 kPa, lastabtragend" mat=0y7tgIrEXB1gMowS1z6FHL grade="CS 300 kPa" format="1250×600" unit=m3 price=240 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
@@ -68,10 +70,10 @@ SZK 1
 [service] guid=1S7bUW001008020000000G short="Abfangung Verblendschale, Konsolanker Edelstahl" trade=1S7Wf_00100800000004UQ title=1S7bUW0010080300000005 pos=20 unit=m basis=length hours=0.3
 [service] guid=1S7bUW001008020000000H short="WDVS EPS 035 d=120mm, Kleber, Dübel, Armierung, Oberputz" trade=1S7Wf_00100800000004Uf title=1S7bUW0010080300000007 pos=10 unit=m2 basis=area hours=1.1 cats=exterior mat=2zPDwmqLPDpAPPFFMa8UFs tmin=100 tmax=130
 [service] guid=1S7bUW001008020000000I short="WDVS EPS 035 d=140mm, Kleber, Dübel, Armierung, Oberputz" trade=1S7Wf_00100800000004Uf title=1S7bUW0010080300000007 pos=20 unit=m2 basis=area hours=1.1 cats=exterior mat=2zPDwmqLPDpAPPFFMa8UFs tmin=131 tmax=160
-[service] guid=1S7bUW001008020000000J short="Untersichtdämmung Decke EPS d=120mm geklebt, verputzt" trade=1S7Wf_00100800000004Uf title=1S7bUW0010080300000007 pos=30 unit=m2 basis=area hours=0.9 cats=soffitinsulation mat=2zPDwmqLPDpAPPFFMa8UFs
+[service] guid=1S7bUW001008020000000J short="Untersichtdämmung EPS 035 d=120mm zwischen Lattung, über Kopf" trade=1S7Wf_00100800000004Uf title=1S7bUW001008030000000G pos=20 unit=m2 basis=area hours=0.2 cats=soffitinsulation mat=2zPDwmqLPDpAPPFFMa8UFs
 [service] guid=1S7bUW001008020000000K short="Innenputz Gips maschinell d=15mm Q2" trade=1S7Wf_00100800000004Uk title=1S7bUW0010080300000009 pos=10 unit=m2 basis=area hours=0.25 cats=exterior,interior mat=3wpDPQ9rX51Re1tUzckf7X
-[service] guid=1S7bUW001008020000000L short="Untersichtdämmung Decke MW-Lamelle d=120mm geklebt, verputzt" trade=1S7Wf_00100800000004Uf title=1S7bUW0010080300000007 pos=40 unit=m2 basis=area hours=0.9 cats=soffitinsulation mat=0isiJXaEH68fAGDc36vC$0
-[service] guid=1S7bUW001008020000000M short="Untersichtdämmung Decke MW-Platte d=120mm gedübelt, verputzt" trade=1S7Wf_00100800000004Uf title=1S7bUW0010080300000007 pos=50 unit=m2 basis=area hours=1 cats=soffitinsulation mat=2dv8rsAYH3ovLj1KIg1$Mo
+[service] guid=1S7bUW001008020000000L short="Untersichtdämmung MW 035 d=120mm A1 zwischen Lattung, über Kopf" trade=1S7Wf_00100800000004Uf title=1S7bUW001008030000000G pos=30 unit=m2 basis=area hours=0.2 cats=soffitinsulation mat=0isiJXaEH68fAGDc36vC$0
+[service] guid=1S7bUW001008020000000M short="Untersichtdämmung MW-Platte 035 d=120mm zwischen Lattung, über Kopf" trade=1S7Wf_00100800000004Uf title=1S7bUW001008030000000G pos=40 unit=m2 basis=area hours=0.2 cats=soffitinsulation mat=2dv8rsAYH3ovLj1KIg1$Mo
 [service] guid=1S7bUW001008020000000N short="Oberboden bis 30cm abtragen, seitlich lagern" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000B pos=10 unit=m3 basis=auto hours=0.12 equip=6 kg=311 auto=earth.topsoil
 [service] guid=1S7bUW001008020000000O short="Baugrube ausheben Homogenbereich B1, seitlich lagern" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000B pos=20 unit=m3 basis=auto hours=0.08 equip=8 kg=311 auto=earth.excavation
 [service] guid=1S7bUW001008020000000P short="Graben Frostschürze ausheben, Wände senkrecht, Sohle eben" trade=1S7Wf_00100800000004Ty title=1S7bUW001008030000000B pos=30 unit=m3 basis=auto hours=0.3 equip=12 kg=311 auto=earth.trench
@@ -104,6 +106,9 @@ SZK 1
 [service] guid=1S7bUW001008020000000q short="Zulage Attikaabdeckung Zuschnitt über 667 bis 1000mm" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000E pos=40 unit=m basis=auto hours=0.15 other=40 kg=363 auto=coping.cut1000
 [service] guid=1S7bUW001008020000000r short="Zulage Attikaabdeckung Ecke 90°, gefalzt oder gelötet" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000E pos=50 unit=st basis=auto hours=0.5 other=18 kg=363 auto=coping.corner
 [service] guid=1S7bUW001008020000000s short="Zulage Attikaabdeckung Endabschluss mit Stirnblech" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000E pos=60 unit=st basis=auto hours=0.25 other=10 kg=363 auto=coping.end
+[service] guid=1S7bUW001008020000000t short="Grundlattung KVH 60/80 über Kopf, a=80cm, mit Schraubankern" trade=1S7Wf_00100800000004UU title=1S7bUW001008030000000G pos=10 unit=m basis=auto hours=0.1 other=3.75 kg=353 auto=soffit.batten
+[service] guid=1S7bUW001008020000000u short="Traglattung 30/50 quer, a=40cm, Hinterlüftung" trade=1S7Wf_00100800000004UU title=1S7bUW001008030000000G pos=50 unit=m basis=auto hours=0.06 other=0.8 kg=353 auto=soffit.counter
+[service] guid=1S7bUW001008020000000v short="Lüftungsprofil Alu gelocht mit Insektenschutz, Untersichtrand" trade=1S7Wf_00100800000004UU title=1S7bUW001008030000000G pos=70 unit=m basis=auto hours=0.1 other=4 kg=353 auto=soffit.edge
 [svcpart] guid=1S7bUW0010080400000001 service=1S7bUW0010080200000001 nr=1 art=1S7bUW0010080100000006 qty=1
 [svcpart] guid=1S7bUW0010080400000002 service=1S7bUW0010080200000002 nr=1 art=1S7bUW0010080100000006 qty=1
 [svcpart] guid=1S7bUW0010080400000003 service=1S7bUW0010080200000003 nr=1 art=1S7bUW0010080100000006 qty=1
@@ -179,9 +184,9 @@ SZK 1
 [origin] key=1S7bUW001008010000000D rec=article kind=factory status=confirmed date=2026-10-08 source="aus MW-Plattenpreis geschätzt" conf=rough
 [origin] key=1S7bUW001008010000000E rec=article kind=factory status=confirmed date=2026-10-08 source="EPS 140 10–15 €/m², Kleber und Armierung 6–9 €/m²; Systemanbieter nicht frei einsehbar" conf=rough
 [origin] key=1S7bUW001008010000000F rec=article kind=factory status=confirmed date=2026-10-08 source="EPS 140 10–15 €/m², Kleber und Armierung 6–9 €/m²; Systemanbieter nicht frei einsehbar" conf=rough
-[origin] key=1S7bUW001008010000000G rec=article kind=factory status=confirmed date=2026-10-08 source="aus WDVS-System abgeleitet" conf=rough
-[origin] key=1S7bUW001008010000000I rec=article kind=factory status=confirmed date=2026-10-08 source="aus WDVS-Untersicht abgeleitet, MW-Lamelle teurer als EPS" conf=rough
-[origin] key=1S7bUW001008010000000J rec=article kind=factory status=confirmed date=2026-10-08 source="wie A-UDMW" conf=rough
+[origin] key=1S7bUW001008010000000G rec=article kind=factory status=confirmed date=2026-10-10 source="Stand 9: EPS 035 120 mm 10,45 €/m² + Verschnitt" conf=rough
+[origin] key=1S7bUW001008010000000I rec=article kind=factory status=confirmed date=2026-10-10 source="Stand 9: Recherche A/B §B5, Dämmung 22–35 €/m² mit Lohn" conf=rough
+[origin] key=1S7bUW001008010000000J rec=article kind=factory status=confirmed date=2026-10-10 source="wie A-UDMW" conf=rough
 [origin] key=1S7bUW001008010000000K rec=article kind=factory status=confirmed date=2026-10-10 source="Material 25–50 €/m³ (Recherche Erdarbeiten §5)" conf=rough
 [origin] key=1S7bUW001008010000000L rec=article kind=factory status=confirmed date=2026-10-10 source="Material 25–40 €/m³ (Recherche Erdarbeiten §5)" conf=rough
 [origin] key=1S7bUW001008010000000M rec=article kind=factory status=confirmed date=2026-10-10 source="XPS 300 kPa 200–280 €/m³ netto Fachhandel" conf=rough
@@ -200,9 +205,9 @@ SZK 1
 [origin] key=1S7bUW001008020000000E rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: Schätzung 0,15–0,25 h/m²" conf=rough
 [origin] key=1S7bUW001008020000000F rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: Lohnanteil Klinker 45–65 %" conf=rough
 [origin] key=1S7bUW001008020000000G rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: geschätzt" conf=rough
-[origin] key=1S7bUW001008020000000J rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: Überkopfarbeit, geschätzt" conf=rough
-[origin] key=1S7bUW001008020000000L rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: wie W30" conf=rough
-[origin] key=1S7bUW001008020000000M rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: wie W30, Dübeln überkopf +0,1 h/m²" conf=rough
+[origin] key=1S7bUW001008020000000J rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Recherche A/B §B5: Dämmung über Kopf 0,15–0,25 h/m²" conf=rough
+[origin] key=1S7bUW001008020000000L rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: wie W30" conf=rough
+[origin] key=1S7bUW001008020000000M rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: wie W30" conf=rough
 [origin] key=1S7bUW001008020000000N rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: ARH 0,12 h/m³; Gerät geschätzt" conf=rough
 [origin] key=1S7bUW001008020000000O rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Bagger 36 m³/h, 0,03–0,05 h/m³ Gerät; Lohn mit Helfer" conf=rough
 [origin] key=1S7bUW001008020000000P rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Grabenaushub 25–60 €/m³, 0,07–0,12 h/m³ Gerät" conf=rough
@@ -235,3 +240,6 @@ SZK 1
 [origin] key=1S7bUW001008020000000q rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: aus Recherche B §3.6 hochgerechnet" conf=rough
 [origin] key=1S7bUW001008020000000r rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Recherche B §3.6: Ecke 35–70 €" conf=rough
 [origin] key=1S7bUW001008020000000s rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Recherche B §3.6: Endabschluss 20–40 €" conf=rough
+[origin] key=1S7bUW001008020000000t rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Recherche A/B §B5: 6–10 €/m, Lattung über Kopf 0,08–0,12 h/m" conf=rough
+[origin] key=1S7bUW001008020000000u rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Recherche A/B §B5: 4–7 €/m" conf=rough
+[origin] key=1S7bUW001008020000000v rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Recherche A/B §B5: 8–15 €/m" conf=rough
