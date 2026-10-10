@@ -512,97 +512,115 @@ mod tests {
         let k = sk_render::glx::kontext(W as i32, H as i32).expect("GLX-Kontext (DISPLAY?)");
         let theme = Theme::dark();
         let mut r = Renderer::new(k.gl, crate::style(&theme.env)).unwrap();
-        // 10 × 8 m, zweischalig (AW-49), OG auf der Rückseite 1,50 m
-        // zurückgesetzt: dort Dachterrasse und Verblender darauf
-        let mut m = Model::with_seed(102);
-        let b = m.add_building(2);
-        let pts = [
-            vec3(0.0, 0.0, 0.0),
-            vec3(0.0, 8000.0, 0.0),
-            vec3(10000.0, 8000.0, 0.0),
-            vec3(10000.0, 0.0, 0.0),
+        // 10 × 8 m, OG auf der Rückseite 1,50 m zurückgesetzt (Dachterrasse),
+        // vorn 30 cm vor (Untersicht): zweischalig (AW-49) und mit WDVS
+        let faelle = [
+            (
+                sk_model::CAVITY_TYPE_GUID,
+                (
+                    Some("ist-flachdach-fusspunkt-schaumglas.png"),
+                    "ist-flachdach-untersicht-bekleidung.png",
+                ),
+            ),
+            (
+                sk_model::ETICS_TYPE_GUID,
+                (None, "ist-flachdach-untersicht-wdvs.png"),
+            ),
         ];
-        let eg = m.build_from_polygon(b, &pts).unwrap();
-        let og = m.runs_above(eg)[0];
-        let t = m.type_by_guid(sk_model::CAVITY_TYPE_GUID).unwrap();
-        m.begin("Typ");
-        assert!(m.set_run_type(eg, t));
-        m.commit();
-        // Norden 1,50 m zurück (Terrasse), Süden 30 cm vor (Untersicht)
-        for (k, d) in [(1, -1500.0), (3, 300.0)] {
-            let w = m.wall_at(og, k).unwrap();
-            m.begin("Versatz");
-            m.set_linked(w, false);
-            assert!(m.set_offset(w, d).is_some());
+        for (typ, bilder) in faelle {
+            // 10 × 8 m, zweischalig (AW-49), OG auf der Rückseite 1,50 m
+            // zurückgesetzt: dort Dachterrasse und Verblender darauf
+            let mut m = Model::with_seed(102);
+            let b = m.add_building(2);
+            let pts = [
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ];
+            let eg = m.build_from_polygon(b, &pts).unwrap();
+            let og = m.runs_above(eg)[0];
+            let t = m.type_by_guid(typ).unwrap();
+            m.begin("Typ");
+            assert!(m.set_run_type(eg, t));
             m.commit();
-        }
-        let mut h = Scene::with_model(m);
-        h.set_theme(&theme);
-        r.set_style(crate::style(&theme.env));
-        r.set_looks(&h.table().looks_with(1.0, |_| 1.0));
-        let chains: Vec<_> = h
-            .model()
-            .runs()
-            .iter()
-            .filter_map(|(id, _)| h.model().chain(id))
-            .collect();
-        let seg = |c: &sk_model::WallChain, k: usize| {
-            let n = c.points.len();
-            (c.points[k], c.points[(k + 1) % n])
-        };
-        // Wand mit Fußpunkt: ihr erstes Segment auf der Terrasse
-        let fuss = chains
-            .iter()
-            .find_map(|c| {
+            // Norden 1,50 m zurück (Terrasse), Süden 30 cm vor (Untersicht)
+            for (k, d) in [(1, -1500.0), (3, 300.0)] {
+                let w = m.wall_at(og, k).unwrap();
+                m.begin("Versatz");
+                m.set_linked(w, false);
+                assert!(m.set_offset(w, d).is_some());
+                m.commit();
+            }
+            let mut h = Scene::with_model(m);
+            h.set_theme(&theme);
+            r.set_style(crate::style(&theme.env));
+            r.set_looks(&h.table().looks_with(1.0, |_| 1.0));
+            let chains: Vec<_> = h
+                .model()
+                .runs()
+                .iter()
+                .filter_map(|(id, _)| h.model().chain(id))
+                .collect();
+            let seg = |c: &sk_model::WallChain, k: usize| {
+                let n = c.points.len();
+                (c.points[k], c.points[(k + 1) % n])
+            };
+            // Wand mit Fußpunkt: ihr erstes Segment auf der Terrasse
+            let fuss = chains.iter().find_map(|c| {
                 let f = c.joints.facing_foot.as_ref()?;
                 let k = (0..f.segs.len()).find(|&k| f.at(k))?;
                 Some((seg(c, k), f.band))
-            })
-            .expect("Fußpunkt Schaumglas über der Terrasse");
-        // EG-Wand unter dem Vorsprung: Verblender bis unter die Bekleidung
-        let vor = chains
-            .iter()
-            .find_map(|c| {
-                let o = c.joints.overhang.as_ref()?;
-                let d = o.drip.as_ref()?;
-                let k = d.segs.iter().position(|x| *x)?;
-                Some((seg(c, k), (d.from, o.to)))
-            })
-            .expect("Bekleidung unter dem Vorsprung");
-        for ((pts, band), name) in [
-            (fuss, "ist-flachdach-fusspunkt-schaumglas.png"),
-            (vor, "ist-flachdach-untersicht-bekleidung.png"),
-        ] {
-            let m = (pts.0 + pts.1) * 0.5;
-            let d = (pts.1 - pts.0).normalized();
-            // Blick entlang der Wand (Schnittebene quer dazu), Ausschnitt
-            let yaw = d.y.atan2(d.x);
-            let plane = (vec3(m.x, m.y, 0.0), -vec3(d.x, d.y, 0.0));
-            let netz = h.mesh(ViewKind::Section, Some(plane), &[]);
-            r.set_mesh(crate::MESH_MODEL, &netz);
-            let q = vec3(-d.y, d.x, 0.0) * 700.0;
-            let b = Some((
-                vec3(m.x, m.y, band.0 - 350.0) - q,
-                vec3(m.x, m.y, band.1 + 350.0) + q,
-            ));
-            let cam = crate::fit_parallel_dir(
-                (yaw, 0.0),
-                b,
-                W as f64,
-                W as f64,
-                H as f64,
-                W as f64 * 0.5,
+            });
+            assert_eq!(
+                fuss.is_some(),
+                bilder.0.is_some(),
+                "Fußpunkt nur zweischalig"
             );
-            let mut view = cam.view(W, H);
-            view.paper = Some(h.table().paper);
-            view.patterns =
-                crate::draw_table::pattern_mode(ViewKind::Section, theme.env.patterns_3d);
-            r.draw(W, H, 0, &view).unwrap();
-            std::fs::write(
-                ziel.join(name),
-                sk_paint::encode_png(W, H, &r.read_pixels(W, H)),
-            )
-            .unwrap();
+            // EG-Wand unter dem Vorsprung: Verblender (WDVS: Dämmung) bis unter
+            // die Bekleidung
+            let vor = chains
+                .iter()
+                .find_map(|c| {
+                    let o = c.joints.overhang.as_ref()?;
+                    let d = o.drip.as_ref()?;
+                    let k = d.segs.iter().position(|x| *x)?;
+                    Some((seg(c, k), (d.from, o.to)))
+                })
+                .expect("Bekleidung unter dem Vorsprung");
+            let fuss = fuss.zip(bilder.0);
+            for ((pts, band), name) in fuss.into_iter().chain([(vor, bilder.1)]) {
+                let m = (pts.0 + pts.1) * 0.5;
+                let d = (pts.1 - pts.0).normalized();
+                // Blick entlang der Wand (Schnittebene quer dazu), Ausschnitt
+                let yaw = d.y.atan2(d.x);
+                let plane = (vec3(m.x, m.y, 0.0), -vec3(d.x, d.y, 0.0));
+                let netz = h.mesh(ViewKind::Section, Some(plane), &[]);
+                r.set_mesh(crate::MESH_MODEL, &netz);
+                let q = vec3(-d.y, d.x, 0.0) * 700.0;
+                let b = Some((
+                    vec3(m.x, m.y, band.0 - 350.0) - q,
+                    vec3(m.x, m.y, band.1 + 350.0) + q,
+                ));
+                let cam = crate::fit_parallel_dir(
+                    (yaw, 0.0),
+                    b,
+                    W as f64,
+                    W as f64,
+                    H as f64,
+                    W as f64 * 0.5,
+                );
+                let mut view = cam.view(W, H);
+                view.paper = Some(h.table().paper);
+                view.patterns =
+                    crate::draw_table::pattern_mode(ViewKind::Section, theme.env.patterns_3d);
+                r.draw(W, H, 0, &view).unwrap();
+                std::fs::write(
+                    ziel.join(name),
+                    sk_paint::encode_png(W, H, &r.read_pixels(W, H)),
+                )
+                .unwrap();
+            }
         }
     }
     /// Ist-Bilder Gelände (Jörn 10.10., Themen 1 und 4): RH-1 mit OK Sohle

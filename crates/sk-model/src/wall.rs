@@ -211,12 +211,14 @@ pub struct Overhang {
     pub drip: Option<Drip>,
 }
 
-/// Der abgefangene Verblender läuft auf den bekleideten Segmenten unter
-/// UK Untersichtdämmung weiter bis `from` (UK Bekleidung − Überstand) und
-/// verdeckt die Stirn der Bekleidung (W3, Jörn 05:57).
+/// Die Außenschichten laufen auf den bekleideten Segmenten unter UK
+/// Untersichtdämmung weiter bis `from` (UK Bekleidung − Überstand) und
+/// verdecken die Stirn der Bekleidung (W3, Jörn 05:57 und 14:03): der
+/// abgefangene Verblender, beim WDVS Dämmung und Putz.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Drip {
-    /// Schicht des Verblenders.
+    /// Schichten `0..=layer` (Luftschichten ausgenommen): bis zum
+    /// Verblender bzw. bis zur äußeren Dämmung.
     pub layer: usize,
     /// Unterkante (z, absolut).
     pub from: f64,
@@ -863,6 +865,11 @@ impl WallChain {
         (d.from < o.from - 1e-6 && d.from < cut && d.segs.iter().any(|x| *x)).then_some((d, o.from))
     }
 
+    /// Schichten, die unter die Bekleidung laufen (W3), ohne Luftschichten.
+    fn drip_layers<'a>(&'a self, d: &Drip) -> impl Iterator<Item = usize> + 'a {
+        (0..=d.layer.min(self.layers.len().saturating_sub(1))).filter(|li| !self.layers[*li].air)
+    }
+
     /// Behält vom Körper nur die bekleideten Segmente (W3).
     fn keep_segments(s: &mut Solid, segs: &[bool]) {
         let on = |e: u32| segs.get(e as usize).copied().unwrap_or(false);
@@ -916,17 +923,20 @@ impl WallChain {
             }
         }
         if let (Some((d, z1)), Some(ext)) = (self.drip_at(cut), &ext) {
-            let (lo, hi, mat) = self.layer_offsets()[d.layer];
+            let offs = self.layer_offsets();
             let s = &mut g[4];
-            s.mat = mat;
-            s.layer = d.layer as u8;
-            let (top, top_mat) = if z1 > cut {
-                (cut, mat | material::CUT)
-            } else {
-                (z1, mat)
-            };
-            let kind = self.layers[d.layer].cut_kind();
-            ext.prism(s, d.layer, lo, hi, (d.from, top), top_mat, kind);
+            for li in self.drip_layers(d) {
+                let (lo, hi, mat) = offs[li];
+                s.mat = mat;
+                s.layer = li as u8;
+                let (top, top_mat) = if z1 > cut {
+                    (cut, mat | material::CUT)
+                } else {
+                    (z1, mat)
+                };
+                let kind = self.layers[li].cut_kind();
+                ext.prism(s, li, lo, hi, (d.from, top), top_mat, kind);
+            }
             Self::keep_segments(s, &d.segs);
         }
         let mut s = self.join_parts(g);
@@ -964,10 +974,13 @@ impl WallChain {
             }
         }
         if let (Some((d, z1)), Some(ext)) = (self.drip_at(f64::INFINITY), &ext) {
-            let (lo, hi, mat) = self.layer_offsets()[d.layer];
-            let kind = self.layers[d.layer].cut_kind();
+            let offs = self.layer_offsets();
             let s = &mut g[4];
-            ext.layer_caps(s, (d.layer, lo, hi, mat), kind, (d.from, z1), p0, n);
+            for li in self.drip_layers(d) {
+                let (lo, hi, mat) = offs[li];
+                let kind = self.layers[li].cut_kind();
+                ext.layer_caps(s, (li, lo, hi, mat), kind, (d.from, z1), p0, n);
+            }
             Self::keep_segments(s, &d.segs);
         }
         let mut s = self.join_parts(g);

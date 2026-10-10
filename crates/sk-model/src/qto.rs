@@ -189,14 +189,14 @@ fn extension(model: &Model, below: &WallChain, set: &LayerSet) -> Option<Extensi
             };
             // Vorspringend: der ganze Abschnitt; Nachbarn: nur das Stück über
             // die Ecke hinaus (der Rest ist die EG-Fassade in ihrer Flucht)
-            // Verblender bis unter die Bekleidung (W3): auf den bekleideten
-            // Segmenten länger
+            // Außenschichten bis unter die Bekleidung (W3): auf den
+            // bekleideten Segmenten länger
             let h_drip = below
                 .joints
                 .overhang
                 .as_ref()
                 .and_then(|o| Some((o, o.drip.as_ref()?)))
-                .filter(|(_, d)| d.layer == li && d.segs.get(k) == Some(&true))
+                .filter(|(_, d)| li <= d.layer && d.segs.get(k) == Some(&true))
                 .map_or(0.0, |(o, d)| (o.from - d.from).max(0.0));
             parts[k][li] = if offs[k] > 0.0 {
                 let h = h_ext + h_drip;

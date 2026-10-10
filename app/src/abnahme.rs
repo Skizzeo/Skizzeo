@@ -12260,7 +12260,8 @@ mod og_phase2 {
     /// ganzen Kragstreifen von Kern EG bis Kern OG (BIM 04:25): 2,9160 m², bei
     /// 12 cm 0,3499 m³, bei 20 cm 0,5832 m³ (ein Schritt). Wandmengen (BIM
     /// 04:37): EG-Porenbeton 15,7613, EG-Dämmung 13,6960 (endet an UK UD), OG-
-    /// Dämmung 14,9031 (reicht bis UK UD). Ohne Verblender keine Abfangung.
+    /// Dämmung 14,9031 (reicht bis UK UD), dazu 0,0966 vor der Bekleidung
+    /// (70 mm tiefer, Jörn 14:03). Ohne Verblender keine Abfangung.
     /// Dicke nur 40–300 mm. Direkt löschen wird abgelehnt.
     #[test]
     fn a147_vorsprung_mit_untersichtdaemmung() {
@@ -12273,7 +12274,7 @@ mod og_phase2 {
         assert_eq!(decke_mengen(&s, og).1, 17.15);
         assert_eq!(decke_mengen(&s, eg).0, 77.9544, "DE-001 kragt aus");
         assert_eq!(decke_mengen(&s, eg).1, 17.15);
-        assert_eq!(schale(&s, og), (16.0379, 14.9031), "OG: Dämmung bis UK UD");
+        assert_eq!(schale(&s, og), (16.0379, 14.9997), "OG: Dämmung bis UK UD");
         assert_eq!(
             schale(&s, eg),
             (15.7613, 13.696),
@@ -14394,24 +14395,24 @@ GB-01;Erdgeschoss;340;Innenwände IW 17,5 Porenbeton: Abzug Deckenstreifen;;;;;-
 GB-01;Erdgeschoss;350;Decke über EG 22 cm;DE-001;;1;77,9544;17,1500;
 GB-01;Erdgeschoss;350;davon Auflager in den Außenwänden;DE-001;;;;1,3159;in der Decke enthalten
 GB-01;Erdgeschoss;354;Untersichtdämmung 12 cm;UD-001;;1;2,9160;0,3499;
-GB-01;Erdgeschoss;354;Bekleidung 4 cm;UD-001;;;3,0000;0,1200;
-GB-01;Erdgeschoss;354;Grundlattung a = 80 cm;UD-001;24,3500;;;;
-GB-01;Erdgeschoss;354;Traglattung a = 40 cm;UD-001;28,1000;;;;
-GB-01;Erdgeschoss;354;Lüftungsprofil;UD-001;10,0000;;;;
-GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS (Summe);AW-005 … 008;36,6000;4;;30,9410;
+GB-01;Erdgeschoss;354;Bekleidung 4 cm;UD-001;;;1,5776;0,0631;
+GB-01;Erdgeschoss;354;Grundlattung a = 80 cm;UD-001;22,1172;;;;
+GB-01;Erdgeschoss;354;Traglattung a = 40 cm;UD-001;24,0892;;;;
+GB-01;Erdgeschoss;354;Lüftungsprofil;UD-001;9,7200;;;;
+GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS (Summe);AW-005 … 008;36,6000;4;;31,0376;
 GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS AW-005, Höhe 2,855 m;AW-005;8,3000;1;;6,8934;
-GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS AW-006, Höhe 2,855 m;AW-006;10,0000;1;;8,8118;Versatz +0,30 m
+GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS AW-006, Höhe 2,855 m;AW-006;10,0000;1;;8,9084;Versatz +0,30 m
 GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS AW-007, Höhe 2,855 m;AW-007;8,3000;1;;6,8934;
 GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS AW-008, Höhe 2,855 m;AW-008;10,0000;1;;8,3425;
-GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS: Dämmung (WDVS);;;;108,0970;14,9031;
+GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS: Dämmung (WDVS);;;;108,7970;14,9997;
 GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS: Porenbeton;;;;;16,0379;
 GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS: Abzug Deckenauflager;;;;;-1,3390;in der Decke enthalten
 GB-01;Obergeschoss;350;Decke über OG 22 cm;DE-002;;1;77,9544;17,1500;
 GB-01;Obergeschoss;350;davon Auflager in den Außenwänden;DE-002;;;;1,3390;in der Decke enthalten
 GB-01;Summe nach Baustoff;;Stahlbeton;;;;;58,9237;
-GB-01;Summe nach Baustoff;;Bekleidung Faserzement;;;;;0,1200;
+GB-01;Summe nach Baustoff;;Bekleidung Faserzement;;;;;0,0631;
 GB-01;Summe nach Baustoff;;Porenbeton;;;;;35,1977;
-GB-01;Summe nach Baustoff;;Dämmung (WDVS);;;;210,3930;28,9490;
+GB-01;Summe nach Baustoff;;Dämmung (WDVS);;;;211,0930;29,0457;
 "#
     );
     /// Mengenliste von Musterhaus B als CSV (main 637f33c), Zeilenende hier LF.
@@ -15749,12 +15750,14 @@ mod nach_gewerk {
             (
                 1880,
                 300.0,
-                // Bekleidung unter der UD (W3): 10 m × 0,30 m × 40 mm
+                // Bekleidung unter der UD (W3) zwischen EG-Außenflucht und
+                // Innenseite der WDVS-Dämmung, die 70 mm vor ihr herunterläuft
+                // (Jörn 14:03): WDVS + 0,70 m², Bekleidung 1,5776 m² × 40 mm
                 vec![
                     g("18331", 58.9237, None),
                     g("18330", 31.7992, None),
-                    g("18345", 28.9490, Some(210.393)),
-                    g("18351", 0.12, Some(3.0)),
+                    g("18345", 29.0457, Some(211.093)),
+                    g("18351", 0.0631, Some(1.5776)),
                 ],
             ),
         ] {
@@ -15817,8 +15820,8 @@ mod nach_gewerk {
         );
         let mut s = pruefhaus(1883, 300.0);
         let kg = nach_kg(&mut s);
-        // UD 0,3499 und Bekleidung darunter 0,12 (W3)
-        assert!(kg.contains(&(354, 0.4699)), "{kg:?}");
+        // UD 0,3499 und Bekleidung darunter 0,0631 (W3, bis an die WDVS-Dämmung)
+        assert!(kg.contains(&(354, 0.413)), "{kg:?}");
 
         // Abweichung an der Schicht: WDVS zu 18330
         let mut s = pruefhaus(1884, 0.0);

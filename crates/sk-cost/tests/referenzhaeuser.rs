@@ -378,13 +378,13 @@ const RH2: Soll = Soll {
 
 const RH3: Soll = Soll {
     datei: include_str!("../referenz/rh3-versatz-dachterrasse.szo"),
-    netto: 8169659,
-    material: 3600738,
+    netto: 8160685,
+    material: 3597391,
     geruest: GERUEST_2G,
     geschosse: &[
         ("Gründung", 2243845),
-        ("Erdgeschoss", 3116740),
-        ("Obergeschoss", 2809049),
+        ("Erdgeschoss", 3099772),
+        ("Obergeschoss", 2817043),
     ],
     ausgleich: 25,
     zeilen: &[
@@ -446,14 +446,16 @@ const RH3: Soll = Soll {
         ),
         (
             "WDVS EPS 035 d=120mm, Kleber, Dübel, Armierung, Oberputz",
-            207884,
+            208584,
             11420,
-            2374035,
-            1002001,
+            2382029,
+            1005375,
         ),
         // Stand 9, K2: Untersicht zwischen Lattung, Bekleidung Faserzement 40 mm
         // (W3, in der Datei nachgetragen); Lattung und Randprofil aus der
-        // Bekleidung (3,00 m² / 0,80 m bzw. 0,40 m + 20,60 m Umfang)
+        // Bekleidung (1,78 m² / 0,80 m bzw. 0,40 m + 20,19 m Umfang). Die
+        // WDVS-Dämmung läuft 70 mm vor die Bekleidung (Jörn 14:03): die
+        // Bekleidung endet an ihrer Innenseite, das WDVS wird 0,70 m² größer
         (
             "Untersichtdämmung EPS 035 d=120mm zwischen Lattung, über Kopf",
             2928,
@@ -463,30 +465,30 @@ const RH3: Soll = Soll {
         ),
         (
             "Grundlattung KVH 60/80 über Kopf, a=80cm, mit Schraubankern",
-            24350,
+            22416,
             975,
-            23741,
+            21856,
             0,
         ),
         (
             "Traglattung 30/50 quer, a=40cm, Hinterlüftung",
-            28100,
+            24639,
             440,
-            12364,
+            10841,
             0,
         ),
         (
             "Untersichtbekleidung Faserzementtafel 8mm über Kopf, verschraubt",
-            3000,
+            1778,
             10900,
-            32700,
-            16500,
+            19380,
+            9779,
         ),
         (
             "Lüftungsprofil Alu gelocht mit Insektenschutz, Untersichtrand",
-            10000,
+            9760,
             1000,
-            10000,
+            9760,
             0,
         ),
         (
