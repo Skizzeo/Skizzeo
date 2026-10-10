@@ -1,0 +1,1 @@
+{"permissions":{"allow":["Bash(git merge:*)","Bash(git rebase:*)","Bash(git push -q origin:*)"]}}
