@@ -207,6 +207,21 @@ pub struct Overhang {
     pub offsets: Vec<f64>,
     pub from: f64,
     pub to: f64,
+    /// Verblender unter der Bekleidung (W3).
+    pub drip: Option<Drip>,
+}
+
+/// Der abgefangene Verblender läuft auf den bekleideten Segmenten unter
+/// UK Untersichtdämmung weiter bis `from` (UK Bekleidung − Überstand) und
+/// verdeckt die Stirn der Bekleidung (W3, Jörn 05:57).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Drip {
+    /// Schicht des Verblenders.
+    pub layer: usize,
+    /// Unterkante (z, absolut).
+    pub from: f64,
+    /// Je Segment: bekleidet?
+    pub segs: Vec<bool>,
 }
 
 impl Overhang {
@@ -816,26 +831,43 @@ impl WallChain {
     /// Schicht in derselben Flucht weiterläuft, ohne Naht. Der Fußpunkt
     /// trägt auf den Terrassensegmenten den Schaumglas-Baustoff, dort
     /// bleibt die Naht als Baustoffwechsel (W2).
-    fn join_parts(&self, mut g: [Solid; 4]) -> Solid {
+    fn join_parts(&self, mut g: [Solid; 5]) -> Solid {
         if let Some(f) = &self.joints.facing_foot {
             for t in &mut g[3].triangles {
                 if f.at(t.elem as usize) {
                     t.mat = f.mat | (t.mat & material::CUT);
                 }
             }
-            let [a, .., d] = &mut g;
+            let [a, _, _, d, _] = &mut g;
             merge_seam(d, a, f.band.1);
         }
         if let Some(o) = &self.joints.overhang {
-            let [a, b, c, _] = &mut g;
+            let [a, b, c, _, e] = &mut g;
+            merge_seam(e, b, o.from);
             merge_seam(a, b, o.from);
             merge_seam(b, c, o.to);
         }
-        let [mut a, b, c, d] = g;
+        let [mut a, b, c, d, e] = g;
         a.append(&b);
         a.append(&c);
         a.append(&d);
+        a.append(&e);
         a
+    }
+
+    /// Verblender unter der Bekleidung (W3), wenn er unter `cut` beginnt:
+    /// Schicht, Unterkante, UK Untersichtdämmung und die Segmente.
+    fn drip_at(&self, cut: f64) -> Option<(&Drip, f64)> {
+        let o = self.joints.overhang.as_ref()?;
+        let d = o.drip.as_ref()?;
+        (d.from < o.from - 1e-6 && d.from < cut && d.segs.iter().any(|x| *x)).then_some((d, o.from))
+    }
+
+    /// Behält vom Körper nur die bekleideten Segmente (W3).
+    fn keep_segments(s: &mut Solid, segs: &[bool]) {
+        let on = |e: u32| segs.get(e as usize).copied().unwrap_or(false);
+        s.triangles.retain(|t| on(t.elem));
+        s.edges.retain(|e| on(e.elem));
     }
 
     /// Wandkörper mit Gehrungen an den Ecken, eine Schale je Schicht.
@@ -853,7 +885,7 @@ impl WallChain {
     /// Deckfläche Schnittfläche.
     fn solid_below(&self, cut: f64) -> Solid {
         let ext = self.overhang_chain();
-        let mut g: [Solid; 4] = Default::default();
+        let mut g: [Solid; 5] = Default::default();
         for (i, ((lo, hi, mat), l)) in self
             .layer_offsets()
             .into_iter()
@@ -883,6 +915,20 @@ impl WallChain {
                 chain.prism(s, i, lo, hi, (z0, top), top_mat, l.cut_kind());
             }
         }
+        if let (Some((d, z1)), Some(ext)) = (self.drip_at(cut), &ext) {
+            let (lo, hi, mat) = self.layer_offsets()[d.layer];
+            let s = &mut g[4];
+            s.mat = mat;
+            s.layer = d.layer as u8;
+            let (top, top_mat) = if z1 > cut {
+                (cut, mat | material::CUT)
+            } else {
+                (z1, mat)
+            };
+            let kind = self.layers[d.layer].cut_kind();
+            ext.prism(s, d.layer, lo, hi, (d.from, top), top_mat, kind);
+            Self::keep_segments(s, &d.segs);
+        }
         let mut s = self.join_parts(g);
         if let Some(a) = &self.joints.attika {
             let mut up = crate::terrace::attika_solid(&a.pieces, a.band, cut);
@@ -897,7 +943,7 @@ impl WallChain {
     /// dick, die übrigen Schichten mitteldick.
     pub fn section_caps(&self, p0: Vec3, n: Vec3) -> Solid {
         let ext = self.overhang_chain();
-        let mut g: [Solid; 4] = Default::default();
+        let mut g: [Solid; 5] = Default::default();
         for (li, ((lo, hi, mat), l)) in self
             .layer_offsets()
             .into_iter()
@@ -916,6 +962,13 @@ impl WallChain {
                 let s = &mut g[self.part_group(li, (z0, z1, e))];
                 chain.layer_caps(s, (li, lo, hi, mat), l.cut_kind(), (z0, z1), p0, n);
             }
+        }
+        if let (Some((d, z1)), Some(ext)) = (self.drip_at(f64::INFINITY), &ext) {
+            let (lo, hi, mat) = self.layer_offsets()[d.layer];
+            let kind = self.layers[d.layer].cut_kind();
+            let s = &mut g[4];
+            ext.layer_caps(s, (d.layer, lo, hi, mat), kind, (d.from, z1), p0, n);
+            Self::keep_segments(s, &d.segs);
         }
         let mut s = self.join_parts(g);
         if let Some(a) = &self.joints.attika {

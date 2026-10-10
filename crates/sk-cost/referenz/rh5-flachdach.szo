@@ -22,18 +22,19 @@ SZO 4
 [surface] guid=0193nkAlT2LhksTCegVeuh name="Stahlbeton" color=8e8e8d cut=969694
 [surface] guid=0Kv0ys5avCWgZAh4WMU3Ds name="Randdämmung" color=ece6c4 cut=e2cc78
 [surface] guid=0Nqc$Rzfn6JB4EHC6Nzy46 name="Luft" color=ffffff cut=ffffff
+[surface] guid=0PkPGEZyD0Nwsu$fA4WLKm name="Abdichtung Bitumen 2-lagig" color=46484c cut=282a2e
+[surface] guid=0Xfeikm$TDDhm1yA0dqkwY name="Terrassenbelag" color=c4beb2 cut=aca69a
+[surface] guid=0YIeR9Hnb2B9mk8lqdTlNV name="Bekleidung Faserzement" color=a8aaa6 cut=c4c6c2
 [surface] guid=0bqfa7vhvAWwwAvb377hM4 name="Dämmung (WDVS)" color=f4efdc cut=e8c45c
+[surface] guid=0zP7Nrbtb8tgiXYW4_ULcv name="Dämmung hart (Terrasse)" color=d6e2ec cut=b4c8de
 [surface] guid=1G87ywj6vEoh1uzpHeS9Ka name="Porenbeton" color=eeede8 cut=b0b1ae
+[surface] guid=1Goi_vOAv9o99YBp2NFzW6 name="Titanzink 0,7" color=969ea4 cut=6e767c
 [surface] guid=1MI6$s1jP42ehJb$wmcr0Y name="Kerndämmung (Mineralwolle)" color=ece2aa cut=dec86e
-[surface] guid=1xjhc4ttH0zP3ROvuSoTK0 name="Dämmung EPS 035 DAA dh" color=ece8d6 cut=d6d0b8
+[surface] guid=1N_6ICGD94VvNp1f0OyLdA name="Dämmung EPS 035 DAA dh" color=ece8d6 cut=d6d0b8
 [surface] guid=1_KdO0VdzEIPirKebRD7JT name="Schaumglas-Dämmstein" color=808486 cut=b0b4b6
 [surface] guid=2I0iV4XeLFxOVLUIsiaPG9 name="Verblender (Vormauerziegel)" color=ffffff cut=96503e
-[surface] guid=30bdSmDEDFExuYUOMcmv3V name="Dämmung hart (Terrasse)" color=d6e2ec cut=b4c8de
-[surface] guid=319H2rOzXFIwe64TIrJuTQ name="Terrassenbelag" color=c4beb2 cut=aca69a
+[surface] guid=2mDo0a4of1KAUNzv9mg0YF name="Dampfsperre Bitumen-Alu" color=787c82 cut=5a5e64
 [surface] guid=3MoId9HKv2OPcggMMyT2Nx name="Putz" color=ececed cut=c8c6c0
-[surface] guid=3bbMWooELC3AUNtu49mjuG name="Titanzink 0,7" color=969ea4 cut=6e767c
-[surface] guid=3kR02XhFXCDwDnm$5eQhEf name="Abdichtung Bitumen 2-lagig" color=46484c cut=282a2e
-[surface] guid=3l$T5ucL96bPOWJBa9MlHA name="Dampfsperre Bitumen-Alu" color=787c82 cut=5a5e64
 [display] slot=drawing.view pen=14aAtKoCX5n9c2Nc3B4nHX lt=2tPWXx8yr62xOuexxUL_tQ
 [display] slot=drawing.cut pen=1IiLgAMJ9FNOr_wJnDOsJy lt=2tPWXx8yr62xOuexxUL_tQ
 [display] slot=drawing.fine pen=0gW2blvGf1MfYVGCh3XF08 lt=2tPWXx8yr62xOuexxUL_tQ
@@ -53,21 +54,23 @@ SZO 4
 [trade] guid=1S7Wf_00100800000004UY code="18338" name="Dachdeckungs- und Dachabdichtungsarbeiten" order=10
 [trade] guid=1S7Wf_00100800000004UZ code="18339" name="Klempnerarbeiten" order=11
 [trade] guid=1S7Wf_00100800000004Uf code="18345" name="Wärmedämm-Verbundsysteme" order=16
+[trade] guid=1S7Wf_00100800000004Ul code="18351" name="Vorgehängte hinterlüftete Fassaden" order=17
 [trade] guid=1S7Wf_00100800000004Uk code="18350" name="Putz- und Stuckarbeiten" order=18
 [material] guid=0IMx_GM9LBJQ9vKs2JYvZu name="Luft" cat=air prio=0 rho=1.2 lambda=- fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0Nqc$Rzfn6JB4EHC6Nzy46
-[material] guid=0Yb39JGen4JxkgK3pBgZ4k name="Dampfsperre Bitumen-Alu" cat=membrane prio=200 rho=1100 lambda=0.17 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=3l$T5ucL96bPOWJBa9MlHA trade=1S7Wf_00100800000004UY
+[material] guid=0Yb39JGen4JxkgK3pBgZ4k name="Dampfsperre Bitumen-Alu" cat=membrane prio=200 rho=1100 lambda=0.17 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=2mDo0a4of1KAUNzv9mg0YF trade=1S7Wf_00100800000004UY
 [material] guid=0isiJXaEH68fAGDc36vC$0 name="Kerndämmung (Mineralwolle)" cat=insulation prio=300 rho=30 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1MI6$s1jP42ehJb$wmcr0Y trade=1S7Wf_00100800000004UQ
 [material] guid=1OqECAAtX4og5C15quWKaA name="Schaumglas-Dämmstein" cat=insulation prio=300 rho=165 lambda=0.058 fill=0fATA5wWvAQQhv902iMpVy fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1_KdO0VdzEIPirKebRD7JT trade=1S7Wf_00100800000004UQ
-[material] guid=1OxgZ1vjv038gKF7kkLN6C name="Dämmung EPS 035 DAA dh" cat=insulation prio=300 rho=20 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1xjhc4ttH0zP3ROvuSoTK0 trade=1S7Wf_00100800000004UY
-[material] guid=1vl_pQvH1FDBsLfn5l1heC name="Terrassenbelag" cat=concrete prio=500 rho=2200 lambda=1.65 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=319H2rOzXFIwe64TIrJuTQ trade=1S7Wf_00100800000004UY
+[material] guid=1OxgZ1vjv038gKF7kkLN6C name="Dämmung EPS 035 DAA dh" cat=insulation prio=300 rho=20 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1N_6ICGD94VvNp1f0OyLdA trade=1S7Wf_00100800000004UY
+[material] guid=1vl_pQvH1FDBsLfn5l1heC name="Terrassenbelag" cat=concrete prio=500 rho=2200 lambda=1.65 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0Xfeikm$TDDhm1yA0dqkwY trade=1S7Wf_00100800000004UY
 [material] guid=203X9w6RHAvxaAnObFB0IP name="Verblender (Vormauerziegel)" cat=masonry prio=700 rho=1800 lambda=0.68 fill=3rzDaPgYj7zhDembDO9g_d fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=2I0iV4XeLFxOVLUIsiaPG9 trade=1S7Wf_00100800000004UQ
-[material] guid=2N$fHb0Xb1UBvWkvwrJ4Rx name="Titanzink 0,7" cat=metal prio=900 rho=7200 lambda=110 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=3bbMWooELC3AUNtu49mjuG trade=1S7Wf_00100800000004UZ
-[material] guid=2OkeJcZuXDoAclkUNNrqJM name="Abdichtung Bitumen 2-lagig" cat=membrane prio=200 rho=1100 lambda=0.17 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=3kR02XhFXCDwDnm$5eQhEf trade=1S7Wf_00100800000004UY
+[material] guid=2N$fHb0Xb1UBvWkvwrJ4Rx name="Titanzink 0,7" cat=metal prio=900 rho=7200 lambda=110 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1Goi_vOAv9o99YBp2NFzW6 trade=1S7Wf_00100800000004UZ
+[material] guid=2OkeJcZuXDoAclkUNNrqJM name="Abdichtung Bitumen 2-lagig" cat=membrane prio=200 rho=1100 lambda=0.17 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0PkPGEZyD0Nwsu$fA4WLKm trade=1S7Wf_00100800000004UY
+[material] guid=2b6MkyCfr3CuSbvo_tnB5F name="Bekleidung Faserzement" cat=concrete prio=500 rho=1800 lambda=- fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0YIeR9Hnb2B9mk8lqdTlNV trade=1S7Wf_00100800000004Ul
 [material] guid=2dv8rsAYH3ovLj1KIg1$Mo name="Randdämmung" cat=insulation prio=300 rho=30 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0Kv0ys5avCWgZAh4WMU3Ds trade=1S7Wf_00100800000004UQ
 [material] guid=2wuC33GkTD9Qack6WJ4EsM name="Porenbeton" cat=masonry prio=800 rho=350 lambda=0.09 fill=3rzDaPgYj7zhDembDO9g_d fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1G87ywj6vEoh1uzpHeS9Ka trade=1S7Wf_00100800000004UQ
 [material] guid=2zPDwmqLPDpAPPFFMa8UFs name="Dämmung (WDVS)" cat=insulation prio=300 rho=20 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0bqfa7vhvAWwwAvb377hM4 trade=1S7Wf_00100800000004Uf
 [material] guid=32Ino7hAj08ufHFYBJxPyP name="Stahlbeton" cat=concrete prio=900 rho=2500 lambda=2.3 fill=3w$Ivc7fPFuRh_XxlbojR5 fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0193nkAlT2LhksTCegVeuh trade=1S7Wf_00100800000004UR
-[material] guid=3NKChAqkL3uwFZN5n$FOr1 name="Dämmung hart (Terrasse)" cat=insulation prio=300 rho=30 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=30bdSmDEDFExuYUOMcmv3V trade=1S7Wf_00100800000004UY
+[material] guid=3NKChAqkL3uwFZN5n$FOr1 name="Dämmung hart (Terrasse)" cat=insulation prio=300 rho=30 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0zP7Nrbtb8tgiXYW4_ULcv trade=1S7Wf_00100800000004UY
 [material] guid=3wpDPQ9rX51Re1tUzckf7X name="Putz" cat=plaster prio=100 rho=1400 lambda=0.87 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=3MoId9HKv2OPcggMMyT2Nx trade=1S7Wf_00100800000004Uk
 [layerset] guid=0ZfW2fP394GuDJUdD2cn2v name="Flachdach 21,5" code="DA-21,5" cat=roof changed=1 note=""
 [layer] set=0ZfW2fP394GuDJUdD2cn2v mat=2OkeJcZuXDoAclkUNNrqJM t=10 fn=membrane core=0 trade=1S7Wf_00100800000004UY
@@ -95,36 +98,36 @@ SZO 4
 [layer] set=2$6TN9pv91oRMXaTMzh9E2 mat=2wuC33GkTD9Qack6WJ4EsM t=175 fn=loadbearing core=1
 [layerset] guid=3ZTJrDtor3KfcH2vccNFkY name="IW 17,5 Porenbeton" code="IW-17,5" cat=interior changed=1 note=""
 [layer] set=3ZTJrDtor3KfcH2vccNFkY mat=2wuC33GkTD9Qack6WJ4EsM t=175 fn=loadbearing core=1
-[project] guid=3dfX_afmX24gxP_UqBTE82 name="Projekt" storey=1rNblenFPDSBgCTEvwFujn wallset=1o57_JzOU2n0nmPAl2XdZt iwset=3ZTJrDtor3KfcH2vccNFkY
-[building] guid=1LiT_J3I1D4eq7pq09hgxL name="Gebäude 1" number="GB-01"
-[storey] guid=0TIGTNvyjBNuts$1ksqR8V building=1LiT_J3I1D4eq7pq09hgxL name="Obergeschoss" short="OG" kind=storey elev=2855 h=2855
-[storey] guid=0xs6CL9_T3cA_kFzigTE43 building=1LiT_J3I1D4eq7pq09hgxL name="Gründung" short="GR" kind=foundation elev=-800 h=800
-[storey] guid=1rNblenFPDSBgCTEvwFujn building=1LiT_J3I1D4eq7pq09hgxL name="Erdgeschoss" short="EG" kind=storey elev=0 h=2855
-[storey] guid=2NwNd1brLAnB6xxlhTzAvg building=1LiT_J3I1D4eq7pq09hgxL name="Flachdach" short="FD" kind=roof elev=5710 h=500
-[run] guid=0X5mVL0zD4HwvojMcnQ_xf storey=1rNblenFPDSBgCTEvwFujn base=1rNblenFPDSBgCTEvwFujn:u:0 top=1rNblenFPDSBgCTEvwFujn:o:0 ref=left closed=1 pts="0 0;0 8000;10000 8000;10000 0"
-[run] guid=1oxVsIKZ94OeZcLYPnGM0s storey=0TIGTNvyjBNuts$1ksqR8V base=0TIGTNvyjBNuts$1ksqR8V:u:0 top=0TIGTNvyjBNuts$1ksqR8V:o:0 ref=left closed=1 pts="0 -300;0 6500;10000 6500;10000 -300"
-[run] guid=27nrX_rdz91BGVbV73ZMEq storey=2NwNd1brLAnB6xxlhTzAvg base=2NwNd1brLAnB6xxlhTzAvg:u:0 top=2NwNd1brLAnB6xxlhTzAvg:o:0 ref=left closed=1 pts="0 -300;0 6500;10000 6500;10000 -300"
-[wall] guid=04sIBH07j3I8KhoMR6lzlt run=0X5mVL0zD4HwvojMcnQ_xf seg=0 number="AW-001" cat=exterior set=2hOi2zoKksT0kOOpxRX45S seq=3 storey=1rNblenFPDSBgCTEvwFujn
-[wall] guid=0U278Dhgz5thEtskWqbKgE run=27nrX_rdz91BGVbV73ZMEq seg=1 number="AK-002" cat=parapet set=2hOi2zoKksT0kOOpxRX45S seq=7 storey=2NwNd1brLAnB6xxlhTzAvg below=3HcUuuPIX0PBeEHWv6i4oO off=0
-[wall] guid=0mArnJMTv4JB09$VQzE86f run=0X5mVL0zD4HwvojMcnQ_xf seg=3 number="AW-004" cat=exterior set=2hOi2zoKksT0kOOpxRX45S seq=3 storey=1rNblenFPDSBgCTEvwFujn
-[wall] guid=0qsU0nTWb1k8dOjFCoagsr run=0X5mVL0zD4HwvojMcnQ_xf seg=1 number="AW-002" cat=exterior set=2hOi2zoKksT0kOOpxRX45S seq=3 storey=1rNblenFPDSBgCTEvwFujn
-[wall] guid=1OSwpjCWz3ngAAZgnepKrj run=1oxVsIKZ94OeZcLYPnGM0s seg=0 number="AW-005" cat=exterior set=2hOi2zoKksT0kOOpxRX45S seq=5 storey=0TIGTNvyjBNuts$1ksqR8V below=04sIBH07j3I8KhoMR6lzlt off=0
-[wall] guid=2HnUyY7IT1uOt5MplyOMLO run=27nrX_rdz91BGVbV73ZMEq seg=3 number="AK-004" cat=parapet set=2hOi2zoKksT0kOOpxRX45S seq=7 storey=2NwNd1brLAnB6xxlhTzAvg below=2oHtIV3rv3_xUtwUs8Z6aM off=0
-[wall] guid=2L7X9j5bX1lhrnoRX8W9TR run=1oxVsIKZ94OeZcLYPnGM0s seg=2 number="AW-007" cat=exterior set=2hOi2zoKksT0kOOpxRX45S seq=5 storey=0TIGTNvyjBNuts$1ksqR8V below=3nQdqYXpn7pfVVLyom$V5D off=0
-[wall] guid=2oHtIV3rv3_xUtwUs8Z6aM run=1oxVsIKZ94OeZcLYPnGM0s seg=3 number="AW-008" cat=exterior set=2hOi2zoKksT0kOOpxRX45S seq=5 storey=0TIGTNvyjBNuts$1ksqR8V below=0mArnJMTv4JB09$VQzE86f off=300 link=0
-[wall] guid=2z9EJ7Zsz0$wvoCZktHSMg run=27nrX_rdz91BGVbV73ZMEq seg=2 number="AK-003" cat=parapet set=2hOi2zoKksT0kOOpxRX45S seq=7 storey=2NwNd1brLAnB6xxlhTzAvg below=2L7X9j5bX1lhrnoRX8W9TR off=0
-[wall] guid=3HcUuuPIX0PBeEHWv6i4oO run=1oxVsIKZ94OeZcLYPnGM0s seg=1 number="AW-006" cat=exterior set=2hOi2zoKksT0kOOpxRX45S seq=5 storey=0TIGTNvyjBNuts$1ksqR8V below=0qsU0nTWb1k8dOjFCoagsr off=-1500 link=0
-[wall] guid=3n3_jA97TD49bL03lNjXuP run=27nrX_rdz91BGVbV73ZMEq seg=0 number="AK-001" cat=parapet set=2hOi2zoKksT0kOOpxRX45S seq=7 storey=2NwNd1brLAnB6xxlhTzAvg below=1OSwpjCWz3ngAAZgnepKrj off=0
-[wall] guid=3nQdqYXpn7pfVVLyom$V5D run=0X5mVL0zD4HwvojMcnQ_xf seg=2 number="AW-003" cat=exterior set=2hOi2zoKksT0kOOpxRX45S seq=3 storey=1rNblenFPDSBgCTEvwFujn
-[slab] guid=2wpQFoZGLDJQy0TQmTrh1E run=0X5mVL0zD4HwvojMcnQ_xf number="SP-001" cat=groundslab mat=32Ino7hAj08ufHFYBJxPyP top=1rNblenFPDSBgCTEvwFujn:u:0 t=220 recess=0 seq=2 storey=1rNblenFPDSBgCTEvwFujn
-[footing] guid=3SU2t_xp91rxhulioFu8sV slab=2wpQFoZGLDJQy0TQmTrh1E number="FS-001" cat=stripfooting mat=32Ino7hAj08ufHFYBJxPyP w=350 base=0xs6CL9_T3cA_kFzigTE43:u:0 seq=1 storey=1rNblenFPDSBgCTEvwFujn
-[floor] guid=2Beh8rAwnA$h6PYUCR9itl run=0X5mVL0zD4HwvojMcnQ_xf number="DE-001" cat=floor mat=32Ino7hAj08ufHFYBJxPyP top=1rNblenFPDSBgCTEvwFujn:o:0 t=220 seq=4 storey=1rNblenFPDSBgCTEvwFujn
-[floor] guid=2O2jVx0nn0PhUT23D8DqSr run=1oxVsIKZ94OeZcLYPnGM0s number="DE-002" cat=floor mat=32Ino7hAj08ufHFYBJxPyP top=0TIGTNvyjBNuts$1ksqR8V:o:0 t=220 seq=6 storey=0TIGTNvyjBNuts$1ksqR8V
-[soffit] guid=3zgmBebWzBfP3f_xM4jHOi floor=2Beh8rAwnA$h6PYUCR9itl number="UD-001" cat=soffitinsulation seq=4 storey=1rNblenFPDSBgCTEvwFujn
-[coping] guid=0ReR9q82LAaf$6MJKluvIR floor=2Beh8rAwnA$h6PYUCR9itl number="AB-001" cat=coping seq=4 storey=1rNblenFPDSBgCTEvwFujn
-[roof] guid=2C_R$h13z3ovUUTVIVvZRR floor=2O2jVx0nn0PhUT23D8DqSr number="DA-001" cat=roof set=0ZfW2fP394GuDJUdD2cn2v seq=6 storey=2NwNd1brLAnB6xxlhTzAvg
-[terrace] guid=3ZnhpR$ar4lR2HZXfkzt6L floor=2Beh8rAwnA$h6PYUCR9itl number="DT-001" cat=roofterrace set=2dMkjFCxf6nfRD5ttUqAkM seq=4 storey=1rNblenFPDSBgCTEvwFujn
-[coping] guid=3nkAcflZH0IvE0Ke2J30Je floor=2O2jVx0nn0PhUT23D8DqSr number="AB-002" cat=coping seq=6 storey=2NwNd1brLAnB6xxlhTzAvg
+[project] guid=2lEucWS4LBkv8hpkucR5F8 name="Projekt" storey=0Pq_YMFiT0Egp$ZozVSUsz wallset=1o57_JzOU2n0nmPAl2XdZt iwset=3ZTJrDtor3KfcH2vccNFkY
+[building] guid=0lw6OTG_D7Per8YUXaxVQL name="Gebäude 1" number="GB-01"
+[storey] guid=0Pq_YMFiT0Egp$ZozVSUsz building=0lw6OTG_D7Per8YUXaxVQL name="Erdgeschoss" short="EG" kind=storey elev=0 h=2855
+[storey] guid=1fh6OTG_C7PWr8YUXaxR3H building=0lw6OTG_D7Per8YUXaxVQL name="Flachdach" short="FD" kind=roof elev=5710 h=500
+[storey] guid=1uO4PHiD18eADIYLCDHDuY building=0lw6OTG_D7Per8YUXaxVQL name="Obergeschoss" short="OG" kind=storey elev=2855 h=2855
+[storey] guid=2bhF2XHmzCZvgZ_Vz2T82U building=0lw6OTG_D7Per8YUXaxVQL name="Gründung" short="GR" kind=foundation elev=-800 h=800
+[run] guid=0qa3gSQ3T93BpBAK2vv43o storey=1fh6OTG_C7PWr8YUXaxR3H base=1fh6OTG_C7PWr8YUXaxR3H:u:0 top=1fh6OTG_C7PWr8YUXaxR3H:o:0 ref=left closed=1 pts="0 -300;0 6500;10000 6500;10000 -300"
+[run] guid=1mqBpnnlf26QmvyZP8HPzH storey=0Pq_YMFiT0Egp$ZozVSUsz base=0Pq_YMFiT0Egp$ZozVSUsz:u:0 top=0Pq_YMFiT0Egp$ZozVSUsz:o:0 ref=left closed=1 pts="0 0;0 8000;10000 8000;10000 0"
+[run] guid=2VtlfPLnX4oxj5kgKbxL2F storey=1uO4PHiD18eADIYLCDHDuY base=1uO4PHiD18eADIYLCDHDuY:u:0 top=1uO4PHiD18eADIYLCDHDuY:o:0 ref=left closed=1 pts="0 -300;0 6500;10000 6500;10000 -300"
+[wall] guid=09ocH09rz7BBTp3AnrKLJ$ run=0qa3gSQ3T93BpBAK2vv43o seg=2 number="AK-003" cat=parapet set=2hOi2zoKksT0kOOpxRX45S seq=7 storey=1fh6OTG_C7PWr8YUXaxR3H below=18WRdYFUnDIezevYPI9cZe off=0
+[wall] guid=0jH5d9Qpz6U8QDo6xjDosM run=2VtlfPLnX4oxj5kgKbxL2F seg=1 number="AW-006" cat=exterior set=2hOi2zoKksT0kOOpxRX45S seq=5 storey=1uO4PHiD18eADIYLCDHDuY below=29btsbmI11hxy3lioRyB9a off=-1500 link=0
+[wall] guid=0npXa9CcP8VftGTAwrXPm_ run=2VtlfPLnX4oxj5kgKbxL2F seg=0 number="AW-005" cat=exterior set=2hOi2zoKksT0kOOpxRX45S seq=5 storey=1uO4PHiD18eADIYLCDHDuY below=2OosZQX$H5QxobXv_IKAXi off=0
+[wall] guid=18WRdYFUnDIezevYPI9cZe run=2VtlfPLnX4oxj5kgKbxL2F seg=2 number="AW-007" cat=exterior set=2hOi2zoKksT0kOOpxRX45S seq=5 storey=1uO4PHiD18eADIYLCDHDuY below=1yOhs2GgrBOgsd74$pxyds off=0
+[wall] guid=1sa5HNM7P6AOgke8PGB8QZ run=0qa3gSQ3T93BpBAK2vv43o seg=3 number="AK-004" cat=parapet set=2hOi2zoKksT0kOOpxRX45S seq=7 storey=1fh6OTG_C7PWr8YUXaxR3H below=3DvVFhrUb1JBc7TJHmhio_ off=0
+[wall] guid=1yOhs2GgrBOgsd74$pxyds run=1mqBpnnlf26QmvyZP8HPzH seg=2 number="AW-003" cat=exterior set=2hOi2zoKksT0kOOpxRX45S seq=3 storey=0Pq_YMFiT0Egp$ZozVSUsz
+[wall] guid=29btsbmI11hxy3lioRyB9a run=1mqBpnnlf26QmvyZP8HPzH seg=1 number="AW-002" cat=exterior set=2hOi2zoKksT0kOOpxRX45S seq=3 storey=0Pq_YMFiT0Egp$ZozVSUsz
+[wall] guid=2OosZQX$H5QxobXv_IKAXi run=1mqBpnnlf26QmvyZP8HPzH seg=0 number="AW-001" cat=exterior set=2hOi2zoKksT0kOOpxRX45S seq=3 storey=0Pq_YMFiT0Egp$ZozVSUsz
+[wall] guid=3DvVFhrUb1JBc7TJHmhio_ run=2VtlfPLnX4oxj5kgKbxL2F seg=3 number="AW-008" cat=exterior set=2hOi2zoKksT0kOOpxRX45S seq=5 storey=1uO4PHiD18eADIYLCDHDuY below=3u0zJCgCj0y8prD4DASfZm off=300 link=0
+[wall] guid=3o4ZZ4n2vErO1aKY9JyXYd run=0qa3gSQ3T93BpBAK2vv43o seg=0 number="AK-001" cat=parapet set=2hOi2zoKksT0kOOpxRX45S seq=7 storey=1fh6OTG_C7PWr8YUXaxR3H below=0npXa9CcP8VftGTAwrXPm_ off=0
+[wall] guid=3u0zJCgCj0y8prD4DASfZm run=1mqBpnnlf26QmvyZP8HPzH seg=3 number="AW-004" cat=exterior set=2hOi2zoKksT0kOOpxRX45S seq=3 storey=0Pq_YMFiT0Egp$ZozVSUsz
+[wall] guid=3wYFGvVSv2PhcTsYjtVHQ0 run=0qa3gSQ3T93BpBAK2vv43o seg=1 number="AK-002" cat=parapet set=2hOi2zoKksT0kOOpxRX45S seq=7 storey=1fh6OTG_C7PWr8YUXaxR3H below=0jH5d9Qpz6U8QDo6xjDosM off=0
+[slab] guid=3yeu1R4U12wBbjttrghaeb run=1mqBpnnlf26QmvyZP8HPzH number="SP-001" cat=groundslab mat=32Ino7hAj08ufHFYBJxPyP top=0Pq_YMFiT0Egp$ZozVSUsz:u:0 t=220 recess=0 seq=2 storey=0Pq_YMFiT0Egp$ZozVSUsz
+[footing] guid=21gQBGGd99RhGPpJdGyvys slab=3yeu1R4U12wBbjttrghaeb number="FS-001" cat=stripfooting mat=32Ino7hAj08ufHFYBJxPyP w=350 base=2bhF2XHmzCZvgZ_Vz2T82U:u:0 seq=1 storey=0Pq_YMFiT0Egp$ZozVSUsz
+[floor] guid=2V7JXGVkH6Dhty1iC513nI run=2VtlfPLnX4oxj5kgKbxL2F number="DE-002" cat=floor mat=32Ino7hAj08ufHFYBJxPyP top=1uO4PHiD18eADIYLCDHDuY:o:0 t=220 soffit_clad=40 seq=6 storey=1uO4PHiD18eADIYLCDHDuY
+[floor] guid=3gO7_lzGz7pAZqaflRvxyu run=1mqBpnnlf26QmvyZP8HPzH number="DE-001" cat=floor mat=32Ino7hAj08ufHFYBJxPyP top=0Pq_YMFiT0Egp$ZozVSUsz:o:0 t=220 soffit_clad=40 seq=4 storey=0Pq_YMFiT0Egp$ZozVSUsz
+[soffit] guid=0nW97r2b52Yuwmlk5Vg4jw floor=3gO7_lzGz7pAZqaflRvxyu number="UD-001" cat=soffitinsulation seq=4 storey=0Pq_YMFiT0Egp$ZozVSUsz
+[terrace] guid=0SV5Gtqkz5qQ2O$DUJkobP floor=3gO7_lzGz7pAZqaflRvxyu number="DT-001" cat=roofterrace set=2dMkjFCxf6nfRD5ttUqAkM seq=4 storey=0Pq_YMFiT0Egp$ZozVSUsz
+[roof] guid=0o6wUQ4bv3GhM7mY_rCc_Z floor=2V7JXGVkH6Dhty1iC513nI number="DA-001" cat=roof set=0ZfW2fP394GuDJUdD2cn2v seq=6 storey=1fh6OTG_C7PWr8YUXaxR3H
+[coping] guid=3WKexZqlL4EPHyyiGs0PvY floor=3gO7_lzGz7pAZqaflRvxyu number="AB-001" cat=coping seq=4 storey=0Pq_YMFiT0Egp$ZozVSUsz
+[coping] guid=3x_a6dKMH4cBM6dEfd0KZr floor=2V7JXGVkH6Dhty1iC513nI number="AB-002" cat=coping seq=6 storey=1fh6OTG_C7PWr8YUXaxR3H
 [pattern] surface=0193nkAlT2LhksTCegVeuh gen=concrete w=2500 h=500 joint=0 anchors=0 cloud=2 pores=0.5 seed=11
 [pattern] surface=2I0iV4XeLFxOVLUIsiaPG9 gen=masonry len=240 h=71 joint=10 bond=wild jrgb=d1cbc2 pal=87493c:79;675549:9;7b6d65:12 hpal=87493c:50;675549:50 flame=100 fend=64 relief=100 spread=7 seed=17
 [pattern] surface=3MoId9HKv2OPcggMMyT2Nx gen=plaster grain=2 spread=4 seed=3

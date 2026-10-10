@@ -99,7 +99,7 @@ pub const BAENDER: [(&str, u32, u32); 12] = [
 ];
 
 /// Werks-Artikel (§10, aus werk.szk).
-pub const ARTIKEL: [WerkArtikel; 29] = [
+pub const ARTIKEL: [WerkArtikel; 30] = [
     a(
         "1S7bUW0010080100000001",
         "m2",
@@ -233,6 +233,11 @@ pub const ARTIKEL: [WerkArtikel; 29] = [
         "m3",
         "EPS-Dachdämmplatte 035 DAA dh, Flachdach",
     ),
+    a(
+        "1S7bUW001008010000000U",
+        "m2",
+        "Faserzementtafel 8mm inkl. Fugenband und Edelstahlschrauben",
+    ),
 ];
 
 /// Werks-Baustoffe nach Vertrag 0.5 §9.
@@ -318,7 +323,7 @@ pub const ARTEN: [&str; 12] = [
 ];
 
 /// Werks-Leistungen (§10, aus werk.szk).
-pub const LEISTUNGEN: [WerkLeistung; 67] = [
+pub const LEISTUNGEN: [WerkLeistung; 68] = [
     l(
         "1S7bUW0010080200000001",
         "m3",
@@ -720,6 +725,12 @@ pub const LEISTUNGEN: [WerkLeistung; 67] = [
         "st",
         "auto",
         "Notüberlauf Attika rechteckig, inkl. Durchbruch und Einbindung",
+    ),
+    l(
+        "1S7bUW0010080200000014",
+        "m2",
+        "area",
+        "Untersichtbekleidung Faserzementtafel 8mm über Kopf, verschraubt",
     ),
 ];
 

@@ -498,9 +498,10 @@ mod tests {
         }
         r.set_below_ground(None);
     }
-    /// Ist-Bilder Flachdach Wand (Jörn 10.10.): Schnitt quer durch die
+    /// Ist-Bilder Flachdach Wand (Jörn 10.10.): Schnitte quer durch die
     /// Wand über der Dachterrasse (Fußpunkt Schaumglas unter dem
-    /// Verblender).
+    /// Verblender) und durch den Vorsprung (Bekleidung unter der
+    /// Untersichtdämmung, Verblender steht 3 cm über).
     /// `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_flachdach_wand -- --ignored`
     #[test]
     #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
@@ -527,51 +528,82 @@ mod tests {
         m.begin("Typ");
         assert!(m.set_run_type(eg, t));
         m.commit();
-        let w = m.wall_at(og, 1).unwrap();
-        m.begin("Versatz");
-        m.set_linked(w, false);
-        assert!(m.set_offset(w, -1500.0).is_some());
-        m.commit();
+        // Norden 1,50 m zurück (Terrasse), Süden 30 cm vor (Untersicht)
+        for (k, d) in [(1, -1500.0), (3, 300.0)] {
+            let w = m.wall_at(og, k).unwrap();
+            m.begin("Versatz");
+            m.set_linked(w, false);
+            assert!(m.set_offset(w, d).is_some());
+            m.commit();
+        }
         let mut h = Scene::with_model(m);
         h.set_theme(&theme);
         r.set_style(crate::style(&theme.env));
         r.set_looks(&h.table().looks_with(1.0, |_| 1.0));
-        // Wand mit Fußpunkt: ihr erstes Segment auf der Terrasse
-        let (pts, band) = h
+        let chains: Vec<_> = h
             .model()
             .runs()
             .iter()
             .filter_map(|(id, _)| h.model().chain(id))
+            .collect();
+        let seg = |c: &sk_model::WallChain, k: usize| {
+            let n = c.points.len();
+            (c.points[k], c.points[(k + 1) % n])
+        };
+        // Wand mit Fußpunkt: ihr erstes Segment auf der Terrasse
+        let fuss = chains
+            .iter()
             .find_map(|c| {
                 let f = c.joints.facing_foot.as_ref()?;
                 let k = (0..f.segs.len()).find(|&k| f.at(k))?;
-                let n = c.points.len();
-                Some(((c.points[k], c.points[(k + 1) % n]), f.band))
+                Some((seg(c, k), f.band))
             })
             .expect("Fußpunkt Schaumglas über der Terrasse");
-        let m = (pts.0 + pts.1) * 0.5;
-        let d = (pts.1 - pts.0).normalized();
-        // Blick entlang der Wand (Schnittebene quer dazu), Ausschnitt um den Fuß
-        let yaw = d.y.atan2(d.x);
-        let plane = (vec3(m.x, m.y, 0.0), -vec3(d.x, d.y, 0.0));
-        let netz = h.mesh(ViewKind::Section, Some(plane), &[]);
-        r.set_mesh(crate::MESH_MODEL, &netz);
-        let q = vec3(-d.y, d.x, 0.0) * 1400.0;
-        let b = Some((
-            vec3(m.x, m.y, band.0 - 1000.0) - q,
-            vec3(m.x, m.y, band.1 + 900.0) + q,
-        ));
-        let cam =
-            crate::fit_parallel_dir((yaw, 0.0), b, W as f64, W as f64, H as f64, W as f64 * 0.5);
-        let mut view = cam.view(W, H);
-        view.paper = Some(h.table().paper);
-        view.patterns = crate::draw_table::pattern_mode(ViewKind::Section, theme.env.patterns_3d);
-        r.draw(W, H, 0, &view).unwrap();
-        std::fs::write(
-            ziel.join("ist-flachdach-fusspunkt-schaumglas.png"),
-            sk_paint::encode_png(W, H, &r.read_pixels(W, H)),
-        )
-        .unwrap();
+        // EG-Wand unter dem Vorsprung: Verblender bis unter die Bekleidung
+        let vor = chains
+            .iter()
+            .find_map(|c| {
+                let o = c.joints.overhang.as_ref()?;
+                let d = o.drip.as_ref()?;
+                let k = d.segs.iter().position(|x| *x)?;
+                Some((seg(c, k), (d.from, o.to)))
+            })
+            .expect("Bekleidung unter dem Vorsprung");
+        for ((pts, band), name) in [
+            (fuss, "ist-flachdach-fusspunkt-schaumglas.png"),
+            (vor, "ist-flachdach-untersicht-bekleidung.png"),
+        ] {
+            let m = (pts.0 + pts.1) * 0.5;
+            let d = (pts.1 - pts.0).normalized();
+            // Blick entlang der Wand (Schnittebene quer dazu), Ausschnitt
+            let yaw = d.y.atan2(d.x);
+            let plane = (vec3(m.x, m.y, 0.0), -vec3(d.x, d.y, 0.0));
+            let netz = h.mesh(ViewKind::Section, Some(plane), &[]);
+            r.set_mesh(crate::MESH_MODEL, &netz);
+            let q = vec3(-d.y, d.x, 0.0) * 700.0;
+            let b = Some((
+                vec3(m.x, m.y, band.0 - 350.0) - q,
+                vec3(m.x, m.y, band.1 + 350.0) + q,
+            ));
+            let cam = crate::fit_parallel_dir(
+                (yaw, 0.0),
+                b,
+                W as f64,
+                W as f64,
+                H as f64,
+                W as f64 * 0.5,
+            );
+            let mut view = cam.view(W, H);
+            view.paper = Some(h.table().paper);
+            view.patterns =
+                crate::draw_table::pattern_mode(ViewKind::Section, theme.env.patterns_3d);
+            r.draw(W, H, 0, &view).unwrap();
+            std::fs::write(
+                ziel.join(name),
+                sk_paint::encode_png(W, H, &r.read_pixels(W, H)),
+            )
+            .unwrap();
+        }
     }
     /// Ist-Bilder Gelände (Jörn 10.10., Themen 1 und 4): RH-1 mit OK Sohle
     /// 0,40 über Gelände und 12 cm Perimeterdämmung, vorne ausgeblendet und

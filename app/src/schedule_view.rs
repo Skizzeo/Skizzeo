@@ -2523,6 +2523,26 @@ fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut V
                 cl.cells[4] = m_vol(b);
                 lines.push(cl);
             }
+            // Untersicht: Bekleidung und Lattung als Mengen (W3)
+            if let Some(ElementQto::Soffit(f)) = &r.q {
+                for (i, (name, l, a, v)) in soffit_lines(f).into_iter().enumerate() {
+                    let mut cl = Line::new(
+                        Kind::Control,
+                        2,
+                        Key::Control(ekey.index(), 3 + i as u8, ekey.generation()),
+                    );
+                    cl.storey = skey;
+                    cl.cells[0] = name;
+                    if l > 0.0 {
+                        cl.cells[2] = m_len(l);
+                    }
+                    if a > 0.0 {
+                        cl.cells[3] = m_area(a);
+                        cl.cells[4] = m_vol(v);
+                    }
+                    lines.push(cl);
+                }
+            }
             // Dachterrasse: Dämmung und Belag je für sich (soll-dt-3)
             for (i, (name, v)) in parts.into_iter().enumerate() {
                 let mut cl = Line::new(
@@ -2537,6 +2557,31 @@ fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut V
             }
         }
     }
+}
+
+/// Zeilen unter einer Untersichtdämmung (W3): Bekleidung (Fläche,
+/// Volumen), Grund- und Traglattung und Lüftungsprofil (Länge); je
+/// (Name, Länge, Fläche, Volumen) in mm, mm², mm³.
+fn soffit_lines(f: &sk_model::SoffitQto) -> Vec<(String, f64, f64, f64)> {
+    let Some(c) = &f.cladding else {
+        return Vec::new();
+    };
+    let mut out = vec![(
+        format!("Bekleidung {}", cm(c.thickness)),
+        0.0,
+        c.area,
+        c.volume,
+    )];
+    for (name, a, l) in [
+        ("Grundlattung", c.batten, c.batten_length()),
+        ("Traglattung", c.counter, c.counter_length()),
+    ] {
+        if l > 0.0 {
+            out.push((format!("{name} a = {}", cm(a)), l, 0.0, 0.0));
+        }
+    }
+    out.push(("Lüftungsprofil".into(), c.edge, 0.0, 0.0));
+    out
 }
 
 // --- CSV ---------------------------------------------------------------------
@@ -2926,6 +2971,29 @@ fn csv_storeys(m: &Model, sched: &Schedule) -> Vec<u8> {
                             "",
                             &vol(f.volume),
                             &format!("{} Lagen, Höhe {} mm", f.courses, f.height.round()),
+                        ]);
+                    }
+                }
+                if let Some(ElementQto::Soffit(f)) = &r.q {
+                    for (name, l, a, v) in soffit_lines(f) {
+                        let pos = |x: f64, s: &dyn Fn(f64) -> String| {
+                            if x > 0.0 {
+                                s(x)
+                            } else {
+                                String::new()
+                            }
+                        };
+                        row([
+                            &gb,
+                            &sname,
+                            &kg,
+                            &name,
+                            &r.number,
+                            &pos(l, &len),
+                            "",
+                            &pos(a, &area),
+                            &pos(v, &vol),
+                            "",
                         ]);
                     }
                 }

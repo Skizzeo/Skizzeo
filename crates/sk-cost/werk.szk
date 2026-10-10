@@ -54,6 +54,7 @@ SZK 1
 [article] guid=1S7bUW001008010000000R name="Terrassenplatte Beton 40mm, Splittbett und Schutzlage" mat=1vl_pQvH1FDBsLfn5l1heC format="500×500" unit=m2 price=30 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
 [article] guid=1S7bUW001008010000000S name="Mauerabdeckung Titanzink 0,7mm Zuschnitt 400, Halter" mat=2N$fHb0Xb1UBvWkvwrJ4Rx grade="0,7 mm" format="Länge 3 m" unit=m price=27 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
 [article] guid=1S7bUW001008010000000T name="EPS-Dachdämmplatte 035 DAA dh, Flachdach" mat=1OxgZ1vjv038gKF7kkLN6C grade="WLS 035" format="1000×500" unit=m3 price=150 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
+[article] guid=1S7bUW001008010000000U name="Faserzementtafel 8mm inkl. Fugenband und Edelstahlschrauben" mat=2b6MkyCfr3CuSbvo_tnB5F unit=m2 price=55 date=10/2026 source="Skizzeo-Referenz 10/2026, unverbindlich" std=1
 [service] guid=1S7bUW0010080200000001 short="Bodenplatte Stb C25/30 XC2 d=18-25cm" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=10 unit=m3 basis=volume hours=0.6 cats=groundslab mat=32Ino7hAj08ufHFYBJxPyP tmin=180 tmax=250
 [service] guid=1S7bUW0010080200000002 short="Frostschürze Stb C25/30 b=30-45cm erdgeschalt" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=20 unit=m3 basis=volume hours=1 cats=stripfooting mat=32Ino7hAj08ufHFYBJxPyP
 [service] guid=1S7bUW0010080200000003 short="Stb-Decke Ortbeton C25/30 XC1 d=18-25cm" trade=1S7Wf_00100800000004UR title=1S7bUW0010080300000002 pos=30 unit=m3 basis=volume hours=0.6 cats=floor mat=32Ino7hAj08ufHFYBJxPyP tmin=180 tmax=250
@@ -108,9 +109,9 @@ SZK 1
 [service] guid=1S7bUW001008020000000q short="Zulage Attikaabdeckung Zuschnitt über 667 bis 1000mm" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000E pos=40 unit=m basis=auto hours=0.15 other=40 kg=363 auto=coping.cut1000
 [service] guid=1S7bUW001008020000000r short="Zulage Attikaabdeckung Ecke 90°, gefalzt oder gelötet" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000E pos=50 unit=st basis=auto hours=0.5 other=18 kg=363 auto=coping.corner
 [service] guid=1S7bUW001008020000000s short="Zulage Attikaabdeckung Endabschluss mit Stirnblech" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000E pos=60 unit=st basis=auto hours=0.25 other=10 kg=363 auto=coping.end
-[service] guid=1S7bUW001008020000000t short="Grundlattung KVH 60/80 über Kopf, a=80cm, mit Schraubankern" trade=1S7Wf_00100800000004UU title=1S7bUW001008030000000G pos=10 unit=m basis=auto hours=0.1 other=3.75 kg=353 auto=soffit.batten
-[service] guid=1S7bUW001008020000000u short="Traglattung 30/50 quer, a=40cm, Hinterlüftung" trade=1S7Wf_00100800000004UU title=1S7bUW001008030000000G pos=50 unit=m basis=auto hours=0.06 other=0.8 kg=353 auto=soffit.counter
-[service] guid=1S7bUW001008020000000v short="Lüftungsprofil Alu gelocht mit Insektenschutz, Untersichtrand" trade=1S7Wf_00100800000004UU title=1S7bUW001008030000000G pos=70 unit=m basis=auto hours=0.1 other=4 kg=353 auto=soffit.edge
+[service] guid=1S7bUW001008020000000t short="Grundlattung KVH 60/80 über Kopf, a=80cm, mit Schraubankern" trade=1S7Wf_00100800000004UU title=1S7bUW001008030000000G pos=10 unit=m basis=auto hours=0.1 other=3.75 kg=354 auto=soffit.batten
+[service] guid=1S7bUW001008020000000u short="Traglattung 30/50 quer, a=40cm, Hinterlüftung" trade=1S7Wf_00100800000004UU title=1S7bUW001008030000000G pos=50 unit=m basis=auto hours=0.06 other=0.8 kg=354 auto=soffit.counter
+[service] guid=1S7bUW001008020000000v short="Lüftungsprofil Alu gelocht mit Insektenschutz, Untersichtrand" trade=1S7Wf_00100800000004UU title=1S7bUW001008030000000G pos=70 unit=m basis=auto hours=0.1 other=4 kg=354 auto=soffit.edge
 [service] guid=1S7bUW001008020000000w short="Fußpunkt Verblendschale Schaumglas-Dämmstein 115mm, 1. Lage" trade=1S7Wf_00100800000004UQ title=1S7bUW0010080300000005 pos=30 unit=m basis=auto hours=0.2 other=40 kg=335 auto=facing.foot
 [service] guid=1S7bUW001008020000000x short="Zulage Fußpunkt Schaumglas-Dämmstein je weitere Lage" trade=1S7Wf_00100800000004UQ title=1S7bUW0010080300000005 pos=40 unit=m basis=auto hours=0.2 other=40 kg=335 auto=facing.footcourse
 [service] guid=1S7bUW001008020000000y short="Mauersperrbahn unter Fußpunkt, B bis 25cm" trade=1S7Wf_00100800000004UQ title=1S7bUW0010080300000005 pos=50 unit=m basis=auto hours=0.05 other=2 kg=335 auto=facing.foot
@@ -121,6 +122,7 @@ SZK 1
 [service] guid=1S7bUW0010080200000011 short="Attikadämmung innen und Krone, EPS d=6-10cm, unter Abdichtung" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=40 unit=m basis=auto hours=0.2 other=10 kg=363 auto=roof.edge
 [service] guid=1S7bUW0010080200000012 short="Dachablauf DN 100 wärmegedämmt mit Aufstockelement, Einbau" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=50 unit=st basis=auto hours=2 other=280 kg=363 auto=roof.drains
 [service] guid=1S7bUW0010080200000013 short="Notüberlauf Attika rechteckig, inkl. Durchbruch und Einbindung" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=60 unit=st basis=auto hours=2 other=160 kg=363 auto=roof.overflows
+[service] guid=1S7bUW0010080200000014 short="Untersichtbekleidung Faserzementtafel 8mm über Kopf, verschraubt" trade=1S7Wf_00100800000004Ul title=1S7bUW001008030000000G pos=60 unit=m2 basis=area hours=0.9 cats=soffitinsulation mat=2b6MkyCfr3CuSbvo_tnB5F
 [svcpart] guid=1S7bUW0010080400000001 service=1S7bUW0010080200000001 nr=1 art=1S7bUW0010080100000006 qty=1
 [svcpart] guid=1S7bUW0010080400000002 service=1S7bUW0010080200000002 nr=1 art=1S7bUW0010080100000006 qty=1
 [svcpart] guid=1S7bUW0010080400000003 service=1S7bUW0010080200000003 nr=1 art=1S7bUW0010080100000006 qty=1
@@ -163,6 +165,7 @@ SZK 1
 [svcpart] guid=1S7bUW001008040000000e service=1S7bUW001008020000000_ nr=2 art=1S7bUW001008010000000P qty=0.3
 [svcpart] guid=1S7bUW001008040000000f service=1S7bUW001008020000000$ nr=1 layer=1 qty=1
 [svcpart] guid=1S7bUW001008040000000g service=1S7bUW0010080200000010 nr=1 art=1S7bUW001008010000000Q qty=2.3
+[svcpart] guid=1S7bUW001008040000000h service=1S7bUW0010080200000014 nr=1 art=1S7bUW001008010000000U qty=1
 [svcfollow] guid=1S7bUW0010080500000001 service=1S7bUW0010080200000001 nr=1 follow=1S7bUW0010080200000005
 [svcfollow] guid=1S7bUW0010080500000002 service=1S7bUW0010080200000001 nr=2 follow=1S7bUW0010080200000006
 [svcfollow] guid=1S7bUW0010080500000003 service=1S7bUW0010080200000002 nr=1 follow=1S7bUW0010080200000006
@@ -213,6 +216,7 @@ SZK 1
 [origin] key=1S7bUW001008010000000R rec=article kind=factory status=confirmed date=2026-10-10 source="geschätzt, Platte 20–35 €/m², Splitt und Schutzvlies 5 €/m²" conf=rough
 [origin] key=1S7bUW001008010000000S rec=article kind=factory status=confirmed date=2026-10-10 source="Titanzink 0,7 ab 15,40 €/m, Zuschnitt 500 ≈ 29 €/m brutto (Recherche B §3.6)" conf=rough
 [origin] key=1S7bUW001008010000000T rec=article kind=factory status=confirmed date=2026-10-10 source="wie A-DTEPS: EPS 035 0,87 €/(m²·cm) brutto, dh +60 % (Recherche B §4)" conf=rough
+[origin] key=1S7bUW001008010000000U rec=article kind=factory status=confirmed date=2026-10-10 source="Recherche A/B §B5: Faserzement 8 mm 85–140 €/m² mit Montage" conf=rough
 [origin] key=1S7bUW0010080200000002 rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: geschätzt, Einbau in den Graben" conf=rough
 [origin] key=1S7bUW0010080200000004 rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: Baubetrieb 0,8–1,0 h/m², Systemschalung 0,4–0,6" conf=rough
 [origin] key=1S7bUW0010080200000005 rec=service kind=factory status=confirmed date=2026-10-08 source="Aufwandswert: geschätzt" conf=rough
@@ -270,3 +274,4 @@ SZK 1
 [origin] key=1S7bUW0010080200000011 rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Recherche B §4.1 Pos. 6: 15–30 €/m, 0,15–0,25 h/m" conf=rough
 [origin] key=1S7bUW0010080200000012 rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Recherche B §4.1 Pos. 7: 280–550 €, 1,5–3,0 h" conf=rough
 [origin] key=1S7bUW0010080200000013 rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Recherche B §4.1 Pos. 8: 180–400 €, 1,5–2,5 h" conf=rough
+[origin] key=1S7bUW0010080200000014 rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Recherche A/B §B5: Schalung über Kopf 0,6–0,9 h/m²" conf=rough

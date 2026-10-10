@@ -800,16 +800,60 @@ fn soffit_section(m: &Model, floor: ElementId) -> Option<crate::ui::Section> {
     let ElementKind::Floor(f) = &m.element(floor)?.kind else {
         return None;
     };
-    Some(crate::ui::Section {
-        title: "Untersicht",
-        fields: vec![field(
+    use sk_model::CladdingValue as C;
+    let c = f.soffit;
+    let mut fields = vec![
+        field(
             Field::Soffit,
             "Dämmung",
-            f.soffit.thickness,
+            c.thickness,
             sk_model::MIN_SOFFIT,
             sk_model::MAX_SOFFIT,
-        )],
-        hint: "nur unter Vorsprüngen",
+        ),
+        FieldRow {
+            zero: true,
+            ..field(
+                Field::Cladding(C::Thickness),
+                "Bekleidung",
+                c.cladding,
+                sk_model::MIN_CLADDING,
+                sk_model::MAX_CLADDING,
+            )
+        },
+    ];
+    // Überstand und Lattung nur mit Bekleidung (W3)
+    if c.cladding > 0.0 {
+        fields.extend([
+            field(
+                Field::Cladding(C::Drip),
+                "Überstand Verblender",
+                c.drip,
+                sk_model::MIN_DRIP,
+                sk_model::MAX_DRIP,
+            ),
+            field(
+                Field::Cladding(C::Batten),
+                "Grundlattung a",
+                c.batten,
+                sk_model::MIN_BATTEN,
+                sk_model::MAX_BATTEN,
+            ),
+            FieldRow {
+                zero: true,
+                ..field(
+                    Field::Cladding(C::Counter),
+                    "Traglattung a",
+                    c.counter,
+                    sk_model::MIN_BATTEN,
+                    sk_model::MAX_BATTEN,
+                )
+            },
+        ]);
+    }
+    Some(crate::ui::Section {
+        title: "Untersicht",
+        fields,
+        hint: "nur unter Vorsprüngen; Lattung nur als Menge",
     })
 }
 
@@ -1024,6 +1068,12 @@ fn outline(
             }
             for (_, q) in &slab.soffits {
                 prism(q, b, clip(t));
+            }
+            // Bekleidung darunter (W3)
+            if let Some((b, t)) = slab.cladding_band() {
+                for (_, q) in &slab.claddings {
+                    prism(q, b, clip(t));
+                }
             }
         }
         (None, Some(ElementKind::RoofTerrace { floor })) => {

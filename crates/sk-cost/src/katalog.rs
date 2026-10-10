@@ -1413,10 +1413,10 @@ mod tests {
     fn werk_ohne_befund() {
         let k = werk();
         assert!(k.befunde.is_empty(), "{:#?}", k.befunde);
-        assert_eq!(k.leistungen.len(), 67);
-        assert_eq!(k.artikel.len(), 29);
+        assert_eq!(k.leistungen.len(), 68);
+        assert_eq!(k.artikel.len(), 30);
         assert_eq!(k.lose.len(), 17);
-        assert_eq!(k.anteile.len(), 42);
+        assert_eq!(k.anteile.len(), 43);
         assert_eq!(k.folgen.len(), 10);
         assert_eq!(k.werte, Firmenwerte::werk());
         assert_eq!(k.kopf.as_ref().map(|c| c.stand), Some(9));

@@ -377,12 +377,12 @@ const RH2: Soll = Soll {
 
 const RH3: Soll = Soll {
     datei: include_str!("../referenz/rh3-versatz-dachterrasse.szo"),
-    netto: 8135874,
+    netto: 8090854,
     material: 3584238,
     geruest: GERUEST_2G,
     geschosse: &[
         ("Gründung", 2243845),
-        ("Erdgeschoss", 3082955),
+        ("Erdgeschoss", 3037935),
         ("Obergeschoss", 2809049),
     ],
     ausgleich: 25,
@@ -450,35 +450,14 @@ const RH3: Soll = Soll {
             2374035,
             1002001,
         ),
-        // Stand 9, K2: Untersicht zwischen Lattung, Lattung und Randprofil als
-        // Automatik (2,928 m² / 0,80 m bzw. 0,40 m + 20,12 m Umfang)
+        // Stand 9, K2: Untersicht zwischen Lattung; die Datei ist älter als
+        // die Bekleidung (W3), darum ohne Bekleidung, Lattung und Randprofil
         (
             "Untersichtdämmung EPS 035 d=120mm zwischen Lattung, über Kopf",
             2928,
             2400,
             7027,
             3514,
-        ),
-        (
-            "Grundlattung KVH 60/80 über Kopf, a=80cm, mit Schraubankern",
-            23780,
-            975,
-            23186,
-            0,
-        ),
-        (
-            "Traglattung 30/50 quer, a=40cm, Hinterlüftung",
-            27440,
-            440,
-            12074,
-            0,
-        ),
-        (
-            "Lüftungsprofil Alu gelocht mit Insektenschutz, Untersichtrand",
-            9760,
-            1000,
-            9760,
-            0,
         ),
         (
             "Bauzaun Mobilzaun h=2,0m aufstellen, vorhalten, räumen",
@@ -538,13 +517,14 @@ const RH3: Soll = Soll {
 
 /// RH-5 Flachdach (Kosten-Strang 10.10., Tagesplan K4): Prüfhaus 10 × 8 m,
 /// AW-49 zweischalig, OG Nord 1,50 m zurück (Dachterrasse mit Fußpunkt aus
-/// Schaumglas), OG Süd 0,30 m vor (Untersicht mit Lattung), Flachdach mit
+/// Schaumglas), OG Süd 0,30 m vor (Untersicht mit Bekleidung Faserzement und
+/// Lattung), Flachdach mit
 /// Aufkantung 50 cm, Dachaufbau Flachdach 21,5 und Attikablech. Bis zur
 /// Oberkante Dach alles mit Bauleistung, keine graue Zeile.
 const RH5: Soll = Soll {
     datei: include_str!("../referenz/rh5-flachdach.szo"),
-    netto: 9737074,
-    material: 4225280,
+    netto: 9765247,
+    material: 4239190,
     geruest: (
         "Fassadengerüst LK3 W09, 4 Wochen Standzeit, auf-/abbauen",
         334544,
@@ -554,8 +534,8 @@ const RH5: Soll = Soll {
     ),
     geschosse: &[
         ("Gründung", 2264725),
-        ("Erdgeschoss", 3292486),
-        ("Obergeschoss", 2870133),
+        ("Erdgeschoss", 3311769),
+        ("Obergeschoss", 2879023),
         ("Flachdach", 1309724),
     ],
     ausgleich: 6,
@@ -625,10 +605,10 @@ const RH5: Soll = Soll {
         ),
         (
             "Verblendschale Klinker NF d=11,5cm Läuferverband verfugt",
-            216912,
+            217612,
             12700,
-            2754782,
-            1193016,
+            2763672,
+            1196866,
         ),
         (
             "Abfangung Verblendschale, Konsolanker Edelstahl",
@@ -779,9 +759,9 @@ const RH5: Soll = Soll {
         ),
         (
             "Grundlattung KVH 60/80 über Kopf, a=80cm, mit Schraubankern",
-            22854,
+            22492,
             975,
-            22283,
+            21930,
             0,
         ),
         (
@@ -793,16 +773,23 @@ const RH5: Soll = Soll {
         ),
         (
             "Traglattung 30/50 quer, a=40cm, Hinterlüftung",
-            26368,
+            24777,
             440,
-            11602,
+            10902,
             0,
         ),
         (
+            "Untersichtbekleidung Faserzementtafel 8mm über Kopf, verschraubt",
+            1829,
+            10900,
+            19936,
+            10060,
+        ),
+        (
             "Lüftungsprofil Alu gelocht mit Insektenschutz, Untersichtrand",
-            9370,
+            9770,
             1000,
-            9370,
+            9770,
             0,
         ),
     ],

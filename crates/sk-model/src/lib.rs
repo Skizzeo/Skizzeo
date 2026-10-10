@@ -53,9 +53,9 @@ pub use catalog::{
     sync_materials_report, write_szk, Library, RawSvc, TypeState,
 };
 pub use element::{
-    Building, BuildingId, Category, Coupling, Element, ElementId, ElementKind, LevelEdge,
-    LevelKind, LevelRef, PropSet, PropValue, RunId, Soffit, Storey, StoreyId, Terrace, Wall,
-    WallRun,
+    Building, BuildingId, Category, CladdingValue, Coupling, Element, ElementId, ElementKind,
+    LevelEdge, LevelKind, LevelRef, PropSet, PropValue, RunId, Soffit, Storey, StoreyId, Terrace,
+    Wall, WallRun,
 };
 pub use erweiterung::{ExtDef, ExtPart};
 pub use ext::{ExtRec, ExtStore};
@@ -81,6 +81,10 @@ pub use model::{
     MONO_TYPE_GUID, PERIMETER_MAT_GUID, PERIMETER_PART, PERIMETER_THICKNESS, ROOF_COPING_PART,
     ROOF_PART, ROOF_TYPE_GUID, ROOF_UPSTAND, SHADE_VIEWS, SLAB_PART, SLAB_THICKNESS, SOFFIT_PART,
     SOFFIT_THICKNESS, STRIP_PART, TERRACE_PART, TERRACE_TYPE_GUID, TERRACE_UPSTAND, WALKABLE_DEPTH,
+};
+pub use model::{
+    BATTEN, CLADDING_MAT_GUID, COUNTER, FOAMGLASS_MAT_GUID, MAX_BATTEN, MAX_CLADDING, MAX_DRIP,
+    MIN_BATTEN, MIN_CLADDING, MIN_DRIP, SOFFIT_CLADDING, SOFFIT_DRIP,
 };
 pub use qto::{
     coping_qto, coping_qto_of, edge_strip_qto, edge_strip_qto_of, flat_roof_qto, flat_roof_qto_of,

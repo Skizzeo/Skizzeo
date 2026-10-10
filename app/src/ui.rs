@@ -190,6 +190,9 @@ pub enum Field {
     Offset,
     /// Dicke der Untersichtdämmung an der Decke (OG-17).
     Soffit,
+    /// Bekleidung darunter (W3): Dicke (0 = keine), Überstand des
+    /// Verblenders, Achsabstände der Grund- und Traglattung.
+    Cladding(sk_model::CladdingValue),
     /// Dachterrasse (D1–D3): Dicken von Dämmung und Belag ihres Typs,
     /// Attika über OK Belag an der Decke.
     TerraceInsulation,

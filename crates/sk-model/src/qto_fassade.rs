@@ -4,19 +4,13 @@
 //! nicht modelliert (Jörn 10.10.), sie steht nur als Position im LV.
 //! Quellen: planung/flachdach/recherche-foamglas-untersicht.md.
 //!
-//! Menge der Lattung = Fläche / Achsabstand + Umfang (Randlatten); der
-//! Verschnitt steckt im Aufwand der Bauleistung.
+//! Menge der Lattung = Fläche / Achsabstand + Umfang (Randlatten) der
+//! Bekleidung ([`CladdingQto`], W3); der Verschnitt steckt im Aufwand der
+//! Bauleistung. Ohne Bekleidung keine Lattung und kein Lüftungsprofil.
 
 use crate::element::ElementKind;
 use crate::model::Model;
-use crate::qto::{AutoMenge, ElementQto, FacingFootQto, Schedule, SoffitQto};
-use sk_math::Vec3;
-
-/// Achsabstand der Grundlattung (mm, Jörn 10.10.: z. B. 80 cm).
-pub const GRUNDLATTUNG_A: f64 = 800.0;
-/// Achsabstand der Traglattung quer (mm): Faserzement über Kopf höchstens
-/// 40 cm (Recherche B2).
-pub const TRAGLATTUNG_A: f64 = 400.0;
+use crate::qto::{AutoMenge, CladdingQto, ElementQto, FacingFootQto, Schedule, SoffitQto};
 
 pub const FOOT: &str = "facing.foot";
 pub const FOOT_COURSE: &str = "facing.footcourse";
@@ -40,63 +34,49 @@ pub const SCHLUESSEL: [(&str, &str, &str); 5] = [
     (
         BATTEN,
         "m",
-        "Grundlattung der Untersicht: Fläche / 0,80 m + Umfang",
+        "Grundlattung unter der Bekleidung: Fläche / Achsabstand + Umfang",
     ),
     (
         COUNTER,
         "m",
-        "Traglattung quer der Untersicht: Fläche / 0,40 m + Umfang",
+        "Traglattung quer unter der Bekleidung: Fläche / Achsabstand + Umfang",
     ),
     (
         EDGE,
         "m",
-        "freie Außenkante der Untersicht (Lüftungsprofil)",
+        "freie Außenkante der Bekleidung am Verblender (Lüftungsprofil)",
     ),
 ];
 
 /// Kostengruppe (DIN 276): 335 Außenwandbekleidungen, wie die Verblendschale.
 pub const KG_FUSSPUNKT: u16 = 335;
-/// Kostengruppe (DIN 276): 353 Deckenbekleidungen, wie die Untersicht.
-pub const KG_UNTERSICHT: u16 = 353;
+/// Kostengruppe (DIN 276:2018): 354 Deckenbekleidungen, wie die Untersicht.
+pub const KG_UNTERSICHT: u16 = 354;
 
-/// Umfang und freie Außenkante der Untersicht (mm) aus ihren Vierecken je
-/// Segment (Kern unten Anfang, Ende, Kern oben Ende, Anfang). Stöße
-/// zwischen zwei vorspringenden Segmenten zählen nicht zum Umfang.
-pub fn umfang_und_kante(quads: &[(usize, [Vec3; 4])]) -> (f64, f64) {
-    let gleich = |p: Vec3, q: Vec3| (p - q).length() < 1.0;
-    let mut umfang = 0.0;
-    let mut kante = 0.0;
-    for (i, (_, q)) in quads.iter().enumerate() {
-        umfang += (0..4)
-            .map(|k| (q[(k + 1) % 4] - q[k]).length())
-            .sum::<f64>();
-        kante += (q[2] - q[3]).length();
-        // Ende dieses Vierecks = Anfang eines anderen: innerer Stoß
-        let stoss = quads
-            .iter()
-            .enumerate()
-            .any(|(j, (_, r))| j != i && gleich(r[0], q[1]) && gleich(r[3], q[2]));
-        if stoss {
-            umfang -= 2.0 * (q[2] - q[1]).length();
-        }
-    }
-    (umfang, kante)
+/// Mengen einer Untersicht: Schlüssel, Wert (mm) und Rechenweg; ohne
+/// Bekleidung keine.
+pub fn werte(s: &SoffitQto) -> Vec<(&'static str, f64, String)> {
+    s.cladding.as_ref().map(bekleidung).unwrap_or_default()
 }
 
-/// Mengen einer Untersicht: Schlüssel, Wert (mm) und Rechenweg.
-pub fn werte(s: &SoffitQto) -> Vec<(&'static str, f64, String)> {
-    if s.area <= 0.0 {
+fn bekleidung(c: &CladdingQto) -> Vec<(&'static str, f64, String)> {
+    if c.area <= 0.0 {
         return Vec::new();
     }
     let m = |mm: f64| format!("{:.2} m", mm / 1000.0).replace('.', ",");
-    let m2 = format!("{:.2} m²", s.area / 1e6).replace('.', ",");
-    let latte = |key, a: f64| {
-        let text = format!("{m2} / {} + {} Umfang", m(a), m(s.perimeter));
-        (key, s.area / a + s.perimeter, text)
-    };
-    let mut out = vec![latte(BATTEN, GRUNDLATTUNG_A), latte(COUNTER, TRAGLATTUNG_A)];
-    if s.edge > 0.0 {
-        out.push((EDGE, s.edge, format!("{} freie Kante", m(s.edge))));
+    let m2 = format!("{:.2} m²", c.area / 1e6).replace('.', ",");
+    let mut out = Vec::new();
+    for (key, a, value) in [
+        (BATTEN, c.batten, c.batten_length()),
+        (COUNTER, c.counter, c.counter_length()),
+    ] {
+        if value > 0.0 {
+            let text = format!("{m2} / {} + {} Umfang", m(a), m(c.perimeter));
+            out.push((key, value, text));
+        }
+    }
+    if c.edge > 0.0 {
+        out.push((EDGE, c.edge, format!("{} freie Kante", m(c.edge))));
     }
     out
 }
@@ -198,38 +178,6 @@ pub(crate) fn bauteil_mengen(model: &Model, sched: &Schedule) -> Vec<AutoMenge> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sk_math::vec3;
-
-    /// Ein Streifen 10 m × 1,5 m allein: Umfang 23 m, Kante 10 m; zwei
-    /// Streifen über Eck haben einen Stoß, der nicht zählt.
-    #[test]
-    fn umfang_ohne_stoesse() {
-        let a = (
-            0,
-            [
-                vec3(0.0, 0.0, 0.0),
-                vec3(10000.0, 0.0, 0.0),
-                vec3(10000.0, -1500.0, 0.0),
-                vec3(0.0, -1500.0, 0.0),
-            ],
-        );
-        assert_eq!(umfang_und_kante(&[a]), (23000.0, 10000.0));
-        let b = (
-            1,
-            [
-                vec3(10000.0, 0.0, 0.0),
-                vec3(10000.0, 8000.0, 0.0),
-                vec3(11500.0, 8000.0, 0.0),
-                vec3(10000.0, -1500.0, 0.0),
-            ],
-        );
-        let (u, k) = umfang_und_kante(&[a, b]);
-        let schraeg = (vec3(10000.0, -1500.0, 0.0) - vec3(11500.0, 8000.0, 0.0)).length();
-        assert!((k - (10000.0 + schraeg)).abs() < 1e-6, "{k}");
-        // a und b ganz, ohne den Stoß zwischen ihnen (zweimal 1500)
-        let soll = 23000.0 + (8000.0 + 1500.0 + schraeg + 1500.0) - 2.0 * 1500.0;
-        assert!((u - soll).abs() < 1e-6, "{u} {soll}");
-    }
 
     /// 140 mm Terrassenaufbau: 2 Lagen, die zweite als Zulage.
     #[test]
@@ -244,12 +192,20 @@ mod tests {
 
     #[test]
     fn lattung_aus_flaeche_und_umfang() {
-        let s = SoffitQto {
+        let c = CladdingQto {
+            thickness: 40.0,
+            area: 15e6,
+            volume: 0.0,
+            perimeter: 23000.0,
+            edge: 10000.0,
+            batten: 800.0,
+            counter: 400.0,
+        };
+        let mut s = SoffitQto {
             area: 15e6,
             volume: 0.0,
             thickness: 120.0,
-            perimeter: 23000.0,
-            edge: 10000.0,
+            cladding: Some(c.clone()),
         };
         let w = werte(&s);
         // 15 m² / 0,8 m + 23 m = 41,75 m; / 0,4 m + 23 m = 60,5 m
@@ -260,5 +216,10 @@ mod tests {
         );
         assert_eq!(w[0].2, "15,00 m² / 0,80 m + 23,00 m Umfang");
         assert_eq!(w[2].2, "10,00 m freie Kante");
+        // ohne Traglattung kein Wert, ohne Bekleidung gar keiner
+        s.cladding = Some(CladdingQto { counter: 0.0, ..c });
+        assert_eq!(werte(&s).len(), 2);
+        s.cladding = None;
+        assert!(werte(&s).is_empty());
     }
 }

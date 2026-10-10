@@ -233,6 +233,62 @@ pub struct Soffit {
     /// `None`: Baustoff der äußersten Dämmschicht der Wand darüber, bei
     /// einschaligen Typen der des Randdämmstreifens.
     pub material: Option<MaterialId>,
+    /// Bekleidung unter der Dämmung (W3), mm: 0 keine, sonst 10 … 80
+    /// (Platte und Traglattung symbolisch in einer Schicht).
+    pub cladding: f64,
+    /// `None`: eingebauter Baustoff „Bekleidung Faserzement“.
+    pub cladding_material: Option<MaterialId>,
+    /// Überstand des abgefangenen Verblenders unter UK Bekleidung, mm
+    /// (20 … 40).
+    pub drip: f64,
+    /// Achsabstand der Grundlattung, mm (nur Mengen, keine Geometrie).
+    pub batten: f64,
+    /// Achsabstand der Traglattung quer dazu, mm; 0 ohne.
+    pub counter: f64,
+}
+
+/// Ein Zahlenwert der Bekleidung an [`Soffit`] (W3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CladdingValue {
+    Thickness,
+    Drip,
+    Batten,
+    Counter,
+}
+
+impl CladdingValue {
+    pub fn of(self, s: &Soffit) -> f64 {
+        match self {
+            CladdingValue::Thickness => s.cladding,
+            CladdingValue::Drip => s.drip,
+            CladdingValue::Batten => s.batten,
+            CladdingValue::Counter => s.counter,
+        }
+    }
+
+    pub(crate) fn of_mut(self, s: &mut Soffit) -> &mut f64 {
+        match self {
+            CladdingValue::Thickness => &mut s.cladding,
+            CladdingValue::Drip => &mut s.drip,
+            CladdingValue::Batten => &mut s.batten,
+            CladdingValue::Counter => &mut s.counter,
+        }
+    }
+}
+
+impl Default for Soffit {
+    fn default() -> Soffit {
+        use crate::model::{BATTEN, COUNTER, SOFFIT_CLADDING, SOFFIT_DRIP, SOFFIT_THICKNESS};
+        Soffit {
+            thickness: SOFFIT_THICKNESS,
+            material: None,
+            cladding: SOFFIT_CLADDING,
+            cladding_material: None,
+            drip: SOFFIT_DRIP,
+            batten: BATTEN,
+            counter: COUNTER,
+        }
+    }
 }
 
 /// Geschossdecke über einem geschlossenen Außenwandzug (IFC: IfcSlab FLOOR).

@@ -189,8 +189,18 @@ fn extension(model: &Model, below: &WallChain, set: &LayerSet) -> Option<Extensi
             };
             // Vorspringend: der ganze Abschnitt; Nachbarn: nur das Stück über
             // die Ecke hinaus (der Rest ist die EG-Fassade in ihrer Flucht)
+            // Verblender bis unter die Bekleidung (W3): auf den bekleideten
+            // Segmenten länger
+            let h_drip = below
+                .joints
+                .overhang
+                .as_ref()
+                .and_then(|o| Some((o, o.drip.as_ref()?)))
+                .filter(|(_, d)| d.layer == li && d.segs.get(k) == Some(&true))
+                .map_or(0.0, |(o, d)| (o.from - d.from).max(0.0));
             parts[k][li] = if offs[k] > 0.0 {
-                (up_area * h_ext, side * h_ext)
+                let h = h_ext + h_drip;
+                (up_area * h, side * h)
             } else {
                 (
                     (up_area - own_area).max(0.0) * h_ext,
@@ -533,26 +543,81 @@ pub struct FloorQto {
 pub struct SoffitQto {
     /// Fläche unter dem auskragenden Streifen (mm²).
     pub area: f64,
+    /// Volumen der Dämmung allein (mm³).
     pub volume: f64,
     pub thickness: f64,
-    /// Umfang ohne Stöße zwischen vorspringenden Segmenten (mm), für die
-    /// Randlatten ([`crate::qto_fassade`]).
+    /// Bekleidung darunter (W3), `None` ohne.
+    pub cladding: Option<CladdingQto>,
+}
+
+impl SoffitQto {
+    /// Fläche der Schicht `i` des Bauteils: 0 Dämmung, 1 Bekleidung (mm²).
+    pub fn layer_area(&self, i: usize) -> f64 {
+        match (i, &self.cladding) {
+            (0, _) => self.area,
+            (_, Some(c)) => c.area,
+            _ => 0.0,
+        }
+    }
+}
+
+/// Mengen der Bekleidung unter einer Untersichtdämmung (W3). Die Lattung ist
+/// nicht modelliert; ihre Längen rechnen sich aus Fläche, Achsabstand und
+/// Umfang (Tagesplan P7).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CladdingQto {
+    /// Dicke (mm).
+    pub thickness: f64,
+    /// Bekleidete Fläche (mm²).
+    pub area: f64,
+    pub volume: f64,
+    /// Umfang der bekleideten Fläche (mm).
     pub perimeter: f64,
-    /// Freie Außenkante in der Kernflucht darüber (mm), Lüftungsprofil.
+    /// Freie Außenkante am Verblender (mm, Lüftungsprofil).
     pub edge: f64,
+    /// Achsabstände der Grund- und Traglattung (mm; 0 ohne).
+    pub batten: f64,
+    pub counter: f64,
+}
+
+impl CladdingQto {
+    /// Länge der Grundlattung (mm): Fläche / Achsabstand + Umfang.
+    pub fn batten_length(&self) -> f64 {
+        lath_length(self.area, self.batten, self.perimeter)
+    }
+
+    /// Länge der Traglattung quer dazu (mm), 0 ohne.
+    pub fn counter_length(&self) -> f64 {
+        lath_length(self.area, self.counter, self.perimeter)
+    }
+}
+
+fn lath_length(area: f64, spacing: f64, perimeter: f64) -> f64 {
+    if spacing > 0.0 && area > 0.0 {
+        area / spacing + perimeter
+    } else {
+        0.0
+    }
 }
 
 /// Mengen der Untersichtdämmung einer schon berechneten Decke; `None` ohne
 /// Vorsprung.
 pub fn soffit_qto_of(f: &FloorSlab) -> Option<SoffitQto> {
     let sp = f.soffit?;
-    let (perimeter, edge) = crate::qto_fassade::umfang_und_kante(&f.soffits);
+    let cladding = f.cladding_band().map(|_| CladdingQto {
+        thickness: sp.cladding,
+        area: f.cladding_area(),
+        volume: f.cladding_volume(),
+        perimeter: f.cladding_perimeter(),
+        edge: f.cladding_edge(),
+        batten: sp.batten,
+        counter: sp.counter,
+    });
     Some(SoffitQto {
         area: f.soffit_area(),
         volume: f.soffit_volume(),
         thickness: sp.thickness,
-        perimeter,
-        edge,
+        cladding,
     })
 }
 
@@ -1143,7 +1208,7 @@ impl ElementQto {
             ElementQto::Footing(f) => f.volume,
             ElementQto::Floor(f) => f.volume,
             ElementQto::Strip(f) => f.volume,
-            ElementQto::Soffit(f) => f.volume,
+            ElementQto::Soffit(f) => f.volume + f.cladding.as_ref().map_or(0.0, |c| c.volume),
             ElementQto::Perimeter(f) => f.volume,
             ElementQto::Terrace(t) => t.volume,
             ElementQto::Coping(c) => c.volume,
@@ -1998,10 +2063,11 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                 .material(m)
                 .is_some_and(|x| x.category == MatCategory::Insulation)
         };
-        // Abrechnung je Bauteil (Fläche, Länge, einmal je Gewerk)
-        let bill = match q {
+        // Abrechnung je Bauteil (Fläche, Länge, einmal je Gewerk); die
+        // Untersicht je Schicht (Dämmung, Bekleidung W3)
+        let bill = |i: usize| match q {
             ElementQto::Terrace(t) => Some((t.area, 0.0)),
-            ElementQto::Soffit(f) => Some((f.area, 0.0)),
+            ElementQto::Soffit(f) => Some((f.layer_area(i), 0.0)),
             ElementQto::Perimeter(f) => Some((f.area, 0.0)),
             ElementQto::Coping(c) => Some((0.0, c.length)),
             _ => None,
@@ -2025,7 +2091,7 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                         pocket: f64| {
             let Some(l) = layers.get(i) else { return };
             let ins = insulation(l.material);
-            let (bill_area, bill_length, once) = match (bill, q) {
+            let (bill_area, bill_length, once) = match (bill(i), q) {
                 (Some((a, len)), _) => (a, len, true),
                 (None, ElementQto::Wall(w)) => (
                     if ins { area } else { 0.0 },
@@ -2126,6 +2192,10 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                     if air {
                         continue;
                     }
+                    let area = match q {
+                        ElementQto::Soffit(f) => f.layer_area(i),
+                        _ => area,
+                    };
                     let v = if l.core || whole {
                         q.volume()
                     } else {
@@ -2293,7 +2363,18 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
                     add(f.material, f.volume, f.area, None);
                 }
             }
-            (ElementQto::Soffit(f), Some(m)) => add(m, f.volume, f.area, None),
+            (ElementQto::Soffit(f), Some(m)) => {
+                add(m, f.volume, f.area, None);
+                // Bekleidung (W3): eigener Baustoff
+                let floor = match model.element(row.element).map(|e| &e.kind) {
+                    Some(ElementKind::SoffitInsulation { floor }) => Some(*floor),
+                    _ => None,
+                };
+                let cm = floor.and_then(|fl| model.soffit_cladding_material_of(fl));
+                if let (Some(c), Some(cm)) = (&f.cladding, cm) {
+                    add(cm, c.volume, c.area, None);
+                }
+            }
             (ElementQto::Perimeter(f), Some(m)) => add(m, f.volume, f.area, None),
             (ElementQto::Coping(c), Some(m)) => add(m, c.volume, 0.0, Some(c.length)),
             (q, Some(m)) => add(m, q.volume(), 0.0, None),

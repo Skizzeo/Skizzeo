@@ -62,6 +62,10 @@ pub struct StripParams {
     pub covered: bool,
 }
 
+/// Schmalste Bekleidung (W3, mm): schmalere Vorsprünge bekleidet der
+/// Verblender allein.
+pub const MIN_CLADDING_WIDTH: f64 = 10.0;
+
 /// Untersichtdämmung unter dem auskragenden Deckenstreifen, wo das
 /// Geschoss darüber vorspringt (OG Phase 2, G7 K4).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -70,6 +74,18 @@ pub struct SoffitParams {
     pub thickness: f64,
     /// Baustoff (Darstellungsschlüssel).
     pub mat: u16,
+    /// Bekleidung unter der Dämmung (W3), mm; 0 ohne.
+    pub cladding: f64,
+    /// Baustoff der Bekleidung (Darstellungsschlüssel).
+    pub clad_mat: u16,
+    /// Von der Außenseite der verlängerten Schichten bis zur Rückseite
+    /// des Verblenders (mm), 0 ohne Verblender: dort endet die Bekleidung.
+    pub clad_inset: f64,
+    /// Überstand des Verblenders unter UK Bekleidung (mm).
+    pub drip: f64,
+    /// Achsabstände der Grund- und Traglattung (mm, nur Mengen; 0 ohne).
+    pub batten: f64,
+    pub counter: f64,
 }
 
 /// Dachterrasse auf der Decke mit Attika und Blech (D1–D3): Aufbau und
@@ -112,6 +128,10 @@ pub struct FloorSlab {
     /// Grundriss der Untersichtdämmung je vorspringendem Segment (Segment,
     /// auf z = 0): Kern EG Anfang, Ende, Kern darüber Ende, Anfang.
     pub soffits: Vec<(usize, [Vec3; 4])>,
+    /// Grundriss der Bekleidung darunter je Segment (W3): Außenseite der
+    /// Wand unten Anfang, Ende, Rückseite des Verblenders (bzw. Außenseite
+    /// der verlängerten Schichten) Ende, Anfang. Leer ohne Bekleidung.
+    pub claddings: Vec<(usize, [Vec3; 4])>,
     /// Dachterrasse, falls das Geschoss darüber zurückspringt (D1).
     pub terrace: Option<TerraceParams>,
     /// Umrisse, Attika-Stücke und Blechpfad dazu (leer ohne Terrasse).
@@ -221,6 +241,22 @@ impl FloorSlab {
             if !slab.soffits.is_empty() {
                 slab.soffit = Some(sp);
             }
+            // Bekleidung (W3): von der Außenseite der Wand unten bis zur
+            // Rückseite des Verblenders; zu schmale Vorsprünge ohne
+            if sp.cladding > 0.0 {
+                let a = own.face_corners(own.outer_offset());
+                let b = ext.face_corners(ext.outer_offset() - ext.outward_sign() * sp.clad_inset);
+                let n = a.len().min(b.len());
+                slab.claddings = slab
+                    .soffits
+                    .iter()
+                    .filter(|(k, _)| offsets[*k] - sp.clad_inset >= MIN_CLADDING_WIDTH)
+                    .map(|&(k, _)| {
+                        let j = (k + 1) % n;
+                        (k, [a[k], a[j], b[j], b[k]])
+                    })
+                    .collect();
+            }
         }
         Ok(slab)
     }
@@ -245,6 +281,7 @@ impl FloorSlab {
             strip_covered: Vec::new(),
             soffit: None,
             soffits: Vec::new(),
+            claddings: Vec::new(),
             terrace: None,
             terraces: TerracePlan::default(),
             core_layer: 0,
@@ -300,20 +337,43 @@ impl FloorSlab {
         self.prism(b, t, false)
     }
 
-    /// Körper der Untersichtdämmung (K4), leer ohne Vorsprung.
+    /// Körper der Untersichtdämmung (K4) samt Bekleidung (W3), leer ohne
+    /// Vorsprung.
     pub fn soffit_solid(&self) -> Solid {
-        match self.soffit_band() {
-            Some((z0, z1)) => self.soffit_prisms(z0, z1, false),
-            None => Solid::default(),
-        }
+        self.soffit_cut_at(f64::INFINITY)
     }
 
-    /// Untersichtdämmung waagerecht geschnitten in Höhe `cut` (Grundriss).
+    /// Untersichtdämmung und Bekleidung waagerecht geschnitten in Höhe
+    /// `cut` (Grundriss).
     pub fn soffit_cut_at(&self, cut: f64) -> Solid {
-        match self.soffit_band().filter(|z| cut > z.0) {
-            Some((z0, z1)) => self.soffit_prisms(z0, z1.min(cut), cut < z1),
-            None => Solid::default(),
+        let mut s = Solid::default();
+        let Some(sp) = self.soffit else {
+            return s;
+        };
+        let bands = [
+            (self.soffit_band(), &self.soffits, sp.mat),
+            (self.cladding_band(), &self.claddings, sp.clad_mat),
+        ];
+        for (band, quads, mat) in bands {
+            if let Some((z0, z1)) = band.filter(|z| cut > z.0) {
+                s.append(&prisms(quads, mat, z0, z1.min(cut), cut < z1));
+            }
         }
+        s
+    }
+
+    /// UK des abgefangenen Verblenders unter der Bekleidung (W3).
+    pub fn drip_bottom(&self) -> Option<f64> {
+        let sp = self.soffit?;
+        Some(self.cladding_band()?.0 - sp.drip)
+    }
+
+    /// Höhenband der Bekleidung unter der Untersichtdämmung (W3), falls es
+    /// sie gibt.
+    pub fn cladding_band(&self) -> Option<(f64, f64)> {
+        let sp = self.soffit.filter(|sp| sp.cladding > 0.0)?;
+        let (z0, _) = self.soffit_band()?;
+        (!self.claddings.is_empty()).then_some((z0 - sp.cladding, z0))
     }
 
     /// Höhenband der Untersichtdämmung (UK Dämmung, UK Decke), falls es sie gibt.
@@ -321,40 +381,6 @@ impl FloorSlab {
         let sp = self.soffit?;
         let (b, _) = self.band();
         Some((b - sp.thickness, b))
-    }
-
-    /// Untersichtdämmung zwischen `z0` und `z1`. Sie liegt zwischen der
-    /// Decke, der EG-Wand und den herabgezogenen Außenschichten; in 3D
-    /// zeichnen diese die Kanten, als Schnitt oben ist sie umrandet.
-    fn soffit_prisms(&self, z0: f64, z1: f64, cut_top: bool) -> Solid {
-        let Some(sp) = self.soffit else {
-            return Solid::default();
-        };
-        let mut s = Solid {
-            mat: sp.mat,
-            ..Solid::default()
-        };
-        for (_, q) in &self.soffits {
-            let ring = polygon::to_ccw(q);
-            s.cap(&ring, z0, false);
-            s.mat = if cut_top {
-                sp.mat | material::CUT
-            } else {
-                sp.mat
-            };
-            s.cap(&ring, z1, true);
-            s.mat = sp.mat;
-            s.sides(&ring, z0, z1, true);
-            if cut_top {
-                s.edge_kind = edge_kind::CUT_LAYER;
-                let n = ring.len();
-                for i in 0..n {
-                    s.edge(at_z(ring[i], z1), at_z(ring[(i + 1) % n], z1));
-                }
-            }
-        }
-        s.edge_kind = edge_kind::VIEW;
-        s
     }
 
     /// Decke waagerecht geschnitten in Höhe `cut` (Grundriss): Liegt sie über
@@ -396,11 +422,34 @@ impl FloorSlab {
     }
 
     /// Schnittfläche der Untersichtdämmung (K4): Dämmschraffur, mitteldick
-    /// umrandet; oben zeichnet die Decke die Linie.
+    /// umrandet; oben zeichnet die Decke die Linie. Darunter die Bekleidung
+    /// (W3) als schmales Band, ringsum umrandet.
     pub fn soffit_section_caps(&self, p0: Vec3, n: Vec3) -> Solid {
         let (Some(sp), Some((z0, z1))) = (self.soffit, self.soffit_band()) else {
             return Solid::default();
         };
+        let mut s = self.ud_section_caps(sp, (z0, z1), p0, n);
+        if let Some((c0, c1)) = self.cladding_band() {
+            let f = SectionFrame::new(p0, n);
+            let (n, along) = (f.n, f.along);
+            let pt = |u: f64, z: f64| f.pt(u, z);
+            s.mat = sp.clad_mat | material::CUT;
+            s.edge_kind = edge_kind::CUT_LAYER;
+            for (_, q) in &self.claddings {
+                for (a, b) in polygon::plane_intervals(q, p0, n, along) {
+                    s.quad(pt(a, c0), pt(b, c0), pt(b, c1), pt(a, c1), n);
+                    s.edge(pt(a, c0), pt(b, c0));
+                    s.edge(pt(a, c1), pt(b, c1));
+                    s.edge(pt(a, c0), pt(a, c1));
+                    s.edge(pt(b, c0), pt(b, c1));
+                }
+            }
+            s.edge_kind = edge_kind::VIEW;
+        }
+        s
+    }
+
+    fn ud_section_caps(&self, sp: SoffitParams, (z0, z1): (f64, f64), p0: Vec3, n: Vec3) -> Solid {
         let f = SectionFrame::new(p0, n);
         let (n, along) = (f.n, f.along);
         let pt = |u: f64, z: f64| f.pt(u, z);
@@ -439,6 +488,55 @@ impl FloorSlab {
     pub fn soffit_volume(&self) -> f64 {
         self.soffit
             .map_or(0.0, |sp| self.soffit_area() * sp.thickness)
+    }
+
+    /// Fläche der Bekleidung (W3, mm²).
+    pub fn cladding_area(&self) -> f64 {
+        self.claddings
+            .iter()
+            .fold(0.0, |a, (_, q)| a + polygon::area(q))
+    }
+
+    /// Volumen der Bekleidung (mm³).
+    pub fn cladding_volume(&self) -> f64 {
+        match (self.soffit, self.cladding_band()) {
+            (Some(sp), Some(_)) => self.cladding_area() * sp.cladding,
+            _ => 0.0,
+        }
+    }
+
+    /// Umfang der bekleideten Fläche (mm): je zusammenhängendem Streifen
+    /// außen herum, ohne die Stöße zwischen den Segmenten.
+    pub fn cladding_perimeter(&self) -> f64 {
+        let len = |p: Vec3, q: Vec3| (q - p).length();
+        let mut total = 0.0;
+        for (i, (_, q)) in self.claddings.iter().enumerate() {
+            total += len(q[0], q[1]) + len(q[2], q[3]);
+            // Stirnseite nur, wo kein bekleidetes Nachbarsegment anschließt
+            let near = |p: Vec3, r: Vec3| (p - r).length() < 1.0;
+            let joined = |a: Vec3| {
+                self.claddings
+                    .iter()
+                    .enumerate()
+                    .any(|(j, (_, o))| j != i && o.iter().any(|x| near(*x, a)))
+            };
+            if !(joined(q[1]) && joined(q[2])) {
+                total += len(q[1], q[2]);
+            }
+            if !(joined(q[0]) && joined(q[3])) {
+                total += len(q[3], q[0]);
+            }
+        }
+        total
+    }
+
+    /// Freie Außenkante der Bekleidung am Verblender (mm, W3): Länge der
+    /// äußeren Längsseiten (Lüftungsprofil).
+    pub fn cladding_edge(&self) -> f64 {
+        self.claddings
+            .iter()
+            .map(|(_, q)| (q[2] - q[3]).length())
+            .sum()
     }
 
     // ---- Dachterrasse, Attika, Attikablech (D1–D3) ----
@@ -843,6 +941,34 @@ impl FloorSlab {
     pub fn volume(&self) -> f64 {
         self.area() * self.params.thickness
     }
+}
+
+/// Untersichtdämmung oder Bekleidung (`mat`) zwischen `z0` und `z1`. Sie
+/// liegt zwischen der Decke, der EG-Wand und den herabgezogenen
+/// Außenschichten; in 3D zeichnen diese die Kanten, als Schnitt oben ist
+/// sie umrandet.
+fn prisms(quads: &[(usize, [Vec3; 4])], mat: u16, z0: f64, z1: f64, cut_top: bool) -> Solid {
+    let mut s = Solid {
+        mat,
+        ..Solid::default()
+    };
+    for (_, q) in quads {
+        let ring = polygon::to_ccw(q);
+        s.cap(&ring, z0, false);
+        s.mat = if cut_top { mat | material::CUT } else { mat };
+        s.cap(&ring, z1, true);
+        s.mat = mat;
+        s.sides(&ring, z0, z1, true);
+        if cut_top {
+            s.edge_kind = edge_kind::CUT_LAYER;
+            let n = ring.len();
+            for i in 0..n {
+                s.edge(at_z(ring[i], z1), at_z(ring[(i + 1) % n], z1));
+            }
+        }
+    }
+    s.edge_kind = edge_kind::VIEW;
+    s
 }
 
 #[cfg(test)]
