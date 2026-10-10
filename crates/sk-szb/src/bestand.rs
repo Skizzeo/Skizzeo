@@ -324,7 +324,7 @@ pub const ARTEN: [&str; 12] = [
 ];
 
 /// Werks-Leistungen (§10, aus werk.szk).
-pub const LEISTUNGEN: [WerkLeistung; 68] = [
+pub const LEISTUNGEN: [WerkLeistung; 70] = [
     l(
         "1S7bUW0010080200000001",
         "m3",
@@ -604,7 +604,7 @@ pub const LEISTUNGEN: [WerkLeistung; 68] = [
     l(
         "1S7bUW001008020000000l",
         "m",
-        "length",
+        "auto",
         "Abdichtungsanschluss an Attika, über Krone geführt, inkl. Keil",
     ),
     l(
@@ -732,6 +732,18 @@ pub const LEISTUNGEN: [WerkLeistung; 68] = [
         "m2",
         "area",
         "Untersichtbekleidung Faserzementtafel 8mm über Kopf, verschraubt",
+    ),
+    l(
+        "1S7bUW0010080200000015",
+        "m",
+        "auto",
+        "Abdichtungsanschluss an Aufkantung Flachdach, über Krone, inkl. Keil",
+    ),
+    l(
+        "1S7bUW0010080200000016",
+        "st",
+        "auto",
+        "Zulage Abdichtungsanschluss Innenecke, Eckverstärkung",
     ),
 ];
 

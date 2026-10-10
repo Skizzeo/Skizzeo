@@ -553,8 +553,8 @@ const RH3: Soll = Soll {
 /// Oberkante Dach alles mit Bauleistung, keine graue Zeile.
 const RH5: Soll = Soll {
     datei: include_str!("../referenz/rh5-flachdach.szo"),
-    netto: 9765247,
-    material: 4239190,
+    netto: 9761840,
+    material: 4237191,
     geruest: (
         "Fassadengerüst LK3 W09, 4 Wochen Standzeit, auf-/abbauen",
         334544,
@@ -566,7 +566,7 @@ const RH5: Soll = Soll {
         ("Gründung", 2264725),
         ("Erdgeschoss", 3311769),
         ("Obergeschoss", 2879023),
-        ("Flachdach", 1309724),
+        ("Flachdach", 1306317),
     ],
     ausgleich: 6,
     zeilen: &[
@@ -697,11 +697,12 @@ const RH5: Soll = Soll {
             21706,
         ),
         (
+            // nur am Blech der Dachterrasse (coping.seal), Review 9897697
             "Abdichtungsanschluss an Attika, über Krone geführt, inkl. Keil",
-            46600,
+            13000,
             2910,
-            135606,
-            23766,
+            37830,
+            6630,
         ),
         (
             "Terrassenbelag Betonplatten 40mm auf Splittbett, Schutzlage",
@@ -765,6 +766,21 @@ const RH5: Soll = Soll {
             3755,
             197122,
             102630,
+        ),
+        // Anschluss am Flachdach an der Innenfläche der Aufkantung, 4 Innenecken
+        (
+            "Abdichtungsanschluss an Aufkantung Flachdach, über Krone, inkl. Keil",
+            29680,
+            2910,
+            86369,
+            15137,
+        ),
+        (
+            "Zulage Abdichtungsanschluss Innenecke, Eckverstärkung",
+            4000,
+            2000,
+            8000,
+            0,
         ),
         (
             "Attikadämmung innen und Krone, EPS d=6-10cm, unter Abdichtung",

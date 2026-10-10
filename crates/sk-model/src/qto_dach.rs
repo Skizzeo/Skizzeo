@@ -25,9 +25,10 @@ pub const CUT667: &str = "coping.cut667";
 pub const CUT1000: &str = "coping.cut1000";
 pub const CORNER: &str = "coping.corner";
 pub const END: &str = "coping.end";
+pub const SEAL: &str = "coping.seal";
 
 /// Schlüssel am Dach (`[service] auto=`), Einheit und Bedeutung.
-pub const SCHLUESSEL: [(&str, &str, &str); 5] = [
+pub const SCHLUESSEL: [(&str, &str, &str); 6] = [
     (
         CUT500,
         "m",
@@ -45,6 +46,12 @@ pub const SCHLUESSEL: [(&str, &str, &str); 5] = [
     ),
     (CORNER, "st", "Ecken des Attikablechs (Knick ab 5°)"),
     (END, "st", "Endabschlüsse: zwei je offenem Blechstrang"),
+    (
+        SEAL,
+        "m",
+        "Abdichtungsanschluss unter dem Attikablech der Dachterrasse (Länge Außenkante); \
+         am Flachdach gilt roof.edge",
+    ),
 ];
 
 /// Kostengruppe (DIN 276): 363 Dachbeläge, dazu der Dachrandabschluss.
@@ -90,8 +97,10 @@ pub fn enden(p: &CopingPath) -> u32 {
 }
 
 /// Automatikmengen eines Attikablechs; `vorlage` trägt Bauteil, Nummer,
-/// Geschoss und Gebäude.
-pub(crate) fn coping_mengen(vorlage: &AutoMenge, c: &CopingQto) -> Vec<AutoMenge> {
+/// Geschoss und Gebäude. `terrasse`: das Blech schließt eine Dachterrasse
+/// ab, dann zählt auch der Abdichtungsanschluss darunter (`coping.seal`);
+/// am Flachdach liegt er an der Innenfläche der Aufkantung (`roof.edge`).
+pub(crate) fn coping_mengen(vorlage: &AutoMenge, c: &CopingQto, terrasse: bool) -> Vec<AutoMenge> {
     let m = |mm: f64| format!("{:.2} m", mm / 1000.0).replace('.', ",");
     let menge = |key, unit, value, formula| AutoMenge {
         key,
@@ -122,6 +131,14 @@ pub(crate) fn coping_mengen(vorlage: &AutoMenge, c: &CopingQto) -> Vec<AutoMenge
                 c.girth,
                 c.cut
             ),
+        ));
+    }
+    if terrasse && c.length > 0.0 {
+        out.push(menge(
+            SEAL,
+            "m",
+            c.length,
+            format!("{} Länge Attikablech der Dachterrasse", m(c.length)),
         ));
     }
     if c.corners > 0 {
@@ -157,9 +174,9 @@ pub(crate) fn bauteil_mengen(model: &Model, sched: &Schedule) -> Vec<AutoMenge> 
             let (Some(ElementQto::Coping(c)), Some(e)) = (&r.q, model.element(r.element)) else {
                 continue;
             };
-            if !matches!(e.kind, ElementKind::Coping { .. }) {
+            let ElementKind::Coping { floor } = e.kind else {
                 continue;
-            }
+            };
             let vorlage = AutoMenge {
                 element: r.element,
                 number: r.number.clone(),
@@ -171,7 +188,8 @@ pub(crate) fn bauteil_mengen(model: &Model, sched: &Schedule) -> Vec<AutoMenge> 
                 kg: None,
                 formula: String::new(),
             };
-            out.extend(coping_mengen(&vorlage, c));
+            let terrasse = model.flat_roof_of(floor).is_none();
+            out.extend(coping_mengen(&vorlage, c, terrasse));
         }
     }
     out

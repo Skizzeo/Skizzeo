@@ -1413,16 +1413,24 @@ mod tests {
     fn werk_ohne_befund() {
         let k = werk();
         assert!(k.befunde.is_empty(), "{:#?}", k.befunde);
-        assert_eq!(k.leistungen.len(), 68);
+        assert_eq!(k.leistungen.len(), 70);
         assert_eq!(k.artikel.len(), 30);
         assert_eq!(k.lose.len(), 17);
-        assert_eq!(k.anteile.len(), 43);
-        assert_eq!(k.folgen.len(), 10);
+        assert_eq!(k.anteile.len(), 44);
+        assert_eq!(k.folgen.len(), 9);
         assert_eq!(k.werte, Firmenwerte::werk());
         assert_eq!(k.kopf.as_ref().map(|c| c.stand), Some(9));
-        // Stand 9: 35 Automatikpositionen (Erde, Baustelle, Zulagen Attikaabdeckung,
-        // Untersicht, Fußpunkt, Flachdach)
-        assert_eq!(k.leistungen.iter().filter(|l| l.auto.is_some()).count(), 35);
+        // Stand 9: 38 Automatikpositionen (Erde, Baustelle, Zulagen Attikaabdeckung,
+        // Anschluss an der Attika, Untersicht, Fußpunkt, Flachdach)
+        assert_eq!(k.leistungen.iter().filter(|l| l.auto.is_some()).count(), 38);
+        // jeder Schlüssel des Modells hat eine Leistung im Werk (Review
+        // 9897697 Hinweis 2: sonst entsteht eine Menge, die niemand bepreist)
+        for (key, _, _) in sk_model::qto::auto_schluessel() {
+            assert!(
+                k.leistungen.iter().any(|l| l.auto.as_deref() == Some(key)),
+                "Schlüssel {key} ohne Leistung im Werk"
+            );
+        }
         assert!(k.herkunft.iter().all(|h| h.bestaetigt));
         let m10 = k
             .leistungen
