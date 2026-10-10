@@ -572,7 +572,7 @@ const RH3: Soll = Soll {
 const RH5: Soll = Soll {
     datei: include_str!("../referenz/rh5-flachdach.szo"),
     netto: 9772362,
-    material: 4239529,
+    material: 4283529,
     geruest: (
         "Fassadengerüst LK3 W09, 4 Wochen Standzeit, auf-/abbauen",
         334544,
@@ -820,14 +820,14 @@ const RH5: Soll = Soll {
             1000,
             40000,
             40000,
-            0,
+            28000,
         ),
         (
             "Notüberlauf Attika rechteckig, inkl. Durchbruch und Einbindung",
             1000,
             28000,
             28000,
-            0,
+            16000,
         ),
         (
             "Grundlattung KVH 60/80 über Kopf, a=80cm, mit Schraubankern",

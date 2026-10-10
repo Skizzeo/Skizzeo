@@ -67,6 +67,13 @@ pub struct Project {
     /// Bodenkennwerte für die Erdarbeiten; kein Projektdatum, ändert sich
     /// nur über [`Model::set_soil`].
     pub soil: crate::qto_earth::Boden,
+    /// Die Bodenkennwerte stehen in `[soil]` (Regel 113); sonst noch an
+    /// `[project]` wie davor.
+    pub soil_info: bool,
+    /// Bodenkennwerte an `[project]` (vor Regel 113), in der Reihenfolge von
+    /// [`crate::qto_earth::Boden::FELDER`]: bleiben bytegleich stehen, bis
+    /// die erste Änderung sie nach `[soil]` umzieht.
+    pub soil_legacy: [Option<f64>; 5],
 }
 
 impl Project {
@@ -86,6 +93,8 @@ impl Project {
             info: false,
             legacy: Default::default(),
             soil: Default::default(),
+            soil_info: false,
+            soil_legacy: [None; 5],
         }
     }
 
@@ -776,6 +785,8 @@ impl Model {
             info: true,
             legacy: Default::default(),
             soil: self.project.soil,
+            soil_info: self.project.soil_info,
+            soil_legacy: self.project.soil_legacy,
             ..p
         };
         match self.txn.as_mut() {
@@ -804,6 +815,8 @@ impl Model {
             && p.soil != self.project.soil
         {
             self.project.soil = p.soil;
+            self.project.soil_info = true;
+            self.project.soil_legacy = [None; 5];
             self.touch();
         }
         if p.fields() == self.project.fields() {
@@ -815,6 +828,8 @@ impl Model {
             info: true,
             legacy: Default::default(),
             soil: self.project.soil,
+            soil_info: self.project.soil_info,
+            soil_legacy: self.project.soil_legacy,
             ..p
         };
         self.touch();
@@ -4100,13 +4115,16 @@ impl Model {
 
     /// Bodenkennwerte der Erdarbeiten (im offenen Schritt). Werte außerhalb
     /// von [`crate::qto_earth::Boden::FELDER`] und gleiche Werte ändern
-    /// nichts.
+    /// nichts. Die erste Änderung zieht die Werte von `[project]` nach
+    /// `[soil]` um (Regel 113), im selben Schritt.
     pub fn set_soil(&mut self, b: crate::qto_earth::Boden) -> bool {
         if b == self.project.soil || crate::qto_earth::Boden::aus_werten(b.werte()).is_none() {
             return false;
         }
         self.note_project();
         self.project.soil = b;
+        self.project.soil_info = true;
+        self.project.soil_legacy = [None; 5];
         self.touch();
         true
     }
@@ -10335,8 +10353,18 @@ mod gelaende_tests {
         let t = schritt(&mut m, |m| m.set_soil(b));
         assert!((summe(&m, TOPSOIL) - vorher * 2.0 / 3.0).abs() < 1.0);
         let text = crate::szo::write(&m);
-        let projekt = text.lines().find(|l| l.starts_with("[project] ")).unwrap();
-        assert!(projekt.ends_with(" topsoil=200 slope=60"), "{projekt}");
+        // Regel 113: eine eigene Zeile, `[project]` bleibt
+        assert!(
+            text.contains("\n[soil] key=project topsoil=200 slope=60\n"),
+            "{text}"
+        );
+        let projekt = |t: &str| {
+            t.lines()
+                .find(|l| l.starts_with("[project] "))
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(projekt(&text), projekt(&leer));
         let back = crate::szo::read(&text, crate::GuidGen::with_seed(1)).unwrap();
         assert_eq!(back.model.project().soil, b);
         assert_eq!(crate::szo::write(&back.model), text);
@@ -10352,8 +10380,126 @@ mod gelaende_tests {
         assert!(!m.set_soil(steil));
         assert!(!m.set_soil(Boden::default()));
         m.rollback();
+        // Außerhalb des Bereichs: Hinweis, Vorgabe gilt, das Projekt öffnet
         let falsch = leer.replacen("[project] ", "[project] slope=10 ", 1);
-        assert!(crate::szo::read(&falsch, crate::GuidGen::with_seed(1)).is_err());
+        let r = crate::szo::read(&falsch, crate::GuidGen::with_seed(1)).unwrap();
+        assert_eq!(r.model.project().soil, Boden::default());
+        assert!(
+            r.hints
+                .iter()
+                .any(|h| h.ends_with("Böschungswinkel 10 außerhalb 30 bis 90, Vorgabe gilt")),
+            "{:?}",
+            r.hints
+        );
+    }
+
+    /// Regel 113: Bodenkennwerte an `[project]` (ältere Dateien) gelten als
+    /// Rückfall und bleiben bytegleich; die erste Änderung zieht sie in
+    /// einem Rückgängig-Schritt nach `[soil]` um. Steht beides in der
+    /// Datei, gilt `[soil]`.
+    #[test]
+    fn bodenkennwerte_ziehen_nach_soil_um() {
+        use crate::qto_earth::Boden;
+        let projekt_zeile = |t: &str| {
+            t.lines()
+                .find(|l| l.starts_with("[project] "))
+                .unwrap()
+                .to_string()
+        };
+        let (m, ..) = haus();
+        let leer = crate::szo::write(&m);
+        let zeile = leer
+            .lines()
+            .find(|l| l.starts_with("[project] "))
+            .unwrap()
+            .to_string();
+        let alt = leer.replace(&zeile, &format!("{zeile} topsoil=200 slope=60"));
+        let r = crate::szo::read(&alt, crate::GuidGen::with_seed(1)).unwrap();
+        assert!(r.hints.is_empty(), "{:?}", r.hints);
+        let mut m = r.model;
+        let b = Boden {
+            oberboden: 200.0,
+            boeschung: 60.0,
+            ..Boden::default()
+        };
+        assert_eq!(m.project().soil, b);
+        assert_eq!(crate::szo::write(&m), alt, "bytegleich");
+        // Andere Änderung am Projekt: bleibt an `[project]`
+        let mut p = m.project().clone();
+        p.site = "Haus".into();
+        schritt(&mut m, |m| m.set_project(p));
+        assert!(projekt_zeile(&crate::szo::write(&m)).ends_with(" topsoil=200 slope=60"));
+        assert!(!crate::szo::write(&m).contains("[soil]"));
+        // Erste Änderung der Bodenkennwerte: Umzug, ein Schritt
+        let vorher = crate::szo::write(&m);
+        let neu = Boden {
+            arbeitsraum: 800.0,
+            ..b
+        };
+        let t = schritt(&mut m, |m| m.set_soil(neu));
+        let text = crate::szo::write(&m);
+        assert!(!projekt_zeile(&text).contains(" topsoil="), "{text}");
+        assert!(
+            text.contains("\n[soil] key=project topsoil=200 workspace=800 slope=60\n"),
+            "{text}"
+        );
+        let back = crate::szo::read(&text, crate::GuidGen::with_seed(1)).unwrap();
+        assert_eq!(back.model.project().soil, neu);
+        assert_eq!(crate::szo::write(&back.model), text);
+        m.apply(&t, Direction::Undo);
+        assert_eq!(crate::szo::write(&m), vorher);
+        // Beides: `[soil]` gilt, `[project]` bleibt bis zur Änderung; eine
+        // leere `[soil]` neben alten Werten heißt Vorgabe
+        let mit_soil = |soil: &str| {
+            let z = projekt_zeile(&alt);
+            alt.replace(&z, &format!("{z}\n{soil}"))
+        };
+        let beides = mit_soil("[soil] key=project topsoil=100");
+        let r = crate::szo::read(&beides, crate::GuidGen::with_seed(1)).unwrap();
+        assert_eq!(r.model.project().soil.oberboden, 100.0);
+        assert_eq!(r.model.project().soil.boeschung, 45.0);
+        assert_eq!(crate::szo::write(&r.model), beides);
+        let leer_soil = mit_soil("[soil] key=project");
+        let r = crate::szo::read(&leer_soil, crate::GuidGen::with_seed(1)).unwrap();
+        assert_eq!(r.model.project().soil, Boden::default());
+        assert_eq!(crate::szo::write(&r.model), leer_soil);
+        let doppelt = mit_soil("[soil] key=project\n[soil] key=project");
+        assert!(crate::szo::read(&doppelt, crate::GuidGen::with_seed(1)).is_err());
+    }
+
+    /// Werte außerhalb des Bereichs sperren das Projekt nicht: slope=95 und
+    /// ein Versatz außerhalb ±3 m öffnen mit zwei Hinweisen, die Vorgaben
+    /// gelten.
+    #[test]
+    fn ausserhalb_des_bereichs_oeffnet_mit_hinweis() {
+        let (m, ..) = haus();
+        let leer = crate::szo::write(&m);
+        let projekt = leer
+            .lines()
+            .find(|l| l.starts_with("[project] "))
+            .unwrap()
+            .to_string();
+        let gebaeude = leer
+            .lines()
+            .find(|l| l.starts_with("[building] "))
+            .unwrap()
+            .to_string();
+        let falsch = leer
+            .replace(&projekt, &format!("{projekt} slope=95"))
+            .replace(&gebaeude, &format!("{gebaeude} terrain=9000"));
+        let r = crate::szo::read(&falsch, crate::GuidGen::with_seed(1)).unwrap();
+        let ab: Vec<_> = r.hints.iter().filter(|h| h.contains("außerhalb")).collect();
+        assert_eq!(ab.len(), 2, "{:?}", r.hints);
+        assert!(ab
+            .iter()
+            .any(|h| h.ends_with("Böschungswinkel 95 außerhalb 30 bis 90, Vorgabe gilt")));
+        assert!(ab
+            .iter()
+            .any(|h| h
+                .ends_with("OK Sohle über Gelände 9000 außerhalb -3000 bis 3000, Vorgabe gilt")));
+        assert_eq!(r.model.project().soil, crate::qto_earth::Boden::default());
+        assert_eq!(r.model.terrain_offset(), 0.0);
+        assert_eq!(crate::szo::write(&r.model), leer);
     }
 
     /// Höher gesetzt: die Schürze wächst mit, die Einbindetiefe bleibt;
@@ -10551,7 +10697,13 @@ mod gelaende_tests {
         assert_eq!(r.model.slab_insulation(slab), 0.0);
         assert!(r.model.perimeter_of(slab).is_none());
         assert!(r.model.check().is_empty(), "{:?}", r.model.check());
+        // außerhalb ±3 m: Hinweis, Versatz 0, das Projekt öffnet
         let bad = text.replace("terrain=-250", "terrain=9000");
-        assert!(crate::szo::read(&bad, GuidGen::with_seed(5)).is_err());
+        let r = crate::szo::read(&bad, GuidGen::with_seed(5)).unwrap();
+        assert_eq!(r.model.terrain_offset(), 0.0);
+        assert!(r
+            .hints
+            .iter()
+            .any(|h| h.contains("OK Sohle über Gelände 9000")));
     }
 }

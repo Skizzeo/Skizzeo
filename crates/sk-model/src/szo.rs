@@ -335,6 +335,12 @@ impl Record {
     }
 }
 
+/// Hinweis für einen Wert außerhalb seines Bereichs: Die Vorgabe gilt,
+/// das Projekt öffnet trotzdem.
+fn ausserhalb(line: usize, name: &str, v: f64, min: f64, max: f64) -> String {
+    format!("Zeile {line}: {name} {v} außerhalb {min} bis {max}, Vorgabe gilt")
+}
+
 pub fn parse_hex(s: &str) -> Option<[u8; 3]> {
     if s.len() != 6 || !s.is_ascii() {
         return None;
@@ -851,14 +857,11 @@ fn write_known(m: &Model) -> String {
         let v: Vec<String> = gaps.iter().map(|(p, n)| format!("{p}:{n}")).collect();
         line.word("next", &v.join(","))
     };
-    // Bodenkennwerte der Erdarbeiten: nur, was von der Vorgabe abweicht
+    // Bodenkennwerte an `[project]` nur noch, wie sie vor Regel 113 in der
+    // Datei standen, bis zur ersten Änderung
     let mut line = line;
-    let vorgabe = crate::qto_earth::Boden::default().werte();
-    for ((k, ..), (v, d)) in crate::qto_earth::Boden::FELDER
-        .iter()
-        .zip(p.soil.werte().into_iter().zip(vorgabe))
-    {
-        if v != d {
+    for ((k, ..), v) in crate::qto_earth::Boden::FELDER.iter().zip(p.soil_legacy) {
+        if let Some(v) = v {
             line = line.num(k, v);
         }
     }
@@ -875,6 +878,27 @@ fn write_known(m: &Model) -> String {
             }
         }
         line.finish(&mut out);
+    }
+    // Bodenkennwerte der Erdarbeiten (Regel 113): `[soil]` mit dem, was von
+    // der Vorgabe abweicht, ohne Abweichung keine Zeile; leer aber doch,
+    // solange alte Werte an `[project]` stehen, denn sonst gälten diese beim
+    // nächsten Laden wieder. Stehen die Werte noch an `[project]`, keine.
+    let alte = p.soil_legacy.iter().any(Option::is_some);
+    if p.soil_info || !alte {
+        let vorgabe = crate::qto_earth::Boden::default().werte();
+        let ab: Vec<(&str, f64)> = crate::qto_earth::Boden::FELDER
+            .iter()
+            .zip(p.soil.werte().into_iter().zip(vorgabe))
+            .filter(|(_, (v, d))| v != d)
+            .map(|((k, ..), (v, _))| (*k, v))
+            .collect();
+        if !ab.is_empty() || alte {
+            let mut line = Line::new("soil").word("key", "project");
+            for (k, v) in ab {
+                line = line.num(k, v);
+            }
+            line.finish(&mut out);
+        }
     }
     // Lage und Nordrichtung (Sonnenstand S1): ohne Angaben keine Zeile, so
     // bleibt eine Datei ohne sie bytegleich
@@ -1508,7 +1532,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 37] = [
+    const KNOWN: [&str; 38] = [
         "pen",
         "linetype",
         "fill",
@@ -1521,6 +1545,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         "typeprop",
         "project",
         "projectinfo",
+        "soil",
         "location",
         "building",
         "storey",
@@ -1688,12 +1713,20 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut building_numbers: HashMap<String, usize> = HashMap::new();
     for r in recs("building") {
         // vor Gelände Thema 1 ohne: OK Sohlplatte auf OK Gelände
-        let terrain = match r.opt("terrain") {
+        let mut terrain = match r.opt("terrain") {
             Some(_) => r.f64("terrain")?,
             None => 0.0,
         };
-        if !(terrain.is_finite() && terrain.abs() <= crate::model::MAX_TERRAIN_OFFSET) {
-            return Err(err(r.line, "[building]: „terrain“ außerhalb des Bereichs"));
+        let max = crate::model::MAX_TERRAIN_OFFSET;
+        if !(terrain.is_finite() && terrain.abs() <= max) {
+            hints.push(ausserhalb(
+                r.line,
+                "OK Sohle über Gelände",
+                terrain,
+                -max,
+                max,
+            ));
+            terrain = 0.0;
         }
         let b = Building {
             guid: r.guid("guid")?,
@@ -1765,21 +1798,51 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     };
     let text = |k: &str| p.opt(k).unwrap_or("").to_string();
     let mut project = Project::new(p.guid("guid")?, p.get("name")?);
-    // Bodenkennwerte der Erdarbeiten; fehlende gelten mit der Vorgabe
-    let mut boden = project.soil.werte();
-    for (w, (k, _, min, max)) in boden.iter_mut().zip(crate::qto_earth::Boden::FELDER) {
-        if p.opt(k).is_some() {
-            let v = p.f64(k)?;
-            if !(v.is_finite() && v >= min && v <= max) {
-                return Err(err(
-                    p.line,
-                    format!("[project]: „{k}“ außerhalb des Bereichs"),
-                ));
-            }
-            *w = v;
+    // Bodenkennwerte der Erdarbeiten (Regel 113): `[soil]` gilt; sonst die
+    // Schlüssel an `[project]` wie davor, die bis zur ersten Änderung dort
+    // stehen bleiben. Fehlende gelten mit der Vorgabe; ein Wert außerhalb
+    // seines Bereichs mit Hinweis ebenso, das Projekt öffnet
+    let felder = crate::qto_earth::Boden::FELDER;
+    let mut boden_wert = |r: &Record, i: usize| -> Result<Option<f64>, LoadError> {
+        let (k, name, min, max) = felder[i];
+        if r.opt(k).is_none() {
+            return Ok(None);
         }
+        let v = r.f64(k)?;
+        if v.is_finite() && v >= min && v <= max {
+            Ok(Some(v))
+        } else {
+            hints.push(ausserhalb(r.line, name, v, min, max));
+            Ok(None)
+        }
+    };
+    let mut legacy = [None; 5];
+    for (i, w) in legacy.iter_mut().enumerate() {
+        *w = boden_wert(p, i)?;
+    }
+    let mut boden = project.soil.werte();
+    match recs("soil").as_slice() {
+        [] => {
+            for (b, w) in boden.iter_mut().zip(legacy) {
+                if let Some(w) = w {
+                    *b = w;
+                }
+            }
+        }
+        [r] => {
+            // Kennung `key=project`; gelesen, damit sie nicht als fremd gilt
+            let _ = r.opt("key");
+            for (i, b) in boden.iter_mut().enumerate() {
+                if let Some(w) = boden_wert(r, i)? {
+                    *b = w;
+                }
+            }
+            project.soil_info = true;
+        }
+        [_, r, ..] => return Err(err(r.line, "[soil] doppelt")),
     }
     project.soil = crate::qto_earth::Boden::aus_werten(boden).unwrap_or_default();
+    project.soil_legacy = legacy;
     // Regel 110: `[projectinfo]` gilt; sonst die Schlüssel an `[project]`
     let alt = [text("site"), text("client"), text("author")];
     match recs("projectinfo").as_slice() {
