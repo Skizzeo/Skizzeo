@@ -8,6 +8,8 @@ mod abnahme;
 #[cfg(test)]
 mod abnahme_einstellungen;
 #[cfg(test)]
+mod abnahme_paket10;
+#[cfg(test)]
 mod abnahme_pd;
 #[cfg(test)]
 mod abnahme_s1;

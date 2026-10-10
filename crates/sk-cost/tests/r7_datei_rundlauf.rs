@@ -9,12 +9,19 @@
 use sk_cost::{lesen, verwaltung, Herkunft, HerkunftArt};
 use sk_model::{read_szk_with, szo, write_szk, GuidGen};
 
-const HAEUSER: [(&str, &str); 3] = [
+const HAEUSER: [(&str, &str); 4] = [
     ("RH-1", include_str!("../referenz/rh1-standardhaus.szo")),
     ("RH-2", include_str!("../referenz/rh2-mehrschalig.szo")),
     (
         "RH-3",
         include_str!("../referenz/rh3-versatz-dachterrasse.szo"),
+    ),
+    // Alle Abschnitte und Schlüssel seit dem 10.10. (Briefing QS §3.2): zwei
+    // Gebäude mit Versatz, Perimeterdämmung, Bodenkennwerte, fünf
+    // Erweiterungen mit je zwei Exemplaren, Bauleistungen mit `auto=`
+    (
+        "r7-alle-abschnitte",
+        include_str!("../referenz/r7-alle-abschnitte.szo"),
     ),
 ];
 
@@ -277,7 +284,7 @@ fn r7_zufaellige_zeilen_bleiben() {
     let v_szo = vorlagen(&lesen::ABSCHNITTE_SZO);
     let v_szk = vorlagen(&lesen::ABSCHNITTE_SZK);
     for lauf in 0..300 {
-        let (name, t) = HAEUSER[lauf % 3];
+        let (name, t) = HAEUSER[lauf % HAEUSER.len()];
         let (ein, neu) = variante(&mut z, t, &v_szo, true, lauf);
         pruefen(name, lauf, &ein, &neu, &szo_rund, &mut befunde);
         let (name, t) = KATALOGE[lauf % 3];
@@ -361,7 +368,7 @@ fn r7_syntaxfehler_nennt_die_zeile() {
     let mut z = Zufall(0x5e_7a);
     for lauf in 0..60 {
         let (name, t, szk) = if lauf % 2 == 0 {
-            let (n, t) = HAEUSER[lauf % 3];
+            let (n, t) = HAEUSER[lauf % HAEUSER.len()];
             (n, t, false)
         } else {
             let (n, t) = KATALOGE[lauf % 3];
