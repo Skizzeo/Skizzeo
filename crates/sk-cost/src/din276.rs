@@ -55,6 +55,14 @@ pub fn name(kg: u16) -> Option<&'static str> {
         364 => "Dachbekleidungen",
         365 => "Elementierte Dachkonstruktionen",
         366 => "Lichtschutz zur KG 360",
+        391 => "Baustelleneinrichtung",
+        392 => "Gerüste",
+        393 => "Sicherungsmaßnahmen",
+        394 => "Abbruchmaßnahmen",
+        395 => "Instandsetzungen",
+        396 => "Materialentsorgung",
+        397 => "Zusätzliche Maßnahmen",
+        398 => "Provisorische Baukonstruktionen",
         k if k % 10 == 9 && (319..=399).contains(&k) => return Some(sonstiges(k)),
         _ => return None,
     })
@@ -82,5 +90,8 @@ mod tests {
         assert_eq!(name(ebene2(335)), Some("Außenwände"));
         assert_eq!(name(349), Some("Sonstiges zur KG 340"));
         assert_eq!(name(300), None);
+        assert_eq!(name(391), Some("Baustelleneinrichtung"));
+        assert_eq!(name(392), Some("Gerüste"));
+        assert_eq!(name(399), Some("Sonstiges"));
     }
 }

@@ -1524,6 +1524,7 @@ fn auto_rows(model: &Model, platten: &[(RunId, ElementId)]) -> Vec<AutoMenge> {
         };
         let basis = crate::qto_earth::ErdBasis::aus(&g);
         out.extend(crate::qto_earth::auto_mengen(&vorlage, &basis, &boden));
+        out.extend(crate::qto_site::site_mengen(model, run, f, &vorlage, 0.0));
     }
     out
 }

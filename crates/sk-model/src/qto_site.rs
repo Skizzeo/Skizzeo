@@ -1,5 +1,5 @@
 //! Automatikmengen der Bauvorbereitung (`site.*`): Baustelleneinrichtung,
-//! Bauzaun, Vermessung und Fassadengerüst, je Gebäude aus seiner Gründung
+//! Bauzaun, Schnurgerüst und Fassadengerüst, je Gebäude aus seiner Gründung
 //! und seinen Außenwänden abgeleitet. Herleitung und Quellen:
 //! kosten/bauvorbereitung-recherche.md.
 //!
@@ -7,7 +7,9 @@
 //! Bauleistung daraus macht (Einheit, Preis), steht im Katalog.
 
 use crate::element::Category;
+use crate::foundation::Foundation;
 use crate::model::Model;
+use crate::qto::AutoMenge;
 use crate::RunId;
 use sk_math::polygon;
 use sk_math::Vec3;
@@ -22,31 +24,34 @@ pub const GERUEST_ABSTAND: f64 = 1_300.0;
 /// Gerüsthöhe über Wandkrone bzw. Attika (mm): Seitenschutz 1,00 m.
 pub const GERUEST_UEBERSTAND: f64 = 1_000.0;
 
-/// Eine Automatikmenge: Schlüssel, Wert, Herleitung für den Mengenansatz.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SiteMenge {
-    pub key: &'static str,
-    /// mm, mm², Stück oder Monate (siehe Schlüssel).
-    pub wert: f64,
-    pub text: String,
-}
+pub const LUMP: &str = "site.lump";
+pub const MONTHS: &str = "site.months";
+pub const FENCE: &str = "site.fence";
+pub const SCAFFOLD: &str = "site.scaffold";
 
-/// Schlüssel und Bedeutung, für Katalogprüfung und Hilfe.
-pub const SITE_KEYS: [(&str, &str); 4] = [
-    ("site.lump", "1 je Gebäude (Pauschale)"),
+/// Schlüssel der Bauvorbereitung (`[service] auto=`), Einheit und Bedeutung.
+pub const SCHLUESSEL: [(&str, &str, &str); 4] = [
+    (LUMP, "psch", "1 je Gebäude (Pauschale)"),
     (
-        "site.months",
-        "Vorhaltedauer Rohbau in Monaten: 2 + Geschosse/2, aufgerundet",
+        MONTHS,
+        "mon",
+        "Vorhaltedauer Rohbau: 2 + Geschosse/2 Monate, aufgerundet",
     ),
     (
-        "site.fence",
-        "Bauzaun (mm): konvexe Hülle des Gebäudes, 3,0 m Abstand",
+        FENCE,
+        "m",
+        "Bauzaun: konvexe Hülle des Gebäudes, 3,0 m Abstand",
     ),
     (
-        "site.scaffold",
-        "Fassadengerüst (mm²): Länge in Gerüstachse × Höhe",
+        SCAFFOLD,
+        "m2",
+        "Fassadengerüst: Länge an der Gerüstaußenseite × Höhe ab Gelände",
     ),
 ];
+
+/// Kostengruppe (DIN 276): 391 Baustelleneinrichtung, 392 Gerüste.
+pub const KG_BE: u16 = 391;
+pub const KG_GERUEST: u16 = 392;
 
 /// Umfang eines um `a` nach außen versetzten einfachen Polygons mit
 /// Gehrungsecken: Umfang + 2a · Σ tan(Außenwinkel/2). Bei rechtwinkligen
@@ -110,13 +115,17 @@ pub fn vorhaltemonate(geschosse: usize) -> u32 {
     2 + geschosse.div_ceil(2) as u32
 }
 
-/// Automatikmengen `site.*` des Gebäudes über der Gründung des Wandzugs
-/// `run` (der Zug, unter dem die Sohlplatte liegt). Leer, wenn der Zug
-/// keine gültige Gründung hat.
-pub fn site_mengen(model: &Model, run: RunId) -> Vec<SiteMenge> {
-    let Some(Ok(f)) = model.foundation(run) else {
-        return Vec::new();
-    };
+/// Automatikmengen `site.*` des Gebäudes über der Gründung `f` des
+/// Wandzugs `run` (der Zug, unter dem die Sohlplatte liegt), mit Sohlplatte,
+/// Geschoss und Gebäude aus `vorlage`. `gelaende`: OK Gelände relativ zu
+/// ±0,00 (mm, nach oben positiv), Aufstandsfläche des Gerüsts.
+pub fn site_mengen(
+    model: &Model,
+    run: RunId,
+    f: &Foundation,
+    vorlage: &AutoMenge,
+    gelaende: f64,
+) -> Vec<AutoMenge> {
     let gebaeude = model.run(run).and_then(|r| model.building_of(r.storey));
     // Außenwandzüge desselben Gebäudes (alle Geschosse)
     let zuege: Vec<RunId> = model
@@ -155,32 +164,50 @@ pub fn site_mengen(model: &Model, run: RunId) -> Vec<SiteMenge> {
     }
     let fassade = fassade.unwrap_or_else(|| f.outline.clone());
     let monate = vorhaltemonate(geschosse.len());
-    let zaun = offset_perimeter(&convex_hull(&punkte), ZAUN_ABSTAND);
+    let huelle = convex_hull(&punkte);
+    let zaun = offset_perimeter(&huelle, ZAUN_ABSTAND);
     let laenge = offset_perimeter(&fassade, GERUEST_ABSTAND);
-    // Aufstandsfläche: Gelände (z = 0) bis über die oberste Wandkrone
-    let hoehe = (krone + GERUEST_UEBERSTAND).max(0.0);
-    let gs = |mm: f64| format!("{:.2} m", mm / 1000.0).replace('.', ",");
+    // Aufstandsfläche: Gelände bis über die oberste Wandkrone bzw. Attika
+    let hoehe = (krone + GERUEST_UEBERSTAND - gelaende).max(0.0);
+    let m = |mm: f64| format!("{:.2} m", mm / 1000.0).replace('.', ",");
+    let menge = |key, unit, value, kg, formula| AutoMenge {
+        key,
+        unit,
+        value,
+        kg: Some(kg),
+        formula,
+        ..vorlage.clone()
+    };
     vec![
-        SiteMenge {
-            key: "site.lump",
-            wert: 1.0,
-            text: "1 je Gebäude".into(),
-        },
-        SiteMenge {
-            key: "site.months",
-            wert: monate as f64,
-            text: format!("{monate} Monate bei {} Geschossen", geschosse.len()),
-        },
-        SiteMenge {
-            key: "site.fence",
-            wert: zaun,
-            text: format!("Hülle des Gebäudes mit {} Abstand", gs(ZAUN_ABSTAND)),
-        },
-        SiteMenge {
-            key: "site.scaffold",
-            wert: laenge * hoehe,
-            text: format!("{} Gerüstachse × {} Höhe", gs(laenge), gs(hoehe)),
-        },
+        menge(LUMP, "psch", 1.0, KG_BE, "1 je Gebäude".into()),
+        menge(
+            MONTHS,
+            "mon",
+            monate as f64,
+            KG_BE,
+            format!(
+                "2 + {} Geschosse ÷ 2, aufgerundet = {monate} Monate",
+                geschosse.len()
+            ),
+        ),
+        menge(
+            FENCE,
+            "m",
+            zaun,
+            KG_BE,
+            format!(
+                "{} Hülle des Gebäudes, mit {} Abstand",
+                m(polygon::perimeter(&huelle)),
+                m(ZAUN_ABSTAND)
+            ),
+        ),
+        menge(
+            SCAFFOLD,
+            "m2",
+            laenge * hoehe,
+            KG_GERUEST,
+            format!("{} Länge × {} Höhe", m(laenge), m(hoehe)),
+        ),
     ]
 }
 
@@ -240,8 +267,17 @@ mod tests {
         let eg = m
             .build_from_polygon(b, &rechteck(10_000.0, 8_000.0))
             .unwrap();
-        let v = site_mengen(&m, eg);
-        let w = |k: &str| v.iter().find(|x| x.key == k).unwrap().wert;
+        let s = crate::qto::schedule(&m);
+        let v: Vec<&AutoMenge> = s
+            .auto
+            .iter()
+            .filter(|a| a.key.starts_with("site."))
+            .collect();
+        assert_eq!(v.len(), 4);
+        assert!(v
+            .iter()
+            .all(|a| a.building == Some(b) && a.number.starts_with("SP-")));
+        let w = |k: &str| v.iter().find(|x| x.key == k).unwrap().value;
         assert_eq!(w("site.lump"), 1.0);
         assert_eq!(w("site.months"), 3.0);
         // Außenmaß mit Dämmung größer als die Bezugslinie
