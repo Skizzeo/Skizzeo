@@ -1125,6 +1125,9 @@ fn write_known(m: &Model) -> String {
         if f.terrace.crown != crate::model::TERRACE_CROWN {
             l = l.num("crown", f.terrace.crown);
         }
+        if f.terrace.inner != crate::model::ROOF_INNER {
+            l = l.num("inner", f.terrace.inner);
+        }
         if let Some(cm) = f.terrace.coping_mat {
             l = l.guid("coping_mat", mat_guid(cm));
         }
@@ -2317,6 +2320,10 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                         crown: match r.opt("crown") {
                             Some(_) => r.f64("crown")?,
                             None => crate::model::TERRACE_CROWN,
+                        },
+                        inner: match r.opt("inner") {
+                            Some(_) => r.f64("inner")?,
+                            None => crate::model::ROOF_INNER,
                         },
                         coping_mat: match r.opt("coping_mat") {
                             Some(_) => Some(r.link("coping_mat", &mat_ids)?),

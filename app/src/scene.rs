@@ -437,8 +437,7 @@ impl RunPart for FlatRoof {
     }
 
     /// Im Grundriss der Ebene Flachdach liegt der Aufbau unter der
-    /// Schnitthöhe; das Blech erscheint, solange die Aufkantung nicht höher
-    /// als die Schnitthöhe ist.
+    /// Schnitthöhe; das Blech erscheint, solange es ganz darunter liegt.
     fn plan(&self, out: &mut Solid, cut: f64, mode: PlanMode) {
         match mode {
             PlanMode::Foundation => {}
@@ -448,9 +447,9 @@ impl RunPart for FlatRoof {
             }
             PlanMode::Cut => {
                 out.append(&part(self.cut_at(cut), ROOF_PART));
-                if self.crown < cut {
-                    out.append(&part(self.coping_solid(), ROOF_COPING_PART));
-                }
+                // Attikadämmung geschnitten oder gesehen, das Blech nur
+                // ganz unter der Schnitthöhe
+                out.append(&part(self.coping_cut_at(cut), ROOF_COPING_PART));
             }
         }
     }
@@ -2098,7 +2097,11 @@ impl Scene {
         }
         if matches!(
             field,
-            Field::TerraceInsulation | Field::TerraceFinish | Field::Upstand | Field::Crown
+            Field::TerraceInsulation
+                | Field::TerraceFinish
+                | Field::Upstand
+                | Field::Crown
+                | Field::AttikaInner
         ) {
             return self.set_terrace_field(id, field, mm);
         }
@@ -2324,10 +2327,10 @@ impl Scene {
     /// Feld im Abschnitt „Aufbau“ der Dachterrasse (D1, H152): Dämmung und
     /// Belag ändern ihren Typ, die Attika steht an der Decke. Ein Schritt.
     pub fn set_terrace_field(&mut self, id: ElementId, field: Field, mm: f64) -> bool {
-        use sk_model::ElementKind::{Coping, Floor, RoofTerrace};
+        use sk_model::ElementKind::{Coping, Floor, Roof, RoofTerrace};
         let m = &self.model;
         let floor = match m.element(id).map(|e| &e.kind) {
-            Some(RoofTerrace { floor } | Coping { floor }) => *floor,
+            Some(RoofTerrace { floor } | Coping { floor } | Roof { floor, .. }) => *floor,
             Some(Floor(_)) => id,
             _ => return false,
         };
@@ -2336,6 +2339,9 @@ impl Scene {
         }
         if field == Field::Crown {
             return self.edit_model("Dämmung auf der Attika", |m| m.set_floor_crown(floor, mm));
+        }
+        if field == Field::AttikaInner {
+            return self.edit_model("Attikadämmung innen", |m| m.set_floor_inner(floor, mm));
         }
         let func = match field {
             Field::TerraceInsulation => sk_model::LayerFunction::Insulation,

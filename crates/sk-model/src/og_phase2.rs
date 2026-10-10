@@ -531,7 +531,7 @@ fn dachterrasse_sollwerte_pruefhaus() {
         lo.z.round() == 3005.0 && hi.z >= 3095.0 && hi.z < 3140.0,
         "{lo:?} {hi:?}"
     );
-    let k = c.crown.as_ref().expect("Dämmstreifen");
+    let k = c.insulation.first().expect("Dämmstreifen");
     assert_eq!(k.thickness, 40.0);
     assert_eq!(r4(k.volume / 1e9), r4(k.area * 40.0 / 1e9));
     // DE-002 folgt dem OG, DE-001 unverändert, keine UD

@@ -571,8 +571,8 @@ const RH3: Soll = Soll {
 /// Oberkante Dach alles mit Bauleistung, keine graue Zeile.
 const RH5: Soll = Soll {
     datei: include_str!("../referenz/rh5-flachdach.szo"),
-    netto: 9790562,
-    material: 4283529,
+    netto: 9858786,
+    material: 4301381,
     geruest: (
         "Fassadengerüst LK3 W09, 4 Wochen Standzeit, auf-/abbauen",
         334544,
@@ -584,7 +584,7 @@ const RH5: Soll = Soll {
         ("Gründung", 2264725),
         ("Erdgeschoss", 3340491),
         ("Obergeschoss", 2879023),
-        ("Flachdach", 1306317),
+        ("Flachdach", 1374541),
     ],
     ausgleich: 6,
     zeilen: &[
@@ -748,9 +748,18 @@ const RH5: Soll = Soll {
             // Blech der Dachterrasse über dem Dämmstreifen: Schenkel je
             // 40 länger, Abwicklung über 500
             "Zulage Attikaabdeckung Zuschnitt über 500 bis 667mm",
-            46600,
+            13000,
             2600,
-            121160,
+            33800,
+            0,
+        ),
+        (
+            // FD: Blech über Aufkantung, Attikadämmung innen 6 cm und
+            // Streifen 4 cm, Schenkel je 40 länger: Abwicklung 770
+            "Zulage Attikaabdeckung Zuschnitt über 667 bis 1000mm",
+            33600,
+            4900,
+            164640,
             0,
         ),
         (
@@ -803,12 +812,21 @@ const RH5: Soll = Soll {
             8000,
             0,
         ),
+        // Attikadämmung am Flachdach als Schichten des Blechs (Jörn 10.10.
+        // 16:07): Krone 4 cm und innen 6 cm, je m² mit Stoff nach Dicke
         (
-            "Attikadämmung innen und Krone, EPS d=6-10cm, unter Abdichtung",
-            29680,
-            2200,
-            65296,
-            0,
+            "Attikadämmung innen und Krone Flachdach, EPS, Dicke nach Aufbau · d=40mm",
+            17270,
+            2100,
+            36267,
+            10362,
+        ),
+        (
+            "Attikadämmung innen und Krone Flachdach, EPS, Dicke nach Aufbau · d=60mm",
+            8322,
+            2400,
+            19973,
+            7490,
         ),
         (
             "Dachablauf DN 100 wärmegedämmt mit Aufstockelement, Einbau",

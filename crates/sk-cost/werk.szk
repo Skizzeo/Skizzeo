@@ -1,7 +1,7 @@
 SZK 1
-# Skizzeo-Werksbestand Stammdaten, Stand 12 (10/2026), nur die neuen Abschnitte aus KA-0.
+# Skizzeo-Werksbestand Stammdaten, Stand 13 (10/2026), nur die neuen Abschnitte aus KA-0.
 # Herkunft: Skizzeo-Referenz 10/2026, unverbindlich. Erzeugt von stammdaten/werkzeug/werksbestand.py, nicht von Hand ändern.
-[catalog] guid=1S7bUW0010080600000001 name="Skizzeo-Werksbestand" stand=12 date=2026-10-10 status=released
+[catalog] guid=1S7bUW0010080600000001 name="Skizzeo-Werksbestand" stand=13 date=2026-10-10 status=released
 [rate] key=wage num=60
 [rate] key=surcharge num=0
 [rate] key=vat num=19
@@ -121,7 +121,7 @@ SZK 1
 [service] guid=1S7bUW001008020000000_ short="Dampfsperre Bitumen-Alu-Schweißbahn Flachdach, inkl. Voranstrich" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=10 unit=m2 basis=area hours=0.15 cats=roof mat=0Yb39JGen4JxkgK3pBgZ4k
 [service] guid=1S7bUW001008020000000$ short="Dachdämmung EPS 035 DAA dh einlagig, Dicke nach Aufbau" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=20 unit=m2 basis=area hours=0.1 cats=roof mat=1OxgZ1vjv038gKF7kkLN6C
 [service] guid=1S7bUW0010080200000010 short="Abdichtung Polymerbitumen 2-lagig Flachdach, Oberlage beschiefert" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=30 unit=m2 basis=area hours=0.3 cats=roof mat=2OkeJcZuXDoAclkUNNrqJM
-[service] guid=1S7bUW0010080200000011 short="Attikadämmung innen und Krone, EPS d=6-10cm, unter Abdichtung" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=60 unit=m basis=auto hours=0.2 other=10 kg=363 auto=roof.edge
+[service] guid=1S7bUW0010080200000011 short="Attikadämmung innen und Krone Flachdach, EPS, Dicke nach Aufbau" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=60 unit=m2 basis=area hours=0.25 cats=coping mat=1OxgZ1vjv038gKF7kkLN6C
 [service] guid=1S7bUW0010080200000012 short="Dachablauf DN 100 wärmegedämmt mit Aufstockelement, Einbau" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=70 unit=st basis=auto hours=2 kg=363 auto=roof.drains
 [service] guid=1S7bUW0010080200000013 short="Notüberlauf Attika rechteckig, inkl. Durchbruch und Einbindung" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=80 unit=st basis=auto hours=2 kg=363 auto=roof.overflows
 [service] guid=1S7bUW0010080200000014 short="Untersichtbekleidung Faserzementtafel 8mm über Kopf, verschraubt" trade=1S7Wf_00100800000004Ul title=1S7bUW001008030000000G pos=60 unit=m2 basis=area hours=0.9 cats=soffitinsulation mat=2b6MkyCfr3CuSbvo_tnB5F
@@ -173,6 +173,7 @@ SZK 1
 [svcpart] guid=1S7bUW001008040000000e service=1S7bUW001008020000000_ nr=2 art=1S7bUW001008010000000P qty=0.3
 [svcpart] guid=1S7bUW001008040000000f service=1S7bUW001008020000000$ nr=1 layer=1 qty=1
 [svcpart] guid=1S7bUW001008040000000g service=1S7bUW0010080200000010 nr=1 art=1S7bUW001008010000000Q qty=2.3
+[svcpart] guid=1S7bUW001008040000000n service=1S7bUW0010080200000011 nr=1 layer=1 qty=1
 [svcpart] guid=1S7bUW001008040000000k service=1S7bUW0010080200000012 nr=1 art=1S7bUW001008010000000V qty=1
 [svcpart] guid=1S7bUW001008040000000l service=1S7bUW0010080200000013 nr=1 art=1S7bUW001008010000000W qty=1
 [svcpart] guid=1S7bUW001008040000000h service=1S7bUW0010080200000014 nr=1 art=1S7bUW001008010000000U qty=1
@@ -285,7 +286,7 @@ SZK 1
 [origin] key=1S7bUW001008020000000_ rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: wie D10" conf=rough
 [origin] key=1S7bUW001008020000000$ rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Recherche B §4.1 Pos. 3a: 0,08–0,12 h/m²" conf=rough
 [origin] key=1S7bUW0010080200000010 rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: wie D30" conf=rough
-[origin] key=1S7bUW0010080200000011 rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Recherche B §4.1 Pos. 6: 15–30 €/m, 0,15–0,25 h/m" conf=rough
+[origin] key=1S7bUW0010080200000011 rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Recherche B §4.1 Pos. 6: 0,15–0,25 h/m bei rund 0,8 m² je m (innen und Krone) = 0,25 h/m²" conf=rough
 [origin] key=1S7bUW0010080200000012 rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Recherche B §4.1 Pos. 7: 280–550 €, 1,5–3,0 h" conf=rough
 [origin] key=1S7bUW0010080200000013 rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Recherche B §4.1 Pos. 8: 180–400 €, 1,5–2,5 h" conf=rough
 [origin] key=1S7bUW0010080200000014 rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Recherche A/B §B5: Schalung über Kopf 0,6–0,9 h/m²" conf=rough

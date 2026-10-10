@@ -8,7 +8,10 @@
 
 use crate::gefaelle::SlopeField;
 use crate::solid::{at_z, edge_kind, material, right_of, SectionFrame, Solid, SweepEnd, NO_LAYER};
-use crate::terrace::{coping_girth_with, coping_profile_with, ROOF_COPING_INNER};
+use crate::terrace::{
+    attika_section_caps, attika_solid, coping_girth_legs, coping_profile_legs, AttikaPiece,
+    COPING_OUTER, ROOF_COPING_INNER,
+};
 use sk_math::{polygon, vec3, Vec3};
 
 /// Dachaufbau und Attikablech über einer Aufkantung.
@@ -35,6 +38,17 @@ pub struct FlatRoof {
     pub slope: Option<SlopeField>,
     /// Gefälledämmschicht (von oben gezählt), nur mit `slope`.
     pub tapered: Option<usize>,
+    /// Attikadämmung innen (Jörn 10.10. 16:07): Dicke (mm, 0 = keine) und
+    /// ihre Innenfläche, gegen den Uhrzeigersinn, Ecke für Ecke zu
+    /// `outline`, auf z = 0 (ohne Dämmung gleich `outline`). Sie steht auf
+    /// der Dachhaut und reicht bis OK Aufkantung.
+    pub inner: f64,
+    pub inset: Vec<Vec3>,
+    /// Dämmstreifen auf der Krone (mm, 0 = keiner) über Aufkantung und
+    /// Attikadämmung innen; das Blech liegt um ihn höher.
+    pub cap: f64,
+    /// Baustoff beider Dämmungen (Darstellungsschlüssel).
+    pub ins_mat: u16,
 }
 
 impl FlatRoof {
@@ -92,20 +106,31 @@ impl FlatRoof {
     /// Keildicke; ohne Gefälle der Umriss mit 0.
     fn rim(&self) -> Vec<(Vec3, f64)> {
         let ring = &self.outline;
-        let Some(g) = &self.slope else {
-            return ring.iter().map(|p| (*p, 0.0)).collect();
-        };
         let n = ring.len();
         let mut out = Vec::new();
         for i in 0..n {
             let (a, b) = (ring[i], ring[(i + 1) % n]);
-            let d = b - a;
-            let len = d.length();
-            if len < 1e-6 {
+            let Some(ts) = self.breaks(a, b) else {
                 continue;
-            }
-            let mut ts: Vec<f64> = g
-                .faces
+            };
+            out.extend(ts[..ts.len() - 1].iter().map(|&t| {
+                let p = a + (b - a) * t;
+                (p, self.wedge_at(p))
+            }));
+        }
+        out
+    }
+
+    /// Knicke des Keils auf der Strecke `a`–`b` des Umrisses als Anteile
+    /// 0 … 1 (mit 0 und 1); `None` für eine Strecke ohne Länge.
+    fn breaks(&self, a: Vec3, b: Vec3) -> Option<Vec<f64>> {
+        let d = b - a;
+        let len = d.length();
+        if len < 1e-6 {
+            return None;
+        }
+        let mut ts: Vec<f64> = self.slope.as_ref().map_or_else(Vec::new, |g| {
+            g.faces
                 .iter()
                 .flat_map(|f| f.pts.iter())
                 .filter_map(|p| {
@@ -114,16 +139,13 @@ impl FlatRoof {
                     let on = vec3(p.x - q.x, p.y - q.y, 0.0).length() < 0.5;
                     (on && t * len > 0.5 && t * len < len - 0.5).then_some(t)
                 })
-                .collect();
-            ts.push(0.0);
-            ts.sort_by(f64::total_cmp);
-            ts.dedup_by(|x, y| (*x - *y) * len < 0.5);
-            out.extend(ts.into_iter().map(|t| {
-                let p = a + d * t;
-                (p, g.wedge_at(p))
-            }));
-        }
-        out
+                .collect()
+        });
+        ts.push(0.0);
+        ts.sort_by(f64::total_cmp);
+        ts.dedup_by(|x, y| (*x - *y) * len < 0.5);
+        ts.push(1.0);
+        Some(ts)
     }
 
     /// Fläche des Aufbaus (mm²).
@@ -504,16 +526,70 @@ impl FlatRoof {
         us
     }
 
-    // ---- Attikablech (D4) ----
+    // ---- Attikablech (D4) mit Attikadämmung ----
 
-    /// Querschnitt des Blechs (Innenschenkel 50 über dem Hochzug).
+    /// Schnittflächen der Attikadämmung innen: von der Dachhaut bis OK
+    /// Aufkantung, Schraffur wie eine Wanddämmung.
+    fn inner_section_caps(&self, p0: Vec3, n: Vec3) -> Solid {
+        let f = SectionFrame::new(p0, n);
+        let (n, along) = (f.n, f.along);
+        let mut s = Solid {
+            edge_kind: edge_kind::CUT_LAYER,
+            mat: self.ins_mat | material::CUT,
+            ..Solid::default()
+        };
+        let w = self.inner.max(1.0);
+        let z1 = self.crown;
+        for (quad, k, ..) in self.inner_parts() {
+            s.elem = k as u32;
+            for (a, b) in polygon::plane_intervals(&quad, p0, n, along) {
+                let (za, zb) = (
+                    self.inner_bottom(f.pt(a, 0.0)).min(z1),
+                    self.inner_bottom(f.pt(b, 0.0)).min(z1),
+                );
+                s.quad_uv(
+                    [f.pt(a, za), f.pt(b, zb), f.pt(b, z1), f.pt(a, z1)],
+                    n,
+                    [[za / w, 0.0], [zb / w, 1.0], [z1 / w, 1.0], [z1 / w, 0.0]],
+                );
+                s.edge(f.pt(a, z1), f.pt(b, z1));
+                s.edge(f.pt(a, za), f.pt(a, z1));
+                s.edge(f.pt(b, zb), f.pt(b, z1));
+                s.edge(f.pt(a, za), f.pt(b, zb));
+            }
+        }
+        s.edge_kind = edge_kind::VIEW;
+        s
+    }
+
+    /// Schenkel des Blechs (innen, außen; mm): über dem Dämmstreifen um
+    /// dessen Dicke länger, sodass sie wie ohne Streifen überdecken (innen 50
+    /// über dem Hochzug bzw. der Attikadämmung innen, außen 50 unter OK
+    /// Aufkantung).
+    fn coping_legs(&self) -> (f64, f64) {
+        (ROOF_COPING_INNER + self.cap, COPING_OUTER + self.cap)
+    }
+
+    /// Querschnitt des Blechs mit den Schenkeln nach [`Self::coping_legs`].
     fn profile(&self) -> Vec<(f64, f64)> {
-        coping_profile_with(self.width, ROOF_COPING_INNER)
+        let (i, o) = self.coping_legs();
+        coping_profile_legs(self.coping_width(), i, o)
+    }
+
+    /// Breite des Blechs: Aufkantung und Attikadämmung innen (mm).
+    fn coping_width(&self) -> f64 {
+        self.width + self.inner
+    }
+
+    /// UK Blech: OK Aufkantung, mit Dämmstreifen darüber (mm, absolut).
+    pub fn coping_z(&self) -> f64 {
+        self.crown + self.cap
     }
 
     /// Abwicklung des Blechs (mm).
     pub fn coping_girth(&self) -> f64 {
-        coping_girth_with(self.width, ROOF_COPING_INNER)
+        let (i, o) = self.coping_legs();
+        coping_girth_legs(self.coping_width(), i, o)
     }
 
     /// Länge des Blechs an der Außenkante der Aufkantung (mm).
@@ -521,30 +597,202 @@ impl FlatRoof {
         polygon::perimeter(&self.ring)
     }
 
-    /// Körper des Blechs: Profil als geschlossener Ring auf OK Aufkantung.
+    /// Körper des Blechs: Profil als geschlossener Ring auf OK Aufkantung,
+    /// mit Attikadämmung innen und Dämmstreifen darunter (sie gehören zum
+    /// Blech, Jörn 10.10. 16:07).
     pub fn coping_solid(&self) -> Solid {
-        let mut s = Solid {
-            mat: self.coping_mat,
-            ..Solid::default()
-        };
-        let path: Vec<Vec3> = self.ring.iter().map(|p| at_z(*p, self.crown)).collect();
+        self.coping_cut_at(f64::INFINITY)
+    }
+
+    /// Blech mit Dämmung bis zur Höhe `cut` (Grundriss): Dämmung darüber
+    /// geschnitten, das Blech nur, wenn es ganz darunter liegt.
+    pub fn coping_cut_at(&self, cut: f64) -> Solid {
+        let mut s = self.inner_solid(cut);
+        if self.cap > 0.0 {
+            let band = (self.crown, self.coping_z());
+            s.append(&attika_solid(&self.cap_pieces(), band, cut));
+        }
+        let d = Solid::default();
+        (s.mat, s.elem, s.layer, s.edge_kind) = (self.coping_mat, d.elem, d.layer, edge_kind::VIEW);
+        if cut.is_finite() && self.coping_z() >= cut {
+            return s;
+        }
+        let path: Vec<Vec3> = self
+            .ring
+            .iter()
+            .map(|p| at_z(*p, self.coping_z()))
+            .collect();
         s.sweep(&path, true, &self.profile(), [SweepEnd::Square; 2]);
         s.edge_kind = edge_kind::VIEW;
         s
     }
 
-    /// Schnittfläche des Blechs: das Profil in der Ebene, kräftig umrandet.
-    pub fn coping_section_caps(&self, p0: Vec3, n: Vec3) -> Solid {
-        let nn = vec3(n.x, n.y, 0.0).normalized();
+    /// Je Kante ein Stück zwischen den Ringen `a` (außen) und `b` (innen),
+    /// Ecken auf Gehrung.
+    fn pieces(a: &[Vec3], b: &[Vec3], mat: u16) -> Vec<AttikaPiece> {
+        let n = a.len().min(b.len());
+        (0..n)
+            .map(|i| {
+                let j = (i + 1) % n;
+                AttikaPiece {
+                    seg: i,
+                    layer: None,
+                    quad: [a[i], a[j], b[j], b[i]],
+                    mat,
+                    free: [false; 2],
+                    contour: [true; 2],
+                }
+            })
+            .collect()
+    }
+
+    /// Grundriss des Dämmstreifens auf der Krone: Aufkantung und
+    /// Attikadämmung innen.
+    fn cap_pieces(&self) -> Vec<AttikaPiece> {
+        Self::pieces(&self.ring, &self.inset, self.ins_mat)
+    }
+
+    /// Unterkante der Attikadämmung innen am Punkt `p`: Dachhaut mit Keil.
+    fn inner_bottom(&self, p: Vec3) -> f64 {
+        self.band().1 + self.wedge_at(p)
+    }
+
+    /// Teilstücke der Attikadämmung innen: je Kante zwischen den Knicken
+    /// des Keils (außen Anfang, außen Ende, innen Ende, innen Anfang; Kante,
+    /// erstes und letztes Stück der Kante).
+    fn inner_parts(&self) -> Vec<([Vec3; 4], usize, bool, bool)> {
+        if self.inner <= 0.0 {
+            return Vec::new();
+        }
+        let (o, i) = (&self.outline, &self.inset);
+        let n = o.len().min(i.len());
+        let mut out = Vec::new();
+        for k in 0..n {
+            let j = (k + 1) % n;
+            let Some(ts) = self.breaks(o[k], o[j]) else {
+                continue;
+            };
+            let at = |t: f64| (o[k] + (o[j] - o[k]) * t, i[k] + (i[j] - i[k]) * t);
+            for w in 0..ts.len() - 1 {
+                let ((o0, i0), (o1, i1)) = (at(ts[w]), at(ts[w + 1]));
+                out.push(([o0, o1, i1, i0], k, w == 0, w + 2 == ts.len()));
+            }
+        }
+        out
+    }
+
+    /// Körper der Attikadämmung innen bis zur Höhe `cut`: von der Dachhaut
+    /// bis OK Aufkantung, oben bei `cut` geschnitten.
+    fn inner_solid(&self, cut: f64) -> Solid {
         let mut s = Solid {
-            mat: self.coping_mat | material::CUT,
-            edge_kind: edge_kind::CUT,
+            mat: self.ins_mat,
             ..Solid::default()
         };
+        let top = self.crown.min(cut);
+        let is_cut = cut < self.crown;
+        let lo = |p: Vec3| at_z(p, self.inner_bottom(p).min(top));
+        let hi = |p: Vec3| at_z(p, top);
+        for ([o0, o1, i1, i0], k, first, last) in self.inner_parts() {
+            if [o0, o1, i1, i0]
+                .iter()
+                .all(|p| self.inner_bottom(*p) >= top)
+            {
+                continue;
+            }
+            s.elem = k as u32;
+            let d = (o1 - o0).normalized();
+            let r = right_of(d);
+            let out = if (o0 - i0).dot(r) > 0.0 { r } else { -r };
+            s.mat = self.ins_mat;
+            s.oriented_quad([lo(o0), lo(o1), hi(o1), hi(o0)], out);
+            s.oriented_quad([lo(i1), lo(i0), hi(i0), hi(i1)], -out);
+            s.oriented_quad([lo(o0), lo(o1), lo(i1), lo(i0)], vec3(0.0, 0.0, -1.0));
+            for (a, b, away, on) in [(i0, o0, -d, first), (o1, i1, d, last)] {
+                if on {
+                    let m = right_of((b - a).normalized());
+                    let nn = if m.dot(away) < 0.0 { -m } else { m };
+                    s.oriented_quad([lo(a), lo(b), hi(b), hi(a)], nn);
+                }
+            }
+            s.mat = if is_cut {
+                self.ins_mat | material::CUT
+            } else {
+                self.ins_mat
+            };
+            s.oriented_quad([hi(o0), hi(o1), hi(i1), hi(i0)], vec3(0.0, 0.0, 1.0));
+            s.edge_kind = if is_cut {
+                edge_kind::CUT_LAYER
+            } else {
+                edge_kind::VIEW
+            };
+            s.edge(hi(o0), hi(o1));
+            s.edge(hi(i0), hi(i1));
+            s.edge_kind = edge_kind::VIEW;
+            // Fuge zur Dachhaut innen, senkrechte Kanten an den Ecken
+            s.edge(lo(i0), lo(i1));
+            for (on, a, b) in [(first, o0, i0), (last, o1, i1)] {
+                if on {
+                    s.edge(lo(b), hi(b));
+                    s.edge_kind = if is_cut {
+                        edge_kind::CUT_LAYER
+                    } else {
+                        edge_kind::FINE
+                    };
+                    s.edge(hi(a), hi(b));
+                    s.edge_kind = edge_kind::VIEW;
+                }
+            }
+        }
+        s.edge_kind = edge_kind::VIEW;
+        s
+    }
+
+    /// Ansichtsfläche (innen, mm²) und Volumen (mm³) der Attikadämmung
+    /// innen: Höhe von der Dachhaut bis OK Aufkantung, mit Keil je Stück
+    /// gemittelt.
+    pub fn inner_qto(&self) -> (f64, f64) {
+        let mut out = (0.0, 0.0);
+        for ([o0, o1, i1, i0], ..) in self.inner_parts() {
+            let h = |p: Vec3| (self.crown - self.inner_bottom(p)).max(0.0);
+            let face = (i1 - i0).length() * (h(i0) + h(i1)) / 2.0;
+            let quad = polygon::area(&polygon::to_ccw(&[o0, o1, i1, i0]));
+            out.0 += face;
+            out.1 += quad * (h(o0) + h(o1) + h(i1) + h(i0)) / 4.0;
+        }
+        out
+    }
+
+    /// Grundfläche des Dämmstreifens auf der Krone (mm²).
+    pub fn cap_area(&self) -> f64 {
+        if self.cap <= 0.0 {
+            return 0.0;
+        }
+        self.cap_pieces()
+            .iter()
+            .map(|p| polygon::area(&polygon::to_ccw(&p.quad)))
+            .sum()
+    }
+
+    /// Schnittfläche des Blechs: das Profil in der Ebene, kräftig umrandet;
+    /// darunter die Dämmung, umrandet wie Wandschichten.
+    pub fn coping_section_caps(&self, p0: Vec3, n: Vec3) -> Solid {
+        let nn = vec3(n.x, n.y, 0.0).normalized();
+        let mut s = self.inner_section_caps(p0, n);
+        if self.cap > 0.0 {
+            let band = (self.crown, self.coping_z());
+            s.append(&attika_section_caps(&self.cap_pieces(), band, p0, n));
+        }
+        let d = Solid::default();
+        (s.mat, s.elem, s.layer, s.edge_kind) = (
+            self.coping_mat | material::CUT,
+            d.elem,
+            d.layer,
+            edge_kind::CUT,
+        );
         let profile = self.profile();
         let flat: Vec<Vec3> = profile.iter().map(|p| vec3(p.0, p.1, 0.0)).collect();
         let tris = polygon::triangulate(&flat);
-        let z = self.crown;
+        let z = self.coping_z();
         let m = self.ring.len();
         for k in 0..m {
             let (a, b) = (self.ring[k], self.ring[(k + 1) % m]);
@@ -722,6 +970,10 @@ mod tests {
             layers: Vec::new(),
             ring: Vec::new(),
             width: 0.0,
+            inner: 0.0,
+            inset: Vec::new(),
+            cap: 0.0,
+            ins_mat: 0,
             crown: 0.0,
             coping_mat: 0,
             slope: None,
@@ -751,6 +1003,10 @@ mod tests {
             layers: vec![(10.0, 1, false), (200.0, 2, true), (5.0, 3, false)],
             ring: Vec::new(),
             width: 0.0,
+            inner: 0.0,
+            inset: Vec::new(),
+            cap: 0.0,
+            ins_mat: 0,
             crown: 1600.0,
             coping_mat: 0,
         }
@@ -820,6 +1076,78 @@ mod tests {
                 "{flaeche} statt {soll}"
             );
         }
+    }
+
+    /// Attikadämmung innen 6 cm und Krone 4 cm am Dach mit Gefälle (Jörn
+    /// 10.10. 16:07): Die Dämmung innen steht auf der Dachhaut mit Keil, ihr
+    /// Körper hat das Volumen der Mengen; im Schnitt quer zur Langseite je
+    /// Seite 6 cm × (OK Aufkantung − Dachhaut am Rand); das Blech liegt auf
+    /// dem Streifen.
+    fn mit_daemmung() -> FlatRoof {
+        let ring = vec![
+            vec3(-300.0, -300.0, 0.0),
+            vec3(10300.0, -300.0, 0.0),
+            vec3(10300.0, 8300.0, 0.0),
+            vec3(-300.0, 8300.0, 0.0),
+        ];
+        let inset = vec![
+            vec3(60.0, 60.0, 0.0),
+            vec3(9940.0, 60.0, 0.0),
+            vec3(9940.0, 7940.0, 0.0),
+            vec3(60.0, 7940.0, 0.0),
+        ];
+        FlatRoof {
+            ring,
+            width: 300.0,
+            inner: 60.0,
+            inset,
+            cap: 40.0,
+            ins_mat: 2,
+            coping_mat: 4,
+            ..mit_gefaelle()
+        }
+    }
+
+    #[test]
+    fn attikadaemmung_mit_keil() {
+        let r = mit_daemmung();
+        let (face, vol) = r.inner_qto();
+        let v = rauminhalt(&r.inner_solid(f64::INFINITY));
+        assert!((v - vol).abs() < 1e-3 * vol, "{v} statt {vol}");
+        // ohne Keil: 35,52 m Innenfläche × (1600 − 1215)
+        let flach = FlatRoof {
+            slope: None,
+            ..mit_daemmung()
+        };
+        assert!((flach.inner_qto().0 - 35_520.0 * 385.0).abs() < 1e-3);
+        assert!(face < flach.inner_qto().0);
+        // Schnitt x = 5 m: am Ablauf (y = 0 und 8 m) liegt die Dachhaut tief
+        let s = r.inner_section_caps(vec3(5000.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0));
+        let flaeche: f64 = s
+            .triangles
+            .iter()
+            .map(|t| (t.p[1] - t.p[0]).cross(t.p[2] - t.p[0]).length() / 2.0)
+            .sum();
+        let h = |y: f64| 1600.0 - 1215.0 - r.wedge_at(vec3(5000.0, y, 0.0));
+        let soll = 60.0 * ((h(0.0) + h(60.0)) / 2.0 + (h(7940.0) + h(8000.0)) / 2.0);
+        assert!(
+            (flaeche - soll).abs() < 1e-6 * soll,
+            "{flaeche} statt {soll}"
+        );
+        // Blech auf dem Streifen, Breite 360, beide Schenkel 40 länger:
+        // Abwicklung + 60 + 2 × 40
+        assert_eq!(r.coping_z(), 1640.0);
+        assert_eq!(r.coping_girth(), flach.coping_girth());
+        assert_eq!(
+            r.coping_girth() - 60.0 - 80.0,
+            coping_girth_legs(300.0, ROOF_COPING_INNER, COPING_OUTER)
+        );
+        assert_eq!(r.cap_area(), (38_400.0 + 35_520.0) / 2.0 * 360.0);
+        // im Grundriss unter OK Aufkantung geschnitten: kein Blech, Dämmung
+        // innen geschnitten
+        let g = r.coping_cut_at(1500.0);
+        assert!(g.triangles.iter().any(|t| t.mat == 2 | material::CUT));
+        assert!(g.triangles.iter().all(|t| t.mat & !material::CUT == 2));
     }
 
     /// Grundriss: knapp über OK Dachhaut am Ablauf geschnitten, deckt der

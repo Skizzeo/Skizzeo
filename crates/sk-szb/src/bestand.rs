@@ -724,9 +724,9 @@ pub const LEISTUNGEN: [WerkLeistung; 74] = [
     ),
     l(
         "1S7bUW0010080200000011",
-        "m",
-        "auto",
-        "Attikadämmung innen und Krone, EPS d=6-10cm, unter Abdichtung",
+        "m2",
+        "area",
+        "Attikadämmung innen und Krone Flachdach, EPS, Dicke nach Aufbau",
     ),
     l(
         "1S7bUW0010080200000012",

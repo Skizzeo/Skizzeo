@@ -489,8 +489,17 @@ impl Model {
         // Innenfläche am Kern: die Schichten innen davon hat die Aufkantung nicht
         let drop = self.parapet_inner_thickness(ak);
         let (inner, outer) = (chain.inner_offset(), chain.outer_offset());
-        let inner = inner + (outer - inner).signum() * drop;
+        let dir = (outer - inner).signum();
+        let inner = inner + dir * drop;
         let outline = sk_math::polygon::to_ccw(&chain.face_corners(inner));
+        // Attikadämmung innen (Jörn 10.10. 16:07): Innenfläche um ihre Dicke
+        // weiter zum Dach hin
+        let ins = crate::model::inner_of(&f.terrace);
+        let inset = if ins > 0.0 {
+            sk_math::polygon::to_ccw(&chain.face_corners(inner - dir * ins))
+        } else {
+            outline.clone()
+        };
         // Gefälle: der Keil liegt in der obersten Dämmschicht (Konzept F3)
         let tapered = layers.iter().position(|l| l.2);
         let slope = tapered
@@ -509,7 +518,30 @@ impl Model {
             coping_mat: self
                 .coping_material_of(&f.terrace)
                 .map_or(material::PLAIN, material_key),
+            inner: ins,
+            inset,
+            cap: crate::model::crown_of(&f.terrace),
+            ins_mat: self
+                .flat_roof_insulation(floor)
+                .map_or(material::PLAIN, material_key),
         })
+    }
+
+    /// Baustoff der Attikadämmung am Flachdach über der Decke `floor`: die
+    /// (oberste) Dämmschicht seines Aufbaus, sonst die des Werkstyps.
+    pub fn flat_roof_insulation(&self, floor: ElementId) -> Option<MaterialId> {
+        let chosen = self
+            .flat_roof_of(floor)
+            .and_then(|r| self.element(r)?.layer_set);
+        self.roof_type_or_default(chosen)
+            .and_then(|t| self.layer_set(t))
+            .and_then(|t| {
+                t.layers
+                    .iter()
+                    .find(|l| l.function == LayerFunction::Insulation)
+                    .map(|l| l.material)
+            })
+            .or_else(|| self.material_by_guid(ROOF_INSULATION_GUID))
     }
 
     /// Geometrie des Flachdachs auf der Decke `floor`.
@@ -979,10 +1011,23 @@ mod tests {
         assert!(m.warnings(da).is_empty());
         let c = crate::qto::coping_qto(&m, ab).unwrap();
         assert!((c.length - 36_000.0).abs() < 1e-6, "{}", c.length);
-        assert!((c.girth - 455.0).abs() < 1e-9);
+        // Blech über Aufkantung und Attikadämmung innen 6 cm (Jörn 10.10.
+        // 16:07), auf dem Streifen 4 cm: Schenkel je 40 länger,
+        // 315 + 60 + 40 + 90 + 90
+        assert!((c.girth - 595.0).abs() < 1e-9, "{}", c.girth);
         let p = m.props_of(ab);
-        assert_eq!(p.get("Zuschnitt"), Some(&PropValue::Number(500.0)));
-        assert_eq!(p.get("Abwicklung"), Some(&PropValue::Number(455.0)));
+        assert_eq!(p.get("Zuschnitt"), Some(&PropValue::Number(625.0)));
+        assert_eq!(p.get("Abwicklung"), Some(&PropValue::Number(595.0)));
+        // innen: Innenfläche 33,00 m × 0,285 m bis OK Aufkantung, Band
+        // (33,48 + 33,00) / 2 × 0,06 m × 0,285 m; Krone: (36,00 + 33,00) / 2
+        // × 0,375 m, 4 cm dick
+        let r4 = |x: f64| (x * 1e4).round() / 1e4;
+        let dd: Vec<(f64, f64, f64)> = c
+            .insulation
+            .iter()
+            .map(|k| (k.thickness, r4(k.area / 1e6), r4(k.volume / 1e9)))
+            .collect();
+        assert_eq!(dd, [(60.0, 9.405, 0.5684), (40.0, 12.9375, 0.5175)]);
         // Automatikmengen am Dachaufbau
         let s = crate::qto::schedule(&m);
         let auto = |k: &str| {
@@ -1045,13 +1090,14 @@ mod tests {
         assert!(m.check().is_empty(), "{:?}", m.check());
     }
 
-    /// D4: Abwicklung = Wanddicke + 40 + 50 + 50, Zuschnitt aufgerundet:
-    /// AW-49 630 → 667, AW-36,5 505 → 625.
+    /// D4: Abwicklung = Wanddicke + 60 (Attikadämmung innen, Jörn 10.10.
+    /// 16:07) + 40 + 90 + 90 (Schenkel über dem Streifen 4 cm je 40
+    /// länger), Zuschnitt aufgerundet: AW-49 770 → 1000, AW-36,5 645 → 667.
     #[test]
     fn blech_zuschnitt() {
         for (typ, g, w) in [
-            (CAVITY_TYPE_GUID, 630.0, 667.0),
-            (MONO_TYPE_GUID, 505.0, 625.0),
+            (CAVITY_TYPE_GUID, 770.0, 1000.0),
+            (MONO_TYPE_GUID, 645.0, 667.0),
         ] {
             let (mut m, og) = haus(typ);
             let og_storey = m.run(og).unwrap().storey;
