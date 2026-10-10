@@ -9,16 +9,21 @@
 use sk_cost::{lesen, verwaltung, Herkunft, HerkunftArt};
 use sk_model::{read_szk_with, szo, write_szk, GuidGen};
 
-const HAEUSER: [(&str, &str); 4] = [
+const HAEUSER: [(&str, &str); 5] = [
     ("RH-1", include_str!("../referenz/rh1-standardhaus.szo")),
     ("RH-2", include_str!("../referenz/rh2-mehrschalig.szo")),
     (
         "RH-3",
         include_str!("../referenz/rh3-versatz-dachterrasse.szo"),
     ),
+    // RH-5 Flachdach: Aufkantung, `[roof]`, Attikablech, Bekleidung der
+    // Untersicht, Fußpunkt aus Schaumglas
+    ("RH-5", include_str!("../referenz/rh5-flachdach.szo")),
     // Alle Abschnitte und Schlüssel seit dem 10.10. (Briefing QS §3.2): zwei
     // Gebäude mit Versatz, Perimeterdämmung, Bodenkennwerte, fünf
-    // Erweiterungen mit je zwei Exemplaren, Bauleistungen mit `auto=`
+    // Erweiterungen mit je zwei Exemplaren, Bauleistungen mit `auto=`;
+    // seit Briefing Fassung 3 Gebäude 1 mit Flachdach (`kind=roof`,
+    // Aufkantungen, `[roof]`, Attikablech)
     (
         "r7-alle-abschnitte",
         include_str!("../referenz/r7-alle-abschnitte.szo"),

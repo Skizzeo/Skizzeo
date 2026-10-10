@@ -51,7 +51,7 @@ impl Boden {
     /// Grad), in der Reihenfolge der Felder.
     pub const FELDER: [(&'static str, &'static str, f64, f64); 5] = [
         ("topsoil", "Oberboden", 0.0, 1000.0),
-        ("strip", "Oberbodenabtrag um die Platte", 0.0, 10000.0),
+        ("strip", "Abtrag um die Platte", 0.0, 10000.0),
         ("workspace", "Arbeitsraum", 0.0, 2000.0),
         ("capillary", "Kapillarbrechende Schicht", 0.0, 1000.0),
         ("slope", "Böschungswinkel", 30.0, 90.0),
