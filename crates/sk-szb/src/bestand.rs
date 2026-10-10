@@ -99,7 +99,7 @@ pub const BAENDER: [(&str, u32, u32); 12] = [
 ];
 
 /// Werks-Artikel (§10, aus werk.szk).
-pub const ARTIKEL: [WerkArtikel; 30] = [
+pub const ARTIKEL: [WerkArtikel; 32] = [
     a(
         "1S7bUW0010080100000001",
         "m2",
@@ -237,6 +237,17 @@ pub const ARTIKEL: [WerkArtikel; 30] = [
         "1S7bUW001008010000000U",
         "m2",
         "Faserzementtafel 8mm inkl. Fugenband und Edelstahlschrauben",
+    ),
+    // Stand 11: Stoff von Dachablauf und Notüberlauf (B18)
+    a(
+        "1S7bUW001008010000000V",
+        "st",
+        "Flachdachablauf DN 100 wärmegedämmt, mit Aufstockelement",
+    ),
+    a(
+        "1S7bUW001008010000000W",
+        "st",
+        "Notüberlauf rechteckig für Attika, mit Anschlussflansch",
     ),
 ];
 
