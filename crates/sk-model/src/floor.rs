@@ -15,7 +15,7 @@
 use crate::solid::{
     at_z, edge_kind, material, right_of, straight_at, SectionFrame, Solid, NO_LAYER,
 };
-use crate::terrace::{attika_section_caps, attika_solid, coping_profile, TerracePlan};
+use crate::terrace::{attika_section_caps, attika_solid, coping_profile, AttikaPiece, TerracePlan};
 use crate::wall::WallChain;
 use sk_math::polygon;
 use sk_math::{vec3, Vec3};
@@ -101,6 +101,10 @@ pub struct TerraceParams {
     pub upstand: f64,
     /// Baustoff des Blechs (Darstellungsschlüssel).
     pub coping_mat: u16,
+    /// Dämmstreifen auf der Krone unter dem Blech (mm, 0 = keiner) und
+    /// sein Baustoff (Darstellungsschlüssel).
+    pub crown: f64,
+    pub crown_mat: u16,
 }
 
 impl TerraceParams {
@@ -705,16 +709,70 @@ impl FloorSlab {
         }
     }
 
+    /// Höhenband des Dämmstreifens auf der Attikakrone (OK Attika, UK
+    /// Blech); `None` ohne Streifen.
+    pub fn crown_band(&self) -> Option<(f64, f64)> {
+        let t = self.terrace.as_ref().filter(|t| t.crown > 0.0)?;
+        let (_, z) = self.attika_band()?;
+        Some((z, z + t.crown))
+    }
+
+    /// Grundfläche des Dämmstreifens auf der Krone (mm²; 0 ohne).
+    pub fn crown_area(&self) -> f64 {
+        self.crown_pieces()
+            .iter()
+            .map(|p| polygon::area(&p.quad))
+            .sum()
+    }
+
+    /// UK Blech: OK Attika, mit Dämmstreifen darüber.
+    fn coping_z(&self) -> Option<f64> {
+        let (_, z) = self.attika_band()?;
+        Some(self.crown_band().map_or(z, |b| b.1))
+    }
+
+    /// Grundriss des Dämmstreifens auf der Krone: je Segment ein Stück über
+    /// die ganze Attikabreite (äußerstes bis innerstes Attika-Stück), im
+    /// Baustoff des Streifens.
+    fn crown_pieces(&self) -> Vec<AttikaPiece> {
+        let Some(t) = self.terrace.as_ref().filter(|t| t.crown > 0.0) else {
+            return Vec::new();
+        };
+        let a = &self.terraces.attika;
+        let mut segs: Vec<usize> = a.iter().map(|p| p.seg).collect();
+        segs.sort_unstable();
+        segs.dedup();
+        segs.into_iter()
+            .filter_map(|k| {
+                let on = || a.iter().filter(move |p| p.seg == k);
+                let out = on().find(|p| p.contour[0])?;
+                let inn = on().find(|p| p.contour[1])?;
+                Some(AttikaPiece {
+                    seg: k,
+                    layer: None,
+                    quad: [out.quad[0], out.quad[1], inn.quad[2], inn.quad[3]],
+                    mat: t.crown_mat,
+                    free: out.free,
+                    contour: [true, true],
+                })
+            })
+            .collect()
+    }
+
     /// Körper des Attikablechs (D3): Profil längs der Außenfläche der
     /// Attika auf OK Attika, Enden an der Außenfläche des Geschosses darüber.
+    /// Mit Dämmstreifen auf der Krone liegt das Blech um ihn höher, der
+    /// Streifen gehört zum Körper (Jörn 10.10. 16:07).
     pub fn coping_solid(&self) -> Solid {
-        let (Some(t), Some((_, z))) = (&self.terrace, self.attika_band()) else {
+        let (Some(t), Some(z)) = (&self.terrace, self.coping_z()) else {
             return Solid::default();
         };
-        let mut s = Solid {
-            mat: t.coping_mat,
-            ..Solid::default()
+        let mut s = match self.crown_band() {
+            Some(b) => attika_solid(&self.crown_pieces(), b, f64::INFINITY),
+            None => Solid::default(),
         };
+        let d = Solid::default();
+        (s.mat, s.elem, s.layer, s.edge_kind) = (t.coping_mat, d.elem, d.layer, edge_kind::VIEW);
         let profile = coping_profile(self.terraces.width);
         for c in &self.terraces.coping {
             let path: Vec<Vec3> = c.points.iter().map(|p| at_z(*p, z)).collect();
@@ -727,15 +785,21 @@ impl FloorSlab {
     /// Schnittfläche des Attikablechs: das Profil in der Ebene, kräftig
     /// umrandet.
     pub fn coping_section_caps(&self, p0: Vec3, n: Vec3) -> Solid {
-        let (Some(t), Some((_, z))) = (&self.terrace, self.attika_band()) else {
+        let (Some(t), Some(z)) = (&self.terrace, self.coping_z()) else {
             return Solid::default();
         };
         let nn = vec3(n.x, n.y, 0.0).normalized();
-        let mut s = Solid {
-            mat: t.coping_mat | material::CUT,
-            edge_kind: edge_kind::CUT,
-            ..Solid::default()
+        let mut s = match self.crown_band() {
+            Some(b) => attika_section_caps(&self.crown_pieces(), b, p0, n),
+            None => Solid::default(),
         };
+        let d = Solid::default();
+        (s.mat, s.elem, s.layer, s.edge_kind) = (
+            t.coping_mat | material::CUT,
+            d.elem,
+            d.layer,
+            edge_kind::CUT,
+        );
         let profile = coping_profile(self.terraces.width);
         let flat2: Vec<Vec3> = profile.iter().map(|p| vec3(p.0, p.1, 0.0)).collect();
         let tris = polygon::triangulate(&flat2);

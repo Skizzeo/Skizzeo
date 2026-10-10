@@ -1048,6 +1048,9 @@ fn write_known(m: &Model) -> String {
         if f.terrace.upstand != crate::model::TERRACE_UPSTAND {
             l = l.num("upstand", f.terrace.upstand);
         }
+        if f.terrace.crown != crate::model::TERRACE_CROWN {
+            l = l.num("crown", f.terrace.crown);
+        }
         if let Some(cm) = f.terrace.coping_mat {
             l = l.guid("coping_mat", mat_guid(cm));
         }
@@ -2187,6 +2190,11 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                         upstand: match r.opt("upstand") {
                             Some(_) => r.f64("upstand")?,
                             None => crate::model::TERRACE_UPSTAND,
+                        },
+                        // vor der Attikadämmung ohne: Vorgabe (Jörn 10.10.)
+                        crown: match r.opt("crown") {
+                            Some(_) => r.f64("crown")?,
+                            None => crate::model::TERRACE_CROWN,
                         },
                         coping_mat: match r.opt("coping_mat") {
                             Some(_) => Some(r.link("coping_mat", &mat_ids)?),

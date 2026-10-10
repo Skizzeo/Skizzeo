@@ -116,8 +116,9 @@ fn rh4_gleich_rh1_plus_erweiterungen() {
     assert_eq!(g + b4.ausgleich_geschoss.0, b4.netto.0);
     assert_eq!(k + b4.ausgleich_kg.0, b4.netto.0);
     println!("RH-4 netto {} (RH-1 {})", b4.netto.0, b1.netto.0);
-    // Werksbestand Stand 9 (Kosten-Strang Flachdach): RH-1 75.953,63 €,
-    // RH-4 83.220,81 € (Stand 8: 73.035,98 und 80.303,16)
-    assert_eq!(b1.netto.0, 7_595_363, "RH-1 netto");
-    assert_eq!(b4.netto.0, 8_322_081, "RH-4 netto");
+    // Werksbestand Stand 9 (Kosten-Strang Flachdach) mit der Dämmung auf der
+    // Attika der Dachterrasse: RH-1 76.001,72 €, RH-4 83.268,90 €
+    // (Stand 9 ohne: 75.953,63 und 83.220,81; Stand 8: 73.035,98 und 80.303,16)
+    assert_eq!(b1.netto.0, 7_600_172, "RH-1 netto");
+    assert_eq!(b4.netto.0, 8_326_890, "RH-4 netto");
 }

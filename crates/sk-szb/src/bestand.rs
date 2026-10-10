@@ -326,7 +326,7 @@ pub const ARTEN: [&str; 12] = [
 ];
 
 /// Werks-Leistungen (§10, aus werk.szk).
-pub const LEISTUNGEN: [WerkLeistung; 70] = [
+pub const LEISTUNGEN: [WerkLeistung; 71] = [
     l(
         "1S7bUW0010080200000001",
         "m3",
@@ -746,6 +746,12 @@ pub const LEISTUNGEN: [WerkLeistung; 70] = [
         "st",
         "auto",
         "Zulage Abdichtungsanschluss Innenecke, Eckverstärkung",
+    ),
+    l(
+        "1S7bUW0010080200000017",
+        "m2",
+        "area",
+        "Attikadämmung Krone Dachterrasse, EPS, Dicke nach Aufbau, unter Blech",
     ),
 ];
 

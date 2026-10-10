@@ -684,7 +684,7 @@ fn terrace_props(
         layers,
         set_label: "Aufbau",
         sections: terrace_section(m, floor).into_iter().collect(),
-        // Dachterrasse: drei Felder, die Schichten erst nach „Mehr …“
+        // Dachterrasse: vier Felder, die Schichten erst nach „Mehr …“
         more: !matches!(e.kind, ElementKind::Coping { .. }),
         notes: m.warnings(id),
         ..Default::default()
@@ -787,6 +787,17 @@ fn terrace_section(m: &Model, floor: ElementId) -> Option<crate::ui::Section> {
                     f.terrace.upstand,
                     0.0,
                     sk_model::MAX_UPSTAND,
+                )
+            },
+            FieldRow {
+                zero: true,
+                einheit: None,
+                ..field(
+                    Field::Crown,
+                    "Dämmung auf der Attika",
+                    f.terrace.crown,
+                    sk_model::MIN_CROWN,
+                    sk_model::MAX_CROWN,
                 )
             },
         ],

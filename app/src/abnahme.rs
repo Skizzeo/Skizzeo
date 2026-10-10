@@ -15731,7 +15731,7 @@ mod nach_gewerk {
     /// 18345), mit Fläche bei Dämmgewerken. Sollwerte von BIM für bündig,
     /// Vorsprung +0,30 (UD über ihre eingebaute Schicht 18345) und
     /// Rücksprung −0,30 (vor Paket 2; ab 2a mit DT, AB und Attika: 18338
-    /// 0,2177 ohne das Blech des AB, 18345 28,3799 / 205,967 m²). Nach KG im bündigen Fall 322, 331,
+    /// 0,2755 ohne das Blech des AB, mit dem Dämmstreifen auf der Attika, 18345 28,3799 / 205,967 m²). Nach KG im bündigen Fall 322, 331,
     /// 335, 351, beim Vorsprung dazu 354. Die Summe über alle Gewerke ist die
     /// Summe über alle Baustoffe. Eine Abweichung an der WDVS-Schicht
     /// (18330) verschiebt ihre Menge zu 18330, die Summe bleibt.
@@ -15775,7 +15775,8 @@ mod nach_gewerk {
         // läuft als Attika bis +3,055 (A195). Werte gemessen mit
         // geometrie/d1-d3-dachterrasse-v2.patch auf 4d5c8a4. 18338 ohne das
         // Blech des AB (0,0019 m³, in m abgerechnet): Dämmung hart 0,1244 +
-        // Belag 0,0933.
+        // Belag 0,0933, dazu der Dämmstreifen 40 mm auf der Attika 0,0578
+        // (Jörn 10.10. 16:07).
         let mut s = pruefhaus(1881, -300.0);
         let mit_dt = s
             .model()
@@ -15790,7 +15791,7 @@ mod nach_gewerk {
                 [
                     ("18331".to_string(), 56.9992),
                     ("18330".to_string(), 31.2458),
-                    ("18338".to_string(), 0.2177),
+                    ("18338".to_string(), 0.2755),
                     ("18345".to_string(), 28.3799),
                 ]
             );
@@ -16353,6 +16354,89 @@ mod dachterrasse {
         let b = s.model().buildings().iter().next().unwrap().0;
         assert!(crate::delete::parts_text(s.model(), b).contains("1 Dachterrasse"));
     }
+
+    /// Mengenzeile der Schicht `i` am Attikablech: (Fläche m², Volumen m³).
+    fn ab_schicht(s: &mut Scene, ab: ElementId, i: usize) -> Option<(f64, f64)> {
+        let l = s.schedule().clone();
+        l.buildings[0]
+            .by_trade
+            .iter()
+            .flat_map(|t| &t.rows)
+            .find(|r| r.element == ab && r.layer == i)
+            .map(|r| (r4(r.area / 1e6), r4(r.volume / 1e9)))
+    }
+
+    fn deckenzeile(text: &str) -> String {
+        text.lines()
+            .find(|l| l.starts_with("[floor]") && l.contains("number=\"DE-001\""))
+            .unwrap()
+            .to_string()
+    }
+
+    /// AD1 (Jörn 10.10. 16:07, planung/flachdach/konzept-attikadaemmung.md
+    /// §1–§4): Dämmstreifen auf der Attika der Dachterrasse zwischen OK
+    /// Attika und UK Blech. Vorgabe 40 mm im Dämmstoff der Terrasse, das
+    /// Blech liegt um ihn höher; Feld „Dämmung auf der Attika“ im Paneel von
+    /// DT und AB (0 = aus, sonst 2–10 cm), ein Schritt, Rückgängig. Nord
+    /// −1,50: Streifen 1,7808 m² (13,00 m × 0,137 m Mittel), 0,0712 m³, als
+    /// zweite Schicht des AB. Datei: `crown=` an `[floor]` nur abweichend von
+    /// 40, Rundlauf bytegleich.
+    #[test]
+    fn ad1_daemmung_auf_der_attika() {
+        let (mut s, eg, _) = pruefhaus(343, &["AW-006"]);
+        let de = decke(&s, eg).unwrap();
+        let ab = s.model().coping_of(de).expect("AB");
+        let id = dt(&s, de).unwrap();
+        for e in [id, ab] {
+            let p = crate::selection::props(&s, e).unwrap();
+            let f = p
+                .sections
+                .iter()
+                .flat_map(|x| &x.fields)
+                .find(|f| f.field == crate::ui::Field::Crown)
+                .expect("Feld Dämmung auf der Attika");
+            assert_eq!((f.value, f.min, f.max), (40.0, 20.0, 100.0));
+            assert_eq!(f.label, "Dämmung auf der Attika");
+        }
+        // Vorgabe: Schicht 1 des AB ist der Streifen, Blech 40 mm höher
+        assert_eq!(s.model().element_layers(ab).len(), 2);
+        assert_eq!(ab_schicht(&mut s, ab, 1), Some((1.7808, 0.0712)));
+        let (_, hoch) = koerper_z(&mut s, ab);
+        let text = sk_model::szo::write(s.model());
+        assert!(
+            !deckenzeile(&text).contains("crown="),
+            "{}",
+            deckenzeile(&text)
+        );
+
+        // 6 cm: ein Schritt, in der Datei, Rundlauf
+        assert!(s.set_field(ab, crate::ui::Field::Crown, 60.0));
+        assert_eq!(s.undo_label(), Some("Dämmung auf der Attika"));
+        assert_eq!(koerper_z(&mut s, ab).1, hoch + 20.0);
+        assert_eq!(ab_schicht(&mut s, ab, 1).map(|x| x.1), Some(0.1068));
+        let t60 = sk_model::szo::write(s.model());
+        assert!(deckenzeile(&t60).contains(" crown=60"));
+        assert_eq!(sk_model::szo::write(&lesen(&t60).model), t60, "Rundlauf");
+
+        // außerhalb 2–10 cm abgelehnt
+        assert!(!s.set_field(id, crate::ui::Field::Crown, 10.0));
+        assert!(!s.set_field(id, crate::ui::Field::Crown, 150.0));
+
+        // 0 = aus: keine Schicht, Blech direkt auf der Attika
+        assert!(s.set_field(id, crate::ui::Field::Crown, 0.0));
+        assert_eq!(s.model().element_layers(ab).len(), 1);
+        assert_eq!(ab_schicht(&mut s, ab, 1), None);
+        assert_eq!(koerper_z(&mut s, ab).1, hoch - 40.0);
+        let t0 = sk_model::szo::write(s.model());
+        assert!(deckenzeile(&t0).contains(" crown=0"));
+        assert_eq!(sk_model::szo::write(&lesen(&t0).model), t0, "Rundlauf");
+        pruefung(&s);
+
+        s.undo();
+        assert_eq!(koerper_z(&mut s, ab).1, hoch + 20.0);
+        s.undo();
+        assert_eq!(sk_model::szo::write(s.model()), text, "zurück zur Vorgabe");
+    }
 }
 mod attika {
     use super::*;
@@ -16816,27 +16900,28 @@ mod gewerk_flaeche_laenge {
     /// Bauteilflächen, je Bauteil einmal, für Bauteile, die in m² abgerechnet
     /// werden (DT, UD, Dämmschichten); die Gewerklänge kommt aus Bauteilen in
     /// m (AB, Abfangung). Nord −1,50: 18338 hat 13,2192 m² (DT einmal, nicht
-    /// je Schicht) und 13,00 m (AB). 18345 behält die Fläche der
+    /// je Schicht) + 1,7808 m² (Dämmstreifen auf der Attika, Jörn 10.10.
+    /// 16:07) = 15,00 m² und 13,00 m (AB). 18345 behält die Fläche der
     /// WDVS-Schicht mit Attika (199,595 m², gemessen mit
     /// geometrie/d1-d3-dachterrasse-v2.patch auf f1649a6) und hat keine
     /// Länge. Beton und Mauerwerk haben weder Fläche noch Länge. Nord+Süd:
-    /// zwei Stücke, ein DT, 26,4384 m² und 26,00 m; ringsum 40,0384 m² und
-    /// 36,00 m.
+    /// zwei Stücke, ein DT, 26,4384 m² + 3,1612 m² Dämmstreifen und 26,00 m;
+    /// ringsum 40,0384 m² + 4,9616 m² und 36,00 m.
     #[test]
     fn a198_flaeche_und_laenge_je_gewerk() {
         let mut s = pruefhaus(198, &["AW-006"]);
         let v = flaeche_laenge(&mut s);
-        assert_eq!(eintrag(&v, "18338"), (Some(13.2192), Some(13.0)));
+        assert_eq!(eintrag(&v, "18338"), (Some(15.0), Some(13.0)));
         assert_eq!(eintrag(&v, "18345"), (Some(199.595), None));
         assert_eq!(eintrag(&v, "18331"), (None, None));
         assert_eq!(eintrag(&v, "18330"), (None, None));
 
         for (seed, rueck, flaeche, laenge) in [
-            (1980, &["AW-006", "AW-008"][..], 26.4384, 26.0),
+            (1980, &["AW-006", "AW-008"][..], 29.5996, 26.0),
             (
                 1981,
                 &["AW-005", "AW-006", "AW-007", "AW-008"][..],
-                40.0384,
+                45.0,
                 36.0,
             ),
         ] {
@@ -16867,9 +16952,9 @@ mod gewerk_flaeche_laenge {
 
     /// A198b (BIM-Befund zu 0e8e08d, Koordinator 11:56): Bauteile, die in m
     /// abgerechnet werden, tragen kein Volumen zur Gewerksumme bei. Nord
-    /// −1,50: 18338 = 1,8507 m³ (Dämmung 1,0575 + Belag 0,7932; ohne das
-    /// Blech des AB, 0,0023 m³; auf 0e8e08d 1,8530), dazu 13,2192 m² und
-    /// 13,00 m. Abfangung (AW-49, OG-Nord +0,30, wie A159): 18330 hat
+    /// −1,50: 18338 = 1,9219 m³ (Dämmung 1,0575 + Belag 0,7932 +
+    /// Dämmstreifen auf der Attika 0,0712; ohne das Blech des AB, 0,0023 m³;
+    /// auf 0e8e08d 1,8530 ohne Dämmstreifen), dazu 15,00 m² und 13,00 m. Abfangung (AW-49, OG-Nord +0,30, wie A159): 18330 hat
     /// 10,485 m Abfangung und als Volumen genau die Summe seiner
     /// Wandschichten Verblender, Kerndämmung und Porenbeton, 81,5458 m³; die
     /// Abfangung bringt kein eigenes Volumen dazu (die Verblenderschicht der
@@ -16879,10 +16964,10 @@ mod gewerk_flaeche_laenge {
         let mut s = pruefhaus(1983, &["AW-006"]);
         let v = volumen(&mut s);
         let dd = v.iter().find(|x| x.0 == "18338").expect("18338").1;
-        assert_eq!(dd, 1.8507, "18338 ohne Blechvolumen");
+        assert_eq!(dd, 1.9219, "18338 ohne Blechvolumen");
         assert_eq!(
             eintrag(&flaeche_laenge(&mut s), "18338"),
-            (Some(13.2192), Some(13.0))
+            (Some(15.0), Some(13.0))
         );
 
         let mut s = Scene::with_model(Model::with_seed(1984));

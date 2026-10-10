@@ -154,12 +154,12 @@ const DT_ZULAGEN: [Zeile; 2] = [
 
 const RH1: Soll = Soll {
     datei: include_str!("../referenz/rh1-standardhaus.szo"),
-    netto: 7595363,
-    material: 3281223,
+    netto: 7600172,
+    material: 3282292,
     geruest: GERUEST_2G,
     geschosse: &[
         ("Gründung", 2242615),
-        ("Erdgeschoss", 3001329),
+        ("Erdgeschoss", 3006138),
         ("Obergeschoss", 2351416),
     ],
     ausgleich: 3,
@@ -254,6 +254,14 @@ const RH1: Soll = Soll {
             2910,
             37830,
             6630,
+        ),
+        (
+            // Dämmstreifen 40 mm auf der Krone (Jörn 10.10. 16:07)
+            "Attikadämmung Krone Dachterrasse, EPS, Dicke nach Aufbau, unter Blech",
+            1781,
+            2700,
+            4809,
+            1069,
         ),
         (
             "Terrassenbelag Betonplatten 40mm auf Splittbett, Schutzlage",
@@ -378,12 +386,12 @@ const RH2: Soll = Soll {
 
 const RH3: Soll = Soll {
     datei: include_str!("../referenz/rh3-versatz-dachterrasse.szo"),
-    netto: 8160685,
-    material: 3597391,
+    netto: 8164041,
+    material: 3598137,
     geruest: GERUEST_2G,
     geschosse: &[
         ("Gründung", 2243845),
-        ("Erdgeschoss", 3099772),
+        ("Erdgeschoss", 3103128),
         ("Obergeschoss", 2817043),
     ],
     ausgleich: 25,
@@ -527,6 +535,14 @@ const RH3: Soll = Soll {
             5406,
         ),
         (
+            // Dämmstreifen 40 mm auf der Krone (Jörn 10.10. 16:07)
+            "Attikadämmung Krone Dachterrasse, EPS, Dicke nach Aufbau, unter Blech",
+            1243,
+            2700,
+            3356,
+            746,
+        ),
+        (
             "Terrassenbelag Betonplatten 40mm auf Splittbett, Schutzlage",
             1757,
             6000,
@@ -555,8 +571,8 @@ const RH3: Soll = Soll {
 /// Oberkante Dach alles mit Bauleistung, keine graue Zeile.
 const RH5: Soll = Soll {
     datei: include_str!("../referenz/rh5-flachdach.szo"),
-    netto: 9761840,
-    material: 4237191,
+    netto: 9772362,
+    material: 4239529,
     geruest: (
         "Fassadengerüst LK3 W09, 4 Wochen Standzeit, auf-/abbauen",
         334544,
@@ -566,7 +582,7 @@ const RH5: Soll = Soll {
     ),
     geschosse: &[
         ("Gründung", 2264725),
-        ("Erdgeschoss", 3311769),
+        ("Erdgeschoss", 3322291),
         ("Obergeschoss", 2879023),
         ("Flachdach", 1306317),
     ],
@@ -705,6 +721,14 @@ const RH5: Soll = Soll {
             2910,
             37830,
             6630,
+        ),
+        (
+            // Dämmstreifen 40 mm auf der Krone (Jörn 10.10. 16:07)
+            "Attikadämmung Krone Dachterrasse, EPS, Dicke nach Aufbau, unter Blech",
+            3897,
+            2700,
+            10522,
+            2338,
         ),
         (
             "Terrassenbelag Betonplatten 40mm auf Splittbett, Schutzlage",
@@ -1153,7 +1177,8 @@ fn abfangung_ohne_rueckfall() {
 /// Abnahme 12 (Vorschau): Die Vorschau nennt das Netto vorher und nachher
 /// selbst, gleich `kosten` vor und nach der Ausführung; Modell, `revision`,
 /// `ext_revision` bleiben. Lohn 65 €/h auf RH-1: 60.089,83 → 62.501,62
-/// (Einstellungen §3 KA-2 Punkt 8), mit Stand 9 75.953,63 → 78.889,33; eine
+/// (Einstellungen §3 KA-2 Punkt 8), mit Stand 9 75.953,63 → 78.889,33, mit
+/// der Dämmung auf der Attika der Dachterrasse 76.001,72 → 78.940,53; eine
 /// Zuordnung rechnet auf einer Kopie.
 #[test]
 fn vorschau_mit_summe_vorher_nachher() {
@@ -1175,14 +1200,14 @@ fn vorschau_mit_summe_vorher_nachher() {
         &u,
     )
     .expect("Vorschau");
-    assert_eq!(p.netto, Some((Cent(7_595_363), Cent(7_888_933))));
+    assert_eq!(p.netto, Some((Cent(7_600_172), Cent(7_894_053))));
     assert_eq!((m.revision(), m.ext_revision()), (rev, ext));
     // gleich der Ausführung
     let h = Herkunft::neu(HerkunftArt::Manual, "2026-10-08", "10:40");
     m.begin("Lohn");
     sk_cost::ausfuehren(&mut m, None, Rolle::Admin, &h, lohn).expect("Lohn");
     m.commit();
-    assert_eq!(blatt(&m, &u).netto, Cent(7_888_933));
+    assert_eq!(blatt(&m, &u).netto, Cent(7_894_053));
     // Zuordnung: eine Außenwandschicht auf eine andere Bauleistung, nur in
     // der Kopie
     let k = lesen::katalog(&m, None);
@@ -1218,7 +1243,7 @@ fn vorschau_mit_summe_vorher_nachher() {
     .expect("Vorschau Zuordnung");
     assert_eq!(m.revision(), rev);
     let (vorher, nachher) = p.netto.expect("Summen");
-    assert_eq!(vorher, Cent(7_888_933));
+    assert_eq!(vorher, Cent(7_894_053));
     m.begin("Zuordnen");
     sk_cost::ausfuehren(&mut m, None, Rolle::Admin, &h, op).expect("Zuordnen");
     m.commit();

@@ -4521,6 +4521,10 @@ impl Model {
                         coping_mat: self
                             .coping_material_of(&f.terrace)
                             .map_or(material::PLAIN, material_key),
+                        crown: crown_of(&f.terrace),
+                        crown_mat: self
+                            .terrace_crown_material(id)
+                            .map_or(material::PLAIN, material_key),
                     });
                     fs.terraces = plan;
                 }
@@ -5358,6 +5362,24 @@ impl Model {
         })
     }
 
+    /// Setzt den Dämmstreifen auf der Attikakrone einer Decke (mm, 0 =
+    /// keiner, sonst [`MIN_CROWN`] … [`MAX_CROWN`]).
+    pub fn set_floor_crown(&mut self, floor: ElementId, mm: f64) -> bool {
+        self.edit_terrace(floor, |t| {
+            (mm == 0.0 || (MIN_CROWN..=MAX_CROWN).contains(&mm)).then(|| t.crown = mm)
+        })
+    }
+
+    /// Baustoff des Dämmstreifens auf der Attika der Dachterrasse: die
+    /// (erste) Dämmschicht ihres Aufbaus.
+    pub fn terrace_crown_material(&self, floor: ElementId) -> Option<MaterialId> {
+        self.terrace_layers(floor)
+            .iter()
+            .find(|l| l.function == LayerFunction::Insulation)
+            .map(|l| l.material)
+            .or_else(|| self.material_by_guid(TERRACE_INSULATION_GUID))
+    }
+
     /// Setzt den Baustoff des Attikablechs (`None`: Titanzink 0,7).
     pub fn set_floor_coping_material(&mut self, floor: ElementId, m: Option<MaterialId>) -> bool {
         if m.is_some_and(|m| self.material(m).is_none()) {
@@ -5514,9 +5536,21 @@ impl Model {
                     return Vec::new();
                 };
                 let t = crate::qto::COPING_SHEET;
-                return vec![
-                    MaterialLayer::new(m, t, LayerFunction::Finish).trade(trade::roofing())
-                ];
+                let mut out =
+                    vec![MaterialLayer::new(m, t, LayerFunction::Finish).trade(trade::roofing())];
+                // Dämmstreifen auf der Krone der Dachterrasse (Jörn 10.10.)
+                if let Some(ElementKind::Floor(f)) = self.element(floor).map(|x| &x.kind) {
+                    let c = crown_of(&f.terrace);
+                    let ins = self.terrace_crown_material(floor);
+                    if let Some(ins) = ins.filter(|_| c > 0.0 && !self.flat_roof_coping(id, floor))
+                    {
+                        out.push(
+                            MaterialLayer::new(ins, c, LayerFunction::Insulation)
+                                .trade(trade::roofing()),
+                        );
+                    }
+                }
+                return out;
             }
             _ => {}
         }
@@ -7154,6 +7188,14 @@ impl Model {
                             e.number, f.terrace.upstand
                         ));
                     }
+                    let c = f.terrace.crown;
+                    if c != 0.0 && !(MIN_CROWN..=MAX_CROWN).contains(&c) {
+                        out.push(format!(
+                            "{}: Dämmung auf der Attika {c} mm (erlaubt 0 oder \
+                             {MIN_CROWN}…{MAX_CROWN} mm)",
+                            e.number
+                        ));
+                    }
                     if f.terrace.build_up.is_some_and(|t| {
                         self.layer_set(t)
                             .is_none_or(|x| x.category != TypeCategory::RoofTerrace)
@@ -7639,6 +7681,21 @@ pub const ROOF_COPING_PART: u32 = STRIP_PART - 11;
 /// Attika über OK Belag (Jörn 08:35, BIM §3): 6 cm, einstellbar 0 bis 30 cm.
 pub const TERRACE_UPSTAND: f64 = 60.0;
 pub const MAX_UPSTAND: f64 = 300.0;
+/// Dämmstreifen auf der Attikakrone unter dem Blech (Jörn 10.10. 16:07,
+/// konzept-attikadaemmung.md): 4 cm, einstellbar 2 bis 10 cm oder 0.
+pub const TERRACE_CROWN: f64 = 40.0;
+pub const MIN_CROWN: f64 = 20.0;
+pub const MAX_CROWN: f64 = 100.0;
+
+/// Gültige Dicke des Dämmstreifens auf der Krone (mm): ungültige Werte
+/// (nur aus fremden Dateien) zählen als keiner.
+pub(crate) fn crown_of(t: &Terrace) -> f64 {
+    if (MIN_CROWN..=MAX_CROWN).contains(&t.crown) {
+        t.crown
+    } else {
+        0.0
+    }
+}
 /// Werkstyp „Dachterrasse 14“ (R4 §1.4) und die eingebauten Baustoffe von
 /// Dachterrasse und Attikablech: feste Guids, angelegt, sobald das erste
 /// Bauteil sie braucht (ältere Dateien bleiben bytegleich).
@@ -9020,8 +9077,17 @@ mod og_phase2 {
         assert_eq!(z(&f.terrace_solid()), Some((2855.0, 2995.0)));
         let wall = m.chain(eg).unwrap().solid();
         assert_eq!(z(&wall).unwrap().1, 3055.0);
+        // Dämmstreifen 4 cm auf der Krone (Jörn 10.10. 16:07), Blech darüber
+        assert_eq!(f.crown_band(), Some((3055.0, 3095.0)));
         let (lo, hi) = f.coping_solid().bounds().unwrap();
-        assert!(lo.z > 2995.0 && lo.z < 3055.0 && hi.z >= 3055.0 && hi.z < 3100.0);
+        // Außenschenkel 50 ab UK Blech: 1 cm über die Attika hinab
+        assert!(
+            lo.z.round() == 3045.0 && hi.z >= 3095.0 && hi.z < 3140.0,
+            "{lo:?} {hi:?}"
+        );
+        let k = c.crown.as_ref().expect("Dämmstreifen");
+        assert_eq!(k.thickness, 40.0);
+        assert_eq!(r4(k.volume / 1e9), r4(k.area * 40.0 / 1e9));
         // DE-002 folgt dem OG, DE-001 unverändert, keine UD
         assert_eq!(r4(m.floor(og).unwrap().unwrap().area() / 1e6), 60.4584);
         assert_eq!(r4(f.area() / 1e6), 75.0384);
@@ -9291,6 +9357,8 @@ mod og_phase2 {
             let soll = match r.category {
                 Category::Floor | Category::GroundSlab => r.area,
                 Category::RoofTerrace => r.bill_area,
+                // Blech in m, Dämmstreifen auf der Krone mit seiner Fläche
+                Category::Coping if r.layer > 0 => r.bill_area,
                 Category::StripFooting | Category::Coping => 0.0,
                 _ => continue,
             };

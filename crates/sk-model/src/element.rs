@@ -212,6 +212,11 @@ pub struct Terrace {
     pub upstand: f64,
     /// Baustoff des Attikablechs; `None`: Titanzink 0,7.
     pub coping_mat: Option<MaterialId>,
+    /// Dämmstreifen auf der Krone zwischen OK Attika und UK Blech, mm
+    /// (0 = keiner, sonst [`crate::model::MIN_CROWN`] …
+    /// [`crate::model::MAX_CROWN`]; Jörn 10.10. 16:07, gilt auch für das
+    /// Blech des Flachdachs auf dieser Decke).
+    pub crown: f64,
 }
 
 impl Default for Terrace {
@@ -220,6 +225,7 @@ impl Default for Terrace {
             build_up: None,
             upstand: crate::model::TERRACE_UPSTAND,
             coping_mat: None,
+            crown: crate::model::TERRACE_CROWN,
         }
     }
 }
