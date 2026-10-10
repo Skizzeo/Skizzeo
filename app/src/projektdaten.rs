@@ -5,6 +5,7 @@
 //! setzt sie (bei „Neu“ ohne Rückgängig-Schritt, sonst als ein Schritt).
 //! Die Maske zeigt keinen Befund und sperrt nichts.
 
+use sk_model::qto_earth::Boden;
 use sk_model::{Location, Project};
 use sk_paint::{Canvas, Path};
 use sk_platform::{Key, Modifiers};
@@ -56,12 +57,16 @@ struct Feld {
     einheit: &'static str,
 }
 
-/// Gruppen ab 0 (Bauvorhaben), 4 (Bauherr), 6 (Planung). Breite und Länge
+/// Felder der Maske.
+const N: usize = 15;
+
+/// Gruppen ab 0 (Bauvorhaben), 4 (Bauherr), 6 (Planung), 10 (Baugrund:
+/// Bodenkennwerte der Erdarbeiten, je zwei in einer Zeile). Breite und Länge
 /// (Sonnenstand S1) stehen hinten, damit die Nummern 0–7 bleiben (der
 /// AVA-Kopf öffnet die Maske an einem Feld); gezeigt und mit Tab erreicht
 /// werden sie unter dem Bauort ([`REIHE`]). Leise vorbelegt ist der
 /// Standardort Ganderkesee.
-const FELDER: [Feld; 10] = [
+const FELDER: [Feld; N] = [
     Feld {
         name: "Projektart",
         beispiel: "z. B. Neubau Einfamilienhaus",
@@ -154,12 +159,62 @@ const FELDER: [Feld; 10] = [
         x: 276.0,
         einheit: "° O",
     },
+    Feld {
+        name: "Oberboden",
+        beispiel: "30",
+        zeilen: 1,
+        max: 8,
+        breite: 64.0,
+        x: 0.0,
+        einheit: "cm",
+    },
+    Feld {
+        name: "Baufeld",
+        beispiel: "1,50",
+        zeilen: 1,
+        max: 8,
+        breite: 64.0,
+        x: 340.0,
+        einheit: "m",
+    },
+    Feld {
+        name: "Arbeitsraum",
+        beispiel: "0,50",
+        zeilen: 1,
+        max: 8,
+        breite: 64.0,
+        x: 0.0,
+        einheit: "m",
+    },
+    Feld {
+        name: "Kiesschicht",
+        beispiel: "15",
+        zeilen: 1,
+        max: 8,
+        breite: 64.0,
+        x: 340.0,
+        einheit: "cm",
+    },
+    Feld {
+        name: "Böschung",
+        beispiel: "45",
+        zeilen: 1,
+        max: 8,
+        breite: 64.0,
+        x: 0.0,
+        einheit: "°",
+    },
 ];
 /// Felder in Lese- und Tab-Reihenfolge.
-const REIHE: [usize; 10] = [0, 1, 2, 8, 9, 3, 4, 5, 6, 7];
-const GRUPPEN: [(usize, &str); 3] = [(0, "BAUVORHABEN"), (4, "BAUHERR"), (6, "PLANUNG")];
+const REIHE: [usize; N] = [0, 1, 2, 8, 9, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14];
+const GRUPPEN: [(usize, &str); 4] = [
+    (0, "BAUVORHABEN"),
+    (4, "BAUHERR"),
+    (6, "PLANUNG"),
+    (10, "BAUGRUND (ERDARBEITEN)"),
+];
 /// Wort des Felds für Meldungen (Bezeichnung mit Gruppe, wo doppelt).
-const WORT: [&str; 10] = [
+const WORT: [&str; N] = [
     "Projektart",
     "Bezeichnung",
     "Bauort",
@@ -170,7 +225,47 @@ const WORT: [&str; 10] = [
     "Anschrift Planung",
     "Breitengrad",
     "Längengrad",
+    "Oberboden",
+    "Baufeld",
+    "Arbeitsraum",
+    "Kiesschicht",
+    "Böschungswinkel",
 ];
+
+/// Erstes Feld der Bodenkennwerte (Reihenfolge wie [`Boden::FELDER`]) und
+/// mm bzw. Grad je Einheit im Feld.
+const BODEN: usize = 10;
+const BODEN_TEILER: [f64; 5] = [10.0, 1000.0, 1000.0, 10.0, 1.0];
+
+/// Bodenkennwert `k` als Text in der Einheit des Felds, mit Komma.
+fn boden_text(k: usize, v: f64) -> String {
+    let x = v / BODEN_TEILER[k];
+    let t = if BODEN_TEILER[k] == 1000.0 {
+        format!("{x:.2}")
+    } else {
+        format!("{}", (x * 10.0).round() / 10.0)
+    };
+    t.replace('.', ",")
+}
+
+/// Bodenkennwert `k` aus seinem Feld (mm bzw. Grad): leer heißt Vorgabe,
+/// `Err` für keine Zahl im Bereich.
+fn boden_wert(k: usize, text: &str) -> Result<f64, ()> {
+    let t = text.trim();
+    let t = t
+        .strip_suffix(FELDER[BODEN + k].einheit)
+        .unwrap_or(t)
+        .trim_end();
+    if t.is_empty() {
+        return Ok(Boden::default().werte()[k]);
+    }
+    let v: f64 = t.replace(',', ".").parse().map_err(|_| ())?;
+    let v = v * BODEN_TEILER[k];
+    let (_, _, min, max) = Boden::FELDER[k];
+    (v.is_finite() && v >= min - 1e-9 && v <= max + 1e-9)
+        .then_some(v.clamp(min, max))
+        .ok_or(())
+}
 
 /// Breite (Feld 8) und Länge (Feld 9): Grenze in Grad.
 const GRAD_MAX: [f64; 2] = [90.0, 180.0];
@@ -233,8 +328,8 @@ pub enum Antwort {
 
 /// Lage der Teile, relativ zum Blatt (Pixel).
 struct Lage {
-    felder: [Rect; 10],
-    gruppen: [f32; 3],
+    felder: [Rect; N],
+    gruppen: [f32; 4],
     knoepfe: [Rect; 2],
     schliessen: Rect,
     h: f32,
@@ -243,7 +338,7 @@ struct Lage {
 pub struct Maske {
     /// Bei Datei › Neu: „Später“ statt „Abbrechen“.
     pub neu: bool,
-    felder: [TextEdit; 10],
+    felder: [TextEdit; N],
     fokus: usize,
     /// Vorschlagsliste offen: markierte Zeile der gefilterten Vorschläge.
     liste: Option<Option<usize>>,
@@ -274,10 +369,14 @@ impl Maske {
             &p.author,
             &p.author_addr,
         ];
-        let mut felder: [TextEdit; 10] = Default::default();
+        let mut felder: [TextEdit; N] = Default::default();
         for (f, w) in felder.iter_mut().zip(werte) {
             *f = TextEdit::new(w);
             f.end(false);
+        }
+        for (k, v) in p.soil.werte().into_iter().enumerate() {
+            felder[BODEN + k] = TextEdit::new(&boden_text(k, v));
+            felder[BODEN + k].end(false);
         }
         let mut vom_letzten = false;
         if let Some((name, anschrift)) = planung.filter(|_| neu) {
@@ -349,10 +448,18 @@ impl Maske {
         self.vom_letzten
     }
 
-    /// Die Projektdaten aus den Feldern.
+    /// Die Projektdaten aus den Feldern. Ein Bodenkennwert, der keine Zahl
+    /// im Bereich ist, lässt den alten stehen (die Maske meldet ihn).
     pub fn projekt(&self) -> Project {
         let w = |i: usize| self.felder[i].text.clone();
+        let mut boden = self.basis.soil.werte();
+        for (k, b) in boden.iter_mut().enumerate() {
+            if let Ok(v) = boden_wert(k, &self.felder[BODEN + k].text) {
+                *b = v;
+            }
+        }
         Project {
+            soil: Boden::aus_werten(boden).unwrap_or(self.basis.soil),
             kind: w(0),
             site: w(1),
             place: w(2),
@@ -375,9 +482,18 @@ impl Maske {
                 Some(format!("{wort}: höchstens {} Zeichen.", f.max))
             } else if f.zeilen == 1 && e.text.contains('\n') {
                 Some(format!("{wort}: nur eine Zeile."))
-            } else if i >= 8 && grad(&e.text, GRAD_MAX[i - 8]).is_err() {
+            } else if (8..BODEN).contains(&i) && grad(&e.text, GRAD_MAX[i - 8]).is_err() {
                 let g = GRAD_MAX[i - 8];
                 Some(format!("{wort}: Zahl von −{g} bis {g}."))
+            } else if i >= BODEN && boden_wert(i - BODEN, &e.text).is_err() {
+                let k = i - BODEN;
+                let (_, _, min, max) = Boden::FELDER[k];
+                Some(format!(
+                    "{wort}: Zahl von {} bis {} {}.",
+                    boden_text(k, min),
+                    boden_text(k, max),
+                    f.einheit
+                ))
             } else {
                 None
             }
@@ -442,8 +558,8 @@ impl Maske {
 
     fn lage(&self, s: f32) -> Lage {
         let mut y = KOPF_H + 12.0;
-        let mut felder = [Rect::new(0.0, 0.0, 0.0, 0.0); 10];
-        let mut gruppen = [0.0; 3];
+        let mut felder = [Rect::new(0.0, 0.0, 0.0, 0.0); N];
+        let mut gruppen = [0.0; 4];
         for i in REIHE {
             let f = &FELDER[i];
             if let Some(g) = GRUPPEN.iter().position(|(a, _)| *a == i) {
@@ -965,6 +1081,35 @@ mod tests {
 
     fn ohne() -> Project {
         Project::new(sk_model::Guid(7), "Projekt")
+    }
+
+    /// Bodenkennwerte (Erdarbeiten): Felder in cm, m und Grad mit der
+    /// Vorgabe; leer heißt Vorgabe, eine Zahl außerhalb des Bereichs meldet
+    /// die Maske und lässt den alten Wert.
+    #[test]
+    fn baugrund_felder() {
+        let mut m = Maske::new(&ohne(), false, None);
+        let werte: Vec<&str> = (BODEN..N).map(|i| m.wert(i)).collect();
+        assert_eq!(werte, ["30", "1,50", "0,50", "15", "45"]);
+        m.felder[10] = TextEdit::new("40");
+        m.felder[11] = TextEdit::new("2 m");
+        m.felder[13] = TextEdit::new("");
+        let b = m.projekt().soil;
+        assert_eq!((b.oberboden, b.rand, b.tragschicht), (400.0, 2000.0, 150.0));
+        assert_eq!(m.meldung(), None);
+        m.felder[14] = TextEdit::new("20");
+        assert_eq!(
+            m.meldung().as_deref(),
+            Some("Böschungswinkel: Zahl von 30 bis 90 °.")
+        );
+        assert_eq!(m.projekt().soil.boeschung, 45.0);
+        // Tab läuft von der Planung in den Baugrund und zurück zum Anfang
+        m.fokus_auf(7);
+        m.key(Key::Tab, Modifiers::default());
+        assert_eq!(m.fokus(), 10);
+        m.fokus_auf(14);
+        m.key(Key::Tab, Modifiers::default());
+        assert_eq!(m.fokus(), 0);
     }
 
     fn tippen(m: &mut Maske, s: &str) {

@@ -796,6 +796,13 @@ impl Model {
     /// Nur außerhalb eines Schritts.
     pub fn init_project(&mut self, p: Project) {
         debug_assert!(self.txn.is_none(), "Anfangswerte im Schritt");
+        // Bodenkennwerte gelten auch ohne Projektdaten
+        if crate::qto_earth::Boden::aus_werten(p.soil.werte()).is_some()
+            && p.soil != self.project.soil
+        {
+            self.project.soil = p.soil;
+            self.touch();
+        }
         if p.fields() == self.project.fields() {
             return;
         }

@@ -1385,10 +1385,13 @@ impl Scene {
         ort: sk_model::Location,
     ) -> bool {
         self.begin(label);
+        let soil = p.soil;
         let a = self.model.set_project(p);
         let b = self.model.set_location(ort);
+        // Bodenkennwerte der Erdarbeiten (Gruppe Baugrund) im selben Schritt
+        let c = self.model.set_soil(soil);
         self.commit();
-        a || b
+        a || b || c
     }
 
     /// Nordpfeil setzen, drehen oder verschieben (Sonnenstand S2): ein
@@ -3923,6 +3926,21 @@ mod tests {
         assert_eq!(s.undo_label(), None, "ein Schritt");
         assert_eq!(sk_model::szo::write(s.model()), leer);
         assert!(s.redo());
+        assert_eq!(sk_model::szo::write(s.model()), neu);
+        // Bodenkennwerte (Gruppe Baugrund): ein Schritt, an `[project]`
+        let mut m = Maske::new(s.model().project(), false, None).mit_ort(s.model().location());
+        m.fokus_auf(10);
+        for ch in "40".chars() {
+            m.text(ch);
+        }
+        let Some(Antwort::Uebernehmen(p)) = m.key(Key::Enter, Modifiers::default()) else {
+            panic!("Enter übernimmt");
+        };
+        assert!(s.projektdaten_setzen("Projektdaten geändert", *p, m.ort()));
+        assert_eq!(s.model().project().soil.oberboden, 400.0);
+        let boden = sk_model::szo::write(s.model());
+        assert!(boden.contains(" topsoil=400"), "{boden}");
+        assert!(s.undo());
         assert_eq!(sk_model::szo::write(s.model()), neu);
     }
 
