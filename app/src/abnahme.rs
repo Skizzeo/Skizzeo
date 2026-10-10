@@ -2831,6 +2831,9 @@ fn a49_hilfslinie_der_ebene() {
 /// `Scene::cancel_building()` (rollback).
 fn dialog_ok(s: &mut Scene) {
     s.open_building_dialog();
+    // Prüfhaus dieser Abnahmen ohne Flachdach (seit Plan Flachdach P8 ist
+    // es im Dialog vorgewählt; Abnahmen dazu: abnahme_flachdach)
+    assert!(s.set_building_dialog_value("flachdach", 0.0));
 }
 
 fn dialog_abbrechen(s: &mut Scene) {

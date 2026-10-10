@@ -219,6 +219,9 @@ pub enum Field {
 /// Vorgaben im Dialog „Gebäude erstellen“, von oben nach unten.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Draft {
+    /// Aufkantung des Flachdachs über dem OG (cm, 0 = kein Flachdach;
+    /// Plan Flachdach P8: vorgewählt).
+    RoofUpstand,
     FloorOg,
     ClearOg,
     FloorEg,
@@ -231,7 +234,8 @@ pub enum Draft {
 }
 
 impl Draft {
-    pub const ALL: [Draft; 7] = [
+    pub const ALL: [Draft; 8] = [
+        Draft::RoofUpstand,
         Draft::FloorOg,
         Draft::ClearOg,
         Draft::FloorEg,
@@ -244,6 +248,7 @@ impl Draft {
     /// Name für `Scene::set_building_dialog_value`.
     pub fn key(self) -> &'static str {
         match self {
+            Draft::RoofUpstand => "flachdach",
             Draft::FloorOg => "decke_og",
             Draft::ClearOg => "lichte_og",
             Draft::FloorEg => "decke_eg",
@@ -256,6 +261,7 @@ impl Draft {
 
     pub fn label(self) -> &'static str {
         match self {
+            Draft::RoofUpstand => "Aufkantung Flachdach",
             Draft::FloorOg => "Dicke OG-Decke",
             Draft::ClearOg => "lichte Höhe OG",
             Draft::FloorEg => "Dicke EG-Decke",
@@ -3665,6 +3671,7 @@ mod tests {
             einheit: None,
         };
         ui.set_dialog_fields(vec![
+            row(Draft::RoofUpstand, 500.0, 150.0, 1500.0),
             row(Draft::FloorOg, 220.0, 100.0, 600.0),
             row(Draft::ClearOg, 2635.0, 1000.0, 10000.0),
             row(Draft::FloorEg, 220.0, 100.0, 600.0),

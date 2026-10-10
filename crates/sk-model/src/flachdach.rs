@@ -23,6 +23,63 @@ const ROOF_BUILD_UP: [(f64, LayerFunction); 3] = [
 /// Mindestens so hoch steht die Aufkantung über der Dachhaut (mm,
 /// Flachdachrichtlinie: Anschlusshöhe am Dachrand 10 cm).
 pub const MIN_ROOF_EDGE: f64 = 100.0;
+/// Guid der Ebene Flachdach: die des Gebäudes mit diesem Muster verknüpft.
+const ROOF_LEVEL_SALT: u128 = 0x4644_0000_0000_4000_8000_0000_0000_4644;
+
+/// Erste Schicht innen vom (letzten) Kern: Ab hier hat die Aufkantung keine
+/// Schicht (Innenputz, Bekleidung; Jörn 10.10.: zum Dach hin ist außen, die
+/// Abdichtung läuft bis zur Anschlusshöhe hoch). Ohne Kern entfällt nichts.
+pub(crate) fn parapet_inner_start(layers: &[MaterialLayer]) -> usize {
+    layers
+        .iter()
+        .rposition(|l| l.core)
+        .map_or(layers.len(), |i| i + 1)
+}
+
+impl Model {
+    /// Schichten des Zugs `run` im Typ `set` für seine Geometrie. In der
+    /// Aufkantung bleiben die Schichten innen vom Kern ohne Körper (wie eine
+    /// Luftschicht): Sie behalten ihre Dicke, damit Bezugslinie und
+    /// Außenfläche zur Wand darunter passen; den Raum nimmt der Dachaufbau.
+    pub(super) fn run_layers(&self, run: RunId, set: LayerSetId) -> Vec<Layer> {
+        let mut layers = self.wall_layers(set);
+        if let Some(from) = self.parapet_inner_layers(run) {
+            for l in layers.iter_mut().skip(from) {
+                l.air = true;
+            }
+        }
+        layers
+    }
+
+    /// Erste weggelassene Schicht der Aufkantung `run` (siehe
+    /// [`parapet_inner_start`]); `None`, wenn `run` keine Aufkantung ist
+    /// oder nichts wegfällt.
+    pub(crate) fn parapet_inner_layers(&self, run: RunId) -> Option<usize> {
+        if self.category_of(run) != Some(Category::Parapet) {
+            return None;
+        }
+        let set = self
+            .run(run)?
+            .segments
+            .first()
+            .and_then(|e| self.element(*e))?;
+        let layers = &self.layer_set(set.layer_set?)?.layers;
+        let from = parapet_inner_start(layers);
+        (from < layers.len()).then_some(from)
+    }
+
+    /// Dicke der weggelassenen Schichten der Aufkantung `run` (mm).
+    fn parapet_inner_thickness(&self, run: RunId) -> f64 {
+        let Some(from) = self.parapet_inner_layers(run) else {
+            return 0.0;
+        };
+        self.run(run)
+            .and_then(|r| r.segments.first())
+            .and_then(|e| self.element(*e)?.layer_set)
+            .and_then(|t| self.layer_set(t))
+            .map_or(0.0, |s| s.layers[from..].iter().map(|l| l.thickness).sum())
+    }
+}
 
 impl Model {
     /// Ebene Flachdach des Gebäudes `b` (`None`: der Vorlage), falls es eine
@@ -85,8 +142,13 @@ impl Model {
                 else {
                     return false;
                 };
-                let fd = self.insert_storey(Storey {
-                    guid: Guid(0),
+                // Guid aus der des Gebäudes: Ein- und Ausschalten (etwa im
+                // Gebäude-Dialog, P8) verbraucht keine aus dem Erzeuger
+                let of = b
+                    .and_then(|b| self.building(b))
+                    .map_or(self.project.guid, |x| x.guid);
+                let st = Storey {
+                    guid: Guid(of.0 ^ ROOF_LEVEL_SALT),
                     building: b,
                     name: "Flachdach".into(),
                     short: "FD".into(),
@@ -94,7 +156,9 @@ impl Model {
                     elevation: top,
                     height: ROOF_UPSTAND,
                     embed: None,
-                });
+                };
+                let fd = self.storeys.insert(st);
+                note!(self, Storey, new fd);
                 self.add_parapets(fd);
                 self.touch();
                 true
@@ -335,12 +399,16 @@ impl Model {
                 .map(|&(d, f)| (d, material::PLAIN, f == LayerFunction::Insulation))
                 .collect(),
         };
+        // Innenfläche am Kern: die Schichten innen davon hat die Aufkantung nicht
+        let drop = self.parapet_inner_thickness(ak);
+        let (inner, outer) = (chain.inner_offset(), chain.outer_offset());
+        let inner = inner + (outer - inner).signum() * drop;
         Some(FlatRoof {
-            outline: sk_math::polygon::to_ccw(&chain.face_corners(chain.inner_offset())),
+            outline: sk_math::polygon::to_ccw(&chain.face_corners(inner)),
             base: self.level_z(f.top)?,
             layers,
             ring: sk_math::polygon::to_ccw(&chain.face_corners(chain.outer_offset())),
-            width: chain.thickness(),
+            width: chain.thickness() - drop,
             crown: chain.top(),
             coping_mat: self
                 .coping_material_of(&f.terrace)
@@ -789,6 +857,73 @@ mod tests {
             assert_eq!(m.props_of(ab).get("Zuschnitt"), Some(&PropValue::Number(w)));
             assert!(m.check().is_empty(), "{:?}", m.check());
         }
+    }
+
+    /// D2 (Koordination 10.10.): Innenputz der Außenwand läuft in der
+    /// Aufkantung nicht weiter. Kein Körper, keine Menge; Dachaufbau und
+    /// Blech enden am Kern wie ohne Putz.
+    #[test]
+    fn aufkantung_ohne_innenputz() {
+        let (mut ohne, og0) = haus(EXTERIOR_TYPE_GUID);
+        let s0 = ohne.run(og0).unwrap().storey;
+        schritt(&mut ohne, |m| m.set_flat_roof(s0, true));
+        let ref_roof = ohne.flat_roof(ak_runs(&ohne)[0]).unwrap();
+
+        let (mut m, og) = haus(EXTERIOR_TYPE_GUID);
+        let set = m.type_by_guid(EXTERIOR_TYPE_GUID).unwrap();
+        let putz = m
+            .materials()
+            .iter()
+            .find(|(_, x)| x.name == "Putz")
+            .map(|(id, _)| id)
+            .unwrap();
+        let mut t = m.layer_set(set).unwrap().clone();
+        t.layers
+            .push(MaterialLayer::new(putz, 15.0, LayerFunction::Finish));
+        schritt(&mut m, |m| m.set_layer_set(set, t));
+        let og_storey = m.run(og).unwrap().storey;
+        schritt(&mut m, |m| m.set_flat_roof(og_storey, true));
+        let ak = ak_runs(&m)[0];
+
+        // OG mit Putz, Aufkantung ohne
+        assert!(!m.chain(og).unwrap().layers[2].air);
+        assert!(m.chain(ak).unwrap().layers[2].air);
+        assert_eq!(m.parapet_inner_layers(ak), Some(2));
+        assert_eq!(m.parapet_inner_layers(og), None);
+        let og_q = crate::qto::run_qto(&m, og);
+        assert!(og_q.iter().all(|q| q.layers[2].volume > 0.0));
+        let ak_q = crate::qto::run_qto(&m, ak);
+        let ak0 = crate::qto::run_qto(&ohne, ak_runs(&ohne)[0]);
+        for (q, q0) in ak_q.iter().zip(&ak0) {
+            assert_eq!(q.layers[2].thickness, 0.0);
+            assert_eq!(q.layers[2].volume, 0.0);
+            assert_eq!(q.layers[2].inner_area, 0.0);
+            assert_eq!(q.width, 315.0);
+            assert!(
+                (q.volume - q0.volume).abs() < 1.0,
+                "{} {}",
+                q.volume,
+                q0.volume
+            );
+            assert!((q.side_inner - q0.side_inner).abs() < 1.0);
+            assert!((q.footprint - q0.footprint).abs() < 1.0);
+        }
+        // keine Zeile Putz an der Aufkantung im Mengenfenster
+        let rows = crate::qto::schedule(&m).layer_rows(&m);
+        let ak_walls = &m.run(ak).unwrap().segments;
+        let ak_rows: Vec<_> = rows
+            .iter()
+            .filter(|(_, r)| ak_walls.contains(&r.element))
+            .collect();
+        assert_eq!(ak_rows.len(), 2 * ak_walls.len());
+        assert!(ak_rows.iter().all(|(_, r)| r.material != putz));
+        assert!(rows.iter().any(|(_, r)| r.material == putz));
+
+        let roof = m.flat_roof(ak).unwrap();
+        assert!((roof.area() - ref_roof.area()).abs() < 1.0);
+        assert_eq!(roof.width, 315.0);
+        assert_eq!(roof.coping_girth(), ref_roof.coping_girth());
+        assert!(m.check().is_empty(), "{:?}", m.check());
     }
 
     /// D2: Ein Gebäude, das nach dem Einschalten in der Vorlage entsteht,

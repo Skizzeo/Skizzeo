@@ -765,6 +765,9 @@ pub struct BuildingDraft {
     /// OK Gelände (Gelände Themen 1 und 4).
     pub insulation: f64,
     pub terrain: f64,
+    /// Höhe der Aufkantung des Flachdachs über dem OG (0 = kein
+    /// Flachdach; Plan Flachdach P8: vorgewählt mit 50 cm).
+    pub roof: f64,
 }
 
 impl Default for BuildingDraft {
@@ -777,6 +780,7 @@ impl Default for BuildingDraft {
             slab: sk_model::SLAB_THICKNESS,
             insulation: 0.0,
             terrain: 0.0,
+            roof: sk_model::ROOF_UPSTAND,
         }
     }
 }
@@ -789,6 +793,8 @@ pub const DRAFT_CLEAR: (f64, f64) = (sk_model::MIN_CLEAR, 10000.0);
 /// Perimeterdämmung 2–30 cm oder 0 (keine); OK Sohle ±3 m über Gelände.
 pub const DRAFT_INSULATION: (f64, f64) = (sk_model::MIN_PERIMETER, sk_model::MAX_PERIMETER);
 pub const DRAFT_TERRAIN: (f64, f64) = (-sk_model::MAX_TERRAIN_OFFSET, sk_model::MAX_TERRAIN_OFFSET);
+/// Aufkantung des Flachdachs 15–150 cm oder 0 (kein Flachdach).
+pub const DRAFT_ROOF: (f64, f64) = (sk_model::MIN_ROOF_UPSTAND, sk_model::MAX_ROOF_UPSTAND);
 
 fn union(a: Option<Aabb>, b: Option<Aabb>) -> Option<Aabb> {
     match (a, b) {
@@ -1162,7 +1168,8 @@ impl Scene {
 
     /// Ein Feld des Dialogs „Gebäude erstellen“ (mm): `lichte_eg`,
     /// `lichte_og`, `decke_eg`, `decke_og`, `sohlplatte`, `perimeter` (0 =
-    /// keine), `gelaende` (OK Sohle über Gelände). Gilt sofort im Paneel
+    /// keine), `gelaende` (OK Sohle über Gelände), `flachdach` (Aufkantung,
+    /// 0 = kein Flachdach). Gilt sofort im Paneel
     /// „Geschosse“; `false` außerhalb der Grenzen oder ohne Dialog.
     pub fn set_building_dialog_value(&mut self, field: &str, mm: f64) -> bool {
         if self.pending.is_none() {
@@ -1178,9 +1185,11 @@ impl Scene {
             "sohlplatte" => (&mut d.slab, DRAFT_SLAB),
             "perimeter" => (&mut d.insulation, DRAFT_INSULATION),
             "gelaende" => (&mut d.terrain, DRAFT_TERRAIN),
+            "flachdach" => (&mut d.roof, DRAFT_ROOF),
             _ => return false,
         };
-        if !(ok(range) || (field == "perimeter" && mm == 0.0)) {
+        let zero = matches!(field, "perimeter" | "flachdach") && mm == 0.0;
+        if !(ok(range) || zero) {
             return false;
         }
         *slot = mm;
@@ -1207,6 +1216,12 @@ impl Scene {
             self.model.plan_storey_height(eg, d.clear_eg + d.floor_eg);
             if let Some(og) = og {
                 self.model.plan_storey_height(og, d.clear_og + d.floor_og);
+            }
+            // Ebene Flachdach über dem OG (P8), die Aufkantung folgt beim
+            // Zeichnen
+            self.model.set_flat_roof(eg, d.roof > 0.0);
+            if let Some(fd) = self.model.roof_level(eg).filter(|_| d.roof > 0.0) {
+                self.model.plan_storey_height(fd, d.roof);
             }
         }
     }

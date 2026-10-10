@@ -1257,7 +1257,8 @@ impl App {
         self.ui.hover = None;
         self.sync_levels();
         self.sync_dialog_fields();
-        // Eingabe beginnt in „Dicke OG-Decke“ (oberste Zeile)
+        // Eingabe beginnt in „Dicke OG-Decke“ (oberste Zahl des Hauses; die
+        // Aufkantung darüber ist vorgewählt)
         let out = self.ui.focus_field(Field::Draft(Draft::FloorOg));
         self.apply_ui(&out);
         self.overlay_dirty = true;
@@ -1270,6 +1271,7 @@ impl App {
             .into_iter()
             .map(|k| {
                 let (value, (min, max)) = match k {
+                    Draft::RoofUpstand => (d.roof, scene::DRAFT_ROOF),
                     Draft::FloorOg => (d.floor_og, scene::DRAFT_FLOOR),
                     Draft::ClearOg => (d.clear_og, scene::DRAFT_CLEAR),
                     Draft::FloorEg => (d.floor_eg, scene::DRAFT_FLOOR),
@@ -1284,8 +1286,8 @@ impl App {
                     value,
                     min,
                     max,
-                    // Perimeterdämmung: 0 = keine
-                    zero: k == Draft::Insulation,
+                    // Perimeterdämmung: 0 = keine; Flachdach: 0 = keins
+                    zero: matches!(k, Draft::Insulation | Draft::RoofUpstand),
                     einheit: None,
                 }
             })
