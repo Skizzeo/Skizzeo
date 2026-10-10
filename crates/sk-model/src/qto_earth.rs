@@ -14,11 +14,16 @@ use crate::foundation::Foundation;
 use crate::qto::AutoMenge;
 use sk_math::Vec3;
 
-/// Bodenkennwerte des Projekts (mm, Grad).
+/// Bodenkennwerte des Projekts (mm, Grad); stehen am Projekt
+/// ([`crate::Project::soil`]) und in der Datei nur, wenn sie von der
+/// Vorgabe abweichen.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Boden {
     /// Oberboden: abtragen und seitlich lagern (DIN 18915, ATV DIN 18320).
     pub oberboden: f64,
+    /// Baufeld: so weit um den Plattenumriss wird der Oberboden abgetragen
+    /// (Arbeitsraum, Gerüst, Wege); mindestens bis zum Rand der Baugrube.
+    pub rand: f64,
     /// Arbeitsraum um den Plattenumriss (DIN 4124: mindestens 0,50 m).
     pub arbeitsraum: f64,
     /// Kapillarbrechende Schicht unter der Platte innerhalb der Schürze.
@@ -33,10 +38,50 @@ impl Default for Boden {
     fn default() -> Boden {
         Boden {
             oberboden: 300.0,
+            rand: 1500.0,
             arbeitsraum: 500.0,
             tragschicht: 150.0,
             boeschung: 45.0,
         }
+    }
+}
+
+impl Boden {
+    /// Schlüssel an `[project]`, Bezeichnung und erlaubter Bereich (mm bzw.
+    /// Grad), in der Reihenfolge der Felder.
+    pub const FELDER: [(&'static str, &'static str, f64, f64); 5] = [
+        ("topsoil", "Oberboden", 0.0, 1000.0),
+        ("strip", "Baufeld um die Platte", 0.0, 10000.0),
+        ("workspace", "Arbeitsraum", 0.0, 2000.0),
+        ("capillary", "Kapillarbrechende Schicht", 0.0, 1000.0),
+        ("slope", "Böschungswinkel", 30.0, 90.0),
+    ];
+
+    /// Die Werte in der Reihenfolge von [`Boden::FELDER`].
+    pub fn werte(&self) -> [f64; 5] {
+        [
+            self.oberboden,
+            self.rand,
+            self.arbeitsraum,
+            self.tragschicht,
+            self.boeschung,
+        ]
+    }
+
+    /// Aus Werten in der Reihenfolge von [`Boden::FELDER`]; `None`, wenn
+    /// einer außerhalb seines Bereichs liegt.
+    pub fn aus_werten(w: [f64; 5]) -> Option<Boden> {
+        let ok = w
+            .iter()
+            .zip(Boden::FELDER)
+            .all(|(v, f)| v.is_finite() && *v >= f.2 && *v <= f.3);
+        ok.then_some(Boden {
+            oberboden: w[0],
+            rand: w[1],
+            arbeitsraum: w[2],
+            tragschicht: w[3],
+            boeschung: w[4],
+        })
     }
 }
 
@@ -105,6 +150,20 @@ pub struct ErdBasis {
 }
 
 impl ErdBasis {
+    /// Aus den Grundlagen der Erdarbeiten des Modells (Gelände, Dämmung,
+    /// Gründung; gelaende/schnittstelle.md).
+    pub fn aus(g: &crate::GroundBasis) -> ErdBasis {
+        ErdBasis {
+            terrain_z: g.terrain_z,
+            insulation_bottom_z: g.insulation_bottom_z,
+            footing_bottom_z: g.footing_bottom_z,
+            outline: g.outline.clone(),
+            slab_area: g.slab_area,
+            slab_perimeter: g.slab_perimeter,
+            footing_area: g.footing_area,
+        }
+    }
+
     /// Aus der Gründung, mit dem Gelände in Höhe `terrain_z` und ohne
     /// Perimeterdämmung.
     pub fn aus_gruendung(f: &Foundation, terrain_z: f64) -> ErdBasis {
@@ -174,18 +233,25 @@ pub fn erd_mengen(b: &ErdBasis, boden: &Boden, mut menge: impl FnMut(&'static st
         0.0
     };
     let x_oben = a + k * h;
-    let oben = fl + u * x_oben + t * x_oben * x_oben;
+    // Oberboden über das Baufeld, mindestens über die ganze Baugrube
+    let x_ob = boden.rand.max(x_oben);
+    let ob_flaeche = fl + u * x_ob + t * x_ob * x_ob;
     let grube = h * fl
         + u * (a * h + k * h * h / 2.0)
         + t * (a * a * h + a * k * h * h + k * k * h * h * h / 3.0);
     let breite = |x: f64| format!("{} m", zahl(x, 1e3));
 
-    // Oberboden über die ganze Baugrube
     if o > 0.0 {
         menge(
             TOPSOIL,
-            oben * o,
-            format!("{} m² × {}", zahl(oben, 1e6), breite(o)),
+            ob_flaeche * o,
+            format!(
+                "Platte {} m² + Baufeld {}: {} m² × {}",
+                zahl(fl, 1e6),
+                breite(x_ob),
+                zahl(ob_flaeche, 1e6),
+                breite(o)
+            ),
         );
     }
     let mut aushub = 0.0;
@@ -378,7 +444,8 @@ mod tests {
     #[test]
     fn gelaende_auf_ok_platte() {
         let v = mengen(&basis(0.0), &Boden::default());
-        let oben = 80.0 + 36.0 * 0.5 + 4.0 * 0.25; // m²
+        // Baufeld 1,50 m um die Platte
+        let oben = 80.0 + 36.0 * 1.5 + 4.0 * 2.25; // m²
         assert!((wert(&v, TOPSOIL) / 1e9 - oben * 0.3).abs() < 1e-9);
         // gewachsener Boden −300 unter UK Platte −200: keine Baugrube
         assert_eq!(wert(&v, BACKFILL), 0.0);
@@ -437,7 +504,27 @@ mod tests {
         let innen = 9.3 * 7.3;
         assert!((wert(&v, EXCAVATION) / 1e9 - (grube + innen * 0.15)).abs() < 1e-6);
         assert!(wert(&v, SLOPE) > 0.0);
+        // Die Baugrube reicht oben 1,90 m über die Platte, weiter als das
+        // Baufeld: Oberboden bis zu ihrem Rand
+        let x = a + k * h;
+        let oben = 80.0 + 36.0 * x + 4.0 * x * x;
+        assert!((wert(&v, TOPSOIL) / 1e9 - oben * 0.3).abs() < 1e-6);
         let senkrecht = mengen(&basis(1_000.0), &Boden::default());
         assert_eq!(wert(&senkrecht, SLOPE), 0.0);
+    }
+
+    /// Bereiche der Bodenkennwerte; die Vorgabe liegt darin.
+    #[test]
+    fn boden_bereiche() {
+        let d = Boden::default();
+        assert_eq!(Boden::aus_werten(d.werte()), Some(d));
+        let mut w = d.werte();
+        w[4] = 20.0;
+        assert_eq!(Boden::aus_werten(w), None);
+        w[4] = 60.0;
+        w[0] = -1.0;
+        assert_eq!(Boden::aus_werten(w), None);
+        w[0] = f64::NAN;
+        assert_eq!(Boden::aus_werten(w), None);
     }
 }

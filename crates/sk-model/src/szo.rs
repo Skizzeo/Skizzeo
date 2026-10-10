@@ -799,11 +799,21 @@ fn write_known(m: &Model) -> String {
     };
     // Versatz OK Sohlplatte über Gelände (Gelände Thema 1): nur ≠ 0, damit
     // ältere Dateien bytegleich bleiben
-    let line = if p.terrain != 0.0 {
+    let mut line = if p.terrain != 0.0 {
         line.num("terrain", p.terrain)
     } else {
         line
     };
+    // Bodenkennwerte der Erdarbeiten: nur, was von der Vorgabe abweicht
+    let vorgabe = crate::qto_earth::Boden::default().werte();
+    for ((k, ..), (v, d)) in crate::qto_earth::Boden::FELDER
+        .iter()
+        .zip(p.soil.werte().into_iter().zip(vorgabe))
+    {
+        if v != d {
+            line = line.num(k, v);
+        }
+    }
     line.finish(&mut out);
     // Projektdaten (BIM §3.12a): nur gesetzte Felder, ohne Daten keine
     // Zeile; leer aber doch, solange alte Werte an `[project]` stehen, denn
@@ -1669,6 +1679,21 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         }
         project.terrain = t;
     }
+    // Bodenkennwerte der Erdarbeiten; fehlende gelten mit der Vorgabe
+    let mut boden = project.soil.werte();
+    for (w, (k, _, min, max)) in boden.iter_mut().zip(crate::qto_earth::Boden::FELDER) {
+        if p.opt(k).is_some() {
+            let v = p.f64(k)?;
+            if !(v.is_finite() && v >= min && v <= max) {
+                return Err(err(
+                    p.line,
+                    &format!("[project]: „{k}“ außerhalb des Bereichs"),
+                ));
+            }
+            *w = v;
+        }
+    }
+    project.soil = crate::qto_earth::Boden::aus_werten(boden).unwrap_or_default();
     // Regel 110: `[projectinfo]` gilt; sonst die Schlüssel an `[project]`
     let alt = [text("site"), text("client"), text("author")];
     match recs("projectinfo").as_slice() {

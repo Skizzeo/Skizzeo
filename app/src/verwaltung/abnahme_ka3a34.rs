@@ -232,9 +232,9 @@ fn abnahme_ka3a4_je_m2_rh() {
     assert!(v.eingeben(&Feld::Wert("wage".into()), "65"));
     // netto mit Lohn 60 (Werk) und 65, aus Abnahme KA-0 und KA-3a2
     let soll = [
-        ("RH-1", 6_177_964, 6_424_476),
-        ("RH-2", 7_166_244, 7_449_508),
-        ("RH-3", 6_863_179, 7_133_687),
+        ("RH-1", 6_195_388, 6_442_692),
+        ("RH-2", 7_183_668, 7_467_724),
+        ("RH-3", 6_880_603, 7_151_903),
     ];
     for ((name, text), (n, n60, n65)) in haeuser().into_iter().zip(soll) {
         assert_eq!(name, n);

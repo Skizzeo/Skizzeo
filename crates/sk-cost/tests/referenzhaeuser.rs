@@ -31,9 +31,9 @@ struct Soll {
 const ERDE: &[Zeile] = &[
     (
         "Oberboden bis 30cm abtragen, seitlich lagern",
-        29700,
+        42900,
         1320,
-        39204,
+        56628,
         0,
     ),
     (
@@ -69,10 +69,10 @@ const ERDE: &[Zeile] = &[
 
 const RH1: Soll = Soll {
     datei: include_str!("../referenz/rh1-standardhaus.szo"),
-    netto: 6177964,
+    netto: 6195388,
     material: 3147423,
     geschosse: [
-        ("Gründung", 1116981),
+        ("Gründung", 1134405),
         ("Erdgeschoss", 2709564),
         ("Obergeschoss", 2351416),
     ],
@@ -140,10 +140,10 @@ const RH1: Soll = Soll {
 
 const RH2: Soll = Soll {
     datei: include_str!("../referenz/rh2-mehrschalig.szo"),
-    netto: 7166244,
+    netto: 7183668,
     material: 3694694,
     geschosse: [
-        ("Gründung", 1116981),
+        ("Gründung", 1134405),
         ("Erdgeschoss", 3034024),
         ("Obergeschoss", 3015257),
     ],
@@ -232,10 +232,10 @@ const RH2: Soll = Soll {
 
 const RH3: Soll = Soll {
     datei: include_str!("../referenz/rh3-versatz-dachterrasse.szo"),
-    netto: 6863179,
+    netto: 6880603,
     material: 3544709,
     geschosse: [
-        ("Gründung", 1116981),
+        ("Gründung", 1134405),
         ("Erdgeschoss", 2937124),
         ("Obergeschoss", 2809049),
     ],
@@ -635,14 +635,14 @@ fn vorschau_mit_summe_vorher_nachher() {
         &u,
     )
     .expect("Vorschau");
-    assert_eq!(p.netto, Some((Cent(6_177_964), Cent(6_424_476))));
+    assert_eq!(p.netto, Some((Cent(6_195_388), Cent(6_442_692))));
     assert_eq!((m.revision(), m.ext_revision()), (rev, ext));
     // gleich der Ausführung
     let h = Herkunft::neu(HerkunftArt::Manual, "2026-10-08", "10:40");
     m.begin("Lohn");
     sk_cost::ausfuehren(&mut m, None, Rolle::Admin, &h, lohn).expect("Lohn");
     m.commit();
-    assert_eq!(blatt(&m, &u).netto, Cent(6_424_476));
+    assert_eq!(blatt(&m, &u).netto, Cent(6_442_692));
     // Zuordnung: eine Außenwandschicht auf eine andere Bauleistung, nur in
     // der Kopie
     let k = lesen::katalog(&m, None);
@@ -678,7 +678,7 @@ fn vorschau_mit_summe_vorher_nachher() {
     .expect("Vorschau Zuordnung");
     assert_eq!(m.revision(), rev);
     let (vorher, nachher) = p.netto.expect("Summen");
-    assert_eq!(vorher, Cent(6_424_476));
+    assert_eq!(vorher, Cent(6_442_692));
     m.begin("Zuordnen");
     sk_cost::ausfuehren(&mut m, None, Rolle::Admin, &h, op).expect("Zuordnen");
     m.commit();

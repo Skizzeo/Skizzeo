@@ -1497,21 +1497,17 @@ pub fn schedule(model: &Model) -> Schedule {
         }
     }
     sched.formwork = formwork_rows(&sched);
-    sched.auto = auto_rows(model, &platten, &found);
+    sched.auto = auto_rows(model, &platten);
     sched
 }
 
 /// Automatikmengen je Gründung: die eine Stelle, an der sie gesammelt
 /// werden (Erdarbeiten, Bauvorbereitung), in der Reihenfolge der Platten.
-fn auto_rows(
-    model: &Model,
-    platten: &[(RunId, ElementId)],
-    found: &HashMap<RunId, Result<Foundation, FoundationError>>,
-) -> Vec<AutoMenge> {
+fn auto_rows(model: &Model, platten: &[(RunId, ElementId)]) -> Vec<AutoMenge> {
     let mut out = Vec::new();
-    let boden = crate::qto_earth::Boden::default();
+    let boden = model.project().soil;
     for &(run, slab) in platten {
-        let (Some(Ok(f)), Some(e)) = (found.get(&run), model.element(slab)) else {
+        let (Some(g), Some(e)) = (model.ground_basis(run), model.element(slab)) else {
             continue;
         };
         let storey = schedule_storey(model, e);
@@ -1526,7 +1522,7 @@ fn auto_rows(
             kg: None,
             formula: String::new(),
         };
-        let basis = crate::qto_earth::ErdBasis::aus_gruendung(f, 0.0);
+        let basis = crate::qto_earth::ErdBasis::aus(&g);
         out.extend(crate::qto_earth::auto_mengen(&vorlage, &basis, &boden));
     }
     out

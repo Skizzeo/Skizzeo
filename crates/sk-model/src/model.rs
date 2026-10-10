@@ -68,6 +68,9 @@ pub struct Project {
     /// Projekt, wie ±0,00 für alle Gebäude gilt. Kein Projektdatum: ändert
     /// sich nur über [`Model::set_terrain_offset`].
     pub terrain: f64,
+    /// Bodenkennwerte für die Erdarbeiten; wie `terrain` kein Projektdatum,
+    /// ändert sich nur über [`Model::set_soil`].
+    pub soil: crate::qto_earth::Boden,
 }
 
 impl Project {
@@ -87,6 +90,7 @@ impl Project {
             info: false,
             legacy: Default::default(),
             terrain: 0.0,
+            soil: Default::default(),
         }
     }
 
@@ -768,6 +772,7 @@ impl Model {
             info: true,
             legacy: Default::default(),
             terrain: self.project.terrain,
+            soil: self.project.soil,
             ..p
         };
         match self.txn.as_mut() {
@@ -800,6 +805,7 @@ impl Model {
             info: true,
             legacy: Default::default(),
             terrain: self.project.terrain,
+            soil: self.project.soil,
             ..p
         };
         self.touch();
@@ -3800,6 +3806,19 @@ impl Model {
             }
             None => debug_assert!(!self.strict, "Änderung ohne Schritt"),
         }
+    }
+
+    /// Bodenkennwerte der Erdarbeiten (im offenen Schritt). Werte außerhalb
+    /// von [`crate::qto_earth::Boden::FELDER`] und gleiche Werte ändern
+    /// nichts.
+    pub fn set_soil(&mut self, b: crate::qto_earth::Boden) -> bool {
+        if b == self.project.soil || crate::qto_earth::Boden::aus_werten(b.werte()).is_none() {
+            return false;
+        }
+        self.note_project();
+        self.project.soil = b;
+        self.touch();
+        true
     }
 
     /// Ist die Gründung `gr` frostfrei (Einbindetiefe ≥ 80 cm)? Alte Dateien
@@ -9477,6 +9496,87 @@ mod gelaende_tests {
         assert_eq!(g.insulation_bottom_z, g.slab_bottom_z);
         assert!((g.slab_area - 80.0e6).abs() < 1.0, "{}", g.slab_area);
         assert_eq!(m.ground_bases().len(), 1);
+    }
+
+    /// Erdmengen aus der Gründung des Modells: höher gesetzt kommt
+    /// Auffüllung statt Aushub, tiefer gesetzt eine Baugrube mit
+    /// Arbeitsraum; die Perimeterdämmung ändert die Erdmengen nicht.
+    #[test]
+    fn erdmengen_folgen_dem_gelaende() {
+        use crate::qto_earth::{BACKFILL, EXCAVATION, FILL, GRAVEL};
+        let (mut m, _, _, slab) = haus();
+        let summe = |m: &Model, k: &str| -> f64 {
+            crate::qto::schedule(m)
+                .auto
+                .iter()
+                .filter(|a| a.key == k)
+                .map(|a| a.value)
+                .sum()
+        };
+        let kies = summe(&m, GRAVEL);
+        schritt(&mut m, |m| m.set_terrain_offset(400.0));
+        assert!(summe(&m, FILL) > 0.0);
+        assert_eq!(summe(&m, EXCAVATION), 0.0);
+        schritt(&mut m, |m| m.set_terrain_offset(-600.0));
+        assert_eq!(summe(&m, FILL), 0.0);
+        let grube = summe(&m, EXCAVATION);
+        assert!(summe(&m, BACKFILL) > 0.0);
+        // Die Dämmung hebt das Haus um ihre Dicke: UK Dämmung und damit
+        // der Aushub bleiben, wo sie waren
+        schritt(&mut m, |m| m.set_slab_insulation(slab, 120.0));
+        assert_eq!(m.terrain_offset(), -480.0);
+        assert!((summe(&m, EXCAVATION) - grube).abs() < 1.0);
+        assert!((summe(&m, GRAVEL) - kies).abs() < 1.0);
+    }
+
+    /// Bodenkennwerte (Erdarbeiten): ändern die Automatikmengen, stehen in
+    /// der Datei nur abweichend von der Vorgabe, Rückgängig stellt her.
+    #[test]
+    fn bodenkennwerte_im_projekt() {
+        use crate::qto_earth::{Boden, TOPSOIL};
+        let (mut m, ..) = haus();
+        let summe = |m: &Model, k: &str| -> f64 {
+            crate::qto::schedule(m)
+                .auto
+                .iter()
+                .filter(|a| a.key == k)
+                .map(|a| a.value)
+                .sum()
+        };
+        let vorher = summe(&m, TOPSOIL);
+        assert!(vorher > 0.0);
+        let leer = crate::szo::write(&m);
+        assert!(
+            !leer.contains("topsoil="),
+            "Vorgabe steht nicht in der Datei"
+        );
+        let b = Boden {
+            oberboden: 200.0,
+            boeschung: 60.0,
+            ..Boden::default()
+        };
+        let t = schritt(&mut m, |m| m.set_soil(b));
+        assert!((summe(&m, TOPSOIL) - vorher * 2.0 / 3.0).abs() < 1.0);
+        let text = crate::szo::write(&m);
+        let projekt = text.lines().find(|l| l.starts_with("[project] ")).unwrap();
+        assert!(projekt.ends_with(" topsoil=200 slope=60"), "{projekt}");
+        let back = crate::szo::read(&text, crate::GuidGen::with_seed(1)).unwrap();
+        assert_eq!(back.model.project().soil, b);
+        assert_eq!(crate::szo::write(&back.model), text);
+        m.apply(&t, Direction::Undo);
+        assert_eq!(m.project().soil, Boden::default());
+        assert_eq!(crate::szo::write(&m), leer);
+        // außerhalb des Bereichs und ohne Änderung abgelehnt
+        m.begin("x");
+        let steil = Boden {
+            boeschung: 95.0,
+            ..Boden::default()
+        };
+        assert!(!m.set_soil(steil));
+        assert!(!m.set_soil(Boden::default()));
+        m.rollback();
+        let falsch = leer.replacen("[project] ", "[project] slope=10 ", 1);
+        assert!(crate::szo::read(&falsch, crate::GuidGen::with_seed(1)).is_err());
     }
 
     /// Höher gesetzt: die Schürze wächst mit, die Einbindetiefe bleibt;
