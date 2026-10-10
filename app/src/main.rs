@@ -3633,6 +3633,14 @@ impl App {
                     self.sync_levels();
                 }
             }
+            Id::FlatRoof => {
+                let st = self.scene.active_storey();
+                let on = self.scene.model().roof_level(st).is_none();
+                if self.scene.set_flat_roof(on) {
+                    self.upload_model();
+                    self.sync_levels();
+                }
+            }
             Id::PropsType if self.ext_gewaehlt_ist() => self.ext_klick(id),
             Id::ToolType | Id::PropsType => self.open_type_menu(id),
             Id::Ext | Id::ExtTyp | Id::ExtListe(_) => self.ext_klick(id),

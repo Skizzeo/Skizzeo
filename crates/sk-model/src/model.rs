@@ -283,6 +283,9 @@ pub use lock::{edit_blocked, Locked};
 
 #[path = "location.rs"]
 mod location;
+
+#[path = "flachdach.rs"]
+mod flachdach;
 pub use location::{Foot, Location, ShadeLight, Sun, ViewShade, FOOT_MAX, SHADE_VIEWS};
 
 impl Default for Model {
@@ -1881,7 +1884,14 @@ impl Model {
     /// vorher zeigt), jedes weitere bekommt eigene Geschosse.
     pub fn add_building(&mut self, storeys: u8) -> BuildingId {
         let storeys = storeys.max(1) as usize;
+        // Das Flachdach der Vorlage zählt nicht als Geschoss, es kommt
+        // zuletzt obendrauf
         let template = self.levels_in(None);
+        let roof = self.roof_level_of(None);
+        let template: Vec<StoreyId> = template
+            .into_iter()
+            .filter(|id| Some(*id) != roof)
+            .collect();
         // Nummern werden nie neu vergeben, auch nicht nach dem Löschen
         let mut k = self.building_number;
         let number = loop {
@@ -1972,6 +1982,17 @@ impl Model {
                 }
             }
         }
+        if let Some(fd) = roof {
+            let z = levels
+                .last()
+                .and_then(|id| self.storey(*id))
+                .map_or(0.0, |s| s.top());
+            note!(self, Storey, self.storeys, fd);
+            if let Some(st) = self.storeys.get_mut(fd) {
+                st.building = Some(b);
+                st.elevation = z;
+            }
+        }
         self.touch();
         b
     }
@@ -1993,7 +2014,7 @@ impl Model {
                 .iter()
                 .filter(|id| {
                     self.storey(**id)
-                        .is_some_and(|s| s.kind != LevelKind::Foundation)
+                        .is_some_and(|s| s.kind == LevelKind::Storey)
                 })
                 .count();
             self.add_building(up.max(1) as u8);
@@ -2181,7 +2202,11 @@ impl Model {
         let fits = self
             .layer_set(layer_set)
             .is_some_and(|t| TypeCategory::of(category) == Some(t.category));
-        if count == 0 || !fits || self.storey(storey).is_none() {
+        // Auf der Ebene Flachdach stehen nur die Aufkantungen (abgeleitet)
+        let roof = self
+            .storey(storey)
+            .is_none_or(|s| s.kind == LevelKind::Roof);
+        if count == 0 || !fits || roof {
             return None;
         }
         self.ensure_building(storey);
@@ -2226,6 +2251,14 @@ impl Model {
                 };
                 (below, at) = (r, up);
             }
+        } else if self.needs_floor(run) {
+            // Im obersten Geschoss gezeichnet: Aufkantung darüber
+            if let Some(fd) = self
+                .level_above(storey)
+                .filter(|l| self.storey(*l).is_some_and(|s| s.kind == LevelKind::Roof))
+            {
+                self.stack_run(run, fd);
+            }
         }
         self.touch();
         Some(run)
@@ -2257,17 +2290,23 @@ impl Model {
         });
         note!(self, Run, new run);
         let seq = self.storey_seq(storey).0;
+        // Auf der Ebene Flachdach wird die Außenwand zur Aufkantung
+        let roof = self
+            .storey(storey)
+            .is_some_and(|s| s.kind == LevelKind::Roof);
         let mut segments = Vec::with_capacity(r.segments.len());
         for (k, &w) in r.segments.iter().enumerate() {
             let Some(t) = self.element(w).cloned() else {
                 continue;
             };
+            let category = if roof { Category::Parapet } else { t.category };
             let id = self.new_wall(
                 run,
                 k,
                 &Element {
                     storey,
                     seq,
+                    category,
                     props: PropSet::new(),
                     ..t
                 },
@@ -2570,6 +2609,10 @@ impl Model {
         let Some((_, now)) = self.stack_offset(wall) else {
             return false;
         };
+        // Die Aufkantung bleibt bündig gekoppelt (Flachdach, Jörn 10.10.)
+        if !linked && self.is_parapet(wall) {
+            return false;
+        }
         if now == linked {
             return true;
         }
@@ -2598,6 +2641,9 @@ impl Model {
         } else {
             offset
         };
+        if offset != 0.0 && self.is_parapet(wall) {
+            return None;
+        }
         let (run, seg) = self.segment_of(wall)?;
         let (old, linked) = self.stack_offset(wall)?;
         let below = self.run_below(run)?;
@@ -5164,7 +5210,7 @@ impl Model {
         let last = layers.iter().rposition(|l| l.core);
         // (vor bzw. über dem Kern, Kern, hinter bzw. unter dem Kern)
         let (before, at, after) = match e.category {
-            Category::ExteriorWall => (335, 331, 336),
+            Category::ExteriorWall | Category::Parapet => (335, 331, 336),
             Category::InteriorWall if crate::library::bears(&layers, true) => (345, 341, 345),
             Category::InteriorWall => (345, 342, 345),
             Category::Floor => (353, 351, 354),
@@ -5570,7 +5616,12 @@ impl Model {
         let s = self.storey(id)?;
         match s.kind {
             LevelKind::Foundation => None,
-            _ => Some((
+            // Flachdach: OK Aufkantung über OK Rohdecke darunter
+            LevelKind::Roof => Some((
+                s.elevation + MIN_ROOF_UPSTAND,
+                s.elevation + MAX_ROOF_UPSTAND,
+            )),
+            LevelKind::Storey => Some((
                 s.elevation + self.floor_thickness_of(id) + MIN_CLEAR,
                 f64::INFINITY,
             )),
@@ -5806,6 +5857,28 @@ impl Model {
             if found != 1 || levels.len() < 2 {
                 out.push(format!(
                     "Geschosse {name}: nicht genau eine Gründung und mindestens ein EG"
+                ));
+            }
+            // Flachdach (Jörn 10.10.): höchstens eins, zuoberst, über einem
+            // Geschoss
+            let roofs: Vec<usize> = levels
+                .iter()
+                .enumerate()
+                .filter(|(_, id)| self.storey(**id).is_some_and(|s| s.kind == LevelKind::Roof))
+                .map(|(i, _)| i)
+                .collect();
+            if roofs.len() > 1 {
+                out.push(format!("Geschosse {name}: mehr als ein Flachdach"));
+            }
+            if roofs.iter().any(|&i| {
+                i + 1 != levels.len()
+                    || !levels[..i].iter().any(|id| {
+                        self.storey(*id)
+                            .is_some_and(|s| s.kind == LevelKind::Storey)
+                    })
+            }) {
+                out.push(format!(
+                    "Geschosse {name}: Flachdach nicht zuoberst über einem Geschoss"
                 ));
             }
             let first = levels.first().and_then(|id| self.storey(*id));
@@ -7101,6 +7174,12 @@ pub(crate) const STOREY_HEIGHT: f64 = 2855.0;
 /// Geschosshöhe OG (Jörn 10:13): lichte Höhe 2,635 + Decke 0,22.
 pub(crate) const UPPER_HEIGHT: f64 = 2855.0;
 pub(crate) const FOUNDATION_DEPTH: f64 = 800.0;
+/// Ebene Flachdach (Jörn 10.10.): ihre Höhe ist die Aufkantung über OK
+/// Rohdecke des obersten Geschosses, 50 cm, einstellbar von 15 cm bis
+/// 1,50 m (OK Mauerwerk, ohne Attikablech).
+pub const ROOF_UPSTAND: f64 = 500.0;
+pub const MIN_ROOF_UPSTAND: f64 = 150.0;
+pub const MAX_ROOF_UPSTAND: f64 = 1500.0;
 pub const FLOOR_THICKNESS: f64 = 220.0;
 /// Untersichtdämmung unter einem Vorsprung (Jörn 04:03, G7 K4, BIM Regel
 /// 35): 12 cm, einstellbar von 4 bis 30 cm, nie 0.

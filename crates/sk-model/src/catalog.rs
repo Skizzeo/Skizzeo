@@ -1443,7 +1443,7 @@ mod tests {
                 ..vorlage.clone()
             }));
         }
-        let [mw, sb, dae, putz, holz, luft, _blech] = mats[..] else {
+        let [mw, sb, dae, putz, holz, luft, _blech, _abdichtung] = mats[..] else {
             unreachable!()
         };
         let lage = |material, thickness, function, core| {

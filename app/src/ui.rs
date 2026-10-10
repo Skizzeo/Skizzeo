@@ -131,6 +131,8 @@ pub enum Id {
     Grip(Grip),
     /// Name eines Geschosses im Paneel „Geschosse“: macht es aktiv.
     Storey(StoreyId),
+    /// Schalter „Flachdach“ im Fuß des Paneels „Geschosse“ (Jörn 10.10.).
+    FlatRoof,
     /// Dialog „Gebäude erstellen“ (E16): Schließkreuz, Zähler − und +
     /// (derzeit gesperrt), „Abbrechen“ und „Zeichnen beginnen“.
     DialogClose,
@@ -613,6 +615,8 @@ pub struct Band {
     pub top: f64,
     /// Gründungsband: Unterkante ziehbar, Oberkante (±0,00) fest.
     pub foundation: bool,
+    /// Ebene Flachdach: Oberkante ist OK Aufkantung.
+    pub roof: bool,
     pub active: bool,
 }
 
@@ -629,6 +633,9 @@ pub struct Levels {
     /// Fundament, mm; Gelände Thema 1). `None` ohne Gründung.
     pub terrain: Option<f64>,
     pub embedment: Option<f64>,
+    /// Schalter „Flachdach“ (Jörn 10.10.): an, wenn die Ebene besteht;
+    /// `None`: kein Schalter.
+    pub flat_roof: Option<bool>,
 }
 
 /// Eine Ebene (Linie) im Diagramm.
@@ -662,7 +669,11 @@ fn level_lines(l: &Levels) -> Vec<LevelLine> {
     if let Some(b) = l.bands.last() {
         out.push(LevelLine {
             z: b.top,
-            name: format!("OK Decke {}", b.name),
+            name: if b.roof {
+                "OK Aufkantung".to_string()
+            } else {
+                format!("OK Decke {}", b.name)
+            },
             field: Some(Field::LevelTop(b.id)),
             grip: Some(Grip::Top(b.id)),
             active: false,
@@ -1951,6 +1962,7 @@ impl Ui {
             }),
             // Standardknopf des Dialogs
             Id::DialogStart => true,
+            Id::FlatRoof => self.levels.flat_roof == Some(true),
             Id::Projektdaten
             | Id::Field(_)
             | Id::Grip(_)
@@ -2259,6 +2271,17 @@ impl Ui {
         let b = Rect::new(b.x + m, b.y + m, b.w, b.h);
         if id == Id::DialogClose {
             self.paint_close(t, c, b, st.hover);
+            return;
+        }
+        if id == Id::FlatRoof {
+            let k = 14.0 * s;
+            let kr = Rect::new(b.x, b.y + ((b.h - k) * 0.5).round(), k, k);
+            widgets::checkbox(c, kr, st.active, st.hover, s, t);
+            let px = self.size.font_small * s;
+            let col = if st.hover { t.ui.text } else { t.ui.text_dim };
+            let base = kr.y + k - 3.0 * s;
+            let font = self.fonts.regular.as_ref();
+            widgets::text(c, font, "Flachdach", px, kr.x + k + 6.0 * s, base, col);
             return;
         }
         if let Some(chip) = self.chip(id) {
@@ -2767,6 +2790,22 @@ impl Ui {
         }
     }
 
+    /// Klickfläche des Schalters „Flachdach“ (Kästchen und Wort) rechts in
+    /// der Titelzeile; das Diagramm behält seine Höhe.
+    fn flat_roof_rect(&self) -> Option<Rect> {
+        self.levels.flat_roof?;
+        let (s, z) = (self.scale, &self.size);
+        let w = 14.0 * s
+            + 6.0 * s
+            + self
+                .fonts
+                .regular
+                .as_ref()
+                .map_or(70.0 * s, |f| f.width("Flachdach", z.font_small * s));
+        let right = (z.panel_width - z.panel_pad) * s;
+        Some(Rect::new(right - w, z.panel_pad * s + 2.0 * s, w, 16.0 * s))
+    }
+
     /// Obere Kante des Fußes (Pixel, ohne Schatten).
     fn footer_top(&self, l: &LevelsLayout) -> f32 {
         l.height - ((self.level_footer() + self.size.panel_pad) * self.scale).round()
@@ -2905,6 +2944,9 @@ impl Ui {
         let bands = &self.levels.bands;
         let mut out = Vec::new();
         let mut names = Vec::new();
+        if let Some(r) = self.flat_roof_rect() {
+            names.push((Id::FlatRoof, r, ""));
+        }
         let mut push = |f: Field, right: f32, base: f32| {
             out.push((Id::Field(f), self.level_text_rect(f, right, base), ""));
         };
@@ -2913,6 +2955,7 @@ impl Ui {
             let base = self.footer_top(&l) + self.size.level_row_base * s;
             push(Field::Terrain, xi - 6.0 * s, base);
         }
+
         if l.list {
             let top = (self.size.panel_pad + LEVEL_HEAD) * s;
             let row = LEVEL_LIST_ROW * s;
@@ -2999,7 +3042,7 @@ impl Ui {
                 Cursor::Hand
             }
             Some(Id::Field(_)) => Cursor::IBeam,
-            Some(Id::Storey(_)) => Cursor::Hand,
+            Some(Id::Storey(_) | Id::FlatRoof) => Cursor::Hand,
             _ => Cursor::Arrow,
         }
     }
@@ -4364,6 +4407,59 @@ mod levels_tests {
         assert!(out.submit.is_none() && ui.edit.is_none());
     }
 
+    /// Flachdach (Jörn 10.10.): Der Schalter rechts in der Titelzeile legt
+    /// über dem OG das Band FD an, OK Aufkantung 0,50 m über OK Decke OG,
+    /// mit Feldern für OK und Höhe der Aufkantung, ohne lichte Höhe.
+    /// Rückgängig nimmt es wieder weg.
+    #[test]
+    fn flachdach_band_und_schalter() {
+        let (mut ui, mut s) = ui_mit_geschossen();
+        assert_eq!(ui.levels.flat_roof, Some(false));
+        let r = ui.rect(Panel::Levels, 1440, 32);
+        let b = ui.flat_roof_rect().unwrap();
+        let (x, y) = ((r.x + b.x + 4.0) as f64, (r.y + b.y + 6.0) as f64);
+        ui.handle(&Event::MouseMove { x, y, mods: M }, 1440, 32);
+        assert_eq!(ui.hover, Some(Id::FlatRoof));
+        let down = Event::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            mods: M,
+        };
+        ui.handle(&down, 1440, 32);
+        let up = Event::MouseUp {
+            button: MouseButton::Left,
+            x,
+            y,
+            mods: M,
+        };
+        assert_eq!(ui.handle(&up, 1440, 32).clicked, Some(Id::FlatRoof));
+        assert!(s.set_flat_roof(true));
+        assert!(!s.set_flat_roof(true), "schon an");
+        ui.set_levels(s.levels());
+        assert_eq!(ui.levels.flat_roof, Some(true));
+        let names: Vec<_> = ui.levels.bands.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, ["Fundament", "EG", "OG", "FD"]);
+        let lines = level_lines(&ui.levels);
+        let last = lines.last().unwrap();
+        assert_eq!((last.z, last.name.as_str()), (6210.0, "OK Aufkantung"));
+        let fd = band(&ui, "FD");
+        assert!(fd.roof && !fd.foundation);
+        let top = ui.field_row(Field::LevelTop(fd.id)).unwrap();
+        assert_eq!(
+            (top.label, top.min, top.max),
+            ("OK Aufkantung", 5860.0, 7210.0)
+        );
+        let h = ui.field_row(Field::StoreyHeight(fd.id)).unwrap();
+        assert_eq!((h.label, h.value), ("Aufkantung", 500.0));
+        assert!(ui.field_row(Field::ClearHeight(fd.id)).is_none());
+        assert!(ui.levels.clear.iter().all(|c| c.0 != fd.id));
+        assert!(s.undo());
+        ui.set_levels(s.levels());
+        assert_eq!(ui.levels.bands.len(), 3);
+        assert_eq!(ui.levels.flat_roof, Some(false));
+    }
+
     /// A47 und Test 5 aus E14: auch im kleinen Fenster nichts abgeschnitten;
     /// reicht der Platz nicht, wird es eine Liste mit denselben Zahlen.
     /// Seit dem kürzeren Werkzeug-Hinweis (Paket 8, §2.7) reichte der Platz
@@ -4387,8 +4483,9 @@ mod levels_tests {
             let n = ui.level_buttons().len();
             // Zahlen (mit lichter Höhe EG und OG), die Namen von
             // Fundament, EG und OG (E18: das Fundament ist anklickbar) und
-            // die Kote OK Gelände im Fuß
-            assert_eq!(n, if list { 11 } else { 12 }, "{w}×{h}");
+            // die Kote OK Gelände im Fuß, dazu der Schalter Flachdach in der
+            // Titelzeile (Jörn 10.10.)
+            assert_eq!(n, if list { 12 } else { 13 }, "{w}×{h}");
             for (_, b, _) in ui.level_buttons() {
                 assert!(b.y >= 0.0 && b.y + b.h <= r.h, "{w}×{h}: {b:?}");
             }

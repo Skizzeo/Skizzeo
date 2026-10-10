@@ -14062,7 +14062,7 @@ mod bauteilarten {
 
     /// Die heutige Tabelle (main 637f33c): Name, Präfix, IFC, KG, IsExternal.
     #[allow(clippy::type_complexity)]
-    const TABELLE: [(Category, &str, &str, &str, Option<u16>, bool); 15] = [
+    const TABELLE: [(Category, &str, &str, &str, Option<u16>, bool); 16] = [
         (
             Category::ExteriorWall,
             "Außenwand",
@@ -14164,6 +14164,15 @@ mod bauteilarten {
             Some(325),
             true,
         ),
+        // Flachdach (Jörn 10.10.)
+        (
+            Category::Parapet,
+            "Aufkantung",
+            "AK",
+            "IfcWall.PARAPET",
+            Some(330),
+            true,
+        ),
     ];
 
     /// Bauteilarten, die es heute als Bauteil gibt: (Kategorie, Abschnitt und
@@ -14219,6 +14228,8 @@ mod bauteilarten {
                 Category::Floor | Category::GroundSlab | Category::StripFooting => {}
                 // Paket 2a: Werkstyp „Dachterrasse 14“
                 Category::RoofTerrace => assert_eq!(t, Some(T::RoofTerrace)),
+                // Flachdach: die Aufkantung im Außenwandtyp
+                Category::Parapet => assert_eq!(t, Some(T::ExteriorWall)),
                 _ => assert_eq!(t, None, "{c:?} ohne Typ"),
             }
         }
@@ -14440,7 +14451,7 @@ GB-01;Summe nach Baustoff;;Randdämmung;;;;3,0000;2,3455;
 
     /// Seit Paket 2a/2c: Dachterrasse und Attikablech (nicht in den
     /// Musterhäusern von A176, die den Stand 637f33c festhalten).
-    const ARTEN_2A: [(Category, &str, &str, &str); 3] = [
+    const ARTEN_2A: [(Category, &str, &str, &str); 4] = [
         (
             Category::RoofTerrace,
             "[terrace]",
@@ -14455,6 +14466,8 @@ GB-01;Summe nach Baustoff;;Randdämmung;;;;3,0000;2,3455;
             "perimeterinsulation",
             "Perimeterdämmungen",
         ),
+        // Flachdach (Jörn 10.10.)
+        (Category::Parapet, "[wall]", "parapet", "Aufkantungen"),
     ];
 
     /// Kategorien, die es noch nicht als Bauteil gibt (kein Beispiel).
@@ -14585,6 +14598,10 @@ GB-01;Summe nach Baustoff;;Randdämmung;;;;3,0000;2,3455;
                 Category::PerimeterInsulation => {
                     let slab = m.foundation_of(eg).unwrap().0;
                     m.set_slab_insulation(slab, 120.0)
+                }
+                Category::Parapet => {
+                    let st = m.run(eg).unwrap().storey;
+                    m.set_flat_roof(st, true)
                 }
                 _ => true,
             }

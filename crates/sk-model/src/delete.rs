@@ -68,6 +68,9 @@ pub fn refusal_lines(m: &Model, id: ElementId, r: &Refusal) -> Vec<&'static str>
                 "Das Attikablech folgt der Dachterrasse. Seinen Baustoff stellst du im Paneel ein.",
             ]
         }
+        Some(Category::Parapet) => {
+            vec!["Die Aufkantung folgt dem Flachdach. Ihre Höhe stellst du in der Geschossverwaltung ein."]
+        }
         _ => vec!["Dieses Bauteil lässt sich nicht löschen."],
     }
 }
@@ -125,6 +128,11 @@ impl Model {
                 let closed = self.run(w.run).is_some_and(|r| r.closed);
                 if closed && e.category == Category::ExteriorWall {
                     Err(Refusal::BuildingOutline(self.building_of_element(id)))
+                } else if e.category == Category::Parapet {
+                    // Folgt dem Flachdach (Jörn 10.10.): nur mit der Ebene weg
+                    Err(Refusal::Derived {
+                        from: w.coupling.map_or(id, |c| c.below),
+                    })
                 } else if e.locked {
                     Err(Refusal::Locked(id))
                 } else {

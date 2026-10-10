@@ -217,6 +217,7 @@ pub fn for_category(c: MatCategory) -> Option<TradeId> {
         MatCategory::Insulation => "18345",
         MatCategory::Plaster => "18350",
         MatCategory::Metal => "18339",
+        MatCategory::Membrane => "18338",
         MatCategory::Air => return None,
     })
 }

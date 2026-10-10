@@ -6,7 +6,6 @@
 //! Die Werte sind roh (mm, mm², ganze Stück bzw. Monate); was eine
 //! Bauleistung daraus macht (Einheit, Preis), steht im Katalog.
 
-use crate::element::Category;
 use crate::model::Model;
 use crate::qto::AutoMenge;
 use crate::RunId;
@@ -130,7 +129,8 @@ pub fn site_mengen(
     erste: bool,
 ) -> Vec<AutoMenge> {
     let gebaeude = model.run(run).and_then(|r| model.building_of(r.storey));
-    // Außenwandzüge desselben Gebäudes (alle Geschosse)
+    // Außenwandzüge desselben Gebäudes (alle Geschosse) samt Aufkantung
+    // des Flachdachs: das Gerüst reicht über ihre Krone
     let zuege: Vec<RunId> = model
         .runs()
         .iter()
@@ -140,7 +140,7 @@ pub fn site_mengen(
                 && r.segments
                     .first()
                     .and_then(|e| model.element(*e))
-                    .is_some_and(|e| e.category == Category::ExteriorWall)
+                    .is_some_and(|e| e.category.is_outer_wall())
         })
         .map(|(id, _)| id)
         .collect();
@@ -156,7 +156,12 @@ pub fn site_mengen(
         if let Some(a) = &c.joints.attika {
             krone = krone.max(a.band.1);
         }
-        if let Some(r) = model.run(*id) {
+        // Die Ebene Flachdach ist kein Geschoss (Vorhaltemonate)
+        if let Some(r) = model.run(*id).filter(|r| {
+            model
+                .storey(r.storey)
+                .is_some_and(|s| s.kind == crate::LevelKind::Storey)
+        }) {
             if !geschosse.contains(&r.storey) {
                 geschosse.push(r.storey);
             }

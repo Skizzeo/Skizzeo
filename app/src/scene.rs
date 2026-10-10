@@ -2053,6 +2053,7 @@ impl Scene {
                 continue;
             };
             let foundation = st.kind == sk_model::LevelKind::Foundation;
+            let roof = st.kind == sk_model::LevelKind::Roof;
             l.bands.push(Band {
                 id,
                 // Jörns Wort (E18); im Modell bleibt es die Gründung
@@ -2064,6 +2065,7 @@ impl Scene {
                 bottom: st.elevation,
                 top: st.top(),
                 foundation,
+                roof,
                 active: id == active,
             });
             if foundation {
@@ -2093,9 +2095,26 @@ impl Scene {
             let Some((lo, hi)) = m.storey_top_range(id) else {
                 continue;
             };
+            let (e, h) = (st.elevation, st.height);
+            // Flachdach (Jörn 10.10.): OK und Höhe der Aufkantung, keine
+            // lichte Höhe
+            if roof {
+                l.fields.push(row(
+                    Field::LevelTop(id),
+                    "OK Aufkantung",
+                    st.top(),
+                    (lo, hi),
+                ));
+                l.fields.push(row(
+                    Field::StoreyHeight(id),
+                    "Aufkantung",
+                    h,
+                    (lo - e, hi - e),
+                ));
+                continue;
+            }
             l.fields
                 .push(row(Field::LevelTop(id), "Oberkante", st.top(), (lo, hi)));
-            let (e, h) = (st.elevation, st.height);
             l.fields.push(row(
                 Field::StoreyHeight(id),
                 "Geschosshöhe",
@@ -2109,7 +2128,21 @@ impl Scene {
             l.fields
                 .push(row(Field::ClearHeight(id), "lichte Höhe", clear, range));
         }
+        // Schalter „Flachdach“, sobald es ein Geschoss gibt
+        if l.bands.iter().any(|b| !b.foundation && !b.roof) {
+            l.flat_roof = Some(m.roof_level(active).is_some());
+        }
         l
+    }
+
+    /// Schaltet die Ebene Flachdach des aktiven Gebäudes als ein Schritt
+    /// (Paneel „Geschosse“, Jörn 10.10.); `false`, wenn nichts geschah.
+    pub fn set_flat_roof(&mut self, on: bool) -> bool {
+        let st = self.active_storey();
+        if self.model.roof_level(st).is_some() == on {
+            return false;
+        }
+        self.edit_model("Flachdach", |m| m.set_flat_roof(st, on))
     }
 
     /// Zahl aus dem Paneel „Geschosse“ als ein Schritt; `false`, wenn das

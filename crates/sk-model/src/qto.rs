@@ -333,7 +333,7 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                 .map(|((fa, fb), _)| area(&[fa[k], fa[j], fb[j], fb[k]]))
                 .sum();
             let side_outer = (c_out[j] - c_out[k]).length() * h;
-            let list_length = if category == Some(Category::ExteriorWall) && h > 0.0 {
+            let list_length = if category.is_some_and(Category::is_outer_wall) && h > 0.0 {
                 side_outer / h
             } else {
                 // lichte Länge: Mittellinie der (ersten) tragenden Schicht
@@ -1230,6 +1230,7 @@ fn material_rank(c: MatCategory) -> u8 {
         MatCategory::Plaster => 4,
         MatCategory::Air => 5,
         MatCategory::Metal => 6,
+        MatCategory::Membrane => 7,
     }
 }
 

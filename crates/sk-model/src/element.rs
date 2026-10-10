@@ -57,6 +57,9 @@ pub enum Category {
     Coping,
     /// Perimeterdämmung vollflächig unter der Sohlplatte (Gelände Thema 4).
     PerimeterInsulation,
+    /// Aufkantung des Flachdachs (Jörn 10.10.): Wand auf der Ebene
+    /// Flachdach, an die oberste Außenwand gekoppelt, im selben Wandtyp.
+    Parapet,
     /// Erweiterungsbauteil aus einer .szb (Vertrag 0.5). Name, Präfix,
     /// IFC-Klasse und Kostengruppe kommen aus seiner Definition; deshalb
     /// nicht in [`Category::ALL`], das die Arten des Lieferumfangs nennt.
@@ -65,7 +68,7 @@ pub enum Category {
 
 impl Category {
     /// Die Arten des Lieferumfangs (ohne [`Category::Extension`]).
-    pub const ALL: [Category; 15] = [
+    pub const ALL: [Category; 16] = [
         Category::ExteriorWall,
         Category::InteriorWall,
         Category::Floor,
@@ -81,6 +84,7 @@ impl Category {
         Category::RoofTerrace,
         Category::Coping,
         Category::PerimeterInsulation,
+        Category::Parapet,
     ];
 
     /// Platz in [`Category::ALL`].
@@ -111,6 +115,12 @@ impl Category {
     /// IFC-Eigenschaft IsExternal.
     pub fn is_external(self) -> bool {
         spec(self).external
+    }
+
+    /// Außenwand oder Aufkantung: Wände im Außenwandtyp, deren Schichten
+    /// von außen nach innen laufen (Flachdach, Jörn 10.10.).
+    pub fn is_outer_wall(self) -> bool {
+        matches!(self, Category::ExteriorWall | Category::Parapet)
     }
 }
 
@@ -336,6 +346,10 @@ pub enum LevelKind {
     /// Gründung: UK Frostschürze bis OK Sohlplatte (±0,00).
     Foundation,
     Storey,
+    /// Flachdach (FD, Jörn 10.10.): eigene Ebene über dem obersten
+    /// Geschoss. UK = OK Rohdecke darunter, OK = OK Aufkantung (Mauerwerk;
+    /// das Attikablech zählt nicht zur Höhe).
+    Roof,
 }
 
 /// Geschoss als Band mit Unter- und Oberkante (IFC: IfcBuildingStorey,

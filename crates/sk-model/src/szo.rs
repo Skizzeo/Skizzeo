@@ -380,10 +380,11 @@ fn mat_category(c: MatCategory) -> &'static str {
         MatCategory::Timber => "timber",
         MatCategory::Air => "air",
         MatCategory::Metal => "metal",
+        MatCategory::Membrane => "membrane",
     }
 }
 
-const MAT_CATEGORIES: [MatCategory; 7] = MatCategory::ALL;
+const MAT_CATEGORIES: [MatCategory; 8] = MatCategory::ALL;
 
 /// Wort der Schichtfunktion in `[layer] fn=` (auch die Regel `fn=` einer
 /// Bauleistung, KA-0).
@@ -419,6 +420,16 @@ fn slab_type(line: Line, m: &Model, e: &Element) -> Line {
     match e.layer_set.and_then(|s| m.layer_set(s)) {
         Some(t) => line.guid("set", Some(t.guid)),
         None => line,
+    }
+}
+
+/// Art eines Geschossbands in der Datei (`kind=`); „roof“ seit dem
+/// Flachdach (Jörn 10.10.), ältere Dateien kennen es nicht.
+fn level_kind_word(k: LevelKind) -> &'static str {
+    match k {
+        LevelKind::Foundation => "foundation",
+        LevelKind::Storey => "storey",
+        LevelKind::Roof => "roof",
     }
 }
 
@@ -867,13 +878,7 @@ fn write_known(m: &Model) -> String {
             )
             .text("name", &s.name)
             .text("short", &s.short)
-            .word(
-                "kind",
-                match s.kind {
-                    LevelKind::Foundation => "foundation",
-                    LevelKind::Storey => "storey",
-                },
-            )
+            .word("kind", level_kind_word(s.kind))
             .num("elev", s.elevation)
             .num("h", s.height);
         // Gewollte Einbindetiefe (Gelände Thema 1) nur, wenn sie von der
@@ -1667,11 +1672,8 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                 kind: keyword(
                     r,
                     "kind",
-                    &[LevelKind::Foundation, LevelKind::Storey],
-                    |k| match k {
-                        LevelKind::Foundation => "foundation",
-                        LevelKind::Storey => "storey",
-                    },
+                    &[LevelKind::Foundation, LevelKind::Storey, LevelKind::Roof],
+                    level_kind_word,
                 )?,
                 elevation: r.f64("elev")?,
                 height: r.f64("h")?,

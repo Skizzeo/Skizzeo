@@ -24,10 +24,12 @@ pub enum MatCategory {
     Air,
     /// Blech (Attikablech, Dachterrasse D3).
     Metal,
+    /// Bahnen: Dampfsperre und Dachabdichtung (Flachdach, Jörn 10.10.).
+    Membrane,
 }
 
 impl MatCategory {
-    pub const ALL: [MatCategory; 7] = [
+    pub const ALL: [MatCategory; 8] = [
         MatCategory::Masonry,
         MatCategory::Concrete,
         MatCategory::Insulation,
@@ -35,6 +37,7 @@ impl MatCategory {
         MatCategory::Timber,
         MatCategory::Air,
         MatCategory::Metal,
+        MatCategory::Membrane,
     ];
 
     pub fn name(self) -> &'static str {
@@ -46,6 +49,7 @@ impl MatCategory {
             MatCategory::Timber => "Holz",
             MatCategory::Air => "Luft",
             MatCategory::Metal => "Metall",
+            MatCategory::Membrane => "Abdichtung",
         }
     }
 }
