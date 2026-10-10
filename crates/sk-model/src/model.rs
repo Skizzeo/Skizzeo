@@ -1304,7 +1304,8 @@ impl Model {
 
     /// Darf der Baustoff gelöscht werden (§1.4, Regeln 15 und 55)? Nicht,
     /// wenn etwas auf ihn verweist; Luft und die eingebauten Baustoffe von
-    /// Dachterrasse und Attikablech nie. Kennwerte halten nichts fest.
+    /// Dachterrasse, Attikablech und Fußpunkt nie. Kennwerte halten nichts
+    /// fest.
     pub fn can_remove_material(&self, id: MaterialId) -> bool {
         self.materials.get(id).is_some_and(|m| {
             m.category != MatCategory::Air
@@ -1312,6 +1313,7 @@ impl Model {
                     TERRACE_FINISH_GUID,
                     TERRACE_INSULATION_GUID,
                     COPING_MAT_GUID,
+                    FOAMGLASS_MAT_GUID,
                 ]
                 .contains(&m.guid)
         }) && !self.material_used(id)
@@ -4656,6 +4658,27 @@ impl Model {
         cut_color: [u8; 3],
         trade: Option<TradeId>,
     ) -> Option<MaterialId> {
+        self.builtin_material_with(
+            guid, name, category, priority, density, lambda, color, cut_color, trade, None,
+        )
+    }
+
+    /// Wie [`Model::builtin_material`]; mit `fill` schneidet der Baustoff
+    /// mit dieser Schraffur statt der seiner Art.
+    #[allow(clippy::too_many_arguments)]
+    fn builtin_material_with(
+        &mut self,
+        guid: Guid,
+        name: &str,
+        category: MatCategory,
+        priority: u16,
+        density: f64,
+        lambda: Option<f64>,
+        color: [u8; 3],
+        cut_color: [u8; 3],
+        trade: Option<TradeId>,
+        fill: Option<FillId>,
+    ) -> Option<MaterialId> {
         if let Some(id) = self.material_by_guid(guid) {
             return Some(id);
         }
@@ -4671,10 +4694,11 @@ impl Model {
             .iter()
             .find(|(_, f)| f.kind == crate::attr::FillKind::Empty)
             .map(|(id, _)| id);
-        let cut_fill = match (&like, category) {
-            (Some(m), MatCategory::Insulation) => m.cut_fill,
-            (Some(m), _) => empty.unwrap_or(m.cut_fill),
-            (None, _) => empty.or_else(|| self.attr.fills().ids().next())?,
+        let cut_fill = match (fill, &like, category) {
+            (Some(f), _, _) => f,
+            (None, Some(m), MatCategory::Insulation) => m.cut_fill,
+            (None, Some(m), _) => empty.unwrap_or(m.cut_fill),
+            (None, None, _) => empty.or_else(|| self.attr.fills().ids().next())?,
         };
         let (cut_fg, cut_bg) = match &like {
             Some(m) => (m.cut_fg, m.cut_bg),
@@ -4751,6 +4775,56 @@ impl Model {
             changed: 1,
             bearing: Bearing::Core,
         })
+    }
+
+    /// Werksschraffur „Dämmung hart (Kreuz)“ (Jörn 10.10. 05:53): Kreuz
+    /// 45°/135° im Abstand der Mauerwerkschraffur; fehlt sie, wird sie
+    /// angelegt (rückgängig machbar).
+    fn ensure_cross_fill(&mut self) -> FillId {
+        if let Some((id, _)) = self
+            .attr
+            .fills()
+            .iter()
+            .find(|(_, f)| f.guid == CROSS_FILL_GUID)
+        {
+            return id;
+        }
+        self.add_fill(Fill {
+            guid: CROSS_FILL_GUID,
+            name: crate::attr::CROSS_FILL_NAME.into(),
+            kind: crate::attr::FillKind::Lines(crate::attr::cross_lines()),
+            space: crate::attr::FillSpace::Paper,
+        })
+    }
+
+    /// Schaumglas-Dämmstein für den Fußpunkt der Verblendschale (W1, z. B.
+    /// FOAMGLAS PERINSUL HL, λ 0,058, Z-17.5-1209): Kreuzschraffur, grau,
+    /// Maurer. Fehlt er, wird er samt Schraffur angelegt.
+    // Erster Aufruf mit dem Fußpunkt (W2)
+    #[allow(dead_code)]
+    pub(crate) fn ensure_foamglass_material(&mut self) -> Option<MaterialId> {
+        if let Some(id) = self.material_by_guid(FOAMGLASS_MAT_GUID) {
+            return Some(id);
+        }
+        let cross = self.ensure_cross_fill();
+        self.builtin_material_with(
+            FOAMGLASS_MAT_GUID,
+            "Schaumglas-Dämmstein",
+            MatCategory::Insulation,
+            300,
+            165.0,
+            Some(0.058),
+            [128, 132, 134],
+            [176, 180, 182],
+            trade::start_id("18330"),
+            Some(cross),
+        )
+    }
+
+    /// Baustoff des Fußpunkts unter der Verblendschale, sobald es ihn im
+    /// Projekt gibt (W1).
+    pub fn foamglass_material(&self) -> Option<MaterialId> {
+        self.material_by_guid(FOAMGLASS_MAT_GUID)
     }
 
     /// Titanzink 0,7 für das Attikablech; fehlt er, wird er angelegt.
@@ -7162,6 +7236,11 @@ pub const TERRACE_TYPE_GUID: Guid = Guid(0xa75aeb4f33ba46c696cd177dded0ab96);
 pub const TERRACE_FINISH_GUID: Guid = Guid(0x79bfecdae5104f34bd95a7116f06ba0c);
 pub const TERRACE_INSULATION_GUID: Guid = Guid(0xd750cacad2e543e3a3e35c5c7f3d8d41);
 pub const COPING_MAT_GUID: Guid = Guid(0x97fe946502194178be60bb9eb54c46fb);
+/// Fußpunkt der Verblendschale auf der Dachterrasse (W1, W2): Baustoff
+/// „Schaumglas-Dämmstein“ und Werksschraffur „Dämmung hart (Kreuz)“, feste
+/// Guids, angelegt beim ersten Fußpunkt (ältere Dateien bleiben bytegleich).
+pub const FOAMGLASS_MAT_GUID: Guid = Guid(0x58d0e30a2b7844caa14c045d3881490a);
+pub const CROSS_FILL_GUID: Guid = Guid(0x2929d285ea0e4a69aaf92400ac5b37fc);
 /// Aufbau des Werkstyps von oben nach unten (Jörn 08:31–08:33).
 const TERRACE_BUILD_UP: [(f64, LayerFunction); 2] = [
     (60.0, LayerFunction::Finish),
