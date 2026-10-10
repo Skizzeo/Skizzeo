@@ -493,10 +493,11 @@ impl Model {
         let inner = inner + dir * drop;
         let outline = sk_math::polygon::to_ccw(&chain.face_corners(inner));
         // Attikadämmung innen (Jörn 10.10. 16:07): Innenfläche um ihre Dicke
-        // weiter zum Dach hin
+        // weiter zum Dach hin, aus dem Umriss selbst (die Wandflächen kappen
+        // spitze Ecken jenseits ihrer Gehrungsgrenze)
         let ins = crate::model::inner_of(&f.terrace);
         let inset = if ins > 0.0 {
-            sk_math::polygon::to_ccw(&chain.face_corners(inner - dir * ins))
+            inset_of(&outline, ins)
         } else {
             outline.clone()
         };
@@ -845,6 +846,35 @@ impl Model {
     }
 }
 
+/// Umriss `outline` (gegen den Uhrzeigersinn) um `d` nach innen versetzt,
+/// Ecke für Ecke: Schnitt der versetzten Nachbarkanten, ohne Gehrungsgrenze.
+fn inset_of(outline: &[Vec3], d: f64) -> Vec<Vec3> {
+    let n = outline.len();
+    let dir = |a: Vec3, b: Vec3| {
+        let v = vec3(b.x - a.x, b.y - a.y, 0.0);
+        (v.length() > 1e-9).then(|| v.normalized())
+    };
+    (0..n)
+        .map(|i| {
+            let (a, b, c) = (outline[(i + n - 1) % n], outline[i], outline[(i + 1) % n]);
+            let left = |v: Vec3| vec3(-v.y, v.x, 0.0);
+            match (dir(a, b), dir(b, c)) {
+                (Some(d0), Some(d1)) => {
+                    let cr = d0.x * d1.y - d0.y * d1.x;
+                    let (p0, p1) = (b + left(d0) * d, b + left(d1) * d);
+                    if cr.abs() < 1e-9 {
+                        return p1;
+                    }
+                    let w = p1 - p0;
+                    p0 + d0 * ((w.x * d1.y - w.y * d1.x) / cr)
+                }
+                (Some(v), None) | (None, Some(v)) => b + left(v) * d,
+                (None, None) => b,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -970,6 +1000,44 @@ mod tests {
     }
 
     /// Dachaufbau und Blech des Flachdachs auf der OG-Decke unter `og`.
+    /// Attikadämmung innen an einer spitzen Ecke (20°): die Innenfläche
+    /// liegt überall genau um die Dicke vor der Aufkantung, auch wo die
+    /// Wandflächen jenseits ihrer Gehrungsgrenze kappen würden.
+    #[test]
+    fn attikadaemmung_innen_spitze_ecke() {
+        let a = 20f64.to_radians();
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(14000.0 * a.cos(), 14000.0 * a.sin(), 0.0),
+            vec3(14000.0, 0.0, 0.0),
+        ];
+        let mut m = Model::with_seed(12);
+        let b = m.add_building(2);
+        let set = m.type_by_guid(EXTERIOR_TYPE_GUID).unwrap();
+        let eg = m.ground_of(Some(b)).unwrap();
+        let eg = m
+            .add_wall_run(&pts, true, RefSide::Left, eg, set, Category::ExteriorWall)
+            .unwrap();
+        let og = m.runs_above(eg)[0];
+        let st = m.run(og).unwrap().storey;
+        schritt(&mut m, |m| m.set_flat_roof(st, true));
+        let floor = m.floor_of(og).unwrap();
+        for d in [20.0, 60.0, 200.0] {
+            schritt(&mut m, |m| m.set_floor_inner(floor, d));
+            let r = m.flat_roof_over(floor).unwrap();
+            let (o, i) = (&r.outline, &r.inset);
+            assert_eq!(o.len(), i.len());
+            let n = o.len();
+            for k in 0..n {
+                let e = (o[(k + 1) % n] - o[k]).normalized();
+                let nrm = vec3(-e.y, e.x, 0.0);
+                for p in [i[k], i[(k + 1) % n]] {
+                    assert!(((p - o[k]).dot(nrm) - d).abs() < 1e-6, "{d}: {p:?}");
+                }
+            }
+        }
+    }
+
     fn da_ab(m: &Model, og: RunId) -> (ElementId, ElementId) {
         let floor = m.floor_of(og).unwrap();
         (m.flat_roof_of(floor).unwrap(), m.coping_of(floor).unwrap())
