@@ -24,6 +24,10 @@ const ROOF_BUILD_UP: [(f64, LayerFunction); 3] = [
 /// Mindestens so hoch steht die Aufkantung über der Dachhaut (mm,
 /// Flachdachrichtlinie: Anschlusshöhe am Dachrand 10 cm).
 pub const MIN_ROOF_EDGE: f64 = 100.0;
+
+/// Mindestwärmeschutz eines Daches über Aufenthaltsräumen (m²K/W, DIN
+/// 4108-2 Tabelle 3): gilt auch an der dünnsten Stelle der Gefälledämmung.
+pub const MIN_ROOF_R: f64 = 1.2;
 /// Guid der Ebene Flachdach: die des Gebäudes mit diesem Muster verknüpft.
 const ROOF_LEVEL_SALT: u128 = 0x4644_0000_0000_4000_8000_0000_0000_4644;
 
@@ -654,6 +658,111 @@ impl Model {
                 crate::library::cm_de(MIN_ROOF_EDGE)
             )
         })
+    }
+
+    /// Wärmeschutz des Flachdachs `roof` mit der Geometrie `r` (G6): R0 an
+    /// der dünnsten Stelle (m²K/W, Rsi 0,10 und Rse 0,04, Wärmestrom nach
+    /// oben, samt Rohdecke, wenn ihr Typ λ hat) und λ der Gefälleschicht.
+    /// `None`, wenn einer Schicht des Dachtyps λ fehlt.
+    pub fn flat_roof_resistance(&self, roof: ElementId, r: &FlatRoof) -> Option<(f64, f64)> {
+        let mut r0 = 0.10 + 0.04;
+        let mut taper = None;
+        let layers = self.flat_roof_layers(roof);
+        let mut k = 0;
+        for l in &layers {
+            if l.function == LayerFunction::AirGap {
+                r0 += 0.18;
+                continue;
+            }
+            let lambda = self.material(l.material)?.lambda.filter(|v| *v > 0.0)?;
+            if r.tapered == Some(k) {
+                taper = Some(lambda);
+            }
+            k += 1;
+            r0 += l.thickness / 1000.0 / lambda;
+        }
+        // Rohdecke darunter, soweit ihr Typ λ kennt
+        let floor = match self.element(roof).map(|e| &e.kind) {
+            Some(ElementKind::Roof { floor, .. }) => Some(*floor),
+            _ => None,
+        };
+        let slab = floor
+            .and_then(|f| self.element(f)?.layer_set)
+            .and_then(|t| self.layer_set(t));
+        if let Some(t) = slab {
+            let rs: Option<f64> = t
+                .layers
+                .iter()
+                .filter(|l| l.function != LayerFunction::AirGap)
+                .map(|l| {
+                    let lambda = self.material(l.material)?.lambda.filter(|v| *v > 0.0)?;
+                    Some(l.thickness / 1000.0 / lambda)
+                })
+                .sum();
+            r0 += rs.unwrap_or(0.0);
+        }
+        Some((r0, taper.unwrap_or(0.0)))
+    }
+
+    /// U-Wert des Flachdachs `roof` (W/(m²K)): ohne Gefälle 1/R, mit
+    /// Gefälle das Flächenmittel nach DIN EN ISO 6946 Anhang C.
+    pub fn flat_roof_u(&self, roof: ElementId, r: &FlatRoof) -> Option<f64> {
+        let (r0, lambda) = self.flat_roof_resistance(roof, r)?;
+        match &r.slope {
+            Some(g) if lambda > 0.0 => Some(g.u_value(r0, lambda)),
+            _ => Some(1.0 / r0),
+        }
+    }
+
+    /// Hinweise zum Gefälle des Flachdachs auf der Decke `floor` (G6):
+    /// Gefälle unter 2 %, Einzugsfläche je Ablauf über 150 m², Fließweg
+    /// über 8 m und Mindestwärmeschutz an der dünnsten Stelle.
+    pub fn flat_roof_slope_hints(&self, floor: ElementId) -> Vec<String> {
+        let mut out = Vec::new();
+        let (Some(roof), Some(r)) = (self.flat_roof_of(floor), self.flat_roof_over(floor)) else {
+            return out;
+        };
+        let Some(g) = &r.slope else {
+            return out;
+        };
+        let de = |v: f64, n: usize| format!("{v:.n$}").replace('.', ",");
+        let pct = g.slope * 100.0;
+        if pct < 2.0 - 1e-9 {
+            out.push(format!(
+                "Gefälle {} %, Flachdachrichtlinie mindestens 2 % (darunter Sonderkonstruktion)",
+                de(pct, 1)
+            ));
+        }
+        let limits = gefaelle::Limits::default();
+        for (i, a) in g.catchments().iter().enumerate() {
+            if *a > limits.max_area + 1e-6 {
+                out.push(format!(
+                    "Ablauf {} entwässert {} m², geplant höchstens {} m² je Ablauf",
+                    i + 1,
+                    de(a / 1e6, 1),
+                    de(limits.max_area / 1e6, 0)
+                ));
+            }
+        }
+        let weg = g.wedge_max() / g.slope;
+        if weg > limits.max_path + 1e-6 {
+            out.push(format!(
+                "Längster Fließweg {} m, geplant höchstens {} m: Keil {} cm dick",
+                de(weg / 1000.0, 1),
+                de(limits.max_path / 1000.0, 0),
+                de(g.wedge_max() / 10.0, 1)
+            ));
+        }
+        if let Some((r0, _)) = self.flat_roof_resistance(roof, &r) {
+            if r0 < MIN_ROOF_R - 1e-9 {
+                out.push(format!(
+                    "Wärmeschutz am Ablauf R = {} m²K/W, DIN 4108-2 mindestens {}",
+                    de(r0, 2),
+                    de(MIN_ROOF_R, 1)
+                ));
+            }
+        }
+        out
     }
 
     /// Regel 48 für Dachaufbau oder Blech `id` des Flachdachs auf der Decke

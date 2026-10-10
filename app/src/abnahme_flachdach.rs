@@ -475,6 +475,15 @@ fn a338_gefaelle_im_paneel() {
             .find(|x| x.title == "Gefälle")
             .expect("Abschnitt Gefälle")
     };
+    // U-Wert ohne Gefälle: 1 / R des Aufbaus samt Rohdecke
+    let u_flach = {
+        let r = s.flat_roof_over(floor).unwrap();
+        let (r0, _) = s.model().flat_roof_resistance(da, r).unwrap();
+        assert!(r0 > 0.14 + 0.2 / 0.035, "{r0}");
+        assert_eq!(s.model().flat_roof_u(da, r), Some(1.0 / r0));
+        1.0 / r0
+    };
+    assert_eq!(wert(&s, da, "U-Wert"), format!("{} W/(m²K)", de3(u_flach)));
     let sec = gefaelle(&s);
     let f = &sec.fields[0];
     assert_eq!(f.field, Field::RoofSlope);
@@ -522,6 +531,11 @@ fn a338_gefaelle_im_paneel() {
     assert_eq!(auto("roof.valleys").map(|a| a.1), Some(kehlen));
     assert_eq!(auto("roof.ridges").map(|a| a.1), Some(grate));
     assert!(platten as f64 >= g.area() / 1e6);
+    // U-Wert mit Gefälle (G6): Flächenmittel nach Anhang C, kleiner als ohne
+    let u = s.model().flat_roof_u(da, &r).unwrap();
+    assert!(u < u_flach && u > 0.5 * u_flach, "{u} / {u_flach}");
+    assert_eq!(wert(&s, da, "U-Wert"), format!("{} W/(m²K)", de3(u)));
+    assert!(selection::props(&s, da).unwrap().notes.is_empty());
     let q = s.flat_roof_qto(da).unwrap();
     let eps = q.layers.iter().map(|l| l.1).fold(0.0, f64::max);
     assert!(
@@ -555,6 +569,16 @@ fn a338_gefaelle_im_paneel() {
     assert!(!s.set_field(da, Field::RoofSlope, 3.0), "gleicher Wert");
     assert!(s.propose_roof_drains(da));
     assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+    // Hinweis unter 2 % (Flachdachrichtlinie)
+    assert!(s.set_field(da, Field::RoofSlope, 1.5));
+    assert_eq!(
+        selection::props(&s, da).unwrap().notes,
+        ["Gefälle 1,5 %, Flachdachrichtlinie mindestens 2 % (darunter Sonderkonstruktion)"]
+    );
+}
+
+fn de3(v: f64) -> String {
+    format!("{v:.3}").replace('.', ",")
 }
 
 /// A339 (Gefälledämmung G4): Ein Ablauf lässt sich an der Aufkantung
@@ -585,7 +609,18 @@ fn a339_ablauf_ziehen() {
     assert!((jetzt[k].y - vorher[k].y).abs() < 1e-6);
     let g = s.flat_roof_over(floor).unwrap().slope.clone().unwrap();
     assert!(g.wedge_max() > max_vorher, "längerer Fließweg");
+    assert!(selection::props(&s, da).unwrap().notes.is_empty());
+    // Beide Abläufe links: der Fließweg nach rechts wird zu lang (G6)
+    s.begin("Ablauf verschoben");
+    assert!(s.drag_drain(da, 1, vec3(x0 + 100.0, vorher[1].y - 50.0, 0.0)));
+    s.commit();
+    let notes = selection::props(&s, da).unwrap().notes;
+    assert!(
+        notes.iter().any(|n| n.starts_with("Längster Fließweg 8,")),
+        "{notes:?}"
+    );
     assert_eq!(s.undo_label(), Some("Ablauf verschoben"));
+    s.undo();
     s.undo();
     assert_eq!(s.roof_drains(da).1, vorher);
 }

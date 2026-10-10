@@ -729,6 +729,10 @@ fn roof_props(
             ("Anschluss", format!("{} m", de(r.edge_length() / 1e3, 2))),
             ("Anschlusshöhe", format!("{} cm", cm(r.upstand()))),
         ]);
+        // Mit Gefälle als Flächenmittel nach DIN EN ISO 6946 Anhang C (G6)
+        if let Some(u) = m.flat_roof_u(id, r) {
+            values.push(("U-Wert", format!("{} W/(m²K)", de(u, 3))));
+        }
         if let Some(g) = &r.slope {
             values.extend([
                 ("Abläufe", format!("{} Stück", g.drains.len())),

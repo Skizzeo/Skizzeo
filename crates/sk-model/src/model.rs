@@ -5821,6 +5821,7 @@ impl Model {
         }
         if let Some(&ElementKind::Roof { floor, .. }) = self.element(e).map(|x| &x.kind) {
             out.extend(self.flat_roof_hint(floor));
+            out.extend(self.flat_roof_slope_hints(floor));
             return out;
         }
         let Some(run) = self.run_of(e) else {
