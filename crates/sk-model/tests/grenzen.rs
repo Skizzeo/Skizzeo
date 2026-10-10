@@ -11,12 +11,12 @@ use std::path::{Path, PathBuf};
 
 /// Höchstens so viele Zeilen je Datei.
 const GRENZE: usize = 5_000;
-/// In `sk-cost` und in den drei Kostenblättern der App.
+/// In `sk-cost` und in den drei Kostenblättern der App, samt ihren Untermodulen.
 const GRENZE_KLEIN: usize = 3_000;
 const KLEIN: [&str; 3] = [
-    "app/src/kosten_view.rs",
-    "app/src/ava_view.rs",
-    "app/src/schedule_view.rs",
+    "app/src/kosten_view",
+    "app/src/ava_view",
+    "app/src/schedule_view",
 ];
 
 /// Dateien, die heute über ihrer Grenze liegen, mit ihrer Zeilenzahl. Sie
@@ -97,7 +97,11 @@ fn abnahme(rel: &str) -> bool {
 }
 
 fn grenze_von(rel: &str) -> usize {
-    if rel.starts_with("crates/sk-cost/") || KLEIN.contains(&rel) {
+    let blatt = |k: &&str| {
+        rel.strip_prefix(*k)
+            .is_some_and(|r| r == ".rs" || r.starts_with('/'))
+    };
+    if rel.starts_with("crates/sk-cost/") || KLEIN.iter().any(blatt) {
         GRENZE_KLEIN
     } else {
         GRENZE
@@ -146,7 +150,9 @@ fn dateien_bleiben_unter_der_grenze() {
     assert!(fehler.is_empty(), "\n{}", fehler.join("\n"));
 }
 
-/// Die eigenen Crates, die eine `Cargo.toml` unter `[dependencies]` nennt.
+/// Die eigenen Crates, die eine `Cargo.toml` in einem ihrer Abschnitte für
+/// Abhängigkeiten nennt (`[dependencies]`, `[dev-dependencies]`,
+/// `[target.….dependencies]` …).
 fn abhaengigkeiten(toml: &str) -> (String, Vec<String>) {
     let mut name = String::new();
     let mut abschnitt = "";
@@ -164,7 +170,7 @@ fn abhaengigkeiten(toml: &str) -> (String, Vec<String>) {
                     .to_string();
             }
         }
-        if abschnitt == "[dependencies]" {
+        if abschnitt.ends_with("dependencies]") {
             let k = z.split(['=', ' ', '.']).next().unwrap_or("");
             if k.starts_with("sk-") {
                 deps.push(k.to_string());
@@ -172,6 +178,7 @@ fn abhaengigkeiten(toml: &str) -> (String, Vec<String>) {
         }
     }
     deps.sort();
+    deps.dedup();
     (name, deps)
 }
 
