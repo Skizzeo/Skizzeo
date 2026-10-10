@@ -1,24 +1,32 @@
 # Skizzeo
 
-Version 0.2.0 (Meilenstein M1: Speichern und Öffnen als `.szo`), dazu
-Innenwände mit Wandanschlüssen (B5a), Gründung (B9) und Erdgeschossdecke (B10).
+Version 0.2.0 (Cargo). Arbeitsstand Oktober 2026: Gebäudemodell mit Wänden,
+Gründung, Decken, Dach und Gelände je Gebäude, Mengen, Kosten und AVA mit
+Firmenkatalog, Erweiterungsbauteile aus der Bauteil-Werkbank (`.szb`).
 
 3D-Gebäudemodellierer als native Rust-App. Keine externen Crates: Fenster,
-Eingabe, OpenGL-Anbindung, 2D-Grafik, Logo und Oberfläche sind selbst geschrieben.
+Eingabe, OpenGL-Anbindung, 2D-Grafik, Schrift, PDF, Logo und Oberfläche sind
+selbst geschrieben. Den Aufbau im Einzelnen beschreibt `architektur.md` im
+Projektordner.
 
 ## Aufbau
 
 | Crate | Aufgabe |
 |---|---|
-| `sk-math` | Vektoren, Matrizen, Strahltests (f64, Millimeter) |
-| `sk-paint` | Eigene 2D-Vektorgrafik mit Kantenglättung, eigener TrueType-Leser, PNG- und SVG-Ausgabe |
-| `sk-ui` | SK-Logo als Vektor, Farbwerte, eigene Titelleiste, Paneele und Knöpfe |
-| `sk-model` | Gebäudemodell als Datenbank: Bauteile mit Guid (IFC-Kurzform) und Nummer (AW-001 …), Arena mit Generationszähler, Baustoff- und Aufbau-Bibliothek, Geschoss; Wandzug mit Schichten, Bezugsseite, Gehrungen, Grundriss- und Senkrechtschnitt; Anschlüsse zwischen Wandzügen (L, T) mit Verschnitt nach Baustoffpriorität |
+| `sk-math` | Vektoren, Matrizen, Polygone, Sonnenstand (f64, Millimeter) |
+| `sk-szb` | Erweiterungsbauteile im Format SZB 0: lesen, Formeln, prüfen wie die Werkbank, Körper und Mengen rechnen |
+| `sk-paint` | Eigene 2D-Vektorgrafik mit Kantenglättung, eigener TrueType-Leser, PNG-, SVG- und PDF-Ausgabe |
+| `sk-ui` | SK-Logo als Vektor, Farbwerte, eigene Titelleiste, Paneele, Knöpfe und Texteingabe |
+| `sk-model` | Gebäudemodell als Datenbank: Bauteile mit Guid und Nummer, Baustoff- und Aufbau-Bibliothek, Geschosse, Gelände je Gebäude; Dateiformat `.szo`; Mengen (qto) mit Automatikmengen für Erdarbeiten und Bauvorbereitung; Erweiterungsexemplare |
+| `sk-cost` | Kosten, AVA und Stammdaten: Katalog (Projekt, Firma, Werk), Rechnung, Leistungsverzeichnis, Verwaltung des Firmenkatalogs `.szk` |
 | `sk-platform` | Windows-Fenster ohne System-Titelleiste, Eingabe, OpenGL-Kontext (eigene Win32-FFI) |
-| `sk-render` | OpenGL-3.3-Darstellung: Himmel, Boden, Flächen, Schraffuren, Kanten, Oberfläche. Netze tragen nur Baustoffschlüssel und Kantenart; Farben, Schraffuren und Strichbreiten liest der Shader aus einer Tabelle (Textur), die bei Änderungen an Stiften oder Schraffuren allein neu hochgeladen wird |
-| `app` | Programm `skizzeo`: Kamera, Navigation, Paneele, Gebäude-Eingabe, Gummiband, Schnittlinie |
+| `sk-render` | OpenGL-3.3-Darstellung: Himmel, Boden, Flächen, Schraffuren, Kanten, Schatten. Netze tragen nur Baustoffschlüssel und Kantenart; Farben, Schraffuren und Strichbreiten liest der Shader aus einer Tabelle (Textur) |
+| `app` | Programm `skizzeo`: Kamera, Navigation, Werkzeuge, Paneele, Blätter für Mengen, Kosten und AVA, Erweiterungsverwaltung, Hilfe |
 
 ## Bedienung
+
+Die vollständige Bedienung steht in der Hilfe des Programms (F1). Dieser
+Abschnitt beschreibt die Grundlagen.
 
 - Drehen: mittlere Maustaste ziehen (um den Punkt unter dem Mauszeiger)
 - Verschieben: Umschalt + mittlere Maustaste ziehen
@@ -31,9 +39,9 @@ und Knöpfe mit (voll ab 1440 × 810 dip, höchstens auf 60 %).
 Paneel „Ansichten“ (rechts): 3D, Grundriss (geschnitten in 1,00 m Höhe),
 Schnitt A–A, Vorne, Hinten, Links, Rechts. Alle außer 3D sind
 Parallelprojektionen im Bauzeichnungs-Look: altweißes Papier, schwarze
-Linien. Im Schnitt ist der tragende Kern (Gasbeton) breit umrandet, die
+Linien. Im Schnitt ist der tragende Kern (Porenbeton) breit umrandet, die
 Dämmung mitteldick; Ansichtskanten mittel, Schichtfugen in Ansichten fein.
-Geschnittenes Mauerwerk (Gasbeton) ist auf weißer Fläche schräg schraffiert,
+Geschnittenes Mauerwerk (Porenbeton) ist auf weißer Fläche schräg schraffiert,
 harte Dämmung mit Zickzack.
 
 Schnittlinie A–A im Grundriss (nach DIN 1356: Strichpunktlinie, kräftige
@@ -42,7 +50,7 @@ Modellmitte, lässt sich mit der linken Maustaste greifen und quer verschieben
 (10-mm-Raster). Die Ansicht „Schnitt“ zeigt den Schnitt an dieser Stelle.
 
 Knopf „Gebäude“ (Paneel „Werkzeuge“, links) startet die Außenwand-Eingabe.
-Außenwand zweischalig, 31,5 cm: 14 cm Dämmung (WDVS) außen, 17,5 cm Gasbeton
+Außenwand zweischalig, 31,5 cm: 14 cm Dämmung (WDVS) außen, 17,5 cm Porenbeton
 innen, Höhe 3,50 m. Eingabe in 3D und im Grundriss:
 
 - Linksklick setzt Punkte, die Wand wächst live am Cursor mit
@@ -55,7 +63,7 @@ innen, Höhe 3,50 m. Eingabe in 3D und im Grundriss:
 - Strg+Z / Strg+Y: rückgängig / wiederholen
 
 Knopf „Innenwand“ (darunter) zeichnet mit demselben Werkzeug Innenwände:
-17,5 cm Gasbeton, Bezugsseite standardmäßig Achse, Nummern IW-001 ….
+17,5 cm Porenbeton, Bezugsseite standardmäßig Achse, Nummern IW-001 ….
 Endet eine Wand höchstens 5 cm vor oder in einer anderen Wand, schließt sie
 an (T); treffen sich zwei freie Wandenden, entsteht eine Ecke mit Gehrung (L).
 Beim T reicht jede Schicht bis zur ersten Schicht der anderen Wand mit
@@ -105,7 +113,7 @@ Uhrzeigersinn (45° = „/“) und werden beim Öffnen umgerechnet.
 
 Erdgeschossdecke: Im selben Schritt entsteht über dem Zug eine
 Stahlbetondecke (DE-001 …, 22 cm, Oberkante = OK EG). Sie reicht bis an die
-Dämmung und liegt in einer Auflagertasche über die ganze Gasbetondicke;
+Dämmung und liegt in einer Auflagertasche über die ganze Porenbetondicke;
 Innenwände unter ihr werden unterbrochen und bleiben ein Bauteil. Wandmengen
 sind netto ohne Tasche bzw. Deckenstreifen. Die Dicke steht im Paneel als
 Zahlenfeld (dicker heißt: Unterkante sinkt, lichte Höhe wird kleiner).

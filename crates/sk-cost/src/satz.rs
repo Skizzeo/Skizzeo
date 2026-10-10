@@ -1031,6 +1031,29 @@ impl Satz {
 mod tests {
     use super::*;
 
+    /// Die Bauteilarten einer Regel sind die `szo`-Wörter aus `kinds.rs`,
+    /// mit Schichten, also ohne Öffnungen und Räume (das Flachdach hat
+    /// seit dem Dach-Strang einen Aufbau).
+    #[test]
+    fn kategorien_wie_kinds() {
+        use sk_model::element::Category;
+        let ohne = [
+            Category::Window,
+            Category::Door,
+            Category::Opening,
+            Category::Space,
+        ];
+        let mut soll: Vec<&str> = Category::ALL
+            .iter()
+            .filter(|c| !ohne.contains(c))
+            .map(|c| sk_model::kinds::spec(*c).szo)
+            .collect();
+        let mut ist = KATEGORIEN.to_vec();
+        ist.sort_unstable();
+        soll.sort_unstable();
+        assert_eq!(ist, soll);
+    }
+
     fn lies(text: &str) -> Result<Satz, Ungueltig> {
         let z = zeile::zerlegen(text).unwrap();
         Satz::lesen(abschnitt(&z.abschnitt).unwrap(), &z)

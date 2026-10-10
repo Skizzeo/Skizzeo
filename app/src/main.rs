@@ -10,6 +10,8 @@ mod abnahme_einstellungen;
 #[cfg(test)]
 mod abnahme_flachdach;
 #[cfg(test)]
+mod abnahme_paket10;
+#[cfg(test)]
 mod abnahme_pd;
 #[cfg(test)]
 mod abnahme_s1;

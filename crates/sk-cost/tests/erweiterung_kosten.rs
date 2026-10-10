@@ -550,6 +550,14 @@ fn probe_3cm() {
             b.befunde.len(),
             b.positionen.len()
         );
+        // Budget (Briefing QS §5, gemessen 46e1ed0: 5,5 ms bei 2000 + 500):
+        // Kostenblatt neu beim Loslassen
+        if !cfg!(debug_assertions) {
+            assert!(
+                warm.as_secs_f64() * 1000.0 <= 8.0,
+                "Kosten bei {n}/{gl}: {warm:?} > 8 ms"
+            );
+        }
     }
 }
 
