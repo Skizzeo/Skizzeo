@@ -687,8 +687,8 @@ pub struct CopingQto {
     pub crown: Option<CrownQto>,
 }
 
-/// Mengen des Dämmstreifens auf der Attikakrone; abgerechnet nach der Länge
-/// des Blechs (eine Position mit ihm).
+/// Mengen des Dämmstreifens auf der Attikakrone; abgerechnet nach seiner
+/// Grundfläche (A70, m²), als Schicht 1 des Blechs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CrownQto {
     pub material: MaterialId,
