@@ -1687,7 +1687,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             if !(v.is_finite() && v >= min && v <= max) {
                 return Err(err(
                     p.line,
-                    &format!("[project]: „{k}“ außerhalb des Bereichs"),
+                    format!("[project]: „{k}“ außerhalb des Bereichs"),
                 ));
             }
             *w = v;
