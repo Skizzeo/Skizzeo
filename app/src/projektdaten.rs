@@ -174,7 +174,7 @@ const FELDER: [Feld; N] = [
         zeilen: 1,
         max: 8,
         breite: 64.0,
-        x: 340.0,
+        x: 360.0,
         einheit: "m",
     },
     Feld {
@@ -192,7 +192,7 @@ const FELDER: [Feld; N] = [
         zeilen: 1,
         max: 8,
         breite: 64.0,
-        x: 340.0,
+        x: 360.0,
         einheit: "cm",
     },
     Feld {
