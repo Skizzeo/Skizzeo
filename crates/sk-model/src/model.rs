@@ -4777,6 +4777,30 @@ impl Model {
 
     /// Nach dem Laden: Untersichtdämmungen passend zu den Vorsprüngen;
     /// Dateien vor W3 bekommen die Bekleidung darunter (mit Hinweis).
+    /// Decken, die erst beim Laden einer alten Datei entstehen (vor B10 und
+    /// B12), tragen keine Bekleidung der Untersicht: die Datei kannte sie
+    /// nicht und bleibt beim Speichern bytegleich (Test F-a, wie
+    /// `soffit_clad` fehlt = 0 beim Lesen). Ohne Rückgängig-Schritt.
+    pub(crate) fn clear_cladding_except(&mut self, before: &[ElementId]) {
+        for id in self.floor_ids() {
+            if before.contains(&id) {
+                continue;
+            }
+            if let Some(ElementKind::Floor(f)) = self.elements.get_mut(id).map(|e| &mut e.kind) {
+                f.soffit.cladding = 0.0;
+            }
+        }
+    }
+
+    /// Alle Decken des Modells.
+    pub(crate) fn floor_ids(&self) -> Vec<ElementId> {
+        self.elements
+            .iter()
+            .filter(|(_, e)| matches!(e.kind, ElementKind::Floor(_)))
+            .map(|(id, _)| id)
+            .collect()
+    }
+
     pub(crate) fn complete_soffits(&mut self) -> Vec<String> {
         let strict = std::mem::replace(&mut self.strict, false);
         let had = self.material_by_guid(CLADDING_MAT_GUID).is_some();

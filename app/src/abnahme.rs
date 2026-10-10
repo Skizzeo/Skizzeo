@@ -2554,6 +2554,25 @@ const HAUS_SZO1: &str = r##"SZO 1
 [footing] guid=30cXg1UHHFl8YubE507j9R slab=26nT6mNE9E5960iZeGTRT$ number="FS-001" cat=stripfooting mat=10re9EBlDC5uUUBY9M$lyC w=350 d=600 seq=1 storey=0yWX_$MH11OwV$3JY6X$_o
 "##;
 
+/// Test F-a (Flachdach-Paket): Die Decken, die beim Laden einer Datei SZO 1
+/// entstehen, tragen keine Bekleidung der Untersicht; gespeichert steht kein
+/// `soffit_clad` darin, und erneut geladen und gespeichert ist sie bytegleich.
+#[test]
+fn alte_datei_ohne_bekleidung() {
+    // wie beim Öffnen in der App: neue Guids aus der Zeit, eine feste Folge
+    // träfe die Guids der Werksbibliothek
+    let lesen = |t: &str| {
+        sk_model::szo::read(t, sk_model::GuidGen::from_time())
+            .expect("lädt")
+            .model
+    };
+    let erst = sk_model::szo::write(&lesen(HAUS_SZO1));
+    assert_eq!(erst.matches("[floor]").count(), 2, "EG- und OG-Decke");
+    assert!(!erst.contains("soffit_clad"), "{erst}");
+    let zweit = sk_model::szo::write(&lesen(&erst));
+    assert_eq!(zweit, erst, "Rundlauf bytegleich");
+}
+
 /// A44 (H-07, F-03): Alte Datei öffnen → auf Geschosse umgestellt, Hinweis;
 /// speichern schreibt SZO 2, erneut öffnen und speichern bytegleich.
 #[test]

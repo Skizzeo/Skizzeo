@@ -2625,10 +2625,12 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     hints.extend(model.complete_trades(recs("trade").is_empty()));
     hints.extend(model.complete_pre_b9());
     hints.extend(model.complete_line_types());
+    let floors = model.floor_ids();
     hints.extend(model.complete_pre_b10());
     if !v3 {
         hints.extend(model.complete_pre_b12());
     }
+    model.clear_cladding_except(&floors);
     model.complete_edge_strips();
     hints.extend(model.complete_soffits());
     model.complete_perimeters();
