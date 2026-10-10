@@ -772,7 +772,7 @@ fn roof_props(
         crate::ui::Section {
             title: "Aufbau",
             fields: vec![field(Field::RoofInsulation, "Dämmung", ins, lo, hi)],
-            hint: "Höhe der Aufkantung in der Geschossverwaltung",
+            hint: "Höhe der Aufkantung im Paneel Geschosse",
             button: None,
         }
     });

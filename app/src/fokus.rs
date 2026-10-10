@@ -57,10 +57,18 @@ impl Fokus {
     }
 
     /// Die Ansatzzeile hängt an der Auswahl: am gewählten Bauteil selbst
-    /// oder, als Automatikmenge der Gründung, an deren Sohlplatte.
+    /// oder, als Erdarbeit (`earth.*`), an der Sohlplatte der Gründung.
+    /// Baustelleneinrichtung und Gerüst (`site.*`) stehen zwar an der
+    /// Sohlplatte, gehören aber dem ganzen Gebäude und keinem Bauteil
+    /// (Bedienbarkeit 34.1).
     pub fn trifft(&self, a: &Ansatz) -> bool {
-        self.auswahl.contains(&a.element)
-            || (a.formel.is_some() && self.platten.contains(&a.element))
+        match a.auto {
+            Some(k) if k.starts_with("site.") => false,
+            Some(k) if k.starts_with("earth.") => {
+                self.auswahl.contains(&a.element) || self.platten.contains(&a.element)
+            }
+            _ => self.auswahl.contains(&a.element),
+        }
     }
 
     /// Zeile ohne Bauleistung eines gewählten Bauteils.
@@ -186,5 +194,53 @@ mod tests {
             f.text(0, "x"),
             "Mit FU-001 ist hier keine Position verknüpft."
         );
+    }
+
+    /// Bedienbarkeit 34.1: Die Frostschürze zieht die Erdarbeiten an der
+    /// Sohlplatte mit, nicht Baustelleneinrichtung und Gerüst.
+    #[test]
+    fn gruendung_nimmt_nur_erdarbeiten_mit() {
+        use sk_model::element::Category;
+        let m = sk_model::szo::read_with(
+            include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo"),
+            sk_model::GuidGen::with_seed(1),
+            &sk_cost::lesen::ABSCHNITTE_SZO,
+        )
+        .expect("lädt")
+        .model;
+        let erstes = |c: Category| {
+            m.elements()
+                .iter()
+                .find(|(_, e)| e.category == c)
+                .map(|(id, e)| (id, e.storey))
+                .unwrap()
+        };
+        let (fs, _) = erstes(Category::StripFooting);
+        let (platte, geschoss) = erstes(Category::GroundSlab);
+        let f = Fokus::neu(&m, &[fs]);
+        let ansatz = |auto: Option<&'static str>| Ansatz {
+            element: platte,
+            nummer: "BP-001".into(),
+            geschoss,
+            gebaeude: None,
+            kg: None,
+            menge: 1,
+            aus: None,
+            auflager: 0,
+            grad: None,
+            formel: auto.map(|_| "1,00 m²".to_string()),
+            auto,
+        };
+        assert!(f.trifft(&ansatz(Some("earth.excavation"))));
+        assert!(!f.trifft(&ansatz(Some("site.scaffold"))));
+        assert!(!f.trifft(&ansatz(Some("site.lump"))));
+        assert!(
+            !f.trifft(&ansatz(None)),
+            "die Platte selbst ist nicht gewählt"
+        );
+        let p = Fokus::neu(&m, &[platte]);
+        assert!(p.trifft(&ansatz(None)));
+        assert!(p.trifft(&ansatz(Some("earth.excavation"))));
+        assert!(!p.trifft(&ansatz(Some("site.scaffold"))));
     }
 }
