@@ -430,6 +430,7 @@ fn foundation_props(
         | ElementKind::SoffitInsulation { .. }
         | ElementKind::RoofTerrace { .. }
         | ElementKind::Coping { .. }
+        | ElementKind::Roof { .. }
         | ElementKind::Ext(_) => return None,
     };
     values.push(("Bauabschnitt", e.seq.to_string()));
@@ -486,6 +487,7 @@ fn props_of(scene: &Scene, id: ElementId) -> Option<Props> {
         ElementKind::RoofTerrace { floor } | ElementKind::Coping { floor } => {
             return terrace_props(scene, id, floor, values)
         }
+        ElementKind::Roof { floor } => return roof_props(scene, id, floor, values),
         _ => return foundation_props(scene, id, values),
     }
     if let Some(q) = q {
@@ -508,12 +510,16 @@ fn props_of(scene: &Scene, id: ElementId) -> Option<Props> {
                 let rgb = m.attr().surface(mat.surface)?.cut_color;
                 // Luftschicht ohne Körper: keine Menge (K4)
                 let body = l.function != sk_model::LayerFunction::AirGap;
-                let amount = q
-                    .filter(|_| body)
-                    .and_then(|q| q.layers.get(i))
-                    .map_or(String::new(), |lq| {
-                        format!("{} m³ · {} kg", de(lq.volume / 1e9, 3), de(lq.mass, 0))
-                    });
+                let amount =
+                    q.filter(|_| body)
+                        .and_then(|q| q.layers.get(i))
+                        .map_or(String::new(), |lq| {
+                            // in der Aufkantung weggelassen (Innenputz)
+                            if lq.thickness == 0.0 {
+                                return "entfällt".into();
+                            }
+                            format!("{} m³ · {} kg", de(lq.volume / 1e9, 3), de(lq.mass, 0))
+                        });
                 let thick = format!("{} cm ", cm(l.thickness));
                 Some((
                     Rgba::from_rgb8(rgb),
@@ -642,9 +648,11 @@ fn terrace_props(
     let mut label = String::new();
     if let ElementKind::Coping { .. } = e.kind {
         if let Some(q) = scene.coping_qto(id) {
+            let cut = sk_model::terrace::coping_cut_width(q.girth);
             values.extend([
                 ("Länge", format!("{} m", de(q.length / 1e3, 2))),
                 ("Abwicklung", format!("{} mm", q.girth.round())),
+                ("Zuschnitt", format!("{} mm", cut.round())),
             ]);
         }
         let mat = m.coping_material(floor);
@@ -678,6 +686,61 @@ fn terrace_props(
         sections: terrace_section(m, floor).into_iter().collect(),
         // Dachterrasse: drei Felder, die Schichten erst nach „Mehr …“
         more: !matches!(e.kind, ElementKind::Coping { .. }),
+        notes: m.warnings(id),
+        ..Default::default()
+    })
+}
+
+/// Eigenschaften des Dachaufbaus eines Flachdachs (D3): Mengen, Schichten
+/// und die Dämmdicke seines Typs.
+fn roof_props(
+    scene: &Scene,
+    id: ElementId,
+    floor: ElementId,
+    mut values: Vec<(&'static str, String)>,
+) -> Option<Props> {
+    let m = scene.model();
+    let mut layers = Vec::new();
+    if let Some(q) = scene.flat_roof_qto(id) {
+        values.extend([
+            ("Fläche", format!("{} m²", de(q.area / 1e6, 2))),
+            ("Volumen", format!("{} m³", de(q.volume / 1e9, 3))),
+        ]);
+        for &(mat, t, v) in &q.layers {
+            layers.extend(solid_layer(m, mat, t, Some(v)));
+        }
+    }
+    if let Some(r) = scene.flat_roof_over(floor) {
+        values.extend([
+            ("Anschluss", format!("{} m", de(r.edge_length() / 1e3, 2))),
+            ("Anschlusshöhe", format!("{} cm", cm(r.upstand()))),
+        ]);
+    }
+    values.push((
+        "Decke",
+        m.element(floor).map_or("–".into(), |f| f.number.clone()),
+    ));
+    let t = m.flat_roof_type(id).and_then(|t| m.layer_set(t));
+    let section = t.map(|t| {
+        let ins = t
+            .layers
+            .iter()
+            .find(|l| l.function == sk_model::LayerFunction::Insulation)
+            .map_or(0.0, |l| l.thickness);
+        let (lo, hi) = sk_model::ROOF_INSULATION;
+        crate::ui::Section {
+            title: "Aufbau",
+            fields: vec![field(Field::RoofInsulation, "Dämmung", ins, lo, hi)],
+            hint: "Höhe der Aufkantung in der Geschossverwaltung",
+        }
+    });
+    Some(Props {
+        values,
+        layer_set: t.map_or(String::new(), |t| t.name.clone()),
+        layers,
+        set_label: "Aufbau",
+        sections: section.into_iter().collect(),
+        more: true,
         notes: m.warnings(id),
         ..Default::default()
     })
@@ -737,16 +800,60 @@ fn soffit_section(m: &Model, floor: ElementId) -> Option<crate::ui::Section> {
     let ElementKind::Floor(f) = &m.element(floor)?.kind else {
         return None;
     };
-    Some(crate::ui::Section {
-        title: "Untersicht",
-        fields: vec![field(
+    use sk_model::CladdingValue as C;
+    let c = f.soffit;
+    let mut fields = vec![
+        field(
             Field::Soffit,
             "Dämmung",
-            f.soffit.thickness,
+            c.thickness,
             sk_model::MIN_SOFFIT,
             sk_model::MAX_SOFFIT,
-        )],
-        hint: "nur unter Vorsprüngen",
+        ),
+        FieldRow {
+            zero: true,
+            ..field(
+                Field::Cladding(C::Thickness),
+                "Bekleidung",
+                c.cladding,
+                sk_model::MIN_CLADDING,
+                sk_model::MAX_CLADDING,
+            )
+        },
+    ];
+    // Überstand und Lattung nur mit Bekleidung (W3)
+    if c.cladding > 0.0 {
+        fields.extend([
+            field(
+                Field::Cladding(C::Drip),
+                "Überstand Verblender",
+                c.drip,
+                sk_model::MIN_DRIP,
+                sk_model::MAX_DRIP,
+            ),
+            field(
+                Field::Cladding(C::Batten),
+                "Grundlattung a",
+                c.batten,
+                sk_model::MIN_BATTEN,
+                sk_model::MAX_BATTEN,
+            ),
+            FieldRow {
+                zero: true,
+                ..field(
+                    Field::Cladding(C::Counter),
+                    "Traglattung a",
+                    c.counter,
+                    sk_model::MIN_BATTEN,
+                    sk_model::MAX_BATTEN,
+                )
+            },
+        ]);
+    }
+    Some(crate::ui::Section {
+        title: "Untersicht",
+        fields,
+        hint: "nur unter Vorsprüngen; Lattung nur als Menge",
     })
 }
 
@@ -962,6 +1069,12 @@ fn outline(
             for (_, q) in &slab.soffits {
                 prism(q, b, clip(t));
             }
+            // Bekleidung darunter (W3)
+            if let Some((b, t)) = slab.cladding_band() {
+                for (_, q) in &slab.claddings {
+                    prism(q, b, clip(t));
+                }
+            }
         }
         (None, Some(ElementKind::RoofTerrace { floor })) => {
             // Dachterrasse: ihr Umriss von OK Rohdecke bis OK Belag
@@ -980,12 +1093,32 @@ fn outline(
                 }
             }
         }
-        (None, Some(ElementKind::Coping { floor })) => {
-            // Attikablech: die Kanten seines Profils über der Attikakrone
-            let Some(slab) = m.run_of(*floor).and_then(|r| scene.floor(r)) else {
+        (None, Some(ElementKind::Roof { floor })) => {
+            // Flachdach: Innenfläche der Aufkantung von OK Rohdecke bis OK
+            // Dachhaut
+            let Some(r) = scene.flat_roof_over(*floor) else {
                 return Vec::new();
             };
-            let body = slab.coping_solid();
+            let (b, t) = r.band();
+            if view == ViewKind::Plan && b >= scene.plan_cut() {
+                return Vec::new();
+            }
+            prism(&r.outline, b, clip(t));
+        }
+        (None, Some(ElementKind::Coping { floor })) => {
+            // Attikablech: die Kanten seines Profils über der Attikakrone
+            // bzw. der Krone der Aufkantung
+            let body = if m.flat_roof_coping(id, *floor) {
+                let Some(r) = scene.flat_roof_over(*floor) else {
+                    return Vec::new();
+                };
+                r.coping_solid()
+            } else {
+                let Some(slab) = m.run_of(*floor).and_then(|r| scene.floor(r)) else {
+                    return Vec::new();
+                };
+                slab.coping_solid()
+            };
             let low = body
                 .edges
                 .iter()

@@ -1,9 +1,11 @@
 //! Kosten, AVA und Stammdaten (Regel K0, architektur/bausteingrenze-sk-cost.md).
 //!
-//! Abhängig nur nach unten (`sk-model`, `sk-math`). Schreiben geht nur über
+//! Abhängig nur nach unten (`sk-model`, `sk-math`, `sk-szb`). Schreiben geht nur über
 //! die Operationen, Lesen nur über [`lesen`]. Die Kostenzeilen liegen roh im
 //! Erweiterungsspeicher von `sk-model`; gedeutet werden sie nur hier, aus
 //! einer Feldtabelle ([`satz`]).
+
+#![forbid(unsafe_code)]
 
 pub mod abgleich;
 pub mod ablauf;

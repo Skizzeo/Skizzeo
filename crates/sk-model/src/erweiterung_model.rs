@@ -419,6 +419,7 @@ fn kategorie(wort: &str) -> Option<MatCategory> {
         "plaster" => MatCategory::Plaster,
         "timber" => MatCategory::Timber,
         "metal" => MatCategory::Metal,
+        "membrane" => MatCategory::Membrane,
         _ => return None,
     })
 }

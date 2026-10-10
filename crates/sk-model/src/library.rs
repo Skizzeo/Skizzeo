@@ -24,10 +24,12 @@ pub enum MatCategory {
     Air,
     /// Blech (Attikablech, Dachterrasse D3).
     Metal,
+    /// Bahnen: Dampfsperre und Dachabdichtung (Flachdach, Jörn 10.10.).
+    Membrane,
 }
 
 impl MatCategory {
-    pub const ALL: [MatCategory; 7] = [
+    pub const ALL: [MatCategory; 8] = [
         MatCategory::Masonry,
         MatCategory::Concrete,
         MatCategory::Insulation,
@@ -35,6 +37,7 @@ impl MatCategory {
         MatCategory::Timber,
         MatCategory::Air,
         MatCategory::Metal,
+        MatCategory::Membrane,
     ];
 
     pub fn name(self) -> &'static str {
@@ -46,6 +49,7 @@ impl MatCategory {
             MatCategory::Timber => "Holz",
             MatCategory::Air => "Luft",
             MatCategory::Metal => "Metall",
+            MatCategory::Membrane => "Abdichtung",
         }
     }
 }
@@ -212,7 +216,8 @@ pub enum Bearing {
 /// haben Werkstypen und einen Standardtyp; Decke, Sohlplatte und
 /// Frostschürze kommen ohne Typ aus (gedachter Einschicht-Aufbau,
 /// [`crate::Model::element_layers`]) und können einen haben (R4). Die
-/// Dachterrasse hat immer einen, ohne Kern (Werkstyp „Dachterrasse 14“).
+/// Dachterrasse hat immer einen, ohne Kern (Werkstyp „Dachterrasse 14“),
+/// ebenso der Dachaufbau des Flachdachs (Werkstyp „Flachdach 21,5“).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TypeCategory {
     ExteriorWall,
@@ -221,16 +226,18 @@ pub enum TypeCategory {
     GroundSlab,
     StripFooting,
     RoofTerrace,
+    FlatRoof,
 }
 
 impl TypeCategory {
-    pub const ALL: [TypeCategory; 6] = [
+    pub const ALL: [TypeCategory; 7] = [
         TypeCategory::ExteriorWall,
         TypeCategory::InteriorWall,
         TypeCategory::Floor,
         TypeCategory::GroundSlab,
         TypeCategory::StripFooting,
         TypeCategory::RoofTerrace,
+        TypeCategory::FlatRoof,
     ];
 
     /// Wandarten: nur sie haben Werkstypen, Standardtyp, Werkzeug und einen
@@ -250,7 +257,13 @@ impl TypeCategory {
     /// Waagerechte Art (Schichten von oben nach unten) mit genau einer
     /// Kernschicht, deren Dicke am Bauteil steht (Regel 38).
     pub fn variable_core(self) -> bool {
-        !self.is_wall() && self != TypeCategory::RoofTerrace
+        !self.is_wall() && !self.is_build_up()
+    }
+
+    /// Aufbau auf der Rohdecke ohne Kern (Dachterrasse, Flachdach), Schichten
+    /// von oben nach unten.
+    pub fn is_build_up(self) -> bool {
+        matches!(self, TypeCategory::RoofTerrace | TypeCategory::FlatRoof)
     }
 
     /// Kategorie der Bauteile dieser Typart.
@@ -262,6 +275,7 @@ impl TypeCategory {
             TypeCategory::GroundSlab => Category::GroundSlab,
             TypeCategory::StripFooting => Category::StripFooting,
             TypeCategory::RoofTerrace => Category::RoofTerrace,
+            TypeCategory::FlatRoof => Category::Roof,
         }
     }
 
@@ -278,6 +292,8 @@ impl TypeCategory {
 /// Dicken von Belag und Dämmung der Dachterrasse (mm, Steckbrief DT §2).
 pub const TERRACE_FINISH: (f64, f64) = (20.0, 150.0);
 pub const TERRACE_INSULATION: (f64, f64) = (40.0, 300.0);
+/// Dicke der Dämmung des Flachdachs (mm, Plan Flachdach P10).
+pub const ROOF_INSULATION: (f64, f64) = (40.0, 400.0);
 
 /// Kurzzeichen aus Typart und Dicke in cm, z. B. „AW-31,5“, „IW-17,5“.
 pub fn type_code(category: TypeCategory, thickness: f64) -> String {
@@ -421,6 +437,23 @@ impl LayerSet {
                 }
             }
         }
+        // Regel 48: der Dachaufbau des Flachdachs liegt wie die Terrasse
+        // ohne Kern auf der Rohdecke; Dämmung in den Grenzen des Paneels
+        if self.category == TypeCategory::FlatRoof {
+            if !core.is_empty() {
+                out.push(format!("Typ {who}: Flachdach ohne Kernschicht"));
+            }
+            let (lo, hi) = ROOF_INSULATION;
+            if self.layers.iter().any(|l| {
+                l.function == LayerFunction::Insulation && !(lo..=hi).contains(&l.thickness)
+            }) {
+                out.push(format!(
+                    "Typ {who}: Dämmung {} bis {} cm",
+                    cm_de(lo),
+                    cm_de(hi)
+                ));
+            }
+        }
         // Regel 20: Luftschicht nie Kern, nie am Rand, nie zweimal nacheinander
         let air = |l: &MaterialLayer| l.function == LayerFunction::AirGap;
         let n = self.layers.len();
@@ -483,7 +516,7 @@ pub fn material_key(id: MaterialId) -> u16 {
 }
 
 /// Zentimeter mit Komma, ohne Einheit („24“, „40,5“).
-fn cm_de(mm: f64) -> String {
+pub(crate) fn cm_de(mm: f64) -> String {
     let cm = (mm / 5.0).round() * 0.5;
     if cm.fract() == 0.0 {
         format!("{cm:.0}")

@@ -84,7 +84,7 @@ pub fn price_unit(c: MatCategory) -> Option<&'static str> {
         | MatCategory::Concrete
         | MatCategory::Insulation
         | MatCategory::Timber => Some("m3"),
-        MatCategory::Plaster | MatCategory::Metal => Some("m2"),
+        MatCategory::Plaster | MatCategory::Metal | MatCategory::Membrane => Some("m2"),
         MatCategory::Air => None,
     }
 }

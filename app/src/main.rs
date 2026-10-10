@@ -8,6 +8,10 @@ mod abnahme;
 #[cfg(test)]
 mod abnahme_einstellungen;
 #[cfg(test)]
+mod abnahme_flachdach;
+#[cfg(test)]
+mod abnahme_paket10;
+#[cfg(test)]
 mod abnahme_pd;
 #[cfg(test)]
 mod abnahme_s1;
@@ -1255,7 +1259,8 @@ impl App {
         self.ui.hover = None;
         self.sync_levels();
         self.sync_dialog_fields();
-        // Eingabe beginnt in „Dicke OG-Decke“ (oberste Zeile)
+        // Eingabe beginnt in „Dicke OG-Decke“ (oberste Zahl des Hauses; die
+        // Aufkantung darüber ist vorgewählt)
         let out = self.ui.focus_field(Field::Draft(Draft::FloorOg));
         self.apply_ui(&out);
         self.overlay_dirty = true;
@@ -1268,6 +1273,7 @@ impl App {
             .into_iter()
             .map(|k| {
                 let (value, (min, max)) = match k {
+                    Draft::RoofUpstand => (d.roof, scene::DRAFT_ROOF),
                     Draft::FloorOg => (d.floor_og, scene::DRAFT_FLOOR),
                     Draft::ClearOg => (d.clear_og, scene::DRAFT_CLEAR),
                     Draft::FloorEg => (d.floor_eg, scene::DRAFT_FLOOR),
@@ -1282,8 +1288,8 @@ impl App {
                     value,
                     min,
                     max,
-                    // Perimeterdämmung: 0 = keine
-                    zero: k == Draft::Insulation,
+                    // Perimeterdämmung: 0 = keine; Flachdach: 0 = keins
+                    zero: matches!(k, Draft::Insulation | Draft::RoofUpstand),
                     einheit: None,
                 }
             })
@@ -3633,6 +3639,14 @@ impl App {
                     self.sync_levels();
                 }
             }
+            Id::FlatRoof => {
+                let st = self.scene.active_storey();
+                let on = self.scene.model().roof_level(st).is_none();
+                if self.scene.set_flat_roof(on) {
+                    self.upload_model();
+                    self.sync_levels();
+                }
+            }
             Id::PropsType if self.ext_gewaehlt_ist() => self.ext_klick(id),
             Id::ToolType | Id::PropsType => self.open_type_menu(id),
             Id::Ext | Id::ExtTyp | Id::ExtListe(_) => self.ext_klick(id),
@@ -4999,7 +5013,7 @@ impl App {
                     SelKind::Foundation
                 }
                 K::Floor(_) | K::EdgeStrip { .. } | K::SoffitInsulation { .. } => SelKind::Floor,
-                K::RoofTerrace { .. } | K::Coping { .. } => SelKind::Terrace,
+                K::RoofTerrace { .. } | K::Coping { .. } | K::Roof { .. } => SelKind::Terrace,
                 // Thema „Erweiterungen“, siehe `sync_help`
                 K::Ext(_) => return None,
             })

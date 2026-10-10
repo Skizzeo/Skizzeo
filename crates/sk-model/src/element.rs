@@ -57,6 +57,9 @@ pub enum Category {
     Coping,
     /// Perimeterdämmung vollflächig unter der Sohlplatte (Gelände Thema 4).
     PerimeterInsulation,
+    /// Aufkantung des Flachdachs (Jörn 10.10.): Wand auf der Ebene
+    /// Flachdach, an die oberste Außenwand gekoppelt, im selben Wandtyp.
+    Parapet,
     /// Erweiterungsbauteil aus einer .szb (Vertrag 0.5). Name, Präfix,
     /// IFC-Klasse und Kostengruppe kommen aus seiner Definition; deshalb
     /// nicht in [`Category::ALL`], das die Arten des Lieferumfangs nennt.
@@ -65,7 +68,7 @@ pub enum Category {
 
 impl Category {
     /// Die Arten des Lieferumfangs (ohne [`Category::Extension`]).
-    pub const ALL: [Category; 15] = [
+    pub const ALL: [Category; 16] = [
         Category::ExteriorWall,
         Category::InteriorWall,
         Category::Floor,
@@ -81,6 +84,7 @@ impl Category {
         Category::RoofTerrace,
         Category::Coping,
         Category::PerimeterInsulation,
+        Category::Parapet,
     ];
 
     /// Platz in [`Category::ALL`].
@@ -111,6 +115,12 @@ impl Category {
     /// IFC-Eigenschaft IsExternal.
     pub fn is_external(self) -> bool {
         spec(self).external
+    }
+
+    /// Außenwand oder Aufkantung: Wände im Außenwandtyp, deren Schichten
+    /// von außen nach innen laufen (Flachdach, Jörn 10.10.).
+    pub fn is_outer_wall(self) -> bool {
+        matches!(self, Category::ExteriorWall | Category::Parapet)
     }
 }
 
@@ -183,6 +193,13 @@ pub enum ElementKind {
     PerimeterInsulation {
         slab: ElementId,
     },
+    /// Dachaufbau des Flachdachs (Jörn 10.10.): nur der Verweis auf die
+    /// oberste Decke unter der Aufkantung; Umriss aus der Innenfläche der
+    /// Aufkantung, Aufbau aus dem Typ des Bauteils
+    /// ([`crate::Model::flat_roof_type`]).
+    Roof {
+        floor: ElementId,
+    },
 }
 
 /// Dachterrasse einer Decke (BIM §3). Jede Decke trägt die Werte, auch ohne
@@ -216,6 +233,62 @@ pub struct Soffit {
     /// `None`: Baustoff der äußersten Dämmschicht der Wand darüber, bei
     /// einschaligen Typen der des Randdämmstreifens.
     pub material: Option<MaterialId>,
+    /// Bekleidung unter der Dämmung (W3), mm: 0 keine, sonst 10 … 80
+    /// (Platte und Traglattung symbolisch in einer Schicht).
+    pub cladding: f64,
+    /// `None`: eingebauter Baustoff „Bekleidung Faserzement“.
+    pub cladding_material: Option<MaterialId>,
+    /// Überstand des abgefangenen Verblenders unter UK Bekleidung, mm
+    /// (20 … 40).
+    pub drip: f64,
+    /// Achsabstand der Grundlattung, mm (nur Mengen, keine Geometrie).
+    pub batten: f64,
+    /// Achsabstand der Traglattung quer dazu, mm; 0 ohne.
+    pub counter: f64,
+}
+
+/// Ein Zahlenwert der Bekleidung an [`Soffit`] (W3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CladdingValue {
+    Thickness,
+    Drip,
+    Batten,
+    Counter,
+}
+
+impl CladdingValue {
+    pub fn of(self, s: &Soffit) -> f64 {
+        match self {
+            CladdingValue::Thickness => s.cladding,
+            CladdingValue::Drip => s.drip,
+            CladdingValue::Batten => s.batten,
+            CladdingValue::Counter => s.counter,
+        }
+    }
+
+    pub(crate) fn of_mut(self, s: &mut Soffit) -> &mut f64 {
+        match self {
+            CladdingValue::Thickness => &mut s.cladding,
+            CladdingValue::Drip => &mut s.drip,
+            CladdingValue::Batten => &mut s.batten,
+            CladdingValue::Counter => &mut s.counter,
+        }
+    }
+}
+
+impl Default for Soffit {
+    fn default() -> Soffit {
+        use crate::model::{BATTEN, COUNTER, SOFFIT_CLADDING, SOFFIT_DRIP, SOFFIT_THICKNESS};
+        Soffit {
+            thickness: SOFFIT_THICKNESS,
+            material: None,
+            cladding: SOFFIT_CLADDING,
+            cladding_material: None,
+            drip: SOFFIT_DRIP,
+            batten: BATTEN,
+            counter: COUNTER,
+        }
+    }
 }
 
 /// Geschossdecke über einem geschlossenen Außenwandzug (IFC: IfcSlab FLOOR).
@@ -336,6 +409,10 @@ pub enum LevelKind {
     /// Gründung: UK Frostschürze bis OK Sohlplatte (±0,00).
     Foundation,
     Storey,
+    /// Flachdach (FD, Jörn 10.10.): eigene Ebene über dem obersten
+    /// Geschoss. UK = OK Rohdecke darunter, OK = OK Aufkantung (Mauerwerk;
+    /// das Attikablech zählt nicht zur Höhe).
+    Roof,
 }
 
 /// Geschoss als Band mit Unter- und Oberkante (IFC: IfcBuildingStorey,

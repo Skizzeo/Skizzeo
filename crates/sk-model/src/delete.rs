@@ -63,10 +63,23 @@ pub fn refusal_lines(m: &Model, id: ElementId, r: &Refusal) -> Vec<&'static str>
         Some(Category::RoofTerrace) => {
             vec!["Die Dachterrasse folgt dem Rücksprung des OG. Ihren Aufbau stellst du im Paneel ein."]
         }
+        Some(Category::Coping)
+            if m.element(id)
+                .and_then(|e| m.storey(e.storey))
+                .is_some_and(|s| s.kind == LevelKind::Roof) =>
+        {
+            vec!["Das Attikablech folgt dem Flachdach. Seinen Baustoff stellst du im Paneel ein."]
+        }
+        Some(Category::Roof) => {
+            vec!["Das Flachdach folgt der Aufkantung. Seinen Aufbau stellst du im Paneel ein."]
+        }
         Some(Category::Coping) => {
             vec![
                 "Das Attikablech folgt der Dachterrasse. Seinen Baustoff stellst du im Paneel ein.",
             ]
+        }
+        Some(Category::Parapet) => {
+            vec!["Die Aufkantung folgt dem Flachdach. Ihre Höhe stellst du in der Geschossverwaltung ein."]
         }
         _ => vec!["Dieses Bauteil lässt sich nicht löschen."],
     }
@@ -125,6 +138,11 @@ impl Model {
                 let closed = self.run(w.run).is_some_and(|r| r.closed);
                 if closed && e.category == Category::ExteriorWall {
                     Err(Refusal::BuildingOutline(self.building_of_element(id)))
+                } else if e.category == Category::Parapet {
+                    // Folgt dem Flachdach (Jörn 10.10.): nur mit der Ebene weg
+                    Err(Refusal::Derived {
+                        from: w.coupling.map_or(id, |c| c.below),
+                    })
                 } else if e.locked {
                     Err(Refusal::Locked(id))
                 } else {
@@ -142,7 +160,8 @@ impl Model {
             ElementKind::EdgeStrip { wall, .. } => Err(Refusal::Derived { from: wall }),
             ElementKind::SoffitInsulation { floor }
             | ElementKind::RoofTerrace { floor }
-            | ElementKind::Coping { floor } => Err(Refusal::Derived { from: floor }),
+            | ElementKind::Coping { floor }
+            | ElementKind::Roof { floor } => Err(Refusal::Derived { from: floor }),
             ElementKind::Ext(_) if e.locked => Err(Refusal::Locked(id)),
             ElementKind::Ext(_) => Ok(()),
         }

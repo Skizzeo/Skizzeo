@@ -4,6 +4,8 @@
 //! Kostenblatt (Rechnung), im Katalog und im LV jedes Loses fest, dazu
 //! das Netto. Eine neue Ordnung oder Zusammenfassung in der Anzeige (etwa
 //! eine Meldung je Dachterrasse) darf an dieser Zählung nichts ändern.
+//! Seit Werksbestand Stand 9 hat die Dachterrasse Bauleistungen; ihre
+//! Befunde „Ohne Bauleistung“ sind damit entfallen.
 
 use super::*;
 use sk_cost::{Befund, Schwere, Umfang};
@@ -88,40 +90,26 @@ fn zaehlung(zeilen: &[String]) -> Vec<String> {
 
 #[test]
 fn abnahme_befunde_regeln_und_zaehlung() {
-    // Rechnung (Kostenblatt): Sätze wörtlich, Regel 81 als Hinweis
-    let blatt_dt = [
-        "blatt 81 H Attikablech, Schicht Titanzink 0,7 0,7 mm: keine Bauleistung gefunden.",
-        "blatt 81 H Dachterrasse 14, Schicht Dämmung hart (Terrasse) 80 mm: keine Bauleistung gefunden.",
-        "blatt 81 H Dachterrasse 14, Schicht Terrassenbelag 60 mm: keine Bauleistung gefunden.",
-    ];
+    // Seit Werksbestand Stand 9 (Los 4 Dach) haben Dachterrasse und
+    // Attikablech Werksleistungen: keine Befunde der Rechnung, Katalog ohne
+    // Befunde, je Los nur die zwei Kopf-Hinweise (Regel 0)
     for (name, text, netto_soll) in [
-        (haeuser()[0].0, haeuser()[0].1, 7_303_598),
+        (haeuser()[0].0, haeuser()[0].1, 7_595_363),
         (haeuser()[1].0, haeuser()[1].1, 8_291_878),
-        (haeuser()[2].0, haeuser()[2].1, 7_990_043),
+        (haeuser()[2].0, haeuser()[2].1, 8_169_659),
     ] {
         let (netto, ist) = stand(text);
         assert_eq!(netto, netto_soll, "{name}: Netto");
-        let terrasse = name != "RH-2";
         let blatt: Vec<&str> = ist
             .iter()
             .filter(|z| z.starts_with("blatt "))
             .map(String::as_str)
             .collect();
-        let blatt_soll: &[&str] = if terrasse { &blatt_dt } else { &[] };
-        assert_eq!(blatt, blatt_soll, "{name}: Befunde der Rechnung");
-        // Katalog ohne Befunde; je Los zwei Kopf-Hinweise (Regel 0) und
-        // bei Dachterrasse je Schicht ohne Bauleistung ein Fehler (Regel
-        // 81): Dachterrasse zwei, Attikablech einer, also drei
-        let mut soll = Vec::new();
-        if terrasse {
-            soll.push("blatt 81 H ×3".to_string());
-        }
-        for los in ["los1", "los2", "los3"] {
-            soll.push(format!("{los} 0 H ×2"));
-            if terrasse {
-                soll.push(format!("{los} 81 F ×3"));
-            }
-        }
+        assert!(blatt.is_empty(), "{name}: Befunde der Rechnung {blatt:#?}");
+        let soll: Vec<String> = ["los1", "los2", "los3", "los4", "los5"]
+            .iter()
+            .map(|los| format!("{los} 0 H ×2"))
+            .collect();
         assert_eq!(zaehlung(&ist), soll, "{name}: Regeln und Zählung\n{ist:#?}");
     }
 }

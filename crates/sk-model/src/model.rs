@@ -9,9 +9,9 @@ use crate::attr::{
     Surface, SurfaceId,
 };
 use crate::element::{
-    Building, BuildingId, Category, Coupling, Element, ElementId, ElementKind, Floor, GroundSlab,
-    LevelEdge, LevelKind, LevelRef, PropSet, PropValue, RunId, Soffit, Storey, StoreyId,
-    StripFooting, Terrace, Wall, WallRun,
+    Building, BuildingId, Category, CladdingValue, Coupling, Element, ElementId, ElementKind,
+    Floor, GroundSlab, LevelEdge, LevelKind, LevelRef, PropSet, PropValue, RunId, Soffit, Storey,
+    StoreyId, StripFooting, Terrace, Wall, WallRun,
 };
 use crate::floor::{FloorError, FloorParams, FloorSlab, SoffitParams, StripParams, TerraceParams};
 use crate::foundation::{FootingShape, Foundation, FoundationError, FoundationParams};
@@ -26,7 +26,8 @@ use crate::solid::material;
 use crate::trade::{self, Trade, TradeId};
 use crate::txn::{Change, Direction, Key, Open, Touched, Txn};
 use crate::wall::{
-    clean_points, cross2, segment_count, Attika, EndCut, Layer, Overhang, RefSide, WallChain,
+    clean_points, cross2, segment_count, Attika, Drip, EndCut, FacingFoot, Layer, Overhang,
+    RefSide, WallChain,
 };
 use sk_math::{vec3, Vec3};
 use std::collections::BTreeMap;
@@ -283,6 +284,12 @@ pub use lock::{edit_blocked, Locked};
 
 #[path = "location.rs"]
 mod location;
+
+#[path = "flachdach.rs"]
+mod flachdach;
+pub use flachdach::{
+    MIN_ROOF_EDGE, ROOF_INSULATION_GUID, ROOF_SEAL_GUID, ROOF_TYPE_GUID, ROOF_VAPOUR_GUID,
+};
 pub use location::{Foot, Location, ShadeLight, Sun, ViewShade, FOOT_MAX, SHADE_VIEWS};
 
 impl Default for Model {
@@ -1282,6 +1289,7 @@ impl Model {
                 ElementKind::Floor(f) => {
                     f.material == id
                         || f.soffit.material == Some(id)
+                        || f.soffit.cladding_material == Some(id)
                         // Die Wahl des Blechs zählt am Blech, fehlt es, an der Decke
                         || (f.terrace.coping_mat == Some(id) && !copings.contains(&e))
                 }
@@ -1293,7 +1301,8 @@ impl Model {
                 ElementKind::Wall(_)
                 | ElementKind::EdgeStrip { .. }
                 | ElementKind::SoffitInsulation { .. }
-                | ElementKind::RoofTerrace { .. } => false,
+                | ElementKind::RoofTerrace { .. }
+                | ElementKind::Roof { .. } => false,
             };
             if hit {
                 out.push(Use::Element(e));
@@ -1304,7 +1313,8 @@ impl Model {
 
     /// Darf der Baustoff gelöscht werden (§1.4, Regeln 15 und 55)? Nicht,
     /// wenn etwas auf ihn verweist; Luft und die eingebauten Baustoffe von
-    /// Dachterrasse und Attikablech nie. Kennwerte halten nichts fest.
+    /// Dachterrasse, Flachdach, Attikablech, Fußpunkt und Untersicht-Bekleidung
+    /// nie. Kennwerte halten nichts fest.
     pub fn can_remove_material(&self, id: MaterialId) -> bool {
         self.materials.get(id).is_some_and(|m| {
             m.category != MatCategory::Air
@@ -1312,6 +1322,11 @@ impl Model {
                     TERRACE_FINISH_GUID,
                     TERRACE_INSULATION_GUID,
                     COPING_MAT_GUID,
+                    flachdach::ROOF_SEAL_GUID,
+                    flachdach::ROOF_INSULATION_GUID,
+                    flachdach::ROOF_VAPOUR_GUID,
+                    FOAMGLASS_MAT_GUID,
+                    CLADDING_MAT_GUID,
                 ]
                 .contains(&m.guid)
         }) && !self.material_used(id)
@@ -1787,10 +1802,14 @@ impl Model {
                     _ => {
                         let g = crate::terrace::coping_girth(f.terraces.width);
                         p.insert("Abwicklung".into(), PropValue::Number(g));
+                        let w = crate::terrace::coping_cut_width(g);
+                        p.insert("Zuschnitt".into(), PropValue::Number(w));
                     }
                 }
             }
         }
+        // ... und des Flachdachs (D3, D4)
+        p.extend(self.flat_roof_props(el));
         p
     }
 
@@ -1881,7 +1900,14 @@ impl Model {
     /// vorher zeigt), jedes weitere bekommt eigene Geschosse.
     pub fn add_building(&mut self, storeys: u8) -> BuildingId {
         let storeys = storeys.max(1) as usize;
+        // Das Flachdach der Vorlage zählt nicht als Geschoss, es kommt
+        // zuletzt obendrauf
         let template = self.levels_in(None);
+        let roof = self.roof_level_of(None);
+        let template: Vec<StoreyId> = template
+            .into_iter()
+            .filter(|id| Some(*id) != roof)
+            .collect();
         // Nummern werden nie neu vergeben, auch nicht nach dem Löschen
         let mut k = self.building_number;
         let number = loop {
@@ -1972,6 +1998,17 @@ impl Model {
                 }
             }
         }
+        if let Some(fd) = roof {
+            let z = levels
+                .last()
+                .and_then(|id| self.storey(*id))
+                .map_or(0.0, |s| s.top());
+            note!(self, Storey, self.storeys, fd);
+            if let Some(st) = self.storeys.get_mut(fd) {
+                st.building = Some(b);
+                st.elevation = z;
+            }
+        }
         self.touch();
         b
     }
@@ -1993,7 +2030,7 @@ impl Model {
                 .iter()
                 .filter(|id| {
                     self.storey(**id)
-                        .is_some_and(|s| s.kind != LevelKind::Foundation)
+                        .is_some_and(|s| s.kind == LevelKind::Storey)
                 })
                 .count();
             self.add_building(up.max(1) as u8);
@@ -2181,7 +2218,11 @@ impl Model {
         let fits = self
             .layer_set(layer_set)
             .is_some_and(|t| TypeCategory::of(category) == Some(t.category));
-        if count == 0 || !fits || self.storey(storey).is_none() {
+        // Auf der Ebene Flachdach stehen nur die Aufkantungen (abgeleitet)
+        let roof = self
+            .storey(storey)
+            .is_none_or(|s| s.kind == LevelKind::Roof);
+        if count == 0 || !fits || roof {
             return None;
         }
         self.ensure_building(storey);
@@ -2226,6 +2267,14 @@ impl Model {
                 };
                 (below, at) = (r, up);
             }
+        } else if self.needs_floor(run) {
+            // Im obersten Geschoss gezeichnet: Aufkantung darüber
+            if let Some(fd) = self
+                .level_above(storey)
+                .filter(|l| self.storey(*l).is_some_and(|s| s.kind == LevelKind::Roof))
+            {
+                self.stack_run(run, fd);
+            }
         }
         self.touch();
         Some(run)
@@ -2257,17 +2306,23 @@ impl Model {
         });
         note!(self, Run, new run);
         let seq = self.storey_seq(storey).0;
+        // Auf der Ebene Flachdach wird die Außenwand zur Aufkantung
+        let roof = self
+            .storey(storey)
+            .is_some_and(|s| s.kind == LevelKind::Roof);
         let mut segments = Vec::with_capacity(r.segments.len());
         for (k, &w) in r.segments.iter().enumerate() {
             let Some(t) = self.element(w).cloned() else {
                 continue;
             };
+            let category = if roof { Category::Parapet } else { t.category };
             let id = self.new_wall(
                 run,
                 k,
                 &Element {
                     storey,
                     seq,
+                    category,
                     props: PropSet::new(),
                     ..t
                 },
@@ -2570,6 +2625,10 @@ impl Model {
         let Some((_, now)) = self.stack_offset(wall) else {
             return false;
         };
+        // Die Aufkantung bleibt bündig gekoppelt (Flachdach, Jörn 10.10.)
+        if !linked && self.is_parapet(wall) {
+            return false;
+        }
         if now == linked {
             return true;
         }
@@ -2598,6 +2657,9 @@ impl Model {
         } else {
             offset
         };
+        if offset != 0.0 && self.is_parapet(wall) {
+            return None;
+        }
         let (run, seg) = self.segment_of(wall)?;
         let (old, linked) = self.stack_offset(wall)?;
         let below = self.run_below(run)?;
@@ -3063,10 +3125,24 @@ impl Model {
         if let Some(Ok(f)) = &floor {
             c.joints.overhang = self.overhang_offsets(id).map(|offsets| {
                 let (b, t) = f.band();
+                // Verblender bis unter die Bekleidung (W3)
+                let drip = self
+                    .facing_layer(id)
+                    .zip(f.drip_bottom())
+                    .map(|(layer, from)| {
+                        let mut segs = vec![false; c.segment_count()];
+                        for (k, _) in &f.claddings {
+                            if let Some(x) = segs.get_mut(*k) {
+                                *x = true;
+                            }
+                        }
+                        Drip { layer, from, segs }
+                    });
                 Overhang {
                     offsets,
                     from: f.soffit_band().map_or(b, |s| s.0),
                     to: t,
+                    drip,
                 }
             });
         }
@@ -3079,6 +3155,7 @@ impl Model {
                     pieces: f.terraces.attika.clone(),
                 });
         }
+        c.joints.facing_foot = self.facing_foot(id, &c);
         c.joints.slab_band = match &floor {
             Some(Ok(f)) => Some(f.band()),
             _ if self.category_of(id) == Some(Category::InteriorWall) => self
@@ -3088,6 +3165,80 @@ impl Model {
             _ => None,
         };
         Some((c, floor))
+    }
+
+    /// Fußpunkt der Verblendschale des Zuges auf der Dachterrasse darunter
+    /// (W2); `None` ohne Verblender, ohne Terrasse oder solange es den
+    /// Baustoff Schaumglas noch nicht gibt ([`Model::sync_terraces`] legt
+    /// ihn an).
+    fn facing_foot(&self, run: RunId, c: &WallChain) -> Option<FacingFoot> {
+        let mat = self.foamglass_material()?;
+        let (band, segs, layer) = self.foot_plan(run, c)?;
+        Some(FacingFoot {
+            band,
+            segs,
+            layer,
+            mat: material_key(mat),
+        })
+    }
+
+    /// Wo der Zug `run` (Körper `c`) einen Fußpunkt aus Schaumglas braucht
+    /// (W2, Tagesplan P1/P2): Steht seine äußere Verblendschale
+    /// ([`crate::qto::is_facing`]) auf der Dachterrasse der Decke darunter,
+    /// dann auf deren Segmenten vom Wandfuß bis OK Terrassenaufbau.
+    /// Monolithisch und mit WDVS nie (kein Verblender).
+    fn foot_plan(&self, run: RunId, c: &WallChain) -> Option<((f64, f64), Vec<bool>, usize)> {
+        if self.category_of(run) != Some(Category::ExteriorWall) {
+            return None;
+        }
+        let layer = self.facing_layer(run)?;
+        let below = self.run_below(run)?;
+        if self.runs_above(below).first() != Some(&run) {
+            return None;
+        }
+        let Some(Ok(f)) = self.floor(below) else {
+            return None;
+        };
+        let (_, top) = f.terrace_band()?;
+        let top = top.min(c.top());
+        if top <= c.base + 1e-6 {
+            return None;
+        }
+        let mut segs = vec![false; c.segment_count()];
+        for k in f.terraces.outlines.iter().flat_map(|t| &t.segments) {
+            if let Some(x) = segs.get_mut(*k) {
+                *x = true;
+            }
+        }
+        segs.iter()
+            .any(|x| *x)
+            .then_some(((c.base, top), segs, layer))
+    }
+
+    /// Äußere Verblendschale im Typ des Zuges: die erste Schicht vor dem
+    /// Kern, die [`crate::qto::is_facing`] erfüllt.
+    fn facing_layer(&self, run: RunId) -> Option<usize> {
+        let t = self
+            .run(run)?
+            .segments
+            .first()
+            .and_then(|w| self.element(*w))
+            .and_then(|e| e.layer_set)
+            .and_then(|t| self.layer_set(t))?;
+        let core = t.layers.iter().position(|l| l.core)?;
+        t.layers[..core]
+            .iter()
+            .position(|l| crate::qto::is_facing(self, l))
+    }
+
+    /// Braucht irgendein Zug einen Fußpunkt aus Schaumglas (W2)?
+    fn foot_wanted(&self) -> bool {
+        self.runs.ids().any(|r| {
+            self.facing_layer(r).is_some()
+                && self
+                    .base_chain(r)
+                    .is_some_and(|c| self.foot_plan(r, &c).is_some())
+        })
     }
 
     /// Kategorie der Wände eines Zuges (die des ersten Segments).
@@ -3236,7 +3387,7 @@ impl Model {
             points: run.points.clone(),
             closed: run.closed,
             ref_side: run.ref_side,
-            layers: self.wall_layers(set),
+            layers: self.run_layers(id, set),
             base,
             height: self.level_z(run.top).unwrap_or(base) - base,
             joints: Default::default(),
@@ -3307,7 +3458,8 @@ impl Model {
             ElementKind::EdgeStrip { wall, .. } => self.run_of(wall),
             ElementKind::SoffitInsulation { floor }
             | ElementKind::RoofTerrace { floor }
-            | ElementKind::Coping { floor } => self.run_of(floor),
+            | ElementKind::Coping { floor }
+            | ElementKind::Roof { floor } => self.run_of(floor),
             ElementKind::PerimeterInsulation { slab } => self.run_of(slab),
             ElementKind::Ext(_) => None,
         }
@@ -3452,6 +3604,8 @@ impl Model {
             SOFFIT_PART => self.soffit_of(self.floor_of(run)?),
             TERRACE_PART => self.terrace_of(self.floor_of(run)?),
             COPING_PART => self.coping_of(self.floor_of(run)?),
+            ROOF_PART => self.flat_roof_of(self.floor_of(self.run_below(run)?)?),
+            ROOF_COPING_PART => self.coping_of(self.floor_of(self.run_below(run)?)?),
             p if (STRIP_PART..STRIP_PART + MAX_STRIPS).contains(&p) => {
                 let wall = self.wall_at(run, (p - STRIP_PART) as usize)?;
                 self.edge_strip_of(wall, self.floor_of(run)?)
@@ -4180,10 +4334,7 @@ impl Model {
                 material,
                 thickness: FLOOR_THICKNESS,
                 top: LevelRef::top(storey),
-                soffit: Soffit {
-                    thickness: SOFFIT_THICKNESS,
-                    material: None,
-                },
+                soffit: Soffit::default(),
                 terrace: Terrace::default(),
             }),
         );
@@ -4299,6 +4450,20 @@ impl Model {
                 .material
                 .or_else(|| self.soffit_material(run))
                 .map_or(material::PLAIN, material_key),
+            // Bekleidung (W3), sobald ihr Baustoff da ist
+            cladding: match self.cladding_material_of(&f.soffit) {
+                Some(_) => f.soffit.cladding,
+                None => 0.0,
+            },
+            clad_mat: self
+                .cladding_material_of(&f.soffit)
+                .map_or(material::PLAIN, material_key),
+            clad_inset: self.facing_layer(run).map_or(0.0, |i| {
+                chain.layers[..=i].iter().map(|l| l.thickness).sum()
+            }),
+            drip: f.soffit.drip,
+            batten: f.soffit.batten,
+            counter: f.soffit.counter,
         };
         let over = ext.as_ref().map(|(c, o)| (c, &o[..], soffit));
         let strip = self.strip_params(run);
@@ -4480,6 +4645,48 @@ impl Model {
         true
     }
 
+    /// Setzt einen Wert der Bekleidung unter der Untersichtdämmung (W3):
+    /// Dicke (0 oder [`MIN_CLADDING`] … [`MAX_CLADDING`]), Überstand des
+    /// Verblenders ([`MIN_DRIP`] … [`MAX_DRIP`]) oder die Achsabstände der
+    /// Grund- und Traglattung ([`MIN_BATTEN`] … [`MAX_BATTEN`], quer auch 0).
+    pub fn set_floor_cladding(&mut self, floor: ElementId, value: CladdingValue, mm: f64) -> bool {
+        let ok = match value {
+            CladdingValue::Thickness => mm == 0.0 || (MIN_CLADDING..=MAX_CLADDING).contains(&mm),
+            CladdingValue::Drip => (MIN_DRIP..=MAX_DRIP).contains(&mm),
+            CladdingValue::Batten => (MIN_BATTEN..=MAX_BATTEN).contains(&mm),
+            CladdingValue::Counter => mm == 0.0 || (MIN_BATTEN..=MAX_BATTEN).contains(&mm),
+        };
+        let Some(ElementKind::Floor(f)) = self.element(floor).map(|e| &e.kind) else {
+            return false;
+        };
+        if !ok || value.of(&f.soffit) == mm {
+            return false;
+        }
+        note!(self, Element, self.elements, floor);
+        if let Some(ElementKind::Floor(f)) = self.elements.get_mut(floor).map(|e| &mut e.kind) {
+            *value.of_mut(&mut f.soffit) = mm;
+        }
+        self.touch();
+        true
+    }
+
+    /// Setzt den Baustoff der Bekleidung (`None`: der eingebaute).
+    pub fn set_floor_cladding_material(&mut self, floor: ElementId, m: Option<MaterialId>) -> bool {
+        if !matches!(
+            self.element(floor).map(|e| &e.kind),
+            Some(ElementKind::Floor(_))
+        ) || m.is_some_and(|m| self.material(m).is_none())
+        {
+            return false;
+        }
+        note!(self, Element, self.elements, floor);
+        if let Some(ElementKind::Floor(f)) = self.elements.get_mut(floor).map(|e| &mut e.kind) {
+            f.soffit.cladding_material = m;
+        }
+        self.touch();
+        true
+    }
+
     /// Decken, unter denen eine Untersichtdämmung liegen muss (Regel 35):
     /// die Decke kragt unter einem Vorsprung darüber aus.
     pub fn soffit_floors(&self) -> Vec<ElementId> {
@@ -4521,6 +4728,16 @@ impl Model {
     /// [`Model::sync_soffits`] nur an den Decken der Züge `scope` (Z4).
     fn sync_soffits_in(&mut self, scope: Option<&[RunId]>) {
         let want = self.soffit_floors_in(scope);
+        // Bekleidung (W3): der eingebaute Baustoff bei der ersten
+        if self.material_by_guid(CLADDING_MAT_GUID).is_none()
+            && want.iter().any(|f| {
+                matches!(self.element(*f).map(|e| &e.kind),
+                    Some(ElementKind::Floor(x)) if x.soffit.cladding > 0.0
+                        && x.soffit.cladding_material.is_none())
+            })
+        {
+            self.ensure_cladding_material();
+        }
         let have: Vec<(ElementId, ElementId)> = self
             .elements
             .iter()
@@ -4558,11 +4775,42 @@ impl Model {
         }
     }
 
-    /// Nach dem Laden: Untersichtdämmungen passend zu den Vorsprüngen.
-    pub(crate) fn complete_soffits(&mut self) {
+    /// Nach dem Laden: Untersichtdämmungen passend zu den Vorsprüngen;
+    /// Dateien vor W3 bekommen die Bekleidung darunter (mit Hinweis).
+    /// Decken, die erst beim Laden einer alten Datei entstehen (vor B10 und
+    /// B12), tragen keine Bekleidung der Untersicht: die Datei kannte sie
+    /// nicht und bleibt beim Speichern bytegleich (Test F-a, wie
+    /// `soffit_clad` fehlt = 0 beim Lesen). Ohne Rückgängig-Schritt.
+    pub(crate) fn clear_cladding_except(&mut self, before: &[ElementId]) {
+        for id in self.floor_ids() {
+            if before.contains(&id) {
+                continue;
+            }
+            if let Some(ElementKind::Floor(f)) = self.elements.get_mut(id).map(|e| &mut e.kind) {
+                f.soffit.cladding = 0.0;
+            }
+        }
+    }
+
+    /// Alle Decken des Modells.
+    pub(crate) fn floor_ids(&self) -> Vec<ElementId> {
+        self.elements
+            .iter()
+            .filter(|(_, e)| matches!(e.kind, ElementKind::Floor(_)))
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    pub(crate) fn complete_soffits(&mut self) -> Vec<String> {
         let strict = std::mem::replace(&mut self.strict, false);
+        let had = self.material_by_guid(CLADDING_MAT_GUID).is_some();
         self.sync_soffits();
         self.strict = strict;
+        if !had && self.material_by_guid(CLADDING_MAT_GUID).is_some() {
+            vec!["Bekleidung unter der Untersichtdämmung ergänzt".to_string()]
+        } else {
+            Vec::new()
+        }
     }
 
     // --- Dachterrasse, Attika, Attikablech (D1–D3) ------------------------
@@ -4633,7 +4881,7 @@ impl Model {
         self.coping_material_of(&f.terrace)
     }
 
-    fn material_by_guid(&self, g: Guid) -> Option<MaterialId> {
+    pub(crate) fn material_by_guid(&self, g: Guid) -> Option<MaterialId> {
         self.materials
             .iter()
             .find(|(_, m)| m.guid == g)
@@ -4656,6 +4904,29 @@ impl Model {
         cut_color: [u8; 3],
         trade: Option<TradeId>,
     ) -> Option<MaterialId> {
+        self.builtin_material_with(
+            guid, name, category, priority, density, lambda, color, cut_color, trade, None, None,
+        )
+    }
+
+    /// Wie [`Model::builtin_material`]; mit `fill` schneidet der Baustoff
+    /// mit dieser Schraffur statt der seiner Art, mit `surface` trägt seine
+    /// Oberfläche diese feste Guid.
+    #[allow(clippy::too_many_arguments)]
+    fn builtin_material_with(
+        &mut self,
+        guid: Guid,
+        name: &str,
+        category: MatCategory,
+        priority: u16,
+        density: f64,
+        lambda: Option<f64>,
+        color: [u8; 3],
+        cut_color: [u8; 3],
+        trade: Option<TradeId>,
+        fill: Option<FillId>,
+        surface: Option<Guid>,
+    ) -> Option<MaterialId> {
         if let Some(id) = self.material_by_guid(guid) {
             return Some(id);
         }
@@ -4671,10 +4942,11 @@ impl Model {
             .iter()
             .find(|(_, f)| f.kind == crate::attr::FillKind::Empty)
             .map(|(id, _)| id);
-        let cut_fill = match (&like, category) {
-            (Some(m), MatCategory::Insulation) => m.cut_fill,
-            (Some(m), _) => empty.unwrap_or(m.cut_fill),
-            (None, _) => empty.or_else(|| self.attr.fills().ids().next())?,
+        let cut_fill = match (fill, &like, category) {
+            (Some(f), _, _) => f,
+            (None, Some(m), MatCategory::Insulation) => m.cut_fill,
+            (None, Some(m), _) => empty.unwrap_or(m.cut_fill),
+            (None, None, _) => empty.or_else(|| self.attr.fills().ids().next())?,
         };
         let (cut_fg, cut_bg) = match &like {
             Some(m) => (m.cut_fg, m.cut_bg),
@@ -4683,7 +4955,7 @@ impl Model {
                 (p, p)
             }
         };
-        let sg = self.new_guid();
+        let sg = surface.unwrap_or_else(|| self.new_guid());
         let surface = self.add_surface(Surface {
             guid: sg,
             name: name.into(),
@@ -4753,6 +5025,93 @@ impl Model {
         })
     }
 
+    /// Werksschraffur „Dämmung hart (Kreuz)“ (Jörn 10.10. 05:53): Kreuz
+    /// 45°/135° im Abstand der Mauerwerkschraffur; fehlt sie, wird sie
+    /// angelegt (rückgängig machbar).
+    fn ensure_cross_fill(&mut self) -> FillId {
+        if let Some((id, _)) = self
+            .attr
+            .fills()
+            .iter()
+            .find(|(_, f)| f.guid == CROSS_FILL_GUID)
+        {
+            return id;
+        }
+        self.add_fill(Fill {
+            guid: CROSS_FILL_GUID,
+            name: crate::attr::CROSS_FILL_NAME.into(),
+            kind: crate::attr::FillKind::Lines(crate::attr::cross_lines()),
+            space: crate::attr::FillSpace::Paper,
+        })
+    }
+
+    /// Schaumglas-Dämmstein für den Fußpunkt der Verblendschale (W1, z. B.
+    /// FOAMGLAS PERINSUL HL, λ 0,058, Z-17.5-1209): Kreuzschraffur, grau,
+    /// Maurer. Fehlt er, wird er samt Schraffur angelegt.
+    pub(crate) fn ensure_foamglass_material(&mut self) -> Option<MaterialId> {
+        if let Some(id) = self.material_by_guid(FOAMGLASS_MAT_GUID) {
+            return Some(id);
+        }
+        let cross = self.ensure_cross_fill();
+        self.builtin_material_with(
+            FOAMGLASS_MAT_GUID,
+            "Schaumglas-Dämmstein",
+            MatCategory::Insulation,
+            300,
+            165.0,
+            Some(0.058),
+            [128, 132, 134],
+            [176, 180, 182],
+            trade::start_id("18330"),
+            Some(cross),
+            Some(FOAMGLASS_SURFACE_GUID),
+        )
+    }
+
+    /// Baustoff des Fußpunkts unter der Verblendschale, sobald es ihn im
+    /// Projekt gibt (W1).
+    pub fn foamglass_material(&self) -> Option<MaterialId> {
+        self.material_by_guid(FOAMGLASS_MAT_GUID)
+    }
+
+    /// „Bekleidung Faserzement“ unter der Untersichtdämmung (W3, Tagesplan
+    /// P5): Faserzementplatte 8 mm auf Traglattung, symbolisch eine Schicht;
+    /// Schnitt ohne Muster, Gewerk VHF. Fehlt er, wird er angelegt.
+    fn ensure_cladding_material(&mut self) -> Option<MaterialId> {
+        self.builtin_material_with(
+            CLADDING_MAT_GUID,
+            "Bekleidung Faserzement",
+            MatCategory::Concrete,
+            500,
+            1800.0,
+            None,
+            [168, 170, 166],
+            [196, 198, 194],
+            trade::start_id("18351"),
+            None,
+            Some(CLADDING_SURFACE_GUID),
+        )
+    }
+
+    /// Baustoff der Bekleidung: die Wahl an der Decke oder der eingebaute,
+    /// sobald es ihn im Projekt gibt.
+    fn cladding_material_of(&self, s: &Soffit) -> Option<MaterialId> {
+        s.cladding_material
+            .filter(|m| self.materials.contains(*m))
+            .or_else(|| self.material_by_guid(CLADDING_MAT_GUID))
+    }
+
+    /// Baustoff der Bekleidung unter der Untersichtdämmung der Decke
+    /// `floor` (W3); `None` ohne Bekleidung.
+    pub fn soffit_cladding_material_of(&self, floor: ElementId) -> Option<MaterialId> {
+        let ElementKind::Floor(f) = self.element(floor)?.kind else {
+            return None;
+        };
+        (f.soffit.cladding > 0.0)
+            .then(|| self.cladding_material_of(&f.soffit))
+            .flatten()
+    }
+
     /// Titanzink 0,7 für das Attikablech; fehlt er, wird er angelegt.
     fn ensure_coping_material(&mut self) -> Option<MaterialId> {
         self.builtin_material(
@@ -4820,6 +5179,11 @@ impl Model {
     /// [`Model::sync_terraces`] nur an den Decken der Züge `scope`; Terrasse
     /// und Blech je Decke kommen aus einer Liste (T7).
     fn sync_terraces_in(&mut self, scope: Option<&[RunId]>) -> (usize, usize) {
+        // Fußpunkt der Verblendschale (W2): der Baustoff beim ersten Mal,
+        // auch wenn der Schritt nur den Typ der Wand darüber ändert
+        if self.foamglass_material().is_none() && self.foot_wanted() {
+            self.ensure_foamglass_material();
+        }
         let want = self.terrace_floors_in(scope);
         if !want.is_empty() {
             self.ensure_terrace_type();
@@ -4840,6 +5204,8 @@ impl Model {
                 _ => None,
             })
             .filter(|&(_, floor, _)| self.floor_in_scope(floor, scope))
+            // das Blech des Flachdachs gleicht [`Model::sync_flat_roofs_in`] ab
+            .filter(|&(id, floor, dt)| dt || !self.flat_roof_coping(id, floor))
             .collect();
         let (mut added, mut removed) = (0, 0);
         // Terrasse je gewünschter Decke (für den Typ unten)
@@ -4944,9 +5310,13 @@ impl Model {
     /// wurden (Regel 46).
     pub(crate) fn complete_terraces(&mut self) -> Vec<String> {
         let strict = std::mem::replace(&mut self.strict, false);
+        let foamglass = self.foamglass_material().is_some();
         let (added, removed) = self.sync_terraces();
         self.strict = strict;
         let mut out = Vec::new();
+        if !foamglass && self.foamglass_material().is_some() {
+            out.push("Fußpunkt aus Schaumglas unter dem Verblender ergänzt".to_string());
+        }
         if added > 0 {
             out.push("Dachterrasse bzw. Attikablech ergänzt".to_string());
         }
@@ -5083,17 +5453,26 @@ impl Model {
                 let Some(ElementKind::Floor(f)) = self.element(floor).map(|x| &x.kind) else {
                     return Vec::new();
                 };
-                return self
-                    .soffit_material_of(floor)
-                    .map(|m| {
-                        vec![
-                            MaterialLayer::new(m, f.soffit.thickness, LayerFunction::Insulation)
-                                .trade(trade::soffit()),
-                        ]
-                    })
-                    .unwrap_or_default();
+                let Some(m) = self.soffit_material_of(floor) else {
+                    return Vec::new();
+                };
+                let mut out =
+                    vec![
+                        MaterialLayer::new(m, f.soffit.thickness, LayerFunction::Insulation)
+                            .trade(trade::soffit()),
+                    ];
+                // Bekleidung darunter (W3), Gewerk aus dem Baustoff
+                if let Some(c) = self.soffit_cladding_material_of(floor) {
+                    out.push(MaterialLayer::new(
+                        c,
+                        f.soffit.cladding,
+                        LayerFunction::Finish,
+                    ));
+                }
+                return out;
             }
             ElementKind::RoofTerrace { floor } => return self.terrace_layers(floor),
+            ElementKind::Roof { .. } => return self.flat_roof_layers(id),
             // Eingebauter Ein-Schicht-Aufbau: XPS in der Dicke an der Platte
             ElementKind::PerimeterInsulation { slab } => {
                 let t = self.slab_insulation(slab);
@@ -5164,7 +5543,7 @@ impl Model {
         let last = layers.iter().rposition(|l| l.core);
         // (vor bzw. über dem Kern, Kern, hinter bzw. unter dem Kern)
         let (before, at, after) = match e.category {
-            Category::ExteriorWall => (335, 331, 336),
+            Category::ExteriorWall | Category::Parapet => (335, 331, 336),
             Category::InteriorWall if crate::library::bears(&layers, true) => (345, 341, 345),
             Category::InteriorWall => (345, 342, 345),
             Category::Floor => (353, 351, 354),
@@ -5416,6 +5795,10 @@ impl Model {
         {
             out.push("Deckenauflager des Typs ungültig".into());
         }
+        if let Some(&ElementKind::Roof { floor }) = self.element(e).map(|x| &x.kind) {
+            out.extend(self.flat_roof_hint(floor));
+            return out;
+        }
         let Some(run) = self.run_of(e) else {
             return out;
         };
@@ -5570,7 +5953,12 @@ impl Model {
         let s = self.storey(id)?;
         match s.kind {
             LevelKind::Foundation => None,
-            _ => Some((
+            // Flachdach: OK Aufkantung über OK Rohdecke darunter
+            LevelKind::Roof => Some((
+                s.elevation + MIN_ROOF_UPSTAND,
+                s.elevation + MAX_ROOF_UPSTAND,
+            )),
+            LevelKind::Storey => Some((
                 s.elevation + self.floor_thickness_of(id) + MIN_CLEAR,
                 f64::INFINITY,
             )),
@@ -5808,6 +6196,28 @@ impl Model {
                     "Geschosse {name}: nicht genau eine Gründung und mindestens ein EG"
                 ));
             }
+            // Flachdach (Jörn 10.10.): höchstens eins, zuoberst, über einem
+            // Geschoss
+            let roofs: Vec<usize> = levels
+                .iter()
+                .enumerate()
+                .filter(|(_, id)| self.storey(**id).is_some_and(|s| s.kind == LevelKind::Roof))
+                .map(|(i, _)| i)
+                .collect();
+            if roofs.len() > 1 {
+                out.push(format!("Geschosse {name}: mehr als ein Flachdach"));
+            }
+            if roofs.iter().any(|&i| {
+                i + 1 != levels.len()
+                    || !levels[..i].iter().any(|id| {
+                        self.storey(*id)
+                            .is_some_and(|s| s.kind == LevelKind::Storey)
+                    })
+            }) {
+                out.push(format!(
+                    "Geschosse {name}: Flachdach nicht zuoberst über einem Geschoss"
+                ));
+            }
             let first = levels.first().and_then(|id| self.storey(*id));
             if first.is_some_and(|s| s.kind != LevelKind::Foundation) {
                 out.push(format!(
@@ -5854,6 +6264,7 @@ impl Model {
                 | ElementKind::SoffitInsulation { .. }
                 | ElementKind::RoofTerrace { .. }
                 | ElementKind::Coping { .. }
+                | ElementKind::Roof { .. }
                 | ElementKind::Ext(_) => {}
             }
         }
@@ -6210,6 +6621,7 @@ impl Model {
             self.sync_edge_strips(scope);
             self.sync_soffits_in(scope);
             self.sync_terraces_in(scope);
+            self.sync_flat_roofs_in(scope);
         }
         if let Some(id) = self.locked_change() {
             self.rollback();
@@ -6269,7 +6681,8 @@ impl Model {
                             ElementKind::EdgeStrip { wall, .. } => strips.push(wall),
                             ElementKind::SoffitInsulation { floor }
                             | ElementKind::RoofTerrace { floor }
-                            | ElementKind::Coping { floor } => strips.push(floor),
+                            | ElementKind::Coping { floor }
+                            | ElementKind::Roof { floor } => strips.push(floor),
                             ElementKind::Ext(_) => {}
                         }
                     }
@@ -6357,7 +6770,8 @@ impl Model {
                         ElementKind::EdgeStrip { wall, .. } => footings.push(wall),
                         ElementKind::SoffitInsulation { floor }
                         | ElementKind::RoofTerrace { floor }
-                        | ElementKind::Coping { floor } => footings.push(floor),
+                        | ElementKind::Coping { floor }
+                        | ElementKind::Roof { floor } => footings.push(floor),
                         ElementKind::Floor(f) => {
                             touched.run(f.run);
                             floors.push(f.run);
@@ -6683,6 +7097,23 @@ impl Model {
                             e.number, f.soffit.thickness
                         ));
                     }
+                    // Bekleidung (W3)
+                    let c = f.soffit;
+                    if !(c.cladding == 0.0 || (MIN_CLADDING..=MAX_CLADDING).contains(&c.cladding))
+                        || !(MIN_DRIP..=MAX_DRIP).contains(&c.drip)
+                        || !(MIN_BATTEN..=MAX_BATTEN).contains(&c.batten)
+                        || !(c.counter == 0.0 || (MIN_BATTEN..=MAX_BATTEN).contains(&c.counter))
+                    {
+                        out.push(format!(
+                            "{}: Bekleidung {} mm, Überstand {} mm, Lattung {}/{} mm außerhalb der Grenzen",
+                            e.number, c.cladding, c.drip, c.batten, c.counter
+                        ));
+                    }
+                    if c.cladding_material
+                        .is_some_and(|m| !self.materials.contains(m))
+                    {
+                        out.push(format!("{}: Baustoff der Bekleidung fehlt", e.number));
+                    }
                     if f.soffit
                         .material
                         .is_some_and(|m| !self.materials.contains(m))
@@ -6711,6 +7142,10 @@ impl Model {
                     {
                         out.push(format!("{}: Baustoff des Attikablechs fehlt", e.number));
                     }
+                }
+                ElementKind::Roof { floor } => out.extend(self.check_flat_roof(id, floor)),
+                ElementKind::Coping { floor } if self.flat_roof_coping(id, floor) => {
+                    out.extend(self.check_flat_roof(id, floor))
                 }
                 ElementKind::RoofTerrace { floor } | ElementKind::Coping { floor } => {
                     // Regeln 41/46: genau dann, wenn darüber ein Rücksprung ist
@@ -7101,12 +7536,32 @@ pub(crate) const STOREY_HEIGHT: f64 = 2855.0;
 /// Geschosshöhe OG (Jörn 10:13): lichte Höhe 2,635 + Decke 0,22.
 pub(crate) const UPPER_HEIGHT: f64 = 2855.0;
 pub(crate) const FOUNDATION_DEPTH: f64 = 800.0;
+/// Ebene Flachdach (Jörn 10.10.): ihre Höhe ist die Aufkantung über OK
+/// Rohdecke des obersten Geschosses, 50 cm, einstellbar von 15 cm bis
+/// 1,50 m (OK Mauerwerk, ohne Attikablech).
+pub const ROOF_UPSTAND: f64 = 500.0;
+pub const MIN_ROOF_UPSTAND: f64 = 150.0;
+pub const MAX_ROOF_UPSTAND: f64 = 1500.0;
 pub const FLOOR_THICKNESS: f64 = 220.0;
 /// Untersichtdämmung unter einem Vorsprung (Jörn 04:03, G7 K4, BIM Regel
 /// 35): 12 cm, einstellbar von 4 bis 30 cm, nie 0.
 pub const SOFFIT_THICKNESS: f64 = 120.0;
 pub const MIN_SOFFIT: f64 = 40.0;
 pub const MAX_SOFFIT: f64 = 300.0;
+/// Bekleidung unter der Untersichtdämmung (Jörn 05:55–05:58, Tagesplan
+/// P5–P7): 40 mm (Platte 8 und Traglattung 30 in einer Schicht), 10 … 80,
+/// 0 ohne; der Verblender steht 30 mm (20 … 40) unter UK Bekleidung über.
+/// Lattung nur als Menge: Grundlattung 800 mm, Traglattung quer 400 mm.
+pub const SOFFIT_CLADDING: f64 = 40.0;
+pub const MIN_CLADDING: f64 = 10.0;
+pub const MAX_CLADDING: f64 = 80.0;
+pub const SOFFIT_DRIP: f64 = 30.0;
+pub const MIN_DRIP: f64 = 20.0;
+pub const MAX_DRIP: f64 = 40.0;
+pub const BATTEN: f64 = 800.0;
+pub const COUNTER: f64 = 400.0;
+pub const MIN_BATTEN: f64 = 300.0;
+pub const MAX_BATTEN: f64 = 1500.0;
 /// Sohlplatte neuer Gebäude (Jörn 10:13): 22 cm, die Frostschürze reicht
 /// darunter bis UK Gründung −0,80 (58 cm).
 pub const SLAB_THICKNESS: f64 = 220.0;
@@ -7152,6 +7607,11 @@ pub const COPING_PART: u32 = STRIP_PART - 3;
 /// Teil des Körpers eines Wandzugs: Perimeterdämmung unter seiner
 /// Sohlplatte (Gelände Thema 4).
 pub const PERIMETER_PART: u32 = STRIP_PART - 4;
+/// Teil des Körpers einer Aufkantung: Dachaufbau und Attikablech des
+/// Flachdachs (D3, D4); Abstand zu den Teilen oben, damit weitere dazwischen
+/// passen.
+pub const ROOF_PART: u32 = STRIP_PART - 10;
+pub const ROOF_COPING_PART: u32 = STRIP_PART - 11;
 /// Attika über OK Belag (Jörn 08:35, BIM §3): 6 cm, einstellbar 0 bis 30 cm.
 pub const TERRACE_UPSTAND: f64 = 60.0;
 pub const MAX_UPSTAND: f64 = 300.0;
@@ -7162,6 +7622,61 @@ pub const TERRACE_TYPE_GUID: Guid = Guid(0xa75aeb4f33ba46c696cd177dded0ab96);
 pub const TERRACE_FINISH_GUID: Guid = Guid(0x79bfecdae5104f34bd95a7116f06ba0c);
 pub const TERRACE_INSULATION_GUID: Guid = Guid(0xd750cacad2e543e3a3e35c5c7f3d8d41);
 pub const COPING_MAT_GUID: Guid = Guid(0x97fe946502194178be60bb9eb54c46fb);
+/// Die eingebauten Baustoffe, die erst das erste Bauteil anlegt, mit Name
+/// und Art: Der Werksbestand verweist auf sie (`mat=`), auch wenn ein
+/// Projekt sie noch nicht führt.
+pub const BUILTIN_MATERIALS: [(Guid, &str, MatCategory); 9] = [
+    (
+        PERIMETER_MAT_GUID,
+        "XPS Perimeterdämmung",
+        MatCategory::Insulation,
+    ),
+    (TERRACE_FINISH_GUID, "Terrassenbelag", MatCategory::Concrete),
+    (
+        TERRACE_INSULATION_GUID,
+        "Dämmung hart (Terrasse)",
+        MatCategory::Insulation,
+    ),
+    (COPING_MAT_GUID, "Titanzink 0,7", MatCategory::Metal),
+    (
+        flachdach::ROOF_SEAL_GUID,
+        "Abdichtung Bitumen 2-lagig",
+        MatCategory::Membrane,
+    ),
+    (
+        flachdach::ROOF_INSULATION_GUID,
+        "Dämmung EPS 035 DAA dh",
+        MatCategory::Insulation,
+    ),
+    (
+        flachdach::ROOF_VAPOUR_GUID,
+        "Dampfsperre Bitumen-Alu",
+        MatCategory::Membrane,
+    ),
+    (
+        FOAMGLASS_MAT_GUID,
+        "Schaumglas-Dämmstein",
+        MatCategory::Insulation,
+    ),
+    (
+        CLADDING_MAT_GUID,
+        "Bekleidung Faserzement",
+        MatCategory::Concrete,
+    ),
+];
+
+/// Fußpunkt der Verblendschale auf der Dachterrasse (W1, W2): Baustoff
+/// „Schaumglas-Dämmstein“ und Werksschraffur „Dämmung hart (Kreuz)“, feste
+/// Guids, angelegt beim ersten Fußpunkt (ältere Dateien bleiben bytegleich).
+pub const FOAMGLASS_MAT_GUID: Guid = Guid(0x58d0e30a2b7844caa14c045d3881490a);
+/// „Bekleidung Faserzement“ unter der Untersichtdämmung (W3), feste Guids
+/// wie beim Schaumglas, angelegt bei der ersten Bekleidung.
+pub const CLADDING_MAT_GUID: Guid = Guid(0xa5196bbc329d43338725e72fb7c4b14f);
+const CLADDING_SURFACE_GUID: Guid = Guid(0x224a86c94719422c9c2e22fd2776f5df);
+pub const CROSS_FILL_GUID: Guid = Guid(0x2929d285ea0e4a69aaf92400ac5b37fc);
+/// Oberfläche des Schaumglases, fest wie der Baustoff: beim Lesen angelegt,
+/// träfe eine Guid aus der Folge sonst eine schon in der Datei vergebene.
+const FOAMGLASS_SURFACE_GUID: Guid = Guid(0x7e5276007e7f4e499b3552895b3474dd);
 /// Aufbau des Werkstyps von oben nach unten (Jörn 08:31–08:33).
 const TERRACE_BUILD_UP: [(f64, LayerFunction); 2] = [
     (60.0, LayerFunction::Finish),
@@ -8456,11 +8971,16 @@ mod og_phase2 {
         );
         let c = crate::qto::coping_qto(&m, ab).unwrap();
         assert!(near(c.length, 13000.0), "{}", c.length);
-        assert_eq!(c.girth, 250.0);
+        // Tropfkante 40 statt 20 (Jörn 10.10., Plan Flachdach P12)
+        assert_eq!(c.girth, 270.0);
         assert_eq!(m.props_of(dt).get("begehbar"), Some(&PropValue::Bool(true)));
         assert_eq!(
             m.props_of(ab).get("Abwicklung"),
-            Some(&PropValue::Number(250.0))
+            Some(&PropValue::Number(270.0))
+        );
+        assert_eq!(
+            m.props_of(ab).get("Zuschnitt"),
+            Some(&PropValue::Number(333.0))
         );
         let f = m.floor(eg).unwrap().unwrap();
         assert_eq!(f.terrace_band(), Some((2855.0, 2995.0)));
@@ -9380,8 +9900,9 @@ mod og_phase2 {
             .count();
         assert!(soffit > 0);
         // Dämmschraffur längs der Schicht (Jörn 05:41): v quer über die Dicke
-        // (unten 0, oben 1), u läuft waagerecht
-        for t in &fc.triangles {
+        // (unten 0, oben 1), u läuft waagerecht; darunter die Bekleidung (W3)
+        let ud = f.soffit.unwrap().mat | material::CUT;
+        for t in fc.triangles.iter().filter(|t| t.mat == ud) {
             for (p, uv) in t.p.iter().zip(t.uv) {
                 let v = if near(p.z, 2515.0) { 0.0 } else { 1.0 };
                 assert!(near(uv[1], v), "{p:?} {uv:?}");

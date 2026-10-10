@@ -244,6 +244,7 @@ pub fn eigene_baustoffe(m: &Model) -> Vec<(Guid, String, Option<sk_model::librar
                 "plaster" => Some(MatCategory::Plaster),
                 "timber" => Some(MatCategory::Timber),
                 "metal" => Some(MatCategory::Metal),
+                "membrane" => Some(MatCategory::Membrane),
                 _ => None,
             };
             let name = b.get("name").unwrap_or(b.key()).to_string();

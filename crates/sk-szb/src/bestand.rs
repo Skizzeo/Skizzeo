@@ -99,7 +99,7 @@ pub const BAENDER: [(&str, u32, u32); 12] = [
 ];
 
 /// Werks-Artikel (§10, aus werk.szk).
-pub const ARTIKEL: [WerkArtikel; 21] = [
+pub const ARTIKEL: [WerkArtikel; 30] = [
     a(
         "1S7bUW0010080100000001",
         "m2",
@@ -174,18 +174,18 @@ pub const ARTIKEL: [WerkArtikel; 21] = [
     a(
         "1S7bUW001008010000000G",
         "m2",
-        "EPS-Dämmplatte 035 d=120mm geklebt, inkl. Armierung und Putz",
+        "EPS-Dämmplatte 035 d=120mm, zwischen Lattung",
     ),
     a("1S7bUW001008010000000H", "m2", "Gipsputz maschinell 15 mm"),
     a(
         "1S7bUW001008010000000I",
         "m2",
-        "MW-Lamellenplatte 035 d=120mm geklebt, inkl. Armierung und Putz",
+        "MW-Klemmplatte 035 d=120mm A1, zwischen Lattung",
     ),
     a(
         "1S7bUW001008010000000J",
         "m2",
-        "MW-Dämmplatte 035 d=120mm gedübelt, inkl. Armierung und Putz",
+        "MW-Dämmplatte 035 d=120mm A1, zwischen Lattung",
     ),
     a(
         "1S7bUW001008010000000K",
@@ -196,6 +196,47 @@ pub const ARTIKEL: [WerkArtikel; 21] = [
         "1S7bUW001008010000000L",
         "m3",
         "Schotter 0/32 Füllmaterial, frei Baustelle",
+    ),
+    a(
+        "1S7bUW001008010000000M",
+        "m3",
+        "XPS-Perimeterdämmplatte 035 CS 300 kPa, lastabtragend",
+    ),
+    a(
+        "1S7bUW001008010000000N",
+        "m3",
+        "EPS-Dachdämmplatte 035 DAA dh, druckfest",
+    ),
+    a(
+        "1S7bUW001008010000000O",
+        "m2",
+        "Bitumen-Schweißbahn mit Alu-Einlage, Dampfsperre",
+    ),
+    a("1S7bUW001008010000000P", "kg", "Bitumen-Voranstrich kalt"),
+    a(
+        "1S7bUW001008010000000Q",
+        "m2",
+        "Polymerbitumen-Schweißbahn PYE PV 200 S5",
+    ),
+    a(
+        "1S7bUW001008010000000R",
+        "m2",
+        "Terrassenplatte Beton 40mm, Splittbett und Schutzlage",
+    ),
+    a(
+        "1S7bUW001008010000000S",
+        "m",
+        "Mauerabdeckung Titanzink 0,7mm Zuschnitt 400, Halter",
+    ),
+    a(
+        "1S7bUW001008010000000T",
+        "m3",
+        "EPS-Dachdämmplatte 035 DAA dh, Flachdach",
+    ),
+    a(
+        "1S7bUW001008010000000U",
+        "m2",
+        "Faserzementtafel 8mm inkl. Fugenband und Edelstahlschrauben",
     ),
 ];
 
@@ -261,12 +302,13 @@ pub const KGS: [u32; 16] = [
 ];
 
 /// In Skizzeo belegte Präfixe (§5).
-pub const BELEGT: [&str; 15] = [
-    "AW", "IW", "DE", "SP", "DA", "FE", "TU", "OE", "R", "FS", "RD", "UD", "DT", "AB", "GB",
+pub const BELEGT: [&str; 17] = [
+    "AW", "IW", "DE", "SP", "DA", "FE", "TU", "OE", "R", "FS", "RD", "UD", "DT", "AB", "GB", "AK",
+    "PD",
 ];
 
 /// Bauteilarten in Skizzeo (§10).
-pub const ARTEN: [&str; 9] = [
+pub const ARTEN: [&str; 12] = [
     "exterior",
     "interior",
     "floor",
@@ -274,12 +316,15 @@ pub const ARTEN: [&str; 9] = [
     "stripfooting",
     "edgeinsulation",
     "soffitinsulation",
+    "perimeterinsulation",
     "roofterrace",
     "coping",
+    "parapet",
+    "roof",
 ];
 
 /// Werks-Leistungen (§10, aus werk.szk).
-pub const LEISTUNGEN: [WerkLeistung; 42] = [
+pub const LEISTUNGEN: [WerkLeistung; 70] = [
     l(
         "1S7bUW0010080200000001",
         "m3",
@@ -392,7 +437,7 @@ pub const LEISTUNGEN: [WerkLeistung; 42] = [
         "1S7bUW001008020000000J",
         "m2",
         "area",
-        "Untersichtdämmung Decke EPS d=120mm geklebt, verputzt",
+        "Untersichtdämmung EPS 035 d=120mm zwischen Lattung, über Kopf",
     ),
     l(
         "1S7bUW001008020000000K",
@@ -404,13 +449,13 @@ pub const LEISTUNGEN: [WerkLeistung; 42] = [
         "1S7bUW001008020000000L",
         "m2",
         "area",
-        "Untersichtdämmung Decke MW-Lamelle d=120mm geklebt, verputzt",
+        "Untersichtdämmung MW 035 d=120mm A1 zwischen Lattung, über Kopf",
     ),
     l(
         "1S7bUW001008020000000M",
         "m2",
         "area",
-        "Untersichtdämmung Decke MW-Platte d=120mm gedübelt, verputzt",
+        "Untersichtdämmung MW-Platte 035 d=120mm zwischen Lattung, über Kopf",
     ),
     l(
         "1S7bUW001008020000000N",
@@ -531,6 +576,174 @@ pub const LEISTUNGEN: [WerkLeistung; 42] = [
         "m2",
         "auto",
         "Fassadengerüst LK3 W09, 4 Wochen Standzeit, auf-/abbauen",
+    ),
+    l(
+        "1S7bUW001008020000000h",
+        "m2",
+        "area",
+        "Perimeterdämmung XPS 300 unter Bodenplatte, lastabtragend",
+    ),
+    l(
+        "1S7bUW001008020000000i",
+        "m2",
+        "area",
+        "Dampfsperre Bitumen-Alu-Schweißbahn vollflächig, inkl. Voranstrich",
+    ),
+    l(
+        "1S7bUW001008020000000j",
+        "m2",
+        "area",
+        "Terrassendämmung EPS 035 DAA dh druckfest, Dicke nach Aufbau",
+    ),
+    l(
+        "1S7bUW001008020000000k",
+        "m2",
+        "area",
+        "Abdichtung Polymerbitumen 2-lagig, Oberlage beschiefert",
+    ),
+    l(
+        "1S7bUW001008020000000l",
+        "m",
+        "auto",
+        "Abdichtungsanschluss an Attika, über Krone geführt, inkl. Keil",
+    ),
+    l(
+        "1S7bUW001008020000000m",
+        "m2",
+        "area",
+        "Terrassenbelag Betonplatten 40mm auf Splittbett, Schutzlage",
+    ),
+    l(
+        "1S7bUW001008020000000n",
+        "m",
+        "length",
+        "Attikaabdeckung Titanzink 0,7mm, Zuschnitt bis 400mm, Halter",
+    ),
+    l(
+        "1S7bUW001008020000000o",
+        "m",
+        "auto",
+        "Zulage Attikaabdeckung Zuschnitt über 400 bis 500mm",
+    ),
+    l(
+        "1S7bUW001008020000000p",
+        "m",
+        "auto",
+        "Zulage Attikaabdeckung Zuschnitt über 500 bis 667mm",
+    ),
+    l(
+        "1S7bUW001008020000000q",
+        "m",
+        "auto",
+        "Zulage Attikaabdeckung Zuschnitt über 667 bis 1000mm",
+    ),
+    l(
+        "1S7bUW001008020000000r",
+        "st",
+        "auto",
+        "Zulage Attikaabdeckung Ecke 90°, gefalzt oder gelötet",
+    ),
+    l(
+        "1S7bUW001008020000000s",
+        "st",
+        "auto",
+        "Zulage Attikaabdeckung Endabschluss mit Stirnblech",
+    ),
+    l(
+        "1S7bUW001008020000000t",
+        "m",
+        "auto",
+        "Grundlattung KVH 60/80 über Kopf, a=80cm, mit Schraubankern",
+    ),
+    l(
+        "1S7bUW001008020000000u",
+        "m",
+        "auto",
+        "Traglattung 30/50 quer, a=40cm, Hinterlüftung",
+    ),
+    l(
+        "1S7bUW001008020000000v",
+        "m",
+        "auto",
+        "Lüftungsprofil Alu gelocht mit Insektenschutz, Untersichtrand",
+    ),
+    l(
+        "1S7bUW001008020000000w",
+        "m",
+        "auto",
+        "Fußpunkt Verblendschale Schaumglas-Dämmstein 115mm, 1. Lage",
+    ),
+    l(
+        "1S7bUW001008020000000x",
+        "m",
+        "auto",
+        "Zulage Fußpunkt Schaumglas-Dämmstein je weitere Lage",
+    ),
+    l(
+        "1S7bUW001008020000000y",
+        "m",
+        "auto",
+        "Mauersperrbahn unter Fußpunkt, B bis 25cm",
+    ),
+    l(
+        "1S7bUW001008020000000z",
+        "m",
+        "auto",
+        "Z-Folie über Fußpunkt, aus dem Schalenzwischenraum geführt",
+    ),
+    l(
+        "1S7bUW001008020000000_",
+        "m2",
+        "area",
+        "Dampfsperre Bitumen-Alu-Schweißbahn Flachdach, inkl. Voranstrich",
+    ),
+    l(
+        "1S7bUW001008020000000$",
+        "m2",
+        "area",
+        "Dachdämmung EPS 035 DAA dh einlagig, Dicke nach Aufbau",
+    ),
+    l(
+        "1S7bUW0010080200000010",
+        "m2",
+        "area",
+        "Abdichtung Polymerbitumen 2-lagig Flachdach, Oberlage beschiefert",
+    ),
+    l(
+        "1S7bUW0010080200000011",
+        "m",
+        "auto",
+        "Attikadämmung innen und Krone, EPS d=6-10cm, unter Abdichtung",
+    ),
+    l(
+        "1S7bUW0010080200000012",
+        "st",
+        "auto",
+        "Dachablauf DN 100 wärmegedämmt mit Aufstockelement, Einbau",
+    ),
+    l(
+        "1S7bUW0010080200000013",
+        "st",
+        "auto",
+        "Notüberlauf Attika rechteckig, inkl. Durchbruch und Einbindung",
+    ),
+    l(
+        "1S7bUW0010080200000014",
+        "m2",
+        "area",
+        "Untersichtbekleidung Faserzementtafel 8mm über Kopf, verschraubt",
+    ),
+    l(
+        "1S7bUW0010080200000015",
+        "m",
+        "auto",
+        "Abdichtungsanschluss an Aufkantung Flachdach, über Krone, inkl. Keil",
+    ),
+    l(
+        "1S7bUW0010080200000016",
+        "st",
+        "auto",
+        "Zulage Abdichtungsanschluss Innenecke, Eckverstärkung",
     ),
 ];
 

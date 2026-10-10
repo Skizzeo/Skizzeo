@@ -10,6 +10,7 @@ use crate::floor::{FloorError, FloorSlab};
 use crate::foundation::{Foundation, FoundationError};
 use crate::library::{LayerFunction, LayerSet, LayerSetId, MatCategory, MaterialId, MaterialLayer};
 use crate::model::Model;
+use crate::roof::FlatRoof;
 use crate::wall::WallChain;
 use sk_math::Vec3;
 use std::collections::HashMap;
@@ -40,6 +41,41 @@ pub struct LayerQto {
     /// Schicht im eigenen Geschoss (mm², Innenputz nach DIN 18350, BIM
     /// Regel 84).
     pub inner_area: f64,
+    /// Fußpunkt aus Schaumglas unter dieser Schicht (W2), mm³; nicht im
+    /// Volumen der Schicht, er steht in [`WallQto::facing_foot`].
+    pub foot: f64,
+}
+
+/// Fußpunkt der Verblendschale auf der Dachterrasse (W2, Tagesplan P1):
+/// Schaumglas-Dämmsteine vom Wandfuß bis OK Terrassenaufbau, je Segment.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FacingFootQto {
+    /// Schicht der Verblendschale im Aufbau der Wand.
+    pub layer: usize,
+    /// Baustoff „Schaumglas-Dämmstein“.
+    pub material: MaterialId,
+    /// Länge in der Außenflucht der Verblendschale (mm), Abrechnung in m.
+    pub length: f64,
+    /// Höhe = Aufbau der Dachterrasse (mm).
+    pub height: f64,
+    /// Breite = Dicke der Verblendschale (mm).
+    pub width: f64,
+    /// Lagen à [`FOOT_COURSE`] mm, aufgerundet (140 mm → 2).
+    pub courses: u32,
+    /// Ansichtsfläche außen: Länge × Höhe (mm²).
+    pub area: f64,
+    /// Grundfläche der Schicht im Segment × Höhe (mm³), aus dem Volumen
+    /// der Verblendschale herausgenommen.
+    pub volume: f64,
+}
+
+/// Lagenmaß der Schaumglas-Dämmsteine: Stein 115 mm + Lagerfuge 10 mm
+/// (FOAMGLAS PERINSUL HL, Tagesplan P1).
+pub const FOOT_COURSE: f64 = 125.0;
+
+/// Lagen eines Fußpunkts der Höhe `h` (mm), mindestens eine.
+pub fn foot_courses(h: f64) -> u32 {
+    ((h / FOOT_COURSE) - 1e-9).ceil().max(1.0) as u32
 }
 
 /// Mengen eines Wandsegments.
@@ -72,6 +108,9 @@ pub struct WallQto {
     /// Wand über einem Vorsprung an UK Untersichtdämmung abgefangen wird
     /// (G7 K4, BIM); 0 ohne Vorsprung oder ohne Verblender.
     pub facing_support: f64,
+    /// Fußpunkt aus Schaumglas, wenn die Verblendschale dieses Segments auf
+    /// einer Dachterrasse steht (W2).
+    pub facing_foot: Option<FacingFootQto>,
 }
 
 /// Kleinste Dicke einer Vorsatzschale, die über einem Vorsprung abgefangen
@@ -80,7 +119,7 @@ pub const MIN_FACING: f64 = 70.0;
 
 /// Verblender: Vorsatzschale aus Mauerwerk oder Beton (vor dem Kern), ab
 /// MIN_FACING dick; Putz, Dämmung und Luft werden nie abgefangen (BIM).
-fn is_facing(model: &Model, l: &MaterialLayer) -> bool {
+pub(crate) fn is_facing(model: &Model, l: &MaterialLayer) -> bool {
     l.function != LayerFunction::AirGap
         && l.function != LayerFunction::Insulation
         && l.thickness >= MIN_FACING
@@ -150,8 +189,18 @@ fn extension(model: &Model, below: &WallChain, set: &LayerSet) -> Option<Extensi
             };
             // Vorspringend: der ganze Abschnitt; Nachbarn: nur das Stück über
             // die Ecke hinaus (der Rest ist die EG-Fassade in ihrer Flucht)
+            // Verblender bis unter die Bekleidung (W3): auf den bekleideten
+            // Segmenten länger
+            let h_drip = below
+                .joints
+                .overhang
+                .as_ref()
+                .and_then(|o| Some((o, o.drip.as_ref()?)))
+                .filter(|(_, d)| d.layer == li && d.segs.get(k) == Some(&true))
+                .map_or(0.0, |(o, d)| (o.from - d.from).max(0.0));
             parts[k][li] = if offs[k] > 0.0 {
-                (up_area * h_ext, side * h_ext)
+                let h = h_ext + h_drip;
+                (up_area * h, side * h)
             } else {
                 (
                     (up_area - own_area).max(0.0) * h_ext,
@@ -222,6 +271,9 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
         return Vec::new();
     };
     let category = model.element(r.segments[0]).map(|e| e.category);
+    // Aufkantung: ohne die Schichten innen vom Kern (Innenputz weglassen)
+    let dropped = model.parapet_inner_layers(run).unwrap_or(set.layers.len());
+    let drop: f64 = set.layers[dropped..].iter().map(|l| l.thickness).sum();
     let pts = chain.clean_points();
     let offsets = chain.layer_offsets();
     // Außenkante einer Schicht: `a` (kleinerer Versatz), wenn außen links liegt
@@ -231,9 +283,13 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
         joints: Default::default(),
         ..chain.clone()
     };
+    let inner = {
+        let (i, o) = (gross.inner_offset(), gross.outer_offset());
+        i + (o - i).signum() * drop
+    };
     let (c_out, c_in) = (
         gross.face_corners(gross.outer_offset()),
-        gross.face_corners(gross.inner_offset()),
+        gross.face_corners(inner),
     );
     let gross_faces: Vec<(Vec<Vec3>, Vec<Vec3>)> = offsets
         .iter()
@@ -271,16 +327,33 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
             }
         })
         .filter(|x| x.parts.len() == chain.segment_count());
+    let foamglass = model.foamglass_material();
     let n = pts.len();
     (0..chain.segment_count())
         .map(|k| {
             let j = (k + 1) % n;
+            let foot = chain.joints.facing_foot.as_ref().filter(|f| f.at(k));
             let layers: Vec<LayerQto> = set
                 .layers
                 .iter()
                 .zip(&faces)
                 .enumerate()
                 .map(|(li, (l, (fa, fb)))| {
+                    if li >= dropped {
+                        return LayerQto {
+                            material: l.material,
+                            thickness: 0.0,
+                            length: 0.0,
+                            area: 0.0,
+                            volume: 0.0,
+                            mass: 0.0,
+                            pocket: 0.0,
+                            side_area: 0.0,
+                            attika: 0.0,
+                            inner_area: 0.0,
+                            foot: 0.0,
+                        };
+                    }
                     let quad = [fa[k], fa[j], fb[j], fb[k]];
                     // Luftschicht: ohne Körper, darum ohne Fläche und Volumen (K4)
                     let air = l.function == LayerFunction::AirGap;
@@ -308,10 +381,13 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                     // Attika über dem Terrassenrand (D2, BIM E2): Mehrmenge der
                     // Schicht, die sie verlängert
                     let (v_att, s_att) = attika_of(&chain, k, li);
-                    let volume = area * h_here + v_up + v_att;
-                    let density = model.material(l.material).map_or(0.0, |m| m.density);
                     let (la, lb) = ((fa[j] - fa[k]).length(), (fb[j] - fb[k]).length());
                     let (lo, li_len) = if outer_first { (la, lb) } else { (lb, la) };
+                    // Fußpunkt aus Schaumglas (W2): nicht Verblender
+                    let h_foot = foot.map_or(0.0, |f| if f.layer == li { f.height() } else { 0.0 });
+                    let v_foot = area * h_foot;
+                    let volume = area * h_here + v_up + v_att - v_foot;
+                    let density = model.material(l.material).map_or(0.0, |m| m.density);
                     LayerQto {
                         material: l.material,
                         thickness: l.thickness,
@@ -320,20 +396,41 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                         volume,
                         mass: volume * 1e-9 * density,
                         pocket: (area * (h - h_own - h_ext)).max(0.0),
-                        side_area: lo * (h - h_ext + h_here - h_own) + s_up + s_att,
+                        side_area: lo * (h - h_ext + h_here - h_own - h_foot) + s_up + s_att,
                         attika: v_att,
                         inner_area: if air { 0.0 } else { li_len * h_here },
+                        foot: v_foot,
                     }
                 })
                 .collect();
+            let facing_foot = foot.zip(foamglass).and_then(|(f, material)| {
+                let l = layers.get(f.layer).filter(|l| l.foot > 0.0)?;
+                let (fa, fb) = &faces[f.layer];
+                let outer = if outer_first {
+                    (fa[j] - fa[k]).length()
+                } else {
+                    (fb[j] - fb[k]).length()
+                };
+                Some(FacingFootQto {
+                    layer: f.layer,
+                    material,
+                    length: outer,
+                    height: f.height(),
+                    width: l.thickness,
+                    courses: foot_courses(f.height()),
+                    area: outer * f.height(),
+                    volume: l.foot,
+                })
+            });
             let footprint: f64 = gross_faces
                 .iter()
                 .zip(&set.layers)
+                .take(dropped)
                 .filter(|(_, l)| l.function != LayerFunction::AirGap)
                 .map(|((fa, fb), _)| area(&[fa[k], fa[j], fb[j], fb[k]]))
                 .sum();
             let side_outer = (c_out[j] - c_out[k]).length() * h;
-            let list_length = if category == Some(Category::ExteriorWall) && h > 0.0 {
+            let list_length = if category.is_some_and(Category::is_outer_wall) && h > 0.0 {
                 side_outer / h
             } else {
                 // lichte Länge: Mittellinie der (ersten) tragenden Schicht
@@ -345,16 +442,17 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
             };
             WallQto {
                 length: (pts[j] - pts[k]).length(),
-                width: chain.thickness(),
+                width: chain.thickness() - drop,
                 height: h,
                 footprint,
                 side_outer,
                 side_inner: (c_in[j] - c_in[k]).length() * h,
-                volume: layers.iter().map(|l| l.volume).sum(),
+                volume: layers.iter().map(|l| l.volume + l.foot).sum(),
                 volume_gross: footprint * h,
                 pocket: layers.iter().map(|l| l.pocket).sum(),
                 list_length,
                 facing_support: from_below.as_ref().map_or(0.0, |x| x.support[k]),
+                facing_foot,
                 layers,
             }
         })
@@ -445,18 +543,81 @@ pub struct FloorQto {
 pub struct SoffitQto {
     /// Fläche unter dem auskragenden Streifen (mm²).
     pub area: f64,
+    /// Volumen der Dämmung allein (mm³).
     pub volume: f64,
     pub thickness: f64,
+    /// Bekleidung darunter (W3), `None` ohne.
+    pub cladding: Option<CladdingQto>,
+}
+
+impl SoffitQto {
+    /// Fläche der Schicht `i` des Bauteils: 0 Dämmung, 1 Bekleidung (mm²).
+    pub fn layer_area(&self, i: usize) -> f64 {
+        match (i, &self.cladding) {
+            (0, _) => self.area,
+            (_, Some(c)) => c.area,
+            _ => 0.0,
+        }
+    }
+}
+
+/// Mengen der Bekleidung unter einer Untersichtdämmung (W3). Die Lattung ist
+/// nicht modelliert; ihre Längen rechnen sich aus Fläche, Achsabstand und
+/// Umfang (Tagesplan P7).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CladdingQto {
+    /// Dicke (mm).
+    pub thickness: f64,
+    /// Bekleidete Fläche (mm²).
+    pub area: f64,
+    pub volume: f64,
+    /// Umfang der bekleideten Fläche (mm).
+    pub perimeter: f64,
+    /// Freie Außenkante am Verblender (mm, Lüftungsprofil).
+    pub edge: f64,
+    /// Achsabstände der Grund- und Traglattung (mm; 0 ohne).
+    pub batten: f64,
+    pub counter: f64,
+}
+
+impl CladdingQto {
+    /// Länge der Grundlattung (mm): Fläche / Achsabstand + Umfang.
+    pub fn batten_length(&self) -> f64 {
+        lath_length(self.area, self.batten, self.perimeter)
+    }
+
+    /// Länge der Traglattung quer dazu (mm), 0 ohne.
+    pub fn counter_length(&self) -> f64 {
+        lath_length(self.area, self.counter, self.perimeter)
+    }
+}
+
+fn lath_length(area: f64, spacing: f64, perimeter: f64) -> f64 {
+    if spacing > 0.0 && area > 0.0 {
+        area / spacing + perimeter
+    } else {
+        0.0
+    }
 }
 
 /// Mengen der Untersichtdämmung einer schon berechneten Decke; `None` ohne
 /// Vorsprung.
 pub fn soffit_qto_of(f: &FloorSlab) -> Option<SoffitQto> {
     let sp = f.soffit?;
+    let cladding = f.cladding_band().map(|_| CladdingQto {
+        thickness: sp.cladding,
+        area: f.cladding_area(),
+        volume: f.cladding_volume(),
+        perimeter: f.cladding_perimeter(),
+        edge: f.cladding_edge(),
+        batten: sp.batten,
+        counter: sp.counter,
+    });
     Some(SoffitQto {
         area: f.soffit_area(),
         volume: f.soffit_volume(),
         thickness: sp.thickness,
+        cladding,
     })
 }
 
@@ -489,8 +650,8 @@ pub fn perimeter_qto_of(f: &Foundation) -> Option<PerimeterQto> {
     })
 }
 
-/// Mengen einer Dachterrasse (D1, IFC IfcCovering ROOFING), Hauptmenge
-/// Fläche (BIM §6).
+/// Mengen einer Dachterrasse (D1, IFC IfcCovering ROOFING) und eines
+/// Flachdachs (Jörn 10.10.), Hauptmenge Fläche (BIM §6).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerraceQto {
     /// Fläche des Umrisses (mm²).
@@ -516,6 +677,12 @@ pub struct CopingQto {
     pub material: Option<MaterialId>,
     /// Blechvolumen: Länge × Abwicklung × wahre Dicke 0,7 mm (mm³).
     pub volume: f64,
+    /// Zuschnitt: Abwicklung auf das Handelsmaß aufgerundet (mm,
+    /// [`crate::qto_dach::zuschnitt`]).
+    pub cut: f64,
+    /// Ecken und Endabschlüsse aller Blechstränge (Zulagen im LV).
+    pub corners: u32,
+    pub ends: u32,
 }
 
 /// Wahre Dicke des Attikablechs (mm), Merkmal (BIM E4).
@@ -568,11 +735,15 @@ pub fn coping_qto_of(model: &Model, floor: ElementId, f: &FloorSlab) -> Option<C
     }
     let length = f.coping_length();
     let girth = crate::terrace::coping_girth(f.terraces.width);
+    let pfade = &f.terraces.coping;
     Some(CopingQto {
         length,
         girth,
         material: model.coping_material(floor),
         volume: length * girth * COPING_SHEET,
+        cut: crate::qto_dach::zuschnitt(girth),
+        corners: pfade.iter().map(crate::qto_dach::ecken).sum(),
+        ends: pfade.iter().map(crate::qto_dach::enden).sum(),
     })
 }
 
@@ -581,8 +752,71 @@ pub fn coping_qto(model: &Model, coping: ElementId) -> Option<CopingQto> {
     let ElementKind::Coping { floor } = model.element(coping)?.kind else {
         return None;
     };
+    if model.flat_roof_coping(coping, floor) {
+        return Some(roof_coping_qto_of(
+            model,
+            floor,
+            &model.flat_roof_over(floor)?,
+        ));
+    }
     let run = model.run_of(floor)?;
     coping_qto_of(model, floor, &model.floor(run)?.ok()?)
+}
+
+/// Mengen des Dachaufbaus `roof` aus der schon berechneten Geometrie
+/// seines Flachdachs (D3): Fläche an der Innenfläche der Aufkantung, je
+/// Schicht ihr Volumen; Abdichtung und Dampfsperre zählen zu den Belägen.
+pub fn flat_roof_qto_of(model: &Model, roof: ElementId, r: &FlatRoof) -> TerraceQto {
+    let area = r.area();
+    let all = model.flat_roof_layers(roof);
+    let layers: Vec<(MaterialId, f64, f64)> = all
+        .iter()
+        .filter(|l| l.function != LayerFunction::AirGap)
+        .map(|l| (l.material, l.thickness, l.thickness * area))
+        .collect();
+    let by = |pick: &dyn Fn(LayerFunction) -> bool| -> f64 {
+        all.iter()
+            .filter(|l| pick(l.function))
+            .map(|l| l.thickness * area)
+            .sum()
+    };
+    TerraceQto {
+        area,
+        volume: layers.iter().map(|l| l.2).sum(),
+        insulation_volume: by(&|x| x == LayerFunction::Insulation),
+        finish_volume: by(&|x| x != LayerFunction::Insulation && x != LayerFunction::AirGap),
+        layers,
+        depth: 0.0,
+    }
+}
+
+/// Mengen eines Dachaufbaus.
+pub fn flat_roof_qto(model: &Model, roof: ElementId) -> Option<TerraceQto> {
+    let ElementKind::Roof { floor } = model.element(roof)?.kind else {
+        return None;
+    };
+    Some(flat_roof_qto_of(model, roof, &model.flat_roof_over(floor)?))
+}
+
+/// Mengen des Attikablechs auf der Aufkantung über der Decke `floor` (D4).
+pub fn roof_coping_qto_of(model: &Model, floor: ElementId, r: &FlatRoof) -> CopingQto {
+    let length = r.coping_length();
+    let girth = r.coping_girth();
+    // geschlossener Ring: Ecken an jedem Knick, keine Endabschlüsse
+    let ring = crate::terrace::CopingPath {
+        points: r.ring.clone(),
+        closed: true,
+        ends: [crate::solid::SweepEnd::Square; 2],
+    };
+    CopingQto {
+        length,
+        girth,
+        material: model.coping_material(floor),
+        volume: length * girth * COPING_SHEET,
+        cut: crate::qto_dach::zuschnitt(girth),
+        corners: crate::qto_dach::ecken(&ring),
+        ends: 0,
+    }
 }
 
 /// Mengen der Decke über einem Wandzug; `None` ohne Decke oder wenn kein
@@ -974,7 +1208,7 @@ impl ElementQto {
             ElementQto::Footing(f) => f.volume,
             ElementQto::Floor(f) => f.volume,
             ElementQto::Strip(f) => f.volume,
-            ElementQto::Soffit(f) => f.volume,
+            ElementQto::Soffit(f) => f.volume + f.cladding.as_ref().map_or(0.0, |c| c.volume),
             ElementQto::Perimeter(f) => f.volume,
             ElementQto::Terrace(t) => t.volume,
             ElementQto::Coping(c) => c.volume,
@@ -1075,7 +1309,8 @@ pub struct LayerRow {
     pub once: bool,
     /// Abrechnungsfläche der Schicht nach Regel 84 (mm², KA-0a2,
     /// architektur/paket-ka0.md §3.3): Wandschicht nach Lage, Decke und
-    /// Sohlplatte mit `area`, Untersicht und Dachterrasse mit `bill_area`.
+    /// Sohlplatte mit `area`, Untersicht, Perimeterdämmung und Dachterrasse
+    /// mit `bill_area`.
     pub face: f64,
     /// Auflagertasche (mm³) für die Zeile „− Auflager“ im Mengenansatz:
     /// Wandschicht ihr Abzug durch die Decke, Decke ihr Auflager in den
@@ -1173,23 +1408,26 @@ pub struct Schedule {
     /// Reihenfolge der Zeilen; aus den schon gerechneten Mengen, damit
     /// „Kosten live“ nur liest.
     pub formwork: Vec<(ElementId, FormworkQto)>,
-    /// Automatikmengen je Gründung (Erdarbeiten, Bauvorbereitung): Mengen,
-    /// die an keiner Schicht hängen. Bauleistungen mit `auto=` rechnen
-    /// damit.
+    /// Automatikmengen (Erdarbeiten, Bauvorbereitung je Gründung, Zulagen
+    /// am Attikablech): Mengen, die an keiner Schicht hängen. Bauleistungen
+    /// mit `auto=` rechnen damit.
     pub auto: Vec<AutoMenge>,
 }
 
-/// Eine Automatikmenge: eine Menge eines Gebäudes, die aus der Gründung
-/// folgt und an keiner Schicht hängt (Erdarbeiten, Baustelleneinrichtung).
-/// Sie steht am Bauteil der Sohlplatte, damit Gebäude, Geschoss und Umfang
-/// wie bei jeder Mengenzeile gelten.
+/// Eine Automatikmenge: eine Menge eines Gebäudes, die an keiner Schicht
+/// hängt. Erdarbeiten und Baustelleneinrichtung folgen aus der Gründung und
+/// stehen an der Sohlplatte, die Zulagen der Attikaabdeckung am Attikablech;
+/// so gelten Gebäude, Geschoss und Umfang wie bei jeder Mengenzeile.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AutoMenge {
-    /// Sohlplatte der Gründung.
+    /// Träger: Sohlplatte der Gründung (`earth.*`, `site.*`), Dachaufbau des
+    /// Flachdachs (`roof.*`) bzw. das Bauteil der Menge (`coping.*`,
+    /// `soffit.*`).
     pub element: ElementId,
-    /// Bauteilnummer der Sohlplatte.
+    /// Bauteilnummer des Trägers.
     pub number: String,
-    /// Geschoss der Zeile (Gründungsband, wie die Sohlplatte).
+    /// Geschoss der Zeile (Gründungsband wie die Sohlplatte, sonst das des
+    /// Trägers).
     pub storey: StoreyId,
     pub building: Option<BuildingId>,
     /// Schlüssel, z. B. `earth.excavation` ([`crate::qto_earth::SCHLUESSEL`]).
@@ -1202,6 +1440,17 @@ pub struct AutoMenge {
     pub kg: Option<u16>,
     /// Rechenweg für den Mengenansatz, z. B. „99,00 m² × 0,30 m“.
     pub formula: String,
+}
+
+/// Alle Schlüssel der Automatikmengen (`[service] auto=`) mit Einheit und
+/// Bedeutung: Erdarbeiten, Bauvorbereitung, Dach, Flachdach, Untersicht.
+pub fn auto_schluessel() -> impl Iterator<Item = (&'static str, &'static str, &'static str)> {
+    crate::qto_earth::SCHLUESSEL
+        .into_iter()
+        .chain(crate::qto_site::SCHLUESSEL)
+        .chain(crate::qto_dach::SCHLUESSEL)
+        .chain(crate::roof::SCHLUESSEL)
+        .chain(crate::qto_fassade::SCHLUESSEL)
 }
 
 /// Geschoss, unter dem ein Bauteil in Mengen und Baum steht: sein eigenes,
@@ -1230,6 +1479,7 @@ fn material_rank(c: MatCategory) -> u8 {
         MatCategory::Plaster => 4,
         MatCategory::Air => 5,
         MatCategory::Metal => 6,
+        MatCategory::Membrane => 7,
     }
 }
 
@@ -1241,6 +1491,8 @@ pub fn schedule(model: &Model) -> Schedule {
     let mut found: HashMap<RunId, Result<Foundation, FoundationError>> = HashMap::new();
     // Sohlplatten je Wandzug, für die Automatikmengen
     let mut platten: Vec<(RunId, ElementId)> = Vec::new();
+    // Flachdächer, für ihre Automatikmengen
+    let mut roofs: Vec<(ElementId, FlatRoof)> = Vec::new();
     let mut floors: HashMap<RunId, Result<FloorSlab, FloorError>> = HashMap::new();
     // (Geschoss der Gruppe, Rang, Aufbau, Erweiterung) → Zeilen mit
     // Baustoffanteilen; die Erweiterung als Stelle in `ext_defs`, sonst 0
@@ -1350,6 +1602,24 @@ pub fn schedule(model: &Model) -> Schedule {
                             crate::model::explain_floor(*err)
                         )),
                     ),
+                }
+            }
+            // Flachdach (D3, D4): aus der Aufkantung über der Decke
+            ElementKind::Roof { floor } => match model.flat_roof_over(floor) {
+                Some(r) => {
+                    let q = flat_roof_qto_of(model, id, &r);
+                    roofs.push((id, r));
+                    (Some(ElementQto::Terrace(q)), None)
+                }
+                None => (None, Some("Kein Körper: keine Aufkantung".into())),
+            },
+            ElementKind::Coping { floor } if model.flat_roof_coping(id, floor) => {
+                match model.flat_roof_over(floor) {
+                    Some(r) => (
+                        Some(ElementQto::Coping(roof_coping_qto_of(model, floor, &r))),
+                        None,
+                    ),
+                    None => (None, Some("Kein Körper: keine Aufkantung".into())),
                 }
             }
             ElementKind::RoofTerrace { floor } | ElementKind::Coping { floor } => {
@@ -1498,6 +1768,30 @@ pub fn schedule(model: &Model) -> Schedule {
     }
     sched.formwork = formwork_rows(&sched);
     sched.auto = auto_rows(model, &platten);
+    roofs.sort_by_key(|(id, _)| model.element(*id).map(|e| e.number.clone()));
+    for (id, r) in &roofs {
+        let Some(e) = model.element(*id) else {
+            continue;
+        };
+        let vorlage = AutoMenge {
+            element: *id,
+            number: e.number.clone(),
+            storey: e.storey,
+            building: model.storey(e.storey).and_then(|s| s.building),
+            key: "",
+            unit: "",
+            value: 0.0,
+            kg: None,
+            formula: String::new(),
+        };
+        sched.auto.extend(crate::roof::roof_mengen(&vorlage, r));
+    }
+    // Zulagen am Attikablech, nach den Mengen der Gründung
+    let dach = crate::qto_dach::bauteil_mengen(model, &sched);
+    sched.auto.extend(dach);
+    // Lattung und Randprofil der Untersichten
+    let untersicht = crate::qto_fassade::bauteil_mengen(model, &sched);
+    sched.auto.extend(untersicht);
     sched
 }
 
@@ -1769,10 +2063,11 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                 .material(m)
                 .is_some_and(|x| x.category == MatCategory::Insulation)
         };
-        // Abrechnung je Bauteil (Fläche, Länge, einmal je Gewerk)
-        let bill = match q {
+        // Abrechnung je Bauteil (Fläche, Länge, einmal je Gewerk); die
+        // Untersicht je Schicht (Dämmung, Bekleidung W3)
+        let bill = |i: usize| match q {
             ElementQto::Terrace(t) => Some((t.area, 0.0)),
-            ElementQto::Soffit(f) => Some((f.area, 0.0)),
+            ElementQto::Soffit(f) => Some((f.layer_area(i), 0.0)),
             ElementQto::Perimeter(f) => Some((f.area, 0.0)),
             ElementQto::Coping(c) => Some((0.0, c.length)),
             _ => None,
@@ -1796,7 +2091,7 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                         pocket: f64| {
             let Some(l) = layers.get(i) else { return };
             let ins = insulation(l.material);
-            let (bill_area, bill_length, once) = match (bill, q) {
+            let (bill_area, bill_length, once) = match (bill(i), q) {
                 (Some((a, len)), _) => (a, len, true),
                 (None, ElementQto::Wall(w)) => (
                     if ins { area } else { 0.0 },
@@ -1822,7 +2117,9 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                     Face::Inner => inner,
                 },
                 ElementQto::Floor(_) | ElementQto::Slab(_) => area,
-                ElementQto::Soffit(_) | ElementQto::Terrace(_) => bill_area,
+                ElementQto::Soffit(_) | ElementQto::Terrace(_) | ElementQto::Perimeter(_) => {
+                    bill_area
+                }
                 _ => 0.0,
             };
             out.push(LayerRow {
@@ -1856,11 +2153,12 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
             ElementQto::Wall(w) => {
                 let whole = w.layers.len() == 1;
                 for (i, l) in w.layers.iter().enumerate() {
-                    // Luftschicht ohne Körper (K4)
+                    // Luftschicht ohne Körper (K4); in der Aufkantung
+                    // weggelassene Schicht (Dicke 0)
                     let air = model
                         .material(l.material)
                         .is_some_and(|x| x.category == MatCategory::Air);
-                    if !air {
+                    if !air && l.thickness > 0.0 {
                         push(
                             i,
                             w.list_length,
@@ -1894,6 +2192,10 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                     if air {
                         continue;
                     }
+                    let area = match q {
+                        ElementQto::Soffit(f) => f.layer_area(i),
+                        _ => area,
+                    };
                     let v = if l.core || whole {
                         q.volume()
                     } else {
@@ -2035,7 +2337,10 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
             }
             ElementKind::Coping { floor } => model.coping_material(floor),
             ElementKind::PerimeterInsulation { .. } => model.perimeter_material(),
-            ElementKind::Wall(_) | ElementKind::RoofTerrace { .. } | ElementKind::Ext(_) => None,
+            ElementKind::Wall(_)
+            | ElementKind::RoofTerrace { .. }
+            | ElementKind::Roof { .. }
+            | ElementKind::Ext(_) => None,
         });
         match (q, mat) {
             (ElementQto::Terrace(t), _) => {
@@ -2053,8 +2358,23 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
                         add(l.material, l.volume, l.side_area, None);
                     }
                 }
+                // Fußpunkt aus Schaumglas (W2): eigener Baustoff
+                if let Some(f) = &w.facing_foot {
+                    add(f.material, f.volume, f.area, None);
+                }
             }
-            (ElementQto::Soffit(f), Some(m)) => add(m, f.volume, f.area, None),
+            (ElementQto::Soffit(f), Some(m)) => {
+                add(m, f.volume, f.area, None);
+                // Bekleidung (W3): eigener Baustoff
+                let floor = match model.element(row.element).map(|e| &e.kind) {
+                    Some(ElementKind::SoffitInsulation { floor }) => Some(*floor),
+                    _ => None,
+                };
+                let cm = floor.and_then(|fl| model.soffit_cladding_material_of(fl));
+                if let (Some(c), Some(cm)) = (&f.cladding, cm) {
+                    add(cm, c.volume, c.area, None);
+                }
+            }
             (ElementQto::Perimeter(f), Some(m)) => add(m, f.volume, f.area, None),
             (ElementQto::Coping(c), Some(m)) => add(m, c.volume, 0.0, Some(c.length)),
             (q, Some(m)) => add(m, q.volume(), 0.0, None),

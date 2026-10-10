@@ -35,13 +35,14 @@ use std::time::{Duration, Instant};
 pub const STEP: &str = "Baustoffe geändert";
 
 /// Reihenfolge der Baustoffarten in der Liste (Sollbild p5-1).
-const CATS: [MatCategory; 7] = [
+const CATS: [MatCategory; 8] = [
     MatCategory::Masonry,
     MatCategory::Concrete,
     MatCategory::Insulation,
     MatCategory::Plaster,
     MatCategory::Timber,
     MatCategory::Metal,
+    MatCategory::Membrane,
     MatCategory::Air,
 ];
 
@@ -233,6 +234,7 @@ fn count_text(c: TypeCategory, n: usize) -> String {
         TypeCategory::GroundSlab => ("Sohlplatte", "Sohlplatten"),
         TypeCategory::StripFooting => ("Frostschürze", "Frostschürzen"),
         TypeCategory::RoofTerrace => ("Dachterrasse", "Dachterrassen"),
+        TypeCategory::FlatRoof => ("Flachdach", "Flachdächer"),
     };
     match n {
         0 => "nicht verbaut".into(),

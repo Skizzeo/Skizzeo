@@ -7,6 +7,8 @@
 //! auf der Grafikkarte noch dazukommen.
 //!
 //! Aufruf: `cargo test --release -p skizzeo perf -- --ignored --nocapture`
+//! Budgets prüfen `perf_gelaende_ziehen` und `perf_automenge` sowie die Proben
+//! `probe_3ch`, `probe_3cl` (app) und `probe_3cm` (sk-cost).
 
 use crate::camera::Camera;
 use crate::scene::Scene;
@@ -339,10 +341,41 @@ fn annex(s: &mut Scene, ox: f64, oy: f64) {
     s.add_wall_as(&w, sk_model::Category::InteriorWall);
 }
 
+/// Stütze aus den Beispielen von sk-szb (Exemplare im Referenzgebäude).
+const STUETZE: &str = include_str!("../../crates/sk-szb/beispiele/werk.stuetze.szb");
+
 /// Referenz: `buildings` Hauptgebäude mit je `storeys` Geschossen und `annexes`
-/// Nebengebäude, Geschosse übereinander.
+/// Nebengebäude, Geschosse übereinander, mit Decken und Gründung. Dazu
+/// (Briefing QS, Fassung 2, §5) je Gebäude OK Gelände 600 mm unter ±0,00,
+/// 100 mm Perimeterdämmung unter jeder Sohlplatte und im EG des ersten
+/// Hauses 7 Stützen als Exemplare.
 fn reference(buildings: usize, storeys: usize, annexes: usize) -> Scene {
-    reference_stacked(buildings, storeys as u8, annexes)
+    use sk_model::erweiterung::{ExtDef, ExtPart};
+    let mut s = reference_stacked(buildings, storeys as u8, annexes);
+    let eg = s.active_storey();
+    assert!(s.edit_model("Referenz ausbauen", |m| {
+        let gebaeude: Vec<_> = m.buildings().ids().collect();
+        for b in gebaeude {
+            assert!(m.set_terrain_offset_of(b, 600.0));
+        }
+        let platten: Vec<_> = m
+            .elements()
+            .iter()
+            .filter(|(_, e)| matches!(e.kind, sk_model::ElementKind::GroundSlab(_)))
+            .map(|(id, _)| id)
+            .collect();
+        for id in platten {
+            assert!(m.set_slab_insulation(id, 100.0));
+        }
+        let d = ExtDef::lesen(STUETZE).unwrap();
+        m.put_ext_def(d.clone()).unwrap();
+        for i in 0..7 {
+            let p = ExtPart::new(&d, [2500.0 + i as f64 * 2000.0, 6000.0]);
+            m.add_ext(eg, p).unwrap();
+        }
+        true
+    }));
+    s
 }
 
 #[test]
@@ -1305,5 +1338,115 @@ fn perf_loslassen_mit_abgleich() {
     let _ = std::fs::remove_dir_all(&d);
     if cfg!(not(debug_assertions)) {
         assert!(l < 8.0, "Loslassen mit Abgleichzeile {l:.3} ms ≥ 8 ms");
+    }
+}
+
+/// Briefing QS §5: OK Gelände des aktiven Gebäudes ziehen (Paneel
+/// „Geschosse“). Je Bild baut die Szene nur die Gründung dieses Gebäudes neu
+/// (47b432f, vorher alle Züge: 18,6 ms bei vier Häusern); das 3D-Netz steht
+/// getrennt daneben. Budget: Ziehen 2 ms je Bild, Loslassen 8 ms.
+#[test]
+#[ignore]
+fn perf_gelaende_ziehen() {
+    println!();
+    for (name, buildings, storeys, annexes) in [
+        ("Referenz: 4 Geschosse + 2 Nebengeb.", 1, 4, 2),
+        ("Groß: 2 Häuser à 4 G. + 2 Nebengeb.", 2, 4, 2),
+        ("Reserve ×4 (8 Häuser à 4 G.)", 8, 4, 2),
+    ] {
+        let mut s = reference(buildings, storeys, annexes);
+        // Sieben Runden wie in `perf_ebene_ziehen`; der Median zählt
+        let (mut drags, mut meshes, mut releases) = (Vec::new(), Vec::new(), Vec::new());
+        for _ in 0..7 {
+            let mut flip = false;
+            s.begin("Gelände ziehen");
+            drags.push(time(20, || {
+                flip = !flip;
+                s.drag_terrain(if flip { -500.0 } else { -700.0 });
+            }));
+            meshes.push(time(5, || {
+                std::hint::black_box(s.mesh(ViewKind::Persp, None, &[]));
+            }));
+            let t = Instant::now();
+            s.commit();
+            releases.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        let (drag, dlo, dhi) = median(&mut drags);
+        let (mesh, _, _) = median(&mut meshes);
+        let (release, _, rhi) = median(&mut releases);
+        println!(
+            "{name:<36} Ziehen {drag:5.2} ms je Bild ({dlo:.2}–{dhi:.2}), Netz3D {mesh:5.2} ms, \
+             Loslassen {release:5.2} ms (max {rhi:.2})"
+        );
+        assert!(drag <= 2.0, "{name}: Gelände ziehen {drag:.2} ms > 2 ms");
+        assert!(release <= 8.0, "{name}: Loslassen {release:.2} ms > 8 ms");
+    }
+}
+
+/// Briefing QS §5: AutoMengen (Erdarbeiten `earth.*`, Bauvorbereitung
+/// `site.*`) in der Mengenliste. Gemessen wird `schedule` im Ganzen und der
+/// Anteil der AutoMengen, nachgebaut aus denselben öffentlichen Bausteinen
+/// wie `qto::auto_rows` (Zeilenzahl geprüft). Budget: Anteil 1 ms am
+/// Referenzgebäude und am großen Fall.
+#[test]
+#[ignore]
+fn perf_automenge() {
+    use sk_model::qto_earth::{erd_mengen, ErdBasis};
+    use sk_model::qto_site::site_mengen;
+    println!();
+    for (name, buildings, storeys, annexes) in [
+        ("Referenz: 4 Geschosse + 2 Nebengeb.", 1, 4, 2),
+        ("Groß: 2 Häuser à 4 G. + 2 Nebengeb.", 2, 4, 2),
+        ("Reserve ×4 (8 Häuser à 4 G.)", 8, 4, 2),
+    ] {
+        let s = reference(buildings, storeys, annexes);
+        let m = s.model();
+        let sched = sk_model::qto::schedule(m);
+        let vorlage = sched
+            .auto
+            .first()
+            .expect("AutoMengen am Referenzgebäude")
+            .clone();
+        let runs: Vec<_> = m
+            .elements()
+            .iter()
+            .filter_map(|(_, e)| match e.kind {
+                sk_model::ElementKind::GroundSlab(p) => Some(p.run),
+                _ => None,
+            })
+            .collect();
+        let boden = m.project().soil;
+        let mut zeilen = 0;
+        let auto = time(20, || {
+            zeilen = 0;
+            let mut gebaeude = Vec::new();
+            for &run in &runs {
+                let Some(g) = m.ground_basis(run) else {
+                    continue;
+                };
+                erd_mengen(&ErdBasis::aus(&g), &boden, |_, v, f| {
+                    std::hint::black_box((v, f));
+                    zeilen += 1;
+                });
+                let erste = !gebaeude.contains(&g.building);
+                gebaeude.push(g.building);
+                zeilen += site_mengen(m, run, &g.outline, &vorlage, g.terrain_z, erste).len();
+            }
+        });
+        let ganz = time(10, || {
+            std::hint::black_box(sk_model::qto::schedule(m));
+        });
+        println!(
+            "{name:<36} schedule {ganz:5.2} ms, davon AutoMengen {auto:5.3} ms \
+             ({:.0} %, {} Zeilen)",
+            auto / ganz * 100.0,
+            sched.auto.len()
+        );
+        assert!(zeilen >= sched.auto.len(), "Nachbau zählt {zeilen} Zeilen");
+        // Budget am Maßstab (bis zwei Häuser); die Reserve ×4 zeigt nur den
+        // Verlauf: `site_mengen` sucht je Platte alle Züge ab
+        if buildings <= 2 {
+            assert!(auto <= 1.0, "{name}: AutoMengen {auto:.3} ms > 1 ms");
+        }
     }
 }

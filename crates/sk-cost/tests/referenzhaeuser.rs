@@ -1,6 +1,8 @@
-//! Referenzhäuser RH-1 bis RH-3 auf den Cent (Abnahme KA-0 „Rechnung“,
-//! Sollwerte bim/integration/sollwerte-referenzhaeuser.md, Prüfstand der
-//! BIM-Integration). Die Häuser liegen unverändert in `referenz/`.
+//! Referenzhäuser RH-1 bis RH-3 und RH-5 (Flachdach) auf den Cent (Abnahme
+//! KA-0 „Rechnung“, Sollwerte bim/integration/sollwerte-referenzhaeuser.md
+//! und sollwerte-rh5.md, Prüfstand der BIM-Integration). Die Häuser liegen
+//! unverändert in `referenz/`; RH-3 trägt seit W3 die Bekleidung der
+//! Untersicht (`soffit_clad=40`).
 
 use sk_cost::{lesen, Cent, Dez, Kostenblatt, Kostenspeicher, Umfang};
 use sk_model::{qto, szo, GuidGen, Model};
@@ -19,7 +21,9 @@ struct Soll {
     netto: i64,
     material: i64,
     /// Geschoss, Netto in Cent
-    geschosse: [(&'static str, i64); 3],
+    geschosse: &'static [(&'static str, i64)],
+    /// Fassadengerüst (Titel 1.01): Höhe bis zur höchsten Wandkrone
+    geruest: Zeile,
     ausgleich: i64,
     zeilen: &'static [Zeile],
     /// Bauteil, Menge in Tausendsteln
@@ -67,10 +71,10 @@ const ERDE: &[Zeile] = &[
     ),
 ];
 
-/// Baustelleneinrichtung (Titel 1.01, Werksbestand Stand 8) ohne Bauzaun,
-/// in allen drei Häusern gleich: zwei Geschosse, 3 Monate Vorhaltung, Gerüst
-/// 46,40 m × 6,71 m an der Erdgeschossfassade. Der Bauzaun hängt an der
-/// Hülle aller Geschosse und steht je Haus in `zeilen`.
+/// Baustelleneinrichtung (Titel 1.01, Werksbestand Stand 8) ohne Bauzaun
+/// und Gerüst, in allen Häusern gleich: zwei Geschosse, 3 Monate
+/// Vorhaltung. Der Bauzaun hängt an der Hülle aller Geschosse und steht je
+/// Haus in `zeilen`, das Gerüst an der höchsten Wandkrone in `geruest`.
 const BE: &[Zeile] = &[
     (
         "Baustelleneinrichtung einrichten und räumen",
@@ -117,22 +121,45 @@ const BE: &[Zeile] = &[
         40000,
         0,
     ),
+];
+
+/// Fassadengerüst zweier Geschosse ohne Flachdach: 46,40 m × 6,71 m.
+const GERUEST_2G: Zeile = (
+    "Fassadengerüst LK3 W09, 4 Wochen Standzeit, auf-/abbauen",
+    311344,
+    900,
+    280210,
+    0,
+);
+
+/// Zulagen der Attikaabdeckung an der Dachterrasse (Werksbestand Stand 9,
+/// Titel 4.02): ein U-förmiger Blechstrang mit zwei Ecken und zwei
+/// Endabschlüssen, in RH-1 und RH-3 gleich.
+const DT_ZULAGEN: [Zeile; 2] = [
     (
-        "Fassadengerüst LK3 W09, 4 Wochen Standzeit, auf-/abbauen",
-        311344,
-        900,
-        280210,
+        "Zulage Attikaabdeckung Ecke 90°, gefalzt oder gelötet",
+        2000,
+        4800,
+        9600,
+        0,
+    ),
+    (
+        "Zulage Attikaabdeckung Endabschluss mit Stirnblech",
+        2000,
+        2500,
+        5000,
         0,
     ),
 ];
 
 const RH1: Soll = Soll {
     datei: include_str!("../referenz/rh1-standardhaus.szo"),
-    netto: 7303598,
-    material: 3147423,
-    geschosse: [
+    netto: 7595363,
+    material: 3281223,
+    geruest: GERUEST_2G,
+    geschosse: &[
         ("Gründung", 2242615),
-        ("Erdgeschoss", 2709564),
+        ("Erdgeschoss", 3001329),
         ("Obergeschoss", 2351416),
     ],
     ausgleich: 3,
@@ -200,15 +227,61 @@ const RH1: Soll = Soll {
             123000,
             0,
         ),
+        (
+            "Dampfsperre Bitumen-Alu-Schweißbahn vollflächig, inkl. Voranstrich",
+            13219,
+            1710,
+            22604,
+            10707,
+        ),
+        (
+            "Terrassendämmung EPS 035 DAA dh druckfest, Dicke nach Aufbau",
+            13219,
+            1920,
+            25380,
+            15863,
+        ),
+        (
+            "Abdichtung Polymerbitumen 2-lagig, Oberlage beschiefert",
+            13219,
+            3755,
+            49637,
+            25843,
+        ),
+        (
+            "Abdichtungsanschluss an Attika, über Krone geführt, inkl. Keil",
+            13000,
+            2910,
+            37830,
+            6630,
+        ),
+        (
+            "Terrassenbelag Betonplatten 40mm auf Splittbett, Schutzlage",
+            13219,
+            6000,
+            79314,
+            39657,
+        ),
+        (
+            "Attikaabdeckung Titanzink 0,7mm, Zuschnitt bis 400mm, Halter",
+            13000,
+            4800,
+            62400,
+            35100,
+        ),
+        // Zulagen am Attikablech (zwei Ecken, zwei Endabschlüsse)
+        DT_ZULAGEN[0],
+        DT_ZULAGEN[1],
     ],
-    ohne: &[("DT-001", 13219), ("DT-001", 13219), ("AB-001", 13000)],
+    ohne: &[],
 };
 
 const RH2: Soll = Soll {
     datei: include_str!("../referenz/rh2-mehrschalig.szo"),
     netto: 8291878,
     material: 3694694,
-    geschosse: [
+    geruest: GERUEST_2G,
+    geschosse: &[
         ("Gründung", 2242615),
         ("Erdgeschoss", 3034024),
         ("Obergeschoss", 3015257),
@@ -305,11 +378,12 @@ const RH2: Soll = Soll {
 
 const RH3: Soll = Soll {
     datei: include_str!("../referenz/rh3-versatz-dachterrasse.szo"),
-    netto: 7990043,
-    material: 3544709,
-    geschosse: [
+    netto: 8169659,
+    material: 3600738,
+    geruest: GERUEST_2G,
+    geschosse: &[
         ("Gründung", 2243845),
-        ("Erdgeschoss", 2937124),
+        ("Erdgeschoss", 3116740),
         ("Obergeschoss", 2809049),
     ],
     ausgleich: 25,
@@ -377,12 +451,43 @@ const RH3: Soll = Soll {
             2374035,
             1002001,
         ),
+        // Stand 9, K2: Untersicht zwischen Lattung, Bekleidung Faserzement 40 mm
+        // (W3, in der Datei nachgetragen); Lattung und Randprofil aus der
+        // Bekleidung (3,00 m² / 0,80 m bzw. 0,40 m + 20,60 m Umfang)
         (
-            "Untersichtdämmung Decke EPS d=120mm geklebt, verputzt",
+            "Untersichtdämmung EPS 035 d=120mm zwischen Lattung, über Kopf",
             2928,
-            8900,
-            26059,
-            10248,
+            2400,
+            7027,
+            3514,
+        ),
+        (
+            "Grundlattung KVH 60/80 über Kopf, a=80cm, mit Schraubankern",
+            24350,
+            975,
+            23741,
+            0,
+        ),
+        (
+            "Traglattung 30/50 quer, a=40cm, Hinterlüftung",
+            28100,
+            440,
+            12364,
+            0,
+        ),
+        (
+            "Untersichtbekleidung Faserzementtafel 8mm über Kopf, verschraubt",
+            3000,
+            10900,
+            32700,
+            16500,
+        ),
+        (
+            "Lüftungsprofil Alu gelocht mit Insektenschutz, Untersichtrand",
+            10000,
+            1000,
+            10000,
+            0,
         ),
         (
             "Bauzaun Mobilzaun h=2,0m aufstellen, vorhalten, räumen",
@@ -391,8 +496,350 @@ const RH3: Soll = Soll {
             124230,
             0,
         ),
+        (
+            "Dampfsperre Bitumen-Alu-Schweißbahn vollflächig, inkl. Voranstrich",
+            1757,
+            1710,
+            3004,
+            1423,
+        ),
+        (
+            "Terrassendämmung EPS 035 DAA dh druckfest, Dicke nach Aufbau",
+            1757,
+            1920,
+            3373,
+            2108,
+        ),
+        (
+            "Abdichtung Polymerbitumen 2-lagig, Oberlage beschiefert",
+            1757,
+            3755,
+            6598,
+            3435,
+        ),
+        (
+            "Abdichtungsanschluss an Attika, über Krone geführt, inkl. Keil",
+            10600,
+            2910,
+            30846,
+            5406,
+        ),
+        (
+            "Terrassenbelag Betonplatten 40mm auf Splittbett, Schutzlage",
+            1757,
+            6000,
+            10542,
+            5271,
+        ),
+        (
+            "Attikaabdeckung Titanzink 0,7mm, Zuschnitt bis 400mm, Halter",
+            10600,
+            4800,
+            50880,
+            28620,
+        ),
+        // Zulagen am Attikablech (zwei Ecken, zwei Endabschlüsse)
+        DT_ZULAGEN[0],
+        DT_ZULAGEN[1],
     ],
-    ohne: &[("DT-001", 1757), ("DT-001", 1757), ("AB-001", 10600)],
+    ohne: &[],
+};
+
+/// RH-5 Flachdach (Kosten-Strang 10.10., Tagesplan K4): Prüfhaus 10 × 8 m,
+/// AW-49 zweischalig, OG Nord 1,50 m zurück (Dachterrasse mit Fußpunkt aus
+/// Schaumglas), OG Süd 0,30 m vor (Untersicht mit Bekleidung Faserzement und
+/// Lattung), Flachdach mit
+/// Aufkantung 50 cm, Dachaufbau Flachdach 21,5 und Attikablech. Bis zur
+/// Oberkante Dach alles mit Bauleistung, keine graue Zeile.
+const RH5: Soll = Soll {
+    datei: include_str!("../referenz/rh5-flachdach.szo"),
+    netto: 9761840,
+    material: 4237191,
+    geruest: (
+        "Fassadengerüst LK3 W09, 4 Wochen Standzeit, auf-/abbauen",
+        334544,
+        900,
+        301090,
+        0,
+    ),
+    geschosse: &[
+        ("Gründung", 2264725),
+        ("Erdgeschoss", 3311769),
+        ("Obergeschoss", 2879023),
+        ("Flachdach", 1306317),
+    ],
+    ausgleich: 6,
+    zeilen: &[
+        (
+            "Bauzaun Mobilzaun h=2,0m aufstellen, vorhalten, räumen",
+            60600,
+            2050,
+            124230,
+            0,
+        ),
+        (
+            "Bodenplatte Stb C25/30 XC2 d=18-25cm",
+            17600,
+            22600,
+            397760,
+            334400,
+        ),
+        (
+            "Frostschürze Stb C25/30 b=30-45cm erdgeschalt",
+            7024,
+            25000,
+            175600,
+            133456,
+        ),
+        (
+            "Stb-Decke Ortbeton C25/30 XC1 d=18-25cm",
+            28530,
+            22600,
+            644778,
+            542070,
+        ),
+        (
+            "Deckenschalung glatt, kein Sichtbeton, Stützhöhe bis 3,0m",
+            118628,
+            3800,
+            450786,
+            94902,
+        ),
+        (
+            "Randschalung Decke/Bodenplatte h bis 25cm",
+            101160,
+            2900,
+            293364,
+            50580,
+        ),
+        (
+            "Betonstahl B500 liefern, schneiden, biegen, verlegen",
+            4542,
+            160000,
+            726720,
+            454200,
+        ),
+        (
+            "AW Porenbeton-Planstein PP2-0,35 d=17,5cm Dünnbettmörtel",
+            181617,
+            5400,
+            980732,
+            490366,
+        ),
+        (
+            "Kerndämmung MW-Platte WLS 035 d=140mm 2-schal. Mauerwerk",
+            205944,
+            2500,
+            514860,
+            329510,
+        ),
+        (
+            "Verblendschale Klinker NF d=11,5cm Läuferverband verfugt",
+            217612,
+            12700,
+            2763672,
+            1196866,
+        ),
+        (
+            "Abfangung Verblendschale, Konsolanker Edelstahl",
+            10485,
+            5300,
+            55571,
+            36698,
+        ),
+        (
+            "Fußpunkt Verblendschale Schaumglas-Dämmstein 115mm, 1. Lage",
+            10000,
+            5200,
+            52000,
+            0,
+        ),
+        (
+            "Zulage Fußpunkt Schaumglas-Dämmstein je weitere Lage",
+            10000,
+            5200,
+            52000,
+            0,
+        ),
+        (
+            "Mauersperrbahn unter Fußpunkt, B bis 25cm",
+            10000,
+            500,
+            5000,
+            0,
+        ),
+        (
+            "Z-Folie über Fußpunkt, aus dem Schalenzwischenraum geführt",
+            10000,
+            1200,
+            12000,
+            0,
+        ),
+        (
+            "Dampfsperre Bitumen-Alu-Schweißbahn vollflächig, inkl. Voranstrich",
+            11103,
+            1710,
+            18986,
+            8993,
+        ),
+        (
+            "Terrassendämmung EPS 035 DAA dh druckfest, Dicke nach Aufbau",
+            11103,
+            1920,
+            21318,
+            13324,
+        ),
+        (
+            "Abdichtung Polymerbitumen 2-lagig, Oberlage beschiefert",
+            11103,
+            3755,
+            41692,
+            21706,
+        ),
+        (
+            // nur am Blech der Dachterrasse (coping.seal), Review 9897697
+            "Abdichtungsanschluss an Attika, über Krone geführt, inkl. Keil",
+            13000,
+            2910,
+            37830,
+            6630,
+        ),
+        (
+            "Terrassenbelag Betonplatten 40mm auf Splittbett, Schutzlage",
+            11103,
+            6000,
+            66618,
+            33309,
+        ),
+        (
+            "Attikaabdeckung Titanzink 0,7mm, Zuschnitt bis 400mm, Halter",
+            46600,
+            4800,
+            223680,
+            125820,
+        ),
+        (
+            "Zulage Attikaabdeckung Zuschnitt über 400 bis 500mm",
+            13000,
+            1200,
+            15600,
+            0,
+        ),
+        (
+            "Zulage Attikaabdeckung Zuschnitt über 500 bis 667mm",
+            33600,
+            2600,
+            87360,
+            0,
+        ),
+        (
+            "Zulage Attikaabdeckung Ecke 90°, gefalzt oder gelötet",
+            6000,
+            4800,
+            28800,
+            0,
+        ),
+        (
+            "Zulage Attikaabdeckung Endabschluss mit Stirnblech",
+            2000,
+            2500,
+            5000,
+            0,
+        ),
+        (
+            "Dampfsperre Bitumen-Alu-Schweißbahn Flachdach, inkl. Voranstrich",
+            52496,
+            1710,
+            89768,
+            42522,
+        ),
+        (
+            "Dachdämmung EPS 035 DAA dh einlagig, Dicke nach Aufbau",
+            52496,
+            3600,
+            188986,
+            157488,
+        ),
+        (
+            "Abdichtung Polymerbitumen 2-lagig Flachdach, Oberlage beschiefert",
+            52496,
+            3755,
+            197122,
+            102630,
+        ),
+        // Anschluss am Flachdach an der Innenfläche der Aufkantung, 4 Innenecken
+        (
+            "Abdichtungsanschluss an Aufkantung Flachdach, über Krone, inkl. Keil",
+            29680,
+            2910,
+            86369,
+            15137,
+        ),
+        (
+            "Zulage Abdichtungsanschluss Innenecke, Eckverstärkung",
+            4000,
+            2000,
+            8000,
+            0,
+        ),
+        (
+            "Attikadämmung innen und Krone, EPS d=6-10cm, unter Abdichtung",
+            29680,
+            2200,
+            65296,
+            0,
+        ),
+        (
+            "Dachablauf DN 100 wärmegedämmt mit Aufstockelement, Einbau",
+            1000,
+            40000,
+            40000,
+            0,
+        ),
+        (
+            "Notüberlauf Attika rechteckig, inkl. Durchbruch und Einbindung",
+            1000,
+            28000,
+            28000,
+            0,
+        ),
+        (
+            "Grundlattung KVH 60/80 über Kopf, a=80cm, mit Schraubankern",
+            22492,
+            975,
+            21930,
+            0,
+        ),
+        (
+            "Untersichtdämmung MW 035 d=120mm A1 zwischen Lattung, über Kopf",
+            2811,
+            2600,
+            7309,
+            3935,
+        ),
+        (
+            "Traglattung 30/50 quer, a=40cm, Hinterlüftung",
+            24777,
+            440,
+            10902,
+            0,
+        ),
+        (
+            "Untersichtbekleidung Faserzementtafel 8mm über Kopf, verschraubt",
+            1829,
+            10900,
+            19936,
+            10060,
+        ),
+        (
+            "Lüftungsprofil Alu gelocht mit Insektenschutz, Untersichtrand",
+            9770,
+            1000,
+            9770,
+            0,
+        ),
+    ],
+    ohne: &[],
 };
 
 fn blatt(m: &Model, u: &Umfang) -> Kostenblatt {
@@ -424,7 +871,7 @@ fn pruefen(s: &Soll) {
             )
         })
         .collect();
-    for z in s.zeilen.iter().chain(ERDE).chain(BE) {
+    for z in s.zeilen.iter().chain(ERDE).chain(BE).chain([&s.geruest]) {
         assert!(
             ist.iter().any(|i| (i.0.as_str(), i.1, i.2, i.3, i.4) == *z),
             "fehlt {z:?}\nist {ist:#?}"
@@ -432,7 +879,7 @@ fn pruefen(s: &Soll) {
     }
     assert_eq!(
         ist.len(),
-        s.zeilen.len() + ERDE.len() + BE.len(),
+        s.zeilen.len() + ERDE.len() + BE.len() + 1,
         "{ist:#?}"
     );
     assert_eq!(b.netto, Cent(s.netto));
@@ -503,9 +950,14 @@ fn rh3_versatz_dachterrasse() {
     pruefen(&RH3);
 }
 
-/// Die Sollbilder zeigen RH-1 ohne Deckenschalung und Randschalung und
-/// ohne die Automatikpositionen (älter als Stand 8): 52.395,55 € /
-/// 29.642,07 €.
+#[test]
+fn rh5_flachdach() {
+    pruefen(&RH5);
+}
+
+/// Die Sollbilder zeigen RH-1 ohne Deckenschalung und Randschalung, ohne
+/// die Automatikpositionen (älter als Stand 8) und ohne Los 4 Dach (älter
+/// als Stand 9): 52.395,55 € / 29.642,07 €.
 #[test]
 fn rh1_ohne_schalung() {
     let m = laden(RH1.datei);
@@ -517,6 +969,7 @@ fn rh1_ohne_schalung() {
                 !p.kurz.starts_with("Deckenschalung")
                     && !p.kurz.starts_with("Randschalung")
                     && p.ansatz.iter().all(|a| a.formel.is_none())
+                    && !p.oz.starts_with("4.")
             })
             .map(f)
             .sum()
@@ -698,7 +1151,8 @@ fn abfangung_ohne_rueckfall() {
 /// Abnahme 12 (Vorschau): Die Vorschau nennt das Netto vorher und nachher
 /// selbst, gleich `kosten` vor und nach der Ausführung; Modell, `revision`,
 /// `ext_revision` bleiben. Lohn 65 €/h auf RH-1: 60.089,83 → 62.501,62
-/// (Einstellungen §3 KA-2 Punkt 8); eine Zuordnung rechnet auf einer Kopie.
+/// (Einstellungen §3 KA-2 Punkt 8), mit Stand 9 75.953,63 → 78.889,33; eine
+/// Zuordnung rechnet auf einer Kopie.
 #[test]
 fn vorschau_mit_summe_vorher_nachher() {
     use sk_cost::{Herkunft, HerkunftArt, Op, Rolle};
@@ -719,14 +1173,14 @@ fn vorschau_mit_summe_vorher_nachher() {
         &u,
     )
     .expect("Vorschau");
-    assert_eq!(p.netto, Some((Cent(7_303_598), Cent(7_584_469))));
+    assert_eq!(p.netto, Some((Cent(7_595_363), Cent(7_888_933))));
     assert_eq!((m.revision(), m.ext_revision()), (rev, ext));
     // gleich der Ausführung
     let h = Herkunft::neu(HerkunftArt::Manual, "2026-10-08", "10:40");
     m.begin("Lohn");
     sk_cost::ausfuehren(&mut m, None, Rolle::Admin, &h, lohn).expect("Lohn");
     m.commit();
-    assert_eq!(blatt(&m, &u).netto, Cent(7_584_469));
+    assert_eq!(blatt(&m, &u).netto, Cent(7_888_933));
     // Zuordnung: eine Außenwandschicht auf eine andere Bauleistung, nur in
     // der Kopie
     let k = lesen::katalog(&m, None);
@@ -762,7 +1216,7 @@ fn vorschau_mit_summe_vorher_nachher() {
     .expect("Vorschau Zuordnung");
     assert_eq!(m.revision(), rev);
     let (vorher, nachher) = p.netto.expect("Summen");
-    assert_eq!(vorher, Cent(7_584_469));
+    assert_eq!(vorher, Cent(7_888_933));
     m.begin("Zuordnen");
     sk_cost::ausfuehren(&mut m, None, Rolle::Admin, &h, op).expect("Zuordnen");
     m.commit();
@@ -776,7 +1230,12 @@ fn vorschau_mit_summe_vorher_nachher() {
 #[test]
 fn kostenspeicher_nach_umbenennen() {
     for s in [&RH1, &RH3] {
-        let mut m = laden(s.datei);
+        // eigene Dämmung der Dachterrasse: eine Zeile ohne Bauleistung mit
+        // Befund (die eingebaute hat seit Stand 9 eine Werksleistung)
+        let mut m = laden(
+            &s.datei
+                .replace("3NKChAqkL3uwFZN5n$FOr1", "3NKChAqkL3uwFZN5n$FOr9"),
+        );
         let u = Umfang::projekt();
         let k = lesen::katalog(&m, None);
         let sched = qto::schedule(&m);

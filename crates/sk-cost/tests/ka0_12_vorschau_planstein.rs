@@ -3,7 +3,8 @@
 //! nachher, ohne das Modell zu ändern: 60.089,83 → 73.323,52 €. Zum Vergleich
 //! Lohn 65 €/h: 60.089,83 → 62.501,62 €. Mit Erdarbeiten und
 //! Baustelleneinrichtung (Werksbestand Stand 8): 73.035,98 → 86.269,67 €,
-//! Lohn 65 €/h → 75.844,69 €.
+//! Lohn 65 €/h → 75.844,69 €. Mit Los 4 Dach (Stand 9, Dachterrasse und
+//! Attikablech): 75.953,63 → 89.187,32 €, Lohn 65 €/h → 78.889,33 €.
 
 use sk_cost::{lesen, vorschau_kosten, Dez, Op, Rolle, Umfang};
 use sk_model::{qto, szo, Guid, GuidGen};
@@ -34,11 +35,11 @@ fn ka0_12_vorschau_planstein_99() {
         quelle: "Abnahme 12".into(),
         eingabe: String::new(),
     };
-    assert_eq!(netto(&[stein]), Some((7_303_598, 8_626_967)));
+    assert_eq!(netto(&[stein]), Some((7_595_363, 8_918_732)));
     let lohn = Op::FirmenwertSetzen {
         schluessel: "wage".into(),
         wert: Dez::ganz(65),
     };
-    assert_eq!(netto(&[lohn]), Some((7_303_598, 7_584_469)));
+    assert_eq!(netto(&[lohn]), Some((7_595_363, 7_888_933)));
     assert_eq!((m.revision(), m.ext_revision()), rev, "Modell unverändert");
 }

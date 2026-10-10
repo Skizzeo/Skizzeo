@@ -794,13 +794,22 @@ mod tests {
                 })
                 .collect();
             let runs = 50;
-            let t = std::time::Instant::now();
-            for _ in 0..runs {
-                let f = Foundation::from_outline(&pts, &params(0.0)).unwrap();
-                let _ = (f.slab_solid(), f.footing_solid(), f.footing_axis_length());
-            }
-            let per = t.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+            // Bester von drei Durchgängen: andere Tests laufen parallel
+            let per = (0..3)
+                .map(|_| {
+                    let t = std::time::Instant::now();
+                    for _ in 0..runs {
+                        let f = Foundation::from_outline(&pts, &params(0.0)).unwrap();
+                        let _ = (f.slab_solid(), f.footing_solid(), f.footing_axis_length());
+                    }
+                    t.elapsed().as_secs_f64() * 1000.0 / runs as f64
+                })
+                .fold(f64::MAX, f64::min);
             eprintln!("Gründung mit {n} Ecken: {per:.3} ms");
+            // Budget nur im Release-Bau (Briefing QS §5; 46e1ed0: 0,54 ms bei 200)
+            if !cfg!(debug_assertions) {
+                assert!(per < 1.0, "Gründung mit {n} Ecken {per:.3} ms ≥ 1 ms");
+            }
         }
     }
 }

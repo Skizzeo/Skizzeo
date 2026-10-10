@@ -95,6 +95,7 @@ pub fn spec(c: Category) -> &'static KindSpec {
         Category::RoofTerrace => &ROOF_TERRACE,
         Category::Coping => &COPING,
         Category::PerimeterInsulation => &PERIMETER_INSULATION,
+        Category::Parapet => &PARAPET,
         Category::Extension => &EXTENSION,
     }
 }
@@ -174,22 +175,25 @@ const GROUND_SLAB: KindSpec = KindSpec {
     default_trade: None,
 };
 
+/// Dachaufbau des Flachdachs (Jörn 10.10., Plan Flachdach P10): Dachbelag
+/// über beheiztem Raum (DIN 276:2018 363) wie die Dachterrasse; im
+/// Mengenfenster mit ihr nach der Decke, vor dem Attikablech.
 const ROOF: KindSpec = KindSpec {
     category: Category::Roof,
-    name: "Dach",
-    short: "Dach",
-    plural: "Dächer",
+    name: "Flachdach",
+    short: "Flachdach",
+    plural: "Flachdächer",
     genus: Genus::Neuter,
     prefix: "DA",
     ifc: "IfcRoof",
-    kg: Some(360),
-    qto_rank: LAST,
+    kg: Some(363),
+    qto_rank: 8,
     szo: "roof",
-    external: false,
-    type_category: None,
+    external: true,
+    type_category: Some(TypeCategory::FlatRoof),
     needs_type: false,
     once: false,
-    default_trade: None,
+    default_trade: Some("18338"),
 };
 
 const WINDOW: KindSpec = KindSpec {
@@ -382,6 +386,28 @@ const COPING: KindSpec = KindSpec {
     default_trade: Some("18338"),
 };
 
+/// Aufkantung des Flachdachs (Jörn 10.10.): gemauerte Wand über der
+/// obersten Decke im Außenwandtyp darunter (IFC 4.2 IfcWall PARAPET);
+/// Kostengruppen je Schicht wie die Außenwand. Im Mengenfenster direkt
+/// nach den Außenwänden.
+const PARAPET: KindSpec = KindSpec {
+    category: Category::Parapet,
+    name: "Aufkantung",
+    short: "Aufkantung",
+    plural: "Aufkantungen",
+    genus: Genus::Feminine,
+    prefix: "AK",
+    ifc: "IfcWall.PARAPET",
+    kg: Some(330),
+    qto_rank: 3,
+    szo: "parapet",
+    external: true,
+    type_category: Some(TypeCategory::ExteriorWall),
+    needs_type: true,
+    once: false,
+    default_trade: None,
+};
+
 /// Erweiterungsbauteile (.szb): Name, Präfix, IFC-Klasse und Kostengruppe
 /// stehen je Bauteil in seiner Definition ([`crate::erweiterung`]); hier
 /// nur, was für alle gilt. Nicht in [`Category::ALL`].
@@ -429,12 +455,14 @@ mod tests {
     }
 
     /// Typarten verweisen zurück auf ihre Kategorie; Pflicht ist ein Typ nur
-    /// bei Wänden.
+    /// bei Wänden. Die Aufkantung leiht sich den Außenwandtyp.
     #[test]
     fn typarten_passen() {
         for c in Category::ALL {
             let k = spec(c);
-            if let Some(t) = k.type_category {
+            if c == Category::Parapet {
+                assert_eq!(k.type_category, Some(TypeCategory::ExteriorWall));
+            } else if let Some(t) = k.type_category {
                 assert_eq!(TypeCategory::of(c), Some(t));
                 assert_eq!(t.category(), c);
                 assert_eq!(t.name(), k.name);

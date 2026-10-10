@@ -159,6 +159,34 @@ pub struct Joints {
     /// Das Geschoss darüber springt zurück (D2): Die Schichten außerhalb
     /// der Deckenkante laufen über dem Terrassenrand bis OK Attika weiter.
     pub attika: Option<Attika>,
+    /// Der Zug steht mit einem Verblender auf einer Dachterrasse (W2): Am
+    /// Fuß ist die Verblendschale dort aus Schaumglas gemauert.
+    pub facing_foot: Option<FacingFoot>,
+}
+
+/// Fußpunkt der Verblendschale auf der Dachterrasse (W2, Jörn 10.10.
+/// 05:53): Schicht `layer` trägt auf den Segmenten mit `segs[k]` zwischen
+/// `band.0` (Wandfuß) und `band.1` (OK Terrassenaufbau) den Baustoff `mat`
+/// (Schaumglas-Dämmstein, Kreuzschraffur). Auf den übrigen Segmenten läuft
+/// sie ohne Naht durch.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FacingFoot {
+    pub band: (f64, f64),
+    pub segs: Vec<bool>,
+    pub layer: usize,
+    pub mat: u16,
+}
+
+impl FacingFoot {
+    /// Steht Segment `k` auf der Terrasse?
+    pub fn at(&self, k: usize) -> bool {
+        self.segs.get(k).copied().unwrap_or(false)
+    }
+
+    /// Höhe des Fußpunkts (mm).
+    pub fn height(&self) -> f64 {
+        (self.band.1 - self.band.0).max(0.0)
+    }
 }
 
 /// Attika über der Wandkrone (BIM E2): Stücke der Außenschichten zwischen
@@ -179,6 +207,21 @@ pub struct Overhang {
     pub offsets: Vec<f64>,
     pub from: f64,
     pub to: f64,
+    /// Verblender unter der Bekleidung (W3).
+    pub drip: Option<Drip>,
+}
+
+/// Der abgefangene Verblender läuft auf den bekleideten Segmenten unter
+/// UK Untersichtdämmung weiter bis `from` (UK Bekleidung − Überstand) und
+/// verdeckt die Stirn der Bekleidung (W3, Jörn 05:57).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Drip {
+    /// Schicht des Verblenders.
+    pub layer: usize,
+    /// Unterkante (z, absolut).
+    pub from: f64,
+    /// Je Segment: bekleidet?
+    pub segs: Vec<bool>,
 }
 
 impl Overhang {
@@ -718,27 +761,43 @@ impl WallChain {
     /// Abschnitte (von, bis, verlängert) der Schicht `layer`: wie
     /// [`WallChain::layer_spans`], bei einem Vorsprung darüber (K4) die
     /// Außenschichten zusätzlich geteilt; `true` liegt in der Lage von
-    /// [`WallChain::overhang_chain`].
+    /// [`WallChain::overhang_chain`]. Die Verblendschale über einer
+    /// Dachterrasse ist zudem an OK Fußpunkt geteilt (W2).
     pub fn layer_parts(&self, layer: usize) -> Vec<(f64, f64, bool)> {
         let spans = self.layer_spans(layer);
-        let Some(o) = self
+        let o = self
             .joints
             .overhang
             .as_ref()
-            .filter(|o| o.any() && layer < self.band_layers().start)
-        else {
+            .filter(|o| o.any() && layer < self.band_layers().start);
+        let foot = self.foot_top(layer);
+        if o.is_none() && foot.is_none() {
             return spans.into_iter().map(|(a, b)| (a, b, false)).collect();
-        };
-        let mut out = Vec::with_capacity(spans.len() + 2);
+        }
+        let mut out = Vec::with_capacity(spans.len() + 3);
         for (z0, z1) in spans {
-            let cuts = [z0, o.from.clamp(z0, z1), o.to.clamp(z0, z1), z1];
-            for k in 0..3 {
-                if cuts[k + 1] - cuts[k] > 1e-6 {
-                    out.push((cuts[k], cuts[k + 1], k == 1));
-                }
+            let mut cuts = vec![z0, z1];
+            if let Some(o) = o {
+                cuts.extend([o.from.clamp(z0, z1), o.to.clamp(z0, z1)]);
+            }
+            cuts.extend(foot.map(|t| t.clamp(z0, z1)));
+            cuts.sort_by(f64::total_cmp);
+            cuts.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+            for w in cuts.windows(2) {
+                let ext = o.is_some_and(|o| w[0] >= o.from - 1e-6 && w[1] <= o.to + 1e-6);
+                out.push((w[0], w[1], ext));
             }
         }
         out
+    }
+
+    /// OK Fußpunkt, wenn Schicht `layer` auf einer Dachterrasse steht (W2).
+    fn foot_top(&self, layer: usize) -> Option<f64> {
+        self.joints
+            .facing_foot
+            .as_ref()
+            .filter(|f| f.layer == layer && f.segs.iter().any(|x| *x) && f.height() > 1e-6)
+            .map(|f| f.band.1)
     }
 
     /// Lage der verlängerten Außenschichten (K4): der Zug mit den Segmenten
@@ -752,27 +811,63 @@ impl WallChain {
     }
 
     /// Gruppe eines Abschnitts für die Nähte bei einem Vorsprung (K4):
-    /// 0 bis UK Untersichtdämmung, 1 verlängert, 2 darüber.
-    fn part_group(&self, layer: usize, (z0, ext): (f64, bool)) -> usize {
+    /// 0 bis UK Untersichtdämmung, 1 verlängert, 2 darüber; 3 der
+    /// Fußpunkt der Verblendschale (W2).
+    fn part_group(&self, layer: usize, (z0, z1, ext): (f64, f64, bool)) -> usize {
         match &self.joints.overhang {
             _ if ext => 1,
+            _ if self
+                .foot_top(layer)
+                .is_some_and(|t| z1 <= t + 1e-6 && z0 < t) =>
+            {
+                3
+            }
             Some(o) if layer < self.band_layers().start && z0 >= o.to - 1e-6 => 2,
             _ => 0,
         }
     }
 
     /// Fügt die Gruppen aus [`WallChain::part_group`] zusammen; wo eine
-    /// Schicht in derselben Flucht weiterläuft, ohne Naht.
-    fn join_parts(&self, mut g: [Solid; 3]) -> Solid {
+    /// Schicht in derselben Flucht weiterläuft, ohne Naht. Der Fußpunkt
+    /// trägt auf den Terrassensegmenten den Schaumglas-Baustoff, dort
+    /// bleibt die Naht als Baustoffwechsel (W2).
+    fn join_parts(&self, mut g: [Solid; 5]) -> Solid {
+        if let Some(f) = &self.joints.facing_foot {
+            for t in &mut g[3].triangles {
+                if f.at(t.elem as usize) {
+                    t.mat = f.mat | (t.mat & material::CUT);
+                }
+            }
+            let [a, _, _, d, _] = &mut g;
+            merge_seam(d, a, f.band.1);
+        }
         if let Some(o) = &self.joints.overhang {
-            let [a, b, c] = &mut g;
+            let [a, b, c, _, e] = &mut g;
+            merge_seam(e, b, o.from);
             merge_seam(a, b, o.from);
             merge_seam(b, c, o.to);
         }
-        let [mut a, b, c] = g;
+        let [mut a, b, c, d, e] = g;
         a.append(&b);
         a.append(&c);
+        a.append(&d);
+        a.append(&e);
         a
+    }
+
+    /// Verblender unter der Bekleidung (W3), wenn er unter `cut` beginnt:
+    /// Schicht, Unterkante, UK Untersichtdämmung und die Segmente.
+    fn drip_at(&self, cut: f64) -> Option<(&Drip, f64)> {
+        let o = self.joints.overhang.as_ref()?;
+        let d = o.drip.as_ref()?;
+        (d.from < o.from - 1e-6 && d.from < cut && d.segs.iter().any(|x| *x)).then_some((d, o.from))
+    }
+
+    /// Behält vom Körper nur die bekleideten Segmente (W3).
+    fn keep_segments(s: &mut Solid, segs: &[bool]) {
+        let on = |e: u32| segs.get(e as usize).copied().unwrap_or(false);
+        s.triangles.retain(|t| on(t.elem));
+        s.edges.retain(|e| on(e.elem));
     }
 
     /// Wandkörper mit Gehrungen an den Ecken, eine Schale je Schicht.
@@ -790,7 +885,7 @@ impl WallChain {
     /// Deckfläche Schnittfläche.
     fn solid_below(&self, cut: f64) -> Solid {
         let ext = self.overhang_chain();
-        let mut g: [Solid; 3] = Default::default();
+        let mut g: [Solid; 5] = Default::default();
         for (i, ((lo, hi, mat), l)) in self
             .layer_offsets()
             .into_iter()
@@ -804,7 +899,7 @@ impl WallChain {
                 if z0 >= cut {
                     continue;
                 }
-                let s = &mut g[self.part_group(i, (z0, e))];
+                let s = &mut g[self.part_group(i, (z0, z1, e))];
                 let chain = if e {
                     ext.as_ref().unwrap_or(self)
                 } else {
@@ -820,6 +915,20 @@ impl WallChain {
                 chain.prism(s, i, lo, hi, (z0, top), top_mat, l.cut_kind());
             }
         }
+        if let (Some((d, z1)), Some(ext)) = (self.drip_at(cut), &ext) {
+            let (lo, hi, mat) = self.layer_offsets()[d.layer];
+            let s = &mut g[4];
+            s.mat = mat;
+            s.layer = d.layer as u8;
+            let (top, top_mat) = if z1 > cut {
+                (cut, mat | material::CUT)
+            } else {
+                (z1, mat)
+            };
+            let kind = self.layers[d.layer].cut_kind();
+            ext.prism(s, d.layer, lo, hi, (d.from, top), top_mat, kind);
+            Self::keep_segments(s, &d.segs);
+        }
         let mut s = self.join_parts(g);
         if let Some(a) = &self.joints.attika {
             let mut up = crate::terrace::attika_solid(&a.pieces, a.band, cut);
@@ -834,7 +943,7 @@ impl WallChain {
     /// dick, die übrigen Schichten mitteldick.
     pub fn section_caps(&self, p0: Vec3, n: Vec3) -> Solid {
         let ext = self.overhang_chain();
-        let mut g: [Solid; 3] = Default::default();
+        let mut g: [Solid; 5] = Default::default();
         for (li, ((lo, hi, mat), l)) in self
             .layer_offsets()
             .into_iter()
@@ -850,9 +959,16 @@ impl WallChain {
                 } else {
                     self
                 };
-                let s = &mut g[self.part_group(li, (z0, e))];
+                let s = &mut g[self.part_group(li, (z0, z1, e))];
                 chain.layer_caps(s, (li, lo, hi, mat), l.cut_kind(), (z0, z1), p0, n);
             }
+        }
+        if let (Some((d, z1)), Some(ext)) = (self.drip_at(f64::INFINITY), &ext) {
+            let (lo, hi, mat) = self.layer_offsets()[d.layer];
+            let kind = self.layers[d.layer].cut_kind();
+            let s = &mut g[4];
+            ext.layer_caps(s, (d.layer, lo, hi, mat), kind, (d.from, z1), p0, n);
+            Self::keep_segments(s, &d.segs);
         }
         let mut s = self.join_parts(g);
         if let Some(a) = &self.joints.attika {

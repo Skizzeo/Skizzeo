@@ -15,10 +15,10 @@ use sk_model::qto::{Schedule, Umfang};
 use sk_model::view::{Isolate, Masks, Visibility};
 use sk_model::{
     edge_kind, floor_qto_of, foundation_qto_of, merge_seam, run_qto, BuildingId, Category, Deleted,
-    Direction, Edge, ElementId, FloorQto, FloorSlab, FootingQto, Foundation, LayerSetId, Model,
-    Refusal, RunId, SlabQto, Solid, StoreyId, Touched, Tri, Txn, TypeCategory, WallChain, WallQto,
-    COPING_PART, FLOOR_PART, FOOTING_PART, PERIMETER_PART, SLAB_PART, SOFFIT_PART, STRIP_PART,
-    TERRACE_PART,
+    Direction, Edge, ElementId, FlatRoof, FloorQto, FloorSlab, FootingQto, Foundation, LayerSetId,
+    Model, Refusal, RunId, SlabQto, Solid, StoreyId, Touched, Tri, Txn, TypeCategory, WallChain,
+    WallQto, COPING_PART, FLOOR_PART, FOOTING_PART, PERIMETER_PART, ROOF_COPING_PART, ROOF_PART,
+    SLAB_PART, SOFFIT_PART, STRIP_PART, TERRACE_PART,
 };
 use sk_render::MeshData;
 use sk_ui::theme::Theme;
@@ -88,6 +88,8 @@ struct RunCache {
     /// Erdgeschossdecke über einem geschlossenen Außenwandzug (B10).
     floor: Option<FloorSlab>,
     floor_qto: Option<FloorQto>,
+    /// Dachaufbau und Attikablech auf einer Aufkantung (Flachdach D3, D4).
+    roof: Option<FlatRoof>,
     /// Wie oft dieser Zug berechnet wurde (für Tests und Messung).
     builds: u32,
     /// Geteilte Körper (deckend, blass) je Ansicht, gültig für die Masken
@@ -119,10 +121,11 @@ impl RunCache {
         chain: WallChain,
         found: Option<Foundation>,
         floor: Option<FloorSlab>,
+        roof: Option<FlatRoof>,
         builds: u32,
     ) -> RunCache {
         let mut solid = chain.solid();
-        for p in run_parts(&found, &floor) {
+        for p in run_parts(&found, &floor, &roof) {
             p.solid(&mut solid);
         }
         // Auf Höhe des Wandfußes (Wände im OG stehen auf ihrem Geschoss)
@@ -152,6 +155,7 @@ impl RunCache {
             found_qto: None,
             floor,
             floor_qto: None,
+            roof,
             builds,
             splits: RefCell::default(),
         }
@@ -164,6 +168,7 @@ impl RunCache {
         self.chain == other.chain
             && self.found == other.found
             && self.floor == other.floor
+            && self.roof == other.roof
             && same_solid(&self.solid, &other.solid)
     }
 
@@ -258,7 +263,7 @@ impl RunCache {
                     let (p0, n) = pl;
                     let mut s = self.solid.clipped(p0, n);
                     s.append(&self.chain.section_caps(p0, n));
-                    for p in run_parts(&self.found, &self.floor) {
+                    for p in run_parts(&self.found, &self.floor, &self.roof) {
                         p.section_caps(&mut s, p0, n);
                     }
                     self.section.truncate(SECTION_KEEP - 1);
@@ -280,7 +285,7 @@ impl RunCache {
             PlanMode::Cut => self.chain.solid_cut_at(cut),
             PlanMode::Foundation | PlanMode::Lower => Solid::default(),
         };
-        for p in run_parts(&self.found, &self.floor) {
+        for p in run_parts(&self.found, &self.floor, &self.roof) {
             p.plan(&mut s, cut, mode);
         }
         s
@@ -332,10 +337,12 @@ trait RunPart {
 fn run_parts<'a>(
     found: &'a Option<Foundation>,
     floor: &'a Option<FloorSlab>,
+    roof: &'a Option<FlatRoof>,
 ) -> impl Iterator<Item = &'a dyn RunPart> {
     let found = found.as_ref().map(|f| f as &dyn RunPart);
     let floor = floor.as_ref().map(|f| f as &dyn RunPart);
-    found.into_iter().chain(floor)
+    let roof = roof.as_ref().map(|f| f as &dyn RunPart);
+    found.into_iter().chain(floor).chain(roof)
 }
 
 impl RunPart for Foundation {
@@ -415,6 +422,39 @@ impl RunPart for FloorSlab {
             let caps = self.strip_section_caps(k, p0, n);
             out.append(&part(caps, STRIP_PART + k as u32));
         }
+    }
+}
+
+/// Flachdach auf einer Aufkantung (D3, D4): Dachaufbau zwischen den
+/// Aufkantungen, Blech auf ihrer Krone.
+impl RunPart for FlatRoof {
+    fn solid(&self, out: &mut Solid) {
+        out.append(&part(FlatRoof::solid(self), ROOF_PART));
+        out.append(&part(self.coping_solid(), ROOF_COPING_PART));
+    }
+
+    /// Im Grundriss der Ebene Flachdach liegt der Aufbau unter der
+    /// Schnitthöhe; das Blech erscheint, solange die Aufkantung nicht höher
+    /// als die Schnitthöhe ist.
+    fn plan(&self, out: &mut Solid, cut: f64, mode: PlanMode) {
+        match mode {
+            PlanMode::Foundation => {}
+            PlanMode::Lower => {
+                out.append(&part(seen_below(self.cut_at(cut)), ROOF_PART));
+                out.append(&part(seen_below(self.coping_solid()), ROOF_COPING_PART));
+            }
+            PlanMode::Cut => {
+                out.append(&part(self.cut_at(cut), ROOF_PART));
+                if self.crown < cut {
+                    out.append(&part(self.coping_solid(), ROOF_COPING_PART));
+                }
+            }
+        }
+    }
+
+    fn section_caps(&self, out: &mut Solid, p0: Vec3, n: Vec3) {
+        out.append(&part(FlatRoof::section_caps(self, p0, n), ROOF_PART));
+        out.append(&part(self.coping_section_caps(p0, n), ROOF_COPING_PART));
     }
 }
 
@@ -725,6 +765,9 @@ pub struct BuildingDraft {
     /// OK Gelände (Gelände Themen 1 und 4).
     pub insulation: f64,
     pub terrain: f64,
+    /// Höhe der Aufkantung des Flachdachs über dem OG (0 = kein
+    /// Flachdach; Plan Flachdach P8: vorgewählt mit 50 cm).
+    pub roof: f64,
 }
 
 impl Default for BuildingDraft {
@@ -737,6 +780,7 @@ impl Default for BuildingDraft {
             slab: sk_model::SLAB_THICKNESS,
             insulation: 0.0,
             terrain: 0.0,
+            roof: sk_model::ROOF_UPSTAND,
         }
     }
 }
@@ -749,6 +793,8 @@ pub const DRAFT_CLEAR: (f64, f64) = (sk_model::MIN_CLEAR, 10000.0);
 /// Perimeterdämmung 2–30 cm oder 0 (keine); OK Sohle ±3 m über Gelände.
 pub const DRAFT_INSULATION: (f64, f64) = (sk_model::MIN_PERIMETER, sk_model::MAX_PERIMETER);
 pub const DRAFT_TERRAIN: (f64, f64) = (-sk_model::MAX_TERRAIN_OFFSET, sk_model::MAX_TERRAIN_OFFSET);
+/// Aufkantung des Flachdachs 15–150 cm oder 0 (kein Flachdach).
+pub const DRAFT_ROOF: (f64, f64) = (sk_model::MIN_ROOF_UPSTAND, sk_model::MAX_ROOF_UPSTAND);
 
 fn union(a: Option<Aabb>, b: Option<Aabb>) -> Option<Aabb> {
     match (a, b) {
@@ -1122,7 +1168,8 @@ impl Scene {
 
     /// Ein Feld des Dialogs „Gebäude erstellen“ (mm): `lichte_eg`,
     /// `lichte_og`, `decke_eg`, `decke_og`, `sohlplatte`, `perimeter` (0 =
-    /// keine), `gelaende` (OK Sohle über Gelände). Gilt sofort im Paneel
+    /// keine), `gelaende` (OK Sohle über Gelände), `flachdach` (Aufkantung,
+    /// 0 = kein Flachdach). Gilt sofort im Paneel
     /// „Geschosse“; `false` außerhalb der Grenzen oder ohne Dialog.
     pub fn set_building_dialog_value(&mut self, field: &str, mm: f64) -> bool {
         if self.pending.is_none() {
@@ -1138,9 +1185,11 @@ impl Scene {
             "sohlplatte" => (&mut d.slab, DRAFT_SLAB),
             "perimeter" => (&mut d.insulation, DRAFT_INSULATION),
             "gelaende" => (&mut d.terrain, DRAFT_TERRAIN),
+            "flachdach" => (&mut d.roof, DRAFT_ROOF),
             _ => return false,
         };
-        if !(ok(range) || (field == "perimeter" && mm == 0.0)) {
+        let zero = matches!(field, "perimeter" | "flachdach") && mm == 0.0;
+        if !(ok(range) || zero) {
             return false;
         }
         *slot = mm;
@@ -1167,6 +1216,12 @@ impl Scene {
             self.model.plan_storey_height(eg, d.clear_eg + d.floor_eg);
             if let Some(og) = og {
                 self.model.plan_storey_height(og, d.clear_og + d.floor_og);
+            }
+            // Ebene Flachdach über dem OG (P8), die Aufkantung folgt beim
+            // Zeichnen
+            self.model.set_flat_roof(eg, d.roof > 0.0);
+            if let Some(fd) = self.model.roof_level(eg).filter(|_| d.roof > 0.0) {
+                self.model.plan_storey_height(fd, d.roof);
             }
         }
     }
@@ -1492,7 +1547,8 @@ impl Scene {
             Some((c, floor)) => {
                 let found = self.model.foundation(id).and_then(Result::ok);
                 let floor = floor.and_then(Result::ok);
-                let mut rc = RunCache::new(id, c, found, floor, builds + 1);
+                let roof = self.model.flat_roof_on(id, &c);
+                let mut rc = RunCache::new(id, c, found, floor, roof, builds + 1);
                 rc.below = self.model.run_below(id);
                 if live {
                     if !self.unsettled.contains(&id) {
@@ -1682,8 +1738,65 @@ impl Scene {
         let sk_model::ElementKind::Coping { floor } = m.element(coping)?.kind else {
             return None;
         };
+        if m.flat_roof_coping(coping, floor) {
+            return Some(sk_model::roof_coping_qto_of(
+                m,
+                floor,
+                self.flat_roof_over(floor)?,
+            ));
+        }
         let run = m.run_of(floor)?;
         sk_model::coping_qto_of(m, floor, self.floor(run)?)
+    }
+
+    /// Flachdach auf der Decke `floor`, wie es gezeichnet wird (am Zug der
+    /// Aufkantung darüber).
+    pub fn flat_roof_over(&self, floor: ElementId) -> Option<&FlatRoof> {
+        let m = &self.model;
+        let ak = m.parapet_above(m.run_of(floor)?)?;
+        self.cached(ak)?.roof.as_ref()
+    }
+
+    /// Mengen eines Dachaufbaus, aus dem gezeichneten Flachdach.
+    pub fn flat_roof_qto(&self, roof: ElementId) -> Option<sk_model::TerraceQto> {
+        let m = &self.model;
+        let sk_model::ElementKind::Roof { floor } = m.element(roof)?.kind else {
+            return None;
+        };
+        Some(sk_model::flat_roof_qto_of(
+            m,
+            roof,
+            self.flat_roof_over(floor)?,
+        ))
+    }
+
+    /// Dämmdicke des Flachdachs (Paneel „Aufbau“, D3): ändert seinen Typ, ein
+    /// Schritt.
+    pub fn set_roof_insulation(&mut self, id: ElementId, mm: f64) -> bool {
+        let m = &self.model;
+        let roof = match m.element(id).map(|e| &e.kind) {
+            Some(sk_model::ElementKind::Roof { .. }) => id,
+            Some(sk_model::ElementKind::Coping { floor }) => match m.flat_roof_of(*floor) {
+                Some(r) => r,
+                None => return false,
+            },
+            _ => return false,
+        };
+        let Some(t) = m.flat_roof_type(roof) else {
+            return false;
+        };
+        let Some(mut set) = m.layer_set(t).cloned() else {
+            return false;
+        };
+        match set
+            .layers
+            .iter_mut()
+            .find(|l| l.function == sk_model::LayerFunction::Insulation)
+        {
+            Some(l) if l.thickness != mm => l.thickness = mm,
+            _ => return false,
+        }
+        self.edit_model("Aufbau des Flachdachs", |m| m.set_layer_set(t, set))
     }
 
     /// Mengen eines Randdämmstreifens (K5), aus der gezeichneten Decke.
@@ -1828,6 +1941,10 @@ impl Scene {
         } else {
             for &id in &t.runs {
                 self.mark(id);
+                // Dachaufbau und Blech hängen an der Aufkantung darüber
+                if let Some(ak) = self.model.parapet_above(id) {
+                    self.mark(ak);
+                }
             }
         }
     }
@@ -1972,6 +2089,12 @@ impl Scene {
         if field == Field::Soffit {
             return self.set_soffit(id, mm);
         }
+        if field == Field::RoofInsulation {
+            return self.set_roof_insulation(id, mm);
+        }
+        if let Field::Cladding(v) = field {
+            return self.set_cladding(id, v, mm);
+        }
         if matches!(
             field,
             Field::TerraceInsulation | Field::TerraceFinish | Field::Upstand
@@ -2053,6 +2176,7 @@ impl Scene {
                 continue;
             };
             let foundation = st.kind == sk_model::LevelKind::Foundation;
+            let roof = st.kind == sk_model::LevelKind::Roof;
             l.bands.push(Band {
                 id,
                 // Jörns Wort (E18); im Modell bleibt es die Gründung
@@ -2064,6 +2188,7 @@ impl Scene {
                 bottom: st.elevation,
                 top: st.top(),
                 foundation,
+                roof,
                 active: id == active,
             });
             if foundation {
@@ -2093,9 +2218,26 @@ impl Scene {
             let Some((lo, hi)) = m.storey_top_range(id) else {
                 continue;
             };
+            let (e, h) = (st.elevation, st.height);
+            // Flachdach (Jörn 10.10.): OK und Höhe der Aufkantung, keine
+            // lichte Höhe
+            if roof {
+                l.fields.push(row(
+                    Field::LevelTop(id),
+                    "OK Aufkantung",
+                    st.top(),
+                    (lo, hi),
+                ));
+                l.fields.push(row(
+                    Field::StoreyHeight(id),
+                    "Aufkantung",
+                    h,
+                    (lo - e, hi - e),
+                ));
+                continue;
+            }
             l.fields
                 .push(row(Field::LevelTop(id), "Oberkante", st.top(), (lo, hi)));
-            let (e, h) = (st.elevation, st.height);
             l.fields.push(row(
                 Field::StoreyHeight(id),
                 "Geschosshöhe",
@@ -2109,7 +2251,21 @@ impl Scene {
             l.fields
                 .push(row(Field::ClearHeight(id), "lichte Höhe", clear, range));
         }
+        // Schalter „Flachdach“, sobald es ein Geschoss gibt
+        if l.bands.iter().any(|b| !b.foundation && !b.roof) {
+            l.flat_roof = Some(m.roof_level(active).is_some());
+        }
         l
+    }
+
+    /// Schaltet die Ebene Flachdach des aktiven Gebäudes als ein Schritt
+    /// (Paneel „Geschosse“, Jörn 10.10.); `false`, wenn nichts geschah.
+    pub fn set_flat_roof(&mut self, on: bool) -> bool {
+        let st = self.active_storey();
+        if self.model.roof_level(st).is_some() == on {
+            return false;
+        }
+        self.edit_model("Flachdach", |m| m.set_flat_roof(st, on))
     }
 
     /// Zahl aus dem Paneel „Geschosse“ als ein Schritt; `false`, wenn das
@@ -2209,6 +2365,28 @@ impl Scene {
         }
         self.begin("Untersichtdämmung");
         let ok = self.model.set_floor_soffit(floor, mm);
+        for r in self.model.step_touched() {
+            self.mark(r);
+        }
+        self.commit();
+        ok
+    }
+
+    /// Ein Wert der Bekleidung unter der Untersichtdämmung (W3) an der Decke
+    /// von `id` (Decke oder Untersichtdämmung); ein Schritt im Verlauf.
+    pub fn set_cladding(&mut self, id: ElementId, v: sk_model::CladdingValue, mm: f64) -> bool {
+        let m = &self.model;
+        let floor = match m.element(id).map(|e| &e.kind) {
+            Some(sk_model::ElementKind::SoffitInsulation { floor }) => *floor,
+            Some(sk_model::ElementKind::Floor(_)) => id,
+            _ => return false,
+        };
+        match m.element(floor).map(|e| &e.kind) {
+            Some(sk_model::ElementKind::Floor(f)) if v.of(&f.soffit) != mm => {}
+            _ => return false,
+        }
+        self.begin("Untersicht-Bekleidung");
+        let ok = self.model.set_floor_cladding(floor, v, mm);
         for r in self.model.step_touched() {
             self.mark(r);
         }

@@ -2444,8 +2444,11 @@ mod abnahme_ka2_nr14 {
 
     #[test]
     fn bauleistung_waehlen_setzt_svc() {
+        // fremde Terrassendämmung: die eingebaute hat seit Stand 9 eine
+        // Werksleistung
         let m = sk_model::szo::read_with(
-            include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo"),
+            &include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo")
+                .replace("3NKChAqkL3uwFZN5n$FOr1", "3NKChAqkL3uwFZN5n$FOr9"),
             sk_model::GuidGen::with_seed(1),
             &sk_cost::lesen::ABSCHNITTE_SZO,
         )
