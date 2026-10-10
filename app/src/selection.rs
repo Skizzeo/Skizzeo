@@ -193,6 +193,62 @@ fn recess_field(m: &Model, id: ElementId) -> Option<FieldRow> {
     })
 }
 
+/// Perimeterdämmung unter der Sohlplatte (Gelände Thema 4): 0 = keine.
+fn insulation_field(t: f64) -> FieldRow {
+    FieldRow {
+        field: Field::Insulation,
+        label: "Perimeterdämmung",
+        value: t,
+        min: sk_model::MIN_PERIMETER,
+        max: sk_model::MAX_PERIMETER,
+        zero: true,
+        einheit: None,
+    }
+}
+
+/// Paneel für die Perimeterdämmung: Hauptmenge Fläche, Dicke als Feld
+/// (sie steht an der Sohlplatte).
+fn perimeter_props(
+    scene: &Scene,
+    id: ElementId,
+    slab: ElementId,
+    mut values: Vec<(&'static str, String)>,
+) -> Option<Props> {
+    let m = scene.model();
+    let e = m.element(id)?;
+    let t = m.slab_insulation(slab);
+    let q = m
+        .run_of(slab)
+        .and_then(|r| scene.foundation(r))
+        .and_then(sk_model::perimeter_qto_of);
+    if let Some(q) = &q {
+        values.extend([
+            ("Fläche", format!("{} m²", de(q.area / 1e6, 2))),
+            ("Volumen", format!("{} m³", de(q.volume / 1e9, 3))),
+        ]);
+    }
+    values.push((
+        "Sohlplatte",
+        m.element(slab).map_or("–".into(), |f| f.number.clone()),
+    ));
+    values.push(("Bauabschnitt", e.seq.to_string()));
+    let mat = m.perimeter_material();
+    Some(Props {
+        values,
+        layer_set: mat
+            .and_then(|x| m.material(x))
+            .map_or(String::new(), |x| x.name.clone()),
+        layers: mat
+            .and_then(|x| solid_layer(m, x, t, q.as_ref().map(|q| q.volume)))
+            .into_iter()
+            .collect(),
+        set_label: "Baustoff",
+        fields: vec![insulation_field(t)],
+        notes: m.warnings(id),
+        ..Default::default()
+    })
+}
+
 /// Zahlenfeld ohne Sonderwert 0; Bereich in mm.
 fn field(field: Field, label: &'static str, value: f64, min: f64, max: f64) -> FieldRow {
     FieldRow {
@@ -337,7 +393,11 @@ fn foundation_props(
                 1000.0,
             ));
             fields.extend(recess_field(m, id));
+            fields.push(insulation_field(s.insulation));
             (s.material, s.thickness, q.map(|q| q.0.volume))
+        }
+        ElementKind::PerimeterInsulation { slab } => {
+            return perimeter_props(scene, id, slab, values);
         }
         ElementKind::StripFooting(f) => {
             if let Some((_, fq)) = q {

@@ -408,18 +408,20 @@ pub(crate) fn section_camera(
     }
 }
 
-/// Geländelinie in Schnitt und Ansichten (kräftig, über das Gebäude hinaus).
+/// Geländelinie in Schnitt und Ansichten (kräftig, über das Gebäude
+/// hinaus) auf OK Gelände `z` (Gelände Thema 1).
 fn ground_line(
     v: ViewKind,
     bounds: Option<(Vec3, Vec3)>,
+    z: f64,
     scale: f32,
     table: &DrawTable,
 ) -> Vec<sk_render::Helper> {
     let (lo, hi) = bounds.unwrap_or((vec3(-2000.0, -2000.0, 0.0), vec3(12000.0, 10000.0, 0.0)));
     let m = 3000.0;
     let (a, b) = match v {
-        ViewKind::Left | ViewKind::Right => (vec3(lo.x, lo.y - m, 0.0), vec3(lo.x, hi.y + m, 0.0)),
-        _ => (vec3(lo.x - m, lo.y, 0.0), vec3(hi.x + m, lo.y, 0.0)),
+        ViewKind::Left | ViewKind::Right => (vec3(lo.x, lo.y - m, z), vec3(lo.x, hi.y + m, z)),
+        _ => (vec3(lo.x - m, lo.y, z), vec3(hi.x + m, lo.y, z)),
     };
     vec![sk_render::Helper {
         a: a.to_f32(),
@@ -1107,6 +1109,8 @@ impl App {
                     Draft::FloorEg => (d.floor_eg, scene::DRAFT_FLOOR),
                     Draft::ClearEg => (d.clear_eg, scene::DRAFT_CLEAR),
                     Draft::Slab => (d.slab, scene::DRAFT_SLAB),
+                    Draft::Insulation => (d.insulation, scene::DRAFT_INSULATION),
+                    Draft::Terrain => (d.terrain, scene::DRAFT_TERRAIN),
                 };
                 FieldRow {
                     field: Field::Draft(k),
@@ -1114,7 +1118,8 @@ impl App {
                     value,
                     min,
                     max,
-                    zero: false,
+                    // Perimeterdämmung: 0 = keine
+                    zero: k == Draft::Insulation,
                     einheit: None,
                 }
             })
@@ -1628,10 +1633,11 @@ impl App {
         let (lo, hi) = self.scene.bounds()?;
         let m = self.scene.model();
         let ganz = ansicht_schatten::platz(v).is_none_or(|i| m.view_below(i));
-        Some(if ganz || hi.z <= 0.0 {
+        let g = m.terrain_z();
+        Some(if ganz || hi.z <= g {
             (lo, hi)
         } else {
-            (vec3(lo.x, lo.y, lo.z.max(0.0)), hi)
+            (vec3(lo.x, lo.y, lo.z.max(g)), hi)
         })
     }
 
@@ -3523,6 +3529,7 @@ impl App {
                 match g {
                     Grip::FoundationBottom => self.scene.drag_foundation_bottom(z),
                     Grip::Top(id) => self.scene.drag_storey_top(id, z),
+                    Grip::Terrain => self.scene.drag_terrain(z),
                 }
                 self.upload_model();
             }
@@ -4819,7 +4826,9 @@ impl App {
             Some(match m.element(id)?.kind {
                 K::Wall(_) if m.stack_offset(id).is_some() => SelKind::UpperWall,
                 K::Wall(_) => SelKind::Wall,
-                K::GroundSlab(_) | K::StripFooting(_) => SelKind::Foundation,
+                K::GroundSlab(_) | K::StripFooting(_) | K::PerimeterInsulation { .. } => {
+                    SelKind::Foundation
+                }
                 K::Floor(_) | K::EdgeStrip { .. } | K::SoffitInsulation { .. } => SelKind::Floor,
                 K::RoofTerrace { .. } | K::Coping { .. } => SelKind::Terrace,
                 // Thema „Erweiterungen“, siehe `sync_help`
@@ -8402,6 +8411,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 v => helpers.extend(ground_line(
                     a.side_like(v),
                     a.scene.bounds(),
+                    a.scene.model().terrain_z(),
                     scale,
                     a.scene.table(),
                 )),
@@ -8702,6 +8712,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             let unten = ansicht_schatten::platz(a.ui.view)
                 .map(|i| a.scene.model().view_below(i).then_some([2.0 * mm, mm]));
             a.renderer.set_below_ground(unten);
+            // OK Gelände (Gelände Thema 1): Boden und Grenze „unter Gelände“
+            a.renderer.set_terrain(a.scene.model().terrain_z() as f32);
             let bild = wahl.map(|(i, vs)| ansicht_schatten::Bild {
                 vs,
                 gestrichelt: a.scene.model().view_below(i),

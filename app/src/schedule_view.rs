@@ -2188,6 +2188,7 @@ fn layer_row_label(m: &Model, r: &LayerRow) -> String {
         Category::GroundSlab => format!("Sohlplatte {}", cm(core)),
         Category::Floor => format!("Decke über {} {}", storey_name(m, r.storey).1, cm(core)),
         Category::SoffitInsulation => format!("Untersichtdämmung {}", cm(r.thickness)),
+        Category::PerimeterInsulation => format!("Perimeterdämmung {}", cm(r.thickness)),
         c => c.name().into(),
     }
 }
@@ -2465,6 +2466,11 @@ fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut V
                 }
                 Some(ElementQto::Soffit(f)) => {
                     rl.cells[0] = format!("Untersichtdämmung {}", cm(f.thickness));
+                    rl.cells[3] = m_area(f.area);
+                    rl.cells[4] = m_vol(f.volume);
+                }
+                Some(ElementQto::Perimeter(f)) => {
+                    rl.cells[0] = format!("Perimeterdämmung {}", cm(f.thickness));
                     rl.cells[3] = m_area(f.area);
                     rl.cells[4] = m_vol(f.volume);
                 }
@@ -2833,6 +2839,13 @@ fn csv_storeys(m: &Model, sched: &Schedule) -> Vec<u8> {
                     ),
                     Some(ElementQto::Soffit(f)) => (
                         format!("Untersichtdämmung {}", cm(f.thickness)),
+                        String::new(),
+                        area(f.area),
+                        vol(f.volume),
+                        String::new(),
+                    ),
+                    Some(ElementQto::Perimeter(f)) => (
+                        format!("Perimeterdämmung {}", cm(f.thickness)),
                         String::new(),
                         area(f.area),
                         vol(f.volume),

@@ -2454,9 +2454,14 @@ fn a42_gruendung_und_plattendicke() {
         (-850.0, -220.0)
     );
     assert!(s.undo());
+    // Gelände Thema 1: frostfrei 0,80 unter OK Gelände (±0,00) vor der
+    // Schürzenhöhe 0,10
+    kante_ziehen(&mut s, "GR.UK", &[-900.0], false);
     kante_ziehen(&mut s, "GR.UK", &[-500.0, -250.0], false);
-    assert_eq!(band(&s, "GR").0, -320.0, "klemmt bei Schürze 0,10");
+    assert_eq!(band(&s, "GR").0, -800.0, "klemmt bei 0,80 unter Gelände");
     assert!(s.undo());
+    assert!(s.undo());
+    assert_eq!(band(&s, "GR").0, -800.0);
     // Plattendicke 25 cm: UK Gründung bleibt, Schürze wird kürzer
     let (slab, footing) = sohlplatte(&s, aw);
     assert!(s.edit_model("Dicke", |m| m.set_slab_thickness(slab, 250.0)));
@@ -14057,7 +14062,7 @@ mod bauteilarten {
 
     /// Die heutige Tabelle (main 637f33c): Name, Präfix, IFC, KG, IsExternal.
     #[allow(clippy::type_complexity)]
-    const TABELLE: [(Category, &str, &str, &str, Option<u16>, bool); 14] = [
+    const TABELLE: [(Category, &str, &str, &str, Option<u16>, bool); 15] = [
         (
             Category::ExteriorWall,
             "Außenwand",
@@ -14148,6 +14153,15 @@ mod bauteilarten {
             "AB",
             "IfcCovering.COPING",
             Some(363),
+            true,
+        ),
+        // Gelände Thema 4: Perimeterdämmung unter der Sohlplatte
+        (
+            Category::PerimeterInsulation,
+            "Perimeterdämmung",
+            "PD",
+            "IfcCovering.INSULATION",
+            Some(325),
             true,
         ),
     ];
@@ -14426,7 +14440,7 @@ GB-01;Summe nach Baustoff;;Randdämmung;;;;3,0000;2,3455;
 
     /// Seit Paket 2a/2c: Dachterrasse und Attikablech (nicht in den
     /// Musterhäusern von A176, die den Stand 637f33c festhalten).
-    const ARTEN_2A: [(Category, &str, &str, &str); 2] = [
+    const ARTEN_2A: [(Category, &str, &str, &str); 3] = [
         (
             Category::RoofTerrace,
             "[terrace]",
@@ -14434,6 +14448,13 @@ GB-01;Summe nach Baustoff;;Randdämmung;;;;3,0000;2,3455;
             "Dachterrassen",
         ),
         (Category::Coping, "[coping]", "coping", "Attikableche"),
+        // Gelände Thema 4
+        (
+            Category::PerimeterInsulation,
+            "[perimeter]",
+            "perimeterinsulation",
+            "Perimeterdämmungen",
+        ),
     ];
 
     /// Kategorien, die es noch nicht als Bauteil gibt (kein Beispiel).
@@ -14560,6 +14581,10 @@ GB-01;Summe nach Baustoff;;Randdämmung;;;;3,0000;2,3455;
                         .map(|(id, _)| id)
                         .unwrap();
                     m.set_linked(w, false) && m.move_segment(w, -1500.0).is_some()
+                }
+                Category::PerimeterInsulation => {
+                    let slab = m.foundation_of(eg).unwrap().0;
+                    m.set_slab_insulation(slab, 120.0)
                 }
                 _ => true,
             }

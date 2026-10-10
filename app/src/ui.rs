@@ -170,6 +170,8 @@ pub enum Grip {
     FoundationBottom,
     /// Oberkante eines Geschosses.
     Top(StoreyId),
+    /// OK Gelände (Gelände Thema 1).
+    Terrain,
 }
 
 /// Zahlenfelder im Paneel „Eigenschaften“.
@@ -177,6 +179,8 @@ pub enum Grip {
 pub enum Field {
     SlabThickness,
     Recess,
+    /// Perimeterdämmung unter der Sohlplatte (cm, 0 = keine; Gelände Thema 4).
+    Insulation,
     FootingWidth,
     FootingDepth,
     FloorThickness,
@@ -196,6 +200,8 @@ pub enum Field {
     LevelTop(StoreyId),
     StoreyHeight(StoreyId),
     ClearHeight(StoreyId),
+    /// Kote von OK Gelände im Paneel „Geschosse“ (m, Gelände Thema 1).
+    Terrain,
     /// Dialog „Gebäude erstellen“ (E16, Jörn 10:13).
     Draft(Draft),
     /// Feld `i` des Werkzeugs „Erweiterungen“ (E6), in der Einheit des
@@ -214,15 +220,21 @@ pub enum Draft {
     FloorEg,
     ClearEg,
     Slab,
+    /// Perimeterdämmung unter der Sohlplatte (cm, 0 = keine; Gelände Thema 4).
+    Insulation,
+    /// OK Sohlplatte über OK Gelände (cm, + = höher; Gelände Thema 1).
+    Terrain,
 }
 
 impl Draft {
-    pub const ALL: [Draft; 5] = [
+    pub const ALL: [Draft; 7] = [
         Draft::FloorOg,
         Draft::ClearOg,
         Draft::FloorEg,
         Draft::ClearEg,
         Draft::Slab,
+        Draft::Insulation,
+        Draft::Terrain,
     ];
 
     /// Name für `Scene::set_building_dialog_value`.
@@ -233,6 +245,8 @@ impl Draft {
             Draft::FloorEg => "decke_eg",
             Draft::ClearEg => "lichte_eg",
             Draft::Slab => "sohlplatte",
+            Draft::Insulation => "perimeter",
+            Draft::Terrain => "gelaende",
         }
     }
 
@@ -243,6 +257,8 @@ impl Draft {
             Draft::FloorEg => "Dicke EG-Decke",
             Draft::ClearEg => "lichte Höhe EG",
             Draft::Slab => "Dicke Sohlplatte",
+            Draft::Insulation => "Perimeterdämmung",
+            Draft::Terrain => "OK Sohle über Gelände",
         }
     }
 
@@ -261,6 +277,7 @@ impl Field {
                 | Field::LevelTop(_)
                 | Field::StoreyHeight(_)
                 | Field::ClearHeight(_)
+                | Field::Terrain
         )
     }
 
@@ -281,7 +298,10 @@ impl Field {
 
     /// Kote (mit Vorzeichen) statt Länge.
     fn is_kote(self) -> bool {
-        matches!(self, Field::LevelBottom | Field::LevelTop(_))
+        matches!(
+            self,
+            Field::LevelBottom | Field::LevelTop(_) | Field::Terrain
+        )
     }
 
     /// Wert zum Bearbeiten (ohne Einheit, Minus als „-“). Der Versatz trägt
@@ -605,6 +625,10 @@ pub struct Levels {
     pub clear: Vec<(StoreyId, f64)>,
     /// Zahlen, die sich eingeben lassen, mit erlaubtem Bereich.
     pub fields: Vec<FieldRow>,
+    /// OK Gelände (mm) und Einbindetiefe der Gründung (OK Gelände bis UK
+    /// Fundament, mm; Gelände Thema 1). `None` ohne Gründung.
+    pub terrain: Option<f64>,
+    pub embedment: Option<f64>,
 }
 
 /// Eine Ebene (Linie) im Diagramm.
@@ -683,6 +707,8 @@ const LEVEL_HEAD: f32 = 34.0;
 const LEVEL_TOP: f32 = 30.0;
 const LEVEL_BOTTOM: f32 = 8.0;
 const LEVEL_LIST_ROW: f32 = 22.0;
+/// Zeilen im Fuß des Paneels: OK Gelände, Einbindetiefe.
+const LEVEL_FOOTER_ROW: f32 = 20.0;
 /// Rechter Rand: Kette der Geschosshöhen und davor die der lichten Höhe.
 const CHAIN_OUTER: f32 = 2.0;
 const CHAIN_GAP: f32 = 40.0;
@@ -1481,6 +1507,7 @@ impl Ui {
         match g {
             Grip::FoundationBottom => b.iter().find(|b| b.foundation).map(|b| b.bottom),
             Grip::Top(id) => b.iter().find(|b| b.id == id).map(|b| b.top),
+            Grip::Terrain => self.levels.terrain,
         }
     }
 
@@ -1700,7 +1727,7 @@ impl Ui {
     fn natural_height(&self, p: Panel) -> f32 {
         match p {
             Panel::Levels => return self.levels_layout().height,
-            Panel::Dialog => return (self.size.dialog_h * self.scale).round(),
+            Panel::Dialog => return (self.dialog_h() * self.scale).round(),
             _ => {}
         }
         let inner: f32 = self
@@ -2555,10 +2582,18 @@ impl Ui {
         DIALOG_ROW_Y + i as f32 * self.size.dialog_row
     }
 
+    /// Höhe des Dialogs (dip): mindestens die eingestellte, sonst so hoch,
+    /// dass unter den Feldern der Hinweis und die Knöpfe Platz haben.
+    fn dialog_h(&self) -> f32 {
+        let n = self.dialog_fields.len();
+        let need = self.dialog_row_y(n + 2) + 12.0 + 30.0 + 12.0;
+        self.size.dialog_h.max(need)
+    }
+
     /// Knöpfe des Dialogs in Paneelkoordinaten.
     fn dialog_buttons(&self) -> Vec<(Id, Rect, &'static str)> {
         let (s, z) = (self.scale, &self.size);
-        let (w, h, pad) = (z.dialog_w, z.dialog_h, z.panel_pad);
+        let (w, h, pad) = (z.dialog_w, self.dialog_h(), z.panel_pad);
         let r = |x: f32, y: f32, bw: f32, bh: f32| Rect::new(x * s, y * s, bw * s, bh * s);
         let (start_w, cancel_w, bh) = (150.0, 96.0, 30.0);
         let by = h - 12.0 - bh;
@@ -2693,10 +2728,11 @@ impl Ui {
         let avail = (self.win_h - y - m).max(0.0);
         let lines = level_lines(&self.levels);
         let head = z.panel_pad + LEVEL_HEAD + LEVEL_TOP;
+        let foot = self.level_footer();
         let mut ppm = z.level_px_per_m;
         loop {
             let (above, below) = self.level_spans(&lines, ppm);
-            let h = ((head + above + below + LEVEL_BOTTOM + z.panel_pad) * s).round();
+            let h = ((head + above + below + LEVEL_BOTTOM + foot + z.panel_pad) * s).round();
             if h <= avail {
                 return LevelsLayout {
                     ppm,
@@ -2711,14 +2747,51 @@ impl Ui {
             ppm = (ppm - 1.0).max(z.level_px_per_m_min);
         }
         let rows = self.levels.bands.len() + self.levels.clear.len();
-        let h = (2.0 * z.panel_pad + LEVEL_HEAD + rows as f32 * LEVEL_LIST_ROW) * s;
-        let least = ((2.0 * z.panel_pad + LEVEL_HEAD) * s).round();
+        let h = (2.0 * z.panel_pad + LEVEL_HEAD + rows as f32 * LEVEL_LIST_ROW + foot) * s;
+        let least = ((2.0 * z.panel_pad + LEVEL_HEAD + foot) * s).round();
         LevelsLayout {
             ppm: z.level_px_per_m_min,
             list: true,
             anchor: 0.0,
             height: h.round().min(avail).max(least),
         }
+    }
+
+    /// Fuß des Paneels (dip): Kote OK Gelände und Einbindetiefe (Gelände
+    /// Thema 1), ohne Gründung nichts.
+    fn level_footer(&self) -> f32 {
+        if self.levels.terrain.is_some() {
+            2.0 * LEVEL_FOOTER_ROW
+        } else {
+            0.0
+        }
+    }
+
+    /// Obere Kante des Fußes (Pixel, ohne Schatten).
+    fn footer_top(&self, l: &LevelsLayout) -> f32 {
+        l.height - ((self.level_footer() + self.size.panel_pad) * self.scale).round()
+    }
+
+    /// Lage von OK Gelände im Diagramm (Pixel): zwischen den Linien, die
+    /// es einschließen, anteilig; außerhalb im Maßstab.
+    fn terrain_y(&self, lines: &[LevelLine], ys: &[f32], l: &LevelsLayout) -> Option<f32> {
+        let z = self.levels.terrain?;
+        let px = l.ppm * self.scale / 1000.0;
+        let (first, last) = (lines.first()?, lines.last()?);
+        if z <= first.z {
+            return Some(ys[0] + (first.z - z) as f32 * px);
+        }
+        if z >= last.z {
+            return Some(ys[ys.len() - 1] - (z - last.z) as f32 * px);
+        }
+        let i = lines.windows(2).position(|w| z >= w[0].z && z <= w[1].z)?;
+        let (z0, z1) = (lines[i].z, lines[i + 1].z);
+        let t = if z1 > z0 {
+            ((z - z0) / (z1 - z0)) as f32
+        } else {
+            0.0
+        };
+        Some(ys[i] + (ys[i + 1] - ys[i]) * t)
     }
 
     /// Abstand zweier Linien (dip), für die Anzeige auf `level_row_min` gespreizt.
@@ -2775,6 +2848,7 @@ impl Ui {
                 .iter()
                 .find(|c| c.0 == id)
                 .map_or(String::new(), |c| m_text(c.1)),
+            Field::Terrain => self.levels.terrain.map_or(String::new(), kote_text),
             _ => String::new(),
         }
     }
@@ -2834,6 +2908,11 @@ impl Ui {
         let mut push = |f: Field, right: f32, base: f32| {
             out.push((Id::Field(f), self.level_text_rect(f, right, base), ""));
         };
+        // Fuß: Kote OK Gelände (Gelände Thema 1)
+        if self.levels.terrain.is_some() {
+            let base = self.footer_top(&l) + self.size.level_row_base * s;
+            push(Field::Terrain, xi - 6.0 * s, base);
+        }
         if l.list {
             let top = (self.size.panel_pad + LEVEL_HEAD) * s;
             let row = LEVEL_LIST_ROW * s;
@@ -2960,10 +3039,14 @@ impl Ui {
         let lines = level_lines(&self.levels);
         let ys = self.line_ys(&lines, &l);
         let hit = self.size.level_hit * s;
+        let terrain = self
+            .terrain_y(&lines, &ys, &l)
+            .map(|ty| (Grip::Terrain, (ty - y as f32).abs()));
         lines
             .iter()
-            .zip(ys)
+            .zip(ys.iter().copied())
             .filter_map(|(line, ly)| Some((line.grip?, (ly - y as f32).abs())))
+            .chain(terrain)
             .filter(|(_, d)| *d <= hit)
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(g, _)| g)
@@ -3110,6 +3193,7 @@ impl Ui {
                 let txt = format!("lichte Höhe {name}");
                 widgets::text(c, regular, &txt, px_d, x0 + m, base + m, u.text_dim);
             }
+            self.paint_level_footer(t, c, &l);
             self.paint_level_error(t, c);
             return;
         }
@@ -3140,6 +3224,40 @@ impl Ui {
             c.fill(&p, u.dim_line);
         };
         let drag = self.level_drag.map(|d| d.grip);
+        // OK Gelände (Gelände Thema 1): Linie mit Erdschraffur darunter und
+        // Griff, unter den Ebenen (bei Versatz 0 liegt sie auf ±0,00); die
+        // Kote steht im Fuß
+        if let Some(ty) = self.terrain_y(&lines, &ys, &l) {
+            let y = clamp(ty);
+            let dragged = drag == Some(Grip::Terrain);
+            let col = if dragged {
+                u.level_handle_drag
+            } else {
+                u.text_dim
+            };
+            let x1 = xi - 12.0 * s;
+            c.fill_rect(x0 + m, (y + m - w1 * 0.5).round(), x1 - x0, w1, col);
+            let step = 7.0 * s;
+            let d = 5.0 * s;
+            let mut x = x0 + z.level_handle * s + 4.0 * s;
+            while x + d <= x1 {
+                let mut p = Path::new();
+                p.segment((x + m, y + d + m), (x + d + m, y + m), w1);
+                c.fill(&p, col);
+                x += step;
+            }
+            let hc = if dragged {
+                u.level_handle_drag
+            } else if self.hover == Some(Id::Grip(Grip::Terrain)) {
+                u.level_handle_hover
+            } else {
+                u.text_dim
+            };
+            let hd = z.level_handle * s;
+            let mut p = Path::new();
+            p.rounded_rect(x0 + m, y + m - hd * 0.5, hd, hd * 0.5 + 1.0, 1.0);
+            c.fill(&p, hc);
+        }
         for (line, &y) in lines.iter().zip(&ys) {
             let y = clamp(y);
             let dragged = line.grip.is_some() && line.grip == drag;
@@ -3222,7 +3340,35 @@ impl Ui {
             let base = self.mid_base(y0, yc, px_d);
             right_text(c, regular, "lichte", px_d, r.x - 2.0 * s, base, u.text_dim);
         }
+        self.paint_level_footer(t, c, &l);
         self.paint_level_error(t, c);
+    }
+
+    /// Fuß des Paneels: „OK Gelände“ (die Kote ist ein Feld) und die
+    /// Einbindetiefe, rot unter 0,80 m.
+    fn paint_level_footer(&self, t: &Theme, c: &mut Canvas, l: &LevelsLayout) {
+        let (Some(_), u, z, s) = (self.levels.terrain, &t.ui, &self.size, self.scale) else {
+            return;
+        };
+        let m = (z.panel_shadow * s).round();
+        let (x0, _, _) = self.level_columns();
+        let regular = self.fonts.regular.as_ref();
+        let top = self.footer_top(l);
+        let base = top + z.level_row_base * s;
+        let px = z.font_small * s;
+        widgets::text(c, regular, "OK Gelände", px, x0 + m, base + m, u.text);
+        if let Some(e) = self.levels.embedment {
+            let ok = e >= sk_model::FROST_DEPTH - 0.5;
+            let txt = if ok {
+                format!("Einbindetiefe {} m · frostfrei", m_text(e))
+            } else {
+                format!("Einbindetiefe {} m · unter 0,80 m", m_text(e))
+            };
+            let col = if ok { u.text_dim } else { u.field_invalid };
+            let px_d = z.font_detail * s;
+            let b2 = base + LEVEL_FOOTER_ROW * s;
+            widgets::text(c, regular, &txt, px_d, x0 + m, b2 + m, col);
+        }
     }
 
     /// Grund einer ungültigen Eingabe unter dem Feld.
@@ -3479,6 +3625,8 @@ mod tests {
             row(Draft::FloorEg, 220.0, 100.0, 600.0),
             row(Draft::ClearEg, 2635.0, 1000.0, 10000.0),
             row(Draft::Slab, 220.0, 100.0, 790.0),
+            row(Draft::Insulation, 0.0, 20.0, 300.0),
+            row(Draft::Terrain, 0.0, -3000.0, 3000.0),
         ]);
         // Felder von oben nach unten, alle über den Knöpfen
         let rects: Vec<Rect> = Draft::ALL
@@ -3545,7 +3693,7 @@ mod tests {
         );
         assert!(ui.edit.is_none());
         // Nach dem letzten Feld keine Eingabe mehr: Enter beginnt (App)
-        ui.focus_field(Field::Draft(Draft::Slab));
+        ui.focus_field(Field::Draft(Draft::Terrain));
         key(&mut ui, Key::Enter);
         assert!(ui.edit.is_none());
     }
@@ -4149,11 +4297,12 @@ mod levels_tests {
         let out = ui.handle(&up, 1440, 32);
         assert_eq!(out.level, Some(LevelEvent::End));
         assert!(out.relayout && ui.level_dragging().is_none());
-        // ±0,00 hat keinen Griff
+        // ±0,00 hat keinen Griff; bei Versatz 0 liegt dort OK Gelände,
+        // das sich ziehen lässt
         let (x, y) = griff(&ui, 0.0);
         let out = ui.handle(&down_at(x, y), 1440, 32);
-        assert_eq!(out.level, None);
-        assert!(!ui.cancel_level_drag());
+        assert_eq!(out.level, Some(LevelEvent::Begin(Grip::Terrain)));
+        assert!(ui.cancel_level_drag());
     }
 
     fn down_at(x: f64, y: f64) -> Event {
@@ -4236,9 +4385,10 @@ mod levels_tests {
             assert!(r.y >= t.y + t.h && r.y + r.h <= h as f32, "{w}×{h}: {r:?}");
             assert_eq!(ui.levels_layout().list, list, "{w}×{h}");
             let n = ui.level_buttons().len();
-            // Zahlen (mit lichter Höhe EG und OG) und die Namen von
-            // Fundament, EG und OG (E18: das Fundament ist anklickbar)
-            assert_eq!(n, if list { 10 } else { 11 }, "{w}×{h}");
+            // Zahlen (mit lichter Höhe EG und OG), die Namen von
+            // Fundament, EG und OG (E18: das Fundament ist anklickbar) und
+            // die Kote OK Gelände im Fuß
+            assert_eq!(n, if list { 11 } else { 12 }, "{w}×{h}");
             for (_, b, _) in ui.level_buttons() {
                 assert!(b.y >= 0.0 && b.y + b.h <= r.h, "{w}×{h}: {b:?}");
             }

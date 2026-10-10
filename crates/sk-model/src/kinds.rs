@@ -94,12 +94,13 @@ pub fn spec(c: Category) -> &'static KindSpec {
         Category::SoffitInsulation => &SOFFIT_INSULATION,
         Category::RoofTerrace => &ROOF_TERRACE,
         Category::Coping => &COPING,
+        Category::PerimeterInsulation => &PERIMETER_INSULATION,
         Category::Extension => &EXTENSION,
     }
 }
 
 /// Rang im Mengenfenster für alles, was dort keinen eigenen Platz hat.
-const LAST: u8 = 9;
+const LAST: u8 = 10;
 
 const EXTERIOR_WALL: KindSpec = KindSpec {
     category: Category::ExteriorWall,
@@ -110,7 +111,7 @@ const EXTERIOR_WALL: KindSpec = KindSpec {
     prefix: "AW",
     ifc: "IfcWall",
     kg: Some(330),
-    qto_rank: 2,
+    qto_rank: 3,
     szo: "exterior",
     external: true,
     type_category: Some(TypeCategory::ExteriorWall),
@@ -128,7 +129,7 @@ const INTERIOR_WALL: KindSpec = KindSpec {
     prefix: "IW",
     ifc: "IfcWall",
     kg: Some(340),
-    qto_rank: 4,
+    qto_rank: 5,
     szo: "interior",
     external: false,
     type_category: Some(TypeCategory::InteriorWall),
@@ -146,7 +147,7 @@ const FLOOR: KindSpec = KindSpec {
     prefix: "DE",
     ifc: "IfcSlab.FLOOR",
     kg: Some(350),
-    qto_rank: 5,
+    qto_rank: 6,
     szo: "floor",
     external: false,
     type_category: Some(TypeCategory::Floor),
@@ -164,7 +165,7 @@ const GROUND_SLAB: KindSpec = KindSpec {
     prefix: "SP",
     ifc: "IfcSlab.BASESLAB",
     kg: Some(322),
-    qto_rank: 1,
+    qto_rank: 2,
     szo: "groundslab",
     external: false,
     type_category: Some(TypeCategory::GroundSlab),
@@ -292,7 +293,7 @@ const EDGE_INSULATION: KindSpec = KindSpec {
     prefix: "RD",
     ifc: "IfcBuildingElementPart.INSULATION",
     kg: Some(330),
-    qto_rank: 3,
+    qto_rank: 4,
     szo: "edgeinsulation",
     external: false,
     type_category: None,
@@ -312,13 +313,34 @@ const SOFFIT_INSULATION: KindSpec = KindSpec {
     prefix: "UD",
     ifc: "IfcCovering.INSULATION",
     kg: Some(354),
-    qto_rank: 6,
+    qto_rank: 7,
     szo: "soffitinsulation",
     external: false,
     type_category: None,
     needs_type: false,
     once: false,
     default_trade: None,
+};
+
+/// Dämmung unter der Bodenplatte (DIN 276:2018 325: Abdichtungen und
+/// Bekleidungen der Gründung, dazu Dämmungen unter der Platte); im
+/// Mengenfenster unter der Sohlplatte. Verlegt der Rohbauer.
+const PERIMETER_INSULATION: KindSpec = KindSpec {
+    category: Category::PerimeterInsulation,
+    name: "Perimeterdämmung",
+    short: "Perimeterdämmung",
+    plural: "Perimeterdämmungen",
+    genus: Genus::Feminine,
+    prefix: "PD",
+    ifc: "IfcCovering.INSULATION",
+    kg: Some(325),
+    qto_rank: 1,
+    szo: "perimeterinsulation",
+    external: true,
+    type_category: None,
+    needs_type: false,
+    once: true,
+    default_trade: Some("18331"),
 };
 
 /// Dachbelag über beheiztem Raum (DIN 276:2018 363, bim/paket-dachterrasse
@@ -332,7 +354,7 @@ const ROOF_TERRACE: KindSpec = KindSpec {
     prefix: "DT",
     ifc: "IfcCovering.ROOFING",
     kg: Some(363),
-    qto_rank: 7,
+    qto_rank: 8,
     szo: "roofterrace",
     external: true,
     type_category: Some(TypeCategory::RoofTerrace),
@@ -351,7 +373,7 @@ const COPING: KindSpec = KindSpec {
     prefix: "AB",
     ifc: "IfcCovering.COPING",
     kg: Some(363),
-    qto_rank: 8,
+    qto_rank: 9,
     szo: "coping",
     external: true,
     type_category: None,

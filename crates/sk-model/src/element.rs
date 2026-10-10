@@ -50,6 +50,8 @@ pub enum Category {
     RoofTerrace,
     /// Attikablech am Rand der Dachterrasse (BIM Regel 46).
     Coping,
+    /// Perimeterdämmung vollflächig unter der Sohlplatte (Gelände Thema 4).
+    PerimeterInsulation,
     /// Erweiterungsbauteil aus einer .szb (Vertrag 0.5). Name, Präfix,
     /// IFC-Klasse und Kostengruppe kommen aus seiner Definition; deshalb
     /// nicht in [`Category::ALL`], das die Arten des Lieferumfangs nennt.
@@ -58,7 +60,7 @@ pub enum Category {
 
 impl Category {
     /// Die Arten des Lieferumfangs (ohne [`Category::Extension`]).
-    pub const ALL: [Category; 14] = [
+    pub const ALL: [Category; 15] = [
         Category::ExteriorWall,
         Category::InteriorWall,
         Category::Floor,
@@ -73,6 +75,7 @@ impl Category {
         Category::SoffitInsulation,
         Category::RoofTerrace,
         Category::Coping,
+        Category::PerimeterInsulation,
     ];
 
     /// Platz in [`Category::ALL`].
@@ -170,6 +173,11 @@ pub enum ElementKind {
     /// Erweiterungsbauteil: Verweis auf die Definition und die Werte dieses
     /// Exemplars ([`crate::erweiterung`]).
     Ext(crate::erweiterung::ExtPart),
+    /// Perimeterdämmung: nur der Verweis auf die Sohlplatte; Umriss aus der
+    /// Platte, Dicke aus [`GroundSlab::insulation`], Baustoff XPS.
+    PerimeterInsulation {
+        slab: ElementId,
+    },
 }
 
 /// Dachterrasse einer Decke (BIM §3). Jede Decke trägt die Werte, auch ohne
@@ -260,6 +268,9 @@ pub struct GroundSlab {
     pub thickness: f64,
     /// Sockelrücksprung in mm: 0 (bündig) oder mindestens 20.
     pub recess: f64,
+    /// Perimeterdämmung vollflächig unter der Platte, mm; 0 = keine. Sie
+    /// hebt die Platte um ihre Dicke über UK Gründung (Gelände Thema 4).
+    pub insulation: f64,
 }
 
 /// Frostschürze unter dem Rand einer Sohlplatte (IFC: IfcFooting STRIP_FOOTING),

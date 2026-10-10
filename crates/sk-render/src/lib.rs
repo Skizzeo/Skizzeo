@@ -493,6 +493,9 @@ pub struct Renderer {
     /// Ansichten (S11): unter dem Gelände 0 wie alles, 1 ausgeblendet, 2
     /// gestrichelt mit Strich und Lücke (px); nur auf Papier.
     below: (i32, [f32; 2]),
+    /// Höhe von OK Gelände (mm): Boden in 3D, „unter dem Gelände“ in den
+    /// Ansichten (Gelände Thema 1).
+    terrain: f32,
     /// Konnte der Treiber die Karte nicht anlegen: Meldung (einmal
     /// abzuholen), danach ohne Schatten.
     shadow_failed: bool,
@@ -664,6 +667,8 @@ uniform vec3 u_hatch_ink;
 // 2 gestrichelt; Flächen dort in Papierfarbe, sie verdecken weiter
 uniform int u_below;
 uniform vec3 u_paper_rgb;
+// Höhe von OK Gelände im Modell (mm, Gelände Thema 1)
+uniform float u_terrain;
 vec4 look(int row) {
     return texelFetch(u_looks, ivec2(v_key & 0x7FFF, row), 0);
 }
@@ -707,7 +712,7 @@ void main() {
     }
     vec4 bg = look(2);
     vec3 c = bg.rgb;
-    if (u_below != 0 && !cut && v_model.z < -0.5) {
+    if (u_below != 0 && !cut && v_model.z < u_terrain - 0.5) {
         o_color = vec4(u_paper_rgb, u_alpha);
         return;
     }
@@ -1254,12 +1259,14 @@ noperspective out float v_z;
 // Farbe gestrichelt unter dem Gelände: die feine Linie (Stift „Fein“)
 flat out vec3 v_color_below;
 uniform int u_below;
+uniform float u_terrain;
 void main() {
     int k = clamp(int(a_kind + 0.5), 0, 7);
     // Unter dem Gelände und gestrichelt: Breite und Farbe der feinen Linie
     // (Kantenart FINE), nur der Strich unter dem Gelände (S11, §8 14:25).
-    // Kanten, die das Gelände kreuzen, teilt der Netzbau an z = 0.
-    bool unter = u_below == 2 && max(a_a.z, a_b.z) < 0.5 && min(a_a.z, a_b.z) < -0.5;
+    // Kanten, die das Gelände kreuzen, teilt der Netzbau an OK Gelände.
+    bool unter = u_below == 2 && max(a_a.z, a_b.z) < u_terrain + 0.5
+        && min(a_a.z, a_b.z) < u_terrain - 0.5;
     int kl = unter ? FINE : k;
     v_color = u_edge_color[kl];
     v_color_below = u_edge_color[FINE];
@@ -1307,13 +1314,14 @@ uniform float u_alpha;
 // Lücke px)
 uniform int u_below;
 uniform vec2 u_below_dash;
+uniform float u_terrain;
 // Blasse Kanten im Zeichenmodus: mit dem Papier (rgb) vorgemischt und
 // deckend (a = 1), damit sich deckungsgleiche Kanten nicht stapeln
 uniform vec4 u_premix;
 void main() {
     if (v_p0.x + v_p0.y > 0.0 && !dash_ink(v_dist, v_len_w.x, v_p0, v_p1, v_len_w.y)) discard;
     vec3 color = v_color;
-    if (u_below != 0 && v_z < -0.5) {
+    if (u_below != 0 && v_z < u_terrain - 0.5) {
         if (u_below == 1) discard;
         float per = u_below_dash.x + u_below_dash.y;
         if (per > 0.0 && mod(max(v_dist, 0.0), per) >= u_below_dash.x) discard;
@@ -1586,6 +1594,7 @@ impl Renderer {
                 paper_shade: None,
                 shadow_paper: false,
                 below: (0, [0.0; 2]),
+                terrain: 0.0,
                 shadow_failed: shadow_error.is_some(),
                 shadow_error: shadow_error.map(|e| format!("Schatten aus: {e}")),
                 shadow_query: 0,
@@ -2210,7 +2219,8 @@ impl Renderer {
                     gl.glUseProgram(q);
                     mat(gl, q, c"u_inv_vp", &view.inv_view_proj);
                     mat(gl, q, c"u_vp", &view.view_proj);
-                    gl.glUniform1f(loc(gl, q, c"u_eye_z"), view.eye_z);
+                    // Boden auf OK Gelände: das Auge steht um so viel höher darüber
+                    gl.glUniform1f(loc(gl, q, c"u_eye_z"), view.eye_z - self.terrain);
                     // gl_FragCoord zählt im ganzen Bild: Horizont um den Bereich versetzt
                     gl.glUniform1f(loc(gl, q, c"u_horizon_px"), view.horizon_px + vy as f32);
                     gl.glUniform1f(loc(gl, q, c"u_height"), rh as f32);
@@ -2588,7 +2598,8 @@ impl Renderer {
             gl.glUseProgram(p);
             mat(gl, p, c"u_inv_vp", &view.inv_view_proj);
             mat(gl, p, c"u_vp", &view.view_proj);
-            gl.glUniform1f(loc(gl, p, c"u_eye_z"), view.eye_z);
+            // Boden auf OK Gelände: das Auge steht um so viel höher darüber
+            gl.glUniform1f(loc(gl, p, c"u_eye_z"), view.eye_z - self.terrain);
             gl.glUniform1f(loc(gl, p, c"u_horizon_px"), view.horizon_px);
             gl.glUniform1f(loc(gl, p, c"u_height"), h as f32);
             gl.glUniform1f(loc(gl, p, c"u_softness"), st.horizon_softness);
@@ -2651,6 +2662,7 @@ impl Renderer {
             gl.glUniform1i(loc(gl, p, c"u_patterns"), view.patterns as GLint);
             let below = if drawing { self.below.0 } else { 0 };
             gl.glUniform1i(loc(gl, p, c"u_below"), below);
+            gl.glUniform1f(loc(gl, p, c"u_terrain"), self.terrain);
             if let Some(pc) = view.paper {
                 gl.glUniform3f(loc(gl, p, c"u_paper_rgb"), pc[0], pc[1], pc[2]);
             }
@@ -2685,6 +2697,7 @@ impl Renderer {
             };
             gl.glUniform2f(loc(gl, p, c"u_viewport"), w as f32, h as f32);
             gl.glUniform1i(loc(gl, p, c"u_below"), below);
+            gl.glUniform1f(loc(gl, p, c"u_terrain"), self.terrain);
             let d = self.below.1;
             gl.glUniform2f(loc(gl, p, c"u_below_dash"), d[0], d[1]);
             let n = EDGE_KINDS as i32;
@@ -3204,6 +3217,12 @@ impl Renderer {
     /// Deckkraft des Bodens (0: Gelände ausgeblendet, Paket 3).
     pub fn set_ground_opacity(&mut self, v: f32) {
         self.style.ground_opacity = v;
+    }
+
+    /// Höhe von OK Gelände im Modell (mm, Gelände Thema 1): Boden in 3D
+    /// und Grenze für „unter dem Gelände“ in den Ansichten.
+    pub fn set_terrain(&mut self, z: f32) {
+        self.terrain = z;
     }
 
     /// Ansichten auf Papier (S11): Teile unter dem Gelände (z < 0) wie

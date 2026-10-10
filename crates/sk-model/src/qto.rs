@@ -469,6 +469,26 @@ pub fn soffit_qto(model: &Model, soffit: ElementId) -> Option<SoffitQto> {
     soffit_qto_of(&model.floor(run)?.ok()?)
 }
 
+/// Mengen der Perimeterdämmung unter einer Sohlplatte (Gelände Thema 4),
+/// Hauptmenge Fläche.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PerimeterQto {
+    /// Fläche unter der Platte (Plattenumriss, mm²).
+    pub area: f64,
+    pub volume: f64,
+    pub thickness: f64,
+}
+
+/// Mengen der Perimeterdämmung einer schon berechneten Gründung; `None`
+/// ohne Dämmung.
+pub fn perimeter_qto_of(f: &Foundation) -> Option<PerimeterQto> {
+    f.insulated().then(|| PerimeterQto {
+        area: f.insulation_area(),
+        volume: f.insulation_volume(),
+        thickness: f.params.insulation,
+    })
+}
+
 /// Mengen einer Dachterrasse (D1, IFC IfcCovering ROOFING), Hauptmenge
 /// Fläche (BIM §6).
 #[derive(Clone, Debug, PartialEq)]
@@ -810,6 +830,7 @@ pub enum ElementQto {
     Floor(FloorQto),
     Strip(EdgeStripQto),
     Soffit(SoffitQto),
+    Perimeter(PerimeterQto),
     Terrace(TerraceQto),
     Coping(CopingQto),
     Ext(ExtQto),
@@ -954,6 +975,7 @@ impl ElementQto {
             ElementQto::Floor(f) => f.volume,
             ElementQto::Strip(f) => f.volume,
             ElementQto::Soffit(f) => f.volume,
+            ElementQto::Perimeter(f) => f.volume,
             ElementQto::Terrace(t) => t.volume,
             ElementQto::Coping(c) => c.volume,
             ElementQto::Ext(x) => x.volume,
@@ -1256,7 +1278,9 @@ pub fn schedule(model: &Model) -> Schedule {
                     None => (None, Some("Kein Körper: Wandzug ungültig".to_string())),
                 }
             }
-            ElementKind::GroundSlab(_) | ElementKind::StripFooting(_) => {
+            ElementKind::GroundSlab(_)
+            | ElementKind::StripFooting(_)
+            | ElementKind::PerimeterInsulation { .. } => {
                 if matches!(e.kind, ElementKind::GroundSlab(_)) {
                     platten.push((run, id));
                 }
@@ -1267,15 +1291,21 @@ pub fn schedule(model: &Model) -> Schedule {
                         None => Err(FoundationError::NotClosed),
                     });
                 match f {
-                    Ok(f) => {
-                        let (s, fs) = foundation_qto_of(f);
-                        let q = if matches!(e.kind, ElementKind::GroundSlab(_)) {
-                            ElementQto::Slab(s)
-                        } else {
-                            ElementQto::Footing(fs)
-                        };
-                        (Some(q), None)
-                    }
+                    Ok(f) => match e.kind {
+                        ElementKind::PerimeterInsulation { .. } => match perimeter_qto_of(f) {
+                            Some(q) => (Some(ElementQto::Perimeter(q)), None),
+                            None => (None, Some("Kein Körper: Platte ungedämmt".into())),
+                        },
+                        _ => {
+                            let (s, fs) = foundation_qto_of(f);
+                            let q = if matches!(e.kind, ElementKind::GroundSlab(_)) {
+                                ElementQto::Slab(s)
+                            } else {
+                                ElementQto::Footing(fs)
+                            };
+                            (Some(q), None)
+                        }
+                    },
                     Err(err) => (None, Some(foundation_note(*err))),
                 }
             }
@@ -1681,6 +1711,7 @@ fn totals(rows: &[RowQto]) -> Totals {
             ElementQto::Footing(f) => t.length += f.length,
             ElementQto::Strip(f) => t.length += f.length,
             ElementQto::Soffit(f) => t.area += f.area,
+            ElementQto::Perimeter(f) => t.area += f.area,
             ElementQto::Terrace(f) => t.area += f.area,
             ElementQto::Coping(f) => t.length += f.length,
             ElementQto::Floor(f) => {
@@ -1717,6 +1748,7 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
         let bill = match q {
             ElementQto::Terrace(t) => Some((t.area, 0.0)),
             ElementQto::Soffit(f) => Some((f.area, 0.0)),
+            ElementQto::Perimeter(f) => Some((f.area, 0.0)),
             ElementQto::Coping(c) => Some((0.0, c.length)),
             _ => None,
         };
@@ -1822,6 +1854,7 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                     ElementQto::Slab(s) => (0.0, s.area),
                     ElementQto::Floor(f) => (0.0, f.area),
                     ElementQto::Soffit(f) => (0.0, f.area),
+                    ElementQto::Perimeter(f) => (0.0, f.area),
                     ElementQto::Footing(f) => (f.length, 0.0),
                     ElementQto::Strip(f) => (f.length, 0.0),
                     ElementQto::Terrace(t) => (0.0, t.area),
@@ -1976,6 +2009,7 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
                 })
             }
             ElementKind::Coping { floor } => model.coping_material(floor),
+            ElementKind::PerimeterInsulation { .. } => model.perimeter_material(),
             ElementKind::Wall(_) | ElementKind::RoofTerrace { .. } | ElementKind::Ext(_) => None,
         });
         match (q, mat) {
@@ -1996,6 +2030,7 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
                 }
             }
             (ElementQto::Soffit(f), Some(m)) => add(m, f.volume, f.area, None),
+            (ElementQto::Perimeter(f), Some(m)) => add(m, f.volume, f.area, None),
             (ElementQto::Coping(c), Some(m)) => add(m, c.volume, 0.0, Some(c.length)),
             (q, Some(m)) => add(m, q.volume(), 0.0, None),
             _ => {}
