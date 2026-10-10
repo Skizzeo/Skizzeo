@@ -432,6 +432,35 @@ fn pruefhaus(rueck: &[(usize, f64)]) -> (Model, RunId, RunId) {
     (m, eg, og)
 }
 
+/// Das Attikablech überdeckt die Attika außen um 50 mm und innen um
+/// 40 mm, mit jedem Dämmstreifen auf der Krone (Schenkel um dessen Dicke
+/// länger); ohne Streifen wie vorher.
+#[test]
+fn blech_ueberdeckt_die_attika_ueber_dem_streifen() {
+    let (mut m, eg, _) = pruefhaus(&[(1, -1500.0)]);
+    let de = m.floor_of(eg).unwrap();
+    let ab = m.coping_of(de).expect("AB");
+    for (c, girth) in [(0.0, 270.0), (20.0, 310.0), (40.0, 350.0), (100.0, 470.0)] {
+        m.begin("Dämmung auf der Attika");
+        assert!(m.set_floor_crown(de, c));
+        m.commit();
+        let f = m.floor(eg).unwrap().unwrap();
+        let (_, top) = f.attika_band().unwrap();
+        assert_eq!(f.coping_girth(), girth);
+        assert_eq!(crate::qto::coping_qto(&m, ab).unwrap().girth, girth);
+        // Blech allein: tiefster Punkt ist der Außenschenkel
+        let s = f.coping_solid();
+        let lo = s
+            .triangles
+            .iter()
+            .filter(|t| t.p.iter().all(|p| p.z < top - 1.0 || p.z > top + c + 1.0))
+            .flat_map(|t| t.p)
+            .map(|p| p.z)
+            .fold(f64::INFINITY, f64::min);
+        assert!((lo - (top - 50.0)).abs() < 1e-6, "{c}: {lo}");
+    }
+}
+
 /// D1–D3 gegen die endgültigen Sollwerte (BIM 08:54): DT 13,2192 m²,
 /// Dämmung 1,0575 m³, Belag 0,7932 m³, AB 13,00 m an der Außenkante,
 /// Abwicklung 250 mm, Attika-Mehrmenge WDVS 0,3562 m³, EG-Dämmung
@@ -468,16 +497,17 @@ fn dachterrasse_sollwerte_pruefhaus() {
     );
     let c = crate::qto::coping_qto(&m, ab).unwrap();
     assert!(near(c.length, 13000.0), "{}", c.length);
-    // Tropfkante 40 statt 20 (Jörn 10.10., Plan Flachdach P12)
-    assert_eq!(c.girth, 270.0);
+    // Tropfkante 40 statt 20 (Jörn 10.10., Plan Flachdach P12); über
+    // dem Dämmstreifen 40 beide Schenkel um 40 länger: 270 + 80
+    assert_eq!(c.girth, 350.0);
     assert_eq!(m.props_of(dt).get("begehbar"), Some(&PropValue::Bool(true)));
     assert_eq!(
         m.props_of(ab).get("Abwicklung"),
-        Some(&PropValue::Number(270.0))
+        Some(&PropValue::Number(350.0))
     );
     assert_eq!(
         m.props_of(ab).get("Zuschnitt"),
-        Some(&PropValue::Number(333.0))
+        Some(&PropValue::Number(400.0))
     );
     let f = m.floor(eg).unwrap().unwrap();
     assert_eq!(f.terrace_band(), Some((2855.0, 2995.0)));
@@ -493,8 +523,17 @@ fn dachterrasse_sollwerte_pruefhaus() {
     assert_eq!(z(&f.terrace_solid()), Some((2855.0, 2995.0)));
     let wall = m.chain(eg).unwrap().solid();
     assert_eq!(z(&wall).unwrap().1, 3055.0);
+    // Dämmstreifen 4 cm auf der Krone (Jörn 10.10. 16:07), Blech darüber
+    assert_eq!(f.crown_band(), Some((3055.0, 3095.0)));
     let (lo, hi) = f.coping_solid().bounds().unwrap();
-    assert!(lo.z > 2995.0 && lo.z < 3055.0 && hi.z >= 3055.0 && hi.z < 3100.0);
+    // Außenschenkel 50 + 40 ab UK Blech: 5 cm über die Attika hinab
+    assert!(
+        lo.z.round() == 3005.0 && hi.z >= 3095.0 && hi.z < 3140.0,
+        "{lo:?} {hi:?}"
+    );
+    let k = c.crown.as_ref().expect("Dämmstreifen");
+    assert_eq!(k.thickness, 40.0);
+    assert_eq!(r4(k.volume / 1e9), r4(k.area * 40.0 / 1e9));
     // DE-002 folgt dem OG, DE-001 unverändert, keine UD
     assert_eq!(r4(m.floor(og).unwrap().unwrap().area() / 1e6), 60.4584);
     assert_eq!(r4(f.area() / 1e6), 75.0384);
@@ -764,6 +803,8 @@ fn abrechnungsflaeche_nach_regel_84() {
         let soll = match r.category {
             Category::Floor | Category::GroundSlab => r.area,
             Category::RoofTerrace => r.bill_area,
+            // Blech in m, Dämmstreifen auf der Krone mit seiner Fläche
+            Category::Coping if r.layer > 0 => r.bill_area,
             Category::StripFooting | Category::Coping => 0.0,
             _ => continue,
         };

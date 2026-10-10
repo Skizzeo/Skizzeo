@@ -76,9 +76,9 @@ fn fall_20_nachunternehmer() {
     assert_eq!(w.gp, Cent(2_195_545));
     assert_eq!(w.stoff_gp, Cent(0));
     assert_eq!(b.nu, Cent(2_195_545));
-    // nur Material ohne W20: 32.812,23 − 9.979,75 (mit Kies der Erdarbeiten
-    // und Los 4 Dach)
-    assert_eq!(b.nur_material, Cent(3_281_223 - 997_975));
+    // nur Material ohne W20: 32.822,92 − 9.979,75 (mit Kies der Erdarbeiten,
+    // Los 4 Dach und Dämmung auf der Attika der Dachterrasse)
+    assert_eq!(b.nur_material, Cent(3_282_292 - 997_975));
     assert!(b.befunde.iter().any(|f| f.regel == 83), "{:#?}", b.befunde);
 }
 

@@ -94,9 +94,9 @@ fn abnahme_befunde_regeln_und_zaehlung() {
     // Attikablech Werksleistungen: keine Befunde der Rechnung, Katalog ohne
     // Befunde, je Los nur die zwei Kopf-Hinweise (Regel 0)
     for (name, text, netto_soll) in [
-        (haeuser()[0].0, haeuser()[0].1, 7_595_363),
+        (haeuser()[0].0, haeuser()[0].1, 7_600_172),
         (haeuser()[1].0, haeuser()[1].1, 8_291_878),
-        (haeuser()[2].0, haeuser()[2].1, 8_160_685),
+        (haeuser()[2].0, haeuser()[2].1, 8_164_041),
     ] {
         let (netto, ist) = stand(text);
         assert_eq!(netto, netto_soll, "{name}: Netto");

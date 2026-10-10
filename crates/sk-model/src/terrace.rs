@@ -336,14 +336,21 @@ pub fn coping_profile(w: f64) -> Vec<(f64, f64)> {
 /// [`coping_profile`] mit dem Innenschenkel `inner` (Flachdach: 50, er
 /// deckt den Hochzug der Abdichtung).
 pub fn coping_profile_with(w: f64, inner: f64) -> Vec<(f64, f64)> {
+    coping_profile_legs(w, inner, COPING_OUTER)
+}
+
+/// [`coping_profile`] mit Innenschenkel `inner` und Außenschenkel `outer`
+/// (über einem Dämmstreifen auf der Krone um dessen Dicke länger, damit
+/// das Blech die Attika weiter überdeckt).
+pub fn coping_profile_legs(w: f64, inner: f64, outer: f64) -> Vec<(f64, f64)> {
     let (o, t, tan) = (COPING_DRIP, COPING_DRAWN, COPING_SLOPE.to_radians().tan());
     vec![
         (-w - t, -inner),
         (-w, -inner),
         (-w, 0.0),
         (o - t, (o - t + w) * tan),
-        (o - t, -COPING_OUTER),
-        (o, -COPING_OUTER),
+        (o - t, -outer),
+        (o, -outer),
         (o, (o + w) * tan + t),
         (-w - t, -t * tan + t),
     ]
@@ -356,7 +363,12 @@ pub fn coping_girth(w: f64) -> f64 {
 
 /// [`coping_girth`] mit dem Innenschenkel `inner`.
 pub fn coping_girth_with(w: f64, inner: f64) -> f64 {
-    w + COPING_DRIP + COPING_OUTER + inner
+    coping_girth_legs(w, inner, COPING_OUTER)
+}
+
+/// [`coping_girth`] mit Innenschenkel `inner` und Außenschenkel `outer`.
+pub fn coping_girth_legs(w: f64, inner: f64, outer: f64) -> f64 {
+    w + COPING_DRIP + outer + inner
 }
 
 /// Zuschnitt des Blechs: die Abwicklung `girth` aufgerundet auf die

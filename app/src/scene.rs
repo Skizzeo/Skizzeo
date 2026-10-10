@@ -2098,7 +2098,7 @@ impl Scene {
         }
         if matches!(
             field,
-            Field::TerraceInsulation | Field::TerraceFinish | Field::Upstand
+            Field::TerraceInsulation | Field::TerraceFinish | Field::Upstand | Field::Crown
         ) {
             return self.set_terrace_field(id, field, mm);
         }
@@ -2333,6 +2333,9 @@ impl Scene {
         };
         if field == Field::Upstand {
             return self.edit_model("Attika", |m| m.set_floor_upstand(floor, mm));
+        }
+        if field == Field::Crown {
+            return self.edit_model("Dämmung auf der Attika", |m| m.set_floor_crown(floor, mm));
         }
         let func = match field {
             Field::TerraceInsulation => sk_model::LayerFunction::Insulation,

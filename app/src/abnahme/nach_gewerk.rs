@@ -110,7 +110,7 @@ fn summe_baustoffe(s: &mut Scene) -> f64 {
 /// 18345), mit Fläche bei Dämmgewerken. Sollwerte von BIM für bündig,
 /// Vorsprung +0,30 (UD über ihre eingebaute Schicht 18345) und
 /// Rücksprung −0,30 (vor Paket 2; ab 2a mit DT, AB und Attika: 18338
-/// 0,2177 ohne das Blech des AB, 18345 28,3799 / 205,967 m²). Nach KG im bündigen Fall 322, 331,
+/// 0,2755 ohne das Blech des AB, mit dem Dämmstreifen auf der Attika, 18345 28,3799 / 205,967 m²). Nach KG im bündigen Fall 322, 331,
 /// 335, 351, beim Vorsprung dazu 354. Die Summe über alle Gewerke ist die
 /// Summe über alle Baustoffe. Eine Abweichung an der WDVS-Schicht
 /// (18330) verschiebt ihre Menge zu 18330, die Summe bleibt.
@@ -154,7 +154,8 @@ fn a188_mengen_nach_gewerk_und_kg() {
     // läuft als Attika bis +3,055 (A195). Werte gemessen mit
     // geometrie/d1-d3-dachterrasse-v2.patch auf 4d5c8a4. 18338 ohne das
     // Blech des AB (0,0019 m³, in m abgerechnet): Dämmung hart 0,1244 +
-    // Belag 0,0933.
+    // Belag 0,0933, dazu der Dämmstreifen 40 mm auf der Attika 0,0578
+    // (Jörn 10.10. 16:07).
     let mut s = pruefhaus(1881, -300.0);
     let mit_dt = s
         .model()
@@ -169,7 +170,7 @@ fn a188_mengen_nach_gewerk_und_kg() {
             [
                 ("18331".to_string(), 56.9992),
                 ("18330".to_string(), 31.2458),
-                ("18338".to_string(), 0.2177),
+                ("18338".to_string(), 0.2755),
                 ("18345".to_string(), 28.3799),
             ]
         );

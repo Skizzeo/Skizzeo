@@ -1485,7 +1485,7 @@ mod tests {
             "{}",
             q.karten.zahl(Blatt::Mengen)
         );
-        assert_eq!(q.karten.zahl(Blatt::Kosten), "75.954 € netto");
+        assert_eq!(q.karten.zahl(Blatt::Kosten), "76.002 € netto");
         assert!(matches!(q.frame(&t, &fonts, now), Some((_, None))));
         // Klick auf die Karte Kosten (rechts neben Mengen)
         let s1 = q.title.scale as f64;
@@ -1511,7 +1511,7 @@ mod tests {
         ));
         q.sync(&mut s, &p, true);
         let eg = q.kosten.as_ref().unwrap().blatt().unwrap().netto;
-        assert!(eg.0 < 7_595_363);
+        assert!(eg.0 < 7_600_172);
         assert_eq!(
             q.karten.zahl(Blatt::Kosten),
             format!("{} netto", kosten_view::euro_ganz(eg))

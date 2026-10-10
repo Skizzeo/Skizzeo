@@ -337,7 +337,7 @@ pub const ARTEN: [&str; 12] = [
 ];
 
 /// Werks-Leistungen (§10, aus werk.szk).
-pub const LEISTUNGEN: [WerkLeistung; 73] = [
+pub const LEISTUNGEN: [WerkLeistung; 74] = [
     l(
         "1S7bUW0010080200000001",
         "m3",
@@ -776,6 +776,13 @@ pub const LEISTUNGEN: [WerkLeistung; 73] = [
         "m",
         "auto",
         "Zulage Gefälledämmung Grat, Zuschnitt auf Gehrung",
+    ),
+    // Stand 10: Dämmung auf der Attika der Dachterrasse (AD1)
+    l(
+        "1S7bUW001008020000001A",
+        "m2",
+        "area",
+        "Attikadämmung Krone Dachterrasse, EPS, Dicke nach Aufbau, unter Blech",
     ),
 ];
 

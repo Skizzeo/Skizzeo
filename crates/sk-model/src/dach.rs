@@ -526,6 +526,33 @@ impl Model {
         })
     }
 
+    /// Setzt den Dämmstreifen auf der Attikakrone einer Decke (mm, 0 =
+    /// keiner, sonst [`MIN_CROWN`] … [`MAX_CROWN`]).
+    pub fn set_floor_crown(&mut self, floor: ElementId, mm: f64) -> bool {
+        self.edit_terrace(floor, |t| {
+            (mm == 0.0 || (MIN_CROWN..=MAX_CROWN).contains(&mm)).then(|| t.crown = mm)
+        })
+    }
+
+    /// Baustoff des Dämmstreifens auf der Attika der Dachterrasse: die
+    /// (erste) Dämmschicht ihres Aufbaus.
+    pub fn terrace_crown_material(&self, floor: ElementId) -> Option<MaterialId> {
+        self.terrace_layers(floor)
+            .iter()
+            .find(|l| l.function == LayerFunction::Insulation)
+            .map(|l| l.material)
+            .or_else(|| self.material_by_guid(TERRACE_INSULATION_GUID))
+    }
+
+    /// Prüfpunkt zur Dämmung auf der Attika (für [`Model::check`]): Dicke 0
+    /// oder [`MIN_CROWN`] … [`MAX_CROWN`].
+    pub(super) fn crown_problem(&self, number: &str, t: &Terrace) -> Option<String> {
+        let c = t.crown;
+        (c != 0.0 && !(MIN_CROWN..=MAX_CROWN).contains(&c)).then(|| {
+            format!("{number}: Dämmung auf der Attika {c} mm (erlaubt 0 oder {MIN_CROWN}…{MAX_CROWN} mm)")
+        })
+    }
+
     /// Setzt den Baustoff des Attikablechs (`None`: Titanzink 0,7).
     pub fn set_floor_coping_material(&mut self, floor: ElementId, m: Option<MaterialId>) -> bool {
         if m.is_some_and(|m| self.material(m).is_none()) {
@@ -682,9 +709,21 @@ impl Model {
                     return Vec::new();
                 };
                 let t = crate::qto::COPING_SHEET;
-                return vec![
-                    MaterialLayer::new(m, t, LayerFunction::Finish).trade(trade::roofing())
-                ];
+                let mut out =
+                    vec![MaterialLayer::new(m, t, LayerFunction::Finish).trade(trade::roofing())];
+                // Dämmstreifen auf der Krone der Dachterrasse (Jörn 10.10.)
+                if let Some(ElementKind::Floor(f)) = self.element(floor).map(|x| &x.kind) {
+                    let c = crown_of(&f.terrace);
+                    let ins = self.terrace_crown_material(floor);
+                    if let Some(ins) = ins.filter(|_| c > 0.0 && !self.flat_roof_coping(id, floor))
+                    {
+                        out.push(
+                            MaterialLayer::new(ins, c, LayerFunction::Insulation)
+                                .trade(trade::roofing()),
+                        );
+                    }
+                }
+                return out;
             }
             _ => {}
         }

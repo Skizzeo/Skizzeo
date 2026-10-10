@@ -507,3 +507,86 @@ fn a194_loeschen_abgelehnt() {
     let b = s.model().buildings().iter().next().unwrap().0;
     assert!(crate::delete::parts_text(s.model(), b).contains("1 Dachterrasse"));
 }
+
+/// Mengenzeile der Schicht `i` am Attikablech: (Fläche m², Volumen m³).
+fn ab_schicht(s: &mut Scene, ab: ElementId, i: usize) -> Option<(f64, f64)> {
+    let l = s.schedule().clone();
+    l.buildings[0]
+        .by_trade
+        .iter()
+        .flat_map(|t| &t.rows)
+        .find(|r| r.element == ab && r.layer == i)
+        .map(|r| (r4(r.area / 1e6), r4(r.volume / 1e9)))
+}
+
+fn deckenzeile(text: &str) -> String {
+    text.lines()
+        .find(|l| l.starts_with("[floor]") && l.contains("number=\"DE-001\""))
+        .unwrap()
+        .to_string()
+}
+
+/// AD1 (Jörn 10.10. 16:07, planung/flachdach/konzept-attikadaemmung.md
+/// §1–§4): Dämmstreifen auf der Attika der Dachterrasse zwischen OK
+/// Attika und UK Blech. Vorgabe 40 mm im Dämmstoff der Terrasse, das
+/// Blech liegt um ihn höher; Feld „Dämmung auf der Attika“ im Paneel von
+/// DT und AB (0 = aus, sonst 2–10 cm), ein Schritt, Rückgängig. Nord
+/// −1,50: Streifen 1,7808 m² (13,00 m × 0,137 m Mittel), 0,0712 m³, als
+/// zweite Schicht des AB. Datei: `crown=` an `[floor]` nur abweichend von
+/// 40, Rundlauf bytegleich.
+#[test]
+fn ad1_daemmung_auf_der_attika() {
+    let (mut s, eg, _) = pruefhaus(343, &["AW-006"]);
+    let de = decke(&s, eg).unwrap();
+    let ab = s.model().coping_of(de).expect("AB");
+    let id = dt(&s, de).unwrap();
+    for e in [id, ab] {
+        let p = crate::selection::props(&s, e).unwrap();
+        let f = p
+            .sections
+            .iter()
+            .flat_map(|x| &x.fields)
+            .find(|f| f.field == crate::ui::Field::Crown)
+            .expect("Feld Dämmung auf der Attika");
+        assert_eq!((f.value, f.min, f.max), (40.0, 20.0, 100.0));
+        assert_eq!(f.label, "Dämmung auf der Attika");
+    }
+    // Vorgabe: Schicht 1 des AB ist der Streifen, Blech 40 mm höher
+    assert_eq!(s.model().element_layers(ab).len(), 2);
+    assert_eq!(ab_schicht(&mut s, ab, 1), Some((1.7808, 0.0712)));
+    let (_, hoch) = koerper_z(&mut s, ab);
+    let text = sk_model::szo::write(s.model());
+    assert!(
+        !deckenzeile(&text).contains("crown="),
+        "{}",
+        deckenzeile(&text)
+    );
+
+    // 6 cm: ein Schritt, in der Datei, Rundlauf
+    assert!(s.set_field(ab, crate::ui::Field::Crown, 60.0));
+    assert_eq!(s.undo_label(), Some("Dämmung auf der Attika"));
+    assert_eq!(koerper_z(&mut s, ab).1, hoch + 20.0);
+    assert_eq!(ab_schicht(&mut s, ab, 1).map(|x| x.1), Some(0.1068));
+    let t60 = sk_model::szo::write(s.model());
+    assert!(deckenzeile(&t60).contains(" crown=60"));
+    assert_eq!(sk_model::szo::write(&lesen(&t60).model), t60, "Rundlauf");
+
+    // außerhalb 2–10 cm abgelehnt
+    assert!(!s.set_field(id, crate::ui::Field::Crown, 10.0));
+    assert!(!s.set_field(id, crate::ui::Field::Crown, 150.0));
+
+    // 0 = aus: keine Schicht, Blech direkt auf der Attika
+    assert!(s.set_field(id, crate::ui::Field::Crown, 0.0));
+    assert_eq!(s.model().element_layers(ab).len(), 1);
+    assert_eq!(ab_schicht(&mut s, ab, 1), None);
+    assert_eq!(koerper_z(&mut s, ab).1, hoch - 40.0);
+    let t0 = sk_model::szo::write(s.model());
+    assert!(deckenzeile(&t0).contains(" crown=0"));
+    assert_eq!(sk_model::szo::write(&lesen(&t0).model), t0, "Rundlauf");
+    pruefung(&s);
+
+    s.undo();
+    assert_eq!(koerper_z(&mut s, ab).1, hoch + 20.0);
+    s.undo();
+    assert_eq!(sk_model::szo::write(s.model()), text, "zurück zur Vorgabe");
+}

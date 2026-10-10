@@ -67,27 +67,28 @@ fn eintrag(v: &[(String, Option<f64>, Option<f64>)], code: &str) -> (Option<f64>
 /// Bauteilflächen, je Bauteil einmal, für Bauteile, die in m² abgerechnet
 /// werden (DT, UD, Dämmschichten); die Gewerklänge kommt aus Bauteilen in
 /// m (AB, Abfangung). Nord −1,50: 18338 hat 13,2192 m² (DT einmal, nicht
-/// je Schicht) und 13,00 m (AB). 18345 behält die Fläche der
+/// je Schicht) + 1,7808 m² (Dämmstreifen auf der Attika, Jörn 10.10.
+/// 16:07) = 15,00 m² und 13,00 m (AB). 18345 behält die Fläche der
 /// WDVS-Schicht mit Attika (199,595 m², gemessen mit
 /// geometrie/d1-d3-dachterrasse-v2.patch auf f1649a6) und hat keine
 /// Länge. Beton und Mauerwerk haben weder Fläche noch Länge. Nord+Süd:
-/// zwei Stücke, ein DT, 26,4384 m² und 26,00 m; ringsum 40,0384 m² und
-/// 36,00 m.
+/// zwei Stücke, ein DT, 26,4384 m² + 3,1612 m² Dämmstreifen und 26,00 m;
+/// ringsum 40,0384 m² + 4,9616 m² und 36,00 m.
 #[test]
 fn a198_flaeche_und_laenge_je_gewerk() {
     let mut s = pruefhaus(198, &["AW-006"]);
     let v = flaeche_laenge(&mut s);
-    assert_eq!(eintrag(&v, "18338"), (Some(13.2192), Some(13.0)));
+    assert_eq!(eintrag(&v, "18338"), (Some(15.0), Some(13.0)));
     assert_eq!(eintrag(&v, "18345"), (Some(199.595), None));
     assert_eq!(eintrag(&v, "18331"), (None, None));
     assert_eq!(eintrag(&v, "18330"), (None, None));
 
     for (seed, rueck, flaeche, laenge) in [
-        (1980, &["AW-006", "AW-008"][..], 26.4384, 26.0),
+        (1980, &["AW-006", "AW-008"][..], 29.5996, 26.0),
         (
             1981,
             &["AW-005", "AW-006", "AW-007", "AW-008"][..],
-            40.0384,
+            45.0,
             36.0,
         ),
     ] {
@@ -118,9 +119,9 @@ fn volumen(s: &mut Scene) -> Vec<(String, f64)> {
 
 /// A198b (BIM-Befund zu 0e8e08d, Koordinator 11:56): Bauteile, die in m
 /// abgerechnet werden, tragen kein Volumen zur Gewerksumme bei. Nord
-/// −1,50: 18338 = 1,8507 m³ (Dämmung 1,0575 + Belag 0,7932; ohne das
-/// Blech des AB, 0,0023 m³; auf 0e8e08d 1,8530), dazu 13,2192 m² und
-/// 13,00 m. Abfangung (AW-49, OG-Nord +0,30, wie A159): 18330 hat
+/// −1,50: 18338 = 1,9219 m³ (Dämmung 1,0575 + Belag 0,7932 +
+/// Dämmstreifen auf der Attika 0,0712; ohne das Blech des AB, 0,0023 m³;
+/// auf 0e8e08d 1,8530 ohne Dämmstreifen), dazu 15,00 m² und 13,00 m. Abfangung (AW-49, OG-Nord +0,30, wie A159): 18330 hat
 /// 10,485 m Abfangung und als Volumen genau die Summe seiner
 /// Wandschichten Verblender, Kerndämmung und Porenbeton, 81,5458 m³; die
 /// Abfangung bringt kein eigenes Volumen dazu (die Verblenderschicht der
@@ -130,10 +131,10 @@ fn a198b_meter_bauteile_ohne_volumen() {
     let mut s = pruefhaus(1983, &["AW-006"]);
     let v = volumen(&mut s);
     let dd = v.iter().find(|x| x.0 == "18338").expect("18338").1;
-    assert_eq!(dd, 1.8507, "18338 ohne Blechvolumen");
+    assert_eq!(dd, 1.9219, "18338 ohne Blechvolumen");
     assert_eq!(
         eintrag(&flaeche_laenge(&mut s), "18338"),
-        (Some(13.2192), Some(13.0))
+        (Some(15.0), Some(13.0))
     );
 
     let mut s = Scene::with_model(Model::with_seed(1984));
