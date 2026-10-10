@@ -4140,7 +4140,8 @@ mod tests {
         assert_eq!(sk_model::szo::write(s.model()), leer);
         assert!(s.redo());
         assert_eq!(sk_model::szo::write(s.model()), neu);
-        // Bodenkennwerte (Gruppe Baugrund): ein Schritt, an `[project]`
+        // Bodenkennwerte (Gruppe Baugrund): ein Schritt, in `[soil]`
+        // (Regel 113)
         let mut m = Maske::new(s.model().project(), false, None).mit_ort(s.model().location());
         m.fokus_auf(10);
         for ch in "40".chars() {
@@ -4152,7 +4153,10 @@ mod tests {
         assert!(s.projektdaten_setzen("Projektdaten geändert", *p, m.ort()));
         assert_eq!(s.model().project().soil.oberboden, 400.0);
         let boden = sk_model::szo::write(s.model());
-        assert!(boden.contains(" topsoil=400"), "{boden}");
+        assert!(
+            boden.contains("\n[soil] key=project topsoil=400\n"),
+            "{boden}"
+        );
         assert!(s.undo());
         assert_eq!(sk_model::szo::write(s.model()), neu);
     }
