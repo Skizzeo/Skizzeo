@@ -118,12 +118,16 @@ pub fn vorhaltemonate(geschosse: usize) -> u32 {
 /// Wandzugs `run` (der Zug, unter dem die Sohlplatte liegt), mit Sohlplatte,
 /// Geschoss und Gebäude aus `vorlage`. `gelaende`: OK Gelände relativ zu
 /// ±0,00 (mm, nach oben positiv), Aufstandsfläche des Gerüsts.
+/// `erste`: die erste Sohlplatte des Gebäudes; nur sie trägt Pauschale,
+/// Vorhaltemonate und Bauzaun, die je Gebäude einmal gelten. Das Gerüst
+/// steht an jeder Platte für ihre eigene Fassade.
 pub fn site_mengen(
     model: &Model,
     run: RunId,
     platte: &[Vec3],
     vorlage: &AutoMenge,
     gelaende: f64,
+    erste: bool,
 ) -> Vec<AutoMenge> {
     let gebaeude = model.run(run).and_then(|r| model.building_of(r.storey));
     // Außenwandzüge desselben Gebäudes (alle Geschosse)
@@ -177,6 +181,16 @@ pub fn site_mengen(
         formula,
         ..vorlage.clone()
     };
+    let geruest = menge(
+        SCAFFOLD,
+        "m2",
+        laenge * hoehe,
+        KG_GERUEST,
+        format!("{} Länge × {} Höhe", m(laenge), m(hoehe)),
+    );
+    if !erste {
+        return vec![geruest];
+    }
     vec![
         menge(LUMP, "psch", 1.0, KG_BE, "1 je Gebäude".into()),
         menge(
@@ -200,13 +214,7 @@ pub fn site_mengen(
                 m(ZAUN_ABSTAND)
             ),
         ),
-        menge(
-            SCAFFOLD,
-            "m2",
-            laenge * hoehe,
-            KG_GERUEST,
-            format!("{} Länge × {} Höhe", m(laenge), m(hoehe)),
-        ),
+        geruest,
     ]
 }
 
@@ -299,6 +307,32 @@ mod tests {
             (w("site.scaffold") - soll).abs() / soll < 0.02,
             "{} {soll}",
             w("site.scaffold")
+        );
+    }
+
+    /// Zwei Sohlplatten in einem Gebäude (Review): Pauschale, Monate und
+    /// Bauzaun je Gebäude einmal, das Gerüst je Platte an ihrer Fassade.
+    #[test]
+    fn zwei_platten_ein_gebaeude() {
+        let mut m = Model::with_seed(12);
+        let b = m.add_building(2);
+        let r = |ox: f64, w: f64, d: f64| {
+            vec![
+                vec3(ox, 0.0, 0.0),
+                vec3(ox + w, 0.0, 0.0),
+                vec3(ox + w, d, 0.0),
+                vec3(ox, d, 0.0),
+            ]
+        };
+        m.build_from_polygon(b, &r(0.0, 10_000.0, 8_000.0)).unwrap();
+        m.build_from_polygon(b, &r(20_000.0, 6_000.0, 5_000.0))
+            .unwrap();
+        let s = crate::qto::schedule(&m);
+        let zahl = |k: &str| s.auto.iter().filter(|a| a.key == k).count();
+        assert_eq!(m.buildings().len(), 1);
+        assert_eq!(
+            (zahl(LUMP), zahl(MONTHS), zahl(FENCE), zahl(SCAFFOLD)),
+            (1, 1, 1, 2)
         );
     }
 

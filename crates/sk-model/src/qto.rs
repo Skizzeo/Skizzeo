@@ -1506,6 +1506,8 @@ pub fn schedule(model: &Model) -> Schedule {
 fn auto_rows(model: &Model, platten: &[(RunId, ElementId)]) -> Vec<AutoMenge> {
     let mut out = Vec::new();
     let boden = model.project().soil;
+    // Gebäude, deren erste Platte schon die Mengen je Gebäude trägt
+    let mut gebaeude: Vec<Option<BuildingId>> = Vec::new();
     for &(run, slab) in platten {
         let (Some(g), Some(e)) = (model.ground_basis(run), model.element(slab)) else {
             continue;
@@ -1524,12 +1526,19 @@ fn auto_rows(model: &Model, platten: &[(RunId, ElementId)]) -> Vec<AutoMenge> {
         };
         let basis = crate::qto_earth::ErdBasis::aus(&g);
         out.extend(crate::qto_earth::auto_mengen(&vorlage, &basis, &boden));
+        let b = model.run(run).and_then(|r| model.building_of(r.storey));
+        // ohne Gebäude zählt jede Platte für sich
+        let erste = b.is_none() || !gebaeude.contains(&b);
+        if erste {
+            gebaeude.push(b);
+        }
         out.extend(crate::qto_site::site_mengen(
             model,
             run,
             &g.outline,
             &vorlage,
             g.terrain_z,
+            erste,
         ));
     }
     out
