@@ -2006,6 +2006,9 @@ impl AvaView {
                 u.sheet_rule,
             );
         };
+        // Auswahl und Hover als Menge, einmal je Bild (Review 10.10.)
+        let sel: std::collections::HashSet<ElementId> = self.selected.iter().copied().collect();
+        let hov: std::collections::HashSet<ElementId> = self.hover.iter().copied().collect();
         for (i, y, h) in self.sichtbar() {
             let z = &self.zeilen[i];
             let base = y + (h + regular.cap_height(px)) * 0.5;
@@ -2013,15 +2016,15 @@ impl AvaView {
             // ganz gewählt ist (wie im Reiter Kosten)
             let auswahl = !z.elemente.is_empty()
                 && if self.fokus.is_some() {
-                    z.elemente.iter().all(|e| self.selected.contains(e))
+                    z.elemente.iter().all(|e| sel.contains(e))
                 } else {
-                    z.elemente.iter().any(|e| self.selected.contains(e))
+                    z.elemente.iter().any(|e| sel.contains(e))
                 };
             // Schwebt die Maus über einer Zeile, nur diese; sonst die
             // Zeilen der Bauteile unter der Maus im Modell
             let schwebt = !matches!(self.hot, Some(Hot::Zeile(_)))
                 && !z.elemente.is_empty()
-                && z.elemente.iter().any(|e| self.hover.contains(e));
+                && z.elemente.iter().any(|e| hov.contains(e));
             let gewaehlt = z.art == Art::Position
                 && self.ansicht == Ansicht::Lv
                 && self.gewaehlt.as_deref() == Some(z.oz.as_str());

@@ -238,6 +238,8 @@ enum Hot {
     Ablauf(usize),
     /// „Alle Positionen“ in der Leiste der isolierten Liste.
     Alle,
+    /// Text der Leiste (Tooltip zur Summe der Anteile).
+    Leiste,
 }
 
 /// Was das Preisblatt schreiben lässt (die App führt es über
@@ -1462,6 +1464,9 @@ impl KostenView {
         {
             return Some(Hot::Alle);
         }
+        if self.fokus_pille(t).is_some_and(|r| inside(r, x, y)) {
+            return Some(Hot::Leiste);
+        }
         if let Some(a) = self.abgleich_lage(t, fonts) {
             for (r, h) in [
                 (a.ansehen, Hot::Ansehen),
@@ -1722,6 +1727,7 @@ impl KostenView {
                 self.fokus_setzen(None);
                 Some(ListOut::Repaint)
             }
+            Hot::Leiste => None,
             Hot::Geschaetzt => self.springe(|z| z.geschaetzt),
             Hot::OhnePreis => self.springe(|z| z.art == Art::Ohne),
             Hot::Abgleich => None,
@@ -1887,6 +1893,7 @@ impl KostenView {
                 None => "Stundenlohn ändern".into(),
             }),
             Hot::Uebernehmen => self.tip_uebernehmen(),
+            Hot::Leiste => Some(fokus_leiste::TIP.into()),
             Hot::Lassen => Some(
                 "Dieses Haus rechnet weiter mit seinen Werten. Die Zeile kommt wieder, wenn sich für neue Häuser erneut etwas ändert.".into(),
             ),
@@ -2122,11 +2129,18 @@ impl KostenView {
     /// Zeile `i` gehört zur Auswahl. Bei offenem Preisblatt nur die
     /// bearbeitete Position, nicht jede Zeile derselben Wände (Bedienbarkeit
     /// 11.4: sonst liest sich ein fremdes Gewerk als „ändert sich mit“).
+    #[cfg(test)]
     fn markiert(&self, i: usize) -> bool {
+        self.markiert_in(i, &self.selected.iter().copied().collect())
+    }
+
+    /// Wie `markiert` mit der Auswahl als Menge: Beim Zeichnen einmal je
+    /// Bild gebaut, nicht je Zeile durch die ganze Auswahl (Review 10.10.).
+    fn markiert_in(&self, i: usize, gewaehlt: &HashSet<ElementId>) -> bool {
         let z = &self.zeilen[i];
         match self.preis.as_ref() {
             Some(pb) => z.key == pb.key && matches!(z.art, Art::Position { .. }),
-            None => !z.elements.is_empty() && z.elements.iter().all(|e| self.selected.contains(e)),
+            None => !z.elements.is_empty() && z.elements.iter().all(|e| gewaehlt.contains(e)),
         }
     }
 
@@ -2137,11 +2151,13 @@ impl KostenView {
         let regular = fonts.regular.as_ref();
         let bold = fonts.bold.as_ref().or(regular);
         let italic = fonts.italic.as_ref().or(regular);
+        let gewaehlt: HashSet<ElementId> = self.selected.iter().copied().collect();
+        let schwebt: HashSet<ElementId> = self.hover.iter().copied().collect();
         for (i, y, h) in self.sichtbar() {
             let z = &self.zeilen[i];
             // Band: Auswahl, Hover
-            let sel = self.markiert(i);
-            let hov = !z.elements.is_empty() && z.elements.iter().all(|e| self.hover.contains(e));
+            let sel = self.markiert_in(i, &gewaehlt);
+            let hov = !z.elements.is_empty() && z.elements.iter().all(|e| schwebt.contains(e));
             if sel || self.blitzt(i, now) {
                 c.fill_rect(x0 - 10.0 * s, y, cw + 20.0 * s, h, u.sheet_select);
                 c.fill_rect(x0 - 10.0 * s, y, 3.0 * s, h, u.accent);

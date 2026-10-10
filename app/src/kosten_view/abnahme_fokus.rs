@@ -308,3 +308,23 @@ fn a340_klick_in_der_liste_waehlt_die_gruendung_und_isoliert_nicht() {
     assert_eq!(v.fokus_text(), None, "eigener Klick isoliert nicht");
     assert_eq!(v.zeilen(), &vorher[..]);
 }
+
+/// Review 10.10.: Der Tooltip an der Leiste sagt, wie die Summe entsteht
+/// (Anteile gerundet, Erdarbeiten an jedem Gründungsteil voll).
+#[test]
+fn a339_tooltip_an_der_leiste() {
+    let t = Theme::dark();
+    let fonts = Fonts {
+        regular: None,
+        bold: None,
+        italic: None,
+    };
+    let mut s = haus();
+    let mut v = ansicht(&mut s);
+    let fs = erstes(&s, Category::StripFooting);
+    let mut p = Picking::default();
+    waehle(&mut v, &mut s, &mut p, &[fs]);
+    let (x, y, _, h) = v.fokus_pille(&t).expect("Leiste");
+    let tip = v.tip_at(&t, &fonts, (x + 20.0) as f64, (y + h * 0.5) as f64);
+    assert_eq!(tip.as_deref(), Some(fokus_leiste::TIP));
+}

@@ -11,6 +11,10 @@ use sk_ui::theme::Theme;
 use sk_ui::widgets::Fonts;
 use std::collections::HashSet;
 
+/// Tooltip an der Leiste (Review 10.10.): wie die Summe entsteht.
+pub(super) const TIP: &str = "Summe der Anteile, je Position auf den Cent gerundet. \
+Erdarbeiten und Baustelleneinrichtung zählen an jedem Teil der Gründung voll.";
+
 impl KostenView {
     /// Isolieren auf `auswahl` bzw. mit `None` wieder alles zeigen. Beim
     /// Isolieren steht die Liste oben, danach wieder wo sie vorher stand.
@@ -86,7 +90,7 @@ impl KostenView {
     }
 
     /// Pille der Leiste (px) zwischen Schaltern und Spaltenköpfen.
-    fn fokus_pille(&self, t: &Theme) -> Option<Rect> {
+    pub(super) fn fokus_pille(&self, t: &Theme) -> Option<Rect> {
         self.fokus.as_ref()?;
         let s = self.scale;
         let (x0, cw) = self.content_x(t);
