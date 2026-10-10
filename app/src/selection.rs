@@ -487,7 +487,7 @@ fn props_of(scene: &Scene, id: ElementId) -> Option<Props> {
         ElementKind::RoofTerrace { floor } | ElementKind::Coping { floor } => {
             return terrace_props(scene, id, floor, values)
         }
-        ElementKind::Roof { floor } => return roof_props(scene, id, floor, values),
+        ElementKind::Roof { floor, .. } => return roof_props(scene, id, floor, values),
         _ => return foundation_props(scene, id, values),
     }
     if let Some(q) = q {
@@ -691,6 +691,10 @@ fn terrace_props(
     })
 }
 
+/// Gefälle des Flachdachs im Paneel (%): ab 2 % nach Flachdachrichtlinie,
+/// 1 % als Sonderkonstruktion; 0 = ohne.
+const ROOF_SLOPE: (f64, f64) = (1.0, 10.0);
+
 /// Eigenschaften des Dachaufbaus eines Flachdachs (D3): Mengen, Schichten
 /// und die Dämmdicke seines Typs.
 fn roof_props(
@@ -715,6 +719,16 @@ fn roof_props(
             ("Anschluss", format!("{} m", de(r.edge_length() / 1e3, 2))),
             ("Anschlusshöhe", format!("{} cm", cm(r.upstand()))),
         ]);
+        if let Some(g) = &r.slope {
+            values.extend([
+                ("Abläufe", format!("{} Stück", g.drains.len())),
+                (
+                    "Keil mittel",
+                    format!("{} cm", de(g.wedge_mean() / 10.0, 1)),
+                ),
+                ("Keil max.", format!("{} cm", de(g.wedge_max() / 10.0, 1))),
+            ]);
+        }
     }
     values.push((
         "Decke",
@@ -732,14 +746,26 @@ fn roof_props(
             title: "Aufbau",
             fields: vec![field(Field::RoofInsulation, "Dämmung", ins, lo, hi)],
             hint: "Höhe der Aufkantung in der Geschossverwaltung",
+            button: None,
         }
     });
+    let slope = m.drainage_of_roof(id).map(|d| d.slope).unwrap_or(0.0);
+    let (lo, hi) = ROOF_SLOPE;
+    let gefaelle = crate::ui::Section {
+        title: "Gefälle",
+        fields: vec![FieldRow {
+            zero: true,
+            ..field(Field::RoofSlope, "Gefälle", slope, lo, hi)
+        }],
+        hint: "0 = ohne Gefälle; Abläufe schlägt Skizzeo vor",
+        button: (slope > 0.0).then_some((crate::ui::Id::PropsDrains, "Abläufe vorschlagen")),
+    };
     Some(Props {
         values,
         layer_set: t.map_or(String::new(), |t| t.name.clone()),
         layers,
         set_label: "Aufbau",
-        sections: section.into_iter().collect(),
+        sections: section.into_iter().chain([gefaelle]).collect(),
         more: true,
         notes: m.warnings(id),
         ..Default::default()
@@ -791,6 +817,7 @@ fn terrace_section(m: &Model, floor: ElementId) -> Option<crate::ui::Section> {
             },
         ],
         hint: "folgt dem Rücksprung des OG",
+        button: None,
     })
 }
 
@@ -854,6 +881,7 @@ fn soffit_section(m: &Model, floor: ElementId) -> Option<crate::ui::Section> {
         title: "Untersicht",
         fields,
         hint: "nur unter Vorsprüngen; Lattung nur als Menge",
+        button: None,
     })
 }
 
@@ -1093,7 +1121,7 @@ fn outline(
                 }
             }
         }
-        (None, Some(ElementKind::Roof { floor })) => {
+        (None, Some(ElementKind::Roof { floor, .. })) => {
             // Flachdach: Innenfläche der Aufkantung von OK Rohdecke bis OK
             // Dachhaut
             let Some(r) = scene.flat_roof_over(*floor) else {

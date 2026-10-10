@@ -452,3 +452,79 @@ fn a337_dialog_flachdach_vorgewaehlt() {
     assert!(flachdach_ebene(&s).is_none());
     assert_eq!(s.model().runs().len(), 0);
 }
+
+/// A338 (Gefälledämmung G2, Paneel „Gefälle“): Das Feld steht auf 0
+/// (waagerecht, 1 bis 10 %). 2 % schalten das Gefälle ein, Skizzeo schlägt
+/// zwei Abläufe in der Mitte der Langseiten vor; der Keil liegt in der
+/// Dämmschicht. Datei hin und zurück gleich, alte Dächer ohne Gefälle
+/// schreiben nichts Neues. Rückgängig nimmt beides; 0 schaltet aus und
+/// behält die Abläufe für das nächste Einschalten.
+#[test]
+fn a338_gefaelle_im_paneel() {
+    let (mut s, og) = haus(338, sk_model::EXTERIOR_TYPE_GUID);
+    let (da, _) = da_ab(&s, og);
+    let floor = s.model().floor_of(og).unwrap();
+    let ohne = sk_model::szo::write(s.model());
+    assert!(!ohne.contains("slope="), "kein Gefälle in alten Dächern");
+    let gefaelle = |s: &Scene| {
+        selection::props(s, da)
+            .unwrap()
+            .sections
+            .into_iter()
+            .find(|x| x.title == "Gefälle")
+            .expect("Abschnitt Gefälle")
+    };
+    let sec = gefaelle(&s);
+    let f = &sec.fields[0];
+    assert_eq!(f.field, Field::RoofSlope);
+    assert_eq!((f.value, f.min, f.max, f.zero), (0.0, 1.0, 10.0, true));
+    assert!(sec.button.is_none());
+    assert!(s.flat_roof_over(floor).unwrap().slope.is_none());
+
+    assert!(s.set_field(da, Field::RoofSlope, 2.0));
+    let d = s.model().drainage_of(floor).unwrap().clone();
+    assert_eq!(d.slope, 2.0);
+    assert_eq!(d.drains.len(), 2, "{:?}", d.drains);
+    let r = s.flat_roof_over(floor).unwrap();
+    let g = r.slope.as_ref().expect("Gefälleplan");
+    assert_eq!(r.tapered, r.layers.iter().position(|l| l.2));
+    // Langseiten waagerecht: beide Abläufe auf halber Länge
+    let mitte = (r.outline.iter().map(|p| p.x).fold(f64::MAX, f64::min)
+        + r.outline.iter().map(|p| p.x).fold(f64::MIN, f64::max))
+        / 2.0;
+    assert!(
+        g.drains.iter().all(|p| (p.x - mitte).abs() < 1.0),
+        "{:?}",
+        g.drains
+    );
+    assert!(g.wedge_max() > 50.0 && g.wedge_mean() < g.wedge_max());
+    assert_eq!(wert(&s, da, "Abläufe"), "2 Stück");
+    assert!(gefaelle(&s).button.is_some());
+
+    let text = sk_model::szo::write(s.model());
+    assert!(text.contains("slope=2 drains="), "{text}");
+    let l = sk_model::szo::read(&text, sk_model::GuidGen::with_seed(1)).unwrap();
+    assert!(l.hints.is_empty(), "{:?}", l.hints);
+    let geladen = l.model.elements().iter().find_map(|(_, e)| match &e.kind {
+        sk_model::ElementKind::Roof { drainage, .. } => Some(drainage),
+        _ => None,
+    });
+    assert_eq!(geladen, Some(&d));
+    assert_eq!(sk_model::szo::write(&l.model), text);
+
+    s.undo();
+    assert_eq!(s.model().drainage_of(floor), Some(&Default::default()));
+    assert!(s.flat_roof_over(floor).unwrap().slope.is_none());
+    assert_eq!(sk_model::szo::write(s.model()), ohne);
+    s.redo();
+    assert_eq!(s.model().drainage_of(floor), Some(&d));
+
+    assert!(s.set_field(da, Field::RoofSlope, 0.0));
+    assert!(s.flat_roof_over(floor).unwrap().slope.is_none());
+    assert_eq!(s.model().drainage_of(floor).unwrap().drains, d.drains);
+    assert!(s.set_field(da, Field::RoofSlope, 3.0));
+    assert_eq!(s.model().drainage_of(floor).unwrap().drains, d.drains);
+    assert!(!s.set_field(da, Field::RoofSlope, 3.0), "gleicher Wert");
+    assert!(s.propose_roof_drains(da));
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+}

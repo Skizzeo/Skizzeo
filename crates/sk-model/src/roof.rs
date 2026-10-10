@@ -6,6 +6,7 @@
 //! läuft als geschlossener Ring auf der Außenfläche der Aufkantung über die
 //! ganze Wanddicke und zählt nicht zur Höhe der Ebene.
 
+use crate::gefaelle::SlopeField;
 use crate::solid::{at_z, edge_kind, material, right_of, SectionFrame, Solid, SweepEnd, NO_LAYER};
 use crate::terrace::{coping_girth_with, coping_profile_with, ROOF_COPING_INNER};
 use sk_math::{polygon, vec3, Vec3};
@@ -29,6 +30,11 @@ pub struct FlatRoof {
     pub crown: f64,
     /// Baustoff des Blechs (Darstellungsschlüssel).
     pub coping_mat: u16,
+    /// Gefälleplan, wenn das Dach Gefälle hat: der Keil liegt in der
+    /// Dämmschicht `tapered` und hebt die Schichten darüber an.
+    pub slope: Option<SlopeField>,
+    /// Gefälledämmschicht (von oben gezählt), nur mit `slope`.
+    pub tapered: Option<usize>,
 }
 
 impl FlatRoof {
@@ -355,6 +361,8 @@ mod tests {
             width: 0.0,
             crown: 0.0,
             coping_mat: 0,
+            slope: None,
+            tapered: None,
         };
         assert_eq!(r.corners(), 5);
         outline.reverse();

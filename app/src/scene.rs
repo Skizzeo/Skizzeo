@@ -1760,7 +1760,7 @@ impl Scene {
     /// Mengen eines Dachaufbaus, aus dem gezeichneten Flachdach.
     pub fn flat_roof_qto(&self, roof: ElementId) -> Option<sk_model::TerraceQto> {
         let m = &self.model;
-        let sk_model::ElementKind::Roof { floor } = m.element(roof)?.kind else {
+        let sk_model::ElementKind::Roof { floor, .. } = m.element(roof)?.kind else {
             return None;
         };
         Some(sk_model::flat_roof_qto_of(
@@ -1774,13 +1774,8 @@ impl Scene {
     /// Schritt.
     pub fn set_roof_insulation(&mut self, id: ElementId, mm: f64) -> bool {
         let m = &self.model;
-        let roof = match m.element(id).map(|e| &e.kind) {
-            Some(sk_model::ElementKind::Roof { .. }) => id,
-            Some(sk_model::ElementKind::Coping { floor }) => match m.flat_roof_of(*floor) {
-                Some(r) => r,
-                None => return false,
-            },
-            _ => return false,
+        let Some(roof) = self.roof_element(id) else {
+            return false;
         };
         let Some(t) = m.flat_roof_type(roof) else {
             return false;
@@ -1797,6 +1792,42 @@ impl Scene {
             _ => return false,
         }
         self.edit_model("Aufbau des Flachdachs", |m| m.set_layer_set(t, set))
+    }
+
+    /// Dachaufbau zum Bauteil `id`: er selbst oder der zum Attikablech.
+    fn roof_element(&self, id: ElementId) -> Option<ElementId> {
+        let m = &self.model;
+        match m.element(id).map(|e| &e.kind) {
+            Some(sk_model::ElementKind::Roof { .. }) => Some(id),
+            Some(sk_model::ElementKind::Coping { floor }) => m.flat_roof_of(*floor),
+            _ => None,
+        }
+    }
+
+    /// Gefälle des Flachdachs in % (Paneel „Gefälle“, G2): 0 schaltet es
+    /// aus, beim ersten Einschalten schlägt Skizzeo die Abläufe vor. Ein
+    /// Schritt.
+    pub fn set_roof_slope(&mut self, id: ElementId, pct: f64) -> bool {
+        let Some(roof) = self.roof_element(id) else {
+            return false;
+        };
+        if self
+            .model
+            .drainage_of_roof(roof)
+            .is_some_and(|d| d.slope == pct)
+        {
+            return false;
+        }
+        self.edit_model("Gefälle des Flachdachs", |m| m.set_roof_slope(roof, pct))
+    }
+
+    /// Schlägt die Abläufe des Flachdachs neu vor (ersetzt die gesetzten).
+    /// Ein Schritt.
+    pub fn propose_roof_drains(&mut self, id: ElementId) -> bool {
+        let Some(roof) = self.roof_element(id) else {
+            return false;
+        };
+        self.edit_model("Abläufe vorschlagen", |m| m.propose_roof_drains(roof))
     }
 
     /// Mengen eines Randdämmstreifens (K5), aus der gezeichneten Decke.
@@ -2091,6 +2122,9 @@ impl Scene {
         }
         if field == Field::RoofInsulation {
             return self.set_roof_insulation(id, mm);
+        }
+        if field == Field::RoofSlope {
+            return self.set_roof_slope(id, mm);
         }
         if let Field::Cladding(v) = field {
             return self.set_cladding(id, v, mm);

@@ -4,6 +4,7 @@
 //! das Attikablech auf der Krone der Aufkantung.
 
 use super::*;
+use crate::gefaelle::{self, Drainage, SlopeField};
 use crate::roof::FlatRoof;
 
 /// Werkstyp „Flachdach 21,5“ (DA-21,5) und seine eingebauten Baustoffe:
@@ -248,7 +249,7 @@ impl Model {
     pub fn flat_roof_of(&self, floor: ElementId) -> Option<ElementId> {
         self.elements
             .iter()
-            .find(|(_, e)| e.kind == ElementKind::Roof { floor })
+            .find(|(_, e)| matches!(e.kind, ElementKind::Roof { floor: f, .. } if f == floor))
             .map(|(id, _)| id)
     }
 
@@ -360,6 +361,88 @@ impl Model {
         true
     }
 
+    /// Gefälle und Abläufe des Dachaufbaus auf der Decke `floor`.
+    pub fn drainage_of(&self, floor: ElementId) -> Option<&Drainage> {
+        self.drainage_of_roof(self.flat_roof_of(floor)?)
+    }
+
+    /// Gefälle und Abläufe des Dachaufbaus `roof`.
+    pub fn drainage_of_roof(&self, roof: ElementId) -> Option<&Drainage> {
+        match &self.element(roof)?.kind {
+            ElementKind::Roof { drainage, .. } => Some(drainage),
+            _ => None,
+        }
+    }
+
+    /// Setzt Gefälle und Abläufe des Dachaufbaus `roof` (Gefälledämmung,
+    /// G2). Gefälle 0 bis 100 %, Abläufe auf z = 0.
+    pub fn set_roof_drainage(&mut self, roof: ElementId, d: Drainage) -> bool {
+        let ok = d.slope.is_finite()
+            && (0.0..=100.0).contains(&d.slope)
+            && d.drains.iter().all(|p| p.x.is_finite() && p.y.is_finite());
+        let Some(ElementKind::Roof { drainage, .. }) = self.element(roof).map(|e| &e.kind) else {
+            return false;
+        };
+        if !ok {
+            return false;
+        }
+        if *drainage == d {
+            return true;
+        }
+        let d = Drainage {
+            drains: d.drains.iter().map(|p| vec3(p.x, p.y, 0.0)).collect(),
+            ..d
+        };
+        note!(self, Element, self.elements, roof);
+        if let Some(ElementKind::Roof { drainage, .. }) =
+            self.elements.get_mut(roof).map(|e| &mut e.kind)
+        {
+            *drainage = d;
+        }
+        self.touch();
+        true
+    }
+
+    /// Gefälle des Dachaufbaus `roof` in Prozent (0 = waagerecht). Hat das
+    /// Dach noch keine Abläufe, schlägt Skizzeo sie vor.
+    pub fn set_roof_slope(&mut self, roof: ElementId, slope: f64) -> bool {
+        let Some(ElementKind::Roof { floor, drainage }) = self.element(roof).map(|e| &e.kind)
+        else {
+            return false;
+        };
+        let mut d = Drainage {
+            slope,
+            ..drainage.clone()
+        };
+        if d.on() && d.drains.is_empty() {
+            d.drains = self.proposed_drains(*floor);
+        }
+        self.set_roof_drainage(roof, d)
+    }
+
+    /// Ersetzt die Abläufe des Dachaufbaus `roof` durch den Vorschlag.
+    pub fn propose_roof_drains(&mut self, roof: ElementId) -> bool {
+        let Some(ElementKind::Roof { floor, drainage }) = self.element(roof).map(|e| &e.kind)
+        else {
+            return false;
+        };
+        let drains = self.proposed_drains(*floor);
+        if drains.is_empty() {
+            return false;
+        }
+        let d = Drainage {
+            drains,
+            ..drainage.clone()
+        };
+        self.set_roof_drainage(roof, d)
+    }
+
+    fn proposed_drains(&self, floor: ElementId) -> Vec<Vec3> {
+        self.flat_roof_over(floor).map_or_else(Vec::new, |r| {
+            gefaelle::propose_drains(&r.outline, &gefaelle::Limits::default())
+        })
+    }
+
     /// Geometrie von Dachaufbau und Attikablech über dem Zug der
     /// Aufkantung `ak`; `None`, wenn `ak` keine Aufkantung auf einer Decke
     /// ist.
@@ -383,7 +466,7 @@ impl Model {
         let chosen = self
             .flat_roof_of(floor)
             .and_then(|r| self.element(r)?.layer_set);
-        let layers = match self
+        let layers: Vec<(f64, u16, bool)> = match self
             .roof_type_or_default(chosen)
             .and_then(|t| self.layer_set(t))
         {
@@ -403,8 +486,17 @@ impl Model {
         let drop = self.parapet_inner_thickness(ak);
         let (inner, outer) = (chain.inner_offset(), chain.outer_offset());
         let inner = inner + (outer - inner).signum() * drop;
+        let outline = sk_math::polygon::to_ccw(&chain.face_corners(inner));
+        // Gefälle: der Keil liegt in der obersten Dämmschicht (Konzept F3)
+        let tapered = layers.iter().position(|l| l.2);
+        let slope = tapered
+            .and(self.drainage_of(floor))
+            .filter(|d| d.on())
+            .and_then(|d| SlopeField::compute(&outline, &d.drains, d.slope));
         Some(FlatRoof {
-            outline: sk_math::polygon::to_ccw(&chain.face_corners(inner)),
+            tapered: slope.as_ref().and(tapered),
+            slope,
+            outline,
             base: self.level_z(f.top)?,
             layers,
             ring: sk_math::polygon::to_ccw(&chain.face_corners(chain.outer_offset())),
@@ -459,7 +551,7 @@ impl Model {
             .elements
             .iter()
             .filter_map(|(id, e)| match e.kind {
-                ElementKind::Roof { floor } => Some((id, floor, true)),
+                ElementKind::Roof { floor, .. } => Some((id, floor, true)),
                 ElementKind::Coping { floor } if self.flat_roof_coping(id, floor) => {
                     Some((id, floor, false))
                 }
@@ -493,7 +585,11 @@ impl Model {
         }
         for &(floor, storey, seq) in &want {
             if !roofs.iter().any(|x| x.0 == floor) {
-                let id = self.new_element(Category::Roof, storey, seq, ElementKind::Roof { floor });
+                let kind = ElementKind::Roof {
+                    floor,
+                    drainage: Default::default(),
+                };
+                let id = self.new_element(Category::Roof, storey, seq, kind);
                 roofs.push((floor, id));
                 self.touch();
                 added += 1;
@@ -526,7 +622,7 @@ impl Model {
             return Vec::new();
         };
         match e.kind {
-            ElementKind::Roof { floor } => self
+            ElementKind::Roof { floor, .. } => self
                 .flat_roof_over(floor)
                 .map(|r| vec![("Anschlusshöhe".into(), PropValue::Number(r.upstand()))])
                 .unwrap_or_default(),

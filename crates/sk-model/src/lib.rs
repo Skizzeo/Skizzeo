@@ -62,6 +62,7 @@ pub use erweiterung::{ExtDef, ExtPart};
 pub use ext::{ExtRec, ExtStore};
 pub use floor::{FloorError, FloorParams, FloorSlab, SoffitParams, StripParams, TerraceParams};
 pub use foundation::{FootingShape, Foundation, FoundationError, FoundationParams};
+pub use gefaelle::{Drainage, SlopeField};
 pub use guid::{Guid, GuidGen};
 pub use id::{Arena, Id};
 pub use join::{Join, JoinEnd, JoinKind};

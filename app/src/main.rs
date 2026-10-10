@@ -3668,6 +3668,15 @@ impl App {
                     self.flush(w);
                 }
             }
+            Id::PropsDrains => {
+                if let Some(id) = self.sel.id {
+                    if let Some(b) = sk_model::edit_blocked(self.scene.model(), &[id]) {
+                        self.show_locked(b, Some((id, delete::Act::Field)));
+                    } else if self.scene.propose_roof_drains(id) {
+                        self.upload_model();
+                    }
+                }
+            }
             Id::DialogStart => self.close_building_dialog(true),
             Id::DialogCancel | Id::DialogClose => self.close_building_dialog(false),
             // Zahlenfelder melden sich über `UiOut::submit`, Griffe über

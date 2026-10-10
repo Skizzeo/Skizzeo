@@ -199,6 +199,9 @@ pub enum ElementKind {
     /// ([`crate::Model::flat_roof_type`]).
     Roof {
         floor: ElementId,
+        /// Gefälle und Abläufe (Gefälledämmung, Konzept §4); Standard ohne
+        /// Gefälle.
+        drainage: crate::gefaelle::Drainage,
     },
 }
 

@@ -792,7 +792,7 @@ pub fn flat_roof_qto_of(model: &Model, roof: ElementId, r: &FlatRoof) -> Terrace
 
 /// Mengen eines Dachaufbaus.
 pub fn flat_roof_qto(model: &Model, roof: ElementId) -> Option<TerraceQto> {
-    let ElementKind::Roof { floor } = model.element(roof)?.kind else {
+    let ElementKind::Roof { floor, .. } = model.element(roof)?.kind else {
         return None;
     };
     Some(flat_roof_qto_of(model, roof, &model.flat_roof_over(floor)?))
@@ -1634,7 +1634,7 @@ pub fn schedule(model: &Model) -> Schedule {
                 }
             }
             // Flachdach (D3, D4): aus der Aufkantung über der Decke
-            ElementKind::Roof { floor } => match model.flat_roof_over(floor) {
+            ElementKind::Roof { floor, .. } => match model.flat_roof_over(floor) {
                 Some(r) => {
                     let q = flat_roof_qto_of(model, id, &r);
                     roofs.push((id, r));
