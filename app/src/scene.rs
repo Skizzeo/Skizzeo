@@ -26,6 +26,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+#[path = "scene_gefaelle.rs"]
+mod gefaelle;
+
 /// Anzeigename der Gründung als Ebene (Paneel „Geschosse“, Geschossbogen).
 pub const FOUNDATION_NAME: &str = "Fundament";
 
@@ -1760,7 +1763,7 @@ impl Scene {
     /// Mengen eines Dachaufbaus, aus dem gezeichneten Flachdach.
     pub fn flat_roof_qto(&self, roof: ElementId) -> Option<sk_model::TerraceQto> {
         let m = &self.model;
-        let sk_model::ElementKind::Roof { floor } = m.element(roof)?.kind else {
+        let sk_model::ElementKind::Roof { floor, .. } = m.element(roof)?.kind else {
             return None;
         };
         Some(sk_model::flat_roof_qto_of(
@@ -1774,13 +1777,8 @@ impl Scene {
     /// Schritt.
     pub fn set_roof_insulation(&mut self, id: ElementId, mm: f64) -> bool {
         let m = &self.model;
-        let roof = match m.element(id).map(|e| &e.kind) {
-            Some(sk_model::ElementKind::Roof { .. }) => id,
-            Some(sk_model::ElementKind::Coping { floor }) => match m.flat_roof_of(*floor) {
-                Some(r) => r,
-                None => return false,
-            },
-            _ => return false,
+        let Some(roof) = self.roof_element(id) else {
+            return false;
         };
         let Some(t) = m.flat_roof_type(roof) else {
             return false;
@@ -2091,6 +2089,9 @@ impl Scene {
         }
         if field == Field::RoofInsulation {
             return self.set_roof_insulation(id, mm);
+        }
+        if field == Field::RoofSlope {
+            return self.set_roof_slope(id, mm);
         }
         if let Field::Cladding(v) = field {
             return self.set_cladding(id, v, mm);

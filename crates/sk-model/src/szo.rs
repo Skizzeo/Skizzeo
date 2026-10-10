@@ -423,6 +423,49 @@ fn slab_type(line: Line, m: &Model, e: &Element) -> Line {
     }
 }
 
+/// Gefälle des Dachaufbaus (Gefälledämmung): `slope=` in Prozent und
+/// `drains=x,y;x,y` in mm, nur wenn es Gefälle oder Abläufe gibt (ältere
+/// Dateien bleiben bytegleich).
+fn write_drainage(line: Line, d: &crate::gefaelle::Drainage) -> Line {
+    if !d.on() && d.drains.is_empty() {
+        return line;
+    }
+    let line = line.num("slope", d.slope);
+    if d.drains.is_empty() {
+        return line;
+    }
+    let pts: Vec<String> = d
+        .drains
+        .iter()
+        .map(|p| format!("{},{}", p.x, p.y))
+        .collect();
+    line.word("drains", &pts.join(";"))
+}
+
+fn read_drainage(r: &Record) -> Result<crate::gefaelle::Drainage, LoadError> {
+    let slope = match r.opt("slope") {
+        Some(_) => r.f64("slope")?,
+        None => 0.0,
+    };
+    let mut drains = Vec::new();
+    for p in r
+        .opt("drains")
+        .unwrap_or("")
+        .split(';')
+        .filter(|t| !t.is_empty())
+    {
+        let xy: Vec<f64> = p.split(',').filter_map(|t| t.parse::<f64>().ok()).collect();
+        match xy[..] {
+            [x, y] if x.is_finite() && y.is_finite() => drains.push(sk_math::vec3(x, y, 0.0)),
+            _ => return Err(r.bad("drains", "Punkte x,y;x,y")),
+        }
+    }
+    if !(0.0..=100.0).contains(&slope) {
+        return Err(r.bad("slope", "Prozent"));
+    }
+    Ok(crate::gefaelle::Drainage { slope, drains })
+}
+
 /// Art eines Geschossbands in der Datei (`kind=`); „roof“ seit dem
 /// Flachdach (Jörn 10.10.), ältere Dateien kennen es nicht.
 fn level_kind_word(k: LevelKind) -> &'static str {
@@ -1102,7 +1145,7 @@ fn write_known(m: &Model) -> String {
         let (word, floor) = match e.kind {
             ElementKind::RoofTerrace { floor } => ("terrace", floor),
             ElementKind::Coping { floor } => ("coping", floor),
-            ElementKind::Roof { floor } => ("roof", floor),
+            ElementKind::Roof { floor, .. } => ("roof", floor),
             _ => continue,
         };
         let l = Line::new(word)
@@ -1114,6 +1157,10 @@ fn write_known(m: &Model) -> String {
             slab_type(l, m, e)
         } else {
             l
+        };
+        let l = match &e.kind {
+            ElementKind::Roof { drainage, .. } => write_drainage(l, drainage),
+            _ => l,
         };
         l.num("seq", e.seq)
             .guid("storey", storey_guid(e.storey))
@@ -2099,7 +2146,10 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                 ) {
                     return Err(err(r.line, "[roof]: „floor“ ist keine Decke"));
                 }
-                ElementKind::Roof { floor }
+                ElementKind::Roof {
+                    floor,
+                    drainage: read_drainage(r)?,
+                }
             } else if ix >= 5 {
                 // Dachterrasse, Attikablech (D1–D3): nur der Verweis auf die Decke
                 let floor = r.link("floor", &elem_ids)?;

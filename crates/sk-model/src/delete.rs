@@ -161,7 +161,7 @@ impl Model {
             ElementKind::SoffitInsulation { floor }
             | ElementKind::RoofTerrace { floor }
             | ElementKind::Coping { floor }
-            | ElementKind::Roof { floor } => Err(Refusal::Derived { from: floor }),
+            | ElementKind::Roof { floor, .. } => Err(Refusal::Derived { from: floor }),
             ElementKind::Ext(_) if e.locked => Err(Refusal::Locked(id)),
             ElementKind::Ext(_) => Ok(()),
         }
