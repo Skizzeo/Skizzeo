@@ -336,9 +336,16 @@ impl Record {
 }
 
 /// Hinweis für einen Wert außerhalb seines Bereichs: Die Vorgabe gilt,
-/// das Projekt öffnet trotzdem.
-fn ausserhalb(line: usize, name: &str, v: f64, min: f64, max: f64) -> String {
-    format!("Zeile {line}: {name} {v} außerhalb {min} bis {max}, Vorgabe gilt")
+/// das Projekt öffnet trotzdem. `einheit` mit führendem Leerzeichen
+/// (" mm"), beim Grad ohne ("°"); Zahlen mit Komma.
+fn ausserhalb(line: usize, name: &str, v: f64, min: f64, max: f64, einheit: &str) -> String {
+    let z = |x: f64| x.to_string().replace('.', ",");
+    format!(
+        "Zeile {line}: {name} {}{einheit} außerhalb {} bis {}{einheit}, Vorgabe gilt",
+        z(v),
+        z(min),
+        z(max)
+    )
 }
 
 pub fn parse_hex(s: &str) -> Option<[u8; 3]> {
@@ -1722,6 +1729,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                 terrain,
                 -max,
                 max,
+                " mm",
             ));
             terrain = 0.0;
         }
@@ -1809,7 +1817,8 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         if v.is_finite() && v >= min && v <= max {
             Ok(Some(v))
         } else {
-            hints.push(ausserhalb(r.line, name, v, min, max));
+            let einheit = if k == "slope" { "°" } else { " mm" };
+            hints.push(ausserhalb(r.line, name, v, min, max, einheit));
             Ok(None)
         }
     };
