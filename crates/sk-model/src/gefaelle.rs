@@ -267,7 +267,32 @@ struct Mesh {
 
 impl Mesh {
     fn new(outline: &[Vec3]) -> Mesh {
-        let idx = polygon::triangulate(outline);
+        let mut idx = polygon::triangulate(outline);
+        // Der Ohrenschnitt kann Ecken mitten auf einer Dreieckskante lassen
+        // (T-Stoß, etwa am Steg eines T): dort teilen, sonst fehlt über diese
+        // Kante der Nachbar und die Sicht bricht ab
+        let mut i = 0;
+        while i < idx.len() {
+            let t = idx[i];
+            let hit = (0..3).find_map(|k| {
+                let (a, b) = (outline[t[k]], outline[t[(k + 1) % 3]]);
+                (0..outline.len())
+                    .find(|&v| {
+                        !t.contains(&v)
+                            && dist_seg(outline[v], a, b) < EPS * (b - a).length().max(1.0)
+                            && (outline[v] - a).length() > EPS
+                            && (outline[v] - b).length() > EPS
+                    })
+                    .map(|v| (k, v))
+            });
+            if let Some((k, v)) = hit {
+                let (a, b, c) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
+                idx[i] = [a, v, c];
+                idx.push([v, b, c]);
+            } else {
+                i += 1;
+            }
+        }
         let tris: Vec<[Vec3; 3]> = idx.iter().map(|t| t.map(|i| outline[i])).collect();
         let mut adj = vec![[None; 3]; idx.len()];
         let mut seen: std::collections::HashMap<(usize, usize), (usize, usize)> =
@@ -1370,6 +1395,47 @@ mod tests {
         assert!((g.area() - 168.0e6).abs() < 1e3);
         let sum: f64 = g.catchments().iter().sum();
         assert!((sum - g.area()).abs() < 1e3);
+    }
+
+    #[test]
+    fn t_und_kreuz_ueber_den_stoss() {
+        // Steg trifft Balken: die Innenecken liegen auf einer Umrisskante
+        let t = poly(&[
+            (0.0, 0.0),
+            (4.0, 0.0),
+            (4.0, 6.0),
+            (8.0, 6.0),
+            (8.0, 9.0),
+            (-4.0, 9.0),
+            (-4.0, 6.0),
+            (0.0, 6.0),
+        ]);
+        let f = SlopeField::compute(&t, &[pt(2.0, 0.0)], 2.0).unwrap();
+        stetig(&f);
+        achsen(&f);
+        assert!((f.area() - 60.0e6).abs() < 1e3, "{}", f.area());
+        // durch den Steg gerade gesehen: 6,075 m Fließweg
+        assert!((f.wedge_at(vec3(1900.0, 6075.0, 0.0)) - 121.5).abs() < 0.01);
+        let kreuz = poly(&[
+            (4.0, 0.0),
+            (8.0, 0.0),
+            (8.0, 4.0),
+            (12.0, 4.0),
+            (12.0, 8.0),
+            (8.0, 8.0),
+            (8.0, 12.0),
+            (4.0, 12.0),
+            (4.0, 8.0),
+            (0.0, 8.0),
+            (0.0, 4.0),
+            (4.0, 4.0),
+        ]);
+        let g = SlopeField::compute(&kreuz, &[pt(6.0, 0.0)], 2.0).unwrap();
+        stetig(&g);
+        achsen(&g);
+        assert!((g.area() - 80.0e6).abs() < 1e3, "{}", g.area());
+        assert!(g.face_at(pt(6.0, 6.0)).is_some());
+        assert!((g.wedge_at(pt(6.0, 11.0)) - 220.0).abs() < 0.01);
     }
 
     #[test]
