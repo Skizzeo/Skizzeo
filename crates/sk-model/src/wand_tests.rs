@@ -417,6 +417,18 @@ fn bekleidung_unter_der_untersicht() {
     assert!(near(mehr, quad * 70.0), "{mehr}");
 }
 
+/// Innenkante der Schicht `key` im Schnitt der Nordwand: kleinstes y
+/// außerhalb der EG-Außenflucht (y = 8000).
+fn tief_innen(s: &Solid, key: u16) -> f64 {
+    s.triangles
+        .iter()
+        .filter(|t| t.mat == key | material::CUT)
+        .flat_map(|t| t.p)
+        .filter(|p| p.y > 8000.0)
+        .map(|p| p.y)
+        .fold(f64::INFINITY, f64::min)
+}
+
 /// Längsseite der Bekleidung an der EG-Wand und Außenkante am Verblender.
 fn q_len(_q: &crate::qto::SoffitQto, f: &crate::floor::FloorSlab) -> (f64, f64) {
     let (_, q) = f.claddings[0];
@@ -428,19 +440,61 @@ fn q_len(_q: &crate::qto::SoffitQto, f: &crate::floor::FloorSlab) -> (f64, f64) 
 /// wie vor W3; Rückgängig bringt sie zurück. Grenzen der Werte.
 #[test]
 fn bekleidung_wdvs_und_ohne() {
-    let (mut m, _, _) = haus(Some(ETICS_TYPE_GUID), &[(1, 300.0)]);
+    let (mut m, _, og) = haus(Some(ETICS_TYPE_GUID), &[(1, 300.0)]);
     let (eg, fl, ud) = eg_of(&m);
     let f = m.floor(eg).unwrap().unwrap();
+    let (u0, _) = f.soffit_band().unwrap();
+    // Die WDVS-Dämmung läuft 30 mm unter die Bekleidung, die Bekleidung
+    // stößt stumpf von innen dagegen: 30 cm − 12 cm Dämmung (Jörn 14:03)
     let (_, q) = f.claddings[0];
-    assert!(near((q[3].y - q[0].y).abs(), 300.0), "{q:?}");
+    assert!(near((q[3].y - q[0].y).abs(), 180.0), "{q:?}");
     let c = m.chain(eg).unwrap();
-    assert!(c.joints.overhang.as_ref().unwrap().drip.is_none());
+    let d = c.joints.overhang.as_ref().unwrap().drip.clone().unwrap();
+    assert_eq!((d.layer, d.from), (0, u0 - 70.0));
+    assert_eq!(d.segs, vec![false, true, false, false]);
+    let dae = c.layers[0].material;
+    let cut = c.section_caps(vec3(5000.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0));
+    let tief = cut
+        .triangles
+        .iter()
+        .filter(|t| t.mat == dae | material::CUT)
+        .flat_map(|t| t.p)
+        .filter(|p| p.y > 8000.0)
+        .map(|p| p.z)
+        .fold(f64::INFINITY, f64::min);
+    assert!(near(tief, u0 - 70.0), "{tief}");
+    // Die Bekleidung endet an der Innenseite der Dämmung, nicht außen
+    let clad = material_key(m.material_by_guid(CLADDING_MAT_GUID).unwrap());
+    let fc = f.soffit_section_caps(vec3(5000.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0));
+    let y_max = fc
+        .triangles
+        .iter()
+        .filter(|t| t.mat == clad | material::CUT)
+        .flat_map(|t| t.p)
+        .map(|p| p.y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let y_daemm = tief_innen(&cut, dae);
+    assert!(near(y_max, y_daemm), "{y_max} {y_daemm}");
+    // Mengen: die Dämmung der OG-Wand ist um 70 mm × 12 cm länger
+    let wdvs = |m: &Model| -> f64 {
+        [eg, og]
+            .iter()
+            .flat_map(|r| run_qto(m, *r))
+            .map(|w| w.layers[0].volume)
+            .sum()
+    };
+    let mit = wdvs(&m);
 
     m.begin("ohne");
     assert!(m.set_floor_cladding(fl, CladdingValue::Thickness, 0.0));
     let t = m.commit().unwrap();
     let f = m.floor(eg).unwrap().unwrap();
     assert!(f.claddings.is_empty() && f.cladding_band().is_none());
+    let mehr = mit - wdvs(&m);
+    assert!(
+        mehr > 120.0 * 70.0 * 9000.0 && mehr < 120.0 * 70.0 * 10600.0,
+        "{mehr}"
+    );
     assert_eq!(m.element_layers(ud).len(), 1);
     assert!(crate::qto::soffit_qto(&m, ud).unwrap().cladding.is_none());
     m.apply(&t, Direction::Undo);

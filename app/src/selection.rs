@@ -826,7 +826,7 @@ fn soffit_section(m: &Model, floor: ElementId) -> Option<crate::ui::Section> {
         fields.extend([
             field(
                 Field::Cladding(C::Drip),
-                "Überstand Verblender",
+                "Überstand Außenschale",
                 c.drip,
                 sk_model::MIN_DRIP,
                 sk_model::MAX_DRIP,

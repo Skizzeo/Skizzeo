@@ -3125,9 +3125,9 @@ impl Model {
         if let Some(Ok(f)) = &floor {
             c.joints.overhang = self.overhang_offsets(id).map(|offsets| {
                 let (b, t) = f.band();
-                // Verblender bis unter die Bekleidung (W3)
+                // Außenschichten bis unter die Bekleidung (W3)
                 let drip = self
-                    .facing_layer(id)
+                    .drip_layer(id)
                     .zip(f.drip_bottom())
                     .map(|(layer, from)| {
                         let mut segs = vec![false; c.segment_count()];
@@ -3229,6 +3229,30 @@ impl Model {
         t.layers[..core]
             .iter()
             .position(|l| crate::qto::is_facing(self, l))
+    }
+
+    /// Innerste der Außenschichten, die unter die Bekleidung der Untersicht
+    /// laufen (W3, Jörn 14:03): bei zweischaligen Wänden der Verblender,
+    /// sonst die äußere Dämmung (WDVS) samt Putz davor, ohne Dämmung die
+    /// Schichten vor dem Kern (Außenputz). Die Bekleidung stößt stumpf von
+    /// innen dagegen. `None` ohne Schicht vor dem Kern.
+    fn drip_layer(&self, run: RunId) -> Option<usize> {
+        if let Some(i) = self.facing_layer(run) {
+            return Some(i);
+        }
+        let t = self
+            .run(run)?
+            .segments
+            .first()
+            .and_then(|w| self.element(*w))
+            .and_then(|e| e.layer_set)
+            .and_then(|t| self.layer_set(t))?;
+        let core = t.layers.iter().position(|l| l.core)?;
+        let outer = &t.layers[..core];
+        outer
+            .iter()
+            .position(|l| l.function == LayerFunction::Insulation)
+            .or_else(|| core.checked_sub(1))
     }
 
     /// Braucht irgendein Zug einen Fußpunkt aus Schaumglas (W2)?
@@ -4458,7 +4482,7 @@ impl Model {
             clad_mat: self
                 .cladding_material_of(&f.soffit)
                 .map_or(material::PLAIN, material_key),
-            clad_inset: self.facing_layer(run).map_or(0.0, |i| {
+            clad_inset: self.drip_layer(run).map_or(0.0, |i| {
                 chain.layers[..=i].iter().map(|l| l.thickness).sum()
             }),
             drip: f.soffit.drip,
@@ -9720,7 +9744,11 @@ mod og_phase2 {
         // OG-Nordwand: dazu der ganze Abschnitt (gleich groß, 0,34 m hoch);
         // OG-Westwand: das Eckstück über dem Vorsprung (0,30 × 0,14 × 0,34)
         let og_west = (8300.0 + 8020.0) * 0.5 * 140.0;
-        assert!(near(o[1].layers[0].volume, nord * 2855.0 + nord * 340.0));
+        // … und 70 mm vor die Bekleidung der Untersicht (W3, Jörn 14:03)
+        assert!(near(
+            o[1].layers[0].volume,
+            nord * 2855.0 + nord * 340.0 + nord * 70.0
+        ));
         assert!(near(
             o[0].layers[0].volume,
             og_west * 2855.0 + 300.0 * 140.0 * 340.0
@@ -9863,12 +9891,14 @@ mod og_phase2 {
             "{}",
             kante_bei_x(&s, 2515.0, 0.0)
         );
-        // Nordseite: Unterkante der herabgezogenen Dämmung bei y = 8,30 und
-        // EG-Dämmung unter der Untersicht bei y = 8,00
+        // Nordseite: Unterkante der herabgezogenen Dämmung bei y = 8,30 (sie
+        // läuft 70 mm unter die Untersicht, vor die Bekleidung, Jörn 14:03)
+        // und EG-Dämmung unter der Untersicht bei y = 8,00
         let north = |y: f64| -> f64 {
+            let z = if y > 8000.0 { 2445.0 } else { 2515.0 };
             s.edges
                 .iter()
-                .filter(|e| near(e.a.z, 2515.0) && near(e.b.z, 2515.0))
+                .filter(|e| near(e.a.z, z) && near(e.b.z, z))
                 .filter(|e| near(e.a.y, y) && near(e.b.y, y))
                 .map(|e| (e.b - e.a).length())
                 .sum()
@@ -9890,7 +9920,10 @@ mod og_phase2 {
                 .filter(|e| near(e.a.z, z) && near(e.b.z, z))
                 .count()
         };
-        assert!(at(2515.0) >= 2, "{}", at(2515.0));
+        // Oberkante der EG-Dämmung bei UK Untersicht, Unterkante der
+        // herabgezogenen Dämmung 70 mm tiefer vor der Bekleidung
+        assert!(at(2515.0) >= 1, "{}", at(2515.0));
+        assert!(at(2445.0) >= 1, "{}", at(2445.0));
         let f = m.floor(eg).unwrap().unwrap();
         let fc = f.soffit_section_caps(vec3(5000.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0));
         let soffit = fc
