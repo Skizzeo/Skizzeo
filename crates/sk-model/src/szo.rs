@@ -2004,7 +2004,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             height: crate::model::STOREY_HEIGHT,
             embed: None,
         });
-        hints.push("Datei auf Geschossverwaltung umgestellt".to_string());
+        hints.push("Datei auf Geschosse umgestellt".to_string());
         (eg, gr)
     } else {
         let b = storeys

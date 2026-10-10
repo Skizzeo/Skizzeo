@@ -72,6 +72,8 @@ pub struct Ansatz {
     pub grad: Option<u32>,
     /// Automatikmenge: Rechenweg statt „aus Modell“ („99,00 m² × 0,30 m“).
     pub formel: Option<String>,
+    /// Automatikmenge: ihr Schlüssel (`earth.excavation`, `site.scaffold` …).
+    pub auto: Option<&'static str>,
 }
 
 /// Was eine Position rechnet.
@@ -863,6 +865,7 @@ pub fn kosten_mit(
             auflager: 0,
             grad: None,
             formel: None,
+            auto: None,
         };
         let gewerk_schicht = r.trade.and_then(|t| m.trade(t)).map(|t| t.guid);
         let mut legen = |key: PosKey,
@@ -1496,6 +1499,7 @@ fn ext_ansaetze(
                     grad: (masse(em) && q.volume > 0.0)
                         .then(|| (menge as f64 / (q.volume / 1e6)).round() as u32),
                     formel: None,
+                    auto: None,
                 },
                 t,
                 mat.map(|x| (x.guid, t)),
@@ -1580,6 +1584,7 @@ fn auto_ansaetze(
                     auflager: 0,
                     grad: None,
                     formel: Some(a.formula.clone()),
+                    auto: Some(a.key),
                 },
                 Dez::NULL,
                 None,

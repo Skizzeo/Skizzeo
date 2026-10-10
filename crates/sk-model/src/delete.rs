@@ -79,7 +79,9 @@ pub fn refusal_lines(m: &Model, id: ElementId, r: &Refusal) -> Vec<&'static str>
             ]
         }
         Some(Category::Parapet) => {
-            vec!["Die Aufkantung folgt dem Flachdach. Ihre Höhe stellst du in der Geschossverwaltung ein."]
+            vec![
+                "Die Aufkantung folgt dem Flachdach. Ihre Höhe stellst du im Paneel Geschosse ein.",
+            ]
         }
         _ => vec!["Dieses Bauteil lässt sich nicht löschen."],
     }
