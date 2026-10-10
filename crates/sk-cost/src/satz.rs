@@ -158,6 +158,8 @@ pub const KATEGORIEN: &[&str] = &[
     "perimeterinsulation",
     "roofterrace",
     "coping",
+    "parapet",
+    "roof",
 ];
 pub const FUNKTIONEN: &[&str] = &["loadbearing", "insulation", "finish", "membrane"];
 pub const REC: &[&str] = &["article", "service", "svcpart", "svcfollow", "rate", "lot"];

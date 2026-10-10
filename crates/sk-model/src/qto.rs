@@ -41,6 +41,41 @@ pub struct LayerQto {
     /// Schicht im eigenen Geschoss (mm², Innenputz nach DIN 18350, BIM
     /// Regel 84).
     pub inner_area: f64,
+    /// Fußpunkt aus Schaumglas unter dieser Schicht (W2), mm³; nicht im
+    /// Volumen der Schicht, er steht in [`WallQto::facing_foot`].
+    pub foot: f64,
+}
+
+/// Fußpunkt der Verblendschale auf der Dachterrasse (W2, Tagesplan P1):
+/// Schaumglas-Dämmsteine vom Wandfuß bis OK Terrassenaufbau, je Segment.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FacingFootQto {
+    /// Schicht der Verblendschale im Aufbau der Wand.
+    pub layer: usize,
+    /// Baustoff „Schaumglas-Dämmstein“.
+    pub material: MaterialId,
+    /// Länge in der Außenflucht der Verblendschale (mm), Abrechnung in m.
+    pub length: f64,
+    /// Höhe = Aufbau der Dachterrasse (mm).
+    pub height: f64,
+    /// Breite = Dicke der Verblendschale (mm).
+    pub width: f64,
+    /// Lagen à [`FOOT_COURSE`] mm, aufgerundet (140 mm → 2).
+    pub courses: u32,
+    /// Ansichtsfläche außen: Länge × Höhe (mm²).
+    pub area: f64,
+    /// Grundfläche der Schicht im Segment × Höhe (mm³), aus dem Volumen
+    /// der Verblendschale herausgenommen.
+    pub volume: f64,
+}
+
+/// Lagenmaß der Schaumglas-Dämmsteine: Stein 115 mm + Lagerfuge 10 mm
+/// (FOAMGLAS PERINSUL HL, Tagesplan P1).
+pub const FOOT_COURSE: f64 = 125.0;
+
+/// Lagen eines Fußpunkts der Höhe `h` (mm), mindestens eine.
+pub fn foot_courses(h: f64) -> u32 {
+    ((h / FOOT_COURSE) - 1e-9).ceil().max(1.0) as u32
 }
 
 /// Mengen eines Wandsegments.
@@ -73,6 +108,9 @@ pub struct WallQto {
     /// Wand über einem Vorsprung an UK Untersichtdämmung abgefangen wird
     /// (G7 K4, BIM); 0 ohne Vorsprung oder ohne Verblender.
     pub facing_support: f64,
+    /// Fußpunkt aus Schaumglas, wenn die Verblendschale dieses Segments auf
+    /// einer Dachterrasse steht (W2).
+    pub facing_foot: Option<FacingFootQto>,
 }
 
 /// Kleinste Dicke einer Vorsatzschale, die über einem Vorsprung abgefangen
@@ -81,7 +119,7 @@ pub const MIN_FACING: f64 = 70.0;
 
 /// Verblender: Vorsatzschale aus Mauerwerk oder Beton (vor dem Kern), ab
 /// MIN_FACING dick; Putz, Dämmung und Luft werden nie abgefangen (BIM).
-fn is_facing(model: &Model, l: &MaterialLayer) -> bool {
+pub(crate) fn is_facing(model: &Model, l: &MaterialLayer) -> bool {
     l.function != LayerFunction::AirGap
         && l.function != LayerFunction::Insulation
         && l.thickness >= MIN_FACING
@@ -272,10 +310,12 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
             }
         })
         .filter(|x| x.parts.len() == chain.segment_count());
+    let foamglass = model.foamglass_material();
     let n = pts.len();
     (0..chain.segment_count())
         .map(|k| {
             let j = (k + 1) % n;
+            let foot = chain.joints.facing_foot.as_ref().filter(|f| f.at(k));
             let layers: Vec<LayerQto> = set
                 .layers
                 .iter()
@@ -309,10 +349,13 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                     // Attika über dem Terrassenrand (D2, BIM E2): Mehrmenge der
                     // Schicht, die sie verlängert
                     let (v_att, s_att) = attika_of(&chain, k, li);
-                    let volume = area * h_here + v_up + v_att;
-                    let density = model.material(l.material).map_or(0.0, |m| m.density);
                     let (la, lb) = ((fa[j] - fa[k]).length(), (fb[j] - fb[k]).length());
                     let (lo, li_len) = if outer_first { (la, lb) } else { (lb, la) };
+                    // Fußpunkt aus Schaumglas (W2): nicht Verblender
+                    let h_foot = foot.map_or(0.0, |f| if f.layer == li { f.height() } else { 0.0 });
+                    let v_foot = area * h_foot;
+                    let volume = area * h_here + v_up + v_att - v_foot;
+                    let density = model.material(l.material).map_or(0.0, |m| m.density);
                     LayerQto {
                         material: l.material,
                         thickness: l.thickness,
@@ -321,12 +364,32 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                         volume,
                         mass: volume * 1e-9 * density,
                         pocket: (area * (h - h_own - h_ext)).max(0.0),
-                        side_area: lo * (h - h_ext + h_here - h_own) + s_up + s_att,
+                        side_area: lo * (h - h_ext + h_here - h_own - h_foot) + s_up + s_att,
                         attika: v_att,
                         inner_area: if air { 0.0 } else { li_len * h_here },
+                        foot: v_foot,
                     }
                 })
                 .collect();
+            let facing_foot = foot.zip(foamglass).and_then(|(f, material)| {
+                let l = layers.get(f.layer).filter(|l| l.foot > 0.0)?;
+                let (fa, fb) = &faces[f.layer];
+                let outer = if outer_first {
+                    (fa[j] - fa[k]).length()
+                } else {
+                    (fb[j] - fb[k]).length()
+                };
+                Some(FacingFootQto {
+                    layer: f.layer,
+                    material,
+                    length: outer,
+                    height: f.height(),
+                    width: l.thickness,
+                    courses: foot_courses(f.height()),
+                    area: outer * f.height(),
+                    volume: l.foot,
+                })
+            });
             let footprint: f64 = gross_faces
                 .iter()
                 .zip(&set.layers)
@@ -351,11 +414,12 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                 footprint,
                 side_outer,
                 side_inner: (c_in[j] - c_in[k]).length() * h,
-                volume: layers.iter().map(|l| l.volume).sum(),
+                volume: layers.iter().map(|l| l.volume + l.foot).sum(),
                 volume_gross: footprint * h,
                 pocket: layers.iter().map(|l| l.pocket).sum(),
                 list_length,
                 facing_support: from_below.as_ref().map_or(0.0, |x| x.support[k]),
+                facing_foot,
                 layers,
             }
         })
@@ -2199,6 +2263,10 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
                     if !air {
                         add(l.material, l.volume, l.side_area, None);
                     }
+                }
+                // Fußpunkt aus Schaumglas (W2): eigener Baustoff
+                if let Some(f) = &w.facing_foot {
+                    add(f.material, f.volume, f.area, None);
                 }
             }
             (ElementQto::Soffit(f), Some(m)) => add(m, f.volume, f.area, None),

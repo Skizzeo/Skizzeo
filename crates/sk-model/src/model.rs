@@ -26,7 +26,8 @@ use crate::solid::material;
 use crate::trade::{self, Trade, TradeId};
 use crate::txn::{Change, Direction, Key, Open, Touched, Txn};
 use crate::wall::{
-    clean_points, cross2, segment_count, Attika, EndCut, Layer, Overhang, RefSide, WallChain,
+    clean_points, cross2, segment_count, Attika, EndCut, FacingFoot, Layer, Overhang, RefSide,
+    WallChain,
 };
 use sk_math::{vec3, Vec3};
 use std::collections::BTreeMap;
@@ -1311,7 +1312,8 @@ impl Model {
 
     /// Darf der Baustoff gelöscht werden (§1.4, Regeln 15 und 55)? Nicht,
     /// wenn etwas auf ihn verweist; Luft und die eingebauten Baustoffe von
-    /// Dachterrasse, Flachdach und Attikablech nie. Kennwerte halten nichts fest.
+    /// Dachterrasse, Flachdach, Attikablech und Fußpunkt nie. Kennwerte
+    /// halten nichts fest.
     pub fn can_remove_material(&self, id: MaterialId) -> bool {
         self.materials.get(id).is_some_and(|m| {
             m.category != MatCategory::Air
@@ -1322,6 +1324,7 @@ impl Model {
                     flachdach::ROOF_SEAL_GUID,
                     flachdach::ROOF_INSULATION_GUID,
                     flachdach::ROOF_VAPOUR_GUID,
+                    FOAMGLASS_MAT_GUID,
                 ]
                 .contains(&m.guid)
         }) && !self.material_used(id)
@@ -3136,6 +3139,7 @@ impl Model {
                     pieces: f.terraces.attika.clone(),
                 });
         }
+        c.joints.facing_foot = self.facing_foot(id, &c);
         c.joints.slab_band = match &floor {
             Some(Ok(f)) => Some(f.band()),
             _ if self.category_of(id) == Some(Category::InteriorWall) => self
@@ -3145,6 +3149,80 @@ impl Model {
             _ => None,
         };
         Some((c, floor))
+    }
+
+    /// Fußpunkt der Verblendschale des Zuges auf der Dachterrasse darunter
+    /// (W2); `None` ohne Verblender, ohne Terrasse oder solange es den
+    /// Baustoff Schaumglas noch nicht gibt ([`Model::sync_terraces`] legt
+    /// ihn an).
+    fn facing_foot(&self, run: RunId, c: &WallChain) -> Option<FacingFoot> {
+        let mat = self.foamglass_material()?;
+        let (band, segs, layer) = self.foot_plan(run, c)?;
+        Some(FacingFoot {
+            band,
+            segs,
+            layer,
+            mat: material_key(mat),
+        })
+    }
+
+    /// Wo der Zug `run` (Körper `c`) einen Fußpunkt aus Schaumglas braucht
+    /// (W2, Tagesplan P1/P2): Steht seine äußere Verblendschale
+    /// ([`crate::qto::is_facing`]) auf der Dachterrasse der Decke darunter,
+    /// dann auf deren Segmenten vom Wandfuß bis OK Terrassenaufbau.
+    /// Monolithisch und mit WDVS nie (kein Verblender).
+    fn foot_plan(&self, run: RunId, c: &WallChain) -> Option<((f64, f64), Vec<bool>, usize)> {
+        if self.category_of(run) != Some(Category::ExteriorWall) {
+            return None;
+        }
+        let layer = self.facing_layer(run)?;
+        let below = self.run_below(run)?;
+        if self.runs_above(below).first() != Some(&run) {
+            return None;
+        }
+        let Some(Ok(f)) = self.floor(below) else {
+            return None;
+        };
+        let (_, top) = f.terrace_band()?;
+        let top = top.min(c.top());
+        if top <= c.base + 1e-6 {
+            return None;
+        }
+        let mut segs = vec![false; c.segment_count()];
+        for k in f.terraces.outlines.iter().flat_map(|t| &t.segments) {
+            if let Some(x) = segs.get_mut(*k) {
+                *x = true;
+            }
+        }
+        segs.iter()
+            .any(|x| *x)
+            .then_some(((c.base, top), segs, layer))
+    }
+
+    /// Äußere Verblendschale im Typ des Zuges: die erste Schicht vor dem
+    /// Kern, die [`crate::qto::is_facing`] erfüllt.
+    fn facing_layer(&self, run: RunId) -> Option<usize> {
+        let t = self
+            .run(run)?
+            .segments
+            .first()
+            .and_then(|w| self.element(*w))
+            .and_then(|e| e.layer_set)
+            .and_then(|t| self.layer_set(t))?;
+        let core = t.layers.iter().position(|l| l.core)?;
+        t.layers[..core]
+            .iter()
+            .position(|l| crate::qto::is_facing(self, l))
+    }
+
+    /// Braucht irgendein Zug einen Fußpunkt aus Schaumglas (W2)?
+    fn foot_wanted(&self) -> bool {
+        self.runs.ids().any(|r| {
+            self.facing_layer(r).is_some()
+                && self
+                    .base_chain(r)
+                    .is_some_and(|c| self.foot_plan(r, &c).is_some())
+        })
     }
 
     /// Kategorie der Wände eines Zuges (die des ersten Segments).
@@ -4716,6 +4794,29 @@ impl Model {
         cut_color: [u8; 3],
         trade: Option<TradeId>,
     ) -> Option<MaterialId> {
+        self.builtin_material_with(
+            guid, name, category, priority, density, lambda, color, cut_color, trade, None, None,
+        )
+    }
+
+    /// Wie [`Model::builtin_material`]; mit `fill` schneidet der Baustoff
+    /// mit dieser Schraffur statt der seiner Art, mit `surface` trägt seine
+    /// Oberfläche diese feste Guid.
+    #[allow(clippy::too_many_arguments)]
+    fn builtin_material_with(
+        &mut self,
+        guid: Guid,
+        name: &str,
+        category: MatCategory,
+        priority: u16,
+        density: f64,
+        lambda: Option<f64>,
+        color: [u8; 3],
+        cut_color: [u8; 3],
+        trade: Option<TradeId>,
+        fill: Option<FillId>,
+        surface: Option<Guid>,
+    ) -> Option<MaterialId> {
         if let Some(id) = self.material_by_guid(guid) {
             return Some(id);
         }
@@ -4731,10 +4832,11 @@ impl Model {
             .iter()
             .find(|(_, f)| f.kind == crate::attr::FillKind::Empty)
             .map(|(id, _)| id);
-        let cut_fill = match (&like, category) {
-            (Some(m), MatCategory::Insulation) => m.cut_fill,
-            (Some(m), _) => empty.unwrap_or(m.cut_fill),
-            (None, _) => empty.or_else(|| self.attr.fills().ids().next())?,
+        let cut_fill = match (fill, &like, category) {
+            (Some(f), _, _) => f,
+            (None, Some(m), MatCategory::Insulation) => m.cut_fill,
+            (None, Some(m), _) => empty.unwrap_or(m.cut_fill),
+            (None, None, _) => empty.or_else(|| self.attr.fills().ids().next())?,
         };
         let (cut_fg, cut_bg) = match &like {
             Some(m) => (m.cut_fg, m.cut_bg),
@@ -4743,7 +4845,7 @@ impl Model {
                 (p, p)
             }
         };
-        let sg = self.new_guid();
+        let sg = surface.unwrap_or_else(|| self.new_guid());
         let surface = self.add_surface(Surface {
             guid: sg,
             name: name.into(),
@@ -4813,6 +4915,55 @@ impl Model {
         })
     }
 
+    /// Werksschraffur „Dämmung hart (Kreuz)“ (Jörn 10.10. 05:53): Kreuz
+    /// 45°/135° im Abstand der Mauerwerkschraffur; fehlt sie, wird sie
+    /// angelegt (rückgängig machbar).
+    fn ensure_cross_fill(&mut self) -> FillId {
+        if let Some((id, _)) = self
+            .attr
+            .fills()
+            .iter()
+            .find(|(_, f)| f.guid == CROSS_FILL_GUID)
+        {
+            return id;
+        }
+        self.add_fill(Fill {
+            guid: CROSS_FILL_GUID,
+            name: crate::attr::CROSS_FILL_NAME.into(),
+            kind: crate::attr::FillKind::Lines(crate::attr::cross_lines()),
+            space: crate::attr::FillSpace::Paper,
+        })
+    }
+
+    /// Schaumglas-Dämmstein für den Fußpunkt der Verblendschale (W1, z. B.
+    /// FOAMGLAS PERINSUL HL, λ 0,058, Z-17.5-1209): Kreuzschraffur, grau,
+    /// Maurer. Fehlt er, wird er samt Schraffur angelegt.
+    pub(crate) fn ensure_foamglass_material(&mut self) -> Option<MaterialId> {
+        if let Some(id) = self.material_by_guid(FOAMGLASS_MAT_GUID) {
+            return Some(id);
+        }
+        let cross = self.ensure_cross_fill();
+        self.builtin_material_with(
+            FOAMGLASS_MAT_GUID,
+            "Schaumglas-Dämmstein",
+            MatCategory::Insulation,
+            300,
+            165.0,
+            Some(0.058),
+            [128, 132, 134],
+            [176, 180, 182],
+            trade::start_id("18330"),
+            Some(cross),
+            Some(FOAMGLASS_SURFACE_GUID),
+        )
+    }
+
+    /// Baustoff des Fußpunkts unter der Verblendschale, sobald es ihn im
+    /// Projekt gibt (W1).
+    pub fn foamglass_material(&self) -> Option<MaterialId> {
+        self.material_by_guid(FOAMGLASS_MAT_GUID)
+    }
+
     /// Titanzink 0,7 für das Attikablech; fehlt er, wird er angelegt.
     fn ensure_coping_material(&mut self) -> Option<MaterialId> {
         self.builtin_material(
@@ -4880,6 +5031,11 @@ impl Model {
     /// [`Model::sync_terraces`] nur an den Decken der Züge `scope`; Terrasse
     /// und Blech je Decke kommen aus einer Liste (T7).
     fn sync_terraces_in(&mut self, scope: Option<&[RunId]>) -> (usize, usize) {
+        // Fußpunkt der Verblendschale (W2): der Baustoff beim ersten Mal,
+        // auch wenn der Schritt nur den Typ der Wand darüber ändert
+        if self.foamglass_material().is_none() && self.foot_wanted() {
+            self.ensure_foamglass_material();
+        }
         let want = self.terrace_floors_in(scope);
         if !want.is_empty() {
             self.ensure_terrace_type();
@@ -5006,9 +5162,13 @@ impl Model {
     /// wurden (Regel 46).
     pub(crate) fn complete_terraces(&mut self) -> Vec<String> {
         let strict = std::mem::replace(&mut self.strict, false);
+        let foamglass = self.foamglass_material().is_some();
         let (added, removed) = self.sync_terraces();
         self.strict = strict;
         let mut out = Vec::new();
+        if !foamglass && self.foamglass_material().is_some() {
+            out.push("Fußpunkt aus Schaumglas unter dem Verblender ergänzt".to_string());
+        }
         if added > 0 {
             out.push("Dachterrasse bzw. Attikablech ergänzt".to_string());
         }
@@ -7278,7 +7438,7 @@ pub const COPING_MAT_GUID: Guid = Guid(0x97fe946502194178be60bb9eb54c46fb);
 /// Die eingebauten Baustoffe, die erst das erste Bauteil anlegt, mit Name
 /// und Art: Der Werksbestand verweist auf sie (`mat=`), auch wenn ein
 /// Projekt sie noch nicht führt.
-pub const BUILTIN_MATERIALS: [(Guid, &str, MatCategory); 4] = [
+pub const BUILTIN_MATERIALS: [(Guid, &str, MatCategory); 8] = [
     (
         PERIMETER_MAT_GUID,
         "XPS Perimeterdämmung",
@@ -7291,7 +7451,36 @@ pub const BUILTIN_MATERIALS: [(Guid, &str, MatCategory); 4] = [
         MatCategory::Insulation,
     ),
     (COPING_MAT_GUID, "Titanzink 0,7", MatCategory::Metal),
+    (
+        flachdach::ROOF_SEAL_GUID,
+        "Abdichtung Bitumen 2-lagig",
+        MatCategory::Membrane,
+    ),
+    (
+        flachdach::ROOF_INSULATION_GUID,
+        "Dämmung EPS 035 DAA dh",
+        MatCategory::Insulation,
+    ),
+    (
+        flachdach::ROOF_VAPOUR_GUID,
+        "Dampfsperre Bitumen-Alu",
+        MatCategory::Membrane,
+    ),
+    (
+        FOAMGLASS_MAT_GUID,
+        "Schaumglas-Dämmstein",
+        MatCategory::Insulation,
+    ),
 ];
+
+/// Fußpunkt der Verblendschale auf der Dachterrasse (W1, W2): Baustoff
+/// „Schaumglas-Dämmstein“ und Werksschraffur „Dämmung hart (Kreuz)“, feste
+/// Guids, angelegt beim ersten Fußpunkt (ältere Dateien bleiben bytegleich).
+pub const FOAMGLASS_MAT_GUID: Guid = Guid(0x58d0e30a2b7844caa14c045d3881490a);
+pub const CROSS_FILL_GUID: Guid = Guid(0x2929d285ea0e4a69aaf92400ac5b37fc);
+/// Oberfläche des Schaumglases, fest wie der Baustoff: beim Lesen angelegt,
+/// träfe eine Guid aus der Folge sonst eine schon in der Datei vergebene.
+const FOAMGLASS_SURFACE_GUID: Guid = Guid(0x7e5276007e7f4e499b3552895b3474dd);
 /// Aufbau des Werkstyps von oben nach unten (Jörn 08:31–08:33).
 const TERRACE_BUILD_UP: [(f64, LayerFunction); 2] = [
     (60.0, LayerFunction::Finish),

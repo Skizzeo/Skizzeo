@@ -40,6 +40,8 @@ pub mod txn;
 mod type_tests;
 pub mod view;
 pub mod wall;
+#[cfg(test)]
+mod wand_tests;
 
 pub use attr::{
     display_slots, AttrRef, AttrUser, Attributes, Dash, Display, EdgeStyle, Fill, FillId, FillKind,

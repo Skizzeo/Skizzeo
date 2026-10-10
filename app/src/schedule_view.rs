@@ -2413,6 +2413,24 @@ fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut V
                         cl.cells[2] = m_len(w.facing_support);
                         lines.push(cl);
                     }
+                    // Verblender auf der Dachterrasse: Fußpunkt aus
+                    // Schaumglas (W2), Lagen fürs LV
+                    if let Some(f) = &w.facing_foot {
+                        let e = r.element;
+                        let key = Key::Control(e.index(), 3, e.generation());
+                        let mut cl = Line::new(Kind::Control, 3, key);
+                        cl.storey = skey;
+                        cl.group = gkey;
+                        cl.elements = vec![e];
+                        cl.cells[0] = format!(
+                            "Fußpunkt Schaumglas · {} Lagen · Höhe {}",
+                            f.courses,
+                            de(f.height / 1e3, 3) + " m"
+                        );
+                        cl.cells[2] = m_len(f.length);
+                        cl.cells[4] = m_vol(f.volume);
+                        lines.push(cl);
+                    }
                 }
             }
             if g.total.pocket > 0.0 {
@@ -2894,6 +2912,20 @@ fn csv_storeys(m: &Model, sched: &Schedule) -> Vec<u8> {
                             "",
                             "",
                             "",
+                        ]);
+                    }
+                    if let Some(f) = &w.facing_foot {
+                        row([
+                            &gb,
+                            &sname,
+                            &kg,
+                            "Fußpunkt Schaumglas",
+                            &r.number,
+                            &len(f.length),
+                            "",
+                            "",
+                            &vol(f.volume),
+                            &format!("{} Lagen, Höhe {} mm", f.courses, f.height.round()),
                         ]);
                     }
                 }

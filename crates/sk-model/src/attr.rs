@@ -91,6 +91,19 @@ pub fn concrete_lines() -> Vec<HatchLine> {
     ]
 }
 
+/// Harte Dämmbauteile (W1, Jörn 10.10. 05:53): Kreuzschraffur 45° und
+/// 135° im Abstand der Mauerwerkschraffur (1,27 mm), z. B. Schaumglas am
+/// Fußpunkt der Verblendschale.
+pub fn cross_lines() -> Vec<HatchLine> {
+    vec![
+        HatchLine::solid(45.0, 1.27, 0.0),
+        HatchLine::solid(135.0, 1.27, 0.0),
+    ]
+}
+
+/// Name der Werksschraffur aus [`cross_lines`].
+pub const CROSS_FILL_NAME: &str = "Dämmung hart (Kreuz)";
+
 /// Mauerwerk: Diagonale 135° alle 1,27 mm.
 pub fn masonry_lines() -> Vec<HatchLine> {
     vec![HatchLine::solid(135.0, 1.27, 0.0)]

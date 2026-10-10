@@ -99,7 +99,7 @@ pub const BAENDER: [(&str, u32, u32); 12] = [
 ];
 
 /// Werks-Artikel (§10, aus werk.szk).
-pub const ARTIKEL: [WerkArtikel; 28] = [
+pub const ARTIKEL: [WerkArtikel; 29] = [
     a(
         "1S7bUW0010080100000001",
         "m2",
@@ -228,6 +228,11 @@ pub const ARTIKEL: [WerkArtikel; 28] = [
         "m",
         "Mauerabdeckung Titanzink 0,7mm Zuschnitt 400, Halter",
     ),
+    a(
+        "1S7bUW001008010000000T",
+        "m3",
+        "EPS-Dachdämmplatte 035 DAA dh, Flachdach",
+    ),
 ];
 
 /// Werks-Baustoffe nach Vertrag 0.5 §9.
@@ -297,7 +302,7 @@ pub const BELEGT: [&str; 16] = [
 ];
 
 /// Bauteilarten in Skizzeo (§10).
-pub const ARTEN: [&str; 10] = [
+pub const ARTEN: [&str; 12] = [
     "exterior",
     "interior",
     "floor",
@@ -308,10 +313,12 @@ pub const ARTEN: [&str; 10] = [
     "perimeterinsulation",
     "roofterrace",
     "coping",
+    "parapet",
+    "roof",
 ];
 
 /// Werks-Leistungen (§10, aus werk.szk).
-pub const LEISTUNGEN: [WerkLeistung; 57] = [
+pub const LEISTUNGEN: [WerkLeistung; 67] = [
     l(
         "1S7bUW0010080200000001",
         "m3",
@@ -653,6 +660,66 @@ pub const LEISTUNGEN: [WerkLeistung; 57] = [
         "m",
         "auto",
         "Lüftungsprofil Alu gelocht mit Insektenschutz, Untersichtrand",
+    ),
+    l(
+        "1S7bUW001008020000000w",
+        "m",
+        "auto",
+        "Fußpunkt Verblendschale Schaumglas-Dämmstein 115mm, 1. Lage",
+    ),
+    l(
+        "1S7bUW001008020000000x",
+        "m",
+        "auto",
+        "Zulage Fußpunkt Schaumglas-Dämmstein je weitere Lage",
+    ),
+    l(
+        "1S7bUW001008020000000y",
+        "m",
+        "auto",
+        "Mauersperrbahn unter Fußpunkt, B bis 25cm",
+    ),
+    l(
+        "1S7bUW001008020000000z",
+        "m",
+        "auto",
+        "Z-Folie über Fußpunkt, aus dem Schalenzwischenraum geführt",
+    ),
+    l(
+        "1S7bUW001008020000000_",
+        "m2",
+        "area",
+        "Dampfsperre Bitumen-Alu-Schweißbahn Flachdach, inkl. Voranstrich",
+    ),
+    l(
+        "1S7bUW001008020000000$",
+        "m2",
+        "area",
+        "Dachdämmung EPS 035 DAA dh einlagig, Dicke nach Aufbau",
+    ),
+    l(
+        "1S7bUW0010080200000010",
+        "m2",
+        "area",
+        "Abdichtung Polymerbitumen 2-lagig Flachdach, Oberlage beschiefert",
+    ),
+    l(
+        "1S7bUW0010080200000011",
+        "m",
+        "auto",
+        "Attikadämmung innen und Krone, EPS d=6-10cm, unter Abdichtung",
+    ),
+    l(
+        "1S7bUW0010080200000012",
+        "st",
+        "auto",
+        "Dachablauf DN 100 wärmegedämmt mit Aufstockelement, Einbau",
+    ),
+    l(
+        "1S7bUW0010080200000013",
+        "st",
+        "auto",
+        "Notüberlauf Attika rechteckig, inkl. Durchbruch und Einbindung",
     ),
 ];
 

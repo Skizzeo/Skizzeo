@@ -1798,7 +1798,10 @@ mod tests {
         assert_eq!(aufbau(&m, &k2, l2).lohn, crate::Cent(2700));
         assert_eq!(katalog(&leer), k, "nichts geschrieben");
         let pa = passt_auf(l, Some("Porenbeton"));
-        assert_eq!(pa, "Porenbeton 230–250 mm · Außenwand · tragend");
+        assert_eq!(
+            pa,
+            "Porenbeton 230–250 mm · Außenwand, Aufkantung · tragend"
+        );
         let ohne = k
             .leistungen
             .iter()
