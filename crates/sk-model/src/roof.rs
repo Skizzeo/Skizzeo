@@ -208,7 +208,86 @@ impl FlatRoof {
 
     /// Aufbau waagerecht geschnitten in Höhe `cut` (Grundriss).
     pub fn cut_at(&self, cut: f64) -> Solid {
-        self.below(cut)
+        let mut s = self.below(cut);
+        if let Some(g) = &self.slope {
+            self.plan_symbols(&mut s, g, cut);
+        }
+        s
+    }
+
+    /// Zeichen des Gefälleplans im Grundriss (G4), feine Linien auf der
+    /// Dachhaut: je Teilfläche ein Pfeil in Fließrichtung, je Ablauf ein
+    /// Kreis mit dem Rohr durch die Aufkantung und daneben der
+    /// Notüberlauf als Rechteck in der Aufkantung.
+    fn plan_symbols(&self, s: &mut Solid, g: &SlopeField, cut: f64) {
+        let top = self.band().1;
+        let at = |p: Vec3| at_z(p, (top + self.wedge_at(p)).min(cut) + 1.0);
+        s.edge_kind = edge_kind::FINE;
+        for f in &g.faces {
+            let a = polygon::area(&f.pts);
+            let len = (a.sqrt() * 0.6).min(ARROW);
+            if len < ARROW / 3.0 {
+                continue;
+            }
+            let Some(c) = polygon::centroid(&f.pts) else {
+                continue;
+            };
+            let d = vec3(-f.rise.x, -f.rise.y, 0.0);
+            let (p, q) = (c - d * (len / 2.0), c + d * (len / 2.0));
+            let side = right_of(d) * (ARROW_HEAD * 0.4);
+            let back = q - d * ARROW_HEAD;
+            s.edge(at(p), at(q));
+            s.edge(at(q), at(back + side));
+            s.edge(at(q), at(back - side));
+        }
+        let n = self.outline.len();
+        for &dr in &g.drains {
+            // Kante der Aufkantung, an der der Ablauf liegt
+            let Some((a, b)) = (0..n)
+                .map(|i| (self.outline[i], self.outline[(i + 1) % n]))
+                .min_by(|x, y| {
+                    let dist = |(a, b): (Vec3, Vec3)| {
+                        sk_math::dist_to_segment((dr.x, dr.y), (a.x, a.y), (b.x, b.y))
+                    };
+                    dist(*x).total_cmp(&dist(*y))
+                })
+            else {
+                continue;
+            };
+            let d = (b - a).normalized();
+            let out = right_of(d);
+            let z = (top + self.wedge_at(dr)).min(cut) + 1.0;
+            let ring = |c: Vec3, r: f64| -> Vec<Vec3> {
+                (0..=16)
+                    .map(|k| {
+                        let t = k as f64 / 16.0 * std::f64::consts::TAU;
+                        at_z(c + vec3(t.cos(), t.sin(), 0.0) * r, z)
+                    })
+                    .collect()
+            };
+            let c = dr - out * DRAIN_R;
+            let pts = ring(c, DRAIN_R);
+            for w in pts.windows(2) {
+                s.edge(w[0], w[1]);
+            }
+            // Rohr durch die Aufkantung
+            let r = DRAIN_R / 2.0;
+            for k in [-1.0, 1.0] {
+                let o = d * (r * k);
+                s.edge(at_z(dr + o, z), at_z(dr + o + out * self.width, z));
+            }
+            // Notüberlauf daneben, in Richtung der längeren Kantenhälfte
+            let ta = (dr - a).length();
+            let tb = (b - dr).length();
+            let dir = if tb >= ta { d } else { -d };
+            let o0 = dr + dir * OVERFLOW_GAP;
+            let o1 = o0 + dir * OVERFLOW_W;
+            let q = [o0, o1, o1 + out * self.width, o0 + out * self.width];
+            for i in 0..4 {
+                s.edge(at_z(q[i], z), at_z(q[(i + 1) % 4], z));
+            }
+        }
+        s.edge_kind = edge_kind::VIEW;
     }
 
     fn below(&self, cut: f64) -> Solid {
@@ -477,6 +556,15 @@ impl FlatRoof {
         s
     }
 }
+
+/// Pfeil im Grundriss: höchstens so lang, Spitze so lang (mm).
+const ARROW: f64 = 1000.0;
+const ARROW_HEAD: f64 = 200.0;
+/// Halbmesser des Ablaufzeichens (mm).
+const DRAIN_R: f64 = 120.0;
+/// Notüberlauf im Grundriss: Abstand vom Ablauf und Breite (mm).
+const OVERFLOW_GAP: f64 = 400.0;
+const OVERFLOW_W: f64 = 300.0;
 
 /// Teil des konvexen Polygons `pts`, in dem die lineare Funktion `f` nicht
 /// negativ ist (z = 0).
