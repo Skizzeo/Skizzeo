@@ -200,18 +200,41 @@ fn crates_haengen_nur_wie_im_bild() {
     );
 }
 
-/// Zeilen ohne Kommentare, ab dem ersten `#[cfg(test)]` abgeschnitten; Dateien
-/// der Tests (`tests/`, `tests.rs`, `*_tests.rs`) fallen ganz heraus.
+/// Zeilen ohne Kommentare und ohne die Einträge unter `#[cfg(test)]` (ein
+/// `mod x;`, ein Block bis zu seiner schließenden Klammer oder eine Zeile bis
+/// `;`); Dateien der Tests (`tests/`, `tests.rs`, `*_tests.rs`) fallen ganz
+/// heraus. Die Klammern werden einfach gezählt, das reicht für den eigenen
+/// Quelltext.
 fn code(rel: &str, text: &str) -> Vec<(usize, String)> {
     let datei = rel.rsplit('/').next().unwrap();
     if rel.contains("/tests/") || datei == "tests.rs" || datei.ends_with("_tests.rs") {
         return Vec::new();
     }
     let mut aus = Vec::new();
+    let mut tiefe = 0i64;
+    // Tiefe beim `#[cfg(test)]` und ob der Eintrag schon eine Klammer öffnete
+    let mut test: Option<(i64, bool)> = None;
     for (i, z) in text.lines().enumerate() {
         let t = z.trim_start();
-        if t.starts_with("#[cfg(test)]") {
-            break;
+        let auf = z.matches('{').count() as i64;
+        let zu = z.matches('}').count() as i64;
+        if test.is_none() && t.starts_with("#[cfg(test)]") {
+            test = Some((tiefe, false));
+            tiefe += auf - zu;
+            continue;
+        }
+        tiefe += auf - zu;
+        if let Some((d, offen)) = test {
+            if t.starts_with("#[") && auf == zu {
+                continue;
+            }
+            let offen = offen || auf > 0;
+            test = if (offen && tiefe <= d) || (!offen && t.ends_with(';')) {
+                None
+            } else {
+                Some((d, offen))
+            };
+            continue;
         }
         if t.starts_with("//") {
             continue;
