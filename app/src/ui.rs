@@ -148,6 +148,8 @@ pub enum Id {
     /// „bündig setzen“.
     PropsLink,
     PropsFlush,
+    /// „Abläufe vorschlagen“ im Abschnitt „Gefälle“ des Flachdachs (G2).
+    PropsDrains,
     /// „Mehr …“ unter dem Aufbau der Dachterrasse: klappt die Schichtliste
     /// auf und zu.
     PropsMore,
@@ -200,6 +202,8 @@ pub enum Field {
     Upstand,
     /// Dämmdicke im Typ des Flachdachs (D3).
     RoofInsulation,
+    /// Gefälle des Flachdachs in % (0 = waagerecht; Gefälledämmung G2).
+    RoofSlope,
     /// Paneel „Geschosse“ (in m): Kote der Gründungsunterkante, Kote der
     /// Oberkante eines Geschosses, Geschosshöhe (bei der Gründung die
     /// Gründungstiefe) und lichte Höhe.
@@ -301,8 +305,15 @@ impl Field {
             || matches!(self, Field::Draft(Draft::ClearEg | Draft::ClearOg))
     }
 
+    /// Zahl in Prozent, ohne Umrechnung (Gefälle).
+    fn in_percent(self) -> bool {
+        self == Field::RoofSlope
+    }
+
     fn unit(self) -> &'static str {
-        if self.in_metres() {
+        if self.in_percent() {
+            "%"
+        } else if self.in_metres() {
             "m"
         } else {
             "cm"
@@ -320,7 +331,9 @@ impl Field {
     /// Wert zum Bearbeiten (ohne Einheit, Minus als „-“). Der Versatz trägt
     /// sein Vorzeichen auch nach außen: „+0,30“.
     fn text(self, mm: f64) -> String {
-        if !self.in_metres() {
+        if self.in_percent() {
+            zahl_text(mm)
+        } else if !self.in_metres() {
             cm_text(mm)
         } else if mm.round() < 0.0 {
             format!("-{}", m_text(mm))
@@ -339,7 +352,9 @@ impl Field {
 
     /// Wert mit Einheit für Hinweise.
     fn show(self, mm: f64) -> String {
-        if !self.in_metres() {
+        if self.in_percent() {
+            format!("{} %", zahl_text(mm))
+        } else if !self.in_metres() {
             format!("{} cm", cm_text(mm))
         } else if self.is_kote() {
             format!("{} m", kote_text(mm))
@@ -412,8 +427,8 @@ impl FieldRow {
         })
     }
 
-    /// Prüft eine Eingabe in cm (Paneel „Geschosse“: in m); `Ok` mit dem Wert
-    /// in mm (auf 1 mm gerundet). Felder von Erweiterungen: in ihrer
+    /// Prüft eine Eingabe in cm (Paneel „Geschosse“: in m, Gefälle: in %);
+    /// `Ok` mit dem Wert in mm (auf 1 mm gerundet, Gefälle in %). Felder von Erweiterungen: in ihrer
     /// Einheit, auch außerhalb von min/max.
     pub fn parse(&self, text: &str) -> Result<f64, Meldung> {
         let t = text.trim().replace(',', ".");
@@ -427,8 +442,13 @@ impl FieldRow {
         if self.einheit.is_some() {
             return Ok(n);
         }
-        let per = if self.field.in_metres() { 1000.0 } else { 10.0 };
-        let mm = (n * per).round() + 0.0;
+        let mm = if self.field.in_percent() {
+            // Prozent auf eine Nachkommastelle
+            (n * 10.0).round() / 10.0 + 0.0
+        } else {
+            let per = if self.field.in_metres() { 1000.0 } else { 10.0 };
+            (n * per).round() + 0.0
+        };
         if self.zero && mm == 0.0 {
             return Ok(0.0);
         }
@@ -787,6 +807,8 @@ pub struct Section {
     pub title: &'static str,
     pub fields: Vec<FieldRow>,
     pub hint: &'static str,
+    /// Knopf unter den Feldern, z. B. „Abläufe vorschlagen“.
+    pub button: Option<(Id, &'static str)>,
 }
 
 /// Typ-Chip (K3): Kachel mit Schnittbild, Name, „Kürzel · Dicke“, Pfeil.
@@ -1164,6 +1186,7 @@ fn props_rows(p: &Props, edit: Option<&Edit>, more_open: bool) -> Vec<Row> {
     for sec in &p.sections {
         rows.extend([Row::Separator, Row::Label(sec.title)]);
         field_rows(&mut rows, &sec.fields);
+        rows.extend(sec.button.map(|(id, label)| Row::Button(id, label)));
         rows.push(Row::Text(sec.hint.into()));
     }
     if p.more {
@@ -1987,6 +2010,7 @@ impl Ui {
             | Id::PropsType
             | Id::PropsLink
             | Id::PropsFlush
+            | Id::PropsDrains
             | Id::PropsMore
             | Id::PropsMaterial(_)
             | Id::ExtListe(_) => false,
@@ -2011,7 +2035,7 @@ impl Ui {
             }
             // Gesperrt (Paket 4): Felder, Typ und Kette blass
             Id::Field(f) if Ui::field_panel(f) == Panel::Props => self.props_locked(),
-            Id::PropsType | Id::PropsLink => self.props_locked(),
+            Id::PropsType | Id::PropsLink | Id::PropsDrains => self.props_locked(),
             _ => false,
         }
     }

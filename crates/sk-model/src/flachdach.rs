@@ -4,6 +4,7 @@
 //! das Attikablech auf der Krone der Aufkantung.
 
 use super::*;
+use crate::gefaelle::{self, Drainage, SlopeField};
 use crate::roof::FlatRoof;
 
 /// Werkstyp „Flachdach 21,5“ (DA-21,5) und seine eingebauten Baustoffe:
@@ -23,6 +24,10 @@ const ROOF_BUILD_UP: [(f64, LayerFunction); 3] = [
 /// Mindestens so hoch steht die Aufkantung über der Dachhaut (mm,
 /// Flachdachrichtlinie: Anschlusshöhe am Dachrand 10 cm).
 pub const MIN_ROOF_EDGE: f64 = 100.0;
+
+/// Mindestwärmeschutz eines Daches über Aufenthaltsräumen (m²K/W, DIN
+/// 4108-2 Tabelle 3): gilt auch an der dünnsten Stelle der Gefälledämmung.
+pub const MIN_ROOF_R: f64 = 1.2;
 /// Guid der Ebene Flachdach: die des Gebäudes mit diesem Muster verknüpft.
 const ROOF_LEVEL_SALT: u128 = 0x4644_0000_0000_4000_8000_0000_0000_4644;
 
@@ -248,7 +253,7 @@ impl Model {
     pub fn flat_roof_of(&self, floor: ElementId) -> Option<ElementId> {
         self.elements
             .iter()
-            .find(|(_, e)| e.kind == ElementKind::Roof { floor })
+            .find(|(_, e)| matches!(e.kind, ElementKind::Roof { floor: f, .. } if f == floor))
             .map(|(id, _)| id)
     }
 
@@ -360,6 +365,88 @@ impl Model {
         true
     }
 
+    /// Gefälle und Abläufe des Dachaufbaus auf der Decke `floor`.
+    pub fn drainage_of(&self, floor: ElementId) -> Option<&Drainage> {
+        self.drainage_of_roof(self.flat_roof_of(floor)?)
+    }
+
+    /// Gefälle und Abläufe des Dachaufbaus `roof`.
+    pub fn drainage_of_roof(&self, roof: ElementId) -> Option<&Drainage> {
+        match &self.element(roof)?.kind {
+            ElementKind::Roof { drainage, .. } => Some(drainage),
+            _ => None,
+        }
+    }
+
+    /// Setzt Gefälle und Abläufe des Dachaufbaus `roof` (Gefälledämmung,
+    /// G2). Gefälle 0 bis 100 %, Abläufe auf z = 0.
+    pub fn set_roof_drainage(&mut self, roof: ElementId, d: Drainage) -> bool {
+        let ok = d.slope.is_finite()
+            && (0.0..=100.0).contains(&d.slope)
+            && d.drains.iter().all(|p| p.x.is_finite() && p.y.is_finite());
+        let Some(ElementKind::Roof { drainage, .. }) = self.element(roof).map(|e| &e.kind) else {
+            return false;
+        };
+        if !ok {
+            return false;
+        }
+        if *drainage == d {
+            return true;
+        }
+        let d = Drainage {
+            drains: d.drains.iter().map(|p| vec3(p.x, p.y, 0.0)).collect(),
+            ..d
+        };
+        note!(self, Element, self.elements, roof);
+        if let Some(ElementKind::Roof { drainage, .. }) =
+            self.elements.get_mut(roof).map(|e| &mut e.kind)
+        {
+            *drainage = d;
+        }
+        self.touch();
+        true
+    }
+
+    /// Gefälle des Dachaufbaus `roof` in Prozent (0 = waagerecht). Hat das
+    /// Dach noch keine Abläufe, schlägt Skizzeo sie vor.
+    pub fn set_roof_slope(&mut self, roof: ElementId, slope: f64) -> bool {
+        let Some(ElementKind::Roof { floor, drainage }) = self.element(roof).map(|e| &e.kind)
+        else {
+            return false;
+        };
+        let mut d = Drainage {
+            slope,
+            ..drainage.clone()
+        };
+        if d.on() && d.drains.is_empty() {
+            d.drains = self.proposed_drains(*floor);
+        }
+        self.set_roof_drainage(roof, d)
+    }
+
+    /// Ersetzt die Abläufe des Dachaufbaus `roof` durch den Vorschlag.
+    pub fn propose_roof_drains(&mut self, roof: ElementId) -> bool {
+        let Some(ElementKind::Roof { floor, drainage }) = self.element(roof).map(|e| &e.kind)
+        else {
+            return false;
+        };
+        let drains = self.proposed_drains(*floor);
+        if drains.is_empty() {
+            return false;
+        }
+        let d = Drainage {
+            drains,
+            ..drainage.clone()
+        };
+        self.set_roof_drainage(roof, d)
+    }
+
+    fn proposed_drains(&self, floor: ElementId) -> Vec<Vec3> {
+        self.flat_roof_over(floor).map_or_else(Vec::new, |r| {
+            gefaelle::propose_drains(&r.outline, &gefaelle::Limits::default())
+        })
+    }
+
     /// Geometrie von Dachaufbau und Attikablech über dem Zug der
     /// Aufkantung `ak`; `None`, wenn `ak` keine Aufkantung auf einer Decke
     /// ist.
@@ -383,7 +470,7 @@ impl Model {
         let chosen = self
             .flat_roof_of(floor)
             .and_then(|r| self.element(r)?.layer_set);
-        let layers = match self
+        let layers: Vec<(f64, u16, bool)> = match self
             .roof_type_or_default(chosen)
             .and_then(|t| self.layer_set(t))
         {
@@ -403,8 +490,17 @@ impl Model {
         let drop = self.parapet_inner_thickness(ak);
         let (inner, outer) = (chain.inner_offset(), chain.outer_offset());
         let inner = inner + (outer - inner).signum() * drop;
+        let outline = sk_math::polygon::to_ccw(&chain.face_corners(inner));
+        // Gefälle: der Keil liegt in der obersten Dämmschicht (Konzept F3)
+        let tapered = layers.iter().position(|l| l.2);
+        let slope = tapered
+            .and(self.drainage_of(floor))
+            .filter(|d| d.on())
+            .and_then(|d| SlopeField::compute(&outline, &d.drains, d.slope));
         Some(FlatRoof {
-            outline: sk_math::polygon::to_ccw(&chain.face_corners(inner)),
+            tapered: slope.as_ref().and(tapered),
+            slope,
+            outline,
             base: self.level_z(f.top)?,
             layers,
             ring: sk_math::polygon::to_ccw(&chain.face_corners(chain.outer_offset())),
@@ -459,7 +555,7 @@ impl Model {
             .elements
             .iter()
             .filter_map(|(id, e)| match e.kind {
-                ElementKind::Roof { floor } => Some((id, floor, true)),
+                ElementKind::Roof { floor, .. } => Some((id, floor, true)),
                 ElementKind::Coping { floor } if self.flat_roof_coping(id, floor) => {
                     Some((id, floor, false))
                 }
@@ -493,7 +589,11 @@ impl Model {
         }
         for &(floor, storey, seq) in &want {
             if !roofs.iter().any(|x| x.0 == floor) {
-                let id = self.new_element(Category::Roof, storey, seq, ElementKind::Roof { floor });
+                let kind = ElementKind::Roof {
+                    floor,
+                    drainage: Default::default(),
+                };
+                let id = self.new_element(Category::Roof, storey, seq, kind);
                 roofs.push((floor, id));
                 self.touch();
                 added += 1;
@@ -526,7 +626,7 @@ impl Model {
             return Vec::new();
         };
         match e.kind {
-            ElementKind::Roof { floor } => self
+            ElementKind::Roof { floor, .. } => self
                 .flat_roof_over(floor)
                 .map(|r| vec![("Anschlusshöhe".into(), PropValue::Number(r.upstand()))])
                 .unwrap_or_default(),
@@ -558,6 +658,111 @@ impl Model {
                 crate::library::cm_de(MIN_ROOF_EDGE)
             )
         })
+    }
+
+    /// Wärmeschutz des Flachdachs `roof` mit der Geometrie `r` (G6): R0 an
+    /// der dünnsten Stelle (m²K/W, Rsi 0,10 und Rse 0,04, Wärmestrom nach
+    /// oben, samt Rohdecke, wenn ihr Typ λ hat) und λ der Gefälleschicht.
+    /// `None`, wenn einer Schicht des Dachtyps λ fehlt.
+    pub fn flat_roof_resistance(&self, roof: ElementId, r: &FlatRoof) -> Option<(f64, f64)> {
+        let mut r0 = 0.10 + 0.04;
+        let mut taper = None;
+        let layers = self.flat_roof_layers(roof);
+        let mut k = 0;
+        for l in &layers {
+            if l.function == LayerFunction::AirGap {
+                r0 += 0.18;
+                continue;
+            }
+            let lambda = self.material(l.material)?.lambda.filter(|v| *v > 0.0)?;
+            if r.tapered == Some(k) {
+                taper = Some(lambda);
+            }
+            k += 1;
+            r0 += l.thickness / 1000.0 / lambda;
+        }
+        // Rohdecke darunter, soweit ihr Typ λ kennt
+        let floor = match self.element(roof).map(|e| &e.kind) {
+            Some(ElementKind::Roof { floor, .. }) => Some(*floor),
+            _ => None,
+        };
+        let slab = floor
+            .and_then(|f| self.element(f)?.layer_set)
+            .and_then(|t| self.layer_set(t));
+        if let Some(t) = slab {
+            let rs: Option<f64> = t
+                .layers
+                .iter()
+                .filter(|l| l.function != LayerFunction::AirGap)
+                .map(|l| {
+                    let lambda = self.material(l.material)?.lambda.filter(|v| *v > 0.0)?;
+                    Some(l.thickness / 1000.0 / lambda)
+                })
+                .sum();
+            r0 += rs.unwrap_or(0.0);
+        }
+        Some((r0, taper.unwrap_or(0.0)))
+    }
+
+    /// U-Wert des Flachdachs `roof` (W/(m²K)): ohne Gefälle 1/R, mit
+    /// Gefälle das Flächenmittel nach DIN EN ISO 6946 Anhang C.
+    pub fn flat_roof_u(&self, roof: ElementId, r: &FlatRoof) -> Option<f64> {
+        let (r0, lambda) = self.flat_roof_resistance(roof, r)?;
+        match &r.slope {
+            Some(g) if lambda > 0.0 => Some(g.u_value(r0, lambda)),
+            _ => Some(1.0 / r0),
+        }
+    }
+
+    /// Hinweise zum Gefälle des Flachdachs auf der Decke `floor` (G6):
+    /// Gefälle unter 2 %, Einzugsfläche je Ablauf über 150 m², Fließweg
+    /// über 8 m und Mindestwärmeschutz an der dünnsten Stelle.
+    pub fn flat_roof_slope_hints(&self, floor: ElementId) -> Vec<String> {
+        let mut out = Vec::new();
+        let (Some(roof), Some(r)) = (self.flat_roof_of(floor), self.flat_roof_over(floor)) else {
+            return out;
+        };
+        let Some(g) = &r.slope else {
+            return out;
+        };
+        let de = |v: f64, n: usize| format!("{v:.n$}").replace('.', ",");
+        let pct = g.slope * 100.0;
+        if pct < 2.0 - 1e-9 {
+            out.push(format!(
+                "Gefälle {} %, Flachdachrichtlinie mindestens 2 % (darunter Sonderkonstruktion)",
+                de(pct, 1)
+            ));
+        }
+        let limits = gefaelle::Limits::default();
+        for (i, a) in g.catchments().iter().enumerate() {
+            if *a > limits.max_area + 1e-6 {
+                out.push(format!(
+                    "Ablauf {} entwässert {} m², geplant höchstens {} m² je Ablauf",
+                    i + 1,
+                    de(a / 1e6, 1),
+                    de(limits.max_area / 1e6, 0)
+                ));
+            }
+        }
+        let weg = g.wedge_max() / g.slope;
+        if weg > limits.max_path + 1e-6 {
+            out.push(format!(
+                "Längster Fließweg {} m, geplant höchstens {} m: Keil {} cm dick",
+                de(weg / 1000.0, 1),
+                de(limits.max_path / 1000.0, 0),
+                de(g.wedge_max() / 10.0, 1)
+            ));
+        }
+        if let Some((r0, _)) = self.flat_roof_resistance(roof, &r) {
+            if r0 < MIN_ROOF_R - 1e-9 {
+                out.push(format!(
+                    "Wärmeschutz am Ablauf R = {} m²K/W, DIN 4108-2 mindestens {}",
+                    de(r0, 2),
+                    de(MIN_ROOF_R, 1)
+                ));
+            }
+        }
+        out
     }
 
     /// Regel 48 für Dachaufbau oder Blech `id` des Flachdachs auf der Decke
