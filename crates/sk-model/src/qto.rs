@@ -1539,6 +1539,8 @@ pub fn schedule(model: &Model) -> Schedule {
     let mut platten: Vec<(RunId, ElementId)> = Vec::new();
     // Flachdächer, für ihre Automatikmengen
     let mut roofs: Vec<(ElementId, FlatRoof)> = Vec::new();
+    // Flachdach je Decke einmal rechnen (Dachaufbau und Attikablech)
+    let mut flat: HashMap<ElementId, Option<FlatRoof>> = HashMap::new();
     let mut floors: HashMap<RunId, Result<FloorSlab, FloorError>> = HashMap::new();
     // (Geschoss der Gruppe, Rang, Aufbau, Erweiterung) → Zeilen mit
     // Baustoffanteilen; die Erweiterung als Stelle in `ext_defs`, sonst 0
@@ -1651,18 +1653,24 @@ pub fn schedule(model: &Model) -> Schedule {
                 }
             }
             // Flachdach (D3, D4): aus der Aufkantung über der Decke
-            ElementKind::Roof { floor, .. } => match model.flat_roof_over(floor) {
+            ElementKind::Roof { floor, .. } => match flat
+                .entry(floor)
+                .or_insert_with(|| model.flat_roof_over(floor))
+            {
                 Some(r) => {
-                    let q = flat_roof_qto_of(model, id, &r);
-                    roofs.push((id, r));
+                    let q = flat_roof_qto_of(model, id, r);
+                    roofs.push((id, r.clone()));
                     (Some(ElementQto::Terrace(q)), None)
                 }
                 None => (None, Some("Kein Körper: keine Aufkantung".into())),
             },
             ElementKind::Coping { floor } if model.flat_roof_coping(id, floor) => {
-                match model.flat_roof_over(floor) {
+                match flat
+                    .entry(floor)
+                    .or_insert_with(|| model.flat_roof_over(floor))
+                {
                     Some(r) => (
-                        Some(ElementQto::Coping(roof_coping_qto_of(model, floor, &r))),
+                        Some(ElementQto::Coping(roof_coping_qto_of(model, floor, r))),
                         None,
                     ),
                     None => (None, Some("Kein Körper: keine Aufkantung".into())),
