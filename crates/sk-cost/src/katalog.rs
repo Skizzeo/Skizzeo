@@ -1420,7 +1420,7 @@ mod tests {
         assert_eq!(k.folgen.len(), 9);
         assert_eq!(k.werte, Firmenwerte::werk());
         assert_eq!(k.kopf.as_ref().map(|c| c.stand), Some(12));
-        // Stand 10: 41 Automatikpositionen (Erde, Baustelle, Zulagen Attikaabdeckung,
+        // Stand 12: 41 Automatikpositionen (Erde, Baustelle, Zulagen Attikaabdeckung,
         // Anschluss an der Attika, Untersicht, Fußpunkt, Flachdach, Gefälledämmung)
         assert_eq!(k.leistungen.iter().filter(|l| l.auto.is_some()).count(), 41);
         // jeder Schlüssel des Modells hat eine Leistung im Werk (Review
