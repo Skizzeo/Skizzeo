@@ -285,20 +285,22 @@ pub const BAUSTOFFE: [WerkBaustoff; 10] = [
 ];
 
 /// Gewerke im Werksbestand (§10).
-pub const GEWERKE: [(u32, &str); 8] = [
+pub const GEWERKE: [(u32, &str); 10] = [
     (18300, "Erdarbeiten"),
     (18330, "Mauerarbeiten"),
     (18331, "Betonarbeiten"),
+    (18334, "Zimmer- und Holzbauarbeiten"),
     (18338, "Dachdeckungs- und Dachabdichtungsarbeiten"),
     (18339, "Klempnerarbeiten"),
     (18345, "Wärmedämm-Verbundsysteme"),
     (18350, "Putz- und Stuckarbeiten"),
+    (18351, "Vorgehängte hinterlüftete Fassaden"),
     (18451, "Gerüstarbeiten"),
 ];
 
 /// Kostengruppen, die der Werksbestand kennt.
-pub const KGS: [u32; 16] = [
-    311, 322, 325, 330, 331, 333, 340, 343, 350, 351, 354, 359, 360, 363, 391, 392,
+pub const KGS: [u32; 17] = [
+    311, 322, 325, 330, 331, 333, 335, 340, 343, 350, 351, 354, 359, 360, 363, 391, 392,
 ];
 
 /// In Skizzeo belegte Präfixe (§5).

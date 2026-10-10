@@ -48,13 +48,14 @@ impl Pruefung {
 const SICHERHEIT: [&str; 3] = ["belegt", "mittel", "grob"];
 const FUNKTION: [&str; 4] = ["loadbearing", "insulation", "finish", "membrane"];
 const BEZUG: [&str; 6] = ["area", "volume", "length", "perimeter", "formwork", "steel"];
-const KATEGORIE: [&str; 6] = [
+const KATEGORIE: [&str; 7] = [
     "masonry",
     "concrete",
     "insulation",
     "plaster",
     "timber",
     "metal",
+    "membrane",
 ];
 const EINH_P: [&str; 4] = ["mm", "grad", "stk", "-"];
 const EINH_M: [&str; 6] = ["stk", "m", "m2", "m3", "kg", "t"];
@@ -1583,6 +1584,34 @@ mod tests {
     }
 
     #[test]
+    fn werk_stand_9_ohne_hinweis() {
+        let p = mit("[baustoff] key=bahn name=\"Bitumenbahn\" kategorie=membrane");
+        assert!(p.befunde.is_empty(), "{:?}", p.befunde);
+        for (alt, neu) in [
+            ("kg=343 gewerk=18331", "kg=335 gewerk=18351"),
+            ("kg=343 gewerk=18331", "kg=363 gewerk=18334"),
+        ] {
+            let p = pruefen(
+                &STUETZE.replace(alt, neu),
+                &Bestand::werk(),
+                &Geschoss::PROBE,
+            );
+            assert!(p.befunde.is_empty(), "{neu}: {:?}", p.befunde);
+        }
+        for pre in ["AK", "PD"] {
+            let p = pruefen(
+                &STUETZE.replace("praefix=ST", &format!("praefix={pre}")),
+                &Bestand::werk(),
+                &Geschoss::PROBE,
+            );
+            assert_eq!(
+                texte(&p),
+                [format!("praefix „{pre}“ ist in Skizzeo belegt")]
+            );
+        }
+    }
+
+    #[test]
     fn kennwerte_und_herkunft() {
         let p = mit("[baustoff] key=holz name=\"Holz\" kategorie=timber euroklasse=D-s2,d0 stand=10/2026 sicherheit=belegt lambda=0.13");
         assert!(p.einlesbar(), "{:?}", p.befunde);
@@ -1590,7 +1619,7 @@ mod tests {
         assert_eq!(
             texte(&p),
             [
-                "kategorie: masonry, concrete, insulation, plaster, timber, metal",
+                "kategorie: masonry, concrete, insulation, plaster, timber, metal, membrane",
                 "farbe: 6 Hex-Ziffern",
                 "[baustoff] holz lambda: Zahl ≥ 0.001 (Dezimalpunkt)",
                 "[baustoff] holz euroklasse: A1, E, F nur ohne Zusatz; A2 bis D auch mit -s1 bis -s3 und ,d0 bis ,d2; Bodenbeläge mit fl, dann nur -s1 oder -s2",
