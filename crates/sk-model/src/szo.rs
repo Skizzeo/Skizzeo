@@ -2128,9 +2128,23 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                     top: level(r, "top", LevelRef::bottom(ground))?,
                     thickness: r.f64("t")?,
                     recess: r.f64("recess")?,
-                    // vor Gelände Thema 4 ohne: keine Dämmung
+                    // vor Gelände Thema 4 ohne: keine Dämmung; außerhalb
+                    // der Grenzen des Dialogs mit Hinweis verworfen
                     insulation: match r.opt("insulation") {
-                        Some(_) => r.f64("insulation")?,
+                        Some(_) => {
+                            let t = r.f64("insulation")?;
+                            let lo = crate::model::MIN_PERIMETER;
+                            let hi = crate::model::MAX_PERIMETER;
+                            if t == 0.0 || (lo..=hi).contains(&t) {
+                                t
+                            } else {
+                                hints.push(format!(
+                                    "Zeile {}: Perimeterdämmung {} mm außerhalb {} bis {} mm, verworfen",
+                                    r.line, t, lo, hi
+                                ));
+                                0.0
+                            }
+                        }
                         None => 0.0,
                     },
                 })

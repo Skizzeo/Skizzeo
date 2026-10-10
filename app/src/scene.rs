@@ -2713,14 +2713,32 @@ impl Scene {
     }
 
     /// OK Gelände des aktiven Gebäudes beim Ziehen (Kote `z`, Gelände
-    /// Thema 1), geklemmt; seine Gründung folgt, also seine Züge neu.
+    /// Thema 1), geklemmt. Seine Gründung folgt; neu sind nur seine Züge
+    /// mit Sohlplatte, denn die Kanten teilt der Netzbau ohnehin je Bild an
+    /// OK Gelände, und andere Gebäude bleiben (Entscheidung B). Die Mengen
+    /// rechnet das Loslassen nach (Review Gelände).
     pub fn drag_terrain(&mut self, z: f64) {
         let max = sk_model::MAX_TERRAIN_OFFSET;
         let Some(b) = self.active_building() else {
             return;
         };
         if z.is_finite() && self.model.set_terrain_offset_of(b, (-z).clamp(-max, max)) {
-            self.mark_all();
+            let runs: Vec<RunId> = self
+                .model
+                .elements()
+                .iter()
+                .filter_map(|(_, e)| match e.kind {
+                    sk_model::ElementKind::GroundSlab(s) => Some(s.run),
+                    _ => None,
+                })
+                .filter(|r| {
+                    let st = self.model.run(*r).map(|x| x.storey);
+                    st.and_then(|st| self.model.building_of(st)) == Some(b)
+                })
+                .collect();
+            for r in runs {
+                self.mark(r);
+            }
             self.rebuild_dirty(true);
         }
     }
@@ -4013,6 +4031,37 @@ mod tests {
 
     use super::*;
     use sk_model::{Pen, RefSide};
+
+    /// Gelände ziehen (Review): nur die Züge mit Sohlplatte neu, und doch
+    /// dasselbe Bild und dieselben Mengen wie nach einem vollen Neuaufbau.
+    #[test]
+    fn gelaende_ziehen_wie_neuaufbau() {
+        let mut m = Model::with_seed(3);
+        for (ox, n) in [(0.0, 1u8), (20000.0, 2)] {
+            let b = m.add_building(n);
+            let pts = [
+                vec3(ox, 0.0, 0.0),
+                vec3(ox, 8000.0, 0.0),
+                vec3(ox + 10000.0, 8000.0, 0.0),
+                vec3(ox + 10000.0, 0.0, 0.0),
+            ];
+            m.build_from_polygon(b, &pts).unwrap();
+        }
+        let mut s = Scene::with_model(m);
+        let bild = |s: &mut Scene| {
+            let m = s.mesh(ViewKind::Front, None, &[]);
+            (m.faces.clone(), m.edges.clone())
+        };
+        s.begin("Gelände ziehen");
+        for z in [-300.0, 250.0, -900.0] {
+            s.drag_terrain(z);
+        }
+        s.commit();
+        let mut neu = Scene::with_model(s.model().clone());
+        assert_eq!(s.model().terrain_z(), -900.0);
+        assert!(bild(&mut s) == bild(&mut neu), "Bild wie nach Neuaufbau");
+        assert_eq!(s.bounds(), neu.bounds());
+    }
 
     /// Gelände Thema 1: Kanten werden an OK Gelände geteilt, nicht bei
     /// ±0,00; endet eine Kante auf dem Gelände, bleibt sie ganz.
