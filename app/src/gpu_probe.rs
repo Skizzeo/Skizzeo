@@ -529,7 +529,7 @@ mod tests {
         let leer = sk_render::MeshData::default;
         let mm = theme.px_per_mm;
         let linie = |h: &Scene, v: ViewKind| {
-            crate::ground_line(v, h.bounds(), h.model().terrain_z(), 1.0, h.table())
+            crate::ground_line(v, h.bounds(), h.model().terrain_z(), 1.0, h.table(), &[])
         };
         for (versatz, modus, n) in [
             (400.0, Some(None), "plus40-ausgeblendet"),
@@ -550,9 +550,8 @@ mod tests {
             );
             ab(&px, &format!("ist-gelaende-vorne-{n}.png"));
         }
-        // Schnitt quer durch die Mitte: Platte, Dämmung, Schürze
-        h.edit_model("Gelände", |m| m.set_terrain_offset(400.0));
-        r.set_terrain(h.model().terrain_z() as f32);
+        // Schnitt quer durch die Mitte: Platte, Dämmung, Schürze; die
+        // Geländelinie endet an geschnittenen Bauteilen
         r.set_below_ground(None);
         let (lo, hi) = h.bounds().unwrap();
         let c = (lo + hi) * 0.5;
@@ -560,22 +559,41 @@ mod tests {
         h.set_theme(&theme);
         r.set_style(crate::style(&theme.env));
         r.set_looks(&h.table().looks_with(1.0, |_| 1.0));
-        r.set_mesh(
-            crate::MESH_MODEL,
-            &h.mesh(ViewKind::Section, Some(plane), &[]),
-        );
-        r.set_helpers(&linie(&h, ViewKind::Section));
-        // Ausschnitt: linke Ecke der Gründung
-        let b = Some((
-            vec3(lo.x - 600.0, c.y, -1500.0),
-            vec3(lo.x + 1800.0, c.y, 600.0),
-        ));
-        let cam = crate::fit_parallel(ViewKind::Section, b, W as f64, H as f64);
-        let mut view = cam.view(W, H);
-        view.paper = Some(h.table().paper);
-        view.patterns = crate::draw_table::pattern_mode(ViewKind::Section, theme.env.patterns_3d);
-        r.draw(W, H, 0, &view).unwrap();
-        ab(&r.read_pixels(W, H), "ist-gelaende-schnitt-ecke.png");
+        for (versatz, n) in [
+            (400.0, "ecke"),
+            (100.0, "ecke-plus10"),
+            (-300.0, "ecke-minus30"),
+        ] {
+            h.edit_model("Gelände", |m| m.set_terrain_offset(versatz));
+            let z = h.model().terrain_z();
+            r.set_terrain(z as f32);
+            let netz = h.mesh(ViewKind::Section, Some(plane), &[]);
+            r.set_mesh(crate::MESH_MODEL, &netz);
+            let luecken = crate::terrain_gaps(&netz.faces, z, 0);
+            r.set_helpers(&crate::ground_line(
+                ViewKind::Section,
+                h.bounds(),
+                z,
+                1.0,
+                h.table(),
+                &luecken,
+            ));
+            // Ausschnitt: linke Ecke der Gründung
+            let b = Some((
+                vec3(lo.x - 600.0, c.y, -1500.0),
+                vec3(lo.x + 1800.0, c.y, 600.0),
+            ));
+            let cam = crate::fit_parallel(ViewKind::Section, b, W as f64, H as f64);
+            let mut view = cam.view(W, H);
+            view.paper = Some(h.table().paper);
+            view.patterns =
+                crate::draw_table::pattern_mode(ViewKind::Section, theme.env.patterns_3d);
+            r.draw(W, H, 0, &view).unwrap();
+            ab(
+                &r.read_pixels(W, H),
+                &format!("ist-gelaende-schnitt-{n}.png"),
+            );
+        }
         r.set_helpers(&[]);
         r.set_below_ground(None);
         r.set_terrain(0.0);

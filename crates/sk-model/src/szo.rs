@@ -858,7 +858,7 @@ fn write_known(m: &Model) -> String {
             .finish(&mut out);
     }
     for s in sorted(m.storeys().iter(), |s| s.guid) {
-        Line::new("storey")
+        let l = Line::new("storey")
             .guid("guid", Some(s.guid))
             .guid(
                 "building",
@@ -874,8 +874,14 @@ fn write_known(m: &Model) -> String {
                 },
             )
             .num("elev", s.elevation)
-            .num("h", s.height)
-            .finish(&mut out);
+            .num("h", s.height);
+        // Gewollte Einbindetiefe (Gelände Thema 1) nur, wenn sie von der
+        // tatsächlichen abweicht; ältere Dateien bleiben bytegleich
+        let l = match s.embed {
+            Some(e) => l.num("embed", e),
+            None => l,
+        };
+        l.finish(&mut out);
     }
     // Höhenbezug als `Guid:u|o:Versatz`
     let level = |r: LevelRef| {
@@ -1640,6 +1646,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                 kind: LevelKind::Storey,
                 elevation: 0.0,
                 height: crate::model::STOREY_HEIGHT,
+                embed: None,
             }
         } else {
             Storey {
@@ -1658,6 +1665,10 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                 )?,
                 elevation: r.f64("elev")?,
                 height: r.f64("h")?,
+                embed: match r.opt("embed") {
+                    Some(_) => Some(r.f64("embed")?),
+                    None => None,
+                },
             }
         };
         let g = s.guid;
@@ -1837,6 +1848,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             kind: LevelKind::Foundation,
             elevation: -crate::model::FOUNDATION_DEPTH,
             height: crate::model::FOUNDATION_DEPTH,
+            embed: None,
         });
         storeys.insert(Storey {
             guid: guids.next_guid(),
@@ -1846,6 +1858,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             kind: LevelKind::Storey,
             elevation: crate::model::STOREY_HEIGHT,
             height: crate::model::STOREY_HEIGHT,
+            embed: None,
         });
         hints.push("Datei auf Geschossverwaltung umgestellt".to_string());
         (eg, gr)
