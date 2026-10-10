@@ -2324,7 +2324,10 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                             if t == 0.0 || (lo..=hi).contains(&t) {
                                 t
                             } else {
-                                hints.push(ausserhalb(r.line, "Perimeterdämmung", t, lo, hi));
+                                hints.push(format!(
+                                    "Zeile {}: Perimeterdämmung {} mm außerhalb {} bis {} mm, verworfen",
+                                    r.line, t, lo, hi
+                                ));
                                 0.0
                             }
                         }
