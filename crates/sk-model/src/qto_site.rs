@@ -213,6 +213,7 @@ pub fn site_mengen(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::BuildingId;
     use sk_math::vec3;
 
     fn rechteck(a: f64, b: f64) -> Vec<Vec3> {
@@ -301,28 +302,52 @@ mod tests {
         );
     }
 
-    /// Thema 1: Sitzt das Gebäude 0,40 m über Gelände, steht das Gerüst
-    /// 0,40 m tiefer auf; Zaun und Pauschalen bleiben.
+    /// Thema 1: Sitzt ein Gebäude 0,40 m über seinem Gelände, steht sein
+    /// Gerüst 0,40 m tiefer auf; Zaun und Pauschalen bleiben, das
+    /// Nachbargebäude rechnet mit seinem eigenen Gelände weiter.
     #[test]
-    fn geruest_ab_gelaende() {
+    fn geruest_ab_gelaende_je_gebaeude() {
         let mut m = Model::with_seed(12);
-        let b = m.add_building(2);
-        m.build_from_polygon(b, &rechteck(10_000.0, 8_000.0))
+        let a = m.add_building(2);
+        let ea = m
+            .build_from_polygon(a, &rechteck(10_000.0, 8_000.0))
             .unwrap();
-        let wert = |m: &Model, k: &str| {
+        let b = m.add_building(2);
+        let daneben: Vec<Vec3> = rechteck(10_000.0, 8_000.0)
+            .iter()
+            .map(|p| vec3(p.x + 30_000.0, p.y, p.z))
+            .collect();
+        m.build_from_polygon(b, &daneben).unwrap();
+        let wert = |m: &Model, g: BuildingId, k: &str| {
             crate::qto::schedule(m)
                 .auto
                 .iter()
-                .find(|a| a.key == k)
-                .unwrap()
-                .value
+                .filter(|x| x.building == Some(g) && x.key == k)
+                .map(|x| x.value)
+                .sum::<f64>()
         };
-        let (g0, z0) = (wert(&m, SCAFFOLD), wert(&m, FENCE));
-        assert!(m.set_terrain_offset(400.0));
-        let (g1, z1) = (wert(&m, SCAFFOLD), wert(&m, FENCE));
-        assert_eq!(z0, z1);
-        let c = m.chain(m.runs().ids().next().unwrap()).unwrap();
+        let vorher = [
+            wert(&m, a, SCAFFOLD),
+            wert(&m, a, FENCE),
+            wert(&m, b, SCAFFOLD),
+            wert(&m, b, FENCE),
+        ];
+        assert!(vorher.iter().all(|v| *v > 0.0), "{vorher:?}");
+        assert!(m.set_terrain_offset_of(a, 400.0));
+        assert_eq!(m.terrain_offset_of(Some(b)), 0.0);
+        let nachher = [
+            wert(&m, a, SCAFFOLD),
+            wert(&m, a, FENCE),
+            wert(&m, b, SCAFFOLD),
+            wert(&m, b, FENCE),
+        ];
+        assert_eq!(vorher[1], nachher[1]);
+        assert_eq!(vorher[2..], nachher[2..], "Nachbar unverändert");
+        let c = m.chain(ea).unwrap();
         let laenge = offset_perimeter(&c.face_corners(c.outer_offset()), GERUEST_ABSTAND);
-        assert!((g1 - g0 - laenge * 400.0).abs() < 1.0, "{g0} {g1}");
+        assert!(
+            (nachher[0] - vorher[0] - laenge * 400.0).abs() < 1.0,
+            "{vorher:?} {nachher:?}"
+        );
     }
 }
