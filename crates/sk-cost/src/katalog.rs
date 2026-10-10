@@ -18,6 +18,10 @@ pub enum Einheit {
     T,
     Kg,
     St,
+    /// Pauschal (Bauvorbereitung), Menge 1.
+    Psch,
+    /// Monat (Vorhaltung), ganze Monate.
+    Mon,
 }
 
 impl Einheit {
@@ -29,6 +33,8 @@ impl Einheit {
             "t" => Einheit::T,
             "kg" => Einheit::Kg,
             "st" => Einheit::St,
+            "psch" => Einheit::Psch,
+            "mon" => Einheit::Mon,
             _ => return None,
         })
     }
@@ -41,6 +47,8 @@ impl Einheit {
             Einheit::T => "t",
             Einheit::Kg => "kg",
             Einheit::St => "st",
+            Einheit::Psch => "psch",
+            Einheit::Mon => "mon",
         }
     }
 
@@ -53,6 +61,8 @@ impl Einheit {
             Einheit::T => "t",
             Einheit::Kg => "kg",
             Einheit::St => "St",
+            Einheit::Psch => "psch",
+            Einheit::Mon => "Mon",
         }
     }
 }
@@ -66,6 +76,8 @@ pub enum Bezug {
     Umfang,
     Schalung,
     Stahl,
+    /// Automatikmenge des Gebäudes (`auto=`, Erdarbeiten, Bauvorbereitung).
+    Auto,
 }
 
 impl Bezug {
@@ -77,6 +89,7 @@ impl Bezug {
             "perimeter" => Bezug::Umfang,
             "formwork" => Bezug::Schalung,
             "steel" => Bezug::Stahl,
+            "auto" => Bezug::Auto,
             _ => return None,
         })
     }
@@ -89,6 +102,7 @@ impl Bezug {
             Bezug::Umfang => "perimeter",
             Bezug::Schalung => "formwork",
             Bezug::Stahl => "steel",
+            Bezug::Auto => "auto",
         }
     }
 
@@ -99,6 +113,8 @@ impl Bezug {
             Bezug::Volumen => e == Einheit::M3,
             Bezug::Laenge | Bezug::Umfang => e == Einheit::M,
             Bezug::Stahl => matches!(e, Einheit::T | Einheit::Kg),
+            // die Automatikmenge bringt ihre Einheit mit
+            Bezug::Auto => true,
         }
     }
 }
@@ -147,6 +163,9 @@ pub struct Leistung {
     pub tmin: Option<Dez>,
     pub tmax: Option<Dez>,
     pub funktion: Option<String>,
+    /// Automatikmenge (`auto=`, nur mit Mengenbezug `auto`): Die Menge kommt
+    /// aus der Gründung des Gebäudes, nicht aus einer Schicht.
+    pub auto: Option<String>,
     pub retired: bool,
     pub satz: Satz,
 }
@@ -985,6 +1004,15 @@ pub fn lesen<'a>(
             bf.push(Befund::fehler(80, t, ort()));
             continue;
         }
+        let auto = s.text("auto").map(str::to_string);
+        if (bezug == Bezug::Auto) != auto.is_some() {
+            let (feld, wert) = match auto {
+                Some(_) => ("basis", crate::wort::bezug(bezug)),
+                None => ("auto", "fehlt"),
+            };
+            bf.push(Befund::fehler(79, befund::r79(&kurz, feld, wert), ort()));
+            continue;
+        }
         let (tmin, tmax) = (s.zahl("tmin"), s.zahl("tmax"));
         if let (Some(a), Some(b)) = (tmin, tmax) {
             if a > b {
@@ -1020,6 +1048,7 @@ pub fn lesen<'a>(
             tmin,
             tmax,
             funktion: s.text("fn").map(str::to_string),
+            auto,
             retired: s.flag("retired"),
             satz: r.satz,
         });

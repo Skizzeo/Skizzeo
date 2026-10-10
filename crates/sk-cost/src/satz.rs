@@ -136,8 +136,16 @@ impl Abschnitt {
     }
 }
 
-pub const EINHEITEN: &[&str] = &["m2", "m3", "m", "t", "kg", "st"];
-pub const BEZUEGE: &[&str] = &["area", "volume", "length", "perimeter", "formwork", "steel"];
+pub const EINHEITEN: &[&str] = &["m2", "m3", "m", "t", "kg", "st", "psch", "mon"];
+pub const BEZUEGE: &[&str] = &[
+    "area",
+    "volume",
+    "length",
+    "perimeter",
+    "formwork",
+    "steel",
+    "auto",
+];
 /// Bauteilarten einer Regel (`kinds.rs` `szo`), BIM §3.3.
 pub const KATEGORIEN: &[&str] = &[
     "exterior",
@@ -349,6 +357,12 @@ pub const SERVICE: Abschnitt = Abschnitt {
         f("tmin", MM, false, "Regel: Schichtdicke von (mm)"),
         f("tmax", MM, false, "Regel: Schichtdicke bis (mm)"),
         f("fn", Art::Wort(FUNKTIONEN), false, "Regel: Schichtfunktion"),
+        f(
+            "auto",
+            Art::Schluessel,
+            false,
+            "Automatikmenge des Gebäudes (earth.…, site.…), nur mit basis=auto",
+        ),
         f("retired", Art::Flag, false, "ausgemustert"),
     ],
 };

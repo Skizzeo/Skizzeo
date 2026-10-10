@@ -26,7 +26,7 @@ pub(crate) fn skala(e: Einheit) -> i128 {
         Einheit::M => 1_000,
         Einheit::T => 1_000_000,
         Einheit::Kg => 1_000,
-        Einheit::St => 1,
+        Einheit::St | Einheit::Psch | Einheit::Mon => 1,
     }
 }
 
@@ -70,6 +70,8 @@ pub struct Ansatz {
     /// Erweiterung, Menge in t oder kg: kg je m³ Bauteil aus der Formel
     /// der Definition („80 kg/m³ aus der Definition“, B16).
     pub grad: Option<u32>,
+    /// Automatikmenge: Rechenweg statt „aus Modell“ („99,00 m² × 0,30 m“).
+    pub formel: Option<String>,
 }
 
 /// Was eine Position rechnet.
@@ -860,6 +862,7 @@ pub fn kosten_mit(
             aus: None,
             auflager: 0,
             grad: None,
+            formel: None,
         };
         let gewerk_schicht = r.trade.and_then(|t| m.trade(t)).map(|t| t.guid);
         let mut legen = |key: PosKey,
@@ -897,6 +900,8 @@ pub fn kosten_mit(
                     // mm³ × kg/m³ → g: Volumen × Grad ÷ 10⁶ (Grad als Festkomma)
                     runden(ganz(r.volume) * grad.0 as i128, 1_000_000_000_000)
                 }
+                // nur aus den Automatikmengen des Gebäudes
+                Bezug::Auto => return None,
             })
         };
         match (
@@ -1036,6 +1041,8 @@ pub fn kosten_mit(
     // Erweiterungsbauteile (E8b), nach den Schichten (E8-9)
     let ext = ext_ansaetze(m, s, k, &mut sammel, &mut index, &mut lose_gemeldet);
     ohne.extend(ext.ohne);
+    // Automatikmengen (Erdarbeiten, Bauvorbereitung), nach den Bauteilen
+    befunde.extend(auto_ansaetze(m, s, k, &mut sammel, &mut index));
     // Befunde der benutzten Typen, je einmal
     let mut schluessel: Vec<&Schluessel> = typen.keys().collect();
     schluessel.sort_by_key(|s| (s.typ, s.kat as u8, s.schichten));
@@ -1220,7 +1227,13 @@ pub fn kosten_mit(
     // Teilungen (Regel 96): Teilmenge auf 3 Stellen × EP, Ausgleich am Ende
     let geschoss_folge: Vec<StoreyId> = {
         let mut v: Vec<StoreyId> = Vec::new();
-        for st in rows.iter().map(|(_, r)| r.storey).chain(ext.geschosse) {
+        let auto = s.auto.iter().map(|a| a.storey);
+        for st in rows
+            .iter()
+            .map(|(_, r)| r.storey)
+            .chain(ext.geschosse)
+            .chain(auto)
+        {
             if !v.contains(&st) {
                 v.push(st);
             }
@@ -1482,6 +1495,7 @@ fn ext_ansaetze(
                     // Masse je m³ aller Körper (B16)
                     grad: (masse(em) && q.volume > 0.0)
                         .then(|| (menge as f64 / (q.volume / 1e6)).round() as u32),
+                    formel: None,
                 },
                 t,
                 mat.map(|x| (x.guid, t)),
@@ -1492,6 +1506,87 @@ fn ext_ansaetze(
     out.befunde
         .extend(crate::erweiterung::fehlende_baustoffe(m, &elemente));
     out
+}
+
+/// Automatikmengen (Erdarbeiten, Bauvorbereitung): je Menge und Bauleistung
+/// mit demselben `auto=` ein Ansatz an der Sohlplatte des Gebäudes, KG der
+/// Bauleistung, sonst die der Menge. Keine Zuordnung und keine
+/// Folgepositionen. Eine ausgemusterte Bauleistung rechnet nicht: So
+/// schaltet ein Projekt eine Automatikposition ab (Op `Ausmustern`).
+fn auto_ansaetze(
+    m: &Model,
+    s: &Schedule,
+    k: &Katalog,
+    sammel: &mut Vec<Sammel>,
+    index: &mut HashMap<PosKey, usize>,
+) -> Vec<Befund> {
+    let mut befunde = Vec::new();
+    let mut stoffe: HashMap<Guid, (Cent, bool)> = HashMap::new();
+    let mut gemeldet: Vec<Guid> = Vec::new();
+    for a in &s.auto {
+        let leistungen = k
+            .leistungen
+            .iter()
+            .filter(|l| !l.retired && l.auto.as_deref() == Some(a.key));
+        for l in leistungen {
+            let ort = m
+                .element(a.element)
+                .map_or(Ort::Datei, |e| Ort::Bauteil(e.guid));
+            // Stück und Pauschale zählen gleich (Bauschild je Gebäude)
+            let zahl = |e: Einheit| matches!(e, Einheit::St | Einheit::Psch);
+            let passt = Einheit::aus(a.unit)
+                .is_some_and(|e| e == l.einheit || (zahl(e) && zahl(l.einheit)));
+            if !passt {
+                if !gemeldet.contains(&l.guid) {
+                    gemeldet.push(l.guid);
+                    let z = Einheit::aus(a.unit).map_or(a.unit, Einheit::zeichen);
+                    befunde.push(Befund::warnung(
+                        80,
+                        crate::befund::r80(&l.kurz, l.einheit.zeichen(), &format!("in {z}")),
+                        ort,
+                    ));
+                }
+                continue;
+            }
+            let menge = a.value.round() as i128;
+            if menge <= 0 {
+                continue;
+            }
+            let (stoff, pf) = *stoffe.entry(l.guid).or_insert_with(|| {
+                let mut bf = Vec::new();
+                let x = stoff_ep(k, l, None, false, &ort, &mut bf);
+                for b in bf {
+                    if !befunde.contains(&b) {
+                        befunde.push(b);
+                    }
+                }
+                x
+            });
+            legen_in(
+                sammel,
+                index,
+                (Quelle::Leistung(l.guid), stoff, None),
+                l.einheit,
+                Some(l.gewerk),
+                pf,
+                Ansatz {
+                    element: a.element,
+                    nummer: a.number.clone(),
+                    geschoss: a.storey,
+                    gebaeude: a.building,
+                    kg: l.kg.or(a.kg),
+                    menge,
+                    aus: None,
+                    auflager: 0,
+                    grad: None,
+                    formel: Some(a.formula.clone()),
+                },
+                Dez::NULL,
+                None,
+            );
+        }
+    }
+    befunde
 }
 
 /// „Ohne Bauleistung: Stahlbetonstütze ST-001 · Schalung Stütze (Einheit

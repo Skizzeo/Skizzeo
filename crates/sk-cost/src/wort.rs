@@ -27,7 +27,7 @@ const ABSCHNITTE: [(&str, &str); 17] = [
 
 /// Felder (§3.19 „Felder“); gleiches Wort in jedem Abschnitt außer den
 /// Ausnahmen in [`AUSNAHMEN`].
-const FELDER: [(&str, &str); 76] = [
+const FELDER: [(&str, &str); 77] = [
     ("guid", "Eintragsnummer"),
     ("key", "Eintragsnummer"),
     ("name", "Name"),
@@ -61,6 +61,7 @@ const FELDER: [(&str, &str); 76] = [
     ("tmin", "Dicke von"),
     ("tmax", "Dicke bis"),
     ("fn", "Schichtfunktion"),
+    ("auto", "Automatikmenge"),
     ("service", "Bauleistung"),
     ("nr", "Nummer"),
     ("art", "Artikel"),
@@ -198,6 +199,7 @@ pub fn bezug(b: crate::katalog::Bezug) -> &'static str {
         Bezug::Umfang => "Umfang",
         Bezug::Schalung => "Schalfläche",
         Bezug::Stahl => "Stahlgewicht",
+        Bezug::Auto => "Automatikmenge",
     }
 }
 

@@ -15,6 +15,7 @@ const VORSCHAU_GAP: f32 = 8.0;
 fn gaeb(e: sk_cost::katalog::Einheit) -> &'static str {
     match e {
         sk_cost::katalog::Einheit::St => "St",
+        sk_cost::katalog::Einheit::Mon => "Mon",
         e => e.wort(),
     }
 }

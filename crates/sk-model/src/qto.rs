@@ -1151,6 +1151,35 @@ pub struct Schedule {
     /// Reihenfolge der Zeilen; aus den schon gerechneten Mengen, damit
     /// „Kosten live“ nur liest.
     pub formwork: Vec<(ElementId, FormworkQto)>,
+    /// Automatikmengen je Gründung (Erdarbeiten, Bauvorbereitung): Mengen,
+    /// die an keiner Schicht hängen. Bauleistungen mit `auto=` rechnen
+    /// damit.
+    pub auto: Vec<AutoMenge>,
+}
+
+/// Eine Automatikmenge: eine Menge eines Gebäudes, die aus der Gründung
+/// folgt und an keiner Schicht hängt (Erdarbeiten, Baustelleneinrichtung).
+/// Sie steht am Bauteil der Sohlplatte, damit Gebäude, Geschoss und Umfang
+/// wie bei jeder Mengenzeile gelten.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AutoMenge {
+    /// Sohlplatte der Gründung.
+    pub element: ElementId,
+    /// Bauteilnummer der Sohlplatte.
+    pub number: String,
+    /// Geschoss der Zeile (Gründungsband, wie die Sohlplatte).
+    pub storey: StoreyId,
+    pub building: Option<BuildingId>,
+    /// Schlüssel, z. B. `earth.excavation` ([`crate::qto_earth::SCHLUESSEL`]).
+    pub key: &'static str,
+    /// Einheit wie `[service] unit`: `m3`, `m2`, `m`, `st`, `psch`, `mon`.
+    pub unit: &'static str,
+    /// Wert in der kleinsten Einheit: mm³, mm², mm bzw. Stück, Monate.
+    pub value: f64,
+    /// Kostengruppe, wenn die Bauleistung keine nennt.
+    pub kg: Option<u16>,
+    /// Rechenweg für den Mengenansatz, z. B. „99,00 m² × 0,30 m“.
+    pub formula: String,
 }
 
 /// Geschoss, unter dem ein Bauteil in Mengen und Baum steht: sein eigenes,
@@ -1188,6 +1217,8 @@ pub fn schedule(model: &Model) -> Schedule {
     // Je Wandzug einmal rechnen
     let mut walls: HashMap<RunId, Vec<WallQto>> = HashMap::new();
     let mut found: HashMap<RunId, Result<Foundation, FoundationError>> = HashMap::new();
+    // Sohlplatten je Wandzug, für die Automatikmengen
+    let mut platten: Vec<(RunId, ElementId)> = Vec::new();
     let mut floors: HashMap<RunId, Result<FloorSlab, FloorError>> = HashMap::new();
     // (Geschoss der Gruppe, Rang, Aufbau, Erweiterung) → Zeilen mit
     // Baustoffanteilen; die Erweiterung als Stelle in `ext_defs`, sonst 0
@@ -1226,6 +1257,9 @@ pub fn schedule(model: &Model) -> Schedule {
                 }
             }
             ElementKind::GroundSlab(_) | ElementKind::StripFooting(_) => {
+                if matches!(e.kind, ElementKind::GroundSlab(_)) {
+                    platten.push((run, id));
+                }
                 let f = found
                     .entry(run)
                     .or_insert_with(|| match model.foundation(run) {
@@ -1433,7 +1467,39 @@ pub fn schedule(model: &Model) -> Schedule {
         }
     }
     sched.formwork = formwork_rows(&sched);
+    sched.auto = auto_rows(model, &platten, &found);
     sched
+}
+
+/// Automatikmengen je Gründung: die eine Stelle, an der sie gesammelt
+/// werden (Erdarbeiten, Bauvorbereitung), in der Reihenfolge der Platten.
+fn auto_rows(
+    model: &Model,
+    platten: &[(RunId, ElementId)],
+    found: &HashMap<RunId, Result<Foundation, FoundationError>>,
+) -> Vec<AutoMenge> {
+    let mut out = Vec::new();
+    let boden = crate::qto_earth::Boden::default();
+    for &(run, slab) in platten {
+        let (Some(Ok(f)), Some(e)) = (found.get(&run), model.element(slab)) else {
+            continue;
+        };
+        let storey = schedule_storey(model, e);
+        let vorlage = AutoMenge {
+            element: slab,
+            number: e.number.clone(),
+            storey,
+            building: model.storey(storey).and_then(|s| s.building),
+            key: "",
+            unit: "",
+            value: 0.0,
+            kg: None,
+            formula: String::new(),
+        };
+        let basis = crate::qto_earth::ErdBasis::aus_gruendung(f, 0.0);
+        out.extend(crate::qto_earth::auto_mengen(&vorlage, &basis, &boden));
+    }
+    out
 }
 
 /// Schalung je Decke und Sohlplatte aus den Zeilen der Mengenliste.
@@ -1554,6 +1620,18 @@ impl Schedule {
             out.loose = self.loose.iter().filter(keep).cloned().collect();
         }
         out.formwork = formwork_rows(&out);
+        out.auto = self
+            .auto
+            .iter()
+            .filter(|a| {
+                !u.ohne.contains(&a.storey)
+                    && match u.gebaeude {
+                        Some(g) => a.building == Some(g),
+                        None => true,
+                    }
+            })
+            .cloned()
+            .collect();
         out
     }
 

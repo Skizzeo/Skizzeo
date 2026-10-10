@@ -293,20 +293,28 @@ fn mengenansatz(
     einheit: Einheit,
     uu: Option<u32>,
 ) -> Vec<Ansatzzeile> {
-    // je Geschoss, Folge-Quelle und Bewehrungsgrad (B16)
-    type Gruppe<'a> = (StoreyId, Option<Guid>, Option<u32>, Vec<&'a Ansatz>);
+    // je Geschoss, Folge-Quelle, Bewehrungsgrad (B16) und Rechenweg einer
+    // Automatikmenge
+    type Gruppe<'a> = (
+        StoreyId,
+        Option<Guid>,
+        Option<u32>,
+        Option<&'a str>,
+        Vec<&'a Ansatz>,
+    );
     let mut gruppen: Vec<Gruppe> = Vec::new();
     for a in ansatz {
+        let f = a.formel.as_deref();
         match gruppen
             .iter_mut()
-            .find(|g| g.0 == a.geschoss && g.1 == a.aus && g.2 == a.grad)
+            .find(|g| g.0 == a.geschoss && g.1 == a.aus && g.2 == a.grad && g.3 == f)
         {
-            Some(g) => g.3.push(a),
-            None => gruppen.push((a.geschoss, a.aus, a.grad, vec![a])),
+            Some(g) => g.4.push(a),
+            None => gruppen.push((a.geschoss, a.aus, a.grad, f, vec![a])),
         }
     }
     let mut zeilen: Vec<(Ansatzzeile, i128)> = Vec::new();
-    for (st, aus, grad, v) in gruppen {
+    for (st, aus, grad, formel, v) in gruppen {
         let mut nummern: Vec<String> = Vec::new();
         let mut elemente: Vec<ElementId> = Vec::new();
         for a in &v {
@@ -319,11 +327,12 @@ fn mengenansatz(
         }
         let menge: i128 = v.iter().map(|a| a.menge).sum();
         let auflager: i128 = v.iter().map(|a| a.auflager).sum();
-        let herkunft = match (aus.and_then(|g| k.leistung(g)), grad) {
-            (Some(l), _) => format!("aus {} {}", oz_im_los(k, l, uu), l.kurz),
+        let herkunft = match (aus.and_then(|g| k.leistung(g)), grad, formel) {
+            (Some(l), _, _) => format!("aus {} {}", oz_im_los(k, l, uu), l.kurz),
             // Bewehrungsgrad der Erweiterung, nicht der Firmenwerte (B16)
-            (None, Some(g)) => format!("aus Modell ({g} kg/m³ aus der Definition)"),
-            (None, None) => "aus Modell".to_string(),
+            (None, Some(g), _) => format!("aus Modell ({g} kg/m³ aus der Definition)"),
+            (None, None, Some(f)) => f.to_string(),
+            (None, None, None) => "aus Modell".to_string(),
         };
         let zeile = |herkunft: String| Ansatzzeile {
             geschoss: st,
