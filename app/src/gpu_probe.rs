@@ -498,6 +498,81 @@ mod tests {
         }
         r.set_below_ground(None);
     }
+    /// Ist-Bilder Flachdach Wand (Jörn 10.10.): Schnitt quer durch die
+    /// Wand über der Dachterrasse (Fußpunkt Schaumglas unter dem
+    /// Verblender).
+    /// `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_flachdach_wand -- --ignored`
+    #[test]
+    #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
+    fn gpu_istbilder_flachdach_wand() {
+        let Some(ziel) = std::env::var_os("SKIZZEO_ISTBILDER").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let k = sk_render::glx::kontext(W as i32, H as i32).expect("GLX-Kontext (DISPLAY?)");
+        let theme = Theme::dark();
+        let mut r = Renderer::new(k.gl, crate::style(&theme.env)).unwrap();
+        // 10 × 8 m, zweischalig (AW-49), OG auf der Rückseite 1,50 m
+        // zurückgesetzt: dort Dachterrasse und Verblender darauf
+        let mut m = Model::with_seed(102);
+        let b = m.add_building(2);
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        let eg = m.build_from_polygon(b, &pts).unwrap();
+        let og = m.runs_above(eg)[0];
+        let t = m.type_by_guid(sk_model::CAVITY_TYPE_GUID).unwrap();
+        m.begin("Typ");
+        assert!(m.set_run_type(eg, t));
+        m.commit();
+        let w = m.wall_at(og, 1).unwrap();
+        m.begin("Versatz");
+        m.set_linked(w, false);
+        assert!(m.set_offset(w, -1500.0).is_some());
+        m.commit();
+        let mut h = Scene::with_model(m);
+        h.set_theme(&theme);
+        r.set_style(crate::style(&theme.env));
+        r.set_looks(&h.table().looks_with(1.0, |_| 1.0));
+        // Wand mit Fußpunkt: ihr erstes Segment auf der Terrasse
+        let (pts, band) = h
+            .model()
+            .runs()
+            .iter()
+            .filter_map(|(id, _)| h.model().chain(id))
+            .find_map(|c| {
+                let f = c.joints.facing_foot.as_ref()?;
+                let k = (0..f.segs.len()).find(|&k| f.at(k))?;
+                let n = c.points.len();
+                Some(((c.points[k], c.points[(k + 1) % n]), f.band))
+            })
+            .expect("Fußpunkt Schaumglas über der Terrasse");
+        let m = (pts.0 + pts.1) * 0.5;
+        let d = (pts.1 - pts.0).normalized();
+        // Blick entlang der Wand (Schnittebene quer dazu), Ausschnitt um den Fuß
+        let yaw = d.y.atan2(d.x);
+        let plane = (vec3(m.x, m.y, 0.0), -vec3(d.x, d.y, 0.0));
+        let netz = h.mesh(ViewKind::Section, Some(plane), &[]);
+        r.set_mesh(crate::MESH_MODEL, &netz);
+        let q = vec3(-d.y, d.x, 0.0) * 1400.0;
+        let b = Some((
+            vec3(m.x, m.y, band.0 - 1000.0) - q,
+            vec3(m.x, m.y, band.1 + 900.0) + q,
+        ));
+        let cam =
+            crate::fit_parallel_dir((yaw, 0.0), b, W as f64, W as f64, H as f64, W as f64 * 0.5);
+        let mut view = cam.view(W, H);
+        view.paper = Some(h.table().paper);
+        view.patterns = crate::draw_table::pattern_mode(ViewKind::Section, theme.env.patterns_3d);
+        r.draw(W, H, 0, &view).unwrap();
+        std::fs::write(
+            ziel.join("ist-flachdach-fusspunkt-schaumglas.png"),
+            sk_paint::encode_png(W, H, &r.read_pixels(W, H)),
+        )
+        .unwrap();
+    }
     /// Ist-Bilder Gelände (Jörn 10.10., Themen 1 und 4): RH-1 mit OK Sohle
     /// 0,40 über Gelände und 12 cm Perimeterdämmung, vorne ausgeblendet und
     /// gestrichelt, dazu 0,30 unter Gelände gestrichelt und ein Schnitt.
