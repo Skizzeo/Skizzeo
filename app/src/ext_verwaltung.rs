@@ -1623,7 +1623,7 @@ mod tests {
         assert_eq!(
             v.neu,
             [
-                "Bauteilart „railing“ ist neu. Die Bauteile stehen nur unter ihrer Erweiterung, nicht bei den Bauteilarten.",
+                "„Stabgeländer“ ist eine neue Bauteilart. Die Bauteile stehen nur unter ihrer Erweiterung, nicht bei den Bauteilarten.",
                 "Metallbauarbeiten 18360 hat noch keinen Titel. Positionen stehen bis dahin in keinem Los.",
             ]
         );
@@ -1773,14 +1773,14 @@ mod tests {
         let mut w = Fenster::mit_frage(Vec::new(), Frage::einlesen(v));
         assert!(w.beim_einlesen());
         let r = w.rect(1.0, 1280, 800, 32);
-        // neue Bauteilart „column“: eigene Rückfrage vor dem Speichern
+        // neue Bauteilart (column): eigene Rückfrage vor dem Speichern
         assert!(drueck(&mut w, r, Knopf::Ja).is_none());
         assert!(w
             .frage
             .as_ref()
             .unwrap()
             .satz
-            .starts_with("Bauteilart „column“ ist neu."));
+            .starts_with("„Stahlbetonstütze“ ist eine neue Bauteilart."));
         let Some(Antwort::Tat(Tat::Einlesen(v))) = drueck(&mut w, r, Knopf::Ja) else {
             panic!("Einlesen")
         };
