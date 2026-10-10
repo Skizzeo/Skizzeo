@@ -1815,7 +1815,7 @@ impl Model {
                         p.insert("begehbar".into(), PropValue::Bool(walk));
                     }
                     _ => {
-                        let g = crate::terrace::coping_girth(f.terraces.width);
+                        let g = f.coping_girth();
                         p.insert("Abwicklung".into(), PropValue::Number(g));
                         let w = crate::terrace::coping_cut_width(g);
                         p.insert("Zuschnitt".into(), PropValue::Number(w));
@@ -9035,6 +9035,35 @@ mod og_phase2 {
         (m, eg, og)
     }
 
+    /// Das Attikablech überdeckt die Attika außen um 50 mm und innen um
+    /// 40 mm, mit jedem Dämmstreifen auf der Krone (Schenkel um dessen Dicke
+    /// länger); ohne Streifen wie vorher.
+    #[test]
+    fn blech_ueberdeckt_die_attika_ueber_dem_streifen() {
+        let (mut m, eg, _) = pruefhaus(&[(1, -1500.0)]);
+        let de = m.floor_of(eg).unwrap();
+        let ab = m.coping_of(de).expect("AB");
+        for (c, girth) in [(0.0, 270.0), (20.0, 310.0), (40.0, 350.0), (100.0, 470.0)] {
+            m.begin("Dämmung auf der Attika");
+            assert!(m.set_floor_crown(de, c));
+            m.commit();
+            let f = m.floor(eg).unwrap().unwrap();
+            let (_, top) = f.attika_band().unwrap();
+            assert_eq!(f.coping_girth(), girth);
+            assert_eq!(crate::qto::coping_qto(&m, ab).unwrap().girth, girth);
+            // Blech allein: tiefster Punkt ist der Außenschenkel
+            let s = f.coping_solid();
+            let lo = s
+                .triangles
+                .iter()
+                .filter(|t| t.p.iter().all(|p| p.z < top - 1.0 || p.z > top + c + 1.0))
+                .flat_map(|t| t.p)
+                .map(|p| p.z)
+                .fold(f64::INFINITY, f64::min);
+            assert!((lo - (top - 50.0)).abs() < 1e-6, "{c}: {lo}");
+        }
+    }
+
     /// D1–D3 gegen die endgültigen Sollwerte (BIM 08:54): DT 13,2192 m²,
     /// Dämmung 1,0575 m³, Belag 0,7932 m³, AB 13,00 m an der Außenkante,
     /// Abwicklung 250 mm, Attika-Mehrmenge WDVS 0,3562 m³, EG-Dämmung
@@ -9071,16 +9100,17 @@ mod og_phase2 {
         );
         let c = crate::qto::coping_qto(&m, ab).unwrap();
         assert!(near(c.length, 13000.0), "{}", c.length);
-        // Tropfkante 40 statt 20 (Jörn 10.10., Plan Flachdach P12)
-        assert_eq!(c.girth, 270.0);
+        // Tropfkante 40 statt 20 (Jörn 10.10., Plan Flachdach P12); über
+        // dem Dämmstreifen 40 beide Schenkel um 40 länger: 270 + 80
+        assert_eq!(c.girth, 350.0);
         assert_eq!(m.props_of(dt).get("begehbar"), Some(&PropValue::Bool(true)));
         assert_eq!(
             m.props_of(ab).get("Abwicklung"),
-            Some(&PropValue::Number(270.0))
+            Some(&PropValue::Number(350.0))
         );
         assert_eq!(
             m.props_of(ab).get("Zuschnitt"),
-            Some(&PropValue::Number(333.0))
+            Some(&PropValue::Number(400.0))
         );
         let f = m.floor(eg).unwrap().unwrap();
         assert_eq!(f.terrace_band(), Some((2855.0, 2995.0)));
@@ -9099,9 +9129,9 @@ mod og_phase2 {
         // Dämmstreifen 4 cm auf der Krone (Jörn 10.10. 16:07), Blech darüber
         assert_eq!(f.crown_band(), Some((3055.0, 3095.0)));
         let (lo, hi) = f.coping_solid().bounds().unwrap();
-        // Außenschenkel 50 ab UK Blech: 1 cm über die Attika hinab
+        // Außenschenkel 50 + 40 ab UK Blech: 5 cm über die Attika hinab
         assert!(
-            lo.z.round() == 3045.0 && hi.z >= 3095.0 && hi.z < 3140.0,
+            lo.z.round() == 3005.0 && hi.z >= 3095.0 && hi.z < 3140.0,
             "{lo:?} {hi:?}"
         );
         let k = c.crown.as_ref().expect("Dämmstreifen");

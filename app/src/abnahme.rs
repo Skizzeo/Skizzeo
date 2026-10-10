@@ -16743,8 +16743,9 @@ mod attikablech {
             ("AB", "IfcCovering.COPING", Some(363))
         );
         assert_eq!(ab_laenge(&s, id), 13.0);
-        // Tropfkante 40 statt 20 (Jörn 10.10., Plan Flachdach P12)
-        assert_eq!(abwicklung(&s, id), 270.0);
+        // Tropfkante 40 statt 20 (Jörn 10.10., Plan Flachdach P12), über
+        // dem Dämmstreifen 40 beide Schenkel um 40 länger
+        assert_eq!(abwicklung(&s, id), 350.0);
         let gw = m
             .layer_trade(id, 0)
             .and_then(|t| m.trade(t))

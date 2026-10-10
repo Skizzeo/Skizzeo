@@ -15,7 +15,10 @@
 use crate::solid::{
     at_z, edge_kind, material, right_of, straight_at, SectionFrame, Solid, NO_LAYER,
 };
-use crate::terrace::{attika_section_caps, attika_solid, coping_profile, AttikaPiece, TerracePlan};
+use crate::terrace::{
+    attika_section_caps, attika_solid, coping_girth_legs, coping_profile_legs, AttikaPiece,
+    TerracePlan, COPING_INNER, COPING_OUTER,
+};
 use crate::wall::WallChain;
 use sk_math::polygon;
 use sk_math::{vec3, Vec3};
@@ -731,6 +734,27 @@ impl FloorSlab {
         Some(self.crown_band().map_or(z, |b| b.1))
     }
 
+    /// Schenkel des Attikablechs (innen, außen; mm): über dem Dämmstreifen
+    /// um dessen Dicke länger, sodass sie die Attika wie ohne Streifen
+    /// überdecken (Außenschenkel 50 unter OK Attika).
+    fn coping_legs(&self) -> (f64, f64) {
+        let c = self.crown_band().map_or(0.0, |b| b.1 - b.0);
+        (COPING_INNER + c, COPING_OUTER + c)
+    }
+
+    /// Querschnitt des Attikablechs mit den Schenkeln nach [`Self::coping_legs`].
+    fn coping_profile(&self) -> Vec<(f64, f64)> {
+        let (i, o) = self.coping_legs();
+        coping_profile_legs(self.terraces.width, i, o)
+    }
+
+    /// Abwicklung des Attikablechs (mm) mit den Schenkeln nach
+    /// [`Self::coping_legs`].
+    pub fn coping_girth(&self) -> f64 {
+        let (i, o) = self.coping_legs();
+        coping_girth_legs(self.terraces.width, i, o)
+    }
+
     /// Grundriss des Dämmstreifens auf der Krone: je Segment ein Stück über
     /// die ganze Attikabreite (äußerstes bis innerstes Attika-Stück), im
     /// Baustoff des Streifens.
@@ -773,7 +797,7 @@ impl FloorSlab {
         };
         let d = Solid::default();
         (s.mat, s.elem, s.layer, s.edge_kind) = (t.coping_mat, d.elem, d.layer, edge_kind::VIEW);
-        let profile = coping_profile(self.terraces.width);
+        let profile = self.coping_profile();
         for c in &self.terraces.coping {
             let path: Vec<Vec3> = c.points.iter().map(|p| at_z(*p, z)).collect();
             s.sweep(&path, c.closed, &profile, c.ends);
@@ -800,7 +824,7 @@ impl FloorSlab {
             d.layer,
             edge_kind::CUT,
         );
-        let profile = coping_profile(self.terraces.width);
+        let profile = self.coping_profile();
         let flat2: Vec<Vec3> = profile.iter().map(|p| vec3(p.0, p.1, 0.0)).collect();
         let tris = polygon::triangulate(&flat2);
         for c in &self.terraces.coping {

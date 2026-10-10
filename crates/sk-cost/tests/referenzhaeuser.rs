@@ -571,7 +571,7 @@ const RH3: Soll = Soll {
 /// Oberkante Dach alles mit Bauleistung, keine graue Zeile.
 const RH5: Soll = Soll {
     datei: include_str!("../referenz/rh5-flachdach.szo"),
-    netto: 9772362,
+    netto: 9790562,
     material: 4283529,
     geruest: (
         "Fassadengerüst LK3 W09, 4 Wochen Standzeit, auf-/abbauen",
@@ -582,7 +582,7 @@ const RH5: Soll = Soll {
     ),
     geschosse: &[
         ("Gründung", 2264725),
-        ("Erdgeschoss", 3322291),
+        ("Erdgeschoss", 3340491),
         ("Obergeschoss", 2879023),
         ("Flachdach", 1306317),
     ],
@@ -745,17 +745,12 @@ const RH5: Soll = Soll {
             125820,
         ),
         (
-            "Zulage Attikaabdeckung Zuschnitt über 400 bis 500mm",
-            13000,
-            1200,
-            15600,
-            0,
-        ),
-        (
+            // Blech der Dachterrasse über dem Dämmstreifen: Schenkel je
+            // 40 länger, Abwicklung über 500
             "Zulage Attikaabdeckung Zuschnitt über 500 bis 667mm",
-            33600,
+            46600,
             2600,
-            87360,
+            121160,
             0,
         ),
         (

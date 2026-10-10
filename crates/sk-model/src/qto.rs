@@ -748,7 +748,7 @@ pub fn coping_qto_of(model: &Model, floor: ElementId, f: &FloorSlab) -> Option<C
         return None;
     }
     let length = f.coping_length();
-    let girth = crate::terrace::coping_girth(f.terraces.width);
+    let girth = f.coping_girth();
     let pfade = &f.terraces.coping;
     Some(CopingQto {
         length,
