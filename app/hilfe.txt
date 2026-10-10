@@ -110,6 +110,7 @@ Plattendicke | 10 bis 100 cm
 Sockelrücksprung | 0 (bündig) oder 2 bis 50 cm; Platte und Schürze springen gemeinsam
 Schürze | Breite 30 bis 45 cm (Standard 35), Tiefe 20 bis 300 cm ab Unterkante Platte
 Ungültig | roter Rahmen mit Grund
+Baugrund | Projektdaten: Oberboden, Abtrag um die Platte, Arbeitsraum, Kiesschicht und Böschung rechnen die Erdarbeiten; leer gilt der Vorschlag
 
 [thema] id=decke titel="Decke"
 Entstehen | EG- und OG-Decke kommen mit dem Gebäude
