@@ -10319,7 +10319,7 @@ mod gelaende_tests {
         assert!(
             r.hints
                 .iter()
-                .any(|h| h.ends_with("Böschungswinkel 10 außerhalb 30 bis 90, Vorgabe gilt")),
+                .any(|h| h.ends_with("Böschungswinkel 10° außerhalb 30 bis 90°, Vorgabe gilt")),
             "{:?}",
             r.hints
         );
@@ -10424,14 +10424,22 @@ mod gelaende_tests {
         assert_eq!(ab.len(), 2, "{:?}", r.hints);
         assert!(ab
             .iter()
-            .any(|h| h.ends_with("Böschungswinkel 95 außerhalb 30 bis 90, Vorgabe gilt")));
-        assert!(ab
-            .iter()
-            .any(|h| h
-                .ends_with("OK Sohle über Gelände 9000 außerhalb -3000 bis 3000, Vorgabe gilt")));
+            .any(|h| h.ends_with("Böschungswinkel 95° außerhalb 30 bis 90°, Vorgabe gilt")));
+        assert!(ab.iter().any(|h| h
+            .ends_with("OK Sohle über Gelände 9000 mm außerhalb -3000 bis 3000 mm, Vorgabe gilt")));
         assert_eq!(r.model.project().soil, crate::qto_earth::Boden::default());
         assert_eq!(r.model.terrain_offset(), 0.0);
         assert_eq!(crate::szo::write(&r.model), leer);
+        // Dezimalstellen mit Komma
+        let komma = leer.replace(&projekt, &format!("{projekt} topsoil=1000.5"));
+        let r = crate::szo::read(&komma, crate::GuidGen::with_seed(1)).unwrap();
+        assert!(
+            r.hints
+                .iter()
+                .any(|h| h.ends_with("Oberboden 1000,5 mm außerhalb 0 bis 1000 mm, Vorgabe gilt")),
+            "{:?}",
+            r.hints
+        );
     }
 
     /// Höher gesetzt: die Schürze wächst mit, die Einbindetiefe bleibt;
