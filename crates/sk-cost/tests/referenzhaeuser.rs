@@ -27,7 +27,7 @@ struct Soll {
 }
 
 /// Erdarbeiten aus der Gründung (Werksbestand Stand 8, Gelände = OK Platte,
-/// Bodenkennwerte ab Werk), in allen drei Häusern gleich: 1.689,81 €.
+/// Bodenkennwerte ab Werk), in allen drei Häusern gleich: 1.864,05 €.
 const ERDE: &[Zeile] = &[
     (
         "Oberboden bis 30cm abtragen, seitlich lagern",
