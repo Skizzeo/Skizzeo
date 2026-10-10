@@ -59,6 +59,20 @@ impl FlatRoof {
         self.band().1 + self.slope.as_ref().map_or(0.0, |g| g.wedge_max())
     }
 
+    /// Keilplatten je Plattentyp (Stück, Konzept F4): Typ k deckt die
+    /// Keildicke von k bis k + 1 Stufen (Stufe = Gefälle × 1 m), je
+    /// angefangener Quadratmeter seiner Fläche eine Platte. Leer ohne
+    /// Gefälle.
+    pub fn plates(&self) -> Vec<usize> {
+        let Some(g) = &self.slope else {
+            return Vec::new();
+        };
+        g.bands(g.slope * PLATE_LENGTH)
+            .iter()
+            .map(|a| (a / 1e6 - 1e-9).ceil().max(0.0) as usize)
+            .collect()
+    }
+
     /// Keildicke am Punkt `p` (mm), 0 ohne Gefälle.
     pub fn wedge_at(&self, p: Vec3) -> f64 {
         self.slope.as_ref().map_or(0.0, |g| g.wedge_at(p))
@@ -590,9 +604,12 @@ pub const EDGE: &str = "roof.edge";
 pub const CORNERS: &str = "roof.corners";
 pub const DRAINS: &str = "roof.drains";
 pub const OVERFLOWS: &str = "roof.overflows";
+pub const TAPER: &str = "roof.taper";
+pub const VALLEYS: &str = "roof.valleys";
+pub const RIDGES: &str = "roof.ridges";
 
 /// Schlüssel des Flachdachs (`[service] auto=`), Einheit und Bedeutung.
-pub const SCHLUESSEL: [(&str, &str, &str); 4] = [
+pub const SCHLUESSEL: [(&str, &str, &str); 7] = [
     (
         EDGE,
         "m",
@@ -609,7 +626,18 @@ pub const SCHLUESSEL: [(&str, &str, &str); 4] = [
         "Dachabläufe: 1 je angefangene 150 m² Dachfläche",
     ),
     (OVERFLOWS, "st", "Notüberläufe: so viele wie Dachabläufe"),
+    (
+        TAPER,
+        "m3",
+        "Gefälledämmung: Keil über der Mindestdicke (nur mit Gefälle)",
+    ),
+    (VALLEYS, "m", "Kehlen der Gefälledämmung: Länge (Zuschnitt)"),
+    (RIDGES, "m", "Grate der Gefälledämmung: Länge (Zuschnitt)"),
 ];
+
+/// Länge einer Keilplatte in Fließrichtung (mm): eine Stufe des
+/// Plattenplans ist Gefälle × Länge (2 % → 20 mm).
+pub const PLATE_LENGTH: f64 = 1000.0;
 
 /// Dachfläche je Ablauf (mm², Schätzung des Plans Flachdach D3; die
 /// Bemessung nach DIN 1986-100 macht der Fachplaner).
@@ -624,7 +652,8 @@ pub const KG_ROOF: u16 = 363;
 pub fn roof_mengen(vorlage: &crate::qto::AutoMenge, r: &FlatRoof) -> Vec<crate::qto::AutoMenge> {
     let m = |mm: f64| format!("{:.2} m", mm / 1000.0).replace('.', ",");
     let area = r.area();
-    let drains = (area / DRAIN_AREA).ceil().max(1.0);
+    let geplant = r.slope.as_ref().map(|g| g.drains.len() as f64);
+    let drains = geplant.unwrap_or_else(|| (area / DRAIN_AREA).ceil().max(1.0));
     let menge = |key, unit, value, formula| crate::qto::AutoMenge {
         key,
         unit,
@@ -635,7 +664,11 @@ pub fn roof_mengen(vorlage: &crate::qto::AutoMenge, r: &FlatRoof) -> Vec<crate::
     };
     let corners = r.corners() as f64;
     let fl = format!("{:.2} m²", area / 1e6).replace('.', ",");
-    vec![
+    let drain_formula = match geplant {
+        Some(n) => format!("{n} Abläufe im Gefälleplan"),
+        None => format!("{fl} ÷ 150 m², aufgerundet, mindestens 1"),
+    };
+    let mut out = vec![
         menge(
             EDGE,
             "m",
@@ -643,14 +676,27 @@ pub fn roof_mengen(vorlage: &crate::qto::AutoMenge, r: &FlatRoof) -> Vec<crate::
             format!("Innenfläche der Aufkantung {}", m(r.edge_length())),
         ),
         menge(CORNERS, "st", corners, format!("{corners} Innenecken")),
-        menge(
-            DRAINS,
-            "st",
-            drains,
-            format!("{fl} ÷ 150 m², aufgerundet, mindestens 1"),
-        ),
+        menge(DRAINS, "st", drains, drain_formula),
         menge(OVERFLOWS, "st", drains, "so viele wie Dachabläufe".into()),
-    ]
+    ];
+    if let Some(g) = &r.slope {
+        let v = g.wedge_volume();
+        let (valley, ridge) = g.crease_lengths();
+        out.extend([
+            menge(
+                TAPER,
+                "m3",
+                v,
+                format!(
+                    "{fl} × {} cm mittlerer Keil",
+                    format!("{:.1}", g.wedge_mean() / 10.0).replace('.', ",")
+                ),
+            ),
+            menge(VALLEYS, "m", valley, format!("Kehlen {}", m(valley))),
+            menge(RIDGES, "m", ridge, format!("Grate {}", m(ridge))),
+        ]);
+    }
+    out
 }
 
 #[cfg(test)]

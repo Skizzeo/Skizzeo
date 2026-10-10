@@ -769,15 +769,32 @@ pub fn coping_qto(model: &Model, coping: ElementId) -> Option<CopingQto> {
 pub fn flat_roof_qto_of(model: &Model, roof: ElementId, r: &FlatRoof) -> TerraceQto {
     let area = r.area();
     let all = model.flat_roof_layers(roof);
+    // Gefälle (G5): die Gefälleschicht ist im Mittel um den Keil dicker
+    let keil = r.slope.as_ref().map_or(0.0, |g| g.wedge_mean());
+    let tapered = r.tapered.filter(|_| r.slope.is_some());
+    let mut ohne_luft = 0;
+    let dicke: Vec<f64> = all
+        .iter()
+        .map(|l| {
+            if l.function == LayerFunction::AirGap {
+                return l.thickness;
+            }
+            let k = ohne_luft;
+            ohne_luft += 1;
+            l.thickness + if tapered == Some(k) { keil } else { 0.0 }
+        })
+        .collect();
     let layers: Vec<(MaterialId, f64, f64)> = all
         .iter()
-        .filter(|l| l.function != LayerFunction::AirGap)
-        .map(|l| (l.material, l.thickness, l.thickness * area))
+        .zip(&dicke)
+        .filter(|(l, _)| l.function != LayerFunction::AirGap)
+        .map(|(l, d)| (l.material, *d, d * area))
         .collect();
     let by = |pick: &dyn Fn(LayerFunction) -> bool| -> f64 {
         all.iter()
-            .filter(|l| pick(l.function))
-            .map(|l| l.thickness * area)
+            .zip(&dicke)
+            .filter(|(l, _)| pick(l.function))
+            .map(|(_, d)| d * area)
             .sum()
     };
     TerraceQto {

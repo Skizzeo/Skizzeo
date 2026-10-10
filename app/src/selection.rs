@@ -691,6 +691,16 @@ fn terrace_props(
     })
 }
 
+/// Buchstabe des Keilplattentyps `k` (A, B, … Z, dann AA, AB …).
+fn plate_letter(k: usize) -> String {
+    let a = |i: usize| char::from(b'A' + (i % 26) as u8);
+    if k < 26 {
+        a(k).to_string()
+    } else {
+        format!("{}{}", a(k / 26 - 1), a(k))
+    }
+}
+
 /// Gefälle des Flachdachs im Paneel (%): ab 2 % nach Flachdachrichtlinie,
 /// 1 % als Sonderkonstruktion; 0 = ohne.
 const ROOF_SLOPE: (f64, f64) = (1.0, 10.0);
@@ -728,6 +738,19 @@ fn roof_props(
                 ),
                 ("Keil max.", format!("{} cm", de(g.wedge_max() / 10.0, 1))),
             ]);
+            // Keilplatten je Typ (F4): A, B, C … von dünn nach dick
+            let plates = r.plates();
+            let typen: Vec<String> = plates
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| **n > 0)
+                .map(|(k, n)| format!("{} {n}", plate_letter(k)))
+                .collect();
+            let sum: usize = plates.iter().sum();
+            values.push((
+                "Keilplatten",
+                format!("{sum} Stück ({})", typen.join(" · ")),
+            ));
         }
     }
     values.push((

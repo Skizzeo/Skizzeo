@@ -326,7 +326,7 @@ pub const ARTEN: [&str; 12] = [
 ];
 
 /// Werks-Leistungen (§10, aus werk.szk).
-pub const LEISTUNGEN: [WerkLeistung; 70] = [
+pub const LEISTUNGEN: [WerkLeistung; 73] = [
     l(
         "1S7bUW0010080200000001",
         "m3",
@@ -746,6 +746,25 @@ pub const LEISTUNGEN: [WerkLeistung; 70] = [
         "st",
         "auto",
         "Zulage Abdichtungsanschluss Innenecke, Eckverstärkung",
+    ),
+    // Stand 10: Gefälledämmung (G5)
+    l(
+        "1S7bUW0010080200000017",
+        "m3",
+        "auto",
+        "Gefälledämmung EPS 035 DAA dh, Keilplatten nach Verlegeplan",
+    ),
+    l(
+        "1S7bUW0010080200000018",
+        "m",
+        "auto",
+        "Zulage Gefälledämmung Kehle, Zuschnitt auf Gehrung",
+    ),
+    l(
+        "1S7bUW0010080200000019",
+        "m",
+        "auto",
+        "Zulage Gefälledämmung Grat, Zuschnitt auf Gehrung",
     ),
 ];
 

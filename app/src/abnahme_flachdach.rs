@@ -322,6 +322,7 @@ fn a334_mengen_flachdach() {
     assert_eq!(auto("roof.corners"), Some(("st", 4.0)));
     assert_eq!(auto("roof.drains"), Some(("st", 1.0)));
     assert_eq!(auto("roof.overflows"), Some(("st", 1.0)));
+    assert_eq!(auto("roof.taper"), None, "ohne Gefälle kein Keil");
 }
 
 /// A335 (D5): Speichern → Öffnen ist bytegleich (`[storey] kind=roof`,
@@ -485,7 +486,7 @@ fn a338_gefaelle_im_paneel() {
     let d = s.model().drainage_of(floor).unwrap().clone();
     assert_eq!(d.slope, 2.0);
     assert_eq!(d.drains.len(), 2, "{:?}", d.drains);
-    let r = s.flat_roof_over(floor).unwrap();
+    let r = s.flat_roof_over(floor).unwrap().clone();
     let g = r.slope.as_ref().expect("Gefälleplan");
     assert_eq!(r.tapered, r.layers.iter().position(|l| l.2));
     // Langseiten waagerecht: beide Abläufe auf halber Länge
@@ -500,6 +501,33 @@ fn a338_gefaelle_im_paneel() {
     assert!(g.wedge_max() > 50.0 && g.wedge_mean() < g.wedge_max());
     assert_eq!(wert(&s, da, "Abläufe"), "2 Stück");
     assert!(gefaelle(&s).button.is_some());
+    // Mengen (G5): Abläufe aus dem Plan, Keil, Kehlen, Grate, Platten
+    let platten: usize = r.plates().iter().sum();
+    assert!(wert(&s, da, "Keilplatten").starts_with(&format!("{platten} Stück (A ")));
+    let sched = schedule(&mut s);
+    let auto = |k: &str| {
+        sched
+            .auto
+            .iter()
+            .find(|a| a.key == k && a.element == da)
+            .map(|a| (a.unit, a.value, a.formula.clone()))
+    };
+    assert_eq!(
+        auto("roof.drains"),
+        Some(("st", 2.0, "2 Abläufe im Gefälleplan".to_string()))
+    );
+    assert_eq!(auto("roof.overflows").map(|a| a.1), Some(2.0));
+    assert_eq!(auto("roof.taper").map(|a| a.1), Some(g.wedge_volume()));
+    let (kehlen, grate) = g.crease_lengths();
+    assert_eq!(auto("roof.valleys").map(|a| a.1), Some(kehlen));
+    assert_eq!(auto("roof.ridges").map(|a| a.1), Some(grate));
+    assert!(platten as f64 >= g.area() / 1e6);
+    let q = s.flat_roof_qto(da).unwrap();
+    let eps = q.layers.iter().map(|l| l.1).fold(0.0, f64::max);
+    assert!(
+        (eps - 200.0 - g.wedge_mean()).abs() < 1e-9,
+        "Dämmung mit Keil: {eps}"
+    );
 
     let text = sk_model::szo::write(s.model());
     assert!(text.contains("slope=2 drains="), "{text}");

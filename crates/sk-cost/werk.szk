@@ -1,7 +1,7 @@
 SZK 1
-# Skizzeo-Werksbestand Stammdaten, Stand 9 (10/2026), nur die neuen Abschnitte aus KA-0.
+# Skizzeo-Werksbestand Stammdaten, Stand 10 (10/2026), nur die neuen Abschnitte aus KA-0.
 # Herkunft: Skizzeo-Referenz 10/2026, unverbindlich. Erzeugt von stammdaten/werkzeug/werksbestand.py, nicht von Hand ändern.
-[catalog] guid=1S7bUW0010080600000001 name="Skizzeo-Werksbestand" stand=9 date=2026-10-10 status=released
+[catalog] guid=1S7bUW0010080600000001 name="Skizzeo-Werksbestand" stand=10 date=2026-10-10 status=released
 [rate] key=wage num=60
 [rate] key=surcharge num=0
 [rate] key=vat num=19
@@ -125,6 +125,9 @@ SZK 1
 [service] guid=1S7bUW0010080200000014 short="Untersichtbekleidung Faserzementtafel 8mm über Kopf, verschraubt" trade=1S7Wf_00100800000004Ul title=1S7bUW001008030000000G pos=60 unit=m2 basis=area hours=0.9 cats=soffitinsulation mat=2b6MkyCfr3CuSbvo_tnB5F
 [service] guid=1S7bUW0010080200000015 short="Abdichtungsanschluss an Aufkantung Flachdach, über Krone, inkl. Keil" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=40 unit=m basis=auto hours=0.4 kg=363 auto=roof.edge
 [service] guid=1S7bUW0010080200000016 short="Zulage Abdichtungsanschluss Innenecke, Eckverstärkung" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=50 unit=st basis=auto hours=0.25 other=5 kg=363 auto=roof.corners
+[service] guid=1S7bUW0010080200000017 short="Gefälledämmung EPS 035 DAA dh, Keilplatten nach Verlegeplan" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=22 unit=m3 basis=auto hours=1.8 other=130 kg=363 auto=roof.taper
+[service] guid=1S7bUW0010080200000018 short="Zulage Gefälledämmung Kehle, Zuschnitt auf Gehrung" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=24 unit=m basis=auto hours=0.1 other=2 kg=363 auto=roof.valleys
+[service] guid=1S7bUW0010080200000019 short="Zulage Gefälledämmung Grat, Zuschnitt auf Gehrung" trade=1S7Wf_00100800000004UY title=1S7bUW001008030000000H pos=26 unit=m basis=auto hours=0.1 other=2 kg=363 auto=roof.ridges
 [svcpart] guid=1S7bUW0010080400000001 service=1S7bUW0010080200000001 nr=1 art=1S7bUW0010080100000006 qty=1
 [svcpart] guid=1S7bUW0010080400000002 service=1S7bUW0010080200000002 nr=1 art=1S7bUW0010080100000006 qty=1
 [svcpart] guid=1S7bUW0010080400000003 service=1S7bUW0010080200000003 nr=1 art=1S7bUW0010080100000006 qty=1
@@ -279,3 +282,6 @@ SZK 1
 [origin] key=1S7bUW0010080200000014 rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: Recherche A/B §B5: Schalung über Kopf 0,6–0,9 h/m²" conf=rough
 [origin] key=1S7bUW0010080200000015 rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: wie D40, Recherche B §4.1 Pos. 5: 0,30–0,50 h/m" conf=rough
 [origin] key=1S7bUW0010080200000016 rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: geschätzt: Eckverstärkung und Zuschnitt je Innenecke 15–25 €" conf=rough
+[origin] key=1S7bUW0010080200000017 rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: geschätzt: Gefälleplatten EPS 110–150 €/m³, Verlegung 0,12–0,18 h/m² bei 8–10 cm" conf=rough
+[origin] key=1S7bUW0010080200000018 rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: geschätzt: Zuschnitt und Anpassen 0,08–0,12 h/m" conf=rough
+[origin] key=1S7bUW0010080200000019 rec=service kind=factory status=confirmed date=2026-10-10 source="Aufwandswert: geschätzt: wie F26" conf=rough
