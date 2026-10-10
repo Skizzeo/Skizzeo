@@ -528,3 +528,36 @@ fn a338_gefaelle_im_paneel() {
     assert!(s.propose_roof_drains(da));
     assert!(s.model().check().is_empty(), "{:?}", s.model().check());
 }
+
+/// A339 (Gefälledämmung G4): Ein Ablauf lässt sich an der Aufkantung
+/// entlang ziehen; er hält 60 cm Abstand zu den Ecken, der Gefälleplan geht
+/// mit, Loslassen ist ein Schritt.
+#[test]
+fn a339_ablauf_ziehen() {
+    let (mut s, og) = haus(339, sk_model::EXTERIOR_TYPE_GUID);
+    let (da, ab) = da_ab(&s, og);
+    let floor = s.model().floor_of(og).unwrap();
+    assert!(s.roof_drains(da).1.is_empty(), "ohne Gefälle keine Griffe");
+    assert!(s.set_field(da, Field::RoofSlope, 2.0));
+    let (roof, vorher) = s.roof_drains(ab);
+    assert_eq!(roof, Some(da), "auch am Blech");
+    assert_eq!(vorher.len(), 2);
+    let r = s.flat_roof_over(floor).unwrap();
+    let x0 = r.outline.iter().map(|p| p.x).fold(f64::MAX, f64::min);
+    let max_vorher = r.slope.as_ref().unwrap().wedge_max();
+    // bis in die Ecke und etwas nach außen: bleibt auf der Kante, 60 cm
+    // vor der Ecke
+    let k = 0;
+    let ziel = vec3(x0 + 100.0, vorher[k].y + 50.0, 0.0);
+    s.begin("Ablauf verschoben");
+    assert!(s.drag_drain(da, k, ziel));
+    s.commit();
+    let jetzt = s.roof_drains(da).1;
+    assert!((jetzt[k].x - (x0 + 600.0)).abs() < 1e-6, "{:?}", jetzt[k]);
+    assert!((jetzt[k].y - vorher[k].y).abs() < 1e-6);
+    let g = s.flat_roof_over(floor).unwrap().slope.clone().unwrap();
+    assert!(g.wedge_max() > max_vorher, "längerer Fließweg");
+    assert_eq!(s.undo_label(), Some("Ablauf verschoben"));
+    s.undo();
+    assert_eq!(s.roof_drains(da).1, vorher);
+}

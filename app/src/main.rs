@@ -111,6 +111,7 @@ use std::f64::consts::{FRAC_PI_2, PI};
 use std::time::Instant;
 use ui::{Draft, Field, FieldRow, Grip, Id, LevelEvent, Panel, Ui, ViewKind};
 use wall_edit::WallEdit;
+mod drain_edit;
 use wall_tool::WallTool;
 
 fn main() {
@@ -735,6 +736,8 @@ struct App {
     nav: Navigation,
     tool: WallTool,
     edit: WallEdit,
+    /// Abläufe des Flachdachs ziehen (Gefälledämmung G4).
+    drains: drain_edit::DrainEdit,
     /// Schnittlinien A und B (im Grundriss verschiebbar, Pfeil spiegelt)
     /// für die Ansicht „Schnitt“.
     sect: Sections,
@@ -2947,7 +2950,7 @@ impl App {
 
     /// Rückgängig bzw. Wiederherstellen (Knopf und Kürzel).
     fn history(&mut self, redo: bool) {
-        if self.tool.is_active() || self.edit.is_dragging() {
+        if self.tool.is_active() || self.edit.is_dragging() || self.drains.is_dragging() {
             return;
         }
         // Ein Lösch-Schritt blendet ein bzw. wieder aus (V?-9)
@@ -4487,7 +4490,10 @@ impl App {
                 _ => {}
             }
         }
-        let busy = self.nav.is_dragging() || self.edit.is_dragging() || self.sect.is_dragging();
+        let busy = self.nav.is_dragging()
+            || self.edit.is_dragging()
+            || self.sect.is_dragging()
+            || self.drains.is_dragging();
         let sen = self.sect_enabled();
         let mut camera_moved = false;
         match e {
@@ -4620,12 +4626,23 @@ impl App {
                     .handle(&sect_ev, &self.scene, &self.cam, vw, vh, sc, sen);
                 self.redraw |= so.redraw;
                 self.cut_changed(&so);
-                let edit_ev =
+                let drain_ev =
                     if outside || self.sect.is_busy() || chip.is_some() || self.nord.is_busy() {
                         Event::MouseLeave
                     } else {
                         ev
                     };
+                self.drain_handle(&drain_ev, vw, vh, sc);
+                let edit_ev = if outside
+                    || self.sect.is_busy()
+                    || chip.is_some()
+                    || self.nord.is_busy()
+                    || self.drains.is_busy()
+                {
+                    Event::MouseLeave
+                } else {
+                    ev
+                };
                 let en = self.edit_enabled();
                 let out = self
                     .edit
@@ -4637,13 +4654,16 @@ impl App {
                     self.upload_model();
                 }
                 // Über Band oder Schnittlinie zeigt das Wandwerkzeug keinen Fangpunkt
-                let tool_ev =
-                    if outside || self.edit.is_busy() || self.sect.is_busy() || self.nord.is_busy()
-                    {
-                        Event::MouseLeave
-                    } else {
-                        ev
-                    };
+                let tool_ev = if outside
+                    || self.edit.is_busy()
+                    || self.sect.is_busy()
+                    || self.nord.is_busy()
+                    || self.drains.is_busy()
+                {
+                    Event::MouseLeave
+                } else {
+                    ev
+                };
                 self.redraw |= self.tool.handle(&tool_ev, &self.cam, vw, vh, sc).redraw;
                 // Bauteil unter der Maus: Mengenliste und Baum zeigen seine
                 // Zeile (B7, Paket 4)
@@ -4736,8 +4756,9 @@ impl App {
                             .handle(&ev, &self.scene, &self.cam, vw, vh, sc, sen);
                         self.redraw |= so.redraw;
                         self.cut_changed(&so);
+                        let dn = so.consumed || self.drain_handle(&ev, vw, vh, sc);
                         let en = self.edit_enabled();
-                        let eo = if so.consumed {
+                        let eo = if dn {
                             wall_edit::EditOutcome {
                                 consumed: true,
                                 ..Default::default()
@@ -4803,6 +4824,7 @@ impl App {
                     .handle(&ev, &self.scene, &self.cam, vw, vh, sc, sen);
                 self.redraw |= so.redraw;
                 self.cut_changed(&so);
+                self.drain_handle(&ev, vw, vh, sc);
                 let en = self.edit_enabled();
                 let eo = self
                     .edit
@@ -4944,6 +4966,9 @@ impl App {
                     // Zahl + Enter beim Aufziehen des Nordpfeils
                     self.redraw = true;
                     self.nord_commit(no.commit);
+                } else if down && key == Key::Escape && self.drains.escape(&mut self.scene) {
+                    self.upload_model();
+                    self.redraw = true;
                 } else if down && key == Key::Escape && self.nord.escape() {
                     self.redraw = true;
                 } else if self.tool.input().is_some() {
@@ -5043,10 +5068,27 @@ impl App {
         }
     }
 
+    /// Abläufe des gewählten Flachdachs ziehen (G4, nur im Grundriss ohne
+    /// Werkzeug). `true`, wenn das Ereignis dem Ablauf gehört.
+    fn drain_handle(&mut self, ev: &Event, vw: f64, vh: f64, sc: f64) -> bool {
+        let en = self.ui.view == ViewKind::Plan && !self.tool.enabled;
+        let out = self
+            .drains
+            .handle(ev, &mut self.scene, &self.cam, vw, vh, sc, self.sel.id, en);
+        self.redraw |= out.redraw;
+        if out.changed && self.drains.is_dragging() {
+            self.upload_live();
+        } else if out.changed {
+            self.upload_model();
+        }
+        out.consumed
+    }
+
     /// Etwas Inneres nimmt Esc vor der Karte (Nachtrag H9-1): Ziehen,
     /// Eingabe, Rückfragen, Menüs, Klapplisten in Fenstern.
     fn esc_inner(&self) -> bool {
         self.edit.is_dragging()
+            || self.drains.is_dragging()
             || self.edit.input().is_some()
             || self.tool.input().is_some()
             || self.ui.level_dragging().is_some()
@@ -5397,7 +5439,7 @@ impl App {
     /// aus und leuchtet mit, ohne zweiten Hinweis.
     fn erase(&mut self, list: bool) {
         let ids = self.picking.selected.clone();
-        if self.tool.is_active() || self.edit.is_dragging() {
+        if self.tool.is_active() || self.edit.is_dragging() || self.drains.is_dragging() {
             return;
         }
         if list && !self.quantity.part_selected(&self.picking) {
@@ -8004,6 +8046,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         nav: Navigation::default(),
         tool,
         edit: WallEdit::default(),
+        drains: drain_edit::DrainEdit::default(),
         sect: Sections::default(),
         nord: Default::default(),
         sonne: Default::default(),
@@ -8730,6 +8773,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 helpers.extend(level_guide(v, a.scene.bounds(), z, scale, &a.theme));
             }
             helpers.extend(a.edit.helpers(&a.scene, &a.cam, scale, !drawing, &a.theme));
+            if a.ui.view == ViewKind::Plan && !a.tool.enabled {
+                helpers.extend(a.drains.helpers(&a.scene, a.sel.id, scale, &a.theme));
+            }
             if let Some(p) = &a.pick {
                 helpers.extend(p.helpers(&a.scene, a.ui.view, plane, scale, &a.theme));
             }
