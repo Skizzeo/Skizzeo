@@ -410,10 +410,18 @@ pub(crate) fn section_camera(
 
 /// Geländelinie in Schnitt und Ansichten (kräftig, über das Gebäude
 /// hinaus) auf OK Gelände `z` (Gelände Thema 1).
+/// Rand der Geländeflächen um die Wandzüge eines Gebäudes (mm): deckt
+/// Dämmung, Schürze und Sockel.
+const TERRAIN_MARGIN: f64 = 1500.0;
+
+/// Geländelinie in Ansicht und Schnitt: auf Höhe des Geländes an jedem
+/// Gebäude (`patches` längs der Linie, sonst `z`), im Schnitt mit Lücken an
+/// geschnittenen Bauteilen (`gaps`, längs der Linie).
 fn ground_line(
     v: ViewKind,
     bounds: Option<(Vec3, Vec3)>,
     z: f64,
+    patches: &[([f64; 4], f64)],
     scale: f32,
     table: &DrawTable,
     gaps: &[(f64, f64)],
@@ -426,47 +434,96 @@ fn ground_line(
     } else {
         (lo.x - m, hi.x + m)
     };
-    let at = |u: f64| {
+    let at = |u: f64, z: f64| {
         if side {
             vec3(lo.x, u, z)
         } else {
             vec3(u, lo.y, z)
         }
     };
-    // Im Schnitt endet die Linie an geschnittenen Bauteilen (Gelände
-    // Thema 1): die Stücke zwischen den Lücken
-    let mut pieces = Vec::new();
-    let mut u = a;
-    for &(g0, g1) in gaps {
-        if g0 > u {
-            pieces.push((u, g0.min(b)));
-        }
-        u = u.max(g1);
-    }
-    if u < b {
-        pieces.push((u, b));
-    }
-    pieces
-        .into_iter()
-        .filter(|(p, q)| q > p)
-        .map(|(p, q)| sk_render::Helper {
-            a: at(p).to_f32(),
-            b: at(q).to_f32(),
-            color: table.ground.1,
-            width: table.ground.0 * scale,
-            dash: 0.0,
-            pattern: sk_render::SOLID,
-            occlude: false,
-            round: false,
+    // Höhe längs der Linie: das erste Gebäude, das die Stelle überdeckt
+    let span = |p: &[f64; 4]| if side { (p[1], p[3]) } else { (p[0], p[2]) };
+    let z_at = |u: f64| {
+        patches
+            .iter()
+            .find(|(p, _)| {
+                let (p0, p1) = span(p);
+                u >= p0 && u <= p1
+            })
+            .map_or(z, |x| x.1)
+    };
+    let mut cuts: Vec<f64> = patches
+        .iter()
+        .flat_map(|(p, _)| {
+            let (p0, p1) = span(p);
+            [p0, p1]
         })
+        .chain(gaps.iter().flat_map(|g| [g.0, g.1]))
+        .filter(|u| *u > a && *u < b)
+        .collect();
+    cuts.extend([a, b]);
+    cuts.sort_by(f64::total_cmp);
+    cuts.dedup();
+    // Stücke zwischen den Teilungen: in einer Lücke keins, sonst auf der
+    // Höhe in ihrer Mitte; gleiche Höhen hintereinander zu einem Stück
+    let mut pieces: Vec<(f64, f64, f64)> = Vec::new();
+    for w in cuts.windows(2) {
+        let (p, q) = (w[0], w[1]);
+        let mid = (p + q) * 0.5;
+        if q <= p || gaps.iter().any(|g| mid > g.0 && mid < g.1) {
+            continue;
+        }
+        let h = z_at(mid);
+        match pieces.last_mut() {
+            Some(l) if l.1 == p && l.2 == h => l.1 = q,
+            _ => pieces.push((p, q, h)),
+        }
+    }
+    let line = |p: Vec3, q: Vec3| sk_render::Helper {
+        a: p.to_f32(),
+        b: q.to_f32(),
+        color: table.ground.1,
+        width: table.ground.0 * scale,
+        dash: 0.0,
+        pattern: sk_render::SOLID,
+        occlude: false,
+        round: false,
+    };
+    let mut out: Vec<sk_render::Helper> = Vec::new();
+    for (i, &(p, q, h)) in pieces.iter().enumerate() {
+        // Stufe zur Höhe des vorigen Stücks, wenn es anschließt
+        if let Some(&(_, q0, h0)) = i.checked_sub(1).and_then(|j| pieces.get(j)) {
+            if q0 == p && h0 != h {
+                out.push(line(at(p, h0), at(p, h)));
+            }
+        }
+        out.push(line(at(p, h), at(q, h)));
+    }
+    out
+}
+
+/// OK Gelände an `(x, y)`: das erste Gebäude-Rechteck, das die Stelle
+/// enthält, sonst `z`.
+fn terrain_at(patches: &[([f64; 4], f64)], z: f64, x: f64, y: f64) -> f64 {
+    patches
+        .iter()
+        .find(|(b, _)| x >= b[0] && y >= b[1] && x <= b[2] && y <= b[3])
+        .map_or(z, |p| p.1)
+}
+
+/// Gelände-Rechtecke für den Renderer.
+fn terrain_boxes(patches: &[([f64; 4], f64)]) -> Vec<([f32; 4], f32)> {
+    patches
+        .iter()
+        .map(|(b, z)| (b.map(|v| v as f32), *z as f32))
         .collect()
 }
 
-/// Wo die Geländelinie in Höhe `z` im Schnitt aussetzt, längs der Achse
+/// Wo die Geländelinie (Höhe `ter(x, y)`) im Schnitt aussetzt, längs der Achse
 /// `axis` (0 = x, 1 = y), sortiert und vereinigt: über jeder geschnittenen
 /// Fläche, die die Linie berührt, und dazwischen, wo eine geschnittene
 /// Fläche darüber liegt (unter der Platte, in den Räumen).
-fn terrain_gaps(faces: &[[f32; 9]], z: f64, axis: usize) -> Vec<(f64, f64)> {
+fn terrain_gaps(faces: &[[f32; 9]], ter: impl Fn(f64, f64) -> f64, axis: usize) -> Vec<(f64, f64)> {
     let tol = 0.5;
     let mut hit = Vec::new();
     let mut roof = Vec::new();
@@ -476,6 +533,9 @@ fn terrain_gaps(faces: &[[f32; 9]], z: f64, axis: usize) -> Vec<(f64, f64)> {
             continue;
         }
         let p: Vec<(f64, f64)> = t.iter().map(|v| (v[axis] as f64, v[2] as f64)).collect();
+        // OK Gelände am Gebäude des Dreiecks (Mitte im Grundriss)
+        let c = |k: usize| t.iter().map(|v| v[k] as f64).sum::<f64>() / 3.0;
+        let z = ter(c(0), c(1));
         let zmin = p.iter().map(|q| q.1).fold(f64::INFINITY, f64::min);
         let zmax = p.iter().map(|q| q.1).fold(f64::NEG_INFINITY, f64::max);
         let umin = p.iter().map(|q| q.0).fold(f64::INFINITY, f64::min);
@@ -1082,7 +1142,9 @@ impl App {
             self.ecken_stand += 1;
             self.terrain_gaps = if self.ui.view == ViewKind::Section {
                 let axis = usize::from(self.side_like(ViewKind::Section) == ViewKind::Left);
-                terrain_gaps(&mesh.faces, self.scene.model().terrain_z(), axis)
+                let patches = self.scene.model().terrain_patches(TERRAIN_MARGIN);
+                let z = self.scene.model().terrain_z();
+                terrain_gaps(&mesh.faces, |x, y| terrain_at(&patches, z, x, y), axis)
             } else {
                 Vec::new()
             };
@@ -1735,7 +1797,12 @@ impl App {
         let (lo, hi) = self.scene.bounds()?;
         let m = self.scene.model();
         let ganz = ansicht_schatten::platz(v).is_none_or(|i| m.view_below(i));
-        let g = m.terrain_z();
+        // Das tiefste Gelände: über keinem Gebäude wird etwas abgeschnitten
+        let g = m
+            .terrain_patches(TERRAIN_MARGIN)
+            .iter()
+            .map(|p| p.1)
+            .fold(m.terrain_z(), f64::min);
         Some(if ganz || hi.z <= g {
             (lo, hi)
         } else {
@@ -8515,6 +8582,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                     a.side_like(v),
                     a.scene.bounds(),
                     a.scene.model().terrain_z(),
+                    &a.scene.model().terrain_patches(TERRAIN_MARGIN),
                     scale,
                     a.scene.table(),
                     &a.terrain_gaps,
@@ -8818,6 +8886,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             a.renderer.set_below_ground(unten);
             // OK Gelände (Gelände Thema 1): Boden und Grenze „unter Gelände“
             a.renderer.set_terrain(a.scene.model().terrain_z() as f32);
+            a.renderer.set_terrain_boxes(&terrain_boxes(
+                &a.scene.model().terrain_patches(TERRAIN_MARGIN),
+            ));
             let bild = wahl.map(|(i, vs)| ansicht_schatten::Bild {
                 vs,
                 gestrichelt: a.scene.model().view_below(i),
@@ -9070,26 +9141,59 @@ mod tests {
         // Ansichtsfläche
         f.extend(schnitt(-5000.0, -4000.0, -1000.0, 0.0, false));
         assert_eq!(
-            terrain_gaps(&f, -400.0, 0),
+            terrain_gaps(&f, |_, _| -400.0, 0),
             [(0.0, 10000.0), (20000.0, 20300.0)]
         );
         // Ohne Lücken eine Linie, mit zwei Lücken drei Stücke
         let t = DrawTable::resolve(&sk_model::Model::with_seed(1), &Theme::dark());
         let b = Some((vec3(0.0, 0.0, 0.0), vec3(20300.0, 8000.0, 0.0)));
         assert_eq!(
-            ground_line(ViewKind::Front, b, -400.0, 1.0, &t, &[]).len(),
+            ground_line(ViewKind::Front, b, -400.0, &[], 1.0, &t, &[]).len(),
             1
         );
         let l = ground_line(
             ViewKind::Front,
             b,
             -400.0,
+            &[],
             1.0,
             &t,
-            &terrain_gaps(&f, -400.0, 0),
+            &terrain_gaps(&f, |_, _| -400.0, 0),
         );
         let xs: Vec<_> = l.iter().map(|h| (h.a[0], h.b[0])).collect();
         assert_eq!(xs, [(-3000.0, 0.0), (10000.0, 20000.0), (20300.0, 23300.0)]);
+    }
+
+    /// Entscheidung B: zwei Gebäude auf verschiedenem Gelände. Die Linie
+    /// liegt an jedem auf seiner Höhe, dazwischen auf der Vorgabe, mit
+    /// Stufen; im Schnitt zählt je Dreieck das Gelände seines Gebäudes.
+    #[test]
+    fn gelaendelinie_je_gebaeude() {
+        let t = DrawTable::resolve(&sk_model::Model::with_seed(1), &Theme::dark());
+        let b = Some((vec3(0.0, 0.0, 0.0), vec3(20000.0, 8000.0, 0.0)));
+        let patches = [
+            ([-1000.0, -1000.0, 9000.0, 9000.0], -500.0),
+            ([11000.0, -1000.0, 21000.0, 9000.0], 0.0),
+        ];
+        let l = ground_line(ViewKind::Front, b, 0.0, &patches, 1.0, &t, &[]);
+        let ab: Vec<_> = l.iter().map(|h| (h.a[0], h.a[2], h.b[0], h.b[2])).collect();
+        assert_eq!(
+            ab,
+            [
+                (-3000.0, 0.0, -1000.0, 0.0),
+                (-1000.0, 0.0, -1000.0, -500.0),
+                (-1000.0, -500.0, 9000.0, -500.0),
+                (9000.0, -500.0, 9000.0, 0.0),
+                (9000.0, 0.0, 23000.0, 0.0),
+            ]
+        );
+        let mut f = Vec::new();
+        f.extend(schnitt(0.0, 300.0, -1300.0, -400.0, true));
+        f.extend(schnitt(12000.0, 12300.0, -1200.0, -320.0, true));
+        let ter = |x: f64, y: f64| terrain_at(&patches, 0.0, x, y);
+        // Haus 1 auf −0,50: seine Schürze trifft die Linie; Haus 2 auf 0:
+        // seine Schürze endet darunter
+        assert_eq!(terrain_gaps(&f, ter, 0), [(0.0, 300.0)]);
     }
 
     fn mv(x: f64) -> Event {

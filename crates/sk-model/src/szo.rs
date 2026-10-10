@@ -797,14 +797,8 @@ fn write_known(m: &Model) -> String {
         let v: Vec<String> = gaps.iter().map(|(p, n)| format!("{p}:{n}")).collect();
         line.word("next", &v.join(","))
     };
-    // Versatz OK Sohlplatte über Gelände (Gelände Thema 1): nur ≠ 0, damit
-    // ältere Dateien bytegleich bleiben
-    let mut line = if p.terrain != 0.0 {
-        line.num("terrain", p.terrain)
-    } else {
-        line
-    };
     // Bodenkennwerte der Erdarbeiten: nur, was von der Vorgabe abweicht
+    let mut line = line;
     let vorgabe = crate::qto_earth::Boden::default().werte();
     for ((k, ..), (v, d)) in crate::qto_earth::Boden::FELDER
         .iter()
@@ -851,11 +845,18 @@ fn write_known(m: &Model) -> String {
         line.finish(&mut out);
     }
     for b in sorted(m.buildings().iter(), |b| b.guid) {
-        Line::new("building")
+        let l = Line::new("building")
             .guid("guid", Some(b.guid))
             .text("name", &b.name)
-            .text("number", &b.number)
-            .finish(&mut out);
+            .text("number", &b.number);
+        // Versatz OK Sohlplatte über Gelände (Gelände Thema 1): nur ≠ 0,
+        // damit ältere Dateien bytegleich bleiben
+        let l = if b.terrain != 0.0 {
+            l.num("terrain", b.terrain)
+        } else {
+            l
+        };
+        l.finish(&mut out);
     }
     for s in sorted(m.storeys().iter(), |s| s.guid) {
         let l = Line::new("storey")
@@ -1610,10 +1611,19 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut building_ids = HashMap::new();
     let mut building_numbers: HashMap<String, usize> = HashMap::new();
     for r in recs("building") {
+        // vor Gelände Thema 1 ohne: OK Sohlplatte auf OK Gelände
+        let terrain = match r.opt("terrain") {
+            Some(_) => r.f64("terrain")?,
+            None => 0.0,
+        };
+        if !(terrain.is_finite() && terrain.abs() <= crate::model::MAX_TERRAIN_OFFSET) {
+            return Err(err(r.line, "[building]: „terrain“ außerhalb des Bereichs"));
+        }
         let b = Building {
             guid: r.guid("guid")?,
             name: r.get("name")?.to_string(),
             number: r.get("number")?.to_string(),
+            terrain,
         };
         if let Some(first) = building_numbers.insert(b.number.clone(), r.line) {
             return Err(err(
@@ -1682,14 +1692,6 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     };
     let text = |k: &str| p.opt(k).unwrap_or("").to_string();
     let mut project = Project::new(p.guid("guid")?, p.get("name")?);
-    // vor Gelände Thema 1 ohne: OK Sohlplatte auf OK Gelände
-    if p.opt("terrain").is_some() {
-        let t = p.f64("terrain")?;
-        if !(t.is_finite() && t.abs() <= crate::model::MAX_TERRAIN_OFFSET) {
-            return Err(err(p.line, "[project]: „terrain“ außerhalb des Bereichs"));
-        }
-        project.terrain = t;
-    }
     // Bodenkennwerte der Erdarbeiten; fehlende gelten mit der Vorgabe
     let mut boden = project.soil.werte();
     for (w, (k, _, min, max)) in boden.iter_mut().zip(crate::qto_earth::Boden::FELDER) {

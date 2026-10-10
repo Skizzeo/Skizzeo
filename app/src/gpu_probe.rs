@@ -529,7 +529,15 @@ mod tests {
         let leer = sk_render::MeshData::default;
         let mm = theme.px_per_mm;
         let linie = |h: &Scene, v: ViewKind| {
-            crate::ground_line(v, h.bounds(), h.model().terrain_z(), 1.0, h.table(), &[])
+            crate::ground_line(
+                v,
+                h.bounds(),
+                h.model().terrain_z(),
+                &h.model().terrain_patches(crate::TERRAIN_MARGIN),
+                1.0,
+                h.table(),
+                &[],
+            )
         };
         for (versatz, modus, n) in [
             (400.0, Some(None), "plus40-ausgeblendet"),
@@ -569,11 +577,12 @@ mod tests {
             r.set_terrain(z as f32);
             let netz = h.mesh(ViewKind::Section, Some(plane), &[]);
             r.set_mesh(crate::MESH_MODEL, &netz);
-            let luecken = crate::terrain_gaps(&netz.faces, z, 0);
+            let luecken = crate::terrain_gaps(&netz.faces, |_, _| z, 0);
             r.set_helpers(&crate::ground_line(
                 ViewKind::Section,
                 h.bounds(),
                 z,
+                &[],
                 1.0,
                 h.table(),
                 &luecken,
@@ -594,6 +603,45 @@ mod tests {
                 &format!("ist-gelaende-schnitt-{n}.png"),
             );
         }
+        // Entscheidung B: ein zweites Haus daneben auf eigenem Gelände
+        // (RH-1 +0,40, das neue −0,30), gestrichelt unter dem jeweiligen
+        let (lo, hi) = h.bounds().unwrap();
+        let x0 = hi.x + 4000.0;
+        assert!(h.edit_model("Haus 2", |m| {
+            let b = m.add_building(1);
+            let pts = [
+                vec3(x0, lo.y, 0.0),
+                vec3(x0, lo.y + 8000.0, 0.0),
+                vec3(x0 + 9000.0, lo.y + 8000.0, 0.0),
+                vec3(x0 + 9000.0, lo.y, 0.0),
+            ];
+            m.build_from_polygon(b, &pts).is_some() && m.set_terrain_offset_of(b, -300.0)
+        }));
+        h.edit_model("Gelände", |m| m.set_terrain_offset(400.0));
+        let patches = h.model().terrain_patches(crate::TERRAIN_MARGIN);
+        assert_eq!(patches.len(), 2);
+        r.set_terrain(h.model().terrain_z() as f32);
+        r.set_terrain_boxes(&crate::terrain_boxes(&patches));
+        r.set_below_ground(Some(Some([2.0 * mm, mm])));
+        r.set_helpers(&crate::ground_line(
+            ViewKind::Front,
+            h.bounds(),
+            h.model().terrain_z(),
+            &patches,
+            1.0,
+            h.table(),
+            &[],
+        ));
+        let (px, _) = ansicht(
+            &mut r,
+            &mut h,
+            ViewKind::Front,
+            ViewShade::WERK,
+            sun,
+            leer(),
+        );
+        ab(&px, "ist-gelaende-vorne-zwei-haeuser.png");
+        r.set_terrain_boxes(&[]);
         r.set_helpers(&[]);
         r.set_below_ground(None);
         r.set_terrain(0.0);

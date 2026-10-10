@@ -496,6 +496,8 @@ pub struct Renderer {
     /// Höhe von OK Gelände (mm): Boden in 3D, „unter dem Gelände“ in den
     /// Ansichten (Gelände Thema 1).
     terrain: f32,
+    /// OK Gelände je Gebäude (Rechteck im Grundriss, Höhe).
+    terrain_boxes: Vec<([f32; 4], f32)>,
     /// Konnte der Treiber die Karte nicht anlegen: Meldung (einmal
     /// abzuholen), danach ohne Schatten.
     shadow_failed: bool,
@@ -616,6 +618,9 @@ void main() {
 }
 "#;
 
+/// Höchstens so viele Gelände-Rechtecke (Gebäude) kennt der Shader.
+pub const TERRAIN_BOXES: usize = 16;
+
 const FACE_VS: &str = r#"#version 330 core
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in vec3 a_normal;
@@ -667,8 +672,19 @@ uniform vec3 u_hatch_ink;
 // 2 gestrichelt; Flächen dort in Papierfarbe, sie verdecken weiter
 uniform int u_below;
 uniform vec3 u_paper_rgb;
-// Höhe von OK Gelände im Modell (mm, Gelände Thema 1)
+// Höhe von OK Gelände im Modell (mm, Gelände Thema 1): je Gebäude ein
+// Rechteck im Grundriss (x0, y0, x1, y1) mit seiner Höhe, sonst u_terrain
 uniform float u_terrain;
+uniform int u_ter_n;
+uniform vec4 u_ter_box[16];
+uniform float u_ter_z[16];
+float terrain_at(vec2 p) {
+    for (int i = 0; i < u_ter_n; i++) {
+        vec4 b = u_ter_box[i];
+        if (p.x >= b.x && p.y >= b.y && p.x <= b.z && p.y <= b.w) return u_ter_z[i];
+    }
+    return u_terrain;
+}
 vec4 look(int row) {
     return texelFetch(u_looks, ivec2(v_key & 0x7FFF, row), 0);
 }
@@ -712,7 +728,7 @@ void main() {
     }
     vec4 bg = look(2);
     vec3 c = bg.rgb;
-    if (u_below != 0 && !cut && v_model.z < u_terrain - 0.5) {
+    if (u_below != 0 && !cut && v_model.z < terrain_at(v_model.xy) - 0.5) {
         o_color = vec4(u_paper_rgb, u_alpha);
         return;
     }
@@ -1258,15 +1274,31 @@ flat out vec2 v_len_w;
 noperspective out float v_z;
 // Farbe gestrichelt unter dem Gelände: die feine Linie (Stift „Fein“)
 flat out vec3 v_color_below;
+// OK Gelände an der Kante (Mitte im Grundriss)
+flat out float v_ter;
 uniform int u_below;
+// Höhe von OK Gelände im Modell (mm, Gelände Thema 1): je Gebäude ein
+// Rechteck im Grundriss (x0, y0, x1, y1) mit seiner Höhe, sonst u_terrain
 uniform float u_terrain;
+uniform int u_ter_n;
+uniform vec4 u_ter_box[16];
+uniform float u_ter_z[16];
+float terrain_at(vec2 p) {
+    for (int i = 0; i < u_ter_n; i++) {
+        vec4 b = u_ter_box[i];
+        if (p.x >= b.x && p.y >= b.y && p.x <= b.z && p.y <= b.w) return u_ter_z[i];
+    }
+    return u_terrain;
+}
 void main() {
     int k = clamp(int(a_kind + 0.5), 0, 7);
+    float ter = terrain_at((a_a.xy + a_b.xy) * 0.5);
+    v_ter = ter;
     // Unter dem Gelände und gestrichelt: Breite und Farbe der feinen Linie
     // (Kantenart FINE), nur der Strich unter dem Gelände (S11, §8 14:25).
     // Kanten, die das Gelände kreuzen, teilt der Netzbau an OK Gelände.
-    bool unter = u_below == 2 && max(a_a.z, a_b.z) < u_terrain + 0.5
-        && min(a_a.z, a_b.z) < u_terrain - 0.5;
+    bool unter = u_below == 2 && max(a_a.z, a_b.z) < ter + 0.5
+        && min(a_a.z, a_b.z) < ter - 0.5;
     int kl = unter ? FINE : k;
     v_color = u_edge_color[kl];
     v_color_below = u_edge_color[FINE];
@@ -1308,20 +1340,20 @@ flat in vec4 v_p1;
 flat in vec2 v_len_w;
 noperspective in float v_z;
 flat in vec3 v_color_below;
+flat in float v_ter;
 out vec4 o_color;
 uniform float u_alpha;
 // Ansichten (S11): unter dem Gelände 1 ausgeblendet, 2 gestrichelt (Strich,
 // Lücke px)
 uniform int u_below;
 uniform vec2 u_below_dash;
-uniform float u_terrain;
 // Blasse Kanten im Zeichenmodus: mit dem Papier (rgb) vorgemischt und
 // deckend (a = 1), damit sich deckungsgleiche Kanten nicht stapeln
 uniform vec4 u_premix;
 void main() {
     if (v_p0.x + v_p0.y > 0.0 && !dash_ink(v_dist, v_len_w.x, v_p0, v_p1, v_len_w.y)) discard;
     vec3 color = v_color;
-    if (u_below != 0 && v_z < u_terrain - 0.5) {
+    if (u_below != 0 && v_z < v_ter - 0.5) {
         if (u_below == 1) discard;
         float per = u_below_dash.x + u_below_dash.y;
         if (per > 0.0 && mod(max(v_dist, 0.0), per) >= u_below_dash.x) discard;
@@ -1595,6 +1627,7 @@ impl Renderer {
                 shadow_paper: false,
                 below: (0, [0.0; 2]),
                 terrain: 0.0,
+                terrain_boxes: Vec::new(),
                 shadow_failed: shadow_error.is_some(),
                 shadow_error: shadow_error.map(|e| format!("Schatten aus: {e}")),
                 shadow_query: 0,
@@ -2662,7 +2695,7 @@ impl Renderer {
             gl.glUniform1i(loc(gl, p, c"u_patterns"), view.patterns as GLint);
             let below = if drawing { self.below.0 } else { 0 };
             gl.glUniform1i(loc(gl, p, c"u_below"), below);
-            gl.glUniform1f(loc(gl, p, c"u_terrain"), self.terrain);
+            self.terrain_uniforms(gl, p);
             if let Some(pc) = view.paper {
                 gl.glUniform3f(loc(gl, p, c"u_paper_rgb"), pc[0], pc[1], pc[2]);
             }
@@ -2697,7 +2730,7 @@ impl Renderer {
             };
             gl.glUniform2f(loc(gl, p, c"u_viewport"), w as f32, h as f32);
             gl.glUniform1i(loc(gl, p, c"u_below"), below);
-            gl.glUniform1f(loc(gl, p, c"u_terrain"), self.terrain);
+            self.terrain_uniforms(gl, p);
             let d = self.below.1;
             gl.glUniform2f(loc(gl, p, c"u_below_dash"), d[0], d[1]);
             let n = EDGE_KINDS as i32;
@@ -3220,9 +3253,32 @@ impl Renderer {
     }
 
     /// Höhe von OK Gelände im Modell (mm, Gelände Thema 1): Boden in 3D
-    /// und Grenze für „unter dem Gelände“ in den Ansichten.
+    /// und Grenze für „unter dem Gelände“ in den Ansichten, wo kein
+    /// Gebäude-Rechteck ([`Renderer::set_terrain_boxes`]) gilt.
     pub fn set_terrain(&mut self, z: f32) {
         self.terrain = z;
+    }
+
+    /// OK Gelände je Gebäude: Rechteck im Grundriss `[x0, y0, x1, y1]`
+    /// (Modellkoordinaten, mm) und Höhe; das erste passende gilt, höchstens
+    /// [`TERRAIN_BOXES`].
+    pub fn set_terrain_boxes(&mut self, boxes: &[([f32; 4], f32)]) {
+        self.terrain_boxes = boxes.iter().take(TERRAIN_BOXES).copied().collect();
+    }
+
+    /// Gelände-Uniforms eines Programms (Flächen, Kanten).
+    fn terrain_uniforms(&self, gl: &Gl, p: GLuint) {
+        unsafe {
+            gl.glUniform1f(loc(gl, p, c"u_terrain"), self.terrain);
+            let n = self.terrain_boxes.len();
+            gl.glUniform1i(loc(gl, p, c"u_ter_n"), n as GLint);
+            if n > 0 {
+                let boxes: Vec<f32> = self.terrain_boxes.iter().flat_map(|b| b.0).collect();
+                let zs: Vec<f32> = self.terrain_boxes.iter().map(|b| b.1).collect();
+                gl.glUniform4fv(loc(gl, p, c"u_ter_box[0]"), n as GLint, boxes.as_ptr());
+                gl.glUniform1fv(loc(gl, p, c"u_ter_z[0]"), n as GLint, zs.as_ptr());
+            }
+        }
     }
 
     /// Ansichten auf Papier (S11): Teile unter dem Gelände (z < 0) wie
