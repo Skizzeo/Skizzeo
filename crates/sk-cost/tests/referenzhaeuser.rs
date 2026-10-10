@@ -1,7 +1,8 @@
 //! Referenzhäuser RH-1 bis RH-3 und RH-5 (Flachdach) auf den Cent (Abnahme
 //! KA-0 „Rechnung“, Sollwerte bim/integration/sollwerte-referenzhaeuser.md
 //! und sollwerte-rh5.md, Prüfstand der BIM-Integration). Die Häuser liegen
-//! unverändert in `referenz/`.
+//! unverändert in `referenz/`; RH-3 trägt seit W3 die Bekleidung der
+//! Untersicht (`soffit_clad=40`).
 
 use sk_cost::{lesen, Cent, Dez, Kostenblatt, Kostenspeicher, Umfang};
 use sk_model::{qto, szo, GuidGen, Model};
@@ -377,12 +378,12 @@ const RH2: Soll = Soll {
 
 const RH3: Soll = Soll {
     datei: include_str!("../referenz/rh3-versatz-dachterrasse.szo"),
-    netto: 8090854,
-    material: 3584238,
+    netto: 8169659,
+    material: 3600738,
     geruest: GERUEST_2G,
     geschosse: &[
         ("Gründung", 2243845),
-        ("Erdgeschoss", 3037935),
+        ("Erdgeschoss", 3116740),
         ("Obergeschoss", 2809049),
     ],
     ausgleich: 25,
@@ -450,14 +451,43 @@ const RH3: Soll = Soll {
             2374035,
             1002001,
         ),
-        // Stand 9, K2: Untersicht zwischen Lattung; die Datei ist älter als
-        // die Bekleidung (W3), darum ohne Bekleidung, Lattung und Randprofil
+        // Stand 9, K2: Untersicht zwischen Lattung, Bekleidung Faserzement 40 mm
+        // (W3, in der Datei nachgetragen); Lattung und Randprofil aus der
+        // Bekleidung (3,00 m² / 0,80 m bzw. 0,40 m + 20,60 m Umfang)
         (
             "Untersichtdämmung EPS 035 d=120mm zwischen Lattung, über Kopf",
             2928,
             2400,
             7027,
             3514,
+        ),
+        (
+            "Grundlattung KVH 60/80 über Kopf, a=80cm, mit Schraubankern",
+            24350,
+            975,
+            23741,
+            0,
+        ),
+        (
+            "Traglattung 30/50 quer, a=40cm, Hinterlüftung",
+            28100,
+            440,
+            12364,
+            0,
+        ),
+        (
+            "Untersichtbekleidung Faserzementtafel 8mm über Kopf, verschraubt",
+            3000,
+            10900,
+            32700,
+            16500,
+        ),
+        (
+            "Lüftungsprofil Alu gelocht mit Insektenschutz, Untersichtrand",
+            10000,
+            1000,
+            10000,
+            0,
         ),
         (
             "Bauzaun Mobilzaun h=2,0m aufstellen, vorhalten, räumen",

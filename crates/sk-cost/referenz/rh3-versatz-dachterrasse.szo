@@ -22,6 +22,7 @@ SZO 4
 [surface] guid=0E2RAo8obFthy$Bh5EIskX name="Terrassenbelag" color=c4beb2 cut=aca69a
 [surface] guid=0Kv0ys5avCWgZAh4WMU3Ds name="Randdämmung" color=ece6c4 cut=e2cc78
 [surface] guid=0Nqc$Rzfn6JB4EHC6Nzy46 name="Luft" color=ffffff cut=ffffff
+[surface] guid=0YIeR9Hnb2B9mk8lqdTlNV name="Bekleidung Faserzement" color=a8aaa6 cut=c4c6c2
 [surface] guid=0bqfa7vhvAWwwAvb377hM4 name="Dämmung (WDVS)" color=f4efdc cut=e8c45c
 [surface] guid=1G87ywj6vEoh1uzpHeS9Ka name="Porenbeton" color=eeede8 cut=b0b1ae
 [surface] guid=1HcJCLQd9Cxuz2HQoFq0sL name="Titanzink 0,7" color=969ea4 cut=6e767c
@@ -48,12 +49,14 @@ SZO 4
 [trade] guid=1S7Wf_00100800000004UY code="18338" name="Dachdeckungs- und Dachabdichtungsarbeiten" order=10
 [trade] guid=1S7Wf_00100800000004UZ code="18339" name="Klempnerarbeiten" order=11
 [trade] guid=1S7Wf_00100800000004Uf code="18345" name="Wärmedämm-Verbundsysteme" order=16
+[trade] guid=1S7Wf_00100800000004Ul code="18351" name="Vorgehängte hinterlüftete Fassaden" order=17
 [trade] guid=1S7Wf_00100800000004Uk code="18350" name="Putz- und Stuckarbeiten" order=18
 [material] guid=0IMx_GM9LBJQ9vKs2JYvZu name="Luft" cat=air prio=0 rho=1.2 lambda=- fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0Nqc$Rzfn6JB4EHC6Nzy46
 [material] guid=0isiJXaEH68fAGDc36vC$0 name="Kerndämmung (Mineralwolle)" cat=insulation prio=300 rho=30 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1MI6$s1jP42ehJb$wmcr0Y trade=1S7Wf_00100800000004UQ
 [material] guid=1vl_pQvH1FDBsLfn5l1heC name="Terrassenbelag" cat=concrete prio=500 rho=2200 lambda=1.65 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0E2RAo8obFthy$Bh5EIskX trade=1S7Wf_00100800000004UY
 [material] guid=203X9w6RHAvxaAnObFB0IP name="Verblender (Vormauerziegel)" cat=masonry prio=700 rho=1800 lambda=0.68 fill=3rzDaPgYj7zhDembDO9g_d fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=2I0iV4XeLFxOVLUIsiaPG9 trade=1S7Wf_00100800000004UQ
 [material] guid=2N$fHb0Xb1UBvWkvwrJ4Rx name="Titanzink 0,7" cat=metal prio=900 rho=7200 lambda=110 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1HcJCLQd9Cxuz2HQoFq0sL trade=1S7Wf_00100800000004UZ
+[material] guid=2b6MkyCfr3CuSbvo_tnB5F name="Bekleidung Faserzement" cat=concrete prio=500 rho=1800 lambda=- fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0YIeR9Hnb2B9mk8lqdTlNV trade=1S7Wf_00100800000004Ul
 [material] guid=2dv8rsAYH3ovLj1KIg1$Mo name="Randdämmung" cat=insulation prio=300 rho=30 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0Kv0ys5avCWgZAh4WMU3Ds trade=1S7Wf_00100800000004UQ
 [material] guid=2wuC33GkTD9Qack6WJ4EsM name="Porenbeton" cat=masonry prio=800 rho=350 lambda=0.09 fill=3rzDaPgYj7zhDembDO9g_d fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1G87ywj6vEoh1uzpHeS9Ka trade=1S7Wf_00100800000004UQ
 [material] guid=2zPDwmqLPDpAPPFFMa8UFs name="Dämmung (WDVS)" cat=insulation prio=300 rho=20 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0bqfa7vhvAWwwAvb377hM4 trade=1S7Wf_00100800000004Uf
@@ -102,7 +105,7 @@ SZO 4
 [slab] guid=2xVi0xsM1FDBav1kfDQwUX run=095euj$cfDBx3kZtGTZWSy number="SP-001" cat=groundslab mat=32Ino7hAj08ufHFYBJxPyP top=09KucGOy500eF0wnIDCTn3:u:0 t=220 recess=0 seq=2 storey=09KucGOy500eF0wnIDCTn3
 [footing] guid=34xZ6H$hDFiwEA$PkeqEbA slab=2xVi0xsM1FDBav1kfDQwUX number="FS-001" cat=stripfooting mat=32Ino7hAj08ufHFYBJxPyP w=350 base=3DXKjw$I1CTuTIHEPTvBbf:u:0 seq=1 storey=09KucGOy500eF0wnIDCTn3
 [floor] guid=2VpJwAmHv2yA0nqY6zug5I run=0wb6eXalH13QgxNUZMMVyk number="DE-002" cat=floor mat=32Ino7hAj08ufHFYBJxPyP top=1yQSTjGjX3z9vu$3gQNrAG:o:0 t=220 seq=6 storey=1yQSTjGjX3z9vu$3gQNrAG
-[floor] guid=2yE7T_0bj5CBb9U8CISviJ run=095euj$cfDBx3kZtGTZWSy number="DE-001" cat=floor mat=32Ino7hAj08ufHFYBJxPyP top=09KucGOy500eF0wnIDCTn3:o:0 t=220 seq=4 storey=09KucGOy500eF0wnIDCTn3
+[floor] guid=2yE7T_0bj5CBb9U8CISviJ run=095euj$cfDBx3kZtGTZWSy number="DE-001" cat=floor mat=32Ino7hAj08ufHFYBJxPyP top=09KucGOy500eF0wnIDCTn3:o:0 t=220 soffit_clad=40 seq=4 storey=09KucGOy500eF0wnIDCTn3
 [soffit] guid=2_dwRgBHD7cO_Y2JRefLPw floor=2yE7T_0bj5CBb9U8CISviJ number="UD-001" cat=soffitinsulation seq=4 storey=09KucGOy500eF0wnIDCTn3
 [coping] guid=0Z627vAa91qRF$otRSlf4m floor=2yE7T_0bj5CBb9U8CISviJ number="AB-001" cat=coping seq=4 storey=09KucGOy500eF0wnIDCTn3
 [terrace] guid=1ZviRBgcPBCBe0KTEwfKKt floor=2yE7T_0bj5CBb9U8CISviJ number="DT-001" cat=roofterrace set=2dMkjFCxf6nfRD5ttUqAkM seq=4 storey=09KucGOy500eF0wnIDCTn3

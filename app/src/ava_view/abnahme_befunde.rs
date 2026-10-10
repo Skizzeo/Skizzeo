@@ -96,7 +96,7 @@ fn abnahme_befunde_regeln_und_zaehlung() {
     for (name, text, netto_soll) in [
         (haeuser()[0].0, haeuser()[0].1, 7_595_363),
         (haeuser()[1].0, haeuser()[1].1, 8_291_878),
-        (haeuser()[2].0, haeuser()[2].1, 8_090_854),
+        (haeuser()[2].0, haeuser()[2].1, 8_169_659),
     ] {
         let (netto, ist) = stand(text);
         assert_eq!(netto, netto_soll, "{name}: Netto");
