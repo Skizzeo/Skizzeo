@@ -128,6 +128,15 @@ Mengen | Fläche in m², Dämmung und Belag je in m³, Blech in m ohne Volumen; 
 Verschwinden | „Bündig setzen“ oder OG nach außen; **Strg+Z** holt sie zurück
 Löschen | geht nicht einzeln; sie folgt dem Rücksprung des OG
 
+[thema] id=flachdach titel="Flachdach"
+Einschalten | Haken „Flachdach“ im Paneel „Geschosse“; über dem obersten Geschoss entstehen Dachaufbau und Aufkantung
+Aufkantung | Höhe im Paneel „Geschosse“: Linie „OK Aufkantung“ ziehen oder auf ihre Maßzahl klicken
+Dämmung | Dachaufbau anklicken, im Paneel unter „Aufbau“ das Feld „Dämmung“ tippen
+Gefälle | Zahlenfeld „Gefälle“ in %, 1 bis 10; 0 = ohne Gefälle
+Abläufe | „Abläufe vorschlagen“ setzt sie neu; im Grundriss stehen sie als Punkte an der Aufkantung
+Ablauf ziehen | Dachaufbau wählen, im Grundriss einen Punkt an der Aufkantung entlang ziehen; der Gefälleplan geht mit, **Esc** bricht ab
+Ausschalten | Haken weg; **Strg+Z** holt das Dach zurück
+
 [thema] id=geschosse titel="Geschosse"
 Aktives Geschoss | Klick auf „Fundament“, „EG“ oder „OG“ im Paneel „Geschosse“
 Geschossbogen | im Grundriss rechts; Klick auf eine Spitze, Mausrad oder **Bild↑** / **Bild↓**
@@ -283,7 +292,8 @@ Ausgabe | „Als Tabelle speichern“ legt eine CSV für Excel ab; die erste Zei
 Fenster | wegziehen löst es, an der Kante rastet es wieder ein
 
 [thema] id=kosten titel="Kosten"
-Preise | „Material“ oder „Material + Lohn“; die Summe zeigt netto, brutto mit MwSt. und den Lohnanteil
+Preise | „Material“ oder „Material + Lohn“; die Summe zeigt netto, brutto mit MwSt. und den Lohnanteil. Referenzpreise: Stand 10/2026, unverbindlich, netto
+Bauteil gewählt | Kosten zeigen nur seine Positionen, am Fundament mit den Erdarbeiten; die Leiste oben nennt Bauteil, Zahl und Summe, „Alle Positionen“ zeigt wieder alles
 Händlerpreis | „Händlerpreis für dieses Haus eintragen …“ oben führt durch Artikel, Preis und Quelle; gilt nur für dieses Haus
 Verrechnungslohn | beim ersten Öffnen in der Hinweiskarte; später Klick auf „… €/h“ in der Kachel Lohnanteil oder unter Datei › Verwaltung › Firmenwerte
 Verwaltung | alles Weitere unter Datei › Verwaltung; dort gilt es für alle neuen Häuser, im Projekt nur für dieses Haus
@@ -292,12 +302,12 @@ Für neue Häuser | gilt sofort für alle neuen Häuser; Strg+Z nimmt es nur fü
 Andere Werte | eine Zeile oben nennt, was für neue Häuser anders ist; „übernehmen“ oder „so lassen“
 Geschätzt | keine genaue Bauleistung; gerechnet nach der nächsten Dicke oder dem Richtpreis
 Grau | keine passende Bauleistung; Zeile überfahren, dann „Bauleistung wählen …“
-Referenzpreise | Stand 10/2026, unverbindlich, netto
 
 [thema] id=ava titel="AVA · Leistungsverzeichnis"
 Los wählen | im Baum links; der Baum zeigt Lose und Titel
 Anfrage | „Für Anfrage (leer)“ lässt EP und GP frei, „Mit Preisen“ füllt sie
 Position | Klick öffnet unten Mengenansatz je Geschoss, Preisanteile und Eigenschaften
+Bauteil gewählt | Das LV zeigt nur die Positionen am Bauteil, Titel darüber ohne Summe; „Alle Positionen“ zeigt wieder alles
 Kopf | „Kopf und Vorbemerkungen“ zeigt die Projektdaten; ändern über „Projektdaten …“
 Prüfen | im Baum unten; ein Klick führt zur Stelle
 Geschosse getrennt | „Mehr“ › „Geschosse als Untertitel“

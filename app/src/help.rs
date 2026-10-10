@@ -159,6 +159,8 @@ pub enum Topic {
     Foundation,
     Floor,
     Terrace,
+    /// Flachdach mit Aufkantung, Gefälle und Abläufen (Bedienbarkeit 34.3).
+    FlatRoof,
     Levels,
     Section,
     /// Nordpfeil aufziehen, drehen, verschieben (Sonnenstand S2).
@@ -186,7 +188,7 @@ pub enum Topic {
 
 impl Topic {
     /// Alle Themen in der Reihenfolge der Liste „Alle Themen“.
-    pub const ALL: [Topic; 35] = [
+    pub const ALL: [Topic; 36] = [
         Topic::Start,
         Topic::Navigation,
         Topic::Building,
@@ -201,6 +203,7 @@ impl Topic {
         Topic::Foundation,
         Topic::Floor,
         Topic::Terrace,
+        Topic::FlatRoof,
         Topic::Levels,
         Topic::Section,
         Topic::North,
@@ -245,7 +248,13 @@ impl Topic {
         ),
         (
             "Bauteile",
-            &[Topic::Wall, Topic::Foundation, Topic::Floor, Topic::Terrace],
+            &[
+                Topic::Wall,
+                Topic::Foundation,
+                Topic::Floor,
+                Topic::Terrace,
+                Topic::FlatRoof,
+            ],
         ),
         (
             "Ansicht",
@@ -295,6 +304,7 @@ impl Topic {
             Topic::Foundation => "gruendung",
             Topic::Floor => "decke",
             Topic::Terrace => "dachterrasse",
+            Topic::FlatRoof => "flachdach",
             Topic::Levels => "geschosse",
             Topic::Section => "schnitt",
             Topic::North => "nordpfeil",
@@ -1124,6 +1134,7 @@ mod tests {
                 "Los wählen",
                 "Anfrage",
                 "Position",
+                "Bauteil gewählt",
                 "Kopf",
                 "Prüfen",
                 "Geschosse getrennt",

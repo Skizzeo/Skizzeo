@@ -85,18 +85,24 @@ fn a338_fundament_zeigt_seine_positionen_mit_erdarbeiten() {
     let mut p = Picking::default();
     waehle(&mut v, &mut s, &mut p, &[fs]);
     let b = v.blatt().unwrap().clone();
-    let trifft = |a: &Ansatz| a.element == fs || (a.formel.is_some() && a.element == platte);
+    let erde = |a: &Ansatz| a.auto.is_some_and(|k| k.starts_with("earth."));
+    let trifft = |a: &Ansatz| a.element == fs || (erde(a) && a.element == platte);
     let soll: Vec<usize> = (0..b.positionen.len())
         .filter(|&i| b.positionen[i].ansatz.iter().any(trifft))
         .collect();
     let ist = positionen(&v);
     assert_eq!(ist, soll, "genau die verknüpften Positionen");
     assert!(ist.len() < alle.len(), "isoliert");
-    // Erdarbeiten und Bauvorbereitung (Automatikmengen der Platte) sind dabei
+    // Erdarbeiten (Automatikmengen der Platte) sind dabei, Baustelleneinrichtung
+    // und Gerüst des Gebäudes nicht (Bedienbarkeit 34.1)
     let auto = ist
         .iter()
-        .filter(|&&i| b.positionen[i].ansatz.iter().any(|a| a.formel.is_some()))
+        .filter(|&&i| b.positionen[i].ansatz.iter().any(erde))
         .count();
+    assert!(ist.iter().all(|&i| !b.positionen[i]
+        .ansatz
+        .iter()
+        .any(|a| a.auto.is_some_and(|k| k.starts_with("site.")))));
     assert!(auto >= 5, "Erdarbeiten am Fundament: {auto}");
     assert!(
         v.zeilen().iter().any(|z| z.text.contains("Baugrube")),

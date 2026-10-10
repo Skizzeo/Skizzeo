@@ -961,7 +961,7 @@ mod tests {
         assert!(!m.set_linked(w, false));
         assert!(m.commit().is_none());
         assert!(matches!(m.can_delete(w), Err(Refusal::Derived { .. })));
-        assert!(refusal_text(&m, w, &m.can_delete(w).unwrap_err()).contains("Geschossverwaltung"));
+        assert!(refusal_text(&m, w, &m.can_delete(w).unwrap_err()).contains("Paneel Geschosse"));
         // Aus: Ebene und Aufkantung weg; rückgängig bringt beides
         let aus = schritt(&mut m, |m| m.set_flat_roof(og_storey, false));
         assert!(m.roof_level(og_storey).is_none() && ak_runs(&m).is_empty());
