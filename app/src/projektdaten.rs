@@ -169,12 +169,12 @@ const FELDER: [Feld; N] = [
         einheit: "cm",
     },
     Feld {
-        name: "Baufeld",
+        name: "Abtrag um die Platte",
         beispiel: "1,50",
         zeilen: 1,
         max: 8,
         breite: 64.0,
-        x: 340.0,
+        x: 360.0,
         einheit: "m",
     },
     Feld {
@@ -192,7 +192,7 @@ const FELDER: [Feld; N] = [
         zeilen: 1,
         max: 8,
         breite: 64.0,
-        x: 340.0,
+        x: 360.0,
         einheit: "cm",
     },
     Feld {
@@ -226,7 +226,7 @@ const WORT: [&str; N] = [
     "Breitengrad",
     "Längengrad",
     "Oberboden",
-    "Baufeld",
+    "Abtrag um die Platte",
     "Arbeitsraum",
     "Kiesschicht",
     "Böschungswinkel",

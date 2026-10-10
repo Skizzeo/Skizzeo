@@ -416,8 +416,8 @@ fn neue_art(d: &ExtDef, ablage: &Ablage, model: &Model) -> Option<String> {
         || model.ext_defs().iter().any(|o| art(o) == a);
     (!bekannt).then(|| {
         format!(
-            "Bauteilart „{}“ ist neu. Die Bauteile stehen nur unter ihrer Erweiterung, nicht bei den Bauteilarten.",
-            anzeige(&a, 40)
+            "„{}“ ist eine neue Bauteilart. Die Bauteile stehen nur unter ihrer Erweiterung, nicht bei den Bauteilarten.",
+            anzeige(d.name(), 60)
         )
     })
 }
