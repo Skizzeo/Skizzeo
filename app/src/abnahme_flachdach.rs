@@ -79,13 +79,13 @@ fn schedule(s: &mut Scene) -> Schedule {
     s.schedule().clone()
 }
 
-/// A320 (D1): Der Schalter legt über dem OG die Ebene „Flachdach“ an (UK =
+/// A330 (D1): Der Schalter legt über dem OG die Ebene „Flachdach“ an (UK =
 /// OK Rohdecke OG +5,710, Höhe 0,50 bis OK Aufkantung +6,210). Auf ihr
 /// stehen 4 Aufkantungen, der Dachaufbau DA-001 und das Blech AB-001. Im
 /// Baum hat die Ebene ihren Ast; blendet man ihre Bauteile aus, ist das
 /// Flachdach weg und das Haus darunter bleibt. Ausschalten nimmt alles mit.
 #[test]
-fn a320_ebene_flachdach_ein_und_ausblenden() {
+fn a330_ebene_flachdach_ein_und_ausblenden() {
     let (mut s, og) = haus(320, sk_model::EXTERIOR_TYPE_GUID);
     let st = fd(&s, og);
     let e = s.model().storey(st).unwrap().clone();
@@ -140,11 +140,11 @@ fn a320_ebene_flachdach_ein_und_ausblenden() {
     assert!(s.model().check().is_empty(), "{:?}", s.model().check());
 }
 
-/// A321 (D2): Die Aufkantung ist in allen drei Wandtypen der Außenwandtyp
+/// A331 (D2): Die Aufkantung ist in allen drei Wandtypen der Außenwandtyp
 /// des OG, gekoppelt, ihre Krone liegt auf OK Aufkantung +6,210. Das
 /// Gerüst steigt mit (Länge × Höhe wächst um 0,50 m).
 #[test]
-fn a321_aufkantung_je_wandtyp() {
+fn a331_aufkantung_je_wandtyp() {
     for (seed, typ) in [
         (3210, sk_model::EXTERIOR_TYPE_GUID),
         (3211, sk_model::MONO_TYPE_GUID),
@@ -180,14 +180,14 @@ fn a321_aufkantung_je_wandtyp() {
     assert!(mit > ohne * 1.05, "{mit} > {ohne}");
 }
 
-/// A322 (D3): Dachaufbau DA-001 im Werkstyp „Flachdach 21,5“ (Abdichtung
+/// A332 (D3): Dachaufbau DA-001 im Werkstyp „Flachdach 21,5“ (Abdichtung
 /// 10, EPS 035 200, Dampfsperre 5) zwischen den Aufkantungen: Körper von
 /// OK Rohdecke +5,710 bis OK Dachhaut +5,925, innerhalb der Innenfläche
 /// der Aufkantung (AW-31,5: 315 mm). Fläche 69,06 m², Volumen der Dämmung
 /// 13,811 m³, Anschluss 33,48 m, Anschlusshöhe 28,5 cm. Auch im Schnitt
 /// umrissen.
 #[test]
-fn a322_dachaufbau() {
+fn a332_dachaufbau() {
     let (mut s, og) = haus(322, sk_model::EXTERIOR_TYPE_GUID);
     let (da, _) = da_ab(&s, og);
     let m = s.model();
@@ -239,12 +239,12 @@ fn a322_dachaufbau() {
     assert!((a as f64 - OK_OG).abs() < 1.0 && (b as f64 - OK_OG - 215.0).abs() < 1.0);
 }
 
-/// A323 (D4): Attikablech AB-001 als Ring auf der Krone der Aufkantung,
+/// A333 (D4): Attikablech AB-001 als Ring auf der Krone der Aufkantung,
 /// außen 40 mm vor der Fassade abgekantet: Länge an der Außenkante
 /// 36,00 m, Abwicklung 315 + 40 + 50 + 50 = 455 mm, Zuschnitt 500 mm.
 /// Löschen lehnt es mit dem Satz zum Flachdach ab.
 #[test]
-fn a323_attikablech() {
+fn a333_attikablech() {
     let (mut s, og) = haus(323, sk_model::EXTERIOR_TYPE_GUID);
     let (da, ab) = da_ab(&s, og);
     let (lo, hi) = s.element_bounds(ab).expect("Körper");
@@ -266,12 +266,12 @@ fn a323_attikablech() {
     }
 }
 
-/// A324 (D5): Das Mengenfenster führt die Ebene FD mit Aufkantungen,
+/// A334 (D5): Das Mengenfenster führt die Ebene FD mit Aufkantungen,
 /// Flachdach und Attikablech; am Flachdach hängen die Automatikmengen
 /// `roof.edge` 33,48 m, `roof.corners` 4, `roof.drains` und
 /// `roof.overflows` je 1 (69 m² < 150 m²).
 #[test]
-fn a324_mengen_flachdach() {
+fn a334_mengen_flachdach() {
     let (mut s, og) = haus(324, sk_model::EXTERIOR_TYPE_GUID);
     let st = fd(&s, og);
     let (da, ab) = da_ab(&s, og);
@@ -324,12 +324,12 @@ fn a324_mengen_flachdach() {
     assert_eq!(auto("roof.overflows"), Some(("st", 1.0)));
 }
 
-/// A325 (D5): Speichern → Öffnen ist bytegleich (`[storey] kind=roof`,
+/// A335 (D5): Speichern → Öffnen ist bytegleich (`[storey] kind=roof`,
 /// `[wall] cat=parapet`, `[roof]`, `[coping]`, `[layerset] cat=roof`);
 /// Rückgängig des Schalters nimmt Ebene, Aufkantungen, Dachaufbau, Blech,
 /// Werkstyp und Baustoffe zurück, Wiederherstellen bringt dieselben Guids.
 #[test]
-fn a325_datei_und_rueckgaengig() {
+fn a335_datei_und_rueckgaengig() {
     let (mut s, og) = haus(325, sk_model::EXTERIOR_TYPE_GUID);
     let text = sk_model::szo::write(s.model());
     for w in ["kind=roof", "cat=parapet", "\n[roof] ", "cat=roof"] {
@@ -356,12 +356,12 @@ fn a325_datei_und_rueckgaengig() {
     assert!(s.model().check().is_empty(), "{:?}", s.model().check());
 }
 
-/// A326 (D3, Paneel „Aufbau“): Das Feld „Dämmung“ zeigt 20 cm und ändert
+/// A336 (D3, Paneel „Aufbau“): Das Feld „Dämmung“ zeigt 20 cm und ändert
 /// die Dicke im Typ (4 bis 40 cm) in einem Schritt; bei 40 cm bleibt die
 /// Aufkantung 8,5 cm über der Dachhaut, das Paneel nennt den Hinweis zur
 /// Anschlusshöhe.
 #[test]
-fn a326_daemmdicke_im_paneel() {
+fn a336_daemmdicke_im_paneel() {
     let (mut s, og) = haus(326, sk_model::EXTERIOR_TYPE_GUID);
     let (da, _) = da_ab(&s, og);
     let p = selection::props(&s, da).unwrap();
@@ -380,4 +380,75 @@ fn a326_daemmdicke_im_paneel() {
     assert!(!s.set_field(da, Field::RoofInsulation, 450.0), "über 40 cm");
     s.undo();
     assert_eq!(wert(&s, da, "Anschlusshöhe"), "18,5 cm");
+}
+
+/// Ebene Flachdach im Modell: (Gebäude, Höhe), falls es eine gibt.
+fn flachdach_ebene(s: &Scene) -> Option<(Option<sk_model::BuildingId>, f64)> {
+    s.model()
+        .storeys()
+        .iter()
+        .find(|(_, st)| st.kind == sk_model::LevelKind::Roof)
+        .map(|(_, st)| (st.building, st.height))
+}
+
+/// A337 (P8): Der Dialog „Gebäude erstellen“ hat das Flachdach vorgewählt.
+/// Feld „Aufkantung Flachdach“ 50 cm (15–150 cm, 0 = kein Flachdach), die
+/// Ebene FD steht sofort im Paneel „Geschosse“. Das Rechteck bekommt
+/// Aufkantung, Dachaufbau und Blech im Schritt „Gebäude erstellt“;
+/// Abbrechen lässt nichts zurück, Rückgängig nimmt alles.
+#[test]
+fn a337_dialog_flachdach_vorgewaehlt() {
+    let mut s = Scene::with_model(Model::with_seed(327));
+    let vorher = sk_model::szo::write(s.model());
+    s.open_building_dialog();
+    assert_eq!(s.building_draft().roof, 500.0);
+    let (b, h) = flachdach_ebene(&s).expect("FD vorgewählt");
+    assert!(b.is_some());
+    assert_eq!(h, 500.0);
+    assert!(
+        !s.set_building_dialog_value("flachdach", 100.0),
+        "unter 15 cm"
+    );
+    assert!(
+        !s.set_building_dialog_value("flachdach", 1600.0),
+        "über 150 cm"
+    );
+    assert!(s.set_building_dialog_value("flachdach", 800.0));
+    assert_eq!(flachdach_ebene(&s).map(|x| x.1), Some(800.0));
+    assert!(s.set_building_dialog_value("flachdach", 0.0), "0 = keins");
+    assert!(flachdach_ebene(&s).is_none());
+    assert!(s.set_building_dialog_value("flachdach", 500.0));
+    assert!(flachdach_ebene(&s).is_some());
+    s.cancel_building();
+    assert!(flachdach_ebene(&s).is_none());
+    assert_eq!(sk_model::szo::write(s.model()), vorher, "Abbrechen");
+
+    s.open_building_dialog();
+    let (z, height) = s.work_plane();
+    let set = s.model().defaults().exterior_wall;
+    let chain = sk_model::WallChain {
+        points: vec![
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ],
+        closed: true,
+        ref_side: sk_model::RefSide::Left,
+        layers: s.model().wall_layers(set),
+        base: z,
+        height,
+        joints: Default::default(),
+    };
+    let eg = s.add_wall(&chain).expect("Gebäude gezeichnet");
+    let og = s.model().runs_above(eg)[0];
+    let fd = fd(&s, og);
+    assert_eq!(auf_ebene(&s, fd, Category::Parapet).len(), 4);
+    let (da, ab) = da_ab(&s, og);
+    assert_eq!(wert(&s, da, "Anschlusshöhe"), "28,5 cm");
+    assert!(s.model().element(ab).is_some());
+    assert!(s.model().check().is_empty(), "{:?}", s.model().check());
+    assert!(s.undo());
+    assert!(flachdach_ebene(&s).is_none());
+    assert_eq!(s.model().runs().len(), 0);
 }

@@ -3293,7 +3293,7 @@ impl Model {
             points: run.points.clone(),
             closed: run.closed,
             ref_side: run.ref_side,
-            layers: self.wall_layers(set),
+            layers: self.run_layers(id, set),
             base,
             height: self.level_z(run.top).unwrap_or(base) - base,
             joints: Default::default(),

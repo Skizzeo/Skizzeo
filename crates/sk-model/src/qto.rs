@@ -223,6 +223,9 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
         return Vec::new();
     };
     let category = model.element(r.segments[0]).map(|e| e.category);
+    // Aufkantung: ohne die Schichten innen vom Kern (Innenputz weglassen)
+    let dropped = model.parapet_inner_layers(run).unwrap_or(set.layers.len());
+    let drop: f64 = set.layers[dropped..].iter().map(|l| l.thickness).sum();
     let pts = chain.clean_points();
     let offsets = chain.layer_offsets();
     // Außenkante einer Schicht: `a` (kleinerer Versatz), wenn außen links liegt
@@ -232,9 +235,13 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
         joints: Default::default(),
         ..chain.clone()
     };
+    let inner = {
+        let (i, o) = (gross.inner_offset(), gross.outer_offset());
+        i + (o - i).signum() * drop
+    };
     let (c_out, c_in) = (
         gross.face_corners(gross.outer_offset()),
-        gross.face_corners(gross.inner_offset()),
+        gross.face_corners(inner),
     );
     let gross_faces: Vec<(Vec<Vec3>, Vec<Vec3>)> = offsets
         .iter()
@@ -282,6 +289,20 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                 .zip(&faces)
                 .enumerate()
                 .map(|(li, (l, (fa, fb)))| {
+                    if li >= dropped {
+                        return LayerQto {
+                            material: l.material,
+                            thickness: 0.0,
+                            length: 0.0,
+                            area: 0.0,
+                            volume: 0.0,
+                            mass: 0.0,
+                            pocket: 0.0,
+                            side_area: 0.0,
+                            attika: 0.0,
+                            inner_area: 0.0,
+                        };
+                    }
                     let quad = [fa[k], fa[j], fb[j], fb[k]];
                     // Luftschicht: ohne Körper, darum ohne Fläche und Volumen (K4)
                     let air = l.function == LayerFunction::AirGap;
@@ -330,6 +351,7 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
             let footprint: f64 = gross_faces
                 .iter()
                 .zip(&set.layers)
+                .take(dropped)
                 .filter(|(_, l)| l.function != LayerFunction::AirGap)
                 .map(|((fa, fb), _)| area(&[fa[k], fa[j], fb[j], fb[k]]))
                 .sum();
@@ -346,7 +368,7 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
             };
             WallQto {
                 length: (pts[j] - pts[k]).length(),
-                width: chain.thickness(),
+                width: chain.thickness() - drop,
                 height: h,
                 footprint,
                 side_outer,
@@ -1951,11 +1973,12 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
             ElementQto::Wall(w) => {
                 let whole = w.layers.len() == 1;
                 for (i, l) in w.layers.iter().enumerate() {
-                    // Luftschicht ohne Körper (K4)
+                    // Luftschicht ohne Körper (K4); in der Aufkantung
+                    // weggelassene Schicht (Dicke 0)
                     let air = model
                         .material(l.material)
                         .is_some_and(|x| x.category == MatCategory::Air);
-                    if !air {
+                    if !air && l.thickness > 0.0 {
                         push(
                             i,
                             w.list_length,
