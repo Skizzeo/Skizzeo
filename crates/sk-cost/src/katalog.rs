@@ -1416,7 +1416,7 @@ mod tests {
         assert_eq!(k.leistungen.len(), 73);
         assert_eq!(k.artikel.len(), 30);
         assert_eq!(k.lose.len(), 17);
-        assert_eq!(k.anteile.len(), 44);
+        assert_eq!(k.anteile.len(), 45);
         assert_eq!(k.folgen.len(), 9);
         assert_eq!(k.werte, Firmenwerte::werk());
         assert_eq!(k.kopf.as_ref().map(|c| c.stand), Some(10));
