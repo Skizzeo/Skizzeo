@@ -1443,7 +1443,7 @@ mod tests {
                 ..vorlage.clone()
             }));
         }
-        let [mw, sb, dae, putz, holz, luft, _blech] = mats[..] else {
+        let [mw, sb, dae, putz, holz, luft, _blech, _abdichtung] = mats[..] else {
             unreachable!()
         };
         let lage = |material, thickness, function, core| {
@@ -1467,14 +1467,9 @@ mod tests {
                     lage(dae, 2.0, LayerFunction::Membrane, false),
                     lage(dae, 100.0, LayerFunction::Insulation, false),
                     // waagerechte Typen: genau eine Kernschicht (Regel 38),
-                    // die Dachterrasse keine (Regel 39)
+                    // Dachterrasse und Flachdach keine (Regeln 39, 48)
                     lage(mw, 175.0, LayerFunction::Structure, cat.is_wall()),
-                    lage(
-                        sb,
-                        200.0,
-                        LayerFunction::Structure,
-                        cat != TypeCategory::RoofTerrace,
-                    ),
+                    lage(sb, 200.0, LayerFunction::Structure, !cat.is_build_up()),
                     lage(holz, 20.0, LayerFunction::Finish, false),
                 ],
                 bearing: if cat.is_wall() {

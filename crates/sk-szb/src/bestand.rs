@@ -292,8 +292,8 @@ pub const KGS: [u32; 16] = [
 ];
 
 /// In Skizzeo belegte Präfixe (§5).
-pub const BELEGT: [&str; 15] = [
-    "AW", "IW", "DE", "SP", "DA", "FE", "TU", "OE", "R", "FS", "RD", "UD", "DT", "AB", "GB",
+pub const BELEGT: [&str; 16] = [
+    "AW", "IW", "DE", "SP", "DA", "FE", "TU", "OE", "R", "FS", "RD", "UD", "DT", "AB", "GB", "AK",
 ];
 
 /// Bauteilarten in Skizzeo (§10).

@@ -8,6 +8,8 @@ mod abnahme;
 #[cfg(test)]
 mod abnahme_einstellungen;
 #[cfg(test)]
+mod abnahme_flachdach;
+#[cfg(test)]
 mod abnahme_pd;
 #[cfg(test)]
 mod abnahme_s1;
@@ -3633,6 +3635,14 @@ impl App {
                     self.sync_levels();
                 }
             }
+            Id::FlatRoof => {
+                let st = self.scene.active_storey();
+                let on = self.scene.model().roof_level(st).is_none();
+                if self.scene.set_flat_roof(on) {
+                    self.upload_model();
+                    self.sync_levels();
+                }
+            }
             Id::PropsType if self.ext_gewaehlt_ist() => self.ext_klick(id),
             Id::ToolType | Id::PropsType => self.open_type_menu(id),
             Id::Ext | Id::ExtTyp | Id::ExtListe(_) => self.ext_klick(id),
@@ -4999,7 +5009,7 @@ impl App {
                     SelKind::Foundation
                 }
                 K::Floor(_) | K::EdgeStrip { .. } | K::SoffitInsulation { .. } => SelKind::Floor,
-                K::RoofTerrace { .. } | K::Coping { .. } => SelKind::Terrace,
+                K::RoofTerrace { .. } | K::Coping { .. } | K::Roof { .. } => SelKind::Terrace,
                 // Thema „Erweiterungen“, siehe `sync_help`
                 K::Ext(_) => return None,
             })

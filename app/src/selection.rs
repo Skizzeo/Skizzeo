@@ -430,6 +430,7 @@ fn foundation_props(
         | ElementKind::SoffitInsulation { .. }
         | ElementKind::RoofTerrace { .. }
         | ElementKind::Coping { .. }
+        | ElementKind::Roof { .. }
         | ElementKind::Ext(_) => return None,
     };
     values.push(("Bauabschnitt", e.seq.to_string()));
@@ -486,6 +487,7 @@ fn props_of(scene: &Scene, id: ElementId) -> Option<Props> {
         ElementKind::RoofTerrace { floor } | ElementKind::Coping { floor } => {
             return terrace_props(scene, id, floor, values)
         }
+        ElementKind::Roof { floor } => return roof_props(scene, id, floor, values),
         _ => return foundation_props(scene, id, values),
     }
     if let Some(q) = q {
@@ -642,9 +644,11 @@ fn terrace_props(
     let mut label = String::new();
     if let ElementKind::Coping { .. } = e.kind {
         if let Some(q) = scene.coping_qto(id) {
+            let cut = sk_model::terrace::coping_cut_width(q.girth);
             values.extend([
                 ("Länge", format!("{} m", de(q.length / 1e3, 2))),
                 ("Abwicklung", format!("{} mm", q.girth.round())),
+                ("Zuschnitt", format!("{} mm", cut.round())),
             ]);
         }
         let mat = m.coping_material(floor);
@@ -678,6 +682,61 @@ fn terrace_props(
         sections: terrace_section(m, floor).into_iter().collect(),
         // Dachterrasse: drei Felder, die Schichten erst nach „Mehr …“
         more: !matches!(e.kind, ElementKind::Coping { .. }),
+        notes: m.warnings(id),
+        ..Default::default()
+    })
+}
+
+/// Eigenschaften des Dachaufbaus eines Flachdachs (D3): Mengen, Schichten
+/// und die Dämmdicke seines Typs.
+fn roof_props(
+    scene: &Scene,
+    id: ElementId,
+    floor: ElementId,
+    mut values: Vec<(&'static str, String)>,
+) -> Option<Props> {
+    let m = scene.model();
+    let mut layers = Vec::new();
+    if let Some(q) = scene.flat_roof_qto(id) {
+        values.extend([
+            ("Fläche", format!("{} m²", de(q.area / 1e6, 2))),
+            ("Volumen", format!("{} m³", de(q.volume / 1e9, 3))),
+        ]);
+        for &(mat, t, v) in &q.layers {
+            layers.extend(solid_layer(m, mat, t, Some(v)));
+        }
+    }
+    if let Some(r) = scene.flat_roof_over(floor) {
+        values.extend([
+            ("Anschluss", format!("{} m", de(r.edge_length() / 1e3, 2))),
+            ("Anschlusshöhe", format!("{} cm", cm(r.upstand()))),
+        ]);
+    }
+    values.push((
+        "Decke",
+        m.element(floor).map_or("–".into(), |f| f.number.clone()),
+    ));
+    let t = m.flat_roof_type(id).and_then(|t| m.layer_set(t));
+    let section = t.map(|t| {
+        let ins = t
+            .layers
+            .iter()
+            .find(|l| l.function == sk_model::LayerFunction::Insulation)
+            .map_or(0.0, |l| l.thickness);
+        let (lo, hi) = sk_model::ROOF_INSULATION;
+        crate::ui::Section {
+            title: "Aufbau",
+            fields: vec![field(Field::RoofInsulation, "Dämmung", ins, lo, hi)],
+            hint: "Höhe der Aufkantung in der Geschossverwaltung",
+        }
+    });
+    Some(Props {
+        values,
+        layer_set: t.map_or(String::new(), |t| t.name.clone()),
+        layers,
+        set_label: "Aufbau",
+        sections: section.into_iter().collect(),
+        more: true,
         notes: m.warnings(id),
         ..Default::default()
     })
@@ -980,12 +1039,32 @@ fn outline(
                 }
             }
         }
-        (None, Some(ElementKind::Coping { floor })) => {
-            // Attikablech: die Kanten seines Profils über der Attikakrone
-            let Some(slab) = m.run_of(*floor).and_then(|r| scene.floor(r)) else {
+        (None, Some(ElementKind::Roof { floor })) => {
+            // Flachdach: Innenfläche der Aufkantung von OK Rohdecke bis OK
+            // Dachhaut
+            let Some(r) = scene.flat_roof_over(*floor) else {
                 return Vec::new();
             };
-            let body = slab.coping_solid();
+            let (b, t) = r.band();
+            if view == ViewKind::Plan && b >= scene.plan_cut() {
+                return Vec::new();
+            }
+            prism(&r.outline, b, clip(t));
+        }
+        (None, Some(ElementKind::Coping { floor })) => {
+            // Attikablech: die Kanten seines Profils über der Attikakrone
+            // bzw. der Krone der Aufkantung
+            let body = if m.flat_roof_coping(id, *floor) {
+                let Some(r) = scene.flat_roof_over(*floor) else {
+                    return Vec::new();
+                };
+                r.coping_solid()
+            } else {
+                let Some(slab) = m.run_of(*floor).and_then(|r| scene.floor(r)) else {
+                    return Vec::new();
+                };
+                slab.coping_solid()
+            };
             let low = body
                 .edges
                 .iter()

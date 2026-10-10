@@ -10,6 +10,7 @@ use crate::floor::{FloorError, FloorSlab};
 use crate::foundation::{Foundation, FoundationError};
 use crate::library::{LayerFunction, LayerSet, LayerSetId, MatCategory, MaterialId, MaterialLayer};
 use crate::model::Model;
+use crate::roof::FlatRoof;
 use crate::wall::WallChain;
 use sk_math::Vec3;
 use std::collections::HashMap;
@@ -333,7 +334,7 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                 .map(|((fa, fb), _)| area(&[fa[k], fa[j], fb[j], fb[k]]))
                 .sum();
             let side_outer = (c_out[j] - c_out[k]).length() * h;
-            let list_length = if category == Some(Category::ExteriorWall) && h > 0.0 {
+            let list_length = if category.is_some_and(Category::is_outer_wall) && h > 0.0 {
                 side_outer / h
             } else {
                 // lichte Länge: Mittellinie der (ersten) tragenden Schicht
@@ -497,8 +498,8 @@ pub fn perimeter_qto_of(f: &Foundation) -> Option<PerimeterQto> {
     })
 }
 
-/// Mengen einer Dachterrasse (D1, IFC IfcCovering ROOFING), Hauptmenge
-/// Fläche (BIM §6).
+/// Mengen einer Dachterrasse (D1, IFC IfcCovering ROOFING) und eines
+/// Flachdachs (Jörn 10.10.), Hauptmenge Fläche (BIM §6).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerraceQto {
     /// Fläche des Umrisses (mm²).
@@ -599,8 +600,71 @@ pub fn coping_qto(model: &Model, coping: ElementId) -> Option<CopingQto> {
     let ElementKind::Coping { floor } = model.element(coping)?.kind else {
         return None;
     };
+    if model.flat_roof_coping(coping, floor) {
+        return Some(roof_coping_qto_of(
+            model,
+            floor,
+            &model.flat_roof_over(floor)?,
+        ));
+    }
     let run = model.run_of(floor)?;
     coping_qto_of(model, floor, &model.floor(run)?.ok()?)
+}
+
+/// Mengen des Dachaufbaus `roof` aus der schon berechneten Geometrie
+/// seines Flachdachs (D3): Fläche an der Innenfläche der Aufkantung, je
+/// Schicht ihr Volumen; Abdichtung und Dampfsperre zählen zu den Belägen.
+pub fn flat_roof_qto_of(model: &Model, roof: ElementId, r: &FlatRoof) -> TerraceQto {
+    let area = r.area();
+    let all = model.flat_roof_layers(roof);
+    let layers: Vec<(MaterialId, f64, f64)> = all
+        .iter()
+        .filter(|l| l.function != LayerFunction::AirGap)
+        .map(|l| (l.material, l.thickness, l.thickness * area))
+        .collect();
+    let by = |pick: &dyn Fn(LayerFunction) -> bool| -> f64 {
+        all.iter()
+            .filter(|l| pick(l.function))
+            .map(|l| l.thickness * area)
+            .sum()
+    };
+    TerraceQto {
+        area,
+        volume: layers.iter().map(|l| l.2).sum(),
+        insulation_volume: by(&|x| x == LayerFunction::Insulation),
+        finish_volume: by(&|x| x != LayerFunction::Insulation && x != LayerFunction::AirGap),
+        layers,
+        depth: 0.0,
+    }
+}
+
+/// Mengen eines Dachaufbaus.
+pub fn flat_roof_qto(model: &Model, roof: ElementId) -> Option<TerraceQto> {
+    let ElementKind::Roof { floor } = model.element(roof)?.kind else {
+        return None;
+    };
+    Some(flat_roof_qto_of(model, roof, &model.flat_roof_over(floor)?))
+}
+
+/// Mengen des Attikablechs auf der Aufkantung über der Decke `floor` (D4).
+pub fn roof_coping_qto_of(model: &Model, floor: ElementId, r: &FlatRoof) -> CopingQto {
+    let length = r.coping_length();
+    let girth = r.coping_girth();
+    // geschlossener Ring: Ecken an jedem Knick, keine Endabschlüsse
+    let ring = crate::terrace::CopingPath {
+        points: r.ring.clone(),
+        closed: true,
+        ends: [crate::solid::SweepEnd::Square; 2],
+    };
+    CopingQto {
+        length,
+        girth,
+        material: model.coping_material(floor),
+        volume: length * girth * COPING_SHEET,
+        cut: crate::qto_dach::zuschnitt(girth),
+        corners: crate::qto_dach::ecken(&ring),
+        ends: 0,
+    }
 }
 
 /// Mengen der Decke über einem Wandzug; `None` ohne Decke oder wenn kein
@@ -1204,7 +1268,9 @@ pub struct Schedule {
 /// so gelten Gebäude, Geschoss und Umfang wie bei jeder Mengenzeile.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AutoMenge {
-    /// Träger: Sohlplatte der Gründung bzw. das Bauteil der Menge.
+    /// Träger: Sohlplatte der Gründung (`earth.*`, `site.*`), Dachaufbau des
+    /// Flachdachs (`roof.*`) bzw. das Bauteil der Menge (`coping.*`,
+    /// `soffit.*`).
     pub element: ElementId,
     /// Bauteilnummer des Trägers.
     pub number: String,
@@ -1225,12 +1291,13 @@ pub struct AutoMenge {
 }
 
 /// Alle Schlüssel der Automatikmengen (`[service] auto=`) mit Einheit und
-/// Bedeutung: Erdarbeiten, Bauvorbereitung, Dach, Untersicht.
+/// Bedeutung: Erdarbeiten, Bauvorbereitung, Dach, Flachdach, Untersicht.
 pub fn auto_schluessel() -> impl Iterator<Item = (&'static str, &'static str, &'static str)> {
     crate::qto_earth::SCHLUESSEL
         .into_iter()
         .chain(crate::qto_site::SCHLUESSEL)
         .chain(crate::qto_dach::SCHLUESSEL)
+        .chain(crate::roof::SCHLUESSEL)
         .chain(crate::qto_fassade::SCHLUESSEL)
 }
 
@@ -1260,6 +1327,7 @@ fn material_rank(c: MatCategory) -> u8 {
         MatCategory::Plaster => 4,
         MatCategory::Air => 5,
         MatCategory::Metal => 6,
+        MatCategory::Membrane => 7,
     }
 }
 
@@ -1271,6 +1339,8 @@ pub fn schedule(model: &Model) -> Schedule {
     let mut found: HashMap<RunId, Result<Foundation, FoundationError>> = HashMap::new();
     // Sohlplatten je Wandzug, für die Automatikmengen
     let mut platten: Vec<(RunId, ElementId)> = Vec::new();
+    // Flachdächer, für ihre Automatikmengen
+    let mut roofs: Vec<(ElementId, FlatRoof)> = Vec::new();
     let mut floors: HashMap<RunId, Result<FloorSlab, FloorError>> = HashMap::new();
     // (Geschoss der Gruppe, Rang, Aufbau, Erweiterung) → Zeilen mit
     // Baustoffanteilen; die Erweiterung als Stelle in `ext_defs`, sonst 0
@@ -1380,6 +1450,24 @@ pub fn schedule(model: &Model) -> Schedule {
                             crate::model::explain_floor(*err)
                         )),
                     ),
+                }
+            }
+            // Flachdach (D3, D4): aus der Aufkantung über der Decke
+            ElementKind::Roof { floor } => match model.flat_roof_over(floor) {
+                Some(r) => {
+                    let q = flat_roof_qto_of(model, id, &r);
+                    roofs.push((id, r));
+                    (Some(ElementQto::Terrace(q)), None)
+                }
+                None => (None, Some("Kein Körper: keine Aufkantung".into())),
+            },
+            ElementKind::Coping { floor } if model.flat_roof_coping(id, floor) => {
+                match model.flat_roof_over(floor) {
+                    Some(r) => (
+                        Some(ElementQto::Coping(roof_coping_qto_of(model, floor, &r))),
+                        None,
+                    ),
+                    None => (None, Some("Kein Körper: keine Aufkantung".into())),
                 }
             }
             ElementKind::RoofTerrace { floor } | ElementKind::Coping { floor } => {
@@ -1528,6 +1616,24 @@ pub fn schedule(model: &Model) -> Schedule {
     }
     sched.formwork = formwork_rows(&sched);
     sched.auto = auto_rows(model, &platten);
+    roofs.sort_by_key(|(id, _)| model.element(*id).map(|e| e.number.clone()));
+    for (id, r) in &roofs {
+        let Some(e) = model.element(*id) else {
+            continue;
+        };
+        let vorlage = AutoMenge {
+            element: *id,
+            number: e.number.clone(),
+            storey: e.storey,
+            building: model.storey(e.storey).and_then(|s| s.building),
+            key: "",
+            unit: "",
+            value: 0.0,
+            kg: None,
+            formula: String::new(),
+        };
+        sched.auto.extend(crate::roof::roof_mengen(&vorlage, r));
+    }
     // Zulagen am Attikablech, nach den Mengen der Gründung
     let dach = crate::qto_dach::bauteil_mengen(model, &sched);
     sched.auto.extend(dach);
@@ -2073,7 +2179,10 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
             }
             ElementKind::Coping { floor } => model.coping_material(floor),
             ElementKind::PerimeterInsulation { .. } => model.perimeter_material(),
-            ElementKind::Wall(_) | ElementKind::RoofTerrace { .. } | ElementKind::Ext(_) => None,
+            ElementKind::Wall(_)
+            | ElementKind::RoofTerrace { .. }
+            | ElementKind::Roof { .. }
+            | ElementKind::Ext(_) => None,
         });
         match (q, mat) {
             (ElementQto::Terrace(t), _) => {

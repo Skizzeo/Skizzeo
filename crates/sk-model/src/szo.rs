@@ -380,10 +380,11 @@ fn mat_category(c: MatCategory) -> &'static str {
         MatCategory::Timber => "timber",
         MatCategory::Air => "air",
         MatCategory::Metal => "metal",
+        MatCategory::Membrane => "membrane",
     }
 }
 
-const MAT_CATEGORIES: [MatCategory; 7] = MatCategory::ALL;
+const MAT_CATEGORIES: [MatCategory; 8] = MatCategory::ALL;
 
 /// Wort der Schichtfunktion in `[layer] fn=` (auch die Regel `fn=` einer
 /// Bauleistung, KA-0).
@@ -419,6 +420,16 @@ fn slab_type(line: Line, m: &Model, e: &Element) -> Line {
     match e.layer_set.and_then(|s| m.layer_set(s)) {
         Some(t) => line.guid("set", Some(t.guid)),
         None => line,
+    }
+}
+
+/// Art eines Geschossbands in der Datei (`kind=`); „roof“ seit dem
+/// Flachdach (Jörn 10.10.), ältere Dateien kennen es nicht.
+fn level_kind_word(k: LevelKind) -> &'static str {
+    match k {
+        LevelKind::Foundation => "foundation",
+        LevelKind::Storey => "storey",
+        LevelKind::Roof => "roof",
     }
 }
 
@@ -867,13 +878,7 @@ fn write_known(m: &Model) -> String {
             )
             .text("name", &s.name)
             .text("short", &s.short)
-            .word(
-                "kind",
-                match s.kind {
-                    LevelKind::Foundation => "foundation",
-                    LevelKind::Storey => "storey",
-                },
-            )
+            .word("kind", level_kind_word(s.kind))
             .num("elev", s.elevation)
             .num("h", s.height);
         // Gewollte Einbindetiefe (Gelände Thema 1) nur, wenn sie von der
@@ -1073,11 +1078,13 @@ fn write_known(m: &Model) -> String {
             .guid("storey", storey_guid(e.storey))
             .finish(&mut out);
     }
-    // Dachterrasse und Attikablech (D1–D3): nur, wenn es sie gibt
+    // Dachterrasse und Attikablech (D1–D3), Dachaufbau des Flachdachs
+    // (Jörn 10.10.): nur, wenn es sie gibt
     for e in &walls {
         let (word, floor) = match e.kind {
             ElementKind::RoofTerrace { floor } => ("terrace", floor),
             ElementKind::Coping { floor } => ("coping", floor),
+            ElementKind::Roof { floor } => ("roof", floor),
             _ => continue,
         };
         let l = Line::new(word)
@@ -1085,7 +1092,7 @@ fn write_known(m: &Model) -> String {
             .guid("floor", m.element(floor).map(|x| x.guid))
             .text("number", &e.number)
             .word("cat", category(e.category));
-        let l = if word == "terrace" {
+        let l = if word != "coping" {
             slab_type(l, m, e)
         } else {
             l
@@ -1433,7 +1440,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 36] = [
+    const KNOWN: [&str; 37] = [
         "pen",
         "linetype",
         "fill",
@@ -1459,6 +1466,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         "terrace",
         "coping",
         "perimeter",
+        "roof",
         "extdef",
         "extpart",
         "prop",
@@ -1667,11 +1675,8 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                 kind: keyword(
                     r,
                     "kind",
-                    &[LevelKind::Foundation, LevelKind::Storey],
-                    |k| match k {
-                        LevelKind::Foundation => "foundation",
-                        LevelKind::Storey => "storey",
-                    },
+                    &[LevelKind::Foundation, LevelKind::Storey, LevelKind::Roof],
+                    level_kind_word,
                 )?,
                 elevation: r.f64("elev")?,
                 height: r.f64("h")?,
@@ -2053,6 +2058,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         ("terrace", 5),
         ("coping", 6),
         ("perimeter", 7),
+        ("roof", 8),
     ] {
         for r in recs(section) {
             let kind = if ix == 7 {
@@ -2066,6 +2072,16 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                     return Err(err(r.line, "[perimeter]: „slab“ ist keine Sohlplatte"));
                 }
                 ElementKind::PerimeterInsulation { slab }
+            } else if ix == 8 {
+                // Flachdach (Jörn 10.10.): nur der Verweis auf die Decke
+                let floor = r.link("floor", &elem_ids)?;
+                if !matches!(
+                    elements.get(floor).map(|e: &Element| &e.kind),
+                    Some(ElementKind::Floor(_))
+                ) {
+                    return Err(err(r.line, "[roof]: „floor“ ist keine Decke"));
+                }
+                ElementKind::Roof { floor }
             } else if ix >= 5 {
                 // Dachterrasse, Attikablech (D1–D3): nur der Verweis auf die Decke
                 let floor = r.link("floor", &elem_ids)?;
@@ -2586,6 +2602,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     model.complete_soffits();
     model.complete_perimeters();
     hints.extend(model.complete_terraces());
+    hints.extend(model.complete_flat_roofs());
     for (i, c) in cuts {
         model.set_cut(i, c);
     }

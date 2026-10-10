@@ -283,6 +283,12 @@ pub use lock::{edit_blocked, Locked};
 
 #[path = "location.rs"]
 mod location;
+
+#[path = "flachdach.rs"]
+mod flachdach;
+pub use flachdach::{
+    MIN_ROOF_EDGE, ROOF_INSULATION_GUID, ROOF_SEAL_GUID, ROOF_TYPE_GUID, ROOF_VAPOUR_GUID,
+};
 pub use location::{Foot, Location, ShadeLight, Sun, ViewShade, FOOT_MAX, SHADE_VIEWS};
 
 impl Default for Model {
@@ -1293,7 +1299,8 @@ impl Model {
                 ElementKind::Wall(_)
                 | ElementKind::EdgeStrip { .. }
                 | ElementKind::SoffitInsulation { .. }
-                | ElementKind::RoofTerrace { .. } => false,
+                | ElementKind::RoofTerrace { .. }
+                | ElementKind::Roof { .. } => false,
             };
             if hit {
                 out.push(Use::Element(e));
@@ -1304,7 +1311,7 @@ impl Model {
 
     /// Darf der Baustoff gelöscht werden (§1.4, Regeln 15 und 55)? Nicht,
     /// wenn etwas auf ihn verweist; Luft und die eingebauten Baustoffe von
-    /// Dachterrasse und Attikablech nie. Kennwerte halten nichts fest.
+    /// Dachterrasse, Flachdach und Attikablech nie. Kennwerte halten nichts fest.
     pub fn can_remove_material(&self, id: MaterialId) -> bool {
         self.materials.get(id).is_some_and(|m| {
             m.category != MatCategory::Air
@@ -1312,6 +1319,9 @@ impl Model {
                     TERRACE_FINISH_GUID,
                     TERRACE_INSULATION_GUID,
                     COPING_MAT_GUID,
+                    flachdach::ROOF_SEAL_GUID,
+                    flachdach::ROOF_INSULATION_GUID,
+                    flachdach::ROOF_VAPOUR_GUID,
                 ]
                 .contains(&m.guid)
         }) && !self.material_used(id)
@@ -1787,10 +1797,14 @@ impl Model {
                     _ => {
                         let g = crate::terrace::coping_girth(f.terraces.width);
                         p.insert("Abwicklung".into(), PropValue::Number(g));
+                        let w = crate::terrace::coping_cut_width(g);
+                        p.insert("Zuschnitt".into(), PropValue::Number(w));
                     }
                 }
             }
         }
+        // ... und des Flachdachs (D3, D4)
+        p.extend(self.flat_roof_props(el));
         p
     }
 
@@ -1881,7 +1895,14 @@ impl Model {
     /// vorher zeigt), jedes weitere bekommt eigene Geschosse.
     pub fn add_building(&mut self, storeys: u8) -> BuildingId {
         let storeys = storeys.max(1) as usize;
+        // Das Flachdach der Vorlage zählt nicht als Geschoss, es kommt
+        // zuletzt obendrauf
         let template = self.levels_in(None);
+        let roof = self.roof_level_of(None);
+        let template: Vec<StoreyId> = template
+            .into_iter()
+            .filter(|id| Some(*id) != roof)
+            .collect();
         // Nummern werden nie neu vergeben, auch nicht nach dem Löschen
         let mut k = self.building_number;
         let number = loop {
@@ -1972,6 +1993,17 @@ impl Model {
                 }
             }
         }
+        if let Some(fd) = roof {
+            let z = levels
+                .last()
+                .and_then(|id| self.storey(*id))
+                .map_or(0.0, |s| s.top());
+            note!(self, Storey, self.storeys, fd);
+            if let Some(st) = self.storeys.get_mut(fd) {
+                st.building = Some(b);
+                st.elevation = z;
+            }
+        }
         self.touch();
         b
     }
@@ -1993,7 +2025,7 @@ impl Model {
                 .iter()
                 .filter(|id| {
                     self.storey(**id)
-                        .is_some_and(|s| s.kind != LevelKind::Foundation)
+                        .is_some_and(|s| s.kind == LevelKind::Storey)
                 })
                 .count();
             self.add_building(up.max(1) as u8);
@@ -2181,7 +2213,11 @@ impl Model {
         let fits = self
             .layer_set(layer_set)
             .is_some_and(|t| TypeCategory::of(category) == Some(t.category));
-        if count == 0 || !fits || self.storey(storey).is_none() {
+        // Auf der Ebene Flachdach stehen nur die Aufkantungen (abgeleitet)
+        let roof = self
+            .storey(storey)
+            .is_none_or(|s| s.kind == LevelKind::Roof);
+        if count == 0 || !fits || roof {
             return None;
         }
         self.ensure_building(storey);
@@ -2226,6 +2262,14 @@ impl Model {
                 };
                 (below, at) = (r, up);
             }
+        } else if self.needs_floor(run) {
+            // Im obersten Geschoss gezeichnet: Aufkantung darüber
+            if let Some(fd) = self
+                .level_above(storey)
+                .filter(|l| self.storey(*l).is_some_and(|s| s.kind == LevelKind::Roof))
+            {
+                self.stack_run(run, fd);
+            }
         }
         self.touch();
         Some(run)
@@ -2257,17 +2301,23 @@ impl Model {
         });
         note!(self, Run, new run);
         let seq = self.storey_seq(storey).0;
+        // Auf der Ebene Flachdach wird die Außenwand zur Aufkantung
+        let roof = self
+            .storey(storey)
+            .is_some_and(|s| s.kind == LevelKind::Roof);
         let mut segments = Vec::with_capacity(r.segments.len());
         for (k, &w) in r.segments.iter().enumerate() {
             let Some(t) = self.element(w).cloned() else {
                 continue;
             };
+            let category = if roof { Category::Parapet } else { t.category };
             let id = self.new_wall(
                 run,
                 k,
                 &Element {
                     storey,
                     seq,
+                    category,
                     props: PropSet::new(),
                     ..t
                 },
@@ -2570,6 +2620,10 @@ impl Model {
         let Some((_, now)) = self.stack_offset(wall) else {
             return false;
         };
+        // Die Aufkantung bleibt bündig gekoppelt (Flachdach, Jörn 10.10.)
+        if !linked && self.is_parapet(wall) {
+            return false;
+        }
         if now == linked {
             return true;
         }
@@ -2598,6 +2652,9 @@ impl Model {
         } else {
             offset
         };
+        if offset != 0.0 && self.is_parapet(wall) {
+            return None;
+        }
         let (run, seg) = self.segment_of(wall)?;
         let (old, linked) = self.stack_offset(wall)?;
         let below = self.run_below(run)?;
@@ -3307,7 +3364,8 @@ impl Model {
             ElementKind::EdgeStrip { wall, .. } => self.run_of(wall),
             ElementKind::SoffitInsulation { floor }
             | ElementKind::RoofTerrace { floor }
-            | ElementKind::Coping { floor } => self.run_of(floor),
+            | ElementKind::Coping { floor }
+            | ElementKind::Roof { floor } => self.run_of(floor),
             ElementKind::PerimeterInsulation { slab } => self.run_of(slab),
             ElementKind::Ext(_) => None,
         }
@@ -3452,6 +3510,8 @@ impl Model {
             SOFFIT_PART => self.soffit_of(self.floor_of(run)?),
             TERRACE_PART => self.terrace_of(self.floor_of(run)?),
             COPING_PART => self.coping_of(self.floor_of(run)?),
+            ROOF_PART => self.flat_roof_of(self.floor_of(self.run_below(run)?)?),
+            ROOF_COPING_PART => self.coping_of(self.floor_of(self.run_below(run)?)?),
             p if (STRIP_PART..STRIP_PART + MAX_STRIPS).contains(&p) => {
                 let wall = self.wall_at(run, (p - STRIP_PART) as usize)?;
                 self.edge_strip_of(wall, self.floor_of(run)?)
@@ -4840,6 +4900,8 @@ impl Model {
                 _ => None,
             })
             .filter(|&(_, floor, _)| self.floor_in_scope(floor, scope))
+            // das Blech des Flachdachs gleicht [`Model::sync_flat_roofs_in`] ab
+            .filter(|&(id, floor, dt)| dt || !self.flat_roof_coping(id, floor))
             .collect();
         let (mut added, mut removed) = (0, 0);
         // Terrasse je gewünschter Decke (für den Typ unten)
@@ -5094,6 +5156,7 @@ impl Model {
                     .unwrap_or_default();
             }
             ElementKind::RoofTerrace { floor } => return self.terrace_layers(floor),
+            ElementKind::Roof { .. } => return self.flat_roof_layers(id),
             // Eingebauter Ein-Schicht-Aufbau: XPS in der Dicke an der Platte
             ElementKind::PerimeterInsulation { slab } => {
                 let t = self.slab_insulation(slab);
@@ -5164,7 +5227,7 @@ impl Model {
         let last = layers.iter().rposition(|l| l.core);
         // (vor bzw. über dem Kern, Kern, hinter bzw. unter dem Kern)
         let (before, at, after) = match e.category {
-            Category::ExteriorWall => (335, 331, 336),
+            Category::ExteriorWall | Category::Parapet => (335, 331, 336),
             Category::InteriorWall if crate::library::bears(&layers, true) => (345, 341, 345),
             Category::InteriorWall => (345, 342, 345),
             Category::Floor => (353, 351, 354),
@@ -5416,6 +5479,10 @@ impl Model {
         {
             out.push("Deckenauflager des Typs ungültig".into());
         }
+        if let Some(&ElementKind::Roof { floor }) = self.element(e).map(|x| &x.kind) {
+            out.extend(self.flat_roof_hint(floor));
+            return out;
+        }
         let Some(run) = self.run_of(e) else {
             return out;
         };
@@ -5570,7 +5637,12 @@ impl Model {
         let s = self.storey(id)?;
         match s.kind {
             LevelKind::Foundation => None,
-            _ => Some((
+            // Flachdach: OK Aufkantung über OK Rohdecke darunter
+            LevelKind::Roof => Some((
+                s.elevation + MIN_ROOF_UPSTAND,
+                s.elevation + MAX_ROOF_UPSTAND,
+            )),
+            LevelKind::Storey => Some((
                 s.elevation + self.floor_thickness_of(id) + MIN_CLEAR,
                 f64::INFINITY,
             )),
@@ -5808,6 +5880,28 @@ impl Model {
                     "Geschosse {name}: nicht genau eine Gründung und mindestens ein EG"
                 ));
             }
+            // Flachdach (Jörn 10.10.): höchstens eins, zuoberst, über einem
+            // Geschoss
+            let roofs: Vec<usize> = levels
+                .iter()
+                .enumerate()
+                .filter(|(_, id)| self.storey(**id).is_some_and(|s| s.kind == LevelKind::Roof))
+                .map(|(i, _)| i)
+                .collect();
+            if roofs.len() > 1 {
+                out.push(format!("Geschosse {name}: mehr als ein Flachdach"));
+            }
+            if roofs.iter().any(|&i| {
+                i + 1 != levels.len()
+                    || !levels[..i].iter().any(|id| {
+                        self.storey(*id)
+                            .is_some_and(|s| s.kind == LevelKind::Storey)
+                    })
+            }) {
+                out.push(format!(
+                    "Geschosse {name}: Flachdach nicht zuoberst über einem Geschoss"
+                ));
+            }
             let first = levels.first().and_then(|id| self.storey(*id));
             if first.is_some_and(|s| s.kind != LevelKind::Foundation) {
                 out.push(format!(
@@ -5854,6 +5948,7 @@ impl Model {
                 | ElementKind::SoffitInsulation { .. }
                 | ElementKind::RoofTerrace { .. }
                 | ElementKind::Coping { .. }
+                | ElementKind::Roof { .. }
                 | ElementKind::Ext(_) => {}
             }
         }
@@ -6210,6 +6305,7 @@ impl Model {
             self.sync_edge_strips(scope);
             self.sync_soffits_in(scope);
             self.sync_terraces_in(scope);
+            self.sync_flat_roofs_in(scope);
         }
         if let Some(id) = self.locked_change() {
             self.rollback();
@@ -6269,7 +6365,8 @@ impl Model {
                             ElementKind::EdgeStrip { wall, .. } => strips.push(wall),
                             ElementKind::SoffitInsulation { floor }
                             | ElementKind::RoofTerrace { floor }
-                            | ElementKind::Coping { floor } => strips.push(floor),
+                            | ElementKind::Coping { floor }
+                            | ElementKind::Roof { floor } => strips.push(floor),
                             ElementKind::Ext(_) => {}
                         }
                     }
@@ -6357,7 +6454,8 @@ impl Model {
                         ElementKind::EdgeStrip { wall, .. } => footings.push(wall),
                         ElementKind::SoffitInsulation { floor }
                         | ElementKind::RoofTerrace { floor }
-                        | ElementKind::Coping { floor } => footings.push(floor),
+                        | ElementKind::Coping { floor }
+                        | ElementKind::Roof { floor } => footings.push(floor),
                         ElementKind::Floor(f) => {
                             touched.run(f.run);
                             floors.push(f.run);
@@ -6711,6 +6809,10 @@ impl Model {
                     {
                         out.push(format!("{}: Baustoff des Attikablechs fehlt", e.number));
                     }
+                }
+                ElementKind::Roof { floor } => out.extend(self.check_flat_roof(id, floor)),
+                ElementKind::Coping { floor } if self.flat_roof_coping(id, floor) => {
+                    out.extend(self.check_flat_roof(id, floor))
                 }
                 ElementKind::RoofTerrace { floor } | ElementKind::Coping { floor } => {
                     // Regeln 41/46: genau dann, wenn darüber ein Rücksprung ist
@@ -7101,6 +7203,12 @@ pub(crate) const STOREY_HEIGHT: f64 = 2855.0;
 /// Geschosshöhe OG (Jörn 10:13): lichte Höhe 2,635 + Decke 0,22.
 pub(crate) const UPPER_HEIGHT: f64 = 2855.0;
 pub(crate) const FOUNDATION_DEPTH: f64 = 800.0;
+/// Ebene Flachdach (Jörn 10.10.): ihre Höhe ist die Aufkantung über OK
+/// Rohdecke des obersten Geschosses, 50 cm, einstellbar von 15 cm bis
+/// 1,50 m (OK Mauerwerk, ohne Attikablech).
+pub const ROOF_UPSTAND: f64 = 500.0;
+pub const MIN_ROOF_UPSTAND: f64 = 150.0;
+pub const MAX_ROOF_UPSTAND: f64 = 1500.0;
 pub const FLOOR_THICKNESS: f64 = 220.0;
 /// Untersichtdämmung unter einem Vorsprung (Jörn 04:03, G7 K4, BIM Regel
 /// 35): 12 cm, einstellbar von 4 bis 30 cm, nie 0.
@@ -7152,6 +7260,11 @@ pub const COPING_PART: u32 = STRIP_PART - 3;
 /// Teil des Körpers eines Wandzugs: Perimeterdämmung unter seiner
 /// Sohlplatte (Gelände Thema 4).
 pub const PERIMETER_PART: u32 = STRIP_PART - 4;
+/// Teil des Körpers einer Aufkantung: Dachaufbau und Attikablech des
+/// Flachdachs (D3, D4); Abstand zu den Teilen oben, damit weitere dazwischen
+/// passen.
+pub const ROOF_PART: u32 = STRIP_PART - 10;
+pub const ROOF_COPING_PART: u32 = STRIP_PART - 11;
 /// Attika über OK Belag (Jörn 08:35, BIM §3): 6 cm, einstellbar 0 bis 30 cm.
 pub const TERRACE_UPSTAND: f64 = 60.0;
 pub const MAX_UPSTAND: f64 = 300.0;
@@ -8473,11 +8586,16 @@ mod og_phase2 {
         );
         let c = crate::qto::coping_qto(&m, ab).unwrap();
         assert!(near(c.length, 13000.0), "{}", c.length);
-        assert_eq!(c.girth, 250.0);
+        // Tropfkante 40 statt 20 (Jörn 10.10., Plan Flachdach P12)
+        assert_eq!(c.girth, 270.0);
         assert_eq!(m.props_of(dt).get("begehbar"), Some(&PropValue::Bool(true)));
         assert_eq!(
             m.props_of(ab).get("Abwicklung"),
-            Some(&PropValue::Number(250.0))
+            Some(&PropValue::Number(270.0))
+        );
+        assert_eq!(
+            m.props_of(ab).get("Zuschnitt"),
+            Some(&PropValue::Number(333.0))
         );
         let f = m.floor(eg).unwrap().unwrap();
         assert_eq!(f.terrace_band(), Some((2855.0, 2995.0)));
