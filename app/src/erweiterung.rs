@@ -208,6 +208,14 @@ mod probe_3ch {
                 "E={n} ziehen={drag:.3} ms pick={pick:.3} ms neu_gerechnet={}",
                 s.ext_builds() - b0
             );
+            // Budget (Briefing QS §5, gemessen 46e1ed0: 0,83 und 0,08 ms)
+            if n == 2000 && !cfg!(debug_assertions) {
+                assert!(drag <= 2.0, "Ziehen bei {n} Exemplaren {drag:.3} ms > 2 ms");
+                assert!(
+                    pick <= 0.5,
+                    "Picken bei {n} Exemplaren {pick:.3} ms > 0,5 ms"
+                );
+            }
         }
     }
 
@@ -252,6 +260,15 @@ mod probe_3ch {
             }
             let rech = t1.elapsed().as_secs_f64() * 1000.0 / k as f64;
             println!("E={n} verschieden={anders} schedule={ms:.2} ms davon_rechnen~{rech:.2} ms");
+            // Budget (Briefing QS §5, gemessen 46e1ed0: 3,0 und 19,9 ms); der
+            // Fall „verschieden“ rechnet jede Stütze einmal, beim Öffnen
+            let budget = if anders { 40.0 } else { 6.0 };
+            if !cfg!(debug_assertions) {
+                assert!(
+                    ms <= budget,
+                    "schedule bei {n} Exemplaren {ms:.2} ms > {budget} ms"
+                );
+            }
         }
     }
 }
