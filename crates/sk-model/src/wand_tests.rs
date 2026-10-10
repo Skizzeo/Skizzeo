@@ -4,8 +4,12 @@
 
 use crate::attr::{cross_lines, FillKind, CROSS_FILL_NAME};
 use crate::element::RunId;
+use crate::element::{CladdingValue, ElementKind};
 use crate::library::{material_key, MatCategory};
-use crate::model::{Model, CAVITY_TYPE_GUID, CROSS_FILL_GUID, FOAMGLASS_MAT_GUID, MONO_TYPE_GUID};
+use crate::model::{
+    Model, CAVITY_TYPE_GUID, CLADDING_MAT_GUID, CROSS_FILL_GUID, ETICS_TYPE_GUID,
+    FOAMGLASS_MAT_GUID, MONO_TYPE_GUID,
+};
 use crate::solid::{material, Solid};
 use crate::txn::Direction;
 use crate::{run_qto, szo, Guid, GuidGen};
@@ -279,4 +283,278 @@ fn og_of(m: &Model) -> RunId {
         .map(|(id, _)| id)
         .unwrap();
     m.runs_above(eg)[0]
+}
+
+/// EG-Zug, Decke und Untersichtdämmung des Prüfhauses.
+fn eg_of(m: &Model) -> (RunId, crate::ElementId, crate::ElementId) {
+    let og = og_of(m);
+    let eg = m.run_below(og).unwrap();
+    let fl = m.floor_of(eg).unwrap();
+    (eg, fl, m.soffit_of(fl).unwrap())
+}
+
+/// W3: AW-49, OG im Norden 30 cm vor. Unter der Untersichtdämmung liegt
+/// die Bekleidung (40 mm, Faserzement) von der Außenseite der EG-Wand bis
+/// zur Rückseite des Verblenders; der Verblender läuft auf dem Nordsegment
+/// bis 30 mm unter UK Bekleidung. Mengen: Fläche, Umfang, Außenkante,
+/// Lattung, eigene Schicht mit VHF und KG 354, Summe je Baustoff.
+#[test]
+fn bekleidung_unter_der_untersicht() {
+    let (mut m, _, og) = haus(Some(CAVITY_TYPE_GUID), &[(1, 300.0)]);
+    let (eg, fl, ud) = eg_of(&m);
+    let clad = m
+        .material_by_guid(CLADDING_MAT_GUID)
+        .expect("Bekleidung angelegt");
+    assert_eq!(m.material(clad).unwrap().name, "Bekleidung Faserzement");
+    assert_eq!(m.soffit_cladding_material_of(fl), Some(clad));
+    assert!(!m.can_remove_material(clad));
+    let f = m.floor(eg).unwrap().unwrap();
+    let (u0, _) = f.soffit_band().unwrap();
+    assert_eq!(f.cladding_band(), Some((u0 - 40.0, u0)));
+    assert_eq!(f.drip_bottom(), Some(u0 - 70.0));
+    // Nur das Nordsegment, 30 cm − Verblender 11,5 cm breit
+    assert_eq!(f.claddings.len(), 1);
+    let (k, q) = f.claddings[0];
+    assert_eq!(k, 1);
+    let quer = |p: sk_math::Vec3, r: sk_math::Vec3| (r.y - p.y).abs();
+    assert!(
+        near(quer(q[0], q[3]), 185.0) && near(quer(q[1], q[2]), 185.0),
+        "{q:?}"
+    );
+    assert!(near(f.cladding_volume(), f.cladding_area() * 40.0));
+
+    // Verblender bis UK Bekleidung − 30 mm, nur im Norden
+    let c = m.chain(eg).unwrap();
+    let d = c.joints.overhang.as_ref().unwrap().drip.clone().unwrap();
+    assert_eq!((d.layer, d.from), (0, u0 - 70.0));
+    assert_eq!(d.segs, vec![false, true, false, false]);
+    let vb = c.layers[0].material;
+    let (z, _) = mit_baustoff(&c.solid(), vb);
+    assert!(near(z.unwrap().0, 0.0));
+    let unten: Vec<u32> = c
+        .solid()
+        .triangles
+        .iter()
+        .filter(|t| t.mat & !material::CUT == vb && t.p.iter().all(|p| p.z < u0 - 1.0))
+        .filter(|t| t.p.iter().any(|p| near(p.z, u0 - 70.0)))
+        .map(|t| t.elem)
+        .collect();
+    assert!(
+        !unten.is_empty() && unten.iter().all(|e| *e == 1),
+        "{unten:?}"
+    );
+    // Schnitt quer durch die Nordwand: Verblender reicht bis u0 − 70,
+    // darunter Bekleidung zwischen EG-Wand und Verblender
+    let cut = c.section_caps(vec3(5000.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0));
+    let tief = cut
+        .triangles
+        .iter()
+        .filter(|t| t.mat == vb | material::CUT)
+        .flat_map(|t| t.p)
+        .filter(|p| p.y > 8000.0)
+        .map(|p| p.z)
+        .fold(f64::INFINITY, f64::min);
+    assert!(near(tief, u0 - 70.0), "{tief}");
+    let fc = f.soffit_section_caps(vec3(5000.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0));
+    let (cz, _) = mit_baustoff(&fc, material_key(clad));
+    assert_eq!(cz, Some((u0 - 40.0, u0)));
+
+    // Mengen
+    let q = crate::qto::soffit_qto(&m, ud).unwrap();
+    let cq = q.cladding.clone().unwrap();
+    assert_eq!((cq.thickness, cq.batten, cq.counter), (40.0, 800.0, 400.0));
+    assert!(near(cq.area, f.cladding_area()) && near(cq.volume, f.cladding_volume()));
+    assert!(near(cq.edge, (q_len(&q, &f)).1));
+    assert!(near(cq.batten_length(), cq.area / 800.0 + cq.perimeter));
+    assert!(near(cq.counter_length(), cq.area / 400.0 + cq.perimeter));
+    // Umfang: zwei Längsseiten und die Stirnseiten auf den Gehrungen
+    let (lang, aussen) = q_len(&q, &f);
+    let (_, r) = f.claddings[0];
+    let stirn = (r[1] - r[2]).length() + (r[3] - r[0]).length();
+    assert!(stirn >= 2.0 * 185.0);
+    assert!(
+        near(cq.perimeter, lang + aussen + stirn),
+        "{}",
+        cq.perimeter
+    );
+    // Schichten der UD: Dämmung, Bekleidung (VHF, KG 354)
+    let layers = m.element_layers(ud);
+    assert_eq!(layers.len(), 2);
+    assert_eq!(layers[1].material, clad);
+    assert_eq!(layers[1].thickness, 40.0);
+    let vhf = crate::trade::start_id("18351");
+    assert_eq!(m.layer_trade(ud, 1), vhf);
+    assert_eq!(m.layer_kg(ud, 1), Some(354));
+    let sched = crate::qto::schedule(&m);
+    let b = &sched.buildings[0];
+    let row = b
+        .by_trade
+        .iter()
+        .find(|t| Some(t.trade) == vhf)
+        .and_then(|t| t.rows.iter().find(|r| r.element == ud))
+        .expect("Zeile Bekleidung unter VHF");
+    assert_eq!(row.layer, 1);
+    assert!(near(row.bill_area, cq.area) && near(row.volume, cq.volume));
+    let sum = b.by_material.iter().find(|x| x.material == clad).unwrap();
+    assert!(near(sum.volume, cq.volume));
+    assert!(m.check().is_empty(), "{:?}", m.check());
+
+    // Der längere Verblender zählt in den Mengen mit (Nordsegment, 70 mm)
+    let vb_menge = |m: &Model| -> f64 {
+        [eg, og]
+            .iter()
+            .flat_map(|r| run_qto(m, *r))
+            .map(|w| w.layers[0].volume)
+            .sum()
+    };
+    let mit = vb_menge(&m);
+    m.begin("ohne Bekleidung");
+    assert!(m.set_floor_cladding(fl, CladdingValue::Thickness, 0.0));
+    m.commit();
+    let mehr = mit - vb_menge(&m);
+    // Verblender im Grundriss: Trapez 10,00 / 9,77 m × 11,5 cm
+    let quad = (10000.0 + 9770.0) * 0.5 * 115.0;
+    assert!(near(mehr, quad * 70.0), "{mehr}");
+}
+
+/// Längsseite der Bekleidung an der EG-Wand und Außenkante am Verblender.
+fn q_len(_q: &crate::qto::SoffitQto, f: &crate::floor::FloorSlab) -> (f64, f64) {
+    let (_, q) = f.claddings[0];
+    ((q[1] - q[0]).length(), (q[2] - q[3]).length())
+}
+
+/// W3: Mit WDVS reicht die Bekleidung bis zur Außenseite der verlängerten
+/// Schichten, kein Verblender läuft herab. Ohne Bekleidung (0) bleibt alles
+/// wie vor W3; Rückgängig bringt sie zurück. Grenzen der Werte.
+#[test]
+fn bekleidung_wdvs_und_ohne() {
+    let (mut m, _, _) = haus(Some(ETICS_TYPE_GUID), &[(1, 300.0)]);
+    let (eg, fl, ud) = eg_of(&m);
+    let f = m.floor(eg).unwrap().unwrap();
+    let (_, q) = f.claddings[0];
+    assert!(near((q[3].y - q[0].y).abs(), 300.0), "{q:?}");
+    let c = m.chain(eg).unwrap();
+    assert!(c.joints.overhang.as_ref().unwrap().drip.is_none());
+
+    m.begin("ohne");
+    assert!(m.set_floor_cladding(fl, CladdingValue::Thickness, 0.0));
+    let t = m.commit().unwrap();
+    let f = m.floor(eg).unwrap().unwrap();
+    assert!(f.claddings.is_empty() && f.cladding_band().is_none());
+    assert_eq!(m.element_layers(ud).len(), 1);
+    assert!(crate::qto::soffit_qto(&m, ud).unwrap().cladding.is_none());
+    m.apply(&t, Direction::Undo);
+    assert_eq!(m.element_layers(ud).len(), 2);
+    assert_eq!(m.floor(eg).unwrap().unwrap().claddings.len(), 1);
+
+    // Grenzen: Dicke 0 oder 10 … 80, Überstand 20 … 40, Lattung 300 … 1500
+    m.begin("Grenzen");
+    for (v, mm) in [
+        (CladdingValue::Thickness, 5.0),
+        (CladdingValue::Thickness, 90.0),
+        (CladdingValue::Drip, 10.0),
+        (CladdingValue::Drip, 50.0),
+        (CladdingValue::Batten, 0.0),
+        (CladdingValue::Batten, 2000.0),
+        (CladdingValue::Counter, 100.0),
+    ] {
+        assert!(!m.set_floor_cladding(fl, v, mm), "{v:?} {mm}");
+    }
+    assert!(m.set_floor_cladding(fl, CladdingValue::Counter, 0.0));
+    assert!(m.set_floor_cladding(fl, CladdingValue::Thickness, 60.0));
+    m.commit();
+    let cq = crate::qto::soffit_qto(&m, ud).unwrap().cladding.unwrap();
+    assert_eq!((cq.thickness, cq.counter), (60.0, 0.0));
+    assert_eq!(cq.counter_length(), 0.0);
+    assert!(m.check().is_empty(), "{:?}", m.check());
+
+    // Zu schmaler Vorsprung (Verblender 11,5 cm, Vorsprung 10 cm): keine
+    let (m, _, _) = haus(Some(CAVITY_TYPE_GUID), &[(1, 100.0)]);
+    let (eg, _, _) = eg_of(&m);
+    let f = m.floor(eg).unwrap().unwrap();
+    assert!(f.soffit.is_some() && f.claddings.is_empty());
+    assert!(m.chain(eg).unwrap().joints.overhang.unwrap().drip.is_none());
+}
+
+/// W3: Neue Decken schreiben `soffit_clad=40`; der Rundlauf ist bytegleich,
+/// geänderte Werte bleiben. Dateien vor W3 (ohne den Wert) haben keine
+/// Bekleidung und bleiben bytegleich.
+#[test]
+fn bekleidung_datei() {
+    let (mut m, _, _) = haus(Some(CAVITY_TYPE_GUID), &[(1, 300.0)]);
+    let text = szo::write(&m);
+    assert!(text.contains(" soffit_clad=40 "), "Bekleidung in der Datei");
+    let read = |t: &str| szo::read(t, GuidGen::with_seed(7)).unwrap();
+    let back = read(&text);
+    assert!(back.hints.is_empty(), "{:?}", back.hints);
+    assert_eq!(szo::write(&back.model), text);
+
+    let (_, fl, _) = eg_of(&m);
+    m.begin("Werte");
+    assert!(m.set_floor_cladding(fl, CladdingValue::Drip, 25.0));
+    assert!(m.set_floor_cladding(fl, CladdingValue::Batten, 625.0));
+    assert!(m.set_floor_cladding(fl, CladdingValue::Counter, 0.0));
+    m.commit();
+    let text = szo::write(&m);
+    for k in [" soffit_drip=25 ", " batten=625 ", " counter=0 "] {
+        assert!(text.contains(k), "{k}");
+    }
+    let back = read(&text);
+    assert_eq!(szo::write(&back.model), text);
+    let (_, fl2, _) = eg_of(&back.model);
+    let ElementKind::Floor(f) = back.model.element(fl2).unwrap().kind else {
+        panic!()
+    };
+    assert_eq!(
+        (f.soffit.drip, f.soffit.batten, f.soffit.counter),
+        (25.0, 625.0, 0.0)
+    );
+
+    // Stand vor W3: ohne Wert und ohne Baustoff, keine Bekleidung
+    let alt: String = szo::write(&m)
+        .lines()
+        .filter(|l| !l.contains("Bekleidung Faserzement") && !l.contains("code=\"18351\""))
+        .map(|l| {
+            l.split(' ')
+                .filter(|w| {
+                    !["soffit_clad=", "soffit_drip=", "batten=", "counter="]
+                        .iter()
+                        .any(|k| w.starts_with(k))
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+                + "\n"
+        })
+        .collect();
+    let back = read(&alt);
+    assert!(back.hints.is_empty(), "{:?}", back.hints);
+    assert_eq!(szo::write(&back.model), alt);
+    assert!(back.model.material_by_guid(CLADDING_MAT_GUID).is_none());
+    let (eg, _, ud) = eg_of(&back.model);
+    assert!(back.model.floor(eg).unwrap().unwrap().claddings.is_empty());
+    assert_eq!(back.model.element_layers(ud).len(), 1);
+}
+
+/// W2 mit W3 (Ist-Bild 10.10.): Terrasse im Norden, Vorsprung im Süden. An
+/// OK Fußpunkt bleibt die Naht nur auf dem Terrassensegment (Baustoff-
+/// wechsel), sonst läuft der Verblender ohne Linie durch, in 3D und im
+/// Schnitt.
+#[test]
+fn fusspunkt_naht_nur_auf_der_terrasse() {
+    let (m, _, og) = haus(Some(CAVITY_TYPE_GUID), &[(1, -1500.0), (3, 300.0)]);
+    let c = m.chain(og).unwrap();
+    let top = c.joints.facing_foot.as_ref().unwrap().band.1;
+    let naht = |s: &Solid| -> Vec<u32> {
+        let mut v: Vec<u32> = s
+            .edges
+            .iter()
+            .filter(|e| near(e.a.z, top) && near(e.b.z, top))
+            .map(|e| e.elem)
+            .collect();
+        v.dedup();
+        v
+    };
+    assert_eq!(naht(&c.solid()), vec![1]);
+    let cut = c.section_caps(vec3(5000.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0));
+    assert_eq!(naht(&cut), vec![1]);
 }

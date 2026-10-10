@@ -12626,7 +12626,8 @@ mod og_phase2 {
         assert_eq!(stoff(&s, eg, "Kerndämmung (Mineralwolle)"), 13.1531);
         assert_eq!(stoff(&s, eg, "Verblender (Vormauerziegel)"), 11.2822);
         assert_eq!(stoff(&s, og, "Kerndämmung (Mineralwolle)"), 14.3268);
-        assert_eq!(stoff(&s, og, "Verblender (Vormauerziegel)"), 12.2756);
+        // 12,2756 + Verblender unter die Bekleidung (W3): 9,885 × 0,115 × 0,07
+        assert_eq!(stoff(&s, og, "Verblender (Vormauerziegel)"), 12.3552);
         assert_eq!(ud(&s, eg), Some(("UD-001".to_string(), 2.811, 0.3373)));
         assert_eq!(abfangung_m(&s, og), 10.485, "Abfangung Verblender");
         assert_eq!(abfangung(&s, aw6), 9885.0, "Nord");
@@ -14308,6 +14309,10 @@ GB-01;Erdgeschoss;340;Innenwände IW 17,5 Porenbeton: Abzug Deckenstreifen;;;;;-
 GB-01;Erdgeschoss;350;Decke über EG 22 cm;DE-001;;1;77,9544;17,1500;
 GB-01;Erdgeschoss;350;davon Auflager in den Außenwänden;DE-001;;;;1,3159;in der Decke enthalten
 GB-01;Erdgeschoss;354;Untersichtdämmung 12 cm;UD-001;;1;2,9160;0,3499;
+GB-01;Erdgeschoss;354;Bekleidung 4 cm;UD-001;;;3,0000;0,1200;
+GB-01;Erdgeschoss;354;Grundlattung a = 80 cm;UD-001;24,3500;;;;
+GB-01;Erdgeschoss;354;Traglattung a = 40 cm;UD-001;28,1000;;;;
+GB-01;Erdgeschoss;354;Lüftungsprofil;UD-001;10,0000;;;;
 GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS (Summe);AW-005 … 008;36,6000;4;;30,9410;
 GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS AW-005, Höhe 2,855 m;AW-005;8,3000;1;;6,8934;
 GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS AW-006, Höhe 2,855 m;AW-006;10,0000;1;;8,8118;Versatz +0,30 m
@@ -14319,6 +14324,7 @@ GB-01;Obergeschoss;330;Außenwände AW 31,5 Porenbeton + WDVS: Abzug Deckenaufla
 GB-01;Obergeschoss;350;Decke über OG 22 cm;DE-002;;1;77,9544;17,1500;
 GB-01;Obergeschoss;350;davon Auflager in den Außenwänden;DE-002;;;;1,3390;in der Decke enthalten
 GB-01;Summe nach Baustoff;;Stahlbeton;;;;;58,9237;
+GB-01;Summe nach Baustoff;;Bekleidung Faserzement;;;;;0,1200;
 GB-01;Summe nach Baustoff;;Porenbeton;;;;;35,1977;
 GB-01;Summe nach Baustoff;;Dämmung (WDVS);;;;210,3930;28,9490;
 "#
@@ -14347,6 +14353,10 @@ GB-01;Erdgeschoss;340;Innenwände IW 17,5 Porenbeton: Abzug Deckenstreifen;;;;;-
 GB-01;Erdgeschoss;350;Decke über EG 22 cm;DE-001;;1;78,4875;17,2672;
 GB-01;Erdgeschoss;350;davon Auflager in den Außenwänden;DE-001;;;;2,7736;in der Decke enthalten
 GB-01;Erdgeschoss;354;Untersichtdämmung 12 cm;UD-001;;1;3,0000;0,3600;
+GB-01;Erdgeschoss;354;Bekleidung 4 cm;UD-001;;;3,0000;0,1200;
+GB-01;Erdgeschoss;354;Grundlattung a = 80 cm;UD-001;24,3500;;;;
+GB-01;Erdgeschoss;354;Traglattung a = 40 cm;UD-001;28,1000;;;;
+GB-01;Erdgeschoss;354;Lüftungsprofil;UD-001;10,0000;;;;
 GB-01;Obergeschoss;330;Außenwände AW monolithisch 36,5 (Summe);AW-005 … 008;36,6000;4;;33,7968;
 GB-01;Obergeschoss;330;Außenwände AW monolithisch 36,5 AW-005, Höhe 2,855 m;AW-005;8,3000;1;;7,6317;
 GB-01;Obergeschoss;330;Außenwände AW monolithisch 36,5 AW-006, Höhe 2,855 m;AW-006;10,0000;1;;9,2667;Versatz +0,30 m
@@ -14361,6 +14371,7 @@ GB-01;Obergeschoss;330;Randdämmstreifen 12,5 cm × 22 cm;RD-008;9,8750;1;;0,271
 GB-01;Obergeschoss;350;Decke über OG 22 cm;DE-002;;1;78,4875;17,2672;
 GB-01;Obergeschoss;350;davon Auflager in den Außenwänden;DE-002;;;;2,8217;in der Decke enthalten
 GB-01;Summe nach Baustoff;;Stahlbeton;;;;;59,1583;
+GB-01;Summe nach Baustoff;;Bekleidung Faserzement;;;;;0,1200;
 GB-01;Summe nach Baustoff;;Porenbeton;;;;;70,3689;
 GB-01;Summe nach Baustoff;;Randdämmung;;;;3,0000;2,3455;
 "#
@@ -14368,7 +14379,9 @@ GB-01;Summe nach Baustoff;;Randdämmung;;;;3,0000;2,3455;
 
     /// A177 (R1): Das Mengenfenster ist Zeile für Zeile gleich:
     /// Gruppenreihenfolge nach Bauablauf (FS, SP, AW, RD, IW, DE, UD),
-    /// Gruppentitel, Kostengruppen, Mengen und Summen nach Baustoff.
+    /// Gruppentitel, Kostengruppen, Mengen und Summen nach Baustoff. Seit
+    /// W3 (10.10.) stehen unter der UD Bekleidung, Lattung und
+    /// Lüftungsprofil.
     #[test]
     fn a177_mengenliste_unveraendert() {
         for (seed, mono, soll) in [(176, false, CSV_A), (1760, true, CSV_B)] {
@@ -15284,9 +15297,10 @@ mod gewerke {
         for n in ["DE-001", "DE-002", "SP-001", "FS-001"] {
             assert_eq!(gewerke_von(m, nr(&s, n)), [g("18331")], "{n}");
         }
+        // UD mit Bekleidung darunter (W3, VHF)
         assert_eq!(
             gewerke_von(m, nr(&s, "UD-001")),
-            [g("18345")],
+            [g("18345"), g("18351")],
             "UD eingebaut"
         );
 
@@ -15329,7 +15343,7 @@ mod gewerke {
         for n in ["SP-001", "FS-001"] {
             assert_eq!(kgs_von(m, nr(&s, n)), [Some(322)], "{n}");
         }
-        assert_eq!(kgs_von(m, nr(&s, "UD-001")), [Some(354)]);
+        assert_eq!(kgs_von(m, nr(&s, "UD-001")), [Some(354), Some(354)]);
 
         let aw = typ(s.model(), "AW-31,5");
         let schritt = s.undo_label();
@@ -15385,7 +15399,7 @@ mod gewerke {
         assert_eq!(stoff_gewerk(m, wdvs), g("18345"), "Baustoff bleibt");
         assert_eq!(
             gewerke_von(m, ud),
-            [g("18345")],
+            [g("18345"), g("18351")],
             "UD hat ihre eigene Schicht"
         );
         assert!(m.check().is_empty(), "{:?}", m.check());
@@ -15635,7 +15649,7 @@ mod nach_gewerk {
             (
                 188,
                 0.0,
-                [
+                vec![
                     g("18331", 57.6407, None),
                     g("18330", 31.5225, None),
                     g("18345", 28.3307, Some(205.56)),
@@ -15644,10 +15658,12 @@ mod nach_gewerk {
             (
                 1880,
                 300.0,
-                [
+                // Bekleidung unter der UD (W3): 10 m × 0,30 m × 40 mm
+                vec![
                     g("18331", 58.9237, None),
                     g("18330", 31.7992, None),
                     g("18345", 28.9490, Some(210.393)),
+                    g("18351", 0.12, Some(3.0)),
                 ],
             ),
         ] {
@@ -15710,7 +15726,8 @@ mod nach_gewerk {
         );
         let mut s = pruefhaus(1883, 300.0);
         let kg = nach_kg(&mut s);
-        assert!(kg.contains(&(354, 0.3499)), "{kg:?}");
+        // UD 0,3499 und Bekleidung darunter 0,12 (W3)
+        assert!(kg.contains(&(354, 0.4699)), "{kg:?}");
 
         // Abweichung an der Schicht: WDVS zu 18330
         let mut s = pruefhaus(1884, 0.0);
@@ -16790,7 +16807,8 @@ mod gewerk_flaeche_laenge {
         assert_eq!(eintrag(&fl, "18330").1, Some(10.485), "Abfangung");
         let v = volumen(&mut s);
         let maurer = v.iter().find(|x| x.0 == "18330").expect("18330").1;
-        assert_eq!(maurer, 81.5458, "nur Wandschichten, kein Abfangungsvolumen");
+        // 81,5458 + Verblender unter die Bekleidung (W3): 9,885 × 0,115 × 0,07
+        assert_eq!(maurer, 81.6254, "nur Wandschichten, kein Abfangungsvolumen");
         let wdvs = v.iter().find(|x| x.0 == "18345").expect("18345").1;
         assert_eq!(wdvs, 0.3373, "UD-Kerndämmung");
     }
@@ -18824,7 +18842,8 @@ mod baumpanel {
                 ref k => panic!("{k:?}"),
             })
             .collect();
-        assert_eq!(codes, ["18331", "18330", "18338", "18345"]);
+        // 18351: Bekleidung unter der UD (W3)
+        assert_eq!(codes, ["18331", "18330", "18338", "18345", "18351"]);
         for &i in &oben {
             let NodeKey::Trade(tr) = n[i].key else {
                 unreachable!()

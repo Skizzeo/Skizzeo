@@ -1018,6 +1018,24 @@ fn write_known(m: &Model) -> String {
         if let Some(sm) = f.soffit.material {
             l = l.guid("soffit_mat", mat_guid(sm));
         }
+        // Bekleidung (W3): fehlt der Wert, gibt es keine (Dateien davor
+        // bleiben bytegleich); Lattung und Überstand nur abweichend
+        let d = Soffit::default();
+        if f.soffit.cladding != 0.0 {
+            l = l.num("soffit_clad", f.soffit.cladding);
+        }
+        if let Some(cm) = f.soffit.cladding_material {
+            l = l.guid("soffit_clad_mat", mat_guid(cm));
+        }
+        for (k, v, d) in [
+            ("soffit_drip", f.soffit.drip, d.drip),
+            ("batten", f.soffit.batten, d.batten),
+            ("counter", f.soffit.counter, d.counter),
+        ] {
+            if v != d {
+                l = l.num(k, v);
+            }
+        }
         // Dachterrasse (D1–D3): ebenso nur abweichend
         if let Some(t) = f.terrace.build_up.and_then(|t| m.layer_set(t)) {
             l = l.guid("terrace", Some(t.guid));
@@ -2110,15 +2128,28 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                     // SZO 1: die feste Zahl (⅔ der Wandhöhe) wird verworfen
                     top: level(r, "top", LevelRef::top(ground))?,
                     // vor G7 K4 ohne: Standard (wirkt nur bei Vorsprung)
-                    soffit: Soffit {
-                        thickness: match r.opt("soffit") {
-                            Some(_) => r.f64("soffit")?,
-                            None => crate::model::SOFFIT_THICKNESS,
-                        },
-                        material: match r.opt("soffit_mat") {
-                            Some(_) => Some(r.link("soffit_mat", &mat_ids)?),
-                            None => None,
-                        },
+                    // vor W3 ohne Bekleidung (bytegleich), übrige Werte Standard
+                    soffit: {
+                        let d = Soffit::default();
+                        let num = |k: &str, d: f64| match r.opt(k) {
+                            Some(_) => r.f64(k),
+                            None => Ok(d),
+                        };
+                        Soffit {
+                            thickness: num("soffit", d.thickness)?,
+                            material: match r.opt("soffit_mat") {
+                                Some(_) => Some(r.link("soffit_mat", &mat_ids)?),
+                                None => None,
+                            },
+                            cladding: num("soffit_clad", 0.0)?,
+                            cladding_material: match r.opt("soffit_clad_mat") {
+                                Some(_) => Some(r.link("soffit_clad_mat", &mat_ids)?),
+                                None => None,
+                            },
+                            drip: num("soffit_drip", d.drip)?,
+                            batten: num("batten", d.batten)?,
+                            counter: num("counter", d.counter)?,
+                        }
                     },
                     // vor D1 ohne: Werkstyp, 6 cm, Titanzink (wirkt nur bei
                     // Rücksprung)
@@ -2583,7 +2614,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         hints.extend(model.complete_pre_b12());
     }
     model.complete_edge_strips();
-    model.complete_soffits();
+    hints.extend(model.complete_soffits());
     model.complete_perimeters();
     hints.extend(model.complete_terraces());
     for (i, c) in cuts {

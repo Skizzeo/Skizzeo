@@ -1972,6 +1972,9 @@ impl Scene {
         if field == Field::Soffit {
             return self.set_soffit(id, mm);
         }
+        if let Field::Cladding(v) = field {
+            return self.set_cladding(id, v, mm);
+        }
         if matches!(
             field,
             Field::TerraceInsulation | Field::TerraceFinish | Field::Upstand
@@ -2209,6 +2212,28 @@ impl Scene {
         }
         self.begin("Untersichtdämmung");
         let ok = self.model.set_floor_soffit(floor, mm);
+        for r in self.model.step_touched() {
+            self.mark(r);
+        }
+        self.commit();
+        ok
+    }
+
+    /// Ein Wert der Bekleidung unter der Untersichtdämmung (W3) an der Decke
+    /// von `id` (Decke oder Untersichtdämmung); ein Schritt im Verlauf.
+    pub fn set_cladding(&mut self, id: ElementId, v: sk_model::CladdingValue, mm: f64) -> bool {
+        let m = &self.model;
+        let floor = match m.element(id).map(|e| &e.kind) {
+            Some(sk_model::ElementKind::SoffitInsulation { floor }) => *floor,
+            Some(sk_model::ElementKind::Floor(_)) => id,
+            _ => return false,
+        };
+        match m.element(floor).map(|e| &e.kind) {
+            Some(sk_model::ElementKind::Floor(f)) if v.of(&f.soffit) != mm => {}
+            _ => return false,
+        }
+        self.begin("Untersicht-Bekleidung");
+        let ok = self.model.set_floor_cladding(floor, v, mm);
         for r in self.model.step_touched() {
             self.mark(r);
         }
