@@ -7162,6 +7162,23 @@ pub const TERRACE_TYPE_GUID: Guid = Guid(0xa75aeb4f33ba46c696cd177dded0ab96);
 pub const TERRACE_FINISH_GUID: Guid = Guid(0x79bfecdae5104f34bd95a7116f06ba0c);
 pub const TERRACE_INSULATION_GUID: Guid = Guid(0xd750cacad2e543e3a3e35c5c7f3d8d41);
 pub const COPING_MAT_GUID: Guid = Guid(0x97fe946502194178be60bb9eb54c46fb);
+/// Die eingebauten Baustoffe, die erst das erste Bauteil anlegt, mit Name
+/// und Art: Der Werksbestand verweist auf sie (`mat=`), auch wenn ein
+/// Projekt sie noch nicht führt.
+pub const BUILTIN_MATERIALS: [(Guid, &str, MatCategory); 4] = [
+    (
+        PERIMETER_MAT_GUID,
+        "XPS Perimeterdämmung",
+        MatCategory::Insulation,
+    ),
+    (TERRACE_FINISH_GUID, "Terrassenbelag", MatCategory::Concrete),
+    (
+        TERRACE_INSULATION_GUID,
+        "Dämmung hart (Terrasse)",
+        MatCategory::Insulation,
+    ),
+    (COPING_MAT_GUID, "Titanzink 0,7", MatCategory::Metal),
+];
 /// Aufbau des Werkstyps von oben nach unten (Jörn 08:31–08:33).
 const TERRACE_BUILD_UP: [(f64, LayerFunction); 2] = [
     (60.0, LayerFunction::Finish),

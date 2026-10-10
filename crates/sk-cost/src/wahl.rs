@@ -189,19 +189,22 @@ mod tests {
     use crate::lesen;
     use sk_model::{qto, szo, GuidGen};
 
-    /// RH-3: Die Dachterrasse hat im Werksbestand keine Bauleistung des
-    /// Dachdeckers; die erste Zeile sagt das, dann Dämmungen aus anderen
-    /// Gewerken mit „kommt dann zu“, der Rest dahinter. Wählen macht aus
-    /// der grauen Zeile eine Position.
+    /// RH-3 mit einer eigenen Dämmung der Dachterrasse (sonst greift die
+    /// Werksleistung) im Gewerk Zimmerer, das im Werksbestand nichts hat:
+    /// Die erste Zeile sagt das, dann Dämmungen aus anderen Gewerken mit
+    /// „kommt dann zu“, der Rest dahinter. Wählen macht aus der grauen Zeile
+    /// eine Position.
     #[test]
     fn dachterrasse_ehrlich_geordnet() {
-        let mut m = szo::read_with(
-            include_str!("../referenz/rh3-versatz-dachterrasse.szo"),
-            GuidGen::with_seed(1),
-            &lesen::ABSCHNITTE_SZO,
-        )
-        .expect("lädt")
-        .model;
+        let text = include_str!("../referenz/rh3-versatz-dachterrasse.szo")
+            .replace("3NKChAqkL3uwFZN5n$FOr1", "3NKChAqkL3uwFZN5n$FOr9")
+            .replace(
+                "t=80 fn=insulation core=0 trade=1S7Wf_00100800000004UY",
+                "t=80 fn=insulation core=0 trade=1S7Wf_00100800000004UU",
+            );
+        let mut m = szo::read_with(&text, GuidGen::with_seed(1), &lesen::ABSCHNITTE_SZO)
+            .expect("lädt")
+            .model;
         let k = lesen::katalog(&m, None);
         let b = lesen::kosten(&m, &qto::schedule(&m), &k, &crate::Umfang::projekt());
         let z = b
@@ -214,7 +217,7 @@ mod tests {
             })
             .expect("graue Dämmschicht");
         let a = auswahl(&m, &k, z).expect("passende Einheit");
-        let (fett, leise) = a.leer_text().expect("Dachdecker hat nichts");
+        let (fett, leise) = a.leer_text().expect("Zimmerer hat nichts");
         assert!(fett.starts_with("Für ") && fett.ends_with(" gibt es noch keine Bauleistung."));
         assert_eq!(leise, "Ähnliche aus anderen Gewerken, auch Dämmung:");
         assert!(!a.aehnlich.is_empty());
@@ -223,7 +226,14 @@ mod tests {
             .iter()
             .all(|w| w.fremd.as_deref().is_some_and(|f| f.contains("(DIN "))));
         assert!(a.weitere_text().is_some_and(|t| t.starts_with("+ ")));
-        assert!(a.alle().all(|w| w.ep.is_some_and(|c| c.0 > 0)), "{a:?}");
+        // EP an dieser Schicht; ohne nur, wo der Stoff der Artikel der
+        // Schicht ist (`layer=1`) und es für diesen Baustoff keinen gibt
+        let schichtartikel = |g: Guid| k.anteile_von(g).any(|x| x.artikel.is_none());
+        assert!(
+            a.alle()
+                .all(|w| w.ep.is_some_and(|c| c.0 > 0) || schichtartikel(w.leistung)),
+            "{a:?}"
+        );
         // wählen: eine Position mehr, die Zeile ist nicht mehr grau
         let w = &a.aehnlich[0];
         let op = zuordnen(z, w.leistung).unwrap();

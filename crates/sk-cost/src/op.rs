@@ -2281,12 +2281,12 @@ mod tests {
         .unwrap();
         let k = lesen::katalog(&m, None);
         assert!(
-            matches!(k.quelle, Quelle::Projekt { stand: Some(8), .. }),
+            matches!(k.quelle, Quelle::Projekt { stand: Some(9), .. }),
             "{:?}",
             k.quelle
         );
         assert_eq!(k.werte.lohn, Dez::ganz(65));
-        assert_eq!(k.leistungen.len(), 42, "Kopie des Werks");
+        assert_eq!(k.leistungen.len(), 54, "Kopie des Werks");
         assert!(k.befunde.is_empty(), "{:#?}", k.befunde);
         let u = k.herkunft_von("rate", "wage").unwrap();
         assert_eq!((u.kind.as_str(), u.bestaetigt), ("manual", true));
@@ -2566,7 +2566,7 @@ mod tests {
                 .artikel(g("0000000000000000000A99"))
                 .is_some()
         );
-        assert_eq!(k.artikel.len(), 21);
+        assert_eq!(k.artikel.len(), 28);
         assert!(k.befunde.iter().all(|b| b.regel == 87), "{:#?}", k.befunde);
         let c = k.kopie.as_ref().unwrap();
         assert_eq!(c.stand, Some(1));
@@ -2709,7 +2709,7 @@ mod tests {
         let lib = sk_model::read_szk_with(&f.text, &satz::ABSCHNITTE_SZK).unwrap();
         let k = lesen::katalog(&Model::from_library(&lib), Some(&lib));
         assert!(k.befunde.is_empty(), "{:#?}", k.befunde);
-        assert_eq!(k.leistungen.len(), 42, "Werkssätze kopiert");
+        assert_eq!(k.leistungen.len(), 54, "Werkssätze kopiert");
 
         // Anderer Satz in der Datei geändert: gelingt, fremde Änderung bleibt
         let geladen = firmentext(3);

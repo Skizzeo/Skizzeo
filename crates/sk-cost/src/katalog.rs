@@ -562,6 +562,11 @@ impl Umfeld {
                 _ => {}
             }
         }
+        // Eingebaute Baustoffe (Dachterrasse, Attikablech, Perimeterdämmung)
+        // legt erst das erste Bauteil an: bekannt, auch ohne sie
+        for (g, name, _) in sk_model::model::BUILTIN_MATERIALS {
+            materialien.entry(g).or_insert_with(|| name.to_string());
+        }
         Umfeld {
             materialien,
             kategorien,
@@ -1013,6 +1018,13 @@ pub fn lesen<'a>(
             bf.push(Befund::fehler(79, befund::r79(&kurz, feld, wert), ort()));
             continue;
         }
+        // Ein unbekannter Schlüssel liefert nie eine Menge (Prüfung 10.10., A327)
+        if let Some(a) = auto
+            .as_deref()
+            .filter(|a| !sk_model::qto::auto_schluessel().any(|(k, _, _)| k == *a))
+        {
+            bf.push(Befund::warnung(79, befund::r79(&kurz, "auto", a), ort()));
+        }
         let (tmin, tmax) = (s.zahl("tmin"), s.zahl("tmax"));
         if let (Some(a), Some(b)) = (tmin, tmax) {
             if a > b {
@@ -1401,15 +1413,15 @@ mod tests {
     fn werk_ohne_befund() {
         let k = werk();
         assert!(k.befunde.is_empty(), "{:#?}", k.befunde);
-        assert_eq!(k.leistungen.len(), 42);
-        assert_eq!(k.artikel.len(), 21);
-        assert_eq!(k.lose.len(), 11);
-        assert_eq!(k.anteile.len(), 30);
-        assert_eq!(k.folgen.len(), 7);
+        assert_eq!(k.leistungen.len(), 54);
+        assert_eq!(k.artikel.len(), 28);
+        assert_eq!(k.lose.len(), 14);
+        assert_eq!(k.anteile.len(), 38);
+        assert_eq!(k.folgen.len(), 10);
         assert_eq!(k.werte, Firmenwerte::werk());
-        assert_eq!(k.kopf.as_ref().map(|c| c.stand), Some(8));
-        // Stand 8: 20 Automatikpositionen (Erdarbeiten, Baustelleneinrichtung)
-        assert_eq!(k.leistungen.iter().filter(|l| l.auto.is_some()).count(), 20);
+        assert_eq!(k.kopf.as_ref().map(|c| c.stand), Some(9));
+        // Stand 9: 25 Automatikpositionen (Erde, Baustelle, Zulagen Attikaabdeckung)
+        assert_eq!(k.leistungen.iter().filter(|l| l.auto.is_some()).count(), 25);
         assert!(k.herkunft.iter().all(|h| h.bestaetigt));
         let m10 = k
             .leistungen

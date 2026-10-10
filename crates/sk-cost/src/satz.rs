@@ -155,6 +155,7 @@ pub const KATEGORIEN: &[&str] = &[
     "stripfooting",
     "edgeinsulation",
     "soffitinsulation",
+    "perimeterinsulation",
     "roofterrace",
     "coping",
 ];

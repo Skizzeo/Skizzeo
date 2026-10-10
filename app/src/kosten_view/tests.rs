@@ -14,6 +14,20 @@ fn haus() -> Scene {
     Scene::with_model(m)
 }
 
+/// RH-1 mit fremder Terrassendämmung: die eingebaute hat seit Stand 9 eine
+/// Werksleistung, die fremde bleibt eine graue Zeile.
+fn haus_grau() -> Scene {
+    let m = sk_model::szo::read_with(
+        &include_str!("../../../crates/sk-cost/referenz/rh1-standardhaus.szo")
+            .replace("3NKChAqkL3uwFZN5n$FOr1", "3NKChAqkL3uwFZN5n$FOr9"),
+        sk_model::GuidGen::with_seed(1),
+        &sk_cost::lesen::ABSCHNITTE_SZO,
+    )
+    .expect("lädt")
+    .model;
+    Scene::with_model(m)
+}
+
 /// Betrag aus einem angezeigten Text „1.234,56“.
 fn cent(text: &str) -> i64 {
     let t = text.replace(['.', '−'], "").replace(',', "");
@@ -41,7 +55,7 @@ fn anzeige_rechnet_nach() {
     let mut v = KostenView::new();
     v.sync(&mut s, None);
     let netto_voll = v.netto().unwrap();
-    assert_eq!(netto_voll, Cent(7_303_598));
+    assert_eq!(netto_voll, Cent(7_595_363));
     for modus in Modus::ALLE {
         for g in Gliederung::ALLE {
             v.modus = modus;
@@ -159,7 +173,20 @@ fn gliederungen_und_chips() {
 /// Gewerkzeile sagt „ohne Bauleistung“; die Fußzeile nennt sie.
 #[test]
 fn graue_zeilen_unter_dem_gewerk() {
-    let mut s = haus();
+    // fremde Terrassendämmung beim Zimmerer, der keine Bauleistung hat
+    let m = sk_model::szo::read_with(
+        &include_str!("../../../crates/sk-cost/referenz/rh1-standardhaus.szo")
+            .replace("3NKChAqkL3uwFZN5n$FOr1", "3NKChAqkL3uwFZN5n$FOr9")
+            .replace(
+                "t=80 fn=insulation core=0 trade=1S7Wf_00100800000004UY",
+                "t=80 fn=insulation core=0 trade=1S7Wf_00100800000004UU",
+            ),
+        sk_model::GuidGen::with_seed(1),
+        &sk_cost::lesen::ABSCHNITTE_SZO,
+    )
+    .expect("lädt")
+    .model;
+    let mut s = Scene::with_model(m);
     let mut v = KostenView::new();
     v.sync(&mut s, None);
     let z = v.zeilen();
@@ -168,13 +195,12 @@ fn graue_zeilen_unter_dem_gewerk() {
         .position(|x| x.art == Art::Ohne)
         .expect("graue Zeile");
     let g = z[..i].iter().rev().find(|x| x.art == Art::Gruppe).unwrap();
-    assert!(g.text.contains("Dach"), "{}", g.text);
+    assert!(g.text.starts_with("Zimmer"), "{}", g.text);
     assert_eq!(g.gp, "ohne Bauleistung");
     let f = v.fuss();
     assert!(
-        f.iter().any(
-            |x| x.text == "Ohne Preis: " && x.verweis == "Dachterrasse, Attikablech (3 Zeilen)"
-        ),
+        f.iter()
+            .any(|x| x.text == "Ohne Preis: " && x.verweis == "Dachterrasse (1 Zeile)"),
         "{:?}",
         f.iter().map(|x| &x.verweis).collect::<Vec<_>>()
     );
@@ -191,7 +217,7 @@ fn zahlen_und_csv() {
     v.sync(&mut s, None);
     let csv = String::from_utf8(v.csv("Standardhaus", "08.10.2026")).unwrap();
     assert!(csv.starts_with("\u{feff}Projekt;Standardhaus\r\n"), "{csv}");
-    assert!(csv.contains("\r\nNetto;73035,98\r\n"), "{csv}");
+    assert!(csv.contains("\r\nNetto;75953,63\r\n"), "{csv}");
     assert!(csv.contains("\r\nModus;Material + Lohn\r\n"));
     // OZ mit Los, Frostschürze unter 1.03.0020; Zeilen ohne Bauleistung
     // ohne OZ, Menge und Einheit getrennt
@@ -529,7 +555,7 @@ fn bauleistung_waehlen() {
         bold: None,
         italic: None,
     };
-    let mut s = haus();
+    let mut s = haus_grau();
     let mut v = KostenView::new();
     (v.w, v.h) = (1200, 1400);
     v.sync(&mut s, None);

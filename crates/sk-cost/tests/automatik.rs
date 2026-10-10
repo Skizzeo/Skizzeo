@@ -143,3 +143,24 @@ fn umfang_ohne_gruendung() {
     let b = lesen::kosten(&m, &s, &k, &u);
     assert!(b.positionen.is_empty());
 }
+
+/// Prüfung 10.10. (Briefing QS §4): Ein unbekannter Schlüssel an `auto=`
+/// liefert nie eine Menge. Das darf nicht still bleiben, sondern gibt einen
+/// Befund mit der Kurzbezeichnung der Bauleistung.
+#[test]
+fn unbekannter_auto_schluessel_gibt_befund() {
+    let m = haus(&[leistung(
+        OBERBODEN,
+        "Oberboden abtragen",
+        10,
+        "unit=m3 basis=auto auto=earth.tippfehler hours=0.1 kg=311",
+    )]);
+    let k = lesen::katalog(&m, None);
+    let bf = lesen::befunde(&m, &k);
+    assert!(
+        bf.iter()
+            .any(|b| b.satz.contains("Oberboden abtragen") && b.satz.contains("earth.tippfehler")),
+        "{:?}",
+        bf.iter().map(|b| &b.satz).collect::<Vec<_>>()
+    );
+}

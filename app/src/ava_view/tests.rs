@@ -34,6 +34,29 @@ fn haus() -> Scene {
     Scene::with_model(m)
 }
 
+/// RH-1 mit fremder Terrassendämmung: die eingebaute hat seit Stand 9 eine
+/// Werksleistung, die fremde bleibt eine graue Zeile „Ohne Bauleistung“.
+fn haus_grau() -> Scene {
+    let m = sk_model::szo::read_with(
+        &include_str!("../../../crates/sk-cost/referenz/rh1-standardhaus.szo")
+            .replace("3NKChAqkL3uwFZN5n$FOr1", "3NKChAqkL3uwFZN5n$FOr9"),
+        sk_model::GuidGen::with_seed(1),
+        &sk_cost::lesen::ABSCHNITTE_SZO,
+    )
+    .expect("lädt")
+    .model;
+    Scene::with_model(m)
+}
+
+/// Los 4 Dach im Werksbestand: dort steht die graue Zeile der Dachterrasse,
+/// beim Gewerk Dachdecker.
+fn los_dach(v: &mut AvaView, s: &mut Scene) {
+    let dach = sk_model::Guid::from_ifc("1S7bUW001008030000000C").unwrap();
+    v.waehle_los(dach);
+    v.offen = vec![dach];
+    v.sync(s, None);
+}
+
 fn leer() -> Fonts {
     Fonts {
         regular: None,
@@ -653,8 +676,9 @@ fn knopf_speichert() {
 #[test]
 fn pruefen_fuehrt_zur_stelle() {
     let t = Theme::dark();
-    let mut s = haus();
+    let mut s = haus_grau();
     let mut v = blatt(&mut s);
+    los_dach(&mut v, &mut s);
     let mut p = Picking::default();
     let mods = sk_platform::Modifiers::default();
     let lv = v.lv().unwrap();
@@ -957,11 +981,11 @@ fn baum_als_leiste_im_schmalen_fenster() {
         return;
     };
     let t = Theme::dark();
-    let mut s = haus();
+    let mut s = haus_grau();
     let mut p = Picking::default();
     let mut v = AvaView::new();
     (v.w, v.h) = (1000, 900);
-    v.sync(&mut s, None);
+    los_dach(&mut v, &mut s);
     assert!(!v.baum_als_leiste() && !v.baum_lage(&t).is_empty());
     v.w = 640;
     v.sync(&mut s, None);

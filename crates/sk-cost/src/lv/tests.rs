@@ -4,6 +4,8 @@ use crate::{lesen, Umfang};
 use sk_model::{qto, szo, GuidGen};
 
 const ROHBAU: &str = "1S7bUW0010080300000001";
+/// Los 4 Dach (Werksbestand Stand 9).
+const DACH: &str = "1S7bUW001008030000000C";
 
 fn laden(text: &str) -> Model {
     szo::read_with(text, GuidGen::with_seed(1), &lesen::ABSCHNITTE_SZO)
@@ -323,19 +325,22 @@ fn fall_5_geschaetzt_und_preisstand() {
     assert_eq!(lv.zusammenstellung.geschaetzt, Some(b.geschaetzt_betrag));
 }
 
-/// RH-3: Die Dachterrasse hat keine Bauleistung und erscheint im Prüfen
-/// des Loses Rohbau (ihr Gewerk hat kein Los).
+/// RH-3 mit einer eigenen Dämmung der Dachterrasse statt des eingebauten
+/// Baustoffs (Werksbestand Stand 9 hat für diesen Leistungen): Die Schicht
+/// hat keine Bauleistung und erscheint im Prüfen des Loses Dach, des Loses
+/// ihres Gewerks.
 #[test]
 fn dachterrasse_ohne_bauleistung() {
-    let m = laden(include_str!("../../referenz/rh3-versatz-dachterrasse.szo"));
-    let k = lesen::katalog(&m, None);
-    let lv = lesen::lv(
-        &m,
-        &qto::schedule(&m),
-        &k,
-        &Umfang::projekt(),
-        &wahl(false, true),
+    let m = laden(
+        &include_str!("../../referenz/rh3-versatz-dachterrasse.szo")
+            .replace("3NKChAqkL3uwFZN5n$FOr1", "3NKChAqkL3uwFZN5n$FOr9"),
     );
+    let k = lesen::katalog(&m, None);
+    let dach = LvWahl {
+        los: Guid::from_ifc(DACH).unwrap(),
+        ..wahl(false, true)
+    };
+    let lv = lesen::lv(&m, &qto::schedule(&m), &k, &Umfang::projekt(), &dach);
     assert!(
         lv.befunde
             .iter()

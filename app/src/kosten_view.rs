@@ -2559,7 +2559,7 @@ mod abnahme_ka2 {
         v.sync(&mut s, None);
         let b = v.blatt().unwrap();
         assert_eq!(b.nu, Cent(2_195_545));
-        assert_eq!(v.netto(), Some(Cent(3_147_423 - 997_975)));
+        assert_eq!(v.netto(), Some(Cent(3_281_223 - 997_975)));
         let z = v
             .zeilen()
             .iter()

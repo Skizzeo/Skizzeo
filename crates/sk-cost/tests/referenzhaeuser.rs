@@ -126,13 +126,33 @@ const BE: &[Zeile] = &[
     ),
 ];
 
+/// Zulagen der Attikaabdeckung an der Dachterrasse (Werksbestand Stand 9,
+/// Titel 4.02): ein U-förmiger Blechstrang mit zwei Ecken und zwei
+/// Endabschlüssen, in RH-1 und RH-3 gleich.
+const DT_ZULAGEN: [Zeile; 2] = [
+    (
+        "Zulage Attikaabdeckung Ecke 90°, gefalzt oder gelötet",
+        2000,
+        4800,
+        9600,
+        0,
+    ),
+    (
+        "Zulage Attikaabdeckung Endabschluss mit Stirnblech",
+        2000,
+        2500,
+        5000,
+        0,
+    ),
+];
+
 const RH1: Soll = Soll {
     datei: include_str!("../referenz/rh1-standardhaus.szo"),
-    netto: 7303598,
-    material: 3147423,
+    netto: 7595363,
+    material: 3281223,
     geschosse: [
         ("Gründung", 2242615),
-        ("Erdgeschoss", 2709564),
+        ("Erdgeschoss", 3001329),
         ("Obergeschoss", 2351416),
     ],
     ausgleich: 3,
@@ -200,8 +220,53 @@ const RH1: Soll = Soll {
             123000,
             0,
         ),
+        (
+            "Dampfsperre Bitumen-Alu-Schweißbahn vollflächig, inkl. Voranstrich",
+            13219,
+            1710,
+            22604,
+            10707,
+        ),
+        (
+            "Terrassendämmung EPS 035 DAA dh druckfest, Dicke nach Aufbau",
+            13219,
+            1920,
+            25380,
+            15863,
+        ),
+        (
+            "Abdichtung Polymerbitumen 2-lagig, Oberlage beschiefert",
+            13219,
+            3755,
+            49637,
+            25843,
+        ),
+        (
+            "Abdichtungsanschluss an Attika, über Krone geführt, inkl. Keil",
+            13000,
+            2910,
+            37830,
+            6630,
+        ),
+        (
+            "Terrassenbelag Betonplatten 40mm auf Splittbett, Schutzlage",
+            13219,
+            6000,
+            79314,
+            39657,
+        ),
+        (
+            "Attikaabdeckung Titanzink 0,7mm, Zuschnitt bis 400mm, Halter",
+            13000,
+            4800,
+            62400,
+            35100,
+        ),
+        // Zulagen am Attikablech (zwei Ecken, zwei Endabschlüsse)
+        DT_ZULAGEN[0],
+        DT_ZULAGEN[1],
     ],
-    ohne: &[("DT-001", 13219), ("DT-001", 13219), ("AB-001", 13000)],
+    ohne: &[],
 };
 
 const RH2: Soll = Soll {
@@ -305,11 +370,11 @@ const RH2: Soll = Soll {
 
 const RH3: Soll = Soll {
     datei: include_str!("../referenz/rh3-versatz-dachterrasse.szo"),
-    netto: 7990043,
-    material: 3544709,
+    netto: 8109886,
+    material: 3590972,
     geschosse: [
         ("Gründung", 2243845),
-        ("Erdgeschoss", 2937124),
+        ("Erdgeschoss", 3056967),
         ("Obergeschoss", 2809049),
     ],
     ausgleich: 25,
@@ -391,8 +456,53 @@ const RH3: Soll = Soll {
             124230,
             0,
         ),
+        (
+            "Dampfsperre Bitumen-Alu-Schweißbahn vollflächig, inkl. Voranstrich",
+            1757,
+            1710,
+            3004,
+            1423,
+        ),
+        (
+            "Terrassendämmung EPS 035 DAA dh druckfest, Dicke nach Aufbau",
+            1757,
+            1920,
+            3373,
+            2108,
+        ),
+        (
+            "Abdichtung Polymerbitumen 2-lagig, Oberlage beschiefert",
+            1757,
+            3755,
+            6598,
+            3435,
+        ),
+        (
+            "Abdichtungsanschluss an Attika, über Krone geführt, inkl. Keil",
+            10600,
+            2910,
+            30846,
+            5406,
+        ),
+        (
+            "Terrassenbelag Betonplatten 40mm auf Splittbett, Schutzlage",
+            1757,
+            6000,
+            10542,
+            5271,
+        ),
+        (
+            "Attikaabdeckung Titanzink 0,7mm, Zuschnitt bis 400mm, Halter",
+            10600,
+            4800,
+            50880,
+            28620,
+        ),
+        // Zulagen am Attikablech (zwei Ecken, zwei Endabschlüsse)
+        DT_ZULAGEN[0],
+        DT_ZULAGEN[1],
     ],
-    ohne: &[("DT-001", 1757), ("DT-001", 1757), ("AB-001", 10600)],
+    ohne: &[],
 };
 
 fn blatt(m: &Model, u: &Umfang) -> Kostenblatt {
@@ -503,9 +613,9 @@ fn rh3_versatz_dachterrasse() {
     pruefen(&RH3);
 }
 
-/// Die Sollbilder zeigen RH-1 ohne Deckenschalung und Randschalung und
-/// ohne die Automatikpositionen (älter als Stand 8): 52.395,55 € /
-/// 29.642,07 €.
+/// Die Sollbilder zeigen RH-1 ohne Deckenschalung und Randschalung, ohne
+/// die Automatikpositionen (älter als Stand 8) und ohne Los 4 Dach (älter
+/// als Stand 9): 52.395,55 € / 29.642,07 €.
 #[test]
 fn rh1_ohne_schalung() {
     let m = laden(RH1.datei);
@@ -517,6 +627,7 @@ fn rh1_ohne_schalung() {
                 !p.kurz.starts_with("Deckenschalung")
                     && !p.kurz.starts_with("Randschalung")
                     && p.ansatz.iter().all(|a| a.formel.is_none())
+                    && !p.oz.starts_with("4.")
             })
             .map(f)
             .sum()
@@ -698,7 +809,8 @@ fn abfangung_ohne_rueckfall() {
 /// Abnahme 12 (Vorschau): Die Vorschau nennt das Netto vorher und nachher
 /// selbst, gleich `kosten` vor und nach der Ausführung; Modell, `revision`,
 /// `ext_revision` bleiben. Lohn 65 €/h auf RH-1: 60.089,83 → 62.501,62
-/// (Einstellungen §3 KA-2 Punkt 8); eine Zuordnung rechnet auf einer Kopie.
+/// (Einstellungen §3 KA-2 Punkt 8), mit Stand 9 75.953,63 → 78.889,33; eine
+/// Zuordnung rechnet auf einer Kopie.
 #[test]
 fn vorschau_mit_summe_vorher_nachher() {
     use sk_cost::{Herkunft, HerkunftArt, Op, Rolle};
@@ -719,14 +831,14 @@ fn vorschau_mit_summe_vorher_nachher() {
         &u,
     )
     .expect("Vorschau");
-    assert_eq!(p.netto, Some((Cent(7_303_598), Cent(7_584_469))));
+    assert_eq!(p.netto, Some((Cent(7_595_363), Cent(7_888_933))));
     assert_eq!((m.revision(), m.ext_revision()), (rev, ext));
     // gleich der Ausführung
     let h = Herkunft::neu(HerkunftArt::Manual, "2026-10-08", "10:40");
     m.begin("Lohn");
     sk_cost::ausfuehren(&mut m, None, Rolle::Admin, &h, lohn).expect("Lohn");
     m.commit();
-    assert_eq!(blatt(&m, &u).netto, Cent(7_584_469));
+    assert_eq!(blatt(&m, &u).netto, Cent(7_888_933));
     // Zuordnung: eine Außenwandschicht auf eine andere Bauleistung, nur in
     // der Kopie
     let k = lesen::katalog(&m, None);
@@ -762,7 +874,7 @@ fn vorschau_mit_summe_vorher_nachher() {
     .expect("Vorschau Zuordnung");
     assert_eq!(m.revision(), rev);
     let (vorher, nachher) = p.netto.expect("Summen");
-    assert_eq!(vorher, Cent(7_584_469));
+    assert_eq!(vorher, Cent(7_888_933));
     m.begin("Zuordnen");
     sk_cost::ausfuehren(&mut m, None, Rolle::Admin, &h, op).expect("Zuordnen");
     m.commit();
@@ -776,7 +888,12 @@ fn vorschau_mit_summe_vorher_nachher() {
 #[test]
 fn kostenspeicher_nach_umbenennen() {
     for s in [&RH1, &RH3] {
-        let mut m = laden(s.datei);
+        // eigene Dämmung der Dachterrasse: eine Zeile ohne Bauleistung mit
+        // Befund (die eingebaute hat seit Stand 9 eine Werksleistung)
+        let mut m = laden(
+            &s.datei
+                .replace("3NKChAqkL3uwFZN5n$FOr1", "3NKChAqkL3uwFZN5n$FOr9"),
+        );
         let u = Umfang::projekt();
         let k = lesen::katalog(&m, None);
         let sched = qto::schedule(&m);

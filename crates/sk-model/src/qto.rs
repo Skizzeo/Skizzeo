@@ -516,6 +516,12 @@ pub struct CopingQto {
     pub material: Option<MaterialId>,
     /// Blechvolumen: Länge × Abwicklung × wahre Dicke 0,7 mm (mm³).
     pub volume: f64,
+    /// Zuschnitt: Abwicklung auf das Handelsmaß aufgerundet (mm,
+    /// [`crate::qto_dach::zuschnitt`]).
+    pub cut: f64,
+    /// Ecken und Endabschlüsse aller Blechstränge (Zulagen im LV).
+    pub corners: u32,
+    pub ends: u32,
 }
 
 /// Wahre Dicke des Attikablechs (mm), Merkmal (BIM E4).
@@ -568,11 +574,15 @@ pub fn coping_qto_of(model: &Model, floor: ElementId, f: &FloorSlab) -> Option<C
     }
     let length = f.coping_length();
     let girth = crate::terrace::coping_girth(f.terraces.width);
+    let pfade = &f.terraces.coping;
     Some(CopingQto {
         length,
         girth,
         material: model.coping_material(floor),
         volume: length * girth * COPING_SHEET,
+        cut: crate::qto_dach::zuschnitt(girth),
+        corners: pfade.iter().map(crate::qto_dach::ecken).sum(),
+        ends: pfade.iter().map(crate::qto_dach::enden).sum(),
     })
 }
 
@@ -1075,7 +1085,8 @@ pub struct LayerRow {
     pub once: bool,
     /// Abrechnungsfläche der Schicht nach Regel 84 (mm², KA-0a2,
     /// architektur/paket-ka0.md §3.3): Wandschicht nach Lage, Decke und
-    /// Sohlplatte mit `area`, Untersicht und Dachterrasse mit `bill_area`.
+    /// Sohlplatte mit `area`, Untersicht, Perimeterdämmung und Dachterrasse
+    /// mit `bill_area`.
     pub face: f64,
     /// Auflagertasche (mm³) für die Zeile „− Auflager“ im Mengenansatz:
     /// Wandschicht ihr Abzug durch die Decke, Decke ihr Auflager in den
@@ -1173,23 +1184,24 @@ pub struct Schedule {
     /// Reihenfolge der Zeilen; aus den schon gerechneten Mengen, damit
     /// „Kosten live“ nur liest.
     pub formwork: Vec<(ElementId, FormworkQto)>,
-    /// Automatikmengen je Gründung (Erdarbeiten, Bauvorbereitung): Mengen,
-    /// die an keiner Schicht hängen. Bauleistungen mit `auto=` rechnen
-    /// damit.
+    /// Automatikmengen (Erdarbeiten, Bauvorbereitung je Gründung, Zulagen
+    /// am Attikablech): Mengen, die an keiner Schicht hängen. Bauleistungen
+    /// mit `auto=` rechnen damit.
     pub auto: Vec<AutoMenge>,
 }
 
-/// Eine Automatikmenge: eine Menge eines Gebäudes, die aus der Gründung
-/// folgt und an keiner Schicht hängt (Erdarbeiten, Baustelleneinrichtung).
-/// Sie steht am Bauteil der Sohlplatte, damit Gebäude, Geschoss und Umfang
-/// wie bei jeder Mengenzeile gelten.
+/// Eine Automatikmenge: eine Menge eines Gebäudes, die an keiner Schicht
+/// hängt. Erdarbeiten und Baustelleneinrichtung folgen aus der Gründung und
+/// stehen an der Sohlplatte, die Zulagen der Attikaabdeckung am Attikablech;
+/// so gelten Gebäude, Geschoss und Umfang wie bei jeder Mengenzeile.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AutoMenge {
-    /// Sohlplatte der Gründung.
+    /// Träger: Sohlplatte der Gründung bzw. das Bauteil der Menge.
     pub element: ElementId,
-    /// Bauteilnummer der Sohlplatte.
+    /// Bauteilnummer des Trägers.
     pub number: String,
-    /// Geschoss der Zeile (Gründungsband, wie die Sohlplatte).
+    /// Geschoss der Zeile (Gründungsband wie die Sohlplatte, sonst das des
+    /// Trägers).
     pub storey: StoreyId,
     pub building: Option<BuildingId>,
     /// Schlüssel, z. B. `earth.excavation` ([`crate::qto_earth::SCHLUESSEL`]).
@@ -1202,6 +1214,15 @@ pub struct AutoMenge {
     pub kg: Option<u16>,
     /// Rechenweg für den Mengenansatz, z. B. „99,00 m² × 0,30 m“.
     pub formula: String,
+}
+
+/// Alle Schlüssel der Automatikmengen (`[service] auto=`) mit Einheit und
+/// Bedeutung: Erdarbeiten, Bauvorbereitung, Dach.
+pub fn auto_schluessel() -> impl Iterator<Item = (&'static str, &'static str, &'static str)> {
+    crate::qto_earth::SCHLUESSEL
+        .into_iter()
+        .chain(crate::qto_site::SCHLUESSEL)
+        .chain(crate::qto_dach::SCHLUESSEL)
 }
 
 /// Geschoss, unter dem ein Bauteil in Mengen und Baum steht: sein eigenes,
@@ -1498,6 +1519,9 @@ pub fn schedule(model: &Model) -> Schedule {
     }
     sched.formwork = formwork_rows(&sched);
     sched.auto = auto_rows(model, &platten);
+    // Zulagen am Attikablech, nach den Mengen der Gründung
+    let dach = crate::qto_dach::bauteil_mengen(model, &sched);
+    sched.auto.extend(dach);
     sched
 }
 
@@ -1822,7 +1846,9 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                     Face::Inner => inner,
                 },
                 ElementQto::Floor(_) | ElementQto::Slab(_) => area,
-                ElementQto::Soffit(_) | ElementQto::Terrace(_) => bill_area,
+                ElementQto::Soffit(_) | ElementQto::Terrace(_) | ElementQto::Perimeter(_) => {
+                    bill_area
+                }
                 _ => 0.0,
             };
             out.push(LayerRow {

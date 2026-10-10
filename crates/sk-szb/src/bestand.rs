@@ -99,7 +99,7 @@ pub const BAENDER: [(&str, u32, u32); 12] = [
 ];
 
 /// Werks-Artikel (§10, aus werk.szk).
-pub const ARTIKEL: [WerkArtikel; 21] = [
+pub const ARTIKEL: [WerkArtikel; 28] = [
     a(
         "1S7bUW0010080100000001",
         "m2",
@@ -197,6 +197,37 @@ pub const ARTIKEL: [WerkArtikel; 21] = [
         "m3",
         "Schotter 0/32 Füllmaterial, frei Baustelle",
     ),
+    a(
+        "1S7bUW001008010000000M",
+        "m3",
+        "XPS-Perimeterdämmplatte 035 CS 300 kPa, lastabtragend",
+    ),
+    a(
+        "1S7bUW001008010000000N",
+        "m3",
+        "EPS-Dachdämmplatte 035 DAA dh, druckfest",
+    ),
+    a(
+        "1S7bUW001008010000000O",
+        "m2",
+        "Bitumen-Schweißbahn mit Alu-Einlage, Dampfsperre",
+    ),
+    a("1S7bUW001008010000000P", "kg", "Bitumen-Voranstrich kalt"),
+    a(
+        "1S7bUW001008010000000Q",
+        "m2",
+        "Polymerbitumen-Schweißbahn PYE PV 200 S5",
+    ),
+    a(
+        "1S7bUW001008010000000R",
+        "m2",
+        "Terrassenplatte Beton 40mm, Splittbett und Schutzlage",
+    ),
+    a(
+        "1S7bUW001008010000000S",
+        "m",
+        "Mauerabdeckung Titanzink 0,7mm Zuschnitt 400, Halter",
+    ),
 ];
 
 /// Werks-Baustoffe nach Vertrag 0.5 §9.
@@ -266,7 +297,7 @@ pub const BELEGT: [&str; 15] = [
 ];
 
 /// Bauteilarten in Skizzeo (§10).
-pub const ARTEN: [&str; 9] = [
+pub const ARTEN: [&str; 10] = [
     "exterior",
     "interior",
     "floor",
@@ -274,12 +305,13 @@ pub const ARTEN: [&str; 9] = [
     "stripfooting",
     "edgeinsulation",
     "soffitinsulation",
+    "perimeterinsulation",
     "roofterrace",
     "coping",
 ];
 
 /// Werks-Leistungen (§10, aus werk.szk).
-pub const LEISTUNGEN: [WerkLeistung; 42] = [
+pub const LEISTUNGEN: [WerkLeistung; 54] = [
     l(
         "1S7bUW0010080200000001",
         "m3",
@@ -531,6 +563,78 @@ pub const LEISTUNGEN: [WerkLeistung; 42] = [
         "m2",
         "auto",
         "Fassadengerüst LK3 W09, 4 Wochen Standzeit, auf-/abbauen",
+    ),
+    l(
+        "1S7bUW001008020000000h",
+        "m2",
+        "area",
+        "Perimeterdämmung XPS 300 unter Bodenplatte, lastabtragend",
+    ),
+    l(
+        "1S7bUW001008020000000i",
+        "m2",
+        "area",
+        "Dampfsperre Bitumen-Alu-Schweißbahn vollflächig, inkl. Voranstrich",
+    ),
+    l(
+        "1S7bUW001008020000000j",
+        "m2",
+        "area",
+        "Terrassendämmung EPS 035 DAA dh druckfest, Dicke nach Aufbau",
+    ),
+    l(
+        "1S7bUW001008020000000k",
+        "m2",
+        "area",
+        "Abdichtung Polymerbitumen 2-lagig, Oberlage beschiefert",
+    ),
+    l(
+        "1S7bUW001008020000000l",
+        "m",
+        "length",
+        "Abdichtungsanschluss an Attika, über Krone geführt, inkl. Keil",
+    ),
+    l(
+        "1S7bUW001008020000000m",
+        "m2",
+        "area",
+        "Terrassenbelag Betonplatten 40mm auf Splittbett, Schutzlage",
+    ),
+    l(
+        "1S7bUW001008020000000n",
+        "m",
+        "length",
+        "Attikaabdeckung Titanzink 0,7mm, Zuschnitt bis 400mm, Halter",
+    ),
+    l(
+        "1S7bUW001008020000000o",
+        "m",
+        "auto",
+        "Zulage Attikaabdeckung Zuschnitt über 400 bis 500mm",
+    ),
+    l(
+        "1S7bUW001008020000000p",
+        "m",
+        "auto",
+        "Zulage Attikaabdeckung Zuschnitt über 500 bis 667mm",
+    ),
+    l(
+        "1S7bUW001008020000000q",
+        "m",
+        "auto",
+        "Zulage Attikaabdeckung Zuschnitt über 667 bis 1000mm",
+    ),
+    l(
+        "1S7bUW001008020000000r",
+        "st",
+        "auto",
+        "Zulage Attikaabdeckung Ecke 90°, gefalzt oder gelötet",
+    ),
+    l(
+        "1S7bUW001008020000000s",
+        "st",
+        "auto",
+        "Zulage Attikaabdeckung Endabschluss mit Stirnblech",
     ),
 ];
 
