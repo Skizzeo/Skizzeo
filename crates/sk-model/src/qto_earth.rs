@@ -21,7 +21,7 @@ use sk_math::Vec3;
 pub struct Boden {
     /// Oberboden: abtragen und seitlich lagern (DIN 18915, ATV DIN 18320).
     pub oberboden: f64,
-    /// Baufeld: so weit um den Plattenumriss wird der Oberboden abgetragen
+    /// Abtrag um die Platte: so weit um den Plattenumriss wird der Oberboden abgetragen
     /// (Arbeitsraum, Gerüst, Wege); mindestens bis zum Rand der Baugrube.
     pub rand: f64,
     /// Arbeitsraum um den Plattenumriss (DIN 4124: mindestens 0,50 m).
@@ -51,7 +51,7 @@ impl Boden {
     /// Grad), in der Reihenfolge der Felder.
     pub const FELDER: [(&'static str, &'static str, f64, f64); 5] = [
         ("topsoil", "Oberboden", 0.0, 1000.0),
-        ("strip", "Baufeld um die Platte", 0.0, 10000.0),
+        ("strip", "Oberbodenabtrag um die Platte", 0.0, 10000.0),
         ("workspace", "Arbeitsraum", 0.0, 2000.0),
         ("capillary", "Kapillarbrechende Schicht", 0.0, 1000.0),
         ("slope", "Böschungswinkel", 30.0, 90.0),
@@ -246,7 +246,7 @@ pub fn erd_mengen(b: &ErdBasis, boden: &Boden, mut menge: impl FnMut(&'static st
             TOPSOIL,
             ob_flaeche * o,
             format!(
-                "Platte {} m² + Baufeld {}: {} m² × {}",
+                "Platte {} m² + Abtrag um die Platte {}: {} m² × {}",
                 zahl(fl, 1e6),
                 breite(x_ob),
                 zahl(ob_flaeche, 1e6),
