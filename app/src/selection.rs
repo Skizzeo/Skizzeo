@@ -1127,7 +1127,7 @@ fn outline(
             let Some(r) = scene.flat_roof_over(*floor) else {
                 return Vec::new();
             };
-            let (b, t) = r.band();
+            let (b, t) = (r.band().0, r.top_max());
             if view == ViewKind::Plan && b >= scene.plan_cut() {
                 return Vec::new();
             }

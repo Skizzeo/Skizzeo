@@ -48,9 +48,68 @@ impl FlatRoof {
         (self.base, self.base + self.thickness())
     }
 
-    /// Anschlusshöhe: OK Aufkantung über OK Dachhaut (mm).
+    /// Anschlusshöhe: OK Aufkantung über OK Dachhaut (mm), mit Gefälle am
+    /// höchsten Punkt des Rands.
     pub fn upstand(&self) -> f64 {
-        self.crown - self.band().1
+        self.crown - self.band().1 - self.slope.as_ref().map_or(0.0, |g| g.wedge_edge_max())
+    }
+
+    /// Höchster Punkt der Dachhaut (absolut, mm): OK Dachhaut plus Keil.
+    pub fn top_max(&self) -> f64 {
+        self.band().1 + self.slope.as_ref().map_or(0.0, |g| g.wedge_max())
+    }
+
+    /// Keildicke am Punkt `p` (mm), 0 ohne Gefälle.
+    pub fn wedge_at(&self, p: Vec3) -> f64 {
+        self.slope.as_ref().map_or(0.0, |g| g.wedge_at(p))
+    }
+
+    /// Steigen Unter- und Oberseite der Schicht `li` (von oben gezählt) mit
+    /// dem Keil? Die Gefälleschicht hat eine ebene Unterseite, alle
+    /// Schichten darüber liegen auf dem Keil.
+    fn rises(&self, li: u8) -> (bool, bool) {
+        match (self.tapered, &self.slope) {
+            (Some(t), Some(_)) => ((li as usize) < t, (li as usize) <= t),
+            _ => (false, false),
+        }
+    }
+
+    /// Umriss mit den Knicken des Keils am Rand: Punkte (z = 0) und
+    /// Keildicke; ohne Gefälle der Umriss mit 0.
+    fn rim(&self) -> Vec<(Vec3, f64)> {
+        let ring = &self.outline;
+        let Some(g) = &self.slope else {
+            return ring.iter().map(|p| (*p, 0.0)).collect();
+        };
+        let n = ring.len();
+        let mut out = Vec::new();
+        for i in 0..n {
+            let (a, b) = (ring[i], ring[(i + 1) % n]);
+            let d = b - a;
+            let len = d.length();
+            if len < 1e-6 {
+                continue;
+            }
+            let mut ts: Vec<f64> = g
+                .faces
+                .iter()
+                .flat_map(|f| f.pts.iter())
+                .filter_map(|p| {
+                    let t = (*p - a).dot(d) / (len * len);
+                    let q = a + d * t;
+                    let on = vec3(p.x - q.x, p.y - q.y, 0.0).length() < 0.5;
+                    (on && t * len > 0.5 && t * len < len - 0.5).then_some(t)
+                })
+                .collect();
+            ts.push(0.0);
+            ts.sort_by(f64::total_cmp);
+            ts.dedup_by(|x, y| (*x - *y) * len < 0.5);
+            out.extend(ts.into_iter().map(|t| {
+                let p = a + d * t;
+                (p, g.wedge_at(p))
+            }));
+        }
+        out
     }
 
     /// Fläche des Aufbaus (mm²).
@@ -124,9 +183,24 @@ impl FlatRoof {
         let top_mat = s.mat;
         s.layer = bands.first().map_or(NO_LAYER, |l| l.4);
         s.cap(&self.outline, self.base, false);
+        let rim = self.rim();
+        let m = rim.len();
         for &(a, b, mat, _, li) in &bands {
             (s.mat, s.layer) = (mat, li);
-            s.sides(&self.outline, a, b, true);
+            let (ra, rb) = self.rises(li);
+            let z = |up: bool, z: f64, w: f64| if up { z + w } else { z };
+            // Seiten an der Aufkantung, mit Gefälle stückweise schräg oben
+            for i in 0..m {
+                let ((p, wp), (q, wq)) = (rim[i], rim[(i + 1) % m]);
+                let r = right_of((q - p).normalized());
+                s.quad(
+                    at_z(p, z(ra, a, wp)),
+                    at_z(q, z(ra, a, wq)),
+                    at_z(q, z(rb, b, wq)),
+                    at_z(p, z(rb, b, wp)),
+                    r,
+                );
+            }
         }
         s.mat = top_mat;
         s
@@ -143,6 +217,16 @@ impl FlatRoof {
         let Some(&(_, top, mat, _, li)) = bands.iter().rev().find(|l| l.0 < cut) else {
             return s;
         };
+        if let Some(g) = self.slope.as_ref().filter(|_| cut >= top) {
+            (s.mat, s.layer) = (mat, li);
+            let cut_mat = self
+                .tapered
+                .and_then(|t| bands.iter().find(|l| l.4 as usize == t))
+                .map_or(mat, |l| l.2)
+                | material::CUT;
+            self.sloped_top(&mut s, g, top, cut, cut_mat);
+            return s;
+        }
         let (z, mat, li) = if cut < top {
             let l = bands
                 .iter()
@@ -169,6 +253,75 @@ impl FlatRoof {
         s
     }
 
+    /// Dachhaut mit Gefälle (OK Dachhaut `top` am Ablauf), über `cut`
+    /// waagerecht abgeschnitten: Teilflächen schräg mit Kanten an Rand,
+    /// Kehlen und Graten; was über `cut` liegt, als Schnittfläche `cut_mat`
+    /// mit der Höhenlinie als Schnittkante.
+    fn sloped_top(&self, s: &mut Solid, g: &SlopeField, top: f64, cut: f64, cut_mat: u16) {
+        let h = cut - top;
+        let w = |f: &crate::gefaelle::Face, p: Vec3| g.slope * f.path(p);
+        let view_mat = s.mat;
+        for f in &g.faces {
+            let nrm = vec3(-g.slope * f.rise.x, -g.slope * f.rise.y, 1.0).normalized();
+            let under = clip_lin(&f.pts, |p| h - w(f, p));
+            s.mat = view_mat;
+            for k in 1..under.len().saturating_sub(1) {
+                let t = [under[0], under[k], under[k + 1]];
+                s.oriented_tri(t.map(|p| at_z(p, top + w(f, p))), nrm);
+            }
+            let over = clip_lin(&f.pts, |p| w(f, p) - h);
+            if over.len() >= 3 {
+                s.mat = cut_mat;
+                s.cap(&over, cut, true);
+                // Höhenlinie: die Kante des Schnitts im Inneren der Fläche
+                s.edge_kind = edge_kind::CUT_LAYER;
+                let k = over.len();
+                for i in 0..k {
+                    let (a, b) = (over[i], over[(i + 1) % k]);
+                    if (w(f, a) - h).abs() < 1e-6 && (w(f, b) - h).abs() < 1e-6 {
+                        s.edge(at_z(a, cut), at_z(b, cut));
+                    }
+                }
+            }
+        }
+        s.mat = view_mat;
+        // Rand und Kehlen/Grate: unter dem Schnitt als Ansicht, darüber
+        // als Schnittkante auf Höhe `cut`
+        let line = |s: &mut Solid, a: Vec3, wa: f64, b: Vec3, wb: f64, rim: bool| {
+            let x = if (wa - h) * (wb - h) < 0.0 {
+                Some(a + (b - a) * ((h - wa) / (wb - wa)))
+            } else {
+                None
+            };
+            let mut seg = |p: Vec3, wp: f64, q: Vec3, wq: f64| {
+                if (wp + wq) / 2.0 <= h {
+                    s.edge_kind = edge_kind::VIEW;
+                    s.edge(at_z(p, top + wp), at_z(q, top + wq));
+                } else if rim {
+                    s.edge_kind = edge_kind::CUT_LAYER;
+                    s.edge(at_z(p, cut), at_z(q, cut));
+                }
+            };
+            match x {
+                Some(x) => {
+                    seg(a, wa, x, h);
+                    seg(x, h, b, wb);
+                }
+                None => seg(a, wa, b, wb),
+            }
+        };
+        let rim = self.rim();
+        let m = rim.len();
+        for i in 0..m {
+            let ((p, wp), (q, wq)) = (rim[i], rim[(i + 1) % m]);
+            line(s, p, wp, q, wq, true);
+        }
+        for c in &g.creases {
+            line(s, c.a, g.wedge_at(c.a), c.b, g.wedge_at(c.b), false);
+        }
+        s.edge_kind = edge_kind::VIEW;
+    }
+
     /// Schnittflächen des Aufbaus: je Schicht umrandet, Dämmung mit
     /// Schraffur längs (waagerecht), Dampfsperre und Abdichtung ohne.
     pub fn section_caps(&self, p0: Vec3, n: Vec3) -> Solid {
@@ -181,23 +334,81 @@ impl FlatRoof {
         };
         let bands = self.bands();
         for (a, b) in polygon::plane_intervals(&self.outline, p0, n, along) {
+            // Knicke des Keils längs des Schnitts: Lauflänge und Keildicke
+            let us = self.section_breaks(&f, a, b);
+            let w: Vec<f64> = us.iter().map(|&u| self.wedge_at(pt(u, 0.0))).collect();
             for &(z0, z1, mat, ins, li) in &bands {
                 s.mat = mat | material::CUT;
                 s.layer = li;
-                let d = (z1 - z0).max(1.0);
-                let uv = if ins {
-                    [[a / d, 0.0], [b / d, 0.0], [b / d, 1.0], [a / d, 1.0]]
+                let (ra, rb) = self.rises(li);
+                let lo = |i: usize| z0 + if ra { w[i] } else { 0.0 };
+                let hi = |i: usize| z1 + if rb { w[i] } else { 0.0 };
+                // Schraffur: Maßstab nach der mittleren Dicke, Höhe gestreckt
+                let mean = if rb && !ra && us.len() > 1 {
+                    (1..us.len())
+                        .map(|i| (us[i] - us[i - 1]) * (w[i] + w[i - 1]) / 2.0)
+                        .sum::<f64>()
+                        / (b - a).max(1.0)
                 } else {
-                    [[0.0; 2]; 4]
+                    0.0
                 };
-                s.quad_uv([pt(a, z0), pt(b, z0), pt(b, z1), pt(a, z1)], n, uv);
-                s.edge(pt(a, z1), pt(b, z1));
-                s.edge(pt(a, z0), pt(a, z1));
-                s.edge(pt(b, z0), pt(b, z1));
+                let d = (z1 - z0 + mean).max(1.0);
+                for i in 1..us.len() {
+                    let (u0, u1) = (us[i - 1], us[i]);
+                    let uv = if ins {
+                        [[u0 / d, 0.0], [u1 / d, 0.0], [u1 / d, 1.0], [u0 / d, 1.0]]
+                    } else {
+                        [[0.0; 2]; 4]
+                    };
+                    s.quad_uv(
+                        [
+                            pt(u0, lo(i - 1)),
+                            pt(u1, lo(i)),
+                            pt(u1, hi(i)),
+                            pt(u0, hi(i - 1)),
+                        ],
+                        n,
+                        uv,
+                    );
+                    s.edge(pt(u0, hi(i - 1)), pt(u1, hi(i)));
+                }
+                let l = us.len() - 1;
+                s.edge(pt(a, lo(0)), pt(a, hi(0)));
+                s.edge(pt(b, lo(l)), pt(b, hi(l)));
             }
         }
         s.edge_kind = edge_kind::VIEW;
         s
+    }
+
+    /// Lauflängen von `a` bis `b` längs des Schnitts, an denen der Keil
+    /// knickt (Kanten der Teilflächen); ohne Gefälle nur `a` und `b`.
+    fn section_breaks(&self, f: &SectionFrame, a: f64, b: f64) -> Vec<f64> {
+        let mut us = vec![a, b];
+        if let Some(g) = &self.slope {
+            let base = f.pt(0.0, 0.0);
+            for face in &g.faces {
+                let k = face.pts.len();
+                for i in 0..k {
+                    let (p, q) = (face.pts[i], face.pts[(i + 1) % k]);
+                    let (dp, dq) = ((p - base).dot(f.n), (q - base).dot(f.n));
+                    if (dp > 0.0) == (dq > 0.0) || (dp - dq).abs() < 1e-12 {
+                        continue;
+                    }
+                    let x = p + (q - p) * (dp / (dp - dq));
+                    let u = (x - base).dot(f.along);
+                    if u > a && u < b {
+                        us.push(u);
+                    }
+                }
+            }
+        }
+        us.sort_by(f64::total_cmp);
+        us.dedup_by(|x, y| *x - *y < 0.5);
+        if let Some(l) = us.last_mut() {
+            *l = b;
+        }
+        us
     }
 
     // ---- Attikablech (D4) ----
@@ -265,6 +476,24 @@ impl FlatRoof {
         s.edge_kind = edge_kind::VIEW;
         s
     }
+}
+
+/// Teil des konvexen Polygons `pts`, in dem die lineare Funktion `f` nicht
+/// negativ ist (z = 0).
+fn clip_lin(pts: &[Vec3], f: impl Fn(Vec3) -> f64) -> Vec<Vec3> {
+    let n = pts.len();
+    let mut out = Vec::with_capacity(n + 1);
+    for i in 0..n {
+        let (p, q) = (pts[i], pts[(i + 1) % n]);
+        let (fp, fq) = (f(p), f(q));
+        if fp >= 0.0 {
+            out.push(p);
+        }
+        if (fp >= 0.0) != (fq >= 0.0) {
+            out.push(p + (q - p) * (fp / (fp - fq)));
+        }
+    }
+    out
 }
 
 // ---- Automatikmengen (`roof.*`, Plan Flachdach D3, für die Leistungen K3) ----
@@ -368,5 +597,119 @@ mod tests {
         outline.reverse();
         r.outline = outline;
         assert_eq!(r.corners(), 5);
+    }
+
+    /// Rechteck 10 × 8 m, Abläufe in der Mitte der Langseiten, 2 %: 1 cm
+    /// Abdichtung, 20 cm Dämmung (Gefälleschicht), 5 mm Dampfsperre.
+    fn mit_gefaelle() -> FlatRoof {
+        let outline = vec![
+            vec3(0.0, 0.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+        ];
+        let drains = [vec3(5000.0, 0.0, 0.0), vec3(5000.0, 8000.0, 0.0)];
+        FlatRoof {
+            slope: SlopeField::compute(&outline, &drains, 2.0),
+            tapered: Some(1),
+            outline,
+            base: 1000.0,
+            layers: vec![(10.0, 1, false), (200.0, 2, true), (5.0, 3, false)],
+            ring: Vec::new(),
+            width: 0.0,
+            crown: 1600.0,
+            coping_mat: 0,
+        }
+    }
+
+    /// Rauminhalt eines geschlossenen Körpers (Divergenzsatz, mm³).
+    fn rauminhalt(s: &Solid) -> f64 {
+        s.triangles
+            .iter()
+            .map(|t| t.p[0].dot(t.p[1].cross(t.p[2])) / 6.0)
+            .sum()
+    }
+
+    /// Der Körper ist geschlossen und hat das Volumen von Aufbau und Keil;
+    /// die Anschlusshöhe zählt ab dem höchsten Randpunkt (Mitte der
+    /// Schmalseiten: 4 m Fließweg, 8 cm).
+    #[test]
+    fn koerper_mit_keil() {
+        let r = mit_gefaelle();
+        let g = r.slope.as_ref().unwrap();
+        let soll = 215.0 * 80.0e6 + g.wedge_volume();
+        let v = rauminhalt(&r.solid());
+        assert!((v - soll).abs() < 1e-6 * soll, "{v} statt {soll}");
+        assert!(
+            (g.wedge_edge_max() - 100.0).abs() < 1e-6,
+            "{}",
+            g.wedge_edge_max()
+        );
+        assert!((r.upstand() - (1600.0 - 1215.0 - 100.0)).abs() < 1e-6);
+        assert!((r.top_max() - 1215.0 - g.wedge_max()).abs() < 1e-9);
+        // ohne Gefälle wie bisher
+        let flach = FlatRoof {
+            slope: None,
+            ..mit_gefaelle()
+        };
+        assert!((rauminhalt(&flach.solid()) - 215.0 * 80.0e6).abs() < 1.0);
+        assert!((flach.upstand() - 385.0).abs() < 1e-9);
+    }
+
+    /// Schnitt quer durch die Abläufe (x = 5 m) und längs (y = 4 m): die
+    /// Schnittfläche ist Aufbau mal Länge plus die Fläche unter dem Keil.
+    #[test]
+    fn schnitt_mit_keil() {
+        let r = mit_gefaelle();
+        for (p0, n, len) in [
+            (vec3(5000.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), 8000.0),
+            (vec3(0.0, 4000.0, 0.0), vec3(0.0, 1.0, 0.0), 10000.0),
+            (vec3(3000.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), 8000.0),
+        ] {
+            let s = r.section_caps(p0, n);
+            let flaeche: f64 = s
+                .triangles
+                .iter()
+                .map(|t| (t.p[1] - t.p[0]).cross(t.p[2] - t.p[0]).length() / 2.0)
+                .sum();
+            let f = SectionFrame::new(p0, n);
+            let (a, b) = polygon::plane_intervals(&r.outline, p0, n, f.along)[0];
+            let k = 4000;
+            let keil: f64 = (0..k)
+                .map(|i| r.wedge_at(f.pt(a + (b - a) * (i as f64 + 0.5) / k as f64, 0.0)))
+                .sum::<f64>()
+                * (b - a)
+                / k as f64;
+            let soll = 215.0 * len + keil;
+            assert!(
+                (flaeche - soll).abs() < 1e-3 * soll,
+                "{flaeche} statt {soll}"
+            );
+        }
+    }
+
+    /// Grundriss: knapp über OK Dachhaut am Ablauf geschnitten, deckt der
+    /// Aufbau (schräg gesehen plus Schnittfläche) genau die Dachfläche.
+    #[test]
+    fn grundriss_mit_keil() {
+        let r = mit_gefaelle();
+        for cut in [1250.0, 1500.0, f64::INFINITY] {
+            let s = r.cut_at(cut);
+            let flaeche: f64 = s
+                .triangles
+                .iter()
+                .map(|t| {
+                    let (u, v) = (t.p[1] - t.p[0], t.p[2] - t.p[0]);
+                    (u.x * v.y - u.y * v.x) / 2.0
+                })
+                .sum();
+            assert!((flaeche - 80.0e6).abs() < 1.0, "{cut}: {flaeche}");
+            let schnitt = s.triangles.iter().any(|t| t.mat & material::CUT != 0);
+            assert_eq!(schnitt, cut == 1250.0, "{cut}");
+            assert!(s
+                .triangles
+                .iter()
+                .all(|t| t.p.iter().all(|p| p.z <= cut + 1e-9)));
+        }
     }
 }
