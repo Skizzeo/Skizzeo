@@ -24,10 +24,15 @@ pub struct FoundationParams {
     pub recess: f64,
     pub slab_thickness: f64,
     pub footing_width: f64,
-    /// Tiefe der Frostschürze ab Unterkante Platte.
+    /// Tiefe der Frostschürze ab Unterkante Dämmung (ohne Dämmung ab
+    /// Unterkante Platte).
     pub footing_depth: f64,
     pub slab_mat: u16,
     pub footing_mat: u16,
+    /// Perimeterdämmung vollflächig unter der Platte (mm, 0 = keine) und
+    /// ihr Baustoff; die Schürze beginnt darunter.
+    pub insulation: f64,
+    pub insulation_mat: u16,
 }
 
 impl Default for FoundationParams {
@@ -39,6 +44,8 @@ impl Default for FoundationParams {
             footing_depth: 600.0,
             slab_mat: material::PLAIN,
             footing_mat: material::PLAIN,
+            insulation: 0.0,
+            insulation_mat: material::PLAIN,
         }
     }
 }
@@ -112,7 +119,11 @@ impl Foundation {
         outline: &[Vec3],
         p: &FoundationParams,
     ) -> Result<Foundation, FoundationError> {
-        if !(p.slab_thickness > 0.0 && p.footing_width > 0.0 && p.footing_depth > 0.0) {
+        if !(p.slab_thickness > 0.0
+            && p.footing_width > 0.0
+            && p.footing_depth > 0.0
+            && p.insulation >= 0.0)
+        {
             return Err(FoundationError::BadSize);
         }
         let outline = polygon::simplified(&polygon::to_ccw(outline));
@@ -134,14 +145,26 @@ impl Foundation {
         })
     }
 
+    /// Platte und Schürze ohne Fuge: gleicher Baustoff, keine Dämmung
+    /// dazwischen.
     fn seamless(&self) -> bool {
-        self.params.slab_mat == self.params.footing_mat
+        self.params.slab_mat == self.params.footing_mat && !self.insulated()
     }
 
-    /// Unterkante Platte und Unterkante Schürze.
+    /// Liegt eine Perimeterdämmung unter der Platte?
+    pub fn insulated(&self) -> bool {
+        self.params.insulation > 0.0
+    }
+
+    /// Unterkante Platte.
+    fn slab_bottom(&self) -> f64 {
+        -self.params.slab_thickness
+    }
+
+    /// Oberkante und Unterkante der Schürze (OK Schürze = UK Dämmung).
     fn levels(&self) -> (f64, f64) {
-        let t = self.params.slab_thickness;
-        (-t, -t - self.params.footing_depth)
+        let top = self.slab_bottom() - self.params.insulation.max(0.0);
+        (top, top - self.params.footing_depth)
     }
 
     /// Ringzellen je Umrisskante (Vier- oder Dreieck), gegen den Uhrzeigersinn.
@@ -186,7 +209,7 @@ impl Foundation {
             layer: self.layers.0,
             ..Solid::default()
         };
-        let (zb, _) = self.levels();
+        let zb = self.slab_bottom();
         let c0 = &self.outline;
         s.cap(c0, 0.0, true);
         Foundation::walls(&mut s, c0, zb, 0.0, true);
@@ -312,6 +335,7 @@ impl Foundation {
         let f = SectionFrame::new(p0, n);
         let (n, along) = (f.n, f.along);
         let pt = |u: f64, z: f64| f.pt(u, z);
+        let zs = self.slab_bottom();
         let (zt, zb) = self.levels();
         let mut slab = Solid {
             mat: self.params.slab_mat | material::CUT,
@@ -334,7 +358,7 @@ impl Foundation {
             s.quad(pt(u0, z0), pt(u1, z0), pt(u1, z1), pt(u0, z1), n);
         };
         for &(a, b) in &outer {
-            rect(&mut slab, a, b, zt, 0.0);
+            rect(&mut slab, a, b, zs, 0.0);
             slab.edge(pt(a, 0.0), pt(b, 0.0));
             // Abschnitte ohne Schürze innerhalb [a, b]
             let inner: Vec<(f64, f64)> = holes
@@ -359,16 +383,19 @@ impl Foundation {
                     rect(&mut foot, z.0, z.1, zb, zt);
                     foot.edge(pt(z.0, zb), pt(z.1, zb));
                     if !self.seamless() {
-                        slab.edge(pt(z.0, zt), pt(z.1, zt));
+                        slab.edge(pt(z.0, zs), pt(z.1, zs));
+                    }
+                    if self.insulated() {
+                        foot.edge(pt(z.0, zt), pt(z.1, zt));
                     }
                 } else {
-                    slab.edge(pt(z.0, zt), pt(z.1, zt));
+                    slab.edge(pt(z.0, zs), pt(z.1, zs));
                 }
             }
             // Senkrechte Kontur: außen ganz hinunter, innen an den Übergängen
             if let (Some(f), Some(l)) = (zones.first(), zones.last()) {
-                slab.edge(pt(a, 0.0), pt(a, zt));
-                slab.edge(pt(b, 0.0), pt(b, zt));
+                slab.edge(pt(a, 0.0), pt(a, zs));
+                slab.edge(pt(b, 0.0), pt(b, zs));
                 if f.2 {
                     foot.edge(pt(a, zt), pt(a, zb));
                 }
@@ -387,7 +414,72 @@ impl Foundation {
         (slab, foot)
     }
 
+    /// Körper der Perimeterdämmung: vollflächig unter der Platte; leer ohne
+    /// Dämmung.
+    pub fn insulation_solid(&self) -> Solid {
+        if !self.insulated() {
+            return Solid::default();
+        }
+        let mut s = Solid {
+            mat: self.params.insulation_mat,
+            layer: 0,
+            ..Solid::default()
+        };
+        let (z0, z1) = (self.levels().0, self.slab_bottom());
+        let c0 = &self.outline;
+        s.cap(c0, z1, true);
+        s.cap(c0, z0, false);
+        Foundation::walls(&mut s, c0, z0, z1, true);
+        Foundation::ring(&mut s, c0, z0);
+        Foundation::ring(&mut s, c0, z1);
+        s.edge_kind = edge_kind::VIEW;
+        s
+    }
+
+    /// Schnittfläche der Perimeterdämmung mit der senkrechten Ebene durch
+    /// `p0` mit Normale `n` (wie [`Foundation::section_caps`]); leer ohne
+    /// Dämmung.
+    pub fn insulation_section(&self, p0: Vec3, n: Vec3) -> Solid {
+        if !self.insulated() {
+            return Solid::default();
+        }
+        let f = SectionFrame::new(p0, n);
+        let (n, along) = (f.n, f.along);
+        let pt = |u: f64, z: f64| f.pt(u, z);
+        let (z0, z1) = (self.levels().0, self.slab_bottom());
+        let mut s = Solid {
+            mat: self.params.insulation_mat | material::CUT,
+            edge_kind: edge_kind::CUT,
+            layer: 0,
+            ..Solid::default()
+        };
+        // Zickzack längs (waagerecht) wie die Dämmung der Dachterrasse
+        let d = (z1 - z0).max(1.0);
+        for (a, b) in polygon::plane_intervals(&self.outline, p0, n, along) {
+            let uv = [[a / d, 0.0], [b / d, 0.0], [b / d, 1.0], [a / d, 1.0]];
+            s.quad_uv([pt(a, z0), pt(b, z0), pt(b, z1), pt(a, z1)], n, uv);
+            s.edge(pt(a, z0), pt(b, z0));
+            s.edge(pt(a, z1), pt(b, z1));
+            s.edge(pt(a, z0), pt(a, z1));
+            s.edge(pt(b, z0), pt(b, z1));
+        }
+        s
+    }
+
     // ---- Mengen (Grundlage für qto, Einheiten mm, mm², mm³) ----
+
+    /// Fläche der Perimeterdämmung (Plattenumriss; 0 ohne Dämmung).
+    pub fn insulation_area(&self) -> f64 {
+        if self.insulated() {
+            self.slab_area()
+        } else {
+            0.0
+        }
+    }
+
+    pub fn insulation_volume(&self) -> f64 {
+        self.insulation_area() * self.params.insulation.max(0.0)
+    }
 
     /// Fläche der Sohlplatte (Umriss).
     pub fn slab_area(&self) -> f64 {

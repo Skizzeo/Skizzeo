@@ -797,6 +797,13 @@ fn write_known(m: &Model) -> String {
         let v: Vec<String> = gaps.iter().map(|(p, n)| format!("{p}:{n}")).collect();
         line.word("next", &v.join(","))
     };
+    // Versatz OK Sohlplatte über Gelände (Gelände Thema 1): nur ≠ 0, damit
+    // ältere Dateien bytegleich bleiben
+    let line = if p.terrain != 0.0 {
+        line.num("terrain", p.terrain)
+    } else {
+        line
+    };
     line.finish(&mut out);
     // Projektdaten (BIM §3.12a): nur gesetzte Felder, ohne Daten keine
     // Zeile; leer aber doch, solange alte Werte an `[project]` stehen, denn
@@ -926,7 +933,7 @@ fn write_known(m: &Model) -> String {
         let ElementKind::GroundSlab(s) = e.kind else {
             continue;
         };
-        slab_type(
+        let l = slab_type(
             Line::new("slab")
                 .guid("guid", Some(e.guid))
                 .guid("run", m.run(s.run).map(|r| r.guid))
@@ -938,10 +945,17 @@ fn write_known(m: &Model) -> String {
         .guid("mat", mat_guid(s.material))
         .word("top", &level(s.top))
         .num("t", s.thickness)
-        .num("recess", s.recess)
-        .num("seq", e.seq)
-        .guid("storey", storey_guid(e.storey))
-        .finish(&mut out);
+        .num("recess", s.recess);
+        // Perimeterdämmung (Gelände Thema 4): nur, wenn es sie gibt, damit
+        // ältere Dateien bytegleich bleiben
+        let l = if s.insulation > 0.0 {
+            l.num("insulation", s.insulation)
+        } else {
+            l
+        };
+        l.num("seq", e.seq)
+            .guid("storey", storey_guid(e.storey))
+            .finish(&mut out);
     }
     for e in &walls {
         let ElementKind::StripFooting(f) = e.kind else {
@@ -1022,6 +1036,20 @@ fn write_known(m: &Model) -> String {
         Line::new("soffit")
             .guid("guid", Some(e.guid))
             .guid("floor", m.element(floor).map(|x| x.guid))
+            .text("number", &e.number)
+            .word("cat", category(e.category))
+            .num("seq", e.seq)
+            .guid("storey", storey_guid(e.storey))
+            .finish(&mut out);
+    }
+    // Perimeterdämmung (Gelände Thema 4): nur, wenn es sie gibt
+    for e in &walls {
+        let ElementKind::PerimeterInsulation { slab } = e.kind else {
+            continue;
+        };
+        Line::new("perimeter")
+            .guid("guid", Some(e.guid))
+            .guid("slab", m.element(slab).map(|x| x.guid))
             .text("number", &e.number)
             .word("cat", category(e.category))
             .num("seq", e.seq)
@@ -1388,7 +1416,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 35] = [
+    const KNOWN: [&str; 36] = [
         "pen",
         "linetype",
         "fill",
@@ -1413,6 +1441,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         "soffit",
         "terrace",
         "coping",
+        "perimeter",
         "extdef",
         "extpart",
         "prop",
@@ -1632,6 +1661,14 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     };
     let text = |k: &str| p.opt(k).unwrap_or("").to_string();
     let mut project = Project::new(p.guid("guid")?, p.get("name")?);
+    // vor Gelände Thema 1 ohne: OK Sohlplatte auf OK Gelände
+    if p.opt("terrain").is_some() {
+        let t = p.f64("terrain")?;
+        if !(t.is_finite() && t.abs() <= crate::model::MAX_TERRAIN_OFFSET) {
+            return Err(err(p.line, "[project]: „terrain“ außerhalb des Bereichs"));
+        }
+        project.terrain = t;
+    }
     // Regel 110: `[projectinfo]` gilt; sonst die Schlüssel an `[project]`
     let alt = [text("site"), text("client"), text("author")];
     match recs("projectinfo").as_slice() {
@@ -1975,9 +2012,21 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         ("soffit", 4),
         ("terrace", 5),
         ("coping", 6),
+        ("perimeter", 7),
     ] {
         for r in recs(section) {
-            let kind = if ix >= 5 {
+            let kind = if ix == 7 {
+                // Perimeterdämmung (Gelände Thema 4): nur der Verweis auf die
+                // Sohlplatte
+                let slab = r.link("slab", &elem_ids)?;
+                if !matches!(
+                    elements.get(slab).map(|e: &Element| &e.kind),
+                    Some(ElementKind::GroundSlab(_))
+                ) {
+                    return Err(err(r.line, "[perimeter]: „slab“ ist keine Sohlplatte"));
+                }
+                ElementKind::PerimeterInsulation { slab }
+            } else if ix >= 5 {
                 // Dachterrasse, Attikablech (D1–D3): nur der Verweis auf die Decke
                 let floor = r.link("floor", &elem_ids)?;
                 if !matches!(
@@ -2065,6 +2114,11 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                     top: level(r, "top", LevelRef::bottom(ground))?,
                     thickness: r.f64("t")?,
                     recess: r.f64("recess")?,
+                    // vor Gelände Thema 4 ohne: keine Dämmung
+                    insulation: match r.opt("insulation") {
+                        Some(_) => r.f64("insulation")?,
+                        None => 0.0,
+                    },
                 })
             } else {
                 let slab = r.link("slab", &elem_ids)?;
@@ -2476,6 +2530,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     }
     model.complete_edge_strips();
     model.complete_soffits();
+    model.complete_perimeters();
     hints.extend(model.complete_terraces());
     for (i, c) in cuts {
         model.set_cut(i, c);

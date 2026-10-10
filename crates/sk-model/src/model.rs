@@ -63,6 +63,11 @@ pub struct Project {
     /// `[projectinfo]` hat: gelten nicht und bleiben bytegleich, bis die
     /// erste Änderung sie entfernt (Regel 110).
     pub legacy: [String; 3],
+    /// Versatz OK Sohlplatte (±0,00) über OK Gelände, mm; + = das Gebäude
+    /// sitzt höher (Gelände Thema 1). Eine Geländeebene für das ganze
+    /// Projekt, wie ±0,00 für alle Gebäude gilt. Kein Projektdatum: ändert
+    /// sich nur über [`Model::set_terrain_offset`].
+    pub terrain: f64,
 }
 
 impl Project {
@@ -81,6 +86,7 @@ impl Project {
             author_addr: String::new(),
             info: false,
             legacy: Default::default(),
+            terrain: 0.0,
         }
     }
 
@@ -120,6 +126,38 @@ pub enum Use {
     Type(LayerSetId, usize),
     /// Bauteil ohne Typ.
     Element(ElementId),
+}
+
+/// Grundlagen der Erdarbeiten einer Gründung ([`Model::ground_basis`]): alle
+/// Höhen in mm relativ zu ±0,00, Flächen in mm², Längen in mm.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroundBasis {
+    /// Außenwandzug, Sohlplatte, Frostschürze, Gebäude.
+    pub run: RunId,
+    pub slab: ElementId,
+    pub footing: ElementId,
+    pub building: Option<BuildingId>,
+    /// OK Gelände.
+    pub terrain_z: f64,
+    /// OK und UK Sohlplatte.
+    pub slab_top_z: f64,
+    pub slab_bottom_z: f64,
+    /// Dicke der Perimeterdämmung (0 = keine) und ihre Unterkante (= OK
+    /// Schürze; ohne Dämmung UK Platte).
+    pub insulation: f64,
+    pub insulation_bottom_z: f64,
+    /// UK Frostschürze = UK Gründung, Breite der Schürze.
+    pub footing_bottom_z: f64,
+    pub footing_width: f64,
+    /// OK Gelände bis UK Gründung.
+    pub embedment: f64,
+    /// Plattenumriss gegen den Uhrzeigersinn auf z = 0.
+    pub outline: Vec<Vec3>,
+    pub slab_area: f64,
+    pub slab_perimeter: f64,
+    /// Ring der Schürze im Grundriss und Länge ihrer Mittellinie.
+    pub footing_area: f64,
+    pub footing_axis_length: f64,
 }
 
 /// Lage und Blickrichtung eines Schnitts (A quer, B längs). Ansichtszustand:
@@ -729,6 +767,7 @@ impl Model {
             name: self.project.name.clone(),
             info: true,
             legacy: Default::default(),
+            terrain: self.project.terrain,
             ..p
         };
         match self.txn.as_mut() {
@@ -760,6 +799,7 @@ impl Model {
             name: self.project.name.clone(),
             info: true,
             legacy: Default::default(),
+            terrain: self.project.terrain,
             ..p
         };
         self.touch();
@@ -1240,6 +1280,7 @@ impl Model {
                 ElementKind::GroundSlab(g) => g.material == id,
                 ElementKind::StripFooting(f) => f.material == id,
                 ElementKind::Coping { floor } => self.coping_material(*floor) == Some(id),
+                ElementKind::PerimeterInsulation { .. } => self.perimeter_material() == Some(id),
                 ElementKind::Ext(p) => ext.contains(&p.key.as_str()),
                 ElementKind::Wall(_)
                 | ElementKind::EdgeStrip { .. }
@@ -3255,6 +3296,7 @@ impl Model {
             ElementKind::SoffitInsulation { floor }
             | ElementKind::RoofTerrace { floor }
             | ElementKind::Coping { floor } => self.run_of(floor),
+            ElementKind::PerimeterInsulation { slab } => self.run_of(slab),
             ElementKind::Ext(_) => None,
         }
     }
@@ -3393,6 +3435,7 @@ impl Model {
         match part {
             SLAB_PART => self.foundation_of(run).map(|f| f.0),
             FOOTING_PART => self.foundation_of(run).and_then(|f| f.1),
+            PERIMETER_PART => self.perimeter_of(self.foundation_of(run)?.0),
             FLOOR_PART => self.floor_of(run),
             SOFFIT_PART => self.soffit_of(self.floor_of(run)?),
             TERRACE_PART => self.terrace_of(self.floor_of(run)?),
@@ -3445,7 +3488,11 @@ impl Model {
         let slabs = self.slabs_of(run);
         if !self.needs_foundation(run) {
             for slab in slabs {
-                for f in self.footings_of(slab) {
+                for f in self
+                    .footings_of(slab)
+                    .into_iter()
+                    .chain(self.perimeters_of(slab))
+                {
                     note!(self, Element, self.elements, f);
                     self.elements.remove(f);
                 }
@@ -3470,9 +3517,11 @@ impl Model {
                     top: LevelRef::bottom(storey),
                     thickness: SLAB_THICKNESS,
                     recess: 0.0,
+                    insulation: 0.0,
                 }),
             ),
         };
+        self.sync_perimeter(slab);
         if self.footings_of(slab).is_empty() {
             let Some(gr) = self.foundation_level_of(storey) else {
                 return;
@@ -3560,13 +3609,18 @@ impl Model {
         }
         let chain = self.base_chain(run)?;
         let slab_bottom = self.level_z(s.top)? - s.thickness;
+        let insulation = s.insulation.max(0.0);
         let p = FoundationParams {
             recess: s.recess,
             slab_thickness: s.thickness,
             footing_width: f.width,
-            footing_depth: slab_bottom - self.level_z(f.base)?,
+            footing_depth: slab_bottom - insulation - self.level_z(f.base)?,
             slab_mat: material_key(s.material),
             footing_mat: material_key(f.material),
+            insulation,
+            insulation_mat: self
+                .perimeter_material()
+                .map_or(material::PLAIN, material_key),
         };
         Some(Foundation::from_chain(&chain, &p).map(|mut x| {
             x.layers = (self.core_layer(slab), self.core_layer(footing));
@@ -3594,16 +3648,18 @@ impl Model {
     }
 
     /// Setzt die Dicke einer Sohlplatte (mm, von oben nach unten).
-    /// Grenze: Schürze bleibt mindestens 10 cm tief (UK Gründung steht).
+    /// Grenze: Schürze bleibt mindestens 10 cm tief (UK Gründung steht),
+    /// unter einer Perimeterdämmung ab deren Unterkante.
     pub fn set_slab_thickness(&mut self, slab: ElementId, thickness: f64) -> bool {
         let bottom = self
             .element(slab)
             .and_then(|e| self.foundation_level_of(e.storey))
             .and_then(|g| self.storey(g))
             .map_or(f64::MIN, |g| g.elevation);
+        let insulation = self.slab_insulation(slab);
         thickness > 0.0
             && thickness.is_finite()
-            && thickness <= -bottom - MIN_FOOTING
+            && thickness + insulation <= -bottom - MIN_FOOTING
             && self.edit_slab(slab, |s| s.thickness = thickness)
     }
 
@@ -3654,7 +3710,7 @@ impl Model {
         let ElementKind::GroundSlab(s) = self.element(f.slab)?.kind else {
             return None;
         };
-        Some(self.level_z(s.top)? - s.thickness - self.level_z(f.base)?)
+        Some(self.level_z(s.top)? - s.thickness - s.insulation.max(0.0) - self.level_z(f.base)?)
     }
 
     /// Schürzentiefe als Zahl: verschiebt UK Gründung (B11), für alle
@@ -3672,6 +3728,276 @@ impl Model {
             return false;
         };
         self.set_foundation_bottom_of(gr, z - (depth - d))
+    }
+
+    // --- Gelände und Perimeterdämmung (Gelände Themen 1 und 4) -------------
+
+    /// Versatz OK Sohlplatte (±0,00) über OK Gelände (mm); + = das Gebäude
+    /// sitzt höher. Alte Projekte: 0.
+    pub fn terrain_offset(&self) -> f64 {
+        self.project.terrain
+    }
+
+    /// Höhe von OK Gelände (mm, relativ zu ±0,00).
+    pub fn terrain_z(&self) -> f64 {
+        -self.project.terrain
+    }
+
+    /// Einbindetiefe der Gründung `gr`: OK Gelände bis UK Gründung (mm).
+    pub fn embedment_of(&self, gr: StoreyId) -> Option<f64> {
+        Some(self.terrain_z() - self.storey(gr)?.elevation)
+    }
+
+    /// Setzt den Versatz OK Sohlplatte über OK Gelände (mm). Jede Gründung
+    /// behält ihre Einbindetiefe, wandert also mit dem Gelände; wird die
+    /// Schürze dabei kürzer als 10 cm, bleibt sie 10 cm (die Einbindung
+    /// wächst). Nie flacher als [`FROST_DEPTH`]: Fehlt Tiefe, wächst die
+    /// Schürze. Außerhalb ±[`MAX_TERRAIN_OFFSET`] abgelehnt.
+    pub fn set_terrain_offset(&mut self, offset: f64) -> bool {
+        if !(offset.is_finite() && offset.abs() <= MAX_TERRAIN_OFFSET + 1e-9) {
+            return false;
+        }
+        let delta = offset - self.project.terrain;
+        if delta == 0.0 {
+            return false;
+        }
+        self.note_project();
+        self.project.terrain = offset;
+        self.follow_terrain(delta);
+        self.touch();
+        true
+    }
+
+    /// Alle Gründungen folgen einem um `delta` gesunkenen Gelände (Versatz
+    /// um `delta` gewachsen): UK Gründung um `delta` tiefer, geklemmt auf
+    /// den erlaubten Bereich.
+    fn follow_terrain(&mut self, delta: f64) {
+        let grs: Vec<StoreyId> = self
+            .storeys
+            .iter()
+            .filter(|(_, s)| s.kind == LevelKind::Foundation)
+            .map(|(id, _)| id)
+            .collect();
+        for gr in grs {
+            let Some(z) = self.storey(gr).map(|s| s.elevation) else {
+                continue;
+            };
+            let (lo, hi) = self.foundation_bottom_range_of(gr);
+            self.move_foundation_bottom(gr, (z - delta).min(hi).max(lo));
+        }
+    }
+
+    /// Merkt das Projekt im offenen Schritt.
+    fn note_project(&mut self) {
+        match self.txn.as_mut() {
+            Some(t) => {
+                if t.noted.insert(Key::Project) {
+                    t.changes.push(Change::Project {
+                        old: Box::new(self.project.clone()),
+                        new: Box::new(self.project.clone()),
+                    });
+                }
+            }
+            None => debug_assert!(!self.strict, "Änderung ohne Schritt"),
+        }
+    }
+
+    /// Ist die Gründung `gr` frostfrei (Einbindetiefe ≥ 80 cm)? Alte Dateien
+    /// können flacher sein, bis man sie ändert.
+    pub fn frost_safe(&self, gr: StoreyId) -> bool {
+        self.embedment_of(gr)
+            .is_none_or(|e| e >= FROST_DEPTH - 1e-6)
+    }
+
+    /// Dicke der Perimeterdämmung unter einer Sohlplatte (mm), 0 = keine.
+    pub fn slab_insulation(&self, slab: ElementId) -> f64 {
+        match self.element(slab).map(|e| &e.kind) {
+            Some(ElementKind::GroundSlab(s)) => s.insulation.max(0.0),
+            _ => 0.0,
+        }
+    }
+
+    /// Setzt die Perimeterdämmung unter einer Sohlplatte (mm): 0 = keine,
+    /// sonst [`MIN_PERIMETER`] bis [`MAX_PERIMETER`]. Die Dämmung hebt die
+    /// Platte um ihre Dicke über UK Gründung: Der Versatz zum Gelände wächst
+    /// um die Änderung, Schürzentiefe und Einbindetiefe bleiben.
+    pub fn set_slab_insulation(&mut self, slab: ElementId, t: f64) -> bool {
+        let ok = t == 0.0 || (MIN_PERIMETER - 1e-9..=MAX_PERIMETER + 1e-9).contains(&t);
+        let old = self.slab_insulation(slab);
+        if !ok || !t.is_finite() || t == old {
+            return false;
+        }
+        if !matches!(
+            self.element(slab).map(|e| &e.kind),
+            Some(ElementKind::GroundSlab(_))
+        ) {
+            return false;
+        }
+        let delta = t - old;
+        let offset = self.project.terrain + delta;
+        if offset.abs() > MAX_TERRAIN_OFFSET + 1e-9 {
+            return false;
+        }
+        if t > 0.0 && self.ensure_perimeter_material().is_none() {
+            return false;
+        }
+        self.edit_slab(slab, |s| s.insulation = t);
+        self.note_project();
+        self.project.terrain = offset;
+        // Erst die Dämmung, dann das Gelände: Die Schürze behält ihre Tiefe
+        self.follow_terrain(delta);
+        self.sync_perimeter(slab);
+        self.touch();
+        true
+    }
+
+    /// Perimeterdämmungen unter einer Sohlplatte (richtig: höchstens eine).
+    fn perimeters_of(&self, slab: ElementId) -> Vec<ElementId> {
+        self.elements
+            .iter()
+            .filter(|(_, e)| e.kind == ElementKind::PerimeterInsulation { slab })
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// Perimeterdämmung unter einer Sohlplatte.
+    pub fn perimeter_of(&self, slab: ElementId) -> Option<ElementId> {
+        self.perimeters_of(slab).first().copied()
+    }
+
+    /// Genau eine Perimeterdämmung unter einer gedämmten Platte, keine unter
+    /// einer ungedämmten.
+    fn sync_perimeter(&mut self, slab: ElementId) {
+        let want = self.slab_insulation(slab) > 0.0;
+        let have = self.perimeters_of(slab);
+        for (i, id) in have.iter().enumerate() {
+            if !want || i > 0 {
+                note!(self, Element, self.elements, *id);
+                self.elements.remove(*id);
+                self.touch();
+            }
+        }
+        if want && have.is_empty() {
+            let Some(storey) = self.element(slab).map(|e| e.storey) else {
+                return;
+            };
+            self.new_element(
+                Category::PerimeterInsulation,
+                storey,
+                PERIMETER_SEQ,
+                ElementKind::PerimeterInsulation { slab },
+            );
+            self.touch();
+        }
+    }
+
+    /// Nach dem Laden: Perimeterdämmungen passend zu den Platten.
+    pub(crate) fn complete_perimeters(&mut self) {
+        let strict = std::mem::replace(&mut self.strict, false);
+        let slabs: Vec<ElementId> = self
+            .elements
+            .iter()
+            .filter(|(_, e)| matches!(e.kind, ElementKind::GroundSlab(_)))
+            .map(|(id, _)| id)
+            .collect();
+        for slab in slabs {
+            self.sync_perimeter(slab);
+        }
+        let orphans: Vec<ElementId> = self
+            .elements
+            .iter()
+            .filter(|(_, e)| match e.kind {
+                ElementKind::PerimeterInsulation { slab } => !matches!(
+                    self.element(slab).map(|x| &x.kind),
+                    Some(ElementKind::GroundSlab(_))
+                ),
+                _ => false,
+            })
+            .map(|(id, _)| id)
+            .collect();
+        for id in orphans {
+            self.elements.remove(id);
+        }
+        self.strict = strict;
+    }
+
+    /// Baustoff der Perimeterdämmung: XPS, sobald es ihn im Projekt gibt,
+    /// sonst die erste Dämmung der Bibliothek.
+    pub fn perimeter_material(&self) -> Option<MaterialId> {
+        self.material_by_guid(PERIMETER_MAT_GUID).or_else(|| {
+            self.materials
+                .iter()
+                .find(|(_, m)| m.category == MatCategory::Insulation)
+                .map(|(id, _)| id)
+        })
+    }
+
+    /// XPS für die Perimeterdämmung; fehlt er, wird er angelegt.
+    fn ensure_perimeter_material(&mut self) -> Option<MaterialId> {
+        self.builtin_material(
+            PERIMETER_MAT_GUID,
+            "XPS Perimeterdämmung",
+            MatCategory::Insulation,
+            300,
+            33.0,
+            Some(0.035),
+            [178, 212, 226],
+            [150, 190, 210],
+            trade::start_id("18331"),
+        )
+    }
+
+    /// Grundlagen der Erdarbeiten je Gründung (Schnittstelle
+    /// gelaende/schnittstelle.md): Höhen, Umriss, Flächen und Längen.
+    /// `None` ohne Gründung oder ohne Körper.
+    pub fn ground_basis(&self, run: RunId) -> Option<GroundBasis> {
+        let (slab, footing) = self.foundation_of(run)?;
+        let footing = footing?;
+        let f = self.foundation(run)?.ok()?;
+        let ElementKind::GroundSlab(s) = self.element(slab)?.kind else {
+            return None;
+        };
+        let ElementKind::StripFooting(sf) = self.element(footing)?.kind else {
+            return None;
+        };
+        let slab_top_z = self.level_z(s.top)?;
+        let slab_bottom_z = slab_top_z - s.thickness;
+        let insulation = s.insulation.max(0.0);
+        let footing_bottom_z = self.level_z(sf.base)?;
+        let terrain_z = self.terrain_z();
+        Some(GroundBasis {
+            run,
+            slab,
+            footing,
+            building: self.element(slab).and_then(|e| self.building_of(e.storey)),
+            terrain_z,
+            slab_top_z,
+            slab_bottom_z,
+            insulation,
+            insulation_bottom_z: slab_bottom_z - insulation,
+            footing_bottom_z,
+            footing_width: sf.width,
+            embedment: terrain_z - footing_bottom_z,
+            slab_area: f.slab_area(),
+            slab_perimeter: f.slab_perimeter(),
+            footing_area: f.footing_area(),
+            footing_axis_length: f.footing_axis_length(),
+            outline: f.outline,
+        })
+    }
+
+    /// [`Model::ground_basis`] aller Gründungen, nach Bauteilnummer der Platte.
+    pub fn ground_bases(&self) -> Vec<GroundBasis> {
+        let mut v: Vec<(String, GroundBasis)> = self
+            .elements
+            .iter()
+            .filter_map(|(_, e)| match e.kind {
+                ElementKind::GroundSlab(s) => Some((e.number.clone(), self.ground_basis(s.run)?)),
+                _ => None,
+            })
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v.into_iter().map(|x| x.1).collect()
     }
 
     // --- Erdgeschossdecke (B10) -------------------------------------------
@@ -4632,6 +4958,16 @@ impl Model {
                     .unwrap_or_default();
             }
             ElementKind::RoofTerrace { floor } => return self.terrace_layers(floor),
+            // Eingebauter Ein-Schicht-Aufbau: XPS in der Dicke an der Platte
+            ElementKind::PerimeterInsulation { slab } => {
+                let t = self.slab_insulation(slab);
+                return match self.perimeter_material() {
+                    Some(m) if t > 0.0 => {
+                        vec![MaterialLayer::new(m, t, LayerFunction::Insulation)]
+                    }
+                    _ => Vec::new(),
+                };
+            }
             // Eingebauter Ein-Schicht-Aufbau (Steckbrief AB §2): Gewerk nach
             // Jörn der Dachdecker, auch wenn Titanzink den Klempner vorschlägt.
             ElementKind::Coping { floor } => {
@@ -4701,6 +5037,7 @@ impl Model {
             // ohne Kern: Teil der Deckenrandschale bzw. Deckenbekleidung
             Category::EdgeInsulation => return Some(331),
             Category::SoffitInsulation => return Some(354),
+            Category::PerimeterInsulation => return Some(325),
             c => return c.din276(),
         };
         Some(match (first, last) {
@@ -5104,7 +5441,25 @@ impl Model {
         }
     }
 
-    /// Erlaubter Bereich der Unterkante der Gründung `gr`.
+    /// Tiefste Unterkante von Sohlplatte samt Perimeterdämmung im Gebäude
+    /// der Gründung `gr` (mm unter OK Platte), ohne Platte der Standardwert.
+    pub fn max_slab_depth(&self, gr: StoreyId) -> f64 {
+        let b = self.building_of(gr);
+        self.elements
+            .iter()
+            .filter_map(|(_, e)| match e.kind {
+                ElementKind::GroundSlab(s) if self.building_of(s.top.storey) == b => {
+                    Some(s.thickness + s.insulation.max(0.0))
+                }
+                _ => None,
+            })
+            .reduce(f64::max)
+            .unwrap_or(SLAB_THICKNESS)
+    }
+
+    /// Erlaubter Bereich der Unterkante der Gründung `gr`: die Schürze
+    /// bleibt mindestens 10 cm hoch, und die Gründung reicht mindestens
+    /// [`FROST_DEPTH`] unter OK Gelände (frostfrei, Gelände Thema 1).
     pub fn foundation_bottom_range_of(&self, gr: StoreyId) -> (f64, f64) {
         let eg = self
             .ground_storey(gr)
@@ -5112,7 +5467,7 @@ impl Model {
             .map_or(0.0, |s| s.elevation);
         (
             eg - MAX_FOUNDATION,
-            eg - self.max_slab_thickness(gr) - MIN_FOOTING,
+            (eg - self.max_slab_depth(gr) - MIN_FOOTING).min(self.terrain_z() - FROST_DEPTH),
         )
     }
 
@@ -5120,7 +5475,10 @@ impl Model {
     pub fn foundation_bottom_range(&self) -> (f64, f64) {
         match self.foundation_level() {
             Some(gr) => self.foundation_bottom_range_of(gr),
-            None => (-MAX_FOUNDATION, -SLAB_THICKNESS - MIN_FOOTING),
+            None => (
+                -MAX_FOUNDATION,
+                (-SLAB_THICKNESS - MIN_FOOTING).min(self.terrain_z() - FROST_DEPTH),
+            ),
         }
     }
 
@@ -5352,6 +5710,7 @@ impl Model {
                 ElementKind::StripFooting(f) => refs.push(f.base),
                 ElementKind::Floor(f) => refs.push(f.top),
                 ElementKind::Wall(_)
+                | ElementKind::PerimeterInsulation { .. }
                 | ElementKind::EdgeStrip { .. }
                 | ElementKind::SoffitInsulation { .. }
                 | ElementKind::RoofTerrace { .. }
@@ -5763,6 +6122,7 @@ impl Model {
                             ElementKind::Wall(w) => t.run(w.run),
                             ElementKind::GroundSlab(s) => t.run(s.run),
                             ElementKind::StripFooting(f) => footings.push(f.slab),
+                            ElementKind::PerimeterInsulation { slab } => footings.push(slab),
                             ElementKind::Floor(f) => {
                                 t.run(f.run);
                                 floors.push(f.run);
@@ -5854,6 +6214,7 @@ impl Model {
                         ElementKind::GroundSlab(s) => touched.run(s.run),
                         // Wand oder Platte stehen ggf. selbst im Schritt
                         ElementKind::StripFooting(f) => footings.push(f.slab),
+                        ElementKind::PerimeterInsulation { slab } => footings.push(slab),
                         ElementKind::EdgeStrip { wall, .. } => footings.push(wall),
                         ElementKind::SoffitInsulation { floor }
                         | ElementKind::RoofTerrace { floor }
@@ -6093,6 +6454,21 @@ impl Model {
                     if self.footings_of(id).len() != 1 {
                         out.push(format!("{}: nicht genau eine Frostschürze", e.number));
                     }
+                    let want = usize::from(s.insulation > 0.0);
+                    if self.perimeters_of(id).len() != want {
+                        out.push(format!(
+                            "{}: Perimeterdämmung passt nicht zur Dicke {}",
+                            e.number, s.insulation
+                        ));
+                    }
+                    if s.insulation != 0.0
+                        && !(s.insulation >= MIN_PERIMETER && s.insulation <= MAX_PERIMETER)
+                    {
+                        out.push(format!(
+                            "{}: Perimeterdämmung {} mm (0 oder {MIN_PERIMETER} bis {MAX_PERIMETER} mm)",
+                            e.number, s.insulation
+                        ));
+                    }
                     if s.recess > 0.0 && s.recess < MIN_RECESS {
                         out.push(format!(
                             "{}: Sockelrücksprung {} mm (0 oder ab {MIN_RECESS} mm)",
@@ -6104,6 +6480,11 @@ impl Model {
                     }
                     if !self.materials.contains(s.material) {
                         out.push(format!("{}: Baustoff fehlt", e.number));
+                    }
+                }
+                ElementKind::PerimeterInsulation { slab } => {
+                    if self.slab_insulation(slab) <= 0.0 {
+                        out.push(format!("{}: Sohlplatte fehlt oder ungedämmt", e.number));
                     }
                 }
                 ElementKind::StripFooting(f) => {
@@ -6571,6 +6952,8 @@ const LIBRARY_SEED: u64 = 0x534b_4b41_5441_4c47;
 pub const WALL_SEQ: u16 = 3;
 const SLAB_SEQ: u16 = 2;
 const FOOTING_SEQ: u16 = 1;
+/// Die Perimeterdämmung liegt vor der Platte (nach der Schürze).
+const PERIMETER_SEQ: u16 = 2;
 /// Bauabschnitt der Erdgeschossdecke (nach den Wänden).
 const FLOOR_SEQ: u16 = 4;
 /// Standardwerte der Geschossbänder (B11, mm): Geschosshöhe EG und OG,
@@ -6595,6 +6978,19 @@ pub const MIN_FOOTING: f64 = 100.0;
 pub const MAX_FOUNDATION: f64 = 10000.0;
 /// Kleinster Sockelrücksprung außer 0 (mm).
 pub const MIN_RECESS: f64 = 20.0;
+/// Mindesteinbindetiefe ins Erdreich (mm): OK Gelände bis UK Gründung,
+/// frostfrei (Jörn 10.10., Gelände Thema 1).
+pub const FROST_DEPTH: f64 = 800.0;
+/// Größter Versatz OK Sohlplatte gegen OK Gelände, nach oben wie unten (mm).
+pub const MAX_TERRAIN_OFFSET: f64 = 3000.0;
+/// Perimeterdämmung unter der Sohlplatte (Gelände Thema 4): XPS 12 cm beim
+/// Einschalten, einstellbar von 2 bis 30 cm.
+pub const PERIMETER_THICKNESS: f64 = 120.0;
+pub const MIN_PERIMETER: f64 = 20.0;
+pub const MAX_PERIMETER: f64 = 300.0;
+/// Eingebauter Baustoff der Perimeterdämmung (XPS), angelegt, sobald die
+/// erste Dämmung ihn braucht (ältere Dateien bleiben bytegleich).
+pub const PERIMETER_MAT_GUID: Guid = Guid(0x3c1f7a92d4e84b06a5b2e9c07d18f455);
 
 /// Breite der Frostschürze (mm): 30 bis 45 cm, unabhängig von der Wand
 /// (Jörn 06.10. 17:34).
@@ -6614,6 +7010,9 @@ pub const SOFFIT_PART: u32 = STRIP_PART - 1;
 /// Decke (D1, D3).
 pub const TERRACE_PART: u32 = STRIP_PART - 2;
 pub const COPING_PART: u32 = STRIP_PART - 3;
+/// Teil des Körpers eines Wandzugs: Perimeterdämmung unter seiner
+/// Sohlplatte (Gelände Thema 4).
+pub const PERIMETER_PART: u32 = STRIP_PART - 4;
 /// Attika über OK Belag (Jörn 08:35, BIM §3): 6 cm, einstellbar 0 bis 30 cm.
 pub const TERRACE_UPSTAND: f64 = 60.0;
 pub const MAX_UPSTAND: f64 = 300.0;
@@ -9023,5 +9422,182 @@ mod og_phase2 {
         let bad = text.replace(" link=0", " link=2");
         let e = crate::szo::read(&bad, GuidGen::with_seed(5)).err().unwrap();
         assert!(format!("{e:?}").contains("link"), "{e:?}");
+    }
+}
+
+/// Gelände Thema 1 und 4: Versatz OK Sohle über Gelände, Frosttiefe und
+/// Perimeterdämmung.
+#[cfg(test)]
+mod gelaende_tests {
+    use super::*;
+    use crate::txn::Direction;
+    use sk_math::vec3;
+
+    fn haus() -> (Model, RunId, StoreyId, ElementId) {
+        let mut m = Model::with_seed(12);
+        let b = m.add_building(1);
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        let eg = m.build_from_polygon(b, &pts).unwrap();
+        let gr = m
+            .storeys()
+            .iter()
+            .find(|(_, s)| s.kind == LevelKind::Foundation)
+            .map(|(id, _)| id)
+            .unwrap();
+        let slab = m.foundation_of(eg).unwrap().0;
+        (m, eg, gr, slab)
+    }
+
+    fn uk(m: &Model, gr: StoreyId) -> f64 {
+        m.storey(gr).unwrap().elevation
+    }
+
+    fn schritt(m: &mut Model, f: impl FnOnce(&mut Model) -> bool) -> Txn {
+        m.begin("Gelände");
+        assert!(f(m));
+        m.commit().expect("Schritt")
+    }
+
+    #[test]
+    fn neues_haus_steht_bei_null_und_frostfrei() {
+        let (m, eg, gr, slab) = haus();
+        assert_eq!(m.terrain_offset(), 0.0);
+        assert_eq!(m.terrain_z(), 0.0);
+        assert_eq!(m.slab_insulation(slab), 0.0);
+        assert!(m.perimeter_of(slab).is_none());
+        assert!(m.embedment_of(gr).unwrap() >= FROST_DEPTH - 1e-6);
+        assert!(m.frost_safe(gr));
+        let g = m.ground_basis(eg).unwrap();
+        assert_eq!((g.terrain_z, g.slab_top_z, g.insulation), (0.0, 0.0, 0.0));
+        assert_eq!(g.insulation_bottom_z, g.slab_bottom_z);
+        assert!((g.slab_area - 80.0e6).abs() < 1.0, "{}", g.slab_area);
+        assert_eq!(m.ground_bases().len(), 1);
+    }
+
+    /// Höher gesetzt: die Schürze wächst mit, die Einbindetiefe bleibt;
+    /// tiefer gesetzt: die Schürze wird kürzer, aber nie flacher als 0,80
+    /// unter Gelände. Rückgängig stellt alles her.
+    #[test]
+    fn versatz_haelt_die_frosttiefe() {
+        let (mut m, eg, gr, _) = haus();
+        let e0 = m.embedment_of(gr).unwrap();
+        let u0 = uk(&m, gr);
+        let t = schritt(&mut m, |m| m.set_terrain_offset(400.0));
+        assert_eq!(m.terrain_z(), -400.0);
+        assert!((uk(&m, gr) - (u0 - 400.0)).abs() < 1e-6);
+        assert!((m.embedment_of(gr).unwrap() - e0).abs() < 1e-6);
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        m.apply(&t, Direction::Undo);
+        assert_eq!(m.terrain_offset(), 0.0);
+        assert_eq!(uk(&m, gr), u0);
+        // Tiefer: UK Gründung wandert mit hoch, geklemmt an 0,80 unter
+        // Gelände
+        schritt(&mut m, |m| m.set_terrain_offset(-300.0));
+        assert_eq!(m.terrain_z(), 300.0);
+        assert!(m.embedment_of(gr).unwrap() >= FROST_DEPTH - 1e-6);
+        assert!(m.frost_safe(gr));
+        let (_, hi) = m.foundation_bottom_range_of(gr);
+        assert!(hi <= m.terrain_z() - FROST_DEPTH + 1e-6);
+        let g = m.ground_basis(eg).unwrap();
+        assert!((g.embedment - (g.terrain_z - g.footing_bottom_z)).abs() < 1e-6);
+        // außerhalb ±3,00 m und ohne Änderung abgelehnt
+        m.begin("x");
+        assert!(!m.set_terrain_offset(MAX_TERRAIN_OFFSET + 1.0));
+        assert!(!m.set_terrain_offset(-300.0));
+        assert!(m.commit().is_none());
+    }
+
+    /// UK Gründung lässt sich nicht über 0,80 unter Gelände ziehen.
+    #[test]
+    fn gruendung_nie_flacher_als_frosttiefe() {
+        let (mut m, _, gr, _) = haus();
+        // 30 cm unter Gelände: die Frosttiefe ist die engere Grenze
+        schritt(&mut m, |m| m.set_terrain_offset(-300.0));
+        let (lo, hi) = m.foundation_bottom_range_of(gr);
+        assert!(lo < hi);
+        assert!((hi - (300.0 - FROST_DEPTH)).abs() < 1e-6, "{hi}");
+        assert!((m.embedment_of(gr).unwrap() - FROST_DEPTH).abs() < 1e-6);
+        // 1 m unter Gelände: die Platte samt 10 cm Schürze ist tiefer
+        schritt(&mut m, |m| m.set_terrain_offset(-1000.0));
+        let (_, hi) = m.foundation_bottom_range_of(gr);
+        assert!(hi < 1000.0 - FROST_DEPTH, "{hi}");
+        assert!(m.embedment_of(gr).unwrap() > FROST_DEPTH);
+    }
+
+    /// Dämmung 120 hebt das Haus um 12 cm über das Gelände; Schürzentiefe
+    /// und Einbindetiefe bleiben; Mengen: Fläche = Platte, Volumen = Fläche
+    /// × Dicke. 0 schaltet sie ab, die Dämmung verschwindet.
+    #[test]
+    fn perimeterdaemmung_hebt_das_haus() {
+        let (mut m, eg, gr, slab) = haus();
+        let g0 = m.ground_basis(eg).unwrap();
+        let t = schritt(&mut m, |m| m.set_slab_insulation(slab, PERIMETER_THICKNESS));
+        assert_eq!(m.slab_insulation(slab), 120.0);
+        assert_eq!(m.terrain_offset(), 120.0);
+        let p = m.perimeter_of(slab).expect("Bauteil Perimeterdämmung");
+        assert_eq!(
+            m.element(p).unwrap().category,
+            Category::PerimeterInsulation
+        );
+        assert!(m.perimeter_material().is_some());
+        let g = m.ground_basis(eg).unwrap();
+        assert_eq!(g.insulation, 120.0);
+        assert!((g.insulation_bottom_z - (g.slab_bottom_z - 120.0)).abs() < 1e-6);
+        assert!((g.embedment - g0.embedment).abs() < 1e-6);
+        let depth = |g: &GroundBasis| g.insulation_bottom_z - g.footing_bottom_z;
+        assert!((depth(&g) - depth(&g0)).abs() < 1e-6);
+        assert!((uk(&m, gr) - (g0.footing_bottom_z - 120.0)).abs() < 1e-6);
+        let f = m.foundation(eg).unwrap().unwrap();
+        let q = crate::qto::perimeter_qto_of(&f).unwrap();
+        assert!((q.area - g.slab_area).abs() < 1.0);
+        assert!((q.volume - q.area * 120.0).abs() < 1.0);
+        assert!(m.check().is_empty(), "{:?}", m.check());
+        // ungültige Dicken
+        m.begin("x");
+        assert!(!m.set_slab_insulation(slab, 10.0));
+        assert!(!m.set_slab_insulation(slab, MAX_PERIMETER + 1.0));
+        assert!(m.commit().is_none());
+        // Rückgängig: wie vorher
+        m.apply(&t, Direction::Undo);
+        assert_eq!(m.terrain_offset(), 0.0);
+        assert!(m.perimeter_of(slab).is_none());
+        assert_eq!(m.ground_basis(eg).unwrap(), g0);
+        // Ab- und wieder anschalten
+        schritt(&mut m, |m| m.set_slab_insulation(slab, 120.0));
+        schritt(&mut m, |m| m.set_slab_insulation(slab, 0.0));
+        assert!(m.perimeter_of(slab).is_none());
+        assert_eq!(m.terrain_offset(), 0.0);
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    /// Alte Datei: ohne Versatz und Dämmung bleibt der Text gleich; mit
+    /// beiden kommt alles zurück.
+    #[test]
+    fn datei_rundreise() {
+        let (mut m, eg, _, slab) = haus();
+        let plain = crate::szo::write(&m);
+        assert!(!plain.contains("terrain=") && !plain.contains("insulation="));
+        assert!(!plain.contains("[perimeter]"));
+        let back = crate::szo::read(&plain, GuidGen::with_seed(5))
+            .unwrap()
+            .model;
+        assert_eq!(crate::szo::write(&back), plain);
+        schritt(&mut m, |m| m.set_slab_insulation(slab, 100.0));
+        schritt(&mut m, |m| m.set_terrain_offset(-250.0));
+        let text = crate::szo::write(&m);
+        let back = crate::szo::read(&text, GuidGen::with_seed(5))
+            .unwrap()
+            .model;
+        assert_eq!(crate::szo::write(&back), text);
+        assert_eq!(back.terrain_offset(), -250.0);
+        assert_eq!(back.slab_insulation(slab), 100.0);
+        assert_eq!(back.ground_basis(eg), m.ground_basis(eg));
+        let bad = text.replace("terrain=-250", "terrain=9000");
+        assert!(crate::szo::read(&bad, GuidGen::with_seed(5)).is_err());
     }
 }

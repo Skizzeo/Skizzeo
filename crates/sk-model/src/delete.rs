@@ -54,6 +54,9 @@ pub fn refusal_lines(m: &Model, id: ElementId, r: &Refusal) -> Vec<&'static str>
         Some(Category::EdgeInsulation) => {
             vec!["Der Randdämmstreifen gehört zum Wandtyp; zum Entfernen den Wandtyp ändern."]
         }
+        Some(Category::PerimeterInsulation) => {
+            vec!["Die Perimeterdämmung gehört zur Sohlplatte; ihre Dicke stellst du bei der Sohlplatte ein, 0 schaltet sie ab."]
+        }
         Some(Category::SoffitInsulation) => {
             vec!["Die Untersichtdämmung folgt dem Vorsprung des Geschosses darüber; ihre Dicke steht bei der Decke."]
         }
@@ -135,6 +138,7 @@ impl Model {
                 from: first_wall(s.run),
             }),
             ElementKind::StripFooting(f) => Err(Refusal::Derived { from: f.slab }),
+            ElementKind::PerimeterInsulation { slab } => Err(Refusal::Derived { from: slab }),
             ElementKind::EdgeStrip { wall, .. } => Err(Refusal::Derived { from: wall }),
             ElementKind::SoffitInsulation { floor }
             | ElementKind::RoofTerrace { floor }

@@ -65,19 +65,21 @@ pub use library::{
 pub use matprop::{MatProp, MatPropKind, MAT_PROPS};
 pub use model::{
     building_index, edit_blocked, refusal_lines, refusal_text, Cut, Defaults, Deleted, ExtError,
-    FlushError, Foot, Location, Locked, Model, NumberError, Project, Refusal, ShadeLight, Sun, Use,
-    ViewShade, CAVITY_TYPE_GUID, COPING_PART, CUT_NAMES, ETICS_TYPE_GUID, EXTERIOR_TYPE_GUID,
-    EXT_SEQ, FLOOR_PART, FLOOR_THICKNESS, FOOTING_PART, FOOTING_WIDTH, INTERIOR_115_TYPE_GUID,
-    INTERIOR_240_TYPE_GUID, INTERIOR_TYPE_GUID, MAX_FOUNDATION, MAX_SOFFIT, MAX_UPSTAND, MIN_CLEAR,
-    MIN_FOOTING, MIN_RECESS, MIN_SOFFIT, MONO_TYPE_GUID, SHADE_VIEWS, SLAB_PART, SLAB_THICKNESS,
-    SOFFIT_PART, SOFFIT_THICKNESS, STRIP_PART, TERRACE_PART, TERRACE_TYPE_GUID, TERRACE_UPSTAND,
-    WALKABLE_DEPTH,
+    FlushError, Foot, GroundBasis, Location, Locked, Model, NumberError, Project, Refusal,
+    ShadeLight, Sun, Use, ViewShade, CAVITY_TYPE_GUID, COPING_PART, CUT_NAMES, ETICS_TYPE_GUID,
+    EXTERIOR_TYPE_GUID, EXT_SEQ, FLOOR_PART, FLOOR_THICKNESS, FOOTING_PART, FOOTING_WIDTH,
+    FROST_DEPTH, INTERIOR_115_TYPE_GUID, INTERIOR_240_TYPE_GUID, INTERIOR_TYPE_GUID,
+    MAX_FOUNDATION, MAX_PERIMETER, MAX_SOFFIT, MAX_TERRAIN_OFFSET, MAX_UPSTAND, MIN_CLEAR,
+    MIN_FOOTING, MIN_PERIMETER, MIN_RECESS, MIN_SOFFIT, MONO_TYPE_GUID, PERIMETER_MAT_GUID,
+    PERIMETER_PART, PERIMETER_THICKNESS, SHADE_VIEWS, SLAB_PART, SLAB_THICKNESS, SOFFIT_PART,
+    SOFFIT_THICKNESS, STRIP_PART, TERRACE_PART, TERRACE_TYPE_GUID, TERRACE_UPSTAND, WALKABLE_DEPTH,
 };
 pub use qto::{
     coping_qto, coping_qto_of, edge_strip_qto, edge_strip_qto_of, floor_formwork_of, floor_qto,
-    floor_qto_of, formwork_qto, foundation_qto, foundation_qto_of, run_qto, soffit_qto,
-    soffit_qto_of, terrace_qto, terrace_qto_of, wall_qto, CopingQto, EdgeStripQto, FloorQto,
-    FootingQto, FormworkQto, LayerQto, SlabQto, SoffitQto, SupportQto, TerraceQto, Umfang, WallQto,
+    floor_qto_of, formwork_qto, foundation_qto, foundation_qto_of, perimeter_qto_of, run_qto,
+    soffit_qto, soffit_qto_of, terrace_qto, terrace_qto_of, wall_qto, CopingQto, EdgeStripQto,
+    FloorQto, FootingQto, FormworkQto, LayerQto, PerimeterQto, SlabQto, SoffitQto, SupportQto,
+    TerraceQto, Umfang, WallQto,
 };
 pub use solid::Solid;
 pub use solid::{edge_kind, material, merge_seam, Edge, SweepEnd, Tri, NO_LAYER};

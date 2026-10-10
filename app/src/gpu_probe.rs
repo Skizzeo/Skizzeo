@@ -498,6 +498,89 @@ mod tests {
         }
         r.set_below_ground(None);
     }
+    /// Ist-Bilder Gelände (Jörn 10.10., Themen 1 und 4): RH-1 mit OK Sohle
+    /// 0,40 über Gelände und 12 cm Perimeterdämmung, vorne ausgeblendet und
+    /// gestrichelt, dazu 0,30 unter Gelände gestrichelt und ein Schnitt.
+    /// `xvfb-run -a env SKIZZEO_ISTBILDER=<ordner> cargo test -p skizzeo gpu_istbilder_gelaende -- --ignored`
+    #[test]
+    #[ignore = "braucht einen X-Server (xvfb-run) und SKIZZEO_ISTBILDER"]
+    fn gpu_istbilder_gelaende() {
+        use sk_model::ViewShade;
+        let Some(ziel) = std::env::var_os("SKIZZEO_ISTBILDER").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let k = sk_render::glx::kontext(W as i32, H as i32).expect("GLX-Kontext (DISPLAY?)");
+        let theme = Theme::dark();
+        let mut r = Renderer::new(k.gl, crate::style(&theme.env)).unwrap();
+        let ab = |px: &[u8], n: &str| {
+            std::fs::write(ziel.join(n), sk_paint::encode_png(W, H, px)).unwrap()
+        };
+        let mut h = haus();
+        let slab = h
+            .model()
+            .elements()
+            .iter()
+            .find(|(_, e)| matches!(e.kind, sk_model::ElementKind::GroundSlab(_)))
+            .map(|(id, _)| id)
+            .unwrap();
+        assert!(h.edit_model("Perimeterdämmung", |m| m.set_slab_insulation(slab, 120.0)));
+        assert!(h.edit_model("Gelände", |m| m.set_terrain_offset(400.0)));
+        let sun = sonne(6, 21, 15 * 60);
+        let leer = sk_render::MeshData::default;
+        let mm = theme.px_per_mm;
+        let linie = |h: &Scene, v: ViewKind| {
+            crate::ground_line(v, h.bounds(), h.model().terrain_z(), 1.0, h.table())
+        };
+        for (versatz, modus, n) in [
+            (400.0, Some(None), "plus40-ausgeblendet"),
+            (400.0, Some(Some([2.0 * mm, mm])), "plus40-gestrichelt"),
+            (-300.0, Some(Some([2.0 * mm, mm])), "minus30-gestrichelt"),
+        ] {
+            h.edit_model("Gelände", |m| m.set_terrain_offset(versatz));
+            r.set_terrain(h.model().terrain_z() as f32);
+            r.set_below_ground(modus);
+            r.set_helpers(&linie(&h, ViewKind::Front));
+            let (px, _) = ansicht(
+                &mut r,
+                &mut h,
+                ViewKind::Front,
+                ViewShade::WERK,
+                sun,
+                leer(),
+            );
+            ab(&px, &format!("ist-gelaende-vorne-{n}.png"));
+        }
+        // Schnitt quer durch die Mitte: Platte, Dämmung, Schürze
+        h.edit_model("Gelände", |m| m.set_terrain_offset(400.0));
+        r.set_terrain(h.model().terrain_z() as f32);
+        r.set_below_ground(None);
+        let (lo, hi) = h.bounds().unwrap();
+        let c = (lo + hi) * 0.5;
+        let plane = (vec3(c.x, c.y, 0.0), vec3(0.0, -1.0, 0.0));
+        h.set_theme(&theme);
+        r.set_style(crate::style(&theme.env));
+        r.set_looks(&h.table().looks_with(1.0, |_| 1.0));
+        r.set_mesh(
+            crate::MESH_MODEL,
+            &h.mesh(ViewKind::Section, Some(plane), &[]),
+        );
+        r.set_helpers(&linie(&h, ViewKind::Section));
+        // Ausschnitt: linke Ecke der Gründung
+        let b = Some((
+            vec3(lo.x - 600.0, c.y, -1500.0),
+            vec3(lo.x + 1800.0, c.y, 600.0),
+        ));
+        let cam = crate::fit_parallel(ViewKind::Section, b, W as f64, H as f64);
+        let mut view = cam.view(W, H);
+        view.paper = Some(h.table().paper);
+        view.patterns = crate::draw_table::pattern_mode(ViewKind::Section, theme.env.patterns_3d);
+        r.draw(W, H, 0, &view).unwrap();
+        ab(&r.read_pixels(W, H), "ist-gelaende-schnitt-ecke.png");
+        r.set_helpers(&[]);
+        r.set_below_ground(None);
+        r.set_terrain(0.0);
+    }
+
     /// Ist-Bilder E4: die fünf Beispiel-Erweiterungen vor RH-1 in 3D, im
     /// Grundriss des EG und in „Vorne“; dazu die Treppe allein in „Vorne“
     /// (schaut in +Y) zum Vergleich mit der Werkbank.

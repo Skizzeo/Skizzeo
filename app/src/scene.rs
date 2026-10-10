@@ -17,7 +17,8 @@ use sk_model::{
     edge_kind, floor_qto_of, foundation_qto_of, merge_seam, run_qto, BuildingId, Category, Deleted,
     Direction, Edge, ElementId, FloorQto, FloorSlab, FootingQto, Foundation, LayerSetId, Model,
     Refusal, RunId, SlabQto, Solid, StoreyId, Touched, Tri, Txn, TypeCategory, WallChain, WallQto,
-    COPING_PART, FLOOR_PART, FOOTING_PART, SLAB_PART, SOFFIT_PART, STRIP_PART, TERRACE_PART,
+    COPING_PART, FLOOR_PART, FOOTING_PART, PERIMETER_PART, SLAB_PART, SOFFIT_PART, STRIP_PART,
+    TERRACE_PART,
 };
 use sk_render::MeshData;
 use sk_ui::theme::Theme;
@@ -340,6 +341,7 @@ fn run_parts<'a>(
 impl RunPart for Foundation {
     fn solid(&self, out: &mut Solid) {
         out.append(&part(self.slab_solid(), SLAB_PART));
+        out.append(&part(self.insulation_solid(), PERIMETER_PART));
         out.append(&part(self.footing_solid(), FOOTING_PART));
     }
 
@@ -366,6 +368,7 @@ impl RunPart for Foundation {
     fn section_caps(&self, out: &mut Solid, p0: Vec3, n: Vec3) {
         let (slab, foot) = Foundation::section_caps(self, p0, n);
         out.append(&part(slab, SLAB_PART));
+        out.append(&part(self.insulation_section(p0, n), PERIMETER_PART));
         out.append(&part(foot, FOOTING_PART));
     }
 }
@@ -718,6 +721,10 @@ pub struct BuildingDraft {
     pub floor_eg: f64,
     pub floor_og: f64,
     pub slab: f64,
+    /// Perimeterdämmung unter der Platte (0 = keine) und OK Sohlplatte über
+    /// OK Gelände (Gelände Themen 1 und 4).
+    pub insulation: f64,
+    pub terrain: f64,
 }
 
 impl Default for BuildingDraft {
@@ -728,6 +735,8 @@ impl Default for BuildingDraft {
             floor_eg: sk_model::FLOOR_THICKNESS,
             floor_og: sk_model::FLOOR_THICKNESS,
             slab: sk_model::SLAB_THICKNESS,
+            insulation: 0.0,
+            terrain: 0.0,
         }
     }
 }
@@ -737,6 +746,9 @@ impl Default for BuildingDraft {
 pub const DRAFT_FLOOR: (f64, f64) = (100.0, 600.0);
 pub const DRAFT_SLAB: (f64, f64) = (100.0, 790.0);
 pub const DRAFT_CLEAR: (f64, f64) = (sk_model::MIN_CLEAR, 10000.0);
+/// Perimeterdämmung 2–30 cm oder 0 (keine); OK Sohle ±3 m über Gelände.
+pub const DRAFT_INSULATION: (f64, f64) = (sk_model::MIN_PERIMETER, sk_model::MAX_PERIMETER);
+pub const DRAFT_TERRAIN: (f64, f64) = (-sk_model::MAX_TERRAIN_OFFSET, sk_model::MAX_TERRAIN_OFFSET);
 
 fn union(a: Option<Aabb>, b: Option<Aabb>) -> Option<Aabb> {
     match (a, b) {
@@ -1090,7 +1102,11 @@ impl Scene {
         let b = self.model.add_building(2);
         self.pending = Some((b, self.active));
         self.active = self.model.ground_of(Some(b));
-        self.draft = BuildingDraft::default();
+        // Das Gelände gilt im ganzen Projekt: der heutige Versatz vorbelegt
+        self.draft = BuildingDraft {
+            terrain: self.model.terrain_offset(),
+            ..BuildingDraft::default()
+        };
         self.apply_draft();
     }
 
@@ -1100,8 +1116,9 @@ impl Scene {
     }
 
     /// Ein Feld des Dialogs „Gebäude erstellen“ (mm): `lichte_eg`,
-    /// `lichte_og`, `decke_eg`, `decke_og`, `sohlplatte`. Gilt sofort im
-    /// Paneel „Geschosse“; `false` außerhalb der Grenzen oder ohne Dialog.
+    /// `lichte_og`, `decke_eg`, `decke_og`, `sohlplatte`, `perimeter` (0 =
+    /// keine), `gelaende` (OK Sohle über Gelände). Gilt sofort im Paneel
+    /// „Geschosse“; `false` außerhalb der Grenzen oder ohne Dialog.
     pub fn set_building_dialog_value(&mut self, field: &str, mm: f64) -> bool {
         if self.pending.is_none() {
             return false;
@@ -1114,9 +1131,11 @@ impl Scene {
             "decke_eg" => (&mut d.floor_eg, DRAFT_FLOOR),
             "decke_og" => (&mut d.floor_og, DRAFT_FLOOR),
             "sohlplatte" => (&mut d.slab, DRAFT_SLAB),
+            "perimeter" => (&mut d.insulation, DRAFT_INSULATION),
+            "gelaende" => (&mut d.terrain, DRAFT_TERRAIN),
             _ => return false,
         };
-        if !ok(range) {
+        if !(ok(range) || (field == "perimeter" && mm == 0.0)) {
             return false;
         }
         *slot = mm;
@@ -1134,6 +1153,11 @@ impl Scene {
     /// Geschosshöhen aus den Vorgaben (lichte Höhe + Deckendicke).
     fn apply_draft(&mut self) {
         let d = self.draft;
+        // Gelände sofort (Paneel „Geschosse“ zeigt es), die Dämmung erst mit
+        // der Platte
+        if d.terrain != self.model.terrain_offset() {
+            self.model.set_terrain_offset(d.terrain);
+        }
         if let Some((eg, og)) = self.draft_storeys() {
             self.model.plan_storey_height(eg, d.clear_eg + d.floor_eg);
             if let Some(og) = og {
@@ -1159,6 +1183,12 @@ impl Scene {
         }
         if let Some((slab, _)) = self.model.foundation_of(eg_run) {
             self.model.set_slab_thickness(slab, d.slab);
+            // Die Dämmung hebt die Platte; der Versatz im Dialog ist der
+            // gewollte Endstand, also danach wieder darauf
+            if d.insulation > 0.0 {
+                self.model.set_slab_insulation(slab, d.insulation);
+                self.model.set_terrain_offset(d.terrain);
+            }
         }
     }
 
@@ -1947,6 +1977,13 @@ impl Scene {
         ) else {
             return false;
         };
+        if field == Field::Insulation {
+            if s.insulation == mm {
+                return false;
+            }
+            // hebt das Gebäude gegen das Gelände: alle Gründungen folgen
+            return self.edit_model("Perimeterdämmung", |m| m.set_slab_insulation(slab, mm));
+        }
         let (label, old) = match field {
             Field::SlabThickness => ("Plattendicke", s.thickness),
             Field::Recess => ("Sockelrücksprung", s.recess),
@@ -2020,6 +2057,16 @@ impl Scene {
                 active: id == active,
             });
             if foundation {
+                // OK Gelände und Einbindetiefe im Fuß (Gelände Thema 1)
+                let max = sk_model::MAX_TERRAIN_OFFSET;
+                l.terrain = Some(m.terrain_z());
+                l.embedment = m.embedment_of(id);
+                l.fields.push(row(
+                    Field::Terrain,
+                    "OK Gelände",
+                    m.terrain_z(),
+                    (-max, max),
+                ));
                 let (lo, hi) = m.foundation_bottom_range_of(id);
                 l.fields.push(row(
                     Field::LevelBottom,
@@ -2075,6 +2122,8 @@ impl Scene {
             Field::ClearHeight(id) => {
                 self.edit_model("lichte Höhe", |m| m.set_clear_height(id, mm))
             }
+            // Kote OK Gelände: der Versatz ist ihr Gegenwert
+            Field::Terrain => self.edit_model("Gelände", |m| m.set_terrain_offset(-mm)),
             _ => false,
         }
     }
@@ -2656,6 +2705,16 @@ impl Scene {
         }
     }
 
+    /// OK Gelände beim Ziehen (Kote `z`, Gelände Thema 1), geklemmt; alle
+    /// Gründungen folgen, also alle Züge neu.
+    pub fn drag_terrain(&mut self, z: f64) {
+        let max = sk_model::MAX_TERRAIN_OFFSET;
+        if z.is_finite() && self.model.set_terrain_offset((-z).clamp(-max, max)) {
+            self.mark_all();
+            self.rebuild_dirty(true);
+        }
+    }
+
     /// Nach einer Änderung der Geschossbänder des Gebäudes, zu dem `level`
     /// gehört: dessen Züge live neu. Jedes Gebäude hat eigene Geschosse, die
     /// Züge anderer Gebäude bleiben (U4); ohne Gebäude alle.
@@ -3200,6 +3259,7 @@ impl Scene {
         let cut = self.plan_cut();
         let filter = self.filtering();
         let stamp = self.vis_stamp();
+        let ground = self.model.terrain_z();
         let mut m = [MeshData::default(), MeshData::default()];
         if view == ViewKind::Plan {
             let active = self.active_storey();
@@ -3224,10 +3284,10 @@ impl Scene {
                                 let key = SplitKey::Plan(cut, modes[i]);
                                 let parts = c.split(key, s, &vis);
                                 for (k, x) in parts.iter().enumerate() {
-                                    mesh_into(&mut m[k], x);
+                                    mesh_into(&mut m[k], x, ground);
                                 }
                             } else {
-                                mesh_into(&mut m[0], s);
+                                mesh_into(&mut m[0], s, ground);
                             }
                         }
                         if let Some(bcut) = under[i] {
@@ -3340,7 +3400,7 @@ impl Scene {
                     whole
                 };
                 if lower.is_none() && uppers.is_empty() {
-                    mesh_into(mk, own);
+                    mesh_into(mk, own, ground);
                     continue;
                 }
                 let mut x = own.clone();
@@ -3350,7 +3410,7 @@ impl Scene {
                 for (z, mut u) in uppers {
                     merge_seam(&mut x, &mut u, z);
                 }
-                mesh_into(mk, &x);
+                mesh_into(mk, &x, ground);
             }
         }
         self.ext_into(&mut m, view, section);
@@ -3370,6 +3430,7 @@ impl Scene {
             return;
         };
         let filter = self.filtering();
+        let ground = self.model.terrain_z();
         let vis = Vis {
             model: &self.model,
             anim: self.vis_anim.as_ref(),
@@ -3386,7 +3447,7 @@ impl Scene {
             } else {
                 0
             };
-            mesh_into(&mut m[k], s);
+            mesh_into(&mut m[k], s, ground);
         }
     }
 
@@ -3716,7 +3777,7 @@ fn part(mut s: Solid, part: u32) -> Solid {
 /// wie sie aussehen (3D oder Zeichnung), steht in der Tabelle des Renderers.
 pub fn mesh_of(s: &Solid) -> MeshData {
     let mut m = MeshData::default();
-    mesh_into(&mut m, s);
+    mesh_into(&mut m, s, 0.0);
     m
 }
 
@@ -3737,7 +3798,7 @@ fn same_solid(a: &Solid, b: &Solid) -> bool {
 }
 
 /// Hängt das Netz eines Körpers an `m` an.
-fn mesh_into(m: &mut MeshData, s: &Solid) {
+fn mesh_into(m: &mut MeshData, s: &Solid, ground: f64) {
     m.faces.reserve(s.triangles.len() * 3);
     for t in &s.triangles {
         let n = t.n.to_f32();
@@ -3757,19 +3818,19 @@ fn mesh_into(m: &mut MeshData, s: &Solid) {
             ]);
         }
     }
-    // Kanten, die das Gelände kreuzen, an z = 0 teilen: In den Ansichten
-    // zeichnet der untere Teil dann gestrichelt in der Breite der feinen
-    // Linie (S11, Review 3cf a); die Breite gilt je Kante.
+    // Kanten, die das Gelände kreuzen, an OK Gelände `ground` teilen: In
+    // den Ansichten zeichnet der untere Teil dann gestrichelt in der Breite
+    // der feinen Linie (S11, Review 3cf a); die Breite gilt je Kante.
     m.edges.reserve(s.edges.len());
     for e in &s.edges {
         let k = e.kind as f32;
         let (a, b) = (e.a, e.b);
-        // Nur echt kreuzende: endet eine Kante auf ±0,00, entstünde ein
-        // Stück der Länge 0 (Toleranz wie im Shader, Review 3cg)
-        if a.z.min(b.z) < -0.5 && a.z.max(b.z) > 0.5 {
-            let t = a.z / (a.z - b.z);
+        // Nur echt kreuzende: endet eine Kante auf dem Gelände, entstünde
+        // ein Stück der Länge 0 (Toleranz wie im Shader, Review 3cg)
+        if a.z.min(b.z) < ground - 0.5 && a.z.max(b.z) > ground + 0.5 {
+            let t = (a.z - ground) / (a.z - b.z);
             let mut g = a + (b - a) * t;
-            g.z = 0.0;
+            g.z = ground;
             m.edges.push(([a.to_f32(), g.to_f32()], k));
             m.edges.push(([g.to_f32(), b.to_f32()], k));
         } else {
@@ -3936,6 +3997,19 @@ mod tests {
     use super::*;
     use sk_model::{Pen, RefSide};
 
+    /// Gelände Thema 1: Kanten werden an OK Gelände geteilt, nicht bei
+    /// ±0,00; endet eine Kante auf dem Gelände, bleibt sie ganz.
+    #[test]
+    fn kanten_teilen_am_gelaende() {
+        let mut s = Solid::default();
+        s.edge(vec3(0.0, 0.0, -1000.0), vec3(0.0, 0.0, 500.0));
+        s.edge(vec3(1.0, 0.0, -400.0), vec3(1.0, 0.0, 500.0));
+        let mut m = MeshData::default();
+        mesh_into(&mut m, &s, -400.0);
+        let zs: Vec<_> = m.edges.iter().map(|(e, _)| (e[0][2], e[1][2])).collect();
+        assert_eq!(zs, [(-1000.0, -400.0), (-400.0, 500.0), (-400.0, 500.0)]);
+    }
+
     /// Paket 3 (Vor-Patch): Jede Fläche und Kante des Prüfhauses mit AW-49
     /// und Dachterrasse trägt ein Bauteil; Wandflächen eine Schicht des
     /// Wandtyps, Decke und Terrasse eine ihres Aufbaus, alles andere
@@ -3981,9 +4055,10 @@ mod tests {
                     Category::ExteriorWall | Category::InteriorWall => {
                         (layer as usize) < layers(id)
                     }
-                    Category::Floor | Category::GroundSlab | Category::StripFooting => {
-                        (layer as usize) < layers(id).max(1)
-                    }
+                    Category::Floor
+                    | Category::GroundSlab
+                    | Category::StripFooting
+                    | Category::PerimeterInsulation => (layer as usize) < layers(id).max(1),
                     Category::RoofTerrace => (layer as usize) < layers(id),
                     _ => layer == NO_LAYER,
                 }
