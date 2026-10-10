@@ -9916,6 +9916,18 @@ mod gelaende_tests {
         assert_eq!(crate::szo::write(&back), deep);
         schritt(&mut m, |m| m.set_terrain_offset(-250.0));
         assert_eq!(crate::szo::write(&m), text);
+        // Dämmdicke außerhalb der Grenzen: mit Hinweis verworfen, ohne
+        // Dämmbauteil (Review Gelände, Hinweis 2)
+        let dick = text.replace(" insulation=100", " insulation=900");
+        let r = crate::szo::read(&dick, GuidGen::with_seed(5)).unwrap();
+        assert!(
+            r.hints.iter().any(|h| h.contains("Perimeterdämmung")),
+            "{:?}",
+            r.hints
+        );
+        assert_eq!(r.model.slab_insulation(slab), 0.0);
+        assert!(r.model.perimeter_of(slab).is_none());
+        assert!(r.model.check().is_empty(), "{:?}", r.model.check());
         let bad = text.replace("terrain=-250", "terrain=9000");
         assert!(crate::szo::read(&bad, GuidGen::with_seed(5)).is_err());
     }
