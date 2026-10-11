@@ -1245,13 +1245,9 @@ impl Scene {
         }
         if let Some((slab, _)) = self.model.foundation_of(eg_run) {
             self.model.set_slab_thickness(slab, d.slab);
-            // Die Dämmung hebt die Platte; der Versatz im Dialog ist der
-            // gewollte Endstand, also danach wieder darauf
+            // Die Dämmung baut sich nach unten auf, der Versatz bleibt
             if d.insulation > 0.0 {
                 self.model.set_slab_insulation(slab, d.insulation);
-                if let Some(b) = self.model.building_of_element(slab) {
-                    self.model.set_terrain_offset_of(b, d.terrain);
-                }
             }
         }
     }
@@ -2118,7 +2114,8 @@ impl Scene {
             if s.insulation == mm {
                 return false;
             }
-            // hebt das Gebäude gegen das Gelände: alle Gründungen folgen
+            // baut sich nach unten auf; eine zu flache Schürze wächst mit
+            // (UK Gründung für alle Gründungen des Gebäudes)
             return self.edit_model("Perimeterdämmung", |m| m.set_slab_insulation(slab, mm));
         }
         let (label, old) = match field {

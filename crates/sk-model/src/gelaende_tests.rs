@@ -71,11 +71,13 @@ fn erdmengen_folgen_dem_gelaende() {
     assert_eq!(summe(&m, FILL), 0.0);
     let grube = summe(&m, EXCAVATION);
     assert!(summe(&m, BACKFILL) > 0.0);
-    // Die Dämmung hebt das Haus um ihre Dicke: UK Dämmung und damit
-    // der Aushub bleiben, wo sie waren
+    // Die Dämmung baut sich nach unten auf (Jörn 11.10.): Das Haus bleibt,
+    // innerhalb der Schürze wird um ihre Dicke tiefer ausgehoben
+    let f = m.foundation(m.run_of(slab).unwrap()).unwrap().unwrap();
+    let innen = f.slab_area() - f.footing_area();
     schritt(&mut m, |m| m.set_slab_insulation(slab, 120.0));
-    assert_eq!(m.terrain_offset(), -480.0);
-    assert!((summe(&m, EXCAVATION) - grube).abs() < 1.0);
+    assert_eq!(m.terrain_offset(), -600.0);
+    assert!((summe(&m, EXCAVATION) - (grube + innen * 120.0)).abs() < 1.0);
     assert!((summe(&m, GRAVEL) - kies).abs() < 1.0);
 }
 
@@ -351,16 +353,25 @@ fn gruendung_nie_flacher_als_frosttiefe() {
     assert!(m.embedment_of(gr).unwrap() > FROST_DEPTH);
 }
 
-/// Dämmung 120 hebt das Haus um 12 cm über das Gelände; Schürzentiefe
-/// und Einbindetiefe bleiben; Mengen: Fläche = Platte ohne den Ring der
-/// Schürze (Jörn 11.10.), Volumen = Fläche × Dicke. 0 schaltet sie ab, die Dämmung verschwindet.
+/// Jörn 11.10.: Die Perimeterdämmung baut sich nach unten auf. Nachträglich
+/// 0 → 10 cm: OK Sohlplatte, alle Geschosshöhen, Versatz zum Gelände, UK
+/// Gründung, Einbindetiefe und Schürzentiefe bleiben; die Dämmung liegt
+/// innerhalb der Schürze unter der Platte. Mengen: Fläche = Platte ohne
+/// den Ring der Schürze, Volumen = Fläche × Dicke. 0 schaltet sie ab.
 #[test]
-fn perimeterdaemmung_hebt_das_haus() {
+fn perimeterdaemmung_aendert_die_hoehen_nicht() {
     let (mut m, eg, gr, slab) = haus();
     let g0 = m.ground_basis(eg).unwrap();
-    let t = schritt(&mut m, |m| m.set_slab_insulation(slab, PERIMETER_THICKNESS));
-    assert_eq!(m.slab_insulation(slab), 120.0);
-    assert_eq!(m.terrain_offset(), 120.0);
+    let fuss = m.foundation_of(eg).unwrap().1.unwrap();
+    let d0 = m.footing_depth(fuss).unwrap();
+    let hoehen = |m: &Model| -> Vec<f64> { m.storeys().iter().map(|(_, s)| s.elevation).collect() };
+    let h0 = hoehen(&m);
+    let t = schritt(&mut m, |m| m.set_slab_insulation(slab, 100.0));
+    assert_eq!(m.slab_insulation(slab), 100.0);
+    assert_eq!(m.terrain_offset(), 0.0);
+    assert_eq!(hoehen(&m), h0);
+    assert_eq!(m.footing_depth(fuss), Some(d0));
+    assert_eq!(uk(&m, gr), g0.footing_bottom_z);
     let p = m.perimeter_of(slab).expect("Bauteil Perimeterdämmung");
     assert_eq!(
         m.element(p).unwrap().category,
@@ -368,33 +379,74 @@ fn perimeterdaemmung_hebt_das_haus() {
     );
     assert!(m.perimeter_material().is_some());
     let g = m.ground_basis(eg).unwrap();
-    assert_eq!(g.insulation, 120.0);
-    assert!((g.insulation_bottom_z - (g.slab_bottom_z - 120.0)).abs() < 1e-6);
+    assert_eq!(g.insulation, 100.0);
+    assert_eq!(
+        (
+            g.terrain_z,
+            g.slab_top_z,
+            g.slab_bottom_z,
+            g.footing_bottom_z
+        ),
+        (
+            g0.terrain_z,
+            g0.slab_top_z,
+            g0.slab_bottom_z,
+            g0.footing_bottom_z
+        )
+    );
+    assert!((g.insulation_bottom_z - (g.slab_bottom_z - 100.0)).abs() < 1e-6);
     assert!((g.embedment - g0.embedment).abs() < 1e-6);
-    let depth = |g: &GroundBasis| g.insulation_bottom_z - g.footing_bottom_z;
-    assert!((depth(&g) - depth(&g0)).abs() < 1e-6);
-    assert!((uk(&m, gr) - (g0.footing_bottom_z - 120.0)).abs() < 1e-6);
+    // Körper: Platte liegt auf der Schürze, Dämmung darunter innerhalb
     let f = m.foundation(eg).unwrap().unwrap();
+    assert!((f.footing_height() - d0).abs() < 1e-6);
     let q = crate::qto::perimeter_qto_of(&f).unwrap();
     assert!((q.area - (g.slab_area - g.footing_area)).abs() < 1.0);
-    assert!((q.volume - q.area * 120.0).abs() < 1.0);
+    assert!((q.volume - q.area * 100.0).abs() < 1.0);
     assert!(m.check().is_empty(), "{:?}", m.check());
-    // ungültige Dicken
+    // 12 cm: wieder nur nach unten
+    let t2 = schritt(&mut m, |m| m.set_slab_insulation(slab, PERIMETER_THICKNESS));
+    assert_eq!(m.terrain_offset(), 0.0);
+    assert_eq!(hoehen(&m), h0);
+    assert_eq!(m.footing_depth(fuss), Some(d0));
+    // ungültige Dicken; unter der Dämmung bleiben 10 cm Schürze
     m.begin("x");
     assert!(!m.set_slab_insulation(slab, 10.0));
     assert!(!m.set_slab_insulation(slab, MAX_PERIMETER + 1.0));
     assert!(m.commit().is_none());
     // Rückgängig: wie vorher
+    m.apply(&t2, Direction::Undo);
+    assert_eq!(m.slab_insulation(slab), 100.0);
     m.apply(&t, Direction::Undo);
     assert_eq!(m.terrain_offset(), 0.0);
     assert!(m.perimeter_of(slab).is_none());
     assert_eq!(m.ground_basis(eg).unwrap(), g0);
+    assert_eq!(hoehen(&m), h0);
     // Ab- und wieder anschalten
-    schritt(&mut m, |m| m.set_slab_insulation(slab, 120.0));
+    schritt(&mut m, |m| m.set_slab_insulation(slab, 100.0));
     schritt(&mut m, |m| m.set_slab_insulation(slab, 0.0));
     assert!(m.perimeter_of(slab).is_none());
-    assert_eq!(m.terrain_offset(), 0.0);
+    assert_eq!(m.ground_basis(eg).unwrap(), g0);
     assert!(m.check().is_empty(), "{:?}", m.check());
+}
+
+/// Die Schürze bleibt unter der Dämmung mindestens 10 cm tief: Liegt das
+/// Haus 60 cm tief im Gelände, ist die Schürze nur 10 cm hoch; 12 cm
+/// Dämmung lassen sie um 12 cm nach unten wachsen. OK Sohlplatte und
+/// Versatz bleiben.
+#[test]
+fn flache_schuerze_waechst_unter_der_daemmung() {
+    let (mut m, eg, gr, slab) = haus();
+    schritt(&mut m, |m| m.set_terrain_offset(-600.0));
+    let fuss = m.foundation_of(eg).unwrap().1.unwrap();
+    assert_eq!(m.footing_depth(fuss), Some(MIN_FOOTING));
+    let z0 = uk(&m, gr);
+    let t = schritt(&mut m, |m| m.set_slab_insulation(slab, 120.0));
+    assert_eq!(m.terrain_offset(), -600.0);
+    assert_eq!(m.footing_depth(fuss), Some(MIN_FOOTING + 120.0));
+    assert!((uk(&m, gr) - (z0 - 120.0)).abs() < 1e-6);
+    assert!(m.check().is_empty(), "{:?}", m.check());
+    m.apply(&t, Direction::Undo);
+    assert_eq!(uk(&m, gr), z0);
 }
 
 /// Entscheidung B: Versatz und Dämmung gelten je Gebäude. Das zweite
