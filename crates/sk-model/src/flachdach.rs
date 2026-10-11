@@ -852,12 +852,56 @@ impl Model {
 /// cot β/2)) schrumpft auf einen Punkt: Ihre beiden Ecken liegen im Schnitt
 /// der versetzten Nachbarkanten, die dort wie überall um `d` versetzt
 /// bleiben. Nur wo das nicht aufgeht (Streifen schmaler als 2 d), rücken die
-/// Ecken weniger weit ein und die Dämmung ist dünner als `d`.
+/// Ecken weniger weit ein und die Dämmung ist dünner als `d`. Gilt nur ein
+/// einfacher Ring, dessen Ecken im Umriss liegen; schließt ein Zahn oder
+/// Finger schmaler als 2 d auch so nicht (Review PR #43), rückt die ganze
+/// Innenfläche so weit ein, wie es noch aufgeht.
 fn inset_of(outline: &[Vec3], d: f64) -> Vec<Vec3> {
-    if let Some(v) = inset_lines(outline, d) {
+    let at = |d: f64| {
+        inset_lines(outline, d)
+            .filter(|v| inset_valid(outline, v))
+            .or_else(|| Some(inset_clamped(outline, d)).filter(|v| inset_valid(outline, v)))
+    };
+    if let Some(v) = at(d) {
         return v;
     }
-    inset_clamped(outline, d)
+    let (mut lo, mut hi) = (0.0, d);
+    for _ in 0..30 {
+        let m = (lo + hi) / 2.0;
+        if at(m).is_some() {
+            lo = m;
+        } else {
+            hi = m;
+        }
+    }
+    at(lo).unwrap_or_else(|| outline.to_vec())
+}
+
+/// Ist `pts` (Innenfläche zu `outline`, Ecke für Ecke) ein einfacher Ring,
+/// dessen Ecken alle im Umriss liegen? Zusammengefallene Ecken einer
+/// weggefallenen Kante zählen einmal.
+fn inset_valid(outline: &[Vec3], pts: &[Vec3]) -> bool {
+    let mut ring: Vec<Vec3> = Vec::with_capacity(pts.len());
+    for p in pts {
+        if ring.last().is_none_or(|q| (*p - *q).length() > 1e-6) {
+            ring.push(*p);
+        }
+    }
+    while ring.len() > 1 && (ring[0] - ring[ring.len() - 1]).length() <= 1e-6 {
+        ring.pop();
+    }
+    let inside = |p: Vec3| {
+        let n = outline.len();
+        let mut c = false;
+        for i in 0..n {
+            let (a, b) = (outline[i], outline[(i + 1) % n]);
+            if (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y) {
+                c = !c;
+            }
+        }
+        c
+    };
+    sk_math::polygon::is_simple(&ring) && ring.iter().all(|p| inside(*p))
 }
 
 /// [`inset_of`] über die versetzten Kanten: Kanten, die sich umkehrten,
@@ -1157,7 +1201,7 @@ mod tests {
             vec3(e.cos(), e.sin(), 0.0) * 3000.0,
         ];
         assert!(sk_math::polygon::signed_area(&outline) > 0.0);
-        for d in [20.0, 60.0, 200.0] {
+        for d in [20.0, 60.0] {
             let inset = inset_of(&outline, d);
             let n = outline.len();
             let mut band = 0.0;
@@ -1187,21 +1231,41 @@ mod tests {
                 );
             }
         }
-        // nur bei 200 mm greift die Klemmung: Kante 0 ist ein Punkt, die
-        // Nachbarkanten 1 und 4 bleiben auf ganzer Länge um 200 versetzt
-        let inset = inset_of(&outline, 200.0);
-        assert!((inset[1] - inset[0]).length() < 1e-6, "{inset:?}");
-        for k in [1, 4] {
-            let j = (k + 1) % outline.len();
-            let e = (outline[j] - outline[k]).normalized();
+        // Giebelspitze: die kurze Kante oben (100 mm) fällt bei 200 mm weg
+        // (Punkt), die Nachbarkanten bleiben auf ganzer Länge um 200 versetzt
+        let giebel = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(4000.0, 0.0, 0.0),
+            vec3(4000.0, 1000.0, 0.0),
+            vec3(2050.0, 5000.0, 0.0),
+            vec3(1950.0, 5000.0, 0.0),
+            vec3(0.0, 1000.0, 0.0),
+        ];
+        let inset = inset_of(&giebel, 200.0);
+        assert!((inset[4] - inset[3]).length() < 1e-6, "{inset:?}");
+        for k in 0..giebel.len() {
+            let j = (k + 1) % giebel.len();
+            if k == 3 {
+                continue;
+            }
+            let e = (giebel[j] - giebel[k]).normalized();
             let nrm = vec3(-e.y, e.x, 0.0);
             for p in [inset[k], inset[j]] {
                 assert!(
-                    ((p - outline[k]).dot(nrm) - 200.0).abs() < 1e-6,
+                    ((p - giebel[k]).dot(nrm) - 200.0).abs() < 1e-6,
                     "{k}: {p:?}"
                 );
             }
         }
+        // ab etwa 140 mm schließt sich der Zahn zwischen Kante 4 und 1: bei
+        // 200 mm läge der Schnitt der Nachbarn 27 mm jenseits von Kante 0, die
+        // Klemmung jenseits von Kante 4 (Review PR #43); die Innenfläche
+        // bleibt im Umriss und rückt weniger weit ein
+        assert!(!inset_valid(
+            &outline,
+            &inset_lines(&outline, 200.0).unwrap()
+        ));
+        assert!(inset_valid(&outline, &inset_of(&outline, 200.0)));
         // Streifen schmaler als 2 d: Rückfall, nichts kehrt sich um
         let streifen = [
             vec3(0.0, 0.0, 0.0),
@@ -1214,6 +1278,23 @@ mod tests {
             let e = streifen[(k + 1) % 4] - streifen[k];
             assert!((i[(k + 1) % 4] - i[k]).dot(e) >= -1e-6, "{i:?}");
         }
+        // Finger 3 m lang, an der Wurzel 300, an der Spitze 310 breit: die
+        // versetzten Seiten schnitten sich erst 27 m jenseits der Spitze
+        // (Review PR #43); die Innenfläche bleibt im Umriss
+        let finger = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(6000.0, 0.0, 0.0),
+            vec3(6000.0, 3000.0, 0.0),
+            vec3(3150.0, 3000.0, 0.0),
+            vec3(3155.0, 6000.0, 0.0),
+            vec3(2845.0, 6000.0, 0.0),
+            vec3(2850.0, 3000.0, 0.0),
+            vec3(0.0, 3000.0, 0.0),
+        ];
+        assert!(inset_lines(&finger, 200.0).is_some_and(|v| v.iter().any(|p| p.y > 20_000.0)));
+        let i = inset_of(&finger, 200.0);
+        assert!(inset_valid(&finger, &i), "{i:?}");
+        assert!(inset_valid(&finger, &inset_of(&finger, 60.0)));
     }
 
     /// Dachaufbau und Blech des Flachdachs auf der OG-Decke unter `og`.
