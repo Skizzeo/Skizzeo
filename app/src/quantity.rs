@@ -84,6 +84,8 @@ pub struct QuantityWindow {
     pub datei: String,
     /// Gliederung der Liste (Paket 1b), aus den Einstellungen.
     pub grouping: Grouping,
+    /// Mengen als VOB-Menge oder Bestellmenge, aus den Einstellungen.
+    pub modus: sk_model::rechenweg::Modus,
     /// Druckvorschau: Titelblatt und Inhaltsverzeichnis, aus den
     /// Einstellungen.
     pub blatt_wahl: (bool, bool),
@@ -134,6 +136,7 @@ impl QuantityWindow {
             ava: None,
             datei: String::new(),
             grouping: Grouping::Storey,
+            modus: sk_model::rechenweg::Modus::Vob,
             blatt_wahl: (false, false),
             dirty: false,
             docked: true,
@@ -345,6 +348,7 @@ impl QuantityWindow {
         let g = self.grouping;
         let aktiv = self.karten.aktiv;
         let list = self.list.get_or_insert_with(|| ListView::grouped(s, g));
+        list.set_modus(self.modus);
         let kosten = self.kosten.get_or_insert_with(KostenView::new);
         let ava = self.ava.get_or_insert_with(AvaView::new);
         ava.blatt_wahl = self.blatt_wahl;
@@ -522,6 +526,11 @@ impl QuantityWindow {
             // Die Zeilen baut das nächste `sync` neu
             ListOut::Grouping(g) => {
                 self.grouping = g;
+                self.dirty = true;
+                None
+            }
+            ListOut::Modus(m) => {
+                self.modus = m;
                 self.dirty = true;
                 None
             }

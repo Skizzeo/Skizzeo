@@ -15,6 +15,7 @@ use crate::umfang_view;
 use sk_model::qto::{
     BuildingQto, ElementQto, GroupQto, LayerRow, Schedule, StoreyQto, TradeSum, Umfang,
 };
+use sk_model::rechenweg::{self, Art, Bezug, Modus};
 use sk_model::{Category, Deleted, ElementId, LevelKind, Model};
 use sk_paint::font::Font;
 use sk_paint::{Canvas, Path, Rgba};
@@ -98,6 +99,8 @@ impl Grouping {
 
 /// Umschalter „Gliedern“: Abstände (dip).
 const TOGGLE_PAD: f32 = 10.0;
+/// Abstand zwischen „Gliedern“ und „Mengen“ (dip).
+const MODUS_GAP: f32 = 20.0;
 const TOGGLE_INSET: f32 = 2.0;
 
 /// Schlüssel einer Zeile: zum Auf- und Zuklappen und zum Wiedererkennen nach
@@ -129,6 +132,9 @@ enum Key {
     ExtSumme(u32, u32, u16),
     /// Erweiterungsgruppe nach Gewerk: Gebäude und Gewerk, Gruppe.
     ExtGewerk(u32, u32),
+    /// Term im Rechenweg einer Schichtzeile: Bauteil (Index, Generation),
+    /// Schicht, Bezug und Reihe.
+    Term(u32, u32, u8, u8, u8),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,6 +177,10 @@ struct Line {
     /// Gedimmter Zusatz hinter dem Namen („DIN 18331“).
     tag: Option<String>,
     tiles: Vec<Tile>,
+    /// Zeile mit Rechenweg: klappt ihn auf und zu.
+    weg: bool,
+    /// Term eines Rechenwegs: sichtbar, solange diese Zeile offen ist.
+    parent: Key,
 }
 
 impl Line {
@@ -186,6 +196,8 @@ impl Line {
             note: None,
             tag: None,
             tiles: Vec::new(),
+            weg: false,
+            parent: Key::None,
         }
     }
 }
@@ -199,6 +211,8 @@ enum Hot {
     Button,
     /// Eine Hälfte des Umschalters „Gliedern nach“.
     Grouping(Grouping),
+    /// Eine Hälfte des Umschalters „Mengen“ (VOB oder Bestellung).
+    Modus(Modus),
     /// Umfangsleiste: Gebäudefeld, Chips, „Alle“ (KA-1).
     Umfang(umfang_view::Hot),
 }
@@ -219,6 +233,8 @@ pub enum ListOut {
     BlattWahl((bool, bool)),
     /// Gliederung umgeschaltet (in den Einstellungen merken).
     Grouping(Grouping),
+    /// Sicht der Mengen umgeschaltet (in den Einstellungen merken).
+    Modus(Modus),
     /// Nur das Blatt neu zeichnen.
     Repaint,
     /// Preisblatt im Reiter Kosten: über `Scene::kosten_folge` schreiben.
@@ -256,6 +272,8 @@ type GroupRef = (String, Category, Vec<ElementId>);
 
 pub struct ListView {
     grouping: Grouping,
+    /// Mengen als VOB-Menge oder Bestellmenge (Jörn 11.10.).
+    modus: Modus,
     /// Umfangsleiste des Blatts (KA-1): Gebäude und abgewählte Geschosse,
     /// für die Sitzung.
     pub leiste: umfang_view::Leiste,
@@ -324,6 +342,7 @@ impl ListView {
     pub fn grouped(s: &mut Scene, g: Grouping) -> ListView {
         let mut v = ListView {
             grouping: g,
+            modus: Modus::Vob,
             leiste: umfang_view::Leiste::default(),
             umfang_shown: None,
             top: 32.0,
@@ -419,9 +438,38 @@ impl ListView {
         true
     }
 
+    /// Sicht der Mengen umschalten (VOB oder Bestellung); die Zeilen baut
+    /// das nächste [`ListView::sync`] neu. `true`, wenn sie sich ändert.
+    pub fn set_modus(&mut self, m: Modus) -> bool {
+        if m == self.modus {
+            return false;
+        }
+        self.modus = m;
+        self.runs = None;
+        self.motion = None;
+        true
+    }
+
+    #[cfg(test)]
+    pub fn modus(&self) -> Modus {
+        self.modus
+    }
+
+    #[cfg(test)]
+    /// Alle Gruppen und Rechenwege aufklappen (Ist-Bilder).
+    pub fn alles_aufklappen(&mut self) {
+        let k: Vec<Key> = self
+            .lines
+            .iter()
+            .filter(|l| l.kind == Kind::Group || l.weg)
+            .map(|l| l.key)
+            .collect();
+        self.open_groups.extend(k);
+    }
+
     /// Zeilen neu aufbauen; Auf- und Zuklappen bleibt erhalten.
     fn rebuild(&mut self, m: &Model, sched: &Schedule, animate: bool) {
-        let (lines, groups) = build_lines(m, sched, self.grouping);
+        let (lines, groups) = build_lines(m, sched, self.grouping, self.modus);
         // Fallen sichtbare Zeilen weg, rücken die übrigen sichtbar nach
         let keys: HashSet<Key> = lines.iter().map(|l| l.key).collect();
         let old: Vec<Line> = self
@@ -484,6 +532,7 @@ impl ListView {
     fn line_visible(&self, l: &Line) -> bool {
         (l.storey == Key::None || !self.closed_storeys.contains(&l.storey))
             && (l.group == Key::None || self.open_groups.contains(&l.group))
+            && (l.parent == Key::None || self.open_groups.contains(&l.parent))
     }
 
     /// Maße aus `t`, sonst die des zuletzt gezeichneten Schemas.
@@ -1051,6 +1100,39 @@ impl ListView {
         ((gx, y + (h + cap) * 0.5), halves)
     }
 
+    /// Umschalter „Mengen: VOB | Bestellung“ (px) rechts neben „Gliedern“
+    /// in derselben Zeile. Beschriftung (x, Grundlinie) und die Hälften.
+    #[allow(clippy::type_complexity)]
+    fn modus_layout(
+        &self,
+        t: &Theme,
+        fonts: &Fonts,
+    ) -> ((f32, f32), [(Modus, (f32, f32, f32, f32)); 2]) {
+        let s = self.scale;
+        let regular = fonts.regular.as_ref();
+        let bold = fonts.bold.as_ref().or(regular);
+        let px = 10.5 * s;
+        let width = |f: Option<&Font>, text: &str| {
+            f.map_or(text.chars().count() as f32 * px * 0.55, |f| {
+                f.width(text, px)
+            })
+        };
+        let inset = TOGGLE_INSET * s;
+        let ((_, ly), g) = self.toggle_layout(t, fonts);
+        let (_, (gx, gy, gw, gh)) = g[1];
+        let lx = gx + gw + inset + MODUS_GAP * s;
+        let x = lx + width(regular, "Mengen") + 8.0 * s + inset;
+        let half = |m: Modus| width(bold, m.label()) + 2.0 * TOGGLE_PAD * s;
+        let w0 = half(Modus::Vob);
+        (
+            (lx, ly),
+            [
+                (Modus::Vob, (x, gy, w0, gh)),
+                (Modus::Bestellung, (x + w0, gy, half(Modus::Bestellung), gh)),
+            ],
+        )
+    }
+
     // --- Umfang: Gebäudefeld und Geschoss-Chips (KA-1) ---------------------
 
     /// Lage der Umfangsleiste unter der Unterzeile (und dem Umschalter, wenn
@@ -1091,6 +1173,11 @@ impl ListView {
                 return Some(Hot::Grouping(g));
             }
         }
+        for (g, (hx, hy, hw, hh)) in self.modus_layout(t, fonts).1 {
+            if x >= hx && x < hx + hw && y >= hy - inset && y < hy + hh + inset {
+                return Some(Hot::Modus(g));
+            }
+        }
         let list_top = (self.top_dip() + self.head()) * s;
         if y < list_top {
             return None;
@@ -1103,7 +1190,7 @@ impl ListView {
             .map(|(i, _, _)| {
                 let l = &self.lines[i];
                 let tri = x0 + (l.depth as f32 * t.size.qto_indent + 14.0) * s;
-                if l.kind == Kind::Group && x < tri {
+                if (l.kind == Kind::Group || l.weg) && x < tri {
                     Hot::Toggle(i)
                 } else {
                     Hot::Line(i)
@@ -1138,7 +1225,7 @@ impl ListView {
         // Nur Knopf, Umschalter und Umfangsleiste sehen anders aus, wenn die
         // Maus darübersteht
         let button = |h: Option<Hot>| match h {
-            Some(Hot::Button | Hot::Grouping(_) | Hot::Umfang(_)) => h,
+            Some(Hot::Button | Hot::Grouping(_) | Hot::Modus(_) | Hot::Umfang(_)) => h,
             _ => None,
         };
         let repaint = button(hot) != button(self.hot);
@@ -1158,7 +1245,7 @@ impl ListView {
     pub fn mouse_leave(&mut self, p: &mut Picking) -> Option<ListOut> {
         let button = matches!(
             self.hot.take(),
-            Some(Hot::Button | Hot::Grouping(_) | Hot::Umfang(_))
+            Some(Hot::Button | Hot::Grouping(_) | Hot::Modus(_) | Hot::Umfang(_))
         ) || self.button_down;
         self.leiste.hot = None;
         self.button_down = false;
@@ -1193,6 +1280,7 @@ impl ListView {
                 Some(ListOut::Repaint)
             }
             Some(Hot::Grouping(g)) => self.set_grouping(g).then_some(ListOut::Grouping(g)),
+            Some(Hot::Modus(g)) => self.set_modus(g).then_some(ListOut::Modus(g)),
             Some(Hot::Toggle(i)) => {
                 let k = self.lines[i].key;
                 if !self.open_groups.remove(&k) {
@@ -1632,18 +1720,52 @@ impl ListView {
         self.leiste.paint(c, t, fonts, self.leiste_lage(t), now);
     }
 
-    /// Umschalter „Gliedern nach: Geschoss | Gewerk“ (Pille in `sheet_tile`,
-    /// die gewählte Hälfte in der Fläche des Knopfs).
+    /// Umschalter „Gliedern nach: Geschoss | Gewerk“ und „Mengen: VOB |
+    /// Bestellung“ (Pille in `sheet_tile`, die gewählte Hälfte in der Fläche
+    /// des Knopfs).
     fn paint_toggle(&self, c: &mut Canvas, t: &Theme, fonts: &Fonts) {
+        let (l, h) = self.toggle_layout(t, fonts);
+        let halves = h.map(|(g, r)| {
+            (
+                g.label(),
+                g == self.grouping,
+                self.hot == Some(Hot::Grouping(g)),
+                r,
+            )
+        });
+        self.paint_umschalter(c, t, fonts, "Gliedern", l, halves);
+        let (l, h) = self.modus_layout(t, fonts);
+        let halves = h.map(|(m, r)| {
+            (
+                m.label(),
+                m == self.modus,
+                self.hot == Some(Hot::Modus(m)),
+                r,
+            )
+        });
+        self.paint_umschalter(c, t, fonts, "Mengen", l, halves);
+    }
+
+    /// Eine Pille mit Beschriftung davor: je Hälfte Text, gewählt, unter der
+    /// Maus und Lage.
+    #[allow(clippy::type_complexity)]
+    fn paint_umschalter(
+        &self,
+        c: &mut Canvas,
+        t: &Theme,
+        fonts: &Fonts,
+        label: &str,
+        (lx, ly): (f32, f32),
+        halves: [(&str, bool, bool, (f32, f32, f32, f32)); 2],
+    ) {
         let s = self.scale;
         let u = &t.ui;
         let regular = fonts.regular.as_ref();
         let bold = fonts.bold.as_ref().or(regular);
         let px = 10.5 * s;
-        let ((lx, ly), halves) = self.toggle_layout(t, fonts);
         let inset = TOGGLE_INSET * s;
-        let (_, (x, y, _, h)) = halves[0];
-        let (_, (x1, _, w1, _)) = halves[1];
+        let (_, _, _, (x, y, _, h)) = halves[0];
+        let (_, _, _, (x1, _, w1, _)) = halves[1];
         let (px0, py0, pw, ph) = (
             x - inset,
             y - inset,
@@ -1654,25 +1776,24 @@ impl ListView {
         p.rounded_rect(px0, py0, pw, ph, ph * 0.5);
         c.fill(&p, u.sheet_tile);
         if let Some(f) = regular {
-            f.draw(c, "Gliedern", px, lx, ly, u.sheet_text_dim);
+            f.draw(c, label, px, lx, ly, u.sheet_text_dim);
         }
-        for (g, (hx, hy, hw, hh)) in halves {
-            let on = g == self.grouping;
+        for (text, on, hot, (hx, hy, hw, hh)) in halves {
             let (font, col) = if on {
                 let mut p = Path::new();
                 p.rounded_rect(hx, hy, hw, hh, hh * 0.5);
                 c.fill(&p, u.sheet_card);
                 (bold, u.sheet_text)
-            } else if self.hot == Some(Hot::Grouping(g)) {
+            } else if hot {
                 (regular, u.sheet_text)
             } else {
                 (regular, u.sheet_text_dim)
             };
             let Some(f) = font else { continue };
-            let tw = f.width(g.label(), px);
+            let tw = f.width(text, px);
             f.draw(
                 c,
-                g.label(),
+                text,
                 px,
                 hx + (hw - tw) * 0.5,
                 hy + (hh + f.cap_height(px)) * 0.5,
@@ -1753,7 +1874,12 @@ impl ListView {
         let f = fonts.regular.as_ref()?;
         let px = 11.0 * s;
         let indent = x0 + l.depth as f32 * t.size.qto_indent * s;
-        let text_x = indent + if l.kind == Kind::Group { 12.0 * s } else { 0.0 };
+        let text_x = indent
+            + if l.kind == Kind::Group || l.weg {
+                12.0 * s
+            } else {
+                0.0
+            };
         let label = self.label_text(l, f, px, (x0, cw), text_x);
         let x = x as f32;
         (label != l.cells[0] && x >= text_x && x <= text_x + f.width(&label, px))
@@ -1800,9 +1926,9 @@ impl ListView {
         }
         // Dreieck vor Geschoss- und Gruppenzeilen
         let mut text_x = indent;
-        if matches!(l.kind, Kind::Storey | Kind::Group) {
+        if matches!(l.kind, Kind::Storey | Kind::Group) || l.weg {
             let open = match l.kind {
-                Kind::Group => self.open_groups.contains(&l.key),
+                Kind::Group | Kind::Row => self.open_groups.contains(&l.key),
                 _ => !self.closed_storeys.contains(&l.key),
             };
             let (cx, cy, r) = (indent + 4.0 * s, y + h * 0.5, 4.0 * s);
@@ -2081,10 +2207,16 @@ fn m_vol(mm3: f64) -> String {
     format!("{} m³", de(mm3 / 1e9, 3))
 }
 
-fn build_lines(m: &Model, sched: &Schedule, by: Grouping) -> (Vec<Line>, Vec<GroupRef>) {
+fn build_lines(
+    m: &Model,
+    sched: &Schedule,
+    by: Grouping,
+    modus: Modus,
+) -> (Vec<Line>, Vec<GroupRef>) {
     let mut lines = Vec::new();
     let mut groups = Vec::new();
     let many = sched.buildings.len() > 1;
+    let faktor = bestell_faktoren(m, sched, modus);
     for b in &sched.buildings {
         let info = m.building(b.id);
         if many {
@@ -2095,10 +2227,10 @@ fn build_lines(m: &Model, sched: &Schedule, by: Grouping) -> (Vec<Line>, Vec<Gro
         match by {
             Grouping::Storey => {
                 for st in &b.storeys {
-                    storey_lines(m, st, &mut lines, &mut groups);
+                    storey_lines(m, st, &faktor, &mut lines, &mut groups);
                 }
             }
-            Grouping::Trade => trade_lines(m, b, &mut lines),
+            Grouping::Trade => trade_lines(m, b, modus, &mut lines),
         }
         lines.push(Line::new(Kind::Rule, 0, Key::None));
         let mut head = Line::new(Kind::SumHead, 0, Key::None);
@@ -2107,6 +2239,12 @@ fn build_lines(m: &Model, sched: &Schedule, by: Grouping) -> (Vec<Line>, Vec<Gro
             info.map_or(String::new(), |x| x.name.clone())
         );
         lines.push(head);
+        let zu = |mat: sk_model::MaterialId| match modus {
+            Modus::Vob => 1.0,
+            Modus::Bestellung => {
+                1.0 + m.material(mat).map_or(0.0, sk_model::matprop::waste) / 100.0
+            }
+        };
         let mut tiles = Line::new(Kind::Tiles, 0, Key::None);
         tiles.tiles = b
             .by_material
@@ -2116,17 +2254,157 @@ fn build_lines(m: &Model, sched: &Schedule, by: Grouping) -> (Vec<Line>, Vec<Gro
                 name: m
                     .material(x.material)
                     .map_or(String::new(), |y| y.name.clone()),
-                // Blech in m statt m³ (Attikablech)
-                value: x.length.map_or_else(|| m_vol(x.volume), m_len),
-                extra: x.area.map(m_area),
+                // Blech in m statt m³ (Attikablech); Bestellung mit Zuschlag
+                value: x.length.map_or_else(
+                    || m_vol(x.volume * zu(x.material)),
+                    |l| m_len(l * zu(x.material)),
+                ),
+                extra: x.area.map(|a| m_area(a * zu(x.material))),
             })
             .collect();
         lines.push(tiles);
     }
     for st in &sched.loose {
-        storey_lines(m, st, &mut lines, &mut groups);
+        storey_lines(m, st, &faktor, &mut lines, &mut groups);
     }
     (lines, groups)
+}
+
+/// Bestellmenge je Bauteil für die Gliederung nach Geschoss: Verhältnis der
+/// Bestellmenge zur Menge über alle Schichten (Volumen, Fläche). Leer in der
+/// VOB-Sicht.
+type Faktoren = HashMap<ElementId, (f64, f64)>;
+
+fn bestell_faktoren(m: &Model, sched: &Schedule, modus: Modus) -> Faktoren {
+    let mut sum: HashMap<ElementId, [f64; 4]> = HashMap::new();
+    if modus == Modus::Vob {
+        return HashMap::new();
+    }
+    for b in &sched.buildings {
+        for t in &b.by_trade {
+            for r in &t.rows {
+                let x = sum.entry(r.element).or_default();
+                x[0] += r.volume;
+                x[1] += rechenweg::anzeige(m, r, Bezug::Volumen, modus);
+                x[2] += rechenweg::wert(r, Bezug::Flaeche);
+                x[3] += rechenweg::anzeige(m, r, Bezug::Flaeche, modus);
+            }
+        }
+    }
+    let q = |a: f64, b: f64| if a > 0.0 { b / a } else { 1.0 };
+    sum.into_iter()
+        .map(|(e, x)| (e, (q(x[0], x[1]), q(x[2], x[3]))))
+        .collect()
+}
+
+/// Hauptmenge einer Schichtzeile für den Rechenweg: Beton nach Volumen,
+/// Blech nach Länge, sonst die Fläche (VOB/C Abschnitt 0.5 der ATV).
+fn haupt_bezug(m: &Model, r: &LayerRow) -> Option<Bezug> {
+    let cat = m.material(r.material).map(|x| x.category);
+    let v = |b| rechenweg::wert(r, b) > 0.0;
+    let wahl = match cat {
+        Some(sk_model::MatCategory::Concrete) => [Bezug::Volumen, Bezug::Flaeche, Bezug::Laenge],
+        Some(sk_model::MatCategory::Metal) => [Bezug::Laenge, Bezug::Flaeche, Bezug::Volumen],
+        _ => [Bezug::Flaeche, Bezug::Volumen, Bezug::Laenge],
+    };
+    // Attikablech: nur in m abgerechnet
+    if r.category == Category::Coping && r.layer == 0 {
+        return v(Bezug::Laenge).then_some(Bezug::Laenge);
+    }
+    wahl.into_iter().find(|&b| v(b))
+}
+
+/// Menge im Bezug als Zelle: „12,40 m“, „31,82 m²“, „7,248 m³“.
+fn menge_zelle(x: f64, b: Bezug) -> String {
+    match b {
+        Bezug::Laenge => m_len(x),
+        Bezug::Flaeche => m_area(x),
+        Bezug::Volumen => m_vol(x),
+    }
+}
+
+/// Spalte der Menge im Bezug.
+fn spalte(b: Bezug) -> usize {
+    match b {
+        Bezug::Laenge => 2,
+        Bezug::Flaeche => 3,
+        Bezug::Volumen => 4,
+    }
+}
+
+/// Zeilen des Rechenwegs unter der Schichtzeile `row` (eingeklappt):
+/// Terme mit Vorzeichen, bei mehr als einem Term das Ergebnis.
+fn weg_zeilen(m: &Model, r: &LayerRow, row: &mut Line, modus: Modus, lines: &mut Vec<Line>) {
+    let Some(b) = haupt_bezug(m, r) else { return };
+    let Some(w) = rechenweg::fuer(m, r, modus)
+        .into_iter()
+        .find(|w| w.bezug == b)
+    else {
+        return;
+    };
+    row.weg = true;
+    let e = r.element;
+    let n = w.terme.len();
+    let mut push = |i: usize, text: String, cell: String| {
+        let key = Key::Term(
+            e.index(),
+            e.generation(),
+            r.layer.min(255) as u8,
+            spalte(b) as u8,
+            i.min(255) as u8,
+        );
+        let mut l = Line::new(Kind::Control, row.depth + 1, key);
+        l.storey = row.storey;
+        l.group = row.group;
+        l.parent = row.key;
+        l.elements = vec![e];
+        l.cells[0] = text;
+        l.cells[spalte(b)] = cell;
+        lines.push(l);
+    };
+    for (i, t) in w.terme.iter().enumerate() {
+        let (text, cell) = match t.art {
+            Art::Basis => (t.text.clone(), menge_zelle(t.wert, b)),
+            Art::Hinweis => (t.text.clone(), String::new()),
+            _ if t.wert < 0.0 => (
+                format!("− {}", t.text),
+                format!("− {}", menge_zelle(-t.wert, b)),
+            ),
+            _ => (
+                format!("+ {}", t.text),
+                format!("+ {}", menge_zelle(t.wert, b)),
+            ),
+        };
+        push(i, text, cell);
+    }
+    if w.terme.iter().filter(|t| t.art != Art::Hinweis).count() > 1 {
+        push(n, "= Menge".into(), menge_zelle(w.menge(), b));
+    }
+}
+
+/// Rechenweg der VOB-Menge als eine Zeile für die Tabelle: „Länge 7,545 m ×
+/// Höhe 2,855 m (21,54 m²) − Deckenauflager … (1,66 m²) = 19,88 m²“.
+fn weg_text(m: &Model, r: &LayerRow) -> String {
+    let Some(b) = haupt_bezug(m, r) else {
+        return String::new();
+    };
+    let Some(w) = rechenweg::fuer(m, r, Modus::Vob)
+        .into_iter()
+        .find(|w| w.bezug == b)
+    else {
+        return String::new();
+    };
+    let mut teile: Vec<String> = Vec::new();
+    for t in &w.terme {
+        teile.push(match t.art {
+            Art::Hinweis => format!("({})", t.text),
+            Art::Basis => format!("{} ({})", t.text, menge_zelle(t.wert, b)),
+            _ if t.wert < 0.0 => format!("− {} ({})", t.text, menge_zelle(-t.wert, b)),
+            _ => format!("+ {} ({})", t.text, menge_zelle(t.wert, b)),
+        });
+    }
+    teile.push(format!("= {}", menge_zelle(w.menge(), b)));
+    teile.join(" ")
 }
 
 /// Schichten, die nach Gewerk zu aufklappbaren Gruppen zusammengefasst
@@ -2196,6 +2474,9 @@ fn per_element(rows: &[LayerRow]) -> Vec<LayerRow> {
             Some(x) => {
                 x.volume += r.volume;
                 x.area += r.area;
+                x.face += r.face;
+                x.bill_area += r.bill_area;
+                x.pocket += r.pocket;
                 x.attika |= r.attika;
             }
             None => out.push(r.clone()),
@@ -2207,7 +2488,7 @@ fn per_element(rows: &[LayerRow]) -> Vec<LayerRow> {
 /// Zeilen eines Gebäudes nach Gewerk (Paket 1b): Gewerk (aufklappbar, mit
 /// ATV-Nummer) → Schichtgruppe „Schicht · Bauteilgruppe“ (aufklappbar,
 /// Bauteile mit Geschoss) bzw. einzelne Bauteile.
-fn trade_lines(m: &Model, b: &BuildingQto, lines: &mut Vec<Line>) {
+fn trade_lines(m: &Model, b: &BuildingQto, modus: Modus, lines: &mut Vec<Line>) {
     let bi = b.id.index();
     // Gewerke der Schichten und der Erweiterungen (E8a) nach Bauablauf
     let ext_t = ext::gewerke(m, b);
@@ -2239,7 +2520,7 @@ fn trade_lines(m: &Model, b: &BuildingQto, lines: &mut Vec<Line>) {
             }
         }
         lines.push(head);
-        trade_rows(m, bi, order, tkey, t, lines);
+        trade_rows(m, bi, order, tkey, t, modus, lines);
         ext::gewerk_zeilen(m, b, Some(id), tkey, lines);
     }
     if ext_t.contains(&None) {
@@ -2252,7 +2533,16 @@ fn trade_lines(m: &Model, b: &BuildingQto, lines: &mut Vec<Line>) {
 }
 
 /// Schichtzeilen eines Gewerks (Paket 1b).
-fn trade_rows(m: &Model, bi: u32, order: u32, tkey: Key, t: &TradeSum, lines: &mut Vec<Line>) {
+fn trade_rows(
+    m: &Model,
+    bi: u32,
+    order: u32,
+    tkey: Key,
+    t: &TradeSum,
+    modus: Modus,
+    lines: &mut Vec<Line>,
+) {
+    let zeig = |r: &LayerRow, b: Bezug| rechenweg::anzeige(m, r, b, modus);
     {
         let mut i = 0;
         while i < t.rows.len() {
@@ -2268,16 +2558,25 @@ fn trade_rows(m: &Model, bi: u32, order: u32, tkey: Key, t: &TradeSum, lines: &m
                 rl.cells[0] = layer_row_label(m, r);
                 rl.cells[1] = r.number.clone();
                 if r.length > 0.0 {
-                    rl.cells[2] = m_len(r.length);
+                    // Verschnitt nur auf die Länge, wenn nach Länge bestellt
+                    // wird (Blech); die Frostschürze bleibt so lang
+                    rl.cells[2] = m_len(if haupt_bezug(m, r) == Some(Bezug::Laenge) {
+                        zeig(r, Bezug::Laenge)
+                    } else {
+                        r.length
+                    });
                 }
-                if r.area > 0.0 {
-                    rl.cells[3] = m_area(r.area);
+                if rechenweg::wert(r, Bezug::Flaeche) > 0.0 {
+                    rl.cells[3] = m_area(zeig(r, Bezug::Flaeche));
                 }
                 // Attikablech: abgerechnet in m, ohne Volumen
                 if r.category != Category::Coping {
-                    rl.cells[4] = m_vol(r.volume);
+                    rl.cells[4] = m_vol(zeig(r, Bezug::Volumen));
                 }
+                let mut weg = Vec::new();
+                weg_zeilen(m, r, &mut rl, modus, &mut weg);
                 lines.push(rl);
+                lines.extend(weg);
                 i += 1;
                 continue;
             }
@@ -2307,17 +2606,18 @@ fn trade_rows(m: &Model, bi: u32, order: u32, tkey: Key, t: &TradeSum, lines: &m
                     format!("{} … {tail}", first.number)
                 }
             };
+            // Länge in der Liste, Stück: nie mit Zuschlag
             let len: f64 = rows.iter().map(|x| x.length).sum();
             gl.cells[2] = if len > 0.0 {
                 format!("{} · {}", m_len(len), rows.len())
             } else {
                 rows.len().to_string()
             };
-            let area: f64 = rows.iter().map(|x| x.area).sum();
-            if r.insulation && area > 0.0 {
+            let area: f64 = rows.iter().map(|x| zeig(x, Bezug::Flaeche)).sum();
+            if area > 0.0 {
                 gl.cells[3] = m_area(area);
             }
-            gl.cells[4] = m_vol(rows.iter().map(|x| x.volume).sum());
+            gl.cells[4] = m_vol(rows.iter().map(|x| zeig(x, Bezug::Volumen)).sum());
             lines.push(gl);
             for x in &rows {
                 let mut rl = Line::new(Kind::Row, 2, row_key(x));
@@ -2328,17 +2628,41 @@ fn trade_rows(m: &Model, bi: u32, order: u32, tkey: Key, t: &TradeSum, lines: &m
                 if x.length > 0.0 {
                     rl.cells[2] = m_len(x.length);
                 }
-                if x.insulation && x.area > 0.0 {
-                    rl.cells[3] = m_area(x.area);
+                if rechenweg::wert(x, Bezug::Flaeche) > 0.0 {
+                    rl.cells[3] = m_area(zeig(x, Bezug::Flaeche));
                 }
-                rl.cells[4] = m_vol(x.volume);
+                rl.cells[4] = m_vol(zeig(x, Bezug::Volumen));
+                // Rechenweg der Schicht dieses Bauteils (bei zwei Schichten
+                // aus gleichem Baustoff die erste)
+                let erste = t.rows.iter().find(|y| y.element == x.element && same(y));
+                let mut weg = Vec::new();
+                if let Some(y) = erste.filter(|y| {
+                    t.rows
+                        .iter()
+                        .filter(|z| z.element == y.element && same(z))
+                        .count()
+                        == 1
+                }) {
+                    weg_zeilen(m, y, &mut rl, modus, &mut weg);
+                }
                 lines.push(rl);
+                lines.extend(weg);
             }
         }
     }
 }
 
-fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut Vec<GroupRef>) {
+fn storey_lines(
+    m: &Model,
+    st: &StoreyQto,
+    faktor: &Faktoren,
+    lines: &mut Vec<Line>,
+    groups: &mut Vec<GroupRef>,
+) {
+    // Bestellmenge: Volumen und Fläche je Bauteil mit dem Zuschlag seiner
+    // Schichten; in der VOB-Sicht unverändert
+    let fv = |e: ElementId, v: f64| v * faktor.get(&e).map_or(1.0, |f| f.0);
+    let fa = |e: ElementId, a: f64| a * faktor.get(&e).map_or(1.0, |f| f.1);
     let (name, short) = storey_name(m, st.id);
     let skey = storey_key(st.id);
     let mut head = Line::new(Kind::Storey, 0, skey);
@@ -2368,7 +2692,17 @@ fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut V
             gl.cells[0] = group_title(m, g, true);
             gl.cells[1] = number_range(m, g);
             gl.cells[2] = format!("{} · {}", m_len(g.total.length), g.total.count);
-            gl.cells[4] = m_vol(g.total.volume);
+            gl.cells[4] = m_vol(if faktor.is_empty() {
+                g.total.volume
+            } else {
+                g.rows
+                    .iter()
+                    .filter_map(|r| match &r.q {
+                        Some(ElementQto::Wall(w)) => Some(fv(r.element, w.volume)),
+                        _ => None,
+                    })
+                    .sum()
+            });
             lines.push(gl);
             for r in &g.rows {
                 let mut rl = Line::new(Kind::Row, 2, elem_key(r.element));
@@ -2383,7 +2717,7 @@ fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut V
                             m_len(w.list_length),
                             de(w.height / 1e3, 3) + " m"
                         );
-                        rl.cells[4] = m_vol(w.volume);
+                        rl.cells[4] = m_vol(fv(r.element, w.volume));
                         // Gestapelte Wand mit Versatz (OG Phase 2)
                         rl.note = offset_note(m, r.element);
                     }
@@ -2452,44 +2786,44 @@ fn storey_lines(m: &Model, st: &StoreyQto, lines: &mut Vec<Line>, groups: &mut V
                 Some(ElementQto::Footing(f)) => {
                     rl.cells[0] = "Frostschürze".into();
                     rl.cells[2] = m_len(f.length);
-                    rl.cells[4] = m_vol(f.volume);
+                    rl.cells[4] = m_vol(fv(r.element, f.volume));
                 }
                 Some(ElementQto::Slab(p)) => {
                     rl.cells[0] = format!("Sohlplatte {}", cm(p.thickness));
-                    rl.cells[3] = m_area(p.area);
-                    rl.cells[4] = m_vol(p.volume);
+                    rl.cells[3] = m_area(fa(r.element, p.area));
+                    rl.cells[4] = m_vol(fv(r.element, p.volume));
                 }
                 Some(ElementQto::Floor(f)) => {
                     rl.cells[0] = format!("Decke über {short} {}", cm(f.thickness));
-                    rl.cells[3] = m_area(f.area);
-                    rl.cells[4] = m_vol(f.volume);
+                    rl.cells[3] = m_area(fa(r.element, f.area));
+                    rl.cells[4] = m_vol(fv(r.element, f.volume));
                     if f.bearing > 0.0 {
                         control = Some(f.bearing);
                     }
                 }
                 Some(ElementQto::Wall(w)) => {
                     rl.cells[0] = g.category.name().into();
-                    rl.cells[4] = m_vol(w.volume);
+                    rl.cells[4] = m_vol(fv(r.element, w.volume));
                 }
                 Some(ElementQto::Strip(f)) => {
                     rl.cells[0] = format!("Randdämmstreifen {} × {}", cm(f.width), cm(f.height));
                     rl.cells[2] = m_len(f.length);
-                    rl.cells[4] = m_vol(f.volume);
+                    rl.cells[4] = m_vol(fv(r.element, f.volume));
                 }
                 Some(ElementQto::Soffit(f)) => {
                     rl.cells[0] = format!("Untersichtdämmung {}", cm(f.thickness));
-                    rl.cells[3] = m_area(f.area);
-                    rl.cells[4] = m_vol(f.volume);
+                    rl.cells[3] = m_area(fa(r.element, f.area));
+                    rl.cells[4] = m_vol(fv(r.element, f.volume));
                 }
                 Some(ElementQto::Perimeter(f)) => {
                     rl.cells[0] = format!("Perimeterdämmung {}", cm(f.thickness));
-                    rl.cells[3] = m_area(f.area);
-                    rl.cells[4] = m_vol(f.volume);
+                    rl.cells[3] = m_area(fa(r.element, f.area));
+                    rl.cells[4] = m_vol(fv(r.element, f.volume));
                 }
                 Some(ElementQto::Terrace(t)) => {
                     rl.cells[0] = "Dachterrasse".into();
-                    rl.cells[3] = m_area(t.area);
-                    rl.cells[4] = m_vol(t.volume);
+                    rl.cells[3] = m_area(fa(r.element, t.area));
+                    rl.cells[4] = m_vol(fv(r.element, t.volume));
                     parts = vec![("Dämmung", t.insulation_volume), ("Belag", t.finish_volume)];
                 }
                 Some(ElementQto::Coping(c)) => {
@@ -2683,7 +3017,7 @@ fn csv_trades(m: &Model, sched: &Schedule) -> Vec<u8> {
                         } else {
                             vol(r.volume)
                         },
-                        "",
+                        &weg_text(m, r),
                     ]);
                     i += 1;
                     continue;
@@ -2725,6 +3059,15 @@ fn csv_trades(m: &Model, sched: &Schedule) -> Vec<u8> {
                     "",
                 ]);
                 for x in &rows {
+                    // Rechenweg, wenn das Bauteil hier nur eine Schicht hat
+                    let eigene: Vec<&LayerRow> = t.rows[i - n..i]
+                        .iter()
+                        .filter(|y| y.element == x.element)
+                        .collect();
+                    let weg = match eigene.as_slice() {
+                        [y] => weg_text(m, y),
+                        _ => String::new(),
+                    };
                     row([
                         &gb,
                         &trade,
@@ -2739,7 +3082,7 @@ fn csv_trades(m: &Model, sched: &Schedule) -> Vec<u8> {
                             String::new()
                         },
                         &vol(x.volume),
-                        "",
+                        &weg,
                     ]);
                 }
             }

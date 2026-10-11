@@ -332,3 +332,113 @@ fn knopf_und_umschalter_ueberlappen_nie() {
         }
     }
 }
+
+/// Jörn 11.10.: Die Sicht der Mengen (VOB oder Bestellung) wird gemerkt;
+/// `mengen=` steht nur bei der Bestellung.
+#[test]
+fn mengen_sicht_wird_gemerkt() {
+    use crate::cards::Blatt;
+    use crate::windows::{read_modus, write_settings_mengen, Windows};
+    let w = Windows::new(520.0);
+    assert_eq!(
+        write_settings_mengen(&w, Grouping::Storey, Blatt::Mengen, Modus::Vob),
+        ""
+    );
+    let text = write_settings_mengen(&w, Grouping::Storey, Blatt::Mengen, Modus::Bestellung);
+    assert!(text.contains(" mengen=bestellung"), "{text}");
+    assert_eq!(read_modus(&text), Modus::Bestellung);
+    assert_eq!(read_modus(""), Modus::Vob);
+    assert_eq!(read_modus("[mengenfenster] mengen=quer\n"), Modus::Vob);
+}
+
+/// Jörn 11.10.: Unter jeder Schichtzeile nach Gewerk steht der Rechenweg,
+/// zugeklappt; aufgeklappt zeigt er Ansatz, Zu- und Abschläge und die
+/// Menge. Mauerwerk zeigt seine Abrechnungsfläche.
+#[test]
+fn rechenweg_unter_der_zeile() {
+    let mut s = standardhaus();
+    let mut v = ListView::grouped(&mut s, Grouping::Trade);
+    let wege: Vec<Key> = v.lines.iter().filter(|l| l.weg).map(|l| l.key).collect();
+    assert!(!wege.is_empty(), "Zeilen mit Rechenweg");
+    let terme = |v: &ListView, k: Key| -> Vec<usize> {
+        (0..v.lines.len())
+            .filter(|&i| v.lines[i].parent == k)
+            .collect()
+    };
+    for &k in &wege {
+        assert!(!terme(&v, k).is_empty(), "{k:?} ohne Terme");
+        assert!(terme(&v, k).iter().all(|&i| !v.line_visible(&v.lines[i])));
+    }
+    // eine Gruppe und die Zeile darin aufklappen
+    let k = wege[0];
+    let i = v.lines.iter().position(|l| l.key == k).unwrap();
+    let g = v.lines[i].group;
+    if g != Key::None {
+        v.open_groups.insert(g);
+    }
+    assert!(v.line_visible(&v.lines[i]));
+    v.open_groups.insert(k);
+    let t = terme(&v, k);
+    assert!(t.iter().all(|&j| v.line_visible(&v.lines[j])));
+    let texte = v.line_texts();
+    assert!(
+        t.iter().any(|&j| texte[j].contains(" × ")),
+        "Ansatz: {:?}",
+        t.iter().map(|&j| &texte[j]).collect::<Vec<_>>()
+    );
+    // Mauerwerk mit Fläche
+    let mw = texte
+        .iter()
+        .find(|x| x.contains("Mauerwerk") || x.contains("Kalksandstein"))
+        .cloned();
+    if let Some(mw) = mw {
+        assert!(mw.contains(" m²"), "{mw}");
+    }
+    // auch in der Tabelle, Spalte Hinweis
+    let csv = String::from_utf8(csv_grouped(
+        s.model(),
+        &sk_model::qto::schedule(s.model()),
+        Grouping::Trade,
+    ))
+    .unwrap();
+    assert!(
+        csv.contains("− Deckenauflager") && csv.contains("× Höhe 0,580 m"),
+        "{csv}"
+    );
+}
+
+/// Jörn 11.10.: Die Bestellmenge liegt um den Verschnittzuschlag über der
+/// VOB-Menge; der Rechenweg nennt den Zuschlag.
+#[test]
+fn bestellmenge_mit_zuschlag() {
+    let mut s = standardhaus();
+    let mut v = ListView::grouped(&mut s, Grouping::Trade);
+    let vob = v.line_texts();
+    assert!(v.set_modus(Modus::Bestellung));
+    assert!(!v.set_modus(Modus::Bestellung));
+    v.sync(&mut s, false);
+    assert_eq!(v.modus(), Modus::Bestellung);
+    let best = v.line_texts();
+    assert_ne!(vob, best);
+    assert!(best.iter().any(|x| x.contains("Verschnittzuschlag")));
+    assert!(!vob.iter().any(|x| x.contains("Verschnittzuschlag")));
+    // Summe einer Schichtzeile mit Fläche: Bestellung größer als VOB
+    let flaeche = |ls: &[Line]| -> f64 {
+        ls.iter()
+            .filter(|l| l.kind == Kind::Row && l.weg)
+            .filter_map(|l| {
+                l.cells[3]
+                    .trim_end_matches(" m²")
+                    .replace('.', "")
+                    .replace(',', ".")
+                    .parse::<f64>()
+                    .ok()
+            })
+            .sum()
+    };
+    let b = flaeche(&v.lines);
+    v.set_modus(Modus::Vob);
+    v.sync(&mut s, false);
+    let a = flaeche(&v.lines);
+    assert!(a > 0.0 && b > a * 1.03, "VOB {a} Bestellung {b}");
+}

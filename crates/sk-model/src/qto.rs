@@ -44,6 +44,35 @@ pub struct LayerQto {
     /// Fußpunkt aus Schaumglas unter dieser Schicht (W2), mm³; nicht im
     /// Volumen der Schicht, er steht in [`WallQto::facing_foot`].
     pub foot: f64,
+    /// Bestandteile der Mengen für den Rechenweg ([`crate::rechenweg`]).
+    pub parts: LayerParts,
+}
+
+/// Bestandteile, aus denen Volumen, Außen- und Innenfläche einer
+/// Wandschicht entstehen (Rechenweg, vob/plan-rechenweg-bestellmengen.md):
+/// `volume = area·h_here + up_volume + attika − area·h_foot`,
+/// `side_area = outer_len·(h − h_cut − h_foot) + up_side + attika_side`,
+/// `inner_area = inner_len·h_here`. Längen und Höhen in mm.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LayerParts {
+    /// Länge der äußeren und der inneren Schichtkante.
+    pub outer_len: f64,
+    pub inner_len: f64,
+    /// Höhe des Wandzugs.
+    pub h: f64,
+    /// Höhe der Schicht in dieser Wand: ohne Deckenband, ohne den Abschnitt
+    /// in der Lage der Wand darüber, wenn er zu ihr gehört.
+    pub h_here: f64,
+    /// Abschnitt in der Lage der Wand darüber, der zu ihr gehört (am
+    /// vorspringenden Segment), sonst 0.
+    pub h_cut: f64,
+    /// Höhe des Fußpunkts aus Schaumglas.
+    pub h_foot: f64,
+    /// Herabgezogene Abschnitte der Wand darüber (G7 K4): Volumen, Außenfläche.
+    pub up_volume: f64,
+    pub up_side: f64,
+    /// Außenfläche der Attika (D2).
+    pub attika_side: f64,
 }
 
 /// Fußpunkt der Verblendschale auf der Dachterrasse (W2, Tagesplan P1):
@@ -374,6 +403,7 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                             attika: 0.0,
                             inner_area: 0.0,
                             foot: 0.0,
+                            parts: LayerParts::default(),
                         };
                     }
                     let quad = [fa[k], fa[j], fb[j], fb[k]];
@@ -423,6 +453,17 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                         attika: v_att,
                         inner_area: if air { 0.0 } else { li_len * h_here },
                         foot: v_foot,
+                        parts: LayerParts {
+                            outer_len: lo,
+                            inner_len: li_len,
+                            h,
+                            h_here,
+                            h_cut: h_own + h_ext - h_here,
+                            h_foot,
+                            up_volume: v_up,
+                            up_side: s_up,
+                            attika_side: s_att,
+                        },
                     }
                 })
                 .collect();
@@ -1432,7 +1473,7 @@ pub struct LayerRow {
 
 /// Lage einer Wandschicht für die Abrechnungsfläche (Regel 84).
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Face {
+pub(crate) enum Face {
     /// Nettovolumen ÷ Dicke.
     Mean,
     /// Außenfläche der Schicht (`side_area`).
@@ -1444,7 +1485,7 @@ enum Face {
 /// Abrechnungsfläche der Wandschicht `i` (Regel 84): Kern, Mauerwerk,
 /// Kerndämmung und Innenwandschichten nach Volumen ÷ Dicke; WDVS, Verblender
 /// sowie Putz und Bekleidung außen nach Außenfläche, innen nach Innenfläche.
-fn wall_face(model: &Model, layers: &[MaterialLayer], i: usize, interior: bool) -> Face {
+pub(crate) fn wall_face(model: &Model, layers: &[MaterialLayer], i: usize, interior: bool) -> Face {
     let Some(l) = layers.get(i) else {
         return Face::Mean;
     };

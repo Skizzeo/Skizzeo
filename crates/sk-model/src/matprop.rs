@@ -30,6 +30,12 @@ pub const SUBGROUP: &str = "Untergruppe";
 pub const MU: &str = "\u{3bc}";
 pub const EUROCLASS: &str = "Euroklasse";
 pub const MAKER: &str = "Hersteller";
+/// Verschnitt der Bestellmenge in % (Mengenpanel „Bestellung“, vob/plan-
+/// rechenweg-bestellmengen.md); ohne Wert gilt [`waste_default`].
+pub const WASTE: &str = "Verschnittzuschlag";
+/// Öffnungen ab dieser Einzelgröße (m²) von der Bestellmenge abziehen;
+/// ohne Wert werden alle übermessen (Jörn 11.10.).
+pub const OPENING_FROM: &str = "Öffnungen abziehen ab";
 
 const fn prop(key: &'static str, unit: &'static str, kind: MatPropKind, basic: bool) -> MatProp {
     MatProp {
@@ -43,7 +49,7 @@ const fn prop(key: &'static str, unit: &'static str, kind: MatPropKind, basic: b
 /// Feste Kennwerte in Anzeige- und Dateireihenfolge. Die Einheit des
 /// Richtpreises steht am Baustoff ([`PRICE_UNIT`]); λ und Rohdichte sind
 /// Felder des Baustoffs.
-pub const MAT_PROPS: [MatProp; 11] = {
+pub const MAT_PROPS: [MatProp; 13] = {
     use MatPropKind::{Number as N, Text as T};
     [
         prop(PRICE, "", N, true),
@@ -57,6 +63,8 @@ pub const MAT_PROPS: [MatProp; 11] = {
         prop("Produkt", "", T, false),
         prop("Bemerkung", "", T, false),
         prop("Preisquelle", "", T, false),
+        prop(WASTE, "%", N, false),
+        prop(OPENING_FROM, "m\u{b2}", N, false),
     ]
 };
 
@@ -86,6 +94,35 @@ pub fn price_unit(c: MatCategory) -> Option<&'static str> {
         | MatCategory::Timber => Some("m3"),
         MatCategory::Plaster | MatCategory::Metal | MatCategory::Membrane => Some("m2"),
         MatCategory::Air => None,
+    }
+}
+
+/// Verschnitt der Bestellmenge in %, wenn der Baustoff keinen nennt:
+/// Spannen aus Händler-Rechnern, Herstellerangaben und Kalkulationslehre
+/// (vob/plan-rechenweg-bestellmengen.md); keine Norm.
+pub fn waste_default(c: MatCategory) -> f64 {
+    match c {
+        MatCategory::Masonry | MatCategory::Concrete | MatCategory::Insulation => 5.0,
+        MatCategory::Plaster | MatCategory::Timber | MatCategory::Metal => 10.0,
+        MatCategory::Membrane => 15.0,
+        MatCategory::Air => 0.0,
+    }
+}
+
+/// Verschnitt der Bestellmenge in % für diesen Baustoff.
+pub fn waste(m: &crate::library::Material) -> f64 {
+    match m.props.get(WASTE) {
+        Some(PropValue::Number(n)) => *n,
+        _ => waste_default(m.category),
+    }
+}
+
+/// Einzelgröße (mm²), ab der Öffnungen von der Bestellmenge abgezogen
+/// werden; `None`: alle übermessen.
+pub fn opening_from(m: &crate::library::Material) -> Option<f64> {
+    match m.props.get(OPENING_FROM) {
+        Some(PropValue::Number(n)) => Some(n * 1e6),
+        _ => None,
     }
 }
 
@@ -178,6 +215,8 @@ pub fn check_prop(c: MatCategory, key: &str, v: &PropValue) -> Result<(), String
         MU => num >= 1.0,
         "c" => num > 0.0,
         EUROCLASS => valid_euroclass(text),
+        WASTE => (0.0..=100.0).contains(&num),
+        OPENING_FROM => num >= 0.0,
         _ => true,
     };
     if ok {
@@ -189,6 +228,8 @@ pub fn check_prop(c: MatCategory, key: &str, v: &PropValue) -> Result<(), String
         PRICE_DATE => "Preisstand als MM/JJJJ, z. B. 10/2026".into(),
         MU => "\u{3bc} ab 1".into(),
         "c" => "c größer als 0".into(),
+        WASTE => "Verschnittzuschlag von 0 bis 100 %".into(),
+        OPENING_FROM => "Öffnungen ab 0 m²".into(),
         _ => "Euroklasse A1, A2, B, C, D, E oder F, Zusatz wie B-s1,d0".into(),
     })
 }
@@ -341,5 +382,27 @@ mod tests {
     fn mikro_wird_my() {
         assert_eq!(normalize_key("\u{b5}"), MU);
         assert!(mat_prop(&normalize_key(" \u{b5} ")).is_some());
+    }
+
+    /// Bestellmenge: Verschnitt und Öffnungsgrenze am Baustoff, Prüfung und
+    /// Vorgabe nach Art; beide überstehen Schreiben und Lesen.
+    #[test]
+    fn bestellung_kennwerte() {
+        let c = MatCategory::Masonry;
+        assert!(check_prop(c, WASTE, &PropValue::Number(5.0)).is_ok());
+        assert!(check_prop(c, WASTE, &PropValue::Number(101.0)).is_err());
+        assert!(check_prop(c, OPENING_FROM, &PropValue::Number(-1.0)).is_err());
+        assert_eq!(waste_default(MatCategory::Membrane), 15.0);
+        let mut props = PropSet::new();
+        props.insert(WASTE.into(), PropValue::Number(7.5));
+        props.insert(OPENING_FROM.into(), PropValue::Number(2.5));
+        let mut out = String::new();
+        write_lines(&mut out, Guid(7), &props);
+        let mut back = PropSet::new();
+        for (i, l) in out.lines().enumerate() {
+            let r = Record::parse(i + 1, l).unwrap().unwrap();
+            read_line(&r, c, &mut back).unwrap();
+        }
+        assert_eq!(back, props);
     }
 }
