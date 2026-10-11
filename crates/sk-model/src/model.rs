@@ -207,6 +207,10 @@ pub struct Model {
     /// (S11), Ansichtszustand wie `view_shade`, dazu unlesbare Zeilen roh.
     view_below: [bool; 4],
     view_below_raw: Vec<String>,
+    /// Eigene Schnitthöhe des Grundrisses ([`crate::hoehen`]), dazu eine
+    /// unlesbare Zeile roh.
+    pub(crate) plan_cut: Option<f64>,
+    pub(crate) plan_cut_raw: Option<String>,
     /// Schnitte A und B.
     cuts: [Cut; 2],
     /// Zuletzt gezeigter Schnitt (Kennung, A = 0); Ansichtszustand wie `cuts`.
@@ -682,6 +686,8 @@ impl Model {
             view_shade_raw: Vec::new(),
             view_below: [false; 4],
             view_below_raw: Vec::new(),
+            plan_cut: None,
+            plan_cut_raw: None,
             attr,
             materials,
             layer_sets,
@@ -761,6 +767,8 @@ impl Model {
             view_shade_raw: Vec::new(),
             view_below: [false; 4],
             view_below_raw: Vec::new(),
+            plan_cut: None,
+            plan_cut_raw: None,
             attr,
             materials,
             layer_sets,

@@ -47,6 +47,7 @@ mod frame_time;
 mod geschosse_app;
 #[cfg(all(test, target_os = "linux"))]
 mod gpu_probe;
+mod grundriss_schnitt;
 mod help;
 mod hints;
 mod kette_app;
@@ -91,6 +92,7 @@ mod wheel;
 mod wheel_view;
 mod window_kit;
 mod windows;
+mod zahnrad_app;
 
 use camera::Camera;
 use document::Document;
@@ -215,8 +217,10 @@ const OVERLAY_NORD: usize = OVERLAY_MARKS + MARKS;
 const OVERLAY_SONNE: usize = OVERLAY_NORD + 1;
 /// Zahnrad und Feld „Schatten“ der Ansichten (S7).
 const OVERLAY_ANSICHT: usize = OVERLAY_SONNE + 1;
+/// Zahnrad und Feld „Schnitthöhe“ des Grundrisses.
+const OVERLAY_SCHNITT: usize = OVERLAY_ANSICHT + 1;
 /// Name und Fläche der Dachterrassen im Grundriss (wie eine Raumangabe).
-const OVERLAY_ROOMS: usize = OVERLAY_ANSICHT + 1;
+const OVERLAY_ROOMS: usize = OVERLAY_SCHNITT + 1;
 const ROOMS: usize = 4;
 /// Kettensymbole an gestapelten Wänden (OG Phase 2), unter den Paneelen.
 const OVERLAY_CHIPS: usize = OVERLAY_ROOMS + ROOMS;
@@ -801,6 +805,9 @@ struct App {
     /// Bild.
     ansicht_schatten: ansicht_schatten::Schalter,
     schatten_bild: Option<ansicht_schatten::Bild>,
+    /// Schnitthöhe des Grundrisses: Zahnrad und Feld, zuletzt hochgeladenes Bild.
+    plan_schnitt: grundriss_schnitt::Schalter,
+    plan_schnitt_bild: Option<grundriss_schnitt::Bild>,
     /// Ecken des Gebäudes über dem Boden bei eingeschaltetem Sonnenstand:
     /// aus ihnen kommt die Schattenspitze (S6).
     ecken: Vec<Vec3>,
@@ -1513,88 +1520,6 @@ impl App {
         self.redraw = true;
     }
 
-    /// Wahl des Schattens der aktuellen Ansicht (S7) mit ihrem Platz;
-    /// `None` außerhalb der vier Ansichten.
-    fn ansicht_wahl(&self) -> Option<(usize, sk_model::ViewShade)> {
-        let i = ansicht_schatten::platz(self.ui.view)?;
-        Some((
-            i,
-            self.scene
-                .model()
-                .view_shade(i, self.settings.vorgaben.schatten),
-        ))
-    }
-
-    /// Stand der Sonne für die Ansichten (S7).
-    fn ansicht_sonne(&self) -> sk_model::Sun {
-        ansicht_schatten::sonne_der_ansichten(self.scene.model().sun())
-    }
-
-    /// Lage von Zahnrad und Feld in der Ansicht.
-    fn ansicht_lage(&self, sc: f64) -> ansicht_schatten::Lage {
-        let l = self.scene.model().location();
-        let (_, vs) = self
-            .ansicht_wahl()
-            .unwrap_or((0, self.settings.vorgaben.schatten));
-        let tief = vs.light == sk_model::ShadeLight::Sun
-            && ansicht_schatten::sonne_waehlbar(l)
-            && ansicht_schatten::sonne_zu_tief(l, self.ansicht_sonne());
-        let rechts = self.ui.rect(Panel::Views, self.w, self.top()).x;
-        ansicht_schatten::lage(rechts, tief, sc as f32, &self.theme)
-    }
-
-    /// Ereignis an Zahnrad und Feld „Schatten“ (S7, nur in den vier
-    /// Ansichten); `true`, wenn sie es genommen haben.
-    fn ansicht_handle(&mut self, ev: &Event, sc: f64) -> bool {
-        let Some((i, vs)) = self.ansicht_wahl() else {
-            if self.ansicht_schatten.offen || self.ansicht_schatten.hover.is_some() {
-                self.ansicht_schatten.reset();
-                self.redraw = true;
-            }
-            return false;
-        };
-        let lage = self.ansicht_lage(sc);
-        let ok = ansicht_schatten::sonne_waehlbar(self.scene.model().location());
-        let eigen = self.scene.model().view_shade_own(i).is_some();
-        let out = self.ansicht_schatten.handle(ev, &lage, vs, ok, eigen);
-        self.redraw |= out.redraw;
-        let neu = out.wahl.or(out.alle.then_some(vs));
-        if let Some(s) =
-            neu.and_then(|w| ansicht_schatten::festschreiben(self.scene.model().sun(), w))
-        {
-            self.scene.set_sun(s);
-        }
-        if let Some(w) = out.wahl {
-            self.scene
-                .set_view_shade(i, w, self.settings.vorgaben.schatten);
-            self.redraw = true;
-        }
-        if out.vorgabe {
-            let v = self.settings.vorgaben.schatten;
-            self.scene.set_view_shade(i, v, v);
-            self.redraw = true;
-        }
-        if out.alle {
-            let unter = self.scene.model().view_below(i);
-            for k in 0..sk_model::SHADE_VIEWS.len() {
-                self.scene
-                    .set_view_shade(k, vs, self.settings.vorgaben.schatten);
-                self.scene.set_view_below(k, unter);
-            }
-            self.redraw = true;
-        }
-        // Unter Gelände (S11): ausgeblendet passt der Ausschnitt bis zum
-        // Gelände, solange nicht verschoben oder gezoomt wurde
-        if let Some(g) = out.unter {
-            self.scene.set_view_below(i, g);
-            if self.fitted.as_ref() == Some(&self.cam) {
-                self.fit_camera();
-            }
-            self.redraw = true;
-        }
-        out.consumed
-    }
-
     /// Ereignis an Sonne und Leiste (3D, Sonnenstand an); `true`, wenn sie
     /// es genommen haben.
     fn sonne_handle(&mut self, ev: &Event, vw: f64, vh: f64, sc: f64) -> bool {
@@ -1740,6 +1665,7 @@ impl App {
             self.nord.set_aktiv(false);
         }
         self.ansicht_schatten.reset();
+        self.plan_schnitt.reset();
         if !self.tool_allowed() && self.tool.enabled {
             self.tool.set_enabled(false);
             self.ui.building = false;
@@ -4603,6 +4529,7 @@ impl App {
                 } else {
                     ev
                 };
+                let outside = self.zahnrad_handle(&sonne_ev, sc) || outside;
                 let outside = self.sonne_handle(&sonne_ev, vw, vh, sc) || outside;
                 let nord_ev = if outside || chip.is_some() {
                     Event::MouseLeave
@@ -4738,7 +4665,7 @@ impl App {
                         let ev = in_view(e);
                         camera_moved |=
                             self.nav.handle(&ev, &mut self.cam, &self.scene, vw, vh, sc);
-                        if self.ansicht_handle(&ev, sc)
+                        if self.zahnrad_handle(&ev, sc)
                             || self.sonne_handle(&ev, vw, vh, sc)
                             || self.nord_handle(&ev, vw, vh, sc)
                         {
@@ -4809,7 +4736,7 @@ impl App {
                 }
                 let ev = in_view(e);
                 camera_moved |= self.nav.handle(&ev, &mut self.cam, &self.scene, vw, vh, sc);
-                if self.ansicht_handle(&ev, sc)
+                if self.zahnrad_handle(&ev, sc)
                     || self.sonne_handle(&ev, vw, vh, sc)
                     || self.nord_handle(&ev, vw, vh, sc)
                 {
@@ -4889,15 +4816,13 @@ impl App {
                             .handle(&in_view(e), &mut self.cam, &self.scene, vw, vh, sc);
                 }
             }
-            // Esc schließt das Feld „Schatten“ der Ansicht (S7)
+            // Esc schließt die Felder der Zahnräder, die Schnitthöhe nimmt Tasten
             Event::Key {
-                key: Key::Escape,
+                key,
                 down: true,
+                mods,
                 ..
-            } if self.ansicht_schatten.offen => {
-                self.ansicht_schatten.offen = false;
-                self.redraw = true;
-            }
+            } if self.zahnrad_will(key) => self.zahnrad_key(key, mods),
             // Ein Feld der Sonnenstands-Leiste in Eingabe nimmt jede Taste (S4)
             Event::Key {
                 key, down, mods, ..
@@ -6394,22 +6319,9 @@ impl App {
         if self.renderer.shadow_failed() && (self.sonne.hover.is_some() || self.sonne.ueber_sonne) {
             return Some(SCHATTEN_FEHLT.into());
         }
-        // Zahnrad „Schatten“ der Ansicht (S7)
-        match self.ansicht_schatten.unter {
-            Some(ansicht_schatten::Teil::Zahnrad) => {
-                let t = if self.renderer.shadow_failed() {
-                    SCHATTEN_FEHLT
-                } else {
-                    ansicht_schatten::TIP
-                };
-                return Some(t.into());
-            }
-            Some(ansicht_schatten::Teil::Licht(sk_model::ShadeLight::Sun))
-                if !ansicht_schatten::sonne_waehlbar(self.scene.model().location()) =>
-            {
-                return Some(ansicht_schatten::OHNE_NORD.into());
-            }
-            _ => {}
+        // Zahnräder der Ansicht: Schatten (S7) und Schnitthöhe
+        if let Some(t) = self.zahnrad_tip() {
+            return Some(t);
         }
         if let Some(t) = self.button_tip() {
             return Some(t);
@@ -8026,6 +7938,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         terrain_gaps: Vec::new(),
         ansicht_schatten: Default::default(),
         schatten_bild: None,
+        plan_schnitt: Default::default(),
+        plan_schnitt_bild: None,
         griff_cache: None,
         ecken_stand: 0,
         nord_fuehrung: Default::default(),
@@ -8508,7 +8422,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 sk_platform::Cursor::Hand
             }
             (None, None) if a.sonne.hover.is_some() => sk_platform::Cursor::Hand,
-            (None, None) if a.ansicht_schatten.hover.is_some() => sk_platform::Cursor::Hand,
+            (None, None) if a.zahnrad_hover() => sk_platform::Cursor::Hand,
             (None, None) => a.ui.cursor(),
         };
         surface.set_cursor(cursor);
@@ -8879,32 +8793,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             a.renderer.set_terrain_boxes(&terrain_boxes(
                 &a.scene.model().terrain_patches(TERRAIN_MARGIN),
             ));
-            let bild = wahl.map(|(i, vs)| ansicht_schatten::Bild {
-                vs,
-                gestrichelt: a.scene.model().view_below(i),
-                eigen: a.scene.model().view_shade_own(i).is_some(),
-                offen: a.ansicht_schatten.offen,
-                hover: a.ansicht_schatten.hover,
-                sonne_ok: ansicht_schatten::sonne_waehlbar(loc),
-                zu_tief: vs.light == sk_model::ShadeLight::Sun
-                    && ansicht_schatten::sonne_waehlbar(loc)
-                    && ansicht_schatten::sonne_zu_tief(loc, a.ansicht_sonne()),
-                rechts: a.ui.rect(Panel::Views, a.w, th).x.to_bits(),
-                scale: scale.to_bits(),
-            });
-            if bild != a.schatten_bild {
-                match &bild {
-                    Some(b) => {
-                        let (c, x, y) = ansicht_schatten::malen(b, &a.ui.fonts, &a.theme);
-                        let px = c.to_premul_rgba8();
-                        let (w, h) = (c.width as u32, c.height as u32);
-                        a.renderer
-                            .set_overlay(OVERLAY_ANSICHT, x, y + th as i32, w, h, &px);
-                    }
-                    None => a.renderer.set_overlay(OVERLAY_ANSICHT, 0, 0, 0, 0, &[]),
-                }
-                a.schatten_bild = bild;
-            }
+            a.zahnrad_bilder(th, scale);
 
             // „Dachterrasse 13,22 m²“ auf der Terrasse, gedimmt wie eine
             // Raumangabe, nach der Platzregel (Review 3f K1): nie über Wand,

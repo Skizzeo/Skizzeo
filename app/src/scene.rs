@@ -32,8 +32,9 @@ mod gefaelle;
 /// Anzeigename der Gründung als Ebene (Paneel „Geschosse“, Geschossbogen).
 pub const FOUNDATION_NAME: &str = "Fundament";
 
-/// Schnitthöhe des Grundrisses über der Unterkante des aktiven Geschosses (mm).
-pub const PLAN_CUT: f64 = 1000.0;
+/// Vorgabe der Schnitthöhe des Grundrisses über OK Rohdecke (mm); das
+/// Projekt kann eine eigene haben ([`sk_model::hoehen`]).
+pub const PLAN_CUT: f64 = sk_model::PLAN_CUT;
 
 type Aabb = (Vec3, Vec3);
 /// Schnittebene: Punkt und Normale zum Betrachter.
@@ -1336,6 +1337,12 @@ impl Scene {
         self.model.set_view_shade(i, v, vorgabe);
     }
 
+    /// Schnitthöhe des Grundrisses über OK Rohdecke (mm), Ansichtszustand
+    /// ohne Schritt; die Grundrisse schneiden beim nächsten Netz neu.
+    pub fn set_plan_cut_height(&mut self, h: f64) {
+        self.model.set_plan_cut_height(h);
+    }
+
     /// Ansicht `i`: unter dem Gelände gestrichelt oder ausgeblendet (S11),
     /// Ansichtszustand ohne Schritt.
     pub fn set_view_below(&mut self, i: usize, gestrichelt: bool) {
@@ -1359,8 +1366,9 @@ impl Scene {
             })
     }
 
-    /// Schnitthöhe des Grundrisses: Unterkante des aktiven Geschosses + 1 m,
-    /// im Fundament die Mitte der Frostschürze (E18).
+    /// Schnitthöhe des Grundrisses: OK Rohdecke des aktiven Geschosses plus
+    /// die Schnitthöhe des Projekts (Vorgabe 1,50 m), im Fundament die Mitte
+    /// der Frostschürze (E18).
     pub fn plan_cut(&self) -> f64 {
         self.plan_cut_of(self.active_storey())
     }
@@ -1384,7 +1392,7 @@ impl Scene {
             sk_model::LevelRef {
                 storey: id,
                 edge: sk_model::LevelEdge::Bottom,
-                offset: PLAN_CUT,
+                offset: self.cut_offset(st),
             }
         };
         self.model.level_z(at).unwrap_or(PLAN_CUT)
@@ -3345,7 +3353,14 @@ impl Scene {
         let floor = self.model.storey(active).map_or(0.0, |st| st.elevation);
         let st = self.model.storey(self.model.run(run)?.storey)?;
         let below = st.kind != sk_model::LevelKind::Foundation && (st.top() - floor).abs() < 1e-6;
-        below.then_some(st.elevation + PLAN_CUT)
+        below.then_some(st.elevation + self.cut_offset(st))
+    }
+
+    /// Schnitthöhe des Projekts über der Unterkante von `st`, im niedrigen
+    /// Geschoss knapp unter seiner Oberkante.
+    fn cut_offset(&self, st: &sk_model::Storey) -> f64 {
+        let h = self.model.plan_cut_height();
+        h.min(st.height - sk_model::PLAN_CUT_TOP_GAP).max(0.0)
     }
 
     /// Wie der Zug zum Geschoss `active` liegt (Grundriss).
