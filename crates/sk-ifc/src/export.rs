@@ -46,8 +46,8 @@ pub struct Bericht {
     pub gebaeude: usize,
     pub geschosse: usize,
     pub bauteile: usize,
-    /// Bauteile, die nicht geschrieben wurden (ohne Form oder ohne
-    /// Geschoss im Gebäude), mit Nummer.
+    /// Bauteile, die nicht geschrieben wurden (ohne Form, ohne Geschoss im
+    /// Gebäude oder Öffnung ohne gelochtes Bauteil), mit Nummer.
     pub ausgelassen: Vec<String>,
 }
 
@@ -142,6 +142,9 @@ struct Ctx<'a> {
     kg_nutzer: BTreeMap<u16, Vec<u32>>,
     /// Geschoss → Bauteile.
     inhalt: BTreeMap<u32, Vec<u32>>,
+    /// Räume je Geschoss: hängen über `IfcRelAggregates` am Geschoss, nicht
+    /// in `IfcRelContainedInSpatialStructure` (IFC4 WR31).
+    raeume: BTreeMap<u32, Vec<u32>>,
     projekt: Guid,
 }
 
@@ -163,6 +166,7 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
         stoff_nutzer: BTreeMap::new(),
         kg_nutzer: BTreeMap::new(),
         inhalt: BTreeMap::new(),
+        raeume: BTreeMap::new(),
         projekt: p.guid,
     };
     let mut bericht = Bericht::default();
@@ -300,13 +304,24 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
             bericht.ausgelassen.push(el.number.clone());
             continue;
         };
+        let klasse = c.zuordnung(id).klasse.name;
+        // Öffnungen brauchen das Bauteil, das sie lochen (IfcRelVoidsElement,
+        // ifc/plan.md §5 I5); bis dahin nicht in der Datei
+        if klasse == "IfcOpeningElement" {
+            bericht.ausgelassen.push(el.number.clone());
+            continue;
+        }
         let netze = geometrie::netze(solid, vec3(0.0, 0.0, elev));
         if netze.is_empty() {
             bericht.ausgelassen.push(el.number.clone());
             continue;
         }
         let pi = c.element(id, s_pl, elev, &netze);
-        c.inhalt.entry(si).or_default().push(pi);
+        if klasse == "IfcSpace" {
+            c.raeume.entry(si).or_default().push(pi);
+        } else {
+            c.inhalt.entry(si).or_default().push(pi);
+        }
         bericht.bauteile += 1;
     }
 
@@ -316,8 +331,11 @@ pub fn export(m: &Model, opt: &Optionen) -> (String, Bericht) {
     let mut geschosse = geschosse;
     geschosse.sort_by_key(|(_, v)| v.0);
     for (sid, (si, _, _)) in geschosse {
+        let g = m.storey(sid).map_or(p.guid, |s| s.guid);
+        if let Some(raeume) = c.raeume.get(&si).cloned() {
+            c.aggregate(abgeleitet(g, "aggregates.spaces"), si, &raeume);
+        }
         if let Some(els) = c.inhalt.get(&si).cloned() {
-            let g = m.storey(sid).map_or(p.guid, |s| s.guid);
             c.w.add(
                 "IFCRELCONTAINEDINSPATIALSTRUCTURE",
                 vec![
@@ -718,6 +736,18 @@ impl Ctx<'_> {
         set
     }
 
+    /// IFC-Klasse und Art eines Bauteils aus der Bauteil-Liste bzw. dem
+    /// `.szb` der Erweiterung.
+    fn zuordnung(&self, id: ElementId) -> Zuordnung {
+        let m = self.m;
+        let el = m.element(id).expect("Bauteil aus der Liste des Modells");
+        let ext = match &el.kind {
+            ElementKind::Ext(_) => m.ext_def_of(id),
+            _ => None,
+        };
+        klassen::zuordnen(ext.map_or(el.category.ifc_class(), |d| d.ifc()))
+    }
+
     fn element(&mut self, id: ElementId, s_pl: u32, elev: f64, netze: &[Netz]) -> u32 {
         let m = self.m;
         let el = m.element(id).expect("Bauteil aus der Liste des Modells");
@@ -725,8 +755,7 @@ impl Ctx<'_> {
             ElementKind::Ext(_) => m.ext_def_of(id),
             _ => None,
         };
-        let ifc = ext.map_or(el.category.ifc_class(), |d| d.ifc());
-        let z: Zuordnung = klassen::zuordnen(ifc);
+        let z: Zuordnung = self.zuordnung(id);
         let k: &Klasse = z.klasse;
         let art = ext.map_or(el.category.name(), |d| d.name()).to_string();
         let layer_set: Option<(LayerSetId, &library::LayerSet)> =
@@ -821,23 +850,29 @@ impl Ctx<'_> {
                     Some(&t) => t,
                     None => {
                         let tg = abgeleitet(ls.guid, k.type_class);
-                        let t = self.w.add(
-                            &k.type_class.to_ascii_uppercase(),
-                            vec![
-                                gid(tg),
-                                r(self.oh),
-                                s(&ls.name),
-                                V::Null,
-                                V::Null,
-                                V::Null,
-                                V::Null,
-                                opt(&ls.code),
-                                opt(&ls.code),
-                                e("NOTDEFINED"),
-                            ],
-                        );
+                        let mut targs = vec![
+                            gid(tg),
+                            r(self.oh),
+                            s(&ls.name),
+                            V::Null,
+                            V::Null,
+                            V::Null,
+                            V::Null,
+                            opt(&ls.code),
+                            opt(&ls.code),
+                        ];
+                        // IfcFurnitureType hat vor der Art noch AssemblyPlace
+                        if k.type_class == "IfcFurnitureType" {
+                            targs.push(e("NOTDEFINED"));
+                        }
+                        targs.push(e("NOTDEFINED"));
+                        let t = self.w.add(&k.type_class.to_ascii_uppercase(), targs);
                         let tg_rel = abgeleitet(tg, "material");
-                        self.stoff_nutzer.insert(set, (tg_rel, vec![t]));
+                        self.stoff_nutzer
+                            .entry(set)
+                            .or_insert((tg_rel, Vec::new()))
+                            .1
+                            .push(t);
                         self.typen.insert((ls_id.index(), k.type_class), t);
                         t
                     }
@@ -915,7 +950,11 @@ impl Ctx<'_> {
                         vec![s(&art), V::Null, refs(&parts)],
                     );
                     let g = abgeleitet(el.guid, "material");
-                    self.stoff_nutzer.insert(set, (g, vec![pi]));
+                    self.stoff_nutzer
+                        .entry(set)
+                        .or_insert((g, Vec::new()))
+                        .1
+                        .push(pi);
                 }
             }
         }

@@ -3425,6 +3425,7 @@ fn befehl(c: Option<Command>) -> Option<String> {
         Command::OpenBackup(i) => format!("Sicherung {i}"),
         Command::Help => "Hilfe".into(),
         Command::MeasureFrameTime => "Bildzeit messen".into(),
+        Command::ExportIfc => "IFC exportieren".into(),
     })
 }
 
@@ -3653,6 +3654,7 @@ fn a60_dateimenue_eintraege_und_ausgrauen() {
         ("—", "", false),
         ("Speichern", "Strg+S", true),
         ("Speichern unter …", "Strg+Umschalt+S", true),
+        ("IFC exportieren …", "", true),
         ("—", "", false),
         ("Einstellungen …", "Strg+Komma", true),
         ("Bauteilkatalog …", "", true),
@@ -4195,7 +4197,8 @@ fn a66_einstellungen_aufrufen() {
         .expect("Eintrag");
     assert_eq!(z[i].1, "Strg+Komma");
     assert!(z[i].2, "aktiv");
-    assert_eq!(z[i - 2].0, "Speichern unter …");
+    assert_eq!(z[i - 2].0, "IFC exportieren …");
+    assert_eq!(z[i - 3].0, "Speichern unter …");
     assert_eq!(z[i - 1].0, "—", "eigene Gruppe");
     // K3: „Bauteilkatalog …“ in derselben Gruppe, Paket 5 §1.1:
     // „Baustoffe …“ direkt darunter
