@@ -465,9 +465,10 @@ impl Model {
             (
                 "Notentwässerung".into(),
                 PropValue::Text(
-                    match d.spec.overflow {
-                        Overflow::Pipe => "Notfallrohr",
-                        Overflow::Spout => "Wasserspeier",
+                    match d.notueberlauf() {
+                        Some(Overflow::Pipe) => "Notfallrohr",
+                        Some(Overflow::Spout) => "Wasserspeier",
+                        None => "frei über die Attika",
                     }
                     .into(),
                 ),
@@ -477,7 +478,7 @@ impl Model {
                 PropValue::Bool(d.control.is_some()),
             ),
         ];
-        if d.spec.overflow == Overflow::Pipe {
+        if d.notueberlauf() == Some(Overflow::Pipe) {
             out.push((
                 "Länge Notfallrohr".into(),
                 PropValue::Number(d.overflow_length()),
@@ -1080,5 +1081,50 @@ mod tests {
             }
             assert_eq!(geprueft, 1, "{up}");
         }
+    }
+
+    /// Geometrie an #71: Ist der Dachrand des Flachdachs am Ablauf
+    /// niedriger als die Öffnung des Notüberlaufs, läuft das Notwasser
+    /// frei über die Attika. Dann zählen `roof.overflows`, die
+    /// Eigenschaften und das LV keinen Notüberlauf, und das RF nennt den
+    /// Grund als Hinweis.
+    #[test]
+    fn flachdach_ohne_notueberlauf_bei_niedrigem_dachrand() {
+        let (mut m, da, _) = haus();
+        // Prüfhaus mit 40 cm Dämmung (Grenze des Dachtyps)
+        let t = m.flat_roof_type(da).unwrap();
+        let mut set = m.layer_set(t).unwrap().clone();
+        set.layers[1].thickness = 400.0;
+        schritt(&mut m, |m| m.set_layer_set(t, set));
+        let rf = m.downpipes_of(da);
+        assert_eq!(rf.len(), 4);
+        for &id in &rf {
+            let d = m.downpipe(id).unwrap();
+            assert!(d.overflow.free, "{:?}", d.overflow);
+            assert_eq!(d.notueberlauf(), None);
+            let p = m.downpipe_props(id);
+            assert!(p.iter().all(|(k, _)| k != "Länge Notfallrohr"), "{p:?}");
+            assert!(p.contains(&(
+                "Notentwässerung".into(),
+                PropValue::Text("frei über die Attika".into())
+            )));
+            let w = m.warnings(id);
+            assert!(
+                w.iter().any(|t| t.starts_with("Ablauf: kein Notüberlauf")),
+                "{w:?}"
+            );
+        }
+        let s = crate::qto::schedule(&m);
+        let alle = |k: &str| -> f64 { s.auto.iter().filter(|a| a.key == k).map(|a| a.value).sum() };
+        assert_eq!(alle(crate::roof::DRAINS), 4.0);
+        assert_eq!(alle(crate::roof::OVERFLOWS), 0.0);
+        assert_eq!(alle(crate::fallrohr::OV_BOX), 0.0);
+        assert_eq!(alle(crate::fallrohr::OV_PIPE), 0.0);
+        assert_eq!(alle(crate::fallrohr::SPOUT), 0.0);
+        // am Flachdach steht der Hinweis zur Anschlusshöhe schon
+        assert!(m
+            .warnings(da)
+            .iter()
+            .any(|t| t.starts_with("Anschlusshöhe")));
     }
 }

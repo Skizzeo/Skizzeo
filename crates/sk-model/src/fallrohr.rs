@@ -350,6 +350,30 @@ impl Downpipe {
         (!self.overflow.free).then_some(self.spec.overflow)
     }
 
+    /// Hinweise, wo der Dachrand für einen eigenen Notüberlauf zu niedrig
+    /// ist (am Ablauf und am Terrassenablauf, Geometrie an #71).
+    pub fn free_hints(&self) -> Vec<String> {
+        let hoehe = |d: &Downpipe| d.overflow.sill - (d.outlet + OUTLET_DROP);
+        let text = |h: f64| {
+            format!(
+                "kein Notüberlauf: Dachrand am Ablauf nur {} cm über der Dachhaut, das Notwasser läuft frei über die Attika",
+                crate::library::cm_de(h.max(0.0))
+            )
+        };
+        let mut out = Vec::new();
+        if self.overflow.free {
+            out.push(format!("Ablauf: {}", text(hoehe(self))));
+        }
+        if let Some(t) = self.terrace.as_deref().filter(|t| t.pipe.overflow.free) {
+            out.push(format!(
+                "Terrassenablauf an {}: {}",
+                t.number,
+                text(hoehe(&t.pipe))
+            ));
+        }
+        out
+    }
+
     /// Rohrschellen an Fallrohr und Notfallrohr (Stück).
     pub fn clamp_count(&self) -> usize {
         self.clamps.len() + self.overflow.clamps.len()
