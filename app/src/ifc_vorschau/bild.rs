@@ -14,7 +14,7 @@ pub fn passend(lo: Vec3, hi: Vec3) -> Camera {
 }
 
 /// Projektion mit denselben Matrizen wie [`Camera::view`], in Koordinaten
-/// relativ zum Auge.
+/// relativ zum Auge, für ein Bild `w` × `h`.
 struct Proj {
     vp: Mat4,
     auge: Vec3,
@@ -22,6 +22,8 @@ struct Proj {
     rechts: Vec3,
     oben: Vec3,
     near: f64,
+    w: f64,
+    h: f64,
 }
 
 fn proj(k: &Camera, w: f64, h: f64) -> Proj {
@@ -39,23 +41,91 @@ fn proj(k: &Camera, w: f64, h: f64) -> Proj {
         rechts,
         oben,
         near: k.near(),
+        w,
+        h,
     }
 }
 
-/// Bildpunkt (x nach rechts, y nach unten) und Tiefe entlang der
-/// Blickrichtung; `None` vor der Nahebene.
-fn projekt(b: &Proj, p: Vec3, w: f64, h: f64) -> Option<(f64, f64, f64)> {
-    let r = p - b.auge;
-    let z = r.dot(b.vor);
-    if z <= b.near {
-        return None;
+/// Punkt relativ zum Auge und seine Tiefe entlang der Blickrichtung.
+#[derive(Clone, Copy, Debug, Default)]
+struct Ecke {
+    r: Vec3,
+    z: f64,
+}
+
+impl Proj {
+    fn ecke(&self, p: Vec3) -> Ecke {
+        let r = p - self.auge;
+        Ecke {
+            r,
+            z: r.dot(self.vor),
+        }
     }
-    let c = b.vp.mul_vec4([r.x, r.y, r.z, 1.0]);
-    Some((
-        (c[0] / c[3] * 0.5 + 0.5) * w,
-        (0.5 - c[1] / c[3] * 0.5) * h,
-        z,
-    ))
+
+    /// Bildpunkt (x nach rechts, y nach unten) und Kehrwert der Tiefe; nur
+    /// für Ecken vor der Nahebene.
+    fn bildpunkt(&self, e: Ecke) -> (f64, f64, f64) {
+        let c = self.vp.mul_vec4([e.r.x, e.r.y, e.r.z, 1.0]);
+        (
+            (c[0] / c[3] * 0.5 + 0.5) * self.w,
+            (0.5 - c[1] / c[3] * 0.5) * self.h,
+            1.0 / e.z,
+        )
+    }
+
+    /// Ebene, an der geschnitten wird: knapp hinter der Nahebene.
+    fn schnitt(&self) -> f64 {
+        self.near * 1.0001
+    }
+}
+
+/// Bildpunkt und Tiefe; `None` vor der Nahebene.
+#[cfg(test)]
+fn projekt(b: &Proj, p: Vec3) -> Option<(f64, f64, f64)> {
+    let e = b.ecke(p);
+    (e.z > b.near).then(|| {
+        let (x, y, _) = b.bildpunkt(e);
+        (x, y, e.z)
+    })
+}
+
+/// Schneidet ein Dreieck an der Ebene `z = near` (Sutherland–Hodgman):
+/// bis zu vier Ecken vor ihr, ihre Zahl als Ergebnis.
+fn schneiden(e: [Ecke; 3], near: f64, out: &mut [Ecke; 4]) -> usize {
+    let mut n = 0;
+    for i in 0..3 {
+        let (a, b) = (e[i], e[(i + 1) % 3]);
+        if a.z >= near {
+            out[n] = a;
+            n += 1;
+        }
+        if (a.z >= near) != (b.z >= near) {
+            let t = (near - a.z) / (b.z - a.z);
+            out[n] = Ecke {
+                r: a.r + (b.r - a.r) * t,
+                z: near,
+            };
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Strecke vor der Nahebene, `None`, wenn sie ganz dahinter liegt.
+fn strecke(a: Ecke, b: Ecke, near: f64) -> Option<(Ecke, Ecke)> {
+    let schnitt = |a: Ecke, b: Ecke| {
+        let t = (near - a.z) / (b.z - a.z);
+        Ecke {
+            r: a.r + (b.r - a.r) * t,
+            z: near,
+        }
+    };
+    match (a.z >= near, b.z >= near) {
+        (true, true) => Some((a, b)),
+        (true, false) => Some((a, schnitt(a, b))),
+        (false, true) => Some((schnitt(b, a), b)),
+        (false, false) => None,
+    }
 }
 
 /// Was gezeichnet wird.
@@ -71,6 +141,7 @@ pub struct Szene<'a> {
 
 /// Fertiges Bild: RGBA (nicht vormultipliziert, deckend) und je Bildpunkt
 /// das Teil (`u32::MAX` = nichts).
+#[derive(Default)]
 pub struct Bild {
     pub w: usize,
     pub h: usize,
@@ -168,115 +239,170 @@ pub fn kanten(t: &Teil) -> Vec<(Vec3, Vec3)> {
 
 /// Zeichnet die Szene in `w` × `h` Bildpunkte, `ss` × `ss` Proben je
 /// Bildpunkt (2 ruhend, 1 beim Ziehen).
+#[cfg(test)]
 pub fn zeichnen(
     s: &Szene,
     kanten: &[Vec<(Vec3, Vec3)>],
     k: &Camera,
-    (w, h): (usize, usize),
+    groesse: (usize, usize),
     ss: usize,
 ) -> Bild {
-    let ss = ss.max(1);
-    let (bw, bh) = (w * ss, h * ss);
-    let b = proj(k, bw as f64, bh as f64);
-    let mut farbe = vec![s.hinter; bw * bh];
-    let mut tiefe = vec![f64::INFINITY; bw * bh];
-    let mut teil = vec![u32::MAX; bw * bh];
-    let misch = |c: [f32; 3], m: [u8; 3], a: f32| -> [f32; 3] {
-        [0, 1, 2].map(|i| c[i] * (1.0 - a) + m[i] as f32 / 255.0 * a)
-    };
-    for (ti, t) in s.teile.iter().enumerate() {
-        if !s.sichtbar.get(ti).copied().unwrap_or(true) {
-            continue;
-        }
-        let gew = s.gewaehlt == Some(ti);
-        for n in &t.netze {
-            let p: Vec<Option<(f64, f64, f64)>> = n
-                .punkte
-                .iter()
-                .map(|&q| projekt(&b, q, bw as f64, bh as f64))
-                .collect();
-            for tri in &n.dreiecke {
-                let [ia, ib, ic] = tri.map(|i| i as usize);
-                let (Some(a), Some(bb), Some(c)) = (p[ia], p[ib], p[ic]) else {
-                    continue;
-                };
-                let [wa, wb, wc] = [ia, ib, ic].map(|i| n.punkte[i]);
-                let nrm = (wb - wa).cross(wc - wa);
-                if nrm.length() < 1e-9 {
-                    continue;
-                }
-                let i = hell(nrm.normalized(), &b) as f32;
+    let mut z = Zeichner::default();
+    z.zeichnen(s, kanten, k, groesse, ss);
+    z.bild
+}
+
+/// Zeichnet Bild um Bild in dieselben Puffer (beim Drehen kein Anlegen je
+/// Bild).
+#[derive(Default)]
+pub struct Zeichner {
+    farbe: Vec<[u8; 3]>,
+    /// Kehrwert der Tiefe je Probe, 0 = nichts.
+    kehr: Vec<f64>,
+    teil: Vec<u32>,
+    ecken: Vec<Ecke>,
+    pub bild: Bild,
+}
+
+fn leeren<T: Clone>(v: &mut Vec<T>, n: usize, x: T) {
+    v.clear();
+    v.resize(n, x);
+}
+
+impl Zeichner {
+    /// Wie [`zeichnen`], das Ergebnis in [`Zeichner::bild`].
+    pub fn zeichnen(
+        &mut self,
+        s: &Szene,
+        kanten: &[Vec<(Vec3, Vec3)>],
+        k: &Camera,
+        (w, h): (usize, usize),
+        ss: usize,
+    ) -> &Bild {
+        let ss = ss.max(1);
+        let (bw, bh) = (w * ss, h * ss);
+        let b = proj(k, bw as f64, bh as f64);
+        let near = b.schnitt();
+        let Zeichner {
+            farbe,
+            kehr,
+            teil,
+            ecken,
+            bild,
+        } = self;
+        leeren(farbe, bw * bh, s.hinter);
+        leeren(kehr, bw * bh, 0.0);
+        leeren(teil, bw * bh, u32::MAX);
+        let misch = |c: [f32; 3], m: [u8; 3], a: f32| -> [f32; 3] {
+            [0, 1, 2].map(|i| c[i] * (1.0 - a) + m[i] as f32 / 255.0 * a)
+        };
+        for (ti, t) in s.teile.iter().enumerate() {
+            if !s.sichtbar.get(ti).copied().unwrap_or(true) {
+                continue;
+            }
+            let gew = s.gewaehlt == Some(ti);
+            for n in &t.netze {
+                ecken.clear();
+                ecken.extend(n.punkte.iter().map(|&q| b.ecke(q)));
                 let c0 = if gew {
                     misch(n.farbe, s.wahl, 0.55)
                 } else {
                     n.farbe
                 };
-                let rgb = c0.map(|v| ((v * i).clamp(0.0, 1.0) * 255.0) as u8);
-                dreieck(a, bb, c, (bw, bh), |idx, z| {
-                    if z < tiefe[idx] {
-                        tiefe[idx] = z;
-                        farbe[idx] = rgb;
-                        teil[idx] = ti as u32;
+                for tri in &n.dreiecke {
+                    let e = tri.map(|i| ecken[i as usize]);
+                    if e.iter().all(|e| e.z < near) {
+                        continue;
+                    }
+                    let nrm = (e[1].r - e[0].r).cross(e[2].r - e[0].r);
+                    if nrm.length() < 1e-9 {
+                        continue;
+                    }
+                    let i = hell(nrm.normalized(), &b) as f32;
+                    let rgb = c0.map(|v| ((v * i).clamp(0.0, 1.0) * 255.0) as u8);
+                    let mut set = |idx: usize, iz: f64| {
+                        if iz > kehr[idx] {
+                            kehr[idx] = iz;
+                            farbe[idx] = rgb;
+                            teil[idx] = ti as u32;
+                        }
+                    };
+                    if e.iter().all(|e| e.z >= near) {
+                        let [p, q, r] = e.map(|e| b.bildpunkt(e));
+                        dreieck(p, q, r, (bw, bh), &mut set);
+                    } else {
+                        // An der Nahebene geschnitten: Fächer aus der Vieleck
+                        let mut o = [Ecke::default(); 4];
+                        let m = schneiden(e, near, &mut o);
+                        let p = o.map(|e| b.bildpunkt(e));
+                        for j in 1..m.saturating_sub(1) {
+                            dreieck(p[0], p[j], p[j + 1], (bw, bh), &mut set);
+                        }
+                    }
+                }
+            }
+        }
+        // Kanten mit Tiefentest, etwas vor den Flächen
+        for (ti, ks) in kanten.iter().enumerate() {
+            if !s.sichtbar.get(ti).copied().unwrap_or(true) {
+                continue;
+            }
+            for &(p, q) in ks {
+                let Some((a, c)) = strecke(b.ecke(p), b.ecke(q), near) else {
+                    continue;
+                };
+                linie(b.bildpunkt(a), b.bildpunkt(c), (bw, bh), |idx, iz| {
+                    let zb = kehr[idx];
+                    if zb == 0.0 || 1.0 / iz <= 1.002 / zb + 2.0 {
+                        farbe[idx] = s.kante;
                     }
                 });
             }
         }
-    }
-    // Kanten mit Tiefentest, etwas vor den Flächen
-    for (ti, ks) in kanten.iter().enumerate() {
-        if !s.sichtbar.get(ti).copied().unwrap_or(true) {
-            continue;
+        // Mitteln auf die Zielgröße
+        (bild.w, bild.h) = (w, h);
+        leeren(&mut bild.rgba, w * h * 4, 255);
+        leeren(&mut bild.teil, w * h, u32::MAX);
+        leeren(&mut bild.tiefe, w * h, f64::INFINITY);
+        let tiefe = |iz: f64| if iz > 0.0 { 1.0 / iz } else { f64::INFINITY };
+        if ss == 1 {
+            for (i, c) in farbe.iter().enumerate() {
+                bild.rgba[i * 4..i * 4 + 3].copy_from_slice(c);
+            }
+            bild.teil.copy_from_slice(teil);
+            for (d, &iz) in bild.tiefe.iter_mut().zip(kehr.iter()) {
+                *d = tiefe(iz);
+            }
+            return bild;
         }
-        for &(p, q) in ks {
-            let (Some(a), Some(c)) = (
-                projekt(&b, p, bw as f64, bh as f64),
-                projekt(&b, q, bw as f64, bh as f64),
-            ) else {
-                continue;
-            };
-            linie(a, c, (bw, bh), |idx, z| {
-                if z <= tiefe[idx] * 1.002 + 2.0 {
-                    farbe[idx] = s.kante;
-                }
-            });
-        }
-    }
-    // Mitteln auf die Zielgröße
-    let mut rgba = vec![0u8; w * h * 4];
-    let mut ids = vec![u32::MAX; w * h];
-    let mut tiefen = vec![f64::INFINITY; w * h];
-    for y in 0..h {
-        for x in 0..w {
-            let mut sum = [0u32; 3];
-            for dy in 0..ss {
-                for dx in 0..ss {
-                    let c = farbe[(y * ss + dy) * bw + x * ss + dx];
-                    for i in 0..3 {
-                        sum[i] += c[i] as u32;
+        for y in 0..h {
+            for x in 0..w {
+                let mut sum = [0u32; 3];
+                for dy in 0..ss {
+                    for dx in 0..ss {
+                        let c = farbe[(y * ss + dy) * bw + x * ss + dx];
+                        for i in 0..3 {
+                            sum[i] += c[i] as u32;
+                        }
                     }
                 }
+                let o = (y * w + x) * 4;
+                for i in 0..3 {
+                    bild.rgba[o + i] = (sum[i] / (ss * ss) as u32) as u8;
+                }
+                let m = (y * ss + ss / 2) * bw + x * ss + ss / 2;
+                bild.teil[y * w + x] = teil[m];
+                bild.tiefe[y * w + x] = tiefe(kehr[m]);
             }
-            let o = (y * w + x) * 4;
-            for i in 0..3 {
-                rgba[o + i] = (sum[i] / (ss * ss) as u32) as u8;
-            }
-            rgba[o + 3] = 255;
-            let m = (y * ss + ss / 2) * bw + x * ss + ss / 2;
-            ids[y * w + x] = teil[m];
-            tiefen[y * w + x] = tiefe[m];
         }
-    }
-    Bild {
-        w,
-        h,
-        rgba,
-        teil: ids,
-        tiefe: tiefen,
+        bild
     }
 }
 
-/// Füllt ein Dreieck im Bild; `set(index, tiefe)` für jeden getroffenen
-/// Bildpunkt (Mitte), Tiefe perspektivisch richtig über 1/z.
+/// Füllt ein Dreieck im Bild; `set(index, 1/tiefe)` für jeden getroffenen
+/// Bildpunkt (Mitte). Kanten- und Tiefenfunktion sind im Bild linear und
+/// laufen je Zeile schrittweise; je Zeile wird nur die Spanne innerhalb des
+/// Dreiecks besucht.
 fn dreieck(
     a: (f64, f64, f64),
     b: (f64, f64, f64),
@@ -285,31 +411,59 @@ fn dreieck(
     mut set: impl FnMut(usize, f64),
 ) {
     let fl = (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
-    if fl.abs() < 1e-12 {
+    if !(fl.abs() >= 1e-12) {
         return;
     }
-    let x0 = a.0.min(b.0).min(c.0).floor().max(0.0) as usize;
-    let y0 = a.1.min(b.1).min(c.1).floor().max(0.0) as usize;
-    let x1 = (a.0.max(b.0).max(c.0).ceil() as i64).clamp(0, w as i64) as usize;
-    let y1 = (a.1.max(b.1).max(c.1).ceil() as i64).clamp(0, h as i64) as usize;
-    let (ia, ib, ic) = (1.0 / a.2, 1.0 / b.2, 1.0 / c.2);
-    for y in y0..y1 {
+    // Baryzentrische Gewichte w_i = A_i·x + B_i·y + C_i
+    let g0 = [
+        (b.1 - c.1) / fl,
+        (c.0 - b.0) / fl,
+        (b.0 * c.1 - b.1 * c.0) / fl,
+    ];
+    let g1 = [
+        (c.1 - a.1) / fl,
+        (a.0 - c.0) / fl,
+        (c.0 * a.1 - c.1 * a.0) / fl,
+    ];
+    let g2 = [-g0[0] - g1[0], -g0[1] - g1[1], 1.0 - g0[2] - g1[2]];
+    let gz = [0, 1, 2].map(|i| g0[i] * a.2 + g1[i] * b.2 + g2[i] * c.2);
+    let lo_y = a.1.min(b.1).min(c.1);
+    let hi_y = a.1.max(b.1).max(c.1);
+    if !(lo_y.is_finite() && hi_y.is_finite()) || hi_y < 0.0 || lo_y > h as f64 {
+        return;
+    }
+    let y0 = (lo_y - 0.5).ceil().max(0.0) as usize;
+    let y1 = ((hi_y - 0.5).floor() as i64).min(h as i64 - 1);
+    for y in y0 as i64..=y1 {
         let py = y as f64 + 0.5;
-        for x in x0..x1 {
-            let px = x as f64 + 0.5;
-            let w0 = ((b.0 - px) * (c.1 - py) - (b.1 - py) * (c.0 - px)) / fl;
-            let w1 = ((c.0 - px) * (a.1 - py) - (c.1 - py) * (a.0 - px)) / fl;
-            let w2 = 1.0 - w0 - w1;
-            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
-                continue;
+        // Spanne, in der alle drei Gewichte ≥ 0 sind
+        let (mut lo, mut hi) = (0.5f64, w as f64 - 0.5);
+        for g in [&g0, &g1, &g2] {
+            let r = g[1] * py + g[2];
+            if g[0] > 0.0 {
+                lo = lo.max(-r / g[0]);
+            } else if g[0] < 0.0 {
+                hi = hi.min(-r / g[0]);
+            } else if r < 0.0 {
+                hi = -1.0;
             }
-            let z = 1.0 / (w0 * ia + w1 * ib + w2 * ic);
-            set(y * w + x, z);
+        }
+        if !(lo <= hi) {
+            continue;
+        }
+        let x0 = (lo - 0.5).ceil() as usize;
+        let x1 = ((hi - 0.5).floor() as usize).min(w - 1);
+        let zeile = y as usize * w;
+        let mut iz = gz[0] * (x0 as f64 + 0.5) + gz[1] * py + gz[2];
+        for x in x0..=x1 {
+            set(zeile + x, iz);
+            iz += gz[0];
         }
     }
 }
 
-/// Linie mit Tiefe, ein Schritt je Bildpunkt der längeren Richtung.
+/// Linie mit Tiefe, ein Schritt je Bildpunkt der längeren Richtung;
+/// `set(index, 1/tiefe)`.
 fn linie(
     a: (f64, f64, f64),
     b: (f64, f64, f64),
@@ -325,11 +479,10 @@ fn linie(
         let t = i as f64 / n as f64;
         let x = a.0 + (b.0 - a.0) * t;
         let y = a.1 + (b.1 - a.1) * t;
-        if x < 0.0 || y < 0.0 || x >= w as f64 || y >= h as f64 {
+        if !(x >= 0.0 && y >= 0.0 && x < w as f64 && y < h as f64) {
             continue;
         }
-        let z = 1.0 / ((1.0 - t) / a.2 + t / b.2);
-        set(y as usize * w + x as usize, z);
+        set(y as usize * w + x as usize, a.2 + (b.2 - a.2) * t);
     }
 }
 
@@ -405,13 +558,7 @@ pub(crate) mod tests {
         assert!(b.punkt_bei(&k, 2.0, 2.0).is_none());
         // Gleiche Abbildung wie die Ansicht
         let (x, y) = k.project(vec3(0.0, 0.0, 1000.0), 200.0, 150.0).unwrap();
-        let q = projekt(
-            &proj(&k, 200.0, 150.0),
-            vec3(0.0, 0.0, 1000.0),
-            200.0,
-            150.0,
-        )
-        .unwrap();
+        let q = projekt(&proj(&k, 200.0, 150.0), vec3(0.0, 0.0, 1000.0)).unwrap();
         assert!((q.0 - x).abs() < 1e-9 && (q.1 - y).abs() < 1e-9);
         // Von hinten: blau vorn
         let k = Camera::looking_at(vec3(500.0, 9500.0, 500.0), vec3(500.0, 3500.0, 500.0), 45.0);
@@ -421,6 +568,37 @@ pub(crate) mod tests {
             zeichnen(&s, &ks, &k, (200, 150), 1).teil_bei(100.0, 75.0),
             Some(1)
         );
+    }
+
+    /// Review B5 zu #83: Dreiecke, die durch die Nahebene gehen, werden
+    /// geschnitten statt verworfen. Im Würfel stehend sieht man ringsum
+    /// seine Wände, ohne Loch.
+    #[test]
+    fn nahebene_schneidet() {
+        let teile = vec![wuerfel([0.5, 0.5, 0.5], vec3(0.0, 0.0, 0.0))];
+        let s = Szene {
+            teile: &teile,
+            sichtbar: &[true],
+            gewaehlt: None,
+            hinter: [255, 255, 255],
+            kante: [0, 0, 0],
+            wahl: [0, 128, 255],
+        };
+        let k = Camera::looking_at(vec3(500.0, 100.0, 500.0), vec3(500.0, 600.0, 500.0), 45.0);
+        for ss in [1, 2] {
+            let b = zeichnen(&s, &[], &k, (120, 90), ss);
+            assert!(b.teil.iter().all(|&t| t == 0), "Loch im Bild ({ss}×)");
+            assert!(b.tiefe.iter().all(|d| d.is_finite()));
+        }
+        let mut e = [Ecke::default(); 4];
+        let z = |z: f64| Ecke {
+            r: vec3(0.0, z, 0.0),
+            z,
+        };
+        assert_eq!(schneiden([z(-5.0), z(5.0), z(5.0)], 1.0, &mut e), 4);
+        assert_eq!(schneiden([z(-5.0), z(-5.0), z(5.0)], 1.0, &mut e), 3);
+        assert!(strecke(z(-1.0), z(0.5), 1.0).is_none());
+        assert_eq!(strecke(z(-1.0), z(3.0), 1.0).unwrap().0.z, 1.0);
     }
 
     /// Passende Kamera: der ganze Kasten im Bild, die Mitte in der Mitte.

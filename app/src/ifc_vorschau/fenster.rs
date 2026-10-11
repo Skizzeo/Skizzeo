@@ -4,7 +4,7 @@
 //! „Geschosse einzeln“ und „Ganzes Modell“. Alles in Software gezeichnet.
 
 use super::baum::{self, Sicht, Zeile, Ziel};
-use super::bild::{self, Bild, Szene};
+use super::bild::{self, Bild, Szene, Zeichner};
 use super::eigenschaften::{self, Eintrag};
 use crate::camera::Camera;
 use sk_ifc::lesen::Vorschau;
@@ -63,7 +63,8 @@ struct Ziehen {
 }
 
 pub struct IfcFenster {
-    pub open: bool,
+    /// Datei und Projekt, aus denen die Vorschau stammt (setzt die App).
+    pub herkunft: (Option<std::path::PathBuf>, sk_model::Guid),
     pub w: u32,
     pub h: u32,
     pub title: TitleBar,
@@ -75,6 +76,8 @@ pub struct IfcFenster {
     pub gewaehlt: Option<usize>,
     /// Klappzustand des Baums (siehe [`baum::zeilen`]).
     umgeklappt: BTreeSet<String>,
+    /// Zeilen des Baums zum Klappzustand, nur bei dessen Änderung neu.
+    zeilen: Vec<Zeile>,
     /// „Geschosse einzeln“: Klick auf ein Geschoss zeigt nur dieses.
     pub einzeln: bool,
     /// Bildlauf von Baum und Eigenschaften (px).
@@ -83,8 +86,10 @@ pub struct IfcFenster {
     ziehen: Option<Ziehen>,
     /// Knöpfe der Fußzeile, wie zuletzt gezeichnet: (Knopf, x, Breite).
     knopf_lage: Vec<(Knopf, f32, f32)>,
-    /// Zuletzt gezeichnetes 3D-Bild; `None` = neu zeichnen.
-    bild: Option<Bild>,
+    /// Zeichnet das 3D-Bild; seine Puffer bleiben von Bild zu Bild.
+    zeichner: Zeichner,
+    /// Das Bild im Zeichner passt zu Kamera, Wahl und Sichtbarkeit.
+    bild_gilt: bool,
     theme_rev: u64,
     canvas: Canvas,
     shown: Vec<u8>,
@@ -119,8 +124,9 @@ impl IfcFenster {
         };
         let sichtbar = vec![true; v.teile.len()];
         let kanten = v.teile.iter().map(bild::kanten).collect();
+        let umgeklappt = BTreeSet::new();
         IfcFenster {
-            open: false,
+            herkunft: (None, sk_model::Guid(0)),
             w: 0,
             h: 0,
             title,
@@ -129,13 +135,15 @@ impl IfcFenster {
             kanten,
             sichtbar,
             gewaehlt: None,
-            umgeklappt: BTreeSet::new(),
+            zeilen: baum::zeilen(&v, &umgeklappt),
+            umgeklappt,
             einzeln: false,
             baum_y: 0.0,
             eig_y: 0.0,
             ziehen: None,
             knopf_lage: Vec::new(),
-            bild: None,
+            zeichner: Zeichner::default(),
+            bild_gilt: false,
             theme_rev: 0,
             canvas: Canvas::new(0, 0),
             shown: Vec::new(),
@@ -143,14 +151,15 @@ impl IfcFenster {
         }
     }
 
-    /// Neuer Stand derselben Vorschau: Fenstergröße, Kamera und, wenn die
-    /// Bauteile dieselben sind, Sichtbarkeit und Wahl bleiben.
+    /// Neuer Stand derselben Vorschau: Fenstergröße bleibt; Kamera,
+    /// Sichtbarkeit und Wahl nur, wenn die Bauteile dieselben sind (sonst
+    /// ist es ein anderes Haus, und die alte Kamera zeigte womöglich ins
+    /// Leere).
     pub fn uebernehmen(&mut self, alt: &IfcFenster) {
         (self.w, self.h) = (alt.w, alt.h);
         self.title.scale = alt.title.scale;
         self.title.maximized = alt.title.maximized;
         self.title.active = alt.title.active;
-        self.kamera = alt.kamera.clone();
         self.einzeln = alt.einzeln;
         let gleich = self.v.teile.len() == alt.v.teile.len()
             && self
@@ -160,9 +169,11 @@ impl IfcFenster {
                 .zip(&alt.v.teile)
                 .all(|(a, b)| a.guid == b.guid);
         if gleich {
+            self.kamera = alt.kamera.clone();
             self.sichtbar.clone_from(&alt.sichtbar);
             self.gewaehlt = alt.gewaehlt;
             self.umgeklappt.clone_from(&alt.umgeklappt);
+            self.zeilen_neu();
         }
         self.neu();
     }
@@ -208,29 +219,38 @@ impl IfcFenster {
         }
     }
 
-    /// Sichtbarkeit, Wahl oder Kamera geändert: Bild neu.
+    /// Sichtbarkeit, Wahl oder Größe geändert: alles neu.
     fn neu(&mut self) {
-        self.bild = None;
+        self.bild_gilt = false;
         self.dirty = true;
     }
 
-    /// Zuletzt gezeichnetes 3D-Bild.
-    #[cfg(test)]
+    /// Nur die Kamera geändert: nur das 3D-Bild neu (Baum, Eigenschaften
+    /// und Fußzeile bleiben, wie sie gezeigt sind).
+    fn neu_bild(&mut self) {
+        self.bild_gilt = false;
+    }
+
+    /// Zeilen des Baums nach einer Änderung des Klappzustands.
+    fn zeilen_neu(&mut self) {
+        self.zeilen = baum::zeilen(&self.v, &self.umgeklappt);
+    }
+
+    /// Zuletzt gezeichnetes 3D-Bild, solange es gilt.
     pub fn bild(&self) -> Option<&Bild> {
-        self.bild.as_ref()
+        self.bild_gilt.then_some(&self.zeichner.bild)
     }
 
     /// Bauteil unter dem Fensterpunkt im zuletzt gezeichneten Bild.
     pub fn teil_bei(&self, x: f64, y: f64) -> Option<usize> {
         let l = self.lage();
-        self.bild
-            .as_ref()?
+        self.bild()?
             .teil_bei(x - l.baum_r as f64, y - l.oben as f64)
     }
 
     #[cfg(test)]
     pub fn baum_zeilen(&self) -> Vec<Zeile> {
-        self.zeilen()
+        self.zeilen.clone()
     }
 
     #[cfg(test)]
@@ -238,8 +258,9 @@ impl IfcFenster {
         self.eintraege()
     }
 
+    #[cfg(test)]
     fn zeilen(&self) -> Vec<Zeile> {
-        baum::zeilen(&self.v, &self.umgeklappt)
+        self.zeilen.clone()
     }
 
     fn eintraege(&self) -> Vec<Eintrag> {
@@ -258,9 +279,9 @@ impl IfcFenster {
         self.eig_y = 0.0;
         if let Some(t) = t {
             baum::aufdecken(&self.v, t, &mut self.umgeklappt);
+            self.zeilen_neu();
             // Zeile in den sichtbaren Teil des Baums holen
-            let z = self.zeilen();
-            if let Some(i) = z.iter().position(|z| z.ziel == Ziel::Teil(t)) {
+            if let Some(i) = self.zeilen.iter().position(|z| z.ziel == Ziel::Teil(t)) {
                 let l = self.lage();
                 let zh = ZEILE * self.s();
                 let y = RAND * self.s() + i as f32 * zh;
@@ -343,7 +364,7 @@ impl IfcFenster {
                     }
                     Some(Knopf::Ganz) => {
                         self.kamera = passend(&self.v, &self.sichtbar);
-                        self.neu();
+                        self.neu_bild();
                     }
                     None => {}
                 },
@@ -366,7 +387,7 @@ impl IfcFenster {
                 if let Some(z) = self.ziehen.take() {
                     if z.bewegt {
                         // Wieder fein zeichnen
-                        self.neu();
+                        self.neu_bild();
                     } else if z.knopf == button && button == MouseButton::Left {
                         let t = self.teil_bei(x, y);
                         // Nochmal auf dasselbe Teil: abwählen
@@ -380,7 +401,7 @@ impl IfcFenster {
                     Bereich::Bild => {
                         let p = self.griff(x, y);
                         self.kamera.zoom(p, delta);
-                        self.neu();
+                        self.neu_bild();
                     }
                     Bereich::Baum => {
                         self.baum_y -= schritt;
@@ -403,8 +424,7 @@ impl IfcFenster {
         let l = self.lage();
         let (bx, by) = (x - l.baum_r as f64, y - l.oben as f64);
         let (w, h) = ((l.eig_l - l.baum_r) as f64, (l.fuss - l.oben) as f64);
-        self.bild
-            .as_ref()
+        self.bild()
             .and_then(|b| b.punkt_bei(&self.kamera, bx, by))
             .unwrap_or_else(|| {
                 let (o, r) = self.kamera.ray(bx, by, w.max(1.0), h.max(1.0));
@@ -430,7 +450,7 @@ impl IfcFenster {
                 self.kamera.pan(tiefe, dx, dy, h);
             }
         }
-        self.neu();
+        self.neu_bild();
     }
 
     /// Klick in den Baum: Dreieck klappt, Kästchen blendet ein und aus, der
@@ -441,8 +461,10 @@ impl IfcFenster {
         let s = self.s();
         let zh = ZEILE * s;
         let i = ((y as f32 - l.oben - RAND * s + self.baum_y) / zh).floor();
-        let z = self.zeilen();
-        let Some(zeile) = (i >= 0.0).then(|| z.get(i as usize)).flatten() else {
+        let Some(zeile) = (i >= 0.0)
+            .then(|| self.zeilen.get(i as usize).cloned())
+            .flatten()
+        else {
             return;
         };
         let x0 = RAND * s + zeile.tiefe as f32 * EINZUG * s;
@@ -451,6 +473,7 @@ impl IfcFenster {
             if zeile.offen.is_some() && !f.umgeklappt.remove(&zeile.schluessel) {
                 f.umgeklappt.insert(zeile.schluessel.clone());
             }
+            f.zeilen_neu();
             f.dirty = true;
         };
         if x < x0 + 14.0 * s {
@@ -532,30 +555,24 @@ fn eig_hoehe(e: &[Eintrag], s: f32) -> f32 {
 }
 
 impl IfcFenster {
-    /// Fensterbild (vormultipliziert), wenn es neu gezeigt werden muss.
-    pub fn frame(&mut self, t: &Theme, fonts: &Fonts) -> Option<&[u8]> {
+    /// Fensterbild (vormultipliziert), wenn es neu gezeigt werden muss, mit
+    /// den Zeilen, die sich geändert haben (`None` = alle). Beim Drehen
+    /// ändert sich nur das 3D-Bild: dann wird nur es gezeichnet und in das
+    /// gezeigte Bild kopiert (Review B4 zu #83).
+    pub fn frame(&mut self, t: &Theme, fonts: &Fonts) -> Option<(&[u8], Option<(u32, u32)>)> {
         if t.rev != self.theme_rev {
             self.theme_rev = t.rev;
             self.neu();
         }
-        if self.w == 0 || self.h == 0 || !self.dirty {
+        if self.w == 0 || self.h == 0 || (!self.dirty && self.bild_gilt) {
             return None;
         }
-        self.dirty = false;
         let (w, h) = (self.w as usize, self.h as usize);
         let l = self.lage();
-        let s = self.s();
-        let mut c = std::mem::replace(&mut self.canvas, Canvas::new(0, 0));
-        c.reuse(w, h);
-        c.clear(t.ui.bg);
-        // 3D-Bild in der Mitte
         let (bw, bh) = ((l.eig_l - l.baum_r) as usize, (l.fuss - l.oben) as usize);
         if bw > 0 && bh > 0 {
-            let alt = match &self.bild {
-                Some(b) => b.w != bw || b.h != bh,
-                None => true,
-            };
-            if alt {
+            let b = &self.zeichner.bild;
+            if !self.bild_gilt || b.w != bw || b.h != bh {
                 let szene = Szene {
                     teile: &self.v.teile,
                     sichtbar: &self.sichtbar,
@@ -570,22 +587,35 @@ impl IfcFenster {
                 } else {
                     2
                 };
-                self.bild = Some(bild::zeichnen(
-                    &szene,
-                    &self.kanten,
-                    &self.kamera,
-                    (bw, bh),
-                    ss,
-                ));
-            }
-            if let Some(b) = &self.bild {
-                let img = Canvas::from_fn(bw, bh, |x, y| {
-                    let o = (y * bw + x) * 4;
-                    Rgba(b.rgba[o], b.rgba[o + 1], b.rgba[o + 2], 255)
-                });
-                c.blit(&img, l.baum_r as i32, l.oben as i32);
+                self.zeichner
+                    .zeichnen(&szene, &self.kanten, &self.kamera, (bw, bh), ss);
             }
         }
+        self.bild_gilt = true;
+        let zeilen = if self.dirty || self.shown.len() != w * h * 4 {
+            self.dirty = false;
+            self.alles_zeichnen(t, fonts, l);
+            None
+        } else {
+            Some((l.oben as u32, (l.oben as usize + bh).min(h) as u32))
+        };
+        // 3D-Bild deckend: vormultipliziert gleich
+        let b = &self.zeichner.bild;
+        let x0 = l.baum_r as usize;
+        for y in 0..bh.min(b.h).min(h.saturating_sub(l.oben as usize)) {
+            let o = ((l.oben as usize + y) * w + x0) * 4;
+            self.shown[o..o + b.w * 4].copy_from_slice(&b.rgba[y * b.w * 4..][..b.w * 4]);
+        }
+        Some((&self.shown, zeilen))
+    }
+
+    /// Alles außer dem 3D-Bild ins gezeigte Bild.
+    fn alles_zeichnen(&mut self, t: &Theme, fonts: &Fonts, l: Lage) {
+        let (w, h) = (self.w as usize, self.h as usize);
+        let s = self.s();
+        let mut c = std::mem::replace(&mut self.canvas, Canvas::new(0, 0));
+        c.reuse(w, h);
+        c.clear(t.ui.bg);
         let hoch = l.fuss - l.oben;
         if l.baum_r >= 1.0 && hoch >= 1.0 {
             let b = self.baum_bild(t, fonts, l.baum_r as usize, hoch as usize);
@@ -605,16 +635,15 @@ impl IfcFenster {
         c.blit(&bar, 0, 0);
         c.premul_rgba8_into(&mut self.shown);
         self.canvas = c;
-        Some(&self.shown)
     }
 
     fn baum_bild(&mut self, t: &Theme, fonts: &Fonts, w: usize, h: usize) -> Canvas {
         let s = self.s();
         let zh = ZEILE * s;
         let px = t.size.font_small * s;
-        let zeilen = self.zeilen();
-        let inhalt = 2.0 * RAND * s + zeilen.len() as f32 * zh;
+        let inhalt = 2.0 * RAND * s + self.zeilen.len() as f32 * zh;
         self.baum_y = self.baum_y.clamp(0.0, (inhalt - h as f32).max(0.0));
+        let zeilen = &self.zeilen;
         let mut c = Canvas::new(w, h);
         let wf = w as f32;
         for (i, z) in zeilen.iter().enumerate() {
@@ -833,7 +862,7 @@ mod tests {
     /// Fensterpunkt, an dem das Bild das Bauteil `t` zeigt.
     fn punkt_von(f: &IfcFenster, t: usize) -> (f64, f64) {
         let l = f.lage();
-        let b = f.bild.as_ref().expect("Bild gezeichnet");
+        let b = f.bild().expect("Bild gezeichnet");
         let i = b
             .teil
             .iter()
@@ -851,12 +880,14 @@ mod tests {
     fn bild_in_drei_bereichen() {
         let (th, fonts) = (Theme::dark(), Fonts::system());
         let mut f = fenster();
-        let px = f.frame(&th, &fonts).expect("erstes Bild").to_vec();
+        let (px, zeilen) = f.frame(&th, &fonts).expect("erstes Bild");
+        assert_eq!(zeilen, None, "erstes Bild ganz");
+        let px = px.to_vec();
         assert_eq!(px.len(), 1200 * 800 * 4);
         assert!(f.frame(&th, &fonts).is_none());
         let l = f.lage();
         assert_eq!((l.baum_r, l.eig_l), (290.0, 870.0));
-        let b = f.bild.as_ref().unwrap();
+        let b = f.bild().unwrap();
         assert_eq!((b.w, b.h), (580, (l.fuss - l.oben) as usize));
         for t in 0..4 {
             punkt_von(&f, t);
@@ -884,7 +915,7 @@ mod tests {
             Eintrag::Wert("Klasse".into(), "IfcSlab".into())
         );
         assert!(f.zeilen().iter().any(|z| z.ziel == Ziel::Teil(2)));
-        assert!(f.bild.is_none(), "Wahl zeichnet das Bild neu");
+        assert!(f.bild().is_none(), "Wahl zeichnet das Bild neu");
         f.frame(&th, &fonts);
         klick(&mut f, x, y);
         assert_eq!(f.gewaehlt, None);
@@ -969,8 +1000,7 @@ mod tests {
             assert!(f.kamera != k, "Kamera auf das OG");
             f.frame(&th, &fonts);
             assert!(f
-                .bild
-                .as_ref()
+                .bild()
                 .unwrap()
                 .teil
                 .iter()
@@ -996,8 +1026,45 @@ mod tests {
         assert_eq!(f.gewaehlt, Some(2));
         v.teile[0].guid = "anders".into();
         let mut f = IfcFenster::new(v, "haus.ifc");
+        let eigene = f.kamera.clone();
         f.uebernehmen(&alt);
         assert_eq!(f.gewaehlt, None, "andere Bauteile: Wahl verfällt");
+        // Review B6 zu #83: ein anderes Haus bekommt seine eigene Kamera
+        assert_eq!(f.kamera, eigene);
+        assert_eq!((f.w, f.h), (1200, 800));
+    }
+
+    /// Review B4 zu #83: Drehen zeichnet nur das 3D-Bild neu und meldet nur
+    /// dessen Zeilen; Baum und Eigenschaften bleiben, wie sie gezeigt sind.
+    #[test]
+    fn drehen_zeigt_nur_das_bild() {
+        let (th, fonts) = (Theme::dark(), Fonts::system());
+        let mut f = fenster();
+        let vorher = f.frame(&th, &fonts).unwrap().0.to_vec();
+        let l = f.lage();
+        let (x, y) = punkt_von(&f, 1);
+        f.handle(&Event::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            mods: M,
+        });
+        f.handle(&Event::MouseMove {
+            x: x + 60.0,
+            y: y + 10.0,
+            mods: M,
+        });
+        let (px, zeilen) = f.frame(&th, &fonts).expect("neues Bild beim Drehen");
+        let (oben, fuss) = (l.oben as u32, l.fuss as u32);
+        assert_eq!(zeilen, Some((oben, fuss)));
+        let baum = (l.baum_r as usize - 2) * 4;
+        let px = px.to_vec();
+        for y in 0..800 {
+            let z = y * 1200 * 4;
+            assert_eq!(vorher[z..z + baum], px[z..z + baum], "Baum in Zeile {y}");
+        }
+        assert_ne!(vorher, px, "3D-Bild gedreht");
+        assert!(f.frame(&th, &fonts).is_none());
     }
 
     /// Titelleiste: Schließen und Minimieren.
@@ -1038,9 +1105,7 @@ mod tests {
             f.frame(&th, &fonts);
         }
         f.dirty = true;
-        f.frame(&th, &fonts);
-        let mut c = Canvas::new(0, 0);
-        std::mem::swap(&mut c, &mut f.canvas);
-        std::fs::write(aus, c.to_png()).unwrap();
+        let (px, _) = f.frame(&th, &fonts).unwrap();
+        std::fs::write(aus, sk_paint::encode_png_gepackt(1400, 860, px)).unwrap();
     }
 }

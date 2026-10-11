@@ -17,9 +17,11 @@ use sk_ui::widgets::Fonts;
 const R7: &str = include_str!("../../../crates/sk-cost/referenz/r7-alle-abschnitte.szo");
 const SOLL: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/ifc_vorschau/soll/r7.png");
 
-/// r7 wie aus dem Menü: exportiert, wieder gelesen, Fenster 1400 × 860.
-fn r7() -> IfcFenster {
-    let m = szo::read(R7, GuidGen::with_seed(1)).expect("r7 lädt").model;
+/// Ein Haus wie aus dem Menü: exportiert, wieder gelesen, Fenster `w` × `h`.
+fn haus(szo_text: &str, (w, h): (u32, u32)) -> IfcFenster {
+    let m = szo::read(szo_text, GuidGen::with_seed(1))
+        .expect("Haus lädt")
+        .model;
     let opt = sk_ifc::Optionen {
         zeit: 1_791_819_528,
         datei: "r7.ifc".into(),
@@ -30,10 +32,15 @@ fn r7() -> IfcFenster {
     let mut f = IfcFenster::new(v, "r7.ifc");
     f.handle(&Event::ScaleChanged(1.0));
     f.handle(&Event::Resized {
-        width: 1400,
-        height: 860,
+        width: w,
+        height: h,
     });
     f
+}
+
+/// r7 im Fenster 1400 × 860.
+fn r7() -> IfcFenster {
+    haus(R7, (1400, 860))
 }
 
 /// Nur das 3D-Bild, ohne Schrift: gleich mit und ohne Schriften.
@@ -143,11 +150,57 @@ fn istbilder_i3() {
         return;
     }
     f.dirty = true;
-    let px = f.frame(&Theme::dark(), &fonts).unwrap().to_vec();
+    let px = f.frame(&Theme::dark(), &fonts).unwrap().0.to_vec();
     // Vormultipliziert und deckend: gleich den Farben
     std::fs::write(
         dir.join("ist-i3-vorschau-r7.png"),
         sk_paint::encode_png_gepackt(1400, 860, &px),
     )
     .unwrap();
+}
+
+/// Bildzeit beim Drehen (Review B4 zu #83, Ziel ≤ 15 ms bei 1200 × 800):
+/// `cargo test --release -p skizzeo bildzeit_beim_drehen -- --ignored
+/// --nocapture`.
+#[test]
+#[ignore = "misst Zeiten, nur im Release sinnvoll"]
+fn bildzeit_beim_drehen() {
+    const RH1: &str = include_str!("../../../crates/sk-cost/referenz/rh1-standardhaus.szo");
+    let fonts = schriften();
+    let th = Theme::dark();
+    for (name, text) in [("RH-1", RH1), ("r7", R7)] {
+        let mut f = haus(text, (1200, 800));
+        f.frame(&th, &fonts);
+        let m = Modifiers::default();
+        let (x, y) = (600.0, 400.0);
+        f.handle(&Event::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            mods: m,
+        });
+        let mut zeiten = Vec::new();
+        for i in 1..=40 {
+            f.handle(&Event::MouseMove {
+                x: x + i as f64 * 6.0,
+                y: y + (i % 7) as f64,
+                mods: m,
+            });
+            let t0 = std::time::Instant::now();
+            assert!(f.frame(&th, &fonts).is_some());
+            zeiten.push(t0.elapsed().as_secs_f64() * 1000.0);
+        }
+        zeiten.sort_by(f64::total_cmp);
+        let teile = f.v.teile.len();
+        let dreiecke: usize =
+            f.v.teile
+                .iter()
+                .flat_map(|t| &t.netze)
+                .map(|n| n.dreiecke.len())
+                .sum();
+        eprintln!(
+            "{name}: {teile} Teile, {dreiecke} Dreiecke, Median {:.1} ms, max {:.1} ms",
+            zeiten[20], zeiten[39]
+        );
+    }
 }
