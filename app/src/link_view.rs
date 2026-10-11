@@ -161,7 +161,7 @@ fn fugen(wnt: &Want, out: &mut Vec<Chip>) {
             continue;
         };
         let n = chain.segment_count();
-        for k in chain.straight_joints() {
+        for &k in wnt.scene.joints(run) {
             if out.len() >= SLOTS {
                 return;
             }

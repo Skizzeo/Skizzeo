@@ -2153,7 +2153,8 @@ impl Model {
     }
 
     /// Nächste freie Nummer der Kategorie, z. B. „AW-004“. Nummern werden nie
-    /// wiederverwendet, auch nicht nach Löschen oder Rückgängig.
+    /// wiederverwendet, auch nicht nach Löschen oder Rückgängig; nur ein
+    /// verworfener Schritt ([`Model::rollback`]) gibt seine zurück.
     fn next_number(&mut self, category: Category) -> String {
         loop {
             let n = &mut self.numbers[category.index()];
@@ -2546,11 +2547,7 @@ impl Model {
             segment_lines(&run.points, run.closed),
             segment_lines(&pts, closed),
         );
-        let matched = if old.len() == count {
-            (0..count).map(Some).collect()
-        } else {
-            teilen::match_walls(&lines_old, &lines_new)
-        };
+        let matched = teilen::assign_walls(&lines_old, &lines_new, closed);
         let mut kept = vec![false; old.len()];
         let mut segments = Vec::with_capacity(count);
         for (k, &m) in matched.iter().enumerate() {
@@ -3017,6 +3014,7 @@ impl Model {
         debug_assert!(self.txn.is_none(), "Schritt schon offen");
         self.txn = Some(Open {
             building_number: self.building_number,
+            numbers: self.numbers.to_vec(),
             label,
             changes: Vec::new(),
             noted: Default::default(),
@@ -3070,6 +3068,9 @@ impl Model {
     pub fn rollback(&mut self) -> Touched {
         if let Some(open) = &self.txn {
             self.building_number = open.building_number;
+            for (n, o) in self.numbers.iter_mut().zip(&open.numbers) {
+                *n = *o;
+            }
         }
         match self.close() {
             Some(t) => self.apply(&t, Direction::Undo),

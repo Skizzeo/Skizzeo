@@ -152,14 +152,30 @@ impl Model {
         let (mut offsets, mut free) = (vec![0.0; n], vec![false; n]);
         for k in 0..n {
             let own = partner(lsegs[k]);
+            // Sonst das nächste Stück derselben Flucht mit Partner, über
+            // gerade Fugen in beide Richtungen (beim Teilen an zwei Punkten
+            // liegt ein Stück zwei Fugen weit, Review Geometrie #61)
             let near = || {
-                let prev = (k > 0 || closed).then(|| (k + n - 1) % n);
-                let next = (k + 1 < n || closed).then(|| (k + 1) % n);
-                [prev, next]
-                    .into_iter()
-                    .flatten()
-                    .filter(|&j| j != k && straight(j, k))
-                    .find_map(|j| partner(lsegs[j]))
+                let step = |j: usize, back: bool| {
+                    let i = match back {
+                        true => (j > 0 || closed).then(|| (j + n - 1) % n)?,
+                        false => (j + 1 < n || closed).then(|| (j + 1) % n)?,
+                    };
+                    (i != k && straight(i, j)).then_some(i)
+                };
+                let (mut prev, mut next) = (Some(k), Some(k));
+                while prev.is_some() || next.is_some() {
+                    prev = prev.and_then(|j| step(j, true));
+                    next = next.and_then(|j| step(j, false));
+                    let found = [prev, next]
+                        .into_iter()
+                        .flatten()
+                        .find_map(|j| partner(lsegs[j]));
+                    if found.is_some() {
+                        return found;
+                    }
+                }
+                None
             };
             if let Some((o, f)) = own.or_else(near) {
                 offsets[k] = o;
@@ -181,17 +197,14 @@ impl Model {
         let Some(r) = self.run(id) else {
             return true;
         };
-        // Andere Segmentzahl: die Wände nach Lage zuordnen wie beim Setzen
+        // Die Wände nach Lage zuordnen wie beim Setzen
         // (Regel 11), neue Stücke ohne Partner (Regel 28)
-        let lsegs: Vec<Option<ElementId>> = if lower.segment_count() != r.segments.len() {
-            let new = segment_lines(&lower.clean_points(), lower.closed);
-            teilen::match_walls(&segment_lines(&r.points, r.closed), &new)
+        let new = segment_lines(&lower.clean_points(), lower.closed);
+        let lsegs: Vec<Option<ElementId>> =
+            teilen::assign_walls(&segment_lines(&r.points, r.closed), &new, lower.closed)
                 .into_iter()
                 .map(|m| m.and_then(|o| r.segments.get(o).copied()))
-                .collect()
-        } else {
-            r.segments.iter().copied().map(Some).collect()
-        };
+                .collect();
         for up in self.runs_above(id) {
             let (offsets, _) = match lsegs.iter().copied().collect::<Option<Vec<_>>>() {
                 Some(l) => self.stack_offsets(up, &lower, &l),

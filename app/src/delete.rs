@@ -340,6 +340,20 @@ impl HintCard {
         )
     }
 
+    /// Entdecken-Karte im Hauptfenster nach [`HintCard::place`]: unten
+    /// rechts, rechts bündig an `right` (links der rechten Spalte, nicht über
+    /// dem Baum), unten höchstens bis `above` (über dem Bogen, wenn er
+    /// steht), nie über `top` (Titelleiste). Andere Karten bleiben.
+    pub fn corner(&mut self, right: f32, above: Option<f32>, top: f32, s: f32) {
+        let (true, Some(r)) = (self.discover, self.rect.as_mut()) else {
+            return;
+        };
+        r.x = (right - r.w).max(8.0 * s).round();
+        if let Some(a) = above {
+            r.y = r.y.min(a - r.h).max(top + 8.0 * s).round();
+        }
+    }
+
     /// Lage unter den Bauteilen (Rechteck im Fenster, Pixel): mittig darunter,
     /// passt es nicht, darüber; nie über den Rand.
     pub fn place(&mut self, size: (f32, f32), bounds: Option<Rect>, win: (f32, f32, f32), s: f32) {
@@ -1151,4 +1165,33 @@ fn danger_button(
 fn mix(a: Rgba, b: Rgba, k: f32) -> Rgba {
     let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * k).round() as u8;
     Rgba(m(a.0, b.0), m(a.1, b.1), m(a.2, b.2), m(a.3, b.3))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Die Entdecken-Karte steht rechts bündig an der Spalte und rückt über
+    /// den Bogen; andere Karten bleiben, wo `place` sie hingelegt hat.
+    #[test]
+    fn entdecken_karte_weicht_dem_bogen_aus() {
+        let neu = || HintCard::new(vec!["Tipp".into()], None, Vec::new(), Instant::now());
+        let win = (1440.0, 900.0, 32.0);
+        let mut k = neu().discovering();
+        k.place((300.0, 80.0), None, win, 1.0);
+        let unten = k.rect.unwrap();
+        k.corner(1200.0, None, 32.0, 1.0);
+        let r = k.rect.unwrap();
+        assert_eq!((r.x + r.w, r.y), (1200.0, unten.y), "ohne Bogen unten");
+        k.corner(1200.0, Some(700.0), 32.0, 1.0);
+        let r = k.rect.unwrap();
+        assert_eq!(r.y + r.h, 700.0, "über dem Bogen");
+        k.corner(1200.0, Some(60.0), 32.0, 1.0);
+        assert_eq!(k.rect.unwrap().y, 40.0, "nie unter die Titelleiste");
+        let mut a = neu();
+        a.place((300.0, 80.0), None, win, 1.0);
+        let vorher = a.rect;
+        a.corner(1200.0, Some(700.0), 32.0, 1.0);
+        assert_eq!(a.rect, vorher, "nur die Entdecken-Karte");
+    }
 }

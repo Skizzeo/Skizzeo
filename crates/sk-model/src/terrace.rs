@@ -196,10 +196,14 @@ fn plan(
     // Stufe oben vor bzw. nach dem Partner von Segment `k`
     let step_before = |k: usize| map[(inv[k] + mu - 1) % mu].is_none();
     let step_after = |k: usize| map[(inv[k] + 1) % mu].is_none();
+    // Richtung aus der Bezugslinie: An einem Stück kürzer als die
+    // Dämmung an der Ecke liegt die Kante auf der Deckenkante verkehrt
+    // (Review 61-2), außen wäre dort innen
+    let pts = slab.clean_points();
     let depths: Vec<f64> = (0..n)
         .map(|k| {
-            let d = dir(&lc, k);
-            if d.length() < 1e-9 || dir(&mc, inv[k]).length() < 1e-9 {
+            let d = dir(&pts, k);
+            if pts.len() != n || d.length() < 1e-9 || dir(&mc, inv[k]).length() < 1e-9 {
                 return 0.0;
             }
             let out = right_of(d.normalized()) * sign;
