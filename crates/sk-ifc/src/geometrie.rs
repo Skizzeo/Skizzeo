@@ -19,7 +19,9 @@ pub struct Netz {
 /// Punkte gelten als gleich, wenn sie in jeder Richtung höchstens 0,001 mm
 /// auseinanderliegen. Gesucht wird in der eigenen Zelle und den Nachbarzellen,
 /// damit zwei Punkte, die nur in der letzten Stelle abweichen, nicht an einer
-/// Rundungsgrenze getrennt werden.
+/// Rundungsgrenze getrennt werden. Verglichen wird mit dem zuerst gesehenen
+/// Punkt; zwei Eingaben auf seinen beiden Seiten können also bis zur doppelten
+/// Toleranz auseinanderliegen, je nach Reihenfolge.
 const SCHWEISS: f64 = 1e-3;
 
 fn zelle(p: Vec3) -> [i64; 3] {

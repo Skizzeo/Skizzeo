@@ -51,14 +51,14 @@ pub fn decode_png(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     while i + 8 <= data.len() {
         let len = u32::from_be_bytes(data[i..i + 4].try_into().ok()?) as usize;
         let kind = data.get(i + 4..i + 8)?;
-        let body = data.get(i + 8..i + 8 + len)?;
+        let body = data.get(i + 8..(i + 8).checked_add(len)?)?;
         match kind {
             b"IHDR" => kopf = Some(body.to_vec()),
             b"IDAT" => idat.extend_from_slice(body),
             b"IEND" => break,
             _ => {}
         }
-        i += 12 + len;
+        i = i.checked_add(12 + len)?;
     }
     let k = kopf?;
     let w = u32::from_be_bytes(k.get(0..4)?.try_into().ok()?);
@@ -67,11 +67,12 @@ pub fn decode_png(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
         return None;
     }
     let raw = crate::deflate::inflate(idat.get(2..)?)?;
-    let zeile = w as usize * 4 + 1;
-    if raw.len() < zeile * h as usize {
+    // Größe aus der Datei: Überlauf heißt kaputt (Review B8 zu #83)
+    let zeile = (w as usize).checked_mul(4)?.checked_add(1)?;
+    if raw.len() < zeile.checked_mul(h as usize)? {
         return None;
     }
-    let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
+    let mut rgba = Vec::with_capacity((zeile - 1) * h as usize);
     for z in raw.chunks(zeile).take(h as usize) {
         if z[0] != 0 {
             return None;
@@ -164,5 +165,12 @@ mod tests {
         let mut anders = klein.clone();
         anders[24] = 2; // Farbtyp RGB
         assert_eq!(decode_png(&anders), None);
+        // Größe am Ende des Wertebereichs: kein Überlauf (Review B8 zu #83)
+        let mut riesig = klein.clone();
+        riesig[16..24].fill(0xFF);
+        assert_eq!(decode_png(&riesig), None);
+        let mut lang = klein.clone();
+        lang[8..12].fill(0xFF);
+        assert_eq!(decode_png(&lang), None);
     }
 }

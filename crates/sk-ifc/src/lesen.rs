@@ -10,7 +10,7 @@
 
 use crate::step::{File, V};
 use sk_math::{vec3, Vec3};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Inhalt einer IFC-Datei, wie ihn ein Empfänger sieht.
 #[derive(Clone, Debug, Default)]
@@ -20,7 +20,8 @@ pub struct Vorschau {
     /// Grundstück › Gebäude › Geschosse (und was sonst aggregiert ist).
     pub baum: Vec<Knoten>,
     pub teile: Vec<Teil>,
-    /// Bauteile mit Platzierung, deren Form die Vorschau (noch) nicht liest.
+    /// Bauteile mit Darstellung, deren Form oder Platzierung die Vorschau
+    /// (noch) nicht liest.
     pub ohne_form: usize,
 }
 
@@ -124,13 +125,18 @@ fn text(v: Option<&V>) -> String {
     }
 }
 
+/// Zahl der Datei; nicht endliche (`1.E999`) gelten als fehlend.
 fn zahl(v: Option<&V>) -> Option<f64> {
     match v? {
-        V::Real(x) | V::Len(x) => Some(*x),
+        V::Real(x) | V::Len(x) => x.is_finite().then_some(*x),
         V::Int(i) => Some(*i as f64),
         V::Typed(_, x) => zahl(Some(x)),
         _ => None,
     }
+}
+
+fn endlich(p: Vec3) -> bool {
+    p.x.is_finite() && p.y.is_finite() && p.z.is_finite()
 }
 
 fn verweis(v: Option<&V>) -> Option<u32> {
@@ -190,16 +196,32 @@ impl Leser<'_> {
         }
     }
 
-    /// `IfcAxis2Placement3D` (bzw. 2D) als Lage; Ursprung in mm.
+    /// `IfcAxis2Placement3D` (bzw. 2D) als Lage; Ursprung in mm. Eine
+    /// Nullrichtung oder eine x-Richtung parallel zu z fällt auf die Vorgabe
+    /// zurück, statt alle Punkte auf den Ursprung zu legen.
     fn achsen(&self, id: u32) -> Lage {
         let a = self.args(id);
         let o = self.vektor(verweis(a.first()), Vec3::ZERO) * self.mm;
-        let z = self
-            .vektor(verweis(a.get(1)), vec3(0.0, 0.0, 1.0))
-            .normalized();
+        let o = if endlich(o) { o } else { Vec3::ZERO };
+        let einheit = |v: Vec3, sonst: Vec3| {
+            let l = v.length();
+            if l.is_finite() && l > 1e-9 {
+                v / l
+            } else {
+                sonst
+            }
+        };
+        let z = einheit(
+            self.vektor(verweis(a.get(1)), vec3(0.0, 0.0, 1.0)),
+            vec3(0.0, 0.0, 1.0),
+        );
         let x0 = self.vektor(verweis(a.get(2)), Vec3::X);
         // x senkrecht zu z (wie IfcBuildAxes)
-        let x = (x0 - z * x0.dot(z)).normalized();
+        let quer = |v: Vec3| v - z * v.dot(z);
+        let x = einheit(
+            quer(x0),
+            einheit(quer(Vec3::X), einheit(quer(vec3(0.0, 1.0, 0.0)), Vec3::X)),
+        );
         let y = z.cross(x);
         Lage { o, x, y, z }
     }
@@ -280,40 +302,44 @@ impl Leser<'_> {
                 let Some(pl) = verweis(ia.first()) else {
                     continue;
                 };
-                let punkte: Vec<Vec3> = match self.args(pl).first() {
+                // Punkte, die nicht endlich sind (oder keine drei Zahlen
+                // haben), sind `None`; Dreiecke an ihnen fallen weg
+                let roh: Vec<Option<Vec3>> = match self.args(pl).first() {
                     Some(V::List(ps)) => ps
                         .iter()
                         .map(|p| match p {
-                            V::List(k) => {
+                            V::List(k) if k.len() == 3 => {
                                 let k: Vec<f64> = k.iter().filter_map(|x| zahl(Some(x))).collect();
-                                let v = vec3(
-                                    k.first().copied().unwrap_or(0.0),
-                                    k.get(1).copied().unwrap_or(0.0),
-                                    k.get(2).copied().unwrap_or(0.0),
-                                );
-                                lage.punkt(v * self.mm)
+                                let q =
+                                    lage.punkt(vec3(*k.first()?, *k.get(1)?, *k.get(2)?) * self.mm);
+                                endlich(q).then_some(q)
                             }
-                            _ => lage.o,
+                            _ => None,
                         })
                         .collect(),
                     _ => Vec::new(),
                 };
-                let n = punkte.len() as u32;
+                let nummer = |x: &V| match x {
+                    V::Int(i) => i
+                        .checked_sub(1)
+                        .and_then(|i| usize::try_from(i).ok())
+                        .filter(|&i| roh.get(i).is_some_and(Option::is_some)),
+                    _ => None,
+                };
+                let mut neu: Vec<Option<u32>> = vec![None; roh.len()];
+                let mut punkte = Vec::new();
                 let dreiecke: Vec<[u32; 3]> = match ia.get(3) {
                     Some(V::List(ts)) => ts
                         .iter()
                         .filter_map(|t| match t {
-                            V::List(k) => {
-                                let k: Vec<u32> = k
-                                    .iter()
-                                    .filter_map(|x| match x {
-                                        V::Int(i) if *i >= 1 && (*i as u32) <= n => {
-                                            Some(*i as u32 - 1)
-                                        }
-                                        _ => None,
+                            V::List(k) if k.len() == 3 => {
+                                let k = [nummer(&k[0])?, nummer(&k[1])?, nummer(&k[2])?];
+                                Some(k.map(|i| {
+                                    *neu[i].get_or_insert_with(|| {
+                                        punkte.push(roh[i].unwrap_or_default());
+                                        (punkte.len() - 1) as u32
                                     })
-                                    .collect();
-                                (k.len() == 3).then(|| [k[0], k[1], k[2]])
+                                }))
                             }
                             _ => None,
                         })
@@ -372,12 +398,18 @@ pub fn vorschau(f: &File) -> Vorschau {
         if RAEUMLICH[..4].contains(&e.name.as_str()) {
             continue;
         }
-        let (Some(pl), Some(sh)) = (verweis(e.args.get(5)), verweis(e.args.get(6))) else {
+        let Some(sh) = verweis(e.args.get(6)) else {
             continue;
         };
-        if l.name(pl) != "IFCLOCALPLACEMENT" || l.name(sh) != "IFCPRODUCTDEFINITIONSHAPE" {
+        if l.name(sh) != "IFCPRODUCTDEFINITIONSHAPE" {
             continue;
         }
+        // ohne lesbare Platzierung keine Lage: zählt wie eine fremde Form
+        let pl = verweis(e.args.get(5)).filter(|&p| l.name(p) == "IFCLOCALPLACEMENT");
+        let Some(pl) = pl else {
+            v.ohne_form += 1;
+            continue;
+        };
         let lage = l.lage(pl, 0);
         let Some(netze) = l.netze(sh, lage) else {
             v.ohne_form += 1;
@@ -421,7 +453,7 @@ pub fn vorschau(f: &File) -> Vorschau {
             .get(&id)
             .or_else(|| typ_von.get(&id).and_then(|t| stoff_von.get(t)));
         let Some(&m) = m else { continue };
-        let (schichten, baustoffe) = baustoffe(&l, m);
+        let (schichten, baustoffe) = baustoffe(&l, m, 0);
         v.teile[i].schichten = schichten;
         v.teile[i].baustoffe = baustoffe;
     }
@@ -476,12 +508,10 @@ pub fn vorschau(f: &File) -> Vorschau {
 
     // Gliederung
     let mut kinder: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-    let mut hat_eltern = std::collections::HashSet::new();
     for (_, e) in f.all("IFCRELAGGREGATES") {
         if let Some(g) = verweis(e.args.get(4)) {
             for k in verweise(e.args.get(5)) {
                 kinder.entry(g).or_default().push(k);
-                hat_eltern.insert(k);
             }
         }
     }
@@ -495,19 +525,24 @@ pub fn vorschau(f: &File) -> Vorschau {
             }
         }
     }
+    /// Ein Ort mit allem darunter. `besucht` hält jeden Ort nur einmal im
+    /// Baum, auch wenn die Datei Zyklen oder doppelte Verweise hat.
     fn knoten(
         l: &Leser,
         id: u32,
         kinder: &BTreeMap<u32, Vec<u32>>,
         enthalten: &HashMap<u32, Vec<usize>>,
         index: &HashMap<u32, usize>,
-        tiefe: u32,
+        besucht: &mut HashSet<u32>,
     ) -> Knoten {
         let a = l.args(id);
         let name = l.name(id).to_string();
         let mut k = Knoten {
             hoehe: if name == "IFCBUILDINGSTOREY" {
-                zahl(a.get(9)).unwrap_or(0.0) * l.mm
+                zahl(a.get(9))
+                    .map(|h| h * l.mm)
+                    .filter(|h| h.is_finite())
+                    .unwrap_or(0.0)
             } else {
                 0.0
             },
@@ -517,16 +552,17 @@ pub fn vorschau(f: &File) -> Vorschau {
             kinder: Vec::new(),
             teile: enthalten.get(&id).cloned().unwrap_or_default(),
         };
-        if tiefe < 16 {
-            for &c in kinder.get(&id).into_iter().flatten() {
-                if let Some(&i) = index.get(&c) {
-                    // Räume mit Form: als Teil unter dem Geschoss
-                    k.teile.push(i);
-                }
-                if RAEUMLICH.contains(&l.name(c)) {
-                    k.kinder
-                        .push(knoten(l, c, kinder, enthalten, index, tiefe + 1));
-                }
+        for &c in kinder.get(&id).into_iter().flatten() {
+            if !besucht.insert(c) {
+                continue;
+            }
+            if let Some(&i) = index.get(&c) {
+                // Räume mit Form: als Teil unter dem Geschoss
+                k.teile.push(i);
+            }
+            if RAEUMLICH.contains(&l.name(c)) {
+                k.kinder
+                    .push(knoten(l, c, kinder, enthalten, index, besucht));
             }
         }
         if name == "IFCBUILDINGSTOREY" {
@@ -536,12 +572,13 @@ pub fn vorschau(f: &File) -> Vorschau {
     }
     if let Some((p, e)) = f.all("IFCPROJECT").next() {
         v.projekt = text(e.args.get(2));
-        v.baum = kinder
-            .get(&p)
-            .into_iter()
-            .flatten()
-            .map(|&c| knoten(&l, c, &kinder, &enthalten, &index, 0))
-            .collect();
+        let mut besucht = HashSet::from([p]);
+        for &c in kinder.get(&p).into_iter().flatten() {
+            if besucht.insert(c) {
+                let k = knoten(&l, c, &kinder, &enthalten, &index, &mut besucht);
+                v.baum.push(k);
+            }
+        }
     }
     v
 }
@@ -562,13 +599,14 @@ pub fn schreibweise(name: &str) -> String {
         .map_or_else(|| name.to_string(), str::to_string)
 }
 
-/// Schichten oder Baustoffe einer Baustoffzuordnung.
-fn baustoffe(l: &Leser, m: u32) -> (Vec<(String, f64)>, Vec<String>) {
+/// Schichten oder Baustoffe einer Baustoffzuordnung; `tiefe` begrenzt
+/// Verweisketten (eine Nutzung, die auf sich selbst zeigt).
+fn baustoffe(l: &Leser, m: u32, tiefe: u32) -> (Vec<(String, f64)>, Vec<String>) {
     let stoffname = |id: Option<u32>| id.map_or(String::new(), |i| text(l.args(i).first()));
     let a = l.args(m);
     match l.name(m) {
-        "IFCMATERIALLAYERSETUSAGE" => {
-            verweis(a.first()).map_or_else(Default::default, |s| baustoffe(l, s))
+        "IFCMATERIALLAYERSETUSAGE" if tiefe < 4 => {
+            verweis(a.first()).map_or_else(Default::default, |s| baustoffe(l, s, tiefe + 1))
         }
         "IFCMATERIALLAYERSET" => {
             let schichten = verweise(a.first())
@@ -677,6 +715,67 @@ mod tests {
             "#31=IFCTRIANGULATEDFACESET(#30,$,$,((1,2,3)),$);",
             "#31=IFCEXTRUDEDAREASOLID($,$,$,1.);",
         );
+        let v = vorschau(&step::read(&t).unwrap());
+        assert_eq!((v.teile.len(), v.ohne_form), (0, 1));
+    }
+
+    /// Review B1 zu #83: eine Baustoffnutzung, die auf sich selbst zeigt,
+    /// hält den Leser nicht an.
+    #[test]
+    fn zyklischer_baustoff() {
+        let t = DATEI.replace(
+            "#53=IFCRELASSOCIATESMATERIAL('m',$,$,$,(#40),#52);",
+            "#53=IFCRELASSOCIATESMATERIAL('m',$,$,$,(#40),#54);\n\
+             #54=IFCMATERIALLAYERSETUSAGE(#54,.AXIS2.,.POSITIVE.,0.,$);",
+        );
+        let v = vorschau(&step::read(&t).unwrap());
+        assert!(v.teile[0].schichten.is_empty());
+    }
+
+    /// Review B2 zu #83: Zyklen und doppelte Verweise in der Gliederung
+    /// geben jeden Ort nur einmal aus.
+    #[test]
+    fn zyklische_gliederung() {
+        let t = DATEI.replace(
+            "#13=IFCRELAGGREGATES('a2',$,$,$,#10,(#11));",
+            "#13=IFCRELAGGREGATES('a2',$,$,$,#10,(#10,#10,#10,#11,#11));\n\
+             #14=IFCRELAGGREGATES('a3',$,$,$,#11,(#10,#1,#11));",
+        );
+        let v = vorschau(&step::read(&t).unwrap());
+        fn zahl(k: &[Knoten]) -> usize {
+            k.iter().map(|k| 1 + zahl(&k.kinder)).sum()
+        }
+        assert_eq!(zahl(&v.baum), 2);
+        assert_eq!(v.baum[0].kinder[0].teile, vec![0]);
+    }
+
+    /// Review B7 zu #83: Werte aus fremden Dateien. Nicht endliche Punkte
+    /// fallen mit ihren Dreiecken weg, eine Nullrichtung gilt als Vorgabe,
+    /// zu große Nummern laufen nicht über, ein Bauteil ohne Platzierung
+    /// zählt ohne Form.
+    #[test]
+    fn kaputte_werte() {
+        let t = DATEI
+            .replace(
+                "#30=IFCCARTESIANPOINTLIST3D(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));",
+                "#30=IFCCARTESIANPOINTLIST3D(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.),(1.E999,0.,0.)));",
+            )
+            .replace(
+                "((1,2,3)),$);",
+                "((1,2,3),(1,2,4),(1,2,4294967297),(1,2,-9223372036854775808)),$);",
+            )
+            .replace(
+                "#24=IFCDIRECTION((0.,1.,0.));",
+                "#24=IFCDIRECTION((0.,0.,0.));",
+            );
+        let v = vorschau(&step::read(&t).unwrap());
+        let n = &v.teile[0].netze[0];
+        assert_eq!((n.punkte.len(), n.dreiecke.len()), (3, 1));
+        // x-Richtung null: Vorgabe x, also nicht gedreht
+        assert!((n.punkte[1] - vec3(2000.0, 0.0, 3000.0)).length() < 1e-6);
+        assert!(n.punkte.iter().all(|p| endlich(*p)));
+
+        let t = DATEI.replace(",#26,#33,'AW-001'", ",$,#33,'AW-001'");
         let v = vorschau(&step::read(&t).unwrap());
         assert_eq!((v.teile.len(), v.ohne_form), (0, 1));
     }
