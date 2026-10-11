@@ -87,24 +87,31 @@ pub struct Ui {
     pub link_chip: Rgba,
     /// Mengenfenster (B7): Blatt, Schrift, gedämpfte Schrift, Kontrollzeilen
     /// (kursiv), Haarlinien, Kacheln; Bänder für Hover, Aufleuchten, Auswahl
-    /// und die Gruppe über der Auswahl (folgen dem Akzent).
+    /// und die Gruppe über der Auswahl (folgen dem Akzent). Das Blatt ist
+    /// dunkel wie die Paneele (Jörn 11.10.); hell bleibt nur, was gedruckt
+    /// werden kann, und die Zeichnungen (Rollen `paper_*`).
     pub sheet_bg: Rgba,
     pub sheet_text: Rgba,
     pub sheet_text_dim: Rgba,
     pub sheet_hint: Rgba,
     pub sheet_rule: Rgba,
     pub sheet_tile: Rgba,
-    /// Weiße Fläche auf dem Blatt (KA-1/KA-2): aktive Karte, Feld und Chip
-    /// unter der Maus, Preisblatt.
+    /// Gehobene Fläche auf dem Blatt (KA-1/KA-2): aktive Karte, Feld und
+    /// Chip unter der Maus, Preisblatt, Sprechblasen.
     pub sheet_card: Rgba,
-    /// Erledigt, erfüllt auf dem hellen Blatt (AVA Prüfen, Punkt im Baum);
-    /// das Grün von `text_same`, dunkler für 4,5 : 1 auf `sheet_bg`. Hängt
-    /// nicht am Akzent.
+    /// Erledigt, erfüllt auf dem Blatt (AVA Prüfen, Punkt im Baum); das Grün
+    /// von `text_same`, mindestens 4,5 : 1 auf `sheet_bg`. Hängt nicht am
+    /// Akzent.
     pub sheet_success: Rgba,
     pub sheet_hover: Rgba,
     pub sheet_flash: Rgba,
     pub sheet_select: Rgba,
     pub sheet_select_group: Rgba,
+    /// Schrift auf Papier, wo eine Zeichnung im dunklen Fenster steht
+    /// (Schnittbild im Bauteilkatalog, Grundriss der Sicherung, Angabe im
+    /// Grundriss): wie gedruckt, dunkel auf `env.paper_fallback`.
+    pub paper_text: Rgba,
+    pub paper_text_dim: Rgba,
     /// Baumpanel (Paket 4): Zeile unter der Maus; Band beim Isolieren
     /// (Schrift `on_accent`).
     pub tree_hover: Rgba,
@@ -387,18 +394,21 @@ impl Theme {
                 link_on: accent,
                 link_off: rgb(160, 165, 172),
                 link_chip: Rgba(bg.0, bg.1, bg.2, 199),
-                sheet_bg: rgb(245, 244, 239),
-                sheet_text: rgb(34, 36, 40),
-                sheet_text_dim: rgb(112, 116, 122),
-                sheet_hint: rgb(138, 142, 148),
-                sheet_rule: rgb(214, 212, 204),
-                sheet_tile: rgb(234, 232, 224),
-                sheet_card: rgb(255, 255, 255),
-                sheet_success: rgb(46, 125, 70),
+                // Blatt im Mengenfenster: dieselben Töne wie die Paneele
+                sheet_bg: bg,
+                sheet_text: text,
+                sheet_text_dim: rgb(160, 165, 172),
+                sheet_hint: rgb(136, 142, 150),
+                sheet_rule: rgb(56, 65, 76),
+                sheet_tile: rgb(38, 45, 55),
+                sheet_card: rgb(47, 56, 68),
+                sheet_success: rgb(126, 196, 140),
                 sheet_hover: Rgba(accent.0, accent.1, accent.2, 36),
                 sheet_flash: Rgba(accent.0, accent.1, accent.2, 120),
                 sheet_select: Rgba(accent.0, accent.1, accent.2, 84),
                 sheet_select_group: Rgba(accent.0, accent.1, accent.2, 26),
+                paper_text: rgb(34, 36, 40),
+                paper_text_dim: rgb(112, 116, 122),
                 tree_hover: hover,
                 isolate_band: accent,
             },
@@ -717,6 +727,47 @@ mod tests {
         t.ui.accent_hover = Rgba::rgb(1, 2, 3);
         t.set_accent(blue);
         assert_eq!(t.ui.accent_hover, Rgba::rgb(1, 2, 3));
+    }
+
+    /// Kontrast nach WCAG zweier deckender Farben.
+    fn kontrast(a: Rgba, b: Rgba) -> f32 {
+        let l = |c: Rgba| {
+            let k = |v: u8| {
+                let v = v as f32 / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * k(c.0) + 0.7152 * k(c.1) + 0.0722 * k(c.2)
+        };
+        let (x, y) = (l(a), l(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    /// Jörn 11.10.: Das Blatt im Mengenfenster ist dunkel wie die Paneele;
+    /// Zeichnungen auf Papier bleiben dunkel auf hell. Schrift lesbar
+    /// (4,5 : 1 auf Blatt und Karte), Kontrollzeilen 4,5 : 1 auf dem Blatt.
+    #[test]
+    fn blatt_dunkel_papier_hell() {
+        let t = Theme::dark();
+        let u = &t.ui;
+        assert_eq!((u.sheet_bg, u.sheet_text), (u.bg, u.text));
+        assert_eq!(u.sheet_rule, u.border);
+        assert!(kontrast(u.sheet_hint, u.sheet_bg) >= 4.5);
+        for c in [u.sheet_text, u.sheet_text_dim, u.sheet_success] {
+            assert!(kontrast(c, u.sheet_bg) >= 4.5, "{c:?}");
+            assert!(kontrast(c, u.sheet_card) >= 4.5, "{c:?} auf Karte");
+        }
+        // Flächen auf dem Blatt heben sich ab, bleiben aber dunkel
+        assert!(kontrast(u.sheet_card, u.sheet_bg) > 1.2);
+        assert!(kontrast(u.sheet_text, u.sheet_card) > 9.0);
+        let paper = t.env.paper_fallback;
+        // Papier wie bisher: Schrift 4,5 : 1, gedämpft die frühere Blattfarbe
+        assert!(kontrast(u.paper_text, paper) >= 4.5);
+        assert!(kontrast(u.paper_text_dim, paper) >= 4.0);
+        assert!(kontrast(paper, u.sheet_bg) > 10.0);
     }
 
     /// Die früheren Werte als 0..1 und ihre Rollen weichen höchstens 0,5/255 ab.
