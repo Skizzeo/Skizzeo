@@ -851,8 +851,25 @@ impl Model {
     /// wurden.
     pub(crate) fn complete_flat_roofs(&mut self) -> Vec<String> {
         let strict = std::mem::replace(&mut self.strict, false);
+        let roofs = |m: &Self| -> Vec<ElementId> {
+            m.elements
+                .iter()
+                .filter(|(_, e)| matches!(e.kind, ElementKind::Roof { .. }))
+                .map(|(id, _)| id)
+                .collect()
+        };
+        let had = roofs(self);
         let (added, removed) = self.sync_flat_roofs();
         self.strict = strict;
+        // Ein beim Laden ergänztes Dach bleibt eben wie in der Datei; die
+        // 2 % gelten nur für neu angelegte Dächer
+        for r in roofs(self).into_iter().filter(|r| !had.contains(r)) {
+            if let Some(ElementKind::Roof { drainage, .. }) =
+                self.elements.get_mut(r).map(|e| &mut e.kind)
+            {
+                *drainage = Drainage::default();
+            }
+        }
         let mut out = Vec::new();
         if added > 0 {
             out.push("Flachdach bzw. Attikablech ergänzt".to_string());
@@ -1170,6 +1187,24 @@ mod tests {
         assert!(back.hints.is_empty(), "{:?}", back.hints);
         assert_eq!(crate::szo::write(&back.model), text);
         assert!(back.model.check().is_empty());
+        // Datei von vor dem Dachaufbau (ohne [roof]): das ergänzte Dach
+        // bleibt eben, ohne Abläufe
+        let alt: String = text
+            .lines()
+            .filter(|l| !l.starts_with("[roof] "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let back = crate::szo::read(&alt, GuidGen::with_seed(5)).unwrap();
+        assert!(
+            back.hints.iter().any(|h| h.contains("ergänzt")),
+            "{:?}",
+            back.hints
+        );
+        let da = (back.model.elements.iter())
+            .find(|(_, e)| matches!(e.kind, ElementKind::Roof { .. }))
+            .unwrap()
+            .0;
+        assert_eq!(back.model.drainage_of_roof(da), Some(&Drainage::default()));
     }
 
     /// Attikadämmung innen an einer spitzen Ecke (20°): die Innenfläche
