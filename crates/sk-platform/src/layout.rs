@@ -25,7 +25,6 @@ pub enum WindowId {
 
 mod frei;
 mod links;
-pub use frei::IFC_SIZE_DIP;
 pub use links::LEVELS_WIDTH_DIP;
 
 /// Rechteck in Bildschirmpixeln: `(x, y, Breite, Höhe)`.
@@ -98,13 +97,14 @@ pub struct Windows {
 
 const ALLE: [WindowId; 3] = [WindowId::Main, WindowId::Quantity, WindowId::Levels];
 
-fn slot(id: WindowId) -> usize {
+/// Platz in `min`; das freie Fenster hat keinen, es minimiert für
+/// sich.
+fn slot(id: WindowId) -> Option<usize> {
     match id {
-        WindowId::Main => 0,
-        WindowId::Quantity => 1,
-        WindowId::Levels => 2,
-        // Kommt nicht vor: das freie Fenster minimiert für sich (`minimized`)
-        WindowId::Ifc => 0,
+        WindowId::Main => Some(0),
+        WindowId::Quantity => Some(1),
+        WindowId::Levels => Some(2),
+        WindowId::Ifc => None,
     }
 }
 
@@ -383,16 +383,17 @@ impl Windows {
     /// Ein Fenster wurde minimiert (Knopf, Taskleiste, Win+D, Win+M oder als
     /// Folge einer eigenen Tat): das andere mit.
     pub fn minimized(&mut self, id: WindowId) -> Vec<Action> {
-        if id == WindowId::Ifc || self.min[slot(id)] {
+        let Some(i) = slot(id).filter(|&i| !self.min[i]) else {
             return Vec::new();
-        }
-        self.min[slot(id)] = true;
+        };
+        self.min[i] = true;
         let mut out = Vec::new();
         for o in ALLE {
-            if o != id && self.is_shown(o) && !self.min[slot(o)] {
-                self.min[slot(o)] = true;
-                out.push(Action::Show(o, Show::Minimize));
-            }
+            let Some(j) = slot(o).filter(|&j| o != id && self.is_shown(o) && !self.min[j]) else {
+                continue;
+            };
+            self.min[j] = true;
+            out.push(Action::Show(o, Show::Minimize));
         }
         out
     }
@@ -410,16 +411,17 @@ impl Windows {
     /// Ein Fenster kam aus dem Minimieren zurück (Taskleiste, Alt+Tab): das
     /// andere mit, ohne es zu aktivieren.
     pub fn restored(&mut self, id: WindowId) -> Vec<Action> {
-        if id == WindowId::Ifc || !self.min[slot(id)] {
+        let Some(i) = slot(id).filter(|&i| self.min[i]) else {
             return Vec::new();
-        }
-        self.min[slot(id)] = false;
+        };
+        self.min[i] = false;
         let mut out = Vec::new();
         for o in ALLE {
-            if o != id && self.is_shown(o) && self.min[slot(o)] {
-                self.min[slot(o)] = false;
-                out.push(Action::Show(o, Show::RestoreNoActivate));
-            }
+            let Some(j) = slot(o).filter(|&j| o != id && self.is_shown(o) && self.min[j]) else {
+                continue;
+            };
+            self.min[j] = false;
+            out.push(Action::Show(o, Show::RestoreNoActivate));
         }
         out
     }

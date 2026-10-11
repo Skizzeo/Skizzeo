@@ -309,6 +309,7 @@ extern "system" {
         and: *const u8,
         xor: *const u8,
     ) -> HICON;
+    fn DestroyIcon(h: HICON) -> BOOL;
     fn SetProcessDPIAware() -> BOOL;
     fn OpenClipboard(h: HWND) -> BOOL;
     fn CloseClipboard() -> BOOL;
@@ -457,6 +458,7 @@ const WM_ERASEBKGND: u32 = 0x0014;
 const WM_SETCURSOR: u32 = 0x0020;
 const WM_GETMINMAXINFO: u32 = 0x0024;
 const WM_SETICON: u32 = 0x0080;
+const WM_GETICON: u32 = 0x007F;
 const WM_NCCALCSIZE: u32 = 0x0083;
 const WM_NCHITTEST: u32 = 0x0084;
 const WM_NCACTIVATE: u32 = 0x0086;
@@ -1677,6 +1679,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     // Nicht über die Regeln geschlossen (etwa vom System): vergessen
                     if !closing {
                         side_gone(id);
+                    }
+                    // Die Symbole aus `decorate` gehören dem Fenster: mit ihm
+                    // freigeben, sonst bleiben zwei je Öffnen liegen
+                    for kind in [0usize, 1] {
+                        let h = SendMessageW(hwnd, WM_GETICON, kind, 0);
+                        if h != 0 {
+                            DestroyIcon(h as HICON);
+                        }
                     }
                 }
                 _ => {

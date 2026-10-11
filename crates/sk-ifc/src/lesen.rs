@@ -585,7 +585,7 @@ pub fn vorschau(f: &File) -> Vorschau {
 
 /// Schreibweise im Schema („IFCWALL“ → „IfcWall“) für die Klassen, die
 /// Skizzeo schreibt, und die räumlichen; andere wie in der Datei.
-pub fn schreibweise(name: &str) -> String {
+pub(crate) fn schreibweise(name: &str) -> String {
     const RAEUME: [&str; 5] = [
         "IfcProject",
         "IfcSite",

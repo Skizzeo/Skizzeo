@@ -7,7 +7,7 @@
 use super::*;
 
 /// Größe beim ersten Öffnen (dip), höchstens 90 % des Arbeitsbereichs.
-pub const IFC_SIZE_DIP: (f32, f32) = (1400.0, 880.0);
+const IFC_SIZE_DIP: (f32, f32) = (1400.0, 880.0);
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Frei {
@@ -18,6 +18,7 @@ pub(super) struct Frei {
 }
 
 impl Windows {
+    #[cfg(test)]
     pub fn ifc_open(&self) -> bool {
         self.frei.shown
     }

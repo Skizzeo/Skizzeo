@@ -548,6 +548,9 @@ fn rgb(c: Rgba) -> [u8; 3] {
     [c.0, c.1, c.2]
 }
 
+/// Geänderte Zeilen eines Fensterbilds (von, bis); `None` = alle.
+pub type Zeilen = Option<(u32, u32)>;
+
 /// Höhe der Eigenschaften (px), wie [`IfcFenster::eig_bild`] sie zeichnet.
 fn eig_hoehe(e: &[Eintrag], s: f32) -> f32 {
     let kopf = e.iter().filter(|e| matches!(e, Eintrag::Kopf(_))).count();
@@ -559,7 +562,7 @@ impl IfcFenster {
     /// den Zeilen, die sich geändert haben (`None` = alle). Beim Drehen
     /// ändert sich nur das 3D-Bild: dann wird nur es gezeichnet und in das
     /// gezeigte Bild kopiert (Review B4 zu #83).
-    pub fn frame(&mut self, t: &Theme, fonts: &Fonts) -> Option<(&[u8], Option<(u32, u32)>)> {
+    pub fn frame(&mut self, t: &Theme, fonts: &Fonts) -> Option<(&[u8], Zeilen)> {
         if t.rev != self.theme_rev {
             self.theme_rev = t.rev;
             self.neu();

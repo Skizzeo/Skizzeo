@@ -76,7 +76,7 @@ pub fn allein(teile: &[usize], sichtbar: &mut [bool]) {
 }
 
 /// Deutsche Bezeichnung der räumlichen Klassen.
-pub fn knoten_art(klasse: &str) -> &str {
+fn knoten_art(klasse: &str) -> &str {
     match klasse {
         "IfcProject" => "Projekt",
         "IfcSite" => "Grundstück",

@@ -387,8 +387,8 @@ impl Zeichner {
                     }
                 }
                 let o = (y * w + x) * 4;
-                for i in 0..3 {
-                    bild.rgba[o + i] = (sum[i] / (ss * ss) as u32) as u8;
+                for (d, s) in bild.rgba[o..o + 3].iter_mut().zip(sum) {
+                    *d = (s / (ss * ss) as u32) as u8;
                 }
                 let m = (y * ss + ss / 2) * bw + x * ss + ss / 2;
                 bild.teil[y * w + x] = teil[m];
@@ -411,7 +411,8 @@ fn dreieck(
     mut set: impl FnMut(usize, f64),
 ) {
     let fl = (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
-    if !(fl.abs() >= 1e-12) {
+    // auch NaN: keine Fläche
+    if fl.abs().partial_cmp(&1e-12) != Some(std::cmp::Ordering::Greater) {
         return;
     }
     // Baryzentrische Gewichte w_i = A_i·x + B_i·y + C_i
@@ -448,7 +449,10 @@ fn dreieck(
                 hi = -1.0;
             }
         }
-        if !(lo <= hi) {
+        if lo
+            .partial_cmp(&hi)
+            .is_none_or(|o| o == std::cmp::Ordering::Greater)
+        {
             continue;
         }
         let x0 = (lo - 0.5).ceil() as usize;
