@@ -22,6 +22,7 @@ pub mod hoehen;
 pub mod id;
 pub mod join;
 pub mod kinds;
+pub mod koerper;
 pub mod library;
 pub mod matprop;
 pub mod model;
