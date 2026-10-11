@@ -3,7 +3,7 @@
 //! die nicht zählt, gibt einen Hinweis und bleibt roh stehen (Regel 72).
 
 use super::{ausserhalb, Line, LoadError, Record};
-use crate::hoehen::{MAX_PLAN_CUT, MIN_PLAN_CUT};
+use crate::hoehen::{MAX_PLAN_CUT, MIN_PLAN_CUT, PLAN_CUT};
 use crate::Model;
 
 pub(super) fn write_plan_cut(m: &Model, out: &mut String) {
@@ -24,11 +24,15 @@ pub(super) fn read_plan_cut(
     match recs {
         [] => Ok((None, None)),
         [r] => {
-            let h = r.opt("h").and_then(|t| t.parse::<f64>().ok());
+            let h = r
+                .opt("h")
+                .and_then(|t| t.parse::<f64>().ok())
+                .filter(|h| h.is_finite())
+                .map(f64::round);
             match h {
-                Some(h) if h.is_finite() && (MIN_PLAN_CUT..=MAX_PLAN_CUT).contains(&h) => {
-                    Ok((Some(h), None))
-                }
+                // die Vorgabe als Zeile gilt wie keine
+                Some(h) if h == PLAN_CUT => Ok((None, None)),
+                Some(h) if (MIN_PLAN_CUT..=MAX_PLAN_CUT).contains(&h) => Ok((Some(h), None)),
                 _ => {
                     r.skip();
                     let grund = match h {
@@ -74,7 +78,20 @@ mod tests {
         let mut m2 = back.model;
         m2.set_plan_cut_height(1500.0);
         assert_eq!(write(&m2), alt);
-        for roh in ["[plancut] h=20", "[plancut] h=hoch", "[plancut]"] {
+        // Die Vorgabe als Zeile gilt wie keine, Dateiwerte auf 1 mm gerundet
+        let l = load(&format!("{alt}[plancut] h=1500\n"));
+        assert!(l.hints.is_empty() && l.model.plan_cut_own().is_none());
+        assert_eq!(write(&l.model), alt);
+        let l = load(&format!("{alt}[plancut] h=1000.4\n"));
+        assert_eq!(l.model.plan_cut_own(), Some(1000.0));
+        let l = load(&format!("{alt}[plancut] h=NaN\n"));
+        assert!(l.hints[0].contains("unlesbar"), "{:?}", l.hints);
+        for roh in [
+            "[plancut] h=20",
+            "[plancut] h=hoch",
+            "[plancut]",
+            "[plancut] h=inf",
+        ] {
             let text = format!("{alt}{roh}\n");
             let l = load(&text);
             assert_eq!(l.hints.len(), 1, "{roh}: {:?}", l.hints);

@@ -14,8 +14,8 @@ pub const PLAN_CUT: f64 = 1500.0;
 /// Kleinste und größte Schnitthöhe (mm).
 pub const MIN_PLAN_CUT: f64 = 100.0;
 pub const MAX_PLAN_CUT: f64 = 5000.0;
-/// So weit bleibt der Schnitt mindestens unter OK Geschoss (mm), sonst
-/// schnitte er im niedrigen Geschoss die Decke.
+/// So weit bleibt der Schnitt mindestens unter UK Rohdecke darüber (mm),
+/// sonst schnitte er im niedrigen Geschoss die Decke.
 pub const PLAN_CUT_TOP_GAP: f64 = 50.0;
 
 impl Model {

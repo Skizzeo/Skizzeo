@@ -2818,8 +2818,8 @@ fn a48_aktives_geschoss() {
     let plan = view_mesh(&mut s, ViewKind::Plan, None);
     assert!((top(&plan) - 4000.0).abs() < 1e-2, "neu geschnitten");
     s.set_plan_cut_height(5000.0);
-    let og_h = s.model().storey(og).unwrap().height;
-    assert_eq!(s.plan_cut(), 3000.0 + og_h - sk_model::PLAN_CUT_TOP_GAP);
+    let og_licht = s.model().clear_height(og);
+    assert_eq!(s.plan_cut(), 3000.0 + og_licht - sk_model::PLAN_CUT_TOP_GAP);
     assert!(s.set_active_storey(gr));
     assert_eq!(s.plan_cut(), -510.0, "Fundament bleibt");
     assert!(s.set_active_storey(og));

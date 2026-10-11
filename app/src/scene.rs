@@ -1404,7 +1404,7 @@ impl Scene {
             sk_model::LevelRef {
                 storey: id,
                 edge: sk_model::LevelEdge::Bottom,
-                offset: self.cut_offset(st),
+                offset: self.cut_offset(id, st),
             }
         };
         self.model.level_z(at).unwrap_or(PLAN_CUT)
@@ -3366,16 +3366,22 @@ impl Scene {
             return None;
         }
         let floor = self.model.storey(active).map_or(0.0, |st| st.elevation);
-        let st = self.model.storey(self.model.run(run)?.storey)?;
+        let id = self.model.run(run)?.storey;
+        let st = self.model.storey(id)?;
         let below = st.kind != sk_model::LevelKind::Foundation && (st.top() - floor).abs() < 1e-6;
-        below.then_some(st.elevation + self.cut_offset(st))
+        below.then_some(st.elevation + self.cut_offset(id, st))
     }
 
-    /// Schnitthöhe des Projekts über der Unterkante von `st`, im niedrigen
-    /// Geschoss knapp unter seiner Oberkante.
-    fn cut_offset(&self, st: &sk_model::Storey) -> f64 {
+    /// Schnitthöhe des Projekts über der Unterkante von `st` (Geschoss
+    /// `id`), im niedrigen Geschoss knapp unter UK Rohdecke darüber; das
+    /// Flachdach hat keine Decke und schneidet frei.
+    fn cut_offset(&self, id: StoreyId, st: &sk_model::Storey) -> f64 {
         let h = self.model.plan_cut_height();
-        h.min(st.height - sk_model::PLAN_CUT_TOP_GAP).max(0.0)
+        if st.kind == sk_model::LevelKind::Roof {
+            return h;
+        }
+        let clear = self.model.clear_height(id);
+        h.min(clear - sk_model::PLAN_CUT_TOP_GAP).max(0.0)
     }
 
     /// Wie der Zug zum Geschoss `active` liegt (Grundriss).
