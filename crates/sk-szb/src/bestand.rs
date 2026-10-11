@@ -99,7 +99,7 @@ pub const BAENDER: [(&str, u32, u32); 12] = [
 ];
 
 /// Werks-Artikel (§10, aus werk.szk).
-pub const ARTIKEL: [WerkArtikel; 33] = [
+pub const ARTIKEL: [WerkArtikel; 41] = [
     a(
         "1S7bUW0010080100000001",
         "m2",
@@ -242,7 +242,7 @@ pub const ARTIKEL: [WerkArtikel; 33] = [
     a(
         "1S7bUW001008010000000V",
         "st",
-        "Flachdachablauf DN 100 wärmegedämmt, mit Aufstockelement",
+        "Attikaablauf DN 100 wärmegedämmt, waagerecht, mit Dampfsperranschluss",
     ),
     a(
         "1S7bUW001008010000000W",
@@ -253,6 +253,46 @@ pub const ARTIKEL: [WerkArtikel; 33] = [
         "1S7bUW001008010000000X",
         "m3",
         "EPS-Dachdämmplatte 035 DAA dh, Streifen Attikakrone",
+    ), // Stand 15: Dachentwässerung außen (Regenfallrohr)
+    a(
+        "1S7bUW001008010000000Y",
+        "st",
+        "Wasserfangkasten Titanzink 0,7mm mit Laubfangsieb, Stutzen DN 100",
+    ),
+    a(
+        "1S7bUW001008010000000Z",
+        "m",
+        "Fallrohr Titanzink rund DN 100, 0,7mm, DIN EN 612",
+    ),
+    a(
+        "1S7bUW001008010000000a",
+        "st",
+        "Rohrschelle DN 100 mit Stockschraube, Abstandsmontage WDVS",
+    ),
+    a(
+        "1S7bUW001008010000000b",
+        "st",
+        "Regenstandrohr Guss DN 100, 1,0m, mit Reinigungsöffnung",
+    ),
+    a(
+        "1S7bUW001008010000000c",
+        "st",
+        "Wasserfangkasten Notüberlauf Titanzink, Stutzen DN 100",
+    ),
+    a(
+        "1S7bUW001008010000000d",
+        "st",
+        "Auslaufbogen Titanzink DN 100",
+    ),
+    a(
+        "1S7bUW001008010000000e",
+        "st",
+        "Wasserspeier Titanzink, 300mm Auskragung, Tropfkante",
+    ),
+    a(
+        "1S7bUW001008010000000f",
+        "st",
+        "Kontrollablauf DN 50 mit Klebeflansch und Insektenschutz",
     ),
 ];
 
@@ -343,7 +383,7 @@ pub const ARTEN: [&str; 13] = [
 ];
 
 /// Werks-Leistungen (§10, aus werk.szk).
-pub const LEISTUNGEN: [WerkLeistung; 75] = [
+pub const LEISTUNGEN: [WerkLeistung; 84] = [
     l(
         "1S7bUW0010080200000001",
         "m3",
@@ -738,7 +778,7 @@ pub const LEISTUNGEN: [WerkLeistung; 75] = [
         "1S7bUW0010080200000012",
         "st",
         "auto",
-        "Dachablauf DN 100 wärmegedämmt mit Aufstockelement, Einbau",
+        "Attikaablauf DN 100 wärmegedämmt, waagerecht, Dampfsperranschluss",
     ),
     l(
         "1S7bUW0010080200000013",
@@ -795,6 +835,60 @@ pub const LEISTUNGEN: [WerkLeistung; 75] = [
         "m2",
         "area",
         "Attikadämmung Krone Flachdach, EPS, Dicke nach Aufbau, unter Blech",
+    ), // Stand 15: Dachentwässerung außen (Regenfallrohr)
+    l(
+        "1S7bUW001008020000001C",
+        "st",
+        "auto",
+        "Wasserfangkasten Titanzink 0,7mm mit Laubfangsieb, Stutzen DN 100",
+    ),
+    l(
+        "1S7bUW001008020000001D",
+        "m",
+        "auto",
+        "Regenfallrohr Titanzink rund DN 100, 0,7mm, inkl. Verbindungen",
+    ),
+    l(
+        "1S7bUW001008020000001E",
+        "st",
+        "auto",
+        "Rohrschelle DN 100 mit Stockschraube durch WDVS, Abstand bis 2,0m",
+    ),
+    l(
+        "1S7bUW001008020000001F",
+        "st",
+        "auto",
+        "Regenstandrohr Guss DN 100, 1,0m, Reinigungsöffnung, an Grundleitung",
+    ),
+    l(
+        "1S7bUW001008020000001G",
+        "st",
+        "auto",
+        "Wasserfangkasten Notüberlauf Titanzink, Stutzen DN 100",
+    ),
+    l(
+        "1S7bUW001008020000001H",
+        "m",
+        "auto",
+        "Notfallrohr Titanzink rund DN 100, frei auslaufend",
+    ),
+    l(
+        "1S7bUW001008020000001I",
+        "st",
+        "auto",
+        "Auslaufbogen Titanzink DN 100 am Notfallrohr, 20cm über Gelände",
+    ),
+    l(
+        "1S7bUW001008020000001J",
+        "st",
+        "auto",
+        "Wasserspeier Titanzink am Notüberlauf, 300mm Auskragung",
+    ),
+    l(
+        "1S7bUW001008020000001K",
+        "st",
+        "auto",
+        "Kontrollablauf Dampfsperrebene DN 50 durch die Aufkantung",
     ),
 ];
 

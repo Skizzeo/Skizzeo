@@ -830,7 +830,7 @@ const RH5: Soll = Soll {
             7490,
         ),
         (
-            "Dachablauf DN 100 wärmegedämmt mit Aufstockelement, Einbau",
+            "Attikaablauf DN 100 wärmegedämmt, waagerecht, Dampfsperranschluss",
             1000,
             40000,
             40000,
