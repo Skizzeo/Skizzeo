@@ -167,6 +167,7 @@ impl Model {
                     elevation: top,
                     height: ROOF_UPSTAND,
                     embed: None,
+                    lines: Default::default(),
                 };
                 let fd = self.storeys.insert(st);
                 note!(self, Storey, new fd);
