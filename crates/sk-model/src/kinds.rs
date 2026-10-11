@@ -497,7 +497,27 @@ mod tests {
             );
         }
         for t in TypeCategory::ALL {
-            assert_eq!(spec(t.category()).type_category, Some(t));
+            if t.is_finish() {
+                // Ausbautypen hängen am Raum, der keinen Typ hat (Raumbuch)
+                assert_eq!(t.category(), Category::Space);
+                assert_eq!(spec(Category::Space).type_category, None);
+            } else {
+                assert_eq!(spec(t.category()).type_category, Some(t));
+            }
+        }
+        // Präfixe und Dateiwörter der Typarten sind eindeutig
+        for (i, a) in TypeCategory::ALL.iter().enumerate() {
+            for b in &TypeCategory::ALL[i + 1..] {
+                assert_ne!(a.prefix(), b.prefix(), "{a:?} {b:?}");
+                assert_ne!(a.word(), b.word(), "{a:?} {b:?}");
+            }
+        }
+        // Ausbautypen teilen Präfix und Wort mit keiner Bauteilart
+        for f in TypeCategory::FINISHES {
+            for c in Category::ALL {
+                assert_ne!(f.prefix(), spec(c).prefix, "{f:?} {c:?}");
+                assert_ne!(f.word(), spec(c).szo, "{f:?} {c:?}");
+            }
         }
     }
 }
