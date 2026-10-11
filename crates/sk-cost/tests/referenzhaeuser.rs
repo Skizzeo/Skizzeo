@@ -1188,6 +1188,35 @@ fn abfangung_ohne_rueckfall() {
     assert_eq!(abfangung(&blatt(&m, &Umfang::projekt())), None);
 }
 
+/// Prüfung P69-1: Ein Teilrücksprung im OG neben dem Vorsprung von RH-5
+/// lässt die Abfangung der Wände darüber stehen. Mit den zwei Stufen hat
+/// der OG-Zug mehr Segmente als der darunter; die herabgezogenen Schichten
+/// folgen der Kopplung statt dem Index. Wand bei 2,0 und 4,0 m teilen,
+/// das Mittelstück im OG 1,5 m zurück: V20 bleibt 10,485 m.
+#[test]
+fn abfangung_bleibt_beim_teilruecksprung() {
+    let soll = abfangung(&blatt(&laden(RH5.datei), &Umfang::projekt()));
+    assert_eq!(soll, Some(10_485));
+    // AW-001 im EG (der Stapel teilt das OG mit), AW-005 im OG selbst
+    for nr in ["AW-001", "AW-005"] {
+        let mut m = laden(RH5.datei);
+        let w = m.elements().iter().find(|(_, e)| e.number == nr).unwrap().0;
+        let (run, s) = m.segment_of(w).unwrap();
+        m.split_wall(w, &[2000.0, 4000.0]).unwrap();
+        let mitte = m.run(run).unwrap().segments[s + 1];
+        let og = match m.run_below(run) {
+            None => m.wall_above(mitte).unwrap(),
+            Some(_) => mitte,
+        };
+        let (alt, _) = m.stack_offset(og).unwrap();
+        assert_eq!(alt, 0.0, "{nr}");
+        assert!(m.set_offset(og, -1500.0).is_some(), "{nr}");
+        let up = m.segment_of(og).unwrap().0;
+        assert!(m.stack_map(up).contains(&None), "{nr}: ohne Stufe");
+        assert_eq!(abfangung(&blatt(&m, &Umfang::projekt())), soll, "{nr}");
+    }
+}
+
 /// Abnahme 12 (Vorschau): Die Vorschau nennt das Netto vorher und nachher
 /// selbst, gleich `kosten` vor und nach der Ausführung; Modell, `revision`,
 /// `ext_revision` bleiben. Lohn 65 €/h auf RH-1: 60.089,83 → 62.501,62
