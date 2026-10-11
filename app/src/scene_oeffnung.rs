@@ -49,3 +49,47 @@ impl Scene {
         id
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sk_math::vec3;
+    use sk_model::oeffnung::{HeightLine, HeightRef, OpeningKind};
+    use sk_model::Model;
+
+    /// Der Strahl von außen trifft die Außenwandfläche; nach dem Anlegen
+    /// einer Öffnung dort geht er durch das Loch und trifft keine
+    /// Außenfläche mehr.
+    #[test]
+    fn strahl_trifft_aussenflaeche_und_loch() {
+        let mut m = Model::with_seed(311);
+        let b = m.add_building(2);
+        let pts = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(10000.0, 8000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ];
+        let eg = m.build_from_polygon(b, &pts).unwrap();
+        let st = m.run(eg).unwrap().storey;
+        let mut s = Scene::with_model(m);
+        let (o, d) = (vec3(5000.0, -9000.0, 1500.0), vec3(0.0, 1.0, 0.0));
+        let (face, p) = s.outer_face_at(o, d).expect("Außenfläche");
+        assert!(face.on_line(p) && face.storey == st);
+        let a = face.at(face.u_of(p) - 600.0, 0.0);
+        let c = face.at(face.u_of(p) + 600.0, 0.0);
+        let op = Opening {
+            kind: OpeningKind::Window,
+            path: vec![vec3(a.x, a.y, 0.0), vec3(c.x, c.y, 0.0)],
+            bottom: HeightRef::Line(st, HeightLine::Sill),
+            top: HeightRef::Line(st, HeightLine::Lintel),
+            reveal: None,
+        };
+        assert!(s.add_opening(op).is_some());
+        assert!(s.outer_face_at(o, d).is_none(), "durch das Loch");
+        assert!(
+            s.outer_face_at(vec3(5000.0, -9000.0, 500.0), d).is_some(),
+            "Brüstung"
+        );
+    }
+}

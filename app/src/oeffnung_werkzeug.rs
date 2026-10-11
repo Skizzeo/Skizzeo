@@ -12,6 +12,8 @@
 use sk_math::{vec3, Vec3};
 use sk_model::oeffnung::{FaceLine, HeightRef, Opening, OpeningKind, OuterFace};
 use sk_model::{LevelEdge, LevelRef};
+use sk_render::Helper;
+use sk_ui::theme::Theme;
 
 /// Eine gefangene Ecke: Fläche, Punkt darauf und Höhenbezug.
 #[derive(Clone, Debug, PartialEq)]
@@ -143,6 +145,8 @@ pub struct Werkzeug {
     pub kind: OpeningKind,
     pub hover: Option<Fang>,
     pub erste: Option<Fang>,
+    /// Zuletzt gerechnete Vorschau, die der Wandwerkzeug zeichnet.
+    pub vorschau: Bild,
 }
 
 /// Was die Vorschau zeichnet: Höhenlinien (gestrichelt, obenauf) und den
@@ -161,6 +165,7 @@ impl Werkzeug {
             kind,
             hover: None,
             erste: None,
+            vorschau: Bild::default(),
         }
     }
 
@@ -207,6 +212,43 @@ impl Werkzeug {
         b.punkt = self.hover.as_ref().map(|h| (h.p, h.line));
         b
     }
+}
+
+/// Hilfslinien der Vorschau: Höhenlinien dünn gestrichelt, Umriss und Ecke
+/// durchgezogen, alles obenauf (Jörn 14:02: ohne z-Fighting).
+pub fn helpers(b: &Bild, scale: f32, theme: &Theme) -> Vec<Helper> {
+    let col = &theme.interact;
+    let p = |v: Vec3| [v.x as f32, v.y as f32, v.z as f32];
+    let line = |a: Vec3, c: Vec3, color, width: f32, dash: f32| Helper {
+        a: p(a),
+        b: p(c),
+        color,
+        width: width * scale,
+        dash: dash * scale,
+        pattern: sk_render::SOLID,
+        occlude: false,
+        round: false,
+    };
+    let mut out: Vec<Helper> = b
+        .linien
+        .iter()
+        .map(|(a, c)| line(*a, *c, col.guide, 1.0, 5.0))
+        .collect();
+    out.extend(
+        b.umriss
+            .iter()
+            .map(|(a, c)| line(*a, *c, col.draw, 2.0, 0.0)),
+    );
+    if let Some((q, fang)) = b.punkt {
+        let (color, size) = if fang {
+            (col.track, 9.0)
+        } else {
+            (col.draw, 6.0)
+        };
+        out.push(line(q, q, col.shadow_tool, size + 3.0, 0.0));
+        out.push(line(q, q, color, size, 0.0));
+    }
+    out
 }
 
 #[cfg(test)]

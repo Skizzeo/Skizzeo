@@ -88,6 +88,9 @@ pub struct WallTool {
     pub ext: Option<ExtModus>,
     /// Gesetzte Erweiterungsbauteile, die die App abholt.
     pub ext_fertig: Vec<ExtPart>,
+    /// Werkzeug „Wandöffnung“ bzw. „Türöffnung“ (Paket O3) statt Wand;
+    /// die App führt es, hier zeichnet es seine Vorschau.
+    pub oeffnung: Option<crate::oeffnung_werkzeug::Werkzeug>,
 }
 
 /// Felder der Pille beim Zeichnen.
@@ -138,6 +141,7 @@ impl WallTool {
             rubber_dip: 0.0,
             ext: None,
             ext_fertig: Vec::new(),
+            oeffnung: None,
         }
     }
 
@@ -412,6 +416,7 @@ impl WallTool {
         self.points.clear();
         self.cursor = None;
         self.input = None;
+        self.oeffnung = None;
         if !on {
             self.ext = None;
         }
@@ -777,6 +782,9 @@ impl WallTool {
     pub fn helpers(&self, cam: &Camera, scale: f32, theme: &Theme) -> Vec<Helper> {
         let col = &theme.interact;
         let mut out = Vec::new();
+        if let Some(w) = &self.oeffnung {
+            return crate::oeffnung_werkzeug::helpers(&w.vorschau, scale, theme);
+        }
         if !self.enabled {
             return out;
         }
