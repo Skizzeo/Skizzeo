@@ -211,9 +211,11 @@ impl Model {
     }
 
     /// Setzt die Perimeterdämmung unter einer Sohlplatte (mm): 0 = keine,
-    /// sonst [`MIN_PERIMETER`] bis [`MAX_PERIMETER`]. Die Dämmung hebt die
-    /// Platte um ihre Dicke über UK Gründung: Der Versatz zum Gelände wächst
-    /// um die Änderung, Schürzentiefe und Einbindetiefe bleiben.
+    /// sonst [`MIN_PERIMETER`] bis [`MAX_PERIMETER`]. Die Dämmung baut sich
+    /// nach unten auf (Jörn 11.10.): OK Sohlplatte, Versatz zum Gelände und
+    /// UK Gründung bleiben, die Schürze behält ihre Höhe. Unter der Dämmung
+    /// bleibt die Schürze mindestens [`MIN_FOOTING`] tief; ist sie dafür zu
+    /// flach, sinkt UK Gründung um den Rest.
     pub fn set_slab_insulation(&mut self, slab: ElementId, t: f64) -> bool {
         let ok = t == 0.0 || (MIN_PERIMETER - 1e-9..=MAX_PERIMETER + 1e-9).contains(&t);
         let old = self.slab_insulation(slab);
@@ -226,21 +228,26 @@ impl Model {
         ) {
             return false;
         }
-        let delta = t - old;
-        // Die Dämmung hebt nur ihr eigenes Gebäude (Entscheidung B)
-        let b = self.building_of_element(slab);
-        let offset = self.terrain_offset_of(b) + delta;
-        if offset.abs() > MAX_TERRAIN_OFFSET + 1e-9 {
-            return false;
-        }
         if t > 0.0 && self.ensure_perimeter_material().is_none() {
             return false;
         }
         self.edit_slab(slab, |s| s.insulation = t);
-        // Erst die Dämmung, dann das Gelände: Die Schürze behält ihre Tiefe
-        if let Some(b) = b {
-            self.put_terrain(b, offset);
-            self.follow_terrain(b, delta);
+        // Unter der Dämmung bleibt die Schürze mindestens 10 cm tief: Ist
+        // sie zu flach, wächst sie nach unten (UK Gründung sinkt), sonst
+        // bleibt alles stehen
+        let gr = self
+            .element(slab)
+            .and_then(|e| self.foundation_level_of(e.storey));
+        if let Some(gr) = gr {
+            let (lo, hi) = self.foundation_bottom_range_of(gr);
+            let z = self.storey(gr).map_or(hi, |s| s.elevation);
+            if z > hi + 1e-9 {
+                if hi < lo - 1e-9 {
+                    self.edit_slab(slab, |s| s.insulation = old);
+                    return false;
+                }
+                self.move_foundation_bottom(gr, hi);
+            }
         }
         self.sync_perimeter(slab);
         self.touch();

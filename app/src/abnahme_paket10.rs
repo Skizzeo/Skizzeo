@@ -168,8 +168,9 @@ fn abnahme_a322_frostschuerze() {
     assert_eq!(m.footing_depth(fuss), Some(d0), "hin und zurück");
 }
 
-/// A324 Perimeterdämmung am RH-1: 120 mm heben das Haus über sein Gelände,
-/// die Erdmengen bleiben gleich; seit Werksbestand Stand 9 rechnet sie als
+/// A324 Perimeterdämmung am RH-1: 120 mm bauen sich nach unten auf (Jörn
+/// 11.10.), das Haus bleibt auf seinem Gelände; innerhalb der Schürze wird
+/// um 120 mm tiefer ausgehoben, die übrigen Erdmengen bleiben; seit Werksbestand Stand 9 rechnet sie als
 /// Position B70 (vorher ein Befund statt einer stillen Lücke); 10 mm abgelehnt,
 /// 0 entfernt sie wieder.
 #[test]
@@ -192,8 +193,20 @@ fn abnahme_a324_perimeterdaemmung() {
     assert!(!m.set_slab_insulation(slab, 10.0), "unter 20 mm abgelehnt");
     schritt(&mut m, |m| m.set_slab_insulation(slab, 120.0));
     let b = m.storey(m.element(slab).unwrap().storey).unwrap().building;
-    assert_eq!(m.terrain_offset_of(b), 120.0, "Haus 120 mm höher");
-    assert_eq!(erde(&m), e0, "Erdmengen gleich");
+    assert_eq!(m.terrain_offset_of(b), 0.0, "Haus bleibt");
+    let g = m.ground_basis(m.run_of(slab).unwrap()).unwrap();
+    let mehr = ((g.slab_area - g.footing_area) * 120.0).round() as i64;
+    let e1 = erde(&m);
+    for k in ["earth.excavation", "earth.disposal"] {
+        assert!((summe(&e1, k) - summe(&e0, k) - mehr).abs() <= 2, "{k}");
+    }
+    let rest = |v: &[(String, &'static str, i64)]| -> Vec<_> {
+        v.iter()
+            .filter(|x| x.1 != "earth.excavation" && x.1 != "earth.disposal")
+            .cloned()
+            .collect()
+    };
+    assert_eq!(rest(&e1), rest(&e0), "übrige Erdmengen gleich");
     let t = rund(&m);
     assert!(t.contains("[perimeter]") && t.contains(" insulation=120"));
     let k = sk_cost::lesen::katalog(&m, None);

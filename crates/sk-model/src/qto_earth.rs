@@ -4,11 +4,12 @@
 //! `auto=earth.…` (kosten/erdarbeiten-recherche.md).
 //!
 //! Höhen relativ zu ±0,00 (OK Sohlplatte), nach oben positiv:
-//! OK Gelände → (Oberboden) → gewachsener Boden → UK Platte bzw. UK Dämmung
-//! → (kapillarbrechende Schicht innerhalb der Frostschürze) → UK Schürze.
-//! Die Baugrube reicht bis UK Dämmung und um den Arbeitsraum über den
-//! Plattenumriss hinaus; die Frostschürze ist erdgeschalt, ihr Graben so
-//! breit wie sie selbst.
+//! OK Gelände → (Oberboden) → gewachsener Boden → UK Platte → (innerhalb
+//! der Frostschürze: Perimeterdämmung, kapillarbrechende Schicht) → UK
+//! Schürze. Die Baugrube reicht bis UK Platte und um den Arbeitsraum über
+//! den Plattenumriss hinaus; innerhalb der Schürze wird für Dämmung und
+//! Schicht tiefer ausgehoben. Die Frostschürze ist erdgeschalt, ihr Graben
+//! so breit wie sie selbst.
 
 use crate::foundation::Foundation;
 use crate::qto::AutoMenge;
@@ -137,7 +138,9 @@ pub const SLOPE: &str = "earth.slope";
 pub struct ErdBasis {
     /// OK Gelände.
     pub terrain_z: f64,
-    /// UK Perimeterdämmung, ohne Dämmung UK Platte.
+    /// UK Platte (= OK Schürze).
+    pub slab_bottom_z: f64,
+    /// UK Perimeterdämmung (innerhalb der Schürze), ohne Dämmung UK Platte.
     pub insulation_bottom_z: f64,
     /// UK Frostschürze.
     pub footing_bottom_z: f64,
@@ -155,6 +158,7 @@ impl ErdBasis {
     pub fn aus(g: &crate::GroundBasis) -> ErdBasis {
         ErdBasis {
             terrain_z: g.terrain_z,
+            slab_bottom_z: g.slab_bottom_z,
             insulation_bottom_z: g.insulation_bottom_z,
             footing_bottom_z: g.footing_bottom_z,
             outline: g.outline.clone(),
@@ -170,6 +174,7 @@ impl ErdBasis {
         let p = f.params;
         ErdBasis {
             terrain_z,
+            slab_bottom_z: -p.slab_thickness,
             insulation_bottom_z: -p.slab_thickness,
             footing_bottom_z: -p.slab_thickness - p.footing_depth,
             outline: f.outline.clone(),
@@ -222,11 +227,12 @@ pub fn erd_mengen(b: &ErdBasis, boden: &Boden, mut menge: impl FnMut(&'static st
     let t = eckzahl(&b.outline);
     // gewachsener Boden unter dem Oberboden
     let z_n = b.terrain_z - o;
-    let z_b = b.insulation_bottom_z;
+    let z_s = b.slab_bottom_z;
+    let z_b = b.insulation_bottom_z.min(z_s);
     let z_p = z_b - g;
-    // Baugrube bis UK Dämmung; Böschung, wenn sie tiefer reicht als 1,25 m
-    let h = (z_n - z_b).max(0.0);
-    let boeschung = b.terrain_z - z_b > SENKRECHT_BIS && boden.boeschung > 0.0;
+    // Baugrube bis UK Platte; Böschung, wenn sie tiefer reicht als 1,25 m
+    let h = (z_n - z_s).max(0.0);
+    let boeschung = b.terrain_z - z_s > SENKRECHT_BIS && boden.boeschung > 0.0;
     let k = if boeschung {
         1.0 / boden.boeschung.clamp(1.0, 90.0).to_radians().tan()
     } else {
@@ -275,21 +281,27 @@ pub fn erd_mengen(b: &ErdBasis, boden: &Boden, mut menge: impl FnMut(&'static st
         menge(EXCAVATION, grube, wie);
         aushub += grube;
     }
-    // Schicht innerhalb der Schürze, soweit unter dem gewachsenen Boden
-    let bett = innen * (z_b.min(z_n) - z_p).max(0.0);
+    // Dämmung und Schicht innerhalb der Schürze, soweit unter dem
+    // gewachsenen Boden
+    let bett = innen * (z_s.min(z_n) - z_p).max(0.0);
     if bett > 0.0 {
+        let wofuer = if z_b < z_s {
+            "Dämmung und Schicht"
+        } else {
+            "Schicht"
+        };
         menge(
             EXCAVATION,
             bett,
             format!(
-                "für Schicht {} m² × {}",
+                "für {wofuer} {} m² × {}",
                 zahl(innen, 1e6),
-                breite(z_b.min(z_n) - z_p)
+                breite(z_s.min(z_n) - z_p)
             ),
         );
         aushub += bett;
     }
-    let graben_h = (z_b.min(z_n) - b.footing_bottom_z).max(0.0);
+    let graben_h = (z_s.min(z_n) - b.footing_bottom_z).max(0.0);
     let graben = ring * graben_h;
     if graben > 0.0 {
         menge(
@@ -401,6 +413,7 @@ mod tests {
         let ring = w * d - (w - 2.0 * s) * (d - 2.0 * s);
         ErdBasis {
             terrain_z,
+            slab_bottom_z: -200.0,
             insulation_bottom_z: -200.0,
             footing_bottom_z: -800.0,
             outline: rechteck(w, d),
