@@ -159,7 +159,7 @@ impl Model {
         let outward = (o - c.inner_offset()).signum();
         let (zb, zt) = (c.base, c.base + c.height);
         let reach = c.thickness();
-        for (_, e) in self.elements.iter() {
+        for (id, e) in self.elements.iter() {
             let ElementKind::Opening(op) = &e.kind else {
                 continue;
             };
@@ -218,6 +218,8 @@ impl Model {
                         },
                         reveal_z: (rev[3], rev[2]),
                         shell: if mono { c.layers.len() } else { shell },
+                        u_right: rechts,
+                        opening: Some(id),
                     });
                 }
             }

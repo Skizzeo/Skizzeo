@@ -44,6 +44,9 @@ pub struct LayerQto {
     /// Fußpunkt aus Schaumglas unter dieser Schicht (W2), mm³; nicht im
     /// Volumen der Schicht, er steht in [`WallQto::facing_foot`].
     pub foot: f64,
+    /// Löcher der Öffnungen in dieser Schicht (O2); ihr Volumen ist vom
+    /// Volumen abgezogen.
+    pub holes: Vec<crate::qto_oeffnung::LayerHole>,
 }
 
 /// Fußpunkt der Verblendschale auf der Dachterrasse (W2, Tagesplan P1):
@@ -374,6 +377,7 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                             attika: 0.0,
                             inner_area: 0.0,
                             foot: 0.0,
+                            holes: Vec::new(),
                         };
                     }
                     let quad = [fa[k], fa[j], fb[j], fb[k]];
@@ -408,7 +412,20 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                     // Fußpunkt aus Schaumglas (W2): nicht Verblender
                     let h_foot = foot.map_or(0.0, |f| if f.layer == li { f.height() } else { 0.0 });
                     let v_foot = area * h_foot;
-                    let volume = area * h_here + v_up + v_att - v_foot;
+                    let holes = if air {
+                        Vec::new()
+                    } else {
+                        crate::qto_oeffnung::layer_holes(
+                            model,
+                            &chain,
+                            k,
+                            li,
+                            (fa, fb),
+                            l.thickness,
+                        )
+                    };
+                    let v_holes: f64 = holes.iter().map(|h| h.volume).sum();
+                    let volume = area * h_here + v_up + v_att - v_foot - v_holes;
                     let density = model.material(l.material).map_or(0.0, |m| m.density);
                     LayerQto {
                         material: l.material,
@@ -423,6 +440,7 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                         attika: v_att,
                         inner_area: if air { 0.0 } else { li_len * h_here },
                         foot: v_foot,
+                        holes,
                     }
                 })
                 .collect();
@@ -2270,8 +2288,19 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                 // Platten, Decken und Streifen: Dämmschicht mit Fläche
                 (None, _) => (if ins { area } else { 0.0 }, 0.0, false),
             };
+            // Abrechnungsfläche ohne Lochabzug: über ihn entscheidet die
+            // VOB-Regel je Schicht (Übermessen bis 2,5 m²)
+            let gross = match q {
+                ElementQto::Wall(w) => {
+                    volume
+                        + w.layers
+                            .get(i)
+                            .map_or(0.0, |l| l.holes.iter().map(|h| h.volume).sum())
+                }
+                _ => volume,
+            };
             let mean = if l.thickness > 0.0 {
-                volume / l.thickness
+                gross / l.thickness
             } else {
                 0.0
             };

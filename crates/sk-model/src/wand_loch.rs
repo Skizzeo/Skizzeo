@@ -31,6 +31,10 @@ pub struct Hole {
     /// bis vor die Luftschicht, WDVS bis vor den Kern); die übrigen bekommen
     /// die um den Anschlag größere.
     pub shell: usize,
+    /// Läuft `u` von außen gesehen nach rechts? Dann ist der Anfang links.
+    pub u_right: bool,
+    /// Die Öffnung, aus der das Loch stammt (Mengen, VOB-Schwelle).
+    pub opening: Option<crate::ElementId>,
 }
 
 /// Bereich eines Lochs in einer Schicht: längs (u) und Höhe (z).
@@ -548,6 +552,8 @@ mod tests {
             reveal_u: (60.0, 60.0),
             reveal_z: (0.0, 60.0),
             shell: 1,
+            u_right: true,
+            opening: None,
         };
         assert_eq!(h.kasten(true), ((1000.0, 2000.0), (875.0, 2385.0)));
         assert_eq!(h.kasten(false), ((940.0, 2060.0), (875.0, 2445.0)));
@@ -574,6 +580,8 @@ mod tests {
             reveal_u: (30.0, 30.0),
             reveal_z: (0.0, 30.0),
             shell: 1,
+            u_right: true,
+            opening: None,
         };
         c.joints.holes.push(h.clone());
         (c, h)

@@ -312,3 +312,71 @@ fn oeffnungen_in_der_datei() {
     let kaputt = text.replacen(":sill", ":brüstung", 1);
     assert!(szo::read(&kaputt, GuidGen::with_seed(5)).is_err());
 }
+
+/// Mengen (VOB-Vorgabe §5): je getroffener Schicht das eigene Lochmaß mit
+/// Anschlag, Laibungslängen und -tiefe; das Volumen sinkt um jedes Loch,
+/// die Abrechnungsfläche bleibt ohne Abzug, bis die VOB-Regel entscheidet.
+#[test]
+fn lochmasse_je_schicht() {
+    use crate::qto::run_qto;
+    let (mut m, eg, og) = haus(None);
+    let vorher = run_qto(&m, eg);
+    let id = m.add_opening(fenster(&m, eg, (3000.0, 4250.0))).unwrap();
+    let q = run_qto(&m, eg);
+    let (d, k) = (&q[0].layers[0], &q[0].layers[1]);
+    assert_eq!((d.holes.len(), k.holes.len()), (1, 1));
+    let (hd, hk) = (&d.holes[0], &k.holes[0]);
+    assert_eq!((hd.opening, hd.kind, hd.sill), (id, OpeningKind::Window, true));
+    assert!((hd.width - 1250.0).abs() < 1e-6 && (hd.height - 1510.0).abs() < 1e-6);
+    assert!((hk.width - 1310.0).abs() < 1e-6 && (hk.height - 1540.0).abs() < 1e-6);
+    assert_eq!(hd.reveal, [1510.0, 1510.0, 1250.0, 1250.0]);
+    assert!((hd.depth - d.thickness).abs() < 1e-9);
+    for (a, b) in vorher[0].layers.iter().zip(&q[0].layers) {
+        let v: f64 = b.holes.iter().map(|h| h.volume).sum();
+        assert!((a.volume - v - b.volume).abs() < 1.0, "{} {} {v}", a.volume, b.volume);
+    }
+    assert_eq!(q[1], vorher[1], "andere Segmente unberührt");
+    // Ecköffnung: zur Ecke hin keine Laibung
+    let (mut m, eg2, _) = haus(None);
+    let _ = (eg, og);
+    m.add_opening(Opening {
+        path: vec![
+            aussen(&m, eg2, 0, 7000.0),
+            ecke(&m, eg2),
+            aussen(&m, eg2, 1, 1500.0),
+        ],
+        ..fenster(&m, eg2, (0.0, 1.0))
+    })
+    .unwrap();
+    let q = run_qto(&m, eg2);
+    let (a, b) = (&q[0].layers[0].holes[0], &q[1].layers[0].holes[0]);
+    // Segment 0 von außen (Westen) gesehen läuft u nach links: die Ecke
+    // liegt links, Segment 1 (Norden) läuft ebenfalls nach links
+    assert_eq!(a.reveal[..2], [0.0, 1510.0]);
+    assert_eq!(b.reveal[..2], [1510.0, 0.0]);
+    assert_eq!(a.opening, b.opening);
+}
+
+/// Geschossübergreifend: die Höhe teilt sich auf EG- und OG-Wand, oben
+/// zeigt nur das OG eine Laibung, unten nur das EG.
+#[test]
+fn lochmasse_ueber_geschosse() {
+    use crate::qto::run_qto;
+    let (mut m, eg, og) = haus(None);
+    let s_og = storey(&m, og);
+    m.add_opening(Opening {
+        top: HeightRef::Line(s_og, HeightLine::Lintel),
+        ..fenster(&m, eg, (3000.0, 4000.0))
+    })
+    .unwrap();
+    let (a, b) = (&run_qto(&m, eg)[0].layers[0], &run_qto(&m, og)[0].layers[0]);
+    let (ha, hb) = (&a.holes[0], &b.holes[0]);
+    assert!(ha.reveal[2] == 0.0 && ha.reveal[3] > 0.0, "{:?}", ha.reveal);
+    assert!(hb.reveal[2] > 0.0 && hb.reveal[3] == 0.0, "{:?}", hb.reveal);
+    assert!(ha.sill && hb.sill, "Brüstung im Geschoss der Öffnung");
+    let z_eg = m.storey(storey(&m, eg)).unwrap().elevation;
+    let z_og = m.storey(s_og).unwrap().elevation;
+    let soll = z_og + 2385.0 - (z_eg + 875.0);
+    assert!(ha.height + hb.height <= soll + 1e-6);
+    assert!(ha.height + hb.height > soll - 400.0, "nur das Deckenband fehlt");
+}
