@@ -15,9 +15,7 @@ use crate::library::{
 };
 use crate::model::{free_code, same_type, Model, ETICS_TYPE_GUID, EXTERIOR_TYPE_GUID};
 use crate::proctex::{CompanyPreset, Pattern};
-use crate::szo::{
-    self, check_header, err, keyword, register, sorted, type_category, Line, LoadError, Record,
-};
+use crate::szo::{self, check_header, err, keyword, register, sorted, Line, LoadError, Record};
 use crate::trade::{self, Trade};
 use std::collections::HashMap;
 
@@ -132,6 +130,27 @@ impl Library {
                             .get(strip)
                             .is_some_and(|m| m.category == MatCategory::Insulation)
                 }
+            })
+            .map(|(_, t)| {
+                if t.code.is_empty() {
+                    t.name.clone()
+                } else {
+                    t.code.clone()
+                }
+            })
+            .collect()
+    }
+
+    /// Kurzzeichen der Ausbautypen mit einer Schicht ohne Dicke, die keine
+    /// Beschichtung ist ([`LayerSet::coat_problem`], wie
+    /// [`Model::finish_problems`]). Sie werden wie ein ungültiges
+    /// Deckenauflager übernommen und gemeldet.
+    pub fn invalid_finishes(&self) -> Vec<String> {
+        self.types
+            .iter()
+            .filter(|(_, t)| {
+                t.coat_problem(|id| self.materials.get(id).map(|m| m.category))
+                    .is_some()
             })
             .map(|(_, t)| {
                 if t.code.is_empty() {
@@ -439,7 +458,7 @@ fn write_known(lib: &Library) -> String {
     ] {
         if let Some(t) = set.and_then(|id| lib.types.get(id)) {
             Line::new("default")
-                .word("cat", type_category(cat))
+                .word("cat", cat.word())
                 .guid("set", Some(t.guid))
                 .finish(&mut out);
         }
@@ -695,14 +714,14 @@ pub fn read_szk_with(text: &str, ext: &[&str]) -> Result<Library, LoadError> {
     for r in recs("default") {
         // Standard einer unbekannten oder waagerechten Art: bleibt stehen
         let cat = r.get("cat")?;
-        let wall = TypeCategory::WALLS.iter().any(|&c| type_category(c) == cat);
+        let wall = TypeCategory::WALLS.iter().any(|&c| c.word() == cat);
         if !wall {
             r.skip();
             alien.push(r.line);
             foreign.unknown += 1;
             continue;
         }
-        let cat = keyword(r, "cat", &TypeCategory::ALL, type_category)?;
+        let cat = keyword(r, "cat", &TypeCategory::ALL, TypeCategory::word)?;
         let g = r.guid("set")?;
         let id = set_ids
             .get(&g)
@@ -1443,7 +1462,7 @@ mod tests {
                 ..vorlage.clone()
             }));
         }
-        let [mw, sb, dae, putz, holz, luft, _blech, _abdichtung] = mats[..] else {
+        let [mw, sb, dae, putz, holz, luft, _blech, _abdichtung, .., anstrich] = mats[..] else {
             unreachable!()
         };
         let lage = |material, thickness, function, core| {
@@ -1469,7 +1488,7 @@ mod tests {
                     // waagerechte Typen: genau eine Kernschicht (Regel 38),
                     // Dachterrasse und Flachdach keine (Regeln 39, 48)
                     lage(mw, 175.0, LayerFunction::Structure, cat.is_wall()),
-                    lage(sb, 200.0, LayerFunction::Structure, !cat.is_build_up()),
+                    lage(sb, 200.0, LayerFunction::Structure, cat.variable_core()),
                     lage(holz, 20.0, LayerFunction::Finish, false),
                 ],
                 bearing: if cat.is_wall() {
@@ -1483,10 +1502,44 @@ mod tests {
                 ..vorlage.clone()
             });
         }
+        // Ausbau (Raumbuch): Beschichtung ohne Dicke, Sockelleiste mit Höhe
+        for t in lib.types.ids().collect::<Vec<_>>() {
+            let t = lib.types.get_mut(t).unwrap();
+            match t.category {
+                TypeCategory::Skirting => {
+                    t.layers = vec![lage(holz, 15.0, LayerFunction::Finish, false)];
+                    t.height = Some(60.0);
+                }
+                c if c.is_finish() => {
+                    t.layers
+                        .push(lage(anstrich, 0.0, LayerFunction::Finish, false))
+                }
+                _ => {}
+            }
+        }
         let text = write_szk(&lib);
-        for w in ["air", "concrete", "plaster", "timber", "membrane", "airgap"] {
+        for w in [
+            "air",
+            "concrete",
+            "plaster",
+            "timber",
+            "membrane",
+            "airgap",
+            "screed",
+            "ceramic",
+            "flooring",
+            "coating",
+            "floorfinish",
+            "wallfinish",
+            "walltiles",
+            "ceilingfinish",
+        ] {
             assert!(text.contains(&format!("={w} ")), "{w}");
         }
+        assert!(
+            text.contains("cat=skirting changed=1 h=60 "),
+            "Höhe der Sockelleiste"
+        );
         let back = read_szk(&text).unwrap();
         assert_eq!(back, lib);
         assert_eq!(write_szk(&back), text);

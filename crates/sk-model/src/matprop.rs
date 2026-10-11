@@ -91,6 +91,11 @@ pub fn price_unit(c: MatCategory) -> Option<&'static str> {
         | MatCategory::Insulation
         | MatCategory::Timber => Some("m3"),
         MatCategory::Plaster | MatCategory::Metal | MatCategory::Membrane => Some("m2"),
+        // Ausbau des Raumbuchs: nach Fläche bei seiner Dicke
+        MatCategory::Screed
+        | MatCategory::Ceramic
+        | MatCategory::Flooring
+        | MatCategory::Coating => Some("m2"),
         MatCategory::Air => None,
     }
 }
@@ -103,6 +108,10 @@ pub fn waste_default(c: MatCategory) -> f64 {
         MatCategory::Masonry | MatCategory::Concrete | MatCategory::Insulation => 5.0,
         MatCategory::Plaster | MatCategory::Timber | MatCategory::Metal => 10.0,
         MatCategory::Membrane => 15.0,
+        // Raumbuch (#80, Kosten H80-1): Estrich wie Beton, Fliesen,
+        // Beläge und Beschichtung mit Zuschnitt
+        MatCategory::Screed => 5.0,
+        MatCategory::Ceramic | MatCategory::Flooring | MatCategory::Coating => 10.0,
         MatCategory::Air => 0.0,
     }
 }
@@ -399,6 +408,8 @@ mod tests {
         assert!(check_prop(c, WASTE, &PropValue::Number(5.0)).is_ok());
         assert!(check_prop(c, WASTE, &PropValue::Number(101.0)).is_err());
         assert_eq!(waste_default(MatCategory::Membrane), 15.0);
+        assert_eq!(waste_default(MatCategory::Screed), 5.0);
+        assert_eq!(waste_default(MatCategory::Coating), 10.0);
         let mut props = PropSet::new();
         props.insert(WASTE.into(), PropValue::Number(7.5));
         let mut out = String::new();
