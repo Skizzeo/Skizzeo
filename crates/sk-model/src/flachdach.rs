@@ -1703,7 +1703,9 @@ mod tests {
         pts.insert(2, vec3(3000.0, 8000.0, 0.0));
         schritt(&mut m, |m| m.set_run_points(eg, &pts).is_some());
         let r2 = m.flat_roof_over(floor).unwrap();
-        assert_eq!(r2.outline.len(), r.outline.len() + 1);
+        // Mit PR #61 fällt der Fugenpunkt aus dem Umriss (simplified); die
+        // Menge muss in beiden Fällen gleich bleiben
+        assert!(r2.outline.len() >= r.outline.len());
         let (face2, vol2) = r2.inner_qto();
         assert!((face2 - face).abs() < 1e-3, "{face} {face2}");
         assert!((vol2 - vol).abs() < 1e-1, "{vol} {vol2}");
