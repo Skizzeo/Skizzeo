@@ -99,7 +99,7 @@ pub use model::{
     SLAB_THICKNESS, SOFFIT_PART, SOFFIT_THICKNESS, STRIP_PART, TERRACE_CROWN, TERRACE_PART,
     TERRACE_TYPE_GUID, TERRACE_UPSTAND, WALKABLE_DEPTH,
 };
-pub use model::{Fangziele, OpeningFault, Wandende, Wandflaeche};
+pub use model::{EckeFehler, Fangziele, OpeningFault, Wandende, Wandflaeche, ZugPunkte};
 pub use model::{
     BATTEN, CLADDING_MAT_GUID, COUNTER, FOAMGLASS_MAT_GUID, MAX_BATTEN, MAX_CLADDING, MAX_DRIP,
     MIN_BATTEN, MIN_CLADDING, MIN_DRIP, SOFFIT_CLADDING, SOFFIT_DRIP,
