@@ -61,6 +61,7 @@ impl App {
         surface.close_side(WindowId::Levels);
         self.geschoss.open = false;
         self.geschoss.ui.edit = None;
+        self.geschoss.pending_move = None;
         if self.ui.levels_open {
             self.ui.levels_open = false;
             self.dirty_buttons.push(Id::LevelsOpen);
@@ -77,12 +78,30 @@ impl App {
         }
     }
 
-    /// Ereignis aus dem Geschossfenster: Ziehen, Zahlen und die Wahl eines
-    /// Geschosses wirken auf das Modell wie im Hauptfenster.
+    /// Ereignis aus dem Geschossfenster. Mausbewegungen werden gesammelt:
+    /// verarbeitet wird die letzte vor dem nächsten anderen Ereignis bzw.
+    /// beim Abgleich, wie `coalesce_moves` im Hauptfenster.
     pub(crate) fn handle_geschoss(&mut self, e: Event, surface: &Surface) {
         if !self.geschoss.open {
             return;
         }
+        if let Event::MouseMove { .. } = e {
+            self.geschoss.pending_move = Some(e);
+            return;
+        }
+        self.flush_geschoss_move(surface);
+        self.geschoss_event(e, surface);
+    }
+
+    fn flush_geschoss_move(&mut self, surface: &Surface) {
+        if let Some(e) = self.geschoss.pending_move.take() {
+            self.geschoss_event(e, surface);
+        }
+    }
+
+    /// Ziehen, Zahlen und die Wahl eines Geschosses wirken auf das Modell
+    /// wie im Hauptfenster.
+    fn geschoss_event(&mut self, e: Event, surface: &Surface) {
         let Some(out) = self.geschoss.handle(&e) else {
             return;
         };
@@ -125,6 +144,7 @@ impl App {
         if !self.geschoss.open {
             return;
         }
+        self.flush_geschoss_move(surface);
         let docked = surface.layout().levels_docked();
         if docked != self.geschoss.docked {
             self.geschoss.docked = docked;

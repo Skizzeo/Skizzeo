@@ -28,6 +28,9 @@ pub struct GeschossFenster {
     pub open: bool,
     /// Knopf „Geschossmanager“ geklickt (wird nach den Ereignissen geöffnet).
     pub wanted: bool,
+    /// Letzte noch nicht verarbeitete Mausbewegung: beim Ziehen zählt nur
+    /// die letzte je Bild, wie im Hauptfenster (Review #70).
+    pub pending_move: Option<Event>,
     pub w: u32,
     pub h: u32,
     pub title: TitleBar,
@@ -50,6 +53,7 @@ impl GeschossFenster {
         GeschossFenster {
             open: false,
             wanted: false,
+            pending_move: None,
             w: 0,
             h: 0,
             title,
@@ -101,7 +105,15 @@ impl GeschossFenster {
             Event::Focus(f) => {
                 self.title.active = f;
                 self.dirty = true;
-                None
+                // Ein anderes Fenster kommt nach vorn: Ziehen bricht ab,
+                // eine Eingabe gilt (Review #70)
+                if f {
+                    None
+                } else if self.ui.level_dragging().is_some() {
+                    Some(Out::Key(Key::Escape, Modifiers::default()))
+                } else {
+                    self.ui.edit.is_some().then(|| Out::Ui(self.ui.end_edit()))
+                }
             }
             Event::Redraw => {
                 self.dirty = true;
@@ -111,7 +123,10 @@ impl GeschossFenster {
             Event::Key {
                 key, down, mods, ..
             } => match self.ui.key(key, down, mods) {
-                Some(out) => Some(Out::Ui(out)),
+                Some(out) => {
+                    self.dirty = true;
+                    Some(Out::Ui(out))
+                }
                 None => down.then_some(Out::Key(key, mods)),
             },
             Event::MouseMove { x, y, .. } => {
@@ -290,5 +305,35 @@ mod tests {
             Some(Out::Key(Key::Char('Z'), _))
         ));
         assert!(matches!(klick(&mut f, 230.0, 600.0), Some(Out::Ui(_))));
+    }
+
+    /// Review #70, 1: Getipptes erscheint sofort; verliert das Fenster den
+    /// Fokus, gilt die Eingabe, ein Ziehen bricht ab.
+    #[test]
+    fn tippen_zeichnet_neu_und_fokus_beendet() {
+        let th = Theme::dark();
+        let mut f = fenster();
+        let l = Scene::new().levels();
+        let og = l.bands.iter().find(|b| b.name == "OG").unwrap().id;
+        let feld = crate::ui::Field::StoreyHeight(og);
+        f.ui.focus_field(feld);
+        f.dirty = true;
+        assert!(f.frame(&th).is_some());
+        let taste = |k: Key| Event::Key {
+            key: k,
+            down: true,
+            repeat: false,
+            mods: M,
+        };
+        for k in [Key::Char('3'), Key::Backspace, Key::Char('3')] {
+            assert!(matches!(f.handle(&taste(k)), Some(Out::Ui(_))));
+            assert!(f.frame(&th).is_some(), "{k:?} sofort zu sehen");
+        }
+        match f.handle(&Event::Focus(false)) {
+            Some(Out::Ui(out)) => assert_eq!(out.submit, Some((feld, 3000.0))),
+            _ => panic!("Eingabe gilt beim Fokusverlust"),
+        }
+        assert!(f.ui.edit.is_none());
+        assert!(f.handle(&Event::Focus(false)).is_none());
     }
 }

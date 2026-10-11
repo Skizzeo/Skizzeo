@@ -42,6 +42,13 @@ impl Ui {
         true
     }
 
+    /// Beendet eine Eingabe wie ein Klick daneben: ein gültiger Wert gilt.
+    pub fn end_edit(&mut self) -> UiOut {
+        let mut out = UiOut::default();
+        self.finish_edit(&mut out);
+        out
+    }
+
     /// Zeigt das Paneel „Geschosse“ das Diagramm: im eigenen Fenster und im
     /// Hauptfenster neben dem Dialog „Gebäude erstellen“; sonst ist es dort
     /// der Knopf „Geschossmanager“.

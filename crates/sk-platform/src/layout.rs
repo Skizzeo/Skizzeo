@@ -429,12 +429,15 @@ impl Windows {
                 self.open = false;
                 self.shown = false;
                 self.min = [false; 3];
+                let restore_max = std::mem::take(&mut self.restore_max);
+                let give_back = self.give_back.take();
                 if !was {
                     return Vec::new();
                 }
                 let mut out = vec![Action::Close(WindowId::Quantity)];
                 let m = self.main;
-                if let Some((before, fill)) = self.filled.filter(|_| self.left_docked_shown()) {
+                let left = self.left_docked_shown();
+                if let Some((before, fill)) = self.filled.filter(|_| left) {
                     // Links bleibt das Geschossfenster: der Rest wird breiter
                     let fill = (fill.0, fill.1, fill.2 + width, fill.3);
                     self.filled = Some((before, fill));
@@ -442,19 +445,23 @@ impl Windows {
                 } else if let Some((mut before, _)) = self.filled.take() {
                     // Gefüllt: jetzt richtig maximieren, vorher die alte Lage
                     // (mit der Breite von vor dem Öffnen, falls es abgab)
-                    if let Some(w) = self.give_back {
+                    if let Some(w) = give_back {
                         before.2 = w;
                     }
                     out.push(Action::Place(WindowId::Main, before));
                     out.push(Action::Show(WindowId::Main, Show::Maximize));
-                    self.restore_max = false;
-                } else if std::mem::take(&mut self.restore_max) {
+                } else if restore_max && left {
+                    // Links bleibt das Geschossfenster: es maximiert beim
+                    // Schließen, bis dahin bekommt das Hauptfenster den Platz
+                    self.links.restore_max = true;
+                    self.main = (m.0, m.1, m.2 + width, m.3);
+                    out.push(Action::Place(WindowId::Main, self.main));
+                } else if restore_max {
                     out.push(Action::Show(WindowId::Main, Show::Maximize));
-                } else if let Some(w) = self.give_back.take() {
+                } else if let Some(w) = give_back {
                     self.main = (m.0, m.1, w, m.3);
                     out.push(Action::Place(WindowId::Main, self.main));
                 }
-                self.give_back = None;
                 out
             }
             WindowId::Main if changed => vec![Action::AskSave],

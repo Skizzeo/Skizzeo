@@ -19,11 +19,12 @@ pub(super) struct Links {
     pub(super) shown: bool,
     docked: bool,
     rect: Option<Rect>,
-    /// Linke Kante des Hauptfensters, bevor es beim Öffnen rechts
-    /// ausgewichen ist: beim Schließen bekommt es den Platz zurück.
+    /// So viel ist das Hauptfenster beim Öffnen nach rechts ausgewichen:
+    /// beim Schließen bekommt es den Platz an seiner linken Kante zurück,
+    /// auch wenn es inzwischen woanders steht (Review #70).
     give_back: Option<i32>,
     /// Das Hauptfenster war maximiert und wurde dafür verkleinert.
-    restore_max: bool,
+    pub(super) restore_max: bool,
 }
 
 impl Links {
@@ -142,7 +143,7 @@ impl Windows {
         if m.0 - width < work.0 {
             // Links zu wenig Platz: das Hauptfenster gibt an seiner linken Kante ab
             let dx = work.0 + width - m.0;
-            self.links.give_back = Some(m.0);
+            self.links.give_back = Some(dx);
             m = (m.0 + dx, m.1, (m.2 - dx).max(1), m.3);
             out.push(Action::Place(WindowId::Main, m));
         }
@@ -236,23 +237,29 @@ impl Windows {
         }
         let m = self.main;
         let right = self.shown && self.docked;
-        if let Some((before, fill)) = self.filled {
+        if let Some((mut before, fill)) = self.filled {
             if right {
                 let fill = (fill.0 - width, fill.1, fill.2 + width, fill.3);
                 self.filled = Some((before, fill));
                 out.extend(self.set_main(fill));
             } else {
+                // Wiederherstell-Lage mit dem Platz von vor dem Öffnen
+                if let Some(dx) = give_back {
+                    before = (before.0 - dx, before.1, before.2 + dx, before.3);
+                }
                 self.filled = None;
                 out.push(Action::Place(WindowId::Main, before));
                 out.push(Action::Show(WindowId::Main, Show::Maximize));
             }
         } else if restore_max && !right {
             out.push(Action::Show(WindowId::Main, Show::Maximize));
-        } else if let Some(x) = give_back.filter(|&x| x < m.0) {
-            self.main = (x, m.1, m.2 + (m.0 - x), m.3);
-            out.push(Action::Place(WindowId::Main, self.main));
         } else if restore_max {
+            // Rechts bleibt das Mengenfenster: es maximiert beim Schließen
+            self.restore_max = true;
             self.main = (m.0 - width, m.1, m.2 + width, m.3);
+            out.push(Action::Place(WindowId::Main, self.main));
+        } else if let Some(dx) = give_back.filter(|&dx| dx > 0) {
+            self.main = (m.0 - dx, m.1, m.2 + dx, m.3);
             out.push(Action::Place(WindowId::Main, self.main));
         }
         out
@@ -441,6 +448,114 @@ mod tests {
             [
                 Action::Close(WindowId::Quantity),
                 Action::Place(WindowId::Main, (460, 0, 1460, 1040)),
+            ]
+        );
+    }
+
+    /// Review #70, 2: Das Hauptfenster bekommt den abgegebenen Platz an
+    /// seiner linken Kante zurück, auch nach dem Verschieben auf einen
+    /// anderen Bildschirm.
+    #[test]
+    fn abgegebener_platz_relativ() {
+        let mut w = Windows::new(520.0);
+        w.open_levels((100, 100, 1200, 800), false, WORK, 1.0);
+        w.main_moved((2500, 100, 840, 800));
+        assert_eq!(
+            w.close_requested(WindowId::Levels, false),
+            [
+                Action::Close(WindowId::Levels),
+                Action::Place(WindowId::Main, (2140, 100, 1200, 800)),
+            ]
+        );
+    }
+
+    /// Review #70, 4: Abgegeben, gefüllt, geschlossen: wiederhergestellt
+    /// wird die Lage von vor dem Öffnen.
+    #[test]
+    fn gefuellt_schliessen_mit_abgegebenem_platz() {
+        let mut w = Windows::new(520.0);
+        w.open_levels((100, 100, 1200, 800), false, WORK, 1.0);
+        w.maximize_main((460, 100, 840, 800), WORK);
+        assert_eq!(
+            w.close_requested(WindowId::Levels, false),
+            [
+                Action::Close(WindowId::Levels),
+                Action::Place(WindowId::Main, (100, 100, 1200, 800)),
+                Action::Show(WindowId::Main, Show::Maximize),
+            ]
+        );
+    }
+
+    /// Review #70, 5: Das Maximieren-Merken des Mengenfensters bleibt nach
+    /// dem Schließen im gefüllten Zustand nicht stehen.
+    #[test]
+    fn mengen_maximieren_merken_verfaellt() {
+        let mut w = Windows::new(520.0);
+        w.open_quantity(MAIN, true, WORK, 1.0);
+        w.open_levels((0, 0, 1280, 1040), false, WORK, 1.0);
+        w.maximize_main((460, 0, 820, 1040), WORK);
+        w.close_requested(WindowId::Quantity, false);
+        assert_eq!(
+            w.close_requested(WindowId::Levels, false),
+            [
+                Action::Close(WindowId::Levels),
+                Action::Place(WindowId::Main, (0, 0, 1280, 1040)),
+                Action::Show(WindowId::Main, Show::Maximize),
+            ]
+        );
+        w.maximized(WindowId::Main);
+        w.main_moved((0, 0, 1280, 1040));
+        w.open_quantity((0, 0, 1280, 1040), false, WORK, 1.0);
+        assert_eq!(
+            w.close_requested(WindowId::Quantity, false),
+            [Action::Close(WindowId::Quantity)]
+        );
+    }
+
+    /// Review #70, 6: Geschossfenster geteilt geöffnet, Mengen dazu, das
+    /// Geschossfenster zuerst zu: das Mengenfenster maximiert beim Schließen.
+    #[test]
+    fn maximieren_merken_geht_nach_rechts_ueber() {
+        let mut w = Windows::new(520.0);
+        w.open_levels(MAIN, true, WORK, 1.0);
+        w.open_quantity((460, 0, 1460, 1040), false, WORK, 1.0);
+        assert_eq!(
+            w.close_requested(WindowId::Levels, false),
+            [
+                Action::Close(WindowId::Levels),
+                Action::Place(WindowId::Main, (0, 0, 1400, 1040)),
+            ]
+        );
+        assert_eq!(
+            w.close_requested(WindowId::Quantity, false),
+            [
+                Action::Close(WindowId::Quantity),
+                Action::Show(WindowId::Main, Show::Maximize),
+            ]
+        );
+    }
+
+    /// Review #70, 7: Mengen geteilt geöffnet, Geschossfenster dazu, Mengen
+    /// zuerst zu: kein Maximieren über das angedockte Geschossfenster; das
+    /// Hauptfenster bekommt rechts den Platz, das Geschossfenster maximiert
+    /// beim Schließen.
+    #[test]
+    fn mengen_schliessen_maximiert_nicht_ueber_links() {
+        let mut w = Windows::new(520.0);
+        w.open_quantity(MAIN, true, WORK, 1.0);
+        w.open_levels((0, 0, 1280, 1040), false, WORK, 1.0);
+        assert_eq!(
+            w.close_requested(WindowId::Quantity, false),
+            [
+                Action::Close(WindowId::Quantity),
+                Action::Place(WindowId::Main, (460, 0, 1460, 1040)),
+            ]
+        );
+        assert_eq!(
+            w.close_requested(WindowId::Levels, false),
+            [
+                Action::Close(WindowId::Levels),
+                Action::Show(WindowId::Main, Show::Maximize),
             ]
         );
     }
