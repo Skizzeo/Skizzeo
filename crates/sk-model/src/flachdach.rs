@@ -1681,6 +1681,34 @@ mod tests {
         assert_eq!(crate::szo::write(&r), ohne);
     }
 
+    /// Attikadämmung innen mit Gefälle: Menge exakt (gegen feine Summe)
+    /// und gleich, wenn der Umriss einen Punkt in der Flucht dazubekommt
+    /// (Teilen einer Wand, Review Geometrie #61).
+    #[test]
+    fn attikadaemmung_innen_mit_keil_exakt() {
+        let (mut m, og) = haus(EXTERIOR_TYPE_GUID);
+        let st = m.run(og).unwrap().storey;
+        schritt(&mut m, |m| m.set_flat_roof(st, true));
+        let floor = m.floor_of(og).unwrap();
+        let r = m.flat_roof_over(floor).unwrap();
+        assert!(r.slope.is_some());
+        let (face, vol) = r.inner_qto();
+        // feine Summe: Mittelpunktregel auf 400 × 400 je Stück
+        let (fein_a, fein_v) = r.inner_qto_fein(400);
+        assert!((face - fein_a).abs() < face * 1e-4, "{face} {fein_a}");
+        assert!((vol - fein_v).abs() < vol * 1e-4, "{vol} {fein_v}");
+        // Punkt in der Flucht der Nordwand im EG (der Stapel folgt)
+        let eg = m.run_below(og).unwrap();
+        let mut pts = m.run(eg).unwrap().points.clone();
+        pts.insert(2, vec3(3000.0, 8000.0, 0.0));
+        schritt(&mut m, |m| m.set_run_points(eg, &pts).is_some());
+        let r2 = m.flat_roof_over(floor).unwrap();
+        assert_eq!(r2.outline.len(), r.outline.len() + 1);
+        let (face2, vol2) = r2.inner_qto();
+        assert!((face2 - face).abs() < 1e-3, "{face} {face2}");
+        assert!((vol2 - vol).abs() < 1e-1, "{vol} {vol2}");
+    }
+
     /// Dachaufbau und Blech des Flachdachs auf der OG-Decke unter `og`.
     fn da_ab(m: &Model, og: RunId) -> (ElementId, ElementId) {
         let floor = m.floor_of(og).unwrap();
