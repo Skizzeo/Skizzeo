@@ -16,8 +16,8 @@ use crate::solid::{
     at_z, edge_kind, material, right_of, straight_at, SectionFrame, Solid, NO_LAYER,
 };
 use crate::terrace::{
-    attika_section_caps, attika_solid, coping_girth_legs, coping_profile_legs, AttikaPiece,
-    TerracePlan, COPING_INNER, COPING_OUTER,
+    attika_section_caps, attika_solid, coping_girth_legs, coping_profile_legs, crown_section_caps,
+    AttikaPiece, TerracePlan, COPING_INNER, COPING_OUTER,
 };
 use crate::wall::WallChain;
 use sk_math::polygon;
@@ -814,7 +814,7 @@ impl FloorSlab {
         };
         let nn = vec3(n.x, n.y, 0.0).normalized();
         let mut s = match self.crown_band() {
-            Some(b) => attika_section_caps(&self.crown_pieces(), b, p0, n),
+            Some(b) => crown_section_caps(&self.crown_pieces(), b, p0, n),
             None => Solid::default(),
         };
         let d = Solid::default();

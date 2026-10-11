@@ -469,11 +469,24 @@ pub fn attika_solid(pieces: &[AttikaPiece], (z0, z1): (f64, f64), cut: f64) -> S
 /// Schnittflächen der Attika-Stücke mit der senkrechten Ebene durch `p0`
 /// mit Normale `n`, wie die Schichten der Wand umrandet; unten ohne Linie
 /// (die Wand läuft durch).
-pub fn attika_section_caps(
+pub fn attika_section_caps(pieces: &[AttikaPiece], band: (f64, f64), p0: Vec3, n: Vec3) -> Solid {
+    pieces_section_caps(pieces, band, p0, n, false)
+}
+
+/// Schnittflächen des Dämmstreifens auf der Attikakrone wie
+/// [`attika_section_caps`], die Schraffur aber längs wie bei liegender
+/// Dämmung (Jörn 11.10.).
+pub fn crown_section_caps(pieces: &[AttikaPiece], band: (f64, f64), p0: Vec3, n: Vec3) -> Solid {
+    pieces_section_caps(pieces, band, p0, n, true)
+}
+
+/// [`attika_section_caps`], mit `lying` Schraffur längs statt quer.
+fn pieces_section_caps(
     pieces: &[AttikaPiece],
     (z0, z1): (f64, f64),
     p0: Vec3,
     n: Vec3,
+    lying: bool,
 ) -> Solid {
     let mut s = Solid::default();
     if z1 <= z0 {
@@ -488,12 +501,14 @@ pub fn attika_section_caps(
         s.mat = p.mat | material::CUT;
         s.edge_kind = edge_kind::CUT_LAYER;
         let w = (p.quad[3] - p.quad[0]).length().max(1.0);
+        let t = (z1 - z0).max(1.0);
         for (a, b) in polygon::plane_intervals(&p.quad, p0, n, along) {
-            s.quad_uv(
-                [pt(a, z0), pt(b, z0), pt(b, z1), pt(a, z1)],
-                n,
-                [[z0 / w, 0.0], [z0 / w, 1.0], [z1 / w, 1.0], [z1 / w, 0.0]],
-            );
+            let uv = if lying {
+                [[a / t, 0.0], [b / t, 0.0], [b / t, 1.0], [a / t, 1.0]]
+            } else {
+                [[z0 / w, 0.0], [z0 / w, 1.0], [z1 / w, 1.0], [z1 / w, 0.0]]
+            };
+            s.quad_uv([pt(a, z0), pt(b, z0), pt(b, z1), pt(a, z1)], n, uv);
             s.edge(pt(a, z1), pt(b, z1));
             s.edge(pt(a, z0), pt(a, z1));
             s.edge(pt(b, z0), pt(b, z1));
