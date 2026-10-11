@@ -1625,8 +1625,7 @@ impl App {
     }
 
     fn refresh_cursor(&mut self) {
-        self.edit.section = self.plane();
-        self.edit.plan_z = self.plan_z();
+        self.edit.stand(self.plane(), self.plan_z(), self.sel.id);
         let (vw, vh, sc) = self.view_size();
         self.tool.refresh(&self.cam, vw, vh, sc);
         let en = self.edit_enabled();
@@ -3440,7 +3439,7 @@ impl App {
                 self.tool.ext = None;
             }
             Id::Ref(r) => self.tool.ref_side = r,
-            Id::Ortho => self.tool.ortho = !self.tool.ortho,
+            Id::Sprung(s) => self.tool.set_sprung(s),
             Id::View(v) => self.set_view(v),
             Id::Quantity => self.quantity_wanted = true,
             Id::Projektdaten => self.open_projektdaten(false),
@@ -3487,9 +3486,7 @@ impl App {
             Id::Opening(k) => self.oeffnung_klick(k),
             Id::ExtWahl(i, k) => self.ext_prop_wert(i, Some(k)),
             Id::ExtJa(i) => self.ext_prop_wert(i, None),
-            Id::PropsLink | Id::PropsFlush | Id::PropsSplit | Id::PropsMerge => {
-                self.kette_klick(id)
-            }
+            ui::kette_button!() => self.kette_klick(id),
             Id::PropsMore => {
                 self.ui.toggle_more();
                 self.overlay_dirty = true;
@@ -3926,9 +3923,9 @@ impl App {
             self.upload_model();
         }
         let b = self.tool.enabled && self.tool.ext.is_none();
-        let (r, o) = (self.tool.ref_side, self.tool.ortho);
-        if (self.ui.building, self.ui.ref_side, self.ui.ortho) != (b, r, o) {
-            (self.ui.building, self.ui.ref_side, self.ui.ortho) = (b, r, o);
+        let (r, o) = (self.tool.ref_side, self.tool.sprung());
+        if (self.ui.building, self.ui.ref_side, self.ui.sprung) != (b, r, o) {
+            (self.ui.building, self.ui.ref_side, self.ui.sprung) = (b, r, o);
             self.overlay_dirty = true;
         }
         self.ext_sync();
@@ -4254,8 +4251,7 @@ impl App {
         ) {
             self.finish_flush();
         }
-        self.edit.section = self.plane();
-        self.edit.plan_z = self.plan_z();
+        self.edit.stand(self.plane(), self.plan_z(), self.sel.id);
         let th = self.top() as f64;
         let (vw, vh, sc) = self.view_size();
         // Ereignis in Koordinaten der 3D-Ansicht (unterhalb der Titelleiste)
@@ -5019,7 +5015,7 @@ impl App {
                 help::Topic::Ext
             }
             _ if ctx.window.is_none() && self.ext_fenster.is_some() => self.ext_thema(),
-            help::Topic::Drag if self.edit.splitting() => help::Topic::Split,
+            help::Topic::Drag if self.edit.splitting() => self.edit.thema(),
             // Gewählte Erweiterung (E7), solange kein Fenster, Dialog oder
             // Werkzeug das Thema bestimmt
             _ if ctx.window.is_none()

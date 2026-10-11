@@ -1800,6 +1800,26 @@ impl Scene {
         self.cached(run).map(|c| &c.chain)
     }
 
+    /// Berechnete Wandzüge mit dem Quader ihres Körpers (Vortest beim
+    /// Zeigen auf eine Wand, Review #82 1).
+    pub fn zuege(&self) -> impl Iterator<Item = (RunId, &WallChain, Option<Aabb>)> + '_ {
+        self.cache
+            .iter()
+            .flatten()
+            .map(|c| (c.id, &c.chain, c.bounds))
+    }
+
+    /// Fangziele eines Geschosses ([`Model::fangziele`]) aus den berechneten
+    /// Wandzügen (Review #82 V4).
+    pub fn fangziele(&self, storey: sk_model::StoreyId) -> sk_model::Fangziele {
+        use std::borrow::Cow;
+        self.model.fangziele_aus(storey, |id| {
+            self.chain(id)
+                .map(Cow::Borrowed)
+                .or_else(|| self.model.chain(id).map(Cow::Owned))
+        })
+    }
+
     /// Fugen eines Wandzugs (siehe [`WallChain::straight_joints`]), mit
     /// dem Zug berechnet.
     pub fn joints(&self, run: RunId) -> &[usize] {
@@ -2941,16 +2961,18 @@ impl Scene {
 
     /// Neue Eckpunkte eines Wandzugs ohne Verlaufseintrag (Live-Änderung beim
     /// Ziehen). Neu berechnet werden dieser Wandzug und die, die an ihm hängen.
-    pub fn set_run_points(&mut self, run: RunId, points: &[Vec3]) {
-        if let Some(runs) = self.model.set_run_points(run, points) {
-            for r in runs {
-                self.mark(r);
-                if !self.live.contains(&r) {
-                    self.live.push(r);
-                }
+    pub fn set_run_points(&mut self, run: RunId, points: &[Vec3]) -> bool {
+        let Some(runs) = self.model.set_run_points(run, points) else {
+            return false;
+        };
+        for r in runs {
+            self.mark(r);
+            if !self.live.contains(&r) {
+                self.live.push(r);
             }
-            self.rebuild_dirty(true);
         }
+        self.rebuild_dirty(true);
+        true
     }
 
     /// Versatz einer gestapelten Wand beim Ziehen (OG Phase 2, im offenen

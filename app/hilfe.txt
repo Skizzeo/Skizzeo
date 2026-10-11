@@ -31,19 +31,21 @@ Punkte setzen | Linksklick; im Uhrzeigersinn zeichnen, Bezugsseite außen
 Länge tippen | Zahl tippen, **Enter** setzt den Punkt genau; die Maus gibt die Richtung
 Winkel tippen | nach der Länge **Tab**, Winkel gegen die vorige Wand (0° geradeaus, plus links)
 Bezugsseite | **Tab** ohne Eingabe: links, rechts oder Mitte
-90°-Sprung | **R** an oder aus; **Umschalt** halten kehrt kurz um
+Winkelsprung | 90°, 45° oder frei im Paneel; **R** an oder aus, **Umschalt** halten kehrt kurz um
 Schließen | Klick auf den Startpunkt; Spurlinien helfen rechtwinklig
 Offenen Zug beenden | **Enter** ohne Eingabe oder Doppelklick
 Zurück | **Rücktaste** löscht eine Ziffer, ohne Eingabe den letzten Punkt
 Abbrechen | **Esc** schließt erst die Eingabe, das zweite **Esc** bricht den Zug ab
 
 [thema] id=innenwand titel="Innenwand"
-Starten | Knopf „Innenwand“ unter „Gebäude“; Bezugsseite ist die Achse
-Geschoss | Sie entsteht im aktiven Geschoss und wird nicht gestapelt
-Zeichnen | wie Wände zeichnen: Klick, Länge tippen und **Enter**, **Tab** für den Winkel
+Starten | Knopf „Innenwand“ unter „Gebäude“; sie entsteht im aktiven Geschoss, nicht gestapelt, Bezugsseite ist die Achse
+Zeichnen | wie Wände zeichnen, Richtung in 45°-Schritten („frei“ im Paneel oder **R**); Länge tippen und **Enter**, **Tab** für den Winkel
 Fangen | der Cursor rastet an Wandflächen und freien Wandenden ein, die Fläche leuchtet
-Abstand ab Ecke | auf einer Wandfläche vor dem ersten Klick Zahl tippen, **Enter** setzt den Anfang
+Lichtes Maß | auf einer Wandfläche vor dem ersten Klick zeigt die Pille das lichte Maß zur nächsten Wand; Zahl tippen, **Enter** setzt den Anfang genau
 Beenden | Klick auf eine quer liegende Wandfläche oder ein Wandende, sonst **Enter** oder Doppelklick
+Ecke bilden | Wand wählen, „Ecke bilden“ im Paneel, dann Klick auf die zweite Wand auf der Seite, die bleibt
+Verlängern | Wand wählen, „Verlängern“, Klick auf die Zielwand; weitere Klicks verlängern weitere Wände bis dorthin, **Esc** beendet
+Wandende ziehen | Wand wählen, im Grundriss den Punkt an ihrem Ende ziehen; fängt wie beim Zeichnen, Zahl setzt die Länge; **Esc** schließt erst die Zahl, dann bricht es ab
 Typ | Chip im Werkzeug: Klick öffnet die Typ-Liste
 Löschen | wählen, dann **Entf** oder Rechtsklick › Löschen
 
@@ -361,7 +363,7 @@ Scheitert es | Karte „Automatisches Sichern klappt gerade nicht.“ mit „Jet
 [knopf]
 Gebäude | Außenwand als Polygon zeichnen; beim Schließen entsteht das ganze Haus.
 Innenwand | Innenwand im aktiven Geschoss zeichnen.
-90°-Sprung | Beim Zeichnen springt die Richtung in 90°-Schritten; **R** schaltet um.
+Winkelsprung | Beim Zeichnen springt die Richtung in 90°- oder 45°-Schritten zur vorigen Wand; **R** schaltet ihn aus und ein.
 Erweiterungen | Eingelesene Bauteile wie Stütze oder Treppe setzen, nach Gruppe geordnet.
 Wandöffnung | Fenster oder Terrassentür in eine Außenwand aufziehen.
 Türöffnung | Haustür in eine Außenwand aufziehen.

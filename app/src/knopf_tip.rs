@@ -18,7 +18,7 @@ impl App {
         let name = match id {
             Id::Building => "Gebäude",
             Id::Interior => "Innenwand",
-            Id::Ortho => "90°-Sprung",
+            Id::Sprung(_) => "Winkelsprung",
             Id::Ext if self.tool.ext.is_none() => "Erweiterungen",
             Id::Opening(k) => k.name(),
             Id::Quantity => cards::KNOPF,
