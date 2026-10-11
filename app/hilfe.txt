@@ -41,7 +41,9 @@ Abbrechen | **Esc** schließt erst die Eingabe, das zweite **Esc** bricht den Zu
 Starten | Knopf „Innenwand“ unter „Gebäude“; Bezugsseite ist die Achse
 Geschoss | Sie entsteht im aktiven Geschoss und wird nicht gestapelt
 Zeichnen | wie Wände zeichnen: Klick, Länge tippen und **Enter**, **Tab** für den Winkel
-Beenden | **Enter** oder Doppelklick
+Fangen | der Cursor rastet an Wandflächen und freien Wandenden ein, die Fläche leuchtet
+Abstand ab Ecke | auf einer Wandfläche vor dem ersten Klick Zahl tippen, **Enter** setzt den Anfang
+Beenden | Klick auf eine quer liegende Wandfläche oder ein Wandende, sonst **Enter** oder Doppelklick
 Typ | Chip im Werkzeug: Klick öffnet die Typ-Liste
 Löschen | wählen, dann **Entf** oder Rechtsklick › Löschen
 
@@ -158,7 +160,7 @@ Aktives Geschoss | Klick auf „Fundament“, „EG“ oder „OG“ im Geschoss
 Geschossbogen | im Grundriss rechts; Klick auf eine Spitze, Mausrad oder **Bild↑** / **Bild↓**
 Höhe ziehen | Griff an einer Geschosslinie; Fang 1 cm, mit **Umschalt** 5 cm, **Esc** bricht ab
 Höhe als Zahl | auf eine Maßzahl klicken, Wert in Metern, **Enter**
-Grundriss | schneidet 1,00 m über dem Geschossboden, das Geschoss darunter im Hintergrund
+Grundriss | schneidet 1,50 m über OK Rohdecke, das Geschoss darunter im Hintergrund; das Zahnrad oben rechts stellt die Schnitthöhe für alle Geschosse ein (0,10 bis 5,00 m, Enter übernimmt)
 Fundament | eigene Ebene; Wände zeichnen ist dort gesperrt
 Grenzen | ±0,00 liegt fest; lichte Höhe mindestens 1,00 m
 

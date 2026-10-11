@@ -162,6 +162,7 @@ SZO 4
 [extpart] guid=3BRCeVvTzBkQvU1PgK3ZD7 key=werk.stabgelaender number="GL-001" x=2500 y=2000 typ="g100" seq=4 storey=2raHMuYTD64hQ6K56DbC_u
 [extpart] guid=3N_s4ILSj9DeczPurFRPuA key=werk.streifenfundament number="SF-001" x=4000 y=2000 typ="sf5080" seq=4 storey=2raHMuYTD64hQ6K56DbC_u
 [extpart] guid=3y1kS67MD3zfAPmF4yotzT key=werk.stabgelaender number="GL-002" x=2500 y=5000 rot=90 typ="g100" seq=4 storey=2raHMuYTD64hQ6K56DbC_u
+[plancut] h=1200
 [pattern] surface=0193nkAlT2LhksTCegVeuh gen=concrete w=2500 h=500 joint=0 anchors=0 cloud=2 pores=0.5 seed=11
 [pattern] surface=2I0iV4XeLFxOVLUIsiaPG9 gen=masonry len=240 h=71 joint=10 bond=wild jrgb=d1cbc2 pal=87493c:79;675549:9;7b6d65:12 hpal=87493c:50;675549:50 flame=100 fend=64 relief=100 spread=7 seed=17
 [pattern] surface=3MoId9HKv2OPcggMMyT2Nx gen=plaster grain=2 spread=4 seed=3

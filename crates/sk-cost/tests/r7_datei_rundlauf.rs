@@ -27,7 +27,8 @@ const HAEUSER: [(&str, &str); 5] = [
     // abweichenden Deckenschlüssel (Untersicht mit Bekleidung und Lattung,
     // `terrace` mit dem Typ DT-14, `upstand`, `crown`, `inner`, `coping_mat`);
     // seit PR #68 das Flachdach mit 2 % Gefälle (`slope`, `drains`) und je
-    // Ablauf ein `[downpipe]`, eines mit `overflow=spout`, `control=0`, `spacing`
+    // Ablauf ein `[downpipe]`, eines mit `overflow=spout`, `control=0`, `spacing`;
+    // seit PR #72 die eigene Schnitthöhe des Grundrisses (`[plancut] h=`)
     (
         "r7-alle-abschnitte",
         include_str!("../referenz/r7-alle-abschnitte.szo"),
