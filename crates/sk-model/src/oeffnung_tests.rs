@@ -321,8 +321,21 @@ fn lochmasse_je_schicht() {
     use crate::qto::run_qto;
     let (mut m, eg, og) = haus(None);
     let vorher = run_qto(&m, eg);
+    let faces = |m: &Model| -> Vec<f64> {
+        crate::qto::schedule(m)
+            .layer_rows(m)
+            .into_iter()
+            .map(|(_, r)| r.face)
+            .collect()
+    };
+    let face_vorher = faces(&m);
     let id = m.add_opening(fenster(&m, eg, (3000.0, 4250.0))).unwrap();
     let q = run_qto(&m, eg);
+    // Abrechnungsfläche ungemindert, auch wo sie aus dem Volumen kommt
+    // (Face::Mean): über den Abzug entscheidet die VOB-Regel
+    for (a, b) in face_vorher.iter().zip(faces(&m)) {
+        assert!((a - b).abs() < 1e-3, "face {a} → {b}");
+    }
     let (d, k) = (&q[0].layers[0], &q[0].layers[1]);
     assert_eq!((d.holes.len(), k.holes.len()), (1, 1));
     let (hd, hk) = (&d.holes[0], &k.holes[0]);
