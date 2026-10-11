@@ -1637,6 +1637,7 @@ pub fn auto_schluessel() -> impl Iterator<Item = (&'static str, &'static str, &'
         .chain(crate::roof::SCHLUESSEL)
         .chain(crate::fallrohr::SCHLUESSEL)
         .chain(crate::qto_fassade::SCHLUESSEL)
+        .chain(crate::qto_laibung::SCHLUESSEL)
 }
 
 /// Gründung, aus deren Geometrie die Automatikmengen ihrer Sohlplatte folgen
@@ -2043,6 +2044,9 @@ pub fn schedule(model: &Model) -> Schedule {
     // Lattung und Randprofil der Untersichten
     let untersicht = crate::qto_fassade::bauteil_mengen(model, &sched);
     sched.auto.extend(untersicht);
+    // Laibungen der Öffnungen und Diagonalbewehrung (VOB/C)
+    let laibung = crate::qto_laibung::bauteil_mengen(model, &sched);
+    sched.auto.extend(laibung);
     sched
 }
 

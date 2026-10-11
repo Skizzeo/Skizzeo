@@ -205,3 +205,29 @@ fn grosses_fenster_abgezogen() {
     assert!((best - r.face * z).abs() < 1.0, "{best} {}", r.face * z);
     summe_stimmt(&m, &r);
 }
+
+/// Laibungen als Automatikmengen: WDVS und innen links, rechts und
+/// oben für jede Öffnung, auch die übermessene; vier Ecken Diagonal-
+/// bewehrung am Fenster.
+#[test]
+fn laibungen_je_oeffnung() {
+    use crate::qto_laibung::{INNER, MESH, WDVS};
+    let (mut m, eg) = haus();
+    let id = m.add_opening(fenster(&m, eg, (3000.0, 4250.0))).unwrap();
+    let s = schedule(&m);
+    let auto: Vec<_> = s.auto.iter().filter(|a| a.element == id).collect();
+    let wert = |k: &str| auto.iter().find(|a| a.key == k).map(|a| a.value);
+    let q = crate::qto::run_qto(&m, eg);
+    let h = &q[0].layers[0].holes[0];
+    assert_eq!(wert(WDVS), Some(2.0 * h.height + h.width), "{auto:?}");
+    assert_eq!(wert(MESH), Some(4.0));
+    // Innenlaibung an der innersten Schicht (hier Porenbeton ohne Putz)
+    let innen = q[0].layers.last().unwrap().holes.first().unwrap();
+    assert_eq!(
+        wert(INNER),
+        Some(2.0 * innen.height + innen.width),
+        "{auto:?}"
+    );
+    let f = auto.iter().find(|a| a.key == INNER).unwrap();
+    assert!(f.formula.contains("Tiefe"), "{}", f.formula);
+}
