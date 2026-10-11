@@ -45,6 +45,7 @@ mod flush_pick;
 mod fokus;
 mod frame_time;
 mod geschosse_app;
+mod geschossfenster;
 #[cfg(all(test, target_os = "linux"))]
 mod gpu_probe;
 mod grundriss_schnitt;
@@ -896,8 +897,9 @@ struct App {
     turn: Option<(u64, f32)>,
     /// Gemeinsamer Hover- und Auswahlzustand beider Fenster (F2).
     picking: picking::Picking,
-    /// Mengenfenster (F2, B7).
+    /// Mengenfenster (F2, B7) und Geschossfenster links (Jörn 11.10.).
     quantity: quantity::QuantityWindow,
+    geschoss: geschossfenster::GeschossFenster,
     /// Baumpanel (Paket 4) und sein Zustand in der App: Hover kommt aus dem
     /// Baum, die Maus steht darüber, Auswahl kam aus dem Baum (dann kein
     /// Aufklappen), zuletzt gesehene Auswahl, gesehene Entdecken-Hinweise.
@@ -1180,10 +1182,7 @@ impl App {
     /// es stehen; die neuen Mengen kommen beim Loslassen.
     fn sync_props(&mut self) {
         // Beim Gleiten („Bündig setzen“) bleibt das Paneel auf dem Stand davor
-        if self.edit.is_dragging()
-            || self.ui.level_dragging().is_some()
-            || self.flush_anim.is_some()
-        {
+        if self.edit.is_dragging() || self.level_dragging().is_some() || self.flush_anim.is_some() {
             return;
         }
         if self.picking.validate(&self.scene) {
@@ -1236,12 +1235,10 @@ impl App {
             self.snaps_key = Some(key);
             self.tool.snaps = self.scene.background_snaps();
         }
-        if self.ui.set_levels(self.scene.levels()) {
-            match self.ui.level_dragging() {
-                Some(g) => self.dirty_buttons.push(Id::Grip(g)),
-                None => self.overlay_dirty = true,
-            }
-        }
+        let l = self.scene.levels();
+        self.geschoss.dirty |= self.geschoss.ui.set_levels(l.clone());
+        // Im Hauptfenster steht das Diagramm nur neben dem Dialog
+        self.overlay_dirty |= self.ui.set_levels(l) && self.ui.dialog;
     }
 
     /// Wählt das Bauteil (oder nichts). Ein Bauteil eines anderen Gebäudes
@@ -3511,7 +3508,7 @@ impl App {
 
     fn click(&mut self, id: Id) {
         match id {
-            Id::LevelsOpen | Id::LevelsClose => self.gross_klick(id),
+            Id::LevelsOpen => self.geschoss.wanted = true,
             Id::Building | Id::Interior => {
                 let cat = match id {
                     Id::Interior => Category::InteriorWall,
@@ -4384,32 +4381,6 @@ impl App {
                 other => other,
             }
         };
-        // Beim Ziehen einer Ebene gehören Maus und Tasten dem Paneel „Geschosse“,
-        // danach der offenen Großansicht (Jörn 11.10.)
-        if self.ui.level_dragging().is_none() && self.gross_event(&e, surface) {
-            return true;
-        } else if self.ui.level_dragging().is_some() {
-            match e {
-                Event::MouseMove { .. } | Event::MouseDown { .. } | Event::MouseUp { .. } => {
-                    let out = self.ui.handle(&e, self.w, self.top());
-                    self.apply_ui(&out);
-                    self.sync_levels();
-                    self.sync_props();
-                    self.sync_caption(surface);
-                    return true;
-                }
-                Event::Key { key, down, .. } => {
-                    if down && key == Key::Escape && self.ui.cancel_level_drag() {
-                        self.scene.rollback();
-                        self.upload_model();
-                        self.overlay_dirty = true;
-                        self.sync_levels();
-                    }
-                    return true;
-                }
-                _ => {}
-            }
-        }
         let busy = self.nav.is_dragging()
             || self.edit.is_dragging()
             || self.sect.is_dragging()
@@ -5006,7 +4977,7 @@ impl App {
             || self.drains.is_dragging()
             || self.edit.input().is_some()
             || self.tool.input().is_some()
-            || self.ui.level_dragging().is_some()
+            || self.level_dragging().is_some()
             || self.sect.is_dragging()
             || self.pick.is_some()
             || self.ui.edit.is_some()
@@ -5049,7 +5020,7 @@ impl App {
         let dragging = self.edit.is_dragging()
             || self.nav.is_dragging()
             || self.sect.is_dragging()
-            || self.ui.level_dragging().is_some();
+            || self.level_dragging().is_some();
         // Auch Ziehen in Fenstern (Rollbalken, Farbwähler, Fenster selbst)
         let pressed = dragging || self.help_press_elsewhere;
         match e {
@@ -5982,7 +5953,7 @@ impl App {
         let th = top as f64;
         if y < th
             || self.ui.dialog
-            || self.ui.level_dragging().is_some()
+            || self.level_dragging().is_some()
             || self.tool.is_active()
             || self.edit.is_dragging()
             || self.nav.is_dragging()
@@ -6293,7 +6264,7 @@ impl App {
             return c.tip();
         }
         if self.ui.dialog
-            || self.ui.level_dragging().is_some()
+            || self.level_dragging().is_some()
             || self.menu.is_open()
             || self.save_dlg.is_some()
             || self.projektdaten.is_some()
@@ -7053,7 +7024,7 @@ impl App {
     fn handle_tree(&mut self, e: Event, surface: &Surface) -> bool {
         if self.w == 0
             || self.ui.dialog
-            || self.ui.level_dragging().is_some()
+            || self.level_dragging().is_some()
             || self.ui.edit.is_some() && matches!(e, Event::Key { .. })
             || self.tool.is_active()
             || self.nav.is_dragging()
@@ -7469,7 +7440,6 @@ impl App {
     /// „Gebäude löschen“ offen sind.
     fn wheel_show(&self) -> wheel_view::Show {
         let blocked = self.ui.dialog
-            || self.ui.levels_gross()
             || self.menu.is_open()
             || self.modal()
             || self.save_dlg.is_some()
@@ -7679,7 +7649,7 @@ impl App {
     /// Neue Fensterbreite bei gleicher Paneelgröße: nur die Titelleiste neu,
     /// die Paneele behalten ihr Bild und rücken an ihren Platz.
     fn relayout_overlays(&mut self, surface: &Surface) {
-        if self.ui.dialog || self.ui.levels_gross() {
+        if self.ui.dialog {
             // Das Abdunkeln folgt der Fenstergröße
             self.paint_overlays(surface);
             return;
@@ -7923,6 +7893,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         dirty_buttons: Vec::new(),
         dirty_title: Vec::new(),
         title_img: None,
+        geschoss: geschossfenster::GeschossFenster::new(&theme),
         theme,
         redraw: true,
         mesh_dirty: true,
@@ -8199,6 +8170,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     a.tree.load_settings(&panel);
     a.hints_seen = hints::seen(&panel);
     surface.layout().set_width_dip(a.theme.size.qto_window_w);
+    a.geschoss.wanted = surface.layout().levels_open();
     if surface.layout().quantity_open() || std::env::args().any(|x| x == "--mengenfenster") {
         a.open_quantity(&surface);
     }
@@ -8294,6 +8266,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             match id {
                 windows::WindowId::Main => events.push(e),
                 windows::WindowId::Quantity => a.handle_quantity(e, &surface),
+                windows::WindowId::Levels => a.handle_geschoss(e, &surface),
             }
         }
         coalesce_moves(&mut events);
@@ -8350,6 +8323,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
             a.redraw = true;
         }
         a.sync_quantity(&surface);
+        a.sync_geschoss(&surface);
         a.sync_tool_chip();
         a.sync_tip();
         a.sync_measure();
@@ -8599,7 +8573,7 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                     ));
                 }
             }
-            if let Some(z) = a.ui.level_drag_z() {
+            if let Some(z) = a.geschoss.ui.level_drag_z() {
                 let v = a.side_like(a.ui.view);
                 helpers.extend(level_guide(v, a.scene.bounds(), z, scale, &a.theme));
             }

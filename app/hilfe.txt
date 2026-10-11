@@ -142,8 +142,8 @@ Verschwinden | „Bündig setzen“ oder OG nach außen; **Strg+Z** holt sie zur
 Löschen | geht nicht einzeln; sie folgt dem Rücksprung des OG
 
 [thema] id=flachdach titel="Flachdach"
-Einschalten | Paneel „Geschosse“ anklicken, in der großen Ansicht Haken „Flachdach“; über dem obersten Geschoss entstehen Dachaufbau und Aufkantung
-Aufkantung | Höhe in der großen Ansicht „Geschosse“: Linie „OK Aufkantung“ ziehen oder auf ihre Maßzahl klicken
+Einschalten | Knopf „Geschossmanager“ unten links, im Fenster Haken „Flachdach“; über dem obersten Geschoss entstehen Dachaufbau und Aufkantung
+Aufkantung | Höhe im Geschossmanager: Linie „OK Aufkantung“ ziehen oder auf ihre Maßzahl klicken
 Dämmung | Dachaufbau anklicken, im Paneel unter „Aufbau“ das Feld „Dämmung“ tippen
 Gefälle | Zahlenfeld „Gefälle“ in %, 1 bis 10; 0 = ohne Gefälle
 Abläufe | Skizzeo schlägt sie vor, beim Rechteck je zwei an beiden Längsseiten nahe den Ecken; „Abläufe vorschlagen“ setzt sie neu; im Grundriss stehen sie als Punkte an der Aufkantung
@@ -152,9 +152,9 @@ Ablauf dazu, weg | Punkt anklicken, dann Rechtsklick oder im Abschnitt „Gefäl
 Ausschalten | Haken weg; **Strg+Z** holt das Dach zurück
 
 [thema] id=geschosse titel="Geschosse"
-Bearbeiten | Klick auf das Paneel „Geschosse“ öffnet es groß; nur dort wird gezogen und getippt, das Modell daneben zeigt jede Änderung sofort
-Schließen | **Esc**, „Schließen ×“ oder Klick daneben
-Aktives Geschoss | Klick auf „Fundament“, „EG“ oder „OG“ in der großen Ansicht
+Bearbeiten | Knopf „Geschossmanager“ unten links öffnet das Geschossfenster links neben dem Hauptfenster; dort wird gezogen und getippt, das Modell bleibt ganz zu sehen
+Fenster | angedockt wie das Mengenfenster; wegziehen löst es, etwa auf einen zweiten Bildschirm; zurück an den Rand rastet es ein
+Aktives Geschoss | Klick auf „Fundament“, „EG“ oder „OG“ im Geschossmanager
 Geschossbogen | im Grundriss rechts; Klick auf eine Spitze, Mausrad oder **Bild↑** / **Bild↓**
 Höhe ziehen | Griff an einer Geschosslinie; Fang 1 cm, mit **Umschalt** 5 cm, **Esc** bricht ab
 Höhe als Zahl | auf eine Maßzahl klicken, Wert in Metern, **Enter**
