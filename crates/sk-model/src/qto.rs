@@ -46,6 +46,9 @@ pub struct LayerQto {
     pub foot: f64,
     /// Bestandteile der Mengen für den Rechenweg ([`crate::rechenweg`]).
     pub parts: LayerParts,
+    /// Löcher der Öffnungen in dieser Schicht (O2); ihr Volumen ist vom
+    /// Volumen abgezogen.
+    pub holes: Vec<crate::qto_oeffnung::LayerHole>,
 }
 
 /// Bestandteile, aus denen Volumen, Außen- und Innenfläche einer
@@ -78,6 +81,10 @@ pub struct LayerParts {
     pub grund: f64,
     pub attika: f64,
     pub dicke: f64,
+    /// Löcher der Öffnungen in der Schicht (O2): Anzahl und ihr Volumen,
+    /// das vom Volumen abgezogen ist ([`LayerQto::holes`]).
+    pub loecher: usize,
+    pub loch_volumen: f64,
 }
 
 /// Fußpunkt der Verblendschale auf der Dachterrasse (W2, Tagesplan P1):
@@ -409,6 +416,7 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                             inner_area: 0.0,
                             foot: 0.0,
                             parts: LayerParts::default(),
+                            holes: Vec::new(),
                         };
                     }
                     let quad = [fa[k], fa[j], fb[j], fb[k]];
@@ -443,7 +451,20 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                     // Fußpunkt aus Schaumglas (W2): nicht Verblender
                     let h_foot = foot.map_or(0.0, |f| if f.layer == li { f.height() } else { 0.0 });
                     let v_foot = area * h_foot;
-                    let volume = area * h_here + v_up + v_att - v_foot;
+                    let holes = if air {
+                        Vec::new()
+                    } else {
+                        crate::qto_oeffnung::layer_holes(
+                            model,
+                            &chain,
+                            k,
+                            li,
+                            (fa, fb),
+                            l.thickness,
+                        )
+                    };
+                    let v_holes: f64 = holes.iter().map(|h| h.volume).sum();
+                    let volume = area * h_here + v_up + v_att - v_foot - v_holes;
                     let density = model.material(l.material).map_or(0.0, |m| m.density);
                     LayerQto {
                         material: l.material,
@@ -471,7 +492,10 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                             grund: area,
                             attika: v_att,
                             dicke: l.thickness,
+                            loecher: holes.len(),
+                            loch_volumen: v_holes,
                         },
+                        holes,
                     }
                 })
                 .collect();
@@ -1878,7 +1902,7 @@ pub fn schedule(model: &Model) -> Schedule {
                 }
             }
             // ohne Wandzug, oben gerechnet
-            ElementKind::Ext(_) => continue,
+            ElementKind::Ext(_) | ElementKind::Opening(_) => continue,
             // Mengen als Automatikmengen am Bauteil (`downpipe.*`)
             ElementKind::Downpipe { .. } => (None, None),
         };
@@ -2344,8 +2368,19 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                 // Platten, Decken und Streifen: Dämmschicht mit Fläche
                 (None, _) => (if ins { area } else { 0.0 }, 0.0, false),
             };
+            // Abrechnungsfläche ohne Lochabzug: über ihn entscheidet die
+            // VOB-Regel je Schicht (Übermessen bis 2,5 m²)
+            let gross = match q {
+                ElementQto::Wall(w) => {
+                    volume
+                        + w.layers
+                            .get(i)
+                            .map_or(0.0, |l| l.holes.iter().map(|h| h.volume).sum())
+                }
+                _ => volume,
+            };
             let mean = if l.thickness > 0.0 {
-                volume / l.thickness
+                gross / l.thickness
             } else {
                 0.0
             };
@@ -2597,7 +2632,8 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
             | ElementKind::RoofTerrace { .. }
             | ElementKind::Roof { .. }
             | ElementKind::Downpipe { .. }
-            | ElementKind::Ext(_) => None,
+            | ElementKind::Ext(_)
+            | ElementKind::Opening(_) => None,
         });
         match (q, mat) {
             (ElementQto::Terrace(t), _) => {

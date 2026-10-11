@@ -390,6 +390,13 @@ fn wand_volumen(p: &LayerParts) -> Vec<Term> {
         -a * p.h_foot,
         b,
     );
+    // Löcher der Öffnungen (O2, Kosten H79-2); die Übermessungsregel der
+    // VOB/C folgt mit dem Öffnungsabzug
+    let text = match p.loecher {
+        1 => "Öffnung".to_string(),
+        n => format!("{n} Öffnungen"),
+    };
+    dazu(&mut t, text, -p.loch_volumen, b);
     t
 }
 
