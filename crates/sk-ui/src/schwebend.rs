@@ -31,7 +31,7 @@ pub const RAND: f32 = 16.0;
 pub const HINWEIS: &str = "Esc oder Klick daneben schließt";
 const ZU: &str = "Schließen";
 /// Abdunkeln und Leiste, in jedem Schema dunkel; Schrift darauf hell.
-pub const DUNKEL: Rgba = Rgba(0, 0, 0, 170);
+const DUNKEL: Rgba = Rgba(0, 0, 0, 170);
 pub const LEISTE_BG: Rgba = Rgba(34, 34, 36, 255);
 const HELL: Rgba = Rgba(255, 255, 255, 235);
 const HELL_DIM: Rgba = Rgba(255, 255, 255, 150);

@@ -1,8 +1,9 @@
 //! Schwebende Großansicht des Paneels „Geschosse“ (Jörn 11.10.): Im linken
-//! Rand zeigt das Paneel nur an; ein Klick irgendwo darauf öffnet es groß
-//! über dem abgedunkelten Fenster, mit derselben Leiste wie die große
-//! LV-Vorschau ([`sk_ui::schwebend`]). Dort wird gezogen, getippt und ein
-//! Geschoss gewählt. Esc, „Schließen ×“ oder ein Klick daneben schließt.
+//! Rand zeigt das Paneel nur an; ein Klick irgendwo darauf öffnet es groß,
+//! mit derselben Leiste wie die große LV-Vorschau ([`sk_ui::schwebend`]),
+//! aber ohne Abdunkeln: das Modell daneben zeigt jedes Ziehen sofort.
+//! Dort wird gezogen, getippt und ein Geschoss gewählt. Esc,
+//! „Schließen ×“ oder ein Klick daneben schließt.
 //!
 //! Platz für später: Jedes Geschoss bekommt zwei untergeordnete Linien,
 //! Brüstung und Sturz von Öffnungen. Die Großansicht ist dafür breiter als
@@ -54,7 +55,7 @@ impl Ui {
     /// Aufteilung der Großansicht: größter Maßstab bis [`PPM`], bei dem sie
     /// über dem Fensterrand endet.
     pub(super) fn levels_layout_gross(&self) -> LevelsLayout {
-        self.levels_layout_at(self.top as f32 + self.gross_oben(), PPM)
+        self.levels_layout_at(self.top as f32 + self.gross_oben(), PPM, false)
     }
 
     /// Rahmen der Großansicht: das Fenster unter der Titelleiste.
@@ -205,7 +206,7 @@ mod tests {
         }
     }
 
-    /// Groß: breiter, unter der Leiste, größerer Maßstab, ohne Liste; im
+    /// Groß: breiter, unter der Leiste, größerer Maßstab; im
     /// Paneel greifen Zahlen und Griffe wie bisher.
     #[test]
     fn gross_ist_groesser_und_bedienbar() {
@@ -218,7 +219,7 @@ mod tests {
         let l = ui.levels_layout();
         assert!(r.w > 2.0 * klein.w && r.h > klein.h, "{r:?} {klein:?}");
         assert_eq!(r.y, 32.0 + schwebend::LEISTE + 12.0);
-        assert!(r.y + r.h <= 900.0 && !l.list && l.ppm > 2.0 * ppm, "{l:?}");
+        assert!(r.y + r.h <= 900.0 && l.ppm > 2.0 * ppm, "{l:?}");
         let og = ui.levels.bands.iter().find(|b| b.name == "OG").unwrap().id;
         let f = Field::StoreyHeight(og);
         let b = ui.field_rect(f).unwrap();
