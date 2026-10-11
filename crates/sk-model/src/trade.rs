@@ -218,6 +218,10 @@ pub fn for_category(c: MatCategory) -> Option<TradeId> {
         MatCategory::Plaster => "18350",
         MatCategory::Metal => "18339",
         MatCategory::Membrane => "18338",
+        MatCategory::Screed => "18353",
+        MatCategory::Ceramic => "18352",
+        MatCategory::Flooring => "18365",
+        MatCategory::Coating => "18363",
         MatCategory::Air => return None,
     })
 }

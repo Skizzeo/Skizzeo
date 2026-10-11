@@ -10,6 +10,7 @@
 //! `storey`, `run`, `wall`, `slab`, `footing`, `floor`, `prop`. Innerhalb eines Abschnitts nach Guid sortiert, damit Diffs
 //! ruhig bleiben. Speichern, Öffnen und wieder Speichern ergibt dieselben Bytes.
 
+mod ausbau;
 mod dach;
 mod hoehen;
 mod oeffnung;
@@ -388,21 +389,6 @@ const EDGE_NAMES: [(&str, u8); edge_kind::COUNT] = [
     ("cut_layer", edge_kind::CUT_LAYER),
 ];
 
-fn mat_category(c: MatCategory) -> &'static str {
-    match c {
-        MatCategory::Masonry => "masonry",
-        MatCategory::Concrete => "concrete",
-        MatCategory::Insulation => "insulation",
-        MatCategory::Plaster => "plaster",
-        MatCategory::Timber => "timber",
-        MatCategory::Air => "air",
-        MatCategory::Metal => "metal",
-        MatCategory::Membrane => "membrane",
-    }
-}
-
-const MAT_CATEGORIES: [MatCategory; 8] = MatCategory::ALL;
-
 /// Wort der Schichtfunktion in `[layer] fn=` (auch die Regel `fn=` einer
 /// Bauleistung, KA-0).
 pub fn layer_function(f: LayerFunction) -> &'static str {
@@ -425,10 +411,6 @@ const LAYER_FUNCTIONS: [LayerFunction; 5] = [
 
 fn category(c: Category) -> &'static str {
     crate::kinds::spec(c).szo
-}
-
-pub(crate) fn type_category(c: TypeCategory) -> &'static str {
-    crate::kinds::spec(c.category()).szo
 }
 
 /// `set=` an Decke, Sohlplatte und Frostschürze nur mit Typ: Dateien ohne
@@ -608,7 +590,7 @@ pub(crate) fn write_material(
     let line = Line::new("material")
         .guid("guid", Some(x.guid))
         .text("name", &x.name)
-        .word("cat", mat_category(x.category))
+        .word("cat", x.category.word())
         .num("prio", x.priority)
         .num("rho", x.density);
     let line = match x.lambda {
@@ -691,12 +673,13 @@ pub(crate) fn write_type(
         .guid("guid", Some(s.guid))
         .text("name", &s.name)
         .text("code", &s.code)
-        .word("cat", type_category(s.category))
+        .word("cat", s.category.word())
         .num("changed", s.changed);
     // Deckenauflager nur, wenn es nicht der ganze Kern ist (K5)
     if let Bearing::Depth { depth, strip } = s.bearing {
         line = line.num("bearing", depth).guid("strip", mat_guid(strip));
     }
+    line = ausbau::write_height(line, s);
     line.text("note", &s.note).finish(out);
     for l in &s.layers {
         let line = Line::new("layer")
@@ -2976,8 +2959,8 @@ pub(crate) fn read_material(
     let category = keyword_or(
         r,
         "cat",
-        &MAT_CATEGORIES,
-        mat_category,
+        &MatCategory::ALL,
+        MatCategory::word,
         MatCategory::Masonry,
     )?;
     let (priority, density) = (r.int("prio")?, r.f64("rho")?);
@@ -3043,7 +3026,7 @@ pub(crate) fn read_types(
     if typed {
         for r in recs("layerset") {
             let cat = r.get("cat")?;
-            if !TypeCategory::ALL.iter().any(|&c| type_category(c) == cat) {
+            if !TypeCategory::ALL.iter().any(|&c| c.word() == cat) {
                 passed.hints.push(format!(
                     "Zeile {}: Typ „{}“ unbekannter Art „{cat}“ übersprungen",
                     r.line,
@@ -3130,7 +3113,7 @@ pub(crate) fn read_types(
         let (code, category, changed, note) = if typed {
             (
                 r.get("code")?.to_string(),
-                keyword(r, "cat", &TypeCategory::ALL, type_category)?,
+                keyword(r, "cat", &TypeCategory::ALL, TypeCategory::word)?,
                 match r.opt("changed") {
                     Some(_) => r.int("changed")?,
                     None => 1,
@@ -3157,6 +3140,7 @@ pub(crate) fn read_types(
             note,
             changed,
             bearing,
+            height: ausbau::read_height(r)?,
         };
         let id = layer_sets.insert(s);
         register(&mut set_ids, seen, r, guid, id)?;
@@ -3921,6 +3905,7 @@ mod tests {
                 note: String::new(),
                 changed: 1,
                 bearing: Bearing::Core,
+                height: None,
             })
             .expect("Typ");
         (m, de, t)

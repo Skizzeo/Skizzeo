@@ -342,6 +342,7 @@ impl Model {
             note: String::new(),
             changed: 1,
             bearing: Bearing::Core,
+            height: None,
         })
     }
 
