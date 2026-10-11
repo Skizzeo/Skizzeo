@@ -43,6 +43,7 @@ pub mod txn;
 mod type_tests;
 pub mod view;
 pub mod wall;
+pub mod wand_loch;
 #[cfg(test)]
 mod wand_tests;
 
