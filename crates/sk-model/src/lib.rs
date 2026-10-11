@@ -26,11 +26,15 @@ pub mod koerper;
 pub mod library;
 pub mod matprop;
 pub mod model;
+pub mod oeffnung;
+#[cfg(test)]
+mod oeffnung_tests;
 pub mod proctex;
 pub mod qto;
 pub mod qto_dach;
 pub mod qto_earth;
 pub mod qto_fassade;
+pub mod qto_oeffnung;
 pub mod qto_site;
 pub mod roof;
 pub mod sha256;
@@ -45,6 +49,7 @@ pub mod txn;
 mod type_tests;
 pub mod view;
 pub mod wall;
+pub mod wand_loch;
 #[cfg(test)]
 mod wand_tests;
 
@@ -68,7 +73,9 @@ pub use floor::{FloorError, FloorParams, FloorSlab, SoffitParams, StripParams, T
 pub use foundation::{FootingShape, Foundation, FoundationError, FoundationParams};
 pub use gefaelle::{Drainage, SlopeField};
 pub use guid::{Guid, GuidGen};
-pub use hoehen::{MAX_PLAN_CUT, MIN_PLAN_CUT, PLAN_CUT, PLAN_CUT_TOP_GAP};
+pub use hoehen::{
+    HeightLines, LINTEL, MAX_PLAN_CUT, MIN_PLAN_CUT, PLAN_CUT, PLAN_CUT_TOP_GAP, SILL,
+};
 pub use id::{Arena, Id};
 pub use join::{Join, JoinEnd, JoinKind};
 pub use library::{
@@ -91,7 +98,7 @@ pub use model::{
     SLAB_THICKNESS, SOFFIT_PART, SOFFIT_THICKNESS, STRIP_PART, TERRACE_CROWN, TERRACE_PART,
     TERRACE_TYPE_GUID, TERRACE_UPSTAND, WALKABLE_DEPTH,
 };
-pub use model::{EckeFehler, Fangziele, Wandende, Wandflaeche, ZugPunkte};
+pub use model::{EckeFehler, Fangziele, OpeningFault, Wandende, Wandflaeche, ZugPunkte};
 pub use model::{
     BATTEN, CLADDING_MAT_GUID, COUNTER, FOAMGLASS_MAT_GUID, MAX_BATTEN, MAX_CLADDING, MAX_DRIP,
     MIN_BATTEN, MIN_CLADDING, MIN_DRIP, SOFFIT_CLADDING, SOFFIT_DRIP,

@@ -1,6 +1,7 @@
 //! Höhen im Geschoss, gemessen über OK Rohdecke bzw. OK Sohlplatte (der
 //! Unterkante des Geschossbands): die Schnitthöhe des Grundrisses (Jörn
-//! 11.10. 14:05). Sie gilt in jedem Geschoss gleich; das Fundament schneidet
+//! 11.10. 14:05) und die Höhenlinien Brüstung und Sturz je Geschoss (14:01).
+//! Die Schnitthöhe gilt in jedem Geschoss gleich; das Fundament schneidet
 //! weiter in der Mitte der Frostschürze.
 //!
 //! Die Schnitthöhe ist Ansichtszustand wie die Schatten der Ansichten: ohne
@@ -17,6 +18,41 @@ pub const MAX_PLAN_CUT: f64 = 5000.0;
 /// So weit bleibt der Schnitt mindestens unter UK Rohdecke darüber (mm),
 /// sonst schnitte er im niedrigen Geschoss die Decke.
 pub const PLAN_CUT_TOP_GAP: f64 = 50.0;
+
+/// Vorgabe der Brüstungslinie (mm über OK Rohdecke), Jörn 14:01: 87,5 cm.
+pub const SILL: f64 = 875.0;
+/// Vorgabe der Sturzlinie (mm über OK Rohdecke), Jörn 14:01: 2,385 m.
+pub const LINTEL: f64 = 2385.0;
+/// Kleinster Abstand zwischen Brüstung und Sturz (mm).
+pub const MIN_LINE_GAP: f64 = 100.0;
+
+/// Höhenlinien eines Geschosses: Brüstung und Sturz über OK Rohdecke
+/// (mm). Öffnungen binden ihre Unter- und Oberkante an sie; in der Datei
+/// am `[storey]` nur, wenn sie von der Vorgabe abweichen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeightLines {
+    pub sill: f64,
+    pub lintel: f64,
+}
+
+impl Default for HeightLines {
+    fn default() -> Self {
+        HeightLines {
+            sill: SILL,
+            lintel: LINTEL,
+        }
+    }
+}
+
+impl HeightLines {
+    /// Gültig: Brüstung ab 0, Sturz mindestens [`MIN_LINE_GAP`] darüber.
+    pub fn valid(&self) -> bool {
+        self.sill.is_finite()
+            && self.lintel.is_finite()
+            && self.sill >= 0.0
+            && self.lintel >= self.sill + MIN_LINE_GAP
+    }
+}
 
 impl Model {
     /// Schnitthöhe des Grundrisses über OK Rohdecke (mm): die eigene des
