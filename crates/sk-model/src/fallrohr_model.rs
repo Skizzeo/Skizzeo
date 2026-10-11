@@ -138,7 +138,7 @@ impl Model {
         } else {
             &drainage.drains
         };
-        drains
+        let mut pipes = drains
             .iter()
             .take(MAX_DOWNPIPES as usize)
             .enumerate()
@@ -151,7 +151,83 @@ impl Model {
             })
             // alle oder keins: der Index bleibt der des Ablaufs (Review #68)
             .collect::<Option<Vec<_>>>()
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // je Dachterrasse, auf die ein Rohr ausläuft, ein Ablauf am ersten
+        // (Kosten B31)
+        let mut seen = Vec::new();
+        for d in &mut pipes {
+            let Some(onto) = d.onto.filter(|o| !seen.contains(o)) else {
+                continue;
+            };
+            seen.push(onto);
+            d.terrace = self.terrace_drain(onto.0, d, b).map(Box::new);
+        }
+        pipes
+    }
+
+    /// Ablauf der Dachterrasse über dem Wandzug `run`, auf die das Rohr `d`
+    /// ausläuft (Kosten B31, DIN 1986-100: jede Dachfläche mit Attika hat
+    /// einen Ablauf und eine Notentwässerung): in der Attika an der Stelle
+    /// des Blechpfads, die der Mündung am nächsten liegt, mit Fallrohr und
+    /// Notentwässerung wie `d`, ohne Kontrollablauf. Ein DN 100 nimmt die
+    /// Terrasse und die oberen Dachflächen der auslaufenden Rohre auf.
+    fn terrace_drain(&self, run: RunId, d: &Downpipe, b: Option<BuildingId>) -> Option<Downpipe> {
+        let Some(Ok(f)) = self.floor(run) else {
+            return None;
+        };
+        let (base, belag) = f.terrace_band()?;
+        let floor = self.floor_of(run)?;
+        let mund = d.axis() + d.bend * OUTLET_REACH;
+        let (a, e) = f
+            .terraces
+            .coping
+            .iter()
+            .flat_map(|c| {
+                let n = c.points.len();
+                let segs = if c.closed { n } else { n.saturating_sub(1) };
+                (0..segs).map(move |i| (c.points[i], c.points[(i + 1) % n]))
+            })
+            .filter(|(a, e)| (*e - *a).length() >= 1.0)
+            .min_by(|x, y| {
+                let dist = |(a, e): &(Vec3, Vec3)| {
+                    sk_math::dist_to_segment((mund.x, mund.y), (a.x, a.y), (e.x, e.y))
+                };
+                dist(x).total_cmp(&dist(y))
+            })?;
+        // Innenfläche der Attika als Kante eines Hilfsumrisses: außen
+        // rechts, wie am Flachdach
+        let w = f.terraces.width;
+        let along = (e - a) * (1.0 / (e - a).length());
+        let aussen = crate::solid::right_of(along);
+        let (ai, ei) = (a - aussen * w, e - aussen * w);
+        let outline = vec![ai, ei, ei - aussen * 1000.0, ai - aussen * 1000.0];
+        let r = FlatRoof {
+            outline: outline.clone(),
+            base,
+            layers: vec![(belag - base, d.mat, false)],
+            ring: vec![a, e],
+            width: w,
+            crown: f.attika_band().map_or(belag, |x| x.1),
+            coping_mat: d.mat,
+            slope: None,
+            tapered: None,
+            inner: 0.0,
+            inset: outline,
+            inner_depth: 0.0,
+            cap: 0.0,
+            ins_mat: d.mat,
+            cap_mat: d.mat,
+            downpipes: Vec::new(),
+        };
+        let spec = DownpipeSpec {
+            control: false,
+            ..d.spec
+        };
+        // Ablauf auf der Innenfläche gegenüber der Mündung
+        let t = (mund - ai).dot(along).clamp(0.0, (e - a).length());
+        let ablauf = ai + along * t;
+        let foot = |p: Vec3, out: Vec3, side: Vec3| self.foot_at(floor, b, p, out, side);
+        Downpipe::layout(&r, ablauf, foot, spec)
     }
 
     /// Fläche unter der Rohrachse `p` außen vor dem Flachdach über der
@@ -190,19 +266,20 @@ impl Model {
                     f.terraces
                         .outlines
                         .iter()
-                        .flat_map(|o| &o.parts)
-                        .any(|part| contains(part, q))
+                        .position(|o| o.parts.iter().any(|part| contains(part, q)))
                 };
                 let reicht = OUTLET_REACH + PIPE_D / 2.0;
-                let bend = [out, side, -side]
-                    .into_iter()
-                    .find(|&dir| belag(p + out * (PIPE_D / 2.0)) && belag(p + dir * reicht));
-                if let Some(bend) = bend {
+                let bend = [out, side, -side].into_iter().find_map(|dir| {
+                    belag(p + out * (PIPE_D / 2.0))?;
+                    belag(p + dir * reicht).map(|k| (dir, k))
+                });
+                if let Some((bend, k)) = bend {
                     return Foot {
                         z: t.1,
                         lower: true,
                         shift: 0.0,
                         bend,
+                        onto: Some((below, k)),
                     };
                 }
             }
@@ -222,6 +299,7 @@ impl Model {
                         lower: true,
                         shift: 0.0,
                         bend: out,
+                        onto: None,
                     };
                 }
                 shift = shift.max(fehlt);
@@ -233,6 +311,7 @@ impl Model {
             lower: false,
             shift,
             bend: out,
+            onto: None,
         }
     }
 
@@ -677,15 +756,30 @@ mod tests {
             }
         }
         assert!(nordseite > 0);
-        // über der Terrasse kein Standrohr, dafür ein Auslaufbogen mehr
+        // Kosten B31: die Terrasse hat einen eigenen Ablauf, am ersten Rohr,
+        // das auf sie ausläuft; er sitzt in der Terrassenattika der Mündung
+        // gegenüber (hier die Ostseite der Terrasse, Außenfläche x = 10000,
+        // auf Höhe der Mündung y = 6780) und sein Fallrohr steht im
+        // Standrohr
+        let pipes: Vec<_> = (m.downpipes_of(da).into_iter())
+            .map(|id| m.downpipe(id).unwrap())
+            .collect();
+        let mit: Vec<_> = pipes.iter().filter_map(|d| d.terrace.as_deref()).collect();
+        assert_eq!(mit.len(), 1);
+        let t = mit[0];
+        assert_eq!((t.face.x, t.face.y, t.out.x), (10000.0, 6780.0, 1.0));
+        assert!(!t.lower && t.control.is_none() && t.terrace.is_none());
+        assert!(t.stand_top < ok_og && t.box_top < ok_og + 500.0);
+        // über der Terrasse kein Standrohr, dafür ein Auslaufbogen mehr;
+        // der Terrassenablauf bringt Ablauf, Notüberlauf, Standrohr und den
+        // Bogen seines Notfallrohrs mit
         let s = crate::qto::schedule(&m);
-        let zahl = |k: &str| s.auto.iter().filter(|a| a.key == k).count();
-        let boegen: f64 = (s.auto.iter())
-            .filter(|a| a.key == crate::fallrohr::OUTLET)
-            .map(|a| a.value)
-            .sum();
-        assert_eq!(zahl(crate::fallrohr::STAND), 4 - nordseite);
-        assert_eq!(boegen, (4 + nordseite) as f64);
+        let alle = |k: &str| -> f64 { s.auto.iter().filter(|a| a.key == k).map(|a| a.value).sum() };
+        assert_eq!(alle(crate::fallrohr::STAND), (4 - nordseite + 1) as f64);
+        assert_eq!(alle(crate::fallrohr::OUTLET), (4 + nordseite + 1) as f64);
+        assert_eq!(alle(crate::fallrohr::BOX), 5.0);
+        assert_eq!(alle(crate::roof::DRAINS), 5.0);
+        assert_eq!(alle(crate::roof::OVERFLOWS), 5.0);
     }
 
     /// Review W12 und Kosten B30 an #68: Ein Dach ohne gespeicherte Abläufe

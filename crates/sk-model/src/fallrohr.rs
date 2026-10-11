@@ -134,6 +134,9 @@ pub struct Foot {
     /// Richtung des Auslaufbogens auf dem tieferen Dach (waagerecht,
     /// Länge 1): nach außen oder, bei schmalem Belag, längs der Fassade.
     pub bend: Vec3,
+    /// Dachterrasse, auf die das Rohr ausläuft: Wandzug darunter und Nummer
+    /// des Terrassenumrisses (Kosten B31).
+    pub onto: Option<(crate::element::RunId, usize)>,
 }
 
 /// Kleinster lichter Abstand eines Rohrs zu einer Fassade, an der es
@@ -166,6 +169,12 @@ pub struct Downpipe {
     pub reach: f64,
     /// Richtung des Auslaufbogens über einem tieferen Dach.
     pub bend: Vec3,
+    /// Dachterrasse, auf die das Fallrohr ausläuft (siehe [`Foot::onto`]).
+    pub onto: Option<(crate::element::RunId, usize)>,
+    /// Terrassenablauf (Kosten B31, DIN 1986-100): Läuft das Rohr als
+    /// erstes auf eine Dachterrasse aus, hat diese einen eigenen Ablauf in
+    /// ihrer Attika mit Fallrohr und Notentwässerung, ausgelegt wie dieses.
+    pub terrace: Option<Box<Downpipe>>,
     /// Unteres Ende des Fallrohrs (OK Standrohr bzw. OK Auslaufbogen über
     /// einem tieferen Dach) und die Fläche darunter.
     pub stand_top: f64,
@@ -276,6 +285,8 @@ impl Downpipe {
             box_bot,
             reach: REACH + unten.shift,
             bend: unten.bend,
+            onto: unten.onto,
+            terrace: None,
             stand_top,
             ground,
             lower: unten.lower,
@@ -376,6 +387,9 @@ impl Downpipe {
                 let c = o.face + self.out * (SPOUT_OUT / 2.0);
                 self.cuboid(&mut s, c, OVERFLOW_W, SPOUT_OUT, o.sill - SPOUT_H, o.sill);
             }
+        }
+        if let Some(t) = &self.terrace {
+            s.append(&t.solid());
         }
         s
     }
@@ -581,6 +595,25 @@ pub fn mengen(vorlage: &AutoMenge, d: &Downpipe) -> Vec<AutoMenge> {
     }
     if d.control.is_some() {
         out.push(menge(CONTROL, "st", 1.0, "1 Kontrollablauf".into()));
+    }
+    // Terrassenablauf mit Notüberlauf in der Terrassenattika und seinem
+    // Fallrohr: zu den Zeilen dieses Rohrs (ein Schlüssel je Zeile)
+    if let Some(t) = &d.terrace {
+        let mut dazu = vec![
+            menge(crate::roof::DRAINS, "st", 1.0, "1 Attikaablauf".into()),
+            menge(crate::roof::OVERFLOWS, "st", 1.0, "1 Notüberlauf".into()),
+        ];
+        dazu.extend(mengen(vorlage, t));
+        for z in dazu {
+            let f = format!("Terrassenablauf: {}", z.formula);
+            match out.iter_mut().find(|o| o.key == z.key) {
+                Some(o) => {
+                    o.value += z.value;
+                    o.formula = format!("{} + {f}", o.formula);
+                }
+                None => out.push(AutoMenge { formula: f, ..z }),
+            }
+        }
     }
     out
 }
