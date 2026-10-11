@@ -1105,8 +1105,8 @@ impl MaterialView {
             // was die Bestellmenge rechnet
             // ein Altwert als Text bleibt sichtbar, wie er steht
             Field::Key(matprop::WASTE) => match x.and_then(|x| x.props.get(matprop::WASTE)) {
-                Some(PropValue::Text(t)) => t.clone(),
-                _ => x.map_or(String::new(), |x| de(matprop::waste(x))),
+                Some(v) => prop_text(v),
+                None => x.map_or(String::new(), |x| de(matprop::waste(x))),
             },
             Field::Key(k) => prop(k),
             Field::Custom(k) => prop(k),

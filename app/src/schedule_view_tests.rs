@@ -456,3 +456,37 @@ fn bestellmenge_mit_zuschlag() {
     let a = flaeche(&v.lines);
     assert!(a > 0.0 && b > a * 1.03, "VOB {a} Bestellung {b}");
 }
+
+/// Review #77, Nachtrag A: In der Bestell-CSV nach Gewerk trägt auch die
+/// „Summe nach Baustoff“ den Zuschlag des Baustoffs.
+#[test]
+fn bestell_csv_summe_nach_baustoff() {
+    let s = standardhaus();
+    let sched = sk_model::qto::schedule(s.model());
+    let summen = |modus| -> Vec<f64> {
+        let csv = String::from_utf8(csv_sicht(s.model(), &sched, Grouping::Trade, modus)).unwrap();
+        csv.lines()
+            .filter(|l| l.contains("Summe nach Baustoff"))
+            .map(|l| {
+                let c: Vec<&str> = l.split(';').collect();
+                let f = |x: &str| {
+                    x.trim_matches('"')
+                        .replace(',', ".")
+                        .parse::<f64>()
+                        .unwrap_or(0.0)
+                };
+                f(c[7]) + f(c[8])
+            })
+            .collect()
+    };
+    let (vob, best) = (summen(Modus::Vob), summen(Modus::Bestellung));
+    assert_eq!(vob.len(), best.len());
+    assert!(!vob.is_empty());
+    for (a, b) in vob.iter().zip(&best) {
+        assert!(*b >= *a, "Bestellung {b} < VOB {a}");
+    }
+    assert!(
+        vob.iter().zip(&best).any(|(a, b)| *b > a * 1.04),
+        "{vob:?} {best:?}"
+    );
+}

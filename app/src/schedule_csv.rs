@@ -250,6 +250,9 @@ fn csv_trades(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
             let name = m
                 .material(x.material)
                 .map_or(String::new(), |y| y.name.clone());
+            // in der Bestellsicht mit dem Zuschlag des Baustoffs, wie nach
+            // Geschoss (Review #77, Nachtrag A)
+            let zu = zu_faktor(m, x.material, modus);
             row([
                 &gb,
                 "Summe nach Baustoff",
@@ -257,12 +260,12 @@ fn csv_trades(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
                 &name,
                 "",
                 "",
-                &x.length.map_or(String::new(), len),
-                &x.area.map_or(String::new(), area),
+                &x.length.map_or(String::new(), |l| len(l * zu)),
+                &x.area.map_or(String::new(), |a| area(a * zu)),
                 &if x.length.is_some() {
                     String::new()
                 } else {
-                    vol(x.volume)
+                    vol(x.volume * zu)
                 },
                 "",
             ]);
@@ -274,6 +277,15 @@ fn csv_trades(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
 }
 
 /// Nach Geschoss (B7).
+/// Faktor der Menge eines Baustoffs in der Sicht `modus`: 1 in VOB, in
+/// der Bestellung 1 + Verschnittzuschlag.
+fn zu_faktor(m: &Model, mat: sk_model::MaterialId, modus: Modus) -> f64 {
+    match modus {
+        Modus::Vob => 1.0,
+        Modus::Bestellung => 1.0 + m.material(mat).map_or(0.0, sk_model::matprop::waste) / 100.0,
+    }
+}
+
 fn csv_storeys(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
     let mut out = String::new();
     let mut row = |cols: [&str; 10]| {
@@ -301,10 +313,7 @@ fn csv_storeys(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
     let faktor = bestell_faktoren(m, sched, modus);
     let fv = |e: ElementId| faktor.get(&e).map_or(1.0, |f| f.0);
     let fa = |e: ElementId| faktor.get(&e).map_or(1.0, |f| f.1);
-    let zu = |mat: sk_model::MaterialId| match modus {
-        Modus::Vob => 1.0,
-        Modus::Bestellung => 1.0 + m.material(mat).map_or(0.0, sk_model::matprop::waste) / 100.0,
-    };
+    let zu = |mat| zu_faktor(m, mat, modus);
     let mut storeys: Vec<(String, &StoreyQto)> = Vec::new();
     for b in &sched.buildings {
         let nr = m.building(b.id).map_or(String::new(), |x| x.number.clone());

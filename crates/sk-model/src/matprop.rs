@@ -315,14 +315,12 @@ pub(crate) fn read_line(r: &Record, c: MatCategory, props: &mut PropSet) -> Resu
         return drop(format!("„{key}“ ohne Wert"));
     };
     if let Err(why) = check_prop(c, &key, &value) {
-        let PropValue::Number(n) = value else {
-            return drop(format!("„{key}“: {why}"));
-        };
         if key != WASTE {
             return drop(format!("„{key}“: {why}"));
         }
-        // Altwert außerhalb 0 bis 100 % roh erhalten statt verwerfen
-        props.insert(key, PropValue::Text(n.to_string()));
+        // Altwert außerhalb 0 bis 100 % roh und mit seinem Typ erhalten
+        // statt verwerfen; er zählt nicht ([`waste`])
+        props.insert(key, value);
         return Ok(());
     }
     if key == PRICE {
@@ -457,6 +455,9 @@ mod tests {
         let r = Record::parse(1, out.trim_end()).unwrap().unwrap();
         let mut p = PropSet::new();
         read_line(&r, c, &mut p).unwrap();
-        assert_eq!(p.get(WASTE), Some(&PropValue::Text("150".into())));
+        assert_eq!(p.get(WASTE), Some(&PropValue::Number(150.0)));
+        let mut back = String::new();
+        write_lines(&mut back, Guid(7), &p);
+        assert_eq!(back, out, "Zahl bleibt Zahl, bytegleich");
     }
 }
