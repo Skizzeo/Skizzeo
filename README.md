@@ -94,6 +94,12 @@ Nummer und Kennung. An jeder Fuge steht eine graue, offene Kette wie an einer
 gelösten Geschosskopplung; ein Klick darauf (oder „an der Fuge vereinen“ im
 Paneel) vereint die beiden Wände wieder, wenn sie in allen Geschossen in einer
 Flucht liegen und denselben Typ haben.
+Teilrücksprung im OG: Mit Strg (oder an einer gelösten Kette) springt nur
+das OG-Stück über der geteilten Wand zurück; an beiden Fugen entstehen im OG
+Stufen, das EG bleibt durchgehend, und auf der freien Decke davor liegt eine
+Dachterrasse mit Attika und Blech bis an die Stufen. Zieht man eine Stufe,
+wandert die Fuge darunter längs der Flucht mit. Ein Vorsprung nur eines
+OG-Stücks (Erker) bleibt abgelehnt.
 
 Auswahl und Eigenschaften (ohne aktive Gebäude-Eingabe):
 

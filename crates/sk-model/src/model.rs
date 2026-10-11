@@ -320,6 +320,8 @@ mod geschossbaender;
 #[path = "gruendung.rs"]
 mod gruendung;
 
+#[path = "stapel.rs"]
+mod stapel;
 #[path = "teilen.rs"]
 mod teilen;
 pub use teilen::FugeError;
@@ -2448,532 +2450,6 @@ impl Model {
             })
     }
 
-    /// Führt die gekoppelten Züge über `root` mit (Linie = Partnerlinie +
-    /// Versatz, Ecken neu geschnitten), Geschoss für Geschoss nach oben, und
-    /// ordnet die Kopplungen neu zu, wenn sich die Segmentzahl geändert hat.
-    /// Liefert die bewegten Züge.
-    fn carry_stack(&mut self, root: RunId) -> Vec<RunId> {
-        let mut out = Vec::new();
-        let mut queue = vec![root];
-        let mut k = 0;
-        while k < queue.len() {
-            let below = queue[k];
-            k += 1;
-            for up in self.runs_above(below) {
-                if queue.contains(&up) {
-                    continue;
-                }
-                self.follow_below(up, below);
-                queue.push(up);
-                out.push(up);
-            }
-        }
-        out
-    }
-
-    /// Versatz je Segment des Zuges `up` gegenüber dem Zug darunter mit der
-    /// Geometrie `lower` und den Wänden `lsegs`, und welche Segmente gelöst
-    /// sind (ohne Kopplung, OG Phase 2). Gekoppelte Segmente behalten ihren
-    /// gespeicherten Versatz; gelöste behalten ihre Linie, ihr Versatz wird
-    /// aus der eigenen Lage gegen `lower` gemessen (G7 K1). Hat sich die
-    /// Segmentzahl geändert, siehe [`Model::recount_offsets`].
-    fn stack_offsets(
-        &self,
-        up: RunId,
-        lower: &WallChain,
-        lsegs: &[ElementId],
-    ) -> (Vec<f64>, Vec<bool>) {
-        let usegs = self.run(up).map(|r| r.segments.clone()).unwrap_or_default();
-        let coupling = |w: ElementId| match self.element(w).map(|e| &e.kind) {
-            Some(ElementKind::Wall(x)) => x.coupling,
-            _ => None,
-        };
-        if usegs.len() != lsegs.len() {
-            let l: Vec<Option<ElementId>> = lsegs.iter().copied().map(Some).collect();
-            return self.recount_offsets(&usegs, lower, &l);
-        }
-        let free: Vec<bool> = usegs
-            .iter()
-            .map(|w| coupling(*w).is_some_and(|c| !c.linked))
-            .collect();
-        let measured = if free.iter().any(|f| *f) {
-            self.base_chain(up)
-                .and_then(|c| c.segment_offsets_from(lower))
-        } else {
-            None
-        };
-        let offsets = lsegs
-            .iter()
-            .enumerate()
-            .map(|(k, e)| {
-                if free[k] {
-                    return measured
-                        .as_ref()
-                        .and_then(|m| m.get(k).copied())
-                        .unwrap_or(0.0);
-                }
-                usegs
-                    .iter()
-                    .find_map(|w| coupling(*w).filter(|c| c.below == *e).map(|c| c.offset))
-                    .unwrap_or(0.0)
-            })
-            .collect();
-        (offsets, free)
-    }
-
-    /// Versatz und Zustand je Segment von `lower`, nachdem sich seine
-    /// Segmentzahl geändert hat (Regel 28): Ein Segment, dessen Wand schon
-    /// einen Partner oben hat, behält dessen Versatz und Zustand; ein neues
-    /// Teilstück erbt beides vom geraden Nachbarn, aus dem es geteilt wurde.
-    /// Sonst bündig und gekoppelt.
-    fn recount_offsets(
-        &self,
-        usegs: &[ElementId],
-        lower: &WallChain,
-        lsegs: &[Option<ElementId>],
-    ) -> (Vec<f64>, Vec<bool>) {
-        let partner = |e: Option<ElementId>| {
-            usegs
-                .iter()
-                .find_map(|w| match self.element(*w).map(|x| &x.kind) {
-                    Some(ElementKind::Wall(Wall {
-                        coupling: Some(c), ..
-                    })) if Some(c.below) == e => Some((c.offset, !c.linked)),
-                    _ => None,
-                })
-        };
-        let n = lsegs.len();
-        let normal = |k: usize| lower.segment_normal(k);
-        let straight = |a: usize, b: usize| match (normal(a), normal(b)) {
-            (Some(x), Some(y)) => x.dot(y) > 1.0 - 1e-9,
-            _ => false,
-        };
-        let closed = lower.closed;
-        let (mut offsets, mut free) = (vec![0.0; n], vec![false; n]);
-        for k in 0..n {
-            let own = partner(lsegs[k]);
-            // Sonst das nächste Stück derselben Flucht mit Partner, über
-            // gerade Fugen in beide Richtungen (beim Teilen an zwei Punkten
-            // liegt ein Stück zwei Fugen weit, Review Geometrie #61)
-            let near = || {
-                let step = |j: usize, back: bool| {
-                    let i = match back {
-                        true => (j > 0 || closed).then(|| (j + n - 1) % n)?,
-                        false => (j + 1 < n || closed).then(|| (j + 1) % n)?,
-                    };
-                    (i != k && straight(i, j)).then_some(i)
-                };
-                let (mut prev, mut next) = (Some(k), Some(k));
-                while prev.is_some() || next.is_some() {
-                    prev = prev.and_then(|j| step(j, true));
-                    next = next.and_then(|j| step(j, false));
-                    let found = [prev, next]
-                        .into_iter()
-                        .flatten()
-                        .find_map(|j| partner(lsegs[j]));
-                    if found.is_some() {
-                        return found;
-                    }
-                }
-                None
-            };
-            if let Some((o, f)) = own.or_else(near) {
-                offsets[k] = o;
-                free[k] = f;
-            }
-        }
-        (offsets, free)
-    }
-
-    /// Lassen sich alle über `id` gestapelten Züge auf die neuen Punkte
-    /// `points` von `id` legen (G7 K2)? Nein, wenn ein Segment verschwinden
-    /// oder kippen würde oder sich ein Umriss selbst schneidet; dann bleibt
-    /// das Gummiband stehen statt eine Decke zu verlieren.
-    fn stack_fits(&self, id: RunId, points: &[Vec3]) -> bool {
-        let Some(mut lower) = self.base_chain(id) else {
-            return true;
-        };
-        lower.points = points.to_vec();
-        let Some(r) = self.run(id) else {
-            return true;
-        };
-        // Die Wände nach Lage zuordnen wie beim Setzen
-        // (Regel 11), neue Stücke ohne Partner (Regel 28)
-        let new = segment_lines(&lower.clean_points(), lower.closed);
-        let lsegs: Vec<Option<ElementId>> =
-            teilen::assign_walls(&segment_lines(&r.points, r.closed), &new, lower.closed)
-                .into_iter()
-                .map(|m| m.and_then(|o| r.segments.get(o).copied()))
-                .collect();
-        for up in self.runs_above(id) {
-            let (offsets, _) = match lsegs.iter().copied().collect::<Option<Vec<_>>>() {
-                Some(l) => self.stack_offsets(up, &lower, &l),
-                None => {
-                    let usegs = self.run(up).map(|r| r.segments.clone()).unwrap_or_default();
-                    self.recount_offsets(&usegs, &lower, &lsegs)
-                }
-            };
-            match lower.with_segment_offsets(&offsets) {
-                Some(c)
-                    if room_inside(&c)
-                        && self.lengths_fit(up, &c, &lower)
-                        && self.stack_fits(up, &c.points) => {}
-                _ => return false,
-            }
-        }
-        true
-    }
-
-    /// Regel 30: Ist jedes Segment von `c` (neue Lage des Zuges `up`)
-    /// mindestens min(Wanddicke, Länge des Partners in `lower`) lang? Sonst
-    /// bliebe nach dem Versetzen ein Wandstummel, den die Prüfung meldet.
-    /// Stummel, die schon der Zug darunter hat, bleiben erlaubt.
-    fn lengths_fit(&self, up: RunId, c: &WallChain, lower: &WallChain) -> bool {
-        let Some(r) = self.run(up) else {
-            return true;
-        };
-        let (n, nl) = (c.points.len(), lower.points.len());
-        if n != r.points.len() || nl != n {
-            return true;
-        }
-        r.segments.iter().enumerate().all(|(k, w)| {
-            if !c.closed && k + 1 >= n {
-                return true;
-            }
-            let len = (c.points[(k + 1) % n] - c.points[k]).length();
-            let partner = (lower.points[(k + 1) % nl] - lower.points[k]).length();
-            let dicke = self
-                .element(*w)
-                .and_then(|e| e.layer_set)
-                .and_then(|t| self.layer_sets.get(t))
-                .map_or(0.0, |t| t.thickness());
-            len < 1.0 || len + 0.5 >= dicke.min(partner)
-        })
-    }
-
-    /// Stapelbezug einer gestapelten Wand: (Versatz in mm, + außen;
-    /// gekoppelt). `None`: keine gestapelte Wand (EG, Innenwand).
-    pub fn stack_offset(&self, wall: ElementId) -> Option<(f64, bool)> {
-        match self.element(wall)?.kind {
-            ElementKind::Wall(Wall {
-                coupling: Some(c), ..
-            }) => Some((c.offset, c.linked)),
-            _ => None,
-        }
-    }
-
-    /// Wand im Geschoss darunter, auf der `wall` steht.
-    pub fn wall_below(&self, wall: ElementId) -> Option<ElementId> {
-        match self.element(wall)?.kind {
-            ElementKind::Wall(Wall {
-                coupling: Some(c), ..
-            }) => Some(c.below),
-            _ => None,
-        }
-    }
-
-    /// Fuß der Kette: von `wall` über gekoppelte Glieder nach unten bis zum
-    /// ersten gelösten Glied oder zum EG. Ziehen ohne Strg an einer
-    /// gekoppelten OG-Wand zieht diese Wand (OG Phase 2).
-    pub fn chain_foot(&self, wall: ElementId) -> ElementId {
-        let mut at = wall;
-        while let Some((_, true)) = self.stack_offset(at) {
-            match self.wall_below(at) {
-                Some(b) if b != wall => at = b,
-                _ => break,
-            }
-        }
-        at
-    }
-
-    /// Kette am Segment öffnen bzw. schließen. Die Lage bleibt, der Versatz
-    /// auch (OG-16). `false` bei einer Wand ohne Partner darunter.
-    pub fn set_linked(&mut self, wall: ElementId, linked: bool) -> bool {
-        let Some((_, now)) = self.stack_offset(wall) else {
-            return false;
-        };
-        // Die Aufkantung bleibt bündig gekoppelt (Flachdach, Jörn 10.10.)
-        if !linked && self.is_parapet(wall) {
-            return false;
-        }
-        if now == linked {
-            return true;
-        }
-        note!(self, Element, self.elements, wall);
-        if let Some(ElementKind::Wall(Wall {
-            coupling: Some(c), ..
-        })) = self.elements.get_mut(wall).map(|e| &mut e.kind)
-        {
-            c.linked = linked;
-        }
-        if let Some((run, _)) = self.segment_of(wall) {
-            self.sync_parts(run);
-            self.update_joins(&[run]);
-        }
-        true
-    }
-
-    /// Versatz der gestapelten Wand `wall` auf `offset` (mm, + außen) setzen;
-    /// unter 20 mm rastet er auf 0 ein (Regel 31). Nur diese Wand und was
-    /// über ihr steht bewegt sich, der Zustand der Kette bleibt. `None`, wenn
-    /// der Stapel dabei ungültig würde (Segment verschwindet, Umriss kreuzt
-    /// sich, kein Raum, ein Erker über nur einen Teil der Wand).
-    pub fn set_offset(&mut self, wall: ElementId, offset: f64) -> Option<Vec<RunId>> {
-        let offset = if offset.abs() < MIN_OFFSET {
-            0.0
-        } else {
-            offset
-        };
-        if offset != 0.0 && self.is_parapet(wall) {
-            return None;
-        }
-        let (run, seg) = self.segment_of(wall)?;
-        let (old, linked) = self.stack_offset(wall)?;
-        let below = self.run_below(run)?;
-        let lower = self.base_chain(below)?;
-        let lsegs = self.run(below)?.segments.clone();
-        let usegs = self.run(run)?.segments.clone();
-        if usegs.len() != lsegs.len() || !offset.is_finite() {
-            return None;
-        }
-        let mut offsets: Vec<f64> = usegs
-            .iter()
-            .map(|w| self.stack_offset(*w).map_or(0.0, |o| o.0))
-            .collect();
-        offsets[seg] = offset;
-        let c = lower.with_segment_offsets(&offsets)?;
-        if !room_inside(&c) || !self.lengths_fit(run, &c, &lower) {
-            return None;
-        }
-        if (old - offset).abs() < 1e-9 {
-            return Some(Vec::new());
-        }
-        let out = self.set_run_points(run, &c.points)?;
-        note!(self, Element, self.elements, wall);
-        if let Some(ElementKind::Wall(Wall {
-            coupling: Some(cp), ..
-        })) = self.elements.get_mut(wall).map(|e| &mut e.kind)
-        {
-            *cp = Coupling {
-                below: cp.below,
-                offset,
-                linked,
-            };
-        }
-        self.sync_parts(run);
-        self.update_joins(&[run]);
-        Some(out)
-    }
-
-    /// Versatz um `d` ändern ([`Model::set_offset`]).
-    pub fn move_segment(&mut self, wall: ElementId, d: f64) -> Option<Vec<RunId>> {
-        let (old, _) = self.stack_offset(wall)?;
-        self.set_offset(wall, old + d)
-    }
-
-    /// „Bündig setzen“: Versatz 0 und gekoppelt.
-    pub fn set_flush(&mut self, wall: ElementId) -> bool {
-        self.set_offset(wall, 0.0).is_some() && self.set_linked(wall, true)
-    }
-
-    /// „Bündig setzen“ mit Zielwand (Jörn 07.10. 07:53): `wall` rückt an
-    /// `target`, danach ist das Paar gekoppelt. Steht `target` unter `wall`,
-    /// ist das [`Model::set_flush`]. Steht es darüber, wandert das Segment
-    /// des Zuges darunter wie beim Ziehen am Fuß (Gummiband): Gründung,
-    /// Decke und die gekoppelten Wände darüber gehen mit, gelöste bleiben
-    /// stehen; die Zielwand selbst bleibt, wo sie ist. Ändert nichts, wenn
-    /// es abgelehnt wird.
-    pub fn flush_to(
-        &mut self,
-        wall: ElementId,
-        target: ElementId,
-    ) -> Result<Vec<RunId>, FlushError> {
-        if self.wall_below(wall) == Some(target) {
-            return if self.stack_offset(wall) == Some((0.0, true)) {
-                Ok(Vec::new())
-            } else if self.set_offset(wall, 0.0).is_some() && self.set_linked(wall, true) {
-                Ok(self.segment_of(wall).map(|s| vec![s.0]).unwrap_or_default())
-            } else {
-                Err(FlushError::Invalid)
-            };
-        }
-        let (run, pts) = self.flush_up_points(wall, target)?;
-        let (d, linked) = self.stack_offset(target).ok_or(FlushError::NotPartners)?;
-        if d == 0.0 {
-            if !linked {
-                self.set_linked(target, true);
-            }
-            return Ok(Vec::new());
-        }
-        if linked {
-            self.set_linked(target, false);
-        }
-        let Some(out) = self.set_run_points(run, &pts) else {
-            if linked {
-                self.set_linked(target, true);
-            }
-            return Err(FlushError::Invalid);
-        };
-        self.set_linked(target, true);
-        Ok(out)
-    }
-
-    /// Ginge [`Model::flush_to`]? Für den Hinweis beim Überfahren der
-    /// Zielwand; ändert nichts.
-    pub fn can_flush_to(&self, wall: ElementId, target: ElementId) -> Result<(), FlushError> {
-        if self.wall_below(wall) == Some(target) {
-            let (run, seg) = self.segment_of(wall).ok_or(FlushError::NotPartners)?;
-            let below = self.run_below(run).ok_or(FlushError::NotPartners)?;
-            let lower = self.base_chain(below).ok_or(FlushError::Invalid)?;
-            let mut offsets: Vec<f64> = self
-                .run(run)
-                .ok_or(FlushError::Invalid)?
-                .segments
-                .iter()
-                .map(|w| self.stack_offset(*w).map_or(0.0, |o| o.0))
-                .collect();
-            *offsets.get_mut(seg).ok_or(FlushError::Invalid)? = 0.0;
-            return match lower.with_segment_offsets(&offsets) {
-                Some(c) if room_inside(&c) && self.lengths_fit(run, &c, &lower) => Ok(()),
-                _ => Err(FlushError::Invalid),
-            };
-        }
-        let (run, pts) = self.flush_up_points(wall, target)?;
-        // Probe mit gelöster Zielwand: sie bleibt stehen, der Rest folgt
-        let mut probe = self.clone();
-        if let Some(ElementKind::Wall(Wall {
-            coupling: Some(c), ..
-        })) = probe.elements.get_mut(target).map(|e| &mut e.kind)
-        {
-            c.linked = false;
-        }
-        if probe.stack_fits(run, &pts) {
-            Ok(())
-        } else {
-            Err(FlushError::Invalid)
-        }
-    }
-
-    /// Zug von `wall` und seine neuen Punkte, wenn `wall` an die Wand
-    /// `target` darüber rückt.
-    fn flush_up_points(
-        &self,
-        wall: ElementId,
-        target: ElementId,
-    ) -> Result<(RunId, Vec<Vec3>), FlushError> {
-        if self.wall_below(target) != Some(wall) {
-            return Err(FlushError::NotPartners);
-        }
-        // Eine gestapelte Wand an die darüber: ihr eigener Versatz müsste
-        // mitwandern (drei Geschosse, noch nicht vorgesehen)
-        if self.stack_offset(wall).is_some() {
-            return Err(FlushError::Unsupported);
-        }
-        let (run, seg) = self.segment_of(wall).ok_or(FlushError::NotPartners)?;
-        let (d, _) = self.stack_offset(target).ok_or(FlushError::NotPartners)?;
-        let c = self.chain(run).ok_or(FlushError::Invalid)?;
-        let c = c
-            .with_segment_moved(seg, c.outward_sign() * d)
-            .ok_or(FlushError::Invalid)?;
-        Ok((run, c.points))
-    }
-
-    /// Legt den Zug `up` auf den Zug `below` (mit den Versätzen seiner Wände)
-    /// und koppelt Wand k an Wand k darunter; gelöste Wände bleiben gelöst
-    /// und stehen still.
-    fn follow_below(&mut self, up: RunId, below: RunId) {
-        let (Some(lower), Some(lsegs)) = (
-            self.base_chain(below),
-            self.run(below).map(|r| r.segments.clone()),
-        ) else {
-            return;
-        };
-        let (mut offsets, free) = self.stack_offsets(up, &lower, &lsegs);
-        // Gelöste Wand, die durch das Ziehen darunter fast bündig steht: rastet
-        // wie beim Ziehen am Fuß unter 20 mm auf 0 ein (Regel 31, Review 1t T1)
-        for (d, f) in offsets.iter_mut().zip(&free) {
-            if *f && d.abs() < MIN_OFFSET {
-                *d = 0.0;
-            }
-        }
-        let recount = self
-            .run(up)
-            .is_some_and(|r| r.segments.len() != lsegs.len());
-        let pts = match lower.with_segment_offsets(&offsets) {
-            Some(c) => c.points,
-            // Neue Segmentzahl: bündig neu auflegen, die Kopplungen folgen
-            None if recount => lower.points.clone(),
-            // Ungültig (siehe stack_fits): Zug bleibt liegen, statt bündig
-            // zu springen
-            None => return,
-        };
-        let same = self
-            .run(up)
-            .is_some_and(|r| r.points == pts && r.segments.len() == lsegs.len());
-        if !same && !self.set_points(up, &pts) {
-            return;
-        }
-        let segs = self.run(up).map(|r| r.segments.clone()).unwrap_or_default();
-        for (k, w) in segs.into_iter().enumerate() {
-            let Some(&b) = lsegs.get(k) else {
-                continue;
-            };
-            // Gelöst: Versatz nachgeführt, die Kette bleibt offen
-            let want = Coupling {
-                below: b,
-                offset: offsets[k],
-                linked: free.get(k) != Some(&true),
-            };
-            let now = match self.element(w).map(|e| &e.kind) {
-                Some(ElementKind::Wall(x)) => x.coupling,
-                _ => continue,
-            };
-            if now != Some(want) {
-                note!(self, Element, self.elements, w);
-                if let Some(ElementKind::Wall(x)) = self.elements.get_mut(w).map(|e| &mut e.kind) {
-                    x.coupling = Some(want);
-                }
-            }
-        }
-    }
-
-    /// Gelöste Segmente eines gestapelten Zuges, der selbst bewegt wurde:
-    /// ihr Versatz ist wieder die wahre Lage gegen den Zug darunter.
-    fn remeasure(&mut self, id: RunId) {
-        let Some(below) = self.run_below(id) else {
-            return;
-        };
-        let (Some(lower), Some(lsegs)) = (
-            self.base_chain(below),
-            self.run(below).map(|r| r.segments.clone()),
-        ) else {
-            return;
-        };
-        let (offsets, free) = self.stack_offsets(id, &lower, &lsegs);
-        let segs = self.run(id).map(|r| r.segments.clone()).unwrap_or_default();
-        if segs.len() != lsegs.len() {
-            return;
-        }
-        for (k, w) in segs.into_iter().enumerate() {
-            if !free[k] {
-                continue;
-            }
-            let now = match self.element(w).map(|e| &e.kind) {
-                Some(ElementKind::Wall(x)) => x.coupling,
-                _ => continue,
-            };
-            if let Some(c) = now.filter(|c| c.offset != offsets[k]) {
-                note!(self, Element, self.elements, w);
-                if let Some(ElementKind::Wall(x)) = self.elements.get_mut(w).map(|e| &mut e.kind) {
-                    x.coupling = Some(Coupling {
-                        offset: offsets[k],
-                        ..c
-                    });
-                }
-            }
-        }
-    }
-
     /// Setzt neue Eckpunkte eines Wandzugs. Bleibt die Segmentzahl gleich, behält
     /// jede Wand ihren Platz (Verschieben). Ändert sie sich, behalten die Wände
     /// ihre Kennung nach Lage (Regel 11): ein geteiltes Segment gibt sie an seinen
@@ -2983,6 +2459,17 @@ impl Model {
     /// alle Züge, deren Körper sich dadurch ändern kann, `None` bei ungültigen
     /// Punkten.
     pub fn set_run_points(&mut self, id: RunId, points: &[Vec3]) -> Option<Vec<RunId>> {
+        self.set_run_points_with(id, points, |_| {})
+    }
+
+    /// Wie [`Model::set_run_points`]; `fix` läuft gleich nach dem Setzen der
+    /// Punkte (Kopplungen eines gestapelten Zuges mit Stufen, W-12).
+    pub(super) fn set_run_points_with(
+        &mut self,
+        id: RunId,
+        points: &[Vec3],
+        fix: impl FnOnce(&mut Model),
+    ) -> Option<Vec<RunId>> {
         let flat: Vec<Vec3> = points.iter().map(|p| vec3(p.x, p.y, 0.0)).collect();
         // Punkte der geschlossenen Züge vorher: Deckenumriss alt gegen neu (U3)
         let before: Vec<(RunId, Vec<Vec3>)> = self
@@ -2994,6 +2481,7 @@ impl Model {
         if !self.stack_fits(id, &flat) || !self.set_points(id, &flat) {
             return None;
         }
+        fix(self);
         self.remeasure(id);
         let mut moved = Vec::new();
         let mut roots = vec![id];
@@ -3274,12 +2762,26 @@ impl Model {
         if top <= c.base + 1e-6 {
             return None;
         }
-        let mut segs = vec![false; c.segment_count()];
-        for k in f.terraces.outlines.iter().flat_map(|t| &t.segments) {
-            if let Some(x) = segs.get_mut(*k) {
-                *x = true;
-            }
-        }
+        // Segmente darunter mit Terrasse; oben das Teilstück darüber und die
+        // Stufen daneben (W-12)
+        let on: Vec<usize> = f
+            .terraces
+            .outlines
+            .iter()
+            .flat_map(|t| t.segments.iter().copied())
+            .collect();
+        let map = self.stack_map(run);
+        let m = map.len();
+        let segs: Vec<bool> = (0..c.segment_count())
+            .map(|j| match map.get(j).copied().flatten() {
+                Some(k) => on.contains(&k),
+                None if m > 0 => [map[(j + m - 1) % m], map[(j + 1) % m]]
+                    .iter()
+                    .flatten()
+                    .any(|k| on.contains(k)),
+                None => false,
+            })
+            .collect();
         segs.iter()
             .any(|x| *x)
             .then_some(((c.base, top), segs, layer))
@@ -4228,55 +3730,7 @@ impl Model {
                 }
             }
             if let Some(lower) = self.run_below(id).and_then(|b| self.run(b)) {
-                // Regel 28: gleiche Segmentzahl, Segment k über Segment k
-                if lower.segments.len() != r.segments.len() {
-                    out.push(format!(
-                        "Wandzug {id:?}: {} Segmente über {} im Geschoss darunter",
-                        r.segments.len(),
-                        lower.segments.len()
-                    ));
-                } else {
-                    for (k, w) in r.segments.iter().enumerate() {
-                        let Some(e) = self.element(*w) else { continue };
-                        match e.kind {
-                            ElementKind::Wall(Wall {
-                                coupling: Some(c), ..
-                            }) => {
-                                if c.below != lower.segments[k] {
-                                    out.push(format!(
-                                        "{}: steht nicht über Segment {} darunter",
-                                        e.number,
-                                        k + 1
-                                    ));
-                                }
-                            }
-                            // Gelöst heißt `linked = false`, der Bezug bleibt
-                            ElementKind::Wall(_) => {
-                                out.push(format!("{}: ohne Stapelbezug", e.number));
-                            }
-                            _ => {}
-                        }
-                    }
-                    // Regel 30: jedes Segment mindestens min(Wanddicke,
-                    // Länge des Partners) lang
-                    let (n, nl) = (r.points.len(), lower.points.len());
-                    for (k, w) in r.segments.iter().enumerate() {
-                        let Some(e) = self.element(*w) else { continue };
-                        let len = (r.points[(k + 1) % n] - r.points[k]).length();
-                        let partner = (lower.points[(k + 1) % nl] - lower.points[k]).length();
-                        let dicke = e
-                            .layer_set
-                            .and_then(|t| self.layer_sets.get(t))
-                            .map_or(0.0, |t| t.thickness());
-                        let min = dicke.min(partner);
-                        if len >= 1.0 && len + 0.5 < min {
-                            out.push(format!(
-                                "{}: {:.0} mm lang, kürzer als {:.0} mm",
-                                e.number, len, min
-                            ));
-                        }
-                    }
-                }
+                self.check_stack(id, r, lower, &mut out);
                 // Regel 30: der Umriss oben schneidet sich nicht selbst
                 if r.closed && !sk_math::polygon::is_simple(&r.points) {
                     out.push(format!("Wandzug {id:?}: Umriss schneidet sich selbst"));

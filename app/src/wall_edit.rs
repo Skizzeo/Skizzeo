@@ -53,6 +53,25 @@ struct Drag {
     blocked: bool,
     /// Seite, zu der die Maus zuletzt gezogen hat (±1, Paket 8b).
     side: f64,
+    /// An einer Stufe (W-12): die Fuge darunter, die mitwandert.
+    joint: Option<Joint>,
+}
+
+/// Fuge im Zug `run` vor Segment `seg`, die beim Ziehen an einer Stufe
+/// längs der Flucht wandert; `sign` rechnet die Zugrichtung in die
+/// Laufrichtung um.
+#[derive(Clone)]
+struct Joint {
+    run: RunId,
+    seg: usize,
+    original: WallChain,
+    sign: f64,
+}
+
+impl Joint {
+    fn moved(&self, d: f64) -> Option<WallChain> {
+        self.original.with_joint_moved(self.seg, d * self.sign)
+    }
 }
 
 impl Drag {
@@ -65,6 +84,7 @@ impl Drag {
             moving: self.moving,
             offset: self.offset.map(|o| o.0),
             side: self.side,
+            joint: self.joint.clone(),
         }
     }
 }
@@ -79,6 +99,7 @@ struct Target {
     /// Versatz dieser gestapelten Wand; sonst wandert das Segment.
     offset: Option<ElementId>,
     side: f64,
+    joint: Option<Joint>,
 }
 
 impl Target {
@@ -103,6 +124,12 @@ impl Target {
         if let Some(wall) = self.offset {
             return scene.set_offset(wall, v);
         }
+        if let Some(j) = &self.joint {
+            return j.moved(v * self.side).is_some_and(|c| {
+                put(scene, j.run, &c);
+                true
+            });
+        }
         match self
             .original
             .with_segment_moved_snap(self.seg, v * self.side, 0.0)
@@ -122,6 +149,14 @@ impl Target {
     fn value(&self, scene: &Scene) -> f64 {
         if let Some(wall) = self.offset {
             return scene.model().stack_offset(wall).map_or(0.0, |o| o.0);
+        }
+        if let Some(j) = &self.joint {
+            let now = scene.chain(j.run).map(|c| c.clean_points());
+            let old = j.original.clean_points();
+            return match (now.as_ref().and_then(|p| p.get(j.seg)), old.get(j.seg)) {
+                (Some(a), Some(b)) => (*a - *b).length(),
+                _ => 0.0,
+            };
         }
         let old = self.original.clean_points();
         let (Some(&a), Some(&b), Some(c)) = (
@@ -256,6 +291,12 @@ pub fn drag_set_mods(m: &sk_model::Model, wall: ElementId, ctrl: bool) -> Vec<El
         _ => wall,
     };
     let mut seeds = vec![moving];
+    // An einer Stufe wandert die Fuge darunter: beide Stücke dort
+    if let Some((run, k)) = m.step_joint(wall) {
+        let n = m.run(run).map_or(1, |r| r.segments.len());
+        seeds.extend(m.wall_at(run, k));
+        seeds.extend(m.wall_at(run, (k + n - 1) % n));
+    }
     if let Some((run, k)) = m.segment_of(moving) {
         let r = m.run(run);
         let n = r.map_or(0, |r| r.segments.len());
@@ -756,6 +797,12 @@ impl WallEdit {
             }
             return ok && now != scene.model().stack_offset(wall).map(|o| o.0);
         }
+        if let Some(j) = &d.joint {
+            let Some(moved) = j.moved(off) else {
+                return false;
+            };
+            return put(scene, j.run, &moved);
+        }
         match d.original.with_segment_moved_snap(d.seg, off, SNAP) {
             Some(moved) => put(scene, d.run, &moved),
             None => false,
@@ -859,6 +906,18 @@ impl WallEdit {
                 let (Some(start), Some(normal)) = (drag_point(cam, x, y, w, h, z), normal) else {
                     return out;
                 };
+                // Stufe: die Fuge darunter wandert längs der Flucht
+                let joint = scene.model().step_joint(wall).and_then(|(run, seg)| {
+                    let c = scene.chain(run)?;
+                    let p = c.clean_points();
+                    let dir = p[(seg + 1) % p.len()] - p[seg];
+                    Some(Joint {
+                        run,
+                        seg,
+                        sign: normal.dot(dir).signum(),
+                        original: c.clone(),
+                    })
+                });
                 self.drag = Some(Drag {
                     wall,
                     run,
@@ -871,6 +930,7 @@ impl WallEdit {
                     offset,
                     blocked: false,
                     side: 1.0,
+                    joint,
                 });
                 scene.begin("Wand verschoben");
                 out.redraw = true;
@@ -904,7 +964,7 @@ impl WallEdit {
                     }
                     let serial = scene.step_serial();
                     scene.commit();
-                    if d.offset.is_none() && scene.step_serial() != serial {
+                    if d.offset.is_none() && d.joint.is_none() && scene.step_serial() != serial {
                         out.joined = joined(scene, d.run, d.moving);
                     }
                     self.remember(scene, serial, d.target());
@@ -1138,6 +1198,83 @@ mod tests {
         assert_eq!(s.model().wall_at(run, 1), Some(wall));
         assert!(s.undo());
         assert!((s.model().run(run).unwrap().points[1].y - 4000.0).abs() < 1e-6);
+    }
+
+    /// Teilrücksprung im OG (W-12): Zieht man eine Stufe, wandert die Fuge
+    /// im EG darunter längs der Flucht mit; der Rücksprung wird breiter,
+    /// ein Schritt im Verlauf.
+    #[test]
+    fn stufe_ziehen_verschiebt_die_fuge() {
+        let mut s = Scene::new();
+        s.edit_model("Gebäude erstellt", |m| {
+            let b = m.add_building(2);
+            let eg = m
+                .build_from_polygon(
+                    b,
+                    &[
+                        vec3(0.0, 0.0, 0.0),
+                        vec3(0.0, 8000.0, 0.0),
+                        vec3(10000.0, 8000.0, 0.0),
+                        vec3(10000.0, 0.0, 0.0),
+                    ],
+                )
+                .unwrap();
+            let nord = m.wall_at(eg, 1).unwrap();
+            m.split_wall(nord, &[3000.0, 6000.0]).is_ok()
+        });
+        let m = s.model();
+        let eg = m.runs().ids().find(|r| m.run_below(*r).is_none()).unwrap();
+        let og = m.runs_above(eg)[0];
+        let mitte = m.wall_at(og, 2).unwrap();
+        s.edit_model("Versatz", |m| m.set_offset(mitte, -1500.0).is_some());
+        let stufe = s.model().wall_at(og, 2).unwrap();
+        assert_eq!(s.model().step_joint(stufe), Some((eg, 2)));
+        let z = s.chain(og).unwrap().base;
+        let c = Camera::looking_at(
+            vec3(5000.0, 4000.0, z + 30000.0),
+            vec3(5000.0, 4000.0, z),
+            45.0,
+        );
+        let mut e = WallEdit {
+            plan_z: Some(z),
+            ..WallEdit::default()
+        };
+        let m = Modifiers::default();
+        let ev = |p: Vec3, kind: u8| {
+            let (x, y) = at(&c, vec3(p.x, p.y, z));
+            match kind {
+                0 => Event::MouseMove { x, y, mods: m },
+                1 => Event::MouseDown {
+                    button: MouseButton::Left,
+                    x,
+                    y,
+                    mods: m,
+                },
+                _ => Event::MouseUp {
+                    button: MouseButton::Left,
+                    x,
+                    y,
+                    mods: m,
+                },
+            }
+        };
+        let go = |e: &mut WallEdit, s: &mut Scene, p: Vec3, k: u8| {
+            e.handle(&ev(p, k), s, &c, W, H, 1.0, true)
+        };
+        let grip = vec3(3000.0, 7250.0, 0.0);
+        go(&mut e, &mut s, grip, 0);
+        assert_eq!(e.hover, Some(stufe));
+        go(&mut e, &mut s, grip, 1);
+        go(&mut e, &mut s, vec3(2000.0, 7250.0, 0.0), 0);
+        go(&mut e, &mut s, vec3(2000.0, 7250.0, 0.0), 2);
+        let mm = s.model();
+        assert_eq!(mm.run(eg).unwrap().points[2].x, 2000.0);
+        assert_eq!(mm.run(og).unwrap().segments.len(), 8);
+        assert_eq!(mm.stack_offset(mitte), Some((-1500.0, true)));
+        assert!(mm.check().is_empty(), "{:?}", mm.check());
+        assert_eq!(e.pill(&s).unwrap().0, "Verschiebung 1,00");
+        assert!(s.undo());
+        assert_eq!(s.model().run(eg).unwrap().points[2].x, 3000.0);
     }
 
     /// L zusammenschieben (W-11): Knapp vor der Flucht rastet der rechte
