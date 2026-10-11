@@ -11,7 +11,7 @@
 //! let r = Schwebend::neu((0.0, oben, w, h - oben), scale, rechts, fonts);
 //! r.abdunkeln(c);
 //! /* Inhalt ab r.inhalt_oben() zeichnen */
-//! r.leiste(c, fonts, "Seite 1 von 3", schwebend::HINWEIS, hot_zu);
+//! r.leiste(c, fonts, ("Seite 1 von 3", inhalt_x), schwebend::HINWEIS, hot_zu);
 //! match r.klick(x, y, inhalt_trifft) { Klick::Daneben | Klick::Zu => zu(), Klick::Inhalt => {} }
 //! ```
 //! Die Leiste wird nach dem Inhalt gezeichnet und deckt, was nach oben

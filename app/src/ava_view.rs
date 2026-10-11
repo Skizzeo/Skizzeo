@@ -41,6 +41,8 @@ const TREE_W: f32 = 268.0;
 const TREE_MIN: f32 = 180.0;
 const TREE_ROW: f32 = 26.0;
 const TREE_GAP: f32 = 40.0;
+/// Platz der Legende unter den Baumzeilen (dip); die Zeilen enden darüber.
+const LEGENDE_H: f32 = 24.0;
 /// Unter dieser Fensterbreite (dip) wird der Baum zur Leiste „LV ▾“ über
 /// der Tabelle, die ihn als Blatt aufklappt; die Tabelle hat dann die ganze
 /// Breite (Bedienbarkeit 23).
@@ -478,6 +480,8 @@ pub struct AvaView {
     fokus_stand: u64,
     fokus_text: String,
     scroll_vorher: Option<f32>,
+    /// Erste gezeigte Baumzeile, wenn der Baum nicht ganz passt.
+    baum_ab: usize,
     /// Druckvorschau groß über dem ganzen Fenster (Jörn 11.10.): Rollstand
     /// (px), `None` zu.
     gross: Option<f32>,
@@ -541,6 +545,7 @@ impl AvaView {
             fokus_stand: 0,
             fokus_text: String::new(),
             scroll_vorher: None,
+            baum_ab: 0,
             gross: None,
         }
     }
@@ -1020,30 +1025,77 @@ impl AvaView {
         v
     }
 
-    /// Baumzeilen: Index, Oberkante und Höhe (px). Als Leiste nur im
-    /// offenen Blatt.
+    /// Fläche der Baumzeilen (px): links, oben, Breite, unten über der
+    /// Legende. Als Leiste nur im offenen Blatt.
+    fn baum_flaeche(&self, t: &Theme) -> Option<(f32, f32, f32, f32)> {
+        let s = self.scale;
+        if self.baum_als_leiste() {
+            if !self.baum_blatt {
+                return None;
+            }
+            let (bx, by, bw, bh) = self.baum_blatt_rect(t);
+            let unten = by + bh - LEGENDE_H * s;
+            return Some((bx + 14.0 * s, by + 8.0 * s, bw - 28.0 * s, unten));
+        }
+        let (x0, cw) = self.content_x(t);
+        let oben = self.body_top() + TREE_ROW * s;
+        let unten = self.bottom() - LEGENDE_H * s;
+        Some((x0, oben, self.baum_w(cw) * s, unten))
+    }
+
+    /// Erste Zeile, ab der die übrigen in `platz` (px) passen: weiter
+    /// rollt der Baum nicht.
+    fn baum_ab_max(&self, platz: f32) -> usize {
+        let mut h = 0.0;
+        for (i, k) in self.baum.iter().enumerate().rev() {
+            h += k.hoehe() * self.scale;
+            if h > platz + 0.5 {
+                return i + 1;
+            }
+        }
+        0
+    }
+
+    /// Erste gezeigte Baumzeile und die letzte Grenze dafür.
+    fn baum_ab(&self, t: &Theme) -> (usize, usize) {
+        let max = self
+            .baum_flaeche(t)
+            .map_or(0, |(_, oben, _, unten)| self.baum_ab_max(unten - oben));
+        (self.baum_ab.min(max), max)
+    }
+
+    /// Baumzeilen: Index, Oberkante und Höhe (px), nur die ganz sichtbaren.
+    /// Ist das Fenster zu niedrig, rollt der Baum mit dem Mausrad; die
+    /// Legende darunter bleibt frei.
     fn baum_lage(&self, t: &Theme) -> Vec<(usize, Rect)> {
         let s = self.scale;
-        let (x0, mut y, bw) = if self.baum_als_leiste() {
-            if !self.baum_blatt {
-                return Vec::new();
-            }
-            let (bx, by, bw, _) = self.baum_blatt_rect(t);
-            (bx + 14.0 * s, by + 8.0 * s, bw - 28.0 * s)
-        } else {
-            let (x0, cw) = self.content_x(t);
-            (x0, self.body_top() + TREE_ROW * s, self.baum_w(cw) * s)
+        let Some((x0, mut y, bw, unten)) = self.baum_flaeche(t) else {
+            return Vec::new();
         };
-        self.baum
-            .iter()
-            .enumerate()
-            .map(|(i, k)| {
-                let h = k.hoehe() * s;
-                let r = (x0, y, bw, h);
-                y += h;
-                (i, r)
-            })
-            .collect()
+        let (ab, _) = self.baum_ab(t);
+        let mut v = Vec::new();
+        for (i, k) in self.baum.iter().enumerate().skip(ab) {
+            let h = k.hoehe() * s;
+            if y + h > unten + 0.5 {
+                break;
+            }
+            v.push((i, (x0, y, bw, h)));
+            y += h;
+        }
+        v
+    }
+
+    /// Rollt den Baum um zwei Zeilen je Raste; `true`, wenn er sich bewegt.
+    fn baum_rollen(&mut self, delta: f64, t: &Theme) -> bool {
+        let (ab, max) = self.baum_ab(t);
+        let n = ((delta.abs() * 2.0).round() as usize).max(1);
+        let neu = if delta < 0.0 {
+            (ab + n).min(max)
+        } else {
+            ab.saturating_sub(n)
+        };
+        self.baum_ab = neu;
+        neu != ab
     }
 
     /// Schalter „Preise“: Beschriftung links und die beiden Segmente.
@@ -1454,9 +1506,21 @@ impl AvaView {
         }
     }
 
-    pub fn wheel(&mut self, delta: f64, t: &Theme) -> Option<ListOut> {
+    /// Mausrad bei `x` (px): große Druckvorschau, Baum, Druckvorschau
+    /// oder Tabelle.
+    pub fn wheel(&mut self, delta: f64, t: &Theme, x: f64) -> Option<ListOut> {
         if self.gross_offen() {
             return self.gross_rollen(delta, t);
+        }
+        // Über dem Baum (bzw. bei offenem Baumblatt) rollt er, wenn er
+        // nicht ganz passt
+        let baum = if self.baum_als_leiste() {
+            self.baum_blatt
+        } else {
+            (x as f32) < self.tabelle_x(t).0 - TREE_GAP * 0.5 * self.scale
+        };
+        if baum && self.baum_ab(t).1 > 0 {
+            return self.baum_rollen(delta, t).then_some(ListOut::Repaint);
         }
         if self.ansicht == Ansicht::Blatt {
             // Das Rad blättert in der Druckvorschau
@@ -1823,6 +1887,26 @@ impl AvaView {
         } else {
             (x0, self.bottom() - 6.0 * s)
         };
+        // Rollt der Baum: Pfeile hoch und runter rechts in der Zeile der
+        // Legende
+        if let Some((bx, _, bw, _)) = self.baum_flaeche(t) {
+            let (ab, _) = self.baum_ab(t);
+            let letzte = self.baum_lage(t).last().map(|(i, _)| *i);
+            let mehr = letzte.is_some_and(|i| i + 1 < self.baum.len());
+            let mx = bx + bw - 6.0 * s;
+            let d = 3.5 * s;
+            let my = ly - 3.5 * s;
+            for (an, mx, auf) in [(ab > 0, mx - 14.0 * s, true), (mehr, mx, false)] {
+                if !an {
+                    continue;
+                }
+                let k = if auf { -d * 0.5 } else { d * 0.5 };
+                let mut p = Path::new();
+                p.segment((mx - d, my - k), (mx, my + k), 1.5 * s);
+                p.segment((mx, my + k), (mx + d, my - k), 1.5 * s);
+                c.fill(&p, u.sheet_text_dim);
+            }
+        }
         for (p, text) in [
             (Punkt::Da, "Preis da"),
             (Punkt::Fehlt, "Preis fehlt"),
