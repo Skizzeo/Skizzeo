@@ -463,6 +463,11 @@ impl Wheel {
         g.tip(true).1 - (TIP_LABEL_GAP + small_label_h(z.arc_label_small)) * g.s
     }
 
+    /// [`Wheel::top`], wenn der Bogen in der Ansicht `view` steht.
+    pub fn top_in(&self, view: ViewKind, ui: &Ui, w: u32, h: u32) -> Option<f32> {
+        self.visible(view, false).then(|| self.top(ui, w, h))
+    }
+
     #[cfg(test)]
     /// Kreismittelpunkt und Radius (Pixel).
     pub fn placement(&self, ui: &Ui, w: u32, h: u32) -> (f32, f32, f32) {
