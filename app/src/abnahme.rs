@@ -5135,9 +5135,9 @@ fn t(a: &str, b: &str, oben: Option<&str>, unten: Option<&str>) -> Text {
 // ===== Tests =====
 
 /// A80 (E18 §1, §2, Test 1): Bogen nur im Grundriss, ausgeblendet bei Dialog,
-/// Menü oder Einstellungsfenster; rechts am Rand mit Abstand `panel_margin`,
-/// senkrecht mittig im freien Bereich unter „Ansichten“, nie höher als die
-/// Fenstermitte. Rechts groß „EG ±0,00“, oben klein „OG“, unten „Fundament“.
+/// Menü oder Einstellungsfenster; unten rechts in der Ecke mit Abstand
+/// `panel_margin` zur rechten Spalte und zum unteren Rand (Jörn 11.10.).
+/// Rechts groß „EG ±0,00“, oben klein „OG“, unten „Fundament“.
 #[test]
 fn a80_bogen_nur_im_grundriss() {
     let th = Theme::dark();
@@ -5169,13 +5169,18 @@ fn a80_bogen_nur_im_grundriss() {
         ui.fit(1.0, bw, bh);
         let (cx, cy, r) = bogen_lage(&w, &ui, bw, bh);
         let views = ui.rect(Panel::Views, bw, 32);
-        let unten = views.y + views.h;
-        let soll = ((unten + bh as f32) / 2.0).max(bh as f32 / 2.0);
         assert_eq!(r, th.size.arc_r);
+        // Unten rechts in der Ecke (Jörn 11.10., vorher senkrecht mittig):
+        // untere Spitze samt Schild „Fundament“ mit Abstand `panel_margin`
+        // über dem unteren Rand
+        let g = w.geo(&ui, bw, bh);
+        let spitze = g.tip(false).1;
+        let schild = spitze + 6.0 + (th.size.arc_label_small * 0.72 + 9.0).ceil();
         assert!(
-            (cy - soll).abs() < 1.0,
-            "senkrecht {bw}×{bh}: {cy} ≠ {soll}"
+            (bh as f32 - th.size.panel_margin - schild).abs() < 1.0,
+            "senkrecht {bw}×{bh}: Schild unten bei {schild}"
         );
+        assert!(cy > bh as f32 / 2.0, "untere Hälfte {bw}×{bh}: {cy}");
         // Befund ac (Nachtrag 2): immer links neben der rechten Spalte
         let rechts = bogen_rechts(&w, &s, &ui, bw, bh);
         assert!(
