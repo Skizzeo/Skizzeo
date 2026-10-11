@@ -101,7 +101,8 @@ impl App {
     /// „Wand teilen“ beginnen: Karte neben der Wand, bis geteilt oder
     /// abgebrochen ist.
     fn split_start(&mut self, wall: ElementId) {
-        if let Some(b) = sk_model::edit_blocked(self.scene.model(), &[wall]) {
+        let m = self.scene.model();
+        if let Some(b) = sk_model::edit_blocked(m, &m.stack_column(wall)) {
             self.show_locked(b, Some((wall, delete::Act::Field)));
             return;
         }
@@ -125,6 +126,9 @@ impl App {
         if let Some(t) = &out.teilen {
             if let Some(e) = t.refused {
                 self.fuge_refused(e);
+            }
+            if let Some((id, wall)) = t.locked {
+                self.show_locked(id, Some((wall, delete::Act::Field)));
             }
             if t.done.is_some() || t.cancelled {
                 self.hint = None;
@@ -174,6 +178,8 @@ impl App {
                 .flat_map(|j| [j.0, j.1])
                 .collect(),
         };
+        // Vereint wird der ganze Stapel
+        let set: Vec<ElementId> = set.iter().flat_map(|w| m.stack_column(*w)).collect();
         if let Some(id) = sk_model::edit_blocked(m, &set) {
             self.show_locked(id, Some((a, delete::Act::Field)));
             return;

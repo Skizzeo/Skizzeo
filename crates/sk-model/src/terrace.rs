@@ -150,10 +150,14 @@ fn plan(slab: &WallChain, up: &WallChain, depth: f64, strip: Option<u16>) -> Opt
         -1.0
     };
     let dir = |c: &[Vec3], k: usize| c[(k + 1) % n] - c[k];
+    // Richtung aus der Bezugslinie: An einem Stück kürzer als die
+    // Dämmung an der Ecke liegt die Kante auf der Deckenkante verkehrt
+    // (Review 61-2), außen wäre dort innen
+    let pts = slab.clean_points();
     let depths: Vec<f64> = (0..n)
         .map(|k| {
-            let d = dir(&lc, k);
-            if d.length() < 1e-9 || dir(&mc, k).length() < 1e-9 {
+            let d = dir(&pts, k);
+            if pts.len() != n || d.length() < 1e-9 || dir(&mc, k).length() < 1e-9 {
                 return 0.0;
             }
             let out = right_of(d.normalized()) * sign;

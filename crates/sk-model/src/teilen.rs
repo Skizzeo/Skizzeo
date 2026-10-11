@@ -242,6 +242,20 @@ impl Model {
             .find(|&(x, y)| (x, y) == (a, b) || (x, y) == (b, a))
     }
 
+    /// Alle Wände des Stapels, in dem `wall` steht, von unten nach oben:
+    /// Teilen und Vereinen ändern sie alle, eine Sperre an einer hält es auf
+    /// (Review 61-3).
+    pub fn stack_column(&self, wall: ElementId) -> Vec<ElementId> {
+        let mut out = vec![self.stack_bottom(wall)];
+        while let Some(up) = out.last().and_then(|w| self.wall_above(*w)) {
+            if out.contains(&up) {
+                break;
+            }
+            out.push(up);
+        }
+        out
+    }
+
     /// Wand, die gestapelt auf `wall` steht (OG über EG).
     pub fn wall_above(&self, wall: ElementId) -> Option<ElementId> {
         let (run, _) = self.segment_of(wall)?;
@@ -252,12 +266,65 @@ impl Model {
     }
 }
 
+/// Welche alte Wand welches neue Segment trägt, wenn ein Zug neue Punkte
+/// bekommt (Regel 11). Gleiche Zahl und je Index gleiche Richtung: Index
+/// auf Index (Ziehen ohne Stufenwechsel, Punkt längs verschoben). Sonst
+/// nach Lage ([`match_walls`]); bei gleicher Zahl bekommen gekippte
+/// Segmente (Punkt quer verschoben) danach ihren Index, wenn die
+/// Reihenfolge bleibt. Fällt links eine Stufe weg und entsteht rechts eine
+/// (Review 61-1), wandert so keine Kennung auf die falsche Wand.
+pub(super) fn assign_walls(
+    old: &[(Vec3, Vec3)],
+    new: &[(Vec3, Vec3)],
+    closed: bool,
+) -> Vec<Option<usize>> {
+    let dir = |&(a, b): &(Vec3, Vec3)| ((b - a).length() > 1e-9).then(|| (b - a).normalized());
+    let same = old.len() == new.len()
+        && old
+            .iter()
+            .zip(new)
+            .all(|(o, n)| dir(o).zip(dir(n)).is_some_and(|(x, y)| same_dir(x, y)));
+    if same {
+        return (0..new.len()).map(Some).collect();
+    }
+    let mut out = match_walls(old, new, closed);
+    if old.len() == new.len() {
+        for k in 0..new.len() {
+            if out[k].is_none() && !out.contains(&Some(k)) {
+                out[k] = Some(k);
+                if !in_order(&out, closed) {
+                    out[k] = None;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Bleibt die Reihenfolge der zugeordneten alten Segmente längs des neuen
+/// Zuges erhalten (geschlossen: zyklisch)?
+fn in_order(out: &[Option<usize>], closed: bool) -> bool {
+    let ks: Vec<usize> = out.iter().flatten().copied().collect();
+    let mut down = ks.windows(2).filter(|w| w[1] < w[0]).count();
+    if closed && ks.len() > 1 && ks[0] < ks[ks.len() - 1] {
+        // Der Sprung vom letzten zum ersten zählt mit
+        down += 1;
+    }
+    down <= usize::from(closed)
+}
+
 /// Ordnet jedem neuen Segment höchstens ein altes zu (Regel 11): zuerst die
 /// auf derselben Linie in gleicher Richtung, längste Überdeckung zuerst
 /// ([`match_segments`]); dann die parallel verschobenen (gleiche Richtung,
 /// überlappend längs der Flucht, nächste Linie zuerst), etwa das gezogene
-/// Teilstück, wenn dabei eine Stufe entsteht oder wegfällt.
-pub(super) fn match_walls(old: &[(Vec3, Vec3)], new: &[(Vec3, Vec3)]) -> Vec<Option<usize>> {
+/// Teilstück, wenn dabei eine Stufe entsteht oder wegfällt. Eine
+/// Zuordnung, die die Reihenfolge längs des Zuges bräche, gilt nicht: eine
+/// weggefallene Stufe wandert nicht an die Stelle einer neuen.
+pub(super) fn match_walls(
+    old: &[(Vec3, Vec3)],
+    new: &[(Vec3, Vec3)],
+    closed: bool,
+) -> Vec<Option<usize>> {
     let mut out = match_segments(old, new);
     let mut used = vec![false; old.len()];
     for k in out.iter().flatten() {
@@ -290,7 +357,11 @@ pub(super) fn match_walls(old: &[(Vec3, Vec3)], new: &[(Vec3, Vec3)]) -> Vec<Opt
     for (_, _, i, k) in pairs {
         if out[i].is_none() && !used[k] {
             out[i] = Some(k);
-            used[k] = true;
+            if in_order(&out, closed) {
+                used[k] = true;
+            } else {
+                out[i] = None;
+            }
         }
     }
     out
@@ -448,31 +519,42 @@ mod tests {
     /// bleiben in Summe gleich (Mengen und Kosten zählen je Wand).
     #[test]
     fn teilen_laesst_die_mengen_gleich() {
-        let (mut m, eg, og) = rechteck();
-        let summe = |m: &Model| {
-            let mut s = [0.0; 4];
-            for run in [eg, og] {
+        let summe = |m: &Model, runs: [RunId; 2]| {
+            let mut s = [0.0; 6];
+            for run in runs {
                 for q in crate::qto::run_qto(m, run) {
-                    for (x, v) in s
-                        .iter_mut()
-                        .zip([q.length, q.side_outer, q.side_inner, q.volume])
-                    {
+                    for (x, v) in s.iter_mut().zip([
+                        q.length,
+                        q.side_outer,
+                        q.side_inner,
+                        q.volume,
+                        q.footprint,
+                        q.layers.iter().map(|l| l.area).sum(),
+                    ]) {
                         *x += v;
                     }
                 }
             }
             s
         };
-        let vorher = summe(&m);
-        let nord = m.wall_at(eg, 1).unwrap();
-        m.split_wall(nord, &[3000.0, 6000.0]).unwrap();
-        pruefen(&mut m);
-        let nachher = summe(&m);
-        for (a, b) in vorher.iter().zip(&nachher) {
-            assert!(
-                (a - b).abs() <= a.abs() * 1e-9 + 1e-3,
-                "{vorher:?} {nachher:?}"
-            );
+        // Auch ein Eckstück kürzer als die Wand dick ist (Review 61-2)
+        for (seg, at) in [
+            (1, vec![3000.0, 6000.0]),
+            (0, vec![7900.0]),
+            (0, vec![100.0]),
+        ] {
+            let (mut m, eg, og) = rechteck();
+            let vorher = summe(&m, [eg, og]);
+            let w = m.wall_at(eg, seg).unwrap();
+            m.split_wall(w, &at).unwrap();
+            pruefen(&mut m);
+            let nachher = summe(&m, [eg, og]);
+            for (a, b) in vorher.iter().zip(&nachher) {
+                assert!(
+                    (a - b).abs() <= a.abs() * 1e-9 + 1e-3,
+                    "{at:?}: {vorher:?} {nachher:?}"
+                );
+            }
         }
     }
 
@@ -490,6 +572,47 @@ mod tests {
         assert_eq!(m.merge_around(mitte), Ok(2));
         assert_eq!((zahl(&m, eg), zahl(&m, og)), (4, 4));
         assert_eq!(m.wall_at(eg, 1), Some(nord));
+        pruefen(&mut m);
+    }
+
+    /// Review 61-1: Rechter Teil des L geteilt, das linke Stück rückt in die
+    /// Flucht. Links fällt die Stufe weg, rechts entsteht eine; die Zahl
+    /// bleibt 7. Das Stück behält seine Kennung auf Segment 2, die alte
+    /// Stufe ist weg, die neue ist eine neue Wand; die Fuge ist da.
+    #[test]
+    fn stufe_wechselt_die_seite_bei_gleicher_zahl() {
+        let (mut m, eg, og) = haus(&[
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.0, 8000.0, 0.0),
+            vec3(4000.0, 8000.0, 0.0),
+            vec3(4000.0, 6000.0, 0.0),
+            vec3(10000.0, 6000.0, 0.0),
+            vec3(10000.0, 0.0, 0.0),
+        ]);
+        let stufe = m.wall_at(eg, 2).unwrap();
+        let rechts = m.wall_at(eg, 3).unwrap();
+        m.split_wall(rechts, &[3000.0]).unwrap();
+        assert_eq!((zahl(&m, eg), zahl(&m, og)), (7, 7));
+        let r1 = m.wall_at(eg, 3).unwrap();
+        let r2 = m.wall_at(eg, 4).unwrap();
+        let typ = m.element(r1).unwrap().layer_set;
+        let n1 = nummer(&m, r1);
+        assert!(ziehen(&mut m, eg, 3, 2000.0));
+        assert_eq!((zahl(&m, eg), zahl(&m, og)), (7, 7));
+        assert_eq!(m.wall_at(eg, 2), Some(r1), "Stück auf Segment 2");
+        assert_eq!(nummer(&m, r1), n1);
+        assert_eq!(m.element(r1).unwrap().layer_set, typ);
+        assert!(m.element(stufe).is_none(), "alte Stufe weg");
+        let neu = m.wall_at(eg, 3).unwrap();
+        assert!(neu != stufe && neu != r1 && neu != r2);
+        assert_eq!(m.wall_at(eg, 4), Some(r2));
+        assert!(m
+            .straight_joints(eg)
+            .contains(&(m.wall_at(eg, 1).unwrap(), r1)));
+        for k in 0..7 {
+            let up = m.wall_at(og, k).unwrap();
+            assert_eq!(m.wall_below(up), m.wall_at(eg, k), "Segment {k}");
+        }
         pruefen(&mut m);
     }
 

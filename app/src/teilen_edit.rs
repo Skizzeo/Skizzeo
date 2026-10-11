@@ -45,6 +45,8 @@ pub struct Outcome {
     pub cancelled: bool,
     /// Punkt abgelehnt, mit Grund.
     pub refused: Option<FugeError>,
+    /// Gesperrt: das sperrende Bauteil und die Wand (Review 61-3).
+    pub locked: Option<(ElementId, ElementId)>,
 }
 
 /// Laufendes Teilen an einer Wand.
@@ -168,6 +170,13 @@ impl Teilen {
         };
         let at = self.p0 + self.dir * mid;
         let wall = self.wall;
+        // Geteilt wird der ganze Stapel: eine Sperre darin hält es auf
+        let m = scene.model();
+        if let Some(id) = sk_model::edit_blocked(m, &m.stack_column(wall)) {
+            out.locked = Some((id, wall));
+            self.points.clear();
+            return;
+        }
         let mut res = Ok(Vec::new());
         scene.edit_model("Wand geteilt", |m| {
             res = m.split_wall(wall, &pts);
@@ -443,6 +452,34 @@ mod tests {
         let p = &m.run(run).unwrap().points;
         assert_eq!((p[2].x, p[3].x), (2000.0, 7000.0));
         assert_eq!(s.undo_label(), Some("Wand geteilt"));
+    }
+
+    /// Review 61-3: Ist die OG-Wand darüber gesperrt, teilt das EG nicht;
+    /// die Sperre wird gemeldet, nichts ändert sich.
+    #[test]
+    fn gesperrt_im_stapel_teilt_nicht() {
+        let mut s = haus();
+        let cam = Camera::looking_at(
+            vec3(5000.0, 4000.0, 30000.0),
+            vec3(5000.0, 4000.0, 0.0),
+            45.0,
+        );
+        let w = nordwand(&s);
+        let og = s.model().wall_above(w).unwrap();
+        s.edit_model("Gesperrt", |m| {
+            m.set_locked(&[og], true);
+            true
+        });
+        let (run, _) = s.model().segment_of(w).unwrap();
+        let mut t = Teilen::start(&s, w).unwrap();
+        t.hover = Some(1000.0);
+        let mut out = Outcome::default();
+        for k in [Key::Char('2'), Key::Enter, Key::Enter] {
+            out = taste(&mut t, &mut s, &cam, k);
+        }
+        assert_eq!(out.done, None);
+        assert_eq!(out.locked.map(|l| l.1), Some(w));
+        assert_eq!(s.model().run(run).unwrap().segments.len(), 4);
     }
 
     /// Zu nah am Ende: abgelehnt, nichts gesetzt; Enter mit einem Punkt
