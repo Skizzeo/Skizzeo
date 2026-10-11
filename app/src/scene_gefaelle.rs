@@ -1,5 +1,6 @@
 //! Gefälle des Flachdachs in der Szene (Gefälledämmung G2, G4): Gefälle
-//! einstellen, Abläufe vorschlagen und an der Aufkantung ziehen.
+//! einstellen, Abläufe vorschlagen, wählen, hinzufügen, löschen und an der
+//! Aufkantung ziehen.
 
 use super::Scene;
 use sk_math::{vec3, Vec3};
@@ -40,6 +41,47 @@ impl Scene {
             return false;
         };
         self.edit_model("Abläufe vorschlagen", |m| m.propose_roof_drains(roof))
+    }
+
+    /// Gewählter Ablauf des Flachdachs zum Bauteil `id` (Index wie in
+    /// [`Scene::roof_drains`]); `None`, wenn keiner oder er nicht mehr da ist.
+    pub fn active_drain(&self, id: ElementId) -> Option<usize> {
+        let (roof, drains) = self.roof_drains(id);
+        let (r, k) = self.drain?;
+        (Some(r) == roof && k < drains.len()).then_some(k)
+    }
+
+    /// Wählt den Ablauf `k` des Dachaufbaus `roof` (oder keinen). `true`,
+    /// wenn sich die Wahl geändert hat.
+    pub fn set_active_drain(&mut self, d: Option<(ElementId, usize)>) -> bool {
+        std::mem::replace(&mut self.drain, d) != d
+    }
+
+    /// Ein weiterer Ablauf am Flachdach zum Bauteil `id`, dort, wo er am
+    /// meisten entlastet; er ist danach gewählt. Ein Schritt.
+    pub fn add_roof_drain(&mut self, id: ElementId) -> bool {
+        let Some(roof) = self.roof_element(id) else {
+            return false;
+        };
+        if !self.edit_model("Ablauf hinzufügen", |m| m.add_roof_drain(roof)) {
+            return false;
+        }
+        let n = self.roof_drains(roof).1.len();
+        self.drain = n.checked_sub(1).map(|k| (roof, k));
+        true
+    }
+
+    /// Löscht den gewählten Ablauf am Flachdach zum Bauteil `id` (nicht den
+    /// letzten). Ein Schritt.
+    pub fn remove_roof_drain(&mut self, id: ElementId) -> bool {
+        let (Some(roof), Some(k)) = (self.roof_element(id), self.active_drain(id)) else {
+            return false;
+        };
+        let ok = self.edit_model("Ablauf löschen", |m| m.remove_roof_drain(roof, k));
+        if ok {
+            self.drain = None;
+        }
+        ok
     }
 
     /// Abläufe des Flachdachs zum Bauteil `id` (Dachaufbau oder Blech), wie

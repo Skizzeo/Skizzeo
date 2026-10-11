@@ -3670,15 +3670,7 @@ impl App {
                 self.overlay_dirty = true;
             }
             Id::PropsMaterial(g) => self.open_materials(Some(g)),
-            Id::PropsDrains => {
-                if let Some(id) = self.sel.id {
-                    if let Some(b) = sk_model::edit_blocked(self.scene.model(), &[id]) {
-                        self.show_locked(b, Some((id, delete::Act::Field)));
-                    } else if self.scene.propose_roof_drains(id) {
-                        self.upload_model();
-                    }
-                }
-            }
+            Id::PropsDrains | Id::PropsDrainAdd | Id::PropsDrainDelete => self.drain_button(id),
             Id::DialogStart => self.close_building_dialog(true),
             Id::DialogCancel | Id::DialogClose => self.close_building_dialog(false),
             // Zahlenfelder melden sich über `UiOut::submit`, Griffe über
@@ -4212,7 +4204,7 @@ impl App {
             ..
         } = e
         {
-            if self.open_context(x, y) {
+            if self.open_drain_context(x, y) || self.open_context(x, y) {
                 return true;
             }
         }
@@ -4618,7 +4610,15 @@ impl App {
                     ev
                 };
                 self.nord_handle(&nord_ev, vw, vh, sc);
-                let sect_ev = if outside || chip.is_some() || self.nord.is_busy() {
+                // Abläufe vor der Schnittlinie (Jörn 11.10.): sie liegen oft darauf
+                let blocked = outside || chip.is_some() || self.nord.is_busy();
+                let drain_ev = if blocked || self.sect.is_dragging() {
+                    Event::MouseLeave
+                } else {
+                    ev
+                };
+                self.drain_handle(&drain_ev, vw, vh, sc);
+                let sect_ev = if blocked || self.drains.is_busy() {
                     Event::MouseLeave
                 } else {
                     ev
@@ -4628,13 +4628,6 @@ impl App {
                     .handle(&sect_ev, &self.scene, &self.cam, vw, vh, sc, sen);
                 self.redraw |= so.redraw;
                 self.cut_changed(&so);
-                let drain_ev =
-                    if outside || self.sect.is_busy() || chip.is_some() || self.nord.is_busy() {
-                        Event::MouseLeave
-                    } else {
-                        ev
-                    };
-                self.drain_handle(&drain_ev, vw, vh, sc);
                 let edit_ev = if outside
                     || self.sect.is_busy()
                     || chip.is_some()
@@ -4753,12 +4746,14 @@ impl App {
                             self.sync_caption(surface);
                             return true;
                         }
-                        let so = self
-                            .sect
-                            .handle(&ev, &self.scene, &self.cam, vw, vh, sc, sen);
+                        let dn = self.drain_handle(&ev, vw, vh, sc);
+                        let sect_ev = if dn { Event::MouseLeave } else { ev };
+                        let so =
+                            self.sect
+                                .handle(&sect_ev, &self.scene, &self.cam, vw, vh, sc, sen);
                         self.redraw |= so.redraw;
                         self.cut_changed(&so);
-                        let dn = so.consumed || self.drain_handle(&ev, vw, vh, sc);
+                        let dn = dn || so.consumed;
                         let en = self.edit_enabled();
                         let eo = if dn {
                             wall_edit::EditOutcome {
@@ -5075,22 +5070,6 @@ impl App {
             selection,
             view: self.ui.view,
         }
-    }
-
-    /// Abläufe des gewählten Flachdachs ziehen (G4, nur im Grundriss ohne
-    /// Werkzeug). `true`, wenn das Ereignis dem Ablauf gehört.
-    fn drain_handle(&mut self, ev: &Event, vw: f64, vh: f64, sc: f64) -> bool {
-        let en = self.ui.view == ViewKind::Plan && !self.tool.enabled;
-        let out = self
-            .drains
-            .handle(ev, &mut self.scene, &self.cam, vw, vh, sc, self.sel.id, en);
-        self.redraw |= out.redraw;
-        if out.changed && self.drains.is_dragging() {
-            self.upload_live();
-        } else if out.changed {
-            self.upload_model();
-        }
-        out.consumed
     }
 
     /// Etwas Inneres nimmt Esc vor der Karte (Nachtrag H9-1): Ziehen,
@@ -6208,6 +6187,7 @@ impl App {
                 }
             }
             delete::Action::Delete => self.erase(list.is_some()),
+            a @ (delete::Action::AddDrain | delete::Action::DeleteDrain) => self.drain_action(a),
             delete::Action::DeleteBuilding => {
                 if let Some(b) = self.scene.model().building_of_element(target) {
                     self.open_confirm(b);

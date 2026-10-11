@@ -715,6 +715,23 @@ fn plate_letter(k: usize) -> String {
 /// 1 % als Sonderkonstruktion; 0 = ohne.
 const ROOF_SLOPE: (f64, f64) = (1.0, 10.0);
 
+/// Knöpfe im Abschnitt „Gefälle“: vorschlagen und hinzufügen; löschen nur
+/// mit gewähltem Ablauf und nicht den letzten (Jörn 11.10.).
+fn drain_buttons(scene: &Scene, id: ElementId, slope: f64) -> Vec<(crate::ui::Id, &'static str)> {
+    use crate::ui::Id;
+    if slope <= 0.0 {
+        return Vec::new();
+    }
+    let mut out = vec![
+        (Id::PropsDrains, "Abläufe vorschlagen"),
+        (Id::PropsDrainAdd, "Ablauf hinzufügen"),
+    ];
+    if scene.active_drain(id).is_some() && scene.roof_drains(id).1.len() > 1 {
+        out.push((Id::PropsDrainDelete, "Ablauf löschen"));
+    }
+    out
+}
+
 /// Eigenschaften des Dachaufbaus eines Flachdachs (D3): Mengen, Schichten
 /// und die Dämmdicke seines Typs.
 fn roof_props(
@@ -783,7 +800,7 @@ fn roof_props(
             title: "Aufbau",
             fields: vec![field(Field::RoofInsulation, "Dämmung", ins, lo, hi)],
             hint: "Höhe der Aufkantung im Paneel Geschosse",
-            button: None,
+            buttons: Vec::new(),
         }
     });
     let slope = m.drainage_of_roof(id).map(|d| d.slope).unwrap_or(0.0);
@@ -794,8 +811,12 @@ fn roof_props(
             zero: true,
             ..field(Field::RoofSlope, "Gefälle", slope, lo, hi)
         }],
-        hint: "0 = ohne Gefälle; Abläufe schlägt Skizzeo vor",
-        button: (slope > 0.0).then_some((crate::ui::Id::PropsDrains, "Abläufe vorschlagen")),
+        hint: if slope > 0.0 {
+            "Abläufe ziehen; Rechtsklick: hinzufügen, löschen"
+        } else {
+            "0 = ohne Gefälle; Abläufe schlägt Skizzeo vor"
+        },
+        buttons: drain_buttons(scene, id, slope),
     };
     Some(Props {
         values,
@@ -869,7 +890,7 @@ fn terrace_section(m: &Model, floor: ElementId) -> Option<crate::ui::Section> {
             },
         ],
         hint: "folgt dem Rücksprung des OG",
-        button: None,
+        buttons: Vec::new(),
     })
 }
 
@@ -903,7 +924,7 @@ fn attika_section(m: &Model, floor: ElementId) -> Option<crate::ui::Section> {
             ),
         ],
         hint: "0 = ohne; das Blech liegt auf der Dämmung",
-        button: None,
+        buttons: Vec::new(),
     })
 }
 
@@ -967,7 +988,7 @@ fn soffit_section(m: &Model, floor: ElementId) -> Option<crate::ui::Section> {
         title: "Untersicht",
         fields,
         hint: "nur unter Vorsprüngen; Lattung nur als Menge",
-        button: None,
+        buttons: Vec::new(),
     })
 }
 

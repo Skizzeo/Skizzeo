@@ -155,6 +155,10 @@ pub enum Id {
     PropsMerge,
     /// „Abläufe vorschlagen“ im Abschnitt „Gefälle“ des Flachdachs (G2).
     PropsDrains,
+    /// „Ablauf hinzufügen“ und „Ablauf löschen“ (den gewählten) im
+    /// Abschnitt „Gefälle“ (Jörn 11.10.).
+    PropsDrainAdd,
+    PropsDrainDelete,
     /// „Mehr …“ unter dem Aufbau der Dachterrasse: klappt die Schichtliste
     /// auf und zu.
     PropsMore,
@@ -826,8 +830,8 @@ pub struct Section {
     pub title: &'static str,
     pub fields: Vec<FieldRow>,
     pub hint: &'static str,
-    /// Knopf unter den Feldern, z. B. „Abläufe vorschlagen“.
-    pub button: Option<(Id, &'static str)>,
+    /// Knöpfe unter den Feldern, z. B. „Abläufe vorschlagen“.
+    pub buttons: Vec<(Id, &'static str)>,
 }
 
 /// Typ-Chip (K3): Kachel mit Schnittbild, Name, „Kürzel · Dicke“, Pfeil.
@@ -1213,7 +1217,11 @@ fn props_rows(p: &Props, edit: Option<&Edit>, more_open: bool) -> Vec<Row> {
     for sec in &p.sections {
         rows.extend([Row::Separator, Row::Label(sec.title)]);
         field_rows(&mut rows, &sec.fields);
-        rows.extend(sec.button.map(|(id, label)| Row::Button(id, label)));
+        rows.extend(
+            sec.buttons
+                .iter()
+                .map(|&(id, label)| Row::Button(id, label)),
+        );
         rows.push(Row::Text(sec.hint.into()));
     }
     if p.more {
@@ -2047,6 +2055,8 @@ impl Ui {
             | Id::PropsSplit
             | Id::PropsMerge
             | Id::PropsDrains
+            | Id::PropsDrainAdd
+            | Id::PropsDrainDelete
             | Id::PropsMore
             | Id::PropsMaterial(_)
             | Id::ExtListe(_)
@@ -2073,7 +2083,11 @@ impl Ui {
             }
             // Gesperrt (Paket 4): Felder, Typ und Kette blass
             Id::Field(f) if Ui::field_panel(f) == Panel::Props => self.props_locked(),
-            Id::PropsType | Id::PropsLink | Id::PropsDrains => self.props_locked(),
+            Id::PropsType
+            | Id::PropsLink
+            | Id::PropsDrains
+            | Id::PropsDrainAdd
+            | Id::PropsDrainDelete => self.props_locked(),
             Id::PropsSplit | Id::PropsMerge => self.props_locked(),
             _ => false,
         }

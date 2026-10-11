@@ -34,6 +34,9 @@ pub const CORNER_GAP: f64 = 600.0;
 pub const MIN_DRAINS: usize = 2;
 /// Raster der Ablaufstellen entlang der Kante (mm).
 const CANDIDATE_STEP: f64 = 500.0;
+/// Rechteckige Dächer ab dieser Länge der Längsseite (mm) bekommen je zwei
+/// Abläufe an beiden Längsseiten nahe den Ecken (Jörn 11.10.).
+pub const RECT_LONG_SIDE: f64 = 6000.0;
 
 /// Längentoleranz der Schnitte (mm).
 const EPS: f64 = 1e-6;
@@ -1249,10 +1252,39 @@ fn better(a: Score, b: Score) -> bool {
     a.2 < b.2 - 1.0
 }
 
+/// Rechteckiger Umriss mit Längsseite ab [`RECT_LONG_SIDE`] (Jörn 11.10.):
+/// zwei Abläufe je Längsseite, je `gap` von den Ecken. In der Seitenmitte
+/// säße das Fallrohr meist vor einem Fenster. Sonst keine.
+fn long_side_drains(outline: &[Vec3], gap: f64) -> Vec<Vec3> {
+    if outline.len() != 4 {
+        return Vec::new();
+    }
+    let e = |i: usize| outline[(i + 1) % 4] - outline[i];
+    let square = (0..4).all(|i| {
+        let (a, b) = (e(i), e((i + 1) % 4));
+        a.dot(b).abs() <= 1e-3 * a.length() * b.length()
+    });
+    let i = if e(0).length() >= e(1).length() { 0 } else { 1 };
+    let l = e(i).length();
+    if !square || l < RECT_LONG_SIDE {
+        return Vec::new();
+    }
+    [i, i + 2]
+        .into_iter()
+        .flat_map(|k| {
+            let (a, d) = (outline[k], e(k) * (1.0 / l));
+            [a + d * gap, a + d * (l - gap)]
+        })
+        .collect()
+}
+
 /// Vorschlag für Attikaabläufe auf dem Umriss (Konzept §4.3): so lange
 /// Abläufe dazu, wo sie den größten Überschuss über Fließweg und
 /// Einzugsfläche abbauen; überzählige wieder weg; dann jeden Ablauf entlang
 /// der Kante verschieben, bis größter und mittlerer Weg am kleinsten sind.
+/// Ein Rechteck beginnt mit den Abläufen an den Längsseiten nahe den Ecken
+/// ([`RECT_LONG_SIDE`]); die bleiben, weitere kommen nur dazu, wo Fließweg
+/// oder Einzugsfläche es verlangen.
 pub fn propose_drains(outline: &[Vec3], lim: &Limits) -> Vec<Vec3> {
     let outline = polygon::to_ccw(&polygon::simplified(outline));
     if outline.len() < 3 || area(&outline) < MIN_AREA {
@@ -1271,13 +1303,16 @@ pub fn propose_drains(outline: &[Vec3], lim: &Limits) -> Vec<Vec3> {
             .unwrap_or(0);
         cands.push((outline[i] + outline[(i + 1) % n]) * 0.5);
     }
+    let seeds = long_side_drains(&outline, lim.corner_gap);
+    let fixed = seeds.len();
+    let mut drains: Vec<usize> = (cands.len()..cands.len() + fixed).collect();
+    cands.extend(seeds);
     let probe = Probe::new(&outline, &cands);
     let free = |chosen: &[usize], c: usize| {
         chosen
             .iter()
             .all(|&d| linf(probe.axis, cands[d], cands[c]) >= 1000.0)
     };
-    let mut drains: Vec<usize> = Vec::new();
     let ok = |s: Score| s.0 <= 1e-6;
     while drains.len() < 12 && (drains.len() < lim.min_drains || !ok(probe.score(&drains, lim))) {
         let mut best: Option<(usize, Score)> = None;
@@ -1299,9 +1334,9 @@ pub fn propose_drains(outline: &[Vec3], lim: &Limits) -> Vec<Vec3> {
     }
     // überzählige weg
     let mut changed = true;
-    while changed && drains.len() > lim.min_drains {
+    while changed && drains.len() > lim.min_drains.max(fixed) {
         changed = false;
-        for i in 0..drains.len() {
+        for i in fixed..drains.len() {
             let mut t = drains.clone();
             t.remove(i);
             if ok(probe.score(&t, lim)) {
@@ -1313,7 +1348,7 @@ pub fn propose_drains(outline: &[Vec3], lim: &Limits) -> Vec<Vec3> {
     }
     // verschieben
     for _ in 0..2 {
-        for i in 0..drains.len() {
+        for i in fixed..drains.len() {
             let mut base = probe.score(&drains, lim);
             for c in 0..cands.len() {
                 if c == drains[i] || linf(probe.axis, cands[c], cands[drains[i]]) > 3000.0 {
@@ -1339,6 +1374,37 @@ pub fn propose_drains(outline: &[Vec3], lim: &Limits) -> Vec<Vec3> {
         }
     }
     drains.into_iter().map(|c| cands[c]).collect()
+}
+
+/// Ein weiterer Ablauf zu `drains` (Jörn 11.10.): die Stelle an der
+/// Aufkantung, an der er Fließweg und Einzugsfläche am meisten entlastet,
+/// mit Abstand zu den vorhandenen. `None`, wenn keine mehr frei ist.
+pub fn next_drain(outline: &[Vec3], drains: &[Vec3], lim: &Limits) -> Option<Vec3> {
+    let outline = polygon::to_ccw(&polygon::simplified(outline));
+    if outline.len() < 3 || area(&outline) < MIN_AREA {
+        return None;
+    }
+    let mut cands = candidates(&outline, lim.corner_gap);
+    let n = cands.len();
+    let have: Vec<usize> = (n..n + drains.len()).collect();
+    cands.extend(drains.iter().map(|p| vec3(p.x, p.y, 0.0)));
+    let probe = Probe::new(&outline, &cands);
+    let mut best: Option<(usize, Score)> = None;
+    for c in 0..n {
+        if have
+            .iter()
+            .any(|&d| linf(probe.axis, cands[d], cands[c]) < 1000.0)
+        {
+            continue;
+        }
+        let mut t = have.clone();
+        t.push(c);
+        let s = probe.score(&t, lim);
+        if best.is_none_or(|b| better(s, b.1)) {
+            best = Some((c, s));
+        }
+    }
+    best.map(|(c, _)| cands[c])
 }
 
 #[cfg(test)]
@@ -1554,14 +1620,69 @@ mod tests {
         assert!((f.u_value(r0, lam) - soll).abs() < 1e-5);
     }
 
+    /// Rechteck 12 × 16 m (Jörn 11.10.): je zwei Abläufe an beiden
+    /// 16-m-Seiten, 60 cm von den Ecken, keiner in der Seitenmitte.
     #[test]
-    fn vorschlag_rechteck_mitte_der_langseiten() {
-        let o = poly(&[(0.0, 0.0), (16.0, 0.0), (16.0, 10.0), (0.0, 10.0)]);
+    fn vorschlag_rechteck_an_den_ecken_der_langseiten() {
+        let o = poly(&[(0.0, 0.0), (16.0, 0.0), (16.0, 12.0), (0.0, 12.0)]);
+        let d = propose_drains(&o, &Limits::default());
+        assert_eq!(d.len(), 4, "{d:?}");
+        for soll in [pt(0.6, 0.0), pt(15.4, 0.0), pt(0.6, 12.0), pt(15.4, 12.0)] {
+            assert!(d.iter().any(|p| (*p - soll).length() < 1.0), "{d:?}");
+        }
+        let f = SlopeField::compute(&o, &d, 2.0).unwrap();
+        stetig(&f);
+        achsen(&f);
+        // hochkant gezeichnet: die Längsseiten sind die senkrechten
+        let o = poly(&[(0.0, 0.0), (10.0, 0.0), (10.0, 16.0), (0.0, 16.0)]);
+        let d = propose_drains(&o, &Limits::default());
+        assert_eq!(d.len(), 4, "{d:?}");
+        assert!(
+            d.iter()
+                .all(|p| p.x.abs() < 1.0 || (p.x - 10000.0).abs() < 1.0),
+            "{d:?}"
+        );
+    }
+
+    /// Kleines Rechteck (Längsseite unter 6 m): wie bisher die Mitten.
+    #[test]
+    fn vorschlag_kleines_rechteck_mitte_der_langseiten() {
+        let o = poly(&[(0.0, 0.0), (5.0, 0.0), (5.0, 4.0), (0.0, 4.0)]);
         let mut d = propose_drains(&o, &Limits::default());
         d.sort_by(|a, b| a.y.total_cmp(&b.y));
         assert_eq!(d.len(), 2, "{d:?}");
-        assert!((d[0] - pt(8.0, 0.0)).length() < 1.0, "{d:?}");
-        assert!((d[1] - pt(8.0, 10.0)).length() < 1.0, "{d:?}");
+        assert!((d[0] - pt(2.5, 0.0)).length() < 1.0, "{d:?}");
+        assert!((d[1] - pt(2.5, 4.0)).length() < 1.0, "{d:?}");
+    }
+
+    /// Großes Rechteck: die vier an den Ecken der Längsseiten bleiben,
+    /// weitere kommen für Fließweg und Einzugsfläche dazu.
+    #[test]
+    fn vorschlag_grosses_rechteck_ergaenzt() {
+        let o = poly(&[(0.0, 0.0), (40.0, 0.0), (40.0, 30.0), (0.0, 30.0)]);
+        let lim = Limits::default();
+        let d = propose_drains(&o, &lim);
+        assert!(d.len() > 4, "{d:?}");
+        for soll in [pt(0.6, 0.0), pt(39.4, 0.0), pt(0.6, 30.0), pt(39.4, 30.0)] {
+            assert!(d.iter().any(|p| (*p - soll).length() < 1.0), "{d:?}");
+        }
+    }
+
+    /// Weiterer Ablauf: an der Aufkantung, mit Abstand zu den vorhandenen,
+    /// dort, wo er am meisten entlastet.
+    #[test]
+    fn weiterer_ablauf() {
+        let o = poly(&[(0.0, 0.0), (16.0, 0.0), (16.0, 12.0), (0.0, 12.0)]);
+        let lim = Limits::default();
+        let d = propose_drains(&o, &lim);
+        let n = next_drain(&o, &d, &lim).unwrap();
+        let am_rand = (n.y.abs() < 1.0 || (n.y - 12000.0).abs() < 1.0)
+            || (n.x.abs() < 1.0 || (n.x - 16000.0).abs() < 1.0);
+        assert!(am_rand, "{n:?}");
+        assert!(d.iter().all(|p| (*p - n).length() >= 1000.0), "{n:?}");
+        let mut mit = d.clone();
+        mit.push(n);
+        assert!(SlopeField::compute(&o, &mit, 2.0).is_some());
     }
 
     #[test]
