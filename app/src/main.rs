@@ -44,6 +44,7 @@ mod ext_werkzeug;
 mod flush_pick;
 mod fokus;
 mod frame_time;
+mod geschosse_app;
 #[cfg(all(test, target_os = "linux"))]
 mod gpu_probe;
 mod help;
@@ -3582,6 +3583,7 @@ impl App {
 
     fn click(&mut self, id: Id) {
         match id {
+            Id::LevelsOpen | Id::LevelsClose => self.gross_klick(id),
             Id::Building | Id::Interior => {
                 let cat = match id {
                     Id::Interior => Category::InteriorWall,
@@ -4469,8 +4471,11 @@ impl App {
                 other => other,
             }
         };
-        // Beim Ziehen einer Ebene gehören Maus und Tasten dem Paneel „Geschosse“
-        if self.ui.level_dragging().is_some() {
+        // Beim Ziehen einer Ebene gehören Maus und Tasten dem Paneel „Geschosse“,
+        // danach der offenen Großansicht (Jörn 11.10.)
+        if self.ui.level_dragging().is_none() && self.gross_event(&e, surface) {
+            return true;
+        } else if self.ui.level_dragging().is_some() {
             match e {
                 Event::MouseMove { .. } | Event::MouseDown { .. } | Event::MouseUp { .. } => {
                     let out = self.ui.handle(&e, self.w, self.top());
@@ -7612,6 +7617,7 @@ impl App {
     /// „Gebäude löschen“ offen sind.
     fn wheel_show(&self) -> wheel_view::Show {
         let blocked = self.ui.dialog
+            || self.ui.levels_gross()
             || self.menu.is_open()
             || self.modal()
             || self.save_dlg.is_some()
@@ -7745,34 +7751,6 @@ impl App {
         }
     }
 
-    /// Dialog „Gebäude erstellen“ samt Abdunkeln des Modellfensters
-    /// zeichnen oder ausblenden.
-    fn paint_dialog(&mut self) {
-        if self.ui.dialog {
-            let th = self.title.height();
-            let (c, x, y) = self.ui.paint(&self.theme, Panel::Dialog, self.w, th);
-            c.premul_rgba8_into(&mut self.panel_px);
-            self.renderer.set_overlay(
-                OVERLAY_DIALOG,
-                x,
-                y,
-                c.width as u32,
-                c.height as u32,
-                &self.panel_px,
-            );
-            let k = self.theme.env.scrim;
-            let a = k.3 as u32;
-            let pm = |v: u8| ((v as u32 * a + 127) / 255) as u8;
-            let scrim = [pm(k.0), pm(k.1), pm(k.2), k.3];
-            let h = self.h.saturating_sub(th);
-            self.renderer
-                .set_overlay_fill(OVERLAY_SCRIM, 0, th as i32, self.w, h, scrim);
-        } else {
-            self.renderer.set_overlay(OVERLAY_DIALOG, 0, 0, 0, 0, &[]);
-            self.renderer.set_overlay(OVERLAY_SCRIM, 0, 0, 0, 0, &[]);
-        }
-    }
-
     /// Paneel „Eigenschaften“ zeichnen oder (ohne Auswahl) ausblenden.
     fn paint_props(&mut self) {
         if self.ui.props().is_some() {
@@ -7849,7 +7827,7 @@ impl App {
     /// Neue Fensterbreite bei gleicher Paneelgröße: nur die Titelleiste neu,
     /// die Paneele behalten ihr Bild und rücken an ihren Platz.
     fn relayout_overlays(&mut self, surface: &Surface) {
-        if self.ui.dialog {
+        if self.ui.dialog || self.ui.levels_gross() {
             // Das Abdunkeln folgt der Fenstergröße
             self.paint_overlays(surface);
             return;
