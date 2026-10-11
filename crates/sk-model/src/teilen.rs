@@ -444,6 +444,38 @@ mod tests {
         assert_eq!(nummer(&m, nord), n);
     }
 
+    /// Teilen ändert keine Menge: Länge, Flächen und Volumen der Wände
+    /// bleiben in Summe gleich (Mengen und Kosten zählen je Wand).
+    #[test]
+    fn teilen_laesst_die_mengen_gleich() {
+        let (mut m, eg, og) = rechteck();
+        let summe = |m: &Model| {
+            let mut s = [0.0; 4];
+            for run in [eg, og] {
+                for q in crate::qto::run_qto(m, run) {
+                    for (x, v) in s
+                        .iter_mut()
+                        .zip([q.length, q.side_outer, q.side_inner, q.volume])
+                    {
+                        *x += v;
+                    }
+                }
+            }
+            s
+        };
+        let vorher = summe(&m);
+        let nord = m.wall_at(eg, 1).unwrap();
+        m.split_wall(nord, &[3000.0, 6000.0]).unwrap();
+        pruefen(&mut m);
+        let nachher = summe(&m);
+        for (a, b) in vorher.iter().zip(&nachher) {
+            assert!(
+                (a - b).abs() <= a.abs() * 1e-9 + 1e-3,
+                "{vorher:?} {nachher:?}"
+            );
+        }
+    }
+
     /// Nach dem Zurückschieben vereint ein Schritt am Mittelstück beide
     /// Fugen; ohne Fuge daneben abgelehnt.
     #[test]
