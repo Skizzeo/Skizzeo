@@ -112,6 +112,11 @@ pub struct OverflowRun {
     pub foot: Foot,
     /// Abstand der Achse des Notfallrohrs von der Außenfläche (mm).
     pub reach: f64,
+    /// Aufkantung niedriger als der Notüberlauf über der Dachhaut (niedrige
+    /// Terrassenattika, Prüfung Geometrie #71): kein eigener Notüberlauf,
+    /// das Wasser läuft im Notfall frei über die Attika (DIN 1986-100,
+    /// Notentwässerung über die Attikakante); `sill` ist dann OK Attika.
+    pub free: bool,
 }
 
 /// Fläche, auf der ein Rohr endet (Prüfung Geometrie #68): das Gelände
@@ -278,14 +283,19 @@ impl Downpipe {
         // Notüberlauf über der Dachhaut, bei niedriger Aufkantung so tief,
         // dass seine Öffnung unter OK Aufkantung bleibt, nie unter der
         // Dachhaut
-        let sill = (top + SILL).min(r.crown - OVERFLOW_H).max(top);
+        let free = r.crown - OVERFLOW_H < top;
+        let sill = if free {
+            r.crown
+        } else {
+            (top + SILL).min(r.crown - OVERFLOW_H)
+        };
         let ov_box_top = (sill + OVERFLOW_H + 20.0).min(r.crown);
         let ov_box_bot = ov_box_top - BOX_H;
         let ov_foot = foot(rohr(ov), out, dir);
         let end = (ov_foot.z + OUTLET_UP).min(ov_box_bot);
         let ov_clamps = match spec.overflow {
-            Overflow::Pipe => clamp_heights(ov_box_bot, end, spec.spacing),
-            Overflow::Spout => Vec::new(),
+            Overflow::Pipe if !free => clamp_heights(ov_box_bot, end, spec.spacing),
+            _ => Vec::new(),
         };
         Some(Downpipe {
             spec,
@@ -314,6 +324,7 @@ impl Downpipe {
                 clamps: ov_clamps,
                 foot: ov_foot,
                 reach: REACH + ov_foot.shift,
+                free,
             },
             mat: r.coping_mat,
         })
@@ -327,10 +338,16 @@ impl Downpipe {
 
     /// Länge des Notfallrohrs (mm), 0 beim Speier.
     pub fn overflow_length(&self) -> f64 {
-        match self.spec.overflow {
-            Overflow::Pipe => (self.overflow.box_bot - self.overflow.end).max(0.0),
-            Overflow::Spout => 0.0,
+        match self.notueberlauf() {
+            Some(Overflow::Pipe) => (self.overflow.box_bot - self.overflow.end).max(0.0),
+            _ => 0.0,
         }
+    }
+
+    /// Art des eigenen Notüberlaufs, `None` bei Notentwässerung frei über
+    /// die niedrige Attika.
+    pub fn notueberlauf(&self) -> Option<Overflow> {
+        (!self.overflow.free).then_some(self.spec.overflow)
     }
 
     /// Rohrschellen an Fallrohr und Notfallrohr (Stück).
@@ -383,8 +400,8 @@ impl Downpipe {
         }
         // Notentwässerung
         let o = &self.overflow;
-        match self.spec.overflow {
-            Overflow::Pipe => {
+        match self.notueberlauf() {
+            Some(Overflow::Pipe) => {
                 let c = o.face + self.out * (tief(o.reach) / 2.0);
                 self.cuboid(&mut s, c, OV_BOX_W, tief(o.reach), o.box_bot, o.box_top);
                 let ax = self.ov_axis();
@@ -396,10 +413,11 @@ impl Downpipe {
                 }
                 self.outlet_bend(&mut s, ax, o.foot.bend, o.end, o.foot.z);
             }
-            Overflow::Spout => {
+            Some(Overflow::Spout) => {
                 let c = o.face + self.out * (SPOUT_OUT / 2.0);
                 self.cuboid(&mut s, c, OVERFLOW_W, SPOUT_OUT, o.sill - SPOUT_H, o.sill);
             }
+            None => {}
         }
         if let Some(t) = &self.terrace {
             s.append(&t.pipe.solid());
@@ -578,9 +596,9 @@ pub fn mengen(vorlage: &AutoMenge, d: &Downpipe) -> Vec<AutoMenge> {
         out.push(menge(STAND, "st", 1.0, "1 Standrohr".into()));
     }
     // Auslaufbögen: am Notfallrohr und am Fallrohr über einem tieferen Dach
-    let boegen = usize::from(d.spec.overflow == Overflow::Pipe) + usize::from(d.lower);
-    match d.spec.overflow {
-        Overflow::Pipe => {
+    let boegen = usize::from(d.notueberlauf() == Some(Overflow::Pipe)) + usize::from(d.lower);
+    match d.notueberlauf() {
+        Some(Overflow::Pipe) => {
             out.push(menge(
                 OV_BOX,
                 "st",
@@ -596,7 +614,8 @@ pub fn mengen(vorlage: &AutoMenge, d: &Downpipe) -> Vec<AutoMenge> {
                 ));
             }
         }
-        Overflow::Spout => out.push(menge(SPOUT, "st", 1.0, "1 Wasserspeier".into())),
+        Some(Overflow::Spout) => out.push(menge(SPOUT, "st", 1.0, "1 Wasserspeier".into())),
+        None => {}
     }
     if boegen > 0 {
         out.push(menge(
@@ -609,13 +628,24 @@ pub fn mengen(vorlage: &AutoMenge, d: &Downpipe) -> Vec<AutoMenge> {
     if d.control.is_some() {
         out.push(menge(CONTROL, "st", 1.0, "1 Kontrollablauf".into()));
     }
-    // Terrassenablauf mit Notüberlauf in der Terrassenattika und seinem
+    // Terrassenablauf mit Notüberlauf in der Terrassenattika (falls nötig) und seinem
     // Fallrohr: zu den Zeilen dieses Rohrs (ein Schlüssel je Zeile)
     if let Some(t) = &d.terrace {
-        let mut dazu = vec![
-            menge(crate::roof::DRAINS, "st", 1.0, "1 Attikaablauf".into()),
-            menge(crate::roof::OVERFLOWS, "st", 1.0, "1 Notüberlauf".into()),
-        ];
+        let mut dazu = vec![menge(
+            crate::roof::DRAINS,
+            "st",
+            1.0,
+            "1 Attikaablauf".into(),
+        )];
+        // bei niedriger Aufkantung läuft das Notwasser frei über die Attika
+        if !t.pipe.overflow.free {
+            dazu.push(menge(
+                crate::roof::OVERFLOWS,
+                "st",
+                1.0,
+                "1 Notüberlauf".into(),
+            ));
+        }
         dazu.extend(mengen(vorlage, &t.pipe));
         for z in dazu {
             let f = format!("Terrassenablauf an {}: {}", t.number, z.formula);

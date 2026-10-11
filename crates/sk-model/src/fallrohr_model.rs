@@ -1013,4 +1013,72 @@ mod tests {
             assert_eq!(geprueft, 1, "{off}");
         }
     }
+
+    /// Geometrie (Nachprüfung #71, d0f81fa): Die Aufkantung der
+    /// Dachterrasse ist ab 0 mm einstellbar. Unter 40 mm über der
+    /// Abdichtung passt die Öffnung des Notüberlaufs (10 cm) nicht mehr in
+    /// die Attika: Sie reicht über OK Attika und über ihren Kasten hinaus.
+    /// Entweder liegt sie in der Attika und im Kasten, oder der
+    /// Terrassenablauf hat keinen eigenen Notüberlauf.
+    #[test]
+    fn terrassen_notueberlauf_bei_niedriger_aufkantung() {
+        for up in [0.0, 30.0] {
+            let mut m = Model::with_seed(12);
+            let b = m.add_building(2);
+            let pts = [
+                vec3(0.0, 0.0, 0.0),
+                vec3(0.0, 8000.0, 0.0),
+                vec3(10000.0, 8000.0, 0.0),
+                vec3(10000.0, 0.0, 0.0),
+            ];
+            let set = m.type_by_guid(crate::EXTERIOR_TYPE_GUID).unwrap();
+            let eg = m.ground_of(Some(b)).unwrap();
+            let eg = m
+                .add_wall_run(&pts, true, RefSide::Left, eg, set, Category::ExteriorWall)
+                .unwrap();
+            let og = m.runs_above(eg)[0];
+            let nord = m.wall_at(og, 1).unwrap();
+            schritt(&mut m, |m| m.set_offset(nord, -1500.0).is_some());
+            let st = m.run(og).unwrap().storey;
+            schritt(&mut m, |m| m.set_flat_roof(st, true));
+            let decke = m.floor_of(eg).unwrap();
+            schritt(&mut m, |m| m.set_floor_upstand(decke, up));
+            let da = m.flat_roof_of(m.floor_of(og).unwrap()).unwrap();
+            let Some(Ok(f)) = m.floor(eg) else {
+                panic!("Decke")
+            };
+            let ok_attika = f.attika_band().unwrap().1;
+            let mut geprueft = 0;
+            for id in m.downpipes_of(da) {
+                let d = m.downpipe(id).unwrap();
+                let Some(t) = d.terrace.as_deref() else {
+                    continue;
+                };
+                geprueft += 1;
+                let o = &t.pipe.overflow;
+                if o.free {
+                    // Notwasser läuft frei über die Attikakante (DIN 1986-100)
+                    assert!(o.sill <= ok_attika, "{up}: {} über OK Attika", o.sill);
+                    assert_eq!(t.pipe.notueberlauf(), None, "{up}");
+                    // im LV nur die Notüberläufe des Flachdachs
+                    let s = crate::qto::schedule(&m);
+                    let n: f64 = (s.auto.iter())
+                        .filter(|a| a.key == crate::roof::OVERFLOWS)
+                        .map(|a| a.value)
+                        .sum();
+                    assert_eq!(n, 4.0, "{up}");
+                    continue;
+                }
+                let oben = o.sill + crate::fallrohr::OVERFLOW_H;
+                assert!(
+                    oben <= ok_attika,
+                    "{up}: Öffnung bis {oben}, OK Attika {ok_attika}"
+                );
+                if t.pipe.spec.overflow == Overflow::Pipe {
+                    assert!(oben <= o.box_top, "{up}: Kasten bis {}", o.box_top);
+                }
+            }
+            assert_eq!(geprueft, 1, "{up}");
+        }
+    }
 }
