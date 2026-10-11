@@ -413,20 +413,30 @@ impl Model {
         self.edit_slab(slab, |s| s.recess = recess)
     }
 
-    /// Setzt die Dicke einer Sohlplatte (mm, von oben nach unten).
-    /// Grenze: Schürze bleibt mindestens 10 cm tief (UK Gründung steht),
-    /// unter einer Perimeterdämmung ab deren Unterkante.
+    /// Setzt die Dicke einer Sohlplatte (mm, von oben nach unten). UK
+    /// Gründung bleibt, die Schürze wird kürzer. Unter Platte und Dämmung
+    /// bleibt sie mindestens [`MIN_FOOTING`] tief; ist sie dafür zu flach,
+    /// wächst sie nach unten, und eine dünnere Platte nimmt das wieder
+    /// zurück (dieselbe Regel wie bei der Dämmung,
+    /// [`Model::settle_below_slab`]).
     pub fn set_slab_thickness(&mut self, slab: ElementId, thickness: f64) -> bool {
-        let bottom = self
-            .element(slab)
-            .and_then(|e| self.foundation_level_of(e.storey))
-            .and_then(|g| self.storey(g))
-            .map_or(f64::MIN, |g| g.elevation);
-        let insulation = self.slab_insulation(slab);
-        thickness > 0.0
-            && thickness.is_finite()
-            && thickness + insulation <= -bottom - MIN_FOOTING
-            && self.edit_slab(slab, |s| s.thickness = thickness)
+        let Some(old) = self.element(slab).and_then(|e| match &e.kind {
+            ElementKind::GroundSlab(s) => Some(s.thickness),
+            _ => None,
+        }) else {
+            return false;
+        };
+        if !(thickness > 0.0 && thickness.is_finite()) || thickness == old {
+            return false;
+        }
+        let gr = self.foundation_bottom_of_slab(slab);
+        self.edit_slab(slab, |s| s.thickness = thickness);
+        if !self.settle_below_slab(slab) {
+            self.edit_slab(slab, |s| s.thickness = old);
+            self.restore_foundation_bottom(gr);
+            return false;
+        }
+        true
     }
 
     pub(super) fn edit_slab(&mut self, slab: ElementId, f: impl FnOnce(&mut GroundSlab)) -> bool {

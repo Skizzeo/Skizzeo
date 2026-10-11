@@ -2491,7 +2491,12 @@ fn a43_grenzen_ablehnen() {
     let d = decke(&s, aw).unwrap();
     assert!(!decke_dicke(&mut s, d, 2000.0), "Decke ≤ OK EG − 1,00");
     let (slab, _) = sohlplatte(&s, aw);
-    assert!(!s.edit_model("Dicke", |m| m.set_slab_thickness(slab, 750.0)));
+    assert!(!s.edit_model("Dicke", |m| m.set_slab_thickness(slab, 0.0)));
+    // Dicke Platte: keine Grenze mehr, die Schürze wächst unter ihr auf
+    // 10 cm (Geometrie-Hinweis zu #50); Rückgängig stellt alles zurück
+    assert!(s.edit_model("Dicke", |m| m.set_slab_thickness(slab, 750.0)));
+    assert_eq!(band(&s, "GR"), (-850.0, 0.0));
+    assert!(s.undo());
     assert_eq!(
         (band(&s, "GR"), band(&s, "EG")),
         ((-800.0, 0.0), (0.0, 2855.0))

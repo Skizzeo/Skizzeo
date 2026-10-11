@@ -449,6 +449,85 @@ fn flache_schuerze_waechst_unter_der_daemmung() {
     assert_eq!(uk(&m, gr), z0);
 }
 
+/// Geometrie-Hinweis 1 zu #50: Weniger Dämmung nimmt das Wachstum der
+/// Schürze zurück, die Dämmung ändert die Schürzentiefe also auch beim
+/// Zurückstellen nicht. Ein normal liegendes Haus bleibt dabei ganz stehen.
+#[test]
+fn schuerze_schrumpft_mit_der_daemmung_zurueck() {
+    let (mut m, eg, gr, slab) = haus();
+    let fuss = m.foundation_of(eg).unwrap().1.unwrap();
+    let (z_normal, d_normal) = (uk(&m, gr), m.footing_depth(fuss));
+    schritt(&mut m, |m| m.set_slab_insulation(slab, 200.0));
+    schritt(&mut m, |m| m.set_slab_insulation(slab, 0.0));
+    assert_eq!((uk(&m, gr), m.footing_depth(fuss)), (z_normal, d_normal));
+    // tief liegendes Haus: die Schürze steht am Mindestmaß
+    schritt(&mut m, |m| m.set_terrain_offset(-600.0));
+    let z0 = uk(&m, gr);
+    let e0 = m.storey(gr).unwrap().embed;
+    assert_eq!(m.footing_depth(fuss), Some(MIN_FOOTING));
+    schritt(&mut m, |m| m.set_slab_insulation(slab, 200.0));
+    assert!((uk(&m, gr) - (z0 - 200.0)).abs() < 1e-6);
+    schritt(&mut m, |m| m.set_slab_insulation(slab, 120.0));
+    assert!((uk(&m, gr) - (z0 - 120.0)).abs() < 1e-6);
+    assert_eq!(m.footing_depth(fuss), Some(MIN_FOOTING + 120.0));
+    let text = crate::szo::write(&m);
+    let back = crate::szo::read(&text, GuidGen::with_seed(5))
+        .unwrap()
+        .model;
+    assert_eq!(crate::szo::write(&back), text);
+    let t = schritt(&mut m, |m| m.set_slab_insulation(slab, 0.0));
+    assert_eq!(uk(&m, gr), z0, "UK −320 statt −520");
+    assert_eq!(m.footing_depth(fuss), Some(MIN_FOOTING));
+    assert_eq!(m.storey(gr).unwrap().embed, e0);
+    assert_eq!(m.terrain_offset(), -600.0);
+    assert!(m.check().is_empty(), "{:?}", m.check());
+    m.apply(&t, Direction::Undo);
+    assert!((uk(&m, gr) - (z0 - 120.0)).abs() < 1e-6);
+    // Gelände zurück: wieder die normale Gründung
+    m.apply(&t, Direction::Redo);
+    schritt(&mut m, |m| m.set_terrain_offset(0.0));
+    assert_eq!((uk(&m, gr), m.footing_depth(fuss)), (z_normal, d_normal));
+}
+
+/// Geometrie-Hinweis 2 zu #50: Eine dickere Platte lässt die Schürze nach
+/// derselben 10-cm-Regel wachsen statt abgelehnt zu werden; eine dünnere
+/// nimmt das zurück. Liegt UK tief genug, bleibt sie, die Schürze wird
+/// kürzer.
+#[test]
+fn dicke_platte_laesst_die_schuerze_wachsen() {
+    let (mut m, eg, gr, slab) = haus();
+    let fuss = m.foundation_of(eg).unwrap().1.unwrap();
+    let dicke = |m: &Model| match &m.element(slab).unwrap().kind {
+        ElementKind::GroundSlab(s) => s.thickness,
+        _ => unreachable!(),
+    };
+    let (z0, t0) = (uk(&m, gr), dicke(&m));
+    schritt(&mut m, |m| m.set_slab_thickness(slab, 250.0));
+    assert_eq!(uk(&m, gr), z0, "UK bleibt, Schürze kürzer");
+    let t = schritt(&mut m, |m| m.set_slab_thickness(slab, 750.0));
+    assert_eq!(m.footing_depth(fuss), Some(MIN_FOOTING));
+    assert!((uk(&m, gr) - (-750.0 - MIN_FOOTING)).abs() < 1e-6);
+    assert_eq!(m.terrain_offset(), 0.0);
+    assert!(m.check().is_empty(), "{:?}", m.check());
+    // Dämmung darunter: die Schürze wächst weiter
+    schritt(&mut m, |m| m.set_slab_insulation(slab, 100.0));
+    assert!((uk(&m, gr) - (-950.0)).abs() < 1e-6);
+    schritt(&mut m, |m| m.set_slab_insulation(slab, 0.0));
+    m.apply(&t, Direction::Undo);
+    assert_eq!(uk(&m, gr), z0);
+    m.apply(&t, Direction::Redo);
+    schritt(&mut m, |m| m.set_slab_thickness(slab, t0));
+    assert_eq!(uk(&m, gr), z0, "dünnere Platte nimmt das Wachstum zurück");
+    assert_eq!(m.storey(gr).unwrap().embed, None);
+    // ungültig oder ohne Platz für die Schürze: abgelehnt, nichts ändert sich
+    for t in [0.0, -10.0, f64::NAN, MAX_FOUNDATION] {
+        m.begin("Dicke");
+        assert!(!m.set_slab_thickness(slab, t), "{t}");
+        m.commit();
+        assert_eq!((uk(&m, gr), dicke(&m)), (z0, t0), "{t}");
+    }
+}
+
 /// Entscheidung B: Versatz und Dämmung gelten je Gebäude. Das zweite
 /// Gebäude behält Gelände und Gründung, wenn das erste gedämmt oder
 /// verschoben wird; die Abfrage nach Lage liefert die Ebene des
