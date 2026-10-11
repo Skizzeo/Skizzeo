@@ -125,11 +125,14 @@ pub fn wert(r: &LayerRow, b: Bezug) -> f64 {
                 r.bill_length
             }
         }
+        // Die Fläche der Liste bleibt, wo es sie gab (Dämmung, Platten;
+        // Review #77/2); die Abrechnungsfläche nur, wo die Liste keine
+        // hatte (Mauerwerk, Putz)
         Bezug::Flaeche => {
-            if r.face > 0.0 {
-                r.face
-            } else {
+            if r.area > 0.0 {
                 r.area
+            } else {
+                r.face
             }
         }
         Bezug::Volumen => r.volume,
