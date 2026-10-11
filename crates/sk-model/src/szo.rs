@@ -1182,6 +1182,8 @@ fn write_known(m: &Model) -> String {
             .guid("storey", storey_guid(e.storey))
             .finish(&mut out);
     }
+    // Regenfallrohre (Jörn 11.10.): nur, wenn es sie gibt
+    dach::write_downpipes(m, &walls, &mut out);
     // Erweiterungsbauteile (E3): Definition vollständig, je Exemplar seine
     // Lage und eigenen Werte; unlesbare Zeilen der gelesenen Datei bleiben
     for d in m.ext_defs() {
@@ -1522,7 +1524,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 39] = [
+    const KNOWN: [&str; 40] = [
         "pen",
         "linetype",
         "fill",
@@ -1550,6 +1552,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         "coping",
         "perimeter",
         "roof",
+        "downpipe",
         "extdef",
         "extpart",
         "prop",
@@ -2183,6 +2186,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         ("coping", 6),
         ("perimeter", 7),
         ("roof", 8),
+        ("downpipe", 9),
     ] {
         for r in recs(section) {
             let kind = if ix == 7 {
@@ -2196,6 +2200,21 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
                     return Err(err(r.line, "[perimeter]: „slab“ ist keine Sohlplatte"));
                 }
                 ElementKind::PerimeterInsulation { slab }
+            } else if ix == 9 {
+                // Regenfallrohr (Jörn 11.10.): Dachaufbau, Nummer des Ablaufs
+                let roof = r.link("roof", &elem_ids)?;
+                if !matches!(
+                    elements.get(roof).map(|e: &Element| &e.kind),
+                    Some(ElementKind::Roof { .. })
+                ) {
+                    return Err(err(r.line, "[downpipe]: „roof“ ist kein Flachdach"));
+                }
+                let spec = dach::read_downpipe_spec(r, &mut hints)?;
+                ElementKind::Downpipe {
+                    roof,
+                    drain: r.int("drain")?,
+                    spec,
+                }
             } else if ix == 8 {
                 // Flachdach (Jörn 10.10.): nur der Verweis auf die Decke
                 let floor = r.link("floor", &elem_ids)?;

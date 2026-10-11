@@ -237,6 +237,8 @@ impl App {
             }
             Id::PropsDrainAdd => self.scene.add_roof_drain(sel),
             Id::PropsDrainDelete => self.scene.remove_roof_drain(sel),
+            // Regenfallrohr: Notentwässerung, Kontrollablauf
+            Id::PropsAction(a) => self.scene.props_action(sel, a),
             _ => false,
         };
         if ok {

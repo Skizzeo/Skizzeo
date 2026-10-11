@@ -478,6 +478,8 @@ impl Model {
             return false;
         }
         d.drains.remove(k);
+        // sein Regenfallrohr geht mit, die übrigen behalten ihr Bauteil
+        self.drop_downpipe(roof, k);
         self.set_roof_drainage(roof, d)
     }
 
@@ -552,7 +554,7 @@ impl Model {
             .and(self.drainage_of(floor))
             .filter(|d| d.on())
             .and_then(|d| SlopeField::compute(&outline, &d.drains, d.slope));
-        Some(FlatRoof {
+        let mut r = FlatRoof {
             tapered: slope.as_ref().and(tapered),
             slope,
             outline,
@@ -574,7 +576,10 @@ impl Model {
             cap_mat: self
                 .flat_roof_crown_material(floor)
                 .map_or(material::PLAIN, material_key),
-        })
+            downpipes: Vec::new(),
+        };
+        r.downpipes = self.layout_downpipes(floor, &r);
+        Some(r)
     }
 
     /// Baustoff der Attikadämmung am Flachdach über der Decke `floor`: die
@@ -756,6 +761,9 @@ impl Model {
                 self.touch();
             }
         }
+        // Regenfallrohre je Ablauf (Jörn 11.10.), mit eigenem Hinweis beim
+        // Lesen
+        self.sync_downpipes(scope);
         (added, removed)
     }
 
@@ -963,6 +971,7 @@ impl Model {
                 .collect()
         };
         let had = roofs(self);
+        let rf = self.downpipe_ids();
         let (added, removed) = self.sync_flat_roofs();
         self.strict = strict;
         // Ein beim Laden ergänztes Dach bleibt eben wie in der Datei; die
@@ -980,6 +989,13 @@ impl Model {
         }
         if removed > 0 {
             out.push("Flachdach bzw. Attikablech ohne Aufkantung entfernt".to_string());
+        }
+        let now = self.downpipe_ids();
+        if now.iter().any(|d| !rf.contains(d)) {
+            out.push("Regenfallrohre an den Abläufen ergänzt".to_string());
+        }
+        if rf.iter().any(|d| !now.contains(d)) {
+            out.push("Regenfallrohre ohne Ablauf entfernt".to_string());
         }
         out
     }
@@ -1269,7 +1285,7 @@ mod tests {
         // die Nummern der Aufkantung bleiben vergeben
         m.apply(&t, Direction::Undo);
         let nachher = crate::szo::write(&m);
-        let soll = vorher.replacen("\n[building]", " next=DA:1,AB:1,AK:4\n[building]", 1);
+        let soll = vorher.replacen("\n[building]", " next=DA:1,AB:1,AK:4,RF:4\n[building]", 1);
         assert!(nachher == soll, "Datei nach Rückgängig anders");
     }
 
@@ -1295,7 +1311,7 @@ mod tests {
         // bleibt eben, ohne Abläufe
         let alt: String = text
             .lines()
-            .filter(|l| !l.starts_with("[roof] "))
+            .filter(|l| !l.starts_with("[roof] ") && !l.starts_with("[downpipe] "))
             .map(|l| format!("{l}\n"))
             .collect();
         let back = crate::szo::read(&alt, GuidGen::with_seed(5)).unwrap();
@@ -1382,6 +1398,8 @@ mod tests {
             })
             .collect();
         let back = crate::szo::read(&kaputt, GuidGen::with_seed(5)).unwrap();
+        // ohne lesbare Abläufe gelten die vorgeschlagenen, die
+        // Regenfallrohre bleiben (Review W12 an #68)
         assert_eq!(back.hints.len(), 4, "{:?}", back.hints);
         let m = back.model;
         let (da, floor) = m
@@ -1882,8 +1900,10 @@ mod tests {
         };
         assert_eq!(auto("roof.edge"), Some(r.edge_length()));
         assert_eq!(auto("roof.corners"), Some(4.0));
-        assert_eq!(auto("roof.drains"), Some(1.0));
-        assert_eq!(auto("roof.overflows"), Some(1.0));
+        // ohne Gefälle die gespeicherten Abläufe, je mit Regenfallrohr
+        // (Review W12 an #68), nicht mehr nach Fläche
+        assert_eq!(auto("roof.drains"), Some(4.0));
+        assert_eq!(auto("roof.overflows"), Some(4.0));
         // Abschalten nimmt beide mit, Rückgängig bringt sie mit Nummer zurück
         let num = e.number.clone();
         let aus = schritt(&mut m, |m| m.set_flat_roof(og_storey, false));
@@ -1899,7 +1919,7 @@ mod tests {
         m.apply(&tx, Direction::Undo);
         assert!(m.type_by_guid(ROOF_TYPE_GUID).is_none());
         let nachher = crate::szo::write(&m);
-        assert_eq!(nachher.replace(" next=DA:1,AB:1,AK:4", ""), vorher);
+        assert_eq!(nachher.replace(" next=DA:1,AB:1,AK:4,RF:4", ""), vorher);
     }
 
     /// D3: Die Dämmdicke ändert den Typ (Paneel „Aufbau“), Grenzen 4–40 cm;

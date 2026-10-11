@@ -420,6 +420,7 @@ impl Model {
                 | ElementKind::RoofTerrace { .. }
                 | ElementKind::Coping { .. }
                 | ElementKind::Roof { .. }
+                | ElementKind::Downpipe { .. }
                 | ElementKind::Ext(_) => {}
             }
         }

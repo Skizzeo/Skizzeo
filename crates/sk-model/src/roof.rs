@@ -55,6 +55,9 @@ pub struct FlatRoof {
     /// Baustoff des Dämmstreifens auf der Krone (Darstellungsschlüssel):
     /// eigener Baustoff, damit ihn das LV von innen trennt (W9 an #60).
     pub cap_mat: u16,
+    /// Regenfallrohre außen, eins je Ablauf in der Reihenfolge der Abläufe
+    /// (Jörn 11.10., [`crate::fallrohr`]).
+    pub downpipes: Vec<crate::fallrohr::Downpipe>,
 }
 
 /// Konvexes `a` geschnitten mit konvexem `b` (beide gegen den
@@ -971,8 +974,8 @@ const ARROW_HEAD: f64 = 200.0;
 /// Halbmesser des Ablaufzeichens (mm).
 const DRAIN_R: f64 = 120.0;
 /// Notüberlauf im Grundriss: Abstand vom Ablauf und Breite (mm).
-const OVERFLOW_GAP: f64 = 400.0;
-const OVERFLOW_W: f64 = 300.0;
+pub(crate) const OVERFLOW_GAP: f64 = 400.0;
+pub(crate) const OVERFLOW_W: f64 = 300.0;
 
 /// Teil des konvexen Polygons `pts`, in dem die lineare Funktion `f` nicht
 /// negativ ist (z = 0).
@@ -1047,7 +1050,12 @@ pub fn roof_mengen(vorlage: &crate::qto::AutoMenge, r: &FlatRoof) -> Vec<crate::
     let m = |mm: f64| format!("{:.2} m", mm / 1000.0).replace('.', ",");
     let area = r.area();
     let geplant = r.slope.as_ref().map(|g| g.drains.len() as f64);
-    let drains = geplant.unwrap_or_else(|| (area / DRAIN_AREA).ceil().max(1.0));
+    // ohne Gefälle so viele wie Regenfallrohre (B30 an #68), sonst nach
+    // Fläche
+    let rf = (!r.downpipes.is_empty()).then_some(r.downpipes.len() as f64);
+    let drains = geplant
+        .or(rf)
+        .unwrap_or_else(|| (area / DRAIN_AREA).ceil().max(1.0));
     let menge = |key, unit, value, formula| crate::qto::AutoMenge {
         key,
         unit,
@@ -1058,9 +1066,10 @@ pub fn roof_mengen(vorlage: &crate::qto::AutoMenge, r: &FlatRoof) -> Vec<crate::
     };
     let corners = r.corners() as f64;
     let fl = format!("{:.2} m²", area / 1e6).replace('.', ",");
-    let drain_formula = match geplant {
-        Some(n) => format!("{n} Abläufe im Gefälleplan"),
-        None => format!("{fl} ÷ 150 m², aufgerundet, mindestens 1"),
+    let drain_formula = match (geplant, rf) {
+        (Some(n), _) => format!("{n} Abläufe im Gefälleplan"),
+        (None, Some(n)) => format!("{n} Abläufe mit Regenfallrohr"),
+        (None, None) => format!("{fl} ÷ 150 m², aufgerundet, mindestens 1"),
     };
     let mut out = vec![
         menge(
@@ -1122,6 +1131,7 @@ mod tests {
             cap: 0.0,
             ins_mat: 0,
             cap_mat: 0,
+            downpipes: Vec::new(),
             crown: 0.0,
             coping_mat: 0,
             slope: None,
@@ -1157,6 +1167,7 @@ mod tests {
             cap: 0.0,
             ins_mat: 0,
             cap_mat: 0,
+            downpipes: Vec::new(),
             crown: 1600.0,
             coping_mat: 0,
         }
@@ -1255,6 +1266,7 @@ mod tests {
             cap: 40.0,
             ins_mat: 2,
             cap_mat: 2,
+            downpipes: Vec::new(),
             coping_mat: 4,
             ..mit_gefaelle()
         }

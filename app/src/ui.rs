@@ -159,6 +159,9 @@ pub enum Id {
     /// Abschnitt „Gefälle“ (Jörn 11.10.).
     PropsDrainAdd,
     PropsDrainDelete,
+    /// Knopf unter einem Abschnitt der Eigenschaften des Regenfallrohrs:
+    /// Notentwässerung und Kontrollablauf.
+    PropsAction(crate::selection::fallrohr::Action),
     /// „Mehr …“ unter dem Aufbau der Dachterrasse: klappt die Schichtliste
     /// auf und zu.
     PropsMore,
@@ -181,6 +184,19 @@ pub enum Id {
     /// meldet ihn.
     LevelsClose,
 }
+
+/// Muster der Knöpfe der Eigenschaften, die `App::drain_button` ausführt:
+/// Abläufe am Flachdach, Notentwässerung und Kontrollablauf am
+/// Regenfallrohr.
+macro_rules! props_button {
+    () => {
+        $crate::ui::Id::PropsDrains
+            | $crate::ui::Id::PropsDrainAdd
+            | $crate::ui::Id::PropsDrainDelete
+            | $crate::ui::Id::PropsAction(_)
+    };
+}
+pub(crate) use props_button;
 
 /// Ziehbare Ebene im Paneel „Geschosse“. ±0,00 liegt fest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -223,6 +239,8 @@ pub enum Field {
     RoofInsulation,
     /// Gefälle des Flachdachs in % (0 = waagerecht; Gefälledämmung G2).
     RoofSlope,
+    /// Schellenabstand des Regenfallrohrs (m, Jörn 11.10.).
+    DownpipeSpacing,
     /// Paneel „Geschosse“ (in m): Kote der Gründungsunterkante, Kote der
     /// Oberkante eines Geschosses, Geschosshöhe (bei der Gründung die
     /// Gründungstiefe) und lichte Höhe.
@@ -320,7 +338,7 @@ impl Field {
     /// Zahl in Metern (sonst in Zentimetern).
     fn in_metres(self) -> bool {
         self.is_level()
-            || self == Field::Offset
+            || matches!(self, Field::Offset | Field::DownpipeSpacing)
             || matches!(self, Field::Draft(Draft::ClearEg | Draft::ClearOg))
     }
 
@@ -2057,6 +2075,7 @@ impl Ui {
             | Id::PropsDrains
             | Id::PropsDrainAdd
             | Id::PropsDrainDelete
+            | Id::PropsAction(_)
             | Id::PropsMore
             | Id::PropsMaterial(_)
             | Id::ExtListe(_)
@@ -2087,7 +2106,8 @@ impl Ui {
             | Id::PropsLink
             | Id::PropsDrains
             | Id::PropsDrainAdd
-            | Id::PropsDrainDelete => self.props_locked(),
+            | Id::PropsDrainDelete
+            | Id::PropsAction(_) => self.props_locked(),
             Id::PropsSplit | Id::PropsMerge => self.props_locked(),
             _ => false,
         }
