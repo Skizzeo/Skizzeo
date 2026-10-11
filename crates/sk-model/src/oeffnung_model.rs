@@ -305,10 +305,21 @@ impl Model {
     /// der Ecke), und keine andere Öffnung darf sie überschneiden (Review
     /// #79).
     pub fn opening_fault(&self, o: &Opening, except: Option<ElementId>) -> Option<OpeningFault> {
+        self.opening_fault_in(o, except, &mut Koerper::default())
+    }
+
+    /// Wie [`Model::opening_fault`], mit den Körpern der Wandzüge aus
+    /// `koerper` (einmal je Prüfung gebaut, Review #79 N4).
+    pub(crate) fn opening_fault_in(
+        &self,
+        o: &Opening,
+        except: Option<ElementId>,
+        koerper: &mut Koerper,
+    ) -> Option<OpeningFault> {
         if !self.opening_ok(o) {
             return Some(OpeningFault::Shape);
         }
-        let Some(l) = self.opening_lage(o, except) else {
+        let Some(l) = self.opening_lage(o, except, koerper) else {
             return Some(OpeningFault::Shape);
         };
         if !l.seated {
@@ -324,12 +335,20 @@ impl Model {
     /// das ihr Höhenband schneidet, auf der Außenfläche einer Außenwand? Nur
     /// die Wandlage, ohne Form, Enden und Überschneidung (Löschen).
     pub(crate) fn opening_on_walls(&self, o: &Opening) -> bool {
-        self.opening_lage(o, None).is_some_and(|l| l.seated)
+        self.opening_lage(o, None, &mut Koerper::default())
+            .is_some_and(|l| l.seated)
     }
 
     /// Lage der Öffnung `o` an den Außenwänden ihres Gebäudes; `None` ohne
     /// Höhenband.
-    fn opening_lage(&self, o: &Opening, except: Option<ElementId>) -> Option<Lage> {
+    /// Nur die Züge am Pfad ([`Model::opening_runs`]) zählen, damit die
+    /// Prüfung nicht mit der Modellgröße wächst.
+    fn opening_lage(
+        &self,
+        o: &Opening,
+        except: Option<ElementId>,
+        koerper: &mut Koerper,
+    ) -> Option<Lage> {
         let z = self.opening_band(o)?;
         let building = self.storey(o.bottom.storey()).and_then(|s| s.building);
         let n = o.path.len();
@@ -352,19 +371,17 @@ impl Model {
         // ihr Pfadstück sitzt, innerhalb der Wandfläche
         let mut ends: [Option<bool>; 2] = [None; 2];
         let mut overlap = None;
-        for run in self.runs.ids() {
+        for run in self.opening_runs(o) {
             let Some(st) = self.run(run).map(|r| r.storey) else {
                 continue;
             };
-            if !self.category_of(run).is_some_and(Category::is_outer_wall)
-                || self.storey(st).and_then(|s| s.building) != building
-            {
+            if self.storey(st).and_then(|s| s.building) != building {
                 continue;
             }
-            let Some(c) = self.chain(run) else {
+            let Some(c) = koerper.entry(run).or_insert_with(|| self.chain(run)) else {
                 continue;
             };
-            let legs = self.legs_on(run, &c, None, o);
+            let legs = self.legs_on(run, c, None, o);
             if legs.is_empty() {
                 continue;
             }
@@ -390,7 +407,7 @@ impl Model {
                         overlap = Some(oid);
                     }
                 }
-                let (a, b) = face_span(&c, &pts, &dirs, h.seg);
+                let (a, b) = face_span(c, &pts, &dirs, h.seg);
                 let (p0, d) = (pts[h.seg], dirs[h.seg]);
                 for (e, p, leg) in [(0, o.path[0], 0), (1, o.path[n - 1], n - 2)] {
                     if leg != *k {
@@ -450,6 +467,9 @@ impl Model {
 /// So weit darf eine Außenfläche von der Bezugslinie ihres Zuges liegen
 /// (mm), großzügig: [`Model::opening_runs`].
 const RUN_REACH: f64 = 2000.0;
+
+/// Körper der Wandzüge, je Prüfung einmal gebaut.
+pub(crate) type Koerper = std::collections::HashMap<RunId, Option<WallChain>>;
 
 /// Lage einer Öffnung an den Wänden ([`Model::opening_fault`]).
 struct Lage {
