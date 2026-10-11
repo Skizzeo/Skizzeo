@@ -133,6 +133,14 @@ pub fn ease_in_out_cubic(t: f32) -> f32 {
 /// Halbe Breite des breitesten kleinen Schilds an einer Spitze
 /// („Fundament“, dip), für den Platz links vom Bogen.
 const TIP_LABEL_HALF: f32 = 48.0;
+/// Abstand des kleinen Schilds von seiner Spitze (dip).
+const TIP_LABEL_GAP: f32 = 6.0;
+
+/// Höhe des kleinen Schilds an einer Spitze bei Schrift `px` (dip), ohne
+/// Schrift gemessen wie in [`paint_small`]: Versalhöhe gut 0,7 und Rand.
+fn small_label_h(px: f32) -> f32 {
+    (px * 0.72 + 9.0).ceil()
+}
 
 /// Ebenen, durch die der Bogen blättert, von unten nach oben: dieselben,
 /// die das Paneel „Geschosse“ zeigt ([`Scene::level_ids`]), auch die der
@@ -413,23 +421,23 @@ impl Wheel {
         g.bounds(0.0).x.min(tip - TIP_LABEL_HALF * g.s)
     }
 
-    /// Lage im Fenster `w` × `h` (Pixel, mit Titelleiste): links neben der
-    /// rechten Spalte (Ansichten, Baum, Eigenschaften), im Abstand
-    /// `panel_margin`, senkrecht mittig unter „Ansichten“, nie höher als die
-    /// Fenstermitte (ac).
+    /// Lage im Fenster `w` × `h` (Pixel, mit Titelleiste): unten rechts in
+    /// der Ecke zwischen unterem Rand und rechter Spalte (Ansichten, Baum,
+    /// Eigenschaften), zu beiden im Abstand `panel_margin` (Jörn 11.10.,
+    /// vorher senkrecht mittig unter „Ansichten“). Maßgeblich unten ist das
+    /// kleine Schild an der unteren Spitze; oben bleibt der Bogen im Bild.
     pub fn geo(&self, ui: &Ui, w: u32, h: u32) -> Geo {
         let z = &self.size;
         let s = ui.dpi();
         let views = ui.rect(Panel::Views, w, ui.top);
-        let below = views.y + views.h;
-        let cy = ((below + h as f32) / 2.0).max(h as f32 / 2.0);
-        let right = views.x - z.panel_margin * s;
+        let m = z.panel_margin * s;
+        let right = views.x - m;
         let label_x = right - LABEL_COL * z.arc_label * s;
         let r = z.arc_r * s;
         let mid = label_x - LABEL_GAP * s - z.arc_band * 0.5 * s;
-        Geo {
+        let mut g = Geo {
             cx: mid - r,
-            cy,
+            cy: 0.0,
             r,
             span: z.arc_span_deg.to_radians(),
             band: z.arc_band * s,
@@ -438,7 +446,13 @@ impl Wheel {
             s,
             label_x,
             right,
-        }
+        };
+        // Spitzen samt kleinem Schild über und unter dem Mittelpunkt
+        let reach = g.tip(false).1 + TIP_LABEL_GAP * s + small_label_h(z.arc_label_small) * s;
+        let lowest = (h as f32 - m - reach).floor();
+        let highest = ui.top as f32 + m + reach;
+        g.cy = lowest.max(highest);
+        g
     }
 
     #[cfg(test)]
@@ -702,7 +716,7 @@ impl Wheel {
             Some((e, sw)) => ia as f32 - sw.steps as f32 * (1.0 - e),
             None => ia as f32,
         };
-        let gap = 6.0 * g.s;
+        let gap = TIP_LABEL_GAP * g.s;
         levels
             .iter()
             .enumerate()
