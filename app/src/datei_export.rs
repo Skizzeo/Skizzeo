@@ -163,7 +163,8 @@ pub(crate) fn ifc_meldung(b: &sk_ifc::Bericht) -> String {
     teile.push(zahl(b.bauteile, "Bauteil", "Bauteile"));
     let mut s = format!("IFC gespeichert: {}", teile.join(", "));
     if !b.ausgelassen.is_empty() {
-        s += &format!(" · nicht in der Datei: {}", b.ausgelassen.join(", "));
+        let nr: Vec<&str> = b.ausgelassen.iter().map(|(n, _)| n.as_str()).collect();
+        s += &format!(" · nicht in der Datei: {}", nr.join(", "));
     }
     s
 }
@@ -188,7 +189,7 @@ mod tests {
             ifc_meldung(&b),
             "IFC gespeichert: 2 Gebäude, 1 Geschoss, 1 Bauteil"
         );
-        b.ausgelassen = vec!["AW-009".into()];
+        b.ausgelassen = vec![("AW-009".into(), sk_ifc::Grund::OhneForm)];
         assert!(ifc_meldung(&b).ends_with(" · nicht in der Datei: AW-009"));
     }
 }

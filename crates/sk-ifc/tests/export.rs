@@ -121,12 +121,22 @@ fn datei_ist_vollstaendig_und_eindeutig() {
         // Jedes Bauteil mit Körper genau einmal, mit seiner Kennung
         let im = bauteile(&f);
         assert_eq!(im.len(), b.bauteile, "{name}");
-        assert!(b.ausgelassen.is_empty(), "{name}: {:?}", b.ausgelassen);
+        // Ausgelassen nur Öffnungen bis I5 (ifc/plan.md §5), mit I5 fällt
+        // die Ausnahme weg
+        for (nr, g) in &b.ausgelassen {
+            assert_eq!(*g, sk_ifc::Grund::OeffnungBisI5, "{name}: {nr}");
+        }
         let solids = m.element_solids();
-        assert_eq!(solids.len(), b.bauteile, "{name}");
+        assert_eq!(solids.len(), b.bauteile + b.ausgelassen.len(), "{name}");
         for (id, _) in &solids {
             let el = m.element(*id).unwrap();
-            assert!(im.contains_key(&el.guid.to_ifc()), "{name}: {}", el.number);
+            let draussen = b.ausgelassen.iter().any(|(nr, _)| *nr == el.number);
+            assert_eq!(
+                im.contains_key(&el.guid.to_ifc()),
+                !draussen,
+                "{name}: {}",
+                el.number
+            );
         }
         // Jedes Bauteil in genau einem Geschoss
         let mut drin: HashMap<u32, usize> = HashMap::new();
@@ -297,6 +307,10 @@ fn raum_am_geschoss_oeffnung_draussen() {
     assert!(!raeume.is_empty(), "Geländer als Raum");
     assert_eq!(f.all("IFCOPENINGELEMENT").count(), 0);
     assert!(!b.ausgelassen.is_empty(), "Stütze als Öffnung");
+    assert!(b
+        .ausgelassen
+        .iter()
+        .all(|(_, g)| *g == sk_ifc::Grund::OeffnungBisI5));
     for (_, e) in f.all("IFCRELCONTAINEDINSPATIALSTRUCTURE") {
         for x in liste(&e.args[4]) {
             assert!(!raeume.contains(&x), "Raum #{x} enthalten statt angehängt");

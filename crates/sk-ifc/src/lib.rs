@@ -12,4 +12,4 @@ pub mod klassen;
 pub mod lesen;
 pub mod step;
 
-pub use export::{export, Bericht, Optionen};
+pub use export::{export, Bericht, Grund, Optionen};
