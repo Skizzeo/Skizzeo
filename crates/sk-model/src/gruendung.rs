@@ -62,7 +62,7 @@ impl Model {
             | ElementKind::Roof { floor, .. } => self.run_of(floor),
             ElementKind::PerimeterInsulation { slab } => self.run_of(slab),
             ElementKind::Downpipe { roof, .. } => self.run_of(roof),
-            ElementKind::Ext(_) => None,
+            ElementKind::Ext(_) | ElementKind::Opening(_) => None,
         }
     }
 

@@ -80,7 +80,7 @@ impl Layer {
     }
 
     /// Kantenart der Schnittkontur dieser Schicht.
-    fn cut_kind(&self) -> u8 {
+    pub(crate) fn cut_kind(&self) -> u8 {
         if self.core {
             edge_kind::CUT
         } else {
@@ -162,6 +162,8 @@ pub struct Joints {
     /// Der Zug steht mit einem Verblender auf einer Dachterrasse (W2): Am
     /// Fuß ist die Verblendschale dort aus Schaumglas gemauert.
     pub facing_foot: Option<FacingFoot>,
+    /// Löcher der Öffnungen (O2), siehe [`crate::wand_loch`].
+    pub holes: Vec<crate::wand_loch::Hole>,
 }
 
 /// Fußpunkt der Verblendschale auf der Dachterrasse (W2, Jörn 10.10.
@@ -905,6 +907,7 @@ impl WallChain {
             Self::keep_segments(s, &d.segs);
         }
         let mut s = self.join_parts(g);
+        self.punch(&mut s, cut);
         if let Some(a) = &self.joints.attika {
             let mut up = crate::terrace::attika_solid(&a.pieces, a.band, cut);
             merge_seam(&mut s, &mut up, a.band.0);
@@ -1008,48 +1011,52 @@ impl WallChain {
             s.mat = mat | material::CUT;
             s.elem = i as u32;
             s.layer = li as u8;
-            let (a, b) = (flat(a) + vec3(0.0, 0.0, z0), flat(b) + vec3(0.0, 0.0, z0));
-            let up = vec3(0.0, 0.0, z1 - z0);
-            let (v0, v1) = (z0 / t, z1 / t);
-            s.quad_uv(
-                [a, b, b + up, a + up],
-                n,
-                [[v0, v(a)], [v0, v(b)], [v1, v(b)], [v1, v(a)]],
-            );
-            s.edge_kind = kind;
-            // Am Deckenband mit Randdämmstreifen keine Querlinie:
-            // die Decke zeichnet ihre eigene, der Streifen keine
-            let (mut bottom, top) = match self.joints.slab_band {
-                Some((zb, zt)) if self.joints.seamless => {
-                    ((z0 - zt).abs() < 1e-6, (z1 - zb).abs() < 1e-6)
-                }
-                _ => (false, false),
-            };
-            bottom |= self.joints.strip_below
-                && self.joints.strip_open.get(i) != Some(&true)
-                && (z0 - self.base).abs() < 1e-6;
-            if !bottom {
-                s.edge(a, b);
-            }
-            if !top {
-                s.edge(a + up, b + up);
-            }
-            for p in [a, b] {
-                let o = off(p);
-                let face = if (o - lo).abs() < 1e-3 {
-                    Some(lo)
-                } else if (o - hi).abs() < 1e-3 {
-                    Some(hi)
-                } else {
-                    None
+            // Trifft der Schnitt ein Loch (O2), zerfällt die Fläche in Bänder
+            let um = ((flat(a) + flat(b)) * 0.5 - pts[i]).dot(dirs[i]);
+            for (bz0, bz1) in self.baender(i, li, um, (z0, z1)) {
+                let (a, b) = (flat(a) + vec3(0.0, 0.0, bz0), flat(b) + vec3(0.0, 0.0, bz0));
+                let up = vec3(0.0, 0.0, bz1 - bz0);
+                let (v0, v1) = (bz0 / t, bz1 / t);
+                s.quad_uv(
+                    [a, b, b + up, a + up],
+                    n,
+                    [[v0, v(a)], [v0, v(b)], [v1, v(b)], [v1, v(a)]],
+                );
+                s.edge_kind = kind;
+                // Am Deckenband mit Randdämmstreifen keine Querlinie:
+                // die Decke zeichnet ihre eigene, der Streifen keine
+                let (mut bottom, top) = match self.joints.slab_band {
+                    Some((zb, zt)) if self.joints.seamless => {
+                        ((bz0 - zt).abs() < 1e-6, (bz1 - zb).abs() < 1e-6)
+                    }
+                    _ => (false, false),
                 };
-                let t = (flat(p) - pts[i]).dot(dirs[i]);
-                if let Some(f) = face {
-                    if !self
-                        .gaps_at(i, f)
-                        .any(|(g0, g1)| t > g0 + 1e-6 && t < g1 - 1e-6)
-                    {
-                        s.edge(p, p + up);
+                bottom |= self.joints.strip_below
+                    && self.joints.strip_open.get(i) != Some(&true)
+                    && (bz0 - self.base).abs() < 1e-6;
+                if !bottom {
+                    s.edge(a, b);
+                }
+                if !top {
+                    s.edge(a + up, b + up);
+                }
+                for p in [a, b] {
+                    let o = off(p);
+                    let face = if (o - lo).abs() < 1e-3 {
+                        Some(lo)
+                    } else if (o - hi).abs() < 1e-3 {
+                        Some(hi)
+                    } else {
+                        None
+                    };
+                    let t = (flat(p) - pts[i]).dot(dirs[i]);
+                    if let Some(f) = face {
+                        if !self
+                            .gaps_at(i, f)
+                            .any(|(g0, g1)| t > g0 + 1e-6 && t < g1 - 1e-6)
+                        {
+                            s.edge(p, p + up);
+                        }
                     }
                 }
             }
