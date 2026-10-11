@@ -587,13 +587,14 @@ pub fn factory_guid(surface: &str) -> Option<Guid> {
     }
 }
 
-/// Werksmuster der Werks-Oberfläche mit der Guid `g`.
+/// Werksmuster der Werks-Oberfläche mit der Guid `g` (auch der eingebauten
+/// Baustoffe des Ausbaus, [`crate::model::finish_pattern`]).
 pub fn factory_for(g: Guid) -> Option<Pattern> {
     match g {
         FACING_SURFACE_GUID => factory(FACING),
         PLASTER_SURFACE_GUID => factory(PLASTER),
         CONCRETE_SURFACE_GUID => factory(CONCRETE),
-        _ => None,
+        _ => crate::model::finish_pattern(g),
     }
 }
 
