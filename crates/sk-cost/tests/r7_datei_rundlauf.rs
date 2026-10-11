@@ -25,7 +25,7 @@ const HAEUSER: [(&str, &str); 5] = [
     // seit Briefing Fassung 3 Gebäude 1 mit Flachdach (`kind=roof`,
     // Aufkantungen, `[roof]`, Attikablech); seit AD2 an DE-002 alle
     // abweichenden Deckenschlüssel (Untersicht mit Bekleidung und Lattung,
-    // `upstand`, `crown`, `inner`, `coping_mat`)
+    // `terrace` mit dem Typ DT-14, `upstand`, `crown`, `inner`, `coping_mat`)
     (
         "r7-alle-abschnitte",
         include_str!("../referenz/r7-alle-abschnitte.szo"),
