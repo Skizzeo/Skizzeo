@@ -848,11 +848,74 @@ impl Model {
 
 /// Umriss `outline` (gegen den Uhrzeigersinn) um `d` nach innen versetzt,
 /// Ecke für Ecke: Schnitt der versetzten Nachbarkanten, ohne Gehrungsgrenze.
-/// An einer kurzen Kante zwischen spitzen Ecken (Kante kürzer als
-/// d · (cot α/2 + cot β/2)) rücken die Ecken nur so weit ein, dass die
-/// versetzte Kante auf einen Punkt schrumpft und sich nicht umkehrt; die
-/// Dämmung ist dort dünner als `d`.
+/// Eine kurze Kante zwischen spitzen Ecken (kürzer als d · (cot α/2 +
+/// cot β/2)) schrumpft auf einen Punkt: Ihre beiden Ecken liegen im Schnitt
+/// der versetzten Nachbarkanten, die dort wie überall um `d` versetzt
+/// bleiben. Nur wo das nicht aufgeht (Streifen schmaler als 2 d), rücken die
+/// Ecken weniger weit ein und die Dämmung ist dünner als `d`.
 fn inset_of(outline: &[Vec3], d: f64) -> Vec<Vec3> {
+    if let Some(v) = inset_lines(outline, d) {
+        return v;
+    }
+    inset_clamped(outline, d)
+}
+
+/// [`inset_of`] über die versetzten Kanten: Kanten, die sich umkehrten,
+/// fallen weg (die zuerst verschwindende zuerst), ihre Ecken liegen im
+/// Schnitt der versetzten Nachbarn; `None`, wenn dabei weniger als drei
+/// Kanten bleiben oder zwei Nachbarn parallel laufen.
+fn inset_lines(outline: &[Vec3], d: f64) -> Option<Vec<Vec3>> {
+    let n = outline.len();
+    let dirs: Vec<Option<Vec3>> = (0..n)
+        .map(|i| {
+            let (a, b) = (outline[i], outline[(i + 1) % n]);
+            let v = vec3(b.x - a.x, b.y - a.y, 0.0);
+            (v.length() > 1e-9).then(|| v.normalized())
+        })
+        .collect();
+    let mut alive: Vec<bool> = dirs.iter().map(Option::is_some).collect();
+    // Ecke `i` liegt zwischen Kante i − 1 und Kante i
+    let point = |alive: &[bool], i: usize| -> Option<Vec3> {
+        let p = (1..=n).map(|k| (i + n - k) % n).find(|&k| alive[k])?;
+        let q = (0..n).map(|k| (i + k) % n).find(|&k| alive[k])?;
+        let (d0, d1) = (dirs[p]?, dirs[q]?);
+        let (a, b) = (
+            outline[p] + vec3(-d0.y, d0.x, 0.0) * d,
+            outline[q] + vec3(-d1.y, d1.x, 0.0) * d,
+        );
+        let cr = d0.x * d1.y - d0.y * d1.x;
+        if cr.abs() < 1e-9 {
+            // gerade weiter: Lot von der Ecke; parallel gegenläufig: nicht lösbar
+            return (d0.dot(d1) > 0.0).then(|| outline[i] + vec3(-d1.y, d1.x, 0.0) * d);
+        }
+        let w = b - a;
+        Some(a + d0 * ((w.x * d1.y - w.y * d1.x) / cr))
+    };
+    loop {
+        let pts: Vec<Vec3> = (0..n).map(|i| point(&alive, i)).collect::<Option<_>>()?;
+        // umgekehrte Kante mit dem stärksten Überschlag je Länge zuerst
+        let worst = (0..n)
+            .filter(|&k| alive[k])
+            .map(|k| {
+                let e = dirs[k].unwrap_or_default();
+                let l = (outline[(k + 1) % n] - outline[k]).length();
+                (k, (pts[(k + 1) % n] - pts[k]).dot(e) / l)
+            })
+            .filter(|&(_, r)| r < -1e-9)
+            .min_by(|x, y| x.1.total_cmp(&y.1));
+        match worst {
+            None => return Some(pts),
+            Some((k, _)) => alive[k] = false,
+        }
+        if alive.iter().filter(|a| **a).count() < 3 {
+            return None;
+        }
+    }
+}
+
+/// Rückfall für [`inset_of`]: Einrücktiefe je Ecke geklemmt, bis keine
+/// versetzte Kante gegen ihre Kante läuft.
+fn inset_clamped(outline: &[Vec3], d: f64) -> Vec<Vec3> {
     let n = outline.len();
     let dir = |a: Vec3, b: Vec3| {
         let v = vec3(b.x - a.x, b.y - a.y, 0.0);
@@ -1124,9 +1187,33 @@ mod tests {
                 );
             }
         }
-        // nur bei 200 mm greift die Klemmung: Kante 0 ist ein Punkt
+        // nur bei 200 mm greift die Klemmung: Kante 0 ist ein Punkt, die
+        // Nachbarkanten 1 und 4 bleiben auf ganzer Länge um 200 versetzt
         let inset = inset_of(&outline, 200.0);
         assert!((inset[1] - inset[0]).length() < 1e-6, "{inset:?}");
+        for k in [1, 4] {
+            let j = (k + 1) % outline.len();
+            let e = (outline[j] - outline[k]).normalized();
+            let nrm = vec3(-e.y, e.x, 0.0);
+            for p in [inset[k], inset[j]] {
+                assert!(
+                    ((p - outline[k]).dot(nrm) - 200.0).abs() < 1e-6,
+                    "{k}: {p:?}"
+                );
+            }
+        }
+        // Streifen schmaler als 2 d: Rückfall, nichts kehrt sich um
+        let streifen = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(5000.0, 0.0, 0.0),
+            vec3(5000.0, 300.0, 0.0),
+            vec3(0.0, 300.0, 0.0),
+        ];
+        let i = inset_of(&streifen, 200.0);
+        for k in 0..4 {
+            let e = streifen[(k + 1) % 4] - streifen[k];
+            assert!((i[(k + 1) % 4] - i[k]).dot(e) >= -1e-6, "{i:?}");
+        }
     }
 
     /// Dachaufbau und Blech des Flachdachs auf der OG-Decke unter `og`.
