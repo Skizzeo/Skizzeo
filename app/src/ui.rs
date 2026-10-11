@@ -736,6 +736,8 @@ struct LevelDrag {
     y0: f64,
     z0: f64,
     layout: LevelsLayout,
+    /// Hinweis zum aktiven Geschoss in den „Werkzeuge“ (bleibt beim Ziehen).
+    hint: bool,
 }
 
 /// Was das Paneel „Geschosse“ beim Ziehen meldet.
@@ -1282,6 +1284,18 @@ fn notes_rows(rows: &mut Vec<Row>, p: &Props) {
     }
 }
 
+/// Höhe eines Paneels aus Zeilen (Pixel), mit Innenabstand oben und unten.
+fn rows_px(rows: &[Row], pad: f32, scale: f32) -> f32 {
+    let inner: f32 = rows
+        .iter()
+        .map(|r| {
+            let (h, g) = row_height(r);
+            h + g
+        })
+        .sum();
+    ((inner + 2.0 * pad) * scale).round()
+}
+
 /// Höhe einer Zeile in dip und Abstand danach.
 fn row_height(r: &Row) -> (f32, f32) {
     match r {
@@ -1370,17 +1384,7 @@ impl Ui {
 
     fn rows(&self, p: Panel) -> Vec<Row> {
         match p {
-            Panel::Tools => tool_rows(
-                &self.projekt_zeilen,
-                self.nord_aktiv,
-                self.interior,
-                self.tool_chip.is_some(),
-                &self.wall_layers,
-                self.upper_active,
-                self.foundation_active,
-                self.ext_tool.as_ref().map(|x| (x, self.edit.as_ref())),
-                self.ext_knopf,
-            ),
+            Panel::Tools => self.tool_rows(self.storey_hint()),
             Panel::Views => view_rows(self.nord),
             Panel::Props => self.props.as_ref().map_or(Vec::new(), |p| {
                 props_rows(p, self.edit.as_ref(), self.more_open)
@@ -1388,6 +1392,40 @@ impl Ui {
             Panel::Levels => vec![Row::Title("Geschosse")],
             Panel::Dialog => Vec::new(),
         }
+    }
+
+    /// Zeilen der „Werkzeuge“, mit oder ohne den Hinweis zum aktiven
+    /// Geschoss („Außenwände entstehen aus dem EG“).
+    fn tool_rows(&self, storey_hint: bool) -> Vec<Row> {
+        tool_rows(
+            &self.projekt_zeilen,
+            self.nord_aktiv,
+            self.interior,
+            self.tool_chip.is_some(),
+            &self.wall_layers,
+            storey_hint && self.upper_active,
+            storey_hint && self.foundation_active,
+            self.ext_tool.as_ref().map(|x| (x, self.edit.as_ref())),
+            self.ext_knopf,
+        )
+    }
+
+    /// Steht der Hinweis zum aktiven Geschoss in den „Werkzeuge“? Er weicht,
+    /// wenn er das Paneel „Geschosse“ vom Diagramm in die Liste drücken
+    /// würde (Jörn 11.10.: nach Klick auf „OG“ kam das Diagramm nur über
+    /// „EG“ zurück). Der Grund steht dann im Tooltip des gesperrten Knopfs.
+    fn storey_hint(&self) -> bool {
+        if !self.upper_active && !self.foundation_active {
+            return false;
+        }
+        if let Some(d) = self.level_drag {
+            return d.hint;
+        }
+        let list = |hint: bool| {
+            let h = rows_px(&self.tool_rows(hint), self.size.panel_pad, self.scale);
+            self.levels_layout_below(h).list
+        };
+        !list(true) || list(false)
     }
 
     pub fn props(&self) -> Option<&Props> {
@@ -1779,15 +1817,7 @@ impl Ui {
             Panel::Dialog => return (self.dialog_h() * self.scale).round(),
             _ => {}
         }
-        let inner: f32 = self
-            .rows(p)
-            .iter()
-            .map(|r| {
-                let (h, g) = row_height(r);
-                h + g
-            })
-            .sum();
-        ((inner + 2.0 * self.size.panel_pad) * self.scale).round()
+        rows_px(&self.rows(p), self.size.panel_pad, self.scale)
     }
 
     /// Breite eines Paneels (dip): die rechte Spalte hat ihre eigene
@@ -2144,6 +2174,7 @@ impl Ui {
                             y0: y,
                             z0,
                             layout: self.levels_layout(),
+                            hint: self.storey_hint(),
                         });
                         out.level = Some(LevelEvent::Begin(g));
                         out.changed.push(Id::Grip(g));
@@ -2784,9 +2815,14 @@ impl Ui {
         if let Some(d) = self.level_drag {
             return d.layout;
         }
+        self.levels_layout_below(self.panel_height(Panel::Tools))
+    }
+
+    /// Aufteilung unter „Werkzeuge“ der Höhe `tools` (Pixel).
+    fn levels_layout_below(&self, tools: f32) -> LevelsLayout {
         let (s, z) = (self.scale, &self.size);
         let m = (z.panel_margin * s).round();
-        let y = self.top as f32 + 2.0 * m + self.panel_height(Panel::Tools);
+        let y = self.top as f32 + 2.0 * m + tools;
         let avail = (self.win_h - y - m).max(0.0);
         let lines = level_lines(&self.levels);
         let head = z.panel_pad + LEVEL_HEAD + LEVEL_TOP;
@@ -4660,5 +4696,47 @@ mod levels_tests {
         assert!(ui.levels_layout().list);
         assert!(name_at(&ui, og.id).is_some());
         assert!(name_at(&ui, band(&ui, "Fundament").id).is_some());
+    }
+
+    /// Jörn 11.10.: Nach Klick auf „OG“ wurde das Diagramm zur Liste, zurück
+    /// ging es nur über „EG“. Der Hinweis „Außenwände entstehen aus dem EG“
+    /// machte die „Werkzeuge“ zwei Zeilen höher. Jetzt weicht er, wenn er
+    /// das Diagramm in die Liste drücken würde; mit Platz bleibt er.
+    #[test]
+    fn geschosswechsel_behaelt_das_diagramm() {
+        let mut s = Scene::new();
+        let mut ui = Ui::new(1.25, &Theme::dark());
+        ui.projekt_zeilen = vec!["Haus Mustermann".into(), "Projekt-Nr. 01/26".into()];
+        ui.ext_knopf = true;
+        let wechsel = |ui: &mut Ui, s: &mut Scene, name: &str| {
+            let id = band(ui, name).id;
+            assert!(s.set_active_storey(id) || band(ui, name).active);
+            ui.set_levels(s.levels());
+            ui.upper_active = !s.ground_active() && !s.foundation_active();
+            ui.foundation_active = s.foundation_active();
+        };
+        let hinweis = |ui: &Ui| {
+            ui.rows(Panel::Tools)
+                .iter()
+                .any(|r| matches!(r, Row::Hint(h) if h.starts_with("Außenwände") || h.starts_with("Im Fundament")))
+        };
+        // 1920 × 1040 bei 125 %: knapp genug, dass der Hinweis kippen würde
+        ui.fit(1.25, 1920, 1040);
+        ui.set_levels(s.levels());
+        assert!(!ui.levels_layout().list, "EG: Diagramm");
+        for name in ["OG", "EG", "Fundament", "OG", "EG"] {
+            wechsel(&mut ui, &mut s, name);
+            assert!(!ui.levels_layout().list, "{name}: Diagramm");
+            assert!(!hinweis(&ui), "{name}: Hinweis weicht");
+            let r = ui.rect(Panel::Levels, 1920, 32);
+            assert!(r.y + r.h <= 1040.0, "{name}: {r:?}");
+        }
+        // Mit Platz steht der Hinweis weiter da
+        ui.fit(1.0, 1920, 1200);
+        wechsel(&mut ui, &mut s, "OG");
+        assert!(!ui.levels_layout().list && hinweis(&ui));
+        // Ist es ohnehin eine Liste, bleibt er auch
+        ui.fit(1.0, 900, 400);
+        assert!(ui.levels_layout().list && hinweis(&ui));
     }
 }
