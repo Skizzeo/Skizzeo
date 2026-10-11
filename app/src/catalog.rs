@@ -385,15 +385,24 @@ impl Company {
                         self.geladen_merken(text.clone());
                         let unknown = lib.foreign.unknown;
                         let bearings = lib.invalid_bearings();
+                        let finishes = lib.invalid_finishes();
                         self.lib = lib;
                         let mut hints = self.add_stock();
-                        // Fremdes aus einer neueren Fassung und ungültige
-                        // Auflager: ein Hinweis, einmal je Fassung der Datei
-                        if (unknown > 0 || !bearings.is_empty()) && first_time(&self.path) {
+                        // Fremdes aus einer neueren Fassung, ungültige
+                        // Auflager und Ausbauschichten: ein Hinweis, einmal
+                        // je Fassung der Datei
+                        let ungueltig = !bearings.is_empty() || !finishes.is_empty();
+                        if (unknown > 0 || ungueltig) && first_time(&self.path) {
                             let auflager = (!bearings.is_empty()).then(|| {
                                 Meldung::mit(
                                     " Deckenauflager von {} ungültig, gebaut wie „ganze tragende Schicht“.",
                                     &[&bearings.join(", ")],
+                                )
+                            });
+                            let ausbau = (!finishes.is_empty()).then(|| {
+                                Meldung::mit(
+                                    " {}: Schicht ohne Dicke, die keine Beschichtung ist.",
+                                    &[&finishes.join(", ")],
                                 )
                             });
                             let fremd = (unknown > 0).then(|| {
@@ -403,9 +412,10 @@ impl Company {
                                 )
                             });
                             hints.push(Meldung::mit(
-                                "Firmenkatalog:{}{}",
+                                "Firmenkatalog:{}{}{}",
                                 &[
                                     auflager.as_deref().unwrap_or(""),
+                                    ausbau.as_deref().unwrap_or(""),
                                     fremd.as_deref().unwrap_or(""),
                                 ],
                             ));

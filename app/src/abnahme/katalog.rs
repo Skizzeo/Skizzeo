@@ -69,6 +69,7 @@ fn neuer_typ(
         note: String::new(),
         changed: 1,
         bearing: sk_model::Bearing::Core,
+        height: None,
     }
 }
 
