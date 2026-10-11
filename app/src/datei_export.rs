@@ -152,8 +152,8 @@ fn zahl(n: usize, eins: &str, mehr: &str) -> String {
 }
 
 /// Satz der Statuszeile nach dem Export: „IFC gespeichert: 2 Geschosse,
-/// 34 Bauteile“, bei mehreren Gebäuden mit deren Zahl vorn, und was ohne
-/// Form oder Geschoss nicht in die Datei kam.
+/// 34 Bauteile“, bei mehreren Gebäuden mit deren Zahl vorn, und was nicht
+/// in die Datei kam.
 pub(crate) fn ifc_meldung(b: &sk_ifc::Bericht) -> String {
     let mut teile = Vec::new();
     if b.gebaeude > 1 {
@@ -163,10 +163,7 @@ pub(crate) fn ifc_meldung(b: &sk_ifc::Bericht) -> String {
     teile.push(zahl(b.bauteile, "Bauteil", "Bauteile"));
     let mut s = format!("IFC gespeichert: {}", teile.join(", "));
     if !b.ausgelassen.is_empty() {
-        s += &format!(
-            " · ohne Form nicht in der Datei: {}",
-            b.ausgelassen.join(", ")
-        );
+        s += &format!(" · nicht in der Datei: {}", b.ausgelassen.join(", "));
     }
     s
 }
@@ -192,6 +189,6 @@ mod tests {
             "IFC gespeichert: 2 Gebäude, 1 Geschoss, 1 Bauteil"
         );
         b.ausgelassen = vec!["AW-009".into()];
-        assert!(ifc_meldung(&b).ends_with(" · ohne Form nicht in der Datei: AW-009"));
+        assert!(ifc_meldung(&b).ends_with(" · nicht in der Datei: AW-009"));
     }
 }
