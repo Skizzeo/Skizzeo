@@ -497,7 +497,12 @@ impl Model {
         let (inner, outer) = (chain.inner_offset(), chain.outer_offset());
         let dir = (outer - inner).signum();
         let inner = inner + dir * drop;
-        let outline = sk_math::polygon::to_ccw(&chain.face_corners(inner));
+        // Ohne Fugenpunkte und ohne Rückläufer an kurzen Eckstücken (#61)
+        let clean = |p: Vec<Vec3>| {
+            use sk_math::polygon;
+            polygon::to_ccw(&polygon::simplified(&crate::terrace::without_spikes(p)))
+        };
+        let outline = clean(chain.face_corners(inner));
         // Attikadämmung innen (Jörn 10.10. 16:07): Innenfläche um ihre Dicke
         // weiter zum Dach hin, aus dem Umriss selbst (die Wandflächen kappen
         // spitze Ecken jenseits ihrer Gehrungsgrenze)
@@ -519,7 +524,7 @@ impl Model {
             outline,
             base: self.level_z(f.top)?,
             layers,
-            ring: sk_math::polygon::to_ccw(&chain.face_corners(chain.outer_offset())),
+            ring: clean(chain.face_corners(chain.outer_offset())),
             width: chain.thickness() - drop,
             crown: chain.top(),
             coping_mat: self

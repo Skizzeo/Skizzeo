@@ -49,6 +49,7 @@ mod geschosse_app;
 mod gpu_probe;
 mod help;
 mod hints;
+mod kette_app;
 mod kosten_view;
 mod link_view;
 mod lohn_blatt;
@@ -74,6 +75,7 @@ mod section;
 mod selection;
 mod settings;
 mod sonne_view;
+mod teilen_edit;
 mod terrace_label;
 mod tree_panel;
 mod type_look;
@@ -915,7 +917,7 @@ struct App {
     /// unter der Maus.
     link_view: link_view::LinkView,
     chips: Vec<link_view::Chip>,
-    chip_hover: Option<sk_model::ElementId>,
+    chip_hover: Option<link_view::Glied>,
     /// Die Statuszeile zeigt den Hinweis zum Ziehen einer gestapelten Wand.
     drag_notice: bool,
     /// „Bündig setzen“ gleitet: rückende Wand, ihr Zug, Versatz am
@@ -3660,21 +3662,14 @@ impl App {
             Id::Ext | Id::ExtTyp | Id::ExtListe(_) => self.ext_klick(id),
             Id::ExtWahl(i, k) => self.ext_prop_wert(i, Some(k)),
             Id::ExtJa(i) => self.ext_prop_wert(i, None),
-            Id::PropsLink => {
-                if let Some(w) = self.sel.id.and_then(|id| self.scene.stack_wall(id)) {
-                    self.toggle_link(w);
-                }
+            Id::PropsLink | Id::PropsFlush | Id::PropsSplit | Id::PropsMerge => {
+                self.kette_klick(id)
             }
             Id::PropsMore => {
                 self.ui.toggle_more();
                 self.overlay_dirty = true;
             }
             Id::PropsMaterial(g) => self.open_materials(Some(g)),
-            Id::PropsFlush => {
-                if let Some(w) = self.sel.id.and_then(|id| self.scene.stack_wall(id)) {
-                    self.flush(w);
-                }
-            }
             Id::PropsDrains => {
                 if let Some(id) = self.sel.id {
                     if let Some(b) = sk_model::edit_blocked(self.scene.model(), &[id]) {
@@ -4606,7 +4601,7 @@ impl App {
                 };
                 if chip != self.chip_hover {
                     self.chip_hover = chip;
-                    self.edit.link_hover = chip;
+                    self.edit.link_hover = chip.filter(|g| g.1.is_none()).map(|g| g.0);
                     self.redraw = true;
                 }
                 // Sonne und Leiste (S4) vor dem Pfeil: über der Leiste und
@@ -4775,6 +4770,7 @@ impl App {
                                 .handle(&ev, &mut self.scene, &self.cam, vw, vh, sc, en)
                         };
                         self.redraw |= eo.redraw;
+                        self.after_edit(&eo);
                         if let Some((id, wall)) = eo.locked {
                             self.show_locked(id, Some((wall, delete::Act::Drag)));
                         }
@@ -4837,6 +4833,7 @@ impl App {
                     .edit
                     .handle(&ev, &mut self.scene, &self.cam, vw, vh, sc, en);
                 self.redraw |= eo.redraw;
+                self.after_edit(&eo);
                 if let Event::MouseUp {
                     button: MouseButton::Left,
                     x,
@@ -4956,7 +4953,9 @@ impl App {
             Event::Key {
                 key, down, mods, ..
             } => {
-                let free = !self.tool.is_active() && !self.edit.is_dragging() && !self.nord.zieht();
+                let free = !self.tool.is_active()
+                    && !(self.edit.is_dragging() || self.edit.splitting())
+                    && !self.nord.zieht();
                 let command = self.shortcuts.key(key, down, mods, free);
                 let en = self.edit_enabled();
                 let eo = self
@@ -4966,6 +4965,7 @@ impl App {
                     self.upload_model();
                 }
                 self.redraw |= eo.redraw;
+                self.after_edit(&eo);
                 let mut no = nordpfeil::Ausgang::default();
                 if eo.consumed {
                     // Esc hat das Ziehen abgebrochen bzw. die Eingabe am Band
@@ -5064,7 +5064,9 @@ impl App {
             window,
             dialog: self.ui.dialog,
             flush_pick: self.pick.is_some(),
-            dragging: self.edit.is_dragging() || self.edit.input().is_some(),
+            dragging: self.edit.is_dragging()
+                || self.edit.input().is_some()
+                || self.edit.splitting(),
             tool: self
                 .tool
                 .enabled
@@ -5095,6 +5097,7 @@ impl App {
     /// Eingabe, Rückfragen, Menüs, Klapplisten in Fenstern.
     fn esc_inner(&self) -> bool {
         self.edit.is_dragging()
+            || self.edit.splitting()
             || self.drains.is_dragging()
             || self.edit.input().is_some()
             || self.tool.input().is_some()
@@ -5233,6 +5236,7 @@ impl App {
                 help::Topic::Ext
             }
             _ if ctx.window.is_none() && self.ext_fenster.is_some() => self.ext_thema(),
+            help::Topic::Drag if self.edit.splitting() => help::Topic::Split,
             // Gewählte Erweiterung (E7), solange kein Fenster, Dialog oder
             // Werkzeug das Thema bestimmt
             _ if ctx.window.is_none()
@@ -5675,6 +5679,7 @@ impl App {
             delete::Link::Materials => self.open_materials(None),
             delete::Link::Help => self.show_help(true),
             delete::Link::Dismiss => {}
+            delete::Link::Merge(wall) => self.merge(wall, None),
         }
     }
 
@@ -6490,52 +6495,6 @@ impl App {
             lines.insert(1, sonne_view::OHNE_HAUS.into());
         }
         Some(tip_text(lines))
-    }
-
-    /// Hinweis am Kettensymbol unter der Maus.
-    fn chain_tip(&self) -> Option<String> {
-        let wall = self.chip_hover?;
-        let (_, linked) = self.scene.model().stack_offset(wall)?;
-        Some(link_view::tip(linked).to_string())
-    }
-
-    /// Klick auf ein Kettensymbol: löst bzw. koppelt sofort, ohne Rückfrage
-    /// (OG Phase 2). Wieder gekoppelt mit Versatz: Hinweis mit „Bündig
-    /// setzen“. `true`, wenn der Klick dem Symbol galt.
-    fn press_chip(&mut self, button: MouseButton, x: f64, y: f64, sc: f64) -> bool {
-        if button != MouseButton::Left || self.tool.is_active() {
-            return false;
-        }
-        let Some(wall) = link_view::hit(&self.chips, x, y, sc) else {
-            return false;
-        };
-        self.toggle_link(wall);
-        true
-    }
-
-    /// Kette der gestapelten Wand umschalten (Symbol im Plan oder Paneel).
-    fn toggle_link(&mut self, wall: sk_model::ElementId) {
-        let Some((offset, linked)) = self.scene.model().stack_offset(wall) else {
-            return;
-        };
-        if self.scene.set_linked(wall, !linked) {
-            self.upload_model();
-            self.sync_props();
-            // Neben dem Paar, damit die Karte keine der Wände verdeckt (E20 §6.4)
-            let pair = [Some(wall), self.scene.model().wall_below(wall)];
-            self.hint = (!linked && offset != 0.0).then(|| {
-                let mut h = delete::HintCard::new(
-                    relink_lines(offset),
-                    Some(("Bündig setzen", delete::Link::Flush(wall))),
-                    pair.into_iter().flatten().collect(),
-                    Instant::now(),
-                );
-                h.beside = true;
-                h
-            });
-            self.hint_dirty = true;
-            self.redraw = true;
-        }
     }
 
     /// Hinweiskarte, wenn das automatische Sichern scheitert (F-13 §8):

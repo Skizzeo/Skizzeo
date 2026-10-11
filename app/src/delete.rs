@@ -36,6 +36,9 @@ pub enum Link {
     Help,
     /// × einer Entdecken-Karte: nur schließen.
     Dismiss,
+    /// Bündig zusammengeschoben (W-11): die Wand mit ihren Nachbarn in der
+    /// Flucht zu einer vereinen.
+    Merge(ElementId),
 }
 
 /// Wörter für die nicht gelöschten Bauteile einer gemischten Auswahl:
@@ -224,12 +227,15 @@ pub fn hint_anchor(d: &Deleted) -> Vec<ElementId> {
 pub struct HintCard {
     pub lines: Vec<String>,
     pub link: Option<(&'static str, Link)>,
+    /// Zweiter Verweis darunter (Rückfrage mit zwei Antworten, W-11).
+    pub link2: Option<(&'static str, Link)>,
     pub anchor: Vec<ElementId>,
     start: Instant,
     deadline: Instant,
     /// Lage im Fenster (Pixel, ohne Schatten), sobald gezeichnet.
     pub rect: Option<Rect>,
     pub link_hover: bool,
+    link2_hover: bool,
     hover: bool,
     /// Punkt in `ui.danger` statt Akzent (es kann Arbeit verloren gehen).
     pub danger: bool,
@@ -265,11 +271,13 @@ impl HintCard {
         HintCard {
             lines,
             link,
+            link2: None,
             anchor,
             start: now,
             deadline: now + HINT_TIME,
             rect: None,
             link_hover: false,
+            link2_hover: false,
             hover: false,
             danger: false,
             beside: false,
@@ -290,6 +298,11 @@ impl HintCard {
         self.deadline = self.start + Duration::from_secs(24 * 3600);
     }
 
+    /// Länger stehen lassen (Rückfrage): `d` ab dem Erscheinen.
+    pub fn stay(&mut self, d: Duration) {
+        self.deadline = self.start + d;
+    }
+
     /// Sofort ausblenden (in `fade_ms`), auch unter der Maus.
     pub fn dismiss(&mut self, now: Instant, fade_ms: f32) {
         self.hover = false;
@@ -307,12 +320,15 @@ impl HintCard {
             let (f, p) = if i == 0 { (bold, px) } else { (regular, small) };
             tw = tw.max(f.map_or(l.len() as f32 * p * 0.5, |f| f.width(l, p)));
         }
-        if let Some((l, _)) = self.link {
+        for (l, _) in self.link.iter().chain(&self.link2) {
             tw = tw.max(bold.map_or(0.0, |f| f.width(l, px)));
         }
         let n = self.lines.len().max(1) as f32;
         let mut h = CARD_TOP + (n - 1.0) * CARD_LINE + CARD_BOTTOM;
         if self.link.is_some() {
+            h += CARD_LINK;
+        }
+        if self.link2.is_some() {
             h += CARD_LINK;
         }
         if self.discover {
@@ -427,9 +443,12 @@ impl HintCard {
         }
         self.hover = over;
         let link = over && self.link_rect(r, s, t).is_some_and(|l| l.contains(x, y));
+        let link2 = over && self.link2_rect(r, s, t).is_some_and(|l| l.contains(x, y));
         let close = over && self.close_rect(r, s).is_some_and(|c| c.contains(x, y));
-        let changed = link != self.link_hover || close != self.close_hover;
-        self.link_hover = link;
+        let changed =
+            link != self.link_hover || link2 != self.link2_hover || close != self.close_hover;
+        self.link_hover = link || link2;
+        self.link2_hover = link2;
         self.close_hover = close;
         changed
     }
@@ -445,10 +464,20 @@ impl HintCard {
     /// Bereich des Verweises im Fenster.
     fn link_rect(&self, r: Rect, s: f32, t: &Theme) -> Option<Rect> {
         self.link?;
+        self.nth_link_rect(r, s, t, 0.0)
+    }
+
+    /// Bereich des zweiten Verweises im Fenster.
+    fn link2_rect(&self, r: Rect, s: f32, t: &Theme) -> Option<Rect> {
+        self.link2?;
+        self.nth_link_rect(r, s, t, 1.0)
+    }
+
+    fn nth_link_rect(&self, r: Rect, s: f32, t: &Theme, k: f32) -> Option<Rect> {
         let n = self.lines.len().max(1) as f32;
         // Grundlinie des Verweises wie in `paint`; Versalhöhe genähert
         let cap = t.size.font * s * 0.7;
-        let base = r.y + cap + (CARD_TOP + (n - 1.0) * CARD_LINE + CARD_LINK) * s;
+        let base = r.y + cap + (CARD_TOP + (n - 1.0) * CARD_LINE + (1.0 + k) * CARD_LINK) * s;
         let (x, pad) = (r.x + (CARD_TEXT_X - 6.0) * s, 6.0 * s);
         Some(Rect::new(
             x,
@@ -467,6 +496,9 @@ impl HintCard {
         }
         if self.close_rect(r, s).is_some_and(|c| c.contains(x, y)) {
             return Some(Some(Link::Dismiss));
+        }
+        if self.link2_rect(r, s, t).is_some_and(|l| l.contains(x, y)) {
+            return Some(self.link2.map(|l| l.1));
         }
         let hit = self.link_rect(r, s, t).is_some_and(|l| l.contains(x, y));
         Some(if hit { self.link.map(|l| l.1) } else { None })
@@ -506,11 +538,17 @@ impl HintCard {
         }
         if let Some((l, _)) = self.link {
             base += CARD_LINK * s;
-            let col = if self.link_hover {
+            let col = if self.link_hover && !self.link2_hover {
                 u.accent_hover
             } else {
                 u.accent
             };
+            widgets::text(&mut c, bold, l, px, x, base, col);
+        }
+        if let Some((l, _)) = self.link2 {
+            // Die andere Antwort ruhiger: „getrennt lassen“ ändert nichts
+            base += CARD_LINK * s;
+            let col = if self.link2_hover { u.text } else { u.text_dim };
             widgets::text(&mut c, bold, l, px, x, base, col);
         }
         if let Some(cr) = self.rect.and_then(|r| self.close_rect(r, s)) {
