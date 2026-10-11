@@ -211,6 +211,9 @@ pub struct Model {
     /// unlesbare Zeile roh.
     pub(crate) plan_cut: Option<f64>,
     pub(crate) plan_cut_raw: Option<String>,
+    /// `[opening]`-Zeilen der Datei, die nicht zählen, roh mit den
+    /// Geschossen, auf die sie zeigen (Regel 72).
+    pub(crate) opening_raw: Vec<(String, Vec<Guid>)>,
     /// Schnitte A und B.
     cuts: [Cut; 2],
     /// Zuletzt gezeigter Schnitt (Kennung, A = 0); Ansichtszustand wie `cuts`.
@@ -716,6 +719,7 @@ impl Model {
             view_below_raw: Vec::new(),
             plan_cut: None,
             plan_cut_raw: None,
+            opening_raw: Vec::new(),
             attr,
             materials,
             layer_sets,
@@ -797,6 +801,7 @@ impl Model {
             view_below_raw: Vec::new(),
             plan_cut: None,
             plan_cut_raw: None,
+            opening_raw: Vec::new(),
             attr,
             materials,
             layer_sets,

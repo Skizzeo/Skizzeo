@@ -2167,6 +2167,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         }
         Ok(n)
     };
+    let mut opening_raw = Vec::new();
     for (section, ix) in [
         ("slab", 0),
         ("footing", 1),
@@ -2184,7 +2185,10 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
             let kind = if ix == 10 {
                 match oeffnung::read(r, &storey_ids, &mut hints)? {
                     Some(k) => k,
-                    None => continue,
+                    None => {
+                        opening_raw.push((lines[r.line - 1].to_string(), oeffnung::storeys_of(r)));
+                        continue;
+                    }
                 }
             } else if ix == 7 {
                 // Perimeterdämmung (Gelände Thema 4): nur der Verweis auf die
@@ -2757,6 +2761,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     model.load_view_shade(shade, shade_raw);
     model.load_view_below(below, below_raw);
     model.load_plan_cut(plan_cut, plan_cut_raw);
+    model.load_opening_raw(opening_raw);
     model.load_ext(ext_defs, ext_raw);
     for (k, n) in counters {
         if !model.raise_counter(&k, n) {

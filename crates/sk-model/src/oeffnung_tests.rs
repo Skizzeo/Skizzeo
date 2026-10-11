@@ -426,6 +426,20 @@ fn oeffnungen_in_der_datei() {
     let l = lies(&text[pts - 5..=ende], "pts=\"abc\"");
     assert_eq!(offen(&l).len(), 2, "die unlesbare Öffnung fällt weg");
     assert!(l.check().is_empty(), "{:?}", l.check());
+    // Regel 72: die verworfene Zeile bleibt roh, auch nach erneutem Lesen
+    let roh = szo::write(&l);
+    assert!(roh.contains("pts=\"abc\""), "{roh}");
+    assert_eq!(roh.matches("[opening]").count(), 3, "{roh}");
+    let l2 = szo::read(&roh, GuidGen::with_seed(5)).unwrap();
+    assert_eq!(szo::write(&l2.model), roh);
+    let l = lies(":u:2135.5", ":u:abc");
+    assert!(szo::write(&l).contains(":u:abc"));
+    // Ist ihr Geschoss gelöscht, entfällt sie
+    let mut l = l;
+    l.opening_raw[0]
+        .1
+        .push(Guid::from_ifc("0000000000000000000000").unwrap());
+    assert!(!szo::write(&l).contains(":u:abc"));
 }
 
 /// Σ n·A über alle Dreiecke: 0 bei geschlossenem Körper.

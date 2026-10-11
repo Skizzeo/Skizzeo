@@ -585,3 +585,22 @@ impl Model {
             .collect()
     }
 }
+
+impl Model {
+    /// `[opening]`-Zeilen der Datei, die nicht zählen, roh (Regel 72), ohne
+    /// die, deren Geschoss inzwischen gelöscht ist: Sie zeigten sonst ins
+    /// Leere, und die nächste Fassung lehnte die Datei ab.
+    pub(crate) fn opening_raw(&self) -> impl Iterator<Item = &str> {
+        self.opening_raw
+            .iter()
+            .filter(|(_, st)| {
+                st.iter()
+                    .all(|g| self.storeys().iter().any(|(_, s)| s.guid == *g))
+            })
+            .map(|(l, _)| l.as_str())
+    }
+
+    pub(crate) fn load_opening_raw(&mut self, raw: Vec<(String, Vec<Guid>)>) {
+        self.opening_raw = raw;
+    }
+}
