@@ -41,7 +41,7 @@ const ZEILE_Y: f32 = 214.0;
 const ZEILE_H: f32 = 46.0;
 /// Auswahl der Ausbautypen: links, Breite.
 const TYP_X: f32 = CONTENT_X + 120.0;
-const TYP_W: f32 = 320.0;
+const TYP_W: f32 = 360.0;
 
 /// Fliesenhöhe aus dem Feld (m, 0,10 bis 4,00, auf cm) in mm.
 pub(super) fn parse_tiles(t: &str) -> Result<f64, String> {
@@ -631,6 +631,8 @@ impl Catalog {
             widgets::combo(c, fonts, r, &text, hov, open, s, t);
         }
         // Ausbau je Fläche
+        let ay = self.r(t, w, 0.0, ZEILE_Y - 8.0, 0.0, 0.0).y;
+        label(c, regular, "Ausbau je Fläche", small, x0, ay, u.text_dim);
         let slots = raum.slots();
         let mut boden = 0.0;
         for (i, (name, leer)) in ZEILEN.iter().enumerate() {
