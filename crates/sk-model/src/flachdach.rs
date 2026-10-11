@@ -623,10 +623,13 @@ impl Model {
         }
         for &(floor, storey, seq) in &want {
             if !roofs.iter().any(|x| x.0 == floor) {
-                let kind = ElementKind::Roof {
-                    floor,
-                    drainage: Default::default(),
+                // Neues Flachdach mit Gefälle nach Flachdachrichtlinie und
+                // vorgeschlagenen Abläufen
+                let drainage = Drainage {
+                    slope: gefaelle::DEFAULT_SLOPE,
+                    drains: self.proposed_drains(floor),
                 };
+                let kind = ElementKind::Roof { floor, drainage };
                 let id = self.new_element(Category::Roof, storey, seq, kind);
                 roofs.push((floor, id));
                 self.touch();
@@ -1407,6 +1410,13 @@ mod tests {
         (m.flat_roof_of(floor).unwrap(), m.coping_of(floor).unwrap())
     }
 
+    /// Neue Flachdächer haben 2 % Gefälle (Jörn 11.10.); Tests der
+    /// waagerechten Geometrie stellen es als Schritt auf 0.
+    fn waagerecht(m: &mut Model, og: RunId) -> Txn {
+        let (da, _) = da_ab(m, og);
+        schritt(m, |m| m.set_roof_slope(da, 0.0))
+    }
+
     /// D3, D4: Mit der Ebene entstehen Dachaufbau DA (Werkstyp „Flachdach
     /// 21,5“) und Attikablech AB auf der Ebene FD; Richtwerte des Plans für
     /// AW-31,5 im Prüfhaus 10 × 8 m.
@@ -1419,6 +1429,24 @@ mod tests {
         let tx = schritt(&mut m, |m| m.set_flat_roof(og_storey, true));
         let fd = m.roof_level(og_storey).unwrap();
         let (da, ab) = da_ab(&m, og);
+        // Neu mit 2 % Gefälle und vorgeschlagenen Abläufen (Jörn 11.10.)
+        let floor = m.floor_of(og).unwrap();
+        let neu = m.drainage_of_roof(da).unwrap().clone();
+        assert_eq!(neu.slope, crate::gefaelle::DEFAULT_SLOPE);
+        assert!(!neu.drains.is_empty());
+        assert_eq!(neu.drains, m.proposed_drains(floor));
+        let g = m.flat_roof_over(floor).unwrap().slope.unwrap();
+        assert!(g.wedge_max() > 0.0);
+        let auto = |m: &Model, k: &str| {
+            crate::qto::schedule(m)
+                .auto
+                .iter()
+                .find(|a| a.key == k && a.element == da)
+                .map(|a| a.value)
+        };
+        assert_eq!(auto(&m, "roof.drains"), Some(neu.drains.len() as f64));
+        assert!(auto(&m, "roof.taper").is_some_and(|v| v > 0.0));
+        let flach = waagerecht(&mut m, og);
         let (e, b) = (m.element(da).unwrap(), m.element(ab).unwrap());
         assert_eq!((e.category, e.storey), (Category::Roof, fd));
         assert_eq!((b.category, b.storey), (Category::Coping, fd));
@@ -1481,6 +1509,8 @@ mod tests {
         m.apply(&aus, Direction::Undo);
         assert_eq!(m.element(da_ab(&m, og).0).unwrap().number, num);
         assert!(m.check().is_empty(), "{:?}", m.check());
+        m.apply(&flach, Direction::Undo);
+        assert_eq!(m.drainage_of_roof(da), Some(&neu));
         // Vor dem Einschalten: auch Werkstyp und Baustoffe wieder weg
         m.apply(&tx, Direction::Undo);
         assert!(m.type_by_guid(ROOF_TYPE_GUID).is_none());
@@ -1495,6 +1525,7 @@ mod tests {
         let (mut m, og) = haus(EXTERIOR_TYPE_GUID);
         let og_storey = m.run(og).unwrap().storey;
         schritt(&mut m, |m| m.set_flat_roof(og_storey, true));
+        waagerecht(&mut m, og);
         let (da, _) = da_ab(&m, og);
         let t = m.flat_roof_type(da).unwrap();
         let mut set = m.layer_set(t).unwrap().clone();
