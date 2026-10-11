@@ -44,6 +44,9 @@ pub struct FlatRoof {
     /// der Dachhaut und reicht bis OK Aufkantung.
     pub inner: f64,
     pub inset: Vec<Vec3>,
+    /// Dicke, um die `inset` tatsächlich einrückt (mm): `inner`, nur wo der
+    /// Umriss stellenweise schmaler als 2 × `inner` ist, weniger.
+    pub inner_depth: f64,
     /// Dämmstreifen auf der Krone (mm, 0 = keiner) über Aufkantung und
     /// Attikadämmung innen; das Blech liegt um ihn höher.
     pub cap: f64,
@@ -972,6 +975,7 @@ mod tests {
             width: 0.0,
             inner: 0.0,
             inset: Vec::new(),
+            inner_depth: 0.0,
             cap: 0.0,
             ins_mat: 0,
             crown: 0.0,
@@ -1005,6 +1009,7 @@ mod tests {
             width: 0.0,
             inner: 0.0,
             inset: Vec::new(),
+            inner_depth: 0.0,
             cap: 0.0,
             ins_mat: 0,
             crown: 1600.0,
@@ -1101,6 +1106,7 @@ mod tests {
             width: 300.0,
             inner: 60.0,
             inset,
+            inner_depth: 60.0,
             cap: 40.0,
             ins_mat: 2,
             coping_mat: 4,

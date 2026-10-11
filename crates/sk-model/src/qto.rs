@@ -871,7 +871,7 @@ pub fn roof_coping_qto_of(model: &Model, floor: ElementId, r: &FlatRoof) -> Copi
             .map(|material| {
                 let (face, vol) = r.inner_qto();
                 let cap = r.cap_area();
-                [(r.inner, face, vol), (r.cap, cap, cap * r.cap)]
+                [(r.inner_depth, face, vol), (r.cap, cap, cap * r.cap)]
                     .into_iter()
                     .filter(|x| x.0 > 0.0)
                     .map(|(thickness, area, volume)| CrownQto {
