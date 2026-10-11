@@ -848,31 +848,70 @@ impl Model {
 
 /// Umriss `outline` (gegen den Uhrzeigersinn) um `d` nach innen versetzt,
 /// Ecke für Ecke: Schnitt der versetzten Nachbarkanten, ohne Gehrungsgrenze.
+/// An einer kurzen Kante zwischen spitzen Ecken (Kante kürzer als
+/// d · (cot α/2 + cot β/2)) rücken die Ecken nur so weit ein, dass die
+/// versetzte Kante auf einen Punkt schrumpft und sich nicht umkehrt; die
+/// Dämmung ist dort dünner als `d`.
 fn inset_of(outline: &[Vec3], d: f64) -> Vec<Vec3> {
     let n = outline.len();
     let dir = |a: Vec3, b: Vec3| {
         let v = vec3(b.x - a.x, b.y - a.y, 0.0);
         (v.length() > 1e-9).then(|| v.normalized())
     };
-    (0..n)
+    let left = |v: Vec3| vec3(-v.y, v.x, 0.0);
+    // Weg der Ecke je mm Dicke
+    let miter: Vec<Vec3> = (0..n)
         .map(|i| {
             let (a, b, c) = (outline[(i + n - 1) % n], outline[i], outline[(i + 1) % n]);
-            let left = |v: Vec3| vec3(-v.y, v.x, 0.0);
             match (dir(a, b), dir(b, c)) {
                 (Some(d0), Some(d1)) => {
                     let cr = d0.x * d1.y - d0.y * d1.x;
-                    let (p0, p1) = (b + left(d0) * d, b + left(d1) * d);
                     if cr.abs() < 1e-9 {
-                        return p1;
+                        return left(d1);
                     }
-                    let w = p1 - p0;
-                    p0 + d0 * ((w.x * d1.y - w.y * d1.x) / cr)
+                    let w = left(d1) - left(d0);
+                    left(d0) + d0 * ((w.x * d1.y - w.y * d1.x) / cr)
                 }
-                (Some(v), None) | (None, Some(v)) => b + left(v) * d,
-                (None, None) => b,
+                (Some(v), None) | (None, Some(v)) => left(v),
+                (None, None) => vec3(0.0, 0.0, 0.0),
             }
         })
-        .collect()
+        .collect();
+    // Einrücktiefe je Ecke: höchstens so weit, dass keine versetzte Kante
+    // gegen ihre Kante läuft (Länge l + b·t[j] − a·t[i] ≥ 0)
+    let mut t = vec![d; n];
+    for _ in 0..2 * n {
+        let mut changed = false;
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let Some(e) = dir(outline[i], outline[j]) else {
+                continue;
+            };
+            let l = (outline[j] - outline[i]).dot(e);
+            let (a, b) = (miter[i].dot(e), miter[j].dot(e));
+            let len = |t: &[f64]| l + b * t[j] - a * t[i];
+            if len(&t) >= -1e-9 {
+                continue;
+            }
+            changed = true;
+            if a > 0.0 && b < 0.0 {
+                let s = l / (a - b);
+                t[i] = t[i].min(s);
+                t[j] = t[j].min(s);
+            }
+            if len(&t) < -1e-9 {
+                if a > 0.0 {
+                    t[i] = ((l + b * t[j]) / a).max(0.0);
+                } else {
+                    t[j] = ((l - a * t[i]) / -b).max(0.0);
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    (0..n).map(|i| outline[i] + miter[i] * t[i]).collect()
 }
 
 #[cfg(test)]
@@ -999,7 +1038,6 @@ mod tests {
         assert!(back.model.check().is_empty());
     }
 
-    /// Dachaufbau und Blech des Flachdachs auf der OG-Decke unter `og`.
     /// Attikadämmung innen an einer spitzen Ecke (20°): die Innenfläche
     /// liegt überall genau um die Dicke vor der Aufkantung, auch wo die
     /// Wandflächen jenseits ihrer Gehrungsgrenze kappen würden.
@@ -1038,6 +1076,60 @@ mod tests {
         }
     }
 
+    /// An einer kurzen Kante zwischen spitzen Ecken (Geometrie, Review
+    /// PR #42): Kante 600 mm zwischen einer Ecke von 120° und einem Zahn von
+    /// 30°; 200 mm Dämmung würden 0,86 m Kante verbrauchen. Die versetzte
+    /// Kante schrumpft auf einen Punkt statt sich umzukehren, und das Band
+    /// zwischen Umriss und Innenfläche hat genau die Fläche Umriss −
+    /// Innenfläche, ohne Überschlag.
+    #[test]
+    fn attikadaemmung_innen_kurze_kante() {
+        let (a, b) = (30f64.to_radians(), vec3(600.0, 0.0, 0.0));
+        let e = 120f64.to_radians();
+        let outline = [
+            vec3(0.0, 0.0, 0.0),
+            b,
+            b + vec3(-a.cos(), a.sin(), 0.0) * 700.0,
+            vec3(-500.0, 3500.0, 0.0),
+            vec3(e.cos(), e.sin(), 0.0) * 3000.0,
+        ];
+        assert!(sk_math::polygon::signed_area(&outline) > 0.0);
+        for d in [20.0, 60.0, 200.0] {
+            let inset = inset_of(&outline, d);
+            let n = outline.len();
+            let mut band = 0.0;
+            for k in 0..n {
+                let j = (k + 1) % n;
+                let e = outline[j] - outline[k];
+                assert!(
+                    (inset[j] - inset[k]).dot(e) >= -1e-6,
+                    "{d}: Kante {k} umgekehrt"
+                );
+                band +=
+                    sk_math::polygon::signed_area(&[outline[k], outline[j], inset[j], inset[k]]);
+            }
+            let soll =
+                sk_math::polygon::signed_area(&outline) - sk_math::polygon::signed_area(&inset);
+            assert!(
+                (band - soll).abs() < 1e-6 * soll,
+                "{d}: {band} statt {soll}"
+            );
+            // die langen Kanten bleiben um die volle Dicke versetzt
+            for k in [2, 3] {
+                let e = (outline[k + 1] - outline[k]).normalized();
+                let nrm = vec3(-e.y, e.x, 0.0);
+                assert!(
+                    ((inset[k + 1] - outline[k]).dot(nrm) - d).abs() < 1e-6,
+                    "{d}"
+                );
+            }
+        }
+        // nur bei 200 mm greift die Klemmung: Kante 0 ist ein Punkt
+        let inset = inset_of(&outline, 200.0);
+        assert!((inset[1] - inset[0]).length() < 1e-6, "{inset:?}");
+    }
+
+    /// Dachaufbau und Blech des Flachdachs auf der OG-Decke unter `og`.
     fn da_ab(m: &Model, og: RunId) -> (ElementId, ElementId) {
         let floor = m.floor_of(og).unwrap();
         (m.flat_roof_of(floor).unwrap(), m.coping_of(floor).unwrap())
