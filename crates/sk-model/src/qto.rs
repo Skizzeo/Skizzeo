@@ -73,6 +73,11 @@ pub struct LayerParts {
     pub up_side: f64,
     /// Außenfläche der Attika (D2).
     pub attika_side: f64,
+    /// Grundfläche der Schicht (`LayerQto.area`), Volumen der Attika
+    /// (`LayerQto.attika`) und Dicke.
+    pub grund: f64,
+    pub attika: f64,
+    pub dicke: f64,
 }
 
 /// Fußpunkt der Verblendschale auf der Dachterrasse (W2, Tagesplan P1):
@@ -463,6 +468,9 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                             up_volume: v_up,
                             up_side: s_up,
                             attika_side: s_att,
+                            grund: area,
+                            attika: v_att,
+                            dicke: l.thickness,
                         },
                     }
                 })
@@ -1469,6 +1477,8 @@ pub struct LayerRow {
     /// Wandschicht ihr Abzug durch die Decke, Decke ihr Auflager in den
     /// Wänden, sonst 0.
     pub pocket: f64,
+    /// Wandschicht: Bestandteile ihrer Mengen für den Rechenweg.
+    pub parts: Option<LayerParts>,
 }
 
 /// Lage einer Wandschicht für die Abrechnungsfläche (Regel 84).
@@ -2374,6 +2384,10 @@ fn layer_rows(model: &Model, storeys: &[StoreyQto]) -> Vec<LayerRow> {
                 once,
                 face,
                 pocket,
+                parts: match q {
+                    ElementQto::Wall(w) => w.layers.get(i).map(|l| l.parts.clone()),
+                    _ => None,
+                },
             });
         };
         match q {

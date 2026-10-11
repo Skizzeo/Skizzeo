@@ -3298,9 +3298,9 @@ impl App {
         }
     }
 
-    /// Tabelle des Mengenblatts im Umfang des Blatts, die Kopfzeile zuerst
-    /// (KA-1).
-    fn quantity_csv(&mut self, by: schedule_view::Grouping) -> Vec<u8> {
+    /// Tabelle des Mengenblatts im Umfang, in Gliederung und Sicht des
+    /// Blatts, die Kopfzeile zuerst (KA-1).
+    fn quantity_csv(&mut self) -> Vec<u8> {
         let u = self
             .quantity
             .list
@@ -3308,7 +3308,8 @@ impl App {
             .map_or_else(sk_model::qto::Umfang::projekt, |l| l.leiste.umfang.clone());
         let sched = self.scene.schedule_in(&u);
         let kopf = umfang_view::umfang_text(self.scene.model(), &u, sk_platform::local_date_time());
-        schedule_view::csv_mit_kopf(self.scene.model(), &sched, by, &kopf)
+        let sicht = (self.quantity.grouping, self.quantity.modus);
+        schedule_view::csv_mit_kopf(self.scene.model(), &sched, sicht, &kopf)
     }
 
     /// „Als Tabelle speichern“: Windows-Dialog, .csv für Excel.
@@ -3355,10 +3356,7 @@ impl App {
                 let (y, mo, d, h, mi) = sk_platform::local_date_time();
                 k.csv(&stem, &format!("{d:02}.{mo:02}.{y}, {h:02}:{mi:02}"))
             }
-            None => {
-                let by = self.quantity.grouping;
-                self.quantity_csv(by)
-            }
+            None => self.quantity_csv(),
         };
         if let Err(e) = document::tabelle_schreiben(&path, &bytes) {
             let m = meldung::Meldung::aus_io(

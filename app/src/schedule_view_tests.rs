@@ -174,7 +174,7 @@ fn csv_mit_kopfzeile() {
     let mut s = standardhaus();
     let ganz = s.schedule_in(&sk_model::qto::Umfang::projekt());
     let kopf = "Gebäude 1 · alle Geschosse · Stand 08.10.2026, 11:34";
-    let b = csv_mit_kopf(s.model(), &ganz, Grouping::Storey, kopf);
+    let b = csv_mit_kopf(s.model(), &ganz, (Grouping::Storey, Modus::Vob), kopf);
     let ohne = csv_grouped(s.model(), &ganz, Grouping::Storey);
     assert!(b.starts_with(&[0xEF, 0xBB, 0xBF]));
     let text = String::from_utf8(b[3..].to_vec()).unwrap();
@@ -353,7 +353,8 @@ fn mengen_sicht_wird_gemerkt() {
 
 /// Jörn 11.10.: Unter jeder Schichtzeile nach Gewerk steht der Rechenweg,
 /// zugeklappt; aufgeklappt zeigt er Ansatz, Zu- und Abschläge und die
-/// Menge. Mauerwerk zeigt seine Abrechnungsfläche.
+/// Menge. Mauerwerk zeigt seine Abrechnungsfläche. Gerechnet wird er erst
+/// beim Aufklappen (Review #77/1).
 #[test]
 fn rechenweg_unter_der_zeile() {
     let mut s = standardhaus();
@@ -366,11 +367,19 @@ fn rechenweg_unter_der_zeile() {
             .collect()
     };
     for &k in &wege {
-        assert!(!terme(&v, k).is_empty(), "{k:?} ohne Terme");
-        assert!(terme(&v, k).iter().all(|&i| !v.line_visible(&v.lines[i])));
+        assert!(terme(&v, k).is_empty(), "{k:?} zugeklappt schon gerechnet");
     }
-    // eine Gruppe und die Zeile darin aufklappen
+    v.alles_aufklappen();
+    v.sync(&mut s, false);
+    for &k in &wege {
+        assert!(!terme(&v, k).is_empty(), "{k:?} ohne Terme");
+    }
+    // nur die Zeile wieder aufklappen: Terme erst nach dem Neuaufbau
     let k = wege[0];
+    v.open_groups.clear();
+    v.runs = None;
+    v.sync(&mut s, false);
+    assert!(terme(&v, k).is_empty());
     let i = v.lines.iter().position(|l| l.key == k).unwrap();
     let g = v.lines[i].group;
     if g != Key::None {
@@ -378,7 +387,10 @@ fn rechenweg_unter_der_zeile() {
     }
     assert!(v.line_visible(&v.lines[i]));
     v.open_groups.insert(k);
+    v.runs = None;
+    v.sync(&mut s, false);
     let t = terme(&v, k);
+    assert!(!t.is_empty());
     assert!(t.iter().all(|&j| v.line_visible(&v.lines[j])));
     let texte = v.line_texts();
     assert!(
@@ -413,6 +425,8 @@ fn rechenweg_unter_der_zeile() {
 fn bestellmenge_mit_zuschlag() {
     let mut s = standardhaus();
     let mut v = ListView::grouped(&mut s, Grouping::Trade);
+    v.alles_aufklappen();
+    v.sync(&mut s, false);
     let vob = v.line_texts();
     assert!(v.set_modus(Modus::Bestellung));
     assert!(!v.set_modus(Modus::Bestellung));

@@ -10,7 +10,7 @@
 use crate::element::{Category, ElementKind};
 use crate::matprop;
 use crate::model::Model;
-use crate::qto::{foundation_qto, wall_face, wall_qto, Face, LayerQto, LayerRow};
+use crate::qto::{foundation_qto, wall_face, Face, LayerParts, LayerRow};
 
 /// Welche Menge der Zeile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,7 +117,14 @@ fn menge_text(x: f64, b: Bezug) -> String {
 /// Menge der Zeile im Bezug.
 pub fn wert(r: &LayerRow, b: Bezug) -> f64 {
     match b {
-        Bezug::Laenge => r.length.max(r.bill_length),
+        // die Länge der Liste; die Abrechnungslänge nur, wo sie fehlt
+        Bezug::Laenge => {
+            if r.length > 0.0 {
+                r.length
+            } else {
+                r.bill_length
+            }
+        }
         Bezug::Flaeche => {
             if r.face > 0.0 {
                 r.face
@@ -147,52 +154,48 @@ pub fn anzeige(model: &Model, r: &LayerRow, b: Bezug, modus: Modus) -> f64 {
 /// Rechenwege einer Mengenzeile für jede Menge, die sie hat (Fläche,
 /// Volumen, Länge), in der Sicht `modus`.
 pub fn fuer(model: &Model, r: &LayerRow, modus: Modus) -> Vec<Rechenweg> {
-    let wall = matches!(
-        model.element(r.element).map(|e| &e.kind),
-        Some(ElementKind::Wall(_))
-    );
-    let lq = if wall {
-        wall_qto(model, r.element).and_then(|w| w.layers.get(r.layer).cloned())
-    } else {
-        None
-    };
-    let mut out = Vec::new();
-    for b in [Bezug::Flaeche, Bezug::Volumen, Bezug::Laenge] {
-        let ziel = wert(r, b);
-        if ziel <= 0.0 {
-            continue;
-        }
-        let mut terme = match (&lq, b) {
-            (Some(l), Bezug::Flaeche) => wand_flaeche(model, r, l),
-            (Some(l), Bezug::Volumen) => wand_volumen(l),
-            (Some(_), Bezug::Laenge) => vec![basis(
-                if r.category == Category::InteriorWall {
-                    "lichte Länge der tragenden Schicht".into()
-                } else {
-                    "Länge der Außenseite".into()
-                },
-                ziel,
-            )],
-            _ => match frost(model, r, b) {
-                Some(t) => t,
-                None => sonst(r, b),
-            },
-        };
-        ausgleich(&mut terme, ziel, b);
-        if modus == Modus::Bestellung {
-            let z = zuschlag(model, r);
-            if z > 0.0 {
-                let summe: f64 = terme.iter().map(|t| t.wert).sum();
-                terme.push(Term {
-                    text: format!("Verschnittzuschlag {} %", de(z)),
-                    wert: summe * z / 100.0,
-                    art: Art::Zuschlag,
-                });
-            }
-        }
-        out.push(Rechenweg { bezug: b, terme });
+    [Bezug::Flaeche, Bezug::Volumen, Bezug::Laenge]
+        .into_iter()
+        .filter_map(|b| weg(model, r, b, modus))
+        .collect()
+}
+
+/// Rechenweg einer Menge der Zeile; `None`, wenn sie die Menge nicht hat.
+/// Rechnet keine Geometrie (die Teile stehen an der Zeile).
+pub fn weg(model: &Model, r: &LayerRow, b: Bezug, modus: Modus) -> Option<Rechenweg> {
+    let ziel = wert(r, b);
+    if ziel <= 0.0 {
+        return None;
     }
-    out
+    let mut terme = match (&r.parts, b) {
+        (Some(p), Bezug::Flaeche) => wand_flaeche(model, r, p),
+        (Some(p), Bezug::Volumen) => wand_volumen(p),
+        (Some(_), Bezug::Laenge) => vec![basis(
+            if r.category == Category::InteriorWall {
+                "lichte Länge der tragenden Schicht".into()
+            } else {
+                "Länge der Außenseite".into()
+            },
+            ziel,
+        )],
+        _ => match frost(model, r, b) {
+            Some(t) => t,
+            None => sonst(r, b),
+        },
+    };
+    ausgleich(&mut terme, ziel, b);
+    if modus == Modus::Bestellung {
+        let z = zuschlag(model, r);
+        if z > 0.0 {
+            let summe: f64 = terme.iter().map(|t| t.wert).sum();
+            terme.push(Term {
+                text: format!("Verschnittzuschlag {} %", de(z)),
+                wert: summe * z / 100.0,
+                art: Art::Zuschlag,
+            });
+        }
+    }
+    Some(Rechenweg { bezug: b, terme })
 }
 
 /// Zahl ohne überflüssige Nullen: „5“, „7,5“.
@@ -246,8 +249,7 @@ fn dazu(terme: &mut Vec<Term>, text: impl Into<String>, wert: f64, b: Bezug) {
 }
 
 /// Abrechnungsfläche einer Wandschicht (Regel 84) nach ihrer Lage.
-fn wand_flaeche(model: &Model, r: &LayerRow, l: &LayerQto) -> Vec<Term> {
-    let p = &l.parts;
+fn wand_flaeche(model: &Model, r: &LayerRow, p: &LayerParts) -> Vec<Term> {
     let b = Bezug::Flaeche;
     let layers = model.element_layers(r.element);
     let interior = r.category == Category::InteriorWall;
@@ -256,8 +258,8 @@ fn wand_flaeche(model: &Model, r: &LayerRow, l: &LayerQto) -> Vec<Term> {
     match wall_face(model, &layers, r.layer, interior) {
         Face::Mean => {
             // Mittellinie der Schicht, an Ecken verschnitten: Grundfläche ÷ Dicke
-            let len = if l.thickness > 0.0 {
-                l.area / l.thickness
+            let len = if p.dicke > 0.0 {
+                p.grund / p.dicke
             } else {
                 0.0
             };
@@ -277,17 +279,17 @@ fn wand_flaeche(model: &Model, r: &LayerRow, l: &LayerQto) -> Vec<Term> {
                 -len * p.h_cut,
                 b,
             );
-            if l.thickness > 0.0 {
+            if p.dicke > 0.0 {
                 dazu(
                     &mut t,
                     "Abschnitte der Wand darüber",
-                    p.up_volume / l.thickness,
+                    p.up_volume / p.dicke,
                     b,
                 );
                 dazu(
                     &mut t,
                     "Attika über dem Terrassenrand",
-                    l.attika / l.thickness,
+                    p.attika / p.dicke,
                     b,
                 );
             }
@@ -353,11 +355,10 @@ fn wand_flaeche(model: &Model, r: &LayerRow, l: &LayerQto) -> Vec<Term> {
 }
 
 /// Volumen einer Wandschicht: Grundfläche × Höhe, Abzüge und Zuschläge.
-fn wand_volumen(l: &LayerQto) -> Vec<Term> {
-    let p = &l.parts;
+fn wand_volumen(p: &LayerParts) -> Vec<Term> {
     let b = Bezug::Volumen;
     let band = (p.h - p.h_cut - p.h_here).max(0.0);
-    let a = l.area;
+    let a = p.grund;
     let mut t = vec![basis(
         format!(
             "Grundfläche {} × Höhe {} m",
@@ -379,7 +380,7 @@ fn wand_volumen(l: &LayerQto) -> Vec<Term> {
         b,
     );
     dazu(&mut t, "Abschnitte der Wand darüber", p.up_volume, b);
-    dazu(&mut t, "Attika über dem Terrassenrand", l.attika, b);
+    dazu(&mut t, "Attika über dem Terrassenrand", p.attika, b);
     dazu(
         &mut t,
         format!("Fußpunkt Schaumglas {} m", m(p.h_foot)),

@@ -647,6 +647,8 @@ fn istbilder_rechenweg() {
         (q.w, q.h) = (1000, 2400);
         q.sync(&mut s, &b.p, false);
         q.list.as_mut().unwrap().alles_aufklappen();
+        // die Rechenwege rechnet erst der Neuaufbau nach dem Aufklappen
+        q.sync(&mut s, &b.p, false);
         b.ablegen(&mut q, n);
     }
 }

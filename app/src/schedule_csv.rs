@@ -26,10 +26,16 @@ pub fn csv(m: &Model, sched: &Schedule) -> Vec<u8> {
     csv_grouped(m, sched, Grouping::Storey)
 }
 
-/// Wie [`csv_grouped`], mit der Kopfzeile des Umfangs als erster Zeile
+/// Wie [`csv_grouped`] in der Sicht der Mengen (VOB oder Bestellung, wie
+/// der Bildschirm), mit der Kopfzeile des Umfangs als erster Zeile
 /// (paket-ka1.md §3), nach dem BOM.
-pub fn csv_mit_kopf(m: &Model, sched: &Schedule, by: Grouping, kopf: &str) -> Vec<u8> {
-    let mut b = csv_grouped(m, sched, by);
+pub fn csv_mit_kopf(
+    m: &Model,
+    sched: &Schedule,
+    (by, modus): (Grouping, Modus),
+    kopf: &str,
+) -> Vec<u8> {
+    let mut b = csv_sicht(m, sched, by, modus);
     debug_assert!(b.starts_with(&[0xEF, 0xBB, 0xBF]), "CSV mit BOM");
     let zeile = format!("{}\r\n", csv_field(kopf));
     b.splice(3..3, zeile.into_bytes());
@@ -37,17 +43,41 @@ pub fn csv_mit_kopf(m: &Model, sched: &Schedule, by: Grouping, kopf: &str) -> Ve
 }
 
 /// Wie [`csv`] in der Gliederung des Mengenfensters (§12 Prüfpunkt 5).
+#[cfg(test)]
 pub fn csv_grouped(m: &Model, sched: &Schedule, by: Grouping) -> Vec<u8> {
+    csv_sicht(m, sched, by, Modus::Vob)
+}
+
+/// In Gliederung `by` und Sicht `modus`: Die Bestellung zeigt die Mengen
+/// mit Zuschlag wie der Bildschirm.
+pub fn csv_sicht(m: &Model, sched: &Schedule, by: Grouping, modus: Modus) -> Vec<u8> {
     match by {
-        Grouping::Storey => csv_storeys(m, sched),
-        Grouping::Trade => csv_trades(m, sched),
+        Grouping::Storey => csv_storeys(m, sched, modus),
+        Grouping::Trade => csv_trades(m, sched, modus),
     }
+}
+
+/// Fläche der Summe eines Gewerks wie die Zeilen (Abrechnungsfläche in der
+/// Sicht): die in m² abgerechneten Zeilen, Bauteile mit `once` je einmal.
+fn summe_flaeche(rows: &[LayerRow], zeig: &dyn Fn(&LayerRow, Bezug) -> f64) -> f64 {
+    let mut seen = Vec::new();
+    let mut a = 0.0;
+    for r in rows.iter().filter(|r| r.bill_area > 0.0) {
+        if r.once {
+            if seen.contains(&r.element) {
+                continue;
+            }
+            seen.push(r.element);
+        }
+        a += zeig(r, Bezug::Flaeche);
+    }
+    a
 }
 
 /// Nach Gewerk (paket-1a §7): je Gewerk die Schichtgruppen mit
 /// Zwischensumme, die Bauteile mit Geschoss und der Kostengruppe der
 /// Schicht, die Summe des Gewerks; danach die Summen nach Baustoff.
-fn csv_trades(m: &Model, sched: &Schedule) -> Vec<u8> {
+fn csv_trades(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
     let mut out = String::new();
     let mut row = |cols: [&str; 10]| {
         let v: Vec<String> = cols.iter().map(|c| csv_field(c)).collect();
@@ -70,6 +100,31 @@ fn csv_trades(m: &Model, sched: &Schedule) -> Vec<u8> {
     let area = |mm2: f64| csv_num(mm2 / 1e6);
     let vol = |mm3: f64| csv_num(mm3 / 1e9);
     let opt = |v: f64, f: &dyn Fn(f64) -> String| if v > 0.0 { f(v) } else { String::new() };
+    // Mengen wie auf dem Bildschirm: Abrechnungsfläche, in der Bestellung
+    // mit Zuschlag; Länge mit Zuschlag nur, wo nach Länge bestellt wird
+    let zeig = |r: &LayerRow, b: Bezug| rechenweg::anzeige(m, r, b, modus);
+    let flaeche = |r: &LayerRow| opt(zeig(r, Bezug::Flaeche), &area);
+    let laenge = |r: &LayerRow| {
+        opt(
+            if haupt_bezug(m, r) == Some(Bezug::Laenge) {
+                zeig(r, Bezug::Laenge)
+            } else {
+                r.length
+            },
+            &len,
+        )
+    };
+    // Summe des Gewerks in der Sicht: Verhältnis Sicht ÷ VOB über die Zeilen
+    let faktor = |rows: &[LayerRow], b: Bezug, f: &dyn Fn(&LayerRow) -> bool| {
+        let (a, z) = rows.iter().filter(|r| f(r)).fold((0.0, 0.0), |(a, z), r| {
+            (a + rechenweg::wert(r, b), z + zeig(r, b))
+        });
+        if a > 0.0 {
+            z / a
+        } else {
+            1.0
+        }
+    };
     for b in &sched.buildings {
         let gb = m.building(b.id).map_or(String::new(), |x| x.number.clone());
         // Gewerke der Schichten und der Erweiterungen (E8a) nach Bauablauf
@@ -100,14 +155,14 @@ fn csv_trades(m: &Model, sched: &Schedule) -> Vec<u8> {
                         &layer_row_label(m, r),
                         &r.number,
                         &storey_name(m, r.storey).0,
-                        &opt(r.length, &len),
-                        &opt(r.area, &area),
+                        &laenge(r),
+                        &flaeche(r),
                         &if r.category == Category::Coping {
                             String::new()
                         } else {
-                            vol(r.volume)
+                            vol(zeig(r, Bezug::Volumen))
                         },
-                        &weg_text(m, r),
+                        &weg_text(m, r, modus),
                     ]);
                     i += 1;
                     continue;
@@ -123,7 +178,7 @@ fn csv_trades(m: &Model, sched: &Schedule) -> Vec<u8> {
                 let rows = per_element(&t.rows[i..i + n]);
                 i += n;
                 let title = layer_group_title(m, r, &rows);
-                let a: f64 = rows.iter().map(|x| x.area).sum();
+                let a: f64 = rows.iter().map(|x| zeig(x, Bezug::Flaeche)).sum();
                 let range = match rows.as_slice() {
                     [] => String::new(),
                     [one] => one.number.clone(),
@@ -140,12 +195,8 @@ fn csv_trades(m: &Model, sched: &Schedule) -> Vec<u8> {
                     &range,
                     "",
                     &opt(rows.iter().map(|x| x.length).sum(), &len),
-                    &if r.insulation {
-                        opt(a, &area)
-                    } else {
-                        String::new()
-                    },
-                    &vol(rows.iter().map(|x| x.volume).sum()),
+                    &opt(a, &area),
+                    &vol(rows.iter().map(|x| zeig(x, Bezug::Volumen)).sum()),
                     "",
                 ]);
                 for x in &rows {
@@ -155,7 +206,7 @@ fn csv_trades(m: &Model, sched: &Schedule) -> Vec<u8> {
                         .filter(|y| y.element == x.element)
                         .collect();
                     let weg = match eigene.as_slice() {
-                        [y] => weg_text(m, y),
+                        [y] => weg_text(m, y, modus),
                         _ => String::new(),
                     };
                     row([
@@ -166,12 +217,8 @@ fn csv_trades(m: &Model, sched: &Schedule) -> Vec<u8> {
                         &x.number,
                         &storey_name(m, x.storey).0,
                         &opt(x.length, &len),
-                        &if x.insulation {
-                            opt(x.area, &area)
-                        } else {
-                            String::new()
-                        },
-                        &vol(x.volume),
+                        &flaeche(x),
+                        &vol(zeig(x, Bezug::Volumen)),
                         &weg,
                     ]);
                 }
@@ -183,9 +230,15 @@ fn csv_trades(m: &Model, sched: &Schedule) -> Vec<u8> {
                 &format!("Summe {}", tr.name),
                 "",
                 "",
-                &t.length.map_or(String::new(), len),
-                &t.area.map_or(String::new(), area),
-                &vol(t.volume),
+                &t.length.map_or(String::new(), |l| {
+                    len(l * faktor(&t.rows, Bezug::Laenge, &|r| r.bill_length > 0.0))
+                }),
+                &t.area
+                    .map_or(String::new(), |_| area(summe_flaeche(&t.rows, &zeig))),
+                &vol(t.volume
+                    * faktor(&t.rows, Bezug::Volumen, &|r| {
+                        !(r.once && r.bill_length > 0.0)
+                    })),
                 "",
             ]);
             ext::csv_gewerk(m, b, &gb, &trade, Some(id), &mut row);
@@ -221,7 +274,7 @@ fn csv_trades(m: &Model, sched: &Schedule) -> Vec<u8> {
 }
 
 /// Nach Geschoss (B7).
-fn csv_storeys(m: &Model, sched: &Schedule) -> Vec<u8> {
+fn csv_storeys(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
     let mut out = String::new();
     let mut row = |cols: [&str; 10]| {
         let v: Vec<String> = cols.iter().map(|c| csv_field(c)).collect();
@@ -243,6 +296,15 @@ fn csv_storeys(m: &Model, sched: &Schedule) -> Vec<u8> {
     let len = |mm: f64| csv_num(mm / 1e3);
     let area = |mm2: f64| csv_num(mm2 / 1e6);
     let vol = |mm3: f64| csv_num(mm3 / 1e9);
+    // Bestellung wie auf dem Bildschirm: je Bauteil das Verhältnis zur
+    // VOB-Menge, je Baustoff der Zuschlag
+    let faktor = bestell_faktoren(m, sched, modus);
+    let fv = |e: ElementId| faktor.get(&e).map_or(1.0, |f| f.0);
+    let fa = |e: ElementId| faktor.get(&e).map_or(1.0, |f| f.1);
+    let zu = |mat: sk_model::MaterialId| match modus {
+        Modus::Vob => 1.0,
+        Modus::Bestellung => 1.0 + m.material(mat).map_or(0.0, sk_model::matprop::waste) / 100.0,
+    };
     let mut storeys: Vec<(String, &StoreyQto)> = Vec::new();
     for b in &sched.buildings {
         let nr = m.building(b.id).map_or(String::new(), |x| x.number.clone());
@@ -286,11 +348,20 @@ fn csv_storeys(m: &Model, sched: &Schedule) -> Vec<u8> {
                     } else {
                         String::new()
                     },
-                    &vol(t.volume),
+                    &vol(match modus {
+                        Modus::Vob => t.volume,
+                        Modus::Bestellung => g
+                            .rows
+                            .iter()
+                            .filter_map(|r| Some(r.q.as_ref()?.volume() * fv(r.element)))
+                            .sum(),
+                    }),
                     "",
                 ]);
             }
             for r in &g.rows {
+                let vol = |x: f64| vol(x * fv(r.element));
+                let area = |x: f64| area(x * fa(r.element));
                 let (bauteil, l, a, v, note) = match &r.q {
                     Some(ElementQto::Wall(w)) => (
                         format!("{} {}, Höhe {} m", title, r.number, de(w.height / 1e3, 3)),
@@ -471,8 +542,12 @@ fn csv_storeys(m: &Model, sched: &Schedule) -> Vec<u8> {
                         "",
                         "",
                         "",
-                        &if ins { area(a) } else { String::new() },
-                        &vol(v),
+                        &if ins {
+                            area(a * zu(mat))
+                        } else {
+                            String::new()
+                        },
+                        &vol(v * zu(mat)),
                         "",
                     ]);
                 }
@@ -509,13 +584,13 @@ fn csv_storeys(m: &Model, sched: &Schedule) -> Vec<u8> {
                 "",
                 &name,
                 "",
-                &x.length.map_or(String::new(), len),
+                &x.length.map_or(String::new(), |l| len(l * zu(x.material))),
                 "",
-                &x.area.map_or(String::new(), area),
+                &x.area.map_or(String::new(), |a| area(a * zu(x.material))),
                 &if x.length.is_some() {
                     String::new()
                 } else {
-                    vol(x.volume)
+                    vol(x.volume * zu(x.material))
                 },
                 "",
             ]);

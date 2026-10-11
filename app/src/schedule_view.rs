@@ -465,11 +465,13 @@ impl ListView {
             .map(|l| l.key)
             .collect();
         self.open_groups.extend(k);
+        self.runs = None;
     }
 
     /// Zeilen neu aufbauen; Auf- und Zuklappen bleibt erhalten.
     fn rebuild(&mut self, m: &Model, sched: &Schedule, animate: bool) {
-        let (lines, groups) = build_lines(m, sched, self.grouping, self.modus);
+        let sicht = (self.modus, &self.open_groups);
+        let (lines, groups) = build_lines(m, sched, self.grouping, sicht);
         // Fallen sichtbare Zeilen weg, rücken die übrigen sichtbar nach
         let keys: HashSet<Key> = lines.iter().map(|l| l.key).collect();
         let old: Vec<Line> = self
@@ -1285,6 +1287,12 @@ impl ListView {
                 let k = self.lines[i].key;
                 if !self.open_groups.remove(&k) {
                     self.open_groups.insert(k);
+                }
+                if self.lines[i].weg {
+                    // Rechenweg erst beim Aufklappen rechnen: das nächste
+                    // `sync` baut die Zeilen neu
+                    self.runs = None;
+                    self.motion = None;
                 }
                 self.clamp();
                 Some(ListOut::Repaint)
@@ -2207,11 +2215,13 @@ fn m_vol(mm3: f64) -> String {
     format!("{} m³", de(mm3 / 1e9, 3))
 }
 
+/// Zeilen der Liste in der Sicht `(modus, offen)`: Rechenwege nur unter
+/// den aufgeklappten Zeilen `offen` (Review #77/1, Leistung).
 fn build_lines(
     m: &Model,
     sched: &Schedule,
     by: Grouping,
-    modus: Modus,
+    (modus, offen): (Modus, &HashSet<Key>),
 ) -> (Vec<Line>, Vec<GroupRef>) {
     let mut lines = Vec::new();
     let mut groups = Vec::new();
@@ -2230,7 +2240,7 @@ fn build_lines(
                     storey_lines(m, st, &faktor, &mut lines, &mut groups);
                 }
             }
-            Grouping::Trade => trade_lines(m, b, modus, &mut lines),
+            Grouping::Trade => trade_lines(m, b, (modus, offen), &mut lines),
         }
         lines.push(Line::new(Kind::Rule, 0, Key::None));
         let mut head = Line::new(Kind::SumHead, 0, Key::None);
@@ -2351,7 +2361,7 @@ fn per_element(rows: &[LayerRow]) -> Vec<LayerRow> {
 /// Zeilen eines Gebäudes nach Gewerk (Paket 1b): Gewerk (aufklappbar, mit
 /// ATV-Nummer) → Schichtgruppe „Schicht · Bauteilgruppe“ (aufklappbar,
 /// Bauteile mit Geschoss) bzw. einzelne Bauteile.
-fn trade_lines(m: &Model, b: &BuildingQto, modus: Modus, lines: &mut Vec<Line>) {
+fn trade_lines(m: &Model, b: &BuildingQto, sicht: (Modus, &HashSet<Key>), lines: &mut Vec<Line>) {
     let bi = b.id.index();
     // Gewerke der Schichten und der Erweiterungen (E8a) nach Bauablauf
     let ext_t = ext::gewerke(m, b);
@@ -2383,7 +2393,7 @@ fn trade_lines(m: &Model, b: &BuildingQto, modus: Modus, lines: &mut Vec<Line>) 
             }
         }
         lines.push(head);
-        trade_rows(m, bi, order, tkey, t, modus, lines);
+        trade_rows(m, bi, order, tkey, t, sicht, lines);
         ext::gewerk_zeilen(m, b, Some(id), tkey, lines);
     }
     if ext_t.contains(&None) {
@@ -2402,7 +2412,7 @@ fn trade_rows(
     order: u32,
     tkey: Key,
     t: &TradeSum,
-    modus: Modus,
+    (modus, offen): (Modus, &HashSet<Key>),
     lines: &mut Vec<Line>,
 ) {
     let zeig = |r: &LayerRow, b: Bezug| rechenweg::anzeige(m, r, b, modus);
@@ -2437,7 +2447,7 @@ fn trade_rows(
                     rl.cells[4] = m_vol(zeig(r, Bezug::Volumen));
                 }
                 let mut weg = Vec::new();
-                weg_zeilen(m, r, &mut rl, modus, &mut weg);
+                weg_zeilen(m, r, &mut rl, (modus, offen), &mut weg);
                 lines.push(rl);
                 lines.extend(weg);
                 i += 1;
@@ -2506,7 +2516,7 @@ fn trade_rows(
                         .count()
                         == 1
                 }) {
-                    weg_zeilen(m, y, &mut rl, modus, &mut weg);
+                    weg_zeilen(m, y, &mut rl, (modus, offen), &mut weg);
                 }
                 lines.push(rl);
                 lines.extend(weg);

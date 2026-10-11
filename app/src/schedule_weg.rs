@@ -17,16 +17,13 @@ pub(super) fn bestell_faktoren(m: &Model, sched: &Schedule, modus: Modus) -> Fak
     if modus == Modus::Vob {
         return HashMap::new();
     }
-    for b in &sched.buildings {
-        for t in &b.by_trade {
-            for r in &t.rows {
-                let x = sum.entry(r.element).or_default();
-                x[0] += r.volume;
-                x[1] += rechenweg::anzeige(m, r, Bezug::Volumen, modus);
-                x[2] += rechenweg::wert(r, Bezug::Flaeche);
-                x[3] += rechenweg::anzeige(m, r, Bezug::Flaeche, modus);
-            }
-        }
+    // alle Schichtzeilen, auch ohne Gewerk (Review #77, Hinweis)
+    for (_, r) in sched.layer_rows(m) {
+        let x = sum.entry(r.element).or_default();
+        x[0] += r.volume;
+        x[1] += rechenweg::anzeige(m, &r, Bezug::Volumen, modus);
+        x[2] += rechenweg::wert(&r, Bezug::Flaeche);
+        x[3] += rechenweg::anzeige(m, &r, Bezug::Flaeche, modus);
     }
     let q = |a: f64, b: f64| if a > 0.0 { b / a } else { 1.0 };
     sum.into_iter()
@@ -69,20 +66,24 @@ pub(super) fn spalte(b: Bezug) -> usize {
     }
 }
 
-/// Zeilen des Rechenwegs unter der Schichtzeile `row` (eingeklappt):
+/// Zeilen des Rechenwegs unter der Schichtzeile `row`, nur wenn sie in
+/// `offen` aufgeklappt ist (eingeklappt nur das Dreieck):
 /// Terme mit Vorzeichen, bei mehr als einem Term das Ergebnis.
 pub(super) fn weg_zeilen(
     m: &Model,
     r: &LayerRow,
     row: &mut Line,
-    modus: Modus,
+    (modus, offen): (Modus, &HashSet<Key>),
     lines: &mut Vec<Line>,
 ) {
     let Some(b) = haupt_bezug(m, r) else { return };
-    let Some(w) = rechenweg::fuer(m, r, modus)
-        .into_iter()
-        .find(|w| w.bezug == b)
-    else {
+    // Zugeklappt nur das Dreieck; den Rechenweg rechnet erst das
+    // Aufklappen (Review #77/1: sonst je Zeile bei jedem Neuaufbau)
+    row.weg = true;
+    if !offen.contains(&row.key) {
+        return;
+    }
+    let Some(w) = rechenweg::weg(m, r, b, modus) else {
         return;
     };
     let e = r.element;
@@ -144,16 +145,13 @@ pub(super) fn term_zeilen(
     }
 }
 
-/// Rechenweg der VOB-Menge als eine Zeile für die Tabelle: „Länge 7,545 m ×
+/// Rechenweg der Menge in der Sicht `modus` als eine Zeile für die Tabelle: „Länge 7,545 m ×
 /// Höhe 2,855 m (21,54 m²) − Deckenauflager … (1,66 m²) = 19,88 m²“.
-pub(super) fn weg_text(m: &Model, r: &LayerRow) -> String {
+pub(super) fn weg_text(m: &Model, r: &LayerRow, modus: Modus) -> String {
     let Some(b) = haupt_bezug(m, r) else {
         return String::new();
     };
-    let Some(w) = rechenweg::fuer(m, r, Modus::Vob)
-        .into_iter()
-        .find(|w| w.bezug == b)
-    else {
+    let Some(w) = rechenweg::weg(m, r, b, modus) else {
         return String::new();
     };
     let mut teile: Vec<String> = Vec::new();
