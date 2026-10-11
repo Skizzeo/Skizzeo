@@ -108,6 +108,9 @@ pub struct WallTiles {
 /// Höhe der Wandfliesen (mm).
 pub const TILES_HEIGHT: (f64, f64) = (100.0, 4000.0);
 
+/// Höhe einer neuen Fliesenzone (mm): 1,20 m wie im Bad.
+pub const TILES_DEFAULT: f64 = 1200.0;
+
 /// Eine Raumvorlage. Die Ausbautypen stehen als Guid des Typs; ihre Art
 /// muss zum Feld passen ([`Model::space_type_problems`]).
 #[derive(Clone, Debug, PartialEq)]
@@ -308,7 +311,7 @@ pub const SPACE_TEMPLATES: [SpaceTemplate; 13] = [
 
 /// Rang einer Vorlage in der Auswahlliste: Werksvorlagen in ihrer
 /// Reihenfolge, eigene danach.
-fn rank(g: Guid) -> usize {
+pub fn space_template_rank(g: Guid) -> usize {
     SPACE_TEMPLATES
         .iter()
         .position(|t| t.guid == g)
@@ -341,7 +344,7 @@ impl Model {
                 v.push((t.guid, t.name.into()));
             }
         }
-        v.sort_by(|a, b| (rank(a.0), &a.1).cmp(&(rank(b.0), &b.1)));
+        v.sort_by(|a, b| (space_template_rank(a.0), &a.1).cmp(&(space_template_rank(b.0), &b.1)));
         v
     }
 
@@ -420,8 +423,9 @@ impl Model {
         true
     }
 
-    /// Entfernt die Vorlage. Räume, die auf sie verweisen, bekommen die
-    /// Vorgabe des Projekts.
+    /// Entfernt die Vorlage. Räume gibt es mit RB3; was ein Raum dann
+    /// bekommt, dessen Vorlage fehlt, regelt RB3 (plan.md §7: die Vorgabe des
+    /// Projekts).
     pub fn remove_space_type(&mut self, g: Guid) -> bool {
         let Some(i) = self.space_types.iter().position(|s| s.guid == g) else {
             return false;
@@ -445,6 +449,57 @@ impl Model {
         &'a self,
         s: &'a SpaceType,
     ) -> impl Iterator<Item = String> + 'a {
+        self.space_type_rules(s, |g| {
+            let t = self.layer_set(self.type_by_guid(g)?)?;
+            Some((t.code.clone(), t.category))
+        })
+        .into_iter()
+    }
+
+    /// Erster Befund der Vorlage `s`, bevor etwas ins Projekt kommt: wie
+    /// [`Model::space_type_problems`], dazu ein Name, den eine andere
+    /// Vorlage trägt. Ein Ausbautyp, den das Projekt noch nicht führt, zählt
+    /// mit der Art, die er mitbrächte: aus dem Werk ([`FINISH_TYPES`]), wenn
+    /// er sich anlegen lässt, sonst aus dem Firmenkatalog `lib`. So prüft der
+    /// Bauteilkatalog eine Änderung, ohne das Modell zu ändern oder zu
+    /// klonen (Review #85, W22).
+    pub fn space_type_problem_before(
+        &self,
+        s: &SpaceType,
+        lib: Option<&crate::catalog::Library>,
+    ) -> Option<String> {
+        if self
+            .space_types
+            .iter()
+            .any(|x| x.guid != s.guid && x.name == s.name)
+        {
+            return Some(format!("Eine Vorlage „{}“ gibt es schon", s.name));
+        }
+        self.space_type_rules(s, |g| {
+            if let Some(t) = self.type_by_guid(g).and_then(|id| self.layer_set(id)) {
+                return Some((t.code.clone(), t.category));
+            }
+            if let Some(t) = FINISH_TYPES
+                .iter()
+                .find(|t| t.guid == g && self.finish_type_creatable(t))
+            {
+                return Some((t.code.into(), t.category));
+            }
+            let lib = lib?;
+            let t = lib.types.get(lib.type_by_guid(g)?)?;
+            Some((t.code.clone(), t.category))
+        })
+        .into_iter()
+        .next()
+    }
+
+    /// Regeln der Vorlage; `typ` nennt Kurzzeichen und Art des Ausbautyps
+    /// mit der Guid, `None`: fehlt.
+    fn space_type_rules(
+        &self,
+        s: &SpaceType,
+        typ: impl Fn(Guid) -> Option<(String, TypeCategory)>,
+    ) -> Vec<String> {
         let who = if s.name.trim().is_empty() {
             "ohne Namen".to_string()
         } else {
@@ -471,17 +526,16 @@ impl Model {
         }
         for (field, cat, g) in s.slots() {
             let Some(g) = g else { continue };
-            match self.type_by_guid(g).and_then(|id| self.layer_set(id)) {
-                Some(t) if t.category == cat => {}
-                Some(t) => out.push(format!(
-                    "Raumvorlage {who}: {field} {} ist kein Typ „{}“",
-                    t.code,
+            match typ(g) {
+                Some((_, c)) if c == cat => {}
+                Some((code, _)) => out.push(format!(
+                    "Raumvorlage {who}: {field} {code} ist kein Typ „{}“",
                     cat.name()
                 )),
                 None => out.push(format!("Raumvorlage {who}: {field} fehlt im Projekt")),
             }
         }
-        out.into_iter()
+        out
     }
 
     /// Alle Befunde der Raumvorlagen, mit doppelten Namen und Guids.
@@ -774,6 +828,97 @@ mod tests {
             .any(|h| h.contains("Bodenbelag") && h.contains("entfällt")));
         let doppelt = format!("{text}{alt}\n");
         assert!(szo::read(&doppelt, GuidGen::with_seed(5)).is_err());
+    }
+
+    /// Fehlt `tiles_h`, ist ein Verweis unlesbar oder fehlt die Gruppe,
+    /// lädt die Datei trotzdem: Ersatz mit Hinweis (Review #85, Hinweis 4).
+    #[test]
+    fn datei_laedt_trotz_fliesenhoehe() {
+        let (m, _) = mit_vorlagen();
+        let text = szo::write(&m);
+        let alt = text
+            .lines()
+            .find(|l| l.contains("name=\"Bad\""))
+            .unwrap()
+            .to_string();
+        let neu = alt
+            .replace(" tiles_h=1200", "")
+            .replace(" group=nuf7", "")
+            .replacen("ceiling=", "ceiling=kaputt x=", 1);
+        let l = szo::read(&text.replace(&alt, &neu), GuidGen::with_seed(5)).unwrap();
+        let b = l.model.space_type(BATH_SPACE_GUID).unwrap();
+        assert_eq!(
+            b.tiles,
+            Some(WallTiles {
+                set: WALL_TILES_TYPE_GUID,
+                height: TILES_DEFAULT
+            })
+        );
+        assert_eq!((b.group, b.ceiling), (SpaceGroup::Nuf7, None));
+        assert!(l.hints.iter().any(|h| h.contains("Fliesenhöhe fehlt")));
+        assert!(l.hints.iter().any(|h| h.contains("„kaputt“ unlesbar")));
+        let ohne_wert = text.replace(&alt, &alt.replace("tiles_h=1200", "tiles_h=hoch"));
+        let l = szo::read(&ohne_wert, GuidGen::with_seed(5)).unwrap();
+        let b = l.model.space_type(BATH_SPACE_GUID).unwrap();
+        assert_eq!(b.tiles.map(|t| t.height), Some(TILES_DEFAULT));
+    }
+
+    /// Prüfen vor dem Anlegen: Ausbautypen des Werks und der Firma zählen
+    /// mit ihrer Art, ohne dass etwas ins Projekt kommt (Review #85,
+    /// Befund 1).
+    #[test]
+    fn pruefen_vor_dem_anlegen() {
+        use crate::catalog::Library;
+        let mut m = Model::with_seed(13);
+        let (typen, stoffe) = (m.layer_sets().len(), m.materials().len());
+        let bad = SPACE_TEMPLATES[8].space_type();
+        assert_eq!(bad.guid, BATH_SPACE_GUID);
+        assert_eq!(m.space_type_problem_before(&bad, None), None);
+        let falsch = SpaceType {
+            floor: Some(WALL_TILES_TYPE_GUID),
+            ..bad.clone()
+        };
+        let why = m.space_type_problem_before(&falsch, None).unwrap();
+        assert!(why.contains("ist kein Typ „Bodenbelag“"), "{why}");
+        let fremd = SpaceType {
+            ceiling: Some(Guid(0x77)),
+            ..bad.clone()
+        };
+        let why = m.space_type_problem_before(&fremd, None).unwrap();
+        assert!(why.contains("Decke fehlt im Projekt"), "{why}");
+        assert_eq!((m.layer_sets().len(), m.materials().len()), (typen, stoffe));
+        // ein Typ nur im Firmenkatalog
+        let mut quelle = Model::with_seed(14);
+        let id = quelle.ensure_finish_type(PORCELAIN_TYPE_GUID).unwrap();
+        let mut t = quelle.layer_set(id).unwrap().clone();
+        t.guid = Guid(0x78);
+        t.code = "BB-X".into();
+        quelle.add_layer_set(t).unwrap();
+        let lib = Library::from_model(&quelle);
+        let firma = SpaceType {
+            floor: Some(Guid(0x78)),
+            ..bad.clone()
+        };
+        assert!(m.space_type_problem_before(&firma, None).is_some());
+        assert_eq!(m.space_type_problem_before(&firma, Some(&lib)), None);
+        // Name einer anderen Vorlage
+        assert_eq!(m.ensure_space_type(BATH_SPACE_GUID), Some(BATH_SPACE_GUID));
+        let zweites = SpaceType {
+            guid: Guid(0x79),
+            ..bad.clone()
+        };
+        let why = m.space_type_problem_before(&zweites, None).unwrap();
+        assert_eq!(why, "Eine Vorlage „Bad“ gibt es schon");
+        // Werkstyp, der sich nicht anlegen lässt: Anstrich umgestellt
+        let mut m = Model::with_seed(15);
+        let a = m.ensure_finish_material(PAINT_GUID).unwrap();
+        let x = Material {
+            category: MatCategory::Plaster,
+            ..m.material(a).unwrap().clone()
+        };
+        assert!(m.set_material(a, x));
+        let why = m.space_type_problem_before(&bad, None).unwrap();
+        assert!(why.contains("fehlt im Projekt"), "{why}");
     }
 
     /// Firmenkatalog: Vorlage samt Ausbautypen hinaus, Rundlauf der `.szk`,

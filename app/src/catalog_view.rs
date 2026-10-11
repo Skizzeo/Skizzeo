@@ -2721,27 +2721,45 @@ impl Catalog {
             .collect();
         let real_guids: Vec<Guid> = real.layer_sets().iter().map(|(_, t)| t.guid).collect();
         // Raumvorlagen (RB2) nach den Typen, auf die sie verweisen, und vor
-        // dem Löschen der Typen, die sie nicht mehr brauchen
+        // dem Löschen der Typen, die sie nicht mehr brauchen. Nicht halb
+        // übernehmen (Review #85): vorher gegen die Arbeitskopie geprüft, die
+        // dieselben Typen trägt; scheitert es im Projekt doch, nimmt der
+        // Schritt alles zurück und das Fenster bleibt offen
         let rooms = self.work.space_types().to_vec();
-        let changed = cx.scene.edit_types(crate::scene::CATALOG_STEP, |m| {
-            for g in &work_guids {
-                import_type(m, &lib, *g);
-            }
-            for (cat, g) in &defaults {
-                if let Some(id) = m.type_by_guid(*g) {
-                    m.set_default_type(*cat, id);
+        let why = rooms
+            .iter()
+            .find_map(|s| self.work.space_type_problems(s).next());
+        let mut rooms_ok = why.is_none();
+        let changed = rooms_ok
+            && cx.scene.edit_types(crate::scene::CATALOG_STEP, |m| {
+                for g in &work_guids {
+                    import_type(m, &lib, *g);
                 }
-            }
-            m.replace_space_types(rooms);
-            for g in &real_guids {
-                if !work_guids.contains(g) && !keep_old.contains(g) {
+                for (cat, g) in &defaults {
                     if let Some(id) = m.type_by_guid(*g) {
-                        let _ = m.remove_type(id);
+                        m.set_default_type(*cat, id);
                     }
                 }
-            }
-            true
-        });
+                if !m.replace_space_types(rooms) {
+                    m.rollback();
+                    rooms_ok = false;
+                    return false;
+                }
+                for g in &real_guids {
+                    if !work_guids.contains(g) && !keep_old.contains(g) {
+                        if let Some(id) = m.type_by_guid(*g) {
+                            let _ = m.remove_type(id);
+                        }
+                    }
+                }
+                true
+            });
+        if !rooms_ok {
+            let why = why.unwrap_or_else(|| "Raumvorlagen passen nicht zu den Typen".into());
+            self.message = Some(format!("Nicht übernommen: {why}"));
+            self.blink = Some(Instant::now());
+            return;
+        }
         out.applied = changed;
         out.closed = true;
     }

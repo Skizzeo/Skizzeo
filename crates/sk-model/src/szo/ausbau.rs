@@ -7,7 +7,7 @@
 use super::{Line, LoadError, Record};
 use crate::id::Arena;
 use crate::library::LayerSet;
-use crate::model::{Model, SpaceGroup, SpaceType, WallTiles, TILES_HEIGHT, WOFLV};
+use crate::model::{Model, SpaceGroup, SpaceType, WallTiles, TILES_DEFAULT, TILES_HEIGHT, WOFLV};
 use crate::{Guid, TypeCategory};
 
 /// `h=` nur, wenn der Typ eine Höhe hat (Sockelleiste).
@@ -87,10 +87,12 @@ pub(crate) fn write_space_types(out: &mut String, v: &[SpaceType]) {
 }
 
 /// Liest `[spacetype]`; `types` sind die Bauteiltypen derselben Datei. Ein
-/// Verweis auf einen fehlenden Typ oder einen Typ anderer Art
-/// entfällt, eine unbekannte Nutzungsgruppe gilt als NUF 7, eine andere
-/// Anrechnung als 100 %, eine Fliesenhöhe außerhalb des Bereichs als die
-/// Grenze, ein doppelter Name bekommt „ 2“; jeweils mit Hinweis.
+/// unlesbarer Verweis oder einer auf einen fehlenden Typ oder einen Typ
+/// anderer Art entfällt, eine fehlende oder unbekannte Nutzungsgruppe gilt
+/// als NUF 7, eine andere Anrechnung als 100 %, eine Fliesenhöhe außerhalb
+/// des Bereichs als die Grenze, eine fehlende als 1,20 m, ein doppelter Name
+/// bekommt „ 2“; jeweils mit Hinweis, die Datei lädt. Nur eine fehlende oder
+/// doppelte Guid und ein fehlender Name brechen das Laden ab.
 pub(crate) fn read_space_types(
     recs: &[Record],
     types: &Arena<LayerSet>,
@@ -120,7 +122,7 @@ pub(crate) fn read_space_types(
             who(hints, format!("„{name}“ doppelt, heißt jetzt „{neu}“"));
             name = neu;
         }
-        let group = match SpaceGroup::from_word(r.get("group")?) {
+        let group = match r.opt("group").and_then(SpaceGroup::from_word) {
             Some(g) => g,
             None => {
                 who(
@@ -137,37 +139,47 @@ pub(crate) fn read_space_types(
                 100
             }
         };
-        let mut set = |key: &str, cat: TypeCategory| -> Result<Option<Guid>, LoadError> {
-            if r.opt(key).is_none() {
-                return Ok(None);
-            }
-            let g = r.guid(key)?;
+        let mut set = |key: &str, cat: TypeCategory| -> Option<Guid> {
+            let v = r.opt(key)?;
+            let Some(g) = Guid::from_ifc(v) else {
+                who(
+                    hints,
+                    format!("„{name}“: {} „{v}“ unlesbar, entfällt", cat.name()),
+                );
+                return None;
+            };
             if known(g) == Some(cat) {
-                return Ok(Some(g));
+                return Some(g);
             }
             who(
                 hints,
                 format!("„{name}“: {} {} fehlt, entfällt", cat.name(), g.to_ifc()),
             );
-            Ok(None)
+            None
         };
-        let floor = set("floor", TypeCategory::FloorFinish)?;
-        let screed = set("screed", TypeCategory::Screed)?;
-        let wall = set("wall", TypeCategory::WallFinish)?;
-        let tiles = set("tiles", TypeCategory::WallTiles)?;
-        let ceiling = set("ceiling", TypeCategory::CeilingFinish)?;
-        let skirting = set("skirting", TypeCategory::Skirting)?;
+        let floor = set("floor", TypeCategory::FloorFinish);
+        let screed = set("screed", TypeCategory::Screed);
+        let wall = set("wall", TypeCategory::WallFinish);
+        let tiles = set("tiles", TypeCategory::WallTiles);
+        let ceiling = set("ceiling", TypeCategory::CeilingFinish);
+        let skirting = set("skirting", TypeCategory::Skirting);
         let tiles = match tiles {
             Some(g) => {
+                // Verwerfen mit Hinweis, die Datei lädt (Review #85)
                 let (lo, hi) = TILES_HEIGHT;
-                let h = r.f64("tiles_h")?;
-                if !(lo..=hi).contains(&h) {
-                    who(hints, format!("„{name}“: Fliesenhöhe {h} mm außerhalb"));
-                }
-                Some(WallTiles {
-                    set: g,
-                    height: h.clamp(lo, hi),
-                })
+                let h = match r.opt("tiles_h").and_then(|v| v.parse::<f64>().ok()) {
+                    Some(h) if h.is_finite() => {
+                        if !(lo..=hi).contains(&h) {
+                            who(hints, format!("„{name}“: Fliesenhöhe {h} mm außerhalb"));
+                        }
+                        h.clamp(lo, hi)
+                    }
+                    _ => {
+                        who(hints, format!("„{name}“: Fliesenhöhe fehlt, gilt 1,20 m"));
+                        TILES_DEFAULT
+                    }
+                };
+                Some(WallTiles { set: g, height: h })
             }
             None => {
                 let _ = r.opt("tiles_h");

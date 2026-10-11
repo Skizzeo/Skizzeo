@@ -9,13 +9,14 @@ use super::{label, rounded, Catalog, ComboId, FieldId, Item, ListLayout, Popup, 
 use super::{CONTENT_X, PAD};
 use crate::prefs::Win;
 use crate::window_kit::parse_num;
-use sk_model::model::{FINISH_TYPES, SPACE_TEMPLATES, TILES_HEIGHT, WOFLV};
-use sk_model::{
-    import_space_type, import_type, Guid, SpaceGroup, SpaceType, TypeCategory, WallTiles,
+use sk_model::model::{
+    space_template_rank, FINISH_TYPES, SPACE_TEMPLATES, TILES_DEFAULT, TILES_HEIGHT, WOFLV,
 };
+use sk_model::{import_type, Guid, SpaceGroup, SpaceType, TypeCategory, WallTiles};
 use sk_paint::Canvas;
 use sk_ui::theme::Theme;
 use sk_ui::widgets::{self, Fonts, Rect};
+use std::borrow::Cow;
 
 /// Woher eine Vorlage der Liste kommt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,13 +69,6 @@ fn woflv_text(p: u8) -> String {
     }
 }
 
-fn rang(g: Guid) -> usize {
-    SPACE_TEMPLATES
-        .iter()
-        .position(|t| t.guid == g)
-        .unwrap_or(SPACE_TEMPLATES.len())
-}
-
 impl Catalog {
     /// Vorlagen der Liste: die des Projekts, dazu die der Firma und des
     /// Werks, die es noch nicht führt (nicht doppelt nach Guid oder Name).
@@ -101,26 +95,34 @@ impl Catalog {
                 v.push((t.guid, t.name.into(), Herkunft::Werk));
             }
         }
-        v.sort_by(|a, b| (rang(a.0), &a.1).cmp(&(rang(b.0), &b.1)));
+        v.sort_by(|a, b| (space_template_rank(a.0), &a.1).cmp(&(space_template_rank(b.0), &b.1)));
         v
     }
 
     /// Die gewählte Vorlage und ihre Herkunft.
     pub(super) fn raum(&self) -> Option<(SpaceType, Herkunft)> {
-        let g = self.room_sel?;
+        self.raum_zu(self.room_sel?)
+            .map(|(s, h)| (s.into_owned(), h))
+    }
+
+    /// Vorlage `g` und ihre Herkunft wie in [`Catalog::raum_eintraege`]:
+    /// aus dem Projekt, sonst der Firma, sonst dem Werk. Ohne die Liste zu
+    /// bauen und ohne Kopie, außer für eine Werksvorlage (je Kachel und
+    /// Mausbewegung).
+    fn raum_zu(&self, g: Guid) -> Option<(Cow<'_, SpaceType>, Herkunft)> {
         if let Some(s) = self.work.space_type(g) {
-            return Some((s.clone(), Herkunft::Projekt));
+            return Some((Cow::Borrowed(s), Herkunft::Projekt));
         }
         if let Some(s) = self
             .company_lib()
             .and_then(|l| l.space_types.iter().find(|s| s.guid == g))
         {
-            return Some((s.clone(), Herkunft::Firma));
+            return Some((Cow::Borrowed(s), Herkunft::Firma));
         }
         SPACE_TEMPLATES
             .iter()
             .find(|t| t.guid == g)
-            .map(|t| (t.space_type(), Herkunft::Werk))
+            .map(|t| (Cow::Owned(t.space_type()), Herkunft::Werk))
     }
 
     /// Name, Kurzzeichen und Dicke (mm) eines Ausbautyps: aus dem Projekt,
@@ -211,7 +213,7 @@ impl Catalog {
         match f {
             FieldId::RoomName => Some(self.r(t, w, CONTENT_X, 72.0, 330.0, 32.0)),
             FieldId::TilesHeight => {
-                self.raum()?.0.tiles?;
+                self.raum_zu(self.room_sel?)?.0.tiles?;
                 let y = ZEILE_Y + 3.0 * ZEILE_H;
                 Some(self.r(t, w, TYP_X + TYP_W + 46.0, y, 76.0, 30.0))
             }
@@ -249,42 +251,34 @@ impl Catalog {
     // --- Ändern ---------------------------------------------------------------
 
     /// Ändert die gewählte Vorlage in der Arbeitskopie; eine Vorlage der
-    /// Firma oder des Werks kommt dabei samt Ausbautypen ins Projekt, ein
-    /// neu gewählter Ausbautyp ebenso. Verstößt das Ergebnis gegen eine
-    /// Regel, bleibt alles, wie es war, und der Fuß nennt den Grund.
+    /// Firma oder des Werks kommt dabei ins Projekt, mit den Ausbautypen,
+    /// auf die sie nach der Änderung verweist. Verstößt das Ergebnis gegen
+    /// eine Regel, bleibt alles, wie es war, und der Fuß nennt den Grund.
     pub(super) fn room_change(&mut self, f: impl FnOnce(&mut SpaceType)) -> bool {
         let Some((mut s, herkunft)) = self.raum() else {
             return false;
         };
-        let before = self.work.clone();
-        let lib = self.company_lib().cloned();
-        let da = match herkunft {
-            Herkunft::Projekt => true,
-            Herkunft::Werk => self.work.ensure_space_type(s.guid).is_some(),
-            Herkunft::Firma => lib
-                .as_ref()
-                .is_some_and(|l| import_space_type(&mut self.work, l, s.guid)),
-        };
-        if let Some(name) = self.work.space_type(s.guid).map(|x| x.name.clone()) {
-            s.name = name;
+        if herkunft != Herkunft::Projekt {
+            s.name = self.work.free_space_name(&s.name);
         }
         f(&mut s);
-        let mut ok = da;
-        for g in s.slots().into_iter().filter_map(|x| x.2) {
-            if !ok || self.work.type_by_guid(g).is_some() {
-                continue;
-            }
-            ok = self.work.ensure_finish_type(g).is_some()
-                || lib
-                    .as_ref()
-                    .is_some_and(|l| import_type(&mut self.work, l, g).is_some());
-        }
-        let why = self.work.space_type_problems(&s).next();
-        if ok && why.is_none() && self.work.put_space_type(s) {
+        // Erst auf der Kopie prüfen, dann anlegen: Eine abgelehnte Änderung
+        // legt nichts an, und das Modell wird nicht geklont (Review #85).
+        // Ins Projekt kommen nur die Ausbautypen, auf die die Vorlage jetzt
+        // verweist.
+        let lib = self.company.as_ref().map(|c| &c.0);
+        let why = self.work.space_type_problem_before(&s, lib);
+        let ok = why.is_none()
+            && s.slots().into_iter().filter_map(|x| x.2).all(|g| {
+                self.work.type_by_guid(g).is_some()
+                    || self.work.ensure_finish_type(g).is_some()
+                    || lib.is_some_and(|l| import_type(&mut self.work, l, g).is_some())
+            })
+            && self.work.put_space_type(s);
+        if ok {
             self.message = None;
             return true;
         }
-        self.work = before;
         self.message = Some(why.unwrap_or_else(|| "Vorlage nicht übernommen".into()));
         self.blink = Some(self.clock());
         false
@@ -403,8 +397,7 @@ impl Catalog {
                     1 => s.screed = neu,
                     2 => s.wall = neu,
                     3 => {
-                        // Neue Fliesenzone: 1,20 m wie im Bad
-                        let height = s.tiles.map_or(1200.0, |t| t.height);
+                        let height = s.tiles.map_or(TILES_DEFAULT, |t| t.height);
                         s.tiles = neu.map(|set| WallTiles { set, height });
                     }
                     4 => s.ceiling = neu,
@@ -502,7 +495,7 @@ impl Catalog {
         sel: bool,
         hover: bool,
     ) {
-        let Some((_, name, herkunft)) = self.raum_eintraege().into_iter().find(|e| e.0 == g) else {
+        let Some((raum, herkunft)) = self.raum_zu(g) else {
             return;
         };
         let s = w.scale;
@@ -534,35 +527,18 @@ impl Catalog {
         };
         let mw = regular.map_or(0.0, |f| f.width(mark, pd));
         let font = if sel { bold } else { regular };
-        let name = widgets::ellipsize(font, &name, px, right - tx - mw - 8.0 * s);
+        let name = widgets::ellipsize(font, &raum.name, px, right - tx - mw - 8.0 * s);
         label(c, font, &name, px, tx, r.y + 20.0 * s, u.text);
         if !mark.is_empty() {
             label(c, regular, mark, pd, right - mw, r.y + 18.0 * s, u.text_dim);
         }
-        let detail = self.room_detail(g);
+        let detail = self.room_detail(&raum);
         let detail = widgets::ellipsize(regular, &detail, pd, right - tx);
         label(c, regular, &detail, pd, tx, r.y + 38.0 * s, u.text_dim);
     }
 
     /// „NUF 1 · Parkett Eiche 20“.
-    fn room_detail(&self, g: Guid) -> String {
-        let s = self
-            .work
-            .space_type(g)
-            .cloned()
-            .or_else(|| {
-                self.company_lib()
-                    .and_then(|l| l.space_types.iter().find(|s| s.guid == g).cloned())
-            })
-            .or_else(|| {
-                SPACE_TEMPLATES
-                    .iter()
-                    .find(|t| t.guid == g)
-                    .map(|t| t.space_type())
-            });
-        let Some(s) = s else {
-            return String::new();
-        };
+    fn room_detail(&self, s: &SpaceType) -> String {
         let boden = s
             .floor
             .and_then(|f| self.ausbau_info(f))
@@ -707,8 +683,8 @@ mod tests {
     use super::*;
     use crate::scene::Scene;
     use sk_model::model::{
-        BATH_SPACE_GUID, KITCHEN_SPACE_GUID, LIVING_SPACE_GUID, PORCELAIN_TYPE_GUID,
-        WALL_TILES_TYPE_GUID,
+        BATH_SPACE_GUID, KITCHEN_SPACE_GUID, LIVING_SPACE_GUID, PARQUET_TYPE_GUID,
+        PORCELAIN_TYPE_GUID, WALL_TILES_TYPE_GUID, WET_FLOOR_TYPE_GUID,
     };
     use sk_model::Model;
     use sk_platform::{Event, Key, Modifiers, MouseButton};
@@ -877,6 +853,33 @@ mod tests {
         );
         klick(&mut c, &mut s, del.1);
         assert_eq!(c.raum().unwrap().0.group, SpaceGroup::Nuf1);
+        assert!(c.work.check().is_empty(), "{:?}", c.work.check());
+    }
+
+    /// Eine Änderung wird auf der Kopie geprüft, bevor etwas ins Projekt
+    /// kommt: abgelehnt legt sie nichts an; angenommen kommen nur die
+    /// Ausbautypen, auf die die Vorlage danach verweist (Review #85).
+    #[test]
+    fn aenderung_erst_pruefen_dann_anlegen() {
+        let s = Scene::with_model(Model::with_seed(7));
+        let mut c = Catalog::open(&s, None);
+        let vorher = (c.work.layer_sets().len(), c.work.materials().len());
+        c.room_sel = Some(BATH_SPACE_GUID);
+        // Bodenbelag mit einem Typ anderer Art: abgelehnt, nichts angelegt
+        assert!(!c.room_change(|r| r.floor = Some(WALL_TILES_TYPE_GUID)));
+        assert!(c.message.as_deref().unwrap().contains("kein Typ"));
+        assert!(c.work.space_types().is_empty());
+        assert_eq!(
+            (c.work.layer_sets().len(), c.work.materials().len()),
+            vorher
+        );
+        // Bad mit Parkett: der Fliesenboden des Werksbads kommt nicht mit
+        assert!(c.room_change(|r| r.floor = Some(PARQUET_TYPE_GUID)));
+        assert!(c.message.is_none());
+        let bad = c.work.space_type(BATH_SPACE_GUID).unwrap();
+        assert_eq!(bad.floor, Some(PARQUET_TYPE_GUID));
+        assert!(c.work.type_by_guid(PARQUET_TYPE_GUID).is_some());
+        assert!(c.work.type_by_guid(WET_FLOOR_TYPE_GUID).is_none());
         assert!(c.work.check().is_empty(), "{:?}", c.work.check());
     }
 }
