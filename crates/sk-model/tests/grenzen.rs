@@ -25,8 +25,8 @@ const KLEIN: [&str; 3] = [
 /// kommt sie von der Liste, ist sie kleiner geworden, wird die Zahl gesenkt.
 const UEBER: [(&str, usize); 3] = [
     ("app/src/main.rs", 9_403),
-    ("app/src/schedule_view.rs", 3_107),
-    ("app/src/kosten_view.rs", 3_033),
+    ("app/src/schedule_view.rs", 3_101),
+    ("app/src/kosten_view.rs", 3_027),
 ];
 
 /// Die Kanten aus architektur.md §2: jede Crate mit den eigenen Crates, die

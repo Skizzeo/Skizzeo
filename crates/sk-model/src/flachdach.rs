@@ -1494,6 +1494,41 @@ mod tests {
         }
     }
 
+    /// Bauteilsumme des Attikablechs mit der Dämmung darunter (BIM R1 B1):
+    /// Volumen im Mengenfenster = Summe seiner Schichtzeilen, das Blech
+    /// selbst (Schicht 0) zählt nur einmal.
+    #[test]
+    fn attikablech_summe_mit_daemmung() {
+        let (mut m, og) = haus(EXTERIOR_TYPE_GUID);
+        let st = m.run(og).unwrap().storey;
+        schritt(&mut m, |m| m.set_flat_roof(st, true));
+        let (_, blech) = da_ab(&m, og);
+        let q = crate::qto::coping_qto(&m, blech).unwrap();
+        let daemmung: f64 = q.insulation.iter().map(|i| i.volume).sum();
+        assert!(daemmung > 0.0);
+        let s = crate::qto::schedule(&m);
+        let row = s
+            .buildings
+            .iter()
+            .flat_map(|b| &b.storeys)
+            .flat_map(|st| &st.groups)
+            .flat_map(|g| &g.rows)
+            .find(|r| r.element == blech)
+            .unwrap();
+        let v = row.q.as_ref().unwrap().volume();
+        assert!((v - (q.volume + daemmung)).abs() < 1e-6, "{v}");
+        let zeilen: Vec<_> = s
+            .layer_rows(&m)
+            .into_iter()
+            .filter(|(_, l)| l.element == blech)
+            .map(|(_, l)| l)
+            .collect();
+        let blechzeile = zeilen.iter().find(|l| l.layer == 0).unwrap();
+        assert!((blechzeile.volume - q.volume).abs() < 1e-6);
+        let summe: f64 = zeilen.iter().map(|l| l.volume).sum();
+        assert!((summe - v).abs() < 1e-6, "{summe} {v}");
+    }
+
     /// Dachaufbau und Blech des Flachdachs auf der OG-Decke unter `og`.
     fn da_ab(m: &Model, og: RunId) -> (ElementId, ElementId) {
         let floor = m.floor_of(og).unwrap();

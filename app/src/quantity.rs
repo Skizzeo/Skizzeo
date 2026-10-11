@@ -271,6 +271,20 @@ impl QuantityWindow {
         {
             self.dirty = true;
         }
+        // Wieder geöffnet zeigt das Blatt AVA das LV, nicht die
+        // Druckvorschau (Jörn 11.10.)
+        if self
+            .ava
+            .as_mut()
+            .is_some_and(|a| a.druckvorschau_verlassen())
+        {
+            self.dirty = true;
+        }
+    }
+
+    /// Die große Druckvorschau liegt über Karten und Blatt.
+    fn ava_gross(&self) -> bool {
+        self.blatt() == Blatt::Ava && self.ava.as_ref().is_some_and(|a| a.gross_offen())
     }
 
     pub fn caption_area(&self) -> CaptionArea {
@@ -411,6 +425,9 @@ impl QuantityWindow {
         let anim = t.size.anim_ms > 0.0;
         if !self.karten.waehlen(b, Instant::now(), anim) {
             return false;
+        }
+        if let Some(a) = self.ava.as_mut() {
+            a.gross_schliessen();
         }
         self.hint = None;
         self.context = None;
@@ -591,7 +608,7 @@ impl QuantityWindow {
                     self.title.hover = b;
                     self.dirty = true;
                 }
-                let karte = self.karte_at(t, x, y);
+                let karte = self.karte_at(t, x, y).filter(|_| !self.ava_gross());
                 if self.karten.set_hover(karte) {
                     self.dirty = true;
                 }
@@ -627,7 +644,7 @@ impl QuantityWindow {
                     self.dirty = true;
                     return None;
                 }
-                if let Some(b) = self.karte_at(t, x, y) {
+                if let Some(b) = self.karte_at(t, x, y).filter(|_| !self.ava_gross()) {
                     self.waehlen(b, t);
                     return None;
                 }
@@ -724,8 +741,13 @@ impl QuantityWindow {
                         p.selected.clear();
                         self.kosten.as_mut()?.follow(p);
                     }
-                    // Zuerst das offene Baumblatt (schmales Fenster)
-                    Blatt::Ava if self.ava.as_mut()?.baum_blatt_schliessen() => {
+                    // Zuerst die große Druckvorschau, dann das offene
+                    // Baumblatt (schmales Fenster), dann die Druckvorschau
+                    Blatt::Ava
+                        if self.ava.as_mut()?.gross_schliessen()
+                            || self.ava.as_mut()?.baum_blatt_schliessen()
+                            || self.ava.as_mut()?.druckvorschau_verlassen() =>
+                    {
                         self.dirty = true;
                         return None;
                     }
@@ -1090,6 +1112,11 @@ impl QuantityWindow {
             (self.cards_x0(t), 32.0 * s, s, self.cards_breit(t)),
             now,
         );
+        if self.ava_gross() {
+            if let Some(a) = &self.ava {
+                a.paint_gross(c, fonts);
+            }
+        }
         if let Some(hc) = &self.hint {
             if let (Some(r), Some(a)) = (hc.rect, hc.alpha(now, Self::fade_ms(t))) {
                 let img = hc.paint(t, fonts, s);
@@ -1762,5 +1789,99 @@ mod tests {
         let bands = q.list.as_ref().unwrap().row_bands(&t);
         let gy = (bands[0].0 + bands[0].1) as f64 * 0.5;
         assert!(!q.open_context(&s, &mut p, 80.0, gy, &t, &fonts));
+    }
+
+    /// Jörn 11.10.: Esc führt Schritt für Schritt aus der großen
+    /// Druckvorschau ins LV, die große Ansicht deckt die Karten (ein Klick
+    /// dort schließt sie nur), und nach dem Schließen öffnet das Fenster
+    /// wieder im LV.
+    #[test]
+    fn druckvorschau_esc_karten_und_wieder_oeffnen() {
+        let lib = std::path::Path::new("/usr/share/fonts/truetype/liberation");
+        let lade = |n: &str| {
+            std::fs::read(lib.join(n))
+                .ok()
+                .and_then(sk_paint::font::Font::parse)
+        };
+        let mut fonts = Fonts::system();
+        if fonts.regular.is_none() {
+            fonts.regular = lade("LiberationSans-Regular.ttf");
+            fonts.bold = lade("LiberationSans-Bold.ttf");
+        }
+        // Ohne Schrift kein Blatt
+        if fonts.regular.is_none() {
+            return;
+        }
+        let t = Theme::dark();
+        let m = sk_model::szo::read_with(
+            include_str!("../../crates/sk-cost/referenz/rh1-standardhaus.szo"),
+            sk_model::GuidGen::with_seed(1),
+            &sk_cost::lesen::ABSCHNITTE_SZO,
+        )
+        .expect("lädt")
+        .model;
+        let mut s = Scene::with_model(m);
+        let mut p = Picking::default();
+        let mut q = QuantityWindow::new();
+        (q.w, q.h) = (960, 1000);
+        q.sync(&mut s, &p, false);
+        q.waehlen(Blatt::Ava, &t);
+        q.sync(&mut s, &p, false);
+        let esc = Event::Key {
+            key: Key::Escape,
+            down: true,
+            repeat: false,
+            mods: Default::default(),
+        };
+        let klick = |(x, y): (f64, f64)| Event::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            mods: Default::default(),
+        };
+        // Mitte der Karte „Mengen“
+        let mut karte = None;
+        'suche: for y in (0..200).step_by(2) {
+            for x in (0..600).step_by(4) {
+                if q.karte_at(&t, x as f64, y as f64) == Some(Blatt::Mengen) {
+                    karte = Some((x as f64 + 20.0, y as f64 + 8.0));
+                    break 'suche;
+                }
+            }
+        }
+        let karte = karte.expect("Karte Mengen");
+        fn ava(q: &QuantityWindow) -> &AvaView {
+            q.ava.as_ref().unwrap()
+        }
+        q.ava.as_mut().unwrap().zeige_druckvorschau(0);
+        let blatt = ava(&q).blatt_mitte(&t, &fonts);
+        q.handle(&klick(blatt), &t, &fonts, &mut p);
+        assert!(q.ava_gross(), "Klick auf das Blatt zeigt es groß");
+        // Die große Ansicht liegt über den Karten
+        let c = q.paint(&t, &fonts, Instant::now());
+        let px = c.to_rgba8();
+        // Unter der Schrift der Leiste, über der Karte
+        let i = (72 * q.w as usize + karte.0 as usize) * 4;
+        assert_eq!(
+            &px[i..i + 3],
+            &[34, 34, 36],
+            "Leiste über den Karten bei {karte:?}"
+        );
+        q.handle(&klick(karte), &t, &fonts, &mut p);
+        assert_eq!(q.blatt(), Blatt::Ava, "Klick auf die Karte schließt nur");
+        assert!(!q.ava_gross());
+        assert!(ava(&q).in_druckvorschau());
+        // Esc: zuerst groß zu, dann zurück ins LV
+        q.handle(&klick(blatt), &t, &fonts, &mut p);
+        assert!(q.ava_gross());
+        q.handle(&esc, &t, &fonts, &mut p);
+        assert!(!q.ava_gross() && ava(&q).in_druckvorschau());
+        q.handle(&esc, &t, &fonts, &mut p);
+        assert!(!ava(&q).in_druckvorschau(), "Esc führt zurück ins LV");
+        // Geschlossen und wieder geöffnet: das LV, nicht die Vorschau
+        q.ava.as_mut().unwrap().zeige_druckvorschau(1);
+        q.handle(&klick(blatt), &t, &fonts, &mut p);
+        q.close_popups();
+        assert!(!q.ava_gross() && !ava(&q).in_druckvorschau());
     }
 }

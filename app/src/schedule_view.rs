@@ -1592,13 +1592,7 @@ impl ListView {
         self.paint_pill(c, t, fonts, now, (0.0, 0.0));
         // Knopf „Als Tabelle speichern“ im normalen Knopfstil
         let (bx, by, bw, bh) = self.button_rect(t, fonts);
-        let bg = if self.button_down {
-            u.pressed
-        } else if self.hot == Some(Hot::Button) {
-            u.hover
-        } else {
-            u.bg
-        };
+        let bg = crate::cards::knopf(u, self.button_down, self.hot == Some(Hot::Button));
         let mut p = Path::new();
         p.rounded_rect(bx, by, bw, bh, t.size.corner_radius * s);
         c.fill(&p, bg);
@@ -1610,7 +1604,7 @@ impl ListView {
                 px,
                 bx + BUTTON_PAD * s,
                 by + (bh + f.cap_height(px)) * 0.5,
-                u.text,
+                u.sheet_text,
             );
         }
         self.paint_toggle(c, t, fonts);
