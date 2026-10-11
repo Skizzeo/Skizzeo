@@ -276,7 +276,6 @@ fn csv_trades(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
     bytes
 }
 
-/// Nach Geschoss (B7).
 /// Faktor der Menge eines Baustoffs in der Sicht `modus`: 1 in VOB, in
 /// der Bestellung 1 + Verschnittzuschlag.
 fn zu_faktor(m: &Model, mat: sk_model::MaterialId, modus: Modus) -> f64 {
@@ -286,6 +285,7 @@ fn zu_faktor(m: &Model, mat: sk_model::MaterialId, modus: Modus) -> f64 {
     }
 }
 
+/// Nach Geschoss (B7).
 fn csv_storeys(m: &Model, sched: &Schedule, modus: Modus) -> Vec<u8> {
     let mut out = String::new();
     let mut row = |cols: [&str; 10]| {
