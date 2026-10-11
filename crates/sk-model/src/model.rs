@@ -3923,7 +3923,9 @@ impl Model {
                     }
                 }
                 ElementKind::StripFooting(f) => {
-                    if self.footing_depth(id).is_none_or(|d| d <= 0.0) {
+                    // unter einer Perimeterdämmung ab deren Unterkante
+                    let ins = self.slab_insulation(f.slab);
+                    if self.footing_depth(id).is_none_or(|d| d - ins <= 0.0) {
                         out.push(format!("{}: Tiefe nicht größer als 0", e.number));
                     }
                     if !matches!(

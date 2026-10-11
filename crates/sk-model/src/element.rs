@@ -361,8 +361,9 @@ pub struct GroundSlab {
     pub thickness: f64,
     /// Sockelrücksprung in mm: 0 (bündig) oder mindestens 20.
     pub recess: f64,
-    /// Perimeterdämmung vollflächig unter der Platte, mm; 0 = keine. Sie
-    /// hebt die Platte um ihre Dicke über UK Gründung (Gelände Thema 4).
+    /// Perimeterdämmung unter der Platte innerhalb der Frostschürze, mm;
+    /// 0 = keine. Sie baut sich nach unten auf und ändert weder OK Platte
+    /// noch UK Gründung (Jörn 11.10.).
     pub insulation: f64,
 }
 
