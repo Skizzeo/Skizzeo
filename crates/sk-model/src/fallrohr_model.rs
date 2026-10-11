@@ -465,9 +465,10 @@ impl Model {
             (
                 "Notentwässerung".into(),
                 PropValue::Text(
-                    match d.spec.overflow {
-                        Overflow::Pipe => "Notfallrohr",
-                        Overflow::Spout => "Wasserspeier",
+                    match d.notueberlauf() {
+                        Some(Overflow::Pipe) => "Notfallrohr",
+                        Some(Overflow::Spout) => "Wasserspeier",
+                        None => "frei über die Attika",
                     }
                     .into(),
                 ),
@@ -477,7 +478,7 @@ impl Model {
                 PropValue::Bool(d.control.is_some()),
             ),
         ];
-        if d.spec.overflow == Overflow::Pipe {
+        if d.notueberlauf() == Some(Overflow::Pipe) {
             out.push((
                 "Länge Notfallrohr".into(),
                 PropValue::Number(d.overflow_length()),
@@ -516,6 +517,18 @@ mod tests {
         (m, da, st)
     }
 
+    /// Alle RF des Flachdachs `da` mit eigenem Notfallrohr statt dem
+    /// Wasserspeier der Vorgabe.
+    fn mit_notfallrohr(m: &mut Model, da: ElementId) {
+        schritt(m, |m| {
+            m.downpipes_of(da).into_iter().all(|id| {
+                let mut s = m.downpipe_spec(id).unwrap();
+                s.overflow = Overflow::Pipe;
+                m.set_downpipe_spec(id, s)
+            })
+        });
+    }
+
     fn schritt(m: &mut Model, f: impl FnOnce(&mut Model) -> bool) -> crate::txn::Txn {
         m.begin("Regenfallrohr");
         assert!(f(m));
@@ -528,9 +541,37 @@ mod tests {
     /// Dachs.
     #[test]
     fn sollwerte_pruefhaus() {
-        let (m, da, _) = haus();
+        let (mut m, da, _) = haus();
         let rf = m.downpipes_of(da);
         assert_eq!(rf.len(), 4);
+        // Vorgabe (Jörn 11.10.): Wasserspeier neben dem Kasten, kein
+        // zweiter Kasten und kein Notfallrohr; Schellen nur am Fallrohr
+        {
+            use crate::fallrohr::*;
+            let d = m.downpipe(rf[0]).unwrap();
+            assert_eq!(d.notueberlauf(), Some(Overflow::Spout));
+            assert_eq!(d.overflow_length(), 0.0);
+            assert_eq!(d.clamp_count(), 4);
+            let s = crate::qto::schedule(&m);
+            let auto = |k: &str| {
+                (s.auto.iter())
+                    .find(|a| a.key == k && a.element == rf[0])
+                    .map(|a| a.value)
+            };
+            assert_eq!(auto(SPOUT), Some(1.0));
+            assert_eq!(auto(CLAMPS), Some(4.0));
+            assert_eq!(
+                (auto(OV_BOX), auto(OV_PIPE), auto(OUTLET)),
+                (None, None, None)
+            );
+            let p = m.props_of(rf[0]);
+            assert_eq!(
+                p.get("Notentwässerung"),
+                Some(&PropValue::Text("Wasserspeier".into()))
+            );
+        }
+        // die übrigen Sollwerte mit eigenem Notfallrohr
+        mit_notfallrohr(&mut m, da);
         let e = m.element(rf[0]).unwrap();
         assert_eq!(e.number, "RF-001");
         assert_eq!(e.category, Category::Downpipe);
@@ -628,6 +669,7 @@ mod tests {
             let st = m.run(og).unwrap().storey;
             schritt(&mut m, |m| m.set_flat_roof(st, true));
             let da = m.flat_roof_of(m.floor_of(og).unwrap()).unwrap();
+            mit_notfallrohr(&mut m, da);
             let Some(Ok(f)) = m.floor(eg) else {
                 panic!("Decke")
             };
@@ -686,6 +728,7 @@ mod tests {
             let st = m.run(og).unwrap().storey;
             schritt(&mut m, |m| m.set_flat_roof(st, true));
             let da = m.flat_roof_of(m.floor_of(og).unwrap()).unwrap();
+            mit_notfallrohr(&mut m, da);
             let Some(Ok(f)) = m.floor(eg) else {
                 panic!("Decke")
             };
@@ -745,6 +788,7 @@ mod tests {
         let st = m.run(og).unwrap().storey;
         schritt(&mut m, |m| m.set_flat_roof(st, true));
         let da = m.flat_roof_of(m.floor_of(og).unwrap()).unwrap();
+        mit_notfallrohr(&mut m, da);
         let ok_og = m.storey(st).unwrap().elevation;
         let c = m.chain(eg).unwrap();
         let unten = sk_math::polygon::to_ccw(&c.face_corners(c.outer_offset()));
@@ -875,11 +919,11 @@ mod tests {
         let guid = |m: &Model, id| m.element(id).unwrap().guid;
         let nummer = |m: &Model, id| m.element(id).unwrap().number.clone();
         let g: Vec<_> = rf.iter().map(|&id| guid(&m, id)).collect();
-        let speier = DownpipeSpec {
-            overflow: Overflow::Spout,
+        let notfallrohr = DownpipeSpec {
+            overflow: Overflow::Pipe,
             ..DownpipeSpec::default()
         };
-        schritt(&mut m, |m| m.set_downpipe_spec(rf[0], speier));
+        schritt(&mut m, |m| m.set_downpipe_spec(rf[0], notfallrohr));
         let mut d = m.drainage_of_roof(da).unwrap().clone();
         let vier = d.drains.clone();
         d.drains.truncate(3);
@@ -909,7 +953,7 @@ mod tests {
         assert_eq!(fuenf.len(), 5);
         assert_eq!(guid(&m, fuenf[0]), g[0]);
         assert_eq!(nummer(&m, fuenf[4]), "RF-005");
-        assert_eq!(m.downpipe_spec(fuenf[4]), Some(speier));
+        assert_eq!(m.downpipe_spec(fuenf[4]), Some(notfallrohr));
         let w = m.downpipe(fuenf[4]).unwrap();
         assert_eq!((w.face.x, w.face.y, w.out.x), (0.0, 4000.0, -1.0));
         // Flachdach aus: alle RF weg
@@ -939,6 +983,22 @@ mod tests {
         assert!(zeilen
             .iter()
             .any(|l| l.contains(" overflow=spout control=0 spacing=2500 ")));
+        // die übrigen haben die Vorgabe Wasserspeier und schreiben sie aus
+        assert_eq!(
+            (zeilen.iter())
+                .filter(|l| l.contains(" overflow=spout "))
+                .count(),
+            4
+        );
+        // Kosten H78-1: ohne `overflow=` bleibt es das Notfallrohr
+        let alt = text.replace(" overflow=spout", "");
+        let back = crate::szo::read(&alt, GuidGen::with_seed(3)).unwrap();
+        assert!(back.model.downpipe_ids().into_iter().all(|id| back
+            .model
+            .downpipe_spec(id)
+            .unwrap()
+            .overflow
+            == Overflow::Pipe));
         let back = crate::szo::read(&text, GuidGen::with_seed(3)).unwrap();
         assert!(back.hints.is_empty(), "{:?}", back.hints);
         assert_eq!(crate::szo::write(&back.model), text);
@@ -984,6 +1044,7 @@ mod tests {
             let st = m.run(og).unwrap().storey;
             schritt(&mut m, |m| m.set_flat_roof(st, true));
             let da = m.flat_roof_of(m.floor_of(og).unwrap()).unwrap();
+            mit_notfallrohr(&mut m, da);
             let Some(Ok(f)) = m.floor(eg) else {
                 panic!("Decke")
             };
@@ -1044,6 +1105,7 @@ mod tests {
             let decke = m.floor_of(eg).unwrap();
             schritt(&mut m, |m| m.set_floor_upstand(decke, up));
             let da = m.flat_roof_of(m.floor_of(og).unwrap()).unwrap();
+            mit_notfallrohr(&mut m, da);
             let Some(Ok(f)) = m.floor(eg) else {
                 panic!("Decke")
             };
@@ -1079,6 +1141,88 @@ mod tests {
                 }
             }
             assert_eq!(geprueft, 1, "{up}");
+        }
+    }
+
+    /// Geometrie an #71: Ist der Dachrand des Flachdachs am Ablauf
+    /// niedriger als die Öffnung des Notüberlaufs, läuft das Notwasser
+    /// frei über die Attika. Dann zählen `roof.overflows`, die
+    /// Eigenschaften und das LV keinen Notüberlauf, und das RF nennt den
+    /// Grund als Hinweis.
+    #[test]
+    fn flachdach_ohne_notueberlauf_bei_niedrigem_dachrand() {
+        let (mut m, da, _) = haus();
+        // Prüfhaus mit 40 cm Dämmung (Grenze des Dachtyps)
+        let t = m.flat_roof_type(da).unwrap();
+        let mut set = m.layer_set(t).unwrap().clone();
+        set.layers[1].thickness = 400.0;
+        schritt(&mut m, |m| m.set_layer_set(t, set));
+        let rf = m.downpipes_of(da);
+        assert_eq!(rf.len(), 4);
+        for &id in &rf {
+            let d = m.downpipe(id).unwrap();
+            assert!(d.overflow.free, "{:?}", d.overflow);
+            assert_eq!(d.notueberlauf(), None);
+            let p = m.downpipe_props(id);
+            assert!(p.iter().all(|(k, _)| k != "Länge Notfallrohr"), "{p:?}");
+            assert!(p.contains(&(
+                "Notentwässerung".into(),
+                PropValue::Text("frei über die Attika".into())
+            )));
+            let w = m.warnings(id);
+            assert!(
+                w.iter().any(|t| t.starts_with("Ablauf: kein Notüberlauf")),
+                "{w:?}"
+            );
+        }
+        let s = crate::qto::schedule(&m);
+        let alle = |k: &str| -> f64 { s.auto.iter().filter(|a| a.key == k).map(|a| a.value).sum() };
+        assert_eq!(alle(crate::roof::DRAINS), 4.0);
+        assert_eq!(alle(crate::roof::OVERFLOWS), 0.0);
+        assert_eq!(alle(crate::fallrohr::OV_BOX), 0.0);
+        assert_eq!(alle(crate::fallrohr::OV_PIPE), 0.0);
+        assert_eq!(alle(crate::fallrohr::SPOUT), 0.0);
+        // am Flachdach steht der Hinweis zur Anschlusshöhe schon
+        assert!(m
+            .warnings(da)
+            .iter()
+            .any(|t| t.starts_with("Anschlusshöhe")));
+    }
+
+    /// Geometrie (Prüfung #78): Der Wasserspeier ist die Vorgabe der
+    /// Notentwässerung. Seine Sohle muss auf der Anstauhöhe liegen (UK
+    /// Notüberlauf, `overflow.sill`), nicht darunter: Sonst steckt er unter
+    /// der Dachhaut im Dachaufbau und das Wasser liefe vor der Anstauhöhe ab.
+    #[test]
+    fn wasserspeier_auf_der_anstauhoehe() {
+        let (m, da, _) = haus();
+        let rf = m.downpipes_of(da);
+        assert!(!rf.is_empty());
+        for id in rf {
+            let d = m.downpipe(id).unwrap();
+            assert_eq!(d.notueberlauf(), Some(Overflow::Spout));
+            let o = &d.overflow;
+            let dachhaut = d.outlet + crate::fallrohr::OUTLET_DROP;
+            assert!(o.sill > dachhaut, "Anstauhöhe über der Dachhaut");
+            // Speier: neben dem Kasten, vor der Fassade (bis 300 mm)
+            let s = d.solid();
+            let im_speier = |p: Vec3| {
+                let v = p - o.face;
+                let laengs = v.dot(d.along).abs();
+                let raus = v.dot(d.out);
+                laengs <= crate::roof::OVERFLOW_W / 2.0 + 1e-6
+                    && (-1e-6..=crate::fallrohr::SPOUT_OUT + 1e-6).contains(&raus)
+            };
+            let uk = (s.triangles.iter())
+                .filter(|t| t.p.iter().all(|p| im_speier(*p)))
+                .flat_map(|t| t.p.iter().map(|p| p.z))
+                .fold(f64::INFINITY, f64::min);
+            assert!(uk.is_finite(), "Speierkörper fehlt");
+            assert!(
+                uk >= o.sill - 1e-6,
+                "UK Speier {uk} unter der Anstauhöhe {} (Dachhaut {dachhaut})",
+                o.sill
+            );
         }
     }
 }
