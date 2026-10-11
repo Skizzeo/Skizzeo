@@ -1535,6 +1535,7 @@ pub fn auto_schluessel() -> impl Iterator<Item = (&'static str, &'static str, &'
         .chain(crate::qto_site::SCHLUESSEL)
         .chain(crate::qto_dach::SCHLUESSEL)
         .chain(crate::roof::SCHLUESSEL)
+        .chain(crate::fallrohr::SCHLUESSEL)
         .chain(crate::qto_fassade::SCHLUESSEL)
 }
 
@@ -1796,6 +1797,8 @@ pub fn schedule(model: &Model) -> Schedule {
             }
             // ohne Wandzug, oben gerechnet
             ElementKind::Ext(_) => continue,
+            // Mengen als Automatikmengen am Bauteil (`downpipe.*`)
+            ElementKind::Downpipe { .. } => (None, None),
         };
         let storey = schedule_storey(model, e);
         let set = match e.kind {
@@ -1913,6 +1916,22 @@ pub fn schedule(model: &Model) -> Schedule {
             formula: String::new(),
         };
         sched.auto.extend(crate::roof::roof_mengen(&vorlage, r));
+        // Regenfallrohre an den Abläufen des Dachs (Jörn 11.10.)
+        for d in model.downpipes_of(*id) {
+            let Some(e) = model.element(d) else { continue };
+            let ElementKind::Downpipe { drain, .. } = e.kind else {
+                continue;
+            };
+            let Some(p) = r.downpipes.get(drain as usize) else {
+                continue;
+            };
+            let vorlage = AutoMenge {
+                element: d,
+                number: e.number.clone(),
+                ..vorlage.clone()
+            };
+            sched.auto.extend(crate::fallrohr::mengen(&vorlage, p));
+        }
     }
     // Zulagen am Attikablech, nach den Mengen der Gründung
     let dach = crate::qto_dach::bauteil_mengen(model, &sched);
@@ -2491,6 +2510,7 @@ fn material_sums(model: &Model, storeys: &[StoreyQto]) -> Vec<MaterialSum> {
             ElementKind::Wall(_)
             | ElementKind::RoofTerrace { .. }
             | ElementKind::Roof { .. }
+            | ElementKind::Downpipe { .. }
             | ElementKind::Ext(_) => None,
         });
         match (q, mat) {

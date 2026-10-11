@@ -96,12 +96,13 @@ pub fn spec(c: Category) -> &'static KindSpec {
         Category::Coping => &COPING,
         Category::PerimeterInsulation => &PERIMETER_INSULATION,
         Category::Parapet => &PARAPET,
+        Category::Downpipe => &DOWNPIPE,
         Category::Extension => &EXTENSION,
     }
 }
 
 /// Rang im Mengenfenster für alles, was dort keinen eigenen Platz hat.
-const LAST: u8 = 10;
+const LAST: u8 = 11;
 
 const EXTERIOR_WALL: KindSpec = KindSpec {
     category: Category::ExteriorWall,
@@ -406,6 +407,27 @@ const PARAPET: KindSpec = KindSpec {
     needs_type: true,
     once: false,
     default_trade: None,
+};
+
+/// Regenfallrohr außen am Ablauf des Flachdachs (Jörn 11.10.,
+/// entwaesserung/konzept-regenfallrohr.md): Klempnerarbeiten nach VOB/C,
+/// Dachentwässerung in KG 363; im Mengenfenster nach dem Attikablech.
+const DOWNPIPE: KindSpec = KindSpec {
+    category: Category::Downpipe,
+    name: "Regenfallrohr",
+    short: "Regenfallrohr",
+    plural: "Regenfallrohre",
+    genus: Genus::Neuter,
+    prefix: "RF",
+    ifc: "IfcPipeSegment.RIGIDSEGMENT",
+    kg: Some(363),
+    qto_rank: 10,
+    szo: "downpipe",
+    external: true,
+    type_category: None,
+    needs_type: false,
+    once: false,
+    default_trade: Some("18339"),
 };
 
 /// Erweiterungsbauteile (.szb): Name, Präfix, IFC-Klasse und Kostengruppe

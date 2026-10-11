@@ -320,13 +320,13 @@ pub const KGS: [u32; 17] = [
 ];
 
 /// In Skizzeo belegte Präfixe (§5).
-pub const BELEGT: [&str; 17] = [
+pub const BELEGT: [&str; 18] = [
     "AW", "IW", "DE", "SP", "DA", "FE", "TU", "OE", "R", "FS", "RD", "UD", "DT", "AB", "GB", "AK",
-    "PD",
+    "PD", "RF",
 ];
 
 /// Bauteilarten in Skizzeo (§10).
-pub const ARTEN: [&str; 12] = [
+pub const ARTEN: [&str; 13] = [
     "exterior",
     "interior",
     "floor",
@@ -339,6 +339,7 @@ pub const ARTEN: [&str; 12] = [
     "coping",
     "parapet",
     "roof",
+    "downpipe",
 ];
 
 /// Werks-Leistungen (§10, aus werk.szk).

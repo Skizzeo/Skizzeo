@@ -3675,11 +3675,11 @@ impl App {
                     self.flush(w);
                 }
             }
-            Id::PropsDrains => {
+            Id::PropsAction(a) => {
                 if let Some(id) = self.sel.id {
                     if let Some(b) = sk_model::edit_blocked(self.scene.model(), &[id]) {
                         self.show_locked(b, Some((id, delete::Act::Field)));
-                    } else if self.scene.propose_roof_drains(id) {
+                    } else if self.scene.props_action(id, a) {
                         self.upload_model();
                     }
                 }
@@ -5057,7 +5057,7 @@ impl App {
                 K::Floor(_) | K::EdgeStrip { .. } | K::SoffitInsulation { .. } => SelKind::Floor,
                 K::RoofTerrace { .. } | K::Coping { .. } | K::Roof { .. } => SelKind::Terrace,
                 // Thema „Erweiterungen“, siehe `sync_help`
-                K::Ext(_) => return None,
+                K::Ext(_) | K::Downpipe { .. } => return None,
             })
         });
         help::HelpCtx {

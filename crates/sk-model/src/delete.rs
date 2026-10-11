@@ -78,6 +78,9 @@ pub fn refusal_lines(m: &Model, id: ElementId, r: &Refusal) -> Vec<&'static str>
                 "Das Attikablech folgt der Dachterrasse. Seinen Baustoff stellst du im Paneel ein.",
             ]
         }
+        Some(Category::Downpipe) => {
+            vec!["Das Regenfallrohr folgt dem Ablauf. Abläufe setzt und löschst du am Flachdach."]
+        }
         Some(Category::Parapet) => {
             vec![
                 "Die Aufkantung folgt dem Flachdach. Ihre Höhe stellst du im Paneel Geschosse ein.",
@@ -164,6 +167,7 @@ impl Model {
             | ElementKind::RoofTerrace { floor }
             | ElementKind::Coping { floor }
             | ElementKind::Roof { floor, .. } => Err(Refusal::Derived { from: floor }),
+            ElementKind::Downpipe { roof, .. } => Err(Refusal::Derived { from: roof }),
             ElementKind::Ext(_) if e.locked => Err(Refusal::Locked(id)),
             ElementKind::Ext(_) => Ok(()),
         }

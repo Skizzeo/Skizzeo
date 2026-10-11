@@ -118,7 +118,8 @@ fn a330_ebene_flachdach_ein_und_ausblenden() {
         .filter(|(_, x)| x.storey == st)
         .map(|(id, _)| id)
         .collect();
-    assert_eq!(ebene.len(), 6);
+    // Aufkantungen, Dach, Blech und je Ablauf ein Regenfallrohr
+    assert_eq!(ebene.len(), 8);
     let mut v = s.model().visibility().clone();
     for id in &ebene {
         v.hidden.insert(s.model().element(*id).unwrap().guid);
@@ -305,7 +306,8 @@ fn a334_mengen_flachdach() {
         [
             (Category::Parapet, 4),
             (Category::Roof, 1),
-            (Category::Coping, 1)
+            (Category::Coping, 1),
+            (Category::Downpipe, 2)
         ]
     );
     let zeile = |id| {
@@ -585,7 +587,11 @@ fn a338_gefaelle_im_paneel() {
     s.undo();
     assert_eq!(s.model().drainage_of(floor), Some(&Default::default()));
     assert!(s.flat_roof_over(floor).unwrap().slope.is_none());
-    assert_eq!(sk_model::szo::write(s.model()), ohne);
+    // die Nummern der Regenfallrohre an den neuen Abläufen bleiben vergeben
+    assert_eq!(
+        sk_model::szo::write(s.model()),
+        ohne.replacen(" next=RF:2", " next=RF:4", 1)
+    );
     s.redo();
     assert_eq!(s.model().drainage_of(floor), Some(&d));
 

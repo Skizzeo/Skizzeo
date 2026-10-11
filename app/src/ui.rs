@@ -150,8 +150,9 @@ pub enum Id {
     /// „bündig setzen“.
     PropsLink,
     PropsFlush,
-    /// „Abläufe vorschlagen“ im Abschnitt „Gefälle“ des Flachdachs (G2).
-    PropsDrains,
+    /// Knopf unter einem Abschnitt der Eigenschaften: „Abläufe vorschlagen“
+    /// (G2), Notentwässerung und Kontrollablauf des Regenfallrohrs.
+    PropsAction(crate::selection::fallrohr::Action),
     /// „Mehr …“ unter dem Aufbau der Dachterrasse: klappt die Schichtliste
     /// auf und zu.
     PropsMore,
@@ -216,6 +217,8 @@ pub enum Field {
     RoofInsulation,
     /// Gefälle des Flachdachs in % (0 = waagerecht; Gefälledämmung G2).
     RoofSlope,
+    /// Schellenabstand des Regenfallrohrs (m, Jörn 11.10.).
+    DownpipeSpacing,
     /// Paneel „Geschosse“ (in m): Kote der Gründungsunterkante, Kote der
     /// Oberkante eines Geschosses, Geschosshöhe (bei der Gründung die
     /// Gründungstiefe) und lichte Höhe.
@@ -313,7 +316,7 @@ impl Field {
     /// Zahl in Metern (sonst in Zentimetern).
     fn in_metres(self) -> bool {
         self.is_level()
-            || self == Field::Offset
+            || matches!(self, Field::Offset | Field::DownpipeSpacing)
             || matches!(self, Field::Draft(Draft::ClearEg | Draft::ClearOg))
     }
 
@@ -2057,7 +2060,7 @@ impl Ui {
             | Id::PropsType
             | Id::PropsLink
             | Id::PropsFlush
-            | Id::PropsDrains
+            | Id::PropsAction(_)
             | Id::PropsMore
             | Id::PropsMaterial(_)
             | Id::ExtListe(_)
@@ -2084,7 +2087,7 @@ impl Ui {
             }
             // Gesperrt (Paket 4): Felder, Typ und Kette blass
             Id::Field(f) if Ui::field_panel(f) == Panel::Props => self.props_locked(),
-            Id::PropsType | Id::PropsLink | Id::PropsDrains => self.props_locked(),
+            Id::PropsType | Id::PropsLink | Id::PropsAction(_) => self.props_locked(),
             _ => false,
         }
     }
