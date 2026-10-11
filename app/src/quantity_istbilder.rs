@@ -630,7 +630,7 @@ fn istbilder_rechenweg() {
         return;
     };
     std::fs::create_dir_all(&dir).unwrap();
-    let mut b = Bilder {
+    let b = Bilder {
         t: Theme::dark(),
         fonts,
         dir,
