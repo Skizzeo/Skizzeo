@@ -4,8 +4,10 @@
 //! zur Wand davor (bzw. zur eigenen Richtung), Umschalt zieht frei; Flächen
 //! und freie Enden anderer Wände ziehen das Ende an. Loslassen auf einer
 //! Fläche ergibt T, auf einem freien Ende L (die Anschlüsse entstehen aus den
-//! Punkten). Eine Zahl setzt die Länge des Segments, Esc bricht ab. Teil von
-//! [`crate::wall_edit`]; die Rechnung steht in [`sk_model::Model::ende_punkte`].
+//! Punkten). Zurück auf die Wand davor geht es nicht (kein 180°-Schritt).
+//! Eine Zahl setzt die Länge des Segments; Esc schließt erst die Eingabe,
+//! dann bricht es ab. Teil von [`crate::wall_edit`]; die Rechnung steht in
+//! [`sk_model::Model::ende_punkte`].
 
 use super::drag_point;
 use crate::camera::Camera;
@@ -43,10 +45,15 @@ pub struct Outcome {
     pub fertig: bool,
 }
 
-/// Griffe der Wand `wand`: Enden ihres offenen Zuges, nur bei Innenwänden.
+/// Griffe der Wand `wand`: Enden ihres offenen Zuges, nur bei Innenwänden
+/// des aktiven Geschosses (eine im Baum gewählte Wand eines anderen
+/// Geschosses hat keine, Review #82 V3).
 pub fn griffe(scene: &Scene, wand: ElementId) -> Vec<(usize, Vec3)> {
     let m = scene.model();
-    if m.element(wand).map(|e| e.category) != Some(Category::InteriorWall) {
+    let hier = m
+        .element(wand)
+        .is_some_and(|e| e.category == Category::InteriorWall && e.storey == scene.active_storey());
+    if !hier {
         return Vec::new();
     }
     m.wand_enden(wand)
@@ -85,10 +92,15 @@ pub struct EndeZug {
     /// Bezug des Winkelsprungs: Richtung der Wand davor im Zug, sonst die
     /// eigene Richtung beim Greifen.
     bezug: Vec3,
+    /// Gibt es die Wand davor? Dann fehlt der 180°-Schritt.
+    davor: bool,
     /// Höhe des Grundrisses.
     z: f64,
     /// Punkte beim Greifen (Geisterlinie).
     original: Vec3,
+    /// Zuletzt gesetztes Ende: bleibt beim Loslassen an einer abgelehnten
+    /// Stelle.
+    gesetzt: Vec3,
     /// Flächen und freie Enden der anderen Wände im Geschoss.
     fang: Fangziele,
     /// Ende jetzt und das gefangene Ziel (Name, Strecke der Fläche).
@@ -116,7 +128,7 @@ impl EndeZug {
         } else {
             None
         };
-        let mut fang = m.fangziele(m.element(wand)?.storey);
+        let mut fang = scene.fangziele(m.element(wand)?.storey);
         let eigene = &r.segments;
         fang.flaechen.retain(|f| !eigene.contains(&f.wand));
         fang.enden.retain(|e| !eigene.contains(&e.wand));
@@ -126,8 +138,10 @@ impl EndeZug {
             ende,
             fest: *fest,
             bezug: davor.unwrap_or(eigen),
+            davor: davor.is_some(),
             z,
             original: *jetzt,
+            gesetzt: *jetzt,
             fang,
             jetzt: *jetzt,
             ziel: None,
@@ -140,7 +154,8 @@ impl EndeZug {
     }
 
     /// Richtung vom festen Punkt zu `p`: im Winkelsprung zum Bezug, mit
-    /// `frei` (Umschalt) wie gezogen.
+    /// `frei` (Umschalt) wie gezogen. Zurück auf die Wand davor (180°)
+    /// springt es nicht, sondern auf 135° (Review #82 3).
     fn richtung(&self, p: Vec3, frei: bool) -> Vec3 {
         let v = vec3(p.x - self.fest.x, p.y - self.fest.y, 0.0);
         if v.length() < 1.0 {
@@ -151,7 +166,10 @@ impl EndeZug {
         }
         let b = self.bezug;
         let w = (b.x * v.y - b.y * v.x).atan2(b.dot(v));
-        let a = (w / SPRUNG).round() * SPRUNG;
+        let mut a = (w / SPRUNG).round() * SPRUNG;
+        if self.davor && a.abs() > std::f64::consts::PI - 1e-6 {
+            a = (std::f64::consts::PI - SPRUNG).copysign(w);
+        }
         let (s, c) = a.sin_cos();
         vec3(b.x * c - b.y * s, b.x * s + b.y * c, 0.0)
     }
@@ -215,11 +233,15 @@ impl EndeZug {
                 let vorher = scene.model().run(run).map(|r| r.points.clone());
                 if vorher.as_ref() == Some(&pts) {
                     self.fehler = None;
+                    self.gesetzt = p;
                     return false;
                 }
                 scene.set_run_points(run, &pts);
                 let ok = scene.model().run(run).is_some_and(|r| r.points == pts);
                 self.fehler = (!ok).then_some(EckeFehler::Ungueltig);
+                if ok {
+                    self.gesetzt = p;
+                }
                 ok
             }
             Err(e) => {
@@ -281,11 +303,12 @@ impl EndeZug {
                 let gilt = !matches!(self.input.as_ref().and_then(|i| i.value(0)), Some(Err(_)));
                 self.schliessen(scene, gilt, &mut out);
             }
+            // Mit offener Eingabe schließt Esc erst sie (unten)
             Event::Key {
                 key: Key::Escape,
                 down: true,
                 ..
-            } => self.schliessen(scene, false, &mut out),
+            } if self.input.is_none() => self.schliessen(scene, false, &mut out),
             Event::Key {
                 key,
                 down: true,
@@ -325,13 +348,20 @@ impl EndeZug {
         out
     }
 
-    /// Pille: Eingabe, sonst Ziel und Länge oder der Grund der Ablehnung.
+    /// Pille: Eingabe, sonst Ziel und Länge oder der Grund der Ablehnung
+    /// mit dem, was beim Loslassen bleibt (Review #82 6).
     pub fn pill(&self) -> Option<(String, bool)> {
         if let Some(i) = &self.input {
             return Some((i.text([LABEL, ""]), true));
         }
         if let Some(f) = self.fehler {
-            return Some((f.message().to_string(), false));
+            let bleibt = if (self.gesetzt - self.original).length() < 0.5 {
+                "wie vorher".to_string()
+            } else {
+                let l = crate::ui::m_text((self.gesetzt - self.fest).length());
+                format!("{LABEL} {l} m")
+            };
+            return Some((format!("{} Loslassen: {bleibt}", f.message()), false));
         }
         let l = crate::ui::m_text((self.jetzt - self.fest).length());
         Some(match &self.ziel {
@@ -419,6 +449,11 @@ mod tests {
     /// Haus 10 × 8 m; Innenwand a senkrecht bei x = 2 m von 1 bis 4 m,
     /// Innenwand b waagerecht bei y = 6 m von 5 bis 8 m.
     fn haus() -> (Scene, ElementId, ElementId) {
+        let (m, a, b) = modell();
+        (Scene::with_model(m), a, b)
+    }
+
+    fn modell() -> (Model, ElementId, ElementId) {
         let mut m = Model::new();
         let st = m.defaults().storey;
         let aw = m.defaults().exterior_wall;
@@ -446,7 +481,7 @@ mod tests {
         };
         let a = innen(vec3(2000.0, 1000.0, 0.0), vec3(2000.0, 4000.0, 0.0));
         let b = innen(vec3(5000.0, 6000.0, 0.0), vec3(8000.0, 6000.0, 0.0));
-        (Scene::with_model(m), a, b)
+        (m, a, b)
     }
 
     fn bewege(z: &mut EndeZug, s: &mut Scene, c: &Camera, p: Vec3, shift: bool) -> Outcome {
@@ -632,5 +667,107 @@ mod tests {
         assert!(!e.is_dragging());
         assert_eq!(s.undo_label(), Some(SCHRITT));
         assert!(nah(enden(&s, a).1, vec3(2000.0, 5000.0, 0.0)));
+    }
+
+    fn taste(z: &mut EndeZug, s: &mut Scene, c: &Camera, key: Key) -> Outcome {
+        let e = Event::Key {
+            key,
+            down: true,
+            mods: Default::default(),
+            repeat: false,
+        };
+        z.handle(&e, s, c, W, H, 1.0)
+    }
+
+    /// Zug mit Knick: Das Ende des zweiten Segments springt nicht auf das
+    /// erste zurück (kein 180°-Schritt); frei gezogen lehnt es ab, die Pille
+    /// nennt, was beim Loslassen bleibt (Review #82 3 und 6).
+    #[test]
+    fn faltet_nicht_zurueck() {
+        let c = cam();
+        let (mut m, ..) = modell();
+        let iw = m.defaults().interior_wall;
+        let st = m.defaults().storey;
+        let r = m
+            .add_wall_run(
+                &[
+                    vec3(7000.0, 1000.0, 0.0),
+                    vec3(7000.0, 4000.0, 0.0),
+                    vec3(9000.0, 4000.0, 0.0),
+                ],
+                false,
+                RefSide::Center,
+                st,
+                iw,
+                Category::InteriorWall,
+            )
+            .unwrap();
+        let w = m.wall_at(r, 1).unwrap();
+        let mut s = Scene::with_model(m);
+        let mut z = EndeZug::greifen(&mut s, w, 1, 0.0).unwrap();
+        bewege(&mut z, &mut s, &c, vec3(7000.0, 2500.0, 0.0), false);
+        let p = s.model().run(r).unwrap().points.clone();
+        let d = (p[2] - p[1]).normalized();
+        assert!(
+            (d.y + std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6 && d.x.abs() > 0.7,
+            "135° statt 180°: {p:?}"
+        );
+        // Frei gezogen auf das erste Segment: abgelehnt, es bleibt der letzte Stand
+        let o = bewege(&mut z, &mut s, &c, vec3(7000.0, 2500.0, 0.0), true);
+        assert!(!o.changed);
+        let pille = z.pill().unwrap().0;
+        assert!(
+            pille.starts_with(EckeFehler::Faltet.message()) && pille.contains("Loslassen: Länge"),
+            "{pille}"
+        );
+        assert_eq!(s.model().run(r).unwrap().points, p);
+        los(&mut z, &mut s, &c);
+        assert_eq!(s.model().run(r).unwrap().points, p);
+        assert_eq!(s.undo_label(), Some(SCHRITT));
+    }
+
+    /// Esc schließt erst die Eingabe, das zweite bricht das Ziehen ab.
+    #[test]
+    fn esc_schliesst_erst_die_eingabe() {
+        let c = cam();
+        let (mut s, a, _) = haus();
+        let mut z = EndeZug::greifen(&mut s, a, 1, 0.0).unwrap();
+        bewege(&mut z, &mut s, &c, vec3(2000.0, 5000.0, 0.0), false);
+        taste(&mut z, &mut s, &c, Key::Char('2'));
+        assert!(z.input.is_some());
+        let o = taste(&mut z, &mut s, &c, Key::Escape);
+        assert!(!o.fertig && z.input.is_none());
+        assert!(
+            nah(enden(&s, a).1, vec3(2000.0, 5000.0, 0.0)),
+            "wieder an der Maus"
+        );
+        let o = taste(&mut z, &mut s, &c, Key::Escape);
+        assert!(o.fertig);
+        assert!(nah(enden(&s, a).1, vec3(2000.0, 4000.0, 0.0)));
+        assert!(s.undo_label().is_none());
+    }
+
+    /// Eine Wand eines anderen Geschosses (etwa im Baum gewählt) zeigt im
+    /// aktiven Geschoss keine Griffe (Review #82 V3).
+    #[test]
+    fn keine_griffe_aus_anderem_geschoss() {
+        let (mut m, ..) = modell();
+        let b = m.add_building(0);
+        let st = m.ground_of(Some(b)).unwrap();
+        let iw = m.defaults().interior_wall;
+        let r = m
+            .add_wall_run(
+                &[vec3(20000.0, 0.0, 0.0), vec3(23000.0, 0.0, 0.0)],
+                false,
+                RefSide::Center,
+                st,
+                iw,
+                Category::InteriorWall,
+            )
+            .unwrap();
+        let w = m.wall_at(r, 0).unwrap();
+        let s = Scene::with_model(m);
+        assert_ne!(s.active_storey(), st);
+        assert!(griffe(&s, w).is_empty());
     }
 }

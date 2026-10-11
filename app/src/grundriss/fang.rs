@@ -77,7 +77,7 @@ impl WallTool {
         }
         self.fang_stand = Some(stand);
         self.snaps = scene.background_snaps();
-        self.fang = scene.model().fangziele(stand.1);
+        self.fang = scene.fangziele(stand.1);
     }
 
     /// Braucht die App weitere Bilder für den Einrast-Puls?

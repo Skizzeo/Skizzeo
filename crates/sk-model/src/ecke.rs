@@ -2,16 +2,21 @@
 //! Methoden von `Model`, aus `model.rs` ausgelagert.
 //!
 //! Beide ändern nur freie Enden offener Züge: Ein Ende läuft auf seiner
-//! Bezugslinie bis zum Ziel, die Richtung der Wand bleibt. Die Anschlüsse
-//! (L an der Ecke, T an der Fläche) entstehen danach wie beim Zeichnen aus
-//! den Punkten (B5a). Schlägt der zweite Zug bei „Ecke bilden“ fehl, ist der
-//! erste schon gesetzt; die App rollt den Schritt dann zurück
-//! (`Scene::edit_model`).
+//! Bezugslinie bis zum Ziel, die Richtung der Wand bleibt. Bei einer
+//! geteilten Wand gilt die ganze Flucht ihrer Stücke, es wandert das freie
+//! Ende des Zuges. Die Anschlüsse (L an der Ecke, T an der Fläche) entstehen
+//! danach wie beim Zeichnen aus den Punkten (B5a). Die App setzt die Punkte
+//! aus [`Model::ecke_punkte`] und [`Model::verlaengern_punkte`] in einem
+//! offenen Schritt und rollt ihn zurück, wenn ein Zug sie ablehnt.
 
 use super::*;
 use crate::fuge::MIN_PIECE;
 use crate::join;
 use crate::wall::{cross2, right_of};
+
+/// Kosinus von 10°: Wandende ziehen lehnt ab, wenn das Segment so eng auf
+/// das Segment davor zurückläuft.
+const FALTEN_COS: f64 = 0.984_807_753_012_208;
 
 /// Warum Ecke bilden oder Verlängern nicht geht.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,6 +34,12 @@ pub enum EckeFehler {
     ZuKurz,
     /// Das Modell lehnt die neuen Punkte ab (Stapel, Umriss).
     Ungueltig,
+    /// Verlängern: Die Bezugslinie läuft an der Zielwand vorbei.
+    Daneben,
+    /// Wandende ziehen: Das Segment liefe auf das Segment davor zurück.
+    Faltet,
+    /// Die Wände liegen in verschiedenen Geschossen.
+    Geschoss,
 }
 
 impl EckeFehler {
@@ -43,6 +54,9 @@ impl EckeFehler {
             EckeFehler::EinZug => "Beide Wände gehören zu einem Zug.",
             EckeFehler::ZuKurz => "Eine Wand würde kürzer als 10 cm.",
             EckeFehler::Ungueltig => "Das geht hier nicht: Der Grundriss würde ungültig.",
+            EckeFehler::Daneben => "Die Wand liefe an der Zielwand vorbei.",
+            EckeFehler::Faltet => "Die Wand läge auf der Wand davor.",
+            EckeFehler::Geschoss => "Die Wände liegen in verschiedenen Geschossen.",
         }
     }
 }
@@ -50,14 +64,19 @@ impl EckeFehler {
 /// Neue Punkte eines Zuges.
 pub type ZugPunkte = (RunId, Vec<Vec3>);
 
-/// Bezugslinie einer Wand: Zug, Segment, Anfang, Einheitsrichtung, Länge und
-/// ob Anfang bzw. Ende des Segments freie Enden des Zuges sind.
+/// Bezugslinie einer Wand oder der Flucht ihrer Stücke: Zug, Punkte am
+/// Anfang und Ende, Anfang, Einheitsrichtung, Länge, die Lage der Punkte,
+/// über die ein wanderndes Ende nicht hinaus darf, und ob Anfang bzw. Ende
+/// freie Enden des Zuges sind.
 struct Strecke {
     run: RunId,
-    seg: usize,
+    i: [usize; 2],
     p0: Vec3,
     d: Vec3,
     len: f64,
+    /// Für das Anfangsende der nächste Punkt danach, für das Endende der
+    /// davor (bei einem Segment: Länge bzw. 0).
+    innen: [f64; 2],
     frei: [bool; 2],
 }
 
@@ -81,11 +100,13 @@ impl Strecke {
 }
 
 impl Model {
+    /// Bezugslinie des Segments der Wand.
     fn strecke(&self, wall: ElementId) -> Result<Strecke, EckeFehler> {
         let (run, seg) = self.segment_of(wall).ok_or(EckeFehler::KeineWand)?;
         let r = self.run(run).ok_or(EckeFehler::KeineWand)?;
         let n = r.points.len();
-        let (a, b) = match (r.points.get(seg), r.points.get((seg + 1) % n.max(1))) {
+        let j = (seg + 1) % n.max(1);
+        let (a, b) = match (r.points.get(seg), r.points.get(j)) {
             (Some(a), Some(b)) if r.closed || seg + 1 < n => (flach(*a), flach(*b)),
             _ => return Err(EckeFehler::KeineWand),
         };
@@ -95,21 +116,64 @@ impl Model {
         }
         Ok(Strecke {
             run,
-            seg,
+            i: [seg, j],
             p0: a,
             d: (b - a) * (1.0 / len),
             len,
+            innen: [len, 0.0],
             frei: [!r.closed && seg == 0, !r.closed && seg + 2 == n],
         })
     }
 
-    /// Punkte des Zuges von `s`, dessen Ende `ende` (0 Anfang, 1 Ende des
-    /// Segments) an der Lage `bei` liegt; prüft freies Ende und Mindestlänge.
+    /// Bezugslinie der Wand über die Fugen ihres offenen Zuges hinweg, so
+    /// weit die Stücke in einer Flucht liegen (geteilte Wand, Review #82 4).
+    fn flucht(&self, wall: ElementId) -> Result<Strecke, EckeFehler> {
+        let s = self.strecke(wall)?;
+        let r = self.run(s.run).ok_or(EckeFehler::KeineWand)?;
+        if r.closed {
+            return Ok(s);
+        }
+        let p: Vec<Vec3> = r.points.iter().map(|q| flach(*q)).collect();
+        let gerade = |a: usize, b: usize| {
+            let e = p[b] - p[a];
+            let l = e.length();
+            l > 1e-6 && cross2(e, s.d).abs() < 1e-6 * l && e.dot(s.d) > 0.0
+        };
+        let (mut i0, mut i1) = (s.i[0], s.i[1]);
+        while i0 > 0 && gerade(i0 - 1, i0) {
+            i0 -= 1;
+        }
+        while i1 + 1 < p.len() && gerade(i1, i1 + 1) {
+            i1 += 1;
+        }
+        if (i0, i1) == (s.i[0], s.i[1]) {
+            return Ok(s);
+        }
+        let len = (p[i1] - p[i0]).length();
+        let mut f = Strecke {
+            run: s.run,
+            i: [i0, i1],
+            p0: p[i0],
+            d: s.d,
+            len,
+            innen: [0.0; 2],
+            frei: [i0 == 0, i1 + 1 == p.len()],
+        };
+        f.innen = [f.bei(p[i0 + 1]), f.bei(p[i1 - 1])];
+        Ok(f)
+    }
+
+    /// Punkte des Zuges von `s`, dessen Ende `ende` (0 Anfang, 1 Ende der
+    /// Strecke) an der Lage `bei` liegt; prüft freies Ende und Mindestlänge.
     fn mit_ende(&self, s: &Strecke, ende: usize, bei: f64) -> Result<ZugPunkte, EckeFehler> {
         if !s.frei[ende] {
             return Err(EckeFehler::KeinEnde);
         }
-        let rest = if ende == 0 { s.len - bei } else { bei };
+        let rest = if ende == 0 {
+            s.innen[0] - bei
+        } else {
+            bei - s.innen[1]
+        };
         if rest < MIN_PIECE {
             return Err(EckeFehler::ZuKurz);
         }
@@ -120,14 +184,27 @@ impl Model {
             .iter()
             .map(|p| flach(*p))
             .collect();
-        pts[s.seg + ende] = s.punkt(bei);
+        pts[s.i[ende]] = s.punkt(bei);
         Ok((s.run, pts))
     }
 
-    /// Hat die Wand ein freies Ende (Anfang oder Ende eines offenen Zuges)?
-    /// Nur dann gehen „Ecke bilden“ und „Verlängern“.
+    /// Beide Wände in einem Geschoss, aber nicht in einem Zug.
+    fn zwei_zuege(&self, a: &Strecke, b: &Strecke) -> Result<(), EckeFehler> {
+        if a.run == b.run {
+            return Err(EckeFehler::EinZug);
+        }
+        let g = |s: &Strecke| self.run(s.run).map(|r| r.storey);
+        if g(a) != g(b) {
+            return Err(EckeFehler::Geschoss);
+        }
+        Ok(())
+    }
+
+    /// Hat die Wand oder die Flucht ihrer Stücke ein freies Ende (Anfang oder
+    /// Ende eines offenen Zuges)? Nur dann gehen „Ecke bilden“ und
+    /// „Verlängern“.
     pub fn freies_ende(&self, wall: ElementId) -> bool {
-        self.strecke(wall).is_ok_and(|s| s.frei.iter().any(|f| *f))
+        self.flucht(wall).is_ok_and(|s| s.frei.iter().any(|f| *f))
     }
 
     /// Neue Punkte für [`Model::ecke_bilden`], ohne etwas zu ändern (Vorschau).
@@ -138,10 +215,8 @@ impl Model {
         b: ElementId,
         b_bleibt: Vec3,
     ) -> Result<[ZugPunkte; 2], EckeFehler> {
-        let (sa, sb) = (self.strecke(a)?, self.strecke(b)?);
-        if sa.run == sb.run {
-            return Err(EckeFehler::EinZug);
-        }
+        let (sa, sb) = (self.flucht(a)?, self.flucht(b)?);
+        self.zwei_zuege(&sa, &sb)?;
         let ta = sa.schnitt(sb.p0, sb.d).ok_or(EckeFehler::Parallel)?;
         let tb = sb.bei(sa.punkt(ta));
         // Es bleibt die Seite des Schnittpunkts, auf der der Klick liegt; das
@@ -157,6 +232,8 @@ impl Model {
     /// ihrer Bezugslinien, verlängert oder gekürzt. Es bleibt jeweils die
     /// Seite, auf der `a_bleibt` bzw. `b_bleibt` liegt (Klickpunkte); das
     /// Ende auf der anderen Seite wandert. Die Ecke entsteht danach als L.
+    /// Lehnt der zweite Zug ab, ist der erste schon gesetzt: im offenen
+    /// Schritt zurückrollen.
     pub fn ecke_bilden(
         &mut self,
         a: ElementId,
@@ -177,16 +254,21 @@ impl Model {
         a: ElementId,
         ziel: ElementId,
     ) -> Result<ZugPunkte, EckeFehler> {
-        let (sa, sb) = (self.strecke(a)?, self.strecke(ziel)?);
-        if sa.run == sb.run {
-            return Err(EckeFehler::EinZug);
-        }
+        let (sa, sb) = (self.flucht(a)?, self.flucht(ziel)?);
+        self.zwei_zuege(&sa, &sb)?;
         if let Some(tx) = sa.schnitt(sb.p0, sb.d) {
             // Quer oder schräg: Das Ende näher am Schnittpunkt läuft bis an
             // die Fläche der Zielwand, die dem anderen Ende zugewandt ist
+            let (lo, hi) = self.base_chain(sb.run).ok_or(EckeFehler::KeineWand)?.span();
+            // Nur, wenn die Bezugslinie die Zielwand trifft (über ihre Enden
+            // hinaus höchstens um ihre Dicke, für Gehrung und Anschluss)
+            let tb = sb.bei(sa.punkt(tx));
+            let e = hi - lo;
+            if tb < -e || tb > sb.len + e {
+                return Err(EckeFehler::Daneben);
+            }
             let ende = usize::from(tx.abs() > (tx - sa.len).abs());
             let fest = sa.punkt(if ende == 0 { sa.len } else { 0.0 });
-            let (lo, hi) = self.chain(sb.run).ok_or(EckeFehler::KeineWand)?.span();
             let n = right_of(sb.d);
             let seite = (fest - sb.p0).dot(n);
             let off = if seite > (lo + hi) * 0.5 { hi } else { lo };
@@ -242,7 +324,8 @@ impl Model {
 
     /// Neue Punkte des Zuges, wenn Ende `ende` der Wand nach `p` wandert
     /// (Vorschau beim Ziehen). Das andere Ende des Segments bleibt; das
-    /// Segment wird nicht kürzer als 10 cm.
+    /// Segment wird nicht kürzer als 10 cm und faltet nicht auf das Segment
+    /// davor zurück (Review #82 3).
     pub fn ende_punkte(
         &self,
         wall: ElementId,
@@ -254,7 +337,8 @@ impl Model {
             return Err(EckeFehler::KeinEnde);
         }
         let fest = s.punkt(if ende == 0 { s.len } else { 0.0 });
-        if (flach(p) - fest).length() < MIN_PIECE {
+        let u = flach(p) - fest;
+        if u.length() < MIN_PIECE {
             return Err(EckeFehler::ZuKurz);
         }
         let mut pts: Vec<Vec3> = self
@@ -264,7 +348,18 @@ impl Model {
             .iter()
             .map(|q| flach(*q))
             .collect();
-        pts[s.seg + ende] = flach(p);
+        // Segment davor: am festen Punkt
+        let davor = if ende == 1 {
+            s.i[0].checked_sub(1)
+        } else {
+            Some(s.i[1] + 1).filter(|k| *k < pts.len())
+        };
+        if let Some(v) = davor.map(|k| pts[k] - fest) {
+            if u.dot(v) > FALTEN_COS * u.length() * v.length() {
+                return Err(EckeFehler::Faltet);
+            }
+        }
+        pts[s.i[ende]] = flach(p);
         Ok((s.run, pts))
     }
 }
@@ -543,6 +638,163 @@ mod tests {
         assert_eq!(
             m.ende_punkte(aw, 0, vec3(0.0, 0.0, 0.0)),
             Err(EckeFehler::KeinEnde)
+        );
+    }
+
+    /// Verlängern trifft die Zielwand: Läuft die Bezugslinie an der Wand
+    /// vorbei, gibt es keine Fläche und kein T; die Wand darf dann nicht bis
+    /// zur gedachten Verlängerung der Zielwand ins Leere laufen.
+    #[test]
+    fn verlaengern_nur_bis_an_eine_getroffene_wand() {
+        let (mut m, st, _) = haus();
+        let a = innenwand(
+            &mut m,
+            st,
+            vec3(3000.0, 2000.0, 0.0),
+            vec3(3000.0, 5000.0, 0.0),
+        );
+        let ziel = innenwand(
+            &mut m,
+            st,
+            vec3(5000.0, 7000.0, 0.0),
+            vec3(6000.0, 7000.0, 0.0),
+        );
+        assert_eq!(
+            m.verlaengern_punkte(a, ziel).unwrap_err(),
+            EckeFehler::Daneben
+        );
+        // Knapp an ihr Ende reicht: der Wandkörper trifft noch
+        let b = innenwand(
+            &mut m,
+            st,
+            vec3(6050.0, 2000.0, 0.0),
+            vec3(6050.0, 5000.0, 0.0),
+        );
+        assert!(m.verlaengern_punkte(b, ziel).is_ok());
+    }
+
+    /// Wandende ziehen faltet den Zug nicht zurück: Ein Ende, das auf das
+    /// eigene Vorsegment zurückläuft, legt zwei Wandkörper übereinander.
+    #[test]
+    fn wandende_faltet_nicht_zurueck() {
+        let (mut m, st, _) = haus();
+        let iw = m.defaults().interior_wall;
+        let r = m
+            .add_wall_run(
+                &[
+                    vec3(1000.0, 1000.0, 0.0),
+                    vec3(4000.0, 1000.0, 0.0),
+                    vec3(4000.0, 1500.0, 0.0),
+                ],
+                false,
+                RefSide::Center,
+                st,
+                iw,
+                Category::InteriorWall,
+            )
+            .unwrap();
+        let w = m.wall_at(r, 1).unwrap();
+        assert_eq!(
+            m.ende_punkte(w, 1, vec3(2000.0, 1000.0, 0.0)),
+            Err(EckeFehler::Faltet),
+            "Ende liegt auf dem Vorsegment"
+        );
+        // Auch der Anfang des ersten Segments nicht auf das zweite
+        let w0 = m.wall_at(r, 0).unwrap();
+        assert_eq!(
+            m.ende_punkte(w0, 0, vec3(4000.0, 2500.0, 0.0)),
+            Err(EckeFehler::Faltet)
+        );
+        // Spitz, aber nicht deckungsgleich, geht
+        assert!(m.ende_punkte(w, 1, vec3(2000.0, 1500.0, 0.0)).is_ok());
+    }
+
+    /// Geteilte Wand: Stück 0 hat an der Fuge kein freies Ende; Verlängern
+    /// und Ecke bilden nehmen das freie Ende des Zuges in der Flucht.
+    #[test]
+    fn geteilte_wand_wandert_am_zugende() {
+        let (mut m, st, t) = haus();
+        let aw = m.wall_at(m.runs().ids().next().unwrap(), 1).unwrap();
+        let a = innenwand(
+            &mut m,
+            st,
+            vec3(3000.0, 2000.0, 0.0),
+            vec3(3000.0, 5000.0, 0.0),
+        );
+        m.split_wall(a, &[1000.0]).unwrap();
+        let (run, _) = m.segment_of(a).unwrap();
+        assert_eq!(m.run(run).unwrap().points.len(), 3);
+        assert!(m.freies_ende(a));
+        m.verlaengern(a, aw).unwrap();
+        let p = &m.run(run).unwrap().points;
+        assert!(nah(p[0], vec3(3000.0, 2000.0, 0.0)), "{p:?}");
+        assert!(nah(p[1], vec3(3000.0, 3000.0, 0.0)), "Fuge bleibt: {p:?}");
+        assert!(nah(p[2], vec3(3000.0, 8000.0 - t, 0.0)), "{p:?}");
+        // Kürzen über die Fuge hinaus geht nicht
+        let quer = innenwand(
+            &mut m,
+            st,
+            vec3(2000.0, 2500.0, 0.0),
+            vec3(2800.0, 2500.0, 0.0),
+        );
+        assert_eq!(
+            m.ecke_punkte(
+                a,
+                vec3(3000.0, 2200.0, 0.0),
+                quer,
+                vec3(2500.0, 2500.0, 0.0)
+            )
+            .unwrap_err(),
+            EckeFehler::ZuKurz
+        );
+        // Ecke am freien Anfang des Zuges
+        let b = m.wall_at(run, 1).unwrap();
+        let unten = innenwand(
+            &mut m,
+            st,
+            vec3(1000.0, 1000.0, 0.0),
+            vec3(2500.0, 1000.0, 0.0),
+        );
+        m.ecke_bilden(
+            b,
+            vec3(3000.0, 6000.0, 0.0),
+            unten,
+            vec3(1500.0, 1000.0, 0.0),
+        )
+        .unwrap();
+        let p = &m.run(run).unwrap().points;
+        assert!(nah(p[0], vec3(3000.0, 1000.0, 0.0)), "{p:?}");
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    /// Wände in verschiedenen Geschossen bilden keine Ecke.
+    #[test]
+    fn verschiedene_geschosse() {
+        let (mut m, st, _) = haus();
+        let a = innenwand(
+            &mut m,
+            st,
+            vec3(2000.0, 1000.0, 0.0),
+            vec3(2000.0, 4000.0, 0.0),
+        );
+        let b2 = m.add_building(0);
+        let st2 = m.ground_of(Some(b2)).unwrap();
+        assert_ne!(st, st2);
+        let b = innenwand(
+            &mut m,
+            st2,
+            vec3(3000.0, 5000.0, 0.0),
+            vec3(6000.0, 5000.0, 0.0),
+        );
+        let mitte = vec3(2000.0, 2000.0, 0.0);
+        assert_eq!(
+            m.ecke_punkte(a, mitte, b, vec3(5000.0, 5000.0, 0.0))
+                .unwrap_err(),
+            EckeFehler::Geschoss
+        );
+        assert_eq!(
+            m.verlaengern_punkte(a, b).unwrap_err(),
+            EckeFehler::Geschoss
         );
     }
 }

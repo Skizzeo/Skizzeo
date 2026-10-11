@@ -45,7 +45,7 @@ Lichtes Maß | auf einer Wandfläche vor dem ersten Klick zeigt die Pille das li
 Beenden | Klick auf eine quer liegende Wandfläche oder ein Wandende, sonst **Enter** oder Doppelklick
 Ecke bilden | Wand wählen, „Ecke bilden“ im Paneel, dann Klick auf die zweite Wand auf der Seite, die bleibt
 Verlängern | Wand wählen, „Verlängern“, Klick auf die Zielwand; weitere Klicks verlängern weitere Wände bis dorthin, **Esc** beendet
-Wandende ziehen | Wand wählen, im Grundriss den Punkt an ihrem Ende ziehen; fängt wie beim Zeichnen, Zahl setzt die Länge, **Esc** bricht ab
+Wandende ziehen | Wand wählen, im Grundriss den Punkt an ihrem Ende ziehen; fängt wie beim Zeichnen, Zahl setzt die Länge; **Esc** schließt erst die Zahl, dann bricht es ab
 Typ | Chip im Werkzeug: Klick öffnet die Typ-Liste
 Löschen | wählen, dann **Entf** oder Rechtsklick › Löschen
 

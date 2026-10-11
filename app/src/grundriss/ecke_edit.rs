@@ -105,7 +105,7 @@ impl EckeWahl {
         if !m.freies_ende(wand) {
             return Err(EckeFehler::KeinEnde);
         }
-        let z = m.chain(run).map_or(0.0, |c| c.base);
+        let z = scene.chain(run).map_or(0.0, |c| c.base);
         Ok(EckeWahl {
             art,
             wand,
@@ -125,7 +125,9 @@ impl EckeWahl {
     }
 
     /// Wand unter der Maus im Geschoss der gewählten Wand, ohne die, die
-    /// gerade nicht in Frage kommt, mit dem Punkt auf der Ebene.
+    /// gerade nicht in Frage kommt, mit dem Punkt auf der Ebene. Die Züge
+    /// kommen berechnet aus der Szene; nur die, deren Quader die Maus
+    /// erreicht, werden genau geprüft (Review #82 1).
     fn wand_bei(
         &self,
         scene: &Scene,
@@ -150,14 +152,15 @@ impl EckeWahl {
             };
             ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
         };
+        let um = PICK_PX * 2.0 * mm_je_px(cam, g, w, h);
+        let weit = |(lo, hi): (Vec3, Vec3)| {
+            g.x < lo.x - um || g.x > hi.x + um || g.y < lo.y - um || g.y > hi.y + um
+        };
         let mut best: Option<(f64, ElementId)> = None;
-        for (run, r) in m.runs().iter() {
-            if r.storey != storey {
+        for (run, c, quader) in scene.zuege() {
+            if quader.is_some_and(weit) || m.run(run).is_none_or(|r| r.storey != storey) {
                 continue;
             }
-            let Some(c) = m.chain(run) else {
-                continue;
-            };
             for k in 0..c.segment_count() {
                 let (Some(q), Some(id)) = (c.segment_footprint(k), m.wall_at(run, k)) else {
                     continue;
@@ -207,49 +210,49 @@ impl EckeWahl {
         vorher.is_some() || self.hover.is_some()
     }
 
-    /// Führt den Schritt an der Wand unter der Maus aus.
+    /// Führt den Schritt an der Wand unter der Maus aus: die neuen Punkte
+    /// je Zug im offenen Schritt wie beim Ziehen, nur die betroffenen Züge
+    /// werden neu gerechnet (Review #82 2). Lehnt ein Zug ab, rollt der
+    /// Schritt ganz zurück.
     fn klick(&mut self, scene: &mut Scene, out: &mut Outcome) {
         let Some((b, bei)) = self.hover else {
             return;
         };
-        if let Err(e) = self.rechne(scene, b, bei) {
-            out.refused = Some(e);
-            return;
-        }
-        // Die Wand, deren Ende wandert, und bei der Ecke beide
-        let (wand, betroffen) = match (self.art, self.ziel) {
-            (Art::Ecke, _) => (self.wand, vec![self.wand, b]),
-            (Art::Verlaengern, None) => (self.wand, vec![self.wand]),
-            (Art::Verlaengern, Some(_)) => (b, vec![b]),
+        let zuege = match self.rechne(scene, b, bei) {
+            Ok(z) => z,
+            Err(e) => {
+                out.refused = Some(e);
+                return;
+            }
+        };
+        // Die Wand, deren Ende wandert (sie wird danach gewählt)
+        let (art, ziel) = (self.art, self.ziel);
+        let wand = match (art, ziel) {
+            (Art::Verlaengern, Some(_)) => b,
+            _ => self.wand,
         };
         let m = scene.model();
-        let spalte: Vec<ElementId> = betroffen.iter().flat_map(|w| m.stack_column(*w)).collect();
+        let spalte: Vec<ElementId> = geaendert(scene, &zuege)
+            .into_iter()
+            .flat_map(|w| m.stack_column(w))
+            .collect();
         if let Some(id) = sk_model::edit_blocked(m, &spalte) {
             out.locked = Some((id, wand));
             return;
         }
-        let mitte = mitte(scene, self.wand);
-        let (art, a, ziel) = (self.art, self.wand, self.ziel);
-        let mut res = Err(EckeFehler::Ungueltig);
-        let label = match art {
+        scene.begin(match art {
             Art::Ecke => "Ecke gebildet",
             Art::Verlaengern => "Wand verlängert",
-        };
-        scene.edit_model(label, |m| {
-            res = match (art, ziel) {
-                (Art::Ecke, _) => match mitte {
-                    Some(mitte) => m.ecke_bilden(a, mitte, b, bei),
-                    None => Err(EckeFehler::KeineWand),
-                },
-                (Art::Verlaengern, None) => m.verlaengern(a, b),
-                (Art::Verlaengern, Some(z)) => m.verlaengern(b, z),
-            };
-            res.is_ok()
         });
-        if let Err(e) = res {
-            out.refused = Some(e);
+        if !zuege
+            .iter()
+            .all(|(run, pts)| scene.set_run_points(*run, pts))
+        {
+            scene.rollback();
+            out.refused = Some(EckeFehler::Ungueltig);
             return;
         }
+        scene.commit();
         out.schritt = Some(wand);
         match (art, ziel) {
             (Art::Ecke, _) => out.fertig = true,
@@ -362,6 +365,49 @@ impl EckeWahl {
     }
 }
 
+/// Wände, deren Segment sich mit den neuen Punkten ändert.
+fn geaendert(scene: &Scene, zuege: &[ZugPunkte]) -> Vec<ElementId> {
+    let m = scene.model();
+    let mut out = Vec::new();
+    for (run, pts) in zuege {
+        let Some(r) = m.run(*run) else {
+            continue;
+        };
+        let n = r.points.len();
+        let anders = |k: usize| {
+            let (a, b) = (r.points[k % n], pts[k % n.max(1)]);
+            (a.x - b.x).abs() > 1e-9 || (a.y - b.y).abs() > 1e-9
+        };
+        for (k, w) in r.segments.iter().enumerate() {
+            if n == pts.len() && (anders(k) || anders(k + 1)) {
+                out.push(*w);
+            }
+        }
+    }
+    out
+}
+
+/// Millimeter je Bildpunkt an `g` (größere der beiden Achsen); ohne
+/// Projektion unendlich (dann prüft der Vortest nichts aus).
+fn mm_je_px(cam: &Camera, g: Vec3, w: f64, h: f64) -> f64 {
+    let Some(a) = cam.project(g, w, h) else {
+        return f64::INFINITY;
+    };
+    let l = [
+        sk_math::vec3(100.0, 0.0, 0.0),
+        sk_math::vec3(0.0, 100.0, 0.0),
+    ]
+    .into_iter()
+    .filter_map(|v| cam.project(g + v, w, h))
+    .map(|b| (b.0 - a.0).hypot(b.1 - a.1))
+    .fold(f64::INFINITY, f64::min);
+    if l > 1e-9 && l.is_finite() {
+        100.0 / l
+    } else {
+        f64::INFINITY
+    }
+}
+
 /// Mitte der Bezugslinie einer Wand: Von der gewählten Wand bleibt so der
 /// längere Teil.
 fn mitte(scene: &Scene, id: ElementId) -> Option<Vec3> {
@@ -422,6 +468,11 @@ mod tests {
     /// Haus 10 × 8 m mit Innenwänden: a senkrecht und b waagerecht, die
     /// sich nicht erreichen, d senkrecht unter b, e parallel zu b.
     fn haus() -> (Scene, [ElementId; 4]) {
+        let (m, w) = modell();
+        (Scene::with_model(m), w)
+    }
+
+    fn modell() -> (Model, [ElementId; 4]) {
         let mut m = Model::new();
         let st = m.defaults().storey;
         let aw = m.defaults().exterior_wall;
@@ -449,11 +500,11 @@ mod tests {
         };
         let w = [
             innen(vec3(2000.0, 1000.0, 0.0), vec3(2000.0, 4000.0, 0.0)),
-            innen(vec3(3000.0, 5000.0, 0.0), vec3(6000.0, 5000.0, 0.0)),
+            innen(vec3(1500.0, 5000.0, 0.0), vec3(6000.0, 5000.0, 0.0)),
             innen(vec3(5000.0, 1000.0, 0.0), vec3(5000.0, 3000.0, 0.0)),
             innen(vec3(7000.0, 6500.0, 0.0), vec3(9000.0, 6500.0, 0.0)),
         ];
-        (Scene::with_model(m), w)
+        (m, w)
     }
 
     fn ereignis(t: &mut EckeWahl, s: &mut Scene, c: &Camera, e: Event) -> Outcome {
@@ -576,5 +627,25 @@ mod tests {
         };
         let out = ereignis(&mut t, &mut s, &c, esc);
         assert!(out.fertig && !out.cancelled);
+    }
+
+    /// Geteilte Wand: Stück 0 startet; Verlängern läuft am freien Ende des
+    /// Zuges, die Fuge bleibt (Review #82 4).
+    #[test]
+    fn geteilte_wand_verlaengert_am_zugende() {
+        let c = cam();
+        let (mut m, [a, ..]) = modell();
+        m.split_wall(a, &[1000.0]).unwrap();
+        let mut s = Scene::with_model(m);
+        let mut t = EckeWahl::start(&s, a, Art::Verlaengern).unwrap();
+        let out = klick(&mut t, &mut s, &c, vec3(4000.0, 5010.0, 0.0));
+        assert_eq!(out.schritt, Some(a), "{out:?}");
+        let ti = dicke_innen(&s);
+        let (run, _) = s.model().segment_of(a).unwrap();
+        let p = s.model().run(run).unwrap().points.clone();
+        assert_eq!(p.len(), 3);
+        assert!((p[1] - vec3(2000.0, 2000.0, 0.0)).length() < 1e-6, "{p:?}");
+        assert!((p[2] - vec3(2000.0, 5000.0 - ti / 2.0, 0.0)).length() < 1e-6);
+        assert_eq!(s.undo_label(), Some("Wand verlängert"));
     }
 }
