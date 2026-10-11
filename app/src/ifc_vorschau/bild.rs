@@ -399,10 +399,98 @@ impl Zeichner {
     }
 }
 
+/// Unterteilung eines Bildpunkts für die Ecken der Dreiecke (Festkomma).
+const SUB: i64 = 256;
+/// Weiter draußen liegende Ecken (Bildpunkte) gibt es nach dem Schneiden an
+/// der Nahebene nicht; was darüber liegt, wird nicht gezeichnet.
+const WEIT: f64 = (1u64 << 40) as f64;
+
+/// Wert der Kante `p` → `q` am Punkt `r` (Festkomma, exakt).
+fn kante(p: (i64, i64), q: (i64, i64), r: (i64, i64)) -> i128 {
+    (q.0 - p.0) as i128 * (r.1 - p.1) as i128 - (q.1 - p.1) as i128 * (r.0 - p.0) as i128
+}
+
+/// Ganze Zahl für die Spannen: `i64`, solange die Ecken im üblichen Bild
+/// liegen (schnell), sonst `i128` (Ecken weit draußen nach dem Schneiden).
+trait Ganz:
+    Copy
+    + Ord
+    + std::ops::Add<Output = Self>
+    + std::ops::Sub<Output = Self>
+    + std::ops::Mul<Output = Self>
+    + std::ops::Neg<Output = Self>
+{
+    fn von(x: i64) -> Self;
+    fn ab(self, d: Self) -> Self;
+    fn breit(self) -> i128;
+}
+
+impl Ganz for i64 {
+    fn von(x: i64) -> i64 {
+        x
+    }
+    fn ab(self, d: i64) -> i64 {
+        self.div_euclid(d)
+    }
+    fn breit(self) -> i128 {
+        self as i128
+    }
+}
+
+impl Ganz for i128 {
+    fn von(x: i64) -> i128 {
+        x as i128
+    }
+    fn ab(self, d: i128) -> i128 {
+        self.div_euclid(d)
+    }
+    fn breit(self) -> i128 {
+        self
+    }
+}
+
+/// Kante von Ecke zu Ecke (Festkomma) mit ihrer Schwelle: 0, wenn Punkte
+/// genau auf ihr dazugehören, sonst 1.
+type Kante = ((i64, i64), (i64, i64), i64);
+
+/// Spalten `x0..=x1` je Zeile `y0..=y1`, in denen alle drei Kanten
+/// mindestens ihre Schwelle erreichen (Bildpunktmitten).
+fn spannen<G: Ganz>(
+    kanten: &[Kante; 3],
+    (y0, y1): (i64, i64),
+    w: usize,
+    mut zeile: impl FnMut(i64, usize, usize),
+) {
+    let g = G::von;
+    for y in y0..=y1 {
+        let py = y * SUB + SUB / 2;
+        let (mut lo, mut hi) = (g(0), g(w as i64 - 1));
+        for &(p, q, schwelle) in kanten {
+            // Wert an Spalte x: e0 + x·s
+            let e0 =
+                (g(q.0) - g(p.0)) * (g(py) - g(p.1)) - (g(q.1) - g(p.1)) * (g(SUB / 2) - g(p.0));
+            let s = -(g(q.1) - g(p.1)) * g(SUB);
+            let t = g(schwelle);
+            if s > g(0) {
+                lo = lo.max(-(e0 - t).ab(s));
+            } else if s < g(0) {
+                hi = hi.min((e0 - t).ab(-s));
+            } else if e0 < t {
+                hi = g(-1);
+            }
+        }
+        if lo <= hi {
+            zeile(y, lo.breit() as usize, hi.breit() as usize);
+        }
+    }
+}
+
 /// Füllt ein Dreieck im Bild; `set(index, 1/tiefe)` für jeden getroffenen
-/// Bildpunkt (Mitte). Kanten- und Tiefenfunktion sind im Bild linear und
-/// laufen je Zeile schrittweise; je Zeile wird nur die Spanne innerhalb des
-/// Dreiecks besucht.
+/// Bildpunkt (Mitte). Die Ecken liegen im Festkomma, die Kantenwerte sind
+/// exakt und haben je Kante eine feste Richtung: Ein Bildpunkt genau auf
+/// einer gemeinsamen Kante gehört genau einem der beiden Dreiecke (Regel
+/// wie „oben links“), dazwischen bleibt keine Lücke. Je Zeile wird nur die
+/// Spanne innerhalb des Dreiecks besucht; die Tiefe läuft schrittweise.
 fn dreieck(
     a: (f64, f64, f64),
     b: (f64, f64, f64),
@@ -410,59 +498,70 @@ fn dreieck(
     (w, h): (usize, usize),
     mut set: impl FnMut(usize, f64),
 ) {
-    let fl = (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
-    // auch NaN: keine Fläche
-    if fl.abs().partial_cmp(&1e-12) != Some(std::cmp::Ordering::Greater) {
+    let fest = |p: (f64, f64, f64)| {
+        (p.0.abs() < WEIT && p.1.abs() < WEIT).then(|| {
+            let f = SUB as f64;
+            (((p.0 * f).round() as i64, (p.1 * f).round() as i64), p.2)
+        })
+    };
+    let (Some(a), Some(mut b), Some(mut c)) = (fest(a), fest(b), fest(c)) else {
+        return;
+    };
+    let mut fl = kante(a.0, b.0, c.0);
+    if fl == 0 {
         return;
     }
-    // Baryzentrische Gewichte w_i = A_i·x + B_i·y + C_i
+    if fl < 0 {
+        std::mem::swap(&mut b, &mut c);
+        fl = -fl;
+    }
+    // Tiefe: 1/z ist im Bild linear, iz = gz0·x + gz1·y + gz2 (Bildpunkte)
+    let f = SUB as f64;
+    let p = |q: ((i64, i64), f64)| (q.0 .0 as f64 / f, q.0 .1 as f64 / f, q.1);
+    let (af, bf, cf) = (p(a), p(b), p(c));
+    let flf = fl as f64 / (f * f);
     let g0 = [
-        (b.1 - c.1) / fl,
-        (c.0 - b.0) / fl,
-        (b.0 * c.1 - b.1 * c.0) / fl,
+        (bf.1 - cf.1) / flf,
+        (cf.0 - bf.0) / flf,
+        (bf.0 * cf.1 - bf.1 * cf.0) / flf,
     ];
     let g1 = [
-        (c.1 - a.1) / fl,
-        (a.0 - c.0) / fl,
-        (c.0 * a.1 - c.1 * a.0) / fl,
+        (cf.1 - af.1) / flf,
+        (af.0 - cf.0) / flf,
+        (cf.0 * af.1 - cf.1 * af.0) / flf,
     ];
     let g2 = [-g0[0] - g1[0], -g0[1] - g1[1], 1.0 - g0[2] - g1[2]];
-    let gz = [0, 1, 2].map(|i| g0[i] * a.2 + g1[i] * b.2 + g2[i] * c.2);
-    let lo_y = a.1.min(b.1).min(c.1);
-    let hi_y = a.1.max(b.1).max(c.1);
-    if !(lo_y.is_finite() && hi_y.is_finite()) || hi_y < 0.0 || lo_y > h as f64 {
-        return;
-    }
-    let y0 = (lo_y - 0.5).ceil().max(0.0) as usize;
-    let y1 = ((hi_y - 0.5).floor() as i64).min(h as i64 - 1);
-    for y in y0 as i64..=y1 {
-        let py = y as f64 + 0.5;
-        // Spanne, in der alle drei Gewichte ≥ 0 sind
-        let (mut lo, mut hi) = (0.5f64, w as f64 - 0.5);
-        for g in [&g0, &g1, &g2] {
-            let r = g[1] * py + g[2];
-            if g[0] > 0.0 {
-                lo = lo.max(-r / g[0]);
-            } else if g[0] < 0.0 {
-                hi = hi.min(-r / g[0]);
-            } else if r < 0.0 {
-                hi = -1.0;
-            }
-        }
-        if lo
-            .partial_cmp(&hi)
-            .is_none_or(|o| o == std::cmp::Ordering::Greater)
-        {
-            continue;
-        }
-        let x0 = (lo - 0.5).ceil() as usize;
-        let x1 = ((hi - 0.5).floor() as usize).min(w - 1);
-        let zeile = y as usize * w;
-        let mut iz = gz[0] * (x0 as f64 + 0.5) + gz[1] * py + gz[2];
+    let gz = [0, 1, 2].map(|i| g0[i] * af.2 + g1[i] * bf.2 + g2[i] * cf.2);
+    // Kanten gegen den Uhrzeigersinn im Bild (alle Werte ≥ 0 innen); eine
+    // Kante zählt ihre eigenen Punkte nur, wenn sie nach unten läuft oder
+    // waagrecht nach links: die Gegenkante des Nachbarn tut es dann nicht
+    let kanten = [(a.0, b.0), (b.0, c.0), (c.0, a.0)].map(|(p, q)| {
+        let (dx, dy) = (q.0 - p.0, q.1 - p.1);
+        let eigen = dy > 0 || (dy == 0 && dx < 0);
+        (p, q, if eigen { 0 } else { 1 })
+    });
+    let ys = [a.0 .1, b.0 .1, c.0 .1];
+    let (lo_y, hi_y) = (*ys.iter().min().unwrap(), *ys.iter().max().unwrap());
+    let zeilen = (
+        (lo_y.div_euclid(SUB) - 1).max(0),
+        (hi_y.div_euclid(SUB) + 1).min(h as i64 - 1),
+    );
+    let fuellen = |y: i64, x0: usize, x1: usize| {
+        let reihe = y as usize * w;
+        let mut iz = gz[0] * (x0 as f64 + 0.5) + gz[1] * (y as f64 + 0.5) + gz[2];
         for x in x0..=x1 {
-            set(zeile + x, iz);
+            set(reihe + x, iz);
             iz += gz[0];
         }
+    };
+    // Kantenwerte bis 2·(2^30)²: in i64, sonst breit rechnen
+    let klein = [a.0, b.0, c.0]
+        .iter()
+        .all(|p| p.0.abs() < 1 << 29 && p.1.abs() < 1 << 29);
+    if klein {
+        spannen::<i64>(&kanten, zeilen, w, fuellen);
+    } else {
+        spannen::<i128>(&kanten, zeilen, w, fuellen);
     }
 }
 
@@ -603,6 +702,110 @@ pub(crate) mod tests {
         assert_eq!(schneiden([z(-5.0), z(-5.0), z(5.0)], 1.0, &mut e), 3);
         assert!(strecke(z(-1.0), z(0.5), 1.0).is_none());
         assert_eq!(strecke(z(-1.0), z(3.0), 1.0).unwrap().0.z, 1.0);
+    }
+
+    /// Nachprüfung N2 zu #83: eine Wand aus vielen Dreiecken, frontal und
+    /// parallel gesehen, hat zwischen den Dreiecken keine Lücke, auch wenn
+    /// Kanten genau auf Bildpunktmitten fallen; kein Bildpunkt doppelt.
+    #[test]
+    fn dicht_an_gemeinsamen_kanten() {
+        // 12 × 9 Felder zu 100 mm in der Ebene y = 0, je zwei Dreiecke
+        let (nx, nz) = (12u32, 9u32);
+        let mut netz = sk_ifc::lesen::Netz {
+            farbe: [0.5; 3],
+            ..Default::default()
+        };
+        for k in 0..=nz {
+            for i in 0..=nx {
+                netz.punkte
+                    .push(vec3(i as f64 * 100.0, 0.0, k as f64 * 100.0));
+            }
+        }
+        let n = |i: u32, k: u32| k * (nx + 1) + i;
+        for k in 0..nz {
+            for i in 0..nx {
+                let (a, b, c, d) = (n(i, k), n(i + 1, k), n(i + 1, k + 1), n(i, k + 1));
+                netz.dreiecke.push([a, b, c]);
+                netz.dreiecke.push([a, c, d]);
+            }
+        }
+        let teile = vec![Teil {
+            netze: vec![netz],
+            ..Teil::default()
+        }];
+        let s = Szene {
+            teile: &teile,
+            sichtbar: &[true],
+            gewaehlt: None,
+            hinter: [255, 255, 255],
+            kante: [0, 0, 0],
+            wahl: [0, 0, 0],
+        };
+        let ziel = vec3(600.0, 0.0, 450.0);
+        for schritt in 0..32 {
+            let mut k;
+            if schritt % 2 == 1 {
+                // parallel, ein Feld genau 8 Bildpunkte, Ecken auf Mitten
+                // oder Rändern der Bildpunkte
+                let d = (schritt / 2) as f64 * 3.125;
+                k = Camera::looking_at(ziel + vec3(d, -3000.0, d), ziel + vec3(d, 0.0, d), 40.0);
+                k.ortho = Some(750.0);
+            } else {
+                let d = schritt as f64 * 0.37;
+                k = Camera::looking_at(
+                    ziel + vec3(d, -2000.0 - 40.0 * d, d * 0.5),
+                    ziel + vec3(d, 0.0, d * 0.5),
+                    40.0,
+                );
+            }
+            let (w, h) = (160, 120);
+            let mut treffer = vec![0u8; w * h];
+            let p = proj(&k, w as f64, h as f64);
+            for tri in &teile[0].netze[0].dreiecke {
+                let e = tri.map(|i| p.bildpunkt(p.ecke(teile[0].netze[0].punkte[i as usize])));
+                dreieck(e[0], e[1], e[2], (w, h), |i, _| treffer[i] += 1);
+            }
+            assert!(treffer.iter().all(|&t| t <= 1), "doppelt ({schritt})");
+            // Innen (Kasten der Treffer, 2 Bildpunkte eingerückt) jeder einmal
+            let xs = (0..w * h).filter(|&i| treffer[i] > 0);
+            let (mut x0, mut x1, mut y0, mut y1) = (w, 0, h, 0);
+            for i in xs {
+                (x0, x1, y0, y1) = (x0.min(i % w), x1.max(i % w), y0.min(i / w), y1.max(i / w));
+            }
+            let mut luecken = 0;
+            for y in y0 + 2..y1.saturating_sub(1) {
+                for x in x0 + 2..x1.saturating_sub(1) {
+                    luecken += usize::from(treffer[y * w + x] == 0);
+                }
+            }
+            assert_eq!(luecken, 0, "Lücken ({schritt})");
+            let b = zeichnen(&s, &[], &k, (w, h), 1);
+            assert!(b.teil.iter().filter(|&&t| t == 0).count() > 1000);
+        }
+    }
+
+    /// Ecken weit draußen (nach dem Schneiden an der Nahebene) rechnen breit
+    /// und treffen dieselben Bildpunkte; jenseits von `WEIT` nichts.
+    #[test]
+    fn ecken_weit_draussen() {
+        for weit in [1.0e3, 1.0e7, 1.0e11] {
+            let mut n = vec![0u8; 50 * 40];
+            let (a, b, c) = ((-weit, -weit, 1.0), (weit, -weit, 1.0), (0.0, weit, 1.0));
+            dreieck(a, b, c, (50, 40), |i, iz| {
+                assert!((iz - 1.0).abs() < 1e-6);
+                n[i] += 1;
+            });
+            assert!(n.iter().all(|&k| k == 1), "{weit}");
+        }
+        let mut n = 0;
+        dreieck(
+            (0.0, 0.0, 1.0),
+            (WEIT * 2.0, 0.0, 1.0),
+            (0.0, 30.0, 1.0),
+            (50, 40),
+            |_, _| n += 1,
+        );
+        assert_eq!(n, 0);
     }
 
     /// Passende Kamera: der ganze Kasten im Bild, die Mitte in der Mitte.

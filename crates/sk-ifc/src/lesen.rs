@@ -101,6 +101,9 @@ impl Lage {
     }
 }
 
+/// Tiefste Gliederung, die die Vorschau liest (üblich sind vier Stufen).
+const BAUMTIEFE: u32 = 64;
+
 const RAEUMLICH: [&str; 5] = [
     "IFCPROJECT",
     "IFCSITE",
@@ -526,7 +529,9 @@ pub fn vorschau(f: &File) -> Vorschau {
         }
     }
     /// Ein Ort mit allem darunter. `besucht` hält jeden Ort nur einmal im
-    /// Baum, auch wenn die Datei Zyklen oder doppelte Verweise hat.
+    /// Baum, auch wenn die Datei Zyklen oder doppelte Verweise hat; tiefer
+    /// als [`BAUMTIEFE`] wird nicht gelesen (sonst läuft bei einer langen
+    /// Kette der Stapel über, hier wie beim Zeichnen und Freigeben).
     fn knoten(
         l: &Leser,
         id: u32,
@@ -534,6 +539,7 @@ pub fn vorschau(f: &File) -> Vorschau {
         enthalten: &HashMap<u32, Vec<usize>>,
         index: &HashMap<u32, usize>,
         besucht: &mut HashSet<u32>,
+        tiefe: u32,
     ) -> Knoten {
         let a = l.args(id);
         let name = l.name(id).to_string();
@@ -560,9 +566,9 @@ pub fn vorschau(f: &File) -> Vorschau {
                 // Räume mit Form: als Teil unter dem Geschoss
                 k.teile.push(i);
             }
-            if RAEUMLICH.contains(&l.name(c)) {
+            if RAEUMLICH.contains(&l.name(c)) && tiefe < BAUMTIEFE {
                 k.kinder
-                    .push(knoten(l, c, kinder, enthalten, index, besucht));
+                    .push(knoten(l, c, kinder, enthalten, index, besucht, tiefe + 1));
             }
         }
         if name == "IFCBUILDINGSTOREY" {
@@ -575,7 +581,7 @@ pub fn vorschau(f: &File) -> Vorschau {
         let mut besucht = HashSet::from([p]);
         for &c in kinder.get(&p).into_iter().flatten() {
             if besucht.insert(c) {
-                let k = knoten(&l, c, &kinder, &enthalten, &index, &mut besucht);
+                let k = knoten(&l, c, &kinder, &enthalten, &index, &mut besucht, 0);
                 v.baum.push(k);
             }
         }
@@ -778,5 +784,39 @@ mod tests {
         let t = DATEI.replace(",#26,#33,'AW-001'", ",$,#33,'AW-001'");
         let v = vorschau(&step::read(&t).unwrap());
         assert_eq!((v.teile.len(), v.ohne_form), (0, 1));
+    }
+
+    /// Nachprüfung N1 zu #83: eine lange Kette von Geschossen läuft nicht
+    /// über den Stapel; gelesen wird bis zur Tiefengrenze.
+    #[test]
+    fn lange_gliederungskette() {
+        let n = 20_000;
+        let mut t = DATEI.replace("ENDSEC;\nEND-ISO-10303-21;", "");
+        for i in 0..n {
+            let (a, b) = (100_000 + i, 100_001 + i);
+            t.push_str(&format!(
+                "#{b}=IFCBUILDINGSTOREY('k{i}',$,'{i}',$,$,$,$,$,.ELEMENT.,0.);\n\
+                 #{}=IFCRELAGGREGATES('r{i}',$,$,$,#{a},(#{b}));\n",
+                200_000 + i
+            ));
+        }
+        t = t.replace(
+            "#13=IFCRELAGGREGATES('a2',$,$,$,#10,(#11));",
+            "#13=IFCRELAGGREGATES('a2',$,$,$,#10,(#11,#100000));",
+        );
+        t.push_str("#100000=IFCBUILDINGSTOREY('k',$,'K',$,$,$,$,$,.ELEMENT.,0.);\nENDSEC;\nEND-ISO-10303-21;");
+        let v = std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn(move || {
+                let v = vorschau(&step::read(&t).unwrap());
+                fn tiefe(k: &[Knoten]) -> usize {
+                    k.iter().map(|k| 1 + tiefe(&k.kinder)).max().unwrap_or(0)
+                }
+                tiefe(&v.baum)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(v, BAUMTIEFE as usize + 1);
     }
 }

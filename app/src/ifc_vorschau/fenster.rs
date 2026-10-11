@@ -63,8 +63,8 @@ struct Ziehen {
 }
 
 pub struct IfcFenster {
-    /// Datei und Projekt, aus denen die Vorschau stammt (setzt die App).
-    pub herkunft: (Option<std::path::PathBuf>, sk_model::Guid),
+    /// Projekt, aus dem die Vorschau stammt (setzt die App).
+    pub herkunft: sk_model::Guid,
     pub w: u32,
     pub h: u32,
     pub title: TitleBar,
@@ -126,7 +126,7 @@ impl IfcFenster {
         let kanten = v.teile.iter().map(bild::kanten).collect();
         let umgeklappt = BTreeSet::new();
         IfcFenster {
-            herkunft: (None, sk_model::Guid(0)),
+            herkunft: sk_model::Guid(0),
             w: 0,
             h: 0,
             title,
@@ -602,10 +602,16 @@ impl IfcFenster {
         } else {
             Some((l.oben as u32, (l.oben as usize + bh).min(h) as u32))
         };
-        // 3D-Bild deckend: vormultipliziert gleich
+        // 3D-Bild deckend: vormultipliziert gleich; ohne Fläche (Fenster
+        // schmaler als Baum und Eigenschaften) nichts zu kopieren
         let b = &self.zeichner.bild;
         let x0 = l.baum_r as usize;
-        for y in 0..bh.min(b.h).min(h.saturating_sub(l.oben as usize)) {
+        let n = if bw > 0 && bh > 0 && b.w == bw && x0 + bw <= w {
+            bh.min(b.h).min(h.saturating_sub(l.oben as usize))
+        } else {
+            0
+        };
+        for y in 0..n {
             let o = ((l.oben as usize + y) * w + x0) * 4;
             self.shown[o..o + b.w * 4].copy_from_slice(&b.rgba[y * b.w * 4..][..b.w * 4]);
         }
@@ -1068,6 +1074,23 @@ mod tests {
         }
         assert_ne!(vorher, px, "3D-Bild gedreht");
         assert!(f.frame(&th, &fonts).is_none());
+    }
+
+    /// Nachprüfung N4 zu #83: winzige Fenster nach einem großen Bild
+    /// zeichnen ohne Absturz.
+    #[test]
+    fn winziges_fenster() {
+        let (th, fonts) = (Theme::dark(), Fonts::system());
+        let mut f = fenster();
+        f.frame(&th, &fonts);
+        for (w, h) in [(1, 800), (1, 1), (3, 2), (1200, 1), (2, 900), (1200, 800)] {
+            f.handle(&Event::Resized {
+                width: w,
+                height: h,
+            });
+            let (px, _) = f.frame(&th, &fonts).expect("neues Bild");
+            assert_eq!(px.len(), (w * h * 4) as usize);
+        }
     }
 
     /// Titelleiste: Schließen und Minimieren.
