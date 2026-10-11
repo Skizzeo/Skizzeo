@@ -566,7 +566,10 @@ fn props_of(scene: &Scene, id: ElementId) -> Option<Props> {
                 .iter()
                 .any(|j| j.0 == id || j.1 == id)
         }),
-        ende: m.freies_ende(id),
+        // Ecke bilden und Verlängern nur im aktiven Geschoss (Review #82 H2)
+        ende: m.freies_ende(id)
+            && m.element(id)
+                .is_some_and(|e| e.storey == scene.active_storey()),
         ..Default::default()
     })
 }

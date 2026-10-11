@@ -98,10 +98,15 @@ pub struct EckeWahl {
 }
 
 impl EckeWahl {
-    /// Beginnt an der Wand `wand`; `Err`, wenn sie kein freies Ende hat.
+    /// Beginnt an der Wand `wand`; `Err`, wenn sie kein freies Ende hat
+    /// oder nicht im aktiven Geschoss liegt (im Baum gewählt; gezeigt wird
+    /// nur das aktive, Review #82 H2).
     pub fn start(scene: &Scene, wand: ElementId, art: Art) -> Result<EckeWahl, EckeFehler> {
         let m = scene.model();
         let (run, _) = m.segment_of(wand).ok_or(EckeFehler::KeineWand)?;
+        if m.run(run).is_none_or(|r| r.storey != scene.active_storey()) {
+            return Err(EckeFehler::Geschoss);
+        }
         if !m.freies_ende(wand) {
             return Err(EckeFehler::KeinEnde);
         }
@@ -144,7 +149,7 @@ impl EckeWahl {
         };
         let g = sk_math::vec3(g.x, g.y, self.z);
         let m = scene.model();
-        let storey = m.element(self.wand)?.storey;
+        let storey = scene.active_storey();
         let ohne = self.ziel.unwrap_or(self.wand);
         let px = |p: Vec3| {
             let (Some(a), Some(b)) = (cam.project(p, w, h), cam.project(g, w, h)) else {
@@ -647,5 +652,32 @@ mod tests {
         assert!((p[1] - vec3(2000.0, 2000.0, 0.0)).length() < 1e-6, "{p:?}");
         assert!((p[2] - vec3(2000.0, 5000.0 - ti / 2.0, 0.0)).length() < 1e-6);
         assert_eq!(s.undo_label(), Some("Wand verlängert"));
+    }
+
+    /// Eine im Baum gewählte Wand eines anderen Geschosses startet nicht:
+    /// Gezeigt und getroffen wird nur das aktive (Review #82 H2).
+    #[test]
+    fn nur_im_aktiven_geschoss() {
+        let (mut m, _) = modell();
+        let b = m.add_building(0);
+        let st = m.ground_of(Some(b)).unwrap();
+        let iw = m.defaults().interior_wall;
+        let r = m
+            .add_wall_run(
+                &[vec3(20000.0, 0.0, 0.0), vec3(23000.0, 0.0, 0.0)],
+                false,
+                RefSide::Center,
+                st,
+                iw,
+                Category::InteriorWall,
+            )
+            .unwrap();
+        let w = m.wall_at(r, 0).unwrap();
+        let s = Scene::with_model(m);
+        assert_ne!(s.active_storey(), st);
+        assert_eq!(
+            EckeWahl::start(&s, w, Art::Verlaengern).unwrap_err(),
+            EckeFehler::Geschoss
+        );
     }
 }
