@@ -30,6 +30,7 @@ SZO 4
 [surface] guid=1qTi_AIwfDm8UpGTQGrwAA name="Dämmung EPS 035 DAA dh" color=ece8d6 cut=d6d0b8
 [surface] guid=2I0iV4XeLFxOVLUIsiaPG9 name="Verblender (Vormauerziegel)" color=ffffff cut=96503e
 [surface] guid=2bDAQcj$rBOv2wqDfNAwhn name="Titanzink 0,7" color=969ea4 cut=6e767c
+[surface] guid=2dx_8AKGDFDgTK5XiVjxFU name="Dämmung EPS 035 DAA dh, Attikakrone" color=ece8d6 cut=d6d0b8
 [surface] guid=2s1ASAYtf3cvlG8rPArrSc name="XPS Perimeterdämmung" color=b2d4e2 cut=96bed2
 [surface] guid=3MoId9HKv2OPcggMMyT2Nx name="Putz" color=ececed cut=c8c6c0
 [surface] guid=3X3RPVEgTDiuBJtF3HcOvV name="Dämmung hart (Terrasse)" color=d6e2ec cut=b4c8de
@@ -57,6 +58,7 @@ SZO 4
 [material] guid=0Yb39JGen4JxkgK3pBgZ4k name="Dampfsperre Bitumen-Alu" cat=membrane prio=200 rho=1100 lambda=0.17 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1lcsskRqn7gAh2pXUbUKex trade=1S7Wf_00100800000004UY
 [material] guid=0isiJXaEH68fAGDc36vC$0 name="Kerndämmung (Mineralwolle)" cat=insulation prio=300 rho=30 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1MI6$s1jP42ehJb$wmcr0Y trade=1S7Wf_00100800000004UQ
 [material] guid=0y7tgIrEXB1gMowS1z6FHL name="XPS Perimeterdämmung" cat=insulation prio=300 rho=33 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=2s1ASAYtf3cvlG8rPArrSc trade=1S7Wf_00100800000004UR
+[material] guid=1GT1XeoafF8xcAmmBvbUWb name="Dämmung EPS 035 DAA dh, Attikakrone" cat=insulation prio=300 rho=20 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=2dx_8AKGDFDgTK5XiVjxFU trade=1S7Wf_00100800000004UY
 [material] guid=1OxgZ1vjv038gKF7kkLN6C name="Dämmung EPS 035 DAA dh" cat=insulation prio=300 rho=20 lambda=0.035 fill=3WZwJkh5z7r8u$EoLXpp5K fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1qTi_AIwfDm8UpGTQGrwAA trade=1S7Wf_00100800000004UY
 [material] guid=1nbp1u0agfb$Q84vtYmYRU name="Baustahl S235, verzinkt" cat=metal prio=800 rho=7850 lambda=- fill=3rzDaPgYj7zhDembDO9g_d fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=1G87ywj6vEoh1uzpHeS9Ka trade=1S7Wf_00100800000004UQ
 [material] guid=1vl_pQvH1FDBsLfn5l1heC name="Terrassenbelag" cat=concrete prio=500 rho=2200 lambda=1.65 fill=2ljwJ4ynz27A6nySnYR$9G fg=3zCKLf$AXB08Vb_tPAhDKm bg=2Q_AHjmO1DIQtdifdRpNy1 surface=0E2RAo8obFthy$Bh5EIskX trade=1S7Wf_00100800000004UY
