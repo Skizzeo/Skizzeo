@@ -62,6 +62,7 @@ mod menu;
 mod musterprobe;
 mod nav;
 mod nordpfeil;
+mod oeffnung_werkzeug;
 mod pattern_view;
 #[cfg(test)]
 mod perf;

@@ -227,3 +227,45 @@ impl Model {
         out
     }
 }
+
+impl Model {
+    /// Außenfläche von Segment `seg` des Außenwandzugs `run`.
+    pub fn outer_face(&self, run: RunId, seg: usize) -> Option<crate::oeffnung::OuterFace> {
+        if !self.category_of(run).is_some_and(Category::is_outer_wall) {
+            return None;
+        }
+        let c = self.chain(run)?;
+        let (pts, _, dirs) = c.layout()?;
+        let d = *dirs.get(seg)?;
+        let o = c.outer_offset();
+        let nr = right_of(d);
+        let corners = c.face_corners(o);
+        let j = (seg + 1) % corners.len().max(1);
+        let a = pts[seg] + nr * o;
+        let u_of = |p: Vec3| (flat(p) - a).dot(d);
+        Some(crate::oeffnung::OuterFace {
+            run,
+            seg,
+            storey: self.run(run)?.storey,
+            a,
+            d,
+            n: nr * (o - c.inner_offset()).signum(),
+            u: (u_of(*corners.get(seg)?), u_of(*corners.get(j)?)),
+            z: (c.base, c.base + c.height),
+        })
+    }
+
+    /// Höhenlinien Brüstung und Sturz des Geschosses `st`.
+    pub fn face_lines(&self, st: StoreyId) -> Vec<crate::oeffnung::FaceLine> {
+        [HeightLine::Sill, HeightLine::Lintel]
+            .into_iter()
+            .filter_map(|l| {
+                let bind = HeightRef::Line(st, l);
+                Some(crate::oeffnung::FaceLine {
+                    z: self.height_z(bind)?,
+                    bind,
+                })
+            })
+            .collect()
+    }
+}

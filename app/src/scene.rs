@@ -30,6 +30,8 @@ use std::rc::Rc;
 mod gefaelle;
 #[path = "scene_fallrohr.rs"]
 mod scene_fallrohr;
+#[path = "scene_oeffnung.rs"]
+mod scene_oeffnung;
 
 /// Anzeigename der Gründung als Ebene (Paneel „Geschosse“, Geschossbogen).
 pub const FOUNDATION_NAME: &str = "Fundament";
