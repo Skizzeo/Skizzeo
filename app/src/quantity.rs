@@ -314,6 +314,19 @@ impl QuantityWindow {
         self.karten.aktiv
     }
 
+    /// Abschnitt `[mengenfenster]` für `einstellungen.txt`: Lage, Gliederung,
+    /// Blatt und Sicht der Mengen.
+    pub fn settings_text(&self, w: &crate::windows::Windows) -> String {
+        crate::windows::write_settings_mengen(w, self.grouping, self.blatt(), self.modus)
+    }
+
+    /// Gliederung, Blatt und Sicht der Mengen aus `einstellungen.txt`.
+    pub fn read_settings(&mut self, text: &str) {
+        self.grouping = crate::windows::read_grouping(text);
+        self.modus = crate::windows::read_modus(text);
+        self.karten.aktiv = crate::windows::read_blatt(text);
+    }
+
     /// Oberkante der Blätter unter Titelleiste und Karten (dip).
     fn sheet_top() -> f32 {
         32.0 + cards::HEIGHT

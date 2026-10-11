@@ -23,9 +23,8 @@ const KLEIN: [&str; 3] = [
 /// dürfen nur schrumpfen; wer eine davon anfasst, legt neuen Code in ein
 /// eigenes Modul daneben (Pfadfinderregel). Ist eine Datei unter der Grenze,
 /// kommt sie von der Liste, ist sie kleiner geworden, wird die Zahl gesenkt.
-const UEBER: [(&str, usize); 3] = [
-    ("app/src/main.rs", 9_335),
-    ("app/src/schedule_view.rs", 3_101),
+const UEBER: [(&str, usize); 2] = [
+    ("app/src/main.rs", 9_334),
     ("app/src/kosten_view.rs", 3_027),
 ];
 

@@ -138,11 +138,7 @@ fn save_settings(
     settings: &mut settings::Settings,
     theme: &Theme,
     recent: &menu::Recent,
-    (grouping, blatt, modus): (
-        schedule_view::Grouping,
-        cards::Blatt,
-        sk_model::rechenweg::Modus,
-    ),
+    q: &quantity::QuantityWindow,
     panel: String,
     surface: &Surface,
 ) {
@@ -151,8 +147,7 @@ fn save_settings(
         // Baumpanel: Karte, zugeklappt, Grenze; gesehene Hinweise (Paket 4)
         settings.panel = panel;
         // Lage des Mengenfensters (F2) und Gliederung der Liste (Paket 1b)
-        settings.windows =
-            windows::write_settings_mengen(&surface.layout(), grouping, blatt, modus);
+        settings.windows = q.settings_text(&surface.layout());
     }
     if let Err(e) = settings.save_if_changed(theme) {
         eprintln!("{e}");
@@ -2543,11 +2538,7 @@ impl App {
             &mut self.settings,
             &self.theme,
             &self.recent,
-            (
-                self.quantity.grouping,
-                self.quantity.blatt(),
-                self.quantity.modus,
-            ),
+            &self.quantity,
             panel,
             surface,
         );
@@ -7517,11 +7508,7 @@ impl App {
             &mut self.settings,
             &self.theme,
             &self.recent,
-            (
-                self.quantity.grouping,
-                self.quantity.blatt(),
-                self.quantity.modus,
-            ),
+            &self.quantity,
             panel,
             surface,
         );
@@ -8260,10 +8247,8 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
     a.sync_caption(&surface);
     // Mengenfenster (F2, B7): gemerkte Lage, Breite aus dem Schema
     *surface.layout() = windows::read_settings(&a.settings.windows, &surface.monitors());
-    a.quantity.grouping = windows::read_grouping(&a.settings.windows);
-    a.quantity.modus = windows::read_modus(&a.settings.windows);
+    a.quantity.read_settings(&a.settings.windows);
     a.quantity.blatt_wahl = a.settings.lv_blatt();
-    a.quantity.karten.aktiv = windows::read_blatt(&a.settings.windows);
     // Baumpanel: Karte, zugeklappt, Grenze (Paket 4)
     let panel = a.settings.panel.clone();
     a.tree.load_settings(&panel);
