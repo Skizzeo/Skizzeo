@@ -13,7 +13,7 @@ use crate::id::{Arena, Id};
 use crate::library::{
     Bearing, LayerSet, LayerSetId, MatCategory, Material, MaterialDisplay, MaterialId, TypeCategory,
 };
-use crate::model::{free_code, same_type, Model, ETICS_TYPE_GUID, EXTERIOR_TYPE_GUID};
+use crate::model::{free_code, same_type, Model, SpaceType, ETICS_TYPE_GUID, EXTERIOR_TYPE_GUID};
 use crate::proctex::{CompanyPreset, Pattern};
 use crate::szo::{self, check_header, err, keyword, register, sorted, Line, LoadError, Record};
 use crate::trade::{self, Trade};
@@ -47,6 +47,8 @@ pub struct Library {
     pub foreign: Foreign,
     /// Zeilen der Erweiterungsabschnitte (KA-0b), gedeutet von `sk-cost`.
     pub ext: crate::ext::ExtStore,
+    /// Raumvorlagen des Büros (Raumbuch RB2); Ausbautypen in `types`.
+    pub space_types: Vec<SpaceType>,
 }
 
 /// Fremdes aus einer neueren Fassung (F-17): bleibt beim Zurückschreiben
@@ -452,6 +454,7 @@ fn write_known(lib: &Library) -> String {
     for t in sorted(lib.types.iter(), |t| t.guid) {
         szo::write_type(&mut out, t, |id| lib.mat_guid(id));
     }
+    szo::ausbau::write_space_types(&mut out, &lib.space_types);
     for (cat, set) in [
         (TypeCategory::ExteriorWall, lib.default_exterior),
         (TypeCategory::InteriorWall, lib.default_interior),
@@ -584,7 +587,7 @@ pub fn read_szk_with(text: &str, ext: &[&str]) -> Result<Library, LoadError> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     check_header(text.lines().next(), "SZK", VERSION)?;
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 14] = [
+    const KNOWN: [&str; 15] = [
         "pen",
         "linetype",
         "fill",
@@ -594,6 +597,7 @@ pub fn read_szk_with(text: &str, ext: &[&str]) -> Result<Library, LoadError> {
         "layerset",
         "layer",
         "typeprop",
+        "spacetype",
         "default",
         "stock",
         "matprop",
@@ -711,6 +715,13 @@ pub fn read_szk_with(text: &str, ext: &[&str]) -> Result<Library, LoadError> {
             .map_or(0, |r| r.line);
         return Err(err(line, t.problems().join(", ")));
     }
+    let known = |g| {
+        lib.types
+            .iter()
+            .find(|(_, t)| t.guid == g)
+            .map(|(_, t)| t.category)
+    };
+    lib.space_types = szo::ausbau::read_space_types(recs("spacetype"), known, &mut hints)?;
     for r in recs("default") {
         // Standard einer unbekannten oder waagerechten Art: bleibt stehen
         let cat = r.get("cat")?;
@@ -923,6 +934,44 @@ pub fn import_type(m: &mut Model, lib: &Library, g: Guid) -> Option<LayerSetId> 
         Some(id) => m.adopt_set_layer_set(id, new).then_some(id),
         None => m.adopt_layer_set(new),
     }
+}
+
+/// Übernimmt eine Raumvorlage des Firmenkatalogs samt ihren Ausbautypen
+/// ins Projekt (gleiche Guid ersetzt die des Projekts). `false`: keine
+/// solche Vorlage, ein Typ fehlt im Katalog, oder der Name ist im Projekt
+/// schon an eine andere Vorlage vergeben.
+pub fn import_space_type(m: &mut Model, lib: &Library, g: Guid) -> bool {
+    let Some(s) = lib.space_types.iter().find(|s| s.guid == g).cloned() else {
+        return false;
+    };
+    for (_, _, set) in s.slots() {
+        if let Some(set) = set {
+            if m.type_by_guid(set).is_none() && import_type(m, lib, set).is_none() {
+                return false;
+            }
+        }
+    }
+    m.put_space_type(s)
+}
+
+/// Schreibt eine Raumvorlage des Projekts samt ihren Ausbautypen in den
+/// Firmenkatalog (gleiche Guid ersetzt). `false`: keine solche Vorlage.
+pub fn export_space_type(m: &Model, lib: &mut Library, g: Guid) -> bool {
+    let Some(s) = m.space_type(g).cloned() else {
+        return false;
+    };
+    for (_, _, set) in s.slots() {
+        if let Some(set) = set {
+            if lib.type_by_guid(set).is_none() {
+                export_type(m, lib, set);
+            }
+        }
+    }
+    match lib.space_types.iter_mut().find(|x| x.guid == g) {
+        Some(x) => *x = s,
+        None => lib.space_types.push(s),
+    }
+    true
 }
 
 /// Darstellung eines Katalog-Baustoffs im Projekt: vorhandene über die Guid,

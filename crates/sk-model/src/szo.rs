@@ -10,7 +10,7 @@
 //! `storey`, `run`, `wall`, `slab`, `footing`, `floor`, `prop`. Innerhalb eines Abschnitts nach Guid sortiert, damit Diffs
 //! ruhig bleiben. Speichern, Öffnen und wieder Speichern ergibt dieselben Bytes.
 
-mod ausbau;
+pub(crate) mod ausbau;
 mod dach;
 mod hoehen;
 
@@ -791,6 +791,7 @@ fn write_known(m: &Model) -> String {
     for s in sorted(m.layer_sets().iter(), |s| s.guid) {
         write_type(&mut out, s, mat_guid);
     }
+    ausbau::write_space_types(&mut out, m.space_types());
 
     let storey_guid = |id| m.storey(id).map(|s| s.guid);
     let p = m.project();
@@ -1507,7 +1508,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     let mut alien: Vec<usize> = Vec::new();
     let mut ext_lines: Vec<(String, &str)> = Vec::new();
     let mut by: HashMap<&str, Vec<Record>> = HashMap::new();
-    const KNOWN: [&str; 40] = [
+    const KNOWN: [&str; 41] = [
         "pen",
         "linetype",
         "fill",
@@ -1518,6 +1519,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         "layerset",
         "layer",
         "typeprop",
+        "spacetype",
         "project",
         "projectinfo",
         "soil",
@@ -2718,6 +2720,13 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
         }
     }
     let (plan_cut, plan_cut_raw) = hoehen::read_plan_cut(recs("plancut"), &lines, &mut hints)?;
+    let known = |g| {
+        set_ids
+            .get(&g)
+            .and_then(|&id| layer_sets.get(id))
+            .map(|t| t.category)
+    };
+    let space_types = ausbau::read_space_types(recs("spacetype"), known, &mut hints)?;
     for recs in by.values() {
         for r in recs {
             r.unused(&mut hints);
@@ -2743,6 +2752,7 @@ pub fn read_with(text: &str, mut guids: GuidGen, ext: &[&str]) -> Result<Loaded,
     model.load_view_shade(shade, shade_raw);
     model.load_view_below(below, below_raw);
     model.load_plan_cut(plan_cut, plan_cut_raw);
+    model.load_space_types(space_types);
     model.load_ext(ext_defs, ext_raw);
     for (k, n) in counters {
         if !model.raise_counter(&k, n) {
