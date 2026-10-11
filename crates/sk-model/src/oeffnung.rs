@@ -100,9 +100,10 @@ pub struct Install {
 }
 
 /// Aufgelöster Einbau in einem Wandzug (mm): außen bis zum Element, das
-/// Element, innen vom Element bis zur Innenseite der Wand. `inner` ist die
-/// innere Einbautiefe, so tief wird die Laibung von innen verputzt,
-/// tapeziert oder gestrichen (Raumbuch).
+/// Element, innen vom Element bis zur Rohbau-Innenseite der Wand (ohne
+/// Putz und Bekleidung innen vom Kern; das Raumbuch rechnet den Putz
+/// seiner Wandseite dazu). `inner` ist die innere Einbautiefe, so tief
+/// wird die Laibung von innen verputzt, tapeziert oder gestrichen.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct InstallDepth {
     pub outer: f64,

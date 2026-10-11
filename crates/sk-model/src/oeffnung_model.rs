@@ -151,7 +151,8 @@ impl Model {
     /// außen nach Wandtyp monolithisch [`INSTALL_MONO`], sonst
     /// [`INSTALL_BEHIND_SHELL`] hinter der Innenseite der Außenschale
     /// ([`Model::opening_shell`]); das Element [`ELEMENT_DEPTH`]; innen der
-    /// Rest bis zur Innenseite. Alles in der Wanddicke geklemmt.
+    /// Rest bis zur Rohbau-Innenseite (ohne Putz und Bekleidung innen vom
+    /// Kern). Alles in der Rohbaudicke geklemmt.
     pub fn install_depth(&self, o: &Opening, run: RunId) -> InstallDepth {
         let layers = self
             .run(run)
@@ -160,7 +161,13 @@ impl Model {
             .and_then(|e| e.layer_set)
             .and_then(|s| self.layer_set(s))
             .map_or(&[][..], |s| &s.layers[..]);
-        let t: f64 = layers.iter().map(|l| l.thickness).sum();
+        let core = layers.iter().position(|l| l.core).unwrap_or(0);
+        let t: f64 = layers
+            .iter()
+            .enumerate()
+            .filter(|(i, l)| *i <= core || l.function != LayerFunction::Finish)
+            .map(|(_, l)| l.thickness)
+            .sum();
         let (shell, _) = self.opening_shell(run);
         let by_wall = if shell >= layers.len() {
             INSTALL_MONO

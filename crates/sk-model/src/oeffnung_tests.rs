@@ -168,6 +168,22 @@ fn einbautiefe_nach_wandtyp() {
     };
     let d = m.install_depth(&eigen, eg);
     assert_eq!((d.outer, d.element, d.inner), (t - 70.0, 70.0, 0.0));
+    // Innenputz zählt nicht: innen bis zur Rohbau-Innenseite
+    let id = m
+        .element(m.run(eg).unwrap().segments[0])
+        .unwrap()
+        .layer_set
+        .unwrap();
+    let mut s = m.layer_set(id).unwrap().clone();
+    let mut putz = s.layers[0].clone();
+    putz.thickness = 15.0;
+    putz.core = false;
+    putz.function = crate::LayerFunction::Finish;
+    s.layers.push(putz);
+    m.begin("Putz");
+    assert!(m.set_layer_set(id, s));
+    m.commit();
+    assert_eq!(m.install_depth(&f, eg).inner, t - 200.0);
 
     // WDVS: Dämmung (und Putz) vor dem Kern ist die Außenschale
     let (m, eg, _) = haus(None);
