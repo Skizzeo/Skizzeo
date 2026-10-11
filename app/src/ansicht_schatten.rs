@@ -309,7 +309,7 @@ pub struct Bild {
 }
 
 /// Zahnrad (Kreis mit acht Zähnen und Loch) in `r`.
-fn zahnrad(c: &mut Canvas, r: Rect, farbe: sk_paint::Rgba) {
+pub(crate) fn zahnrad(c: &mut Canvas, r: Rect, farbe: sk_paint::Rgba) {
     let (cx, cy) = (r.x + r.w * 0.5, r.y + r.h * 0.5);
     let (aussen, innen, loch) = (r.w * 0.36, r.w * 0.27, r.w * 0.12);
     let n = 8;

@@ -158,7 +158,7 @@ Aktives Geschoss | Klick auf „Fundament“, „EG“ oder „OG“ im Geschoss
 Geschossbogen | im Grundriss rechts; Klick auf eine Spitze, Mausrad oder **Bild↑** / **Bild↓**
 Höhe ziehen | Griff an einer Geschosslinie; Fang 1 cm, mit **Umschalt** 5 cm, **Esc** bricht ab
 Höhe als Zahl | auf eine Maßzahl klicken, Wert in Metern, **Enter**
-Grundriss | schneidet 1,00 m über dem Geschossboden, das Geschoss darunter im Hintergrund
+Grundriss | schneidet 1,50 m über OK Rohdecke, das Geschoss darunter im Hintergrund; das Zahnrad oben rechts stellt die Schnitthöhe für alle Geschosse ein (0,10 bis 5,00 m, Enter übernimmt)
 Fundament | eigene Ebene; Wände zeichnen ist dort gesperrt
 Grenzen | ±0,00 liegt fest; lichte Höhe mindestens 1,00 m
 
