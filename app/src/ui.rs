@@ -11,6 +11,8 @@ use sk_platform::{Cursor, Event, Key, Modifiers, MouseButton};
 use sk_ui::theme::{Sizes, Theme};
 use sk_ui::widgets::{self, ButtonState, FieldState, Fonts, Rect};
 
+mod gross;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewKind {
     Persp,
@@ -165,6 +167,12 @@ pub enum Id {
     ExtWahl(u8, u8),
     ExtJa(u8),
     ExtListe(u8),
+    /// Paneel „Geschosse“ im linken Rand (Jörn 11.10.): zeigt nur an, ein
+    /// Klick irgendwo darauf öffnet die schwebende Großansicht.
+    LevelsOpen,
+    /// „Schließen ×“ in der Leiste der Großansicht; auch ein Klick daneben
+    /// meldet ihn.
+    LevelsClose,
 }
 
 /// Ziehbare Ebene im Paneel „Geschosse“. ±0,00 liegt fest.
@@ -932,6 +940,8 @@ pub struct Ui {
     /// Paneel „Geschosse“: Inhalt und laufendes Ziehen.
     levels: Levels,
     level_drag: Option<LevelDrag>,
+    /// Schwebende Großansicht „Geschosse“ offen ([`gross`]).
+    levels_gross: bool,
     /// Fensterhöhe und Höhe der Titelleiste (Pixel), für die Höhe des
     /// Paneels „Geschosse“.
     win_h: f32,
@@ -1355,6 +1365,7 @@ impl Ui {
             images: [None, None, None, None, None],
             levels: Levels::default(),
             level_drag: None,
+            levels_gross: false,
             win_h: 1e6,
             top: 32,
             tree_slot: 0.0,
@@ -1825,6 +1836,7 @@ impl Ui {
     fn width(&self, p: Panel) -> f32 {
         match p {
             Panel::Views | Panel::Props => self.size.right_width,
+            Panel::Levels if self.levels_gross => gross::BREITE,
             _ => self.size.panel_width,
         }
     }
@@ -1846,6 +1858,7 @@ impl Ui {
         let y = match p {
             // Unter „Ansichten“ und dem Baum bzw. unter „Werkzeuge“
             Panel::Props => top as f32 + 2.0 * m + self.panel_height(Panel::Views) + self.tree_slot,
+            Panel::Levels if self.levels_gross => top as f32 + self.gross_oben(),
             Panel::Levels => top as f32 + 2.0 * m + self.panel_height(Panel::Tools),
             _ => top as f32 + m,
         };
@@ -2047,7 +2060,9 @@ impl Ui {
             | Id::PropsDrains
             | Id::PropsMore
             | Id::PropsMaterial(_)
-            | Id::ExtListe(_) => false,
+            | Id::ExtListe(_)
+            | Id::LevelsOpen
+            | Id::LevelsClose => false,
         }
     }
 
@@ -2086,6 +2101,9 @@ impl Ui {
     }
 
     fn hit(&self, x: f64, y: f64, win_w: u32, top: u32) -> Option<(Panel, Option<Id>)> {
+        if self.levels_gross {
+            return self.hit_gross(x, y, win_w, top);
+        }
         if self.dialog {
             // Modal: alles unterhalb der Titelleiste gehört dem Dialog
             let r = self.rect(Panel::Dialog, win_w, top);
@@ -2100,16 +2118,16 @@ impl Ui {
         for p in self.panels() {
             let r = self.rect(p, win_w, top);
             if r.contains(x, y) {
+                // Klein zeigt das Paneel „Geschosse“ nur an (Jörn 11.10.)
+                if p == Panel::Levels {
+                    return Some((p, Some(Id::LevelsOpen)));
+                }
                 let (lx, ly) = (x - r.x as f64, y - r.y as f64);
                 let id = self
                     .buttons(p)
                     .into_iter()
                     .find(|(_, b, _)| b.contains(lx, ly))
-                    .map(|b| b.0)
-                    .or_else(|| match p {
-                        Panel::Levels => self.grip_at(lx, ly).map(Id::Grip),
-                        _ => None,
-                    });
+                    .map(|b| b.0);
                 return Some((p, id));
             }
         }
@@ -2136,6 +2154,16 @@ impl Ui {
                 out.changed.extend(self.hover.take());
             }
             Event::MouseDown { button, x, y, .. } => {
+                if self.levels_gross && self.gross_daneben(x, y, win_w, top) {
+                    // Klick neben die Großansicht schließt sie beim Loslassen;
+                    // eine Eingabe gilt
+                    self.finish_edit(&mut out);
+                    out.consumed = true;
+                    if button == MouseButton::Left {
+                        self.pressed = Some(Id::LevelsClose);
+                    }
+                    return out;
+                }
                 let hit = self.hit(x, y, win_w, top);
                 // Ungültige Eingabe sperrt „Zeichnen beginnen“ auch beim Klick,
                 // der die Eingabe beendet
@@ -2199,7 +2227,8 @@ impl Ui {
                 if let Some(p) = self.pressed.take() {
                     out.changed.push(p);
                     out.consumed = true;
-                    if self.hit(x, y, win_w, top).and_then(|h| h.1) == Some(p) {
+                    let daneben = p == Id::LevelsClose && self.gross_daneben(x, y, win_w, top);
+                    if daneben || self.hit(x, y, win_w, top).and_then(|h| h.1) == Some(p) {
                         out.clicked = Some(p);
                     }
                 }
@@ -2245,7 +2274,8 @@ impl Ui {
         if t.rev != self.theme_rev {
             return None;
         }
-        if matches!(id, Id::Grip(_)) || matches!(id, Id::Field(f) if f.is_level()) {
+        if matches!(id, Id::Grip(_) | Id::LevelsOpen) || matches!(id, Id::Field(f) if f.is_level())
+        {
             return self.repaint_levels(t);
         }
         // Der Hinweis zum Zähler steht im Grundbild des Dialogs
@@ -2815,19 +2845,29 @@ impl Ui {
         if let Some(d) = self.level_drag {
             return d.layout;
         }
+        if self.levels_gross {
+            return self.levels_layout_gross();
+        }
         self.levels_layout_below(self.panel_height(Panel::Tools))
     }
 
     /// Aufteilung unter „Werkzeuge“ der Höhe `tools` (Pixel).
     fn levels_layout_below(&self, tools: f32) -> LevelsLayout {
+        let m = (self.size.panel_margin * self.scale).round();
+        let y = self.top as f32 + 2.0 * m + tools;
+        self.levels_layout_at(y, self.size.level_px_per_m)
+    }
+
+    /// Aufteilung für ein Paneel, das bei `y` (Pixel) beginnt, mit dem
+    /// Maßstab `ppm` (dip je m) als größtem.
+    fn levels_layout_at(&self, y: f32, ppm: f32) -> LevelsLayout {
         let (s, z) = (self.scale, &self.size);
         let m = (z.panel_margin * s).round();
-        let y = self.top as f32 + 2.0 * m + tools;
         let avail = (self.win_h - y - m).max(0.0);
         let lines = level_lines(&self.levels);
         let head = z.panel_pad + LEVEL_HEAD + LEVEL_TOP;
         let foot = self.level_footer();
-        let mut ppm = z.level_px_per_m;
+        let mut ppm = ppm;
         loop {
             let (above, below) = self.level_spans(&lines, ppm);
             let h = ((head + above + below + LEVEL_BOTTOM + foot + z.panel_pad) * s).round();
@@ -2877,7 +2917,7 @@ impl Ui {
                 .regular
                 .as_ref()
                 .map_or(70.0 * s, |f| f.width("Flachdach", z.font_small * s));
-        let right = (z.panel_width - z.panel_pad) * s;
+        let right = (self.width(Panel::Levels) - z.panel_pad) * s;
         Some(Rect::new(right - w, z.panel_pad * s + 2.0 * s, w, 16.0 * s))
     }
 
@@ -2941,7 +2981,7 @@ impl Ui {
     fn level_columns(&self) -> (f32, f32, f32) {
         let (s, z) = (self.scale, &self.size);
         let x0 = z.panel_pad * s;
-        let xo = (z.panel_width - z.panel_pad - CHAIN_OUTER) * s;
+        let xo = (self.width(Panel::Levels) - z.panel_pad - CHAIN_OUTER) * s;
         (x0, xo - CHAIN_GAP * s, xo)
     }
 
@@ -3117,7 +3157,7 @@ impl Ui {
                 Cursor::Hand
             }
             Some(Id::Field(_)) => Cursor::IBeam,
-            Some(Id::Storey(_) | Id::FlatRoof) => Cursor::Hand,
+            Some(Id::Storey(_) | Id::FlatRoof | Id::LevelsOpen | Id::LevelsClose) => Cursor::Hand,
             _ => Cursor::Arrow,
         }
     }
@@ -3266,6 +3306,9 @@ impl Ui {
         let px = z.font_small * s;
         let px_d = z.font_detail * s;
         let w1 = s.round().max(1.0);
+        if self.hover == Some(Id::LevelsOpen) {
+            self.paint_open_ring(t, c, panel_h);
+        }
         let right_text = |c: &mut Canvas,
                           f: Option<&sk_paint::font::Font>,
                           txt: &str,
@@ -4359,6 +4402,9 @@ mod levels_tests {
     #[test]
     fn griff_ziehen_meldet_gefangene_hoehe() {
         let (mut ui, _) = ui_mit_geschossen();
+        // Gezogen wird in der Großansicht (Jörn 11.10.)
+        assert!(ui.set_levels_gross(true));
+        let ppm = ui.levels_layout().ppm as f64;
         let og = band(&ui, "OG");
         let (x, y) = griff(&ui, og.top);
         let out = ui.handle(&Event::MouseMove { x, y, mods: M }, 1440, 32);
@@ -4382,10 +4428,14 @@ mod levels_tests {
             1440,
             32,
         );
+        // 30 px im Maßstab der Großansicht, auf 1 cm gefangen
+        let z = og.top + 30.0 / ppm * 1000.0;
         assert_eq!(
             out.level,
-            // 30 px bei 40 px/m = 750 mm, auf 1 cm gefangen
-            Some(LevelEvent::Move(Grip::Top(og.id), 6460.0))
+            Some(LevelEvent::Move(
+                Grip::Top(og.id),
+                (z / 10.0).round() * 10.0
+            ))
         );
         // Das Paneel bleibt beim Ziehen stehen, auch wenn die Werte wachsen
         let mut l = ui.levels.clone();
@@ -4405,7 +4455,10 @@ mod levels_tests {
         assert_eq!(
             out.level,
             // mit Umschalt auf 5 cm
-            Some(LevelEvent::Move(Grip::Top(og.id), 6450.0))
+            Some(LevelEvent::Move(
+                Grip::Top(og.id),
+                (z / 50.0).round() * 50.0
+            ))
         );
         let up = Event::MouseUp {
             button: MouseButton::Left,
@@ -4456,6 +4509,7 @@ mod levels_tests {
     #[test]
     fn masszahl_als_zahl_in_metern() {
         let (mut ui, _) = ui_mit_geschossen();
+        ui.set_levels_gross(true);
         let eg = band(&ui, "EG").id;
         let f = Field::ClearHeight(eg);
         klick_auf(&mut ui, f);
@@ -4490,6 +4544,7 @@ mod levels_tests {
     #[test]
     fn flachdach_band_und_schalter() {
         let (mut ui, mut s) = ui_mit_geschossen();
+        ui.set_levels_gross(true);
         assert_eq!(ui.levels.flat_roof, Some(false));
         let r = ui.rect(Panel::Levels, 1440, 32);
         let b = ui.flat_roof_rect().unwrap();
@@ -4614,6 +4669,7 @@ mod levels_tests {
     #[test]
     fn zeiger_folgt_dem_hover() {
         let (mut ui, _) = ui_mit_geschossen();
+        ui.set_levels_gross(true);
         let og = band(&ui, "OG");
         let mv = |ui: &mut Ui, (x, y): (f64, f64)| {
             ui.handle(&Event::MouseMove { x, y, mods: M }, 1440, 32);
@@ -4666,6 +4722,7 @@ mod levels_tests {
     #[test]
     fn klick_auf_geschossnamen() {
         let (mut ui, mut s) = ui_mit_geschossen();
+        ui.set_levels_gross(true);
         let og = band(&ui, "OG");
         assert!(name_at(&ui, band(&ui, "Fundament").id).is_some());
         let (x, y) = name_at(&ui, og.id).unwrap();
@@ -4691,8 +4748,11 @@ mod levels_tests {
         assert!(s.set_active_storey(og.id));
         ui.set_levels(s.levels());
         assert!(band(&ui, "OG").active && !band(&ui, "EG").active);
-        // Auch in der Liste (kleines Fenster)
+        // Auch in der Liste (kleines Fenster, Paneel im linken Rand); die
+        // Großansicht hat dort noch Platz für das Diagramm
         ui.fit(1.0, 900, 380);
+        assert!(!ui.levels_layout().list);
+        ui.set_levels_gross(false);
         assert!(ui.levels_layout().list);
         assert!(name_at(&ui, og.id).is_some());
         assert!(name_at(&ui, band(&ui, "Fundament").id).is_some());
