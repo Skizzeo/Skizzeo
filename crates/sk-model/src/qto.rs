@@ -306,7 +306,16 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
         })
         .collect();
     // Herabgezogene Außenschichten (G7 K4): Sie stehen im Körper der Wand
-    // darunter und zählen zu dieser Wand (BIM), Segment k über Segment k
+    // darunter und zählen zu dieser Wand (BIM), Segment k über Segment k;
+    // mit Stufen im Zug (W-12) über die Kopplung, die Stufe ohne (P69-1)
+    let map = model.stack_map(run);
+    let below_of = |k: usize, m: usize| {
+        if m == chain.segment_count() {
+            Some(k)
+        } else {
+            map.get(k).copied().flatten()
+        }
+    };
     let from_below = model
         .run_below(run)
         .and_then(|b| Some((model.chain(b)?, model.run(b)?.segments.first().copied()?)))
@@ -326,7 +335,10 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                 None
             }
         })
-        .filter(|x| x.parts.len() == chain.segment_count());
+        .filter(|x| {
+            let m = x.parts.len();
+            (0..chain.segment_count()).all(|k| below_of(k, m).is_none_or(|i| i < m))
+        });
     let foamglass = model.foamglass_material();
     let n = pts.len();
     (0..chain.segment_count())
@@ -378,7 +390,7 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                     // dazu die herabgezogenen Abschnitte der Wand darüber
                     let (v_up, s_up) = from_below
                         .as_ref()
-                        .and_then(|x| x.parts[k].get(li).copied())
+                        .and_then(|x| x.parts[below_of(k, x.parts.len())?].get(li).copied())
                         .unwrap_or((0.0, 0.0));
                     // Am vorspringenden Segment gehört der Abschnitt in OG-Lage
                     // ganz zur Wand darüber, sonst bleibt er hier (dieselbe Flucht)
@@ -462,7 +474,10 @@ pub fn run_qto(model: &Model, run: RunId) -> Vec<WallQto> {
                 volume_gross: footprint * h,
                 pocket: layers.iter().map(|l| l.pocket).sum(),
                 list_length,
-                facing_support: from_below.as_ref().map_or(0.0, |x| x.support[k]),
+                facing_support: from_below
+                    .as_ref()
+                    .and_then(|x| x.support.get(below_of(k, x.support.len())?))
+                    .map_or(0.0, |s| *s),
                 facing_foot,
                 layers,
             }
