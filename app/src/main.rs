@@ -759,8 +759,6 @@ struct App {
     /// Stand, für den das Paneel „Eigenschaften“ zuletzt gefüllt wurde
     /// (Bauteil, Modellrevision).
     props_key: Option<(sk_model::ElementId, u64)>,
-    /// Stand (Revision, aktives Geschoss) der Fangkanten des Hintergrunds.
-    snaps_key: Option<(u64, sk_model::StoreyId)>,
     w: u32,
     h: u32,
     overlay_dirty: bool,
@@ -1230,12 +1228,8 @@ impl App {
         if self.tool.set_plane(z, h) {
             self.redraw = true;
         }
-        // Fangkanten des Hintergrunds (nur bei Modell- oder Geschosswechsel neu)
-        let key = (self.scene.model().revision(), self.scene.active_storey());
-        if self.snaps_key != Some(key) {
-            self.snaps_key = Some(key);
-            self.tool.snaps = self.scene.background_snaps();
-        }
+        // Fangkanten des Hintergrunds und Wände des Geschosses (E16, G1)
+        self.tool.fang_aus(&mut self.scene);
         let l = self.scene.levels();
         self.geschoss.dirty |= self.geschoss.ui.set_levels(l.clone());
         // Im Hauptfenster steht das Diagramm nur neben dem Dialog
@@ -1766,7 +1760,6 @@ impl App {
         self.nord_fuehrung = Default::default();
         self.nord.set_aktiv(false);
         self.ui.dialog = false;
-        self.snaps_key = None;
         self.scene.set_theme(&self.theme);
         self.tool.set_enabled(self.tool.enabled);
         self.set_wall_kind(self.tool.category);
@@ -7757,7 +7750,6 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
         sonne: Default::default(),
         sel: Selection::default(),
         props_key: None,
-        snaps_key: None,
         mouse_at: None,
         tip: None,
         notice: None,
@@ -8109,6 +8101,9 @@ fn app(surface: Surface, screenshot: Option<String>) -> Result<(), String> {
                 a.auto_switch = Some((left - 1, up));
             }
         }
+        // Wandwerkzeug: Fangziele nach Modelländerungen, Einrast-Puls (G1)
+        a.tool.fang_aus(&mut a.scene);
+        a.redraw |= a.tool.pulsiert();
         if !a.redraw
             && !a.overlay_dirty
             && !a.nav.is_animating()
