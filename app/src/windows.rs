@@ -1,6 +1,7 @@
 //! Mengenfenster neben dem Hauptfenster (F2): Regeln aus der Plattform,
 //! Titel und Merken in `einstellungen.txt` (Abschnitt `[mengenfenster]`,
-//! nie in der `.szo`).
+//! nie in der `.szo`). Ebenso das Geschossfenster links (Jörn 11.10.,
+//! Abschnitt `[geschossfenster]`).
 
 use crate::cards::Blatt;
 use crate::document::Document;
@@ -43,6 +44,7 @@ pub fn write_settings_blatt(w: &Windows, g: Grouping, b: Blatt) -> String {
     let mut out = String::new();
     let rect = w.remembered_rect();
     if !w.quantity_open() && rect.is_none() && g == Grouping::Storey && b == Blatt::Mengen {
+        write_levels(w, &mut out);
         return out;
     }
     let mut l = Line::new("mengenfenster")
@@ -58,7 +60,23 @@ pub fn write_settings_blatt(w: &Windows, g: Grouping, b: Blatt) -> String {
         l = l.word("blatt", b.key());
     }
     l.finish(&mut out);
+    write_levels(w, &mut out);
     out
+}
+
+/// Zeile `[geschossfenster]`, sobald es einmal offen war.
+fn write_levels(w: &Windows, out: &mut String) {
+    let rect = w.levels_rect();
+    if !w.levels_open() && rect.is_none() {
+        return;
+    }
+    let mut l = Line::new("geschossfenster")
+        .flag("offen", w.levels_open())
+        .flag("angedockt", w.levels_docked());
+    if let Some((x, y, b, h)) = rect {
+        l = l.num("x", x).num("y", y).num("breite", b).num("hoehe", h);
+    }
+    l.finish(out);
 }
 
 /// Gemerkte Gliederung der Liste; ohne Angabe nach Geschoss.
@@ -89,15 +107,22 @@ pub fn read_settings(text: &str, monitors: &[Rect]) -> Windows {
     for (i, l) in text.lines().enumerate() {
         if let Ok(Some(r)) = Record::parse(i + 1, l) {
             if r.section == "mengenfenster" {
+                let links = (w.levels_open(), w.levels_docked(), w.levels_rect());
                 w = from_record(&r, monitors);
+                w.remember_levels(links.0, links.1, links.2);
+            }
+            if r.section == "geschossfenster" {
+                let (open, docked, rect) = record_window(&r, monitors);
+                w.remember_levels(open, docked, rect);
             }
         }
     }
     w
 }
 
-/// Eine Zeile `[mengenfenster]`.
-pub fn from_record(r: &Record, monitors: &[Rect]) -> Windows {
+/// Offen, angedockt und Lage aus einer Zeile; liegt das frei gemerkte
+/// Fenster auf keinem Bildschirm, wird es wieder angedockt.
+fn record_window(r: &Record, monitors: &[Rect]) -> (bool, bool, Option<Rect>) {
     let flag = |k: &str| r.opt(k) == Some("1");
     let num = |k: &str| r.opt(k).and_then(|v| v.parse::<i32>().ok());
     let rect = match (num("x"), num("y"), num("breite"), num("hoehe")) {
@@ -105,5 +130,11 @@ pub fn from_record(r: &Record, monitors: &[Rect]) -> Windows {
         _ => None,
     };
     let docked = flag("angedockt") || rect.is_none_or(|r| !on_screen(r, monitors));
-    Windows::remembered(WIDTH_DIP, flag("offen"), docked, rect)
+    (flag("offen"), docked, rect)
+}
+
+/// Eine Zeile `[mengenfenster]`.
+pub fn from_record(r: &Record, monitors: &[Rect]) -> Windows {
+    let (open, docked, rect) = record_window(r, monitors);
+    Windows::remembered(WIDTH_DIP, open, docked, rect)
 }

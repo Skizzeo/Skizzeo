@@ -8,8 +8,9 @@
 //! besitzt den OpenGL-Kontext. So zeichnet die App auch weiter, während das
 //! System das Fenster beim Ziehen oder Vergrößern festhält.
 //!
-//! Neben dem Hauptfenster kann es das Mengenfenster geben
-//! ([`WindowId::Quantity`], F2). Beide haben keinen Besitzer und je einen
+//! Neben dem Hauptfenster kann es rechts das Mengenfenster
+//! ([`WindowId::Quantity`], F2) und links das Geschossfenster
+//! ([`WindowId::Levels`]) geben. Alle haben keinen Besitzer und je einen
 //! Taskleisteneintrag; die Schicht hält sie nach den Regeln in [`layout`]
 //! zusammen (Andocken, Teilen, gemeinsam minimieren).
 
@@ -268,53 +269,99 @@ impl Surface {
     /// seinem gemerkten Platz oder bei maximiertem Hauptfenster geteilt). Ist
     /// es schon offen, kommt es nach vorn. Seine Ereignisse tragen
     /// [`WindowId::Quantity`]; zuerst kommen `ScaleChanged` und `Resized`.
-    #[cfg(windows)]
     pub fn open_quantity(&self, title: &str) {
-        self.inner.open_quantity(title)
+        self.open_side(WindowId::Quantity, title)
     }
 
     /// Schließt das Mengenfenster; ein vorher maximiertes Hauptfenster wird
     /// wieder maximiert.
-    #[cfg(windows)]
     pub fn close_quantity(&self) {
-        self.inner.close_quantity()
+        self.close_side(WindowId::Quantity)
     }
 
     /// Zeigt ein Bild im Mengenfenster: `rgba` vormultipliziert und deckend,
     /// `w` × `h`. `rows`: nur diese Zeilen (von, bis) neu kopieren.
-    #[cfg(windows)]
     pub fn present_quantity(&self, w: u32, h: u32, rgba: &[u8], rows: Option<(u32, u32)>) {
-        self.inner.present_quantity(w, h, rgba, rows)
+        self.present_side(WindowId::Quantity, w, h, rgba, rows)
     }
 
-    #[cfg(windows)]
     pub fn quantity_size(&self) -> (u32, u32) {
-        self.inner.quantity_size()
+        self.side_size(WindowId::Quantity)
     }
 
-    #[cfg(windows)]
     pub fn quantity_scale(&self) -> f32 {
-        self.inner.quantity_scale()
+        self.side_scale(WindowId::Quantity)
     }
 
-    #[cfg(windows)]
     pub fn quantity_command(&self, c: WindowCommand) {
-        self.inner.quantity_command(c)
+        self.side_command(WindowId::Quantity, c)
     }
 
-    #[cfg(windows)]
     pub fn set_quantity_caption_area(&self, a: CaptionArea) {
-        self.inner.set_quantity_caption_area(a)
+        self.set_side_caption_area(WindowId::Quantity, a)
     }
 
-    #[cfg(windows)]
     pub fn set_quantity_cursor(&self, c: Cursor) {
-        self.inner.set_quantity_cursor(c)
+        self.set_side_cursor(WindowId::Quantity, c)
+    }
+
+    pub fn set_quantity_title(&self, title: &str) {
+        self.set_side_title(WindowId::Quantity, title)
+    }
+
+    /// Öffnet ein Seitenfenster: das Mengenfenster rechts oder das
+    /// Geschossfenster links ([`WindowId::Levels`], Jörn 11.10.), beide nach
+    /// den Regeln in [`layout`].
+    #[cfg(windows)]
+    pub fn open_side(&self, id: WindowId, title: &str) {
+        self.inner.open_side(id, title)
     }
 
     #[cfg(windows)]
-    pub fn set_quantity_title(&self, title: &str) {
-        self.inner.set_quantity_title(title)
+    pub fn close_side(&self, id: WindowId) {
+        self.inner.close_side(id)
+    }
+
+    #[cfg(windows)]
+    pub fn present_side(
+        &self,
+        id: WindowId,
+        w: u32,
+        h: u32,
+        rgba: &[u8],
+        rows: Option<(u32, u32)>,
+    ) {
+        self.inner.present_side(id, w, h, rgba, rows)
+    }
+
+    #[cfg(windows)]
+    pub fn side_size(&self, id: WindowId) -> (u32, u32) {
+        self.inner.side_size(id)
+    }
+
+    #[cfg(windows)]
+    pub fn side_scale(&self, id: WindowId) -> f32 {
+        self.inner.side_scale(id)
+    }
+
+    #[cfg(windows)]
+    pub fn side_command(&self, id: WindowId, c: WindowCommand) {
+        self.inner.side_command(id, c)
+    }
+
+    #[cfg(windows)]
+    pub fn set_side_caption_area(&self, id: WindowId, a: CaptionArea) {
+        self.inner.set_side_caption_area(id, a)
+    }
+
+    #[cfg(windows)]
+    pub fn set_side_cursor(&self, id: WindowId, c: Cursor) {
+        self.inner.set_side_cursor(id, c)
+    }
+
+    #[cfg(windows)]
+    pub fn set_side_title(&self, id: WindowId, title: &str) {
+        self.inner.set_side_title(id, title)
     }
 
     /// Arbeitsbereiche aller Bildschirme (ohne Taskleiste).
@@ -333,27 +380,35 @@ impl Surface {
     }
 
     #[cfg(not(windows))]
-    pub fn open_quantity(&self, _title: &str) {}
+    pub fn open_side(&self, _id: WindowId, _title: &str) {}
     #[cfg(not(windows))]
-    pub fn close_quantity(&self) {}
+    pub fn close_side(&self, _id: WindowId) {}
     #[cfg(not(windows))]
-    pub fn present_quantity(&self, _w: u32, _h: u32, _rgba: &[u8], _rows: Option<(u32, u32)>) {}
+    pub fn present_side(
+        &self,
+        _id: WindowId,
+        _w: u32,
+        _h: u32,
+        _rgba: &[u8],
+        _rows: Option<(u32, u32)>,
+    ) {
+    }
     #[cfg(not(windows))]
-    pub fn quantity_size(&self) -> (u32, u32) {
+    pub fn side_size(&self, _id: WindowId) -> (u32, u32) {
         (0, 0)
     }
     #[cfg(not(windows))]
-    pub fn quantity_scale(&self) -> f32 {
+    pub fn side_scale(&self, _id: WindowId) -> f32 {
         1.0
     }
     #[cfg(not(windows))]
-    pub fn quantity_command(&self, _c: WindowCommand) {}
+    pub fn side_command(&self, _id: WindowId, _c: WindowCommand) {}
     #[cfg(not(windows))]
-    pub fn set_quantity_caption_area(&self, _a: CaptionArea) {}
+    pub fn set_side_caption_area(&self, _id: WindowId, _a: CaptionArea) {}
     #[cfg(not(windows))]
-    pub fn set_quantity_cursor(&self, _c: Cursor) {}
+    pub fn set_side_cursor(&self, _id: WindowId, _c: Cursor) {}
     #[cfg(not(windows))]
-    pub fn set_quantity_title(&self, _title: &str) {}
+    pub fn set_side_title(&self, _id: WindowId, _title: &str) {}
     #[cfg(not(windows))]
     pub fn monitors(&self) -> Vec<Rect> {
         Vec::new()
