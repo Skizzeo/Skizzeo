@@ -235,10 +235,12 @@ impl Model {
         let up = *self.runs_above(run).first()?;
         let (upc, low) = (self.base_chain(up)?, self.base_chain(run)?);
         let lsegs = self.run(run)?.segments.clone();
-        self.partners(up, &lsegs)
+        let partners: Vec<usize> = self
+            .partners(up, &lsegs)
             .into_iter()
-            .enumerate()
-            .map(|(k, j)| upc.offset_against(j?, &low, k))
+            .collect::<Option<_>>()?;
+        upc.offsets_against(&low, partners.into_iter().enumerate().map(|(k, j)| (j, k)))
+            .into_iter()
             .collect()
     }
 
