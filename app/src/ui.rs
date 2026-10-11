@@ -7,6 +7,7 @@
 use crate::ext_props::ExtZeile;
 use crate::meldung::Meldung;
 use crate::type_look::TypeLook;
+use crate::wall_tool::Sprung;
 use sk_model::{RefSide, StoreyId};
 use sk_paint::{Canvas, Path, Rgba};
 use sk_platform::{Cursor, Event, Key, Modifiers, MouseButton};
@@ -123,7 +124,8 @@ pub enum Id {
     Building,
     Interior,
     Ref(RefSide),
-    Ortho,
+    /// Winkelsprung 90°, 45° oder frei (G2).
+    Sprung(Sprung),
     View(ViewKind),
     /// „Mengen · Kosten · AVA“ (B7, KA-2a, KA-4): öffnet das Mengenfenster oder holt es nach vorn.
     Quantity,
@@ -157,6 +159,9 @@ pub enum Id {
     /// Wand im Zug (W-11, W-12): „Wand teilen“ und „an der Fuge vereinen“.
     PropsSplit,
     PropsMerge,
+    /// Wand mit freiem Ende (Grundriss G5): „Ecke bilden“ und „Verlängern“.
+    PropsEcke,
+    PropsVerlaengern,
     /// „Abläufe vorschlagen“ im Abschnitt „Gefälle“ des Flachdachs (G2).
     PropsDrains,
     /// „Ablauf hinzufügen“ und „Ablauf löschen“ (den gewählten) im
@@ -198,6 +203,20 @@ macro_rules! props_button {
     };
 }
 pub(crate) use props_button;
+
+/// Muster der Knöpfe an der Wand, die `App::kette_klick` ausführt: Kette,
+/// „bündig setzen“, Teilen, Vereinen, „Ecke bilden“ und „Verlängern“.
+macro_rules! kette_button {
+    () => {
+        $crate::ui::Id::PropsLink
+            | $crate::ui::Id::PropsFlush
+            | $crate::ui::Id::PropsSplit
+            | $crate::ui::Id::PropsMerge
+            | $crate::ui::Id::PropsEcke
+            | $crate::ui::Id::PropsVerlaengern
+    };
+}
+pub(crate) use kette_button;
 
 /// Ziehbare Ebene im Paneel „Geschosse“. ±0,00 liegt fest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -831,6 +850,8 @@ pub struct Props {
     /// einer Flucht steht (Knopf „an der Fuge vereinen“).
     pub split: bool,
     pub joint: bool,
+    /// Wand mit freiem Ende: Knöpfe „Ecke bilden“ und „Verlängern“ (G5).
+    pub ende: bool,
 }
 
 /// Kopplung einer gestapelten Wand im Paneel „Eigenschaften“.
@@ -923,7 +944,7 @@ pub struct Ui {
     /// Das Werkzeug zeichnet Innenwände (sonst Außenwände).
     pub interior: bool,
     pub ref_side: RefSide,
-    pub ortho: bool,
+    pub sprung: Sprung,
     /// Schichten der Wand, die das Werkzeug zeichnet: Farbfeld und Text (aus der Bibliothek).
     pub wall_layers: Vec<(Rgba, String)>,
     /// Typ, den das Werkzeug zeichnet (K3); ersetzt die Schichtzeilen.
@@ -1167,7 +1188,13 @@ fn tool_rows(
             (Id::Ref(RefSide::Center), "Achse"),
             (Id::Ref(RefSide::Right), "Innen"),
         ]),
-        Row::Button(Id::Ortho, "90°-Sprung"),
+        // Winkelsprung (G2) ohne eigene Überschrift: gleiche Höhe wie der
+        // frühere Knopf „90°-Sprung“, der Tooltip nennt ihn
+        Row::Segments([
+            (Id::Sprung(Sprung::R90), "90°"),
+            (Id::Sprung(Sprung::R45), "45°"),
+            (Id::Sprung(Sprung::Frei), "frei"),
+        ]),
         Row::Separator,
     ]);
     // Drei kurze Zeilen (Paket 8, Darstellung §2.7); mehr in der Hilfe (F1).
@@ -1233,6 +1260,12 @@ fn props_rows(p: &Props, edit: Option<&Edit>, more_open: bool) -> Vec<Row> {
     }
     if p.joint {
         rows.push(Row::Button(Id::PropsMerge, "an der Fuge vereinen"));
+    }
+    if p.ende {
+        rows.push(Row::Pair([
+            (Id::PropsEcke, "Ecke bilden"),
+            (Id::PropsVerlaengern, "Verlängern"),
+        ]));
     }
     if p.locked {
         rows.push(Row::Locked);
@@ -1388,7 +1421,7 @@ impl Ui {
             building: false,
             interior: false,
             ref_side: RefSide::Left,
-            ortho: true,
+            sprung: Sprung::R90,
             wall_layers: Vec::new(),
             tool_chip: None,
             ext_tool: None,
@@ -2066,7 +2099,7 @@ impl Ui {
             Id::Building => self.building && !self.interior,
             Id::Interior => self.building && self.interior,
             Id::Ref(r) => self.ref_side == r,
-            Id::Ortho => self.ortho,
+            Id::Sprung(s) => self.sprung == s,
             Id::View(v) => self.view == v,
             Id::Quantity => self.quantity_open,
             Id::LevelsOpen => self.levels_open,
@@ -2095,6 +2128,8 @@ impl Ui {
             | Id::PropsFlush
             | Id::PropsSplit
             | Id::PropsMerge
+            | Id::PropsEcke
+            | Id::PropsVerlaengern
             | Id::PropsDrains
             | Id::PropsDrainAdd
             | Id::PropsDrainDelete
@@ -2129,7 +2164,9 @@ impl Ui {
             | Id::PropsDrainAdd
             | Id::PropsDrainDelete
             | Id::PropsAction(_) => self.props_locked(),
-            Id::PropsSplit | Id::PropsMerge => self.props_locked(),
+            Id::PropsSplit | Id::PropsMerge | Id::PropsEcke | Id::PropsVerlaengern => {
+                self.props_locked()
+            }
             _ => false,
         }
     }

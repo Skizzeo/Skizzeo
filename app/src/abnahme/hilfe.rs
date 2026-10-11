@@ -188,12 +188,13 @@ const OHNE: Modifiers = Modifiers {
     alt: false,
 };
 
-/// Knöpfe mit Tooltip (§1.3); „90°-Sprung“ steht im Paneel Werkzeuge
-/// (Koordinator 21:45), „Erweiterungen“ dort ab E6 (Schrittplan .szb).
+/// Knöpfe mit Tooltip (§1.3); „Winkelsprung“ (vormals „90°-Sprung“, G2)
+/// steht im Paneel Werkzeuge (Koordinator 21:45), „Erweiterungen“ dort ab
+/// E6 (Schrittplan .szb).
 const KNOEPFE: [&str; 13] = [
     "Gebäude",
     "Innenwand",
-    "90°-Sprung",
+    "Winkelsprung",
     "Erweiterungen",
     "3D",
     "Grundriss",
@@ -699,7 +700,7 @@ fn a293_genannte_tasten_sind_belegt() {
     t.handle(&key(Key::Char('R')), &c, W, H, 1.0);
     assert_ne!(t.ortho, ortho, "R");
     t.handle(&key(Key::Char('R')), &c, W, H, 1.0);
-    // Umschalt kehrt den 90°-Sprung kurz um: Cursor schräg statt rechtwinklig
+    // Umschalt kehrt den Winkelsprung kurz um: Cursor schräg statt rechtwinklig
     let schraeg = px(&c, p(5500.0, 4200.0));
     t.handle(&mv(schraeg.0, schraeg.1), &c, W, H, 1.0);
     let gerade = *t.preview().unwrap().points.last().unwrap();

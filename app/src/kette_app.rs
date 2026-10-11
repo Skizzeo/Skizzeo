@@ -1,7 +1,8 @@
 //! Kette und Fuge in der App: die Kettensymbole der gestapelten Wände (OG
 //! Phase 2) und der Fugen (W-11), „Wand teilen“ und „vereinen“ (W-12,
 //! Jörn 11.10.). Gleicher Ablauf wie an der Kopplung zweier Geschosse:
-//! Graue, offene Kette heißt getrennt, ein Klick schließt sie.
+//! Graue, offene Kette heißt getrennt, ein Klick schließt sie. Dazu „Ecke
+//! bilden“ und „Verlängern“ an der gewählten Wand (Grundriss G5).
 //!
 //! Die Entscheidungen stehen in [`sk_model::Model::split_wall`],
 //! [`sk_model::Model::merge_walls`] und [`crate::teilen_edit`]; hier nur
@@ -9,7 +10,7 @@
 
 use crate::delete::{self, HintCard, Link};
 use crate::ui::Id;
-use crate::wall_edit::EditOutcome;
+use crate::wall_edit::{ecke_edit, EditOutcome};
 use crate::{link_view, meldung, relink_lines, teilen_edit, App, NOTICE_TIME};
 use sk_model::{ElementId, FugeError};
 use sk_platform::MouseButton;
@@ -94,6 +95,8 @@ impl App {
             Id::PropsFlush => stacked.into_iter().for_each(|w| self.flush(w)),
             Id::PropsSplit => self.split_start(sel),
             Id::PropsMerge => self.merge(sel, None),
+            Id::PropsEcke => self.ecke_start(sel, ecke_edit::Art::Ecke),
+            Id::PropsVerlaengern => self.ecke_start(sel, ecke_edit::Art::Verlaengern),
             _ => {}
         }
     }
@@ -125,9 +128,64 @@ impl App {
         self.redraw = true;
     }
 
+    /// „Ecke bilden“ bzw. „Verlängern“ beginnen (G5): Karte neben der Wand,
+    /// bis das Werkzeug fertig ist.
+    fn ecke_start(&mut self, wall: ElementId, art: ecke_edit::Art) {
+        let m = self.scene.model();
+        if let Some(b) = sk_model::edit_blocked(m, &m.stack_column(wall)) {
+            self.show_locked(b, Some((wall, delete::Act::Field)));
+            return;
+        }
+        if let Err(e) = self.edit.start_ecke(&self.scene, wall, art) {
+            self.fehler(e.message());
+            return;
+        }
+        let mut h = HintCard::new(ecke_edit::karte(art), None, vec![wall], Instant::now());
+        h.beside = true;
+        h.hold();
+        self.hint = Some(h);
+        self.hint_dirty = true;
+        self.refresh_cursor();
+        self.redraw = true;
+    }
+
+    /// Folgen von „Ecke bilden“ und „Verlängern“: Schritt, neue Karte,
+    /// Ablehnung, Ende.
+    fn after_ecke(&mut self, o: &ecke_edit::Outcome) {
+        if let Some(e) = o.refused {
+            self.fehler(e.message());
+        }
+        if let Some((id, wall)) = o.locked {
+            self.show_locked(id, Some((wall, delete::Act::Field)));
+        }
+        if let Some(wall) = o.schritt {
+            self.upload_model();
+            self.select(Some(wall));
+        }
+        if let Some(lines) = &o.karte {
+            let mut h = HintCard::new(lines.clone(), None, Vec::new(), Instant::now());
+            h.beside = true;
+            h.hold();
+            self.hint = Some(h);
+        }
+        if o.fertig {
+            self.hint = None;
+        }
+        if o.cancelled {
+            self.status(meldung::Meldung::satz(ecke_edit::CANCELLED), NOTICE_TIME);
+        }
+        self.hint_dirty = true;
+        self.redraw = true;
+    }
+
     /// Folgen am Band: geteilt, Teilen abgebrochen oder abgelehnt, bündig
     /// zusammengeschoben (dann die Rückfrage).
     pub(crate) fn after_edit(&mut self, out: &EditOutcome) {
+        if let Some(o) = &out.ecke {
+            if o != &ecke_edit::Outcome::default() {
+                self.after_ecke(o);
+            }
+        }
         if let Some(t) = &out.teilen {
             if let Some(e) = t.refused {
                 self.fuge_refused(e);
@@ -214,7 +272,12 @@ impl App {
 
     /// Statuszeile mit dem Grund, als Fehler.
     fn fuge_refused(&mut self, e: FugeError) {
-        self.status(meldung::Meldung::satz(e.message()), NOTICE_TIME);
+        self.fehler(e.message());
+    }
+
+    /// Statuszeile mit einem Satz, als Fehler.
+    fn fehler(&mut self, satz: &'static str) {
+        self.status(meldung::Meldung::satz(satz), NOTICE_TIME);
         if let Some(n) = self.notice.as_mut() {
             n.error = true;
         }
