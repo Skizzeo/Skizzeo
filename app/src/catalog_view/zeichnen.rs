@@ -1250,7 +1250,7 @@ impl Catalog {
         let newer = self.mark_of(Item::Company(g)) == Some(Mark::CompanyNewer);
         for (i, title) in ["Im Projekt", "Im Firmenkatalog"].iter().enumerate() {
             let r = self.r(t, w, CONTENT_X + i as f32 * 368.0, 128.0, 356.0, 300.0);
-            rounded(c, r, 6.0 * s, u.sheet_bg);
+            rounded(c, r, 6.0 * s, t.env.paper_fallback);
             if i == 1 && newer {
                 outline(c, r, 6.0 * s, (2.0 * s).round(), u.accent);
             }
@@ -1261,7 +1261,7 @@ impl Catalog {
                 small,
                 r.x + 14.0 * s,
                 r.y + 22.0 * s,
-                u.sheet_text,
+                u.paper_text,
             );
             let inner = Rect::new(
                 r.x + 6.0 * s,
@@ -1304,7 +1304,7 @@ impl Catalog {
                         small,
                         r.x + (r.w - tw) * 0.5,
                         r.y + r.h * 0.5,
-                        u.sheet_text_dim,
+                        u.paper_text_dim,
                     );
                 }
             }

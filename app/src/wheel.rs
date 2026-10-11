@@ -455,6 +455,19 @@ impl Wheel {
         g
     }
 
+    /// Oberkante des Bogens samt kleinem Schild an der oberen Spitze
+    /// (Pixel): Bis hierhin darf von unten nichts anderes reichen.
+    pub fn top(&self, ui: &Ui, w: u32, h: u32) -> f32 {
+        let g = self.geo(ui, w, h);
+        let z = &self.size;
+        g.tip(true).1 - (TIP_LABEL_GAP + small_label_h(z.arc_label_small)) * g.s
+    }
+
+    /// [`Wheel::top`], wenn der Bogen in der Ansicht `view` steht.
+    pub fn top_in(&self, view: ViewKind, ui: &Ui, w: u32, h: u32) -> Option<f32> {
+        self.visible(view, false).then(|| self.top(ui, w, h))
+    }
+
     #[cfg(test)]
     /// Kreismittelpunkt und Radius (Pixel).
     pub fn placement(&self, ui: &Ui, w: u32, h: u32) -> (f32, f32, f32) {
@@ -977,4 +990,29 @@ pub fn paint_hint(fonts: &Fonts, line: &str, kote: &str, s: f32, t: &Theme) -> C
         sk_ui::widgets::text(&mut c, reg, kote, kp, pad, h - pad, t.ui.text_dim);
     }
     c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Oberkante samt Schild liegt über der oberen Spitze und so weit über
+    /// der Mitte wie das untere Schild darunter (Entdecken-Karte weicht aus).
+    #[test]
+    fn oberkante_ueber_der_spitze() {
+        let th = Theme::dark();
+        let w = Wheel::new(&th, false);
+        let mut ui = Ui::new(1.0, &th);
+        for (bw, bh, dpi) in [(1440u32, 900u32, 1.0f32), (2560, 1440, 1.5)] {
+            ui.fit(dpi, bw, bh);
+            let g = w.geo(&ui, bw, bh);
+            let top = w.top(&ui, bw, bh);
+            assert!(top < g.tip(true).1, "{bw}: {top}");
+            let unten = bh as f32 - th.size.panel_margin * g.s;
+            assert!(
+                ((g.cy - top) - (unten - g.cy)).abs() < 1.0,
+                "{bw}: symmetrisch"
+            );
+        }
+    }
 }

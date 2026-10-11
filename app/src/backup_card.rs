@@ -577,7 +577,7 @@ impl BackupCard {
         let mut p = Path::new();
         p.rounded_rect(pr.x, pr.y, pr.w, pr.h, 6.0 * s);
         c.fill(&p, t.env.paper_fallback);
-        paint_plan(c, &tile.plan, pr, s, u.sheet_text);
+        paint_plan(c, &tile.plan, pr, s, u.paper_text);
         // Name, Zeit, zweite Zeile
         let (regular, bold) = (fonts.regular.as_ref(), fonts.bold.as_ref());
         let cap = |px: f32| regular.map_or(px * 0.7, |f| f.cap_height(px));

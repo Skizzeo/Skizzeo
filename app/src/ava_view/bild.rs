@@ -59,6 +59,25 @@ impl AvaView {
         self.seite = seite;
     }
 
+    /// Mitte des kleinen Blatts der Druckvorschau.
+    pub(crate) fn blatt_mitte(&self, t: &Theme, fonts: &Fonts) -> (f64, f64) {
+        let (x, y, k) = self.blatt_lage(t, fonts);
+        let (w, h) = sk_paint::pdf::A4;
+        ((x + 0.5 * w * k) as f64, (y + 0.5 * h * k) as f64)
+    }
+
+    /// Zeigt das Blatt die Druckvorschau?
+    pub(crate) fn in_druckvorschau(&self) -> bool {
+        self.ansicht == Ansicht::Blatt
+    }
+
+    /// Rollt die große Druckvorschau um `px`.
+    pub(crate) fn gross_rollen_um(&mut self, px: f32) {
+        if let Some(y) = self.gross.as_mut() {
+            *y += px;
+        }
+    }
+
     /// Mitte der Leiste „LV ▾“ im schmalen Fenster.
     pub(crate) fn leiste_mitte(&self, t: &Theme, fonts: &Fonts) -> Option<(f64, f64)> {
         self.baum_als_leiste().then_some(())?;
