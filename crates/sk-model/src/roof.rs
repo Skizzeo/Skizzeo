@@ -541,7 +541,7 @@ impl FlatRoof {
             mat: self.ins_mat | material::CUT,
             ..Solid::default()
         };
-        let w = self.inner.max(1.0);
+        let w = self.inner_depth.max(1.0);
         let z1 = self.crown;
         for (quad, k, ..) in self.inner_parts() {
             s.elem = k as u32;
@@ -569,7 +569,7 @@ impl FlatRoof {
     /// dessen Dicke länger, sodass sie wie ohne Streifen überdecken (innen 50
     /// über dem Hochzug bzw. der Attikadämmung innen, außen 50 unter OK
     /// Aufkantung).
-    fn coping_legs(&self) -> (f64, f64) {
+    pub(crate) fn coping_legs(&self) -> (f64, f64) {
         (ROOF_COPING_INNER + self.cap, COPING_OUTER + self.cap)
     }
 
@@ -579,9 +579,11 @@ impl FlatRoof {
         coping_profile_legs(self.coping_width(), i, o)
     }
 
-    /// Breite des Blechs: Aufkantung und Attikadämmung innen (mm).
+    /// Breite des Blechs: Aufkantung und Attikadämmung innen (mm), diese
+    /// mit der Dicke, um die sie tatsächlich einrückt (an Engstellen
+    /// weniger als bestellt, sonst hinge der innere Schenkel frei).
     fn coping_width(&self) -> f64 {
-        self.width + self.inner
+        self.width + self.inner_depth
     }
 
     /// UK Blech: OK Aufkantung, mit Dämmstreifen darüber (mm, absolut).

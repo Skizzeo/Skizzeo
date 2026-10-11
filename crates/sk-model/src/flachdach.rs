@@ -1393,6 +1393,11 @@ mod tests {
                 .unwrap()
                 .1;
             assert_eq!(zeile.thickness, r.inner_depth);
+            // das Blech deckt Aufkantung und die tatsächliche Dämmung, der
+            // innere Schenkel liegt an ihr an (Geometrie PR #47)
+            let (i, o) = r.coping_legs();
+            let girth = crate::terrace::coping_girth_legs(r.width + r.inner_depth, i, o);
+            assert!((q.girth - girth).abs() < 1e-9, "{d}: {} {girth}", q.girth);
         }
     }
 
