@@ -85,6 +85,11 @@ pub fn price_unit(c: MatCategory) -> Option<&'static str> {
         | MatCategory::Insulation
         | MatCategory::Timber => Some("m3"),
         MatCategory::Plaster | MatCategory::Metal | MatCategory::Membrane => Some("m2"),
+        // Ausbau des Raumbuchs: nach Fläche bei seiner Dicke
+        MatCategory::Screed
+        | MatCategory::Ceramic
+        | MatCategory::Flooring
+        | MatCategory::Coating => Some("m2"),
         MatCategory::Air => None,
     }
 }

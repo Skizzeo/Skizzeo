@@ -96,6 +96,7 @@ fn deckentyp(s: &mut Scene) -> LayerSetId {
         note: String::new(),
         changed: 1,
         bearing: Default::default(),
+        height: None,
     };
     let mut id = None;
     assert!(s.edit_model("Typ angelegt", |m| {

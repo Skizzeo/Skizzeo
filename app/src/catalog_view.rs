@@ -1974,6 +1974,7 @@ impl Catalog {
         }
         v.extend(self.draft.problems());
         v.extend(self.work.bearing_problem(&self.draft));
+        v.extend(self.work.finish_problems(&self.draft));
         if self.code_taken(&self.draft.code) {
             v.push(format!(
                 "Kurzzeichen {} ist schon vergeben",
@@ -2800,6 +2801,7 @@ fn empty_type(m: &mut Model, cat: TypeCategory) -> LayerSet {
         note: String::new(),
         changed: 1,
         bearing: sk_model::Bearing::Core,
+        height: None,
     }
 }
 
@@ -2826,6 +2828,7 @@ fn mat_look(m: &Model, t: &Theme, id: sk_model::MaterialId) -> TypeLook {
         note: String::new(),
         changed: 0,
         bearing: sk_model::Bearing::Core,
+        height: None,
     };
     type_look(m, t, &set)
 }
