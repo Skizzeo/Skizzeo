@@ -279,3 +279,38 @@ fn rauminhalt_wie_mengen() {
     }
     assert!(geprueft >= 20, "nur {geprueft} geprüft");
 }
+
+/// Review Q10: Ein Raum aus der Werkbank hängt am Geschoss
+/// (`IfcRelAggregates`), nicht in `IfcRelContainedInSpatialStructure`
+/// (IFC4 WR31); eine Öffnung ohne gelochtes Bauteil bleibt draußen und steht
+/// im Bericht.
+#[test]
+fn raum_am_geschoss_oeffnung_draussen() {
+    let t = HAEUSER[3]
+        .1
+        .replace("ifc=IfcRailing.GUARDRAIL", "ifc=IfcSpace")
+        .replace("ifc=IfcColumn.COLUMN", "ifc=IfcOpeningElement");
+    let m = laden(&t);
+    let (ifc, b) = export(&m, &opt());
+    let f = step::read(&ifc).unwrap();
+    let raeume: Vec<u32> = f.all("IFCSPACE").map(|(i, _)| i).collect();
+    assert!(!raeume.is_empty(), "Geländer als Raum");
+    assert_eq!(f.all("IFCOPENINGELEMENT").count(), 0);
+    assert!(!b.ausgelassen.is_empty(), "Stütze als Öffnung");
+    for (_, e) in f.all("IFCRELCONTAINEDINSPATIALSTRUCTURE") {
+        for x in liste(&e.args[4]) {
+            assert!(!raeume.contains(&x), "Raum #{x} enthalten statt angehängt");
+        }
+    }
+    let mut haengt = 0;
+    for (_, e) in f.all("IFCRELAGGREGATES") {
+        let ganz = f.get(liste(&e.args[4])[0]).unwrap();
+        for x in liste(&e.args[5]) {
+            if raeume.contains(&x) {
+                assert_eq!(ganz.name, "IFCBUILDINGSTOREY");
+                haengt += 1;
+            }
+        }
+    }
+    assert_eq!(haengt, raeume.len());
+}

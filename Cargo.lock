@@ -62,6 +62,7 @@ name = "skizzeo"
 version = "0.2.0"
 dependencies = [
  "sk-cost",
+ "sk-ifc",
  "sk-math",
  "sk-model",
  "sk-paint",

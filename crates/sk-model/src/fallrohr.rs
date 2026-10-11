@@ -2,7 +2,7 @@
 //! regenfallrohr.md`): je Ablauf außen ein Wasserfangkasten unter dem
 //! Auslauf des Attikaablaufs, das senkrechte Fallrohr mit Rohrschellen bis
 //! ins Regenstandrohr, dazu die Notentwässerung nach DIN 1986-100 (eigenes
-//! Notfallrohr, frei über Gelände endend, oder Wasserspeier) und der
+//! Wasserspeier oder eigenes Notfallrohr frei über Gelände) und der
 //! Kontrollablauf der Dampfsperrebene in denselben Kasten.
 //!
 //! Bezug ist der Ablaufpunkt auf der Innenfläche der Aufkantung, die nächste
@@ -20,9 +20,11 @@ use sk_math::{vec3, Vec3};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Overflow {
     /// Eigenes Notfallrohr mit Wasserfangkasten, endet mit Auslaufbogen
-    /// über Gelände (Vorgabe).
+    /// über Gelände.
     Pipe,
-    /// Wasserspeier vor der Fassade.
+    /// Wasserspeier vor der Fassade neben dem Kasten (Vorgabe, Jörn 11.10.:
+    /// kein zweiter Kasten mit zweitem Rohr; der Notablauf ins Fallrohr
+    /// verstieße gegen DIN 1986-100).
     Spout,
 }
 
@@ -40,7 +42,7 @@ pub struct DownpipeSpec {
 impl Default for DownpipeSpec {
     fn default() -> DownpipeSpec {
         DownpipeSpec {
-            overflow: Overflow::Pipe,
+            overflow: Overflow::Spout,
             control: true,
             spacing: SPACING,
         }
@@ -350,6 +352,30 @@ impl Downpipe {
         (!self.overflow.free).then_some(self.spec.overflow)
     }
 
+    /// Hinweise, wo der Dachrand für einen eigenen Notüberlauf zu niedrig
+    /// ist (am Ablauf und am Terrassenablauf, Geometrie an #71).
+    pub fn free_hints(&self) -> Vec<String> {
+        let hoehe = |d: &Downpipe| d.overflow.sill - (d.outlet + OUTLET_DROP);
+        let text = |h: f64| {
+            format!(
+                "kein Notüberlauf: Dachrand am Ablauf nur {} cm über der Dachhaut, das Notwasser läuft frei über die Attika",
+                crate::library::cm_de(h.max(0.0))
+            )
+        };
+        let mut out = Vec::new();
+        if self.overflow.free {
+            out.push(format!("Ablauf: {}", text(hoehe(self))));
+        }
+        if let Some(t) = self.terrace.as_deref().filter(|t| t.pipe.overflow.free) {
+            out.push(format!(
+                "Terrassenablauf an {}: {}",
+                t.number,
+                text(hoehe(&t.pipe))
+            ));
+        }
+        out
+    }
+
     /// Rohrschellen an Fallrohr und Notfallrohr (Stück).
     pub fn clamp_count(&self) -> usize {
         self.clamps.len() + self.overflow.clamps.len()
@@ -415,7 +441,7 @@ impl Downpipe {
             }
             Some(Overflow::Spout) => {
                 let c = o.face + self.out * (SPOUT_OUT / 2.0);
-                self.cuboid(&mut s, c, OVERFLOW_W, SPOUT_OUT, o.sill - SPOUT_H, o.sill);
+                self.cuboid(&mut s, c, OVERFLOW_W, SPOUT_OUT, o.sill, o.sill + SPOUT_H);
             }
             None => {}
         }
