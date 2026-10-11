@@ -848,31 +848,177 @@ impl Model {
 
 /// Umriss `outline` (gegen den Uhrzeigersinn) um `d` nach innen versetzt,
 /// Ecke für Ecke: Schnitt der versetzten Nachbarkanten, ohne Gehrungsgrenze.
+/// Eine kurze Kante zwischen spitzen Ecken (kürzer als d · (cot α/2 +
+/// cot β/2)) schrumpft auf einen Punkt: Ihre beiden Ecken liegen im Schnitt
+/// der versetzten Nachbarkanten, die dort wie überall um `d` versetzt
+/// bleiben. Nur wo das nicht aufgeht (Streifen schmaler als 2 d), rücken die
+/// Ecken weniger weit ein und die Dämmung ist dünner als `d`. Gilt nur ein
+/// einfacher Ring, dessen Ecken im Umriss liegen; schließt ein Zahn oder
+/// Finger schmaler als 2 d auch so nicht (Review PR #43), rückt die ganze
+/// Innenfläche so weit ein, wie es noch aufgeht.
 fn inset_of(outline: &[Vec3], d: f64) -> Vec<Vec3> {
+    let at = |d: f64| {
+        inset_lines(outline, d)
+            .filter(|v| inset_valid(outline, v))
+            .or_else(|| Some(inset_clamped(outline, d)).filter(|v| inset_valid(outline, v)))
+    };
+    if let Some(v) = at(d) {
+        return v;
+    }
+    let (mut lo, mut hi) = (0.0, d);
+    for _ in 0..30 {
+        let m = (lo + hi) / 2.0;
+        if at(m).is_some() {
+            lo = m;
+        } else {
+            hi = m;
+        }
+    }
+    at(lo).unwrap_or_else(|| outline.to_vec())
+}
+
+/// Ist `pts` (Innenfläche zu `outline`, Ecke für Ecke) ein einfacher Ring,
+/// dessen Ecken alle im Umriss liegen? Zusammengefallene Ecken einer
+/// weggefallenen Kante zählen einmal.
+fn inset_valid(outline: &[Vec3], pts: &[Vec3]) -> bool {
+    let mut ring: Vec<Vec3> = Vec::with_capacity(pts.len());
+    for p in pts {
+        if ring.last().is_none_or(|q| (*p - *q).length() > 1e-6) {
+            ring.push(*p);
+        }
+    }
+    while ring.len() > 1 && (ring[0] - ring[ring.len() - 1]).length() <= 1e-6 {
+        ring.pop();
+    }
+    let inside = |p: Vec3| {
+        let n = outline.len();
+        let mut c = false;
+        for i in 0..n {
+            let (a, b) = (outline[i], outline[(i + 1) % n]);
+            if (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y) {
+                c = !c;
+            }
+        }
+        c
+    };
+    sk_math::polygon::is_simple(&ring) && ring.iter().all(|p| inside(*p))
+}
+
+/// [`inset_of`] über die versetzten Kanten: Kanten, die sich umkehrten,
+/// fallen weg (die zuerst verschwindende zuerst), ihre Ecken liegen im
+/// Schnitt der versetzten Nachbarn; `None`, wenn dabei weniger als drei
+/// Kanten bleiben oder zwei Nachbarn parallel laufen.
+fn inset_lines(outline: &[Vec3], d: f64) -> Option<Vec<Vec3>> {
+    let n = outline.len();
+    let dirs: Vec<Option<Vec3>> = (0..n)
+        .map(|i| {
+            let (a, b) = (outline[i], outline[(i + 1) % n]);
+            let v = vec3(b.x - a.x, b.y - a.y, 0.0);
+            (v.length() > 1e-9).then(|| v.normalized())
+        })
+        .collect();
+    let mut alive: Vec<bool> = dirs.iter().map(Option::is_some).collect();
+    // Ecke `i` liegt zwischen Kante i − 1 und Kante i
+    let point = |alive: &[bool], i: usize| -> Option<Vec3> {
+        let p = (1..=n).map(|k| (i + n - k) % n).find(|&k| alive[k])?;
+        let q = (0..n).map(|k| (i + k) % n).find(|&k| alive[k])?;
+        let (d0, d1) = (dirs[p]?, dirs[q]?);
+        let (a, b) = (
+            outline[p] + vec3(-d0.y, d0.x, 0.0) * d,
+            outline[q] + vec3(-d1.y, d1.x, 0.0) * d,
+        );
+        let cr = d0.x * d1.y - d0.y * d1.x;
+        if cr.abs() < 1e-9 {
+            // gerade weiter: Lot von der Ecke; parallel gegenläufig: nicht lösbar
+            return (d0.dot(d1) > 0.0).then(|| outline[i] + vec3(-d1.y, d1.x, 0.0) * d);
+        }
+        let w = b - a;
+        Some(a + d0 * ((w.x * d1.y - w.y * d1.x) / cr))
+    };
+    loop {
+        let pts: Vec<Vec3> = (0..n).map(|i| point(&alive, i)).collect::<Option<_>>()?;
+        // umgekehrte Kante mit dem stärksten Überschlag je Länge zuerst
+        let worst = (0..n)
+            .filter(|&k| alive[k])
+            .map(|k| {
+                let e = dirs[k].unwrap_or_default();
+                let l = (outline[(k + 1) % n] - outline[k]).length();
+                (k, (pts[(k + 1) % n] - pts[k]).dot(e) / l)
+            })
+            .filter(|&(_, r)| r < -1e-9)
+            .min_by(|x, y| x.1.total_cmp(&y.1));
+        match worst {
+            None => return Some(pts),
+            Some((k, _)) => alive[k] = false,
+        }
+        if alive.iter().filter(|a| **a).count() < 3 {
+            return None;
+        }
+    }
+}
+
+/// Rückfall für [`inset_of`]: Einrücktiefe je Ecke geklemmt, bis keine
+/// versetzte Kante gegen ihre Kante läuft.
+fn inset_clamped(outline: &[Vec3], d: f64) -> Vec<Vec3> {
     let n = outline.len();
     let dir = |a: Vec3, b: Vec3| {
         let v = vec3(b.x - a.x, b.y - a.y, 0.0);
         (v.length() > 1e-9).then(|| v.normalized())
     };
-    (0..n)
+    let left = |v: Vec3| vec3(-v.y, v.x, 0.0);
+    // Weg der Ecke je mm Dicke
+    let miter: Vec<Vec3> = (0..n)
         .map(|i| {
             let (a, b, c) = (outline[(i + n - 1) % n], outline[i], outline[(i + 1) % n]);
-            let left = |v: Vec3| vec3(-v.y, v.x, 0.0);
             match (dir(a, b), dir(b, c)) {
                 (Some(d0), Some(d1)) => {
                     let cr = d0.x * d1.y - d0.y * d1.x;
-                    let (p0, p1) = (b + left(d0) * d, b + left(d1) * d);
                     if cr.abs() < 1e-9 {
-                        return p1;
+                        return left(d1);
                     }
-                    let w = p1 - p0;
-                    p0 + d0 * ((w.x * d1.y - w.y * d1.x) / cr)
+                    let w = left(d1) - left(d0);
+                    left(d0) + d0 * ((w.x * d1.y - w.y * d1.x) / cr)
                 }
-                (Some(v), None) | (None, Some(v)) => b + left(v) * d,
-                (None, None) => b,
+                (Some(v), None) | (None, Some(v)) => left(v),
+                (None, None) => vec3(0.0, 0.0, 0.0),
             }
         })
-        .collect()
+        .collect();
+    // Einrücktiefe je Ecke: höchstens so weit, dass keine versetzte Kante
+    // gegen ihre Kante läuft (Länge l + b·t[j] − a·t[i] ≥ 0)
+    let mut t = vec![d; n];
+    for _ in 0..2 * n {
+        let mut changed = false;
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let Some(e) = dir(outline[i], outline[j]) else {
+                continue;
+            };
+            let l = (outline[j] - outline[i]).dot(e);
+            let (a, b) = (miter[i].dot(e), miter[j].dot(e));
+            let len = |t: &[f64]| l + b * t[j] - a * t[i];
+            if len(&t) >= -1e-9 {
+                continue;
+            }
+            changed = true;
+            if a > 0.0 && b < 0.0 {
+                let s = l / (a - b);
+                t[i] = t[i].min(s);
+                t[j] = t[j].min(s);
+            }
+            if len(&t) < -1e-9 {
+                if a > 0.0 {
+                    t[i] = ((l + b * t[j]) / a).max(0.0);
+                } else {
+                    t[j] = ((l - a * t[i]) / -b).max(0.0);
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    (0..n).map(|i| outline[i] + miter[i] * t[i]).collect()
 }
 
 #[cfg(test)]
@@ -999,7 +1145,6 @@ mod tests {
         assert!(back.model.check().is_empty());
     }
 
-    /// Dachaufbau und Blech des Flachdachs auf der OG-Decke unter `og`.
     /// Attikadämmung innen an einer spitzen Ecke (20°): die Innenfläche
     /// liegt überall genau um die Dicke vor der Aufkantung, auch wo die
     /// Wandflächen jenseits ihrer Gehrungsgrenze kappen würden.
@@ -1038,6 +1183,121 @@ mod tests {
         }
     }
 
+    /// An einer kurzen Kante zwischen spitzen Ecken (Geometrie, Review
+    /// PR #42): Kante 600 mm zwischen einer Ecke von 120° und einem Zahn von
+    /// 30°; 200 mm Dämmung würden 0,86 m Kante verbrauchen. Die versetzte
+    /// Kante schrumpft auf einen Punkt statt sich umzukehren, und das Band
+    /// zwischen Umriss und Innenfläche hat genau die Fläche Umriss −
+    /// Innenfläche, ohne Überschlag.
+    #[test]
+    fn attikadaemmung_innen_kurze_kante() {
+        let (a, b) = (30f64.to_radians(), vec3(600.0, 0.0, 0.0));
+        let e = 120f64.to_radians();
+        let outline = [
+            vec3(0.0, 0.0, 0.0),
+            b,
+            b + vec3(-a.cos(), a.sin(), 0.0) * 700.0,
+            vec3(-500.0, 3500.0, 0.0),
+            vec3(e.cos(), e.sin(), 0.0) * 3000.0,
+        ];
+        assert!(sk_math::polygon::signed_area(&outline) > 0.0);
+        for d in [20.0, 60.0] {
+            let inset = inset_of(&outline, d);
+            let n = outline.len();
+            let mut band = 0.0;
+            for k in 0..n {
+                let j = (k + 1) % n;
+                let e = outline[j] - outline[k];
+                assert!(
+                    (inset[j] - inset[k]).dot(e) >= -1e-6,
+                    "{d}: Kante {k} umgekehrt"
+                );
+                band +=
+                    sk_math::polygon::signed_area(&[outline[k], outline[j], inset[j], inset[k]]);
+            }
+            let soll =
+                sk_math::polygon::signed_area(&outline) - sk_math::polygon::signed_area(&inset);
+            assert!(
+                (band - soll).abs() < 1e-6 * soll,
+                "{d}: {band} statt {soll}"
+            );
+            // die langen Kanten bleiben um die volle Dicke versetzt
+            for k in [2, 3] {
+                let e = (outline[k + 1] - outline[k]).normalized();
+                let nrm = vec3(-e.y, e.x, 0.0);
+                assert!(
+                    ((inset[k + 1] - outline[k]).dot(nrm) - d).abs() < 1e-6,
+                    "{d}"
+                );
+            }
+        }
+        // Giebelspitze: die kurze Kante oben (100 mm) fällt bei 200 mm weg
+        // (Punkt), die Nachbarkanten bleiben auf ganzer Länge um 200 versetzt
+        let giebel = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(4000.0, 0.0, 0.0),
+            vec3(4000.0, 1000.0, 0.0),
+            vec3(2050.0, 5000.0, 0.0),
+            vec3(1950.0, 5000.0, 0.0),
+            vec3(0.0, 1000.0, 0.0),
+        ];
+        let inset = inset_of(&giebel, 200.0);
+        assert!((inset[4] - inset[3]).length() < 1e-6, "{inset:?}");
+        for k in 0..giebel.len() {
+            let j = (k + 1) % giebel.len();
+            if k == 3 {
+                continue;
+            }
+            let e = (giebel[j] - giebel[k]).normalized();
+            let nrm = vec3(-e.y, e.x, 0.0);
+            for p in [inset[k], inset[j]] {
+                assert!(
+                    ((p - giebel[k]).dot(nrm) - 200.0).abs() < 1e-6,
+                    "{k}: {p:?}"
+                );
+            }
+        }
+        // ab etwa 140 mm schließt sich der Zahn zwischen Kante 4 und 1: bei
+        // 200 mm läge der Schnitt der Nachbarn 27 mm jenseits von Kante 0, die
+        // Klemmung jenseits von Kante 4 (Review PR #43); die Innenfläche
+        // bleibt im Umriss und rückt weniger weit ein
+        assert!(!inset_valid(
+            &outline,
+            &inset_lines(&outline, 200.0).unwrap()
+        ));
+        assert!(inset_valid(&outline, &inset_of(&outline, 200.0)));
+        // Streifen schmaler als 2 d: Rückfall, nichts kehrt sich um
+        let streifen = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(5000.0, 0.0, 0.0),
+            vec3(5000.0, 300.0, 0.0),
+            vec3(0.0, 300.0, 0.0),
+        ];
+        let i = inset_of(&streifen, 200.0);
+        for k in 0..4 {
+            let e = streifen[(k + 1) % 4] - streifen[k];
+            assert!((i[(k + 1) % 4] - i[k]).dot(e) >= -1e-6, "{i:?}");
+        }
+        // Finger 3 m lang, an der Wurzel 300, an der Spitze 310 breit: die
+        // versetzten Seiten schnitten sich erst 27 m jenseits der Spitze
+        // (Review PR #43); die Innenfläche bleibt im Umriss
+        let finger = [
+            vec3(0.0, 0.0, 0.0),
+            vec3(6000.0, 0.0, 0.0),
+            vec3(6000.0, 3000.0, 0.0),
+            vec3(3150.0, 3000.0, 0.0),
+            vec3(3155.0, 6000.0, 0.0),
+            vec3(2845.0, 6000.0, 0.0),
+            vec3(2850.0, 3000.0, 0.0),
+            vec3(0.0, 3000.0, 0.0),
+        ];
+        assert!(inset_lines(&finger, 200.0).is_some_and(|v| v.iter().any(|p| p.y > 20_000.0)));
+        let i = inset_of(&finger, 200.0);
+        assert!(inset_valid(&finger, &i), "{i:?}");
+        assert!(inset_valid(&finger, &inset_of(&finger, 60.0)));
+    }
+
+    /// Dachaufbau und Blech des Flachdachs auf der OG-Decke unter `og`.
     fn da_ab(m: &Model, og: RunId) -> (ElementId, ElementId) {
         let floor = m.floor_of(og).unwrap();
         (m.flat_roof_of(floor).unwrap(), m.coping_of(floor).unwrap())
