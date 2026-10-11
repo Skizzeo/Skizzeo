@@ -60,6 +60,67 @@ pub struct FlatRoof {
     pub downpipes: Vec<crate::fallrohr::Downpipe>,
 }
 
+/// Konvexes `a` geschnitten mit konvexem `b` (beide gegen den
+/// Uhrzeigersinn, z = 0), Sutherland–Hodgman.
+fn clip_convex(a: &[Vec3], b: &[Vec3]) -> Vec<Vec3> {
+    let mut out = a.to_vec();
+    let n = b.len();
+    for k in 0..n {
+        let (p, q) = (b[k], b[(k + 1) % n]);
+        let d = q - p;
+        out = clip_half(&out, |x| d.x * (x.y - p.y) - d.y * (x.x - p.x));
+        if out.is_empty() {
+            break;
+        }
+    }
+    out
+}
+
+/// Teil des Polygons, auf dem die lineare Funktion `f` nicht negativ ist.
+fn clip_half(a: &[Vec3], f: impl Fn(Vec3) -> f64) -> Vec<Vec3> {
+    let n = a.len();
+    let mut out = Vec::with_capacity(n + 2);
+    for k in 0..n {
+        let (p, q) = (a[k], a[(k + 1) % n]);
+        let (fp, fq) = (f(p), f(q));
+        if fp >= 0.0 {
+            out.push(p);
+        }
+        if (fp >= 0.0) != (fq >= 0.0) {
+            out.push(p + (q - p) * (fp / (fp - fq)));
+        }
+    }
+    out
+}
+
+/// Anteile `ta < tb` der Strecke `a`–`b`, die im konvexen Polygon `poly`
+/// (gegen den Uhrzeigersinn) liegen; `None`, wenn kein Stück mit Länge.
+fn segment_in(poly: &[Vec3], a: Vec3, b: Vec3) -> Option<(f64, f64)> {
+    let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+    let d = b - a;
+    let n = poly.len();
+    for k in 0..n {
+        let (p, q) = (poly[k], poly[(k + 1) % n]);
+        let e = q - p;
+        // links von p→q: e × (x − p) ≥ 0, linear in t
+        let f0 = e.x * (a.y - p.y) - e.y * (a.x - p.x);
+        let df = e.x * d.y - e.y * d.x;
+        if df.abs() < 1e-12 {
+            if f0 < 0.0 {
+                return None;
+            }
+            continue;
+        }
+        let t = -f0 / df;
+        if df > 0.0 {
+            lo = lo.max(t);
+        } else {
+            hi = hi.min(t);
+        }
+    }
+    ((hi - lo) * d.length() > 1e-6).then_some((lo, hi))
+}
+
 impl FlatRoof {
     /// Dicke des Aufbaus (mm).
     pub fn thickness(&self) -> f64 {
@@ -759,16 +820,93 @@ impl FlatRoof {
     }
 
     /// Ansichtsfläche (innen, mm²) und Volumen (mm³) der Attikadämmung
-    /// innen: Höhe von der Dachhaut bis OK Aufkantung, mit Keil je Stück
-    /// gemittelt.
+    /// innen: Höhe von der Dachhaut bis OK Aufkantung. Mit Keil exakt: je
+    /// Stück über die ebenen Teilflächen des Gefälleplans integriert (die
+    /// Höhe ist dort linear), wo die Dämmung über OK Aufkantung käme, null.
+    /// So bleibt die Summe gleich, wenn ein Punkt im Umriss dazukommt
+    /// (Teilen einer Wand, Review Geometrie #61).
     pub fn inner_qto(&self) -> (f64, f64) {
         let mut out = (0.0, 0.0);
+        let top = self.crown - self.band().1;
         for ([o0, o1, i1, i0], ..) in self.inner_parts() {
-            let h = |p: Vec3| (self.crown - self.inner_bottom(p)).max(0.0);
-            let face = (i1 - i0).length() * (h(i0) + h(i1)) / 2.0;
-            let quad = polygon::area(&polygon::to_ccw(&[o0, o1, i1, i0]));
+            let quad = polygon::to_ccw(&[o0, o1, i1, i0]);
+            let Some(g) = &self.slope else {
+                let h = top.max(0.0);
+                out.0 += (i1 - i0).length() * h;
+                out.1 += polygon::area(&quad) * h;
+                continue;
+            };
+            // Höhe über einer Teilfläche: linear, a + b · p
+            let lin = |f: &crate::gefaelle::Face| {
+                let s = g.slope;
+                (top - s * f.c, vec3(-s * f.rise.x, -s * f.rise.y, 0.0))
+            };
+            let (mut face, mut vol, mut seen) = (0.0, 0.0, 0.0);
+            for f in &g.faces {
+                let (a, b) = lin(f);
+                let h = |p: Vec3| a + b.x * p.x + b.y * p.y;
+                // Grundfläche: Stück ∩ Teilfläche ∩ {h ≥ 0}
+                let mut poly = clip_convex(&quad, &f.pts);
+                seen += polygon::area(&poly);
+                poly = clip_half(&poly, h);
+                if let Some(c) = polygon::centroid(&poly) {
+                    vol += polygon::area(&poly) * h(c);
+                }
+                // Ansicht: Innenkante ∩ Teilfläche, h ≥ 0, trapezweise
+                if let Some((ta, tb)) = segment_in(&f.pts, i0, i1) {
+                    let (pa, pb) = (i0 + (i1 - i0) * ta, i0 + (i1 - i0) * tb);
+                    let (ha, hb) = (h(pa), h(pb));
+                    let len = (pb - pa).length();
+                    face += match (ha >= 0.0, hb >= 0.0) {
+                        (true, true) => len * (ha + hb) / 2.0,
+                        (false, false) => 0.0,
+                        // nur der Teil mit h ≥ 0: Dreieck bis zur Nullstelle
+                        _ => {
+                            let (hp, hn) = if ha >= 0.0 { (ha, hb) } else { (hb, ha) };
+                            len * hp / (hp - hn) * hp / 2.0
+                        }
+                    };
+                }
+            }
+            // Rest ohne Teilfläche (Rundung am Rand): Höhe wie gezeichnet
+            let rest = polygon::area(&quad) - seen;
+            if rest > 1.0 {
+                if let Some(c) = polygon::centroid(&quad) {
+                    vol += rest * (self.crown - self.inner_bottom(c)).max(0.0);
+                }
+            }
             out.0 += face;
-            out.1 += quad * (h(o0) + h(o1) + h(i1) + h(i0)) / 4.0;
+            out.1 += vol;
+        }
+        out
+    }
+
+    /// Wie [`FlatRoof::inner_qto`], als feine Mittelpunktsumme mit `n` × `n`
+    /// Teilen je Stück (Gegenprobe in Tests).
+    #[cfg(test)]
+    pub(crate) fn inner_qto_fein(&self, n: usize) -> (f64, f64) {
+        let h = |p: Vec3| (self.crown - self.inner_bottom(p)).max(0.0);
+        let mut out = (0.0, 0.0);
+        for ([o0, o1, i1, i0], ..) in self.inner_parts() {
+            let quad = polygon::to_ccw(&[o0, o1, i1, i0]);
+            let area = polygon::area(&quad);
+            let nn = n as f64;
+            for a in 0..n {
+                let s = (a as f64 + 0.5) / nn;
+                out.0 += (i1 - i0).length() / nn * h(i0 + (i1 - i0) * s);
+                for b in 0..n {
+                    let t = (b as f64 + 0.5) / nn;
+                    // bilinear im Trapez; Flächenanteil je Zelle über die
+                    // Breite an der Stelle t
+                    let (p, q) = (o0 + (o1 - o0) * s, i0 + (i1 - i0) * s);
+                    let x = p + (q - p) * t;
+                    let wa = (o1 - o0).length();
+                    let wb = (i1 - i0).length();
+                    let w = wa + (wb - wa) * t;
+                    let mean = (wa + wb) / 2.0;
+                    out.1 += area / (nn * nn) * (w / mean) * h(x);
+                }
+            }
         }
         out
     }
