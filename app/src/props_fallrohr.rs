@@ -49,9 +49,10 @@ pub fn downpipe_props(
             ),
             (
                 "Notentwässerung",
-                match spec.overflow {
-                    Overflow::Pipe => format!("Notfallrohr {}", m_(d.overflow_length())),
-                    Overflow::Spout => "Wasserspeier".into(),
+                match d.notueberlauf() {
+                    Some(Overflow::Pipe) => format!("Notfallrohr {}", m_(d.overflow_length())),
+                    Some(Overflow::Spout) => "Wasserspeier".into(),
+                    None => "frei über die Attika".into(),
                 },
             ),
             (

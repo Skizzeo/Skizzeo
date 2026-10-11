@@ -1066,6 +1066,10 @@ impl Model {
             out.extend(self.flat_roof_slope_hints(floor));
             return out;
         }
+        if let Some(d) = self.downpipe(e) {
+            out.extend(d.free_hints());
+            return out;
+        }
         let Some(run) = self.run_of(e) else {
             return out;
         };
