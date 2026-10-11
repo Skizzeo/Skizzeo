@@ -155,7 +155,7 @@ impl Foundation {
 
     /// Umriss der Perimeterdämmung: die Innenseite der Schürze; `None` ohne
     /// Dämmung oder wenn die Schürze die ganze Fläche füllt.
-    fn insulation_outline(&self) -> Option<&[Vec3]> {
+    pub fn insulation_outline(&self) -> Option<&[Vec3]> {
         match &self.footing {
             FootingShape::Ring(i) if self.params.insulation > 0.0 => Some(&i.pts),
             _ => None,
