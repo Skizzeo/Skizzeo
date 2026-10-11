@@ -571,8 +571,8 @@ const RH3: Soll = Soll {
 /// Oberkante Dach alles mit Bauleistung, keine graue Zeile.
 const RH5: Soll = Soll {
     datei: include_str!("../referenz/rh5-flachdach.szo"),
-    netto: 10578164,
-    material: 4713553,
+    netto: 10464655,
+    material: 4659537,
     geruest: (
         "Fassadengerüst LK3 W09, 4 Wochen Standzeit, auf-/abbauen",
         334544,
@@ -584,7 +584,7 @@ const RH5: Soll = Soll {
         ("Gründung", 2264725),
         ("Erdgeschoss", 3340491),
         ("Obergeschoss", 2879023),
-        ("Flachdach", 2093919),
+        ("Flachdach", 1980410),
     ],
     ausgleich: 6,
     zeilen: &[
@@ -832,8 +832,9 @@ const RH5: Soll = Soll {
         // vier Abläufe am Vorschlag, je mit Regenfallrohr (Review W12 und
         // Kosten B30 an #68); die beiden an der Nordseite enden über der
         // Dachterrasse mit Auslaufbogen statt im Standrohr (Geometrie #68).
-        // Die Terrasse hat dafür einen eigenen Attikaablauf mit Notüberlauf,
-        // Fallrohr und Notfallrohr (Kosten B31)
+        // Die Terrasse hat dafür einen eigenen Attikaablauf mit Notüberlauf
+        // und Fallrohr (Kosten B31). Notentwässerung als Wasserspeier neben
+        // dem Kasten (Vorgabe nach Jörn 11.10.)
         (
             "Attikaablauf DN 100 wärmegedämmt, waagerecht, Dampfsperranschluss",
             5000,
@@ -864,10 +865,10 @@ const RH5: Soll = Soll {
         ),
         (
             "Rohrschelle DN 100 mit Stockschraube durch WDVS, Abstand bis 2,0m",
-            33000,
+            16000,
             2400,
-            79200,
-            29700,
+            38400,
+            14400,
         ),
         (
             "Regenstandrohr Guss DN 100, 1,0m, Reinigungsöffnung, an Grundleitung",
@@ -877,25 +878,18 @@ const RH5: Soll = Soll {
             33000,
         ),
         (
-            "Wasserfangkasten Notüberlauf Titanzink, Stutzen DN 100",
-            5000,
-            14000,
-            70000,
-            47500,
-        ),
-        (
-            "Notfallrohr Titanzink rund DN 100, frei auslaufend",
-            18885,
-            3400,
-            64209,
-            30216,
-        ),
-        (
             "Auslaufbogen Titanzink DN 100 am Notfallrohr, 20cm über Gelände",
-            7000,
+            2000,
             2700,
-            18900,
-            8400,
+            5400,
+            2400,
+        ),
+        (
+            "Wasserspeier Titanzink am Notüberlauf, 300mm Auskragung",
+            5000,
+            15000,
+            75000,
+            45000,
         ),
         (
             "Kontrollablauf Dampfsperrebene DN 50 durch die Aufkantung",

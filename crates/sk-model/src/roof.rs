@@ -1080,8 +1080,23 @@ pub fn roof_mengen(vorlage: &crate::qto::AutoMenge, r: &FlatRoof) -> Vec<crate::
         ),
         menge(CORNERS, "st", corners, format!("{corners} Innenecken")),
         menge(DRAINS, "st", drains, drain_formula),
-        menge(OVERFLOWS, "st", drains, "so viele wie Dachabläufe".into()),
     ];
+    // ohne eigenen Notüberlauf, wo der Dachrand zu niedrig ist: Das
+    // Notwasser läuft dort frei über die Attika (Geometrie an #71)
+    let frei = r.downpipes.iter().filter(|d| d.overflow.free).count() as f64;
+    let overflows = (drains - frei).max(0.0);
+    if overflows > 0.0 {
+        out.push(menge(
+            OVERFLOWS,
+            "st",
+            overflows,
+            if frei > 0.0 {
+                format!("{drains} Dachabläufe, davon {frei} frei über die Attika")
+            } else {
+                "so viele wie Dachabläufe".into()
+            },
+        ));
+    }
     if let Some(g) = &r.slope {
         let v = g.wedge_volume();
         let (valley, ridge) = g.crease_lengths();
