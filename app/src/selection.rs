@@ -561,6 +561,7 @@ fn props_of(scene: &Scene, id: ElementId) -> Option<Props> {
                 .iter()
                 .any(|j| j.0 == id || j.1 == id)
         }),
+        ende: m.freies_ende(id),
         ..Default::default()
     })
 }

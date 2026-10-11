@@ -159,6 +159,9 @@ pub enum Id {
     /// Wand im Zug (W-11, W-12): „Wand teilen“ und „an der Fuge vereinen“.
     PropsSplit,
     PropsMerge,
+    /// Wand mit freiem Ende (Grundriss G5): „Ecke bilden“ und „Verlängern“.
+    PropsEcke,
+    PropsVerlaengern,
     /// „Abläufe vorschlagen“ im Abschnitt „Gefälle“ des Flachdachs (G2).
     PropsDrains,
     /// „Ablauf hinzufügen“ und „Ablauf löschen“ (den gewählten) im
@@ -200,6 +203,20 @@ macro_rules! props_button {
     };
 }
 pub(crate) use props_button;
+
+/// Muster der Knöpfe an der Wand, die `App::kette_klick` ausführt: Kette,
+/// „bündig setzen“, Teilen, Vereinen, „Ecke bilden“ und „Verlängern“.
+macro_rules! kette_button {
+    () => {
+        $crate::ui::Id::PropsLink
+            | $crate::ui::Id::PropsFlush
+            | $crate::ui::Id::PropsSplit
+            | $crate::ui::Id::PropsMerge
+            | $crate::ui::Id::PropsEcke
+            | $crate::ui::Id::PropsVerlaengern
+    };
+}
+pub(crate) use kette_button;
 
 /// Ziehbare Ebene im Paneel „Geschosse“. ±0,00 liegt fest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -833,6 +850,8 @@ pub struct Props {
     /// einer Flucht steht (Knopf „an der Fuge vereinen“).
     pub split: bool,
     pub joint: bool,
+    /// Wand mit freiem Ende: Knöpfe „Ecke bilden“ und „Verlängern“ (G5).
+    pub ende: bool,
 }
 
 /// Kopplung einer gestapelten Wand im Paneel „Eigenschaften“.
@@ -1241,6 +1260,12 @@ fn props_rows(p: &Props, edit: Option<&Edit>, more_open: bool) -> Vec<Row> {
     }
     if p.joint {
         rows.push(Row::Button(Id::PropsMerge, "an der Fuge vereinen"));
+    }
+    if p.ende {
+        rows.push(Row::Pair([
+            (Id::PropsEcke, "Ecke bilden"),
+            (Id::PropsVerlaengern, "Verlängern"),
+        ]));
     }
     if p.locked {
         rows.push(Row::Locked);
@@ -2103,6 +2128,8 @@ impl Ui {
             | Id::PropsFlush
             | Id::PropsSplit
             | Id::PropsMerge
+            | Id::PropsEcke
+            | Id::PropsVerlaengern
             | Id::PropsDrains
             | Id::PropsDrainAdd
             | Id::PropsDrainDelete
@@ -2137,7 +2164,9 @@ impl Ui {
             | Id::PropsDrainAdd
             | Id::PropsDrainDelete
             | Id::PropsAction(_) => self.props_locked(),
-            Id::PropsSplit | Id::PropsMerge => self.props_locked(),
+            Id::PropsSplit | Id::PropsMerge | Id::PropsEcke | Id::PropsVerlaengern => {
+                self.props_locked()
+            }
             _ => false,
         }
     }

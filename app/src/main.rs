@@ -3578,9 +3578,7 @@ impl App {
             Id::Ext | Id::ExtTyp | Id::ExtListe(_) => self.ext_klick(id),
             Id::ExtWahl(i, k) => self.ext_prop_wert(i, Some(k)),
             Id::ExtJa(i) => self.ext_prop_wert(i, None),
-            Id::PropsLink | Id::PropsFlush | Id::PropsSplit | Id::PropsMerge => {
-                self.kette_klick(id)
-            }
+            ui::kette_button!() => self.kette_klick(id),
             Id::PropsMore => {
                 self.ui.toggle_more();
                 self.overlay_dirty = true;
@@ -5105,7 +5103,7 @@ impl App {
                 help::Topic::Ext
             }
             _ if ctx.window.is_none() && self.ext_fenster.is_some() => self.ext_thema(),
-            help::Topic::Drag if self.edit.splitting() => help::Topic::Split,
+            help::Topic::Drag if self.edit.splitting() => self.edit.thema(),
             // Gewählte Erweiterung (E7), solange kein Fenster, Dialog oder
             // Werkzeug das Thema bestimmt
             _ if ctx.window.is_none()

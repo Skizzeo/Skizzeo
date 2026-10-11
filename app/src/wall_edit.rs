@@ -19,11 +19,15 @@ use crate::measure_input::{opens, InputOutcome, MeasureInput};
 use crate::scene::Scene;
 use crate::teilen_edit::{self, Teilen};
 use crate::ui::MeasureKind;
+use ecke_edit::EckeWahl;
 use sk_math::{dist_to_segment, vec3, Vec3};
 use sk_model::{ElementId, RunId, WallChain};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
 use sk_render::Helper;
 use sk_ui::theme::Theme;
+
+#[path = "grundriss/ecke_edit.rs"]
+pub mod ecke_edit;
 
 /// Greifabstand zum Band in Pixeln (bei 96 dpi).
 const PICK_PX: f64 = 8.0;
@@ -244,6 +248,8 @@ pub struct WallEdit {
     last: Option<LastDrag>,
     /// Laufendes „Wand teilen“: nimmt Klicks und Tasten, das Band ruht.
     pub teilen: Option<Teilen>,
+    /// Laufendes „Ecke bilden“ oder „Verlängern“ (G5), wie beim Teilen.
+    pub ecke: Option<EckeWahl>,
 }
 
 /// Ergebnis eines Ereignisses für die App.
@@ -264,6 +270,8 @@ pub struct EditOutcome {
     pub joined: Option<ElementId>,
     /// Werkzeug „Wand teilen“ (W-12).
     pub teilen: Option<teilen_edit::Outcome>,
+    /// Werkzeuge „Ecke bilden“ und „Verlängern“ (G5).
+    pub ecke: Option<ecke_edit::Outcome>,
 }
 
 /// Steht `wall` nach dem Ziehen an einer Fuge? Dann ist sie gerade bündig
@@ -406,9 +414,35 @@ impl WallEdit {
         }
     }
 
-    /// Läuft „Wand teilen“?
+    /// Läuft „Wand teilen“ oder ein anderes Werkzeug an einer gewählten
+    /// Wand („Ecke bilden“, „Verlängern“)? Es nimmt Klicks und Tasten.
     pub fn splitting(&self) -> bool {
-        self.teilen.is_some()
+        self.teilen.is_some() || self.ecke.is_some()
+    }
+
+    /// Hilfethema des laufenden Werkzeugs an der Wand.
+    pub fn thema(&self) -> crate::help::Topic {
+        if self.ecke.is_some() {
+            crate::help::Topic::InnerWall
+        } else {
+            crate::help::Topic::Split
+        }
+    }
+
+    /// „Ecke bilden“ bzw. „Verlängern“ an `wall` beginnen (G5).
+    pub fn start_ecke(
+        &mut self,
+        scene: &Scene,
+        wall: ElementId,
+        art: ecke_edit::Art,
+    ) -> Result<(), sk_model::EckeFehler> {
+        self.drag = None;
+        self.last = None;
+        self.input = None;
+        self.hover = None;
+        self.teilen = None;
+        self.ecke = Some(EckeWahl::start(scene, wall, art)?);
+        Ok(())
     }
 
     /// „Wand teilen“ an `wall` beginnen; `false`, wenn sie zu kurz ist.
@@ -435,6 +469,9 @@ impl WallEdit {
     pub fn pill(&self, scene: &Scene) -> Option<(String, bool)> {
         if let Some(t) = &self.teilen {
             return t.pill();
+        }
+        if let Some(t) = &self.ecke {
+            return t.pill(scene);
         }
         let label = match (&self.drag, &self.last) {
             (Some(d), _) => d.target().label(),
@@ -618,7 +655,7 @@ impl WallEdit {
     }
 
     pub fn is_busy(&self) -> bool {
-        self.hover.is_some() || self.drag.is_some() || self.teilen.is_some()
+        self.hover.is_some() || self.drag.is_some() || self.splitting()
     }
 
     pub fn is_dragging(&self) -> bool {
@@ -752,7 +789,7 @@ impl WallEdit {
         if self.drag.is_some() {
             return false;
         }
-        let hover = if enabled && self.teilen.is_none() {
+        let hover = if enabled && !self.splitting() {
             self.pick(scene, cam, w, h, scale)
         } else {
             None
@@ -847,6 +884,17 @@ impl WallEdit {
             out.changed = o.done.is_some();
             out.consumed = consumed;
             out.teilen = Some(o);
+            return out;
+        }
+        if let Some(t) = self.ecke.as_mut() {
+            let (o, consumed) = t.handle(e, scene, cam, w, h);
+            if o.fertig {
+                self.ecke = None;
+            }
+            out.redraw = o.redraw || o.schritt.is_some() || o.fertig;
+            out.changed = o.schritt.is_some();
+            out.consumed = consumed;
+            out.ecke = Some(o);
             return out;
         }
         match *e {
@@ -1033,6 +1081,9 @@ impl WallEdit {
     ) -> Vec<Helper> {
         if let Some(t) = &self.teilen {
             return t.helpers(scale, occlude, theme);
+        }
+        if let Some(t) = &self.ecke {
+            return t.helpers(scene, scale, occlude, theme);
         }
         let col = &theme.interact;
         let mut out = Vec::new();

@@ -40,11 +40,12 @@ Abbrechen | **Esc** schließt erst die Eingabe, das zweite **Esc** bricht den Zu
 [thema] id=innenwand titel="Innenwand"
 Starten | Knopf „Innenwand“ unter „Gebäude“; Bezugsseite ist die Achse
 Geschoss | Sie entsteht im aktiven Geschoss und wird nicht gestapelt
-Zeichnen | wie Wände zeichnen: Klick, Länge tippen und **Enter**, **Tab** für den Winkel
+Zeichnen | wie Wände zeichnen, Richtung in 45°-Schritten („frei“ im Paneel oder **R**); Länge tippen und **Enter**, **Tab** für den Winkel
 Fangen | der Cursor rastet an Wandflächen und freien Wandenden ein, die Fläche leuchtet
-Winkel | Innenwand springt in 45°-Schritten, Außenwand in 90°; „frei“ im Paneel oder **R**
 Lichtes Maß | auf einer Wandfläche vor dem ersten Klick zeigt die Pille das lichte Maß zur nächsten Wand; Zahl tippen, **Enter** setzt den Anfang genau
 Beenden | Klick auf eine quer liegende Wandfläche oder ein Wandende, sonst **Enter** oder Doppelklick
+Ecke bilden | Wand wählen, „Ecke bilden“ im Paneel, dann Klick auf die zweite Wand auf der Seite, die bleibt
+Verlängern | Wand wählen, „Verlängern“, Klick auf die Zielwand; weitere Klicks verlängern weitere Wände bis dorthin, **Esc** beendet
 Typ | Chip im Werkzeug: Klick öffnet die Typ-Liste
 Löschen | wählen, dann **Entf** oder Rechtsklick › Löschen
 

@@ -336,6 +336,10 @@ pub use teilen::FugeError;
 mod fang;
 pub use fang::{Fangziele, Wandende, Wandflaeche};
 
+#[path = "ecke.rs"]
+mod ecke;
+pub use ecke::{EckeFehler, ZugPunkte};
+
 impl Default for Model {
     fn default() -> Model {
         Model::new()
