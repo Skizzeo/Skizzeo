@@ -504,8 +504,9 @@ impl Model {
     }
 
     /// Raumvorlagen aus der Datei, ohne Rückgängig.
-    pub(crate) fn load_space_types(&mut self, v: Vec<SpaceType>) {
-        self.space_types = v;
+    /// Übernimmt, was das Raumbuch aus der `.szo` gelesen hat.
+    pub(crate) fn load_ausbau(&mut self, d: crate::szo::ausbau::Daten) {
+        self.space_types = d.space_types;
     }
 
     /// Merkt die Vorlagen vor ihrer ersten Änderung im offenen Schritt (als

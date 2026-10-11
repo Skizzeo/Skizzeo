@@ -7,7 +7,7 @@
 use super::{Line, LoadError, Record};
 use crate::id::Arena;
 use crate::library::LayerSet;
-use crate::model::{SpaceGroup, SpaceType, WallTiles, TILES_HEIGHT, WOFLV};
+use crate::model::{Model, SpaceGroup, SpaceType, WallTiles, TILES_HEIGHT, WOFLV};
 use crate::{Guid, TypeCategory};
 
 /// `h=` nur, wenn der Typ eine Höhe hat (Sockelleiste).
@@ -25,6 +25,37 @@ pub(super) fn read_height(r: &Record) -> Result<Option<f64>, LoadError> {
         None => Ok(None),
         Some(_) => r.f64("h").map(Some),
     }
+}
+
+/// Abschnitte des Raumbuchs in der `.szo`.
+const SECTIONS: [&str; 1] = ["spacetype"];
+
+/// Der Abschnitt `s`, wenn ihn `base` (die Liste in [`super::read_with`])
+/// oder das Raumbuch kennt.
+pub(super) fn known(base: &[&'static str], s: &str) -> Option<&'static str> {
+    base.iter().chain(&SECTIONS).find(|k| **k == s).copied()
+}
+
+/// Was das Raumbuch aus der `.szo` liest.
+pub(crate) struct Daten {
+    pub(crate) space_types: Vec<SpaceType>,
+}
+
+/// Schreibt die Abschnitte des Raumbuchs (nach den Bauteiltypen).
+pub(super) fn write(out: &mut String, m: &Model) {
+    write_space_types(out, m.space_types());
+}
+
+/// Liest die Abschnitte des Raumbuchs; `types` sind die Bauteiltypen der
+/// Datei.
+pub(super) fn read<'a>(
+    recs: &impl Fn(&str) -> &'a Vec<Record>,
+    types: &Arena<LayerSet>,
+    hints: &mut Vec<String>,
+) -> Result<Daten, LoadError> {
+    Ok(Daten {
+        space_types: read_space_types(recs("spacetype"), types, hints)?,
+    })
 }
 
 /// Raumvorlagen `[spacetype]` (Raumbuch RB2) nach Guid; ohne Vorlage keine
