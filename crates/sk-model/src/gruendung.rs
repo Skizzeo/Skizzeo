@@ -418,7 +418,7 @@ impl Model {
     /// bleibt sie mindestens [`MIN_FOOTING`] tief; ist sie dafür zu flach,
     /// wächst sie nach unten, und eine dünnere Platte nimmt das wieder
     /// zurück (dieselbe Regel wie bei der Dämmung,
-    /// [`Model::settle_below_slab`]).
+    /// [`Model::settle_below_slab`]). Höchstens [`MAX_SLAB_THICKNESS`].
     pub fn set_slab_thickness(&mut self, slab: ElementId, thickness: f64) -> bool {
         let Some(old) = self.element(slab).and_then(|e| match &e.kind {
             ElementKind::GroundSlab(s) => Some(s.thickness),
@@ -426,7 +426,7 @@ impl Model {
         }) else {
             return false;
         };
-        if !(thickness > 0.0 && thickness.is_finite()) || thickness == old {
+        if !(thickness > 0.0 && thickness <= MAX_SLAB_THICKNESS + 1e-9) || thickness == old {
             return false;
         }
         let gr = self.foundation_bottom_of_slab(slab);

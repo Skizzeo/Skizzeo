@@ -519,8 +519,17 @@ fn dicke_platte_laesst_die_schuerze_wachsen() {
     schritt(&mut m, |m| m.set_slab_thickness(slab, t0));
     assert_eq!(uk(&m, gr), z0, "dünnere Platte nimmt das Wachstum zurück");
     assert_eq!(m.storey(gr).unwrap().embed, None);
-    // ungültig oder ohne Platz für die Schürze: abgelehnt, nichts ändert sich
-    for t in [0.0, -10.0, f64::NAN, MAX_FOUNDATION] {
+    // ungültig oder dicker als im Dialog: abgelehnt, nichts ändert sich
+    schritt(&mut m, |m| m.set_slab_thickness(slab, MAX_SLAB_THICKNESS));
+    assert!((uk(&m, gr) - (-MAX_SLAB_THICKNESS - MIN_FOOTING)).abs() < 1e-6);
+    schritt(&mut m, |m| m.set_slab_thickness(slab, t0));
+    for t in [
+        0.0,
+        -10.0,
+        f64::NAN,
+        MAX_SLAB_THICKNESS + 10.0,
+        MAX_FOUNDATION,
+    ] {
         m.begin("Dicke");
         assert!(!m.set_slab_thickness(slab, t), "{t}");
         m.commit();
