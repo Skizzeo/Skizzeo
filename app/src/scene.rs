@@ -11,6 +11,7 @@ use crate::ui::Field;
 use crate::ui::ViewKind;
 use crate::visible::{split, Class};
 use sk_math::{polygon, vec3, Vec3};
+use sk_model::koerper::{foundation_solid, part, run_solid};
 use sk_model::qto::{Schedule, Umfang};
 use sk_model::view::{Isolate, Masks, Visibility};
 use sk_model::{
@@ -131,10 +132,7 @@ impl RunCache {
         roof: Option<FlatRoof>,
         builds: u32,
     ) -> RunCache {
-        let mut solid = chain.solid();
-        for p in run_parts(&found, &floor, &roof) {
-            p.solid(&mut solid);
-        }
+        let solid = run_solid(&chain, found.as_ref(), floor.as_ref(), roof.as_ref());
         // Auf Höhe des Wandfußes (Wände im OG stehen auf ihrem Geschoss)
         let lift = vec3(0.0, 0.0, chain.base);
         let foot: Vec<(Vec3, Vec3)> = chain
@@ -326,13 +324,12 @@ impl RunCache {
 }
 
 /// Abgeleitete Geometrie an einem Wandzug (Gründung, Decke mit Dämmung und
-/// Streifen): hängt ihre Körper für 3D, Grundriss und senkrechten Schnitt an
-/// `out` an, jeweils mit der Teilnummer je Bauteil (Review 2a, R2). Ein neues
-/// Bauteil am Zug braucht nur eine Umsetzung und einen Eintrag in
-/// [`run_parts`].
+/// Streifen): hängt ihre Körper für Grundriss und senkrechten Schnitt an
+/// `out` an, jeweils mit der Teilnummer je Bauteil (Review 2a, R2). Der
+/// 3D-Körper kommt aus [`sk_model::koerper::run_solid`], damit Ansicht und
+/// IFC-Export dieselbe Form haben. Ein neues Bauteil am Zug braucht eine
+/// Umsetzung hier, einen Eintrag in [`run_parts`] und einen in `run_solid`.
 trait RunPart {
-    /// Körper für 3D und Ansichten.
-    fn solid(&self, out: &mut Solid);
     /// Grundriss in Schnitthöhe `cut`, je nachdem, wie der Zug zum aktiven
     /// Geschoss liegt.
     fn plan(&self, out: &mut Solid, cut: f64, mode: PlanMode);
@@ -354,12 +351,6 @@ fn run_parts<'a>(
 }
 
 impl RunPart for Foundation {
-    fn solid(&self, out: &mut Solid) {
-        out.append(&part(self.slab_solid(), SLAB_PART));
-        out.append(&part(self.insulation_solid(), PERIMETER_PART));
-        out.append(&part(self.footing_solid(), FOOTING_PART));
-    }
-
     fn plan(&self, out: &mut Solid, cut: f64, mode: PlanMode) {
         match mode {
             // Fundament (E18): die Schürze geschnitten, der Plattenrand
@@ -375,7 +366,7 @@ impl RunPart for Foundation {
                     }));
             }
             // Die Gründung liegt unter der Schnitthöhe: Draufsicht
-            PlanMode::Cut => RunPart::solid(self, out),
+            PlanMode::Cut => foundation_solid(self, out),
             PlanMode::Lower => {}
         }
     }
@@ -389,16 +380,6 @@ impl RunPart for Foundation {
 }
 
 impl RunPart for FloorSlab {
-    fn solid(&self, out: &mut Solid) {
-        out.append(&part(FloorSlab::solid(self), FLOOR_PART));
-        out.append(&part(self.soffit_solid(), SOFFIT_PART));
-        out.append(&part(self.terrace_solid(), TERRACE_PART));
-        out.append(&part(self.coping_solid(), COPING_PART));
-        for k in 0..self.strips.len() {
-            out.append(&part(self.strip_solid(k), STRIP_PART + k as u32));
-        }
-    }
-
     /// Die Decke liegt im EG über der Schnitthöhe und bleibt leer, im OG
     /// darunter; im Fundament gibt es sie nicht.
     fn plan(&self, out: &mut Solid, cut: f64, mode: PlanMode) {
@@ -436,14 +417,6 @@ impl RunPart for FloorSlab {
 /// Flachdach auf einer Aufkantung (D3, D4): Dachaufbau zwischen den
 /// Aufkantungen, Blech auf ihrer Krone.
 impl RunPart for FlatRoof {
-    fn solid(&self, out: &mut Solid) {
-        out.append(&part(FlatRoof::solid(self), ROOF_PART));
-        out.append(&part(self.coping_solid(), ROOF_COPING_PART));
-        for (k, d) in self.downpipes.iter().enumerate() {
-            out.append(&part(d.solid(), DOWNPIPE_PART - k as u32));
-        }
-    }
-
     /// Im Grundriss der Ebene Flachdach liegt der Aufbau unter der
     /// Schnitthöhe; das Blech erscheint, solange es ganz darunter liegt.
     fn plan(&self, out: &mut Solid, cut: f64, mode: PlanMode) {
@@ -4016,17 +3989,6 @@ impl Scene {
     pub fn center(&self) -> Option<Vec3> {
         self.bounds().map(|(lo, hi)| (lo + hi) * 0.5)
     }
-}
-
-/// Körper mit allen Dreiecken einem Teil zugeordnet (Treffer beim Klicken).
-fn part(mut s: Solid, part: u32) -> Solid {
-    for t in &mut s.triangles {
-        t.elem = part;
-    }
-    for e in &mut s.edges {
-        e.elem = part;
-    }
-    s
 }
 
 /// Netz eines Körpers. Es trägt nur Darstellungsschlüssel und Kantenarten;
