@@ -1378,12 +1378,12 @@ fn druckvorschau_gross_und_zurueck() {
         assert!(v.tip_at(&t, &fonts, auf.0, auf.1).is_some());
         v.mouse_down(&t, &fonts, &mut p, auf, mods);
         assert!(v.gross_offen(), "{wo}");
-        let l = v.gross_lage(&fonts);
+        let (l, r) = v.gross_lage(&fonts);
         assert_eq!(l.jetzt(h as f32), 1, "{wo}: groß auf Seite 2");
         // Groß ist breiter als klein und bleibt im Fenster
         assert!(l.k > k, "{wo}: {} > {k}", l.k);
         assert!(l.x >= 0.0 && l.x + A4_W * l.k <= w as f32 + 0.5, "{wo}");
-        let (zx, zy, zw, zh) = l.zu;
+        let (zx, zy, zw, zh) = r.zu;
         assert!(zx >= 0.0 && zx + zw <= w as f32 + 0.5, "{wo}: Schließen");
         // Ein Klick auf die Seite schließt nicht, nichts darunter reagiert
         let (sx, sy, sw, sh) = l.seite(1);
@@ -1400,7 +1400,7 @@ fn druckvorschau_gross_und_zurueck() {
         for _ in 0..200 {
             v.wheel(-1.0, &t);
         }
-        let l = v.gross_lage(&fonts);
+        let (l, _) = v.gross_lage(&fonts);
         assert_eq!(l.scroll, l.max, "{wo}");
         assert_eq!(l.jetzt(h as f32), n - 1, "{wo}: am Ende die letzte Seite");
         let zu = ((zx + zw * 0.5) as f64, (zy + zh * 0.5) as f64);
@@ -1416,7 +1416,7 @@ fn druckvorschau_gross_und_zurueck() {
         // Klick daneben (Rand links neben den Seiten bzw. unter der Leiste)
         v.mouse_down(&t, &fonts, &mut p, auf_blatt(&v, &t, &fonts), mods);
         assert!(v.gross_offen(), "{wo}");
-        let l = v.gross_lage(&fonts);
+        let (l, _) = v.gross_lage(&fonts);
         let daneben = ((l.x * 0.5) as f64, (h as f32 - 4.0) as f64);
         assert_eq!(v.hit(&t, &fonts, daneben.0, daneben.1), None);
         v.mouse_down(&t, &fonts, &mut p, daneben, mods);

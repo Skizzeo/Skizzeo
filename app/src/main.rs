@@ -69,6 +69,7 @@ mod projektdaten;
 mod quantity;
 mod scene;
 mod schedule_view;
+mod schwebend;
 mod section;
 mod selection;
 mod settings;

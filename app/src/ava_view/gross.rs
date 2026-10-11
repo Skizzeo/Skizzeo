@@ -2,29 +2,20 @@
 //! Druckvorschau legt die Seiten schwebend über das ganze Fenster, so
 //! breit wie das Fenster (höchstens `BREIT_MAX`), untereinander zum Rollen.
 //! Esc, ein Klick daneben oder „Schließen“ schließt sie; die kleine
-//! Vorschau steht danach auf der zuletzt gezeigten Seite.
+//! Vorschau steht danach auf der zuletzt gezeigten Seite. Rahmen, Leiste
+//! und Klick kommen aus dem gemeinsamen Baustein [`crate::schwebend`].
 
 use super::*;
+use crate::schwebend::{self, Klick, Schwebend, LEISTE, RAND};
 use sk_paint::pdf::A4;
 
-/// Leiste oben mit „Seite x von y“ und „Schließen“ (dip).
-const LEISTE: f32 = 44.0;
-/// Rand links und rechts, Luft zwischen den Seiten (dip).
-const RAND: f32 = 16.0;
 /// Breiteste Seite (dip), etwa anderthalbfache Papiergröße.
 const BREIT_MAX: f32 = 1200.0;
-const ZU: &str = "Schließen";
-/// Abdunkeln des Fensters und Fläche der Leiste, in jedem Schema dunkel.
-const DUNKEL: Rgba = Rgba(0, 0, 0, 170);
-const LEISTE_BG: Rgba = Rgba(34, 34, 36, 255);
-const HELL: Rgba = Rgba(255, 255, 255, 235);
-const HELL_DIM: Rgba = Rgba(255, 255, 255, 150);
 
 /// Lage der großen Vorschau (px).
 pub(super) struct GrossLage {
     /// Oberkante unter der Titelleiste des Fensters.
     pub(super) oben: f32,
-    pub(super) zu: Rect,
     /// Linke Kante der Seiten und Pixel je Punkt.
     pub(super) x: f32,
     pub(super) k: f32,
@@ -57,15 +48,14 @@ impl AvaView {
         self.gross.is_some() && self.ansicht == Ansicht::Blatt
     }
 
-    pub(super) fn gross_lage(&self, fonts: &Fonts) -> GrossLage {
-        let mut l = self.gross_seiten(self.seiten(fonts));
-        let s = self.scale;
-        let bold = fonts.bold.as_ref().or(fonts.regular.as_ref());
-        let zw = bold.map_or(60.0 * s, |f| f.width(ZU, 11.0 * s)) + 40.0 * s;
-        let zh = 26.0 * s;
-        let r = (l.x + A4.0 * l.k).min(self.w as f32 - RAND * s);
-        l.zu = (r - zw, l.oben + (LEISTE * s - zh) * 0.5, zw, zh);
-        l
+    /// Lage der Seiten und der Rahmen mit „Schließen“ rechts über ihnen.
+    pub(super) fn gross_lage(&self, fonts: &Fonts) -> (GrossLage, Schwebend) {
+        let l = self.gross_seiten(self.seiten(fonts));
+        let (w, h) = (self.w as f32, self.h as f32);
+        let flaeche = (0.0, l.oben, w, h - l.oben);
+        let rechts = l.x + A4.0 * l.k;
+        let r = Schwebend::neu(flaeche, self.scale, rechts, fonts);
+        (l, r)
     }
 
     /// Lage der `seiten` Seiten, ohne „Schließen“.
@@ -81,7 +71,6 @@ impl AvaView {
         let max = (inhalt - (h - y0)).max(0.0);
         GrossLage {
             oben,
-            zu: (0.0, 0.0, 0.0, 0.0),
             x: (w - pw) * 0.5,
             k,
             y0,
@@ -137,16 +126,13 @@ impl AvaView {
     }
 
     pub(super) fn gross_hit(&self, fonts: &Fonts, x: f32, y: f32) -> Option<Hot> {
-        let l = self.gross_lage(fonts);
-        if inside(l.zu, x, y) {
-            return Some(Hot::GrossZu);
+        let (l, r) = self.gross_lage(fonts);
+        let seite = (0..l.seiten).any(|i| inside(l.seite(i), x, y));
+        match r.klick(x, y, seite) {
+            Klick::Zu => Some(Hot::GrossZu),
+            Klick::Inhalt => Some(Hot::GrossSeite),
+            Klick::Daneben => None,
         }
-        if y < l.oben + LEISTE * self.scale {
-            return None;
-        }
-        (0..l.seiten)
-            .any(|i| inside(l.seite(i), x, y))
-            .then_some(Hot::GrossSeite)
     }
 
     /// Zeichnet die große Vorschau über das ganze Fenster (nach den Karten,
@@ -163,10 +149,10 @@ impl AvaView {
             return;
         };
         let s = self.scale;
-        let (w, h) = (self.w as f32, self.h as f32);
-        let l = self.gross_lage(fonts);
-        c.fill_rect(0.0, l.oben, w, h - l.oben, DUNKEL);
-        let sicht = l.oben + LEISTE * s;
+        let h = self.h as f32;
+        let (l, r) = self.gross_lage(fonts);
+        r.abdunkeln(c);
+        let sicht = r.inhalt_oben();
         for (i, seite) in b.seiten.iter().enumerate() {
             let (x, y, pw, ph) = l.seite(i);
             if y + ph < sicht || y > h {
@@ -176,34 +162,9 @@ impl AvaView {
             c.fill_rect(x, y, pw, ph, Rgba(255, 255, 255, 255));
             sk_paint::pdf::zeichnen(c, seite, (x, y), l.k, regular, fett);
         }
-        // Die Leiste deckt Seiten, die nach oben gerollt sind
-        c.fill_rect(0.0, l.oben, w, LEISTE * s, LEISTE_BG);
-        let px = 11.0 * s;
-        let mitte = l.oben + LEISTE * s * 0.5;
-        let base = mitte + regular.cap_height(px) * 0.5;
-        let text = format!("Seite {} von {}", l.jetzt(h) + 1, l.seiten.max(1));
-        let tx = l.x.max(RAND * s);
-        fett.draw(c, &text, px, tx, base, HELL);
-        let hinweis = "Mausrad blättert · Esc oder Klick daneben schließt";
-        let hx = tx + fett.width(&text, px) + 16.0 * s;
-        if hx + regular.width(hinweis, px) < l.zu.0 - 12.0 * s {
-            regular.draw(c, hinweis, px, hx, base, HELL_DIM);
-        }
-        // „Schließen ×“
-        let (zx, zy, zw, zh) = l.zu;
-        let bg = if self.hot == Some(Hot::GrossZu) {
-            Rgba(255, 255, 255, 70)
-        } else {
-            Rgba(255, 255, 255, 36)
-        };
-        let mut p = Path::new();
-        p.rounded_rect(zx, zy, zw, zh, zh * 0.5);
-        c.fill(&p, bg);
-        fett.draw(c, ZU, px, zx + 12.0 * s, base, HELL);
-        let (mx, my, d) = (zx + zw - 16.0 * s, mitte, 3.5 * s);
-        let mut p = Path::new();
-        p.segment((mx - d, my - d), (mx + d, my + d), 1.5 * s);
-        p.segment((mx - d, my + d), (mx + d, my - d), 1.5 * s);
-        c.fill(&p, HELL);
+        let titel = format!("Seite {} von {}", l.jetzt(h) + 1, l.seiten.max(1));
+        let hinweis = format!("Mausrad blättert · {}", schwebend::HINWEIS);
+        let hot = self.hot == Some(Hot::GrossZu);
+        r.leiste(c, fonts, (&titel, l.x), &hinweis, hot);
     }
 }
