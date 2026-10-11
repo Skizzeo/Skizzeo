@@ -480,7 +480,11 @@ pub fn mengen(vorlage: &AutoMenge, d: &Downpipe) -> Vec<AutoMenge> {
             PIPE,
             "m",
             d.pipe_length(),
-            format!("Kasten bis Standrohr {}", m(d.pipe_length())),
+            format!(
+                "Kasten bis {} {}",
+                if d.lower { "Auslaufbogen" } else { "Standrohr" },
+                m(d.pipe_length())
+            ),
         ));
     }
     let n = d.clamp_count();
