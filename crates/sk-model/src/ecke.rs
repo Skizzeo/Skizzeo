@@ -227,6 +227,48 @@ fn flach(p: Vec3) -> Vec3 {
     vec3(p.x, p.y, 0.0)
 }
 
+impl Model {
+    /// Enden der Wand, die Enden eines offenen Zuges sind (G5b, Griffe zum
+    /// Ziehen): 0 Anfang, 1 Ende des Segments, mit dem Punkt der Bezugslinie.
+    pub fn wand_enden(&self, wall: ElementId) -> Vec<(usize, Vec3)> {
+        let Ok(s) = self.strecke(wall) else {
+            return Vec::new();
+        };
+        (0..2)
+            .filter(|&e| s.frei[e])
+            .map(|e| (e, s.punkt(if e == 0 { 0.0 } else { s.len })))
+            .collect()
+    }
+
+    /// Neue Punkte des Zuges, wenn Ende `ende` der Wand nach `p` wandert
+    /// (Vorschau beim Ziehen). Das andere Ende des Segments bleibt; das
+    /// Segment wird nicht kürzer als 10 cm.
+    pub fn ende_punkte(
+        &self,
+        wall: ElementId,
+        ende: usize,
+        p: Vec3,
+    ) -> Result<ZugPunkte, EckeFehler> {
+        let s = self.strecke(wall)?;
+        if !s.frei.get(ende).copied().unwrap_or(false) {
+            return Err(EckeFehler::KeinEnde);
+        }
+        let fest = s.punkt(if ende == 0 { s.len } else { 0.0 });
+        if (flach(p) - fest).length() < MIN_PIECE {
+            return Err(EckeFehler::ZuKurz);
+        }
+        let mut pts: Vec<Vec3> = self
+            .run(s.run)
+            .ok_or(EckeFehler::KeineWand)?
+            .points
+            .iter()
+            .map(|q| flach(*q))
+            .collect();
+        pts[s.seg + ende] = flach(p);
+        Ok((s.run, pts))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,5 +511,38 @@ mod tests {
         );
         assert_eq!(m.verlaengern(c, d).unwrap_err(), EckeFehler::Parallel);
         assert_eq!(m.verlaengern(c, c).unwrap_err(), EckeFehler::EinZug);
+    }
+
+    #[test]
+    fn wandende_wandert() {
+        let (mut m, st, _) = haus();
+        let w = innenwand(
+            &mut m,
+            st,
+            vec3(2000.0, 2000.0, 0.0),
+            vec3(2000.0, 5000.0, 0.0),
+        );
+        let e = m.wand_enden(w);
+        assert_eq!(e.len(), 2);
+        assert!(nah(e[1].1, vec3(2000.0, 5000.0, 0.0)));
+        let (run, pts) = m.ende_punkte(w, 1, vec3(2000.0, 6000.0, 0.0)).unwrap();
+        assert!(nah(pts[1], vec3(2000.0, 6000.0, 0.0)) && nah(pts[0], vec3(2000.0, 2000.0, 0.0)));
+        assert!(m.set_run_points(run, &pts).is_some());
+        assert_eq!(
+            m.ende_punkte(w, 0, vec3(2000.0, 5950.0, 0.0)),
+            Err(EckeFehler::ZuKurz)
+        );
+        // Außenwand (geschlossen): keine Enden
+        let aw = m
+            .elements()
+            .iter()
+            .find(|(_, e)| e.category == Category::ExteriorWall)
+            .map(|(id, _)| id)
+            .unwrap();
+        assert!(m.wand_enden(aw).is_empty());
+        assert_eq!(
+            m.ende_punkte(aw, 0, vec3(0.0, 0.0, 0.0)),
+            Err(EckeFehler::KeinEnde)
+        );
     }
 }

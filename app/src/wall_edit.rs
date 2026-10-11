@@ -20,6 +20,7 @@ use crate::scene::Scene;
 use crate::teilen_edit::{self, Teilen};
 use crate::ui::MeasureKind;
 use ecke_edit::EckeWahl;
+use ende_edit::EndeZug;
 use sk_math::{dist_to_segment, vec3, Vec3};
 use sk_model::{ElementId, RunId, WallChain};
 use sk_platform::{Event, Key, Modifiers, MouseButton};
@@ -28,6 +29,8 @@ use sk_ui::theme::Theme;
 
 #[path = "grundriss/ecke_edit.rs"]
 pub mod ecke_edit;
+#[path = "grundriss/ende_edit.rs"]
+pub mod ende_edit;
 
 /// Greifabstand zum Band in Pixeln (bei 96 dpi).
 const PICK_PX: f64 = 8.0;
@@ -250,6 +253,12 @@ pub struct WallEdit {
     pub teilen: Option<Teilen>,
     /// Laufendes „Ecke bilden“ oder „Verlängern“ (G5), wie beim Teilen.
     pub ecke: Option<EckeWahl>,
+    /// Gewählte Wand: im Grundriss Griffe an ihren Enden (G5b).
+    gewaehlt: Option<ElementId>,
+    /// Maus über einem Griff.
+    griff: bool,
+    /// Laufendes Ziehen an einem Wandende (G5b).
+    pub ende: Option<EndeZug>,
 }
 
 /// Ergebnis eines Ereignisses für die App.
@@ -406,12 +415,39 @@ pub fn partner_line(a: Vec3, b: Vec3, scale: f32, theme: &Theme) -> Helper {
 }
 
 impl WallEdit {
+    /// Stand der Ansicht vor jedem Ereignis: Schnittebene, Höhe des
+    /// Grundrisses und gewählte Wand.
+    pub fn stand(
+        &mut self,
+        section: Option<(Vec3, Vec3)>,
+        plan_z: Option<f64>,
+        gewaehlt: Option<ElementId>,
+    ) {
+        self.section = section;
+        self.plan_z = plan_z;
+        self.gewaehlt = gewaehlt;
+    }
+
     /// Offene Maßeingabe beim Ziehen bzw. in der Nachkorrektur (Paket 8b).
     pub fn input(&self) -> Option<&MeasureInput> {
-        match &self.teilen {
-            Some(t) => t.input.as_ref(),
-            None => self.input.as_ref(),
+        match (&self.teilen, &self.ende) {
+            (Some(t), _) => t.input.as_ref(),
+            (None, Some(z)) => z.input.as_ref(),
+            (None, None) => self.input.as_ref(),
         }
+    }
+
+    /// Griff der gewählten Wand unter der Maus (nur im Grundriss).
+    fn griff_bei(
+        &self,
+        scene: &Scene,
+        cam: &Camera,
+        w: f64,
+        h: f64,
+        scale: f64,
+    ) -> Option<(usize, Vec3)> {
+        let (wand, z, mouse) = (self.gewaehlt?, self.plan_z?, self.mouse?);
+        ende_edit::griff_bei(scene, cam, wand, z, mouse, w, h, scale)
     }
 
     /// Läuft „Wand teilen“ oder ein anderes Werkzeug an einer gewählten
@@ -473,6 +509,9 @@ impl WallEdit {
         if let Some(t) = &self.ecke {
             return t.pill(scene);
         }
+        if let Some(z) = &self.ende {
+            return z.pill();
+        }
         let label = match (&self.drag, &self.last) {
             (Some(d), _) => d.target().label(),
             (None, Some(l)) if self.last_valid(scene) => l.target.label(),
@@ -504,6 +543,9 @@ impl WallEdit {
     pub fn input_label(&self) -> &'static str {
         if self.teilen.is_some() {
             return teilen_edit::LABEL;
+        }
+        if self.ende.is_some() {
+            return ende_edit::LABEL;
         }
         match (&self.drag, &self.last) {
             (Some(d), _) => d.target().label(),
@@ -655,16 +697,19 @@ impl WallEdit {
     }
 
     pub fn is_busy(&self) -> bool {
-        self.hover.is_some() || self.drag.is_some() || self.splitting()
+        self.hover.is_some() || self.griff || self.is_dragging() || self.splitting()
     }
 
     pub fn is_dragging(&self) -> bool {
-        self.drag.is_some()
+        self.drag.is_some() || self.ende.is_some()
     }
 
     /// Wandzug, der gerade gezogen wird.
     pub fn dragging_run(&self) -> Option<RunId> {
-        self.drag.as_ref().map(|d| d.run)
+        self.drag
+            .as_ref()
+            .map(|d| d.run)
+            .or(self.ende.as_ref().map(|z| z.run))
     }
 
     /// Ist der Fuß einer Wand, die von der Seite als Punkt erscheint, zu sehen?
@@ -786,16 +831,18 @@ impl WallEdit {
         scale: f64,
         enabled: bool,
     ) -> bool {
-        if self.drag.is_some() {
+        if self.is_dragging() {
             return false;
         }
-        let hover = if enabled && !self.splitting() {
+        let griff =
+            enabled && !self.splitting() && self.griff_bei(scene, cam, w, h, scale).is_some();
+        let hover = if enabled && !self.splitting() && !griff {
             self.pick(scene, cam, w, h, scale)
         } else {
             None
         };
-        let changed = hover != self.hover;
-        self.hover = hover;
+        let changed = hover != self.hover || griff != self.griff;
+        (self.hover, self.griff) = (hover, griff);
         changed
     }
 
@@ -897,6 +944,20 @@ impl WallEdit {
             out.ecke = Some(o);
             return out;
         }
+        if let Some(z) = self.ende.as_mut() {
+            let o = z.handle(e, scene, cam, w, h, scale);
+            if o.fertig {
+                self.ende = None;
+                if let Event::MouseUp { x, y, .. } = *e {
+                    self.mouse = Some((x, y));
+                }
+                self.refresh(scene, cam, w, h, scale, enabled);
+            }
+            out.redraw = o.redraw;
+            out.changed = o.changed;
+            out.consumed = true;
+            return out;
+        }
         match *e {
             Event::MouseMove { x, y, .. } => {
                 self.mouse = Some((x, y));
@@ -925,6 +986,19 @@ impl WallEdit {
                 out.redraw = self.end_post();
                 self.mouse = Some((x, y));
                 self.refresh(scene, cam, w, h, scale, enabled);
+                // Griff an einem Ende der gewählten Wand (G5b)
+                let griff = self.griff_bei(scene, cam, w, h, scale).filter(|_| enabled);
+                if let (Some((ende, _)), Some(wand), Some(z)) = (griff, self.gewaehlt, self.plan_z)
+                {
+                    out.consumed = true;
+                    if let Some(id) = sk_model::edit_blocked(scene.model(), &[wand]) {
+                        out.locked = Some((id, wand));
+                        return out;
+                    }
+                    self.ende = EndeZug::greifen(scene, wand, ende, z);
+                    out.redraw = true;
+                    return out;
+                }
                 let Some(wall) = self.hover else {
                     return out;
                 };
@@ -1085,6 +1159,9 @@ impl WallEdit {
         if let Some(t) = &self.ecke {
             return t.helpers(scene, scale, occlude, theme);
         }
+        if let Some(z) = &self.ende {
+            return z.helpers(scale, occlude, theme);
+        }
         let col = &theme.interact;
         let mut out = Vec::new();
         let lift = |p: Vec3| [p.x as f32, p.y as f32, p.z as f32 + 2.0];
@@ -1156,6 +1233,12 @@ impl WallEdit {
                     let (w, dash) = (theme.size.link_line, theme.size.link_dash);
                     out.push(line(up(a), up(b), theme.ui.link_on.to_f32(), w, dash));
                 }
+            }
+        }
+        // Griffe an den Enden der gewählten Innenwand (Grundriss, G5b)
+        if let (Some(wand), Some(z)) = (self.gewaehlt, self.plan_z) {
+            for (_, p) in ende_edit::griffe(scene, wand) {
+                out.extend(ende_edit::griff(p, z, scale, occlude, theme));
             }
         }
         // Sichtbar nur das Segment unter der Maus bzw. das gezogene
